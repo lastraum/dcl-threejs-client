@@ -1,0 +1,41 @@
+name: Deploy to DigitalOcean
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: deploy-droplet-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build
+        env:
+          SKIP_VERSION_BUMP: 1
+          VITE_ARCHIPELAGO_PEERS_URL: ${{ vars.VITE_ARCHIPELAGO_PEERS_URL }}
+          VITE_PARCELS_API_BASE: ${{ vars.VITE_PARCELS_API_BASE }}
+          VITE_WORLDS_LIVE_DATA_URL: ${{ vars.VITE_WORLDS_LIVE_DATA_URL }}
+        run: npm run build
+
+      - name: Rsync dist to droplet
+        uses: burnett01/rsync-deployments@7.0.1
+        with:
+          switches: -avzr --delete
+          path: dist/
+          remote_path: ${{ secrets.DEPLOY_PATH }}
+          remote_host: ${{ secrets.DEPLOY_HOST }}
+          remote_user: ${{ secrets.DEPLOY_USER }}
+          remote_key: ${{ secrets.DEPLOY_SSH_KEY }}

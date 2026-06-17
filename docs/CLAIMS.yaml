@@ -9,6 +9,13 @@ updated: 2026-06-17
 source: github
 base_branch: dev-latest
 workflow:
+  - stage: in_progress
+    integration_ref: ecs:TweenState
+    title: implement TweenState
+    owner: lastraum
+    issue: 3
+    issue_url: https://github.com/lastraum/dcl-threejs-client/issues/3
+    updated: 2026-06-17
   - stage: merged
     integration_ref: ecs:TriggerArea
     title: TriggerArea Tier A — volume enter/exit and scene callbacks

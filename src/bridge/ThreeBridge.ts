@@ -91,6 +91,8 @@ export class ThreeBridge {
   private readonly store: EntityStore
   /** Phase 2 — entities whose GLB/mesh/material still needs an attach pass (budgeted, retried). */
   private readonly pendingMeshEntities = new Set<Entity>()
+  /** Entities with a Material component still needing full texture apply after hydration defer. */
+  private readonly pendingMaterialEntities = new Set<Entity>()
   private readonly materials: MaterialApplier
   private hydrationMode = false
   private readonly loggedUnresolvedSrcs = new Set<string>()
@@ -153,7 +155,9 @@ export class ThreeBridge {
 
   /** Lift the per-frame GLTF spawn cap while `waitForSceneAssets` runs. */
   setAssetHydrationMode(enabled: boolean): void {
+    const wasHydration = this.hydrationMode
     this.hydrationMode = enabled
+    if (wasHydration && !enabled) this.queueAllMaterialEntities()
   }
 
   isAssetHydrationMode(): boolean {
@@ -163,6 +167,7 @@ export class ThreeBridge {
   /** Keep a higher spawn cap briefly after the loading screen hides. */
   extendSoftHydration(durationMs: number): void {
     this.softHydrationUntil = Math.max(this.softHydrationUntil, performance.now() + durationMs)
+    window.setTimeout(() => this.queueAllMaterialEntities(), durationMs)
   }
 
   private resolveGltfBudget(): number {
@@ -177,11 +182,45 @@ export class ThreeBridge {
       : ThreeBridge.MESH_PASS_BUDGET_MS
   }
 
+  /** Defer texture loads only during the loading-screen hydration burst — not soft GLTF cap. */
   private shouldDeferMaterials(): boolean {
+    return this.hydrationMode
+  }
+
+  private shouldDeferTextures(): boolean {
     return this.hydrationMode || performance.now() < this.softHydrationUntil
   }
 
-  private entityNeedsMeshWork(entity: Entity, obj: THREE.Group): boolean {
+  private entityVisualRoot(entity: Entity, obj: THREE.Group): THREE.Object3D | null {
+    const mk = meshKey(entity)
+    return obj.getObjectByName(mk) ?? null
+  }
+
+  private queueAllMaterialEntities(): void {
+    const { Material } = this.ecs
+    for (const [entity, obj] of this.store.nodes) {
+      if (!this.store.isSceneOwned(entity)) continue
+      if (!Material.has(entity)) continue
+      if (!this.entityVisualRoot(entity, obj)) continue
+      const pb = Material.get(entity) as PbMaterial
+      if (this.materials.needsReapply(entity, pb)) this.pendingMaterialEntities.add(entity)
+    }
+  }
+
+  private entityNeedsMaterialWork(entity: Entity, obj: THREE.Group): boolean {
+    const { Material } = this.ecs
+    if (!Material.has(entity)) return false
+    const visual = this.entityVisualRoot(entity, obj)
+    if (!visual) return false
+    return this.materials.needsReapply(entity, Material.get(entity) as PbMaterial)
+  }
+
+  private entityNeedsMeshWork(
+    entity: Entity,
+    obj: THREE.Group,
+    opts: { includeMaterial?: boolean } = {}
+  ): boolean {
+    const includeMaterial = opts.includeMaterial !== false
     const { GltfContainer, MeshRenderer, TextShape } = this.ecs
 
     if (GltfContainer.has(entity)) {
@@ -212,6 +251,8 @@ export class ThreeBridge {
       if (!(primitive instanceof THREE.Mesh) || primitive.userData.primitiveMeshKey !== key) return true
     }
 
+    if (includeMaterial && this.entityNeedsMaterialWork(entity, obj)) return true
+
     return false
   }
 
@@ -232,16 +273,20 @@ export class ThreeBridge {
     return 'waiting'
   }
 
-  private meshEntitiesForPass(sorted: Entity[]): Entity[] {
-    if (!this.shouldDeferMaterials()) return sorted
+  private meshEntitiesForPass(sorted: Entity[], includeMaterial = true): Entity[] {
+    const needsWork: Entity[] = []
+    for (const entity of sorted) {
+      const obj = this.store.nodes.get(entity)
+      if (!obj || !this.entityNeedsMeshWork(entity, obj, { includeMaterial })) continue
+      needsWork.push(entity)
+    }
+    if (!this.shouldDeferMaterials()) return needsWork
 
     const ready: Entity[] = []
     const waiting: Entity[] = []
     const blocked: Entity[] = []
     const other: Entity[] = []
-    for (const entity of sorted) {
-      const obj = this.store.nodes.get(entity)
-      if (!obj || !this.entityNeedsMeshWork(entity, obj)) continue
+    for (const entity of needsWork) {
       const priority = this.gltfAttachPriority(entity)
       if (priority === 'ready') ready.push(entity)
       else if (priority === 'waiting') waiting.push(entity)
@@ -256,15 +301,16 @@ export class ThreeBridge {
   private async runMeshAttachPass(
     sorted: Entity[],
     meshEcs: Pick<MirrorComponents, 'MeshRenderer' | 'Material' | 'GltfContainer' | 'TextShape'>,
-    deferMaterials: boolean
+    deferMaterials: boolean,
+    touchMaterials = true
   ): Promise<number> {
     const budgetStart = this.gltfBudgetRemaining
-    const meshEntities = this.meshEntitiesForPass(sorted)
+    const meshEntities = this.meshEntitiesForPass(sorted, touchMaterials)
     const meshPassStart = performance.now()
     for (const entity of meshEntities) {
       if (performance.now() - meshPassStart >= this.meshPassBudgetMs()) break
       const obj = this.store.nodes.get(entity)!
-      await this.syncMesh(entity, obj, meshEcs, deferMaterials)
+      await this.syncMesh(entity, obj, meshEcs, deferMaterials, touchMaterials)
     }
     return budgetStart - this.gltfBudgetRemaining
   }
@@ -272,13 +318,14 @@ export class ThreeBridge {
   private async runHydrationAttachPasses(
     sorted: Entity[],
     meshEcs: Pick<MirrorComponents, 'MeshRenderer' | 'Material' | 'GltfContainer' | 'TextShape'>,
-    deferMaterials: boolean
+    deferMaterials: boolean,
+    touchMaterials = true
   ): Promise<void> {
     const burstStart = performance.now()
     for (let pass = 0; pass < ThreeBridge.HYDRATION_ATTACH_PASSES; pass++) {
       if (performance.now() - burstStart >= ThreeBridge.HYDRATION_ATTACH_TOTAL_MS) break
       this.gltfBudgetRemaining = this.resolveGltfBudget()
-      const attached = await this.runMeshAttachPass(sorted, meshEcs, deferMaterials)
+      const attached = await this.runMeshAttachPass(sorted, meshEcs, deferMaterials, touchMaterials)
       // Collider extract + PhysX cook run once per hydration tick (sceneHydration onCollidersCook),
       // not here — per-attach sync+cook blocked the attach burst on multi-shape trimesh cooks.
       if (attached === 0 && pass > 0) break
@@ -373,10 +420,13 @@ export class ThreeBridge {
       notifySecondary: false
     })
 
+    // Post-hydration safety resync: reconcile transforms / orphan nodes only — never re-touch materials.
+    const touchMaterials = this.hydrationMode
     if (this.hydrationMode) {
-      await this.runHydrationAttachPasses(applied.upserts, meshEcs, deferMaterials)
+      await this.runHydrationAttachPasses(applied.upserts, meshEcs, deferMaterials, touchMaterials)
+      await this.runMaterialPass(Material)
     } else {
-      await this.runMeshAttachPass(applied.upserts, meshEcs, deferMaterials)
+      await this.runMeshAttachPass(applied.upserts, meshEcs, deferMaterials, touchMaterials)
     }
 
     for (const [entity] of this.store.nodes) {
@@ -419,9 +469,14 @@ export class ThreeBridge {
     }
     for (const entity of applied.meshDirty) {
       this.pendingMeshEntities.add(entity)
+      if (Material.has(entity)) {
+        const pb = Material.get(entity) as PbMaterial
+        if (this.materials.needsReapply(entity, pb)) this.pendingMaterialEntities.add(entity)
+      }
     }
 
     await this.runDiffMeshPass(meshEcs, deferMaterials)
+    await this.runMaterialPass(Material)
   }
 
   /** Budgeted attach pass over the standing pending-mesh set (drained as entities finish). */
@@ -447,15 +502,44 @@ export class ThreeBridge {
         this.pendingMeshEntities.delete(entity)
         continue
       }
-      await this.syncMesh(entity, obj, meshEcs, deferMaterials)
+      await this.syncMesh(entity, obj, meshEcs, deferMaterials, true)
       // GLB still downloading → stays queued; otherwise it's done.
       if (!this.entityNeedsMeshWork(entity, obj)) this.pendingMeshEntities.delete(entity)
+    }
+  }
+
+  /** Budgeted full material apply for entities queued during hydration defer. */
+  private async runMaterialPass(Material: MirrorComponents['Material']): Promise<void> {
+    if (!this.pendingMaterialEntities.size) return
+    const deferTextures = this.shouldDeferTextures()
+    const passStart = performance.now()
+
+    for (const entity of [...this.pendingMaterialEntities]) {
+      if (performance.now() - passStart >= this.meshPassBudgetMs()) break
+      const obj = this.store.nodes.get(entity)
+      if (!obj || !Material.has(entity)) {
+        this.pendingMaterialEntities.delete(entity)
+        continue
+      }
+      const visual = this.entityVisualRoot(entity, obj)
+      if (!visual) continue
+
+      const pb = Material.get(entity) as PbMaterial
+      if (deferTextures) {
+        this.materials.applyScalarsToObject3D(visual, entity, pb)
+        if (!this.materials.needsReapply(entity, pb)) this.pendingMaterialEntities.delete(entity)
+        continue
+      }
+      await this.materials.applyToObject3D(visual, entity, pb)
+      this.notifyMeshComponent(entity, Material.componentId)
+      if (!this.materials.needsReapply(entity, pb)) this.pendingMaterialEntities.delete(entity)
     }
   }
 
   private removeEntityNode(entity: Entity): void {
     if (!this.store.isSceneOwned(entity)) return
     this.pendingMeshEntities.delete(entity)
+    this.pendingMaterialEntities.delete(entity)
     const obj = this.store.getNode(entity)
     if (!obj) return
     this.materials.clearEntity(entity)
@@ -469,6 +553,7 @@ export class ThreeBridge {
     this.videoPlayerBridge?.dispose()
     this.videoPlayerBridge = null
     this.pendingMeshEntities.clear()
+    this.pendingMaterialEntities.clear()
   }
 
   private removeEntityVisuals(entity: Entity, obj: THREE.Group): void {
@@ -489,7 +574,8 @@ export class ThreeBridge {
     entity: Entity,
     obj: THREE.Group,
     ecs: Pick<MirrorComponents, 'MeshRenderer' | 'Material' | 'GltfContainer' | 'TextShape'>,
-    deferMaterials = false
+    deferMaterials = false,
+    touchMaterials = true
   ): Promise<void> {
     const { MeshRenderer, Material, GltfContainer, TextShape } = ecs
     const mk = meshKey(entity)
@@ -604,9 +690,18 @@ export class ThreeBridge {
 
       if (mesh) syncGltfInstanceRenderState(mesh)
 
-      if (!deferMaterials && Material.has(entity) && mesh) {
-        await this.materials.applyToObject3D(mesh, entity, Material.get(entity) as PbMaterial)
-        this.notifyMeshComponent(entity, Material.componentId)
+      if (touchMaterials && Material.has(entity) && mesh) {
+        const pb = Material.get(entity) as PbMaterial
+        if (!this.materials.needsReapply(entity, pb)) {
+          /* material already matches ECS — skip destructive re-apply on full resync */
+        } else if (deferMaterials || this.shouldDeferTextures()) {
+          this.pendingMaterialEntities.add(entity)
+          this.materials.applyScalarsToObject3D(mesh, entity, pb)
+        } else {
+          await this.materials.applyToObject3D(mesh, entity, pb)
+          this.notifyMeshComponent(entity, Material.componentId)
+          if (!this.materials.needsReapply(entity, pb)) this.pendingMaterialEntities.delete(entity)
+        }
       }
       return
     }
@@ -645,9 +740,18 @@ export class ThreeBridge {
         this.notifyMeshComponent(entity, MeshRenderer.componentId)
       }
 
-      if (!deferMaterials && Material.has(entity)) {
-        await this.materials.applyToObject3D(primitive, entity, Material.get(entity) as PbMaterial)
-        this.notifyMeshComponent(entity, Material.componentId)
+      if (touchMaterials && Material.has(entity)) {
+        const pb = Material.get(entity) as PbMaterial
+        if (!this.materials.needsReapply(entity, pb)) {
+          /* material already matches ECS — skip destructive re-apply on full resync */
+        } else if (deferMaterials || this.shouldDeferTextures()) {
+          this.pendingMaterialEntities.add(entity)
+          this.materials.applyScalarsToObject3D(primitive, entity, pb)
+        } else {
+          await this.materials.applyToObject3D(primitive, entity, pb)
+          this.notifyMeshComponent(entity, Material.componentId)
+          if (!this.materials.needsReapply(entity, pb)) this.pendingMaterialEntities.delete(entity)
+        }
       }
     }
   }

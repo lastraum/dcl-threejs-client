@@ -71,8 +71,105 @@ function wrapMode(mode?: number): THREE.Wrapping {
   return THREE.ClampToEdgeWrapping
 }
 
+function round4(n: number | undefined): number | undefined {
+  if (n === undefined) return undefined
+  return Math.round(n * 10000) / 10000
+}
+
+function normalizeColor4(c?: Color4): Color4 | undefined {
+  if (!c) return undefined
+  return { r: round4(c.r), g: round4(c.g), b: round4(c.b), a: round4(c.a) }
+}
+
+function normalizeColor3(c?: Color3): Color3 | undefined {
+  if (!c) return undefined
+  return { r: round4(c.r), g: round4(c.g), b: round4(c.b) }
+}
+
+function normalizeTextureUnion(u?: TextureUnion): unknown {
+  const tex = u?.tex
+  if (!tex) return undefined
+  if (tex.$case === 'texture') {
+    const t = tex.texture
+    return {
+      case: 'texture',
+      src: t.src,
+      wrapMode: t.wrapMode,
+      filterMode: t.filterMode,
+      offset: t.offset,
+      tiling: t.tiling
+    }
+  }
+  if (tex.$case === 'videoTexture') {
+    const v = tex.videoTexture
+    return {
+      case: 'video',
+      videoPlayerEntity: v.videoPlayerEntity,
+      wrapMode: v.wrapMode,
+      filterMode: v.filterMode
+    }
+  }
+  if (tex.$case === 'avatarTexture') return { case: 'avatar' }
+  return undefined
+}
+
+/** Stable hash of ECS material fields — avoids protobuf/JSON key-order drift across projection reads. */
 function materialFingerprint(pb: PbMaterial): string {
-  return JSON.stringify(pb)
+  const materialCase = pb.material?.$case
+  if (!materialCase) return ''
+  const inner =
+    materialCase === 'pbr'
+      ? pb.material!.pbr
+      : materialCase === 'unlit'
+        ? pb.material!.unlit
+        : undefined
+  if (!inner) return materialCase
+
+  if (materialCase === 'pbr') {
+    const pbr = inner as PbrMaterial
+    return JSON.stringify({
+      case: 'pbr',
+      albedoColor: normalizeColor4(pbr.albedoColor),
+      emissiveColor: normalizeColor3(pbr.emissiveColor),
+      alphaTest: round4(pbr.alphaTest),
+      castShadows: pbr.castShadows,
+      transparencyMode: pbr.transparencyMode,
+      metallic: round4(pbr.metallic),
+      roughness: round4(pbr.roughness),
+      emissiveIntensity: round4(pbr.emissiveIntensity),
+      texture: normalizeTextureUnion(pbr.texture),
+      alphaTexture: normalizeTextureUnion(pbr.alphaTexture),
+      emissiveTexture: normalizeTextureUnion(pbr.emissiveTexture),
+      bumpTexture: normalizeTextureUnion(pbr.bumpTexture)
+    })
+  }
+
+  const unlit = inner as UnlitMaterial
+  return JSON.stringify({
+    case: 'unlit',
+    diffuseColor: normalizeColor4(unlit.diffuseColor),
+    alphaTest: round4(unlit.alphaTest),
+    castShadows: unlit.castShadows,
+    texture: normalizeTextureUnion(unlit.texture),
+    alphaTexture: normalizeTextureUnion(unlit.alphaTexture)
+  })
+}
+
+function materialHasTextureSlots(pb: PbMaterial): boolean {
+  const materialCase = pb.material?.$case
+  const inner =
+    materialCase === 'pbr'
+      ? pb.material!.pbr
+      : materialCase === 'unlit'
+        ? pb.material!.unlit
+        : undefined
+  if (!inner) return false
+  if (inner.texture?.tex || inner.alphaTexture?.tex) return true
+  if (materialCase === 'pbr') {
+    const pbr = inner as PbrMaterial
+    if (pbr.emissiveTexture?.tex || pbr.bumpTexture?.tex) return true
+  }
+  return false
 }
 
 /** Apply SDK7 Material → Three.js materials (P0 parity). */
@@ -89,10 +186,37 @@ export class MaterialApplier {
     this.getVideoTexture = resolver
   }
 
+  needsReapply(entity: number, pb: PbMaterial): boolean {
+    const fp = materialFingerprint(pb)
+    if (this.hasUnresolvedVideo(pb)) return true
+    if (this.applied.get(entity) === fp) return false
+    // Scalar-only materials are fully applied once color/transparency is set.
+    if (!materialHasTextureSlots(pb) && this.applied.get(entity) === `scalar:${fp}`) return false
+    return true
+  }
+
+  /** Sync color / PBR scalars only — safe during hydration before textures are ready. */
+  applyScalarsToObject3D(root: THREE.Object3D, entity: number, pb: PbMaterial): void {
+    root.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) this.applyScalarsToMesh(child as THREE.Mesh, pb)
+    })
+    if (!this.hasUnresolvedVideo(pb)) {
+      this.applied.set(entity, `scalar:${materialFingerprint(pb)}`)
+    }
+  }
+
+  private isMaterialApplied(entity: number, pb: PbMaterial): boolean {
+    const fp = materialFingerprint(pb)
+    const stored = this.applied.get(entity)
+    if (stored === fp) return true
+    if (!materialHasTextureSlots(pb) && stored === `scalar:${fp}`) return true
+    return false
+  }
+
   async applyToObject3D(root: THREE.Object3D, entity: number, pb: PbMaterial): Promise<void> {
     const fp = materialFingerprint(pb)
     const pendingVideo = this.hasUnresolvedVideo(pb)
-    if (this.applied.get(entity) === fp && !pendingVideo) return
+    if (this.isMaterialApplied(entity, pb) && !pendingVideo) return
 
     const meshes: THREE.Mesh[] = []
     root.traverse((child) => {
@@ -107,7 +231,7 @@ export class MaterialApplier {
     else this.applied.delete(entity)
   }
 
-  async applyToMesh(mesh: THREE.Mesh, pb: PbMaterial): Promise<void> {
+  applyScalarsToMesh(mesh: THREE.Mesh, pb: PbMaterial): void {
     const materialCase = pb.material?.$case
     const isPbr = materialCase === 'pbr'
     const inner =
@@ -154,36 +278,55 @@ export class MaterialApplier {
       m.emissiveIntensity = pbr.emissiveIntensity ?? 1
     }
 
-    m.map = null
-    m.alphaMap = null
-    if (m instanceof THREE.MeshStandardMaterial) {
-      m.emissiveMap = null
-      m.normalMap = null
-    }
+    applyTransparency(
+      m,
+      color.a ?? 1,
+      inner.alphaTest,
+      isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO,
+      false
+    )
+    m.needsUpdate = true
+  }
 
-    const mainTex = await this.loadUnionTexture(inner.texture)
-    if (mainTex) {
+  async applyToMesh(mesh: THREE.Mesh, pb: PbMaterial): Promise<void> {
+    const materialCase = pb.material?.$case
+    const isPbr = materialCase === 'pbr'
+    const inner =
+      materialCase === 'pbr'
+        ? pb.material!.pbr
+        : materialCase === 'unlit'
+          ? pb.material!.unlit
+          : undefined
+    if (!inner) return
+
+    this.applyScalarsToMesh(mesh, pb)
+    const m = mesh.material as THREE.MeshBasicMaterial | THREE.MeshStandardMaterial
+    const base = isPbr ? (inner as PbrMaterial).albedoColor : (inner as UnlitMaterial).diffuseColor
+    const color = base ?? { r: 1, g: 1, b: 1, a: 1 }
+
+    let alphaTex: THREE.Texture | null = null
+    if (inner.texture?.tex) {
+      const mainTex = await this.loadUnionTexture(inner.texture)
       m.map = mainTex
-      this.applyUvTransform(mainTex, getTextureDef(inner.texture))
+      if (mainTex) this.applyUvTransform(mainTex, getTextureDef(inner.texture))
     }
-
-    const alphaTex = await this.loadUnionTexture(inner.alphaTexture)
-    if (alphaTex) {
+    if (inner.alphaTexture?.tex) {
+      alphaTex = await this.loadUnionTexture(inner.alphaTexture)
       m.alphaMap = alphaTex
-      this.applyUvTransform(alphaTex, getTextureDef(inner.alphaTexture))
+      if (alphaTex) this.applyUvTransform(alphaTex, getTextureDef(inner.alphaTexture))
     }
 
     if (m instanceof THREE.MeshStandardMaterial && isPbr) {
       const pbr = inner as PbrMaterial
-      const emissiveTex = await this.loadUnionTexture(pbr.emissiveTexture)
-      if (emissiveTex) {
+      if (pbr.emissiveTexture?.tex) {
+        const emissiveTex = await this.loadUnionTexture(pbr.emissiveTexture)
         m.emissiveMap = emissiveTex
-        this.applyUvTransform(emissiveTex, getTextureDef(pbr.emissiveTexture))
+        if (emissiveTex) this.applyUvTransform(emissiveTex, getTextureDef(pbr.emissiveTexture))
       }
-      const bumpTex = await this.loadUnionTexture(pbr.bumpTexture)
-      if (bumpTex) {
+      if (pbr.bumpTexture?.tex) {
+        const bumpTex = await this.loadUnionTexture(pbr.bumpTexture)
         m.normalMap = bumpTex
-        this.applyUvTransform(bumpTex, getTextureDef(pbr.bumpTexture))
+        if (bumpTex) this.applyUvTransform(bumpTex, getTextureDef(pbr.bumpTexture))
       }
     }
 
@@ -192,7 +335,7 @@ export class MaterialApplier {
       color.a ?? 1,
       inner.alphaTest,
       isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO,
-      !!alphaTex
+      !!alphaTex || !!m.alphaMap
     )
 
     mesh.castShadow = inner.castShadows === true

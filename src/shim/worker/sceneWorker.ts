@@ -99,8 +99,9 @@ let sceneOnStartComplete = false
 let sceneBootInProgress = false
 /** Priority lane messages received while sceneBootInProgress — drained after onStart. */
 const pendingBootPriority: SceneWorkerPriorityMessage[] = []
-/** Coalesce inject + pointer-crdt-deliver into one post-apply engine tick before ack. */
-let pointerDeliveryCompleteTimer: ReturnType<typeof setTimeout> | null = null
+/** True after inject until deliver (or fallback) finalizes the batch. */
+let pointerDeliverBatchOpen = false
+let pointerDeliverAckFallbackTimer: ReturnType<typeof setTimeout> | null = null
 /** Genesis composite spawn runs in exports.onUpdate — must stay on (engine.update alone does not load composite). */
 const ENABLE_FULL_SCENE_ONUPDATE = true
 
@@ -173,57 +174,95 @@ function drainQueuedPointerDeliver(): void {
 }
 
 function preemptForPointerDelivery(): void {
+  const hadSceneUpdate = sceneUpdateInFlight
   sceneUpdateInFlight = false
   engineTickInFlight = false
   clearSceneUpdateAbortTimer()
-  // Do not resolve pending crdtSendToRenderer with [] — empty renderer responses leave
-  // worker PlayerEntity at spawn and scene scripts call movePlayerTo(spawn) on click.
+  // Unblock pointer engine ticks stuck behind an in-flight onUpdate ↔ crdt-send round-trip.
+  if (hadSceneUpdate && pendingCrdt.size) interruptPendingCrdtRoundTrips()
 }
 
-/** Run engine.update, ack main, then kick scene onUpdate without blocking the ack. */
-function schedulePointerDeliveryComplete(label: string): void {
-  if (pointerDeliveryCompleteTimer) {
-    clearTimeout(pointerDeliveryCompleteTimer)
+function clearPointerDeliverAckFallback(): void {
+  if (pointerDeliverAckFallbackTimer) {
+    clearTimeout(pointerDeliverAckFallbackTimer)
+    pointerDeliverAckFallbackTimer = null
   }
-  pointerDeliveryCompleteTimer = setTimeout(() => {
-    pointerDeliveryCompleteTimer = null
-    pointerDeliveryInFlight = true
-    try {
-      if (!sceneOnStartComplete) {
-        workerLog(
-          'log',
-          `[sceneWorker] ${label} — deferring sceneEngine.update(0) until onStart completes (boot-safe)`
-        )
-      } else if (sceneEngine) {
-        sceneEngine.update(0)
-        workerLog('log', `[sceneWorker] ${label} — sceneEngine.update(0) done`)
-      } else {
-        workerLog('warn', `[sceneWorker] ${label} — sceneEngine missing, skip update`)
-      }
-    } catch (err) {
+}
+
+/**
+ * Same-tick engine tick after inject + CRDT apply — getClick() must run before main resumes ticks.
+ * Do not defer via setTimeout; worker priority handlers were starving the timer queue.
+ */
+function runPointerEngineTickSync(label: string): void {
+  pointerDeliveryInFlight = true
+  try {
+    if (!sceneOnStartComplete) {
       workerLog(
-        'error',
-        `[sceneWorker] ${label} pointer engine tick failed — ${err instanceof Error ? err.message : String(err)}`
+        'log',
+        `[sceneWorker] ${label} — deferring sceneEngine.update(0) until onStart completes (boot-safe)`
       )
-    } finally {
-      postPointerDeliverDone(label)
-      pointerDeliveryInFlight = false
-      resumeSceneTicksAfterPointer()
-      drainQueuedPointerDeliver()
+      return
     }
-    if (sceneOnStartComplete && sceneOnUpdate) {
-      void Promise.resolve(sceneOnUpdate(0))
-        .then(() => {
-          workerLog('log', `[sceneWorker] ${label} — scene onUpdate(0) done (post-ack)`)
-        })
-        .catch((err) => {
-          workerLog(
-            'error',
-            `[sceneWorker] ${label} post-ack onUpdate failed — ${err instanceof Error ? err.message : String(err)}`
-          )
-        })
+    if (!sceneEngine) {
+      workerLog('warn', `[sceneWorker] ${label} — sceneEngine missing, skip update`)
+      return
     }
-  }, 0)
+    sceneEngine.update(0)
+    workerLog('log', `[sceneWorker] ${label} — sceneEngine.update(0) done`)
+    if (sceneOnUpdate) {
+      const result = sceneOnUpdate(0)
+      if (result != null && typeof (result as Promise<void>).then === 'function') {
+        void (result as Promise<void>)
+          .then(() => {
+            workerLog('log', `[sceneWorker] ${label} — scene onUpdate(0) done (post-engine-tick)`)
+          })
+          .catch((err) => {
+            workerLog(
+              'error',
+              `[sceneWorker] ${label} scene onUpdate(0) failed — ${err instanceof Error ? err.message : String(err)}`
+            )
+          })
+      } else {
+        workerLog('log', `[sceneWorker] ${label} — scene onUpdate(0) done (sync)`)
+      }
+    }
+  } catch (err) {
+    workerLog(
+      'error',
+      `[sceneWorker] ${label} pointer engine tick failed — ${err instanceof Error ? err.message : String(err)}`
+    )
+  } finally {
+    pointerDeliveryInFlight = false
+    resumeSceneTicksAfterPointer()
+    drainQueuedPointerDeliver()
+  }
+}
+
+/** Post pointer-deliver-done synchronously, then run engine tick in the same call stack. */
+function finalizePointerDelivery(label: string): void {
+  if (!pointerDeliverBatchOpen) {
+    workerLog('warn', `[sceneWorker] ${label} — finalize skipped (no open pointer batch)`)
+    return
+  }
+  pointerDeliverBatchOpen = false
+  clearPointerDeliverAckFallback()
+  postPointerDeliverDone(label)
+  runPointerEngineTickSync(label)
+}
+
+function armPointerDeliverAckFallback(label: string): void {
+  clearPointerDeliverAckFallback()
+  pointerDeliverAckFallbackTimer = setTimeout(() => {
+    pointerDeliverAckFallbackTimer = null
+    if (!pointerDeliverBatchOpen) return
+    workerLog('warn', `[sceneWorker] ${label} — no pointer-crdt-deliver; acking inject-only batch`)
+    finalizePointerDelivery(`${label}-inject-only`)
+  }, 32)
+}
+
+function beginPointerDeliverBatch(label: string): void {
+  pointerDeliverBatchOpen = true
+  armPointerDeliverAckFallback(label)
 }
 
 /** Forward to main debug log without relying on patched console (scene onStart may restore native console). */
@@ -275,13 +314,13 @@ function executePointerInjection(body: InjectPointerClickBody): void {
   try {
     injectPointerClickOnEngine(sceneEngine, body)
     workerLog('log', '[sceneWorker] inject-pointer-click — PointerEventsResult written')
-    schedulePointerDeliveryComplete('inject-pointer-click')
+    beginPointerDeliverBatch('inject-pointer-click')
   } catch (err) {
     workerLog(
       'error',
       `[sceneWorker] inject-pointer-click failed — ${err instanceof Error ? err.message : String(err)}`
     )
-    schedulePointerDeliveryComplete('inject-pointer-click')
+    beginPointerDeliverBatch('inject-pointer-click')
   }
 }
 
@@ -325,19 +364,19 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
   sceneTicksPaused = true
   if (!rendererInboundApply) {
     workerLog('warn', '[sceneWorker] pointer-crdt-deliver skipped — rendererInboundApply not bound')
-    schedulePointerDeliveryComplete('pointer-crdt-deliver')
+    finalizePointerDelivery('pointer-crdt-deliver')
     return
   }
   try {
     rendererInboundApply(chunks)
     workerLog('log', '[sceneWorker] pointer-crdt-deliver — rendererInboundApply done')
-    schedulePointerDeliveryComplete('pointer-crdt-deliver')
+    finalizePointerDelivery('pointer-crdt-deliver')
   } catch (err) {
     workerLog(
       'error',
       `[sceneWorker] pointer-crdt-deliver failed — ${err instanceof Error ? err.message : String(err)}`
     )
-    schedulePointerDeliveryComplete('pointer-crdt-deliver')
+    finalizePointerDelivery('pointer-crdt-deliver')
   }
 }
 
@@ -1171,7 +1210,8 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
           err instanceof Error ? err.message : String(err)
         }`
       )
-      postPointerDeliverDone('inject-pointer-click')
+      pointerDeliverBatchOpen = true
+      finalizePointerDelivery('inject-pointer-click-error')
     }
     return
   }
@@ -1185,7 +1225,8 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
           err instanceof Error ? err.message : String(err)
         }`
       )
-      postPointerDeliverDone('pointer-crdt-deliver')
+      pointerDeliverBatchOpen = true
+      finalizePointerDelivery('pointer-crdt-deliver-error')
     }
     return
   }

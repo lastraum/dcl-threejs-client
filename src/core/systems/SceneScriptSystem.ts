@@ -39,9 +39,6 @@ import type { AssetCache } from '../../rendering/AssetCache'
 import type { SceneHost } from '../../rendering/SceneHost'
 import type { PlayerMirrorIdentity } from '../../bridge/playerMirrorIdentity'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
-import { PointerEventType } from '../../input/pointerConstants'
-import { resolveSceneEmoteFromSrc } from '../../avatar/profileEmotes'
-import { getActiveSceneManifest } from '../../rendering/DclTextureResolver'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
 import { EngineApiEventBridge } from './EngineApiEventBridge'
 
@@ -154,13 +151,11 @@ export class SceneScriptSystem {
   /** Set when pointer-crdt-deliver is posted; cleared on pointer-deliver-done from worker. */
   private pointerDeliverAwaitingAck = false
   private pointerDeliverWatchdog: ReturnType<typeof setTimeout> | null = null
-  private pointerFallbackWatchdog: ReturnType<typeof setTimeout> | null = null
+  private pointerDeliverFailWatchdog: ReturnType<typeof setTimeout> | null = null
   /** Click flush pending — cleared on pointer-deliver-done. */
   private pointerAwaitingWorkerApply = false
   /** Last inject payload — retried when worker ack stalls. */
   private lastInjectPayload: InjectPointerClickBody | null = null
-  /** Emote src fired via main-thread fallback after worker ack stalls. */
-  private fallbackPointerEmoteSrc: string | null = null
   /** True after one watchdog retry — avoids infinite inject loops. */
   private pointerDeliverRetried = false
 
@@ -890,9 +885,8 @@ export class SceneScriptSystem {
       return
     }
     this.pointerDeliverAwaitingAck = true
-    this.fallbackPointerEmoteSrc = null
     this.pointerDeliverRetried = false
-    this.armPointerDeliverWatchdog('pointer — no worker ack within 800ms (inject or crdt-deliver)')
+    this.armPointerDeliverWatchdog('pointer — no worker pointer-deliver-done (inject or crdt-deliver)')
 
     const inject = this.pointerEvents?.consumeInjectPayload()
     if (inject) {
@@ -930,135 +924,23 @@ export class SceneScriptSystem {
   }
 
   /** Clear pointer flush state and resume worker scene ticks after delivery (idempotent). */
-  private finishPointerDelivery(source: string, options?: { keepFallbackEmote?: boolean }): void {
+  private finishPointerDelivery(source: string): void {
     if (!this.pointerAwaitingWorkerApply && !this.pointerDeliverAwaitingAck) return
     clientDebugLog.log('pointer', `delivery complete — ${source}`, { alsoConsole: false })
     this.pointerAwaitingWorkerApply = false
     this.lastInjectPayload = null
-    if (!options?.keepFallbackEmote) this.fallbackPointerEmoteSrc = null
     this.pointerDeliverRetried = false
     this.clearPointerDeliverWatchdog()
     this.worker?.postMessage({ type: 'pause-scene-ticks', paused: false } satisfies MainToWorker)
   }
 
-  /** Resolve scene emote src from inject entity chain (PET_DOWN/PET_UP + hoverText/manifest). */
-  private resolveEmoteFromInject(inject: InjectPointerClickBody): string | null {
-    const entities = this.collectPointerFallbackEntities(inject)
-    const stores: Array<{ ecs: MirrorComponents }> = [{ ecs: this.readComponents }]
-
-    for (const entity of entities) {
-      for (const { ecs } of stores) {
-        const spec = ecs.PointerEvents.getOrNull(entity) as
-          | { pointerEvents: Array<{ eventType?: number; eventInfo?: { hoverText?: string } }> }
-          | null
-        if (!spec?.pointerEvents?.length) continue
-
-        for (const entry of spec.pointerEvents) {
-          const eventType = entry.eventType ?? PointerEventType.PET_DOWN
-          if (eventType !== PointerEventType.PET_DOWN && eventType !== PointerEventType.PET_UP) continue
-
-          const hover = entry.eventInfo?.hoverText?.trim() ?? ''
-          const emoteSrc =
-            this.resolveTriggerSceneEmoteSrc(hover) ?? this.resolveEmoteFromManifestHover(hover)
-          if (emoteSrc) return emoteSrc
-        }
-      }
-    }
-    return null
-  }
-
-  /**
-   * Main-thread triggerSceneEmote — last-resort fallback when worker pointer delivery stalls.
-   */
-  private tryMainThreadPointerFallback(inject: InjectPointerClickBody): boolean {
-    if (this.fallbackPointerEmoteSrc) return false
-
-    const emoteSrc = this.resolveEmoteFromInject(inject)
-    if (!emoteSrc) {
-      console.warn('[pointer]', `main-thread pointer fallback — no triggerSceneEmote match entity=${inject.entity}`)
-      return false
-    }
-
-    if (!this.triggerSceneEmoteHandler?.({ src: emoteSrc })) return false
-
-    console.warn('[pointer]', `main-thread pointer fallback — entity=${inject.entity}`)
-    this.logPointer(`fallback triggerSceneEmote — src=${emoteSrc}`)
-    this.fallbackPointerEmoteSrc = emoteSrc
-    this.finishPointerDelivery('main-thread emote fallback', { keepFallbackEmote: true })
-    return true
-  }
-
-  /** Entities to inspect for emergency triggerSceneEmote fallback (inject chain + Transform parents). */
-  private collectPointerFallbackEntities(inject: InjectPointerClickBody): Entity[] {
-    const seen = new Set<number>()
-    const out: Entity[] = []
-    const add = (raw: number): void => {
-      if (seen.has(raw)) return
-      seen.add(raw)
-      out.push(raw as Entity)
-    }
-
-    for (const raw of inject.entities.length ? inject.entities : [inject.entity]) add(raw)
-    add(inject.hitEntity)
-    add(inject.entity)
-
-    let current = inject.entity as Entity
-    const { RootEntity, PlayerEntity, CameraEntity } = this.view
-    for (let depth = 0; depth < 24; depth++) {
-      const parent = this.readComponents.Transform.getOrNull(current)?.parent as Entity | undefined
-      if (parent === undefined || parent === RootEntity || parent === PlayerEntity || parent === CameraEntity) {
-        break
-      }
-      add(parent)
-      current = parent
-    }
-    return out
-  }
-
-  /** Parse triggerSceneEmote src from hoverText (`triggerSceneEmote:path`) or scene content paths. */
-  private resolveTriggerSceneEmoteSrc(hoverText: string): string | null {
-    const hover = hoverText.trim()
-    if (!hover) return null
-    if (hover.startsWith('triggerSceneEmote:')) {
-      const src = hover.slice('triggerSceneEmote:'.length).trim()
-      return src || null
-    }
-    if (resolveSceneEmoteFromSrc(hover, false)) return hover
-    if (hover.includes('/') || /\.(glb|gltf|json)$/i.test(hover)) {
-      return hover.startsWith('./') ? hover : `./${hover.replace(/^\.\//, '')}`
-    }
-    return null
-  }
-
-  /** Match hover label (e.g. "WATER PLANTS") to a scene `_emote.glb` in the deployed manifest. */
-  private resolveEmoteFromManifestHover(hoverText: string): string | null {
-    const manifest = getActiveSceneManifest()
-    if (!manifest?.content?.length) return null
-
-    const emotes = manifest.content
-      .map((f) => f.file)
-      .filter((file) => /_emote\.glb$/i.test(file))
-    if (!emotes.length) return null
-
-    const hover = hoverText.trim().toLowerCase()
-    if (!hover) return null
-
-    const tokens = hover.split(/[\s_-]+/).filter((t) => t.length > 2)
-    for (const file of emotes) {
-      const lower = file.toLowerCase()
-      if (tokens.some((t) => lower.includes(t))) {
-        return file.startsWith('./') ? file : `./${file.replace(/^\.\//, '')}`
-      }
-    }
-
-    if (/water|plant|watering/i.test(hover)) {
-      const match = emotes.find((f) => /water|watering|plant/i.test(f))
-      if (match) {
-        return match.startsWith('./') ? match : `./${match.replace(/^\.\//, '')}`
-      }
-    }
-
-    return null
+  /** Worker path failed — surface loudly; scene triggers/tweens did not run. */
+  private failPointerDelivery(reason: string): void {
+    if (!this.pointerAwaitingWorkerApply && !this.pointerDeliverAwaitingAck) return
+    const message = `pointer delivery failed — ${reason} (worker must ack pointer-deliver-done)`
+    console.error('[pointer]', message)
+    clientDebugLog.log('pointer', message, { level: 'error', alsoConsole: true })
+    this.finishPointerDelivery('pointer-delivery-failed')
   }
 
   /** One retry when inject + direct CRDT stall; no infinite inject loop. */
@@ -1081,19 +963,18 @@ export class SceneScriptSystem {
       clearTimeout(this.pointerDeliverWatchdog)
       this.pointerDeliverWatchdog = null
     }
+    if (this.pointerDeliverFailWatchdog) {
+      clearTimeout(this.pointerDeliverFailWatchdog)
+      this.pointerDeliverFailWatchdog = null
+    }
     this.pointerDeliverWatchdog = setTimeout(() => {
       if (!this.pointerDeliverAwaitingAck) return
       console.error('[pointer]', `pointer deliver stalled — ${detail}`)
       this.recoverStalledPointerDelivery()
     }, 400)
-    if (this.pointerFallbackWatchdog) {
-      clearTimeout(this.pointerFallbackWatchdog)
-      this.pointerFallbackWatchdog = null
-    }
-    this.pointerFallbackWatchdog = setTimeout(() => {
-      if (this.fallbackPointerEmoteSrc || !this.lastInjectPayload) return
-      if (!this.pointerAwaitingWorkerApply && !this.pointerDeliverAwaitingAck) return
-      this.tryMainThreadPointerFallback(this.lastInjectPayload)
+    this.pointerDeliverFailWatchdog = setTimeout(() => {
+      if (!this.pointerDeliverAwaitingAck) return
+      this.failPointerDelivery('no worker pointer-deliver-done after retry')
     }, 1200)
   }
 
@@ -1102,9 +983,9 @@ export class SceneScriptSystem {
       clearTimeout(this.pointerDeliverWatchdog)
       this.pointerDeliverWatchdog = null
     }
-    if (this.pointerFallbackWatchdog) {
-      clearTimeout(this.pointerFallbackWatchdog)
-      this.pointerFallbackWatchdog = null
+    if (this.pointerDeliverFailWatchdog) {
+      clearTimeout(this.pointerDeliverFailWatchdog)
+      this.pointerDeliverFailWatchdog = null
     }
     this.pointerDeliverAwaitingAck = false
   }
@@ -1198,11 +1079,15 @@ export class SceneScriptSystem {
     this.flushPointerStructureIfDirty()
   }
 
+  private playReadyNotified = false
+
   /** Hydration done — throttle worker onUpdate and widen full-resync interval for runtime perf. */
   notifyPlayReady(): void {
     this.fullResyncCountdown = FULL_RESYNC_INTERVAL
     this.collisionPoseSyncEvery = COLLISION_POSE_SYNC_RUNTIME
     this.bridgeSyncEvery = BRIDGE_ECS_SYNC_RUNTIME
+    if (this.playReadyNotified) return
+    this.playReadyNotified = true
     this.worker?.postMessage({ type: 'scene-play-ready' } satisfies MainToWorker)
   }
 

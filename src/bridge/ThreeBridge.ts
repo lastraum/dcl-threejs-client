@@ -7,6 +7,8 @@ import type { AssetCache } from '../rendering/AssetCache'
 import { prefetchSceneManifestGlbs } from '../rendering/AssetCache'
 import type { ResolvedScene } from '../dcl/content/types'
 import { resolveGltfSrcHash, GLTF_LOCAL_PREFIX, isEmoteAnchorGltfSrc } from '../rendering/DclTextureResolver'
+import { isMotionFocusActive, matchesMotionFocusSrc } from './motionFocus'
+import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { syncGltfInstanceRenderState } from '../collision/gltfRenderMeshes'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionChangeKind } from './CrdtProjection'
@@ -57,6 +59,16 @@ function gltfInstanceHasGeometry(root: THREE.Object3D): boolean {
     found = true
   })
   return found
+}
+
+/** Animation-only GLBs — hide meshes but keep armature for Animator / scene-emote rigs. */
+function hideGltfRenderMeshes(root: THREE.Object3D): void {
+  root.traverse((obj) => {
+    if ((obj as THREE.Mesh).isMesh) {
+      obj.visible = false
+      obj.frustumCulled = false
+    }
+  })
 }
 
 function meshKey(entity: Entity): string {
@@ -232,7 +244,8 @@ export class ThreeBridge {
     if (GltfContainer.has(entity)) {
       const src = GltfContainer.get(entity).src?.trim()
       if (!src) return false
-      if (isEmoteAnchorGltfSrc(src)) {
+      if (isEmoteAnchorGltfSrc(src) && !this.ecs.Animator.has(entity)) {
+        if (obj.userData.emoteAnchor) return false
         const srcKey = hashFromSrc(src, this.sceneConfig) ?? src
         const mesh = obj.getObjectByName(meshKey(entity))
         return !mesh || obj.userData.gltfSrcKey !== srcKey
@@ -245,6 +258,7 @@ export class ThreeBridge {
       if (this.cache.hasGivenUp(cacheKey)) return false
       const mesh = obj.getObjectByName(meshKey(entity))
       if (!mesh || obj.userData.gltfSrcKey !== hash) return true
+      if (obj.userData.animationRig) return false
       return !gltfInstanceHasGeometry(mesh)
     }
 
@@ -637,22 +651,6 @@ export class ThreeBridge {
       const srcKey = hash ?? src.trim()
       let mesh = obj.getObjectByName(mk) as THREE.Object3D | undefined
 
-      if (isEmoteAnchorGltfSrc(src)) {
-        if (!mesh || obj.userData.gltfSrcKey !== srcKey) {
-          if (mesh) {
-            disposeOwnedObject3D(mesh)
-            obj.remove(mesh)
-          }
-          const anchor = new THREE.Group()
-          anchor.name = mk
-          obj.userData.gltfSrcKey = srcKey
-          obj.userData.emoteAnchor = true
-          obj.add(anchor)
-          this.notifyMeshComponent(entity, GltfContainer.componentId)
-        }
-        return
-      }
-
       if (!hash) return
 
       if (!mesh || obj.userData.gltfSrcKey !== srcKey) {
@@ -675,17 +673,35 @@ export class ThreeBridge {
         try {
           const clone = await this.cache.clone(url, isLocal ? url : hash)
           obj.userData.gltfSrcKey = srcKey
-          if (!gltfInstanceHasGeometry(clone)) {
-            this.gltfBudgetRemaining++
+          const hasGeometry = gltfInstanceHasGeometry(clone)
+          if (!hasGeometry) {
+            const wantsAnimatorRig = this.ecs.Animator.has(entity)
+            if (wantsAnimatorRig) {
+              const cached = await this.cache.load(url, isLocal ? url : hash)
+              if (cached.animations.length > 0) {
+                clone.name = mk
+                hideGltfRenderMeshes(clone)
+                obj.userData.animationRig = true
+                obj.add(clone)
+                mesh = clone
+                this.notifyMeshComponent(entity, GltfContainer.componentId)
+                this.notifyGltfAttached()
+                return
+              }
+            }
             if (isEmoteAnchorGltfSrc(src)) {
+              this.gltfBudgetRemaining++
+              this.emptyGltfHashes.add(hash)
+              disposeOwnedObject3D(clone)
               const anchor = new THREE.Group()
               anchor.name = mk
-              obj.userData.gltfSrcKey = srcKey
               obj.userData.emoteAnchor = true
               obj.add(anchor)
-              disposeOwnedObject3D(clone)
+              mesh = anchor
+              this.notifyMeshComponent(entity, GltfContainer.componentId)
               return
             }
+            this.gltfBudgetRemaining++
             this.emptyGltfHashes.add(hash)
             disposeOwnedObject3D(clone)
             if (!this.loggedEmptyGltfSrcs.has(src)) {
@@ -701,6 +717,15 @@ export class ThreeBridge {
           mesh = clone
           this.notifyMeshComponent(entity, GltfContainer.componentId)
           this.notifyGltfAttached()
+          if (isMotionFocusActive() && matchesMotionFocusSrc(src)) {
+            const loaded = await this.cache.load(url, isLocal ? url : hash)
+            const clipNames = loaded.animations.map((c) => c.name)
+            clientDebugLog.log(
+              'motion',
+              `Blimp GLB attached — entity ${entity} · clips [${clipNames.join(', ') || '(none)'}] · ECS Animator ${this.ecs.Animator.has(entity) ? 'yes' : 'no — default auto-play first clip (ArmatureAction propellers)'}`,
+              { level: clipNames.length ? 'info' : 'warn', alsoConsole: true }
+            )
+          }
         } catch (err) {
           this.gltfBudgetRemaining++
           obj.userData.gltfSrcKey = srcKey

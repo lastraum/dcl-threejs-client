@@ -20,6 +20,7 @@ import { BillboardBridge } from '../../bridge/BillboardBridge'
 import { AnimatorBridge } from '../../bridge/AnimatorBridge'
 import { TweenBridge } from '../../bridge/TweenBridge'
 import { isTweenVerbose } from '../../bridge/tweenConfig'
+import { dumpMotionFocusReport, isMotionFocusActive, resetBlimpPivotCache } from '../../bridge/motionFocus'
 import { AvatarAttachBridge } from '../../bridge/AvatarAttachBridge'
 import type { AvatarAttachTargetResolver } from '../../avatar/AvatarAttachTargets'
 import { VideoPlayerBridge } from '../../media/VideoPlayerBridge'
@@ -155,6 +156,8 @@ export class SceneScriptSystem {
   private readonly pointerResponseStash: Uint8Array[] = []
   /** Prevents overlapping flush encodes while mirror flushOutgoing is awaited. */
   private pointerFlushInFlight = false
+  private motionFocusDumped = false
+  private motionFocusDumpTicks = 0
   /** Serializes crdt-send round-trips so mirror/encoder/stash cannot race. */
   private crdtSendSerial: Promise<void> = Promise.resolve()
   /** Set when pointer-crdt-deliver is posted; cleared on pointer-deliver-done from worker. */
@@ -456,6 +459,14 @@ export class SceneScriptSystem {
     })
 
     this.running = true
+    if (isMotionFocusActive() && typeof globalThis !== 'undefined') {
+      const g = globalThis as typeof globalThis & {
+        __dumpMotionFocus?: () => void
+        __inspectEntity?: (id: number) => void
+      }
+      g.__dumpMotionFocus = () => this.dumpMotionFocusNow()
+      g.__inspectEntity = (id: number) => this.inspectEntity(id as Entity)
+    }
   }
 
   private async handleWorkerMessage(
@@ -1329,8 +1340,39 @@ export class SceneScriptSystem {
    * Tween / billboard / animator mixer — runs on the sync frame (before render).
    * Must not be gated on async frame backlog; Genesis blimp and other tweens freeze otherwise.
    */
+  dumpMotionFocusNow(): void {
+    if (!this.running) return
+    const nodes = this.bridge?.getEntityNodes()
+    dumpMotionFocusReport(this.readComponents, this.view, {
+      hasSceneNode: (entity) => nodes?.has(entity) ?? false
+    })
+  }
+
+  inspectEntity(entity: Entity): void {
+    const { GltfContainer, Transform, Tween, Animator, TweenSequence } = this.readComponents
+    const nodes = this.bridge?.getEntityNodes()
+    const src = GltfContainer.has(entity) ? GltfContainer.get(entity).src : '(none)'
+    const parent = Transform.has(entity) ? Transform.get(entity).parent : 0
+    const tween = Tween.has(entity) ? Tween.get(entity).mode?.$case : '-'
+    const anim = Animator.has(entity) ? (Animator.get(entity).states ?? []).map((s) => s.clip).join(',') : '-'
+    const seq = TweenSequence.has(entity) ? 'yes' : 'no'
+    const node = nodes?.has(entity) ? 'yes' : 'no'
+    const line = `entity ${entity} · ${src} · parent ${parent} · node ${node} · tween ${tween} · animator [${anim}] · TweenSequence ${seq}`
+    clientDebugLog.log('motion', line, { alsoConsole: true })
+    console.info('[motion]', line)
+  }
+
+  private maybeDumpMotionFocus(): void {
+    if (!isMotionFocusActive() || this.motionFocusDumped || !this.running) return
+    this.motionFocusDumpTicks++
+    if (this.motionFocusDumpTicks < 180) return
+    this.motionFocusDumped = true
+    this.dumpMotionFocusNow()
+  }
+
   pumpMotionBridges(delta: number, tickNumber = 0): void {
     if (!this.running || !this.bridge) return
+    this.maybeDumpMotionFocus()
     this.tweenBridge?.sync(this.view)
     this.videoPlayerBridge?.sync(this.view)
     this.billboardBridge?.update()
@@ -1385,6 +1427,9 @@ export class SceneScriptSystem {
   }
 
   dispose(): void {
+    resetBlimpPivotCache()
+    this.motionFocusDumped = false
+    this.motionFocusDumpTicks = 0
     this.avatarShapes?.dispose()
     this.bridge?.dispose()
     this.bridge = null

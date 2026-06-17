@@ -9,13 +9,13 @@ function readSearchParams(): URLSearchParams | null {
 
 import { isMotionFocusActive } from './motionFocus'
 
-/** `?tweenverbose` / `?tween` / `?blimpdebug` — log TweenState on the debug panel. */
-export function isTweenVerbose(): boolean {
+/** `?animatorverbose` / `?animator` / `?blimpdebug` — log GLTF Animator bind/clip playback. */
+export function isAnimatorVerbose(): boolean {
   const params = readSearchParams()
-  if (params?.has('tweenverbose') || params?.has('tween')) return true
+  if (params?.has('animatorverbose') || params?.has('animator')) return true
   if (isMotionFocusActive()) return true
   try {
-    if (localStorage.getItem('tweenverbose') === '1') return true
+    if (localStorage.getItem('animatorverbose') === '1') return true
   } catch {
     /* ignore */
   }

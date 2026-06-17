@@ -21,12 +21,13 @@ import {
 } from '../dev/integrationRegistry'
 import {
   loadProgressMarkdown,
-  parseProgressMeta,
+  parseProgressIntroLines,
   progressBrowseUrl,
   progressMdUrl,
+  stripProgressIntro,
   type ProgressLoadResult
 } from '../dev/progressRegistry'
-import { renderMarkdownToHtml } from '../dev/renderMarkdown'
+import { renderInlineMarkdown, renderMarkdownToHtml } from '../dev/renderMarkdown'
 
 type DevTab = 'community' | 'status' | 'progress'
 
@@ -95,7 +96,7 @@ export class DevProgressPanel {
     subtitle.textContent = 'Parity gaps + community claims from github.com/lastraum/dcl-threejs-client'
 
     this.metaEl = this.panel.querySelector('.dev-progress__meta')!
-    this.renderHeaderMeta()
+    this.metaEl.hidden = true
 
     this.root.appendChild(this.backdrop)
     this.root.appendChild(this.panel)
@@ -163,8 +164,7 @@ export class DevProgressPanel {
     this.progressLoading = true
     try {
       this.progressLoad = await loadProgressMarkdown(force)
-      this.renderHeaderMeta()
-      if (this.visible && this.activeTab === 'progress') this.renderProgress()
+      if (this.visible && (this.activeTab === 'community' || this.activeTab === 'progress')) this.render()
     } finally {
       this.progressLoading = false
     }
@@ -201,28 +201,29 @@ export class DevProgressPanel {
       <a class="dev-progress__chip dev-progress__chip--claim" href="${escapeHtml(communityClaimNewIssueUrl())}" target="_blank" rel="noopener">+ Claim work</a>
     `
 
-    if (!this.claimsLoad) {
-      this.bodyEl.innerHTML = docsGithubFetchEnabled()
-        ? '<p class="dev-progress__loading">Fetching community claims from GitHub…</p>'
-        : '<p class="dev-progress__loading">Loading claims (offline snapshot)…</p>'
-      return
-    }
-
-    const { registry, source, branch } = this.claimsLoad
-    const sourceLabel = source === 'github' ? 'GitHub' : 'offline snapshot'
+    const branch = this.claimsLoad?.branch ?? this.progressLoad?.branch ?? 'dev-latest'
+    const sourceLabel =
+      this.claimsLoad?.source === 'github' || this.progressLoad?.source === 'github'
+        ? 'GitHub'
+        : 'offline snapshot'
     this.footerEl.innerHTML = `<span class="dev-progress__legend">${sourceLabel} · branch <code>${escapeHtml(branch)}</code> · <a href="${escapeHtml(communityClaimsIssuesUrl())}" target="_blank" rel="noopener">in-progress issues</a> · <a href="${escapeHtml(docsClaimsBrowseUrl(branch))}" target="_blank" rel="noopener">CLAIMS.yaml</a></span>`
 
     this.bodyEl.innerHTML = ''
 
-    const claimIntro = document.createElement('p')
-    claimIntro.className = 'dev-progress__registry-meta'
-    claimIntro.textContent =
-      registry.updated && registry.claims.length
-        ? `Claims synced ${registry.updated} · pick a gap below, then open a Task claim issue before you start coding.`
-        : 'No active claims yet — parity gaps below are fair game. Open a Task claim issue to announce your work.'
-    this.bodyEl.appendChild(claimIntro)
+    const intro = this.buildProgressIntroSection()
+    if (intro) this.bodyEl.appendChild(intro)
 
-    this.bodyEl.appendChild(this.buildClaimsSection(registry.claims))
+    if (!this.claimsLoad) {
+      const loading = document.createElement('p')
+      loading.className = 'dev-progress__loading'
+      loading.textContent = docsGithubFetchEnabled()
+        ? 'Fetching community claims from GitHub…'
+        : 'Loading claims (offline snapshot)…'
+      this.bodyEl.appendChild(loading)
+    } else {
+      const claimsSection = this.buildClaimsSection(this.claimsLoad.registry.claims)
+      if (claimsSection) this.bodyEl.appendChild(claimsSection)
+    }
 
     for (const category of INTEGRATION_CATEGORIES) {
       const gaps = category.entries.filter((e) => PARITY_GAP_STATUSES.includes(e.status))
@@ -275,33 +276,41 @@ export class DevProgressPanel {
     this.bodyEl.innerHTML = ''
     const article = document.createElement('article')
     article.className = 'dev-progress__markdown'
-    article.innerHTML = renderMarkdownToHtml(markdown)
+    article.innerHTML = renderMarkdownToHtml(stripProgressIntro(markdown))
     this.bodyEl.appendChild(article)
   }
 
-  private renderHeaderMeta(): void {
-    const progressMeta = this.progressLoad ? parseProgressMeta(this.progressLoad.markdown) : null
-    const phase = progressMeta?.phase ?? '…'
-    const updated = progressMeta?.lastUpdated ?? '…'
-    this.metaEl.innerHTML = `
-      <span>Phase: <strong>${escapeHtml(phase)}</strong></span>
-      <span>Client v${escapeHtml(APP_VERSION)}</span>
-      <span>${escapeHtml(updated)}</span>
-    `
+  private buildProgressIntroSection(): HTMLElement | null {
+    if (!this.progressLoad) {
+      const loading = document.createElement('section')
+      loading.className = 'dev-progress__intro dev-progress__intro--loading'
+      loading.textContent = docsGithubFetchEnabled()
+        ? 'Loading project status from GitHub…'
+        : 'Loading project status…'
+      return loading
+    }
+
+    const lines = parseProgressIntroLines(this.progressLoad.markdown)
+    if (!lines.length) return null
+
+    const section = document.createElement('section')
+    section.className = 'dev-progress__intro'
+    section.setAttribute('aria-label', 'Project status')
+    for (const line of lines) {
+      const row = document.createElement('p')
+      row.className = 'dev-progress__intro-line'
+      row.innerHTML = renderInlineMarkdown(line)
+      section.appendChild(row)
+    }
+    return section
   }
 
-  private buildClaimsSection(claims: CommunityClaim[]): HTMLElement {
+  private buildClaimsSection(claims: CommunityClaim[]): HTMLElement | null {
+    if (!claims.length) return null
+
     const section = document.createElement('section')
     section.className = 'dev-progress__section'
-    section.innerHTML = `<h3 class="dev-progress__section-title">Being worked on</h3>`
-
-    if (!claims.length) {
-      const empty = document.createElement('p')
-      empty.className = 'dev-progress__registry-meta'
-      empty.innerHTML = `Nothing claimed right now. <a href="${escapeHtml(communityClaimNewIssueUrl())}" target="_blank" rel="noopener">Open a Task claim issue</a> with an integration ref (e.g. <code>ecs:Raycast</code>).`
-      section.appendChild(empty)
-      return section
-    }
+    section.innerHTML = `<h3 class="dev-progress__section-title">Merges under review</h3>`
 
     const table = document.createElement('table')
     table.className = 'dev-progress__table'

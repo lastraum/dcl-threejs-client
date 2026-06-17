@@ -80,3 +80,30 @@ export function parseProgressMeta(markdown: string): { title: string; lastUpdate
   const phase = markdown.match(/\*\*Current phase:\*\*\s*([^\n]+)/)?.[1]?.trim()
   return { title, lastUpdated, phase }
 }
+
+/** Blockquote intro lines under the PROGRESS.md H1 (living doc, phase, links). */
+export function parseProgressIntroLines(markdown: string): string[] {
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n')
+  const result: string[] = []
+  let i = 0
+  if (/^#\s+/.test(lines[i] ?? '')) i++
+  while (i < lines.length && !lines[i].trim()) i++
+  while (i < lines.length && /^>\s?/.test(lines[i])) {
+    result.push(lines[i].replace(/^>\s?/, '').replace(/\s+$/, ''))
+    i++
+  }
+  return result
+}
+
+/** Milestone body only — strips H1, intro blockquote, and leading horizontal rule. */
+export function stripProgressIntro(markdown: string): string {
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n')
+  let i = 0
+  if (/^#\s+/.test(lines[i] ?? '')) i++
+  while (i < lines.length && !lines[i].trim()) i++
+  while (i < lines.length && /^>\s?/.test(lines[i])) i++
+  while (i < lines.length && !lines[i].trim()) i++
+  if (lines[i]?.trim() === '---') i++
+  while (i < lines.length && !lines[i].trim()) i++
+  return lines.slice(i).join('\n').trim()
+}

@@ -8,7 +8,7 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;')
 }
 
-function inlineMarkdown(text: string): string {
+export function renderInlineMarkdown(text: string): string {
   let out = escapeHtml(text)
   out = out.replace(/`([^`]+)`/g, '<code>$1</code>')
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
@@ -69,11 +69,11 @@ export function renderMarkdownToHtml(markdown: string): string {
         i++
       }
       let table = '<table><thead><tr>'
-      for (const cell of header) table += `<th>${inlineMarkdown(cell)}</th>`
+      for (const cell of header) table += `<th>${renderInlineMarkdown(cell)}</th>`
       table += '</tr></thead><tbody>'
       for (const row of rows) {
         table += '<tr>'
-        for (const cell of row) table += `<td>${inlineMarkdown(cell)}</td>`
+        for (const cell of row) table += `<td>${renderInlineMarkdown(cell)}</td>`
         table += '</tr>'
       }
       table += '</tbody></table>'
@@ -84,7 +84,7 @@ export function renderMarkdownToHtml(markdown: string): string {
     const heading = line.match(/^(#{1,4})\s+(.+)$/)
     if (heading) {
       const level = heading[1].length
-      parts.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`)
+      parts.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`)
       i++
       continue
     }
@@ -101,7 +101,7 @@ export function renderMarkdownToHtml(markdown: string): string {
         quote.push(lines[i].replace(/^>\s?/, '').replace(/\s+$/, ''))
         i++
       }
-      const paras = quote.map((q) => `<p>${inlineMarkdown(q)}</p>`).join('')
+      const paras = quote.map((q) => `<p>${renderInlineMarkdown(q)}</p>`).join('')
       parts.push(`<blockquote>${paras}</blockquote>`)
       continue
     }
@@ -113,7 +113,7 @@ export function renderMarkdownToHtml(markdown: string): string {
         i++
       }
       parts.push('<ul>')
-      for (const item of items) parts.push(`<li>${inlineMarkdown(item)}</li>`)
+      for (const item of items) parts.push(`<li>${renderInlineMarkdown(item)}</li>`)
       parts.push('</ul>')
       continue
     }
@@ -124,7 +124,7 @@ export function renderMarkdownToHtml(markdown: string): string {
       para.push(lines[i])
       i++
     }
-    parts.push(`<p>${inlineMarkdown(para.join(' '))}</p>`)
+    parts.push(`<p>${renderInlineMarkdown(para.join(' '))}</p>`)
   }
 
   return parts.join('\n')

@@ -1,0 +1,57 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:sneakers",
+  "data": {
+    "category": "feet",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "feet",
+      "Sneakers",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "Sneakers_01.glb",
+        "contents": [
+          {
+            "key": "Sneakers_01.glb",
+            "url": "Sneakers_01.glb"
+          },
+          {
+            "key": "AvatarWearables_TX.png",
+            "url": "AvatarWearables_TX.png"
+          },
+          {
+            "key": "Avatar_MaleSkinBase.png",
+            "url": "Avatar_MaleSkinBase.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "Sneakers_01.glb",
+        "contents": [
+          {
+            "key": "Sneakers_01.glb",
+            "url": "Sneakers_01.glb"
+          },
+          {
+            "key": "AvatarWearables_TX.png",
+            "url": "AvatarWearables_TX.png"
+          },
+          {
+            "key": "Avatar_MaleSkinBase.png",
+            "url": "Avatar_MaleSkinBase.png"
+          }
+        ]
+      }
+    ]
+  }
+}

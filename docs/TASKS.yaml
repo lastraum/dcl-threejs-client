@@ -1,0 +1,536 @@
+# ThreejsClient — community task registry (single source of truth for backlog)
+# Claim a task: set owner + status: in_progress, open a PR, keep this file updated.
+# Dev panel fetches this file from GitHub at runtime (fallback: tasksFallback.ts snapshot).
+
+schema_version: 1
+updated: "2026-06-17"
+
+tasks:
+  - id: rearch-e7-pointer-same-tick
+    title: "Re-arch e7 — pointer same-tick gate via crdt-response"
+    status: done
+    owner: maintainer
+    track: re-arch
+    phase: 3
+    complexity: high
+    priority: P0
+    dependencies: [rearch-e6-boot-snapshot]
+    blocks: [rearch-e8-delete-push-channel]
+    files:
+      - src/core/systems/SceneScriptSystem.ts
+      - src/input/PointerEventsSystem.ts
+      - src/shim/worker/sceneWorker.ts
+      - src/shim/types.ts
+    acceptance_criteria:
+      - PointerEventsResult delivered same tick on asset-pack Trigger scenes
+      - getClick() reads result before scene inputSystem runs
+      - No regression on Genesis Plaza / pizzaparty.dcl.eth click flows
+    ai_context_links:
+      - docs/REARCHITECTURE_PLAN.md
+      - docs/PROGRESS.md
+    test_scenes:
+      - genesis-city
+      - pizzaparty.dcl.eth
+      - rickroll.dcl.eth
+    do_not_touch:
+      - src/shim/system/createSystemStubs.ts
+    notes: >-
+      Default path (2026-06-16): encoder source-capture + pointerResponseStash + crdt-round-trip-nudge
+      merges PointerEventsResult on empty crdt-response. Legacy crdt-renderer-push removed in e8.
+      Fix 2026-06-16: stash only consumed on nudge (empty body); nudge runs engine.update(0) after
+      stub apply; mirror flushOutgoing fallback when encoder encode is empty. Re-validate: Genesis
+      watering plants, RickRoll F-key, asset-pack Triggers. Debug: ?pointerverbose.
+    maintainer_only: true
+
+  - id: rearch-e8-delete-push-channel
+    title: "Re-arch e8 — delete crdt-renderer-push / stash / nudge"
+    status: done
+    owner: maintainer
+    track: re-arch
+    phase: 3
+    complexity: high
+    priority: P0
+    dependencies: [rearch-e7-pointer-same-tick]
+    blocks: [rearch-e9-drop-mirror-engine]
+    files:
+      - src/core/systems/SceneScriptSystem.ts
+      - src/shim/worker/sceneWorker.ts
+      - src/shim/types.ts
+    acceptance_criteria:
+      - crdt-renderer-push* message types removed from worker protocol
+      - rendererPushStash / schedulePointerStashNudge deleted
+      - Same-tick pointer delivery still passes QA
+    ai_context_links:
+      - docs/REARCHITECTURE_PLAN.md
+    test_scenes:
+      - genesis-city
+    do_not_touch:
+      - src/bridge/CrdtMirror.ts
+    notes: >-
+      Shipped 2026-06-16 — deleted crdt-renderer-push/ack, rendererPushQueue, deliverRendererInbound,
+      rendererPushStash machinery. crdt-round-trip-nudge retained for same-tick pointer delivery.
+    maintainer_only: true
+
+  - id: rearch-e9-drop-mirror-engine
+    title: "Re-arch e9 — projection-only reads, drop CrdtMirror Engine()"
+    status: done
+    owner: maintainer
+    track: re-arch
+    phase: 3
+    complexity: high
+    priority: P0
+    dependencies: [rearch-e8-delete-push-channel]
+    blocks: [rearch-e10-perf-pass]
+    files:
+      - src/bridge/CrdtMirror.ts
+      - src/bridge/CrdtProjection.ts
+      - src/bridge/ProjectionView.ts
+      - src/bridge/CrdtEncoder.ts
+      - src/core/systems/SceneScriptSystem.ts
+    acceptance_criteria:
+      - All scene-render bridges read via ProjectionView
+      - getState bootstrap uses projection dump, not mirror engine
+      - Encoder is sole outbound writer on audited ticks
+    ai_context_links:
+      - docs/REARCHITECTURE_PLAN.md
+    test_scenes:
+      - genesis-city
+      - rickroll.dcl.eth
+    do_not_touch:
+      - src/shim/worker/sceneWorker.ts
+    notes: >-
+      Shipped 2026-06-17 — CrdtMirror.ts deleted; RendererComponentHost schema-only Engine
+      (component defs + NetworkEntity/NetworkParent, no CRDT transports/update). Bootstrap
+      getState via projection dump.
+    maintainer_only: true
+
+  - id: rearch-e10-perf-pass
+    title: "Re-arch e10 — post-cutover perf pass"
+    status: open
+    owner: unassigned
+    track: re-arch
+    phase: 3
+    complexity: medium
+    priority: P1
+    dependencies: [rearch-e9-drop-mirror-engine]
+    blocks: []
+    files:
+      - src/bridge/ThreeBridge.ts
+      - src/core/World.ts
+      - src/core/systems/SceneScriptSystem.ts
+    acceptance_criteria:
+      - Genesis Plaza FPS within 10% of pre-rearch baseline
+      - No per-frame full-engine walk in hot path
+      - Diff consumer handles reparent + visibility without full resync storms
+    ai_context_links:
+      - docs/REARCHITECTURE_PLAN.md
+    test_scenes:
+      - genesis-city
+    notes: >-
+      Deferred after e9 — pointer cache already delivered Genesis 70–110 fps. Remaining: shadow pass,
+      instancing, FULL_RESYNC_INTERVAL, verbose log gating.
+    maintainer_only: false
+
+  - id: rearch-phase4-entity-store
+    title: "Phase 4 — Three.js-backed EntityStore (unify projection + scene graph)"
+    status: done
+    owner: maintainer
+    track: re-arch
+    phase: 4
+    complexity: high
+    priority: P0
+    dependencies: [rearch-e9-drop-mirror-engine]
+    blocks: []
+    files:
+      - src/bridge/EntityStore.ts
+      - src/bridge/ThreeBridge.ts
+      - src/bridge/CrdtProjection.ts
+      - src/core/systems/SceneScriptSystem.ts
+    acceptance_criteria:
+      - EntityStore owns all scene entity THREE.Group nodes
+      - Transform CRDT apply mutates groups in place (no duplicate projection map for Transform)
+      - Mesh/collider/pointer secondary systems subscribe to EntityStore change notifications
+      - Full-walk sync reuses applySceneDiff (single transform/visibility/light path)
+      - Animator/AvatarShape async bridges driven by store notifications, not foldProjectionChanges
+      - Genesis Plaza renders + clicks identical to pre-Phase-4
+    ai_context_links:
+      - docs/REARCHITECTURE_PLAN.md
+    test_scenes:
+      - genesis-city
+      - rickroll.dcl.eth
+    notes: >-
+      2026-06-17 — EntityStore scaffold + ThreeBridge node migration. Slice 1: Transform apply.
+      Slice 2: mesh/collider/pointer store subscriptions. Slice 3: full-walk via applySceneDiff;
+      bridgeDirty via store. Slice 4: store-backed hydration stats + owner guards on teardown.
+      Slice 5: RemoteAvatarManager upsertAvatar (owner avatar). e10 full-resync tuning deferred.
+    maintainer_only: true
+
+  - id: rearch-e6-boot-snapshot
+    title: "Re-arch e6 — getState boot-snapshot parity oracle"
+    status: done
+    owner: maintainer
+    track: re-arch
+    phase: 3
+    complexity: high
+    priority: P0
+    dependencies: []
+    blocks: [rearch-e7-pointer-same-tick]
+    files:
+      - src/bridge/CrdtMirror.ts
+      - src/bridge/CrdtProjection.ts
+      - src/core/systems/SceneScriptSystem.ts
+    acceptance_criteria:
+      - Projection parity OK on composite boot snapshot
+      - CrdtMirror.getState remains bootstrap source until e9
+    notes: Shipped 2026-06-16 — see PROGRESS.md milestone.
+    maintainer_only: true
+
+  - id: trigger-area-volume
+    title: "TriggerArea + volume enter/leave events"
+    status: open
+    owner: unassigned
+    track: input
+    phase: 3
+    complexity: medium
+    priority: P1
+    dependencies: []
+    blocks: []
+    files:
+      - src/input/PointerEventsSystem.ts
+      - src/bridge/mirrorComponents.ts
+      - src/collision/CollisionSystem.ts
+    acceptance_criteria:
+      - TriggerArea CRDT decodes and syncs to collision volumes
+      - TriggerAreaResult grow-only appends reach scene worker
+      - QA on scenes using asset-pack Triggers volumes
+    ai_context_links:
+      - docs/ECS_COMPONENTS.md
+      - docs/PHASE3_COMPLETION.md
+    test_scenes:
+      - genesis-city
+    do_not_touch:
+      - src/shim/worker/sceneWorker.ts
+    notes: Distinct from PointerEvents PET_PROXIMITY — volume component + TriggerAreaResult.
+
+  - id: raycast-scene-api
+    title: "Raycast + RaycastResult scene API"
+    status: open
+    owner: unassigned
+    track: input
+    phase: 3
+    complexity: medium
+    priority: P1
+    dependencies: []
+    blocks: []
+    files:
+      - src/input/PointerEventsSystem.ts
+      - src/bridge/mirrorComponents.ts
+      - src/collision/CollisionSystem.ts
+    acceptance_criteria:
+      - engine.physicsRaycast / Raycast component wired
+      - RaycastResult written back via CRDT grow-only path
+      - Documented test scene with visible ray debug
+    ai_context_links:
+      - docs/ECS_COMPONENTS.md
+    test_scenes:
+      - rickroll.dcl.eth
+
+  - id: pet-proximity-pointer
+    title: "PointerEvents PET_PROXIMITY_ENTER / LEAVE"
+    status: open
+    owner: unassigned
+    track: input
+    phase: 3
+    complexity: medium
+    priority: P1
+    dependencies: []
+    blocks: []
+    files:
+      - src/input/PointerEventsSystem.ts
+      - src/input/pointerConstants.ts
+    acceptance_criteria:
+      - Avatar walk-in range fires proximity events (no cursor ray)
+      - Distinct from TriggerArea volume semantics
+      - Hover icons unchanged for cursor path
+    ai_context_links:
+      - docs/PROGRESS.md
+    notes: PET_PROXIMITY_* on PointerEvents — player avatar distance, not volume.
+
+  - id: hydration-first-load-race
+    title: "Hydration first-load race — composite vs delta merge"
+    status: open
+    owner: unassigned
+    track: rendering
+    phase: 7
+    complexity: medium
+    priority: P2
+    dependencies: []
+    blocks: []
+    files:
+      - src/rendering/sceneHydration.ts
+      - src/rendering/SceneHost.ts
+      - src/core/systems/SceneScriptSystem.ts
+    acceptance_criteria:
+      - Initial crdtGetState + first script deltas converge under Lamport LWW
+      - No double-spawn or missing GLB on fast composite boot
+      - Loading bar reflects attach-stall fallback correctly
+    ai_context_links:
+      - docs/REARCHITECTURE_PLAN.md
+    test_scenes:
+      - genesis-city
+      - rickroll.dcl.eth
+    notes: Snapshot vs delta race called out in Rearchitecture open questions.
+
+  - id: video-player-bridge
+    title: "VideoPlayer + VideoEvent + getActiveVideoStreams"
+    status: open
+    owner: unassigned
+    track: media
+    phase: 3
+    complexity: medium
+    priority: P1
+    dependencies: []
+    blocks: []
+    files:
+      - src/media/VideoPlayerBridge.ts
+      - src/media/WebVideoPlayer.ts
+      - src/bridge/mirrorComponents.ts
+    acceptance_criteria:
+      - VideoPlayer CRDT drives WebVideoPlayer instances
+      - VideoEvent appends via CrdtEncoder source-capture
+      - EngineApi video observables reachable from scene worker
+    ai_context_links:
+      - docs/ECS_COMPONENTS.md
+    test_scenes:
+      - scenes with in-world video planes
+
+  - id: ui-transform-world-ui
+    title: "UiTransform / UiText in-world UI rendering"
+    status: open
+    owner: unassigned
+    track: ui
+    phase: 3
+    complexity: high
+    priority: P2
+    dependencies: []
+    blocks: []
+    files:
+      - src/bridge/ThreeBridge.ts
+      - src/bridge/mirrorComponents.ts
+      - src/dcl/ecs/registry.ts
+    acceptance_criteria:
+      - UiTransform hierarchy renders as CSS3D or canvas overlay
+      - UiText font + alignment parity with Explorer baseline
+      - PointerEvents on UI entities work where SDK expects
+    ai_context_links:
+      - docs/ECS_COMPONENTS.md
+      - docs/CLIENT_UI_LAYOUT.md
+
+  - id: parcel-routes-catalyst
+    title: "Parcel routes /80,-1 → Catalyst content resolution"
+    status: open
+    owner: unassigned
+    track: content
+    phase: 6
+    complexity: medium
+    priority: P2
+    dependencies: []
+    blocks: []
+    files:
+      - src/dcl/content/resolveScene.ts
+      - src/client/AppController.ts
+      - src/map/types.ts
+    acceptance_criteria:
+      - Deep link /80,-1 resolves parcel and loads scene
+      - Catalyst realm override via env still works
+      - SPA fallback documented in DEPLOYMENT.md
+    ai_context_links:
+      - docs/DEPLOYMENT.md
+    test_scenes:
+      - parcel coordinate URLs
+
+  - id: voice-livekit-audio
+    title: "Voice / LiveKit audio presence"
+    status: open
+    owner: unassigned
+    track: social
+    phase: 5
+    complexity: high
+    priority: P2
+    dependencies: []
+    blocks: []
+    files:
+      - src/social/
+      - src/network/comms/
+      - src/core/World.ts
+    acceptance_criteria:
+      - Mic publish/subscribe on scene room
+      - Presence indicator in HUD
+      - Matches deployed realm comms adapter on rickroll.dcl.eth
+    ai_context_links:
+      - .cursor/rules/comms-architecture.mdc
+      - docs/PROGRESS.md
+    do_not_touch:
+      - src/social/dclRfc4Chat.ts
+    notes: Text chat shipped; voice is separate LiveKit audio track path.
+
+  - id: pointer-events-qa
+    title: "PointerEvents manual QA harness"
+    status: done
+    owner: maintainer
+    track: input
+    phase: 3
+    complexity: low
+    priority: P2
+    dependencies: []
+    blocks: []
+    files:
+      - src/input/PointerEventsSystem.ts
+    acceptance_criteria:
+      - Custom scenes + Genesis interactives validated
+    notes: Shipped — hover, click, key actions validated.
+
+  - id: engine-api-comms
+    title: "EngineApi sendBatch + subscribe (comms topic)"
+    status: done
+    owner: maintainer
+    track: ecs-shim
+    phase: 1
+    complexity: medium
+    priority: P0
+    dependencies: []
+    blocks: []
+    files:
+      - src/shim/system/createSystemStubs.ts
+      - src/shim/worker/sceneWorker.ts
+    acceptance_criteria:
+      - comms topic → onCommsMessage observable in scene worker
+    notes: SDK7 parity — paired sendBatch + subscribe.
+
+  - id: tags-component
+    title: "Tags component — getEntitiesByTag()"
+    status: done
+    owner: maintainer
+    track: ecs
+    phase: 1
+    complexity: low
+    priority: P1
+    dependencies: []
+    blocks: []
+    files:
+      - src/bridge/mirrorComponents.ts
+    acceptance_criteria:
+      - Mirror CRDT sync for core-schema::Tags
+    notes: Shipped.
+
+  - id: signed-fetch-bridge
+    title: "SignedFetch scene worker RPC"
+    status: done
+    owner: maintainer
+    track: ecs-shim
+    phase: 3
+    complexity: medium
+    priority: P1
+    dependencies: []
+    blocks: []
+    files:
+      - src/shim/system/createSystemStubs.ts
+    acceptance_criteria:
+      - signedFetch + getHeaders via worker RPC → decentraland-crypto-fetch
+    notes: Shipped — ADR-44 signed HTTP + WebSocket auth headers.
+
+  - id: chat-nav-links
+    title: "Chat nav links → teleport"
+    status: done
+    owner: maintainer
+    track: social
+    phase: 5
+    complexity: medium
+    priority: P2
+    dependencies: []
+    blocks: []
+    files:
+      - src/social/linkifyText.ts
+      - src/client/AppController.ts
+    acceptance_criteria:
+      - Coords, .dcl.eth, play URLs teleport correctly
+    notes: Shipped.
+
+  - id: gltf-node-shadows
+    title: "GltfNodeModifiers castShadows"
+    status: open
+    owner: unassigned
+    track: rendering
+    phase: 6
+    complexity: low
+    priority: P3
+    dependencies: []
+    blocks: []
+    files:
+      - src/bridge/ThreeBridge.ts
+      - src/rendering/AssetCache.ts
+    acceptance_criteria:
+      - Per-node shadow flags applied on GLB attach
+      - No regression on LightSource culling
+    ai_context_links:
+      - docs/lightsource-parity.md
+
+  - id: chat-timestamp-parity
+    title: "Explorer chat timestamp wire parity"
+    status: partial
+    owner: unassigned
+    track: social
+    phase: 5
+    complexity: low
+    priority: P3
+    dependencies: []
+    blocks: []
+    files:
+      - src/social/dclRfc4Chat.ts
+      - src/client/ui/shell/
+    acceptance_criteria:
+      - Incoming chat timestamps match Explorer display
+    notes: Our UI correct; Unity shows wrong dates on wire — investigate RFC4 Chat.timestamp semantics.
+
+  - id: pointer-collider-checker-noise
+    title: "SDK pointer-event-collider-checker false positives (asset-pack Triggers)"
+    status: done
+    owner: unassigned
+    track: input
+    phase: 3
+    complexity: low
+    priority: P3
+    dependencies: []
+    blocks: []
+    files:
+      - src/shim/worker/sceneWorker.ts
+      - src/input/PointerEventsSystem.ts
+    acceptance_criteria:
+      - No repeated Missing MeshCollider worker logs on rickroll.dcl.eth asset-pack Trigger scenes
+      - Pointer click delivery unchanged on Trigger + GLTF _collider layouts
+    ai_context_links:
+      - docs/PROGRESS.md
+    test_scenes:
+      - rickroll.dcl.eth
+    notes: >
+      @dcl/ecs pointerEventColliderChecker (scene worker) warns once per entity when PointerEvents
+      lacks MeshCollider on the same entity; it skips GltfContainer on that entity only, not children.
+      ThreejsClient collectPointerTargets already raycasts GLTF _collider meshes, MeshCollider, and
+      MeshRenderer; resolvePointerResultEntity walks parents for asset-pack Triggers. Warnings are
+      benign — clicks work. Optional fix filter worker console or upstream SDK child GltfContainer check.
+
+  - id: tween-sequence-qa
+    title: "TweenSequence yoyo/restart QA"
+    status: done
+    owner: maintainer
+    track: ecs
+    phase: 3
+    complexity: low
+    priority: P2
+    dependencies: []
+    blocks: []
+    files:
+      - src/bridge/TweenBridge.ts
+    acceptance_criteria:
+      - Genesis Plaza blimp orbit — rotate Tween + TweenSequence
+    notes: Shipped with pumpMotionBridges fix.

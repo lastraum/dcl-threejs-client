@@ -1,0 +1,69 @@
+import * as extended from '@dcl/ecs/dist/components'
+import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
+import type { IEngine } from '@dcl/ecs'
+
+/** Renderer-side component defs bound to the mirror engine (not the scene singleton). */
+export type MirrorComponents = {
+  Transform: ReturnType<typeof extended.Transform>
+  Tags: ReturnType<typeof extended.Tags>
+  MeshRenderer: ReturnType<typeof extended.MeshRenderer>
+  MeshCollider: ReturnType<typeof extended.MeshCollider>
+  Material: ReturnType<typeof extended.Material>
+  GltfContainer: ReturnType<typeof generated.GltfContainer>
+  VisibilityComponent: ReturnType<typeof generated.VisibilityComponent>
+  LightSource: ReturnType<typeof generated.LightSource>
+  TextShape: ReturnType<typeof generated.TextShape>
+  Billboard: ReturnType<typeof generated.Billboard>
+  Animator: ReturnType<typeof generated.Animator>
+  MainCamera: ReturnType<typeof generated.MainCamera>
+  AvatarLocomotionSettings: ReturnType<typeof generated.AvatarLocomotionSettings>
+  InputModifier: ReturnType<typeof generated.InputModifier>
+  AvatarShape: ReturnType<typeof generated.AvatarShape>
+  SkyboxTime: ReturnType<typeof generated.SkyboxTime>
+  PlayerIdentityData: ReturnType<typeof generated.PlayerIdentityData>
+  AvatarBase: ReturnType<typeof generated.AvatarBase>
+  AvatarEquippedData: ReturnType<typeof generated.AvatarEquippedData>
+  AvatarEmoteCommand: ReturnType<typeof generated.AvatarEmoteCommand>
+  Tween: ReturnType<typeof generated.Tween>
+  TweenState: ReturnType<typeof generated.TweenState>
+  TweenSequence: ReturnType<typeof generated.TweenSequence>
+  PointerEvents: ReturnType<typeof generated.PointerEvents>
+  PointerEventsResult: ReturnType<typeof generated.PointerEventsResult>
+  PrimaryPointerInfo: ReturnType<typeof generated.PrimaryPointerInfo>
+  VideoPlayer: ReturnType<typeof generated.VideoPlayer>
+  VideoEvent: ReturnType<typeof generated.VideoEvent>
+}
+
+/** Register mirror ECS components so incoming scene CRDT can be applied. */
+export function registerMirrorComponents(engine: IEngine): MirrorComponents {
+  return {
+    Transform: extended.Transform(engine),
+    Tags: extended.Tags(engine),
+    MeshRenderer: extended.MeshRenderer(engine),
+    MeshCollider: extended.MeshCollider(engine),
+    Material: extended.Material(engine),
+    GltfContainer: generated.GltfContainer(engine),
+    VisibilityComponent: generated.VisibilityComponent(engine),
+    LightSource: generated.LightSource(engine),
+    TextShape: generated.TextShape(engine),
+    Billboard: generated.Billboard(engine),
+    Animator: generated.Animator(engine),
+    MainCamera: generated.MainCamera(engine),
+    AvatarLocomotionSettings: generated.AvatarLocomotionSettings(engine),
+    InputModifier: generated.InputModifier(engine),
+    AvatarShape: generated.AvatarShape(engine),
+    SkyboxTime: generated.SkyboxTime(engine),
+    PlayerIdentityData: generated.PlayerIdentityData(engine),
+    AvatarBase: generated.AvatarBase(engine),
+    AvatarEquippedData: generated.AvatarEquippedData(engine),
+    AvatarEmoteCommand: generated.AvatarEmoteCommand(engine),
+    Tween: generated.Tween(engine),
+    TweenState: generated.TweenState(engine),
+    TweenSequence: generated.TweenSequence(engine),
+    PointerEvents: generated.PointerEvents(engine),
+    PointerEventsResult: generated.PointerEventsResult(engine),
+    PrimaryPointerInfo: generated.PrimaryPointerInfo(engine),
+    VideoPlayer: generated.VideoPlayer(engine),
+    VideoEvent: generated.VideoEvent(engine)
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:f_sweater",
+  "data": {
+    "category": "upper_body",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [
+      "hands"
+    ],
+    "tags": [
+      "unisex",
+      "upper",
+      "body",
+      "Yellow",
+      "Sweater",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "F_uBody_Sweater_01.glb",
+        "contents": [
+          {
+            "key": "F_uBody_Sweater_01.glb",
+            "url": "F_uBody_Sweater_01.glb"
+          },
+          {
+            "key": "M_uBody_Sweater_01b_512.png.png",
+            "url": "M_uBody_Sweater_01b_512.png.png"
+          },
+          {
+            "key": "Avatar_MaleSkinBase.png",
+            "url": "Avatar_MaleSkinBase.png"
+          },
+          {
+            "key": "M_uBody_Sweater_01.glb",
+            "url": "M_uBody_Sweater_01.glb"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "M_uBody_Sweater_01.glb",
+        "contents": [
+          {
+            "key": "F_uBody_Sweater_01.glb",
+            "url": "F_uBody_Sweater_01.glb"
+          },
+          {
+            "key": "M_uBody_Sweater_01b_512.png.png",
+            "url": "M_uBody_Sweater_01b_512.png.png"
+          },
+          {
+            "key": "Avatar_MaleSkinBase.png",
+            "url": "Avatar_MaleSkinBase.png"
+          },
+          {
+            "key": "M_uBody_Sweater_01.glb",
+            "url": "M_uBody_Sweater_01.glb"
+          }
+        ]
+      }
+    ]
+  }
+}

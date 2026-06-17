@@ -1,0 +1,58 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:bun_shoes",
+  "data": {
+    "category": "feet",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "feet",
+      "Bun",
+      "shoes",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "F_BunShoes_01.glb",
+        "contents": [
+          {
+            "key": "F_BunShoes_01.glb",
+            "url": "F_BunShoes_01.glb"
+          },
+          {
+            "key": "AvatarWearables_TX.png",
+            "url": "AvatarWearables_TX.png"
+          },
+          {
+            "key": "Avatar_MaleSkinBase.png",
+            "url": "Avatar_MaleSkinBase.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "F_BunShoes_01.glb",
+        "contents": [
+          {
+            "key": "F_BunShoes_01.glb",
+            "url": "F_BunShoes_01.glb"
+          },
+          {
+            "key": "AvatarWearables_TX.png",
+            "url": "AvatarWearables_TX.png"
+          },
+          {
+            "key": "Avatar_MaleSkinBase.png",
+            "url": "Avatar_MaleSkinBase.png"
+          }
+        ]
+      }
+    ]
+  }
+}

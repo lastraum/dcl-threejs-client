@@ -1,0 +1,40 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:f_eyebrows_00",
+  "data": {
+    "category": "eyebrows",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "eyebrows",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "F_Eyebrows_00.png",
+        "contents": [
+          {
+            "key": "F_Eyebrows_00.png",
+            "url": "F_Eyebrows_00.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "F_Eyebrows_00.png",
+        "contents": [
+          {
+            "key": "F_Eyebrows_00.png",
+            "url": "F_Eyebrows_00.png"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:brown_pants",
+  "data": {
+    "category": "lower_body",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "lower",
+      "body",
+      "Brown",
+      "Pants",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "M_lBody_LongPants_01.glb",
+        "contents": [
+          {
+            "key": "F_lBody_LongPants_01.glb",
+            "url": "F_lBody_LongPants_01.glb"
+          },
+          {
+            "key": "Avatar_MaleSkinBase.png",
+            "url": "Avatar_MaleSkinBase.png"
+          },
+          {
+            "key": "F_lBody_LongPants_512.png",
+            "url": "F_lBody_LongPants_512.png"
+          },
+          {
+            "key": "M_lBody_LongPants_01.glb",
+            "url": "M_lBody_LongPants_01.glb"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "F_lBody_LongPants_01.glb",
+        "contents": [
+          {
+            "key": "F_lBody_LongPants_01.glb",
+            "url": "F_lBody_LongPants_01.glb"
+          },
+          {
+            "key": "Avatar_MaleSkinBase.png",
+            "url": "Avatar_MaleSkinBase.png"
+          },
+          {
+            "key": "F_lBody_LongPants_512.png",
+            "url": "F_lBody_LongPants_512.png"
+          },
+          {
+            "key": "M_lBody_LongPants_01.glb",
+            "url": "M_lBody_LongPants_01.glb"
+          }
+        ]
+      }
+    ]
+  }
+}

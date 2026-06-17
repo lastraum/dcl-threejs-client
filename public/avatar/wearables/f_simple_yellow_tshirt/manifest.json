@@ -1,0 +1,86 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:f_simple_yellow_tshirt",
+  "data": {
+    "category": "upper_body",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [
+      "hands"
+    ],
+    "tags": [
+      "unisex",
+      "upper",
+      "body",
+      "Simple",
+      "Yellow",
+      "T-shirt",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "M_uBody_YellowBasicTShirt.glb",
+        "contents": [
+          {
+            "key": "F_uBody_YellowBasicTShirt.glb",
+            "url": "F_uBody_YellowBasicTShirt.glb"
+          },
+          {
+            "key": "TShirt_f_Yellow.png.png",
+            "url": "TShirt_f_Yellow.png.png"
+          },
+          {
+            "key": "Avatar_FemaleSkinBase.png.png",
+            "url": "Avatar_FemaleSkinBase.png.png"
+          },
+          {
+            "key": "M_uBody_YellowBasicTShirt.glb",
+            "url": "M_uBody_YellowBasicTShirt.glb"
+          },
+          {
+            "key": "TShirt_m_Yellow.png.png",
+            "url": "TShirt_m_Yellow.png.png"
+          },
+          {
+            "key": "Avatar_MaleSkinBase.png",
+            "url": "Avatar_MaleSkinBase.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "F_uBody_YellowBasicTShirt.glb",
+        "contents": [
+          {
+            "key": "F_uBody_YellowBasicTShirt.glb",
+            "url": "F_uBody_YellowBasicTShirt.glb"
+          },
+          {
+            "key": "TShirt_f_Yellow.png.png",
+            "url": "TShirt_f_Yellow.png.png"
+          },
+          {
+            "key": "Avatar_FemaleSkinBase.png.png",
+            "url": "Avatar_FemaleSkinBase.png.png"
+          },
+          {
+            "key": "M_uBody_YellowBasicTShirt.glb",
+            "url": "M_uBody_YellowBasicTShirt.glb"
+          },
+          {
+            "key": "TShirt_m_Yellow.png.png",
+            "url": "TShirt_m_Yellow.png.png"
+          },
+          {
+            "key": "Avatar_MaleSkinBase.png",
+            "url": "Avatar_MaleSkinBase.png"
+          }
+        ]
+      }
+    ]
+  }
+}

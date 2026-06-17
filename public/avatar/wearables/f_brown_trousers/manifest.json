@@ -1,0 +1,68 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:f_brown_trousers",
+  "data": {
+    "category": "lower_body",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "lower",
+      "body",
+      "New",
+      "Brown",
+      "Trousers",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "F_lBody_BrownTrousers.glb",
+        "contents": [
+          {
+            "key": "F_lBody_BrownTrousers.glb",
+            "url": "F_lBody_BrownTrousers.glb"
+          },
+          {
+            "key": "Avatar_MaleSkinBase.png",
+            "url": "Avatar_MaleSkinBase.png"
+          },
+          {
+            "key": "F_lBody_BrownTrousers_512-F_lBody_BrownTrousers_512.png.png",
+            "url": "F_lBody_BrownTrousers_512-F_lBody_BrownTrousers_512.png.png"
+          },
+          {
+            "key": "M_lBody_BrownTrousers.glb",
+            "url": "M_lBody_BrownTrousers.glb"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "M_lBody_BrownTrousers.glb",
+        "contents": [
+          {
+            "key": "F_lBody_BrownTrousers.glb",
+            "url": "F_lBody_BrownTrousers.glb"
+          },
+          {
+            "key": "Avatar_MaleSkinBase.png",
+            "url": "Avatar_MaleSkinBase.png"
+          },
+          {
+            "key": "F_lBody_BrownTrousers_512-F_lBody_BrownTrousers_512.png.png",
+            "url": "F_lBody_BrownTrousers_512-F_lBody_BrownTrousers_512.png.png"
+          },
+          {
+            "key": "M_lBody_BrownTrousers.glb",
+            "url": "M_lBody_BrownTrousers.glb"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:BaseMale",
+  "data": {
+    "category": "body_shape",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "body",
+      "male",
+      "man",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "BaseMale.glb",
+        "contents": [
+          {
+            "key": "BaseMale.glb",
+            "url": "BaseMale.glb"
+          },
+          {
+            "key": "Avatar_MaleSkinBase.png",
+            "url": "Avatar_MaleSkinBase.png"
+          },
+          {
+            "key": "M_EyeBrows_00.png",
+            "url": "M_EyeBrows_00.png"
+          },
+          {
+            "key": "M_Eyes_00.png",
+            "url": "M_Eyes_00.png"
+          },
+          {
+            "key": "M_Mouth_00.png",
+            "url": "M_Mouth_00.png"
+          }
+        ]
+      }
+    ]
+  }
+}

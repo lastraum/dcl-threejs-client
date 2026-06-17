@@ -1,0 +1,61 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:green_hoodie",
+  "data": {
+    "category": "upper_body",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [
+      "hands"
+    ],
+    "tags": [
+      "unisex",
+      "upper",
+      "body",
+      "Green",
+      "Hoodie",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "M_uBody_Hoodie_01.glb",
+        "contents": [
+          {
+            "key": "F_uBody_Hoodie_01.glb",
+            "url": "F_uBody_Hoodie_01.glb"
+          },
+          {
+            "key": "basicGreenHoodie_diffuse512.png.png",
+            "url": "basicGreenHoodie_diffuse512.png.png"
+          },
+          {
+            "key": "M_uBody_Hoodie_01.glb",
+            "url": "M_uBody_Hoodie_01.glb"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "F_uBody_Hoodie_01.glb",
+        "contents": [
+          {
+            "key": "F_uBody_Hoodie_01.glb",
+            "url": "F_uBody_Hoodie_01.glb"
+          },
+          {
+            "key": "basicGreenHoodie_diffuse512.png.png",
+            "url": "basicGreenHoodie_diffuse512.png.png"
+          },
+          {
+            "key": "M_uBody_Hoodie_01.glb",
+            "url": "M_uBody_Hoodie_01.glb"
+          }
+        ]
+      }
+    ]
+  }
+}

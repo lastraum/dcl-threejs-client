@@ -1,0 +1,37 @@
+import type { ParcelCoord } from '../../content/parseParcel'
+import { PARCEL_SIZE } from '../../content/types'
+
+/** DCL scene space: SW corner of base parcel is world origin; +X east, +Z north. */
+export function parcelWorldOrigin(parcel: ParcelCoord, base: ParcelCoord): {
+  x: number
+  y: number
+  z: number
+} {
+  return {
+    x: (parcel.x - base.x) * PARCEL_SIZE,
+    y: 0,
+    z: (parcel.y - base.y) * PARCEL_SIZE
+  }
+}
+
+/**
+ * Empty-land `ground.glb` mesh is centered on the origin (±8 m).
+ * Shift so the parcel SW corner stays at the parent origin, matching SDK7 coords.
+ */
+export const EMPTY_LAND_GROUND_OFFSET = {
+  x: PARCEL_SIZE / 2,
+  y: 0,
+  z: PARCEL_SIZE / 2
+} as const
+
+/** Random prop position inside a parcel in SDK7 scene space (0–16 on X/Z). */
+export function randomParcelLocalXZ(
+  rng: () => number,
+  inset = 1.2
+): { x: number; z: number } {
+  const span = PARCEL_SIZE - inset * 2
+  return {
+    x: inset + rng() * span,
+    z: inset + rng() * span
+  }
+}

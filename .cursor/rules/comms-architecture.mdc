@@ -1,0 +1,32 @@
+---
+description: DCL comms reference stack — Bevy, Unity, dcl-companion
+alwaysApply: true
+---
+
+# Comms architecture (ThreejsClient)
+
+## Reference stack
+
+| Concern | Reference |
+|---------|-----------|
+| Inbound decode / routing | **Bevy** (`Rfc4Router`, `crates/comms`) |
+| Outbound movement & profile | **Unity Foundation Client** — `RFC4_PROTOCOL_VERSION` in `Packet` header (`dclRfc4Comms.ts`) |
+| Outbound LiveKit **text chat** | **dcl-companion** — `sdk7/dcl-companion/web-app-social/src/dclRfc4Chat.ts` + `publishData(..., { reliable: true })` |
+| LiveKit session wiring | **dcl-companion** — `livekitRoom.ts`, `JumpInView` / `PublicSceneStreamPage` |
+
+## Outbound chat (critical)
+
+Unity movement-style `Packet.encode({ protocolVersion: 100, … chat })` does **not** deliver on LiveKit scene rooms in practice.
+
+Use **`encodeRfc4ChatPacket` in `src/social/dclRfc4Chat.ts`** — byte-compatible with dcl-companion:
+
+- `Chat.timestamp` = session elapsed seconds since LiveKit connect
+- Trailing protobuf field `11` = protocol version `100`
+- Publish to every connected chat transport: scene room, world room, and island (when connected)
+
+Local UI display time: `Date.now() / 1000` (not the wire timestamp).
+
+## Do not
+
+- Mention or target a Godot explorer comms parity path in this repo.
+- Use Unity header encode for LiveKit chat until verified end-to-end on wire.

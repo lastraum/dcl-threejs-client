@@ -1,0 +1,36 @@
+/** Numeric mirrors of `@dcl/ecs` input_action const enums (isolatedModules-safe). */
+export const InputAction = {
+  IA_POINTER: 0,
+  IA_PRIMARY: 1,
+  IA_SECONDARY: 2,
+  IA_ANY: 3,
+  IA_FORWARD: 4,
+  IA_BACKWARD: 5,
+  IA_RIGHT: 6,
+  IA_LEFT: 7,
+  IA_JUMP: 8,
+  IA_WALK: 9,
+  IA_ACTION_3: 10,
+  IA_ACTION_4: 11,
+  IA_ACTION_5: 12,
+  IA_ACTION_6: 13,
+  IA_MODIFIER: 14
+} as const
+
+export type InputActionValue = (typeof InputAction)[keyof typeof InputAction]
+
+export const PointerEventType = {
+  PET_UP: 0,
+  PET_DOWN: 1,
+  PET_HOVER_ENTER: 2,
+  PET_HOVER_LEAVE: 3,
+  PET_PROXIMITY_ENTER: 4,
+  PET_PROXIMITY_LEAVE: 5
+} as const
+
+export type PointerEventTypeValue = (typeof PointerEventType)[keyof typeof PointerEventType]
+
+export const InteractionType = {
+  CURSOR: 0,
+  PROXIMITY: 1
+} as const

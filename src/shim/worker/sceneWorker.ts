@@ -1,0 +1,1155 @@
+import {
+  createSystemStubs,
+  evaluateSceneBundle,
+  watchRendererTransportOnmessage
+} from '../system/createSystemStubs'
+import { encodeCommsBinaryMessage } from '../../network/comms/commsBinaryWire'
+import { CommsWireMessageType } from '../../network/comms/CommsInboundQueue'
+import { createEngineApiEventState, type EngineApiEventState } from '../engine/EngineApiEventState'
+import type {
+  ActiveVideoStreamsResponse,
+  CommsAdapterRequest,
+  CommsPublishDataRequest,
+  CommsTopicRequest,
+  ConsumeMessagesResponse,
+  MainToWorker,
+  RealmResponse,
+  SceneWorkerOutbound,
+  SendBinaryRequest,
+  SendBinaryResponse,
+  SignedFetchRequest,
+  SignedFetchResponse,
+  SignedFetchGetHeadersResponse,
+  UserDataResponse
+} from '../types'
+import type { MovePlayerToRequest, MovePlayerToResponse } from '../../player/movePlayerTo'
+import type { OpenExternalUrlRequest, OpenExternalUrlResponse } from '../../player/openExternalUrl'
+import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/triggerEmote'
+import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../player/triggerSceneEmote'
+import {
+  installPointerEventColliderChecker,
+  stripBundledPointerEventColliderChecker
+} from './pointerEventColliderCheckerPatch'
+import { injectPointerClickOnEngine } from './injectPointerClick'
+import type { InjectPointerClickBody } from '../../player/injectPointerClick'
+import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
+import { resolveSceneEngine } from './resolveSceneEngine'
+
+const ctx = self
+
+let requestId = 0
+const pendingCrdt = new Map<number, (data: Uint8Array[]) => void>()
+const pendingGetState = new Map<number, (state: { hasEntities: boolean; data: Uint8Array[] }) => void>()
+const pendingMove = new Map<number, (body: MovePlayerToResponse) => void>()
+const pendingTriggerEmote = new Map<number, (body: TriggerEmoteResponse) => void>()
+const pendingTriggerSceneEmote = new Map<number, (body: TriggerSceneEmoteResponse) => void>()
+const pendingOpenExternalUrl = new Map<number, (body: OpenExternalUrlResponse) => void>()
+const pendingCommsAdapter = new Map<number, (body: { success: boolean }) => void>()
+const pendingSendBinary = new Map<number, (body: SendBinaryResponse) => void>()
+const pendingUserData = new Map<number, (body: UserDataResponse) => void>()
+const pendingRealm = new Map<number, (body: RealmResponse) => void>()
+const pendingSubscribeTopic = new Map<number, (body: Record<string, never>) => void>()
+const pendingUnsubscribeTopic = new Map<number, (body: Record<string, never>) => void>()
+const pendingPublishData = new Map<number, (body: Record<string, never>) => void>()
+const pendingConsumeMessages = new Map<number, (body: ConsumeMessagesResponse) => void>()
+const pendingActiveVideoStreams = new Map<number, (body: ActiveVideoStreamsResponse) => void>()
+const pendingSignedFetch = new Map<number, (body: SignedFetchResponse) => void>()
+const pendingSignedFetchGetHeaders = new Map<number, (body: SignedFetchGetHeadersResponse) => void>()
+const pendingCommsSend = new Map<number, (body: Record<string, never>) => void>()
+const pendingInboundBinaries: Uint8Array[] = []
+let rendererInboundApply: ((chunks: Uint8Array[]) => void) | null = null
+let engineApiEvents: EngineApiEventState | null = null
+let sceneEngine: import('@dcl/ecs').IEngine | null = null
+let sceneRunning = false
+let lastTick = performance.now()
+/** True while scene onUpdate promise is in flight (may be awaiting crdtSendToRenderer). */
+let sceneUpdateInFlight = false
+/** True while pointer inbound apply + engine tick is running — scene loop yields. */
+let pointerDeliveryInFlight = false
+/** Pointer deliver deferred until scene onUpdate finishes after a crdt interrupt. */
+let queuedPointerDeliver: Uint8Array[] | null = null
+/** Min ms between lightweight engine ticks (pointer/getClick systems). */
+const SCENE_TICK_BASE_INTERVAL_MS = 100
+/** Min ms between full scene onUpdate — fast during hydration, throttled after play-ready. */
+let fullSceneOnUpdateIntervalMs = 250
+/** After play-ready: keep onUpdate responsive for pointer/triggers; perf throttle is engine-tick + diff consumer. */
+const FULL_SCENE_ONUPDATE_INTERVAL_PLAY_MS = 400
+/** Abort in-flight scene onUpdate after this — pointer inject must not queue behind Genesis-scale sync work. */
+const SCENE_UPDATE_ABORT_MS = 2000
+const SCENE_UPDATE_ABORT_PLAY_MS = 600
+/** Abort timer — shorter once the scene is interactive. */
+let sceneUpdateAbortMs = SCENE_UPDATE_ABORT_MS
+let sceneTickIntervalMs = SCENE_TICK_BASE_INTERVAL_MS
+let sceneTicksPaused = false
+let sceneUpdateAbortTimer: ReturnType<typeof setTimeout> | null = null
+let sceneTickTimer: ReturnType<typeof setInterval> | null = null
+/** Set when inject arrives before sceneEngine is bound — drained after bundle eval. */
+let pendingInjectPointer: InjectPointerClickBody | null = null
+let lastHeartbeatAt = performance.now()
+let sceneUpdateStartedAt = 0
+let lastEngineTickAt = 0
+let lastFullSceneUpdateAt = 0
+/** True while a deferred sceneEngine.update tick is running. */
+let engineTickInFlight = false
+/** Scene exports.onUpdate — set when the cooperative loop starts. */
+let sceneOnUpdate: ((dt: number) => unknown) | null = null
+/** False until exports.onStart resolves — sceneEngine.update during boot can stall Rick Roll worlds. */
+let sceneOnStartComplete = false
+/** Coalesce inject + pointer-crdt-deliver into one post-apply engine tick before ack. */
+let pointerDeliveryCompleteTimer: ReturnType<typeof setTimeout> | null = null
+/** Genesis composite spawn runs in exports.onUpdate — must stay on (engine.update alone does not load composite). */
+const ENABLE_FULL_SCENE_ONUPDATE = true
+
+function clearSceneUpdateAbortTimer(): void {
+  if (sceneUpdateAbortTimer) {
+    clearTimeout(sceneUpdateAbortTimer)
+    sceneUpdateAbortTimer = null
+  }
+}
+
+function armSceneUpdateAbortTimer(): void {
+  clearSceneUpdateAbortTimer()
+  sceneUpdateAbortTimer = setTimeout(() => {
+    if (!sceneUpdateInFlight) return
+    workerLog(
+      'error',
+      `[sceneWorker] scene onUpdate exceeded ${sceneUpdateAbortMs}ms — aborting for pointer priority`
+    )
+    sceneUpdateInFlight = false
+    sceneTicksPaused = true
+    // Do not backoff tick interval during hydration-scale onUpdate — slows composite spawn on worker.
+    interruptPendingCrdtRoundTrips()
+    drainQueuedPointerDeliver()
+  }, sceneUpdateAbortMs)
+}
+
+function resumeSceneTicksAfterPointer(): void {
+  if (pointerDeliveryInFlight || sceneUpdateInFlight || queuedPointerDeliver || pendingInjectPointer) return
+  sceneTicksPaused = false
+}
+
+function postPointerDeliverDone(label: string): void {
+  ctx.postMessage({ type: 'pointer-deliver-done' } satisfies SceneWorkerOutbound)
+  workerLog('log', `[sceneWorker] ${label} — pointer-deliver-done posted to main`)
+}
+
+/**
+ * Unblock scene ticks stuck awaiting crdtSendToRenderer so pointer delivery is not queued
+ * behind an in-flight main↔worker round-trip (mirror.flushOutgoing can stall main for 500ms+).
+ */
+function interruptPendingCrdtRoundTrips(): void {
+  if (!pendingCrdt.size) return
+  const ids = [...pendingCrdt.keys()]
+  for (const id of ids) {
+    pendingCrdt.get(id)?.([])
+    pendingCrdt.delete(id)
+  }
+  workerLog(
+    'log',
+    `[sceneWorker] interrupted ${ids.length} pending crdt round-trip(s) for pointer priority`
+  )
+}
+
+function drainQueuedPointerDeliver(): void {
+  if (pointerDeliveryInFlight || sceneUpdateInFlight || !queuedPointerDeliver) return
+  const chunks = queuedPointerDeliver
+  queuedPointerDeliver = null
+  executePointerDelivery(chunks)
+}
+
+function preemptForPointerDelivery(): void {
+  sceneUpdateInFlight = false
+  engineTickInFlight = false
+  clearSceneUpdateAbortTimer()
+  // Do not resolve pending crdtSendToRenderer with [] — empty renderer responses leave
+  // worker PlayerEntity at spawn and scene scripts call movePlayerTo(spawn) on click.
+}
+
+/** Run engine.update, ack main, then kick scene onUpdate without blocking the ack. */
+function schedulePointerDeliveryComplete(label: string): void {
+  if (pointerDeliveryCompleteTimer) {
+    clearTimeout(pointerDeliveryCompleteTimer)
+  }
+  pointerDeliveryCompleteTimer = setTimeout(() => {
+    pointerDeliveryCompleteTimer = null
+    pointerDeliveryInFlight = true
+    try {
+      if (!sceneOnStartComplete) {
+        workerLog(
+          'log',
+          `[sceneWorker] ${label} — deferring sceneEngine.update(0) until onStart completes (boot-safe)`
+        )
+      } else if (sceneEngine) {
+        sceneEngine.update(0)
+        workerLog('log', `[sceneWorker] ${label} — sceneEngine.update(0) done`)
+      } else {
+        workerLog('warn', `[sceneWorker] ${label} — sceneEngine missing, skip update`)
+      }
+    } catch (err) {
+      workerLog(
+        'error',
+        `[sceneWorker] ${label} pointer engine tick failed — ${err instanceof Error ? err.message : String(err)}`
+      )
+    } finally {
+      postPointerDeliverDone(label)
+      pointerDeliveryInFlight = false
+      resumeSceneTicksAfterPointer()
+      drainQueuedPointerDeliver()
+    }
+    if (sceneOnStartComplete && sceneOnUpdate) {
+      void Promise.resolve(sceneOnUpdate(0))
+        .then(() => {
+          workerLog('log', `[sceneWorker] ${label} — scene onUpdate(0) done (post-ack)`)
+        })
+        .catch((err) => {
+          workerLog(
+            'error',
+            `[sceneWorker] ${label} post-ack onUpdate failed — ${err instanceof Error ? err.message : String(err)}`
+          )
+        })
+    }
+  }, 0)
+}
+
+/** Forward to main debug log without relying on patched console (scene onStart may restore native console). */
+function workerLog(level: 'log' | 'info' | 'warn' | 'error' | 'debug', message: string): void {
+  ctx.postMessage({ type: 'log', message: `[${level}] ${message}` } satisfies SceneWorkerOutbound)
+}
+
+function patchWorkerConsole(): void {
+  const forward =
+    (level: 'log' | 'info' | 'warn' | 'error' | 'debug') =>
+    (...args: unknown[]) => {
+      const message = args
+        .map((arg) => {
+          if (typeof arg === 'string') return arg
+          try {
+            return JSON.stringify(arg)
+          } catch {
+            return String(arg)
+          }
+        })
+        .join(' ')
+      workerLog(level, message)
+    }
+
+  console.log = forward('log')
+  console.info = forward('info')
+  console.warn = forward('warn')
+  console.error = forward('error')
+  console.debug = forward('debug')
+}
+
+function chunkByteCount(chunks: Uint8Array[]): number {
+  return chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
+}
+
+function executePointerInjection(body: InjectPointerClickBody): void {
+  preemptForPointerDelivery()
+  sceneTicksPaused = true
+  workerLog(
+    'log',
+    `[sceneWorker] inject-pointer-click entity=${body.entity} button=${body.button} ts=${body.downTimestamp}/${body.upTimestamp}`
+  )
+  if (!sceneEngine) {
+    pendingInjectPointer = body
+    workerLog('warn', '[sceneWorker] inject-pointer-click queued — sceneEngine missing (no ack until bound)')
+    return
+  }
+  pendingInjectPointer = null
+  try {
+    injectPointerClickOnEngine(sceneEngine, body)
+    workerLog('log', '[sceneWorker] inject-pointer-click — PointerEventsResult written')
+    schedulePointerDeliveryComplete('inject-pointer-click')
+  } catch (err) {
+    workerLog(
+      'error',
+      `[sceneWorker] inject-pointer-click failed — ${err instanceof Error ? err.message : String(err)}`
+    )
+    schedulePointerDeliveryComplete('inject-pointer-click')
+  }
+}
+
+function drainPendingInjectPointer(): void {
+  if (!pendingInjectPointer || !sceneEngine) return
+  const body = pendingInjectPointer
+  pendingInjectPointer = null
+  workerLog('log', '[sceneWorker] draining queued inject-pointer-click after sceneEngine ready')
+  executePointerInjection(body)
+}
+
+/** Direct path: main posts pre-encoded pointer CRDT — no crdtSendToRenderer round-trip. */
+function deliverPointerCrdtInbound(chunks: Uint8Array[]): void {
+  if (!chunks?.length) {
+    workerLog('warn', '[sceneWorker] pointer-crdt-deliver received — empty payload')
+    return
+  }
+  const bytes = chunkByteCount(chunks)
+  workerLog(
+    'log',
+    `[sceneWorker] pointer-crdt-deliver received — ${chunks.length} chunk(s), ${bytes} bytes` +
+      (sceneUpdateInFlight ? ' (scene tick in flight — preempting)' : '')
+  )
+  if (pointerDeliveryInFlight) {
+    queuedPointerDeliver = chunks
+    workerLog('log', '[sceneWorker] pointer-crdt-deliver queued — prior delivery in flight')
+    setTimeout(() => {
+      if (queuedPointerDeliver) drainQueuedPointerDeliver()
+    }, 50)
+    return
+  }
+  executePointerDelivery(chunks)
+}
+
+function executePointerDelivery(chunks: Uint8Array[]): void {
+  if (pointerDeliveryInFlight) {
+    queuedPointerDeliver = chunks
+    return
+  }
+  preemptForPointerDelivery()
+  sceneTicksPaused = true
+  if (!rendererInboundApply) {
+    workerLog('warn', '[sceneWorker] pointer-crdt-deliver skipped — rendererInboundApply not bound')
+    schedulePointerDeliveryComplete('pointer-crdt-deliver')
+    return
+  }
+  try {
+    rendererInboundApply(chunks)
+    workerLog('log', '[sceneWorker] pointer-crdt-deliver — rendererInboundApply done')
+    schedulePointerDeliveryComplete('pointer-crdt-deliver')
+  } catch (err) {
+    workerLog(
+      'error',
+      `[sceneWorker] pointer-crdt-deliver failed — ${err instanceof Error ? err.message : String(err)}`
+    )
+    schedulePointerDeliveryComplete('pointer-crdt-deliver')
+  }
+}
+
+type RendererTransportLike = {
+  onmessage?: (message: Uint8Array) => void
+  type?: string
+  send?: unknown
+  filter?: unknown
+}
+
+/** Keys whose getters must not be read during transport discovery (may have side effects). */
+const SKIP_EXPORT_GRAPH_KEYS = new Set(['onStart', 'onUpdate', 'main'])
+
+type RendererTransportResolveOptions = {
+  /** Invoke rendererTransport export thunks (unsafe before onStart). */
+  allowThunks?: boolean
+  /** Read accessor properties while probing (unsafe before onStart). */
+  allowGetters?: boolean
+  /** Walk nested export/engine graphs when direct exports miss. */
+  allowGraphSearch?: boolean
+}
+
+function readOwnProperty(obj: object, key: string, allowGetters: boolean): unknown {
+  const desc = Object.getOwnPropertyDescriptor(obj, key)
+  if (!desc) return undefined
+  if (desc.get) {
+    if (!allowGetters) return undefined
+    try {
+      return desc.get.call(obj)
+    } catch {
+      return undefined
+    }
+  }
+  if ('value' in desc) return desc.value
+  return (obj as Record<string, unknown>)[key]
+}
+
+function hasOwnFunction(obj: object, key: string): boolean {
+  const desc = Object.getOwnPropertyDescriptor(obj, key)
+  return !!desc && 'value' in desc && typeof desc.value === 'function'
+}
+
+/** Unwrap rendererTransport export thunks only when explicitly allowed. */
+function unwrapRendererTransportExport(raw: unknown, allowThunks: boolean): unknown {
+  if (raw == null) return raw
+  if (typeof raw === 'function') {
+    if (!allowThunks) return undefined
+    try {
+      return (raw as () => unknown)()
+    } catch {
+      return undefined
+    }
+  }
+  return raw
+}
+
+function pickRendererTransport(val: unknown): RendererTransportLike | null {
+  if (!val || typeof val !== 'object') return null
+  const transport = val as RendererTransportLike
+  if (transport.type === 'renderer') return transport
+  if (hasOwnFunction(transport, 'onmessage')) return transport
+  if (hasOwnFunction(transport, 'send') && hasOwnFunction(transport, 'filter')) return transport
+  return null
+}
+
+function findRendererTransportInObject(
+  root: unknown,
+  maxDepth: number,
+  allowGetters: boolean,
+  allowThunks: boolean
+): RendererTransportLike | null {
+  if (root == null || maxDepth < 0) return null
+
+  const direct = pickRendererTransport(root)
+  if (direct) return direct
+  if (typeof root !== 'object') return null
+
+  const seen = new Set<object>()
+  const queue: Array<{ val: unknown; depth: number }> = [{ val: root, depth: 0 }]
+
+  while (queue.length) {
+    const item = queue.shift()
+    if (!item) continue
+    const { val, depth } = item
+    if (!val || typeof val !== 'object') continue
+    if (seen.has(val)) continue
+    seen.add(val)
+
+    const picked = pickRendererTransport(val)
+    if (picked) return picked
+
+    const rec = val as Record<string, unknown>
+    const nested = readOwnProperty(rec, 'rendererTransport', allowGetters)
+    if (nested != null) {
+      const fromNested = pickRendererTransport(unwrapRendererTransportExport(nested, allowThunks))
+      if (fromNested) return fromNested
+    }
+
+    if (depth >= maxDepth) continue
+    for (const key of Object.getOwnPropertyNames(rec)) {
+      if (SKIP_EXPORT_GRAPH_KEYS.has(key)) continue
+      const desc = Object.getOwnPropertyDescriptor(rec, key)
+      if (!desc || desc.get) continue
+      if (!('value' in desc)) continue
+      const child = desc.value
+      if (child != null && typeof child === 'object') {
+        queue.push({ val: child, depth: depth + 1 })
+      }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Resolve the scene renderer transport without invoking scene export thunks (onStart/main/…).
+ * Blind getter/thunk calls during boot have re-triggered scene init and stalled Rick Roll worlds.
+ */
+function resolveRendererTransport(
+  exports: import('../system/createSystemStubs').SceneBundleExports,
+  sceneEngine: import('@dcl/ecs').IEngine | null,
+  options: RendererTransportResolveOptions = {}
+): RendererTransportLike | null {
+  const allowThunks = options.allowThunks === true
+  const allowGetters = options.allowGetters === true
+  const allowGraphSearch = options.allowGraphSearch !== false
+
+  const fromExport = pickRendererTransport(
+    unwrapRendererTransportExport(readOwnProperty(exports, 'rendererTransport', allowGetters), allowThunks)
+  )
+  if (fromExport) return fromExport
+
+  const engineExport = readOwnProperty(exports, 'engine', allowGetters)
+  if (engineExport && typeof engineExport === 'object') {
+    const fromEngineExport = pickRendererTransport(
+      unwrapRendererTransportExport(readOwnProperty(engineExport, 'rendererTransport', allowGetters), allowThunks)
+    )
+    if (fromEngineExport) return fromEngineExport
+  }
+
+  if (allowGraphSearch) {
+    const fromExportsGraph = findRendererTransportInObject(exports, 2, allowGetters, allowThunks)
+    if (fromExportsGraph) return fromExportsGraph
+
+    if (sceneEngine) {
+      const fromSceneEngine = findRendererTransportInObject(sceneEngine, 3, allowGetters, allowThunks)
+      if (fromSceneEngine) return fromSceneEngine
+    }
+  }
+
+  return null
+}
+
+function describeRendererTransportProbe(
+  exports: import('../system/createSystemStubs').SceneBundleExports,
+  sceneEngine: import('@dcl/ecs').IEngine | null
+): string {
+  const exportKeys = Object.getOwnPropertyNames(exports)
+  const raw = readOwnProperty(exports, 'rendererTransport', false)
+  let rendererHint = 'missing'
+  if (raw != null) {
+    rendererHint = typeof raw === 'function' ? 'function(deferred)' : typeof raw
+    if (typeof raw === 'object') {
+      const t = raw as RendererTransportLike
+      rendererHint += `(type=${t.type ?? '?'},onmessage=${hasOwnFunction(t, 'onmessage') ? 'fn' : 'missing'})`
+    }
+  }
+  const engineShape = sceneEngine
+    ? `{keys:${Object.getOwnPropertyNames(sceneEngine).slice(0, 16).join('|')},update:${typeof sceneEngine.update}}`
+    : 'null'
+  return `exportKeys=[${exportKeys.join(',')}] rendererTransport=${rendererHint} sceneEngine=${engineShape}`
+}
+
+function bindRendererInbound(
+  exports: import('../system/createSystemStubs').SceneBundleExports,
+  sceneEngine: import('@dcl/ecs').IEngine | null,
+  options: RendererTransportResolveOptions = {}
+): void {
+  if (rendererInboundApply) return
+
+  const transport = resolveRendererTransport(exports, sceneEngine, options)
+  if (!transport) {
+    if (options.allowThunks || options.allowGetters) {
+      workerLog(
+        'warn',
+        `[sceneWorker] rendererTransport not found — pointer CRDT may not reach scene systems (${describeRendererTransportProbe(exports, sceneEngine)})`
+      )
+    }
+    return
+  }
+
+  const applyBinding = (onmessage: (chunk: Uint8Array) => void) => {
+    if (rendererInboundApply) return
+    rendererInboundApply = (chunks) => {
+      for (const chunk of chunks) onmessage(chunk)
+    }
+    workerLog('log', '[sceneWorker] renderer inbound bound')
+  }
+
+  watchRendererTransportOnmessage(transport, applyBinding)
+}
+
+function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
+  const id = ++requestId
+  const copy = data.slice()
+  return new Promise((resolve) => {
+    pendingCrdt.set(id, resolve)
+    const msg = { type: 'crdt-send', id, data: copy } satisfies SceneWorkerOutbound
+    // Do not transfer an empty view's backing buffer — some runtimes deliver a broken payload.
+    if (copy.byteLength === 0) ctx.postMessage(msg)
+    else ctx.postMessage(msg, [copy.buffer])
+  })
+}
+
+function rpcGetState(): Promise<{ hasEntities: boolean; data: Uint8Array[] }> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingGetState.set(id, resolve)
+    ctx.postMessage({ type: 'crdt-get-state', id } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcMovePlayerTo(body: MovePlayerToRequest): Promise<MovePlayerToResponse> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingMove.set(id, resolve)
+    ctx.postMessage({ type: 'move-player-to', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcTriggerEmote(body: TriggerEmoteRequest): Promise<TriggerEmoteResponse> {
+  const id = ++requestId
+  const emote = body.predefinedEmote?.trim()
+  if (emote) workerLog('log', `[sceneWorker] triggerEmote → ${emote}`)
+  return new Promise((resolve) => {
+    pendingTriggerEmote.set(id, resolve)
+    ctx.postMessage({ type: 'trigger-emote', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcTriggerSceneEmote(body: TriggerSceneEmoteRequest): Promise<TriggerSceneEmoteResponse> {
+  const id = ++requestId
+  const src = body.src?.trim()
+  if (src) {
+    console.log('[sceneWorker]', `triggerSceneEmote RPC → ${src}`)
+    workerLog('log', `[sceneWorker] triggerSceneEmote RPC → ${src}`)
+  }
+  return new Promise((resolve) => {
+    pendingTriggerSceneEmote.set(id, resolve)
+    ctx.postMessage({ type: 'trigger-scene-emote', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcOpenExternalUrl(body: OpenExternalUrlRequest): Promise<OpenExternalUrlResponse> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingOpenExternalUrl.set(id, resolve)
+    ctx.postMessage({ type: 'open-external-url', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcCommsAdapter(body: CommsAdapterRequest): Promise<{ success: boolean }> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingCommsAdapter.set(id, resolve)
+    ctx.postMessage({ type: 'set-comms-adapter', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
+function mergeSendBinaryResponse(body: SendBinaryResponse): SendBinaryResponse {
+  if (!pendingInboundBinaries.length) return body
+  return { data: [...body.data, ...pendingInboundBinaries.splice(0)] }
+}
+
+function rpcSendBinary(body: SendBinaryRequest): Promise<SendBinaryResponse> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingSendBinary.set(id, (response) => resolve(mergeSendBinaryResponse(response)))
+    ctx.postMessage({ type: 'comms-send-binary', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcGetUserData(): Promise<UserDataResponse> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingUserData.set(id, resolve)
+    ctx.postMessage({ type: 'get-user-data', id } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcGetRealm(): Promise<RealmResponse> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingRealm.set(id, resolve)
+    ctx.postMessage({ type: 'get-realm', id } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcSubscribeTopic(body: CommsTopicRequest): Promise<Record<string, never>> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingSubscribeTopic.set(id, resolve)
+    ctx.postMessage({ type: 'comms-subscribe-topic', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcUnsubscribeTopic(body: CommsTopicRequest): Promise<Record<string, never>> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingUnsubscribeTopic.set(id, resolve)
+    ctx.postMessage({ type: 'comms-unsubscribe-topic', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcPublishData(body: CommsPublishDataRequest): Promise<Record<string, never>> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingPublishData.set(id, resolve)
+    ctx.postMessage({ type: 'comms-publish-data', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcConsumeMessages(body: CommsTopicRequest): Promise<ConsumeMessagesResponse> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingConsumeMessages.set(id, resolve)
+    ctx.postMessage({ type: 'comms-consume-messages', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcGetActiveVideoStreams(): Promise<ActiveVideoStreamsResponse> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingActiveVideoStreams.set(id, resolve)
+    ctx.postMessage({ type: 'comms-get-active-video-streams', id } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcCommsSend(body: { message: string }): Promise<Record<string, never>> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingCommsSend.set(id, resolve)
+    ctx.postMessage({ type: 'comms-send', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcSignedFetch(body: SignedFetchRequest): Promise<SignedFetchResponse> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingSignedFetch.set(id, resolve)
+    ctx.postMessage({ type: 'signed-fetch', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcSignedFetchGetHeaders(body: SignedFetchRequest): Promise<SignedFetchGetHeadersResponse> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingSignedFetchGetHeaders.set(id, resolve)
+    ctx.postMessage({ type: 'signed-fetch-get-headers', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
+async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): Promise<void> {
+  sceneRunning = true
+  lastTick = performance.now()
+  sceneTickIntervalMs = SCENE_TICK_BASE_INTERVAL_MS
+
+  const sceneUpdate = exports.onUpdate
+  sceneOnUpdate = sceneUpdate ?? null
+  workerLog(
+    'log',
+    `[sceneWorker] scene loop started — onUpdate=${sceneUpdate ? 'present' : 'absent'}, interval=${SCENE_TICK_BASE_INTERVAL_MS}ms cooperative`
+  )
+
+  let heartbeatPass = 0
+  setInterval(() => {
+    if (!sceneRunning) return
+    heartbeatPass++
+    const now = performance.now()
+    const sinceLast = now - lastHeartbeatAt
+    if (sinceLast > 10_000) {
+      workerLog(
+        'error',
+        `[sceneWorker] heartbeat stalled ${Math.round(sinceLast)}ms — worker event loop blocked ` +
+          `(sceneUpdateInFlight=${sceneUpdateInFlight} pointerDeliveryInFlight=${pointerDeliveryInFlight})`
+      )
+    }
+    if (sceneUpdateInFlight && sceneUpdateStartedAt > 0 && now - sceneUpdateStartedAt > 8_000) {
+      workerLog(
+        'error',
+        `[sceneWorker] scene onUpdate running >8s — pointer inject/deliver messages will queue behind it`
+      )
+    }
+    lastHeartbeatAt = now
+    workerLog(
+      'log',
+      `[sceneWorker] heartbeat — tick=${heartbeatPass} sceneUpdateInFlight=${sceneUpdateInFlight} pointerDeliveryInFlight=${pointerDeliveryInFlight} pendingCrdt=${pendingCrdt.size} sceneEngine=${sceneEngine ? 'ok' : 'missing'} sceneTickIntervalMs=${sceneTickIntervalMs}`
+    )
+  }, 5000)
+
+  const scheduleSceneUpdate = (dt: number): void => {
+    if (!sceneUpdate || sceneUpdateInFlight) return
+    lastFullSceneUpdateAt = performance.now()
+    setTimeout(() => {
+      if (
+        sceneTicksPaused ||
+        pendingInjectPointer ||
+        queuedPointerDeliver ||
+        pointerDeliveryInFlight
+      ) {
+        return
+      }
+      sceneUpdateInFlight = true
+      sceneUpdateStartedAt = performance.now()
+      armSceneUpdateAbortTimer()
+      void Promise.resolve(sceneUpdate(dt))
+        .catch((err) => {
+          workerLog(
+            'error',
+            `[sceneWorker] scene tick failed — ${err instanceof Error ? err.message : String(err)}`
+          )
+        })
+        .finally(() => {
+          clearSceneUpdateAbortTimer()
+          sceneUpdateInFlight = false
+          resumeSceneTicksAfterPointer()
+          drainQueuedPointerDeliver()
+        })
+    }, 0)
+  }
+
+  const scheduleEngineTick = (dt: number): void => {
+    if (!sceneEngine || sceneUpdateInFlight || pointerDeliveryInFlight || engineTickInFlight) return
+    if (sceneTicksPaused || pendingInjectPointer || queuedPointerDeliver) return
+    engineTickInFlight = true
+    setTimeout(() => {
+      engineTickInFlight = false
+      if (!sceneEngine || sceneTicksPaused || pendingInjectPointer || pointerDeliveryInFlight) return
+      lastEngineTickAt = performance.now()
+      try {
+        sceneEngine.update(dt)
+      } catch (err) {
+        workerLog(
+          'error',
+          `[sceneWorker] engine tick failed — ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+    }, 0)
+  }
+
+  const runCooperativeTick = (): void => {
+    if (!sceneRunning) return
+    const now = performance.now()
+    const dt = Math.min((now - lastTick) / 1000, 0.1)
+    lastTick = now
+
+    const pointerPending =
+      sceneTicksPaused || pendingInjectPointer || queuedPointerDeliver || pointerDeliveryInFlight
+
+    if (
+      sceneEngine &&
+      !sceneUpdateInFlight &&
+      !pointerPending &&
+      !engineTickInFlight &&
+      now - lastEngineTickAt >= SCENE_TICK_BASE_INTERVAL_MS
+    ) {
+      scheduleEngineTick(dt)
+    }
+
+    if (
+      ENABLE_FULL_SCENE_ONUPDATE &&
+      sceneUpdate &&
+      !sceneTicksPaused &&
+      !sceneUpdateInFlight &&
+      !pointerDeliveryInFlight &&
+      !engineTickInFlight &&
+      !queuedPointerDeliver &&
+      !pendingInjectPointer &&
+      now - lastFullSceneUpdateAt >= fullSceneOnUpdateIntervalMs
+    ) {
+      scheduleSceneUpdate(dt)
+    }
+  }
+
+  if (sceneTickTimer) clearInterval(sceneTickTimer)
+  sceneTickTimer = setInterval(runCooperativeTick, SCENE_TICK_BASE_INTERVAL_MS)
+  runCooperativeTick()
+}
+
+async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
+  if (msg.type === 'scene-play-ready') {
+    fullSceneOnUpdateIntervalMs = FULL_SCENE_ONUPDATE_INTERVAL_PLAY_MS
+    sceneUpdateAbortMs = SCENE_UPDATE_ABORT_PLAY_MS
+    sceneTickIntervalMs = SCENE_TICK_BASE_INTERVAL_MS
+    workerLog(
+      'log',
+      `[sceneWorker] scene-play-ready — onUpdate interval ${fullSceneOnUpdateIntervalMs}ms, abort ${sceneUpdateAbortMs}ms`
+    )
+    return
+  }
+  if (msg.type === 'crdt-response') {
+    pendingCrdt.get(msg.id)?.(msg.data)
+    pendingCrdt.delete(msg.id)
+    return
+  }
+  if (msg.type === 'crdt-get-state-response') {
+    pendingGetState.get(msg.id)?.({ hasEntities: msg.hasEntities, data: msg.data })
+    pendingGetState.delete(msg.id)
+    return
+  }
+  if (msg.type === 'move-player-to-response') {
+    pendingMove.get(msg.id)?.(msg.body)
+    pendingMove.delete(msg.id)
+    return
+  }
+  if (msg.type === 'trigger-emote-response') {
+    pendingTriggerEmote.get(msg.id)?.(msg.body)
+    pendingTriggerEmote.delete(msg.id)
+    return
+  }
+  if (msg.type === 'trigger-scene-emote-response') {
+    pendingTriggerSceneEmote.get(msg.id)?.(msg.body)
+    pendingTriggerSceneEmote.delete(msg.id)
+    return
+  }
+  if (msg.type === 'open-external-url-response') {
+    pendingOpenExternalUrl.get(msg.id)?.(msg.body)
+    pendingOpenExternalUrl.delete(msg.id)
+    return
+  }
+  if (msg.type === 'set-comms-adapter-response') {
+    pendingCommsAdapter.get(msg.id)?.(msg.body)
+    pendingCommsAdapter.delete(msg.id)
+    return
+  }
+  if (msg.type === 'comms-send-binary-response') {
+    pendingSendBinary.get(msg.id)?.(msg.body)
+    pendingSendBinary.delete(msg.id)
+    return
+  }
+  if (msg.type === 'get-user-data-response') {
+    pendingUserData.get(msg.id)?.(msg.body)
+    pendingUserData.delete(msg.id)
+    return
+  }
+  if (msg.type === 'get-realm-response') {
+    pendingRealm.get(msg.id)?.(msg.body)
+    pendingRealm.delete(msg.id)
+    return
+  }
+  if (msg.type === 'comms-subscribe-topic-response') {
+    pendingSubscribeTopic.get(msg.id)?.(msg.body)
+    pendingSubscribeTopic.delete(msg.id)
+    return
+  }
+  if (msg.type === 'comms-unsubscribe-topic-response') {
+    pendingUnsubscribeTopic.get(msg.id)?.(msg.body)
+    pendingUnsubscribeTopic.delete(msg.id)
+    return
+  }
+  if (msg.type === 'comms-publish-data-response') {
+    pendingPublishData.get(msg.id)?.(msg.body)
+    pendingPublishData.delete(msg.id)
+    return
+  }
+  if (msg.type === 'comms-consume-messages-response') {
+    pendingConsumeMessages.get(msg.id)?.(msg.body)
+    pendingConsumeMessages.delete(msg.id)
+    return
+  }
+  if (msg.type === 'comms-get-active-video-streams-response') {
+    pendingActiveVideoStreams.get(msg.id)?.(msg.body)
+    pendingActiveVideoStreams.delete(msg.id)
+    return
+  }
+  if (msg.type === 'signed-fetch-response') {
+    pendingSignedFetch.get(msg.id)?.(msg.body)
+    pendingSignedFetch.delete(msg.id)
+    return
+  }
+  if (msg.type === 'signed-fetch-get-headers-response') {
+    pendingSignedFetchGetHeaders.get(msg.id)?.(msg.body)
+    pendingSignedFetchGetHeaders.delete(msg.id)
+    return
+  }
+  if (msg.type === 'comms-send-response') {
+    pendingCommsSend.get(msg.id)?.(msg.body)
+    pendingCommsSend.delete(msg.id)
+    return
+  }
+  if (msg.type === 'comms-receive-binary') {
+    pendingInboundBinaries.push(
+      encodeCommsBinaryMessage(msg.sender, CommsWireMessageType.CRDT, msg.data)
+    )
+    return
+  }
+  if (msg.type === 'engine-api-enqueue') {
+    engineApiEvents?.enqueueMany(msg.events)
+    return
+  }
+
+  if (msg.type !== 'boot') return
+
+  try {
+    sceneOnStartComplete = false
+    patchWorkerConsole()
+    workerLog('log', 'scene worker boot — console forwarding active')
+    const res = await fetch(msg.scene.scriptUrl)
+    if (!res.ok) throw new Error(`Script fetch ${res.status}`)
+    const code = await res.text()
+
+    engineApiEvents = createEngineApiEventState({
+      onSubscribe: (eventId) => ctx.postMessage({ type: 'engine-api-subscribe', eventId } satisfies SceneWorkerOutbound),
+      onUnsubscribe: (eventId) =>
+        ctx.postMessage({ type: 'engine-api-unsubscribe', eventId } satisfies SceneWorkerOutbound)
+    })
+
+    const { requireMap } = createSystemStubs(msg.scene, {
+      crdtSendToRenderer: rpcCrdt,
+      crdtGetState: rpcGetState,
+      movePlayerTo: rpcMovePlayerTo,
+      triggerEmote: rpcTriggerEmote,
+      triggerSceneEmote: rpcTriggerSceneEmote,
+      openExternalUrl: rpcOpenExternalUrl,
+      commsSend: rpcCommsSend,
+      comms: {
+        setCommunicationsAdapter: rpcCommsAdapter,
+        send: rpcCommsSend,
+        sendBinary: rpcSendBinary,
+        getUserData: rpcGetUserData,
+        getRealm: rpcGetRealm,
+        subscribeToTopic: rpcSubscribeTopic,
+        unsubscribeFromTopic: rpcUnsubscribeTopic,
+        publishData: rpcPublishData,
+        consumeMessages: rpcConsumeMessages,
+        getActiveVideoStreams: rpcGetActiveVideoStreams
+      },
+      signedFetch: rpcSignedFetch,
+      signedFetchGetHeaders: rpcSignedFetchGetHeaders
+    }, engineApiEvents)
+
+    // Yield so priority inject/deliver messages posted during stub setup can run before bundle eval.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+    const exports = evaluateSceneBundle(code, requireMap, stripBundledPointerEventColliderChecker)
+    sceneEngine = resolveSceneEngine(exports)
+    if (sceneEngine) {
+      workerLog('log', '[sceneWorker] sceneEngine bound after bundle eval')
+    } else {
+      workerLog('warn', '[sceneWorker] sceneEngine not found after bundle eval — inject will queue until onStart')
+    }
+    // Do not drain inject before onStart — executePointerInjection runs sceneEngine.update(0)
+    // via schedulePointerDeliveryComplete and can block the boot handler before onStart (Rick Roll).
+    workerLog('log', '[sceneWorker] boot — post-eval inject drain skipped (deferred until after onStart)')
+    workerLog('log', '[sceneWorker] boot — pre-onStart yield begin')
+    // Yield so priority inject/deliver messages posted during bundle eval can run before onStart.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    workerLog('log', '[sceneWorker] boot — pre-onStart yield done')
+    // Do not bind renderer inbound before onStart — Rick Roll / SDK7 worlds expose
+    // rendererTransport via lazy getters that stall boot; addTransport assigns onmessage in onStart.
+    workerLog('log', '[sceneWorker] onStart — begin')
+    const onStartWatchdog = setTimeout(() => {
+      workerLog(
+        'error',
+        '[sceneWorker] onStart exceeded 45s — likely stuck awaiting renderer RPC (crdt-get-state / crdt-send)'
+      )
+    }, 45_000)
+    try {
+      if (exports.onStart) await exports.onStart()
+    } finally {
+      clearTimeout(onStartWatchdog)
+    }
+    sceneOnStartComplete = true
+    workerLog('log', '[sceneWorker] onStart — complete')
+    if (!sceneEngine) {
+      sceneEngine = resolveSceneEngine(exports)
+    }
+    drainPendingInjectPointer()
+    if (!sceneEngine) {
+      const message =
+        '[sceneWorker] FATAL — sceneEngine null after onStart; pointer inject and engine.update(0) unavailable'
+      workerLog('error', message)
+      ctx.postMessage({ type: 'error', message } satisfies SceneWorkerOutbound)
+      return
+    }
+    workerLog('log', '[sceneWorker] sceneEngine ok after onStart')
+    if (sceneEngine) {
+      try {
+        installPointerEventColliderChecker(sceneEngine)
+        workerLog('log', '[sceneWorker] pointerEventColliderChecker installed (post-onStart)')
+      } catch (err) {
+        workerLog(
+          'warn',
+          `[sceneWorker] pointerEventColliderChecker install failed — ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+    }
+    patchWorkerConsole()
+    bindRendererInbound(exports, sceneEngine, {
+      allowThunks: true,
+      allowGetters: true,
+      allowGraphSearch: true
+    })
+    // Flush composite / onStart CRDT to the renderer before hydration reads the projection.
+    try {
+      sceneEngine.update(0)
+      workerLog('log', '[sceneWorker] post-onStart engine.update(0) — composite CRDT flushed to renderer')
+    } catch (err) {
+      workerLog(
+        'error',
+        `[sceneWorker] post-onStart engine.update failed — ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+    if (exports.onUpdate) {
+      try {
+        await Promise.resolve(exports.onUpdate(0))
+        workerLog('log', '[sceneWorker] post-onStart onUpdate(0) — composite spawn kickstarted')
+      } catch (err) {
+        workerLog(
+          'error',
+          `[sceneWorker] post-onStart onUpdate failed — ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+    }
+    workerLog('log', 'scene worker ready — onStart complete')
+    ctx.postMessage({ type: 'ready' } satisfies SceneWorkerOutbound)
+    startSceneLoop(exports).catch((err) =>
+      workerLog(
+        'error',
+        `[sceneWorker] scene loop failed to start — ${err instanceof Error ? err.message : String(err)}`
+      )
+    )
+  } catch (err) {
+    sceneRunning = false
+    ctx.postMessage({
+      type: 'error',
+      message: err instanceof Error ? err.message : String(err)
+    } satisfies SceneWorkerOutbound)
+  }
+}
+
+/** High-frequency RPC responses are excluded from the arrival log to avoid flooding. */
+const QUIET_MESSAGE_TYPES = new Set<string>(['crdt-response', 'crdt-get-state-response'])
+let workerMessageCount = 0
+
+/** Unconditional arrival proof — raw postMessage, never patched console or async dispatch. */
+function logWorkerMessageArrival(type: string, count: number): void {
+  if (QUIET_MESSAGE_TYPES.has(type)) return
+  try {
+    ctx.postMessage({
+      type: 'log',
+      message: `[debug] [sceneWorker] onmessage #${count} type=${type}`
+    } satisfies SceneWorkerOutbound)
+  } catch {
+    /* worker shutting down */
+  }
+}
+
+/**
+ * Single source of truth for inbound messages. Runs the real handler inside a try/catch that
+ * forwards thrown errors to main instead of dying silently.
+ */
+async function dispatchMainToWorkerMessage(msg: MainToWorker): Promise<void> {
+  const type = (msg as { type?: string })?.type ?? 'undefined'
+  try {
+    await handleMainToWorkerMessage(msg)
+  } catch (err) {
+    ctx.postMessage({
+      type: 'error',
+      message: `[sceneWorker] message handler threw for type=${type} — ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    } satisfies SceneWorkerOutbound)
+  }
+}
+
+function dispatchPriorityMessage(msg: SceneWorkerPriorityMessage): void {
+  workerMessageCount++
+  logWorkerMessageArrival(msg.type, workerMessageCount)
+
+  if (msg.type === 'pause-scene-ticks') {
+    sceneTicksPaused = msg.paused !== false
+    if (sceneTicksPaused) {
+      preemptForPointerDelivery()
+    } else {
+      resumeSceneTicksAfterPointer()
+    }
+    workerLog('log', `[sceneWorker] scene ticks ${sceneTicksPaused ? 'paused' : 'resumed'}`)
+    return
+  }
+  if (msg.type === 'inject-pointer-click') {
+    try {
+      executePointerInjection(msg.body as InjectPointerClickBody)
+    } catch (err) {
+      workerLog(
+        'error',
+        `[sceneWorker] inject-pointer-click handler threw — ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+      postPointerDeliverDone('inject-pointer-click')
+    }
+    return
+  }
+  if (msg.type === 'pointer-crdt-deliver') {
+    try {
+      deliverPointerCrdtInbound(msg.data)
+    } catch (err) {
+      workerLog(
+        'error',
+        `[sceneWorker] pointer-crdt-deliver handler threw — ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+      postPointerDeliverDone('pointer-crdt-deliver')
+    }
+    return
+  }
+}
+
+bindSceneWorkerPriorityDispatch(dispatchPriorityMessage)
+
+// Non-priority messages (boot, crdt-response, RPC responses, …).
+ctx.addEventListener(
+  'message',
+  (ev: MessageEvent<MainToWorker>) => {
+    void dispatchMainToWorkerMessage(ev.data)
+  },
+  { capture: false }
+)

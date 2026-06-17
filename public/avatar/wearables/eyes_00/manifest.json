@@ -1,0 +1,40 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:eyes_00",
+  "data": {
+    "category": "eyes",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "face",
+      "eyes",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "M_Eyes_00.png",
+        "contents": [
+          {
+            "key": "M_Eyes_00.png",
+            "url": "M_Eyes_00.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "M_Eyes_00.png",
+        "contents": [
+          {
+            "key": "M_Eyes_00.png",
+            "url": "M_Eyes_00.png"
+          }
+        ]
+      }
+    ]
+  }
+}

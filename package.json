@@ -1,0 +1,31 @@
+{
+  "name": "threejs-dcl-client",
+  "version": "0.1.148",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "prebuild": "node scripts/sync-dev-progress.mjs",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "bundle:wearables": "node scripts/bundle-base-wearables.mjs",
+    "bump": "npm version patch --no-git-tag-version"
+  },
+  "dependencies": {
+    "@dcl/crypto": "^3.6.0",
+    "@dcl/ecs": "^7.24.1",
+    "@dcl/protocol": "1.0.0-27222196396.commit-748bafb",
+    "@protobufjs/utf8": "^1.1.1",
+    "decentraland-crypto-fetch": "^2.0.1",
+    "hls.js": "^1.6.2",
+    "livekit-client": "^2.19.2",
+    "protobufjs": "^8.6.3",
+    "three": "^0.175.0",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.175.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.2.0"
+  }
+}

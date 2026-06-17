@@ -1,0 +1,56 @@
+name: Task claim
+description: Claim or propose a task from TASKS.yaml
+title: "[task] "
+labels: ["task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Browse [docs/TASKS.yaml](https://github.com/lastraum/ThreejsClient/blob/redo/threejs-projection-arch/docs/TASKS.yaml).
+        To claim: set `owner` + `status: in_progress` in a PR, or note intent here for maintainer assignment.
+
+  - type: input
+    id: task-id
+    attributes:
+      label: Task id
+      description: Slug from TASKS.yaml (e.g. trigger-area-volume)
+      placeholder: trigger-area-volume
+    validations:
+      required: true
+
+  - type: dropdown
+    id: intent
+    attributes:
+      label: Intent
+      options:
+        - Claim (I will open a PR)
+        - Propose new task
+        - Question / blocked
+    validations:
+      required: true
+
+  - type: input
+    id: github-handle
+    attributes:
+      label: GitHub handle
+      placeholder: your-handle
+    validations:
+      required: true
+
+  - type: textarea
+    id: plan
+    attributes:
+      label: Plan
+      description: Brief approach, test scenes, estimated complexity
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Boundaries acknowledged
+      options:
+        - label: I read docs/AGENTS.md frozen boundaries (shim, CRDT, no pub/sub, comms rule)
+          required: true
+        - label: Task is not marked maintainer_only (or I coordinated with maintainer)
+          required: false

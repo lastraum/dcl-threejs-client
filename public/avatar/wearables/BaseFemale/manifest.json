@@ -1,0 +1,45 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:BaseFemale",
+  "data": {
+    "category": "body_shape",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "body",
+      "male",
+      "man",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "BaseFemale.glb",
+        "contents": [
+          {
+            "key": "BaseFemale.glb",
+            "url": "BaseFemale.glb"
+          },
+          {
+            "key": "Avatar_FemaleSkinBase.png",
+            "url": "Avatar_FemaleSkinBase.png"
+          },
+          {
+            "key": "F_Eyebrows_00.png",
+            "url": "F_Eyebrows_00.png"
+          },
+          {
+            "key": "F_Eyes_00.png",
+            "url": "F_Eyes_00.png"
+          },
+          {
+            "key": "F_Mouth_00.png",
+            "url": "F_Mouth_00.png"
+          }
+        ]
+      }
+    ]
+  }
+}

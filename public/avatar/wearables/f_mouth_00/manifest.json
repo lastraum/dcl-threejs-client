@@ -1,0 +1,40 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:f_mouth_00",
+  "data": {
+    "category": "mouth",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "face",
+      "mouth",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "F_Mouth_00.png",
+        "contents": [
+          {
+            "key": "F_Mouth_00.png",
+            "url": "F_Mouth_00.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "F_Mouth_00.png",
+        "contents": [
+          {
+            "key": "F_Mouth_00.png",
+            "url": "F_Mouth_00.png"
+          }
+        ]
+      }
+    ]
+  }
+}

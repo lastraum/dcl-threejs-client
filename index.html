@@ -1610,6 +1610,7 @@
         position: relative;
         z-index: 1;
         width: min(920px, 100%);
+        height: min(86vh, 820px);
         max-height: min(86vh, 820px);
         display: flex;
         flex-direction: column;
@@ -1627,6 +1628,7 @@
         gap: 12px;
         padding: 16px 18px 10px;
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        flex-shrink: 0;
       }
       .dev-progress__title {
         margin: 0;
@@ -1695,6 +1697,7 @@
         display: flex;
         gap: 6px;
         padding: 0 18px 10px;
+        flex-shrink: 0;
       }
       .dev-progress__tab {
         border: 1px solid rgba(255, 255, 255, 0.12);
@@ -1718,6 +1721,7 @@
         flex-wrap: wrap;
         gap: 8px;
         padding: 0 18px 12px;
+        flex-shrink: 0;
       }
       .dev-progress__chip {
         font-size: 11px;
@@ -1747,7 +1751,8 @@
         padding: 16px 8px !important;
       }
       .dev-progress__body {
-        flex: 1;
+        flex: 1 1 auto;
+        min-height: 0;
         overflow: auto;
         padding: 0 18px 12px;
       }

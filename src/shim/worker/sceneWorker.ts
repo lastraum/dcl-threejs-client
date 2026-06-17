@@ -95,6 +95,10 @@ let engineTickInFlight = false
 let sceneOnUpdate: ((dt: number) => unknown) | null = null
 /** False until exports.onStart resolves — sceneEngine.update during boot can stall Rick Roll worlds. */
 let sceneOnStartComplete = false
+/** True from boot message until onStart completes — priority inject/deliver is queued. */
+let sceneBootInProgress = false
+/** Priority lane messages received while sceneBootInProgress — drained after onStart. */
+const pendingBootPriority: SceneWorkerPriorityMessage[] = []
 /** Coalesce inject + pointer-crdt-deliver into one post-apply engine tick before ack. */
 let pointerDeliveryCompleteTimer: ReturnType<typeof setTimeout> | null = null
 /** Genesis composite spawn runs in exports.onUpdate — must stay on (engine.update alone does not load composite). */
@@ -148,6 +152,17 @@ function interruptPendingCrdtRoundTrips(): void {
     'log',
     `[sceneWorker] interrupted ${ids.length} pending crdt round-trip(s) for pointer priority`
   )
+}
+
+/** Unblock boot when eval microtasks are stuck awaiting crdt-get-state from main. */
+function interruptPendingGetStateRoundTrips(): void {
+  if (!pendingGetState.size) return
+  const ids = [...pendingGetState.keys()]
+  for (const id of ids) {
+    pendingGetState.get(id)?.({ hasEntities: false, data: [] })
+    pendingGetState.delete(id)
+  }
+  workerLog('log', `[sceneWorker] interrupted ${ids.length} pending crdt-get-state round-trip(s)`)
 }
 
 function drainQueuedPointerDeliver(): void {
@@ -541,6 +556,9 @@ function rpcGetState(): Promise<{ hasEntities: boolean; data: Uint8Array[] }> {
   const id = ++requestId
   return new Promise((resolve) => {
     pendingGetState.set(id, resolve)
+    if (sceneBootInProgress) {
+      workerLog('log', `[sceneWorker] crdt-get-state posted id=${id} (boot)`)
+    }
     ctx.postMessage({ type: 'crdt-get-state', id } satisfies SceneWorkerOutbound)
   })
 }
@@ -812,6 +830,81 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
   runCooperativeTick()
 }
 
+/** onStart + post-onStart setup — scheduled as a macrotask so eval microtasks can finish first. */
+async function completeSceneBoot(exports: import('../system/createSystemStubs').SceneBundleExports): Promise<void> {
+  workerLog('log', '[sceneWorker] onStart — begin')
+  const onStartWatchdog = setTimeout(() => {
+    workerLog(
+      'error',
+      '[sceneWorker] onStart exceeded 45s — likely stuck awaiting renderer RPC (crdt-get-state / crdt-send)'
+    )
+  }, 45_000)
+  try {
+    if (exports.onStart) await exports.onStart()
+  } finally {
+    clearTimeout(onStartWatchdog)
+  }
+  sceneOnStartComplete = true
+  sceneBootInProgress = false
+  workerLog('log', '[sceneWorker] onStart — complete')
+  drainPendingBootPriority()
+  if (!sceneEngine) {
+    sceneEngine = resolveSceneEngine(exports)
+  }
+  drainPendingInjectPointer()
+  if (!sceneEngine) {
+    const message =
+      '[sceneWorker] FATAL — sceneEngine null after onStart; pointer inject and engine.update(0) unavailable'
+    workerLog('error', message)
+    ctx.postMessage({ type: 'error', message } satisfies SceneWorkerOutbound)
+    return
+  }
+  workerLog('log', '[sceneWorker] sceneEngine ok after onStart')
+  try {
+    installPointerEventColliderChecker(sceneEngine)
+    workerLog('log', '[sceneWorker] pointerEventColliderChecker installed (post-onStart)')
+  } catch (err) {
+    workerLog(
+      'warn',
+      `[sceneWorker] pointerEventColliderChecker install failed — ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+  patchWorkerConsole()
+  bindRendererInbound(exports, sceneEngine, {
+    allowThunks: true,
+    allowGetters: true,
+    allowGraphSearch: true
+  })
+  try {
+    sceneEngine.update(0)
+    workerLog('log', '[sceneWorker] post-onStart engine.update(0) — composite CRDT flushed to renderer')
+  } catch (err) {
+    workerLog(
+      'error',
+      `[sceneWorker] post-onStart engine.update failed — ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+  if (exports.onUpdate) {
+    try {
+      await Promise.resolve(exports.onUpdate(0))
+      workerLog('log', '[sceneWorker] post-onStart onUpdate(0) — composite spawn kickstarted')
+    } catch (err) {
+      workerLog(
+        'error',
+        `[sceneWorker] post-onStart onUpdate failed — ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+  }
+  workerLog('log', 'scene worker ready — onStart complete')
+  ctx.postMessage({ type: 'ready' } satisfies SceneWorkerOutbound)
+  startSceneLoop(exports).catch((err) =>
+    workerLog(
+      'error',
+      `[sceneWorker] scene loop failed to start — ${err instanceof Error ? err.message : String(err)}`
+    )
+  )
+}
+
 async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   if (msg.type === 'scene-play-ready') {
     fullSceneOnUpdateIntervalMs = FULL_SCENE_ONUPDATE_INTERVAL_PLAY_MS
@@ -829,6 +922,12 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     return
   }
   if (msg.type === 'crdt-get-state-response') {
+    if (sceneBootInProgress) {
+      workerLog(
+        'log',
+        `[sceneWorker] crdt-get-state-response id=${msg.id} chunks=${msg.data?.length ?? 0} hasEntities=${msg.hasEntities}`
+      )
+    }
     pendingGetState.get(msg.id)?.({ hasEntities: msg.hasEntities, data: msg.data })
     pendingGetState.delete(msg.id)
     return
@@ -928,6 +1027,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
 
   try {
     sceneOnStartComplete = false
+    sceneBootInProgress = true
+    pendingBootPriority.length = 0
     patchWorkerConsole()
     workerLog('log', 'scene worker boot — console forwarding active')
     const res = await fetch(msg.scene.scriptUrl)
@@ -977,85 +1078,32 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Do not drain inject before onStart — executePointerInjection runs sceneEngine.update(0)
     // via schedulePointerDeliveryComplete and can block the boot handler before onStart (Rick Roll).
     workerLog('log', '[sceneWorker] boot — post-eval inject drain skipped (deferred until after onStart)')
-    workerLog('log', '[sceneWorker] boot — pre-onStart yield begin')
-    // Yield so priority inject/deliver messages posted during bundle eval can run before onStart.
-    await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    workerLog('log', '[sceneWorker] boot — pre-onStart yield done')
-    // Do not bind renderer inbound before onStart — Rick Roll / SDK7 worlds expose
-    // rendererTransport via lazy getters that stall boot; addTransport assigns onmessage in onStart.
-    workerLog('log', '[sceneWorker] onStart — begin')
-    const onStartWatchdog = setTimeout(() => {
+    // Invoke onStart synchronously — a post-eval setTimeout(0) never fired when bundle eval left
+    // microtasks stuck awaiting crdt-get-state. Boot handler returns right after onStart is invoked
+    // so main can answer get-state while onStart awaits.
+    workerLog('log', '[sceneWorker] boot — invoking onStart')
+    const bootWatchdog = setTimeout(() => {
+      if (sceneOnStartComplete) return
       workerLog(
-        'error',
-        '[sceneWorker] onStart exceeded 45s — likely stuck awaiting renderer RPC (crdt-get-state / crdt-send)'
+        'warn',
+        `[sceneWorker] boot watchdog 8s — onStart incomplete; pendingGetState=${pendingGetState.size} pendingCrdt=${pendingCrdt.size}`
       )
-    }, 45_000)
-    try {
-      if (exports.onStart) await exports.onStart()
-    } finally {
-      clearTimeout(onStartWatchdog)
-    }
-    sceneOnStartComplete = true
-    workerLog('log', '[sceneWorker] onStart — complete')
-    if (!sceneEngine) {
-      sceneEngine = resolveSceneEngine(exports)
-    }
-    drainPendingInjectPointer()
-    if (!sceneEngine) {
-      const message =
-        '[sceneWorker] FATAL — sceneEngine null after onStart; pointer inject and engine.update(0) unavailable'
-      workerLog('error', message)
-      ctx.postMessage({ type: 'error', message } satisfies SceneWorkerOutbound)
-      return
-    }
-    workerLog('log', '[sceneWorker] sceneEngine ok after onStart')
-    if (sceneEngine) {
-      try {
-        installPointerEventColliderChecker(sceneEngine)
-        workerLog('log', '[sceneWorker] pointerEventColliderChecker installed (post-onStart)')
-      } catch (err) {
-        workerLog(
-          'warn',
-          `[sceneWorker] pointerEventColliderChecker install failed — ${err instanceof Error ? err.message : String(err)}`
-        )
-      }
-    }
-    patchWorkerConsole()
-    bindRendererInbound(exports, sceneEngine, {
-      allowThunks: true,
-      allowGetters: true,
-      allowGraphSearch: true
-    })
-    // Flush composite / onStart CRDT to the renderer before hydration reads the projection.
-    try {
-      sceneEngine.update(0)
-      workerLog('log', '[sceneWorker] post-onStart engine.update(0) — composite CRDT flushed to renderer')
-    } catch (err) {
-      workerLog(
-        'error',
-        `[sceneWorker] post-onStart engine.update failed — ${err instanceof Error ? err.message : String(err)}`
-      )
-    }
-    if (exports.onUpdate) {
-      try {
-        await Promise.resolve(exports.onUpdate(0))
-        workerLog('log', '[sceneWorker] post-onStart onUpdate(0) — composite spawn kickstarted')
-      } catch (err) {
-        workerLog(
-          'error',
-          `[sceneWorker] post-onStart onUpdate failed — ${err instanceof Error ? err.message : String(err)}`
-        )
-      }
-    }
-    workerLog('log', 'scene worker ready — onStart complete')
-    ctx.postMessage({ type: 'ready' } satisfies SceneWorkerOutbound)
-    startSceneLoop(exports).catch((err) =>
-      workerLog(
-        'error',
-        `[sceneWorker] scene loop failed to start — ${err instanceof Error ? err.message : String(err)}`
-      )
-    )
+      if (pendingGetState.size) interruptPendingGetStateRoundTrips()
+      if (pendingCrdt.size) interruptPendingCrdtRoundTrips()
+    }, 8_000)
+    void completeSceneBoot(exports)
+      .catch((err) => {
+        sceneBootInProgress = false
+        sceneRunning = false
+        ctx.postMessage({
+          type: 'error',
+          message: err instanceof Error ? err.message : String(err)
+        } satisfies SceneWorkerOutbound)
+      })
+      .finally(() => clearTimeout(bootWatchdog))
+    return
   } catch (err) {
+    sceneBootInProgress = false
     sceneRunning = false
     ctx.postMessage({
       type: 'error',
@@ -1099,7 +1147,7 @@ async function dispatchMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   }
 }
 
-function dispatchPriorityMessage(msg: SceneWorkerPriorityMessage): void {
+function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
   workerMessageCount++
   logWorkerMessageArrival(msg.type, workerMessageCount)
 
@@ -1141,6 +1189,21 @@ function dispatchPriorityMessage(msg: SceneWorkerPriorityMessage): void {
     }
     return
   }
+}
+
+function dispatchPriorityMessage(msg: SceneWorkerPriorityMessage): void {
+  if (sceneBootInProgress && !sceneOnStartComplete) {
+    pendingBootPriority.push(msg)
+    return
+  }
+  dispatchPriorityMessageCore(msg)
+}
+
+function drainPendingBootPriority(): void {
+  if (!pendingBootPriority.length) return
+  const batch = pendingBootPriority.splice(0)
+  workerLog('log', `[sceneWorker] draining ${batch.length} queued priority message(s) after onStart`)
+  for (const msg of batch) dispatchPriorityMessageCore(msg)
 }
 
 bindSceneWorkerPriorityDispatch(dispatchPriorityMessage)

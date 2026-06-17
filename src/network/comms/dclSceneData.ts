@@ -1,4 +1,4 @@
-import protobuf from 'protobufjs'
+import protobuf from 'protobufjs/light'
 import protoSource from './dclSceneCommsProto.proto?raw'
 
 let rootCache: protobuf.Root | null = null

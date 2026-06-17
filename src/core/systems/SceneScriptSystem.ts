@@ -369,8 +369,27 @@ export class SceneScriptSystem {
       }
     }
 
+    const BOOT_TIMEOUT_MS = 60_000
     await new Promise<void>((resolve, reject) => {
       if (!this.worker) return reject(new Error('Worker missing'))
+
+      let settled = false
+      const finish = (fn: () => void) => {
+        if (settled) return
+        settled = true
+        clearTimeout(bootTimer)
+        fn()
+      }
+
+      const bootTimer = window.setTimeout(() => {
+        finish(() =>
+          reject(
+            new Error(
+              'Scene worker boot timed out (60s) — check console for [sceneWorker] onStart / crdt-get-state logs; hard-refresh if the worker bundle is stale'
+            )
+          )
+        )
+      }, BOOT_TIMEOUT_MS)
 
       this.engineApiEvents.bind((events) => {
         this.worker?.postMessage({ type: 'engine-api-enqueue', events } satisfies MainToWorker)
@@ -383,9 +402,14 @@ export class SceneScriptSystem {
           this.onPointerDeliverDone()
           return
         }
-        void this.handleWorkerMessage(msg, resolve, reject)
+        // Boot lane — crdt-get-state must not queue behind log spam or serialized crdt-send.
+        if (msg?.type === 'crdt-get-state') {
+          this.respondCrdtGetState(msg.id)
+          return
+        }
+        void this.handleWorkerMessage(msg, () => finish(resolve), (err) => finish(() => reject(err)))
       }
-      this.worker.onerror = (err) => reject(err)
+      this.worker.onerror = (err) => finish(() => reject(err))
 
       this.worker.postMessage(boot)
     })
@@ -609,30 +633,7 @@ export class SceneScriptSystem {
       return
     }
     if (msg.type === 'crdt-get-state') {
-      this.prepareRendererOutboundState()
-      let state: { hasEntities: boolean; data: Uint8Array[] } = { hasEntities: false, data: [] }
-      try {
-        state = this.buildBootstrapSnapshot()
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        clientDebugLog.log('scene', `crdt-get-state snapshot failed — ${message}`, {
-          level: 'error',
-          alsoConsole: true
-        })
-      }
-      if (PROJ_PARITY_AUDIT) {
-        clientDebugLog.log(
-          'projection',
-          `boot snapshot — sceneEntities ${this.projection.sceneEntityCount(this.reservedEntities())}, chunks ${state.data.length}`,
-          { level: 'info', alsoConsole: true }
-        )
-      }
-      this.worker?.postMessage({
-        type: 'crdt-get-state-response',
-        id: msg.id,
-        hasEntities: state.hasEntities,
-        data: state.data
-      } satisfies MainToWorker)
+      this.respondCrdtGetState(msg.id)
       return
     }
   }
@@ -692,6 +693,34 @@ export class SceneScriptSystem {
       this.worker?.postMessage({ type: 'crdt-response', id: msg.id, data: [] } satisfies MainToWorker)
       throw err
     }
+  }
+
+  /** Sync boot snapshot response — called from worker.onmessage fast-path during boot. */
+  private respondCrdtGetState(id: number): void {
+    this.prepareRendererOutboundState()
+    let state: { hasEntities: boolean; data: Uint8Array[] } = { hasEntities: false, data: [] }
+    try {
+      state = this.buildBootstrapSnapshot()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      clientDebugLog.log('scene', `crdt-get-state snapshot failed — ${message}`, {
+        level: 'error',
+        alsoConsole: true
+      })
+    }
+    if (PROJ_PARITY_AUDIT) {
+      clientDebugLog.log(
+        'projection',
+        `boot snapshot — sceneEntities ${this.projection.sceneEntityCount(this.reservedEntities())}, chunks ${state.data.length}`,
+        { level: 'info', alsoConsole: true }
+      )
+    }
+    this.worker?.postMessage({
+      type: 'crdt-get-state-response',
+      id,
+      hasEntities: state.hasEntities,
+      data: state.data
+    } satisfies MainToWorker)
   }
 
   /** e9: projection + encoder boot snapshot (replaces mirror.getState on the wire). */

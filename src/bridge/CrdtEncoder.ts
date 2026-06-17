@@ -100,7 +100,7 @@ export class CrdtEncoder {
     this.projection = projection
     this.tweenState = components.TweenState
     this.transform = components.Transform
-    const growOnly = [components.PointerEventsResult, components.VideoEvent]
+    const growOnly = [components.PointerEventsResult, components.TriggerAreaResult, components.VideoEvent]
     this.growOnlyIds = new Set(growOnly.map((d) => d.componentId))
     this.growOnlyById = new Map(growOnly.map((d) => [d.componentId, d]))
 

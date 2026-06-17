@@ -22,8 +22,8 @@ export function takeCapturedSceneEngine(): IEngine | null {
 }
 
 /**
- * SDK7 scene bundles often omit `exports.engine` but embed the singleton on an internal
- * module (captured via pointerEventColliderChecker strip) or nested export bag.
+ * SDK7 scene bundles often omit `exports.engine`. Capture hooks in `patchSceneBundle`:
+ * `pointerEventColliderChecker(engine)` (dev bundles) and `engine.addTransport(renderer)` (minified).
  */
 export function resolveSceneEngine(exports: SceneBundleExports): IEngine | null {
   if (isEngineLike(exports.engine)) return exports.engine

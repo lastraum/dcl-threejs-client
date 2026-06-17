@@ -21,6 +21,10 @@ function guardAddSystemFromStockChecker(engine: IEngine): void {
 const CAPTURE_ENGINE =
   '(function(__e){if(__e&&typeof __e.update==="function"&&typeof __e.addSystem==="function"){globalThis.__THREEJS_SCENE_ENGINE__=__e}})'
 
+/** Minified bundles call `ae.addTransport(jP)` — capture the scene engine there (RickRoll, asset packs). */
+const CAPTURE_ADD_TRANSPORT =
+  '(function(__e,__t){if(__e&&typeof __e.update==="function"&&typeof __e.addSystem==="function"){globalThis.__THREEJS_SCENE_ENGINE__=__e}return __e.addTransport(__t)})'
+
 export function stripBundledPointerEventColliderChecker(code: string): string {
   const moduleCall =
     /\(\s*(?:0\s*,\s*)?([0-9a-zA-Z_$]+)\.pointerEventColliderChecker\s*\)\(\s*([0-9a-zA-Z_$]+(?:\.engine)?)\s*\)/g
@@ -28,6 +32,14 @@ export function stripBundledPointerEventColliderChecker(code: string): string {
   return code
     .replace(moduleCall, `${CAPTURE_ENGINE}($2);(void 0)`)
     .replace(directCall, `${CAPTURE_ENGINE}($1);(void 0)`)
+}
+
+/** Bundle transforms applied before `evaluateSceneBundle` — engine capture + checker strip. */
+export function patchSceneBundle(code: string): string {
+  return stripBundledPointerEventColliderChecker(code).replace(
+    /(\w+)\.addTransport\((\w+)\)/g,
+    `${CAPTURE_ADD_TRANSPORT}($1,$2)`
+  )
 }
 
 /** Suppress false warnings — any descendant MeshCollider/GltfContainer is a valid trigger setup. */

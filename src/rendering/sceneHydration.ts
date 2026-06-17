@@ -4,7 +4,10 @@ import type { SceneScriptSystem } from '../core/systems/SceneScriptSystem'
 
 export type SceneHydrationStats = {
   entityCount: number
+  /** GltfContainer on projection with a resolvable, non-emote src (blocking attach target). */
   gltfEntities: number
+  /** All GltfContainer components on projection (before src/hash filtering). */
+  gltfContainers: number
   gltfLoaded: number
   gltfPending: number
   /** Resolved src but empty/broken GLB — will not attach; excluded from blocking gate. */
@@ -36,6 +39,25 @@ const SOFT_HYDRATION_MS = 8_000
 /** No attach progress + no downloads — unrecoverable tail (disabled: loading waits for full attach). */
 const ATTACH_STALL_MS = 20_000
 const ENABLE_ATTACH_STALL_BAILOUT = false
+/** Wait before treating peakGltfEntities===0 as complete when composite may still publish GltfContainer. */
+const ZERO_GLTF_FALLBACK_MS = 12_000
+/** Fast path when projection never gets GltfContainer and manifest downloads are idle. */
+const ZERO_GLTF_FAST_MS = 1_500
+const ENTITY_STABLE_FAST_MS = 300
+/** Periodic status log while attach count is unchanged (composite may still be publishing GltfContainer). */
+const HYDRATION_STATUS_LOG_MS = 5_000
+
+function countManifestGlbs(scene: ResolvedScene): number {
+  const seen = new Set<string>()
+  let count = 0
+  for (const entry of scene.content) {
+    if (!entry.file.toLowerCase().endsWith('.glb')) continue
+    if (!entry.hash || seen.has(entry.hash)) continue
+    seen.add(entry.hash)
+    count++
+  }
+  return count
+}
 
 function yieldToUi(): Promise<void> {
   return new Promise((resolve) => {
@@ -48,10 +70,40 @@ function blockingPending(stats: SceneHydrationStats): number {
   return attachPending + stats.gltfInflight + stats.textureInflight
 }
 
-/** All discoverable GLTFs attached — false while entity count still at 0 (worker CRDT not on main yet). */
-function isGltfAttachComplete(stats: SceneHydrationStats, peakGltfEntities: number): boolean {
-  if (peakGltfEntities <= 0) return false
+/**
+ * All discoverable GLTFs attached.
+ * When peakGltfEntities stays 0, only fall back after ZERO_GLTF_FALLBACK_MS so composite
+ * CRDT has time to publish GltfContainer on the projection.
+ */
+function zeroGltfFallbackMs(stats: SceneHydrationStats, manifestGlbCount: number): number {
+  if (stats.gltfContainers > 0 || stats.gltfEntities > 0) return ZERO_GLTF_FALLBACK_MS
+  if (manifestGlbCount > 0 && (stats.gltfInflight > 0 || stats.textureInflight > 0)) {
+    return ZERO_GLTF_FALLBACK_MS
+  }
+  return ZERO_GLTF_FAST_MS
+}
+
+function entityStableRequiredMs(peakGltfEntities: number, gltfContainers: number): number {
+  if (peakGltfEntities > 0 || gltfContainers > 0) return ENTITY_STABLE_MS
+  return ENTITY_STABLE_FAST_MS
+}
+
+function isGltfAttachComplete(
+  stats: SceneHydrationStats,
+  peakGltfEntities: number,
+  elapsedMs: number,
+  manifestGlbCount: number
+): boolean {
   const attachPending = Math.max(0, stats.gltfPending - stats.gltfAbandoned)
+  if (peakGltfEntities <= 0) {
+    if (elapsedMs < zeroGltfFallbackMs(stats, manifestGlbCount)) return false
+    return (
+      stats.entityCount > 0 &&
+      attachPending === 0 &&
+      stats.gltfInflight === 0 &&
+      stats.textureInflight === 0
+    )
+  }
   return attachPending === 0 && stats.gltfInflight === 0 && stats.textureInflight === 0
 }
 
@@ -122,11 +174,17 @@ export async function waitForSceneAssets(
   let lastMessage = ''
   let lastStats: SceneHydrationStats | null = null
   let lastLoggedLoaded = -1
+  let lastStatusLogAt = started
 
+  const manifestGlbCount = countManifestGlbs(scene)
   let peakInflight = 0
-  let peakEntities = 0
+  /** Peak resolvable GltfContainer count on projection — drives the attach-complete gate. */
+  let peakGltfEntities = 0
+  /** Progress denominator — manifest floor until projection publishes GltfContainer. */
+  let peakProgressEntities = manifestGlbCount > 0 ? manifestGlbCount : 0
 
   sceneScript.setAssetHydrationMode(true)
+  sceneScript.prefetchGltfs()
 
   return new Promise((resolve) => {
     let finished = false
@@ -175,6 +233,7 @@ export async function waitForSceneAssets(
           return
         }
 
+        await sceneScript.yieldForWorkerMessages()
         await sceneScript.syncRenderer()
         if (finished) return
         sceneScript.syncCollisionForce()
@@ -186,6 +245,7 @@ export async function waitForSceneAssets(
         const stats: SceneHydrationStats = bridgeStats ?? {
           entityCount: 0,
           gltfEntities: 0,
+          gltfContainers: 0,
           gltfLoaded: 0,
           gltfPending: 0,
           gltfAbandoned: 0,
@@ -196,14 +256,43 @@ export async function waitForSceneAssets(
         lastStats = stats
 
         peakInflight = Math.max(peakInflight, stats.gltfInflight)
-        peakEntities = Math.max(peakEntities, stats.gltfEntities)
+        peakGltfEntities = Math.max(peakGltfEntities, stats.gltfEntities)
+        peakProgressEntities = Math.max(peakProgressEntities, stats.gltfEntities, manifestGlbCount)
 
-        if (stats.gltfLoaded !== lastLoggedLoaded) {
-          lastLoggedLoaded = stats.gltfLoaded
-          lastProgressAt = performance.now()
-          const elapsed = ((performance.now() - started) / 1000).toFixed(1)
+        const elapsed = performance.now() - started
+        const shouldLogStatus =
+          stats.gltfLoaded !== lastLoggedLoaded ||
+          elapsed - lastStatusLogAt >= HYDRATION_STATUS_LOG_MS
+
+        if (shouldLogStatus) {
+          if (stats.gltfLoaded !== lastLoggedLoaded) {
+            lastLoggedLoaded = stats.gltfLoaded
+            lastProgressAt = performance.now()
+          }
+          lastStatusLogAt = performance.now()
+          const elapsedSec = (elapsed / 1000).toFixed(1)
           console.info(
-            `[Hydration] ${stats.gltfLoaded}/${stats.gltfEntities} attached (${elapsed}s) — ${stats.gltfPending} pending (${stats.gltfAbandoned} abandoned), ${stats.gltfInflight} downloading, tex ${stats.textureInflight}, entities ${stats.entityCount}`
+            `[Hydration] ${stats.gltfLoaded}/${stats.gltfEntities} attached (${elapsedSec}s) — ` +
+              `${stats.gltfPending} pending (${stats.gltfAbandoned} abandoned), ${stats.gltfInflight} downloading, ` +
+              `tex ${stats.textureInflight}, entities ${stats.entityCount}, ` +
+              `gltfContainers ${stats.gltfContainers}` +
+              (stats.gltfUnresolved ? `, unresolved ${stats.gltfUnresolved}` : '') +
+              (manifestGlbCount ? `, manifest ${manifestGlbCount}` : '')
+          )
+        }
+
+        if (
+          stats.gltfEntities === 0 &&
+          stats.gltfContainers === 0 &&
+          manifestGlbCount > 3 &&
+          stats.entityCount > 0 &&
+          elapsed >= 10_000 &&
+          performance.now() - lastProgressAt >= 10_000
+        ) {
+          lastProgressAt = performance.now()
+          console.warn(
+            `[Hydration] no GltfContainer in projection after ${(elapsed / 1000).toFixed(0)}s — ` +
+              `${stats.entityCount} entities, worker CRDT may not be reaching renderer (check [sceneWorker] pendingCrdt)`
           )
         }
 
@@ -239,18 +328,23 @@ export async function waitForSceneAssets(
         }
 
         const message = formatProgress(stats)
-        const fraction = peakEntities > 0
-          ? computeAssetProgress(stats, peakInflight, peakEntities)
+        const fraction = peakProgressEntities > 0
+          ? computeAssetProgress(stats, peakInflight, peakProgressEntities)
           : undefined
         if (message !== lastMessage || fraction !== undefined) {
           lastMessage = message
           onProgress?.(message, fraction, stats)
         }
 
-        if (isGltfAttachComplete(stats, peakEntities) && entityStableSince > 0) {
+        const elapsedMs = performance.now() - started
+        const entityStableMs = entityStableRequiredMs(peakGltfEntities, stats.gltfContainers)
+        if (
+          isGltfAttachComplete(stats, peakGltfEntities, elapsedMs, manifestGlbCount) &&
+          entityStableSince > 0
+        ) {
           if (stableSince === 0) stableSince = performance.now()
           const assetsStable = performance.now() - stableSince >= stableMs
-          const entitiesStable = performance.now() - entityStableSince >= ENTITY_STABLE_MS
+          const entitiesStable = performance.now() - entityStableSince >= entityStableMs
           if (assetsStable && entitiesStable) {
             const elapsed = ((performance.now() - started) / 1000).toFixed(1)
             console.info(

@@ -330,7 +330,8 @@ export class World {
     this.bindAvatarAttachTargets()
     this.sceneScript.bindPointerEvents(
       () => this.player!.getWorldPosition(),
-      () => this.player!.isPointerBlocked()
+      () => this.player!.isPointerBlocked(),
+      () => this.physics
     )
     this.player.setOnUserGestureUnlock(() => {
       this.sceneScript.setVideoUserGestureUnlocked(true)
@@ -440,6 +441,7 @@ export class World {
         if (this.playerMode && this.player) {
           this.player.update(delta)
           this.sceneScript.syncClientEntities(this.player.getEntityPose(), this.player.getCameraEntityPose())
+          this.sceneScript.updateTriggerAreas()
           this.sceneScript.updatePointerEvents(startFrame)
 
           const pos = this.player.getPosition()

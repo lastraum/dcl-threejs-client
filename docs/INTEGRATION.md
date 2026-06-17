@@ -68,7 +68,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | PointerEventsResult | 1063 | 🔵 | Grow-only to worker |
 | PrimaryPointerInfo | 1209 | 🔵 | Cursor ray on RootEntity |
 | Raycast | 1067 | ⬜ | Scene → engine ray |
-| TriggerArea | 1060 | ⬜ | Volume enter/exit |
+| TriggerArea | 1060 | 🟢 | Volume enter/exit — `TriggerAreaSystem` + grow-only `TriggerAreaResult` |
 
 ### Media & motion (Phase 3)
 

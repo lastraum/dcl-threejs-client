@@ -282,6 +282,11 @@ export class TweenBridge {
     })
   }
 
+  /** True when `TweenState` / tween `Transform` changed since the last consume. */
+  hasEncodeDirty(): boolean {
+    return this.encodeDirty.size > 0
+  }
+
   /** Consume and clear encoder dirty set (call before `CrdtEncoder.encode()`). */
   consumeEncodeDirty(): ReadonlySet<Entity> {
     const out = new Set(this.encodeDirty)

@@ -32,6 +32,7 @@ import {
 } from './pointerEventColliderCheckerPatch'
 import { injectPointerClickOnEngine } from './injectPointerClick'
 import { injectTriggerAreaAppendsOnEngine } from './injectTriggerAreaAppends'
+import { injectRendererLwwPutsOnEngine } from './injectRendererLwwPuts'
 import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransforms'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
@@ -362,6 +363,19 @@ function deliverPointerCrdtInbound(chunks: Uint8Array[]): void {
   executePointerDelivery(chunks)
 }
 
+function applyRendererInboundChunks(chunks: Uint8Array[]): { tweenPuts: number; triggerAppends: number } {
+  let tweenPuts = 0
+  let triggerAppends = 0
+  if (sceneEngine) {
+    tweenPuts = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
+    triggerAppends = injectTriggerAreaAppendsOnEngine(sceneEngine, chunks)
+  }
+  if (tweenPuts === 0 && triggerAppends === 0 && rendererInboundApply) {
+    rendererInboundApply(chunks)
+  }
+  return { tweenPuts, triggerAppends }
+}
+
 function executePointerDelivery(chunks: Uint8Array[]): void {
   if (pointerDeliveryInFlight) {
     queuedPointerDeliver = chunks
@@ -369,37 +383,59 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
   }
   preemptForPointerDelivery()
   sceneTicksPaused = true
-  const canTriggerInject = !!sceneEngine && sceneOnStartComplete && !pointerDeliverBatchOpen
-  if (!rendererInboundApply && !canTriggerInject) {
+  const canDirectInject = !!sceneEngine && sceneOnStartComplete && !pointerDeliverBatchOpen
+  if (!rendererInboundApply && !canDirectInject) {
     workerLog('warn', '[sceneWorker] pointer-crdt-deliver skipped — rendererInboundApply not bound')
     finalizePointerDelivery('pointer-crdt-deliver')
     return
   }
   try {
     if (pointerDeliverBatchOpen) {
-      rendererInboundApply!(chunks)
-      workerLog('log', '[sceneWorker] pointer-crdt-deliver — rendererInboundApply done')
+      const { tweenPuts, triggerAppends } = applyRendererInboundChunks(chunks)
+      workerLog(
+        'log',
+        `[sceneWorker] pointer-crdt-deliver — batch apply tween=${tweenPuts} trigger=${triggerAppends}`
+      )
       finalizePointerDelivery('pointer-crdt-deliver')
       return
     }
 
-    if (canTriggerInject) {
-      // TriggerArea grow-only appends — direct inject mirrors pointer inject; then awaited engine tick.
-      let applied = injectTriggerAreaAppendsOnEngine(sceneEngine!, chunks)
-      if (applied === 0 && rendererInboundApply) {
-        rendererInboundApply(chunks)
-        workerLog('warn', '[sceneWorker] pointer-crdt-deliver — trigger inject 0; fell back to rendererInboundApply')
-      } else {
+    if (canDirectInject) {
+      const { tweenPuts, triggerAppends } = applyRendererInboundChunks(chunks)
+      if (triggerAppends > 0) {
         workerLog(
           'log',
-          `[sceneWorker] pointer-crdt-deliver — trigger inject ${applied} TriggerAreaResult append(s)`
+          `[sceneWorker] pointer-crdt-deliver — trigger inject ${triggerAppends} TriggerAreaResult append(s)`
         )
+        void runPointerEngineTickSync('pointer-crdt-deliver-trigger')
+        return
       }
-      void runPointerEngineTickSync('pointer-crdt-deliver-trigger')
+      if (tweenPuts > 0) {
+        workerLog('log', `[sceneWorker] pointer-crdt-deliver — tween inject ${tweenPuts} TweenState PUT(s)`)
+        void sceneEngine!
+          .update(0)
+          .then(() => {
+            workerLog('log', '[sceneWorker] pointer-crdt-deliver — tween inject engine tick done')
+          })
+          .catch((err) => {
+            workerLog(
+              'error',
+              `[sceneWorker] pointer-crdt-deliver tween tick failed — ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            )
+          })
+          .finally(() => {
+            resumeSceneTicksAfterPointer()
+          })
+        return
+      }
+      workerLog('warn', '[sceneWorker] pointer-crdt-deliver — direct inject 0; fell back to transport apply')
+      void runPointerEngineTickSync('pointer-crdt-deliver-fallback')
       return
     }
 
-    rendererInboundApply!(chunks)
+    applyRendererInboundChunks(chunks)
     workerLog('log', '[sceneWorker] pointer-crdt-deliver — rendererInboundApply done (pre-onStart)')
     resumeSceneTicksAfterPointer()
   } catch (err) {

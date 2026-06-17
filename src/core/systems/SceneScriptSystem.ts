@@ -126,7 +126,6 @@ export class SceneScriptSystem {
   private billboardBridge: BillboardBridge | null = null
   private animatorBridge: AnimatorBridge | null = null
   private tweenBridge: TweenBridge | null = null
-  private lastMotionDelta = 1 / 60
   private avatarAttachBridge: AvatarAttachBridge | null = null
   private videoPlayerBridge: VideoPlayerBridge | null = null
   private host: SceneHost | null = null
@@ -892,6 +891,8 @@ export class SceneScriptSystem {
 
   private lastTriggerFlushAt = 0
   private static readonly TRIGGER_FLUSH_MIN_MS = 50
+  private lastTweenDeliverAt = 0
+  private static readonly TWEEN_DELIVER_MIN_MS = 50
 
   /**
    * Per-frame TriggerArea detection + push grow-only results to the worker.
@@ -906,6 +907,37 @@ export class SceneScriptSystem {
     if (now - this.lastTriggerFlushAt < SceneScriptSystem.TRIGGER_FLUSH_MIN_MS) return
     this.lastTriggerFlushAt = now
     this.deliverRendererAppendsToWorker()
+  }
+
+  /**
+   * Push renderer-owned `TweenState` PUTs to the worker (throttled).
+   * Worker CRDT round-trips alone are too sparse for click→`tweenCompleted()` parity.
+   */
+  private deliverTweenStateToWorker(): void {
+    if (!this.worker || !this.running || !this.tweenBridge?.hasEncodeDirty()) return
+    if (this.pointerAwaitingWorkerApply || this.pointerFlushInFlight) return
+    const now = performance.now()
+    if (now - this.lastTweenDeliverAt < SceneScriptSystem.TWEEN_DELIVER_MIN_MS) return
+    this.lastTweenDeliverAt = now
+
+    this.prepareRendererOutboundState()
+    const tweenDirty = this.tweenBridge.consumeEncodeDirty()
+    this.encoder.setTweenEncodeEntities(tweenDirty)
+    const bytes = this.encoder.encode()
+    if (!bytes?.byteLength) return
+
+    if (isTweenVerbose()) {
+      clientDebugLog.log(
+        'motion',
+        `TweenState push — ${tweenDirty.size} entity(s) [${[...tweenDirty].join(', ')}]`,
+        { throttleMs: 300, alsoConsole: true }
+      )
+    }
+    const copy = bytes.slice()
+    this.worker.postMessage(
+      { type: 'pointer-crdt-deliver', data: [copy] } satisfies MainToWorker,
+      [copy.buffer]
+    )
   }
 
   /** Deliver source-captured grow-only appends (TriggerAreaResult, etc.) to the worker. */
@@ -1137,7 +1169,8 @@ export class SceneScriptSystem {
     let tweenCount = 0
     for (const _ of this.view.getEntitiesWith(Tween)) tweenCount++
     this.tweenBridge.sync(this.view)
-    this.tweenBridge.update(this.lastMotionDelta, this.view)
+    // Encode progress accumulated by pumpMotionBridges — do not advance again here.
+    this.tweenBridge.update(0, this.view)
     if (isTweenVerbose() && tweenCount > 0) {
       clientDebugLog.log(
         'motion',
@@ -1290,7 +1323,6 @@ export class SceneScriptSystem {
    */
   pumpMotionBridges(delta: number, tickNumber = 0): void {
     if (!this.running || !this.bridge) return
-    this.lastMotionDelta = delta
     this.tweenBridge?.sync(this.view)
     this.videoPlayerBridge?.sync(this.view)
     this.billboardBridge?.update()
@@ -1299,6 +1331,7 @@ export class SceneScriptSystem {
     this.avatarAttachBridge?.update(this.view)
     this.flushAvatarAttachTransforms()
     this.tweenBridge?.update(delta, this.view)
+    this.deliverTweenStateToWorker()
     this.videoPlayerBridge?.update(tickNumber, this.view)
   }
 

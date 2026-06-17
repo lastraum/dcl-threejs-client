@@ -126,6 +126,7 @@ export class SceneScriptSystem {
   private billboardBridge: BillboardBridge | null = null
   private animatorBridge: AnimatorBridge | null = null
   private tweenBridge: TweenBridge | null = null
+  private lastMotionDelta = 1 / 60
   private avatarAttachBridge: AvatarAttachBridge | null = null
   private videoPlayerBridge: VideoPlayerBridge | null = null
   private host: SceneHost | null = null
@@ -687,6 +688,7 @@ export class SceneScriptSystem {
         this.foldProjectionChanges()
         this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
         this.syncTriggerAreas()
+        this.syncTweenBeforeEncode()
         this.crdtTick++
         this.prepareRendererOutboundState()
         const encoderBytes = this.encodeRendererCrdt()
@@ -709,6 +711,7 @@ export class SceneScriptSystem {
       // Hover + PrimaryPointerInfo only. PET_DOWN/UP stay queued until click flush → pointer-crdt-deliver.
       this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
       this.syncTriggerAreas()
+      this.syncTweenBeforeEncode()
       this.crdtTick++
 
       this.prepareRendererOutboundState()
@@ -1126,6 +1129,13 @@ export class SceneScriptSystem {
     this.pointerResponseStash.push(merged)
   }
 
+  /** Advance tweens after inbound CRDT (scene may have just added Tween on worker). */
+  private syncTweenBeforeEncode(): void {
+    if (!this.tweenBridge) return
+    this.tweenBridge.sync(this.view)
+    this.tweenBridge.update(this.lastMotionDelta, this.view)
+  }
+
   /** Encode renderer-owned CRDT — tween path scoped to entities updated this frame. */
   private encodeRendererCrdt(): Uint8Array | null {
     const tweenDirty = this.tweenBridge?.consumeEncodeDirty() ?? null
@@ -1269,6 +1279,7 @@ export class SceneScriptSystem {
    */
   pumpMotionBridges(delta: number, tickNumber = 0): void {
     if (!this.running || !this.bridge) return
+    this.lastMotionDelta = delta
     this.tweenBridge?.sync(this.view)
     this.videoPlayerBridge?.sync(this.view)
     this.billboardBridge?.update()

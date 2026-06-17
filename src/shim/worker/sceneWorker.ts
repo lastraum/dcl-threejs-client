@@ -212,22 +212,24 @@ async function runPointerEngineTickSync(label: string): Promise<void> {
     await sceneEngine.update(0)
     workerLog('log', `[sceneWorker] ${label} — sceneEngine.update(0) done`)
     if (sceneOnUpdate) {
-      const result = sceneOnUpdate(0)
-      if (result != null && typeof (result as Promise<void>).then === 'function') {
-        void (result as Promise<void>)
-          .then(() => {
-            workerLog('log', `[sceneWorker] ${label} — scene onUpdate(0) done (post-engine-tick)`)
-          })
-          .catch((err) => {
-            workerLog(
-              'error',
-              `[sceneWorker] ${label} scene onUpdate(0) failed — ${err instanceof Error ? err.message : String(err)}`
-            )
-          })
-      } else {
-        workerLog('log', `[sceneWorker] ${label} — scene onUpdate(0) done (sync)`)
+      try {
+        const result = sceneOnUpdate(0)
+        if (result != null && typeof (result as Promise<void>).then === 'function') {
+          await result
+          workerLog('log', `[sceneWorker] ${label} — scene onUpdate(0) done (async)`)
+        } else {
+          workerLog('log', `[sceneWorker] ${label} — scene onUpdate(0) done (sync)`)
+        }
+      } catch (err) {
+        workerLog(
+          'error',
+          `[sceneWorker] ${label} scene onUpdate(0) failed — ${err instanceof Error ? err.message : String(err)}`
+        )
       }
     }
+    // onUpdate may add Tween / mutate ECS — flush to renderer before pointer batch ends.
+    await sceneEngine.update(0)
+    workerLog('log', `[sceneWorker] ${label} — sceneEngine.update(0) post-onUpdate flush done`)
   } catch (err) {
     workerLog(
       'error',
@@ -826,6 +828,17 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
       sceneUpdateStartedAt = performance.now()
       armSceneUpdateAbortTimer()
       void Promise.resolve(sceneUpdate(dt))
+        .then(async () => {
+          if (!sceneEngine || sceneTicksPaused) return
+          try {
+            await sceneEngine.update(0)
+          } catch (err) {
+            workerLog(
+              'error',
+              `[sceneWorker] post-onUpdate engine flush failed — ${err instanceof Error ? err.message : String(err)}`
+            )
+          }
+        })
         .catch((err) => {
           workerLog(
             'error',

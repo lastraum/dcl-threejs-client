@@ -7,8 +7,14 @@ function readSearchParams(): URLSearchParams | null {
   }
 }
 
-/** `?tweenverbose` — log TweenState transitions + progress on the client debug panel. */
+/** `?tweenverbose` or `localStorage.tweenverbose=1` — log TweenState on the debug panel. */
 export function isTweenVerbose(): boolean {
   const params = readSearchParams()
-  return params?.has('tweenverbose') ?? false
+  if (params?.has('tweenverbose')) return true
+  try {
+    if (localStorage.getItem('tweenverbose') === '1') return true
+  } catch {
+    /* ignore */
+  }
+  return false
 }

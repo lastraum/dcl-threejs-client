@@ -336,8 +336,11 @@ export class TweenBridge {
       }
       const node = this.store.getNode(entity)
       if (!node) {
-        this.logTween(`Tween skip — entity ${entity} has no EntityStore node`, { entity, throttleMs: 2000 })
-        continue
+        this.logTween(`Tween warn — entity ${entity} has no EntityStore node (TweenState still written)`, {
+          entity,
+          throttleMs: 2000,
+          level: 'warn'
+        })
       }
 
       const playing = tween.playing !== false
@@ -361,21 +364,21 @@ export class TweenBridge {
       const eased = applyEasing(tween.easingFunction ?? 0, progress)
       let applied = false
 
-      if (textureMode) {
-        applied = this.applyTextureTween(node, tween, runtime, delta, eased, playing)
-      } else if (Transform.has(entity)) {
-        applied = this.applyTransformTween(
-          entity,
-          tween,
-          Transform.get(entity),
-          node,
-          eased,
-          playing,
-          delta
-        )
+      if (node) {
+        if (textureMode) {
+          applied = this.applyTextureTween(node, tween, runtime, delta, eased, playing)
+        } else if (Transform.has(entity)) {
+          applied = this.applyTransformTween(
+            entity,
+            tween,
+            Transform.get(entity),
+            node,
+            eased,
+            playing,
+            delta
+          )
+        }
       }
-
-      if (!applied) continue
 
       const completed =
         !continuous && durationSec > 0 && playing && progress >= 1 && !runtime?.completed
@@ -386,6 +389,13 @@ export class TweenBridge {
       TweenState.createOrReplace(entity, { state, currentTime: progress })
       this.encodeDirty.add(entity)
       this.logTweenState(entity, tween, state, progress, continuous)
+
+      if (!applied && !textureMode) {
+        this.logTween(
+          `Tween visual skip — entity ${entity} · ${tweenModeLabel(tween)} (no node or Transform)`,
+          { entity, throttleMs: 1500, level: 'warn' }
+        )
+      }
     }
   }
 

@@ -32,15 +32,18 @@ Diff vs `main`: ~78 files, +7174 / −910 lines. `package.json` is `0.1.99`, `"p
 
 ## Branch strategy
 
-### Target model: `main`-only (no permanent `develop`)
+### Target model: `dev-latest` → `main` (two-step, no Git Flow `develop`)
 
 ```
-main                              ← stable / release / community default
-  └── feat/<task-id>-short-desc   ← short-lived PR branches
+dev-latest                        ← integration + QA (community PR target)
+  └── feat/<task-id>-short-desc
   └── fix/<issue>-short-desc
+main                              ← stable / release (promoted after QA)
 ```
 
-Git Flow `develop` adds overhead for a solo/small team. One integration branch is enough.
+- **Contributors:** branch from `dev-latest`, PR back into `dev-latest`.
+- **Maintainer:** when `dev-latest` is QA-clean, open PR `dev-latest` → `main` (batch ship).
+- **`main` stays pure** — no direct feature PRs except hotfixes agreed with maintainer.
 
 ### During re-arch (now → e10 merge)
 
@@ -54,8 +57,8 @@ Keep **`redo/threejs-projection-arch`** as the long-running integration branch. 
 
 ### After public cut
 
-- All community work branches from `main`.
-- Protect `main` with required PR + CI (`npm run build` minimum).
+- Community work branches from **`dev-latest`**, merges back into **`dev-latest`**.
+- Protect **`main`** with required PR + CI (`npm run build` minimum); promote from `dev-latest` only.
 - Re-arch tasks with `maintainer_only: true` stay maintainer-gated until e10 completes; then open suitable tasks to community.
 
 ### Do not

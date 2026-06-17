@@ -8,7 +8,23 @@ Thanks for helping build a browser-native Decentraland Explorer. There is **no m
 2. Open the client dev panel (`</>`) → **Community** tab — see parity gaps and who is already working on what
 3. Open a **[Task claim](https://github.com/lastraum/dcl-threejs-client/issues/new?template=task.yml)** issue with the integration ref (e.g. `ecs:Raycast`)
 4. Get the **`in-progress`** label on your issue (ask in the issue or add it if you have triage access) — syncs to `docs/CLAIMS.yaml` and the dev panel
-5. Branch, implement, open PR — link the issue; follow [docs/PR_CHECKLIST.md](docs/PR_CHECKLIST.md)
+5. Branch from `dev-latest`, implement, open PR **into `dev-latest`** — link the issue; follow [docs/PR_CHECKLIST.md](docs/PR_CHECKLIST.md)
+
+### Branches (contributor vs maintainer)
+
+| Branch | Role |
+| ------ | ---- |
+| **`dev-latest`** | Integration + QA — **open your PR here** |
+| **`main`** | Stable / release — maintainer promotes from `dev-latest` after QA |
+| **`feat/…`** | Your short-lived task branch |
+
+```text
+dev-latest          ← community PRs land here (QA soak)
+  └── feat/<task>
+main                ← maintainer PR: dev-latest → main when ready to ship
+```
+
+Do not open contributor PRs directly into `main` unless a maintainer asks you to.
 
 ## What each source means
 

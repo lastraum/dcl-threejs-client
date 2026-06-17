@@ -98,10 +98,11 @@ export function renderMarkdownToHtml(markdown: string): string {
     if (/^>\s?/.test(line)) {
       const quote: string[] = []
       while (i < lines.length && /^>\s?/.test(lines[i])) {
-        quote.push(lines[i].replace(/^>\s?/, ''))
+        quote.push(lines[i].replace(/^>\s?/, '').replace(/\s+$/, ''))
         i++
       }
-      parts.push(`<blockquote><p>${inlineMarkdown(quote.join(' '))}</p></blockquote>`)
+      const paras = quote.map((q) => `<p>${inlineMarkdown(q)}</p>`).join('')
+      parts.push(`<blockquote>${paras}</blockquote>`)
       continue
     }
 

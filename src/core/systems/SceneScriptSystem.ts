@@ -19,6 +19,7 @@ import { AvatarEmoteCommandBridge, type AvatarEmoteHandler } from '../../bridge/
 import { BillboardBridge } from '../../bridge/BillboardBridge'
 import { AnimatorBridge } from '../../bridge/AnimatorBridge'
 import { TweenBridge } from '../../bridge/TweenBridge'
+import { isTweenVerbose } from '../../bridge/tweenConfig'
 import { AvatarAttachBridge } from '../../bridge/AvatarAttachBridge'
 import type { AvatarAttachTargetResolver } from '../../avatar/AvatarAttachTargets'
 import { VideoPlayerBridge } from '../../media/VideoPlayerBridge'
@@ -1127,8 +1128,17 @@ export class SceneScriptSystem {
 
   /** Encode renderer-owned CRDT — tween path scoped to entities updated this frame. */
   private encodeRendererCrdt(): Uint8Array | null {
-    this.encoder.setTweenEncodeEntities(this.tweenBridge?.consumeEncodeDirty() ?? null)
-    return this.encoder.encode()
+    const tweenDirty = this.tweenBridge?.consumeEncodeDirty() ?? null
+    this.encoder.setTweenEncodeEntities(tweenDirty)
+    const bytes = this.encoder.encode()
+    if (isTweenVerbose() && tweenDirty?.size) {
+      clientDebugLog.log(
+        'motion',
+        `TweenState CRDT deliver — ${tweenDirty.size} entity(s) [${[...tweenDirty].join(', ')}]`,
+        { throttleMs: 300, alsoConsole: true }
+      )
+    }
+    return bytes
   }
 
   /** Apply latest client poses to projection before renderer outbound CRDT. */

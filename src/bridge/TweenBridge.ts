@@ -8,9 +8,11 @@ import {
   threeToDclQuat,
   type DclTransformValues
 } from './dclTransform'
+import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import type { EntityStore } from './EntityStore'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionView } from './ProjectionView'
+import { isTweenVerbose } from './tweenConfig'
 
 type Vec2 = { x: number; y: number }
 type Vec3 = { x: number; y: number; z: number }
@@ -27,7 +29,13 @@ type TweenRuntime = {
   textureTargets?: THREE.Texture[]
   /** Reset progress on the frame after signature change. */
   justReset?: boolean
+  /** Verbose — last TweenState.state written (0 active / 1 completed / 2 paused). */
+  lastLoggedState?: number
+  /** Verbose — last progress milestone logged (0, 0.25, 0.5, 0.75, 1). */
+  lastProgressMilestone?: number
 }
+
+const TWEEN_STATE_LABEL = ['active', 'completed', 'paused'] as const
 
 const _v3a = new THREE.Vector3()
 const _qA = new THREE.Quaternion()
@@ -202,6 +210,22 @@ function readTextureUvFromTargets(targets: THREE.Texture[], movementType?: numbe
   return { x: tex.offset.x, y: tex.offset.y }
 }
 
+function tweenModeLabel(tween: PBTween): string {
+  return tween.mode?.$case ?? 'unknown'
+}
+
+function tweenStateLabel(state: number): string {
+  return TWEEN_STATE_LABEL[state] ?? `state:${state}`
+}
+
+function progressMilestone(progress: number): number {
+  return Math.min(1, Math.floor(progress * 4) / 4)
+}
+
+function formatTweenProgress(progress: number): string {
+  return `${(progress * 100).toFixed(1)}%`
+}
+
 function faceMoveDirection(
   transform: DclTransformValues,
   start: Vec3,
@@ -230,11 +254,33 @@ export class TweenBridge {
   private readonly runtime = new Map<Entity, TweenRuntime>()
   /** Entities whose TweenState/Transform changed this frame — scopes CrdtEncoder tween scan. */
   private readonly encodeDirty = new Set<Entity>()
+  private readonly verbose = isTweenVerbose()
 
   constructor(
     private readonly ecs: MirrorComponents,
     private readonly store: EntityStore
-  ) {}
+  ) {
+    if (this.verbose) {
+      clientDebugLog.log('motion', 'Tween verbose — logging TweenState + progress (?tweenverbose)', {
+        level: 'info',
+        alsoConsole: true
+      })
+    }
+  }
+
+  private logTween(
+    message: string,
+    options: { level?: 'info' | 'warn' | 'success'; throttleMs?: number; entity?: Entity } = {}
+  ): void {
+    if (!this.verbose) return
+    const key = options.entity !== undefined ? `tween:${options.entity}` : 'tween'
+    clientDebugLog.log('motion', message, {
+      level: options.level ?? 'info',
+      throttleKey: key,
+      throttleMs: options.throttleMs,
+      alsoConsole: true
+    })
+  }
 
   /** Consume and clear encoder dirty set (call before `CrdtEncoder.encode()`). */
   consumeEncodeDirty(): ReadonlySet<Entity> {
@@ -254,19 +300,29 @@ export class TweenBridge {
       const prev = this.runtime.get(entity)
       if (!prev || prev.signature !== signature) {
         const node = this.store.getNode(entity)
+        const progress = tween.currentTime ?? 0
         this.runtime.set(entity, {
           signature,
           completed: false,
-          progress: tween.currentTime ?? 0,
+          progress,
           textureUv: undefined,
           textureTargets: node && isTextureMode(tween.mode) ? collectTextureTargets(node) : undefined,
-          justReset: true
+          justReset: true,
+          lastLoggedState: undefined,
+          lastProgressMilestone: undefined
         })
+        this.logTween(
+          `Tween reset — entity ${entity} · ${tweenModeLabel(tween)} · duration ${tween.duration}ms · progress ${formatTweenProgress(progress)} · playing ${tween.playing !== false}`,
+          { entity }
+        )
       }
     }
 
     for (const entity of this.runtime.keys()) {
-      if (!active.has(entity)) this.runtime.delete(entity)
+      if (!active.has(entity)) {
+        this.runtime.delete(entity)
+        this.logTween(`Tween removed — entity ${entity}`, { entity })
+      }
     }
   }
 
@@ -274,9 +330,15 @@ export class TweenBridge {
     const { Tween, TweenState, Transform, AvatarAttach } = this.ecs
 
     for (const [entity, tween] of view.getEntitiesWith(Tween)) {
-      if (AvatarAttach.has(entity)) continue
+      if (AvatarAttach.has(entity)) {
+        this.logTween(`Tween skip — entity ${entity} has AvatarAttach`, { entity, throttleMs: 2000 })
+        continue
+      }
       const node = this.store.getNode(entity)
-      if (!node) continue
+      if (!node) {
+        this.logTween(`Tween skip — entity ${entity} has no EntityStore node`, { entity, throttleMs: 2000 })
+        continue
+      }
 
       const playing = tween.playing !== false
       const runtime = this.runtime.get(entity)
@@ -323,7 +385,37 @@ export class TweenBridge {
 
       TweenState.createOrReplace(entity, { state, currentTime: progress })
       this.encodeDirty.add(entity)
+      this.logTweenState(entity, tween, state, progress, continuous)
     }
+  }
+
+  private logTweenState(
+    entity: Entity,
+    tween: PBTween,
+    state: number,
+    progress: number,
+    continuous: boolean
+  ): void {
+    if (!this.verbose) return
+    const runtime = this.runtime.get(entity)
+    const mode = tweenModeLabel(tween)
+    const prevState = runtime?.lastLoggedState
+    if (prevState !== state) {
+      if (runtime) runtime.lastLoggedState = state
+      const level = state === 1 ? 'success' : state === 2 ? 'warn' : 'info'
+      this.logTween(
+        `TweenState ${tweenStateLabel(state)} — entity ${entity} · ${mode} · currentTime ${formatTweenProgress(progress)}`,
+        { entity, level }
+      )
+    }
+    if (state !== 0 || continuous) return
+    const milestone = progressMilestone(progress)
+    if (runtime && runtime.lastProgressMilestone === milestone) return
+    if (runtime) runtime.lastProgressMilestone = milestone
+    this.logTween(
+      `Tween progress — entity ${entity} · ${mode} · ${formatTweenProgress(progress)}`,
+      { entity, throttleMs: 400 }
+    )
   }
 
   private applyTextureTween(

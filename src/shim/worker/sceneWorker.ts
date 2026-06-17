@@ -28,9 +28,10 @@ import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/tri
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../player/triggerSceneEmote'
 import {
   installPointerEventColliderChecker,
-  stripBundledPointerEventColliderChecker
+  patchSceneBundle
 } from './pointerEventColliderCheckerPatch'
 import { injectPointerClickOnEngine } from './injectPointerClick'
+import { injectTriggerAreaAppendsOnEngine } from './injectTriggerAreaAppends'
 import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransforms'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
@@ -194,7 +195,7 @@ function clearPointerDeliverAckFallback(): void {
  * Same-tick engine tick after inject + CRDT apply — getClick() must run before main resumes ticks.
  * Do not defer via setTimeout; worker priority handlers were starving the timer queue.
  */
-function runPointerEngineTickSync(label: string): void {
+async function runPointerEngineTickSync(label: string): Promise<void> {
   pointerDeliveryInFlight = true
   try {
     if (!sceneOnStartComplete) {
@@ -208,7 +209,7 @@ function runPointerEngineTickSync(label: string): void {
       workerLog('warn', `[sceneWorker] ${label} — sceneEngine missing, skip update`)
       return
     }
-    sceneEngine.update(0)
+    await sceneEngine.update(0)
     workerLog('log', `[sceneWorker] ${label} — sceneEngine.update(0) done`)
     if (sceneOnUpdate) {
       const result = sceneOnUpdate(0)
@@ -248,7 +249,7 @@ function finalizePointerDelivery(label: string): void {
   pointerDeliverBatchOpen = false
   clearPointerDeliverAckFallback()
   postPointerDeliverDone(label)
-  runPointerEngineTickSync(label)
+  void runPointerEngineTickSync(label)
 }
 
 function armPointerDeliverAckFallback(label: string): void {
@@ -363,21 +364,49 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
   }
   preemptForPointerDelivery()
   sceneTicksPaused = true
-  if (!rendererInboundApply) {
+  const canTriggerInject = !!sceneEngine && sceneOnStartComplete && !pointerDeliverBatchOpen
+  if (!rendererInboundApply && !canTriggerInject) {
     workerLog('warn', '[sceneWorker] pointer-crdt-deliver skipped — rendererInboundApply not bound')
     finalizePointerDelivery('pointer-crdt-deliver')
     return
   }
   try {
-    rendererInboundApply(chunks)
-    workerLog('log', '[sceneWorker] pointer-crdt-deliver — rendererInboundApply done')
-    finalizePointerDelivery('pointer-crdt-deliver')
+    if (pointerDeliverBatchOpen) {
+      rendererInboundApply!(chunks)
+      workerLog('log', '[sceneWorker] pointer-crdt-deliver — rendererInboundApply done')
+      finalizePointerDelivery('pointer-crdt-deliver')
+      return
+    }
+
+    if (canTriggerInject) {
+      // TriggerArea grow-only appends — direct inject mirrors pointer inject; then awaited engine tick.
+      let applied = injectTriggerAreaAppendsOnEngine(sceneEngine!, chunks)
+      if (applied === 0 && rendererInboundApply) {
+        rendererInboundApply(chunks)
+        workerLog('warn', '[sceneWorker] pointer-crdt-deliver — trigger inject 0; fell back to rendererInboundApply')
+      } else {
+        workerLog(
+          'log',
+          `[sceneWorker] pointer-crdt-deliver — trigger inject ${applied} TriggerAreaResult append(s)`
+        )
+      }
+      void runPointerEngineTickSync('pointer-crdt-deliver-trigger')
+      return
+    }
+
+    rendererInboundApply!(chunks)
+    workerLog('log', '[sceneWorker] pointer-crdt-deliver — rendererInboundApply done (pre-onStart)')
+    resumeSceneTicksAfterPointer()
   } catch (err) {
     workerLog(
       'error',
       `[sceneWorker] pointer-crdt-deliver failed — ${err instanceof Error ? err.message : String(err)}`
     )
-    finalizePointerDelivery('pointer-crdt-deliver')
+    if (pointerDeliverBatchOpen) {
+      finalizePointerDelivery('pointer-crdt-deliver')
+    } else {
+      resumeSceneTicksAfterPointer()
+    }
   }
 }
 
@@ -1114,10 +1143,14 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Yield so priority inject/deliver messages posted during stub setup can run before bundle eval.
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
-    const exports = evaluateSceneBundle(code, requireMap, stripBundledPointerEventColliderChecker)
+    const exports = evaluateSceneBundle(code, requireMap, patchSceneBundle)
     sceneEngine = resolveSceneEngine(exports)
     if (sceneEngine) {
-      workerLog('log', '[sceneWorker] sceneEngine bound after bundle eval')
+      const engineId = (sceneEngine as { _id?: number })._id
+      workerLog(
+        'log',
+        `[sceneWorker] sceneEngine bound after bundle eval${engineId != null ? ` (_id=${engineId})` : ''}`
+      )
     } else {
       workerLog('warn', '[sceneWorker] sceneEngine not found after bundle eval — inject will queue until onStart')
     }

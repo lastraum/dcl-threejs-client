@@ -40,7 +40,7 @@ export const DCL_ECS_COMPONENTS: EcsComponentEntry[] = [
   { name: 'PrimaryPointerInfo', coreId: 1209, phase: 3, status: 'client-only', category: 'input' },
   { name: 'Raycast', coreId: 1067, phase: 3, status: 'none', category: 'input' },
   { name: 'RaycastResult', coreId: 1068, phase: 3, status: 'client-only', category: 'input' },
-  { name: 'TriggerArea', coreId: 1060, phase: 3, status: 'none', category: 'input' },
+  { name: 'TriggerArea', coreId: 1060, phase: 3, status: 'render', category: 'input' },
   { name: 'TriggerAreaResult', coreId: 1061, phase: 3, status: 'client-only', category: 'input' },
   { name: 'UiTransform', coreId: 1050, phase: 3, status: 'none', category: 'ui' },
   { name: 'UiText', coreId: 1052, phase: 3, status: 'none', category: 'ui' },

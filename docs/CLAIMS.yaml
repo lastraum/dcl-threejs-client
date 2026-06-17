@@ -1,11 +1,17 @@
 # Community work claims — synced from GitHub issues (label: in-progress).
 # Do not edit manually on main; .github/workflows/sync-community-claims.yml updates this file.
 #
-# Contributors: open a Task claim issue → maintainer or bot adds in-progress label → appears here + dev panel.
-# Gaps to pick from: dev panel Integration status / Community tab (integrationRegistry parity matrix).
+# Contributors: open a Task claim issue → add in-progress label → appears here + dev panel.
+# Gaps to pick from: dev panel Community tab (integrationRegistry parity matrix).
 
 schema_version: 1
-updated: "2026-06-17"
-source: manual
-
-claims: []
+updated: 2026-06-17
+source: github-issues
+claims:
+  - integration_ref: ecs:TriggerArea
+    title: Trigger Areas
+    owner: lastraum
+    status: in_progress
+    issue: 1
+    issue_url: https://github.com/lastraum/dcl-threejs-client/issues/1
+    started: 2026-06-17

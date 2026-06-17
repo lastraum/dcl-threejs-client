@@ -266,12 +266,9 @@ export class DevProgressPanel {
     }
 
     const { markdown, source, branch } = this.progressLoad
-    const meta = parseProgressMeta(markdown)
     const sourceLabel = source === 'github' ? 'GitHub' : 'offline snapshot'
     this.summaryEl.innerHTML = `
       <span class="dev-progress__chip dev-progress__chip--done">v${escapeHtml(APP_VERSION)} client</span>
-      ${meta.phase ? `<span class="dev-progress__chip">${escapeHtml(meta.phase)}</span>` : ''}
-      ${meta.lastUpdated ? `<span class="dev-progress__chip">${escapeHtml(meta.lastUpdated)}</span>` : ''}
     `
     this.footerEl.innerHTML = `<span class="dev-progress__legend">${sourceLabel} · branch <code>${escapeHtml(branch)}</code> · <a href="${escapeHtml(progressBrowseUrl(branch))}" target="_blank" rel="noopener">PROGRESS.md</a> · <a href="${escapeHtml(progressMdUrl(branch))}" target="_blank" rel="noopener">raw</a></span>`
 

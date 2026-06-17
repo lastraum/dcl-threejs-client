@@ -338,20 +338,31 @@ export class ThreeBridge {
     }
   }
 
-  getHydrationStats(_view: ProjectionView): SceneHydrationStats {
-    const { GltfContainer } = this.ecs
+  getHydrationStats(view: ProjectionView): SceneHydrationStats {
+    const { GltfContainer, Transform } = this.ecs
+    const { RootEntity, PlayerEntity, CameraEntity } = view
     let entityCount = 0
+    let gltfContainers = 0
     let gltfEntities = 0
     let gltfLoaded = 0
     let gltfAbandoned = 0
     let gltfUnresolved = 0
 
-    this.store.forEachSceneEntity((entity, obj) => {
+    const isReserved = (entity: Entity) =>
+      entity === RootEntity || entity === PlayerEntity || entity === CameraEntity
+
+    // Count from projection (worker CRDT) — store nodes lag behind during hydration bursts.
+    for (const [entity] of view.getEntitiesWith(Transform)) {
+      if (isReserved(entity)) continue
       entityCount++
-      if (!GltfContainer.has(entity)) return
+    }
+
+    for (const [entity] of view.getEntitiesWith(GltfContainer)) {
+      if (isReserved(entity)) continue
+      gltfContainers++
 
       const src = GltfContainer.get(entity).src?.trim()
-      if (!src) return
+      if (!src) continue
 
       const hash = hashFromSrc(src, this.sceneConfig)
       if (!hash) {
@@ -360,28 +371,31 @@ export class ThreeBridge {
           this.loggedUnresolvedSrcs.add(src)
           console.debug('[ThreeBridge] unresolved GltfContainer.src:', src)
         }
-        return
+        continue
       }
 
-      if (hash.startsWith(GLTF_LOCAL_PREFIX)) return
+      if (hash.startsWith(GLTF_LOCAL_PREFIX)) continue
 
       gltfEntities++
       if (this.emptyGltfHashes.has(hash)) {
         gltfAbandoned++
-        return
+        continue
       }
       const cacheKey = this.gltfCacheKey(hash)
       if (this.cache.hasGivenUp(cacheKey)) {
         gltfAbandoned++
-        return
+        continue
       }
+      const obj = this.store.getNode(entity)
+      if (!obj) continue
       const mesh = obj.getObjectByName(meshKey(entity))
       if (mesh && obj.userData.gltfSrcKey === hash && gltfInstanceHasGeometry(mesh)) gltfLoaded++
-    })
+    }
 
     const assetStats = this.cache.getLoadStats()
     return {
       entityCount,
+      gltfContainers,
       gltfEntities,
       gltfLoaded,
       gltfPending: gltfEntities - gltfLoaded,

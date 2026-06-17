@@ -5,7 +5,7 @@ import { isSceneParcel, parcelKey } from '../dcl/landscape/Utils/ParcelGrid'
 import { parcelWorldOrigin } from '../dcl/landscape/Utils/SceneSpace'
 import { physxColliderDebug } from '../debug/PhysxColliderDebug'
 import { extendThreePhysX } from './extendThreePhysX'
-import { CAMERA_QUERY_MASK, GROUND_QUERY_MASK, Layers } from './Layers'
+import { CAMERA_QUERY_MASK, GROUND_QUERY_MASK, Layers, TRIGGER_QUERY_MASK } from './Layers'
 import { geometryToPxMesh, type PxMeshHandle } from './geometryToPxMesh'
 import { bakeTrimeshGeometry, isTrimeshGeometryCookable } from './bakeTrimeshGeometry'
 import { ensureIndexedForCook } from './colliderGeometryPrep'
@@ -16,6 +16,13 @@ export type PhysicsColliderShapeDesc = {
   geometry?: THREE.BufferGeometry
   /** Shape pose relative to the actor root (`PhysicsColliderDesc.matrix`). */
   localMatrix: THREE.Matrix4
+}
+
+/** SDK TriggerArea volume pose — unit box/sphere scaled by entity world matrix. */
+export type TriggerVolumeDesc = {
+  entity: number
+  mesh: number
+  matrix: THREE.Matrix4
 }
 
 export type PhysicsColliderDesc = {
@@ -99,9 +106,20 @@ export class PhysXWorld {
   private groundSweepGeometry: any = null
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private cameraSweepGeometry: any = null
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private playerCapsuleOverlapGeometry: any = null
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private overlapPose: any = null
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private overlapResult: any = null
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly staticActors = new Map<number, any>()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private readonly triggerActors = new Map<number, any>()
+  private readonly triggerFp = new Map<number, string>()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private readonly triggerEntityByActorPtr = new Map<number, number>()
   private readonly staticFp = new Map<number, string>()
   /** Last applied world matrix fingerprint for pose-driven trimesh actors. */
   private readonly staticPoseFp = new Map<number, string>()
@@ -151,6 +169,13 @@ export class PhysXWorld {
         console.warn('[PhysXWorld] dispose removeStatic failed:', entity, err)
       }
     }
+    for (const entity of [...this.triggerActors.keys()]) {
+      try {
+        this.removeTriggerVolume(entity)
+      } catch (err) {
+        console.warn('[PhysXWorld] dispose removeTriggerVolume failed:', entity, err)
+      }
+    }
 
     try {
       this.groundSweepGeometry?.release?.()
@@ -162,8 +187,16 @@ export class PhysXWorld {
     } catch {
       // ignore
     }
+    try {
+      this.playerCapsuleOverlapGeometry?.release?.()
+    } catch {
+      // ignore
+    }
     this.groundSweepGeometry = null
     this.cameraSweepGeometry = null
+    this.playerCapsuleOverlapGeometry = null
+    this.overlapPose = null
+    this.overlapResult = null
 
     try {
       this.scene?.release?.()
@@ -292,6 +325,10 @@ export class PhysXWorld {
     this._pv2 = new PHYSX.PxVec3()
     this.groundSweepGeometry = new PHYSX.PxSphereGeometry(this.groundSweepRadius)
     this.cameraSweepGeometry = new PHYSX.PxSphereGeometry(0.2)
+    const capsuleHalfHeight = (this.capsuleHeight - this.capsuleRadius * 2) / 2
+    this.playerCapsuleOverlapGeometry = new PHYSX.PxCapsuleGeometry(this.capsuleRadius, capsuleHalfHeight)
+    this.overlapPose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
+    this.overlapResult = new PHYSX.PxOverlapResult()
 
     this.setupControllerManager()
     this.ensureInfiniteGroundPlane()
@@ -1187,6 +1224,126 @@ export class PhysXWorld {
         }
       }
     }
+  }
+
+  /** Tier B — sync PhysX trigger actors for SDK TriggerArea volumes. */
+  syncTriggerVolumes(descs: TriggerVolumeDesc[]): void {
+    if (!this.physics || !this.scene) return
+
+    const active = new Set<number>()
+    for (const desc of descs) {
+      active.add(desc.entity)
+      const fp = `${desc.mesh}:${matrixFingerprint(desc.matrix)}`
+      if (this.triggerFp.get(desc.entity) === fp) continue
+      this.removeTriggerVolume(desc.entity)
+      if (!this.addTriggerVolume(desc)) continue
+      this.triggerFp.set(desc.entity, fp)
+    }
+
+    for (const entity of [...this.triggerActors.keys()]) {
+      if (!active.has(entity)) {
+        this.removeTriggerVolume(entity)
+        this.triggerFp.delete(entity)
+      }
+    }
+  }
+
+  /**
+   * Tier B — broadphase overlap of local player capsule against trigger actors.
+   * Returns trigger entity ids currently overlapping the player capsule.
+   */
+  queryTriggerVolumesOverlappingPlayer(out: Set<number>): Set<number> {
+    out.clear()
+    if (!this.scene || !this.controller || !this.playerCapsuleOverlapGeometry || !this.overlapPose) {
+      return out
+    }
+
+    const foot = this.probeOriginFromFeet(this._v1)
+    const halfHeight = (this.capsuleHeight - this.capsuleRadius * 2) / 2
+    const centerY = foot.y + this.capsuleRadius + halfHeight
+    this._pos.set(foot.x, centerY, foot.z)
+    this._pos.toPxTransform(this.overlapPose)
+    // PxCapsuleGeometry is X-aligned — rotate to Y-up (Hyperfy PlayerLocal pattern).
+    this._quat.setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2)
+    this._quat.toPxTransform(this.overlapPose)
+
+    this.queryFilterData.data.word0 = TRIGGER_QUERY_MASK
+    this.queryFilterData.data.word1 = 0
+    const didHit = this.scene.overlap(
+      this.playerCapsuleOverlapGeometry,
+      this.overlapPose,
+      this.overlapResult,
+      this.queryFilterData
+    )
+    if (!didHit) return out
+
+    const nbHits = this.overlapResult.getNbAnyHits()
+    for (let i = 0; i < nbHits; i++) {
+      const hit = this.overlapResult.getAnyHit(i)
+      const entity = this.triggerEntityByActorPtr.get(hit.actor.ptr)
+      if (entity !== undefined) out.add(entity)
+    }
+    return out
+  }
+
+  private addTriggerVolume(desc: TriggerVolumeDesc): boolean {
+    if (!this.physics || !this.scene) return false
+
+    desc.matrix.decompose(this._pos, this._quat, this._scale)
+    const meshSphere = desc.mesh === 1
+    let geometry
+    if (meshSphere) {
+      const r = 0.5 * Math.max(Math.abs(this._scale.x), Math.abs(this._scale.y), Math.abs(this._scale.z))
+      geometry = new PHYSX.PxSphereGeometry(r)
+    } else {
+      geometry = new PHYSX.PxBoxGeometry(
+        0.5 * Math.abs(this._scale.x),
+        0.5 * Math.abs(this._scale.y),
+        0.5 * Math.abs(this._scale.z)
+      )
+    }
+
+    const shapeFlags = new PHYSX.PxShapeFlags(
+      PHYSX.PxShapeFlagEnum.eTRIGGER_SHAPE | PHYSX.PxShapeFlagEnum.eSCENE_QUERY_SHAPE
+    )
+    const shape = this.physics.createShape(geometry, this.defaultMaterial, true, shapeFlags)
+    PHYSX.destroy(geometry)
+
+    const pairFlags =
+      PHYSX.PxPairFlagEnum.eNOTIFY_TOUCH_FOUND | PHYSX.PxPairFlagEnum.eNOTIFY_TOUCH_LOST
+    const filterData = new PHYSX.PxFilterData(Layers.trigger.group, Layers.player.group, pairFlags, 0)
+    shape.setQueryFilterData(filterData)
+    shape.setSimulationFilterData(filterData)
+
+    const transform = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
+    this._pos.toPxTransform(transform)
+    this._quat.toPxTransform(transform)
+
+    const actor = this.physics.createRigidStatic(transform)
+    actor.attachShape(shape)
+    this.scene.addActor(actor)
+
+    this.triggerActors.set(desc.entity, actor)
+    this.triggerEntityByActorPtr.set(actor.ptr, desc.entity)
+    return true
+  }
+
+  private removeTriggerVolume(entity: number): void {
+    const actor = this.triggerActors.get(entity)
+    if (!actor || !this.scene) return
+    try {
+      this.scene.removeActor(actor)
+    } catch (err) {
+      console.warn('[PhysXWorld] removeTriggerVolume scene.removeActor failed:', entity, err)
+    }
+    this.triggerEntityByActorPtr.delete(actor.ptr)
+    try {
+      actor.release()
+    } catch (err) {
+      console.warn('[PhysXWorld] removeTriggerVolume actor.release failed:', entity, err)
+    }
+    this.triggerActors.delete(entity)
+    this.triggerFp.delete(entity)
   }
 }
 

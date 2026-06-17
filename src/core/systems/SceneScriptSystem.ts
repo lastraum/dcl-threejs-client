@@ -19,6 +19,7 @@ import { AvatarEmoteCommandBridge, type AvatarEmoteHandler } from '../../bridge/
 import { BillboardBridge } from '../../bridge/BillboardBridge'
 import { AnimatorBridge } from '../../bridge/AnimatorBridge'
 import { TweenBridge } from '../../bridge/TweenBridge'
+import { isTweenVerbose } from '../../bridge/tweenConfig'
 import { AvatarAttachBridge } from '../../bridge/AvatarAttachBridge'
 import type { AvatarAttachTargetResolver } from '../../avatar/AvatarAttachTargets'
 import { VideoPlayerBridge } from '../../media/VideoPlayerBridge'
@@ -202,7 +203,7 @@ export class SceneScriptSystem {
       scene,
       () => this.bridge?.getEntityNodes()
     )
-    this.tweenBridge = new TweenBridge(this.readComponents, () => this.bridge?.getEntityNodes())
+    this.tweenBridge = new TweenBridge(this.readComponents, this.entityStore)
     this.avatarAttachBridge = new AvatarAttachBridge(
       this.readComponents,
       this.projection,
@@ -686,9 +687,10 @@ export class SceneScriptSystem {
         this.foldProjectionChanges()
         this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
         this.syncTriggerAreas()
+        this.syncTweenBeforeEncode()
         this.crdtTick++
         this.prepareRendererOutboundState()
-        const encoderBytes = this.encoder.encode()
+        const encoderBytes = this.encodeRendererCrdt()
         const data = encoderBytes ? [encoderBytes] : []
         this.worker?.postMessage({ type: 'crdt-response', id: msg.id, data } satisfies MainToWorker)
         return
@@ -708,11 +710,12 @@ export class SceneScriptSystem {
       // Hover + PrimaryPointerInfo only. PET_DOWN/UP stay queued until click flush → pointer-crdt-deliver.
       this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
       this.syncTriggerAreas()
+      this.syncTweenBeforeEncode()
       this.crdtTick++
 
       this.prepareRendererOutboundState()
 
-      const encoderBytes = this.encoder.encode()
+      const encoderBytes = this.encodeRendererCrdt()
       const data = encoderBytes ? [encoderBytes] : []
 
       if (!this.encoderEnabledLogged) {
@@ -888,6 +891,8 @@ export class SceneScriptSystem {
 
   private lastTriggerFlushAt = 0
   private static readonly TRIGGER_FLUSH_MIN_MS = 50
+  private lastTweenDeliverAt = 0
+  private static readonly TWEEN_DELIVER_MIN_MS = 50
 
   /**
    * Per-frame TriggerArea detection + push grow-only results to the worker.
@@ -902,6 +907,37 @@ export class SceneScriptSystem {
     if (now - this.lastTriggerFlushAt < SceneScriptSystem.TRIGGER_FLUSH_MIN_MS) return
     this.lastTriggerFlushAt = now
     this.deliverRendererAppendsToWorker()
+  }
+
+  /**
+   * Push renderer-owned `TweenState` PUTs to the worker (throttled).
+   * Worker CRDT round-trips alone are too sparse for click→`tweenCompleted()` parity.
+   */
+  private deliverTweenStateToWorker(): void {
+    if (!this.worker || !this.running || !this.tweenBridge?.hasEncodeDirty()) return
+    if (this.pointerAwaitingWorkerApply || this.pointerFlushInFlight) return
+    const now = performance.now()
+    if (now - this.lastTweenDeliverAt < SceneScriptSystem.TWEEN_DELIVER_MIN_MS) return
+    this.lastTweenDeliverAt = now
+
+    this.prepareRendererOutboundState()
+    const tweenDirty = this.tweenBridge.consumeEncodeDirty()
+    this.encoder.setTweenEncodeEntities(tweenDirty)
+    const bytes = this.encoder.encode()
+    if (!bytes?.byteLength) return
+
+    if (isTweenVerbose()) {
+      clientDebugLog.log(
+        'motion',
+        `TweenState push — ${tweenDirty.size} entity(s) [${[...tweenDirty].join(', ')}]`,
+        { throttleMs: 300, alsoConsole: true }
+      )
+    }
+    const copy = bytes.slice()
+    this.worker.postMessage(
+      { type: 'pointer-crdt-deliver', data: [copy] } satisfies MainToWorker,
+      [copy.buffer]
+    )
   }
 
   /** Deliver source-captured grow-only appends (TriggerAreaResult, etc.) to the worker. */
@@ -1021,7 +1057,8 @@ export class SceneScriptSystem {
     }
 
     this.deliverPointerCrdtDirect()
-    this.worker.postMessage({ type: 'pause-scene-ticks', paused: true } satisfies MainToWorker)
+    // Worker sets sceneTicksPaused during inject/deliver; do not pause from main mid-flight —
+    // it raced post-onUpdate engine.update CRDT (Tween sync) before deliver-done.
   }
 
   /** Post pre-encoded pointer CRDT directly to worker (parallel to inject). */
@@ -1040,7 +1077,7 @@ export class SceneScriptSystem {
   }
 
   private onPointerDeliverDone(): void {
-    this.logPointer('pointer-deliver-done — worker applied pointer CRDT and ticked scene')
+    this.logPointer('pointer-deliver-done — worker finished pointer tick + onUpdate CRDT flush')
     this.finishPointerDelivery('pointer-deliver-done')
   }
 
@@ -1123,6 +1160,39 @@ export class SceneScriptSystem {
     }
     this.pointerResponseStash.length = 0
     this.pointerResponseStash.push(merged)
+  }
+
+  /** Advance tweens after inbound CRDT (scene may have just added Tween on worker). */
+  private syncTweenBeforeEncode(): void {
+    if (!this.tweenBridge) return
+    const { Tween } = this.readComponents
+    let tweenCount = 0
+    for (const _ of this.view.getEntitiesWith(Tween)) tweenCount++
+    this.tweenBridge.sync(this.view)
+    // Encode progress accumulated by pumpMotionBridges — do not advance again here.
+    this.tweenBridge.update(0, this.view)
+    if (isTweenVerbose() && tweenCount > 0) {
+      clientDebugLog.log(
+        'motion',
+        `Tween encode prep — ${tweenCount} active tween(s) before CRDT outbound`,
+        { throttleMs: 400, alsoConsole: true }
+      )
+    }
+  }
+
+  /** Encode renderer-owned CRDT — tween path scoped to entities updated this frame. */
+  private encodeRendererCrdt(): Uint8Array | null {
+    const tweenDirty = this.tweenBridge?.consumeEncodeDirty() ?? null
+    this.encoder.setTweenEncodeEntities(tweenDirty)
+    const bytes = this.encoder.encode()
+    if (isTweenVerbose() && tweenDirty?.size) {
+      clientDebugLog.log(
+        'motion',
+        `TweenState CRDT deliver — ${tweenDirty.size} entity(s) [${[...tweenDirty].join(', ')}]`,
+        { throttleMs: 300, alsoConsole: true }
+      )
+    }
+    return bytes
   }
 
   /** Apply latest client poses to projection before renderer outbound CRDT. */
@@ -1261,6 +1331,7 @@ export class SceneScriptSystem {
     this.avatarAttachBridge?.update(this.view)
     this.flushAvatarAttachTransforms()
     this.tweenBridge?.update(delta, this.view)
+    this.deliverTweenStateToWorker()
     this.videoPlayerBridge?.update(tickNumber, this.view)
   }
 

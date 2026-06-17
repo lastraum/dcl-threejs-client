@@ -335,6 +335,9 @@ export class TweenBridge {
     const { Tween, TweenState, Transform, AvatarAttach } = this.ecs
 
     for (const [entity, tween] of view.getEntitiesWith(Tween)) {
+      const runtime = this.runtime.get(entity)
+      if (runtime?.completed) continue
+
       if (AvatarAttach.has(entity)) {
         this.logTween(`Tween skip — entity ${entity} has AvatarAttach`, { entity, throttleMs: 2000 })
         continue
@@ -349,7 +352,6 @@ export class TweenBridge {
       }
 
       const playing = tween.playing !== false
-      const runtime = this.runtime.get(entity)
       const continuous = isContinuousMode(tween.mode)
       const textureMode = isTextureMode(tween.mode)
       const durationSec = Math.max(tween.duration / 1000, 0)

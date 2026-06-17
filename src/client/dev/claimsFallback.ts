@@ -9,12 +9,21 @@ export const CLAIMS_FALLBACK: ClaimsRegistry = {
   "base_branch": "dev-latest",
   "workflow": [
     {
-      "stage": "in_progress",
-      "integration_ref": "ecs:TweenState",
-      "title": "implement TweenState",
+      "stage": "merged",
+      "integration_ref": "pr:5",
+      "title": "perf(tween): stop Genesis hot-loop + silence worker deliver logs",
       "owner": "lastraum",
-      "issue": 3,
-      "issue_url": "https://github.com/lastraum/dcl-threejs-client/issues/3",
+      "pr": 5,
+      "pr_url": "https://github.com/lastraum/dcl-threejs-client/pull/5",
+      "updated": "2026-06-17"
+    },
+    {
+      "stage": "merged",
+      "integration_ref": "pr:4",
+      "title": "proactive TweenState delivery for tweenCompleted parity",
+      "owner": "lastraum",
+      "pr": 4,
+      "pr_url": "https://github.com/lastraum/dcl-threejs-client/pull/4",
       "updated": "2026-06-17"
     },
     {

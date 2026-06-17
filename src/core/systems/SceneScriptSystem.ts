@@ -1025,7 +1025,8 @@ export class SceneScriptSystem {
     }
 
     this.deliverPointerCrdtDirect()
-    this.worker.postMessage({ type: 'pause-scene-ticks', paused: true } satisfies MainToWorker)
+    // Worker sets sceneTicksPaused during inject/deliver; do not pause from main mid-flight —
+    // it raced post-onUpdate engine.update CRDT (Tween sync) before deliver-done.
   }
 
   /** Post pre-encoded pointer CRDT directly to worker (parallel to inject). */
@@ -1044,7 +1045,7 @@ export class SceneScriptSystem {
   }
 
   private onPointerDeliverDone(): void {
-    this.logPointer('pointer-deliver-done — worker applied pointer CRDT and ticked scene')
+    this.logPointer('pointer-deliver-done — worker finished pointer tick + onUpdate CRDT flush')
     this.finishPointerDelivery('pointer-deliver-done')
   }
 
@@ -1132,8 +1133,18 @@ export class SceneScriptSystem {
   /** Advance tweens after inbound CRDT (scene may have just added Tween on worker). */
   private syncTweenBeforeEncode(): void {
     if (!this.tweenBridge) return
+    const { Tween } = this.readComponents
+    let tweenCount = 0
+    for (const _ of this.view.getEntitiesWith(Tween)) tweenCount++
     this.tweenBridge.sync(this.view)
     this.tweenBridge.update(this.lastMotionDelta, this.view)
+    if (isTweenVerbose() && tweenCount > 0) {
+      clientDebugLog.log(
+        'motion',
+        `Tween encode prep — ${tweenCount} active tween(s) before CRDT outbound`,
+        { throttleMs: 400, alsoConsole: true }
+      )
+    }
   }
 
   /** Encode renderer-owned CRDT — tween path scoped to entities updated this frame. */

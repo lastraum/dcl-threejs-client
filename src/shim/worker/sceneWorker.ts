@@ -180,7 +180,8 @@ function preemptForPointerDelivery(): void {
   sceneUpdateInFlight = false
   engineTickInFlight = false
   clearSceneUpdateAbortTimer()
-  // Unblock pointer engine ticks stuck behind an in-flight onUpdate ↔ crdt-send round-trip.
+  // Never abort an in-flight pointer engine tick CRDT flush (post-onUpdate Tween sync depends on it).
+  if (pointerDeliveryInFlight) return
   if (hadSceneUpdate && pendingCrdt.size) interruptPendingCrdtRoundTrips()
 }
 
@@ -196,6 +197,7 @@ function clearPointerDeliverAckFallback(): void {
  * Do not defer via setTimeout; worker priority handlers were starving the timer queue.
  */
 async function runPointerEngineTickSync(label: string): Promise<void> {
+  // Returns when engine tick + onUpdate + post-onUpdate CRDT flush complete.
   pointerDeliveryInFlight = true
   try {
     if (!sceneOnStartComplete) {
@@ -242,7 +244,7 @@ async function runPointerEngineTickSync(label: string): Promise<void> {
   }
 }
 
-/** Post pointer-deliver-done synchronously, then run engine tick in the same call stack. */
+/** Run engine tick + onUpdate flush, then ack main — Tween CRDT must finish before deliver-done. */
 function finalizePointerDelivery(label: string): void {
   if (!pointerDeliverBatchOpen) {
     workerLog('warn', `[sceneWorker] ${label} — finalize skipped (no open pointer batch)`)
@@ -250,8 +252,9 @@ function finalizePointerDelivery(label: string): void {
   }
   pointerDeliverBatchOpen = false
   clearPointerDeliverAckFallback()
-  postPointerDeliverDone(label)
-  void runPointerEngineTickSync(label)
+  void runPointerEngineTickSync(label).then(() => {
+    postPointerDeliverDone(label)
+  })
 }
 
 function armPointerDeliverAckFallback(label: string): void {

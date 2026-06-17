@@ -21,7 +21,13 @@ const ROOT = join(import.meta.dirname, '..')
 const PKG_PATH = join(ROOT, 'package.json')
 
 function run(cmd, opts = {}) {
-  return execSync(cmd, { cwd: ROOT, encoding: 'utf8', stdio: opts.silent ? 'pipe' : 'inherit', ...opts }).trim()
+  const out = execSync(cmd, {
+    cwd: ROOT,
+    encoding: 'utf8',
+    stdio: opts.silent ? 'pipe' : 'inherit',
+    ...opts
+  })
+  return (out ?? '').trim()
 }
 
 function runSilent(cmd) {
@@ -69,7 +75,7 @@ if (pkg.version !== version) {
 }
 
 console.log('Running build…')
-run('npm run build')
+run('SKIP_VERSION_BUMP=1 npm run build')
 
 const statusAfter = runSilent('git status --porcelain')
 if (statusAfter) {

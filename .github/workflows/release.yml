@@ -20,7 +20,7 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npm run build
+      - run: SKIP_VERSION_BUMP=1 npm run build
 
       - name: Package dist artifact
         run: |

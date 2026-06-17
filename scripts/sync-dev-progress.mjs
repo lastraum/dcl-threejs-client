@@ -184,11 +184,13 @@ async function main() {
   const isNewDay = previousDate !== today
   let pkgBumped = false
 
-  const bumped = bumpPatchVersion(pkgVersion)
-  if (bumped && bumped !== pkgVersion) {
-    pkgVersion = bumped
-    await writePackageVersion(pkgVersion)
-    pkgBumped = true
+  if (!process.env.SKIP_VERSION_BUMP) {
+    const bumped = bumpPatchVersion(pkgVersion)
+    if (bumped && bumped !== pkgVersion) {
+      pkgVersion = bumped
+      await writePackageVersion(pkgVersion)
+      pkgBumped = true
+    }
   }
 
   const mergedItems = [...manualItems, ...newGitLines, ...keptGitItems.filter((item) => {

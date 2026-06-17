@@ -1,10 +1,18 @@
-# Community work claims — synced from GitHub issues (label: in-progress).
-# Do not edit manually on main; .github/workflows/sync-community-claims.yml updates this file.
+# Community workflow — synced from GitHub issues + PRs.
+# Do not edit manually; .github/workflows/sync-community-claims.yml updates this file.
 #
-# Contributors: open a Task claim issue → add in-progress label → appears here + dev panel.
-# Gaps to pick from: dev panel Community tab (integrationRegistry parity matrix).
+# Stages: in_progress (open in-progress issues) · pending_review (open PRs) · merged (recent PRs into base_branch).
+# Dev panel Community tab renders this as a single workflow table.
 
-schema_version: 1
+schema_version: 2
 updated: 2026-06-17
-source: github-issues
-claims: []
+source: github
+base_branch: dev-latest
+workflow:
+  - stage: merged
+    integration_ref: ecs:TriggerArea
+    title: TriggerArea Tier A — volume enter/exit and scene callbacks
+    owner: lastraum
+    pr: 2
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/2
+    updated: 2026-06-17

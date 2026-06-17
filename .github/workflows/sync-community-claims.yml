@@ -3,6 +3,8 @@ name: Sync community claims
 on:
   issues:
     types: [opened, edited, labeled, unlabeled, closed, reopened, deleted]
+  pull_request:
+    types: [opened, edited, closed, reopened, synchronize, ready_for_review, converted_to_draft]
 
 permissions:
   contents: write
@@ -22,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Regenerate CLAIMS.yaml from in-progress issues
+      - name: Regenerate CLAIMS.yaml from issues + PRs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/sync-claims-from-issues.mjs

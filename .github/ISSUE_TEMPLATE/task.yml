@@ -6,7 +6,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        **Find gaps:** client dev panel (`</>`) → **Community** tab — parity gaps list integration refs like `ecs:Raycast`.
+        **Find gaps:** dev panel (`</>`) → **Full status** tab — pick an integration ref like `ecs:Raycast`.
+
+        **Track work:** **Community** tab — workflow table (in progress · pending review · merged).
 
         **What's shipped:** **Shipped** tab (`PROGRESS.md`) + **Full status** tab (complete parity matrix).
 

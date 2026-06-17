@@ -48,7 +48,9 @@ import type { ClaimsRegistry } from './claimsRegistry'
 export const CLAIMS_FALLBACK: ClaimsRegistry = ${json} as ClaimsRegistry
 `
   await writeFile(CLAIMS_FALLBACK_PATH, out, 'utf8')
-  return Array.isArray(parsed?.claims) ? parsed.claims.length : 0
+  if (Array.isArray(parsed?.workflow)) return parsed.workflow.length
+  if (Array.isArray(parsed?.claims)) return parsed.claims.length
+  return 0
 }
 
 async function syncTasksFallback() {

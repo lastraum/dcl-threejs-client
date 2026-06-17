@@ -1,9 +1,11 @@
 import { APP_VERSION } from '../appVersion'
 import {
-  CLAIM_STATUS_LABEL,
   loadClaimsRegistry,
+  WORKFLOW_STAGE_LABEL,
+  WORKFLOW_STAGE_ORDER,
   type ClaimsLoadResult,
-  type CommunityClaim
+  type WorkflowItem,
+  type WorkflowStage
 } from '../dev/claimsRegistry'
 import {
   communityClaimNewIssueUrl,
@@ -16,7 +18,6 @@ import {
   countIntegrationByStatus,
   INTEGRATION_CATEGORIES,
   INTEGRATION_STATUS_LABEL,
-  PARITY_GAP_STATUSES,
   type IntegrationEntry
 } from '../dev/integrationRegistry'
 import {
@@ -31,7 +32,7 @@ import { renderInlineMarkdown, renderMarkdownToHtml } from '../dev/renderMarkdow
 
 type DevTab = 'community' | 'status' | 'progress'
 
-/** Dev overlay — parity gaps + community claims (GitHub issues) + PROGRESS.md from GitHub. */
+/** Dev overlay — community workflow + full parity matrix + PROGRESS.md milestones. */
 export class DevProgressPanel {
   readonly root: HTMLElement
   private readonly backdrop: HTMLElement
@@ -93,7 +94,7 @@ export class DevProgressPanel {
     this.footerEl = this.panel.querySelector('.dev-progress__footer')!
 
     const subtitle = this.panel.querySelector('.dev-progress__subtitle')!
-    subtitle.textContent = 'Parity gaps + community claims from github.com/lastraum/dcl-threejs-client'
+    subtitle.textContent = 'Community workflow from github.com/lastraum/dcl-threejs-client'
 
     this.metaEl = this.panel.querySelector('.dev-progress__meta')!
     this.metaEl.hidden = true
@@ -188,25 +189,31 @@ export class DevProgressPanel {
     }
   }
 
+  private countWorkflowStage(workflow: WorkflowItem[], stage: WorkflowStage): number {
+    return workflow.filter((row) => row.stage === stage).length
+  }
+
   private renderCommunity(): void {
-    const integrationCounts = countIntegrationByStatus(ALL_INTEGRATION_ENTRIES)
-    const gapCount =
-      integrationCounts.none + integrationCounts.stub + integrationCounts.partial
-    const claimCount = this.claimsLoad?.registry.claims.length ?? 0
+    const workflow = this.claimsLoad?.registry.workflow ?? []
+    const inProgress = this.countWorkflowStage(workflow, 'in_progress')
+    const pending = this.countWorkflowStage(workflow, 'pending_review')
+    const merged = this.countWorkflowStage(workflow, 'merged')
 
     this.summaryEl.innerHTML = `
-      <span class="dev-progress__chip dev-progress__chip--next">⬜ ${gapCount} parity gaps</span>
-      <span class="dev-progress__chip dev-progress__chip--progress">🟡 ${claimCount} being worked on</span>
-      <span class="dev-progress__chip dev-progress__chip--done">🟢 ${integrationCounts.render} shipped</span>
+      <span class="dev-progress__chip dev-progress__chip--progress">🟡 ${inProgress} in progress</span>
+      <span class="dev-progress__chip dev-progress__chip--pending">🟠 ${pending} pending review</span>
+      <span class="dev-progress__chip dev-progress__chip--done">🟢 ${merged} merged</span>
       <a class="dev-progress__chip dev-progress__chip--claim" href="${escapeHtml(communityClaimNewIssueUrl())}" target="_blank" rel="noopener">+ Claim work</a>
     `
 
     const branch = this.claimsLoad?.branch ?? this.progressLoad?.branch ?? 'dev-latest'
+    const baseBranch = this.claimsLoad?.registry.base_branch ?? 'dev-latest'
     const sourceLabel =
       this.claimsLoad?.source === 'github' || this.progressLoad?.source === 'github'
         ? 'GitHub'
         : 'offline snapshot'
-    this.footerEl.innerHTML = `<span class="dev-progress__legend">${sourceLabel} · branch <code>${escapeHtml(branch)}</code> · <a href="${escapeHtml(communityClaimsIssuesUrl())}" target="_blank" rel="noopener">in-progress issues</a> · <a href="${escapeHtml(docsClaimsBrowseUrl(branch))}" target="_blank" rel="noopener">CLAIMS.yaml</a></span>`
+    const prsUrl = `https://github.com/lastraum/dcl-threejs-client/pulls?q=is%3Aopen+base%3A${encodeURIComponent(baseBranch)}`
+    this.footerEl.innerHTML = `<span class="dev-progress__legend">${sourceLabel} · docs <code>${escapeHtml(branch)}</code> · PRs → <code>${escapeHtml(baseBranch)}</code> · <a href="${escapeHtml(communityClaimsIssuesUrl())}" target="_blank" rel="noopener">claims</a> · <a href="${escapeHtml(prsUrl)}" target="_blank" rel="noopener">open PRs</a> · <a href="${escapeHtml(docsClaimsBrowseUrl(branch))}" target="_blank" rel="noopener">CLAIMS.yaml</a></span>`
 
     this.bodyEl.innerHTML = ''
 
@@ -217,19 +224,13 @@ export class DevProgressPanel {
       const loading = document.createElement('p')
       loading.className = 'dev-progress__loading'
       loading.textContent = docsGithubFetchEnabled()
-        ? 'Fetching community claims from GitHub…'
-        : 'Loading claims (offline snapshot)…'
+        ? 'Fetching community workflow from GitHub…'
+        : 'Loading workflow (offline snapshot)…'
       this.bodyEl.appendChild(loading)
-    } else {
-      const claimsSection = this.buildClaimsSection(this.claimsLoad.registry.claims)
-      if (claimsSection) this.bodyEl.appendChild(claimsSection)
+      return
     }
 
-    for (const category of INTEGRATION_CATEGORIES) {
-      const gaps = category.entries.filter((e) => PARITY_GAP_STATUSES.includes(e.status))
-      if (!gaps.length) continue
-      this.bodyEl.appendChild(this.buildIntegrationTable(`Parity gaps — ${category.title}`, gaps))
-    }
+    this.bodyEl.appendChild(this.buildWorkflowTable(workflow))
   }
 
   private renderIntegrationStatus(): void {
@@ -305,43 +306,72 @@ export class DevProgressPanel {
     return section
   }
 
-  private buildClaimsSection(claims: CommunityClaim[]): HTMLElement | null {
-    if (!claims.length) return null
-
+  private buildWorkflowTable(workflow: WorkflowItem[]): HTMLElement {
     const section = document.createElement('section')
     section.className = 'dev-progress__section'
-    section.innerHTML = `<h3 class="dev-progress__section-title">Merges under review</h3>`
+    section.innerHTML = `<h3 class="dev-progress__section-title">Community workflow</h3>`
+
+    const sorted = [...workflow].sort((a, b) => {
+      const stageDiff =
+        WORKFLOW_STAGE_ORDER.indexOf(a.stage) - WORKFLOW_STAGE_ORDER.indexOf(b.stage)
+      if (stageDiff !== 0) return stageDiff
+      return (b.updated ?? '').localeCompare(a.updated ?? '')
+    })
 
     const table = document.createElement('table')
-    table.className = 'dev-progress__table'
+    table.className = 'dev-progress__table dev-progress__table--workflow'
     table.innerHTML = `
       <thead>
         <tr>
-          <th>Status</th>
+          <th>Stage</th>
           <th>Area</th>
+          <th>Work</th>
           <th>Owner</th>
-          <th>Issue</th>
+          <th>Updated</th>
+          <th>Links</th>
         </tr>
       </thead>
     `
     const tbody = document.createElement('tbody')
-    for (const claim of claims) {
+
+    if (!sorted.length) {
       const tr = document.createElement('tr')
-      tr.className = `dev-progress__row dev-progress__row--${claim.status.replace('_', '-')}`
-      const issueLink = claim.issue_url
-        ? `<a href="${escapeHtml(claim.issue_url)}" target="_blank" rel="noopener">#${claim.issue}</a>`
-        : `#${claim.issue}`
+      tr.innerHTML = `<td colspan="6" class="dev-progress__empty">No workflow rows synced yet.</td>`
+      tbody.appendChild(tr)
+    }
+
+    for (const row of sorted) {
+      const tr = document.createElement('tr')
+      tr.className = `dev-progress__row dev-progress__row--workflow-${row.stage.replace('_', '-')}`
       tr.innerHTML = `
-        <td class="dev-progress__status">${CLAIM_STATUS_LABEL[claim.status]}</td>
-        <td class="dev-progress__name"><code>${escapeHtml(claim.integration_ref)}</code><br>${escapeHtml(claim.title)}</td>
-        <td>${escapeHtml(claim.owner)}</td>
-        <td>${issueLink}</td>
+        <td class="dev-progress__status">${WORKFLOW_STAGE_LABEL[row.stage]}</td>
+        <td><code>${escapeHtml(row.integration_ref)}</code></td>
+        <td class="dev-progress__name">${escapeHtml(row.title)}</td>
+        <td>${escapeHtml(row.owner)}</td>
+        <td>${escapeHtml(row.updated ?? '—')}</td>
+        <td>${this.workflowLinks(row)}</td>
       `
       tbody.appendChild(tr)
     }
+
     table.appendChild(tbody)
     section.appendChild(table)
     return section
+  }
+
+  private workflowLinks(row: WorkflowItem): string {
+    const parts: string[] = []
+    if (row.issue_url && row.issue) {
+      parts.push(
+        `<a href="${escapeHtml(row.issue_url)}" target="_blank" rel="noopener">#${row.issue}</a>`
+      )
+    }
+    if (row.pr_url && row.pr) {
+      parts.push(
+        `<a href="${escapeHtml(row.pr_url)}" target="_blank" rel="noopener">PR #${row.pr}</a>`
+      )
+    }
+    return parts.length ? parts.join(' · ') : '—'
   }
 
   private buildIntegrationTable(title: string, items: IntegrationEntry[]): HTMLElement {

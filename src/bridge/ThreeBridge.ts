@@ -104,6 +104,7 @@ export class ThreeBridge {
   private readonly loggedGltfAttachFailures = new Set<string>()
   private onGltfAttached: (() => void) | null = null
   private videoPlayerBridge: VideoPlayerBridge | null = null
+  private skipTransformApply?: (entity: Entity) => boolean
 
   constructor(
     private readonly sceneConfig: ResolvedScene,
@@ -134,6 +135,11 @@ export class ThreeBridge {
   /** Fired after a hydration attach burst — sync + cook colliders for newly attached GLTFs. */
   setOnGltfAttached(callback: (() => void) | null): void {
     this.onGltfAttached = callback
+  }
+
+  /** Skip inbound Transform apply for renderer-owned poses (AvatarAttach). */
+  setSkipTransformApply(fn: ((entity: Entity) => boolean) | null): void {
+    this.skipTransformApply = fn ?? undefined
   }
 
   private notifyGltfAttached(): void {
@@ -417,7 +423,8 @@ export class ThreeBridge {
     }
 
     const applied = applySceneDiff(this.store, fullDiff, view, this.ecs, [], {
-      notifySecondary: false
+      notifySecondary: false,
+      skipTransformApply: this.skipTransformApply
     })
 
     // Post-hydration safety resync: reconcile transforms / orphan nodes only — never re-touch materials.
@@ -453,16 +460,19 @@ export class ThreeBridge {
    */
   async consumeDiff(diff: Map<Entity, Map<number, ProjectionChangeKind>>, view: ProjectionView): Promise<void> {
     this.gltfBudgetRemaining = this.resolveGltfBudget()
-    const { MeshRenderer, Material, GltfContainer, TextShape, Tween } = this.ecs
+    const { MeshRenderer, Material, GltfContainer, TextShape, Tween, AvatarAttach } = this.ecs
     const meshEcs = { MeshRenderer, Material, GltfContainer, TextShape }
     const deferMaterials = this.shouldDeferMaterials()
 
     const tweenRefresh: Entity[] = []
     for (const [entity] of view.getEntitiesWith(Tween)) {
+      if (AvatarAttach.has(entity) || this.skipTransformApply?.(entity)) continue
       tweenRefresh.push(entity)
     }
 
-    const applied = applySceneDiff(this.store, diff, view, this.ecs, tweenRefresh)
+    const applied = applySceneDiff(this.store, diff, view, this.ecs, tweenRefresh, {
+      skipTransformApply: this.skipTransformApply
+    })
 
     for (const entity of applied.removals) {
       this.removeEntityNode(entity)

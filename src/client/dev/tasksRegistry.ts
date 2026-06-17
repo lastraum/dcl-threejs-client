@@ -1,6 +1,7 @@
 /** Fetch and parse docs/TASKS.yaml for the dev progress panel. */
 
 import { parse as parseYaml } from 'yaml'
+import { docsGithubFetchEnabled, docsTasksYamlUrl, resolveDocsBranch } from './githubDocs'
 import { TASKS_FALLBACK } from './tasksFallback'
 
 export type TaskStatus = 'open' | 'in_progress' | 'partial' | 'done' | 'blocked'
@@ -31,25 +32,9 @@ export type TasksRegistry = {
   tasks: RegistryTask[]
 }
 
-const GITHUB_RAW =
-  'https://raw.githubusercontent.com/lastraum/ThreejsClient'
-const DEFAULT_BRANCH = 'redo/threejs-projection-arch'
-
-/**
- * Private repo — raw.githubusercontent.com 404s without auth. Use bundled tasksFallback.ts
- * until the public cut (see docs/REPO_MANAGEMENT.md). Enable with ?tasksGithubFetch=1 or
- * VITE_TASKS_GITHUB_FETCH=true after the repo is public.
- */
+/** @deprecated Use docsGithubFetchEnabled from githubDocs.ts */
 export function tasksGithubFetchEnabled(): boolean {
-  if (typeof window === 'undefined') return false
-  const params = new URLSearchParams(window.location.search)
-  if (params.get('tasksGithubFetch') === '1') return true
-  try {
-    if (localStorage.getItem('tasksGithubFetch') === '1') return true
-  } catch {
-    /* ignore */
-  }
-  return import.meta.env.VITE_TASKS_GITHUB_FETCH === 'true'
+  return docsGithubFetchEnabled()
 }
 
 export type TasksLoadSource = 'github' | 'fallback'
@@ -62,21 +47,11 @@ export type TasksLoadResult = {
 }
 
 export function resolveTasksBranch(): string {
-  if (typeof window === 'undefined') return DEFAULT_BRANCH
-  const params = new URLSearchParams(window.location.search)
-  const fromQuery = params.get('tasksBranch')
-  if (fromQuery) return fromQuery
-  try {
-    const stored = localStorage.getItem('tasksBranch')
-    if (stored) return stored
-  } catch {
-    /* ignore */
-  }
-  return DEFAULT_BRANCH
+  return resolveDocsBranch()
 }
 
 export function tasksYamlUrl(branch = resolveTasksBranch()): string {
-  return `${GITHUB_RAW}/${branch}/docs/TASKS.yaml`
+  return docsTasksYamlUrl(branch)
 }
 
 function isTaskStatus(value: unknown): value is TaskStatus {

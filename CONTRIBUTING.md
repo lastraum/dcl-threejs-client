@@ -1,31 +1,30 @@
 # Contributing to ThreejsClient
 
-Thanks for helping build a browser-native Decentraland Explorer. This repo uses a **task registry** so humans and AI agents can pick up work without duplicating effort.
+Thanks for helping build a browser-native Decentraland Explorer. There is **no maintainer-curated task backlog** — you pick work from the **parity gap matrix** and announce it yourself.
 
 ## Quick start
 
 1. Read [docs/AGENTS.md](docs/AGENTS.md) — architecture boundaries and reading order
-2. Browse [docs/TASKS.yaml](docs/TASKS.yaml) — find an `open` task (skip `maintainer_only: true` unless coordinated)
-3. Claim it (see below), branch, implement, open PR
+2. Open the client dev panel (`</>`) → **Community** tab — see parity gaps and who is already working on what
+3. Open a **[Task claim](https://github.com/lastraum/dcl-threejs-client/issues/new?template=task.yml)** issue with the integration ref (e.g. `ecs:Raycast`)
+4. Get the **`in-progress`** label on your issue (ask in the issue or add it if you have triage access) — syncs to `docs/CLAIMS.yaml` and the dev panel
+5. Branch, implement, open PR — link the issue; follow [docs/PR_CHECKLIST.md](docs/PR_CHECKLIST.md)
 
-## Claim a task
+## What each source means
 
-1. **Reserve** — edit `docs/TASKS.yaml`:
-   - Set `owner` to your GitHub handle
-   - Set `status: in_progress`
-2. **Branch** — `git checkout -b feat/<task-id>-short-description`
-3. **Implement** — stay within `files` listed on the task; follow [docs/PR_CHECKLIST.md](docs/PR_CHECKLIST.md)
-4. **PR** — template auto-links checklist; include task `id` in title or body
-5. **Merge** — maintainer sets `status: done` (or `partial`) when acceptance criteria pass
-
-Prefer opening a draft PR early if scope is uncertain.
+| Source | Purpose |
+| ------ | ------- |
+| **Integration registry** (`integrationRegistry.ts`, dev panel) | Master parity matrix — what's done vs gaps |
+| **PROGRESS.md** | Shipped milestones and narrative history |
+| **CLAIMS.yaml** | Who is working on what (auto-synced from `in-progress` GitHub issues) |
+| **TASKS.yaml** | Legacy re-arch history only — not a pick-up queue |
 
 ## Development
 
 ```bash
 npm install
 npm run dev        # Vite dev server
-npm run build      # tsc + vite production build (runs prebuild sync)
+npm run build      # tsc + vite production build (prebuild refreshes offline doc fallbacks)
 npm run preview    # serve dist/
 ```
 
@@ -47,23 +46,17 @@ dcl deploy --target-content yourname.dcl.eth
 npm run dev   # → http://localhost:5173/yourname.dcl.eth?guest
 ```
 
-Include your world URL in PR descriptions when it exercises the task.
+Include your world URL in PR descriptions when it exercises your claim.
 
-## Task registry rules
+## Finishing work
 
-| Field | Purpose |
-| ----- | ------- |
-| `id` | Stable slug — reference in branches/PRs |
-| `status` | `open` · `in_progress` · `partial` · `done` · `blocked` |
-| `maintainer_only` | Needs maintainer review / re-arch gate |
-| `do_not_touch` | Paths that must not change for this task |
-| `acceptance_criteria` | Definition of done |
-
-Add new tasks via PR with maintainer review — keep total backlog focused (15–30 active items).
+1. Update status in `src/dcl/ecs/registry.ts` and/or `integrationRegistry.ts`
+2. Add a short note to [docs/PROGRESS.md](docs/PROGRESS.md) when shipping a milestone
+3. Close your claim issue (removes entry from `CLAIMS.yaml` on next sync)
 
 ## AI agents
 
-Use [docs/AGENTS.md](docs/AGENTS.md) as the onboarding pack. Fetch live backlog from GitHub raw `docs/TASKS.yaml` or read the file in-repo.
+Use [docs/AGENTS.md](docs/AGENTS.md) as the onboarding pack. Read `integrationRegistry.ts` for gaps; check [CLAIMS.yaml](docs/CLAIMS.yaml) and [in-progress issues](https://github.com/lastraum/dcl-threejs-client/issues?q=is%3Aopen+label%3Ain-progress) before claiming.
 
 ## Code of conduct
 
@@ -71,4 +64,4 @@ Be constructive in review. Match existing code style — minimal diffs, no drive
 
 ## Questions
 
-Open a GitHub issue using the **Task claim** template, or comment on an existing task PR.
+Open a GitHub issue using the **Task claim** template with intent **Question / blocked**.

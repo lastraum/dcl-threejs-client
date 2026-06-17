@@ -21,6 +21,8 @@ import type { SendBinaryRequest } from '../shim/types'
 import { performGetSignedHeaders, performSignedFetch } from '../network/SignedFetchService'
 import { shortenAddress } from '../avatar/displayName'
 import { buildPlayerMirrorIdentity, getOrCreateGuestAddress } from '../bridge/playerMirrorIdentity'
+import type { AvatarAttachTargetResolver } from '../avatar/AvatarAttachTargets'
+import type { DclTransformValues } from '../bridge/dclTransform'
 import { openExternalUrl } from '../player/openExternalUrl'
 import { ReservedEntitiesSync } from '../bridge/ReservedEntitiesSync'
 import { waitForSceneAssets, type WaitForSceneAssetsOptions } from '../rendering/sceneHydration'
@@ -325,6 +327,7 @@ export class World {
     onProgress?.('Loading avatar…')
     this.player.setAssetCache(this.assets, scene.realm.contentUrl)
     await this.player.loadAvatar(onProgress)
+    this.bindAvatarAttachTargets()
     this.sceneScript.bindPointerEvents(
       () => this.player!.getWorldPosition(),
       () => this.player!.isPointerBlocked()
@@ -346,6 +349,47 @@ export class World {
         rotation: ReservedEntitiesSync.playerRotationFromYaw(0)
       }
     }
+  }
+
+  private bindAvatarAttachTargets(): void {
+    const { readComponents, view } = this.sceneScript
+    const { Transform, PlayerIdentityData } = readComponents
+    const { PlayerEntity } = view
+
+    const resolver: AvatarAttachTargetResolver = {
+      getLocalWallet: () => {
+        if (PlayerIdentityData.has(PlayerEntity)) {
+          return (PlayerIdentityData.get(PlayerEntity) as { address?: string }).address?.toLowerCase()
+        }
+        return this.session.getAddress()?.toLowerCase() ?? getOrCreateGuestAddress().toLowerCase()
+      },
+      getLocalSkeleton: () => {
+        const avatar = this.player?.getLocalAvatar()
+        const model = avatar?.getModel()
+        if (!avatar || !model) return null
+        return { model, nameTagAnchor: avatar.nameTagAnchor }
+      },
+      getRemoteSkeleton: (avatarId) => this.remoteAvatars?.getAttachSkeleton(avatarId) ?? null,
+      getNpcSkeleton: (entity) => this.sceneScript.getAvatarShapeSkeleton(entity),
+      getPlayerTransformDcl: (avatarId) => {
+        const localWallet = resolver.getLocalWallet()
+        const id = avatarId?.trim().toLowerCase()
+        if (!id || (localWallet && id === localWallet)) {
+          if (!Transform.has(PlayerEntity)) return null
+          return Transform.get(PlayerEntity) as DclTransformValues
+        }
+        const remote = this.remoteAvatars?.getPlayerTransformDclForAddress(id)
+        if (remote) return remote
+        for (const [playerEntity, identity] of view.getEntitiesWith(PlayerIdentityData)) {
+          const address = (identity as { address?: string }).address?.toLowerCase()
+          if (address !== id) continue
+          if (Transform.has(playerEntity)) return Transform.get(playerEntity) as DclTransformValues
+        }
+        return null
+      }
+    }
+
+    this.sceneScript.setAvatarAttachTargets(resolver)
   }
 
   /** Block until scene GLBs/textures hydrate — call after `loadScene`, before `start()`. */

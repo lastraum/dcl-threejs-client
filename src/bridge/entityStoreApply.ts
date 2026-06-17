@@ -44,6 +44,8 @@ const BRIDGE_NOTIFY_NAMES = ['Animator', 'AvatarShape'] as const
 export type ApplySceneDiffOptions = {
   /** When false, skip secondary/bridge notifications (full-resync / hydration walks set dirty flags explicitly). */
   notifySecondary?: boolean
+  /** AvatarAttach-driven entities — renderer owns world pose; skip inbound Transform apply. */
+  skipTransformApply?: (entity: Entity) => boolean
 }
 
 function notifyKind(kind: ProjectionChangeKind): 'put' | 'delete' {
@@ -64,6 +66,7 @@ export function applySceneDiff(
   options: ApplySceneDiffOptions = {}
 ): ApplySceneDiffResult {
   const notifySecondary = options.notifySecondary !== false
+  const skipTransformApply = options.skipTransformApply
   const { Transform, VisibilityComponent, LightSource } = components
   const meshComponentIds = new Set<number>(
     MESH_COMPONENT_NAMES.map((name) => components[name].componentId)
@@ -115,7 +118,9 @@ export function applySceneDiff(
     const t = Transform.get(entity)
     const desiredParent = resolveTransformParent(t.parent, view, store.nodes, store.root)
     if (obj.parent !== desiredParent) desiredParent.add(obj)
-    applyDclLocalTransform(obj, t)
+    if (!skipTransformApply?.(entity)) {
+      applyDclLocalTransform(obj, t)
+    }
 
     obj.visible = VisibilityComponent.has(entity)
       ? VisibilityComponent.get(entity).visible !== false

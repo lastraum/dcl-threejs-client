@@ -1,4 +1,4 @@
-/** Machine-readable ECS component registry — keep in sync with docs/ECS_COMPONENTS.md */
+/** Machine-readable ECS component registry — keep in sync with docs/INTEGRATION.md */
 
 export type ComponentPhase = 1 | '1b' | 2 | 3 | 4 | 5 | 6
 export type ComponentStatus = 'none' | 'stub' | 'partial' | 'render' | 'client-only'
@@ -61,7 +61,7 @@ export const DCL_ECS_COMPONENTS: EcsComponentEntry[] = [
   { name: 'TweenState', coreId: 1103, phase: 3, status: 'client-only', category: 'motion' },
   { name: 'AvatarShape', coreId: 1080, phase: 4, status: 'render', category: 'avatar' },
   { name: 'AvatarBase', coreId: 1087, phase: 4, status: 'none', category: 'avatar' },
-  { name: 'AvatarAttach', coreId: 1073, phase: 4, status: 'none', category: 'avatar' },
+  { name: 'AvatarAttach', coreId: 1073, phase: 4, status: 'render', category: 'avatar' },
   { name: 'AvatarEmoteCommand', coreId: 1088, phase: 4, status: 'render', category: 'avatar' },
   { name: 'AvatarEquippedData', coreId: 1091, phase: 4, status: 'client-only', category: 'avatar' },
   { name: 'AvatarModifierArea', coreId: 1070, phase: 4, status: 'none', category: 'avatar' },

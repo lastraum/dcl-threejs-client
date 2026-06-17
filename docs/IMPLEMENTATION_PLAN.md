@@ -3,7 +3,9 @@
 > Browser-native Decentraland client: load deployed Worlds/scenes, shim SDK7 runtime, mirror ECS → Three.js, expand to open world.
 
 **Status:** Explorer **layout parity ✅** on RickRoll-style worlds; Phase 5 **social comms** next (see [`PROGRESS.md`](./PROGRESS.md))  
-**ECS reference:** [`ECS_COMPONENTS.md`](./ECS_COMPONENTS.md) — all SDK7 components by phase  
+**ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md) — all SDK7 components by phase  
+**Note:** Legacy phase roadmap — active backlog is [TASKS.yaml](./TASKS.yaml) + [PROGRESS.md](./PROGRESS.md).
+
 **Related repos in workspace:** `dcl-companion` (content resolution), `dcl-avatar-hyperfy` (VRM/Three.js), `colyseus-scene` (multiplayer), `blank-scene` (test deploy)
 
 ---
@@ -247,7 +249,7 @@ ThreejsClient/src/
 
 **Outcome:** Run `bin/scene.js`; static + dynamically spawned entities appear with Explorer-aligned transforms and primitives.
 
-> **Full component matrix:** [`docs/ECS_COMPONENTS.md`](./ECS_COMPONENTS.md) — all 60+ SDK7 components mapped to phases.  
+> **Full component matrix:** [`docs/INTEGRATION.md`](./INTEGRATION.md) — all 60+ SDK7 components mapped to phases.  
 > **Code registry:** `src/dcl/ecs/registry.ts`
 
 ### Architecture
@@ -309,7 +311,7 @@ ThreejsClient/src/
 
 ## ECS components — phase map (summary)
 
-See **[`docs/ECS_COMPONENTS.md`](./ECS_COMPONENTS.md)** for the complete table. Quick reference:
+See **[`docs/INTEGRATION.md`](./INTEGRATION.md)** for the complete table. Quick reference:
 
 | Phase | Components |
 |-------|------------|

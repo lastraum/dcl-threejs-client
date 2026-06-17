@@ -33,7 +33,7 @@ export const TASKS_FALLBACK: TasksRegistry = {
         "No regression on Genesis Plaza / pizzaparty.dcl.eth click flows"
       ],
       "ai_context_links": [
-        "docs/REARCHITECTURE_PLAN.md",
+        "docs/INTEGRATION.md",
         "docs/PROGRESS.md"
       ],
       "test_scenes": [
@@ -73,7 +73,7 @@ export const TASKS_FALLBACK: TasksRegistry = {
         "Same-tick pointer delivery still passes QA"
       ],
       "ai_context_links": [
-        "docs/REARCHITECTURE_PLAN.md"
+        "docs/INTEGRATION.md"
       ],
       "test_scenes": [
         "genesis-city"
@@ -112,7 +112,7 @@ export const TASKS_FALLBACK: TasksRegistry = {
         "Encoder is sole outbound writer on audited ticks"
       ],
       "ai_context_links": [
-        "docs/REARCHITECTURE_PLAN.md"
+        "docs/INTEGRATION.md"
       ],
       "test_scenes": [
         "genesis-city",
@@ -123,38 +123,6 @@ export const TASKS_FALLBACK: TasksRegistry = {
       ],
       "notes": "Shipped 2026-06-17 — CrdtMirror.ts deleted; RendererComponentHost schema-only Engine (component defs + NetworkEntity/NetworkParent, no CRDT transports/update). Bootstrap getState via projection dump.",
       "maintainer_only": true
-    },
-    {
-      "id": "rearch-e10-perf-pass",
-      "title": "Re-arch e10 — post-cutover perf pass",
-      "status": "open",
-      "owner": "unassigned",
-      "track": "re-arch",
-      "phase": 3,
-      "complexity": "medium",
-      "priority": "P1",
-      "dependencies": [
-        "rearch-e9-drop-mirror-engine"
-      ],
-      "blocks": [],
-      "files": [
-        "src/bridge/ThreeBridge.ts",
-        "src/core/World.ts",
-        "src/core/systems/SceneScriptSystem.ts"
-      ],
-      "acceptance_criteria": [
-        "Genesis Plaza FPS within 10% of pre-rearch baseline",
-        "No per-frame full-engine walk in hot path",
-        "Diff consumer handles reparent + visibility without full resync storms"
-      ],
-      "ai_context_links": [
-        "docs/REARCHITECTURE_PLAN.md"
-      ],
-      "test_scenes": [
-        "genesis-city"
-      ],
-      "notes": "Deferred after e9 — pointer cache already delivered Genesis 70–110 fps. Remaining: shadow pass, instancing, FULL_RESYNC_INTERVAL, verbose log gating.",
-      "maintainer_only": false
     },
     {
       "id": "rearch-phase4-entity-store",
@@ -184,7 +152,7 @@ export const TASKS_FALLBACK: TasksRegistry = {
         "Genesis Plaza renders + clicks identical to pre-Phase-4"
       ],
       "ai_context_links": [
-        "docs/REARCHITECTURE_PLAN.md"
+        "docs/INTEGRATION.md"
       ],
       "test_scenes": [
         "genesis-city",
@@ -217,234 +185,6 @@ export const TASKS_FALLBACK: TasksRegistry = {
       ],
       "notes": "Shipped 2026-06-16 — see PROGRESS.md milestone.",
       "maintainer_only": true
-    },
-    {
-      "id": "trigger-area-volume",
-      "title": "TriggerArea + volume enter/leave events",
-      "status": "open",
-      "owner": "unassigned",
-      "track": "input",
-      "phase": 3,
-      "complexity": "medium",
-      "priority": "P1",
-      "dependencies": [],
-      "blocks": [],
-      "files": [
-        "src/input/PointerEventsSystem.ts",
-        "src/bridge/mirrorComponents.ts",
-        "src/collision/CollisionSystem.ts"
-      ],
-      "acceptance_criteria": [
-        "TriggerArea CRDT decodes and syncs to collision volumes",
-        "TriggerAreaResult grow-only appends reach scene worker",
-        "QA on scenes using asset-pack Triggers volumes"
-      ],
-      "ai_context_links": [
-        "docs/ECS_COMPONENTS.md",
-        "docs/PHASE3_COMPLETION.md"
-      ],
-      "test_scenes": [
-        "genesis-city"
-      ],
-      "do_not_touch": [
-        "src/shim/worker/sceneWorker.ts"
-      ],
-      "notes": "Distinct from PointerEvents PET_PROXIMITY — volume component + TriggerAreaResult."
-    },
-    {
-      "id": "raycast-scene-api",
-      "title": "Raycast + RaycastResult scene API",
-      "status": "open",
-      "owner": "unassigned",
-      "track": "input",
-      "phase": 3,
-      "complexity": "medium",
-      "priority": "P1",
-      "dependencies": [],
-      "blocks": [],
-      "files": [
-        "src/input/PointerEventsSystem.ts",
-        "src/bridge/mirrorComponents.ts",
-        "src/collision/CollisionSystem.ts"
-      ],
-      "acceptance_criteria": [
-        "engine.physicsRaycast / Raycast component wired",
-        "RaycastResult written back via CRDT grow-only path",
-        "Documented test scene with visible ray debug"
-      ],
-      "ai_context_links": [
-        "docs/ECS_COMPONENTS.md"
-      ],
-      "test_scenes": [
-        "rickroll.dcl.eth"
-      ]
-    },
-    {
-      "id": "pet-proximity-pointer",
-      "title": "PointerEvents PET_PROXIMITY_ENTER / LEAVE",
-      "status": "open",
-      "owner": "unassigned",
-      "track": "input",
-      "phase": 3,
-      "complexity": "medium",
-      "priority": "P1",
-      "dependencies": [],
-      "blocks": [],
-      "files": [
-        "src/input/PointerEventsSystem.ts",
-        "src/input/pointerConstants.ts"
-      ],
-      "acceptance_criteria": [
-        "Avatar walk-in range fires proximity events (no cursor ray)",
-        "Distinct from TriggerArea volume semantics",
-        "Hover icons unchanged for cursor path"
-      ],
-      "ai_context_links": [
-        "docs/PROGRESS.md"
-      ],
-      "notes": "PET_PROXIMITY_* on PointerEvents — player avatar distance, not volume."
-    },
-    {
-      "id": "hydration-first-load-race",
-      "title": "Hydration first-load race — composite vs delta merge",
-      "status": "open",
-      "owner": "unassigned",
-      "track": "rendering",
-      "phase": 7,
-      "complexity": "medium",
-      "priority": "P2",
-      "dependencies": [],
-      "blocks": [],
-      "files": [
-        "src/rendering/sceneHydration.ts",
-        "src/rendering/SceneHost.ts",
-        "src/core/systems/SceneScriptSystem.ts"
-      ],
-      "acceptance_criteria": [
-        "Initial crdtGetState + first script deltas converge under Lamport LWW",
-        "No double-spawn or missing GLB on fast composite boot",
-        "Loading bar reflects attach-stall fallback correctly"
-      ],
-      "ai_context_links": [
-        "docs/REARCHITECTURE_PLAN.md"
-      ],
-      "test_scenes": [
-        "genesis-city",
-        "rickroll.dcl.eth"
-      ],
-      "notes": "Snapshot vs delta race called out in Rearchitecture open questions."
-    },
-    {
-      "id": "video-player-bridge",
-      "title": "VideoPlayer + VideoEvent + getActiveVideoStreams",
-      "status": "open",
-      "owner": "unassigned",
-      "track": "media",
-      "phase": 3,
-      "complexity": "medium",
-      "priority": "P1",
-      "dependencies": [],
-      "blocks": [],
-      "files": [
-        "src/media/VideoPlayerBridge.ts",
-        "src/media/WebVideoPlayer.ts",
-        "src/bridge/mirrorComponents.ts"
-      ],
-      "acceptance_criteria": [
-        "VideoPlayer CRDT drives WebVideoPlayer instances",
-        "VideoEvent appends via CrdtEncoder source-capture",
-        "EngineApi video observables reachable from scene worker"
-      ],
-      "ai_context_links": [
-        "docs/ECS_COMPONENTS.md"
-      ],
-      "test_scenes": [
-        "scenes with in-world video planes"
-      ]
-    },
-    {
-      "id": "ui-transform-world-ui",
-      "title": "UiTransform / UiText in-world UI rendering",
-      "status": "open",
-      "owner": "unassigned",
-      "track": "ui",
-      "phase": 3,
-      "complexity": "high",
-      "priority": "P2",
-      "dependencies": [],
-      "blocks": [],
-      "files": [
-        "src/bridge/ThreeBridge.ts",
-        "src/bridge/mirrorComponents.ts",
-        "src/dcl/ecs/registry.ts"
-      ],
-      "acceptance_criteria": [
-        "UiTransform hierarchy renders as CSS3D or canvas overlay",
-        "UiText font + alignment parity with Explorer baseline",
-        "PointerEvents on UI entities work where SDK expects"
-      ],
-      "ai_context_links": [
-        "docs/ECS_COMPONENTS.md",
-        "docs/CLIENT_UI_LAYOUT.md"
-      ]
-    },
-    {
-      "id": "parcel-routes-catalyst",
-      "title": "Parcel routes /80,-1 → Catalyst content resolution",
-      "status": "open",
-      "owner": "unassigned",
-      "track": "content",
-      "phase": 6,
-      "complexity": "medium",
-      "priority": "P2",
-      "dependencies": [],
-      "blocks": [],
-      "files": [
-        "src/dcl/content/resolveScene.ts",
-        "src/client/AppController.ts",
-        "src/map/types.ts"
-      ],
-      "acceptance_criteria": [
-        "Deep link /80,-1 resolves parcel and loads scene",
-        "Catalyst realm override via env still works",
-        "SPA fallback documented in DEPLOYMENT.md"
-      ],
-      "ai_context_links": [
-        "docs/DEPLOYMENT.md"
-      ],
-      "test_scenes": [
-        "parcel coordinate URLs"
-      ]
-    },
-    {
-      "id": "voice-livekit-audio",
-      "title": "Voice / LiveKit audio presence",
-      "status": "open",
-      "owner": "unassigned",
-      "track": "social",
-      "phase": 5,
-      "complexity": "high",
-      "priority": "P2",
-      "dependencies": [],
-      "blocks": [],
-      "files": [
-        "src/social/",
-        "src/network/comms/",
-        "src/core/World.ts"
-      ],
-      "acceptance_criteria": [
-        "Mic publish/subscribe on scene room",
-        "Presence indicator in HUD",
-        "Matches deployed realm comms adapter on rickroll.dcl.eth"
-      ],
-      "ai_context_links": [
-        ".cursor/rules/comms-architecture.mdc",
-        "docs/PROGRESS.md"
-      ],
-      "do_not_touch": [
-        "src/social/dclRfc4Chat.ts"
-      ],
-      "notes": "Text chat shipped; voice is separate LiveKit audio track path."
     },
     {
       "id": "pointer-events-qa",
@@ -542,29 +282,6 @@ export const TASKS_FALLBACK: TasksRegistry = {
         "Coords, .dcl.eth, play URLs teleport correctly"
       ],
       "notes": "Shipped."
-    },
-    {
-      "id": "gltf-node-shadows",
-      "title": "GltfNodeModifiers castShadows",
-      "status": "open",
-      "owner": "unassigned",
-      "track": "rendering",
-      "phase": 6,
-      "complexity": "low",
-      "priority": "P3",
-      "dependencies": [],
-      "blocks": [],
-      "files": [
-        "src/bridge/ThreeBridge.ts",
-        "src/rendering/AssetCache.ts"
-      ],
-      "acceptance_criteria": [
-        "Per-node shadow flags applied on GLB attach",
-        "No regression on LightSource culling"
-      ],
-      "ai_context_links": [
-        "docs/lightsource-parity.md"
-      ]
     },
     {
       "id": "chat-timestamp-parity",

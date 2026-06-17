@@ -6,6 +6,13 @@ import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../player/trigge
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../player/triggerSceneEmote'
 import type { InjectPointerClickBody } from '../player/injectPointerClick'
 
+export type AvatarAttachTransformEntry = {
+  entity: number
+  position: { x: number; y: number; z: number }
+  rotation: { x: number; y: number; z: number; w: number }
+  scale: { x: number; y: number; z: number }
+}
+
 export type SceneWorkerBoot = {
   type: 'boot'
   scene: Pick<
@@ -176,6 +183,7 @@ export type MainToWorker =
   | { type: 'scene-play-ready' }
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
   | { type: 'inject-pointer-click'; body: InjectPointerClickBody }
+  | { type: 'avatar-attach-transforms'; entries: AvatarAttachTransformEntry[] }
 
 export type CrdtGetStateResponse = {
   hasEntities: boolean

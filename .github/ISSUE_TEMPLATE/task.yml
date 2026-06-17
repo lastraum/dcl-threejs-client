@@ -1,20 +1,29 @@
 name: Task claim
-description: Claim or propose a task from TASKS.yaml
+description: Announce work on a parity gap (no maintainer-assigned backlog)
 title: "[task] "
 labels: ["task"]
 body:
   - type: markdown
     attributes:
       value: |
-        Browse [docs/TASKS.yaml](https://github.com/lastraum/ThreejsClient/blob/redo/threejs-projection-arch/docs/TASKS.yaml).
-        To claim: set `owner` + `status: in_progress` in a PR, or note intent here for maintainer assignment.
+        **Find gaps:** client dev panel (`</>`) → **Community** tab — parity gaps list integration refs like `ecs:Raycast`.
+
+        **What's shipped:** **Shipped** tab (`PROGRESS.md`) + **Full status** tab (complete parity matrix).
+
+        **Claim flow:**
+        1. Pick an integration ref from the Community tab (or propose a new gap).
+        2. File this issue — check for duplicate claims in [in-progress issues](https://github.com/lastraum/dcl-threejs-client/issues?q=is%3Aopen+label%3Ain-progress).
+        3. A maintainer (or you, if triager) adds the **`in-progress`** label — bot syncs to `docs/CLAIMS.yaml` + dev panel.
+        4. Open a PR when ready; link this issue. On merge, close issue + update `registry.ts` / `integrationRegistry.ts` status.
+
+        Read [docs/AGENTS.md](https://github.com/lastraum/dcl-threejs-client/blob/main/docs/AGENTS.md) before coding.
 
   - type: input
-    id: task-id
+    id: integration-ref
     attributes:
-      label: Task id
-      description: Slug from TASKS.yaml (e.g. trigger-area-volume)
-      placeholder: trigger-area-volume
+      label: Integration ref
+      description: From dev panel Community tab (e.g. ecs:Raycast, ui:voice-ui, net:voice-tracks)
+      placeholder: ecs:TriggerArea
     validations:
       required: true
 
@@ -24,7 +33,7 @@ body:
       label: Intent
       options:
         - Claim (I will open a PR)
-        - Propose new task
+        - Propose new gap
         - Question / blocked
     validations:
       required: true
@@ -41,7 +50,7 @@ body:
     id: plan
     attributes:
       label: Plan
-      description: Brief approach, test scenes, estimated complexity
+      description: Brief approach, test scenes / your .dcl.eth world, estimated complexity
     validations:
       required: true
 
@@ -52,5 +61,5 @@ body:
       options:
         - label: I read docs/AGENTS.md frozen boundaries (shim, CRDT, no pub/sub, comms rule)
           required: true
-        - label: Task is not marked maintainer_only (or I coordinated with maintainer)
-          required: false
+        - label: I checked in-progress issues — no duplicate claim on this ref
+          required: true

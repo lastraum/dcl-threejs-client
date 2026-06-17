@@ -175,6 +175,10 @@ export class PlayerSystem {
     onProgress?.('Player ready')
   }
 
+  getLocalAvatar(): LocalAvatar | null {
+    return this.avatar
+  }
+
   async loadAvatar(onProgress?: (msg: string) => void): Promise<void> {
     onProgress?.('Loading avatar…')
     const avatarOptions = avatarOptionsFromUrl()

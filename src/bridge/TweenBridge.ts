@@ -224,9 +224,10 @@ export class TweenBridge {
     const nodes = this.getNodes()
     if (!nodes) return
 
-    const { Tween, TweenState, Transform } = this.ecs
+    const { Tween, TweenState, Transform, AvatarAttach } = this.ecs
 
     for (const [entity, tween] of view.getEntitiesWith(Tween)) {
+      if (AvatarAttach.has(entity)) continue
       const node = nodes.get(entity)
       if (!node) continue
 

@@ -1,0 +1,30 @@
+name: Sync community claims
+
+on:
+  issues:
+    types: [opened, edited, labeled, unlabeled, closed, reopened, deleted]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.repository == 'lastraum/dcl-threejs-client'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Regenerate CLAIMS.yaml from in-progress issues
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/sync-claims-from-issues.mjs
+
+      - name: Commit if changed
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'chore: sync CLAIMS.yaml from GitHub issues'
+          file_pattern: docs/CLAIMS.yaml

@@ -32,7 +32,7 @@ Use this before requesting review. Copy relevant items into your PR description.
 ## UI & docs
 
 - [ ] User-facing strings match Explorer tone (concise, no debug jargon in HUD)
-- [ ] [PROGRESS.md](./PROGRESS.md) updated if shipping a milestone (maintainer or with maintainer ack)
+- [ ] [PROGRESS.md](./PROGRESS.md) + [INTEGRATION.md](./INTEGRATION.md) updated if shipping a milestone
 - [ ] New env vars or deploy steps documented in [DEPLOYMENT.md](./DEPLOYMENT.md)
 
 ## Security & hygiene

@@ -14,6 +14,7 @@ import { SceneAvatar } from '../avatar/SceneAvatar'
 import type { ProfileIdentity } from '../avatar/displayName'
 import { NameTag, type NameTagStyle } from '../client/ui/NameTag'
 import type { AssetCache } from '../rendering/AssetCache'
+import type { AvatarSkeletonTarget } from '../avatar/AvatarAttachTargets'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionView } from './ProjectionView'
 
@@ -176,6 +177,14 @@ export class AvatarShapeBridge {
         this.avatars.delete(entity)
       }
     }
+  }
+
+  getNpcSkeleton(entity: Entity): AvatarSkeletonTarget | null {
+    const entry = this.avatars.get(entity)
+    if (!entry) return null
+    const model = entry.avatar.getModel()
+    if (!model) return null
+    return { model, nameTagAnchor: entry.avatar.nameTagAnchor }
   }
 
   playEmote(entity: Entity, emoteRef: string, loop: boolean): void {

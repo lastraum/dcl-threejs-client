@@ -12,7 +12,7 @@ A **browser-native Decentraland SDK7 Explorer** — Three.js renderer, Web Worke
 
 **Focused scope.** This is not a full replica of the entire Decentraland stack. The priority is **in-scene runtime** plus **social/comms** where already integrated — not rebuilding every platform service or legacy kernel surface.
 
-**Open contribution.** Work is tracked in [docs/TASKS.yaml](docs/TASKS.yaml) and open to DCL creators, SDK7 developers, and AI-assisted contributors — see [Community contributions](#community-contributions) below.
+**Open contribution.** Parity gaps live in the integration registry; contributors self-claim via GitHub issues — see [Community contributions](#community-contributions) below.
 
 ## Community contributions
 
@@ -20,13 +20,13 @@ A **browser-native Decentraland SDK7 Explorer** — Three.js renderer, Web Worke
 
 - **DCL scene creators and SDK7 developers** — fix parity gaps you hit in real scenes
 - **Web / Three.js engineers** — renderer, input, media, comms, content resolution
-- **AI-assisted workflow welcome** — same task registry, boundaries, and PR rules as humans
+- **AI-assisted workflow welcome** — same parity matrix, boundaries, and PR rules as humans
 
 ### Find and claim work
 
-1. Browse **[docs/TASKS.yaml](docs/TASKS.yaml)** — look for `status: open` (skip `maintainer_only: true` unless you coordinated with a maintainer)
-2. **Dev panel** — open the `</>` sidebar in the running client; it loads the live backlog from GitHub
-3. **Claim** — set `owner` + `status: in_progress` in YAML and open a PR, or file a [**Task claim** issue](.github/ISSUE_TEMPLATE/task.yml) to propose or reserve work
+1. **Dev panel** — `</>` sidebar → **Community** tab: parity gaps (`ecs:Raycast`, `ui:voice-ui`, …) + who is already working on what
+2. **Shipped history** — **Shipped** tab (`PROGRESS.md`) and **Full status** tab (complete matrix)
+3. **Claim** — file a [**Task claim** issue](https://github.com/lastraum/dcl-threejs-client/issues/new?template=task.yml) with an integration ref; add **`in-progress`** label → syncs to dev panel
 
 Full claim workflow: [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -47,16 +47,16 @@ Still smoke **Genesis Plaza** or **RickRoll** for heavy-scene parity; use **your
 
 ### AI-assisted contributors
 
-1. Read **[docs/AGENTS.md](docs/AGENTS.md)** first — frozen boundaries, reading order, re-arch gates
-2. **One task per PR** — stay within the task's `files` list; reference the task `id` in the PR title or body
-3. **Update TASKS.yaml** in the same PR (`owner`, `status`, notes if scope shifts)
+1. Read **[docs/AGENTS.md](docs/AGENTS.md)** first — frozen boundaries, reading order
+2. **One claim per PR** — link your Task claim issue; reference the integration ref in the PR title or body
+3. **Update integration status** in `registry.ts` / `integrationRegistry.ts` when parity changes
 4. Run through **[docs/PR_CHECKLIST.md](docs/PR_CHECKLIST.md)** before requesting review
 
 ### Branch and PR basics
 
 | Step | Detail |
 | --- | --- |
-| Branch | `feat/<task-id>-short-description` |
+| Branch | `feat/<integration-ref>-short-description` |
 | Build | `npm run build` must pass |
 | Smoke test | Load Genesis Plaza or the task's `test_scenes` |
 | Checklist | [docs/PR_CHECKLIST.md](docs/PR_CHECKLIST.md) |
@@ -64,26 +64,20 @@ Still smoke **Genesis Plaza** or **RickRoll** for heavy-scene parity; use **your
 
 Draft PRs early if scope is uncertain.
 
-### Good first tasks vs re-arch work
+### Good first areas
 
-| | Good starters | Re-arch gates (e7–e10) |
-| --- | --- | --- |
-| **Tracks** | input, media, rendering, content, ui | `re-arch` phase 3 |
-| **Examples** | `gltf-node-shadows`, `trigger-area-volume`, `raycast-scene-api`, `video-player-bridge` | `rearch-e7-pointer-same-tick` → e8 → e9 → e10 |
-| **Requirements** | No `maintainer_only`; read task `acceptance_criteria` + `test_scenes` | Read [docs/REARCHITECTURE_PLAN.md](docs/REARCHITECTURE_PLAN.md) + [docs/AGENTS.md](docs/AGENTS.md); maintainer review required |
+Pick a **Community tab** gap with a clear test scene — e.g. `ecs:TriggerArea`, `ecs:Raycast`, `ecs:AudioSource`, `ui:voice-ui`. Avoid shim/worker paths unless you have read [docs/AGENTS.md](docs/AGENTS.md) and coordinated on CRDT boundaries.
 
-Re-arch tasks e7–e10 are sequential and touch the CRDT consumer path — they need prior context on projection, encoder, and pointer same-tick gates. Prefer non–re-arch open tasks for a first contribution.
+### Public docs
 
-### Public repo migration
-
-The repo is **private** during active re-arch integration on branch `redo/threejs-projection-arch`. A public cut is planned after phase 3 completes (e10 merged to `main`, `package.json` opened, branch protection enabled). Details: [docs/REPO_MANAGEMENT.md](docs/REPO_MANAGEMENT.md).
+Live claims and progress load from [github.com/lastraum/dcl-threejs-client](https://github.com/lastraum/dcl-threejs-client) (`main`). Dev panel (`</>`) fetches `CLAIMS.yaml` and `PROGRESS.md` at runtime. Details: [docs/AGENTS.md](docs/AGENTS.md).
 
 ### Expectations
 
 - **Focused PRs** — minimal diffs; no drive-by refactors outside the task scope
 - **Parity on real scenes** — Genesis Plaza, `rickroll.dcl.eth`, `pizzaparty.dcl.eth` (not toy demos)
 - **Respect frozen boundaries** — do not rewrite shim/worker, CRDT wire format, or comms chat encoding without an explicit task and maintainer discussion ([docs/AGENTS.md](docs/AGENTS.md))
-- **Constructive review** — match existing code style; call out known gaps (`status: partial` in TASKS.yaml)
+- **Constructive review** — match existing code style; call out known gaps in the integration registry
 
 ## Quick start
 
@@ -97,14 +91,13 @@ Production build: `npm run build` → static SPA in `dist/`. Preview: `npm run p
 
 | Doc | Purpose |
 | --- | ------- |
-| [docs/INTEGRATION_STATUS.md](docs/INTEGRATION_STATUS.md) | Master checklist — ECS + UI + networking + performance |
+| [docs/INTEGRATION.md](docs/INTEGRATION.md) | Master checklist — ECS + UI + networking + performance |
 | [docs/CONTRIBUTOR_TESTING.md](docs/CONTRIBUTOR_TESTING.md) | **Deploy your own world** for immediate test iterations |
 | [docs/AGENTS.md](docs/AGENTS.md) | AI/human onboarding — boundaries, reading order |
-| [docs/TASKS.yaml](docs/TASKS.yaml) | Community task backlog (claim → PR) |
+| [docs/CLAIMS.yaml](docs/CLAIMS.yaml) | Community claims (synced from GitHub issues) |
 | [docs/PR_CHECKLIST.md](docs/PR_CHECKLIST.md) | Required checks before opening a PR |
-| [docs/PROGRESS.md](docs/PROGRESS.md) | Milestone log and re-arch narrative |
-| [docs/REARCHITECTURE_PLAN.md](docs/REARCHITECTURE_PLAN.md) | Renderer re-arch scope and phase gates |
+| [docs/PROGRESS.md](docs/PROGRESS.md) | Milestone log (live in dev panel from public repo) |
 | [docs/REPO_MANAGEMENT.md](docs/REPO_MANAGEMENT.md) | Public repo migration and branch strategy |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to claim tasks and submit PRs |
 
-Deploy: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Dev overlay: `</>` sidebar → roadmap loaded from GitHub `TASKS.yaml`.
+Deploy: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Dev overlay: `</>` sidebar → Community claims + parity gaps + `PROGRESS.md` from GitHub `main`.

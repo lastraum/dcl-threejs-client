@@ -147,4 +147,4 @@ src/
 
 - [`AVATAR_DESIGN.md`](./AVATAR_DESIGN.md) — runtime DCL avatar + custom VRM
 - [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) — Phase 2 / 4 summary
-- [`ECS_COMPONENTS.md`](./ECS_COMPONENTS.md) — MeshCollider, PointerLock, AvatarLocomotionSettings
+- [`INTEGRATION.md`](./INTEGRATION.md) — MeshCollider, PointerLock, AvatarLocomotionSettings

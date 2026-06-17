@@ -1,6 +1,6 @@
 /**
  * Community integration status — single machine-readable registry.
- * Human doc mirror: docs/INTEGRATION_STATUS.md (keep in sync when adding entries).
+ * Human doc mirror: docs/INTEGRATION.md (keep in sync when adding entries).
  */
 
 import {
@@ -10,6 +10,9 @@ import {
 } from '../../dcl/ecs/registry'
 
 export type IntegrationStatus = ComponentStatus
+
+/** Statuses shown as parity gaps in the dev panel Community tab. */
+export const PARITY_GAP_STATUSES: IntegrationStatus[] = ['none', 'stub', 'partial']
 
 export type IntegrationEntry = {
   id: string
@@ -38,7 +41,7 @@ function ecsToIntegration(c: EcsComponentEntry): IntegrationEntry {
   }
 }
 
-/** In-scene ECS components — full list from @dcl/sdk7 (see also docs/ECS_COMPONENTS.md). */
+/** In-scene ECS components — full list from @dcl/sdk7 (see docs/INTEGRATION.md). */
 export const ECS_INTEGRATION: IntegrationEntry[] = DCL_ECS_COMPONENTS.map(ecsToIntegration)
 
 /** Browser DOM HUD, settings overlay, splash — not in-scene UiTransform ECS. */
@@ -51,7 +54,7 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   { id: 'ui:minimap', name: 'Minimap', status: 'render', category: 'client-ui', notes: 'Scene parcels only' },
   { id: 'ui:world-location-card', name: 'World location card', status: 'render', category: 'client-ui' },
   { id: 'ui:debug-panel', name: 'Debug panel (Help)', status: 'render', category: 'client-ui', notes: 'Position HUD, collider toggles, render quality' },
-  { id: 'ui:dev-progress', name: 'Dev progress panel (</>)', status: 'render', category: 'client-ui', notes: 'TASKS.yaml + status registry' },
+  { id: 'ui:dev-progress', name: 'Dev progress panel (</>)', status: 'render', category: 'client-ui', notes: 'Community claims + parity gaps + PROGRESS.md from GitHub' },
   { id: 'ui:settings-events', name: 'Settings → Events (X)', status: 'render', category: 'client-ui', notes: 'DCL Events API, weekly/calendar' },
   { id: 'ui:settings-map', name: 'Settings → Map (M)', status: 'render', category: 'client-ui', notes: 'Genesis tiles, peers, Jump In' },
   { id: 'ui:settings-backpack', name: 'Settings → Backpack (I)', status: 'render', category: 'client-ui', notes: 'Avatar preview, equipped wearables' },
@@ -98,7 +101,8 @@ export const PERFORMANCE_INTEGRATION: IntegrationEntry[] = [
   { id: 'perf:player-idle-skip', name: 'Idle player physics skip', status: 'render', category: 'performance' },
   { id: 'perf:instancing', name: 'GLTF InstancedMesh path', status: 'none', category: 'performance', notes: 'Phase 6 re-arch' },
   { id: 'perf:shadow-pass', name: 'Shadow pass tuning', status: 'partial', category: 'performance', notes: 'e10 deferred' },
-  { id: 'perf:full-resync-interval', name: 'Periodic ThreeBridge full resync', status: 'partial', category: 'performance', notes: 'Safety net; tune in e10' }
+  { id: 'perf:full-resync-interval', name: 'Periodic ThreeBridge full resync', status: 'partial', category: 'performance', notes: 'Safety net; tune in e10' },
+  { id: 'perf:avatar-attach', name: 'AvatarAttach (Tier B parity)', status: 'render', category: 'performance', notes: 'Bone sampling + worker Transform batch; attach wins over Tween' }
 ]
 
 /** Scene worker ~system/* stubs — not ECS components. */

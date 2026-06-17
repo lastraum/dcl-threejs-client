@@ -31,6 +31,7 @@ import {
   stripBundledPointerEventColliderChecker
 } from './pointerEventColliderCheckerPatch'
 import { injectPointerClickOnEngine } from './injectPointerClick'
+import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransforms'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
 import { resolveSceneEngine } from './resolveSceneEngine'
@@ -1059,6 +1060,12 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   }
   if (msg.type === 'engine-api-enqueue') {
     engineApiEvents?.enqueueMany(msg.events)
+    return
+  }
+  if (msg.type === 'avatar-attach-transforms') {
+    if (sceneEngine) {
+      applyAvatarAttachTransformsOnEngine(sceneEngine, msg.entries)
+    }
     return
   }
 

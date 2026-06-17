@@ -2,8 +2,26 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-06-17 (Phase 4 EntityStore **closed**; e10 perf deferred)  
-> **Current phase:** **Phase 4 — EntityStore ✅ closed**. Next: e10 perf pass or Phase 5+ (instancing, composite boot). See `REARCHITECTURE_PLAN.md` §5A.
+> **Last updated:** 2026-06-17 (AvatarAttach ✅ · Phase 4 EntityStore **closed**)  
+> **Current phase:** **Phase 4 closed** — EntityStore + **AvatarAttach Tier B** shipped. Next: Raycast/TriggerArea, e10 perf, or Phase 5+ networking.  
+> **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Tasks:** [TASKS.yaml](./TASKS.yaml)
+
+---
+
+## 🎉 Milestone — AvatarAttach Tier B parity (2026-06-17)
+
+**User-confirmed working:** entities with `AvatarAttach` follow local player, remote peers, and `AvatarShape` NPC bones — SDK-parity avatar-relative `Transform` on the worker + composed world pose on the renderer.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| Bone sampling | ✅ | All `AvatarAnchorPointType` anchors; name-tag offset |
+| Transform model | ✅ | `playerTransform ⊗ relativeTransform` — not raw world-matrix copy |
+| Main thread | ✅ | `AvatarAttachBridge` — `projection.setRenderer` + EntityStore world apply |
+| Worker batch | ✅ | `avatar-attach-transforms` message per frame |
+| Targets | ✅ | LocalAvatar, RemoteAvatarManager, AvatarShapeBridge |
+| Conflicts | ✅ | Attach wins over inbound Transform apply + Tween |
+
+**Files:** `AvatarAttachBridge.ts`, `avatarAttachMath.ts`, `avatarAttachAnchors.ts`, `applyAvatarAttachTransforms.ts`, `World.bindAvatarAttachTargets()`
 
 ---
 
@@ -270,7 +288,7 @@ Default sky time: **midday (12:00)** on load. Day/night cycle still available wh
 | **World location card** (replaces minimap in worlds) | ✅ `WorldLocationCard.ts` — name, live coords, **Jump back to Genesis City** → `0,0` |
 | Debug panel (right-anchored, hidden by default) | ✅ toggled from Help icon; live scene-local + world position HUD |
 | Settings overlay (tabbed) | ✅ Events, Places, Communities, Map, Backpack, Gallery, Settings |
-| **Dev progress panel** | ✅ `</>` sidebar button — roadmap + ECS table from `progressData.ts` |
+| **Dev progress panel** | ✅ `</>` sidebar — TASKS.yaml + PROGRESS.md from GitHub + integration registry |
 | **Map tab** — Genesis City stitched tiles | ✅ click mini-map / **M** — parcel popup + Jump In + peer sidebar (dcl-neurolink parity) |
 | **Events tab** — calendar + weekly views | ✅ DCL Events API · Weekly (4 day columns) / Calendar toggle · Today + Create Event stub |
 | Chat sidebar unread badge | ✅ count when panel closed; clears on open |
@@ -390,7 +408,7 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 
 | Task                                                        | Status                                                         |
 | ----------------------------------------------------------- | -------------------------------------------------------------- |
-| ECS component registry + docs                               | ✅ `[ECS_COMPONENTS.md](./ECS_COMPONENTS.md)`, `registry.ts`    |
+| ECS component registry + docs                               | ✅ `[INTEGRATION.md](./INTEGRATION.md)`, `registry.ts`    |
 | `CrdtMirror` (@dcl/ecs renderer transport)                  | ✅ stable @ 120fps on RickRoll                                 |
 | `sceneWorker` + ~system stubs                               | ✅ `onStart` + `onUpdate` loop; see **no-ops** below            |
 | `ThreeBridge` — Transform hierarchy + parent order          | ✅ `dclTransform.ts` — depth-sorted parents + LH→RH conversion   |
@@ -527,7 +545,7 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 - **Chat nav links** — parcel coords (`80,-1`), `.dcl.eth` names, Decentraland play URLs → in-client teleport (not new tab) — `chatNavigationLinks.ts`, `linkifyText.ts`
 - **Chat @mention highlight** — purple `is-mentioned` on **bubble only** (not whole row) when message @-mentions local user — `chatMentionDetection.ts`, `ChatPanel.ts`
 - **Login** — removed **Sign in with Decentraland** (auth-server popup); wallet connect remains primary path
-- **Dev progress panel** — `</>` sidebar → roadmap + ECS + changelog from `progressData.ts` — `DevProgressPanel.ts`. **`npm run build`** runs `prebuild` → `sync-dev-progress.mjs` (patch bump, today’s date, recent commit lines appended).
+- **Dev progress panel** — `</>` sidebar → Roadmap (`TASKS.yaml`), Integration status, and Progress (`PROGRESS.md`) fetched live from `lastraum/dcl-threejs-client` `main` — `DevProgressPanel.ts`, `githubDocs.ts`. Offline: `?docsGithubFetch=0` uses bundled snapshots; **`npm run prebuild`** → `sync-dev-progress.mjs` regenerates `tasksFallback.ts` + `progressFallback.ts` from local `docs/`.
 
 **ECS bridges**
 - **`TweenBridge`** — wired in `SceneScriptSystem` + `mirrorComponents` (`Tween`, `TweenState`); move/rotate/scale/moveRotateScale + continuous modes; 31 easing curves; writes `TweenState` for worker `tweenCompleted()` — see **Tween status** below
@@ -855,7 +873,7 @@ Tracked in `src/shim/system/createSystemStubs.ts`. These are **deliberately stub
 - `crdt-get-state` bootstrap snapshot.
 - A few legacy consumers (environment, PlayerSystem, ReservedEntitiesSync writes).
 
-**Next (e9–e10):** projection-only reads + drop mirror `Engine()`; perf pass. See `docs/PHASE3_COMPLETION.md` and `docs/REARCHITECTURE_PLAN.md`.
+**Next (e9–e10):** projection-only reads + drop mirror `Engine()`; perf pass. See [PROGRESS.md](./PROGRESS.md) re-arch milestones.
 
 This is the point where the second full `@dcl/ecs` engine on the main thread is no longer required for turning scene CRDT into a Three.js scene graph.
 
@@ -1033,7 +1051,7 @@ Removed the dedicated push channel and compensation machinery:
 
 ## 2026-06-17 — Phase 4 kickoff: EntityStore
 
-First slice of the unified Three.js-backed entity store (REARCHITECTURE_PLAN.md §5A):
+First slice of the unified Three.js-backed entity store (EntityStore phase — see INTEGRATION.md):
 
 | File | Change |
 | ---- | ------ |
@@ -1082,5 +1100,5 @@ First slice of the unified Three.js-backed entity store (REARCHITECTURE_PLAN.md 
 | `src/core/World.ts` | Wires `RemoteAvatarManager.setEntityStore` after scene prepare |
 | `src/core/systems/SceneScriptSystem.ts` | Avatar store changes skip collision/pointer dirty flags |
 
-**Phase 4 closed.** Deferred to e10: `FULL_RESYNC_INTERVAL` tuning. Local player capsule remains outside store until a later pass (REARCHITECTURE_PLAN §5C).
+**Phase 4 closed.** Deferred to e10: `FULL_RESYNC_INTERVAL` tuning. Local player capsule remains outside store until a later pass (later pass).
 

@@ -1701,6 +1701,15 @@
         border: 1px solid rgba(255, 255, 255, 0.08);
         color: rgba(255, 255, 255, 0.78);
       }
+      a.dev-progress__chip--claim {
+        text-decoration: none;
+        background: rgba(120, 180, 255, 0.14);
+        border-color: rgba(120, 180, 255, 0.35);
+        color: rgba(200, 225, 255, 0.95);
+      }
+      a.dev-progress__chip--claim:hover {
+        background: rgba(120, 180, 255, 0.22);
+      }
       .dev-progress__body {
         flex: 1;
         overflow: auto;
@@ -1766,6 +1775,79 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
         font-size: 10px;
         color: rgba(200, 170, 255, 0.75);
+      }
+      .dev-progress__markdown {
+        font-size: 12px;
+        line-height: 1.55;
+        color: rgba(255, 255, 255, 0.82);
+      }
+      .dev-progress__markdown h1,
+      .dev-progress__markdown h2,
+      .dev-progress__markdown h3,
+      .dev-progress__markdown h4 {
+        margin: 16px 0 8px;
+        color: rgba(255, 255, 255, 0.95);
+        line-height: 1.3;
+      }
+      .dev-progress__markdown h1 { font-size: 16px; }
+      .dev-progress__markdown h2 { font-size: 14px; }
+      .dev-progress__markdown h3 { font-size: 13px; }
+      .dev-progress__markdown p,
+      .dev-progress__markdown ul {
+        margin: 0 0 10px;
+      }
+      .dev-progress__markdown ul {
+        padding-left: 18px;
+      }
+      .dev-progress__markdown table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 0 0 12px;
+        font-size: 11px;
+      }
+      .dev-progress__markdown th,
+      .dev-progress__markdown td {
+        padding: 5px 8px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        vertical-align: top;
+      }
+      .dev-progress__markdown th {
+        text-align: left;
+        color: rgba(255, 255, 255, 0.45);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .dev-progress__markdown code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 11px;
+        color: rgba(200, 170, 255, 0.9);
+      }
+      .dev-progress__markdown pre {
+        margin: 0 0 12px;
+        padding: 10px 12px;
+        overflow: auto;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.35);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .dev-progress__markdown pre code {
+        color: rgba(255, 255, 255, 0.78);
+      }
+      .dev-progress__markdown a {
+        color: rgba(160, 200, 255, 0.95);
+      }
+      .dev-progress__markdown blockquote {
+        margin: 0 0 10px;
+        padding: 8px 12px;
+        border-left: 3px solid rgba(160, 120, 255, 0.5);
+        background: rgba(255, 255, 255, 0.03);
+        color: rgba(255, 255, 255, 0.65);
+      }
+      .dev-progress__markdown hr {
+        border: none;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        margin: 14px 0;
       }
       .dev-progress__changelog {
         padding: 10px 12px;

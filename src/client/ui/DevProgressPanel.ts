@@ -1,44 +1,53 @@
+import { APP_VERSION } from '../appVersion'
 import {
-  countChangelogEntries,
-  DEV_CHANGELOG,
-  DEV_PROGRESS_META,
-  type ChangelogEntry
-} from '../dev/progressData'
+  CLAIM_STATUS_LABEL,
+  loadClaimsRegistry,
+  type ClaimsLoadResult,
+  type CommunityClaim
+} from '../dev/claimsRegistry'
+import {
+  communityClaimNewIssueUrl,
+  communityClaimsIssuesUrl,
+  docsClaimsBrowseUrl,
+  docsGithubFetchEnabled
+} from '../dev/githubDocs'
 import {
   ALL_INTEGRATION_ENTRIES,
   countIntegrationByStatus,
   INTEGRATION_CATEGORIES,
   INTEGRATION_STATUS_LABEL,
+  PARITY_GAP_STATUSES,
   type IntegrationEntry
 } from '../dev/integrationRegistry'
 import {
-  countTasksByStatus,
-  loadTasksRegistry,
-  tasksGithubFetchEnabled,
-  ROADMAP_GROUPS,
-  TASK_STATUS_LABEL,
-  tasksYamlUrl,
-  type RegistryTask,
-  type TasksLoadResult
-} from '../dev/tasksRegistry'
+  loadProgressMarkdown,
+  parseProgressMeta,
+  progressBrowseUrl,
+  progressMdUrl,
+  type ProgressLoadResult
+} from '../dev/progressRegistry'
+import { renderMarkdownToHtml } from '../dev/renderMarkdown'
 
-type DevTab = 'roadmap' | 'status' | 'changelog'
+type DevTab = 'community' | 'status' | 'progress'
 
-/** Centered dev overlay — roadmap (TASKS.yaml) + ECS table + version changelog. */
+/** Dev overlay — parity gaps + community claims (GitHub issues) + PROGRESS.md from GitHub. */
 export class DevProgressPanel {
   readonly root: HTMLElement
   private readonly backdrop: HTMLElement
   private readonly panel: HTMLElement
   private readonly summaryEl: HTMLElement
   private readonly bodyEl: HTMLElement
-  private readonly tabRoadmap: HTMLButtonElement
+  private readonly tabCommunity: HTMLButtonElement
   private readonly tabStatus: HTMLButtonElement
-  private readonly tabChangelog: HTMLButtonElement
+  private readonly tabProgress: HTMLButtonElement
   private readonly footerEl: HTMLElement
-  private activeTab: DevTab = 'roadmap'
+  private readonly metaEl: HTMLElement
+  private activeTab: DevTab = 'community'
   private visible = false
-  private tasksLoad: TasksLoadResult | null = null
-  private tasksLoading = false
+  private claimsLoad: ClaimsLoadResult | null = null
+  private progressLoad: ProgressLoadResult | null = null
+  private claimsLoading = false
+  private progressLoading = false
 
   constructor() {
     this.root = document.createElement('div')
@@ -64,33 +73,29 @@ export class DevProgressPanel {
       </header>
       <div class="dev-progress__meta"></div>
       <nav class="dev-progress__tabs" role="tablist">
-        <button type="button" class="dev-progress__tab is-active" data-tab="roadmap" role="tab">Roadmap</button>
-        <button type="button" class="dev-progress__tab" data-tab="status" role="tab">Integration status</button>
-        <button type="button" class="dev-progress__tab" data-tab="changelog" role="tab">Version</button>
+        <button type="button" class="dev-progress__tab is-active" data-tab="community" role="tab">Community</button>
+        <button type="button" class="dev-progress__tab" data-tab="status" role="tab">Full status</button>
+        <button type="button" class="dev-progress__tab" data-tab="progress" role="tab">Shipped</button>
       </nav>
       <div class="dev-progress__summary"></div>
       <div class="dev-progress__body"></div>
       <footer class="dev-progress__footer">
-        <span class="dev-progress__legend">⬜ not started · 🟡 partial · 🟢 done · 🔵 client-only</span>
+        <span class="dev-progress__legend">⬜ gap · 🟡 partial/stub · 🟢 done · 🔵 client-only</span>
       </footer>
     `
 
     this.summaryEl = this.panel.querySelector('.dev-progress__summary')!
     this.bodyEl = this.panel.querySelector('.dev-progress__body')!
-    this.tabRoadmap = this.panel.querySelector('[data-tab="roadmap"]')!
+    this.tabCommunity = this.panel.querySelector('[data-tab="community"]')!
     this.tabStatus = this.panel.querySelector('[data-tab="status"]')!
-    this.tabChangelog = this.panel.querySelector('[data-tab="changelog"]')!
+    this.tabProgress = this.panel.querySelector('[data-tab="progress"]')!
     this.footerEl = this.panel.querySelector('.dev-progress__footer')!
 
     const subtitle = this.panel.querySelector('.dev-progress__subtitle')!
-    subtitle.textContent = DEV_PROGRESS_META.tagline
+    subtitle.textContent = 'Parity gaps + community claims from github.com/lastraum/dcl-threejs-client'
 
-    const meta = this.panel.querySelector('.dev-progress__meta')!
-    meta.innerHTML = `
-      <span>Phase: <strong>${DEV_PROGRESS_META.phase}</strong></span>
-      <span>v${DEV_PROGRESS_META.version}</span>
-      <span>Updated ${DEV_PROGRESS_META.lastUpdated}</span>
-    `
+    this.metaEl = this.panel.querySelector('.dev-progress__meta')!
+    this.renderHeaderMeta()
 
     this.root.appendChild(this.backdrop)
     this.root.appendChild(this.panel)
@@ -98,12 +103,13 @@ export class DevProgressPanel {
 
     this.panel.querySelector('.dev-progress__close')!.addEventListener('click', () => this.hide())
     this.backdrop.addEventListener('click', () => this.hide())
-    this.tabRoadmap.addEventListener('click', () => this.setTab('roadmap'))
+    this.tabCommunity.addEventListener('click', () => this.setTab('community'))
     this.tabStatus.addEventListener('click', () => this.setTab('status'))
-    this.tabChangelog.addEventListener('click', () => this.setTab('changelog'))
+    this.tabProgress.addEventListener('click', () => this.setTab('progress'))
     window.addEventListener('keydown', this.onKeyDown)
 
-    void this.refreshTasks()
+    void this.refreshClaims()
+    void this.refreshProgress()
   }
 
   dispose(): void {
@@ -119,7 +125,8 @@ export class DevProgressPanel {
     this.visible = true
     this.root.hidden = false
     requestAnimationFrame(() => this.root.classList.add('is-open'))
-    void this.refreshTasks(true)
+    void this.refreshClaims(true)
+    void this.refreshProgress(true)
     this.render()
   }
 
@@ -140,68 +147,87 @@ export class DevProgressPanel {
     return true
   }
 
-  private async refreshTasks(force = false): Promise<void> {
-    if (this.tasksLoading) return
-    this.tasksLoading = true
+  private async refreshClaims(force = false): Promise<void> {
+    if (this.claimsLoading) return
+    this.claimsLoading = true
     try {
-      this.tasksLoad = await loadTasksRegistry(force)
-      if (this.visible && this.activeTab === 'roadmap') this.renderRoadmap()
+      this.claimsLoad = await loadClaimsRegistry(force)
+      if (this.visible && this.activeTab === 'community') this.renderCommunity()
     } finally {
-      this.tasksLoading = false
+      this.claimsLoading = false
+    }
+  }
+
+  private async refreshProgress(force = false): Promise<void> {
+    if (this.progressLoading) return
+    this.progressLoading = true
+    try {
+      this.progressLoad = await loadProgressMarkdown(force)
+      this.renderHeaderMeta()
+      if (this.visible && this.activeTab === 'progress') this.renderProgress()
+    } finally {
+      this.progressLoading = false
     }
   }
 
   private setTab(tab: DevTab): void {
     this.activeTab = tab
-    this.tabRoadmap.classList.toggle('is-active', tab === 'roadmap')
+    this.tabCommunity.classList.toggle('is-active', tab === 'community')
     this.tabStatus.classList.toggle('is-active', tab === 'status')
-    this.tabChangelog.classList.toggle('is-active', tab === 'changelog')
+    this.tabProgress.classList.toggle('is-active', tab === 'progress')
     this.render()
   }
 
   private render(): void {
-    if (this.activeTab === 'roadmap') {
-      this.renderRoadmap()
+    if (this.activeTab === 'community') {
+      this.renderCommunity()
     } else if (this.activeTab === 'status') {
       this.renderIntegrationStatus()
     } else {
-      this.renderChangelog()
+      this.renderProgress()
     }
   }
 
-  private renderRoadmap(): void {
-    if (!this.tasksLoad) {
-      this.summaryEl.innerHTML = '<span class="dev-progress__chip">Loading tasks…</span>'
-      this.bodyEl.innerHTML = tasksGithubFetchEnabled()
-        ? '<p class="dev-progress__loading">Fetching docs/TASKS.yaml from GitHub…</p>'
-        : '<p class="dev-progress__loading">Loading task backlog (offline snapshot)…</p>'
+  private renderCommunity(): void {
+    const integrationCounts = countIntegrationByStatus(ALL_INTEGRATION_ENTRIES)
+    const gapCount =
+      integrationCounts.none + integrationCounts.stub + integrationCounts.partial
+    const claimCount = this.claimsLoad?.registry.claims.length ?? 0
+
+    this.summaryEl.innerHTML = `
+      <span class="dev-progress__chip dev-progress__chip--next">⬜ ${gapCount} parity gaps</span>
+      <span class="dev-progress__chip dev-progress__chip--progress">🟡 ${claimCount} being worked on</span>
+      <span class="dev-progress__chip dev-progress__chip--done">🟢 ${integrationCounts.render} shipped</span>
+      <a class="dev-progress__chip dev-progress__chip--claim" href="${escapeHtml(communityClaimNewIssueUrl())}" target="_blank" rel="noopener">+ Claim work</a>
+    `
+
+    if (!this.claimsLoad) {
+      this.bodyEl.innerHTML = docsGithubFetchEnabled()
+        ? '<p class="dev-progress__loading">Fetching community claims from GitHub…</p>'
+        : '<p class="dev-progress__loading">Loading claims (offline snapshot)…</p>'
       return
     }
 
-    const { registry, source, branch } = this.tasksLoad
-    const tasks = registry.tasks
-    const counts = countTasksByStatus(tasks)
+    const { registry, source, branch } = this.claimsLoad
     const sourceLabel = source === 'github' ? 'GitHub' : 'offline snapshot'
-    this.summaryEl.innerHTML = `
-      <span class="dev-progress__chip dev-progress__chip--done">🟢 ${counts.done} done</span>
-      <span class="dev-progress__chip dev-progress__chip--progress">🟡 ${counts.in_progress + counts.partial} active</span>
-      <span class="dev-progress__chip dev-progress__chip--next">⬜ ${counts.open} open</span>
-      <span class="dev-progress__chip dev-progress__chip--blocked">🔴 ${counts.blocked} blocked</span>
-    `
-    this.footerEl.innerHTML = `<span class="dev-progress__legend">${sourceLabel} · branch <code>${escapeHtml(branch)}</code> · <a href="${escapeHtml(tasksYamlUrl(branch))}" target="_blank" rel="noopener">TASKS.yaml</a></span>`
+    this.footerEl.innerHTML = `<span class="dev-progress__legend">${sourceLabel} · branch <code>${escapeHtml(branch)}</code> · <a href="${escapeHtml(communityClaimsIssuesUrl())}" target="_blank" rel="noopener">in-progress issues</a> · <a href="${escapeHtml(docsClaimsBrowseUrl(branch))}" target="_blank" rel="noopener">CLAIMS.yaml</a></span>`
 
     this.bodyEl.innerHTML = ''
-    if (registry.updated) {
-      const updated = document.createElement('p')
-      updated.className = 'dev-progress__registry-meta'
-      updated.textContent = `Registry updated ${registry.updated} · ${tasks.length} tasks`
-      this.bodyEl.appendChild(updated)
-    }
 
-    for (const group of ROADMAP_GROUPS) {
-      const items = tasks.filter((t) => group.statuses.includes(t.status))
-      if (!items.length) continue
-      this.bodyEl.appendChild(this.buildTaskTable(group.title, items))
+    const claimIntro = document.createElement('p')
+    claimIntro.className = 'dev-progress__registry-meta'
+    claimIntro.textContent =
+      registry.updated && registry.claims.length
+        ? `Claims synced ${registry.updated} · pick a gap below, then open a Task claim issue before you start coding.`
+        : 'No active claims yet — parity gaps below are fair game. Open a Task claim issue to announce your work.'
+    this.bodyEl.appendChild(claimIntro)
+
+    this.bodyEl.appendChild(this.buildClaimsSection(registry.claims))
+
+    for (const category of INTEGRATION_CATEGORIES) {
+      const gaps = category.entries.filter((e) => PARITY_GAP_STATUSES.includes(e.status))
+      if (!gaps.length) continue
+      this.bodyEl.appendChild(this.buildIntegrationTable(`Parity gaps — ${category.title}`, gaps))
     }
   }
 
@@ -216,7 +242,7 @@ export class DevProgressPanel {
       <span class="dev-progress__chip">${covered} / ${ALL_INTEGRATION_ENTRIES.length} tracked</span>
     `
     this.footerEl.innerHTML =
-      '<span class="dev-progress__legend">Source: integrationRegistry.ts · docs/INTEGRATION_STATUS.md</span>'
+      '<span class="dev-progress__legend">Source: integrationRegistry.ts · docs/INTEGRATION.md</span>'
 
     this.bodyEl.innerHTML = ''
     for (const category of INTEGRATION_CATEGORIES) {
@@ -230,49 +256,55 @@ export class DevProgressPanel {
     }
   }
 
-  private renderChangelog(): void {
-    const stats = countChangelogEntries(DEV_CHANGELOG)
+  private renderProgress(): void {
+    if (!this.progressLoad) {
+      this.summaryEl.innerHTML = '<span class="dev-progress__chip">Loading progress…</span>'
+      this.bodyEl.innerHTML = docsGithubFetchEnabled()
+        ? '<p class="dev-progress__loading">Fetching docs/PROGRESS.md from GitHub…</p>'
+        : '<p class="dev-progress__loading">Loading progress (offline snapshot)…</p>'
+      return
+    }
+
+    const { markdown, source, branch } = this.progressLoad
+    const meta = parseProgressMeta(markdown)
+    const sourceLabel = source === 'github' ? 'GitHub' : 'offline snapshot'
     this.summaryEl.innerHTML = `
-      <span class="dev-progress__chip dev-progress__chip--done">v${escapeHtml(DEV_PROGRESS_META.version)} current</span>
-      <span class="dev-progress__chip">${stats.releases} release${stats.releases === 1 ? '' : 's'}</span>
-      <span class="dev-progress__chip">${stats.items} shipped items</span>
-      <span class="dev-progress__chip">Updated ${escapeHtml(stats.latestDate)}</span>
+      <span class="dev-progress__chip dev-progress__chip--done">v${escapeHtml(APP_VERSION)} client</span>
+      ${meta.phase ? `<span class="dev-progress__chip">${escapeHtml(meta.phase)}</span>` : ''}
+      ${meta.lastUpdated ? `<span class="dev-progress__chip">${escapeHtml(meta.lastUpdated)}</span>` : ''}
     `
-    this.footerEl.innerHTML =
-      '<span class="dev-progress__legend">Changelog in <code>progressData.ts</code> · tasks in <code>docs/TASKS.yaml</code></span>'
+    this.footerEl.innerHTML = `<span class="dev-progress__legend">${sourceLabel} · branch <code>${escapeHtml(branch)}</code> · <a href="${escapeHtml(progressBrowseUrl(branch))}" target="_blank" rel="noopener">PROGRESS.md</a> · <a href="${escapeHtml(progressMdUrl(branch))}" target="_blank" rel="noopener">raw</a></span>`
 
     this.bodyEl.innerHTML = ''
-    for (const entry of DEV_CHANGELOG) {
-      this.bodyEl.appendChild(this.buildChangelogEntry(entry))
-    }
+    const article = document.createElement('article')
+    article.className = 'dev-progress__markdown'
+    article.innerHTML = renderMarkdownToHtml(markdown)
+    this.bodyEl.appendChild(article)
   }
 
-  private buildChangelogEntry(entry: ChangelogEntry): HTMLElement {
-    const section = document.createElement('section')
-    section.className = 'dev-progress__section dev-progress__changelog'
-    const titleSuffix = entry.title ? ` — ${escapeHtml(entry.title)}` : ''
-    section.innerHTML = `
-      <div class="dev-progress__changelog-header">
-        <h3 class="dev-progress__section-title dev-progress__changelog-version">v${escapeHtml(entry.version)}${titleSuffix}</h3>
-        <span class="dev-progress__changelog-date">${escapeHtml(entry.date)}</span>
-      </div>
+  private renderHeaderMeta(): void {
+    const progressMeta = this.progressLoad ? parseProgressMeta(this.progressLoad.markdown) : null
+    const phase = progressMeta?.phase ?? '…'
+    const updated = progressMeta?.lastUpdated ?? '…'
+    this.metaEl.innerHTML = `
+      <span>Phase: <strong>${escapeHtml(phase)}</strong></span>
+      <span>Client v${escapeHtml(APP_VERSION)}</span>
+      <span>${escapeHtml(updated)}</span>
     `
-
-    const list = document.createElement('ul')
-    list.className = 'dev-progress__changelog-list'
-    for (const item of entry.items) {
-      const li = document.createElement('li')
-      li.textContent = item
-      list.appendChild(li)
-    }
-    section.appendChild(list)
-    return section
   }
 
-  private buildTaskTable(title: string, items: RegistryTask[]): HTMLElement {
+  private buildClaimsSection(claims: CommunityClaim[]): HTMLElement {
     const section = document.createElement('section')
     section.className = 'dev-progress__section'
-    section.innerHTML = `<h3 class="dev-progress__section-title">${title}</h3>`
+    section.innerHTML = `<h3 class="dev-progress__section-title">Being worked on</h3>`
+
+    if (!claims.length) {
+      const empty = document.createElement('p')
+      empty.className = 'dev-progress__registry-meta'
+      empty.innerHTML = `Nothing claimed right now. <a href="${escapeHtml(communityClaimNewIssueUrl())}" target="_blank" rel="noopener">Open a Task claim issue</a> with an integration ref (e.g. <code>ecs:Raycast</code>).`
+      section.appendChild(empty)
+      return section
+    }
 
     const table = document.createElement('table')
     table.className = 'dev-progress__table'
@@ -280,27 +312,24 @@ export class DevProgressPanel {
       <thead>
         <tr>
           <th>Status</th>
-          <th>Task</th>
-          <th>Track</th>
-          <th>Phase</th>
+          <th>Area</th>
           <th>Owner</th>
-          <th>Notes</th>
+          <th>Issue</th>
         </tr>
       </thead>
     `
     const tbody = document.createElement('tbody')
-    for (const item of items) {
+    for (const claim of claims) {
       const tr = document.createElement('tr')
-      tr.className = `dev-progress__row dev-progress__row--${item.status.replace('_', '-')}`
-      const owner = item.owner ?? '—'
-      const notes = [item.notes, item.priority ? `P: ${item.priority}` : ''].filter(Boolean).join(' · ')
+      tr.className = `dev-progress__row dev-progress__row--${claim.status.replace('_', '-')}`
+      const issueLink = claim.issue_url
+        ? `<a href="${escapeHtml(claim.issue_url)}" target="_blank" rel="noopener">#${claim.issue}</a>`
+        : `#${claim.issue}`
       tr.innerHTML = `
-        <td class="dev-progress__status">${TASK_STATUS_LABEL[item.status]}</td>
-        <td class="dev-progress__name"><code>${escapeHtml(item.id)}</code><br>${escapeHtml(item.title)}</td>
-        <td>${escapeHtml(item.track ?? '—')}</td>
-        <td>${item.phase ?? '—'}</td>
-        <td>${escapeHtml(owner)}</td>
-        <td class="dev-progress__notes">${escapeHtml(notes)}</td>
+        <td class="dev-progress__status">${CLAIM_STATUS_LABEL[claim.status]}</td>
+        <td class="dev-progress__name"><code>${escapeHtml(claim.integration_ref)}</code><br>${escapeHtml(claim.title)}</td>
+        <td>${escapeHtml(claim.owner)}</td>
+        <td>${issueLink}</td>
       `
       tbody.appendChild(tr)
     }
@@ -321,6 +350,7 @@ export class DevProgressPanel {
         <tr>
           <th>Status</th>
           <th>Name</th>
+          <th>Ref</th>
           <th>Phase</th>
           <th>Notes</th>
         </tr>
@@ -333,6 +363,7 @@ export class DevProgressPanel {
       tr.innerHTML = `
         <td class="dev-progress__status">${INTEGRATION_STATUS_LABEL[item.status]}</td>
         <td class="dev-progress__name">${escapeHtml(item.name)}</td>
+        <td><code>${escapeHtml(item.id)}</code></td>
         <td>${item.phase ?? '—'}</td>
         <td class="dev-progress__notes">${escapeHtml(item.notes ?? '')}</td>
       `

@@ -1,0 +1,11 @@
+# Community work claims — synced from GitHub issues (label: in-progress).
+# Do not edit manually on main; .github/workflows/sync-community-claims.yml updates this file.
+#
+# Contributors: open a Task claim issue → maintainer or bot adds in-progress label → appears here + dev panel.
+# Gaps to pick from: dev panel Integration status / Community tab (integrationRegistry parity matrix).
+
+schema_version: 1
+updated: "2026-06-17"
+source: manual
+
+claims: []

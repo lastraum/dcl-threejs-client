@@ -19,6 +19,7 @@ export type MirrorComponents = {
   AvatarLocomotionSettings: ReturnType<typeof generated.AvatarLocomotionSettings>
   InputModifier: ReturnType<typeof generated.InputModifier>
   AvatarShape: ReturnType<typeof generated.AvatarShape>
+  AvatarAttach: ReturnType<typeof generated.AvatarAttach>
   SkyboxTime: ReturnType<typeof generated.SkyboxTime>
   PlayerIdentityData: ReturnType<typeof generated.PlayerIdentityData>
   AvatarBase: ReturnType<typeof generated.AvatarBase>
@@ -52,6 +53,7 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     AvatarLocomotionSettings: generated.AvatarLocomotionSettings(engine),
     InputModifier: generated.InputModifier(engine),
     AvatarShape: generated.AvatarShape(engine),
+    AvatarAttach: generated.AvatarAttach(engine),
     SkyboxTime: generated.SkyboxTime(engine),
     PlayerIdentityData: generated.PlayerIdentityData(engine),
     AvatarBase: generated.AvatarBase(engine),

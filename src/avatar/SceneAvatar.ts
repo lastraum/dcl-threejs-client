@@ -99,6 +99,10 @@ export class SceneAvatar {
     return this.animations?.isProfileEmoteActive() ?? false
   }
 
+  getModel(): THREE.Group | null {
+    return this.model
+  }
+
   getIdentity(): ProfileIdentity {
     return this.identity
   }

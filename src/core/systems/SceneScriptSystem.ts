@@ -19,6 +19,8 @@ import { AvatarEmoteCommandBridge, type AvatarEmoteHandler } from '../../bridge/
 import { BillboardBridge } from '../../bridge/BillboardBridge'
 import { AnimatorBridge } from '../../bridge/AnimatorBridge'
 import { TweenBridge } from '../../bridge/TweenBridge'
+import { AvatarAttachBridge } from '../../bridge/AvatarAttachBridge'
+import type { AvatarAttachTargetResolver } from '../../avatar/AvatarAttachTargets'
 import { VideoPlayerBridge } from '../../media/VideoPlayerBridge'
 import { CollisionSystem } from '../../collision/CollisionSystem'
 import { GltfColliderExtractor } from '../../collision/GltfColliderExtractor'
@@ -119,6 +121,7 @@ export class SceneScriptSystem {
   private billboardBridge: BillboardBridge | null = null
   private animatorBridge: AnimatorBridge | null = null
   private tweenBridge: TweenBridge | null = null
+  private avatarAttachBridge: AvatarAttachBridge | null = null
   private videoPlayerBridge: VideoPlayerBridge | null = null
   private host: SceneHost | null = null
   private worker: Worker | null = null
@@ -195,6 +198,12 @@ export class SceneScriptSystem {
       () => this.bridge?.getEntityNodes()
     )
     this.tweenBridge = new TweenBridge(this.readComponents, () => this.bridge?.getEntityNodes())
+    this.avatarAttachBridge = new AvatarAttachBridge(
+      this.readComponents,
+      this.projection,
+      () => this.bridge?.getEntityNodes()
+    )
+    this.bridge.setSkipTransformApply((entity) => this.avatarAttachBridge!.isAttachDriven(entity))
     this.videoPlayerBridge = new VideoPlayerBridge(this.readComponents, scene, this.recordRendererAppend)
     this.bridge.setVideoPlayerBridge(this.videoPlayerBridge)
     this.collision = new CollisionSystem(host.scene)
@@ -296,6 +305,15 @@ export class SceneScriptSystem {
 
   setAvatarAssetCache(cache: AssetCache, peerUrl?: string): void {
     this.avatarShapes?.setAssetCache(cache, peerUrl)
+  }
+
+  /** Wire local / remote / NPC skeleton resolvers — call after player avatar loads. */
+  setAvatarAttachTargets(resolver: AvatarAttachTargetResolver | null): void {
+    this.avatarAttachBridge?.setTargets(resolver)
+  }
+
+  getAvatarShapeSkeleton(entity: Entity) {
+    return this.avatarShapes?.getNpcSkeleton(entity) ?? null
   }
 
   /** Seed PlayerEntity identity components for scene `getPlayer()`. */
@@ -1128,8 +1146,16 @@ export class SceneScriptSystem {
     this.billboardBridge?.update()
     this.avatarShapes?.update(delta)
     this.animatorBridge?.update(delta)
+    this.avatarAttachBridge?.update(this.view)
+    this.flushAvatarAttachTransforms()
     this.tweenBridge?.update(delta, this.view)
     this.videoPlayerBridge?.update(tickNumber, this.view)
+  }
+
+  private flushAvatarAttachTransforms(): void {
+    const batch = this.avatarAttachBridge?.consumeWorkerBatch()
+    if (!batch?.length || !this.worker) return
+    this.worker.postMessage({ type: 'avatar-attach-transforms', entries: batch } satisfies MainToWorker)
   }
 
   async syncAsyncBridges(): Promise<void> {
@@ -1180,6 +1206,8 @@ export class SceneScriptSystem {
     this.billboardBridge = null
     this.animatorBridge = null
     this.tweenBridge = null
+    this.avatarAttachBridge?.dispose()
+    this.avatarAttachBridge = null
     this.videoPlayerBridge = null
     this.collision?.dispose()
     this.collision = null

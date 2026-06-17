@@ -1,4 +1,4 @@
-/** App semver — always read from package.json (sync-dev-progress keeps changelog in sync). */
+/** App semver — read from package.json (bumped via release tooling, not every build). */
 import pkg from '../../package.json'
 
 declare const __BUILD_DATE__: string

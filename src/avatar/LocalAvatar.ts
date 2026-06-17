@@ -77,6 +77,10 @@ export class LocalAvatar {
     return this.identity
   }
 
+  getModel(): THREE.Group | null {
+    return this.model
+  }
+
   getIdentity(): ProfileIdentity {
     return this.identity
   }

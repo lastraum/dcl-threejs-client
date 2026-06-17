@@ -85,7 +85,7 @@ Document in the PR which URLs you used.
 
 ## Related
 
-- [INTEGRATION_STATUS.md](./INTEGRATION_STATUS.md) — what is implemented vs not
+- [INTEGRATION.md](./INTEGRATION.md) — what is implemented vs not
 - [TASKS.yaml](./TASKS.yaml) — `test_scenes` per task
 - [DEPLOYMENT.md](./DEPLOYMENT.md) — hosting the **client** SPA (not scene deploy)
 - [PR_CHECKLIST.md](./PR_CHECKLIST.md) — pre-review checks

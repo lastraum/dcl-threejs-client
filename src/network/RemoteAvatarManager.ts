@@ -10,7 +10,15 @@ import { defaultProfileIdentity, identityFromAvatarProfile, type ProfileIdentity
 import { fetchProfileCached, profileFromSerializedEntry } from '../avatar/peerApi'
 import type { AvatarProfile, BodyShape } from '../avatar/types'
 import { DCL_LOCOMOTION_DEFAULTS } from '../player/locomotion'
-import { dclToThreeVec, dclYawToThreeYaw } from '../bridge/dclTransform'
+import {
+  dclToThreeVec,
+  dclYawToThreeYaw,
+  threeToDclQuat,
+  threeToDclVec,
+  type DclTransformValues
+} from '../bridge/dclTransform'
+import { ReservedEntitiesSync } from '../bridge/ReservedEntitiesSync'
+import type { AvatarSkeletonTarget } from '../avatar/AvatarAttachTargets'
 import { avatarEntityFromAddress, type EntityStore } from '../bridge/EntityStore'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { NameTag } from '../client/ui/NameTag'
@@ -110,6 +118,26 @@ export class RemoteAvatarManager {
 
   setCameraPosition(position: THREE.Vector3): void {
     this.loadQueue.setCameraPosition(position)
+  }
+
+  getAttachSkeleton(address: string): AvatarSkeletonTarget | null {
+    const record = this.peers.get(address.toLowerCase())
+    if (!record) return null
+    const model = record.model ?? record.placeholder
+    if (!model) return null
+    return { model, nameTagAnchor: record.nameTagAnchor }
+  }
+
+  getPlayerTransformDclForAddress(address: string): DclTransformValues | null {
+    const record = this.peers.get(address.toLowerCase())
+    if (!record || !record.hasPosition) return null
+    const pos = threeToDclVec(record.root.position)
+    const rot = threeToDclQuat(ReservedEntitiesSync.playerRotationFromYaw(record.currentYaw))
+    return {
+      position: { x: pos.x, y: pos.y, z: pos.z },
+      rotation: { x: rot.x, y: rot.y, z: rot.z, w: rot.w },
+      scale: { x: 1, y: 1, z: 1 }
+    }
   }
 
   playPeerEmote(address: string, emoteRef: string, incrementalId: number): void {

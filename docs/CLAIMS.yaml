@@ -9,6 +9,13 @@ updated: 2026-06-17
 source: github
 base_branch: dev-latest
 workflow:
+  - stage: pending_review
+    integration_ref: pr:5
+    title: "perf(tween): stop Genesis hot-loop + silence worker deliver logs"
+    owner: lastraum
+    pr: 5
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/5
+    updated: 2026-06-17
   - stage: merged
     integration_ref: pr:4
     title: proactive TweenState delivery for tweenCompleted parity

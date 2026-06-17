@@ -2,7 +2,7 @@
 
 export const GITHUB_DOCS_REPO = 'lastraum/dcl-threejs-client'
 export const GITHUB_DOCS_RAW = 'https://raw.githubusercontent.com/lastraum/dcl-threejs-client'
-export const GITHUB_DOCS_DEFAULT_BRANCH = 'main'
+export const GITHUB_DOCS_DEFAULT_BRANCH = 'dev-latest'
 
 export function resolveDocsBranch(): string {
   if (typeof window === 'undefined') return GITHUB_DOCS_DEFAULT_BRANCH

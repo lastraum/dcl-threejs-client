@@ -2,9 +2,26 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-06-17 (AvatarAttach ✅ · Phase 4 EntityStore **closed**)  
-> **Current phase:** **Phase 4 closed** — EntityStore + **AvatarAttach Tier B** shipped. Next: Raycast/TriggerArea, e10 perf, or Phase 5+ networking.  
+> **Last updated:** 2026-06-17 (TriggerArea Tier A ✅ · AvatarAttach ✅ · Phase 4 EntityStore **closed**)  
+> **Current phase:** **Phase 4 closed** — EntityStore + **AvatarAttach Tier B** + **TriggerArea Tier A** shipped. Next: Raycast, e10 perf, or Phase 5+ networking.
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Tasks:** [TASKS.yaml](./TASKS.yaml)
+
+---
+
+## 🎉 Milestone — TriggerArea Tier A parity (2026-06-17)
+
+**User-confirmed working:** box + sphere `TriggerArea` volumes fire scene `onTriggerEnter` / `onTriggerExit` callbacks; grow-only `TriggerAreaResult` CRDT delivery to the scene worker.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| Detection | ✅ | DCL-native math probes (default); optional PhysX Tier B via `?triggerParity` |
+| CRDT path | ✅ | `TriggerAreaSystem` → `CrdtEncoder` → worker inject + awaited engine tick |
+| Bundled scenes | ✅ | `patchSceneBundle` captures correct engine at `addTransport(renderer)` |
+| Debug | ✅ | `?triggerverbose` probes · `npm run test:trigger` (11/11) |
+
+**Files:** `TriggerAreaSystem.ts`, `triggerAreaMath.ts`, `triggerAreaEmit.ts`, `injectTriggerAreaAppends.ts`, `SceneScriptSystem.updateTriggerAreas()`
+
+**PR:** [#2](https://github.com/lastraum/dcl-threejs-client/pull/2) → `dev-latest` (closes [#1](https://github.com/lastraum/dcl-threejs-client/issues/1))
 
 ---
 

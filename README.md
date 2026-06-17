@@ -100,4 +100,4 @@ Production build: `npm run build` → static SPA in `dist/`. Preview: `npm run p
 | [docs/REPO_MANAGEMENT.md](docs/REPO_MANAGEMENT.md) | Public repo migration and branch strategy |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to claim tasks and submit PRs |
 
-Deploy: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Dev overlay: `</>` sidebar → Community claims + parity gaps + `PROGRESS.md` from GitHub `main`.
+Deploy: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Dev overlay: `</>` sidebar → Community claims + parity gaps + `PROGRESS.md` from GitHub `dev-latest`.

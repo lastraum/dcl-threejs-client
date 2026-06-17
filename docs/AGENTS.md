@@ -39,7 +39,7 @@ Optional: `CLIENT_UI_LAYOUT.md`, `PLAYER_DESIGN.md`, `AVATAR_DESIGN.md`, `CONTRI
 | Full status | Complete integration matrix |
 | Shipped | `docs/PROGRESS.md` on `main` |
 
-Raw URLs (default branch `main`):
+Raw URLs (default branch `dev-latest`):
 
 - `https://raw.githubusercontent.com/lastraum/dcl-threejs-client/main/docs/CLAIMS.yaml`
 - `https://raw.githubusercontent.com/lastraum/dcl-threejs-client/main/docs/PROGRESS.md`

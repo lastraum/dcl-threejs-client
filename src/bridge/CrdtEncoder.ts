@@ -170,6 +170,34 @@ export class CrdtEncoder {
     return buf.toBinary()
   }
 
+  /**
+   * Encode only dirty `TweenState` PUTs (no Transform, reserved entities, or appends).
+   * Used for lightweight proactive worker push after pointer-triggered tweens.
+   */
+  encodeTweenStateOnly(): Uint8Array | null {
+    this.emitted.length = 0
+    const buf = new ReadWriteByteBuffer()
+    const tweenStateId = this.tweenState.componentId
+    const tweenDirty = this.tweenEncodeEntities
+    this.tweenEncodeEntities = null
+    if (!tweenDirty?.size) return null
+    let wrote = false
+    for (const entity of tweenDirty) {
+      if (!this.projection.has(tweenStateId, entity)) continue
+      if (
+        this.emitLww(
+          entity,
+          tweenStateId,
+          serializeFromProjection(this.tweenState, this.projection, entity),
+          buf
+        )
+      ) {
+        wrote = true
+      }
+    }
+    return wrote ? buf.toBinary() : null
+  }
+
   /** Grow-only component ids the encoder owns (pointer results, video events). */
   growOnlyComponentIds(): ReadonlySet<number> {
     return this.growOnlyIds

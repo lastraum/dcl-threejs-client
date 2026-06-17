@@ -391,6 +391,10 @@ export class SceneScriptSystem {
 
     const boot: SceneWorkerBoot = {
       type: 'boot',
+      debug: {
+        pointerDeliver: POINTER_VERBOSE,
+        tweenDeliver: isTweenVerbose()
+      },
       scene: {
         title: scene.title,
         parcels: scene.parcels,
@@ -892,7 +896,10 @@ export class SceneScriptSystem {
   private lastTriggerFlushAt = 0
   private static readonly TRIGGER_FLUSH_MIN_MS = 50
   private lastTweenDeliverAt = 0
-  private static readonly TWEEN_DELIVER_MIN_MS = 50
+  /** Proactive TweenState push only after pointer delivery (click→complete parity). */
+  private proactiveTweenPushUntil = 0
+  private static readonly TWEEN_DELIVER_MIN_MS = 100
+  private static readonly PROACTIVE_TWEEN_PUSH_MS = 3000
 
   /**
    * Per-frame TriggerArea detection + push grow-only results to the worker.
@@ -910,20 +917,20 @@ export class SceneScriptSystem {
   }
 
   /**
-   * Push renderer-owned `TweenState` PUTs to the worker (throttled).
-   * Worker CRDT round-trips alone are too sparse for click→`tweenCompleted()` parity.
+   * Push `TweenState` to the worker after pointer delivery only (throttled).
+   * Ambient Genesis tweens use the normal worker `crdt-send` path — no hot-loop push.
    */
   private deliverTweenStateToWorker(): void {
+    if (performance.now() > this.proactiveTweenPushUntil) return
     if (!this.worker || !this.running || !this.tweenBridge?.hasEncodeDirty()) return
     if (this.pointerAwaitingWorkerApply || this.pointerFlushInFlight) return
     const now = performance.now()
     if (now - this.lastTweenDeliverAt < SceneScriptSystem.TWEEN_DELIVER_MIN_MS) return
     this.lastTweenDeliverAt = now
 
-    this.prepareRendererOutboundState()
     const tweenDirty = this.tweenBridge.consumeEncodeDirty()
     this.encoder.setTweenEncodeEntities(tweenDirty)
-    const bytes = this.encoder.encode()
+    const bytes = this.encoder.encodeTweenStateOnly()
     if (!bytes?.byteLength) return
 
     if (isTweenVerbose()) {
@@ -935,7 +942,7 @@ export class SceneScriptSystem {
     }
     const copy = bytes.slice()
     this.worker.postMessage(
-      { type: 'pointer-crdt-deliver', data: [copy] } satisfies MainToWorker,
+      { type: 'tween-state-deliver', data: [copy] } satisfies MainToWorker,
       [copy.buffer]
     )
   }
@@ -1089,6 +1096,7 @@ export class SceneScriptSystem {
     this.lastInjectPayload = null
     this.pointerDeliverRetried = false
     this.clearPointerDeliverWatchdog()
+    this.proactiveTweenPushUntil = performance.now() + SceneScriptSystem.PROACTIVE_TWEEN_PUSH_MS
     this.worker?.postMessage({ type: 'pause-scene-ticks', paused: false } satisfies MainToWorker)
   }
 

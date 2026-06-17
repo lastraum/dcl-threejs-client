@@ -107,6 +107,12 @@ let pointerDeliverBatchOpen = false
 let pointerDeliverAckFallbackTimer: ReturnType<typeof setTimeout> | null = null
 /** Genesis composite spawn runs in exports.onUpdate — must stay on (engine.update alone does not load composite). */
 const ENABLE_FULL_SCENE_ONUPDATE = true
+/** Boot `debug` flags from main (`?pointerverbose` / `?tweenverbose`). */
+let debugPointerDeliver = false
+let debugTweenDeliver = false
+let debugMessageArrival = false
+/** Coalesce proactive tween-state injects into one engine tick per frame. */
+let tweenEngineTickQueued = false
 
 function clearSceneUpdateAbortTimer(): void {
   if (sceneUpdateAbortTimer) {
@@ -213,15 +219,15 @@ async function runPointerEngineTickSync(label: string): Promise<void> {
       return
     }
     await sceneEngine.update(0)
-    workerLog('log', `[sceneWorker] ${label} — sceneEngine.update(0) done`)
+    workerVerboseLog(debugPointerDeliver, 'log', `[sceneWorker] ${label} — sceneEngine.update(0) done`)
     if (sceneOnUpdate) {
       try {
         const result = sceneOnUpdate(0)
         if (result != null && typeof (result as Promise<void>).then === 'function') {
           await result
-          workerLog('log', `[sceneWorker] ${label} — scene onUpdate(0) done (async)`)
+          workerVerboseLog(debugPointerDeliver, 'log', `[sceneWorker] ${label} — scene onUpdate(0) done (async)`)
         } else {
-          workerLog('log', `[sceneWorker] ${label} — scene onUpdate(0) done (sync)`)
+          workerVerboseLog(debugPointerDeliver, 'log', `[sceneWorker] ${label} — scene onUpdate(0) done (sync)`)
         }
       } catch (err) {
         workerLog(
@@ -232,7 +238,11 @@ async function runPointerEngineTickSync(label: string): Promise<void> {
     }
     // onUpdate may add Tween / mutate ECS — flush to renderer before pointer batch ends.
     await sceneEngine.update(0)
-    workerLog('log', `[sceneWorker] ${label} — sceneEngine.update(0) post-onUpdate flush done`)
+    workerVerboseLog(
+      debugPointerDeliver,
+      'log',
+      `[sceneWorker] ${label} — sceneEngine.update(0) post-onUpdate flush done`
+    )
   } catch (err) {
     workerLog(
       'error',
@@ -276,6 +286,45 @@ function beginPointerDeliverBatch(label: string): void {
 /** Forward to main debug log without relying on patched console (scene onStart may restore native console). */
 function workerLog(level: 'log' | 'info' | 'warn' | 'error' | 'debug', message: string): void {
   ctx.postMessage({ type: 'log', message: `[${level}] ${message}` } satisfies SceneWorkerOutbound)
+}
+
+function workerVerboseLog(
+  enabled: boolean,
+  level: 'log' | 'info' | 'warn' | 'error' | 'debug',
+  message: string
+): void {
+  if (!enabled) return
+  workerLog(level, message)
+}
+
+function scheduleBatchedTweenEngineTick(): void {
+  if (tweenEngineTickQueued || !sceneEngine) return
+  tweenEngineTickQueued = true
+  setTimeout(() => {
+    tweenEngineTickQueued = false
+    if (!sceneEngine || pointerDeliveryInFlight || sceneTicksPaused) return
+    void sceneEngine.update(0).catch((err) => {
+      workerLog(
+        'error',
+        `[sceneWorker] tween-state batched engine tick failed — ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+    })
+  }, 0)
+}
+
+/** Lightweight tween-state path — no pointer pause / preempt / full deliver batch. */
+function deliverTweenStateInbound(chunks: Uint8Array[]): void {
+  if (!sceneEngine || !sceneOnStartComplete) return
+  const applied = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
+  if (applied === 0) return
+  workerVerboseLog(
+    debugTweenDeliver,
+    'log',
+    `[sceneWorker] tween-state-deliver — inject ${applied} TweenState PUT(s)`
+  )
+  scheduleBatchedTweenEngineTick()
 }
 
 function patchWorkerConsole(): void {
@@ -347,14 +396,19 @@ function deliverPointerCrdtInbound(chunks: Uint8Array[]): void {
     return
   }
   const bytes = chunkByteCount(chunks)
-  workerLog(
+  workerVerboseLog(
+    debugPointerDeliver,
     'log',
     `[sceneWorker] pointer-crdt-deliver received — ${chunks.length} chunk(s), ${bytes} bytes` +
       (sceneUpdateInFlight ? ' (scene tick in flight — preempting)' : '')
   )
   if (pointerDeliveryInFlight) {
     queuedPointerDeliver = chunks
-    workerLog('log', '[sceneWorker] pointer-crdt-deliver queued — prior delivery in flight')
+    workerVerboseLog(
+      debugPointerDeliver,
+      'log',
+      '[sceneWorker] pointer-crdt-deliver queued — prior delivery in flight'
+    )
     setTimeout(() => {
       if (queuedPointerDeliver) drainQueuedPointerDeliver()
     }, 50)
@@ -381,9 +435,45 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
     queuedPointerDeliver = chunks
     return
   }
+
+  const canDirectInject = !!sceneEngine && sceneOnStartComplete && !pointerDeliverBatchOpen
+
+  // Lightweight path — no scene-tick pause (tween/transform transport-only).
+  if (canDirectInject) {
+    try {
+      const { tweenPuts, triggerAppends } = applyRendererInboundChunks(chunks)
+      if (triggerAppends > 0) {
+        preemptForPointerDelivery()
+        sceneTicksPaused = true
+        workerVerboseLog(
+          debugPointerDeliver,
+          'log',
+          `[sceneWorker] pointer-crdt-deliver — trigger inject ${triggerAppends} TriggerAreaResult append(s)`
+        )
+        void runPointerEngineTickSync('pointer-crdt-deliver-trigger')
+        return
+      }
+      if (tweenPuts > 0) {
+        workerVerboseLog(
+          debugTweenDeliver,
+          'log',
+          `[sceneWorker] pointer-crdt-deliver — tween inject ${tweenPuts} TweenState PUT(s)`
+        )
+        scheduleBatchedTweenEngineTick()
+        return
+      }
+      return
+    } catch (err) {
+      workerLog(
+        'error',
+        `[sceneWorker] pointer-crdt-deliver failed — ${err instanceof Error ? err.message : String(err)}`
+      )
+      return
+    }
+  }
+
   preemptForPointerDelivery()
   sceneTicksPaused = true
-  const canDirectInject = !!sceneEngine && sceneOnStartComplete && !pointerDeliverBatchOpen
   if (!rendererInboundApply && !canDirectInject) {
     workerLog('warn', '[sceneWorker] pointer-crdt-deliver skipped — rendererInboundApply not bound')
     finalizePointerDelivery('pointer-crdt-deliver')
@@ -392,7 +482,8 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
   try {
     if (pointerDeliverBatchOpen) {
       const { tweenPuts, triggerAppends } = applyRendererInboundChunks(chunks)
-      workerLog(
+      workerVerboseLog(
+        debugPointerDeliver,
         'log',
         `[sceneWorker] pointer-crdt-deliver — batch apply tween=${tweenPuts} trigger=${triggerAppends}`
       )
@@ -400,43 +491,12 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
       return
     }
 
-    if (canDirectInject) {
-      const { tweenPuts, triggerAppends } = applyRendererInboundChunks(chunks)
-      if (triggerAppends > 0) {
-        workerLog(
-          'log',
-          `[sceneWorker] pointer-crdt-deliver — trigger inject ${triggerAppends} TriggerAreaResult append(s)`
-        )
-        void runPointerEngineTickSync('pointer-crdt-deliver-trigger')
-        return
-      }
-      if (tweenPuts > 0) {
-        workerLog('log', `[sceneWorker] pointer-crdt-deliver — tween inject ${tweenPuts} TweenState PUT(s)`)
-        void sceneEngine!
-          .update(0)
-          .then(() => {
-            workerLog('log', '[sceneWorker] pointer-crdt-deliver — tween inject engine tick done')
-          })
-          .catch((err) => {
-            workerLog(
-              'error',
-              `[sceneWorker] pointer-crdt-deliver tween tick failed — ${
-                err instanceof Error ? err.message : String(err)
-              }`
-            )
-          })
-          .finally(() => {
-            resumeSceneTicksAfterPointer()
-          })
-        return
-      }
-      workerLog('warn', '[sceneWorker] pointer-crdt-deliver — direct inject 0; fell back to transport apply')
-      void runPointerEngineTickSync('pointer-crdt-deliver-fallback')
-      return
-    }
-
     applyRendererInboundChunks(chunks)
-    workerLog('log', '[sceneWorker] pointer-crdt-deliver — rendererInboundApply done (pre-onStart)')
+    workerVerboseLog(
+      debugPointerDeliver,
+      'log',
+      '[sceneWorker] pointer-crdt-deliver — rendererInboundApply done (pre-onStart)'
+    )
     resumeSceneTicksAfterPointer()
   } catch (err) {
     workerLog(
@@ -1149,6 +1209,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     }
     return
   }
+  if (msg.type === 'tween-state-deliver') {
+    deliverTweenStateInbound(msg.data)
+    return
+  }
 
   if (msg.type !== 'boot') return
 
@@ -1156,6 +1220,9 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     sceneOnStartComplete = false
     sceneBootInProgress = true
     pendingBootPriority.length = 0
+    debugPointerDeliver = msg.debug?.pointerDeliver === true
+    debugTweenDeliver = msg.debug?.tweenDeliver === true
+    debugMessageArrival = msg.debug?.messageArrival === true
     patchWorkerConsole()
     workerLog('log', 'scene worker boot — console forwarding active')
     const res = await fetch(msg.scene.scriptUrl)
@@ -1243,13 +1310,18 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   }
 }
 
-/** High-frequency RPC responses are excluded from the arrival log to avoid flooding. */
-const QUIET_MESSAGE_TYPES = new Set<string>(['crdt-response', 'crdt-get-state-response'])
+/** High-frequency messages excluded from arrival log unless `debug.messageArrival`. */
+const QUIET_MESSAGE_TYPES = new Set<string>([
+  'crdt-response',
+  'crdt-get-state-response',
+  'pointer-crdt-deliver',
+  'tween-state-deliver'
+])
 let workerMessageCount = 0
 
-/** Unconditional arrival proof — raw postMessage, never patched console or async dispatch. */
+/** Raw postMessage arrival proof — only when `debug.messageArrival` is set at boot. */
 function logWorkerMessageArrival(type: string, count: number): void {
-  if (QUIET_MESSAGE_TYPES.has(type)) return
+  if (!debugMessageArrival || QUIET_MESSAGE_TYPES.has(type)) return
   try {
     ctx.postMessage({
       type: 'log',
@@ -1289,7 +1361,11 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
     } else {
       resumeSceneTicksAfterPointer()
     }
-    workerLog('log', `[sceneWorker] scene ticks ${sceneTicksPaused ? 'paused' : 'resumed'}`)
+    workerVerboseLog(
+      debugPointerDeliver,
+      'log',
+      `[sceneWorker] scene ticks ${sceneTicksPaused ? 'paused' : 'resumed'}`
+    )
     return
   }
   if (msg.type === 'inject-pointer-click') {

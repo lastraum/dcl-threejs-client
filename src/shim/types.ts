@@ -13,8 +13,18 @@ export type AvatarAttachTransformEntry = {
   scale: { x: number; y: number; z: number }
 }
 
+export type SceneWorkerDebugFlags = {
+  /** `?pointerverbose` — log pointer-crdt-deliver round-trips in the worker. */
+  pointerDeliver?: boolean
+  /** `?tweenverbose` — log tween-state inject / push in the worker. */
+  tweenDeliver?: boolean
+  /** Log every worker onmessage arrival (`onmessage #N type=…`). */
+  messageArrival?: boolean
+}
+
 export type SceneWorkerBoot = {
   type: 'boot'
+  debug?: SceneWorkerDebugFlags
   scene: Pick<
     ResolvedScene,
     'title' | 'parcels' | 'baseParcel' | 'spawn' | 'contentsBaseUrl' | 'entityId' | 'mainEntry'
@@ -182,6 +192,7 @@ export type MainToWorker =
   | { type: 'pause-scene-ticks'; paused?: boolean }
   | { type: 'scene-play-ready' }
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
+  | { type: 'tween-state-deliver'; data: Uint8Array[] }
   | { type: 'inject-pointer-click'; body: InjectPointerClickBody }
   | { type: 'avatar-attach-transforms'; entries: AvatarAttachTransformEntry[] }
 

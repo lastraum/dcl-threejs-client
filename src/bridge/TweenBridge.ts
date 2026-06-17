@@ -2,7 +2,13 @@ import * as THREE from 'three'
 import { Easing } from '@tweenjs/tween.js'
 import type { Entity } from '@dcl/ecs'
 import type { PBTween } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/tween.gen'
-import { applyDclLocalTransform, dclYawToThreeYaw, threeToDclQuat, type DclTransformValues } from './dclTransform'
+import {
+  applyDclLocalTransform,
+  dclYawToThreeYaw,
+  threeToDclQuat,
+  type DclTransformValues
+} from './dclTransform'
+import type { EntityStore } from './EntityStore'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionView } from './ProjectionView'
 
@@ -17,6 +23,8 @@ type TweenRuntime = {
   progress: number
   /** Accumulated UV for textureMoveContinuous. */
   textureUv?: Vec2
+  /** Cached texture targets — avoids per-frame Object3D traverse. */
+  textureTargets?: THREE.Texture[]
   /** Reset progress on the frame after signature change. */
   justReset?: boolean
 }
@@ -26,6 +34,12 @@ const _qA = new THREE.Quaternion()
 const _qB = new THREE.Quaternion()
 const _qOut = new THREE.Quaternion()
 const _euler = new THREE.Euler(0, 0, 0, 'YXZ')
+const _scratchTransform: DclTransformValues = {
+  position: { x: 0, y: 0, z: 0 },
+  rotation: { x: 0, y: 0, z: 0, w: 1 },
+  scale: { x: 1, y: 1, z: 1 },
+  parent: 0 as Entity
+}
 /** Matches `TextureMovementType.TMT_TILING` (const enum — use literal under isolatedModules). */
 const TMT_TILING = 1
 
@@ -62,6 +76,26 @@ const EASING: Array<(t: number) => number> = [
   Easing.Back.Out,
   Easing.Back.InOut
 ]
+
+function copyVec3(dst: Vec3, src: Vec3): void {
+  dst.x = src.x
+  dst.y = src.y
+  dst.z = src.z
+}
+
+function copyQuat(dst: Quat, src: Quat): void {
+  dst.x = src.x
+  dst.y = src.y
+  dst.z = src.z
+  dst.w = src.w
+}
+
+function copyTransform(dst: DclTransformValues, src: DclTransformValues): void {
+  copyVec3(dst.position, src.position)
+  copyQuat(dst.rotation, src.rotation)
+  copyVec3(dst.scale, src.scale)
+  dst.parent = src.parent
+}
 
 function lerpVec2(a: Vec2, b: Vec2, t: number): Vec2 {
   return {
@@ -130,6 +164,15 @@ function collectMeshTextures(mesh: THREE.Mesh): THREE.Texture[] {
   return out
 }
 
+function collectTextureTargets(root: THREE.Object3D): THREE.Texture[] {
+  const out: THREE.Texture[] = []
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return
+    out.push(...collectMeshTextures(child))
+  })
+  return out
+}
+
 function ensureRepeatWrapping(tex: THREE.Texture): void {
   if (tex.wrapS !== THREE.RepeatWrapping || tex.wrapT !== THREE.RepeatWrapping) {
     tex.wrapS = THREE.RepeatWrapping
@@ -138,35 +181,25 @@ function ensureRepeatWrapping(tex: THREE.Texture): void {
   }
 }
 
-function applyTextureUv(root: THREE.Object3D, uv: Vec2, movementType?: number): void {
+function applyTextureUvToTargets(targets: THREE.Texture[], uv: Vec2, movementType?: number): void {
   const tiling = movementType === TMT_TILING
-  root.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) return
-    for (const tex of collectMeshTextures(child)) {
-      ensureRepeatWrapping(tex)
-      if (tiling) {
-        tex.repeat.set(uv.x, uv.y)
-      } else {
-        tex.offset.set(uv.x, uv.y)
-      }
+  for (const tex of targets) {
+    ensureRepeatWrapping(tex)
+    if (tiling) {
+      tex.repeat.set(uv.x, uv.y)
+    } else {
+      tex.offset.set(uv.x, uv.y)
     }
-  })
+  }
 }
 
-function readTextureUv(root: THREE.Object3D, movementType?: number): Vec2 | null {
-  let found: Vec2 | null = null
-  root.traverse((child) => {
-    if (found || !(child instanceof THREE.Mesh)) return
-    for (const tex of collectMeshTextures(child)) {
-      if (movementType === TMT_TILING) {
-        found = { x: tex.repeat.x, y: tex.repeat.y }
-      } else {
-        found = { x: tex.offset.x, y: tex.offset.y }
-      }
-      return
-    }
-  })
-  return found
+function readTextureUvFromTargets(targets: THREE.Texture[], movementType?: number): Vec2 | null {
+  const tex = targets[0]
+  if (!tex) return null
+  if (movementType === TMT_TILING) {
+    return { x: tex.repeat.x, y: tex.repeat.y }
+  }
+  return { x: tex.offset.x, y: tex.offset.y }
 }
 
 function faceMoveDirection(
@@ -186,14 +219,29 @@ function faceMoveDirection(
   transform.rotation = { x: dclQ.x, y: dclQ.y, z: dclQ.z, w: dclQ.w }
 }
 
-/** ECS `Tween` → Transform / material UV interpolation; writes `TweenState` back to mirror. */
+/**
+ * ECS `Tween` → EntityStore pose + material UV interpolation.
+ * Writes `TweenState` (+ interpolated `Transform`) back to the mirror for worker `tweenCompleted()`.
+ *
+ * SDK parity: `@dcl/ecs` `createTweenSystem()` reads `TweenState.state` (0 active / 1 completed / 2 paused)
+ * and `currentTime` (0–1 progress) to fire `tweenCompleted()` and advance `TweenSequence` yoyo/restart.
+ */
 export class TweenBridge {
   private readonly runtime = new Map<Entity, TweenRuntime>()
+  /** Entities whose TweenState/Transform changed this frame — scopes CrdtEncoder tween scan. */
+  private readonly encodeDirty = new Set<Entity>()
 
   constructor(
     private readonly ecs: MirrorComponents,
-    private readonly getNodes: () => Map<Entity, THREE.Group> | undefined
+    private readonly store: EntityStore
   ) {}
+
+  /** Consume and clear encoder dirty set (call before `CrdtEncoder.encode()`). */
+  consumeEncodeDirty(): ReadonlySet<Entity> {
+    const out = new Set(this.encodeDirty)
+    this.encodeDirty.clear()
+    return out
+  }
 
   sync(view: ProjectionView): void {
     const { Tween } = this.ecs
@@ -205,11 +253,13 @@ export class TweenBridge {
       const signature = tweenSignature(tween)
       const prev = this.runtime.get(entity)
       if (!prev || prev.signature !== signature) {
+        const node = this.store.getNode(entity)
         this.runtime.set(entity, {
           signature,
           completed: false,
           progress: tween.currentTime ?? 0,
           textureUv: undefined,
+          textureTargets: node && isTextureMode(tween.mode) ? collectTextureTargets(node) : undefined,
           justReset: true
         })
       }
@@ -221,14 +271,11 @@ export class TweenBridge {
   }
 
   update(delta: number, view: ProjectionView): void {
-    const nodes = this.getNodes()
-    if (!nodes) return
-
     const { Tween, TweenState, Transform, AvatarAttach } = this.ecs
 
     for (const [entity, tween] of view.getEntitiesWith(Tween)) {
       if (AvatarAttach.has(entity)) continue
-      const node = nodes.get(entity)
+      const node = this.store.getNode(entity)
       if (!node) continue
 
       const playing = tween.playing !== false
@@ -255,7 +302,15 @@ export class TweenBridge {
       if (textureMode) {
         applied = this.applyTextureTween(node, tween, runtime, delta, eased, playing)
       } else if (Transform.has(entity)) {
-        applied = this.applyTransformTween(entity, tween, Transform.get(entity), node, eased, playing, delta)
+        applied = this.applyTransformTween(
+          entity,
+          tween,
+          Transform.get(entity),
+          node,
+          eased,
+          playing,
+          delta
+        )
       }
 
       if (!applied) continue
@@ -267,6 +322,7 @@ export class TweenBridge {
       const state = !playing ? 2 : completed || (!continuous && durationSec > 0 && progress >= 1) ? 1 : 0
 
       TweenState.createOrReplace(entity, { state, currentTime: progress })
+      this.encodeDirty.add(entity)
     }
   }
 
@@ -278,12 +334,19 @@ export class TweenBridge {
     eased: number,
     playing: boolean
   ): boolean {
+    let targets = runtime?.textureTargets
+    if (!targets?.length) {
+      targets = collectTextureTargets(node)
+      if (runtime) runtime.textureTargets = targets
+    }
+    if (!targets.length) return false
+
     switch (tween.mode?.$case) {
       case 'textureMove': {
         const { start, end, movementType } = tween.mode.textureMove
         if (!start || !end) return false
         const uv = lerpVec2(start, end, eased)
-        applyTextureUv(node, uv, movementType)
+        applyTextureUvToTargets(targets, uv, movementType)
         if (runtime) runtime.textureUv = uv
         return true
       }
@@ -292,14 +355,14 @@ export class TweenBridge {
         if (!direction || !playing) return false
         let uv = runtime?.textureUv
         if (!uv) {
-          uv = readTextureUv(node, movementType) ?? { x: 0, y: 0 }
+          uv = readTextureUvFromTargets(targets, movementType) ?? { x: 0, y: 0 }
         }
         const step = speed * delta
         uv = {
           x: uv.x + direction.x * step,
           y: uv.y + direction.y * step
         }
-        applyTextureUv(node, uv, movementType)
+        applyTextureUvToTargets(targets, uv, movementType)
         if (runtime) runtime.textureUv = uv
         return true
       }
@@ -312,20 +375,20 @@ export class TweenBridge {
     entity: Entity,
     tween: PBTween,
     baseTransform: DclTransformValues,
-    node: THREE.Object3D,
+    node: THREE.Group,
     eased: number,
     playing: boolean,
     delta: number
   ): boolean {
-    const transform = { ...baseTransform }
+    copyTransform(_scratchTransform, baseTransform)
     let applied = false
 
     switch (tween.mode?.$case) {
       case 'move': {
         const { start, end, faceDirection } = tween.mode.move
         if (start && end) {
-          transform.position = lerpVec3(start, end, eased)
-          if (faceDirection) faceMoveDirection(transform, start, end, eased)
+          _scratchTransform.position = lerpVec3(start, end, eased)
+          if (faceDirection) faceMoveDirection(_scratchTransform, start, end, eased)
           applied = true
         }
         break
@@ -333,7 +396,7 @@ export class TweenBridge {
       case 'rotate': {
         const { start, end } = tween.mode.rotate
         if (start && end) {
-          transform.rotation = slerpQuat(start, end, eased)
+          _scratchTransform.rotation = slerpQuat(start, end, eased)
           applied = true
         }
         break
@@ -341,7 +404,7 @@ export class TweenBridge {
       case 'scale': {
         const { start, end } = tween.mode.scale
         if (start && end) {
-          transform.scale = lerpVec3(start, end, eased)
+          _scratchTransform.scale = lerpVec3(start, end, eased)
           applied = true
         }
         break
@@ -349,15 +412,15 @@ export class TweenBridge {
       case 'moveRotateScale': {
         const m = tween.mode.moveRotateScale
         if (m.positionStart && m.positionEnd) {
-          transform.position = lerpVec3(m.positionStart, m.positionEnd, eased)
+          _scratchTransform.position = lerpVec3(m.positionStart, m.positionEnd, eased)
           applied = true
         }
         if (m.rotationStart && m.rotationEnd) {
-          transform.rotation = slerpQuat(m.rotationStart, m.rotationEnd, eased)
+          _scratchTransform.rotation = slerpQuat(m.rotationStart, m.rotationEnd, eased)
           applied = true
         }
         if (m.scaleStart && m.scaleEnd) {
-          transform.scale = lerpVec3(m.scaleStart, m.scaleEnd, eased)
+          _scratchTransform.scale = lerpVec3(m.scaleStart, m.scaleEnd, eased)
           applied = true
         }
         break
@@ -366,10 +429,10 @@ export class TweenBridge {
         const { direction, speed } = tween.mode.moveContinuous
         if (direction && playing) {
           const step = speed * delta
-          transform.position = {
-            x: transform.position.x + direction.x * step,
-            y: transform.position.y + direction.y * step,
-            z: transform.position.z + direction.z * step
+          _scratchTransform.position = {
+            x: _scratchTransform.position.x + direction.x * step,
+            y: _scratchTransform.position.y + direction.y * step,
+            z: _scratchTransform.position.z + direction.z * step
           }
           applied = true
         }
@@ -384,13 +447,13 @@ export class TweenBridge {
           _v3a.normalize()
           _qB.setFromAxisAngle(_v3a, speed * delta)
           _qA.set(
-            transform.rotation.x,
-            transform.rotation.y,
-            transform.rotation.z,
-            transform.rotation.w
+            _scratchTransform.rotation.x,
+            _scratchTransform.rotation.y,
+            _scratchTransform.rotation.z,
+            _scratchTransform.rotation.w
           )
           _qOut.copy(_qB).multiply(_qA)
-          transform.rotation = { x: _qOut.x, y: _qOut.y, z: _qOut.z, w: _qOut.w }
+          _scratchTransform.rotation = { x: _qOut.x, y: _qOut.y, z: _qOut.z, w: _qOut.w }
           applied = true
         }
         break
@@ -401,8 +464,13 @@ export class TweenBridge {
 
     if (!applied) return false
 
-    this.ecs.Transform.createOrReplace(entity, transform)
-    applyDclLocalTransform(node, transform)
+    this.ecs.Transform.createOrReplace(entity, {
+      position: { ..._scratchTransform.position },
+      rotation: { ..._scratchTransform.rotation },
+      scale: { ..._scratchTransform.scale },
+      parent: _scratchTransform.parent
+    })
+    applyDclLocalTransform(node, _scratchTransform)
     return true
   }
 }

@@ -202,7 +202,7 @@ export class SceneScriptSystem {
       scene,
       () => this.bridge?.getEntityNodes()
     )
-    this.tweenBridge = new TweenBridge(this.readComponents, () => this.bridge?.getEntityNodes())
+    this.tweenBridge = new TweenBridge(this.readComponents, this.entityStore)
     this.avatarAttachBridge = new AvatarAttachBridge(
       this.readComponents,
       this.projection,
@@ -688,7 +688,7 @@ export class SceneScriptSystem {
         this.syncTriggerAreas()
         this.crdtTick++
         this.prepareRendererOutboundState()
-        const encoderBytes = this.encoder.encode()
+        const encoderBytes = this.encodeRendererCrdt()
         const data = encoderBytes ? [encoderBytes] : []
         this.worker?.postMessage({ type: 'crdt-response', id: msg.id, data } satisfies MainToWorker)
         return
@@ -712,7 +712,7 @@ export class SceneScriptSystem {
 
       this.prepareRendererOutboundState()
 
-      const encoderBytes = this.encoder.encode()
+      const encoderBytes = this.encodeRendererCrdt()
       const data = encoderBytes ? [encoderBytes] : []
 
       if (!this.encoderEnabledLogged) {
@@ -1123,6 +1123,12 @@ export class SceneScriptSystem {
     }
     this.pointerResponseStash.length = 0
     this.pointerResponseStash.push(merged)
+  }
+
+  /** Encode renderer-owned CRDT — tween path scoped to entities updated this frame. */
+  private encodeRendererCrdt(): Uint8Array | null {
+    this.encoder.setTweenEncodeEntities(this.tweenBridge?.consumeEncodeDirty() ?? null)
+    return this.encoder.encode()
   }
 
   /** Apply latest client poses to projection before renderer outbound CRDT. */

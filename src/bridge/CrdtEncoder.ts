@@ -94,6 +94,8 @@ export class CrdtEncoder {
   private readonly recordedAppends: EncoderEmit[] = []
   /** componentIds the encoder is responsible for (for boot logging + coverage). */
   private readonly componentIds: Set<number>
+  /** When set, tween encode scans only these entities (from TweenBridge dirty set). */
+  private tweenEncodeEntities: ReadonlySet<Entity> | null = null
 
   constructor(reserved: ReservedEntities, projection: CrdtProjection, components: MirrorComponents) {
     this.reservedEntities = reserved
@@ -173,6 +175,11 @@ export class CrdtEncoder {
     return this.growOnlyIds
   }
 
+  /** Limit tween-path encode to entities updated this frame (null = scan all TweenState owners). */
+  setTweenEncodeEntities(entities: ReadonlySet<Entity> | null): void {
+    this.tweenEncodeEntities = entities
+  }
+
   /**
    * Encode renderer-owned components whose value changed since the last call.
    * Returns the CRDT payload (one binary blob) or `null` when nothing changed.
@@ -195,19 +202,28 @@ export class CrdtEncoder {
     // each tweened scene entity. Entities are dynamic, so scan by TweenState ownership.
     const tweenStateId = this.tweenState.componentId
     const transformId = this.transform.componentId
-    const tweenMap = this.projection.componentMap(tweenStateId)
-    if (tweenMap) {
-      for (const [entity] of tweenMap) {
-        if (this.emitLww(entity, tweenStateId, serializeFromProjection(this.tweenState, this.projection, entity), buf)) {
+    const tweenDirty = this.tweenEncodeEntities
+    this.tweenEncodeEntities = null
+    const tweenEntities =
+      tweenDirty && tweenDirty.size > 0
+        ? [...tweenDirty].filter((entity) => this.projection.has(tweenStateId, entity))
+        : null
+    const emitTweenEntity = (entity: Entity): void => {
+      if (this.emitLww(entity, tweenStateId, serializeFromProjection(this.tweenState, this.projection, entity), buf)) {
+        wrote = true
+      }
+      if (this.projection.has(transformId, entity)) {
+        if (this.emitLww(entity, transformId, serializeFromProjection(this.transform, this.projection, entity), buf)) {
           wrote = true
         }
-        if (this.projection.has(transformId, entity)) {
-          if (
-            this.emitLww(entity, transformId, serializeFromProjection(this.transform, this.projection, entity), buf)
-          ) {
-            wrote = true
-          }
-        }
+      }
+    }
+    if (tweenEntities?.length) {
+      for (const entity of tweenEntities) emitTweenEntity(entity)
+    } else {
+      const tweenMap = this.projection.componentMap(tweenStateId)
+      if (tweenMap) {
+        for (const [entity] of tweenMap) emitTweenEntity(entity)
       }
     }
 

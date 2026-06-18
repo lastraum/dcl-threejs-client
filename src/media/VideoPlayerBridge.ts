@@ -161,9 +161,11 @@ export class VideoPlayerBridge {
     if (!entry) return
     const ecsPlaying = spec.playing !== false
     const specKey = JSON.stringify(spec)
-    const playingChanged =
+    const bridgePlayingChanged =
       entry.lastAppliedPlaying !== undefined && ecsPlaying !== entry.lastAppliedPlaying
-    const needsEndedReplay = entry.player.needsReplayAfterEnd(ecsPlaying, playingChanged)
+    const playerPlayingChanged = entry.player.wouldEcsPlayingChange(ecsPlaying)
+    const playingChanged = bridgePlayingChanged || playerPlayingChanged
+    const needsEndedReplay = entry.player.needsReplayAfterEnd(ecsPlaying, playerPlayingChanged)
     if (entry.lastSpecKey === specKey && !playingChanged && !needsEndedReplay) return
     entry.lastSpecKey = specKey
     entry.lastAppliedPlaying = ecsPlaying

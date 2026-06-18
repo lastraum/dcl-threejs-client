@@ -159,12 +159,9 @@ export class WebVideoPlayer {
     const ecsPlayingChanged =
       this.lastEcsPlaying !== undefined && ecsPlaying !== this.lastEcsPlaying
 
-    // User toggle after natural end — worker may still have playing=true (toggle sends false).
-    if (!options?.fromEcsSync && this.shouldReplayAfterEnd(ecsPlaying, ecsPlayingChanged)) {
+    // User toggled play while at end — replay from start (not resume).
+    if (!options?.fromEcsSync && ecsPlaying && ecsPlayingChanged && this.isAtEnd()) {
       this.restartFromBeginning()
-      this.lastEcsPlaying = ecsPlaying
-      if (!this.visibilityPaused) void this.tryPlay()
-      return
     }
 
     const url = resolveSceneTextureUrl(spec.src, this.scene)
@@ -182,18 +179,23 @@ export class WebVideoPlayer {
     const positionFieldChanged =
       this.lastSpecPosition === undefined || Math.abs(specPosition - this.lastSpecPosition) > 0.05
     if (positionFieldChanged) {
-      const staleZeroOnPlayToggle =
+      const stalePositionOnPlayToggle =
         ecsPlayingChanged &&
-        specPosition < 0.05 &&
-        this.video.currentTime > 0.5
+        this.video.currentTime > 0.5 &&
+        Math.abs(specPosition - this.video.currentTime) > 1.5
       if (
-        !staleZeroOnPlayToggle &&
+        !stalePositionOnPlayToggle &&
         Number.isFinite(specPosition) &&
         Math.abs(this.video.currentTime - specPosition) > 0.25
       ) {
         this.video.currentTime = specPosition
       }
-      this.lastSpecPosition = specPosition
+      this.lastSpecPosition = stalePositionOnPlayToggle
+        ? this.video.currentTime
+        : specPosition
+    } else if (ecsPlayingChanged) {
+      // Keep lastSpecPosition aligned with decoder when ECS omits position on toggle.
+      this.lastSpecPosition = this.video.currentTime
     }
 
     this.wantsPlaying = ecsPlaying
@@ -270,15 +272,15 @@ export class WebVideoPlayer {
     this.playGeneration++
   }
 
-  /** Bridge dedup bypass when a user toggle should replay from the end. */
-  needsReplayAfterEnd(ecsPlaying: boolean, playingChanged: boolean): boolean {
-    return this.shouldReplayAfterEnd(ecsPlaying, playingChanged)
+  /** Whether this spec would change the tracked ECS playing flag. */
+  wouldEcsPlayingChange(ecsPlaying: boolean): boolean {
+    return this.lastEcsPlaying !== undefined && ecsPlaying !== this.lastEcsPlaying
   }
 
-  private shouldReplayAfterEnd(ecsPlaying: boolean, ecsPlayingChanged: boolean): boolean {
-    if (!this.isAtEnd() || !ecsPlayingChanged) return false
-    if (ecsPlaying) return true
-    return this.lastEcsPlaying === true
+  /** Bridge dedup bypass when a user toggle should replay from the end. */
+  needsReplayAfterEnd(ecsPlaying: boolean, playingChanged: boolean): boolean {
+    if (!playingChanged || !ecsPlaying || !this.isAtEnd()) return false
+    return true
   }
 
   private isAtEnd(): boolean {

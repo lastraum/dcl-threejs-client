@@ -27,6 +27,7 @@ export type DebugPanelOptions = {
   onVisibilityChange?: (visible: boolean) => void
   getPlayerPosition?: () => DebugPanelPosition | null
   getSceneOrigin?: () => DebugPanelSceneOrigin
+  onRecookColliders?: () => void
 }
 
 /** Top-right debug overlay — toggled from the Help sidebar button. */
@@ -36,6 +37,8 @@ export class DebugPanel {
   private readonly physxSceneToggle: HTMLInputElement
   private readonly physxGltfToggle: HTMLInputElement
   private readonly physxPlayerToggle: HTMLInputElement
+  private readonly physxProbeToggle: HTMLInputElement
+  private readonly physxRecookBtn: HTMLButtonElement
   private readonly renderQualitySelect: HTMLSelectElement
   private readonly renderQualityHint: HTMLDivElement
   private readonly positionLocalEl: HTMLDivElement
@@ -50,6 +53,7 @@ export class DebugPanel {
   private positionRafId = 0
   private unsubscribeLogs: (() => void) | null = null
   private unsubscribePhysxDebug: (() => void) | null = null
+  private onRecookColliders: (() => void) | null = null
   private readonly onDocumentClick = (ev: MouseEvent) => {
     if (this.ignoreOutsideClick) {
       this.ignoreOutsideClick = false
@@ -62,11 +66,19 @@ export class DebugPanel {
     this.hide()
   }
 
-  constructor({ anchor, renderStats, onVisibilityChange, getPlayerPosition, getSceneOrigin }: DebugPanelOptions) {
+  constructor({
+    anchor,
+    renderStats,
+    onVisibilityChange,
+    getPlayerPosition,
+    getSceneOrigin,
+    onRecookColliders
+  }: DebugPanelOptions) {
     this.anchor = anchor
     this.onVisibilityChange = onVisibilityChange
     this.getPlayerPosition = getPlayerPosition
     this.getSceneOrigin = getSceneOrigin
+    this.onRecookColliders = onRecookColliders ?? null
     this.root = document.createElement('div')
     this.root.id = 'debug-panel'
     this.root.className = 'debug-panel'
@@ -87,6 +99,11 @@ export class DebugPanel {
           <input type="checkbox" data-physx-player />
           <span>Local player capsule</span>
         </label>
+        <label class="debug-panel__check">
+          <input type="checkbox" data-physx-probe />
+          <span>Log PhysX probe (collidersphys)</span>
+        </label>
+        <button type="button" class="debug-panel__logs-btn" data-physx-recook>Recook colliders</button>
       </div>
       <div class="debug-panel__render-quality">
         <div class="debug-panel__render-quality-title">Render quality</div>
@@ -122,6 +139,8 @@ export class DebugPanel {
     this.physxSceneToggle = this.root.querySelector('[data-physx-scene]') as HTMLInputElement
     this.physxGltfToggle = this.root.querySelector('[data-physx-gltf]') as HTMLInputElement
     this.physxPlayerToggle = this.root.querySelector('[data-physx-player]') as HTMLInputElement
+    this.physxProbeToggle = this.root.querySelector('[data-physx-probe]') as HTMLInputElement
+    this.physxRecookBtn = this.root.querySelector('[data-physx-recook]') as HTMLButtonElement
     this.renderQualitySelect = this.root.querySelector('[data-render-quality]') as HTMLSelectElement
     this.renderQualityHint = this.root.querySelector('[data-render-quality-hint]') as HTMLDivElement
     this.positionLocalEl = this.root.querySelector('.debug-panel__position-local') as HTMLDivElement
@@ -157,6 +176,10 @@ export class DebugPanel {
   replaceRenderStats(renderStats: RenderStats): void {
     const host = this.root.querySelector('.debug-panel__stats') as HTMLDivElement
     host.replaceChildren(renderStats.dom)
+  }
+
+  setRecookCollidersHandler(handler: (() => void) | null): void {
+    this.onRecookColliders = handler
   }
 
   toggle(): boolean {
@@ -279,6 +302,7 @@ export class DebugPanel {
       this.physxSceneToggle.checked = options.sceneMeshColliders
       this.physxGltfToggle.checked = options.gltfColliders
       this.physxPlayerToggle.checked = options.localPlayerCapsule
+      this.physxProbeToggle.checked = options.collidersPhys
     }
 
     syncFromStore(physxColliderDebug.getOptions())
@@ -293,6 +317,18 @@ export class DebugPanel {
 
     this.physxPlayerToggle.addEventListener('change', () => {
       physxColliderDebug.setOptions({ localPlayerCapsule: this.physxPlayerToggle.checked })
+    })
+
+    this.physxProbeToggle.addEventListener('change', () => {
+      physxColliderDebug.setOptions({ collidersPhys: this.physxProbeToggle.checked })
+    })
+
+    this.physxRecookBtn.addEventListener('click', () => {
+      this.onRecookColliders?.()
+      this.physxRecookBtn.textContent = 'Recooking…'
+      window.setTimeout(() => {
+        this.physxRecookBtn.textContent = 'Recook colliders'
+      }, 1200)
     })
 
     this.unsubscribePhysxDebug = physxColliderDebug.subscribe(syncFromStore)

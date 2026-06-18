@@ -16,6 +16,6 @@ export function resolveCollisionMask(mask?: number): number {
   return mask ?? DEFAULT_COLLISION_MASK
 }
 
-export function hasColliderLayer(mask: number, layer: ColliderLayerFlag): boolean {
+export function hasColliderLayer(mask: number, layer: number): boolean {
   return (mask & layer) !== 0
 }

@@ -58,8 +58,8 @@ type OpenExternalUrlHandler = (request: OpenExternalUrlRequest) => boolean
 const FULL_RESYNC_INTERVAL = 480
 /** Pose-only collision sync during hydration (tweened entities). */
 const COLLISION_POSE_SYNC_HYDRATION = 4
-/** Runtime pose-only sync — static Genesis colliders rarely move. */
-const COLLISION_POSE_SYNC_RUNTIME = 30
+/** Runtime pose-only sync — tweened MeshColliders need fresher poses for PhysX. */
+const COLLISION_POSE_SYNC_RUNTIME = 8
 /** Async bridge ECS sync (Animator / AvatarShape load paths) — playback still runs every sync frame. */
 const BRIDGE_ECS_SYNC_RUNTIME = 12
 
@@ -1308,6 +1308,14 @@ export class SceneScriptSystem {
     if (this.playReadyNotified) return
     this.playReadyNotified = true
     this.worker?.postMessage({ type: 'scene-play-ready' } satisfies MainToWorker)
+  }
+
+  /** Pose refresh before PhysX cook — keeps MeshCollider actors aligned with visuals. */
+  syncCollisionPoses(): void {
+    if (!this.collision || !this.bridge) return
+    const nodes = this.bridge.getEntityNodes()
+    this.collision.syncPoses(nodes)
+    this.gltfColliders?.syncPoses(nodes)
   }
 
   syncCollision(): void {

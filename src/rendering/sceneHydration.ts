@@ -23,6 +23,8 @@ export type WaitForSceneAssetsOptions = {
   onPrimeRender?: () => void
   /** Cook PhysX static colliders after each hydration sync (incremental during GLB attach). */
   onCollidersCook?: () => void
+  /** Per-tick stats — e.g. throttle remote avatar composes during scene GLTF pressure. */
+  onHydrationTick?: (stats: SceneHydrationStats) => void
 }
 
 export type WaitForSceneAssetsResult = {
@@ -254,6 +256,7 @@ export async function waitForSceneAssets(
           textureInflight: assetStats.textureInflight
         }
         lastStats = stats
+        options.onHydrationTick?.(stats)
 
         peakInflight = Math.max(peakInflight, stats.gltfInflight)
         peakGltfEntities = Math.max(peakGltfEntities, stats.gltfEntities)

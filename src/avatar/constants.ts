@@ -78,6 +78,10 @@ export function assetUrnFromCompleteUrn(completeUrn: string): string {
   if (urn.includes(thirdParty) && parts.length === 10) {
     return parts.slice(0, 7).join(':')
   }
+  // L1 profile URNs: urn:decentraland:{chain}:collections-v1:{collection}:{item}:{tokenId}
+  if (parts.length >= 7 && parts[3] === 'collections-v1') {
+    return parts.slice(0, 6).join(':')
+  }
   // collections-v2 profile URNs: urn:decentraland:matic:collections-v2:{contract}:{itemId}:{tokenId}
   if (parts.length >= 7 && parts[3] === 'collections-v2') {
     return parts.slice(0, 6).join(':')

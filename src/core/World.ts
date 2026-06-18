@@ -15,7 +15,7 @@ import { RemoteAvatarManager } from '../network/RemoteAvatarManager'
 import { CommsService } from '../network/CommsService'
 import { buildEmoteWheelSlots, resolveSceneEmoteFromSrc } from '../avatar/profileEmotes'
 import { SocialService } from '../social/SocialService'
-import { fetchProfileFaceUrl } from '../avatar/peerApi'
+import { fetchProfileFaceUrl, seedCommsPeerProfile } from '../avatar/peerApi'
 import type { LoginResult } from '../auth/AuthClient'
 import type { SendBinaryRequest } from '../shim/types'
 import { performGetSignedHeaders, performSignedFetch } from '../network/SignedFetchService'
@@ -59,6 +59,8 @@ export class World {
   private loggedCollidersPhysNoHit = false
   private hydrationCollidersCooked = false
   private lastPhysicsBatchFp = ''
+  private sceneCommsConnected = false
+  private colliderHealthPass = 0
 
   /** New static actors cooked per hydration tick — keeps GLTF attach ahead of PhysX trimesh work. */
   private static readonly HYDRATION_COLLIDER_COOK_BUDGET = 50
@@ -72,6 +74,7 @@ export class World {
 
     this.remoteAvatars && this.comms.setHandlers({
       onPeerJoin: (address) => {
+        if (address === this.session.getAddress()?.toLowerCase()) return
         this.remoteAvatars?.upsertPeer(address)
         void this.social.ensurePeerProfile(address)
       },
@@ -92,6 +95,7 @@ export class World {
         )
       },
       onPeerProfile: (address, serializedProfile) => {
+        seedCommsPeerProfile(address, serializedProfile)
         this.remoteAvatars?.applyPeerProfile(address, serializedProfile)
         this.social.rememberPeerProfile(address, serializedProfile)
       },
@@ -260,6 +264,38 @@ export class World {
   }
 
   /**
+   * Connect scene comms during the loading screen so remote peers arrive while assets hydrate.
+   * Receive-only until `start()` — idempotent; safe to call before `spawnLocalPlayer`.
+   */
+  async connectSceneCommsEarly(scene: ResolvedScene, onProgress?: (msg: string) => void): Promise<void> {
+    if (!this.playerMode || this.sceneCommsConnected) return
+
+    const address = this.session.getAddress()
+    const identity = this.session.getAuthIdentity()
+    if (!address || !identity) return
+
+    onProgress?.(
+      scene.source.kind === 'world' ? 'Joining world comms…' : 'Joining scene comms room…'
+    )
+    this.comms.setIdentity(address, identity)
+    this.comms.setCommsProfile(this.session.getCommsProfileEntity())
+    this.comms.setLambdasUrl(scene.realm.lambdasUrl)
+    this.remoteAvatars?.setLocalAddress(address)
+    const connectResult = await this.comms.connectSceneRoom(this.buildCommsTarget(scene))
+    if (connectResult.ok) {
+      this.sceneCommsConnected = true
+      clientDebugLog.log('comms', 'Early scene comms connected during hydration', { level: 'success' })
+      onProgress?.('Receiving peer updates…')
+      return
+    }
+    if (connectResult.reason === 'duplicate_wallet') {
+      onProgress?.('This wallet is already connected in another session — close the other client first')
+      return
+    }
+    onProgress?.('Comms connection failed — check console')
+  }
+
+  /**
    * Spawn local player after scene script + assets are ready — PhysX ground plane must exist first.
    * Call after `waitForSceneAssets`, before `start()`.
    */
@@ -284,14 +320,24 @@ export class World {
     const address = this.session.getAddress()
     const identity = this.session.getAuthIdentity()
     if (address && identity) {
-      onProgress?.(
-        scene.source.kind === 'world' ? 'Joining world comms…' : 'Joining scene comms room…'
-      )
-      this.comms.setIdentity(address, identity)
-      this.comms.setCommsProfile(this.session.getCommsProfileEntity())
-      this.comms.setLambdasUrl(scene.realm.lambdasUrl)
-      const connected = await this.comms.connectSceneRoom(this.buildCommsTarget(scene))
-      onProgress?.(connected ? 'Connected to DCL comms' : 'Comms connection failed — check console')
+      if (!this.sceneCommsConnected) {
+        onProgress?.(
+          scene.source.kind === 'world' ? 'Joining world comms…' : 'Joining scene comms room…'
+        )
+        this.comms.setIdentity(address, identity)
+        this.comms.setCommsProfile(this.session.getCommsProfileEntity())
+        this.comms.setLambdasUrl(scene.realm.lambdasUrl)
+        this.remoteAvatars?.setLocalAddress(address)
+        const connectResult = await this.comms.connectSceneRoom(this.buildCommsTarget(scene))
+        this.sceneCommsConnected = connectResult.ok
+        if (connectResult.ok) {
+          onProgress?.('Connected to DCL comms')
+        } else if (connectResult.reason === 'duplicate_wallet') {
+          onProgress?.('This wallet is already connected in another session — close the other client first')
+        } else {
+          onProgress?.('Comms connection failed — check console')
+        }
+      }
 
       onProgress?.('Loading social services…')
       const profile = this.session.getProfile()
@@ -399,10 +445,25 @@ export class World {
     onProgress?: (msg: string, fraction?: number) => void,
     options?: WaitForSceneAssetsOptions
   ) {
-    return waitForSceneAssets(scene, this.sceneScript, this.assets, onProgress, {
+    const spawnCamera = new THREE.Vector3(scene.spawn.x, scene.spawn.y, scene.spawn.z)
+    this.remoteAvatars?.setCameraPosition(spawnCamera)
+    this.remoteAvatars?.setHydrationLoading(true)
+
+    const hydration = waitForSceneAssets(scene, this.sceneScript, this.assets, onProgress, {
       ...options,
       onPrimeRender: () => this.primeRender(),
-      onCollidersCook: () => this.cookStaticCollidersDuringHydration()
+      onCollidersCook: () => this.cookStaticCollidersDuringHydration(),
+      onHydrationTick: (stats) => {
+        this.remoteAvatars?.setSceneAssetPressure(stats.gltfInflight, stats.textureInflight)
+        options?.onHydrationTick?.(stats)
+      }
+    })
+    if (!hydration) {
+      this.remoteAvatars?.setHydrationLoading(false)
+      return
+    }
+    return hydration.finally(() => {
+      this.remoteAvatars?.setHydrationLoading(false)
     })
   }
 
@@ -484,7 +545,62 @@ export class World {
 
   private applyPhysicsColliders(): void {
     if (!this.playerMode) return
+    this.colliderHealthPass++
+    if (this.colliderHealthPass % 90 === 0 && this.repairCollidersIfBroken()) return
     this.cookStaticColliders()
+  }
+
+  /**
+   * Force a full collider re-extract + PhysX cook (Help panel — Recook colliders).
+   * Clears fingerprint skip and failed-cook blacklist when `force` is true.
+   */
+  recookPhysicsColliders(options?: { force?: boolean; quiet?: boolean }): void {
+    if (!this.playerMode || !this.player) return
+    if (options?.force !== false) {
+      this.lastPhysicsBatchFp = ''
+      this.physics.clearFailedCookCaches()
+    }
+    this.sceneScript.syncCollisionForce()
+    this.cookStaticColliders()
+    this.physics.warmStaticScene()
+    this.physics.invalidateControllerCache()
+    this.physics.snapToGroundBelow(0.5)
+    if (!options?.quiet) {
+      const mesh = this.sceneScript.collision?.getPhysicsColliders().length ?? 0
+      const gltf = this.sceneScript.gltfColliders?.getPhysicsColliders().length ?? 0
+      const probe = this.physics.debugProbeStaticHit(2.5)
+      const hit = probe.distance !== null ? `${probe.distance.toFixed(2)}m` : 'none'
+      clientDebugLog.log(
+        'collision',
+        `Colliders recooked — static=${this.physics.staticColliderCount} mesh=${mesh} gltf=${gltf} probe=${hit}`,
+        { level: 'success', alsoConsole: true }
+      )
+    }
+  }
+
+  /** Self-heal when MeshColliders exist in the scene graph but PhysX lost registration. */
+  private repairCollidersIfBroken(): boolean {
+    if (!this.player?.getPosition()) return false
+    const meshDescs = this.sceneScript.collision?.getPhysicsColliders() ?? []
+    if (meshDescs.length < 2) return false
+
+    let meshRegistered = 0
+    for (const desc of meshDescs) {
+      if (this.physics.hasStaticActor(desc.entity)) meshRegistered++
+    }
+    const probe = this.physics.debugProbeStaticHit(2.5)
+    const missingActors = meshRegistered < meshDescs.length
+    const noNearbyHit = probe.distance === null
+
+    if (!missingActors && !noNearbyHit) return false
+
+    clientDebugLog.log(
+      'collision',
+      `[auto-repair] mesh ${meshRegistered}/${meshDescs.length} in PhysX, horizontal probe=${probe.distance !== null ? `${probe.distance.toFixed(2)}m` : 'none'} — recooking`,
+      { level: 'warn', throttleMs: 8000, throttleKey: 'collider-auto-repair' }
+    )
+    this.recookPhysicsColliders({ force: true, quiet: true })
+    return true
   }
 
   /**
@@ -493,55 +609,77 @@ export class World {
    */
   cookStaticColliders(options?: { hydration?: boolean }): void {
     const gltfEntityCount = this.sceneScript.gltfColliders?.getGltfEntityColliderCount() ?? 0
-    let gltfRegistered = this.physics.gltfStaticActorCount
-    const registrationComplete = gltfEntityCount === 0 || gltfRegistered >= gltfEntityCount
+    const prevGltf = this.lastGltfColliderCount
+    const prevRegistered = this.lastGltfRegisteredCount
+
+    if (!options?.hydration) {
+      this.sceneScript.syncCollisionPoses()
+    }
+
+    const meshColliders = this.sceneScript.collision?.getPhysicsColliders() ?? []
+    const gltfColliderDescs = this.sceneScript.gltfColliders?.getPhysicsColliders() ?? []
+
+    const deferGltfWipe =
+      gltfEntityCount === 0 && prevGltf > 10 && this.physics.gltfStaticActorCount > 0
+    if (deferGltfWipe) {
+      if (!this.skippedColliderWipeLogged) {
+        console.warn('[World] deferring GLTF collider sync — transient empty extraction batch')
+        this.skippedColliderWipeLogged = true
+      }
+    } else {
+      this.skippedColliderWipeLogged = false
+    }
+
+    const cookDescs = deferGltfWipe ? meshColliders : [...meshColliders, ...gltfColliderDescs]
+    let registeredForCook = 0
+    for (const desc of cookDescs) {
+      if (this.physics.hasStaticActor(desc.entity)) registeredForCook++
+    }
+
+    const gltfRegistered = this.physics.gltfStaticActorCount
+    const gltfRegistrationComplete =
+      deferGltfWipe || gltfEntityCount === 0 || gltfRegistered >= gltfEntityCount
+    const cookRegistrationComplete =
+      cookDescs.length === 0 || registeredForCook >= cookDescs.length
 
     if (!options?.hydration) {
       const batchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
-      if (registrationComplete && batchFp === this.lastPhysicsBatchFp) {
-        const extracted = this.lastGltfColliderCount
-        const registered = this.physics.gltfStaticActorCount
-        if (extracted === 0 || registered >= extracted) return
+      if (
+        batchFp === this.lastPhysicsBatchFp &&
+        cookRegistrationComplete &&
+        gltfRegistrationComplete
+      ) {
+        return
       }
       this.lastPhysicsBatchFp = batchFp
     }
 
-    const colliders = this.sceneScript.collision?.getPhysicsColliders() ?? []
-    const gltfColliders = this.sceneScript.gltfColliders?.getPhysicsColliders() ?? []
-    const prevGltf = this.lastGltfColliderCount
-    const prevRegistered = this.lastGltfRegisteredCount
-
-    if (gltfEntityCount === 0 && prevGltf > 10 && this.physics.gltfStaticActorCount > 0) {
-      if (!this.skippedColliderWipeLogged) {
-        console.warn('[World] skipping collider wipe — transient empty gltf batch')
-        this.skippedColliderWipeLogged = true
-      }
-      return
-    }
-    this.skippedColliderWipeLogged = false
-
     try {
-      this.physics.syncStaticColliders([...colliders, ...gltfColliders], {
-        cookBudget: options?.hydration ? World.HYDRATION_COLLIDER_COOK_BUDGET : undefined
+      const geometryChanged = this.physics.syncStaticColliders(cookDescs, {
+        cookBudget: options?.hydration ? World.HYDRATION_COLLIDER_COOK_BUDGET : undefined,
+        freezeRemoval: deferGltfWipe
       })
+      if (geometryChanged && !options?.hydration) {
+        this.physics.warmStaticScene()
+      }
     } catch (err) {
       console.warn('[World] syncStaticColliders failed:', err)
       return
     }
 
-    gltfRegistered = this.physics.gltfStaticActorCount
+    const gltfRegisteredAfter = this.physics.gltfStaticActorCount
     // Landscape `_collider` meshes are extracted here but registered as environment actors, not gltf-*.
     if (
       !options?.hydration &&
       gltfEntityCount > 0 &&
-      gltfRegistered === 0 &&
+      gltfRegisteredAfter === 0 &&
       !this.loggedGltfPhysMismatch
     ) {
       this.loggedGltfPhysMismatch = true
       console.warn(
         `[World] ${gltfEntityCount} GLTF entity colliders extracted but 0 registered in PhysX — check cook failures in console`
       )
-    } else if (gltfRegistered > 0) {
+    } else if (gltfRegisteredAfter > 0) {
       this.loggedGltfPhysMismatch = false
     }
 
@@ -549,7 +687,8 @@ export class World {
     const significantGltfIncrease =
       gltfEntityCount - prevGltf >= 50 || (prevGltf < 10 && gltfEntityCount >= 50)
     const significantGltfRegistered =
-      gltfRegistered - prevRegistered >= 50 || (prevRegistered < 10 && gltfRegistered >= 50)
+      gltfRegisteredAfter - prevRegistered >= 50 ||
+      (prevRegistered < 10 && gltfRegisteredAfter >= 50)
     if (
       this.player &&
       (gltfRecoveredFromEmpty || significantGltfIncrease || significantGltfRegistered)
@@ -559,7 +698,7 @@ export class World {
       this.physics.snapToGroundBelow(0.35)
     }
     this.lastGltfColliderCount = gltfEntityCount
-    this.lastGltfRegisteredCount = gltfRegistered
+    this.lastGltfRegisteredCount = gltfRegisteredAfter
   }
 
   /** Incremental PhysX cook while GLBs attach during the loading-screen hydration loop. */
@@ -599,8 +738,7 @@ export class World {
 
   syncPhysicsColliders(): void {
     if (!this.playerMode || !this.player) return
-    this.sceneScript.syncCollisionForce()
-    this.applyPhysicsColliders()
+    this.recookPhysicsColliders({ force: true, quiet: true })
   }
 
   /**
@@ -615,8 +753,8 @@ export class World {
     if (!this.playerMode || !this.player) return
     const assetsTimedOut = options.assetsTimedOut ?? false
     this.lastPhysicsBatchFp = ''
-    const maxWallMs = assetsTimedOut ? 4_000 : 12_000
-    const maxPasses = assetsTimedOut ? 6 : 16
+    const maxWallMs = assetsTimedOut ? 15_000 : 12_000
+    const maxPasses = assetsTimedOut ? 12 : 16
     const started = performance.now()
 
     let prev = -1
@@ -654,7 +792,14 @@ export class World {
       }
 
       if (assetsTimedOut) {
-        if (gltfCount === 0 || gltfRegistered > 0 || pass >= 2) gltfStable = 2
+        if (gltfCount === 0) {
+          gltfStable = 2
+        } else if (gltfRegistered >= gltfCount) {
+          gltfStable++
+        } else {
+          gltfStable = 0
+          prevGltfRegistered = gltfRegistered
+        }
       } else if (gltfsPending > 0) {
         gltfStable = 0
       } else if (gltfCount === 0) {

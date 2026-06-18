@@ -1,8 +1,9 @@
 import { identityFromAvatarProfile } from '../avatar/displayName'
 import {
-  fetchProfileCached,
   fetchProfileFaceUrl,
-  profileFromSerializedEntry
+  getCommsPeerProfile,
+  profileFromSerializedEntry,
+  resolveRemotePeerProfile
 } from '../avatar/peerApi'
 import type { AvatarProfile } from '../avatar/types'
 
@@ -35,7 +36,14 @@ export class ChatPeerProfiles {
   async ensurePeer(address: string): Promise<void> {
     const key = address.toLowerCase()
     if (this.byAddress.has(key)) return
-    const profile = await fetchProfileCached(key, this.peerUrl)
+
+    const commsProfile = getCommsPeerProfile(key)
+    if (commsProfile) {
+      this.applyAvatarProfile(key, commsProfile)
+      return
+    }
+
+    const profile = await resolveRemotePeerProfile(key, this.peerUrl)
     if (profile) {
       this.applyAvatarProfile(key, profile)
       return

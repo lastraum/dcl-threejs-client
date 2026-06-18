@@ -8,19 +8,39 @@ type QueuedLoad = {
 
 /** Limits concurrent remote avatar composes; nearer peers load first. */
 export class RemoteAvatarLoadQueue {
-  /** Max simultaneous full avatar composes (placeholder + profile). */
+  /** Default simultaneous full avatar composes. */
   static readonly MAX_CONCURRENT = 2
+  /** During scene hydration — no full composes; pill + name tag only. */
+  static readonly MAX_CONCURRENT_HYDRATION = 0
+  /** After hydration — bounded burst without starving scene tail loads. */
+  static readonly MAX_CONCURRENT_WARM = 2
   /** Peers beyond this horizontal distance wait until closer or queue drains. */
   static readonly DEFER_DISTANCE = 55
+  /** Pause new avatar starts while scene has this many GLB fetches in flight. */
+  static readonly SCENE_PRESSURE_INFLIGHT = 3
 
   private readonly camera = new THREE.Vector3()
   private readonly waiting = new Map<string, QueuedLoad>()
   private readonly active = new Set<string>()
   private running = 0
+  private hydrationMode = false
+  private cacheWarm = false
+  private sceneGltfInflight = 0
 
   setCameraPosition(position: THREE.Vector3): void {
     this.camera.copy(position)
     this.reprioritize()
+  }
+
+  setHydrationMode(active: boolean): void {
+    this.hydrationMode = active
+    if (!active) this.cacheWarm = true
+    this.pump()
+  }
+
+  setSceneAssetPressure(gltfInflight: number, textureInflight = 0): void {
+    this.sceneGltfInflight = gltfInflight + textureInflight
+    this.pump()
   }
 
   /** Queue a peer avatar load. Replaces any pending entry for the same address. */
@@ -46,6 +66,16 @@ export class RemoteAvatarLoadQueue {
     this.waiting.delete(address.toLowerCase())
   }
 
+  private maxConcurrent(): number {
+    if (this.hydrationMode) return RemoteAvatarLoadQueue.MAX_CONCURRENT_HYDRATION
+    if (this.cacheWarm) return RemoteAvatarLoadQueue.MAX_CONCURRENT_WARM
+    return RemoteAvatarLoadQueue.MAX_CONCURRENT
+  }
+
+  private scenePressureBlocks(): boolean {
+    return this.hydrationMode && this.sceneGltfInflight >= RemoteAvatarLoadQueue.SCENE_PRESSURE_INFLIGHT
+  }
+
   private markFinished(address: string): void {
     this.active.delete(address)
     this.running = Math.max(0, this.running - 1)
@@ -57,13 +87,14 @@ export class RemoteAvatarLoadQueue {
   }
 
   private pump(): void {
-    while (this.running < RemoteAvatarLoadQueue.MAX_CONCURRENT && this.waiting.size > 0) {
+    if (this.scenePressureBlocks()) return
+
+    while (this.running < this.maxConcurrent() && this.waiting.size > 0) {
       const deferSq = RemoteAvatarLoadQueue.DEFER_DISTANCE ** 2
       const candidates = [...this.waiting.values()].sort((a, b) => a.distanceSq - b.distanceSq)
       const next = candidates.find((c) => c.distanceSq <= deferSq) ?? candidates[0]
       if (!next) break
 
-      // Only defer when nearer peers are still waiting and this one is far.
       if (next.distanceSq > deferSq) {
         const hasNearWaiting = candidates.some((c) => c.distanceSq <= deferSq)
         if (hasNearWaiting) break

@@ -13,6 +13,7 @@ import {
 import type { PBVideoPlayer } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/video_player.gen'
 import { resolveSceneTextureUrl } from '../bridge/material/resolveTexture'
 import type { ResolvedScene } from '../dcl/content/types'
+import { configureSceneVideoTexture } from './videoTextureOrientation'
 
 type HlsInstance = {
   loadSource(url: string): void
@@ -58,9 +59,8 @@ export class WebVideoPlayer {
     document.body.appendChild(this.video)
 
     this.texture = new THREE.VideoTexture(this.video)
-    // DCL/Babylon VideoTexture uses invertY=false — Three.js defaults to flipY=true.
-    this.texture.flipY = false
     this.texture.colorSpace = THREE.SRGBColorSpace
+    configureSceneVideoTexture(this.texture)
 
     this.video.addEventListener('loadstart', () => this.setState(VS_LOADING))
     this.video.addEventListener('loadeddata', () => {

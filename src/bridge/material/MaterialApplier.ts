@@ -4,6 +4,7 @@ import type { AssetCache } from '../../rendering/AssetCache'
 import { isSharedAssetResource } from '../../rendering/sharedAsset'
 import { resolveSceneTextureUrl } from './resolveTexture'
 import { applyHdrAlbedoAndEmissive, applyPbrScalars } from './pbrApply'
+import { configureSceneVideoTexture } from '../../media/videoTextureOrientation'
 
 /** Matches `@dcl/ecs` MaterialTransparencyMode. */
 const MTM_OPAQUE = 0
@@ -372,6 +373,7 @@ export class MaterialApplier {
             : THREE.LinearFilter
       tex.magFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
       tex.colorSpace = options?.normalMap ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace
+      configureSceneVideoTexture(tex)
       return tex
     }
     if (union?.tex?.$case !== 'texture') return null

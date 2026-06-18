@@ -21,6 +21,7 @@ import { parseCommsSceneOrigin, realmBoundsFromParcels, type RealmBounds } from 
 import { encodeRfc4SceneBinaryPacket, Rfc4Router } from './comms/Rfc4Router'
 import { Rfc5RoomClient } from './comms/Rfc5RoomClient'
 import { isLiveKitAdapter } from './comms/livekitAdapter'
+import type { ActiveVideoStream } from './comms/livekitVideoStreams'
 import { TransportType } from './comms/Transport'
 import {
   decodeTransformPayload,
@@ -590,8 +591,19 @@ export class CommsService {
     return { messages: this.topicService.consume(topic) }
   }
 
-  getActiveVideoStreams(): { streams: never[] } {
-    return { streams: [] }
+  getActiveVideoStreams(): { streams: ActiveVideoStream[] } {
+    const seen = new Set<string>()
+    const streams: ActiveVideoStream[] = []
+    for (const session of [this.sceneLiveKit, this.worldLiveKit, this.islandLiveKit]) {
+      if (!session.isConnected()) continue
+      for (const stream of session.getActiveVideoStreams()) {
+        const key = `${stream.identity}:${stream.trackSid}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        streams.push(stream)
+      }
+    }
+    return { streams }
   }
 
   disconnect(): void {

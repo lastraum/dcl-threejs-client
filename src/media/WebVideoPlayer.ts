@@ -60,6 +60,8 @@ export class WebVideoPlayer {
   onFrameReady?: () => void
   /** Fired when playback reaches the end (non-looping). */
   onNaturalEnd?: () => void
+  /** Fired when user-triggered replay starts — sync ECS/worker to playing=true. */
+  onReplayStarted?: () => void
 
   constructor(private readonly scene: ResolvedScene) {
     this.video = document.createElement('video')
@@ -165,8 +167,10 @@ export class WebVideoPlayer {
     if (!this.isAtEnd() && !this.holdingAtEnd) return
     this.holdingAtEnd = false
     this.restartFromBeginning()
+    this.lastEcsPlaying = true
     this.wantsPlaying = true
     if (!this.visibilityPaused) void this.tryPlay()
+    this.onReplayStarted?.()
   }
 
   setUserGestureUnlocked(unlocked: boolean): void {
@@ -204,9 +208,10 @@ export class WebVideoPlayer {
     ) {
       this.holdingAtEnd = false
       this.restartFromBeginning()
-      this.lastEcsPlaying = ecsPlaying
+      this.lastEcsPlaying = true
       this.wantsPlaying = true
       if (!this.visibilityPaused) void this.tryPlay()
+      this.onReplayStarted?.()
       return
     }
 
@@ -319,6 +324,12 @@ export class WebVideoPlayer {
   /** Whether this spec would change the tracked ECS playing flag. */
   wouldEcsPlayingChange(ecsPlaying: boolean): boolean {
     return this.lastEcsPlaying !== undefined && ecsPlaying !== this.lastEcsPlaying
+  }
+
+  /** Align ECS playing tracker after replay without re-applying the full spec. */
+  alignEcsPlaying(playing: boolean): void {
+    this.lastEcsPlaying = playing
+    this.wantsPlaying = playing
   }
 
   /** Bridge dedup bypass when a user toggle should replay from the end. */

@@ -86,6 +86,7 @@ export class VideoPlayerBridge {
       for (const [entity, entry] of this.decoders) {
         if (!entry.player.isHoldingAtEnd()) continue
         entry.player.replayFromUserClick()
+        entry.lastAppliedPlaying = true
         this.onTextureReady?.(entity)
         userToggleConsumed = true
         break
@@ -156,6 +157,7 @@ export class VideoPlayerBridge {
     player.setUserGestureUnlocked(this.userGestureUnlocked)
     player.onFrameReady = () => this.onTextureReady?.(entity)
     player.onNaturalEnd = () => this.syncPlayingToEcs(entity, false)
+    player.onReplayStarted = () => this.syncPlayingToEcs(entity, true)
     this.decoders.set(entity, {
       player,
       lastSpecKey: '',
@@ -174,7 +176,11 @@ export class VideoPlayerBridge {
     const entry = this.decoders.get(entity)
     if (!spec || !entry) return
     const currentPlaying = spec.playing !== false
-    if (currentPlaying === playing) return
+    entry.lastAppliedPlaying = playing
+    if (currentPlaying === playing) {
+      entry.player.alignEcsPlaying(playing)
+      return
+    }
 
     const next: PBVideoPlayer = {
       ...spec,
@@ -182,7 +188,6 @@ export class VideoPlayerBridge {
       position: entry.player.getCurrentOffset()
     }
     VideoPlayer.createOrReplace(entity, next)
-    entry.lastAppliedPlaying = playing
     // Do not cache lastSpecKey — worker may still have playing=true until LWW inject lands.
     entry.player.applySpec(next, { fromEcsSync: true })
     this.recordLww?.(VideoPlayer.componentId, entity, next)

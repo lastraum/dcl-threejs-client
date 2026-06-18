@@ -199,19 +199,20 @@ export class WebVideoPlayer {
       return
     }
 
-    // Replay left ECS=false while decoder plays; next toggle sends true — pause instead.
-    if (ecsPlaying && ecsPlayingChanged && this.ecsPlayDesync) {
-      this.ecsPlayDesync = false
-      this.wantsPlaying = false
-      this.lastEcsPlaying = true
-      if (!this.visibilityPaused) {
-        this.bumpPlayGeneration()
-        this.video.pause()
+    // Decoder plays while ECS still says false — ignore stale false re-sends (e.g. position-only updates).
+    if (this.ecsPlayDesync) {
+      if (ecsPlaying && ecsPlayingChanged) {
+        this.ecsPlayDesync = false
+        this.wantsPlaying = false
+        this.lastEcsPlaying = true
+        if (!this.visibilityPaused) {
+          this.bumpPlayGeneration()
+          this.video.pause()
+        }
       }
       return
     }
 
-    this.ecsPlayDesync = false
     this.wantsPlaying = ecsPlaying
     this.lastEcsPlaying = ecsPlaying
 

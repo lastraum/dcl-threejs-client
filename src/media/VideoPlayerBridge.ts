@@ -22,6 +22,9 @@ export class VideoPlayerBridge {
   private readonly decoders = new Map<Entity, DecoderEntry>()
   private userGestureUnlocked = false
   private eventTimestamp = 1
+  /** Set after pointer-deliver-done until a VideoPlayer toggle is applied. */
+  private pendingUserVideoToggle = false
+  private pendingUserVideoToggleFrames = 0
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -34,6 +37,12 @@ export class VideoPlayerBridge {
 
   /** Push pending VideoPlayer LWW PUTs to the scene worker (no pointer-await guard). */
   onLwwFlush?: () => void
+
+  /** Scene pointer delivery finished — next VideoPlayer change is a user toggle. */
+  notifyUserPointerDelivered(): void {
+    this.pendingUserVideoToggle = true
+    this.pendingUserVideoToggleFrames = 12
+  }
 
   setUserGestureUnlocked(unlocked: boolean): void {
     if (this.userGestureUnlocked === unlocked) return
@@ -55,6 +64,8 @@ export class VideoPlayerBridge {
   sync(view: ProjectionView): void {
     const { VideoPlayer, VisibilityComponent } = this.ecs
     const active = new Set<Entity>()
+    const fromUserToggle = this.pendingUserVideoToggle
+    let userToggleConsumed = false
 
     for (const [entity, spec] of view.getEntitiesWith(VideoPlayer)) {
       active.add(entity)
@@ -66,7 +77,19 @@ export class VideoPlayerBridge {
         !VisibilityComponent.has(entity) ||
         VisibilityComponent.get(entity).visible !== false
       entry.player.setVisibilityPaused(!visible)
-      this.applySpec(entity, spec)
+      if (this.applySpec(entity, spec, fromUserToggle)) {
+        userToggleConsumed = true
+      }
+    }
+
+    if (userToggleConsumed) {
+      this.pendingUserVideoToggle = false
+      this.pendingUserVideoToggleFrames = 0
+    } else if (this.pendingUserVideoToggle && this.pendingUserVideoToggleFrames > 0) {
+      this.pendingUserVideoToggleFrames--
+      if (this.pendingUserVideoToggleFrames === 0) {
+        this.pendingUserVideoToggle = false
+      }
     }
 
     for (const entity of [...this.decoders.keys()]) {
@@ -156,21 +179,26 @@ export class VideoPlayerBridge {
     this.onLwwFlush?.()
   }
 
-  private applySpec(entity: Entity, spec: PBVideoPlayer): void {
+  private applySpec(
+    entity: Entity,
+    spec: PBVideoPlayer,
+    fromUserToggle = false
+  ): boolean {
     const entry = this.decoders.get(entity)
-    if (!entry) return
+    if (!entry) return false
     const ecsPlaying = spec.playing !== false
     const specKey = JSON.stringify(spec)
     const bridgePlayingChanged =
       entry.lastAppliedPlaying !== undefined && ecsPlaying !== entry.lastAppliedPlaying
     const playerPlayingChanged = entry.player.wouldEcsPlayingChange(ecsPlaying)
     const playingChanged = bridgePlayingChanged || playerPlayingChanged
-    const needsEndedReplay = entry.player.needsReplayAfterEnd(ecsPlaying, playerPlayingChanged)
-    if (entry.lastSpecKey === specKey && !playingChanged && !needsEndedReplay) return
+    const needsEndedReplay = entry.player.needsReplayAfterEnd(playerPlayingChanged, fromUserToggle)
+    if (entry.lastSpecKey === specKey && !playingChanged && !needsEndedReplay) return false
     entry.lastSpecKey = specKey
     entry.lastAppliedPlaying = ecsPlaying
-    entry.player.applySpec(spec)
+    entry.player.applySpec(spec, { fromUserToggle })
     this.onTextureReady?.(entity)
+    return fromUserToggle && playingChanged
   }
 
   private removeDecoder(entity: Entity): void {

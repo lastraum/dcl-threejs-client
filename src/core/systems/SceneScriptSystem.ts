@@ -736,6 +736,11 @@ export class SceneScriptSystem {
       this.projection.applyIncoming(msg.data)
       this.foldProjectionChanges()
 
+      if (this.pointerAwaitingWorkerApply) {
+        this.videoPlayerBridge?.notifyUserPointerDelivered()
+        this.videoPlayerBridge?.sync(this.view)
+      }
+
       // Hover + PrimaryPointerInfo only. PET_DOWN/UP stay queued until click flush → pointer-crdt-deliver.
       this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
       this.syncTriggerAreas()
@@ -1187,6 +1192,7 @@ export class SceneScriptSystem {
 
   private onPointerDeliverDone(): void {
     this.logPointer('pointer-deliver-done — worker finished pointer tick + onUpdate CRDT flush')
+    this.videoPlayerBridge?.notifyUserPointerDelivered()
     this.finishPointerDelivery('pointer-deliver-done')
   }
 

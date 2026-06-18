@@ -154,14 +154,26 @@ export class WebVideoPlayer {
     }
   }
 
-  applySpec(spec: PBVideoPlayer, options?: { fromEcsSync?: boolean }): void {
+  applySpec(
+    spec: PBVideoPlayer,
+    options?: { fromEcsSync?: boolean; fromUserToggle?: boolean }
+  ): void {
     const ecsPlaying = spec.playing !== false
     const ecsPlayingChanged =
       this.lastEcsPlaying !== undefined && ecsPlaying !== this.lastEcsPlaying
 
-    // User toggled play while at end — replay from start (not resume).
-    if (!options?.fromEcsSync && ecsPlaying && ecsPlayingChanged && this.isAtEnd()) {
+    // Pointer click at end-of-video — always replay (scene uses !playing).
+    if (
+      !options?.fromEcsSync &&
+      options?.fromUserToggle &&
+      ecsPlayingChanged &&
+      this.isAtEnd()
+    ) {
       this.restartFromBeginning()
+      this.lastEcsPlaying = ecsPlaying
+      this.wantsPlaying = true
+      if (!this.visibilityPaused) void this.tryPlay()
+      return
     }
 
     const url = resolveSceneTextureUrl(spec.src, this.scene)
@@ -199,9 +211,7 @@ export class WebVideoPlayer {
     }
 
     this.wantsPlaying = ecsPlaying
-    if (!options?.fromEcsSync) {
-      this.lastEcsPlaying = ecsPlaying
-    }
+    this.lastEcsPlaying = ecsPlaying
 
     if (this.visibilityPaused) return
 
@@ -278,12 +288,11 @@ export class WebVideoPlayer {
   }
 
   /** Bridge dedup bypass when a user toggle should replay from the end. */
-  needsReplayAfterEnd(ecsPlaying: boolean, playingChanged: boolean): boolean {
-    if (!playingChanged || !ecsPlaying || !this.isAtEnd()) return false
-    return true
+  needsReplayAfterEnd(playingChanged: boolean, fromUserToggle: boolean): boolean {
+    return fromUserToggle && playingChanged && this.isAtEnd()
   }
 
-  private isAtEnd(): boolean {
+  isAtEnd(): boolean {
     if (this.video.ended) return true
     const duration = this.video.duration
     if (!Number.isFinite(duration) || duration <= 0) return false

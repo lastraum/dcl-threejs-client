@@ -69,18 +69,20 @@ export class SettingsOverlay {
     this.root.setAttribute('hidden', '')
 
     this.root.innerHTML = `
-      <div class="settings-overlay__header">
-        <div class="settings-overlay__logo">
-          <svg viewBox="0 0 44 44" width="28" height="28"><circle cx="22" cy="22" r="22" fill="#FF2D55"/><path fill="#fff" d="M10 28l6-14h2.2l3.4 8.2L25 14h2.1l6 14h-2.4l-1.2-3H13.6l-1.2 3H10zm5.8-5.2h6.8L19.8 17l-4 5.8z"/></svg>
-          <span class="settings-overlay__brand">Decentraland</span>
-        </div>
-        <nav class="settings-overlay__tabs" role="tablist"></nav>
-        <div class="settings-overlay__user">
+      <aside class="settings-overlay__panel" role="dialog" aria-label="Settings" aria-modal="true">
+        <div class="settings-overlay__header">
+          <div class="settings-overlay__heading">
+            <svg viewBox="0 0 44 44" width="22" height="22" aria-hidden="true"><circle cx="22" cy="22" r="22" fill="#FF2D55"/><path fill="#fff" d="M10 28l6-14h2.2l3.4 8.2L25 14h2.1l6 14h-2.4l-1.2-3H13.6l-1.2 3H10zm5.8-5.2h6.8L19.8 17l-4 5.8z"/></svg>
+            <span class="settings-overlay__title">SETTINGS</span>
+          </div>
           <span class="settings-overlay__user-name"></span>
-          <button class="settings-overlay__close" aria-label="Close">&times;</button>
+          <button class="settings-overlay__close" type="button" aria-label="Close">&times;</button>
         </div>
-      </div>
-      <div class="settings-overlay__content"></div>
+        <div class="settings-overlay__body">
+          <nav class="settings-overlay__tabs" role="tablist" aria-label="Settings sections"></nav>
+          <div class="settings-overlay__content"></div>
+        </div>
+      </aside>
     `
 
     this.tabBar = this.root.querySelector('.settings-overlay__tabs')!
@@ -103,10 +105,9 @@ export class SettingsOverlay {
       btn.className = 'settings-overlay__tab'
       btn.dataset.tab = tab.id
       btn.setAttribute('role', 'tab')
-      btn.innerHTML = `
-        <span class="settings-overlay__tab-icon">${tab.icon}</span>
-        <span class="settings-overlay__tab-label">${tab.label} [${tab.shortcut}]</span>
-      `
+      btn.title = `${tab.label} [${tab.shortcut}]`
+      btn.setAttribute('aria-label', `${tab.label} (${tab.shortcut})`)
+      btn.innerHTML = `<span class="settings-overlay__tab-icon">${tab.icon}</span>`
       btn.addEventListener('click', () => this.switchTab(tab.id))
       this.tabBar.appendChild(btn)
     }
@@ -190,6 +191,9 @@ export class SettingsOverlay {
     for (const btn of this.tabBar.querySelectorAll('.settings-overlay__tab')) {
       btn.classList.toggle('is-active', (btn as HTMLElement).dataset.tab === id)
     }
+    const titleEl = this.root.querySelector('.settings-overlay__title')
+    const tabDef = TABS.find((tab) => tab.id === id)
+    if (titleEl) titleEl.textContent = tabDef?.label ?? 'SETTINGS'
     this.renderContent()
   }
 

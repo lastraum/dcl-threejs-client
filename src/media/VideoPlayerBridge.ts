@@ -54,7 +54,7 @@ export class VideoPlayerBridge {
 
   getTexture(entity: Entity): THREE.VideoTexture | null {
     const entry = this.decoders.get(entity)
-    if (!entry?.player.hasRenderableFrame()) return null
+    if (!entry?.player.canAttachTexture()) return null
     return entry.player.texture
   }
 
@@ -79,6 +79,16 @@ export class VideoPlayerBridge {
       entry.player.setVisibilityPaused(!visible)
       if (this.applySpec(entity, spec, fromUserToggle)) {
         userToggleConsumed = true
+      }
+    }
+
+    if (!userToggleConsumed && fromUserToggle) {
+      for (const [entity, entry] of this.decoders) {
+        if (!entry.player.isHoldingAtEnd()) continue
+        entry.player.replayFromUserClick()
+        this.onTextureReady?.(entity)
+        userToggleConsumed = true
+        break
       }
     }
 
@@ -198,7 +208,7 @@ export class VideoPlayerBridge {
     entry.lastAppliedPlaying = ecsPlaying
     entry.player.applySpec(spec, { fromUserToggle })
     this.onTextureReady?.(entity)
-    return fromUserToggle && playingChanged
+    return fromUserToggle && (playingChanged || entry.player.isHoldingAtEnd())
   }
 
   private removeDecoder(entity: Entity): void {

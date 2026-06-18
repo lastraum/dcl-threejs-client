@@ -55,6 +55,8 @@ export class WebVideoPlayer {
   private lastSpecPosition: number | undefined
   /** Last `spec.playing` from ECS — used to ignore stale position on play/pause toggles. */
   private lastEcsPlaying: boolean | undefined
+  /** Awaiting user click to replay after natural end (ECS may already show paused). */
+  private holdingAtEnd = false
   onFrameReady?: () => void
   /** Fired when playback reaches the end (non-looping). */
   onNaturalEnd?: () => void
@@ -75,6 +77,9 @@ export class WebVideoPlayer {
     configureSceneVideoTexture(this.texture)
 
     this.video.addEventListener('loadstart', () => this.setState(VS_LOADING))
+    this.video.addEventListener('loadedmetadata', () => {
+      this.onFrameReady?.()
+    })
     this.video.addEventListener('loadeddata', () => {
       if (this.state !== VS_ERROR) this.setState(VS_READY)
       this.onFrameReady?.()
@@ -83,7 +88,10 @@ export class WebVideoPlayer {
       if (this.state !== VS_ERROR && !this.video.paused) return
       if (this.state !== VS_ERROR) this.setState(VS_READY)
     })
-    this.video.addEventListener('playing', () => this.setState(VS_PLAYING))
+    this.video.addEventListener('playing', () => {
+      this.setState(VS_PLAYING)
+      this.onFrameReady?.()
+    })
     this.video.addEventListener('pause', () => {
       if (this.state !== VS_SEEKING && this.state !== VS_ERROR) {
         this.setState(VS_PAUSED)
@@ -109,7 +117,10 @@ export class WebVideoPlayer {
     })
     this.video.addEventListener('ended', () => {
       this.setState(VS_PAUSED)
-      if (!this.video.loop) this.onNaturalEnd?.()
+      if (!this.video.loop) {
+        this.holdingAtEnd = true
+        this.onNaturalEnd?.()
+      }
     })
   }
 
@@ -134,6 +145,28 @@ export class WebVideoPlayer {
       return true
     }
     return this.hasHadRenderableFrame && this.state !== VS_ERROR && !!this.loadedSrc
+  }
+
+  /** VideoTexture can bind once metadata is loaded (updates each frame). */
+  canAttachTexture(): boolean {
+    return (
+      !!this.loadedSrc &&
+      this.state !== VS_ERROR &&
+      (this.video.readyState >= HTMLMediaElement.HAVE_METADATA || this.hasHadRenderableFrame)
+    )
+  }
+
+  isHoldingAtEnd(): boolean {
+    return this.holdingAtEnd
+  }
+
+  /** Pointer click while holding end frame — replay even if ECS playing did not change. */
+  replayFromUserClick(): void {
+    if (!this.isAtEnd() && !this.holdingAtEnd) return
+    this.holdingAtEnd = false
+    this.restartFromBeginning()
+    this.wantsPlaying = true
+    if (!this.visibilityPaused) void this.tryPlay()
   }
 
   setUserGestureUnlocked(unlocked: boolean): void {
@@ -162,13 +195,14 @@ export class WebVideoPlayer {
     const ecsPlayingChanged =
       this.lastEcsPlaying !== undefined && ecsPlaying !== this.lastEcsPlaying
 
-    // Pointer click at end-of-video — always replay (scene uses !playing).
+    // Pointer click at end-of-video — replay (first click may not change ECS playing).
     if (
       !options?.fromEcsSync &&
       options?.fromUserToggle &&
-      ecsPlayingChanged &&
-      this.isAtEnd()
+      this.isAtEnd() &&
+      (ecsPlayingChanged || this.holdingAtEnd)
     ) {
+      this.holdingAtEnd = false
       this.restartFromBeginning()
       this.lastEcsPlaying = ecsPlaying
       this.wantsPlaying = true
@@ -289,7 +323,8 @@ export class WebVideoPlayer {
 
   /** Bridge dedup bypass when a user toggle should replay from the end. */
   needsReplayAfterEnd(playingChanged: boolean, fromUserToggle: boolean): boolean {
-    return fromUserToggle && playingChanged && this.isAtEnd()
+    if (!fromUserToggle || !this.isAtEnd()) return false
+    return playingChanged || this.holdingAtEnd
   }
 
   isAtEnd(): boolean {
@@ -300,6 +335,7 @@ export class WebVideoPlayer {
   }
 
   private restartFromBeginning(): void {
+    this.holdingAtEnd = false
     this.video.currentTime = 0
     this.lastSpecPosition = 0
     this.wantsPlaying = true

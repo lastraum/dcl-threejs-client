@@ -490,6 +490,7 @@ export class World {
 
   start(): void {
     this.sceneScript.notifyPlayReady()
+    this.sceneScript.setVideoUserGestureUnlocked(true)
     let startFrame = 0
     this.host.start({
       onSyncFrame: (delta) => {

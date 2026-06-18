@@ -171,6 +171,7 @@ export class ThreeBridge {
       this.materials.clearEntity(entity)
       this.pendingMaterialEntities.add(entity)
     })
+    void this.runMaterialPass(Material)
   }
 
   /** Lift the per-frame GLTF spawn cap while `waitForSceneAssets` runs. */

@@ -68,15 +68,25 @@ vec3 celestialDisc(vec3 dir, vec3 lightDir, sampler2D map, float mask, float siz
 }
 
 vec3 sunDisc(vec3 dir, vec3 sunDir, vec3 sunColor, float radiance) {
-  float d = dot(normalize(dir), normalize(sunDir));
-  if (d < uSunDiscCutoff) return vec3(0.0);
-  float coreEnd = 0.99998;
-  float coreStart = uSunDiscCutoff + (coreEnd - uSunDiscCutoff) * 0.55;
-  float core = smoothstep(coreStart, coreEnd, d);
-  float corona = pow(max(d, 0.0), 56.0) * (0.22 + radiance * 2.6) * uSunDiscGlowGain;
-  float bloom = pow(max(d, 0.0), 20.0) * 0.07 * (0.4 + radiance * 1.35) * uSunDiscGlowGain;
-  vec3 warm = sunColor * vec3(1.12, 1.0, 0.86);
-  return warm * (core * uSunDiscCoreGain + corona + bloom);
+  vec3 sDir = normalize(sunDir);
+  float d = dot(normalize(dir), sDir);
+  float glowReach = uSunDiscCutoff - mix(0.0, 0.028, uSunDiscGlowGain);
+  if (d < glowReach) return vec3(0.0);
+
+  float ang = acos(clamp(d, -1.0, 1.0));
+  float coreEdge = acos(clamp(uSunDiscCutoff, -1.0, 1.0));
+  float core = 1.0 - smoothstep(0.0, max(coreEdge * 0.9, 0.0008), ang);
+  core = pow(max(core, 0.0), 1.35);
+
+  float glowAmt = uSunDiscGlowGain;
+  float innerSpread = mix(0.006, 0.055, glowAmt);
+  float outerSpread = max(innerSpread * 4.0, 0.01);
+  float corona = exp(-ang / innerSpread) * glowAmt * (1.4 + radiance * 1.1);
+  float bloom = exp(-ang / outerSpread) * glowAmt * (0.55 + radiance * 0.45);
+
+  vec3 warm = sunColor * vec3(1.15, 1.02, 0.88);
+  float rad = 0.4 + radiance * 0.75;
+  return warm * rad * (core * uSunDiscCoreGain + corona + bloom);
 }
 
 vec3 starField(vec3 dir, sampler2D map, float night) {

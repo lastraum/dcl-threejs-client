@@ -2106,7 +2106,7 @@
         display: flex;
         flex-direction: column;
         pointer-events: auto;
-        background: linear-gradient(160deg, #1a2238 0%, #243352 35%, #2d3f5c 72%, #354a68 100%);
+        background: linear-gradient(160deg, #2d1b4e 0%, #4a1942 35%, #6b1d5e 72%, #7e2470 100%);
         box-shadow: -12px 0 40px rgba(0, 0, 0, 0.45);
         transform: translateX(104%);
         transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
@@ -2174,7 +2174,7 @@
       .preferences-panel__tab.is-active {
         background: rgba(255, 255, 255, 0.14);
         color: #fff;
-        box-shadow: inset 3px 0 0 #5b9fd4;
+        box-shadow: inset 3px 0 0 #ff2d55;
       }
       .preferences-panel__tab-icon {
         display: flex;
@@ -2366,6 +2366,11 @@
         border: 2px solid #ff6b6b;
         box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
         cursor: pointer;
+      }
+      .gfx-settings__slider::-moz-range-track {
+        height: 4px;
+        border-radius: 2px;
+        background: linear-gradient(to right, #ff6b6b 0%, #ff6b6b var(--pct, 50%), rgba(255, 255, 255, 0.15) var(--pct, 50%));
       }
       .gfx-settings__slider::-webkit-slider-runnable-track {
         height: 4px;

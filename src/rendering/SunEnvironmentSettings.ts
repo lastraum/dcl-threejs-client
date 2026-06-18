@@ -3,7 +3,7 @@ import * as THREE from 'three'
 const STORAGE_KEY = 'dcl-sun-environment-settings'
 
 export type SunEnvironmentSettingsState = {
-  /** 0 = large disc, 100 = small disc */
+  /** 0 = small disc, 100 = large disc */
   discSize: number
   /** Corona/bloom around the skydome sun (0–100) */
   discGlow: number
@@ -40,18 +40,18 @@ function clampSlider(value: number): number {
 /** Skydome sun angular cutoff — higher dot threshold = smaller visible disc. */
 export function sunDiscCutoff(size: number): number {
   const t = clampSlider(size) / SUN_DISC_SIZE_MAX
-  return THREE.MathUtils.lerp(0.992, 0.99885, t)
+  return THREE.MathUtils.lerp(0.99885, 0.992, t)
 }
 
 export function sunDiscCoreGain(brightness: number): number {
   const t = clampSlider(brightness) / SUN_SLIDER_MAX
-  return THREE.MathUtils.lerp(1.8, 7.5, t)
+  return THREE.MathUtils.lerp(0.15, 3.2, t)
 }
 
 export function sunDiscGlowGain(glow: number, enabled: boolean): number {
   if (!enabled) return 0
   const t = clampSlider(glow) / SUN_SLIDER_MAX
-  return THREE.MathUtils.lerp(0.15, 1.35, t)
+  return THREE.MathUtils.lerp(0.0, 1.0, t)
 }
 
 /** Multiplier on SUN_BRIGHTNESS + directional curve. */

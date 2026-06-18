@@ -100,7 +100,7 @@ const SECTIONS: SectionDef[] = [
 ]
 
 type BoundControl =
-  | { kind: 'slider'; input: HTMLInputElement; label: HTMLSpanElement; suffix?: string }
+  | { kind: 'slider'; input: HTMLInputElement; label: HTMLSpanElement; suffix?: string; min: number; max: number }
   | { kind: 'toggle'; input: HTMLInputElement }
 
 export class GraphicsSettingsView {
@@ -140,7 +140,7 @@ export class GraphicsSettingsView {
         },
         {
           type: 'slider',
-          label: 'Glow Intensity',
+          label: 'Sun Corona',
           min: SUN_SLIDER_MIN,
           max: SUN_SLIDER_MAX,
           defaultValue: sun.discGlow,
@@ -188,7 +188,7 @@ export class GraphicsSettingsView {
   private syncSunControls(state: SunEnvironmentSettingsState): void {
     const values: Record<string, string | boolean> = {
       'Sun Size': String(state.discSize),
-      'Glow Intensity': String(state.discGlow),
+      'Sun Corona': String(state.discGlow),
       'Sky Sun Brightness': String(state.discBrightness),
       'Scene Sun Light': String(state.sceneSunLight),
       Exposure: String(state.exposure),
@@ -202,6 +202,7 @@ export class GraphicsSettingsView {
         if (!name || values[name] === undefined) continue
         control.input.value = values[name] as string
         control.label.textContent = `${values[name]}${control.suffix ?? ''}`
+        this.setSliderPct(control.input, control.min, control.max)
         continue
       }
       const row = control.input.closest('.gfx-settings__row')
@@ -308,6 +309,7 @@ export class GraphicsSettingsView {
 
     const updateLabel = () => {
       valueLabel.textContent = `${slider.value}${def.suffix ?? ''}`
+      this.setSliderPct(slider, def.min, def.max)
       def.onChange?.(Number(slider.value))
     }
 
@@ -325,8 +327,16 @@ export class GraphicsSettingsView {
     wrap.appendChild(slider)
     wrap.appendChild(nextBtn)
     wrap.appendChild(valueLabel)
-    this.boundControls.push({ kind: 'slider', input: slider, label: valueLabel, suffix: def.suffix })
+    this.setSliderPct(slider, def.min, def.max)
+    this.boundControls.push({ kind: 'slider', input: slider, label: valueLabel, suffix: def.suffix, min: def.min, max: def.max })
     return wrap
+  }
+
+  private setSliderPct(slider: HTMLInputElement, min: number, max: number): void {
+    const value = Number(slider.value)
+    const span = max - min
+    const pct = span <= 0 ? 0 : ((value - min) / span) * 100
+    slider.style.setProperty('--pct', `${pct}%`)
   }
 
   private buildToggle(def: ToggleDef): HTMLElement {

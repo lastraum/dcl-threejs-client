@@ -18,12 +18,15 @@ function guardAddSystemFromStockChecker(engine: IEngine): void {
  * Scene bundles embed @dcl/sdk and call `pointerEventColliderChecker(engine)` at init.
  * Strip that call in `evaluateSceneBundle` — the public engine API has no `getSystems()`.
  */
+const PREREGISTER_CALL =
+  'try{globalThis.__THREEJS_PREREGISTER_RENDERER_COMPONENTS__&&globalThis.__THREEJS_PREREGISTER_RENDERER_COMPONENTS__(__e)}catch(__err){}'
+
 const CAPTURE_ENGINE =
-  '(function(__e){if(__e&&typeof __e.update==="function"&&typeof __e.addSystem==="function"){globalThis.__THREEJS_SCENE_ENGINE__=__e}})'
+  `(function(__e){if(__e&&typeof __e.update==="function"&&typeof __e.addSystem==="function"){${PREREGISTER_CALL}globalThis.__THREEJS_SCENE_ENGINE__=__e}})`
 
 /** Minified bundles call `ae.addTransport(jP)` — capture the scene engine there (RickRoll, asset packs). */
 const CAPTURE_ADD_TRANSPORT =
-  '(function(__e,__t){if(__e&&typeof __e.update==="function"&&typeof __e.addSystem==="function"){globalThis.__THREEJS_SCENE_ENGINE__=__e}return __e.addTransport(__t)})'
+  `(function(__e,__t){if(__e&&typeof __e.update==="function"&&typeof __e.addSystem==="function"){${PREREGISTER_CALL}globalThis.__THREEJS_SCENE_ENGINE__=__e}return __e.addTransport(__t)})`
 
 export function stripBundledPointerEventColliderChecker(code: string): string {
   const moduleCall =

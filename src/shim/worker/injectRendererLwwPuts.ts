@@ -1,5 +1,6 @@
 import type { Entity, IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
+import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
 import { ReadWriteByteBuffer } from '@dcl/ecs/dist/serialization/ByteBuffer'
 import { readMessage } from '@dcl/ecs/dist/serialization/crdt/message'
 import { CrdtMessageType } from '@dcl/ecs/dist/serialization/crdt/types'
@@ -19,6 +20,7 @@ export type RendererLwwInjectCounts = {
  * Mirrors `injectTriggerAreaAppendsOnEngine` — same-tick delivery without waiting for transport LWW.
  */
 export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Array[]): RendererLwwInjectCounts {
+  preregisterRendererInjectedComponents(engine)
   const TweenState = generated.TweenState(engine)
   const RaycastResult = generated.RaycastResult(engine)
   let tweenPuts = 0

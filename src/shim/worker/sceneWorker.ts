@@ -37,6 +37,10 @@ import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransfor
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
 import { resolveSceneEngine } from './resolveSceneEngine'
+import {
+  installPreregisterRendererComponentsHook,
+  preregisterRendererInjectedComponents
+} from './preregisterRendererInjectedComponents'
 
 const ctx = self
 
@@ -497,10 +501,17 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
       }
       return
     } catch (err) {
-      workerLog(
-        'error',
-        `[sceneWorker] pointer-crdt-deliver failed — ${err instanceof Error ? err.message : String(err)}`
-      )
+      const message = err instanceof Error ? err.message : String(err)
+      if (rendererInboundApply && message.includes('already sealed')) {
+        workerVerboseLog(
+          debugPointerDeliver,
+          'warn',
+          '[sceneWorker] pointer-crdt-deliver — direct inject blocked (sealed), falling back to transport'
+        )
+        rendererInboundApply(chunks)
+        return
+      }
+      workerLog('error', `[sceneWorker] pointer-crdt-deliver failed — ${message}`)
       return
     }
   }
@@ -1295,9 +1306,18 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Yield so priority inject/deliver messages posted during stub setup can run before bundle eval.
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
+    installPreregisterRendererComponentsHook()
     const exports = evaluateSceneBundle(code, requireMap, patchSceneBundle)
     sceneEngine = resolveSceneEngine(exports)
     if (sceneEngine) {
+      try {
+        preregisterRendererInjectedComponents(sceneEngine)
+      } catch (err) {
+        workerLog(
+          'warn',
+          `[sceneWorker] renderer component preregister skipped — ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
       const engineId = (sceneEngine as { _id?: number })._id
       workerLog(
         'log',

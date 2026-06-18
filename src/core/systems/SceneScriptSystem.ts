@@ -46,6 +46,8 @@ import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
 import { TriggerAreaSystem } from '../../input/TriggerAreaSystem'
 import { isTriggerAreaVerbose } from '../../input/triggerAreaConfig'
+import { RaycastSystem } from '../../input/RaycastSystem'
+import { isRaycastVerbose } from '../../input/raycastConfig'
 import type { PhysXWorld } from '../../physics/PhysXWorld'
 import { EngineApiEventBridge } from './EngineApiEventBridge'
 
@@ -111,12 +113,16 @@ export class SceneScriptSystem {
   private readonly recordRendererAppend = (componentId: number, entity: Entity, value: unknown): void => {
     this.encoder.recordAppend(componentId, entity, value)
   }
+  private readonly recordRendererLww = (componentId: number, entity: Entity, value: unknown): void => {
+    this.encoder.recordLww(componentId, entity, value)
+  }
   private encoderEnabledLogged = false
   readonly reserved = new ReservedEntitiesSync(this.projection, this.readComponents, SDK_RESERVED)
   collision: CollisionSystem | null = null
   gltfColliders: GltfColliderExtractor | null = null
   pointerEvents: PointerEventsSystem | null = null
   triggerAreas: TriggerAreaSystem | null = null
+  raycasts: RaycastSystem | null = null
   readonly engineApiEvents = new EngineApiEventBridge()
   private bridge: ThreeBridge | null = null
   /** Phase 4 — unified scene-graph entity store (Three.js groups keyed by ECS entity). */
@@ -219,6 +225,7 @@ export class SceneScriptSystem {
     this.gltfColliders = new GltfColliderExtractor(host.scene)
     this.pointerEvents = new PointerEventsSystem(host.renderer.domElement)
     this.triggerAreas = new TriggerAreaSystem()
+    this.raycasts = new RaycastSystem()
     this.avatarShapes.setAssetCache(cache, scene.realm.contentUrl)
     this.bridge.setOnGltfAttached(() => this.flushIncrementalColliders())
     this.prepared = true
@@ -702,6 +709,7 @@ export class SceneScriptSystem {
         this.foldProjectionChanges()
         this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
         this.syncTriggerAreas()
+        this.syncRaycasts()
         this.syncTweenBeforeEncode()
         this.crdtTick++
         this.prepareRendererOutboundState()
@@ -725,6 +733,7 @@ export class SceneScriptSystem {
       // Hover + PrimaryPointerInfo only. PET_DOWN/UP stay queued until click flush → pointer-crdt-deliver.
       this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
       this.syncTriggerAreas()
+      this.syncRaycasts()
       this.syncTweenBeforeEncode()
       this.crdtTick++
 
@@ -881,6 +890,13 @@ export class SceneScriptSystem {
       getPhysics,
       recordAppend: this.recordRendererAppend
     })
+    this.raycasts?.bind({
+      ecs: this.readComponents,
+      view: this.view,
+      collision: this.collision,
+      getEntityNodes: () => this.bridge!.getEntityNodes(),
+      recordLww: this.recordRendererLww
+    })
     let triggerEntities = 0
     for (const [entity] of this.view.getEntitiesWith(this.readComponents.TriggerArea)) {
       if (
@@ -892,9 +908,20 @@ export class SceneScriptSystem {
       }
       triggerEntities++
     }
+    let raycastEntities = 0
+    for (const [entity] of this.view.getEntitiesWith(this.readComponents.Raycast)) {
+      if (
+        entity === this.view.RootEntity ||
+        entity === this.view.PlayerEntity ||
+        entity === this.view.CameraEntity
+      ) {
+        continue
+      }
+      raycastEntities++
+    }
     clientDebugLog.log(
       'pointer',
-      `input bound — ${pointerEntities} PointerEvents · ${triggerEntities} TriggerArea`,
+      `input bound — ${pointerEntities} PointerEvents · ${triggerEntities} TriggerArea · ${raycastEntities} Raycast`,
       { level: 'success' }
     )
   }
@@ -904,8 +931,14 @@ export class SceneScriptSystem {
     this.triggerAreas?.sync()
   }
 
+  private syncRaycasts(): void {
+    this.raycasts?.sync(this.crdtTick)
+  }
+
   private lastTriggerFlushAt = 0
+  private lastRaycastFlushAt = 0
   private static readonly TRIGGER_FLUSH_MIN_MS = 50
+  private static readonly RAYCAST_FLUSH_MIN_MS = 50
   private lastTweenDeliverAt = 0
   /** Proactive TweenState push only after pointer delivery (click→complete parity). */
   private proactiveTweenPushUntil = 0
@@ -925,6 +958,21 @@ export class SceneScriptSystem {
     if (now - this.lastTriggerFlushAt < SceneScriptSystem.TRIGGER_FLUSH_MIN_MS) return
     this.lastTriggerFlushAt = now
     this.deliverRendererAppendsToWorker()
+  }
+
+  /**
+   * Per-frame Raycast execution + push RaycastResult LWW to the worker.
+   * CRDT round-trips alone are too sparse when the scene worker is idle.
+   */
+  updateRaycasts(): void {
+    if (!this.running || !this.raycasts) return
+    this.syncRaycasts()
+    if (this.encoder.pendingLwwPutCount === 0) return
+    if (this.pointerAwaitingWorkerApply || this.pointerFlushInFlight) return
+    const now = performance.now()
+    if (now - this.lastRaycastFlushAt < SceneScriptSystem.RAYCAST_FLUSH_MIN_MS) return
+    this.lastRaycastFlushAt = now
+    this.deliverRendererLwwToWorker()
   }
 
   /**
@@ -954,6 +1002,24 @@ export class SceneScriptSystem {
     const copy = bytes.slice()
     this.worker.postMessage(
       { type: 'tween-state-deliver', data: [copy] } satisfies MainToWorker,
+      [copy.buffer]
+    )
+  }
+
+  /** Deliver source-captured dynamic LWW PUTs (RaycastResult) to the worker. */
+  private deliverRendererLwwToWorker(): void {
+    if (!this.worker || !this.running) return
+    const pending = this.encoder.pendingLwwPutCount
+    const lwwBytes = this.encoder.encodeLwwPutsOnly()
+    if (!lwwBytes?.byteLength) return
+    const copy = lwwBytes.slice()
+    clientDebugLog.log(
+      'input',
+      `Raycast CRDT deliver — ${pending} PUT(s), ${copy.byteLength} bytes`,
+      { level: 'info', alsoConsole: isRaycastVerbose() }
+    )
+    this.worker.postMessage(
+      { type: 'pointer-crdt-deliver', data: [copy] } satisfies MainToWorker,
       [copy.buffer]
     )
   }
@@ -1461,6 +1527,8 @@ export class SceneScriptSystem {
     this.pointerEvents = null
     this.triggerAreas?.dispose()
     this.triggerAreas = null
+    this.raycasts?.dispose()
+    this.raycasts = null
     this.engineApiEvents.dispose()
     this.clearPointerDeliverWatchdog()
     this.pointerResponseStash.length = 0

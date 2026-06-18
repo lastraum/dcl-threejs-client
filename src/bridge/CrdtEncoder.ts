@@ -92,6 +92,9 @@ export class CrdtEncoder {
    * older entries the engine still flushed, the cause of the snapshot-diff append misses).
    */
   private readonly recordedAppends: EncoderEmit[] = []
+  /** Source-captured dynamic LWW PUTs (RaycastResult, etc.). */
+  private readonly lwwCaptureById: Map<number, ComponentDef>
+  private readonly recordedLwwPuts: EncoderEmit[] = []
   /** componentIds the encoder is responsible for (for boot logging + coverage). */
   private readonly componentIds: Set<number>
   /** When set, tween encode scans only these entities (from TweenBridge dirty set). */
@@ -105,6 +108,8 @@ export class CrdtEncoder {
     const growOnly = [components.PointerEventsResult, components.TriggerAreaResult, components.VideoEvent]
     this.growOnlyIds = new Set(growOnly.map((d) => d.componentId))
     this.growOnlyById = new Map(growOnly.map((d) => [d.componentId, d]))
+    const lwwCapture = [components.RaycastResult]
+    this.lwwCaptureById = new Map(lwwCapture.map((d) => [d.componentId, d]))
 
     const mk = (def: ComponentDef, entity: Entity): LwwTarget => ({
       componentId: def.componentId,
@@ -129,6 +134,7 @@ export class CrdtEncoder {
     this.componentIds.add(this.tweenState.componentId)
     this.componentIds.add(this.transform.componentId)
     for (const id of this.growOnlyIds) this.componentIds.add(id)
+    for (const id of this.lwwCaptureById.keys()) this.componentIds.add(id)
   }
 
   private key(entity: Entity, componentId: number): string {
@@ -159,6 +165,11 @@ export class CrdtEncoder {
     return this.recordedAppends.length
   }
 
+  /** Dynamic LWW PUTs queued since the last `encode()` / `encodeLwwPutsOnly()`. */
+  get pendingLwwPutCount(): number {
+    return this.recordedLwwPuts.length
+  }
+
   /**
    * Encode only source-captured grow-only appends (pointer/video results).
    * Used for pointer flush stash so player/camera LWW is not re-shipped every nudge.
@@ -167,6 +178,17 @@ export class CrdtEncoder {
     this.emittedAppends.length = 0
     const buf = new ReadWriteByteBuffer()
     if (!this.encodeAppends(buf)) return null
+    return buf.toBinary()
+  }
+
+  /**
+   * Encode only source-captured dynamic LWW PUTs (RaycastResult).
+   * Used for proactive worker delivery without re-shipping reserved entities.
+   */
+  encodeLwwPutsOnly(): Uint8Array | null {
+    this.emitted.length = 0
+    const buf = new ReadWriteByteBuffer()
+    if (!this.encodeRecordedLwwPuts(buf)) return null
     return buf.toBinary()
   }
 
@@ -260,6 +282,8 @@ export class CrdtEncoder {
     // from the values source-captured at each `addValue` site (see `recordAppend`).
     if (this.encodeAppends(buf)) wrote = true
 
+    if (this.encodeRecordedLwwPuts(buf)) wrote = true
+
     return wrote ? buf.toBinary() : null
   }
 
@@ -274,6 +298,13 @@ export class CrdtEncoder {
     this.recordedAppends.push({ entity, componentId, data: serializeValue(def, value) })
   }
 
+  /** Source-capture a renderer-owned dynamic LWW PUT (RaycastResult). */
+  recordLww(componentId: number, entity: Entity, value: unknown): void {
+    const def = this.lwwCaptureById.get(componentId)
+    if (!def) return
+    this.recordedLwwPuts.push({ entity, componentId, data: serializeValue(def, value) })
+  }
+
   /** Emit one APPEND op per source-captured value since the last encode. */
   private encodeAppends(buf: ReadWriteByteBuffer): boolean {
     if (this.recordedAppends.length === 0) return false
@@ -283,6 +314,19 @@ export class CrdtEncoder {
     }
     this.recordedAppends.length = 0
     return true
+  }
+
+  /** Emit one PUT op per source-captured dynamic LWW value since the last encode. */
+  private encodeRecordedLwwPuts(buf: ReadWriteByteBuffer): boolean {
+    if (this.recordedLwwPuts.length === 0) return false
+    let wrote = false
+    for (const rec of this.recordedLwwPuts) {
+      if (this.emitLww(rec.entity, rec.componentId, rec.data, buf)) {
+        wrote = true
+      }
+    }
+    this.recordedLwwPuts.length = 0
+    return wrote
   }
 
   /** Latest serialized bytes the encoder believes for `(entity, componentId)`. */
@@ -328,6 +372,7 @@ export class CrdtEncoder {
   covers(entity: Entity, componentId: number): boolean {
     if (componentId === this.tweenState.componentId) return true
     if (this.growOnlyIds.has(componentId)) return true
+    if (this.lwwCaptureById.has(componentId)) return true
     if (componentId === this.transform.componentId) {
       if (entity === this.reservedEntities.player || entity === this.reservedEntities.camera) return true
       return this.projection.has(this.tweenState.componentId, entity)

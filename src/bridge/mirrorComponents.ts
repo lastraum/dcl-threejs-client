@@ -32,6 +32,8 @@ export type MirrorComponents = {
   PointerEventsResult: ReturnType<typeof generated.PointerEventsResult>
   TriggerArea: ReturnType<typeof generated.TriggerArea>
   TriggerAreaResult: ReturnType<typeof generated.TriggerAreaResult>
+  Raycast: ReturnType<typeof generated.Raycast>
+  RaycastResult: ReturnType<typeof generated.RaycastResult>
   PrimaryPointerInfo: ReturnType<typeof generated.PrimaryPointerInfo>
   VideoPlayer: ReturnType<typeof generated.VideoPlayer>
   VideoEvent: ReturnType<typeof generated.VideoEvent>
@@ -68,6 +70,8 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     PointerEventsResult: generated.PointerEventsResult(engine),
     TriggerArea: generated.TriggerArea(engine),
     TriggerAreaResult: generated.TriggerAreaResult(engine),
+    Raycast: generated.Raycast(engine),
+    RaycastResult: generated.RaycastResult(engine),
     PrimaryPointerInfo: generated.PrimaryPointerInfo(engine),
     VideoPlayer: generated.VideoPlayer(engine),
     VideoEvent: generated.VideoEvent(engine)

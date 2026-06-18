@@ -317,12 +317,12 @@ function scheduleBatchedTweenEngineTick(): void {
 /** Lightweight tween-state path — no pointer pause / preempt / full deliver batch. */
 function deliverTweenStateInbound(chunks: Uint8Array[]): void {
   if (!sceneEngine || !sceneOnStartComplete) return
-  const applied = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
-  if (applied === 0) return
+  const { tweenPuts } = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
+  if (tweenPuts === 0) return
   workerVerboseLog(
     debugTweenDeliver,
     'log',
-    `[sceneWorker] tween-state-deliver — inject ${applied} TweenState PUT(s)`
+    `[sceneWorker] tween-state-deliver — inject ${tweenPuts} TweenState PUT(s)`
   )
   scheduleBatchedTweenEngineTick()
 }
@@ -417,17 +417,24 @@ function deliverPointerCrdtInbound(chunks: Uint8Array[]): void {
   executePointerDelivery(chunks)
 }
 
-function applyRendererInboundChunks(chunks: Uint8Array[]): { tweenPuts: number; triggerAppends: number } {
+function applyRendererInboundChunks(chunks: Uint8Array[]): {
+  tweenPuts: number
+  raycastPuts: number
+  triggerAppends: number
+} {
   let tweenPuts = 0
+  let raycastPuts = 0
   let triggerAppends = 0
   if (sceneEngine) {
-    tweenPuts = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
+    const lww = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
+    tweenPuts = lww.tweenPuts
+    raycastPuts = lww.raycastPuts
     triggerAppends = injectTriggerAreaAppendsOnEngine(sceneEngine, chunks)
   }
-  if (tweenPuts === 0 && triggerAppends === 0 && rendererInboundApply) {
+  if (tweenPuts === 0 && raycastPuts === 0 && triggerAppends === 0 && rendererInboundApply) {
     rendererInboundApply(chunks)
   }
-  return { tweenPuts, triggerAppends }
+  return { tweenPuts, raycastPuts, triggerAppends }
 }
 
 function executePointerDelivery(chunks: Uint8Array[]): void {
@@ -441,7 +448,7 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
   // Lightweight path — no scene-tick pause (tween/transform transport-only).
   if (canDirectInject) {
     try {
-      const { tweenPuts, triggerAppends } = applyRendererInboundChunks(chunks)
+      const { tweenPuts, raycastPuts, triggerAppends } = applyRendererInboundChunks(chunks)
       if (triggerAppends > 0) {
         preemptForPointerDelivery()
         sceneTicksPaused = true
@@ -451,6 +458,17 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
           `[sceneWorker] pointer-crdt-deliver — trigger inject ${triggerAppends} TriggerAreaResult append(s)`
         )
         void runPointerEngineTickSync('pointer-crdt-deliver-trigger')
+        return
+      }
+      if (raycastPuts > 0) {
+        preemptForPointerDelivery()
+        sceneTicksPaused = true
+        workerVerboseLog(
+          debugPointerDeliver,
+          'log',
+          `[sceneWorker] pointer-crdt-deliver — raycast inject ${raycastPuts} RaycastResult PUT(s)`
+        )
+        void runPointerEngineTickSync('pointer-crdt-deliver-raycast')
         return
       }
       if (tweenPuts > 0) {
@@ -481,11 +499,11 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
   }
   try {
     if (pointerDeliverBatchOpen) {
-      const { tweenPuts, triggerAppends } = applyRendererInboundChunks(chunks)
+      const { tweenPuts, raycastPuts, triggerAppends } = applyRendererInboundChunks(chunks)
       workerVerboseLog(
         debugPointerDeliver,
         'log',
-        `[sceneWorker] pointer-crdt-deliver — batch apply tween=${tweenPuts} trigger=${triggerAppends}`
+        `[sceneWorker] pointer-crdt-deliver — batch apply tween=${tweenPuts} raycast=${raycastPuts} trigger=${triggerAppends}`
       )
       finalizePointerDelivery('pointer-crdt-deliver')
       return

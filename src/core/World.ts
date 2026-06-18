@@ -503,6 +503,7 @@ export class World {
           this.player.update(delta)
           this.sceneScript.syncClientEntities(this.player.getEntityPose(), this.player.getCameraEntityPose())
           this.sceneScript.updateTriggerAreas()
+          this.sceneScript.updateRaycasts()
           this.sceneScript.updatePointerEvents(startFrame)
 
           const pos = this.player.getPosition()

@@ -181,6 +181,19 @@ export class WebVideoPlayer {
       }
       this.lastSpecPosition = specPosition
     }
+
+    // ECS often keeps playing=true after natural end; first toggle sends false — replay instead.
+    if (
+      !playing &&
+      playingChanged &&
+      this.video.ended &&
+      this.lastSpecPlaying === true
+    ) {
+      this.restartFromBeginning()
+      if (!this.visibilityPaused) void this.tryPlay()
+      return
+    }
+
     this.lastSpecPlaying = playing
 
     if (this.visibilityPaused) return
@@ -245,8 +258,18 @@ export class WebVideoPlayer {
     this.playGeneration++
   }
 
+  private restartFromBeginning(): void {
+    this.video.currentTime = 0
+    this.lastSpecPosition = 0
+    this.lastSpecPlaying = true
+    this.wantsPlaying = true
+  }
+
   private async tryPlay(): Promise<void> {
     if (!this.userGestureUnlocked || this.visibilityPaused || !this.wantsPlaying) return
+    if (this.video.ended && !this.video.loop) {
+      this.restartFromBeginning()
+    }
     const gen = ++this.playGeneration
     try {
       await this.video.play()

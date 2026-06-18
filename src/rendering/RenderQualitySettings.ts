@@ -27,9 +27,9 @@ export const SHADOW_MAP_SIZE: Record<RenderQualityTier, number> = {
 
 /** Renderer exposure with ACESFilmic tone mapping — tier-tuned; daytime sun needs slightly more headroom. */
 export const TONE_MAPPING_EXPOSURE: Record<RenderQualityTier, number> = {
-  [RenderQualityTier.Low]: 1.0,
-  [RenderQualityTier.Medium]: 1.06,
-  [RenderQualityTier.High]: 1.12
+  [RenderQualityTier.Low]: 1.05,
+  [RenderQualityTier.Medium]: 1.14,
+  [RenderQualityTier.High]: 1.2
 }
 
 type Listener = (options: RenderQualityOptions) => void

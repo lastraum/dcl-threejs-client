@@ -9,7 +9,7 @@ export const SUNRISE = 6 * 3600 + 15 * 60 /** 6:15 → 22500 */
 export const SUNSET = 19 * 3600 + 50 * 60 /** 19:50 → 71400 */
 export const TRANSITION_WALL_SEC = 4
 /** Directional sun + skydome disc intensity multiplier vs Explorer defaults. */
-export const SUN_BRIGHTNESS = 1.55
+export const SUN_BRIGHTNESS = 2.1
 /** Moon fill directional — Unity Generic_Skybox ~0.2–0.55 at night (separate from sun anim curve). */
 export const MOON_BRIGHTNESS = 1.35
 /** Hemisphere ambient — day / night multipliers on SkyboxRenderController indirect colors. */

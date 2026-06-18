@@ -3,6 +3,13 @@ import { loadCrossCubemap } from './crossCubemap'
 import { sampleSkyGradients } from './skyGradients'
 import { normalizedTimeOfDay, SUN_BRIGHTNESS } from './skyboxTime'
 import { isSunPeriod } from './sunCycleSampler'
+import {
+  sunDiscCoreGain,
+  sunDiscCutoff,
+  sunDiscGlowGain,
+  sunEnvironmentSettings,
+  type SunEnvironmentSettingsState
+} from '../rendering/SunEnvironmentSettings'
 
 const SKY_VERTEX = /* glsl */ `
 varying vec3 vWorldPosition;
@@ -25,6 +32,9 @@ uniform vec3 uMoonDirection;
 uniform float uMoonMask;
 uniform float uSunSize;
 uniform float uSunRadiance;
+uniform float uSunDiscCutoff;
+uniform float uSunDiscCoreGain;
+uniform float uSunDiscGlowGain;
 uniform float uCloudHighlights;
 uniform float uCloudDensity;
 uniform float uCloudOpacity;
@@ -59,12 +69,14 @@ vec3 celestialDisc(vec3 dir, vec3 lightDir, sampler2D map, float mask, float siz
 
 vec3 sunDisc(vec3 dir, vec3 sunDir, vec3 sunColor, float radiance) {
   float d = dot(normalize(dir), normalize(sunDir));
-  if (d < 0.9965) return vec3(0.0);
-  float core = smoothstep(0.9986, 0.99998, d);
-  float corona = pow(max(d, 0.0), 56.0) * (0.22 + radiance * 2.6);
-  float bloom = pow(max(d, 0.0), 20.0) * 0.07 * (0.4 + radiance * 1.35);
+  if (d < uSunDiscCutoff) return vec3(0.0);
+  float coreEnd = 0.99998;
+  float coreStart = uSunDiscCutoff + (coreEnd - uSunDiscCutoff) * 0.55;
+  float core = smoothstep(coreStart, coreEnd, d);
+  float corona = pow(max(d, 0.0), 56.0) * (0.22 + radiance * 2.6) * uSunDiscGlowGain;
+  float bloom = pow(max(d, 0.0), 20.0) * 0.07 * (0.4 + radiance * 1.35) * uSunDiscGlowGain;
   vec3 warm = sunColor * vec3(1.12, 1.0, 0.86);
-  return warm * (core * 5.0 + corona + bloom);
+  return warm * (core * uSunDiscCoreGain + corona + bloom);
 }
 
 vec3 starField(vec3 dir, sampler2D map, float night) {
@@ -155,6 +167,9 @@ export type GenesisSkyUniforms = {
   uMoonMask: THREE.IUniform<number>
   uSunSize: THREE.IUniform<number>
   uSunRadiance: THREE.IUniform<number>
+  uSunDiscCutoff: THREE.IUniform<number>
+  uSunDiscCoreGain: THREE.IUniform<number>
+  uSunDiscGlowGain: THREE.IUniform<number>
   uCloudHighlights: THREE.IUniform<number>
   uCloudDensity: THREE.IUniform<number>
   uCloudOpacity: THREE.IUniform<number>
@@ -191,6 +206,9 @@ export class DclGenesisSky {
       uMoonMask: { value: 0 },
       uSunSize: { value: 0.1 },
       uSunRadiance: { value: 0 },
+      uSunDiscCutoff: { value: sunDiscCutoff(sunEnvironmentSettings.get().discSize) },
+      uSunDiscCoreGain: { value: sunDiscCoreGain(sunEnvironmentSettings.get().discBrightness) },
+      uSunDiscGlowGain: { value: sunDiscGlowGain(sunEnvironmentSettings.get().discGlow, sunEnvironmentSettings.get().sunGlowEnabled) },
       uCloudHighlights: { value: 0.8 },
       uCloudDensity: { value: 0.52 },
       uCloudOpacity: { value: 1 },
@@ -217,6 +235,15 @@ export class DclGenesisSky {
     this.mesh = new THREE.Mesh(geometry, this.material)
     this.mesh.frustumCulled = false
     this.mesh.renderOrder = -1000
+
+    this.syncSunDiscSettings(sunEnvironmentSettings.get())
+    sunEnvironmentSettings.subscribe((state) => this.syncSunDiscSettings(state))
+  }
+
+  private syncSunDiscSettings(state: SunEnvironmentSettingsState): void {
+    this.uniforms.uSunDiscCutoff.value = sunDiscCutoff(state.discSize)
+    this.uniforms.uSunDiscCoreGain.value = sunDiscCoreGain(state.discBrightness)
+    this.uniforms.uSunDiscGlowGain.value = sunDiscGlowGain(state.discGlow, state.sunGlowEnabled)
   }
 
   async loadTextures(baseUrl = '/environment/'): Promise<void> {

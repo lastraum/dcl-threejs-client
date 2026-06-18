@@ -9,9 +9,11 @@ import { sanitizeSceneGltfMaterials } from '../rendering/LandscapeAssetSanitizer
 import { contentMappings, getMainFileUrl } from './peerApi'
 import { prepareAvatarMaterials, tintWearableMaterials } from './materials'
 import { wearableGlbCacheKey } from './wearableCache'
+import { findSkeletonHips, pruneWearableDisplayMeshes } from './wearableSanitize'
 import type { BodyShape, WearableDefinition } from './types'
 
 export { wearableGlbCacheKey } from './wearableCache'
+export { pruneWearableDisplayMeshes } from './wearableSanitize'
 
 export function createGltfLoader(mappings: Record<string, string>): GLTFLoader {
   const manager = new THREE.LoadingManager()
@@ -159,12 +161,34 @@ export function mergeWearableMeshes(
   return merged > 0
 }
 
+/**
+ * When bone merge fails, parent the wearable under the avatar hips instead of dumping the raw GLB
+ * at the avatar root (common source of huge white helper meshes).
+ */
+export function attachWearableFallback(
+  wearableRoot: THREE.Object3D,
+  skeleton: THREE.Skeleton,
+  target: THREE.Object3D
+): boolean {
+  const visibleMeshes = pruneWearableDisplayMeshes(wearableRoot)
+  if (visibleMeshes === 0) return false
+
+  const attachBone = findSkeletonHips(skeleton)
+  wearableRoot.position.set(0, 0, 0)
+  wearableRoot.rotation.set(0, 0, 0)
+  wearableRoot.scale.set(1, 1, 1)
+  if (attachBone) {
+    attachBone.add(wearableRoot)
+  } else {
+    target.add(wearableRoot)
+  }
+  return true
+}
+
 export function sanitizeWearableRoot(root: THREE.Object3D): void {
   sanitizeSceneGltfMaterials(root)
+  pruneWearableDisplayMeshes(root)
   root.traverse((obj) => {
-    if (obj instanceof THREE.Mesh && obj.name.toLowerCase().includes('collider')) {
-      obj.visible = false
-    }
     if (obj instanceof THREE.Mesh) {
       obj.castShadow = false
       obj.receiveShadow = false

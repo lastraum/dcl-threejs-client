@@ -18,6 +18,7 @@ import { markSharedAssetResources } from './sharedAsset'
 import { cloneGltfInstance } from './skinnedMeshInstance'
 import { prepareAvatarMaterials } from '../avatar/materials'
 import { prepareWearableCacheRoot } from '../avatar/wearableCache'
+import { clearLocomotionClipCache } from '../avatar/locomotionClipCache'
 
 export type CachedGltf = {
   root: THREE.Group
@@ -43,6 +44,7 @@ export function getSessionAssetCache(): AssetCache {
 export function disposeSessionAssetCache(): void {
   sessionCache?.dispose()
   sessionCache = null
+  clearLocomotionClipCache()
   disposeGlbFetchPool()
   disposeGlbParsePool()
 }

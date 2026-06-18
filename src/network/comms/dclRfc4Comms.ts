@@ -3,6 +3,7 @@ import {
   Packet,
   type AnnounceProfileVersion,
   type PlayerEmote,
+  type ProfileRequest,
   type ProfileResponse,
   type MovementCompressed as Rfc4MovementCompressed
 } from '@dcl/protocol/out-ts/decentraland/kernel/comms/rfc4/comms.gen'
@@ -121,6 +122,19 @@ export function encodeRfc4MovementPacket(
   }).finish()
 }
 
+export function encodeRfc4ProfileRequestPacket(address: string, profileVersion = 0): Uint8Array {
+  return Packet.encode({
+    protocolVersion: RFC4_PROTOCOL_VERSION,
+    message: {
+      $case: 'profileRequest',
+      profileRequest: {
+        address: address.toLowerCase(),
+        profileVersion
+      } satisfies ProfileRequest
+    }
+  }).finish()
+}
+
 export function encodeRfc4ProfileVersionPacket(profileVersion = 0): Uint8Array {
   return Packet.encode({
     protocolVersion: RFC4_PROTOCOL_VERSION,
@@ -207,6 +221,20 @@ export function tryDecodeRfc4ProfileResponse(buf: Uint8Array): DecodedRfc4Profil
       serializedProfile,
       baseUrl: response.baseUrl?.trim() ?? ''
     }
+  } catch {
+    return null
+  }
+}
+
+export type DecodedRfc4ProfileVersion = {
+  profileVersion: number
+}
+
+export function tryDecodeRfc4ProfileVersion(buf: Uint8Array): DecodedRfc4ProfileVersion | null {
+  try {
+    const packet = Packet.decode(buf)
+    if (packet.message?.$case !== 'profileVersion') return null
+    return { profileVersion: packet.message.profileVersion.profileVersion ?? 0 }
   } catch {
     return null
   }

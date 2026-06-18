@@ -145,10 +145,12 @@ export class AppController {
         renderStats: world.host.renderStats,
         onVisibilityChange: (visible) => this.shell?.getButton('help')?.setActive(visible),
         getPlayerPosition: () => this.world?.getPlayerPosition() ?? null,
-        getSceneOrigin: () => this.world?.comms.getSceneOrigin() ?? { x: 0, z: 0 }
+        getSceneOrigin: () => this.world?.comms.getSceneOrigin() ?? { x: 0, z: 0 },
+        onRecookColliders: () => this.world?.recookPhysicsColliders({ force: true })
       })
     } else {
       this.debugPanel.replaceRenderStats(world.host.renderStats)
+      this.debugPanel.setRecookCollidersHandler(() => this.world?.recookPhysicsColliders({ force: true }))
     }
 
     if (!this.devProgressPanel) {
@@ -206,6 +208,7 @@ export class AppController {
 
     const loadPromise = (async () => {
       await world.loadScene(sceneConfig, opts.onProgress)
+      void world.connectSceneCommsEarly(sceneConfig, opts.onProgress)
 
       this.minimap?.dispose()
       this.minimap = null

@@ -1,10 +1,17 @@
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
-import type { CommsProfileEntity } from '../avatar/peerApi'
+import { needsCommsPeerProfile, type CommsProfileEntity } from '../avatar/peerApi'
+import { encodeRfc4ProfileRequestPacket } from './comms/dclRfc4Comms'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { resolveCommsSceneId } from './catalyst/CatalystClient'
 import { normalizePointer, realmNameForCommsPointer, isParcelPointer } from './catalyst/pointer'
 import type { RealmEndpoints } from '../dcl/content/types'
 import { fetchSceneParticipants, getSceneAdapter } from './gatekeeper/GatekeeperClient'
+import {
+  acquireWalletSessionLock,
+  isWalletListedInScene,
+  refreshWalletSessionLock,
+  releaseWalletSessionLock
+} from './walletSessionGuard'
 import { AdapterManager } from './comms/AdapterManager'
 import { ArchipelagoClient } from './comms/ArchipelagoClient'
 import { CommsInboundQueue } from './comms/CommsInboundQueue'
@@ -23,6 +30,15 @@ import {
 } from './comms/types'
 
 const BROADCAST_INTERVAL_MS = 100
+
+export type SceneCommsFailureReason =
+  | 'duplicate_wallet'
+  | 'no_identity'
+  | 'scene_id'
+  | 'gatekeeper'
+  | 'livekit'
+
+export type SceneCommsConnectResult = { ok: true } | { ok: false; reason: SceneCommsFailureReason }
 
 export type SceneCommsTarget = {
   pointer: string
@@ -70,6 +86,7 @@ export class CommsService {
   private sceneId = ''
   private islandConnected = false
   private worldConnected = false
+  private walletSessionLockHeld = false
   private handlers: CommsPeerHandlers | null = null
   private sceneBinaryHandler: SceneBinaryHandler | null = null
   private chatHandler: SceneChatHandler | null = null
@@ -128,6 +145,11 @@ export class CommsService {
         this.sceneLiveKit.sendProfileAnnouncement('profile-request')
         this.worldLiveKit.sendProfileAnnouncement('profile-request')
         this.islandLiveKit.sendProfileAnnouncement('profile-request')
+      },
+      onPeerProfileVersion: (address, profileVersion) => {
+        if (address === this.localAddress) return
+        if (!needsCommsPeerProfile(address, profileVersion)) return
+        this.requestRemotePeerProfile(address, profileVersion)
       },
       onPeerProfile: (address, serializedProfile, baseUrl) => {
         if (address === this.localAddress) return
@@ -278,7 +300,7 @@ export class CommsService {
     return connected
   }
 
-  async connectSceneRoom(target: SceneCommsTarget): Promise<boolean> {
+  async connectSceneRoom(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
     this.sceneTarget = target
     this.sceneId = target.sceneId.trim()
     this.realm.room = normalizePointer(target.pointer)
@@ -301,10 +323,35 @@ export class CommsService {
 
     if (!this.localAddress || !this.identity) {
       clientDebugLog.log('comms', 'Wallet login required for production comms', { level: 'warn' })
-      return false
+      return { ok: false, reason: 'no_identity' }
+    }
+
+    if (!acquireWalletSessionLock(this.localAddress)) {
+      clientDebugLog.log('comms', 'Blocked second client — wallet already active in another tab', {
+        level: 'error'
+      })
+      return { ok: false, reason: 'duplicate_wallet' }
     }
 
     const realmName = realmNameForCommsPointer(target.pointer)
+
+    try {
+      const alreadyInScene = await isWalletListedInScene(target.pointer, realmName, this.localAddress)
+      if (alreadyInScene) {
+        releaseWalletSessionLock(this.localAddress)
+        clientDebugLog.log(
+          'comms',
+          `Blocked second client — ${this.localAddress.slice(0, 8)}… already in scene`,
+          { level: 'error' }
+        )
+        return { ok: false, reason: 'duplicate_wallet' }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      clientDebugLog.log('comms', `scene-participants preflight failed: ${msg}`, { level: 'warn' })
+    }
+
+    this.walletSessionLockHeld = true
     const isWorld = target.isWorld ?? !isParcelPointer(normalizePointer(target.pointer))
 
     let sceneId = this.sceneId
@@ -313,8 +360,9 @@ export class CommsService {
       this.sceneId = sceneId
     }
     if (!sceneId) {
+      this.releaseWalletSessionIfHeld()
       clientDebugLog.log('comms', `Could not resolve scene id for ${target.pointer}`, { level: 'error' })
-      return false
+      return { ok: false, reason: 'scene_id' }
     }
 
     this.disconnectSceneTransports()
@@ -331,15 +379,18 @@ export class CommsService {
     if (isWorld) {
       clientDebugLog.log('comms', `Joining world comms · pointer=${target.pointer}`, { level: 'info' })
       if (!this.worldConnected) {
+        this.releaseWalletSessionIfHeld()
         clientDebugLog.log('comms', 'World LiveKit failed to connect', { level: 'error' })
-        return false
+        return { ok: false, reason: 'livekit' }
       }
 
       this.transport = 'livekit'
       this.worldLiveKit.sendProfileAnnouncement('connect')
 
       try {
-        const participants = await fetchSceneParticipants(target.pointer, realmName)
+        const participants = await this.peerAddressesExceptSelf(
+          await fetchSceneParticipants(target.pointer, realmName)
+        )
         this.worldLiveKit.seedPeers(participants)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -349,7 +400,7 @@ export class CommsService {
       clientDebugLog.log('comms', 'Transport: LiveKit world room · RFC4 Movement + chat', {
         level: 'success'
       })
-      return true
+      return { ok: true }
     }
 
     clientDebugLog.log('comms', `Joining scene room · pointer=${target.pointer} scene=${sceneId.slice(0, 12)}…`)
@@ -371,8 +422,9 @@ export class CommsService {
       isWorld: false
     })
     if (!adapterResult.ok) {
+      this.releaseWalletSessionIfHeld()
       clientDebugLog.log('comms', `Gatekeeper failed: ${adapterResult.error}`, { level: 'error' })
-      return false
+      return { ok: false, reason: 'gatekeeper' }
     }
 
     clientDebugLog.log('comms', 'Gatekeeper adapter received · connecting scene LiveKit…', { level: 'success' })
@@ -381,13 +433,16 @@ export class CommsService {
 
     const connected = await this.sceneLiveKit.connect(adapterResult.adapter)
     if (!connected) {
+      this.releaseWalletSessionIfHeld()
       clientDebugLog.log('comms', 'Scene LiveKit failed to connect', { level: 'error' })
-      return false
+      return { ok: false, reason: 'livekit' }
     }
 
     let participants: Awaited<ReturnType<typeof fetchSceneParticipants>> = []
     try {
-      participants = await fetchSceneParticipants(target.pointer, realmName)
+      participants = await this.peerAddressesExceptSelf(
+        await fetchSceneParticipants(target.pointer, realmName)
+      )
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       clientDebugLog.log('comms', `scene-participants fetch failed: ${msg}`, { level: 'warn' })
@@ -406,7 +461,7 @@ export class CommsService {
     clientDebugLog.log('comms', 'Transport: LiveKit scene room · RFC4 Movement + Scene packets', {
       level: 'success'
     })
-    return true
+    return { ok: true }
   }
 
   async connectAdapter(connectionString: string, roomHint?: string): Promise<boolean> {
@@ -484,6 +539,9 @@ export class CommsService {
   }
 
   flushBroadcast(now = performance.now()): void {
+    if (this.walletSessionLockHeld && this.localAddress) {
+      refreshWalletSessionLock(this.localAddress)
+    }
     if (this.transport === 'livekit') {
       if (this.sceneLiveKit.isConnected()) this.sceneLiveKit.flushBroadcast(now, BROADCAST_INTERVAL_MS)
       if (this.worldConnected) this.worldLiveKit.flushBroadcast(now, BROADCAST_INTERVAL_MS)
@@ -633,15 +691,52 @@ export class CommsService {
     }
   }
 
+  private peerAddressesExceptSelf(addresses: string[]): string[] {
+    const self = this.localAddress
+    if (!self) return addresses
+    return addresses.filter((address) => address.toLowerCase() !== self)
+  }
+
+  private releaseWalletSessionIfHeld(): void {
+    if (!this.walletSessionLockHeld || !this.localAddress) return
+    releaseWalletSessionLock(this.localAddress)
+    this.walletSessionLockHeld = false
+  }
+
   private trackPeerJoin(address: string, transport: TransportType): void {
     const key = address.toLowerCase()
+    if (key === this.localAddress) return
     let sources = this.peerTransports.get(key)
     if (!sources) {
       sources = new Set()
       this.peerTransports.set(key, sources)
     }
-    if (sources.size === 0) this.handlers?.onPeerJoin(key)
+    if (sources.size === 0) {
+      this.handlers?.onPeerJoin(key)
+      this.requestRemotePeerProfile(key)
+    }
     sources.add(transport)
+  }
+
+  /** Ask a remote peer for their RFC4 profile (Explorer parity on join / version bump). */
+  requestRemotePeerProfile(address: string, profileVersion = 0): void {
+    const key = address.toLowerCase()
+    if (!key || key === this.localAddress) return
+
+    const packet = encodeRfc4ProfileRequestPacket(key, profileVersion)
+    let sent = false
+    for (const session of [this.sceneLiveKit, this.worldLiveKit, this.islandLiveKit]) {
+      if (!session.isConnected()) continue
+      void session.publishData(packet)
+      sent = true
+    }
+    if (sent) {
+      clientDebugLog.log(
+        'comms',
+        `RFC4 ProfileRequest → ${key.slice(0, 8)}… v${profileVersion}`,
+        { throttleMs: 1500, throttleKey: `profile-req:${key}` }
+      )
+    }
   }
 
   private trackPeerLeave(address: string, transport: TransportType): void {
@@ -666,6 +761,7 @@ export class CommsService {
   }
 
   private disconnectAllTransports(): void {
+    this.releaseWalletSessionIfHeld()
     this.archipelago.disconnect()
     this.islandLiveKit.disconnect()
     this.sceneLiveKit.disconnect()

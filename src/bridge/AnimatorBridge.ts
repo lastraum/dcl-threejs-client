@@ -59,7 +59,6 @@ function retargetAnimationClip(clip: THREE.AnimationClip, root: THREE.Object3D):
       })
     }
     if (!target) {
-      tracks.push(track)
       continue
     }
     const rebound = track.clone()

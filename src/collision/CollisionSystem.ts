@@ -15,6 +15,7 @@ export type ColliderHit = {
   point: THREE.Vector3
   distance: number
   normal: THREE.Vector3
+  meshName?: string
 }
 
 type ColliderRecord = {
@@ -164,7 +165,7 @@ export class CollisionSystem {
   }
 
   /** Raycast scene colliders with a DCL layer mask (default CL_POINTER). */
-  raycast(ray: THREE.Ray, layerMask = ColliderLayer.CL_POINTER): ColliderHit[] {
+  raycast(ray: THREE.Ray, layerMask: number = ColliderLayer.CL_POINTER): ColliderHit[] {
     const targets: THREE.Object3D[] = []
     for (const { mesh } of this.colliders.values()) {
       if (hasColliderLayer(mesh.userData.collisionMask as number, layerMask)) {
@@ -185,7 +186,8 @@ export class CollisionSystem {
         entity,
         point: hit.point.clone(),
         distance: hit.distance,
-        normal: (hit.face?.normal ?? new THREE.Vector3(0, 1, 0)).clone()
+        normal: (hit.face?.normal ?? new THREE.Vector3(0, 1, 0)).clone(),
+        meshName: hit.object.name || undefined
       })
     }
 

@@ -182,6 +182,20 @@ export class LiveKitCommsSession {
       if (this.lambdasUrl) {
         void room.localParticipant.setMetadata(JSON.stringify({ lambdasEndpoint: this.lambdasUrl }))
       }
+
+      for (const participant of room.remoteParticipants.values()) {
+        const remoteAddress = participant.identity?.trim().toLowerCase()
+        if (remoteAddress && this.localAddress && remoteAddress === this.localAddress) {
+          clientDebugLog.log(
+            'comms',
+            `Duplicate wallet in room (${this.transport}) — disconnecting second client`,
+            { level: 'error' }
+          )
+          this.disconnect()
+          return false
+        }
+      }
+
       clientDebugLog.log(
         'comms',
         `LiveKit connected (${this.transport}) · room=${room.name} · identity=${room.localParticipant.identity} · remotes=${room.remoteParticipants.size}`,

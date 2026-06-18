@@ -1,10 +1,11 @@
 import * as THREE from 'three'
+import type { AssetCache } from '../rendering/AssetCache'
 import { getWearableRepresentation } from './peerApi'
 import { hexToColor, lipColorFromSkin } from './materials'
 import type { AvatarComposeConfig, BodyShape, WearableCategory, WearableDefinition } from './types'
 
 const BASE_AVATAR_URN = /off-chain:base-avatars/
-const textureLoader = new THREE.TextureLoader()
+const fallbackTextureLoader = new THREE.TextureLoader()
 
 function isDefaultWearable(wearable: WearableDefinition | undefined): boolean {
   if (!wearable) return true
@@ -21,23 +22,24 @@ function pngUrl(wearable: WearableDefinition, bodyShape: BodyShape, mask: boolea
   return file?.url ?? null
 }
 
-async function loadFeatureTexture(url: string): Promise<THREE.Texture> {
-  const texture = await textureLoader.loadAsync(url)
+async function loadFeatureTexture(url: string, cache?: AssetCache): Promise<THREE.Texture> {
+  const texture = cache ? await cache.loadTexture(url) : await fallbackTextureLoader.loadAsync(url)
   texture.colorSpace = THREE.SRGBColorSpace
   return texture
 }
 
 async function loadFeaturePair(
   wearable: WearableDefinition | undefined,
-  bodyShape: BodyShape
+  bodyShape: BodyShape,
+  cache?: AssetCache
 ): Promise<[THREE.Texture | null, THREE.Texture | null]> {
   if (!wearable) return [null, null]
   try {
     const mainUrl = pngUrl(wearable, bodyShape, false)
     if (!mainUrl) return [null, null]
-    const texture = await loadFeatureTexture(mainUrl)
+    const texture = await loadFeatureTexture(mainUrl, cache)
     const maskUrl = pngUrl(wearable, bodyShape, true)
-    const mask = maskUrl ? await loadFeatureTexture(maskUrl).catch(() => null) : null
+    const mask = maskUrl ? await loadFeatureTexture(maskUrl, cache).catch(() => null) : null
     return [texture, mask]
   } catch {
     return [null, null]
@@ -72,7 +74,11 @@ function applyFeatureMaterial(
 }
 
 /** Apply eyes / eyebrows / mouth textures to body_shape mask meshes — Forge `face.ts`. */
-export async function applyFacialFeatures(bodyRoot: THREE.Object3D, config: AvatarComposeConfig): Promise<void> {
+export async function applyFacialFeatures(
+  bodyRoot: THREE.Object3D,
+  config: AvatarComposeConfig,
+  cache?: AssetCache
+): Promise<void> {
   const find = (category: WearableCategory) =>
     config.wearables.find((w) => w.data.category === category)
 
@@ -81,9 +87,9 @@ export async function applyFacialFeatures(bodyRoot: THREE.Object3D, config: Avat
   const mouthWearable = find('mouth')
 
   const [eyes, eyebrows, mouth] = await Promise.all([
-    loadFeaturePair(eyesWearable, config.bodyShape),
-    loadFeaturePair(browsWearable, config.bodyShape),
-    loadFeaturePair(mouthWearable, config.bodyShape)
+    loadFeaturePair(eyesWearable, config.bodyShape, cache),
+    loadFeaturePair(browsWearable, config.bodyShape, cache),
+    loadFeaturePair(mouthWearable, config.bodyShape, cache)
   ])
 
   const eyeColor = isDefaultWearable(eyesWearable)

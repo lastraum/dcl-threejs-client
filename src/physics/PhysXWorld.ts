@@ -470,7 +470,20 @@ export class PhysXWorld {
     this.invalidateControllerCache()
   }
 
-  syncStaticColliders(descs: PhysicsColliderDesc[], options?: { cookBudget?: number }): void {
+  hasStaticActor(entity: number): boolean {
+    return this.staticActors.has(entity)
+  }
+
+  /** Clears trimesh cook failure blacklist — use before a manual recook pass. */
+  clearFailedCookCaches(): void {
+    this.failedCookFp.clear()
+    this.loggedFailedCookFp.clear()
+  }
+
+  syncStaticColliders(
+    descs: PhysicsColliderDesc[],
+    options?: { cookBudget?: number; freezeRemoval?: boolean }
+  ): boolean {
     const active = new Set<number>()
     let cooksRemaining = options?.cookBudget ?? Number.POSITIVE_INFINITY
     let geometryChanged = false
@@ -571,14 +584,16 @@ export class PhysXWorld {
       }
     }
 
-    for (const entity of [...this.staticActors.keys()]) {
-      if (entity === INFINITE_GROUND_ENTITY) continue
-      if (!active.has(entity)) {
-        try {
-          this.removeStatic(entity)
-          geometryChanged = true
-        } catch (err) {
-          console.warn('[PhysXWorld] static collider removal failed:', entity, err)
+    if (!options?.freezeRemoval) {
+      for (const entity of [...this.staticActors.keys()]) {
+        if (entity === INFINITE_GROUND_ENTITY) continue
+        if (!active.has(entity)) {
+          try {
+            this.removeStatic(entity)
+            geometryChanged = true
+          } catch (err) {
+            console.warn('[PhysXWorld] static collider removal failed:', entity, err)
+          }
         }
       }
     }
@@ -586,6 +601,7 @@ export class PhysXWorld {
     if (geometryChanged) {
       this.invalidateControllerCache()
     }
+    return geometryChanged
   }
 
   /** CCT obstacle cache must refresh when static geometry changes (GLTF collider batches). */

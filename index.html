@@ -2273,6 +2273,20 @@
         overflow: hidden;
         text-overflow: ellipsis;
       }
+      .gfx-settings__row--pending .gfx-settings__label {
+        color: rgba(255, 255, 255, 0.62);
+      }
+      .gfx-settings__row--pending .gfx-settings__label::after {
+        content: ' · saved';
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        color: rgba(255, 255, 255, 0.35);
+        margin-left: 4px;
+      }
+      .gfx-settings__row:not(.gfx-settings__row--pending) .gfx-settings__label::after {
+        content: none;
+      }
 
       /* Dropdown */
       .gfx-settings__dropdown {
@@ -2280,6 +2294,10 @@
         display: inline-flex;
         align-items: center;
         min-width: 120px;
+      }
+      .gfx-settings__dropdown--wide {
+        min-width: 168px;
+        max-width: 220px;
       }
       .gfx-settings__select {
         appearance: none;

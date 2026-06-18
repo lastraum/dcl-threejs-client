@@ -15,6 +15,8 @@ import type { ProjectionChangeKind } from './CrdtProjection'
 import { removeLightSource } from './LightSourceSync'
 import { buildTextShapeMesh, disposeTextShapeMesh, updateTextShapeMesh } from './TextShapeSync'
 import type { SceneHydrationStats } from '../rendering/sceneHydration'
+import type { AudioSourceBridge } from '../media/AudioSourceBridge'
+import type { AudioStreamBridge } from '../media/AudioStreamBridge'
 import type { VideoPlayerBridge } from '../media/VideoPlayerBridge'
 import type { EntityStore } from './EntityStore'
 import { applySceneDiff } from './entityStoreApply'
@@ -116,6 +118,8 @@ export class ThreeBridge {
   private readonly loggedGltfAttachFailures = new Set<string>()
   private onGltfAttached: (() => void) | null = null
   private videoPlayerBridge: VideoPlayerBridge | null = null
+  private audioSourceBridge: AudioSourceBridge | null = null
+  private audioStreamBridge: AudioStreamBridge | null = null
   private skipTransformApply?: (entity: Entity) => boolean
 
   constructor(
@@ -142,6 +146,14 @@ export class ThreeBridge {
     bridge.onTextureReady = (videoPlayerEntity) => {
       this.invalidateMaterialsForVideoPlayer(videoPlayerEntity)
     }
+  }
+
+  setAudioSourceBridge(bridge: AudioSourceBridge): void {
+    this.audioSourceBridge = bridge
+  }
+
+  setAudioStreamBridge(bridge: AudioStreamBridge): void {
+    this.audioStreamBridge = bridge
   }
 
   /** Fired after a hydration attach burst — sync + cook colliders for newly attached GLTFs. */
@@ -585,6 +597,8 @@ export class ThreeBridge {
     if (!obj) return
     this.materials.clearEntity(entity)
     this.videoPlayerBridge?.disposeEntity(entity)
+    this.audioSourceBridge?.disposeEntity(entity)
+    this.audioStreamBridge?.disposeEntity(entity)
     this.removeEntityVisuals(entity, obj)
     this.store.deleteEntity(entity)
   }
@@ -593,6 +607,10 @@ export class ThreeBridge {
   dispose(): void {
     this.videoPlayerBridge?.dispose()
     this.videoPlayerBridge = null
+    this.audioSourceBridge?.dispose()
+    this.audioSourceBridge = null
+    this.audioStreamBridge?.dispose()
+    this.audioStreamBridge = null
     this.pendingMeshEntities.clear()
     this.pendingMaterialEntities.clear()
   }

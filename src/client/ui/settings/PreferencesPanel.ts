@@ -1,4 +1,5 @@
 import { GraphicsSettingsView } from './GraphicsSettingsView'
+import { SoundsSettingsView } from './SoundsSettingsView'
 
 export type PreferencesTab = 'graphics' | 'sounds' | 'controls' | 'chat'
 
@@ -43,6 +44,7 @@ export class PreferencesPanel {
   private readonly contentArea: HTMLElement
   private readonly closeBtn: HTMLElement
   private graphicsSettingsView: GraphicsSettingsView | null = null
+  private soundsSettingsView: SoundsSettingsView | null = null
   private activeTab: PreferencesTab = 'graphics'
   private visible = false
   private readonly onVisibilityChange?: (visible: boolean) => void
@@ -163,10 +165,18 @@ export class PreferencesPanel {
     this.contentArea.innerHTML = ''
     this.graphicsSettingsView?.dispose()
     this.graphicsSettingsView = null
+    this.soundsSettingsView?.dispose()
+    this.soundsSettingsView = null
 
     if (this.activeTab === 'graphics') {
       this.graphicsSettingsView = new GraphicsSettingsView()
       this.contentArea.appendChild(this.graphicsSettingsView.root)
+      return
+    }
+
+    if (this.activeTab === 'sounds') {
+      this.soundsSettingsView = new SoundsSettingsView()
+      this.contentArea.appendChild(this.soundsSettingsView.root)
       return
     }
 
@@ -179,6 +189,7 @@ export class PreferencesPanel {
   dispose(): void {
     window.removeEventListener('keydown', this.onKeyDown)
     this.graphicsSettingsView?.dispose()
+    this.soundsSettingsView?.dispose()
     this.root.remove()
   }
 }

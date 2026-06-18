@@ -37,6 +37,9 @@ export type MirrorComponents = {
   PrimaryPointerInfo: ReturnType<typeof generated.PrimaryPointerInfo>
   VideoPlayer: ReturnType<typeof generated.VideoPlayer>
   VideoEvent: ReturnType<typeof generated.VideoEvent>
+  AudioSource: ReturnType<typeof generated.AudioSource>
+  AudioStream: ReturnType<typeof generated.AudioStream>
+  AudioEvent: ReturnType<typeof generated.AudioEvent>
 }
 
 /** Register mirror ECS components so incoming scene CRDT can be applied. */
@@ -74,6 +77,9 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     RaycastResult: generated.RaycastResult(engine),
     PrimaryPointerInfo: generated.PrimaryPointerInfo(engine),
     VideoPlayer: generated.VideoPlayer(engine),
-    VideoEvent: generated.VideoEvent(engine)
+    VideoEvent: generated.VideoEvent(engine),
+    AudioSource: generated.AudioSource(engine),
+    AudioStream: generated.AudioStream(engine),
+    AudioEvent: generated.AudioEvent(engine)
   }
 }

@@ -79,7 +79,9 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | Tween | 1102 | 🟢 | Transform + textureMove |
 | TweenSequence | 1104 | 🟢 | Genesis blimp orbit |
 | TweenState | 1103 | 🔵 | Written by TweenBridge |
-| AudioSource / AudioStream | 1020/1021 | ⬜ | |
+| AudioSource | 1020 | 🟡 | `AudioSourceBridge` — implemented; **not user-tested** |
+| AudioEvent | 1105 | 🔵 | Grow-only MediaState events → worker |
+| AudioStream | 1021 | 🟡 | `AudioStreamBridge` — HTTP/HLS; **not user-tested** |
 
 ### Avatars (Phase 4)
 

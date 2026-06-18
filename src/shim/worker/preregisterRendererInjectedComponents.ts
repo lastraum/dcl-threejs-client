@@ -18,9 +18,11 @@ export function preregisterRendererInjectedComponents(engine: IEngine): void {
   generated.PointerEventsResult(engine)
   generated.TriggerAreaResult(engine)
   generated.VideoEvent(engine)
+  generated.AudioEvent(engine)
   generated.TweenState(engine)
   generated.RaycastResult(engine)
   generated.VideoPlayer(engine)
+  generated.AudioSource(engine)
   generated.PrimaryPointerInfo(engine)
 }
 

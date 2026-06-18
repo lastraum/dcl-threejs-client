@@ -23,6 +23,8 @@ import { isTweenVerbose } from '../../bridge/tweenConfig'
 import { dumpMotionFocusReport, isMotionFocusActive, resetBlimpPivotCache } from '../../bridge/motionFocus'
 import { AvatarAttachBridge } from '../../bridge/AvatarAttachBridge'
 import type { AvatarAttachTargetResolver } from '../../avatar/AvatarAttachTargets'
+import { AudioSourceBridge } from '../../media/AudioSourceBridge'
+import { AudioStreamBridge } from '../../media/AudioStreamBridge'
 import { VideoPlayerBridge } from '../../media/VideoPlayerBridge'
 import { CollisionSystem } from '../../collision/CollisionSystem'
 import { GltfColliderExtractor } from '../../collision/GltfColliderExtractor'
@@ -135,6 +137,8 @@ export class SceneScriptSystem {
   private tweenBridge: TweenBridge | null = null
   private avatarAttachBridge: AvatarAttachBridge | null = null
   private videoPlayerBridge: VideoPlayerBridge | null = null
+  private audioSourceBridge: AudioSourceBridge | null = null
+  private audioStreamBridge: AudioStreamBridge | null = null
   private host: SceneHost | null = null
   private worker: Worker | null = null
   private running = false
@@ -225,8 +229,25 @@ export class SceneScriptSystem {
       this.recordRendererAppend,
       this.recordRendererLww
     )
-    this.videoPlayerBridge.onLwwFlush = () => this.flushVideoPlayerLwwToWorker()
+    this.videoPlayerBridge.onLwwFlush = () => this.flushRendererLwwToWorker()
     this.bridge.setVideoPlayerBridge(this.videoPlayerBridge)
+    this.audioSourceBridge = new AudioSourceBridge(
+      this.readComponents,
+      scene,
+      () => this.bridge!.getEntityNodes(),
+      host.camera,
+      this.recordRendererAppend,
+      this.recordRendererLww
+    )
+    this.audioSourceBridge.onLwwFlush = () => this.flushRendererLwwToWorker()
+    this.bridge.setAudioSourceBridge(this.audioSourceBridge)
+    this.audioStreamBridge = new AudioStreamBridge(
+      this.readComponents,
+      () => this.bridge!.getEntityNodes(),
+      this.audioSourceBridge.getListener(),
+      this.recordRendererAppend
+    )
+    this.bridge.setAudioStreamBridge(this.audioStreamBridge)
     this.collision = new CollisionSystem(host.scene)
     this.gltfColliders = new GltfColliderExtractor(host.scene)
     this.pointerEvents = new PointerEventsSystem(host.renderer.domElement)
@@ -739,6 +760,8 @@ export class SceneScriptSystem {
       if (this.pointerAwaitingWorkerApply) {
         this.videoPlayerBridge?.notifyUserPointerDelivered()
         this.videoPlayerBridge?.sync(this.view)
+        this.audioSourceBridge?.sync(this.view)
+        this.audioStreamBridge?.sync(this.view)
       }
 
       // Hover + PrimaryPointerInfo only. PET_DOWN/UP stay queued until click flush → pointer-crdt-deliver.
@@ -856,6 +879,8 @@ export class SceneScriptSystem {
 
   setVideoUserGestureUnlocked(unlocked: boolean): void {
     this.videoPlayerBridge?.setUserGestureUnlocked(unlocked)
+    this.audioSourceBridge?.setUserGestureUnlocked(unlocked)
+    this.audioStreamBridge?.setUserGestureUnlocked(unlocked)
   }
 
   /** Bind pointer raycast after player spawn — needs collision + camera + player pose. */
@@ -1023,8 +1048,8 @@ export class SceneScriptSystem {
     )
   }
 
-  /** Deliver VideoPlayer `playing` sync PUTs — not blocked by pointer-await. */
-  private flushVideoPlayerLwwToWorker(): void {
+  /** Deliver renderer-owned LWW PUTs (VideoPlayer/AudioSource sync) — not blocked by pointer-await. */
+  private flushRendererLwwToWorker(): void {
     if (!this.worker || !this.running) return
     if (this.encoder.pendingLwwPutCount === 0) return
     const lwwBytes = this.encoder.encodeLwwPutsOnly()
@@ -1479,6 +1504,8 @@ export class SceneScriptSystem {
     this.maybeDumpMotionFocus()
     this.tweenBridge?.sync(this.view)
     this.videoPlayerBridge?.sync(this.view)
+    this.audioSourceBridge?.sync(this.view)
+    this.audioStreamBridge?.sync(this.view)
     this.billboardBridge?.update()
     this.avatarShapes?.update(delta)
     this.animatorBridge?.update(delta)
@@ -1487,6 +1514,8 @@ export class SceneScriptSystem {
     this.tweenBridge?.update(delta, this.view)
     this.deliverTweenStateToWorker()
     this.videoPlayerBridge?.update(tickNumber, this.view)
+    this.audioSourceBridge?.update(tickNumber, this.view)
+    this.audioStreamBridge?.update(tickNumber, this.view)
     this.flushRendererGrowOnlyAppends()
   }
 
@@ -1550,6 +1579,10 @@ export class SceneScriptSystem {
     this.avatarAttachBridge?.dispose()
     this.avatarAttachBridge = null
     this.videoPlayerBridge = null
+    this.audioSourceBridge?.dispose()
+    this.audioSourceBridge = null
+    this.audioStreamBridge?.dispose()
+    this.audioStreamBridge = null
     this.collision?.dispose()
     this.collision = null
     this.gltfColliders?.dispose()

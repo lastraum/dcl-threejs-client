@@ -2,9 +2,28 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-06-18 (Lighting polish ✅ · VideoPlayer ECS ✅ · Preferences panel ✅)  
-> **Current phase:** **Phase 4 closed** — EntityStore + **AvatarAttach Tier B** + **TriggerArea Tier A** + **VideoPlayer** shipped. Next: Raycast, e10 perf, or Phase 5+ networking.
+> **Last updated:** 2026-06-18 (AudioSource + AudioStream ⬜ not tested · Preferences Sounds 🟡 · Lighting ✅)  
+> **Current phase:** **Phase 4 closed** — EntityStore + **AvatarAttach Tier B** + **TriggerArea Tier A** + **VideoPlayer** shipped. **Media:** AudioSource + AudioStream implemented (awaiting user test). Next: Raycast, voice UI, e10 perf.
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Tasks:** [TASKS.yaml](./TASKS.yaml)
+
+---
+
+## 🎉 Milestone — Audio ECS + Preferences Sounds (2026-06-18)
+
+**Status: implemented, not user-tested yet** — build passes; no in-world confirmation on a stream/clip test scene.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **AudioSource** (1020) | ⬜ **not tested** | `AudioSourceBridge` + `SceneAudioPlayer` — THREE buffer clips, spatial/global, play/pause/seek/loop/volume/pitch |
+| **AudioStream** (1021) | ⬜ **not tested** | `AudioStreamBridge` + `SceneAudioStreamPlayer` — HTTP/HLS via hidden `HTMLAudioElement`, spatial min/max distance |
+| **AudioEvent** (1105) | ⬜ **not tested** | Grow-only `MediaState` → worker (source + stream entities) |
+| **Shared listener** | ✅ code | One `AudioListener` on camera; master volume from preferences |
+| **Preferences → Sounds** | 🟡 **partial** | Volume sliders + mic picker + mute-in-background toggle; **live:** master + in-world; **saved only:** UI SFX, voice, avatar emotes |
+| **Natural end sync** | ⬜ **not tested** | AudioSource writes `playing:false` LWW on clip end |
+
+**Files:** `AudioSourceBridge.ts`, `SceneAudioPlayer.ts`, `AudioStreamBridge.ts`, `SceneAudioStreamPlayer.ts`, `AudioBufferCache.ts`, `SoundSettings.ts`, `SoundsSettingsView.ts`, `MicDeviceService.ts`, `mirrorComponents.ts`, `CrdtEncoder.ts`, `SceneScriptSystem.ts`
+
+**Merged:** pending — push `lastraum` → merge `dev-latest`
 
 ---
 
@@ -346,7 +365,7 @@ Default sky time: **midday (12:00)** on load. Day/night cycle still available wh
 | **World location card** (replaces minimap in worlds) | ✅ `WorldLocationCard.ts` — name, live coords, **Jump back to Genesis City** → `0,0` |
 | Debug panel (right-anchored, hidden by default) | ✅ toggled from Help icon; live scene-local + world position HUD |
 | Settings overlay (tabbed) | ✅ Events, Places, Communities, Map, Backpack, Gallery |
-| **Preferences panel (P / ⚙)** | ✅ Graphics + stub Sounds/Controls/Chat — separate from main overlay |
+| **Preferences panel (P / ⚙)** | ✅ Graphics live · **Sounds partial** (volume + mic UI) · Controls/Chat stubs |
 | **Dev progress panel** | ✅ `</>` sidebar — TASKS.yaml + PROGRESS.md from GitHub + integration registry |
 | **Map tab** — Genesis City stitched tiles | ✅ click mini-map / **M** — parcel popup + Jump In + peer sidebar (dcl-neurolink parity) |
 | **Events tab** — calendar + weekly views | ✅ DCL Events API · Weekly (4 day columns) / Calendar toggle · Today + Create Event stub |
@@ -845,7 +864,8 @@ SDK7 scenes call `EngineApi.subscribe("comms")` then drain via `sendBatch` insid
 | 1 | **3** | **`Raycast` + `TriggerArea`** | Scene ray APIs + volume enter/exit — unlocks many interactives |
 | 2 | **3b** | **`PET_PROXIMITY_*`** pointer events | Walk-up interactives (no cursor) |
 | 3 | **3** | ~~**`VideoPlayer` + `videoEvent`**~~ ✅ | RickRoll screen parity — remaining: **`getActiveVideoStreams`** comms stub |
-| 4 | **5** | Voice / presence (LiveKit audio) | Social layer |
+| 3b | **3** | ~~**`AudioSource` + `AudioStream`**~~ ⬜ | Code shipped — **user test pending**; wire voice/UI/emote volume prefs |
+| 4 | **5** | Voice / presence (LiveKit audio) | Social layer — hook **Voice Chat & Streams** slider + mic picker |
 | 5 | **3** | `UiTransform` MVP | In-world UI |
 | 6 | infra | Parcel routing `/80,-1` → Catalyst | Genesis City parcel scenes |
 

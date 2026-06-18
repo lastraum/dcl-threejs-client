@@ -125,7 +125,9 @@ DOM overlay — not in-scene `UiTransform`.
 | Splash / login, loading + hydration timer | 🟢 |
 | Sidebar, chat, emote wheel, minimap, world card | 🟢 |
 | Debug panel, dev progress panel (`</>`) | 🟢 |
-| Settings: Events, Map, Backpack, Graphics | 🟢 |
+| Settings overlay: Events, Map, Backpack | 🟢 |
+| Preferences panel (P / ⚙): Graphics lighting sliders | 🟢 |
+| Preferences: Sounds, Controls, Chat tabs | 🟡 stub |
 | Settings: Places, Communities, Gallery | ⬜ |
 | In-scene ECS UI, voice/mic UI | ⬜ |
 
@@ -152,6 +154,9 @@ DOM overlay — not in-scene `UiTransform`.
 | EntityStore (Phase 4) | 🟢 |
 | **AvatarAttach Tier B** | **🟢** |
 | PointerEvents cache, LightManager culling | 🟢 |
+| Genesis sky + cloud lighting (HDR tint) | 🟢 |
+| Scene GLTF emissive LEDs (neon mats) | 🟡 partial |
+| User sun/moon lighting + exposure sliders | 🟢 |
 | GLTF hydration budgets, GLB parse pool, AssetCache IDB | 🟢 |
 | PhysX lazy load, collider prewarm, Hyperfy grouped GLTF actors | 🟢 |
 | GLTF InstancedMesh | ⬜ |

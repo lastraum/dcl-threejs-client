@@ -1,4 +1,10 @@
 import { clientSettings, FOV_MIN, FOV_MAX } from '../../../rendering/ClientSettings'
+import {
+  sunEnvironmentSettings,
+  SUN_SLIDER_MAX,
+  SUN_SLIDER_MIN,
+  type SunEnvironmentSettingsState
+} from '../../../rendering/SunEnvironmentSettings'
 
 type DropdownDef = {
   type: 'dropdown'
@@ -21,6 +27,7 @@ type ToggleDef = {
   type: 'toggle'
   label: string
   defaultOn: boolean
+  onChange?: (on: boolean) => void
 }
 
 type SettingDef = DropdownDef | SliderDef | ToggleDef
@@ -65,13 +72,6 @@ const SECTIONS: SectionDef[] = [
     ]
   },
   {
-    title: 'Sun',
-    items: [
-      { type: 'toggle', label: 'Sun Shadows', defaultOn: true },
-      { type: 'toggle', label: 'Sun Lens Flare', defaultOn: true }
-    ]
-  },
-  {
     title: 'Scene Lighting',
     items: [
       { type: 'toggle', label: 'Enable Scene Lights', defaultOn: true },
@@ -99,8 +99,14 @@ const SECTIONS: SectionDef[] = [
   }
 ]
 
+type BoundControl =
+  | { kind: 'slider'; input: HTMLInputElement; label: HTMLSpanElement; suffix?: string; min: number; max: number }
+  | { kind: 'toggle'; input: HTMLInputElement }
+
 export class GraphicsSettingsView {
   readonly root: HTMLElement
+  private readonly boundControls: BoundControl[] = []
+  private readonly unsubscribeSun?: () => void
 
   constructor() {
     this.root = document.createElement('div')
@@ -112,8 +118,75 @@ export class GraphicsSettingsView {
     for (const section of SECTIONS) {
       scrollArea.appendChild(this.buildSection(section))
     }
+    scrollArea.appendChild(this.buildLightingSection())
 
     this.root.appendChild(scrollArea)
+    this.unsubscribeSun = sunEnvironmentSettings.subscribe((state) => this.syncSunControls(state))
+  }
+
+  private buildLightingSection(): HTMLElement {
+    const lighting = sunEnvironmentSettings.get()
+    const section: SectionDef = {
+      title: 'Lighting',
+      items: [
+        {
+          type: 'slider',
+          label: 'Scene Sun Light',
+          min: SUN_SLIDER_MIN,
+          max: SUN_SLIDER_MAX,
+          defaultValue: lighting.sceneSunLight,
+          suffix: '%',
+          onChange: (v) => sunEnvironmentSettings.set({ sceneSunLight: v })
+        },
+        {
+          type: 'slider',
+          label: 'Exposure',
+          min: SUN_SLIDER_MIN,
+          max: SUN_SLIDER_MAX,
+          defaultValue: lighting.exposure,
+          suffix: '%',
+          onChange: (v) => sunEnvironmentSettings.set({ exposure: v })
+        },
+        {
+          type: 'slider',
+          label: 'Scene Moon Light',
+          min: SUN_SLIDER_MIN,
+          max: SUN_SLIDER_MAX,
+          defaultValue: lighting.sceneMoonLight,
+          suffix: '%',
+          onChange: (v) => sunEnvironmentSettings.set({ sceneMoonLight: v })
+        },
+        {
+          type: 'slider',
+          label: 'Moon Exposure',
+          min: SUN_SLIDER_MIN,
+          max: SUN_SLIDER_MAX,
+          defaultValue: lighting.moonExposure,
+          suffix: '%',
+          onChange: (v) => sunEnvironmentSettings.set({ moonExposure: v })
+        }
+      ]
+    }
+    return this.buildSection(section)
+  }
+
+  private syncSunControls(state: SunEnvironmentSettingsState): void {
+    const values: Record<string, string> = {
+      'Scene Sun Light': String(state.sceneSunLight),
+      Exposure: String(state.exposure),
+      'Scene Moon Light': String(state.sceneMoonLight),
+      'Moon Exposure': String(state.moonExposure)
+    }
+
+    for (const control of this.boundControls) {
+      if (control.kind !== 'slider') continue
+      const row = control.input.closest('.gfx-settings__row')
+      const name = row?.querySelector('.gfx-settings__label')?.textContent
+      if (!name || values[name] === undefined) continue
+      control.input.value = values[name]
+      control.label.textContent = `${values[name]}${control.suffix ?? ''}`
+      this.setSliderPct(control.input, control.min, control.max)
+    }
   }
 
   private buildSection(section: SectionDef): HTMLElement {
@@ -214,6 +287,7 @@ export class GraphicsSettingsView {
 
     const updateLabel = () => {
       valueLabel.textContent = `${slider.value}${def.suffix ?? ''}`
+      this.setSliderPct(slider, def.min, def.max)
       def.onChange?.(Number(slider.value))
     }
 
@@ -231,7 +305,16 @@ export class GraphicsSettingsView {
     wrap.appendChild(slider)
     wrap.appendChild(nextBtn)
     wrap.appendChild(valueLabel)
+    this.setSliderPct(slider, def.min, def.max)
+    this.boundControls.push({ kind: 'slider', input: slider, label: valueLabel, suffix: def.suffix, min: def.min, max: def.max })
     return wrap
+  }
+
+  private setSliderPct(slider: HTMLInputElement, min: number, max: number): void {
+    const value = Number(slider.value)
+    const span = max - min
+    const pct = span <= 0 ? 0 : ((value - min) / span) * 100
+    slider.style.setProperty('--pct', `${pct}%`)
   }
 
   private buildToggle(def: ToggleDef): HTMLElement {
@@ -245,12 +328,16 @@ export class GraphicsSettingsView {
     const track = document.createElement('span')
     track.className = 'gfx-settings__toggle-track'
 
+    input.addEventListener('change', () => def.onChange?.(input.checked))
+
     label.appendChild(input)
     label.appendChild(track)
+    this.boundControls.push({ kind: 'toggle', input })
     return label
   }
 
   dispose(): void {
+    this.unsubscribeSun?.()
     this.root.remove()
   }
 }

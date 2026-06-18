@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { isGltfInvisibleColliderName } from '../collision/gltfColliderNaming'
+import { isSceneNeonEmissiveMaterial } from './sceneGltfEmissives'
 
 /** Leave headroom for fog/tone mapping; scene shadows stay off (each shadow light adds a sampler). */
 const MAX_MATERIAL_TEXTURES = 8
@@ -9,10 +10,10 @@ const STRIP_MAP_KEYS = [
   'bumpMap',
   'lightMap',
   'aoMap',
-  'emissiveMap',
   'metalnessMap',
   'roughnessMap',
-  'normalMap'
+  'normalMap',
+  'emissiveMap'
 ] as const satisfies ReadonlyArray<keyof THREE.MeshStandardMaterial>
 
 type MapMaterial = THREE.MeshStandardMaterial
@@ -74,6 +75,7 @@ function stripOptionalMaps(material: MapMaterial): void {
 
   for (const key of STRIP_MAP_KEYS) {
     if (countMaterialTextures(material) <= MAX_MATERIAL_TEXTURES) return
+    if (key === 'emissiveMap' && isSceneNeonEmissiveMaterial(material)) continue
     material[key] = null
   }
 }

@@ -15,6 +15,7 @@ import type { SocialService } from '../../../social/SocialService'
 import { EmoteWheelPanel } from '../EmoteWheelPanel'
 import type { EmoteWheelSlot } from '../../../avatar/profileEmotes'
 import type { SettingsOverlay, SettingsTab } from '../settings/SettingsOverlay'
+import type { PreferencesPanel } from '../settings/PreferencesPanel'
 
 export type ClientShellOptions = {
   environment: EnvironmentSystem
@@ -23,6 +24,7 @@ export type ClientShellOptions = {
   devProgressPanel?: DevProgressPanel | null
   chatPanel?: ChatPanel | null
   settingsOverlay?: SettingsOverlay | null
+  preferencesPanel?: PreferencesPanel | null
   onEmoteSelected?: (emoteId: string) => void
   onSignOut: () => void | Promise<void>
   onExit: () => void | Promise<void>
@@ -69,12 +71,13 @@ export class ClientShell {
   private readonly devProgressPanel: DevProgressPanel | null
   private chatPanel: ChatPanel | null
   private settingsOverlay: SettingsOverlay | null
+  private preferencesPanel: PreferencesPanel | null
   private session: SessionIdentity
   private onEmoteSelected: ((emoteId: string) => void) | null = null
   private unreadChat = 0
   private unsubChatUnread: (() => void) | null = null
 
-  constructor({ environment, session, debugPanel, devProgressPanel = null, chatPanel = null, settingsOverlay = null, onEmoteSelected, onSignOut, onExit }: ClientShellOptions) {
+  constructor({ environment, session, debugPanel, devProgressPanel = null, chatPanel = null, settingsOverlay = null, preferencesPanel = null, onEmoteSelected, onSignOut, onExit }: ClientShellOptions) {
     this.session = session
     this.onEmoteSelected = onEmoteSelected ?? null
     this.root = document.createElement('aside')
@@ -89,6 +92,7 @@ export class ClientShell {
     this.devProgressPanel = devProgressPanel
     this.chatPanel = chatPanel
     this.settingsOverlay = settingsOverlay
+    this.preferencesPanel = preferencesPanel
     if (this.chatPanel) this.wireChatPanel(this.chatPanel)
 
     this.emoteWheel = new EmoteWheelPanel()
@@ -169,6 +173,10 @@ export class ClientShell {
 
   attachSettingsOverlay(overlay: SettingsOverlay): void {
     this.settingsOverlay = overlay
+  }
+
+  attachPreferencesPanel(panel: PreferencesPanel): void {
+    this.preferencesPanel = panel
   }
 
   updateWorldBindings(session: SessionIdentity, environment: EnvironmentSystem): void {
@@ -287,17 +295,26 @@ export class ClientShell {
       }
     }
 
+    if (id === 'settings') {
+      return (ev) => {
+        ev.stopPropagation()
+        this.preferencesPanel?.toggle('graphics')
+        this.buttons.get('settings')?.setActive(this.preferencesPanel?.isVisible() ?? false)
+      }
+    }
+
     const overlayTabs: Record<string, SettingsTab> = {
       events: 'events',
       map: 'map',
       communities: 'communities',
       backpack: 'backpack',
-      pictures: 'gallery',
-      settings: 'settings'
+      pictures: 'gallery'
     }
     if (overlayTabs[id]) {
       return (ev) => {
         ev.stopPropagation()
+        this.preferencesPanel?.hide()
+        this.buttons.get('settings')?.setActive(false)
         this.settingsOverlay?.show(overlayTabs[id])
       }
     }

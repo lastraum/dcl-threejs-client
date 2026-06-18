@@ -18,6 +18,7 @@ import { Minimap } from './ui/Minimap'
 import { WorldLocationCard } from './ui/WorldLocationCard'
 import { showSplashScreen } from './ui/SplashScreen'
 import { ChatPanel } from './ui/chat/ChatPanel'
+import { PreferencesPanel } from './ui/settings/PreferencesPanel'
 import { SettingsOverlay } from './ui/settings/SettingsOverlay'
 import type { MapPlayerState } from './ui/settings/MapView'
 import { genesisMetersToParcel } from '../map/genesisMapViewport'
@@ -37,6 +38,7 @@ export class AppController {
   private worldLocationCard: WorldLocationCard | null = null
   private chatPanel: ChatPanel | null = null
   private settingsOverlay: SettingsOverlay | null = null
+  private preferencesPanel: PreferencesPanel | null = null
   private login: LoginResult | null = null
   private currentRoute: RouteTarget | null = null
   private running = false
@@ -187,6 +189,8 @@ export class AppController {
         },
         onOpen: () => {
           if (document.pointerLockElement) document.exitPointerLock()
+          this.preferencesPanel?.hide()
+          this.shell?.getButton('settings')?.setActive(false)
         },
         onClose: () => {}
       })
@@ -201,6 +205,17 @@ export class AppController {
           y: py,
           segment: `${px},${py}`
         })
+      })
+    }
+
+    if (!this.preferencesPanel) {
+      this.preferencesPanel = new PreferencesPanel({
+        onVisibilityChange: (visible) => {
+          this.shell?.getButton('settings')?.setActive(visible)
+        },
+        onOpen: () => {
+          this.settingsOverlay?.hide()
+        }
       })
     }
 
@@ -283,6 +298,7 @@ export class AppController {
     })
     this.shell.attachChatPanel(this.chatPanel, world.social)
     if (this.settingsOverlay) this.shell.attachSettingsOverlay(this.settingsOverlay)
+    if (this.preferencesPanel) this.shell.attachPreferencesPanel(this.preferencesPanel)
     opts.onProgress?.('Almost ready…')
     this.shell.show()
     void this.shell.refreshProfile()
@@ -335,6 +351,8 @@ export class AppController {
     this.chatPanel = null
     this.settingsOverlay?.dispose()
     this.settingsOverlay = null
+    this.preferencesPanel?.dispose()
+    this.preferencesPanel = null
     this.debugPanel?.dispose()
     this.debugPanel = null
     this.devProgressPanel?.dispose()

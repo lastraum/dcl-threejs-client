@@ -104,7 +104,8 @@ export function animatedLightIntensity(seconds: number): number {
   if (!isSunPeriod(seconds)) return 0
   const animTime = normalizedTimeOfDay(seconds) * SUN_CYCLE_CLIP_LENGTH
   const raw = sampleCurve(SUN_CYCLE_LIGHT_INTENSITY, animTime)
-  return THREE.MathUtils.clamp(raw * 1.15, 0.05, 1.45)
+  // Unity SunCycle24h peaks ~2.72 — balance scene fill without washing mid-tones.
+  return THREE.MathUtils.clamp(raw * 1.1, 0.05, 2.55)
 }
 
 /**

@@ -3,6 +3,11 @@ import { loadCrossCubemap } from './crossCubemap'
 import { sampleSkyGradients } from './skyGradients'
 import { normalizedTimeOfDay, SUN_BRIGHTNESS } from './skyboxTime'
 import { isSunPeriod } from './sunCycleSampler'
+import {
+  FIXED_SUN_DISC_CORE_GAIN,
+  FIXED_SUN_DISC_CUTOFF,
+  FIXED_SUN_DISC_GLOW_GAIN
+} from '../rendering/SunEnvironmentSettings'
 
 const SKY_VERTEX = /* glsl */ `
 varying vec3 vWorldPosition;
@@ -25,6 +30,9 @@ uniform vec3 uMoonDirection;
 uniform float uMoonMask;
 uniform float uSunSize;
 uniform float uSunRadiance;
+uniform float uSunDiscCutoff;
+uniform float uSunDiscCoreGain;
+uniform float uSunDiscGlowGain;
 uniform float uCloudHighlights;
 uniform float uCloudDensity;
 uniform float uCloudOpacity;
@@ -58,13 +66,25 @@ vec3 celestialDisc(vec3 dir, vec3 lightDir, sampler2D map, float mask, float siz
 }
 
 vec3 sunDisc(vec3 dir, vec3 sunDir, vec3 sunColor, float radiance) {
-  float d = dot(normalize(dir), normalize(sunDir));
-  if (d < 0.97) return vec3(0.0);
-  float core = smoothstep(0.988, 0.9998, d);
-  float innerGlow = pow(max(d, 0.0), 28.0) * (0.55 + radiance * 3.5);
-  float outerHalo = pow(max(d, 0.0), 10.0) * 0.22 * (0.6 + radiance * 1.5);
-  vec3 warm = sunColor * vec3(1.12, 1.0, 0.82);
-  return warm * (core * 4.5 + innerGlow + outerHalo);
+  vec3 sDir = normalize(sunDir);
+  float d = dot(normalize(dir), sDir);
+  float glowReach = uSunDiscCutoff - mix(0.0, 0.028, uSunDiscGlowGain);
+  if (d < glowReach) return vec3(0.0);
+
+  float ang = acos(clamp(d, -1.0, 1.0));
+  float coreEdge = acos(clamp(uSunDiscCutoff, -1.0, 1.0));
+  float core = 1.0 - smoothstep(0.0, max(coreEdge * 0.9, 0.0008), ang);
+  core = pow(max(core, 0.0), 1.35);
+
+  float glowAmt = uSunDiscGlowGain;
+  float innerSpread = mix(0.006, 0.055, glowAmt);
+  float outerSpread = max(innerSpread * 4.0, 0.01);
+  float corona = exp(-ang / innerSpread) * glowAmt * (1.4 + radiance * 1.1);
+  float bloom = exp(-ang / outerSpread) * glowAmt * (0.55 + radiance * 0.45);
+
+  vec3 warm = sunColor * vec3(1.15, 1.02, 0.88);
+  float rad = 0.4 + radiance * 0.75;
+  return warm * rad * (core * uSunDiscCoreGain + corona + bloom);
 }
 
 vec3 starField(vec3 dir, sampler2D map, float night) {
@@ -81,10 +101,16 @@ vec3 rotateY(vec3 dir, float angle) {
   return vec3(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
 }
 
-// Compress HDR cloud gradient keys before LDR screen blend (Unity uses GradientUsage HDR).
-vec3 cloudTintColor(vec3 hdr, float highlights) {
-  vec3 ldr = hdr / (hdr + vec3(0.72));
-  return ldr * (0.55 + highlights * 0.65);
+// DCL clouds gradient is HDR (keys >1 at midday). Keep hue, put brightness in intensity.
+vec3 cloudTintColor(vec3 hdr, float highlights, vec3 dir, vec3 sunDir) {
+  float peak = max(max(hdr.r, hdr.g), hdr.b);
+  vec3 hue = hdr / max(peak, 1e-4);
+  float intensity = peak * (0.82 + highlights * 0.55);
+  float sunSide = sunDir.y > 0.05
+    ? smoothstep(-0.05, 0.45, dot(normalize(dir), normalize(sunDir)))
+    : 0.0;
+  intensity *= mix(0.88, 1.28, sunSide * highlights);
+  return hue * intensity;
 }
 
 float cloudLayerMask(
@@ -117,8 +143,11 @@ vec3 blendCloudLayer(
 ) {
   float mask = cloudLayerMask(dir, map, angle, opacity, yMin, yMax);
   if (mask <= 0.001) return sky;
-  vec3 tint = cloudTintColor(uCloudsColor, uCloudHighlights);
-  return mix(sky, tint, mask);
+  vec3 cloud = cloudTintColor(uCloudsColor, uCloudHighlights, dir, uSunDirection);
+  // Screen-style brighten — lerp toward gray tint; DCL puffs read white over blue sky
+  vec3 layer = min(cloud, vec3(2.5));
+  vec3 screen = vec3(1.0) - (vec3(1.0) - sky) * (vec3(1.0) - min(layer, vec3(1.0)));
+  return mix(sky, max(screen, layer), mask);
 }
 
 void main() {
@@ -155,6 +184,9 @@ export type GenesisSkyUniforms = {
   uMoonMask: THREE.IUniform<number>
   uSunSize: THREE.IUniform<number>
   uSunRadiance: THREE.IUniform<number>
+  uSunDiscCutoff: THREE.IUniform<number>
+  uSunDiscCoreGain: THREE.IUniform<number>
+  uSunDiscGlowGain: THREE.IUniform<number>
   uCloudHighlights: THREE.IUniform<number>
   uCloudDensity: THREE.IUniform<number>
   uCloudOpacity: THREE.IUniform<number>
@@ -191,6 +223,9 @@ export class DclGenesisSky {
       uMoonMask: { value: 0 },
       uSunSize: { value: 0.1 },
       uSunRadiance: { value: 0 },
+      uSunDiscCutoff: { value: FIXED_SUN_DISC_CUTOFF },
+      uSunDiscCoreGain: { value: FIXED_SUN_DISC_CORE_GAIN },
+      uSunDiscGlowGain: { value: FIXED_SUN_DISC_GLOW_GAIN },
       uCloudHighlights: { value: 0.8 },
       uCloudDensity: { value: 0.52 },
       uCloudOpacity: { value: 1 },
@@ -210,13 +245,15 @@ export class DclGenesisSky {
       fragmentShader: SKY_FRAGMENT,
       side: THREE.BackSide,
       depthWrite: false,
-      fog: false
+      fog: false,
+      toneMapped: false
     })
 
     const geometry = new THREE.SphereGeometry(400, 64, 32)
     this.mesh = new THREE.Mesh(geometry, this.material)
     this.mesh.frustumCulled = false
     this.mesh.renderOrder = -1000
+
   }
 
   async loadTextures(baseUrl = '/environment/'): Promise<void> {

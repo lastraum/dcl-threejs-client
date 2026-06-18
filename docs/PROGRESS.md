@@ -2,9 +2,30 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-06-18 (VideoPlayer ECS ✅ · RickRoll screen parity)  
+> **Last updated:** 2026-06-18 (Lighting polish ✅ · VideoPlayer ECS ✅ · Preferences panel ✅)  
 > **Current phase:** **Phase 4 closed** — EntityStore + **AvatarAttach Tier B** + **TriggerArea Tier A** + **VideoPlayer** shipped. Next: Raycast, e10 perf, or Phase 5+ networking.
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Tasks:** [TASKS.yaml](./TASKS.yaml)
+
+---
+
+## 🎉 Milestone — Lighting & skybox polish (2026-06-18)
+
+**User-confirmed working (opbadge / night mode):** scene LED strips read warm emissive (not flat white); skybox clouds white at midday; preferences panel opens over live world (orbit + WASD still work).
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Preferences panel (P / ⚙)** | ✅ | Separate from main overlay — Graphics, Sounds, Controls, Chat tabs; right rail; no pointer-lock exit |
+| **User lighting sliders** | 🟡 **partial** | **Scene Sun Light**, **Exposure** (day), **Scene Moon Light**, **Moon Exposure** (night) — persisted in `SunEnvironmentSettings` |
+| **Skydome sun look** | ✅ | Locked to small disc / no corona (former 0% sliders removed) |
+| **Skybox clouds** | ✅ | HDR cloud gradient tint + screen brighten + sun-facing lift; `toneMapped: false` on sky shader |
+| **Scene GLTF emissives** | 🟡 **partial** | DCL model: clamp emissive RGB → `emissiveIntensity` (KHR strength 2–80+); named neon mats (`LightLED`, etc.) — **decent, room to improve** |
+| **Baked emissive maps** | ✅ | Floor/wall bake mats skipped — no blowout |
+| **Graphics settings stubs** | ⬜ | MSAA, bloom, resolution scale, shadow quality — UI placeholders only |
+| **Custom skybox worlds** | 🟡 | User sliders affect Genesis path only; cubemap `/about` scenes hide `DclGenesisSky` |
+
+**Files:** `PreferencesPanel.ts`, `SunEnvironmentSettings.ts`, `DclGenesisSky.ts`, `EnvironmentSystem.ts`, `sceneGltfEmissives.ts`, `GraphicsSettingsView.ts`
+
+**Merged:** `lastraum` → `dev-latest` (2026-06-18)
 
 ---
 
@@ -22,8 +43,6 @@
 | Worker inject | ✅ | `VideoPlayer` LWW + `VideoEvent` append via renderer inject path |
 
 **Files:** `WebVideoPlayer.ts`, `VideoPlayerBridge.ts`, `videoTextureOrientation.ts`, `injectRendererLwwPuts.ts`, `injectRendererGrowOnlyAppends.ts`, `CrdtEncoder.ts` (LWW capture)
-
-**Merged:** `lastraum` → `dev-latest` (2026-06-18)
 
 ---
 
@@ -277,20 +296,23 @@ mrdoob **stats.js** panel top-center — closes out Phase 0 perf/viewer checkmar
 | When | What | Status |
 | ---- | ---- | ------ |
 | **Now** | GenesisSky dome (DCL textures + cloud scroll) | ✅ `DclGenesisSky` |
-| **Now** | Purple night sky, moon, stars, moon fill light | ✅ separate `moonLightIntensity()` + night hemi/exposure boost (2026-06-13) |
+| **Now** | Purple night sky, moon, stars, moon fill light | ✅ `moonLightIntensity()` + night hemi; user **Moon Light** / **Moon Exposure** sliders (2026-06-18) |
 | **Now** | `SkyboxTime` ECS on RootEntity + `scene.json` fixedTime | ✅ mirror + smooth transition |
 | **Now** | World `/about` + `display.skybox` custom textures | ✅ cubemap / equirect when provided |
 | **Now** | Animated water plane under landscape | ✅ `WaterPlane.ts` — 1024 m+ ocean, no square horizon clip |
 | **Now** | Skybox default midday (12:00) on load | ✅ `MIDDAY_SECONDS = 43200` |
-| **Now** | DCL cubemap clouds (near/far/horizon/top) | ✅ `crossCubemap.ts` + official unity-explorer assets |
+| **Now** | DCL cubemap clouds (near/far/horizon/top) | ✅ white midday puffs — HDR tint + screen blend (2026-06-18) |
 | **Now** | FPV camera zoom (scroll to first person) | ✅ 1.82 m eye height, inverted pitch, hide body + tag |
-| **Now** | Sun brightness +20% | ✅ `SUN_BRIGHTNESS = 1.2` — directional + skydome disc |
+| **Now** | Sun directional brightness | ✅ `SUN_BRIGHTNESS = 1.55` + user **Scene Sun Light** slider |
 | **Now** | Sun shadow sweep disabled | ✅ no moving diagonal ground shadow from sun cycle |
 | **Now** | `LightSource` ECS + `LightManager` culling | ✅ intensity/range/spot + 40 m cull + quality tiers — **FPS win in Genesis Plaza** |
 | **Now** | PhysX player grounding + capsule debug | ✅ feet on y=0; bone-based pivot; debug panel toggles |
-| **Pre-live** | Sun / hardcoded directional vs ECS lights | ✅ hybrid sun + ACES + cloud blend (2026-06-13) |
+| **Now** | Sun / ECS hybrid + ACES exposure | ✅ hybrid dim + tier exposure; user day/night exposure sliders |
+| **Now** | Scene GLTF neon / LED emissives | 🟡 DCL color×intensity split — warm LEDs at night; not full Explorer parity |
+| **Now** | Preferences → Graphics lighting UI | 🟡 4 live sliders + stub sections (MSAA, bloom, etc.) |
 | **Pre-live** | Emote GLB props | ✅ `SkeletonUtils.clone` + scene-emote URNs (2026-06-13) |
 | Full Explorer ShaderGraph parity (bloom, dual sun logo) | ⬜ polish |
+| Per-layer cloud tint gradients (Explorer Far/Near) | ⬜ single global `uCloudsColor` today |
 | **Phase 6** | Post-processing, probe env maps | ⬜ deferred |
 
 Default sky time: **midday (12:00)** on load. Day/night cycle still available when `SkyboxTime` is not fixed — **60 DCL-seconds per real second** (24-minute full cycle).
@@ -323,7 +345,8 @@ Default sky time: **midday (12:00)** on load. Day/night cycle still available wh
 | Circular minimap (top-left, 224×224) | ✅ scene parcels only + player dot |
 | **World location card** (replaces minimap in worlds) | ✅ `WorldLocationCard.ts` — name, live coords, **Jump back to Genesis City** → `0,0` |
 | Debug panel (right-anchored, hidden by default) | ✅ toggled from Help icon; live scene-local + world position HUD |
-| Settings overlay (tabbed) | ✅ Events, Places, Communities, Map, Backpack, Gallery, Settings |
+| Settings overlay (tabbed) | ✅ Events, Places, Communities, Map, Backpack, Gallery |
+| **Preferences panel (P / ⚙)** | ✅ Graphics + stub Sounds/Controls/Chat — separate from main overlay |
 | **Dev progress panel** | ✅ `</>` sidebar — TASKS.yaml + PROGRESS.md from GitHub + integration registry |
 | **Map tab** — Genesis City stitched tiles | ✅ click mini-map / **M** — parcel popup + Jump In + peer sidebar (dcl-neurolink parity) |
 | **Events tab** — calendar + weekly views | ✅ DCL Events API · Weekly (4 day columns) / Calendar toggle · Today + Create Event stub |

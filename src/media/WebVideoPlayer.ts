@@ -58,6 +58,8 @@ export class WebVideoPlayer {
     document.body.appendChild(this.video)
 
     this.texture = new THREE.VideoTexture(this.video)
+    // DCL/Babylon VideoTexture uses invertY=false — Three.js defaults to flipY=true.
+    this.texture.flipY = false
     this.texture.colorSpace = THREE.SRGBColorSpace
 
     this.video.addEventListener('loadstart', () => this.setState(VS_LOADING))

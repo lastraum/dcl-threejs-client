@@ -5,8 +5,24 @@ const PRIMITIVE_SEGMENTS = 24
 /** DCL box face order: North, South, East, West, Top, Bottom. */
 const DCL_BOX_FACE_TO_THREE = [4, 5, 0, 1, 2, 3]
 
-/** DCL per-face corner order (LL, LR, UR, UL) → Three.js BoxGeometry vertex index. */
-const DCL_BOX_CORNER_TO_THREE = [0, 1, 3, 2]
+/**
+ * DCL LL, LR, UR, UL → Three.js BoxGeometry vertex index (indexed by Three face 0..5).
+ * Winding differs per face — a single global map scrambles textures (180°/mirrored).
+ */
+const THREE_BOX_FACE_CORNER_TO_THREE: ReadonlyArray<readonly number[]> = [
+  [2, 3, 1, 0], // +X east
+  [3, 2, 0, 1], // -X west
+  [2, 3, 1, 0], // +Y top
+  [0, 1, 3, 2], // -Y bottom
+  [2, 3, 1, 0], // +Z north
+  [3, 2, 0, 1] // -Z south
+]
+
+/** Full-tile north + south UVs for a double-sided DCL plane (no custom MeshRenderer uvs). */
+const DEFAULT_DCL_PLANE_UVS = [
+  0, 0, 1, 0, 1, 1, 0, 1,
+  1, 0, 0, 0, 0, 1, 1, 1
+]
 
 /** DCL plane north-side corners (LL, LR, UR, UL) → PlaneGeometry vertex index. */
 const DCL_PLANE_NORTH_CORNER_TO_THREE = [2, 3, 1, 0]
@@ -45,8 +61,8 @@ export function buildPrimitiveGeometry(spec: PrimitiveMeshSpec): THREE.BufferGeo
   if (kind === 'plane') {
     const uvs = spec.mesh?.$case === 'plane' ? spec.mesh.plane?.uvs : undefined
     if (uvs?.length) return buildPlaneGeometryWithUvs(uvs)
-    // DCL MeshRenderer plane matches Babylon CreatePlane: vertical XY, normal +Z.
-    return new THREE.PlaneGeometry(1, 1)
+    // DCL planes are double-sided with distinct back-face UVs (not Three.js PlaneGeometry + DoubleSide).
+    return buildPlaneGeometryWithUvs(DEFAULT_DCL_PLANE_UVS)
   }
 
   if (kind === 'cylinder') {
@@ -105,14 +121,16 @@ function applyBoxUvs(geometry: THREE.BufferGeometry, uvs: number[]): void {
   if (!(attr instanceof THREE.BufferAttribute) || attr.count < 24) return
 
   for (let dclFace = 0; dclFace < 6; dclFace++) {
-    applyFaceUvs(attr, DCL_BOX_FACE_TO_THREE[dclFace] ?? dclFace, DCL_BOX_CORNER_TO_THREE, uvs, dclFace * perFace)
+    const threeFace = DCL_BOX_FACE_TO_THREE[dclFace] ?? dclFace
+    const cornerMap = THREE_BOX_FACE_CORNER_TO_THREE[threeFace] ?? THREE_BOX_FACE_CORNER_TO_THREE[4]!
+    applyFaceUvs(attr, threeFace, cornerMap, uvs, dclFace * perFace)
   }
   attr.needsUpdate = true
 }
 
 function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
   const perSide = uvs.length >= 16 ? 8 : uvs.length >= 8 ? 8 : 0
-  if (!perSide) return new THREE.PlaneGeometry(1, 1)
+  if (!perSide) return buildPlaneGeometryWithUvs(DEFAULT_DCL_PLANE_UVS)
 
   const north = uvs.slice(0, 8)
   const south = uvs.length >= 16 ? uvs.slice(8, 16) : north

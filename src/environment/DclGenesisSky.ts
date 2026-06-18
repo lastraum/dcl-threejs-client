@@ -59,12 +59,12 @@ vec3 celestialDisc(vec3 dir, vec3 lightDir, sampler2D map, float mask, float siz
 
 vec3 sunDisc(vec3 dir, vec3 sunDir, vec3 sunColor, float radiance) {
   float d = dot(normalize(dir), normalize(sunDir));
-  if (d < 0.993) return vec3(0.0);
-  float core = smoothstep(0.9968, 0.99995, d);
-  float innerGlow = pow(max(d, 0.0), 72.0) * (0.4 + radiance * 7.0);
-  float outerHalo = pow(max(d, 0.0), 36.0) * 0.08 * (0.45 + radiance * 2.2);
-  vec3 warm = sunColor * vec3(1.18, 1.02, 0.84);
-  return warm * (core * 9.0 + innerGlow + outerHalo);
+  if (d < 0.9965) return vec3(0.0);
+  float core = smoothstep(0.9986, 0.99998, d);
+  float corona = pow(max(d, 0.0), 56.0) * (0.22 + radiance * 2.6);
+  float bloom = pow(max(d, 0.0), 20.0) * 0.07 * (0.4 + radiance * 1.35);
+  vec3 warm = sunColor * vec3(1.12, 1.0, 0.86);
+  return warm * (core * 5.0 + corona + bloom);
 }
 
 vec3 starField(vec3 dir, sampler2D map, float night) {

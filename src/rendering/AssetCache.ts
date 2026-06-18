@@ -9,6 +9,7 @@ import {
   sanitizeSceneGltfColliders,
   sanitizeSceneGltfMaterials
 } from './LandscapeAssetSanitizer'
+import { applySceneGltfEmissives } from './sceneGltfEmissives'
 import { deleteGlbBytes, normalizeGlbCacheKey, readGlbBytes } from './glbByteCache'
 import { fetchGlbBytesOffThread, disposeGlbFetchPool } from './glbFetchPool'
 import { parseGlbOffThread, disposeGlbParsePool } from './glbParsePool'
@@ -222,6 +223,7 @@ export class AssetCache {
     } else if (!options?.emote) {
       sanitizeSceneGltfColliders(entry.root)
       sanitizeSceneGltfMaterials(entry.root)
+      applySceneGltfEmissives(entry.root)
     } else {
       entry.root.traverse((obj) => {
         if (/collider/i.test(obj.name)) obj.visible = false

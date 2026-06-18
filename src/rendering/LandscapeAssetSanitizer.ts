@@ -4,15 +4,17 @@ import { isGltfInvisibleColliderName } from '../collision/gltfColliderNaming'
 /** Leave headroom for fog/tone mapping; scene shadows stay off (each shadow light adds a sampler). */
 const MAX_MATERIAL_TEXTURES = 8
 
+const EMISSIVE_NAME = /^em\.|emissive|glow|neon|em_|led|lightstrip|light_strip/i
+
 const STRIP_MAP_KEYS = [
   'displacementMap',
   'bumpMap',
   'lightMap',
   'aoMap',
-  'emissiveMap',
   'metalnessMap',
   'roughnessMap',
-  'normalMap'
+  'normalMap',
+  'emissiveMap'
 ] as const satisfies ReadonlyArray<keyof THREE.MeshStandardMaterial>
 
 type MapMaterial = THREE.MeshStandardMaterial
@@ -68,12 +70,24 @@ function resetPhysicalScalars(material: THREE.MeshPhysicalMaterial): void {
   material.anisotropyMap = null
 }
 
+function isEmissiveMaterial(material: MapMaterial): boolean {
+  const emissiveLuma = material.emissive.r + material.emissive.g + material.emissive.b
+  const colorLuma = material.color.r + material.color.g + material.color.b
+  return (
+    !!material.emissiveMap ||
+    emissiveLuma > 0.05 ||
+    colorLuma > 3 ||
+    EMISSIVE_NAME.test(material.name)
+  )
+}
+
 function stripOptionalMaps(material: MapMaterial): void {
   material.envMap = null
   material.envMapIntensity = 0
 
   for (const key of STRIP_MAP_KEYS) {
     if (countMaterialTextures(material) <= MAX_MATERIAL_TEXTURES) return
+    if (key === 'emissiveMap' && isEmissiveMaterial(material)) continue
     material[key] = null
   }
 }

@@ -49,6 +49,8 @@ export class WebVideoPlayer {
   private userGestureUnlocked = false
   private visibilityPaused = false
   private wantsPlaying = true
+  private playGeneration = 0
+  onFrameReady?: () => void
 
   constructor(private readonly scene: ResolvedScene) {
     this.video = document.createElement('video')
@@ -65,6 +67,7 @@ export class WebVideoPlayer {
     this.video.addEventListener('loadstart', () => this.setState(VS_LOADING))
     this.video.addEventListener('loadeddata', () => {
       if (this.state !== VS_ERROR) this.setState(VS_READY)
+      this.onFrameReady?.()
     })
     this.video.addEventListener('canplay', () => {
       if (this.state !== VS_ERROR && !this.video.paused) return
@@ -111,6 +114,11 @@ export class WebVideoPlayer {
     return Number.isFinite(d) ? d : 0
   }
 
+  /** Avoid WebGL texImage2D uploads before the decoder has a frame. */
+  hasRenderableFrame(): boolean {
+    return this.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+  }
+
   setUserGestureUnlocked(unlocked: boolean): void {
     this.userGestureUnlocked = unlocked
     if (unlocked && this.wantsPlaying && !this.visibilityPaused) {
@@ -122,6 +130,7 @@ export class WebVideoPlayer {
     if (this.visibilityPaused === paused) return
     this.visibilityPaused = paused
     if (paused) {
+      this.bumpPlayGeneration()
       this.video.pause()
     } else if (this.wantsPlaying) {
       void this.tryPlay()
@@ -153,6 +162,7 @@ export class WebVideoPlayer {
     if (playing) {
       void this.tryPlay()
     } else {
+      this.bumpPlayGeneration()
       this.video.pause()
     }
   }
@@ -177,6 +187,7 @@ export class WebVideoPlayer {
 
     this.hls?.destroy()
     this.hls = null
+    this.bumpPlayGeneration()
     this.video.pause()
     this.video.removeAttribute('src')
     this.video.load()
@@ -203,11 +214,18 @@ export class WebVideoPlayer {
     this.video.load()
   }
 
+  private bumpPlayGeneration(): void {
+    this.playGeneration++
+  }
+
   private async tryPlay(): Promise<void> {
     if (!this.userGestureUnlocked || this.visibilityPaused || !this.wantsPlaying) return
+    const gen = ++this.playGeneration
     try {
       await this.video.play()
     } catch (err) {
+      if (gen !== this.playGeneration) return
+      if (err instanceof DOMException && err.name === 'AbortError') return
       console.warn('[WebVideoPlayer] play() blocked or failed', err, this.loadedSrc)
     }
   }

@@ -128,6 +128,15 @@ function applyBoxUvs(geometry: THREE.BufferGeometry, uvs: number[]): void {
   attr.needsUpdate = true
 }
 
+/** DCL double-sided plane (north +Z, south -Z) scaled to world units. */
+export function buildDclPlaneGeometry(width = 1, height = 1): THREE.BufferGeometry {
+  const geometry = buildPlaneGeometryWithUvs(DEFAULT_DCL_PLANE_UVS)
+  if (width !== 1 || height !== 1) {
+    geometry.scale(width, height, 1)
+  }
+  return geometry
+}
+
 function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
   const perSide = uvs.length >= 16 ? 8 : uvs.length >= 8 ? 8 : 0
   if (!perSide) return buildPlaneGeometryWithUvs(DEFAULT_DCL_PLANE_UVS)

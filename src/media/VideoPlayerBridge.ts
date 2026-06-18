@@ -38,7 +38,9 @@ export class VideoPlayerBridge {
   }
 
   getTexture(entity: Entity): THREE.VideoTexture | null {
-    return this.decoders.get(entity)?.player.texture ?? null
+    const entry = this.decoders.get(entity)
+    if (!entry?.player.hasRenderableFrame()) return null
+    return entry.player.texture
   }
 
   /** Invalidate material cache for entities referencing this video player. */
@@ -119,6 +121,7 @@ export class VideoPlayerBridge {
     if (this.decoders.has(entity)) return
     const player = new WebVideoPlayer(this.scene)
     player.setUserGestureUnlocked(this.userGestureUnlocked)
+    player.onFrameReady = () => this.onTextureReady?.(entity)
     this.decoders.set(entity, {
       player,
       lastSpecKey: '',

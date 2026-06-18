@@ -219,7 +219,13 @@ export class SceneScriptSystem {
       () => this.bridge?.getEntityNodes()
     )
     this.bridge.setSkipTransformApply((entity) => this.avatarAttachBridge!.isAttachDriven(entity))
-    this.videoPlayerBridge = new VideoPlayerBridge(this.readComponents, scene, this.recordRendererAppend)
+    this.videoPlayerBridge = new VideoPlayerBridge(
+      this.readComponents,
+      scene,
+      this.recordRendererAppend,
+      this.recordRendererLww
+    )
+    this.videoPlayerBridge.onLwwFlush = () => this.flushVideoPlayerLwwToWorker()
     this.bridge.setVideoPlayerBridge(this.videoPlayerBridge)
     this.collision = new CollisionSystem(host.scene)
     this.gltfColliders = new GltfColliderExtractor(host.scene)
@@ -1008,6 +1014,19 @@ export class SceneScriptSystem {
     const copy = bytes.slice()
     this.worker.postMessage(
       { type: 'tween-state-deliver', data: [copy] } satisfies MainToWorker,
+      [copy.buffer]
+    )
+  }
+
+  /** Deliver VideoPlayer `playing` sync PUTs — not blocked by pointer-await. */
+  private flushVideoPlayerLwwToWorker(): void {
+    if (!this.worker || !this.running) return
+    if (this.encoder.pendingLwwPutCount === 0) return
+    const lwwBytes = this.encoder.encodeLwwPutsOnly()
+    if (!lwwBytes?.byteLength) return
+    const copy = lwwBytes.slice()
+    this.worker.postMessage(
+      { type: 'pointer-crdt-deliver', data: [copy] } satisfies MainToWorker,
       [copy.buffer]
     )
   }

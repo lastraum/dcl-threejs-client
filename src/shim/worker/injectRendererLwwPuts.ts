@@ -9,10 +9,13 @@ import { CrdtMessageType } from '@dcl/ecs/dist/serialization/crdt/types'
 const TWEEN_STATE_ID = 1103
 /** `core::RaycastResult` — renderer raycast hits for worker `raycastSystem` callbacks. */
 const RAYCAST_RESULT_ID = 1068
+/** `core::VideoPlayer` — renderer syncs `playing` on natural end for scene toggle parity. */
+const VIDEO_PLAYER_ID = 1043
 
 export type RendererLwwInjectCounts = {
   tweenPuts: number
   raycastPuts: number
+  videoPlayerPuts: number
 }
 
 /**
@@ -23,8 +26,10 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
   preregisterRendererInjectedComponents(engine)
   const TweenState = generated.TweenState(engine)
   const RaycastResult = generated.RaycastResult(engine)
+  const VideoPlayer = generated.VideoPlayer(engine)
   let tweenPuts = 0
   let raycastPuts = 0
+  let videoPlayerPuts = 0
 
   for (const chunk of chunks) {
     const buf = new ReadWriteByteBuffer(chunk)
@@ -41,11 +46,16 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
           const value = RaycastResult.schema.deserialize(valueBuf)
           RaycastResult.createOrReplace(msg.entityId as Entity, value)
           raycastPuts++
+        } else if (msg.componentId === VIDEO_PLAYER_ID) {
+          const valueBuf = new ReadWriteByteBuffer(msg.data)
+          const value = VideoPlayer.schema.deserialize(valueBuf)
+          VideoPlayer.createOrReplace(msg.entityId as Entity, value)
+          videoPlayerPuts++
         }
       }
       msg = readMessage(buf)
     }
   }
 
-  return { tweenPuts, raycastPuts }
+  return { tweenPuts, raycastPuts, videoPlayerPuts }
 }

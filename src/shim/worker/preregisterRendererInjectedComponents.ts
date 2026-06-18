@@ -20,6 +20,7 @@ export function preregisterRendererInjectedComponents(engine: IEngine): void {
   generated.VideoEvent(engine)
   generated.TweenState(engine)
   generated.RaycastResult(engine)
+  generated.VideoPlayer(engine)
   generated.PrimaryPointerInfo(engine)
 }
 

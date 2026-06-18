@@ -26,8 +26,13 @@ export class VideoPlayerBridge {
     private readonly ecs: MirrorComponents,
     private readonly scene: ResolvedScene,
     /** Source-capture each VideoEvent append for the outbound CrdtEncoder. */
-    private readonly recordAppend?: (componentId: number, entity: Entity, value: unknown) => void
+    private readonly recordAppend?: (componentId: number, entity: Entity, value: unknown) => void,
+    /** Source-capture VideoPlayer LWW PUTs (playing sync on natural end). */
+    private readonly recordLww?: (componentId: number, entity: Entity, value: unknown) => void
   ) {}
+
+  /** Push pending VideoPlayer LWW PUTs to the scene worker (no pointer-await guard). */
+  onLwwFlush?: () => void
 
   setUserGestureUnlocked(unlocked: boolean): void {
     if (this.userGestureUnlocked === unlocked) return
@@ -116,6 +121,7 @@ export class VideoPlayerBridge {
     const player = new WebVideoPlayer(this.scene)
     player.setUserGestureUnlocked(this.userGestureUnlocked)
     player.onFrameReady = () => this.onTextureReady?.(entity)
+    player.onNaturalEnd = () => this.syncPlayingToEcs(entity, false)
     this.decoders.set(entity, {
       player,
       lastSpecKey: '',
@@ -124,6 +130,28 @@ export class VideoPlayerBridge {
       lastLength: -1
     })
     this.onTextureReady?.(entity)
+  }
+
+  /** Keep scene worker + projection `playing` aligned with decoder (e.g. after natural end). */
+  private syncPlayingToEcs(entity: Entity, playing: boolean): void {
+    const { VideoPlayer } = this.ecs
+    const spec = VideoPlayer.getOrNull(entity) as PBVideoPlayer | null
+    const entry = this.decoders.get(entity)
+    if (!spec || !entry) return
+    const currentPlaying = spec.playing !== false
+    if (currentPlaying === playing) return
+
+    const next: PBVideoPlayer = {
+      ...spec,
+      playing,
+      position: entry.player.getCurrentOffset()
+    }
+    VideoPlayer.createOrReplace(entity, next)
+    const specKey = JSON.stringify(next)
+    entry.lastSpecKey = specKey
+    entry.player.applySpec(next)
+    this.recordLww?.(VideoPlayer.componentId, entity, next)
+    this.onLwwFlush?.()
   }
 
   private applySpec(entity: Entity, spec: PBVideoPlayer): void {

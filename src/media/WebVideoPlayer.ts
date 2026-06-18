@@ -53,11 +53,11 @@ export class WebVideoPlayer {
   private hasHadRenderableFrame = false
   /** Last `spec.position` applied — ignore stale position=0 on play/pause toggles. */
   private lastSpecPosition: number | undefined
-  /** Last `spec.playing` from ECS — may diverge from decoder after end-of-video replay. */
+  /** Last `spec.playing` from ECS — used to ignore stale position on play/pause toggles. */
   private lastEcsPlaying: boolean | undefined
-  /** True after replaying against an ECS false toggle; next false→true ECS toggle means pause. */
-  private ecsPlayDesync = false
   onFrameReady?: () => void
+  /** Fired when playback reaches the end (non-looping). */
+  onNaturalEnd?: () => void
 
   constructor(private readonly scene: ResolvedScene) {
     this.video = document.createElement('video')
@@ -107,7 +107,10 @@ export class WebVideoPlayer {
       console.warn('[WebVideoPlayer] decode error', err?.code, err?.message, this.loadedSrc)
       this.setState(VS_ERROR)
     })
-    this.video.addEventListener('ended', () => this.setState(VS_PAUSED))
+    this.video.addEventListener('ended', () => {
+      this.setState(VS_PAUSED)
+      if (!this.video.loop) this.onNaturalEnd?.()
+    })
   }
 
   getVideoState(): VideoStateValue {
@@ -183,34 +186,6 @@ export class WebVideoPlayer {
         this.video.currentTime = specPosition
       }
       this.lastSpecPosition = specPosition
-    }
-
-    // ECS often keeps playing=true after natural end; first toggle sends false — replay instead.
-    if (
-      !ecsPlaying &&
-      ecsPlayingChanged &&
-      this.video.ended &&
-      this.lastEcsPlaying === true
-    ) {
-      this.restartFromBeginning()
-      this.lastEcsPlaying = false
-      this.ecsPlayDesync = true
-      if (!this.visibilityPaused) void this.tryPlay()
-      return
-    }
-
-    // Decoder plays while ECS still says false — ignore stale false re-sends (e.g. position-only updates).
-    if (this.ecsPlayDesync) {
-      if (ecsPlaying && ecsPlayingChanged) {
-        this.ecsPlayDesync = false
-        this.wantsPlaying = false
-        this.lastEcsPlaying = true
-        if (!this.visibilityPaused) {
-          this.bumpPlayGeneration()
-          this.video.pause()
-        }
-      }
-      return
     }
 
     this.wantsPlaying = ecsPlaying

@@ -101,10 +101,16 @@ vec3 rotateY(vec3 dir, float angle) {
   return vec3(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
 }
 
-// Compress HDR cloud gradient keys before LDR screen blend (Unity uses GradientUsage HDR).
-vec3 cloudTintColor(vec3 hdr, float highlights) {
-  vec3 ldr = hdr / (hdr + vec3(0.72));
-  return ldr * (0.55 + highlights * 0.65);
+// DCL clouds gradient is HDR (keys >1 at midday). Keep hue, put brightness in intensity.
+vec3 cloudTintColor(vec3 hdr, float highlights, vec3 dir, vec3 sunDir) {
+  float peak = max(max(hdr.r, hdr.g), hdr.b);
+  vec3 hue = hdr / max(peak, 1e-4);
+  float intensity = peak * (0.82 + highlights * 0.55);
+  float sunSide = sunDir.y > 0.05
+    ? smoothstep(-0.05, 0.45, dot(normalize(dir), normalize(sunDir)))
+    : 0.0;
+  intensity *= mix(0.88, 1.28, sunSide * highlights);
+  return hue * intensity;
 }
 
 float cloudLayerMask(
@@ -137,8 +143,11 @@ vec3 blendCloudLayer(
 ) {
   float mask = cloudLayerMask(dir, map, angle, opacity, yMin, yMax);
   if (mask <= 0.001) return sky;
-  vec3 tint = cloudTintColor(uCloudsColor, uCloudHighlights);
-  return mix(sky, tint, mask);
+  vec3 cloud = cloudTintColor(uCloudsColor, uCloudHighlights, dir, uSunDirection);
+  // Screen-style brighten — lerp toward gray tint; DCL puffs read white over blue sky
+  vec3 layer = min(cloud, vec3(2.5));
+  vec3 screen = vec3(1.0) - (vec3(1.0) - sky) * (vec3(1.0) - min(layer, vec3(1.0)));
+  return mix(sky, max(screen, layer), mask);
 }
 
 void main() {
@@ -236,7 +245,8 @@ export class DclGenesisSky {
       fragmentShader: SKY_FRAGMENT,
       side: THREE.BackSide,
       depthWrite: false,
-      fog: false
+      fog: false,
+      toneMapped: false
     })
 
     const geometry = new THREE.SphereGeometry(400, 64, 32)

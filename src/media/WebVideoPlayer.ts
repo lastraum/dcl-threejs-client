@@ -51,6 +51,9 @@ export class WebVideoPlayer {
   private wantsPlaying = true
   private playGeneration = 0
   private hasHadRenderableFrame = false
+  /** Last `spec.position` applied — ignore stale position=0 on play/pause toggles. */
+  private lastSpecPosition: number | undefined
+  private lastSpecPlaying: boolean | undefined
   onFrameReady?: () => void
 
   constructor(private readonly scene: ResolvedScene) {
@@ -160,10 +163,25 @@ export class WebVideoPlayer {
     this.video.volume = clamp(spec.volume ?? 1, 0, 1)
     this.video.playbackRate = Math.max(spec.playbackRate ?? 1, 0.01)
 
-    const targetTime = Math.max(spec.position ?? 0, 0)
-    if (Number.isFinite(targetTime) && Math.abs(this.video.currentTime - targetTime) > 0.25) {
-      this.video.currentTime = targetTime
+    const specPosition = Math.max(spec.position ?? 0, 0)
+    const playingChanged = this.lastSpecPlaying !== undefined && playing !== this.lastSpecPlaying
+    const positionFieldChanged =
+      this.lastSpecPosition === undefined || Math.abs(specPosition - this.lastSpecPosition) > 0.05
+    if (positionFieldChanged) {
+      const staleZeroOnPlayToggle =
+        playingChanged &&
+        specPosition < 0.05 &&
+        this.video.currentTime > 0.5
+      if (
+        !staleZeroOnPlayToggle &&
+        Number.isFinite(specPosition) &&
+        Math.abs(this.video.currentTime - specPosition) > 0.25
+      ) {
+        this.video.currentTime = specPosition
+      }
+      this.lastSpecPosition = specPosition
     }
+    this.lastSpecPlaying = playing
 
     if (this.visibilityPaused) return
 

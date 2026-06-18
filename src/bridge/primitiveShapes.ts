@@ -30,6 +30,9 @@ const DEFAULT_DCL_PLANE_UVS = [
 /** DCL plane corner order SW, SE, NE, NW → spatial vertex index (BL, BR, TR, TL). */
 const DCL_PLANE_CORNER_TO_THREE = [2, 3, 1, 0]
 
+/** Bump when plane topology/UV layout changes — busts primitiveMeshKey mesh cache. */
+const PLANE_GEOMETRY_REVISION = 'v3'
+
 export type PrimitiveMeshSpec = {
   mesh?:
     | { $case: 'box'; box?: { uvs?: number[] } }
@@ -82,6 +85,9 @@ export function buildPrimitiveGeometry(spec: PrimitiveMeshSpec): THREE.BufferGeo
 export function primitiveMeshKey(spec: PrimitiveMeshSpec): string {
   const kind = primitiveKind(spec)
   const uvsKey = uvsFingerprint(meshRendererUvs(spec))
+  if (kind === 'plane') {
+    return uvsKey ? `${kind}:${uvsKey}:${PLANE_GEOMETRY_REVISION}` : `${kind}:${PLANE_GEOMETRY_REVISION}`
+  }
   return uvsKey ? `${kind}:${uvsKey}` : kind
 }
 
@@ -142,7 +148,7 @@ function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
   if (!perSide) return buildPlaneGeometryWithUvs(DEFAULT_DCL_PLANE_UVS)
 
   const north = uvs.slice(0, 8)
-  const south = uvs.length >= 16 ? uvs.slice(8, 16) : north
+  const south = uvs.length >= 16 ? uvs.slice(8, 16) : mirrorSouthPlaneUvs(north)
 
   const positions = new Float32Array([
     -0.5, 0.5, 0,
@@ -166,6 +172,18 @@ function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
   geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
   geometry.setAttribute('uv', uvAttr)
-  geometry.setIndex([0, 2, 1, 2, 3, 1, 4, 5, 6, 4, 6, 7])
+  // North (+Z): CCW from +Z. South (-Z): opposite winding so both sides render with FrontSide.
+  geometry.setIndex([0, 2, 1, 2, 3, 1, 4, 5, 6, 5, 7, 6])
   return geometry
+}
+
+/** Mirror U for the south face when only 8 custom UVs are provided (SW, SE, NE, NW). */
+function mirrorSouthPlaneUvs(north: readonly number[]): number[] {
+  const out: number[] = []
+  for (let corner = 0; corner < 4; corner++) {
+    const u = north[corner * 2] ?? 0
+    const v = north[corner * 2 + 1] ?? 0
+    out.push(1 - u, v)
+  }
+  return out
 }

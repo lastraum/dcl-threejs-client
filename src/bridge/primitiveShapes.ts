@@ -85,9 +85,9 @@ export function primitiveMeshKey(spec: PrimitiveMeshSpec): string {
   return uvsKey ? `${kind}:${uvsKey}` : kind
 }
 
-/** DCL CreatePlane uses Babylon sideOrientation 2 (DOUBLE_SIDE). */
-export function primitiveDoubleSided(spec: PrimitiveMeshSpec): boolean {
-  return spec.mesh?.$case === 'plane'
+/** Planes use true double-sided geometry (north + south faces) — material stays FrontSide. */
+export function primitiveDoubleSided(_spec: PrimitiveMeshSpec): boolean {
+  return false
 }
 
 export function primitiveKind(spec: PrimitiveMeshSpec): string {

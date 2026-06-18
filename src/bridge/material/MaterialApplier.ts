@@ -365,12 +365,9 @@ export class MaterialApplier {
       if (!tex) return null
       tex.wrapS = wrapMode(def.wrapMode)
       tex.wrapT = wrapMode(def.wrapMode)
-      tex.minFilter =
-        def.filterMode === TFM_POINT
-          ? THREE.NearestFilter
-          : def.filterMode === TFM_TRILINEAR
-            ? THREE.LinearMipmapLinearFilter
-            : THREE.LinearFilter
+      // VideoTexture has no mipmaps — mipmap min filters render blank/corrupt.
+      tex.generateMipmaps = false
+      tex.minFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
       tex.magFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
       tex.colorSpace = options?.normalMap ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace
       configureSceneVideoTexture(tex)

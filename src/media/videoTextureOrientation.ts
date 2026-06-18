@@ -2,8 +2,8 @@ import * as THREE from 'three'
 
 /**
  * Scene VideoTexture orientation for MeshRenderer planes.
- * DCL/Babylon uses invertY=false with Babylon plane UVs (v=1 at mesh bottom).
- * Our planes use Three.js UVs (v=0 at bottom) — flipY must stay true.
+ * DCL plane geometry uses the same corner UV layout as static textures (LL/LR/UR/UL).
+ * flipY=true matches TextureLoader parity on those UVs.
  */
 export function configureSceneVideoTexture(tex: THREE.Texture): void {
   tex.flipY = true

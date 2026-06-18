@@ -62,6 +62,9 @@ export class WebVideoPlayer {
 
     this.texture = new THREE.VideoTexture(this.video)
     this.texture.colorSpace = THREE.SRGBColorSpace
+    this.texture.generateMipmaps = false
+    this.texture.minFilter = THREE.LinearFilter
+    this.texture.magFilter = THREE.LinearFilter
     configureSceneVideoTexture(this.texture)
 
     this.video.addEventListener('loadstart', () => this.setState(VS_LOADING))

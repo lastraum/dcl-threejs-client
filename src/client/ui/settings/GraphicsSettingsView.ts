@@ -118,50 +118,23 @@ export class GraphicsSettingsView {
     for (const section of SECTIONS) {
       scrollArea.appendChild(this.buildSection(section))
     }
-    scrollArea.appendChild(this.buildSunSection())
+    scrollArea.appendChild(this.buildLightingSection())
 
     this.root.appendChild(scrollArea)
     this.unsubscribeSun = sunEnvironmentSettings.subscribe((state) => this.syncSunControls(state))
   }
 
-  private buildSunSection(): HTMLElement {
-    const sun = sunEnvironmentSettings.get()
+  private buildLightingSection(): HTMLElement {
+    const lighting = sunEnvironmentSettings.get()
     const section: SectionDef = {
-      title: 'Sun',
+      title: 'Lighting',
       items: [
-        {
-          type: 'slider',
-          label: 'Sun Size',
-          min: SUN_SLIDER_MIN,
-          max: SUN_SLIDER_MAX,
-          defaultValue: sun.discSize,
-          suffix: '%',
-          onChange: (v) => sunEnvironmentSettings.set({ discSize: v })
-        },
-        {
-          type: 'slider',
-          label: 'Sun Corona',
-          min: SUN_SLIDER_MIN,
-          max: SUN_SLIDER_MAX,
-          defaultValue: sun.discGlow,
-          suffix: '%',
-          onChange: (v) => sunEnvironmentSettings.set({ discGlow: v })
-        },
-        {
-          type: 'slider',
-          label: 'Sky Sun Brightness',
-          min: SUN_SLIDER_MIN,
-          max: SUN_SLIDER_MAX,
-          defaultValue: sun.discBrightness,
-          suffix: '%',
-          onChange: (v) => sunEnvironmentSettings.set({ discBrightness: v })
-        },
         {
           type: 'slider',
           label: 'Scene Sun Light',
           min: SUN_SLIDER_MIN,
           max: SUN_SLIDER_MAX,
-          defaultValue: sun.sceneSunLight,
+          defaultValue: lighting.sceneSunLight,
           suffix: '%',
           onChange: (v) => sunEnvironmentSettings.set({ sceneSunLight: v })
         },
@@ -170,15 +143,27 @@ export class GraphicsSettingsView {
           label: 'Exposure',
           min: SUN_SLIDER_MIN,
           max: SUN_SLIDER_MAX,
-          defaultValue: sun.exposure,
+          defaultValue: lighting.exposure,
           suffix: '%',
           onChange: (v) => sunEnvironmentSettings.set({ exposure: v })
         },
         {
-          type: 'toggle',
-          label: 'Sun Glow',
-          defaultOn: sun.sunGlowEnabled,
-          onChange: (on) => sunEnvironmentSettings.set({ sunGlowEnabled: on })
+          type: 'slider',
+          label: 'Scene Moon Light',
+          min: SUN_SLIDER_MIN,
+          max: SUN_SLIDER_MAX,
+          defaultValue: lighting.sceneMoonLight,
+          suffix: '%',
+          onChange: (v) => sunEnvironmentSettings.set({ sceneMoonLight: v })
+        },
+        {
+          type: 'slider',
+          label: 'Moon Exposure',
+          min: SUN_SLIDER_MIN,
+          max: SUN_SLIDER_MAX,
+          defaultValue: lighting.moonExposure,
+          suffix: '%',
+          onChange: (v) => sunEnvironmentSettings.set({ moonExposure: v })
         }
       ]
     }
@@ -186,28 +171,21 @@ export class GraphicsSettingsView {
   }
 
   private syncSunControls(state: SunEnvironmentSettingsState): void {
-    const values: Record<string, string | boolean> = {
-      'Sun Size': String(state.discSize),
-      'Sun Corona': String(state.discGlow),
-      'Sky Sun Brightness': String(state.discBrightness),
+    const values: Record<string, string> = {
       'Scene Sun Light': String(state.sceneSunLight),
       Exposure: String(state.exposure),
-      'Sun Glow_toggle': state.sunGlowEnabled
+      'Scene Moon Light': String(state.sceneMoonLight),
+      'Moon Exposure': String(state.moonExposure)
     }
 
     for (const control of this.boundControls) {
-      if (control.kind === 'slider') {
-        const row = control.input.closest('.gfx-settings__row')
-        const name = row?.querySelector('.gfx-settings__label')?.textContent
-        if (!name || values[name] === undefined) continue
-        control.input.value = values[name] as string
-        control.label.textContent = `${values[name]}${control.suffix ?? ''}`
-        this.setSliderPct(control.input, control.min, control.max)
-        continue
-      }
+      if (control.kind !== 'slider') continue
       const row = control.input.closest('.gfx-settings__row')
       const name = row?.querySelector('.gfx-settings__label')?.textContent
-      if (name === 'Sun Glow') control.input.checked = state.sunGlowEnabled
+      if (!name || values[name] === undefined) continue
+      control.input.value = values[name]
+      control.label.textContent = `${values[name]}${control.suffix ?? ''}`
+      this.setSliderPct(control.input, control.min, control.max)
     }
   }
 

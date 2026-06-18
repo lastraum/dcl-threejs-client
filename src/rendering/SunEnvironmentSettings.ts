@@ -3,32 +3,29 @@ import * as THREE from 'three'
 const STORAGE_KEY = 'dcl-sun-environment-settings'
 
 export type SunEnvironmentSettingsState = {
-  /** 0 = small disc, 100 = large disc */
-  discSize: number
-  /** Corona/bloom around the skydome sun (0–100) */
-  discGlow: number
-  /** Skydome sun disc core intensity (0–100) */
-  discBrightness: number
-  /** Directional sun + hemi scene lighting (0–100) */
+  /** Directional sun + day hemi scene lighting (0–100) */
   sceneSunLight: number
-  /** ACES exposure multiplier on top of quality tier (0–100) */
+  /** ACES exposure multiplier during day (0–100) */
   exposure: number
-  /** Enable corona/bloom on the skydome sun */
-  sunGlowEnabled: boolean
+  /** Directional moon + night hemi scene lighting (0–100) */
+  sceneMoonLight: number
+  /** ACES exposure multiplier during night (0–100) */
+  moonExposure: number
 }
 
-export const SUN_DISC_SIZE_MIN = 0
-export const SUN_DISC_SIZE_MAX = 100
 export const SUN_SLIDER_MIN = 0
 export const SUN_SLIDER_MAX = 100
 
+/** Locked skydome sun — matches former slider 0% (small disc, no corona, dim core). */
+export const FIXED_SUN_DISC_CUTOFF = 0.99885
+export const FIXED_SUN_DISC_CORE_GAIN = 0.15
+export const FIXED_SUN_DISC_GLOW_GAIN = 0
+
 const DEFAULTS: SunEnvironmentSettingsState = {
-  discSize: 52,
-  discGlow: 42,
-  discBrightness: 42,
   sceneSunLight: 56,
   exposure: 80,
-  sunGlowEnabled: true
+  sceneMoonLight: 56,
+  moonExposure: 50
 }
 
 type Listener = (state: SunEnvironmentSettingsState) => void
@@ -37,33 +34,28 @@ function clampSlider(value: number): number {
   return Math.round(THREE.MathUtils.clamp(value, SUN_SLIDER_MIN, SUN_SLIDER_MAX))
 }
 
-/** Skydome sun angular cutoff — higher dot threshold = smaller visible disc. */
-export function sunDiscCutoff(size: number): number {
-  const t = clampSlider(size) / SUN_DISC_SIZE_MAX
-  return THREE.MathUtils.lerp(0.99885, 0.992, t)
-}
-
-export function sunDiscCoreGain(brightness: number): number {
-  const t = clampSlider(brightness) / SUN_SLIDER_MAX
-  return THREE.MathUtils.lerp(0.15, 3.2, t)
-}
-
-export function sunDiscGlowGain(glow: number, enabled: boolean): number {
-  if (!enabled) return 0
-  const t = clampSlider(glow) / SUN_SLIDER_MAX
-  return THREE.MathUtils.lerp(0.0, 1.0, t)
-}
-
 /** Multiplier on SUN_BRIGHTNESS + directional curve. */
 export function sceneSunLightMultiplier(sceneSunLight: number): number {
   const t = clampSlider(sceneSunLight) / SUN_SLIDER_MAX
   return THREE.MathUtils.lerp(0.35, 1.45, t)
 }
 
-/** Multiplier on tier tone-mapping exposure. */
+/** Multiplier on MOON_BRIGHTNESS + night hemi. */
+export function sceneMoonLightMultiplier(sceneMoonLight: number): number {
+  const t = clampSlider(sceneMoonLight) / SUN_SLIDER_MAX
+  return THREE.MathUtils.lerp(0.35, 1.45, t)
+}
+
+/** Multiplier on tier tone-mapping exposure during day. */
 export function sunExposureMultiplier(exposure: number): number {
   const t = clampSlider(exposure) / SUN_SLIDER_MAX
   return THREE.MathUtils.lerp(0.72, 1.18, t)
+}
+
+/** Multiplier on tier tone-mapping exposure during night (~1.32 at 50%). */
+export function moonExposureMultiplier(moonExposure: number): number {
+  const t = clampSlider(moonExposure) / SUN_SLIDER_MAX
+  return THREE.MathUtils.lerp(0.9, 1.75, t)
 }
 
 class SunEnvironmentSettingsStore {
@@ -83,27 +75,6 @@ class SunEnvironmentSettingsStore {
     const next: SunEnvironmentSettingsState = { ...this.state }
     let changed = false
 
-    if (partial.discSize !== undefined) {
-      const v = clampSlider(partial.discSize)
-      if (v !== next.discSize) {
-        next.discSize = v
-        changed = true
-      }
-    }
-    if (partial.discGlow !== undefined) {
-      const v = clampSlider(partial.discGlow)
-      if (v !== next.discGlow) {
-        next.discGlow = v
-        changed = true
-      }
-    }
-    if (partial.discBrightness !== undefined) {
-      const v = clampSlider(partial.discBrightness)
-      if (v !== next.discBrightness) {
-        next.discBrightness = v
-        changed = true
-      }
-    }
     if (partial.sceneSunLight !== undefined) {
       const v = clampSlider(partial.sceneSunLight)
       if (v !== next.sceneSunLight) {
@@ -118,9 +89,19 @@ class SunEnvironmentSettingsStore {
         changed = true
       }
     }
-    if (partial.sunGlowEnabled !== undefined && partial.sunGlowEnabled !== next.sunGlowEnabled) {
-      next.sunGlowEnabled = partial.sunGlowEnabled
-      changed = true
+    if (partial.sceneMoonLight !== undefined) {
+      const v = clampSlider(partial.sceneMoonLight)
+      if (v !== next.sceneMoonLight) {
+        next.sceneMoonLight = v
+        changed = true
+      }
+    }
+    if (partial.moonExposure !== undefined) {
+      const v = clampSlider(partial.moonExposure)
+      if (v !== next.moonExposure) {
+        next.moonExposure = v
+        changed = true
+      }
     }
 
     if (!changed) return
@@ -162,12 +143,10 @@ class SunEnvironmentSettingsStore {
       if (!raw) return
       const parsed = JSON.parse(raw) as Partial<SunEnvironmentSettingsState>
       this.state = {
-        discSize: clampSlider(parsed.discSize ?? DEFAULTS.discSize),
-        discGlow: clampSlider(parsed.discGlow ?? DEFAULTS.discGlow),
-        discBrightness: clampSlider(parsed.discBrightness ?? DEFAULTS.discBrightness),
         sceneSunLight: clampSlider(parsed.sceneSunLight ?? DEFAULTS.sceneSunLight),
         exposure: clampSlider(parsed.exposure ?? DEFAULTS.exposure),
-        sunGlowEnabled: parsed.sunGlowEnabled ?? DEFAULTS.sunGlowEnabled
+        sceneMoonLight: clampSlider(parsed.sceneMoonLight ?? DEFAULTS.sceneMoonLight),
+        moonExposure: clampSlider(parsed.moonExposure ?? DEFAULTS.moonExposure)
       }
     } catch {
       /* corrupt data */

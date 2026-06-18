@@ -4,11 +4,9 @@ import { sampleSkyGradients } from './skyGradients'
 import { normalizedTimeOfDay, SUN_BRIGHTNESS } from './skyboxTime'
 import { isSunPeriod } from './sunCycleSampler'
 import {
-  sunDiscCoreGain,
-  sunDiscCutoff,
-  sunDiscGlowGain,
-  sunEnvironmentSettings,
-  type SunEnvironmentSettingsState
+  FIXED_SUN_DISC_CORE_GAIN,
+  FIXED_SUN_DISC_CUTOFF,
+  FIXED_SUN_DISC_GLOW_GAIN
 } from '../rendering/SunEnvironmentSettings'
 
 const SKY_VERTEX = /* glsl */ `
@@ -216,9 +214,9 @@ export class DclGenesisSky {
       uMoonMask: { value: 0 },
       uSunSize: { value: 0.1 },
       uSunRadiance: { value: 0 },
-      uSunDiscCutoff: { value: sunDiscCutoff(sunEnvironmentSettings.get().discSize) },
-      uSunDiscCoreGain: { value: sunDiscCoreGain(sunEnvironmentSettings.get().discBrightness) },
-      uSunDiscGlowGain: { value: sunDiscGlowGain(sunEnvironmentSettings.get().discGlow, sunEnvironmentSettings.get().sunGlowEnabled) },
+      uSunDiscCutoff: { value: FIXED_SUN_DISC_CUTOFF },
+      uSunDiscCoreGain: { value: FIXED_SUN_DISC_CORE_GAIN },
+      uSunDiscGlowGain: { value: FIXED_SUN_DISC_GLOW_GAIN },
       uCloudHighlights: { value: 0.8 },
       uCloudDensity: { value: 0.52 },
       uCloudOpacity: { value: 1 },
@@ -246,14 +244,6 @@ export class DclGenesisSky {
     this.mesh.frustumCulled = false
     this.mesh.renderOrder = -1000
 
-    this.syncSunDiscSettings(sunEnvironmentSettings.get())
-    sunEnvironmentSettings.subscribe((state) => this.syncSunDiscSettings(state))
-  }
-
-  private syncSunDiscSettings(state: SunEnvironmentSettingsState): void {
-    this.uniforms.uSunDiscCutoff.value = sunDiscCutoff(state.discSize)
-    this.uniforms.uSunDiscCoreGain.value = sunDiscCoreGain(state.discBrightness)
-    this.uniforms.uSunDiscGlowGain.value = sunDiscGlowGain(state.discGlow, state.sunGlowEnabled)
   }
 
   async loadTextures(baseUrl = '/environment/'): Promise<void> {

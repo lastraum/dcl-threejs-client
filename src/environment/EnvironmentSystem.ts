@@ -5,7 +5,13 @@ import type { ProjectionView } from '../bridge/ProjectionView'
 import type { SceneHost } from '../rendering/SceneHost'
 import type { LightManager } from '../rendering/LightManager'
 import { renderQuality, TONE_MAPPING_EXPOSURE } from '../rendering/RenderQualitySettings'
-import { sceneSunLightMultiplier, sunEnvironmentSettings, sunExposureMultiplier } from '../rendering/SunEnvironmentSettings'
+import {
+  moonExposureMultiplier,
+  sceneMoonLightMultiplier,
+  sceneSunLightMultiplier,
+  sunEnvironmentSettings,
+  sunExposureMultiplier
+} from '../rendering/SunEnvironmentSettings'
 import { DclGenesisSky, sampleSkyGradientsAt } from './DclGenesisSky'
 import {
   CYCLE_RATE,
@@ -14,7 +20,6 @@ import {
   lerpDaySeconds,
   MIDDAY_SECONDS,
   MOON_BRIGHTNESS,
-  NIGHT_EXPOSURE_BOOST,
   NIGHT_GROUND_HEMI_BOOST,
   normalizeDaySeconds,
   SUN_BRIGHTNESS,
@@ -233,8 +238,9 @@ export class EnvironmentSystem {
 
     const sunScale = this.hybridSunScale()
     const moonScale = 1 - (1 - sunScale) * 0.4
-    const sunUser = sunEnvironmentSettings.get()
-    const sceneSunMul = sceneSunLightMultiplier(sunUser.sceneSunLight)
+    const lighting = sunEnvironmentSettings.get()
+    const sceneSunMul = sceneSunLightMultiplier(lighting.sceneSunLight)
+    const sceneMoonMul = sceneMoonLightMultiplier(lighting.sceneMoonLight)
 
     this.sun.intensity = (day ? lit * SUN_BRIGHTNESS : 0.02) * sunScale * sceneSunMul
     this.sun.color.copy(g.directional)
@@ -242,20 +248,21 @@ export class EnvironmentSystem {
     this.sun.target.position.set(0, 0, 0)
 
     const moonLit = moonLightIntensity(seconds)
-    this.moon.intensity = day ? 0 : moonLit * MOON_BRIGHTNESS * moonScale
+    this.moon.intensity = day ? 0 : moonLit * MOON_BRIGHTNESS * moonScale * sceneMoonMul
     this.moon.color.copy(g.directional)
     this.moon.position.copy(_celestial).multiplyScalar(120)
     this.moon.target.position.set(0, 0, 0)
 
-    this.hemi.intensity = (day ? HEMI_DAY_INTENSITY : HEMI_NIGHT_INTENSITY) * sunScale * sceneSunMul
+    this.hemi.intensity =
+      (day ? HEMI_DAY_INTENSITY * sceneSunMul : HEMI_NIGHT_INTENSITY * sceneMoonMul) * sunScale
     this.hemi.color.copy(g.indirectSky)
     _hemiGround.copy(g.indirectGround)
     if (!day) _hemiGround.multiplyScalar(NIGHT_GROUND_HEMI_BOOST)
     this.hemi.groundColor.copy(_hemiGround)
 
-    const baseExposure =
-      TONE_MAPPING_EXPOSURE[renderQuality.getTier()] * sunExposureMultiplier(sunUser.exposure)
-    this.host.renderer.toneMappingExposure = baseExposure * (day ? 1 : NIGHT_EXPOSURE_BOOST)
+    const tierExposure = TONE_MAPPING_EXPOSURE[renderQuality.getTier()]
+    const baseExposure = tierExposure * (day ? sunExposureMultiplier(lighting.exposure) : moonExposureMultiplier(lighting.moonExposure))
+    this.host.renderer.toneMappingExposure = baseExposure
 
     if (useGenesis && this.host.scene.background instanceof THREE.Color) {
       this.host.scene.background.copy(g.indirectSky)

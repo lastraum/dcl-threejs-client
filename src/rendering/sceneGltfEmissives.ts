@@ -34,34 +34,41 @@ function isNeonEmissiveMaterial(mat: THREE.MeshStandardMaterial): boolean {
   return NEON_MATERIAL_NAME.test(name) && emissiveLuma > 0.12
 }
 
+function applyEmissiveOnlyLook(mat: THREE.MeshStandardMaterial): void {
+  const emissiveLuma = mat.emissive.r + mat.emissive.g + mat.emissive.b
+  if (emissiveLuma > 0.08) {
+    // Unity LED exports duplicate tint in baseColor — diffuse reads as "whiter", not glowing.
+    mat.color.setRGB(0, 0, 0)
+  }
+  mat.metalness = 0
+  mat.roughness = 1
+  mat.envMapIntensity = 0
+  mat.toneMapped = false
+}
+
 function tuneNeonMaterial(mat: THREE.MeshStandardMaterial): void {
   if ((mat.userData as Record<string, unknown>).dclSceneNeonTuned) return
 
   const name = mat.name.toLowerCase()
   const intensity = mat.emissiveIntensity ?? 1
 
-  // KHR_materials_emissive_strength (e.g. opbadge LightLED ≈ 80) — keep authored values.
+  applyEmissiveOnlyLook(mat)
+
+  // KHR_materials_emissive_strength (e.g. opbadge LightLED ≈ 80).
   if (intensity > 1) {
-    mat.toneMapped = false
     ;(mat.userData as Record<string, unknown>).dclSceneNeonTuned = true
     return
   }
 
-  // Visible LED variants often omit emissive_strength — lift moderately.
+  // Visible LED variants omit emissive_strength but pair with a high-strength sibling mat.
   if (/light.*visible|lightled/i.test(name)) {
-    mat.emissiveIntensity = 6
-    mat.toneMapped = false
-    mat.metalness = 0
-    mat.roughness = Math.min(mat.roughness, 0.35)
+    mat.emissiveIntensity = 40
     ;(mat.userData as Record<string, unknown>).dclSceneNeonTuned = true
     return
   }
 
   if (NEON_MATERIAL_NAME.test(name)) {
-    mat.emissiveIntensity = Math.max(intensity, 2)
-    mat.toneMapped = false
-    mat.metalness = 0
-    mat.roughness = Math.min(mat.roughness, 0.35)
+    mat.emissiveIntensity = Math.max(intensity, 8)
     ;(mat.userData as Record<string, unknown>).dclSceneNeonTuned = true
   }
 }

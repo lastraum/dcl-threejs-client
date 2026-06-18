@@ -53,7 +53,10 @@ export class WebVideoPlayer {
   private hasHadRenderableFrame = false
   /** Last `spec.position` applied — ignore stale position=0 on play/pause toggles. */
   private lastSpecPosition: number | undefined
-  private lastSpecPlaying: boolean | undefined
+  /** Last `spec.playing` from ECS — may diverge from decoder after end-of-video replay. */
+  private lastEcsPlaying: boolean | undefined
+  /** True after replaying against an ECS false toggle; next false→true ECS toggle means pause. */
+  private ecsPlayDesync = false
   onFrameReady?: () => void
 
   constructor(private readonly scene: ResolvedScene) {
@@ -149,8 +152,9 @@ export class WebVideoPlayer {
   }
 
   applySpec(spec: PBVideoPlayer): void {
-    const playing = spec.playing !== false
-    this.wantsPlaying = playing
+    const ecsPlaying = spec.playing !== false
+    const ecsPlayingChanged =
+      this.lastEcsPlaying !== undefined && ecsPlaying !== this.lastEcsPlaying
 
     const url = resolveSceneTextureUrl(spec.src, this.scene)
     if (url && url !== this.loadedSrc) {
@@ -164,12 +168,11 @@ export class WebVideoPlayer {
     this.video.playbackRate = Math.max(spec.playbackRate ?? 1, 0.01)
 
     const specPosition = Math.max(spec.position ?? 0, 0)
-    const playingChanged = this.lastSpecPlaying !== undefined && playing !== this.lastSpecPlaying
     const positionFieldChanged =
       this.lastSpecPosition === undefined || Math.abs(specPosition - this.lastSpecPosition) > 0.05
     if (positionFieldChanged) {
       const staleZeroOnPlayToggle =
-        playingChanged &&
+        ecsPlayingChanged &&
         specPosition < 0.05 &&
         this.video.currentTime > 0.5
       if (
@@ -184,21 +187,37 @@ export class WebVideoPlayer {
 
     // ECS often keeps playing=true after natural end; first toggle sends false — replay instead.
     if (
-      !playing &&
-      playingChanged &&
+      !ecsPlaying &&
+      ecsPlayingChanged &&
       this.video.ended &&
-      this.lastSpecPlaying === true
+      this.lastEcsPlaying === true
     ) {
       this.restartFromBeginning()
+      this.lastEcsPlaying = false
+      this.ecsPlayDesync = true
       if (!this.visibilityPaused) void this.tryPlay()
       return
     }
 
-    this.lastSpecPlaying = playing
+    // Replay left ECS=false while decoder plays; next toggle sends true — pause instead.
+    if (ecsPlaying && ecsPlayingChanged && this.ecsPlayDesync) {
+      this.ecsPlayDesync = false
+      this.wantsPlaying = false
+      this.lastEcsPlaying = true
+      if (!this.visibilityPaused) {
+        this.bumpPlayGeneration()
+        this.video.pause()
+      }
+      return
+    }
+
+    this.ecsPlayDesync = false
+    this.wantsPlaying = ecsPlaying
+    this.lastEcsPlaying = ecsPlaying
 
     if (this.visibilityPaused) return
 
-    if (playing) {
+    if (ecsPlaying) {
       void this.tryPlay()
     } else {
       this.bumpPlayGeneration()
@@ -261,7 +280,6 @@ export class WebVideoPlayer {
   private restartFromBeginning(): void {
     this.video.currentTime = 0
     this.lastSpecPosition = 0
-    this.lastSpecPlaying = true
     this.wantsPlaying = true
   }
 

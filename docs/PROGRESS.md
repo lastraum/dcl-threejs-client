@@ -23,7 +23,7 @@
 
 **Files:** `AudioSourceBridge.ts`, `SceneAudioPlayer.ts`, `AudioStreamBridge.ts`, `SceneAudioStreamPlayer.ts`, `AudioBufferCache.ts`, `SoundSettings.ts`, `SoundsSettingsView.ts`, `MicDeviceService.ts`, `mirrorComponents.ts`, `CrdtEncoder.ts`, `SceneScriptSystem.ts`
 
-**Merged:** pending — push `lastraum` → merge `dev-latest`
+**Merged:** `lastraum` → `dev-latest` (`c608dbc`, 2026-06-18)
 
 ---
 

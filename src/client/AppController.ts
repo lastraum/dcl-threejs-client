@@ -208,7 +208,7 @@ export class AppController {
 
     const loadPromise = (async () => {
       await world.loadScene(sceneConfig, opts.onProgress)
-      void world.connectSceneCommsEarly(sceneConfig, opts.onProgress)
+      const earlyCommsPromise = world.connectSceneCommsEarly(sceneConfig, opts.onProgress)
 
       this.minimap?.dispose()
       this.minimap = null
@@ -257,6 +257,7 @@ export class AppController {
         beforeSpawn: true
       })
 
+      await earlyCommsPromise
       await world.spawnLocalPlayer(sceneConfig, opts.onProgress)
 
       world.start()

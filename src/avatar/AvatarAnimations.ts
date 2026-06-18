@@ -62,6 +62,7 @@ export class AvatarAnimations {
   private walkBlend = 0
   private runBlend = 0
   private jumpBlend = 0
+  private bindGeneration = 0
 
   setVfxScene(scene: THREE.Scene | null): void {
     this.vfxScene = scene
@@ -77,6 +78,7 @@ export class AvatarAnimations {
     options?: { bodyShape?: BodyShape; peerUrl?: string; assetCache?: AssetCache | null }
   ): Promise<void> {
     this.dispose()
+    const generation = this.bindGeneration
     this.avatarRoot = avatarRoot
     this.attachParent = attachParent ?? avatarRoot.parent ?? avatarRoot
     this.mixer = new THREE.AnimationMixer(avatarRoot)
@@ -137,6 +139,8 @@ export class AvatarAnimations {
       loadSlug('double_jump')
     ])
 
+    if (generation !== this.bindGeneration || !this.mixer) return
+
     if (!idleClip) {
       throw new Error('locomotion idle emote unavailable')
     }
@@ -157,7 +161,7 @@ export class AvatarAnimations {
       })
     }
 
-    this.mixer.update(0)
+    this.mixer?.update(0)
   }
 
   triggerDoubleJump(): void {
@@ -373,6 +377,7 @@ export class AvatarAnimations {
   }
 
   dispose(): void {
+    this.bindGeneration++
     if (this.mixer) {
       this.mixer.removeEventListener('finished', this.onMixerFinished)
       this.mixer.stopAllAction()

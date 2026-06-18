@@ -16,11 +16,9 @@ type DecoderEntry = {
   lastLength: number
 }
 
-/** ECS VideoPlayer → HTML decoder; grow-only VideoEvent back to mirror. */
+/** ECS VideoPlayer → HTML decoders (one per playing entity); grow-only VideoEvent back to mirror. */
 export class VideoPlayerBridge {
-  private decoder: DecoderEntry | null = null
-  private activeEntity: Entity | null = null
-  private readonly lastPlaying = new Map<Entity, boolean>()
+  private readonly decoders = new Map<Entity, DecoderEntry>()
   private userGestureUnlocked = false
   private eventTimestamp = 1
 
@@ -34,12 +32,13 @@ export class VideoPlayerBridge {
   setUserGestureUnlocked(unlocked: boolean): void {
     if (this.userGestureUnlocked === unlocked) return
     this.userGestureUnlocked = unlocked
-    this.decoder?.player.setUserGestureUnlocked(unlocked)
+    for (const entry of this.decoders.values()) {
+      entry.player.setUserGestureUnlocked(unlocked)
+    }
   }
 
   getTexture(entity: Entity): THREE.VideoTexture | null {
-    if (this.activeEntity !== entity) return null
-    return this.decoder?.player.texture ?? null
+    return this.decoders.get(entity)?.player.texture ?? null
   }
 
   /** Invalidate material cache for entities referencing this video player. */
@@ -52,36 +51,24 @@ export class VideoPlayerBridge {
     for (const [entity, spec] of view.getEntitiesWith(VideoPlayer)) {
       active.add(entity)
       const playing = spec.playing !== false
-      const wasPlaying = this.lastPlaying.get(entity) ?? false
-      if (playing && (!wasPlaying || this.activeEntity !== entity)) {
-        this.setActiveEntity(entity, spec)
+      if (!playing) {
+        this.removeDecoder(entity)
+        continue
       }
-      this.lastPlaying.set(entity, playing)
 
-      if (entity === this.activeEntity && !playing) {
-        this.clearActiveEntity()
-      }
-    }
+      this.ensureDecoder(entity)
+      const entry = this.decoders.get(entity)
+      if (!entry) continue
 
-    if (this.activeEntity === null) {
-      const next = this.pickFallbackActive(view)
-      if (next !== null) this.setActiveEntity(next, VideoPlayer.get(next))
-    }
-
-    if (this.activeEntity !== null && active.has(this.activeEntity)) {
-      const spec = VideoPlayer.get(this.activeEntity)
       const visible =
-        !VisibilityComponent.has(this.activeEntity) ||
-        VisibilityComponent.get(this.activeEntity).visible !== false
-      this.decoder?.player.setVisibilityPaused(!visible)
-      this.applySpec(this.activeEntity, spec)
+        !VisibilityComponent.has(entity) ||
+        VisibilityComponent.get(entity).visible !== false
+      entry.player.setVisibilityPaused(!visible)
+      this.applySpec(entity, spec)
     }
 
-    for (const entity of this.lastPlaying.keys()) {
-      if (!active.has(entity)) {
-        this.lastPlaying.delete(entity)
-        if (this.activeEntity === entity) this.clearActiveEntity()
-      }
+    for (const entity of [...this.decoders.keys()]) {
+      if (!active.has(entity)) this.removeDecoder(entity)
     }
   }
 
@@ -89,7 +76,7 @@ export class VideoPlayerBridge {
     const { VideoPlayer, VideoEvent } = this.ecs
 
     for (const [entity] of view.getEntitiesWith(VideoPlayer)) {
-      const entry = entity === this.activeEntity ? this.decoder : null
+      const entry = this.decoders.get(entity)
       if (!entry) continue
 
       const state = entry.player.getVideoState()
@@ -119,62 +106,43 @@ export class VideoPlayerBridge {
   }
 
   disposeEntity(entity: Entity): void {
-    if (this.activeEntity !== entity) return
-    this.clearActiveEntity()
+    this.removeDecoder(entity)
   }
 
   dispose(): void {
-    this.clearActiveEntity()
-    this.lastPlaying.clear()
+    for (const entity of [...this.decoders.keys()]) {
+      this.removeDecoder(entity)
+    }
   }
 
-  private pickFallbackActive(view: ProjectionView): Entity | null {
-    const { VideoPlayer, VisibilityComponent } = this.ecs
-    let pick: Entity | null = null
-    for (const [entity, spec] of view.getEntitiesWith(VideoPlayer)) {
-      if (spec.playing === false) continue
-      if (VisibilityComponent.has(entity) && VisibilityComponent.get(entity).visible === false) continue
-      pick = entity
-    }
-    return pick
-  }
-
-  private setActiveEntity(entity: Entity, spec: PBVideoPlayer): void {
-    if (this.activeEntity === entity) {
-      this.applySpec(entity, spec)
-      return
-    }
-
-    this.clearActiveEntity()
-    this.activeEntity = entity
-
+  private ensureDecoder(entity: Entity): void {
+    if (this.decoders.has(entity)) return
     const player = new WebVideoPlayer(this.scene)
     player.setUserGestureUnlocked(this.userGestureUnlocked)
-    this.decoder = {
+    this.decoders.set(entity, {
       player,
       lastSpecKey: '',
       lastState: VS_NONE,
       lastOffset: -1,
       lastLength: -1
-    }
-    this.applySpec(entity, spec)
+    })
     this.onTextureReady?.(entity)
   }
 
   private applySpec(entity: Entity, spec: PBVideoPlayer): void {
-    if (this.activeEntity !== entity || !this.decoder) return
+    const entry = this.decoders.get(entity)
+    if (!entry) return
     const specKey = JSON.stringify(spec)
-    if (this.decoder.lastSpecKey === specKey) return
-    this.decoder.lastSpecKey = specKey
-    this.decoder.player.applySpec(spec)
+    if (entry.lastSpecKey === specKey) return
+    entry.lastSpecKey = specKey
+    entry.player.applySpec(spec)
     this.onTextureReady?.(entity)
   }
 
-  private clearActiveEntity(): void {
-    if (this.decoder) {
-      this.decoder.player.dispose()
-      this.decoder = null
-    }
-    this.activeEntity = null
+  private removeDecoder(entity: Entity): void {
+    const entry = this.decoders.get(entity)
+    if (!entry) return
+    entry.player.dispose()
+    this.decoders.delete(entity)
   }
 }

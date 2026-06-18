@@ -204,6 +204,13 @@ export class WebVideoPlayer {
     if (this.visibilityPaused) return
 
     if (ecsPlaying) {
+      // Stale ECS playing=true after natural end — hold last frame until user toggles.
+      if (this.isAtEnd() && !ecsPlayingChanged) {
+        this.wantsPlaying = false
+        this.bumpPlayGeneration()
+        this.video.pause()
+        return
+      }
       void this.tryPlay()
     } else {
       this.bumpPlayGeneration()
@@ -263,15 +270,15 @@ export class WebVideoPlayer {
     this.playGeneration++
   }
 
-  /** Bridge dedup bypass when ECS repeats playing=false but decoder is still at end. */
-  needsReplayAfterEnd(ecsPlaying: boolean): boolean {
-    return this.shouldReplayAfterEnd(ecsPlaying, true)
+  /** Bridge dedup bypass when a user toggle should replay from the end. */
+  needsReplayAfterEnd(ecsPlaying: boolean, playingChanged: boolean): boolean {
+    return this.shouldReplayAfterEnd(ecsPlaying, playingChanged)
   }
 
   private shouldReplayAfterEnd(ecsPlaying: boolean, ecsPlayingChanged: boolean): boolean {
-    if (!this.isAtEnd()) return false
+    if (!this.isAtEnd() || !ecsPlayingChanged) return false
     if (ecsPlaying) return true
-    return ecsPlayingChanged && this.lastEcsPlaying === true
+    return this.lastEcsPlaying === true
   }
 
   private isAtEnd(): boolean {
@@ -289,9 +296,6 @@ export class WebVideoPlayer {
 
   private async tryPlay(): Promise<void> {
     if (!this.userGestureUnlocked || this.visibilityPaused || !this.wantsPlaying) return
-    if (this.video.ended && !this.video.loop) {
-      this.restartFromBeginning()
-    }
     const gen = ++this.playGeneration
     try {
       await this.video.play()

@@ -154,10 +154,18 @@ export class WebVideoPlayer {
     }
   }
 
-  applySpec(spec: PBVideoPlayer): void {
+  applySpec(spec: PBVideoPlayer, options?: { fromEcsSync?: boolean }): void {
     const ecsPlaying = spec.playing !== false
     const ecsPlayingChanged =
       this.lastEcsPlaying !== undefined && ecsPlaying !== this.lastEcsPlaying
+
+    // User toggle after natural end — worker may still have playing=true (toggle sends false).
+    if (!options?.fromEcsSync && this.shouldReplayAfterEnd(ecsPlaying, ecsPlayingChanged)) {
+      this.restartFromBeginning()
+      this.lastEcsPlaying = ecsPlaying
+      if (!this.visibilityPaused) void this.tryPlay()
+      return
+    }
 
     const url = resolveSceneTextureUrl(spec.src, this.scene)
     if (url && url !== this.loadedSrc) {
@@ -189,7 +197,9 @@ export class WebVideoPlayer {
     }
 
     this.wantsPlaying = ecsPlaying
-    this.lastEcsPlaying = ecsPlaying
+    if (!options?.fromEcsSync) {
+      this.lastEcsPlaying = ecsPlaying
+    }
 
     if (this.visibilityPaused) return
 
@@ -251,6 +261,24 @@ export class WebVideoPlayer {
 
   private bumpPlayGeneration(): void {
     this.playGeneration++
+  }
+
+  /** Bridge dedup bypass when ECS repeats playing=false but decoder is still at end. */
+  needsReplayAfterEnd(ecsPlaying: boolean): boolean {
+    return this.shouldReplayAfterEnd(ecsPlaying, true)
+  }
+
+  private shouldReplayAfterEnd(ecsPlaying: boolean, ecsPlayingChanged: boolean): boolean {
+    if (!this.isAtEnd()) return false
+    if (ecsPlaying) return true
+    return ecsPlayingChanged && this.lastEcsPlaying === true
+  }
+
+  private isAtEnd(): boolean {
+    if (this.video.ended) return true
+    const duration = this.video.duration
+    if (!Number.isFinite(duration) || duration <= 0) return false
+    return this.video.currentTime >= duration - 0.35
   }
 
   private restartFromBeginning(): void {

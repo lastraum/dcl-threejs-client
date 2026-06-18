@@ -11,6 +11,7 @@ import { WebVideoPlayer } from './WebVideoPlayer'
 type DecoderEntry = {
   player: WebVideoPlayer
   lastSpecKey: string
+  lastAppliedPlaying: boolean | undefined
   lastState: VideoStateValue
   lastOffset: number
   lastLength: number
@@ -125,6 +126,7 @@ export class VideoPlayerBridge {
     this.decoders.set(entity, {
       player,
       lastSpecKey: '',
+      lastAppliedPlaying: undefined,
       lastState: VS_NONE,
       lastOffset: -1,
       lastLength: -1
@@ -147,9 +149,9 @@ export class VideoPlayerBridge {
       position: entry.player.getCurrentOffset()
     }
     VideoPlayer.createOrReplace(entity, next)
-    const specKey = JSON.stringify(next)
-    entry.lastSpecKey = specKey
-    entry.player.applySpec(next)
+    entry.lastAppliedPlaying = playing
+    // Do not cache lastSpecKey — worker may still have playing=true until LWW inject lands.
+    entry.player.applySpec(next, { fromEcsSync: true })
     this.recordLww?.(VideoPlayer.componentId, entity, next)
     this.onLwwFlush?.()
   }
@@ -157,9 +159,14 @@ export class VideoPlayerBridge {
   private applySpec(entity: Entity, spec: PBVideoPlayer): void {
     const entry = this.decoders.get(entity)
     if (!entry) return
+    const ecsPlaying = spec.playing !== false
     const specKey = JSON.stringify(spec)
-    if (entry.lastSpecKey === specKey) return
+    const playingChanged =
+      entry.lastAppliedPlaying !== undefined && ecsPlaying !== entry.lastAppliedPlaying
+    const needsEndedReplay = entry.player.needsReplayAfterEnd(ecsPlaying)
+    if (entry.lastSpecKey === specKey && !playingChanged && !needsEndedReplay) return
     entry.lastSpecKey = specKey
+    entry.lastAppliedPlaying = ecsPlaying
     entry.player.applySpec(spec)
     this.onTextureReady?.(entity)
   }

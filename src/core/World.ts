@@ -591,14 +591,13 @@ export class World {
     for (const desc of meshDescs) {
       if (this.physics.hasStaticActor(desc.entity)) meshRegistered++
     }
-    const probe = this.physics.debugProbeStaticHit(2.5)
     const missingMeshActors = meshDescs.length >= 2 && meshRegistered < meshDescs.length
     const missingGltfActors =
       gltfEntityCount >= 10 && gltfRegistered < gltfEntityCount * 0.85
-    const noNearbyHit = probe.distance === null && (meshDescs.length >= 2 || gltfEntityCount >= 10)
 
-    if (!missingMeshActors && !missingGltfActors && !noNearbyHit) return false
+    if (!missingMeshActors && !missingGltfActors) return false
 
+    const probe = this.physics.debugProbeStaticHit(2.5)
     clientDebugLog.log(
       'collision',
       `[auto-repair] mesh ${meshRegistered}/${meshDescs.length} gltf ${gltfRegistered}/${gltfEntityCount} in PhysX, horizontal probe=${probe.distance !== null ? `${probe.distance.toFixed(2)}m` : 'none'} — recooking`,

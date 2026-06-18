@@ -165,9 +165,11 @@ export class ThreeBridge {
   private invalidateMaterialsForVideoPlayer(videoPlayerEntity: Entity): void {
     const { Material } = this.ecs
     this.store.forEachSceneEntity((entity) => {
-      if (materialReferencesVideoPlayer(Material.get(entity) as PbMaterial, videoPlayerEntity)) {
-        this.materials.clearEntity(entity)
-      }
+      if (!Material.has(entity)) return
+      const pb = Material.get(entity) as PbMaterial
+      if (!materialReferencesVideoPlayer(pb, videoPlayerEntity)) return
+      this.materials.clearEntity(entity)
+      this.pendingMaterialEntities.add(entity)
     })
   }
 

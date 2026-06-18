@@ -18,17 +18,17 @@ const THREE_BOX_FACE_CORNER_TO_THREE: ReadonlyArray<readonly number[]> = [
   [3, 2, 0, 1] // -Z south
 ]
 
-/** Full-tile north + south UVs for a double-sided DCL plane (no custom MeshRenderer uvs). */
+/**
+ * Full-tile north + south UVs for a double-sided DCL plane (no custom MeshRenderer uvs).
+ * Corner order per side: SW, SE, NE, NW (spatial bottom-left → top-right).
+ */
 const DEFAULT_DCL_PLANE_UVS = [
   0, 0, 1, 0, 1, 1, 0, 1,
   1, 0, 0, 0, 0, 1, 1, 1
 ]
 
-/** DCL plane north-side corners (LL, LR, UR, UL) → PlaneGeometry vertex index. */
-const DCL_PLANE_NORTH_CORNER_TO_THREE = [2, 3, 1, 0]
-
-/** DCL plane south-side corners (LR, LL, UL, UR) → spatial vertex index. */
-const DCL_PLANE_SOUTH_CORNER_TO_THREE = [3, 2, 0, 1]
+/** DCL plane corner order SW, SE, NE, NW → spatial vertex index (BL, BR, TR, TL). */
+const DCL_PLANE_CORNER_TO_THREE = [2, 3, 1, 0]
 
 export type PrimitiveMeshSpec = {
   mesh?:
@@ -159,8 +159,8 @@ function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
     0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1
   ])
   const uvAttr = new THREE.BufferAttribute(new Float32Array(16), 2)
-  applyFaceUvs(uvAttr, 0, DCL_PLANE_NORTH_CORNER_TO_THREE, north)
-  applyFaceUvs(uvAttr, 1, DCL_PLANE_SOUTH_CORNER_TO_THREE, south)
+  applyFaceUvs(uvAttr, 0, DCL_PLANE_CORNER_TO_THREE, north)
+  applyFaceUvs(uvAttr, 1, DCL_PLANE_CORNER_TO_THREE, south)
 
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))

@@ -52,12 +52,6 @@ export class VideoPlayerBridge {
 
     for (const [entity, spec] of view.getEntitiesWith(VideoPlayer)) {
       active.add(entity)
-      const playing = spec.playing !== false
-      if (!playing) {
-        this.removeDecoder(entity)
-        continue
-      }
-
       this.ensureDecoder(entity)
       const entry = this.decoders.get(entity)
       if (!entry) continue

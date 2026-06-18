@@ -50,6 +50,7 @@ export class WebVideoPlayer {
   private visibilityPaused = false
   private wantsPlaying = true
   private playGeneration = 0
+  private hasHadRenderableFrame = false
   onFrameReady?: () => void
 
   constructor(private readonly scene: ResolvedScene) {
@@ -117,9 +118,13 @@ export class WebVideoPlayer {
     return Number.isFinite(d) ? d : 0
   }
 
-  /** Avoid WebGL texImage2D uploads before the decoder has a frame. */
+  /** Avoid texImage2D before first frame; keep texture during brief buffering gaps. */
   hasRenderableFrame(): boolean {
-    return this.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+    if (this.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      this.hasHadRenderableFrame = true
+      return true
+    }
+    return this.hasHadRenderableFrame && this.state !== VS_ERROR && !!this.loadedSrc
   }
 
   setUserGestureUnlocked(unlocked: boolean): void {
@@ -186,6 +191,7 @@ export class WebVideoPlayer {
 
   private async loadSource(url: string): Promise<void> {
     this.loadedSrc = url
+    this.hasHadRenderableFrame = false
     this.setState(VS_LOADING)
 
     this.hls?.destroy()

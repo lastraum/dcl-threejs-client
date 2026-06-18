@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-06-17
+> **Last updated:** 2026-06-18
 
 ---
 
@@ -74,8 +74,8 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 
 | Component | ID | Status | Notes |
 | --------- | -- | ------ | ----- |
-| VideoPlayer | 1043 | 🟢 | `VideoPlayerBridge` |
-| VideoEvent | 1044 | 🔵 | Playback events outbound |
+| VideoPlayer | 1043 | 🟢 | `VideoPlayerBridge` — decode, texture, pointer play/pause, end replay |
+| VideoEvent | 1044 | 🔵 | Grow-only playback events → worker (`injectRendererGrowOnlyAppends`) |
 | Tween | 1102 | 🟢 | Transform + textureMove |
 | TweenSequence | 1104 | 🟢 | Genesis blimp orbit |
 | TweenState | 1103 | 🔵 | Written by TweenBridge |

@@ -3,11 +3,14 @@ import type { ResolvedScene } from '../../dcl/content/types'
 import type { AssetCache } from '../../rendering/AssetCache'
 import { isSharedAssetResource } from '../../rendering/sharedAsset'
 import { resolveSceneTextureUrl } from './resolveTexture'
+import { applyHdrAlbedoAndEmissive, applyPbrScalars } from './pbrApply'
+import { configureSceneVideoTexture } from '../../media/videoTextureOrientation'
 
 /** Matches `@dcl/ecs` MaterialTransparencyMode. */
 const MTM_OPAQUE = 0
 const MTM_ALPHA_TEST = 1
 const MTM_ALPHA_BLEND = 2
+const MTM_ALPHA_TEST_AND_ALPHA_BLEND = 3
 const MTM_AUTO = 4
 
 const TWM_REPEAT = 0
@@ -48,6 +51,9 @@ type PbrMaterial = {
   metallic?: number
   roughness?: number
   emissiveIntensity?: number
+  reflectivityColor?: Color3
+  specularIntensity?: number
+  directIntensity?: number
 }
 
 type UnlitMaterial = {
@@ -137,6 +143,9 @@ function materialFingerprint(pb: PbMaterial): string {
       metallic: round4(pbr.metallic),
       roughness: round4(pbr.roughness),
       emissiveIntensity: round4(pbr.emissiveIntensity),
+      reflectivityColor: normalizeColor3(pbr.reflectivityColor),
+      specularIntensity: round4(pbr.specularIntensity),
+      directIntensity: round4(pbr.directIntensity),
       texture: normalizeTextureUnion(pbr.texture),
       alphaTexture: normalizeTextureUnion(pbr.alphaTexture),
       emissiveTexture: normalizeTextureUnion(pbr.emissiveTexture),
@@ -246,13 +255,13 @@ export class MaterialApplier {
     const current = mesh.material
     const reuse =
       (needsUnlit && current instanceof THREE.MeshBasicMaterial) ||
-      (!needsUnlit && current instanceof THREE.MeshStandardMaterial)
+      (!needsUnlit && current instanceof THREE.MeshPhysicalMaterial)
 
     const m = reuse
       ? current
       : needsUnlit
         ? new THREE.MeshBasicMaterial({ color: 0xffffff })
-        : new THREE.MeshStandardMaterial({ color: 0xffffff })
+        : new THREE.MeshPhysicalMaterial({ color: 0xffffff })
 
     if (!reuse) {
       const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
@@ -264,18 +273,13 @@ export class MaterialApplier {
 
     const base = isPbr ? (inner as PbrMaterial).albedoColor : (inner as UnlitMaterial).diffuseColor
     const color = base ?? { r: 1, g: 1, b: 1, a: 1 }
-    m.color.setRGB(color.r ?? 1, color.g ?? 1, color.b ?? 1)
 
-    if (m instanceof THREE.MeshStandardMaterial) {
+    if (m instanceof THREE.MeshPhysicalMaterial) {
       const pbr = inner as PbrMaterial
-      m.metalness = pbr.metallic ?? 0.5
-      m.roughness = pbr.roughness ?? 0.5
-      if (pbr.emissiveColor) {
-        m.emissive.setRGB(pbr.emissiveColor.r ?? 0, pbr.emissiveColor.g ?? 0, pbr.emissiveColor.b ?? 0)
-      } else {
-        m.emissive.setRGB(0, 0, 0)
-      }
-      m.emissiveIntensity = pbr.emissiveIntensity ?? 1
+      applyHdrAlbedoAndEmissive(m, color, pbr.emissiveColor, pbr.emissiveIntensity)
+      applyPbrScalars(m, pbr)
+    } else {
+      m.color.setRGB(color.r ?? 1, color.g ?? 1, color.b ?? 1)
     }
 
     applyTransparency(
@@ -300,7 +304,7 @@ export class MaterialApplier {
     if (!inner) return
 
     this.applyScalarsToMesh(mesh, pb)
-    const m = mesh.material as THREE.MeshBasicMaterial | THREE.MeshStandardMaterial
+    const m = mesh.material as THREE.MeshBasicMaterial | THREE.MeshPhysicalMaterial
     const base = isPbr ? (inner as PbrMaterial).albedoColor : (inner as UnlitMaterial).diffuseColor
     const color = base ?? { r: 1, g: 1, b: 1, a: 1 }
 
@@ -316,7 +320,7 @@ export class MaterialApplier {
       if (alphaTex) this.applyUvTransform(alphaTex, getTextureDef(inner.alphaTexture))
     }
 
-    if (m instanceof THREE.MeshStandardMaterial && isPbr) {
+    if (m instanceof THREE.MeshPhysicalMaterial && isPbr) {
       const pbr = inner as PbrMaterial
       if (pbr.emissiveTexture?.tex) {
         const emissiveTex = await this.loadUnionTexture(pbr.emissiveTexture)
@@ -324,9 +328,12 @@ export class MaterialApplier {
         if (emissiveTex) this.applyUvTransform(emissiveTex, getTextureDef(pbr.emissiveTexture))
       }
       if (pbr.bumpTexture?.tex) {
-        const bumpTex = await this.loadUnionTexture(pbr.bumpTexture)
+        const bumpTex = await this.loadUnionTexture(pbr.bumpTexture, { normalMap: true })
         m.normalMap = bumpTex
-        if (bumpTex) this.applyUvTransform(bumpTex, getTextureDef(pbr.bumpTexture))
+        if (bumpTex) {
+          bumpTex.colorSpace = THREE.LinearSRGBColorSpace
+          this.applyUvTransform(bumpTex, getTextureDef(pbr.bumpTexture))
+        }
       }
     }
 
@@ -348,21 +355,22 @@ export class MaterialApplier {
     this.applied.delete(entity)
   }
 
-  private async loadUnionTexture(union?: TextureUnion): Promise<THREE.Texture | null> {
+  private async loadUnionTexture(
+    union?: TextureUnion,
+    options?: { normalMap?: boolean }
+  ): Promise<THREE.Texture | null> {
     if (union?.tex?.$case === 'videoTexture') {
       const def = union.tex.videoTexture
       const tex = this.getVideoTexture?.(def.videoPlayerEntity) ?? null
       if (!tex) return null
       tex.wrapS = wrapMode(def.wrapMode)
       tex.wrapT = wrapMode(def.wrapMode)
-      tex.minFilter =
-        def.filterMode === TFM_POINT
-          ? THREE.NearestFilter
-          : def.filterMode === TFM_TRILINEAR
-            ? THREE.LinearMipmapLinearFilter
-            : THREE.LinearFilter
+      // VideoTexture has no mipmaps — mipmap min filters render blank/corrupt.
+      tex.generateMipmaps = false
+      tex.minFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
       tex.magFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
-      tex.colorSpace = THREE.SRGBColorSpace
+      tex.colorSpace = options?.normalMap ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace
+      configureSceneVideoTexture(tex)
       return tex
     }
     if (union?.tex?.$case !== 'texture') return null
@@ -379,7 +387,7 @@ export class MaterialApplier {
           ? THREE.LinearMipmapLinearFilter
           : THREE.LinearFilter
     tex.magFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
-    tex.colorSpace = THREE.SRGBColorSpace
+    tex.colorSpace = options?.normalMap ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace
     return tex
   }
 
@@ -421,7 +429,7 @@ function getTextureDef(union?: TextureUnion): TextureDef | undefined {
 }
 
 function applyTransparency(
-  m: THREE.MeshBasicMaterial | THREE.MeshStandardMaterial,
+  m: THREE.MeshBasicMaterial | THREE.MeshPhysicalMaterial,
   alpha: number,
   alphaTest: number | undefined,
   mode: number | undefined,
@@ -444,6 +452,13 @@ function applyTransparency(
   if (resolved === MTM_ALPHA_BLEND) {
     m.transparent = true
     m.opacity = alpha
+    return
+  }
+
+  if (resolved === MTM_ALPHA_TEST_AND_ALPHA_BLEND) {
+    m.transparent = true
+    m.opacity = alpha
+    m.alphaTest = alphaTest ?? 0.5
     return
   }
 

@@ -108,7 +108,7 @@ export class CrdtEncoder {
     const growOnly = [components.PointerEventsResult, components.TriggerAreaResult, components.VideoEvent]
     this.growOnlyIds = new Set(growOnly.map((d) => d.componentId))
     this.growOnlyById = new Map(growOnly.map((d) => [d.componentId, d]))
-    const lwwCapture = [components.RaycastResult]
+    const lwwCapture = [components.RaycastResult, components.VideoPlayer]
     this.lwwCaptureById = new Map(lwwCapture.map((d) => [d.componentId, d]))
 
     const mk = (def: ComponentDef, entity: Entity): LwwTarget => ({

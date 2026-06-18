@@ -1,10 +1,12 @@
 import type { Entity, IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
+import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
 import { PointerEventType } from '../../input/pointerConstants'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 
 /** Write PointerEventsResult directly on the scene worker engine (same-tick getClick). */
 export function injectPointerClickOnEngine(engine: IEngine, body: InjectPointerClickBody): void {
+  preregisterRendererInjectedComponents(engine)
   const PointerEventsResult = generated.PointerEventsResult(engine)
   const hit = {
     entityId: body.hitEntity,

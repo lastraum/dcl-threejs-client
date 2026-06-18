@@ -482,7 +482,7 @@ export class PhysXWorld {
 
   syncStaticColliders(
     descs: PhysicsColliderDesc[],
-    options?: { cookBudget?: number; freezeRemoval?: boolean }
+    options?: { cookBudget?: number; freezeRemoval?: boolean; freezeGltfRemoval?: boolean }
   ): boolean {
     const active = new Set<number>()
     let cooksRemaining = options?.cookBudget ?? Number.POSITIVE_INFINITY
@@ -588,6 +588,7 @@ export class PhysXWorld {
       for (const entity of [...this.staticActors.keys()]) {
         if (entity === INFINITE_GROUND_ENTITY) continue
         if (!active.has(entity)) {
+          if (options?.freezeGltfRemoval && this.isGltfStaticActor(entity)) continue
           try {
             this.removeStatic(entity)
             geometryChanged = true
@@ -764,11 +765,16 @@ export class PhysXWorld {
   /** GLTF multi-shape static actors successfully registered in PhysX. */
   get gltfStaticActorCount(): number {
     let count = 0
-    for (const [entity, fp] of this.staticFp) {
-      if (entity === INFINITE_GROUND_ENTITY) continue
-      if (fp.startsWith('gltf') && this.staticActors.has(entity)) count++
+    for (const [entity] of this.staticFp) {
+      if (this.isGltfStaticActor(entity)) count++
     }
     return count
+  }
+
+  private isGltfStaticActor(entity: number): boolean {
+    if (entity === INFINITE_GROUND_ENTITY) return false
+    const fp = this.staticFp.get(entity)
+    return !!fp?.startsWith('gltf-entity:') && this.staticActors.has(entity)
   }
 
   /**

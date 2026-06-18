@@ -2,9 +2,28 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-06-17 (TriggerArea Tier A ✅ · AvatarAttach ✅ · Phase 4 EntityStore **closed**)  
-> **Current phase:** **Phase 4 closed** — EntityStore + **AvatarAttach Tier B** + **TriggerArea Tier A** shipped. Next: Raycast, e10 perf, or Phase 5+ networking.
+> **Last updated:** 2026-06-18 (VideoPlayer ECS ✅ · RickRoll screen parity)  
+> **Current phase:** **Phase 4 closed** — EntityStore + **AvatarAttach Tier B** + **TriggerArea Tier A** + **VideoPlayer** shipped. Next: Raycast, e10 perf, or Phase 5+ networking.
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Tasks:** [TASKS.yaml](./TASKS.yaml)
+
+---
+
+## 🎉 Milestone — VideoPlayer ECS parity (2026-06-18)
+
+**User-confirmed working:** `rickroll.dcl.eth` screen — auto-play on load, video texture on plane, pointer play/pause toggle, end-of-video replay on first click, pause/resume from current frame.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| Decoder | ✅ | `WebVideoPlayer` — HTMLVideoElement + `THREE.VideoTexture` (HLS via hls.js) |
+| ECS bridge | ✅ | `VideoPlayerBridge` — projection ↔ decoder; grow-only `VideoEvent` outbound |
+| Scene toggle | ✅ | Worker `VideoPlayer.getMutable().playing = !playing` via pointer CRDT |
+| End-of-video | ✅ | Natural end syncs `playing:false` + LWW inject; click replays from start |
+| Material | ✅ | Video texture binds at metadata; material pass on `onTextureReady` |
+| Worker inject | ✅ | `VideoPlayer` LWW + `VideoEvent` append via renderer inject path |
+
+**Files:** `WebVideoPlayer.ts`, `VideoPlayerBridge.ts`, `videoTextureOrientation.ts`, `injectRendererLwwPuts.ts`, `injectRendererGrowOnlyAppends.ts`, `CrdtEncoder.ts` (LWW capture)
+
+**Merged:** `lastraum` → `dev-latest` (2026-06-18)
 
 ---
 
@@ -771,7 +790,7 @@ SDK7 scenes call `EngineApi.subscribe("comms")` then drain via `sendBatch` insid
 
 | Item | Status | Notes |
 | ---- | ------ | ----- |
-| **`videoEvent`** observable / sendBatch | ⬜ pending | Needs **`VideoPlayer`** + **`CommsApi.getActiveVideoStreams`** |
+| **`videoEvent`** observable / sendBatch | 🟢 **VideoEvent outbound** | Grow-only append to worker; SDK `videoEventsSystem` callbacks — **`getActiveVideoStreams`** still pending |
 | Legacy typed events (`position_changed`, etc.) | ⬜ not planned | SDK7 uses ECS transforms, not sendBatch |
 | Other LiveKit topics via sendBatch | ⬜ not planned | Use **`CommsApi.subscribeToTopic` + `consumeMessages`** |
 
@@ -802,7 +821,7 @@ SDK7 scenes call `EngineApi.subscribe("comms")` then drain via `sendBatch` insid
 | -------- | ---- | --- |
 | 1 | **3** | **`Raycast` + `TriggerArea`** | Scene ray APIs + volume enter/exit — unlocks many interactives |
 | 2 | **3b** | **`PET_PROXIMITY_*`** pointer events | Walk-up interactives (no cursor) |
-| 3 | **3** | **`VideoPlayer` + `videoEvent`** | Presentation / screen scenes; pairs with pending `getActiveVideoStreams` |
+| 3 | **3** | ~~**`VideoPlayer` + `videoEvent`**~~ ✅ | RickRoll screen parity — remaining: **`getActiveVideoStreams`** comms stub |
 | 4 | **5** | Voice / presence (LiveKit audio) | Social layer |
 | 5 | **3** | `UiTransform` MVP | In-world UI |
 | 6 | infra | Parcel routing `/80,-1` → Catalyst | Genesis City parcel scenes |

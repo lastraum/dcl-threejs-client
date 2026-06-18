@@ -13,6 +13,7 @@ import {
 import type { PBVideoPlayer } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/video_player.gen'
 import { resolveSceneTextureUrl } from '../bridge/material/resolveTexture'
 import type { ResolvedScene } from '../dcl/content/types'
+import { configureSceneVideoTexture } from './videoTextureOrientation'
 
 type HlsInstance = {
   loadSource(url: string): void
@@ -48,6 +49,19 @@ export class WebVideoPlayer {
   private userGestureUnlocked = false
   private visibilityPaused = false
   private wantsPlaying = true
+  private playGeneration = 0
+  private hasHadRenderableFrame = false
+  /** Last `spec.position` applied — ignore stale position=0 on play/pause toggles. */
+  private lastSpecPosition: number | undefined
+  /** Last `spec.playing` from ECS — used to ignore stale position on play/pause toggles. */
+  private lastEcsPlaying: boolean | undefined
+  /** Awaiting user click to replay after natural end (ECS may already show paused). */
+  private holdingAtEnd = false
+  onFrameReady?: () => void
+  /** Fired when playback reaches the end (non-looping). */
+  onNaturalEnd?: () => void
+  /** Fired when user-triggered replay starts — sync ECS/worker to playing=true. */
+  onReplayStarted?: () => void
 
   constructor(private readonly scene: ResolvedScene) {
     this.video = document.createElement('video')
@@ -59,16 +73,27 @@ export class WebVideoPlayer {
 
     this.texture = new THREE.VideoTexture(this.video)
     this.texture.colorSpace = THREE.SRGBColorSpace
+    this.texture.generateMipmaps = false
+    this.texture.minFilter = THREE.LinearFilter
+    this.texture.magFilter = THREE.LinearFilter
+    configureSceneVideoTexture(this.texture)
 
     this.video.addEventListener('loadstart', () => this.setState(VS_LOADING))
+    this.video.addEventListener('loadedmetadata', () => {
+      this.onFrameReady?.()
+    })
     this.video.addEventListener('loadeddata', () => {
       if (this.state !== VS_ERROR) this.setState(VS_READY)
+      this.onFrameReady?.()
     })
     this.video.addEventListener('canplay', () => {
       if (this.state !== VS_ERROR && !this.video.paused) return
       if (this.state !== VS_ERROR) this.setState(VS_READY)
     })
-    this.video.addEventListener('playing', () => this.setState(VS_PLAYING))
+    this.video.addEventListener('playing', () => {
+      this.setState(VS_PLAYING)
+      this.onFrameReady?.()
+    })
     this.video.addEventListener('pause', () => {
       if (this.state !== VS_SEEKING && this.state !== VS_ERROR) {
         this.setState(VS_PAUSED)
@@ -92,7 +117,13 @@ export class WebVideoPlayer {
       console.warn('[WebVideoPlayer] decode error', err?.code, err?.message, this.loadedSrc)
       this.setState(VS_ERROR)
     })
-    this.video.addEventListener('ended', () => this.setState(VS_PAUSED))
+    this.video.addEventListener('ended', () => {
+      this.setState(VS_PAUSED)
+      if (!this.video.loop) {
+        this.holdingAtEnd = true
+        this.onNaturalEnd?.()
+      }
+    })
   }
 
   getVideoState(): VideoStateValue {
@@ -109,6 +140,39 @@ export class WebVideoPlayer {
     return Number.isFinite(d) ? d : 0
   }
 
+  /** Avoid texImage2D before first frame; keep texture during brief buffering gaps. */
+  hasRenderableFrame(): boolean {
+    if (this.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      this.hasHadRenderableFrame = true
+      return true
+    }
+    return this.hasHadRenderableFrame && this.state !== VS_ERROR && !!this.loadedSrc
+  }
+
+  /** VideoTexture can bind once metadata is loaded (updates each frame). */
+  canAttachTexture(): boolean {
+    return (
+      !!this.loadedSrc &&
+      this.state !== VS_ERROR &&
+      (this.video.readyState >= HTMLMediaElement.HAVE_METADATA || this.hasHadRenderableFrame)
+    )
+  }
+
+  isHoldingAtEnd(): boolean {
+    return this.holdingAtEnd
+  }
+
+  /** Pointer click while holding end frame — replay even if ECS playing did not change. */
+  replayFromUserClick(): void {
+    if (!this.isAtEnd() && !this.holdingAtEnd) return
+    this.holdingAtEnd = false
+    this.restartFromBeginning()
+    this.lastEcsPlaying = true
+    this.wantsPlaying = true
+    if (!this.visibilityPaused) void this.tryPlay()
+    this.onReplayStarted?.()
+  }
+
   setUserGestureUnlocked(unlocked: boolean): void {
     this.userGestureUnlocked = unlocked
     if (unlocked && this.wantsPlaying && !this.visibilityPaused) {
@@ -120,15 +184,36 @@ export class WebVideoPlayer {
     if (this.visibilityPaused === paused) return
     this.visibilityPaused = paused
     if (paused) {
+      this.bumpPlayGeneration()
       this.video.pause()
     } else if (this.wantsPlaying) {
       void this.tryPlay()
     }
   }
 
-  applySpec(spec: PBVideoPlayer): void {
-    const playing = spec.playing !== false
-    this.wantsPlaying = playing
+  applySpec(
+    spec: PBVideoPlayer,
+    options?: { fromEcsSync?: boolean; fromUserToggle?: boolean }
+  ): void {
+    const ecsPlaying = spec.playing !== false
+    const ecsPlayingChanged =
+      this.lastEcsPlaying !== undefined && ecsPlaying !== this.lastEcsPlaying
+
+    // Pointer click at end-of-video — replay (first click may not change ECS playing).
+    if (
+      !options?.fromEcsSync &&
+      options?.fromUserToggle &&
+      this.isAtEnd() &&
+      (ecsPlayingChanged || this.holdingAtEnd)
+    ) {
+      this.holdingAtEnd = false
+      this.restartFromBeginning()
+      this.lastEcsPlaying = true
+      this.wantsPlaying = true
+      if (!this.visibilityPaused) void this.tryPlay()
+      this.onReplayStarted?.()
+      return
+    }
 
     const url = resolveSceneTextureUrl(spec.src, this.scene)
     if (url && url !== this.loadedSrc) {
@@ -141,16 +226,45 @@ export class WebVideoPlayer {
     this.video.volume = clamp(spec.volume ?? 1, 0, 1)
     this.video.playbackRate = Math.max(spec.playbackRate ?? 1, 0.01)
 
-    const targetTime = Math.max(spec.position ?? 0, 0)
-    if (Number.isFinite(targetTime) && Math.abs(this.video.currentTime - targetTime) > 0.25) {
-      this.video.currentTime = targetTime
+    const specPosition = Math.max(spec.position ?? 0, 0)
+    const positionFieldChanged =
+      this.lastSpecPosition === undefined || Math.abs(specPosition - this.lastSpecPosition) > 0.05
+    if (positionFieldChanged) {
+      const stalePositionOnPlayToggle =
+        ecsPlayingChanged &&
+        this.video.currentTime > 0.5 &&
+        Math.abs(specPosition - this.video.currentTime) > 1.5
+      if (
+        !stalePositionOnPlayToggle &&
+        Number.isFinite(specPosition) &&
+        Math.abs(this.video.currentTime - specPosition) > 0.25
+      ) {
+        this.video.currentTime = specPosition
+      }
+      this.lastSpecPosition = stalePositionOnPlayToggle
+        ? this.video.currentTime
+        : specPosition
+    } else if (ecsPlayingChanged) {
+      // Keep lastSpecPosition aligned with decoder when ECS omits position on toggle.
+      this.lastSpecPosition = this.video.currentTime
     }
+
+    this.wantsPlaying = ecsPlaying
+    this.lastEcsPlaying = ecsPlaying
 
     if (this.visibilityPaused) return
 
-    if (playing) {
+    if (ecsPlaying) {
+      // Stale ECS playing=true after natural end — hold last frame until user toggles.
+      if (this.isAtEnd() && !ecsPlayingChanged) {
+        this.wantsPlaying = false
+        this.bumpPlayGeneration()
+        this.video.pause()
+        return
+      }
       void this.tryPlay()
     } else {
+      this.bumpPlayGeneration()
       this.video.pause()
     }
   }
@@ -171,10 +285,12 @@ export class WebVideoPlayer {
 
   private async loadSource(url: string): Promise<void> {
     this.loadedSrc = url
+    this.hasHadRenderableFrame = false
     this.setState(VS_LOADING)
 
     this.hls?.destroy()
     this.hls = null
+    this.bumpPlayGeneration()
     this.video.pause()
     this.video.removeAttribute('src')
     this.video.load()
@@ -201,11 +317,49 @@ export class WebVideoPlayer {
     this.video.load()
   }
 
+  private bumpPlayGeneration(): void {
+    this.playGeneration++
+  }
+
+  /** Whether this spec would change the tracked ECS playing flag. */
+  wouldEcsPlayingChange(ecsPlaying: boolean): boolean {
+    return this.lastEcsPlaying !== undefined && ecsPlaying !== this.lastEcsPlaying
+  }
+
+  /** Align ECS playing tracker after replay without re-applying the full spec. */
+  alignEcsPlaying(playing: boolean): void {
+    this.lastEcsPlaying = playing
+    this.wantsPlaying = playing
+  }
+
+  /** Bridge dedup bypass when a user toggle should replay from the end. */
+  needsReplayAfterEnd(playingChanged: boolean, fromUserToggle: boolean): boolean {
+    if (!fromUserToggle || !this.isAtEnd()) return false
+    return playingChanged || this.holdingAtEnd
+  }
+
+  isAtEnd(): boolean {
+    if (this.video.ended) return true
+    const duration = this.video.duration
+    if (!Number.isFinite(duration) || duration <= 0) return false
+    return this.video.currentTime >= duration - 0.35
+  }
+
+  private restartFromBeginning(): void {
+    this.holdingAtEnd = false
+    this.video.currentTime = 0
+    this.lastSpecPosition = 0
+    this.wantsPlaying = true
+  }
+
   private async tryPlay(): Promise<void> {
     if (!this.userGestureUnlocked || this.visibilityPaused || !this.wantsPlaying) return
+    const gen = ++this.playGeneration
     try {
       await this.video.play()
     } catch (err) {
+      if (gen !== this.playGeneration) return
+      if (err instanceof DOMException && err.name === 'AbortError') return
       console.warn('[WebVideoPlayer] play() blocked or failed', err, this.loadedSrc)
     }
   }

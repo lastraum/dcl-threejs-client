@@ -17,6 +17,7 @@ import {
   type RealmBounds
 } from './movementCompressed'
 import { parseLiveKitConnectionString } from './livekitAdapter'
+import { collectActiveVideoStreamsFromRoom, type ActiveVideoStream } from './livekitVideoStreams'
 import { TransportType, type PeerLifecycleHandlers } from './Transport'
 
 const PROFILE_EVERY_N_BROADCASTS = 30
@@ -106,6 +107,10 @@ export class LiveKitCommsSession {
       if (address && address !== this.localAddress) out.push(address)
     }
     return out
+  }
+
+  getActiveVideoStreams(): ActiveVideoStream[] {
+    return collectActiveVideoStreamsFromRoom(this.room)
   }
 
   async connect(adapter: string): Promise<boolean> {

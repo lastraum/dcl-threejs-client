@@ -490,6 +490,7 @@ export class World {
 
   start(): void {
     this.sceneScript.notifyPlayReady()
+    this.sceneScript.setVideoUserGestureUnlocked(true)
     let startFrame = 0
     this.host.start({
       onSyncFrame: (delta) => {
@@ -579,25 +580,28 @@ export class World {
     }
   }
 
-  /** Self-heal when MeshColliders exist in the scene graph but PhysX lost registration. */
+  /** Self-heal when scene colliders exist but PhysX lost registration. */
   private repairCollidersIfBroken(): boolean {
     if (!this.player?.getPosition()) return false
     const meshDescs = this.sceneScript.collision?.getPhysicsColliders() ?? []
-    if (meshDescs.length < 2) return false
+    const gltfEntityCount = this.sceneScript.gltfColliders?.getGltfEntityColliderCount() ?? 0
+    const gltfRegistered = this.physics.gltfStaticActorCount
+    if (meshDescs.length < 2 && gltfEntityCount < 2) return false
 
     let meshRegistered = 0
     for (const desc of meshDescs) {
       if (this.physics.hasStaticActor(desc.entity)) meshRegistered++
     }
+    const missingMeshActors = meshDescs.length >= 2 && meshRegistered < meshDescs.length
+    const missingGltfActors =
+      gltfEntityCount >= 10 && gltfRegistered < gltfEntityCount * 0.85
+
+    if (!missingMeshActors && !missingGltfActors) return false
+
     const probe = this.physics.debugProbeStaticHit(2.5)
-    const missingActors = meshRegistered < meshDescs.length
-    const noNearbyHit = probe.distance === null
-
-    if (!missingActors && !noNearbyHit) return false
-
     clientDebugLog.log(
       'collision',
-      `[auto-repair] mesh ${meshRegistered}/${meshDescs.length} in PhysX, horizontal probe=${probe.distance !== null ? `${probe.distance.toFixed(2)}m` : 'none'} — recooking`,
+      `[auto-repair] mesh ${meshRegistered}/${meshDescs.length} gltf ${gltfRegistered}/${gltfEntityCount} in PhysX, horizontal probe=${probe.distance !== null ? `${probe.distance.toFixed(2)}m` : 'none'} — recooking`,
       { level: 'warn', throttleMs: 8000, throttleKey: 'collider-auto-repair' }
     )
     this.recookPhysicsColliders({ force: true, quiet: true })
@@ -620,24 +624,31 @@ export class World {
     const meshColliders = this.sceneScript.collision?.getPhysicsColliders() ?? []
     const gltfColliderDescs = this.sceneScript.gltfColliders?.getPhysicsColliders() ?? []
 
-    const deferGltfWipe =
-      gltfEntityCount === 0 && prevGltf > 10 && this.physics.gltfStaticActorCount > 0
+    const gltfRegistered = this.physics.gltfStaticActorCount
+    const transientEmptyBatch = gltfEntityCount === 0 && prevGltf > 10 && gltfRegistered > 0
+    const dropThreshold = Math.max(5, Math.floor(prevGltf * 0.12))
+    const transientPartialDrop =
+      prevGltf > 10 &&
+      gltfEntityCount > 0 &&
+      gltfEntityCount < prevGltf - dropThreshold &&
+      gltfRegistered > gltfEntityCount
+    const deferGltfWipe = transientEmptyBatch || transientPartialDrop
     if (deferGltfWipe) {
       if (!this.skippedColliderWipeLogged) {
-        console.warn('[World] deferring GLTF collider sync — transient empty extraction batch')
+        const reason = transientEmptyBatch ? 'empty extraction batch' : 'partial extraction drop'
+        console.warn(`[World] deferring GLTF collider removal — transient ${reason}`)
         this.skippedColliderWipeLogged = true
       }
     } else {
       this.skippedColliderWipeLogged = false
     }
 
-    const cookDescs = deferGltfWipe ? meshColliders : [...meshColliders, ...gltfColliderDescs]
+    const cookDescs = transientEmptyBatch ? meshColliders : [...meshColliders, ...gltfColliderDescs]
     let registeredForCook = 0
     for (const desc of cookDescs) {
       if (this.physics.hasStaticActor(desc.entity)) registeredForCook++
     }
 
-    const gltfRegistered = this.physics.gltfStaticActorCount
     const gltfRegistrationComplete =
       deferGltfWipe || gltfEntityCount === 0 || gltfRegistered >= gltfEntityCount
     const cookRegistrationComplete =
@@ -658,7 +669,7 @@ export class World {
     try {
       const geometryChanged = this.physics.syncStaticColliders(cookDescs, {
         cookBudget: options?.hydration ? World.HYDRATION_COLLIDER_COOK_BUDGET : undefined,
-        freezeRemoval: deferGltfWipe
+        freezeGltfRemoval: deferGltfWipe
       })
       if (geometryChanged && !options?.hydration) {
         this.physics.warmStaticScene()

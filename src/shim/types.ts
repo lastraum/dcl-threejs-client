@@ -205,7 +205,14 @@ export type CommsTopicRequest = { topic: string }
 export type CommsPublishDataRequest = { topic: string; data: string }
 export type CommsTopicMessage = { sender: string; data: string }
 export type ConsumeMessagesResponse = { messages: CommsTopicMessage[] }
-export type ActiveVideoStreamsResponse = { streams: never[] }
+export type ActiveVideoStream = {
+  identity: string
+  trackSid: string
+  /** Matches `VideoTrackSourceType` in comms_api.proto (0 unknown, 1 camera, 2 screen share). */
+  sourceType: number
+}
+
+export type ActiveVideoStreamsResponse = { streams: ActiveVideoStream[] }
 
 export type SignedFetchInit = {
   method?: string

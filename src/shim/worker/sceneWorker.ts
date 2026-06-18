@@ -31,12 +31,16 @@ import {
   patchSceneBundle
 } from './pointerEventColliderCheckerPatch'
 import { injectPointerClickOnEngine } from './injectPointerClick'
-import { injectTriggerAreaAppendsOnEngine } from './injectTriggerAreaAppends'
+import { injectRendererGrowOnlyAppendsOnEngine } from './injectRendererGrowOnlyAppends'
 import { injectRendererLwwPutsOnEngine } from './injectRendererLwwPuts'
 import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransforms'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
 import { resolveSceneEngine } from './resolveSceneEngine'
+import {
+  installPreregisterRendererComponentsHook,
+  preregisterRendererInjectedComponents
+} from './preregisterRendererInjectedComponents'
 
 const ctx = self
 
@@ -420,21 +424,35 @@ function deliverPointerCrdtInbound(chunks: Uint8Array[]): void {
 function applyRendererInboundChunks(chunks: Uint8Array[]): {
   tweenPuts: number
   raycastPuts: number
+  videoPlayerPuts: number
   triggerAppends: number
+  videoAppends: number
 } {
   let tweenPuts = 0
   let raycastPuts = 0
+  let videoPlayerPuts = 0
   let triggerAppends = 0
+  let videoAppends = 0
   if (sceneEngine) {
     const lww = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
     tweenPuts = lww.tweenPuts
     raycastPuts = lww.raycastPuts
-    triggerAppends = injectTriggerAreaAppendsOnEngine(sceneEngine, chunks)
+    videoPlayerPuts = lww.videoPlayerPuts
+    const growOnly = injectRendererGrowOnlyAppendsOnEngine(sceneEngine, chunks)
+    triggerAppends = growOnly.triggerAppends
+    videoAppends = growOnly.videoAppends
   }
-  if (tweenPuts === 0 && raycastPuts === 0 && triggerAppends === 0 && rendererInboundApply) {
+  if (
+    tweenPuts === 0 &&
+    raycastPuts === 0 &&
+    videoPlayerPuts === 0 &&
+    triggerAppends === 0 &&
+    videoAppends === 0 &&
+    rendererInboundApply
+  ) {
     rendererInboundApply(chunks)
   }
-  return { tweenPuts, raycastPuts, triggerAppends }
+  return { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends }
 }
 
 function executePointerDelivery(chunks: Uint8Array[]): void {
@@ -448,27 +466,19 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
   // Lightweight path — no scene-tick pause (tween/transform transport-only).
   if (canDirectInject) {
     try {
-      const { tweenPuts, raycastPuts, triggerAppends } = applyRendererInboundChunks(chunks)
-      if (triggerAppends > 0) {
+      const { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends } =
+        applyRendererInboundChunks(chunks)
+      const needsSceneTick =
+        triggerAppends > 0 || videoAppends > 0 || raycastPuts > 0 || videoPlayerPuts > 0
+      if (needsSceneTick) {
         preemptForPointerDelivery()
         sceneTicksPaused = true
         workerVerboseLog(
           debugPointerDeliver,
           'log',
-          `[sceneWorker] pointer-crdt-deliver — trigger inject ${triggerAppends} TriggerAreaResult append(s)`
+          `[sceneWorker] pointer-crdt-deliver — inject trigger=${triggerAppends} videoEvent=${videoAppends} raycast=${raycastPuts} videoPlayer=${videoPlayerPuts}`
         )
-        void runPointerEngineTickSync('pointer-crdt-deliver-trigger')
-        return
-      }
-      if (raycastPuts > 0) {
-        preemptForPointerDelivery()
-        sceneTicksPaused = true
-        workerVerboseLog(
-          debugPointerDeliver,
-          'log',
-          `[sceneWorker] pointer-crdt-deliver — raycast inject ${raycastPuts} RaycastResult PUT(s)`
-        )
-        void runPointerEngineTickSync('pointer-crdt-deliver-raycast')
+        void runPointerEngineTickSync('pointer-crdt-deliver-renderer-inject')
         return
       }
       if (tweenPuts > 0) {
@@ -478,14 +488,20 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
           `[sceneWorker] pointer-crdt-deliver — tween inject ${tweenPuts} TweenState PUT(s)`
         )
         scheduleBatchedTweenEngineTick()
-        return
       }
       return
     } catch (err) {
-      workerLog(
-        'error',
-        `[sceneWorker] pointer-crdt-deliver failed — ${err instanceof Error ? err.message : String(err)}`
-      )
+      const message = err instanceof Error ? err.message : String(err)
+      if (rendererInboundApply && message.includes('already sealed')) {
+        workerVerboseLog(
+          debugPointerDeliver,
+          'warn',
+          '[sceneWorker] pointer-crdt-deliver — direct inject blocked (sealed), falling back to transport'
+        )
+        rendererInboundApply(chunks)
+        return
+      }
+      workerLog('error', `[sceneWorker] pointer-crdt-deliver failed — ${message}`)
       return
     }
   }
@@ -499,11 +515,12 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
   }
   try {
     if (pointerDeliverBatchOpen) {
-      const { tweenPuts, raycastPuts, triggerAppends } = applyRendererInboundChunks(chunks)
+      const { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends } =
+        applyRendererInboundChunks(chunks)
       workerVerboseLog(
         debugPointerDeliver,
         'log',
-        `[sceneWorker] pointer-crdt-deliver — batch apply tween=${tweenPuts} raycast=${raycastPuts} trigger=${triggerAppends}`
+        `[sceneWorker] pointer-crdt-deliver — batch apply tween=${tweenPuts} raycast=${raycastPuts} videoPlayer=${videoPlayerPuts} trigger=${triggerAppends} video=${videoAppends}`
       )
       finalizePointerDelivery('pointer-crdt-deliver')
       return
@@ -1280,9 +1297,18 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Yield so priority inject/deliver messages posted during stub setup can run before bundle eval.
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
+    installPreregisterRendererComponentsHook()
     const exports = evaluateSceneBundle(code, requireMap, patchSceneBundle)
     sceneEngine = resolveSceneEngine(exports)
     if (sceneEngine) {
+      try {
+        preregisterRendererInjectedComponents(sceneEngine)
+      } catch (err) {
+        workerLog(
+          'warn',
+          `[sceneWorker] renderer component preregister skipped — ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
       const engineId = (sceneEngine as { _id?: number })._id
       workerLog(
         'log',

@@ -219,7 +219,13 @@ export class SceneScriptSystem {
       () => this.bridge?.getEntityNodes()
     )
     this.bridge.setSkipTransformApply((entity) => this.avatarAttachBridge!.isAttachDriven(entity))
-    this.videoPlayerBridge = new VideoPlayerBridge(this.readComponents, scene, this.recordRendererAppend)
+    this.videoPlayerBridge = new VideoPlayerBridge(
+      this.readComponents,
+      scene,
+      this.recordRendererAppend,
+      this.recordRendererLww
+    )
+    this.videoPlayerBridge.onLwwFlush = () => this.flushVideoPlayerLwwToWorker()
     this.bridge.setVideoPlayerBridge(this.videoPlayerBridge)
     this.collision = new CollisionSystem(host.scene)
     this.gltfColliders = new GltfColliderExtractor(host.scene)
@@ -730,6 +736,11 @@ export class SceneScriptSystem {
       this.projection.applyIncoming(msg.data)
       this.foldProjectionChanges()
 
+      if (this.pointerAwaitingWorkerApply) {
+        this.videoPlayerBridge?.notifyUserPointerDelivered()
+        this.videoPlayerBridge?.sync(this.view)
+      }
+
       // Hover + PrimaryPointerInfo only. PET_DOWN/UP stay queued until click flush → pointer-crdt-deliver.
       this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
       this.syncTriggerAreas()
@@ -935,9 +946,9 @@ export class SceneScriptSystem {
     this.raycasts?.sync(this.crdtTick)
   }
 
-  private lastTriggerFlushAt = 0
+  private lastGrowOnlyFlushAt = 0
   private lastRaycastFlushAt = 0
-  private static readonly TRIGGER_FLUSH_MIN_MS = 50
+  private static readonly GROW_ONLY_FLUSH_MIN_MS = 50
   private static readonly RAYCAST_FLUSH_MIN_MS = 50
   private lastTweenDeliverAt = 0
   /** Proactive TweenState push only after pointer delivery (click→complete parity). */
@@ -952,11 +963,17 @@ export class SceneScriptSystem {
   updateTriggerAreas(): void {
     if (!this.running || !this.triggerAreas) return
     this.syncTriggerAreas()
+    this.flushRendererGrowOnlyAppends()
+  }
+
+  /** Push source-captured grow-only appends (TriggerAreaResult, VideoEvent) to the worker. */
+  private flushRendererGrowOnlyAppends(): void {
+    if (!this.running) return
     if (this.encoder.pendingAppendCount === 0) return
     if (this.pointerAwaitingWorkerApply || this.pointerFlushInFlight) return
     const now = performance.now()
-    if (now - this.lastTriggerFlushAt < SceneScriptSystem.TRIGGER_FLUSH_MIN_MS) return
-    this.lastTriggerFlushAt = now
+    if (now - this.lastGrowOnlyFlushAt < SceneScriptSystem.GROW_ONLY_FLUSH_MIN_MS) return
+    this.lastGrowOnlyFlushAt = now
     this.deliverRendererAppendsToWorker()
   }
 
@@ -1006,6 +1023,18 @@ export class SceneScriptSystem {
     )
   }
 
+  /** Deliver VideoPlayer `playing` sync PUTs — not blocked by pointer-await. */
+  private flushVideoPlayerLwwToWorker(): void {
+    if (!this.worker || !this.running) return
+    if (this.encoder.pendingLwwPutCount === 0) return
+    const lwwBytes = this.encoder.encodeLwwPutsOnly()
+    if (!lwwBytes?.byteLength) return
+    const copy = lwwBytes.slice()
+    this.worker.postMessage(
+      { type: 'pointer-crdt-deliver', data: [copy] } satisfies MainToWorker,
+      [copy.buffer]
+    )
+  }
   /** Deliver source-captured dynamic LWW PUTs (RaycastResult) to the worker. */
   private deliverRendererLwwToWorker(): void {
     if (!this.worker || !this.running) return
@@ -1033,7 +1062,7 @@ export class SceneScriptSystem {
     const copy = appendBytes.slice()
     clientDebugLog.log(
       'input',
-      `TriggerArea CRDT deliver — ${pending} append(s), ${copy.byteLength} bytes`,
+      `Grow-only CRDT deliver — ${pending} append(s), ${copy.byteLength} bytes`,
       { level: 'info', alsoConsole: isTriggerAreaVerbose() }
     )
     this.worker.postMessage(
@@ -1162,6 +1191,7 @@ export class SceneScriptSystem {
 
   private onPointerDeliverDone(): void {
     this.logPointer('pointer-deliver-done — worker finished pointer tick + onUpdate CRDT flush')
+    this.videoPlayerBridge?.notifyUserPointerDelivered()
     this.finishPointerDelivery('pointer-deliver-done')
   }
 
@@ -1457,6 +1487,7 @@ export class SceneScriptSystem {
     this.tweenBridge?.update(delta, this.view)
     this.deliverTweenStateToWorker()
     this.videoPlayerBridge?.update(tickNumber, this.view)
+    this.flushRendererGrowOnlyAppends()
   }
 
   private flushAvatarAttachTransforms(): void {

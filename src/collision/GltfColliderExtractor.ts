@@ -147,12 +147,13 @@ export class GltfColliderExtractor {
     }
 
     for (const entity of this.extracted.keys()) {
-      if (!active.has(entity)) {
-        this.extracted.delete(entity)
-        this.fingerprints.delete(entity)
-        this.poseFingerprints.delete(entity)
-        this.syncState.delete(entity)
-      }
+      if (active.has(entity)) continue
+      // GLB mesh children can detach briefly during re-attach — keep last-known colliders.
+      if (entityNodes.has(entity) && GltfContainer.has(entity)) continue
+      this.extracted.delete(entity)
+      this.fingerprints.delete(entity)
+      this.poseFingerprints.delete(entity)
+      this.syncState.delete(entity)
     }
 
     this.recomputePhysicsBatchFingerprint()

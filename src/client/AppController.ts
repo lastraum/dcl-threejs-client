@@ -208,7 +208,7 @@ export class AppController {
 
     const loadPromise = (async () => {
       await world.loadScene(sceneConfig, opts.onProgress)
-      void world.connectSceneCommsEarly(sceneConfig, opts.onProgress)
+      const earlyCommsPromise = world.connectSceneCommsEarly(sceneConfig, opts.onProgress)
 
       this.minimap?.dispose()
       this.minimap = null
@@ -250,11 +250,15 @@ export class AppController {
         opts.onHydrationFinish?.(hydrationResult)
       }
 
-      await world.spawnLocalPlayer(sceneConfig, opts.onProgress)
+      // Cook scene colliders before spawning — floor GLTF trimeshes must be in PhysX so the
+      // elevated spawn snap lands on the scene floor, not the infinite ground at y=0.
+      await world.prewarmPhysicsColliders(opts.onProgress, {
+        assetsTimedOut: hydrationTimedOut,
+        beforeSpawn: true
+      })
 
-      // Cook scene colliders before the loop starts. After hydration timeout, cap work so
-      // the loading screen doesn't stall while background assets still attach.
-      await world.prewarmPhysicsColliders(opts.onProgress, { assetsTimedOut: hydrationTimedOut })
+      await earlyCommsPromise
+      await world.spawnLocalPlayer(sceneConfig, opts.onProgress)
 
       world.start()
       opts.onProgress?.('Starting experience…')

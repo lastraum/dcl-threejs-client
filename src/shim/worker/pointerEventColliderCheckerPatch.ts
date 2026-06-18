@@ -37,11 +37,25 @@ export function stripBundledPointerEventColliderChecker(code: string): string {
     .replace(directCall, `${CAPTURE_ENGINE}($1);(void 0)`)
 }
 
+/**
+ * Some deploys inline composites as `assets/scene/main.composite` while onStart calls
+ * `getCompositeOrNull("main.composite")` — alias lookup so composite instancing runs (opbadge).
+ */
+function patchCompositeSrcAlias(code: string): string {
+  return code.replace(
+    /getCompositeOrNull\((\w+)(?:,(\w+))?\)\{let (\w+)=(\w+)\[(\w+)\]/g,
+    (_, arg0, arg1, varName, tableName, key) =>
+      `getCompositeOrNull(${arg0}${arg1 ? `,${arg1}` : ''}){let ${varName}=${tableName}[${key}]||${tableName}["assets/scene/"+${key}]`
+  )
+}
+
 /** Bundle transforms applied before `evaluateSceneBundle` — engine capture + checker strip. */
 export function patchSceneBundle(code: string): string {
-  return stripBundledPointerEventColliderChecker(code).replace(
-    /(\w+)\.addTransport\((\w+)\)/g,
-    `${CAPTURE_ADD_TRANSPORT}($1,$2)`
+  return patchCompositeSrcAlias(
+    stripBundledPointerEventColliderChecker(code).replace(
+      /(\w+)\.addTransport\((\w+)\)/g,
+      `${CAPTURE_ADD_TRANSPORT}($1,$2)`
+    )
   )
 }
 

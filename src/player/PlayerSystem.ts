@@ -68,6 +68,8 @@ const PLAYER_TURN_SMOOTH = 12
 const FACING_SPEED_MIN = 0.12
 const GROUND_COYOTE_SECONDS = 0.15
 const AIR_JUMP_DELAY = 0.2
+/** Drop from above spawn so scene floors above y=0 win over the infinite ground plane. */
+const SPAWN_GROUND_PROBE_LIFT = 4
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v))
@@ -138,17 +140,24 @@ export class PlayerSystem {
     this.readComponents = readComponents
     this.bounds = bounds
     this.input = new PlayerInput(this.host.renderer.domElement)
-    this.physics.spawnPlayer(dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y, spawn.z)))
-    this.physics.snapToGroundBelow(64)
+    const spawnPos = dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y, spawn.z))
+    const probeDrop = SPAWN_GROUND_PROBE_LIFT + 64
+    this.physics.spawnPlayer(
+      dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y + SPAWN_GROUND_PROBE_LIFT, spawn.z))
+    )
+    this.physics.snapToGroundBelow(probeDrop)
     this.physics.invalidateControllerCache()
     let spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
     if (!spawnGrounded) {
-      this.physics.teleport(dclToThreeVec(new THREE.Vector3(spawn.x, 0, spawn.z)))
+      this.physics.teleport(
+        dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y + SPAWN_GROUND_PROBE_LIFT, spawn.z))
+      )
+      this.physics.snapToGroundBelow(probeDrop)
       this.physics.invalidateControllerCache()
       spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
     }
     if (!spawnGrounded) {
-      this.physics.teleport(dclToThreeVec(new THREE.Vector3(spawn.x, 0, spawn.z)))
+      this.physics.teleport(spawnPos)
       spawnGrounded = true
     }
     this.grounded = spawnGrounded
@@ -255,6 +264,12 @@ export class PlayerSystem {
   }
 
   /** Scene-local DCL meters (+X east, +Z north). */
+  /** Apply PhysX foot position to the avatar root (after prewarm / teleport snap). */
+  syncFromPhysics(): void {
+    this.root.position.copy(this.physics.positionOut)
+    this.syncCamera(true)
+  }
+
   getPosition(): THREE.Vector3 {
     return threeToDclVec(this.root.position)
   }

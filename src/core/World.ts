@@ -297,7 +297,7 @@ export class World {
 
   /**
    * Spawn local player after scene script + assets are ready — PhysX ground plane must exist first.
-   * Call after `waitForSceneAssets`, before `start()`.
+   * Call after `waitForSceneAssets` and `prewarmPhysicsColliders`, before `start()`.
    */
   async spawnLocalPlayer(scene: ResolvedScene, onProgress?: (msg: string) => void): Promise<void> {
     if (!this.playerMode || !this.player) return
@@ -760,9 +760,9 @@ export class World {
    */
   async prewarmPhysicsColliders(
     onProgress?: (msg: string) => void,
-    options: { assetsTimedOut?: boolean } = {}
+    options: { assetsTimedOut?: boolean; beforeSpawn?: boolean } = {}
   ): Promise<void> {
-    if (!this.playerMode || !this.player) return
+    if (!this.playerMode) return
     const assetsTimedOut = options.assetsTimedOut ?? false
     this.lastPhysicsBatchFp = ''
     const maxWallMs = assetsTimedOut ? 15_000 : 12_000
@@ -827,8 +827,10 @@ export class World {
       onProgress?.(`${label}… ${count} static (${gltfRegistered}/${gltfCount} GLTF)`)
 
       const registrationComplete = gltfCount === 0 || gltfRegistered >= gltfCount
+      const spawnProbeReady =
+        options.beforeSpawn || !this.player ? true : this.areSpawnCollidersQueryable(gltfCount)
       const collidersQueryable =
-        registrationComplete && stable >= 2 && gltfStable >= 2 && this.areSpawnCollidersQueryable(gltfCount)
+        registrationComplete && stable >= 2 && gltfStable >= 2 && spawnProbeReady
       if (collidersQueryable) break
 
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
@@ -849,8 +851,11 @@ export class World {
         `[World] prewarm finished — ${finalRegistered} GLTF actors registered but horizontal CCT probe near spawn found no hit`
       )
     }
-    this.physics.invalidateControllerCache()
-    this.physics.snapToGroundBelow(2)
+    if (!options.beforeSpawn && this.player) {
+      this.physics.invalidateControllerCache()
+      this.physics.snapToGroundBelow(8)
+      this.player.syncFromPhysics()
+    }
   }
 
   /** True when a horizontal capsule sweep near the player hits registered static geometry. */

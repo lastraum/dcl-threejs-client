@@ -27,6 +27,18 @@ function assetUrlForHash(boot: SceneWorkerBoot['scene'], hash: string): string {
   return `${contentBaseUrl(boot)}${encodeURIComponent(hash)}`
 }
 
+function resolveContentEntry(
+  content: SceneWorkerBoot['scene']['content'],
+  fileName: string
+): { file: string; hash: string } | undefined {
+  const direct = content.find((file) => file.file === fileName)
+  if (direct) return direct
+  if (fileName === 'main.composite') {
+    return content.find((file) => file.file === 'assets/scene/main.composite')
+  }
+  return undefined
+}
+
 export function createSystemStubs(
   boot: SceneWorkerBoot['scene'],
   rpc: RpcHandler,
@@ -69,7 +81,7 @@ export function createSystemStubs(
       }),
       getWorldTime: async () => ({ seconds: Math.floor(Date.now() / 1000) }),
       readFile: async (body: { fileName: string }) => {
-        const entry = boot.content.find((file) => file.file === body.fileName)
+        const entry = resolveContentEntry(boot.content, body.fileName)
         if (!entry) throw new Error(`readFile: ${body.fileName} not found in scene content`)
         const res = await fetch(assetUrlForHash(boot, entry.hash))
         if (!res.ok) throw new Error(`readFile: ${body.fileName} (${res.status})`)

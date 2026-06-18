@@ -99,13 +99,18 @@ export class SplashAvatarPreview {
     this.avatar = avatar
     this.pivot.add(avatar)
 
-    this.animations = new AvatarAnimations()
+    const animations = new AvatarAnimations()
     try {
-      await this.animations.bind(avatar)
+      await animations.bind(avatar, this.pivot, { bodyShape: profile.bodyShape })
+      if (this.disposed || token !== this.loadToken) {
+        animations.dispose()
+        return
+      }
+      this.animations = animations
     } catch (err) {
+      animations.dispose()
+      if (this.disposed || token !== this.loadToken) return
       console.warn('[splash] idle emote failed', err)
-      this.animations.dispose()
-      this.animations = null
     }
 
     this.subjectSize = box.getSize(new THREE.Vector3())

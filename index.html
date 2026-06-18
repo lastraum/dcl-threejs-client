@@ -2085,6 +2085,140 @@
         letter-spacing: 0.04em;
       }
 
+      /* ===== Preferences Panel (settings only — world input passes through) ===== */
+      .preferences-panel {
+        position: fixed;
+        inset: 0;
+        z-index: 201;
+        display: flex;
+        justify-content: flex-end;
+        align-items: stretch;
+        color: #fff;
+        pointer-events: none;
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      .preferences-panel[hidden] {
+        display: none !important;
+      }
+      .preferences-panel__panel {
+        width: min(460px, 94vw);
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        pointer-events: auto;
+        background: linear-gradient(160deg, #1a2238 0%, #243352 35%, #2d3f5c 72%, #354a68 100%);
+        box-shadow: -12px 0 40px rgba(0, 0, 0, 0.45);
+        transform: translateX(104%);
+        transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+        border-left: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .preferences-panel.is-open .preferences-panel__panel {
+        transform: translateX(0);
+      }
+      .preferences-panel__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 14px 10px 16px;
+        background: rgba(0, 0, 0, 0.35);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        flex-shrink: 0;
+        min-height: 48px;
+      }
+      .preferences-panel__title {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        color: rgba(255, 255, 255, 0.95);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .preferences-panel__body {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        overflow: hidden;
+      }
+      .preferences-panel__tabs {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 4px;
+        width: 56px;
+        flex-shrink: 0;
+        padding: 10px 6px;
+        background: rgba(0, 0, 0, 0.22);
+        border-right: 1px solid rgba(255, 255, 255, 0.06);
+        overflow-y: auto;
+      }
+      .preferences-panel__tab {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        padding: 0;
+        border: none;
+        border-radius: 10px;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.55);
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+      }
+      .preferences-panel__tab:hover {
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.92);
+      }
+      .preferences-panel__tab.is-active {
+        background: rgba(255, 255, 255, 0.14);
+        color: #fff;
+        box-shadow: inset 3px 0 0 #5b9fd4;
+      }
+      .preferences-panel__tab-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+      }
+      .preferences-panel__tab-icon svg {
+        width: 20px;
+        height: 20px;
+      }
+      .preferences-panel__close {
+        width: 32px;
+        height: 32px;
+        border: none;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.1);
+        color: #fff;
+        font-size: 20px;
+        line-height: 1;
+        cursor: pointer;
+        transition: background 0.15s;
+        flex-shrink: 0;
+      }
+      .preferences-panel__close:hover {
+        background: rgba(255, 255, 255, 0.2);
+      }
+      .preferences-panel__content {
+        flex: 1;
+        min-height: 0;
+        min-width: 0;
+        overflow: hidden;
+      }
+      .preferences-panel__placeholder {
+        display: grid;
+        place-items: center;
+        height: 100%;
+        font-size: 18px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.4);
+        letter-spacing: 0.04em;
+      }
+
       /* ===== Graphics Settings View ===== */
       .gfx-settings {
         width: 100%;

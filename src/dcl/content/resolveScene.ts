@@ -1,6 +1,7 @@
 import type { RouteTarget } from './route'
 import type { ContentFile, RealmEndpoints, ResolvedScene, SceneMetadata, SceneSpawn, SpawnPoint } from './types'
 import { BLANK_SCENE_TEMPLATE } from './types'
+import { resolveSceneEnvironment } from '../landscape/resolveLandscapeEnvironment'
 import { catalystContentAssetUrl, catalystRootFromContentUrl, fetchSceneEntityByPointer } from '../../network/catalyst/CatalystClient'
 import { fetchCatalystRealmAbout, fetchWorldRealmAbout } from '../../network/catalyst/realmAbout'
 
@@ -195,12 +196,16 @@ function resolvedFromEntity(
         }
       : undefined
 
+  const resolvedEnv = resolveSceneEnvironment(metadata, opts.source)
+
   return {
     title: display?.title ?? opts.title,
     parcels,
     baseParcel: base,
     spawn: pickSpawn(metadata),
     metadata,
+    landscapeEnvironment: resolvedEnv.landscapeEnvironment,
+    skyLighting: resolvedEnv.skyLighting,
     content,
     contentsBaseUrl: opts.contentsBaseUrl,
     assetUrl: opts.assetUrl,
@@ -214,7 +219,16 @@ function resolvedFromEntity(
 }
 
 export async function resolveSceneFromRoute(target: RouteTarget): Promise<ResolvedScene> {
-  if (target.kind === 'blank') return { ...BLANK_SCENE_TEMPLATE }
+  if (target.kind === 'blank') {
+    const metadata = { ...BLANK_SCENE_TEMPLATE.metadata, environment: 'none' as const }
+    const resolvedEnv = resolveSceneEnvironment(metadata, { kind: 'blank' })
+    return {
+      ...BLANK_SCENE_TEMPLATE,
+      metadata,
+      landscapeEnvironment: resolvedEnv.landscapeEnvironment,
+      skyLighting: resolvedEnv.skyLighting
+    }
+  }
 
   if (target.kind === 'coords') {
     const result = await fetchParcelEntity(target.x, target.y)

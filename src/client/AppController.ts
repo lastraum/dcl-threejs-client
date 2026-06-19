@@ -8,6 +8,7 @@ import {
 } from '../dcl/content/route'
 import { resolveSceneFromRoute, summarizeSceneContent } from '../dcl/content/resolveScene'
 import { World } from '../core/World'
+import { readSceneDevQueryKey } from '../environment/fftOcean/readFftOceanOverride'
 import { disconnectAll } from '../network/SessionConnections'
 import { ClientShell } from './ui/shell/ClientShell'
 import { clientDebugLog } from './debug/ClientDebugLog'
@@ -41,6 +42,7 @@ export class AppController {
   private preferencesPanel: PreferencesPanel | null = null
   private login: LoginResult | null = null
   private currentRoute: RouteTarget | null = null
+  private lastSceneDevQueryKey = ''
   private running = false
   private navigating = false
 
@@ -84,7 +86,15 @@ export class AppController {
     opts: { fromHistory?: boolean; replace?: boolean } = {}
   ): Promise<void> {
     if (this.navigating) return
-    if (this.currentRoute && routeEquals(this.currentRoute, target) && this.world) return
+    const devQueryKey = readSceneDevQueryKey()
+    if (
+      this.currentRoute &&
+      routeEquals(this.currentRoute, target) &&
+      this.world &&
+      devQueryKey === this.lastSceneDevQueryKey
+    ) {
+      return
+    }
 
     this.navigating = true
     const loading = new LoadingScreen('Teleporting…', { fast: true })
@@ -128,6 +138,7 @@ export class AppController {
       applyRouteToHistory(route, opts.replace ?? false)
     }
     this.currentRoute = route
+    this.lastSceneDevQueryKey = readSceneDevQueryKey()
 
     await this.teardownScene()
 
@@ -376,3 +387,5 @@ export class AppController {
     }
   }
 }
+
+

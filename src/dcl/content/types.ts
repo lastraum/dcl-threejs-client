@@ -24,12 +24,39 @@ export type SceneSpawn = {
   cameraTarget?: { x: number; y: number; z: number }
 }
 
+/** Future scene.json field — biome for client landscape (island default). */
+export type SceneEnvironmentKind =
+  | 'none'
+  | 'island'
+  | 'water'
+  | 'space'
+  | 'mountains'
+  | 'desert'
+  | 'land'
+  | 'forest'
+
+/** `scene.json` → `environment` object — biome + optional celestial lighting toggles. */
+export type SceneEnvironmentConfig = {
+  kind?: SceneEnvironmentKind
+  /** No directional sun light or visible sun disc — scene relies on ECS / local lights. */
+  disableSun?: boolean
+  /** No directional moon light or visible moon disc. */
+  disableMoon?: boolean
+}
+
+export type SceneSkyLighting = {
+  disableSun: boolean
+  disableMoon: boolean
+}
+
 export type SceneMetadata = {
   display?: { title?: string; description?: string; skybox?: string; skyboxTexture?: string }
   scene?: SceneLayout
   spawnPoints?: SpawnPoint[]
   main?: string
   skyboxConfig?: { fixedTime?: number }
+  /** Biome id string or object — override via `?environment=` until scenes ship this. */
+  environment?: SceneEnvironmentKind | SceneEnvironmentConfig
 }
 
 export type SkyboxConfig = {
@@ -54,6 +81,10 @@ export type ResolvedScene = {
   baseParcel: string
   spawn: SceneSpawn
   metadata: SceneMetadata
+  /** Resolved landscape biome (scene.json + URL override). */
+  landscapeEnvironment: SceneEnvironmentKind
+  /** Celestial lights from `environment.disableSun` / `disableMoon` (+ dev URL overrides). */
+  skyLighting: SceneSkyLighting
   content: ContentFile[]
   contentsBaseUrl: string
   assetUrl: (hash: string) => string
@@ -73,7 +104,9 @@ export const BLANK_SCENE_TEMPLATE: ResolvedScene = {
   parcels: ['0,0'],
   baseParcel: '0,0',
   spawn: { x: 8, y: 0, z: 8 },
-  metadata: {},
+  metadata: { environment: 'none' },
+  landscapeEnvironment: 'none',
+  skyLighting: { disableSun: false, disableMoon: false },
   content: [],
   contentsBaseUrl: 'https://peer.decentraland.org',
   assetUrl: (hash) => `https://peer.decentraland.org/content/contents/${encodeURIComponent(hash)}`,

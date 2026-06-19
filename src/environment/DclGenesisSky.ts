@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { ENVIRONMENT_TEXTURES } from './environmentAssets'
 import { loadCrossCubemap } from './crossCubemap'
 import { sampleSkyGradients } from './skyGradients'
 import { normalizedTimeOfDay, SUN_BRIGHTNESS } from './skyboxTime'
@@ -256,15 +257,15 @@ export class DclGenesisSky {
 
   }
 
-  async loadTextures(baseUrl = '/environment/'): Promise<void> {
+  async loadTextures(): Promise<void> {
     const loader = new THREE.TextureLoader()
     const [moon, stars, farClouds, nearClouds, horizonClouds, topClouds] = await Promise.all([
-      loader.loadAsync(`${baseUrl}SkyboxMoon.png`),
-      loader.loadAsync(`${baseUrl}SkyboxStars.png`),
-      loadCrossCubemap(`${baseUrl}SkyboxFarClouds.png`),
-      loadCrossCubemap(`${baseUrl}SkyboxNearClouds.png`),
-      loadCrossCubemap(`${baseUrl}horizon_clouds2.png`),
-      loadCrossCubemap(`${baseUrl}top_clouds.png`)
+      loader.loadAsync(ENVIRONMENT_TEXTURES.moon),
+      loader.loadAsync(ENVIRONMENT_TEXTURES.stars),
+      loadCrossCubemap(ENVIRONMENT_TEXTURES.farClouds),
+      loadCrossCubemap(ENVIRONMENT_TEXTURES.nearClouds),
+      loadCrossCubemap(ENVIRONMENT_TEXTURES.horizonClouds),
+      loadCrossCubemap(ENVIRONMENT_TEXTURES.topClouds)
     ])
 
     for (const tex of [moon, stars]) {

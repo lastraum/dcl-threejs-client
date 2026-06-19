@@ -37,6 +37,8 @@ export class GltfColliderExtractor {
   private landscapeRoot: THREE.Object3D | null = null
   private landscapeColliders: PhysicsColliderDesc[] = []
   private landscapeCollidersReady = false
+  /** When false, open island beach uses the infinite ground plane only (no parcel GLB _collider boxes). */
+  private landscapePhysicsEnabled = true
   private physicsBatchFingerprint = ''
 
   private static emptyFingerprint = '__empty__'
@@ -177,8 +179,12 @@ export class GltfColliderExtractor {
     if (changed) this.recomputePhysicsBatchFingerprint()
   }
 
-  setLandscapeRoot(root: THREE.Object3D | null): void {
+  setLandscapeRoot(
+    root: THREE.Object3D | null,
+    options?: { physicsColliders?: boolean }
+  ): void {
     this.landscapeRoot = root
+    this.landscapePhysicsEnabled = options?.physicsColliders !== false
     this.landscapeCollidersReady = false
     this.landscapeColliders = []
     this.recomputePhysicsBatchFingerprint()
@@ -204,7 +210,7 @@ export class GltfColliderExtractor {
   }
 
   private ensureLandscapeColliders(): PhysicsColliderDesc[] {
-    if (!this.landscapeRoot) return []
+    if (!this.landscapeRoot || !this.landscapePhysicsEnabled) return []
     if (!this.landscapeCollidersReady) {
       this.landscapeRoot.updateMatrixWorld(true)
       this.landscapeColliders = buildColliderDescs(this.landscapeRoot, this.landscapeRoot, 'landscape')

@@ -255,6 +255,8 @@ export class TweenBridge {
   private readonly runtime = new Map<Entity, TweenRuntime>()
   /** Entities whose TweenState/Transform changed this frame — scopes CrdtEncoder tween scan. */
   private readonly encodeDirty = new Set<Entity>()
+  /** Entities whose scene-graph pose was interpolated this frame (collider pose slide). */
+  private readonly transformMotionEntities = new Set<Entity>()
   private readonly verbose = isTweenVerbose()
   private motionFocusView: ProjectionView | null = null
 
@@ -304,6 +306,13 @@ export class TweenBridge {
     return out
   }
 
+  /** Consume entities whose transform was tween-interpolated this frame. */
+  consumeTransformMotionEntities(): ReadonlySet<Entity> {
+    const out = new Set(this.transformMotionEntities)
+    this.transformMotionEntities.clear()
+    return out
+  }
+
   sync(view: ProjectionView): void {
     this.motionFocusView = view
     const { Tween } = this.ecs
@@ -344,6 +353,7 @@ export class TweenBridge {
 
   update(delta: number, view: ProjectionView): void {
     this.motionFocusView = view
+    this.transformMotionEntities.clear()
     const { Tween, TweenState, Transform, AvatarAttach } = this.ecs
 
     for (const [entity, tween] of view.getEntitiesWith(Tween)) {
@@ -592,6 +602,7 @@ export class TweenBridge {
       parent: _scratchTransform.parent
     })
     applyDclLocalTransform(node, _scratchTransform)
+    this.transformMotionEntities.add(entity)
     return true
   }
 }

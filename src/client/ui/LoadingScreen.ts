@@ -7,7 +7,11 @@ import { progressFromStatus } from './loadingProgress'
 import type { WaitForSceneAssetsResult, SceneHydrationStats } from '../../rendering/sceneHydration'
 
 const POST_LOAD_HOLD_MS = 800
+/** After world.start() — let composite spawn / colliders settle before revealing UI. */
+export const POST_SPAWN_SETTLE_MS = 5000
+export const POST_SPAWN_SETTLE_FAST_MS = 1500
 const SLIDE_INTERVAL_MS = 5500
+const BODY_LOADING_CLASS = 'client-loading'
 const PROGRESS_LERP = 0.12
 
 function formatDurationMs(ms: number): string {
@@ -87,6 +91,7 @@ export class LoadingScreen {
   }
 
   mount(): void {
+    document.body.classList.add(BODY_LOADING_CLASS)
     document.body.appendChild(this.root)
     this.targetProgress = 0.02
     this.displayedProgress = 0
@@ -150,7 +155,7 @@ export class LoadingScreen {
       this.hydrationTimerEl.classList.add('is-timeout')
       this.hydrationDetailEl.textContent = 'Assets still loading — finishing spawn & collisions…'
     } else {
-      this.hydrationDetailEl.textContent = 'Scene models attached — spawning player…'
+      this.hydrationDetailEl.textContent = 'Scene models attached — preparing collisions…'
     }
   }
 
@@ -171,6 +176,7 @@ export class LoadingScreen {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    document.body.classList.remove(BODY_LOADING_CLASS)
     window.clearInterval(this.slideTimer)
     if (this.animFrame) cancelAnimationFrame(this.animFrame)
     this.root.classList.add('is-hiding')

@@ -13,7 +13,7 @@ import { ClientShell } from './ui/shell/ClientShell'
 import { clientDebugLog } from './debug/ClientDebugLog'
 import { DebugPanel } from './ui/DebugPanel'
 import { DevProgressPanel } from './ui/DevProgressPanel'
-import { LoadingScreen } from './ui/LoadingScreen'
+import { LoadingScreen, POST_SPAWN_SETTLE_FAST_MS, POST_SPAWN_SETTLE_MS } from './ui/LoadingScreen'
 import { Minimap } from './ui/Minimap'
 import { WorldLocationCard } from './ui/WorldLocationCard'
 import { showSplashScreen } from './ui/SplashScreen'
@@ -265,18 +265,23 @@ export class AppController {
         opts.onHydrationFinish?.(hydrationResult)
       }
 
-      // Cook scene colliders before spawning — floor GLTF trimeshes must be in PhysX so the
-      // elevated spawn snap lands on the scene floor, not the infinite ground at y=0.
-      await world.prewarmPhysicsColliders(opts.onProgress, {
-        assetsTimedOut: hydrationTimedOut,
-        beforeSpawn: true
+      await world.prewarmPhysicsColliders(sceneConfig, opts.onProgress, {
+        assetsTimedOut: hydrationTimedOut
       })
 
+      // Comms may finish while CRDT catches up — authoritative cook runs in spawnLocalPlayer after final sync.
       await earlyCommsPromise
       await world.spawnLocalPlayer(sceneConfig, opts.onProgress)
 
       world.start()
-      opts.onProgress?.('Starting experience…')
+
+      const settleMs = opts.fastAssets ? POST_SPAWN_SETTLE_FAST_MS : POST_SPAWN_SETTLE_MS
+      if (settleMs > 0) {
+        opts.onProgress?.('Settling world…', 0.985)
+        await new Promise<void>((resolve) => window.setTimeout(resolve, settleMs))
+      }
+
+      opts.onProgress?.('Starting experience…', 0.99)
 
       const footer = 'Click to lock cursor · WASD move · /goto name or x,y in chat'
 

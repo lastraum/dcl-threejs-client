@@ -587,6 +587,14 @@ export class CommsService {
     await session.publishTopicData(topic, payload)
   }
 
+  /** Legacy `CommunicationsController.send` — UTF-8 text on topic `comms` (not base64). */
+  async publishCommsMessage(message: string): Promise<void> {
+    const payload = new TextEncoder().encode(message)
+    const session = this.activeDataSession()
+    if (!session) return
+    await session.publishTopicData('comms', payload)
+  }
+
   consumeMessages(topic: string): { messages: Array<{ sender: string; data: string }> } {
     return { messages: this.topicService.consume(topic) }
   }

@@ -68,8 +68,6 @@ const PLAYER_TURN_SMOOTH = 12
 const FACING_SPEED_MIN = 0.12
 const GROUND_COYOTE_SECONDS = 0.15
 const AIR_JUMP_DELAY = 0.2
-/** Drop from above spawn so scene floors above y=0 win over the infinite ground plane. */
-const SPAWN_GROUND_PROBE_LIFT = 4
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v))
@@ -98,6 +96,7 @@ export class PlayerSystem {
   private camDistance = CAM_DISTANCE_DEFAULT
 
   private grounded = false
+  private groundedLastFrame = false
   private nearGround = false
   private groundCoyote = 0
   private jumping = false
@@ -141,25 +140,13 @@ export class PlayerSystem {
     this.bounds = bounds
     this.input = new PlayerInput(this.host.renderer.domElement)
     const spawnPos = dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y, spawn.z))
-    const probeDrop = SPAWN_GROUND_PROBE_LIFT + 64
-    this.physics.spawnPlayer(
-      dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y + SPAWN_GROUND_PROBE_LIFT, spawn.z))
-    )
-    this.physics.snapToGroundBelow(probeDrop)
-    this.physics.invalidateControllerCache()
-    let spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
-    if (!spawnGrounded) {
-      this.physics.teleport(
-        dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y + SPAWN_GROUND_PROBE_LIFT, spawn.z))
-      )
-      this.physics.snapToGroundBelow(probeDrop)
-      this.physics.invalidateControllerCache()
-      spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
+    this.physics.spawnPlayer(spawnPos)
+    // CCT obstacle cache must see static GLTF/MeshCollider actors registered during hydration.
+    this.physics.warmStaticScene()
+    if (spawnPos.y < 0) {
+      this.physics.snapToGroundBelow()
     }
-    if (!spawnGrounded) {
-      this.physics.teleport(spawnPos)
-      spawnGrounded = true
-    }
+    const spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
     this.grounded = spawnGrounded
     this.groundCoyote = spawnGrounded ? GROUND_COYOTE_SECONDS : 0
     this.physics.attachCapsuleDebug(this.root)
@@ -443,10 +430,6 @@ export class PlayerSystem {
       this.jumping = false
     }
 
-    if (this.grounded && !this.jumping) {
-      _velocity.y = 0
-    }
-
     const accel = this.grounded ? GROUND_ACCEL : AIR_ACCEL
     const steerAlpha = 1 - Math.exp(-accel * delta)
 
@@ -501,26 +484,32 @@ export class PlayerSystem {
     }
 
     _displacement.copy(_velocity).multiplyScalar(delta)
-    const idleOnGround =
-      !moving &&
+    // Horizontal-only when actually grounded — coyote must keep vertical displacement so gravity
+    // can pull the capsule onto stair treads (stripping Y during coyote caused lip stalls).
+    if (
       this.grounded &&
       !this.jumping &&
       !this.jumped &&
       !this.airJumpPending &&
-      _displacement.lengthSq() < 1e-10
-
-    if (idleOnGround) {
-      this.groundCoyote = GROUND_COYOTE_SECONDS
-    } else {
-      const moveResult = this.physics.movePlayer(_displacement, delta)
-      this.grounded = moveResult.grounded
-      if (this.grounded) {
-        this.groundCoyote = GROUND_COYOTE_SECONDS
-      } else {
-        this.groundCoyote = Math.max(0, this.groundCoyote - delta)
-      }
-      this.physics.step(delta)
+      _velocity.y <= 0
+    ) {
+      _displacement.y = 0
     }
+
+    const moveResult = this.physics.movePlayer(_displacement, delta)
+    this.grounded = moveResult.grounded
+    if (this.grounded) {
+      this.groundCoyote = GROUND_COYOTE_SECONDS
+      if (!this.jumping) _velocity.y = 0
+      if (!this.groundedLastFrame) {
+        // Air land — refresh CCT obstacle cache so elevated GLTF treads block immediately.
+        this.physics.warmStaticScene()
+      }
+    } else {
+      this.groundCoyote = Math.max(0, this.groundCoyote - delta)
+    }
+    this.groundedLastFrame = this.grounded
+    this.physics.step(delta)
 
     this.nearGround = this.grounded || this.groundCoyote > 0
 
@@ -655,7 +644,6 @@ export class PlayerSystem {
       positionThree.copy(dclToThreeVec(dclPos))
     }
     this.physics.teleport(positionThree)
-    this.physics.snapToGroundBelow()
     _velocity.set(0, 0, 0)
     this.root.position.copy(this.physics.positionOut)
   }

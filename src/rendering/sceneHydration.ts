@@ -21,8 +21,6 @@ export type WaitForSceneAssetsOptions = {
   timeoutMs?: number
   stableMs?: number
   onPrimeRender?: () => void
-  /** Cook PhysX static colliders after each hydration sync (incremental during GLB attach). */
-  onCollidersCook?: () => void
   /** Per-tick stats — e.g. throttle remote avatar composes during scene GLTF pressure. */
   onHydrationTick?: (stats: SceneHydrationStats) => void
 }
@@ -197,7 +195,6 @@ export async function waitForSceneAssets(
       finished = true
       window.clearTimeout(hardTimeout)
       sceneScript.setAssetHydrationMode(false)
-      sceneScript.notifyPlayReady()
       sceneScript.extendSoftHydration(SOFT_HYDRATION_MS)
       options.onPrimeRender?.()
       if (reason) console.warn(`[Hydration] ${reason}`)
@@ -238,8 +235,7 @@ export async function waitForSceneAssets(
         await sceneScript.yieldForWorkerMessages()
         await sceneScript.syncRenderer()
         if (finished) return
-        sceneScript.syncCollisionForce()
-        options.onCollidersCook?.()
+        sceneScript.syncCollision()
         sceneScript.pumpMotionBridges(1 / 60)
 
         const bridgeStats = sceneScript.getHydrationStats()

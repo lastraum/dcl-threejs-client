@@ -42,7 +42,7 @@ const SECONDARY_NOTIFY_NAMES = [
 const BRIDGE_NOTIFY_NAMES = ['Animator', 'AvatarShape'] as const
 
 export type ApplySceneDiffOptions = {
-  /** When false, skip secondary/bridge notifications (full-resync / hydration walks set dirty flags explicitly). */
+  /** When false, skip secondary/bridge notifications (hydration full-walk sets dirty flags explicitly). */
   notifySecondary?: boolean
   /** AvatarAttach-driven entities — renderer owns world pose; skip inbound Transform apply. */
   skipTransformApply?: (entity: Entity) => boolean
@@ -108,6 +108,7 @@ export function applySceneDiff(
     if (isReserved(entity, view) || !store.has(entity)) continue
     if (!Transform.has(entity)) continue
     upsertSet.add(entity)
+    diffEntities.add(entity)
   }
 
   const sorted = sortEntitiesByTransformDepth([...upsertSet], Transform)
@@ -133,7 +134,7 @@ export function applySceneDiff(
       removeLightSource(obj, lk)
     }
 
-    // Tween refresh mutates transforms in place; collision poses use syncPoses, not full resync.
+    // Tween refresh mutates matrixWorld in place — mark colliderPoseDirty via Transform notify.
     if (notifySecondary && diffEntities.has(entity)) {
       store.notifyComponentChange(entity, Transform.componentId, 'put')
     }

@@ -103,7 +103,7 @@ export class DebugPanel {
           <input type="checkbox" data-physx-probe />
           <span>Log PhysX probe (collidersphys)</span>
         </label>
-        <button type="button" class="debug-panel__logs-btn" data-physx-recook>Recook colliders</button>
+        <button type="button" class="debug-panel__logs-btn" data-physx-recook>Force recook all colliders</button>
       </div>
       <div class="debug-panel__render-quality">
         <div class="debug-panel__render-quality-title">Render quality</div>
@@ -324,7 +324,15 @@ export class DebugPanel {
     })
 
     this.physxRecookBtn.addEventListener('click', () => {
-      this.onRecookColliders?.()
+      if (!this.onRecookColliders) {
+        clientDebugLog.log('collision', 'Recook unavailable — scene not ready', { level: 'warn', alsoConsole: true })
+        return
+      }
+      this.onRecookColliders()
+      clientDebugLog.log('collision', 'Manual collider recook started (Debug → Force recook all colliders)', {
+        level: 'success',
+        alsoConsole: true
+      })
       this.physxRecookBtn.textContent = 'Recooking…'
       window.setTimeout(() => {
         this.physxRecookBtn.textContent = 'Recook colliders'

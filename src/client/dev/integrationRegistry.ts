@@ -108,7 +108,7 @@ export const PERFORMANCE_INTEGRATION: IntegrationEntry[] = [
   { id: 'perf:player-idle-skip', name: 'Idle player physics skip', status: 'render', category: 'performance' },
   { id: 'perf:instancing', name: 'GLTF InstancedMesh path', status: 'none', category: 'performance', notes: 'Phase 6 re-arch' },
   { id: 'perf:shadow-pass', name: 'Shadow pass tuning', status: 'partial', category: 'performance', notes: 'e10 deferred' },
-  { id: 'perf:full-resync-interval', name: 'Periodic ThreeBridge full resync', status: 'partial', category: 'performance', notes: 'Safety net; tune in e10' },
+  { id: 'perf:full-resync-interval', name: 'Periodic ThreeBridge full resync', status: 'render', category: 'performance', notes: 'Removed — diff + EntityStore onChange only' },
   { id: 'perf:avatar-attach', name: 'AvatarAttach (Tier B parity)', status: 'render', category: 'performance', notes: 'Bone sampling + worker Transform batch; attach wins over Tween' }
 ]
 

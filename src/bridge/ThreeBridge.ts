@@ -116,7 +116,7 @@ export class ThreeBridge {
   /** Log once per src — emote anchor GLBs often have no render geometry. */
   private readonly loggedEmptyGltfSrcs = new Set<string>()
   private readonly loggedGltfAttachFailures = new Set<string>()
-  private onGltfAttached: (() => void) | null = null
+  private onGltfAttached: ((entity: Entity) => void) | null = null
   private videoPlayerBridge: VideoPlayerBridge | null = null
   private audioSourceBridge: AudioSourceBridge | null = null
   private audioStreamBridge: AudioStreamBridge | null = null
@@ -156,8 +156,8 @@ export class ThreeBridge {
     this.audioStreamBridge = bridge
   }
 
-  /** Fired after a hydration attach burst — sync + cook colliders for newly attached GLTFs. */
-  setOnGltfAttached(callback: (() => void) | null): void {
+  /** Fired after a GLB lands on an entity — incremental collider extract for that entity only. */
+  setOnGltfAttached(callback: ((entity: Entity) => void) | null): void {
     this.onGltfAttached = callback
   }
 
@@ -166,8 +166,8 @@ export class ThreeBridge {
     this.skipTransformApply = fn ?? undefined
   }
 
-  private notifyGltfAttached(): void {
-    this.onGltfAttached?.()
+  private notifyGltfAttached(entity: Entity): void {
+    this.onGltfAttached?.(entity)
   }
 
   private notifyMeshComponent(entity: Entity, componentId: number): void {
@@ -361,8 +361,8 @@ export class ThreeBridge {
       if (performance.now() - burstStart >= ThreeBridge.HYDRATION_ATTACH_TOTAL_MS) break
       this.gltfBudgetRemaining = this.resolveGltfBudget()
       const attached = await this.runMeshAttachPass(sorted, meshEcs, deferMaterials, touchMaterials)
-      // Collider extract + PhysX cook run once per hydration tick (sceneHydration onCollidersCook),
-      // not here — per-attach sync+cook blocked the attach burst on multi-shape trimesh cooks.
+      // Collider extract runs on the hydration tick (syncCollision), not per attach —
+      // per-attach PhysX cook blocked the attach burst on multi-shape trimesh cooks.
       if (attached === 0 && pass > 0) break
     }
   }
@@ -470,7 +470,7 @@ export class ThreeBridge {
       skipTransformApply: this.skipTransformApply
     })
 
-    // Post-hydration safety resync: reconcile transforms / orphan nodes only — never re-touch materials.
+    // Hydration full-walk: reconcile transforms / orphan nodes only — never re-touch materials.
     const touchMaterials = this.hydrationMode
     if (this.hydrationMode) {
       await this.runHydrationAttachPasses(applied.upserts, meshEcs, deferMaterials, touchMaterials)
@@ -706,7 +706,7 @@ export class ThreeBridge {
                 obj.add(clone)
                 mesh = clone
                 this.notifyMeshComponent(entity, GltfContainer.componentId)
-                this.notifyGltfAttached()
+                this.notifyGltfAttached(entity)
                 return
               }
             }
@@ -737,7 +737,7 @@ export class ThreeBridge {
           obj.add(clone)
           mesh = clone
           this.notifyMeshComponent(entity, GltfContainer.componentId)
-          this.notifyGltfAttached()
+          this.notifyGltfAttached(entity)
           if (isMotionFocusActive() && matchesMotionFocusSrc(src)) {
             const loaded = await this.cache.load(url, isLocal ? url : hash)
             const clipNames = loaded.animations.map((c) => c.name)
@@ -763,7 +763,7 @@ export class ThreeBridge {
       if (touchMaterials && Material.has(entity) && mesh) {
         const pb = Material.get(entity) as PbMaterial
         if (!this.materials.needsReapply(entity, pb)) {
-          /* material already matches ECS — skip destructive re-apply on full resync */
+          /* material already matches ECS — skip destructive re-apply on hydration full-walk */
         } else if (deferMaterials || this.shouldDeferTextures()) {
           this.pendingMaterialEntities.add(entity)
           this.materials.applyScalarsToObject3D(mesh, entity, pb)
@@ -813,7 +813,7 @@ export class ThreeBridge {
       if (touchMaterials && Material.has(entity)) {
         const pb = Material.get(entity) as PbMaterial
         if (!this.materials.needsReapply(entity, pb)) {
-          /* material already matches ECS — skip destructive re-apply on full resync */
+          /* material already matches ECS — skip destructive re-apply on hydration full-walk */
         } else if (deferMaterials || this.shouldDeferTextures()) {
           this.pendingMaterialEntities.add(entity)
           this.materials.applyScalarsToObject3D(primitive, entity, pb)

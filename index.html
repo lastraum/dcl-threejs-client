@@ -1096,6 +1096,13 @@
         background-color: #0c0b0f;
         color: #eceaf0;
         overflow: hidden;
+        pointer-events: auto;
+      }
+      /* Block shell, canvas, and HUD clicks until the loading overlay is dismissed. */
+      body.client-loading #app,
+      body.client-loading #client-shell,
+      body.client-loading #hud {
+        pointer-events: none !important;
       }
       .loading-screen__progress {
         position: relative;

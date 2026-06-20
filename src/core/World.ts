@@ -1,3 +1,4 @@
+import type { Entity } from '@dcl/ecs'
 import type { ResolvedScene } from '../dcl/content/types'
 import * as THREE from 'three'
 import { createTerrainModel } from '../dcl/landscape/Worlds/TerrainModel'
@@ -18,17 +19,24 @@ import { SocialService } from '../social/SocialService'
 import { fetchProfileFaceUrl, seedCommsPeerProfile } from '../avatar/peerApi'
 import type { LoginResult } from '../auth/AuthClient'
 import type { SendBinaryRequest } from '../shim/types'
-import { performGetSignedHeaders, performSignedFetch } from '../network/SignedFetchService'
+import {
+  performGetSignedHeaders,
+  performSignedFetch,
+  type SignedFetchSceneContext
+} from '../network/SignedFetchService'
 import { shortenAddress } from '../avatar/displayName'
 import { buildPlayerMirrorIdentity, getOrCreateGuestAddress } from '../bridge/playerMirrorIdentity'
 import type { AvatarAttachTargetResolver } from '../avatar/AvatarAttachTargets'
-import type { DclTransformValues } from '../bridge/dclTransform'
+import { dclToThreeVec, type DclTransformValues } from '../bridge/dclTransform'
+import type { PhysicsColliderDesc } from '../physics/PhysXWorld'
+
 import { openExternalUrl } from '../player/openExternalUrl'
 import { ReservedEntitiesSync } from '../bridge/ReservedEntitiesSync'
 import { waitForSceneAssets, type WaitForSceneAssetsOptions } from '../rendering/sceneHydration'
 import { LightManager } from '../rendering/LightManager'
 import { clearGeometryCookCache } from '../physics/geometryToPxMesh'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
+import { skipRemoteAvatars } from '../client/devFlags'
 import { physxColliderDebug } from '../debug/PhysxColliderDebug'
 
 function useOrbitMode(): boolean {
@@ -52,18 +60,38 @@ export class World {
   private remoteAvatars: RemoteAvatarManager | null = null
   private playerMode = !useOrbitMode()
   private lastGltfColliderCount = 0
-  private lastGltfRegisteredCount = 0
-  private skippedColliderWipeLogged = false
   private loggedGltfPhysMismatch = false
   private collidersPhysLastLog = 0
   private loggedCollidersPhysNoHit = false
-  private hydrationCollidersCooked = false
+  private loggedFinalizePoseDiag = false
+  private collidersLoadingComplete = false
   private lastPhysicsBatchFp = ''
+  private signedFetchSceneContext: SignedFetchSceneContext | null = null
   private sceneCommsConnected = false
-  private colliderHealthPass = 0
+  private pendingColliderCooks = 0
+  private readonly colliderCookQueue = new Set<number>()
+  /** Extract colliders while GLBs attach; PhysX cook runs once after hydration is idle. */
+  private deferPhysxCooks = true
+  private readonly colliderCookPriority = new THREE.Vector3()
+  private warmStaticScenePending = false
+  private bootAssetsTimedOut = false
+  /** Runtime burst (e.g. theatre Scene 11/12) — drain with loading-style recook until idle. */
+  private runtimeColliderBurstUntil = 0
 
-  /** New static actors cooked per hydration tick — keeps GLTF attach ahead of PhysX trimesh work. */
-  private static readonly HYDRATION_COLLIDER_COOK_BUDGET = 50
+  /** Per-tick budget while GLBs still attaching on the loading screen. */
+  private static readonly HYDRATION_COLLIDER_COOK_BUDGET = 80
+  /** Per-frame budget during the post-hydration loading drain. */
+  private static readonly LOADING_COLLIDER_COOK_BUDGET = 96
+  private static readonly RUNTIME_COLLIDER_COOK_BUDGET = 15
+  /** Burst cook after dynamic scene spawns (theatre) — higher per-frame budget. */
+  private static readonly RUNTIME_COLLIDER_BURST_BUDGET = 64
+  private static readonly RUNTIME_COLLIDER_BURST_MS = 12_000
+  private static readonly RUNTIME_COLLIDER_BURST_QUEUE = 24
+  /** Hard cap for the single boot cook — load fails if the queue is not drained in time. */
+  private static readonly LOADING_COLLIDER_WALL_MS = 180_000
+  private static readonly LOADING_COLLIDER_WALL_TIMED_OUT_MS = 120_000
+  private static readonly COLLIDER_COOK_PROGRESS_START = 0.82
+  private static readonly COLLIDER_COOK_PROGRESS_RANGE = 0.12
 
   constructor(container: HTMLElement) {
     this.host = new SceneHost(container)
@@ -74,12 +102,17 @@ export class World {
 
     this.remoteAvatars && this.comms.setHandlers({
       onPeerJoin: (address) => {
+        if (skipRemoteAvatars()) return
         if (address === this.session.getAddress()?.toLowerCase()) return
         this.remoteAvatars?.upsertPeer(address)
         void this.social.ensurePeerProfile(address)
       },
-      onPeerLeave: (address) => this.remoteAvatars?.removePeer(address),
+      onPeerLeave: (address) => {
+        if (skipRemoteAvatars()) return
+        this.remoteAvatars?.removePeer(address)
+      },
       onPeerTransform: (address, payload) => {
+        if (skipRemoteAvatars()) return
         this.remoteAvatars?.updatePeerTransform(
           address,
           new THREE.Vector3(payload.x, payload.y, payload.z),
@@ -95,11 +128,13 @@ export class World {
         )
       },
       onPeerProfile: (address, serializedProfile) => {
+        if (skipRemoteAvatars()) return
         seedCommsPeerProfile(address, serializedProfile)
         this.remoteAvatars?.applyPeerProfile(address, serializedProfile)
         this.social.rememberPeerProfile(address, serializedProfile)
       },
       onPeerEmote: (address, urn, incrementalId) => {
+        if (skipRemoteAvatars()) return
         this.remoteAvatars?.playPeerEmote(address, urn, incrementalId)
       }
     })
@@ -132,6 +167,12 @@ export class World {
   }
 
   async loadScene(scene: ResolvedScene, onProgress?: (msg: string) => void): Promise<void> {
+    if (skipRemoteAvatars()) {
+      clientDebugLog.log('network', 'Remote avatars disabled (?noremote / dev default)', {
+        alsoConsole: true,
+        throttleMs: 60_000
+      })
+    }
     this.assets.setScene(scene)
     prefetchSceneManifestGlbs(this.assets, scene)
     this.comms.setIdentity(this.session.getAddress(), this.session.getAuthIdentity())
@@ -149,7 +190,6 @@ export class World {
     await this.landscape.initialize(scene, this.assets, onProgress)
     if (this.landscape.state.landscapeRoot) {
       this.host.scene.add(this.landscape.state.landscapeRoot)
-      this.sceneScript.gltfColliders?.setLandscapeRoot(this.landscape.state.landscapeRoot)
     }
 
     this.water = new WaterPlane(scene.parcels, scene.baseParcel, 1)
@@ -162,15 +202,23 @@ export class World {
 
     if (scene.mainEntry && scene.entityId) {
       this.sceneScript.prepare(scene, this.assets, this.host)
+      if (this.landscape.state.landscapeRoot) {
+        this.sceneScript.gltfColliders?.setLandscapeRoot(this.landscape.state.landscapeRoot)
+      }
       this.remoteAvatars?.setEntityStore(this.sceneScript.getEntityStore())
-      this.sceneScript.setCollidersCookCallback(() => this.cookStaticColliders())
+      dclToThreeVec(
+        new THREE.Vector3(scene.spawn.x, scene.spawn.y, scene.spawn.z),
+        this.colliderCookPriority
+      )
+      this.sceneScript.setCollidersCookCallback((entity) => this.onColliderCookRequest(entity))
+      this.sceneScript.setCollidersPoseCallback((entities) => this.applyColliderPoseSlides(entities))
       this.sceneScript.setCommsHandler({
         setCommunicationsAdapter: async (body) => ({
           success: await this.comms.connectAdapter(body.connectionString)
         }),
         sendBinary: async (body) => this.handleSendBinary(body),
         send: async (body) => {
-          await this.comms.publishTopicData('comms', body.message)
+          await this.comms.publishCommsMessage(body.message)
           return {}
         },
         getUserData: async () => this.buildUserData(),
@@ -190,8 +238,14 @@ export class World {
         consumeMessages: async (body) => this.comms.consumeMessages(body.topic),
         getActiveVideoStreams: async () => this.comms.getActiveVideoStreams()
       })
+      this.signedFetchSceneContext = {
+        sceneId: scene.entityId ?? '',
+        parcel: scene.baseParcel,
+        realmName: scene.realm.realmName,
+        isWorld: scene.source.kind === 'world'
+      }
       this.sceneScript.setSignedFetchHandler(async (body) =>
-        performSignedFetch(body, this.session.getAuthIdentity())
+        performSignedFetch(body, this.session.getAuthIdentity(), this.signedFetchSceneContext)
       )
       this.sceneScript.setSignedFetchGetHeadersHandler(async (body) =>
         performGetSignedHeaders(body, this.session.getAuthIdentity())
@@ -297,24 +351,43 @@ export class World {
 
   /**
    * Spawn local player after scene script + assets are ready — PhysX ground plane must exist first.
+   * Authoritative GLTF cook runs here (after final renderer sync), then capsule init.
    * Call after `waitForSceneAssets` and `prewarmPhysicsColliders`, before `start()`.
    */
   async spawnLocalPlayer(scene: ResolvedScene, onProgress?: (msg: string) => void): Promise<void> {
     if (!this.playerMode || !this.player) return
+    if (!this.collidersLoadingComplete) {
+      await this.bootCookPhysicsColliders(scene, onProgress, {
+        assetsTimedOut: this.bootAssetsTimedOut
+      })
+    }
 
     const bounds = sceneWorldBounds(scene.parcels, scene.baseParcel)
-    this.sceneScript.syncCollisionForce()
-    this.syncPhysicsColliders()
-    this.physics.warmStaticScene()
 
     onProgress?.('Spawning player…')
     await this.player.initCapsule(scene.spawn, bounds, this.sceneScript.readComponents, onProgress)
-    this.physics.invalidateControllerCache()
     const spawnStatic = this.physics.staticColliderCount
     const spawnGltf = this.physics.gltfStaticActorCount
+    const gltfStats = this.sceneScript.gltfColliders?.getPhysicsExtractionStats()
+    const probe = this.physics.debugProbeStaticHit(2.5)
+    const downProbe = this.physics.debugProbeDownHit(8)
+    const pos = this.player.getPosition()
+    const nearestGltf = pos ? this.nearestGltfColliderHorizDist(pos) : null
+    const sceneProbe = pos ? this.physics.probeSceneMeshDownAt(pos, 12) : null
     console.info(
-      `[World] player spawn — staticColliderCount=${spawnStatic} gltfRegistered=${spawnGltf} gltfExtracted=${this.lastGltfColliderCount}`
+      `[World] player spawn — static=${spawnStatic} gltfRegistered=${spawnGltf} gltfExtracted=${this.lastGltfColliderCount}` +
+        (gltfStats
+          ? ` shapes(inv=${gltfStats.invisibleShapes} vis=${gltfStats.visibleShapes})`
+          : '') +
+        (pos ? ` feet=(${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})` : '') +
+        ` probeH=${probe.distance !== null ? `${probe.distance.toFixed(2)}m` : 'none'}` +
+        ` sceneProbe=${sceneProbe !== null ? `${sceneProbe.toFixed(2)}m` : 'none'}` +
+        ` nearestGltf=${nearestGltf !== null ? `${nearestGltf.toFixed(1)}m` : 'none'}` +
+        ` probeDown=${downProbe !== null ? `${downProbe.toFixed(2)}m` : 'none'}`
     )
+    if (pos) {
+      this.logBootColliderDiag(pos)
+    }
     this.sceneScript.syncClientEntities(this.player.getEntityPose(), this.player.getCameraEntityPose())
 
     const address = this.session.getAddress()
@@ -446,30 +519,32 @@ export class World {
     options?: WaitForSceneAssetsOptions
   ) {
     const spawnCamera = new THREE.Vector3(scene.spawn.x, scene.spawn.y, scene.spawn.z)
-    this.remoteAvatars?.setCameraPosition(spawnCamera)
-    this.remoteAvatars?.setHydrationLoading(true)
+    if (!skipRemoteAvatars()) {
+      this.remoteAvatars?.setCameraPosition(spawnCamera)
+      this.remoteAvatars?.setHydrationLoading(true)
+    }
 
     const hydration = waitForSceneAssets(scene, this.sceneScript, this.assets, onProgress, {
       ...options,
       onPrimeRender: () => this.primeRender(),
-      onCollidersCook: () => this.cookStaticCollidersDuringHydration(),
       onHydrationTick: (stats) => {
-        this.remoteAvatars?.setSceneAssetPressure(stats.gltfInflight, stats.textureInflight)
+        if (!skipRemoteAvatars()) {
+          this.remoteAvatars?.setSceneAssetPressure(stats.gltfInflight, stats.textureInflight)
+        }
         options?.onHydrationTick?.(stats)
       }
     })
     if (!hydration) {
-      this.remoteAvatars?.setHydrationLoading(false)
+      if (!skipRemoteAvatars()) this.remoteAvatars?.setHydrationLoading(false)
       return
     }
     return hydration.finally(() => {
-      this.remoteAvatars?.setHydrationLoading(false)
+      if (!skipRemoteAvatars()) this.remoteAvatars?.setHydrationLoading(false)
     })
   }
 
   /** One visible frame (sky/landscape/camera) before the loading overlay hides. */
   primeRender(): void {
-    this.syncPhysicsColliders()
     this.water?.update(0)
     this.lightManager.update(this.host.camera.position)
     this.environment.update(0, this.sceneScript.view, this.sceneScript.readComponents)
@@ -489,7 +564,6 @@ export class World {
   }
 
   start(): void {
-    this.sceneScript.notifyPlayReady()
     this.sceneScript.setVideoUserGestureUnlocked(true)
     let startFrame = 0
     this.host.start({
@@ -497,7 +571,9 @@ export class World {
         startFrame++
         this.water?.update(delta)
         this.lightManager.update(this.host.camera.position)
-        this.remoteAvatars?.setCameraPosition(this.host.camera.position)
+        if (!skipRemoteAvatars()) {
+          this.remoteAvatars?.setCameraPosition(this.host.camera.position)
+        }
         this.environment.update(delta, this.sceneScript.view, this.sceneScript.readComponents)
 
         if (this.playerMode && this.player) {
@@ -525,7 +601,9 @@ export class World {
           }
         }
 
-        this.remoteAvatars?.update(delta)
+        if (!skipRemoteAvatars()) {
+          this.remoteAvatars?.update(delta)
+        }
         this.comms.flushBroadcast()
 
         // Tweens / billboards / GLTF animators — sync frame, before render (not async-gated).
@@ -546,10 +624,352 @@ export class World {
   }
 
   private applyPhysicsColliders(): void {
+    if (!this.playerMode || !this.collidersLoadingComplete || this.deferPhysxCooks) return
+    const batchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
+    const fpDrifted = batchFp !== this.lastPhysicsBatchFp
+    if (fpDrifted) {
+      this.sceneScript.refreshColliderDescPoses()
+      this.pushColliderPosesToPhysX()
+    }
+    this.reconcileColliderCookQueue()
+    if (this.colliderCookQueue.size > 0) {
+      this.drainColliderCookQueue({ initialOnly: true })
+    }
+    const driftRecooked = this.physics.recookWorldBakedPoseDrift(
+      this.sceneScript.getAllPhysicsColliderDescs()
+    )
+    if (driftRecooked > 0) this.scheduleWarmStaticScene()
+  }
+
+  /** Runtime tween / transform pose slide — only the entities that moved. */
+  private applyColliderPoseSlides(changedEntities: Entity[]): void {
+    if (!changedEntities.length) return
+    const physIds: number[] = []
+    for (const entity of changedEntities) {
+      physIds.push(...this.sceneScript.collectPhysCookTargets(entity))
+    }
+    this.applyColliderPoseSlidesForPhysIds(physIds)
+  }
+
+  private collectColliderDescs(physIds: number[]): PhysicsColliderDesc[] {
+    const descs: PhysicsColliderDesc[] = []
+    for (const physId of physIds) {
+      const desc = this.sceneScript.getPhysicsColliderDesc(physId)
+      if (desc) descs.push(desc)
+    }
+    return descs
+  }
+
+  /** Incremental pose push — entity-local actors only; world-baked drift is queued for recook. */
+  private applyColliderPoseSlidesForPhysIds(physIds: number[]): void {
+    if (!this.playerMode || !physIds.length) return
+    for (const physId of physIds) {
+      this.sceneScript.refreshColliderPose(physId)
+    }
+    const descs = this.collectColliderDescs(physIds)
+    const slideDescs: PhysicsColliderDesc[] = []
+    for (const desc of descs) {
+      if (this.physics.needsWorldBakedPoseRecook(desc)) {
+        this.colliderCookQueue.add(desc.entity)
+        continue
+      }
+      slideDescs.push(desc)
+    }
+    const updated = this.physics.applyStaticColliderPoseUpdates(slideDescs)
+    if (updated > 0) this.scheduleWarmStaticScene()
+    if (this.colliderCookQueue.size > 0 && this.collidersLoadingComplete) {
+      this.drainColliderCookQueue({ initialOnly: true })
+    }
+  }
+
+  /** Coalesce runtime CCT cache warms to once per frame. */
+  private scheduleWarmStaticScene(): void {
+    if (this.warmStaticScenePending) return
+    this.warmStaticScenePending = true
+    requestAnimationFrame(() => {
+      this.warmStaticScenePending = false
+      this.physics.warmStaticScene()
+    })
+  }
+
+  /** Pose slide only — never recooks geometry (runtime + post-spawn CRDT drain). */
+  private pushColliderPosesToPhysX(options?: { force?: boolean }): void {
     if (!this.playerMode) return
-    this.colliderHealthPass++
-    if (this.colliderHealthPass % 90 === 0 && this.repairCollidersIfBroken()) return
-    this.cookStaticColliders()
+    this.sceneScript.refreshColliderDescPoses()
+    const descs = this.sceneScript.getAllPhysicsColliderDescs()
+    const force = options?.force === true
+    const updated = this.physics.applyStaticColliderPoseUpdates(descs, { force })
+    if (updated > 0) this.physics.warmStaticScene()
+    this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
+  }
+
+  private nearestGltfColliderHorizDist(feet: THREE.Vector3): number | null {
+    let nearest: number | null = null
+    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      if (!desc.fingerprint.startsWith('gltf-entity:')) continue
+      const dx = desc.matrix.elements[12]! - feet.x
+      const dz = desc.matrix.elements[14]! - feet.z
+      const d = Math.hypot(dx, dz)
+      if (nearest === null || d < nearest) nearest = d
+    }
+    return nearest
+  }
+
+  /** After boot cook — log probe health at spawn feet (once). */
+  private logBootColliderDiag(probeAt: THREE.Vector3): void {
+    if (!this.playerMode || this.loggedFinalizePoseDiag) return
+    if (this.physics.gltfStaticActorCount < 20) return
+    this.loggedFinalizePoseDiag = true
+    const descs = this.sceneScript.getAllPhysicsColliderDescs()
+    let fpMismatch = 0
+    let missingActor = 0
+    for (const desc of descs) {
+      if (!desc.fingerprint.startsWith('gltf-entity:')) continue
+      if (!this.physics.hasStaticActor(desc.entity)) missingActor++
+      else if (!this.physics.geomFingerprintMatches(desc)) fpMismatch++
+    }
+    const sceneProbe = this.physics.probeSceneMeshDownAt(probeAt, 12)
+    const probe = this.physics.debugProbeDownHit(8)
+    const nearestGltf = this.nearestGltfColliderHorizDist(probeAt)
+    console.info(
+      `[World] colliders booted — gltf=${this.physics.gltfStaticActorCount}` +
+        (fpMismatch > 0 ? ` fpMismatch=${fpMismatch}` : '') +
+        (missingActor > 0 ? ` missingActor=${missingActor}` : '') +
+        ` sceneProbe=${sceneProbe !== null ? `${sceneProbe.toFixed(2)}m` : 'none'}` +
+        ` nearestGltf=${nearestGltf !== null ? `${nearestGltf.toFixed(1)}m` : 'none'}` +
+        ` probeDown=${probe !== null ? `${probe.toFixed(2)}m` : 'none'}`
+    )
+  }
+
+  /** GLB attached (enqueue) or hydration tick / notifyPlayReady (reconcile + drain). */
+  private onColliderCookRequest(ecsEntity?: Entity): void {
+    const queueBefore = this.colliderCookQueue.size
+    if (ecsEntity !== undefined) {
+      const physIds = this.sceneScript.collectPhysCookTargets(ecsEntity)
+      this.enqueueColliderCook(ecsEntity)
+      this.maybeBeginRuntimeColliderBurst(queueBefore)
+      if (this.collidersLoadingComplete) {
+        this.drainColliderCookQueue({ initialOnly: true })
+        this.applyColliderPoseSlidesForPhysIds(physIds)
+      }
+      return
+    }
+    this.reconcileColliderCookQueue()
+    this.maybeBeginRuntimeColliderBurst(queueBefore)
+    if (this.collidersLoadingComplete) {
+      const touched = [...this.colliderCookQueue]
+      this.drainColliderCookQueue({ initialOnly: true })
+      this.applyColliderPoseSlidesForPhysIds(touched)
+    }
+  }
+
+  /** Dynamic scene spawn (theatre) — short burst of higher PhysX cook budget. */
+  private maybeBeginRuntimeColliderBurst(queueBefore: number): void {
+    if (!this.collidersLoadingComplete) return
+    const pending = this.colliderCookQueue.size
+    const delta = pending - queueBefore
+    if (
+      pending >= World.RUNTIME_COLLIDER_BURST_QUEUE ||
+      delta >= World.RUNTIME_COLLIDER_BURST_QUEUE
+    ) {
+      this.runtimeColliderBurstUntil = performance.now() + World.RUNTIME_COLLIDER_BURST_MS
+      clientDebugLog.log(
+        'collision',
+        `Runtime collider burst — pending=${pending} (+${delta})`,
+        { level: 'info', alsoConsole: true, throttleMs: 5_000 }
+      )
+    }
+  }
+
+  private enqueueColliderCook(ecsEntity: Entity): void {
+    if (this.deferPhysxCooks) return
+    for (const physId of this.sceneScript.collectPhysCookTargets(ecsEntity)) {
+      if (this.collidersLoadingComplete) {
+        this.sceneScript.refreshColliderPose(physId)
+      } else if (!this.deferPhysxCooks) {
+        this.sceneScript.refreshColliderBeforeCook(physId)
+      }
+      const desc = this.sceneScript.getPhysicsColliderDesc(physId)
+      if (!desc || this.physics.isColliderSynced(desc)) {
+        this.colliderCookQueue.delete(physId)
+        continue
+      }
+      this.colliderCookQueue.add(physId)
+    }
+    this.pendingColliderCooks = this.colliderCookQueue.size
+  }
+
+  /** Scan extracted descriptors and queue any not yet in PhysX. */
+  private reconcileColliderCookQueue(): void {
+    if (this.deferPhysxCooks) {
+      this.pendingColliderCooks = this.colliderCookQueue.size
+      return
+    }
+    this.sceneScript.refreshColliderDescPoses()
+    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      if (
+        this.collidersLoadingComplete &&
+        this.physics.isWorldBakedStatic(desc.entity) &&
+        this.physics.geomFingerprintMatches(desc)
+      ) {
+        if (this.physics.needsWorldBakedPoseRecook(desc)) {
+          this.colliderCookQueue.add(desc.entity)
+          continue
+        }
+        this.physics.ackStaticPoseFingerprint(desc)
+        this.colliderCookQueue.delete(desc.entity)
+        continue
+      }
+      if (this.physics.isColliderSynced(desc)) {
+        this.colliderCookQueue.delete(desc.entity)
+      } else {
+        this.colliderCookQueue.add(desc.entity)
+      }
+    }
+    this.pendingColliderCooks = this.colliderCookQueue.size
+  }
+
+  private colliderCookProgressFraction(registered: number, total: number): number {
+    if (total <= 0) return World.COLLIDER_COOK_PROGRESS_START + World.COLLIDER_COOK_PROGRESS_RANGE
+    const frac = Math.min(1, registered / total)
+    return World.COLLIDER_COOK_PROGRESS_START + World.COLLIDER_COOK_PROGRESS_RANGE * frac
+  }
+
+  private drainColliderCookQueue(options?: {
+    hydration?: boolean
+    loading?: boolean
+    /** Boot spawn cook — entity-local vertices, actor at world pose (not world-baked). */
+    entityLocal?: boolean
+    /** Post-load: register actors that have never been cooked — never remove/recook existing. */
+    initialOnly?: boolean
+  }): void {
+    const burstActive = performance.now() < this.runtimeColliderBurstUntil
+    const budget = options?.hydration
+      ? World.HYDRATION_COLLIDER_COOK_BUDGET
+      : options?.loading
+        ? World.LOADING_COLLIDER_COOK_BUDGET
+        : options?.initialOnly
+          ? burstActive
+            ? World.RUNTIME_COLLIDER_BURST_BUDGET
+            : World.RUNTIME_COLLIDER_COOK_BUDGET
+          : Number.POSITIVE_INFINITY
+
+    const loadingPass = !!(options?.loading || options?.hydration)
+    const toCook: PhysicsColliderDesc[] = []
+    let worldBakedRecook = false
+    for (const physId of this.colliderCookQueue) {
+      if (toCook.length >= budget) break
+      if (loadingPass) {
+        this.sceneScript.flushSceneGraphMatrices()
+        this.sceneScript.refreshColliderBeforeCook(physId)
+      } else {
+        this.sceneScript.refreshColliderPose(physId)
+      }
+      const desc = this.sceneScript.getPhysicsColliderDesc(physId)
+      if (!desc) {
+        this.colliderCookQueue.delete(physId)
+        continue
+      }
+      if (!loadingPass && this.physics.isColliderSynced(desc)) {
+        this.colliderCookQueue.delete(physId)
+        continue
+      }
+      if (loadingPass) {
+        this.physics.invalidateStaticCollider(physId)
+      } else if (
+        this.physics.isWorldBakedStatic(physId) &&
+        desc &&
+        this.physics.needsWorldBakedPoseRecook(desc)
+      ) {
+        this.physics.invalidateStaticCollider(physId)
+        worldBakedRecook = true
+      }
+      if (options?.initialOnly && this.physics.hasStaticActor(physId)) {
+        if (this.physics.isColliderSynced(desc)) {
+          this.colliderCookQueue.delete(physId)
+          continue
+        }
+        // Boot world-bake — keep actor when pose still matches; drift needs full recook below.
+        if (
+          this.physics.isWorldBakedStatic(physId) &&
+          this.physics.geomFingerprintMatches(desc) &&
+          !this.physics.needsWorldBakedPoseRecook(desc)
+        ) {
+          this.physics.ackStaticPoseFingerprint(desc)
+          this.colliderCookQueue.delete(physId)
+          continue
+        }
+        if (this.physics.geomFingerprintMatches(desc)) {
+          if (this.physics.needsWorldBakedPoseRecook(desc)) {
+            // fall through — world-baked actor needs a full recook
+          } else if (!this.physics.isWorldBakedStatic(physId)) {
+            // Entity-local actor — pose slide only (theatre / composite parent moves).
+            this.physics.applyStaticColliderPoseUpdates([desc])
+            this.colliderCookQueue.delete(physId)
+            continue
+          } else {
+            this.physics.ackStaticPoseFingerprint(desc)
+            this.colliderCookQueue.delete(physId)
+            continue
+          }
+        }
+      }
+      toCook.push(desc)
+    }
+
+    if (!toCook.length) {
+      this.pendingColliderCooks = this.colliderCookQueue.size
+      this.refreshColliderCookStats()
+      return
+    }
+
+    try {
+      const result = this.physics.syncStaticColliders(toCook, {
+        cookBudget: toCook.length,
+        freezeRemoval: true,
+        // Loading + world-baked pose drift: full recook. Runtime entity-local: pose slide only.
+        forceRecookOnPoseChange: loadingPass || worldBakedRecook,
+        geometryCache: options?.entityLocal ? true : !loadingPass
+      })
+      for (const desc of toCook) {
+        if (this.physics.isColliderSynced(desc)) {
+          this.colliderCookQueue.delete(desc.entity)
+        }
+      }
+      if (result.geometryChanged) {
+        if (loadingPass) this.physics.warmStaticScene()
+        else this.scheduleWarmStaticScene()
+      }
+    } catch (err) {
+      console.warn('[World] per-entity collider cook failed:', err)
+    }
+
+    this.pendingColliderCooks = this.colliderCookQueue.size
+    this.refreshColliderCookStats()
+  }
+
+  private refreshColliderCookStats(): void {
+    const gltfEntityCount = this.sceneScript.gltfColliders?.getGltfEntityColliderCount() ?? 0
+    this.lastGltfColliderCount = gltfEntityCount
+    const batchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
+    if (batchFp !== this.lastPhysicsBatchFp) {
+      this.lastPhysicsBatchFp = batchFp
+    }
+
+    const gltfRegisteredAfter = this.physics.gltfStaticActorCount
+    if (
+      gltfEntityCount > 0 &&
+      gltfRegisteredAfter === 0 &&
+      this.colliderCookQueue.size === 0 &&
+      !this.loggedGltfPhysMismatch
+    ) {
+      this.loggedGltfPhysMismatch = true
+      console.warn(
+        `[World] ${gltfEntityCount} GLTF entity colliders extracted but 0 registered in PhysX — check cook failures in console`
+      )
+    } else if (gltfRegisteredAfter > 0) {
+      this.loggedGltfPhysMismatch = false
+    }
   }
 
   /**
@@ -561,12 +981,19 @@ export class World {
     if (options?.force !== false) {
       this.lastPhysicsBatchFp = ''
       this.physics.clearFailedCookCaches()
+      this.physics.clearGltfStaticActors()
+      this.colliderCookQueue.clear()
     }
     this.sceneScript.syncCollisionForce()
-    this.cookStaticColliders()
+    this.reconcileColliderCookQueue()
+    while (this.colliderCookQueue.size > 0) {
+      this.drainColliderCookQueue({ loading: true })
+    }
+    this.pushColliderPosesToPhysX({ force: true })
+    this.physics.recookWorldBakedPoseDrift(this.sceneScript.getAllPhysicsColliderDescs(), {
+      forceAll: true
+    })
     this.physics.warmStaticScene()
-    this.physics.invalidateControllerCache()
-    this.physics.snapToGroundBelow(0.5)
     if (!options?.quiet) {
       const mesh = this.sceneScript.collision?.getPhysicsColliders().length ?? 0
       const gltf = this.sceneScript.gltfColliders?.getPhysicsColliders().length ?? 0
@@ -580,150 +1007,6 @@ export class World {
     }
   }
 
-  /** Self-heal when scene colliders exist but PhysX lost registration. */
-  private repairCollidersIfBroken(): boolean {
-    if (!this.player?.getPosition()) return false
-    const meshDescs = this.sceneScript.collision?.getPhysicsColliders() ?? []
-    const gltfEntityCount = this.sceneScript.gltfColliders?.getGltfEntityColliderCount() ?? 0
-    const gltfRegistered = this.physics.gltfStaticActorCount
-    if (meshDescs.length < 2 && gltfEntityCount < 2) return false
-
-    let meshRegistered = 0
-    for (const desc of meshDescs) {
-      if (this.physics.hasStaticActor(desc.entity)) meshRegistered++
-    }
-    const missingMeshActors = meshDescs.length >= 2 && meshRegistered < meshDescs.length
-    const missingGltfActors =
-      gltfEntityCount >= 10 && gltfRegistered < gltfEntityCount * 0.85
-
-    if (!missingMeshActors && !missingGltfActors) return false
-
-    const probe = this.physics.debugProbeStaticHit(2.5)
-    clientDebugLog.log(
-      'collision',
-      `[auto-repair] mesh ${meshRegistered}/${meshDescs.length} gltf ${gltfRegistered}/${gltfEntityCount} in PhysX, horizontal probe=${probe.distance !== null ? `${probe.distance.toFixed(2)}m` : 'none'} — recooking`,
-      { level: 'warn', throttleMs: 8000, throttleKey: 'collider-auto-repair' }
-    )
-    this.recookPhysicsColliders({ force: true, quiet: true })
-    return true
-  }
-
-  /**
-   * Extract GLTF/MeshCollider descriptors and cook any new/changed trimeshes into PhysX.
-   * Safe to call during asset hydration (before the player capsule exists).
-   */
-  cookStaticColliders(options?: { hydration?: boolean }): void {
-    const gltfEntityCount = this.sceneScript.gltfColliders?.getGltfEntityColliderCount() ?? 0
-    const prevGltf = this.lastGltfColliderCount
-    const prevRegistered = this.lastGltfRegisteredCount
-
-    if (!options?.hydration) {
-      this.sceneScript.syncCollisionPoses()
-    }
-
-    const meshColliders = this.sceneScript.collision?.getPhysicsColliders() ?? []
-    const gltfColliderDescs = this.sceneScript.gltfColliders?.getPhysicsColliders() ?? []
-
-    const gltfRegistered = this.physics.gltfStaticActorCount
-    const transientEmptyBatch = gltfEntityCount === 0 && prevGltf > 10 && gltfRegistered > 0
-    const dropThreshold = Math.max(5, Math.floor(prevGltf * 0.12))
-    const transientPartialDrop =
-      prevGltf > 10 &&
-      gltfEntityCount > 0 &&
-      gltfEntityCount < prevGltf - dropThreshold &&
-      gltfRegistered > gltfEntityCount
-    const deferGltfWipe = transientEmptyBatch || transientPartialDrop
-    if (deferGltfWipe) {
-      if (!this.skippedColliderWipeLogged) {
-        const reason = transientEmptyBatch ? 'empty extraction batch' : 'partial extraction drop'
-        console.warn(`[World] deferring GLTF collider removal — transient ${reason}`)
-        this.skippedColliderWipeLogged = true
-      }
-    } else {
-      this.skippedColliderWipeLogged = false
-    }
-
-    const cookDescs = transientEmptyBatch ? meshColliders : [...meshColliders, ...gltfColliderDescs]
-    let registeredForCook = 0
-    for (const desc of cookDescs) {
-      if (this.physics.hasStaticActor(desc.entity)) registeredForCook++
-    }
-
-    const gltfRegistrationComplete =
-      deferGltfWipe || gltfEntityCount === 0 || gltfRegistered >= gltfEntityCount
-    const cookRegistrationComplete =
-      cookDescs.length === 0 || registeredForCook >= cookDescs.length
-
-    if (!options?.hydration) {
-      const batchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
-      if (
-        batchFp === this.lastPhysicsBatchFp &&
-        cookRegistrationComplete &&
-        gltfRegistrationComplete
-      ) {
-        return
-      }
-      this.lastPhysicsBatchFp = batchFp
-    }
-
-    try {
-      const geometryChanged = this.physics.syncStaticColliders(cookDescs, {
-        cookBudget: options?.hydration ? World.HYDRATION_COLLIDER_COOK_BUDGET : undefined,
-        freezeGltfRemoval: deferGltfWipe
-      })
-      if (geometryChanged && !options?.hydration) {
-        this.physics.warmStaticScene()
-      }
-    } catch (err) {
-      console.warn('[World] syncStaticColliders failed:', err)
-      return
-    }
-
-    const gltfRegisteredAfter = this.physics.gltfStaticActorCount
-    // Landscape `_collider` meshes are extracted here but registered as environment actors, not gltf-*.
-    if (
-      !options?.hydration &&
-      gltfEntityCount > 0 &&
-      gltfRegisteredAfter === 0 &&
-      !this.loggedGltfPhysMismatch
-    ) {
-      this.loggedGltfPhysMismatch = true
-      console.warn(
-        `[World] ${gltfEntityCount} GLTF entity colliders extracted but 0 registered in PhysX — check cook failures in console`
-      )
-    } else if (gltfRegisteredAfter > 0) {
-      this.loggedGltfPhysMismatch = false
-    }
-
-    const gltfRecoveredFromEmpty = prevGltf === 0 && gltfEntityCount > 0
-    const significantGltfIncrease =
-      gltfEntityCount - prevGltf >= 50 || (prevGltf < 10 && gltfEntityCount >= 50)
-    const significantGltfRegistered =
-      gltfRegisteredAfter - prevRegistered >= 50 ||
-      (prevRegistered < 10 && gltfRegisteredAfter >= 50)
-    if (
-      this.player &&
-      (gltfRecoveredFromEmpty || significantGltfIncrease || significantGltfRegistered)
-    ) {
-      this.physics.invalidateControllerCache()
-      // Small correction only — full snap teleports and zeroes velocity (breaks movement near walls).
-      this.physics.snapToGroundBelow(0.35)
-    }
-    this.lastGltfColliderCount = gltfEntityCount
-    this.lastGltfRegisteredCount = gltfRegisteredAfter
-  }
-
-  /** Incremental PhysX cook while GLBs attach during the loading-screen hydration loop. */
-  private cookStaticCollidersDuringHydration(): void {
-    if (!this.playerMode) return
-    this.cookStaticColliders({ hydration: true })
-    const gltfEntityCount = this.sceneScript.gltfColliders?.getGltfEntityColliderCount() ?? 0
-    const gltfRegistered = this.physics.gltfStaticActorCount
-    if (gltfEntityCount === 0 || gltfRegistered >= gltfEntityCount) {
-      this.hydrationCollidersCooked = true
-    }
-  }
-
   private logCollidersPhysDebug(): void {
     if (!physxColliderDebug.isCollidersPhysEnabled()) return
     const now = performance.now()
@@ -731,8 +1014,17 @@ export class World {
     this.collidersPhysLastLog = now
     const probe = this.physics.debugProbeStaticHit()
     const hit = probe.distance !== null ? `${probe.distance.toFixed(2)}m` : 'none'
+    const downProbe = this.physics.debugProbeDownHit(8)
+    const physFeet = this.player?.getWorldPosition()
+    const feet =
+      physFeet !== undefined
+        ? `feet=(${physFeet.x.toFixed(1)}, ${physFeet.y.toFixed(1)}, ${physFeet.z.toFixed(1)})`
+        : ''
+    const down = downProbe !== null ? `probeDown=${downProbe.toFixed(2)}m` : 'probeDown=none'
+    const pending = this.pendingColliderCooks
+    const pendingStr = pending > 0 ? ` pendingCook=${pending}` : ''
     console.info(
-      `[collidersphys] static=${probe.staticCount} gltfRegistered=${probe.gltfCount} extracted=${this.lastGltfColliderCount} nearestHit=${hit}`
+      `[collidersphys] static=${probe.staticCount} gltfRegistered=${probe.gltfCount} extracted=${this.lastGltfColliderCount} nearestHit=${hit} ${down}${feet ? ` ${feet}` : ''}${pendingStr}`
     )
     if (
       !this.loggedCollidersPhysNoHit &&
@@ -748,121 +1040,139 @@ export class World {
     }
   }
 
-  syncPhysicsColliders(): void {
-    if (!this.playerMode || !this.player) return
-    this.recookPhysicsColliders({ force: true, quiet: true })
+  /**
+   * Hydration follow-up: extract colliders from live Three.js poses — PhysX cook deferred to spawn.
+   * Keeps hydration mode on so projection diff cannot drift transforms before the authoritative cook.
+   */
+  async prewarmPhysicsColliders(
+    _scene: ResolvedScene,
+    onProgress?: (msg: string, fraction?: number) => void,
+    options: { assetsTimedOut?: boolean } = {}
+  ): Promise<void> {
+    if (!this.playerMode) return
+    this.bootAssetsTimedOut = options.assetsTimedOut ?? false
+    this.lastPhysicsBatchFp = ''
+    this.collidersLoadingComplete = false
+    this.deferPhysxCooks = true
+    this.colliderCookQueue.clear()
+
+    this.sceneScript.setAssetHydrationMode(true)
+    onProgress?.('Preparing collisions…', World.COLLIDER_COOK_PROGRESS_START)
+    await this.sceneScript.syncRendererFull()
+    this.sceneScript.flushSceneGraphMatrices()
+    this.sceneScript.invalidateGltfColliderSyncCache()
+    this.sceneScript.syncCollisionForce()
+    this.refreshColliderCookStats()
+    const extracted = this.lastGltfColliderCount
+    onProgress?.(
+      extracted > 0 ? `Colliders extracted (${extracted} GLTF)…` : 'Preparing collisions…',
+      World.COLLIDER_COOK_PROGRESS_START + World.COLLIDER_COOK_PROGRESS_RANGE * 0.25
+    )
   }
 
   /**
-   * Validation pass after hydration — most trimeshes are already cooked incrementally while
-   * GLBs attach. Only re-syncs the renderer when assets are still pending; otherwise just
-   * re-extracts poses and confirms the static-actor count stabilises.
+   * Authoritative boot cook — runs immediately before player spawn after final ECS/renderer sync.
+   * Entity-local trimesh + actor at world pose; no post-spawn pose fixups.
    */
-  async prewarmPhysicsColliders(
-    onProgress?: (msg: string) => void,
-    options: { assetsTimedOut?: boolean; beforeSpawn?: boolean } = {}
+  private async bootCookPhysicsColliders(
+    scene: ResolvedScene,
+    onProgress?: (msg: string, fraction?: number) => void,
+    options: { assetsTimedOut?: boolean } = {}
   ): Promise<void> {
-    if (!this.playerMode) return
     const assetsTimedOut = options.assetsTimedOut ?? false
-    this.lastPhysicsBatchFp = ''
-    const maxWallMs = assetsTimedOut ? 15_000 : 12_000
-    const maxPasses = assetsTimedOut ? 12 : 16
+    const maxWallMs = assetsTimedOut
+      ? World.LOADING_COLLIDER_WALL_TIMED_OUT_MS
+      : World.LOADING_COLLIDER_WALL_MS
     const started = performance.now()
 
-    let prev = -1
-    let prevGltfRegistered = -1
-    let stable = 0
-    let gltfStable = 0
-
-    for (let pass = 0; pass < maxPasses; pass++) {
-      if (performance.now() - started >= maxWallMs) {
-        clientDebugLog.log('collision', `[prewarm] wall timeout after ${pass} pass(es)`, {
-          throttleMs: 10_000,
-          alsoConsole: false
-        })
-        break
-      }
-
-      const hydration = this.sceneScript.getHydrationStats()
-      const gltfsPending = hydration?.gltfPending ?? 0
-
-      // Renderer full-walk only when late attaches are still in flight.
-      if (gltfsPending > 0) {
-        await this.sceneScript.syncRenderer()
-      }
+    this.sceneScript.setAssetHydrationMode(true)
+    try {
+      onProgress?.('Syncing scene…', World.COLLIDER_COOK_PROGRESS_START + World.COLLIDER_COOK_PROGRESS_RANGE * 0.3)
+      await this.sceneScript.syncRendererFull()
+      this.sceneScript.flushSceneGraphMatrices()
+      this.sceneScript.invalidateGltfColliderSyncCache()
       this.sceneScript.syncCollisionForce()
-      this.cookStaticColliders()
-      this.physics.warmStaticScene()
-      const count = this.physics.staticColliderCount
-      const gltfCount = this.lastGltfColliderCount
-      const gltfRegistered = this.physics.gltfStaticActorCount
 
-      if (count === prev) stable++
-      else {
-        stable = 0
-        prev = count
-      }
+      this.lastPhysicsBatchFp = ''
+      this.deferPhysxCooks = false
+      this.physics.clearGltfStaticActors()
+      this.physics.clearFailedCookCaches()
+      this.colliderCookQueue.clear()
+      this.reconcileColliderCookQueue()
 
-      if (assetsTimedOut) {
-        if (gltfCount === 0) {
-          gltfStable = 2
-        } else if (gltfRegistered >= gltfCount) {
-          gltfStable++
-        } else {
-          gltfStable = 0
-          prevGltfRegistered = gltfRegistered
+      dclToThreeVec(
+        new THREE.Vector3(scene.spawn.x, scene.spawn.y, scene.spawn.z),
+        this.colliderCookPriority
+      )
+
+      while (this.colliderCookQueue.size > 0) {
+        if (performance.now() - started > maxWallMs) {
+          const pending = this.colliderCookQueue.size
+          const registered = this.physics.gltfStaticActorCount
+          const extracted = this.lastGltfColliderCount
+          throw new Error(
+            `[World] collider boot incomplete after ${(maxWallMs / 1000).toFixed(0)}s — ` +
+              `gltf=${registered}/${extracted} pending=${pending}`
+          )
         }
-      } else if (gltfsPending > 0) {
-        gltfStable = 0
-      } else if (gltfCount === 0) {
-        gltfStable = 2
-      } else if (gltfRegistered === prevGltfRegistered && gltfRegistered >= gltfCount) {
-        gltfStable++
-      } else {
-        gltfStable = 0
-        prevGltfRegistered = gltfRegistered
+
+        this.drainColliderCookQueue({ loading: true, entityLocal: true })
+        const gltfCount = this.lastGltfColliderCount
+        const registered = this.physics.gltfStaticActorCount
+        const pending = this.colliderCookQueue.size
+        onProgress?.(
+          `Cooking collisions… ${registered}/${gltfCount} GLTF` +
+            (pending > 0 ? ` (${pending} left)` : ''),
+          this.colliderCookProgressFraction(registered, gltfCount)
+        )
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
       }
 
-      const label = this.hydrationCollidersCooked ? 'Checking collisions' : 'Building collisions'
-      onProgress?.(`${label}… ${count} static (${gltfRegistered}/${gltfCount} GLTF)`)
+      this.physics.warmStaticScene()
 
-      const registrationComplete = gltfCount === 0 || gltfRegistered >= gltfCount
-      const spawnProbeReady =
-        options.beforeSpawn || !this.player ? true : this.areSpawnCollidersQueryable(gltfCount)
-      const collidersQueryable =
-        registrationComplete && stable >= 2 && gltfStable >= 2 && spawnProbeReady
-      if (collidersQueryable) break
+      const finalRegistered = this.physics.gltfStaticActorCount
+      const finalGltfCount = this.lastGltfColliderCount
+      if (finalGltfCount > 0 && finalRegistered < finalGltfCount) {
+        throw new Error(
+          `[World] collider boot incomplete — gltf=${finalRegistered}/${finalGltfCount} PhysX actors`
+        )
+      }
 
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-    }
+      this.collidersLoadingComplete = true
+      this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
+      this.sceneScript.notifyPlayReady()
 
-    const finalRegistered = this.physics.gltfStaticActorCount
-    const finalGltfCount = this.lastGltfColliderCount
-    if (finalGltfCount > 0 && finalRegistered === 0) {
-      console.warn(
-        `[World] prewarm finished with 0/${finalGltfCount} GLTF PhysX actors — movement will not collide with GLTF meshes`
+      const elapsedSec = ((performance.now() - started) / 1000).toFixed(1)
+      const staticAfter = this.physics.staticColliderCount
+      const downProbe = this.physics.probeSceneMeshDownAt(this.colliderCookPriority, 12)
+      const nearestGltf = this.nearestGltfColliderHorizDist(this.colliderCookPriority)
+      console.info(
+        `[World] colliders ready — static=${staticAfter} gltf=${finalRegistered}/${finalGltfCount} (${elapsedSec}s)` +
+          ` sceneProbe=${downProbe !== null ? `${downProbe.toFixed(2)}m` : 'none'}` +
+          ` nearestGltf=${nearestGltf !== null ? `${nearestGltf.toFixed(1)}m` : 'none'}`
       )
-    } else if (finalRegistered > 0 && finalRegistered < finalGltfCount) {
-      console.warn(
-        `[World] prewarm finished with ${finalRegistered}/${finalGltfCount} GLTF PhysX actors — some GLTF meshes will not block movement`
-      )
-    } else if (finalGltfCount >= 50 && !this.areSpawnCollidersQueryable(finalGltfCount)) {
-      console.warn(
-        `[World] prewarm finished — ${finalRegistered} GLTF actors registered but horizontal CCT probe near spawn found no hit`
-      )
+      if (finalGltfCount >= 50 && downProbe === null) {
+        let descProbeHits = 0
+        let sampled = 0
+        for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+          if (!desc.fingerprint.startsWith('gltf-entity:')) continue
+          if (sampled >= 8) break
+          sampled++
+          const px = desc.matrix.elements[12]!
+          const py = desc.matrix.elements[13]!
+          const pz = desc.matrix.elements[14]!
+          const probeAt = new THREE.Vector3(px, py + 2, pz)
+          if (this.physics.probeSceneMeshDownAt(probeAt, 16) !== null) descProbeHits++
+        }
+        console.warn(
+          `[World] spawn probe missed scene meshes — nearestDesc=${nearestGltf !== null ? `${nearestGltf.toFixed(1)}m` : 'none'}` +
+            ` descProbes=${descProbeHits}/${sampled}`
+        )
+      }
+      onProgress?.('Collisions ready', 0.96)
+    } finally {
+      this.sceneScript.setAssetHydrationMode(false)
     }
-    if (!options.beforeSpawn && this.player) {
-      this.physics.invalidateControllerCache()
-      this.physics.snapToGroundBelow(8)
-      this.player.syncFromPhysics()
-    }
-  }
-
-  /** True when a horizontal capsule sweep near the player hits registered static geometry. */
-  private areSpawnCollidersQueryable(gltfCount: number): boolean {
-    if (gltfCount < 10) return true
-    const probe = this.physics.debugProbeStaticHit(6)
-    return probe.distance !== null
   }
 
   getPlayerPosition(): THREE.Vector3 | null {

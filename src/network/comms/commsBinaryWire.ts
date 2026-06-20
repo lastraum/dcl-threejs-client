@@ -17,8 +17,14 @@ export function bytesToBase64(data: Uint8Array): string {
 }
 
 export function base64ToBytes(data: string): Uint8Array {
-  const binary = atob(data)
-  const out = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i)
-  return out
+  const trimmed = data.trim()
+  if (!trimmed) return new Uint8Array(0)
+  try {
+    const binary = atob(trimmed)
+    const out = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i)
+    return out
+  } catch {
+    return new TextEncoder().encode(data)
+  }
 }

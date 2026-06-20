@@ -47,6 +47,7 @@ export class CollisionSystem {
     this.unsubscribeDebug()
   }
 
+  /** Full MeshCollider walk — hydration / force-recook only. */
   sync(
     view: ProjectionView,
     ecs: MirrorComponents,
@@ -56,73 +57,102 @@ export class CollisionSystem {
     const active = new Set<Entity>()
 
     for (const [entity] of view.getEntitiesWith(MeshCollider, Transform)) {
-      if (entity === view.RootEntity || entity === view.PlayerEntity || entity === view.CameraEntity) {
-        continue
-      }
-
-      const visual = entityNodes.get(entity)
-      if (!visual) continue
-
+      if (this.isReserved(entity, view)) continue
       active.add(entity)
-      const spec = MeshCollider.get(entity)
-      const collisionMask = resolveCollisionMask(spec.collisionMask)
-      if (collisionMask === ColliderLayer.CL_NONE) continue
-
-      const kind = primitiveKind(spec as PrimitiveMeshSpec)
-      let record = this.colliders.get(entity)
-
-      if (!record || record.mesh.userData.colliderKind !== kind) {
-        if (record) {
-          record.root.remove(record.mesh)
-        }
-
-        let geometry = colliderGeometryCache.get(kind)
-        if (!geometry) {
-          geometry = buildPrimitiveGeometry(spec as PrimitiveMeshSpec)
-          colliderGeometryCache.set(kind, geometry)
-        }
-
-        const mesh = new THREE.Mesh(
-          geometry,
-          this.createDebugMaterial(collisionMask, physxColliderDebug.isSceneMeshCollidersVisible())
-        )
-        mesh.name = `collider:${entity}`
-        mesh.userData.colliderKind = kind
-        mesh.userData.entity = entity
-        mesh.userData.collisionMask = collisionMask
-
-        const root = new THREE.Object3D()
-        root.name = `collider-root:${entity}`
-        root.add(mesh)
-        this.root.add(root)
-
-        record = { root, mesh, collisionMask }
-        this.colliders.set(entity, record)
-      } else if (record.collisionMask !== collisionMask) {
-        record.collisionMask = collisionMask
-        record.mesh.userData.collisionMask = collisionMask
-        this.applyDebugMaterial(record.mesh, collisionMask, physxColliderDebug.isSceneMeshCollidersVisible())
-      }
-
-      visual.updateMatrixWorld(true)
-      const poseFp = colliderPoseFp(visual.matrixWorld)
-      if (this.poseFingerprints.get(entity) !== poseFp) {
-        this.poseFingerprints.set(entity, poseFp)
-        record.root.matrix.copy(visual.matrixWorld)
-        record.root.matrixAutoUpdate = false
-        record.root.updateMatrixWorld(true)
-      }
-      record.mesh.userData.collisionMask = collisionMask
+      this.syncColliderEntity(entity, view, ecs, entityNodes)
     }
 
-    for (const [entity, record] of this.colliders) {
+    for (const entity of this.colliders.keys()) {
       if (active.has(entity)) continue
-      record.root.remove(record.mesh)
-      this.root.remove(record.root)
-      this.colliders.delete(entity)
-      this.poseFingerprints.delete(entity)
+      this.removeColliderEntity(entity)
     }
 
+    this.finalizeColliderSync()
+  }
+
+  /** Sync one entity's MeshCollider primitive (structure + pose). */
+  syncColliderEntity(
+    entity: Entity,
+    view: ProjectionView,
+    ecs: MirrorComponents,
+    entityNodes: Map<Entity, THREE.Group>
+  ): void {
+    const { Transform, MeshCollider } = ecs
+
+    if (this.isReserved(entity, view) || !MeshCollider.has(entity) || !Transform.has(entity)) {
+      this.removeColliderEntity(entity)
+      return
+    }
+
+    const visual = entityNodes.get(entity)
+    if (!visual) return
+
+    const spec = MeshCollider.get(entity)
+    const collisionMask = resolveCollisionMask(spec.collisionMask)
+    if (collisionMask === ColliderLayer.CL_NONE) {
+      this.removeColliderEntity(entity)
+      return
+    }
+
+    const kind = primitiveKind(spec as PrimitiveMeshSpec)
+    let record = this.colliders.get(entity)
+
+    if (!record || record.mesh.userData.colliderKind !== kind) {
+      if (record) {
+        record.root.remove(record.mesh)
+      }
+
+      let geometry = colliderGeometryCache.get(kind)
+      if (!geometry) {
+        geometry = buildPrimitiveGeometry(spec as PrimitiveMeshSpec)
+        colliderGeometryCache.set(kind, geometry)
+      }
+
+      const mesh = new THREE.Mesh(
+        geometry,
+        this.createDebugMaterial(collisionMask, physxColliderDebug.isSceneMeshCollidersVisible())
+      )
+      mesh.name = `collider:${entity}`
+      mesh.userData.colliderKind = kind
+      mesh.userData.entity = entity
+      mesh.userData.collisionMask = collisionMask
+
+      const root = new THREE.Object3D()
+      root.name = `collider-root:${entity}`
+      root.add(mesh)
+      this.root.add(root)
+
+      record = { root, mesh, collisionMask }
+      this.colliders.set(entity, record)
+    } else if (record.collisionMask !== collisionMask) {
+      record.collisionMask = collisionMask
+      record.mesh.userData.collisionMask = collisionMask
+      this.applyDebugMaterial(record.mesh, collisionMask, physxColliderDebug.isSceneMeshCollidersVisible())
+    }
+
+    this.applyColliderPose(entity, visual, record)
+    record.mesh.userData.collisionMask = collisionMask
+  }
+
+  /** Pose-only update for one MeshCollider entity — no ECS scan. */
+  syncColliderEntityPose(entity: Entity, entityNodes: Map<Entity, THREE.Group>): boolean {
+    const record = this.colliders.get(entity)
+    const visual = entityNodes.get(entity)
+    if (!record || !visual) return false
+    return this.applyColliderPose(entity, visual, record)
+  }
+
+  removeColliderEntity(entity: Entity): void {
+    const record = this.colliders.get(entity)
+    if (!record) return
+    record.root.remove(record.mesh)
+    this.root.remove(record.root)
+    this.colliders.delete(entity)
+    this.poseFingerprints.delete(entity)
+  }
+
+  /** Recompute PhysX batch fingerprint after a batch of per-entity structure syncs. */
+  finalizeColliderSync(): void {
     this.recomputePhysicsBatchFingerprint()
   }
 
@@ -130,17 +160,8 @@ export class CollisionSystem {
   syncPoses(entityNodes: Map<Entity, THREE.Group>): void {
     if (!this.colliders.size) return
     let changed = false
-    for (const [entity, record] of this.colliders) {
-      const visual = entityNodes.get(entity)
-      if (!visual) continue
-      visual.updateMatrixWorld(true)
-      const poseFp = colliderPoseFp(visual.matrixWorld)
-      if (this.poseFingerprints.get(entity) === poseFp) continue
-      this.poseFingerprints.set(entity, poseFp)
-      record.root.matrix.copy(visual.matrixWorld)
-      record.root.matrixAutoUpdate = false
-      record.root.updateMatrixWorld(true)
-      changed = true
+    for (const [entity] of this.colliders) {
+      if (this.syncColliderEntityPose(entity, entityNodes)) changed = true
     }
     if (changed) this.recomputePhysicsBatchFingerprint()
   }
@@ -148,6 +169,23 @@ export class CollisionSystem {
   /** Cheap stable hash — skip PhysX cook when primitive poses are unchanged. */
   getPhysicsBatchFingerprint(): string {
     return this.physicsBatchFingerprint
+  }
+
+  private applyColliderPose(entity: Entity, visual: THREE.Group, record: ColliderRecord): boolean {
+    visual.updateMatrixWorld(true)
+    const poseFp = colliderPoseFp(visual.matrixWorld)
+    if (this.poseFingerprints.get(entity) === poseFp) return false
+    this.poseFingerprints.set(entity, poseFp)
+    record.root.matrix.copy(visual.matrixWorld)
+    record.root.matrixAutoUpdate = false
+    record.root.updateMatrixWorld(true)
+    return true
+  }
+
+  private isReserved(entity: Entity, view: ProjectionView): boolean {
+    return (
+      entity === view.RootEntity || entity === view.PlayerEntity || entity === view.CameraEntity
+    )
   }
 
   private recomputePhysicsBatchFingerprint(): void {
@@ -198,6 +236,24 @@ export class CollisionSystem {
     return this.colliders.size
   }
 
+  hasPhysicsCollider(entity: Entity): boolean {
+    const record = this.colliders.get(entity)
+    return !!record && hasColliderLayer(record.collisionMask, ColliderLayer.CL_PHYSICS)
+  }
+
+  getPhysicsColliderForEntity(entity: Entity): PhysicsColliderDesc | null {
+    const record = this.colliders.get(entity)
+    if (!record || !hasColliderLayer(record.collisionMask, ColliderLayer.CL_PHYSICS)) return null
+    record.root.updateMatrixWorld(true)
+    const kind = String(record.mesh.userData.colliderKind ?? 'box')
+    return {
+      entity,
+      kind,
+      fingerprint: this.physicsGeomFingerprint(entity, kind, record.collisionMask),
+      matrix: record.root.matrixWorld.clone()
+    }
+  }
+
   /** Colliders with CL_PHYSICS for PhysX static actors. */
   getPhysicsColliders(): PhysicsColliderDesc[] {
     const out: PhysicsColliderDesc[] = []
@@ -208,11 +264,16 @@ export class CollisionSystem {
       out.push({
         entity,
         kind,
-        fingerprint: `${kind}:${record.collisionMask}:${colliderPoseFp(record.root.matrixWorld)}`,
+        fingerprint: this.physicsGeomFingerprint(entity, kind, record.collisionMask),
         matrix: record.root.matrixWorld.clone()
       })
     }
     return out
+  }
+
+  /** Stable geometry id — pose tracked separately in PhysX (staticPoseFp). */
+  private physicsGeomFingerprint(entity: Entity, kind: string, collisionMask: number): string {
+    return `mesh:${entity}:${kind}:${collisionMask}`
   }
 
   private createDebugMaterial(collisionMask: number, visible: boolean): THREE.MeshBasicMaterial {

@@ -21,7 +21,7 @@ export function parcelWorldOrigin(parcel: ParcelCoord, base: ParcelCoord): {
  */
 export const EMPTY_LAND_GROUND_OFFSET = {
   x: PARCEL_SIZE / 2,
-  y: -0.01,
+  y: -0.02,
   z: PARCEL_SIZE / 2
 } as const
 

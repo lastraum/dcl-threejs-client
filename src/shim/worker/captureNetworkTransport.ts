@@ -13,12 +13,11 @@ export function resolveNetworkTransportOnmessage(): ((data: Uint8Array) => void)
 /** Wrap sync-systems network transport onmessage so processed authoritative CRDT also reaches main projection. */
 export function installNetworkTransportProjectionForwarder(
   transport: RendererTransportExport,
-  forward: (data: Uint8Array) => void
+  _forward: (data: Uint8Array) => void
 ): void {
   watchRendererTransportOnmessage(transport, (onmessage) => {
     const original = onmessage
     const wrapped = (data: Uint8Array) => {
-      if (data?.byteLength) forward(data)
       original(data)
     }
     networkTransportOnmessage = wrapped

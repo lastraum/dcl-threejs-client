@@ -184,6 +184,17 @@ export class World {
     if (!this.sceneCommsConnected || !this.comms.expectsRemoteAuthoritativeServer()) return
     if (!this.comms.hasRemoteAuthoritativeServer()) return
     this.comms.requestAuthoritativeCrdtState(true)
+    this.scheduleAuthoritativeCrdtRetries()
+  }
+
+  /** Authoritative server can answer after scene-room handshake — retry bulk state request. */
+  private scheduleAuthoritativeCrdtRetries(): void {
+    for (const delayMs of [2_000, 5_000, 10_000]) {
+      window.setTimeout(() => {
+        if (!this.sceneCommsConnected || !this.comms.hasRemoteAuthoritativeServer()) return
+        this.comms.requestAuthoritativeCrdtState(true)
+      }, delayMs)
+    }
   }
 
   async loadScene(scene: ResolvedScene, onProgress?: (msg: string) => void): Promise<void> {

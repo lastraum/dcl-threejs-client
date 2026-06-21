@@ -48,7 +48,11 @@ import type {
   SignedFetchGetHeadersHandler
 } from '../../shim/types'
 import type { CommsRealmInfo } from '../../network/comms/types'
-import { normalizeInboundSceneBinary } from '../../network/sceneSync/sceneBinaryWire'
+import {
+  decodeCommsBinaryMessage,
+  normalizeInboundSceneBinary,
+  SceneBinaryMessageType
+} from '../../network/sceneSync/sceneBinaryWire'
 import type { MovePlayerToRequest, MovePlayerToResponse } from '../../player/movePlayerTo'
 import type { OpenExternalUrlRequest, OpenExternalUrlResponse } from '../../player/openExternalUrl'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/triggerEmote'
@@ -691,11 +695,38 @@ export class SceneScriptSystem {
     const wrapped = normalizeInboundSceneBinary(sender, data)
     if (!wrapped) return
     const copy = wrapped.slice()
+    this.applyAuthoritativeInboundComms(copy)
     if (!this.worker) {
       this.pendingCommsBinary.push(copy)
       return
     }
     this.postCommsBinaryToWorker(copy)
+  }
+
+  /** Fort / server entities — apply on main projection as soon as scene-room binary arrives. */
+  private applyAuthoritativeInboundComms(wrapped: Uint8Array): void {
+    const decoded = decodeCommsBinaryMessage(wrapped)
+    if (!decoded?.payload.byteLength) return
+    const { messageType, payload } = decoded
+    if (
+      messageType !== SceneBinaryMessageType.CRDT_AUTHORITATIVE &&
+      messageType !== SceneBinaryMessageType.RES_CRDT_STATE &&
+      messageType !== SceneBinaryMessageType.CRDT
+    ) {
+      return
+    }
+    const typeLabel =
+      messageType === SceneBinaryMessageType.RES_CRDT_STATE
+        ? 'RES_CRDT_STATE'
+        : messageType === SceneBinaryMessageType.CRDT_AUTHORITATIVE
+          ? 'CRDT_AUTHORITATIVE'
+          : 'CRDT'
+    clientDebugLog.log(
+      'projection',
+      `authoritative inbound (${typeLabel}) — ${payload.byteLength}B`,
+      { level: 'info', alsoConsole: true, throttleMs: 2000, throttleKey: `auth-in:${typeLabel}` }
+    )
+    this.applyAuthoritativeCrdtToProjection(payload.slice())
   }
 
   private postCommsBinaryToWorker(data: Uint8Array): void {

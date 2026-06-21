@@ -6,10 +6,7 @@ import {
 import { createEngineApiEventState, type EngineApiEventState } from '../engine/EngineApiEventState'
 import { resolveBinaryMessageBus } from './captureBinaryMessageBus'
 import { installNetworkTransportHook, resolveNetworkTransportOnmessage } from './captureNetworkTransport'
-import {
-  forwardAuthoritativeInboundChunks,
-  processInboundBinaryFallback
-} from './inboundBinaryFallback'
+import { processInboundBinaryFallback } from './inboundBinaryFallback'
 import { applyRealmInfoOnEngine } from './applyRealmInfoOnEngine'
 import type {
   ActiveVideoStreamsResponse,
@@ -141,7 +138,7 @@ let inboundBinaryFlushQueued = false
 /** Brief debounce so RES_CRDT_STATE chunks batch before BinaryMessageBus dispatch. */
 const INBOUND_BINARY_FLUSH_DEBOUNCE_MS = 20
 let inboundBinaryBusMissingWarned = false
-let authoritativeInboundForwardLogged = false
+
 
 function decodeInboundBinaryLogLabel(chunk: Uint8Array): string {
   if (chunk.length < 3) return `binary(${chunk.byteLength}B)`
@@ -187,17 +184,9 @@ function scheduleInboundBinaryFlush(): void {
   }, INBOUND_BINARY_FLUSH_DEBOUNCE_MS)
 }
 
-function postAuthoritativeCrdtToMain(data: Uint8Array): void {
-  if (!authoritativeInboundForwardLogged && data.byteLength > 512) {
-    authoritativeInboundForwardLogged = true
-    workerLog('log', `[sceneWorker] authoritative CRDT → main projection (${data.byteLength}B)`)
-  }
-  ctx.postMessage({ type: 'authoritative-crdt', data } satisfies SceneWorkerOutbound, [data.buffer])
-}
-
 function flushInboundBinaryFallback(chunks: Uint8Array[]): boolean {
   const applied = processInboundBinaryFallback(chunks, {
-    postAuthoritativeCrdt: postAuthoritativeCrdtToMain,
+    postAuthoritativeCrdt: () => {},
     applyNetworkCrdt: (data) => {
       resolveNetworkTransportOnmessage()?.(data)
     },
@@ -214,17 +203,6 @@ async function flushInboundBinaryViaSendBinary(): Promise<void> {
     const bus = resolveBinaryMessageBus()
     if (bus) {
       bus.__processMessages(chunks)
-      const hookInstalled =
-        (globalThis as Record<string, unknown>).__THREEJS_NETWORK_TRANSPORT_HOOKED__ === true
-      if (!hookInstalled) {
-        const forwarded = forwardAuthoritativeInboundChunks(chunks, postAuthoritativeCrdtToMain)
-        if (forwarded > 0 && debugMessageArrival) {
-          workerLog(
-            'log',
-            `[sceneWorker] inbound-binary flush — forwarded ${forwarded} authoritative chunk(s) to main projection`
-          )
-        }
-      }
       const hasResState = chunks.some((chunk) =>
         decodeInboundBinaryLogLabel(chunk).startsWith('RES_CRDT_STATE')
       )
@@ -1632,10 +1610,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
     installPreregisterRendererComponentsHook()
-    installNetworkTransportHook((data) => {
-      if (!data?.byteLength) return
-      postAuthoritativeCrdtToMain(data.slice())
-    })
+    installNetworkTransportHook(() => {})
     const exports = evaluateSceneBundle(code, requireMap, patchSceneBundle)
     if ((globalThis as Record<string, unknown>).__THREEJS_NETWORK_TRANSPORT_HOOKED__ === true) {
       workerLog('log', '[sceneWorker] network transport projection forwarder installed')

@@ -186,6 +186,7 @@ export class CommsService {
       },
       onSceneBinary: (sceneId, sender, data) => {
         if (this.sceneId && sceneId !== this.sceneId) return
+        this.inboundQueue.pushSceneBinary(sender, data)
         this.sceneBinaryHandler?.(sender, data)
       },
       onPeerChat: (address, text, time, transport) => {

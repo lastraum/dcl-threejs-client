@@ -5,7 +5,7 @@
 # Dev panel Community tab renders this as a single workflow table.
 
 schema_version: 2
-updated: 2026-06-17
+updated: 2026-06-21
 source: github
 base_branch: dev-latest
 workflow:

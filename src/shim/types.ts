@@ -44,6 +44,12 @@ export type SceneWorkerCrdtRequest = {
   data: Uint8Array
 }
 
+export type SceneWorkerCrdtBatchRequest = {
+  type: 'crdt-send-batch'
+  batchId: number
+  items: Array<{ id: number; data: Uint8Array }>
+}
+
 export type SceneWorkerReady = { type: 'ready' }
 export type SceneWorkerError = { type: 'error'; message: string }
 export type SceneWorkerLog = { type: 'log'; message: string }
@@ -149,6 +155,7 @@ export type SceneWorkerOutbound =
   | SceneWorkerError
   | SceneWorkerLog
   | SceneWorkerCrdtRequest
+  | SceneWorkerCrdtBatchRequest
   | SceneWorkerMovePlayerTo
   | SceneWorkerTriggerEmote
   | SceneWorkerTriggerSceneEmote
@@ -175,6 +182,11 @@ export type SceneWorkerOutbound =
 export type MainToWorker =
   | SceneWorkerBoot
   | { type: 'crdt-response'; id: number; data: Uint8Array[] }
+  | {
+      type: 'crdt-response-batch'
+      batchId: number
+      items: Array<{ id: number; data: Uint8Array[] }>
+    }
   | { type: 'crdt-get-state-response'; id: number; hasEntities: boolean; data: Uint8Array[] }
   | { type: 'move-player-to-response'; id: number; body: MovePlayerToResponse }
   | { type: 'trigger-emote-response'; id: number; body: TriggerEmoteResponse }

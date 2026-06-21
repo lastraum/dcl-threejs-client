@@ -47,6 +47,14 @@ const ctx = self
 
 let requestId = 0
 const pendingCrdt = new Map<number, (data: Uint8Array[]) => void>()
+type QueuedCrdtItem = { id: number; data: Uint8Array; resolve: (data: Uint8Array[]) => void }
+const crdtBatchQueue: QueuedCrdtItem[] = []
+let crdtBatchDepth = 0
+let crdtBatchIdSeq = 0
+const pendingCrdtBatch = new Map<
+  number,
+  { resolvers: Map<number, (data: Uint8Array[]) => void>; settle: () => void }
+>()
 const pendingGetState = new Map<number, (state: { hasEntities: boolean; data: Uint8Array[] }) => void>()
 const pendingMove = new Map<number, (body: MovePlayerToResponse) => void>()
 const pendingTriggerEmote = new Map<number, (body: TriggerEmoteResponse) => void>()
@@ -197,7 +205,7 @@ async function flushInboundBinaryViaSendBinary(): Promise<void> {
       )
     }
     if (sceneEngine && !pointerDeliveryInFlight && !sceneTicksPaused) {
-      await sceneEngine.update(0)
+      await runBatchedEngineUpdate(0)
     }
   } catch (err) {
     pendingInboundBinaries.unshift(...chunks)
@@ -249,16 +257,64 @@ function postPointerDeliverDone(label: string): void {
  * behind an in-flight main↔worker round-trip (mirror.flushOutgoing can stall main for 500ms+).
  */
 function interruptPendingCrdtRoundTrips(): void {
-  if (!pendingCrdt.size) return
+  if (!pendingCrdt.size && !crdtBatchQueue.length && !pendingCrdtBatch.size) return
   const ids = [...pendingCrdt.keys()]
   for (const id of ids) {
     pendingCrdt.get(id)?.([])
     pendingCrdt.delete(id)
   }
+  for (const item of crdtBatchQueue.splice(0)) item.resolve([])
+  for (const [batchId, batch] of pendingCrdtBatch) {
+    for (const resolve of batch.resolvers.values()) resolve([])
+    batch.settle()
+    pendingCrdtBatch.delete(batchId)
+  }
   workerLog(
     'log',
     `[sceneWorker] interrupted ${ids.length} pending crdt round-trip(s) for pointer priority`
   )
+}
+
+function beginCrdtBatch(): void {
+  crdtBatchDepth++
+}
+
+async function endCrdtBatch(): Promise<void> {
+  if (crdtBatchDepth <= 0) return
+  crdtBatchDepth--
+  if (crdtBatchDepth > 0) return
+  await flushCrdtBatch()
+}
+
+async function runBatchedEngineUpdate(dt: number): Promise<void> {
+  if (!sceneEngine) return
+  beginCrdtBatch()
+  try {
+    await sceneEngine.update(dt)
+  } finally {
+    await endCrdtBatch()
+  }
+}
+
+async function flushCrdtBatch(): Promise<void> {
+  if (!crdtBatchQueue.length) return
+  const items = crdtBatchQueue.splice(0)
+  const batchId = ++crdtBatchIdSeq
+  const resolvers = new Map<number, (data: Uint8Array[]) => void>()
+  const outbound: Array<{ id: number; data: Uint8Array }> = []
+  for (const item of items) {
+    resolvers.set(item.id, item.resolve)
+    outbound.push({ id: item.id, data: item.data })
+  }
+  const flushPromise = new Promise<void>((resolve) => {
+    pendingCrdtBatch.set(batchId, { resolvers, settle: resolve })
+  })
+  const transfers = outbound.filter((entry) => entry.data.byteLength > 0).map((entry) => entry.data.buffer)
+  ctx.postMessage(
+    { type: 'crdt-send-batch', batchId, items: outbound } satisfies SceneWorkerOutbound,
+    transfers
+  )
+  await flushPromise
 }
 
 /** Unblock boot when eval microtasks are stuck awaiting crdt-get-state from main. */
@@ -326,7 +382,7 @@ async function runPointerEngineTickWork(label: string): Promise<void> {
     workerLog('warn', `[sceneWorker] ${label} — sceneEngine missing, skip update`)
     return
   }
-  await sceneEngine.update(0)
+  await runBatchedEngineUpdate(0)
   workerVerboseLog(debugPointerDeliver, 'log', `[sceneWorker] ${label} — sceneEngine.update(0) done`)
   if (sceneOnUpdate) {
     try {
@@ -345,7 +401,7 @@ async function runPointerEngineTickWork(label: string): Promise<void> {
     }
   }
   // onUpdate may add Tween / mutate ECS — flush to renderer before pointer batch ends.
-  await sceneEngine.update(0)
+  await runBatchedEngineUpdate(0)
   workerVerboseLog(
     debugPointerDeliver,
     'log',
@@ -442,7 +498,7 @@ function scheduleBatchedSceneEngineTick(): void {
   setTimeout(() => {
     tweenEngineTickQueued = false
     if (!sceneEngine || pointerDeliveryInFlight || sceneTicksPaused) return
-    void sceneEngine.update(0).catch((err) => {
+    void runBatchedEngineUpdate(0).catch((err) => {
       workerLog(
         'error',
         `[sceneWorker] batched engine tick failed — ${err instanceof Error ? err.message : String(err)}`
@@ -908,6 +964,10 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
   const id = ++requestId
   const copy = data.slice()
   return new Promise((resolve) => {
+    if (crdtBatchDepth > 0) {
+      crdtBatchQueue.push({ id, data: copy, resolve })
+      return
+    }
     pendingCrdt.set(id, resolve)
     const msg = { type: 'crdt-send', id, data: copy } satisfies SceneWorkerOutbound
     // Do not transfer an empty view's backing buffer — some runtimes deliver a broken payload.
@@ -1139,7 +1199,7 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
         .then(async () => {
           if (!sceneEngine || sceneTicksPaused) return
           try {
-            await sceneEngine.update(0)
+            await runBatchedEngineUpdate(0)
           } catch (err) {
             workerLog(
               'error',
@@ -1171,7 +1231,7 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
       if (!sceneEngine || sceneTicksPaused || pendingInjectPointer || pointerDeliveryInFlight) return
       lastEngineTickAt = performance.now()
       try {
-        sceneEngine.update(dt)
+        void runBatchedEngineUpdate(dt)
       } catch (err) {
         workerLog(
           'error',
@@ -1266,7 +1326,7 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     allowGraphSearch: true
   })
   try {
-    sceneEngine.update(0)
+    await runBatchedEngineUpdate(0)
     workerLog('log', '[sceneWorker] post-onStart engine.update(0) — composite CRDT flushed to renderer')
   } catch (err) {
     workerLog(
@@ -1313,6 +1373,19 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   if (msg.type === 'crdt-response') {
     pendingCrdt.get(msg.id)?.(msg.data)
     pendingCrdt.delete(msg.id)
+    return
+  }
+  if (msg.type === 'crdt-response-batch') {
+    const batch = pendingCrdtBatch.get(msg.batchId)
+    if (batch) {
+      for (const item of msg.items) {
+        batch.resolvers.get(item.id)?.(item.data)
+        batch.resolvers.delete(item.id)
+      }
+      for (const resolve of batch.resolvers.values()) resolve([])
+      batch.settle()
+      pendingCrdtBatch.delete(msg.batchId)
+    }
     return
   }
   if (msg.type === 'crdt-get-state-response') {

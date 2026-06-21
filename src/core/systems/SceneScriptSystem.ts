@@ -65,6 +65,7 @@ import { RaycastSystem } from '../../input/RaycastSystem'
 import { isRaycastVerbose } from '../../input/raycastConfig'
 import type { PhysXWorld } from '../../physics/PhysXWorld'
 import { EngineApiEventBridge } from './EngineApiEventBridge'
+import { StaticEntityRegistry } from '../../bridge/StaticEntityRegistry'
 
 type MovePlayerHandler = (request: MovePlayerToRequest) => boolean
 type TriggerEmoteHandler = (request: TriggerEmoteRequest) => boolean
@@ -125,6 +126,7 @@ export class SceneScriptSystem {
     this.encoder.recordLww(componentId, entity, value)
   }
   private encoderEnabledLogged = false
+  private readonly staticEntities = new StaticEntityRegistry()
   readonly reserved = new ReservedEntitiesSync(this.projection, this.readComponents, SDK_RESERVED)
   collision: CollisionSystem | null = null
   gltfColliders: GltfColliderExtractor | null = null
@@ -227,6 +229,7 @@ export class SceneScriptSystem {
     this.entityStore = new EntityStore(host.scene, 'scene-entities')
     this.entityStoreUnsub = this.entityStore.subscribe((change) => this.onEntityStoreChange(change))
     this.bridge = new ThreeBridge(scene, cache, this.entityStore, this.readComponents)
+    this.bridge.setStaticEntityRegistry(this.staticEntities)
     this.avatarShapes = new AvatarShapeBridge(this.readComponents, (entity) =>
       this.bridge?.getEntityNodes().get(entity)
     )
@@ -470,9 +473,21 @@ export class SceneScriptSystem {
       return
     }
 
+    if (this.staticEntities.shouldThawOnComponentPut(entity, componentId, this.readComponents)) {
+      if (this.staticEntities.thaw(entity)) {
+        this.bridge?.thawEntity(entity)
+        clientDebugLog.log('projection', `static entity thawed — ${entity}`, {
+          level: 'info',
+          throttleMs: 2000,
+          throttleKey: `thaw:${entity}`
+        })
+      }
+    }
+
     if (componentId === MeshCollider.componentId || componentId === GltfContainer.componentId) {
       this.colliderStructureDirty.add(entity)
     } else if (componentId === Transform.componentId) {
+      if (this.staticEntities.isFrozen(entity)) return
       if (change.kind === 'delete') {
         this.unlinkTransformEntity(entity)
         return
@@ -1050,6 +1065,21 @@ export class SceneScriptSystem {
       } satisfies MainToWorker)
       return
     }
+    if (msg.type === 'crdt-send-batch') {
+      if (this.pointerAwaitingWorkerApply) {
+        await this.handleCrdtSendBatch(msg)
+      } else {
+        await (this.crdtSendSerial = this.crdtSendSerial
+          .then(() => this.handleCrdtSendBatch(msg))
+          .catch((err) => {
+            console.error(
+              '[scene]',
+              `crdt-send-batch handler failed — ${err instanceof Error ? err.message : String(err)}`
+            )
+          }))
+      }
+      return
+    }
     if (msg.type === 'crdt-send') {
       const isNudge = !msg.data?.byteLength
       if (isNudge || this.pointerAwaitingWorkerApply) {
@@ -1070,6 +1100,55 @@ export class SceneScriptSystem {
     if (msg.type === 'crdt-get-state') {
       this.respondCrdtGetState(msg.id)
       return
+    }
+  }
+
+  /** Batched worker engine tick — one bridge sync + encode for multiple inbounds. */
+  private async handleCrdtSendBatch(
+    msg: Extract<SceneWorkerOutbound, { type: 'crdt-send-batch' }>
+  ): Promise<void> {
+    try {
+      this.prepareRendererOutboundState()
+      for (const item of msg.items) {
+        if (item.data?.byteLength) {
+          this.projection.applyIncoming(item.data)
+          this.foldProjectionChanges()
+        }
+      }
+
+      if (this.pointerAwaitingWorkerApply) {
+        this.videoPlayerBridge?.notifyUserPointerDelivered()
+        this.videoPlayerBridge?.sync(this.view)
+        this.audioSourceBridge?.sync(this.view)
+        this.audioStreamBridge?.sync(this.view)
+      }
+
+      this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
+      this.syncTriggerAreas()
+      this.syncRaycasts()
+      this.syncTweenBeforeEncode()
+      this.crdtTick++
+
+      this.prepareRendererOutboundState()
+      const encoderBytes = this.encodeRendererCrdt()
+      const data = encoderBytes ? [encoderBytes] : []
+      const items = msg.items.map((item) => ({ id: item.id, data }))
+      this.worker?.postMessage({
+        type: 'crdt-response-batch',
+        batchId: msg.batchId,
+        items
+      } satisfies MainToWorker)
+    } catch (err) {
+      console.error(
+        '[scene]',
+        `crdt-send-batch failed — ${err instanceof Error ? err.message : String(err)}`
+      )
+      const items = msg.items.map((item) => ({ id: item.id, data: [] as Uint8Array[] }))
+      this.worker?.postMessage({
+        type: 'crdt-response-batch',
+        batchId: msg.batchId,
+        items
+      } satisfies MainToWorker)
     }
   }
 
@@ -1211,6 +1290,20 @@ export class SceneScriptSystem {
         const gltfBefore = [...this.view.getEntitiesWith(GltfContainer)].length
         this.projection.applyIncoming(data)
         if (this.projection.changes.length === 0) return
+        for (const change of this.projection.changes) {
+          if (
+            change.entity === undefined ||
+            change.componentId === undefined ||
+            !this.staticEntities.shouldThawOnComponentPut(
+              change.entity,
+              change.componentId,
+              this.readComponents
+            )
+          ) {
+            continue
+          }
+          if (this.staticEntities.thaw(change.entity)) this.bridge?.thawEntity(change.entity)
+        }
         this.foldProjectionChanges()
         this.colliderFullWalkRequested = true
         this.pointerStructureDirty = true
@@ -1257,6 +1350,13 @@ export class SceneScriptSystem {
 
     for (const change of this.projection.changes) {
       if (change.entity === PlayerEntity || change.entity === CameraEntity || change.entity === RootEntity) {
+        continue
+      }
+
+      if (
+        this.staticEntities.isFrozen(change.entity) &&
+        change.componentId === Transform.componentId
+      ) {
         continue
       }
 
@@ -1878,6 +1978,17 @@ export class SceneScriptSystem {
     this.bridgeSyncEvery = BRIDGE_ECS_SYNC_RUNTIME
     if (this.playReadyNotified) return
     this.playReadyNotified = true
+    this.staticEntities.setEnabled(true)
+    const frozen = this.staticEntities.freezeEligible(this.view, this.readComponents)
+    if (this.host) {
+      this.bridge?.enableGltfInstancing(this.host.scene)
+    }
+    const requeued = this.bridge?.requeueSoloGltfsForInstancing() ?? 0
+    clientDebugLog.log(
+      'projection',
+      `e10 static freeze — ${frozen} frozen, ${requeued} solo GLTFs queued for instancing`,
+      { level: 'success', alsoConsole: true }
+    )
     this.worker?.postMessage({ type: 'scene-play-ready' } satisfies MainToWorker)
   }
 

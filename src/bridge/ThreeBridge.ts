@@ -27,8 +27,10 @@ import type { AudioSourceBridge } from '../media/AudioSourceBridge'
 import type { AudioStreamBridge } from '../media/AudioStreamBridge'
 import type { VideoPlayerBridge } from '../media/VideoPlayerBridge'
 import type { EntityStore } from './EntityStore'
-import { applySceneDiff } from './entityStoreApply'
+import { applySceneDiff, type ApplySceneDiffOptions } from './entityStoreApply'
 import { disposeOwnedObject3D } from '../rendering/sharedAsset'
+import type { StaticEntityRegistry } from './StaticEntityRegistry'
+import { GltfInstancedPool } from './GltfInstancedPool'
 
 function materialReferencesVideoPlayer(pb: PbMaterial, videoPlayerEntity: Entity): boolean {
   const materialCase = pb.material?.$case
@@ -138,6 +140,9 @@ export class ThreeBridge {
   private audioSourceBridge: AudioSourceBridge | null = null
   private audioStreamBridge: AudioStreamBridge | null = null
   private skipTransformApply?: (entity: Entity) => boolean
+  private staticRegistry: StaticEntityRegistry | null = null
+  private gltfPool: GltfInstancedPool | null = null
+  private instancingEnabled = false
 
   constructor(
     private readonly sceneConfig: ResolvedScene,
@@ -295,6 +300,61 @@ export class ThreeBridge {
     this.skipTransformApply = fn ?? undefined
   }
 
+  setStaticEntityRegistry(registry: StaticEntityRegistry | null): void {
+    this.staticRegistry = registry
+  }
+
+  /** Enable GLTF instancing for frozen decorative props (after play-ready). */
+  enableGltfInstancing(sceneRoot: THREE.Object3D): void {
+    if (this.gltfPool) return
+    this.gltfPool = new GltfInstancedPool(sceneRoot)
+    this.instancingEnabled = true
+  }
+
+  /** Migrate hydrated solo GLTF clones into the instanced pool after play-ready freeze. */
+  requeueSoloGltfsForInstancing(): number {
+    if (!this.instancingEnabled || !this.gltfPool || !this.staticRegistry?.isEnabled()) return 0
+    const { GltfContainer } = this.ecs
+    let count = 0
+    this.staticRegistry.forEachFrozen((entity) => {
+      if (!GltfContainer.has(entity) || this.gltfPool!.isInstanced(entity)) return
+      const obj = this.store.getNode(entity)
+      if (!obj || obj.userData.gltfInstanced) return
+      const solo = obj.getObjectByName(meshKey(entity))
+      if (!solo) return
+      disposeOwnedObject3D(solo)
+      obj.remove(solo)
+      delete obj.userData.gltfSrcKey
+      delete obj.userData.gltfInstanced
+      delete obj.userData.animationRig
+      delete obj.userData.emoteAnchor
+      this.pendingMeshEntities.add(entity)
+      count++
+    })
+    return count
+  }
+
+  /** Thawed entities leave the instanced pool and re-enter the solo clone attach queue. */
+  thawEntity(entity: Entity): void {
+    this.gltfPool?.release(entity)
+    const obj = this.store.getNode(entity)
+    if (obj) {
+      delete obj.userData.gltfInstanced
+      delete obj.userData.gltfInstanceSlot
+      delete obj.userData.gltfSrcKey
+    }
+    this.pendingMeshEntities.add(entity)
+  }
+
+  private applyDiffOptions(extra?: Partial<ApplySceneDiffOptions>): ApplySceneDiffOptions {
+    return {
+      skipTransformApply: this.skipTransformApply,
+      skipSecondaryNotify: this.skipSpriteSecondaryNotify,
+      skipFrozenTransform: (entity) => this.staticRegistry?.isFrozen(entity) ?? false,
+      ...extra
+    }
+  }
+
   private notifyGltfAttached(entity: Entity): void {
     this.onGltfAttached?.(entity)
   }
@@ -414,6 +474,7 @@ export class ThreeBridge {
       if (this.emptyGltfHashes.has(hash)) return false
       const cacheKey = this.gltfCacheKey(hash)
       if (this.cache.hasGivenUp(cacheKey)) return false
+      if (obj.userData.gltfInstanced && obj.userData.gltfSrcKey === hash) return false
       const mesh = obj.getObjectByName(meshKey(entity))
       if (!mesh || obj.userData.gltfSrcKey !== hash) return true
       if (obj.userData.animationRig) return false
@@ -610,8 +671,7 @@ export class ThreeBridge {
 
     const applied = applySceneDiff(this.store, fullDiff, view, this.ecs, [], {
       notifySecondary: false,
-      skipTransformApply: this.skipTransformApply,
-      skipSecondaryNotify: this.skipSpriteSecondaryNotify
+      ...this.applyDiffOptions()
     })
 
     // Hydration full-walk: reconcile transforms / orphan nodes only — never re-touch materials.
@@ -677,10 +737,13 @@ export class ThreeBridge {
       tweenRefresh.push(entity)
     }
 
-    const applied = applySceneDiff(this.store, diff, view, this.ecs, tweenRefresh, {
-      skipTransformApply: this.skipTransformApply,
-      skipSecondaryNotify: this.skipSpriteSecondaryNotify
-    })
+    const applied = applySceneDiff(this.store, diff, view, this.ecs, tweenRefresh, this.applyDiffOptions())
+
+    if (this.gltfPool && this.staticRegistry?.isEnabled()) {
+      for (const entity of applied.upserts) {
+        if (this.gltfPool.isInstanced(entity)) this.gltfPool.syncEntityTransform(entity, this.store)
+      }
+    }
 
     for (const entity of applied.removals) {
       if (this.animatedPlaneSlots.has(entity)) {
@@ -946,6 +1009,7 @@ export class ThreeBridge {
 
   private removeEntityNode(entity: Entity): void {
     if (!this.store.isSceneOwned(entity)) return
+    this.gltfPool?.release(entity)
     this.pendingMeshEntities.delete(entity)
     this.pendingMaterialEntities.delete(entity)
     this.animatedPlaneSlots.delete(entity)
@@ -961,6 +1025,9 @@ export class ThreeBridge {
 
   /** Tear down bridge-owned resources (entity graph cleared via `EntityStore.dispose`). */
   dispose(): void {
+    this.gltfPool?.dispose()
+    this.gltfPool = null
+    this.instancingEnabled = false
     this.videoPlayerBridge?.dispose()
     this.videoPlayerBridge = null
     this.audioSourceBridge?.dispose()
@@ -1057,6 +1124,20 @@ export class ThreeBridge {
         this.gltfBudgetRemaining--
         try {
           const clone = await this.cache.clone(url, isLocal ? url : hash)
+          if (
+            this.instancingEnabled &&
+            this.gltfPool &&
+            this.staticRegistry &&
+            this.gltfPool.canInstance(entity, src, this.staticRegistry, this.ecs)
+          ) {
+            if (this.gltfPool.registerFromClone(entity, srcKey, clone, obj)) {
+              disposeOwnedObject3D(clone)
+              this.notifyMeshComponent(entity, GltfContainer.componentId)
+              this.notifyGltfAttached(entity)
+              return
+            }
+          }
+          obj.userData.gltfInstanced = false
           obj.userData.gltfSrcKey = srcKey
           const hasGeometry = gltfInstanceHasGeometry(clone)
           if (!hasGeometry) {

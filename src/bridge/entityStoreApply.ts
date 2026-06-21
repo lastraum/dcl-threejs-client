@@ -46,6 +46,8 @@ export type ApplySceneDiffOptions = {
   notifySecondary?: boolean
   /** AvatarAttach-driven entities — renderer owns world pose; skip inbound Transform apply. */
   skipTransformApply?: (entity: Entity) => boolean
+  /** Frozen static props — skip Transform apply until thawed (e10). */
+  skipFrozenTransform?: (entity: Entity) => boolean
   /** Skip collision/pointer/bridge store notifications (campfire sprite pool — no colliders). */
   skipSecondaryNotify?: (entity: Entity) => boolean
 }
@@ -69,6 +71,7 @@ export function applySceneDiff(
 ): ApplySceneDiffResult {
   const notifySecondary = options.notifySecondary !== false
   const skipTransformApply = options.skipTransformApply
+  const skipFrozenTransform = options.skipFrozenTransform
   const skipSecondaryNotify = options.skipSecondaryNotify
   const shouldNotify = (entity: Entity): boolean =>
     notifySecondary && !skipSecondaryNotify?.(entity)
@@ -124,7 +127,7 @@ export function applySceneDiff(
     const t = Transform.get(entity)
     const desiredParent = resolveTransformParent(t.parent, view, store.nodes, store.root)
     if (obj.parent !== desiredParent) desiredParent.add(obj)
-    if (!skipTransformApply?.(entity)) {
+    if (!skipTransformApply?.(entity) && !skipFrozenTransform?.(entity)) {
       applyDclLocalTransform(obj, t)
     }
 

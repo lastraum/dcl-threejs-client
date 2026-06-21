@@ -148,13 +148,14 @@ export class CollisionSystem {
     return this.applyColliderPose(entity, visual, record)
   }
 
-  removeColliderEntity(entity: Entity): void {
+  removeColliderEntity(entity: Entity): boolean {
     const record = this.colliders.get(entity)
-    if (!record) return
+    if (!record) return false
     record.root.remove(record.mesh)
     this.root.remove(record.root)
     this.colliders.delete(entity)
     this.poseFingerprints.delete(entity)
+    return true
   }
 
   /** Recompute PhysX batch fingerprint after a batch of per-entity structure syncs. */

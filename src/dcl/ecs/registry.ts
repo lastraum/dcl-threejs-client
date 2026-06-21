@@ -73,7 +73,7 @@ export const DCL_ECS_COMPONENTS: EcsComponentEntry[] = [
   { name: 'AssetLoadLoadingState', coreId: 1214, phase: 6, status: 'client-only', category: 'assets' },
   { name: 'GltfNodeModifiers', coreId: 1099, phase: 6, status: 'none', category: 'render' },
   { name: 'NftShape', coreId: 1040, phase: 6, status: 'none', category: 'render' },
-  { name: 'ParticleSystem', coreId: 1217, phase: 6, status: 'none', category: 'render' },
+  { name: 'ParticleSystem', coreId: 1217, phase: 6, status: 'render', category: 'render' },
   { name: 'MapPin', coreId: 1097, phase: 6, status: 'none', category: 'misc' },
   { name: 'EngineInfo', coreId: 1048, phase: 6, status: 'client-only', category: 'misc' },
   { name: 'RealmInfo', coreId: 1106, phase: 6, status: 'client-only', category: 'misc' }

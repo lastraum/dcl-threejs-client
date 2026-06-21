@@ -101,15 +101,16 @@ vec3 rotateY(vec3 dir, float angle) {
   return vec3(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
 }
 
-// DCL clouds gradient is HDR (keys >1 at midday). Keep hue, put brightness in intensity.
+// DCL clouds gradient is HDR (keys >1 at midday). Bias bright hours toward white puffs.
 vec3 cloudTintColor(vec3 hdr, float highlights, vec3 dir, vec3 sunDir) {
   float peak = max(max(hdr.r, hdr.g), hdr.b);
   vec3 hue = hdr / max(peak, 1e-4);
-  float intensity = peak * (0.82 + highlights * 0.55);
+  hue = mix(hue, vec3(1.0), clamp(highlights * 0.72, 0.0, 0.9));
+  float intensity = peak * (0.88 + highlights * 0.62);
   float sunSide = sunDir.y > 0.05
     ? smoothstep(-0.05, 0.45, dot(normalize(dir), normalize(sunDir)))
     : 0.0;
-  intensity *= mix(0.88, 1.28, sunSide * highlights);
+  intensity *= mix(0.94, 1.22, sunSide * highlights);
   return hue * intensity;
 }
 
@@ -117,19 +118,22 @@ float cloudLayerMask(
   vec3 dir,
   samplerCube map,
   float angle,
-  float opacity,
+  float layerWeight,
   float yMin,
   float yMax
 ) {
   if (dir.y < yMin) return 0.0;
   vec3 sampleDir = rotateY(normalize(dir), angle);
-  float n = textureCube(map, sampleDir, -1.0).r;
+  vec3 tex = textureCube(map, sampleDir, -1.0).rgb;
+  float n = max(dot(tex, vec3(0.299, 0.587, 0.114)), tex.r);
   float density = 1.0 - uCloudDensity;
-  float falloff = 0.62;
+  // layerWeight shapes density (Explorer parity) — not final alpha; weak layers = softer wisps, not gray puffs
+  float falloff = mix(0.5, 0.66, layerWeight);
+  density = mix(density - 0.1, density + 0.02, layerWeight);
   float mask = smoothstep(density, density + falloff, n);
   mask *= smoothstep(yMin, yMin + 0.15, dir.y);
   mask *= 1.0 - smoothstep(yMax - 0.1, yMax, dir.y);
-  return mask * opacity * uCloudOpacity;
+  return mask * uCloudOpacity;
 }
 
 vec3 blendCloudLayer(
@@ -137,17 +141,18 @@ vec3 blendCloudLayer(
   vec3 dir,
   samplerCube map,
   float angle,
-  float opacity,
+  float layerWeight,
   float yMin,
   float yMax
 ) {
-  float mask = cloudLayerMask(dir, map, angle, opacity, yMin, yMax);
+  float mask = cloudLayerMask(dir, map, angle, layerWeight, yMin, yMax);
   if (mask <= 0.001) return sky;
   vec3 cloud = cloudTintColor(uCloudsColor, uCloudHighlights, dir, uSunDirection);
-  // Screen-style brighten — lerp toward gray tint; DCL puffs read white over blue sky
-  vec3 layer = min(cloud, vec3(2.5));
+  vec3 layer = min(cloud, vec3(2.8));
   vec3 screen = vec3(1.0) - (vec3(1.0) - sky) * (vec3(1.0) - min(layer, vec3(1.0)));
-  return mix(sky, max(screen, layer), mask);
+  vec3 outColor = max(screen, layer);
+  float blend = min(mask * mix(0.82, 1.05, uCloudHighlights), 1.0);
+  return mix(sky, outColor, blend);
 }
 
 void main() {

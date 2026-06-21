@@ -119,6 +119,10 @@ export class PlayerSystem {
     to: THREE.Vector3
     elapsed: number
     duration: number
+    /** When set, avatar keeps looking at this DCL point while moving (not camera yaw). */
+    avatarTarget?: { x?: number; y?: number; z?: number }
+    /** Constant travel facing when no avatarTarget — movement direction of the path. */
+    travelYaw?: number
   } | null = null
   /** Holds capsule after scene `movePlayerTo` until emote starts or the player moves. */
   private scenePositionLock = false
@@ -246,10 +250,11 @@ export class PlayerSystem {
     this.syncCamera(true)
   }
 
+  /** PlayerEntity pose for CRDT / scene reads — rotation uses immediate wire yaw, not smoothed body turn. */
   getEntityPose(): EntityPose {
     return {
       position: threeToDclVec(this.root.position),
-      rotation: threeToDclQuat(ReservedEntitiesSync.playerRotationFromYaw(this.playerYaw))
+      rotation: threeToDclQuat(ReservedEntitiesSync.playerRotationFromYaw(this.getNetworkYaw()))
     }
   }
 
@@ -284,6 +289,11 @@ export class PlayerSystem {
 
   setOnUserGestureUnlock(callback: () => void): void {
     this.input?.setOnUserGestureUnlock(callback)
+  }
+
+  /** Scene chat line shown inside the overhead name-tag pill. */
+  showNameTagChat(text: string): void {
+    this.nameTag?.showChat(text)
   }
 
   getPlayerYaw(): number {
@@ -325,8 +335,9 @@ export class PlayerSystem {
     clampToSceneBounds(targetDcl, this.bounds)
     const target = dclToThreeVec(targetDcl)
 
-    if (request.avatarTarget) {
-      this.applyAvatarLookTarget(target, request.avatarTarget)
+    const avatarTarget = request.avatarTarget
+    if (avatarTarget) {
+      this.applyAvatarLookTarget(target, avatarTarget)
     }
     if (request.cameraTarget) {
       this.applyCameraLookTarget(target, request.cameraTarget)
@@ -347,11 +358,24 @@ export class PlayerSystem {
       return true
     }
 
+    const from = this.root.position.clone()
+    let travelYaw: number | undefined
+    if (!avatarTarget) {
+      const dx = target.x - from.x
+      const dz = target.z - from.z
+      if (Math.hypot(dx, dz) > 1e-4) {
+        travelYaw = Math.atan2(-dx, -dz)
+        this.setAvatarFacing(travelYaw)
+      }
+    }
+
     this.moveTask = {
-      from: this.root.position.clone(),
+      from,
       to: target,
       elapsed: 0,
-      duration
+      duration,
+      avatarTarget,
+      travelYaw
     }
     _velocity.set(0, 0, 0)
     this.scenePositionLock = true
@@ -389,7 +413,26 @@ export class PlayerSystem {
         const t = Math.min(1, this.moveTask.elapsed / this.moveTask.duration)
         _pivot.copy(this.moveTask.from).lerp(this.moveTask.to, t)
         this.teleportTo(_pivot)
+        if (this.moveTask.avatarTarget) {
+          this.applyAvatarLookTarget(_pivot, this.moveTask.avatarTarget)
+        } else if (this.moveTask.travelYaw !== undefined) {
+          this.setAvatarFacing(this.moveTask.travelYaw)
+        }
+        const moveSpeed =
+          this.moveTask.from.distanceTo(this.moveTask.to) / Math.max(this.moveTask.duration, 1e-6)
         this.syncNameTag()
+        this.avatar?.setYaw(this.playerYaw)
+        this.avatar?.update(delta, {
+          horizontalSpeed: moveSpeed,
+          grounded: true,
+          nearGround: true,
+          verticalVelocity: 0,
+          locomotionMode: this.locomotionMode,
+          jumping: false,
+          doubleJumping: false,
+          doubleJumpTriggered: false,
+          falling: false
+        })
         this.syncCamera(false, delta)
         this.input.endFrame()
         if (t >= 1) {
@@ -401,6 +444,7 @@ export class PlayerSystem {
     }
 
     if (this.scenePositionLock && !breakSceneHold) {
+      this.syncWireYawFromAvatar()
       this.physics.step(delta)
       this.root.position.copy(this.physics.positionOut)
       this.syncNameTag()
@@ -574,17 +618,18 @@ export class PlayerSystem {
     } else if (moving) {
       targetYaw = Math.atan2(-_moveDir.x, -_moveDir.z)
     }
-    if (moving && !this.isFirstPerson()) {
-      // Unity third person: body yaw follows camera forward on the wire.
-      this.networkYaw = normalizeAngle(this.camYaw)
+    const locomoting = moving || horizontalSpeed > FACING_SPEED_MIN
+    if (locomoting && targetYaw !== null) {
+      // Snap body + CRDT wire yaw to travel direction — no turn lag behind position.
+      this.setAvatarFacing(targetYaw)
+    } else if (locomoting && this.isFirstPerson()) {
+      this.setAvatarFacing(this.camYaw)
     } else if (targetYaw !== null) {
-      this.networkYaw = normalizeAngle(targetYaw)
-    } else {
-      this.networkYaw = normalizeAngle(this.playerYaw)
-    }
-    if (targetYaw !== null) {
       const turnAlpha = 1 - Math.exp(-PLAYER_TURN_SMOOTH * delta)
       this.playerYaw = lerpAngle(this.playerYaw, targetYaw, turnAlpha)
+      this.syncWireYawFromAvatar()
+    } else {
+      this.syncWireYawFromAvatar()
     }
 
     this.root.position.copy(this.physics.positionOut)
@@ -702,13 +747,24 @@ export class PlayerSystem {
     this.root.position.copy(this.physics.positionOut)
   }
 
+  /** Avatar body yaw (Three.js space) + wire yaw for CRDT / RFC4 — not camera orbit. */
+  private setAvatarFacing(yaw: number): void {
+    this.playerYaw = normalizeAngle(yaw)
+    this.networkYaw = this.playerYaw
+  }
+
+  /** Keep CRDT PlayerEntity rotation aligned with visible avatar facing. */
+  private syncWireYawFromAvatar(): void {
+    this.networkYaw = normalizeAngle(this.playerYaw)
+  }
+
   private applyAvatarLookTarget(
     from: THREE.Vector3,
     targetDcl: { x?: number; y?: number; z?: number }
   ): void {
     const { dx, dz } = this.lookTargetDelta(from, targetDcl)
     if (Math.hypot(dx, dz) < 1e-4) return
-    this.playerYaw = Math.atan2(-dx, -dz)
+    this.setAvatarFacing(Math.atan2(-dx, -dz))
   }
 
   private applyCameraLookTarget(

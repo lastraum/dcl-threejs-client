@@ -46,6 +46,8 @@ export type ApplySceneDiffOptions = {
   notifySecondary?: boolean
   /** AvatarAttach-driven entities — renderer owns world pose; skip inbound Transform apply. */
   skipTransformApply?: (entity: Entity) => boolean
+  /** Skip collision/pointer/bridge store notifications (campfire sprite pool — no colliders). */
+  skipSecondaryNotify?: (entity: Entity) => boolean
 }
 
 function notifyKind(kind: ProjectionChangeKind): 'put' | 'delete' {
@@ -67,6 +69,9 @@ export function applySceneDiff(
 ): ApplySceneDiffResult {
   const notifySecondary = options.notifySecondary !== false
   const skipTransformApply = options.skipTransformApply
+  const skipSecondaryNotify = options.skipSecondaryNotify
+  const shouldNotify = (entity: Entity): boolean =>
+    notifySecondary && !skipSecondaryNotify?.(entity)
   const { Transform, VisibilityComponent, LightSource } = components
   const meshComponentIds = new Set<number>(
     MESH_COMPONENT_NAMES.map((name) => components[name].componentId)
@@ -97,7 +102,7 @@ export function applySceneDiff(
 
     for (const [componentId, kind] of comps) {
       if (meshComponentIds.has(componentId)) meshDirty.add(entity)
-      if (!notifySecondary) continue
+      if (!shouldNotify(entity)) continue
       if (secondaryNotifyIds.has(componentId) || bridgeNotifyIds.has(componentId)) {
         store.notifyComponentChange(entity, componentId, notifyKind(kind))
       }
@@ -135,13 +140,14 @@ export function applySceneDiff(
     }
 
     // Tween refresh mutates matrixWorld in place — mark colliderPoseDirty via Transform notify.
-    if (notifySecondary && diffEntities.has(entity)) {
+    if (shouldNotify(entity) && diffEntities.has(entity)) {
       store.notifyComponentChange(entity, Transform.componentId, 'put')
     }
   }
 
   if (notifySecondary) {
     for (const entity of removals) {
+      if (!shouldNotify(entity)) continue
       store.notifyComponentChange(entity, Transform.componentId, 'delete')
     }
   }

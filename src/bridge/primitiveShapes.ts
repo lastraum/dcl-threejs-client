@@ -81,7 +81,12 @@ export function buildPrimitiveGeometry(spec: PrimitiveMeshSpec): THREE.BufferGeo
   return geometry
 }
 
-/** Sync key for MeshRenderer primitive meshes — includes custom UV data when present. */
+/** Plane with custom MeshRenderer UVs — campfire sprite pool + billboards. */
+export function hasAnimatedPlaneUvs(spec: PrimitiveMeshSpec): boolean {
+  const uvs = spec.mesh?.$case === 'plane' ? spec.mesh.plane?.uvs : undefined
+  return (uvs?.length ?? 0) >= 8
+}
+
 export function primitiveMeshKey(spec: PrimitiveMeshSpec): string {
   const kind = primitiveKind(spec)
   const uvsKey = uvsFingerprint(meshRendererUvs(spec))
@@ -188,6 +193,22 @@ function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
   // North (+Z): CCW from +Z. South (-Z): opposite winding so both sides render with FrontSide.
   geometry.setIndex([0, 2, 1, 2, 3, 1, 4, 5, 6, 5, 7, 6])
   return geometry
+}
+
+/** Update an existing double-sided plane geometry in place (sprite UV animation). */
+export function updatePlaneGeometryUvs(geometry: THREE.BufferGeometry, uvs: number[]): boolean {
+  const perSide = uvs.length >= 16 ? 8 : uvs.length >= 8 ? 8 : 0
+  if (!perSide) return false
+
+  const attr = geometry.getAttribute('uv')
+  if (!(attr instanceof THREE.BufferAttribute) || attr.count < 8) return false
+
+  const north = uvs.slice(0, 8)
+  const south = uvs.length >= 16 ? uvs.slice(8, 16) : mirrorSouthPlaneUvs(north)
+  applyFaceUvs(attr, 0, DCL_PLANE_CORNER_TO_THREE, north)
+  applyFaceUvs(attr, 1, DCL_PLANE_CORNER_TO_THREE, south)
+  attr.needsUpdate = true
+  return true
 }
 
 /** Mirror U for the south face when only 8 custom UVs are provided (SW, SE, NE, NW). */

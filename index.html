@@ -448,9 +448,11 @@
         line-height: 1.2;
       }
       .avatar-name-tag {
+        --avatar-name-tag-chat-max-w: 200px;
         display: inline-flex;
+        flex-direction: column;
         align-items: center;
-        gap: 4px;
+        gap: 0;
         transform: translate(-50%, -100%);
         padding: 4px 12px;
         border-radius: 999px;
@@ -458,10 +460,23 @@
         font-size: 12px;
         font-weight: 700;
         line-height: 1.2;
-        white-space: nowrap;
+        width: max-content;
+        max-width: var(--avatar-name-tag-chat-max-w);
         pointer-events: none;
         user-select: none;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+      }
+      .avatar-name-tag--has-chat {
+        border-radius: 14px;
+        padding: 5px 12px 6px;
+      }
+      .avatar-name-tag__header {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        white-space: nowrap;
+        max-width: 100%;
       }
       .avatar-name-tag__text {
         letter-spacing: 0.01em;
@@ -470,6 +485,28 @@
         color: #ff6ad5;
         font-size: 11px;
         line-height: 1;
+        flex-shrink: 0;
+      }
+      .avatar-name-tag__chat {
+        display: none;
+        box-sizing: border-box;
+        width: max-content;
+        min-width: 100%;
+        max-width: var(--avatar-name-tag-chat-max-w);
+        margin-top: 3px;
+        padding-top: 3px;
+        border-top: 1px solid rgba(255, 255, 255, 0.14);
+        font-size: 11px;
+        font-weight: 500;
+        line-height: 1.35;
+        color: rgba(255, 255, 255, 0.94);
+        text-align: center;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      .avatar-name-tag--has-chat .avatar-name-tag__chat {
+        display: block;
       }
 
       /* Client chrome — left sidebar (Explorer-style, separate from scene UI) */

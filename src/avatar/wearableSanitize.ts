@@ -30,7 +30,8 @@ const EXPECTED_WEARABLE_EXTENT_M: Partial<Record<WearableCategory, number>> = {
 }
 
 const CATEGORY_ATTACH_BONE_ALIASES: Partial<Record<WearableCategory, string[]>> = {
-  feet: ['LeftFoot', 'RightFoot', 'LeftToeBase', 'RightToeBase', 'Hips'],
+  // Whole-shoe GLBs must not parent to a single foot — Hips keeps both feet aligned.
+  feet: ['Hips'],
   lower_body: ['Hips', 'Spine'],
   upper_body: ['Spine2', 'Spine1', 'Spine'],
   hands_wear: ['LeftHand', 'RightHand', 'LeftForeArm', 'RightForeArm'],

@@ -176,9 +176,33 @@ function boneMapQuality(
   return matched / bones.length
 }
 
-function mergeThresholdForCategory(category?: WearableCategory): number {
+const FEET_MERGE_BONE_ALIASES = ['LeftFoot', 'RightFoot', 'LeftToeBase', 'RightToeBase'] as const
+
+function feetMergeHasFootBones(src: THREE.Skeleton, dst: THREE.Skeleton, usedBoneIndices: Set<number>): boolean {
+  const dstBones = skeletonBoneSet(dst)
+  const footTargets = new Set<string>()
+  for (const alias of FEET_MERGE_BONE_ALIASES) {
+    const resolved = resolveBoneName(alias, dstBones)
+    if (resolved) footTargets.add(resolved)
+  }
+  if (!footTargets.size) return false
+
+  const bones =
+    usedBoneIndices.size > 0
+      ? [...usedBoneIndices].map((i) => src.bones[i]).filter(Boolean)
+      : src.bones
+  for (const bone of bones) {
+    const resolved = resolveBoneName(bone.name, dstBones)
+    if (resolved && footTargets.has(resolved)) return true
+  }
+  return false
+}
+
+function mergeThresholdForCategory(category?: WearableCategory, wearableId?: string): number {
+  if (isL1WearableUrn(wearableId)) return 0.85
   switch (category) {
     case 'feet':
+      return 0.55
     case 'earring':
     case 'eyewear':
       return 0.35
@@ -189,7 +213,8 @@ function mergeThresholdForCategory(category?: WearableCategory): number {
   }
 }
 
-function isL1WearableUrn(urn?: string): boolean {
+/** L1 profile wearables (ethereum / collections-v1) — bone merge required; never fallback-attach. */
+export function isL1WearableUrn(urn?: string): boolean {
   return !!urn?.includes(':ethereum:') || !!urn?.includes(':collections-v1:')
 }
 
@@ -224,7 +249,7 @@ export function mergeWearableMeshes(
   target: THREE.Object3D,
   options: MergeWearableOptions = {}
 ): boolean {
-  const threshold = mergeThresholdForCategory(options.category)
+  const threshold = mergeThresholdForCategory(options.category, options.wearableId)
   let merged = 0
 
   wearableRoot.traverse((obj) => {
@@ -233,6 +258,12 @@ export function mergeWearableMeshes(
     const usedBones = collectUsedBoneIndices(obj)
     const quality = boneMapQuality(obj.skeleton, skeleton, usedBones)
     if (quality < threshold) return
+    if (
+      options.category === 'feet' &&
+      !feetMergeHasFootBones(obj.skeleton, skeleton, usedBones)
+    ) {
+      return
+    }
 
     const indexMap = buildBoneIndexMap(obj.skeleton, skeleton)
     const geometry = obj.geometry.clone()
@@ -259,6 +290,8 @@ export function attachWearableFallback(
   target: THREE.Object3D,
   options: MergeWearableOptions = {}
 ): boolean {
+  if (isL1WearableUrn(options.wearableId)) return false
+
   const visibleMeshes = pruneWearableDisplayMeshes(wearableRoot)
   if (visibleMeshes === 0) return false
 
@@ -272,11 +305,6 @@ export function attachWearableFallback(
     target.add(wearableRoot)
   }
 
-  if (isL1WearableUrn(options.wearableId)) {
-    console.warn(
-      `[avatar] L1 wearable fallback attach: ${options.wearableId} (${options.category ?? 'unknown'}) — bone merge failed`
-    )
-  }
   return true
 }
 

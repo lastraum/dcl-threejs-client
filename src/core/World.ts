@@ -16,6 +16,7 @@ import { RemoteAvatarManager } from '../network/RemoteAvatarManager'
 import { CommsService } from '../network/CommsService'
 import { buildEmoteWheelSlots, resolveSceneEmoteFromSrc } from '../avatar/profileEmotes'
 import { SocialService } from '../social/SocialService'
+import { overheadChatText } from '../social/overheadChatText'
 import { fetchProfileFaceUrl, seedCommsPeerProfile } from '../avatar/peerApi'
 import type { LoginResult } from '../auth/AuthClient'
 import type { SendBinaryRequest } from '../shim/types'
@@ -64,6 +65,7 @@ export class World {
   private collidersPhysLastLog = 0
   private loggedCollidersPhysNoHit = false
   private loggedFinalizePoseDiag = false
+  private loggedRuntimeRecookDisabled = false
   private collidersLoadingComplete = false
   private lastPhysicsBatchFp = ''
   private signedFetchSceneContext: SignedFetchSceneContext | null = null
@@ -77,12 +79,13 @@ export class World {
   private bootAssetsTimedOut = false
   /** Runtime burst (e.g. theatre Scene 11/12) — drain with loading-style recook until idle. */
   private runtimeColliderBurstUntil = 0
+  private unsubAvatarChat: (() => void) | null = null
 
   /** Per-tick budget while GLBs still attaching on the loading screen. */
   private static readonly HYDRATION_COLLIDER_COOK_BUDGET = 80
   /** Per-frame budget during the post-hydration loading drain. */
   private static readonly LOADING_COLLIDER_COOK_BUDGET = 96
-  private static readonly RUNTIME_COLLIDER_COOK_BUDGET = 15
+  private static readonly RUNTIME_COLLIDER_COOK_BUDGET = 24
   /** Burst cook after dynamic scene spawns (theatre) — higher per-frame budget. */
   private static readonly RUNTIME_COLLIDER_BURST_BUDGET = 64
   private static readonly RUNTIME_COLLIDER_BURST_MS = 12_000
@@ -98,6 +101,10 @@ export class World {
     this.lightManager = new LightManager(this.host.scene)
     this.environment = new EnvironmentSystem(this.host, this.lightManager)
     this.player = new PlayerSystem(this.host, this.physics)
+    this.sceneScript.setClientPoseProvider(() => ({
+      player: this.player!.getEntityPose(),
+      camera: this.player!.getCameraEntityPose()
+    }))
     this.remoteAvatars = new RemoteAvatarManager(this.host.scene)
 
     this.remoteAvatars && this.comms.setHandlers({
@@ -376,8 +383,9 @@ export class World {
     const probe = this.physics.debugProbeStaticHit(2.5)
     const downProbe = this.physics.debugProbeDownHit(8)
     const pos = this.player.getPosition()
-    const nearestGltf = pos ? this.nearestGltfColliderHorizDist(pos) : null
-    const sceneProbe = pos ? this.physics.probeSceneMeshDownAt(pos, 12) : null
+    const feetThree = this.player.getWorldPosition()
+    const nearestGltf = this.nearestGltfColliderHorizDist(feetThree)
+    const sceneProbe = this.physics.probeSceneMeshDownAt(feetThree, 12)
     console.info(
       `[World] player spawn — static=${spawnStatic} gltfRegistered=${spawnGltf} gltfExtracted=${this.lastGltfColliderCount}` +
         (gltfStats
@@ -389,9 +397,7 @@ export class World {
         ` nearestGltf=${nearestGltf !== null ? `${nearestGltf.toFixed(1)}m` : 'none'}` +
         ` probeDown=${downProbe !== null ? `${downProbe.toFixed(2)}m` : 'none'}`
     )
-    if (pos) {
-      this.logBootColliderDiag(pos)
-    }
+    this.logBootColliderDiag(feetThree)
     this.sceneScript.syncClientEntities(this.player.getEntityPose(), this.player.getCameraEntityPose())
 
     const address = this.session.getAddress()
@@ -445,6 +451,7 @@ export class World {
           ? `Social ready · ${this.social.getCommunities().length} communities`
           : 'Social ready'
       )
+      this.wireAvatarChatOverhead()
     }
 
     onProgress?.('Loading avatar…')
@@ -612,6 +619,10 @@ export class World {
 
         // Tweens / billboards / GLTF animators — sync frame, before render (not async-gated).
         this.sceneScript.pumpMotionBridges(delta, startFrame)
+        // Campfire sprite UV animation — sync frame (tiny tracked set, self-prunes static planes).
+        this.sceneScript.syncAnimatedSprites()
+        // Texture retries — sync frame so failed loads don't block async projection drain.
+        this.sceneScript.tickDeferredMaterials()
       },
       onAsyncFrame: async (_delta) => {
         await this.sceneScript.syncRenderer()
@@ -627,26 +638,49 @@ export class World {
     })
   }
 
+  /** Runtime pose-drift recook — off unless `?colliderrecook` or Help debug toggle. Boot + manual recook bypass. */
+  private allowsRuntimeColliderRecook(): boolean {
+    return physxColliderDebug.isRuntimeRecookEnabled()
+  }
+
+  private logRuntimeRecookDisabledOnce(): void {
+    if (this.loggedRuntimeRecookDisabled || this.allowsRuntimeColliderRecook()) return
+    this.loggedRuntimeRecookDisabled = true
+    console.info(
+      '[World] runtime collider recook disabled — boot cook + pose slides only; add ?colliderrecook or enable in Help (?) to allow drift recook'
+    )
+  }
+
   private applyPhysicsColliders(): void {
     if (!this.playerMode || !this.collidersLoadingComplete || this.deferPhysxCooks) return
+    this.logRuntimeRecookDisabledOnce()
     const batchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
     const fpDrifted = batchFp !== this.lastPhysicsBatchFp
+    const cookPending = this.colliderCookQueue.size > 0
+    const colliderWork = this.sceneScript.hasColliderWorkPending()
+
     if (fpDrifted) {
-      this.sceneScript.refreshColliderDescPoses()
-      this.pushColliderPosesToPhysX()
+      const posesSynced = this.sceneScript.hadColliderPoseSyncThisPass()
+      if (!posesSynced) {
+        // Entity-local actors only — world-baked trimesh recooks run per-entity when
+        // syncCollision reports an actual pose change (not blanket batch-drift sweeps).
+        this.sceneScript.refreshColliderDescPoses()
+        this.pushColliderPosesToPhysX()
+      }
+      this.lastPhysicsBatchFp = batchFp
     }
+
+    if (!cookPending && !fpDrifted && !colliderWork) return
+
     this.reconcileColliderCookQueue()
-    // Drift recook before queue drain — world-baked actors must not be invalidated first
-    // (needsWorldBakedPoseRecook requires a live actor; premature remove leaves physics gaps).
-    const driftRecooked = this.physics.recookWorldBakedPoseDrift(
-      this.sceneScript.getAllPhysicsColliderDescs()
-    )
-    if (driftRecooked > 0) this.scheduleWarmStaticScene()
-    this.drainRuntimeColliderCookQueue()
+    if (cookPending && this.allowsRuntimeColliderRecook()) {
+      this.drainRuntimeColliderCookQueue()
+    }
   }
 
   /** Runtime PhysX cook — prioritize near-player, burst-drain after composite spawns (theatre). */
   private drainRuntimeColliderCookQueue(): void {
+    if (!this.allowsRuntimeColliderRecook()) return
     const pending = this.colliderCookQueue.size
     if (pending === 0) return
 
@@ -710,7 +744,9 @@ export class World {
     const slideDescs: PhysicsColliderDesc[] = []
     for (const desc of descs) {
       if (this.physics.needsWorldBakedPoseRecook(desc)) {
-        this.colliderCookQueue.add(desc.entity)
+        if (this.allowsRuntimeColliderRecook() && this.isColliderDescNearPlayer(desc)) {
+          this.colliderCookQueue.add(desc.entity)
+        }
         continue
       }
       slideDescs.push(desc)
@@ -741,6 +777,15 @@ export class World {
     const updated = this.physics.applyStaticColliderPoseUpdates(descs, { force })
     if (updated > 0) this.physics.warmStaticScene()
     this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
+  }
+
+  /** Runtime world-baked recook — only colliders near the avatar (theatre tweens skip distant drift). */
+  private isColliderDescNearPlayer(desc: PhysicsColliderDesc, maxHoriz = 40): boolean {
+    const feet = this.player?.getWorldPosition()
+    if (!feet) return true
+    const dx = desc.matrix.elements[12]! - feet.x
+    const dz = desc.matrix.elements[14]! - feet.z
+    return dx * dx + dz * dz <= maxHoriz * maxHoriz
   }
 
   private nearestGltfColliderHorizDist(feet: THREE.Vector3): number | null {
@@ -853,7 +898,11 @@ export class World {
         this.physics.geomFingerprintMatches(desc)
       ) {
         if (this.physics.needsWorldBakedPoseRecook(desc)) {
-          this.colliderCookQueue.add(desc.entity)
+          if (this.allowsRuntimeColliderRecook() && this.isColliderDescNearPlayer(desc)) {
+            this.colliderCookQueue.add(desc.entity)
+          } else {
+            this.colliderCookQueue.delete(desc.entity)
+          }
           continue
         }
         this.physics.ackStaticPoseFingerprint(desc)
@@ -911,6 +960,11 @@ export class World {
         this.colliderCookQueue.delete(physId)
         continue
       }
+      // Runtime: only register actors that have never been cooked; never remove/recook existing.
+      if (!loadingPass && !this.allowsRuntimeColliderRecook() && this.physics.hasStaticActor(physId)) {
+        this.colliderCookQueue.delete(physId)
+        continue
+      }
       if (!loadingPass && this.physics.isColliderSynced(desc)) {
         this.colliderCookQueue.delete(physId)
         continue
@@ -965,12 +1019,13 @@ export class World {
     }
 
     try {
+      const bootStyleCook = loadingPass || worldBakedRecook
       const result = this.physics.syncStaticColliders(toCook, {
         cookBudget: toCook.length,
         freezeRemoval: true,
-        // Loading + world-baked pose drift: full recook. Runtime entity-local: pose slide only.
-        forceRecookOnPoseChange: loadingPass || worldBakedRecook,
-        geometryCache: options?.entityLocal ? true : !loadingPass
+        // Loading + world-baked pose drift: full world-bake recook.
+        forceRecookOnPoseChange: bootStyleCook,
+        geometryCache: options?.entityLocal ? true : !bootStyleCook
       })
       for (const desc of toCook) {
         if (this.physics.isColliderSynced(desc)) {
@@ -1024,9 +1079,11 @@ export class World {
     if (options?.force !== false) {
       this.lastPhysicsBatchFp = ''
       this.physics.clearFailedCookCaches()
-      this.physics.clearGltfStaticActors()
+      this.physics.clearAllSceneStaticActors()
       this.colliderCookQueue.clear()
+      this.sceneScript.invalidateGltfColliderSyncCache()
     }
+    this.sceneScript.flushSceneGraphMatrices()
     this.sceneScript.syncCollisionForce()
     this.reconcileColliderCookQueue()
     while (this.colliderCookQueue.size > 0) {
@@ -1040,11 +1097,13 @@ export class World {
     if (!options?.quiet) {
       const mesh = this.sceneScript.collision?.getPhysicsColliders().length ?? 0
       const gltf = this.sceneScript.gltfColliders?.getPhysicsColliders().length ?? 0
-      const probe = this.physics.debugProbeStaticHit(2.5)
-      const hit = probe.distance !== null ? `${probe.distance.toFixed(2)}m` : 'none'
+      const probeH = this.physics.debugProbeStaticHit(2.5)
+      const probeDown = this.physics.debugProbeDownHit(8)
+      const horiz = probeH.distance !== null ? `${probeH.distance.toFixed(2)}m` : 'none'
+      const down = probeDown !== null ? `${probeDown.toFixed(2)}m` : 'none'
       clientDebugLog.log(
         'collision',
-        `Colliders recooked — static=${this.physics.staticColliderCount} mesh=${mesh} gltf=${gltf} probe=${hit}`,
+        `Colliders recooked — static=${this.physics.staticColliderCount} mesh=${mesh} gltf=${gltf} probeH=${horiz} probeDown=${down}`,
         { level: 'success', alsoConsole: true }
       )
     }
@@ -1258,7 +1317,32 @@ export class World {
   }
 
 
+  private wireAvatarChatOverhead(): void {
+    this.unsubAvatarChat?.()
+    this.unsubAvatarChat = this.social.onChat((event) => {
+      if (!event.channelKey.startsWith('scene:')) return
+      const address = event.line.senderAddress?.toLowerCase()
+      if (!address) return
+      const text = overheadChatText(event.line.text)
+      if (!text) return
+      this.showAvatarOverheadChat(address, text)
+    })
+  }
+
+  private showAvatarOverheadChat(address: string, text: string): void {
+    const local = this.session.getAddress()?.toLowerCase()
+    if (local && address === local) {
+      this.player?.showNameTagChat(text)
+      return
+    }
+    if (!skipRemoteAvatars()) {
+      this.remoteAvatars?.showPeerNameTagChat(address, text)
+    }
+  }
+
   dispose(): void {
+    this.unsubAvatarChat?.()
+    this.unsubAvatarChat = null
     this.host.stop()
 
     this.player?.dispose()

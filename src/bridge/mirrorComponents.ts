@@ -40,6 +40,7 @@ export type MirrorComponents = {
   AudioSource: ReturnType<typeof generated.AudioSource>
   AudioStream: ReturnType<typeof generated.AudioStream>
   AudioEvent: ReturnType<typeof generated.AudioEvent>
+  ParticleSystem: ReturnType<typeof generated.ParticleSystem>
 }
 
 /** Register mirror ECS components so incoming scene CRDT can be applied. */
@@ -80,6 +81,7 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     VideoEvent: generated.VideoEvent(engine),
     AudioSource: generated.AudioSource(engine),
     AudioStream: generated.AudioStream(engine),
-    AudioEvent: generated.AudioEvent(engine)
+    AudioEvent: generated.AudioEvent(engine),
+    ParticleSystem: generated.ParticleSystem(engine)
   }
 }

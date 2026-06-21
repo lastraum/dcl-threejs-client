@@ -5,7 +5,10 @@ import {
   applyPrimitivePivotOffset,
   buildPrimitiveGeometry,
   primitiveDoubleSided,
-  primitiveMeshKey
+  hasAnimatedPlaneUvs,
+  primitiveKind,
+  primitiveMeshKey,
+  updatePlaneGeometryUvs
 } from './primitiveShapes'
 import { MaterialApplier, type PbMaterial } from './material/MaterialApplier'
 import type { AssetCache } from '../rendering/AssetCache'
@@ -90,6 +93,10 @@ function textKey(entity: Entity): string {
   return `__text_${entity}`
 }
 
+function particleKey(entity: Entity): string {
+  return `__particles_${entity}`
+}
+
 function enableMeshReceiveShadow(root: THREE.Object3D): void {
   root.traverse((child) => {
     if ((child as THREE.Mesh).isMesh) (child as THREE.Mesh).receiveShadow = true
@@ -112,6 +119,11 @@ export class ThreeBridge {
   private readonly pendingMeshEntities = new Set<Entity>()
   /** Entities with a Material component still needing full texture apply after hydration defer. */
   private readonly pendingMaterialEntities = new Set<Entity>()
+  /**
+   * Recycled sprite-plane entity ids (DCL pool) — stay registered across DELETE_ENTITY
+   * until the same id is PUT again; no per-frame scene scan.
+   */
+  private readonly animatedPlaneSlots = new Set<Entity>()
   private readonly materials: MaterialApplier
   private hydrationMode = false
   private readonly loggedUnresolvedSrcs = new Set<string>()
@@ -145,12 +157,124 @@ export class ThreeBridge {
     return this.store.nodes
   }
 
+  /** Campfire sprite pool — never participates in collider/pointer/bridge secondary notifications. */
+  isAnimatedSpriteSlot(entity: Entity): boolean {
+    return this.animatedPlaneSlots.has(entity)
+  }
+
+  private skipSpriteSecondaryNotify = (entity: Entity): boolean => this.animatedPlaneSlots.has(entity)
+
+  private isReservedSceneEntity(entity: Entity, view: ProjectionView): boolean {
+    return (
+      entity === view.RootEntity || entity === view.PlayerEntity || entity === view.CameraEntity
+    )
+  }
+
+  /**
+   * Campfire sprite pool only — not interactive planes (plants with PointerEvents / MeshCollider).
+   */
+  private isCampfireSpritePoolEntity(entity: Entity): boolean {
+    const { MeshRenderer, PointerEvents, MeshCollider } = this.ecs
+    if (!MeshRenderer.has(entity) || !hasAnimatedPlaneUvs(MeshRenderer.get(entity))) return false
+    return !PointerEvents.has(entity) && !MeshCollider.has(entity)
+  }
+
+  private isSpriteDiffEntity(
+    entity: Entity,
+    view: ProjectionView,
+    Transform: MirrorComponents['Transform']
+  ): boolean {
+    if (this.isReservedSceneEntity(entity, view)) return false
+    if (this.animatedPlaneSlots.has(entity)) return true
+    if (this.isCampfireSpritePoolEntity(entity)) return true
+    return !Transform.has(entity) && this.store.has(entity) && this.animatedPlaneSlots.has(entity)
+  }
+
+  /** Peel campfire sprite-pool churn off the main async consumeDiff path. */
+  partitionSpriteDiff(
+    diff: Map<Entity, Map<number, ProjectionChangeKind>>,
+    view: ProjectionView
+  ): {
+    spriteDiff: Map<Entity, Map<number, ProjectionChangeKind>>
+    sceneDiff: Map<Entity, Map<number, ProjectionChangeKind>>
+  } {
+    this.pruneMisclassifiedSpriteSlots()
+    const { Transform } = this.ecs
+    const spriteDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    const sceneDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    for (const [entity, comps] of diff) {
+      if (this.isSpriteDiffEntity(entity, view, Transform)) {
+        spriteDiff.set(entity, comps)
+      } else {
+        sceneDiff.set(entity, comps)
+      }
+    }
+    return { spriteDiff, sceneDiff }
+  }
+
+  /**
+   * Sync-only sprite pool path — transform + in-place UV; no async mesh/material passes,
+   * no EntityStore secondary notifications (collider / pointer).
+   */
+  consumeSpriteDiff(
+    diff: Map<Entity, Map<number, ProjectionChangeKind>>,
+    view: ProjectionView
+  ): void {
+    if (!diff.size) return
+    const { MeshRenderer, Material } = this.ecs
+
+    this.primeAnimatedPlaneSlotsFromDiff(diff, view, MeshRenderer)
+
+    const applied = applySceneDiff(this.store, diff, view, this.ecs, [], {
+      skipTransformApply: this.skipTransformApply,
+      skipSecondaryNotify: this.skipSpriteSecondaryNotify
+    })
+
+    const materialTouch = new Set<Entity>()
+
+    for (const entity of applied.removals) {
+      this.suspendSpriteSlot(entity)
+    }
+
+    for (const entity of applied.meshDirty) {
+      this.trackAnimatedPlane(entity)
+      this.syncSpritePlaneVisual(entity, Material, true)
+      this.applyAnimatedPlaneUvs(entity)
+      materialTouch.add(entity)
+    }
+
+    for (const entity of applied.upserts) {
+      if (applied.meshDirty.includes(entity)) continue
+      if (!MeshRenderer.has(entity)) continue
+      this.trackAnimatedPlane(entity)
+      this.syncSpritePlaneVisual(entity, Material, true)
+      this.applyAnimatedPlaneUvs(entity)
+      materialTouch.add(entity)
+    }
+
+    for (const [entity, comps] of diff) {
+      if (!this.animatedPlaneSlots.has(entity)) continue
+      if (!comps.has(Material.componentId) || !Material.has(entity)) continue
+      this.syncSpritePlaneVisual(entity, Material, true)
+      materialTouch.add(entity)
+    }
+
+    if (materialTouch.size) {
+      void this.runSpriteMaterialPass([...materialTouch], Material)
+    }
+  }
+
   setVideoPlayerBridge(bridge: VideoPlayerBridge): void {
     this.videoPlayerBridge = bridge
     this.materials.setVideoTextureResolver((entity) => bridge.getTexture(entity as Entity))
     bridge.onTextureReady = (videoPlayerEntity) => {
       this.invalidateMaterialsForVideoPlayer(videoPlayerEntity)
     }
+  }
+
+  setAvatarTextureResolver(resolver: (userId: string) => Promise<THREE.Texture | null>): void {
+    this.materials.setAvatarTextureResolver(resolver)
+    this.queueAllMaterialEntities()
   }
 
   setAudioSourceBridge(bridge: AudioSourceBridge): void {
@@ -176,6 +300,10 @@ export class ThreeBridge {
   }
 
   private notifyMeshComponent(entity: Entity, componentId: number): void {
+    if (this.animatedPlaneSlots.has(entity)) {
+      const { PointerEvents, MeshCollider } = this.ecs
+      if (!PointerEvents.has(entity) && !MeshCollider.has(entity)) return
+    }
     this.store.notifyComponentChange(entity, componentId, 'put')
   }
 
@@ -220,13 +348,22 @@ export class ThreeBridge {
       : ThreeBridge.MESH_PASS_BUDGET_MS
   }
 
+  /** Scale mesh drain when a large pending queue would otherwise stall GLTF attach + colliders. */
+  private meshDrainBudgetMs(): number {
+    const base = this.meshPassBudgetMs()
+    const pending = this.pendingMeshEntities.size
+    if (pending > 200) return Math.max(base, 16)
+    if (pending > 50) return Math.max(base, 12)
+    return base
+  }
+
   /** Defer texture loads only during the loading-screen hydration burst — not soft GLTF cap. */
   private shouldDeferMaterials(): boolean {
     return this.hydrationMode
   }
 
   private shouldDeferTextures(): boolean {
-    return this.hydrationMode || performance.now() < this.softHydrationUntil
+    return this.hydrationMode
   }
 
   private entityVisualRoot(entity: Entity, obj: THREE.Group): THREE.Object3D | null {
@@ -241,7 +378,8 @@ export class ThreeBridge {
       if (!Material.has(entity)) continue
       if (!this.entityVisualRoot(entity, obj)) continue
       const pb = Material.get(entity) as PbMaterial
-      if (this.materials.needsReapply(entity, pb)) this.pendingMaterialEntities.add(entity)
+      const visual = this.entityVisualRoot(entity, obj)
+      if (visual && this.materials.needsReapply(entity, pb, visual)) this.pendingMaterialEntities.add(entity)
     }
   }
 
@@ -250,7 +388,7 @@ export class ThreeBridge {
     if (!Material.has(entity)) return false
     const visual = this.entityVisualRoot(entity, obj)
     if (!visual) return false
-    return this.materials.needsReapply(entity, Material.get(entity) as PbMaterial)
+    return this.materials.needsReapply(entity, Material.get(entity) as PbMaterial, visual)
   }
 
   private entityNeedsMeshWork(
@@ -472,7 +610,8 @@ export class ThreeBridge {
 
     const applied = applySceneDiff(this.store, fullDiff, view, this.ecs, [], {
       notifySecondary: false,
-      skipTransformApply: this.skipTransformApply
+      skipTransformApply: this.skipTransformApply,
+      skipSecondaryNotify: this.skipSpriteSecondaryNotify
     })
 
     // Hydration full-walk: reconcile transforms / orphan nodes only — never re-touch materials.
@@ -486,7 +625,10 @@ export class ThreeBridge {
 
     for (const [entity] of this.store.nodes) {
       if (!this.store.isSceneOwned(entity)) continue
-      if (!active.has(entity)) this.removeEntityNode(entity)
+      if (!active.has(entity)) {
+        if (this.animatedPlaneSlots.has(entity)) continue
+        this.removeEntityNode(entity)
+      }
     }
     this.pendingMeshEntities.clear()
   }
@@ -506,11 +648,28 @@ export class ThreeBridge {
    * Tweened entities are re-applied every frame because their Transform is interpolated
    * renderer-locally and never appears in the worker diff.
    */
+  /** Drain deferred mesh work when the projection diff is empty — materials use sync-frame tickDeferredMaterials. */
+  async drainPendingWork(): Promise<void> {
+    if (!this.pendingMeshEntities.size) return
+    const { MeshRenderer, Material, GltfContainer, TextShape } = this.ecs
+    const meshEcs = { MeshRenderer, Material, GltfContainer, TextShape }
+    const deferMaterials = this.shouldDeferMaterials()
+    await this.runDiffMeshPass(meshEcs, deferMaterials)
+  }
+
   async consumeDiff(diff: Map<Entity, Map<number, ProjectionChangeKind>>, view: ProjectionView): Promise<void> {
+    if (!diff.size) return
     this.gltfBudgetRemaining = this.resolveGltfBudget()
     const { MeshRenderer, Material, GltfContainer, TextShape, Tween, AvatarAttach } = this.ecs
     const meshEcs = { MeshRenderer, Material, GltfContainer, TextShape }
     const deferMaterials = this.shouldDeferMaterials()
+
+    const { spriteDiff, sceneDiff } = this.partitionSpriteDiff(diff, view)
+    if (spriteDiff.size) this.consumeSpriteDiff(spriteDiff, view)
+    if (!sceneDiff.size) return
+    diff = sceneDiff
+
+    this.primeAnimatedPlaneSlotsFromDiff(diff, view, MeshRenderer)
 
     const tweenRefresh: Entity[] = []
     for (const [entity] of view.getEntitiesWith(Tween)) {
@@ -519,21 +678,30 @@ export class ThreeBridge {
     }
 
     const applied = applySceneDiff(this.store, diff, view, this.ecs, tweenRefresh, {
-      skipTransformApply: this.skipTransformApply
+      skipTransformApply: this.skipTransformApply,
+      skipSecondaryNotify: this.skipSpriteSecondaryNotify
     })
 
     for (const entity of applied.removals) {
-      this.removeEntityNode(entity)
+      if (this.animatedPlaneSlots.has(entity)) {
+        this.suspendSpriteSlot(entity)
+      } else {
+        this.removeEntityNode(entity)
+      }
     }
     for (const entity of applied.meshDirty) {
       this.pendingMeshEntities.add(entity)
+      this.trackAnimatedPlane(entity)
       if (Material.has(entity)) {
         const pb = Material.get(entity) as PbMaterial
-        if (this.materials.needsReapply(entity, pb)) this.pendingMaterialEntities.add(entity)
+        const obj = this.store.nodes.get(entity)
+        const visual = obj ? this.entityVisualRoot(entity, obj) : null
+        if (visual && this.materials.needsReapply(entity, pb, visual)) this.pendingMaterialEntities.add(entity)
       }
     }
 
     await this.runDiffMeshPass(meshEcs, deferMaterials)
+    for (const entity of applied.meshDirty) this.applyAnimatedPlaneUvs(entity)
     await this.runMaterialPass(Material)
   }
 
@@ -553,8 +721,9 @@ export class ThreeBridge {
 
     const ordered = this.meshEntitiesForPass([...this.pendingMeshEntities])
     const passStart = performance.now()
+    const budgetMs = this.meshDrainBudgetMs()
     for (const entity of ordered) {
-      if (performance.now() - passStart >= this.meshPassBudgetMs()) break
+      if (performance.now() - passStart >= budgetMs) break
       const obj = this.store.nodes.get(entity)
       if (!obj) {
         this.pendingMeshEntities.delete(entity)
@@ -566,14 +735,102 @@ export class ThreeBridge {
     }
   }
 
-  /** Budgeted full material apply for entities queued during hydration defer. */
-  private async runMaterialPass(Material: MirrorComponents['Material']): Promise<void> {
-    if (!this.pendingMaterialEntities.size) return
-    const deferTextures = this.shouldDeferTextures()
-    const passStart = performance.now()
+  /** Register sprite slots before applySceneDiff so DELETE_ENTITY skips collider/pointer notifies. */
+  private primeAnimatedPlaneSlotsFromDiff(
+    diff: Map<Entity, Map<number, ProjectionChangeKind>>,
+    view: ProjectionView,
+    MeshRenderer: MirrorComponents['MeshRenderer']
+  ): void {
+    for (const [entity, comps] of diff) {
+      if (
+        entity === view.RootEntity ||
+        entity === view.PlayerEntity ||
+        entity === view.CameraEntity
+      ) {
+        continue
+      }
+      if (this.animatedPlaneSlots.has(entity)) continue
+      const meshChange = comps.get(MeshRenderer.componentId)
+      if (meshChange !== 'put') continue
+      if (this.isCampfireSpritePoolEntity(entity)) this.animatedPlaneSlots.add(entity)
+    }
+  }
 
-    for (const entity of [...this.pendingMaterialEntities]) {
-      if (performance.now() - passStart >= this.meshPassBudgetMs()) break
+  private trackAnimatedPlane(entity: Entity): void {
+    if (!this.isCampfireSpritePoolEntity(entity)) return
+    this.animatedPlaneSlots.add(entity)
+  }
+
+  /** Drop interactive animated planes (plants) that were never campfire-pool candidates. */
+  private pruneMisclassifiedSpriteSlots(): void {
+    for (const entity of this.animatedPlaneSlots) {
+      if (!this.isCampfireSpritePoolEntity(entity)) this.animatedPlaneSlots.delete(entity)
+    }
+  }
+
+  private applyAnimatedPlaneUvs(entity: Entity): void {
+    const { MeshRenderer } = this.ecs
+    if (!MeshRenderer.has(entity)) return
+    const spec = MeshRenderer.get(entity)
+    const planeUvsEarly = spec.mesh?.$case === 'plane' ? spec.mesh.plane?.uvs : undefined
+    if (!planeUvsEarly || planeUvsEarly.length < 8) return
+    const obj = this.store.nodes.get(entity)
+    if (!obj) return
+
+    const mk = meshKey(entity)
+    const primitive = obj.getObjectByName(mk) as THREE.Mesh | undefined
+    if (!primitive?.isMesh) return
+
+    const key = primitiveMeshKey(spec)
+    if (primitive.userData.primitiveMeshKey === key) return
+    if (updatePlaneGeometryUvs(primitive.geometry, planeUvsEarly)) {
+      primitive.userData.primitiveMeshKey = key
+    }
+  }
+
+  /**
+   * Hot path — only tracked sprite planes (campfire pool), not every MeshRenderer in Genesis.
+   * Runs on the sync frame so UV updates are not gated behind async syncRenderer.
+   */
+  syncAnimatedPlaneUvs(): void {
+    if (!this.animatedPlaneSlots.size) return
+    for (const entity of this.animatedPlaneSlots) {
+      this.applyAnimatedPlaneUvs(entity)
+    }
+  }
+
+  private materialTickBusy = false
+
+  /** Retry deferred sprite/material textures without blocking the render loop. */
+  tickDeferredMaterials(budgetMs = 8, maxEntities = 8): void {
+    if (this.materialTickBusy) return
+    if (!this.pendingMaterialEntities.size) return
+    // After hydration, apply deferred textures even if the global defer gate is still set.
+    const deferTextures = this.shouldDeferTextures() && this.hydrationMode
+    if (deferTextures) return
+    this.materialTickBusy = true
+    void this.runMaterialPass(this.ecs.Material, budgetMs, maxEntities, deferTextures).finally(() => {
+      this.materialTickBusy = false
+    })
+  }
+
+  /** Budgeted full material apply for entities queued during hydration defer. */
+  private async runMaterialPass(
+    Material: MirrorComponents['Material'],
+    budgetMs = this.meshPassBudgetMs(),
+    maxEntities = Number.POSITIVE_INFINITY,
+    deferTextures = this.shouldDeferTextures() && this.hydrationMode
+  ): Promise<void> {
+    if (!this.pendingMaterialEntities.size) return
+    const passStart = performance.now()
+    let processed = 0
+
+    // FIFO — avoid O(n log n) mesh traversals in the sort comparator every drain pass.
+    const ordered = [...this.pendingMaterialEntities]
+
+    for (const entity of ordered) {
+      if (processed >= maxEntities) break
+      if (performance.now() - passStart >= budgetMs) break
       const obj = this.store.nodes.get(entity)
       if (!obj || !Material.has(entity)) {
         this.pendingMaterialEntities.delete(entity)
@@ -585,12 +842,105 @@ export class ThreeBridge {
       const pb = Material.get(entity) as PbMaterial
       if (deferTextures) {
         this.materials.applyScalarsToObject3D(visual, entity, pb)
-        if (!this.materials.needsReapply(entity, pb)) this.pendingMaterialEntities.delete(entity)
+        if (!this.materials.needsReapply(entity, pb, visual)) this.pendingMaterialEntities.delete(entity)
         continue
       }
       await this.materials.applyToObject3D(visual, entity, pb)
       this.notifyMeshComponent(entity, Material.componentId)
-      if (!this.materials.needsReapply(entity, pb)) this.pendingMaterialEntities.delete(entity)
+      if (!this.materials.needsReapply(entity, pb, visual)) this.pendingMaterialEntities.delete(entity)
+      processed++
+    }
+  }
+
+  /**
+   * DCL sprite pool — hide visuals and keep the EntityStore node across DELETE_ENTITY
+   * so recycled ids do not emit store destroy/create (avoids collider + pointer full walks).
+   */
+  private suspendSpriteSlot(entity: Entity): void {
+    if (!this.store.isSceneOwned(entity)) return
+    this.pendingMeshEntities.delete(entity)
+    this.pendingMaterialEntities.delete(entity)
+    const obj = this.store.getNode(entity)
+    if (!obj) return
+    this.removeEntityVisuals(entity, obj)
+  }
+
+  /** Build or UV-patch a sprite plane synchronously — never notifies collision/pointer. */
+  private syncSpritePlaneVisual(
+    entity: Entity,
+    Material: MirrorComponents['Material'],
+    touchMaterials: boolean
+  ): void {
+    const { MeshRenderer } = this.ecs
+    if (!MeshRenderer.has(entity)) return
+    const obj = this.store.getNode(entity)
+    if (!obj) return
+
+    const spec = MeshRenderer.get(entity)
+    const mk = meshKey(entity)
+    const key = primitiveMeshKey(spec)
+    const planeUvs = spec.mesh?.$case === 'plane' ? spec.mesh.plane?.uvs : undefined
+    let primitive = obj.getObjectByName(mk) as THREE.Mesh | undefined
+
+    if (
+      primitive?.isMesh &&
+      primitive.userData.primitiveMeshKey !== key &&
+      planeUvs?.length &&
+      updatePlaneGeometryUvs(primitive.geometry, planeUvs)
+    ) {
+      primitive.userData.primitiveMeshKey = key
+    } else if (!primitive?.isMesh || primitive.userData.primitiveMeshKey !== key) {
+      if (primitive) {
+        primitive.geometry.dispose()
+        obj.remove(primitive)
+      }
+      const doubleSided = primitiveDoubleSided(spec)
+      primitive = new THREE.Mesh(
+        buildPrimitiveGeometry(spec),
+        new THREE.MeshStandardMaterial({
+          color: 0xffffff,
+          side: doubleSided ? THREE.DoubleSide : THREE.FrontSide
+        })
+      )
+      primitive.name = mk
+      primitive.userData.primitiveMeshKey = key
+      primitive.userData.primitiveDoubleSided = doubleSided
+      primitive.castShadow = false
+      primitive.receiveShadow = true
+      applyPrimitivePivotOffset(primitive, spec)
+      primitive.userData.entity = entity
+      obj.add(primitive)
+      this.notifyMeshComponent(entity, MeshRenderer.componentId)
+    }
+
+    if (!touchMaterials || !Material.has(entity) || !primitive?.isMesh) return
+    const pb = Material.get(entity) as PbMaterial
+    if (this.materials.needsReapply(entity, pb, primitive)) {
+      this.materials.applyScalarsToObject3D(primitive, entity, pb)
+      this.pendingMaterialEntities.add(entity)
+    }
+  }
+
+  /** Texture apply for campfire pool — never notifies collision/pointer. */
+  private async runSpriteMaterialPass(
+    entities: Entity[],
+    Material: MirrorComponents['Material']
+  ): Promise<void> {
+    for (const entity of entities) {
+      if (!this.animatedPlaneSlots.has(entity) || !Material.has(entity)) continue
+      const obj = this.store.getNode(entity)
+      if (!obj) continue
+      const visual = this.entityVisualRoot(entity, obj)
+      if (!visual) continue
+      const pb = Material.get(entity) as PbMaterial
+      if (!this.materials.needsReapply(entity, pb, visual)) {
+        this.pendingMaterialEntities.delete(entity)
+        continue
+      }
+      await this.materials.applyToObject3D(visual, entity, pb)
+      if (!this.materials.needsReapply(entity, pb, visual)) {
+        this.pendingMaterialEntities.delete(entity)
+      }
     }
   }
 
@@ -598,6 +948,7 @@ export class ThreeBridge {
     if (!this.store.isSceneOwned(entity)) return
     this.pendingMeshEntities.delete(entity)
     this.pendingMaterialEntities.delete(entity)
+    this.animatedPlaneSlots.delete(entity)
     const obj = this.store.getNode(entity)
     if (!obj) return
     this.materials.clearEntity(entity)
@@ -618,17 +969,25 @@ export class ThreeBridge {
     this.audioStreamBridge = null
     this.pendingMeshEntities.clear()
     this.pendingMaterialEntities.clear()
+    this.animatedPlaneSlots.clear()
   }
 
   private removeEntityVisuals(entity: Entity, obj: THREE.Group): void {
     const mk = meshKey(entity)
     const tk = textKey(entity)
     const lk = lightKey(entity)
-    for (const name of [mk, tk]) {
+    const pk = particleKey(entity)
+    for (const name of [mk, tk, pk]) {
       const child = obj.getObjectByName(name)
       if (!child) continue
       if (name === tk) disposeTextShapeMesh(child)
-      else disposeOwnedObject3D(child)
+      else if (name === pk && (child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh
+        mesh.geometry.dispose()
+        const mat = mesh.material
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose())
+        else mat.dispose()
+      } else disposeOwnedObject3D(child)
       obj.remove(child)
     }
     removeLightSource(obj, lk)
@@ -772,7 +1131,7 @@ export class ThreeBridge {
 
       if (touchMaterials && Material.has(entity) && mesh) {
         const pb = Material.get(entity) as PbMaterial
-        if (!this.materials.needsReapply(entity, pb)) {
+        if (!this.materials.needsReapply(entity, pb, mesh)) {
           /* material already matches ECS — skip destructive re-apply on hydration full-walk */
         } else if (deferMaterials || this.shouldDeferTextures()) {
           this.pendingMaterialEntities.add(entity)
@@ -780,7 +1139,7 @@ export class ThreeBridge {
         } else {
           await this.materials.applyToObject3D(mesh, entity, pb)
           this.notifyMeshComponent(entity, Material.componentId)
-          if (!this.materials.needsReapply(entity, pb)) this.pendingMaterialEntities.delete(entity)
+          if (!this.materials.needsReapply(entity, pb, mesh)) this.pendingMaterialEntities.delete(entity)
         }
       }
       return
@@ -795,10 +1154,22 @@ export class ThreeBridge {
 
     if (MeshRenderer.has(entity)) {
       const spec = MeshRenderer.get(entity)
+      this.trackAnimatedPlane(entity)
       const key = primitiveMeshKey(spec)
       let primitive = obj.getObjectByName(mk) as THREE.Mesh | undefined
+      const meshKind = primitiveKind(spec)
+      const planeUvs = spec.mesh?.$case === 'plane' ? spec.mesh.plane?.uvs : undefined
 
-      if (!primitive || !(primitive as THREE.Mesh).isMesh || primitive.userData.primitiveMeshKey !== key) {
+      if (
+        primitive &&
+        (primitive as THREE.Mesh).isMesh &&
+        meshKind === 'plane' &&
+        primitive.userData.primitiveMeshKey !== key &&
+        planeUvs?.length &&
+        updatePlaneGeometryUvs(primitive.geometry, planeUvs)
+      ) {
+        primitive.userData.primitiveMeshKey = key
+      } else if (!primitive || !(primitive as THREE.Mesh).isMesh || primitive.userData.primitiveMeshKey !== key) {
         if (primitive) {
           ;(primitive as THREE.Mesh).geometry.dispose()
           obj.remove(primitive)
@@ -823,7 +1194,7 @@ export class ThreeBridge {
 
       if (touchMaterials && Material.has(entity)) {
         const pb = Material.get(entity) as PbMaterial
-        if (!this.materials.needsReapply(entity, pb)) {
+        if (!this.materials.needsReapply(entity, pb, primitive)) {
           /* material already matches ECS — skip destructive re-apply on hydration full-walk */
         } else if (deferMaterials || this.shouldDeferTextures()) {
           this.pendingMaterialEntities.add(entity)
@@ -831,7 +1202,7 @@ export class ThreeBridge {
         } else {
           await this.materials.applyToObject3D(primitive, entity, pb)
           this.notifyMeshComponent(entity, Material.componentId)
-          if (!this.materials.needsReapply(entity, pb)) this.pendingMaterialEntities.delete(entity)
+          if (!this.materials.needsReapply(entity, pb, primitive)) this.pendingMaterialEntities.delete(entity)
         }
       }
     }

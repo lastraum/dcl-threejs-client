@@ -84,8 +84,9 @@ export class PointerEventsSystem {
 
   constructor(private readonly canvas: HTMLElement) {
     this.canvas.addEventListener('mousemove', this.onMouseMove)
-    this.canvas.addEventListener('mousedown', this.onMouseDown, PointerEventsSystem.captureMouse)
-    window.addEventListener('mouseup', this.onMouseUp, PointerEventsSystem.captureMouse)
+    // Capture pointerdown before PlayerInput sets orbiting on bubble-phase pointerdown.
+    this.canvas.addEventListener('pointerdown', this.onPointerDown, PointerEventsSystem.captureMouse)
+    window.addEventListener('pointerup', this.onPointerUp, PointerEventsSystem.captureMouse)
     window.addEventListener('keydown', this.onKeyDown)
     window.addEventListener('keyup', this.onKeyUp)
     this.screenX = window.innerWidth * 0.5
@@ -94,8 +95,8 @@ export class PointerEventsSystem {
 
   dispose(): void {
     this.canvas.removeEventListener('mousemove', this.onMouseMove)
-    this.canvas.removeEventListener('mousedown', this.onMouseDown, PointerEventsSystem.captureMouse)
-    window.removeEventListener('mouseup', this.onMouseUp, PointerEventsSystem.captureMouse)
+    this.canvas.removeEventListener('pointerdown', this.onPointerDown, PointerEventsSystem.captureMouse)
+    window.removeEventListener('pointerup', this.onPointerUp, PointerEventsSystem.captureMouse)
     window.removeEventListener('keydown', this.onKeyDown)
     window.removeEventListener('keyup', this.onKeyUp)
     this.hoverFeedback.dispose()
@@ -263,15 +264,25 @@ export class PointerEventsSystem {
     this.pointerDirty = true
   }
 
-  private onMouseDown = (e: MouseEvent): void => {
+  private onPointerDown = (e: PointerEvent): void => {
     if (!this.deps) return
+    if (e.target !== this.canvas) return
     if (this.isTypingTarget()) return
     if (this.deps.isPointerBlocked()) return
 
     const button = mouseButtonToInputAction(e.button)
     const hit = this.resolveInteractHit(button)
     if (!this.canQueuePointerDown(button, hit)) {
-      if (hit) this.logInteractBlocked(mouseInteractLabel(button), button, hit)
+      if (hit) {
+        this.logInteractBlocked(mouseInteractLabel(button), button, hit)
+      } else {
+        this.rebuildPointerCacheIfNeeded()
+        clientDebugLog.log(
+          'pointer',
+          `${mouseInteractLabel(button)} — no in-range target (entities=${this.pointerEntitySet.size} meshes=${this.pointerTargets.length})`,
+          { level: 'warn', alsoConsole: true }
+        )
+      }
       return
     }
     const targetEntity = this.resolvePointerResultEntity(hit!.entity, button)
@@ -279,12 +290,14 @@ export class PointerEventsSystem {
     this.pendingPointerDown.set(button, hit)
     if (button === InputAction.IA_POINTER) {
       const label =
-        targetEntity !== hit!.entity ? `click → target ${targetEntity} (hit ${hit!.entity})` : `click → entity ${targetEntity}`
+        targetEntity !== hit!.entity
+          ? `click → target ${targetEntity} (hit ${hit!.entity})`
+          : `click → entity ${targetEntity}`
       clientDebugLog.log('pointer', label, { alsoConsole: true })
     }
   }
 
-  private onMouseUp = (e: MouseEvent): void => {
+  private onPointerUp = (e: PointerEvent): void => {
     if (!this.deps) return
     const button = mouseButtonToInputAction(e.button)
     if (!this.downEntityByButton.has(button)) return
@@ -307,7 +320,16 @@ export class PointerEventsSystem {
 
     const hit = this.resolveInteractHit(action)
     if (!this.canQueuePointerDown(action, hit)) {
-      if (hit) this.logInteractBlocked(label, action, hit)
+      if (hit) {
+        this.logInteractBlocked(label, action, hit)
+      } else {
+        this.rebuildPointerCacheIfNeeded()
+        clientDebugLog.log(
+          'pointer',
+          `${label} — no in-range target (entities=${this.pointerEntitySet.size} meshes=${this.pointerTargets.length})`,
+          { level: 'warn', alsoConsole: true }
+        )
+      }
       return
     }
 
@@ -372,7 +394,8 @@ export class PointerEventsSystem {
   private tryWritePointerDown(button: InputActionValue, preferredHit: PointerHit | null = null): void {
     if (!this.deps) return
 
-    const activeHit = preferredHit ?? this.pickAtPointer()
+    let activeHit = preferredHit ?? this.pickAtPointer()
+    if (!activeHit) activeHit = this.pickProximityTarget(button)
     if (!activeHit) return
 
     const targetEntity = this.resolvePointerResultEntity(activeHit.entity, button)
@@ -384,12 +407,19 @@ export class PointerEventsSystem {
     this.writeResult(this.deps.ecs, targetEntity, activeHit, PointerEventType.PET_DOWN, button)
   }
 
-  /** Crosshair hit — fall back to last frame when pointer-locked center ray misses collider shell. */
+  /** Crosshair hit — fall back to proximity / last frame when the center ray misses. */
   private resolveInteractHit(button: InputActionValue): PointerHit | null {
     const fresh = this.pickAtPointer()
     if (fresh && this.canQueuePointerDown(button, fresh)) return fresh
+    const proximity = this.pickProximityTarget(button)
+    if (proximity && this.canQueuePointerDown(button, proximity)) {
+      clientDebugLog.log('pointer', `proximity target entity=${proximity.entity} player=${proximity.playerDistance.toFixed(1)}m`, {
+        alsoConsole: true
+      })
+      return proximity
+    }
     if (this.lastHit && this.canQueuePointerDown(button, this.lastHit)) return this.lastHit
-    return fresh ?? this.lastHit
+    return fresh ?? proximity ?? this.lastHit
   }
 
   private canQueuePointerDown(button: InputActionValue, hit: PointerHit | null): boolean {
@@ -455,7 +485,13 @@ export class PointerEventsSystem {
     const upHit: PointerHit =
       activeHit && activeTarget === downEntity
         ? activeHit
-        : buildSyntheticHit(this.deps.ecs, downEntity, _camPos, this.deps.getPlayerPosition())
+        : buildSyntheticHit(
+            this.deps.ecs,
+            downEntity,
+            _camPos,
+            this.deps.getPlayerPosition(),
+            this.deps.getEntityNodes()
+          )
 
     this.writeResult(this.deps.ecs, downEntity, upHit, PointerEventType.PET_UP, button)
     return true
@@ -528,7 +564,7 @@ export class PointerEventsSystem {
 
     this.raycaster.layers.set(0)
     this.raycaster.set(ray.origin, ray.direction)
-    const hits = this.raycaster.intersectObjects(this.pointerTargets, false)
+    const hits = this.raycaster.intersectObjects(this.pointerTargets, true)
 
     let best: PointerHit | null = null
     for (const hit of hits) {
@@ -563,6 +599,39 @@ export class PointerEventsSystem {
       }
     }
 
+    return best
+  }
+
+  /** Closest in-range PROXIMITY PointerEvents target (Genesis planters, E-key interact). */
+  private pickProximityTarget(button: InputActionValue): PointerHit | null {
+    if (!this.deps || !this.pointerEntitySet.size) return null
+    const { ecs, camera, getPlayerPosition } = this.deps
+    camera.getWorldPosition(_camPos)
+    const playerPos = getPlayerPosition()
+
+    let best: PointerHit | null = null
+    for (const entity of this.pointerEntitySet) {
+      const spec = ecs.PointerEvents.getOrNull(entity)
+      if (!hasPointerEvent(spec, PointerEventType.PET_DOWN, button, InteractionType.PROXIMITY)) continue
+
+      const distances = measureEntityDistances(
+        ecs,
+        entity,
+        _camPos,
+        playerPos,
+        this.deps.getEntityNodes()
+      )
+      const hit = buildSyntheticProximityHit(
+        ecs,
+        entity,
+        spec!,
+        distances,
+        this.deps.getEntityNodes()
+      )
+      if (!pointerEventInRange(spec, PointerEventType.PET_DOWN, button, hit)) continue
+
+      if (!best || hit.playerDistance < best.playerDistance) best = hit
+    }
     return best
   }
 
@@ -972,21 +1041,35 @@ function measureHitDistances(
   }
 }
 
+function resolveEntityWorldPosition(
+  ecs: MirrorComponents,
+  entity: Entity,
+  nodes: Map<Entity, THREE.Group>,
+  out: THREE.Vector3
+): THREE.Vector3 | null {
+  const node = nodes.get(entity)
+  if (node) {
+    node.updateWorldMatrix(true, false)
+    return node.getWorldPosition(out)
+  }
+  const transform = ecs.Transform.getOrNull(entity)
+  if (!transform) return null
+  return dclToThreeVec(
+    new THREE.Vector3(transform.position.x, transform.position.y, transform.position.z),
+    out
+  )
+}
+
 function measureEntityDistances(
   ecs: MirrorComponents,
   entity: Entity,
   cameraPos: THREE.Vector3,
-  playerPos: THREE.Vector3 | null
+  playerPos: THREE.Vector3 | null,
+  nodes: Map<Entity, THREE.Group>
 ): { cameraDistance: number; playerDistance: number } {
-  const transform = ecs.Transform.getOrNull(entity)
-  if (!transform) return { cameraDistance: Infinity, playerDistance: Infinity }
-
-  _entityPos.copy(
-    dclToThreeVec(
-      new THREE.Vector3(transform.position.x, transform.position.y, transform.position.z),
-      _entityPos
-    )
-  )
+  if (!resolveEntityWorldPosition(ecs, entity, nodes, _entityPos)) {
+    return { cameraDistance: Infinity, playerDistance: Infinity }
+  }
   return {
     cameraDistance: cameraPos.distanceTo(_entityPos),
     playerDistance: playerPos ? playerPos.distanceTo(_entityPos) : Infinity
@@ -1003,14 +1086,14 @@ function hasPointerEvent(
   spec: { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> } | null | undefined,
   eventType: PointerEventTypeValue,
   button: InputActionValue,
-  interaction: number = InteractionType.CURSOR
+  interaction?: number
 ): boolean {
   if (!spec) return false
   return spec.pointerEvents.some(
     (entry) =>
       entry.eventType === eventType &&
       buttonMatches(entry.eventInfo?.button, button) &&
-      (entry.interactionType ?? InteractionType.CURSOR) === interaction
+      (interaction === undefined || (entry.interactionType ?? InteractionType.CURSOR) === interaction)
   )
 }
 
@@ -1076,11 +1159,32 @@ function pointerEventInRange(
   if (!spec) return false
   for (const entry of spec.pointerEvents) {
     if (entry.eventType !== eventType) continue
-    if ((entry.interactionType ?? InteractionType.CURSOR) !== InteractionType.CURSOR) continue
     if (!buttonMatches(entry.eventInfo?.button, button)) continue
+    const interaction = entry.interactionType ?? InteractionType.CURSOR
+    if (interaction !== InteractionType.CURSOR && interaction !== InteractionType.PROXIMITY) continue
     return entryPassesDistance(entry, hit.cameraDistance, hit.playerDistance)
   }
   return false
+}
+
+function buildSyntheticProximityHit(
+  ecs: MirrorComponents,
+  entity: Entity,
+  spec: { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> },
+  distances: { cameraDistance: number; playerDistance: number },
+  nodes: Map<Entity, THREE.Group>
+): PointerHit {
+  const point = resolveEntityWorldPosition(ecs, entity, nodes, new THREE.Vector3()) ?? _camPos.clone()
+  return {
+    entity,
+    point,
+    distance: distances.cameraDistance,
+    normal: new THREE.Vector3(0, 1, 0),
+    priority: maxEntryPriority(spec),
+    cameraDistance: distances.cameraDistance,
+    playerDistance: distances.playerDistance,
+    inRange: pointerHighlightInRange(spec, distances.cameraDistance, distances.playerDistance)
+  }
 }
 
 /** Camera maxDistance on the entry first; if that fails, player distance (maxPlayerDistance or same maxDistance). */
@@ -1122,17 +1226,18 @@ function buildSyntheticHit(
   ecs: MirrorComponents,
   entity: Entity,
   cameraPos: THREE.Vector3,
-  playerPos: THREE.Vector3 | null
+  playerPos: THREE.Vector3 | null,
+  nodes: Map<Entity, THREE.Group>
 ): PointerHit {
   const spec = ecs.PointerEvents.getOrNull(entity)
-  const transform = ecs.Transform.getOrNull(entity)
-  const { cameraDistance, playerDistance } = measureEntityDistances(ecs, entity, cameraPos, playerPos)
-  const point = transform
-    ? dclToThreeVec(
-        new THREE.Vector3(transform.position.x, transform.position.y, transform.position.z),
-        new THREE.Vector3()
-      )
-    : cameraPos.clone()
+  const { cameraDistance, playerDistance } = measureEntityDistances(
+    ecs,
+    entity,
+    cameraPos,
+    playerPos,
+    nodes
+  )
+  const point = resolveEntityWorldPosition(ecs, entity, nodes, new THREE.Vector3()) ?? cameraPos.clone()
   return {
     entity,
     point,

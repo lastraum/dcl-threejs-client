@@ -6,6 +6,7 @@ import { applyFacialFeatures } from './face'
 import {
   attachWearableFallback,
   findSkeleton,
+  isL1WearableUrn,
   loadWearableSceneCached,
   mergeWearableMeshes,
   sanitizeWearableRoot,
@@ -116,9 +117,22 @@ async function composeFromConfig(
         category: entry.wearable.data.category,
         wearableId: entry.wearable.id
       }
+      if (entry.wearable.data.category === 'feet') {
+        console.info(`[avatar] composing feet — ${entry.wearable.id}`)
+      }
       const merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
       if (!merged) {
+        if (isL1WearableUrn(entry.wearable.id)) {
+          console.warn(
+            `[avatar] discarding L1 wearable ${entry.wearable.id} (${entry.wearable.data.category}) — bone merge failed`
+          )
+          disposeWearableInstance(entry.layer)
+          continue
+        }
         const attached = attachWearableFallback(entry.layer, skeleton, avatar, mergeOpts)
+        if (attached && entry.wearable.data.category === 'feet') {
+          console.info(`[avatar] feet fallback attach — ${entry.wearable.id}`)
+        }
         if (!attached) {
           console.warn(
             `[avatar] skipping wearable ${entry.wearable.id} (${entry.wearable.data.category}) — no merge and no safe fallback geometry`

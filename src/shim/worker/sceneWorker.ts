@@ -137,9 +137,9 @@ function armSceneUpdateAbortTimer(): void {
       `[sceneWorker] scene onUpdate exceeded ${sceneUpdateAbortMs}ms — aborting for pointer priority`
     )
     sceneUpdateInFlight = false
-    sceneTicksPaused = true
-    // Do not backoff tick interval during hydration-scale onUpdate — slows composite spawn on worker.
-    interruptPendingCrdtRoundTrips()
+    // Do not set sceneTicksPaused here — pointer batches pause explicitly; a stuck pause
+    // freezes worker onUpdate (campfire sprite pool) while trigger delivers keep firing.
+    // Do not interrupt pending CRDT — empty responses drop composite/sprite diffs on main.
     drainQueuedPointerDeliver()
   }, sceneUpdateAbortMs)
 }
@@ -196,7 +196,8 @@ function preemptForPointerDelivery(): void {
   clearSceneUpdateAbortTimer()
   // Never abort an in-flight pointer engine tick CRDT flush (post-onUpdate Tween sync depends on it).
   if (pointerDeliveryInFlight) return
-  if (hadSceneUpdate && pendingCrdt.size) interruptPendingCrdtRoundTrips()
+  // Only drop in-flight CRDT during an actual pointer click batch — not scene abort / grow-only.
+  if (hadSceneUpdate && pendingCrdt.size && pointerDeliverBatchOpen) interruptPendingCrdtRoundTrips()
 }
 
 function clearPointerDeliverAckFallback(): void {
@@ -345,7 +346,7 @@ function workerVerboseLog(
   workerLog(level, message)
 }
 
-function scheduleBatchedTweenEngineTick(): void {
+function scheduleBatchedSceneEngineTick(): void {
   if (tweenEngineTickQueued || !sceneEngine) return
   tweenEngineTickQueued = true
   setTimeout(() => {
@@ -354,12 +355,14 @@ function scheduleBatchedTweenEngineTick(): void {
     void sceneEngine.update(0).catch((err) => {
       workerLog(
         'error',
-        `[sceneWorker] tween-state batched engine tick failed — ${
-          err instanceof Error ? err.message : String(err)
-        }`
+        `[sceneWorker] batched engine tick failed — ${err instanceof Error ? err.message : String(err)}`
       )
     })
   }, 0)
+}
+
+function scheduleBatchedTweenEngineTick(): void {
+  scheduleBatchedSceneEngineTick()
 }
 
 /** Lightweight tween-state path — no pointer pause / preempt / full deliver batch. */
@@ -373,6 +376,19 @@ function deliverTweenStateInbound(chunks: Uint8Array[]): void {
     `[sceneWorker] tween-state-deliver — inject ${tweenPuts} TweenState PUT(s)`
   )
   scheduleBatchedTweenEngineTick()
+}
+
+/** TriggerAreaResult / VideoEvent — engine tick only; must not pause scene onUpdate (sprite pool). */
+function deliverRendererAppendInbound(chunks: Uint8Array[]): void {
+  if (!sceneEngine || !sceneOnStartComplete) return
+  const { triggerAppends, videoAppends } = applyRendererInboundChunks(chunks)
+  if (triggerAppends === 0 && videoAppends === 0) return
+  workerVerboseLog(
+    debugPointerDeliver,
+    'log',
+    `[sceneWorker] renderer-append-deliver — trigger=${triggerAppends} videoEvent=${videoAppends}`
+  )
+  scheduleBatchedSceneEngineTick()
 }
 
 function patchWorkerConsole(): void {
@@ -471,12 +487,14 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
   videoPlayerPuts: number
   triggerAppends: number
   videoAppends: number
+  pointerAppends: number
 } {
   let tweenPuts = 0
   let raycastPuts = 0
   let videoPlayerPuts = 0
   let triggerAppends = 0
   let videoAppends = 0
+  let pointerAppends = 0
   if (sceneEngine) {
     const lww = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
     tweenPuts = lww.tweenPuts
@@ -485,6 +503,7 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
     const growOnly = injectRendererGrowOnlyAppendsOnEngine(sceneEngine, chunks)
     triggerAppends = growOnly.triggerAppends
     videoAppends = growOnly.videoAppends
+    pointerAppends = growOnly.pointerAppends
   }
   if (
     tweenPuts === 0 &&
@@ -492,11 +511,12 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
     videoPlayerPuts === 0 &&
     triggerAppends === 0 &&
     videoAppends === 0 &&
+    pointerAppends === 0 &&
     rendererInboundApply
   ) {
     rendererInboundApply(chunks)
   }
-  return { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends }
+  return { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends, pointerAppends }
 }
 
 function executePointerDelivery(chunks: Uint8Array[]): void {
@@ -510,17 +530,20 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
   // Lightweight path — no scene-tick pause (tween/transform transport-only).
   if (canDirectInject) {
     try {
-      const { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends } =
+      const { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends, pointerAppends } =
         applyRendererInboundChunks(chunks)
       const needsSceneTick =
-        triggerAppends > 0 || videoAppends > 0 || raycastPuts > 0 || videoPlayerPuts > 0
+        raycastPuts > 0 ||
+        videoPlayerPuts > 0 ||
+        triggerAppends > 0 ||
+        pointerAppends > 0
       if (needsSceneTick) {
         preemptForPointerDelivery()
         sceneTicksPaused = true
         workerVerboseLog(
           debugPointerDeliver,
           'log',
-          `[sceneWorker] pointer-crdt-deliver — inject trigger=${triggerAppends} videoEvent=${videoAppends} raycast=${raycastPuts} videoPlayer=${videoPlayerPuts}`
+          `[sceneWorker] pointer-crdt-deliver — inject trigger=${triggerAppends} videoEvent=${videoAppends} pointer=${pointerAppends} raycast=${raycastPuts} videoPlayer=${videoPlayerPuts}`
         )
         void runPointerEngineTickSync('pointer-crdt-deliver-renderer-inject').then(() => {
           postPointerDeliverDone('pointer-crdt-deliver-renderer-inject')
@@ -561,12 +584,12 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
   }
   try {
     if (pointerDeliverBatchOpen) {
-      const { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends } =
+      const { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends, pointerAppends } =
         applyRendererInboundChunks(chunks)
       workerVerboseLog(
         debugPointerDeliver,
         'log',
-        `[sceneWorker] pointer-crdt-deliver — batch apply tween=${tweenPuts} raycast=${raycastPuts} videoPlayer=${videoPlayerPuts} trigger=${triggerAppends} video=${videoAppends}`
+        `[sceneWorker] pointer-crdt-deliver — batch apply tween=${tweenPuts} raycast=${raycastPuts} videoPlayer=${videoPlayerPuts} trigger=${triggerAppends} video=${videoAppends} pointer=${pointerAppends}`
       )
       finalizePointerDelivery('pointer-crdt-deliver')
       return
@@ -1299,6 +1322,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   }
   if (msg.type === 'tween-state-deliver') {
     deliverTweenStateInbound(msg.data)
+    return
+  }
+  if (msg.type === 'renderer-append-deliver') {
+    deliverRendererAppendInbound(msg.data)
     return
   }
 

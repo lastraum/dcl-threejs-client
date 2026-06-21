@@ -38,6 +38,7 @@ export class DebugPanel {
   private readonly physxGltfToggle: HTMLInputElement
   private readonly physxPlayerToggle: HTMLInputElement
   private readonly physxProbeToggle: HTMLInputElement
+  private readonly physxRuntimeRecookToggle: HTMLInputElement
   private readonly physxRecookBtn: HTMLButtonElement
   private readonly renderQualitySelect: HTMLSelectElement
   private readonly renderQualityHint: HTMLDivElement
@@ -103,6 +104,10 @@ export class DebugPanel {
           <input type="checkbox" data-physx-probe />
           <span>Log PhysX probe (collidersphys)</span>
         </label>
+        <label class="debug-panel__check">
+          <input type="checkbox" data-physx-runtime-recook />
+          <span>Runtime drift recook (colliderrecook)</span>
+        </label>
         <button type="button" class="debug-panel__logs-btn" data-physx-recook>Force recook all colliders</button>
       </div>
       <div class="debug-panel__render-quality">
@@ -140,6 +145,7 @@ export class DebugPanel {
     this.physxGltfToggle = this.root.querySelector('[data-physx-gltf]') as HTMLInputElement
     this.physxPlayerToggle = this.root.querySelector('[data-physx-player]') as HTMLInputElement
     this.physxProbeToggle = this.root.querySelector('[data-physx-probe]') as HTMLInputElement
+    this.physxRuntimeRecookToggle = this.root.querySelector('[data-physx-runtime-recook]') as HTMLInputElement
     this.physxRecookBtn = this.root.querySelector('[data-physx-recook]') as HTMLButtonElement
     this.renderQualitySelect = this.root.querySelector('[data-render-quality]') as HTMLSelectElement
     this.renderQualityHint = this.root.querySelector('[data-render-quality-hint]') as HTMLDivElement
@@ -303,6 +309,7 @@ export class DebugPanel {
       this.physxGltfToggle.checked = options.gltfColliders
       this.physxPlayerToggle.checked = options.localPlayerCapsule
       this.physxProbeToggle.checked = options.collidersPhys
+      this.physxRuntimeRecookToggle.checked = options.runtimeRecook
     }
 
     syncFromStore(physxColliderDebug.getOptions())
@@ -321,6 +328,10 @@ export class DebugPanel {
 
     this.physxProbeToggle.addEventListener('change', () => {
       physxColliderDebug.setOptions({ collidersPhys: this.physxProbeToggle.checked })
+    })
+
+    this.physxRuntimeRecookToggle.addEventListener('change', () => {
+      physxColliderDebug.setOptions({ runtimeRecook: this.physxRuntimeRecookToggle.checked })
     })
 
     this.physxRecookBtn.addEventListener('click', () => {

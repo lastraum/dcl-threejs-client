@@ -30,10 +30,16 @@ type TextureDef = {
   tiling?: { x?: number; y?: number }
 }
 
+type AvatarTextureDef = {
+  userId: string
+  wrapMode?: number
+  filterMode?: number
+}
+
 type TextureUnion = {
   tex?:
     | { $case: 'texture'; texture: TextureDef }
-    | { $case: 'avatarTexture' }
+    | { $case: 'avatarTexture'; avatarTexture: AvatarTextureDef }
     | { $case: 'videoTexture'; videoTexture: { videoPlayerEntity: number; wrapMode?: number; filterMode?: number } }
     | undefined
 }
@@ -92,8 +98,20 @@ function normalizeColor3(c?: Color3): Color3 | undefined {
   return { r: round4(c.r), g: round4(c.g), b: round4(c.b) }
 }
 
+/** Accept SDK TextureUnion and legacy `{ src }` shapes from composite JSON. */
+function coerceTextureUnion(u?: TextureUnion | { src?: string; wrapMode?: number; filterMode?: number }): TextureUnion | undefined {
+  if (!u) return undefined
+  if ('tex' in u && u.tex) return u as TextureUnion
+  const flat = u as { src?: string; wrapMode?: number; filterMode?: number }
+  if (flat.src?.trim()) {
+    return { tex: { $case: 'texture', texture: { src: flat.src, wrapMode: flat.wrapMode, filterMode: flat.filterMode } } }
+  }
+  return undefined
+}
+
 function normalizeTextureUnion(u?: TextureUnion): unknown {
-  const tex = u?.tex
+  const coerced = coerceTextureUnion(u)
+  const tex = coerced?.tex
   if (!tex) return undefined
   if (tex.$case === 'texture') {
     const t = tex.texture
@@ -115,7 +133,10 @@ function normalizeTextureUnion(u?: TextureUnion): unknown {
       filterMode: v.filterMode
     }
   }
-  if (tex.$case === 'avatarTexture') return { case: 'avatar' }
+  if (tex.$case === 'avatarTexture') {
+    const a = tex.avatarTexture
+    return { case: 'avatar', userId: a.userId, wrapMode: a.wrapMode, filterMode: a.filterMode }
+  }
   return undefined
 }
 
@@ -164,27 +185,60 @@ function materialFingerprint(pb: PbMaterial): string {
   })
 }
 
-function materialHasTextureSlots(pb: PbMaterial): boolean {
+function materialInner(pb: PbMaterial): PbrMaterial | UnlitMaterial | undefined {
   const materialCase = pb.material?.$case
-  const inner =
-    materialCase === 'pbr'
-      ? pb.material!.pbr
-      : materialCase === 'unlit'
-        ? pb.material!.unlit
-        : undefined
-  if (!inner) return false
-  if (inner.texture?.tex || inner.alphaTexture?.tex) return true
+  if (materialCase === 'pbr') return pb.material!.pbr
+  if (materialCase === 'unlit') return pb.material!.unlit
+  return undefined
+}
+
+function materialTextureSlots(pb: PbMaterial): TextureUnion[] {
+  const materialCase = pb.material?.$case
+  const inner = materialInner(pb)
+  if (!inner) return []
+  const slots: TextureUnion[] = []
+  const main = coerceTextureUnion(inner.texture)
+  const alpha = coerceTextureUnion(inner.alphaTexture)
+  if (main) slots.push(main)
+  if (alpha) slots.push(alpha)
   if (materialCase === 'pbr') {
     const pbr = inner as PbrMaterial
-    if (pbr.emissiveTexture?.tex || pbr.bumpTexture?.tex) return true
+    const emissive = coerceTextureUnion(pbr.emissiveTexture)
+    const bump = coerceTextureUnion(pbr.bumpTexture)
+    if (emissive) slots.push(emissive)
+    if (bump) slots.push(bump)
   }
-  return false
+  return slots
+}
+
+function materialHasTextureSlots(pb: PbMaterial): boolean {
+  return materialTextureSlots(pb).length > 0
+}
+
+function meshHasTextureMaps(mesh: THREE.Mesh, pb: PbMaterial): boolean {
+  if (!materialHasTextureSlots(pb)) return true
+  const m = mesh.material as THREE.MeshBasicMaterial | THREE.MeshPhysicalMaterial
+  const materialCase = pb.material?.$case
+  const inner = materialInner(pb)
+  if (!inner) return true
+
+  if (coerceTextureUnion(inner.texture) && !m.map) return false
+  if (coerceTextureUnion(inner.alphaTexture) && !m.alphaMap) return false
+  if (materialCase === 'pbr' && m instanceof THREE.MeshPhysicalMaterial) {
+    const pbr = inner as PbrMaterial
+    if (coerceTextureUnion(pbr.emissiveTexture) && !m.emissiveMap) return false
+    if (coerceTextureUnion(pbr.bumpTexture) && !m.normalMap) return false
+  }
+  return true
 }
 
 /** Apply SDK7 Material → Three.js materials (P0 parity). */
 export class MaterialApplier {
   private readonly applied = new Map<number, string>()
   private getVideoTexture: ((videoPlayerEntity: number) => THREE.Texture | null) | null = null
+  private getAvatarTexture: ((userId: string) => Promise<THREE.Texture | null>) | null = null
+  /** userId → resolved face texture (null = fetch failed). */
+  private readonly resolvedAvatarTextures = new Map<string, THREE.Texture | null>()
 
   constructor(
     private readonly scene: ResolvedScene,
@@ -195,13 +249,36 @@ export class MaterialApplier {
     this.getVideoTexture = resolver
   }
 
-  needsReapply(entity: number, pb: PbMaterial): boolean {
-    const fp = materialFingerprint(pb)
+  setAvatarTextureResolver(resolver: (userId: string) => Promise<THREE.Texture | null>): void {
+    this.getAvatarTexture = resolver
+  }
+
+  /** Texture/video/avatar slots still loading — cheap check for material-queue ordering. */
+  texturesPending(pb: PbMaterial, root?: THREE.Object3D): boolean {
     if (this.hasUnresolvedVideo(pb)) return true
+    if (this.hasUnresolvedAvatar(pb)) return true
+    if (this.hasUnresolvedStaticTexture(pb)) return true
+    if (root && materialHasTextureSlots(pb) && !this.objectTexturesSatisfied(root, pb)) return true
+    return false
+  }
+
+  needsReapply(entity: number, pb: PbMaterial, root?: THREE.Object3D): boolean {
+    if (this.texturesPending(pb, root)) return true
+    const fp = materialFingerprint(pb)
     if (this.applied.get(entity) === fp) return false
     // Scalar-only materials are fully applied once color/transparency is set.
     if (!materialHasTextureSlots(pb) && this.applied.get(entity) === `scalar:${fp}`) return false
     return true
+  }
+
+  objectTexturesSatisfied(root: THREE.Object3D, pb: PbMaterial): boolean {
+    if (!materialHasTextureSlots(pb)) return true
+    let ok = true
+    root.traverse((child) => {
+      if (!ok || !(child as THREE.Mesh).isMesh) return
+      if (!meshHasTextureMaps(child as THREE.Mesh, pb)) ok = false
+    })
+    return ok
   }
 
   /** Sync color / PBR scalars only — safe during hydration before textures are ready. */
@@ -209,7 +286,11 @@ export class MaterialApplier {
     root.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) this.applyScalarsToMesh(child as THREE.Mesh, pb)
     })
-    if (!this.hasUnresolvedVideo(pb)) {
+    if (
+      !materialHasTextureSlots(pb) &&
+      !this.hasUnresolvedVideo(pb) &&
+      !this.hasUnresolvedAvatar(pb)
+    ) {
       this.applied.set(entity, `scalar:${materialFingerprint(pb)}`)
     }
   }
@@ -225,19 +306,34 @@ export class MaterialApplier {
   async applyToObject3D(root: THREE.Object3D, entity: number, pb: PbMaterial): Promise<void> {
     const fp = materialFingerprint(pb)
     const pendingVideo = this.hasUnresolvedVideo(pb)
-    if (this.isMaterialApplied(entity, pb) && !pendingVideo) return
+    const pendingAvatar = this.hasUnresolvedAvatar(pb)
+    const pendingTexture = this.hasUnresolvedStaticTexture(pb)
+    if (
+      this.isMaterialApplied(entity, pb) &&
+      !pendingVideo &&
+      !pendingAvatar &&
+      !pendingTexture &&
+      this.objectTexturesSatisfied(root, pb)
+    ) {
+      return
+    }
 
     const meshes: THREE.Mesh[] = []
     root.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) meshes.push(child as THREE.Mesh)
     })
 
+    let texturesOk = !materialHasTextureSlots(pb)
     for (const mesh of meshes) {
-      await this.applyToMesh(mesh, pb)
+      const ok = await this.applyToMesh(mesh, pb)
+      if (!ok) texturesOk = false
     }
 
-    if (!pendingVideo) this.applied.set(entity, fp)
-    else this.applied.delete(entity)
+    if (!pendingVideo && !pendingAvatar && texturesOk && this.objectTexturesSatisfied(root, pb)) {
+      this.applied.set(entity, fp)
+    } else {
+      this.applied.delete(entity)
+    }
   }
 
   applyScalarsToMesh(mesh: THREE.Mesh, pb: PbMaterial): void {
@@ -292,73 +388,124 @@ export class MaterialApplier {
     m.needsUpdate = true
   }
 
-  async applyToMesh(mesh: THREE.Mesh, pb: PbMaterial): Promise<void> {
+  async applyToMesh(mesh: THREE.Mesh, pb: PbMaterial): Promise<boolean> {
     const materialCase = pb.material?.$case
     const isPbr = materialCase === 'pbr'
-    const inner =
-      materialCase === 'pbr'
-        ? pb.material!.pbr
-        : materialCase === 'unlit'
-          ? pb.material!.unlit
-          : undefined
-    if (!inner) return
+    const inner = materialInner(pb)
+    if (!inner) return true
 
     this.applyScalarsToMesh(mesh, pb)
     const m = mesh.material as THREE.MeshBasicMaterial | THREE.MeshPhysicalMaterial
     const base = isPbr ? (inner as PbrMaterial).albedoColor : (inner as UnlitMaterial).diffuseColor
     const color = base ?? { r: 1, g: 1, b: 1, a: 1 }
 
+    let texturesOk = true
     let alphaTex: THREE.Texture | null = null
-    if (inner.texture?.tex) {
-      const mainTex = await this.loadUnionTexture(inner.texture)
+    const mainUnion = coerceTextureUnion(inner.texture)
+    if (mainUnion) {
+      const mainTex = await this.loadUnionTexture(mainUnion)
       m.map = mainTex
-      if (mainTex) this.applyUvTransform(mainTex, getTextureDef(inner.texture))
+      if (!mainTex) texturesOk = false
+      else this.applyUvTransform(mainTex, getTextureDef(mainUnion))
     }
-    if (inner.alphaTexture?.tex) {
-      alphaTex = await this.loadUnionTexture(inner.alphaTexture)
+    const alphaUnion = coerceTextureUnion(inner.alphaTexture)
+    if (alphaUnion) {
+      alphaTex = await this.loadUnionTexture(alphaUnion)
       m.alphaMap = alphaTex
-      if (alphaTex) this.applyUvTransform(alphaTex, getTextureDef(inner.alphaTexture))
+      if (!alphaTex) texturesOk = false
+      else this.applyUvTransform(alphaTex, getTextureDef(alphaUnion))
     }
 
     if (m instanceof THREE.MeshPhysicalMaterial && isPbr) {
       const pbr = inner as PbrMaterial
-      if (pbr.emissiveTexture?.tex) {
-        const emissiveTex = await this.loadUnionTexture(pbr.emissiveTexture)
+      const emissiveUnion = coerceTextureUnion(pbr.emissiveTexture)
+      if (emissiveUnion) {
+        let emissiveTex = await this.loadUnionTexture(emissiveUnion)
+        if (!emissiveTex && m.map && textureUnionSameSrc(emissiveUnion, mainUnion)) {
+          emissiveTex = m.map
+        }
         m.emissiveMap = emissiveTex
-        if (emissiveTex) this.applyUvTransform(emissiveTex, getTextureDef(pbr.emissiveTexture))
+        if (!emissiveTex) texturesOk = false
+        else this.applyUvTransform(emissiveTex, getTextureDef(emissiveUnion))
       }
-      if (pbr.bumpTexture?.tex) {
-        const bumpTex = await this.loadUnionTexture(pbr.bumpTexture, { normalMap: true })
+      const bumpUnion = coerceTextureUnion(pbr.bumpTexture)
+      if (bumpUnion) {
+        const bumpTex = await this.loadUnionTexture(bumpUnion, { normalMap: true })
         m.normalMap = bumpTex
-        if (bumpTex) {
+        if (!bumpTex) texturesOk = false
+        else {
           bumpTex.colorSpace = THREE.LinearSRGBColorSpace
-          this.applyUvTransform(bumpTex, getTextureDef(pbr.bumpTexture))
+          this.applyUvTransform(bumpTex, getTextureDef(bumpUnion))
         }
       }
+      // Re-apply after maps land — emissiveIntensity + HDR albedo drive flame brightness in DCL.
+      applyHdrAlbedoAndEmissive(m, color, pbr.emissiveColor, pbr.emissiveIntensity)
+      applyPbrScalars(m, pbr)
     }
 
+    const transparencyMode = isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO
     applyTransparency(
       m,
       color.a ?? 1,
       inner.alphaTest,
-      isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO,
+      transparencyMode,
       !!alphaTex || !!m.alphaMap
     )
+    if (transparencyMode === MTM_ALPHA_BLEND || transparencyMode === MTM_ALPHA_TEST_AND_ALPHA_BLEND) {
+      m.depthWrite = false
+    }
 
     mesh.castShadow = inner.castShadows === true
     mesh.receiveShadow = true
     m.side = mesh.userData.primitiveDoubleSided === true ? THREE.DoubleSide : THREE.FrontSide
     m.needsUpdate = true
+    return texturesOk && meshHasTextureMaps(mesh, pb)
   }
 
   clearEntity(entity: number): void {
     this.applied.delete(entity)
   }
 
+  private hasUnresolvedStaticTexture(pb: PbMaterial): boolean {
+    for (const slot of materialTextureSlots(pb)) {
+      const tex = slot.tex
+      if (!tex || tex.$case === 'videoTexture' || tex.$case === 'avatarTexture') continue
+      if (tex.$case === 'texture') {
+        const src = tex.texture.src?.trim()
+        if (!src) continue
+        if (!resolveSceneTextureUrl(src, this.scene)) return true
+      }
+    }
+    return false
+  }
+
   private async loadUnionTexture(
     union?: TextureUnion,
     options?: { normalMap?: boolean }
   ): Promise<THREE.Texture | null> {
+    union = coerceTextureUnion(union)
+    if (union?.tex?.$case === 'avatarTexture') {
+      const def = union.tex.avatarTexture
+      const userId = def.userId?.trim()
+      if (!userId || !this.getAvatarTexture) return null
+      let tex = this.resolvedAvatarTextures.get(userId)
+      if (tex === undefined) {
+        tex = await this.getAvatarTexture(userId)
+        this.resolvedAvatarTextures.set(userId, tex)
+      }
+      if (!tex) return null
+      tex.wrapS = wrapMode(def.wrapMode)
+      tex.wrapT = wrapMode(def.wrapMode)
+      tex.minFilter =
+        def.filterMode === TFM_POINT
+          ? THREE.NearestFilter
+          : def.filterMode === TFM_TRILINEAR
+            ? THREE.LinearMipmapLinearFilter
+            : THREE.LinearFilter
+      tex.magFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
+      tex.colorSpace = options?.normalMap ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace
+      return tex
+    }
     if (union?.tex?.$case === 'videoTexture') {
       const def = union.tex.videoTexture
       const tex = this.getVideoTexture?.(def.videoPlayerEntity) ?? null
@@ -389,6 +536,31 @@ export class MaterialApplier {
     tex.magFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
     tex.colorSpace = options?.normalMap ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace
     return tex
+  }
+
+  private hasUnresolvedAvatar(pb: PbMaterial): boolean {
+    const materialCase = pb.material?.$case
+    const inner =
+      materialCase === 'pbr'
+        ? pb.material!.pbr
+        : materialCase === 'unlit'
+          ? pb.material!.unlit
+          : undefined
+    if (!inner || !this.getAvatarTexture) return false
+
+    const slots: Array<TextureUnion | undefined> = [inner.texture, inner.alphaTexture]
+    if (materialCase === 'pbr') {
+      const pbr = inner as PbrMaterial
+      slots.push(pbr.emissiveTexture, pbr.bumpTexture)
+    }
+
+    for (const slot of slots) {
+      if (slot?.tex?.$case !== 'avatarTexture') continue
+      const userId = slot.tex.avatarTexture.userId?.trim()
+      if (!userId) continue
+      if (!this.resolvedAvatarTextures.has(userId)) return true
+    }
+    return false
   }
 
   private hasUnresolvedVideo(pb: PbMaterial): boolean {
@@ -425,7 +597,14 @@ export class MaterialApplier {
 }
 
 function getTextureDef(union?: TextureUnion): TextureDef | undefined {
-  return union?.tex?.$case === 'texture' ? union.tex.texture : undefined
+  const coerced = coerceTextureUnion(union)
+  return coerced?.tex?.$case === 'texture' ? coerced.tex.texture : undefined
+}
+
+function textureUnionSameSrc(a?: TextureUnion, b?: TextureUnion): boolean {
+  const aSrc = getTextureDef(coerceTextureUnion(a))?.src?.trim()
+  const bSrc = getTextureDef(coerceTextureUnion(b))?.src?.trim()
+  return !!aSrc && aSrc === bSrc
 }
 
 function applyTransparency(
@@ -462,11 +641,13 @@ function applyTransparency(
     return
   }
 
-  if (alpha < 0.999 || hasAlphaMap) {
+  // AUTO — DCL picks alpha-cutout when the albedo texture has alpha; not alpha-blend.
+  if (hasAlphaMap) {
+    m.alphaTest = alphaTest ?? 0.5
+    return
+  }
+  if (alpha < 0.999) {
     m.transparent = true
     m.opacity = alpha
-    if (hasAlphaMap && (alphaTest ?? 0) > 0) {
-      m.alphaTest = alphaTest ?? 0.5
-    }
   }
 }

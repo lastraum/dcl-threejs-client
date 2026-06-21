@@ -152,6 +152,12 @@ export class RemoteAvatarManager {
     return { model, nameTagAnchor: record.nameTagAnchor }
   }
 
+  /** Scene chat line shown inside the peer's overhead name-tag pill. */
+  showPeerNameTagChat(address: string, text: string): void {
+    const record = this.peers.get(address.toLowerCase())
+    record?.nameTag?.showChat(text)
+  }
+
   getPlayerTransformDclForAddress(address: string): DclTransformValues | null {
     const record = this.peers.get(address.toLowerCase())
     if (!record || !record.hasPosition) return null
@@ -389,7 +395,12 @@ export class RemoteAvatarManager {
         record.root.position.lerp(record.targetPosition, alpha)
       }
 
-      record.currentYaw += (record.targetYaw - record.currentYaw) * alpha
+      // Snap facing while moving so rotation does not trail position interpolation.
+      if (record.horizontalSpeed > 0.35) {
+        record.currentYaw = record.targetYaw
+      } else {
+        record.currentYaw += (record.targetYaw - record.currentYaw) * alpha
+      }
       record.pivot.rotation.y = record.currentYaw + AVATAR_YAW_OFFSET
 
       record.smoothedSpeed += (record.horizontalSpeed - record.smoothedSpeed) * speedAlpha

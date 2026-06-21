@@ -490,6 +490,14 @@ export class PhysXWorld {
     }
   }
 
+  /** Remove every scene static actor (keeps infinite ground) — manual recook / pose drift reset. */
+  clearAllSceneStaticActors(): void {
+    for (const entity of [...this.staticActors.keys()]) {
+      if (entity === INFINITE_GROUND_ENTITY) continue
+      this.removeStatic(entity)
+    }
+  }
+
   /** Remove one static actor + sync fingerprints — boot cook always recooks fresh. */
   invalidateStaticCollider(entity: number): void {
     if (entity === INFINITE_GROUND_ENTITY) return
@@ -645,17 +653,8 @@ export class PhysXWorld {
         if (prevGeomFp === geomFp) {
           const actor = this.staticActors.get(desc.entity)
           if (actor && this.staticPoseFp.get(desc.entity) === poseFp) continue
-          // World-baked — vertices embed world placement; pose drift requires full recook.
-          if (actor && this.actorWorldBaked.get(desc.entity)) {
-            if (this.staticPoseFp.get(desc.entity) === poseFp) continue
-            this.removeStatic(desc.entity)
-            this.staticFp.delete(desc.entity)
-            this.staticPoseFp.delete(desc.entity)
-          }
-          if (
-            actor &&
-            !options?.forceRecookOnPoseChange
-          ) {
+          const worldBaked = !!(actor && this.actorWorldBaked.get(desc.entity))
+          if (actor && !options?.forceRecookOnPoseChange && !worldBaked) {
             try {
               this.updateMultiShapeActorPose(actor, desc)
               this.staticPoseFp.set(desc.entity, poseFp)
@@ -665,9 +664,7 @@ export class PhysXWorld {
               console.warn('[PhysXWorld] multi-shape pose update failed:', desc.entity, err)
             }
           }
-          // Missing actor or pose-update failure — full recook.
-          this.staticFp.delete(desc.entity)
-          this.staticPoseFp.delete(desc.entity)
+          // World-baked pose drift — keep the live actor until cook budget allows atomic swap below.
         }
 
         if (prevGeomFp && prevGeomFp !== geomFp) {
@@ -727,10 +724,7 @@ export class PhysXWorld {
             console.warn('[PhysXWorld] primitive pose update failed:', desc.entity, err)
           }
         }
-        // Missing actor, world-baked trimesh, or pose-update failure — full recook.
-        if (hasActor) this.removeStatic(desc.entity)
-        this.staticFp.delete(desc.entity)
-        this.staticPoseFp.delete(desc.entity)
+        // World-baked / missing actor — recook below; keep existing actor until cook budget allows swap.
       }
 
       const prevFp = geomFp

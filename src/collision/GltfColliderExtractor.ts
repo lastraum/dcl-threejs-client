@@ -202,12 +202,13 @@ export class GltfColliderExtractor {
     this.syncState.clear()
   }
 
-  removeColliderEntity(entity: Entity): void {
-    if (!this.extracted.has(entity) && !this.fingerprints.has(entity)) return
+  removeColliderEntity(entity: Entity): boolean {
+    if (!this.extracted.has(entity) && !this.fingerprints.has(entity)) return false
     this.extracted.delete(entity)
     this.fingerprints.delete(entity)
     this.poseFingerprints.delete(entity)
     this.syncState.delete(entity)
+    return true
   }
 
   /** Recompute PhysX batch fingerprint + debug wireframes after per-entity structure syncs. */

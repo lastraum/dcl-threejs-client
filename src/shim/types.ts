@@ -193,6 +193,7 @@ export type MainToWorker =
   | { type: 'scene-play-ready' }
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
   | { type: 'tween-state-deliver'; data: Uint8Array[] }
+  | { type: 'renderer-append-deliver'; data: Uint8Array[] }
   | { type: 'inject-pointer-click'; body: InjectPointerClickBody }
   | { type: 'avatar-attach-transforms'; entries: AvatarAttachTransformEntry[] }
 

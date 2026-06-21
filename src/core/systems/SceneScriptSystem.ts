@@ -1371,7 +1371,8 @@ export class SceneScriptSystem {
         const { GltfContainer } = this.readComponents
         const gltfBefore = [...this.view.getEntitiesWith(GltfContainer)].length
         this.projection.applyIncoming(data)
-        if (this.projection.changes.length === 0) return
+        const gltfAfterApply = [...this.view.getEntitiesWith(GltfContainer)].length
+        if (this.projection.changes.length === 0 && gltfAfterApply <= gltfBefore) return
         for (const change of this.projection.changes) {
           if (
             change.entity === undefined ||
@@ -1390,9 +1391,8 @@ export class SceneScriptSystem {
         this.colliderFullWalkRequested = true
         this.pointerStructureDirty = true
         const bulkAuthoritative = data.byteLength > 512
-        const gltfAfter = [...this.view.getEntitiesWith(GltfContainer)].length
-        const needsFullAttach =
-          bulkAuthoritative && (gltfBefore === 0 || gltfAfter > gltfBefore)
+        const gltfAfter = gltfAfterApply
+        const needsFullAttach = bulkAuthoritative && gltfAfter > gltfBefore
         if (needsFullAttach) {
           await this.syncRendererFull()
           this.syncCollisionForce()

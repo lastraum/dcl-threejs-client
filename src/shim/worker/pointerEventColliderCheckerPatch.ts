@@ -89,10 +89,22 @@ function patchNetworkTransportHook(code: string): string {
  * unless we fall through to `loadComposite` (readFile → assets/scene/main.composite).
  */
 function patchMainCompositeOnStartLoad(code: string): string {
-  return code.replace(
+  let out = code
+  // Readable SDK bundle (flagtag 2026): const mainComposite = …getCompositeOrNull("main.composite")
+  out = out.replace(
+    /const mainComposite = compositeProvider\.getCompositeOrNull\("main\.composite"\);\s*if \(mainComposite\) \{\s*try \{\s*Composite\.instance\(engine, mainComposite, compositeProvider\);/g,
+    `let mainComposite = compositeProvider.getCompositeOrNull("main.composite");
+    if (!mainComposite && compositeProvider.loadComposite) mainComposite = await compositeProvider.loadComposite("main.composite");
+    if (mainComposite) {
+      try {
+        Composite.instance(engine, mainComposite, compositeProvider);`
+  )
+  // Legacy minified onStart
+  out = out.replace(
     /getCompositeOrNull\("main\.composite"\);if\((\w+)\)try\{(\w+)\.instance\((\w+),\1,(\w+)\)/g,
     'getCompositeOrNull("main.composite");if(!$1&&$4.loadComposite)$1=await $4.loadComposite("main.composite");if($1)try{$2.instance($3,$1,$4)'
   )
+  return out
 }
 
 /** Wrap `engine.addTransport(x)` at call sites — bounded passes, not whole-file regex. */

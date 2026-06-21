@@ -9,6 +9,7 @@ import {
   sanitizeSceneGltfColliders,
   sanitizeSceneGltfMaterials
 } from './LandscapeAssetSanitizer'
+import { applySceneGltfEmissives } from './sceneGltfEmissives'
 import { deleteGlbBytes, normalizeGlbCacheKey, readGlbBytes } from './glbByteCache'
 import { fetchGlbBytesOffThread, disposeGlbFetchPool } from './glbFetchPool'
 import { parseGlbOffThread, disposeGlbParsePool } from './glbParsePool'
@@ -18,6 +19,7 @@ import { markSharedAssetResources } from './sharedAsset'
 import { cloneGltfInstance } from './skinnedMeshInstance'
 import { prepareAvatarMaterials } from '../avatar/materials'
 import { prepareWearableCacheRoot } from '../avatar/wearableCache'
+import { clearLocomotionClipCache } from '../avatar/locomotionClipCache'
 
 export type CachedGltf = {
   root: THREE.Group
@@ -43,6 +45,7 @@ export function getSessionAssetCache(): AssetCache {
 export function disposeSessionAssetCache(): void {
   sessionCache?.dispose()
   sessionCache = null
+  clearLocomotionClipCache()
   disposeGlbFetchPool()
   disposeGlbParsePool()
 }
@@ -220,6 +223,7 @@ export class AssetCache {
     } else if (!options?.emote) {
       sanitizeSceneGltfColliders(entry.root)
       sanitizeSceneGltfMaterials(entry.root)
+      applySceneGltfEmissives(entry.root)
     } else {
       entry.root.traverse((obj) => {
         if (/collider/i.test(obj.name)) obj.visible = false

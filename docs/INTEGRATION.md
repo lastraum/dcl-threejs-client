@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-06-17
+> **Last updated:** 2026-06-18
 
 ---
 
@@ -74,12 +74,14 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 
 | Component | ID | Status | Notes |
 | --------- | -- | ------ | ----- |
-| VideoPlayer | 1043 | 🟢 | `VideoPlayerBridge` |
-| VideoEvent | 1044 | 🔵 | Playback events outbound |
+| VideoPlayer | 1043 | 🟢 | `VideoPlayerBridge` — decode, texture, pointer play/pause, end replay |
+| VideoEvent | 1044 | 🔵 | Grow-only playback events → worker (`injectRendererGrowOnlyAppends`) |
 | Tween | 1102 | 🟢 | Transform + textureMove |
 | TweenSequence | 1104 | 🟢 | Genesis blimp orbit |
 | TweenState | 1103 | 🔵 | Written by TweenBridge |
-| AudioSource / AudioStream | 1020/1021 | ⬜ | |
+| AudioSource | 1020 | 🟡 | `AudioSourceBridge` — implemented; **not user-tested** |
+| AudioEvent | 1105 | 🔵 | Grow-only MediaState events → worker |
+| AudioStream | 1021 | 🟡 | `AudioStreamBridge` — HTTP/HLS; **not user-tested** |
 
 ### Avatars (Phase 4)
 
@@ -125,7 +127,9 @@ DOM overlay — not in-scene `UiTransform`.
 | Splash / login, loading + hydration timer | 🟢 |
 | Sidebar, chat, emote wheel, minimap, world card | 🟢 |
 | Debug panel, dev progress panel (`</>`) | 🟢 |
-| Settings: Events, Map, Backpack, Graphics | 🟢 |
+| Settings overlay: Events, Map, Backpack | 🟢 |
+| Preferences panel (P / ⚙): Graphics lighting sliders | 🟢 |
+| Preferences: Sounds, Controls, Chat tabs | 🟡 stub |
 | Settings: Places, Communities, Gallery | ⬜ |
 | In-scene ECS UI, voice/mic UI | ⬜ |
 
@@ -152,6 +156,9 @@ DOM overlay — not in-scene `UiTransform`.
 | EntityStore (Phase 4) | 🟢 |
 | **AvatarAttach Tier B** | **🟢** |
 | PointerEvents cache, LightManager culling | 🟢 |
+| Genesis sky + cloud lighting (HDR tint) | 🟢 |
+| Scene GLTF emissive LEDs (neon mats) | 🟡 partial |
+| User sun/moon lighting + exposure sliders | 🟢 |
 | GLTF hydration budgets, GLB parse pool, AssetCache IDB | 🟢 |
 | PhysX lazy load, collider prewarm, Hyperfy grouped GLTF actors | 🟢 |
 | GLTF InstancedMesh | ⬜ |

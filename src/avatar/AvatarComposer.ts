@@ -4,7 +4,9 @@ import { getSessionAssetCache } from '../rendering/AssetCache'
 import { applyBodyShapeVisibility } from './bodyShape'
 import { applyFacialFeatures } from './face'
 import {
+  attachWearableFallback,
   findSkeleton,
+  isL1WearableUrn,
   loadWearableSceneCached,
   mergeWearableMeshes,
   sanitizeWearableRoot,
@@ -25,6 +27,23 @@ export type ComposeOptions = {
   assetCache?: AssetCache | null
 }
 
+/** Serializes composes — global wearable texture mappings are not re-entrant. */
+let composeMutex: Promise<void> = Promise.resolve()
+
+async function withComposeMutex<T>(run: () => Promise<T>): Promise<T> {
+  const prior = composeMutex
+  let release!: () => void
+  composeMutex = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await prior
+  try {
+    return await run()
+  } finally {
+    release()
+  }
+}
+
 /** Builds a composed DCL avatar `Group` from a profile or defaults. */
 export async function composeAvatar(options: ComposeOptions = {}): Promise<THREE.Group> {
   const profile = await resolveAvatarProfile(options.profileId, options.bodyShape)
@@ -38,7 +57,7 @@ export async function composeAvatarFromProfile(
   assetCache?: AssetCache | null
 ): Promise<THREE.Group> {
   const config = await buildComposeConfig(profile, profile.address, contentUrl)
-  return composeFromConfig(config, assetCache ?? getSessionAssetCache())
+  return withComposeMutex(() => composeFromConfig(config, assetCache ?? getSessionAssetCache()))
 }
 
 async function composeFromConfig(
@@ -69,27 +88,59 @@ async function composeFromConfig(
     const skeleton = findSkeleton(bodyRoot)
     if (!skeleton) throw new Error('Body shape has no skeleton')
 
-    for (const wearable of config.wearables) {
-      if (wearable.data.category === 'body_shape') continue
-      if (!isModelWearable(wearable)) continue
-      try {
-        const layer = await loadWearableSceneCached(
-          cache,
-          wearable,
-          config.bodyShape,
-          config.skin,
-          config.hair,
-          true
-        )
-        sanitizeWearableRoot(layer)
-        const merged = mergeWearableMeshes(layer, skeleton, avatar)
-        if (!merged) {
-          avatar.add(layer)
-        } else {
-          disposeWearableInstance(layer)
+    const modelWearables = config.wearables.filter(
+      (w) => w.data.category !== 'body_shape' && isModelWearable(w)
+    )
+    const loadedLayers = await Promise.all(
+      modelWearables.map(async (wearable) => {
+        try {
+          const layer = await loadWearableSceneCached(
+            cache,
+            wearable,
+            config.bodyShape,
+            config.skin,
+            config.hair,
+            true
+          )
+          sanitizeWearableRoot(layer)
+          return { wearable, layer }
+        } catch (err) {
+          console.warn(`Skipping wearable ${wearable.id}:`, err)
+          return null
         }
-      } catch (err) {
-        console.warn(`Skipping wearable ${wearable.id}:`, err)
+      })
+    )
+
+    for (const entry of loadedLayers) {
+      if (!entry) continue
+      const mergeOpts = {
+        category: entry.wearable.data.category,
+        wearableId: entry.wearable.id
+      }
+      if (entry.wearable.data.category === 'feet') {
+        console.info(`[avatar] composing feet — ${entry.wearable.id}`)
+      }
+      const merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
+      if (!merged) {
+        if (isL1WearableUrn(entry.wearable.id)) {
+          console.warn(
+            `[avatar] discarding L1 wearable ${entry.wearable.id} (${entry.wearable.data.category}) — bone merge failed`
+          )
+          disposeWearableInstance(entry.layer)
+          continue
+        }
+        const attached = attachWearableFallback(entry.layer, skeleton, avatar, mergeOpts)
+        if (attached && entry.wearable.data.category === 'feet') {
+          console.info(`[avatar] feet fallback attach — ${entry.wearable.id}`)
+        }
+        if (!attached) {
+          console.warn(
+            `[avatar] skipping wearable ${entry.wearable.id} (${entry.wearable.data.category}) — no merge and no safe fallback geometry`
+          )
+          disposeWearableInstance(entry.layer)
+        }
+      } else {
+        disposeWearableInstance(entry.layer)
       }
     }
   } finally {
@@ -97,7 +148,7 @@ async function composeFromConfig(
   }
 
   applyBodyShapeVisibility(bodyRoot, config.wearables)
-  await applyFacialFeatures(bodyRoot, config)
+  await applyFacialFeatures(bodyRoot, config, cache)
   applyWearableEmissives(avatar)
   stabilizeSkinnedMeshes(avatar)
   return avatar

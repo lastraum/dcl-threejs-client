@@ -13,16 +13,20 @@ import { ClientShell } from './ui/shell/ClientShell'
 import { clientDebugLog } from './debug/ClientDebugLog'
 import { DebugPanel } from './ui/DebugPanel'
 import { DevProgressPanel } from './ui/DevProgressPanel'
-import { LoadingScreen } from './ui/LoadingScreen'
+import { LoadingScreen, POST_SPAWN_SETTLE_FAST_MS, POST_SPAWN_SETTLE_MS } from './ui/LoadingScreen'
 import { Minimap } from './ui/Minimap'
 import { WorldLocationCard } from './ui/WorldLocationCard'
 import { showSplashScreen } from './ui/SplashScreen'
 import { ChatPanel } from './ui/chat/ChatPanel'
+import { PreferencesPanel } from './ui/settings/PreferencesPanel'
 import { SettingsOverlay } from './ui/settings/SettingsOverlay'
 import type { MapPlayerState } from './ui/settings/MapView'
 import { genesisMetersToParcel } from '../map/genesisMapViewport'
+import type { ResolvedScene } from '../dcl/content/types'
 import { fetchProfileFaceUrl } from '../avatar/peerApi'
 import { hydrateEmoteWheelSlots } from '../avatar/profileEmotes'
+import { InputAction } from '../input/pointerConstants'
+import { MobileGameHud } from './ui/MobileGameHud'
 import { disposeSessionAssetCache, getSessionAssetCache, prefetchSceneManifestGlbs } from '../rendering/AssetCache'
 import { DEFAULT_TIMEOUT_MS, FAST_TIMEOUT_MS, type SceneHydrationStats } from '../rendering/sceneHydration'
 
@@ -37,10 +41,12 @@ export class AppController {
   private worldLocationCard: WorldLocationCard | null = null
   private chatPanel: ChatPanel | null = null
   private settingsOverlay: SettingsOverlay | null = null
+  private preferencesPanel: PreferencesPanel | null = null
   private login: LoginResult | null = null
   private currentRoute: RouteTarget | null = null
   private running = false
   private navigating = false
+  private mobileHud: MobileGameHud | null = null
 
   async start(container: HTMLElement): Promise<void> {
     if (this.running) return
@@ -145,10 +151,12 @@ export class AppController {
         renderStats: world.host.renderStats,
         onVisibilityChange: (visible) => this.shell?.getButton('help')?.setActive(visible),
         getPlayerPosition: () => this.world?.getPlayerPosition() ?? null,
-        getSceneOrigin: () => this.world?.comms.getSceneOrigin() ?? { x: 0, z: 0 }
+        getSceneOrigin: () => this.world?.comms.getSceneOrigin() ?? { x: 0, z: 0 },
+        onRecookColliders: () => this.world?.recookPhysicsColliders({ force: true })
       })
     } else {
       this.debugPanel.replaceRenderStats(world.host.renderStats)
+      this.debugPanel.setRecookCollidersHandler(() => this.world?.recookPhysicsColliders({ force: true }))
     }
 
     if (!this.devProgressPanel) {
@@ -185,6 +193,8 @@ export class AppController {
         },
         onOpen: () => {
           if (document.pointerLockElement) document.exitPointerLock()
+          this.preferencesPanel?.hide()
+          this.shell?.getButton('settings')?.setActive(false)
         },
         onClose: () => {}
       })
@@ -202,10 +212,22 @@ export class AppController {
       })
     }
 
+    if (!this.preferencesPanel) {
+      this.preferencesPanel = new PreferencesPanel({
+        onVisibilityChange: (visible) => {
+          this.shell?.getButton('settings')?.setActive(visible)
+        },
+        onOpen: () => {
+          this.settingsOverlay?.hide()
+        }
+      })
+    }
+
     let hydrationTimedOut = false
 
     const loadPromise = (async () => {
       await world.loadScene(sceneConfig, opts.onProgress)
+      const earlyCommsPromise = world.connectSceneCommsEarly(sceneConfig, opts.onProgress)
 
       this.minimap?.dispose()
       this.minimap = null
@@ -247,14 +269,23 @@ export class AppController {
         opts.onHydrationFinish?.(hydrationResult)
       }
 
+      await world.prewarmPhysicsColliders(sceneConfig, opts.onProgress, {
+        assetsTimedOut: hydrationTimedOut
+      })
+
+      // Comms may finish while CRDT catches up — authoritative cook runs in spawnLocalPlayer after final sync.
+      await earlyCommsPromise
       await world.spawnLocalPlayer(sceneConfig, opts.onProgress)
 
-      // Cook scene colliders before the loop starts. After hydration timeout, cap work so
-      // the loading screen doesn't stall while background assets still attach.
-      await world.prewarmPhysicsColliders(opts.onProgress, { assetsTimedOut: hydrationTimedOut })
-
       world.start()
-      opts.onProgress?.('Starting experience…')
+
+      const settleMs = opts.fastAssets ? POST_SPAWN_SETTLE_FAST_MS : POST_SPAWN_SETTLE_MS
+      if (settleMs > 0) {
+        opts.onProgress?.('Settling world…', 0.985)
+        await new Promise<void>((resolve) => window.setTimeout(resolve, settleMs))
+      }
+
+      opts.onProgress?.('Starting experience…', 0.99)
 
       const footer = 'Click to lock cursor · WASD move · /goto name or x,y in chat'
 
@@ -276,9 +307,24 @@ export class AppController {
     })
     this.shell.attachChatPanel(this.chatPanel, world.social)
     if (this.settingsOverlay) this.shell.attachSettingsOverlay(this.settingsOverlay)
+    if (this.preferencesPanel) this.shell.attachPreferencesPanel(this.preferencesPanel)
     opts.onProgress?.('Almost ready…')
     this.shell.show()
     void this.shell.refreshProfile()
+    this.shell.setSceneLocation(sceneDisplayTitle(sceneConfig), () => this.getLocationCoordsLabel())
+
+    this.mobileHud?.dispose()
+    this.mobileHud = new MobileGameHud({
+      onEmote: () => this.shell?.toggleEmotes(),
+      onPrimaryDown: () => world.triggerPointerAction(InputAction.IA_PRIMARY, 'down'),
+      onPrimaryUp: () => world.triggerPointerAction(InputAction.IA_PRIMARY, 'up'),
+      onSecondaryDown: () => world.triggerPointerAction(InputAction.IA_SECONDARY, 'down'),
+      onSecondaryUp: () => world.triggerPointerAction(InputAction.IA_SECONDARY, 'up'),
+      onJumpDown: () => world.setJumpHeld(true),
+      onJumpUp: () => world.setJumpHeld(false)
+    })
+    this.mobileHud.setShellVisible(true)
+    this.shell.setOnEmoteWheelVisibility((visible) => this.mobileHud?.setEmoteActive(visible))
 
     const address = world.session.getAddress()
     const profile = world.session.getProfile()
@@ -289,6 +335,14 @@ export class AppController {
     }
 
     return hydrationTimedOut
+  }
+
+  private getLocationCoordsLabel(): string {
+    const state = this.getMapPlayerState()
+    if (state?.parcelKey) return state.parcelKey
+    const pos = this.world?.getPlayerPosition()
+    if (pos) return `${Math.floor(pos.x)}, ${Math.floor(pos.z)}`
+    return '—'
   }
 
   private getMapPlayerState(): MapPlayerState | null {
@@ -312,6 +366,8 @@ export class AppController {
   }
 
   private async teardownScene(): Promise<void> {
+    this.mobileHud?.dispose()
+    this.mobileHud = null
     this.minimap?.dispose()
     this.minimap = null
     this.worldLocationCard?.dispose()
@@ -328,10 +384,14 @@ export class AppController {
     this.chatPanel = null
     this.settingsOverlay?.dispose()
     this.settingsOverlay = null
+    this.preferencesPanel?.dispose()
+    this.preferencesPanel = null
     this.debugPanel?.dispose()
     this.debugPanel = null
     this.devProgressPanel?.dispose()
     this.devProgressPanel = null
+    this.mobileHud?.dispose()
+    this.mobileHud = null
     this.shell?.dispose()
     this.shell = null
     await this.teardownScene()
@@ -350,4 +410,13 @@ export class AppController {
       await this.start(this.container)
     }
   }
+}
+
+function sceneDisplayTitle(scene: ResolvedScene): string {
+  if (scene.source.kind === 'world') {
+    const title = scene.title.trim()
+    return title || scene.source.worldName
+  }
+  const title = scene.title.trim()
+  return title || scene.baseParcel
 }

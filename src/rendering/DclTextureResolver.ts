@@ -304,6 +304,8 @@ export function isEmoteAnchorGltfSrc(ref: string): boolean {
   const leaf = leafName(trimmed)
   const stem = leaf.replace(/\.glb$/i, '')
   if (BUNDLED_EMOTE_FILES_MAP.has(leaf) || BUNDLED_EMOTE_FILES_MAP.has(stem)) return true
+  if (/_emote\.glb$/i.test(leaf)) return true
+  if (/\/anims\//i.test(trimmed) || /\/anims\//i.test(leaf)) return true
   return /^sitting(chair|ground)/i.test(stem) || /^sitting(chair|ground)/i.test(trimmed)
 }
 

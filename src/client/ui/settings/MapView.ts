@@ -52,6 +52,7 @@ const INITIAL_VIEW: MapViewState = {
 }
 
 const DRAG_THRESHOLD_PX = 6
+const MOBILE_MAP_QUERY = '(max-width: 767px)'
 
 function playerSortKey(displayName: string, address: string): string {
   const name = displayName.trim()
@@ -142,6 +143,11 @@ export class MapView {
   private highlightParcel: { px: number; py: number } | null = null
   private parcelFetchGen = 0
   private parcelPopup: MapParcelPopup | null = null
+  private readonly mobileQuery = window.matchMedia(MOBILE_MAP_QUERY)
+  private readonly onMobileLayoutChange = (): void => this.syncMobileSidebarLayout()
+  private readonly sidebarToggleBtn: HTMLButtonElement
+  private readonly sidebarBackdrop: HTMLDivElement
+  private readonly sidebarCloseBtn: HTMLButtonElement
 
   constructor({ getPlayerState, onJumpIn }: MapViewOptions) {
     this.getPlayerState = getPlayerState
@@ -171,7 +177,19 @@ export class MapView {
         </div>
       </header>
 
+      <button type="button" class="dcl-map__sidebar-toggle" data-sidebar-toggle aria-label="Open activity panel" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M5 7h14M5 12h14M5 17h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </button>
+
+      <div class="dcl-map__sidebar-backdrop" data-sidebar-backdrop hidden></div>
+
       <aside class="dcl-map__sidebar" aria-label="Live activity">
+        <div class="dcl-map__sidebar-toolbar">
+          <span class="dcl-map__sidebar-toolbar-title">Activity</span>
+          <button type="button" class="dcl-map__sidebar-close" data-sidebar-close aria-label="Close activity panel">&times;</button>
+        </div>
         <section class="dcl-map__sidebar-section dcl-map__sidebar-section--genesis" aria-label="Genesis City players">
           <div class="dcl-map__sidebar-head">
             <h2 class="dcl-map__sidebar-title">Genesis City</h2>
@@ -222,6 +240,25 @@ export class MapView {
     this.worldsEmpty = this.root.querySelector('[data-worlds-empty]')!
     this.peersError = this.root.querySelector('[data-peers-error]')!
     this.worldsError = this.root.querySelector('[data-worlds-error]')!
+    this.sidebarToggleBtn = this.root.querySelector('[data-sidebar-toggle]')!
+    this.sidebarBackdrop = this.root.querySelector('[data-sidebar-backdrop]')!
+    this.sidebarCloseBtn = this.root.querySelector('[data-sidebar-close]')!
+
+    this.sidebarToggleBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation()
+      if (!this.isMobileLayout()) return
+      this.setSidebarOpen(!this.root.classList.contains('is-sidebar-open'))
+    })
+    this.sidebarCloseBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation()
+      this.setSidebarOpen(false)
+    })
+    this.sidebarBackdrop.addEventListener('click', (ev) => {
+      ev.stopPropagation()
+      this.setSidebarOpen(false)
+    })
+    this.mobileQuery.addEventListener('change', this.onMobileLayoutChange)
+    this.syncMobileSidebarLayout()
 
     this.root.querySelector('[data-center-plaza]')!.addEventListener('click', () => this.centerOnParcel(0, 0))
     this.root.querySelector('[data-center-player]')!.addEventListener('click', () => this.centerOnPlayer())
@@ -247,6 +284,7 @@ export class MapView {
   mount(): void {
     if (this.disposed) return
     this.active = true
+    this.syncMobileSidebarLayout()
     this.resizeObserver = new ResizeObserver(() => this.measureViewport())
     this.resizeObserver.observe(this.viewport)
     this.measureViewport()
@@ -281,7 +319,43 @@ export class MapView {
     this.startRenderLoop()
   }
 
+  private isMobileLayout(): boolean {
+    return this.mobileQuery.matches
+  }
+
+  private syncMobileSidebarLayout(): void {
+    if (!this.isMobileLayout()) {
+      this.setSidebarOpen(true)
+      return
+    }
+    this.setSidebarOpen(false)
+  }
+
+  private setSidebarOpen(open: boolean): void {
+    if (!this.isMobileLayout()) {
+      this.root.classList.add('is-sidebar-open')
+      this.sidebarBackdrop.hidden = true
+      this.sidebarToggleBtn.setAttribute('aria-expanded', 'true')
+      this.sidebarToggleBtn.hidden = true
+      return
+    }
+    this.root.classList.toggle('is-sidebar-open', open)
+    this.sidebarBackdrop.hidden = !open
+    this.sidebarToggleBtn.hidden = false
+    this.updateSidebarToggleIcon(open)
+    this.sidebarToggleBtn.setAttribute('aria-expanded', open ? 'true' : 'false')
+    this.sidebarToggleBtn.setAttribute('aria-label', open ? 'Close activity panel' : 'Open activity panel')
+    if (open) this.measureViewport()
+  }
+
+  private updateSidebarToggleIcon(open: boolean): void {
+    this.sidebarToggleBtn.innerHTML = open
+      ? `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`
+      : `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`
+  }
+
   dispose(): void {
+    this.mobileQuery.removeEventListener('change', this.onMobileLayoutChange)
     this.disposed = true
     this.active = false
     this.stopRenderLoop()

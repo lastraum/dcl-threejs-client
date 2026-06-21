@@ -7,6 +7,8 @@ export type PhysxColliderDebugOptions = {
   localPlayerCapsule: boolean
   /** Log staticColliderCount + nearest sweep hit each second. */
   collidersPhys: boolean
+  /** Runtime world-baked pose-drift recook (off by default — boot + Help manual recook still run). */
+  runtimeRecook: boolean
 }
 
 type Listener = (options: PhysxColliderDebugOptions) => void
@@ -21,14 +23,21 @@ function readCollidersPhysDefault(): boolean {
   return new URLSearchParams(window.location.search).has('collidersphys')
 }
 
+function readRuntimeRecookDefault(): boolean {
+  if (typeof window === 'undefined') return false
+  return new URLSearchParams(window.location.search).has('colliderrecook')
+}
+
 const urlDefault = readUrlDefault()
 const collidersPhysDefault = readCollidersPhysDefault()
+const runtimeRecookDefault = readRuntimeRecookDefault()
 
 const DEFAULT_OPTIONS: PhysxColliderDebugOptions = {
   sceneMeshColliders: urlDefault,
   gltfColliders: urlDefault,
   localPlayerCapsule: urlDefault,
-  collidersPhys: collidersPhysDefault
+  collidersPhys: collidersPhysDefault,
+  runtimeRecook: runtimeRecookDefault
 }
 
 /** Shared toggles for PhysX collider debug wireframes (Help debug panel + `?colliders`). */
@@ -71,6 +80,10 @@ class PhysxColliderDebugStore {
     return this.options.collidersPhys
   }
 
+  isRuntimeRecookEnabled(): boolean {
+    return this.options.runtimeRecook
+  }
+
   private notify(): void {
     const snapshot = this.getOptions()
     for (const listener of this.listeners) listener(snapshot)
@@ -82,7 +95,8 @@ function optionsEqual(a: PhysxColliderDebugOptions, b: PhysxColliderDebugOptions
     a.sceneMeshColliders === b.sceneMeshColliders &&
     a.gltfColliders === b.gltfColliders &&
     a.localPlayerCapsule === b.localPlayerCapsule &&
-    a.collidersPhys === b.collidersPhys
+    a.collidersPhys === b.collidersPhys &&
+    a.runtimeRecook === b.runtimeRecook
   )
 }
 

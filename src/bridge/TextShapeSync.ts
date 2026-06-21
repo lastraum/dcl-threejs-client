@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { PBTextShape } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/text_shape.gen'
+import { buildDclPlaneGeometry } from './primitiveShapes'
 import { color3ToThree, color4Alpha, color4ToThree } from './pbColor'
 
 const CANVAS_W = 512
@@ -19,11 +20,11 @@ export function buildTextShapeMesh(spec: PBTextShape): THREE.Mesh {
 
   const width = spec.width ?? 1
   const height = spec.height ?? 1
-  const geometry = new THREE.PlaneGeometry(width, height)
+  const geometry = buildDclPlaneGeometry(width, height)
   const material = new THREE.MeshBasicMaterial({
     map: texture,
     transparent: true,
-    side: THREE.DoubleSide,
+    side: THREE.FrontSide,
     depthWrite: false
   })
 
@@ -47,7 +48,7 @@ export function updateTextShapeMesh(mesh: THREE.Mesh, spec: PBTextShape): void {
   const width = spec.width ?? 1
   const height = spec.height ?? 1
   mesh.geometry.dispose()
-  mesh.geometry = new THREE.PlaneGeometry(width, height)
+  mesh.geometry = buildDclPlaneGeometry(width, height)
 }
 
 export function disposeTextShapeMesh(mesh: THREE.Object3D): void {

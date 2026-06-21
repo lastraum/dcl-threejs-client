@@ -9,6 +9,32 @@ import type {
 
 const signedHeader = signedHeaderFactory()
 
+/** Scene metadata injected into gatekeeper SignedFetch calls (Explorer kernel parity). */
+export type SignedFetchSceneContext = {
+  sceneId: string
+  parcel: string
+  realmName: string
+  isWorld?: boolean
+}
+
+function isGatekeeperSignedFetchUrl(url: string): boolean {
+  try {
+    return new URL(url).hostname.includes('comms-gatekeeper')
+  } catch {
+    return url.includes('comms-gatekeeper')
+  }
+}
+
+function gatekeeperMetadata(context: SignedFetchSceneContext) {
+  return {
+    signer: 'decentraland-kernel-scene',
+    sceneId: context.sceneId,
+    parcel: context.parcel,
+    realmName: context.realmName,
+    isWorld: context.isWorld ?? false
+  }
+}
+
 function headersToRecord(
   headers: Record<string, string> | Array<{ key: string; value: string }> | undefined
 ): Record<string, string> {
@@ -57,7 +83,8 @@ export function performGetSignedHeaders(
 /** Scene `~system/SignedFetch.signedFetch` — signed when wallet connected, plain fetch otherwise. */
 export async function performSignedFetch(
   request: SignedFetchRequest,
-  identity: AuthIdentity | null
+  identity: AuthIdentity | null,
+  sceneContext?: SignedFetchSceneContext | null
 ): Promise<SignedFetchResponse> {
   const init = request.init ?? {}
   const fetchInit: RequestInit = {
@@ -67,8 +94,14 @@ export async function performSignedFetch(
   }
 
   try {
+    const useGatekeeperMetadata =
+      !!identity && !!sceneContext?.sceneId && isGatekeeperSignedFetchUrl(request.url)
     const res = identity
-      ? await signedFetch(request.url, { ...fetchInit, identity })
+      ? await signedFetch(request.url, {
+          ...fetchInit,
+          identity,
+          ...(useGatekeeperMetadata ? { metadata: gatekeeperMetadata(sceneContext!) } : {})
+        })
       : await fetch(request.url, fetchInit)
 
     const body = await res.text()

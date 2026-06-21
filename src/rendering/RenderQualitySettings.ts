@@ -15,6 +15,13 @@ export const LIGHT_LIMITS: Record<RenderQualityTier, number> = {
   [RenderQualityTier.High]: 10
 }
 
+/** Max simultaneous VideoPlayer decoders (DCL Explorer parity). */
+export const VIDEO_PLAYER_LIMITS: Record<RenderQualityTier, number> = {
+  [RenderQualityTier.Low]: 1,
+  [RenderQualityTier.Medium]: 5,
+  [RenderQualityTier.High]: 10
+}
+
 export const MAX_SHADOW_SPOT_LIGHTS = 3
 export const LIGHT_CULL_DISTANCE_M = 40
 
@@ -27,8 +34,8 @@ export const SHADOW_MAP_SIZE: Record<RenderQualityTier, number> = {
 
 /** Renderer exposure with ACESFilmic tone mapping — tier-tuned; daytime sun needs slightly more headroom. */
 export const TONE_MAPPING_EXPOSURE: Record<RenderQualityTier, number> = {
-  [RenderQualityTier.Low]: 1.0,
-  [RenderQualityTier.Medium]: 1.06,
+  [RenderQualityTier.Low]: 1.02,
+  [RenderQualityTier.Medium]: 1.08,
   [RenderQualityTier.High]: 1.12
 }
 

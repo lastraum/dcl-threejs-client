@@ -16,6 +16,7 @@ import {
   splitEmoteClips
 } from './emotePlayback'
 import { remapClipToAvatar } from './emoteBoneMap'
+import { getRemappedLocomotionClip } from './locomotionClipCache'
 import type { AssetCache, CachedGltf } from '../rendering/AssetCache'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import type { LocomotionMode } from '../player/locomotion'
@@ -61,6 +62,7 @@ export class AvatarAnimations {
   private walkBlend = 0
   private runBlend = 0
   private jumpBlend = 0
+  private bindGeneration = 0
 
   setVfxScene(scene: THREE.Scene | null): void {
     this.vfxScene = scene
@@ -76,6 +78,7 @@ export class AvatarAnimations {
     options?: { bodyShape?: BodyShape; peerUrl?: string; assetCache?: AssetCache | null }
   ): Promise<void> {
     this.dispose()
+    const generation = this.bindGeneration
     this.avatarRoot = avatarRoot
     this.attachParent = attachParent ?? avatarRoot.parent ?? avatarRoot
     this.mixer = new THREE.AnimationMixer(avatarRoot)
@@ -136,15 +139,17 @@ export class AvatarAnimations {
       loadSlug('double_jump')
     ])
 
+    if (generation !== this.bindGeneration || !this.mixer) return
+
     if (!idleClip) {
       throw new Error('locomotion idle emote unavailable')
     }
 
-    this.idleAction = this.playLoop(idleClip, avatarRoot)
-    this.walkAction = this.playLoop(walkClip ?? undefined, avatarRoot, 0)
-    this.runAction = this.playLoop(runClip ?? undefined, avatarRoot, 0)
-    this.jumpAction = this.playLoop(jumpClip ?? undefined, avatarRoot, 0)
-    this.doubleJumpAction = this.playOneShot(doubleJumpClip ?? jumpClip ?? undefined, avatarRoot)
+    this.idleAction = this.playLoop(idleClip, avatarRoot, bodyShape, 1)
+    this.walkAction = this.playLoop(walkClip ?? undefined, avatarRoot, bodyShape, 0)
+    this.runAction = this.playLoop(runClip ?? undefined, avatarRoot, bodyShape, 0)
+    this.jumpAction = this.playLoop(jumpClip ?? undefined, avatarRoot, bodyShape, 0)
+    this.doubleJumpAction = this.playOneShot(doubleJumpClip ?? jumpClip ?? undefined, avatarRoot, bodyShape)
 
     if (!this.walkAction || !this.runAction || !this.jumpAction) {
       console.warn('[avatar] locomotion bind:', {
@@ -156,7 +161,7 @@ export class AvatarAnimations {
       })
     }
 
-    this.mixer.update(0)
+    this.mixer?.update(0)
   }
 
   triggerDoubleJump(): void {
@@ -372,6 +377,7 @@ export class AvatarAnimations {
   }
 
   dispose(): void {
+    this.bindGeneration++
     if (this.mixer) {
       this.mixer.removeEventListener('finished', this.onMixerFinished)
       this.mixer.stopAllAction()
@@ -473,9 +479,10 @@ export class AvatarAnimations {
   private playLoop(
     clip: THREE.AnimationClip | undefined,
     avatarRoot: THREE.Object3D,
+    bodyShape: BodyShape,
     weight = 1
   ): THREE.AnimationAction | null {
-    const remapped = remapClipToAvatar(clip, avatarRoot)
+    const remapped = getRemappedLocomotionClip(clip, avatarRoot, bodyShape)
     if (!remapped || !this.mixer) return null
     const action = this.mixer.clipAction(remapped)
     action.setLoop(THREE.LoopRepeat, Infinity)
@@ -487,9 +494,10 @@ export class AvatarAnimations {
 
   private playOneShot(
     clip: THREE.AnimationClip | undefined,
-    avatarRoot: THREE.Object3D
+    avatarRoot: THREE.Object3D,
+    bodyShape: BodyShape
   ): THREE.AnimationAction | null {
-    const remapped = remapClipToAvatar(clip, avatarRoot)
+    const remapped = getRemappedLocomotionClip(clip, avatarRoot, bodyShape)
     if (!remapped || !this.mixer) return null
     const action = this.mixer.clipAction(remapped)
     action.setLoop(THREE.LoopOnce, 1)

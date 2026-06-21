@@ -56,13 +56,15 @@ const GROUND_RAY_OFFSET = 0.08
 const WALKABLE_NORMAL_Y = 0.55
 /** Landscape / MeshCollider boxes only — skip dense GLTF trimesh walls when probing feet. */
 const LANDSCAPE_GROUND_MASK = Layers.environment.group | Layers.prop.group
+/** GLTF + prop static meshes — prefer over infinite ground when snapping spawn feet. */
+const SCENE_MESH_GROUND_MASK = Layers.prop.group | Layers.gltfCollider.group
 
 /** Unity CharacterController defaults — DCL Foundation uses PhysX CCT with similar tuning. */
 const DEG2RAD = Math.PI / 180
 const CONTROLLER_SLOPE_LIMIT_DEG = 45
-const CONTROLLER_STEP_OFFSET = 0.3
+const CONTROLLER_STEP_OFFSET = 0.45
 const CONTROLLER_CONTACT_OFFSET = 0.08
-/** Max foot gap the grounded ground-stick will clamp across (covers stepOffset+contactOffset overshoot when climbing onto raised floors, without gluing the player to ground over real drops). */
+/** Max foot gap scene-mesh ground-stick will clamp (CCT step-offset overshoot on stairs — never infinite ground). */
 const GROUND_STICK_DISTANCE = 0.55
 /** Always-on floor at y=0 — large thin static box (PxPlane is unsupported by CCT/sweep queries), no render mesh. */
 const INFINITE_GROUND_ENTITY = -1
@@ -123,6 +125,8 @@ export class PhysXWorld {
   private readonly staticFp = new Map<number, string>()
   /** Last applied world matrix fingerprint for pose-driven trimesh actors. */
   private readonly staticPoseFp = new Map<number, string>()
+  /** World-space baked trimesh — actor stays at origin; never apply setGlobalPose. */
+  private readonly actorWorldBaked = new Map<number, boolean>()
   /** Fingerprints whose trimesh cook failed — skip retry until fingerprint changes. */
   private readonly failedCookFp = new Set<string>()
   private readonly loggedFailedCookFp = new Set<string>()
@@ -377,8 +381,7 @@ export class PhysXWorld {
   verifyInfiniteGroundAt(x: number, y: number, z: number): boolean {
     if (!this.scene) return false
     this._v1.set(x, y, z)
-    this.queryFilterData.data.word0 = GROUND_QUERY_MASK
-    this.queryFilterData.data.word1 = 0
+    this.applySceneQueryFilter(GROUND_QUERY_MASK)
     return this.scene.raycast(
       this._v1.toPxVec3(this._pv2),
       this._down.toPxVec3(this.sweepPose.p),
@@ -470,10 +473,174 @@ export class PhysXWorld {
     this.invalidateControllerCache()
   }
 
-  syncStaticColliders(descs: PhysicsColliderDesc[], options?: { cookBudget?: number }): void {
+  hasStaticActor(entity: number): boolean {
+    return this.staticActors.has(entity)
+  }
+
+  /** Clears trimesh cook failure blacklist — use before a manual recook pass. */
+  clearFailedCookCaches(): void {
+    this.failedCookFp.clear()
+    this.loggedFailedCookFp.clear()
+  }
+
+  /** Drop all GLTF multi-shape PhysX actors — Help panel force-recook only. */
+  clearGltfStaticActors(): void {
+    for (const entity of [...this.staticActors.keys()]) {
+      if (this.isGltfStaticActor(entity)) this.removeStatic(entity)
+    }
+  }
+
+  /** Remove every scene static actor (keeps infinite ground) — manual recook / pose drift reset. */
+  clearAllSceneStaticActors(): void {
+    for (const entity of [...this.staticActors.keys()]) {
+      if (entity === INFINITE_GROUND_ENTITY) continue
+      this.removeStatic(entity)
+    }
+  }
+
+  /** Remove one static actor + sync fingerprints — boot cook always recooks fresh. */
+  invalidateStaticCollider(entity: number): void {
+    if (entity === INFINITE_GROUND_ENTITY) return
+    if (this.staticActors.has(entity)) this.removeStatic(entity)
+    else {
+      this.staticFp.delete(entity)
+      this.staticPoseFp.delete(entity)
+      this.actorWorldBaked.delete(entity)
+    }
+  }
+
+  /** True when a cooked actor exists and geometry fingerprint still matches the live desc. */
+  geomFingerprintMatches(desc: PhysicsColliderDesc): boolean {
+    return this.staticFp.get(desc.entity) === desc.fingerprint
+  }
+
+  isWorldBakedStatic(entity: number): boolean {
+    return this.actorWorldBaked.get(entity) === true && this.staticActors.has(entity)
+  }
+
+  /** Descriptor pose moved (CRDT resync) — world-baked vertices are already in world space. */
+  ackStaticPoseFingerprint(desc: PhysicsColliderDesc): void {
+    const poseFp = desc.shapes?.length
+      ? multiShapePoseFingerprint(desc)
+      : matrixFingerprint(desc.matrix)
+    this.staticPoseFp.set(desc.entity, poseFp)
+  }
+
+  /**
+   * World-baked trimeshes embed placement in vertices — actor pose slides are a no-op.
+   * Returns true when the live descriptor matrix moved since the last cook.
+   */
+  needsWorldBakedPoseRecook(desc: PhysicsColliderDesc): boolean {
+    if (!this.actorWorldBaked.get(desc.entity)) return false
+    if (!this.staticActors.has(desc.entity)) return false
+    if (!this.geomFingerprintMatches(desc)) return false
+    const poseFp = desc.shapes?.length
+      ? multiShapePoseFingerprint(desc)
+      : matrixFingerprint(desc.matrix)
+    return this.staticPoseFp.get(desc.entity) !== poseFp
+  }
+
+  /** Recook world-baked actors whose matrixWorld drifted (landscape + MeshCollider trimesh). */
+  recookWorldBakedPoseDrift(
+    descs: PhysicsColliderDesc[],
+    options?: { forceAll?: boolean }
+  ): number {
+    const stale = options?.forceAll
+      ? descs.filter(
+          (d) =>
+            this.actorWorldBaked.get(d.entity) &&
+            this.staticActors.has(d.entity) &&
+            this.geomFingerprintMatches(d)
+        )
+      : descs.filter((d) => this.needsWorldBakedPoseRecook(d))
+    if (!stale.length) return 0
+    if (options?.forceAll) {
+      for (const desc of stale) this.staticPoseFp.delete(desc.entity)
+    }
+    const result = this.syncStaticColliders(stale, {
+      cookBudget: stale.length,
+      freezeRemoval: true,
+      forceRecookOnPoseChange: true
+    })
+    if (result.geometryChanged) this.invalidateControllerCache()
+    return stale.length
+  }
+
+  /**
+   * Runtime pose slide — moves existing actors without remove/recook gaps.
+   * Returns how many actors were repositioned.
+   */
+  applyStaticColliderPoseUpdates(
+    descs: PhysicsColliderDesc[],
+    options?: { force?: boolean }
+  ): number {
+    const force = options?.force === true
+    let updated = 0
+    for (const desc of descs) {
+      if (this.failedCookFp.has(desc.fingerprint)) continue
+
+      if (desc.shapes?.length) {
+        if (!this.geomFingerprintMatches(desc)) continue
+        const poseFp = multiShapePoseFingerprint(desc)
+        if (!force && this.staticPoseFp.get(desc.entity) === poseFp) continue
+        const actor = this.staticActors.get(desc.entity)
+        if (!actor || this.actorWorldBaked.get(desc.entity)) continue
+        this.updateMultiShapeActorPose(actor, desc)
+        this.staticPoseFp.set(desc.entity, poseFp)
+        updated++
+        continue
+      }
+
+      if (!this.geomFingerprintMatches(desc)) continue
+      const poseFp = matrixFingerprint(desc.matrix)
+      if (!force && this.staticPoseFp.get(desc.entity) === poseFp) continue
+      const actor = this.staticActors.get(desc.entity)
+      if (!actor || this.actorWorldBaked.get(desc.entity)) continue
+      desc.matrix.decompose(this._pos, this._quat, this._scale)
+      const actorTransform = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
+      this._pos.toPxTransform(actorTransform)
+      this._quat.toPxTransform(actorTransform)
+      actor.setGlobalPose(actorTransform)
+      this.staticPoseFp.set(desc.entity, poseFp)
+      updated++
+    }
+    if (updated > 0) this.invalidateControllerCache()
+    return updated
+  }
+
+  isColliderSynced(desc: PhysicsColliderDesc): boolean {
+    if (this.failedCookFp.has(desc.fingerprint)) return false
+
+    if (desc.shapes?.length) {
+      const geomFp = desc.fingerprint
+      const poseFp = multiShapePoseFingerprint(desc)
+      if (this.staticFp.get(desc.entity) !== geomFp) return false
+      const actor = this.staticActors.get(desc.entity)
+      return !!actor && this.staticPoseFp.get(desc.entity) === poseFp
+    }
+
+    const poseFp = matrixFingerprint(desc.matrix)
+    if (this.staticFp.get(desc.entity) !== desc.fingerprint) return false
+    if (!this.staticActors.has(desc.entity)) return false
+    return this.staticPoseFp.get(desc.entity) === poseFp
+  }
+
+  syncStaticColliders(
+    descs: PhysicsColliderDesc[],
+    options?: {
+      cookBudget?: number
+      freezeRemoval?: boolean
+      /** Skip actor pose-only moves — full trimesh recook when pose drifts (loading). */
+      forceRecookOnPoseChange?: boolean
+      /** Share cooked trimesh meshes across instances — disable during boot cook. */
+      geometryCache?: boolean
+    }
+  ): { geometryChanged: boolean; pendingCooks: number } {
+    const bootStyleCook = options?.geometryCache === false
     const active = new Set<number>()
     let cooksRemaining = options?.cookBudget ?? Number.POSITIVE_INFINITY
     let geometryChanged = false
+    let pendingCooks = 0
 
     for (const desc of descs) {
       active.add(desc.entity)
@@ -486,7 +653,8 @@ export class PhysXWorld {
         if (prevGeomFp === geomFp) {
           const actor = this.staticActors.get(desc.entity)
           if (actor && this.staticPoseFp.get(desc.entity) === poseFp) continue
-          if (actor) {
+          const worldBaked = !!(actor && this.actorWorldBaked.get(desc.entity))
+          if (actor && !options?.forceRecookOnPoseChange && !worldBaked) {
             try {
               this.updateMultiShapeActorPose(actor, desc)
               this.staticPoseFp.set(desc.entity, poseFp)
@@ -496,9 +664,7 @@ export class PhysXWorld {
               console.warn('[PhysXWorld] multi-shape pose update failed:', desc.entity, err)
             }
           }
-          // Fingerprint cached but actor missing (e.g. scene re-entry) — force recook.
-          this.staticFp.delete(desc.entity)
-          this.staticPoseFp.delete(desc.entity)
+          // World-baked pose drift — keep the live actor until cook budget allows atomic swap below.
         }
 
         if (prevGeomFp && prevGeomFp !== geomFp) {
@@ -510,11 +676,14 @@ export class PhysXWorld {
           continue
         }
 
-        if (cooksRemaining <= 0) continue
+        if (cooksRemaining <= 0) {
+          pendingCooks++
+          continue
+        }
 
         try {
           this.removeStatic(desc.entity)
-          if (!this.addMultiShapeStatic(desc)) {
+          if (!this.addMultiShapeStatic(desc, { geometryCache: !bootStyleCook })) {
             this.failedCookFp.add(geomFp)
             continue
           }
@@ -536,10 +705,26 @@ export class PhysXWorld {
       if (geomFp === desc.fingerprint) {
         const hasActor = this.staticActors.has(desc.entity)
         if (hasActor && this.staticPoseFp.get(desc.entity) === poseFp) continue
-        // Pose changed or actor missing — recook with the new world matrix.
-        if (hasActor) this.removeStatic(desc.entity)
-        this.staticFp.delete(desc.entity)
-        this.staticPoseFp.delete(desc.entity)
+        if (
+          hasActor &&
+          !options?.forceRecookOnPoseChange &&
+          !this.actorWorldBaked.get(desc.entity)
+        ) {
+          try {
+            desc.matrix.decompose(this._pos, this._quat, this._scale)
+            const actor = this.staticActors.get(desc.entity)!
+            const actorTransform = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
+            this._pos.toPxTransform(actorTransform)
+            this._quat.toPxTransform(actorTransform)
+            actor.setGlobalPose(actorTransform)
+            this.staticPoseFp.set(desc.entity, poseFp)
+            geometryChanged = true
+            continue
+          } catch (err) {
+            console.warn('[PhysXWorld] primitive pose update failed:', desc.entity, err)
+          }
+        }
+        // World-baked / missing actor — recook below; keep existing actor until cook budget allows swap.
       }
 
       const prevFp = geomFp
@@ -552,7 +737,10 @@ export class PhysXWorld {
         continue
       }
 
-      if (cooksRemaining <= 0) continue
+      if (cooksRemaining <= 0) {
+        pendingCooks++
+        continue
+      }
 
       try {
         this.removeStatic(desc.entity)
@@ -571,14 +759,16 @@ export class PhysXWorld {
       }
     }
 
-    for (const entity of [...this.staticActors.keys()]) {
-      if (entity === INFINITE_GROUND_ENTITY) continue
-      if (!active.has(entity)) {
-        try {
-          this.removeStatic(entity)
-          geometryChanged = true
-        } catch (err) {
-          console.warn('[PhysXWorld] static collider removal failed:', entity, err)
+    if (!options?.freezeRemoval) {
+      for (const entity of [...this.staticActors.keys()]) {
+        if (entity === INFINITE_GROUND_ENTITY) continue
+        if (!active.has(entity)) {
+          try {
+            this.removeStatic(entity)
+            geometryChanged = true
+          } catch (err) {
+            console.warn('[PhysXWorld] static collider removal failed:', entity, err)
+          }
         }
       }
     }
@@ -586,6 +776,7 @@ export class PhysXWorld {
     if (geometryChanged) {
       this.invalidateControllerCache()
     }
+    return { geometryChanged, pendingCooks }
   }
 
   /** CCT obstacle cache must refresh when static geometry changes (GLTF collider batches). */
@@ -704,6 +895,7 @@ export class PhysXWorld {
     if (this.position.y < 0) {
       this._v1.set(this.position.x, 0, this.position.z)
       this.teleport(this._v1)
+      this.invalidateControllerCache()
       grounded = true
     } else if (displacement.y <= 0) {
       const idleOnGround =
@@ -711,21 +903,17 @@ export class PhysXWorld {
         displacement.lengthSq() < 1e-8 &&
         Math.abs(displacement.y) < 1e-8
       if (!idleOnGround) {
-        // Clamp feet to the walkable surface below.
-        // !grounded: fine-snap when nearly touching (removes micro-hover after a small fall).
-        // grounded: settle CCT step-up overshoot — PhysX lifts the capsule by up to
-        // stepOffset+contactOffset to clear a raised floor edge, then zeroed vertical velocity
-        // leaves it hovering knee-high. Pull it back down to the real surface (DCL ground-stick),
-        // bounded by GROUND_STICK_DISTANCE so it never glues the player across genuine drops.
+        // Scene meshes only — never snap to the y=0 infinite plane (that yanks feet off stairs).
         const reach = grounded ? GROUND_STICK_DISTANCE + 0.25 : CONTROLLER_CONTACT_OFFSET + 0.35
-        const hit = this.sweepDown(reach)
+        const hit = this.probeSceneGroundDown(reach)
         if (hit) {
           const gap = hit.distance - hit.probeOffset
           const shouldSnap = grounded
             ? gap > CONTROLLER_CONTACT_OFFSET + 0.03 && gap <= GROUND_STICK_DISTANCE
             : hit.distance <= hit.probeOffset + CONTROLLER_CONTACT_OFFSET + 0.05
           if (shouldSnap) {
-            this._v1.set(this.position.x, this.feetYFromGroundHit(this.position.y, hit), this.position.z)
+            const targetFeetY = this.feetYFromGroundHit(this.position.y, hit)
+            this._v1.set(this.position.x, targetFeetY, this.position.z)
             this.teleport(this._v1)
             grounded = true
           }
@@ -748,16 +936,65 @@ export class PhysXWorld {
   /** GLTF multi-shape static actors successfully registered in PhysX. */
   get gltfStaticActorCount(): number {
     let count = 0
-    for (const [entity, fp] of this.staticFp) {
-      if (entity === INFINITE_GROUND_ENTITY) continue
-      if (fp.startsWith('gltf') && this.staticActors.has(entity)) count++
+    for (const [entity] of this.staticFp) {
+      if (this.isGltfStaticActor(entity)) count++
     }
     return count
+  }
+
+  private isGltfStaticActor(entity: number): boolean {
+    if (entity === INFINITE_GROUND_ENTITY) return false
+    const fp = this.staticFp.get(entity)
+    return !!fp?.startsWith('gltf-entity:') && this.staticActors.has(entity)
   }
 
   /**
    * Horizontal capsule sweep probe for `?collidersphys` — nearest static hit within `maxDistance`.
    */
+  /** Downward probe for spawn diagnostics — nearest walkable hit below feet. */
+  debugProbeDownHit(maxDrop = 8): number | null {
+    if (!this.scene || !this.controller) return null
+    const hit = this.probeWalkableDown(maxDrop)
+    return hit?.distance ?? null
+  }
+
+  /** Downward probe at an arbitrary feet position — used before the player capsule exists. */
+  probeDownAt(feet: THREE.Vector3, maxDrop = 8): number | null {
+    if (!this.scene) return null
+    const hit =
+      this.raycastDownAt(feet, SCENE_MESH_GROUND_MASK, maxDrop) ??
+      this.raycastDownAt(feet, GROUND_QUERY_MASK, maxDrop)
+    return hit?.distance ?? null
+  }
+
+  /** GLTF/prop floor probe at spawn — excludes infinite ground so prewarm waits for scene meshes. */
+  probeSceneMeshDownAt(feet: THREE.Vector3, maxDrop = 12): number | null {
+    if (!this.scene) return null
+    const hit = this.raycastDownAt(feet, SCENE_MESH_GROUND_MASK, maxDrop)
+    return hit?.distance ?? null
+  }
+
+  private raycastDownAt(
+    feet: THREE.Vector3,
+    mask: number,
+    maxDistance: number
+  ): GroundSweepHit | null {
+    const origin = this._v1.copy(feet)
+    this.liftProbeOriginAboveFloor(origin, GROUND_RAY_OFFSET)
+    this.applySceneQueryFilter(mask)
+    const didHit = this.scene!.raycast(
+      origin.toPxVec3(this._pv2),
+      this._down.toPxVec3(this.sweepPose.p),
+      maxDistance,
+      this.raycastResult,
+      PHYSX.PxHitFlagEnum.eDEFAULT,
+      this.queryFilterData
+    )
+    if (!didHit) return null
+    const nbHits = this.raycastResult.getNbAnyHits?.() ?? 1
+    return this.pickWalkableGroundHit(this.raycastResult, nbHits, GROUND_RAY_OFFSET)
+  }
+
   debugProbeStaticHit(maxDistance = 2.5): { distance: number | null; staticCount: number; gltfCount: number } {
     const staticCount = this.staticColliderCount
     const gltfCount = this.gltfStaticActorCount
@@ -804,12 +1041,41 @@ export class PhysXWorld {
   }
 
   sweepDown(maxDistance = GROUND_CHECK_DISTANCE): GroundSweepHit | null {
+    return this.probeWalkableDown(maxDistance)
+  }
+
+  /**
+   * Downward walkable probe for locomotion ground-stick — scene GLTF/prop meshes first
+   * (stairs, platforms), then landscape / infinite ground at y=0.
+   * Sphere sweep before ray: avoids stair risers blocking a thin ray while the tread is beside the feet.
+   */
+  private probeWalkableDown(maxDistance: number): GroundSweepHit | null {
+    const sceneHit =
+      this.sweepDownWithMask(SCENE_MESH_GROUND_MASK, maxDistance) ??
+      this.raycastDownWithMask(SCENE_MESH_GROUND_MASK, maxDistance)
+    if (sceneHit) return sceneHit
+
     return (
-      this.raycastDownWithMask(LANDSCAPE_GROUND_MASK, maxDistance) ??
-      this.raycastDownWithMask(GROUND_QUERY_MASK, maxDistance) ??
       this.sweepDownWithMask(LANDSCAPE_GROUND_MASK, maxDistance) ??
-      this.sweepDownWithMask(GROUND_QUERY_MASK, maxDistance)
+      this.raycastDownWithMask(LANDSCAPE_GROUND_MASK, maxDistance) ??
+      this.sweepDownWithMask(GROUND_QUERY_MASK, maxDistance) ??
+      this.raycastDownWithMask(GROUND_QUERY_MASK, maxDistance)
     )
+  }
+
+  /** GLTF / prop floor only — used by ground-stick (excludes infinite y=0 plane). */
+  private probeSceneGroundDown(maxDistance: number): GroundSweepHit | null {
+    return (
+      this.sweepDownWithMask(SCENE_MESH_GROUND_MASK, maxDistance) ??
+      this.raycastDownWithMask(SCENE_MESH_GROUND_MASK, maxDistance)
+    )
+  }
+
+  /** Lift probe origin above the infinite-ground top face so queries don't start inside the box. */
+  private liftProbeOriginAboveFloor(origin: THREE.Vector3, extraOffset: number): void {
+    origin.y += extraOffset
+    const minOriginY = 0.15
+    if (origin.y < minOriginY) origin.y = minOriginY
   }
 
   private probeOriginFromFeet(out: THREE.Vector3): THREE.Vector3 {
@@ -840,13 +1106,19 @@ export class PhysXWorld {
     return best
   }
 
+  /** Scene queries — bilateral layer test (matches CCT preFilter). */
+  private applySceneQueryFilter(layerMask: number): void {
+    this.queryFilterData.data.word0 = Layers.player.group
+    this.queryFilterData.data.word1 =
+      layerMask === 0 ? Layers.player.mask : layerMask & Layers.player.mask
+  }
+
   private raycastDownWithMask(mask: number, maxDistance: number): GroundSweepHit | null {
     if (!this.scene || !this.controller) return null
     const origin = this.probeOriginFromFeet(this._v1)
-    origin.y += GROUND_RAY_OFFSET
+    this.liftProbeOriginAboveFloor(origin, GROUND_RAY_OFFSET)
 
-    this.queryFilterData.data.word0 = mask
-    this.queryFilterData.data.word1 = 0
+    this.applySceneQueryFilter(mask)
 
     const didHit = this.scene.raycast(
       origin.toPxVec3(this._pv2),
@@ -866,11 +1138,10 @@ export class PhysXWorld {
     if (!this.scene || !this.controller) return null
     const origin = this.probeOriginFromFeet(this._v1)
     const probeOffset = this.groundSweepRadius + GROUND_PROBE_OFFSET
-    origin.y += probeOffset
+    this.liftProbeOriginAboveFloor(origin, probeOffset)
     origin.toPxVec3(this.sweepPose.p)
 
-    this.queryFilterData.data.word0 = mask
-    this.queryFilterData.data.word1 = 0
+    this.applySceneQueryFilter(mask)
 
     const didHit = this.scene.sweep(
       this.groundSweepGeometry,
@@ -897,9 +1168,14 @@ export class PhysXWorld {
     return hit.point.y
   }
 
-  /** Drop the player onto the nearest ground below (spawn / teleport). */
-  snapToGroundBelow(maxDrop = 64): boolean {
-    const hit = this.sweepDown(maxDrop)
+  /** Drop feet onto walkable geometry below — only used when spawn Y is under the floor (y < 0). */
+  snapToGroundBelow(maxDrop = 64, options?: { preferSceneMeshes?: boolean }): boolean {
+    const preferScene = options?.preferSceneMeshes !== false
+    const hit = preferScene
+      ? this.sweepDownWithMask(SCENE_MESH_GROUND_MASK, maxDrop) ??
+        this.raycastDownWithMask(SCENE_MESH_GROUND_MASK, maxDrop) ??
+        this.probeWalkableDown(maxDrop)
+      : this.probeWalkableDown(maxDrop)
     if (!hit) return false
     const feetY = this.feetYFromGroundHit(this.position.y, hit)
     if (Math.abs(feetY - this.position.y) < 0.001) return false
@@ -913,8 +1189,7 @@ export class PhysXWorld {
     if (!this.scene) return null
     origin.toPxVec3(this.sweepPose.p)
 
-    this.queryFilterData.data.word0 = CAMERA_QUERY_MASK
-    this.queryFilterData.data.word1 = 0
+    this.applySceneQueryFilter(CAMERA_QUERY_MASK)
 
     const didHit = this.scene.sweep(
       this.cameraSweepGeometry,
@@ -949,7 +1224,11 @@ export class PhysXWorld {
     else console.warn(message, fingerprint)
   }
 
-  private addMultiShapeStatic(desc: PhysicsColliderDesc): boolean {
+  private addMultiShapeStatic(
+    desc: PhysicsColliderDesc,
+    options?: { geometryCache?: boolean }
+  ): boolean {
+    const geometryCache = options?.geometryCache !== false
     const shapes = desc.shapes
     if (!shapes?.length || !this.physics || !this.scene) return false
 
@@ -958,11 +1237,11 @@ export class PhysXWorld {
     const pxShapes: any[] = []
     let attached = 0
     let actorAtOrigin = false
-    const allowWorldFallback = shapes.length === 1
 
     for (const shapeDesc of shapes) {
       if (!shapeDesc.geometry) continue
-      const result = this.createLocalTrimeshShape(shapeDesc, handles, desc.matrix, allowWorldFallback)
+      // Entity-local cook only — actor root carries world pose; no world-baked vertex teleport path.
+      const result = this.createLocalTrimeshShape(shapeDesc, handles, desc.matrix, false, geometryCache)
       if (!result) continue
       if (result.worldBaked) actorAtOrigin = true
       pxShapes.push(result.shape)
@@ -1004,14 +1283,25 @@ export class PhysXWorld {
     this.scene.addActor(actor)
     this.staticActors.set(desc.entity, actor)
     this.pmeshHandles.set(desc.entity, handles)
+    this.actorWorldBaked.set(desc.entity, actorAtOrigin)
     return true
+  }
+
+  private cookBakedGeometryToCache(bakedGeo: THREE.BufferGeometry): PxMeshHandle | null {
+    if (!isTrimeshGeometryCookable(bakedGeo)) return null
+    let handle = geometryToPxMesh(this.cookingParams, bakedGeo, false, { cache: true })
+    if (!handle?.value) {
+      handle = geometryToPxMesh(this.cookingParams, bakedGeo, true, { cache: true })
+    }
+    return handle?.value ? handle : null
   }
 
   private createLocalTrimeshShape(
     shapeDesc: PhysicsColliderShapeDesc,
     handles: PxMeshHandle[],
     actorMatrix: THREE.Matrix4,
-    allowWorldFallback: boolean
+    allowWorldFallback: boolean,
+    geometryCache = true
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): { shape: any; worldBaked: boolean } | null {
     const geometry = shapeDesc.geometry
@@ -1021,16 +1311,19 @@ export class PhysXWorld {
     const cookBakedGeo = (bakedGeo: THREE.BufferGeometry, cache: boolean): any | null => {
       if (!isTrimeshGeometryCookable(bakedGeo)) return null
 
-      const cookOpts = { cache }
-      let pmeshHandle = geometryToPxMesh(this.cookingParams, bakedGeo, false, cookOpts)
+      const pmeshHandle = cache
+        ? this.cookBakedGeometryToCache(bakedGeo)
+        : geometryToPxMesh(this.cookingParams, bakedGeo, false, { cache: false })
       let pxGeometry: unknown = null
 
-      if (!pmeshHandle?.value) {
-        pmeshHandle = geometryToPxMesh(this.cookingParams, bakedGeo, true, cookOpts)
-        if (pmeshHandle?.value) {
+      if (!pmeshHandle?.value && !cache) {
+        const convexHandle = geometryToPxMesh(this.cookingParams, bakedGeo, true, { cache: false })
+        if (convexHandle?.value) {
           const meshScale = unitPxMeshScale()
-          pxGeometry = new PHYSX.PxConvexMeshGeometry(pmeshHandle.value, meshScale)
+          pxGeometry = new PHYSX.PxConvexMeshGeometry(convexHandle.value, meshScale)
           PHYSX.destroy(meshScale)
+          handles.push(convexHandle)
+          return pxGeometry
         }
       }
 
@@ -1050,19 +1343,31 @@ export class PhysXWorld {
 
     try {
       const indexed = ensureIndexedForCook(geometry)
-      const entityLocalGeo = bakeTrimeshGeometry(indexed, shapeDesc.localMatrix)
-      let pxGeometry = cookBakedGeo(entityLocalGeo, true)
+      let pxGeometry: unknown = null
       let worldBaked = false
+      let entityLocalGeo: THREE.BufferGeometry | null = null
 
-      if (!pxGeometry && allowWorldFallback) {
+      if (!geometryCache) {
+        // Boot cook — world-space vertices, actor at origin (matches placed Three.js object).
         this._worldMatrix.copy(actorMatrix).multiply(shapeDesc.localMatrix)
         const worldGeo = bakeTrimeshGeometry(indexed, this._worldMatrix)
         pxGeometry = cookBakedGeo(worldGeo, false)
         if (pxGeometry) worldBaked = true
         worldGeo.dispose()
+      } else {
+        entityLocalGeo = bakeTrimeshGeometry(indexed, shapeDesc.localMatrix)
+        pxGeometry = cookBakedGeo(entityLocalGeo, geometryCache)
+
+        if (!pxGeometry && allowWorldFallback) {
+          this._worldMatrix.copy(actorMatrix).multiply(shapeDesc.localMatrix)
+          const worldGeo = bakeTrimeshGeometry(indexed, this._worldMatrix)
+          pxGeometry = cookBakedGeo(worldGeo, false)
+          if (pxGeometry) worldBaked = true
+          worldGeo.dispose()
+        }
       }
 
-      entityLocalGeo.dispose()
+      entityLocalGeo?.dispose()
       if (indexed !== geometry) indexed.dispose()
 
       if (!pxGeometry) {
@@ -1076,6 +1381,7 @@ export class PhysXWorld {
       const shape = this.physics.createShape(pxGeometry, this.defaultMaterial, true, shapeFlags)
       PHYSX.destroy(pxGeometry)
 
+      // Prop layer — same filter path as MeshCollider (proven CCT + scene query blocking).
       const filterData = new PHYSX.PxFilterData(Layers.prop.group, Layers.prop.mask, 0, 0)
       shape.setQueryFilterData(filterData)
       shape.setSimulationFilterData(filterData)
@@ -1092,6 +1398,7 @@ export class PhysXWorld {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  /** Move the PhysX actor root — mesh vertices stay in entity-local space (tweens / pose dirty only). */
   private updateMultiShapeActorPose(actor: any, desc: PhysicsColliderDesc): void {
     const shapes = desc.shapes
     if (!shapes?.length) return
@@ -1101,7 +1408,6 @@ export class PhysXWorld {
     this._pos.toPxTransform(actorTransform)
     this._quat.toPxTransform(actorTransform)
     actor.setGlobalPose(actorTransform)
-    // Per-shape localMatrix is baked into cooked geometry — only the actor root moves.
   }
 
   private addStatic(desc: PhysicsColliderDesc): boolean {
@@ -1149,6 +1455,7 @@ export class PhysXWorld {
         this._pos.set(0, 0, 0)
         this._quat.set(0, 0, 0, 1)
         this._scale.set(1, 1, 1)
+        this.actorWorldBaked.set(desc.entity, true)
       } catch (err) {
         this.logCookFailedOnce(desc.fingerprint, '[PhysXWorld] trimesh bake/cook failed:', err)
         return false
@@ -1203,6 +1510,7 @@ export class PhysXWorld {
     this.staticActors.delete(entity)
     this.staticFp.delete(entity)
     this.staticPoseFp.delete(entity)
+    this.actorWorldBaked.delete(entity)
     const pmeshList = this.pmeshHandles.get(entity)
     this.pmeshHandles.delete(entity)
 
@@ -1267,8 +1575,7 @@ export class PhysXWorld {
     this._quat.setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2)
     this._quat.toPxTransform(this.overlapPose)
 
-    this.queryFilterData.data.word0 = TRIGGER_QUERY_MASK
-    this.queryFilterData.data.word1 = 0
+    this.applySceneQueryFilter(TRIGGER_QUERY_MASK)
     const didHit = this.scene.overlap(
       this.playerCapsuleOverlapGeometry,
       this.overlapPose,

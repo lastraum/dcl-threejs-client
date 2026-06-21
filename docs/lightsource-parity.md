@@ -44,19 +44,29 @@ renderQuality.setTier(RenderQualityTier.High)
 Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not replace them):
 
 - Base sun: `DirectionalLight` 1.0 × `SUN_BRIGHTNESS` **1.55** × anim curve (clamped **1.45** at midday)
-- Moon fill: **`moonLightIntensity()`** × `MOON_BRIGHTNESS` **0.9** — separate from sun anim curve (Unity `directionalLightLayer.intensity`, not `SunCycle24h` sun curve which hits 0 at night)
+- Moon fill: **`moonLightIntensity()`** × `MOON_BRIGHTNESS` **1.35** × user **`sceneMoonLight`** multiplier — separate from sun anim curve
 - Moon color from **`directional` sky gradient** (purple at night), not hardcoded RGB
-- Hemisphere fill **0.54** day / 0.38 night
+- Hemisphere fill **0.54** day / **0.65** night × user sun/moon light sliders
+- **User tuning** (`SunEnvironmentSettings`, Preferences → Graphics): Scene Sun Light, Exposure (day), Scene Moon Light, Moon Exposure (night) — persisted localStorage
 - **Hybrid scale:** when nearby ECS lights exceed **40%** of the quality-tier budget, sun/moon/hemi blend down by up to **25%** (`ECS_HYBRID_SUN_REDUCTION`) — sparse outdoor scenes keep full sun; saturated Genesis Plaza clusters avoid double-lit look
-- Skydome sun disc uses a wider warm halo (shader); hybrid does **not** dim the sky dome
-- **Cloud layers:** cubemap density mask → `mix()` over sky gradient (not additive HDR stack); soft `smoothstep` falloff **0.62** + mipmap bias **-1.0**; per-ray `sunFacing` removed (was causing blue holes on non-sun-facing puff pixels)
+- Skydome sun disc: fixed small disc / no corona (user sliders removed 2026-06-18); hybrid does **not** dim the sky dome
+- **Cloud layers:** cubemap density mask → HDR `clouds` gradient tint + **screen brighten** over sky; sun-facing lift at day; `toneMapped: false` on sky material; soft `smoothstep` falloff **0.62** + mipmap bias **-1.0**; per-ray `sunFacing` on **mask** removed (was blue speckle) — sun used for **tint** only
 - `LightManager.getActiveNearbyCount()` drives the scale; `World` runs light culling **before** environment update
 
-### Tone mapping + exposure (`SceneHost.ts`)
+### Tone mapping + exposure (`SceneHost.ts`, `EnvironmentSystem.ts`)
 
 - `ACESFilmicToneMapping` + tier exposure from `RenderQualitySettings`
+- Day: `tierExposure × sunExposureMultiplier(user exposure)`
+- Night: `tierExposure × moonExposureMultiplier(user moon exposure)` (replaces fixed `NIGHT_EXPOSURE_BOOST` only multiplier)
 - `outputColorSpace = SRGBColorSpace`
 - Re-subscribes on tier change via `renderQuality`
+
+### Scene GLTF emissives (`sceneGltfEmissives.ts`) — 🟡 partial
+
+- DCL parity model: emissive **color** clamped to [0,1] per channel; **intensity** separate (KHR `emissive_strength`, 2–80+)
+- Named neon mats (`LightLED`, etc.) → black albedo, `toneMapped: false`, hue in `emissive` × `emissiveIntensity`
+- Baked floor/wall emissive maps skipped
+- **Outstanding:** not all scenes/materials match Explorer; emissive-map neon path; wearables use separate `avatar/materials.ts`
 
 ### Global shadow pipeline (`SceneHost.ts`, `spotLightShadow.ts`, `LightManager.ts`)
 
@@ -77,6 +87,9 @@ Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not rep
 | **Player vs camera cull origin** | Culling uses **camera** position (works in orbit mode). Explorer may use avatar position in some cases. |
 | **Directional sun shadows** | Environment sun/moon remain non-shadow-casting; only ECS spot lights cast. |
 | **GltfNodeModifiers castShadows** | Per-node GLTF shadow flags not wired; Material `castShadows` is. |
+| **Per-layer cloud tints** | Explorer uses per-layer gradients; we use one global `uCloudsColor` for all cubemap layers. |
+| **Graphics settings stubs** | Preferences panel MSAA/bloom/shadows/resolution — UI only, not wired to renderer. |
+| **Custom skybox + user sliders** | Worlds with `/about` cubemap hide GenesisSky; lighting sliders don't affect custom backgrounds. |
 
 ## Key files
 

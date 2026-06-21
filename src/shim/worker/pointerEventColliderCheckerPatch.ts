@@ -18,12 +18,15 @@ function guardAddSystemFromStockChecker(engine: IEngine): void {
  * Scene bundles embed @dcl/sdk and call `pointerEventColliderChecker(engine)` at init.
  * Strip that call in `evaluateSceneBundle` — the public engine API has no `getSystems()`.
  */
+const PREREGISTER_CALL =
+  'try{globalThis.__THREEJS_PREREGISTER_RENDERER_COMPONENTS__&&globalThis.__THREEJS_PREREGISTER_RENDERER_COMPONENTS__(__e)}catch(__err){}'
+
 const CAPTURE_ENGINE =
-  '(function(__e){if(__e&&typeof __e.update==="function"&&typeof __e.addSystem==="function"){globalThis.__THREEJS_SCENE_ENGINE__=__e}})'
+  `(function(__e){if(__e&&typeof __e.update==="function"&&typeof __e.addSystem==="function"){${PREREGISTER_CALL}globalThis.__THREEJS_SCENE_ENGINE__=__e}})`
 
 /** Minified bundles call `ae.addTransport(jP)` — capture the scene engine there (RickRoll, asset packs). */
 const CAPTURE_ADD_TRANSPORT =
-  '(function(__e,__t){if(__e&&typeof __e.update==="function"&&typeof __e.addSystem==="function"){globalThis.__THREEJS_SCENE_ENGINE__=__e}return __e.addTransport(__t)})'
+  `(function(__e,__t){if(__e&&typeof __e.update==="function"&&typeof __e.addSystem==="function"){${PREREGISTER_CALL}globalThis.__THREEJS_SCENE_ENGINE__=__e}return __e.addTransport(__t)})`
 
 export function stripBundledPointerEventColliderChecker(code: string): string {
   const moduleCall =
@@ -34,11 +37,25 @@ export function stripBundledPointerEventColliderChecker(code: string): string {
     .replace(directCall, `${CAPTURE_ENGINE}($1);(void 0)`)
 }
 
+/**
+ * Some deploys inline composites as `assets/scene/main.composite` while onStart calls
+ * `getCompositeOrNull("main.composite")` — alias lookup so composite instancing runs (opbadge).
+ */
+function patchCompositeSrcAlias(code: string): string {
+  return code.replace(
+    /getCompositeOrNull\((\w+)(?:,(\w+))?\)\{let (\w+)=(\w+)\[(\w+)\]/g,
+    (_, arg0, arg1, varName, tableName, key) =>
+      `getCompositeOrNull(${arg0}${arg1 ? `,${arg1}` : ''}){let ${varName}=${tableName}[${key}]||${tableName}["assets/scene/"+${key}]`
+  )
+}
+
 /** Bundle transforms applied before `evaluateSceneBundle` — engine capture + checker strip. */
 export function patchSceneBundle(code: string): string {
-  return stripBundledPointerEventColliderChecker(code).replace(
-    /(\w+)\.addTransport\((\w+)\)/g,
-    `${CAPTURE_ADD_TRANSPORT}($1,$2)`
+  return patchCompositeSrcAlias(
+    stripBundledPointerEventColliderChecker(code).replace(
+      /(\w+)\.addTransport\((\w+)\)/g,
+      `${CAPTURE_ADD_TRANSPORT}($1,$2)`
+    )
   )
 }
 

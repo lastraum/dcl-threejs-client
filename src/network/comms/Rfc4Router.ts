@@ -2,6 +2,7 @@ import { Packet } from '@dcl/protocol/out-ts/decentraland/kernel/comms/rfc4/comm
 import {
   tryDecodeRfc4ProfileRequest,
   tryDecodeRfc4ProfileResponse,
+  tryDecodeRfc4ProfileVersion,
   tryDecodeRfc4PlayerEmote,
   tryDecodeRfc4TransformPacket,
   describeRfc4Packet
@@ -32,6 +33,7 @@ export type Rfc4RouterHandlers = {
     locomotion?: { isGrounded?: boolean; isJumping?: boolean; jumpCount?: number }
   ) => void
   onProfileRequest: (address: string, profileVersion: number) => void
+  onPeerProfileVersion?: (address: string, profileVersion: number) => void
   onPeerProfile: (address: string, serializedProfile: string, baseUrl: string) => void
   onPeerEmote?: (address: string, urn: string, incrementalId: number) => void
   onSceneBinary: (sceneId: string, sender: string, data: Uint8Array) => void
@@ -107,6 +109,12 @@ export class Rfc4Router {
         `RFC4 in ← ${transport} ${address.slice(0, 8)}… ${packetKind}`,
         { throttleMs: 2000, throttleKey: `pkt-in:${packetKind}:${address}` }
       )
+    }
+
+    const profileVersion = tryDecodeRfc4ProfileVersion(data)
+    if (profileVersion) {
+      this.handlers.onPeerProfileVersion?.(address, profileVersion.profileVersion)
+      return
     }
 
     const profileRequest = tryDecodeRfc4ProfileRequest(data)

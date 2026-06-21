@@ -7,10 +7,13 @@ function readSearchParams(): URLSearchParams | null {
   }
 }
 
-/** `?tweenverbose` or `localStorage.tweenverbose=1` — log TweenState on the debug panel. */
+import { isMotionFocusActive } from './motionFocus'
+
+/** `?tweenverbose` / `?tween` / `?blimpdebug` — log TweenState on the debug panel. */
 export function isTweenVerbose(): boolean {
   const params = readSearchParams()
-  if (params?.has('tweenverbose')) return true
+  if (params?.has('tweenverbose') || params?.has('tween')) return true
+  if (isMotionFocusActive()) return true
   try {
     if (localStorage.getItem('tweenverbose') === '1') return true
   } catch {

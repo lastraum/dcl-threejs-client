@@ -1,5 +1,9 @@
 import type { ResolvedScene } from '../../dcl/content/types'
-import { DCL_SHARED_TEXTURES, findSceneContentHash } from '../../rendering/DclTextureResolver'
+import {
+  DCL_SHARED_TEXTURES,
+  findSceneContentHash,
+  resolveDclAssetUrl
+} from '../../rendering/DclTextureResolver'
 
 function leafName(path: string): string {
   const clean = path.split('?')[0]!.split('#')[0]!
@@ -22,6 +26,9 @@ export function resolveSceneTextureUrl(src: string, scene: ResolvedScene): strin
     DCL_SHARED_TEXTURES[trimmed] ??
     Object.entries(DCL_SHARED_TEXTURES).find(([key]) => key.toLowerCase() === leafName(trimmed).toLowerCase())?.[1]
   if (shared) return scene.assetUrl(shared)
+
+  const resolved = resolveDclAssetUrl(trimmed)
+  if (resolved && resolved !== trimmed && /^https?:/i.test(resolved)) return resolved
 
   return null
 }

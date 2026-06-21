@@ -16,7 +16,7 @@ type Pending = {
   reject: (err: Error) => void
 }
 
-const POOL_SIZE = 2
+const POOL_SIZE = 3
 
 let workers: Worker[] | null = null
 let nextId = 1

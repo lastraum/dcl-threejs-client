@@ -261,6 +261,96 @@ const profileCache = new Map<string, Promise<AvatarProfile | null>>()
 const commsProfileCache = new Map<string, Promise<CommsProfileEntity | null>>()
 const profileFaceCache = new Map<string, Promise<string | null>>()
 
+/** Wait for RFC4 profile broadcast before lambda fallback during remote avatar load. */
+export const PROFILE_COMMS_WAIT_MS = 2_500
+
+type CommsPeerProfile = {
+  serialized: string
+  profile: AvatarProfile
+  version: number
+}
+
+type ProfileWaiter = {
+  resolve: (profile: AvatarProfile) => void
+  timer: ReturnType<typeof setTimeout>
+}
+
+const commsPeerProfiles = new Map<string, CommsPeerProfile>()
+const profileWaiters = new Map<string, Set<ProfileWaiter>>()
+
+function resolveProfileWaiters(key: string, profile: AvatarProfile): void {
+  const waiters = profileWaiters.get(key)
+  if (!waiters) return
+  profileWaiters.delete(key)
+  for (const waiter of waiters) {
+    clearTimeout(waiter.timer)
+    waiter.resolve(profile)
+  }
+}
+
+/** Store peer profile from RFC4 broadcast — seeds lambda cache and unblocks waiters. */
+export function seedCommsPeerProfile(
+  address: string,
+  serializedProfile: string,
+  version = 1
+): AvatarProfile | null {
+  const profile = profileFromSerializedEntry(serializedProfile, address)
+  if (!profile) return null
+
+  const key = address.toLowerCase()
+  const existing = commsPeerProfiles.get(key)
+  if (existing && existing.serialized === serializedProfile) {
+    if (version > existing.version) existing.version = version
+    return existing.profile
+  }
+
+  commsPeerProfiles.set(key, { serialized: serializedProfile, profile, version })
+  profileCache.set(key, Promise.resolve(profile))
+  resolveProfileWaiters(key, profile)
+  return profile
+}
+
+/** Returns true when a full RFC4 profile response is still needed for this peer version. */
+export function needsCommsPeerProfile(address: string, version: number): boolean {
+  const key = address.toLowerCase()
+  const existing = commsPeerProfiles.get(key)
+  if (!existing) return true
+  return version > existing.version
+}
+
+export function getCommsPeerProfile(address: string): AvatarProfile | null {
+  return commsPeerProfiles.get(address.toLowerCase())?.profile ?? null
+}
+
+/** Await RFC4 profile broadcast (used before lambda fetch on remote avatar load). */
+export function waitForCommsPeerProfile(
+  address: string,
+  timeoutMs = PROFILE_COMMS_WAIT_MS
+): Promise<AvatarProfile | null> {
+  const key = address.toLowerCase()
+  const hit = commsPeerProfiles.get(key)
+  if (hit) return Promise.resolve(hit.profile)
+
+  return new Promise((resolve) => {
+    let waiters = profileWaiters.get(key)
+    if (!waiters) {
+      waiters = new Set()
+      profileWaiters.set(key, waiters)
+    }
+
+    const bucket = waiters
+    const waiter: ProfileWaiter = {
+      resolve: (profile) => resolve(profile),
+      timer: setTimeout(() => {
+        bucket.delete(waiter)
+        if (bucket.size === 0) profileWaiters.delete(key)
+        resolve(null)
+      }, timeoutMs)
+    }
+    bucket.add(waiter)
+  })
+}
+
 /** Resolve Catalyst `face256` snapshot — URL or IPFS entity id. */
 export function resolveFaceSnapshotUrl(raw: unknown): string | null {
   const value = String(raw ?? '').trim()
@@ -289,12 +379,31 @@ export async function fetchProfileFaceUrl(profileId: string, peerUrl = PEER_URL)
 
 export async function fetchProfileCached(profileId: string, peerUrl = PEER_URL): Promise<AvatarProfile | null> {
   const key = profileId.toLowerCase()
+  const commsHit = commsPeerProfiles.get(key)
+  if (commsHit) return commsHit.profile
+
   let pending = profileCache.get(key)
   if (!pending) {
     pending = fetchProfile(key, peerUrl)
     profileCache.set(key, pending)
   }
   return pending
+}
+
+/** Comms-first profile resolve — waits for RFC4 broadcast, then lambda fallback. */
+export async function resolveRemotePeerProfile(
+  address: string,
+  lambdasUrl?: string,
+  timeoutMs = PROFILE_COMMS_WAIT_MS
+): Promise<AvatarProfile | null> {
+  const key = address.toLowerCase()
+  const commsHit = commsPeerProfiles.get(key)
+  if (commsHit) return commsHit.profile
+
+  const broadcast = await waitForCommsPeerProfile(key, timeoutMs)
+  if (broadcast) return broadcast
+
+  return fetchProfileCached(key, lambdasUrl || undefined)
 }
 
 export async function fetchCommsProfileEntityCached(

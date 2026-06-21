@@ -13,6 +13,7 @@ import type { EntityStore } from './EntityStore'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionView } from './ProjectionView'
 import { isTweenVerbose } from './tweenConfig'
+import { isInBlimpSubtree, isMotionFocusActive } from './motionFocus'
 
 type Vec2 = { x: number; y: number }
 type Vec3 = { x: number; y: number; z: number }
@@ -254,17 +255,20 @@ export class TweenBridge {
   private readonly runtime = new Map<Entity, TweenRuntime>()
   /** Entities whose TweenState/Transform changed this frame — scopes CrdtEncoder tween scan. */
   private readonly encodeDirty = new Set<Entity>()
+  /** Entities whose scene-graph pose was interpolated this frame (collider pose slide). */
+  private readonly transformMotionEntities = new Set<Entity>()
   private readonly verbose = isTweenVerbose()
+  private motionFocusView: ProjectionView | null = null
 
   constructor(
     private readonly ecs: MirrorComponents,
     private readonly store: EntityStore
   ) {
     if (this.verbose) {
-      clientDebugLog.log('motion', 'Tween verbose — logging TweenState + progress (?tweenverbose)', {
-        level: 'info',
-        alsoConsole: true
-      })
+      const hint = isMotionFocusActive()
+        ? 'Motion focus — filtered tween logs (?blimpdebug or ?motionfocus=pattern)'
+        : 'Tween verbose — logging TweenState + progress (?tweenverbose)'
+      clientDebugLog.log('motion', hint, { level: 'info', alsoConsole: true })
     }
   }
 
@@ -273,6 +277,14 @@ export class TweenBridge {
     options: { level?: 'info' | 'warn' | 'success'; throttleMs?: number; entity?: Entity } = {}
   ): void {
     if (!this.verbose) return
+    if (
+      isMotionFocusActive() &&
+      options.entity !== undefined &&
+      this.motionFocusView &&
+      !isInBlimpSubtree(options.entity, this.ecs, this.motionFocusView)
+    ) {
+      return
+    }
     const key = options.entity !== undefined ? `tween:${options.entity}` : 'tween'
     clientDebugLog.log('motion', message, {
       level: options.level ?? 'info',
@@ -294,7 +306,15 @@ export class TweenBridge {
     return out
   }
 
+  /** Consume entities whose transform was tween-interpolated this frame. */
+  consumeTransformMotionEntities(): ReadonlySet<Entity> {
+    const out = new Set(this.transformMotionEntities)
+    this.transformMotionEntities.clear()
+    return out
+  }
+
   sync(view: ProjectionView): void {
+    this.motionFocusView = view
     const { Tween } = this.ecs
     const active = new Set<Entity>()
 
@@ -332,6 +352,8 @@ export class TweenBridge {
   }
 
   update(delta: number, view: ProjectionView): void {
+    this.motionFocusView = view
+    this.transformMotionEntities.clear()
     const { Tween, TweenState, Transform, AvatarAttach } = this.ecs
 
     for (const [entity, tween] of view.getEntitiesWith(Tween)) {
@@ -580,6 +602,7 @@ export class TweenBridge {
       parent: _scratchTransform.parent
     })
     applyDclLocalTransform(node, _scratchTransform)
+    this.transformMotionEntities.add(entity)
     return true
   }
 }

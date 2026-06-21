@@ -129,7 +129,8 @@ export class CrdtProjection {
   }
 
   private putComponent(entity: Entity, componentId: number, timestamp: number, data: Uint8Array): void {
-    if (this.deletedEntities.has(entity)) return
+    // DCL recycles entity ids after DELETE_ENTITY — next PUT revives the slot (campfire sprite pool, etc.).
+    this.deletedEntities.delete(entity)
     const meta = this.meta.get(componentId)
     if (!meta) return
 
@@ -220,7 +221,7 @@ export class CrdtProjection {
     return this.components.get(componentId)?.has(entity) ?? false
   }
 
-  /** Whether the entity has been deleted (DELETE_ENTITY) and is rejecting further puts. */
+  /** Whether the entity is between DELETE_ENTITY and the next inbound PUT (id may be recycled). */
   isDeleted(entity: Entity): boolean {
     return this.deletedEntities.has(entity)
   }

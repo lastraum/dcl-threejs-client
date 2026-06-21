@@ -140,7 +140,7 @@ export function sampleSkyGradients(t: number): {
     t <= 0.25 ? THREE.MathUtils.lerp(0.16, 0.17, t / 0.25) : t >= 0.84 ? 0.16 : 0
 
   const cloudHighlights =
-    t < 0.3 ? 0.4 : t < 0.5 ? THREE.MathUtils.lerp(0.4, 0.8, (t - 0.3) / 0.2) : t < 0.75 ? 0.8 : 0.5
+    t < 0.3 ? 0.45 : t < 0.5 ? THREE.MathUtils.lerp(0.45, 1.0, (t - 0.3) / 0.2) : t < 0.75 ? 1.0 : 0.55
 
   const sunRadiance =
     t < 0.5 ? THREE.MathUtils.lerp(-0.38, 0.12, t / 0.5) : THREE.MathUtils.lerp(0.12, -0.38, (t - 0.5) / 0.5)

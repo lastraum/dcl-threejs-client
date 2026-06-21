@@ -55,7 +55,7 @@ export class ChatPanel {
     this.onVisibilityChange = onVisibilityChange ?? null
     this.sceneCanvas = document.querySelector('#app canvas')
 
-    window.addEventListener('keydown', this.onGlobalKeyDown)
+    window.addEventListener('keydown', this.onGlobalKeyDown, true)
     this.root = document.createElement('div')
     this.root.id = 'chat-panel-wrap'
     this.root.className = 'chat-panel-wrap'
@@ -144,7 +144,7 @@ export class ChatPanel {
       this.updateComposerUi()
     })
     this.onVisibilityChange?.(true)
-    window.setTimeout(() => this.inputEl.focus(), 0)
+    window.setTimeout(() => this.focusComposer(), 0)
   }
 
   hide(): void {
@@ -175,7 +175,7 @@ export class ChatPanel {
   }
 
   dispose(): void {
-    window.removeEventListener('keydown', this.onGlobalKeyDown)
+    window.removeEventListener('keydown', this.onGlobalKeyDown, true)
     this.sceneCanvas?.removeEventListener('mousedown', this.onScenePointerDown)
     this.hide()
     if (this.mounted) this.root.remove()
@@ -183,12 +183,36 @@ export class ChatPanel {
   }
 
   private onGlobalKeyDown = (e: KeyboardEvent): void => {
-    if (this.visible) return
     if (e.code !== 'Enter' && e.code !== 'NumpadEnter') return
     if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return
-    if (this.isTypingTarget()) return
+    if (this.isModalUiOpen()) return
+    if (this.isTypingTarget() && document.activeElement !== this.inputEl) return
+    if (document.activeElement === this.inputEl) return
+
     e.preventDefault()
-    this.show()
+    e.stopPropagation()
+
+    if (!this.visible) {
+      this.show()
+      return
+    }
+
+    this.focusComposer()
+  }
+
+  /** Pin chat chrome and focus the message field (exits pointer lock). */
+  private focusComposer(): void {
+    if (document.pointerLockElement) document.exitPointerLock()
+    this.root.classList.remove('is-scene-mode')
+    this.root.classList.add('is-chat-pinned')
+    this.inputEl.focus({ preventScroll: true })
+  }
+
+  private isModalUiOpen(): boolean {
+    return (
+      document.querySelector('.settings-overlay.is-open') !== null ||
+      document.querySelector('.emote-wheel-overlay.is-open') !== null
+    )
   }
 
   private onScenePointerDown = (): void => {

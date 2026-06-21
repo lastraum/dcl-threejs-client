@@ -1,5 +1,5 @@
 import type { LoginResult } from '../../auth/AuthClient'
-import { loginWithWallet, refreshWalletIdentity, resumeStoredLogin } from '../../auth/AuthClient'
+import { loginWithMetaMask, refreshWalletIdentity, resumeStoredLogin } from '../../auth/AuthClient'
 import { clearStoredIdentity } from '../../auth/identityStore'
 import {
   formatIdentityExpiry,
@@ -223,7 +223,7 @@ export class SplashScreen {
   private handleProviderClick(provider: AuthProvider): void {
     switch (provider.id) {
       case 'metamask':
-        void this.runLogin((onStatus) => loginWithWallet(onStatus))
+        void this.runLogin((onStatus) => loginWithMetaMask(onStatus))
         break
       default:
         this.setStatus(`${provider.label} login is not yet available.`)

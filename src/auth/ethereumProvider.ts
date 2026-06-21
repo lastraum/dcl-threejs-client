@@ -1,4 +1,4 @@
-type EthereumProvider = {
+export type EthereumProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>
   on?: (event: string, handler: (...args: unknown[]) => void) => void
   removeListener?: (event: string, handler: (...args: unknown[]) => void) => void
@@ -10,9 +10,15 @@ declare global {
   }
 }
 
+let activeProvider: EthereumProvider | null = null
+
+export function setActiveEthereumProvider(provider: EthereumProvider | null): void {
+  activeProvider = provider
+}
+
 export function getEthereumProvider(): EthereumProvider | null {
   if (typeof window === 'undefined') return null
-  return window.ethereum ?? null
+  return activeProvider ?? window.ethereum ?? null
 }
 
 export async function requestWalletAddress(): Promise<string> {

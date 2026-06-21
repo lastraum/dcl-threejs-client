@@ -7,7 +7,11 @@ import { AVATAR_YAW_OFFSET, BODY_SHAPE_URN, PEER_URL } from '../avatar/constants
 import { applyAvatarPivotOffset } from '../avatar/feetAlign'
 import { updateNameTagAnchor } from '../avatar/headAnchor'
 import { defaultProfileIdentity, identityFromAvatarProfile, type ProfileIdentity } from '../avatar/displayName'
-import { fetchProfileCached, profileFromSerializedEntry } from '../avatar/peerApi'
+import {
+  profileFromSerializedEntry,
+  resolveRemotePeerProfile,
+  seedCommsPeerProfile
+} from '../avatar/peerApi'
 import type { AvatarProfile, BodyShape } from '../avatar/types'
 import { DCL_LOCOMOTION_DEFAULTS } from '../player/locomotion'
 import {
@@ -24,6 +28,7 @@ import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { NameTag } from '../client/ui/NameTag'
 import { resolveProfileEmote, loadResolvedProfileEmote } from '../avatar/profileEmotes'
 import type { AssetCache } from '../rendering/AssetCache'
+import { createRemoteAvatarPlaceholder } from '../avatar/remotePlaceholder'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import type { AvatarTransformPayload } from './comms/types'
 import { RemoteAvatarLoadQueue } from './RemoteAvatarLoadQueue'
@@ -86,6 +91,7 @@ export class RemoteAvatarManager {
   private readonly scene: THREE.Scene
   private readonly loadQueue = new RemoteAvatarLoadQueue()
   private entityStore: EntityStore | null = null
+  private localAddress: string | null = null
 
   constructor(scene: THREE.Scene) {
     this.scene = scene
@@ -96,6 +102,15 @@ export class RemoteAvatarManager {
   /** Phase 4.5 — register remote peers in the unified EntityStore (owner `'avatar'`). */
   setEntityStore(store: EntityStore | null): void {
     this.entityStore = store
+  }
+
+  setLocalAddress(address: string | null): void {
+    this.localAddress = address?.toLowerCase() ?? null
+  }
+
+  private isLocalPeer(address: string): boolean {
+    const key = address.toLowerCase()
+    return !!this.localAddress && key === this.localAddress
   }
 
   /** Remote peers with a known scene position. */
@@ -120,12 +135,27 @@ export class RemoteAvatarManager {
     this.loadQueue.setCameraPosition(position)
   }
 
+  /** Scene asset hydration — throttle remote composes so scene GLTF attach wins. */
+  setHydrationLoading(active: boolean): void {
+    this.loadQueue.setHydrationMode(active)
+  }
+
+  setSceneAssetPressure(gltfInflight: number, textureInflight = 0): void {
+    this.loadQueue.setSceneAssetPressure(gltfInflight, textureInflight)
+  }
+
   getAttachSkeleton(address: string): AvatarSkeletonTarget | null {
     const record = this.peers.get(address.toLowerCase())
     if (!record) return null
     const model = record.model ?? record.placeholder
     if (!model) return null
     return { model, nameTagAnchor: record.nameTagAnchor }
+  }
+
+  /** Scene chat line shown inside the peer's overhead name-tag pill. */
+  showPeerNameTagChat(address: string, text: string): void {
+    const record = this.peers.get(address.toLowerCase())
+    record?.nameTag?.showChat(text)
   }
 
   getPlayerTransformDclForAddress(address: string): DclTransformValues | null {
@@ -163,6 +193,7 @@ export class RemoteAvatarManager {
 
   upsertPeer(address: string, positionDcl?: THREE.Vector3): void {
     const key = address.toLowerCase()
+    if (this.isLocalPeer(key)) return
     let record = this.peers.get(key)
     if (!record) {
       const entity = avatarEntityFromAddress(key)
@@ -219,6 +250,9 @@ export class RemoteAvatarManager {
       record.targetPosition.copy(position)
       record.root.position.copy(position)
       record.root.visible = true
+      if (!record.model && !record.placeholder) {
+        this.attachLoadingPresentation(record)
+      }
     }
 
     this.tryStartAvatarLoad(key, record)
@@ -226,6 +260,7 @@ export class RemoteAvatarManager {
 
   applyPeerProfile(address: string, serializedProfile: string): void {
     const key = address.toLowerCase()
+    if (this.isLocalPeer(key)) return
     const profile = profileFromSerializedEntry(serializedProfile, key)
     if (!profile) return
 
@@ -238,10 +273,14 @@ export class RemoteAvatarManager {
 
     if (record.profileSignature === serializedProfile) return
 
+    seedCommsPeerProfile(key, serializedProfile)
     record.pendingProfile = profile
     record.profileSignature = serializedProfile
     record.bodyShape = profile.bodyShape
     record.identity = identityFromAvatarProfile(profile, key)
+    if (!record.model && record.hasPosition) {
+      this.attachLoadingPresentation(record)
+    }
     if (record.model) {
       if (record.animations?.isProfileEmoteActive()) {
         record.deferredProfileReload = true
@@ -276,6 +315,7 @@ export class RemoteAvatarManager {
     locomotion?: Pick<AvatarTransformPayload, 'isGrounded' | 'isJumping' | 'jumpCount'>
   ): void {
     const key = address.toLowerCase()
+    if (this.isLocalPeer(key)) return
     const position = dclToThreeVec(positionDcl)
     const yaw = dclYawToThreeYaw(yawDcl)
     if (!this.peers.has(key)) {
@@ -355,7 +395,12 @@ export class RemoteAvatarManager {
         record.root.position.lerp(record.targetPosition, alpha)
       }
 
-      record.currentYaw += (record.targetYaw - record.currentYaw) * alpha
+      // Snap facing while moving so rotation does not trail position interpolation.
+      if (record.horizontalSpeed > 0.35) {
+        record.currentYaw = record.targetYaw
+      } else {
+        record.currentYaw += (record.targetYaw - record.currentYaw) * alpha
+      }
       record.pivot.rotation.y = record.currentYaw + AVATAR_YAW_OFFSET
 
       record.smoothedSpeed += (record.horizontalSpeed - record.smoothedSpeed) * speedAlpha
@@ -391,8 +436,9 @@ export class RemoteAvatarManager {
       }
       record.doubleJumpTriggered = false
 
-      if (record.model) {
-        updateNameTagAnchor(record.nameTagAnchor, record.model)
+      const nameTagTarget = record.model ?? record.placeholder
+      if (nameTagTarget) {
+        updateNameTagAnchor(record.nameTagAnchor, nameTagTarget)
       }
     }
   }
@@ -434,33 +480,47 @@ export class RemoteAvatarManager {
     await record.loading
   }
 
+  private attachLoadingPresentation(record: RemotePeerRecord): void {
+    if (!record.placeholder) {
+      record.placeholder = createRemoteAvatarPlaceholder(true)
+      record.pivot.add(record.placeholder)
+    }
+    record.nameTag?.dispose()
+    record.nameTag = NameTag.attach(record.nameTagAnchor, record.identity.displayName, {
+      textColor: record.identity.nameColor,
+      claimed: record.identity.hasClaimedName
+    })
+    updateNameTagAnchor(record.nameTagAnchor, record.placeholder)
+  }
+
+  private clearLoadingPresentation(record: RemotePeerRecord): void {
+    if (record.placeholder) {
+      record.pivot.remove(record.placeholder)
+      this.disposeModel(record.placeholder)
+      record.placeholder = null
+    }
+  }
+
   private async loadPeerAvatar(address: string, record: RemotePeerRecord): Promise<void> {
     const key = address.toLowerCase()
     try {
       if (!this.peers.has(key)) return
-      const profileSeed = record.pendingProfile ?? blankProfile(address)
-      record.placeholder = await composeAvatarFromProfile(profileSeed, this.contentUrl || undefined, this.assetCache)
-      stabilizeSkinnedMeshes(record.placeholder)
-      record.placeholder.traverse((obj) => {
-        if (obj instanceof THREE.Mesh && obj.material) {
-          const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
-          for (const mat of mats) {
-            if ('color' in mat && mat.color instanceof THREE.Color) {
-              mat.color.multiplyScalar(0.55)
-            }
-          }
-        }
-      })
-      record.pivot.add(record.placeholder)
-
-      if (!this.peers.has(key)) return
 
       const profile =
         record.pendingProfile ??
-        (await fetchProfileCached(address, this.lambdasUrl || undefined)) ??
+        (await resolveRemotePeerProfile(address, this.lambdasUrl || undefined)) ??
         blankProfile(address)
       record.identity = identityFromAvatarProfile(profile, address)
       record.bodyShape = profile.bodyShape
+      record.pendingProfile = profile
+
+      if (!record.model && !record.placeholder) {
+        this.attachLoadingPresentation(record)
+      } else if (!record.nameTag) {
+        this.attachLoadingPresentation(record)
+      }
+
+      if (!this.peers.has(key)) return
 
       record.model = await composeAvatarFromProfile(profile, this.contentUrl || undefined, this.assetCache)
       stabilizeSkinnedMeshes(record.model)
@@ -471,11 +531,7 @@ export class RemoteAvatarManager {
         return
       }
 
-      if (record.placeholder) {
-        record.pivot.remove(record.placeholder)
-        this.disposeModel(record.placeholder)
-        record.placeholder = null
-      }
+      this.clearLoadingPresentation(record)
 
       record.pivot.add(record.model)
 
@@ -548,10 +604,7 @@ export class RemoteAvatarManager {
     record.animations?.dispose()
     record.animations = null
     record.activeEmoteUrn = null
-    if (record.placeholder) {
-      this.disposeModel(record.placeholder)
-      record.placeholder = null
-    }
+    this.clearLoadingPresentation(record)
     if (record.model) {
       this.disposeModel(record.model)
       record.model = null

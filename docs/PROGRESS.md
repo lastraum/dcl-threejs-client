@@ -2,9 +2,66 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-06-17 (TriggerArea Tier A ✅ · AvatarAttach ✅ · Phase 4 EntityStore **closed**)  
-> **Current phase:** **Phase 4 closed** — EntityStore + **AvatarAttach Tier B** + **TriggerArea Tier A** shipped. Next: Raycast, e10 perf, or Phase 5+ networking.
+> **Last updated:** 2026-06-18 (AudioSource + AudioStream ⬜ not tested · Preferences Sounds 🟡 · Lighting ✅)  
+> **Current phase:** **Phase 4 closed** — EntityStore + **AvatarAttach Tier B** + **TriggerArea Tier A** + **VideoPlayer** shipped. **Media:** AudioSource + AudioStream implemented (awaiting user test). Next: Raycast, voice UI, e10 perf.
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Tasks:** [TASKS.yaml](./TASKS.yaml)
+
+---
+
+## 🎉 Milestone — Audio ECS + Preferences Sounds (2026-06-18)
+
+**Status: implemented, not user-tested yet** — build passes; no in-world confirmation on a stream/clip test scene.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **AudioSource** (1020) | ⬜ **not tested** | `AudioSourceBridge` + `SceneAudioPlayer` — THREE buffer clips, spatial/global, play/pause/seek/loop/volume/pitch |
+| **AudioStream** (1021) | ⬜ **not tested** | `AudioStreamBridge` + `SceneAudioStreamPlayer` — HTTP/HLS via hidden `HTMLAudioElement`, spatial min/max distance |
+| **AudioEvent** (1105) | ⬜ **not tested** | Grow-only `MediaState` → worker (source + stream entities) |
+| **Shared listener** | ✅ code | One `AudioListener` on camera; master volume from preferences |
+| **Preferences → Sounds** | 🟡 **partial** | Volume sliders + mic picker + mute-in-background toggle; **live:** master + in-world; **saved only:** UI SFX, voice, avatar emotes |
+| **Natural end sync** | ⬜ **not tested** | AudioSource writes `playing:false` LWW on clip end |
+
+**Files:** `AudioSourceBridge.ts`, `SceneAudioPlayer.ts`, `AudioStreamBridge.ts`, `SceneAudioStreamPlayer.ts`, `AudioBufferCache.ts`, `SoundSettings.ts`, `SoundsSettingsView.ts`, `MicDeviceService.ts`, `mirrorComponents.ts`, `CrdtEncoder.ts`, `SceneScriptSystem.ts`
+
+**Merged:** `lastraum` → `dev-latest` (`c608dbc`, 2026-06-18)
+
+---
+
+## 🎉 Milestone — Lighting & skybox polish (2026-06-18)
+
+**User-confirmed working (opbadge / night mode):** scene LED strips read warm emissive (not flat white); skybox clouds white at midday; preferences panel opens over live world (orbit + WASD still work).
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Preferences panel (P / ⚙)** | ✅ | Separate from main overlay — Graphics, Sounds, Controls, Chat tabs; right rail; no pointer-lock exit |
+| **User lighting sliders** | 🟡 **partial** | **Scene Sun Light**, **Exposure** (day), **Scene Moon Light**, **Moon Exposure** (night) — persisted in `SunEnvironmentSettings` |
+| **Skydome sun look** | ✅ | Locked to small disc / no corona (former 0% sliders removed) |
+| **Skybox clouds** | ✅ | HDR cloud gradient tint + screen brighten + sun-facing lift; `toneMapped: false` on sky shader |
+| **Scene GLTF emissives** | 🟡 **partial** | DCL model: clamp emissive RGB → `emissiveIntensity` (KHR strength 2–80+); named neon mats (`LightLED`, etc.) — **decent, room to improve** |
+| **Baked emissive maps** | ✅ | Floor/wall bake mats skipped — no blowout |
+| **Graphics settings stubs** | ⬜ | MSAA, bloom, resolution scale, shadow quality — UI placeholders only |
+| **Custom skybox worlds** | 🟡 | User sliders affect Genesis path only; cubemap `/about` scenes hide `DclGenesisSky` |
+
+**Files:** `PreferencesPanel.ts`, `SunEnvironmentSettings.ts`, `DclGenesisSky.ts`, `EnvironmentSystem.ts`, `sceneGltfEmissives.ts`, `GraphicsSettingsView.ts`
+
+**Merged:** `lastraum` → `dev-latest` (2026-06-18)
+
+---
+
+## 🎉 Milestone — VideoPlayer ECS parity (2026-06-18)
+
+**User-confirmed working:** `rickroll.dcl.eth` screen — auto-play on load, video texture on plane, pointer play/pause toggle, end-of-video replay on first click, pause/resume from current frame.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| Decoder | ✅ | `WebVideoPlayer` — HTMLVideoElement + `THREE.VideoTexture` (HLS via hls.js) |
+| ECS bridge | ✅ | `VideoPlayerBridge` — projection ↔ decoder; grow-only `VideoEvent` outbound |
+| Scene toggle | ✅ | Worker `VideoPlayer.getMutable().playing = !playing` via pointer CRDT |
+| End-of-video | ✅ | Natural end syncs `playing:false` + LWW inject; click replays from start |
+| Material | ✅ | Video texture binds at metadata; material pass on `onTextureReady` |
+| Worker inject | ✅ | `VideoPlayer` LWW + `VideoEvent` append via renderer inject path |
+
+**Files:** `WebVideoPlayer.ts`, `VideoPlayerBridge.ts`, `videoTextureOrientation.ts`, `injectRendererLwwPuts.ts`, `injectRendererGrowOnlyAppends.ts`, `CrdtEncoder.ts` (LWW capture)
 
 ---
 
@@ -258,20 +315,23 @@ mrdoob **stats.js** panel top-center — closes out Phase 0 perf/viewer checkmar
 | When | What | Status |
 | ---- | ---- | ------ |
 | **Now** | GenesisSky dome (DCL textures + cloud scroll) | ✅ `DclGenesisSky` |
-| **Now** | Purple night sky, moon, stars, moon fill light | ✅ separate `moonLightIntensity()` + night hemi/exposure boost (2026-06-13) |
+| **Now** | Purple night sky, moon, stars, moon fill light | ✅ `moonLightIntensity()` + night hemi; user **Moon Light** / **Moon Exposure** sliders (2026-06-18) |
 | **Now** | `SkyboxTime` ECS on RootEntity + `scene.json` fixedTime | ✅ mirror + smooth transition |
 | **Now** | World `/about` + `display.skybox` custom textures | ✅ cubemap / equirect when provided |
 | **Now** | Animated water plane under landscape | ✅ `WaterPlane.ts` — 1024 m+ ocean, no square horizon clip |
 | **Now** | Skybox default midday (12:00) on load | ✅ `MIDDAY_SECONDS = 43200` |
-| **Now** | DCL cubemap clouds (near/far/horizon/top) | ✅ `crossCubemap.ts` + official unity-explorer assets |
+| **Now** | DCL cubemap clouds (near/far/horizon/top) | ✅ white midday puffs — HDR tint + screen blend (2026-06-18) |
 | **Now** | FPV camera zoom (scroll to first person) | ✅ 1.82 m eye height, inverted pitch, hide body + tag |
-| **Now** | Sun brightness +20% | ✅ `SUN_BRIGHTNESS = 1.2` — directional + skydome disc |
+| **Now** | Sun directional brightness | ✅ `SUN_BRIGHTNESS = 1.55` + user **Scene Sun Light** slider |
 | **Now** | Sun shadow sweep disabled | ✅ no moving diagonal ground shadow from sun cycle |
 | **Now** | `LightSource` ECS + `LightManager` culling | ✅ intensity/range/spot + 40 m cull + quality tiers — **FPS win in Genesis Plaza** |
 | **Now** | PhysX player grounding + capsule debug | ✅ feet on y=0; bone-based pivot; debug panel toggles |
-| **Pre-live** | Sun / hardcoded directional vs ECS lights | ✅ hybrid sun + ACES + cloud blend (2026-06-13) |
+| **Now** | Sun / ECS hybrid + ACES exposure | ✅ hybrid dim + tier exposure; user day/night exposure sliders |
+| **Now** | Scene GLTF neon / LED emissives | 🟡 DCL color×intensity split — warm LEDs at night; not full Explorer parity |
+| **Now** | Preferences → Graphics lighting UI | 🟡 4 live sliders + stub sections (MSAA, bloom, etc.) |
 | **Pre-live** | Emote GLB props | ✅ `SkeletonUtils.clone` + scene-emote URNs (2026-06-13) |
 | Full Explorer ShaderGraph parity (bloom, dual sun logo) | ⬜ polish |
+| Per-layer cloud tint gradients (Explorer Far/Near) | ⬜ single global `uCloudsColor` today |
 | **Phase 6** | Post-processing, probe env maps | ⬜ deferred |
 
 Default sky time: **midday (12:00)** on load. Day/night cycle still available when `SkyboxTime` is not fixed — **60 DCL-seconds per real second** (24-minute full cycle).
@@ -304,7 +364,8 @@ Default sky time: **midday (12:00)** on load. Day/night cycle still available wh
 | Circular minimap (top-left, 224×224) | ✅ scene parcels only + player dot |
 | **World location card** (replaces minimap in worlds) | ✅ `WorldLocationCard.ts` — name, live coords, **Jump back to Genesis City** → `0,0` |
 | Debug panel (right-anchored, hidden by default) | ✅ toggled from Help icon; live scene-local + world position HUD |
-| Settings overlay (tabbed) | ✅ Events, Places, Communities, Map, Backpack, Gallery, Settings |
+| Settings overlay (tabbed) | ✅ Events, Places, Communities, Map, Backpack, Gallery |
+| **Preferences panel (P / ⚙)** | ✅ Graphics live · **Sounds partial** (volume + mic UI) · Controls/Chat stubs |
 | **Dev progress panel** | ✅ `</>` sidebar — TASKS.yaml + PROGRESS.md from GitHub + integration registry |
 | **Map tab** — Genesis City stitched tiles | ✅ click mini-map / **M** — parcel popup + Jump In + peer sidebar (dcl-neurolink parity) |
 | **Events tab** — calendar + weekly views | ✅ DCL Events API · Weekly (4 day columns) / Calendar toggle · Today + Create Event stub |
@@ -771,7 +832,7 @@ SDK7 scenes call `EngineApi.subscribe("comms")` then drain via `sendBatch` insid
 
 | Item | Status | Notes |
 | ---- | ------ | ----- |
-| **`videoEvent`** observable / sendBatch | ⬜ pending | Needs **`VideoPlayer`** + **`CommsApi.getActiveVideoStreams`** |
+| **`videoEvent`** observable / sendBatch | 🟢 **VideoEvent outbound** | Grow-only append to worker; SDK `videoEventsSystem` callbacks — **`getActiveVideoStreams`** still pending |
 | Legacy typed events (`position_changed`, etc.) | ⬜ not planned | SDK7 uses ECS transforms, not sendBatch |
 | Other LiveKit topics via sendBatch | ⬜ not planned | Use **`CommsApi.subscribeToTopic` + `consumeMessages`** |
 
@@ -802,8 +863,9 @@ SDK7 scenes call `EngineApi.subscribe("comms")` then drain via `sendBatch` insid
 | -------- | ---- | --- |
 | 1 | **3** | **`Raycast` + `TriggerArea`** | Scene ray APIs + volume enter/exit — unlocks many interactives |
 | 2 | **3b** | **`PET_PROXIMITY_*`** pointer events | Walk-up interactives (no cursor) |
-| 3 | **3** | **`VideoPlayer` + `videoEvent`** | Presentation / screen scenes; pairs with pending `getActiveVideoStreams` |
-| 4 | **5** | Voice / presence (LiveKit audio) | Social layer |
+| 3 | **3** | ~~**`VideoPlayer` + `videoEvent`**~~ ✅ | RickRoll screen parity — remaining: **`getActiveVideoStreams`** comms stub |
+| 3b | **3** | ~~**`AudioSource` + `AudioStream`**~~ ⬜ | Code shipped — **user test pending**; wire voice/UI/emote volume prefs |
+| 4 | **5** | Voice / presence (LiveKit audio) | Social layer — hook **Voice Chat & Streams** slider + mic picker |
 | 5 | **3** | `UiTransform` MVP | In-world UI |
 | 6 | infra | Parcel routing `/80,-1` → Catalyst | Genesis City parcel scenes |
 

@@ -17,10 +17,11 @@ export function parcelWorldOrigin(parcel: ParcelCoord, base: ParcelCoord): {
 /**
  * Empty-land `ground.glb` mesh is centered on the origin (±8 m).
  * Shift so the parcel SW corner stays at the parent origin, matching SDK7 coords.
+ * Y is nudged slightly below y=0 so scene floors at zero do not z-fight the padding ground.
  */
 export const EMPTY_LAND_GROUND_OFFSET = {
   x: PARCEL_SIZE / 2,
-  y: 0,
+  y: -0.02,
   z: PARCEL_SIZE / 2
 } as const
 

@@ -96,6 +96,7 @@ export class PlayerSystem {
   private camDistance = CAM_DISTANCE_DEFAULT
 
   private grounded = false
+  private groundedLastFrame = false
   private nearGround = false
   private groundCoyote = 0
   private jumping = false
@@ -118,7 +119,14 @@ export class PlayerSystem {
     to: THREE.Vector3
     elapsed: number
     duration: number
+    /** When set, avatar keeps looking at this DCL point while moving (not camera yaw). */
+    avatarTarget?: { x?: number; y?: number; z?: number }
+    /** Constant travel facing when no avatarTarget — movement direction of the path. */
+    travelYaw?: number
   } | null = null
+  /** Holds capsule after scene `movePlayerTo` until emote starts or the player moves. */
+  private scenePositionLock = false
+  private wasProfileEmoteActive = false
 
   constructor(
     private readonly host: SceneHost,
@@ -138,19 +146,14 @@ export class PlayerSystem {
     this.readComponents = readComponents
     this.bounds = bounds
     this.input = new PlayerInput(this.host.renderer.domElement)
-    this.physics.spawnPlayer(dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y, spawn.z)))
-    this.physics.snapToGroundBelow(64)
-    this.physics.invalidateControllerCache()
-    let spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
-    if (!spawnGrounded) {
-      this.physics.teleport(dclToThreeVec(new THREE.Vector3(spawn.x, 0, spawn.z)))
-      this.physics.invalidateControllerCache()
-      spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
+    const spawnPos = dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y, spawn.z))
+    this.physics.spawnPlayer(spawnPos)
+    // CCT obstacle cache must see static GLTF/MeshCollider actors registered during hydration.
+    this.physics.warmStaticScene()
+    if (spawnPos.y < 0) {
+      this.physics.snapToGroundBelow()
     }
-    if (!spawnGrounded) {
-      this.physics.teleport(dclToThreeVec(new THREE.Vector3(spawn.x, 0, spawn.z)))
-      spawnGrounded = true
-    }
+    const spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
     this.grounded = spawnGrounded
     this.groundCoyote = spawnGrounded ? GROUND_COYOTE_SECONDS : 0
     this.physics.attachCapsuleDebug(this.root)
@@ -247,14 +250,26 @@ export class PlayerSystem {
     this.syncCamera(true)
   }
 
+  /** PlayerEntity pose for CRDT / scene reads — rotation uses immediate wire yaw, not smoothed body turn. */
   getEntityPose(): EntityPose {
     return {
       position: threeToDclVec(this.root.position),
-      rotation: threeToDclQuat(ReservedEntitiesSync.playerRotationFromYaw(this.playerYaw))
+      rotation: threeToDclQuat(ReservedEntitiesSync.playerRotationFromYaw(this.getNetworkYaw()))
     }
   }
 
+  /** Capsule root — spatial audio parented to PlayerEntity attaches here. */
+  getPlayerRoot(): THREE.Object3D {
+    return this.root
+  }
+
   /** Scene-local DCL meters (+X east, +Z north). */
+  /** Apply PhysX foot position to the avatar root (after prewarm / teleport snap). */
+  syncFromPhysics(): void {
+    this.root.position.copy(this.physics.positionOut)
+    this.syncCamera(true)
+  }
+
   getPosition(): THREE.Vector3 {
     return threeToDclVec(this.root.position)
   }
@@ -268,8 +283,17 @@ export class PlayerSystem {
     return this.input?.orbiting ?? false
   }
 
+  setJumpHeld(down: boolean): void {
+    this.input?.setJumpHeld(down)
+  }
+
   setOnUserGestureUnlock(callback: () => void): void {
     this.input?.setOnUserGestureUnlock(callback)
+  }
+
+  /** Scene chat line shown inside the overhead name-tag pill. */
+  showNameTagChat(text: string): void {
+    this.nameTag?.showChat(text)
   }
 
   getPlayerYaw(): number {
@@ -311,8 +335,9 @@ export class PlayerSystem {
     clampToSceneBounds(targetDcl, this.bounds)
     const target = dclToThreeVec(targetDcl)
 
-    if (request.avatarTarget) {
-      this.applyAvatarLookTarget(target, request.avatarTarget)
+    const avatarTarget = request.avatarTarget
+    if (avatarTarget) {
+      this.applyAvatarLookTarget(target, avatarTarget)
     }
     if (request.cameraTarget) {
       this.applyCameraLookTarget(target, request.cameraTarget)
@@ -329,16 +354,31 @@ export class PlayerSystem {
     if (duration <= 0) {
       this.teleportTo(target)
       this.moveTask = null
+      this.scenePositionLock = true
       return true
     }
 
+    const from = this.root.position.clone()
+    let travelYaw: number | undefined
+    if (!avatarTarget) {
+      const dx = target.x - from.x
+      const dz = target.z - from.z
+      if (Math.hypot(dx, dz) > 1e-4) {
+        travelYaw = Math.atan2(-dx, -dz)
+        this.setAvatarFacing(travelYaw)
+      }
+    }
+
     this.moveTask = {
-      from: this.root.position.clone(),
+      from,
       to: target,
       elapsed: 0,
-      duration
+      duration,
+      avatarTarget,
+      travelYaw
     }
     _velocity.set(0, 0, 0)
+    this.scenePositionLock = true
     return true
   }
 
@@ -350,21 +390,79 @@ export class PlayerSystem {
     if (!this.enabled || !this.input) return
     delta = Math.min(delta, 1 / 20)
 
+    const emoteActive = this.avatar?.isProfileEmoteActive() ?? false
+    if (this.wasProfileEmoteActive && !emoteActive) {
+      this.scenePositionLock = false
+    }
+    this.wasProfileEmoteActive = emoteActive
+
+    const movingKeys =
+      this.input.keys.w || this.input.keys.a || this.input.keys.s || this.input.keys.d
+    const breakSceneHold = movingKeys || this.input.spacePressed
+    if (breakSceneHold && this.scenePositionLock) {
+      this.scenePositionLock = false
+      this.avatar?.stopEmote()
+    }
+
     if (this.moveTask) {
-      const moving = this.input.keys.w || this.input.keys.a || this.input.keys.s || this.input.keys.d
-      if (moving) {
+      if (breakSceneHold) {
         this.moveTask = null
+        this.scenePositionLock = false
       } else {
         this.moveTask.elapsed += delta
         const t = Math.min(1, this.moveTask.elapsed / this.moveTask.duration)
         _pivot.copy(this.moveTask.from).lerp(this.moveTask.to, t)
         this.teleportTo(_pivot)
+        if (this.moveTask.avatarTarget) {
+          this.applyAvatarLookTarget(_pivot, this.moveTask.avatarTarget)
+        } else if (this.moveTask.travelYaw !== undefined) {
+          this.setAvatarFacing(this.moveTask.travelYaw)
+        }
+        const moveSpeed =
+          this.moveTask.from.distanceTo(this.moveTask.to) / Math.max(this.moveTask.duration, 1e-6)
         this.syncNameTag()
+        this.avatar?.setYaw(this.playerYaw)
+        this.avatar?.update(delta, {
+          horizontalSpeed: moveSpeed,
+          grounded: true,
+          nearGround: true,
+          verticalVelocity: 0,
+          locomotionMode: this.locomotionMode,
+          jumping: false,
+          doubleJumping: false,
+          doubleJumpTriggered: false,
+          falling: false
+        })
         this.syncCamera(false, delta)
         this.input.endFrame()
-        if (t >= 1) this.moveTask = null
+        if (t >= 1) {
+          this.moveTask = null
+          this.scenePositionLock = true
+        }
         return
       }
+    }
+
+    if (this.scenePositionLock && !breakSceneHold) {
+      this.syncWireYawFromAvatar()
+      this.physics.step(delta)
+      this.root.position.copy(this.physics.positionOut)
+      this.syncNameTag()
+      this.avatar?.setYaw(this.playerYaw)
+      this.avatar?.update(delta, {
+        horizontalSpeed: 0,
+        grounded: true,
+        nearGround: true,
+        verticalVelocity: 0,
+        locomotionMode: this.locomotionMode,
+        jumping: false,
+        doubleJumping: false,
+        doubleJumpTriggered: false,
+        falling: false
+      })
+      this.syncCamera(false, delta)
+      this.input.endFrame()
+      return
     }
 
     if (this.input.looking) {
@@ -376,8 +474,9 @@ export class PlayerSystem {
       this.camPitch = clamp(this.camPitch, pitchMin, CAM_PITCH_MAX)
     }
 
-    if (this.input.scrollDelta !== 0) {
-      this.camDistance += this.input.scrollDelta * ZOOM_WHEEL_SPEED
+    const zoomDelta = this.input.scrollDelta + this.input.pinchZoomDelta * 3
+    if (zoomDelta !== 0) {
+      this.camDistance += zoomDelta * ZOOM_WHEEL_SPEED
       this.camDistance = clamp(this.camDistance, CAM_DISTANCE_MIN, CAM_DISTANCE_MAX)
     }
 
@@ -392,6 +491,7 @@ export class PlayerSystem {
     if (moving) _moveDir.normalize()
 
     if (moving || this.input.spacePressed) {
+      this.scenePositionLock = false
       this.avatar?.stopEmote()
     }
 
@@ -426,10 +526,6 @@ export class PlayerSystem {
 
     if (this.jumping && !this.grounded && _velocity.y <= 0) {
       this.jumping = false
-    }
-
-    if (this.grounded && !this.jumping) {
-      _velocity.y = 0
     }
 
     const accel = this.grounded ? GROUND_ACCEL : AIR_ACCEL
@@ -486,26 +582,32 @@ export class PlayerSystem {
     }
 
     _displacement.copy(_velocity).multiplyScalar(delta)
-    const idleOnGround =
-      !moving &&
+    // Horizontal-only when actually grounded — coyote must keep vertical displacement so gravity
+    // can pull the capsule onto stair treads (stripping Y during coyote caused lip stalls).
+    if (
       this.grounded &&
       !this.jumping &&
       !this.jumped &&
       !this.airJumpPending &&
-      _displacement.lengthSq() < 1e-10
-
-    if (idleOnGround) {
-      this.groundCoyote = GROUND_COYOTE_SECONDS
-    } else {
-      const moveResult = this.physics.movePlayer(_displacement, delta)
-      this.grounded = moveResult.grounded
-      if (this.grounded) {
-        this.groundCoyote = GROUND_COYOTE_SECONDS
-      } else {
-        this.groundCoyote = Math.max(0, this.groundCoyote - delta)
-      }
-      this.physics.step(delta)
+      _velocity.y <= 0
+    ) {
+      _displacement.y = 0
     }
+
+    const moveResult = this.physics.movePlayer(_displacement, delta)
+    this.grounded = moveResult.grounded
+    if (this.grounded) {
+      this.groundCoyote = GROUND_COYOTE_SECONDS
+      if (!this.jumping) _velocity.y = 0
+      if (!this.groundedLastFrame) {
+        // Air land — refresh CCT obstacle cache so elevated GLTF treads block immediately.
+        this.physics.warmStaticScene()
+      }
+    } else {
+      this.groundCoyote = Math.max(0, this.groundCoyote - delta)
+    }
+    this.groundedLastFrame = this.grounded
+    this.physics.step(delta)
 
     this.nearGround = this.grounded || this.groundCoyote > 0
 
@@ -516,17 +618,18 @@ export class PlayerSystem {
     } else if (moving) {
       targetYaw = Math.atan2(-_moveDir.x, -_moveDir.z)
     }
-    if (moving && !this.isFirstPerson()) {
-      // Unity third person: body yaw follows camera forward on the wire.
-      this.networkYaw = normalizeAngle(this.camYaw)
+    const locomoting = moving || horizontalSpeed > FACING_SPEED_MIN
+    if (locomoting && targetYaw !== null) {
+      // Snap body + CRDT wire yaw to travel direction — no turn lag behind position.
+      this.setAvatarFacing(targetYaw)
+    } else if (locomoting && this.isFirstPerson()) {
+      this.setAvatarFacing(this.camYaw)
     } else if (targetYaw !== null) {
-      this.networkYaw = normalizeAngle(targetYaw)
-    } else {
-      this.networkYaw = normalizeAngle(this.playerYaw)
-    }
-    if (targetYaw !== null) {
       const turnAlpha = 1 - Math.exp(-PLAYER_TURN_SMOOTH * delta)
       this.playerYaw = lerpAngle(this.playerYaw, targetYaw, turnAlpha)
+      this.syncWireYawFromAvatar()
+    } else {
+      this.syncWireYawFromAvatar()
     }
 
     this.root.position.copy(this.physics.positionOut)
@@ -640,9 +743,19 @@ export class PlayerSystem {
       positionThree.copy(dclToThreeVec(dclPos))
     }
     this.physics.teleport(positionThree)
-    this.physics.snapToGroundBelow()
     _velocity.set(0, 0, 0)
     this.root.position.copy(this.physics.positionOut)
+  }
+
+  /** Avatar body yaw (Three.js space) + wire yaw for CRDT / RFC4 — not camera orbit. */
+  private setAvatarFacing(yaw: number): void {
+    this.playerYaw = normalizeAngle(yaw)
+    this.networkYaw = this.playerYaw
+  }
+
+  /** Keep CRDT PlayerEntity rotation aligned with visible avatar facing. */
+  private syncWireYawFromAvatar(): void {
+    this.networkYaw = normalizeAngle(this.playerYaw)
   }
 
   private applyAvatarLookTarget(
@@ -651,7 +764,7 @@ export class PlayerSystem {
   ): void {
     const { dx, dz } = this.lookTargetDelta(from, targetDcl)
     if (Math.hypot(dx, dz) < 1e-4) return
-    this.playerYaw = Math.atan2(-dx, -dz)
+    this.setAvatarFacing(Math.atan2(-dx, -dz))
   }
 
   private applyCameraLookTarget(

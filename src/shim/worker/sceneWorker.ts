@@ -31,12 +31,16 @@ import {
   patchSceneBundle
 } from './pointerEventColliderCheckerPatch'
 import { injectPointerClickOnEngine } from './injectPointerClick'
-import { injectTriggerAreaAppendsOnEngine } from './injectTriggerAreaAppends'
+import { injectRendererGrowOnlyAppendsOnEngine } from './injectRendererGrowOnlyAppends'
 import { injectRendererLwwPutsOnEngine } from './injectRendererLwwPuts'
 import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransforms'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
 import { resolveSceneEngine } from './resolveSceneEngine'
+import {
+  installPreregisterRendererComponentsHook,
+  preregisterRendererInjectedComponents
+} from './preregisterRendererInjectedComponents'
 
 const ctx = self
 
@@ -69,6 +73,7 @@ let lastTick = performance.now()
 let sceneUpdateInFlight = false
 /** True while pointer inbound apply + engine tick is running — scene loop yields. */
 let pointerDeliveryInFlight = false
+let pointerDeliveryStartedAt = 0
 /** Pointer deliver deferred until scene onUpdate finishes after a crdt interrupt. */
 let queuedPointerDeliver: Uint8Array[] | null = null
 /** Min ms between lightweight engine ticks (pointer/getClick systems). */
@@ -80,6 +85,8 @@ const FULL_SCENE_ONUPDATE_INTERVAL_PLAY_MS = 400
 /** Abort in-flight scene onUpdate after this — pointer inject must not queue behind Genesis-scale sync work. */
 const SCENE_UPDATE_ABORT_MS = 2000
 const SCENE_UPDATE_ABORT_PLAY_MS = 600
+/** Abort pointer engine tick if sceneEngine.update / onUpdate stalls awaiting main-thread CRDT. */
+const POINTER_ENGINE_TICK_ABORT_MS = 4000
 /** Abort timer — shorter once the scene is interactive. */
 let sceneUpdateAbortMs = SCENE_UPDATE_ABORT_MS
 let sceneTickIntervalMs = SCENE_TICK_BASE_INTERVAL_MS
@@ -130,9 +137,9 @@ function armSceneUpdateAbortTimer(): void {
       `[sceneWorker] scene onUpdate exceeded ${sceneUpdateAbortMs}ms — aborting for pointer priority`
     )
     sceneUpdateInFlight = false
-    sceneTicksPaused = true
-    // Do not backoff tick interval during hydration-scale onUpdate — slows composite spawn on worker.
-    interruptPendingCrdtRoundTrips()
+    // Do not set sceneTicksPaused here — pointer batches pause explicitly; a stuck pause
+    // freezes worker onUpdate (campfire sprite pool) while trigger delivers keep firing.
+    // Do not interrupt pending CRDT — empty responses drop composite/sprite diffs on main.
     drainQueuedPointerDeliver()
   }, sceneUpdateAbortMs)
 }
@@ -189,7 +196,8 @@ function preemptForPointerDelivery(): void {
   clearSceneUpdateAbortTimer()
   // Never abort an in-flight pointer engine tick CRDT flush (post-onUpdate Tween sync depends on it).
   if (pointerDeliveryInFlight) return
-  if (hadSceneUpdate && pendingCrdt.size) interruptPendingCrdtRoundTrips()
+  // Only drop in-flight CRDT during an actual pointer click batch — not scene abort / grow-only.
+  if (hadSceneUpdate && pendingCrdt.size && pointerDeliverBatchOpen) interruptPendingCrdtRoundTrips()
 }
 
 function clearPointerDeliverAckFallback(): void {
@@ -199,57 +207,98 @@ function clearPointerDeliverAckFallback(): void {
   }
 }
 
+function forceRecoverStuckPointerDelivery(reason: string): void {
+  if (!pointerDeliveryInFlight && !pointerDeliverBatchOpen && !sceneTicksPaused) return
+  workerLog(
+    'error',
+    `[sceneWorker] pointer delivery recovery — ${reason} ` +
+      `(inFlight=${pointerDeliveryInFlight} batchOpen=${pointerDeliverBatchOpen} ticksPaused=${sceneTicksPaused})`
+  )
+  clearPointerDeliverAckFallback()
+  pointerDeliverBatchOpen = false
+  pointerDeliveryInFlight = false
+  pointerDeliveryStartedAt = 0
+  sceneTicksPaused = false
+  interruptPendingCrdtRoundTrips()
+  postPointerDeliverDone(reason)
+  drainQueuedPointerDeliver()
+}
+
+async function runPointerEngineTickWork(label: string): Promise<void> {
+  if (!sceneOnStartComplete) {
+    workerLog(
+      'log',
+      `[sceneWorker] ${label} — deferring sceneEngine.update(0) until onStart completes (boot-safe)`
+    )
+    return
+  }
+  if (!sceneEngine) {
+    workerLog('warn', `[sceneWorker] ${label} — sceneEngine missing, skip update`)
+    return
+  }
+  await sceneEngine.update(0)
+  workerVerboseLog(debugPointerDeliver, 'log', `[sceneWorker] ${label} — sceneEngine.update(0) done`)
+  if (sceneOnUpdate) {
+    try {
+      const result = sceneOnUpdate(0)
+      if (result != null && typeof (result as Promise<void>).then === 'function') {
+        await result
+        workerVerboseLog(debugPointerDeliver, 'log', `[sceneWorker] ${label} — scene onUpdate(0) done (async)`)
+      } else {
+        workerVerboseLog(debugPointerDeliver, 'log', `[sceneWorker] ${label} — scene onUpdate(0) done (sync)`)
+      }
+    } catch (err) {
+      workerLog(
+        'error',
+        `[sceneWorker] ${label} scene onUpdate(0) failed — ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+  }
+  // onUpdate may add Tween / mutate ECS — flush to renderer before pointer batch ends.
+  await sceneEngine.update(0)
+  workerVerboseLog(
+    debugPointerDeliver,
+    'log',
+    `[sceneWorker] ${label} — sceneEngine.update(0) post-onUpdate flush done`
+  )
+}
+
 /**
  * Same-tick engine tick after inject + CRDT apply — getClick() must run before main resumes ticks.
  * Do not defer via setTimeout; worker priority handlers were starving the timer queue.
  */
 async function runPointerEngineTickSync(label: string): Promise<void> {
-  // Returns when engine tick + onUpdate + post-onUpdate CRDT flush complete.
   pointerDeliveryInFlight = true
-  try {
-    if (!sceneOnStartComplete) {
-      workerLog(
-        'log',
-        `[sceneWorker] ${label} — deferring sceneEngine.update(0) until onStart completes (boot-safe)`
-      )
-      return
-    }
-    if (!sceneEngine) {
-      workerLog('warn', `[sceneWorker] ${label} — sceneEngine missing, skip update`)
-      return
-    }
-    await sceneEngine.update(0)
-    workerVerboseLog(debugPointerDeliver, 'log', `[sceneWorker] ${label} — sceneEngine.update(0) done`)
-    if (sceneOnUpdate) {
-      try {
-        const result = sceneOnUpdate(0)
-        if (result != null && typeof (result as Promise<void>).then === 'function') {
-          await result
-          workerVerboseLog(debugPointerDeliver, 'log', `[sceneWorker] ${label} — scene onUpdate(0) done (async)`)
-        } else {
-          workerVerboseLog(debugPointerDeliver, 'log', `[sceneWorker] ${label} — scene onUpdate(0) done (sync)`)
-        }
-      } catch (err) {
-        workerLog(
-          'error',
-          `[sceneWorker] ${label} scene onUpdate(0) failed — ${err instanceof Error ? err.message : String(err)}`
-        )
-      }
-    }
-    // onUpdate may add Tween / mutate ECS — flush to renderer before pointer batch ends.
-    await sceneEngine.update(0)
-    workerVerboseLog(
-      debugPointerDeliver,
-      'log',
-      `[sceneWorker] ${label} — sceneEngine.update(0) post-onUpdate flush done`
+  pointerDeliveryStartedAt = performance.now()
+  let timedOut = false
+  const abortTimer = setTimeout(() => {
+    timedOut = true
+    workerLog(
+      'error',
+      `[sceneWorker] ${label} — pointer engine tick exceeded ${POINTER_ENGINE_TICK_ABORT_MS}ms; interrupting pending CRDT`
     )
+    interruptPendingCrdtRoundTrips()
+  }, POINTER_ENGINE_TICK_ABORT_MS)
+
+  try {
+    await Promise.race([
+      runPointerEngineTickWork(label),
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, POINTER_ENGINE_TICK_ABORT_MS)
+      })
+    ])
+    if (timedOut) {
+      workerLog('warn', `[sceneWorker] ${label} — pointer engine tick finished after abort (partial)`)
+    }
   } catch (err) {
     workerLog(
       'error',
       `[sceneWorker] ${label} pointer engine tick failed — ${err instanceof Error ? err.message : String(err)}`
     )
   } finally {
+    clearTimeout(abortTimer)
     pointerDeliveryInFlight = false
+    pointerDeliveryStartedAt = 0
     resumeSceneTicksAfterPointer()
     drainQueuedPointerDeliver()
   }
@@ -297,7 +346,7 @@ function workerVerboseLog(
   workerLog(level, message)
 }
 
-function scheduleBatchedTweenEngineTick(): void {
+function scheduleBatchedSceneEngineTick(): void {
   if (tweenEngineTickQueued || !sceneEngine) return
   tweenEngineTickQueued = true
   setTimeout(() => {
@@ -306,25 +355,40 @@ function scheduleBatchedTweenEngineTick(): void {
     void sceneEngine.update(0).catch((err) => {
       workerLog(
         'error',
-        `[sceneWorker] tween-state batched engine tick failed — ${
-          err instanceof Error ? err.message : String(err)
-        }`
+        `[sceneWorker] batched engine tick failed — ${err instanceof Error ? err.message : String(err)}`
       )
     })
   }, 0)
 }
 
+function scheduleBatchedTweenEngineTick(): void {
+  scheduleBatchedSceneEngineTick()
+}
+
 /** Lightweight tween-state path — no pointer pause / preempt / full deliver batch. */
 function deliverTweenStateInbound(chunks: Uint8Array[]): void {
   if (!sceneEngine || !sceneOnStartComplete) return
-  const applied = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
-  if (applied === 0) return
+  const { tweenPuts } = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
+  if (tweenPuts === 0) return
   workerVerboseLog(
     debugTweenDeliver,
     'log',
-    `[sceneWorker] tween-state-deliver — inject ${applied} TweenState PUT(s)`
+    `[sceneWorker] tween-state-deliver — inject ${tweenPuts} TweenState PUT(s)`
   )
   scheduleBatchedTweenEngineTick()
+}
+
+/** TriggerAreaResult / VideoEvent — engine tick only; must not pause scene onUpdate (sprite pool). */
+function deliverRendererAppendInbound(chunks: Uint8Array[]): void {
+  if (!sceneEngine || !sceneOnStartComplete) return
+  const { triggerAppends, videoAppends } = applyRendererInboundChunks(chunks)
+  if (triggerAppends === 0 && videoAppends === 0) return
+  workerVerboseLog(
+    debugPointerDeliver,
+    'log',
+    `[sceneWorker] renderer-append-deliver — trigger=${triggerAppends} videoEvent=${videoAppends}`
+  )
+  scheduleBatchedSceneEngineTick()
 }
 
 function patchWorkerConsole(): void {
@@ -417,17 +481,42 @@ function deliverPointerCrdtInbound(chunks: Uint8Array[]): void {
   executePointerDelivery(chunks)
 }
 
-function applyRendererInboundChunks(chunks: Uint8Array[]): { tweenPuts: number; triggerAppends: number } {
+function applyRendererInboundChunks(chunks: Uint8Array[]): {
+  tweenPuts: number
+  raycastPuts: number
+  videoPlayerPuts: number
+  triggerAppends: number
+  videoAppends: number
+  pointerAppends: number
+} {
   let tweenPuts = 0
+  let raycastPuts = 0
+  let videoPlayerPuts = 0
   let triggerAppends = 0
+  let videoAppends = 0
+  let pointerAppends = 0
   if (sceneEngine) {
-    tweenPuts = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
-    triggerAppends = injectTriggerAreaAppendsOnEngine(sceneEngine, chunks)
+    const lww = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
+    tweenPuts = lww.tweenPuts
+    raycastPuts = lww.raycastPuts
+    videoPlayerPuts = lww.videoPlayerPuts
+    const growOnly = injectRendererGrowOnlyAppendsOnEngine(sceneEngine, chunks)
+    triggerAppends = growOnly.triggerAppends
+    videoAppends = growOnly.videoAppends
+    pointerAppends = growOnly.pointerAppends
   }
-  if (tweenPuts === 0 && triggerAppends === 0 && rendererInboundApply) {
+  if (
+    tweenPuts === 0 &&
+    raycastPuts === 0 &&
+    videoPlayerPuts === 0 &&
+    triggerAppends === 0 &&
+    videoAppends === 0 &&
+    pointerAppends === 0 &&
+    rendererInboundApply
+  ) {
     rendererInboundApply(chunks)
   }
-  return { tweenPuts, triggerAppends }
+  return { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends, pointerAppends }
 }
 
 function executePointerDelivery(chunks: Uint8Array[]): void {
@@ -441,16 +530,24 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
   // Lightweight path — no scene-tick pause (tween/transform transport-only).
   if (canDirectInject) {
     try {
-      const { tweenPuts, triggerAppends } = applyRendererInboundChunks(chunks)
-      if (triggerAppends > 0) {
+      const { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends, pointerAppends } =
+        applyRendererInboundChunks(chunks)
+      const needsSceneTick =
+        raycastPuts > 0 ||
+        videoPlayerPuts > 0 ||
+        triggerAppends > 0 ||
+        pointerAppends > 0
+      if (needsSceneTick) {
         preemptForPointerDelivery()
         sceneTicksPaused = true
         workerVerboseLog(
           debugPointerDeliver,
           'log',
-          `[sceneWorker] pointer-crdt-deliver — trigger inject ${triggerAppends} TriggerAreaResult append(s)`
+          `[sceneWorker] pointer-crdt-deliver — inject trigger=${triggerAppends} videoEvent=${videoAppends} pointer=${pointerAppends} raycast=${raycastPuts} videoPlayer=${videoPlayerPuts}`
         )
-        void runPointerEngineTickSync('pointer-crdt-deliver-trigger')
+        void runPointerEngineTickSync('pointer-crdt-deliver-renderer-inject').then(() => {
+          postPointerDeliverDone('pointer-crdt-deliver-renderer-inject')
+        })
         return
       }
       if (tweenPuts > 0) {
@@ -460,14 +557,20 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
           `[sceneWorker] pointer-crdt-deliver — tween inject ${tweenPuts} TweenState PUT(s)`
         )
         scheduleBatchedTweenEngineTick()
-        return
       }
       return
     } catch (err) {
-      workerLog(
-        'error',
-        `[sceneWorker] pointer-crdt-deliver failed — ${err instanceof Error ? err.message : String(err)}`
-      )
+      const message = err instanceof Error ? err.message : String(err)
+      if (rendererInboundApply && message.includes('already sealed')) {
+        workerVerboseLog(
+          debugPointerDeliver,
+          'warn',
+          '[sceneWorker] pointer-crdt-deliver — direct inject blocked (sealed), falling back to transport'
+        )
+        rendererInboundApply(chunks)
+        return
+      }
+      workerLog('error', `[sceneWorker] pointer-crdt-deliver failed — ${message}`)
       return
     }
   }
@@ -481,11 +584,12 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
   }
   try {
     if (pointerDeliverBatchOpen) {
-      const { tweenPuts, triggerAppends } = applyRendererInboundChunks(chunks)
+      const { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends, pointerAppends } =
+        applyRendererInboundChunks(chunks)
       workerVerboseLog(
         debugPointerDeliver,
         'log',
-        `[sceneWorker] pointer-crdt-deliver — batch apply tween=${tweenPuts} trigger=${triggerAppends}`
+        `[sceneWorker] pointer-crdt-deliver — batch apply tween=${tweenPuts} raycast=${raycastPuts} videoPlayer=${videoPlayerPuts} trigger=${triggerAppends} video=${videoAppends} pointer=${pointerAppends}`
       )
       finalizePointerDelivery('pointer-crdt-deliver')
       return
@@ -904,6 +1008,13 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
         `[sceneWorker] scene onUpdate running >8s — pointer inject/deliver messages will queue behind it`
       )
     }
+    if (
+      pointerDeliveryInFlight &&
+      pointerDeliveryStartedAt > 0 &&
+      now - pointerDeliveryStartedAt > POINTER_ENGINE_TICK_ABORT_MS + 1_000
+    ) {
+      forceRecoverStuckPointerDelivery('heartbeat-stuck-pointer-delivery')
+    }
     lastHeartbeatAt = now
     workerLog(
       'log',
@@ -1213,6 +1324,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     deliverTweenStateInbound(msg.data)
     return
   }
+  if (msg.type === 'renderer-append-deliver') {
+    deliverRendererAppendInbound(msg.data)
+    return
+  }
 
   if (msg.type !== 'boot') return
 
@@ -1262,9 +1377,18 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Yield so priority inject/deliver messages posted during stub setup can run before bundle eval.
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
+    installPreregisterRendererComponentsHook()
     const exports = evaluateSceneBundle(code, requireMap, patchSceneBundle)
     sceneEngine = resolveSceneEngine(exports)
     if (sceneEngine) {
+      try {
+        preregisterRendererInjectedComponents(sceneEngine)
+      } catch (err) {
+        workerLog(
+          'warn',
+          `[sceneWorker] renderer component preregister skipped — ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
       const engineId = (sceneEngine as { _id?: number })._id
       workerLog(
         'log',

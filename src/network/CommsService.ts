@@ -614,6 +614,19 @@ export class CommsService {
     return { streams }
   }
 
+  /** Bind `livekit-video://current-stream` to a scene VideoPlayer HTML element. */
+  bindLiveKitVideoSource(video: HTMLVideoElement, onUpdate?: () => void): () => void {
+    const session = this.sceneLiveKit.isConnected()
+      ? this.sceneLiveKit
+      : this.worldLiveKit.isConnected()
+        ? this.worldLiveKit
+        : this.islandLiveKit.isConnected()
+          ? this.islandLiveKit
+          : null
+    if (!session) return () => {}
+    return session.bindCurrentVideoStream(video, onUpdate)
+  }
+
   disconnect(): void {
     this.disconnectAllTransports()
   }

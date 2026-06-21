@@ -202,6 +202,9 @@ export class World {
 
     if (scene.mainEntry && scene.entityId) {
       this.sceneScript.prepare(scene, this.assets, this.host)
+      this.sceneScript.setLiveKitVideoBinder((video, onUpdate) =>
+        this.comms.bindLiveKitVideoSource(video, onUpdate)
+      )
       if (this.landscape.state.landscapeRoot) {
         this.sceneScript.gltfColliders?.setLandscapeRoot(this.landscape.state.landscapeRoot)
       }

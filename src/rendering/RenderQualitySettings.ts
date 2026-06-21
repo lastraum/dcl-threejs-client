@@ -15,6 +15,13 @@ export const LIGHT_LIMITS: Record<RenderQualityTier, number> = {
   [RenderQualityTier.High]: 10
 }
 
+/** Max simultaneous VideoPlayer decoders (DCL Explorer parity). */
+export const VIDEO_PLAYER_LIMITS: Record<RenderQualityTier, number> = {
+  [RenderQualityTier.Low]: 1,
+  [RenderQualityTier.Medium]: 5,
+  [RenderQualityTier.High]: 10
+}
+
 export const MAX_SHADOW_SPOT_LIGHTS = 3
 export const LIGHT_CULL_DISTANCE_M = 40
 

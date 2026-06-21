@@ -1,4 +1,12 @@
-import { ConnectionState, Room, RoomEvent, type Participant } from 'livekit-client'
+import {
+  ConnectionState,
+  RemoteTrack,
+  Room,
+  RoomEvent,
+  Track,
+  type Participant,
+  type RemoteTrackPublication
+} from 'livekit-client'
 import type { CommsProfileEntity } from '../../avatar/peerApi'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import { setLiveKitSession } from '../SessionConnections'
@@ -111,6 +119,60 @@ export class LiveKitCommsSession {
 
   getActiveVideoStreams(): ActiveVideoStream[] {
     return collectActiveVideoStreamsFromRoom(this.room)
+  }
+
+  /**
+   * Attach the scene's active LiveKit video (screen share, then camera) to a VideoPlayer element.
+   * Rebinds when tracks subscribe/unsubscribe.
+   */
+  bindCurrentVideoStream(video: HTMLVideoElement, onUpdate?: () => void): () => void {
+    const room = this.room
+    if (!room) return () => {}
+
+    let attached: RemoteTrack | null = null
+
+    const detach = (): void => {
+      if (attached) {
+        attached.detach(video)
+        attached = null
+      }
+      video.srcObject = null
+      video.removeAttribute('src')
+    }
+
+    const attachBest = (): void => {
+      const next = pickCurrentVideoTrack(room)
+      if (next === attached) return
+      detach()
+      if (!next) {
+        onUpdate?.()
+        return
+      }
+      next.attach(video)
+      attached = next
+      onUpdate?.()
+    }
+
+    const onTrackChange = (): void => attachBest()
+
+    room.on(RoomEvent.TrackSubscribed, onTrackChange)
+    room.on(RoomEvent.TrackUnsubscribed, onTrackChange)
+    room.on(RoomEvent.TrackPublished, onTrackChange)
+    room.on(RoomEvent.TrackUnpublished, onTrackChange)
+    room.on(RoomEvent.ParticipantConnected, onTrackChange)
+    room.on(RoomEvent.ParticipantDisconnected, onTrackChange)
+
+    attachBest()
+
+    return () => {
+      room.off(RoomEvent.TrackSubscribed, onTrackChange)
+      room.off(RoomEvent.TrackUnsubscribed, onTrackChange)
+      room.off(RoomEvent.TrackPublished, onTrackChange)
+      room.off(RoomEvent.TrackUnpublished, onTrackChange)
+      room.off(RoomEvent.ParticipantConnected, onTrackChange)
+      room.off(RoomEvent.ParticipantDisconnected, onTrackChange)
+      detach()
+    }
   }
 
   async connect(adapter: string): Promise<boolean> {
@@ -399,4 +461,47 @@ export class LiveKitCommsSession {
       setLiveKitSession(null)
     }
   }
+}
+
+function publicationVideoTrack(publication: RemoteTrackPublication): RemoteTrack | null {
+  if (publication.kind !== Track.Kind.Video || !publication.isSubscribed || !publication.track) {
+    return null
+  }
+  return publication.track as RemoteTrack
+}
+
+function pickFromParticipant(participant: Participant): {
+  screenShare: RemoteTrack | null
+  camera: RemoteTrack | null
+} {
+  let screenShare: RemoteTrack | null = null
+  let camera: RemoteTrack | null = null
+  for (const publication of participant.trackPublications.values()) {
+    const track = publicationVideoTrack(publication as RemoteTrackPublication)
+    if (!track) continue
+    if (publication.source === Track.Source.ScreenShare) {
+      screenShare = track
+    } else if (publication.source === Track.Source.Camera && !camera) {
+      camera = track
+    }
+  }
+  return { screenShare, camera }
+}
+
+/** Prefer remote screen share, then remote camera, then local screen share. */
+function pickCurrentVideoTrack(room: Room): RemoteTrack | null {
+  let remoteScreen: RemoteTrack | null = null
+  let remoteCamera: RemoteTrack | null = null
+
+  for (const participant of room.remoteParticipants.values()) {
+    const picked = pickFromParticipant(participant)
+    if (picked.screenShare) remoteScreen = picked.screenShare
+    if (!remoteCamera && picked.camera) remoteCamera = picked.camera
+  }
+
+  if (remoteScreen) return remoteScreen
+  if (remoteCamera) return remoteCamera
+
+  const local = pickFromParticipant(room.localParticipant)
+  return local.screenShare ?? local.camera
 }

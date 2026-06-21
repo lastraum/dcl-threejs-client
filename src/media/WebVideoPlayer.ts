@@ -11,8 +11,10 @@ import {
   type VideoStateValue
 } from './videoConstants'
 import type { PBVideoPlayer } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/video_player.gen'
+import { applyDclLocalTransform, type DclTransformValues } from '../bridge/dclTransform'
 import { resolveSceneTextureUrl } from '../bridge/material/resolveTexture'
 import type { ResolvedScene } from '../dcl/content/types'
+import { isLiveKitCurrentStreamSrc, isLiveKitVideoSrc } from './livekitVideoSource'
 import { configureSceneVideoTexture } from './videoTextureOrientation'
 
 type HlsInstance = {
@@ -21,9 +23,10 @@ type HlsInstance = {
   destroy(): void
 }
 
+export type LiveKitVideoBinder = (video: HTMLVideoElement, onUpdate?: () => void) => () => void
+
 function isHlsUrl(url: string): boolean {
   if (/\.m3u8(\?|#|$)/i.test(url)) return true
-  // Stream manifests without a static file extension (not raw Catalyst content hashes).
   if (/^https?:\/\//i.test(url) && !/\/contents?\//i.test(url)) {
     return !/\.(mp4|webm|ogv|mov|m4v)(\?|#|$)/i.test(url)
   }
@@ -44,31 +47,39 @@ export class WebVideoPlayer {
   readonly texture: THREE.VideoTexture
 
   private hls: HlsInstance | null = null
+  private liveKitCleanup: (() => void) | null = null
   private loadedSrc = ''
+  private liveKitSource = false
   private state: VideoStateValue = VS_NONE
   private userGestureUnlocked = false
   private visibilityPaused = false
+  private budgetPaused = false
   private wantsPlaying = true
   private playGeneration = 0
   private hasHadRenderableFrame = false
-  /** Last `spec.position` applied — ignore stale position=0 on play/pause toggles. */
   private lastSpecPosition: number | undefined
-  /** Last `spec.playing` from ECS — used to ignore stale position on play/pause toggles. */
   private lastEcsPlaying: boolean | undefined
-  /** Awaiting user click to replay after natural end (ECS may already show paused). */
   private holdingAtEnd = false
+  private lastSpecVolume = 1
+  private spatial = false
+  private spatialMin = 0
+  private spatialMax = 60
+  private sound: THREE.Audio | null = null
+  private listener: THREE.AudioListener | null = null
   onFrameReady?: () => void
-  /** Fired when playback reaches the end (non-looping). */
   onNaturalEnd?: () => void
-  /** Fired when user-triggered replay starts — sync ECS/worker to playing=true. */
   onReplayStarted?: () => void
 
-  constructor(private readonly scene: ResolvedScene) {
+  constructor(
+    private readonly scene: ResolvedScene,
+    private readonly bindLiveKitVideo: LiveKitVideoBinder | null = null
+  ) {
     this.video = document.createElement('video')
     this.video.crossOrigin = 'anonymous'
     this.video.playsInline = true
     this.video.preload = 'auto'
-    this.video.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none'
+    this.video.style.cssText =
+      'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none'
     document.body.appendChild(this.video)
 
     this.texture = new THREE.VideoTexture(this.video)
@@ -79,9 +90,7 @@ export class WebVideoPlayer {
     configureSceneVideoTexture(this.texture)
 
     this.video.addEventListener('loadstart', () => this.setState(VS_LOADING))
-    this.video.addEventListener('loadedmetadata', () => {
-      this.onFrameReady?.()
-    })
+    this.video.addEventListener('loadedmetadata', () => this.onFrameReady?.())
     this.video.addEventListener('loadeddata', () => {
       if (this.state !== VS_ERROR) this.setState(VS_READY)
       this.onFrameReady?.()
@@ -106,7 +115,7 @@ export class WebVideoPlayer {
     })
     this.video.addEventListener('seeking', () => this.setState(VS_SEEKING))
     this.video.addEventListener('seeked', () => {
-      if (this.wantsPlaying && !this.visibilityPaused) {
+      if (this.wantsPlaying && !this.isPlaybackBlocked()) {
         this.setState(this.video.paused ? VS_PAUSED : VS_PLAYING)
       } else {
         this.setState(VS_PAUSED)
@@ -119,11 +128,67 @@ export class WebVideoPlayer {
     })
     this.video.addEventListener('ended', () => {
       this.setState(VS_PAUSED)
-      if (!this.video.loop) {
+      if (!this.video.loop && !this.liveKitSource) {
         this.holdingAtEnd = true
         this.onNaturalEnd?.()
       }
     })
+  }
+
+  setAudioListener(listener: THREE.AudioListener | null): void {
+    if (this.listener === listener) return
+    this.disposeSpatialSound()
+    this.listener = listener
+    if (this.spatial && listener) {
+      this.sound = this.createSpatialSound(this.spatialMin, this.spatialMax)
+      this.bindSpatialMedia()
+      this.applyEffectiveVolume()
+    }
+  }
+
+  setSpatialAudio(
+    spatial: boolean,
+    spatialMinDistance: number,
+    spatialMaxDistance: number,
+    parent?: THREE.Object3D,
+    localTransform?: DclTransformValues
+  ): void {
+    const same =
+      this.spatial === spatial &&
+      this.spatialMin === spatialMinDistance &&
+      this.spatialMax === spatialMaxDistance
+    if (same && (!spatial || this.sound?.parent === parent)) {
+      if (spatial && parent && this.sound) this.attachSpatialSound(parent, localTransform)
+      return
+    }
+
+    this.disposeSpatialSound()
+    this.spatial = spatial
+    this.spatialMin = spatialMinDistance
+    this.spatialMax = spatialMaxDistance
+
+    if (spatial && this.listener) {
+      this.sound = this.createSpatialSound(spatialMinDistance, spatialMaxDistance)
+      if (parent) this.attachSpatialSound(parent, localTransform)
+      this.bindSpatialMedia()
+    }
+
+    this.applyEffectiveVolume()
+  }
+
+  attachSpatialSound(parent: THREE.Object3D, localTransform?: DclTransformValues): void {
+    if (!this.spatial || !this.sound) return
+    if (this.sound.parent !== parent) parent.add(this.sound)
+    if (localTransform) applyDclLocalTransform(this.sound, localTransform)
+  }
+
+  applySpatialDistances(spatialMinDistance: number, spatialMaxDistance: number): void {
+    if (!this.spatial || !this.sound) return
+    const positional = this.sound as unknown as THREE.PositionalAudio
+    positional.setRefDistance(Math.max(spatialMinDistance, 0.01))
+    positional.setMaxDistance(Math.max(spatialMaxDistance, 1))
+    this.spatialMin = spatialMinDistance
+    this.spatialMax = spatialMaxDistance
   }
 
   getVideoState(): VideoStateValue {
@@ -140,21 +205,25 @@ export class WebVideoPlayer {
     return Number.isFinite(d) ? d : 0
   }
 
-  /** Avoid texImage2D before first frame; keep texture during brief buffering gaps. */
   hasRenderableFrame(): boolean {
     if (this.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      this.hasHadRenderableFrame = true
+      return true
+    }
+    if (this.liveKitSource && this.video.videoWidth > 0) {
       this.hasHadRenderableFrame = true
       return true
     }
     return this.hasHadRenderableFrame && this.state !== VS_ERROR && !!this.loadedSrc
   }
 
-  /** VideoTexture can bind once metadata is loaded (updates each frame). */
   canAttachTexture(): boolean {
     return (
       !!this.loadedSrc &&
       this.state !== VS_ERROR &&
-      (this.video.readyState >= HTMLMediaElement.HAVE_METADATA || this.hasHadRenderableFrame)
+      (this.video.readyState >= HTMLMediaElement.HAVE_METADATA ||
+        this.hasHadRenderableFrame ||
+        (this.liveKitSource && this.video.videoWidth > 0))
     )
   }
 
@@ -162,20 +231,23 @@ export class WebVideoPlayer {
     return this.holdingAtEnd
   }
 
-  /** Pointer click while holding end frame — replay even if ECS playing did not change. */
   replayFromUserClick(): void {
+    if (this.liveKitSource) {
+      if (!this.isPlaybackBlocked()) void this.tryPlay()
+      return
+    }
     if (!this.isAtEnd() && !this.holdingAtEnd) return
     this.holdingAtEnd = false
     this.restartFromBeginning()
     this.lastEcsPlaying = true
     this.wantsPlaying = true
-    if (!this.visibilityPaused) void this.tryPlay()
+    if (!this.isPlaybackBlocked()) void this.tryPlay()
     this.onReplayStarted?.()
   }
 
   setUserGestureUnlocked(unlocked: boolean): void {
     this.userGestureUnlocked = unlocked
-    if (unlocked && this.wantsPlaying && !this.visibilityPaused) {
+    if (unlocked && this.wantsPlaying && !this.isPlaybackBlocked()) {
       void this.tryPlay()
     }
   }
@@ -183,12 +255,13 @@ export class WebVideoPlayer {
   setVisibilityPaused(paused: boolean): void {
     if (this.visibilityPaused === paused) return
     this.visibilityPaused = paused
-    if (paused) {
-      this.bumpPlayGeneration()
-      this.video.pause()
-    } else if (this.wantsPlaying) {
-      void this.tryPlay()
-    }
+    this.syncPlaybackPause()
+  }
+
+  setBudgetPaused(paused: boolean): void {
+    if (this.budgetPaused === paused) return
+    this.budgetPaused = paused
+    this.syncPlaybackPause()
   }
 
   applySpec(
@@ -199,8 +272,8 @@ export class WebVideoPlayer {
     const ecsPlayingChanged =
       this.lastEcsPlaying !== undefined && ecsPlaying !== this.lastEcsPlaying
 
-    // Pointer click at end-of-video — replay (first click may not change ECS playing).
     if (
+      !this.liveKitSource &&
       !options?.fromEcsSync &&
       options?.fromUserToggle &&
       this.isAtEnd() &&
@@ -210,53 +283,64 @@ export class WebVideoPlayer {
       this.restartFromBeginning()
       this.lastEcsPlaying = true
       this.wantsPlaying = true
-      if (!this.visibilityPaused) void this.tryPlay()
+      if (!this.isPlaybackBlocked()) void this.tryPlay()
       this.onReplayStarted?.()
       return
     }
 
-    const url = resolveSceneTextureUrl(spec.src, this.scene)
-    if (url && url !== this.loadedSrc) {
-      void this.loadSource(url)
-    } else if (!url && spec.src.trim()) {
+    const src = spec.src.trim()
+    if (src && src !== this.loadedSrc) {
+      if (isLiveKitVideoSrc(src)) {
+        if (isLiveKitCurrentStreamSrc(src)) void this.loadLiveKitSource(src)
+        else this.setState(VS_ERROR)
+      } else {
+        const url = resolveSceneTextureUrl(src, this.scene)
+        if (url) void this.loadSource(url)
+        else this.setState(VS_ERROR)
+      }
+    } else if (!src) {
       this.setState(VS_ERROR)
     }
 
-    this.video.loop = spec.loop === true
-    this.video.volume = clamp(spec.volume ?? 1, 0, 1)
+    this.video.loop = !this.liveKitSource && spec.loop === true
+    this.lastSpecVolume = spec.volume ?? 1
+    this.applyEffectiveVolume()
+    if (this.spatial) {
+      this.applySpatialDistances(spec.spatialMinDistance ?? 0, spec.spatialMaxDistance ?? 60)
+    }
     this.video.playbackRate = Math.max(spec.playbackRate ?? 1, 0.01)
 
-    const specPosition = Math.max(spec.position ?? 0, 0)
-    const positionFieldChanged =
-      this.lastSpecPosition === undefined || Math.abs(specPosition - this.lastSpecPosition) > 0.05
-    if (positionFieldChanged) {
-      const stalePositionOnPlayToggle =
-        ecsPlayingChanged &&
-        this.video.currentTime > 0.5 &&
-        Math.abs(specPosition - this.video.currentTime) > 1.5
-      if (
-        !stalePositionOnPlayToggle &&
-        Number.isFinite(specPosition) &&
-        Math.abs(this.video.currentTime - specPosition) > 0.25
-      ) {
-        this.video.currentTime = specPosition
+    if (!this.liveKitSource) {
+      const specPosition = Math.max(spec.position ?? 0, 0)
+      const positionFieldChanged =
+        this.lastSpecPosition === undefined || Math.abs(specPosition - this.lastSpecPosition) > 0.05
+      if (positionFieldChanged) {
+        const stalePositionOnPlayToggle =
+          ecsPlayingChanged &&
+          this.video.currentTime > 0.5 &&
+          Math.abs(specPosition - this.video.currentTime) > 1.5
+        if (
+          !stalePositionOnPlayToggle &&
+          Number.isFinite(specPosition) &&
+          Math.abs(this.video.currentTime - specPosition) > 0.25
+        ) {
+          this.video.currentTime = specPosition
+        }
+        this.lastSpecPosition = stalePositionOnPlayToggle
+          ? this.video.currentTime
+          : specPosition
+      } else if (ecsPlayingChanged) {
+        this.lastSpecPosition = this.video.currentTime
       }
-      this.lastSpecPosition = stalePositionOnPlayToggle
-        ? this.video.currentTime
-        : specPosition
-    } else if (ecsPlayingChanged) {
-      // Keep lastSpecPosition aligned with decoder when ECS omits position on toggle.
-      this.lastSpecPosition = this.video.currentTime
     }
 
     this.wantsPlaying = ecsPlaying
     this.lastEcsPlaying = ecsPlaying
 
-    if (this.visibilityPaused) return
+    if (this.isPlaybackBlocked()) return
 
     if (ecsPlaying) {
-      // Stale ECS playing=true after natural end — hold last frame until user toggles.
-      if (this.isAtEnd() && !ecsPlayingChanged) {
+      if (!this.liveKitSource && this.isAtEnd() && !ecsPlayingChanged) {
         this.wantsPlaying = false
         this.bumpPlayGeneration()
         this.video.pause()
@@ -270,30 +354,131 @@ export class WebVideoPlayer {
   }
 
   dispose(): void {
-    this.hls?.destroy()
-    this.hls = null
-    this.video.pause()
-    this.video.removeAttribute('src')
-    this.video.load()
+    this.clearMediaSource()
+    this.disposeSpatialSound()
     this.texture.dispose()
     this.video.remove()
+  }
+
+  wouldEcsPlayingChange(ecsPlaying: boolean): boolean {
+    return this.lastEcsPlaying !== undefined && ecsPlaying !== this.lastEcsPlaying
+  }
+
+  alignEcsPlaying(playing: boolean): void {
+    this.lastEcsPlaying = playing
+    this.wantsPlaying = playing
+  }
+
+  needsReplayAfterEnd(playingChanged: boolean, fromUserToggle: boolean): boolean {
+    if (this.liveKitSource) return false
+    if (!fromUserToggle || !this.isAtEnd()) return false
+    return playingChanged || this.holdingAtEnd
+  }
+
+  isAtEnd(): boolean {
+    if (this.liveKitSource) return false
+    if (this.video.ended) return true
+    const duration = this.video.duration
+    if (!Number.isFinite(duration) || duration <= 0) return false
+    return this.video.currentTime >= duration - 0.35
+  }
+
+  private isPlaybackBlocked(): boolean {
+    return this.visibilityPaused || this.budgetPaused
+  }
+
+  private syncPlaybackPause(): void {
+    if (this.isPlaybackBlocked()) {
+      this.bumpPlayGeneration()
+      this.video.pause()
+    } else if (this.wantsPlaying) {
+      void this.tryPlay()
+    }
+  }
+
+  private applyEffectiveVolume(): void {
+    const gain = clamp(this.lastSpecVolume, 0, 1)
+    if (this.spatial && this.sound) {
+      this.video.volume = 0
+      this.video.muted = true
+      this.sound.setVolume(gain)
+    } else {
+      this.video.muted = false
+      this.video.volume = gain
+      this.sound?.setVolume(0)
+    }
+  }
+
+  private createSpatialSound(spatialMinDistance: number, spatialMaxDistance: number): THREE.Audio {
+    const positional = new THREE.PositionalAudio(this.listener!)
+    positional.setRefDistance(Math.max(spatialMinDistance, 0.01))
+    positional.setRolloffFactor(1)
+    positional.setDistanceModel('inverse')
+    positional.setMaxDistance(Math.max(spatialMaxDistance, 1))
+    return positional as unknown as THREE.Audio
+  }
+
+  private bindSpatialMedia(): void {
+    if (!this.sound) return
+    try {
+      this.sound.setMediaElementSource(this.video)
+    } catch (err) {
+      console.warn('[WebVideoPlayer] spatial audio bind failed', err)
+    }
+  }
+
+  private disposeSpatialSound(): void {
+    if (!this.sound) return
+    this.sound.parent?.remove(this.sound)
+    this.sound.disconnect()
+    this.sound = null
   }
 
   private setState(next: VideoStateValue): void {
     this.state = next
   }
 
-  private async loadSource(url: string): Promise<void> {
-    this.loadedSrc = url
-    this.hasHadRenderableFrame = false
-    this.setState(VS_LOADING)
-
+  private clearMediaSource(): void {
+    this.liveKitCleanup?.()
+    this.liveKitCleanup = null
     this.hls?.destroy()
     this.hls = null
     this.bumpPlayGeneration()
     this.video.pause()
+    this.video.srcObject = null
     this.video.removeAttribute('src')
     this.video.load()
+    this.loadedSrc = ''
+    this.liveKitSource = false
+    this.hasHadRenderableFrame = false
+  }
+
+  private async loadLiveKitSource(src: string): Promise<void> {
+    if (!this.bindLiveKitVideo) {
+      this.setState(VS_ERROR)
+      return
+    }
+
+    this.clearMediaSource()
+    this.loadedSrc = src
+    this.liveKitSource = true
+    this.holdingAtEnd = false
+    this.setState(VS_LOADING)
+
+    this.liveKitCleanup = this.bindLiveKitVideo(this.video, () => {
+      if (this.video.videoWidth > 0 || this.video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+        if (this.state !== VS_ERROR) this.setState(VS_READY)
+        this.onFrameReady?.()
+      }
+      if (this.wantsPlaying && !this.isPlaybackBlocked()) void this.tryPlay()
+    })
+  }
+
+  private async loadSource(url: string): Promise<void> {
+    this.clearMediaSource()
+    this.loadedSrc = url
+    this.hasHadRenderableFrame = false
+    this.setState(VS_LOADING)
 
     if (isHlsUrl(url) && !safariNativeHls(this.video)) {
       try {
@@ -321,30 +506,6 @@ export class WebVideoPlayer {
     this.playGeneration++
   }
 
-  /** Whether this spec would change the tracked ECS playing flag. */
-  wouldEcsPlayingChange(ecsPlaying: boolean): boolean {
-    return this.lastEcsPlaying !== undefined && ecsPlaying !== this.lastEcsPlaying
-  }
-
-  /** Align ECS playing tracker after replay without re-applying the full spec. */
-  alignEcsPlaying(playing: boolean): void {
-    this.lastEcsPlaying = playing
-    this.wantsPlaying = playing
-  }
-
-  /** Bridge dedup bypass when a user toggle should replay from the end. */
-  needsReplayAfterEnd(playingChanged: boolean, fromUserToggle: boolean): boolean {
-    if (!fromUserToggle || !this.isAtEnd()) return false
-    return playingChanged || this.holdingAtEnd
-  }
-
-  isAtEnd(): boolean {
-    if (this.video.ended) return true
-    const duration = this.video.duration
-    if (!Number.isFinite(duration) || duration <= 0) return false
-    return this.video.currentTime >= duration - 0.35
-  }
-
   private restartFromBeginning(): void {
     this.holdingAtEnd = false
     this.video.currentTime = 0
@@ -353,7 +514,7 @@ export class WebVideoPlayer {
   }
 
   private async tryPlay(): Promise<void> {
-    if (!this.userGestureUnlocked || this.visibilityPaused || !this.wantsPlaying) return
+    if (!this.userGestureUnlocked || this.isPlaybackBlocked() || !this.wantsPlaying) return
     const gen = ++this.playGeneration
     try {
       await this.video.play()

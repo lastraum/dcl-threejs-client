@@ -5,16 +5,24 @@ import type { PBVideoPlayer } from '@dcl/ecs/dist/components/generated/pb/decent
 import type { MirrorComponents } from '../bridge/mirrorComponents'
 import type { ProjectionView } from '../bridge/ProjectionView'
 import type { ResolvedScene } from '../dcl/content/types'
+import { renderQuality, VIDEO_PLAYER_LIMITS } from '../rendering/RenderQualitySettings'
 import { VS_NONE, type VideoStateValue } from './videoConstants'
+import type { LiveKitVideoBinder } from './WebVideoPlayer'
 import { WebVideoPlayer } from './WebVideoPlayer'
+import { resolveSpatialAudioAttach, type SpatialAudioAnchors } from './spatialAudioParent'
+import { selectBudgetedVideoEntities, type VideoBudgetInput } from './videoPlayerBudget'
 
 type DecoderEntry = {
   player: WebVideoPlayer
   lastSpecKey: string
   lastAppliedPlaying: boolean | undefined
+  lastSpatial: boolean
+  lastSpatialMin: number
+  lastSpatialMax: number
   lastState: VideoStateValue
   lastOffset: number
   lastLength: number
+  lastBudgetPaused: boolean
 }
 
 /** ECS VideoPlayer → HTML decoders (one per playing entity); grow-only VideoEvent back to mirror. */
@@ -22,23 +30,31 @@ export class VideoPlayerBridge {
   private readonly decoders = new Map<Entity, DecoderEntry>()
   private userGestureUnlocked = false
   private eventTimestamp = 1
-  /** Set after pointer-deliver-done until a VideoPlayer toggle is applied. */
   private pendingUserVideoToggle = false
   private pendingUserVideoToggleFrames = 0
+  private listener: THREE.AudioListener | null = null
 
   constructor(
     private readonly ecs: MirrorComponents,
     private readonly scene: ResolvedScene,
-    /** Source-capture each VideoEvent append for the outbound CrdtEncoder. */
+    private readonly getEntityNodes: () => Map<Entity, THREE.Group>,
+    private readonly getSpatialAnchors: () => SpatialAudioAnchors | null,
+    private readonly getCamera: () => THREE.Camera | null,
+    private readonly getLiveKitBinder: () => LiveKitVideoBinder | null,
     private readonly recordAppend?: (componentId: number, entity: Entity, value: unknown) => void,
-    /** Source-capture VideoPlayer LWW PUTs (playing sync on natural end). */
     private readonly recordLww?: (componentId: number, entity: Entity, value: unknown) => void
   ) {}
 
-  /** Push pending VideoPlayer LWW PUTs to the scene worker (no pointer-await guard). */
   onLwwFlush?: () => void
+  onTextureReady?: (videoPlayerEntity: Entity) => void
 
-  /** Scene pointer delivery finished — next VideoPlayer change is a user toggle. */
+  setAudioListener(listener: THREE.AudioListener | null): void {
+    this.listener = listener
+    for (const entry of this.decoders.values()) {
+      entry.player.setAudioListener(listener)
+    }
+  }
+
   notifyUserPointerDelivered(): void {
     this.pendingUserVideoToggle = true
     this.pendingUserVideoToggleFrames = 12
@@ -58,14 +74,12 @@ export class VideoPlayerBridge {
     return entry.player.texture
   }
 
-  /** Invalidate material cache for entities referencing this video player. */
-  onTextureReady?: (videoPlayerEntity: Entity) => void
-
   sync(view: ProjectionView): void {
-    const { VideoPlayer, VisibilityComponent } = this.ecs
+    const { VideoPlayer, VisibilityComponent, Transform } = this.ecs
     const active = new Set<Entity>()
     const fromUserToggle = this.pendingUserVideoToggle
     let userToggleConsumed = false
+    const budgetInputs: VideoBudgetInput[] = []
 
     for (const [entity, spec] of view.getEntitiesWith(VideoPlayer)) {
       active.add(entity)
@@ -77,8 +91,70 @@ export class VideoPlayerBridge {
         !VisibilityComponent.has(entity) ||
         VisibilityComponent.get(entity).visible !== false
       entry.player.setVisibilityPaused(!visible)
+
+      const spatial = spec.spatial === true
+      const spatialMin = spec.spatialMinDistance ?? 0
+      const spatialMax = spec.spatialMaxDistance ?? 60
+      const attach = spatial
+        ? resolveSpatialAudioAttach(
+            entity,
+            view,
+            Transform,
+            this.getEntityNodes,
+            this.getSpatialAnchors()
+          )
+        : null
+      const spatialChanged =
+        entry.lastSpatial !== spatial ||
+        entry.lastSpatialMin !== spatialMin ||
+        entry.lastSpatialMax !== spatialMax
+
+      if (spatialChanged) {
+        entry.lastSpatial = spatial
+        entry.lastSpatialMin = spatialMin
+        entry.lastSpatialMax = spatialMax
+        entry.player.setSpatialAudio(
+          spatial,
+          spatialMin,
+          spatialMax,
+          attach?.parent,
+          attach?.localTransform
+        )
+        entry.lastSpecKey = ''
+      } else if (spatial && attach) {
+        entry.player.attachSpatialSound(attach.parent, attach.localTransform)
+        entry.player.applySpatialDistances(spatialMin, spatialMax)
+      }
+
+      budgetInputs.push({
+        entity,
+        ecsWantsPlaying: spec.playing !== false,
+        visible
+      })
+
       if (this.applySpec(entity, spec, fromUserToggle)) {
         userToggleConsumed = true
+      }
+    }
+
+    const camera = this.getCamera()
+    const budgeted = camera
+      ? selectBudgetedVideoEntities(
+          budgetInputs,
+          view,
+          Transform,
+          this.getEntityNodes,
+          this.getSpatialAnchors(),
+          camera,
+          VIDEO_PLAYER_LIMITS[renderQuality.getTier()]
+        )
+      : new Set<Entity>(budgetInputs.map((b) => b.entity))
+
+    for (const [entity, entry] of this.decoders) {
+      const allowed = budgeted.has(entity)
+      if (entry.lastBudgetPaused !== !allowed) {
+        entry.lastBudgetPaused = !allowed
+        entry.player.setBudgetPaused(!allowed)
       }
     }
 
@@ -153,7 +229,8 @@ export class VideoPlayerBridge {
 
   private ensureDecoder(entity: Entity): void {
     if (this.decoders.has(entity)) return
-    const player = new WebVideoPlayer(this.scene)
+    const player = new WebVideoPlayer(this.scene, this.getLiveKitBinder())
+    player.setAudioListener(this.listener)
     player.setUserGestureUnlocked(this.userGestureUnlocked)
     player.onFrameReady = () => this.onTextureReady?.(entity)
     player.onNaturalEnd = () => this.syncPlayingToEcs(entity, false)
@@ -162,14 +239,17 @@ export class VideoPlayerBridge {
       player,
       lastSpecKey: '',
       lastAppliedPlaying: undefined,
+      lastSpatial: false,
+      lastSpatialMin: 0,
+      lastSpatialMax: 60,
       lastState: VS_NONE,
       lastOffset: -1,
-      lastLength: -1
+      lastLength: -1,
+      lastBudgetPaused: false
     })
     this.onTextureReady?.(entity)
   }
 
-  /** Keep scene worker + projection `playing` aligned with decoder (e.g. after natural end). */
   private syncPlayingToEcs(entity: Entity, playing: boolean): void {
     const { VideoPlayer } = this.ecs
     const spec = VideoPlayer.getOrNull(entity) as PBVideoPlayer | null
@@ -188,7 +268,6 @@ export class VideoPlayerBridge {
       position: entry.player.getCurrentOffset()
     }
     VideoPlayer.createOrReplace(entity, next)
-    // Do not cache lastSpecKey — worker may still have playing=true until LWW inject lands.
     entry.player.applySpec(next, { fromEcsSync: true })
     this.recordLww?.(VideoPlayer.componentId, entity, next)
     this.onLwwFlush?.()

@@ -27,6 +27,7 @@ import { AudioSourceBridge } from '../../media/AudioSourceBridge'
 import { AudioStreamBridge } from '../../media/AudioStreamBridge'
 import type { SpatialAudioAnchors } from '../../media/spatialAudioParent'
 import { VideoPlayerBridge } from '../../media/VideoPlayerBridge'
+import type { LiveKitVideoBinder } from '../../media/WebVideoPlayer'
 import { CollisionSystem } from '../../collision/CollisionSystem'
 import {
   GLTF_COLLIDER_ENTITY_BASE,
@@ -147,6 +148,7 @@ export class SceneScriptSystem {
   private clientPlayerPose: EntityPose | null = null
   private clientCameraPose: EntityPose | null = null
   private getSpatialAudioPlayerRoot: (() => THREE.Object3D | null) | null = null
+  private bindLiveKitVideo: LiveKitVideoBinder | null = null
   private movePlayerHandler: MovePlayerHandler | null = null
   private triggerEmoteHandler: TriggerEmoteHandler | null = null
   private triggerSceneEmoteHandler: TriggerSceneEmoteHandler | null = null
@@ -238,6 +240,10 @@ export class SceneScriptSystem {
     this.videoPlayerBridge = new VideoPlayerBridge(
       this.readComponents,
       scene,
+      () => this.bridge!.getEntityNodes(),
+      () => this.getSpatialAudioAnchors(),
+      () => this.host?.camera ?? null,
+      () => this.bindLiveKitVideo,
       this.recordRendererAppend,
       this.recordRendererLww
     )
@@ -255,6 +261,7 @@ export class SceneScriptSystem {
     )
     this.audioSourceBridge.onLwwFlush = () => this.flushRendererLwwToWorker()
     this.bridge.setAudioSourceBridge(this.audioSourceBridge)
+    this.videoPlayerBridge.setAudioListener(this.audioSourceBridge.getListener())
     this.audioStreamBridge = new AudioStreamBridge(
       this.readComponents,
       this.view,
@@ -556,6 +563,11 @@ export class SceneScriptSystem {
   /** Player capsule root for spatial audio on PlayerEntity — call after initCapsule. */
   setSpatialAudioPlayerRoot(getter: (() => THREE.Object3D | null) | null): void {
     this.getSpatialAudioPlayerRoot = getter
+  }
+
+  /** LiveKit scene cast binder for `livekit-video://current-stream` VideoPlayer.src. */
+  setLiveKitVideoBinder(binder: LiveKitVideoBinder | null): void {
+    this.bindLiveKitVideo = binder
   }
 
   private getSpatialAudioAnchors(): SpatialAudioAnchors | null {

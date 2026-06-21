@@ -34,6 +34,7 @@ export class GltfInstancedPool {
   private readonly entityBatch = new Map<Entity, string>()
   private readonly matrixScratch = new THREE.Matrix4()
   private readonly entityWorld = new THREE.Matrix4()
+  private readonly entityWorldInv = new THREE.Matrix4()
 
   constructor(parent: THREE.Object3D) {
     this.root = new THREE.Group()
@@ -68,7 +69,7 @@ export class GltfInstancedPool {
 
     let batch = this.batches.get(srcKey)
     if (!batch) {
-      const created = this.createBatch(srcKey, clone)
+      const created = this.createBatch(srcKey, clone, entityNode)
       if (!created) return false
       batch = created
       this.batches.set(srcKey, batch)
@@ -136,8 +137,10 @@ export class GltfInstancedPool {
     this.root.removeFromParent()
   }
 
-  private createBatch(srcKey: string, clone: THREE.Object3D): SrcBatch | null {
+  private createBatch(srcKey: string, clone: THREE.Object3D, entityNode: THREE.Object3D): SrcBatch | null {
     const templates: TemplateMesh[] = []
+    entityNode.updateMatrixWorld(true)
+    this.entityWorldInv.copy(entityNode.matrixWorld).invert()
     clone.updateMatrixWorld(true)
     clone.traverse((obj) => {
       const mesh = obj as THREE.Mesh
@@ -146,7 +149,8 @@ export class GltfInstancedPool {
       if (!pos || pos.count < 3) return
       const localMatrix = new THREE.Matrix4()
       mesh.updateMatrixWorld(true)
-      localMatrix.copy(mesh.matrixWorld)
+      // Entity-relative mesh pose — world matrix would double-apply entity transforms.
+      localMatrix.copy(this.entityWorldInv).multiply(mesh.matrixWorld)
       templates.push({
         geometry: mesh.geometry,
         material: mesh.material,

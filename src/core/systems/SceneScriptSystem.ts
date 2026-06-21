@@ -200,6 +200,8 @@ export class SceneScriptSystem {
   /** Scene-room binary received before the worker exists (early comms / RES_CRDT_STATE). */
   private pendingCommsBinary: Uint8Array[] = []
   private onWorkerReadyCallback: (() => void) | null = null
+  private onAuthoritativeBulkReceived: (() => void) | null = null
+  private authoritativeBulkNotified = false
   /** Pointer append bytes captured at flush, sent via pointer-crdt-deliver. */
   private readonly pointerResponseStash: Uint8Array[] = []
   /** Prevents overlapping flush encodes while mirror flushOutgoing is awaited. */
@@ -691,6 +693,11 @@ export class SceneScriptSystem {
 
   setOnWorkerReady(handler: (() => void) | null): void {
     this.onWorkerReadyCallback = handler
+  }
+
+  /** Fired once when bulk RES_CRDT_STATE is applied (stop REQ retries / duplicate state floods). */
+  setOnAuthoritativeBulkReceived(handler: (() => void) | null): void {
+    this.onAuthoritativeBulkReceived = handler
   }
 
   deliverCommsBinary(sender: string, data: Uint8Array): void {
@@ -1415,6 +1422,10 @@ export class SceneScriptSystem {
             `authoritative CRDT applied (${data.byteLength}B) — gltfContainers ${gltfBefore} → ${gltfAfter}`,
             { level: 'info', alsoConsole: true, throttleMs: 15_000, throttleKey: 'auth-crdt-same-count' }
           )
+        }
+        if (bulkAuthoritative && !this.authoritativeBulkNotified) {
+          this.authoritativeBulkNotified = true
+          this.onAuthoritativeBulkReceived?.()
         }
       } catch (err) {
         clientDebugLog.log(

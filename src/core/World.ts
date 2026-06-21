@@ -156,6 +156,9 @@ export class World {
     this.sceneScript.setOnWorkerReady(() => {
       this.requestAuthoritativeSceneStateIfReady()
     })
+    this.sceneScript.setOnAuthoritativeBulkReceived(() => {
+      this.clearAuthoritativeCrdtRetries()
+    })
     this.comms.setTopicMessageHandler((topic, sender, payload) => {
       if (topic !== 'comms') return
       const message = new TextDecoder().decode(payload)

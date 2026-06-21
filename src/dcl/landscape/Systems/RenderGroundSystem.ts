@@ -37,13 +37,18 @@ export async function buildParcelLandscape(
     const origin = parcelWorldOrigin(parcel, base)
     dclToThreePos(origin.x, origin.y, origin.z, parcelRoot.position)
 
-    const ground = await cache.clone(catalystAssetUrl(EMPTY_LAND.ground), EMPTY_LAND.ground)
-    ground.position.set(
-      EMPTY_LAND_GROUND_OFFSET.x,
-      EMPTY_LAND_GROUND_OFFSET.y,
-      EMPTY_LAND_GROUND_OFFSET.z
-    )
-    parcelRoot.add(ground)
+    // World scenes ship full composite terrain — skip empty-land ground on scene parcels
+    // (1024 orange tiles under flagtag otherwise z-fight / double-floor the deploy).
+    const skipSceneGround = worldScene && role === 'scene'
+    if (!skipSceneGround) {
+      const ground = await cache.clone(catalystAssetUrl(EMPTY_LAND.ground), EMPTY_LAND.ground)
+      ground.position.set(
+        EMPTY_LAND_GROUND_OFFSET.x,
+        EMPTY_LAND_GROUND_OFFSET.y,
+        EMPTY_LAND_GROUND_OFFSET.z
+      )
+      parcelRoot.add(ground)
+    }
 
     await decorateParcel(cache, parcel.x, parcel.y, role, parcelRoot, worldScene)
     landscape.add(parcelRoot)

@@ -22,8 +22,11 @@ import { PreferencesPanel } from './ui/settings/PreferencesPanel'
 import { SettingsOverlay } from './ui/settings/SettingsOverlay'
 import type { MapPlayerState } from './ui/settings/MapView'
 import { genesisMetersToParcel } from '../map/genesisMapViewport'
+import type { ResolvedScene } from '../dcl/content/types'
 import { fetchProfileFaceUrl } from '../avatar/peerApi'
 import { hydrateEmoteWheelSlots } from '../avatar/profileEmotes'
+import { InputAction } from '../input/pointerConstants'
+import { MobileGameHud } from './ui/MobileGameHud'
 import { disposeSessionAssetCache, getSessionAssetCache, prefetchSceneManifestGlbs } from '../rendering/AssetCache'
 import { DEFAULT_TIMEOUT_MS, FAST_TIMEOUT_MS, type SceneHydrationStats } from '../rendering/sceneHydration'
 
@@ -43,6 +46,7 @@ export class AppController {
   private currentRoute: RouteTarget | null = null
   private running = false
   private navigating = false
+  private mobileHud: MobileGameHud | null = null
 
   async start(container: HTMLElement): Promise<void> {
     if (this.running) return
@@ -307,6 +311,20 @@ export class AppController {
     opts.onProgress?.('Almost ready…')
     this.shell.show()
     void this.shell.refreshProfile()
+    this.shell.setSceneLocation(sceneDisplayTitle(sceneConfig), () => this.getLocationCoordsLabel())
+
+    this.mobileHud?.dispose()
+    this.mobileHud = new MobileGameHud({
+      onEmote: () => this.shell?.toggleEmotes(),
+      onPrimaryDown: () => world.triggerPointerAction(InputAction.IA_PRIMARY, 'down'),
+      onPrimaryUp: () => world.triggerPointerAction(InputAction.IA_PRIMARY, 'up'),
+      onSecondaryDown: () => world.triggerPointerAction(InputAction.IA_SECONDARY, 'down'),
+      onSecondaryUp: () => world.triggerPointerAction(InputAction.IA_SECONDARY, 'up'),
+      onJumpDown: () => world.setJumpHeld(true),
+      onJumpUp: () => world.setJumpHeld(false)
+    })
+    this.mobileHud.setShellVisible(true)
+    this.shell.setOnEmoteWheelVisibility((visible) => this.mobileHud?.setEmoteActive(visible))
 
     const address = world.session.getAddress()
     const profile = world.session.getProfile()
@@ -317,6 +335,14 @@ export class AppController {
     }
 
     return hydrationTimedOut
+  }
+
+  private getLocationCoordsLabel(): string {
+    const state = this.getMapPlayerState()
+    if (state?.parcelKey) return state.parcelKey
+    const pos = this.world?.getPlayerPosition()
+    if (pos) return `${Math.floor(pos.x)}, ${Math.floor(pos.z)}`
+    return '—'
   }
 
   private getMapPlayerState(): MapPlayerState | null {
@@ -340,6 +366,8 @@ export class AppController {
   }
 
   private async teardownScene(): Promise<void> {
+    this.mobileHud?.dispose()
+    this.mobileHud = null
     this.minimap?.dispose()
     this.minimap = null
     this.worldLocationCard?.dispose()
@@ -362,6 +390,8 @@ export class AppController {
     this.debugPanel = null
     this.devProgressPanel?.dispose()
     this.devProgressPanel = null
+    this.mobileHud?.dispose()
+    this.mobileHud = null
     this.shell?.dispose()
     this.shell = null
     await this.teardownScene()
@@ -380,4 +410,13 @@ export class AppController {
       await this.start(this.container)
     }
   }
+}
+
+function sceneDisplayTitle(scene: ResolvedScene): string {
+  if (scene.source.kind === 'world') {
+    const title = scene.title.trim()
+    return title || scene.source.worldName
+  }
+  const title = scene.title.trim()
+  return title || scene.baseParcel
 }

@@ -1,6 +1,11 @@
 import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
-import { buildPrimitiveGeometry, primitiveKind, type PrimitiveMeshSpec } from '../bridge/primitiveShapes'
+import {
+  applyPrimitivePivotOffset,
+  buildPrimitiveGeometry,
+  primitiveKind,
+  type PrimitiveMeshSpec
+} from '../bridge/primitiveShapes'
 import type { MirrorComponents } from '../bridge/mirrorComponents'
 import type { ProjectionView } from '../bridge/ProjectionView'
 import { physxColliderDebug } from '../debug/PhysxColliderDebug'
@@ -116,6 +121,7 @@ export class CollisionSystem {
       mesh.userData.colliderKind = kind
       mesh.userData.entity = entity
       mesh.userData.collisionMask = collisionMask
+      applyPrimitivePivotOffset(mesh, spec as PrimitiveMeshSpec)
 
       const root = new THREE.Object3D()
       root.name = `collider-root:${entity}`

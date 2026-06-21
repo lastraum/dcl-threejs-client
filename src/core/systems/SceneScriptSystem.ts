@@ -1306,6 +1306,10 @@ export class SceneScriptSystem {
     )
   }
 
+  triggerPointerAction(action: import('../../input/pointerConstants').InputActionValue, phase: 'down' | 'up'): void {
+    this.pointerEvents?.triggerInputAction(action, phase)
+  }
+
   updatePointerEvents(tickNumber: number): void {
     this.pointerEvents?.updateVisuals(tickNumber)
   }

@@ -24,6 +24,12 @@ export class ClientUiLayout {
   }
 
   private syncSidebarWidth(): void {
+    if (document.documentElement.classList.contains('client-mobile')) {
+      const profileW = 48
+      document.documentElement.style.setProperty('--client-sidebar-w', '0px')
+      document.documentElement.style.setProperty('--client-mobile-profile-w', `${profileW}px`)
+      return
+    }
     const el = this.sidebar
     if (!el) return
     const w = el.getBoundingClientRect().width

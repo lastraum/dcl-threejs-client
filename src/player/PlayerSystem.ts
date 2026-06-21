@@ -120,6 +120,9 @@ export class PlayerSystem {
     elapsed: number
     duration: number
   } | null = null
+  /** Holds capsule after scene `movePlayerTo` until emote starts or the player moves. */
+  private scenePositionLock = false
+  private wasProfileEmoteActive = false
 
   constructor(
     private readonly host: SceneHost,
@@ -275,6 +278,10 @@ export class PlayerSystem {
     return this.input?.orbiting ?? false
   }
 
+  setJumpHeld(down: boolean): void {
+    this.input?.setJumpHeld(down)
+  }
+
   setOnUserGestureUnlock(callback: () => void): void {
     this.input?.setOnUserGestureUnlock(callback)
   }
@@ -336,6 +343,7 @@ export class PlayerSystem {
     if (duration <= 0) {
       this.teleportTo(target)
       this.moveTask = null
+      this.scenePositionLock = true
       return true
     }
 
@@ -346,6 +354,7 @@ export class PlayerSystem {
       duration
     }
     _velocity.set(0, 0, 0)
+    this.scenePositionLock = true
     return true
   }
 
@@ -357,10 +366,24 @@ export class PlayerSystem {
     if (!this.enabled || !this.input) return
     delta = Math.min(delta, 1 / 20)
 
+    const emoteActive = this.avatar?.isProfileEmoteActive() ?? false
+    if (this.wasProfileEmoteActive && !emoteActive) {
+      this.scenePositionLock = false
+    }
+    this.wasProfileEmoteActive = emoteActive
+
+    const movingKeys =
+      this.input.keys.w || this.input.keys.a || this.input.keys.s || this.input.keys.d
+    const breakSceneHold = movingKeys || this.input.spacePressed
+    if (breakSceneHold && this.scenePositionLock) {
+      this.scenePositionLock = false
+      this.avatar?.stopEmote()
+    }
+
     if (this.moveTask) {
-      const moving = this.input.keys.w || this.input.keys.a || this.input.keys.s || this.input.keys.d
-      if (moving) {
+      if (breakSceneHold) {
         this.moveTask = null
+        this.scenePositionLock = false
       } else {
         this.moveTask.elapsed += delta
         const t = Math.min(1, this.moveTask.elapsed / this.moveTask.duration)
@@ -369,9 +392,33 @@ export class PlayerSystem {
         this.syncNameTag()
         this.syncCamera(false, delta)
         this.input.endFrame()
-        if (t >= 1) this.moveTask = null
+        if (t >= 1) {
+          this.moveTask = null
+          this.scenePositionLock = true
+        }
         return
       }
+    }
+
+    if (this.scenePositionLock && !breakSceneHold) {
+      this.physics.step(delta)
+      this.root.position.copy(this.physics.positionOut)
+      this.syncNameTag()
+      this.avatar?.setYaw(this.playerYaw)
+      this.avatar?.update(delta, {
+        horizontalSpeed: 0,
+        grounded: true,
+        nearGround: true,
+        verticalVelocity: 0,
+        locomotionMode: this.locomotionMode,
+        jumping: false,
+        doubleJumping: false,
+        doubleJumpTriggered: false,
+        falling: false
+      })
+      this.syncCamera(false, delta)
+      this.input.endFrame()
+      return
     }
 
     if (this.input.looking) {
@@ -383,8 +430,9 @@ export class PlayerSystem {
       this.camPitch = clamp(this.camPitch, pitchMin, CAM_PITCH_MAX)
     }
 
-    if (this.input.scrollDelta !== 0) {
-      this.camDistance += this.input.scrollDelta * ZOOM_WHEEL_SPEED
+    const zoomDelta = this.input.scrollDelta + this.input.pinchZoomDelta * 3
+    if (zoomDelta !== 0) {
+      this.camDistance += zoomDelta * ZOOM_WHEEL_SPEED
       this.camDistance = clamp(this.camDistance, CAM_DISTANCE_MIN, CAM_DISTANCE_MAX)
     }
 
@@ -399,6 +447,7 @@ export class PlayerSystem {
     if (moving) _moveDir.normalize()
 
     if (moving || this.input.spacePressed) {
+      this.scenePositionLock = false
       this.avatar?.stopEmote()
     }
 

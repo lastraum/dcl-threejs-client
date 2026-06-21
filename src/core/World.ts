@@ -168,7 +168,7 @@ export class World {
 
   async loadScene(scene: ResolvedScene, onProgress?: (msg: string) => void): Promise<void> {
     if (skipRemoteAvatars()) {
-      clientDebugLog.log('network', 'Remote avatars disabled (?noremote / dev default)', {
+      clientDebugLog.log('network', 'Remote avatars disabled (?noremote)', {
         alsoConsole: true,
         throttleMs: 60_000
       })
@@ -636,13 +636,49 @@ export class World {
       this.pushColliderPosesToPhysX()
     }
     this.reconcileColliderCookQueue()
-    if (this.colliderCookQueue.size > 0) {
-      this.drainColliderCookQueue({ initialOnly: true })
-    }
+    // Drift recook before queue drain — world-baked actors must not be invalidated first
+    // (needsWorldBakedPoseRecook requires a live actor; premature remove leaves physics gaps).
     const driftRecooked = this.physics.recookWorldBakedPoseDrift(
       this.sceneScript.getAllPhysicsColliderDescs()
     )
     if (driftRecooked > 0) this.scheduleWarmStaticScene()
+    this.drainRuntimeColliderCookQueue()
+  }
+
+  /** Runtime PhysX cook — prioritize near-player, burst-drain after composite spawns (theatre). */
+  private drainRuntimeColliderCookQueue(): void {
+    const pending = this.colliderCookQueue.size
+    if (pending === 0) return
+
+    const burstActive = performance.now() < this.runtimeColliderBurstUntil
+    if (pending >= World.RUNTIME_COLLIDER_BURST_QUEUE || burstActive) {
+      let passes = 0
+      const maxPasses = burstActive ? 12 : 6
+      while (this.colliderCookQueue.size > World.RUNTIME_COLLIDER_COOK_BUDGET && passes < maxPasses) {
+        this.drainColliderCookQueue({ loading: true })
+        passes++
+      }
+    }
+    if (this.colliderCookQueue.size > 0) {
+      this.drainColliderCookQueue({ initialOnly: true })
+    }
+  }
+
+  /** Near-player colliders first — theatre floors under the avatar cook before distant props. */
+  private sortedColliderCookQueue(): number[] {
+    const ids = [...this.colliderCookQueue]
+    const feet = this.player?.getWorldPosition()
+    if (!feet || ids.length <= 1) return ids
+
+    const distSq = (physId: number): number => {
+      const desc = this.sceneScript.getPhysicsColliderDesc(physId)
+      if (!desc) return Number.POSITIVE_INFINITY
+      const dx = desc.matrix.elements[12]! - feet.x
+      const dz = desc.matrix.elements[14]! - feet.z
+      return dx * dx + dz * dz
+    }
+    ids.sort((a, b) => distSq(a) - distSq(b))
+    return ids
   }
 
   /** Runtime tween / transform pose slide — only the entities that moved. */
@@ -842,7 +878,7 @@ export class World {
   private drainColliderCookQueue(options?: {
     hydration?: boolean
     loading?: boolean
-    /** Boot spawn cook — entity-local vertices, actor at world pose (not world-baked). */
+    /** Force entity-local cached cook (runtime only — boot uses world-baked via `loading`). */
     entityLocal?: boolean
     /** Post-load: register actors that have never been cooked — never remove/recook existing. */
     initialOnly?: boolean
@@ -861,7 +897,8 @@ export class World {
     const loadingPass = !!(options?.loading || options?.hydration)
     const toCook: PhysicsColliderDesc[] = []
     let worldBakedRecook = false
-    for (const physId of this.colliderCookQueue) {
+    const queueOrder = loadingPass ? [...this.colliderCookQueue] : this.sortedColliderCookQueue()
+    for (const physId of queueOrder) {
       if (toCook.length >= budget) break
       if (loadingPass) {
         this.sceneScript.flushSceneGraphMatrices()
@@ -885,7 +922,7 @@ export class World {
         desc &&
         this.physics.needsWorldBakedPoseRecook(desc)
       ) {
-        this.physics.invalidateStaticCollider(physId)
+        // syncStaticColliders removes + recooks atomically — do not invalidate early.
         worldBakedRecook = true
       }
       if (options?.initialOnly && this.physics.hasStaticActor(physId)) {
@@ -965,6 +1002,8 @@ export class World {
       gltfEntityCount > 0 &&
       gltfRegisteredAfter === 0 &&
       this.colliderCookQueue.size === 0 &&
+      !this.deferPhysxCooks &&
+      this.collidersLoadingComplete &&
       !this.loggedGltfPhysMismatch
     ) {
       this.loggedGltfPhysMismatch = true
@@ -1099,6 +1138,7 @@ export class World {
 
       this.lastPhysicsBatchFp = ''
       this.deferPhysxCooks = false
+      clearGeometryCookCache()
       this.physics.clearGltfStaticActors()
       this.physics.clearFailedCookCaches()
       this.colliderCookQueue.clear()
@@ -1120,7 +1160,8 @@ export class World {
           )
         }
 
-        this.drainColliderCookQueue({ loading: true, entityLocal: true })
+        // World-baked boot cook — matches Help → Force recook (entity-local boot left actors misaligned).
+        this.drainColliderCookQueue({ loading: true })
         const gltfCount = this.lastGltfColliderCount
         const registered = this.physics.gltfStaticActorCount
         const pending = this.colliderCookQueue.size
@@ -1182,6 +1223,17 @@ export class World {
   getPlayerPosition(): THREE.Vector3 | null {
     if (!this.playerMode || !this.player) return null
     return this.player.getPosition()
+  }
+
+  triggerPointerAction(
+    action: import('../input/pointerConstants').InputActionValue,
+    phase: 'down' | 'up'
+  ): void {
+    this.sceneScript.triggerPointerAction(action, phase)
+  }
+
+  setJumpHeld(down: boolean): void {
+    this.player?.setJumpHeld(down)
   }
 
   playLocalEmote(emoteRef: string, options?: { loop?: boolean; broadcast?: boolean }): void {

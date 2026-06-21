@@ -18,6 +18,7 @@
     "@dcl/crypto": "^3.6.0",
     "@dcl/ecs": "^7.24.1",
     "@dcl/protocol": "1.0.0-27222196396.commit-748bafb",
+    "@metamask/sdk": "^0.34.0",
     "@protobufjs/utf8": "^1.1.1",
     "decentraland-crypto-fetch": "^2.0.1",
     "hls.js": "^1.6.2",

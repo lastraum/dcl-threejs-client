@@ -65,7 +65,7 @@ export class SettingsOverlay {
     this.root.setAttribute('hidden', '')
 
     this.root.innerHTML = `
-      <aside class="settings-overlay__panel" role="dialog" aria-label="Settings" aria-modal="true">
+      <aside class="settings-overlay__panel" role="dialog" aria-label="Options" aria-modal="true">
         <div class="settings-overlay__header">
           <div class="settings-overlay__heading">
             <svg viewBox="0 0 44 44" width="22" height="22" aria-hidden="true"><circle cx="22" cy="22" r="22" fill="#FF2D55"/><path fill="#fff" d="M10 28l6-14h2.2l3.4 8.2L25 14h2.1l6 14h-2.4l-1.2-3H13.6l-1.2 3H10zm5.8-5.2h6.8L19.8 17l-4 5.8z"/></svg>
@@ -184,12 +184,19 @@ export class SettingsOverlay {
 
   private switchTab(id: SettingsTab): void {
     this.activeTab = id
+    let activeBtn: HTMLElement | null = null
     for (const btn of this.tabBar.querySelectorAll('.settings-overlay__tab')) {
-      btn.classList.toggle('is-active', (btn as HTMLElement).dataset.tab === id)
+      const el = btn as HTMLElement
+      const isActive = el.dataset.tab === id
+      el.classList.toggle('is-active', isActive)
+      if (isActive) activeBtn = el
     }
     const titleEl = this.root.querySelector('.settings-overlay__title')
     const tabDef = TABS.find((tab) => tab.id === id)
     if (titleEl) titleEl.textContent = tabDef?.label ?? 'SETTINGS'
+    if (activeBtn && window.matchMedia('(max-width: 767px)').matches) {
+      activeBtn.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' })
+    }
     this.renderContent()
   }
 

@@ -5,11 +5,10 @@ function readSearchParams(): URLSearchParams | null {
 
 /**
  * Skip remote avatar compose/load (comms may still connect).
- * On by default in Vite dev; override with `?remote` or force with `?noremote`.
+ * Enabled by default; opt out with `?noremote`. `?remote` is accepted as an alias for the default.
  */
 export function skipRemoteAvatars(): boolean {
   const params = readSearchParams()
-  if (params?.has('remote')) return false
   if (params?.has('noremote')) return true
-  return import.meta.env.DEV
+  return false
 }

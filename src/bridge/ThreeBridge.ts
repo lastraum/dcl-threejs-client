@@ -1,7 +1,12 @@
 import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
 import type { ProjectionView } from './ProjectionView'
-import { buildPrimitiveGeometry, primitiveDoubleSided, primitiveMeshKey } from './primitiveShapes'
+import {
+  applyPrimitivePivotOffset,
+  buildPrimitiveGeometry,
+  primitiveDoubleSided,
+  primitiveMeshKey
+} from './primitiveShapes'
 import { MaterialApplier, type PbMaterial } from './material/MaterialApplier'
 import type { AssetCache } from '../rendering/AssetCache'
 import { prefetchSceneManifestGlbs } from '../rendering/AssetCache'
@@ -732,8 +737,13 @@ export class ThreeBridge {
             return
           }
           clone.name = mk
-          syncGltfInstanceRenderState(clone)
-          enableMeshReceiveShadow(clone)
+          if (isEmoteAnchorGltfSrc(src) && !this.ecs.Animator.has(entity)) {
+            hideGltfRenderMeshes(clone)
+            obj.userData.emoteAnchor = true
+          } else {
+            syncGltfInstanceRenderState(clone)
+            enableMeshReceiveShadow(clone)
+          }
           obj.add(clone)
           mesh = clone
           this.notifyMeshComponent(entity, GltfContainer.componentId)
@@ -758,7 +768,7 @@ export class ThreeBridge {
         }
       }
 
-      if (mesh) syncGltfInstanceRenderState(mesh)
+      if (mesh && !obj.userData.emoteAnchor) syncGltfInstanceRenderState(mesh)
 
       if (touchMaterials && Material.has(entity) && mesh) {
         const pb = Material.get(entity) as PbMaterial
@@ -806,6 +816,7 @@ export class ThreeBridge {
         primitive.userData.primitiveDoubleSided = doubleSided
         primitive.castShadow = false
         primitive.receiveShadow = true
+        applyPrimitivePivotOffset(primitive, spec)
         obj.add(primitive)
         this.notifyMeshComponent(entity, MeshRenderer.componentId)
       }

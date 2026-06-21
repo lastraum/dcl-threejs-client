@@ -122,7 +122,11 @@ export function prepareEmotePropRoot(propRoot: THREE.Object3D, propTrackTargets:
 
     if (EMOTE_BODY_MESH.test(obj.name)) {
       obj.visible = false
+      return
     }
+
+    // Static sit anchors / collision proxies (e.g. sittingChair2 "Cube") — hide unless animated prop.
+    obj.visible = false
   })
 }
 
@@ -138,7 +142,8 @@ export function emoteNeedsPropScene(gltf: CachedGltf, propTrackTargets: Set<stri
     if (found || !(obj instanceof THREE.Mesh)) return
     if (/collider/i.test(obj.name)) return
     if (obj instanceof THREE.SkinnedMesh && EMOTE_BODY_MESH.test(obj.name)) return
-    if (!obj.name.startsWith('Avatar_')) found = true
+    if (obj.name.startsWith('Avatar_')) return
+    if (isEmotePropMesh(obj.name)) found = true
   })
   return found
 }

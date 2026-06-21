@@ -9,11 +9,22 @@ import { sanitizeSceneGltfMaterials } from '../rendering/LandscapeAssetSanitizer
 import { contentMappings, getMainFileUrl } from './peerApi'
 import { prepareAvatarMaterials, tintWearableMaterials } from './materials'
 import { wearableGlbCacheKey } from './wearableCache'
-import { findSkeletonHips, pruneWearableDisplayMeshes } from './wearableSanitize'
-import type { BodyShape, WearableDefinition } from './types'
+import { normalizeBoneName, resolveBoneName } from './emoteBoneMap'
+import {
+  findAttachBoneForCategory,
+  findSkeletonHips,
+  normalizeWearableWorldScale,
+  pruneWearableDisplayMeshes
+} from './wearableSanitize'
+import type { BodyShape, WearableCategory, WearableDefinition } from './types'
 
 export { wearableGlbCacheKey } from './wearableCache'
 export { pruneWearableDisplayMeshes } from './wearableSanitize'
+
+export type MergeWearableOptions = {
+  category?: WearableCategory
+  wearableId?: string
+}
 
 export function createGltfLoader(mappings: Record<string, string>): GLTFLoader {
   const manager = new THREE.LoadingManager()
@@ -93,11 +104,93 @@ function cloneMaterials(material: THREE.Material | THREE.Material[]): THREE.Mate
   return material.clone()
 }
 
+function skeletonBoneSet(skeleton: THREE.Skeleton): Set<string> {
+  const names = new Set<string>()
+  for (const bone of skeleton.bones) {
+    names.add(normalizeBoneName(bone.name))
+  }
+  return names
+}
+
+function buildDstBoneIndexMap(dst: THREE.Skeleton): Map<string, number> {
+  const map = new Map<string, number>()
+  for (let i = 0; i < dst.bones.length; i++) {
+    map.set(normalizeBoneName(dst.bones[i].name), i)
+  }
+  return map
+}
+
+function resolveDstBoneIndex(
+  boneName: string,
+  dstIndexByName: Map<string, number>,
+  dstBones: Set<string>
+): number {
+  const resolved = resolveBoneName(boneName, dstBones)
+  if (resolved) {
+    const idx = dstIndexByName.get(resolved)
+    if (idx !== undefined) return idx
+  }
+  const exact = dstIndexByName.get(normalizeBoneName(boneName))
+  return exact !== undefined ? exact : 0
+}
+
 function buildBoneIndexMap(src: THREE.Skeleton, dst: THREE.Skeleton): number[] {
-  return src.bones.map((bone) => {
-    const idx = dst.bones.findIndex((b) => b.name === bone.name)
-    return idx >= 0 ? idx : 0
-  })
+  const dstBones = skeletonBoneSet(dst)
+  const dstIndexByName = buildDstBoneIndexMap(dst)
+  return src.bones.map((bone) => resolveDstBoneIndex(bone.name, dstIndexByName, dstBones))
+}
+
+function collectUsedBoneIndices(mesh: THREE.SkinnedMesh): Set<number> {
+  const used = new Set<number>()
+  const skinIndex = mesh.geometry.attributes.skinIndex as THREE.BufferAttribute | undefined
+  const skinWeight = mesh.geometry.attributes.skinWeight as THREE.BufferAttribute | undefined
+  if (!skinIndex) return used
+
+  for (let i = 0; i < skinIndex.count; i++) {
+    for (let j = 0; j < 4; j++) {
+      const weight = skinWeight ? skinWeight.getComponent(i, j) : 1
+      if (weight <= 0) continue
+      const idx = skinIndex.getComponent(i, j)
+      if (idx >= 0) used.add(idx)
+    }
+  }
+  return used
+}
+
+function boneMapQuality(
+  src: THREE.Skeleton,
+  dst: THREE.Skeleton,
+  usedBoneIndices?: Set<number>
+): number {
+  const dstBones = skeletonBoneSet(dst)
+  const bones =
+    usedBoneIndices && usedBoneIndices.size > 0
+      ? [...usedBoneIndices].map((i) => src.bones[i]).filter(Boolean)
+      : src.bones
+  if (!bones.length) return 0
+
+  let matched = 0
+  for (const bone of bones) {
+    if (resolveBoneName(bone.name, dstBones)) matched++
+  }
+  return matched / bones.length
+}
+
+function mergeThresholdForCategory(category?: WearableCategory): number {
+  switch (category) {
+    case 'feet':
+    case 'earring':
+    case 'eyewear':
+      return 0.35
+    case 'hands_wear':
+      return 0.4
+    default:
+      return 0.55
+  }
+}
+
+function isL1WearableUrn(urn?: string): boolean {
+  return !!urn?.includes(':ethereum:') || !!urn?.includes(':collections-v1:')
 }
 
 function remapSkinIndices(geometry: THREE.BufferGeometry, indexMap: number[], boneCount: number): void {
@@ -120,33 +213,28 @@ function bindSkinnedMesh(mesh: THREE.SkinnedMesh, skeleton: THREE.Skeleton): voi
   mesh.frustumCulled = false
 }
 
-function boneMapQuality(src: THREE.Skeleton, dst: THREE.Skeleton): number {
-  if (!src.bones.length) return 0
-  let matched = 0
-  for (const bone of src.bones) {
-    if (dst.bones.some((b) => b.name === bone.name)) matched++
-  }
-  return matched / src.bones.length
-}
-
 /**
  * Attach wearable skinned meshes to the body skeleton (Forge pattern).
- * Remaps bone indices by name so custom profile wearables work.
+ * Remaps bone indices by name so L1 / Mixamo profile wearables work.
  * Returns false when nothing could be merged — caller should add the full GLB instead.
  */
 export function mergeWearableMeshes(
   wearableRoot: THREE.Object3D,
   skeleton: THREE.Skeleton,
-  target: THREE.Object3D
+  target: THREE.Object3D,
+  options: MergeWearableOptions = {}
 ): boolean {
+  const threshold = mergeThresholdForCategory(options.category)
   let merged = 0
 
   wearableRoot.traverse((obj) => {
     if (!(obj instanceof THREE.SkinnedMesh) || !obj.skeleton) return
 
-    const indexMap = buildBoneIndexMap(obj.skeleton, skeleton)
-    if (boneMapQuality(obj.skeleton, skeleton) < 0.6) return
+    const usedBones = collectUsedBoneIndices(obj)
+    const quality = boneMapQuality(obj.skeleton, skeleton, usedBones)
+    if (quality < threshold) return
 
+    const indexMap = buildBoneIndexMap(obj.skeleton, skeleton)
     const geometry = obj.geometry.clone()
     remapSkinIndices(geometry, indexMap, skeleton.bones.length)
 
@@ -162,25 +250,32 @@ export function mergeWearableMeshes(
 }
 
 /**
- * When bone merge fails, parent the wearable under the avatar hips instead of dumping the raw GLB
- * at the avatar root (common source of huge white helper meshes).
+ * When bone merge fails, parent the wearable under a category-appropriate avatar bone.
+ * L1 exports often keep their own armature — scale is normalized before attach.
  */
 export function attachWearableFallback(
   wearableRoot: THREE.Object3D,
   skeleton: THREE.Skeleton,
-  target: THREE.Object3D
+  target: THREE.Object3D,
+  options: MergeWearableOptions = {}
 ): boolean {
   const visibleMeshes = pruneWearableDisplayMeshes(wearableRoot)
   if (visibleMeshes === 0) return false
 
-  const attachBone = findSkeletonHips(skeleton)
+  const attachBone = findAttachBoneForCategory(skeleton, options.category) ?? findSkeletonHips(skeleton)
   wearableRoot.position.set(0, 0, 0)
   wearableRoot.rotation.set(0, 0, 0)
-  wearableRoot.scale.set(1, 1, 1)
+  normalizeWearableWorldScale(wearableRoot, options.category)
   if (attachBone) {
     attachBone.add(wearableRoot)
   } else {
     target.add(wearableRoot)
+  }
+
+  if (isL1WearableUrn(options.wearableId)) {
+    console.warn(
+      `[avatar] L1 wearable fallback attach: ${options.wearableId} (${options.category ?? 'unknown'}) — bone merge failed`
+    )
   }
   return true
 }

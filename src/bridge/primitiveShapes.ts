@@ -105,6 +105,19 @@ export function primitiveKind(spec: PrimitiveMeshSpec): string {
   return `cylinder:${radiusTop}:${radiusBottom}`
 }
 
+/**
+ * DCL primitives use a bottom-center pivot — unit box/cylinder grow upward from y = 0.
+ * Three.js unit geometries are Y-centered; offset the mesh so the entity origin stays at the base.
+ */
+export function applyPrimitivePivotOffset(obj: THREE.Object3D, spec: PrimitiveMeshSpec): void {
+  const kind = spec.mesh?.$case ?? 'box'
+  if (kind === 'box' || kind === 'cylinder') {
+    obj.position.set(0, 0.5, 0)
+  } else {
+    obj.position.set(0, 0, 0)
+  }
+}
+
 function applyFaceUvs(
   attr: THREE.BufferAttribute,
   faceIndex: number,

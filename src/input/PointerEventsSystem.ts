@@ -5,7 +5,7 @@ import type { PBPointerEvents_Entry } from '@dcl/ecs/dist/components/generated/p
 import type { PBPointerEventsResult } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/pointer_events_result.gen'
 import type { RaycastHit } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/common/raycast_hit.gen'
 import { InputAction, InteractionType, PointerEventType, type InputActionValue, type PointerEventTypeValue } from './pointerConstants'
-import { inputActionInteractLabel, keyCodeToInputActionBinding } from './inputActionBinding'
+import { inputActionBinding, inputActionInteractLabel, keyCodeToInputActionBinding } from './inputActionBinding'
 import type { MirrorComponents } from '../bridge/mirrorComponents'
 import { dclToThreeVec, threeToDclVec } from '../bridge/dclTransform'
 import type { CollisionSystem } from '../collision/CollisionSystem'
@@ -334,6 +334,32 @@ export class PointerEventsSystem {
 
   hasPendingInput(): boolean {
     return this.pendingPointerDown.size > 0 || this.pendingPointerUp.size > 0
+  }
+
+  /** Mobile HUD — same path as E/F keyboard interact. */
+  triggerInputAction(action: InputActionValue, phase: 'down' | 'up'): void {
+    if (!this.deps) return
+    if (phase === 'down') {
+      if (this.deps.isPointerBlocked()) return
+      const binding = inputActionBinding(action)
+      if (!binding) return
+      const hit = this.resolveInteractHit(action)
+      if (!this.canQueuePointerDown(action, hit)) {
+        if (hit) this.logInteractBlocked(binding.label, action, hit)
+        return
+      }
+      if (action === InputAction.IA_PRIMARY) this.primaryKeyDown = true
+      const targetEntity = this.resolvePointerResultEntity(hit!.entity, action)
+      this.downEntityByButton.set(action, targetEntity)
+      this.pendingPointerDown.set(action, hit)
+      this.deps.flushPointerCrdt?.()
+      return
+    }
+
+    if (action === InputAction.IA_PRIMARY) this.primaryKeyDown = false
+    if (!this.downEntityByButton.has(action)) return
+    this.pendingPointerUp.add(action)
+    this.deps.flushPointerCrdt?.()
   }
 
   /** Payload for direct worker injection (bypasses CRDT deliver when worker is busy). */

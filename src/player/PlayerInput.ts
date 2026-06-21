@@ -3,20 +3,27 @@ export class PlayerInput {
   readonly keys = { w: false, a: false, s: false, d: false, space: false, shift: false, ctrl: false }
   readonly pointer = { locked: false, dx: 0, dy: 0 }
   scrollDelta = 0
+  pinchZoomDelta = 0
   spacePressed = false
   /** Left-button drag orbit — does not change pointer lock. */
   orbiting = false
   private userGestureUnlocked = false
   private onUserGestureUnlock: (() => void) | null = null
+  private orbitPointerId: number | null = null
+  private lastPointerX = 0
+  private lastPointerY = 0
+  private readonly activePointers = new Map<number, { x: number; y: number }>()
+  private lastPinchSpan = 0
 
   constructor(private readonly canvas: HTMLElement) {
     window.addEventListener('keydown', this.onKeyDown)
     window.addEventListener('keyup', this.onKeyUp)
     document.addEventListener('focusin', this.onFocusIn)
     document.addEventListener('pointerlockchange', this.onLockChange)
-    document.addEventListener('mousemove', this.onMouseMove)
-    this.canvas.addEventListener('mousedown', this.onMouseDown)
-    window.addEventListener('mouseup', this.onMouseUp)
+    this.canvas.addEventListener('pointerdown', this.onPointerDown)
+    this.canvas.addEventListener('pointermove', this.onPointerMove)
+    window.addEventListener('pointerup', this.onPointerUp)
+    window.addEventListener('pointercancel', this.onPointerUp)
     this.canvas.addEventListener('contextmenu', this.onContextMenu)
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false })
   }
@@ -26,9 +33,10 @@ export class PlayerInput {
     window.removeEventListener('keyup', this.onKeyUp)
     document.removeEventListener('focusin', this.onFocusIn)
     document.removeEventListener('pointerlockchange', this.onLockChange)
-    document.removeEventListener('mousemove', this.onMouseMove)
-    this.canvas.removeEventListener('mousedown', this.onMouseDown)
-    window.removeEventListener('mouseup', this.onMouseUp)
+    this.canvas.removeEventListener('pointerdown', this.onPointerDown)
+    this.canvas.removeEventListener('pointermove', this.onPointerMove)
+    window.removeEventListener('pointerup', this.onPointerUp)
+    window.removeEventListener('pointercancel', this.onPointerUp)
     this.canvas.removeEventListener('contextmenu', this.onContextMenu)
     this.canvas.removeEventListener('wheel', this.onWheel)
     if (document.pointerLockElement === this.canvas) document.exitPointerLock()
@@ -38,7 +46,13 @@ export class PlayerInput {
     this.pointer.dx = 0
     this.pointer.dy = 0
     this.scrollDelta = 0
+    this.pinchZoomDelta = 0
     this.spacePressed = false
+  }
+
+  setJumpHeld(down: boolean): void {
+    this.keys.space = down
+    if (down) this.spacePressed = true
   }
 
   get looking(): boolean {
@@ -78,7 +92,7 @@ export class PlayerInput {
     }
     if (e.code === 'Escape' && this.pointer.locked) {
       document.exitPointerLock()
-      this.orbiting = false
+      this.stopOrbit()
     }
   }
 
@@ -92,21 +106,61 @@ export class PlayerInput {
   private onLockChange = () => {
     this.pointer.locked = document.pointerLockElement === this.canvas
     this.canvas.style.cursor = this.pointer.locked ? 'none' : 'default'
-    if (this.pointer.locked) this.notifyUserGesture()
+    if (this.pointer.locked) {
+      this.stopOrbit()
+      this.notifyUserGesture()
+    }
   }
 
-  private onMouseMove = (e: MouseEvent) => {
+  private onPointerMove = (e: PointerEvent) => {
+    if (this.activePointers.has(e.pointerId)) {
+      this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    }
+
+    if (this.activePointers.size >= 2) {
+      this.applyPinchZoom()
+      return
+    }
+
     if (!this.looking) return
-    this.pointer.dx += e.movementX
-    this.pointer.dy += e.movementY
+    if (this.pointer.locked) {
+      this.pointer.dx += e.movementX
+      this.pointer.dy += e.movementY
+      return
+    }
+    if (!this.orbiting || e.pointerId !== this.orbitPointerId) return
+    const dx = e.clientX - this.lastPointerX
+    const dy = e.clientY - this.lastPointerY
+    this.lastPointerX = e.clientX
+    this.lastPointerY = e.clientY
+    this.pointer.dx += dx
+    this.pointer.dy += dy
   }
 
-  private onMouseDown = (e: MouseEvent) => {
+  private onPointerDown = (e: PointerEvent) => {
+    if (e.target !== this.canvas) return
     if (this.isOverlayOpen()) return
+
+    this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    if (this.activePointers.size >= 2) {
+      this.stopOrbit()
+      this.lastPinchSpan = this.pointerSpan()
+      return
+    }
+
     if (e.button === 0) {
       this.notifyUserGesture()
-      // Orbit drag only when unlocked — pointer lock uses movementX, not LMB hold.
-      if (!this.pointer.locked) this.orbiting = true
+      if (!this.pointer.locked) {
+        this.orbiting = true
+        this.orbitPointerId = e.pointerId
+        this.lastPointerX = e.clientX
+        this.lastPointerY = e.clientY
+        try {
+          this.canvas.setPointerCapture(e.pointerId)
+        } catch {
+          // ignore capture failures on unsupported browsers
+        }
+      }
       return
     }
     if (e.button === 2) {
@@ -115,8 +169,39 @@ export class PlayerInput {
     }
   }
 
-  private onMouseUp = (e: MouseEvent) => {
-    if (e.button === 0) this.orbiting = false
+  private onPointerUp = (e: PointerEvent) => {
+    this.activePointers.delete(e.pointerId)
+    if (this.activePointers.size < 2) this.lastPinchSpan = 0
+    if (e.pointerId !== this.orbitPointerId) return
+    this.stopOrbit()
+  }
+
+  private pointerSpan(): number {
+    const pts = [...this.activePointers.values()]
+    if (pts.length < 2) return 0
+    return Math.hypot(pts[0]!.x - pts[1]!.x, pts[0]!.y - pts[1]!.y)
+  }
+
+  private applyPinchZoom(): void {
+    const span = this.pointerSpan()
+    if (span <= 0 || this.lastPinchSpan <= 0) {
+      this.lastPinchSpan = span
+      return
+    }
+    this.pinchZoomDelta += span - this.lastPinchSpan
+    this.lastPinchSpan = span
+  }
+
+  private stopOrbit(): void {
+    const pointerId = this.orbitPointerId
+    this.orbiting = false
+    this.orbitPointerId = null
+    if (pointerId === null) return
+    try {
+      this.canvas.releasePointerCapture(pointerId)
+    } catch {
+      // ignore
+    }
   }
 
   private onContextMenu = (e: Event) => {
@@ -184,7 +269,7 @@ export class PlayerInput {
   }
 
   private togglePointerLock(): void {
-    this.orbiting = false
+    this.stopOrbit()
     if (this.pointer.locked) document.exitPointerLock()
     else this.canvas.requestPointerLock()
   }

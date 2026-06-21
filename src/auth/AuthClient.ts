@@ -3,7 +3,13 @@ import { createUnsafeIdentity } from '@dcl/crypto/dist/crypto'
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import { IDENTITY_TTL_MS } from './constants'
 import { readStoredIdentity, writeStoredIdentity } from './identityStore'
-import { getEthereumProvider, requestWalletAddress, signPersonalMessage } from './ethereumProvider'
+import {
+  getEthereumProvider,
+  requestWalletAddress,
+  setActiveEthereumProvider,
+  signPersonalMessage
+} from './ethereumProvider'
+import { ensureMetaMaskProvider, shouldUseMetaMaskSdk } from './metaMaskSdk'
 
 export type LoginResult =
   | { kind: 'guest' }
@@ -22,7 +28,9 @@ async function createWalletIdentity(
   onStatus?.('Creating ephemeral identity…')
   const ephemeral = createUnsafeIdentity()
 
-  onStatus?.('Sign the message in your wallet…')
+  onStatus?.(
+    shouldUseMetaMaskSdk() ? 'Sign the message in the MetaMask app…' : 'Sign the message in your wallet…'
+  )
   const identity = await Authenticator.initializeAuthChain(
     address,
     ephemeral,
@@ -37,6 +45,20 @@ async function createWalletIdentity(
 /** Wallet-first login using injected provider + DCL AuthChain. */
 export async function loginWithWallet(onStatus?: StatusCallback): Promise<LoginResult> {
   onStatus?.('Requesting wallet connection…')
+  const address = await requestWalletAddress()
+  onStatus?.(`Connected: ${address.slice(0, 6)}…${address.slice(-4)}`)
+
+  const identity = await createWalletIdentity(address, onStatus)
+  writeStoredIdentity(address, identity)
+  return { kind: 'wallet', address, identity }
+}
+
+/** MetaMask login — opens the mobile app via deeplink when no extension is injected. */
+export async function loginWithMetaMask(onStatus?: StatusCallback): Promise<LoginResult> {
+  const provider = await ensureMetaMaskProvider(onStatus)
+  setActiveEthereumProvider(provider)
+
+  onStatus?.(shouldUseMetaMaskSdk() ? 'Approve connection in MetaMask…' : 'Requesting wallet connection…')
   const address = await requestWalletAddress()
   onStatus?.(`Connected: ${address.slice(0, 6)}…${address.slice(-4)}`)
 
@@ -63,10 +85,13 @@ export async function refreshWalletIdentity(
   }
 
   if (!getEthereumProvider()) {
-    throw new Error('No Ethereum wallet found — install MetaMask or similar')
+    const provider = await ensureMetaMaskProvider(onStatus)
+    setActiveEthereumProvider(provider)
   }
 
-  onStatus?.('Requesting wallet connection…')
+  onStatus?.(
+    shouldUseMetaMaskSdk() ? 'Approve connection in MetaMask…' : 'Requesting wallet connection…'
+  )
   const connected = await requestWalletAddress()
   if (connected !== normalized) {
     throw new Error(

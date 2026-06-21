@@ -112,9 +112,13 @@ async function composeFromConfig(
 
     for (const entry of loadedLayers) {
       if (!entry) continue
-      const merged = mergeWearableMeshes(entry.layer, skeleton, avatar)
+      const mergeOpts = {
+        category: entry.wearable.data.category,
+        wearableId: entry.wearable.id
+      }
+      const merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
       if (!merged) {
-        const attached = attachWearableFallback(entry.layer, skeleton, avatar)
+        const attached = attachWearableFallback(entry.layer, skeleton, avatar, mergeOpts)
         if (!attached) {
           console.warn(
             `[avatar] skipping wearable ${entry.wearable.id} (${entry.wearable.data.category}) — no merge and no safe fallback geometry`

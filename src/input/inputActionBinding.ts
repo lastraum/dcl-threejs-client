@@ -31,6 +31,13 @@ export function keyCodeToInputActionBinding(code: string): InputActionKeyBinding
   return codeToBinding.get(code)
 }
 
+export function inputActionBinding(action: InputActionValue): InputActionKeyBinding | undefined {
+  for (const entry of BINDINGS) {
+    if (entry.action === action) return entry
+  }
+  return undefined
+}
+
 export function inputActionInteractLabel(action: InputActionValue): string {
   for (const entry of BINDINGS) {
     if (entry.action === action) return entry.label

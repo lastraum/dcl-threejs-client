@@ -2008,10 +2008,15 @@ export class SceneScriptSystem {
     if (this.host) {
       this.bridge?.enableGltfInstancing(this.host.scene)
     }
-    const requeued = this.bridge?.requeueSoloGltfsForInstancing() ?? 0
+    const migrated = this.bridge?.migrateSoloGltfsToInstancing(64) ?? 0
+    const instancingLeft = this.bridge?.getInstancingMigrationRemaining() ?? 0
+    if (instancingLeft > 0) {
+      this.bridge?.extendSoftHydration(12_000)
+    }
     clientDebugLog.log(
       'projection',
-      `e10 static freeze — ${frozen} frozen, ${requeued} solo GLTFs queued for instancing`,
+      `e10 static freeze — ${frozen} frozen, ${migrated} instanced in-place` +
+        (instancingLeft > 0 ? `, ${instancingLeft} migrating` : ''),
       { level: 'success', alsoConsole: true }
     )
     this.worker?.postMessage({ type: 'scene-play-ready' } satisfies MainToWorker)

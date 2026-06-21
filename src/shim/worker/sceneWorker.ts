@@ -95,7 +95,7 @@ let fullSceneOnUpdateIntervalMs = 250
 const FULL_SCENE_ONUPDATE_INTERVAL_PLAY_MS = 400
 /** Abort in-flight scene onUpdate after this — pointer inject must not queue behind Genesis-scale sync work. */
 const SCENE_UPDATE_ABORT_MS = 2000
-const SCENE_UPDATE_ABORT_PLAY_MS = 600
+const SCENE_UPDATE_ABORT_PLAY_MS = 2500
 /** Abort pointer engine tick if sceneEngine.update / onUpdate stalls awaiting main-thread CRDT. */
 const POINTER_ENGINE_TICK_ABORT_MS = 4000
 /** Abort timer — shorter once the scene is interactive. */
@@ -256,7 +256,17 @@ function clearSceneUpdateAbortTimer(): void {
   }
 }
 
+function pointerPressureActive(): boolean {
+  return (
+    pointerDeliveryInFlight ||
+    pointerDeliverBatchOpen ||
+    queuedPointerDeliver !== null ||
+    pendingInjectPointer !== null
+  )
+}
+
 function armSceneUpdateAbortTimer(): void {
+  if (!pointerPressureActive()) return
   clearSceneUpdateAbortTimer()
   sceneUpdateAbortTimer = setTimeout(() => {
     if (!sceneUpdateInFlight) return

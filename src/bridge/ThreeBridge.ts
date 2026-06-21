@@ -143,6 +143,7 @@ export class ThreeBridge {
   private staticRegistry: StaticEntityRegistry | null = null
   private gltfPool: GltfInstancedPool | null = null
   private instancingEnabled = false
+  private instancingMigrationRemaining = 0
 
   constructor(
     private readonly sceneConfig: ResolvedScene,
@@ -311,27 +312,54 @@ export class ThreeBridge {
     this.instancingEnabled = true
   }
 
-  /** Migrate hydrated solo GLTF clones into the instanced pool after play-ready freeze. */
-  requeueSoloGltfsForInstancing(): number {
-    if (!this.instancingEnabled || !this.gltfPool || !this.staticRegistry?.isEnabled()) return 0
+  /** In-place migrate solo GLTF clones into InstancedMesh (no cache.clone round-trip). */
+  migrateSoloGltfsToInstancing(limit = 64): number {
+    if (!this.instancingEnabled || !this.gltfPool || !this.staticRegistry?.isEnabled()) {
+      this.instancingMigrationRemaining = 0
+      return 0
+    }
     const { GltfContainer } = this.ecs
-    let count = 0
+    let migrated = 0
+    let remaining = 0
     this.staticRegistry.forEachFrozen((entity) => {
       if (!GltfContainer.has(entity) || this.gltfPool!.isInstanced(entity)) return
       const obj = this.store.getNode(entity)
       if (!obj || obj.userData.gltfInstanced) return
       const solo = obj.getObjectByName(meshKey(entity))
       if (!solo) return
-      disposeOwnedObject3D(solo)
-      obj.remove(solo)
-      delete obj.userData.gltfSrcKey
-      delete obj.userData.gltfInstanced
-      delete obj.userData.animationRig
-      delete obj.userData.emoteAnchor
-      this.pendingMeshEntities.add(entity)
-      count++
+      if (migrated < limit) {
+        const { src } = GltfContainer.get(entity)
+        const hash = hashFromSrc(src, this.sceneConfig)
+        const srcKey = hash ?? src.trim()
+        if (
+          hash &&
+          this.gltfPool!.canInstance(entity, src, this.staticRegistry!, this.ecs) &&
+          this.gltfPool!.registerFromClone(entity, srcKey, solo, obj)
+        ) {
+          disposeOwnedObject3D(solo)
+          obj.remove(solo)
+          delete obj.userData.animationRig
+          delete obj.userData.emoteAnchor
+          this.notifyMeshComponent(entity, GltfContainer.componentId)
+          this.notifyGltfAttached(entity)
+          migrated++
+          return
+        }
+      }
+      remaining++
     })
-    return count
+    this.instancingMigrationRemaining = remaining
+    return migrated
+  }
+
+  /** Continue batched in-place instancing migration on async renderer drains. */
+  drainInstancingMigration(): void {
+    if (this.instancingMigrationRemaining <= 0) return
+    this.migrateSoloGltfsToInstancing(48)
+  }
+
+  getInstancingMigrationRemaining(): number {
+    return this.instancingMigrationRemaining
   }
 
   /** Thawed entities leave the instanced pool and re-enter the solo clone attach queue. */
@@ -398,6 +426,7 @@ export class ThreeBridge {
 
   private resolveGltfBudget(): number {
     if (this.hydrationMode) return ThreeBridge.GLTF_HYDRATION_BUDGET_PER_FRAME
+    if (this.instancingMigrationRemaining > 0) return 32
     if (performance.now() < this.softHydrationUntil) return ThreeBridge.GLTF_SOFT_HYDRATION_BUDGET_PER_FRAME
     return ThreeBridge.GLTF_BUDGET_PER_FRAME
   }
@@ -710,6 +739,7 @@ export class ThreeBridge {
    */
   /** Drain deferred mesh work when the projection diff is empty — materials use sync-frame tickDeferredMaterials. */
   async drainPendingWork(): Promise<void> {
+    this.drainInstancingMigration()
     if (!this.pendingMeshEntities.size) return
     const { MeshRenderer, Material, GltfContainer, TextShape } = this.ecs
     const meshEcs = { MeshRenderer, Material, GltfContainer, TextShape }
@@ -719,6 +749,7 @@ export class ThreeBridge {
 
   async consumeDiff(diff: Map<Entity, Map<number, ProjectionChangeKind>>, view: ProjectionView): Promise<void> {
     if (!diff.size) return
+    this.drainInstancingMigration()
     this.gltfBudgetRemaining = this.resolveGltfBudget()
     const { MeshRenderer, Material, GltfContainer, TextShape, Tween, AvatarAttach } = this.ecs
     const meshEcs = { MeshRenderer, Material, GltfContainer, TextShape }
@@ -1104,6 +1135,25 @@ export class ThreeBridge {
       let mesh = obj.getObjectByName(mk) as THREE.Object3D | undefined
 
       if (!hash) return
+
+      if (
+        mesh &&
+        obj.userData.gltfSrcKey === srcKey &&
+        !obj.userData.gltfInstanced &&
+        this.instancingEnabled &&
+        this.gltfPool &&
+        this.staticRegistry &&
+        this.gltfPool.canInstance(entity, src, this.staticRegistry, this.ecs) &&
+        this.gltfPool.registerFromClone(entity, srcKey, mesh, obj)
+      ) {
+        disposeOwnedObject3D(mesh)
+        obj.remove(mesh)
+        delete obj.userData.animationRig
+        delete obj.userData.emoteAnchor
+        this.notifyMeshComponent(entity, GltfContainer.componentId)
+        this.notifyGltfAttached(entity)
+        return
+      }
 
       if (!mesh || obj.userData.gltfSrcKey !== srcKey) {
         if (mesh) {

@@ -366,6 +366,7 @@ export class World {
 
     onProgress?.('Spawning player…')
     await this.player.initCapsule(scene.spawn, bounds, this.sceneScript.readComponents, onProgress)
+    this.sceneScript.setSpatialAudioPlayerRoot(() => this.player!.getPlayerRoot())
     const spawnStatic = this.physics.staticColliderCount
     const spawnGltf = this.physics.gltfStaticActorCount
     const gltfStats = this.sceneScript.gltfColliders?.getPhysicsExtractionStats()

@@ -25,6 +25,7 @@ import { AvatarAttachBridge } from '../../bridge/AvatarAttachBridge'
 import type { AvatarAttachTargetResolver } from '../../avatar/AvatarAttachTargets'
 import { AudioSourceBridge } from '../../media/AudioSourceBridge'
 import { AudioStreamBridge } from '../../media/AudioStreamBridge'
+import type { SpatialAudioAnchors } from '../../media/spatialAudioParent'
 import { VideoPlayerBridge } from '../../media/VideoPlayerBridge'
 import { CollisionSystem } from '../../collision/CollisionSystem'
 import {
@@ -145,6 +146,7 @@ export class SceneScriptSystem {
   private crdtTick = 0
   private clientPlayerPose: EntityPose | null = null
   private clientCameraPose: EntityPose | null = null
+  private getSpatialAudioPlayerRoot: (() => THREE.Object3D | null) | null = null
   private movePlayerHandler: MovePlayerHandler | null = null
   private triggerEmoteHandler: TriggerEmoteHandler | null = null
   private triggerSceneEmoteHandler: TriggerSceneEmoteHandler | null = null
@@ -244,7 +246,9 @@ export class SceneScriptSystem {
     this.audioSourceBridge = new AudioSourceBridge(
       this.readComponents,
       scene,
+      this.view,
       () => this.bridge!.getEntityNodes(),
+      () => this.getSpatialAudioAnchors(),
       host.camera,
       this.recordRendererAppend,
       this.recordRendererLww
@@ -253,7 +257,9 @@ export class SceneScriptSystem {
     this.bridge.setAudioSourceBridge(this.audioSourceBridge)
     this.audioStreamBridge = new AudioStreamBridge(
       this.readComponents,
+      this.view,
       () => this.bridge!.getEntityNodes(),
+      () => this.getSpatialAudioAnchors(),
       this.audioSourceBridge.getListener(),
       this.recordRendererAppend
     )
@@ -545,6 +551,19 @@ export class SceneScriptSystem {
   /** Wire local / remote / NPC skeleton resolvers — call after player avatar loads. */
   setAvatarAttachTargets(resolver: AvatarAttachTargetResolver | null): void {
     this.avatarAttachBridge?.setTargets(resolver)
+  }
+
+  /** Player capsule root for spatial audio on PlayerEntity — call after initCapsule. */
+  setSpatialAudioPlayerRoot(getter: (() => THREE.Object3D | null) | null): void {
+    this.getSpatialAudioPlayerRoot = getter
+  }
+
+  private getSpatialAudioAnchors(): SpatialAudioAnchors | null {
+    if (!this.host) return null
+    return {
+      getPlayerRoot: () => this.getSpatialAudioPlayerRoot?.() ?? null,
+      getCamera: () => this.host!.camera
+    }
   }
 
   getAvatarShapeSkeleton(entity: Entity) {

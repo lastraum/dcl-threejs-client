@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { PBAudioSource } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/audio_source.gen'
+import { applyDclLocalTransform, type DclTransformValues } from '../bridge/dclTransform'
 import { resolveSceneTextureUrl } from '../bridge/material/resolveTexture'
 import type { ResolvedScene } from '../dcl/content/types'
 import { inWorldVolumeMultiplier } from '../rendering/SoundSettings'
@@ -44,11 +45,12 @@ export class SceneAudioPlayer {
     private readonly scene: ResolvedScene,
     private readonly cache: AudioBufferCache,
     global: boolean,
-    parent?: THREE.Object3D
+    parent?: THREE.Object3D,
+    localTransform?: DclTransformValues
   ) {
     this.global = global
     this.sound = this.createSound(global)
-    if (!global && parent) parent.add(this.sound)
+    if (!global && parent) this.attachToParent(parent, localTransform)
   }
 
   getMediaState(): MediaStateValue {
@@ -82,18 +84,19 @@ export class SceneAudioPlayer {
   }
 
   /** Attach positional audio to the entity scene-graph node once it exists. */
-  attachToParent(parent: THREE.Object3D): void {
-    if (this.global || this.sound.parent === parent) return
-    parent.add(this.sound)
+  attachToParent(parent: THREE.Object3D, localTransform?: DclTransformValues): void {
+    if (this.global) return
+    if (this.sound.parent !== parent) parent.add(this.sound)
+    if (localTransform) applyDclLocalTransform(this.sound, localTransform)
   }
 
   /** Recreate decoder when `global` flag changes. */
-  setSpatialMode(global: boolean, parent?: THREE.Object3D): void {
+  setSpatialMode(global: boolean, parent?: THREE.Object3D, localTransform?: DclTransformValues): void {
     if (this.global === global) return
     this.disposeSound()
     this.global = global
     this.sound = this.createSound(global)
-    if (!global && parent) parent.add(this.sound)
+    if (!global && parent) this.attachToParent(parent, localTransform)
     if (this.loadedClip) void this.reloadCurrentClip()
   }
 

@@ -7,6 +7,7 @@ import type { ProjectionView } from '../bridge/ProjectionView'
 import { soundSettings } from '../rendering/SoundSettings'
 import { MS_NONE, type MediaStateValue } from './audioConstants'
 import { SceneAudioStreamPlayer } from './SceneAudioStreamPlayer'
+import { resolveSpatialAudioAttach, type SpatialAudioAnchors } from './spatialAudioParent'
 
 type StreamEntry = {
   player: SceneAudioStreamPlayer
@@ -27,7 +28,9 @@ export class AudioStreamBridge {
 
   constructor(
     private readonly ecs: MirrorComponents,
+    private readonly view: ProjectionView,
     private readonly getEntityNodes: () => Map<Entity, THREE.Group>,
+    private readonly getSpatialAnchors: () => SpatialAudioAnchors | null,
     private readonly listener: THREE.AudioListener,
     private readonly recordAppend?: (componentId: number, entity: Entity, value: unknown) => void
   ) {
@@ -45,7 +48,7 @@ export class AudioStreamBridge {
   }
 
   sync(view: ProjectionView): void {
-    const { AudioStream, VisibilityComponent } = this.ecs
+    const { AudioStream, VisibilityComponent, Transform } = this.ecs
     const active = new Set<Entity>()
 
     for (const [entity, spec] of view.getEntitiesWith(AudioStream)) {
@@ -61,17 +64,24 @@ export class AudioStreamBridge {
         entry.lastSpatial !== spatial ||
         entry.lastSpatialMin !== spatialMin ||
         entry.lastSpatialMax !== spatialMax
+      const attach = spatial
+        ? resolveSpatialAudioAttach(
+            entity,
+            view,
+            Transform,
+            this.getEntityNodes,
+            this.getSpatialAnchors()
+          )
+        : null
 
       if (spatialChanged) {
         entry.lastSpatial = spatial
         entry.lastSpatialMin = spatialMin
         entry.lastSpatialMax = spatialMax
-        const parent = this.getEntityNodes().get(entity)
-        entry.player.setSpatialMode(spatial, spatialMin, spatialMax, parent)
+        entry.player.setSpatialMode(spatial, spatialMin, spatialMax, attach?.parent, attach?.localTransform)
         entry.lastSpecKey = ''
-      } else if (spatial) {
-        const parent = this.getEntityNodes().get(entity)
-        if (parent) entry.player.attachToParent(parent)
+      } else if (spatial && attach) {
+        entry.player.attachToParent(attach.parent, attach.localTransform)
         entry.player.applySpatialDistances(spatialMin, spatialMax)
       }
 
@@ -121,13 +131,22 @@ export class AudioStreamBridge {
   private ensureStream(entity: Entity, spec: PBAudioStream): void {
     if (this.streams.has(entity)) return
     const spatial = spec.spatial === true
-    const parent = spatial ? this.getEntityNodes().get(entity) : undefined
+    const attach = spatial
+      ? resolveSpatialAudioAttach(
+          entity,
+          this.view,
+          this.ecs.Transform,
+          this.getEntityNodes,
+          this.getSpatialAnchors()
+        )
+      : null
     const player = new SceneAudioStreamPlayer(
       this.listener,
       spatial,
       spec.spatialMinDistance ?? 0,
       spec.spatialMaxDistance ?? 60,
-      parent
+      attach?.parent,
+      attach?.localTransform
     )
     player.setUserGestureUnlocked(this.userGestureUnlocked)
     this.streams.set(entity, {

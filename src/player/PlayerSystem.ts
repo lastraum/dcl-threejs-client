@@ -250,6 +250,11 @@ export class PlayerSystem {
     }
   }
 
+  /** Capsule root — spatial audio parented to PlayerEntity attaches here. */
+  getPlayerRoot(): THREE.Object3D {
+    return this.root
+  }
+
   /** Scene-local DCL meters (+X east, +Z north). */
   /** Apply PhysX foot position to the avatar root (after prewarm / teleport snap). */
   syncFromPhysics(): void {

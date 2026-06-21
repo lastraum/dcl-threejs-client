@@ -9,6 +9,7 @@ import { soundSettings, volumeToGain } from '../rendering/SoundSettings'
 import { AudioBufferCache } from './AudioBufferCache'
 import { MS_NONE, type MediaStateValue } from './audioConstants'
 import { SceneAudioPlayer } from './SceneAudioPlayer'
+import { resolveSpatialAudioAttach, type SpatialAudioAnchors } from './spatialAudioParent'
 
 type PlayerEntry = {
   player: SceneAudioPlayer
@@ -30,7 +31,9 @@ export class AudioSourceBridge {
   constructor(
     private readonly ecs: MirrorComponents,
     private readonly scene: ResolvedScene,
+    private readonly view: ProjectionView,
     private readonly getEntityNodes: () => Map<Entity, THREE.Group>,
+    private readonly getSpatialAnchors: () => SpatialAudioAnchors | null,
     camera: THREE.Camera,
     /** Source-capture each AudioEvent append for the outbound CrdtEncoder. */
     private readonly recordAppend?: (componentId: number, entity: Entity, value: unknown) => void,
@@ -62,7 +65,7 @@ export class AudioSourceBridge {
   }
 
   sync(view: ProjectionView): void {
-    const { AudioSource, VisibilityComponent } = this.ecs
+    const { AudioSource, VisibilityComponent, Transform } = this.ecs
     const active = new Set<Entity>()
 
     for (const [entity, spec] of view.getEntitiesWith(AudioSource)) {
@@ -72,16 +75,24 @@ export class AudioSourceBridge {
       if (!entry) continue
 
       const global = spec.global === true
+      const attach = global
+        ? null
+        : resolveSpatialAudioAttach(
+            entity,
+            view,
+            Transform,
+            this.getEntityNodes,
+            this.getSpatialAnchors()
+          )
+
       if (entry.lastGlobal !== global) {
         entry.lastGlobal = global
-        const parent = this.getEntityNodes().get(entity)
-        entry.player.setSpatialMode(global, parent)
+        entry.player.setSpatialMode(global, attach?.parent, attach?.localTransform)
         entry.lastSpecKey = ''
       }
 
-      if (!global) {
-        const parent = this.getEntityNodes().get(entity)
-        if (parent) entry.player.attachToParent(parent)
+      if (!global && attach) {
+        entry.player.attachToParent(attach.parent, attach.localTransform)
       }
 
       const visible =
@@ -136,8 +147,23 @@ export class AudioSourceBridge {
   private ensurePlayer(entity: Entity, spec: PBAudioSource): void {
     if (this.players.has(entity)) return
     const global = spec.global === true
-    const parent = global ? undefined : this.getEntityNodes().get(entity)
-    const player = new SceneAudioPlayer(this.listener, this.scene, this.cache, global, parent)
+    const attach = global
+      ? null
+      : resolveSpatialAudioAttach(
+          entity,
+          this.view,
+          this.ecs.Transform,
+          this.getEntityNodes,
+          this.getSpatialAnchors()
+        )
+    const player = new SceneAudioPlayer(
+      this.listener,
+      this.scene,
+      this.cache,
+      global,
+      attach?.parent,
+      attach?.localTransform
+    )
     player.setUserGestureUnlocked(this.userGestureUnlocked)
     player.onNaturalEnd = () => this.syncPlayingToEcs(entity, false)
     this.players.set(entity, {

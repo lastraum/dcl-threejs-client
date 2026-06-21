@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { PBAudioStream } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/audio_stream.gen'
+import { applyDclLocalTransform, type DclTransformValues } from '../bridge/dclTransform'
 import { inWorldVolumeMultiplier } from '../rendering/SoundSettings'
 import {
   MS_BUFFERING,
@@ -57,7 +58,8 @@ export class SceneAudioStreamPlayer {
     spatial: boolean,
     spatialMinDistance: number,
     spatialMaxDistance: number,
-    parent?: THREE.Object3D
+    parent?: THREE.Object3D,
+    localTransform?: DclTransformValues
   ) {
     this.spatial = spatial
     this.spatialMin = spatialMinDistance
@@ -65,7 +67,7 @@ export class SceneAudioStreamPlayer {
     this.audio = this.createAudioElement()
     this.sound = this.createSound(spatial, spatialMinDistance, spatialMaxDistance)
     this.bindAudioElement(this.sound)
-    if (spatial && parent) parent.add(this.sound)
+    if (spatial && parent) this.attachToParent(parent, localTransform)
     this.wireMediaEvents()
   }
 
@@ -92,9 +94,10 @@ export class SceneAudioStreamPlayer {
     }
   }
 
-  attachToParent(parent: THREE.Object3D): void {
-    if (!this.spatial || this.sound.parent === parent) return
-    parent.add(this.sound)
+  attachToParent(parent: THREE.Object3D, localTransform?: DclTransformValues): void {
+    if (!this.spatial) return
+    if (this.sound.parent !== parent) parent.add(this.sound)
+    if (localTransform) applyDclLocalTransform(this.sound, localTransform)
   }
 
   /** Recreate decoder when spatial mode or falloff distances require a new graph. */
@@ -102,7 +105,8 @@ export class SceneAudioStreamPlayer {
     spatial: boolean,
     spatialMinDistance: number,
     spatialMaxDistance: number,
-    parent?: THREE.Object3D
+    parent?: THREE.Object3D,
+    localTransform?: DclTransformValues
   ): void {
     const same =
       this.spatial === spatial &&
@@ -119,7 +123,7 @@ export class SceneAudioStreamPlayer {
     this.audio = this.createAudioElement()
     this.sound = this.createSound(spatial, spatialMinDistance, spatialMaxDistance)
     this.bindAudioElement(this.sound)
-    if (spatial && parent) parent.add(this.sound)
+    if (spatial && parent) this.attachToParent(parent, localTransform)
     this.wireMediaEvents()
     this.loadedUrl = ''
     if (url) void this.loadStream(url, playing)

@@ -96,7 +96,9 @@ export function composeTriggerWorldMatrixDcl(
   if (!chain.length) return false
   out.identity()
   for (const e of chain) {
-    composeTransformMatrixDcl(Transform.get(e) as DclTransformValues, _compose)
+    const tr = Transform.getOrNull(e)
+    if (!tr) return false
+    composeTransformMatrixDcl(tr as DclTransformValues, _compose)
     out.multiply(_compose)
   }
   return true

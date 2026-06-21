@@ -10,10 +10,10 @@ import {
 } from '../rendering/SunEnvironmentSettings'
 
 const SKY_VERTEX = /* glsl */ `
-varying vec3 vWorldPosition;
+varying vec3 vWorldDirection;
 void main() {
-  vec4 worldPos = modelMatrix * vec4(position, 1.0);
-  vWorldPosition = worldPos.xyz;
+  // Local sphere vertex = view ray when the dome is centered on the camera each frame.
+  vWorldDirection = position;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
 `
@@ -45,7 +45,7 @@ uniform samplerCube uNearCloudsCube;
 uniform samplerCube uHorizonCloudsCube;
 uniform samplerCube uTopCloudsCube;
 
-varying vec3 vWorldPosition;
+varying vec3 vWorldDirection;
 
 vec3 sampleGradient(vec3 dir, vec3 zenit, vec3 horizon, vec3 nadir) {
   float y = clamp(dir.y, -1.0, 1.0);
@@ -156,7 +156,7 @@ vec3 blendCloudLayer(
 }
 
 void main() {
-  vec3 dir = normalize(vWorldPosition);
+  vec3 dir = normalize(vWorldDirection);
   vec3 sky = sampleGradient(dir, uZenitColor, uHorizonColor, uNadirColor);
 
   float night = 1.0 - smoothstep(-0.08, 0.12, uSunDirection.y);

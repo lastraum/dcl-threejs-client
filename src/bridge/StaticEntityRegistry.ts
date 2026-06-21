@@ -77,8 +77,7 @@ export class StaticEntityRegistry {
       components.TweenState.componentId,
       components.AvatarShape.componentId,
       components.PointerEvents.componentId,
-      components.MeshCollider.componentId,
-      components.GltfContainer.componentId
+      components.MeshCollider.componentId
     ])
     return thawIds.has(componentId)
   }

@@ -11,6 +11,7 @@ export type SpatialAudioAnchors = {
 
 export type SpatialAudioAttach = {
   parent: THREE.Object3D
+  /** Set when the audio entity is parented under another ECS entity's scene node. */
   localTransform?: DclTransformValues
 }
 
@@ -87,6 +88,36 @@ function composeLocalTransformToAnchor(
   return multiplyDclTransforms(parentLocal, t)
 }
 
+/**
+ * Attach to the audio entity's own scene node, or the nearest ancestor with a rendered node
+ * (when the AudioSource entity is a Transform child of another entity).
+ */
+function resolveSceneNodeAttach(
+  entity: Entity,
+  view: ProjectionView,
+  Transform: MirrorComponents['Transform'],
+  getEntityNodes: () => Map<Entity, THREE.Group>
+): SpatialAudioAttach | null {
+  const nodes = getEntityNodes()
+  const own = nodes.get(entity)
+  if (own) return { parent: own }
+
+  if (!Transform.has(entity)) return null
+
+  let current = Transform.get(entity).parent as Entity | undefined
+  while (current && current !== view.RootEntity) {
+    const node = nodes.get(current)
+    if (node) {
+      const local = composeLocalTransformToAnchor(entity, current, Transform)
+      return local ? { parent: node, localTransform: local } : null
+    }
+    if (!Transform.has(current)) break
+    current = Transform.get(current).parent as Entity | undefined
+  }
+
+  return null
+}
+
 /** Resolve THREE parent for spatial audio — scene nodes, or player/camera anchors when ECS parent is reserved. */
 export function resolveSpatialAudioAttach(
   entity: Entity,
@@ -111,7 +142,5 @@ export function resolveSpatialAudioAttach(
     return local ? { parent: camera, localTransform: local } : null
   }
 
-  const node = getEntityNodes().get(entity)
-  return node ? { parent: node } : null
+  return resolveSceneNodeAttach(entity, view, Transform, getEntityNodes)
 }
-

@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import type { PBAudioSource } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/audio_source.gen'
 import { applyDclLocalTransform, type DclTransformValues } from '../bridge/dclTransform'
-import { resolveSceneTextureUrl } from '../bridge/material/resolveTexture'
+import { resolveSceneAudioUrl } from './resolveSceneAudioUrl'
 import type { ResolvedScene } from '../dcl/content/types'
 import { inWorldVolumeMultiplier } from '../rendering/SoundSettings'
 import type { AudioBufferCache } from './AudioBufferCache'
@@ -83,11 +83,31 @@ export class SceneAudioPlayer {
     }
   }
 
-  /** Attach positional audio to the entity scene-graph node once it exists. */
+  /** Detach positional audio from the scene graph (global clips stay on the listener only). */
+  detachFromScene(): void {
+    this.sound.parent?.remove(this.sound)
+  }
+
+  /**
+   * Parent `PositionalAudio` under a scene entity node (own entity or an ECS parent entity).
+   * Re-applies `localTransform` each call so child-entity offsets stay in sync.
+   */
   attachToParent(parent: THREE.Object3D, localTransform?: DclTransformValues): void {
-    if (this.global) return
-    if (this.sound.parent !== parent) parent.add(this.sound)
-    if (localTransform) applyDclLocalTransform(this.sound, localTransform)
+    if (this.global) {
+      this.detachFromScene()
+      return
+    }
+    if (this.sound.parent !== parent) {
+      this.detachFromScene()
+      parent.add(this.sound)
+    }
+    if (localTransform) {
+      applyDclLocalTransform(this.sound, localTransform)
+    } else {
+      this.sound.position.set(0, 0, 0)
+      this.sound.quaternion.set(0, 0, 0, 1)
+      this.sound.scale.set(1, 1, 1)
+    }
   }
 
   /** Recreate decoder when `global` flag changes. */
@@ -108,7 +128,7 @@ export class SceneAudioPlayer {
     const specCurrentTime = Math.max(spec.currentTime ?? 0, 0)
 
     const clipPath = spec.audioClipUrl?.trim() ?? ''
-    const url = clipPath ? resolveSceneTextureUrl(clipPath, this.scene) : null
+    const url = clipPath ? resolveSceneAudioUrl(clipPath, this.scene) : null
     if (url && url !== this.loadedClip) {
       void this.loadClip(url)
     } else if (!url && clipPath) {

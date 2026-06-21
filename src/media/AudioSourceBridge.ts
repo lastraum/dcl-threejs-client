@@ -22,7 +22,7 @@ type PlayerEntry = {
 /** ECS AudioSource → THREE.Audio decoders; grow-only AudioEvent back to mirror. */
 export class AudioSourceBridge {
   private readonly players = new Map<Entity, PlayerEntry>()
-  private readonly cache = new AudioBufferCache()
+  private readonly cache: AudioBufferCache
   private readonly listener: THREE.AudioListener
   private userGestureUnlocked = false
   private eventTimestamp = 1
@@ -41,6 +41,7 @@ export class AudioSourceBridge {
     private readonly recordLww?: (componentId: number, entity: Entity, value: unknown) => void
   ) {
     this.listener = new THREE.AudioListener()
+    this.cache = new AudioBufferCache(() => this.listener.context)
     camera.add(this.listener)
     this.applyMasterVolume(soundSettings.get().masterVolume)
     this.unsubscribeSoundSettings = soundSettings.subscribe((state) => {
@@ -91,7 +92,9 @@ export class AudioSourceBridge {
         entry.lastSpecKey = ''
       }
 
-      if (!global && attach) {
+      if (global) {
+        entry.player.detachFromScene()
+      } else if (attach) {
         entry.player.attachToParent(attach.parent, attach.localTransform)
       }
 

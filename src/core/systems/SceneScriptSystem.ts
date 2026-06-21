@@ -157,6 +157,8 @@ export class SceneScriptSystem {
   private running = false
   /** True while `bootWorker` awaits the worker `ready` message — CRDT uses a fast lane. */
   private workerBootInProgress = false
+  /** Authoritative fort CRDT received while the worker is still booting — applied after ready. */
+  private readonly pendingAuthoritativeInbound: Uint8Array[] = []
   private prepared = false
   private crdtTick = 0
   private clientPlayerPose: EntityPose | null = null
@@ -721,12 +723,35 @@ export class SceneScriptSystem {
         : messageType === SceneBinaryMessageType.CRDT_AUTHORITATIVE
           ? 'CRDT_AUTHORITATIVE'
           : 'CRDT'
+    const copy = payload.slice()
+    if (this.workerBootInProgress) {
+      this.pendingAuthoritativeInbound.push(copy)
+      clientDebugLog.log(
+        'projection',
+        `authoritative inbound buffered during boot (${typeLabel}) — ${copy.byteLength}B`,
+        { level: 'info', alsoConsole: true, throttleMs: 2000, throttleKey: `auth-in-boot:${typeLabel}` }
+      )
+      return
+    }
     clientDebugLog.log(
       'projection',
-      `authoritative inbound (${typeLabel}) — ${payload.byteLength}B`,
+      `authoritative inbound (${typeLabel}) — ${copy.byteLength}B`,
       { level: 'info', alsoConsole: true, throttleMs: 2000, throttleKey: `auth-in:${typeLabel}` }
     )
-    this.applyAuthoritativeCrdtToProjection(payload.slice())
+    this.applyAuthoritativeCrdtToProjection(copy)
+  }
+
+  private flushPendingAuthoritativeInbound(): void {
+    if (!this.pendingAuthoritativeInbound.length) return
+    const pending = this.pendingAuthoritativeInbound.splice(0)
+    clientDebugLog.log(
+      'projection',
+      `applying ${pending.length} buffered authoritative CRDT chunk(s) after boot`,
+      { level: 'info', alsoConsole: true }
+    )
+    for (const payload of pending) {
+      this.applyAuthoritativeCrdtToProjection(payload)
+    }
   }
 
   private postCommsBinaryToWorker(data: Uint8Array): void {
@@ -873,6 +898,7 @@ export class SceneScriptSystem {
     })
     } finally {
       this.workerBootInProgress = false
+      this.flushPendingAuthoritativeInbound()
     }
 
     this.running = true

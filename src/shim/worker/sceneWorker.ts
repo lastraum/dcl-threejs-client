@@ -137,6 +137,28 @@ let inboundBinaryFlushInFlight = false
 let inboundBinaryFlushQueued = false
 /** Brief debounce so RES_CRDT_STATE chunks batch before BinaryMessageBus dispatch. */
 const INBOUND_BINARY_FLUSH_DEBOUNCE_MS = 20
+const SCENE_SCRIPT_FETCH_TIMEOUT_MS = 30_000
+
+async function fetchSceneScript(url: string): Promise<string> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), SCENE_SCRIPT_FETCH_TIMEOUT_MS)
+  const heartbeat = setInterval(() => {
+    workerLog('log', `[sceneWorker] still fetching scene script… (${SCENE_SCRIPT_FETCH_TIMEOUT_MS / 1000}s timeout)`)
+  }, 5_000)
+  try {
+    const res = await fetch(url, { signal: controller.signal })
+    if (!res.ok) throw new Error(`Script fetch ${res.status}`)
+    return await res.text()
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error(`Script fetch timed out after ${SCENE_SCRIPT_FETCH_TIMEOUT_MS / 1000}s — ${url}`)
+    }
+    throw err
+  } finally {
+    clearTimeout(timeout)
+    clearInterval(heartbeat)
+  }
+}
 let inboundBinaryBusMissingWarned = false
 
 
@@ -1570,9 +1592,13 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     debugMessageArrival = msg.debug?.messageArrival === true
     patchWorkerConsole()
     workerLog('log', 'scene worker boot — console forwarding active')
-    const res = await fetch(msg.scene.scriptUrl)
-    if (!res.ok) throw new Error(`Script fetch ${res.status}`)
-    const code = await res.text()
+    workerLog('log', `[sceneWorker] fetching scene script — ${msg.scene.scriptUrl}`)
+    const fetchStartedAt = performance.now()
+    const code = await fetchSceneScript(msg.scene.scriptUrl)
+    workerLog(
+      'log',
+      `[sceneWorker] script fetched — ${(code.length / 1024).toFixed(0)}KB in ${(performance.now() - fetchStartedAt).toFixed(0)}ms`
+    )
 
     engineApiEvents = createEngineApiEventState({
       onSubscribe: (eventId) => ctx.postMessage({ type: 'engine-api-subscribe', eventId } satisfies SceneWorkerOutbound),
@@ -1611,7 +1637,12 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
 
     installPreregisterRendererComponentsHook()
     installNetworkTransportHook(() => {})
+    const evalStartedAt = performance.now()
     const exports = evaluateSceneBundle(code, requireMap, patchSceneBundle)
+    workerLog(
+      'log',
+      `[sceneWorker] bundle eval complete in ${(performance.now() - evalStartedAt).toFixed(0)}ms`
+    )
     if ((globalThis as Record<string, unknown>).__THREEJS_NETWORK_TRANSPORT_HOOKED__ === true) {
       workerLog('log', '[sceneWorker] network transport projection forwarder installed')
     } else {

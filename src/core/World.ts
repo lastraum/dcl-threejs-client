@@ -69,6 +69,7 @@ export class World {
   private lastPhysicsBatchFp = ''
   private signedFetchSceneContext: SignedFetchSceneContext | null = null
   private sceneCommsConnected = false
+  private authoritativeCrdtRetryTimers: number[] = []
   private pendingColliderCooks = 0
   private readonly colliderCookQueue = new Set<number>()
   /** Extract colliders while GLBs attach; PhysX cook runs once after hydration is idle. */
@@ -189,15 +190,23 @@ export class World {
 
   /** Authoritative server can answer after scene-room handshake — retry bulk state request. */
   private scheduleAuthoritativeCrdtRetries(): void {
+    this.clearAuthoritativeCrdtRetries()
     for (const delayMs of [2_000, 5_000, 10_000]) {
-      window.setTimeout(() => {
+      const timer = window.setTimeout(() => {
         if (!this.sceneCommsConnected || !this.comms.hasRemoteAuthoritativeServer()) return
         this.comms.requestAuthoritativeCrdtState(true)
       }, delayMs)
+      this.authoritativeCrdtRetryTimers.push(timer)
     }
   }
 
+  private clearAuthoritativeCrdtRetries(): void {
+    for (const timer of this.authoritativeCrdtRetryTimers) clearTimeout(timer)
+    this.authoritativeCrdtRetryTimers.length = 0
+  }
+
   async loadScene(scene: ResolvedScene, onProgress?: (msg: string) => void): Promise<void> {
+    this.clearAuthoritativeCrdtRetries()
     if (skipRemoteAvatars()) {
       clientDebugLog.log('network', 'Remote avatars disabled (?noremote)', {
         alsoConsole: true,

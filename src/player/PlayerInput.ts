@@ -1,3 +1,6 @@
+import { isMobilePortrait } from '../client/mobilePortrait'
+import { TouchControls } from './TouchControls'
+
 /** Keyboard + pointer-lock input for DCL-style third-person camera. */
 export class PlayerInput {
   readonly keys = { w: false, a: false, s: false, d: false, space: false, shift: false, ctrl: false }
@@ -6,10 +9,13 @@ export class PlayerInput {
   spacePressed = false
   /** Left-button drag orbit — does not change pointer lock. */
   orbiting = false
+  private readonly touch: TouchControls | null
   private userGestureUnlocked = false
   private onUserGestureUnlock: (() => void) | null = null
 
   constructor(private readonly canvas: HTMLElement) {
+    this.touch = isMobilePortrait() ? new TouchControls(canvas) : null
+    this.touch?.setEnabled(true)
     window.addEventListener('keydown', this.onKeyDown)
     window.addEventListener('keyup', this.onKeyUp)
     document.addEventListener('focusin', this.onFocusIn)
@@ -21,7 +27,13 @@ export class PlayerInput {
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false })
   }
 
+  /** Normalized camera-relative stick — x strafe, z forward (mobile portrait). */
+  get touchMove(): { x: number; z: number } {
+    return this.touch?.move ?? { x: 0, z: 0 }
+  }
+
   dispose(): void {
+    this.touch?.dispose()
     window.removeEventListener('keydown', this.onKeyDown)
     window.removeEventListener('keyup', this.onKeyUp)
     document.removeEventListener('focusin', this.onFocusIn)
@@ -39,10 +51,11 @@ export class PlayerInput {
     this.pointer.dy = 0
     this.scrollDelta = 0
     this.spacePressed = false
+    this.touch?.endFrame()
   }
 
   get looking(): boolean {
-    return this.pointer.locked || this.orbiting
+    return this.pointer.locked || this.orbiting || (this.touch?.isLooking ?? false)
   }
 
   setOnUserGestureUnlock(callback: () => void): void {
@@ -101,6 +114,14 @@ export class PlayerInput {
     this.pointer.dy += e.movementY
   }
 
+  /** Merge touch-look deltas into pointer before PlayerSystem reads them. */
+  consumeTouchLook(): void {
+    const look = this.touch?.look
+    if (!look) return
+    this.pointer.dx += look.dx
+    this.pointer.dy += look.dy
+  }
+
   private onMouseDown = (e: MouseEvent) => {
     if (this.isOverlayOpen()) return
     if (e.button === 0) {
@@ -145,7 +166,10 @@ export class PlayerInput {
   }
 
   private isOverlayOpen(): boolean {
-    return document.querySelector('.settings-overlay.is-open') !== null
+    return (
+      document.querySelector('.settings-overlay.is-open') !== null ||
+      document.querySelector('.preferences-panel:not([hidden])') !== null
+    )
   }
 
   private clearMovementKeys(): void {

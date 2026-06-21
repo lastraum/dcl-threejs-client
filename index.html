@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>DCL Three.js Client</title>
     <style>
@@ -631,6 +631,164 @@
         :root {
           --client-chat-max-h: min(360px, calc(100vh - var(--client-safe-top) - var(--client-safe-bottom) - 64px));
         }
+      }
+
+      /* ===== Mobile portrait HUD + touch layout ===== */
+      body.mobile-portrait {
+        --client-sidebar-w: 0px;
+        --client-ui-gap: 0px;
+        --client-safe-left: max(12px, env(safe-area-inset-left, 0px));
+        --client-safe-right: max(12px, env(safe-area-inset-right, 0px));
+        --client-safe-top: max(10px, env(safe-area-inset-top, 0px));
+        --client-safe-bottom: max(12px, env(safe-area-inset-bottom, 0px));
+        --client-chat-max-h: min(72vh, calc(100vh - var(--client-safe-top) - var(--client-safe-bottom) - 80px));
+        --client-panel-max-w: 100vw;
+        touch-action: manipulation;
+      }
+      body.mobile-portrait .client-shell {
+        display: none !important;
+      }
+      body.mobile-portrait #app canvas {
+        touch-action: none;
+      }
+      .mobile-hud {
+        position: fixed;
+        inset: 0;
+        z-index: 24;
+        pointer-events: none;
+      }
+      .mobile-hud[hidden] {
+        display: none !important;
+      }
+      .mobile-hud__btn {
+        position: absolute;
+        display: grid;
+        place-items: center;
+        width: 48px;
+        height: 48px;
+        min-width: 48px;
+        min-height: 48px;
+        padding: 0;
+        border: 0;
+        border-radius: 50%;
+        background: rgba(12, 12, 18, 0.72);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        color: #fff;
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+        cursor: pointer;
+        pointer-events: auto;
+        transition: transform 0.12s ease, background 0.15s ease, box-shadow 0.15s ease;
+      }
+      .mobile-hud__btn:active {
+        transform: scale(0.94);
+      }
+      .mobile-hud__btn.is-active {
+        background: rgba(255, 45, 135, 0.88);
+        box-shadow: 0 6px 22px rgba(255, 45, 135, 0.35);
+      }
+      .mobile-hud__btn--profile {
+        top: var(--client-safe-top);
+        left: var(--client-safe-left);
+        overflow: hidden;
+        box-shadow: 0 0 0 2px #57e389, 0 4px 18px rgba(0, 0, 0, 0.35);
+      }
+      .mobile-hud__btn--chat {
+        left: var(--client-safe-left);
+        bottom: var(--client-safe-bottom);
+      }
+      .mobile-hud__avatar {
+        width: 100%;
+        height: 100%;
+        border-radius: 50%;
+        object-fit: cover;
+        image-rendering: pixelated;
+        background: #2a2a34;
+      }
+      .mobile-hud__icon {
+        display: grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+      }
+      .mobile-hud__icon svg {
+        width: 22px;
+        height: 22px;
+      }
+      .mobile-hud__badge {
+        position: absolute;
+        top: 2px;
+        right: 2px;
+        min-width: 16px;
+        height: 16px;
+        padding: 0 4px;
+        border-radius: 999px;
+        background: #ff2d87;
+        color: #fff;
+        font-size: 9px;
+        font-weight: 700;
+        line-height: 16px;
+        text-align: center;
+      }
+      body.mobile-portrait .chat-panel-wrap {
+        left: var(--client-safe-left);
+        right: var(--client-safe-right);
+        bottom: calc(var(--client-safe-bottom) + 60px);
+        width: auto;
+        max-height: var(--client-chat-max-h);
+      }
+      body.mobile-portrait .chat-panel {
+        width: 100%;
+        max-width: none;
+        border-radius: 18px;
+      }
+      body.mobile-portrait .preferences-panel__panel {
+        left: 0;
+        right: 0;
+        top: auto;
+        bottom: 0;
+        width: 100%;
+        max-width: none;
+        max-height: 88vh;
+        border-radius: 20px 20px 0 0;
+      }
+      body.mobile-portrait .splash-screen__layout {
+        grid-template-columns: 1fr;
+        width: 100%;
+        min-height: 100dvh;
+        max-height: 100dvh;
+        padding: max(16px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom));
+        overflow: hidden;
+      }
+      body.mobile-portrait .splash-screen__copy {
+        justify-content: flex-start;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior: contain;
+        padding-bottom: 24px;
+      }
+      body.mobile-portrait .splash-screen__actions {
+        max-width: none;
+        max-height: min(52vh, 440px);
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior: contain;
+        padding-right: 4px;
+      }
+      body.mobile-portrait .splash-auth-grid {
+        max-width: none;
+      }
+      body.mobile-portrait .loading-screen__layout {
+        padding: max(12px, env(safe-area-inset-top)) 12px max(16px, env(safe-area-inset-bottom));
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      body.mobile-portrait .loading-screen__featured {
+        min-height: 42vh;
+      }
+      body.mobile-portrait .loading-screen__hydration-timer {
+        position: relative;
+        margin-top: 12px;
       }
 
       .client-panel {

@@ -369,6 +369,8 @@ export class PlayerSystem {
       }
     }
 
+    this.input.consumeTouchLook()
+
     if (this.input.looking) {
       this.camYaw -= this.input.pointer.dx * POINTER_LOOK_SPEED
       this.camYaw = normalizeAngle(this.camYaw)
@@ -390,6 +392,11 @@ export class PlayerSystem {
     if (this.input.keys.s) _moveDir.sub(_forward)
     if (this.input.keys.a) _moveDir.sub(_right)
     if (this.input.keys.d) _moveDir.add(_right)
+    const stick = this.input.touchMove
+    if (stick.x !== 0 || stick.z !== 0) {
+      _moveDir.addScaledVector(_right, stick.x)
+      _moveDir.addScaledVector(_forward, stick.z)
+    }
     const moving = _moveDir.lengthSq() > 0
     if (moving) _moveDir.normalize()
 

@@ -26,6 +26,7 @@ import { fetchProfileFaceUrl } from '../avatar/peerApi'
 import { hydrateEmoteWheelSlots } from '../avatar/profileEmotes'
 import { disposeSessionAssetCache, getSessionAssetCache, prefetchSceneManifestGlbs } from '../rendering/AssetCache'
 import { DEFAULT_TIMEOUT_MS, FAST_TIMEOUT_MS, type SceneHydrationStats } from '../rendering/sceneHydration'
+import { applyMobileGraphics, initMobilePortraitLayout, isMobilePortrait } from './mobilePortrait'
 
 /** Owns world lifecycle — splash → load → play, navigation, and sign-out. */
 export class AppController {
@@ -48,6 +49,7 @@ export class AppController {
     if (this.running) return
     this.running = true
     this.container = container
+    initMobilePortraitLayout()
 
     this.login = await showSplashScreen()
     window.addEventListener('popstate', this.onPopState)
@@ -139,6 +141,9 @@ export class AppController {
 
     const world = new World(this.container)
     this.world = world
+    if (isMobilePortrait()) {
+      applyMobileGraphics(world.host.renderer)
+    }
     world.applyLogin(this.login)
 
     if (!this.debugPanel) {
@@ -211,7 +216,7 @@ export class AppController {
     if (!this.preferencesPanel) {
       this.preferencesPanel = new PreferencesPanel({
         onVisibilityChange: (visible) => {
-          this.shell?.getButton('settings')?.setActive(visible)
+          this.shell?.onPreferencesVisibilityChange(visible)
         },
         onOpen: () => {
           this.settingsOverlay?.hide()

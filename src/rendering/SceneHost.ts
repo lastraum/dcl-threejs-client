@@ -91,7 +91,9 @@ export class SceneHost {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = TONE_MAPPING_EXPOSURE[renderQuality.getTier()]
-    this.renderer.shadowMap.enabled = true
+    const mobilePortrait =
+      typeof document !== 'undefined' && document.body.classList.contains('mobile-portrait')
+    this.renderer.shadowMap.enabled = !mobilePortrait
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
   }
 

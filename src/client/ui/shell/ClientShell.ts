@@ -1,3 +1,5 @@
+import { initMobilePortraitLayout, isMobilePortrait, syncMobilePortraitClass } from '../../mobilePortrait'
+import { MobileHud } from '../MobileHud'
 import { ClientUiLayout } from '../ClientUiLayout'
 import type { EnvironmentSystem } from '../../../environment/EnvironmentSystem'
 import type { SessionIdentity } from '../../../network/SessionIdentity'
@@ -76,8 +78,13 @@ export class ClientShell {
   private onEmoteSelected: ((emoteId: string) => void) | null = null
   private unreadChat = 0
   private unsubChatUnread: (() => void) | null = null
+  private mobileHud: MobileHud | null = null
+  private readonly onLayoutChange = (): void => {
+    this.syncMobileChrome()
+  }
 
   constructor({ environment, session, debugPanel, devProgressPanel = null, chatPanel = null, settingsOverlay = null, preferencesPanel = null, onEmoteSelected, onSignOut, onExit }: ClientShellOptions) {
+    initMobilePortraitLayout()
     this.session = session
     this.onEmoteSelected = onEmoteSelected ?? null
     this.root = document.createElement('aside')
@@ -151,10 +158,18 @@ export class ClientShell {
     document.body.appendChild(this.root)
     this.root.hidden = true
     this.uiLayout.attach(this.root)
+
+    this.ensureMobileHud()
+    window.addEventListener('resize', this.onLayoutChange, { passive: true })
+    window.addEventListener('orientationchange', this.onLayoutChange, { passive: true })
+    this.syncMobileChrome()
   }
 
   show(): void {
-    this.root.hidden = false
+    this.syncMobileChrome()
+    if (!isMobilePortrait()) {
+      this.root.hidden = false
+    }
   }
 
   attachChatPanel(panel: ChatPanel, social: SocialService): void {
@@ -199,6 +214,7 @@ export class ClientShell {
   private wireChatPanel(panel: ChatPanel): void {
     panel.setOnVisibilityChange((visible) => {
       this.buttons.get('chat')?.setActive(visible)
+      this.mobileHud?.setChatActive(visible)
       if (visible) {
         this.unreadChat = 0
         this.updateChatBadge()
@@ -207,7 +223,9 @@ export class ClientShell {
   }
 
   private updateChatBadge(): void {
-    this.buttons.get('chat')?.setBadge(this.unreadChat > 0 ? this.unreadChat : null)
+    const badge = this.unreadChat > 0 ? this.unreadChat : null
+    this.buttons.get('chat')?.setBadge(badge)
+    this.mobileHud?.setChatBadge(badge)
   }
 
   async refreshProfile(): Promise<void> {
@@ -215,9 +233,14 @@ export class ClientShell {
     if (!address) return
     const faceUrl = await fetchProfileFaceUrl(address)
     this.profileButton.setFaceUrl(faceUrl)
+    this.mobileHud?.setFaceUrl(faceUrl)
   }
 
   dispose(): void {
+    window.removeEventListener('resize', this.onLayoutChange)
+    window.removeEventListener('orientationchange', this.onLayoutChange)
+    this.mobileHud?.dispose()
+    this.mobileHud = null
     this.unsubChatUnread?.()
     this.unsubChatUnread = null
     this.profilePopup.dispose()
@@ -298,8 +321,7 @@ export class ClientShell {
     if (id === 'settings') {
       return (ev) => {
         ev.stopPropagation()
-        this.preferencesPanel?.toggle('graphics')
-        this.buttons.get('settings')?.setActive(this.preferencesPanel?.isVisible() ?? false)
+        this.openMobileSettings()
       }
     }
 
@@ -343,5 +365,37 @@ export class ClientShell {
 
   getButton(id: string): SidebarButton | undefined {
     return this.buttons.get(id)
+  }
+
+  private openMobileSettings(): void {
+    this.preferencesPanel?.toggle('graphics')
+    const open = this.preferencesPanel?.isVisible() ?? false
+    this.buttons.get('settings')?.setActive(open)
+    this.mobileHud?.setProfileActive(open)
+  }
+
+  private ensureMobileHud(): void {
+    if (this.mobileHud) return
+    this.mobileHud = new MobileHud({
+      onProfile: () => this.openMobileSettings(),
+      onChat: () => this.actionHandler('chat')(new MouseEvent('click'))
+    })
+  }
+
+  onPreferencesVisibilityChange(visible: boolean): void {
+    this.buttons.get('settings')?.setActive(visible)
+    this.mobileHud?.setProfileActive(visible)
+  }
+
+  private syncMobileChrome(): void {
+    const mobile = syncMobilePortraitClass()
+    if (mobile) {
+      this.ensureMobileHud()
+      this.root.hidden = true
+      this.mobileHud?.show()
+    } else {
+      this.mobileHud?.hide()
+      this.root.hidden = false
+    }
   }
 }

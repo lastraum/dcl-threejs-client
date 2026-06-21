@@ -15,6 +15,14 @@ import {
 import { AdapterManager } from './comms/AdapterManager'
 import { ArchipelagoClient } from './comms/ArchipelagoClient'
 import { CommsInboundQueue } from './comms/CommsInboundQueue'
+import { AuthoritativePeerRegistry } from './sceneSync/AuthoritativePeer'
+import { resolveSceneBinaryDestinations } from './sceneSync/sceneBinaryRecipients'
+import {
+  AUTHORITATIVE_SERVER_SENDER,
+  encodeReqCrdtStateChunk
+} from './sceneSync/sceneBinaryWire'
+import { SceneBinaryTransport } from './sceneSync/SceneBinaryTransport'
+import type { SendBinaryRequest, SendBinaryResponse } from '../shim/types'
 import { CommsTopicService } from './comms/CommsTopicService'
 import { LiveKitCommsSession } from './comms/LiveKitCommsSession'
 import { parseCommsSceneOrigin, realmBoundsFromParcels, type RealmBounds } from './comms/movementCompressed'
@@ -61,6 +69,8 @@ export type CommsPeerHandlers = {
 
 export type SceneBinaryHandler = (sender: string, data: Uint8Array) => void
 
+export type AuthServerJoinHandler = () => void
+
 export type SceneChatHandler = (payload: {
   senderAddress: string
   text: string
@@ -77,6 +87,8 @@ export class CommsService {
   private readonly router = new Rfc4Router()
   private readonly topicService = new CommsTopicService()
   private readonly inboundQueue = new CommsInboundQueue()
+  private readonly authoritativePeer = new AuthoritativePeerRegistry()
+  private readonly sceneBinaryTransport: SceneBinaryTransport
   private adapterManager: AdapterManager
 
   private identity: AuthIdentity | null = null
@@ -90,6 +102,8 @@ export class CommsService {
   private walletSessionLockHeld = false
   private handlers: CommsPeerHandlers | null = null
   private sceneBinaryHandler: SceneBinaryHandler | null = null
+  private authServerJoinHandler: AuthServerJoinHandler | null = null
+  private authoritativeCrdtStateRequested = false
   private chatHandler: SceneChatHandler | null = null
   private topicMessageHandler: ((topic: string, sender: string, payload: Uint8Array) => void) | null = null
   private lastBroadcast = 0
@@ -118,6 +132,15 @@ export class CommsService {
       connectArchipelago: (url) => this.connectArchipelago(url),
       connectLiveKit: (adapter, label) => this.connectLiveKitLabel(adapter, label),
       connectWsRoom: (url) => this.connectWsRoom(url)
+    })
+
+    this.sceneBinaryTransport = new SceneBinaryTransport({
+      getLocalAddress: () => this.localAddress,
+      isAuthoritativePeer: () => this.authoritativePeer.isAuthoritativePeer(),
+      hasRemoteAuthoritativeServer: () => this.hasRemoteAuthoritativeServer(),
+      expectsRemoteAuthoritativeServer: () => this.expectsRemoteAuthoritativeServer(),
+      publishChunks: (chunks, targetAddresses) => this.publishSceneBinaryChunks(chunks, targetAddresses),
+      drainInbound: () => this.inboundQueue.drain()
     })
 
     this.archipelago.setIslandHandler((event) => {
@@ -163,7 +186,6 @@ export class CommsService {
       },
       onSceneBinary: (sceneId, sender, data) => {
         if (this.sceneId && sceneId !== this.sceneId) return
-        this.inboundQueue.pushSceneBinary(sender, data)
         this.sceneBinaryHandler?.(sender, data)
       },
       onPeerChat: (address, text, time, transport) => {
@@ -191,6 +213,7 @@ export class CommsService {
   setIdentity(address: string | undefined, identity: AuthIdentity | null): void {
     this.localAddress = address?.toLowerCase() ?? null
     this.identity = identity
+    this.authoritativePeer.setLocalAddress(this.localAddress)
     this.adapterManager.setIdentity(identity)
     for (const session of [this.islandLiveKit, this.sceneLiveKit, this.worldLiveKit]) {
       session.setLocalAddress(address)
@@ -215,6 +238,10 @@ export class CommsService {
 
   setSceneBinaryHandler(handler: SceneBinaryHandler | null): void {
     this.sceneBinaryHandler = handler
+  }
+
+  setAuthServerJoinHandler(handler: AuthServerJoinHandler | null): void {
+    this.authServerJoinHandler = handler
   }
 
   setChatHandler(handler: SceneChatHandler | null): void {
@@ -266,6 +293,30 @@ export class CommsService {
       room: normalizePointer(commsPointer),
       isConnectedSceneRoom: this.realm.isConnectedSceneRoom
     }
+  }
+
+  /**
+   * Internal Phase 5 election — drives sendBinary loopback when solo in scene/world room.
+   * Not exposed to scenes via `EngineApi.isServer`.
+   */
+  isAuthoritativePeer(): boolean {
+    return this.authoritativePeer.isAuthoritativePeer()
+  }
+
+  /**
+   * `EngineApi.isServer` — dedicated scene-server deployment only (Node/hosted auth server).
+   * Browser clients always false: sync-systems server logic runs on remote `authoritative-server`.
+   */
+  isEngineServer(): boolean {
+    return false
+  }
+
+  getSceneRoomPeerCount(): number {
+    return this.authoritativePeer.getSceneRoomPeerCount()
+  }
+
+  async handleSceneSendBinary(body: SendBinaryRequest): Promise<SendBinaryResponse> {
+    return this.sceneBinaryTransport.handleSendBinary(body)
   }
 
   getRealmInfo(): CommsRealmInfo {
@@ -366,6 +417,7 @@ export class CommsService {
       return { ok: false, reason: 'scene_id' }
     }
 
+    this.authoritativeCrdtStateRequested = false
     this.disconnectSceneTransports()
     this.realm = {
       ...this.realm,
@@ -385,11 +437,11 @@ export class CommsService {
         return { ok: false, reason: 'livekit' }
       }
 
-      this.transport = 'livekit'
       this.worldLiveKit.sendProfileAnnouncement('connect')
 
+      let participants: string[] = []
       try {
-        const participants = await this.peerAddressesExceptSelf(
+        participants = await this.peerAddressesExceptSelf(
           await fetchSceneParticipants(target.pointer, realmName)
         )
         this.worldLiveKit.seedPeers(participants)
@@ -398,48 +450,33 @@ export class CommsService {
         clientDebugLog.log('comms', `world-participants fetch failed: ${msg}`, { level: 'warn' })
       }
 
+      const sceneRoomOk = await this.connectGatekeeperSceneRoom(
+        target,
+        sceneId,
+        realmName,
+        true,
+        participants
+      )
+      if (!sceneRoomOk) {
+        clientDebugLog.log(
+          'comms',
+          'Gatekeeper scene room unavailable for world — sync-systems multiplayer degraded (solo loopback only)',
+          { level: 'warn' }
+        )
+      }
+
+      this.armAuthoritativeSceneRoom(participants)
+
       clientDebugLog.log('comms', 'Transport: LiveKit world room · RFC4 Movement + chat', {
         level: 'success'
       })
+      this.logAuthoritativePeerStatus()
       return { ok: true }
     }
 
     clientDebugLog.log('comms', `Joining scene room · pointer=${target.pointer} scene=${sceneId.slice(0, 12)}…`)
 
-    const parcel = isParcelPointer(normalizePointer(target.pointer))
-      ? normalizePointer(target.pointer)
-      : normalizePointer(target.baseParcel)
-
-    clientDebugLog.log(
-      'comms',
-      `Gatekeeper request · realm=${realmName} parcel=${parcel} scene=${sceneId.slice(0, 12)}… world=false`,
-      { level: 'info' }
-    )
-
-    const adapterResult = await getSceneAdapter(this.identity, {
-      sceneId,
-      parcel,
-      realmName,
-      isWorld: false
-    })
-    if (!adapterResult.ok) {
-      this.releaseWalletSessionIfHeld()
-      clientDebugLog.log('comms', `Gatekeeper failed: ${adapterResult.error}`, { level: 'error' })
-      return { ok: false, reason: 'gatekeeper' }
-    }
-
-    clientDebugLog.log('comms', 'Gatekeeper adapter received · connecting scene LiveKit…', { level: 'success' })
-
-    this.realm.commsAdapter = adapterResult.adapter
-
-    const connected = await this.sceneLiveKit.connect(adapterResult.adapter)
-    if (!connected) {
-      this.releaseWalletSessionIfHeld()
-      clientDebugLog.log('comms', 'Scene LiveKit failed to connect', { level: 'error' })
-      return { ok: false, reason: 'livekit' }
-    }
-
-    let participants: Awaited<ReturnType<typeof fetchSceneParticipants>> = []
+    let participants: string[] = []
     try {
       participants = await this.peerAddressesExceptSelf(
         await fetchSceneParticipants(target.pointer, realmName)
@@ -449,19 +486,29 @@ export class CommsService {
       clientDebugLog.log('comms', `scene-participants fetch failed: ${msg}`, { level: 'warn' })
     }
 
+    const sceneRoomOk = await this.connectGatekeeperSceneRoom(
+      target,
+      sceneId,
+      realmName,
+      false,
+      participants
+    )
+    if (!sceneRoomOk) {
+      this.releaseWalletSessionIfHeld()
+      return { ok: false, reason: 'gatekeeper' }
+    }
+
     if (this.worldConnected) {
       this.worldLiveKit.seedPeers(participants)
       this.worldLiveKit.sendProfileAnnouncement('connect')
     }
 
-    this.transport = 'livekit'
-    this.realm.isConnectedSceneRoom = true
-
-    this.sceneLiveKit.seedPeers(participants)
+    this.armAuthoritativeSceneRoom(participants)
 
     clientDebugLog.log('comms', 'Transport: LiveKit scene room · RFC4 Movement + Scene packets', {
       level: 'success'
     })
+    this.logAuthoritativePeerStatus()
     return { ok: true }
   }
 
@@ -471,11 +518,13 @@ export class CommsService {
     if (!this.localAddress || !this.identity) return false
 
     if (isLiveKitAdapter(trimmed)) {
+      this.authoritativeCrdtStateRequested = false
       this.disconnectSceneTransports()
       this.realm.commsAdapter = trimmed
       const connected = await this.sceneLiveKit.connect(trimmed)
       this.transport = connected ? 'livekit' : 'none'
       this.realm.isConnectedSceneRoom = connected
+      this.authoritativePeer.setSceneRoomConnected(connected)
       return connected
     }
 
@@ -556,20 +605,68 @@ export class CommsService {
   }
 
   async sendBinary(data: Uint8Array[], addresses: string[] = []): Promise<Uint8Array[]> {
-    void addresses
+    await this.publishSceneBinaryChunks(data, addresses)
+    return this.inboundQueue.drain()
+  }
+
+  /** Publish sync-systems binary chunks to the gatekeeper scene room (RFC4 Scene packet). */
+  async publishSceneBinaryChunks(chunks: Uint8Array[], addresses: string[] = []): Promise<void> {
+    if (!chunks.length) return
     if (this.transport !== 'livekit' || !this.sceneId) {
-      if (!this.rfc5.isConnected()) return this.inboundQueue.drain()
-      for (const chunk of data) this.rfc5.send(chunk, false)
-      return this.inboundQueue.drain()
+      if (!this.rfc5.isConnected()) return
+      for (const chunk of chunks) this.rfc5.send(chunk, false)
+      return
     }
 
-    for (const chunk of data) {
+    const session = this.sceneBinarySession()
+    if (!session) return
+
+    const onSceneRoom = session === this.sceneLiveKit
+    const destinations = resolveSceneBinaryDestinations(addresses, {
+      localAddress: this.localAddress,
+      includeAuthServerIfPresent: onSceneRoom,
+      hasRemoteParticipant: (identity) => session.hasRemoteParticipant(identity)
+    })
+
+    for (const chunk of chunks) {
       const packet = encodeRfc4SceneBinaryPacket(this.sceneId, chunk)
-      const session = this.activeDataSession()
-      if (!session) return this.inboundQueue.drain()
-      await session.publishData(packet)
+      await session.publishData(packet, destinations)
     }
-    return this.inboundQueue.drain()
+  }
+
+  hasRemoteAuthoritativeServer(): boolean {
+    return (
+      this.sceneLiveKit.isConnected() &&
+      this.sceneLiveKit.hasRemoteParticipant(AUTHORITATIVE_SERVER_SENDER)
+    )
+  }
+
+  /** Gatekeeper worlds host sync-systems on a remote `authoritative-server` LiveKit peer. */
+  expectsRemoteAuthoritativeServer(): boolean {
+    return !!(this.sceneTarget?.isWorld && this.sceneLiveKit.isConnected())
+  }
+
+  /** Poll scene room until the authoritative server peer appears (or timeout). */
+  async waitForRemoteAuthoritativeServer(timeoutMs = 8_000): Promise<boolean> {
+    if (this.hasRemoteAuthoritativeServer()) return true
+    if (!this.expectsRemoteAuthoritativeServer()) return false
+
+    const deadline = performance.now() + timeoutMs
+    while (performance.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 250))
+      if (this.hasRemoteAuthoritativeServer()) return true
+    }
+    return false
+  }
+
+  /** Ask the remote authoritative server for bulk RES_CRDT_STATE (fort / server entities). */
+  requestAuthoritativeCrdtState(force = false): void {
+    if (!this.hasRemoteAuthoritativeServer()) return
+    if (!force && this.authoritativeCrdtStateRequested) return
+    this.authoritativeCrdtStateRequested = true
+    const chunk = encodeReqCrdtStateChunk()
+    clientDebugLog.log('comms', 'REQ_CRDT_STATE → authoritative-server', { level: 'info', alsoConsole: true })
+    void this.publishSceneBinaryChunks([chunk], [AUTHORITATIVE_SERVER_SENDER])
   }
 
   subscribeToTopic(topic: string): void {
@@ -635,6 +732,7 @@ export class CommsService {
     this.disconnectAllTransports()
     this.handlers = null
     this.sceneBinaryHandler = null
+    this.authServerJoinHandler = null
     this.topicMessageHandler = null
     this.chatHandler = null
     this.sceneTarget = null
@@ -736,9 +834,95 @@ export class CommsService {
     this.walletSessionLockHeld = false
   }
 
+  private sceneBinarySession(): LiveKitCommsSession | null {
+    if (this.sceneLiveKit.isConnected()) return this.sceneLiveKit
+    if (this.worldConnected && this.worldLiveKit.isConnected()) return this.worldLiveKit
+    return null
+  }
+
+  private armAuthoritativeSceneRoom(participants: string[]): void {
+    this.transport = 'livekit'
+    this.realm.isConnectedSceneRoom = true
+    this.authoritativePeer.setSceneRoomConnected(true)
+    for (const peer of participants) {
+      this.authoritativePeer.trackSceneRoomPeerJoin(peer)
+    }
+  }
+
+  private logAuthoritativePeerStatus(): void {
+    const authServer = this.hasRemoteAuthoritativeServer()
+    clientDebugLog.log(
+      'comms',
+      `Phase 5 authoritative peer · isServer=${this.isAuthoritativePeer()} peers=${this.getSceneRoomPeerCount()} authServerRemote=${authServer}`,
+      { level: 'info' }
+    )
+  }
+
+  private async connectGatekeeperSceneRoom(
+    target: SceneCommsTarget,
+    sceneId: string,
+    realmName: string,
+    isWorld: boolean,
+    participants: string[]
+  ): Promise<boolean> {
+    if (!this.identity) return false
+
+    const parcel = isParcelPointer(normalizePointer(target.pointer))
+      ? normalizePointer(target.pointer)
+      : normalizePointer(target.baseParcel)
+
+    clientDebugLog.log(
+      'comms',
+      `Gatekeeper request · realm=${realmName} parcel=${parcel} scene=${sceneId.slice(0, 12)}… world=${isWorld}`,
+      { level: 'info' }
+    )
+
+    const adapterResult = await getSceneAdapter(this.identity, {
+      sceneId,
+      parcel,
+      realmName,
+      isWorld
+    })
+    if (!adapterResult.ok) {
+      clientDebugLog.log('comms', `Gatekeeper failed: ${adapterResult.error}`, { level: 'error' })
+      return false
+    }
+
+    clientDebugLog.log('comms', 'Gatekeeper adapter received · connecting scene LiveKit…', { level: 'success' })
+
+    this.realm.commsAdapter = adapterResult.adapter
+
+    const connected = await this.sceneLiveKit.connect(adapterResult.adapter)
+    if (!connected) {
+      clientDebugLog.log('comms', 'Scene LiveKit failed to connect', { level: 'error' })
+      return false
+    }
+
+    this.sceneLiveKit.seedPeers(participants)
+    return true
+  }
+
+  private shouldTrackAuthoritativePeer(transport: TransportType): boolean {
+    if (transport === TransportType.SceneRoom) return true
+    return (
+      transport === TransportType.World &&
+      !!this.sceneTarget?.isWorld &&
+      !this.sceneLiveKit.isConnected()
+    )
+  }
+
   private trackPeerJoin(address: string, transport: TransportType): void {
     const key = address.toLowerCase()
     if (key === this.localAddress) return
+    if (this.shouldTrackAuthoritativePeer(transport)) {
+      this.authoritativePeer.trackSceneRoomPeerJoin(key)
+    }
+    if (transport === TransportType.SceneRoom && key === AUTHORITATIVE_SERVER_SENDER) {
+      clientDebugLog.log('comms', 'Authoritative server joined scene room', { level: 'success', alsoConsole: true })
+      this.logAuthoritativePeerStatus()
+      this.requestAuthoritativeCrdtState()
+      this.authServerJoinHandler?.()
+    }
     let sources = this.peerTransports.get(key)
     if (!sources) {
       sources = new Set()
@@ -774,6 +958,9 @@ export class CommsService {
 
   private trackPeerLeave(address: string, transport: TransportType): void {
     const key = address.toLowerCase()
+    if (this.shouldTrackAuthoritativePeer(transport)) {
+      this.authoritativePeer.trackSceneRoomPeerLeave(key)
+    }
     const sources = this.peerTransports.get(key)
     if (!sources) return
     sources.delete(transport)
@@ -788,6 +975,7 @@ export class CommsService {
     this.rfc5.disconnect()
     this.transport = 'none'
     this.realm.isConnectedSceneRoom = false
+    this.authoritativePeer.setSceneRoomConnected(false)
     this.pendingTransform = null
     this.clearPeerTransport(TransportType.SceneRoom)
     this.clearPeerTransport(TransportType.WebsocketRoom)
@@ -804,6 +992,7 @@ export class CommsService {
     this.islandConnected = false
     this.worldConnected = false
     this.realm.isConnectedSceneRoom = false
+    this.authoritativePeer.setSceneRoomConnected(false)
     this.pendingTransform = null
     this.peerTransports.clear()
     this.topicService.clear()
@@ -829,10 +1018,8 @@ export class CommsService {
     return sessions
   }
 
-  /** Primary LiveKit session for RFC4 scene binary (scene room, else world room). */
+  /** Primary LiveKit session for chat/topics (scene room, else world room). */
   private activeDataSession(): LiveKitCommsSession | null {
-    if (this.sceneLiveKit.isConnected()) return this.sceneLiveKit
-    if (this.worldConnected) return this.worldLiveKit
-    return null
+    return this.sceneBinarySession()
   }
 }

@@ -25,6 +25,8 @@ export type SceneWorkerDebugFlags = {
 export type SceneWorkerBoot = {
   type: 'boot'
   debug?: SceneWorkerDebugFlags
+  /** Realm snapshot at boot — sync-systems room-ready requires RootEntity RealmInfo. */
+  realmInfo?: RealmResponse['realmInfo']
   scene: Pick<
     ResolvedScene,
     'title' | 'parcels' | 'baseParcel' | 'spawn' | 'contentsBaseUrl' | 'entityId' | 'mainEntry'
@@ -129,6 +131,7 @@ export type SceneWorkerCommsSend = {
 
 export type SceneWorkerGetUserData = { type: 'get-user-data'; id: number }
 export type SceneWorkerGetRealm = { type: 'get-realm'; id: number }
+export type SceneWorkerIsServer = { type: 'is-server'; id: number }
 export type SceneWorkerSubscribeTopic = { type: 'comms-subscribe-topic'; id: number; body: CommsTopicRequest }
 export type SceneWorkerUnsubscribeTopic = { type: 'comms-unsubscribe-topic'; id: number; body: CommsTopicRequest }
 export type SceneWorkerPublishData = { type: 'comms-publish-data'; id: number; body: CommsPublishDataRequest }
@@ -155,6 +158,7 @@ export type SceneWorkerOutbound =
   | SceneWorkerCommsSend
   | SceneWorkerGetUserData
   | SceneWorkerGetRealm
+  | SceneWorkerIsServer
   | SceneWorkerSubscribeTopic
   | SceneWorkerUnsubscribeTopic
   | SceneWorkerPublishData
@@ -166,6 +170,7 @@ export type SceneWorkerOutbound =
   | { type: 'engine-api-unsubscribe'; eventId: string }
   | { type: 'crdt-get-state'; id: number }
   | { type: 'pointer-deliver-done' }
+  | { type: 'authoritative-crdt'; data: Uint8Array }
 
 export type MainToWorker =
   | SceneWorkerBoot
@@ -179,6 +184,11 @@ export type MainToWorker =
   | { type: 'comms-send-binary-response'; id: number; body: SendBinaryResponse }
   | { type: 'get-user-data-response'; id: number; body: UserDataResponse }
   | { type: 'get-realm-response'; id: number; body: RealmResponse }
+  | { type: 'is-server-response'; id: number; body: { isServer: boolean } }
+  | {
+      type: 'realm-info-update'
+      realmInfo: NonNullable<RealmResponse['realmInfo']>
+    }
   | { type: 'comms-subscribe-topic-response'; id: number; body: Record<string, never> }
   | { type: 'comms-unsubscribe-topic-response'; id: number; body: Record<string, never> }
   | { type: 'comms-publish-data-response'; id: number; body: Record<string, never> }
@@ -188,7 +198,7 @@ export type MainToWorker =
   | { type: 'signed-fetch-get-headers-response'; id: number; body: SignedFetchGetHeadersResponse }
   | { type: 'comms-send-response'; id: number; body: Record<string, never> }
   | { type: 'engine-api-enqueue'; events: EngineApiEvent[] }
-  | { type: 'comms-receive-binary'; sender: string; data: Uint8Array }
+  | { type: 'comms-receive-binary'; data: Uint8Array }
   | { type: 'pause-scene-ticks'; paused?: boolean }
   | { type: 'scene-play-ready' }
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
@@ -247,6 +257,7 @@ export type CommsRpcHandler = {
   setCommunicationsAdapter: (body: CommsAdapterRequest) => Promise<{ success: boolean }>
   send: (body: { message: string }) => Promise<Record<string, never>>
   sendBinary: (body: SendBinaryRequest) => Promise<SendBinaryResponse>
+  isServer: () => Promise<{ isServer: boolean }>
   getUserData: () => Promise<UserDataResponse>
   getRealm: () => Promise<RealmResponse>
   subscribeToTopic: (body: CommsTopicRequest) => Promise<Record<string, never>>

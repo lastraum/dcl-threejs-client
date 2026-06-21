@@ -49,14 +49,45 @@ function patchCompositeSrcAlias(code: string): string {
   )
 }
 
+/** Capture sync-systems BinaryMessageBus (created in sync-systems `xq`) for proactive inbound feed. */
+function patchBinaryMessageBusCapture(code: string): string {
+  return code.replace(
+    /p=ZG\(\(ye,le\)=>\{f\.push\(\{data:\[ye\],address:le\?\?\[\]\}\)\}\);/g,
+    'p=ZG((ye,le)=>{f.push({data:[ye],address:le??[]})});globalThis.__THREEJS_BINARY_MESSAGE_BUS__=p;'
+  )
+}
+
+/** Hook network transport so authoritative CRDT applied on the worker also forwards to main projection. */
+function patchNetworkTransportHook(code: string): string {
+  return code.replace(
+    /vq\(M\),e\.addTransport\(x\)/g,
+    'vq(M),e.addTransport(x),globalThis.__THREEJS_HOOK_NETWORK_TRANSPORT__&&globalThis.__THREEJS_HOOK_NETWORK_TRANSPORT__(x)'
+  )
+}
+
+/**
+ * Worlds like flagtag ship with an empty composite preload table (`oU={}`). onStart only
+ * calls `getCompositeOrNull("main.composite")` — when that misses, the fort never instances
+ * unless we fall through to `loadComposite` (readFile → assets/scene/main.composite).
+ */
+function patchMainCompositeOnStartLoad(code: string): string {
+  return code.replace(
+    /getCompositeOrNull\("main\.composite"\);if\((\w+)\)try\{(\w+)\.instance\((\w+),\1,(\w+)\)/g,
+    'getCompositeOrNull("main.composite");if(!$1&&$4.loadComposite)$1=await $4.loadComposite("main.composite");if($1)try{$2.instance($3,$1,$4)'
+  )
+}
+
 /** Bundle transforms applied before `evaluateSceneBundle` — engine capture + checker strip. */
 export function patchSceneBundle(code: string): string {
-  return patchCompositeSrcAlias(
-    stripBundledPointerEventColliderChecker(code).replace(
-      /(\w+)\.addTransport\((\w+)\)/g,
-      `${CAPTURE_ADD_TRANSPORT}($1,$2)`
-    )
-  )
+  // Network hook must run before CAPTURE_ADD_TRANSPORT — otherwise `e.addTransport(x)` is
+  // wrapped in an IIFE and the `vq(M),e.addTransport(x)` pattern never matches (flagtag fort).
+  let out = stripBundledPointerEventColliderChecker(code)
+  out = patchNetworkTransportHook(out)
+  out = patchCompositeSrcAlias(out)
+  out = patchMainCompositeOnStartLoad(out)
+  out = patchBinaryMessageBusCapture(out)
+  out = out.replace(/(\w+)\.addTransport\((\w+)\)/g, `${CAPTURE_ADD_TRANSPORT}($1,$2)`)
+  return out
 }
 
 /** Suppress false warnings — any descendant MeshCollider/GltfContainer is a valid trigger setup. */

@@ -14,6 +14,7 @@ type RpcHandler = {
   openExternalUrl: (body: OpenExternalUrlRequest) => Promise<OpenExternalUrlResponse>
   commsSend: (body: { message: string }) => Promise<Record<string, never>>
   comms: CommsRpcHandler
+  isServer: () => Promise<{ isServer: boolean }>
   signedFetch: (body: SignedFetchRequest) => Promise<SignedFetchResponse>
   signedFetchGetHeaders: (body: SignedFetchRequest) => Promise<SignedFetchGetHeadersResponse>
 }
@@ -92,7 +93,7 @@ export function createSystemStubs(
       crdtSendToRenderer: engineApi.crdtSendToRenderer,
       crdtGetState: engineApi.crdtGetState,
       sendBatch: async (_body?: { actions?: unknown[] }) => ({ events: engineApiEvents.drainEvents() }),
-      isServer: async () => ({ isServer: false }),
+      isServer: async () => rpc.isServer(),
       subscribe: async (body: { eventId: string }) => {
         engineApiEvents.subscribe(body.eventId)
         return {}

@@ -41,11 +41,14 @@ import { GltfColliderExtractor } from '../../collision/GltfColliderExtractor'
 import type {
   CommsRpcHandler,
   MainToWorker,
+  RealmResponse,
   SceneWorkerBoot,
   SceneWorkerOutbound,
   SignedFetchHandler,
   SignedFetchGetHeadersHandler
 } from '../../shim/types'
+import type { CommsRealmInfo } from '../../network/comms/types'
+import { normalizeInboundSceneBinary } from '../../network/sceneSync/sceneBinaryWire'
 import type { MovePlayerToRequest, MovePlayerToResponse } from '../../player/movePlayerTo'
 import type { OpenExternalUrlRequest, OpenExternalUrlResponse } from '../../player/openExternalUrl'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/triggerEmote'
@@ -183,6 +186,10 @@ export class SceneScriptSystem {
   private bridgeSyncEvery = BRIDGE_ECS_SYNC_RUNTIME
   private signedFetchHandler: SignedFetchHandler | null = null
   private signedFetchGetHeadersHandler: SignedFetchGetHeadersHandler | null = null
+  private pendingRealmInfo: NonNullable<RealmResponse['realmInfo']> | null = null
+  /** Scene-room binary received before the worker exists (early comms / RES_CRDT_STATE). */
+  private pendingCommsBinary: Uint8Array[] = []
+  private onWorkerReadyCallback: (() => void) | null = null
   /** Pointer append bytes captured at flush, sent via pointer-crdt-deliver. */
   private readonly pointerResponseStash: Uint8Array[] = []
   /** Prevents overlapping flush encodes while mirror flushOutgoing is awaited. */
@@ -659,13 +666,59 @@ export class SceneScriptSystem {
     this.signedFetchGetHeadersHandler = handler
   }
 
+  setOnWorkerReady(handler: (() => void) | null): void {
+    this.onWorkerReadyCallback = handler
+  }
+
   deliverCommsBinary(sender: string, data: Uint8Array): void {
+    const wrapped = normalizeInboundSceneBinary(sender, data)
+    if (!wrapped) return
+    const copy = wrapped.slice()
+    if (!this.worker) {
+      this.pendingCommsBinary.push(copy)
+      return
+    }
+    this.postCommsBinaryToWorker(copy)
+  }
+
+  private postCommsBinaryToWorker(data: Uint8Array): void {
     if (!this.worker) return
     const copy = data.slice()
     this.worker.postMessage(
-      { type: 'comms-receive-binary', sender, data: copy } satisfies MainToWorker,
+      { type: 'comms-receive-binary', data: copy } satisfies MainToWorker,
       [copy.buffer]
     )
+  }
+
+  private flushPendingCommsBinary(): void {
+    if (!this.worker || !this.pendingCommsBinary.length) return
+    const pending = this.pendingCommsBinary.splice(0)
+    for (const chunk of pending) this.postCommsBinaryToWorker(chunk)
+    clientDebugLog.log(
+      'scene',
+      `Flushed ${pending.length} buffered scene-binary chunk(s) to worker`,
+      { level: 'info', alsoConsole: true }
+    )
+  }
+
+  /** Remember realm for boot payload + worker updates (may run before worker exists). */
+  syncRealmInfo(realm: CommsRealmInfo): void {
+    const realmInfo: NonNullable<RealmResponse['realmInfo']> = {
+      baseUrl: realm.baseUrl,
+      realmName: realm.realmName,
+      networkId: realm.networkId,
+      commsAdapter: realm.commsAdapter,
+      isPreview: realm.isPreview,
+      room: realm.room,
+      isConnectedSceneRoom: realm.isConnectedSceneRoom
+    }
+    this.pendingRealmInfo = realmInfo
+    if (!this.worker) return
+    this.worker.postMessage({ type: 'realm-info-update', realmInfo } satisfies MainToWorker)
+  }
+
+  takePendingRealmInfo(): NonNullable<RealmResponse['realmInfo']> | undefined {
+    return this.pendingRealmInfo ?? undefined
   }
 
   async start(scene: ResolvedScene, cache: AssetCache, host: SceneHost): Promise<void> {
@@ -686,6 +739,7 @@ export class SceneScriptSystem {
 
     const boot: SceneWorkerBoot = {
       type: 'boot',
+      realmInfo: this.takePendingRealmInfo(),
       debug: {
         pointerDeliver: POINTER_VERBOSE,
         tweenDeliver: isTweenVerbose()
@@ -782,6 +836,14 @@ export class SceneScriptSystem {
   ): Promise<void> {
     if (msg.type === 'ready') {
       clientDebugLog.log('scene', 'Scene worker ready (main thread)', { level: 'success' })
+      if (this.pendingRealmInfo) {
+        this.worker?.postMessage({
+          type: 'realm-info-update',
+          realmInfo: this.pendingRealmInfo
+        } satisfies MainToWorker)
+      }
+      this.flushPendingCommsBinary()
+      this.onWorkerReadyCallback?.()
       onReady()
       return
     }
@@ -792,6 +854,10 @@ export class SceneScriptSystem {
     }
     if (msg.type === 'log') {
       clientDebugLog.log('scene', msg.message, { alsoConsole: true })
+      return
+    }
+    if (msg.type === 'authoritative-crdt') {
+      this.applyAuthoritativeCrdtToProjection(msg.data)
       return
     }
     if (msg.type === 'pointer-deliver-done') {
@@ -893,6 +959,26 @@ export class SceneScriptSystem {
         id: msg.id,
         body
       } satisfies MainToWorker)
+      return
+    }
+    if (msg.type === 'is-server') {
+      const body = (await this.commsHandler?.isServer()) ?? { isServer: false }
+      clientDebugLog.log(
+        'comms',
+        `EngineApi.isServer → ${body.isServer}`,
+        { level: 'info', alsoConsole: true }
+      )
+      this.worker?.postMessage({
+        type: 'is-server-response',
+        id: msg.id,
+        body
+      } satisfies MainToWorker)
+      if (body.isServer && this.pendingRealmInfo?.isConnectedSceneRoom && this.worker) {
+        this.worker.postMessage({
+          type: 'realm-info-update',
+          realmInfo: this.pendingRealmInfo
+        } satisfies MainToWorker)
+      }
       return
     }
     if (msg.type === 'comms-subscribe-topic') {
@@ -1103,6 +1189,68 @@ export class SceneScriptSystem {
   }
 
   /** Fold the latest projection decode batch into the render-frame diff accumulator. */
+  private rendererSyncTail = Promise.resolve()
+  private authoritativeCrdtLogged = false
+
+  /** Serialize renderer walks — avoids authoritative CRDT full-resync racing the async-frame diff consumer. */
+  private runRendererSync<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.rendererSyncTail.then(fn)
+    this.rendererSyncTail = run.then(
+      () => undefined,
+      () => undefined
+    )
+    return run
+  }
+
+  /** Apply sync-systems network transport CRDT on main projection (fort / server entities). */
+  private applyAuthoritativeCrdtToProjection(data: Uint8Array): void {
+    if (!data?.byteLength) return
+    void this.runRendererSync(async () => {
+      try {
+        const { GltfContainer } = this.readComponents
+        const gltfBefore = [...this.view.getEntitiesWith(GltfContainer)].length
+        this.projection.applyIncoming(data)
+        if (this.projection.changes.length === 0) return
+        this.foldProjectionChanges()
+        this.colliderFullWalkRequested = true
+        this.pointerStructureDirty = true
+        const bulkAuthoritative = data.byteLength > 512
+        const gltfAfter = [...this.view.getEntitiesWith(GltfContainer)].length
+        const needsFullAttach =
+          bulkAuthoritative && (gltfBefore === 0 || gltfAfter > gltfBefore)
+        if (needsFullAttach) {
+          await this.syncRendererFull()
+          this.syncCollisionForce()
+        } else {
+          await this.syncRenderer()
+          if (bulkAuthoritative) {
+            this.syncCollision()
+          }
+        }
+        if (!this.authoritativeCrdtLogged && gltfAfter > gltfBefore + 5) {
+          this.authoritativeCrdtLogged = true
+          clientDebugLog.log(
+            'projection',
+            `authoritative CRDT — gltfContainers ${gltfBefore} → ${gltfAfter}`,
+            { level: 'success', alsoConsole: true }
+          )
+        } else if (!this.authoritativeCrdtLogged && bulkAuthoritative) {
+          clientDebugLog.log(
+            'projection',
+            `authoritative CRDT applied (${data.byteLength}B) — gltfContainers ${gltfBefore} → ${gltfAfter}`,
+            { level: 'info', alsoConsole: true, throttleMs: 15_000, throttleKey: 'auth-crdt-same-count' }
+          )
+        }
+      } catch (err) {
+        clientDebugLog.log(
+          'projection',
+          `authoritative CRDT apply failed — ${err instanceof Error ? err.message : String(err)}`,
+          { level: 'error', alsoConsole: true }
+        )
+      }
+    })
+  }
+
   private foldProjectionChanges(): void {
     const { PlayerEntity, CameraEntity, RootEntity } = this.view
     const { TriggerArea, Transform } = this.readComponents

@@ -19,7 +19,6 @@ import { SocialService } from '../social/SocialService'
 import { overheadChatText } from '../social/overheadChatText'
 import { fetchProfileFaceUrl, seedCommsPeerProfile } from '../avatar/peerApi'
 import type { LoginResult } from '../auth/AuthClient'
-import type { SendBinaryRequest } from '../shim/types'
 import {
   performGetSignedHeaders,
   performSignedFetch,
@@ -149,6 +148,13 @@ export class World {
     this.comms.setSceneBinaryHandler((sender, data) => {
       this.sceneScript.deliverCommsBinary(sender, data)
     })
+    this.comms.setAuthServerJoinHandler(() => {
+      this.sceneScript.syncRealmInfo(this.comms.getRealmInfo())
+      this.requestAuthoritativeSceneStateIfReady()
+    })
+    this.sceneScript.setOnWorkerReady(() => {
+      this.requestAuthoritativeSceneStateIfReady()
+    })
     this.comms.setTopicMessageHandler((topic, sender, payload) => {
       if (topic !== 'comms') return
       const message = new TextDecoder().decode(payload)
@@ -171,6 +177,13 @@ export class World {
       parcels: scene.parcels,
       isWorld: scene.source.kind === 'world'
     }
+  }
+
+  /** REQ_CRDT_STATE only after the scene worker can receive RES_CRDT_STATE (early comms drops otherwise). */
+  private requestAuthoritativeSceneStateIfReady(): void {
+    if (!this.sceneCommsConnected || !this.comms.expectsRemoteAuthoritativeServer()) return
+    if (!this.comms.hasRemoteAuthoritativeServer()) return
+    this.comms.requestAuthoritativeCrdtState(true)
   }
 
   async loadScene(scene: ResolvedScene, onProgress?: (msg: string) => void): Promise<void> {
@@ -226,7 +239,8 @@ export class World {
         setCommunicationsAdapter: async (body) => ({
           success: await this.comms.connectAdapter(body.connectionString)
         }),
-        sendBinary: async (body) => this.handleSendBinary(body),
+        isServer: async () => ({ isServer: this.comms.isEngineServer() }),
+        sendBinary: async (body) => this.comms.handleSceneSendBinary(body),
         send: async (body) => {
           await this.comms.publishCommsMessage(body.message)
           return {}
@@ -318,6 +332,9 @@ export class World {
       this.sceneScript.seedRendererEntities(spawnPoses.player, spawnPoses.camera)
       try {
         await this.sceneScript.start(scene, this.assets, this.host)
+        if (this.sceneCommsConnected) {
+          this.sceneScript.syncRealmInfo(this.comms.getRealmInfo())
+        }
         onProgress?.('Scene script running')
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -348,6 +365,7 @@ export class World {
     const connectResult = await this.comms.connectSceneRoom(this.buildCommsTarget(scene))
     if (connectResult.ok) {
       this.sceneCommsConnected = true
+      this.sceneScript.syncRealmInfo(this.comms.getRealmInfo())
       clientDebugLog.log('comms', 'Early scene comms connected during hydration', { level: 'success' })
       onProgress?.('Receiving peer updates…')
       return
@@ -415,6 +433,7 @@ export class World {
         this.sceneCommsConnected = connectResult.ok
         if (connectResult.ok) {
           onProgress?.('Connected to DCL comms')
+          this.sceneScript.syncRealmInfo(this.comms.getRealmInfo())
         } else if (connectResult.reason === 'duplicate_wallet') {
           onProgress?.('This wallet is already connected in another session — close the other client first')
         } else {
@@ -1368,25 +1387,6 @@ export class World {
     clearGeometryCookCache()
 
     this.host.dispose()
-  }
-
-  private async handleSendBinary(body: SendBinaryRequest) {
-    const peerChunks =
-      body.peerData?.flatMap((entry) => entry.data.map((chunk) => ({ chunk, addresses: entry.address }))) ?? []
-    const broadcast = body.data ?? []
-    const sent: Uint8Array[] = []
-
-    if (broadcast.length === 0 && peerChunks.length === 0) {
-      return { data: await this.comms.sendBinary([]) }
-    }
-
-    if (broadcast.length) {
-      sent.push(...(await this.comms.sendBinary(broadcast)))
-    }
-    for (const entry of peerChunks) {
-      sent.push(...(await this.comms.sendBinary([entry.chunk], entry.addresses)))
-    }
-    return { data: sent }
   }
 
   private buildUserData() {

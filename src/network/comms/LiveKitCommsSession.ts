@@ -117,6 +117,13 @@ export class LiveKitCommsSession {
     return out
   }
 
+  hasRemoteParticipant(identity: string): boolean {
+    if (!this.room) return false
+    const key = identity.trim().toLowerCase()
+    if (!key) return false
+    return this.room.remoteParticipants.has(key)
+  }
+
   getActiveVideoStreams(): ActiveVideoStream[] {
     return collectActiveVideoStreamsFromRoom(this.room)
   }
@@ -436,9 +443,13 @@ export class LiveKitCommsSession {
     }
   }
 
-  async publishData(packet: Uint8Array): Promise<void> {
+  async publishData(packet: Uint8Array, destinationIdentities?: string[]): Promise<void> {
     if (!this.room || this.room.state !== ConnectionState.Connected) return
-    await this.room.localParticipant.publishData(packet, { reliable: false })
+    const options: { reliable: false; destinationIdentities?: string[] } = { reliable: false }
+    if (destinationIdentities?.length) {
+      options.destinationIdentities = destinationIdentities
+    }
+    await this.room.localParticipant.publishData(packet, options)
   }
 
   async publishTopicData(topic: string, packet: Uint8Array, reliable = true): Promise<void> {

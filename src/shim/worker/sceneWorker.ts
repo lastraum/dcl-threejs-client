@@ -3,9 +3,10 @@ import {
   evaluateSceneBundle,
   watchRendererTransportOnmessage
 } from '../system/createSystemStubs'
-import { encodeCommsBinaryMessage } from '../../network/comms/commsBinaryWire'
-import { CommsWireMessageType } from '../../network/comms/CommsInboundQueue'
 import { createEngineApiEventState, type EngineApiEventState } from '../engine/EngineApiEventState'
+import { resolveBinaryMessageBus } from './captureBinaryMessageBus'
+import { installNetworkTransportHook } from './captureNetworkTransport'
+import { applyRealmInfoOnEngine } from './applyRealmInfoOnEngine'
 import type {
   ActiveVideoStreamsResponse,
   CommsAdapterRequest,
@@ -55,6 +56,7 @@ const pendingCommsAdapter = new Map<number, (body: { success: boolean }) => void
 const pendingSendBinary = new Map<number, (body: SendBinaryResponse) => void>()
 const pendingUserData = new Map<number, (body: UserDataResponse) => void>()
 const pendingRealm = new Map<number, (body: RealmResponse) => void>()
+const pendingIsServer = new Map<number, (body: { isServer: boolean }) => void>()
 const pendingSubscribeTopic = new Map<number, (body: Record<string, never>) => void>()
 const pendingUnsubscribeTopic = new Map<number, (body: Record<string, never>) => void>()
 const pendingPublishData = new Map<number, (body: Record<string, never>) => void>()
@@ -120,6 +122,94 @@ let debugTweenDeliver = false
 let debugMessageArrival = false
 /** Coalesce proactive tween-state injects into one engine tick per frame. */
 let tweenEngineTickQueued = false
+/** True while a proactive sendBinary flush is in flight (BinaryMessageBus inbound feed). */
+let inboundBinaryFlushInFlight = false
+/** Coalesce inbound scene-binary sendBinary flushes into one macrotask per burst. */
+let inboundBinaryFlushQueued = false
+/** Brief debounce so RES_CRDT_STATE chunks batch before BinaryMessageBus dispatch. */
+const INBOUND_BINARY_FLUSH_DEBOUNCE_MS = 20
+
+function decodeInboundBinaryLogLabel(chunk: Uint8Array): string {
+  if (chunk.length < 3) return `binary(${chunk.byteLength}B)`
+  const senderLen = chunk[0]!
+  if (senderLen === 0 || 1 + senderLen + 1 > chunk.length) return `binary(${chunk.byteLength}B)`
+  const sender = new TextDecoder().decode(chunk.subarray(1, 1 + senderLen))
+  const messageType = chunk[1 + senderLen]!
+  const typeNames: Record<number, string> = {
+    4: 'CRDT_SERVER',
+    5: 'CRDT_AUTHORITATIVE',
+    6: 'CUSTOM_EVENT',
+    7: 'CRDT',
+    8: 'REQ_CRDT_STATE',
+    9: 'RES_CRDT_STATE'
+  }
+  const typeLabel = typeNames[messageType] ?? `type${messageType}`
+  return `${typeLabel} from ${sender} (${chunk.byteLength}B)`
+}
+
+/**
+ * Feed queued gatekeeper scene-room payloads through sync-systems BinaryMessageBus.
+ * Must use sendBinary (not rendererInboundApply) so RES_CRDT_STATE / CRDT_AUTHORITATIVE handlers run.
+ */
+function queueInboundCommsBinary(chunk: Uint8Array, source: 'immediate' | 'flush'): void {
+  pendingInboundBinaries.push(chunk.slice())
+  const label = decodeInboundBinaryLogLabel(chunk)
+  if (
+    label.startsWith('RES_CRDT_STATE') ||
+    label.startsWith('CRDT_AUTHORITATIVE') ||
+    debugMessageArrival
+  ) {
+    workerLog('log', `[sceneWorker] inbound-binary ${source} — queued ${label}`)
+  }
+  scheduleInboundBinaryFlush()
+}
+
+function scheduleInboundBinaryFlush(): void {
+  if (inboundBinaryFlushQueued) return
+  inboundBinaryFlushQueued = true
+  setTimeout(() => {
+    inboundBinaryFlushQueued = false
+    void flushInboundBinaryViaSendBinary()
+  }, INBOUND_BINARY_FLUSH_DEBOUNCE_MS)
+}
+
+async function flushInboundBinaryViaSendBinary(): Promise<void> {
+  if (!pendingInboundBinaries.length || inboundBinaryFlushInFlight || !sceneOnStartComplete) return
+  const bus = resolveBinaryMessageBus()
+  if (!bus) {
+    workerLog(
+      'warn',
+      `[sceneWorker] inbound-binary flush deferred — BinaryMessageBus not captured (${pendingInboundBinaries.length} queued)`
+    )
+    scheduleInboundBinaryFlush()
+    return
+  }
+  inboundBinaryFlushInFlight = true
+  const chunks = pendingInboundBinaries.splice(0)
+  try {
+    bus.__processMessages(chunks)
+    const hasResState = chunks.some((chunk) => decodeInboundBinaryLogLabel(chunk).startsWith('RES_CRDT_STATE'))
+    if (hasResState || debugMessageArrival) {
+      workerLog(
+        'log',
+        `[sceneWorker] inbound-binary flush — BinaryMessageBus processed ${chunks.length} chunk(s)` +
+          (hasResState ? ' (incl. RES_CRDT_STATE)' : '')
+      )
+    }
+    if (sceneEngine && !pointerDeliveryInFlight && !sceneTicksPaused) {
+      await sceneEngine.update(0)
+    }
+  } catch (err) {
+    pendingInboundBinaries.unshift(...chunks)
+    workerLog(
+      'error',
+      `[sceneWorker] inbound-binary flush failed — ${err instanceof Error ? err.message : String(err)}`
+    )
+  } finally {
+    inboundBinaryFlushInFlight = false
+    if (pendingInboundBinaries.length) scheduleInboundBinaryFlush()
+  }
+}
 
 function clearSceneUpdateAbortTimer(): void {
   if (sceneUpdateAbortTimer) {
@@ -913,6 +1003,14 @@ function rpcGetRealm(): Promise<RealmResponse> {
   })
 }
 
+function rpcIsServer(): Promise<{ isServer: boolean }> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingIsServer.set(id, resolve)
+    ctx.postMessage({ type: 'is-server', id } satisfies SceneWorkerOutbound)
+  })
+}
+
 function rpcSubscribeTopic(body: CommsTopicRequest): Promise<Record<string, never>> {
   const id = ++requestId
   return new Promise((resolve) => {
@@ -1187,7 +1285,11 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
       )
     }
   }
-  workerLog('log', 'scene worker ready — onStart complete')
+  workerLog(
+    'log',
+    `scene worker ready — onStart complete (binaryMessageBus=${resolveBinaryMessageBus() ? 'ok' : 'missing'})`
+  )
+  scheduleInboundBinaryFlush()
   ctx.postMessage({ type: 'ready' } satisfies SceneWorkerOutbound)
   startSceneLoop(exports).catch((err) =>
     workerLog(
@@ -1305,9 +1407,25 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     return
   }
   if (msg.type === 'comms-receive-binary') {
-    pendingInboundBinaries.push(
-      encodeCommsBinaryMessage(msg.sender, CommsWireMessageType.CRDT, msg.data)
-    )
+    queueInboundCommsBinary(msg.data, 'immediate')
+    return
+  }
+  if (msg.type === 'realm-info-update') {
+    if (sceneEngine) {
+      applyRealmInfoOnEngine(sceneEngine, msg.realmInfo, { forceNotify: true })
+      workerLog(
+        'log',
+        `[sceneWorker] RealmInfo update — isConnectedSceneRoom=${msg.realmInfo.isConnectedSceneRoom === true}`
+      )
+    }
+    if (msg.realmInfo.isConnectedSceneRoom === true) {
+      scheduleInboundBinaryFlush()
+    }
+    return
+  }
+  if (msg.type === 'is-server-response') {
+    pendingIsServer.get(msg.id)?.(msg.body)
+    pendingIsServer.delete(msg.id)
     return
   }
   if (msg.type === 'engine-api-enqueue') {
@@ -1362,6 +1480,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
         setCommunicationsAdapter: rpcCommsAdapter,
         send: rpcCommsSend,
         sendBinary: rpcSendBinary,
+        isServer: rpcIsServer,
         getUserData: rpcGetUserData,
         getRealm: rpcGetRealm,
         subscribeToTopic: rpcSubscribeTopic,
@@ -1371,14 +1490,33 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
         getActiveVideoStreams: rpcGetActiveVideoStreams
       },
       signedFetch: rpcSignedFetch,
-      signedFetchGetHeaders: rpcSignedFetchGetHeaders
+      signedFetchGetHeaders: rpcSignedFetchGetHeaders,
+      isServer: rpcIsServer
     }, engineApiEvents)
 
     // Yield so priority inject/deliver messages posted during stub setup can run before bundle eval.
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
     installPreregisterRendererComponentsHook()
+    let authoritativeForwardLogged = false
+    installNetworkTransportHook((data) => {
+      if (!data?.byteLength) return
+      const copy = data.slice()
+      if (!authoritativeForwardLogged && copy.byteLength > 512) {
+        authoritativeForwardLogged = true
+        workerLog('log', `[sceneWorker] authoritative CRDT → main projection (${copy.byteLength}B)`)
+      }
+      ctx.postMessage({ type: 'authoritative-crdt', data: copy } satisfies SceneWorkerOutbound, [copy.buffer])
+    })
     const exports = evaluateSceneBundle(code, requireMap, patchSceneBundle)
+    if ((globalThis as Record<string, unknown>).__THREEJS_NETWORK_TRANSPORT_HOOKED__ === true) {
+      workerLog('log', '[sceneWorker] network transport projection forwarder installed')
+    } else {
+      workerLog(
+        'warn',
+        '[sceneWorker] network transport hook missing — authoritative CRDT may not reach main projection'
+      )
+    }
     sceneEngine = resolveSceneEngine(exports)
     if (sceneEngine) {
       try {
@@ -1396,6 +1534,15 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       )
     } else {
       workerLog('warn', '[sceneWorker] sceneEngine not found after bundle eval — inject will queue until onStart')
+    }
+    if (sceneEngine && msg.realmInfo) {
+      applyRealmInfoOnEngine(sceneEngine, msg.realmInfo)
+      workerLog(
+        'log',
+        `[sceneWorker] RealmInfo applied — isConnectedSceneRoom=${msg.realmInfo.isConnectedSceneRoom === true} realm=${msg.realmInfo.realmName ?? ''}`
+      )
+    } else if (msg.realmInfo) {
+      workerLog('warn', '[sceneWorker] RealmInfo boot payload skipped — sceneEngine not bound yet')
     }
     // Do not drain inject before onStart — executePointerInjection runs sceneEngine.update(0)
     // via schedulePointerDeliveryComplete and can block the boot handler before onStart (Rick Roll).

@@ -1637,8 +1637,15 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
 
     installPreregisterRendererComponentsHook()
     installNetworkTransportHook(() => {})
+    workerLog('log', '[sceneWorker] bundle patch starting…')
+    const patchStartedAt = performance.now()
+    const patchedCode = patchSceneBundle(code)
+    workerLog(
+      'log',
+      `[sceneWorker] bundle patch complete in ${(performance.now() - patchStartedAt).toFixed(0)}ms`
+    )
     const evalStartedAt = performance.now()
-    const exports = evaluateSceneBundle(code, requireMap, patchSceneBundle)
+    const exports = evaluateSceneBundle(patchedCode, requireMap)
     workerLog(
       'log',
       `[sceneWorker] bundle eval complete in ${(performance.now() - evalStartedAt).toFixed(0)}ms`

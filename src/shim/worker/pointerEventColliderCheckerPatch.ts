@@ -31,7 +31,9 @@ const CAPTURE_ADD_TRANSPORT =
 export function stripBundledPointerEventColliderChecker(code: string): string {
   const moduleCall =
     /\(\s*(?:0\s*,\s*)?([0-9a-zA-Z_$]+)\.pointerEventColliderChecker\s*\)\(\s*([0-9a-zA-Z_$]+(?:\.engine)?)\s*\)/g
-  const directCall = /\bpointerEventColliderChecker\s*\(\s*([0-9a-zA-Z_$]+(?:\.engine)?)\s*\)/g
+  // Do not match `function pointerEventColliderChecker(engine)` definitions in bundled @dcl/ecs sources.
+  const directCall =
+    /(?<!function )pointerEventColliderChecker\s*\(\s*([0-9a-zA-Z_$]+(?:\.engine)?)\s*\)/g
   return code
     .replace(moduleCall, `${CAPTURE_ENGINE}($2);(void 0)`)
     .replace(directCall, `${CAPTURE_ENGINE}($1);(void 0)`)
@@ -49,22 +51,27 @@ function patchCompositeSrcAlias(code: string): string {
   )
 }
 
-/** Capture sync-systems BinaryMessageBus (created in sync-systems `xq`) for proactive inbound feed. */
+/**
+ * Capture @dcl/sdk BinaryMessageBus for inbound RES_CRDT_STATE dispatch.
+ * Use literal markers only — broad minified regex on 13MB bundles (flagtag) can hang forever.
+ */
 function patchBinaryMessageBusCapture(code: string): string {
   const capture = 'globalThis.__THREEJS_BINARY_MESSAGE_BUS__'
   let out = code.replace(
     /p=ZG\(\(ye,le\)=>\{f\.push\(\{data:\[ye\],address:le\?\?\[\]\}\)\}\);/g,
     `p=ZG((ye,le)=>{f.push({data:[ye],address:le??[]})});${capture}=p;`
   )
-  // Newer sync-systems minification — generic BinaryMessageBus(send) factory assignment.
-  out = out.replace(
-    /(\w+)=\w+\(\(\w+,\w+\)=>\{\w+\.push\(\{data:\[\w+\],address:\w+\?\?\[\]\}\)\}\);/g,
-    `$&${capture}=$1;`
-  )
-  out = out.replace(
-    /(\w+)=\w+\(\(\w+,\w+\)=>\{\w+\.push\(\{data:\[\w+\],address:\w+\|\|\[\]\}\)\}\);/g,
-    `$&${capture}=$1;`
-  )
+  const busFactory =
+    'function BinaryMessageBus(send2) {\n  const mapping = /* @__PURE__ */ new Map();\n  return {'
+  const busCapture =
+    'function BinaryMessageBus(send2) {\n  const mapping = /* @__PURE__ */ new Map();\n  const __threejsBus = {'
+  if (out.includes(busFactory)) {
+    out = out.replace(busFactory, busCapture)
+    out = out.replace(
+      '    }\n  };\n}\nfunction craftCommsMessage(messageType, payload)',
+      `    }\n  };\n  ${capture}=__threejsBus;\n  return __threejsBus;\n}\nfunction craftCommsMessage(messageType, payload)`
+    )
+  }
   return out
 }
 
@@ -88,16 +95,47 @@ function patchMainCompositeOnStartLoad(code: string): string {
   )
 }
 
+/** Wrap `engine.addTransport(x)` at call sites — bounded passes, not whole-file regex. */
+function patchAddTransportCapture(code: string): string {
+  const needle = '.addTransport('
+  let out = code
+  let from = 0
+  let patched = 0
+  while (patched < 8) {
+    const at = out.indexOf(needle, from)
+    if (at === -1) break
+    let start = at
+    while (start > 0 && /[0-9a-zA-Z_$]/.test(out[start - 1]!)) start--
+    const open = at + needle.length
+    let end = open
+    while (end < out.length && /[0-9a-zA-Z_$]/.test(out[end]!)) end++
+    if (end <= open) {
+      from = at + needle.length
+      continue
+    }
+    const recv = out.slice(start, at)
+    const arg = out.slice(open, end)
+    const original = `${recv}.addTransport(${arg})`
+    const wrapped = `${CAPTURE_ADD_TRANSPORT}(${recv},${arg})`
+    if (out.slice(start, end + 1) === original) {
+      out = out.slice(0, start) + wrapped + out.slice(end + 1)
+      from = start + wrapped.length
+      patched++
+      continue
+    }
+    from = at + needle.length
+  }
+  return out
+}
+
 /** Bundle transforms applied before `evaluateSceneBundle` — engine capture + checker strip. */
 export function patchSceneBundle(code: string): string {
-  // Network hook must run before CAPTURE_ADD_TRANSPORT — otherwise `e.addTransport(x)` is
-  // wrapped in an IIFE and the `vq(M),e.addTransport(x)` pattern never matches (flagtag fort).
   let out = stripBundledPointerEventColliderChecker(code)
   out = patchNetworkTransportHook(out)
   out = patchCompositeSrcAlias(out)
   out = patchMainCompositeOnStartLoad(out)
   out = patchBinaryMessageBusCapture(out)
-  out = out.replace(/(\w+)\.addTransport\((\w+)\)/g, `${CAPTURE_ADD_TRANSPORT}($1,$2)`)
+  out = patchAddTransportCapture(out)
   return out
 }
 

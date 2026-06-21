@@ -151,6 +151,8 @@ export class SceneScriptSystem {
   private host: SceneHost | null = null
   private worker: Worker | null = null
   private running = false
+  /** True while `bootWorker` awaits the worker `ready` message — CRDT uses a fast lane. */
+  private workerBootInProgress = false
   private prepared = false
   private crdtTick = 0
   private clientPlayerPose: EntityPose | null = null
@@ -775,6 +777,8 @@ export class SceneScriptSystem {
     }
 
     const BOOT_TIMEOUT_MS = 60_000
+    this.workerBootInProgress = true
+    try {
     await new Promise<void>((resolve, reject) => {
       if (!this.worker) return reject(new Error('Worker missing'))
 
@@ -812,12 +816,33 @@ export class SceneScriptSystem {
           this.respondCrdtGetState(msg.id)
           return
         }
+        if (this.workerBootInProgress && msg?.type === 'crdt-send-batch') {
+          void this.handleCrdtSendBatch(msg).catch((err) => {
+            console.error(
+              '[scene]',
+              `boot crdt-send-batch failed — ${err instanceof Error ? err.message : String(err)}`
+            )
+          })
+          return
+        }
+        if (this.workerBootInProgress && msg?.type === 'crdt-send') {
+          void this.handleCrdtSend(msg).catch((err) => {
+            console.error(
+              '[scene]',
+              `boot crdt-send failed — ${err instanceof Error ? err.message : String(err)}`
+            )
+          })
+          return
+        }
         void this.handleWorkerMessage(msg, () => finish(resolve), (err) => finish(() => reject(err)))
       }
       this.worker.onerror = (err) => finish(() => reject(err))
 
       this.worker.postMessage(boot)
     })
+    } finally {
+      this.workerBootInProgress = false
+    }
 
     this.running = true
     if (isMotionFocusActive() && typeof globalThis !== 'undefined') {

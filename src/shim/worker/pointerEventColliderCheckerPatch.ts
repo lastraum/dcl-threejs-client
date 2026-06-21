@@ -51,10 +51,21 @@ function patchCompositeSrcAlias(code: string): string {
 
 /** Capture sync-systems BinaryMessageBus (created in sync-systems `xq`) for proactive inbound feed. */
 function patchBinaryMessageBusCapture(code: string): string {
-  return code.replace(
+  const capture = 'globalThis.__THREEJS_BINARY_MESSAGE_BUS__'
+  let out = code.replace(
     /p=ZG\(\(ye,le\)=>\{f\.push\(\{data:\[ye\],address:le\?\?\[\]\}\)\}\);/g,
-    'p=ZG((ye,le)=>{f.push({data:[ye],address:le??[]})});globalThis.__THREEJS_BINARY_MESSAGE_BUS__=p;'
+    `p=ZG((ye,le)=>{f.push({data:[ye],address:le??[]})});${capture}=p;`
   )
+  // Newer sync-systems minification — generic BinaryMessageBus(send) factory assignment.
+  out = out.replace(
+    /(\w+)=\w+\(\(\w+,\w+\)=>\{\w+\.push\(\{data:\[\w+\],address:\w+\?\?\[\]\}\)\}\);/g,
+    `$&${capture}=$1;`
+  )
+  out = out.replace(
+    /(\w+)=\w+\(\(\w+,\w+\)=>\{\w+\.push\(\{data:\[\w+\],address:\w+\|\|\[\]\}\)\}\);/g,
+    `$&${capture}=$1;`
+  )
+  return out
 }
 
 /** Hook network transport so authoritative CRDT applied on the worker also forwards to main projection. */

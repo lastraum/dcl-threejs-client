@@ -3,6 +3,13 @@ import { watchRendererTransportOnmessage } from '../system/createSystemStubs'
 
 export const NETWORK_TRANSPORT_HOOK_KEY = '__THREEJS_HOOK_NETWORK_TRANSPORT__'
 
+let networkTransportOnmessage: ((data: Uint8Array) => void) | null = null
+
+/** Network transport onmessage — fallback when BinaryMessageBus capture misses. */
+export function resolveNetworkTransportOnmessage(): ((data: Uint8Array) => void) | null {
+  return networkTransportOnmessage
+}
+
 /** Wrap sync-systems network transport onmessage so processed authoritative CRDT also reaches main projection. */
 export function installNetworkTransportProjectionForwarder(
   transport: RendererTransportExport,
@@ -14,6 +21,7 @@ export function installNetworkTransportProjectionForwarder(
       if (data?.byteLength) forward(data)
       original(data)
     }
+    networkTransportOnmessage = wrapped
     Object.defineProperty(transport, 'onmessage', {
       configurable: true,
       enumerable: true,

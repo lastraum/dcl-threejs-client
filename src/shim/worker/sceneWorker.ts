@@ -5,7 +5,8 @@ import {
 } from '../system/createSystemStubs'
 import { createEngineApiEventState, type EngineApiEventState } from '../engine/EngineApiEventState'
 import { resolveBinaryMessageBus } from './captureBinaryMessageBus'
-import { installNetworkTransportHook } from './captureNetworkTransport'
+import { installNetworkTransportHook, resolveNetworkTransportOnmessage } from './captureNetworkTransport'
+import { processInboundBinaryFallback } from './inboundBinaryFallback'
 import { applyRealmInfoOnEngine } from './applyRealmInfoOnEngine'
 import type {
   ActiveVideoStreamsResponse,
@@ -136,6 +137,7 @@ let inboundBinaryFlushInFlight = false
 let inboundBinaryFlushQueued = false
 /** Brief debounce so RES_CRDT_STATE chunks batch before BinaryMessageBus dispatch. */
 const INBOUND_BINARY_FLUSH_DEBOUNCE_MS = 20
+let inboundBinaryBusMissingWarned = false
 
 function decodeInboundBinaryLogLabel(chunk: Uint8Array): string {
   if (chunk.length < 3) return `binary(${chunk.byteLength}B)`
@@ -181,28 +183,56 @@ function scheduleInboundBinaryFlush(): void {
   }, INBOUND_BINARY_FLUSH_DEBOUNCE_MS)
 }
 
+function flushInboundBinaryFallback(chunks: Uint8Array[]): boolean {
+  const applied = processInboundBinaryFallback(chunks, {
+    postAuthoritativeCrdt: (data) => {
+      ctx.postMessage({ type: 'authoritative-crdt', data } satisfies SceneWorkerOutbound, [data.buffer])
+    },
+    applyNetworkCrdt: (data) => {
+      resolveNetworkTransportOnmessage()?.(data)
+    },
+    log: (level, message) => workerLog(level, message)
+  })
+  return applied > 0
+}
+
 async function flushInboundBinaryViaSendBinary(): Promise<void> {
   if (!pendingInboundBinaries.length || inboundBinaryFlushInFlight || !sceneOnStartComplete) return
-  const bus = resolveBinaryMessageBus()
-  if (!bus) {
-    workerLog(
-      'warn',
-      `[sceneWorker] inbound-binary flush deferred — BinaryMessageBus not captured (${pendingInboundBinaries.length} queued)`
-    )
-    scheduleInboundBinaryFlush()
-    return
-  }
   inboundBinaryFlushInFlight = true
   const chunks = pendingInboundBinaries.splice(0)
   try {
-    bus.__processMessages(chunks)
-    const hasResState = chunks.some((chunk) => decodeInboundBinaryLogLabel(chunk).startsWith('RES_CRDT_STATE'))
-    if (hasResState || debugMessageArrival) {
-      workerLog(
-        'log',
-        `[sceneWorker] inbound-binary flush — BinaryMessageBus processed ${chunks.length} chunk(s)` +
-          (hasResState ? ' (incl. RES_CRDT_STATE)' : '')
+    const bus = resolveBinaryMessageBus()
+    if (bus) {
+      bus.__processMessages(chunks)
+      const hasResState = chunks.some((chunk) =>
+        decodeInboundBinaryLogLabel(chunk).startsWith('RES_CRDT_STATE')
       )
+      if (hasResState || debugMessageArrival) {
+        workerLog(
+          'log',
+          `[sceneWorker] inbound-binary flush — BinaryMessageBus processed ${chunks.length} chunk(s)` +
+            (hasResState ? ' (incl. RES_CRDT_STATE)' : '')
+        )
+      }
+    } else if (flushInboundBinaryFallback(chunks)) {
+      if (!inboundBinaryBusMissingWarned) {
+        inboundBinaryBusMissingWarned = true
+        workerLog(
+          'warn',
+          `[sceneWorker] BinaryMessageBus not captured — using inbound-binary fallback (${chunks.length} chunk(s))`
+        )
+      }
+    } else {
+      pendingInboundBinaries.unshift(...chunks)
+      if (!inboundBinaryBusMissingWarned) {
+        inboundBinaryBusMissingWarned = true
+        workerLog(
+          'warn',
+          `[sceneWorker] inbound-binary flush deferred — BinaryMessageBus not captured (${pendingInboundBinaries.length} queued)`
+        )
+      }
+      scheduleInboundBinaryFlush()
+      return
     }
     if (sceneEngine && !pointerDeliveryInFlight && !sceneTicksPaused) {
       await runBatchedEngineUpdate(0)
@@ -964,7 +994,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
   const id = ++requestId
   const copy = data.slice()
   return new Promise((resolve) => {
-    if (crdtBatchDepth > 0) {
+    if (crdtBatchDepth > 0 && sceneRunning) {
       crdtBatchQueue.push({ id, data: copy, resolve })
       return
     }

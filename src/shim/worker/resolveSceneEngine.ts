@@ -17,8 +17,9 @@ export function isEngineLike(val: unknown): val is IEngine {
 export function takeCapturedSceneEngine(): IEngine | null {
   const g = globalThis as Record<string, unknown>
   const eng = g[SCENE_ENGINE_CAPTURE_KEY]
+  if (!isEngineLike(eng)) return null
   delete g[SCENE_ENGINE_CAPTURE_KEY]
-  return isEngineLike(eng) ? eng : null
+  return eng
 }
 
 const SKIP_ENGINE_GRAPH_KEYS = new Set(['onStart', 'onUpdate', 'main', 'rendererTransport'])

@@ -35,77 +35,114 @@ const ADD_TRANSPORT_WRAP_LIMIT = Number.POSITIVE_INFINITY
 
 type AddTransportCallSite = { receiver: string; arg: string; start: number; end: number }
 
-/** Walk source once; invoke `onMatch(i)` for each `needle` at index `i` outside strings/comments. */
-function forEachNeedleOutsideStrings(code: string, needle: string, onMatch: (index: number) => void): void {
-  let inSingle = false
-  let inDouble = false
-  let inTemplate = false
-  let inLineComment = false
-  let inBlockComment = false
+function skipQuotedString(code: string, start: number, quote: "'" | '"'): number {
+  let i = start + 1
+  while (i < code.length) {
+    const ch = code[i]!
+    if (ch === '\\') {
+      i += 2
+      continue
+    }
+    if (ch === quote) return i + 1
+    i++
+  }
+  return code.length
+}
 
-  for (let i = 0; i < code.length; i++) {
+/** Skip `${...}` inside a template literal — nested strings/templates are real tokens. */
+function skipTemplateExpression(code: string, start: number): number {
+  let i = start + 2
+  let depth = 1
+  while (i < code.length && depth > 0) {
     const ch = code[i]!
     const next = code[i + 1]
-
-    if (inLineComment) {
-      if (ch === '\n') inLineComment = false
-      continue
-    }
-    if (inBlockComment) {
-      if (ch === '*' && next === '/') {
-        inBlockComment = false
-        i++
-      }
-      continue
-    }
-    if (inSingle) {
-      if (ch === '\\') {
-        i++
-        continue
-      }
-      if (ch === "'") inSingle = false
-      continue
-    }
-    if (inDouble) {
-      if (ch === '\\') {
-        i++
-        continue
-      }
-      if (ch === '"') inDouble = false
-      continue
-    }
-    if (inTemplate) {
-      if (ch === '\\') {
-        i++
-        continue
-      }
-      if (ch === '`') inTemplate = false
-      continue
-    }
-
     if (ch === '/' && next === '/') {
-      inLineComment = true
-      i++
+      i += 2
+      while (i < code.length && code[i] !== '\n') i++
       continue
     }
     if (ch === '/' && next === '*') {
-      inBlockComment = true
-      i++
+      i += 2
+      while (i < code.length - 1) {
+        if (code[i] === '*' && code[i + 1] === '/') {
+          i += 2
+          break
+        }
+        i++
+      }
       continue
     }
     if (ch === "'") {
-      inSingle = true
+      i = skipQuotedString(code, i, "'")
       continue
     }
     if (ch === '"') {
-      inDouble = true
+      i = skipQuotedString(code, i, '"')
       continue
     }
     if (ch === '`') {
-      inTemplate = true
+      i = skipTemplateLiteral(code, i)
       continue
     }
+    if (ch === '{') depth++
+    else if (ch === '}') depth--
+    i++
+  }
+  return i
+}
 
+function skipTemplateLiteral(code: string, start: number): number {
+  let i = start + 1
+  while (i < code.length) {
+    const ch = code[i]!
+    const next = code[i + 1]
+    if (ch === '\\') {
+      i += 2
+      continue
+    }
+    if (ch === '`') return i + 1
+    if (ch === '$' && next === '{') {
+      i = skipTemplateExpression(code, i)
+      continue
+    }
+    i++
+  }
+  return code.length
+}
+
+/** Walk source once; invoke `onMatch(i)` for each `needle` at index `i` outside strings/comments. */
+function forEachNeedleOutsideStrings(code: string, needle: string, onMatch: (index: number) => void): void {
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i]!
+    const next = code[i + 1]
+    if (ch === '/' && next === '/') {
+      i += 2
+      while (i < code.length && code[i] !== '\n') i++
+      continue
+    }
+    if (ch === '/' && next === '*') {
+      i += 2
+      while (i < code.length - 1) {
+        if (code[i] === '*' && code[i + 1] === '/') {
+          i += 2
+          break
+        }
+        i++
+      }
+      continue
+    }
+    if (ch === "'") {
+      i = skipQuotedString(code, i, "'") - 1
+      continue
+    }
+    if (ch === '"') {
+      i = skipQuotedString(code, i, '"') - 1
+      continue
+    }
+    if (ch === '`') {
+      i = skipTemplateLiteral(code, i) - 1
+      continue
+    }
     if (code.startsWith(needle, i)) {
       onMatch(i)
       i += needle.length - 1
@@ -167,13 +204,30 @@ function parseSimpleAddTransportAt(code: string, dotIndex: number): AddTransport
   return { receiver, arg, start: recvStart, end: argEnd + 1 }
 }
 
+const SIMPLE_ADD_TRANSPORT_RE = /([a-zA-Z_$][\w$]*)\.addTransport\(([a-zA-Z_$][\w$]*)\)/g
+
+function findSimpleAddTransportCallsRegexFallback(code: string): AddTransportCallSite[] {
+  if (!code.includes(ADD_TRANSPORT_NEEDLE)) return []
+  const out: AddTransportCallSite[] = []
+  for (const match of code.matchAll(SIMPLE_ADD_TRANSPORT_RE)) {
+    const receiver = match[1]!
+    const dotIndex = match.index! + receiver.length
+    const parsed = parseSimpleAddTransportAt(code, dotIndex)
+    if (parsed) out.push(parsed)
+  }
+  return out
+}
+
 function findSimpleAddTransportCalls(code: string): AddTransportCallSite[] {
   const out: AddTransportCallSite[] = []
   forEachNeedleOutsideStrings(code, ADD_TRANSPORT_NEEDLE, (dotIndex) => {
     const parsed = parseSimpleAddTransportAt(code, dotIndex)
     if (parsed) out.push(parsed)
   })
-  return out
+  if (out.length) return out
+  // React-heavy deploy bundles (RickRoll bin/index.js) can desync the string-aware scan
+  // across megabyte-scale template literals — fall back to the last simple addTransport site.
+  return findSimpleAddTransportCallsRegexFallback(code)
 }
 
 /** Wrap the last N scene `engine.addTransport(renderer)` calls — outside strings only. */

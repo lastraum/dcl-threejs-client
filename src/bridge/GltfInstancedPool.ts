@@ -3,19 +3,11 @@ import type { Entity } from '@dcl/ecs'
 import type { EntityStore } from './EntityStore'
 import type { MirrorComponents } from './mirrorComponents'
 import type { StaticEntityRegistry } from './StaticEntityRegistry'
-import { collectGltfInstancingMeshes, collectGltfRenderMeshes } from '../collision/gltfRenderMeshes'
+import { collectGltfInstancingMeshes, isGltfRootInstancable } from '../collision/gltfRenderMeshes'
 import { isEmoteAnchorGltfSrc } from '../rendering/DclTextureResolver'
 
 const INITIAL_CAPACITY = 64
 const MAX_CAPACITY = 2048
-
-function cloneInstancingMaterial(material: THREE.Material | THREE.Material[]): THREE.Material | THREE.Material[] {
-  if (Array.isArray(material)) {
-    const cloned = material.map((m) => m.clone())
-    return cloned.length === 1 ? cloned[0]! : cloned
-  }
-  return material.clone()
-}
 
 type TemplateMesh = {
   geometry: THREE.BufferGeometry
@@ -73,12 +65,15 @@ export class GltfInstancedPool {
     return this.entityBatch.has(entity)
   }
 
+  isRootInstancable(root: THREE.Object3D): boolean {
+    return isGltfRootInstancable(root)
+  }
+
   registerFromClone(entity: Entity, srcKey: string, clone: THREE.Object3D, entityNode: THREE.Group): boolean {
     if (this.entityBatch.has(entity)) return true
 
-    const renderMeshes = collectGltfRenderMeshes(clone)
+    if (!isGltfRootInstancable(clone)) return false
     const instancingMeshes = collectGltfInstancingMeshes(clone)
-    if (!instancingMeshes.length || instancingMeshes.length !== renderMeshes.length) return false
 
     let batch = this.batches.get(srcKey)
     if (!batch) {
@@ -165,7 +160,7 @@ export class GltfInstancedPool {
       localMatrix.copy(this.entityWorldInv).multiply(mesh.matrixWorld)
       templates.push({
         geometry: mesh.geometry,
-        material: cloneInstancingMaterial(mesh.material),
+        material: mesh.material,
         localMatrix
       })
     }

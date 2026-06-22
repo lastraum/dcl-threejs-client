@@ -10,12 +10,24 @@ function meshMaterials(mesh: THREE.Mesh): THREE.Material[] {
   return Array.isArray(mesh.material) ? mesh.material : [mesh.material]
 }
 
-/** True when a mesh carries glTF-authored display maps (not a bare pointer/physics proxy). */
+const DEFAULT_ALBEDO = new THREE.Color(0xffffff)
+
+function materialHasDisplayContent(material: THREE.Material): boolean {
+  const std = material as THREE.MeshStandardMaterial & THREE.MeshBasicMaterial
+  if (std.map || std.emissiveMap || std.normalMap || std.metalnessMap || std.roughnessMap || std.alphaMap) {
+    return true
+  }
+  if ('vertexColors' in std && std.vertexColors) return true
+  if ('color' in std && std.color && !std.color.equals(DEFAULT_ALBEDO)) return true
+  return false
+}
+
+/** True when a mesh carries glTF-authored display content (not a bare pointer/physics proxy). */
 export function gltfMeshHasDisplayMaps(mesh: THREE.Mesh): boolean {
+  if (mesh.geometry?.attributes.color) return true
   for (const material of meshMaterials(mesh)) {
     if (!material) continue
-    const std = material as THREE.MeshStandardMaterial
-    if (std.map || std.emissiveMap || std.normalMap || std.metalnessMap || std.roughnessMap) return true
+    if (materialHasDisplayContent(material)) return true
   }
   return false
 }
@@ -118,6 +130,13 @@ export function collectGltfRenderMeshes(root: THREE.Object3D): THREE.Mesh[] {
 /** Renderable GLTF meshes safe for InstancedMesh batching (no morph/skinning). */
 export function collectGltfInstancingMeshes(root: THREE.Object3D): THREE.Mesh[] {
   return collectGltfRenderMeshes(root).filter(isInstancableGltfMesh)
+}
+
+/** True when every render mesh can be batched into InstancedMesh (no partial roots). */
+export function isGltfRootInstancable(root: THREE.Object3D): boolean {
+  const renderMeshes = collectGltfRenderMeshes(root)
+  if (!renderMeshes.length) return false
+  return collectGltfInstancingMeshes(root).length === renderMeshes.length
 }
 
 /**

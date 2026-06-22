@@ -312,6 +312,14 @@ export class ThreeBridge {
     this.instancingEnabled = true
   }
 
+  private markGltfInstancingSkipped(obj: THREE.Object3D): void {
+    obj.userData.gltfInstancingSkipped = true
+  }
+
+  private isGltfInstancingSkipped(obj: THREE.Object3D | null | undefined): boolean {
+    return obj?.userData?.gltfInstancingSkipped === true
+  }
+
   /** In-place migrate solo GLTF clones into InstancedMesh (no cache.clone round-trip). */
   migrateSoloGltfsToInstancing(limit = 64): number {
     if (!this.instancingEnabled || !this.gltfPool || !this.staticRegistry?.isEnabled()) {
@@ -324,18 +332,23 @@ export class ThreeBridge {
     this.staticRegistry.forEachFrozen((entity) => {
       if (!GltfContainer.has(entity) || this.gltfPool!.isInstanced(entity)) return
       const obj = this.store.getNode(entity)
-      if (!obj || obj.userData.gltfInstanced) return
+      if (!obj || obj.userData.gltfInstanced || this.isGltfInstancingSkipped(obj)) return
       const solo = obj.getObjectByName(meshKey(entity))
       if (!solo) return
+
+      const { src } = GltfContainer.get(entity)
+      const hash = hashFromSrc(src, this.sceneConfig)
+      if (
+        !hash ||
+        !this.gltfPool!.canInstance(entity, src, this.staticRegistry!, this.ecs) ||
+        !this.gltfPool!.isRootInstancable(solo)
+      ) {
+        this.markGltfInstancingSkipped(obj)
+        return
+      }
+
       if (migrated < limit) {
-        const { src } = GltfContainer.get(entity)
-        const hash = hashFromSrc(src, this.sceneConfig)
-        const srcKey = hash ?? src.trim()
-        if (
-          hash &&
-          this.gltfPool!.canInstance(entity, src, this.staticRegistry!, this.ecs) &&
-          this.gltfPool!.registerFromClone(entity, srcKey, solo, obj)
-        ) {
+        if (this.gltfPool!.registerFromClone(entity, hash, solo, obj)) {
           disposeOwnedObject3D(solo)
           obj.remove(solo)
           delete obj.userData.animationRig
@@ -1140,10 +1153,12 @@ export class ThreeBridge {
         mesh &&
         obj.userData.gltfSrcKey === srcKey &&
         !obj.userData.gltfInstanced &&
+        !this.isGltfInstancingSkipped(obj) &&
         this.instancingEnabled &&
         this.gltfPool &&
         this.staticRegistry &&
         this.gltfPool.canInstance(entity, src, this.staticRegistry, this.ecs) &&
+        this.gltfPool.isRootInstancable(mesh) &&
         this.gltfPool.registerFromClone(entity, srcKey, mesh, obj)
       ) {
         disposeOwnedObject3D(mesh)
@@ -1178,7 +1193,8 @@ export class ThreeBridge {
             this.instancingEnabled &&
             this.gltfPool &&
             this.staticRegistry &&
-            this.gltfPool.canInstance(entity, src, this.staticRegistry, this.ecs)
+            this.gltfPool.canInstance(entity, src, this.staticRegistry, this.ecs) &&
+            this.gltfPool.isRootInstancable(clone)
           ) {
             if (this.gltfPool.registerFromClone(entity, srcKey, clone, obj)) {
               disposeOwnedObject3D(clone)
@@ -1186,6 +1202,14 @@ export class ThreeBridge {
               this.notifyGltfAttached(entity)
               return
             }
+          } else if (
+            this.instancingEnabled &&
+            this.gltfPool &&
+            this.staticRegistry &&
+            (!this.gltfPool.canInstance(entity, src, this.staticRegistry, this.ecs) ||
+              !this.gltfPool.isRootInstancable(clone))
+          ) {
+            this.markGltfInstancingSkipped(obj)
           }
           obj.userData.gltfInstanced = false
           obj.userData.gltfSrcKey = srcKey

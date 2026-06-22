@@ -35,6 +35,8 @@ export type SceneWorkerBoot = {
     scriptCode?: string
     /** Renderer CRDT snapshot for sync bundle eval (avoids get-state deadlock in worker). */
     bootCrdtSnapshot?: { hasEntities: boolean; data: Uint8Array[] }
+    /** Scene files preloaded on main (composite, etc.) — avoids worker fetch during eval/onStart. */
+    preloadedFiles?: Record<string, { hash: string; content: Uint8Array }>
     content: ContentFile[]
     metadataJson: string
   }
@@ -47,6 +49,8 @@ export type SceneWorkerCrdtRequest = {
 }
 
 export type SceneWorkerReady = { type: 'ready' }
+/** Bundle eval finished — main may start asset hydration while onStart runs. */
+export type SceneWorkerEvalDone = { type: 'eval-done' }
 export type SceneWorkerError = { type: 'error'; message: string }
 export type SceneWorkerLog = { type: 'log'; message: string }
 
@@ -147,6 +151,7 @@ export type SceneWorkerSignedFetchGetHeaders = {
 
 export type SceneWorkerOutbound =
   | SceneWorkerReady
+  | SceneWorkerEvalDone
   | SceneWorkerError
   | SceneWorkerLog
   | SceneWorkerCrdtRequest

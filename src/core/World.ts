@@ -313,7 +313,7 @@ export class World {
     }
 
     if (scene.mainEntry && scene.entityId) {
-      onProgress?.('Booting scene script…')
+      onProgress?.('Compiling scene script…')
       const spawnPoses = this.seedPosesFromSpawn(scene.spawn)
       this.sceneScript.seedRendererEntities(spawnPoses.player, spawnPoses.camera)
       const bootProgressTimer = window.setInterval(() => {

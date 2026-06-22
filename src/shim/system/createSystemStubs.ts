@@ -81,6 +81,10 @@ export function createSystemStubs(
       }),
       getWorldTime: async () => ({ seconds: Math.floor(Date.now() / 1000) }),
       readFile: async (body: { fileName: string }) => {
+        const cached = boot.preloadedFiles?.[body.fileName]
+        if (cached?.content?.byteLength) {
+          return { content: cached.content.slice(), hash: cached.hash }
+        }
         const entry = resolveContentEntry(boot.content, body.fileName)
         if (!entry) throw new Error(`readFile: ${body.fileName} not found in scene content`)
         const res = await fetch(assetUrlForHash(boot, entry.hash))

@@ -192,6 +192,8 @@ export class SceneScriptSystem {
   /** Serializes crdt-send round-trips so mirror/encoder/stash cannot race. */
   private crdtSendSerial: Promise<void> = Promise.resolve()
   private bootCrdtSendSerial: Promise<void> = Promise.resolve()
+  /** True from worker boot until `ready` — keeps fast CRDT path during onStart after eval-done. */
+  private bootPhaseActive = false
   /** Set when pointer-crdt-deliver is posted; cleared on pointer-deliver-done from worker. */
   private pointerDeliverAwaitingAck = false
   private pointerDeliverWatchdog: ReturnType<typeof setTimeout> | null = null
@@ -683,17 +685,18 @@ export class SceneScriptSystem {
 
     const scriptUrl = scene.assetUrl(mainFile.hash)
     const scriptStarted = performance.now()
-    console.info('[scene] loading scene script…')
-    const scriptRes = await fetch(scriptUrl)
-    if (!scriptRes.ok) {
-      throw new Error(`Scene script fetch failed (${scriptRes.status}): ${scriptUrl}`)
-    }
-    const scriptCode = await scriptRes.text()
+    console.info('[scene] loading scene script and boot files…')
+    const [scriptCode, preloadedFiles, bootSnapshot] = await Promise.all([
+      fetch(scriptUrl).then(async (res) => {
+        if (!res.ok) throw new Error(`Scene script fetch failed (${res.status}): ${scriptUrl}`)
+        return res.text()
+      }),
+      this.preloadSceneBootFiles(scene),
+      Promise.resolve().then(() => this.buildBootCrdtSnapshot())
+    ])
     console.info(
       `[scene] scene script ready (${(scriptCode.length / 1024).toFixed(0)} KB, ${((performance.now() - scriptStarted) / 1000).toFixed(1)}s)`
     )
-
-    const bootSnapshot = this.buildBootCrdtSnapshot()
 
     this.worker = new Worker(new URL('../../shim/worker/sceneWorkerEntry.ts', import.meta.url), {
       type: 'module'
@@ -720,13 +723,20 @@ export class SceneScriptSystem {
           hasEntities: bootSnapshot.hasEntities,
           data: bootSnapshot.data.map((chunk) => chunk.slice())
         },
+        preloadedFiles: Object.fromEntries(
+          Object.entries(preloadedFiles).map(([key, file]) => [
+            key,
+            { hash: file.hash, content: file.content.slice() }
+          ])
+        ),
         content: scene.content,
         metadataJson: JSON.stringify(scene.metadata ?? {})
       }
     }
 
-    const BOOT_TIMEOUT_MS = 60_000
+    const BOOT_TIMEOUT_MS = 120_000
     this.bootCrdtSendSerial = Promise.resolve()
+    this.bootPhaseActive = true
     await new Promise<void>((resolve, reject) => {
       if (!this.worker) return reject(new Error('Worker missing'))
 
@@ -764,7 +774,16 @@ export class SceneScriptSystem {
           this.respondCrdtGetState(msg.id)
           return
         }
-        if (msg?.type === 'crdt-send' && !this.running) {
+        if (msg?.type === 'eval-done') {
+          clientDebugLog.log('scene', 'Scene bundle compiled — hydrating while onStart runs', {
+            level: 'success',
+            alsoConsole: true
+          })
+          this.running = true
+          if (!settled) finish(resolve)
+          return
+        }
+        if (msg?.type === 'crdt-send' && this.bootPhaseActive) {
           this.bootCrdtSendSerial = this.bootCrdtSendSerial
             .then(() => this.handleCrdtSendBootFast(msg))
             .catch((err) => {
@@ -782,7 +801,7 @@ export class SceneScriptSystem {
       this.worker.postMessage(boot)
     })
 
-    this.running = true
+    if (!this.running) this.running = true
     if (isMotionFocusActive() && typeof globalThis !== 'undefined') {
       const g = globalThis as typeof globalThis & {
         __dumpMotionFocus?: () => void
@@ -813,8 +832,12 @@ export class SceneScriptSystem {
     onError: (err: Error) => void
   ): Promise<void> {
     if (msg.type === 'ready') {
+      this.bootPhaseActive = false
       clientDebugLog.log('scene', 'Scene worker ready (main thread)', { level: 'success' })
       onReady()
+      return
+    }
+    if (msg.type === 'eval-done') {
       return
     }
     if (msg.type === 'error') {
@@ -997,7 +1020,7 @@ export class SceneScriptSystem {
       return
     }
     if (msg.type === 'crdt-send') {
-      if (!this.running) {
+      if (this.bootPhaseActive) {
         await this.handleCrdtSendBootFast(msg)
         return
       }
@@ -1146,6 +1169,40 @@ export class SceneScriptSystem {
       hasEntities: state.hasEntities,
       data: state.data
     } satisfies MainToWorker)
+  }
+
+  private async preloadSceneBootFiles(
+    scene: ResolvedScene
+  ): Promise<Record<string, { hash: string; content: Uint8Array }>> {
+    const out: Record<string, { hash: string; content: Uint8Array }> = {}
+    const names = ['main.composite', 'assets/scene/main.composite']
+    await Promise.all(
+      names.map(async (fileName) => {
+        const entry =
+          scene.content.find((file) => file.file === fileName) ??
+          (fileName === 'main.composite'
+            ? scene.content.find((file) => file.file === 'assets/scene/main.composite')
+            : undefined)
+        if (!entry?.hash) return
+        try {
+          const res = await fetch(scene.assetUrl(entry.hash))
+          if (!res.ok) return
+          const content = new Uint8Array(await res.arrayBuffer())
+          out[fileName] = { hash: entry.hash, content }
+          if (fileName === 'assets/scene/main.composite') {
+            out['main.composite'] = { hash: entry.hash, content: content.slice() }
+          }
+        } catch {
+          /* composite optional */
+        }
+      })
+    )
+    const keys = Object.keys(out)
+    if (keys.length) {
+      const kb = keys.reduce((sum, key) => sum + out[key]!.content.byteLength, 0) / 1024
+      console.info(`[scene] preloaded ${keys.length} boot file(s) (${kb.toFixed(0)} KB)`)
+    }
+    return out
   }
 
   /** Renderer CRDT snapshot for worker bundle eval (must not round-trip main during sync eval). */

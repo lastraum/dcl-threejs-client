@@ -819,6 +819,9 @@ function bindRendererInbound(
 }
 
 function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
+  if (sceneEvalInProgress) {
+    return Promise.resolve([])
+  }
   const id = ++requestId
   const copy = data.slice()
   return new Promise((resolve) => {
@@ -1407,18 +1410,27 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
 
     installPreregisterRendererComponentsHook()
     const evalStarted = performance.now()
-    workerLog('log', '[sceneWorker] evaluating scene bundle…')
+    const evalKb = (code.length / 1024).toFixed(0)
+    workerLog('log', `[sceneWorker] evaluating scene bundle (${evalKb} KB)…`)
+    const evalHeartbeat = setInterval(() => {
+      workerLog(
+        'log',
+        `[sceneWorker] still compiling scene bundle (${((performance.now() - evalStarted) / 1000).toFixed(0)}s)…`
+      )
+    }, 5000)
     sceneEvalInProgress = true
     let exports: ReturnType<typeof evaluateSceneBundle>
     try {
       exports = evaluateSceneBundle(code, requireMap, patchSceneBundle)
     } finally {
       sceneEvalInProgress = false
+      clearInterval(evalHeartbeat)
     }
     workerLog(
       'log',
       `[sceneWorker] scene bundle evaluated (${((performance.now() - evalStarted) / 1000).toFixed(2)}s)`
     )
+    ctx.postMessage({ type: 'eval-done' } satisfies SceneWorkerOutbound)
     sceneEngine = resolveSceneEngine(exports)
     if (sceneEngine) {
       try {

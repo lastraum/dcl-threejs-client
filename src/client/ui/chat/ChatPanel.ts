@@ -20,6 +20,7 @@ export type ChatPanelOptions = {
   social: SocialService
   onVisibilityChange?: (visible: boolean) => void
   onGoto?: (target: RouteTarget) => void | Promise<void>
+  onOpenProfile?: (address: string) => void
 }
 
 /** Compact bottom-left chat window with a vertical channel rail on the right. */
@@ -37,6 +38,7 @@ export class ChatPanel {
   private readonly inputEl: HTMLInputElement
   private readonly social: SocialService
   private readonly onGoto?: ChatPanelOptions['onGoto']
+  private readonly onOpenProfile?: ChatPanelOptions['onOpenProfile']
   private onVisibilityChange: ((visible: boolean) => void) | null = null
   private visible = false
   private unsubChat: (() => void) | null = null
@@ -49,9 +51,10 @@ export class ChatPanel {
   private mentionPopupRows: MentionCandidate[] = []
   private lastMentionStart: number | null = null
 
-  constructor({ social, onVisibilityChange, onGoto }: ChatPanelOptions) {
+  constructor({ social, onVisibilityChange, onGoto, onOpenProfile }: ChatPanelOptions) {
     this.social = social
     this.onGoto = onGoto
+    this.onOpenProfile = onOpenProfile
     this.onVisibilityChange = onVisibilityChange ?? null
     this.sceneCanvas = document.querySelector('#app canvas')
 
@@ -396,11 +399,19 @@ export class ChatPanel {
       name.textContent = local.displayName
       name.style.color = local.nameColor
       this.fillAvatar(avatar, local.faceUrl, local.displayName)
+      if (localAddress) {
+        this.wireProfileOpen(avatar, localAddress)
+        this.wireProfileOpen(name, localAddress)
+      }
     } else {
       const peer = this.social.getPeerDisplay(line.senderAddress)
       name.textContent = peer.displayName
       name.style.color = peer.nameColor
       this.fillAvatar(avatar, peer.faceUrl, peer.displayName)
+      if (line.senderAddress) {
+        this.wireProfileOpen(avatar, line.senderAddress)
+        this.wireProfileOpen(name, line.senderAddress)
+      }
     }
 
     bubble.appendChild(name)
@@ -415,6 +426,27 @@ export class ChatPanel {
       row.appendChild(bubble)
     }
     return row
+  }
+
+  private wireProfileOpen(el: HTMLElement, address: string): void {
+    if (!this.onOpenProfile) return
+    el.classList.add('chat-panel__profile-hit')
+    el.setAttribute('role', 'button')
+    el.setAttribute('tabindex', '0')
+    el.setAttribute('title', 'View profile')
+    const open = (): void => {
+      if (document.pointerLockElement) document.exitPointerLock()
+      this.onOpenProfile?.(address)
+    }
+    el.addEventListener('click', (e) => {
+      e.stopPropagation()
+      open()
+    })
+    el.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return
+      e.preventDefault()
+      open()
+    })
   }
 
   private fillAvatar(el: HTMLElement, faceUrl: string | null, fallbackLabel: string): void {

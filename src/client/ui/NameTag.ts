@@ -6,11 +6,37 @@ export type NameTagStyle = {
   claimed?: boolean
 }
 
+export type NameTagOptions = NameTagStyle & {
+  /** Wallet address — enables right-click context menu when interactive. */
+  address?: string
+  interactive?: boolean
+}
+
 /** Horizontal growth cap before chat wraps and the pill grows taller. */
 export const NAME_TAG_CHAT_MAX_WIDTH_PX = 200
 
 /** How long overhead chat stays visible above an avatar. */
 export const NAME_TAG_CHAT_DISPLAY_MS = 10_000
+
+type NameTagContextHandler = (address: string, clientX: number, clientY: number) => void
+
+let contextMenuHandler: NameTagContextHandler | null = null
+
+export function setNameTagContextMenuHandler(handler: NameTagContextHandler | null): void {
+  contextMenuHandler = handler
+}
+
+const OPTIONS_TOOLTIP_HTML = `
+  <span class="avatar-name-tag__options-label">Options</span>
+  <span class="avatar-name-tag__options-icon" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none">
+      <path d="M8 6h12M8 12h12M8 18h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      <rect x="2.5" y="4.5" width="3" height="3" rx="0.6" fill="currentColor"/>
+      <rect x="2.5" y="10.5" width="3" height="3" rx="0.6" fill="currentColor"/>
+      <rect x="2.5" y="16.5" width="3" height="3" rx="0.6" fill="currentColor"/>
+    </svg>
+  </span>
+`
 
 /** Floating label above an avatar — billboard via CSS2DRenderer. */
 export class NameTag {
@@ -19,11 +45,13 @@ export class NameTag {
   private readonly textEl: HTMLSpanElement
   private readonly badgeEl: HTMLSpanElement | null
   private readonly chatEl: HTMLDivElement
+
   private label: string
   private style: NameTagStyle
+  private readonly address: string | null
   private chatHideTimer: ReturnType<typeof setTimeout> | null = null
 
-  constructor(text: string, style: NameTagStyle) {
+  constructor(text: string, options: NameTagOptions) {
     const el = document.createElement('div')
     el.className = 'avatar-name-tag'
     this.rootEl = el
@@ -35,7 +63,7 @@ export class NameTag {
     this.textEl.className = 'avatar-name-tag__text'
     header.appendChild(this.textEl)
 
-    this.badgeEl = style.claimed ? document.createElement('span') : null
+    this.badgeEl = options.claimed ? document.createElement('span') : null
     if (this.badgeEl) {
       this.badgeEl.className = 'avatar-name-tag__badge'
       this.badgeEl.textContent = '✓'
@@ -50,15 +78,25 @@ export class NameTag {
     el.appendChild(this.chatEl)
 
     this.label = text
-    this.style = { ...style }
+    this.style = { textColor: options.textColor, claimed: options.claimed }
+    this.address = options.address?.toLowerCase() ?? null
     this.textEl.textContent = text
     this.applyStyle()
+
+    if (options.interactive && this.address) {
+      el.classList.add('avatar-name-tag--interactive')
+      const hint = document.createElement('div')
+      hint.className = 'avatar-name-tag__options-hint'
+      hint.innerHTML = OPTIONS_TOOLTIP_HTML
+      el.appendChild(hint)
+      this.wireInteraction()
+    }
 
     this.object = new CSS2DObject(el)
   }
 
-  static attach(parent: THREE.Object3D, text: string, style: NameTagStyle): NameTag {
-    const tag = new NameTag(text, style)
+  static attach(parent: THREE.Object3D, text: string, options: NameTagOptions): NameTag {
+    const tag = new NameTag(text, options)
     parent.add(tag.object)
     return tag
   }
@@ -114,6 +152,20 @@ export class NameTag {
   dispose(): void {
     this.clearChat()
     this.object.removeFromParent()
+  }
+
+  private wireInteraction(): void {
+    if (!this.address) return
+
+    this.rootEl.addEventListener('contextmenu', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      contextMenuHandler?.(this.address!, e.clientX, e.clientY)
+    })
+
+    this.rootEl.addEventListener('pointerdown', (e) => {
+      if (e.button === 2) e.stopPropagation()
+    })
   }
 
   private applyStyle(): void {

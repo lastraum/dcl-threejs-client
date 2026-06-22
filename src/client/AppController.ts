@@ -29,6 +29,7 @@ import { MobileGameHud } from './ui/MobileGameHud'
 import { disposeSessionAssetCache, getSessionAssetCache, prefetchSceneManifestGlbs } from '../rendering/AssetCache'
 import { DEFAULT_TIMEOUT_MS, FAST_TIMEOUT_MS, type SceneHydrationStats } from '../rendering/sceneHydration'
 import { formatSceneLoadError } from './formatSceneLoadError'
+import { ProfileUiController } from './ui/profile/ProfileUiController'
 
 /** Owns world lifecycle — splash → load → play, navigation, and sign-out. */
 export class AppController {
@@ -46,6 +47,8 @@ export class AppController {
   private running = false
   private navigating = false
   private mobileHud: MobileGameHud | null = null
+  private profileUi: ProfileUiController | null = null
+  private sceneContentUrl = 'https://peer.decentraland.org'
 
   async start(container: HTMLElement): Promise<void> {
     if (this.running) return
@@ -136,6 +139,7 @@ export class AppController {
 
     opts.onProgress?.('Resolving destination…')
     const sceneConfig = await resolveSceneFromRoute(route)
+    this.sceneContentUrl = sceneConfig.realm.contentUrl
     prefetchSceneManifestGlbs(getSessionAssetCache(), sceneConfig)
     opts.onProgress?.('Building world…')
     if (!this.container) throw new Error('App container missing')
@@ -312,10 +316,20 @@ export class AppController {
 
     await loadPromise
 
+    this.profileUi?.dispose()
+    this.profileUi = new ProfileUiController({
+      session: world.session,
+      social: world.social,
+      getPeerUrl: () => this.sceneContentUrl,
+      onOpenChat: () => this.shell?.openChatPanel()
+    })
+    this.shell.setOnViewLocalProfile(() => this.profileUi?.openProfile({ kind: 'local' }))
+
     this.chatPanel?.dispose()
     this.chatPanel = new ChatPanel({
       social: world.social,
-      onGoto: (target) => this.navigateTo(target)
+      onGoto: (target) => this.navigateTo(target),
+      onOpenProfile: (address) => this.profileUi?.openProfileForAddress(address)
     })
     this.shell.attachChatPanel(this.chatPanel, world.social)
     if (this.settingsOverlay) this.shell.attachSettingsOverlay(this.settingsOverlay)
@@ -378,6 +392,8 @@ export class AppController {
   }
 
   private async teardownScene(): Promise<void> {
+    this.profileUi?.dispose()
+    this.profileUi = null
     this.mobileHud?.dispose()
     this.mobileHud = null
     this.worldLocationCard?.dispose()
@@ -390,6 +406,8 @@ export class AppController {
 
   async signOut(): Promise<void> {
     window.removeEventListener('popstate', this.onPopState)
+    this.profileUi?.dispose()
+    this.profileUi = null
     this.chatPanel?.dispose()
     this.chatPanel = null
     this.settingsOverlay?.dispose()

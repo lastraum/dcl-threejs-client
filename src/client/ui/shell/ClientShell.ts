@@ -539,4 +539,12 @@ export class ClientShell {
   setEmoteHudActive(active: boolean): void {
     this.buttons.get('emotes')?.setActive(active)
   }
+
+  setOnViewLocalProfile(handler: (() => void) | null): void {
+    this.profilePopup.setOnViewProfile(handler)
+  }
+
+  openChatPanel(): void {
+    this.chatPanel?.show()
+  }
 }

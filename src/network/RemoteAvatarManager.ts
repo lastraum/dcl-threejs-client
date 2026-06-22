@@ -34,6 +34,7 @@ import type { AvatarTransformPayload } from './comms/types'
 import { RemoteAvatarLoadQueue } from './RemoteAvatarLoadQueue'
 
 type RemotePeerRecord = {
+  address: string
   entity: Entity
   root: THREE.Object3D
   pivot: THREE.Group
@@ -209,6 +210,7 @@ export class RemoteAvatarManager {
       if (!this.entityStore) this.root.add(root)
 
       record = {
+        address: key,
         entity,
         root,
         pivot,
@@ -488,7 +490,9 @@ export class RemoteAvatarManager {
     record.nameTag?.dispose()
     record.nameTag = NameTag.attach(record.nameTagAnchor, record.identity.displayName, {
       textColor: record.identity.nameColor,
-      claimed: record.identity.hasClaimedName
+      claimed: record.identity.hasClaimedName,
+      address: record.address,
+      interactive: true
     })
     updateNameTagAnchor(record.nameTagAnchor, record.placeholder)
   }
@@ -553,7 +557,9 @@ export class RemoteAvatarManager {
       record.nameTag?.dispose()
       record.nameTag = NameTag.attach(record.nameTagAnchor, record.identity.displayName, {
         textColor: record.identity.nameColor,
-        claimed: record.identity.hasClaimedName
+        claimed: record.identity.hasClaimedName,
+        address: record.address,
+        interactive: true
       })
 
       const { x, y, z } = record.targetPosition

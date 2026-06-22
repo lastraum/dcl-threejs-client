@@ -2528,7 +2528,7 @@
         flex-direction: column;
       }
       .settings-overlay__content > .events-view {
-        flex: 1;
+        flex: 1 1 0;
         min-height: 0;
         width: 100%;
       }
@@ -4537,42 +4537,53 @@
         min-height: 0;
       }
       .events-view--calendar {
-        flex: 1;
+        flex: 1 1 0;
         min-height: 0;
         height: auto;
+        padding-bottom: 12px;
       }
       .events-view--calendar .events-view__list-shell {
         flex: 1 1 0;
         min-height: 0;
         display: flex;
         flex-direction: column;
+        gap: 8px;
       }
       .events-view--calendar .events-view__columns {
         display: none;
       }
       .events-view--calendar .events-view__main {
+        display: flex;
         flex: 1 1 0;
         min-height: 0;
         align-items: stretch;
         overflow: hidden;
+        gap: 12px;
       }
       .events-view--calendar .events-view__calendar-pane {
-        flex: 1 1 0;
+        flex: 3 1 0;
+        min-width: 0;
         min-height: 0;
-        height: auto;
+        display: flex;
+        flex-direction: column;
       }
       .events-view--calendar .events-view__calendar-grid {
         flex: 1 1 0;
         min-height: 0;
         overflow: hidden;
+        grid-template-rows: repeat(6, minmax(0, 1fr));
       }
       .events-view--calendar .events-view__day {
         min-height: 0;
         height: 100%;
       }
       .events-view--calendar .events-view__highlight {
-        height: 100%;
-        align-self: stretch;
+        flex: 1 1 0;
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
       }
       .events-view--calendar .events-view__day-panel {
         flex: 1;

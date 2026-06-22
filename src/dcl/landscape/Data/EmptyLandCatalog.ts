@@ -3,6 +3,11 @@ const TREE_01 = 'bafybeibpse7zmzxuge2l4vk3udmjyu6mzhvm62vmbjby65b6nlxg2v346y'
 const TREE_02 = 'bafybeied5cx6vw6p7okstzk5d7fp7kpfujb2lfugte33l6euejajsiydo4'
 const TREE_03 = 'bafybeig4v6vn4fdq62ri6ng5e3rd4m7pg4opicwr253t7hmsxxitepyb4y'
 
+/** Extra Y sink after ground alignment — green-canopy tree03 sits high on its pivot. */
+export const PROP_Y_SINK: Partial<Record<string, number>> = {
+  [TREE_03]: -1.05
+}
+
 export const EMPTY_LAND = {
   ground: 'bafybeic34wsg4l2h7qioxndv7zlspscrinewlxqodvumx75bfrf3vvk3jq',
   trees: [TREE_01, TREE_02, TREE_03],

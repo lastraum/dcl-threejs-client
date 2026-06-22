@@ -6,11 +6,28 @@ import { getSessionAssetCache, prefetchSceneManifestGlbs } from '../rendering/As
 import { SceneHost } from '../rendering/SceneHost'
 import { PhysXWorld } from '../physics/PhysXWorld'
 import { PlayerSystem } from '../player/PlayerSystem'
-import { sceneWorldBounds } from '../player/SceneBounds'
+import {
+  islandCircularWalkBounds,
+  sceneWorldBounds,
+  type PlayerWalkBounds
+} from '../player/SceneBounds'
 import { LandscapeSystem } from './systems/LandscapeSystem'
 import { SceneScriptSystem } from './systems/SceneScriptSystem'
 import { EnvironmentSystem } from '../environment/EnvironmentSystem'
-import { WaterPlane } from '../environment/WaterPlane'
+import { FftOceanWater } from '../environment/FftOceanWater'
+import { IslandWater } from '../environment/IslandWater'
+import { OpenOceanWater } from '../environment/OpenOceanWater'
+import { OceanRing } from '../environment/OceanRing'
+import { readFftOceanOverride } from '../environment/fftOcean/readFftOceanOverride'
+import type { OceanPerfInfo } from '../client/ui/RenderStats'
+import type { OutdoorLightingSnapshot } from '../environment/OutdoorLighting'
+import type { IslandShoreMaterial } from '../dcl/landscape/IslandShoreMaterial'
+import {
+  landscapeProfileForResolvedScene,
+  resolveSceneEnvironment
+} from '../dcl/landscape/resolveLandscapeEnvironment'
+import type { EzTreeGrassFieldHandle } from '../dcl/landscape/EzTreeGrassField'
+import { resetFoliageWindRegistry, updateFoliageWind } from '../dcl/landscape/foliageWind'
 import { SessionIdentity } from '../network/SessionIdentity'
 import { RemoteAvatarManager } from '../network/RemoteAvatarManager'
 import { CommsService } from '../network/CommsService'
@@ -44,6 +61,14 @@ function useOrbitMode(): boolean {
   return typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('orbit')
 }
 
+type SceneWater = {
+  group: THREE.Group
+  update: (delta: number, camera: THREE.Camera) => void
+  applyOutdoorLighting?: (lighting: OutdoorLightingSnapshot) => void
+  dispose: () => void
+  perfInfo?: OceanPerfInfo
+}
+
 /** Top-level world — analogous to Unity Explorer client world root. */
 export class World {
   readonly assets = getSessionAssetCache()
@@ -56,7 +81,7 @@ export class World {
   readonly host: SceneHost
   readonly environment: EnvironmentSystem
   private readonly lightManager: LightManager
-  private water: WaterPlane | null = null
+  private ocean: SceneWater | null = null
   private player: PlayerSystem | null = null
   private remoteAvatars: RemoteAvatarManager | null = null
   private playerMode = !useOrbitMode()
@@ -80,6 +105,10 @@ export class World {
   /** Runtime burst (e.g. theatre Scene 11/12) — drain with loading-style recook until idle. */
   private runtimeColliderBurstUntil = 0
   private unsubAvatarChat: (() => void) | null = null
+  private playerWalkBounds: PlayerWalkBounds | null = null
+  private ezTreeGrass: EzTreeGrassFieldHandle | null = null
+  private ezTreeGrassElapsed = 0
+  private foliageWindElapsed = 0
 
   /** Per-tick budget while GLBs still attaching on the loading screen. */
   private static readonly HYDRATION_COLLIDER_COOK_BUDGET = 80
@@ -192,30 +221,90 @@ export class World {
     const bounds = sceneWorldBounds(scene.parcels, scene.baseParcel)
     this.host.configureViewDistance(bounds)
 
+    const resolvedEnv = resolveSceneEnvironment(scene.metadata, scene.source)
+    scene.landscapeEnvironment = resolvedEnv.landscapeEnvironment
+    scene.skyLighting = resolvedEnv.skyLighting
+
     onProgress?.('Setting up sky…')
     await this.environment.init(scene)
 
+    const landscapeProfile = landscapeProfileForResolvedScene(scene)
+    const openIslandShore =
+      landscapeProfile.kind === 'island' || landscapeProfile.circularShore === true
+    const openOcean = landscapeProfile.openOcean === true
+
     await this.landscape.initialize(scene, this.assets, onProgress)
+    this.ezTreeGrass?.dispose()
+    this.ezTreeGrass =
+      (this.landscape.state.landscapeRoot?.userData.ezTreeGrass as EzTreeGrassFieldHandle | undefined) ??
+      null
+    this.ezTreeGrassElapsed = 0
+    this.foliageWindElapsed = 0
     if (this.landscape.state.landscapeRoot) {
       this.host.scene.add(this.landscape.state.landscapeRoot)
     }
+    const terrain = createTerrainModel(
+      scene.parcels,
+      landscapeProfile.borderPadding,
+      landscapeProfile.circularShore === true
+    )
 
-    this.water = new WaterPlane(scene.parcels, scene.baseParcel, 1)
-    this.host.scene.add(this.water.mesh)
+    this.clearOcean()
+    if (landscapeProfile.showWater) {
+      const fftSettings = readFftOceanOverride()
+      const useFftOcean = fftSettings.enabled && this.host.renderer.capabilities.isWebGL2
+      if (fftSettings.enabled && !useFftOcean) {
+        console.warn('[ocean] FFTOCEAN requires WebGL2 — using Water.js')
+      }
+      console.info(
+        `[ocean] env=${landscapeProfile.kind} openOcean=${openOcean} fftOcean=${useFftOcean}`
+      )
+      this.ocean = openOcean
+        ? useFftOcean
+          ? await this.createFftOcean(scene, 'open', fftSettings)
+          : await this.createOpenOcean(scene)
+        : openIslandShore
+          ? useFftOcean
+            ? await this.createFftOcean(
+                scene,
+                'island',
+                fftSettings,
+                landscapeProfile.borderPadding
+              )
+            : await this.createIslandWater(scene, landscapeProfile.borderPadding)
+          : new OceanRing(
+              scene.parcels,
+              scene.baseParcel,
+              terrain.paddingInParcels,
+              terrain.landscapeParcelKeys
+            )
+      if (this.ocean.group.children.length > 0) {
+        this.host.scene.add(this.ocean.group)
+        this.host.renderStats.setOceanPerf(this.ocean.perfInfo ?? null)
+      } else {
+        this.ocean.dispose()
+        this.ocean = null
+        this.host.renderStats.setOceanPerf(null)
+      }
+    } else {
+      this.host.renderStats.setOceanPerf(null)
+    }
+    this.syncOutdoorLighting()
 
     onProgress?.('Initialising physics…')
     await this.physics.init()
-    const terrain = createTerrainModel(scene.parcels, 1)
-    this.physics.syncLandscapeGround(terrain.landscapeParcelKeys, scene.baseParcel, scene.parcels)
+    this.physics.syncLandscapeGround(terrain.landscapeParcelKeys, scene.baseParcel, scene.parcels, {
+      perimeterWalls: !openIslandShore && !openOcean
+    })
+    this.playerWalkBounds = openIslandShore
+      ? islandCircularWalkBounds(scene.parcels, scene.baseParcel, landscapeProfile.borderPadding)
+      : { mode: 'rect', bounds: sceneWorldBounds(scene.parcels, scene.baseParcel) }
 
     if (scene.mainEntry && scene.entityId) {
       this.sceneScript.prepare(scene, this.assets, this.host)
       this.sceneScript.setLiveKitVideoBinder((video, onUpdate) =>
         this.comms.bindLiveKitVideoSource(video, onUpdate)
       )
-      if (this.landscape.state.landscapeRoot) {
-        this.sceneScript.gltfColliders?.setLandscapeRoot(this.landscape.state.landscapeRoot)
-      }
       this.remoteAvatars?.setEntityStore(this.sceneScript.getEntityStore())
       dclToThreeVec(
         new THREE.Vector3(scene.spawn.x, scene.spawn.y, scene.spawn.z),
@@ -263,6 +352,8 @@ export class World {
       )
       this.sceneScript.setOpenExternalUrlHandler((request) => openExternalUrl(request))
     }
+
+    this.bindLandscapeColliders(openIslandShore)
 
     if (this.playerMode && this.player) {
       onProgress?.('Connecting profile…')
@@ -374,10 +465,11 @@ export class World {
       })
     }
 
-    const bounds = sceneWorldBounds(scene.parcels, scene.baseParcel)
+    const walkBounds =
+      this.playerWalkBounds ?? { mode: 'rect', bounds: sceneWorldBounds(scene.parcels, scene.baseParcel) }
 
     onProgress?.('Spawning player…')
-    await this.player.initCapsule(scene.spawn, bounds, this.sceneScript.readComponents, onProgress)
+    await this.player.initCapsule(scene.spawn, walkBounds, this.sceneScript.readComponents, onProgress)
     this.sceneScript.setSpatialAudioPlayerRoot(() => this.player!.getPlayerRoot())
     const spawnStatic = this.physics.staticColliderCount
     const spawnGltf = this.physics.gltfStaticActorCount
@@ -566,9 +658,11 @@ export class World {
 
   /** One visible frame (sky/landscape/camera) before the loading overlay hides. */
   primeRender(): void {
-    this.water?.update(0)
+    this.ocean?.update(0, this.host.camera)
+    updateFoliageWind(this.foliageWindElapsed)
     this.lightManager.update(this.host.camera.position)
     this.environment.update(0, this.sceneScript.view, this.sceneScript.readComponents)
+    this.syncOutdoorLighting()
     this.player?.snapCamera()
     this.host.renderFrame()
     const entityRoot = this.host.scene.getObjectByName('scene-entities')
@@ -590,12 +684,19 @@ export class World {
     this.host.start({
       onSyncFrame: (delta) => {
         startFrame++
-        this.water?.update(delta)
+        this.ocean?.update(delta, this.host.camera)
+        if (this.ezTreeGrass) {
+          this.ezTreeGrassElapsed += delta
+          this.ezTreeGrass.update(this.ezTreeGrassElapsed, this.host.camera.position)
+        }
+        this.foliageWindElapsed += delta
+        updateFoliageWind(this.foliageWindElapsed)
         this.lightManager.update(this.host.camera.position)
         if (!skipRemoteAvatars()) {
           this.remoteAvatars?.setCameraPosition(this.host.camera.position)
         }
         this.environment.update(delta, this.sceneScript.view, this.sceneScript.readComponents)
+        this.syncOutdoorLighting()
 
         if (this.playerMode && this.player) {
           this.player.update(delta)
@@ -1402,6 +1503,91 @@ export class World {
     }
   }
 
+  /** Wire landscape into GLTF collider extraction (must run after `sceneScript.prepare`). */
+  private bindLandscapeColliders(openIslandShore: boolean): void {
+    const root = this.landscape.state.landscapeRoot
+    if (!root) return
+    this.sceneScript.gltfColliders?.setLandscapeRoot(root, {
+      physicsColliders: !openIslandShore
+    })
+    this.lastPhysicsBatchFp = ''
+  }
+
+  private syncOutdoorLighting(): void {
+    const lighting = this.environment.getOutdoorLighting()
+    this.ocean?.applyOutdoorLighting?.(lighting)
+    const shoreRoot = this.landscape.state.landscapeRoot?.getObjectByName('landscape:island-shore')
+    const shoreMat = shoreRoot?.userData.islandShoreMaterial as IslandShoreMaterial | undefined
+    shoreMat?.applyOutdoorLighting(lighting)
+  }
+
+  private async createOpenOcean(scene: ResolvedScene): Promise<SceneWater> {
+    const ocean = await OpenOceanWater.create(scene.parcels, scene.baseParcel)
+    return {
+      group: ocean.group,
+      update: (delta, camera) => ocean.update(delta, camera),
+      applyOutdoorLighting: (lighting) => ocean.applyOutdoorLighting(lighting),
+      dispose: () => ocean.dispose(),
+      perfInfo: ocean.perf
+    }
+  }
+
+  private async createFftOcean(
+    scene: ResolvedScene,
+    mode: 'open' | 'island',
+    fftSettings: ReturnType<typeof readFftOceanOverride>,
+    shoreWidthParcels?: number
+  ): Promise<SceneWater> {
+    try {
+      const ocean = await FftOceanWater.create(
+        scene.parcels,
+        scene.baseParcel,
+        this.host.renderer,
+        { mode, shoreWidthParcels, settings: fftSettings }
+      )
+      return {
+        group: ocean.group,
+        update: (delta, camera) => ocean.update(delta, camera),
+        applyOutdoorLighting: (lighting) => ocean.applyOutdoorLighting(lighting),
+        dispose: () => ocean.dispose(),
+        perfInfo: ocean.perf
+      }
+    } catch (err) {
+      console.error('[ocean] FFTOCEAN init failed — falling back to Water.js', err)
+      return mode === 'island'
+        ? this.createIslandWater(scene, shoreWidthParcels ?? 1)
+        : this.createOpenOcean(scene)
+    }
+  }
+
+  private async createIslandWater(
+    scene: ResolvedScene,
+    shoreWidthParcels: number
+  ): Promise<SceneWater> {
+    const ocean = await IslandWater.create(scene.parcels, scene.baseParcel, shoreWidthParcels)
+    return {
+      group: ocean.group,
+      update: (delta, camera) => ocean.update(delta, camera),
+      applyOutdoorLighting: (lighting) => ocean.applyOutdoorLighting(lighting),
+      dispose: () => ocean.dispose(),
+      perfInfo: ocean.perf
+    }
+  }
+
+  private clearOcean(): void {
+    this.ocean?.dispose()
+    this.ocean = null
+    this.host.renderStats.setOceanPerf(null)
+    const stalePlane = this.host.scene.getObjectByName('water-plane')
+    const staleRing = this.host.scene.getObjectByName('ocean-ring')
+    const staleIsland = this.host.scene.getObjectByName('island-water')
+    const staleOpenOcean = this.host.scene.getObjectByName('open-ocean-water')
+    stalePlane?.removeFromParent()
+    staleRing?.removeFromParent()
+    staleIsland?.removeFromParent()
+    staleOpenOcean?.removeFromParent()
+  }
+
   dispose(): void {
     this.unsubAvatarChat?.()
     this.unsubAvatarChat = null
@@ -1412,10 +1598,12 @@ export class World {
     this.remoteAvatars?.dispose()
     this.remoteAvatars = null
 
-    this.water?.dispose()
-    this.water = null
+    this.clearOcean()
     this.environment.dispose()
 
+    this.ezTreeGrass?.dispose()
+    this.ezTreeGrass = null
+    resetFoliageWindRegistry()
     this.landscape.state.landscapeRoot?.removeFromParent()
     this.landscape.state.landscapeRoot = null
     this.sceneScript.gltfColliders?.setLandscapeRoot(null)

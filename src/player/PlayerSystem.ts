@@ -16,7 +16,7 @@ import {
 } from './locomotion'
 import type { SceneSpawn } from '../dcl/content/types'
 import type { MovePlayerToRequest } from './movePlayerTo'
-import { clampToSceneBounds, type SceneWorldBounds } from './SceneBounds'
+import { clampToWalkBounds, type PlayerWalkBounds } from './SceneBounds'
 import { normalizeAngle } from '../network/comms/movementCompressed'
 import {
   dclToThreeVec,
@@ -68,6 +68,8 @@ const PLAYER_TURN_SMOOTH = 12
 const FACING_SPEED_MIN = 0.12
 const GROUND_COYOTE_SECONDS = 0.15
 const AIR_JUMP_DELAY = 0.2
+/** Drop from above spawn so scene floors above y=0 win over the infinite ground plane. */
+const SPAWN_GROUND_PROBE_LIFT = 4
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v))
@@ -113,7 +115,7 @@ export class PlayerSystem {
   private avatar: LocalAvatar | null = null
   private nameTag: NameTag | null = null
   private playerIdentity: ProfileIdentity | null = null
-  private bounds: SceneWorldBounds | null = null
+  private walkBounds: PlayerWalkBounds | null = null
   private moveTask: {
     from: THREE.Vector3
     to: THREE.Vector3
@@ -139,21 +141,35 @@ export class PlayerSystem {
 
   async initCapsule(
     spawn: SceneSpawn,
-    bounds: SceneWorldBounds,
+    walkBounds: PlayerWalkBounds,
     readComponents: MirrorComponents,
     onProgress?: (msg: string) => void
   ): Promise<void> {
     this.readComponents = readComponents
-    this.bounds = bounds
+    this.walkBounds = walkBounds
     this.input = new PlayerInput(this.host.renderer.domElement)
     const spawnPos = dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y, spawn.z))
-    this.physics.spawnPlayer(spawnPos)
+    const probeDrop = SPAWN_GROUND_PROBE_LIFT + 64
+    this.physics.spawnPlayer(
+      dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y + SPAWN_GROUND_PROBE_LIFT, spawn.z))
+    )
     // CCT obstacle cache must see static GLTF/MeshCollider actors registered during hydration.
     this.physics.warmStaticScene()
-    if (spawnPos.y < 0) {
-      this.physics.snapToGroundBelow()
+    this.physics.snapToGroundBelow(probeDrop)
+    this.physics.invalidateControllerCache()
+    let spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
+    if (!spawnGrounded) {
+      this.physics.teleport(
+        dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y + SPAWN_GROUND_PROBE_LIFT, spawn.z))
+      )
+      this.physics.snapToGroundBelow(probeDrop)
+      this.physics.invalidateControllerCache()
+      spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
     }
-    const spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
+    if (!spawnGrounded) {
+      this.physics.teleport(spawnPos)
+      spawnGrounded = true
+    }
     this.grounded = spawnGrounded
     this.groundCoyote = spawnGrounded ? GROUND_COYOTE_SECONDS : 0
     this.physics.attachCapsuleDebug(this.root)
@@ -225,11 +241,11 @@ export class PlayerSystem {
   /** @deprecated Use initCapsule + loadAvatar for social-first boot order. */
   async init(
     spawn: SceneSpawn,
-    bounds: SceneWorldBounds,
+    walkBounds: PlayerWalkBounds,
     readComponents: MirrorComponents,
     onProgress?: (msg: string) => void
   ): Promise<void> {
-    await this.initCapsule(spawn, bounds, readComponents, onProgress)
+    await this.initCapsule(spawn, walkBounds, readComponents, onProgress)
     await this.loadAvatar(onProgress)
   }
 
@@ -326,7 +342,7 @@ export class PlayerSystem {
 
   /** DCL `RestrictedActions.movePlayerTo` — position relative to scene origin. */
   movePlayerTo(request: MovePlayerToRequest): boolean {
-    if (!this.enabled || !this.bounds) return false
+    if (!this.enabled || !this.walkBounds) return false
 
     const pos = request.newRelativePosition
     if (!pos) return false
@@ -336,7 +352,7 @@ export class PlayerSystem {
       pos.y ?? threeToDclVec(this.root.position).y,
       pos.z ?? threeToDclVec(this.root.position).z
     )
-    clampToSceneBounds(targetDcl, this.bounds)
+    clampToWalkBounds(targetDcl, this.walkBounds)
     const target = dclToThreeVec(targetDcl)
 
     const avatarTarget = request.avatarTarget
@@ -626,9 +642,9 @@ export class PlayerSystem {
     }
 
     this.root.position.copy(this.physics.positionOut)
-    if (this.bounds) {
+    if (this.walkBounds) {
       const dclPos = threeToDclVec(this.root.position)
-      if (clampToSceneBounds(dclPos, this.bounds)) {
+      if (clampToWalkBounds(dclPos, this.walkBounds)) {
         this.physics.teleport(dclToThreeVec(dclPos))
         this.root.position.copy(this.physics.positionOut)
         _velocity.x = 0
@@ -750,9 +766,9 @@ export class PlayerSystem {
   }
 
   private teleportTo(positionThree: THREE.Vector3): void {
-    if (this.bounds) {
+    if (this.walkBounds) {
       const dclPos = threeToDclVec(positionThree)
-      clampToSceneBounds(dclPos, this.bounds)
+      clampToWalkBounds(dclPos, this.walkBounds)
       positionThree.copy(dclToThreeVec(dclPos))
     }
     this.physics.teleport(positionThree)

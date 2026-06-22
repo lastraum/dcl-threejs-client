@@ -796,13 +796,29 @@ export class PhysXWorld {
     this.invalidateControllerCache()
   }
 
-  /** Perimeter walls on empty padding parcels — floor is `ensureInfiniteGroundPlane()`. */
-  syncLandscapeGround(parcelKeys: string[], baseParcel: string, sceneParcels: string[]): void {
-    const fp = `${baseParcel}:${parcelKeys.join(',')}:${sceneParcels.join(',')}`
+  /**
+   * Padding-ring perimeter walls — tall thin boxes on the outer edges of empty padding parcels.
+   * Never placed on scene parcels or on edges that border scene parcels (grass → sand must stay open).
+   * Floor collision is `ensureInfiniteGroundPlane()`; island / open shore passes `perimeterWalls: false`.
+   */
+  syncLandscapeGround(
+    parcelKeys: string[],
+    baseParcel: string,
+    sceneParcels: string[],
+    options?: { perimeterWalls?: boolean }
+  ): void {
+    const perimeterWalls = options?.perimeterWalls !== false
+    const fp = `${baseParcel}:${perimeterWalls ? 'w' : 'o'}:${parcelKeys.join(',')}:${sceneParcels.join(',')}`
     if (this.landscapeFp === fp) return
 
     for (const entity of [...this.staticActors.keys()]) {
       if (entity < 0 && entity !== INFINITE_GROUND_ENTITY) this.removeStatic(entity)
+    }
+
+    if (!perimeterWalls) {
+      this.landscapeFp = fp
+      this.invalidateControllerCache()
+      return
     }
 
     const base = parseParcelKey(baseParcel)
@@ -813,6 +829,13 @@ export class PhysXWorld {
     const wallThick = 0.25
     const wallHalfY = wallHeight / 2
     let nextEntity = -(parcelKeys.length + 2)
+
+    const needsOuterWall = (nx: number, ny: number): boolean => {
+      const neighbor = parcelKey({ x: nx, y: ny })
+      if (keySet.has(neighbor)) return false
+      if (isSceneParcel(neighbor, sceneParcels)) return false
+      return true
+    }
 
     parcelKeys.forEach((key) => {
       if (isSceneParcel(key, sceneParcels)) return
@@ -836,28 +859,28 @@ export class PhysXWorld {
       const oz = origin.z
       const mid = PARCEL_SIZE / 2
 
-      if (!keySet.has(parcelKey({ x: parcel.x - 1, y: parcel.y }))) {
+      if (needsOuterWall(parcel.x - 1, parcel.y)) {
         addWall(
           new THREE.Vector3(ox - wallThick / 2, wallHalfY, oz + mid),
           new THREE.Vector3(wallThick, wallHeight, PARCEL_SIZE),
           'west'
         )
       }
-      if (!keySet.has(parcelKey({ x: parcel.x + 1, y: parcel.y }))) {
+      if (needsOuterWall(parcel.x + 1, parcel.y)) {
         addWall(
           new THREE.Vector3(ox - PARCEL_SIZE + wallThick / 2, wallHalfY, oz + mid),
           new THREE.Vector3(wallThick, wallHeight, PARCEL_SIZE),
           'east'
         )
       }
-      if (!keySet.has(parcelKey({ x: parcel.x, y: parcel.y - 1 }))) {
+      if (needsOuterWall(parcel.x, parcel.y - 1)) {
         addWall(
           new THREE.Vector3(ox - mid, wallHalfY, oz + wallThick / 2),
           new THREE.Vector3(PARCEL_SIZE, wallHeight, wallThick),
           'south'
         )
       }
-      if (!keySet.has(parcelKey({ x: parcel.x, y: parcel.y + 1 }))) {
+      if (needsOuterWall(parcel.x, parcel.y + 1)) {
         addWall(
           new THREE.Vector3(ox - mid, wallHalfY, oz + PARCEL_SIZE - wallThick / 2),
           new THREE.Vector3(PARCEL_SIZE, wallHeight, wallThick),

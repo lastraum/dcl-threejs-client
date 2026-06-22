@@ -49,6 +49,7 @@ export class SceneHost {
     this.controls.maxPolarAngle = Math.PI * 0.49
     this.nameTags = new NameTagRenderer(container)
     this.renderStats = new RenderStats()
+    this.renderStats.attachRenderer(this.renderer)
 
     clientSettings.subscribe((s) => {
       this.camera.fov = s.fov

@@ -1,4 +1,5 @@
 import { parseParcelKey } from '../../content/parseParcel'
+import { islandLandscapeParcelKeys } from '../islandLandscapeKeys'
 import { landscapeParcelKeys, sceneParcelBounds } from '../Utils/ParcelGrid'
 
 /**
@@ -12,9 +13,15 @@ export type TerrainModel = {
   landscapeParcelKeys: string[]
 }
 
-export function createTerrainModel(sceneParcels: string[], borderPadding = 1): TerrainModel {
+export function createTerrainModel(
+  sceneParcels: string[],
+  borderPadding = 1,
+  circularShore = false
+): TerrainModel {
   const bounds = sceneParcelBounds(sceneParcels)
-  const keys = landscapeParcelKeys(sceneParcels, borderPadding)
+  const keys = circularShore
+    ? islandLandscapeParcelKeys(sceneParcels, borderPadding)
+    : landscapeParcelKeys(sceneParcels, borderPadding)
 
   return {
     minParcel: { x: bounds.minX - borderPadding, y: bounds.minY - borderPadding },

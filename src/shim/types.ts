@@ -13,6 +13,9 @@ export type AvatarAttachTransformEntry = {
   scale: { x: number; y: number; z: number }
 }
 
+/** Client hardware heuristic — passed to the scene worker for timing budgets. */
+export type PerformanceTier = 'low' | 'medium' | 'high'
+
 export type SceneWorkerDebugFlags = {
   /** `?pointerverbose` — log pointer-crdt-deliver round-trips in the worker. */
   pointerDeliver?: boolean
@@ -201,7 +204,7 @@ export type MainToWorker =
   | { type: 'engine-api-enqueue'; events: EngineApiEvent[] }
   | { type: 'comms-receive-binary'; sender: string; data: Uint8Array }
   | { type: 'pause-scene-ticks'; paused?: boolean }
-  | { type: 'scene-play-ready' }
+  | { type: 'scene-play-ready'; performanceTier?: PerformanceTier }
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
   | { type: 'tween-state-deliver'; data: Uint8Array[] }
   | { type: 'renderer-append-deliver'; data: Uint8Array[] }

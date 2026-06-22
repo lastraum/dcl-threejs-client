@@ -11,11 +11,14 @@ import {
 } from '../rendering/SunEnvironmentSettings'
 
 const SKY_VERTEX = /* glsl */ `
-varying vec3 vWorldPosition;
+// Model-space ray — dome is centered on the camera each frame (see EnvironmentSystem).
+varying vec3 vDirection;
 void main() {
-  vec4 worldPos = modelMatrix * vec4(position, 1.0);
-  vWorldPosition = worldPos.xyz;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  vDirection = position;
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  vec4 clipPos = projectionMatrix * mvPosition;
+  // Infinite sky — push to far plane after projection (Three.js Sky / envmap pattern).
+  gl_Position = vec4(clipPos.x, clipPos.y, clipPos.w, clipPos.w);
 }
 `
 
@@ -46,7 +49,7 @@ uniform samplerCube uNearCloudsCube;
 uniform samplerCube uHorizonCloudsCube;
 uniform samplerCube uTopCloudsCube;
 
-varying vec3 vWorldPosition;
+varying vec3 vDirection;
 
 vec3 sampleGradient(vec3 dir, vec3 zenit, vec3 horizon, vec3 nadir) {
   float y = clamp(dir.y, -1.0, 1.0);
@@ -152,7 +155,7 @@ vec3 blendCloudLayer(
 }
 
 void main() {
-  vec3 dir = normalize(vWorldPosition);
+  vec3 dir = normalize(vDirection);
   vec3 sky = sampleGradient(dir, uZenitColor, uHorizonColor, uNadirColor);
 
   float night = 1.0 - smoothstep(-0.08, 0.12, uSunDirection.y);

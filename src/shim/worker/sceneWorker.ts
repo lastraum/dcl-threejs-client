@@ -13,6 +13,7 @@ import type {
   CommsTopicRequest,
   ConsumeMessagesResponse,
   MainToWorker,
+  PerformanceTier,
   RealmResponse,
   SceneWorkerOutbound,
   SendBinaryRequest,
@@ -72,6 +73,8 @@ let sceneRunning = false
 let lastTick = performance.now()
 /** True while scene onUpdate promise is in flight (may be awaiting crdtSendToRenderer). */
 let sceneUpdateInFlight = false
+/** Stays true until the onUpdate promise settles — prevents overlap after abort preemption. */
+let sceneUpdatePromiseActive = false
 /** True while pointer inbound apply + engine tick is running — scene loop yields. */
 let pointerDeliveryInFlight = false
 let pointerDeliveryStartedAt = 0
@@ -83,14 +86,24 @@ const SCENE_TICK_BASE_INTERVAL_MS = 100
 let fullSceneOnUpdateIntervalMs = 250
 /** After play-ready: keep onUpdate responsive for pointer/triggers; perf throttle is engine-tick + diff consumer. */
 const FULL_SCENE_ONUPDATE_INTERVAL_PLAY_MS = 400
+const FULL_SCENE_ONUPDATE_INTERVAL_PLAY_LOW_MS = 900
+const FULL_SCENE_ONUPDATE_INTERVAL_PLAY_MEDIUM_MS = 650
 /** Abort in-flight scene onUpdate after this — pointer inject must not queue behind Genesis-scale sync work. */
 const SCENE_UPDATE_ABORT_MS = 2000
 const SCENE_UPDATE_ABORT_PLAY_MS = 600
+const SCENE_UPDATE_ABORT_PLAY_MEDIUM_MS = 1400
+const SCENE_UPDATE_ABORT_PLAY_LOW_MS = 2800
+const SCENE_UPDATE_ABORT_ADAPTIVE_WINDOW_MS = 20_000
+const SCENE_UPDATE_ABORT_ADAPTIVE_THRESHOLD = 4
 /** Abort pointer engine tick if sceneEngine.update / onUpdate stalls awaiting main-thread CRDT. */
 const POINTER_ENGINE_TICK_ABORT_MS = 4000
 /** Abort timer — shorter once the scene is interactive. */
 let sceneUpdateAbortMs = SCENE_UPDATE_ABORT_MS
 let sceneTickIntervalMs = SCENE_TICK_BASE_INTERVAL_MS
+let playReadyPerformanceTier: PerformanceTier | undefined
+let adaptiveLowPerfMode = false
+let sceneUpdateAbortStreak = 0
+let sceneUpdateAbortWindowStart = 0
 let sceneTicksPaused = false
 let sceneUpdateAbortTimer: ReturnType<typeof setTimeout> | null = null
 let sceneTickTimer: ReturnType<typeof setInterval> | null = null
@@ -133,6 +146,39 @@ function clearSceneUpdateAbortTimer(): void {
   }
 }
 
+function recordSceneUpdateAbort(): void {
+  const now = performance.now()
+  if (!sceneUpdateAbortWindowStart || now - sceneUpdateAbortWindowStart > SCENE_UPDATE_ABORT_ADAPTIVE_WINDOW_MS) {
+    sceneUpdateAbortWindowStart = now
+    sceneUpdateAbortStreak = 0
+  }
+  sceneUpdateAbortStreak++
+  if (sceneUpdateAbortStreak >= SCENE_UPDATE_ABORT_ADAPTIVE_THRESHOLD && !adaptiveLowPerfMode) {
+    adaptiveLowPerfMode = true
+    applyPlayReadyTiming(playReadyPerformanceTier, 'adaptive-abort-backoff')
+  }
+}
+
+function applyPlayReadyTiming(tier: PerformanceTier | undefined, reason: string): void {
+  const low = tier === 'low' || adaptiveLowPerfMode
+  const medium = !low && tier === 'medium'
+  fullSceneOnUpdateIntervalMs = low
+    ? FULL_SCENE_ONUPDATE_INTERVAL_PLAY_LOW_MS
+    : medium
+      ? FULL_SCENE_ONUPDATE_INTERVAL_PLAY_MEDIUM_MS
+      : FULL_SCENE_ONUPDATE_INTERVAL_PLAY_MS
+  sceneUpdateAbortMs = low
+    ? SCENE_UPDATE_ABORT_PLAY_LOW_MS
+    : medium
+      ? SCENE_UPDATE_ABORT_PLAY_MEDIUM_MS
+      : SCENE_UPDATE_ABORT_PLAY_MS
+  workerLog(
+    'log',
+    `[sceneWorker] play-ready timing (${reason}) — tier=${tier ?? 'default'} adaptiveLow=${adaptiveLowPerfMode} ` +
+      `onUpdate interval ${fullSceneOnUpdateIntervalMs}ms, abort ${sceneUpdateAbortMs}ms`
+  )
+}
+
 function armSceneUpdateAbortTimer(): void {
   clearSceneUpdateAbortTimer()
   sceneUpdateAbortTimer = setTimeout(() => {
@@ -141,7 +187,9 @@ function armSceneUpdateAbortTimer(): void {
       'error',
       `[sceneWorker] scene onUpdate exceeded ${sceneUpdateAbortMs}ms — aborting for pointer priority`
     )
+    recordSceneUpdateAbort()
     sceneUpdateInFlight = false
+    // sceneUpdatePromiseActive stays true until the promise finally() — no overlapping onUpdate.
     // Do not set sceneTicksPaused here — pointer batches pause explicitly; a stuck pause
     // freezes worker onUpdate (campfire sprite pool) while trigger delivers keep firing.
     // Do not interrupt pending CRDT — empty responses drop composite/sprite diffs on main.
@@ -1035,23 +1083,25 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
     lastHeartbeatAt = now
     workerLog(
       'log',
-      `[sceneWorker] heartbeat — tick=${heartbeatPass} sceneUpdateInFlight=${sceneUpdateInFlight} pointerDeliveryInFlight=${pointerDeliveryInFlight} pendingCrdt=${pendingCrdt.size} sceneEngine=${sceneEngine ? 'ok' : 'missing'} sceneTickIntervalMs=${sceneTickIntervalMs}`
+      `[sceneWorker] heartbeat — tick=${heartbeatPass} sceneUpdateInFlight=${sceneUpdateInFlight} sceneUpdatePromiseActive=${sceneUpdatePromiseActive} pointerDeliveryInFlight=${pointerDeliveryInFlight} pendingCrdt=${pendingCrdt.size} sceneEngine=${sceneEngine ? 'ok' : 'missing'} sceneTickIntervalMs=${sceneTickIntervalMs}`
     )
   }, 5000)
 
   const scheduleSceneUpdate = (dt: number): void => {
-    if (!sceneUpdate || sceneUpdateInFlight) return
+    if (!sceneUpdate || sceneUpdateInFlight || sceneUpdatePromiseActive) return
     lastFullSceneUpdateAt = performance.now()
     setTimeout(() => {
       if (
         sceneTicksPaused ||
         pendingInjectPointer ||
         queuedPointerDeliver ||
-        pointerDeliveryInFlight
+        pointerDeliveryInFlight ||
+        sceneUpdatePromiseActive
       ) {
         return
       }
       sceneUpdateInFlight = true
+      sceneUpdatePromiseActive = true
       sceneUpdateStartedAt = performance.now()
       armSceneUpdateAbortTimer()
       void Promise.resolve(sceneUpdate(dt))
@@ -1075,6 +1125,7 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
         .finally(() => {
           clearSceneUpdateAbortTimer()
           sceneUpdateInFlight = false
+          sceneUpdatePromiseActive = false
           resumeSceneTicksAfterPointer()
           drainQueuedPointerDeliver()
         })
@@ -1082,7 +1133,15 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
   }
 
   const scheduleEngineTick = (dt: number): void => {
-    if (!sceneEngine || sceneUpdateInFlight || pointerDeliveryInFlight || engineTickInFlight) return
+    if (
+      !sceneEngine ||
+      sceneUpdateInFlight ||
+      sceneUpdatePromiseActive ||
+      pointerDeliveryInFlight ||
+      engineTickInFlight
+    ) {
+      return
+    }
     if (sceneTicksPaused || pendingInjectPointer || queuedPointerDeliver) return
     engineTickInFlight = true
     setTimeout(() => {
@@ -1112,6 +1171,7 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
     if (
       sceneEngine &&
       !sceneUpdateInFlight &&
+      !sceneUpdatePromiseActive &&
       !pointerPending &&
       !engineTickInFlight &&
       now - lastEngineTickAt >= SCENE_TICK_BASE_INTERVAL_MS
@@ -1124,6 +1184,7 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
       sceneUpdate &&
       !sceneTicksPaused &&
       !sceneUpdateInFlight &&
+      !sceneUpdatePromiseActive &&
       !pointerDeliveryInFlight &&
       !engineTickInFlight &&
       !queuedPointerDeliver &&
@@ -1216,13 +1277,9 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
 
 async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   if (msg.type === 'scene-play-ready') {
-    fullSceneOnUpdateIntervalMs = FULL_SCENE_ONUPDATE_INTERVAL_PLAY_MS
-    sceneUpdateAbortMs = SCENE_UPDATE_ABORT_PLAY_MS
+    playReadyPerformanceTier = msg.performanceTier
+    applyPlayReadyTiming(msg.performanceTier, 'scene-play-ready')
     sceneTickIntervalMs = SCENE_TICK_BASE_INTERVAL_MS
-    workerLog(
-      'log',
-      `[sceneWorker] scene-play-ready — onUpdate interval ${fullSceneOnUpdateIntervalMs}ms, abort ${sceneUpdateAbortMs}ms`
-    )
     return
   }
   if (msg.type === 'crdt-response') {

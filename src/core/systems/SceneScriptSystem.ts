@@ -41,6 +41,7 @@ import { GltfColliderExtractor } from '../../collision/GltfColliderExtractor'
 import type {
   CommsRpcHandler,
   MainToWorker,
+  PerformanceTier,
   SceneWorkerBoot,
   SceneWorkerOutbound,
   SignedFetchHandler,
@@ -1950,13 +1951,21 @@ export class SceneScriptSystem {
   }
 
   private playReadyNotified = false
+  private performanceTier: PerformanceTier = 'high'
+
+  setPerformanceTier(tier: PerformanceTier): void {
+    this.performanceTier = tier
+  }
 
   /** Scene + PhysX colliders ready — throttle worker onUpdate (called from World after boot cook). */
   notifyPlayReady(): void {
     this.bridgeSyncEvery = BRIDGE_ECS_SYNC_RUNTIME
     if (this.playReadyNotified) return
     this.playReadyNotified = true
-    this.worker?.postMessage({ type: 'scene-play-ready' } satisfies MainToWorker)
+    this.worker?.postMessage({
+      type: 'scene-play-ready',
+      performanceTier: this.performanceTier
+    } satisfies MainToWorker)
   }
 
   /** When a parent Transform moves, child GltfContainer / MeshCollider world poses change too. */

@@ -275,8 +275,7 @@ export class EnvironmentSystem {
     this.genesisSky.mesh.visible = useGenesis
 
     if (useGenesis) {
-      const cam = this.host.camera.position
-      this.genesisSky.mesh.position.set(cam.x, 0, cam.z)
+      this.genesisSky.mesh.position.copy(this.host.camera.position)
       this.genesisSky.update(seconds, _celestial, delta, this.freezeClouds)
       if (this.disableSun) {
         this.genesisSky.uniforms.uSunRadiance.value = 0

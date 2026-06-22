@@ -3,6 +3,7 @@ import type { ResolvedScene } from '../dcl/content/types'
 import * as THREE from 'three'
 import { createTerrainModel } from '../dcl/landscape/Worlds/TerrainModel'
 import { getSessionAssetCache, prefetchSceneManifestGlbs } from '../rendering/AssetCache'
+import { applyClientPerformanceDefaults, detectPerformanceTier } from '../client/detectPerformanceTier'
 import { SceneHost } from '../rendering/SceneHost'
 import { PhysXWorld } from '../physics/PhysXWorld'
 import { PlayerSystem } from '../player/PlayerSystem'
@@ -128,6 +129,12 @@ export class World {
 
   constructor(container: HTMLElement) {
     this.host = new SceneHost(container)
+    const performanceTier = detectPerformanceTier(this.host.renderer.getContext())
+    applyClientPerformanceDefaults(this.host.renderer, performanceTier)
+    this.sceneScript.setPerformanceTier(performanceTier)
+    if (performanceTier !== 'high') {
+      console.info(`[World] performance tier=${performanceTier} — relaxed scene-worker timing + render defaults`)
+    }
     this.lightManager = new LightManager(this.host.scene)
     this.environment = new EnvironmentSystem(this.host, this.lightManager)
     this.player = new PlayerSystem(this.host, this.physics)

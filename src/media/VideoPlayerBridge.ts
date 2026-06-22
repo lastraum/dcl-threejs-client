@@ -11,6 +11,7 @@ import type { LiveKitVideoBinder } from './WebVideoPlayer'
 import { WebVideoPlayer } from './WebVideoPlayer'
 import { resolveSpatialAudioAttach, type SpatialAudioAnchors } from './spatialAudioParent'
 import { selectBudgetedVideoEntities, type VideoBudgetInput } from './videoPlayerBudget'
+import { soundSettings } from '../rendering/SoundSettings'
 
 type DecoderEntry = {
   player: WebVideoPlayer
@@ -33,6 +34,7 @@ export class VideoPlayerBridge {
   private pendingUserVideoToggle = false
   private pendingUserVideoToggleFrames = 0
   private listener: THREE.AudioListener | null = null
+  private readonly unsubscribeSoundSettings: () => void
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -43,7 +45,11 @@ export class VideoPlayerBridge {
     private readonly getLiveKitBinder: () => LiveKitVideoBinder | null,
     private readonly recordAppend?: (componentId: number, entity: Entity, value: unknown) => void,
     private readonly recordLww?: (componentId: number, entity: Entity, value: unknown) => void
-  ) {}
+  ) {
+    this.unsubscribeSoundSettings = soundSettings.subscribe(() => {
+      for (const entry of this.decoders.values()) entry.player.refreshVolume()
+    })
+  }
 
   onLwwFlush?: () => void
   onTextureReady?: (videoPlayerEntity: Entity) => void
@@ -222,6 +228,7 @@ export class VideoPlayerBridge {
   }
 
   dispose(): void {
+    this.unsubscribeSoundSettings()
     for (const entity of [...this.decoders.keys()]) {
       this.removeDecoder(entity)
     }

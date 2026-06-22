@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-06-18
+> **Last updated:** 2026-06-22
 
 ---
 
@@ -79,9 +79,9 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | Tween | 1102 | 🟢 | Transform + textureMove |
 | TweenSequence | 1104 | 🟢 | Genesis blimp orbit |
 | TweenState | 1103 | 🔵 | Written by TweenBridge |
-| AudioSource | 1020 | 🟡 | `AudioSourceBridge` — implemented; **not user-tested** |
+| AudioSource | 1020 | 🟢 | `AudioSourceBridge` — buffer clips; in-world + player-parent emote gain |
 | AudioEvent | 1105 | 🔵 | Grow-only MediaState events → worker |
-| AudioStream | 1021 | 🟡 | `AudioStreamBridge` — HTTP/HLS; **not user-tested** |
+| AudioStream | 1021 | 🟢 | `AudioStreamBridge` — HTTP/HLS; voice-chat volume category |
 
 ### Avatars (Phase 4)
 

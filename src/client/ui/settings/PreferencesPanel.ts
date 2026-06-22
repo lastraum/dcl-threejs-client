@@ -1,3 +1,4 @@
+import { playUiClick } from '../UiSfx'
 import { GraphicsSettingsView } from './GraphicsSettingsView'
 import { SoundsSettingsView } from './SoundsSettingsView'
 
@@ -75,7 +76,10 @@ export class PreferencesPanel {
     this.closeBtn = this.root.querySelector('.preferences-panel__close')!
 
     this.buildTabs()
-    this.closeBtn.addEventListener('click', () => this.hide())
+    this.closeBtn.addEventListener('click', () => {
+      playUiClick()
+      this.hide()
+    })
     window.addEventListener('keydown', this.onKeyDown)
     document.body.appendChild(this.root)
   }
@@ -90,7 +94,10 @@ export class PreferencesPanel {
       btn.title = tab.label
       btn.setAttribute('aria-label', tab.label)
       btn.innerHTML = `<span class="preferences-panel__tab-icon">${tab.icon}</span>`
-      btn.addEventListener('click', () => this.switchTab(tab.id))
+      btn.addEventListener('click', () => {
+        playUiClick()
+        this.switchTab(tab.id)
+      })
       this.tabBar.appendChild(btn)
     }
   }

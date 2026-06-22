@@ -2,24 +2,24 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-06-18 (AudioSource + AudioStream ⬜ not tested · Preferences Sounds 🟡 · Lighting ✅)  
-> **Current phase:** **Phase 4 closed** — EntityStore + **AvatarAttach Tier B** + **TriggerArea Tier A** + **VideoPlayer** shipped. **Media:** AudioSource + AudioStream implemented (awaiting user test). Next: Raycast, voice UI, e10 perf.
+> **Last updated:** 2026-06-22 (Audio ECS ✅ · Preferences Sounds volume sliders ✅ · Lighting ✅)  
+> **Current phase:** **Phase 4 closed** — EntityStore + **AvatarAttach Tier B** + **TriggerArea Tier A** + **VideoPlayer** shipped. **Media:** AudioSource + AudioStream done. Next: voice UI, mic routing.
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Tasks:** [TASKS.yaml](./TASKS.yaml)
 
 ---
 
 ## 🎉 Milestone — Audio ECS + Preferences Sounds (2026-06-18)
 
-**Status: implemented, not user-tested yet** — build passes; no in-world confirmation on a stream/clip test scene.
+**Status: shipped** — Cantina Fashion + scene deploys load AudioSource/AudioStream; volume categories wired in preferences.
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
-| **AudioSource** (1020) | ⬜ **not tested** | `AudioSourceBridge` + `SceneAudioPlayer` — THREE buffer clips, spatial/global, play/pause/seek/loop/volume/pitch |
-| **AudioStream** (1021) | ⬜ **not tested** | `AudioStreamBridge` + `SceneAudioStreamPlayer` — HTTP/HLS via hidden `HTMLAudioElement`, spatial min/max distance |
-| **AudioEvent** (1105) | ⬜ **not tested** | Grow-only `MediaState` → worker (source + stream entities) |
-| **Shared listener** | ✅ code | One `AudioListener` on camera; master volume from preferences |
-| **Preferences → Sounds** | 🟡 **partial** | Volume sliders + mic picker + mute-in-background toggle; **live:** master + in-world; **saved only:** UI SFX, voice, avatar emotes |
-| **Natural end sync** | ⬜ **not tested** | AudioSource writes `playing:false` LWW on clip end |
+| **AudioSource** (1020) | 🟢 | `AudioSourceBridge` + `SceneAudioPlayer` — buffer clips, spatial/global, in-world vs player-parented emote gain |
+| **AudioStream** (1021) | 🟢 | `AudioStreamBridge` + `SceneAudioStreamPlayer` — HTTP/HLS, voice-chat volume category |
+| **AudioEvent** (1105) | 🟢 | Grow-only `MediaState` → worker (source + stream entities) |
+| **Shared listener** | 🟢 | One `AudioListener` on camera; master volume from preferences |
+| **Preferences → Sounds** | 🟡 **partial** | **Live:** master, UI SFX, voice/streams, in-world, avatar-emote categories; **pending:** mic device + mute-in-background (needs voice UI) |
+| **Natural end sync** | 🟢 | AudioSource writes `playing:false` LWW on clip end |
 
 **Files:** `AudioSourceBridge.ts`, `SceneAudioPlayer.ts`, `AudioStreamBridge.ts`, `SceneAudioStreamPlayer.ts`, `AudioBufferCache.ts`, `SoundSettings.ts`, `SoundsSettingsView.ts`, `MicDeviceService.ts`, `mirrorComponents.ts`, `CrdtEncoder.ts`, `SceneScriptSystem.ts`
 

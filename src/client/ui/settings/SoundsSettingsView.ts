@@ -1,3 +1,4 @@
+import { playUiClick } from '../UiSfx'
 import {
   soundSettings,
   VOLUME_MIN,
@@ -33,10 +34,10 @@ const SECTIONS: SectionDef[] = [
     title: 'Volume',
     items: [
       { type: 'slider', label: 'Master Volume', key: 'masterVolume', hooked: true },
-      { type: 'slider', label: 'UI SFX', key: 'uiSfxVolume' },
-      { type: 'slider', label: 'Voice Chat & Streams', key: 'voiceChatVolume' },
+      { type: 'slider', label: 'UI SFX', key: 'uiSfxVolume', hooked: true },
+      { type: 'slider', label: 'Voice Chat & Streams', key: 'voiceChatVolume', hooked: true },
       { type: 'slider', label: 'In World Music & SFX', key: 'inWorldMusicSfxVolume', hooked: true },
-      { type: 'slider', label: 'Avatar & Emotes SFX', key: 'avatarEmotesVolume' }
+      { type: 'slider', label: 'Avatar & Emotes SFX', key: 'avatarEmotesVolume', hooked: true }
     ]
   },
   {
@@ -201,7 +202,10 @@ export class SoundsSettingsView {
       soundSettings.set({ [def.key]: value })
     }
 
-    slider.addEventListener('input', updateLabel)
+    slider.addEventListener('input', () => {
+      updateLabel()
+      if (def.key === 'uiSfxVolume') playUiClick()
+    })
     prevBtn.addEventListener('click', () => {
       slider.value = String(Math.max(VOLUME_MIN, Number(slider.value) - step))
       updateLabel()

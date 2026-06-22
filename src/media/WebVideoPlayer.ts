@@ -16,6 +16,7 @@ import { resolveSceneTextureUrl } from '../bridge/material/resolveTexture'
 import type { ResolvedScene } from '../dcl/content/types'
 import { isLiveKitCurrentStreamSrc, isLiveKitVideoSrc } from './livekitVideoSource'
 import { configureSceneVideoTexture } from './videoTextureOrientation'
+import { mediaElementGain, spatialAudioGain } from '../rendering/SoundSettings'
 
 type HlsInstance = {
   loadSource(url: string): void
@@ -369,6 +370,10 @@ export class WebVideoPlayer {
     this.wantsPlaying = playing
   }
 
+  refreshVolume(): void {
+    this.applyEffectiveVolume()
+  }
+
   needsReplayAfterEnd(playingChanged: boolean, fromUserToggle: boolean): boolean {
     if (this.liveKitSource) return false
     if (!fromUserToggle || !this.isAtEnd()) return false
@@ -396,13 +401,23 @@ export class WebVideoPlayer {
     }
   }
 
+  private resolveVolumeCategory(src: string): 'voice' | 'inWorld' {
+    if (this.liveKitSource || isLiveKitVideoSrc(src)) return 'voice'
+    const trimmed = src.trim()
+    if (isHlsUrl(trimmed)) return 'voice'
+    if (/^https?:\/\//i.test(trimmed) && !/\/contents?\//i.test(trimmed)) return 'voice'
+    return 'inWorld'
+  }
+
   private applyEffectiveVolume(): void {
-    const gain = clamp(this.lastSpecVolume, 0, 1)
+    const category = this.resolveVolumeCategory(this.loadedSrc)
     if (this.spatial && this.sound) {
+      const gain = clamp(spatialAudioGain(category, this.lastSpecVolume), 0, 1)
       this.video.volume = 0
       this.video.muted = true
       this.sound.setVolume(gain)
     } else {
+      const gain = clamp(mediaElementGain(category, this.lastSpecVolume), 0, 1)
       this.video.muted = false
       this.video.volume = gain
       this.sound?.setVolume(0)

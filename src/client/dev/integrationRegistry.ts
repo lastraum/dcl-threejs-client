@@ -59,7 +59,7 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   { id: 'ui:settings-backpack', name: 'Settings → Backpack (I)', status: 'render', category: 'client-ui', notes: 'Avatar preview, equipped wearables' },
   { id: 'ui:preferences-panel', name: 'Preferences panel (P / ⚙)', status: 'render', category: 'client-ui', notes: 'Right rail; world input passes through' },
   { id: 'ui:preferences-graphics', name: 'Preferences → Graphics', status: 'partial', category: 'client-ui', notes: 'Sun/moon light + exposure sliders live; MSAA/bloom stubs' },
-  { id: 'ui:preferences-sounds', name: 'Preferences → Sounds', status: 'partial', category: 'client-ui', notes: 'Volume sliders + mic picker; master + in-world live; voice/UI/emotes pending' },
+  { id: 'ui:preferences-sounds', name: 'Preferences → Sounds', status: 'partial', category: 'client-ui', notes: 'Volume sliders live (master, UI SFX, voice/streams, in-world, emotes); mic picker + mute-in-background pending voice UI' },
   { id: 'ui:preferences-controls', name: 'Preferences → Controls', status: 'none', category: 'client-ui', notes: 'Coming soon placeholder' },
   { id: 'ui:preferences-chat', name: 'Preferences → Chat', status: 'none', category: 'client-ui', notes: 'Coming soon placeholder' },
   { id: 'ui:settings-places', name: 'Settings → Places', status: 'partial', category: 'client-ui', notes: 'Explore tab — Places + Worlds APIs, category filters, Jump In' },

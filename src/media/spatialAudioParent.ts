@@ -48,7 +48,7 @@ function multiplyDclTransforms(parent: DclTransformValues, local: DclTransformVa
   return matrixToDclTransform(_matOut)
 }
 
-function findReservedAnchorKind(
+export function findReservedAnchorKind(
   entity: Entity,
   view: ProjectionView,
   Transform: MirrorComponents['Transform']

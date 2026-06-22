@@ -9,7 +9,7 @@ import { soundSettings, volumeToGain } from '../rendering/SoundSettings'
 import { AudioBufferCache } from './AudioBufferCache'
 import { MS_NONE, type MediaStateValue } from './audioConstants'
 import { SceneAudioPlayer } from './SceneAudioPlayer'
-import { resolveSpatialAudioAttach, type SpatialAudioAnchors } from './spatialAudioParent'
+import { findReservedAnchorKind, resolveSpatialAudioAttach, type SpatialAudioAnchors } from './spatialAudioParent'
 
 type PlayerEntry = {
   player: SceneAudioPlayer
@@ -94,6 +94,10 @@ export class AudioSourceBridge {
       if (!global && attach) {
         entry.player.attachToParent(attach.parent, attach.localTransform)
       }
+
+      const volumeCategory =
+        global || findReservedAnchorKind(entity, view, Transform) !== 'player' ? 'inWorld' : 'emote'
+      entry.player.setVolumeCategory(volumeCategory)
 
       const visible =
         !VisibilityComponent.has(entity) ||

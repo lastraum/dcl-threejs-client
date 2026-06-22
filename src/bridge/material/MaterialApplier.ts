@@ -3,7 +3,7 @@ import type { ResolvedScene } from '../../dcl/content/types'
 import type { AssetCache } from '../../rendering/AssetCache'
 import { isSharedAssetResource } from '../../rendering/sharedAsset'
 import { resolveSceneTextureUrl } from './resolveTexture'
-import { applyHdrAlbedoAndEmissive, applyPbrScalars } from './pbrApply'
+import { applyPbrColors, applyPbrScalars, configureEmissiveRendering } from './pbrApply'
 import { configureSceneVideoTexture } from '../../media/videoTextureOrientation'
 
 /** Matches `@dcl/ecs` MaterialTransparencyMode. */
@@ -367,20 +367,28 @@ export class MaterialApplier {
       mesh.material = m
     }
 
-    const base = isPbr ? (inner as PbrMaterial).albedoColor : (inner as UnlitMaterial).diffuseColor
-    const color = base ?? { r: 1, g: 1, b: 1, a: 1 }
-
     if (m instanceof THREE.MeshPhysicalMaterial) {
       const pbr = inner as PbrMaterial
-      applyHdrAlbedoAndEmissive(m, color, pbr.emissiveColor, pbr.emissiveIntensity)
+      applyPbrColors(m, pbr)
       applyPbrScalars(m, pbr)
+      const emissiveUnion = coerceTextureUnion(pbr.emissiveTexture)
+      const mainUnion = coerceTextureUnion(inner.texture)
+      if (emissiveUnion && m.map && textureUnionSameSrc(emissiveUnion, mainUnion)) {
+        m.emissiveMap = m.map
+      }
+      configureEmissiveRendering(m, pbr.emissiveIntensity, !!m.emissiveMap)
     } else {
-      m.color.setRGB(color.r ?? 1, color.g ?? 1, color.b ?? 1)
+      const diffuse = (inner as UnlitMaterial).diffuseColor
+      if (diffuse) {
+        m.color.setRGB(diffuse.r ?? 1, diffuse.g ?? 1, diffuse.b ?? 1)
+      }
     }
 
+    const alpha =
+      (isPbr ? (inner as PbrMaterial).albedoColor?.a : (inner as UnlitMaterial).diffuseColor?.a) ?? 1
     applyTransparency(
       m,
-      color.a ?? 1,
+      alpha,
       inner.alphaTest,
       isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO,
       false
@@ -396,8 +404,6 @@ export class MaterialApplier {
 
     this.applyScalarsToMesh(mesh, pb)
     const m = mesh.material as THREE.MeshBasicMaterial | THREE.MeshPhysicalMaterial
-    const base = isPbr ? (inner as PbrMaterial).albedoColor : (inner as UnlitMaterial).diffuseColor
-    const color = base ?? { r: 1, g: 1, b: 1, a: 1 }
 
     let texturesOk = true
     let alphaTex: THREE.Texture | null = null
@@ -438,15 +444,18 @@ export class MaterialApplier {
           this.applyUvTransform(bumpTex, getTextureDef(bumpUnion))
         }
       }
-      // Re-apply after maps land — emissiveIntensity + HDR albedo drive flame brightness in DCL.
-      applyHdrAlbedoAndEmissive(m, color, pbr.emissiveColor, pbr.emissiveIntensity)
+      // Re-apply after maps land — emissiveIntensity drives flame brightness when albedoColor is absent.
+      applyPbrColors(m, pbr)
       applyPbrScalars(m, pbr)
+      configureEmissiveRendering(m, pbr.emissiveIntensity, !!m.emissiveMap)
     }
 
     const transparencyMode = isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO
+    const alpha =
+      (isPbr ? (inner as PbrMaterial).albedoColor?.a : (inner as UnlitMaterial).diffuseColor?.a) ?? 1
     applyTransparency(
       m,
-      color.a ?? 1,
+      alpha,
       inner.alphaTest,
       transparencyMode,
       !!alphaTex || !!m.alphaMap

@@ -1284,6 +1284,18 @@ export class World {
     return this.player.getPosition()
   }
 
+  /** Three.js world position for renderer raycasts. */
+  getPlayerWorldPosition(): THREE.Vector3 | null {
+    if (!this.playerMode || !this.player) return null
+    return this.player.getWorldPosition()
+  }
+
+  /** Avatar facing yaw (radians) — independent of orbit camera. */
+  getPlayerYaw(): number | null {
+    if (!this.playerMode || !this.player) return null
+    return this.player.getPlayerYaw()
+  }
+
   triggerPointerAction(
     action: import('../input/pointerConstants').InputActionValue,
     phase: 'down' | 'up'

@@ -14,7 +14,6 @@ import { clientDebugLog } from './debug/ClientDebugLog'
 import { DebugPanel } from './ui/DebugPanel'
 import { DevProgressPanel } from './ui/DevProgressPanel'
 import { LoadingScreen, POST_SPAWN_SETTLE_FAST_MS, POST_SPAWN_SETTLE_MS } from './ui/LoadingScreen'
-import { Minimap } from './ui/Minimap'
 import { WorldLocationCard } from './ui/WorldLocationCard'
 import { showSplashScreen } from './ui/SplashScreen'
 import { ChatPanel } from './ui/chat/ChatPanel'
@@ -37,7 +36,6 @@ export class AppController {
   private shell: ClientShell | null = null
   private debugPanel: DebugPanel | null = null
   private devProgressPanel: DevProgressPanel | null = null
-  private minimap: Minimap | null = null
   private worldLocationCard: WorldLocationCard | null = null
   private chatPanel: ChatPanel | null = null
   private settingsOverlay: SettingsOverlay | null = null
@@ -229,35 +227,26 @@ export class AppController {
       await world.loadScene(sceneConfig, opts.onProgress)
       const earlyCommsPromise = world.connectSceneCommsEarly(sceneConfig, opts.onProgress)
 
-      this.minimap?.dispose()
-      this.minimap = null
       this.worldLocationCard?.dispose()
       this.worldLocationCard = null
 
-      if (sceneConfig.source.kind === 'world') {
-        this.worldLocationCard = new WorldLocationCard({
-          scene: sceneConfig,
-          getPlayerPosition: () => world.getPlayerPosition(),
-          onJumpToGenesis: () => {
-            if (document.pointerLockElement) document.exitPointerLock()
-            void this.navigateTo({
-              kind: 'coords',
-              x: 0,
-              y: 0,
-              segment: '0,0'
-            })
-          }
-        })
-      } else {
-        this.minimap = new Minimap({
-          scene: sceneConfig,
-          getPlayerPosition: () => world.getPlayerPosition(),
-          onClick: () => {
-            if (document.pointerLockElement) document.exitPointerLock()
-            this.settingsOverlay?.show('map')
-          }
-        })
-      }
+      this.worldLocationCard = new WorldLocationCard({
+        scene: sceneConfig,
+        title: sceneDisplayTitle(sceneConfig),
+        getCoordsLabel: () => this.getLocationCoordsLabel(),
+        onJumpToGenesis:
+          sceneConfig.source.kind === 'world'
+            ? () => {
+                if (document.pointerLockElement) document.exitPointerLock()
+                void this.navigateTo({
+                  kind: 'coords',
+                  x: 0,
+                  y: 0,
+                  segment: '0,0'
+                })
+              }
+            : undefined
+      })
 
       const hydrationTimeoutMs = opts.fastAssets ? FAST_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
       opts.onHydrationStart?.(hydrationTimeoutMs)
@@ -368,8 +357,6 @@ export class AppController {
   private async teardownScene(): Promise<void> {
     this.mobileHud?.dispose()
     this.mobileHud = null
-    this.minimap?.dispose()
-    this.minimap = null
     this.worldLocationCard?.dispose()
     this.worldLocationCard = null
     this.chatPanel?.hide()

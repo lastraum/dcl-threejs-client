@@ -316,6 +316,12 @@ export class World {
       onProgress?.('Booting scene script…')
       const spawnPoses = this.seedPosesFromSpawn(scene.spawn)
       this.sceneScript.seedRendererEntities(spawnPoses.player, spawnPoses.camera)
+      const bootProgressTimer = window.setInterval(() => {
+        const { gltfInflight, gltfCached } = this.assets.getLoadStats()
+        if (gltfInflight > 0) {
+          onProgress?.(`Booting scene script… (${gltfCached} cached, ${gltfInflight} downloading)`)
+        }
+      }, 750)
       try {
         await this.sceneScript.start(scene, this.assets, this.host)
         onProgress?.('Scene script running')
@@ -323,6 +329,8 @@ export class World {
         const msg = err instanceof Error ? err.message : String(err)
         onProgress?.(`Scene script error: ${msg}`)
         console.error(err)
+      } finally {
+        window.clearInterval(bootProgressTimer)
       }
     }
   }

@@ -191,6 +191,7 @@ export class SceneScriptSystem {
   private motionFocusDumpTicks = 0
   /** Serializes crdt-send round-trips so mirror/encoder/stash cannot race. */
   private crdtSendSerial: Promise<void> = Promise.resolve()
+  private bootCrdtSendSerial: Promise<void> = Promise.resolve()
   /** Set when pointer-crdt-deliver is posted; cleared on pointer-deliver-done from worker. */
   private pointerDeliverAwaitingAck = false
   private pointerDeliverWatchdog: ReturnType<typeof setTimeout> | null = null
@@ -706,6 +707,7 @@ export class SceneScriptSystem {
     }
 
     const BOOT_TIMEOUT_MS = 60_000
+    this.bootCrdtSendSerial = Promise.resolve()
     await new Promise<void>((resolve, reject) => {
       if (!this.worker) return reject(new Error('Worker missing'))
 
@@ -738,9 +740,20 @@ export class SceneScriptSystem {
           this.onPointerDeliverDone()
           return
         }
-        // Boot lane — crdt-get-state must not queue behind log spam or serialized crdt-send.
+        // Boot lane — CRDT RPC must not queue behind log spam or the serialized crdt-send chain.
         if (msg?.type === 'crdt-get-state') {
           this.respondCrdtGetState(msg.id)
+          return
+        }
+        if (msg?.type === 'crdt-send' && !this.running) {
+          this.bootCrdtSendSerial = this.bootCrdtSendSerial
+            .then(() => this.handleCrdtSendBootFast(msg))
+            .catch((err) => {
+              console.error(
+                '[scene]',
+                `boot crdt-send failed — ${err instanceof Error ? err.message : String(err)}`
+              )
+            })
           return
         }
         void this.handleWorkerMessage(msg, () => finish(resolve), (err) => finish(() => reject(err)))
@@ -965,6 +978,10 @@ export class SceneScriptSystem {
       return
     }
     if (msg.type === 'crdt-send') {
+      if (!this.running) {
+        await this.handleCrdtSendBootFast(msg)
+        return
+      }
       const isNudge = !msg.data?.byteLength
       if (isNudge || this.pointerAwaitingWorkerApply) {
         // Priority lane — empty nudge / pointer flush must not queue behind mirror.flushOutgoing.
@@ -984,6 +1001,33 @@ export class SceneScriptSystem {
     if (msg.type === 'crdt-get-state') {
       this.respondCrdtGetState(msg.id)
       return
+    }
+  }
+
+  /**
+   * Lightweight CRDT apply during worker boot (onStart).
+   * Skips pointer/trigger/raycast/tween — those run after `ready` and would serialize
+   * hundreds of onStart round-trips behind full renderer sync (~45s stalls).
+   */
+  private async handleCrdtSendBootFast(
+    msg: Extract<SceneWorkerOutbound, { type: 'crdt-send' }>
+  ): Promise<void> {
+    try {
+      this.prepareRendererOutboundState()
+      this.projection.applyIncoming(msg.data)
+      this.foldProjectionChanges()
+      this.crdtTick++
+      this.prepareRendererOutboundState()
+      const encoderBytes = this.encodeRendererCrdt()
+      const data = encoderBytes ? [encoderBytes] : []
+      this.worker?.postMessage({ type: 'crdt-response', id: msg.id, data } satisfies MainToWorker)
+    } catch (err) {
+      console.error(
+        '[scene]',
+        `boot crdt-send failed — replying empty: ${err instanceof Error ? err.message : String(err)}`
+      )
+      this.worker?.postMessage({ type: 'crdt-response', id: msg.id, data: [] } satisfies MainToWorker)
+      throw err
     }
   }
 

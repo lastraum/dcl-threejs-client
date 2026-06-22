@@ -62,7 +62,10 @@ export function prefetchSceneManifestGlbs(cache: AssetCache, scene: ResolvedScen
     urls.push({ url: scene.assetUrl(entry.hash), hash: entry.hash })
   }
 
-  if (urls.length) cache.prefetchAll(urls)
+  if (urls.length) {
+    console.info(`[assets] prefetching ${urls.length} scene GLB(s) (bytes only, parallel)`)
+    cache.prefetchAll(urls)
+  }
 }
 
 export class AssetCache {

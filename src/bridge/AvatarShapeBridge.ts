@@ -11,7 +11,7 @@ import {
   type AvatarShapeExpressionState
 } from '../avatar/avatarShapeEmote'
 import { SceneAvatar } from '../avatar/SceneAvatar'
-import type { ProfileIdentity } from '../avatar/displayName'
+import { identityShowsNameTag, type ProfileIdentity } from '../avatar/displayName'
 import { NameTag, type NameTagStyle } from '../client/ui/NameTag'
 import type { AssetCache } from '../rendering/AssetCache'
 import type { AvatarSkeletonTarget } from '../avatar/AvatarAttachTargets'
@@ -20,7 +20,7 @@ import type { ProjectionView } from './ProjectionView'
 
 type AvatarEntry = {
   avatar: SceneAvatar
-  nameTag: NameTag
+  nameTag: NameTag | null
   signature: string
   nameKey: string
   identity: ProfileIdentity
@@ -36,6 +36,23 @@ function applyIdentity(tag: NameTag, identity: ProfileIdentity): void {
     textColor: identity.nameColor,
     claimed: identity.hasClaimedName
   } satisfies NameTagStyle)
+}
+
+function syncNameTag(entry: AvatarEntry, identity: ProfileIdentity): void {
+  entry.identity = identity
+  if (!identityShowsNameTag(identity)) {
+    entry.nameTag?.dispose()
+    entry.nameTag = null
+    return
+  }
+  if (!entry.nameTag) {
+    entry.nameTag = NameTag.attach(entry.avatar.nameTagAnchor, identity.displayName, {
+      textColor: identity.nameColor,
+      claimed: identity.hasClaimedName
+    })
+    return
+  }
+  applyIdentity(entry.nameTag, identity)
 }
 
 function playAvatarShapeEmote(entry: AvatarEntry, emoteRef: string, loop: boolean): void {
@@ -97,10 +114,7 @@ export class AvatarShapeBridge {
         const identity = await resolveShapeIdentity(shape)
         entry = {
           avatar,
-          nameTag: NameTag.attach(avatar.nameTagAnchor, identity.displayName, {
-            textColor: identity.nameColor,
-            claimed: identity.hasClaimedName
-          }),
+          nameTag: null,
           signature: '',
           nameKey,
           identity,
@@ -109,11 +123,11 @@ export class AvatarShapeBridge {
           pendingEmote: null,
           pendingSignatureReload: null
         }
+        syncNameTag(entry, identity)
         this.avatars.set(entity, entry)
       } else if (entry.nameKey !== nameKey) {
         entry.nameKey = nameKey
-        entry.identity = await resolveShapeIdentity(shape)
-        applyIdentity(entry.nameTag, entry.identity)
+        syncNameTag(entry, await resolveShapeIdentity(shape))
       }
 
       if (entry.signature !== signature && !entry.loading) {
@@ -126,9 +140,7 @@ export class AvatarShapeBridge {
           const profile = profileFromAvatarShape(shape)
           try {
             await entry.avatar.load(profile, entry.identity.displayName)
-            const identity = await resolveShapeIdentity(shape)
-            entry.identity = identity
-            applyIdentity(entry.nameTag, identity)
+            syncNameTag(entry, await resolveShapeIdentity(shape))
           } catch (err) {
             console.warn(`[AvatarShape] entity ${entity} compose failed:`, err)
             entry.signature = ''
@@ -146,9 +158,7 @@ export class AvatarShapeBridge {
           const profile = profileFromAvatarShape(shape)
           try {
             await entry.avatar.load(profile, entry.identity.displayName)
-            const identity = await resolveShapeIdentity(shape)
-            entry.identity = identity
-            applyIdentity(entry.nameTag, identity)
+            syncNameTag(entry, await resolveShapeIdentity(shape))
           } catch (err) {
             console.warn(`[AvatarShape] entity ${entity} compose failed:`, err)
             entry.signature = ''
@@ -172,7 +182,7 @@ export class AvatarShapeBridge {
 
     for (const [entity, entry] of this.avatars) {
       if (!active.has(entity)) {
-        entry.nameTag.dispose()
+        entry.nameTag?.dispose()
         entry.avatar.dispose()
         this.avatars.delete(entity)
       }
@@ -208,7 +218,7 @@ export class AvatarShapeBridge {
 
   dispose(): void {
     for (const entry of this.avatars.values()) {
-      entry.nameTag.dispose()
+      entry.nameTag?.dispose()
       entry.avatar.dispose()
     }
     this.avatars.clear()

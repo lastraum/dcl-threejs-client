@@ -7,10 +7,19 @@ export function shortenAddress(address: string): string {
   return `${normalized.slice(0, 6)}…${normalized.slice(-4)}`
 }
 
-/** Visible label from AvatarShape.name (Explorer default: "NPC"). */
-export function avatarShapeDisplayName(name?: string | null): string {
+/** Scene-authored AvatarShape.name — null when unset (no overhead label). */
+export function avatarShapeSceneLabel(name?: string | null): string | null {
   const trimmed = name?.trim()
-  return trimmed && trimmed.length > 0 ? trimmed : 'NPC'
+  return trimmed ? trimmed : null
+}
+
+/** Legacy helper — empty names map to "NPC" for non-tag call sites only. */
+export function avatarShapeDisplayName(name?: string | null): string {
+  return avatarShapeSceneLabel(name) ?? 'NPC'
+}
+
+export function identityShowsNameTag(identity: ProfileIdentity): boolean {
+  return identity.displayName.trim().length > 0
 }
 
 export type ProfileIdentity = {

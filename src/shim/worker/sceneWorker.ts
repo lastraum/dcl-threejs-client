@@ -28,7 +28,8 @@ import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/tri
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../player/triggerSceneEmote'
 import {
   installPointerEventColliderChecker,
-  patchSceneBundle
+  patchSceneBundle,
+  patchSceneBundleWithCheckerStrip
 } from './pointerEventColliderCheckerPatch'
 import { injectPointerClickOnEngine } from './injectPointerClick'
 import { injectRendererGrowOnlyAppendsOnEngine } from './injectRendererGrowOnlyAppends'
@@ -834,11 +835,14 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
 }
 
 function rpcGetState(): Promise<{ hasEntities: boolean; data: Uint8Array[] }> {
-  if (sceneEvalInProgress && bootCrdtSnapshot) {
-    return Promise.resolve({
-      hasEntities: bootCrdtSnapshot.hasEntities,
-      data: bootCrdtSnapshot.data.map((chunk) => chunk.slice())
-    })
+  if (sceneEvalInProgress) {
+    if (bootCrdtSnapshot) {
+      return Promise.resolve({
+        hasEntities: bootCrdtSnapshot.hasEntities,
+        data: bootCrdtSnapshot.data.map((chunk) => chunk.slice())
+      })
+    }
+    return Promise.resolve({ hasEntities: false, data: [] })
   }
   const id = ++requestId
   return new Promise((resolve) => {
@@ -1181,7 +1185,7 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     allowGraphSearch: true
   })
   try {
-    sceneEngine.update(0)
+    await sceneEngine.update(0)
     workerLog('log', '[sceneWorker] post-onStart engine.update(0) — composite CRDT flushed to renderer')
   } catch (err) {
     workerLog(
@@ -1361,15 +1365,19 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       : null
 
     let code: string
+    const scriptSource = msg.scene.scriptBlobUrl ?? msg.scene.scriptUrl
     if (msg.scene.scriptCode) {
       code = msg.scene.scriptCode
       workerLog(
         'log',
-        `[sceneWorker] using main-thread script (${(code.length / 1024).toFixed(0)} KB)`
+        `[sceneWorker] using inline script (${(code.length / 1024).toFixed(0)} KB)`
       )
     } else {
-      workerLog('log', `[sceneWorker] fetching script ${msg.scene.scriptUrl}`)
-      const res = await fetch(msg.scene.scriptUrl)
+      workerLog(
+        'log',
+        `[sceneWorker] fetching script ${msg.scene.scriptBlobUrl ? 'from blob URL' : msg.scene.scriptUrl}`
+      )
+      const res = await fetch(scriptSource)
       if (!res.ok) throw new Error(`Script fetch ${res.status}`)
       code = await res.text()
       workerLog('log', `[sceneWorker] script fetched (${(code.length / 1024).toFixed(0)} KB)`)
@@ -1411,24 +1419,54 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     installPreregisterRendererComponentsHook()
     const evalStarted = performance.now()
     const evalKb = (code.length / 1024).toFixed(0)
-    workerLog('log', `[sceneWorker] evaluating scene bundle (${evalKb} KB)…`)
-    const evalHeartbeat = setInterval(() => {
-      workerLog(
-        'log',
-        `[sceneWorker] still compiling scene bundle (${((performance.now() - evalStarted) / 1000).toFixed(0)}s)…`
-      )
-    }, 5000)
-    sceneEvalInProgress = true
-    let exports: ReturnType<typeof evaluateSceneBundle>
-    try {
-      exports = evaluateSceneBundle(code, requireMap, patchSceneBundle)
-    } finally {
-      sceneEvalInProgress = false
-      clearInterval(evalHeartbeat)
+    const patchStarted = performance.now()
+    workerLog('log', `[sceneWorker] patching scene bundle (${evalKb} KB)…`)
+    const logPatchStep = (step: string, ms: number) => {
+      workerLog('log', `[sceneWorker] patch — ${step} ${ms.toFixed(0)}ms`)
     }
+    const compositePatched = patchSceneBundle(code, logPatchStep)
+    const checkerPatched = patchSceneBundleWithCheckerStrip(code, logPatchStep)
     workerLog(
       'log',
-      `[sceneWorker] scene bundle evaluated (${((performance.now() - evalStarted) / 1000).toFixed(2)}s)`
+      `[sceneWorker] bundle patch ready (${((performance.now() - patchStarted) / 1000).toFixed(2)}s)`
+    )
+    workerLog('log', `[sceneWorker] compiling scene bundle…`)
+    sceneEvalInProgress = true
+    let exports: ReturnType<typeof evaluateSceneBundle>
+    const compileBundle = (source: string, label: string): ReturnType<typeof evaluateSceneBundle> | null => {
+      try {
+        const result = evaluateSceneBundle(source, requireMap)
+        workerLog('log', `[sceneWorker] ${label}`)
+        return result
+      } catch (err) {
+        workerLog(
+          'warn',
+          `[sceneWorker] ${label} failed — ${err instanceof Error ? err.message : String(err)}`
+        )
+        return null
+      }
+    }
+    try {
+      const compiled =
+        compileBundle(compositePatched, 'compiled capture-patched bundle') ??
+        compileBundle(code, 'compiled original bundle') ??
+        compileBundle(checkerPatched, 'compiled checker-patched bundle')
+      if (!compiled) {
+        throw new Error('Scene bundle compile failed (original and patched sources are invalid)')
+      }
+      exports = compiled
+    } finally {
+      sceneEvalInProgress = false
+    }
+    const timings = (exports as { __evalTimings?: { patchMs: number; compileMs: number; executeMs: number } })
+      .__evalTimings
+    workerLog(
+      'log',
+      `[sceneWorker] scene bundle evaluated (${((performance.now() - evalStarted) / 1000).toFixed(2)}s` +
+        (timings
+          ? ` — patch ${timings.patchMs.toFixed(0)}ms, compile ${timings.compileMs.toFixed(0)}ms, run ${timings.executeMs.toFixed(0)}ms`
+          : '') +
+        ')'
     )
     ctx.postMessage({ type: 'eval-done' } satisfies SceneWorkerOutbound)
     sceneEngine = resolveSceneEngine(exports)

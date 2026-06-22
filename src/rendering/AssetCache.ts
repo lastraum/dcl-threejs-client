@@ -74,12 +74,18 @@ export function prefetchSceneManifestGlbs(cache: AssetCache, scene: ResolvedScen
   }
 }
 
+/**
+ * GLB pipeline (one consumer path):
+ * 1. `prefetchAll` / manifest — bytes only (worker pool + IndexedDB), no parse.
+ * 2. `load` / `clone` — IDB → in-flight bytes → network → parse → `cache`.
+ * Warm revisits hit step 2 immediately; cold loads reuse step 1 bytes in step 2.
+ */
 export class AssetCache {
   private loader: GLTFLoader
   private textureLoader: THREE.TextureLoader
   private cache = new Map<string, CachedGltf>()
   private inflight = new Map<string, Promise<CachedGltf>>()
-  /** Raw byte prefetch (network/IDB only) — parse deferred until attach/clone. */
+  /** Raw byte prefetch (network/IDB only) — consumed by `load` via `resolveGlbBytes`. */
   private bytesInflight = new Map<string, Promise<ArrayBuffer>>()
   private textures = new Map<string, THREE.Texture>()
   private textureInflight = new Map<string, Promise<THREE.Texture>>()
@@ -144,13 +150,13 @@ export class AssetCache {
     return this.cache.has(key)
   }
 
-  hasGivenUp(key: string): boolean {
-    return this.givenUp.has(key)
+  /** True when bytes or parse is in flight — used to prioritize attach passes. */
+  isResolving(key: string): boolean {
+    return this.inflight.has(key) || this.bytesInflight.has(key)
   }
 
-  /** Start a background byte fetch if this hash is not cached or already downloading. */
-  ensureLoading(url: string, hash?: string): void {
-    this.prefetchBytes(url, hash)
+  hasGivenUp(key: string): boolean {
+    return this.givenUp.has(key)
   }
 
   hasPendingLoads(): boolean {

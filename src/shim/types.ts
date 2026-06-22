@@ -31,7 +31,9 @@ export type SceneWorkerBoot = {
   > & {
     worldName?: string
     scriptUrl: string
-    /** Fetched on main thread — avoids slow/blocked worker cross-origin fetch. */
+    /** Blob URL for main-thread-fetched script — avoids cloning multi-MB source in postMessage. */
+    scriptBlobUrl?: string
+    /** Inline script (fallback only — prefer `scriptBlobUrl`). */
     scriptCode?: string
     /** Renderer CRDT snapshot for sync bundle eval (avoids get-state deadlock in worker). */
     bootCrdtSnapshot?: { hasEntities: boolean; data: Uint8Array[] }

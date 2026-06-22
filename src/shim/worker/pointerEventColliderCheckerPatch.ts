@@ -24,17 +24,118 @@ const PREREGISTER_CALL =
 const CAPTURE_ENGINE =
   `(function(__e){if(__e&&typeof __e.update==="function"&&typeof __e.addSystem==="function"){${PREREGISTER_CALL}globalThis.__THREEJS_SCENE_ENGINE__=__e}})`
 
-/** Minified bundles call `ae.addTransport(jP)` — capture the scene engine there (RickRoll, asset packs). */
+/** Minified bundles call `ae.addTransport(jP)` — capture scene engine at renderer registration. */
 const CAPTURE_ADD_TRANSPORT =
   `(function(__e,__t){if(__e&&typeof __e.update==="function"&&typeof __e.addSystem==="function"){${PREREGISTER_CALL}globalThis.__THREEJS_SCENE_ENGINE__=__e}return __e.addTransport(__t)})`
 
+const CHECKER_CALL_NEEDLE = 'pointerEventColliderChecker('
+const ADD_TRANSPORT_NEEDLE = '.addTransport('
+/** Wrap every scene registration site — string-aware scan is cheap vs missing the scene engine. */
+const ADD_TRANSPORT_WRAP_LIMIT = Number.POSITIVE_INFINITY
+
+type AddTransportCallSite = { receiver: string; arg: string; start: number; end: number }
+
+/** Walk source once; invoke `onMatch(i)` for each `needle` at index `i` outside strings/comments. */
+function forEachNeedleOutsideStrings(code: string, needle: string, onMatch: (index: number) => void): void {
+  let inSingle = false
+  let inDouble = false
+  let inTemplate = false
+  let inLineComment = false
+  let inBlockComment = false
+
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i]!
+    const next = code[i + 1]
+
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false
+      continue
+    }
+    if (inBlockComment) {
+      if (ch === '*' && next === '/') {
+        inBlockComment = false
+        i++
+      }
+      continue
+    }
+    if (inSingle) {
+      if (ch === '\\') {
+        i++
+        continue
+      }
+      if (ch === "'") inSingle = false
+      continue
+    }
+    if (inDouble) {
+      if (ch === '\\') {
+        i++
+        continue
+      }
+      if (ch === '"') inDouble = false
+      continue
+    }
+    if (inTemplate) {
+      if (ch === '\\') {
+        i++
+        continue
+      }
+      if (ch === '`') inTemplate = false
+      continue
+    }
+
+    if (ch === '/' && next === '/') {
+      inLineComment = true
+      i++
+      continue
+    }
+    if (ch === '/' && next === '*') {
+      inBlockComment = true
+      i++
+      continue
+    }
+    if (ch === "'") {
+      inSingle = true
+      continue
+    }
+    if (ch === '"') {
+      inDouble = true
+      continue
+    }
+    if (ch === '`') {
+      inTemplate = true
+      continue
+    }
+
+    if (code.startsWith(needle, i)) {
+      onMatch(i)
+      i += needle.length - 1
+    }
+  }
+}
+
 export function stripBundledPointerEventColliderChecker(code: string): string {
-  const moduleCall =
-    /\(\s*(?:0\s*,\s*)?([0-9a-zA-Z_$]+)\.pointerEventColliderChecker\s*\)\(\s*([0-9a-zA-Z_$]+(?:\.engine)?)\s*\)/g
-  const directCall = /\bpointerEventColliderChecker\s*\(\s*([0-9a-zA-Z_$]+(?:\.engine)?)\s*\)/g
-  return code
-    .replace(moduleCall, `${CAPTURE_ENGINE}($2);(void 0)`)
-    .replace(directCall, `${CAPTURE_ENGINE}($1);(void 0)`)
+  if (!code.includes(CHECKER_CALL_NEEDLE)) return code
+
+  const sites: { start: number; end: number; arg: string }[] = []
+  forEachNeedleOutsideStrings(code, CHECKER_CALL_NEEDLE, (idx) => {
+    const argStart = idx + CHECKER_CALL_NEEDLE.length
+    let argEnd = argStart
+    while (argEnd < code.length && /[0-9a-zA-Z_$]/.test(code[argEnd]!)) argEnd++
+    if (argEnd >= code.length || code[argEnd] !== ')') return
+    const arg = code.slice(argStart, argEnd)
+    if (!/^[a-zA-Z_$][\w$]*(?:\.engine)?$/.test(arg)) return
+    sites.push({ start: idx, end: argEnd + 1, arg })
+  })
+
+  if (!sites.length) return code
+
+  let out = code
+  for (let i = sites.length - 1; i >= 0; i--) {
+    const site = sites[i]!
+    const replacement = `${CAPTURE_ENGINE}(${site.arg});(void 0)`
+    out = out.slice(0, site.start) + replacement + out.slice(site.end)
+  }
+  return out
 }
 
 /**
@@ -42,21 +143,77 @@ export function stripBundledPointerEventColliderChecker(code: string): string {
  * `getCompositeOrNull("main.composite")` — alias lookup so composite instancing runs (opbadge).
  */
 function patchCompositeSrcAlias(code: string): string {
+  if (!code.includes('getCompositeOrNull')) return code
   return code.replace(
-    /getCompositeOrNull\((\w+)(?:,(\w+))?\)\{let (\w+)=(\w+)\[(\w+)\]/g,
+    /getCompositeOrNull\((\w+)(?:,(\w+))?\)\{let (\w+)=(\w+)\[(\w+)\]/,
     (_, arg0, arg1, varName, tableName, key) =>
       `getCompositeOrNull(${arg0}${arg1 ? `,${arg1}` : ''}){let ${varName}=${tableName}[${key}]||${tableName}["assets/scene/"+${key}]`
   )
 }
 
-/** Bundle transforms applied before `evaluateSceneBundle` — engine capture + checker strip. */
-export function patchSceneBundle(code: string): string {
-  return patchCompositeSrcAlias(
-    stripBundledPointerEventColliderChecker(code).replace(
-      /(\w+)\.addTransport\((\w+)\)/g,
-      `${CAPTURE_ADD_TRANSPORT}($1,$2)`
-    )
-  )
+function parseSimpleAddTransportAt(code: string, dotIndex: number): AddTransportCallSite | null {
+  let recvStart = dotIndex - 1
+  while (recvStart >= 0 && /[0-9a-zA-Z_$]/.test(code[recvStart]!)) recvStart--
+  recvStart++
+  const receiver = code.slice(recvStart, dotIndex)
+  if (!receiver || !/^[a-zA-Z_$][\w$]*$/.test(receiver)) return null
+
+  const argStart = dotIndex + ADD_TRANSPORT_NEEDLE.length
+  let argEnd = argStart
+  while (argEnd < code.length && /[0-9a-zA-Z_$]/.test(code[argEnd]!)) argEnd++
+  const arg = code.slice(argStart, argEnd)
+  if (!arg || argEnd >= code.length || code[argEnd] !== ')') return null
+
+  return { receiver, arg, start: recvStart, end: argEnd + 1 }
+}
+
+function findSimpleAddTransportCalls(code: string): AddTransportCallSite[] {
+  const out: AddTransportCallSite[] = []
+  forEachNeedleOutsideStrings(code, ADD_TRANSPORT_NEEDLE, (dotIndex) => {
+    const parsed = parseSimpleAddTransportAt(code, dotIndex)
+    if (parsed) out.push(parsed)
+  })
+  return out
+}
+
+/** Wrap the last N scene `engine.addTransport(renderer)` calls — outside strings only. */
+function wrapAddTransportCalls(code: string, limit: number): string {
+  if (!code.includes(ADD_TRANSPORT_NEEDLE)) return code
+  const calls = findSimpleAddTransportCalls(code)
+  if (!calls.length) return code
+
+  const toWrap = calls.slice(-limit)
+  let patched = code
+  for (let i = toWrap.length - 1; i >= 0; i--) {
+    const call = toWrap[i]!
+    const replacement = `${CAPTURE_ADD_TRANSPORT}(${call.receiver},${call.arg})`
+    patched = patched.slice(0, call.start) + replacement + patched.slice(call.end)
+  }
+  return patched
+}
+
+export type PatchSceneBundleStepLog = (step: string, ms: number) => void
+
+/** Default bundle patch — composite alias + safe engine capture (no checker strip). */
+export function patchSceneBundle(code: string, onStep?: PatchSceneBundleStepLog): string {
+  let stepAt = performance.now()
+  let out = patchCompositeSrcAlias(code)
+  onStep?.('composite alias', performance.now() - stepAt)
+  stepAt = performance.now()
+  out = wrapAddTransportCalls(out, ADD_TRANSPORT_WRAP_LIMIT)
+  onStep?.('addTransport capture', performance.now() - stepAt)
+  return out
+}
+
+/** Full patch including checker strip — use only as compile fallback. */
+export function patchSceneBundleWithCheckerStrip(code: string, onStep?: PatchSceneBundleStepLog): string {
+  let stepAt = performance.now()
+  let out = stripBundledPointerEventColliderChecker(code)
+  onStep?.('strip checker', performance.now() - stepAt)
+  stepAt = performance.now()
+  out = patchCompositeSrcAlias(out)
+  onStep?.('composite alias', performance.now() - stepAt)
+  return out
 }
 
 /** Suppress false warnings — any descendant MeshCollider/GltfContainer is a valid trigger setup. */

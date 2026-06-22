@@ -194,6 +194,9 @@ export class SceneScriptSystem {
   private bootCrdtSendSerial: Promise<void> = Promise.resolve()
   /** True from worker boot until `ready` — keeps fast CRDT path during onStart after eval-done. */
   private bootPhaseActive = false
+  private bootProgressReporter: ((msg: string) => void) | null = null
+  private scriptBlobUrl: string | null = null
+  private compileProgressTimer: ReturnType<typeof setInterval> | null = null
   /** Set when pointer-crdt-deliver is posted; cleared on pointer-deliver-done from worker. */
   private pointerDeliverAwaitingAck = false
   private pointerDeliverWatchdog: ReturnType<typeof setTimeout> | null = null
@@ -212,6 +215,26 @@ export class SceneScriptSystem {
   /** Phase 4 — unified entity store (scene graph + avatar peers). */
   getEntityStore(): EntityStore | null {
     return this.entityStore
+  }
+
+  /** Loading-screen progress while the worker compiles the scene bundle (main thread is free). */
+  setBootProgressReporter(fn: ((msg: string) => void) | null): void {
+    this.bootProgressReporter = fn
+  }
+
+  private clearCompileProgressTimer(): void {
+    if (!this.compileProgressTimer) return
+    clearInterval(this.compileProgressTimer)
+    this.compileProgressTimer = null
+  }
+
+  private startCompileProgressTimer(): void {
+    this.clearCompileProgressTimer()
+    const compileStarted = performance.now()
+    this.compileProgressTimer = setInterval(() => {
+      const seconds = Math.floor((performance.now() - compileStarted) / 1000)
+      this.bootProgressReporter?.(`Compiling scene script… (${seconds}s)`)
+    }, 1000)
   }
 
   /** Mirror + bridge setup — call before player spawn so reserved entities exist. */
@@ -677,6 +700,12 @@ export class SceneScriptSystem {
     await this.bootWorker(scene)
   }
 
+  private revokeScriptBlobUrl(): void {
+    if (!this.scriptBlobUrl) return
+    URL.revokeObjectURL(this.scriptBlobUrl)
+    this.scriptBlobUrl = null
+  }
+
   private async bootWorker(scene: ResolvedScene): Promise<void> {
     if (!scene.mainEntry || !scene.entityId) return
 
@@ -685,22 +714,39 @@ export class SceneScriptSystem {
 
     const scriptUrl = scene.assetUrl(mainFile.hash)
     const scriptStarted = performance.now()
+    this.bootProgressReporter?.('Fetching scene script…')
     console.info('[scene] loading scene script and boot files…')
-    const [scriptCode, preloadedFiles, bootSnapshot] = await Promise.all([
+    const [, preloadedFiles, bootSnapshot] = await Promise.all([
       fetch(scriptUrl).then(async (res) => {
         if (!res.ok) throw new Error(`Scene script fetch failed (${res.status}): ${scriptUrl}`)
-        return res.text()
+        const code = await res.text()
+        this.revokeScriptBlobUrl()
+        this.scriptBlobUrl = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }))
+        console.info(
+          `[scene] scene script ready (${(code.length / 1024).toFixed(0)} KB, ${((performance.now() - scriptStarted) / 1000).toFixed(1)}s)`
+        )
       }),
       this.preloadSceneBootFiles(scene),
-      Promise.resolve().then(() => this.buildBootCrdtSnapshot())
+      this.seedProjectionFromMainCrdt(scene).then(() => this.buildBootCrdtSnapshot())
     ])
-    console.info(
-      `[scene] scene script ready (${(scriptCode.length / 1024).toFixed(0)} KB, ${((performance.now() - scriptStarted) / 1000).toFixed(1)}s)`
-    )
 
     this.worker = new Worker(new URL('../../shim/worker/sceneWorkerEntry.ts', import.meta.url), {
       type: 'module'
     })
+
+    const transfer: Transferable[] = []
+    const transferredBuffers = new Set<ArrayBufferLike>()
+    const preloadedPayload: Record<string, { hash: string; content: Uint8Array }> = {}
+    for (const [key, file] of Object.entries(preloadedFiles)) {
+      const content = file.content
+      const buffer = content.buffer
+      if (!transferredBuffers.has(buffer)) {
+        transferredBuffers.add(buffer)
+        transfer.push(buffer as ArrayBuffer)
+      }
+      preloadedPayload[key] = { hash: file.hash, content }
+    }
+    const bootCrdtData = bootSnapshot.data.map((chunk) => chunk.slice())
 
     const boot: SceneWorkerBoot = {
       type: 'boot',
@@ -718,17 +764,12 @@ export class SceneScriptSystem {
         mainEntry: scene.mainEntry,
         worldName: scene.source.kind === 'world' ? scene.source.worldName : undefined,
         scriptUrl,
-        scriptCode,
+        scriptBlobUrl: this.scriptBlobUrl ?? undefined,
         bootCrdtSnapshot: {
           hasEntities: bootSnapshot.hasEntities,
-          data: bootSnapshot.data.map((chunk) => chunk.slice())
+          data: bootCrdtData
         },
-        preloadedFiles: Object.fromEntries(
-          Object.entries(preloadedFiles).map(([key, file]) => [
-            key,
-            { hash: file.hash, content: file.content.slice() }
-          ])
-        ),
+        preloadedFiles: Object.keys(preloadedPayload).length ? preloadedPayload : undefined,
         content: scene.content,
         metadataJson: JSON.stringify(scene.metadata ?? {})
       }
@@ -745,6 +786,8 @@ export class SceneScriptSystem {
         if (settled) return
         settled = true
         clearTimeout(bootTimer)
+        this.clearCompileProgressTimer()
+        this.revokeScriptBlobUrl()
         fn()
       }
 
@@ -752,7 +795,7 @@ export class SceneScriptSystem {
         finish(() =>
           reject(
             new Error(
-              'Scene worker boot timed out (60s) — check console for [sceneWorker] onStart / crdt-get-state logs; hard-refresh if the worker bundle is stale'
+              'Scene worker bundle compile timed out (120s) — check console for [sceneWorker] compile / onStart logs; hard-refresh if the worker bundle is stale'
             )
           )
         )
@@ -764,12 +807,10 @@ export class SceneScriptSystem {
 
       this.worker.onmessage = (ev: MessageEvent<SceneWorkerOutbound>) => {
         const msg = ev.data
-        // Priority lane — pointer-deliver-done must not queue behind handleCrdtSend.
         if (msg?.type === 'pointer-deliver-done') {
           this.onPointerDeliverDone()
           return
         }
-        // Boot lane — CRDT RPC must not queue behind log spam or the serialized crdt-send chain.
         if (msg?.type === 'crdt-get-state') {
           this.respondCrdtGetState(msg.id)
           return
@@ -780,6 +821,7 @@ export class SceneScriptSystem {
             alsoConsole: true
           })
           this.running = true
+          this.bootProgressReporter?.('Scene script compiled — loading assets…')
           if (!settled) finish(resolve)
           return
         }
@@ -796,11 +838,23 @@ export class SceneScriptSystem {
         }
         void this.handleWorkerMessage(msg, () => finish(resolve), (err) => finish(() => reject(err)))
       }
-      this.worker.onerror = (err) => finish(() => reject(err))
+      this.worker.onerror = (err) => finish(() => reject(err instanceof ErrorEvent ? err : new Error('Scene worker error')))
 
-      this.worker.postMessage(boot)
+      this.startCompileProgressTimer()
+      this.bootProgressReporter?.('Compiling scene script… (0s)')
+      // Yield so the loading screen can paint before the (still non-trivial) boot postMessage clone.
+      requestAnimationFrame(() => {
+        try {
+          this.worker?.postMessage(boot, transfer)
+        } catch (err) {
+          finish(() =>
+            reject(err instanceof Error ? err : new Error(`Scene worker boot postMessage failed — ${String(err)}`))
+          )
+        }
+      })
     })
 
+    this.bootProgressReporter = null
     if (!this.running) this.running = true
     if (isMotionFocusActive() && typeof globalThis !== 'undefined') {
       const g = globalThis as typeof globalThis & {
@@ -1169,6 +1223,33 @@ export class SceneScriptSystem {
       hasEntities: state.hasEntities,
       data: state.data
     } satisfies MainToWorker)
+  }
+
+  /**
+   * Deployed scenes ship static ECS state in `main.crdt`. Seed the renderer projection
+   * before the worker's onStart crdt-get-state — otherwise hasEntities stays false, composite
+   * is missing, and hydration never receives GltfContainer (0/0 forever).
+   */
+  private async seedProjectionFromMainCrdt(scene: ResolvedScene): Promise<void> {
+    const entry = scene.content.find((file) => file.file === 'main.crdt')
+    if (!entry?.hash) return
+    try {
+      const res = await fetch(scene.assetUrl(entry.hash))
+      if (!res.ok) return
+      const bytes = new Uint8Array(await res.arrayBuffer())
+      if (!bytes.byteLength) return
+      this.projection.applyIncoming(bytes)
+      this.foldProjectionChanges()
+      const entities = this.projection.sceneEntityCount(this.reservedEntities())
+      console.info(
+        `[scene] main.crdt seeded projection (${(bytes.byteLength / 1024).toFixed(0)} KB, ${entities} entities)`
+      )
+    } catch (err) {
+      console.warn(
+        '[scene]',
+        `main.crdt seed failed — ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
   }
 
   private async preloadSceneBootFiles(

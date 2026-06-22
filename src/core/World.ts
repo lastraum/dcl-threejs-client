@@ -316,21 +316,14 @@ export class World {
       onProgress?.('Compiling scene script…')
       const spawnPoses = this.seedPosesFromSpawn(scene.spawn)
       this.sceneScript.seedRendererEntities(spawnPoses.player, spawnPoses.camera)
-      const bootProgressTimer = window.setInterval(() => {
-        const { gltfInflight, gltfCached } = this.assets.getLoadStats()
-        if (gltfInflight > 0) {
-          onProgress?.(`Booting scene script… (${gltfCached} cached, ${gltfInflight} downloading)`)
-        }
-      }, 750)
+      this.sceneScript.setBootProgressReporter((msg) => onProgress?.(msg))
       try {
         await this.sceneScript.start(scene, this.assets, this.host)
-        onProgress?.('Scene script running')
+        onProgress?.('Loading scene assets…')
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         onProgress?.(`Scene script error: ${msg}`)
         console.error(err)
-      } finally {
-        window.clearInterval(bootProgressTimer)
       }
     }
   }

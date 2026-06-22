@@ -465,7 +465,7 @@ export class ThreeBridge {
     if (!hash || hash.startsWith(GLTF_LOCAL_PREFIX)) return 'other'
     if (this.emptyGltfHashes.has(hash)) return 'blocked'
     const cacheKey = this.gltfCacheKey(hash)
-    if (this.cache.hasCached(cacheKey)) return 'ready'
+    if (this.cache.hasCached(cacheKey) || this.cache.isResolving(cacheKey)) return 'ready'
     return 'waiting'
   }
 
@@ -607,6 +607,35 @@ export class ThreeBridge {
     prefetchSceneManifestGlbs(this.cache, this.sceneConfig)
   }
 
+  /**
+   * Start parse for every scene GLTF on the projection — same `load()` path as IDB/memory hits.
+   * Manifest prefetch only warms bytes; attach still goes through load → parse → cache → clone.
+   */
+  private primeGltfParses(
+    view: ProjectionView,
+    GltfContainer: MirrorComponents['GltfContainer']
+  ): void {
+    const { RootEntity, PlayerEntity, CameraEntity } = view
+    for (const [entity] of view.getEntitiesWith(GltfContainer)) {
+      if (entity === RootEntity || entity === PlayerEntity || entity === CameraEntity) continue
+      const src = GltfContainer.get(entity).src?.trim()
+      if (!src) continue
+      const hash = hashFromSrc(src, this.sceneConfig)
+      if (!hash || hash.startsWith(GLTF_LOCAL_PREFIX)) continue
+      const cacheKey = this.gltfCacheKey(hash)
+      if (
+        this.cache.hasCached(cacheKey) ||
+        this.cache.isResolving(cacheKey) ||
+        this.cache.hasGivenUp(cacheKey) ||
+        this.emptyGltfHashes.has(hash)
+      ) {
+        continue
+      }
+      const url = this.sceneConfig.assetUrl(hash)
+      void this.cache.load(url, hash, { quiet: true }).catch(() => {})
+    }
+  }
+
   async sync(view: ProjectionView): Promise<void> {
     this.gltfBudgetRemaining = this.resolveGltfBudget()
     const { Transform, MeshRenderer, Material, GltfContainer, TextShape } = this.ecs
@@ -635,6 +664,7 @@ export class ThreeBridge {
     // Hydration full-walk: reconcile transforms / orphan nodes only — never re-touch materials.
     const touchMaterials = this.hydrationMode
     if (this.hydrationMode) {
+      this.primeGltfParses(view, GltfContainer)
       await this.runHydrationAttachPasses(applied.upserts, meshEcs, deferMaterials, touchMaterials)
       await this.runMaterialPass(Material)
     } else {
@@ -1093,16 +1123,12 @@ export class ThreeBridge {
 
         const isLocal = hash.startsWith(GLTF_LOCAL_PREFIX)
         const url = isLocal ? hash.slice(GLTF_LOCAL_PREFIX.length) : this.sceneConfig.assetUrl(hash)
-        const cacheKey = this.gltfCacheKey(hash)
-        if (!this.cache.hasCached(cacheKey)) {
-          this.cache.ensureLoading(url, isLocal ? undefined : hash)
-          return
-        }
 
         if (this.gltfBudgetRemaining <= 0) return
 
         this.gltfBudgetRemaining--
         try {
+          // Single pipeline for cold / IDB / memory: clone → load → bytes (prefetch/IDB/network) → parse → cache.
           const clone = await this.cache.clone(url, isLocal ? url : hash)
           obj.userData.gltfSrcKey = srcKey
           const hasGeometry = gltfInstanceHasGeometry(clone)

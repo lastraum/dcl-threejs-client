@@ -3,11 +3,19 @@ import type { Entity } from '@dcl/ecs'
 import type { EntityStore } from './EntityStore'
 import type { MirrorComponents } from './mirrorComponents'
 import type { StaticEntityRegistry } from './StaticEntityRegistry'
-import { collectGltfRenderMeshes } from '../collision/gltfRenderMeshes'
+import { collectGltfInstancingMeshes, collectGltfRenderMeshes } from '../collision/gltfRenderMeshes'
 import { isEmoteAnchorGltfSrc } from '../rendering/DclTextureResolver'
 
 const INITIAL_CAPACITY = 64
 const MAX_CAPACITY = 2048
+
+function cloneInstancingMaterial(material: THREE.Material | THREE.Material[]): THREE.Material | THREE.Material[] {
+  if (Array.isArray(material)) {
+    const cloned = material.map((m) => m.clone())
+    return cloned.length === 1 ? cloned[0]! : cloned
+  }
+  return material.clone()
+}
 
 type TemplateMesh = {
   geometry: THREE.BufferGeometry
@@ -68,9 +76,13 @@ export class GltfInstancedPool {
   registerFromClone(entity: Entity, srcKey: string, clone: THREE.Object3D, entityNode: THREE.Group): boolean {
     if (this.entityBatch.has(entity)) return true
 
+    const renderMeshes = collectGltfRenderMeshes(clone)
+    const instancingMeshes = collectGltfInstancingMeshes(clone)
+    if (!instancingMeshes.length || instancingMeshes.length !== renderMeshes.length) return false
+
     let batch = this.batches.get(srcKey)
     if (!batch) {
-      const created = this.createBatch(srcKey, clone, entityNode)
+      const created = this.createBatch(srcKey, instancingMeshes, entityNode)
       if (!created) return false
       batch = created
       this.batches.set(srcKey, batch)
@@ -138,19 +150,22 @@ export class GltfInstancedPool {
     this.root.removeFromParent()
   }
 
-  private createBatch(srcKey: string, clone: THREE.Object3D, entityNode: THREE.Object3D): SrcBatch | null {
+  private createBatch(
+    srcKey: string,
+    instancingMeshes: THREE.Mesh[],
+    entityNode: THREE.Object3D
+  ): SrcBatch | null {
     const templates: TemplateMesh[] = []
     entityNode.updateMatrixWorld(true)
     this.entityWorldInv.copy(entityNode.matrixWorld).invert()
-    clone.updateMatrixWorld(true)
-    for (const mesh of collectGltfRenderMeshes(clone)) {
+    for (const mesh of instancingMeshes) {
       const localMatrix = new THREE.Matrix4()
       mesh.updateMatrixWorld(true)
       // Entity-relative mesh pose — world matrix would double-apply entity transforms.
       localMatrix.copy(this.entityWorldInv).multiply(mesh.matrixWorld)
       templates.push({
         geometry: mesh.geometry,
-        material: mesh.material,
+        material: cloneInstancingMaterial(mesh.material),
         localMatrix
       })
     }

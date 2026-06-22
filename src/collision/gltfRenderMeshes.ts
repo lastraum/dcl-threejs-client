@@ -4,6 +4,7 @@ import {
   isGltfInvisibleColliderName,
   isGltfVisibleClassMesh
 } from './gltfColliderNaming'
+import { isSharedAssetResource } from '../rendering/sharedAsset'
 
 function meshMaterials(mesh: THREE.Mesh): THREE.Material[] {
   return Array.isArray(mesh.material) ? mesh.material : [mesh.material]
@@ -19,8 +20,16 @@ export function gltfMeshHasDisplayMaps(mesh: THREE.Mesh): boolean {
   return false
 }
 
+function detachSharedMaterials(mesh: THREE.Mesh): void {
+  const materials = meshMaterials(mesh)
+  if (!materials.some((m) => m && isSharedAssetResource(m))) return
+  const cloned = materials.map((m) => (m ? m.clone() : m))
+  mesh.material = Array.isArray(mesh.material) ? cloned : cloned[0]!
+}
+
 /** Keep pointer raycasts while hiding untextured proxy hulls from the camera. */
 function hideMeshFromCameraKeepRaycast(mesh: THREE.Mesh): void {
+  detachSharedMaterials(mesh)
   mesh.visible = true
   for (const material of meshMaterials(mesh)) {
     if (!material) continue
@@ -28,6 +37,25 @@ function hideMeshFromCameraKeepRaycast(mesh: THREE.Mesh): void {
     material.opacity = 0
     material.depthWrite = false
   }
+}
+
+/** InstancedMesh cannot drive per-instance morph/skinning — skip those templates. */
+export function isInstancableGltfMesh(mesh: THREE.Mesh): boolean {
+  if ((mesh as THREE.SkinnedMesh).isSkinnedMesh) return false
+  const geometry = mesh.geometry
+  if (!geometry) return false
+  const pos = geometry.getAttribute('position')
+  if (!pos || pos.count < 3) return false
+  if (
+    geometry.morphAttributes.position?.length ||
+    geometry.morphAttributes.normal?.length ||
+    geometry.morphAttributes.color?.length
+  ) {
+    return false
+  }
+  const materials = meshMaterials(mesh)
+  if (!materials.length || materials.some((m) => !m)) return false
+  return true
 }
 
 function unhideRenderAncestors(root: THREE.Object3D): void {
@@ -85,6 +113,11 @@ export function collectGltfRenderMeshes(root: THREE.Object3D): THREE.Mesh[] {
   }
 
   return meshes
+}
+
+/** Renderable GLTF meshes safe for InstancedMesh batching (no morph/skinning). */
+export function collectGltfInstancingMeshes(root: THREE.Object3D): THREE.Mesh[] {
+  return collectGltfRenderMeshes(root).filter(isInstancableGltfMesh)
 }
 
 /**

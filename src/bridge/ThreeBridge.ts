@@ -152,17 +152,25 @@ export class ThreeBridge {
     return this.store.nodes
   }
 
-  /** Sprite pool slot — never participates in collider/pointer create/destroy walks. */
+  /** Sprite pool slot — live ECS check so stale flags never suppress colliders. */
   isAnimatedSpriteSlot(entity: Entity): boolean {
-    return this.store.isSpritePool(entity)
+    return this.isSpritePoolEntity(entity)
   }
 
-  private skipSpriteSecondaryNotify = (entity: Entity): boolean => this.store.isSpritePool(entity)
+  private skipSpriteSecondaryNotify = (entity: Entity): boolean => this.isSpritePoolEntity(entity)
 
   private sceneDiffOptions(extra?: Partial<ApplySceneDiffOptions>): ApplySceneDiffOptions {
     return {
       skipTransformApply: this.skipTransformApply,
       skipSecondaryNotify: this.skipSpriteSecondaryNotify,
+      ...extra
+    }
+  }
+
+  /** Sprite recycle path only — transformless MeshRenderer/Material between DELETE and revive. */
+  private spritePoolDiffOptions(extra?: Partial<ApplySceneDiffOptions>): ApplySceneDiffOptions {
+    return {
+      ...this.sceneDiffOptions(),
       allowTransformless: (entity) => this.store.allowTransformless(entity),
       ...extra
     }
@@ -189,9 +197,13 @@ export class ThreeBridge {
     Transform: MirrorComponents['Transform']
   ): boolean {
     if (this.isReservedSceneEntity(entity, view)) return false
-    if (this.store.isSpritePool(entity)) return true
     if (this.isSpritePoolEntity(entity)) return true
-    return !Transform.has(entity) && this.store.has(entity) && this.store.isSpritePool(entity)
+    return (
+      !Transform.has(entity) &&
+      this.store.has(entity) &&
+      this.store.isSpritePool(entity) &&
+      this.store.isSuspended(entity)
+    )
   }
 
   /** Peel sprite-pool churn off the main async consumeDiff path. */
@@ -229,7 +241,7 @@ export class ThreeBridge {
 
     this.primeSpritePoolSlotsFromDiff(diff, view, MeshRenderer)
 
-    const applied = applySceneDiff(this.store, diff, view, this.ecs, [], this.sceneDiffOptions())
+    const applied = applySceneDiff(this.store, diff, view, this.ecs, [], this.spritePoolDiffOptions())
 
     const materialTouch = new Set<Entity>()
 
@@ -693,7 +705,7 @@ export class ThreeBridge {
     }
 
     for (const entity of applied.removals) {
-      if (this.store.isSpritePool(entity)) {
+      if (this.isSpritePoolEntity(entity) || (this.store.isSpritePool(entity) && this.store.isSuspended(entity))) {
         this.suspendSpriteSlot(entity)
       } else {
         this.removeEntityNode(entity)
@@ -782,11 +794,10 @@ export class ThreeBridge {
     }
   }
 
-  /** Hydration full-walk — reconcile sprite/billboard tracked sets after bulk spawn. */
+  /** Hydration full-walk — reconcile billboard tracked set after bulk spawn. */
   private refreshTrackedEntityFlags(): void {
     const { Billboard } = this.ecs
     this.store.forEachSceneEntity((entity) => {
-      this.trackSpritePoolEntity(entity)
       this.store.setBillboard(entity, Billboard.has(entity))
     })
   }
@@ -817,6 +828,10 @@ export class ThreeBridge {
    */
   syncAnimatedPlaneUvs(): void {
     this.store.forEachSpritePool((entity) => {
+      if (!this.isSpritePoolEntity(entity)) {
+        this.store.setSpritePool(entity, false)
+        return
+      }
       this.applyAnimatedPlaneUvs(entity)
     })
   }

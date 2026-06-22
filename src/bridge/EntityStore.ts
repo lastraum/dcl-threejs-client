@@ -93,6 +93,11 @@ export class EntityStore {
     return record
   }
 
+  /** Flag-only meta for entities whose node may land later (billboard/tween diff). */
+  private ensureFlagMeta(entity: Entity): EntityMeta {
+    return this.ensureMeta(entity, this.getOwner(entity) ?? 'scene')
+  }
+
   getOwner(entity: Entity): EntityOwner | undefined {
     return this.meta.get(entity)?.owner
   }
@@ -111,29 +116,26 @@ export class EntityStore {
 
   /**
    * Sprite pool slots may receive MeshRenderer/Material PUTs without Transform
-   * between DELETE_ENTITY and revive (DCL recycled id pattern).
+   * only after DELETE_ENTITY suspend — not for active scene entities.
    */
   allowTransformless(entity: Entity): boolean {
     if (!this.isSceneOwned(entity) || !this.nodes.has(entity)) return false
-    return this.isSpritePool(entity)
+    return this.isSpritePool(entity) && this.isSuspended(entity)
   }
 
   setSpritePool(entity: Entity, enabled: boolean): void {
     if (!this.nodes.has(entity)) return
     const record = this.ensureMeta(entity, this.getOwner(entity) ?? 'scene')
     record.flags.spritePool = enabled
+    if (!enabled && record.lifecycle === 'suspended') record.lifecycle = 'active'
   }
 
   setBillboard(entity: Entity, enabled: boolean): void {
-    if (!this.nodes.has(entity)) return
-    const record = this.ensureMeta(entity, this.getOwner(entity) ?? 'scene')
-    record.flags.billboard = enabled
+    this.ensureFlagMeta(entity).flags.billboard = enabled
   }
 
   setTween(entity: Entity, enabled: boolean): void {
-    if (!this.nodes.has(entity)) return
-    const record = this.ensureMeta(entity, this.getOwner(entity) ?? 'scene')
-    record.flags.tween = enabled
+    this.ensureFlagMeta(entity).flags.tween = enabled
   }
 
   /** Hide-and-keep-node recycle — no destroy notification (sprite pool). */

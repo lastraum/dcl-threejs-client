@@ -28,6 +28,7 @@ import { InputAction } from '../input/pointerConstants'
 import { MobileGameHud } from './ui/MobileGameHud'
 import { disposeSessionAssetCache, getSessionAssetCache, prefetchSceneManifestGlbs } from '../rendering/AssetCache'
 import { DEFAULT_TIMEOUT_MS, FAST_TIMEOUT_MS, type SceneHydrationStats } from '../rendering/sceneHydration'
+import { resolveSceneLoadWarm } from '../rendering/sceneLoadWarm'
 import { formatSceneLoadError } from './formatSceneLoadError'
 import { ProfileUiController } from './ui/profile/ProfileUiController'
 
@@ -275,10 +276,15 @@ export class AppController {
             : undefined
       })
 
-      const hydrationTimeoutMs = opts.fastAssets ? FAST_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
+      const warmScene = await resolveSceneLoadWarm(getSessionAssetCache(), sceneConfig)
+      const useFastBoot = opts.fastAssets ?? warmScene
+      if (warmScene && !opts.fastAssets) {
+        console.info('[client] warm scene cache — using fast boot timings')
+      }
+      const hydrationTimeoutMs = useFastBoot ? FAST_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
       opts.onHydrationStart?.(hydrationTimeoutMs)
       const hydrationResult = await world.waitForSceneAssets(sceneConfig, opts.onProgress, {
-        timeoutMs: opts.fastAssets ? FAST_TIMEOUT_MS : undefined
+        timeoutMs: useFastBoot ? FAST_TIMEOUT_MS : undefined
       })
       if (hydrationResult) {
         hydrationTimedOut = hydrationResult.timedOut
@@ -295,7 +301,7 @@ export class AppController {
 
       world.start()
 
-      const settleMs = opts.fastAssets ? POST_SPAWN_SETTLE_FAST_MS : POST_SPAWN_SETTLE_MS
+      const settleMs = useFastBoot ? POST_SPAWN_SETTLE_FAST_MS : POST_SPAWN_SETTLE_MS
       if (settleMs > 0) {
         opts.onProgress?.('Settling world…', 0.985)
         await new Promise<void>((resolve) => window.setTimeout(resolve, settleMs))

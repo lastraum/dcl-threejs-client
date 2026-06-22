@@ -337,10 +337,13 @@ export class ThreeBridge {
     void this.runMaterialPass(Material)
   }
 
+  private hydrationPrimeDone = false
+
   /** Lift the per-frame GLTF spawn cap while `waitForSceneAssets` runs. */
   setAssetHydrationMode(enabled: boolean): void {
     const wasHydration = this.hydrationMode
     this.hydrationMode = enabled
+    if (!enabled) this.hydrationPrimeDone = false
     if (wasHydration && !enabled) this.queueAllMaterialEntities()
   }
 
@@ -664,7 +667,10 @@ export class ThreeBridge {
     // Hydration full-walk: reconcile transforms / orphan nodes only — never re-touch materials.
     const touchMaterials = this.hydrationMode
     if (this.hydrationMode) {
-      this.primeGltfParses(view, GltfContainer)
+      if (!this.hydrationPrimeDone) {
+        this.primeGltfParses(view, GltfContainer)
+        this.hydrationPrimeDone = true
+      }
       await this.runHydrationAttachPasses(applied.upserts, meshEcs, deferMaterials, touchMaterials)
       await this.runMaterialPass(Material)
     } else {

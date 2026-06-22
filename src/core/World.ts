@@ -113,6 +113,7 @@ export class World {
         if (address === this.session.getAddress()?.toLowerCase()) return
         this.remoteAvatars?.upsertPeer(address)
         void this.social.ensurePeerProfile(address)
+        this.social.onRemotePeerJoined(address)
       },
       onPeerLeave: (address) => {
         if (skipRemoteAvatars()) return
@@ -1350,6 +1351,10 @@ export class World {
 
   cancelCameraPointer(): void {
     this.player?.cancelCameraPointer()
+  }
+
+  getRemoteAvatarManager(): RemoteAvatarManager | null {
+    return this.remoteAvatars
   }
 
   playLocalEmote(emoteRef: string, options?: { loop?: boolean; broadcast?: boolean }): void {

@@ -32,6 +32,7 @@ import { createRemoteAvatarPlaceholder } from '../avatar/remotePlaceholder'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import type { AvatarTransformPayload } from './comms/types'
 import { RemoteAvatarLoadQueue } from './RemoteAvatarLoadQueue'
+import type { InteractiveNameTagHit } from '../client/ui/overlayHitTest'
 
 type RemotePeerRecord = {
   address: string
@@ -93,7 +94,6 @@ export class RemoteAvatarManager {
   private readonly loadQueue = new RemoteAvatarLoadQueue()
   private entityStore: EntityStore | null = null
   private localAddress: string | null = null
-
   constructor(scene: THREE.Scene) {
     this.scene = scene
     this.root.name = 'remote-avatars'
@@ -157,6 +157,73 @@ export class RemoteAvatarManager {
   showPeerNameTagChat(address: string, text: string): void {
     const record = this.peers.get(address.toLowerCase())
     record?.nameTag?.showChat(text)
+  }
+
+  /**
+   * Screen-space hit on a remote avatar body — used for pointer-lock pill hover.
+   * Returns the peer's CSS2D pill element when the cursor is over the projected bounds.
+   */
+  findPeerNearScreenPoint(
+    clientX: number,
+    clientY: number,
+    camera: THREE.Camera | null,
+    slopPx = 28
+  ): InteractiveNameTagHit | null {
+    if (!camera) return null
+    const canvas = document.querySelector('#app canvas') as HTMLCanvasElement | null
+    if (!canvas) return null
+    const canvasRect = canvas.getBoundingClientRect()
+    if (canvasRect.width <= 0 || canvasRect.height <= 0) return null
+
+    const _projected = new THREE.Vector3()
+    const _box = new THREE.Box3()
+    let best: { hit: InteractiveNameTagHit; score: number } | null = null
+
+    for (const [address, record] of this.peers.entries()) {
+      if (!record.hasPosition) continue
+      const body = record.model ?? record.placeholder
+      if (!body) continue
+
+      body.updateWorldMatrix(true, true)
+      _box.setFromObject(body)
+      if (_box.isEmpty()) continue
+      _box.expandByScalar(0.08)
+
+      let minX = Infinity
+      let minY = Infinity
+      let maxX = -Infinity
+      let maxY = -Infinity
+      for (const corner of boxCornerPoints(_box)) {
+        _projected.copy(corner).project(camera)
+        const sx = canvasRect.left + (_projected.x * 0.5 + 0.5) * canvasRect.width
+        const sy = canvasRect.top + (-_projected.y * 0.5 + 0.5) * canvasRect.height
+        minX = Math.min(minX, sx)
+        maxX = Math.max(maxX, sx)
+        minY = Math.min(minY, sy)
+        maxY = Math.max(maxY, sy)
+      }
+
+      const inBounds =
+        clientX >= minX - slopPx &&
+        clientX <= maxX + slopPx &&
+        clientY >= minY - slopPx &&
+        clientY <= maxY + slopPx
+      if (!inBounds) continue
+
+      const element = document.querySelector<HTMLElement>(
+        `.avatar-name-tag--interactive[data-peer-address="${address}"]`
+      )
+      if (!element) continue
+
+      const cx = (minX + maxX) * 0.5
+      const cy = (minY + maxY) * 0.5
+      const score = Math.hypot(clientX - cx, clientY - cy)
+      if (!best || score < best.score) {
+        best = { hit: { address, element }, score }
+      }
+    }
+
+    return best?.hit ?? null
   }
 
   getPlayerTransformDclForAddress(address: string): DclTransformValues | null {
@@ -443,6 +510,7 @@ export class RemoteAvatarManager {
         updateNameTagAnchor(record.nameTagAnchor, nameTagTarget)
       }
     }
+
   }
 
   dispose(): void {
@@ -621,4 +689,19 @@ export class RemoteAvatarManager {
     disposeWearableInstance(model)
     model.removeFromParent()
   }
+}
+
+const _boxCornerScratch = Array.from({ length: 8 }, () => new THREE.Vector3())
+
+function boxCornerPoints(box: THREE.Box3): THREE.Vector3[] {
+  const { min, max } = box
+  _boxCornerScratch[0]!.set(min.x, min.y, min.z)
+  _boxCornerScratch[1]!.set(max.x, min.y, min.z)
+  _boxCornerScratch[2]!.set(min.x, max.y, min.z)
+  _boxCornerScratch[3]!.set(max.x, max.y, min.z)
+  _boxCornerScratch[4]!.set(min.x, min.y, max.z)
+  _boxCornerScratch[5]!.set(max.x, min.y, max.z)
+  _boxCornerScratch[6]!.set(min.x, max.y, max.z)
+  _boxCornerScratch[7]!.set(max.x, max.y, max.z)
+  return _boxCornerScratch
 }

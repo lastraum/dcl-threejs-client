@@ -1,5 +1,6 @@
 import { shortenAddress } from '../../../avatar/displayName'
 import type { PeerChatProfile } from '../../../social/ChatPeerProfiles'
+import type { FriendshipRelation } from '../../../social/friendshipsApi'
 
 export type UserContextMenuAction =
   | 'add-friend'
@@ -13,6 +14,7 @@ export type UserContextMenuAction =
 
 export type UserContextMenuHandlers = {
   onAction: (action: UserContextMenuAction, address: string) => void
+  onHide?: () => void
 }
 
 type MenuRow =
@@ -20,15 +22,15 @@ type MenuRow =
   | { kind: 'divider' }
 
 const MENU_ROWS: MenuRow[] = [
-  { kind: 'action', action: 'add-friend', label: 'Add Friend', icon: 'add-friend' },
-  { kind: 'action', action: 'view-profile', label: 'View Profile', icon: 'view-profile' },
-  { kind: 'action', action: 'chat', label: 'Chat', icon: 'chat' },
-  { kind: 'action', action: 'call', label: 'Call', icon: 'call' },
-  { kind: 'action', action: 'hush', label: 'Hush', icon: 'hush' },
-  { kind: 'action', action: 'gift', label: 'Gift', icon: 'gift' },
-  { kind: 'divider' },
-  { kind: 'action', action: 'report', label: 'Report', icon: 'report', danger: true },
-  { kind: 'action', action: 'block', label: 'Block', icon: 'block', danger: true }
+  // { kind: 'action', action: 'add-friend', label: 'Add Friend', icon: 'add-friend' },
+  { kind: 'action', action: 'view-profile', label: 'View Profile', icon: 'view-profile' }
+  // { kind: 'action', action: 'chat', label: 'Chat', icon: 'chat' },
+  // { kind: 'action', action: 'call', label: 'Call', icon: 'call' },
+  // { kind: 'action', action: 'hush', label: 'Hush', icon: 'hush' },
+  // { kind: 'action', action: 'gift', label: 'Gift', icon: 'gift' },
+  // { kind: 'divider' },
+  // { kind: 'action', action: 'report', label: 'Report', icon: 'report', danger: true },
+  // { kind: 'action', action: 'block', label: 'Block', icon: 'block', danger: true }
 ]
 
 const ICONS: Record<string, string> = {
@@ -85,10 +87,16 @@ export class UserContextMenu {
     return this.open
   }
 
-  show(address: string, peer: PeerChatProfile, clientX: number, clientY: number): void {
+  show(
+    address: string,
+    peer: PeerChatProfile,
+    clientX: number,
+    clientY: number,
+    relation: FriendshipRelation = 'unknown'
+  ): void {
     const key = address.toLowerCase()
     this.address = key
-    this.renderHeader(key, peer)
+    this.renderHeader(key, peer, relation)
     this.renderActions()
 
     const panelWidth = 280
@@ -105,11 +113,13 @@ export class UserContextMenu {
   }
 
   hide(): void {
+    if (!this.open) return
     this.open = false
     this.address = null
     this.root.innerHTML = ''
     this.root.hidden = true
     this.backdrop.hidden = true
+    this.handlers.onHide?.()
   }
 
   private onKeyDown = (ev: KeyboardEvent): void => {
@@ -120,7 +130,16 @@ export class UserContextMenu {
     if (this.open) this.hide()
   }
 
-  private renderHeader(address: string, peer: PeerChatProfile): void {
+  private renderHeader(address: string, peer: PeerChatProfile, _relation: FriendshipRelation): void {
+    // const friendBtn = friendshipActionLabel(relation)
+    // const friendIcon =
+    //   friendBtn.variant === 'friends'
+    //     ? '✓'
+    //     : friendBtn.variant === 'accept'
+    //       ? '✓'
+    //       : friendBtn.variant === 'pending'
+    //         ? '…'
+    //         : '+'
     const face = peer.faceUrl
       ? `<img class="user-context-menu__face" src="${peer.faceUrl}" alt="" decoding="async" />`
       : `<div class="user-context-menu__face user-context-menu__face--fallback">${peer.displayName.charAt(0).toUpperCase()}</div>`
@@ -138,10 +157,6 @@ export class UserContextMenu {
           </div>
         </div>
       </header>
-      <button type="button" class="user-context-menu__add-friend" data-action="add-friend">
-        <span class="user-context-menu__add-icon" aria-hidden="true">+</span>
-        Add Friend
-      </button>
       <div class="user-context-menu__list" role="none"></div>
     `
 
@@ -157,11 +172,12 @@ export class UserContextMenu {
       }
     })
 
-    this.root.querySelector('.user-context-menu__add-friend')?.addEventListener('click', () => {
-      if (!this.address) return
-      this.handlers.onAction('add-friend', this.address)
-      this.hide()
-    })
+    // const addFriendBtn = this.root.querySelector('.user-context-menu__add-friend') as HTMLButtonElement | null
+    // addFriendBtn?.addEventListener('click', () => {
+    //   if (!this.address || addFriendBtn.disabled) return
+    //   this.handlers.onAction('add-friend', this.address)
+    //   this.hide()
+    // })
   }
 
   private renderActions(): void {

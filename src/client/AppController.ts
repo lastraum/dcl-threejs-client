@@ -154,6 +154,8 @@ export class AppController {
       session: world.session,
       social: world.social,
       getPeerUrl: () => this.sceneContentUrl,
+      getRemoteAvatars: () => world.getRemoteAvatarManager(),
+      getCamera: () => world.host.camera,
       onOpenChat: () => this.shell?.openChatPanel(),
       onPrepareOverlay: () => this.world?.cancelCameraPointer()
     })

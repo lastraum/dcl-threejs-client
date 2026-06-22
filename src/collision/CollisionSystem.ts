@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
 import {
-  applyPrimitivePivotOffset,
+
   buildPrimitiveGeometry,
   primitiveKind,
   type PrimitiveMeshSpec
@@ -121,8 +121,6 @@ export class CollisionSystem {
       mesh.userData.colliderKind = kind
       mesh.userData.entity = entity
       mesh.userData.collisionMask = collisionMask
-      applyPrimitivePivotOffset(mesh, spec as PrimitiveMeshSpec)
-
       const root = new THREE.Object3D()
       root.name = `collider-root:${entity}`
       root.add(mesh)

@@ -2,6 +2,13 @@ import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import type { CommsService } from '../network/CommsService'
 import { ChatPeerProfiles, type PeerChatProfile } from './ChatPeerProfiles'
+import {
+  buildFriendshipRelationMap,
+  fetchFriendshipSnapshotSigned,
+  resolveFriendshipRelation,
+  type FriendshipRelation,
+  type FriendshipSnapshot
+} from './friendshipsApi'
 import { fetchMemberCommunitiesSigned } from './socialApi'
 import { CHAT_MAX_LENGTH, type MentionCandidate } from './chatMentions'
 import { isEvmAddress } from './walletLabel'
@@ -50,13 +57,21 @@ export class SocialService {
   private readonly listeners = new Set<(event: SocialChatEvent) => void>()
   private readonly channelListeners = new Set<() => void>()
   private readonly peerProfiles = new ChatPeerProfiles()
+  private authIdentity: AuthIdentity | null = null
+  private friendshipSnapshot: FriendshipSnapshot | null = null
+  private friendshipRelationByAddress = new Map<string, FriendshipRelation>()
+  private friendshipLoad: Promise<void> | null = null
   private ready = false
   private readonly seenChatKeys = new Map<string, number>()
 
   async init(options: SocialInitOptions): Promise<void> {
     this.comms = options.comms
+    this.authIdentity = options.isGuest ? null : options.identity
     this.localAddress = options.address?.toLowerCase() ?? null
     this.displayName = options.address ? 'You' : 'Guest'
+    this.friendshipSnapshot = null
+    this.friendshipRelationByAddress.clear()
+    this.friendshipLoad = null
     this.sceneTab = options.sceneTab
     this.channel = { kind: 'scene', sceneKey: options.sceneTab.key, label: options.sceneTab.label }
     this.peerProfiles.setPeerUrl(options.contentUrl)
@@ -83,6 +98,7 @@ export class SocialService {
         const msg = err instanceof Error ? err.message : String(err)
         clientDebugLog.log('social', `Member communities failed: ${msg}`, { level: 'warn' })
       }
+      void this.ensureFriendshipSnapshot()
     }
 
     this.ready = true
@@ -206,6 +222,44 @@ export class SocialService {
       })
   }
 
+  async ensureFriendshipSnapshot(): Promise<void> {
+    if (!this.authIdentity || !this.localAddress) return
+    if (this.friendshipSnapshot) return
+    if (this.friendshipLoad) {
+      await this.friendshipLoad
+      return
+    }
+    this.friendshipLoad = fetchFriendshipSnapshotSigned(this.authIdentity, this.localAddress)
+      .then((snapshot) => {
+        this.applyFriendshipSnapshot(snapshot)
+        clientDebugLog.log('social', `Loaded ${snapshot.friends.size} friends`, { level: 'success' })
+      })
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        clientDebugLog.log('social', `Friendships failed: ${msg}`, { level: 'warn' })
+      })
+      .finally(() => {
+        this.friendshipLoad = null
+      })
+    await this.friendshipLoad
+  }
+
+  /** Preload signed friendship data when a remote peer appears in-scene. */
+  onRemotePeerJoined(address: string): void {
+    void this.ensureFriendshipSnapshot()
+    const key = address.toLowerCase()
+    if (this.friendshipRelationByAddress.has(key)) return
+    if (!this.friendshipSnapshot) return
+    this.friendshipRelationByAddress.set(key, resolveFriendshipRelation(key, this.friendshipSnapshot))
+  }
+
+  getFriendshipRelation(address: string): FriendshipRelation {
+    const key = address.toLowerCase()
+    const cached = this.friendshipRelationByAddress.get(key)
+    if (cached) return cached
+    return resolveFriendshipRelation(key, this.friendshipSnapshot)
+  }
+
   getPeerDisplay(address: string | undefined): PeerChatProfile {
     const hit = this.peerProfiles.get(address)
     if (hit) return hit
@@ -256,7 +310,16 @@ export class SocialService {
     this.channelListeners.clear()
     this.messages.clear()
     this.peerProfiles.clear()
+    this.authIdentity = null
+    this.friendshipSnapshot = null
+    this.friendshipRelationByAddress.clear()
+    this.friendshipLoad = null
     this.ready = false
+  }
+
+  private applyFriendshipSnapshot(snapshot: FriendshipSnapshot): void {
+    this.friendshipSnapshot = snapshot
+    this.friendshipRelationByAddress = buildFriendshipRelationMap(snapshot)
   }
 
   static formatLineTime(line: ChatLine): string {

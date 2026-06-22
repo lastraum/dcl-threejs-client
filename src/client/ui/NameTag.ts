@@ -162,13 +162,6 @@ export class NameTag {
       e.stopPropagation()
     }
 
-    this.rootEl.addEventListener('mouseenter', () => {
-      this.rootEl.classList.add('avatar-name-tag--hovered')
-    })
-    this.rootEl.addEventListener('mouseleave', () => {
-      this.rootEl.classList.remove('avatar-name-tag--hovered')
-    })
-
     this.rootEl.addEventListener('contextmenu', (e) => {
       e.preventDefault()
       e.stopPropagation()

@@ -1,6 +1,13 @@
+import type { RemoteAvatarManager } from '../../../network/RemoteAvatarManager'
 import type { SessionIdentity } from '../../../network/SessionIdentity'
 import type { SocialService } from '../../../social/SocialService'
-import { findInteractiveNameTagNear, isClientOverlayTarget } from '../overlayHitTest'
+import { PeerPillHover } from '../PeerPillHover'
+import {
+  findPeerPillAtPointer,
+  isClientOverlayTarget,
+  setPeerContextMenuHandler,
+  setPeerPillHitTestOptions
+} from '../overlayHitTest'
 import { setNameTagContextMenuHandler } from '../NameTag'
 import { UserContextMenu, type UserContextMenuAction } from './UserContextMenu'
 import { UserProfileModal, type UserProfileModalTarget } from './UserProfileModal'
@@ -9,6 +16,8 @@ export type ProfileUiControllerOptions = {
   session: SessionIdentity
   social: SocialService
   getPeerUrl: () => string
+  getRemoteAvatars?: () => RemoteAvatarManager | null
+  getCamera?: () => import('three').Camera | null
   onOpenChat?: () => void
   onPrepareOverlay?: () => void
 }
@@ -17,15 +26,29 @@ export type ProfileUiControllerOptions = {
 export class ProfileUiController {
   private readonly contextMenu: UserContextMenu
   private readonly profileModal: UserProfileModal
+  private readonly pillHover: PeerPillHover
 
   constructor(private readonly options: ProfileUiControllerOptions) {
+    this.pillHover = new PeerPillHover({
+      getRemoteAvatars: () => options.getRemoteAvatars?.() ?? null,
+      getCamera: () => options.getCamera?.() ?? null
+    })
+    this.pillHover.install()
+    setPeerPillHitTestOptions({
+      getRemoteAvatars: () => options.getRemoteAvatars?.() ?? null,
+      getCamera: () => options.getCamera?.() ?? null
+    })
+    setPeerContextMenuHandler((address, clientX, clientY) => this.openContextMenu(address, clientX, clientY))
+
     this.contextMenu = new UserContextMenu({
-      onAction: (action, address) => this.handleContextAction(action, address)
+      onAction: (action, address) => this.handleContextAction(action, address),
+      onHide: () => this.onOverlayDismissed()
     })
     this.profileModal = new UserProfileModal(
       options.session,
       options.social,
-      options.getPeerUrl
+      options.getPeerUrl,
+      () => this.onOverlayDismissed()
     )
     setNameTagContextMenuHandler((address, x, y) => this.openContextMenu(address, x, y))
     document.addEventListener('contextmenu', this.onDocumentContextMenu, true)
@@ -33,7 +56,10 @@ export class ProfileUiController {
 
   dispose(): void {
     document.removeEventListener('contextmenu', this.onDocumentContextMenu, true)
+    setPeerPillHitTestOptions(null)
+    setPeerContextMenuHandler(null)
     setNameTagContextMenuHandler(null)
+    this.pillHover.dispose()
     this.contextMenu.dispose()
     this.profileModal.dispose()
   }
@@ -56,15 +82,24 @@ export class ProfileUiController {
   openContextMenu(address: string, clientX: number, clientY: number): void {
     this.prepareOverlay()
     const key = address.toLowerCase()
-    void this.options.social.ensurePeerProfile(key).then(() => {
-      const peer = this.options.social.getPeerDisplay(key)
-      this.contextMenu.show(key, peer, clientX, clientY)
+    void this.options.social.ensureFriendshipSnapshot().then(() => {
+      void this.options.social.ensurePeerProfile(key).then(() => {
+        const peer = this.options.social.getPeerDisplay(key)
+        const relation = this.options.social.getFriendshipRelation(key)
+        this.contextMenu.show(key, peer, clientX, clientY, relation)
+      })
     })
   }
 
   private prepareOverlay(): void {
+    this.pillHover.setBlocked(true)
     this.options.onPrepareOverlay?.()
     if (document.pointerLockElement) document.exitPointerLock()
+  }
+
+  private onOverlayDismissed(): void {
+    this.pillHover.setBlocked(false)
+    this.pillHover.refresh()
   }
 
   /** Right-click on canvas near a remote pill — Explorer opens profile options from avatar vicinity. */
@@ -72,7 +107,7 @@ export class ProfileUiController {
     if (isClientOverlayTarget(e.target)) return
     const canvas = document.querySelector('#app canvas')
     if (!canvas || e.target !== canvas) return
-    const hit = findInteractiveNameTagNear(e.clientX, e.clientY)
+    const hit = findPeerPillAtPointer(e.clientX, e.clientY)
     if (!hit) return
     e.preventDefault()
     e.stopPropagation()

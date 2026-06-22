@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
 import type { ProjectionView } from './ProjectionView'
 import {
-  applyPrimitivePivotOffset,
+
   buildPrimitiveGeometry,
   primitiveDoubleSided,
   hasAnimatedPlaneUvs,
@@ -989,7 +989,6 @@ export class ThreeBridge {
       primitive.userData.primitiveDoubleSided = doubleSided
       primitive.castShadow = false
       primitive.receiveShadow = true
-      applyPrimitivePivotOffset(primitive, spec)
       primitive.userData.entity = entity
       obj.add(primitive)
       this.notifyMeshComponent(entity, MeshRenderer.componentId)
@@ -1266,7 +1265,6 @@ export class ThreeBridge {
         primitive.userData.primitiveDoubleSided = doubleSided
         primitive.castShadow = false
         primitive.receiveShadow = true
-        applyPrimitivePivotOffset(primitive, spec)
         obj.add(primitive)
         this.notifyMeshComponent(entity, MeshRenderer.componentId)
       }

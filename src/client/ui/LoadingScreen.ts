@@ -30,6 +30,9 @@ export class LoadingScreen {
   private readonly hydrationTimeEl: HTMLElement
   private readonly hydrationLabelEl: HTMLElement
   private readonly hydrationDetailEl: HTMLElement
+  private readonly errorPanelEl: HTMLElement
+  private readonly errorTitleEl: HTMLElement
+  private readonly errorDetailEl: HTMLElement
   private readonly slideA: HTMLElement
   private readonly slideB: HTMLElement
   private readonly dotsEl: HTMLElement
@@ -70,6 +73,10 @@ export class LoadingScreen {
           <span class="loading-screen__hydration-time">0:00</span>
           <span class="loading-screen__hydration-detail">Waiting for scene assets…</span>
         </div>
+        <div class="loading-screen__error" hidden role="alert" aria-live="assertive">
+          <p class="loading-screen__error-title"></p>
+          <p class="loading-screen__error-detail"></p>
+        </div>
         <p class="loading-screen__status" hidden aria-hidden="true">${initialStatus}</p>
       </div>
     `
@@ -80,6 +87,9 @@ export class LoadingScreen {
     this.hydrationTimeEl = this.root.querySelector('.loading-screen__hydration-time')!
     this.hydrationLabelEl = this.root.querySelector('.loading-screen__hydration-label')!
     this.hydrationDetailEl = this.root.querySelector('.loading-screen__hydration-detail')!
+    this.errorPanelEl = this.root.querySelector('.loading-screen__error')!
+    this.errorTitleEl = this.root.querySelector('.loading-screen__error-title')!
+    this.errorDetailEl = this.root.querySelector('.loading-screen__error-detail')!
     this.slideA = this.root.querySelector('[data-slide="a"]')!
     this.slideB = this.root.querySelector('[data-slide="b"]')!
     this.dotsEl = this.root.querySelector('.loading-screen__dots')!
@@ -110,6 +120,28 @@ export class LoadingScreen {
         this.hydrationDetailEl.textContent = text
       }
     }
+  }
+
+  /**
+   * Fatal scene load — keep overlay visible with a clear message (do not call `finish()`).
+   */
+  showFatalError(title: string, detail: string): void {
+    if (this.disposed) return
+    this.root.classList.add('is-error')
+    this.errorTitleEl.textContent = title
+    this.errorDetailEl.textContent = detail
+    this.errorPanelEl.hidden = false
+    this.hydrationTimerEl.hidden = true
+    window.clearInterval(this.slideTimer)
+    this.finishLoadingTimer()
+    this.hydrationLabelEl.textContent = 'Load failed'
+    this.hydrationTimeEl.textContent = ''
+    this.hydrationDetailEl.textContent = detail
+    this.hydrationTimerEl.hidden = false
+    this.hydrationTimerEl.classList.add('is-error')
+    this.targetProgress = 0
+    this.displayedProgress = 0
+    this.updateProgressBar()
   }
 
   setProgress(fraction: number): void {

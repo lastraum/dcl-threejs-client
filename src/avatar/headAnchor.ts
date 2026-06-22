@@ -20,8 +20,8 @@ export function findHeadBone(root: THREE.Object3D): THREE.Bone | null {
   return found
 }
 
-/** Gap above the animated head bone for name tags (Explorer ~0.4 m). */
-export const NAME_TAG_HEAD_OFFSET_Y = 0.42
+/** Gap above the animated head bone for name tags (Explorer ~0.4 m + client lift). */
+export const NAME_TAG_HEAD_OFFSET_Y = 0.62
 
 /** Keep a name-tag anchor above the animated head (local to anchor parent). */
 export function updateNameTagAnchor(

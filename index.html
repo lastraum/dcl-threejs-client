@@ -1736,6 +1736,50 @@
       .loading-screen__hydration-timer.is-timeout .loading-screen__hydration-time {
         color: #ffb347;
       }
+      .loading-screen__hydration-timer.is-error .loading-screen__hydration-label {
+        color: #ff8a8a;
+      }
+      .loading-screen__hydration-timer.is-error .loading-screen__hydration-detail {
+        max-width: 280px;
+        color: rgba(255, 220, 220, 0.92);
+      }
+      .loading-screen__error {
+        position: absolute;
+        left: 50%;
+        bottom: 18%;
+        z-index: 4;
+        transform: translateX(-50%);
+        width: min(92vw, 520px);
+        padding: 20px 22px;
+        border-radius: 14px;
+        background: rgba(24, 8, 12, 0.88);
+        border: 1px solid rgba(255, 120, 120, 0.45);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+        backdrop-filter: blur(10px);
+        text-align: center;
+        pointer-events: none;
+      }
+      .loading-screen__error-title {
+        margin: 0 0 10px;
+        font-size: 20px;
+        font-weight: 700;
+        line-height: 1.25;
+        color: #fff;
+      }
+      .loading-screen__error-detail {
+        margin: 0;
+        font-size: 14px;
+        line-height: 1.5;
+        color: rgba(255, 230, 230, 0.9);
+      }
+      .loading-screen.is-error .loading-screen__featured {
+        opacity: 0.35;
+        filter: grayscale(0.35);
+      }
+      .loading-screen.is-error .loading-screen__progress-fill {
+        background: linear-gradient(90deg, #ff6b6b, #c92a2a);
+        width: 0 !important;
+      }
       .loading-screen.is-hiding {
         opacity: 0;
         pointer-events: none;

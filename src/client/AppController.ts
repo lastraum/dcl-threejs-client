@@ -28,6 +28,7 @@ import { InputAction } from '../input/pointerConstants'
 import { MobileGameHud } from './ui/MobileGameHud'
 import { disposeSessionAssetCache, getSessionAssetCache, prefetchSceneManifestGlbs } from '../rendering/AssetCache'
 import { DEFAULT_TIMEOUT_MS, FAST_TIMEOUT_MS, type SceneHydrationStats } from '../rendering/sceneHydration'
+import { formatSceneLoadError } from './formatSceneLoadError'
 
 /** Owns world lifecycle — splash → load → play, navigation, and sign-out. */
 export class AppController {
@@ -71,9 +72,9 @@ export class AppController {
       await loading.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      loading.setStatus(msg, true)
+      const ui = formatSceneLoadError(msg)
+      loading.showFatalError(ui.title, ui.detail)
       clientDebugLog.log('client', `Failed to load scene: ${msg}`, { level: 'error' })
-      await loading.finish(Promise.resolve())
     }
   }
 
@@ -107,9 +108,9 @@ export class AppController {
       await loading.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      loading.setStatus(msg, true)
+      const ui = formatSceneLoadError(msg)
+      loading.showFatalError(ui.title, ui.detail)
       clientDebugLog.log('client', `Teleport failed: ${msg}`, { level: 'error' })
-      await loading.finish(Promise.resolve())
     } finally {
       this.navigating = false
     }

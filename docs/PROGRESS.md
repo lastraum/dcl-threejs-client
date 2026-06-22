@@ -2,9 +2,133 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-06-22 (Audio ECS ✅ · Preferences Sounds volume sliders ✅ · Lighting ✅)  
-> **Current phase:** **Phase 4 closed** — EntityStore + **AvatarAttach Tier B** + **TriggerArea Tier A** + **VideoPlayer** shipped. **Media:** AudioSource + AudioStream done. Next: voice UI, mic routing.
-> **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Tasks:** [TASKS.yaml](./TASKS.yaml)
+> **Last updated:** 2026-06-22 (dev-latest rollup — media/render ✅ · environments ✅ · boot perf ✅ · social UI ✅ · DCM chat images ✅ · sky dome fix ✅)  
+> **Current phase:** **Phase 5 social polish** — scene media (audio/video/billboards/particles) + Genesis environments shipped; boot/hydration hardened; profile & settings shell restored. **Next:** voice/mic UI, in-scene ECS UI, Raycast scene callbacks polish.
+> **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
+
+---
+
+## 🎉 Milestone — dev-latest rollup (2026-06-22)
+
+**Status: shipped on `dev-latest`** (`43aad5c`) — consolidates the June 22 `lastraum` → `dev-latest` merge batch. Dev panel **Shipped** + **Full status** tabs load this file from `dev-latest` at runtime.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Media ECS** | 🟢 | **AudioSource** + **AudioStream** + **VideoPlayer** production paths; **Billboard** + **Animator** + **ParticleSystem** GPU sprites |
+| **Preferences → Sounds** | 🟢 | Master, UI SFX, voice/streams, in-world, avatar-emote volume sliders wired (`58893b1`) |
+| **Genesis sky** | 🟢 | Camera-centered dome rays + correct far-plane depth — fixes pinwheel clouds + gray-sky regression (`43aad5c`) |
+| **Low-end perf** | 🟢 | Client tier detection → relaxed scene-worker abort/interval + adaptive backoff (`43aad5c`) |
+| **DCM chat images** | 🟢 | Drag-drop, auto-resize \< 1 MiB, animated GIF, inline chat display (`e19a32e`) |
+| **Environments** | 🟢 | Landscape parcels, **FFT ocean**, Perlin scatter foliage, outdoor lighting (`50c6021`) |
+| **Boot / hydration** | 🟢 | `main.crdt` seed, unified GLB pipeline, composite preload, fast onStart CRDT path, warm-scene load restore |
+| **Profile & pills** | 🟢 | User/remote pill hover, badges row, right-click profile menu, shared profile modal |
+| **Settings shell** | 🟢 | Events calendar, Places, Gallery restored; location pill (replaces minimap); fatal load errors |
+| **Scene stability** | 🟢 | React-heavy deploy engine capture; emote camera orbit while scene-locked |
+
+**Merged:** `lastraum` → `dev-latest` (2026-06-22, tip `43aad5c`)
+
+---
+
+## 🎉 Milestone — DCM v1 chat images (2026-06-22)
+
+**Status: shipped** — inline images in scene chat (separate wire from 140-char text chat).
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Protocol** | 🟢 | `dcl.chat.media` over RFC4 `Packet.scene`, chunked ~12 KiB for LiveKit |
+| **Prepare** | 🟢 | Static → WebP/JPEG; animated GIF preserved; oversized GIF downscale via `ImageDecoder` + `gifenc` |
+| **UI** | 🟢 | Chat panel drag-drop; image lines render inline in chat box |
+| **Size cap** | 🟢 | Auto-resize to \< 1 MiB before send |
+
+**Files:** `dcmChatMedia.ts`, `prepareChatImage.ts`, `Rfc4Router.ts`, `CommsService.ts`, `LiveKitCommsSession.ts`, `SocialService.ts`, `ChatPanel.ts`
+
+**Merged:** `e19a32e` → `dev-latest`
+
+---
+
+## 🎉 Milestone — Environments: landscapes, FFT ocean, Perlin scatter (2026-06-22)
+
+**Status: shipped** — Genesis / island outdoor stack beyond the procedural skydome.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Landscape parcels** | 🟢 | `LandscapeSystem` + terrain model; parcel grid padding |
+| **FFT ocean** | 🟢 | `FftOceanWater`, island/open ocean rings, perf stats hook |
+| **Perlin scatter** | 🟢 | `EzTreeGrassField` + foliage wind on supported scenes |
+| **Outdoor lighting** | 🟢 | Sun/moon/hemi hybrid with ECS light budget dimming |
+| **Walk bounds** | 🟢 | Island circular bounds + scene footprint view distance |
+
+**Files:** `LandscapeSystem.ts`, `FftOceanWater.ts`, `OpenOceanWater.ts`, `IslandWater.ts`, `OceanRing.ts`, `resolveLandscapeEnvironment.ts`, `World.ts`
+
+**Merged:** `50c6021` → `dev-latest`
+
+---
+
+## 🎉 Milestone — Boot & hydration performance (2026-06-22)
+
+**Status: shipped** — cold Genesis loads and warm revisits after unified GLB pipeline.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **main.crdt seed** | 🟢 | Renderer snapshot before worker eval — fixes 0/0 GLTF hydration stalls |
+| **Unified GLB pipeline** | 🟢 | Bytes-only prefetch, parse pool, budgeted attach on main thread |
+| **Worker boot** | 🟢 | Main-thread script fetch; eval CRDT deadlock fix; composite preload after eval |
+| **onStart CRDT** | 🟢 | Fast path during scene `onStart`; hydration unblocked after bundle eval |
+| **Warm scenes** | 🟢 | Restored load times after unified pipeline (`cbdca8d`) |
+
+**Files:** `SceneScriptSystem.ts`, `AssetCache.ts`, `glbFetchPool.ts`, `sceneWorker.ts`, `ThreeBridge.ts`, `World.ts`
+
+---
+
+## 🎉 Milestone — Render bridges: Billboard, Animator, ParticleSystem (2026-06-22)
+
+**Status: shipped** — Phase 1b/6 sprite and animation paths used by Genesis Plaza and deploy scenes.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Billboard** (1090) | 🟢 | `BillboardBridge` — live ECS scan + post-tween reconcile |
+| **Animator** (1042) | 🟢 | `AnimatorBridge` — GLTF clip states |
+| **ParticleSystem** (1217) | 🟢 | `ParticleSystemBridge` — GPU-instanced billboard sprites, DCL gravity/blend |
+| **VideoPlayer** (1043) | 🟢 | See milestone below — RickRoll + scene screens |
+| **TextShape** (1030) | 🟢 | Canvas texture planes |
+
+**Files:** `BillboardBridge.ts`, `AnimatorBridge.ts`, `ParticleSystemBridge.ts`, `bridge/particles/*`, `SceneScriptSystem.ts`
+
+---
+
+## 🎉 Milestone — Profile, settings shell & social UI (2026-06-22)
+
+**Status: shipped** — Explorer-style chrome restored and extended.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Location pill** | 🟢 | Top-left scene name + parcel coords (replaces minimap) |
+| **Profile pills** | 🟢 | Hover state, badges row, right-click → profile menu |
+| **User pill menu** | 🟢 | Shared profile modal; overlay visibility fixes |
+| **Settings → Events** | 🟢 | DCL Events API weekly/calendar — full-height layout |
+| **Settings → Places** | 🟢 | Explore tab + CORS proxy; category filters |
+| **Settings → Gallery** | 🟢 | Camera Reel month grid |
+| **Name tags** | 🟢 | Raised offset; hidden on nameless `AvatarShape`; emote chat filter |
+| **Load errors** | 🟢 | Fatal scene load surfaced in UI |
+
+**Files:** `ClientShell.ts`, `LocationCard.ts`, `ProfileModal.ts`, `EventsView.ts`, `PlacesView.ts`, `GalleryView.ts`, `NameTagRenderer.ts`, `formatSceneLoadError.ts`
+
+---
+
+## 🎉 Milestone — Low-end perf + Genesis sky dome fix (2026-06-22)
+
+**Status: shipped** — Windows 10 / weak Chrome no longer spam-abort `onUpdate` or show broken skies.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Performance tier** | 🟢 | `detectPerformanceTier()` — CPU/RAM/GPU heuristic + `?perf=low` override |
+| **Scene worker** | 🟢 | Low/medium play-ready abort + interval; adaptive backoff; single-flight `onUpdate` |
+| **Render defaults** | 🟢 | Low tier → quality Low + pixel ratio cap |
+| **Sky dome** | 🟢 | Model-space view rays + `clipPos.xyww` far plane; full camera follow |
+
+**Files:** `detectPerformanceTier.ts`, `sceneWorker.ts`, `DclGenesisSky.ts`, `EnvironmentSystem.ts`, `World.ts`
+
+**Merged:** `43aad5c` → `dev-latest`
 
 ---
 

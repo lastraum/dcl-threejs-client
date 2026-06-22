@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-06-22
+> **Last updated:** 2026-06-22 (dev-latest rollup — see PROGRESS.md milestones)
 
 ---
 
@@ -27,10 +27,11 @@
 
 | Area | Tracked | 🟢 Done | 🟡 Partial | ⬜ Not started |
 | ---- | ------- | ------- | ---------- | -------------- |
-| ECS components | 65 | ~29 | ~5 | ~31 |
-| Client UI | 18 | 13 | 0 | 5 |
-| Networking | 16 | 13 | 2 | 1 |
-| Performance | 15 | 12 | 2 | 1 |
+| ECS components | 65 | ~32 | ~3 | ~30 |
+| Client UI | 22 | 16 | 4 | 2 |
+| Networking | 17 | 14 | 2 | 1 |
+| Performance | 18 | 15 | 2 | 1 |
+| Environment | 4 | 4 | 0 | 0 |
 | ~system modules | 9 | 5 | 2 | 2 |
 
 *Exact counts: dev panel or `integrationRegistry.ts`.*
@@ -67,7 +68,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | PointerEvents | 1062 | 🟢 | Raycast + hover hints + CRDT |
 | PointerEventsResult | 1063 | 🔵 | Grow-only to worker |
 | PrimaryPointerInfo | 1209 | 🔵 | Cursor ray on RootEntity |
-| Raycast | 1067 | ⬜ | Scene → engine ray |
+| Raycast | 1067 | 🟢 | `RaycastSystem` + grow-only `RaycastResult` |
 | TriggerArea | 1060 | 🟢 | Volume enter/exit — `TriggerAreaSystem` + grow-only `TriggerAreaResult` |
 
 ### Media & motion (Phase 3)
@@ -101,7 +102,8 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | NetworkEntity / NetworkParent | — | 🟡 | Projection decode + parent strip |
 | SkyboxTime | 1210 | 🟢 | Day/night + fixed time |
 | UiTransform … UiDropdown | 1050+ | ⬜ | In-scene UI (HUD is separate) |
-| ParticleSystem / NftShape | 1217/1040 | ⬜ | |
+| ParticleSystem | 1217 | 🟢 | `ParticleSystemBridge` — GPU billboard sprites |
+| NftShape | 1040 | ⬜ | |
 
 ### ~system modules (worker shim)
 
@@ -125,12 +127,14 @@ DOM overlay — not in-scene `UiTransform`.
 | Feature | Status |
 | ------- | ------ |
 | Splash / login, loading + hydration timer | 🟢 |
-| Sidebar, chat, emote wheel, minimap, world card | 🟢 |
+| Sidebar, chat (+ DCM v1 inline images), emote wheel, location pill | 🟢 |
 | Debug panel, dev progress panel (`</>`) | 🟢 |
-| Settings overlay: Events, Map, Backpack | 🟢 |
+| Settings overlay: Events, Map, Backpack, Places, Gallery | 🟢 |
+| Profile pills + right-click profile menu | 🟢 |
 | Preferences panel (P / ⚙): Graphics lighting sliders | 🟢 |
-| Preferences: Sounds, Controls, Chat tabs | 🟡 stub |
-| Settings: Places, Communities, Gallery | ⬜ |
+| Preferences → Sounds volume sliders | 🟢 |
+| Preferences: Controls, Chat tabs | 🟡 stub |
+| Settings: Communities | ⬜ |
 | In-scene ECS UI, voice/mic UI | ⬜ |
 
 ---
@@ -139,7 +143,7 @@ DOM overlay — not in-scene `UiTransform`.
 
 | Feature | Status |
 | ------- | ------ |
-| RFC4 movement, profile, emote, scene chat | 🟢 |
+| RFC4 movement, profile, emote, scene chat + DCM chat media | 🟢 |
 | LiveKit scene/world/island rooms | 🟢 |
 | Remote avatars + load queue | 🟢 |
 | SignedFetch, Catalyst content, wallet session | 🟢 |
@@ -156,13 +160,16 @@ DOM overlay — not in-scene `UiTransform`.
 | EntityStore (Phase 4) | 🟢 |
 | **AvatarAttach Tier B** | **🟢** |
 | PointerEvents cache, LightManager culling | 🟢 |
-| Genesis sky + cloud lighting (HDR tint) | 🟢 |
+| Genesis sky + cloud lighting (camera-centered dome) | 🟢 |
+| Low-end scene worker timing + adaptive abort backoff | 🟢 |
+| Boot/hydration: main.crdt seed, composite preload, unified GLB | 🟢 |
+| Landscapes, FFT ocean, Perlin scatter foliage | 🟢 |
 | Scene GLTF emissive LEDs (neon mats) | 🟡 partial |
 | User sun/moon lighting + exposure sliders | 🟢 |
 | GLTF hydration budgets, GLB parse pool, AssetCache IDB | 🟢 |
 | PhysX lazy load, collider prewarm, Hyperfy grouped GLTF actors | 🟢 |
 | GLTF InstancedMesh | ⬜ |
-| Shadow pass tuning, full-resync interval | 🟡 partial |
+| Shadow pass tuning | 🟡 partial |
 
 ---
 

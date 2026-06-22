@@ -49,7 +49,8 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   { id: 'ui:splash-login', name: 'Splash / login', status: 'render', category: 'client-ui', notes: 'Catalyst + wallet session' },
   { id: 'ui:loading-screen', name: 'Loading screen + hydration timer', status: 'render', category: 'client-ui', notes: 'Count-up elapsed, attach stall timeout' },
   { id: 'ui:sidebar-shell', name: 'Sidebar shell + responsive layout', status: 'render', category: 'client-ui', notes: 'ClientUiLayout CSS tokens' },
-  { id: 'ui:chat-panel', name: 'Scene chat panel', status: 'render', category: 'client-ui', notes: 'LiveKit RFC4, unread badge, nav links → teleport' },
+  { id: 'ui:chat-panel', name: 'Scene chat panel', status: 'render', category: 'client-ui', notes: 'LiveKit RFC4, unread badge, nav links → teleport, DCM v1 inline images' },
+  { id: 'ui:profile-pill', name: 'Profile / name pills + menu', status: 'render', category: 'client-ui', notes: 'Hover, badges row, right-click profile modal' },
   { id: 'ui:emote-wheel', name: 'Emote wheel (B)', status: 'render', category: 'client-ui', notes: 'Profile + bundled emotes' },
   { id: 'ui:location-card', name: 'Location card', status: 'render', category: 'client-ui', notes: 'Top-left pill — scene name + Genesis parcel coords (all scenes)' },
   { id: 'ui:debug-panel', name: 'Debug panel (Help)', status: 'render', category: 'client-ui', notes: 'Position HUD, collider toggles, render quality' },
@@ -59,12 +60,12 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   { id: 'ui:settings-backpack', name: 'Settings → Backpack (I)', status: 'render', category: 'client-ui', notes: 'Avatar preview, equipped wearables' },
   { id: 'ui:preferences-panel', name: 'Preferences panel (P / ⚙)', status: 'render', category: 'client-ui', notes: 'Right rail; world input passes through' },
   { id: 'ui:preferences-graphics', name: 'Preferences → Graphics', status: 'partial', category: 'client-ui', notes: 'Sun/moon light + exposure sliders live; MSAA/bloom stubs' },
-  { id: 'ui:preferences-sounds', name: 'Preferences → Sounds', status: 'partial', category: 'client-ui', notes: 'Volume sliders live (master, UI SFX, voice/streams, in-world, emotes); mic picker + mute-in-background pending voice UI' },
+  { id: 'ui:preferences-sounds', name: 'Preferences → Sounds', status: 'render', category: 'client-ui', notes: 'Volume sliders live (master, UI SFX, voice/streams, in-world, emotes); mic picker + mute-in-background pending voice UI' },
   { id: 'ui:preferences-controls', name: 'Preferences → Controls', status: 'none', category: 'client-ui', notes: 'Coming soon placeholder' },
   { id: 'ui:preferences-chat', name: 'Preferences → Chat', status: 'none', category: 'client-ui', notes: 'Coming soon placeholder' },
-  { id: 'ui:settings-places', name: 'Settings → Places', status: 'partial', category: 'client-ui', notes: 'Explore tab — Places + Worlds APIs, category filters, Jump In' },
+  { id: 'ui:settings-places', name: 'Settings → Places', status: 'render', category: 'client-ui', notes: 'Explore tab — Places + Worlds APIs, category filters, Jump In' },
   { id: 'ui:settings-communities', name: 'Settings → Communities', status: 'none', category: 'client-ui', notes: 'Placeholder tab' },
-  { id: 'ui:settings-gallery', name: 'Settings → Gallery', status: 'partial', category: 'client-ui', notes: 'Camera Reel API, month grid, Share on X → reels.decentraland.org' },
+  { id: 'ui:settings-gallery', name: 'Settings → Gallery', status: 'render', category: 'client-ui', notes: 'Camera Reel API, month grid, Share on X → reels.decentraland.org' },
   { id: 'ui:ecs-scene-ui', name: 'In-scene ECS UI (UiTransform…)', status: 'none', category: 'client-ui', notes: 'React/canvas scene UI — separate from HUD' },
   { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'none', category: 'client-ui', notes: 'LiveKit audio tracks not exposed in HUD yet' }
 ]
@@ -74,7 +75,8 @@ export const NETWORKING_INTEGRATION: IntegrationEntry[] = [
   { id: 'net:rfc4-movement', name: 'RFC4 movement (in/out)', status: 'render', category: 'networking', notes: 'Movement + MovementCompressed, Bevy/Unity wire parity' },
   { id: 'net:rfc4-profile', name: 'RFC4 profile request/response', status: 'render', category: 'networking' },
   { id: 'net:rfc4-emote', name: 'RFC4 PlayerEmote + DLE chat fallback', status: 'render', category: 'networking', notes: 'Unity emotes via DLE chat text parsed inbound' },
-  { id: 'net:rfc4-chat', name: 'RFC4 scene chat (LiveKit)', status: 'render', category: 'networking', notes: 'encodeRfc4ChatPacket companion path' },
+  { id: 'net:rfc4-chat', name: 'RFC4 scene chat (LiveKit)', status: 'render', category: 'networking', notes: 'Text chat + DCM v1 inline images (dcl.chat.media)' },
+  { id: 'net:dcm-chat-media', name: 'DCM v1 chat images', status: 'render', category: 'networking', notes: 'Chunked scene packets, drag-drop, GIF/WebP/JPEG < 1 MiB' },
   { id: 'net:livekit-scene', name: 'LiveKit scene room', status: 'render', category: 'networking' },
   { id: 'net:livekit-world', name: 'LiveKit world room', status: 'render', category: 'networking' },
   { id: 'net:livekit-island', name: 'LiveKit island / archipelago', status: 'render', category: 'networking' },
@@ -95,7 +97,9 @@ export const PERFORMANCE_INTEGRATION: IntegrationEntry[] = [
   { id: 'perf:entity-store-p4', name: 'EntityStore (Phase 4)', status: 'render', category: 'performance', notes: 'Scene graph + remote avatars in store; mesh attach in ThreeBridge' },
   { id: 'perf:pointer-cache', name: 'PointerEvents cache + throttled raycast', status: 'render', category: 'performance', notes: 'Genesis ~70–110 fps fix' },
   { id: 'perf:light-culling', name: 'LightManager culling + tiers', status: 'render', category: 'performance', notes: '40 m cull, 4/6/10 caps' },
-  { id: 'perf:genesis-clouds', name: 'Genesis skybox cloud lighting', status: 'render', category: 'performance', notes: 'HDR tint + screen blend, white midday puffs' },
+  { id: 'perf:genesis-clouds', name: 'Genesis skybox cloud lighting', status: 'render', category: 'performance', notes: 'Camera-centered dome rays + HDR cloud tint; low-tier worker timing' },
+  { id: 'perf:low-end-scene-worker', name: 'Low-end scene worker timing', status: 'render', category: 'performance', notes: 'Tier detection, adaptive abort backoff, single-flight onUpdate' },
+  { id: 'perf:boot-hydration', name: 'Boot + hydration pipeline', status: 'render', category: 'performance', notes: 'main.crdt seed, composite preload, unified GLB bytes/parse pool' },
   { id: 'perf:scene-emissives', name: 'Scene GLTF emissive LEDs', status: 'partial', category: 'performance', notes: 'DCL color×intensity; LightLED parity decent' },
   { id: 'perf:user-lighting', name: 'User sun/moon + exposure sliders', status: 'render', category: 'performance', notes: 'SunEnvironmentSettings localStorage' },
   { id: 'perf:gltf-hydration-budget', name: 'GLTF hydration budgets', status: 'render', category: 'performance' },
@@ -109,6 +113,14 @@ export const PERFORMANCE_INTEGRATION: IntegrationEntry[] = [
   { id: 'perf:shadow-pass', name: 'Shadow pass tuning', status: 'partial', category: 'performance', notes: 'e10 deferred' },
   { id: 'perf:full-resync-interval', name: 'Periodic ThreeBridge full resync', status: 'render', category: 'performance', notes: 'Removed — diff + EntityStore onChange only' },
   { id: 'perf:avatar-attach', name: 'AvatarAttach (Tier B parity)', status: 'render', category: 'performance', notes: 'Bone sampling + worker Transform batch; attach wins over Tween' }
+]
+
+/** Outdoor / world shell — landscapes, ocean, scatter (not ECS SkyboxTime). */
+export const ENVIRONMENT_INTEGRATION: IntegrationEntry[] = [
+  { id: 'env:genesis-sky', name: 'GenesisSky procedural dome', status: 'render', category: 'environment', notes: 'DclGenesisSky shader + cross cubemap clouds' },
+  { id: 'env:landscape-parcels', name: 'Landscape parcel tiles', status: 'render', category: 'environment', notes: 'LandscapeSystem + TerrainModel' },
+  { id: 'env:fft-ocean', name: 'FFT ocean water', status: 'render', category: 'environment', notes: 'FftOceanWater, island/open ocean rings' },
+  { id: 'env:perlin-scatter', name: 'Perlin scatter foliage', status: 'render', category: 'environment', notes: 'EzTreeGrassField + foliage wind' }
 ]
 
 /** Scene worker ~system/* stubs — not ECS components. */
@@ -148,6 +160,12 @@ export const INTEGRATION_CATEGORIES: IntegrationCategory[] = [
     title: 'Performance & rendering',
     description: 'Load, culling, re-arch pipeline, physics cook.',
     entries: PERFORMANCE_INTEGRATION
+  },
+  {
+    id: 'environment',
+    title: 'World environment',
+    description: 'Landscapes, ocean, procedural sky — outside scene ECS bundles.',
+    entries: ENVIRONMENT_INTEGRATION
   },
   {
     id: 'system-modules',

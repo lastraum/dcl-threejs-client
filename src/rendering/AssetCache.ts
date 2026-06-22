@@ -50,7 +50,7 @@ export function disposeSessionAssetCache(): void {
   disposeGlbParsePool()
 }
 
-/** Start byte fetches for every `.glb` in the scene manifest — safe to call multiple times. */
+/** Start byte-only fetches for every `.glb` in the scene manifest — safe to call multiple times. */
 export function prefetchSceneManifestGlbs(cache: AssetCache, scene: ResolvedScene): void {
   const urls: Array<{ url: string; hash: string }> = []
   const seen = new Set<string>()
@@ -70,6 +70,8 @@ export class AssetCache {
   private textureLoader: THREE.TextureLoader
   private cache = new Map<string, CachedGltf>()
   private inflight = new Map<string, Promise<CachedGltf>>()
+  /** Raw byte prefetch (network/IDB only) — parse deferred until attach/clone. */
+  private bytesInflight = new Map<string, Promise<ArrayBuffer>>()
   private textures = new Map<string, THREE.Texture>()
   private textureInflight = new Map<string, Promise<THREE.Texture>>()
   private warnedFailed = new Set<string>()
@@ -110,6 +112,7 @@ export class AssetCache {
     }
     this.cache.clear()
     this.inflight.clear()
+    this.bytesInflight.clear()
 
     for (const texture of this.textures.values()) {
       texture.dispose()
@@ -121,7 +124,7 @@ export class AssetCache {
 
   getLoadStats(): AssetLoadStats {
     return {
-      gltfInflight: this.inflight.size,
+      gltfInflight: this.inflight.size + this.bytesInflight.size,
       gltfCached: this.cache.size,
       textureInflight: this.textureInflight.size,
       textureCached: this.textures.size
@@ -136,30 +139,48 @@ export class AssetCache {
     return this.givenUp.has(key)
   }
 
-  /** Start a background fetch if this hash is not cached or already downloading. */
+  /** Start a background byte fetch if this hash is not cached or already downloading. */
   ensureLoading(url: string, hash?: string): void {
-    const key = normalizeGlbCacheKey(hash ?? url)
-    if (this.cache.has(key) || this.inflight.has(key) || this.givenUp.has(key)) return
-    const retryAt = this.failedUntil.get(key) ?? 0
-    if (performance.now() < retryAt) return
-    void this.load(url, hash, { quiet: true }).catch(() => {})
+    this.prefetchBytes(url, hash)
   }
 
   hasPendingLoads(): boolean {
-    return this.inflight.size > 0 || this.textureInflight.size > 0
+    return this.inflight.size > 0 || this.bytesInflight.size > 0 || this.textureInflight.size > 0
   }
 
   async preload(urls: Array<{ url: string; hash?: string }>): Promise<void> {
     await Promise.all(urls.map(({ url, hash }) => this.load(url, hash)))
   }
 
-  /** Fire off network requests for all hashes without waiting. Does not block. */
+  /** Fire off network/IDB byte fetches for all hashes without parsing. Does not block. */
   prefetchAll(urls: Array<{ url: string; hash?: string }>): void {
     for (const { url, hash } of urls) {
-      const key = normalizeGlbCacheKey(hash ?? url)
-      if (this.cache.has(key) || this.inflight.has(key)) continue
-      void this.load(url, hash).catch(() => {})
+      this.prefetchBytes(url, hash)
     }
+  }
+
+  /** Download GLB bytes only — keeps main thread free for hydration attach + PhysX. */
+  prefetchBytes(url: string, hash?: string): void {
+    const key = normalizeGlbCacheKey(hash ?? url)
+    if (
+      this.cache.has(key) ||
+      this.inflight.has(key) ||
+      this.bytesInflight.has(key) ||
+      this.givenUp.has(key)
+    ) {
+      return
+    }
+    const retryAt = this.failedUntil.get(key) ?? 0
+    if (performance.now() < retryAt) return
+
+    const task = fetchGlbBytesOffThread(url, key)
+      .then((buffer) => buffer.slice(0))
+      .finally(() => {
+        this.bytesInflight.delete(key)
+      })
+
+    this.bytesInflight.set(key, task)
+    void task.catch(() => {})
   }
 
   async preloadTextures(urls: string[]): Promise<void> {
@@ -285,23 +306,7 @@ export class AssetCache {
   }
 
   private async fetchAndParseGltf(url: string, cacheKey: string, quiet?: boolean) {
-    let buffer = await readGlbBytes(cacheKey)
-    if (buffer) {
-      const prepared = prepareGlbBytes(buffer)
-      if (prepared) {
-        buffer = prepared
-      } else {
-        if (!quiet) {
-          console.warn('[AssetCache] invalid GLB in IndexedDB — re-fetching', cacheKey.slice(0, 16))
-        }
-        void deleteGlbBytes(cacheKey)
-        buffer = null
-      }
-    }
-
-    if (!buffer) {
-      buffer = await fetchGlbBytesOffThread(url, cacheKey)
-    }
+    let buffer = await this.resolveGlbBytes(url, cacheKey, quiet)
 
     const resourcePath = this.gltfResourcePath(url)
     if (isGlbOffThreadParseEnabled()) {
@@ -313,6 +318,30 @@ export class AssetCache {
       }
     }
     return this.loader.parseAsync(buffer, resourcePath)
+  }
+
+  private async resolveGlbBytes(url: string, cacheKey: string, quiet?: boolean): Promise<ArrayBuffer> {
+    let buffer = await readGlbBytes(cacheKey)
+    if (buffer) {
+      const prepared = prepareGlbBytes(buffer)
+      if (prepared) return prepared
+      if (!quiet) {
+        console.warn('[AssetCache] invalid GLB in IndexedDB — re-fetching', cacheKey.slice(0, 16))
+      }
+      void deleteGlbBytes(cacheKey)
+      buffer = null
+    }
+
+    const bytesPending = this.bytesInflight.get(cacheKey)
+    if (bytesPending) {
+      try {
+        return await bytesPending
+      } catch {
+        /* fall through to direct fetch */
+      }
+    }
+
+    return fetchGlbBytesOffThread(url, cacheKey)
   }
 
   async loadTexture(url: string): Promise<THREE.Texture> {

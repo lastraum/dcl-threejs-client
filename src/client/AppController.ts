@@ -189,6 +189,23 @@ export class AppController {
             segment: `${px},${py}`
           })
         },
+        onEventJumpIn: (target) => {
+          this.settingsOverlay?.hide()
+          void this.navigateTo(target)
+        },
+        onPlaceJumpIn: (target) => {
+          this.settingsOverlay?.hide()
+          void this.navigateTo(target)
+        },
+        getDefaultEventCoords: () => {
+          const state = this.getMapPlayerState()
+          if (!state?.parcelKey) return null
+          const parts = state.parcelKey.split(',').map((n) => Number(n.trim()))
+          if (parts.length !== 2 || !parts.every(Number.isFinite)) return null
+          return { x: parts[0]!, y: parts[1]! }
+        },
+        isWorldScene: sceneConfig.source.kind === 'world',
+        worldName: sceneConfig.source.kind === 'world' ? sceneConfig.source.worldName : null,
         onOpen: () => {
           if (document.pointerLockElement) document.exitPointerLock()
           this.preferencesPanel?.hide()
@@ -198,6 +215,10 @@ export class AppController {
       })
     } else {
       this.settingsOverlay.updateSession(world.session)
+      this.settingsOverlay.updateEventContext(
+        sceneConfig.source.kind === 'world',
+        sceneConfig.source.kind === 'world' ? sceneConfig.source.worldName : null
+      )
       this.settingsOverlay.updateMapPlayerState(() => this.getMapPlayerState())
       this.settingsOverlay.updateMapJumpIn((px, py) => {
         this.settingsOverlay?.hide()
@@ -208,6 +229,7 @@ export class AppController {
           segment: `${px},${py}`
         })
       })
+
     }
 
     if (!this.preferencesPanel) {

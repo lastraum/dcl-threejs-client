@@ -62,9 +62,9 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   { id: 'ui:preferences-sounds', name: 'Preferences → Sounds', status: 'partial', category: 'client-ui', notes: 'Volume sliders + mic picker; master + in-world live; voice/UI/emotes pending' },
   { id: 'ui:preferences-controls', name: 'Preferences → Controls', status: 'none', category: 'client-ui', notes: 'Coming soon placeholder' },
   { id: 'ui:preferences-chat', name: 'Preferences → Chat', status: 'none', category: 'client-ui', notes: 'Coming soon placeholder' },
-  { id: 'ui:settings-places', name: 'Settings → Places', status: 'none', category: 'client-ui', notes: 'Placeholder tab' },
+  { id: 'ui:settings-places', name: 'Settings → Places', status: 'partial', category: 'client-ui', notes: 'Explore tab — Places + Worlds APIs, category filters, Jump In' },
   { id: 'ui:settings-communities', name: 'Settings → Communities', status: 'none', category: 'client-ui', notes: 'Placeholder tab' },
-  { id: 'ui:settings-gallery', name: 'Settings → Gallery', status: 'none', category: 'client-ui', notes: 'Placeholder tab' },
+  { id: 'ui:settings-gallery', name: 'Settings → Gallery', status: 'partial', category: 'client-ui', notes: 'Camera Reel API, month grid, Share on X → reels.decentraland.org' },
   { id: 'ui:ecs-scene-ui', name: 'In-scene ECS UI (UiTransform…)', status: 'none', category: 'client-ui', notes: 'React/canvas scene UI — separate from HUD' },
   { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'none', category: 'client-ui', notes: 'LiveKit audio tracks not exposed in HUD yet' }
 ]

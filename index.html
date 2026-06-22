@@ -5916,6 +5916,30 @@
         white-space: pre-wrap;
         word-break: break-word;
       }
+      .chat-panel__media {
+        margin-top: 2px;
+      }
+      .chat-panel__image {
+        display: block;
+        max-width: min(280px, 100%);
+        max-height: 220px;
+        width: auto;
+        height: auto;
+        border-radius: 8px;
+        object-fit: contain;
+        background: rgba(0, 0, 0, 0.2);
+      }
+      .chat-panel__bubble.is-image {
+        padding: 6px 8px;
+      }
+      .chat-panel__composer--drop {
+        outline: 2px dashed rgba(120, 200, 255, 0.75);
+        outline-offset: -4px;
+        background: rgba(80, 140, 220, 0.12);
+      }
+      .chat-panel__composer--sending {
+        opacity: 0.75;
+      }
       .chat-panel__link {
         color: #4da6ff;
         text-decoration: underline;

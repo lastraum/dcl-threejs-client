@@ -33,6 +33,7 @@ import { RemoteAvatarManager } from '../network/RemoteAvatarManager'
 import { CommsService } from '../network/CommsService'
 import { buildEmoteWheelSlots, resolveSceneEmoteFromSrc } from '../avatar/profileEmotes'
 import { SocialService } from '../social/SocialService'
+import { isChatTextLine } from '../social/types'
 import { overheadChatText } from '../social/overheadChatText'
 import { fetchProfileFaceUrl, seedCommsPeerProfile } from '../avatar/peerApi'
 import type { LoginResult } from '../auth/AuthClient'
@@ -1486,6 +1487,7 @@ export class World {
       if (!event.channelKey.startsWith('scene:')) return
       const address = event.line.senderAddress?.toLowerCase()
       if (!address) return
+      if (!isChatTextLine(event.line)) return
       const text = overheadChatText(event.line.text)
       if (!text) return
       this.showAvatarOverheadChat(address, text)

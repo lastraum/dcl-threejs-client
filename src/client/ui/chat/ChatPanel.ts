@@ -14,7 +14,8 @@ import type { RouteTarget } from '../../../dcl/content/route'
 import { parseGotoCommand } from '../../../dcl/content/route'
 import { SCENE_CHAT_RAIL_ICON } from '../shell/icons'
 import { pickCommunityThumbnailUrl } from '../../../social/memberCommunities'
-import type { ChatChannelChoice, ChatLine } from '../../../social/types'
+import { isAllowedChatImageFile } from '../../../social/prepareChatImage'
+import { isChatImageLine, type ChatChannelChoice, type ChatLine } from '../../../social/types'
 
 export type ChatPanelOptions = {
   social: SocialService
@@ -50,6 +51,7 @@ export class ChatPanel {
   private mentionHighlight = 0
   private mentionPopupRows: MentionCandidate[] = []
   private lastMentionStart: number | null = null
+  private imageSending = false
 
   constructor({ social, onVisibilityChange, onGoto, onOpenProfile }: ChatPanelOptions) {
     this.social = social
@@ -113,6 +115,11 @@ export class ChatPanel {
       ev.preventDefault()
       void this.submitMessage()
     })
+
+    this.composerEl.addEventListener('dragenter', this.onComposerDragEnter)
+    this.composerEl.addEventListener('dragover', this.onComposerDragOver)
+    this.composerEl.addEventListener('dragleave', this.onComposerDragLeave)
+    this.composerEl.addEventListener('drop', this.onComposerDrop)
 
     this.root.addEventListener('mousedown', this.onChatPointerDown)
     this.sceneCanvas?.addEventListener('mousedown', this.onScenePointerDown)
@@ -273,8 +280,12 @@ export class ChatPanel {
     this.renderRail()
     this.renderMessages()
     this.updateComposerUi()
-    this.inputEl.disabled = false
-    this.inputEl.placeholder = 'Press Enter to chat'
+    this.inputEl.disabled = this.imageSending
+    this.inputEl.placeholder =
+      this.social.getChannel().kind === 'scene'
+        ? 'Press Enter to chat — drop an image'
+        : 'Press Enter to chat'
+    this.updateComposerDropUi()
   }
 
   private renderRail(): void {
@@ -367,29 +378,42 @@ export class ChatPanel {
     const local = this.social.getLocalDisplay()
     const localAddress = this.social.getLocalAddress()
     const mentionsSelf =
+      !isChatImageLine(line) &&
       !line.self &&
       textChatMentionsSelf(line.text, localAddress, local.displayName)
 
     const row = document.createElement('div')
-    row.className = `chat-panel__line${line.self ? ' is-self' : ''}`
+    row.className = `chat-panel__line${line.self ? ' is-self' : ''}${isChatImageLine(line) ? ' is-image' : ''}`
 
     const avatar = document.createElement('div')
     avatar.className = 'chat-panel__avatar'
 
     const bubble = document.createElement('div')
-    bubble.className = `chat-panel__bubble${mentionsSelf ? ' is-mentioned' : ''}`
+    bubble.className = `chat-panel__bubble${mentionsSelf ? ' is-mentioned' : ''}${isChatImageLine(line) ? ' is-image' : ''}`
 
     const name = document.createElement('div')
     name.className = 'chat-panel__sender'
 
-    const text = document.createElement('div')
-    text.className = 'chat-panel__text'
-    appendLinkifiedText(text, line.text, {
-      onNavigate: (target) => {
-        if (document.pointerLockElement) document.exitPointerLock()
-        void this.onGoto?.(target)
-      }
-    })
+    const body = document.createElement('div')
+    body.className = isChatImageLine(line) ? 'chat-panel__media' : 'chat-panel__text'
+
+    if (isChatImageLine(line)) {
+      const img = document.createElement('img')
+      img.className = 'chat-panel__image'
+      img.src = line.objectUrl
+      img.alt = 'Chat image'
+      img.loading = 'lazy'
+      img.decoding = 'async'
+      if (line.width > 0) img.width = Math.min(line.width, 280)
+      body.appendChild(img)
+    } else {
+      appendLinkifiedText(body, line.text, {
+        onNavigate: (target) => {
+          if (document.pointerLockElement) document.exitPointerLock()
+          void this.onGoto?.(target)
+        }
+      })
+    }
 
     const time = document.createElement('div')
     time.className = 'chat-panel__time'
@@ -415,7 +439,7 @@ export class ChatPanel {
     }
 
     bubble.appendChild(name)
-    bubble.appendChild(text)
+    bubble.appendChild(body)
     bubble.appendChild(time)
 
     if (line.self) {
@@ -447,6 +471,76 @@ export class ChatPanel {
       e.preventDefault()
       open()
     })
+  }
+
+  private onComposerDragEnter = (e: DragEvent): void => {
+    if (!this.canAcceptImageDrop()) return
+    e.preventDefault()
+    this.composerEl.classList.add('chat-panel__composer--drop')
+  }
+
+  private onComposerDragOver = (e: DragEvent): void => {
+    if (!this.canAcceptImageDrop()) return
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+    this.composerEl.classList.add('chat-panel__composer--drop')
+  }
+
+  private onComposerDragLeave = (e: DragEvent): void => {
+    if (e.currentTarget !== this.composerEl) return
+    this.composerEl.classList.remove('chat-panel__composer--drop')
+  }
+
+  private onComposerDrop = (e: DragEvent): void => {
+    e.preventDefault()
+    this.composerEl.classList.remove('chat-panel__composer--drop')
+    if (!this.canAcceptImageDrop()) return
+    const file = this.pickImageFileFromDataTransfer(e.dataTransfer)
+    if (!file) return
+    void this.sendImageFile(file)
+  }
+
+  private canAcceptImageDrop(): boolean {
+    return this.visible && this.social.getChannel().kind === 'scene' && !this.imageSending
+  }
+
+  private pickImageFileFromDataTransfer(dt: DataTransfer | null): File | null {
+    if (!dt) return null
+    const files = [...dt.files]
+    for (const file of files) {
+      if (isAllowedChatImageFile(file)) return file
+    }
+    return null
+  }
+
+  private async sendImageFile(file: File): Promise<void> {
+    if (this.imageSending || this.social.getChannel().kind !== 'scene') return
+    this.imageSending = true
+    this.updateComposerDropUi()
+    try {
+      const sent = await this.social.sendImageFile(file)
+      if (sent) this.renderMessages()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.inputEl.placeholder = msg
+      window.setTimeout(() => this.updateComposerDropUi(), 3000)
+    } finally {
+      this.imageSending = false
+      this.updateComposerDropUi()
+    }
+  }
+
+  private updateComposerDropUi(): void {
+    this.inputEl.disabled = this.imageSending
+    this.composerEl.classList.toggle('chat-panel__composer--sending', this.imageSending)
+    if (!this.imageSending) {
+      this.inputEl.placeholder =
+        this.social.getChannel().kind === 'scene'
+          ? 'Press Enter to chat — drop an image'
+          : 'Press Enter to chat'
+    } else {
+      this.inputEl.placeholder = 'Sending image…'
+    }
   }
 
   private fillAvatar(el: HTMLElement, faceUrl: string | null, fallbackLabel: string): void {

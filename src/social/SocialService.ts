@@ -12,6 +12,13 @@ import {
 import { fetchMemberCommunitiesSigned } from './socialApi'
 import { CHAT_MAX_LENGTH, type MentionCandidate } from './chatMentions'
 import { isEvmAddress } from './walletLabel'
+import {
+  chatMediaBlob,
+  createDcmMessageId,
+  DcmInboundAssembler,
+  encodeDcmImageEnvelopes
+} from './dcmChatMedia'
+import { prepareChatImageFile } from './prepareChatImage'
 import type { ChatChannelChoice, ChatLine, CommunityListRow, SceneChatTab } from './types'
 
 export { CHAT_MAX_LENGTH }
@@ -63,6 +70,9 @@ export class SocialService {
   private friendshipLoad: Promise<void> | null = null
   private ready = false
   private readonly seenChatKeys = new Map<string, number>()
+  private readonly seenMediaKeys = new Map<string, number>()
+  private readonly mediaAssembler = new DcmInboundAssembler()
+  private readonly mediaObjectUrls = new Set<string>()
 
   async init(options: SocialInitOptions): Promise<void> {
     this.comms = options.comms
@@ -85,6 +95,29 @@ export class SocialService {
         id: `in-${++lineCounter}`,
         text: payload.text,
         time: payload.time,
+        senderAddress: payload.senderAddress
+      })
+    })
+
+    this.comms.setChatMediaHandler((payload) => {
+      if (this.channel.kind !== 'scene') return
+      const decoded = this.mediaAssembler.ingest(payload.senderAddress, payload.data)
+      if (!decoded) return
+      if (this.isDuplicateMedia(payload.senderAddress, decoded.messageId)) return
+      const key = channelKey(this.channel)
+      void this.ensurePeerProfile(payload.senderAddress)
+      const objectUrl = this.registerMediaObjectUrl(
+        URL.createObjectURL(chatMediaBlob(decoded.bytes, decoded.mime))
+      )
+      this.appendLine(key, {
+        kind: 'image',
+        id: `in-${++lineCounter}`,
+        messageId: decoded.messageId,
+        objectUrl,
+        mime: decoded.mime,
+        width: decoded.width,
+        height: decoded.height,
+        time: decoded.time,
         senderAddress: payload.senderAddress
       })
     })
@@ -273,6 +306,39 @@ export class SocialService {
     return { displayName: 'Player', nameColor: '#ff6ad5', faceUrl: null }
   }
 
+  async sendImageFile(file: File): Promise<boolean> {
+    if (!this.comms || this.channel.kind !== 'scene') return false
+
+    const prepared = await prepareChatImageFile(file)
+    const messageId = createDcmMessageId()
+    const time = Date.now() / 1000
+    const envelopes = encodeDcmImageEnvelopes(prepared, messageId, time)
+    const sent = await this.comms.sendSceneChatMedia(envelopes)
+    if (!sent) return false
+
+    const objectUrl = this.registerMediaObjectUrl(
+      URL.createObjectURL(chatMediaBlob(prepared.bytes, prepared.mime))
+    )
+    this.appendLine(channelKey(this.channel), {
+      kind: 'image',
+      id: `local-${++lineCounter}`,
+      messageId,
+      objectUrl,
+      mime: prepared.mime,
+      width: prepared.width,
+      height: prepared.height,
+      time,
+      self: true,
+      senderAddress: this.localAddress ?? undefined
+    })
+    clientDebugLog.log(
+      'social',
+      `DCM image sent — ${prepared.mime} ${prepared.width}×${prepared.height} ${prepared.bytes.length}B`,
+      { level: 'success' }
+    )
+    return true
+  }
+
   async sendMessage(text: string): Promise<boolean> {
     const trimmed = text.trim().slice(0, CHAT_MAX_LENGTH)
     if (!trimmed || !this.comms) return false
@@ -305,6 +371,9 @@ export class SocialService {
 
   dispose(): void {
     this.comms?.setChatHandler(null)
+    this.comms?.setChatMediaHandler(null)
+    for (const url of this.mediaObjectUrls) URL.revokeObjectURL(url)
+    this.mediaObjectUrls.clear()
     this.comms = null
     this.listeners.clear()
     this.channelListeners.clear()
@@ -336,6 +405,25 @@ export class SocialService {
 
   private notifyChannelChange(): void {
     for (const listener of this.channelListeners) listener()
+  }
+
+  private registerMediaObjectUrl(url: string): string {
+    this.mediaObjectUrls.add(url)
+    return url
+  }
+
+  private isDuplicateMedia(senderAddress: string, messageId: string): boolean {
+    const key = `${senderAddress.toLowerCase()}\0${messageId}`
+    const now = performance.now()
+    const prev = this.seenMediaKeys.get(key)
+    if (prev !== undefined && now - prev < 30_000) return true
+    this.seenMediaKeys.set(key, now)
+    if (this.seenMediaKeys.size > 64) {
+      for (const [seenKey, seenAt] of this.seenMediaKeys) {
+        if (now - seenAt > 120_000) this.seenMediaKeys.delete(seenKey)
+      }
+    }
+    return false
   }
 
   private isDuplicateChat(senderAddress: string, text: string, time: number): boolean {

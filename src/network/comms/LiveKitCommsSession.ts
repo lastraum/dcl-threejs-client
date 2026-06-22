@@ -18,6 +18,8 @@ import {
   movementBlendTier
 } from './dclRfc4Comms'
 import { encodeRfc4ChatPacket } from '../../social/dclRfc4Chat'
+import { DCM_SCENE_ID } from '../../social/dcmChatMedia'
+import { encodeRfc4SceneBinaryPacket } from './Rfc4Router'
 import {
   playerYawToMovementRotationDeg,
   sceneLocalToGenesis,
@@ -394,6 +396,28 @@ export class LiveKitCommsSession {
       `RFC4 Profile v${version} sent (${this.transport}/${reason})`,
       { throttleMs: reason === 'heartbeat' ? 5000 : 0, throttleKey: `profile-${this.transport}-${reason}` }
     )
+  }
+
+  async publishChatMedia(envelopes: Uint8Array[]): Promise<boolean> {
+    if (!this.room || this.room.state !== ConnectionState.Connected || !envelopes.length) return false
+    try {
+      for (const envelope of envelopes) {
+        const packet = encodeRfc4SceneBinaryPacket(DCM_SCENE_ID, envelope)
+        await this.room.localParticipant.publishData(packet, { reliable: true })
+      }
+      clientDebugLog.log(
+        'comms',
+        `DCM ChatMedia out → ${this.transport} chunks=${envelopes.length}`,
+        { throttleMs: 0, throttleKey: `chat-media-out:${this.transport}` }
+      )
+      return true
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      clientDebugLog.log('comms', `DCM ChatMedia publish failed (${this.transport}): ${msg}`, {
+        level: 'error'
+      })
+      return false
+    }
   }
 
   async publishChat(text: string): Promise<boolean> {

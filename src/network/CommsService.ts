@@ -67,6 +67,11 @@ export type SceneChatHandler = (payload: {
   time: number
 }) => void
 
+export type SceneChatMediaHandler = (payload: {
+  senderAddress: string
+  data: Uint8Array
+}) => void
+
 /** Bevy `CommsPlugin` — archipelago + signed-login/world + gatekeeper scene room + RFC4 router. */
 export class CommsService {
   private readonly islandLiveKit = new LiveKitCommsSession(TransportType.Island, false)
@@ -91,6 +96,7 @@ export class CommsService {
   private handlers: CommsPeerHandlers | null = null
   private sceneBinaryHandler: SceneBinaryHandler | null = null
   private chatHandler: SceneChatHandler | null = null
+  private chatMediaHandler: SceneChatMediaHandler | null = null
   private topicMessageHandler: ((topic: string, sender: string, payload: Uint8Array) => void) | null = null
   private lastBroadcast = 0
   private pendingTransform: AvatarTransformPayload | null = null
@@ -170,6 +176,11 @@ export class CommsService {
         if (transport === TransportType.World && this.sceneLiveKit.isConnected()) return
         if (transport === TransportType.Island) return
         this.chatHandler?.({ senderAddress: address, text, time })
+      },
+      onPeerChatMedia: (address, data, transport) => {
+        if (transport === TransportType.World && this.sceneLiveKit.isConnected()) return
+        if (transport === TransportType.Island) return
+        this.chatMediaHandler?.({ senderAddress: address, data })
       }
     })
 
@@ -221,6 +232,10 @@ export class CommsService {
     this.chatHandler = handler
   }
 
+  setChatMediaHandler(handler: SceneChatMediaHandler | null): void {
+    this.chatMediaHandler = handler
+  }
+
   setTopicMessageHandler(
     handler: ((topic: string, sender: string, payload: Uint8Array) => void) | null
   ): void {
@@ -236,6 +251,22 @@ export class CommsService {
     let sent = false
     for (const session of sessions) {
       if (await session.publishChat(text)) sent = true
+    }
+    return sent
+  }
+
+  /** DCM v1 — scene chat images on RFC4 Scene `dcl.chat.media` (chunked when needed). */
+  async sendSceneChatMedia(envelopes: Uint8Array[]): Promise<boolean> {
+    const sessions = this.liveKitChatSessions()
+    if (!sessions.length || !envelopes.length) {
+      clientDebugLog.log('comms', 'Chat media send skipped — no LiveKit session connected', {
+        level: 'warn'
+      })
+      return false
+    }
+    let sent = false
+    for (const session of sessions) {
+      if (await session.publishChatMedia(envelopes)) sent = true
     }
     return sent
   }
@@ -637,6 +668,7 @@ export class CommsService {
     this.sceneBinaryHandler = null
     this.topicMessageHandler = null
     this.chatHandler = null
+    this.chatMediaHandler = null
     this.sceneTarget = null
     this.peerTransports.clear()
     this.topicService.clear()

@@ -681,6 +681,20 @@ export class SceneScriptSystem {
     const mainFile = scene.content.find((c) => c.file === scene.mainEntry)
     if (!mainFile) throw new Error(`Main entry not in content: ${scene.mainEntry}`)
 
+    const scriptUrl = scene.assetUrl(mainFile.hash)
+    const scriptStarted = performance.now()
+    console.info('[scene] loading scene script…')
+    const scriptRes = await fetch(scriptUrl)
+    if (!scriptRes.ok) {
+      throw new Error(`Scene script fetch failed (${scriptRes.status}): ${scriptUrl}`)
+    }
+    const scriptCode = await scriptRes.text()
+    console.info(
+      `[scene] scene script ready (${(scriptCode.length / 1024).toFixed(0)} KB, ${((performance.now() - scriptStarted) / 1000).toFixed(1)}s)`
+    )
+
+    const bootSnapshot = this.buildBootCrdtSnapshot()
+
     this.worker = new Worker(new URL('../../shim/worker/sceneWorkerEntry.ts', import.meta.url), {
       type: 'module'
     })
@@ -700,7 +714,12 @@ export class SceneScriptSystem {
         entityId: scene.entityId,
         mainEntry: scene.mainEntry,
         worldName: scene.source.kind === 'world' ? scene.source.worldName : undefined,
-        scriptUrl: scene.assetUrl(mainFile.hash),
+        scriptUrl,
+        scriptCode,
+        bootCrdtSnapshot: {
+          hasEntities: bootSnapshot.hasEntities,
+          data: bootSnapshot.data.map((chunk) => chunk.slice())
+        },
         content: scene.content,
         metadataJson: JSON.stringify(scene.metadata ?? {})
       }
@@ -1127,6 +1146,12 @@ export class SceneScriptSystem {
       hasEntities: state.hasEntities,
       data: state.data
     } satisfies MainToWorker)
+  }
+
+  /** Renderer CRDT snapshot for worker bundle eval (must not round-trip main during sync eval). */
+  private buildBootCrdtSnapshot(): { hasEntities: boolean; data: Uint8Array[] } {
+    this.prepareRendererOutboundState()
+    return this.buildBootstrapSnapshot()
   }
 
   /** e9: projection + encoder boot snapshot (replaces mirror.getState on the wire). */

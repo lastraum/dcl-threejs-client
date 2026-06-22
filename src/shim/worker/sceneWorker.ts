@@ -107,6 +107,10 @@ let sceneOnUpdate: ((dt: number) => unknown) | null = null
 let sceneOnStartComplete = false
 /** True from boot message until onStart completes — priority inject/deliver is queued. */
 let sceneBootInProgress = false
+/** True during synchronous evaluateSceneBundle — get-state must not RPC main (deadlock). */
+let sceneEvalInProgress = false
+/** Boot snapshot from main — satisfies crdtGetState during bundle eval without worker↔main RPC. */
+let bootCrdtSnapshot: { hasEntities: boolean; data: Uint8Array[] } | null = null
 /** Priority lane messages received while sceneBootInProgress — drained after onStart. */
 const pendingBootPriority: SceneWorkerPriorityMessage[] = []
 /** True after inject until deliver (or fallback) finalizes the batch. */
@@ -827,6 +831,12 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
 }
 
 function rpcGetState(): Promise<{ hasEntities: boolean; data: Uint8Array[] }> {
+  if (sceneEvalInProgress && bootCrdtSnapshot) {
+    return Promise.resolve({
+      hasEntities: bootCrdtSnapshot.hasEntities,
+      data: bootCrdtSnapshot.data.map((chunk) => chunk.slice())
+    })
+  }
   const id = ++requestId
   return new Promise((resolve) => {
     pendingGetState.set(id, resolve)
@@ -1340,9 +1350,27 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     debugMessageArrival = msg.debug?.messageArrival === true
     patchWorkerConsole()
     workerLog('log', 'scene worker boot — console forwarding active')
-    const res = await fetch(msg.scene.scriptUrl)
-    if (!res.ok) throw new Error(`Script fetch ${res.status}`)
-    const code = await res.text()
+    bootCrdtSnapshot = msg.scene.bootCrdtSnapshot
+      ? {
+          hasEntities: msg.scene.bootCrdtSnapshot.hasEntities,
+          data: msg.scene.bootCrdtSnapshot.data.map((chunk) => chunk.slice())
+        }
+      : null
+
+    let code: string
+    if (msg.scene.scriptCode) {
+      code = msg.scene.scriptCode
+      workerLog(
+        'log',
+        `[sceneWorker] using main-thread script (${(code.length / 1024).toFixed(0)} KB)`
+      )
+    } else {
+      workerLog('log', `[sceneWorker] fetching script ${msg.scene.scriptUrl}`)
+      const res = await fetch(msg.scene.scriptUrl)
+      if (!res.ok) throw new Error(`Script fetch ${res.status}`)
+      code = await res.text()
+      workerLog('log', `[sceneWorker] script fetched (${(code.length / 1024).toFixed(0)} KB)`)
+    }
 
     engineApiEvents = createEngineApiEventState({
       onSubscribe: (eventId) => ctx.postMessage({ type: 'engine-api-subscribe', eventId } satisfies SceneWorkerOutbound),
@@ -1378,7 +1406,19 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
     installPreregisterRendererComponentsHook()
-    const exports = evaluateSceneBundle(code, requireMap, patchSceneBundle)
+    const evalStarted = performance.now()
+    workerLog('log', '[sceneWorker] evaluating scene bundle…')
+    sceneEvalInProgress = true
+    let exports: ReturnType<typeof evaluateSceneBundle>
+    try {
+      exports = evaluateSceneBundle(code, requireMap, patchSceneBundle)
+    } finally {
+      sceneEvalInProgress = false
+    }
+    workerLog(
+      'log',
+      `[sceneWorker] scene bundle evaluated (${((performance.now() - evalStarted) / 1000).toFixed(2)}s)`
+    )
     sceneEngine = resolveSceneEngine(exports)
     if (sceneEngine) {
       try {

@@ -50,8 +50,13 @@ export function disposeSessionAssetCache(): void {
   disposeGlbParsePool()
 }
 
+const prefetchedSceneIds = new Set<string>()
+
 /** Start byte-only fetches for every `.glb` in the scene manifest — safe to call multiple times. */
 export function prefetchSceneManifestGlbs(cache: AssetCache, scene: ResolvedScene): void {
+  const sceneKey = scene.entityId ?? scene.title
+  if (sceneKey && prefetchedSceneIds.has(sceneKey)) return
+
   const urls: Array<{ url: string; hash: string }> = []
   const seen = new Set<string>()
 
@@ -63,6 +68,7 @@ export function prefetchSceneManifestGlbs(cache: AssetCache, scene: ResolvedScen
   }
 
   if (urls.length) {
+    if (sceneKey) prefetchedSceneIds.add(sceneKey)
     console.info(`[assets] prefetching ${urls.length} scene GLB(s) (bytes only, parallel)`)
     cache.prefetchAll(urls)
   }

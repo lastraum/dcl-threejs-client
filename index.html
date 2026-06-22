@@ -2524,6 +2524,13 @@
         min-height: 0;
         min-width: 0;
         overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .settings-overlay__content > .events-view {
+        flex: 1;
+        min-height: 0;
+        width: 100%;
       }
       .settings-overlay__placeholder {
         display: grid;
@@ -4493,6 +4500,8 @@
       }
       /* Weekly: day columns + highlight sidebar — no calendar */
       .events-view--weekly {
+        flex: 1;
+        min-height: 0;
         display: grid;
         grid-template-rows: auto auto 1fr;
         grid-template-columns: 3fr 1fr;
@@ -4528,11 +4537,12 @@
         min-height: 0;
       }
       .events-view--calendar {
-        height: 100%;
+        flex: 1;
         min-height: 0;
+        height: auto;
       }
       .events-view--calendar .events-view__list-shell {
-        flex: 1;
+        flex: 1 1 0;
         min-height: 0;
         display: flex;
         flex-direction: column;
@@ -4541,20 +4551,24 @@
         display: none;
       }
       .events-view--calendar .events-view__main {
-        flex: 1;
+        flex: 1 1 0;
         min-height: 0;
         align-items: stretch;
         overflow: hidden;
       }
       .events-view--calendar .events-view__calendar-pane {
+        flex: 1 1 0;
         min-height: 0;
-        height: 100%;
+        height: auto;
       }
       .events-view--calendar .events-view__calendar-grid {
+        flex: 1 1 0;
+        min-height: 0;
         overflow: hidden;
       }
       .events-view--calendar .events-view__day {
-        min-height: 52px;
+        min-height: 0;
+        height: 100%;
       }
       .events-view--calendar .events-view__highlight {
         height: 100%;
@@ -4659,7 +4673,7 @@
       }
       .events-view__event-card-img {
         width: 100%;
-        height: 304px;
+        height: 243px;
         object-fit: cover;
         background: rgba(255, 255, 255, 0.06);
         display: block;
@@ -4874,7 +4888,7 @@
           display: none;
         }
         .events-view__event-card-img {
-          height: 432px;
+          height: 346px;
         }
         .events-view__event-card-name {
           font-size: 13px;

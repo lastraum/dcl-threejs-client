@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { isGltfInvisibleColliderName } from '../collision/gltfColliderNaming'
 import { isSceneNeonEmissiveMaterial } from './sceneGltfEmissives'
+import { isSharedAssetResource } from './sharedAsset'
 
 /** Leave headroom for fog/tone mapping; scene shadows stay off (each shadow light adds a sampler). */
 const MAX_MATERIAL_TEXTURES = 8
@@ -103,7 +104,7 @@ function downgradePhysicalMaterial(material: THREE.MeshPhysicalMaterial): THREE.
   standard.side = material.side
   standard.vertexColors = material.vertexColors
   stripOptionalMaps(standard)
-  material.dispose()
+  if (!isSharedAssetResource(material)) material.dispose()
   return standard
 }
 
@@ -123,6 +124,15 @@ function simplifyMaterial(material: THREE.Material, meshName = ''): THREE.Materi
 
 /** Keep glTF materials under WebGL fragment texture unit limits (16 on many GPUs). */
 export function sanitizeSceneGltfMaterials(root: THREE.Object3D): void {
+  const simplified = new WeakMap<THREE.Material, THREE.Material>()
+  const simplifyOnce = (material: THREE.Material, meshName: string): THREE.Material => {
+    const cached = simplified.get(material)
+    if (cached) return cached
+    const result = simplifyMaterial(material, meshName)
+    if (result !== material) simplified.set(material, result)
+    return result
+  }
+
   root.traverse((node) => {
     if (!(node instanceof THREE.Mesh)) return
     if (isGltfInvisibleColliderName(node.name)) {
@@ -130,10 +140,10 @@ export function sanitizeSceneGltfMaterials(root: THREE.Object3D): void {
       return
     }
     if (Array.isArray(node.material)) {
-      node.material = node.material.map((material) => simplifyMaterial(material, node.name))
+      node.material = node.material.map((material) => simplifyOnce(material, node.name))
       return
     }
-    node.material = simplifyMaterial(node.material, node.name)
+    node.material = simplifyOnce(node.material, node.name)
   })
 }
 

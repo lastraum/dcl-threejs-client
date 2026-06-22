@@ -107,6 +107,8 @@ function enableMeshReceiveShadow(root: THREE.Object3D): void {
 
 /** Sync mirror ECS state → Three.js scene graph (Phase 1 + 1b render components). */
 export class ThreeBridge {
+  /** Off by default — InstancedMesh path caused morph crashes and material mismatches on Genesis. */
+  static readonly GLTF_INSTANCING_ENABLED = false
   private static readonly GLTF_BUDGET_PER_FRAME = 6
   private static readonly GLTF_HYDRATION_BUDGET_PER_FRAME = 80
   private static readonly GLTF_SOFT_HYDRATION_BUDGET_PER_FRAME = 24
@@ -307,6 +309,7 @@ export class ThreeBridge {
 
   /** Enable GLTF instancing for frozen decorative props (after play-ready). */
   enableGltfInstancing(sceneRoot: THREE.Object3D): void {
+    if (!ThreeBridge.GLTF_INSTANCING_ENABLED) return
     if (this.gltfPool) return
     this.gltfPool = new GltfInstancedPool(sceneRoot)
     this.instancingEnabled = true
@@ -1154,6 +1157,7 @@ export class ThreeBridge {
         obj.userData.gltfSrcKey === srcKey &&
         !obj.userData.gltfInstanced &&
         !this.isGltfInstancingSkipped(obj) &&
+        ThreeBridge.GLTF_INSTANCING_ENABLED &&
         this.instancingEnabled &&
         this.gltfPool &&
         this.staticRegistry &&
@@ -1190,6 +1194,7 @@ export class ThreeBridge {
         try {
           const clone = await this.cache.clone(url, isLocal ? url : hash)
           if (
+            ThreeBridge.GLTF_INSTANCING_ENABLED &&
             this.instancingEnabled &&
             this.gltfPool &&
             this.staticRegistry &&
@@ -1203,6 +1208,7 @@ export class ThreeBridge {
               return
             }
           } else if (
+            ThreeBridge.GLTF_INSTANCING_ENABLED &&
             this.instancingEnabled &&
             this.gltfPool &&
             this.staticRegistry &&

@@ -2073,18 +2073,19 @@ export class SceneScriptSystem {
     this.playReadyNotified = true
     this.staticEntities.setEnabled(true)
     const frozen = this.staticEntities.freezeEligible(this.view, this.readComponents)
-    if (this.host) {
+    let instancingNote = ''
+    if (ThreeBridge.GLTF_INSTANCING_ENABLED && this.host) {
       this.bridge?.enableGltfInstancing(this.host.scene)
-    }
-    const migrated = this.bridge?.migrateSoloGltfsToInstancing(64) ?? 0
-    const instancingLeft = this.bridge?.getInstancingMigrationRemaining() ?? 0
-    if (instancingLeft > 0) {
-      this.bridge?.extendSoftHydration(12_000)
+      const migrated = this.bridge?.migrateSoloGltfsToInstancing(64) ?? 0
+      const instancingLeft = this.bridge?.getInstancingMigrationRemaining() ?? 0
+      if (instancingLeft > 0) {
+        this.bridge?.extendSoftHydration(12_000)
+      }
+      instancingNote = `, ${migrated} instanced in-place` + (instancingLeft > 0 ? `, ${instancingLeft} migrating` : '')
     }
     clientDebugLog.log(
       'projection',
-      `e10 static freeze — ${frozen} frozen, ${migrated} instanced in-place` +
-        (instancingLeft > 0 ? `, ${instancingLeft} migrating` : ''),
+      `e10 static freeze — ${frozen} frozen${instancingNote}`,
       { level: 'success', alsoConsole: true }
     )
     this.worker?.postMessage({ type: 'scene-play-ready' } satisfies MainToWorker)

@@ -5,6 +5,24 @@ import { disposeOwnedObject3D } from '../rendering/sharedAsset'
 /** Who owns an entity record — scene CRDT, avatar manager, or renderer-reserved. */
 export type EntityOwner = 'scene' | 'avatar' | 'renderer'
 
+/** Scene entity between DELETE_ENTITY and the next revive PUT (sprite pool recycle). */
+export type EntityLifecycle = 'active' | 'suspended'
+
+export type EntityFlags = {
+  /** Plane + animated MeshRenderer UVs, non-interactive — DCL sprite pool pattern. */
+  spritePool: boolean
+  /** ECS Billboard component — camera-facing rotation hot path. */
+  billboard: boolean
+  /** Active TweenBridge runtime entry — transform refresh hot path. */
+  tween: boolean
+}
+
+const DEFAULT_FLAGS = (): EntityFlags => ({
+  spritePool: false,
+  billboard: false,
+  tween: false
+})
+
 /** Synthetic entity ids for comms-driven avatars (outside scene CRDT id space). */
 const AVATAR_ENTITY_BASE = 0x8000_0000
 
@@ -27,10 +45,10 @@ export type EntityStoreChange = {
   kind: EntityStoreChangeKind
 }
 
-export type EntityRecord = {
-  entity: Entity
+type EntityMeta = {
   owner: EntityOwner
-  group: THREE.Group
+  lifecycle: EntityLifecycle
+  flags: EntityFlags
 }
 
 /**
@@ -46,7 +64,7 @@ export class EntityStore {
   readonly root: THREE.Group
   /** entity → scene-graph node (authoritative for renderer-side entity visuals). */
   readonly nodes = new Map<Entity, THREE.Group>()
-  private readonly owners = new Map<Entity, EntityOwner>()
+  private readonly meta = new Map<Entity, EntityMeta>()
   private readonly listeners = new Set<(change: EntityStoreChange) => void>()
 
   constructor(parent: THREE.Object3D, rootName = 'entity-store') {
@@ -66,18 +84,89 @@ export class EntityStore {
     }
   }
 
+  private ensureMeta(entity: Entity, owner: EntityOwner): EntityMeta {
+    let record = this.meta.get(entity)
+    if (!record) {
+      record = { owner, lifecycle: 'active', flags: DEFAULT_FLAGS() }
+      this.meta.set(entity, record)
+    }
+    return record
+  }
+
   getOwner(entity: Entity): EntityOwner | undefined {
-    return this.owners.get(entity)
+    return this.meta.get(entity)?.owner
   }
 
   isSceneOwned(entity: Entity): boolean {
-    return this.owners.get(entity) === 'scene'
+    return this.meta.get(entity)?.owner === 'scene'
+  }
+
+  isSuspended(entity: Entity): boolean {
+    return this.meta.get(entity)?.lifecycle === 'suspended'
+  }
+
+  isSpritePool(entity: Entity): boolean {
+    return this.meta.get(entity)?.flags.spritePool === true
+  }
+
+  /**
+   * Sprite pool slots may receive MeshRenderer/Material PUTs without Transform
+   * between DELETE_ENTITY and revive (DCL recycled id pattern).
+   */
+  allowTransformless(entity: Entity): boolean {
+    if (!this.isSceneOwned(entity) || !this.nodes.has(entity)) return false
+    return this.isSpritePool(entity)
+  }
+
+  setSpritePool(entity: Entity, enabled: boolean): void {
+    if (!this.nodes.has(entity)) return
+    const record = this.ensureMeta(entity, this.getOwner(entity) ?? 'scene')
+    record.flags.spritePool = enabled
+  }
+
+  setBillboard(entity: Entity, enabled: boolean): void {
+    if (!this.nodes.has(entity)) return
+    const record = this.ensureMeta(entity, this.getOwner(entity) ?? 'scene')
+    record.flags.billboard = enabled
+  }
+
+  setTween(entity: Entity, enabled: boolean): void {
+    if (!this.nodes.has(entity)) return
+    const record = this.ensureMeta(entity, this.getOwner(entity) ?? 'scene')
+    record.flags.tween = enabled
+  }
+
+  /** Hide-and-keep-node recycle — no destroy notification (sprite pool). */
+  suspendSceneEntity(entity: Entity): void {
+    if (!this.isSceneOwned(entity)) return
+    const record = this.ensureMeta(entity, 'scene')
+    record.lifecycle = 'suspended'
+  }
+
+  reviveSceneEntity(entity: Entity): void {
+    const record = this.meta.get(entity)
+    if (!record || record.owner !== 'scene') return
+    record.lifecycle = 'active'
+  }
+
+  getBillboardEntities(): Entity[] {
+    const out: Entity[] = []
+    for (const [entity, record] of this.meta) {
+      if (record.flags.billboard && this.nodes.has(entity)) out.push(entity)
+    }
+    return out
+  }
+
+  forEachSpritePool(fn: (entity: Entity, group: THREE.Group) => void): void {
+    for (const [entity, group] of this.nodes) {
+      if (this.meta.get(entity)?.flags.spritePool) fn(entity, group)
+    }
   }
 
   /** Iterate scene CRDT entities (excludes avatar + reserved store records). */
   forEachSceneEntity(fn: (entity: Entity, group: THREE.Group) => void): void {
     for (const [entity, group] of this.nodes) {
-      if (this.owners.get(entity) === 'scene') fn(entity, group)
+      if (this.isSceneOwned(entity)) fn(entity, group)
     }
   }
 
@@ -88,8 +177,10 @@ export class EntityStore {
       group.name = `entity:${entity}`
       this.root.add(group)
       this.nodes.set(entity, group)
-      this.owners.set(entity, owner)
+      this.ensureMeta(entity, owner)
       this.emit({ entity, kind: 'create' })
+    } else {
+      this.ensureMeta(entity, owner)
     }
     return group
   }
@@ -108,7 +199,7 @@ export class EntityStore {
   }
 
   removeAvatar(entity: Entity): void {
-    if (this.owners.get(entity) !== 'avatar') return
+    if (this.getOwner(entity) !== 'avatar') return
     this.deleteEntity(entity)
   }
 
@@ -118,7 +209,7 @@ export class EntityStore {
     disposeOwnedObject3D(group)
     group.removeFromParent()
     this.nodes.delete(entity)
-    this.owners.delete(entity)
+    this.meta.delete(entity)
     this.emit({ entity, kind: 'destroy' })
   }
 
@@ -133,7 +224,7 @@ export class EntityStore {
       group.removeFromParent()
     }
     this.nodes.clear()
-    this.owners.clear()
+    this.meta.clear()
     this.listeners.clear()
     this.root.removeFromParent()
   }

@@ -228,7 +228,7 @@ export class SceneScriptSystem {
     this.avatarEmoteBridge = new AvatarEmoteCommandBridge(this.readComponents, this.avatarShapes)
     this.billboardBridge = new BillboardBridge(
       this.readComponents,
-      () => this.bridge?.getEntityNodes(),
+      this.entityStore,
       () => this.host!.camera
     )
     this.animatorBridge = new AnimatorBridge(
@@ -1707,7 +1707,8 @@ export class SceneScriptSystem {
       }
       const { spriteDiff, sceneDiff } = this.bridge.partitionSpriteDiff(diff, view)
       if (spriteDiff.size) this.bridge.consumeSpriteDiff(spriteDiff, view)
-      if (sceneDiff.size) await this.bridge.consumeDiff(sceneDiff, view)
+      const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+      if (sceneDiff.size) await this.bridge.consumeDiff(sceneDiff, view, tweenRefresh)
       else await this.bridge.drainPendingWork()
       this.flushPointerStructureIfDirty()
       return

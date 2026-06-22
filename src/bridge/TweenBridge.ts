@@ -313,6 +313,11 @@ export class TweenBridge {
     return out
   }
 
+  /** Entities with active tween runtime — avoids `getEntitiesWith(Tween)` in consumeDiff. */
+  getActiveTweenEntities(): Entity[] {
+    return [...this.runtime.keys()]
+  }
+
   sync(view: ProjectionView): void {
     this.motionFocusView = view
     const { Tween } = this.ecs
@@ -320,6 +325,7 @@ export class TweenBridge {
 
     for (const [entity] of view.getEntitiesWith(Tween)) {
       active.add(entity)
+      this.store.setTween(entity, true)
       const tween = Tween.get(entity)
       const signature = tweenSignature(tween)
       const prev = this.runtime.get(entity)
@@ -346,6 +352,7 @@ export class TweenBridge {
     for (const entity of this.runtime.keys()) {
       if (!active.has(entity)) {
         this.runtime.delete(entity)
+        this.store.setTween(entity, false)
         this.logTween(`Tween removed — entity ${entity}`, { entity })
       }
     }

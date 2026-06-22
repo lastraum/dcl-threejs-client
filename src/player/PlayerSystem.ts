@@ -433,6 +433,7 @@ export class PlayerSystem {
           doubleJumpTriggered: false,
           falling: false
         })
+        this.applyCameraInputFromPointer()
         this.syncCamera(false, delta)
         this.input.endFrame()
         if (t >= 1) {
@@ -460,25 +461,13 @@ export class PlayerSystem {
         doubleJumpTriggered: false,
         falling: false
       })
+      this.applyCameraInputFromPointer()
       this.syncCamera(false, delta)
       this.input.endFrame()
       return
     }
 
-    if (this.input.looking) {
-      this.camYaw -= this.input.pointer.dx * POINTER_LOOK_SPEED
-      this.camYaw = normalizeAngle(this.camYaw)
-      const pitchDelta = this.input.pointer.dy * POINTER_LOOK_SPEED
-      this.camPitch += this.isFirstPerson() ? -pitchDelta : pitchDelta
-      const pitchMin = this.isFirstPerson() ? -CAM_PITCH_MAX + 0.05 : CAM_PITCH_MIN
-      this.camPitch = clamp(this.camPitch, pitchMin, CAM_PITCH_MAX)
-    }
-
-    const zoomDelta = this.input.scrollDelta + this.input.pinchZoomDelta * 3
-    if (zoomDelta !== 0) {
-      this.camDistance += zoomDelta * ZOOM_WHEEL_SPEED
-      this.camDistance = clamp(this.camDistance, CAM_DISTANCE_MIN, CAM_DISTANCE_MAX)
-    }
+    this.applyCameraInputFromPointer()
 
     _moveDir.set(0, 0, 0)
     _forward.set(Math.sin(this.camYaw), 0, Math.cos(this.camYaw)).multiplyScalar(-1)
@@ -661,6 +650,26 @@ export class PlayerSystem {
 
   private isFirstPerson(): boolean {
     return this.camDistance <= CAM_FPV_MAX_DISTANCE
+  }
+
+  /** Orbit + zoom from pointer lock / drag — runs even when movement is scene-locked. */
+  private applyCameraInputFromPointer(): void {
+    if (!this.input) return
+
+    if (this.input.looking) {
+      this.camYaw -= this.input.pointer.dx * POINTER_LOOK_SPEED
+      this.camYaw = normalizeAngle(this.camYaw)
+      const pitchDelta = this.input.pointer.dy * POINTER_LOOK_SPEED
+      this.camPitch += this.isFirstPerson() ? -pitchDelta : pitchDelta
+      const pitchMin = this.isFirstPerson() ? -CAM_PITCH_MAX + 0.05 : CAM_PITCH_MIN
+      this.camPitch = clamp(this.camPitch, pitchMin, CAM_PITCH_MAX)
+    }
+
+    const zoomDelta = this.input.scrollDelta + this.input.pinchZoomDelta * 3
+    if (zoomDelta !== 0) {
+      this.camDistance += zoomDelta * ZOOM_WHEEL_SPEED
+      this.camDistance = clamp(this.camDistance, CAM_DISTANCE_MIN, CAM_DISTANCE_MAX)
+    }
   }
 
   private syncCamera(snap: boolean, delta = 0.016): void {

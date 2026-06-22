@@ -33,3 +33,10 @@ export function catalystPeerBaseUrl(): string {
 export function catalystProfilesEndpoint(): string {
   return `${catalystPeerBaseUrl()}/lambdas/profiles`
 }
+
+/** Same-origin proxy in dev (Vite) and prod (`public/_redirects`) — avoids CORS on custom domains. */
+export function placesApiBase(): string {
+  const fromEnv = import.meta.env.VITE_PLACES_API_BASE?.trim()
+  if (fromEnv) return fromEnv.replace(/\/+$/, '')
+  return '/api/places'
+}

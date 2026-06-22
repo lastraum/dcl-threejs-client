@@ -7,8 +7,7 @@
 import signedFetch from 'decentraland-crypto-fetch'
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import type { RouteTarget } from '../dcl/content/route'
-
-const PLACES_API_URL = 'https://places.decentraland.org/api'
+import { placesApiBase } from '../map/mapConfig'
 
 export const PLACES_PAGE_SIZE = 100
 
@@ -195,7 +194,7 @@ async function placesApiGet(
   params: URLSearchParams,
   identity?: AuthIdentity | null
 ): Promise<{ data: unknown[]; total: number }> {
-  const url = `${PLACES_API_URL}/${path}?${params.toString()}`
+  const url = `${placesApiBase()}/${path}?${params.toString()}`
   const res = identity
     ? await signedFetch(url, {
         method: 'GET',

@@ -346,6 +346,11 @@ export class EventsView {
     if (this.layoutMode === 'calendar') {
       this.columnsRow.innerHTML = ''
       this.columnsRow.hidden = true
+      this.renderCalendar()
+      requestAnimationFrame(() => {
+        void this.root.offsetHeight
+        this.renderCalendar()
+      })
     } else {
       this.columnsRow.hidden = false
     }

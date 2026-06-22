@@ -4545,67 +4545,62 @@
         min-height: 0;
       }
       .events-view--calendar {
-        position: absolute;
-        inset: 0;
         display: flex;
         flex-direction: column;
+        flex: 1 1 auto;
         min-height: 0;
         height: 100%;
-        padding: 8px 16px 0;
+        padding: 8px 16px 12px;
         gap: 0;
         overflow: hidden;
       }
       .events-view--calendar .events-view__list-shell {
-        flex: 1 1 0;
+        flex: 1 1 auto;
         min-height: 0;
-        height: 0;
-        display: flex;
-        flex-direction: column;
+        display: grid;
+        grid-template-rows: auto auto auto minmax(0, 1fr);
+        grid-template-columns: minmax(0, 1fr);
         gap: 6px;
         overflow: hidden;
       }
       .events-view--calendar .events-view__header,
       .events-view--calendar .events-view__status,
       .events-view--calendar .events-view__dow-row {
-        flex: 0 0 auto;
+        min-height: 0;
       }
       .events-view--calendar .events-view__columns {
         display: none;
       }
       .events-view--calendar .events-view__main {
-        flex: 1 1 0;
+        display: grid;
+        grid-template-columns: minmax(0, 3fr) minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr);
         min-height: 0;
-        height: 0;
-        display: flex;
-        flex-direction: row;
-        align-items: stretch;
         overflow: hidden;
         gap: 12px;
+        align-self: stretch;
       }
       .events-view--calendar .events-view__calendar-pane {
-        flex: 3 1 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
         min-width: 0;
         min-height: 0;
-        height: 100%;
-        display: flex;
-        flex-direction: column;
+        overflow: hidden;
       }
       .events-view--calendar .events-view__calendar-grid {
-        flex: 1 1 0;
         min-height: 0;
-        height: 100%;
         overflow: hidden;
+        align-content: stretch;
         grid-template-rows: repeat(6, minmax(0, 1fr));
       }
       .events-view--calendar .events-view__day {
         min-height: 0;
-        height: 100%;
+        height: auto;
+        align-self: stretch;
       }
       .events-view--calendar .events-view__highlight {
-        flex: 1 1 0;
         min-width: 0;
         min-height: 0;
-        height: 100%;
         display: flex;
         flex-direction: column;
         overflow: hidden;
@@ -4933,6 +4928,13 @@
         .events-view__col-head {
           font-size: 12px;
           padding: 10px 12px;
+        }
+        .events-view--calendar {
+          padding: 8px 10px 10px;
+        }
+        .events-view--calendar .events-view__main {
+          grid-template-columns: 1fr;
+          grid-template-rows: minmax(0, 1fr) minmax(140px, 34vh);
         }
       }
 

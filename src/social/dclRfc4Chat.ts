@@ -55,8 +55,8 @@ export type DecodedRfc4Chat =
   | { kind: 'chat'; text: string; time: number }
   | { kind: 'unknown' }
 
-/** Legacy chat emote wire text — e.g. `DLEraiseHand 1781680170960.9731`. */
-const CHAT_EMOTE_COMMAND_RE = /^DLE(\S+)\s+([\d.]+)\s*$/
+/** Legacy chat emote wire text — Unity/Explorer prefix with ASCII DLE (`\x10`), or literal `DLE`. */
+const CHAT_EMOTE_COMMAND_RE = /^(?:DLE|\x10)(.+)\s+([\d.]+)\s*$/
 
 export type ParsedChatEmoteCommand = {
   emoteRef: string

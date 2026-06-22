@@ -15,6 +15,7 @@ import { collectGltfPointerTargetMeshes } from '../collision/gltfPointerMeshes'
 import { PointerHighlightFeedback } from './PointerHighlightFeedback'
 import { PointerHoverFeedback } from './PointerHoverFeedback'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
+import { findInteractiveNameTagNear } from '../client/ui/overlayHitTest'
 import type { InjectPointerClickBody } from '../player/injectPointerClick'
 
 export type PointerHit = {
@@ -124,6 +125,12 @@ export class PointerEventsSystem {
     this.rebuildChildrenByParent()
     this.collectPointerTargets()
     this.pointerCacheDirty = false
+  }
+
+  /** Right-click / F with zero scene PointerEvents is normal — don't spam the console. */
+  private shouldLogNoTarget(action: InputActionValue): boolean {
+    if (this.pointerEntitySet.size > 0) return true
+    return action !== InputAction.IA_SECONDARY
   }
 
   /** Tooltip + mesh highlight only (no CRDT). */
@@ -273,12 +280,15 @@ export class PointerEventsSystem {
     if (e.target !== this.canvas) return
     if (this.isTypingTarget()) return
     if (this.deps.isPointerBlocked()) return
+    if (e.button === 2 && findInteractiveNameTagNear(e.clientX, e.clientY)) return
 
     const button = mouseButtonToInputAction(e.button)
     const hit = this.resolveInteractHit(button)
     if (!this.canQueuePointerDown(button, hit)) {
       if (hit) {
         this.logInteractBlocked(mouseInteractLabel(button), button, hit)
+      } else if (!this.shouldLogNoTarget(button)) {
+        /* scene has no PointerEvents or right-click near a name pill — expected noise */
       } else {
         this.rebuildPointerCacheIfNeeded()
         clientDebugLog.log(
@@ -326,6 +336,8 @@ export class PointerEventsSystem {
     if (!this.canQueuePointerDown(action, hit)) {
       if (hit) {
         this.logInteractBlocked(label, action, hit)
+      } else if (!this.shouldLogNoTarget(action)) {
+        /* expected when the scene has no pointer targets */
       } else {
         this.rebuildPointerCacheIfNeeded()
         clientDebugLog.log(

@@ -149,6 +149,15 @@ export class AppController {
     this.world = world
     world.applyLogin(this.login)
 
+    this.profileUi?.dispose()
+    this.profileUi = new ProfileUiController({
+      session: world.session,
+      social: world.social,
+      getPeerUrl: () => this.sceneContentUrl,
+      onOpenChat: () => this.shell?.openChatPanel(),
+      onPrepareOverlay: () => this.world?.cancelCameraPointer()
+    })
+
     if (!this.debugPanel) {
       this.debugPanel = new DebugPanel({
         anchor: () => this.shell?.getButton('help')?.element,
@@ -322,14 +331,6 @@ export class AppController {
 
     await loadPromise
 
-    this.profileUi?.dispose()
-    this.profileUi = new ProfileUiController({
-      session: world.session,
-      social: world.social,
-      getPeerUrl: () => this.sceneContentUrl,
-      onOpenChat: () => this.shell?.openChatPanel(),
-      onPrepareOverlay: () => this.world?.cancelCameraPointer()
-    })
     this.shell.setOnViewLocalProfile(() => this.profileUi?.openProfile({ kind: 'local' }))
 
     this.chatPanel?.dispose()

@@ -85,6 +85,7 @@ export class NameTag {
 
     if (options.interactive && this.address) {
       el.classList.add('avatar-name-tag--interactive')
+      el.dataset.peerAddress = this.address
       const hint = document.createElement('div')
       hint.className = 'avatar-name-tag__options-hint'
       hint.innerHTML = OPTIONS_TOOLTIP_HTML

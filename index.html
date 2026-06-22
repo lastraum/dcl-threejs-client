@@ -556,6 +556,17 @@
         overflow: visible;
         z-index: 2;
       }
+      .avatar-name-tag--interactive::before {
+        content: '';
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: calc(100% + 28px);
+        height: calc(100% + 20px);
+        transform: translate(-50%, -50%);
+        border-radius: 999px;
+        pointer-events: auto;
+      }
       .avatar-name-tag__options-hint {
         position: absolute;
         left: 50%;

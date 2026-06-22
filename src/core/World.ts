@@ -661,8 +661,9 @@ export class World {
   private logRuntimeRecookDisabledOnce(): void {
     if (this.loggedRuntimeRecookDisabled || this.allowsRuntimeColliderRecook()) return
     this.loggedRuntimeRecookDisabled = true
-    console.info(
-      '[World] runtime collider recook disabled — boot cook + pose slides only; add ?colliderrecook or enable in Help (?) to allow drift recook'
+    clientDebugLog.log(
+      'client',
+      'Runtime collider recook disabled — boot cook + pose slides only; add ?colliderrecook or enable in Help (?) to allow drift recook'
     )
   }
 

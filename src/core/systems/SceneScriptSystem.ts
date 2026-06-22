@@ -1105,7 +1105,7 @@ export class SceneScriptSystem {
   /** Fold the latest projection decode batch into the render-frame diff accumulator. */
   private foldProjectionChanges(): void {
     const { PlayerEntity, CameraEntity, RootEntity } = this.view
-    const { TriggerArea, Transform } = this.readComponents
+    const { TriggerArea, Transform, Billboard } = this.readComponents
 
     for (const change of this.projection.changes) {
       if (change.entity === PlayerEntity || change.entity === CameraEntity || change.entity === RootEntity) {
@@ -1117,6 +1117,10 @@ export class SceneScriptSystem {
         (change.componentId === Transform.componentId && TriggerArea.has(change.entity))
       ) {
         this.triggerStructureDirty = true
+      }
+
+      if (change.componentId === Billboard.componentId) {
+        this.entityStore?.setBillboard(change.entity, change.kind !== 'delete')
       }
 
       let comps = this.pendingDiff.get(change.entity)
@@ -1710,6 +1714,7 @@ export class SceneScriptSystem {
       const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
       if (sceneDiff.size) await this.bridge.consumeDiff(sceneDiff, view, tweenRefresh)
       else await this.bridge.drainPendingWork()
+      this.bridge.reconcileBillboardFlags()
       this.flushPointerStructureIfDirty()
       return
     }
@@ -1894,7 +1899,6 @@ export class SceneScriptSystem {
     this.videoPlayerBridge?.sync(this.view)
     this.audioSourceBridge?.sync(this.view)
     this.audioStreamBridge?.sync(this.view)
-    this.billboardBridge?.update()
     this.avatarShapes?.update(delta)
     this.animatorBridge?.update(delta)
     this.particleBridge?.update(delta)
@@ -1902,6 +1906,8 @@ export class SceneScriptSystem {
     this.flushAvatarAttachTransforms()
     this.tweenBridge?.update(delta, this.view)
     this.markTweenColliderPosesDirty()
+    // After tweens/animators — billboard rotation is renderer-owned, not in ECS Transform.
+    this.billboardBridge?.update()
     this.deliverTweenStateToWorker()
     this.videoPlayerBridge?.update(tickNumber, this.view)
     this.audioSourceBridge?.update(tickNumber, this.view)

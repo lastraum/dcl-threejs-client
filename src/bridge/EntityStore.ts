@@ -114,6 +114,10 @@ export class EntityStore {
     return this.meta.get(entity)?.flags.spritePool === true
   }
 
+  isBillboard(entity: Entity): boolean {
+    return this.meta.get(entity)?.flags.billboard === true
+  }
+
   /**
    * Sprite pool slots may receive MeshRenderer/Material PUTs without Transform
    * only after DELETE_ENTITY suspend — not for active scene entities.

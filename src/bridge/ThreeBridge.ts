@@ -277,6 +277,8 @@ export class ThreeBridge {
     if (materialTouch.size) {
       void this.runSpriteMaterialPass([...materialTouch], Material)
     }
+
+    this.syncBillboardFlagsFromDiff(diff, this.ecs.Billboard)
   }
 
   setVideoPlayerBridge(bridge: VideoPlayerBridge): void {
@@ -794,12 +796,17 @@ export class ThreeBridge {
     }
   }
 
-  /** Hydration full-walk — reconcile billboard tracked set after bulk spawn. */
-  private refreshTrackedEntityFlags(): void {
+  /** Reconcile billboard tracked flags from live ECS (hydration + post-diff). */
+  reconcileBillboardFlags(): void {
     const { Billboard } = this.ecs
     this.store.forEachSceneEntity((entity) => {
       this.store.setBillboard(entity, Billboard.has(entity))
     })
+  }
+
+  /** Hydration full-walk — reconcile billboard tracked set after bulk spawn. */
+  private refreshTrackedEntityFlags(): void {
+    this.reconcileBillboardFlags()
   }
 
   private applyAnimatedPlaneUvs(entity: Entity): void {

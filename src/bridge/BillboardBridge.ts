@@ -17,20 +17,25 @@ export class BillboardBridge {
     const { Billboard } = this.ecs
     const camPos = this.getCamera().position
 
-    for (const entity of this.store.getBillboardEntities()) {
-      const obj = this.store.getNode(entity)
-      if (!obj || !Billboard.has(entity)) continue
+    // Live ECS check — runtime spawns (firepit pivots) never relied on tracked flags alone.
+    this.store.forEachSceneEntity((entity, obj) => {
+      if (!Billboard.has(entity)) {
+        if (this.store.isBillboard(entity)) this.store.setBillboard(entity, false)
+        return
+      }
+      this.store.setBillboard(entity, true)
+
       const mode = Billboard.get(entity).billboardMode ?? 7
-      if (mode === 0) continue
+      if (mode === 0) return
 
       if (mode === BM_Y || mode === (BM_X | BM_Y)) {
         const dx = camPos.x - obj.position.x
         const dz = camPos.z - obj.position.z
         obj.rotation.y = Math.atan2(dx, dz)
-        continue
+      } else {
+        obj.lookAt(camPos)
       }
-
-      obj.lookAt(camPos)
-    }
+      obj.updateMatrixWorld(true)
+    })
   }
 }

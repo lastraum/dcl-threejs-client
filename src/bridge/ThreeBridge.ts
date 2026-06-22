@@ -152,12 +152,16 @@ export class ThreeBridge {
     return this.store.nodes
   }
 
-  /** Sprite pool slot — live ECS check so stale flags never suppress colliders. */
+  /**
+   * Tracked sprite-pool recycle slot — live ECS guard so stale flags never suppress colliders
+   * on entities that gained MeshCollider / PointerEvents.
+   */
   isAnimatedSpriteSlot(entity: Entity): boolean {
-    return this.isSpritePoolEntity(entity)
+    return this.store.isSpritePool(entity) && this.isSpritePoolEntity(entity)
   }
 
-  private skipSpriteSecondaryNotify = (entity: Entity): boolean => this.isSpritePoolEntity(entity)
+  /** Only suspended pool slots skip secondary notifies — not every animated plane in the scene. */
+  private skipSpriteSecondaryNotify = (entity: Entity): boolean => this.isAnimatedSpriteSlot(entity)
 
   private sceneDiffOptions(extra?: Partial<ApplySceneDiffOptions>): ApplySceneDiffOptions {
     return {
@@ -317,10 +321,7 @@ export class ThreeBridge {
   }
 
   private notifyMeshComponent(entity: Entity, componentId: number): void {
-    if (this.store.isSpritePool(entity)) {
-      const { PointerEvents, MeshCollider } = this.ecs
-      if (!PointerEvents.has(entity) && !MeshCollider.has(entity)) return
-    }
+    if (this.isAnimatedSpriteSlot(entity)) return
     this.store.notifyComponentChange(entity, componentId, 'put')
   }
 

@@ -458,6 +458,14 @@ export class World {
     this.player.setAssetCache(this.assets, scene.realm.contentUrl)
     await this.player.loadAvatar(onProgress)
     this.bindAvatarAttachTargets()
+    // Social/avatar load can overlap post-play-ready CRDT — sync + register before pointer bind.
+    this.sceneScript.syncCollision()
+    this.reconcileColliderCookQueue()
+    this.drainPendingColliderCooksInitialOnly()
+    this.physics.warmStaticScene()
+    this.sceneScript.flushSceneGraphMatrices()
+    this.sceneScript.preparePointerRaycast()
+    this.sceneScript.refreshPointerTargets()
     this.sceneScript.bindPointerEvents(
       () => this.player!.getWorldPosition(),
       () => this.player!.isPointerBlocked(),
@@ -590,9 +598,6 @@ export class World {
         if (this.playerMode && this.player) {
           this.player.update(delta)
           this.sceneScript.syncClientEntities(this.player.getEntityPose(), this.player.getCameraEntityPose())
-          this.sceneScript.updateTriggerAreas()
-          this.sceneScript.updateRaycasts()
-          this.sceneScript.updatePointerEvents(startFrame)
 
           const pos = this.player.getPosition()
           const yaw = this.player.getNetworkYaw()
@@ -619,6 +624,12 @@ export class World {
 
         // Tweens / billboards / GLTF animators — sync frame, before render (not async-gated).
         this.sceneScript.pumpMotionBridges(delta, startFrame)
+        if (this.playerMode && this.player) {
+          this.sceneScript.preparePointerRaycast()
+          this.sceneScript.updateTriggerAreas()
+          this.sceneScript.updateRaycasts()
+          this.sceneScript.updatePointerEvents(startFrame)
+        }
         // Campfire sprite UV animation — sync frame (tiny tracked set, self-prunes static planes).
         this.sceneScript.syncAnimatedSprites()
         // Texture retries — sync frame so failed loads don't block async projection drain.
@@ -627,6 +638,9 @@ export class World {
       onAsyncFrame: async (_delta) => {
         await this.sceneScript.syncRenderer()
         this.sceneScript.syncCollision()
+        if (this.playerMode && this.player) {
+          this.sceneScript.preparePointerRaycast()
+        }
 
         if (this.playerMode && this.player) {
           this.applyPhysicsColliders()
@@ -673,9 +687,34 @@ export class World {
     if (!cookPending && !fpDrifted && !colliderWork) return
 
     this.reconcileColliderCookQueue()
-    if (cookPending && this.allowsRuntimeColliderRecook()) {
-      this.drainRuntimeColliderCookQueue()
+    if (this.colliderCookQueue.size > 0) {
+      if (this.allowsRuntimeColliderRecook()) {
+        this.drainRuntimeColliderCookQueue()
+      } else {
+        this.drainPendingColliderCooksInitialOnly()
+      }
     }
+  }
+
+  /**
+   * Register never-cooked PhysX actors while runtime recook is off — still required for
+   * composite/theatre spawns that land after boot cook.
+   */
+  private drainPendingColliderCooksInitialOnly(): void {
+    if (this.colliderCookQueue.size === 0) return
+    const burstActive = performance.now() < this.runtimeColliderBurstUntil
+    const pending = this.colliderCookQueue.size
+    if (pending >= World.RUNTIME_COLLIDER_BURST_QUEUE || burstActive) {
+      let passes = 0
+      const maxPasses = burstActive ? 10 : 5
+      while (this.colliderCookQueue.size > 0 && passes < maxPasses) {
+        this.drainColliderCookQueue({ initialOnly: true })
+        passes++
+      }
+    } else {
+      this.drainColliderCookQueue({ initialOnly: true })
+    }
+    this.scheduleWarmStaticScene()
   }
 
   /** Runtime PhysX cook — prioritize near-player, burst-drain after composite spawns (theatre). */
@@ -754,7 +793,7 @@ export class World {
     const updated = this.physics.applyStaticColliderPoseUpdates(slideDescs)
     if (updated > 0) this.scheduleWarmStaticScene()
     if (this.colliderCookQueue.size > 0 && this.collidersLoadingComplete) {
-      this.drainColliderCookQueue({ initialOnly: true })
+      this.drainPendingColliderCooksInitialOnly()
     }
   }
 
@@ -834,7 +873,7 @@ export class World {
       this.enqueueColliderCook(ecsEntity)
       this.maybeBeginRuntimeColliderBurst(queueBefore)
       if (this.collidersLoadingComplete) {
-        this.drainColliderCookQueue({ initialOnly: true })
+        this.drainPendingColliderCooksInitialOnly()
         this.applyColliderPoseSlidesForPhysIds(physIds)
       }
       return
@@ -843,7 +882,7 @@ export class World {
     this.maybeBeginRuntimeColliderBurst(queueBefore)
     if (this.collidersLoadingComplete) {
       const touched = [...this.colliderCookQueue]
-      this.drainColliderCookQueue({ initialOnly: true })
+      this.drainPendingColliderCooksInitialOnly()
       this.applyColliderPoseSlidesForPhysIds(touched)
     }
   }

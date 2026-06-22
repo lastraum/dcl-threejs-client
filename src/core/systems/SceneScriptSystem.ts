@@ -1138,6 +1138,18 @@ export class SceneScriptSystem {
     this.pointerEvents?.invalidatePointerCache()
   }
 
+  /** Rebuild pointer raycast targets after collision sync (spawn / incremental colliders). */
+  refreshPointerTargets(): void {
+    this.pointerStructureDirty = true
+    this.flushPointerStructureIfDirty()
+  }
+
+  /** MatrixWorld + collider pose sync immediately before pointer raycast. */
+  preparePointerRaycast(): void {
+    this.flushSceneGraphMatrices()
+    this.syncCollisionPoses()
+  }
+
   private flushTriggerStructureIfDirty(): void {
     if (!this.triggerStructureDirty) return
     this.triggerStructureDirty = false
@@ -1172,6 +1184,7 @@ export class SceneScriptSystem {
       flushPointerCrdt: () => {
         void this.flushPendingPointerCrdt()
       },
+      prepareRaycast: () => this.preparePointerRaycast(),
       recordAppend: this.recordRendererAppend
     })
     let pointerEntities = 0
@@ -1764,6 +1777,17 @@ export class SceneScriptSystem {
     }
   }
 
+  /** BillboardBridge rotates nodes renderer-side — slide PhysX / pointer collider poses. */
+  private markBillboardColliderPosesDirty(): void {
+    const { Billboard, MeshCollider, GltfContainer } = this.readComponents
+    for (const [entity] of this.view.getEntitiesWith(Billboard)) {
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
+        this.colliderPoseDirty.add(entity)
+      }
+      this.markDescendantColliderPosesDirty(entity)
+    }
+  }
+
   /** Pose refresh before PhysX cook — keeps MeshCollider actors aligned with visuals. */
   syncCollisionPoses(): void {
     if (!this.collision || !this.bridge) return
@@ -1796,6 +1820,7 @@ export class SceneScriptSystem {
       this.rebuildColliderRootEntities()
       // Scene graph parents may settle after extract — align PhysX poses to live matrixWorld.
       this.syncCollisionPoses()
+      this.refreshPointerTargets()
       return
     }
 
@@ -1839,6 +1864,7 @@ export class SceneScriptSystem {
       for (const entity of structureEntities) {
         if (!this.colliderStructureDirty.has(entity)) this.collidersCookCallback?.(entity)
       }
+      this.refreshPointerTargets()
     }
 
     if (poseChangedEntities.length > 0) {
@@ -1908,6 +1934,7 @@ export class SceneScriptSystem {
     this.markTweenColliderPosesDirty()
     // After tweens/animators — billboard rotation is renderer-owned, not in ECS Transform.
     this.billboardBridge?.update()
+    this.markBillboardColliderPosesDirty()
     this.deliverTweenStateToWorker()
     this.videoPlayerBridge?.update(tickNumber, this.view)
     this.audioSourceBridge?.update(tickNumber, this.view)

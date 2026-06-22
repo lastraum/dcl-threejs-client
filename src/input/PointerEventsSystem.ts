@@ -38,6 +38,8 @@ type PointerDeps = {
   getPlayerPosition: () => THREE.Vector3 | null
   isPointerBlocked: () => boolean
   flushPointerCrdt?: () => void
+  /** Flush matrixWorld + collider poses immediately before a raycast (click / hover). */
+  prepareRaycast?: () => void
   /** Source-capture each PointerEventsResult append for the outbound CrdtEncoder. */
   recordAppend?: (componentId: number, entity: Entity, value: unknown) => void
 }
@@ -238,6 +240,8 @@ export class PointerEventsSystem {
 
   private computeCurrentHit(): PointerHit | null {
     if (!this.deps || !this.pointerEntitySet.size) return null
+    this.deps.prepareRaycast?.()
+    this.rebuildPointerCacheIfNeeded()
     const { collision, camera, getPlayerPosition } = this.deps
 
     const pointerLocked = document.pointerLockElement === this.canvas
@@ -503,6 +507,7 @@ export class PointerEventsSystem {
 
   private pickAtPointer(): PointerHit | null {
     if (!this.deps) return null
+    this.deps.prepareRaycast?.()
     this.rebuildPointerCacheIfNeeded()
     const ray = this.computePointerRay(this.deps.camera)
     this.deps.camera.getWorldPosition(_camPos)

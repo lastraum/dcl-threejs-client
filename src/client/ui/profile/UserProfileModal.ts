@@ -75,6 +75,7 @@ export class UserProfileModal {
     this.target = null
     this.preview?.dispose()
     this.preview = null
+    this.root.innerHTML = ''
     this.root.hidden = true
     this.backdrop.hidden = true
   }

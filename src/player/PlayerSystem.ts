@@ -283,6 +283,10 @@ export class PlayerSystem {
     return this.input?.orbiting ?? false
   }
 
+  cancelCameraPointer(): void {
+    this.input?.cancelCameraPointer()
+  }
+
   setJumpHeld(down: boolean): void {
     this.input?.setJumpHeld(down)
   }

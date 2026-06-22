@@ -9,6 +9,7 @@ export type ProfileUiControllerOptions = {
   social: SocialService
   getPeerUrl: () => string
   onOpenChat?: () => void
+  onPrepareOverlay?: () => void
 }
 
 /** Central hub for user pill context menus and the shared profile modal. */
@@ -35,6 +36,7 @@ export class ProfileUiController {
   }
 
   openProfile(target: UserProfileModalTarget): void {
+    this.prepareOverlay()
     this.contextMenu.hide()
     void this.profileModal.show(target)
   }
@@ -49,12 +51,17 @@ export class ProfileUiController {
   }
 
   openContextMenu(address: string, clientX: number, clientY: number): void {
-    if (document.pointerLockElement) document.exitPointerLock()
+    this.prepareOverlay()
     const key = address.toLowerCase()
     void this.options.social.ensurePeerProfile(key).then(() => {
       const peer = this.options.social.getPeerDisplay(key)
       this.contextMenu.show(key, peer, clientX, clientY)
     })
+  }
+
+  private prepareOverlay(): void {
+    this.options.onPrepareOverlay?.()
+    if (document.pointerLockElement) document.exitPointerLock()
   }
 
   private handleContextAction(action: UserContextMenuAction, address: string): void {

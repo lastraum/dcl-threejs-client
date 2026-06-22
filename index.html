@@ -38,6 +38,19 @@
         overflow: hidden;
         background: #0a1624;
         font-family: system-ui, sans-serif;
+        position: relative;
+      }
+      #app canvas {
+        display: block;
+        position: relative;
+        z-index: 1;
+      }
+      .name-tag-layer {
+        position: absolute;
+        top: 0;
+        left: 0;
+        z-index: 6;
+        pointer-events: none;
       }
       #hud {
         display: none;
@@ -540,6 +553,8 @@
         position: relative;
         pointer-events: auto;
         cursor: context-menu;
+        overflow: visible;
+        z-index: 2;
       }
       .avatar-name-tag__options-hint {
         position: absolute;
@@ -560,13 +575,17 @@
         text-transform: uppercase;
         color: rgba(255, 255, 255, 0.92);
         opacity: 0;
+        visibility: hidden;
         pointer-events: none;
-        transition: opacity 0.15s ease, transform 0.15s ease;
+        z-index: 20;
+        transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s ease;
         white-space: nowrap;
       }
       .avatar-name-tag--interactive:hover .avatar-name-tag__options-hint,
-      .avatar-name-tag--interactive:focus-within .avatar-name-tag__options-hint {
+      .avatar-name-tag--interactive:focus-within .avatar-name-tag__options-hint,
+      .avatar-name-tag--interactive.avatar-name-tag--hovered .avatar-name-tag__options-hint {
         opacity: 1;
+        visibility: visible;
         transform: translateX(-50%) translateY(0);
       }
       .avatar-name-tag__options-icon {
@@ -2019,6 +2038,14 @@
         color: rgba(255, 255, 255, 0.72);
       }
 
+      /* Profile overlays — [hidden] must win over display:flex from component styles */
+      .user-context-menu-backdrop[hidden],
+      .user-context-menu[hidden],
+      .user-profile-modal-backdrop[hidden],
+      .user-profile-modal[hidden] {
+        display: none !important;
+      }
+
       /* User context menu — right-click on name pills */
       .user-context-menu-backdrop {
         position: fixed;
@@ -2170,6 +2197,9 @@
         background: rgba(4, 6, 14, 0.72);
         backdrop-filter: blur(4px);
       }
+      .user-profile-modal:not([hidden]) {
+        display: flex;
+      }
       .user-profile-modal {
         position: fixed;
         z-index: 151;
@@ -2178,7 +2208,6 @@
         transform: translate(-50%, -50%);
         width: min(920px, calc(100vw - 32px));
         max-height: min(640px, calc(100vh - 40px));
-        display: flex;
         flex-direction: column;
         border-radius: 18px;
         overflow: hidden;

@@ -327,7 +327,8 @@ export class AppController {
       session: world.session,
       social: world.social,
       getPeerUrl: () => this.sceneContentUrl,
-      onOpenChat: () => this.shell?.openChatPanel()
+      onOpenChat: () => this.shell?.openChatPanel(),
+      onPrepareOverlay: () => this.world?.cancelCameraPointer()
     })
     this.shell.setOnViewLocalProfile(() => this.profileUi?.openProfile({ kind: 'local' }))
 

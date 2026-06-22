@@ -1347,6 +1347,10 @@ export class World {
     this.player?.setJumpHeld(down)
   }
 
+  cancelCameraPointer(): void {
+    this.player?.cancelCameraPointer()
+  }
+
   playLocalEmote(emoteRef: string, options?: { loop?: boolean; broadcast?: boolean }): void {
     if (!this.playerMode || !this.player) return
     void this.player.playEmote(emoteRef, { loop: options?.loop }).then((resolved) => {

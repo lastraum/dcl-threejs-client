@@ -157,15 +157,26 @@ export class NameTag {
   private wireInteraction(): void {
     if (!this.address) return
 
+    const blockCameraInput = (e: Event): void => {
+      e.stopPropagation()
+    }
+
+    this.rootEl.addEventListener('mouseenter', () => {
+      this.rootEl.classList.add('avatar-name-tag--hovered')
+    })
+    this.rootEl.addEventListener('mouseleave', () => {
+      this.rootEl.classList.remove('avatar-name-tag--hovered')
+    })
+
     this.rootEl.addEventListener('contextmenu', (e) => {
       e.preventDefault()
       e.stopPropagation()
       contextMenuHandler?.(this.address!, e.clientX, e.clientY)
     })
 
-    this.rootEl.addEventListener('pointerdown', (e) => {
-      if (e.button === 2) e.stopPropagation()
-    })
+    this.rootEl.addEventListener('pointerdown', blockCameraInput, true)
+    this.rootEl.addEventListener('mousedown', blockCameraInput, true)
+    this.rootEl.addEventListener('pointerup', blockCameraInput, true)
   }
 
   private applyStyle(): void {

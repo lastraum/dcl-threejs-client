@@ -107,6 +107,7 @@ export class UserContextMenu {
   hide(): void {
     this.open = false
     this.address = null
+    this.root.innerHTML = ''
     this.root.hidden = true
     this.backdrop.hidden = true
   }

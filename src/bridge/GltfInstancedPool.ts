@@ -3,6 +3,7 @@ import type { Entity } from '@dcl/ecs'
 import type { EntityStore } from './EntityStore'
 import type { MirrorComponents } from './mirrorComponents'
 import type { StaticEntityRegistry } from './StaticEntityRegistry'
+import { collectGltfRenderMeshes } from '../collision/gltfRenderMeshes'
 import { isEmoteAnchorGltfSrc } from '../rendering/DclTextureResolver'
 
 const INITIAL_CAPACITY = 64
@@ -142,11 +143,7 @@ export class GltfInstancedPool {
     entityNode.updateMatrixWorld(true)
     this.entityWorldInv.copy(entityNode.matrixWorld).invert()
     clone.updateMatrixWorld(true)
-    clone.traverse((obj) => {
-      const mesh = obj as THREE.Mesh
-      if (!mesh.isMesh || !mesh.geometry) return
-      const pos = mesh.geometry.getAttribute('position')
-      if (!pos || pos.count < 3) return
+    for (const mesh of collectGltfRenderMeshes(clone)) {
       const localMatrix = new THREE.Matrix4()
       mesh.updateMatrixWorld(true)
       // Entity-relative mesh pose — world matrix would double-apply entity transforms.
@@ -156,7 +153,7 @@ export class GltfInstancedPool {
         material: mesh.material,
         localMatrix
       })
-    })
+    }
     if (!templates.length) return null
 
     const holder = new THREE.Group()

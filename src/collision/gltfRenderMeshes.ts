@@ -1,5 +1,9 @@
 import * as THREE from 'three'
-import { isGltfInvisibleColliderName } from './gltfColliderNaming'
+import {
+  isGltfInvisibleColliderMesh,
+  isGltfInvisibleColliderName,
+  isGltfVisibleClassMesh
+} from './gltfColliderNaming'
 
 function meshMaterials(mesh: THREE.Mesh): THREE.Material[] {
   return Array.isArray(mesh.material) ? mesh.material : [mesh.material]
@@ -37,6 +41,52 @@ function unhideRenderAncestors(root: THREE.Object3D): void {
   })
 }
 
+function classifyGltfRenderMeshes(root: THREE.Object3D): {
+  visibleClass: THREE.Mesh[]
+  colliderClass: THREE.Mesh[]
+  misExport: boolean
+} {
+  const visibleClass: THREE.Mesh[] = []
+  const colliderClass: THREE.Mesh[] = []
+
+  root.traverse((node) => {
+    if (!(node instanceof THREE.Mesh)) return
+    if (isGltfInvisibleColliderMesh(node, root)) {
+      if (isGltfVisibleClassMesh(node)) visibleClass.push(node)
+      else colliderClass.push(node)
+      return
+    }
+    visibleClass.push(node)
+  })
+
+  const visibleHasDisplay = visibleClass.some(gltfMeshHasDisplayMaps)
+  const misExport = !visibleHasDisplay && colliderClass.some(gltfMeshHasDisplayMaps)
+  return { visibleClass, colliderClass, misExport }
+}
+
+/** Meshes that should draw for a GLTF instance (excludes hidden `_collider` hulls). */
+export function collectGltfRenderMeshes(root: THREE.Object3D): THREE.Mesh[] {
+  const { visibleClass, colliderClass, misExport } = classifyGltfRenderMeshes(root)
+  const meshes: THREE.Mesh[] = []
+
+  for (const mesh of visibleClass) {
+    const pos = mesh.geometry?.getAttribute('position')
+    if (!pos || pos.count < 3) continue
+    if (misExport && !gltfMeshHasDisplayMaps(mesh)) continue
+    meshes.push(mesh)
+  }
+
+  if (misExport) {
+    for (const mesh of colliderClass) {
+      const pos = mesh.geometry?.getAttribute('position')
+      if (!pos || pos.count < 3) continue
+      if (gltfMeshHasDisplayMaps(mesh)) meshes.push(mesh)
+    }
+  }
+
+  return meshes
+}
+
 /**
  * Apply DCL glTF render visibility after cache sanitization / on every attach sync.
  *
@@ -45,17 +95,7 @@ function unhideRenderAncestors(root: THREE.Object3D): void {
  * show the textured `_collider` mesh and hide the proxy from the camera (still raycastable).
  */
 export function syncGltfInstanceRenderState(root: THREE.Object3D): void {
-  const visibleClass: THREE.Mesh[] = []
-  const colliderClass: THREE.Mesh[] = []
-
-  root.traverse((node) => {
-    if (!(node instanceof THREE.Mesh)) return
-    if (isGltfInvisibleColliderName(node.name)) colliderClass.push(node)
-    else visibleClass.push(node)
-  })
-
-  const visibleHasDisplay = visibleClass.some(gltfMeshHasDisplayMaps)
-  const misExport = !visibleHasDisplay && colliderClass.some(gltfMeshHasDisplayMaps)
+  const { colliderClass, misExport } = classifyGltfRenderMeshes(root)
 
   root.traverse((node) => {
     if (isGltfInvisibleColliderName(node.name)) {
@@ -71,6 +111,10 @@ export function syncGltfInstanceRenderState(root: THREE.Object3D): void {
       else node.visible = true
     }
   })
+
+  for (const mesh of colliderClass) {
+    mesh.visible = misExport && gltfMeshHasDisplayMaps(mesh)
+  }
 
   unhideRenderAncestors(root)
 }

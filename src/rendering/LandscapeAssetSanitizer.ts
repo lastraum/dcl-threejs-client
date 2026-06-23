@@ -107,18 +107,15 @@ function downgradePhysicalMaterial(material: THREE.MeshPhysicalMaterial): THREE.
   return standard
 }
 
-function simplifyMaterial(material: THREE.Material, meshName = ''): THREE.Material {
-  let result: THREE.Material
+function simplifyMaterial(material: THREE.Material): THREE.Material {
   if (material instanceof THREE.MeshPhysicalMaterial) {
-    result = downgradePhysicalMaterial(material)
-  } else if (material instanceof THREE.MeshStandardMaterial) {
-    stripOptionalMaps(material)
-    result = material
-  } else {
-    result = material
+    return downgradePhysicalMaterial(material)
   }
-  tuneFoliageMaterial(result, meshName)
-  return result
+  if (material instanceof THREE.MeshStandardMaterial) {
+    stripOptionalMaps(material)
+    return material
+  }
+  return material
 }
 
 /** Keep glTF materials under WebGL fragment texture unit limits (16 on many GPUs). */
@@ -130,14 +127,14 @@ export function sanitizeSceneGltfMaterials(root: THREE.Object3D): void {
       return
     }
     if (Array.isArray(node.material)) {
-      node.material = node.material.map((material) => simplifyMaterial(material, node.name))
+      node.material = node.material.map((material) => simplifyMaterial(material))
       return
     }
-    node.material = simplifyMaterial(node.material, node.name)
+    node.material = simplifyMaterial(node.material)
   })
 }
 
-/** Foliage cutout only — do not rewrite scene alpha-blend glass (e.g. La Cantina elevator tube). */
+/** Landscape tree cards only — alpha cutout + double-sided (see sanitizeLandscapeGltf). */
 function tuneFoliageMaterial(material: THREE.Material, meshName = ''): void {
   if (!(material instanceof THREE.MeshStandardMaterial)) return
 

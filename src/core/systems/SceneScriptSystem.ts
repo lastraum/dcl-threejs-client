@@ -395,25 +395,72 @@ export class SceneScriptSystem {
     }
   }
 
+  private isAnimatedGltfCollider(entity: Entity): boolean {
+    const { Animator, GltfContainer } = this.readComponents
+    return GltfContainer.has(entity) && Animator.has(entity)
+  }
+
   /**
-   * PhysX pose slides follow entity transforms and the grounded GLTF tread — not every Animator
-   * in the scene (decorative mesh bob stays visual-only).
+   * PhysX pose slides: ECS transform movers + stand surfaces (grounded or tread under feet).
    */
-  collectPhysXPoseSyncEntities(groundEcs: Entity | null): Entity[] {
-    const out = new Set<Entity>()
+  collectPhysXPoseSyncEntities(groundEcs: Entity | null, feet?: THREE.Vector3): Entity[] {
+    const out = new Set<Entity>(this.collectPhysXShapeMotionEntities(groundEcs, feet))
     if (groundEcs !== null) out.add(groundEcs)
     for (const entity of this.lastTweenMotionEntities) out.add(entity)
     for (const entity of this.lastSyncFrameTransformEntities) out.add(entity)
     return [...out]
   }
 
-  /** GLTF tread shape locals — only the surface the CCT is grounded on (animated lift mesh). */
-  collectPhysXShapeMotionEntities(groundEcs: Entity | null): Set<Entity> {
+  /**
+   * GLTF shape-local sync — Animator treads under the capsule column or already grounded on.
+   * Distant bobbing props stay at rest pose until the player steps on them.
+   */
+  collectPhysXShapeMotionEntities(groundEcs: Entity | null, feet?: THREE.Vector3): Set<Entity> {
     const out = new Set<Entity>()
     if (groundEcs !== null && this.gltfColliders?.hasExtractedCollider(groundEcs)) {
-      out.add(groundEcs)
+      if (this.isAnimatedGltfCollider(groundEcs)) out.add(groundEcs)
+    }
+    const nodes = this.bridge?.getEntityNodes()
+    if (feet && nodes && this.gltfColliders) {
+      const under = this.gltfColliders.findAnimatedStandSurfaceEntity(
+        nodes,
+        feet,
+        (entity) => this.isAnimatedGltfCollider(entity)
+      )
+      if (under !== null) out.add(under)
     }
     return out
+  }
+
+  /**
+   * Riding + PhysX bounds scope — grounded actor, or animated tread under feet when stepping on.
+   */
+  resolveStandSurfacePhysEntity(
+    feet: THREE.Vector3 | undefined,
+    groundPhysEntity: number | null
+  ): number | null {
+    const nodes = this.bridge?.getEntityNodes()
+    let animatedPhys: number | null = null
+    if (feet && nodes && this.gltfColliders) {
+      const under = this.gltfColliders.findAnimatedStandSurfaceEntity(
+        nodes,
+        feet,
+        (entity) => this.isAnimatedGltfCollider(entity)
+      )
+      if (under !== null) animatedPhys = GLTF_COLLIDER_ENTITY_BASE + under
+    }
+
+    if (groundPhysEntity !== null && groundPhysEntity !== -1) {
+      if (animatedPhys !== null && groundPhysEntity === animatedPhys) return groundPhysEntity
+      if (animatedPhys !== null) return animatedPhys
+      return groundPhysEntity
+    }
+    return animatedPhys
+  }
+
+  standSurfaceEcsFromPhys(physEntity: number | null): Entity | null {
+    if (physEntity === null || physEntity < GLTF_COLLIDER_ENTITY_BASE) return null
+    return (physEntity - GLTF_COLLIDER_ENTITY_BASE) as Entity
   }
 
   physEntityIdForPoseSync(entity: Entity): number | null {

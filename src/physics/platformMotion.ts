@@ -14,10 +14,15 @@
  *
  * Mesh walk-surface Δ does not drive either pipeline.
  *
- * 3. **Decorative animator** (SnoopCar, etc.)
- *    Visual mesh may bob; PhysX stays at entity rest pose unless the player is grounded on
- *    that collider (lift tread) or ECS Transform / Tween moves the whole entity.
+ * 3. **Animator mesh deformation** (SnoopCar, lift tread, etc.)
+ *    PhysX shape locals sync only when the capsule column overlaps that tread (stand surface).
+ *    Distant animated props stay at rest pose — no camera / bystander jitter.
  */
+
+/** Feet may be this far above animated tread to start PhysX shape sync (step onto bobbing prop). */
+export const STAND_SURFACE_MAX_VERT_GAP = 1.4
+/** Feet must be on/near tread top — not walking on floor far below a bobbing mesh overhead. */
+export const STAND_SURFACE_CONTACT_TOLERANCE = 0.08
 
 /** Ignore sub-mm PhysX/probe jitter on static floors (~8 mm). */
 export const MIN_PLATFORM_TRANSFER_LEN_SQ = 6.25e-5

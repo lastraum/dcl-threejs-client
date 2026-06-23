@@ -8,7 +8,11 @@ import { ColliderLayer, hasColliderLayer } from './ColliderLayer'
 import { isGltfInvisibleColliderMesh, isGltfVisibleClassMesh } from './gltfColliderNaming'
 import { bakeTrimeshGeometry } from '../physics/bakeTrimeshGeometry'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
-import { isSignificantPlatformDelta } from '../physics/platformMotion'
+import {
+  isSignificantPlatformDelta,
+  STAND_SURFACE_CONTACT_TOLERANCE,
+  STAND_SURFACE_MAX_VERT_GAP
+} from '../physics/platformMotion'
 
 export const LANDSCAPE_COLLIDER_ENTITY_BASE = 19_000_000
 /** Synthetic PhysX entity id — one actor per GltfContainer ECS entity (avoids MeshCollider id clash). */
@@ -541,6 +545,32 @@ export class GltfColliderExtractor {
 
   hasExtractedCollider(entity: Entity): boolean {
     return this.extracted.has(entity)
+  }
+
+  /**
+   * Highest Animator GLTF tread under the capsule column — proactive stand surface before CCT
+   * has registered grounding (avoids fall-through on bobbing props like SnoopCar).
+   */
+  findAnimatedStandSurfaceEntity(
+    entityNodes: Map<Entity, THREE.Group>,
+    feet: THREE.Vector3,
+    isAnimatedCollider: (entity: Entity) => boolean
+  ): Entity | null {
+    let bestEntity: Entity | null = null
+    let bestTreadY = Number.NEGATIVE_INFINITY
+
+    for (const entity of this.extracted.keys()) {
+      if (!isAnimatedCollider(entity)) continue
+      const surface = this.colliderWalkSurfacePos(entity, entityNodes, feet)
+      if (!surface) continue
+      const gap = feet.y - surface.y
+      if (gap < -STAND_SURFACE_CONTACT_TOLERANCE || gap > STAND_SURFACE_MAX_VERT_GAP) continue
+      if (surface.y > bestTreadY) {
+        bestTreadY = surface.y
+        bestEntity = entity
+      }
+    }
+    return bestEntity
   }
 
   getPhysicsColliderForEntity(entity: Entity): PhysicsColliderDesc | null {

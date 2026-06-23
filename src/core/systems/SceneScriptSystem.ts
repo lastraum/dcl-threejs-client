@@ -2004,41 +2004,32 @@ export class SceneScriptSystem {
   private readonly frameAnimatorOriginDelta = new Map<Entity, THREE.Vector3>()
   private readonly frameAnimatorOriginPos = new Map<Entity, THREE.Vector3>()
 
-  snapshotAnimatorOriginPositions(feet: THREE.Vector3, maxHoriz = 24): void {
+  snapshotAnimatorOriginPositions(_feet: THREE.Vector3, scopeEntity?: Entity): void {
     this.animatorOriginSnapshot.clear()
     const nodes = this.bridge?.getEntityNodes()
-    if (!nodes) return
-    const { Animator, GltfContainer } = this.readComponents
-    const maxSq = maxHoriz * maxHoriz
-    for (const [entity] of this.view.getEntitiesWith(Animator)) {
-      if (!GltfContainer.has(entity)) continue
-      const node = nodes.get(entity)
-      if (!node) continue
-      node.updateMatrixWorld(true)
-      const pos = new THREE.Vector3().setFromMatrixPosition(node.matrixWorld)
-      const dx = pos.x - feet.x
-      const dz = pos.z - feet.z
-      if (dx * dx + dz * dz > maxSq) continue
-      this.animatorOriginSnapshot.set(entity, pos)
-    }
+    if (!nodes || scopeEntity === undefined) return
+    const node = nodes.get(scopeEntity)
+    if (!node) return
+    node.updateMatrixWorld(true)
+    this.animatorOriginSnapshot.set(
+      scopeEntity,
+      new THREE.Vector3().setFromMatrixPosition(node.matrixWorld)
+    )
   }
 
-  /** Animator root Δ after motion bridges — Explorer moves the whole platform transform, not just bbox centers. */
-  computeAnimatorOriginDeltas(feet: THREE.Vector3, maxHoriz = 24): Entity[] {
+  /** Animator root Δ after motion bridges — only the grounded platform entity. */
+  computeAnimatorOriginDeltas(_feet: THREE.Vector3, scopeEntity?: Entity): Entity[] {
     this.frameAnimatorOriginDelta.clear()
     this.frameAnimatorOriginPos.clear()
     const changed: Entity[] = []
     const nodes = this.bridge?.getEntityNodes()
     if (!nodes) return changed
-    const maxSq = maxHoriz * maxHoriz
     for (const [entity, snapshot] of this.animatorOriginSnapshot) {
+      if (scopeEntity !== undefined && entity !== scopeEntity) continue
       const node = nodes.get(entity)
       if (!node) continue
       node.updateMatrixWorld(true)
       const pos = new THREE.Vector3().setFromMatrixPosition(node.matrixWorld)
-      const dx = pos.x - feet.x
-      const dz = pos.z - feet.z
-      if (dx * dx + dz * dz > maxSq) continue
       const delta = pos.clone().sub(snapshot)
       this.frameAnimatorOriginPos.set(entity, pos)
       if (delta.lengthSq() > 1e-14) {

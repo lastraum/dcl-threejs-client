@@ -12,7 +12,11 @@ import { geometryToPxMesh, type PxMeshHandle } from './geometryToPxMesh'
 import { bakeTrimeshGeometry, isTrimeshGeometryCookable } from './bakeTrimeshGeometry'
 import { ensureIndexedForCook } from './colliderGeometryPrep'
 import { loadPhysX } from './loadPhysX'
-import { isSignificantPlatformDelta } from './platformMotion'
+import {
+  isSignificantPlatformDelta,
+  PLATFORM_STANDING_MAX_HORIZ,
+  PLATFORM_STANDING_MAX_VERT
+} from './platformMotion'
 
 export type PhysicsColliderShapeDesc = {
   fingerprint: string
@@ -154,7 +158,7 @@ export class PhysXWorld {
    * Sampled again after pose slides; Δ goes to platformMotionDelta for the grounded actor.
    */
   private groundContactBaseline: { entity: number; point: THREE.Vector3 } | null = null
-  private groundContactDeltaTrusted = false
+
   /** Frame-start actor root world positions — reliable lift Δ when tread probes desync. */
   private readonly actorRootPoseSnapshot = new Map<number, THREE.Vector3>()
   /** Brief fallback when tread/PhysX probes glitch but the player is still grounded on a lift. */
@@ -1421,7 +1425,7 @@ export class PhysXWorld {
     this.actorRootPoseSnapshot.clear()
     this.physxActorSurfaceSnapshot.clear()
     this.groundContactBaseline = null
-    this.groundContactDeltaTrusted = false
+
   }
 
   /**
@@ -1701,7 +1705,6 @@ export class PhysXWorld {
       this.platformWalkSurfacePos.set(entity, surface)
     }
     surface.copy(hit.point)
-    this.groundContactDeltaTrusted = entity === this.lastGroundPhysEntity || entity === baseline.entity
     this.recordStickyPlatformDelta(entity, this._v1)
 
     if (platformMotionDebug.isEnabled()) {
@@ -1768,25 +1771,37 @@ export class PhysXWorld {
     feet: THREE.Vector3,
     entity: number,
     delta: THREE.Vector3,
-    maxHoriz = 8
+    maxHoriz = PLATFORM_STANDING_MAX_HORIZ
   ): 'standing' | 'overhead' | 'rising' | null {
     const surfacePos = this.platformWalkSurfacePos.get(entity)
     if (!surfacePos) return null
     const dx = feet.x - surfacePos.x
     const dz = feet.z - surfacePos.z
-    if (dx * dx + dz * dz > maxHoriz * maxHoriz) return null
+    const horizSq = dx * dx + dz * dz
+    const standingHorizSq = PLATFORM_STANDING_MAX_HORIZ * PLATFORM_STANDING_MAX_HORIZ
+    const maxHorizSq = maxHoriz * maxHoriz
+    if (horizSq > maxHorizSq) return null
 
     const surfaceYStart = surfacePos.y - delta.y
     const gapAboveFeet = surfacePos.y - feet.y
-
-    const horizSq = dx * dx + dz * dz
     const feetGapY = Math.abs(feet.y - surfacePos.y)
 
-    if (feet.y >= surfaceYStart - 2.5 && feet.y <= surfacePos.y + 1.2) return 'standing'
+    if (
+      horizSq <= standingHorizSq &&
+      feetGapY <= PLATFORM_STANDING_MAX_VERT &&
+      feet.y >= surfaceYStart - 0.15
+    ) {
+      return 'standing'
+    }
 
-    if (horizSq <= 16 && feetGapY <= 2.5 && Math.abs(delta.y) > 1e-5) return 'rising'
+    if (horizSq <= standingHorizSq && feetGapY <= 1.2 && Math.abs(delta.y) > 1e-5) return 'rising'
 
-    if (delta.y > 1e-5 && feet.y >= surfaceYStart - 1.5 && feet.y <= surfacePos.y + 2.5) {
+    if (
+      delta.y > 1e-5 &&
+      horizSq <= standingHorizSq &&
+      feet.y >= surfaceYStart - 0.35 &&
+      feet.y <= surfacePos.y + 1.2
+    ) {
       return 'rising'
     }
 
@@ -1896,7 +1911,7 @@ export class PhysXWorld {
       for (const [entity, candidate] of this.platformMotionDelta) {
         if (entity === INFINITE_GROUND_ENTITY || entity === groundEntity) continue
         if (!isSignificantPlatformDelta(candidate)) continue
-        if (!this.platformTransferMatch(feet, entity, candidate, 32)) continue
+        if (!this.platformTransferMatch(feet, entity, candidate, PLATFORM_STANDING_MAX_HORIZ)) continue
         const surface = this.platformWalkSurfacePos.get(entity)
         if (!surface) continue
         const horizSq = (feet.x - surface.x) ** 2 + (feet.z - surface.z) ** 2
@@ -1915,7 +1930,10 @@ export class PhysXWorld {
 
     if (this.standingPlatformEntity !== null) {
       const stickyDelta = this.platformMotionDeltaForEntity(this.standingPlatformEntity)
-      if (stickyDelta && this.platformTransferMatch(feet, this.standingPlatformEntity, stickyDelta, 24)) {
+      if (
+        stickyDelta &&
+        this.platformTransferMatch(feet, this.standingPlatformEntity, stickyDelta, PLATFORM_STANDING_MAX_HORIZ)
+      ) {
         return adoptPlatform(this.standingPlatformEntity, stickyDelta)
       }
     }
@@ -1926,7 +1944,7 @@ export class PhysXWorld {
     for (const [entity, delta] of this.platformMotionDelta) {
       if (entity === INFINITE_GROUND_ENTITY) continue
       if (!isSignificantPlatformDelta(delta)) continue
-      if (!this.platformTransferMatch(feet, entity, delta, 16)) continue
+      if (!this.platformTransferMatch(feet, entity, delta, PLATFORM_STANDING_MAX_HORIZ)) continue
       const surface = this.platformWalkSurfacePos.get(entity)
       if (!surface) continue
       const dx = feet.x - surface.x
@@ -1978,15 +1996,13 @@ export class PhysXWorld {
       return false
     }
     const entity = this.standingPlatformEntity
-    let match =
-      entity !== null ? this.platformTransferMatch(this.position, entity, delta, 24) : null
-    if (
-      !match &&
-      entity !== null &&
-      this.groundContactDeltaTrusted &&
-      (entity === this.lastGroundPhysEntity || entity === this.groundContactBaseline?.entity)
-    ) {
-      match = 'standing'
+    const match =
+      entity !== null
+        ? this.platformTransferMatch(this.position, entity, delta, PLATFORM_STANDING_MAX_HORIZ)
+        : null
+    if (!match) {
+      this.standingPlatformEntity = null
+      return false
     }
     this._v1.copy(this.position).add(delta)
     this.teleport(this._v1)

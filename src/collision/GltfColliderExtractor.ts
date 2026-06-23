@@ -380,7 +380,9 @@ export class GltfColliderExtractor {
       }
     }
 
-    const best = feet && columnBest ? columnBest : globalBest
+    // With `feet`, only tread under the capsule column — no global bbox fallback (animated props
+    // like SnoopCar would otherwise register platform Δ 96m away and bounce distant avatars).
+    const best = feet ? columnBest : globalBest
     return best ? best.clone() : null
   }
 

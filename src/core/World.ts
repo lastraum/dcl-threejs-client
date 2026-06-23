@@ -60,6 +60,7 @@ import { clearGeometryCookCache } from '../physics/geometryToPxMesh'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { skipRemoteAvatars } from '../client/devFlags'
 import { physxColliderDebug } from '../debug/PhysxColliderDebug'
+import { environmentDebug } from '../debug/EnvironmentDebug'
 import { platformMotionDebug } from '../debug/PlatformMotionDebug'
 
 function useOrbitMode(): boolean {
@@ -115,6 +116,7 @@ export class World {
   private ezTreeGrass: EzTreeGrassFieldHandle | null = null
   private ezTreeGrassElapsed = 0
   private foliageWindElapsed = 0
+  private unsubEnvironmentDebug: (() => void) | null = null
 
   /** Per-tick budget while GLBs still attaching on the loading screen. */
   private static readonly HYDRATION_COLLIDER_COOK_BUDGET = 80
@@ -147,6 +149,8 @@ export class World {
       camera: this.player!.getCameraEntityPose()
     }))
     this.remoteAvatars = new RemoteAvatarManager(this.host.scene)
+
+    this.unsubEnvironmentDebug = environmentDebug.subscribe(() => this.applyEnvironmentDebugVisibility())
 
     this.remoteAvatars && this.comms.setHandlers({
       onPeerJoin: (address) => {
@@ -236,6 +240,7 @@ export class World {
     const resolvedEnv = resolveSceneEnvironment(scene.metadata, scene.source)
     scene.landscapeEnvironment = resolvedEnv.landscapeEnvironment
     scene.skyLighting = resolvedEnv.skyLighting
+    environmentDebug.setSceneEnvironment(resolvedEnv.landscapeEnvironment)
 
     onProgress?.('Setting up sky…')
     await this.environment.init(scene)
@@ -367,6 +372,7 @@ export class World {
     }
 
     this.bindLandscapeColliders(openIslandShore)
+    this.applyEnvironmentDebugVisibility()
 
     if (this.playerMode && this.player) {
       onProgress?.('Connecting profile…')
@@ -763,9 +769,14 @@ export class World {
       },
       onAsyncFrame: async (_delta) => {
         await this.sceneScript.syncRenderer()
-        this.sceneScript.syncCollision()
         if (this.playerMode && this.player) {
           this.sceneScript.preparePointerRaycast()
+        }
+
+        // Sync frame already runs syncCollision after motion bridges — async only when
+        // projection diff or entity-store changes mark new collider work this frame.
+        if (this.sceneScript.hasColliderWorkPending()) {
+          this.sceneScript.syncCollision()
         }
 
         if (this.playerMode && this.player) {
@@ -793,47 +804,88 @@ export class World {
     const standPhysEntity = this.sceneScript.resolveStandSurfacePhysEntity(feet, groundPhysEntity)
     this.physics.beginPlatformMotionFrame(standPhysEntity)
     this.sceneScript.consumeSyncFrameTransforms()
-    this.sceneScript.snapshotWalkSurfacePositions(feet ?? undefined)
-    const descs = this.sceneScript.getAllPhysicsColliderDescs()
-    this.physics.snapshotColliderPositions(descs)
-    this.physics.snapshotActorRootPoses(descs)
-    this.physics.snapshotGltfColliderWalkSurfaces(descs, feet ?? undefined)
+
     const groundEcsEarly = this.sceneScript.standSurfaceEcsFromPhys(standPhysEntity)
-    if (feet) {
-      this.physics.snapshotGroundContactBaseline(feet)
-      if (groundEcsEarly !== null) {
-        this.sceneScript.snapshotAnimatorOriginPositions(feet, groundEcsEarly)
+    const onSceneGround = groundPhysEntity !== null && groundPhysEntity !== -1
+    const shapeMotionEarly = this.sceneScript.collectPhysXShapeMotionEntities(
+      groundEcsEarly,
+      feet ?? undefined,
+      groundPhysEntity
+    )
+    const needsPlatformPipeline =
+      shapeMotionEarly.size > 0 || !onSceneGround || groundPhysEntity === -1
+
+    if (needsPlatformPipeline && feet) {
+      this.sceneScript.snapshotWalkSurfacePositions(feet, 96)
+    }
+
+    let descs: ReturnType<SceneScriptSystem['getAllPhysicsColliderDescs']> | null = null
+    if (needsPlatformPipeline) {
+      descs = this.sceneScript.getAllPhysicsColliderDescs()
+      this.physics.snapshotColliderPositions(descs)
+      if (shapeMotionEarly.size > 0 || !onSceneGround) {
+        this.physics.snapshotActorRootPoses(descs)
+      }
+      if (shapeMotionEarly.size > 0 && standPhysEntity !== null && standPhysEntity !== -1) {
+        this.physics.snapshotGltfColliderWalkSurfaces(descs, feet ?? undefined, standPhysEntity)
+      }
+      if (feet) {
+        this.physics.snapshotGroundContactBaseline(feet)
+        if (groundEcsEarly !== null) {
+          this.sceneScript.snapshotAnimatorOriginPositions(feet, groundEcsEarly)
+        }
       }
     }
+
     this.sceneScript.pumpMotionBridges(delta, startFrame)
-    this.sceneScript.syncCollision()
-    let poseSync: Entity[] = []
-    if (this.collidersLoadingComplete && !this.deferPhysxCooks) {
+    if (this.sceneScript.hasColliderWorkPending()) {
+      this.sceneScript.syncCollision()
+    }
+
+    let meshMotion: Entity[] = []
+    if (this.collidersLoadingComplete && !this.deferPhysxCooks && needsPlatformPipeline && descs) {
       const groundEcs = groundEcsEarly
-      poseSync = this.sceneScript.collectPhysXPoseSyncEntities(groundEcs, feet ?? undefined)
-      const shapeMotion = this.sceneScript.collectPhysXShapeMotionEntities(groundEcs, feet ?? undefined)
-      this.sceneScript.refreshColliderDescPoses(poseSync, shapeMotion)
+      const shapeMotion = shapeMotionEarly
+      meshMotion = feet
+        ? this.sceneScript.detectAndMarkLiveColliderMeshMotion(feet, 96, standPhysEntity)
+        : []
+      const poseSync = this.sceneScript.collectPhysXPoseSyncEntities(meshMotion, shapeMotion)
+      if (poseSync.length) {
+        this.sceneScript.refreshColliderDescPoses(poseSync, shapeMotion)
+        const forceEntities = new Set<number>()
+        for (const entity of poseSync) {
+          const physId = this.sceneScript.physEntityIdForPoseSync(entity)
+          if (physId !== null) forceEntities.add(physId)
+        }
+        this.pushColliderPosesToPhysX({ forceEntities })
+      }
+      const groundIsMoving =
+        groundEcs !== null && (meshMotion.includes(groundEcs) || shapeMotion.has(groundEcs))
       const standScoped = standPhysEntity !== null && standPhysEntity !== -1
-      if (feet && standScoped) {
+      if (feet && standScoped && groundIsMoving) {
         this.physics.snapshotPhysXActorWalkSurfaces(standPhysEntity, feet, descs)
       }
-      const forceEntities = new Set<number>()
-      for (const entity of poseSync) {
-        const physId = this.sceneScript.physEntityIdForPoseSync(entity)
-        if (physId !== null) forceEntities.add(physId)
+      if (poseSync.length || groundIsMoving) {
+        this.physics.applyGltfColliderPoseDeltas(descs, feet ?? undefined)
       }
-      this.pushColliderPosesToPhysX({ forceEntities })
-      this.physics.applyGltfColliderPoseDeltas(descs, feet ?? undefined)
-      this.physics.applyActorRootPoseDeltas(descs, standPhysEntity)
-      if (feet && groundEcs !== null) this.sceneScript.computeAnimatorOriginDeltas(feet, groundEcs)
+      if (groundIsMoving) {
+        this.physics.applyActorRootPoseDeltas(descs, standPhysEntity)
+      }
+      if (feet && groundEcs !== null && (groundIsMoving || shapeMotion.has(groundEcs))) {
+        this.sceneScript.computeAnimatorOriginDeltas(feet, groundEcs)
+      }
       this.physics.mergeAnimatorOriginPlatformMotion(
         this.sceneScript.consumeAnimatorOriginDeltasPhys(),
         this.sceneScript.consumeAnimatorOriginPositionsPhys()
       )
-      this.physics.applyMeshColliderPoseDeltas(descs)
-      if (feet && standScoped) {
+      if (poseSync.length || groundIsMoving) {
+        this.physics.applyMeshColliderPoseDeltas(descs)
+      }
+      if (feet && standScoped && groundIsMoving) {
         this.physics.applyPhysXActorWalkSurfaceDeltas(standPhysEntity, feet, descs)
         this.physics.applyGroundContactDelta(feet)
+      }
+      if (feet && standScoped && groundPhysEntity === -1) {
         this.physics.reconcileStandSurfaceGrounding(standPhysEntity, descs, feet)
       }
       this.physics.cullInsignificantPlatformMotionDeltas()
@@ -848,7 +900,7 @@ export class World {
     }
     if (feet && platformMotionDebug.isEnabled()) {
       this.sceneScript.logPlatformMotionTick(feet, {
-        meshMotion: poseSync,
+        meshMotion,
         poseDirty: 0,
         platformDeltas: this.physics.getPlatformMotionDeltaSnapshot(),
         platformTransferApplied: false,
@@ -1791,6 +1843,19 @@ export class World {
     }
   }
 
+  /** Help panel — hide landscape, ocean, and genesis dome while a biome is loaded. */
+  private applyEnvironmentDebugVisibility(): void {
+    const hasLoaded = environmentDebug.hasLoadedEnvironment()
+    const show = hasLoaded && !environmentDebug.isDisabled()
+
+    const root = this.landscape.state.landscapeRoot
+    if (root) root.visible = show
+
+    if (this.ocean) this.ocean.group.visible = show
+
+    this.environment.setLandscapeVisualSuppressed(hasLoaded && !show)
+  }
+
   /** Wire landscape into GLTF collider extraction (must run after `sceneScript.prepare`). */
   private bindLandscapeColliders(openIslandShore: boolean): void {
     const root = this.landscape.state.landscapeRoot
@@ -1879,6 +1944,8 @@ export class World {
   dispose(): void {
     this.unsubAvatarChat?.()
     this.unsubAvatarChat = null
+    this.unsubEnvironmentDebug?.()
+    this.unsubEnvironmentDebug = null
     this.host.stop()
 
     this.player?.dispose()

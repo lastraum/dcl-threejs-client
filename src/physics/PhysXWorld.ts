@@ -640,12 +640,12 @@ export class PhysXWorld {
     let updated = 0
     for (const desc of descs) {
       if (this.failedCookFp.has(desc.fingerprint)) continue
-      const force = forceAll || (forceEntities?.has(desc.entity) ?? false)
+      if (forceEntities && !forceAll && !forceEntities.has(desc.entity)) continue
 
       if (desc.shapes?.length) {
         if (!this.geomFingerprintMatches(desc)) continue
         const poseFp = multiShapePoseFingerprint(desc)
-        if (!force && this.staticPoseFp.get(desc.entity) === poseFp) continue
+        if (this.staticPoseFp.get(desc.entity) === poseFp) continue
         const actor = this.staticActors.get(desc.entity)
         if (!actor || this.actorWorldBaked.get(desc.entity)) continue
         this.updateMultiShapeActorPose(actor, desc)
@@ -656,7 +656,7 @@ export class PhysXWorld {
 
       if (!this.geomFingerprintMatches(desc)) continue
       const poseFp = matrixFingerprint(desc.matrix)
-      if (!force && this.staticPoseFp.get(desc.entity) === poseFp) continue
+      if (this.staticPoseFp.get(desc.entity) === poseFp) continue
       const actor = this.staticActors.get(desc.entity)
       if (!actor || this.actorWorldBaked.get(desc.entity)) continue
       desc.matrix.decompose(this._pos, this._quat, this._scale)
@@ -1372,8 +1372,20 @@ export class PhysXWorld {
   }
 
   /** Frame-start GLTF tread snapshot — baseline for shape-based platform Δ after pose refresh. */
-  snapshotGltfColliderWalkSurfaces(descs: PhysicsColliderDesc[], feet?: THREE.Vector3): void {
+  snapshotGltfColliderWalkSurfaces(
+    descs: PhysicsColliderDesc[],
+    feet?: THREE.Vector3,
+    scopePhysEntity?: number | null
+  ): void {
     this.gltfWalkSurfaceSnapshot.clear()
+    if (scopePhysEntity !== null && scopePhysEntity !== undefined) {
+      const desc = descs.find((d) => d.entity === scopePhysEntity)
+      if (desc?.fingerprint.startsWith('gltf-entity:')) {
+        const top = this.gltfShapeWalkSurfaceTop(desc, feet)
+        if (top) this.gltfWalkSurfaceSnapshot.set(desc.entity, top.clone())
+      }
+      return
+    }
     for (const desc of descs) {
       if (!desc.fingerprint.startsWith('gltf-entity:')) continue
       const top = this.gltfShapeWalkSurfaceTop(desc, feet)

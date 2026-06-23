@@ -405,30 +405,57 @@ export class SceneScriptSystem {
   }
 
   /**
-   * PhysX pose slides: ECS transform movers + stand surfaces (grounded or tread under feet).
+   * PhysX pose slides — only entities with live tread motion or active animated shape sync.
+   * Do not blanket-sync every scene tween (static floors stay put; avoids CCT cache churn).
    */
-  collectPhysXPoseSyncEntities(groundEcs: Entity | null, feet?: THREE.Vector3): Entity[] {
-    const out = new Set<Entity>(this.collectPhysXShapeMotionEntities(groundEcs, feet))
-    if (groundEcs !== null) out.add(groundEcs)
-    for (const entity of this.lastTweenMotionEntities) out.add(entity)
-    // Only sync CRDT transform movers the avatar is grounded on — not every nearby composite parent.
-    for (const entity of this.lastSyncFrameTransformEntities) {
-      if (entity === groundEcs) out.add(entity)
-    }
+  collectPhysXPoseSyncEntities(
+    meshMotion: readonly Entity[],
+    shapeMotion: ReadonlySet<Entity>
+  ): Entity[] {
+    const out = new Set<Entity>(meshMotion)
+    for (const entity of shapeMotion) out.add(entity)
     return [...out]
   }
 
   /**
-   * GLTF shape-local sync — Animator treads under the capsule column or already grounded on.
-   * Distant bobbing props stay at rest pose until the player steps on them.
+   * GLTF walk-surface Δ after motion bridges — returns ECS entities that actually moved this frame.
    */
-  collectPhysXShapeMotionEntities(groundEcs: Entity | null, feet?: THREE.Vector3): Set<Entity> {
+  detectAndMarkLiveColliderMeshMotion(
+    feet?: THREE.Vector3,
+    maxHoriz = 96,
+    groundPhysEntity: number | null = null
+  ): Entity[] {
+    const nodes = this.bridge?.getEntityNodes()
+    if (!nodes || !this.gltfColliders) return []
+    const priority: Entity[] = []
+    if (groundPhysEntity !== null && groundPhysEntity >= GLTF_COLLIDER_ENTITY_BASE) {
+      priority.push((groundPhysEntity - GLTF_COLLIDER_ENTITY_BASE) as Entity)
+    }
+    const changed = this.gltfColliders.computeWalkSurfaceDeltas(nodes, feet, maxHoriz, priority)
+    for (const entity of changed) {
+      this.colliderPoseDirty.add(entity)
+      this.markDescendantColliderPosesDirty(entity)
+    }
+    return changed
+  }
+
+  /**
+   * GLTF shape-local sync — Animator treads under the capsule column or already grounded on.
+   * Distant bobbing props stay at rest pose until the player steps on them (no scene ground).
+   */
+  collectPhysXShapeMotionEntities(
+    groundEcs: Entity | null,
+    feet?: THREE.Vector3,
+    groundPhysEntity?: number | null
+  ): Set<Entity> {
     const out = new Set<Entity>()
     if (groundEcs !== null && this.gltfColliders?.hasExtractedCollider(groundEcs)) {
       if (this.isAnimatedGltfCollider(groundEcs)) out.add(groundEcs)
     }
+    const onSceneGround =
+      groundPhysEntity !== null && groundPhysEntity !== undefined && groundPhysEntity !== -1
     const nodes = this.bridge?.getEntityNodes()
-    if (feet && nodes && this.gltfColliders) {
+    if (!onSceneGround && feet && nodes && this.gltfColliders) {
       const under = this.gltfColliders.findAnimatedStandSurfaceEntity(
         nodes,
         feet,
@@ -442,12 +469,22 @@ export class SceneScriptSystem {
   private lastStandSurfacePhys: number | null = null
 
   /**
-   * Riding + PhysX bounds scope — grounded actor, or animated tread under feet when stepping on.
+   * Riding + PhysX bounds scope — CCT-grounded scene actor wins; animated tread hints apply
+   * only before CCT registers scene geometry (infinite plane / airborne).
    */
   resolveStandSurfacePhysEntity(
     feet: THREE.Vector3 | undefined,
     groundPhysEntity: number | null
   ): number | null {
+    const INFINITE_GROUND = -1
+    const hasSceneGround =
+      groundPhysEntity !== null && groundPhysEntity !== INFINITE_GROUND
+
+    if (hasSceneGround) {
+      this.lastStandSurfacePhys = groundPhysEntity
+      return groundPhysEntity
+    }
+
     const nodes = this.bridge?.getEntityNodes()
     let animatedPhys: number | null = null
     if (feet && nodes && this.gltfColliders) {
@@ -467,19 +504,6 @@ export class SceneScriptSystem {
       ) {
         animatedPhys = this.lastStandSurfacePhys
       }
-    }
-
-    if (groundPhysEntity !== null && groundPhysEntity !== -1) {
-      if (animatedPhys !== null && groundPhysEntity === animatedPhys) {
-        this.lastStandSurfacePhys = groundPhysEntity
-        return groundPhysEntity
-      }
-      if (animatedPhys !== null) {
-        this.lastStandSurfacePhys = animatedPhys
-        return animatedPhys
-      }
-      this.lastStandSurfacePhys = groundPhysEntity
-      return groundPhysEntity
     }
 
     this.lastStandSurfacePhys = animatedPhys
@@ -2103,9 +2127,9 @@ export class SceneScriptSystem {
   }
 
   /** Frame-start walk-surface snapshot — before Animator / Tween motion (platform Δ baseline). */
-  snapshotWalkSurfacePositions(feet?: THREE.Vector3): void {
+  snapshotWalkSurfacePositions(feet?: THREE.Vector3, maxHoriz = 96): void {
     const nodes = this.bridge?.getEntityNodes()
-    if (nodes) this.gltfColliders?.snapshotWalkSurfacePositions(nodes, feet)
+    if (nodes) this.gltfColliders?.snapshotWalkSurfacePositions(nodes, feet, maxHoriz)
   }
 
   /** Frame-start Animator GLTF root world origin — lifts that move the entity node without `_collider` Δ. */

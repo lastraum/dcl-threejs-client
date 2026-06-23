@@ -76,7 +76,7 @@ function parseBoolQuery(value: string | null): boolean | null {
   return null
 }
 
-/** Dev override until deployed scenes ship `scene.json` → `environment`. */
+/** Dev URL override (`?environment=` / `?env=`) — force biome at scene load for debugging. */
 export function readLandscapeEnvironmentUrlOverride(): LandscapeEnvironmentKind | null {
   if (typeof window === 'undefined') return null
   const params = new URLSearchParams(window.location.search)
@@ -123,9 +123,17 @@ export type ResolvedSceneEnvironment = {
   skyLighting: SceneSkyLighting
 }
 
+function defaultLandscapeEnvironmentForSource(source: SceneSource): LandscapeEnvironmentKind {
+  if (source.kind === 'world') return 'island'
+  return 'none'
+}
+
 /**
  * Resolve biome + celestial flags together. URL `?environment=` always wins for biome so
  * `?environment=none&disableSun=1` cannot fall back to island when `kind` is omitted from JSON.
+ *
+ * Parcel scenes (`coords`) default to `none` unless `scene.json` declares `environment`.
+ * Worlds default to `island` when the field is absent.
  */
 export function resolveSceneEnvironment(
   metadata: SceneMetadata,
@@ -138,10 +146,8 @@ export function resolveSceneEnvironment(
     landscapeEnvironment = urlKind
   } else if (metaKind) {
     landscapeEnvironment = metaKind
-  } else if (source.kind === 'blank') {
-    landscapeEnvironment = 'none'
   } else {
-    landscapeEnvironment = 'island'
+    landscapeEnvironment = defaultLandscapeEnvironmentForSource(source)
   }
   return {
     landscapeEnvironment,
@@ -150,7 +156,7 @@ export function resolveSceneEnvironment(
 }
 
 /**
- * Resolve landscape biome: URL `?environment=` / `?env=` wins, then scene.json, else island.
+ * Resolve landscape biome for a parcel scene: URL override, then scene.json, else `none`.
  */
 export function resolveLandscapeEnvironment(metadata: SceneMetadata): LandscapeEnvironmentKind {
   return resolveSceneEnvironment(metadata, { kind: 'coords', x: 0, y: 0 }).landscapeEnvironment

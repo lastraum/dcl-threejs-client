@@ -246,9 +246,21 @@ export class GltfColliderExtractor {
   }
 
   /** Snapshot walk-surface points before motion — baseline for per-frame platform Δ. */
-  snapshotWalkSurfacePositions(entityNodes: Map<Entity, THREE.Group>, feet?: THREE.Vector3): void {
+  snapshotWalkSurfacePositions(
+    entityNodes: Map<Entity, THREE.Group>,
+    feet?: THREE.Vector3,
+    maxHoriz = 96
+  ): void {
     this.walkSurfaceSnapshotPos.clear()
+    const maxHorizSq = maxHoriz * maxHoriz
     for (const entity of this.extracted.keys()) {
+      const obj = entityNodes.get(entity)
+      if (feet && obj) {
+        obj.updateMatrixWorld(true)
+        const dx = obj.matrixWorld.elements[12]! - feet.x
+        const dz = obj.matrixWorld.elements[14]! - feet.z
+        if (dx * dx + dz * dz > maxHorizSq) continue
+      }
       const surface = this.colliderWalkSurfacePos(entity, entityNodes, feet)
       if (surface) this.walkSurfaceSnapshotPos.set(entity, surface.clone())
     }
@@ -591,8 +603,8 @@ export class GltfColliderExtractor {
   }
 
   /**
-   * Highest animated collider tread contacting the capsule — on top, inside volume, or just below
-   * a rising bobbing surface (height-agnostic; no ground-level assumption).
+   * Highest animated collider tread contacting the capsule — on tread top or just below a rising
+   * bobbing surface (height-agnostic; no ground-level assumption).
    */
   private animatedColliderContactSurface(
     entity: Entity,
@@ -623,29 +635,12 @@ export class GltfColliderExtractor {
       if (feet.z < this._walkSurfaceBox.min.z - columnMargin) continue
       if (feet.z > this._walkSurfaceBox.max.z + columnMargin) continue
 
-      const treadCenterX = (this._walkSurfaceBox.min.x + this._walkSurfaceBox.max.x) * 0.5
-      const treadCenterZ = (this._walkSurfaceBox.min.z + this._walkSurfaceBox.max.z) * 0.5
-      const horizFromCenterSq =
-        (feet.x - treadCenterX) * (feet.x - treadCenterX) +
-        (feet.z - treadCenterZ) * (feet.z - treadCenterZ)
-      const meshHalfSpan =
-        Math.max(
-          this._walkSurfaceBox.max.x - this._walkSurfaceBox.min.x,
-          this._walkSurfaceBox.max.z - this._walkSurfaceBox.min.z
-        ) *
-          0.55 +
-        0.35
-
       const gap = feet.y - this._walkSurfaceBox.max.y
       const onTop =
         gap >= -STAND_SURFACE_CONTACT_TOLERANCE && gap <= STAND_SURFACE_MAX_VERT_GAP
-      const insideVolume =
-        feet.y >= this._walkSurfaceBox.min.y - STAND_SURFACE_CONTACT_TOLERANCE &&
-        feet.y <= this._walkSurfaceBox.max.y + STAND_SURFACE_CONTACT_TOLERANCE &&
-        horizFromCenterSq <= meshHalfSpan * meshHalfSpan
       const belowRising =
         gap < -STAND_SURFACE_CONTACT_TOLERANCE && gap >= -STAND_SURFACE_MAX_BELOW_TREAD
-      if (!onTop && !insideVolume && !belowRising) continue
+      if (!onTop && !belowRising) continue
 
       const top = this._walkSurfacePos.set(
         (this._walkSurfaceBox.min.x + this._walkSurfaceBox.max.x) * 0.5,

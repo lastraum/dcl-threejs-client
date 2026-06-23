@@ -1,4 +1,5 @@
 import { clientDebugLog } from '../debug/ClientDebugLog'
+import { environmentDebug, type EnvironmentDebugState } from '../../debug/EnvironmentDebug'
 import { physxColliderDebug, type PhysxColliderDebugOptions } from '../../debug/PhysxColliderDebug'
 import { platformMotionDebug } from '../../debug/PlatformMotionDebug'
 import {
@@ -41,6 +42,8 @@ export class DebugPanel {
   private readonly physxProbeToggle: HTMLInputElement
   private readonly physxRuntimeRecookToggle: HTMLInputElement
   private readonly platformMotionToggle: HTMLInputElement
+  private readonly environmentDisableToggle: HTMLInputElement
+  private readonly environmentHint: HTMLDivElement
   private readonly physxRecookBtn: HTMLButtonElement
   private readonly renderQualitySelect: HTMLSelectElement
   private readonly renderQualityHint: HTMLDivElement
@@ -56,6 +59,7 @@ export class DebugPanel {
   private positionRafId = 0
   private unsubscribeLogs: (() => void) | null = null
   private unsubscribePhysxDebug: (() => void) | null = null
+  private unsubscribeEnvironmentDebug: (() => void) | null = null
   private onRecookColliders: (() => void) | null = null
   private readonly onDocumentClick = (ev: MouseEvent) => {
     if (this.ignoreOutsideClick) {
@@ -88,6 +92,14 @@ export class DebugPanel {
     this.root.innerHTML = `
       <div class="debug-panel__header">Debug</div>
       <div class="debug-panel__body"></div>
+      <div class="debug-panel__environment">
+        <div class="debug-panel__physx-title">Environment</div>
+        <label class="debug-panel__check">
+          <input type="checkbox" data-env-disable />
+          <span>Disable loaded environment</span>
+        </label>
+        <div class="debug-panel__render-quality-hint" data-env-hint></div>
+      </div>
       <div class="debug-panel__physx">
         <div class="debug-panel__physx-title">PhysX colliders</div>
         <label class="debug-panel__check">
@@ -153,6 +165,8 @@ export class DebugPanel {
     this.physxProbeToggle = this.root.querySelector('[data-physx-probe]') as HTMLInputElement
     this.physxRuntimeRecookToggle = this.root.querySelector('[data-physx-runtime-recook]') as HTMLInputElement
     this.platformMotionToggle = this.root.querySelector('[data-platform-motion]') as HTMLInputElement
+    this.environmentDisableToggle = this.root.querySelector('[data-env-disable]') as HTMLInputElement
+    this.environmentHint = this.root.querySelector('[data-env-hint]') as HTMLDivElement
     this.physxRecookBtn = this.root.querySelector('[data-physx-recook]') as HTMLButtonElement
     this.renderQualitySelect = this.root.querySelector('[data-render-quality]') as HTMLSelectElement
     this.renderQualityHint = this.root.querySelector('[data-render-quality-hint]') as HTMLDivElement
@@ -176,6 +190,7 @@ export class DebugPanel {
 
     this.wirePhysxDebugControls()
     this.wirePlatformMotionControls()
+    this.wireEnvironmentDebugControls()
     this.wireRenderQualityControls()
 
     document.body.appendChild(this.root)
@@ -231,6 +246,8 @@ export class DebugPanel {
     this.unsubscribeLogs = null
     this.unsubscribePhysxDebug?.()
     this.unsubscribePhysxDebug = null
+    this.unsubscribeEnvironmentDebug?.()
+    this.unsubscribeEnvironmentDebug = null
     this.root.remove()
   }
 
@@ -359,6 +376,41 @@ export class DebugPanel {
     })
 
     this.unsubscribePhysxDebug = physxColliderDebug.subscribe(syncFromStore)
+  }
+
+  private wireEnvironmentDebugControls(): void {
+    const syncFromStore = (state: EnvironmentDebugState) => {
+      const available = state.loadedKind !== null
+      this.environmentDisableToggle.disabled = !available
+      this.environmentDisableToggle.checked = available && state.disabled
+      if (!available) {
+        this.environmentHint.textContent =
+          'No client environment on this scene — add scene.json "environment" or use ?environment=island'
+      } else {
+        this.environmentHint.textContent = `Loaded: ${state.loadedKind} · force biome at load with ?environment=`
+      }
+    }
+
+    syncFromStore(environmentDebug.getState())
+
+    this.environmentDisableToggle.addEventListener('change', () => {
+      if (!environmentDebug.hasLoadedEnvironment()) {
+        this.environmentDisableToggle.checked = false
+        return
+      }
+      environmentDebug.setDisabled(this.environmentDisableToggle.checked)
+      if (this.environmentDisableToggle.checked) {
+        clientDebugLog.log(
+          'environment',
+          `Environment hidden (${environmentDebug.getState().loadedKind}) — landscape, ocean, and genesis sky off`,
+          { level: 'success', alsoConsole: true }
+        )
+      } else {
+        clientDebugLog.log('environment', 'Environment restored', { level: 'success', alsoConsole: true })
+      }
+    })
+
+    this.unsubscribeEnvironmentDebug = environmentDebug.subscribe(syncFromStore)
   }
 
   private wirePlatformMotionControls(): void {

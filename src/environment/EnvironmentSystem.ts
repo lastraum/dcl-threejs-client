@@ -74,6 +74,8 @@ export class EnvironmentSystem {
   private landscapeKind: SceneEnvironmentKind = 'island'
   private disableSun = false
   private disableMoon = false
+  /** Help panel — hide genesis dome and use void sky while keeping custom skybox textures. */
+  private landscapeVisualSuppressed = false
   private readonly outdoorLighting = createOutdoorLightingSnapshot()
 
   constructor(
@@ -95,6 +97,7 @@ export class EnvironmentSystem {
 
   async init(scene: ResolvedScene): Promise<void> {
     const threeScene = this.host.scene
+    this.landscapeVisualSuppressed = false
     this.landscapeKind = scene.landscapeEnvironment
     this.disableSun = scene.skyLighting.disableSun
     this.disableMoon = scene.skyLighting.disableMoon
@@ -133,6 +136,15 @@ export class EnvironmentSystem {
     this.applyTime(this.displayTime, 0)
   }
 
+  /** Runtime debug — suppress genesis sky dome (landscape/ocean hidden separately in World). */
+  setLandscapeVisualSuppressed(suppressed: boolean): void {
+    this.landscapeVisualSuppressed = suppressed
+  }
+
+  isLandscapeVisualSuppressed(): boolean {
+    return this.landscapeVisualSuppressed
+  }
+
   update(delta: number, view: ProjectionView, components: MirrorComponents): void {
     if (this.uiOverrideTime === null) {
       this.syncSkyboxTime(view, components)
@@ -158,6 +170,7 @@ export class EnvironmentSystem {
   }
 
   dispose(): void {
+    this.landscapeVisualSuppressed = false
     this.genesisSky.dispose()
     this.genesisSky.mesh.removeFromParent()
     this.hemi.removeFromParent()
@@ -268,10 +281,16 @@ export class EnvironmentSystem {
 
     const skylightOff = this.celestialSkylightSuppressed(day)
     const landscapeProfile = landscapeEnvironmentProfile(this.landscapeKind)
-    const spaceSky = landscapeProfile.spaceSky === true
-    const voidSky = landscapeProfile.voidSky === true
+    const forceVoidSky = this.landscapeVisualSuppressed
+    const spaceSky = !forceVoidSky && landscapeProfile.spaceSky === true
+    const voidSky = forceVoidSky || landscapeProfile.voidSky === true
     const useGenesis =
-      !this.customCube && !this.customBackground && !spaceSky && !voidSky && !skylightOff
+      !forceVoidSky &&
+      !this.customCube &&
+      !this.customBackground &&
+      !spaceSky &&
+      !voidSky &&
+      !skylightOff
     this.genesisSky.mesh.visible = useGenesis
 
     if (useGenesis) {

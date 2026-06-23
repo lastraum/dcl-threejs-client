@@ -24,7 +24,7 @@ export type SceneSpawn = {
   cameraTarget?: { x: number; y: number; z: number }
 }
 
-/** Future scene.json field — biome for client landscape (island default). */
+/** scene.json `environment` — biome for client landscape (worlds default island; parcel scenes default none). */
 export type SceneEnvironmentKind =
   | 'none'
   | 'island'
@@ -55,7 +55,7 @@ export type SceneMetadata = {
   spawnPoints?: SpawnPoint[]
   main?: string
   skyboxConfig?: { fixedTime?: number }
-  /** Biome id string or object — override via `?environment=` until scenes ship this. */
+  /** Biome id string or object — opt-in on parcel scenes; worlds fall back to island when omitted. */
   environment?: SceneEnvironmentKind | SceneEnvironmentConfig
 }
 

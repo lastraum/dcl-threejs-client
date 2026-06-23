@@ -5,6 +5,7 @@ import { createTerrainModel } from '../dcl/landscape/Worlds/TerrainModel'
 import { getSessionAssetCache, prefetchSceneManifestAssets } from '../rendering/AssetCache'
 import { applyClientPerformanceDefaults, detectPerformanceTier } from '../client/detectPerformanceTier'
 import { SceneHost } from '../rendering/SceneHost'
+import { GLTF_COLLIDER_ENTITY_BASE } from '../collision/GltfColliderExtractor'
 import { PhysXWorld } from '../physics/PhysXWorld'
 import { PlayerSystem } from '../player/PlayerSystem'
 import {
@@ -795,7 +796,6 @@ export class World {
     this.physics.snapshotActorRootPoses(descs)
     this.physics.snapshotGltfColliderWalkSurfaces(descs, feet ?? undefined)
     if (feet) {
-      this.physics.snapshotPhysXActorWalkSurfaces(groundPhysEntity, feet)
       this.physics.snapshotGroundContactBaseline(feet)
       this.sceneScript.snapshotAnimatorOriginPositions(feet)
     }
@@ -807,10 +807,17 @@ export class World {
       meshMotion = feet
         ? this.sceneScript.detectAndMarkLiveColliderMeshMotion(feet, 96, groundPhysEntity)
         : []
+      const groundEcs =
+        groundPhysEntity !== null && groundPhysEntity >= GLTF_COLLIDER_ENTITY_BASE
+          ? ((groundPhysEntity - GLTF_COLLIDER_ENTITY_BASE) as Entity)
+          : null
+      const groundIsMoving = groundEcs !== null && meshMotion.includes(groundEcs)
+      if (feet && groundIsMoving) {
+        this.physics.snapshotPhysXActorWalkSurfaces(groundPhysEntity, feet)
+      }
       const forceEntities = new Set(
-        meshMotion.map((entity) => 20_000_000 + entity)
+        meshMotion.map((entity) => GLTF_COLLIDER_ENTITY_BASE + entity)
       )
-      if (groundPhysEntity !== null && groundPhysEntity > 0) forceEntities.add(groundPhysEntity)
       this.pushColliderPosesToPhysX({ forceEntities })
       this.physics.applyGltfColliderPoseDeltas(descs, feet ?? undefined)
       this.physics.applyActorRootPoseDeltas(descs, groundPhysEntity)
@@ -822,8 +829,13 @@ export class World {
       )
       this.physics.mergePlatformMotionDeltas(this.sceneScript.consumeWalkSurfaceDeltas())
       this.physics.applyMeshColliderPoseDeltas(descs)
-      if (feet) this.physics.applyPhysXActorWalkSurfaceDeltas(groundPhysEntity, feet)
-      if (feet) this.physics.applyGroundContactDelta(feet)
+      if (feet && groundIsMoving) {
+        this.physics.applyPhysXActorWalkSurfaceDeltas(groundPhysEntity, feet)
+      }
+      if (feet && groundIsMoving) {
+        this.physics.applyGroundContactDelta(feet)
+      }
+      this.physics.cullInsignificantPlatformMotionDeltas()
     }
     if (platformMotionDebug.isEnabled() && !this.loggedPlatformMotionDebugHint) {
       this.loggedPlatformMotionDebugHint = true

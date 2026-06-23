@@ -8,6 +8,7 @@ import { ColliderLayer, hasColliderLayer } from './ColliderLayer'
 import { isGltfInvisibleColliderMesh, isGltfVisibleClassMesh } from './gltfColliderNaming'
 import { bakeTrimeshGeometry } from '../physics/bakeTrimeshGeometry'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
+import { isSignificantPlatformDelta } from '../physics/platformMotion'
 
 export const LANDSCAPE_COLLIDER_ENTITY_BASE = 19_000_000
 /** Synthetic PhysX entity id — one actor per GltfContainer ECS entity (avoids MeshCollider id clash). */
@@ -301,7 +302,7 @@ export class GltfColliderExtractor {
 
     this.frameWalkSurfacePos.set(entity, surface.clone())
     this._walkSurfacePos.subVectors(surface, snapshot)
-    if (this._walkSurfacePos.lengthSq() > 1e-14) {
+    if (isSignificantPlatformDelta(this._walkSurfacePos)) {
       this.frameWalkSurfaceDelta.set(entity, this._walkSurfacePos.clone())
       changed.push(entity)
     }

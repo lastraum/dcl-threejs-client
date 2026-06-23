@@ -12,6 +12,7 @@ import { geometryToPxMesh, type PxMeshHandle } from './geometryToPxMesh'
 import { bakeTrimeshGeometry, isTrimeshGeometryCookable } from './bakeTrimeshGeometry'
 import { ensureIndexedForCook } from './colliderGeometryPrep'
 import { loadPhysX } from './loadPhysX'
+import { isSignificantPlatformDelta } from './platformMotion'
 
 export type PhysicsColliderShapeDesc = {
   fingerprint: string
@@ -1323,6 +1324,15 @@ export class PhysXWorld {
     return delta.lengthSq() <= MAX_PLATFORM_DELTA_TOTAL * MAX_PLATFORM_DELTA_TOTAL
   }
 
+  /** Drop jitter entries before CCT transfer — static ground must not micro-teleport. */
+  cullInsignificantPlatformMotionDeltas(): void {
+    for (const [entity, delta] of this.platformMotionDelta) {
+      if (!isSignificantPlatformDelta(delta)) {
+        this.platformMotionDelta.delete(entity)
+      }
+    }
+  }
+
   private logRejectedPlatformDelta(
     source: string,
     entity: number,
@@ -1359,7 +1369,7 @@ export class PhysXWorld {
       if (!snapshot || !current) continue
 
       this._v1.subVectors(current, snapshot)
-      if (this._v1.lengthSq() <= 1e-14) continue
+      if (!isSignificantPlatformDelta(this._v1)) continue
       if (!this.isPlausiblePlatformDelta(this._v1)) {
         this.logRejectedPlatformDelta('gltf-walk-surface', desc.entity, this._v1)
         continue
@@ -1435,7 +1445,7 @@ export class PhysXWorld {
     if (!snapshot || !current) return
 
     this._v1.subVectors(current, snapshot)
-    if (this._v1.lengthSq() <= 1e-14) return
+    if (!isSignificantPlatformDelta(this._v1)) return
     if (!this.isPlausiblePlatformDelta(this._v1)) {
       this.logRejectedPlatformDelta('physx-actor-bounds', groundEntity, this._v1)
       return
@@ -1512,7 +1522,7 @@ export class PhysXWorld {
       if (!snapshot) continue
       this._pos.setFromMatrixPosition(desc.matrix)
       this._v1.subVectors(this._pos, snapshot)
-      if (this._v1.lengthSq() <= 1e-14) continue
+      if (!isSignificantPlatformDelta(this._v1)) continue
       if (!this.isPlausiblePlatformDelta(this._v1)) {
         this.logRejectedPlatformDelta('actor-root', desc.entity, this._v1)
         continue
@@ -1554,7 +1564,7 @@ export class PhysXWorld {
   }
 
   private recordStickyPlatformDelta(entity: number, delta: THREE.Vector3): void {
-    if (!this.isPlausiblePlatformDelta(delta)) return
+    if (!isSignificantPlatformDelta(delta) || !this.isPlausiblePlatformDelta(delta)) return
     let sticky = this.stickyPlatformDelta.get(entity)
     if (!sticky) {
       sticky = { delta: new THREE.Vector3(), framesLeft: 0 }
@@ -1578,7 +1588,7 @@ export class PhysXWorld {
   private stickyPlatformDeltaFor(entity: number): THREE.Vector3 | null {
     const sticky = this.stickyPlatformDelta.get(entity)
     if (!sticky || sticky.framesLeft <= 0) return null
-    return sticky.delta.lengthSq() > 1e-12 ? sticky.delta : null
+    return isSignificantPlatformDelta(sticky.delta) ? sticky.delta : null
   }
 
   /** Scene GLTF/prop floor only — spawn snap after boot cook (skips infinite y=0). */
@@ -1656,7 +1666,7 @@ export class PhysXWorld {
     }
 
     this._v1.subVectors(hit.point, baseline.point)
-    if (this._v1.lengthSq() <= 1e-14) return
+    if (!isSignificantPlatformDelta(this._v1)) return
     if (Math.abs(this._v1.y) > MAX_GROUND_CONTACT_VERT) {
       this.logRejectedPlatformDelta(
         'ground-contact-vert',
@@ -1714,7 +1724,7 @@ export class PhysXWorld {
         continue
       }
       this._v1.subVectors(this._pos, prev)
-      if (this._v1.lengthSq() > 1e-12) {
+      if (isSignificantPlatformDelta(this._v1)) {
         if (!this.isPlausiblePlatformDelta(this._v1)) {
           this.logRejectedPlatformDelta('mesh-collider', desc.entity, this._v1)
         } else {
@@ -1858,12 +1868,17 @@ export class PhysXWorld {
 
     if (groundEntity !== null && groundEntity !== INFINITE_GROUND_ENTITY) {
       const delta = this.platformMotionDeltaForEntity(groundEntity)
-      if (delta) {
+      if (delta && isSignificantPlatformDelta(delta)) {
         return adoptPlatform(groundEntity, delta)
       }
 
       const sticky = this.stickyPlatformDeltaFor(groundEntity)
-      if (sticky && feet.y > 0.5 && this.isPlausiblePlatformDelta(sticky)) {
+      if (
+        sticky &&
+        feet.y > 0.5 &&
+        isSignificantPlatformDelta(sticky) &&
+        this.isPlausiblePlatformDelta(sticky)
+      ) {
         if (platformMotionDebug.isEnabled()) {
           clientDebugLog.log(
             'motion',
@@ -1880,6 +1895,7 @@ export class PhysXWorld {
       let groundAssistDelta: THREE.Vector3 | null = null
       for (const [entity, candidate] of this.platformMotionDelta) {
         if (entity === INFINITE_GROUND_ENTITY || entity === groundEntity) continue
+        if (!isSignificantPlatformDelta(candidate)) continue
         if (!this.platformTransferMatch(feet, entity, candidate, 32)) continue
         const surface = this.platformWalkSurfacePos.get(entity)
         if (!surface) continue
@@ -1909,6 +1925,7 @@ export class PhysXWorld {
     let bestDelta: THREE.Vector3 | null = null
     for (const [entity, delta] of this.platformMotionDelta) {
       if (entity === INFINITE_GROUND_ENTITY) continue
+      if (!isSignificantPlatformDelta(delta)) continue
       if (!this.platformTransferMatch(feet, entity, delta, 16)) continue
       const surface = this.platformWalkSurfacePos.get(entity)
       if (!surface) continue
@@ -1945,7 +1962,7 @@ export class PhysXWorld {
       this.standingPlatformEntity = null
       return false
     }
-    if (delta.lengthSq() < 1e-12) {
+    if (!isSignificantPlatformDelta(delta)) {
       this.decayStickyPlatformDelta(this.lastGroundPhysEntity)
       if (platformMotionDebug.isEnabled() && this.platformMotionDelta.size > 0) {
         const baseline = this.groundContactBaseline
@@ -1973,7 +1990,11 @@ export class PhysXWorld {
     }
     this._v1.copy(this.position).add(delta)
     this.teleport(this._v1)
-    if (entity !== null && (match === 'overhead' || match === 'standing' || match === 'rising')) {
+    if (
+      entity !== null &&
+      (match === 'overhead' || match === 'standing' || match === 'rising') &&
+      (Math.abs(delta.y) >= 0.01 || match === 'overhead')
+    ) {
       this.snapFeetToPlatformWalkSurface(entity)
     }
     if (entity !== null) this.refreshStickyPlatformDelta(entity)
@@ -1997,7 +2018,7 @@ export class PhysXWorld {
     originPositions: Map<number, THREE.Vector3>
   ): void {
     for (const [entity, originDelta] of originDeltas) {
-      if (originDelta.lengthSq() <= 1e-14) continue
+      if (!isSignificantPlatformDelta(originDelta)) continue
       if (!this.isPlausiblePlatformDelta(originDelta)) {
         this.logRejectedPlatformDelta('animator-origin', entity, originDelta)
         continue
@@ -2029,7 +2050,7 @@ export class PhysXWorld {
   /** GLTF walk-surface Δ — same values that slid PhysX collider poses this frame. */
   mergePlatformMotionDeltas(surfaceDeltas: Map<number, THREE.Vector3>): void {
     for (const [entity, surfaceDelta] of surfaceDeltas) {
-      if (surfaceDelta.lengthSq() <= 1e-14) continue
+      if (!isSignificantPlatformDelta(surfaceDelta)) continue
       if (!this.isPlausiblePlatformDelta(surfaceDelta)) {
         this.logRejectedPlatformDelta('walk-surface', entity, surfaceDelta)
         continue

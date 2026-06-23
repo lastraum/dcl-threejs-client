@@ -4,6 +4,8 @@ import { PARCEL_SIZE } from '../dcl/content/types'
 import { isSceneParcel, parcelKey } from '../dcl/landscape/Utils/ParcelGrid'
 import { parcelWorldOrigin } from '../dcl/landscape/Utils/SceneSpace'
 import { physxColliderDebug } from '../debug/PhysxColliderDebug'
+import { platformMotionDebug } from '../debug/PlatformMotionDebug'
+import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { extendThreePhysX } from './extendThreePhysX'
 import { CAMERA_QUERY_MASK, GROUND_QUERY_MASK, Layers, TRIGGER_QUERY_MASK } from './Layers'
 import { geometryToPxMesh, type PxMeshHandle } from './geometryToPxMesh'
@@ -45,6 +47,8 @@ export type GroundSweepHit = {
   point: THREE.Vector3
   /** Y offset from feet where the probe started (ray or sphere sweep). */
   probeOffset: number
+  /** PhysX static collider entity id — undefined for misses / unmapped actors. */
+  physEntity?: number
 }
 
 /** Downward probe range for spawn snap / teleport (not locomotion grounded). */
@@ -64,8 +68,17 @@ const DEG2RAD = Math.PI / 180
 const CONTROLLER_SLOPE_LIMIT_DEG = 45
 const CONTROLLER_STEP_OFFSET = 0.45
 const CONTROLLER_CONTACT_OFFSET = 0.08
+/** Descending platform overhead — max gap from feet to walk surface to start transfer (≈ capsule). */
+const PLATFORM_OVERHEAD_CATCH = 1.6 + CONTROLLER_STEP_OFFSET + 0.35
 /** Max foot gap scene-mesh ground-stick will clamp (CCT step-offset overshoot on stairs — never infinite ground). */
 const GROUND_STICK_DISTANCE = 0.55
+/** Per-frame platform Δ sanity — rejects collider pose glitches (walk surface jumping to far global bbox). */
+const MAX_PLATFORM_DELTA_HORIZ = 1.25
+const MAX_PLATFORM_DELTA_TOTAL = 2.5
+/** Ground-contact tread must stay under the capsule column — not a distant shape on the same actor. */
+const MAX_GROUND_CONTACT_HORIZ = 2
+/** Tread Y must not jump more than this vs baseline (duplicate mesh at lift bottom). */
+const MAX_GROUND_CONTACT_VERT = 1.5
 /** Always-on floor at y=0 — large thin static box (PxPlane is unsupported by CCT/sweep queries), no render mesh. */
 const INFINITE_GROUND_ENTITY = -1
 const INFINITE_GROUND_FINGERPRINT = 'infinite-ground-plane'
@@ -117,6 +130,36 @@ export class PhysXWorld {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly staticActors = new Map<number, any>()
+  /** Reverse lookup — platform transfer + CCT grounding probes. */
+  private readonly staticEntityByActorPtr = new Map<number, number>()
+  /** Last descriptor world position per PhysX entity — tweened platform delta tracking. */
+  private readonly colliderLastWorldPos = new Map<number, THREE.Vector3>()
+  /**
+   * Per-frame world Δ of standing colliders — GLTF from walk-surface motion, MeshCollider from
+   * entity-origin motion. CCT does not inherit this; PlayerSystem applies it before move().
+   */
+  private readonly platformMotionDelta = new Map<number, THREE.Vector3>()
+  private readonly platformTransferDisp = new THREE.Vector3()
+  /** Platform we are riding — sticky across frames while walk surface stays under feet. */
+  private standingPlatformEntity: number | null = null
+  /** Last walkable PhysX actor under the feet (from CCT grounding probes). */
+  private lastGroundPhysEntity: number | null = null
+  /** Bbox-top walk-surface positions — transfer matching uses XZ under soles, not entity pivots. */
+  private readonly platformWalkSurfacePos = new Map<number, THREE.Vector3>()
+  /** Frame-start GLTF shape tread tops — authoritative vs PhysX pose slides after refreshColliderDescPoses. */
+  private readonly gltfWalkSurfaceSnapshot = new Map<number, THREE.Vector3>()
+  /**
+   * PhysX tread contact under soles at frame start — Unity/DCL rides the hit point, not bbox centers.
+   * Sampled again after pose slides; Δ goes to platformMotionDelta for the grounded actor.
+   */
+  private groundContactBaseline: { entity: number; point: THREE.Vector3 } | null = null
+  private groundContactDeltaTrusted = false
+  /** Frame-start actor root world positions — reliable lift Δ when tread probes desync. */
+  private readonly actorRootPoseSnapshot = new Map<number, THREE.Vector3>()
+  /** Brief fallback when tread/PhysX probes glitch but the player is still grounded on a lift. */
+  private readonly stickyPlatformDelta = new Map<number, { delta: THREE.Vector3; framesLeft: number }>()
+  /** Frame-start PhysX actor AABB tread top — authoritative vs raycast duplicate treads. */
+  private readonly physxActorSurfaceSnapshot = new Map<number, THREE.Vector3>()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly triggerActors = new Map<number, any>()
   private readonly triggerFp = new Map<number, string>()
@@ -127,6 +170,8 @@ export class PhysXWorld {
   private readonly staticPoseFp = new Map<number, string>()
   /** World-space baked trimesh — actor stays at origin; never apply setGlobalPose. */
   private readonly actorWorldBaked = new Map<number, boolean>()
+  /** Cook-time shape local poses — runtime Animator slides use current * baseline⁻¹. */
+  private readonly shapeBaselineLocal = new Map<number, THREE.Matrix4[]>()
   /** Fingerprints whose trimesh cook failed — skip retry until fingerprint changes. */
   private readonly failedCookFp = new Set<string>()
   private readonly loggedFailedCookFp = new Set<string>()
@@ -152,6 +197,8 @@ export class PhysXWorld {
   private readonly _scale = new THREE.Vector3()
   private readonly _v1 = new THREE.Vector3()
   private readonly _worldMatrix = new THREE.Matrix4()
+  private readonly _shapeRel = new THREE.Matrix4()
+  private readonly _shapeBBox = new THREE.Box3()
   private readonly _down = new THREE.Vector3(0, -1, 0)
 
   constructor() {
@@ -369,6 +416,7 @@ export class PhysXWorld {
     actor.attachShape(shape)
     this.scene.addActor(actor)
     this.staticActors.set(INFINITE_GROUND_ENTITY, actor)
+    this.registerStaticActor(INFINITE_GROUND_ENTITY, actor)
     this.staticFp.set(INFINITE_GROUND_ENTITY, INFINITE_GROUND_FINGERPRINT)
 
     queueMicrotask(() => {
@@ -572,12 +620,14 @@ export class PhysXWorld {
    */
   applyStaticColliderPoseUpdates(
     descs: PhysicsColliderDesc[],
-    options?: { force?: boolean }
+    options?: { force?: boolean; forceEntities?: ReadonlySet<number> }
   ): number {
-    const force = options?.force === true
+    const forceAll = options?.force === true
+    const forceEntities = options?.forceEntities
     let updated = 0
     for (const desc of descs) {
       if (this.failedCookFp.has(desc.fingerprint)) continue
+      const force = forceAll || (forceEntities?.has(desc.entity) ?? false)
 
       if (desc.shapes?.length) {
         if (!this.geomFingerprintMatches(desc)) continue
@@ -913,7 +963,12 @@ export class PhysXWorld {
       this.controllerFilters
     )
     let grounded = flags.isSet(PHYSX.PxControllerCollisionFlagEnum.eCOLLISION_DOWN)
+    const hitUp = flags.isSet(PHYSX.PxControllerCollisionFlagEnum.eCOLLISION_UP)
     this.syncPlayerTransform()
+
+    if (hitUp && this.correctDescendingPlatformHeadCrush()) {
+      grounded = true
+    }
 
     if (this.position.y < 0) {
       this._v1.set(this.position.x, 0, this.position.z)
@@ -940,8 +995,16 @@ export class PhysXWorld {
             this.teleport(this._v1)
             grounded = true
           }
+          if (hit.physEntity !== undefined) this.lastGroundPhysEntity = hit.physEntity
         }
       }
+    }
+
+    if (grounded) {
+      const groundHit = this.probeSceneGroundDown(GROUND_STICK_DISTANCE + 0.35)
+      if (groundHit?.physEntity !== undefined) this.lastGroundPhysEntity = groundHit.physEntity
+    } else {
+      this.lastGroundPhysEntity = null
     }
 
     return { grounded }
@@ -1000,12 +1063,14 @@ export class PhysXWorld {
   private raycastDownAt(
     feet: THREE.Vector3,
     mask: number,
-    maxDistance: number
+    maxDistance: number,
+    maxHoriz = MAX_GROUND_CONTACT_HORIZ
   ): GroundSweepHit | null {
+    if (!this.scene) return null
     const origin = this._v1.copy(feet)
     this.liftProbeOriginAboveFloor(origin, GROUND_RAY_OFFSET)
     this.applySceneQueryFilter(mask)
-    const didHit = this.scene!.raycast(
+    const didHit = this.scene.raycast(
       origin.toPxVec3(this._pv2),
       this._down.toPxVec3(this.sweepPose.p),
       maxDistance,
@@ -1015,7 +1080,33 @@ export class PhysXWorld {
     )
     if (!didHit) return null
     const nbHits = this.raycastResult.getNbAnyHits?.() ?? 1
-    return this.pickWalkableGroundHit(this.raycastResult, nbHits, GROUND_RAY_OFFSET)
+    return this.pickWalkableGroundHit(this.raycastResult, nbHits, GROUND_RAY_OFFSET, feet, maxHoriz)
+  }
+
+  private sweepDownAt(
+    feet: THREE.Vector3,
+    mask: number,
+    maxDistance: number,
+    maxHoriz = MAX_GROUND_CONTACT_HORIZ
+  ): GroundSweepHit | null {
+    if (!this.scene) return null
+    const origin = this._v1.copy(feet)
+    const probeOffset = this.groundSweepRadius + GROUND_PROBE_OFFSET
+    this.liftProbeOriginAboveFloor(origin, probeOffset)
+    origin.toPxVec3(this.sweepPose.p)
+    this.applySceneQueryFilter(mask)
+    const didHit = this.scene.sweep(
+      this.groundSweepGeometry,
+      this.sweepPose,
+      this._down.toPxVec3(this._pv2),
+      maxDistance,
+      this.sweepResult,
+      PHYSX.PxHitFlagEnum.eDEFAULT,
+      this.queryFilterData
+    )
+    if (!didHit) return null
+    const nbHits = this.sweepResult.getNbAnyHits?.() ?? 1
+    return this.pickWalkableGroundHit(this.sweepResult, nbHits, probeOffset, feet, maxHoriz)
   }
 
   debugProbeStaticHit(maxDistance = 2.5): { distance: number | null; staticCount: number; gltfCount: number } {
@@ -1107,26 +1198,888 @@ export class PhysXWorld {
   }
 
   private pickWalkableGroundHit(
-    hits: { getAnyHit(i: number): { normal: { x: number; y: number; z: number }; distance: number; position: { x: number; y: number; z: number } } },
+    hits: {
+      getAnyHit(i: number): {
+        normal: { x: number; y: number; z: number }
+        distance: number
+        position: { x: number; y: number; z: number }
+        actor?: { ptr: number }
+      }
+    },
     nbHits: number,
-    probeOffset: number
+    probeOffset: number,
+    feet?: THREE.Vector3,
+    maxHoriz = MAX_GROUND_CONTACT_HORIZ
   ): GroundSweepHit | null {
     let best: GroundSweepHit | null = null
+    const maxHorizSq = maxHoriz * maxHoriz
     for (let i = 0; i < nbHits; i++) {
       const hit = hits.getAnyHit(i)
       const normal = new THREE.Vector3(hit.normal.x, hit.normal.y, hit.normal.z)
       if (normal.y < WALKABLE_NORMAL_Y) continue
+      const point = new THREE.Vector3(hit.position.x, hit.position.y, hit.position.z)
+      if (feet) {
+        const dx = point.x - feet.x
+        const dz = point.z - feet.z
+        if (dx * dx + dz * dz > maxHorizSq) continue
+        if (point.y < feet.y - MAX_GROUND_CONTACT_VERT) continue
+        if (point.y > feet.y + MAX_GROUND_CONTACT_VERT + 0.5) continue
+      }
       const distance = hit.distance
-      if (!best || distance < best.distance) {
-        best = {
-          normal,
-          distance,
-          point: new THREE.Vector3(hit.position.x, hit.position.y, hit.position.z),
-          probeOffset
-        }
+      const actor =
+        hit.actor ??
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ((hit as any).get_actor?.() as { ptr: number } | null | undefined)
+      const physEntity =
+        actor?.ptr !== undefined ? this.staticEntityByActorPtr.get(actor.ptr) : undefined
+      const candidate: GroundSweepHit = {
+        normal,
+        distance,
+        point,
+        probeOffset,
+        physEntity
+      }
+      if (!best) {
+        best = candidate
+        continue
+      }
+      // Elevators may duplicate tread meshes on one actor — prefer the topmost surface under the column.
+      if (feet) {
+        if (point.y > best.point.y + 0.02) best = candidate
+        else if (Math.abs(point.y - best.point.y) <= 0.02 && distance < best.distance) best = candidate
+      } else if (distance < best.distance) {
+        best = candidate
       }
     }
     return best
+  }
+
+  /** MeshCollider anchor for platform Δ — highest shape world point (GLTF uses walk-surface instead). */
+  private colliderWalkSurfaceAnchor(desc: PhysicsColliderDesc, out: THREE.Vector3): THREE.Vector3 {
+    const top = this.gltfShapeWalkSurfaceTop(desc)
+    return top ? out.copy(top) : out.setFromMatrixPosition(desc.matrix)
+  }
+
+  /**
+   * Highest collider-shape tread in world space — matches the PhysX poses we slide each frame.
+   * With `feet`, prefer the highest shape whose XZ bbox overlaps the capsule column.
+   */
+  private gltfShapeWalkSurfaceTop(
+    desc: PhysicsColliderDesc,
+    feet?: THREE.Vector3
+  ): THREE.Vector3 | null {
+    const shapes = desc.shapes
+    if (!shapes?.length) return null
+
+    const columnMargin = 1.5
+    let columnMaxY = Number.NEGATIVE_INFINITY
+    let columnBest: THREE.Vector3 | null = null
+    let globalMaxY = Number.NEGATIVE_INFINITY
+    let globalBest: THREE.Vector3 | null = null
+
+    for (const shape of shapes) {
+      const geometry = shape.geometry
+      if (!geometry) continue
+      if (!geometry.boundingBox) geometry.computeBoundingBox()
+      const localBox = geometry.boundingBox
+      if (!localBox || !Number.isFinite(localBox.max.y)) continue
+
+      this._worldMatrix.copy(desc.matrix).multiply(shape.localMatrix)
+      this._shapeBBox.copy(localBox).applyMatrix4(this._worldMatrix)
+      if (!Number.isFinite(this._shapeBBox.max.y)) continue
+
+      const top = this._v1.set(
+        (this._shapeBBox.min.x + this._shapeBBox.max.x) * 0.5,
+        this._shapeBBox.max.y,
+        (this._shapeBBox.min.z + this._shapeBBox.max.z) * 0.5
+      )
+
+      if (this._shapeBBox.max.y >= globalMaxY) {
+        globalMaxY = this._shapeBBox.max.y
+        globalBest = top.clone()
+      }
+
+      if (feet) {
+        if (feet.x < this._shapeBBox.min.x - columnMargin) continue
+        if (feet.x > this._shapeBBox.max.x + columnMargin) continue
+        if (feet.z < this._shapeBBox.min.z - columnMargin) continue
+        if (feet.z > this._shapeBBox.max.z + columnMargin) continue
+        if (this._shapeBBox.max.y >= columnMaxY) {
+          columnMaxY = this._shapeBBox.max.y
+          columnBest = top.clone()
+        }
+      }
+    }
+
+    // When `feet` is set, only tread under the capsule column counts — never fall back to a far
+    // global bbox (pose desync would yield a ~parcel-span Δ and teleport the player to spawn).
+    return feet ? columnBest : globalBest
+  }
+
+  private isPlausiblePlatformDelta(delta: THREE.Vector3): boolean {
+    const horizSq = delta.x * delta.x + delta.z * delta.z
+    if (horizSq > MAX_PLATFORM_DELTA_HORIZ * MAX_PLATFORM_DELTA_HORIZ) return false
+    if (Math.abs(delta.y) > MAX_GROUND_CONTACT_VERT) return false
+    return delta.lengthSq() <= MAX_PLATFORM_DELTA_TOTAL * MAX_PLATFORM_DELTA_TOTAL
+  }
+
+  private logRejectedPlatformDelta(
+    source: string,
+    entity: number,
+    delta: THREE.Vector3,
+    extra?: string
+  ): void {
+    if (!platformMotionDebug.isEnabled()) return
+    clientDebugLog.log(
+      'motion',
+      `platform Δ rejected (${source}) · entity=${entity} · Δ=(${delta.x.toFixed(3)},${delta.y.toFixed(3)},${delta.z.toFixed(3)})${extra ? ` · ${extra}` : ''}`,
+      { throttleKey: `platform-delta-reject-${source}`, throttleMs: 600, alsoConsole: true, level: 'warn' }
+    )
+  }
+
+  /** Frame-start GLTF tread snapshot — baseline for shape-based platform Δ after pose refresh. */
+  snapshotGltfColliderWalkSurfaces(descs: PhysicsColliderDesc[], feet?: THREE.Vector3): void {
+    this.gltfWalkSurfaceSnapshot.clear()
+    for (const desc of descs) {
+      if (!desc.fingerprint.startsWith('gltf-entity:')) continue
+      const top = this.gltfShapeWalkSurfaceTop(desc, feet)
+      if (top) this.gltfWalkSurfaceSnapshot.set(desc.entity, top.clone())
+    }
+  }
+
+  /**
+   * GLTF platform Δ from cooked-shape tread tops — catches Animator slides mesh bbox can miss
+   * when the CCT ground actor pose updates but walk-surface extractors report zero Δ.
+   */
+  applyGltfColliderPoseDeltas(descs: PhysicsColliderDesc[], feet?: THREE.Vector3): void {
+    for (const desc of descs) {
+      if (!desc.fingerprint.startsWith('gltf-entity:')) continue
+      const snapshot = this.gltfWalkSurfaceSnapshot.get(desc.entity)
+      const current = this.gltfShapeWalkSurfaceTop(desc, feet)
+      if (!snapshot || !current) continue
+
+      this._v1.subVectors(current, snapshot)
+      if (this._v1.lengthSq() <= 1e-14) continue
+      if (!this.isPlausiblePlatformDelta(this._v1)) {
+        this.logRejectedPlatformDelta('gltf-walk-surface', desc.entity, this._v1)
+        continue
+      }
+
+      let delta = this.platformMotionDelta.get(desc.entity)
+      if (!delta) {
+        delta = new THREE.Vector3()
+        this.platformMotionDelta.set(desc.entity, delta)
+        delta.copy(this._v1)
+      } else if (
+        delta.lengthSq() <= 1e-12 ||
+        Math.abs(this._v1.y) > Math.abs(delta.y) + 1e-6
+      ) {
+        delta.copy(this._v1)
+      }
+
+      let surface = this.platformWalkSurfacePos.get(desc.entity)
+      if (!surface) {
+        surface = new THREE.Vector3()
+        this.platformWalkSurfacePos.set(desc.entity, surface)
+      }
+      surface.copy(current)
+      this.recordStickyPlatformDelta(desc.entity, this._v1)
+    }
+  }
+
+  /**
+   * Snapshot collider descriptor world positions before pose slides / tweens.
+   * Call once per frame before motion bridges update entity transforms.
+   */
+  snapshotColliderPositions(descs: PhysicsColliderDesc[]): void {
+    for (const desc of descs) {
+      if (desc.fingerprint.startsWith('gltf-entity:')) continue
+      this.colliderWalkSurfaceAnchor(desc, this._pos)
+      let prev = this.colliderLastWorldPos.get(desc.entity)
+      if (!prev) {
+        prev = new THREE.Vector3()
+        this.colliderLastWorldPos.set(desc.entity, prev)
+      }
+      prev.copy(this._pos)
+    }
+  }
+
+  /** Start of platform-motion frame — walk-surface / mesh-collider Δ merged after motion bridges. */
+  beginPlatformMotionFrame(): void {
+    this.platformMotionDelta.clear()
+    this.gltfWalkSurfaceSnapshot.clear()
+    this.actorRootPoseSnapshot.clear()
+    this.physxActorSurfaceSnapshot.clear()
+    this.groundContactBaseline = null
+    this.groundContactDeltaTrusted = false
+  }
+
+  /**
+   * Frame-start tread top from the live PhysX actor AABB — same poses we slide this frame.
+   * max.y ignores duplicate low tread shapes on one actor (combined bounds stay under the capsule).
+   */
+  snapshotPhysXActorWalkSurfaces(groundEntity: number | null, feet?: THREE.Vector3): void {
+    this.physxActorSurfaceSnapshot.clear()
+    if (groundEntity === null || groundEntity === INFINITE_GROUND_ENTITY) return
+    const top = this.physxActorWalkSurfaceTop(groundEntity, feet)
+    if (top) this.physxActorSurfaceSnapshot.set(groundEntity, top.clone())
+  }
+
+  /**
+   * Grounded-entity Δ from PhysX actor bounds after pose slide — primary lift source (not raycast tread).
+   */
+  applyPhysXActorWalkSurfaceDeltas(groundEntity: number | null, feet?: THREE.Vector3): void {
+    if (groundEntity === null || groundEntity === INFINITE_GROUND_ENTITY) return
+    const snapshot = this.physxActorSurfaceSnapshot.get(groundEntity)
+    const current = this.physxActorWalkSurfaceTop(groundEntity, feet)
+    if (!snapshot || !current) return
+
+    this._v1.subVectors(current, snapshot)
+    if (this._v1.lengthSq() <= 1e-14) return
+    if (!this.isPlausiblePlatformDelta(this._v1)) {
+      this.logRejectedPlatformDelta('physx-actor-bounds', groundEntity, this._v1)
+      return
+    }
+
+    let delta = this.platformMotionDelta.get(groundEntity)
+    if (!delta) {
+      delta = new THREE.Vector3()
+      this.platformMotionDelta.set(groundEntity, delta)
+      delta.copy(this._v1)
+    } else {
+      delta.copy(this._v1)
+    }
+
+    let surface = this.platformWalkSurfacePos.get(groundEntity)
+    if (!surface) {
+      surface = new THREE.Vector3()
+      this.platformWalkSurfacePos.set(groundEntity, surface)
+    }
+    surface.copy(current)
+    this.recordStickyPlatformDelta(groundEntity, this._v1)
+
+    if (platformMotionDebug.isEnabled()) {
+      clientDebugLog.log(
+        'motion',
+        `physxBounds Δ=(${this._v1.x.toFixed(3)},${this._v1.y.toFixed(3)},${this._v1.z.toFixed(3)}) · entity=${groundEntity} · treadY ${snapshot.y.toFixed(2)}→${current.y.toFixed(2)}`,
+        { throttleKey: 'physx-bounds-delta', throttleMs: 400, alsoConsole: true }
+      )
+    }
+  }
+
+  private physxActorWalkSurfaceTop(entity: number, feet?: THREE.Vector3): THREE.Vector3 | null {
+    const actor = this.staticActors.get(entity)
+    if (!actor || typeof actor.getWorldBounds !== 'function') return null
+    const bounds = actor.getWorldBounds()
+    if (!bounds || typeof bounds.get_minimum !== 'function') return null
+    const min = bounds.get_minimum()
+    const max = bounds.get_maximum()
+    if (!min || !max) return null
+
+    const minX = min.x
+    const minZ = min.z
+    const maxX = max.x
+    const maxY = max.y
+    const maxZ = max.z
+    if (![minX, minZ, maxX, maxY, maxZ].every(Number.isFinite)) return null
+
+    if (feet) {
+      const margin = MAX_GROUND_CONTACT_HORIZ
+      if (feet.x < minX - margin || feet.x > maxX + margin) return null
+      if (feet.z < minZ - margin || feet.z > maxZ + margin) return null
+      if (maxY < feet.y - MAX_GROUND_CONTACT_VERT - 0.5) return null
+    }
+
+    return this._pos.set((minX + maxX) * 0.5, maxY, (minZ + maxZ) * 0.5)
+  }
+
+  /** All collider actor roots (incl. GLTF) — baseline for matrix-based platform Δ. */
+  snapshotActorRootPoses(descs: PhysicsColliderDesc[]): void {
+    this.actorRootPoseSnapshot.clear()
+    for (const desc of descs) {
+      this._pos.setFromMatrixPosition(desc.matrix)
+      this.actorRootPoseSnapshot.set(desc.entity, this._pos.clone())
+    }
+  }
+
+  /**
+   * Descriptor matrix root Δ after pose refresh — tracks Animator/tween lifts even when PhysX
+   * tread probes pick a stale duplicate mesh at scene origin.
+   */
+  applyActorRootPoseDeltas(descs: PhysicsColliderDesc[], priorityEntity?: number | null): void {
+    for (const desc of descs) {
+      const snapshot = this.actorRootPoseSnapshot.get(desc.entity)
+      if (!snapshot) continue
+      this._pos.setFromMatrixPosition(desc.matrix)
+      this._v1.subVectors(this._pos, snapshot)
+      if (this._v1.lengthSq() <= 1e-14) continue
+      if (!this.isPlausiblePlatformDelta(this._v1)) {
+        this.logRejectedPlatformDelta('actor-root', desc.entity, this._v1)
+        continue
+      }
+
+      const prefer =
+        priorityEntity !== null &&
+        priorityEntity !== undefined &&
+        desc.entity === priorityEntity
+      let delta = this.platformMotionDelta.get(desc.entity)
+      if (!delta) {
+        delta = new THREE.Vector3()
+        this.platformMotionDelta.set(desc.entity, delta)
+        delta.copy(this._v1)
+      } else if (
+        prefer ||
+        delta.lengthSq() <= 1e-12 ||
+        Math.abs(this._v1.y) > Math.abs(delta.y) + 1e-6
+      ) {
+        delta.copy(this._v1)
+      }
+
+      let surface = this.platformWalkSurfacePos.get(desc.entity)
+      if (!surface) {
+        surface = new THREE.Vector3()
+        this.platformWalkSurfacePos.set(desc.entity, surface)
+      }
+      surface.copy(this._pos)
+      this.recordStickyPlatformDelta(desc.entity, this._v1)
+
+      if (platformMotionDebug.isEnabled() && prefer) {
+        clientDebugLog.log(
+          'motion',
+          `actorRoot Δ=(${this._v1.x.toFixed(3)},${this._v1.y.toFixed(3)},${this._v1.z.toFixed(3)}) · entity=${desc.entity}`,
+          { throttleKey: 'actor-root-delta', throttleMs: 400, alsoConsole: true }
+        )
+      }
+    }
+  }
+
+  private recordStickyPlatformDelta(entity: number, delta: THREE.Vector3): void {
+    if (!this.isPlausiblePlatformDelta(delta)) return
+    let sticky = this.stickyPlatformDelta.get(entity)
+    if (!sticky) {
+      sticky = { delta: new THREE.Vector3(), framesLeft: 0 }
+      this.stickyPlatformDelta.set(entity, sticky)
+    }
+    sticky.delta.copy(delta)
+    sticky.framesLeft = 12
+  }
+
+  private refreshStickyPlatformDelta(entity: number): void {
+    const sticky = this.stickyPlatformDelta.get(entity)
+    if (sticky) sticky.framesLeft = 12
+  }
+
+  private decayStickyPlatformDelta(entity: number | null): void {
+    if (entity === null) return
+    const sticky = this.stickyPlatformDelta.get(entity)
+    if (sticky) sticky.framesLeft = Math.max(0, sticky.framesLeft - 1)
+  }
+
+  private stickyPlatformDeltaFor(entity: number): THREE.Vector3 | null {
+    const sticky = this.stickyPlatformDelta.get(entity)
+    if (!sticky || sticky.framesLeft <= 0) return null
+    return sticky.delta.lengthSq() > 1e-12 ? sticky.delta : null
+  }
+
+  /** Scene GLTF/prop floor only — spawn snap after boot cook (skips infinite y=0). */
+  snapFeetToSceneMesh(feet: THREE.Vector3, maxDrop = 32): boolean {
+    const hit = this.probeSceneMeshDownAt(feet, maxDrop)
+    if (hit === null) return false
+    const targetY = feet.y - hit
+    if (Math.abs(targetY - this.position.y) < 0.02) return false
+    this._v1.set(this.position.x, targetY, this.position.z)
+    this.teleport(this._v1)
+    return true
+  }
+
+  /** Down tread contact under feet — long reach for lifts (excludes infinite y=0 plane). */
+  private probeSceneGroundAt(feet: THREE.Vector3, maxDistance: number): GroundSweepHit | null {
+    return (
+      this.raycastDownAt(feet, SCENE_MESH_GROUND_MASK, maxDistance) ??
+      this.sweepDownAt(feet, SCENE_MESH_GROUND_MASK, maxDistance)
+    )
+  }
+
+  /**
+   * Frame-start PhysX contact under soles — baseline for tread Δ (Explorer-style: stand on the hit triangle).
+   */
+  snapshotGroundContactBaseline(feet: THREE.Vector3): void {
+    const reach = Math.max(20, feet.y + 6)
+    const hit = this.probeSceneGroundAt(feet, reach)
+    if (!hit?.physEntity || hit.physEntity === INFINITE_GROUND_ENTITY) {
+      this.groundContactBaseline = null
+      return
+    }
+    this.groundContactBaseline = { entity: hit.physEntity, point: hit.point.clone() }
+  }
+
+  /**
+   * Tread contact Δ after collider pose slides — wins for the grounded actor over distant bbox centers.
+   */
+  applyGroundContactDelta(feet: THREE.Vector3): void {
+    const baseline = this.groundContactBaseline
+    if (!baseline) return
+
+    const reach = Math.max(20, feet.y + 6)
+    const hit = this.probeSceneGroundAt(feet, reach)
+    if (!hit?.physEntity || hit.physEntity === INFINITE_GROUND_ENTITY) return
+
+    const entity = hit.physEntity
+    const trustEntity =
+      entity === baseline.entity ||
+      entity === this.lastGroundPhysEntity ||
+      entity === this.standingPlatformEntity
+    if (!trustEntity) return
+
+    if (Math.abs(hit.point.y - feet.y) > MAX_GROUND_CONTACT_VERT + 0.35) {
+      this.logRejectedPlatformDelta(
+        'ground-contact-feet-y',
+        entity,
+        hit.point.clone().sub(baseline.point),
+        `feetY=${feet.y.toFixed(2)} hitY=${hit.point.y.toFixed(2)}`
+      )
+      return
+    }
+
+    const horizFromFeetSq =
+      (hit.point.x - feet.x) * (hit.point.x - feet.x) +
+      (hit.point.z - feet.z) * (hit.point.z - feet.z)
+    if (horizFromFeetSq > MAX_GROUND_CONTACT_HORIZ * MAX_GROUND_CONTACT_HORIZ) {
+      this.logRejectedPlatformDelta(
+        'ground-contact-horiz',
+        entity,
+        hit.point.clone().sub(baseline.point),
+        `feet→hit horiz=${Math.sqrt(horizFromFeetSq).toFixed(2)}m`
+      )
+      this.groundContactBaseline = null
+      return
+    }
+
+    this._v1.subVectors(hit.point, baseline.point)
+    if (this._v1.lengthSq() <= 1e-14) return
+    if (Math.abs(this._v1.y) > MAX_GROUND_CONTACT_VERT) {
+      this.logRejectedPlatformDelta(
+        'ground-contact-vert',
+        entity,
+        this._v1,
+        `baselineY ${baseline.point.y.toFixed(2)}→${hit.point.y.toFixed(2)}`
+      )
+      this.groundContactBaseline = null
+      return
+    }
+    if (!this.isPlausiblePlatformDelta(this._v1)) {
+      this.logRejectedPlatformDelta('ground-contact', entity, this._v1)
+      this.groundContactBaseline = null
+      return
+    }
+
+    const existing = this.platformMotionDelta.get(entity)
+    if (existing && existing.lengthSq() > 1e-12 && Math.abs(existing.y) >= Math.abs(this._v1.y)) {
+      return
+    }
+
+    let delta = existing
+    if (!delta) {
+      delta = new THREE.Vector3()
+      this.platformMotionDelta.set(entity, delta)
+    }
+    delta.copy(this._v1)
+
+    let surface = this.platformWalkSurfacePos.get(entity)
+    if (!surface) {
+      surface = new THREE.Vector3()
+      this.platformWalkSurfacePos.set(entity, surface)
+    }
+    surface.copy(hit.point)
+    this.groundContactDeltaTrusted = entity === this.lastGroundPhysEntity || entity === baseline.entity
+    this.recordStickyPlatformDelta(entity, this._v1)
+
+    if (platformMotionDebug.isEnabled()) {
+      clientDebugLog.log(
+        'motion',
+        `groundContact Δ=(${this._v1.x.toFixed(3)},${this._v1.y.toFixed(3)},${this._v1.z.toFixed(3)}) · entity=${entity} · treadY ${baseline.point.y.toFixed(2)}→${hit.point.y.toFixed(2)}`,
+        { throttleKey: 'ground-contact-delta', throttleMs: 400, alsoConsole: true }
+      )
+    }
+  }
+
+  /** MeshCollider / landscape tweens — GLTF uses walk-surface Δ from GltfColliderExtractor. */
+  applyMeshColliderPoseDeltas(descs: PhysicsColliderDesc[]): void {
+    for (const desc of descs) {
+      if (desc.fingerprint.startsWith('gltf-entity:')) continue
+      this.colliderWalkSurfaceAnchor(desc, this._pos)
+      const prev = this.colliderLastWorldPos.get(desc.entity)
+      if (!prev) {
+        this.colliderLastWorldPos.set(desc.entity, this._pos.clone())
+        continue
+      }
+      this._v1.subVectors(this._pos, prev)
+      if (this._v1.lengthSq() > 1e-12) {
+        if (!this.isPlausiblePlatformDelta(this._v1)) {
+          this.logRejectedPlatformDelta('mesh-collider', desc.entity, this._v1)
+        } else {
+          let delta = this.platformMotionDelta.get(desc.entity)
+          if (!delta) {
+            delta = new THREE.Vector3()
+            this.platformMotionDelta.set(desc.entity, delta)
+          }
+          delta.copy(this._v1)
+        }
+      }
+      prev.copy(this._pos)
+    }
+  }
+
+  clearStandingPlatform(): void {
+    this.standingPlatformEntity = null
+    this.lastGroundPhysEntity = null
+    this.stickyPlatformDelta.clear()
+    this.groundContactBaseline = null
+  }
+
+  /** Walk-surface positions after motion — feet-over-platform matching. */
+  mergePlatformWalkSurfacePositions(positions: Map<number, THREE.Vector3>): void {
+    for (const [entity, surfacePos] of positions) {
+      let existing = this.platformWalkSurfacePos.get(entity)
+      if (!existing) {
+        existing = new THREE.Vector3()
+        this.platformWalkSurfacePos.set(entity, existing)
+      }
+      existing.copy(surfacePos)
+    }
+  }
+
+  /**
+   * Whether the capsule should ride this platform's Δ this frame.
+   * - standing: feet on walk surface
+   * - overhead: descending surface above head/feet — ride instead of CCT head-crush shove
+   */
+  private platformTransferMatch(
+    feet: THREE.Vector3,
+    entity: number,
+    delta: THREE.Vector3,
+    maxHoriz = 8
+  ): 'standing' | 'overhead' | 'rising' | null {
+    const surfacePos = this.platformWalkSurfacePos.get(entity)
+    if (!surfacePos) return null
+    const dx = feet.x - surfacePos.x
+    const dz = feet.z - surfacePos.z
+    if (dx * dx + dz * dz > maxHoriz * maxHoriz) return null
+
+    const surfaceYStart = surfacePos.y - delta.y
+    const gapAboveFeet = surfacePos.y - feet.y
+
+    const horizSq = dx * dx + dz * dz
+    const feetGapY = Math.abs(feet.y - surfacePos.y)
+
+    if (feet.y >= surfaceYStart - 2.5 && feet.y <= surfacePos.y + 1.2) return 'standing'
+
+    if (horizSq <= 16 && feetGapY <= 2.5 && Math.abs(delta.y) > 1e-5) return 'rising'
+
+    if (delta.y > 1e-5 && feet.y >= surfaceYStart - 1.5 && feet.y <= surfacePos.y + 2.5) {
+      return 'rising'
+    }
+
+    if (delta.y < -1e-5 && gapAboveFeet > 0 && gapAboveFeet <= PLATFORM_OVERHEAD_CATCH) {
+      return 'overhead'
+    }
+
+    return null
+  }
+
+  /** Glue feet to walk-surface tread — after transfer or head-crush, avoids tunneling through floor below. */
+  private snapFeetToPlatformWalkSurface(entity: number): boolean {
+    const surface = this.platformWalkSurfacePos.get(entity)
+    if (!surface) return false
+    const targetFeetY = surface.y - CONTROLLER_CONTACT_OFFSET * 0.25
+    const gap = targetFeetY - this.position.y
+    if (gap <= 0.02 || gap > PLATFORM_OVERHEAD_CATCH) return false
+    this._v1.set(this.position.x, targetFeetY, this.position.z)
+    this.teleport(this._v1)
+    this.lastGroundPhysEntity = entity
+    this.invalidateControllerCache()
+    return true
+  }
+
+  /** CCT eCOLLISION_UP from descending platform — snap onto tread instead of shoving through floor. */
+  private correctDescendingPlatformHeadCrush(): boolean {
+    const feet = this.position
+    const tryEntity = (entity: number): boolean => {
+      const delta = this.platformMotionDelta.get(entity)
+      if (!delta || delta.y >= -1e-5) return false
+      if (this.platformTransferMatch(feet, entity, delta, 24) !== 'overhead') return false
+      this.standingPlatformEntity = entity
+      return this.snapFeetToPlatformWalkSurface(entity)
+    }
+
+    if (this.standingPlatformEntity !== null && tryEntity(this.standingPlatformEntity)) return true
+
+    let bestHoriz = Number.POSITIVE_INFINITY
+    let bestEntity: number | null = null
+    for (const [entity, delta] of this.platformMotionDelta) {
+      if (entity === INFINITE_GROUND_ENTITY || delta.y >= -1e-5) continue
+      if (this.platformTransferMatch(feet, entity, delta, 16) !== 'overhead') continue
+      const surface = this.platformWalkSurfacePos.get(entity)
+      if (!surface) continue
+      const horizSq = (feet.x - surface.x) ** 2 + (feet.z - surface.z) ** 2
+      if (horizSq < bestHoriz) {
+        bestHoriz = horizSq
+        bestEntity = entity
+      }
+    }
+    return bestEntity !== null && tryEntity(bestEntity)
+  }
+
+  private platformMotionDeltaForEntity(entity: number): THREE.Vector3 | null {
+    const delta = this.platformMotionDelta.get(entity)
+    return delta && delta.lengthSq() > 1e-12 ? delta : null
+  }
+
+  /**
+   * Δ to add to the CCT capsule this frame — whatever walk surface we are standing on moved.
+   * CCT move() only blocks penetration; it does not inherit motion from teleported static colliders.
+   */
+  getPlatformTransferDelta(): THREE.Vector3 {
+    this.platformTransferDisp.set(0, 0, 0)
+
+    const feet = this.position
+
+    const adoptPlatform = (entity: number, delta: THREE.Vector3): THREE.Vector3 => {
+      this.standingPlatformEntity = entity
+      return this.platformTransferDisp.copy(delta)
+    }
+
+    if (this.platformMotionDelta.size === 0) {
+      this.standingPlatformEntity = null
+      return this.platformTransferDisp
+    }
+
+    const groundEntity = this.lastGroundPhysEntity
+
+    if (groundEntity !== null && groundEntity !== INFINITE_GROUND_ENTITY) {
+      const delta = this.platformMotionDeltaForEntity(groundEntity)
+      if (delta) {
+        return adoptPlatform(groundEntity, delta)
+      }
+
+      const sticky = this.stickyPlatformDeltaFor(groundEntity)
+      if (sticky && feet.y > 0.5 && this.isPlausiblePlatformDelta(sticky)) {
+        if (platformMotionDebug.isEnabled()) {
+          clientDebugLog.log(
+            'motion',
+            `platform transfer sticky Δ=(${sticky.x.toFixed(3)},${sticky.y.toFixed(3)},${sticky.z.toFixed(3)}) · entity=${groundEntity}`,
+            { throttleKey: 'platform-sticky', throttleMs: 500, alsoConsole: true }
+          )
+        }
+        return adoptPlatform(groundEntity, sticky)
+      }
+
+      // CCT grounded on this actor but tread Δ missed — ride the nearest moving surface in column.
+      let groundAssistHoriz = Number.POSITIVE_INFINITY
+      let groundAssistEntity: number | null = null
+      let groundAssistDelta: THREE.Vector3 | null = null
+      for (const [entity, candidate] of this.platformMotionDelta) {
+        if (entity === INFINITE_GROUND_ENTITY || entity === groundEntity) continue
+        if (!this.platformTransferMatch(feet, entity, candidate, 32)) continue
+        const surface = this.platformWalkSurfacePos.get(entity)
+        if (!surface) continue
+        const horizSq = (feet.x - surface.x) ** 2 + (feet.z - surface.z) ** 2
+        const verticalBias = Math.abs(feet.y - surface.y) * 0.25
+        const score = horizSq + verticalBias * verticalBias
+        if (score < groundAssistHoriz) {
+          groundAssistHoriz = score
+          groundAssistEntity = entity
+          groundAssistDelta = candidate
+        }
+      }
+      if (groundAssistDelta && groundAssistEntity !== null) {
+        return adoptPlatform(groundAssistEntity, groundAssistDelta)
+      }
+    }
+
+    if (this.standingPlatformEntity !== null) {
+      const stickyDelta = this.platformMotionDeltaForEntity(this.standingPlatformEntity)
+      if (stickyDelta && this.platformTransferMatch(feet, this.standingPlatformEntity, stickyDelta, 24)) {
+        return adoptPlatform(this.standingPlatformEntity, stickyDelta)
+      }
+    }
+
+    let bestScore = Number.NEGATIVE_INFINITY
+    let bestEntity: number | null = null
+    let bestDelta: THREE.Vector3 | null = null
+    for (const [entity, delta] of this.platformMotionDelta) {
+      if (entity === INFINITE_GROUND_ENTITY) continue
+      if (!this.platformTransferMatch(feet, entity, delta, 16)) continue
+      const surface = this.platformWalkSurfacePos.get(entity)
+      if (!surface) continue
+      const dx = feet.x - surface.x
+      const dz = feet.z - surface.z
+      const horizSq = dx * dx + dz * dz
+      const score = Math.abs(delta.y) * 12 - horizSq * 0.05 - Math.abs(feet.y - surface.y) * 0.5
+      if (score > bestScore) {
+        bestScore = score
+        bestEntity = entity
+        bestDelta = delta
+      }
+    }
+    if (bestDelta && bestEntity !== null) {
+      return adoptPlatform(bestEntity, bestDelta)
+    }
+
+    this.standingPlatformEntity = null
+    return this.platformTransferDisp
+  }
+
+  /**
+   * Explicit platform velocity transfer — capsule position += standing surface Δ, then CCT move().
+   */
+  applyPlatformVelocityTransfer(): boolean {
+    const delta = this.getPlatformTransferDelta()
+    if (delta.lengthSq() >= 1e-12 && !this.isPlausiblePlatformDelta(delta)) {
+      this.logRejectedPlatformDelta(
+        'transfer',
+        this.standingPlatformEntity ?? this.lastGroundPhysEntity ?? -1,
+        delta,
+        `feet=(${this.position.x.toFixed(2)},${this.position.y.toFixed(2)},${this.position.z.toFixed(2)})`
+      )
+      this.standingPlatformEntity = null
+      return false
+    }
+    if (delta.lengthSq() < 1e-12) {
+      this.decayStickyPlatformDelta(this.lastGroundPhysEntity)
+      if (platformMotionDebug.isEnabled() && this.platformMotionDelta.size > 0) {
+        const baseline = this.groundContactBaseline
+        const baselineStr = baseline
+          ? ` · contact=${baseline.entity}@${baseline.point.y.toFixed(2)}`
+          : ''
+        clientDebugLog.log(
+          'motion',
+          `platform transfer skip — ${this.platformMotionDelta.size} Δ(s) but no match · ground=${this.lastGroundPhysEntity ?? 'none'} · feet=(${this.position.x.toFixed(2)},${this.position.y.toFixed(2)},${this.position.z.toFixed(2)})${baselineStr}`,
+          { throttleKey: 'platform-transfer-skip', throttleMs: 800, alsoConsole: true }
+        )
+      }
+      return false
+    }
+    const entity = this.standingPlatformEntity
+    let match =
+      entity !== null ? this.platformTransferMatch(this.position, entity, delta, 24) : null
+    if (
+      !match &&
+      entity !== null &&
+      this.groundContactDeltaTrusted &&
+      (entity === this.lastGroundPhysEntity || entity === this.groundContactBaseline?.entity)
+    ) {
+      match = 'standing'
+    }
+    this._v1.copy(this.position).add(delta)
+    this.teleport(this._v1)
+    if (entity !== null && (match === 'overhead' || match === 'standing' || match === 'rising')) {
+      this.snapFeetToPlatformWalkSurface(entity)
+    }
+    if (entity !== null) this.refreshStickyPlatformDelta(entity)
+    this.invalidateControllerCache()
+    if (platformMotionDebug.isEnabled()) {
+      clientDebugLog.log(
+        'motion',
+        `platform transfer Δ=(${delta.x.toFixed(3)},${delta.y.toFixed(3)},${delta.z.toFixed(3)}) · entity=${entity ?? '?'}${match ? ` · ${match}` : ''} · feet→(${this.position.x.toFixed(2)},${this.position.y.toFixed(2)},${this.position.z.toFixed(2)})`,
+        { throttleKey: 'platform-transfer', throttleMs: 400, alsoConsole: true, level: 'success' }
+      )
+    }
+    return true
+  }
+
+  /**
+   * Animator GLTF root-origin Δ — whole-entity lifts (Unity moves the platform Transform).
+   * Prefer |Δy| over walk-surface bbox when the lift has no `_collider` tread motion.
+   */
+  mergeAnimatorOriginPlatformMotion(
+    originDeltas: Map<number, THREE.Vector3>,
+    originPositions: Map<number, THREE.Vector3>
+  ): void {
+    for (const [entity, originDelta] of originDeltas) {
+      if (originDelta.lengthSq() <= 1e-14) continue
+      if (!this.isPlausiblePlatformDelta(originDelta)) {
+        this.logRejectedPlatformDelta('animator-origin', entity, originDelta)
+        continue
+      }
+      let existing = this.platformMotionDelta.get(entity)
+      if (!existing) {
+        existing = new THREE.Vector3()
+        this.platformMotionDelta.set(entity, existing)
+        existing.copy(originDelta)
+      } else if (
+        Math.abs(originDelta.y) > Math.abs(existing.y) + 1e-5 ||
+        (Math.abs(originDelta.y) > 1e-5 && existing.lengthSq() < 1e-8)
+      ) {
+        existing.copy(originDelta)
+      }
+      const originPos = originPositions.get(entity)
+      if (originPos) {
+        let surface = this.platformWalkSurfacePos.get(entity)
+        if (!surface) {
+          surface = new THREE.Vector3()
+          this.platformWalkSurfacePos.set(entity, surface)
+        }
+        surface.copy(originPos)
+      }
+      this.recordStickyPlatformDelta(entity, originDelta)
+    }
+  }
+
+  /** GLTF walk-surface Δ — same values that slid PhysX collider poses this frame. */
+  mergePlatformMotionDeltas(surfaceDeltas: Map<number, THREE.Vector3>): void {
+    for (const [entity, surfaceDelta] of surfaceDeltas) {
+      if (surfaceDelta.lengthSq() <= 1e-14) continue
+      if (!this.isPlausiblePlatformDelta(surfaceDelta)) {
+        this.logRejectedPlatformDelta('walk-surface', entity, surfaceDelta)
+        continue
+      }
+      let existing = this.platformMotionDelta.get(entity)
+      if (!existing) {
+        existing = new THREE.Vector3()
+        this.platformMotionDelta.set(entity, existing)
+      }
+      existing.copy(surfaceDelta)
+      const surfacePos = this.platformWalkSurfacePos.get(entity)
+      if (surfacePos) {
+        let anchor = this.colliderLastWorldPos.get(entity)
+        if (!anchor) {
+          anchor = new THREE.Vector3()
+          this.colliderLastWorldPos.set(entity, anchor)
+        }
+        anchor.copy(surfacePos)
+      }
+    }
+  }
+
+  getPlatformMotionDeltaSnapshot(): { entity: number; dx: number; dy: number; dz: number }[] {
+    const out: { entity: number; dx: number; dy: number; dz: number }[] = []
+    for (const [entity, delta] of this.platformMotionDelta) {
+      out.push({ entity, dx: delta.x, dy: delta.y, dz: delta.z })
+    }
+    return out
+  }
+
+  getLastGroundPhysEntity(): number | null {
+    return this.lastGroundPhysEntity
+  }
+
+  getStandingPlatformEntity(): number | null {
+    return this.standingPlatformEntity
+  }
+
+  private registerStaticActor(entity: number, actor: { ptr: number }): void {
+    this.staticEntityByActorPtr.set(actor.ptr, entity)
+  }
+
+  private unregisterStaticActor(entity: number): void {
+    const actor = this.staticActors.get(entity)
+    if (actor?.ptr !== undefined) this.staticEntityByActorPtr.delete(actor.ptr)
+    this.colliderLastWorldPos.delete(entity)
+    this.gltfWalkSurfaceSnapshot.delete(entity)
+    this.platformMotionDelta.delete(entity)
+    this.platformWalkSurfacePos.delete(entity)
+    this.shapeBaselineLocal.delete(entity)
   }
 
   /** Scene queries — bilateral layer test (matches CCT preFilter). */
@@ -1210,7 +2163,12 @@ export class PhysXWorld {
   /** Ray-style sweep for third-person camera wall collision (Hyperfy `simpleCamLerp`). */
   sweepRay(origin: THREE.Vector3, direction: THREE.Vector3, maxDistance: number): number | null {
     if (!this.scene) return null
-    origin.toPxVec3(this.sweepPose.p)
+    const skipNear = Math.min(0.55, maxDistance * 0.06)
+    const sweepDist = maxDistance - skipNear
+    if (sweepDist <= 0.2) return null
+
+    this._v1.copy(origin).addScaledVector(direction, skipNear)
+    this._v1.toPxVec3(this.sweepPose.p)
 
     this.applySceneQueryFilter(CAMERA_QUERY_MASK)
 
@@ -1218,14 +2176,28 @@ export class PhysXWorld {
       this.cameraSweepGeometry,
       this.sweepPose,
       direction.toPxVec3(this._pv2),
-      maxDistance,
+      sweepDist,
       this.sweepResult,
       PHYSX.PxHitFlagEnum.eDEFAULT,
       this.queryFilterData
     )
 
     if (!didHit) return null
-    return this.sweepResult.getAnyHit(0).distance
+    const nbHits = this.sweepResult.getNbAnyHits?.() ?? 1
+    let bestDist: number | null = null
+    for (let i = 0; i < nbHits; i++) {
+      const hit = this.sweepResult.getAnyHit(i)
+      const ny = hit.normal.y
+      if (ny > 0.42) continue
+      const nx = hit.normal.x
+      const nz = hit.normal.z
+      const dot =
+        nx * direction.x + ny * direction.y + nz * direction.z
+      if (dot > -0.12) continue
+      const dist = hit.distance + skipNear
+      if (bestDist === null || dist < bestDist) bestDist = dist
+    }
+    return bestDist
   }
 
   teleport(position: THREE.Vector3): void {
@@ -1305,8 +2277,15 @@ export class PhysXWorld {
 
     this.scene.addActor(actor)
     this.staticActors.set(desc.entity, actor)
+    this.registerStaticActor(desc.entity, actor)
     this.pmeshHandles.set(desc.entity, handles)
     this.actorWorldBaked.set(desc.entity, actorAtOrigin)
+    if (!actorAtOrigin && shapes.length) {
+      this.shapeBaselineLocal.set(
+        desc.entity,
+        shapes.map((shape) => shape.localMatrix.clone())
+      )
+    }
     return true
   }
 
@@ -1378,6 +2357,7 @@ export class PhysXWorld {
         if (pxGeometry) worldBaked = true
         worldGeo.dispose()
       } else {
+        // Entity-local bake — scale stays in vertices; Animator slides via relative setLocalPose.
         entityLocalGeo = bakeTrimeshGeometry(indexed, shapeDesc.localMatrix)
         pxGeometry = cookBakedGeo(entityLocalGeo, geometryCache)
 
@@ -1412,7 +2392,6 @@ export class PhysXWorld {
       const localTransform = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
       shape.setLocalPose(localTransform)
 
-      // Geometry already carries entity-local (or world) pose — shape stays at identity.
       return { shape, worldBaked }
     } catch (err) {
       this.logCookFailedOnce(shapeDesc.fingerprint, '[PhysXWorld] local trimesh cook failed:', err)
@@ -1421,7 +2400,16 @@ export class PhysXWorld {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  /** Move the PhysX actor root — mesh vertices stay in entity-local space (tweens / pose dirty only). */
+  private setPxShapeLocalPose(pxShape: any, matrix: THREE.Matrix4): void {
+    matrix.decompose(this._pos, this._quat, this._scale)
+    const localTransform = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
+    this._pos.toPxTransform(localTransform)
+    this._quat.toPxTransform(localTransform)
+    pxShape.setLocalPose(localTransform)
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  /** Slide actor root + per-shape relative poses — geometry baked at cook baseline. */
   private updateMultiShapeActorPose(actor: any, desc: PhysicsColliderDesc): void {
     const shapes = desc.shapes
     if (!shapes?.length) return
@@ -1431,6 +2419,26 @@ export class PhysXWorld {
     this._pos.toPxTransform(actorTransform)
     this._quat.toPxTransform(actorTransform)
     actor.setGlobalPose(actorTransform)
+
+    if (this.actorWorldBaked.get(desc.entity)) return
+
+    const baselines = this.shapeBaselineLocal.get(desc.entity)
+    const nbShapes = actor.getNbShapes()
+    if (nbShapes <= 0) return
+    const shapeBuffer = new PHYSX.PxArray_PxShapePtr(nbShapes)
+    const shapesCount = actor.getShapes(shapeBuffer.begin(), nbShapes, 0)
+    for (let i = 0; i < shapesCount && i < shapes.length; i++) {
+      const pxShape = shapeBuffer.get(i)
+      const current = shapes[i]!.localMatrix
+      const baseline = baselines?.[i]
+      if (baseline) {
+        this._shapeRel.copy(baseline).invert()
+        this._shapeRel.premultiply(current)
+        this.setPxShapeLocalPose(pxShape, this._shapeRel)
+      } else {
+        this.setPxShapeLocalPose(pxShape, current)
+      }
+    }
   }
 
   private addStatic(desc: PhysicsColliderDesc): boolean {
@@ -1525,15 +2533,18 @@ export class PhysXWorld {
     actor.attachShape(shape)
     this.scene.addActor(actor)
     this.staticActors.set(desc.entity, actor)
+    this.registerStaticActor(desc.entity, actor)
     return true
   }
 
   private removeStatic(entity: number): void {
+    this.unregisterStaticActor(entity)
     const actor = this.staticActors.get(entity)
     this.staticActors.delete(entity)
     this.staticFp.delete(entity)
     this.staticPoseFp.delete(entity)
     this.actorWorldBaked.delete(entity)
+    this.shapeBaselineLocal.delete(entity)
     const pmeshList = this.pmeshHandles.get(entity)
     this.pmeshHandles.delete(entity)
 

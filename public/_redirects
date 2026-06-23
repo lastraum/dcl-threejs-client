@@ -1,1 +1,4 @@
+/api/peers https://archipelago-ea-stats.decentraland.org/peers 200
+/api/parcels/* https://api.decentraland.org/v2/parcels/:splat 200
+/api/worlds/live-data https://worlds-content-server.decentraland.org/live-data 200
 /api/places/* https://places.decentraland.org/api/:splat 200

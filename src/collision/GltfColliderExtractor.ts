@@ -29,8 +29,25 @@ export class GltfColliderExtractor {
   private readonly extracted = new Map<Entity, PhysicsColliderDesc>()
   private readonly fingerprints = new Map<Entity, string>()
   private readonly poseFingerprints = new Map<Entity, string>()
+  /** Live `_collider` mesh world poses — catches Animator motion without root Transform drift. */
+  private readonly lastColliderMeshWorldFp = new Map<Entity, string>()
+  /** Frame-start walk surface point — bbox-top center of highest CL_PHYSICS collider mesh. */
+  private readonly walkSurfaceSnapshotPos = new Map<Entity, THREE.Vector3>()
+  private readonly frameWalkSurfaceDelta = new Map<Entity, THREE.Vector3>()
+  private readonly frameWalkSurfacePos = new Map<Entity, THREE.Vector3>()
+  private readonly _walkSurfacePos = new THREE.Vector3()
+  private readonly _walkSurfaceBox = new THREE.Box3()
   /** Stable geometry + mask + mesh child — skip trimesh re-extract when unchanged. */
-  private readonly syncState = new Map<Entity, { geomKey: string; maskKey: string; mesh: THREE.Object3D }>()
+  private readonly syncState = new Map<
+    Entity,
+    {
+      geomKey: string
+      maskKey: string
+      mesh: THREE.Object3D
+      hasVisiblePhysics: boolean
+      hasInvisiblePhysics: boolean
+    }
+  >()
   private readonly debugRoot: THREE.Group
   private readonly debugMeshes = new Map<string, THREE.Mesh>()
   private debugFingerprint = ''
@@ -173,8 +190,14 @@ export class GltfColliderExtractor {
 
     if (desc) {
       this.extracted.set(entity, desc)
-      this.syncState.set(entity, { geomKey, maskKey, mesh: gltfMesh })
-      this.poseFingerprints.set(entity, colliderPoseFp(desc.matrix))
+      this.syncState.set(entity, {
+        geomKey,
+        maskKey,
+        mesh: gltfMesh,
+        hasVisiblePhysics,
+        hasInvisiblePhysics
+      })
+      this.poseFingerprints.set(entity, gltfColliderPoseFp(desc))
     } else {
       this.removeColliderEntity(entity)
     }
@@ -187,11 +210,241 @@ export class GltfColliderExtractor {
     const obj = entityNodes.get(entity)
     if (!stored || !obj) return false
     obj.updateMatrixWorld(true)
-    const poseFp = colliderPoseFp(obj.matrixWorld)
-    if (this.poseFingerprints.get(entity) === poseFp) return false
+    const state = this.syncState.get(entity)
+    const gltfMesh = state?.mesh ?? obj.children.find((c) => c.name.startsWith('__mesh_'))
+    let shapesChanged = false
+    if (stored.shapes?.length && gltfMesh && state) {
+      shapesChanged = this.refreshShapeLocalMatrices(
+        gltfMesh,
+        obj,
+        stored.shapes,
+        state.hasVisiblePhysics,
+        state.hasInvisiblePhysics
+      )
+    }
     stored.matrix.copy(obj.matrixWorld)
+    const poseFp = gltfColliderPoseFp(stored)
+    if (!shapesChanged && this.poseFingerprints.get(entity) === poseFp) return false
     this.poseFingerprints.set(entity, poseFp)
     return true
+  }
+
+  /** Snapshot walk-surface points before motion — baseline for per-frame platform Δ. */
+  snapshotWalkSurfacePositions(entityNodes: Map<Entity, THREE.Group>, feet?: THREE.Vector3): void {
+    this.walkSurfaceSnapshotPos.clear()
+    for (const entity of this.extracted.keys()) {
+      const surface = this.colliderWalkSurfacePos(entity, entityNodes, feet)
+      if (surface) this.walkSurfaceSnapshotPos.set(entity, surface.clone())
+    }
+  }
+
+  /**
+   * Per-frame walk-surface Δ after motion bridges — same motion that slides PhysX collider poses.
+   * Fed into CCT platform velocity transfer (capsule += Δ before controller.move).
+   */
+  computeWalkSurfaceDeltas(
+    entityNodes: Map<Entity, THREE.Group>,
+    feet?: THREE.Vector3,
+    maxHoriz = 96,
+    priorityEntities: Entity[] = []
+  ): Entity[] {
+    this.frameWalkSurfaceDelta.clear()
+    this.frameWalkSurfacePos.clear()
+    const changed: Entity[] = []
+    const priority = new Set(priorityEntities)
+    const visit = (entity: Entity, bypassHoriz = false): void => {
+      if (this.recordWalkSurfaceDelta(entity, entityNodes, feet, maxHoriz, changed, bypassHoriz)) {
+        // recorded
+      }
+    }
+    for (const entity of priorityEntities) visit(entity, true)
+    for (const entity of this.extracted.keys()) {
+      if (priority.has(entity)) continue
+      visit(entity, false)
+    }
+    return changed
+  }
+
+  private recordWalkSurfaceDelta(
+    entity: Entity,
+    entityNodes: Map<Entity, THREE.Group>,
+    feet: THREE.Vector3 | undefined,
+    maxHoriz: number,
+    changed: Entity[],
+    bypassHorizFilter: boolean
+  ): boolean {
+    const state = this.syncState.get(entity)
+    const obj = entityNodes.get(entity)
+    if (!state || !obj) return false
+    const surface = this.colliderWalkSurfacePos(entity, entityNodes, feet)
+    if (!bypassHorizFilter && feet) {
+      if (surface) {
+        const dx = surface.x - feet.x
+        const dz = surface.z - feet.z
+        if (dx * dx + dz * dz > maxHoriz * maxHoriz) return false
+      } else {
+        obj.updateMatrixWorld(true)
+        const dx = obj.matrixWorld.elements[12]! - feet.x
+        const dz = obj.matrixWorld.elements[14]! - feet.z
+        if (dx * dx + dz * dz > maxHoriz * maxHoriz) return false
+      }
+    }
+    const snapshot = this.walkSurfaceSnapshotPos.get(entity)
+    if (!surface || !snapshot) return false
+
+    const fp = this.colliderMeshWorldFingerprint(
+      state.mesh,
+      state.hasVisiblePhysics,
+      state.hasInvisiblePhysics
+    )
+    if (fp) this.lastColliderMeshWorldFp.set(entity, fp)
+
+    this.frameWalkSurfacePos.set(entity, surface.clone())
+    this._walkSurfacePos.subVectors(surface, snapshot)
+    if (this._walkSurfacePos.lengthSq() > 1e-14) {
+      this.frameWalkSurfaceDelta.set(entity, this._walkSurfacePos.clone())
+      changed.push(entity)
+    }
+    return true
+  }
+
+  /** Current-frame walk-surface positions — platform transfer proximity (not entity pivots). */
+  consumeFrameWalkSurfacePositionsPhys(): Map<number, THREE.Vector3> {
+    const out = new Map<number, THREE.Vector3>()
+    for (const [entity, pos] of this.frameWalkSurfacePos) {
+      out.set(GLTF_COLLIDER_ENTITY_BASE + entity, pos.clone())
+    }
+    return out
+  }
+
+  /** PhysX entity id → walk-surface Δ this frame (GLTF_COLLIDER_ENTITY_BASE + ecs entity). */
+  consumeFrameWalkSurfaceDeltasPhys(): Map<number, THREE.Vector3> {
+    const out = new Map<number, THREE.Vector3>()
+    for (const [entity, delta] of this.frameWalkSurfaceDelta) {
+      out.set(GLTF_COLLIDER_ENTITY_BASE + entity, delta)
+    }
+    return out
+  }
+
+  /**
+   * Bbox-top center for platform transfer.
+   * With `feet` — highest collider tread in the XZ column under the capsule (not global entity maxY).
+   */
+  private colliderWalkSurfacePos(
+    entity: Entity,
+    entityNodes: Map<Entity, THREE.Group>,
+    feet?: THREE.Vector3
+  ): THREE.Vector3 | null {
+    const state = this.syncState.get(entity)
+    const obj = entityNodes.get(entity)
+    if (!state || !obj) return null
+    const meshes = this.collectColliderMeshes(
+      state.mesh,
+      state.hasVisiblePhysics,
+      state.hasInvisiblePhysics
+    )
+    if (!meshes.length) return null
+
+    const columnMargin = 1.5
+    let columnMaxY = Number.NEGATIVE_INFINITY
+    let columnBest: THREE.Vector3 | null = null
+    let globalMaxY = Number.NEGATIVE_INFINITY
+    let globalBest: THREE.Vector3 | null = null
+
+    for (const mesh of meshes) {
+      mesh.updateMatrixWorld(true)
+      this._walkSurfaceBox.setFromObject(mesh)
+      if (!Number.isFinite(this._walkSurfaceBox.max.y)) continue
+
+      const top = this._walkSurfacePos.set(
+        (this._walkSurfaceBox.min.x + this._walkSurfaceBox.max.x) * 0.5,
+        this._walkSurfaceBox.max.y,
+        (this._walkSurfaceBox.min.z + this._walkSurfaceBox.max.z) * 0.5
+      )
+
+      if (this._walkSurfaceBox.max.y >= globalMaxY) {
+        globalMaxY = this._walkSurfaceBox.max.y
+        globalBest = top
+      }
+
+      if (feet) {
+        if (feet.x < this._walkSurfaceBox.min.x - columnMargin) continue
+        if (feet.x > this._walkSurfaceBox.max.x + columnMargin) continue
+        if (feet.z < this._walkSurfaceBox.min.z - columnMargin) continue
+        if (feet.z > this._walkSurfaceBox.max.z + columnMargin) continue
+        if (this._walkSurfaceBox.max.y >= columnMaxY) {
+          columnMaxY = this._walkSurfaceBox.max.y
+          columnBest = top
+        }
+      }
+    }
+
+    const best = feet && columnBest ? columnBest : globalBest
+    return best ? best.clone() : null
+  }
+
+  private collectColliderMeshes(
+    gltfRoot: THREE.Object3D,
+    hasVisiblePhysics: boolean,
+    hasInvisiblePhysics: boolean
+  ): THREE.Mesh[] {
+    const colliderMeshes: THREE.Mesh[] = []
+    gltfRoot.traverse((node) => {
+      if (!(node instanceof THREE.Mesh)) return
+      if ((node as THREE.SkinnedMesh).isSkinnedMesh) return
+      if (isGltfVisibleClassMesh(node)) {
+        if (hasVisiblePhysics) colliderMeshes.push(node)
+        return
+      }
+      if (isGltfInvisibleColliderMesh(node, gltfRoot)) {
+        if (hasInvisiblePhysics) colliderMeshes.push(node)
+        return
+      }
+      if (hasVisiblePhysics) colliderMeshes.push(node)
+    })
+    return colliderMeshes
+  }
+
+  private colliderMeshWorldFingerprint(
+    gltfRoot: THREE.Object3D,
+    hasVisiblePhysics: boolean,
+    hasInvisiblePhysics: boolean
+  ): string | null {
+    const meshes = this.collectColliderMeshes(gltfRoot, hasVisiblePhysics, hasInvisiblePhysics)
+    if (!meshes.length) return null
+    const parts: string[] = []
+    for (const mesh of meshes) {
+      mesh.updateMatrixWorld(true)
+      const e = mesh.matrixWorld.elements
+      parts.push(`${e[12]!.toFixed(3)},${e[13]!.toFixed(3)},${e[14]!.toFixed(3)}`)
+    }
+    return parts.join('|')
+  }
+
+  /** Animator / skinned GLTF — child `_collider` meshes move without entity-root Transform changes. */
+  private refreshShapeLocalMatrices(
+    gltfRoot: THREE.Object3D,
+    entityObj: THREE.Object3D,
+    shapes: PhysicsColliderShapeDesc[],
+    hasVisiblePhysics: boolean,
+    hasInvisiblePhysics: boolean
+  ): boolean {
+    const colliderMeshes = this.collectColliderMeshes(gltfRoot, hasVisiblePhysics, hasInvisiblePhysics)
+    if (!colliderMeshes.length || colliderMeshes.length !== shapes.length) return false
+
+    _entityInv.copy(entityObj.matrixWorld).invert()
+    let changed = false
+    for (let i = 0; i < shapes.length; i++) {
+      const mesh = colliderMeshes[i]!
+      mesh.updateMatrixWorld(true)
+      _worldMatrix.copy(mesh.matrixWorld).premultiply(_entityInv)
+      const nextFp = colliderPoseFp(_worldMatrix)
+      if (colliderPoseFp(shapes[i]!.localMatrix) !== nextFp) {
+        shapes[i]!.localMatrix.copy(_worldMatrix)
+        changed = true
+      }
+    }
+    return changed
   }
 
   /** Drop geom-skip cache for one entity — next sync re-traverses its GLB with live matrixWorld. */
@@ -210,6 +463,9 @@ export class GltfColliderExtractor {
     this.fingerprints.delete(entity)
     this.poseFingerprints.delete(entity)
     this.syncState.delete(entity)
+    this.lastColliderMeshWorldFp.delete(entity)
+    this.walkSurfaceSnapshotPos.delete(entity)
+    this.frameWalkSurfaceDelta.delete(entity)
     return true
   }
 
@@ -483,7 +739,8 @@ export class GltfColliderExtractor {
     return {
       entity: GLTF_COLLIDER_ENTITY_BASE + entity,
       kind: 'gltf-multi',
-      fingerprint: `gltf-entity:${entity}:${geomKey}`,
+      // v3 — entity-local baked geometry + relative per-shape pose slides (Animator walk surfaces).
+      fingerprint: `gltf-entity:v3:${entity}:${geomKey}`,
       matrix: entityObj.matrixWorld.clone(),
       shapes
     }
@@ -550,6 +807,15 @@ function debugWireframeEntries(desc: PhysicsColliderDesc): DebugWireframeEntry[]
 
 function colliderPoseFp(matrix: THREE.Matrix4): string {
   return matrix.elements.map((n) => n.toFixed(3)).join(',')
+}
+
+function gltfColliderPoseFp(desc: PhysicsColliderDesc): string {
+  if (desc.shapes?.length) {
+    const parts = [colliderPoseFp(desc.matrix)]
+    for (const shape of desc.shapes) parts.push(colliderPoseFp(shape.localMatrix))
+    return parts.join('|')
+  }
+  return colliderPoseFp(desc.matrix)
 }
 
 export { colliderPoseFp }

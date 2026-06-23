@@ -27,7 +27,7 @@ import { fetchProfileFaceUrl } from '../avatar/peerApi'
 import { hydrateEmoteWheelSlots } from '../avatar/profileEmotes'
 import { InputAction } from '../input/pointerConstants'
 import { MobileGameHud } from './ui/MobileGameHud'
-import { disposeSessionAssetCache, getSessionAssetCache, prefetchSceneManifestGlbs } from '../rendering/AssetCache'
+import { disposeSessionAssetCache, getSessionAssetCache, prefetchSceneManifestAssets } from '../rendering/AssetCache'
 import { DEFAULT_TIMEOUT_MS, FAST_TIMEOUT_MS, type SceneHydrationStats } from '../rendering/sceneHydration'
 import { resolveSceneLoadWarm } from '../rendering/sceneLoadWarm'
 import { formatSceneLoadError } from './formatSceneLoadError'
@@ -152,7 +152,7 @@ export class AppController {
     opts.onProgress?.('Resolving destination…')
     const sceneConfig = await resolveSceneFromRoute(route)
     this.sceneContentUrl = sceneConfig.realm.contentUrl
-    prefetchSceneManifestGlbs(getSessionAssetCache(), sceneConfig)
+    prefetchSceneManifestAssets(getSessionAssetCache(), sceneConfig)
     opts.onProgress?.('Building world…')
     if (!this.container) throw new Error('App container missing')
 
@@ -334,7 +334,10 @@ export class AppController {
       const footer = 'Click to lock cursor · WASD move · /goto name or x,y in chat'
 
       this.debugPanel?.setStatusHtml(`${summarizeSceneContent(sceneConfig)}<br>${footer}`)
-      clientDebugLog.log('client', 'Scene loaded — open Help (?) for network debug log')
+      clientDebugLog.log(
+        'client',
+        'Scene loaded — Help (?) for debug log · moving platforms: ?platformdebug or Debug → Platform transfer log'
+      )
       const profile = world.session.getProfile()
       const peerUrl = sceneConfig.realm.contentUrl
       void hydrateEmoteWheelSlots(profile, peerUrl).then((slots) => {

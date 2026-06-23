@@ -14,6 +14,7 @@ import { CrdtProjection, type ProjectionChangeKind } from '../../bridge/CrdtProj
 import { CrdtEncoder } from '../../bridge/CrdtEncoder'
 import { ReservedEntitiesSync, type EntityPose } from '../../bridge/ReservedEntitiesSync'
 import { ThreeBridge } from '../../bridge/ThreeBridge'
+import { applySceneDiff } from '../../bridge/entityStoreApply'
 import { AvatarShapeBridge } from '../../bridge/AvatarShapeBridge'
 import { AvatarEmoteCommandBridge, type AvatarEmoteHandler } from '../../bridge/AvatarEmoteCommandBridge'
 import { BillboardBridge } from '../../bridge/BillboardBridge'
@@ -37,6 +38,7 @@ import {
   gltfPhysicsEntityId
 } from '../../collision/GltfColliderExtractor'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
+import { platformMotionDebug } from '../../debug/PlatformMotionDebug'
 import { GltfColliderExtractor } from '../../collision/GltfColliderExtractor'
 import type {
   CommsRpcHandler,
@@ -95,10 +97,14 @@ const PROJ_PARITY_AUDIT = ((): boolean => {
 export class SceneScriptSystem {
   readonly componentHost = new RendererComponentHost()
   /** Typed projection is the renderer-side CRDT state (inbound decode + renderer-owned writes). */
-  private readonly projection = new CrdtProjection(this.componentHost.components, {
-    networkEntity: this.componentHost.networkEntity,
-    networkParent: this.componentHost.networkParent
-  })
+  private readonly projection = new CrdtProjection(
+    this.componentHost.components,
+    {
+      networkEntity: this.componentHost.networkEntity,
+      networkParent: this.componentHost.networkParent
+    },
+    new Set<Entity>([SDK_RESERVED.root, SDK_RESERVED.player, SDK_RESERVED.camera])
+  )
   private readonly storeComponents = createStoreComponents(this.componentHost.components, this.projection)
   readonly readComponents: MirrorComponents = this.storeComponents
   readonly view: ProjectionView = projectionViewFromProjection(
@@ -169,6 +175,10 @@ export class SceneScriptSystem {
   private readonly colliderStructureDirty = new Set<Entity>()
   /** EntityStore onChange — Transform on collider-bearing entities (pose only). */
   private readonly colliderPoseDirty = new Set<Entity>()
+  private readonly lastTweenMotionEntities = new Set<Entity>()
+  private readonly lastSyncFrameTransformEntities = new Set<Entity>()
+  private platformMotionReportDumped = false
+  private sceneBaseParcel: string | null = null
   /** True when syncCollision already pushed incremental pose slides this async pass. */
   private colliderPosesSyncedThisPass = false
   /** Transform parent → direct children — subtree walks for pose dirty propagation. */
@@ -242,6 +252,8 @@ export class SceneScriptSystem {
   prepare(scene: ResolvedScene, cache: AssetCache, host: SceneHost): void {
     if (!scene.mainEntry || !scene.entityId) return
 
+    this.sceneBaseParcel = scene.baseParcel
+    this.platformMotionReportDumped = false
     this.reserved.initialize(scene.spawn)
     this.host = host
     this.entityStore = new EntityStore(host.scene, 'scene-entities')
@@ -274,7 +286,7 @@ export class SceneScriptSystem {
     this.bridge.setAvatarTextureResolver(async (userId) => {
       const url = await fetchProfileFaceUrl(userId)
       if (!url) return null
-      return cache.loadTexture(url)
+      return cache.loadTexture(url).catch(() => null)
     })
     this.avatarAttachBridge = new AvatarAttachBridge(
       this.readComponents,
@@ -1981,11 +1993,328 @@ export class SceneScriptSystem {
     }
   }
 
+  /** Frame-start walk-surface snapshot — before Animator / Tween motion (platform Δ baseline). */
+  snapshotWalkSurfacePositions(feet?: THREE.Vector3): void {
+    const nodes = this.bridge?.getEntityNodes()
+    if (nodes) this.gltfColliders?.snapshotWalkSurfacePositions(nodes, feet)
+  }
+
+  /** Frame-start Animator GLTF root world origin — lifts that move the entity node without `_collider` Δ. */
+  private readonly animatorOriginSnapshot = new Map<Entity, THREE.Vector3>()
+  private readonly frameAnimatorOriginDelta = new Map<Entity, THREE.Vector3>()
+  private readonly frameAnimatorOriginPos = new Map<Entity, THREE.Vector3>()
+
+  snapshotAnimatorOriginPositions(feet: THREE.Vector3, maxHoriz = 24): void {
+    this.animatorOriginSnapshot.clear()
+    const nodes = this.bridge?.getEntityNodes()
+    if (!nodes) return
+    const { Animator, GltfContainer } = this.readComponents
+    const maxSq = maxHoriz * maxHoriz
+    for (const [entity] of this.view.getEntitiesWith(Animator)) {
+      if (!GltfContainer.has(entity)) continue
+      const node = nodes.get(entity)
+      if (!node) continue
+      node.updateMatrixWorld(true)
+      const pos = new THREE.Vector3().setFromMatrixPosition(node.matrixWorld)
+      const dx = pos.x - feet.x
+      const dz = pos.z - feet.z
+      if (dx * dx + dz * dz > maxSq) continue
+      this.animatorOriginSnapshot.set(entity, pos)
+    }
+  }
+
+  /** Animator root Δ after motion bridges — Explorer moves the whole platform transform, not just bbox centers. */
+  computeAnimatorOriginDeltas(feet: THREE.Vector3, maxHoriz = 24): Entity[] {
+    this.frameAnimatorOriginDelta.clear()
+    this.frameAnimatorOriginPos.clear()
+    const changed: Entity[] = []
+    const nodes = this.bridge?.getEntityNodes()
+    if (!nodes) return changed
+    const maxSq = maxHoriz * maxHoriz
+    for (const [entity, snapshot] of this.animatorOriginSnapshot) {
+      const node = nodes.get(entity)
+      if (!node) continue
+      node.updateMatrixWorld(true)
+      const pos = new THREE.Vector3().setFromMatrixPosition(node.matrixWorld)
+      const dx = pos.x - feet.x
+      const dz = pos.z - feet.z
+      if (dx * dx + dz * dz > maxSq) continue
+      const delta = pos.clone().sub(snapshot)
+      this.frameAnimatorOriginPos.set(entity, pos)
+      if (delta.lengthSq() > 1e-14) {
+        this.frameAnimatorOriginDelta.set(entity, delta)
+        changed.push(entity)
+      }
+    }
+    return changed
+  }
+
+  consumeAnimatorOriginDeltasPhys(): Map<number, THREE.Vector3> {
+    const out = new Map<number, THREE.Vector3>()
+    for (const [entity, delta] of this.frameAnimatorOriginDelta) {
+      out.set(GLTF_COLLIDER_ENTITY_BASE + entity, delta.clone())
+    }
+    return out
+  }
+
+  consumeAnimatorOriginPositionsPhys(): Map<number, THREE.Vector3> {
+    const out = new Map<number, THREE.Vector3>()
+    for (const [entity, pos] of this.frameAnimatorOriginPos) {
+      out.set(GLTF_COLLIDER_ENTITY_BASE + entity, pos.clone())
+    }
+    return out
+  }
+
+  /**
+   * Live `_collider` walk-surface motion — Animator / GLTF clips that skip ECS Transform updates.
+   * Call after motion bridges + syncCollision pose refresh (shape matrices current).
+   */
+  detectAndMarkLiveColliderMeshMotion(
+    feet?: THREE.Vector3,
+    maxHoriz = 96,
+    groundPhysEntity: number | null = null
+  ): Entity[] {
+    const nodes = this.bridge?.getEntityNodes()
+    if (!nodes || !this.gltfColliders) return []
+    const priority: Entity[] = []
+    if (groundPhysEntity !== null && groundPhysEntity >= GLTF_COLLIDER_ENTITY_BASE) {
+      priority.push((groundPhysEntity - GLTF_COLLIDER_ENTITY_BASE) as Entity)
+    }
+    const changed = this.gltfColliders.computeWalkSurfaceDeltas(nodes, feet, maxHoriz, priority)
+    for (const entity of changed) {
+      this.colliderPoseDirty.add(entity)
+      this.markDescendantColliderPosesDirty(entity)
+    }
+    return changed
+  }
+
+  consumeWalkSurfaceDeltas(): Map<number, THREE.Vector3> {
+    return this.gltfColliders?.consumeFrameWalkSurfaceDeltasPhys() ?? new Map()
+  }
+
+  consumeWalkSurfacePositions(): Map<number, THREE.Vector3> {
+    return this.gltfColliders?.consumeFrameWalkSurfacePositionsPhys() ?? new Map()
+  }
+
+  motionSourceLabel(entity: Entity): string {
+    const { Tween, Animator, GltfContainer } = this.readComponents
+    const parts: string[] = []
+    if (this.lastTweenMotionEntities.has(entity)) parts.push('tween')
+    if (this.lastSyncFrameTransformEntities.has(entity)) parts.push('sync-transform')
+    if (Animator.has(entity)) parts.push('animator')
+    if (Tween.has(entity)) parts.push(`tween-ecs:${Tween.get(entity).mode?.$case ?? '?'}`)
+    if (GltfContainer.has(entity)) parts.push('gltf-collider')
+    return parts.length ? parts.join('+') : 'mesh/system'
+  }
+
+  /** One-shot ECS report — scene-wide motion + entities near the avatar (any parcel/scene). */
+  dumpPlatformMotionReport(
+    feet: THREE.Vector3,
+    sceneOrigin?: { x: number; z: number } | null,
+    nearHoriz = 96
+  ): void {
+    if (!platformMotionDebug.isEnabled() || this.platformMotionReportDumped) return
+    this.platformMotionReportDumped = true
+    const { GltfContainer, Tween, Animator, Transform } = this.readComponents
+    const nodes = this.bridge?.getEntityNodes()
+    const parcel = this.sceneBaseParcel ?? '?'
+    const worldX = feet.x + (sceneOrigin?.x ?? 0)
+    const worldZ = feet.z + (sceneOrigin?.z ?? 0)
+    const lines: string[] = [
+      `Platform motion report — parcel ${parcel}` +
+        ` · feet scene (${feet.x.toFixed(1)}, ${feet.y.toFixed(1)}, ${feet.z.toFixed(1)})` +
+        ` · world (${worldX.toFixed(1)}, ${feet.y.toFixed(1)}, ${worldZ.toFixed(1)})`
+    ]
+    const horizSq = (entity: Entity): number => {
+      if (!Transform.has(entity)) return Number.POSITIVE_INFINITY
+      const p = Transform.get(entity).position
+      const dx = p.x - feet.x
+      const dz = p.z - feet.z
+      return dx * dx + dz * dz
+    }
+    const nearSq = nearHoriz * nearHoriz
+    const formatTween = (entity: Entity): string => {
+      const t = Tween.get(entity)
+      const src = GltfContainer.has(entity) ? GltfContainer.get(entity).src : '(no gltf)'
+      const pos = Transform.has(entity) ? Transform.get(entity).position : null
+      const posStr = pos ? `@(${pos.x.toFixed(1)},${pos.y.toFixed(1)},${pos.z.toFixed(1)})` : ''
+      return `  tween ${entity}${posStr} · ${t.mode?.$case ?? '?'} · ${t.playing !== false ? 'play' : 'stop'} · ${src}`
+    }
+    const formatAnimator = (entity: Entity): string => {
+      const states = Animator.get(entity).states ?? []
+      const playing = states
+        .filter((s) => s.playing !== false && s.clip)
+        .map((s) => s.clip)
+        .join(',')
+      const src = GltfContainer.has(entity) ? GltfContainer.get(entity).src : '(no gltf)'
+      const pos = Transform.has(entity) ? Transform.get(entity).position : null
+      const posStr = pos ? `@(${pos.x.toFixed(1)},${pos.y.toFixed(1)},${pos.z.toFixed(1)})` : ''
+      return `  animator ${entity}${posStr} · [${playing || 'idle'}] · ${src}`
+    }
+
+    const allPlayingTweens: Entity[] = []
+    const allPlayingAnimators: Entity[] = []
+    for (const [entity] of this.view.getEntitiesWith(Tween)) {
+      const t = Tween.get(entity)
+      if (t.playing !== false) allPlayingTweens.push(entity)
+    }
+    for (const [entity] of this.view.getEntitiesWith(Animator)) {
+      const states = Animator.get(entity).states ?? []
+      if (states.some((s) => s.playing !== false && s.clip)) allPlayingAnimators.push(entity)
+    }
+
+    lines.push(`Scene-wide playing tweens (${allPlayingTweens.length}):`)
+    if (allPlayingTweens.length) {
+      for (const entity of allPlayingTweens.slice(0, 40)) lines.push(formatTween(entity))
+      if (allPlayingTweens.length > 40) lines.push(`  … +${allPlayingTweens.length - 40} more`)
+    } else {
+      lines.push('  (none — lift may use Animator or scene-script Transform)')
+    }
+
+    lines.push(`Scene-wide playing animators (${allPlayingAnimators.length}):`)
+    if (allPlayingAnimators.length) {
+      for (const entity of allPlayingAnimators.slice(0, 40)) lines.push(formatAnimator(entity))
+      if (allPlayingAnimators.length > 40) lines.push(`  … +${allPlayingAnimators.length - 40} more`)
+    } else {
+      lines.push('  (none)')
+    }
+
+    lines.push(`Near avatar (within ${nearHoriz}m):`)
+    let nearTween = 0
+    let nearAnim = 0
+    let nearGltf = 0
+    for (const [entity] of this.view.getEntitiesWith(Tween)) {
+      if (horizSq(entity) > nearSq) continue
+      nearTween++
+      lines.push(formatTween(entity))
+    }
+    for (const [entity] of this.view.getEntitiesWith(Animator)) {
+      if (horizSq(entity) > nearSq) continue
+      nearAnim++
+      lines.push(formatAnimator(entity))
+    }
+    for (const desc of this.gltfColliders?.getPhysicsColliders() ?? []) {
+      const ecsEntity = (desc.entity - GLTF_COLLIDER_ENTITY_BASE) as Entity
+      if (horizSq(ecsEntity) > nearSq) continue
+      nearGltf++
+      const src = GltfContainer.has(ecsEntity) ? GltfContainer.get(ecsEntity).src : '(no gltf)'
+      const node = nodes?.has(ecsEntity) ? 'yes' : 'no'
+      lines.push(`  gltf-collider ${ecsEntity} · phys=${desc.entity} · node=${node} · ${src}`)
+    }
+    lines.push(`Near totals — tween:${nearTween} animator:${nearAnim} gltf-collider:${nearGltf}`)
+    const message = lines.join('\n')
+    clientDebugLog.log('motion', message, { level: 'info', alsoConsole: true })
+    console.info('[motion]', message)
+  }
+
+  logPlatformMotionTick(
+    feet: THREE.Vector3,
+    options: {
+      meshMotion: Entity[]
+      poseDirty: number
+      platformDeltas: { entity: number; dx: number; dy: number; dz: number }[]
+      platformTransferApplied: boolean
+      lastGround?: number | null
+      standingPlatform?: number | null
+      sceneOrigin?: { x: number; z: number } | null
+    }
+  ): void {
+    if (!platformMotionDebug.isEnabled()) return
+    const worldX = feet.x + (options.sceneOrigin?.x ?? 0)
+    const worldZ = feet.z + (options.sceneOrigin?.z ?? 0)
+    const parcel = this.sceneBaseParcel
+    const parts = [
+      parcel ? `parcel=${parcel}` : 'parcel=?',
+      `feet=(${feet.x.toFixed(2)},${feet.y.toFixed(2)},${feet.z.toFixed(2)})`,
+      `world=(${worldX.toFixed(1)},${feet.y.toFixed(2)},${worldZ.toFixed(1)})`,
+      `poseDirty=${options.poseDirty}`,
+      `meshMotion=${options.meshMotion.length}`,
+      `platformΔ=${options.platformDeltas.length}`,
+      `transfer=${options.platformTransferApplied ? 'yes' : 'no'}`
+    ]
+    if (options.lastGround != null) parts.push(`ground=${options.lastGround}`)
+    if (options.standingPlatform != null) parts.push(`platform=${options.standingPlatform}`)
+    if (options.meshMotion.length) {
+      parts.push(
+        `mesh[${options.meshMotion.map((e) => `${e}:${this.motionSourceLabel(e)}`).join(', ')}]`
+      )
+    }
+    if (options.platformDeltas.length) {
+      parts.push(
+        options.platformDeltas
+          .map((d) => `Δ${d.entity}=(${d.dx.toFixed(3)},${d.dy.toFixed(3)},${d.dz.toFixed(3)})`)
+          .join(' ')
+      )
+    }
+    clientDebugLog.log('motion', parts.join(' · '), {
+      throttleKey: 'platform-motion-tick',
+      throttleMs: 400,
+      alsoConsole: true
+    })
+  }
+
   /** TweenBridge updates matrixWorld on the sync frame — mark affected collider subtrees. */
   private markTweenColliderPosesDirty(): void {
     if (!this.tweenBridge) return
+    this.lastTweenMotionEntities.clear()
     const { MeshCollider, GltfContainer } = this.readComponents
     for (const entity of this.tweenBridge.consumeTransformMotionEntities()) {
+      this.lastTweenMotionEntities.add(entity)
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
+        this.colliderPoseDirty.add(entity)
+      }
+      this.markDescendantColliderPosesDirty(entity)
+    }
+  }
+
+  /**
+   * Scene-script Transform updates arrive via projection diff — apply on the sync frame
+   * before player CCT so moving platforms record walk-surface Δ the same frame.
+   */
+  consumeSyncFrameTransforms(): void {
+    if (!this.running || !this.bridge || !this.entityStore || !this.pendingDiff.size) return
+    if (!this.bridge.canConsumeDiff()) return
+
+    const { Transform, AvatarAttach } = this.readComponents
+    const transformDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    for (const [entity, comps] of this.pendingDiff) {
+      const transformKind = comps.get(Transform.componentId)
+      if (transformKind === undefined) continue
+      transformDiff.set(entity, new Map([[Transform.componentId, transformKind]]))
+    }
+    if (!transformDiff.size) return
+
+    const tweenRefresh = (this.tweenBridge?.getActiveTweenEntities() ?? []).filter(
+      (entity) => !AvatarAttach.has(entity)
+    )
+    applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh)
+    this.lastSyncFrameTransformEntities.clear()
+    for (const entity of transformDiff.keys()) this.lastSyncFrameTransformEntities.add(entity)
+
+    for (const entity of transformDiff.keys()) {
+      const pending = this.pendingDiff.get(entity)
+      if (!pending) continue
+      pending.delete(Transform.componentId)
+      if (pending.size === 0) this.pendingDiff.delete(entity)
+    }
+  }
+
+  /** Push live Animator mesh poses into GLTF `_collider` shape locals before collision sync. */
+  private syncAnimatorGltfColliderPoses(): void {
+    const nodes = this.bridge?.getEntityNodes()
+    if (!nodes || !this.gltfColliders) return
+    const { Animator, GltfContainer } = this.readComponents
+    for (const [entity] of this.view.getEntitiesWith(Animator)) {
+      if (GltfContainer.has(entity)) {
+        this.gltfColliders.syncColliderEntityPose(entity, nodes)
+      }
+    }
+  }
+
+  /** AnimatorBridge moves GLTF child meshes — mark collider roots for pose slide. */
+  private markAnimatorColliderPosesDirty(): void {
+    const { Animator, GltfContainer, MeshCollider } = this.readComponents
+    for (const [entity] of this.view.getEntitiesWith(Animator)) {
       if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
         this.colliderPoseDirty.add(entity)
       }
@@ -2143,6 +2472,8 @@ export class SceneScriptSystem {
     this.audioStreamBridge?.sync(this.view)
     this.avatarShapes?.update(delta)
     this.animatorBridge?.update(delta)
+    this.syncAnimatorGltfColliderPoses()
+    this.markAnimatorColliderPosesDirty()
     this.particleBridge?.update(delta)
     this.avatarAttachBridge?.update(this.view)
     this.flushAvatarAttachTransforms()

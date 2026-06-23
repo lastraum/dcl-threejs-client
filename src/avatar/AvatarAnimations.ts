@@ -16,6 +16,7 @@ import {
   splitEmoteClips
 } from './emotePlayback'
 import { remapClipToAvatar } from './emoteBoneMap'
+import { findBodyShapeRoot } from './loadWearable'
 import { getRemappedLocomotionClip } from './locomotionClipCache'
 import type { AssetCache, CachedGltf } from '../rendering/AssetCache'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
@@ -80,8 +81,9 @@ export class AvatarAnimations {
     this.dispose()
     const generation = this.bindGeneration
     this.avatarRoot = avatarRoot
+    const animationRoot = findBodyShapeRoot(avatarRoot)
     this.attachParent = attachParent ?? avatarRoot.parent ?? avatarRoot
-    this.mixer = new THREE.AnimationMixer(avatarRoot)
+    this.mixer = new THREE.AnimationMixer(animationRoot)
     this.mixer.addEventListener('finished', this.onMixerFinished)
 
     if (this.vfxScene) {
@@ -145,11 +147,15 @@ export class AvatarAnimations {
       throw new Error('locomotion idle emote unavailable')
     }
 
-    this.idleAction = this.playLoop(idleClip, avatarRoot, bodyShape, 1)
-    this.walkAction = this.playLoop(walkClip ?? undefined, avatarRoot, bodyShape, 0)
-    this.runAction = this.playLoop(runClip ?? undefined, avatarRoot, bodyShape, 0)
-    this.jumpAction = this.playLoop(jumpClip ?? undefined, avatarRoot, bodyShape, 0)
-    this.doubleJumpAction = this.playOneShot(doubleJumpClip ?? jumpClip ?? undefined, avatarRoot, bodyShape)
+    this.idleAction = this.playLoop(idleClip, animationRoot, bodyShape, 1)
+    this.walkAction = this.playLoop(walkClip ?? undefined, animationRoot, bodyShape, 0)
+    this.runAction = this.playLoop(runClip ?? undefined, animationRoot, bodyShape, 0)
+    this.jumpAction = this.playLoop(jumpClip ?? undefined, animationRoot, bodyShape, 0)
+    this.doubleJumpAction = this.playOneShot(
+      doubleJumpClip ?? jumpClip ?? undefined,
+      animationRoot,
+      bodyShape
+    )
 
     if (!this.walkAction || !this.runAction || !this.jumpAction) {
       console.warn('[avatar] locomotion bind:', {
@@ -212,7 +218,7 @@ export class AvatarAnimations {
     }
 
     if (avatarClip) {
-      const remapped = remapClipToAvatar(avatarClip, this.avatarRoot)
+      const remapped = remapClipToAvatar(avatarClip, findBodyShapeRoot(this.avatarRoot))
       if (remapped) {
         this.profileAction = this.mixer.clipAction(remapped)
         this.profileAction.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1)
@@ -247,7 +253,7 @@ export class AvatarAnimations {
     }
 
     this.teardownProfileEmotePlayback()
-    const remapped = remapClipToAvatar(clip, this.avatarRoot)
+    const remapped = remapClipToAvatar(clip, findBodyShapeRoot(this.avatarRoot))
     if (!remapped) {
       console.warn(`[avatar] emote "${clip.name}" has no matching bone tracks`)
       this.finishProfileEmoteStop()

@@ -5,9 +5,14 @@ import type { WearableCategory } from './types'
 const _boundsSize = new THREE.Vector3()
 const _worldScale = new THREE.Vector3()
 
-/** Helper / physics / duplicate body shells that must never render on avatars. */
+/**
+ * Junk geometry inside wearable GLBs (colliders, LOD, helpers).
+ * Do NOT match `*BaseMesh*` here — that is the standard DCL wearable display mesh
+ * (e.g. ShapeB_uBody_BaseMesh). Body-shape shells are hidden via `applyBodyShapeVisibility`.
+ */
+// LOD1 is often the only NFT display mesh (e.g. ProcessedMeshNode_LOD1) — hide LOD2+ only.
 const WEARABLE_HIDE_NAME =
-  /collider|_lod\d*$|_lod_|helper|invisible|physics|_anchor|_target|vfx|particle|reference|basemesh|basebody|bodyshape|avatar_body|_body_|^armature$|skeleton|rig_|^root$/i
+  /collider|_lod[2-9]\d*$|_lod_[2-9]|helper|invisible|physics|_anchor|_target|vfx|particle|reference|^armature$|skeleton|rig_|^root$/i
 
 /** Max mesh extent in meters — larger geometry is almost always a bad export or VFX plane. */
 const MAX_WEARABLE_MESH_EXTENT_M = 3.5
@@ -53,9 +58,136 @@ function meshExtentMeters(mesh: THREE.Mesh): number {
   return box.getSize(_boundsSize).length()
 }
 
-function shouldHideWearableMesh(mesh: THREE.Mesh): boolean {
+/** Local-space bounds — catches cm-scale helper planes before armature scale is normalized. */
+function localMeshExtent(mesh: THREE.Mesh): number {
+  if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox()
+  const box = mesh.geometry.boundingBox
+  if (!box || box.isEmpty()) return 0
+  return box.getSize(_boundsSize).length()
+}
+
+function isCmScaleHelperPlane(mesh: THREE.Mesh): boolean {
+  const local = localMeshExtent(mesh)
+  if (local <= 10) return false
+  const pos = mesh.geometry.attributes.position as THREE.BufferAttribute | undefined
+  // RTFKT / L1 helper quad: ~58 verts, ~250cm wide (standard sneakers: same count but ~0.25m).
+  return (pos?.count ?? 0) < 120
+}
+
+export function wearableHasCmScaleDisplayMesh(root: THREE.Object3D): boolean {
+  let found = false
+  root.traverse((obj) => {
+    if (!(obj instanceof THREE.SkinnedMesh)) return
+    if (localMeshExtent(obj) > 2) found = true
+  })
+  return found
+}
+
+function shouldHideWearableMesh(mesh: THREE.Mesh, extentCheck = true): boolean {
   if (WEARABLE_HIDE_NAME.test(mesh.name)) return true
+  if (isCmScaleHelperPlane(mesh)) return true
+  if (!extentCheck) return false
   return meshExtentMeters(mesh) > MAX_WEARABLE_MESH_EXTENT_M
+}
+
+function subtreeHasVisibleMesh(obj: THREE.Object3D): boolean {
+  let found = false
+  obj.traverse((child) => {
+    if (child instanceof THREE.Mesh && child.visible) found = true
+  })
+  return found
+}
+
+/** RTFKT feet ship duplicate scene-root armatures — drop trees with no display mesh. */
+export function pruneOrphanWearableRoots(wearableRoot: THREE.Object3D): void {
+  for (const child of [...wearableRoot.children]) {
+    if (!subtreeHasVisibleMesh(child)) child.removeFromParent()
+  }
+}
+
+/** Max world scale on Armature* nodes — BaseMale ≈0.01, RTFKT ≈10. */
+export function getWearableArmatureScale(root: THREE.Object3D): number {
+  let maxScale = 0
+  root.updateWorldMatrix(true, true)
+  root.traverse((obj) => {
+    if (!/armature/i.test(obj.name)) return
+    obj.getWorldScale(_worldScale)
+    maxScale = Math.max(maxScale, _worldScale.x, _worldScale.y, _worldScale.z)
+  })
+  return maxScale > 0 ? maxScale : 1
+}
+
+/** True when wearable rig units differ from body_shape (merge would explode skinning). */
+export function wearableNeedsParallelSkeleton(
+  bodyRoot: THREE.Object3D,
+  wearableRoot: THREE.Object3D
+): boolean {
+  // Primary signal — RTFKT/L1 feet keep shoe verts in ~300cm space; body_shape uses meters.
+  if (wearableHasCmScaleDisplayMesh(wearableRoot)) return true
+
+  const bodyScale = getWearableArmatureScale(bodyRoot)
+  const wearScale = getWearableArmatureScale(wearableRoot)
+  if (bodyScale <= 0 || wearScale <= 0) return false
+  const ratio = wearScale / bodyScale
+  return ratio > 2 || ratio < 0.5
+}
+
+/** Match wearable armature units to body_shape (Forge keeps parallel rigs at the same scale). */
+export function normalizeWearableArmatureToBody(
+  wearableRoot: THREE.Object3D,
+  bodyRoot: THREE.Object3D
+): void {
+  const bodyScale = getWearableArmatureScale(bodyRoot)
+  const wearScale = getWearableArmatureScale(wearableRoot)
+  if (bodyScale <= 0 || wearScale <= 0) return
+  const ratio = wearScale / bodyScale
+  if (ratio > 2 || ratio < 0.5) {
+    const factor = bodyScale / wearScale
+    wearableRoot.scale.multiplyScalar(factor)
+  }
+}
+
+/** True when wearable rig units differ from body_shape — must normalize before extent-based prune. */
+export function wearableNeedsArmatureNormalize(
+  bodyRoot: THREE.Object3D,
+  wearableRoot: THREE.Object3D
+): boolean {
+  if (wearableHasCmScaleDisplayMesh(wearableRoot)) return true
+  const bodyScale = getWearableArmatureScale(bodyRoot)
+  const wearScale = getWearableArmatureScale(wearableRoot)
+  if (bodyScale <= 0 || wearScale <= 0) return false
+  const ratio = wearScale / bodyScale
+  return ratio > 2 || ratio < 0.5
+}
+
+/**
+ * Normalize armature to body_shape, then prune — extent checks must run after scale fix.
+ * Parallel duplicate skeletons break locomotion (mixer drives the wrong rig → T-pose).
+ */
+export function prepareWearableForCompose(
+  wearableRoot: THREE.Object3D,
+  bodyRoot: THREE.Object3D,
+  category?: WearableCategory
+): void {
+  // Undo cache-time / prior compose hides before orphan pruning (stale visible=false drops whole subtrees).
+  wearableRoot.traverse((obj) => {
+    if (obj instanceof THREE.Mesh) obj.visible = true
+  })
+  pruneOrphanWearableRoots(wearableRoot)
+  wearableRoot.position.set(0, 0, 0)
+  wearableRoot.rotation.set(0, 0, 0)
+  wearableRoot.scale.set(1, 1, 1)
+  normalizeWearableArmatureToBody(wearableRoot, bodyRoot)
+  normalizeWearableWorldScale(wearableRoot, category)
+  pruneWearableDisplayMeshes(wearableRoot)
+}
+
+/** @deprecated Use prepareWearableForCompose — kept for existing imports. */
+export function prepareCmScaleWearableForMerge(
+  wearableRoot: THREE.Object3D,
+  bodyRoot: THREE.Object3D
+): void {
+  prepareWearableForCompose(wearableRoot, bodyRoot)
 }
 
 function skeletonBoneSet(skeleton: THREE.Skeleton): Set<string> {
@@ -73,12 +205,22 @@ function findBoneByResolvedName(skeleton: THREE.Skeleton, resolved: string): THR
   return null
 }
 
+export type PruneWearableMeshesOptions = {
+  /** When false, only hide by name / helper heuristics (safe before armature normalize). */
+  extentCheck?: boolean
+}
+
 /** Hide colliders, oversize planes, and duplicate body shells — returns visible mesh count. */
-export function pruneWearableDisplayMeshes(root: THREE.Object3D): number {
+export function pruneWearableDisplayMeshes(
+  root: THREE.Object3D,
+  options: PruneWearableMeshesOptions = {}
+): number {
+  const extentCheck = options.extentCheck !== false
   let visible = 0
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return
-    if (shouldHideWearableMesh(obj)) {
+    obj.visible = true
+    if (shouldHideWearableMesh(obj, extentCheck)) {
       obj.visible = false
       return
     }

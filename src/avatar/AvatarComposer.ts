@@ -6,9 +6,9 @@ import { applyFacialFeatures } from './face'
 import {
   attachWearableFallback,
   findSkeleton,
-  isL1WearableUrn,
   loadWearableSceneCached,
   mergeWearableMeshes,
+  prepareWearableForCompose,
   sanitizeWearableRoot,
   disposeWearableInstance,
   buildMappingsForWearables
@@ -102,7 +102,6 @@ async function composeFromConfig(
             config.hair,
             true
           )
-          sanitizeWearableRoot(layer)
           return { wearable, layer }
         } catch (err) {
           console.warn(`Skipping wearable ${wearable.id}:`, err)
@@ -115,20 +114,18 @@ async function composeFromConfig(
       if (!entry) continue
       const mergeOpts = {
         category: entry.wearable.data.category,
-        wearableId: entry.wearable.id
+        wearableId: entry.wearable.id,
+        bodyRoot
       }
-      if (entry.wearable.data.category === 'feet') {
+      const isFeet = entry.wearable.data.category === 'feet'
+      if (isFeet) {
         console.info(`[avatar] composing feet — ${entry.wearable.id}`)
       }
+
+      prepareWearableForCompose(entry.layer, bodyRoot, entry.wearable.data.category)
+
       const merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
       if (!merged) {
-        if (isL1WearableUrn(entry.wearable.id)) {
-          console.warn(
-            `[avatar] discarding L1 wearable ${entry.wearable.id} (${entry.wearable.data.category}) — bone merge failed`
-          )
-          disposeWearableInstance(entry.layer)
-          continue
-        }
         const attached = attachWearableFallback(entry.layer, skeleton, avatar, mergeOpts)
         if (attached && entry.wearable.data.category === 'feet') {
           console.info(`[avatar] feet fallback attach — ${entry.wearable.id}`)

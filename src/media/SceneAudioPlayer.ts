@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import type { PBAudioSource } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/audio_source.gen'
 import { applyDclLocalTransform, type DclTransformValues } from '../bridge/dclTransform'
-import { resolveSceneTextureUrl } from '../bridge/material/resolveTexture'
+import { resolveSceneMediaUrl } from '../bridge/material/resolveTexture'
 import type { ResolvedScene } from '../dcl/content/types'
 import { spatialAudioGain } from '../rendering/SoundSettings'
 import type { AudioBufferCache } from './AudioBufferCache'
@@ -109,7 +109,7 @@ export class SceneAudioPlayer {
     const specCurrentTime = Math.max(spec.currentTime ?? 0, 0)
 
     const clipPath = spec.audioClipUrl?.trim() ?? ''
-    const url = clipPath ? resolveSceneTextureUrl(clipPath, this.scene) : null
+    const url = clipPath ? resolveSceneMediaUrl(clipPath, this.scene) : null
     if (url && url !== this.loadedClip) {
       void this.loadClip(url)
     } else if (!url && clipPath) {

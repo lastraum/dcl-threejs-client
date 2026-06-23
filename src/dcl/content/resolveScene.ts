@@ -39,15 +39,15 @@ function pickSpawnCoord(value: number | number[] | undefined, fallback: number):
 function pickSpawn(metadata: SceneMetadata): SceneSpawn {
   const points = metadata.spawnPoints
   if (!Array.isArray(points) || points.length === 0) {
-    return { x: 8, y: 0, z: 8 }
+    return { x: 0, y: 0, z: 0 }
   }
   const def = points.find((p: SpawnPoint) => p.default) ?? points[0]
   const pos = def?.position
   const cameraTarget = def?.cameraTarget
   return {
-    x: pickSpawnCoord(pos?.x, 8),
+    x: pickSpawnCoord(pos?.x, 0),
     y: Math.max(0, pickSpawnCoord(pos?.y, 0)),
-    z: pickSpawnCoord(pos?.z, 8),
+    z: pickSpawnCoord(pos?.z, 0),
     cameraTarget: cameraTarget
       ? { x: cameraTarget.x, y: cameraTarget.y, z: cameraTarget.z }
       : undefined

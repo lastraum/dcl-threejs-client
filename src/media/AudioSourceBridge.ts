@@ -6,7 +6,7 @@ import type { MirrorComponents } from '../bridge/mirrorComponents'
 import type { ProjectionView } from '../bridge/ProjectionView'
 import type { ResolvedScene } from '../dcl/content/types'
 import { soundSettings, volumeToGain } from '../rendering/SoundSettings'
-import { AudioBufferCache } from './AudioBufferCache'
+import { getSessionAudioBufferCache } from './AudioBufferCache'
 import { MS_NONE, type MediaStateValue } from './audioConstants'
 import { SceneAudioPlayer } from './SceneAudioPlayer'
 import { findReservedAnchorKind, resolveSpatialAudioAttach, type SpatialAudioAnchors } from './spatialAudioParent'
@@ -22,7 +22,7 @@ type PlayerEntry = {
 /** ECS AudioSource → THREE.Audio decoders; grow-only AudioEvent back to mirror. */
 export class AudioSourceBridge {
   private readonly players = new Map<Entity, PlayerEntry>()
-  private readonly cache = new AudioBufferCache()
+  private readonly cache = getSessionAudioBufferCache()
   private readonly listener: THREE.AudioListener
   private userGestureUnlocked = false
   private eventTimestamp = 1

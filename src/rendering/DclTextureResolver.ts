@@ -1,6 +1,7 @@
 import { catalystAssetUrl } from '../dcl/landscape/Data/EmptyLandCatalog'
 import type { ContentFile } from '../dcl/content/types'
 import { BUNDLED_EMOTE_FILES_MAP } from '../avatar/profileEmotes'
+import { isStreamingMediaUrl, proxiedTextureUrl } from './textureProxy'
 
 /**
  * Shared external textures referenced by DCL glTFs (from @dcl/asset-packs / creator-hub).
@@ -256,6 +257,9 @@ export function resolveDclAssetUrl(url: string): string {
     if (retry) return retry
   }
 
+  if (/^https?:/i.test(url)) {
+    return isStreamingMediaUrl(url) ? url : proxiedTextureUrl(url)
+  }
   return url
 }
 

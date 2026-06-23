@@ -1,5 +1,6 @@
 import { clientDebugLog } from '../debug/ClientDebugLog'
 import { physxColliderDebug, type PhysxColliderDebugOptions } from '../../debug/PhysxColliderDebug'
+import { platformMotionDebug } from '../../debug/PlatformMotionDebug'
 import {
   LIGHT_LIMITS,
   MAX_SHADOW_SPOT_LIGHTS,
@@ -39,6 +40,7 @@ export class DebugPanel {
   private readonly physxPlayerToggle: HTMLInputElement
   private readonly physxProbeToggle: HTMLInputElement
   private readonly physxRuntimeRecookToggle: HTMLInputElement
+  private readonly platformMotionToggle: HTMLInputElement
   private readonly physxRecookBtn: HTMLButtonElement
   private readonly renderQualitySelect: HTMLSelectElement
   private readonly renderQualityHint: HTMLDivElement
@@ -108,6 +110,10 @@ export class DebugPanel {
           <input type="checkbox" data-physx-runtime-recook />
           <span>Runtime drift recook (colliderrecook)</span>
         </label>
+        <label class="debug-panel__check">
+          <input type="checkbox" data-platform-motion />
+          <span>Platform velocity transfer log</span>
+        </label>
         <button type="button" class="debug-panel__logs-btn" data-physx-recook>Force recook all colliders</button>
       </div>
       <div class="debug-panel__render-quality">
@@ -146,6 +152,7 @@ export class DebugPanel {
     this.physxPlayerToggle = this.root.querySelector('[data-physx-player]') as HTMLInputElement
     this.physxProbeToggle = this.root.querySelector('[data-physx-probe]') as HTMLInputElement
     this.physxRuntimeRecookToggle = this.root.querySelector('[data-physx-runtime-recook]') as HTMLInputElement
+    this.platformMotionToggle = this.root.querySelector('[data-platform-motion]') as HTMLInputElement
     this.physxRecookBtn = this.root.querySelector('[data-physx-recook]') as HTMLButtonElement
     this.renderQualitySelect = this.root.querySelector('[data-render-quality]') as HTMLSelectElement
     this.renderQualityHint = this.root.querySelector('[data-render-quality-hint]') as HTMLDivElement
@@ -168,6 +175,7 @@ export class DebugPanel {
     this.unsubscribeLogs = clientDebugLog.subscribe((entries) => this.renderLogs(entries))
 
     this.wirePhysxDebugControls()
+    this.wirePlatformMotionControls()
     this.wireRenderQualityControls()
 
     document.body.appendChild(this.root)
@@ -351,6 +359,24 @@ export class DebugPanel {
     })
 
     this.unsubscribePhysxDebug = physxColliderDebug.subscribe(syncFromStore)
+  }
+
+  private wirePlatformMotionControls(): void {
+    const syncFromStore = () => {
+      this.platformMotionToggle.checked = platformMotionDebug.isEnabled()
+    }
+    syncFromStore()
+    this.platformMotionToggle.addEventListener('change', () => {
+      platformMotionDebug.setOptions({ enabled: this.platformMotionToggle.checked })
+      if (this.platformMotionToggle.checked) {
+        clientDebugLog.log(
+          'motion',
+          'Platform transfer debug ON — stand on the lift; logs show tween/animator/mesh motion + platform Δ',
+          { level: 'success', alsoConsole: true }
+        )
+      }
+    })
+    platformMotionDebug.subscribe(syncFromStore)
   }
 
   private async copyLogs(button: HTMLButtonElement): Promise<void> {

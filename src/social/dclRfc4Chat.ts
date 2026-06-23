@@ -55,8 +55,14 @@ export type DecodedRfc4Chat =
   | { kind: 'chat'; text: string; time: number }
   | { kind: 'unknown' }
 
-/** Legacy chat emote wire text — Unity/Explorer prefix with ASCII DLE (`\x10`), or literal `DLE`. */
-const CHAT_EMOTE_COMMAND_RE = /^(?:DLE|\x10)(.+)\s+([\d.]+)\s*$/
+/**
+ * Legacy chat emote wire text — Unity/Explorer prefix with ASCII DLE (`\x10`), literal `DLE`,
+ * or Unicode control-picture U+2410 (some clients render/store DLE as ␐).
+ */
+const CHAT_EMOTE_COMMAND_RE = /^(?:DLE|\x10|\u2410)(.+)\s+([\d.]+)\s*$/
+
+/** Loose guard — NFT/profile emote lines that slipped past strict parse. */
+const CHAT_EMOTE_LOOSE_RE = /^(?:DLE|\x10|\u2410).+urn:decentraland:/i
 
 export type ParsedChatEmoteCommand = {
   emoteRef: string
@@ -66,7 +72,8 @@ export type ParsedChatEmoteCommand = {
 
 /** Some clients broadcast bundled/profile emotes as chat text instead of RFC4 PlayerEmote. */
 export function tryParseChatEmoteCommand(text: string): ParsedChatEmoteCommand | null {
-  const match = text.trim().match(CHAT_EMOTE_COMMAND_RE)
+  const trimmed = text.trim()
+  const match = trimmed.match(CHAT_EMOTE_COMMAND_RE)
   if (!match) return null
 
   const emoteRef = match[1]?.trim()
@@ -78,6 +85,14 @@ export function tryParseChatEmoteCommand(text: string): ParsedChatEmoteCommand |
   const incrementalId =
     timestamp > 1e11 ? Math.floor(timestamp) : Math.floor(timestamp * 1000)
   return { emoteRef, incrementalId }
+}
+
+/** True when inbound chat text is an emote command — must not appear in the chat panel. */
+export function isSceneChatEmoteWireText(text: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed) return false
+  if (tryParseChatEmoteCommand(trimmed)) return true
+  return CHAT_EMOTE_LOOSE_RE.test(trimmed)
 }
 
 export function tryDecodeRfc4ChatPacket(buf: Uint8Array): DecodedRfc4Chat {

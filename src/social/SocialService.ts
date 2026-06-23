@@ -19,6 +19,7 @@ import {
   encodeDcmImageEnvelopes
 } from './dcmChatMedia'
 import { prepareChatImageFile } from './prepareChatImage'
+import { isSceneChatEmoteWireText } from './dclRfc4Chat'
 import type { ChatChannelChoice, ChatLine, CommunityListRow, SceneChatTab } from './types'
 
 export { CHAT_MAX_LENGTH }
@@ -88,6 +89,7 @@ export class SocialService {
 
     this.comms.setChatHandler((payload) => {
       if (this.channel.kind !== 'scene') return
+      if (isSceneChatEmoteWireText(payload.text)) return
       if (this.isDuplicateChat(payload.senderAddress, payload.text, payload.time)) return
       const key = channelKey(this.channel)
       void this.ensurePeerProfile(payload.senderAddress)

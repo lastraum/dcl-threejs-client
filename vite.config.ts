@@ -39,6 +39,22 @@ export default defineConfig({
         target: PLACES_API,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/places/, '')
+      },
+      '/api/texture': {
+        target: 'https://arweave.net',
+        changeOrigin: true,
+        secure: true,
+        followRedirects: true,
+        router: (req) => {
+          const path = req.url ?? ''
+          const match = path.match(/^\/api\/texture\/(https?)\/([^/?#]+)/)
+          if (!match) return 'https://arweave.net'
+          return `${match[1]}://${match[2]}`
+        },
+        rewrite: (path) => {
+          const match = path.match(/^\/api\/texture\/https?:\/[^/]+(\/.*)?$/)
+          return match?.[1] || '/'
+        }
       }
     }
   },

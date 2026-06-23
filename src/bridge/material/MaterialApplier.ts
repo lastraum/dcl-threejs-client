@@ -533,7 +533,12 @@ export class MaterialApplier {
     const def = union.tex.texture
     const url = resolveSceneTextureUrl(def.src, this.scene)
     if (!url) return null
-    const tex = await this.cache.loadTexture(url)
+    let tex: THREE.Texture
+    try {
+      tex = await this.cache.loadTexture(url)
+    } catch {
+      return null
+    }
     tex.wrapS = wrapMode(def.wrapMode)
     tex.wrapT = wrapMode(def.wrapMode)
     tex.minFilter =

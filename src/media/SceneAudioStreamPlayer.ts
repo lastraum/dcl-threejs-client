@@ -251,7 +251,7 @@ export class SceneAudioStreamPlayer {
           this.setState(MS_ERROR)
           return
         }
-        const hls = new Hls() as HlsInstance
+        const hls = new Hls({ enableWorker: false }) as HlsInstance
         hls.attachMedia(this.audio)
         hls.loadSource(url)
         this.hls = hls

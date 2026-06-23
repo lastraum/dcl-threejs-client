@@ -20,6 +20,9 @@ import { cloneGltfInstance } from './skinnedMeshInstance'
 import { prepareAvatarMaterials } from '../avatar/materials'
 import { prepareWearableCacheRoot } from '../avatar/wearableCache'
 import { clearLocomotionClipCache } from '../avatar/locomotionClipCache'
+import { disposeSessionAudioBufferCache, getSessionAudioBufferCache } from '../media/AudioBufferCache'
+import { collectManifestAssets } from './manifestAssets'
+import { preferFetchTextureLoad, proxiedTextureUrl } from './textureProxy'
 
 export type CachedGltf = {
   root: THREE.Group
@@ -48,30 +51,40 @@ export function disposeSessionAssetCache(): void {
   clearLocomotionClipCache()
   disposeGlbFetchPool()
   disposeGlbParsePool()
+  disposeSessionAudioBufferCache()
 }
 
 const prefetchedSceneIds = new Set<string>()
 
-/** Start byte-only fetches for every `.glb` in the scene manifest — safe to call multiple times. */
-export function prefetchSceneManifestGlbs(cache: AssetCache, scene: ResolvedScene): void {
+/** Start parallel warmup for manifest GLBs (bytes), PNGs (GPU textures), MP3s (decoded buffers). */
+export function prefetchSceneManifestAssets(cache: AssetCache, scene: ResolvedScene): void {
   const sceneKey = scene.entityId ?? scene.title
   if (sceneKey && prefetchedSceneIds.has(sceneKey)) return
 
-  const urls: Array<{ url: string; hash: string }> = []
-  const seen = new Set<string>()
+  const { glbs, textures, audio } = collectManifestAssets(scene)
+  if (!glbs.length && !textures.length && !audio.length) return
 
-  for (const entry of scene.content) {
-    if (!entry.file.toLowerCase().endsWith('.glb')) continue
-    if (!entry.hash || seen.has(entry.hash)) continue
-    seen.add(entry.hash)
-    urls.push({ url: scene.assetUrl(entry.hash), hash: entry.hash })
-  }
+  if (sceneKey) prefetchedSceneIds.add(sceneKey)
 
-  if (urls.length) {
-    if (sceneKey) prefetchedSceneIds.add(sceneKey)
-    console.info(`[assets] prefetching ${urls.length} scene GLB(s) (bytes only, parallel)`)
-    cache.prefetchAll(urls)
+  const parts: string[] = []
+  if (glbs.length) {
+    parts.push(`${glbs.length} GLB(s) (bytes)`)
+    cache.prefetchAll(glbs)
   }
+  if (textures.length) {
+    parts.push(`${textures.length} PNG(s)`)
+    cache.prefetchTextures(textures.map((t) => t.url))
+  }
+  if (audio.length) {
+    parts.push(`${audio.length} MP3(s)`)
+    getSessionAudioBufferCache().prefetch(audio.map((a) => a.url))
+  }
+  console.info(`[assets] prefetching scene manifest — ${parts.join(', ')}`)
+}
+
+/** @deprecated Use `prefetchSceneManifestAssets` */
+export function prefetchSceneManifestGlbs(cache: AssetCache, scene: ResolvedScene): void {
+  prefetchSceneManifestAssets(cache, scene)
 }
 
 /**
@@ -199,7 +212,14 @@ export class AssetCache {
   }
 
   async preloadTextures(urls: string[]): Promise<void> {
-    await Promise.all(urls.map((url) => this.textureLoader.loadAsync(url)))
+    await Promise.all(urls.map((url) => this.loadTexture(url)))
+  }
+
+  /** Fire-and-forget texture warmup — deduped via `loadTexture`. */
+  prefetchTextures(urls: string[]): void {
+    for (const url of urls) {
+      void this.loadTexture(url).catch(() => {})
+    }
   }
 
   async load(url: string, hash?: string, options?: { emote?: boolean; wearable?: boolean; quiet?: boolean }): Promise<CachedGltf> {
@@ -360,26 +380,67 @@ export class AssetCache {
   }
 
   async loadTexture(url: string): Promise<THREE.Texture> {
-    const hit = this.textures.get(url)
+    const fetchUrl = proxiedTextureUrl(url)
+    const hit = this.textures.get(url) ?? this.textures.get(fetchUrl)
     if (hit) return hit
+
+    if (this.givenUp.has(url)) {
+      throw new Error(`texture load given up: ${url}`)
+    }
 
     const pending = this.textureInflight.get(url)
     if (pending) return pending
 
-    const task = this.textureLoader
-      .loadAsync(url)
+    const task = this.loadTextureData(fetchUrl)
       .then((tex) => {
         this.textures.set(url, tex)
         this.textureInflight.delete(url)
+        this.failedUntil.delete(url)
+        this.failCount.delete(url)
+        this.givenUp.delete(url)
         return tex
       })
       .catch((err) => {
         this.textureInflight.delete(url)
-        throw err
+        const attempts = (this.failCount.get(url) ?? 0) + 1
+        this.failCount.set(url, attempts)
+        if (attempts >= AssetCache.MAX_LOAD_ATTEMPTS) {
+          this.givenUp.add(url)
+          this.failedUntil.delete(url)
+        } else {
+          this.failedUntil.set(url, performance.now() + AssetCache.FAILED_RETRY_MS)
+        }
+        if (!this.warnedFailed.has(url)) {
+          this.warnedFailed.add(url)
+          const detail = err instanceof Error ? err.message : String(err?.type ?? err)
+          console.warn('[AssetCache] texture load failed', fetchUrl, detail)
+        }
+        throw err instanceof Error ? err : new Error(`texture load failed: ${url}`)
       })
 
     this.textureInflight.set(url, task)
     return task
+  }
+
+  private async loadTextureData(url: string): Promise<THREE.Texture> {
+    if (preferFetchTextureLoad(url)) {
+      return this.loadTextureViaFetch(url)
+    }
+    return this.textureLoader.loadAsync(url)
+  }
+
+  /** fetch + blob — follows Arweave 302 redirects; works through same-origin proxy. */
+  private async loadTextureViaFetch(url: string): Promise<THREE.Texture> {
+    const res = await fetch(url, { redirect: 'follow', credentials: 'omit' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const blob = await res.blob()
+    if (!blob.size) throw new Error('empty texture response')
+    const objectUrl = URL.createObjectURL(blob)
+    try {
+      return await this.textureLoader.loadAsync(objectUrl)
+    } finally {
+      URL.revokeObjectURL(objectUrl)
+    }
   }
 }
 

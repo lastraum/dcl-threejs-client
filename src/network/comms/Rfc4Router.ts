@@ -11,7 +11,11 @@ import type { CommsSceneOrigin, RealmBounds } from './movementCompressed'
 import { parseCommsSceneOrigin } from './movementCompressed'
 import { tryDecodeSceneDataPacket, yawFromQuaternion } from './dclSceneData'
 import type { TransportType } from './Transport'
-import { tryDecodeRfc4ChatPacket, tryParseChatEmoteCommand } from '../../social/dclRfc4Chat'
+import {
+  isSceneChatEmoteWireText,
+  tryDecodeRfc4ChatPacket,
+  tryParseChatEmoteCommand
+} from '../../social/dclRfc4Chat'
 import { DCM_SCENE_ID } from '../../social/dcmChatMedia'
 import { baseEmoteUrn } from '../../avatar/profileEmotes'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
@@ -150,6 +154,7 @@ export class Rfc4Router {
         this.handlers.onPeerEmote?.(address, urn, chatEmote.incrementalId)
         return
       }
+      if (isSceneChatEmoteWireText(chat.text)) return
       this.handlers.onPeerChat?.(address, chat.text, chat.time, transport)
       return
     }

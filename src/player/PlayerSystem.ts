@@ -155,14 +155,26 @@ export class PlayerSystem {
     )
     // CCT obstacle cache must see static GLTF/MeshCollider actors registered during hydration.
     this.physics.warmStaticScene()
-    this.physics.snapToGroundBelow(probeDrop)
+    const liftedFeet = this.physics.positionOut
+    if (
+      !this.physics.snapFeetToSceneMesh(liftedFeet, probeDrop) &&
+      !this.physics.snapToGroundBelow(probeDrop)
+    ) {
+      this.physics.snapToGroundBelow(probeDrop, { preferSceneMeshes: false })
+    }
     this.physics.invalidateControllerCache()
     let spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
     if (!spawnGrounded) {
       this.physics.teleport(
         dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y + SPAWN_GROUND_PROBE_LIFT, spawn.z))
       )
-      this.physics.snapToGroundBelow(probeDrop)
+      const retryFeet = this.physics.positionOut
+      if (
+        !this.physics.snapFeetToSceneMesh(retryFeet, probeDrop) &&
+        !this.physics.snapToGroundBelow(probeDrop)
+      ) {
+        this.physics.snapToGroundBelow(probeDrop, { preferSceneMeshes: false })
+      }
       this.physics.invalidateControllerCache()
       spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
     }
@@ -603,6 +615,13 @@ export class PlayerSystem {
       _displacement.y = 0
     }
 
+    if (!this.jumping && !this.jumped && !this.airJumpPending && (this.grounded || this.nearGround)) {
+      // CCT is kinematic — standing surface moved Δ this frame, so capsule += Δ before move().
+      this.physics.applyPlatformVelocityTransfer()
+    } else if (!this.grounded && !this.nearGround) {
+      this.physics.clearStandingPlatform()
+    }
+
     const moveResult = this.physics.movePlayer(_displacement, delta)
     this.grounded = moveResult.grounded
     if (this.grounded) {
@@ -741,8 +760,10 @@ export class PlayerSystem {
 
   private resolveCameraDistance(pivot: THREE.Vector3, direction: THREE.Vector3, maxDistance: number): number {
     const hitDist = this.physics.sweepRay(pivot, direction, maxDistance)
-    if (hitDist !== null) return Math.max(0.8, hitDist - 0.25)
-    return maxDistance
+    if (hitDist === null) return maxDistance
+    const occlusionThreshold = maxDistance * 0.82
+    if (hitDist >= occlusionThreshold) return maxDistance
+    return Math.max(0.8, hitDist - 0.25)
   }
 
   private syncNameTag(): void {

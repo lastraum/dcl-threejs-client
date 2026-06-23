@@ -12,7 +12,8 @@ import {
 } from './videoConstants'
 import type { PBVideoPlayer } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/video_player.gen'
 import { applyDclLocalTransform, type DclTransformValues } from '../bridge/dclTransform'
-import { resolveSceneTextureUrl } from '../bridge/material/resolveTexture'
+import { resolveSceneMediaUrl } from '../bridge/material/resolveTexture'
+import { unwrapMisroutedMediaUrl } from '../rendering/textureProxy'
 import type { ResolvedScene } from '../dcl/content/types'
 import { isLiveKitCurrentStreamSrc, isLiveKitVideoSrc } from './livekitVideoSource'
 import { configureSceneVideoTexture } from './videoTextureOrientation'
@@ -22,6 +23,13 @@ type HlsInstance = {
   loadSource(url: string): void
   attachMedia(video: HTMLMediaElement): void
   destroy(): void
+  on?(event: string, handler: (event: string, data: { type?: string; details?: string; fatal?: boolean }) => void): void
+}
+
+type HlsConstructor = {
+  new (config?: Record<string, unknown>): HlsInstance
+  isSupported(): boolean
+  Events?: { ERROR: string }
 }
 
 export type LiveKitVideoBinder = (video: HTMLVideoElement, onUpdate?: () => void) => () => void
@@ -295,7 +303,7 @@ export class WebVideoPlayer {
         if (isLiveKitCurrentStreamSrc(src)) void this.loadLiveKitSource(src)
         else this.setState(VS_ERROR)
       } else {
-        const url = resolveSceneTextureUrl(src, this.scene)
+        const url = resolveSceneMediaUrl(src, this.scene)
         if (url) void this.loadSource(url)
         else this.setState(VS_ERROR)
       }
@@ -490,30 +498,52 @@ export class WebVideoPlayer {
   }
 
   private async loadSource(url: string): Promise<void> {
+    const mediaUrl = unwrapMisroutedMediaUrl(url)
+    if (mediaUrl !== url) {
+      console.warn('[WebVideoPlayer] unwrapped texture-proxy media URL', url, '→', mediaUrl)
+    }
     this.clearMediaSource()
-    this.loadedSrc = url
+    this.loadedSrc = mediaUrl
     this.hasHadRenderableFrame = false
     this.setState(VS_LOADING)
 
-    if (isHlsUrl(url) && !safariNativeHls(this.video)) {
+    if (isHlsUrl(mediaUrl)) {
       try {
         const mod = await import('hls.js')
-        const Hls = mod.default
-        if (!Hls.isSupported()) {
-          this.setState(VS_ERROR)
+        const Hls = mod.default as HlsConstructor
+        if (Hls.isSupported()) {
+          const hls = new Hls({
+            // Vite-bundled worker URLs often break TS demux (DEMUXER_ERROR_COULD_NOT_PARSE).
+            enableWorker: false,
+            lowLatencyMode: false
+          })
+          const errorEvent = Hls.Events?.ERROR ?? 'hlsError'
+          hls.on?.(errorEvent, (_event, data) => {
+            if (!data.fatal) return
+            console.warn('[WebVideoPlayer] HLS fatal error', data.type, data.details, mediaUrl)
+            this.setState(VS_ERROR)
+          })
+          hls.attachMedia(this.video)
+          hls.loadSource(mediaUrl)
+          this.hls = hls
           return
         }
-        const hls = new Hls() as HlsInstance
-        hls.attachMedia(this.video)
-        hls.loadSource(url)
-        this.hls = hls
-      } catch {
-        this.setState(VS_ERROR)
+      } catch (err) {
+        console.warn('[WebVideoPlayer] HLS.js init failed', err, mediaUrl)
       }
+
+      if (safariNativeHls(this.video)) {
+        this.video.src = mediaUrl
+        this.video.load()
+        return
+      }
+
+      console.warn('[WebVideoPlayer] HLS playback unavailable', mediaUrl)
+      this.setState(VS_ERROR)
       return
     }
 
-    this.video.src = url
+    this.video.src = mediaUrl
     this.video.load()
   }
 

@@ -63,8 +63,14 @@ export class CrdtProjection {
   /** Network-entity book-keeping component ids (so we replicate `fixTransformParent`). */
   private readonly networkEntityId: number | null
   private readonly networkParentId: number | null
+  /** Renderer-owned entities — inbound worker Transform must not overwrite (spawn snap). */
+  private readonly reservedEntities: ReadonlySet<Entity>
 
-  constructor(components: MirrorComponents, network?: ProjectionNetworkDefs) {
+  constructor(
+    components: MirrorComponents,
+    network?: ProjectionNetworkDefs,
+    reservedEntities?: ReadonlySet<Entity>
+  ) {
   for (const def of Object.values(components)) {
     if (!def?.componentId) continue
     const id = def.componentId
@@ -81,6 +87,7 @@ export class CrdtProjection {
     this.transformId = components.Transform.componentId
     this.networkEntityId = network?.networkEntity?.componentId ?? null
     this.networkParentId = network?.networkParent?.componentId ?? null
+    this.reservedEntities = reservedEntities ?? new Set()
     // The engine's CRDT system stores NetworkEntity/NetworkParent (built-in components) so
     // it can detect network-parented entities on receive. Register them here too — but as
     // raw passthrough (no typed schema): we only need presence, not the decoded value.
@@ -131,6 +138,7 @@ export class CrdtProjection {
   private putComponent(entity: Entity, componentId: number, timestamp: number, data: Uint8Array): void {
     // DCL recycles entity ids after DELETE_ENTITY — next PUT revives the slot (campfire sprite pool, etc.).
     this.deletedEntities.delete(entity)
+    if (componentId === this.transformId && this.reservedEntities.has(entity)) return
     const meta = this.meta.get(componentId)
     if (!meta) return
 

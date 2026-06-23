@@ -1,6 +1,7 @@
 import type { ResolvedScene } from '../dcl/content/types'
 import type { AssetCache } from './AssetCache'
 import { normalizeGlbCacheKey, readGlbBytes } from './glbByteCache'
+import { collectManifestGlbs } from './manifestAssets'
 
 export type ManifestGlbCacheStats = {
   total: number
@@ -19,18 +20,6 @@ export function markSceneHydrated(scene: ResolvedScene): void {
 
 export function wasSceneHydratedThisSession(scene: ResolvedScene): boolean {
   return sessionHydratedScenes.has(sceneSessionKey(scene))
-}
-
-export function collectManifestGlbs(scene: ResolvedScene): Array<{ url: string; hash: string }> {
-  const seen = new Set<string>()
-  const out: Array<{ url: string; hash: string }> = []
-  for (const entry of scene.content) {
-    if (!entry.file.toLowerCase().endsWith('.glb')) continue
-    if (!entry.hash || seen.has(entry.hash)) continue
-    seen.add(entry.hash)
-    out.push({ url: scene.assetUrl(entry.hash), hash: entry.hash })
-  }
-  return out
 }
 
 export function getManifestGlbCacheStats(cache: AssetCache, scene: ResolvedScene): ManifestGlbCacheStats {

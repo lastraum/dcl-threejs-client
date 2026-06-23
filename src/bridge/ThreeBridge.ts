@@ -12,7 +12,7 @@ import {
 } from './primitiveShapes'
 import { MaterialApplier, type PbMaterial } from './material/MaterialApplier'
 import type { AssetCache } from '../rendering/AssetCache'
-import { prefetchSceneManifestGlbs } from '../rendering/AssetCache'
+import { prefetchSceneManifestAssets } from '../rendering/AssetCache'
 import type { ResolvedScene } from '../dcl/content/types'
 import { resolveGltfSrcHash, GLTF_LOCAL_PREFIX, isEmoteAnchorGltfSrc } from '../rendering/DclTextureResolver'
 import { isMotionFocusActive, matchesMotionFocusSrc } from './motionFocus'
@@ -607,7 +607,7 @@ export class ThreeBridge {
   prefetchSceneGlbs(): void {
     if (this.sceneManifestPrefetched) return
     this.sceneManifestPrefetched = true
-    prefetchSceneManifestGlbs(this.cache, this.sceneConfig)
+    prefetchSceneManifestAssets(this.cache, this.sceneConfig)
   }
 
   /**
@@ -890,9 +890,11 @@ export class ThreeBridge {
     const deferTextures = this.shouldDeferTextures() && this.hydrationMode
     if (deferTextures) return
     this.materialTickBusy = true
-    void this.runMaterialPass(this.ecs.Material, budgetMs, maxEntities, deferTextures).finally(() => {
-      this.materialTickBusy = false
-    })
+    void this.runMaterialPass(this.ecs.Material, budgetMs, maxEntities, deferTextures)
+      .catch((err) => console.warn('[ThreeBridge] deferred material pass failed', err))
+      .finally(() => {
+        this.materialTickBusy = false
+      })
   }
 
   /** Budgeted full material apply for entities queued during hydration defer. */

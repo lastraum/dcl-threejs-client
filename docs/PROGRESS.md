@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-06-22 (dev-latest rollup — media/render ✅ · environments ✅ · boot perf ✅ · social UI ✅ · DCM chat images ✅ · sky dome fix ✅)  
-> **Current phase:** **Phase 5 social polish** — scene media (audio/video/billboards/particles) + Genesis environments shipped; boot/hydration hardened; profile & settings shell restored. **Next:** voice/mic UI, in-scene ECS UI, Raycast scene callbacks polish.
+> **Last updated:** 2026-06-22 (scene glTF alpha-blend ✅ · La Cantina `-150,95` elevator tube · foliage sanitizer scoped to landscape only)  
+> **Current phase:** **Phase 5 social polish** — scene media (audio/video/billboards/particles) + Genesis environments shipped; boot/hydration hardened; profile & settings shell restored. **Next:** voice/mic UI, in-scene ECS UI, Raycast scene callbacks polish; **PhysX cook worker** on `lastraum-cook` (merge when ready).
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -26,6 +26,23 @@
 | **Scene stability** | 🟢 | React-heavy deploy engine capture; emote camera orbit while scene-locked |
 
 **Merged:** `lastraum` → `dev-latest` (2026-06-22, tip `43aad5c`)
+
+---
+
+## 🎉 Milestone — scene glTF alpha-blend parity (2026-06-22)
+
+**Status: shipped on `dev-latest`** (`e16fe81`) — faint blue elevator tube at **La Cantina `-150,95`** matches Unity Explorer.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Scene GLTF transparency** | 🟢 | `sanitizeSceneGltfMaterials` no longer forces foliage alpha-cutout on creator meshes |
+| **Landscape foliage** | 🟢 | `tuneFoliageMaterial` stays on `sanitizeLandscapeGltf` only (empty-land tree cards) |
+
+**Root cause:** `tuneFoliageMaterial` ran inside `simplifyMaterial` for every scene GLB — transparent / low-opacity materials were rewritten to `alphaTest` cutout instead of glTF **alpha blend**.
+
+**Files:** `LandscapeAssetSanitizer.ts`
+
+**Branch:** `hotfix-transparent-textures` → merged `dev-latest`
 
 ---
 
@@ -615,7 +632,7 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 | `sceneWorker` + ~system stubs                               | ✅ `onStart` + `onUpdate` loop; see **no-ops** below            |
 | `ThreeBridge` — Transform hierarchy + parent order          | ✅ `dclTransform.ts` — depth-sorted parents + LH→RH conversion   |
 | `ThreeBridge` — MeshRenderer primitives                     | ✅ box/sphere/cylinder/plane — **plane vertical + double-sided**; **box/plane custom `uvs`** |
-| `ThreeBridge` — Material (PBR/unlit, textures, alpha)     | ✅ `MaterialApplier.ts`                                        |
+| `ThreeBridge` — Material (PBR/unlit, textures, alpha)     | ✅ `MaterialApplier.ts` + scene GLTF blend preserved (`e16fe81`) |
 | `ThreeBridge` — GltfContainer, Visibility                   | ✅ reload on src change — all GLTF scenes (Plaza, RickRoll, parcels) |
 | Phase 1b — `LightSource`, `TextShape`                       | ✅ `LightSourceSync.ts` + `LightManager` culling + quality tiers |
 | Phase 1b — `Billboard`, `Animator`                          | ✅ `BillboardBridge.ts`, `AnimatorBridge.ts` in `SceneScriptSystem` |
@@ -1033,6 +1050,7 @@ Tracked in `src/shim/system/createSystemStubs.ts`. These are **deliberately stub
 - **Interaction:** **`PointerEvents` ✅** — camera raycast, hover icons + tooltips, green/red highlight, full desktop input actions, click/key CRDT to scene worker. Remaining: proximity, UI pointers.
 - **GLTF colliders:** **✅ fixed (2026-06-13)** — shared cook cache bug, PhysX release crash, degenerate mesh skip. Genesis plaza blocking confirmed.
 - **GltfContainer / Visibility:** **✅** — `ThreeBridge` + `AssetCache`; used on Genesis Plaza, RickRoll, parcel scenes.
+- **Scene GLTF alpha blend:** **✅ fixed (2026-06-22)** — creator transparency (La Cantina elevator tube `-150,95`); foliage cutout scoped to landscape GLBs only.
 - **Profile emotes:** Bundled defaults + wheel + remote RFC4 + AvatarShape loop + **GLB props ✅** + **`AvatarEmoteCommand` ECS bridge ✅** + **locomotion VFX (foot/air puffs) ✅**.
 - **Tween:** **`TweenBridge` ✅** — transform + textureMove + **`TweenSequence`** (Genesis blimp orbit) + `pumpMotionBridges` sync-frame fix — see **Tween status** section.
 - **Session assets:** GLB/texture cache survives teleports (`getSessionAssetCache`); sign-out evicts via `disposeSessionAssetCache`. **UnityGLTF null-padded JSON chunks** sanitized in `glbSanitizer.ts`. **Hydration gate** — failed GLB loads no longer cached as empty placeholders; loading screen waits for real mesh geometry + unresolved src count; **elapsed timer** (count-up from 0:00; timeout at 3:00 / 1:30 teleport) shows early ready vs fallback.

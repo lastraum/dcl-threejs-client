@@ -12,7 +12,13 @@ import { geometryToPxMesh, type PxMeshHandle } from './geometryToPxMesh'
 import { bakeTrimeshGeometry, isTrimeshGeometryCookable } from './bakeTrimeshGeometry'
 import { ensureIndexedForCook } from './colliderGeometryPrep'
 import { loadPhysX } from './loadPhysX'
-import { isSignificantPlatformDelta } from './platformMotion'
+import {
+  isSignificantPlatformDelta,
+  MAX_RIDING_DELTA_HORIZ,
+  STAND_SURFACE_CONTACT_TOLERANCE,
+  STAND_SURFACE_MAX_BELOW_TREAD,
+  STAND_SURFACE_MAX_VERT_GAP
+} from './platformMotion'
 
 export type PhysicsColliderShapeDesc = {
   fingerprint: string
@@ -144,6 +150,8 @@ export class PhysXWorld {
   private readonly poseMotionDelta = new Map<number, THREE.Vector3>()
   /** CCT-grounded PhysX entity at frame start — gates riding transfer recording. */
   private platformMotionScopeEntity: number | null = null
+  /** Retain GLTF stand surface over infinite y=0 when CCT down-probe mis-fires. */
+  private standSurfaceGroundHint: number | null = null
   private readonly platformTransferDisp = new THREE.Vector3()
   /** Platform we are riding — always the grounded actor when transfer applies. */
   private standingPlatformEntity: number | null = null
@@ -1000,16 +1008,21 @@ export class PhysXWorld {
             this.teleport(this._v1)
             grounded = true
           }
-          if (hit.physEntity !== undefined) this.lastGroundPhysEntity = hit.physEntity
+          if (hit.physEntity !== undefined) {
+            this.lastGroundPhysEntity = this.resolveGroundPhysEntity(hit.physEntity)
+          }
         }
       }
     }
 
     if (grounded) {
       const groundHit = this.probeSceneGroundDown(GROUND_STICK_DISTANCE + 0.35)
-      if (groundHit?.physEntity !== undefined) this.lastGroundPhysEntity = groundHit.physEntity
+      if (groundHit?.physEntity !== undefined) {
+        this.lastGroundPhysEntity = this.resolveGroundPhysEntity(groundHit.physEntity)
+      }
     } else {
       this.lastGroundPhysEntity = null
+      this.standSurfaceGroundHint = null
     }
 
     return { grounded }
@@ -1328,6 +1341,13 @@ export class PhysXWorld {
     return delta.lengthSq() <= MAX_PLATFORM_DELTA_TOTAL * MAX_PLATFORM_DELTA_TOTAL
   }
 
+  /** Stricter cap for capsule riding — rejects actor-root glitches that pass pose-sync bounds. */
+  private isPlausibleRidingDelta(delta: THREE.Vector3): boolean {
+    const horizSq = delta.x * delta.x + delta.z * delta.z
+    if (horizSq > MAX_RIDING_DELTA_HORIZ * MAX_RIDING_DELTA_HORIZ) return false
+    return this.isPlausiblePlatformDelta(delta)
+  }
+
   /** Drop jitter entries before CCT transfer — static ground must not micro-teleport. */
   cullInsignificantPlatformMotionDeltas(): void {
     for (const [entity, delta] of this.platformMotionDelta) {
@@ -1414,10 +1434,24 @@ export class PhysXWorld {
     this.groundContactBaseline = null
     this.platformMotionScopeEntity =
       groundEntity !== null && groundEntity !== INFINITE_GROUND_ENTITY ? groundEntity : null
+    this.standSurfaceGroundHint =
+      this.platformMotionScopeEntity !== null ? this.platformMotionScopeEntity : null
   }
 
   private isRidingTransferEntity(entity: number): boolean {
     return this.platformMotionScopeEntity !== null && entity === this.platformMotionScopeEntity
+  }
+
+  /** Prefer animated stand-surface GLTF over the infinite y=0 plane when both probe positive. */
+  private resolveGroundPhysEntity(probed: number): number {
+    if (
+      probed === INFINITE_GROUND_ENTITY &&
+      this.standSurfaceGroundHint !== null &&
+      this.standSurfaceGroundHint !== INFINITE_GROUND_ENTITY
+    ) {
+      return this.standSurfaceGroundHint
+    }
+    return probed
   }
 
   /** Record transform motion — poseMotionDelta always; riding map only when grounded on this actor. */
@@ -1446,6 +1480,10 @@ export class PhysXWorld {
     }
 
     if (!this.isRidingTransferEntity(entity)) return
+    if (!this.isPlausibleRidingDelta(delta)) {
+      this.stickyPlatformDelta.delete(entity)
+      return
+    }
 
     let riding = this.platformMotionDelta.get(entity)
     if (!riding) {
@@ -1457,23 +1495,33 @@ export class PhysXWorld {
   }
 
   /**
-   * Frame-start tread top from the live PhysX actor AABB — same poses we slide this frame.
-   * max.y ignores duplicate low tread shapes on one actor (combined bounds stay under the capsule).
+   * Frame-start tread top — GLTF uses per-shape descriptor tread under the capsule (not combined
+   * PhysX AABB, which can include far duplicate shapes and report treadY 50m+ away from feet).
    */
-  snapshotPhysXActorWalkSurfaces(groundEntity: number | null, feet?: THREE.Vector3): void {
+  snapshotPhysXActorWalkSurfaces(
+    groundEntity: number | null,
+    feet?: THREE.Vector3,
+    descs?: PhysicsColliderDesc[]
+  ): void {
     this.physxActorSurfaceSnapshot.clear()
     if (groundEntity === null || groundEntity === INFINITE_GROUND_ENTITY) return
-    const top = this.physxActorWalkSurfaceTop(groundEntity, feet)
+    const top = this.actorWalkSurfaceTopForFrame(groundEntity, feet, descs)
     if (top) this.physxActorSurfaceSnapshot.set(groundEntity, top.clone())
   }
 
   /**
-   * Grounded-entity Δ from PhysX actor bounds after pose slide — primary lift source (not raycast tread).
+   * Grounded-entity Δ after pose slide — GLTF tread from live shape locals; mesh colliders use PhysX AABB.
    */
-  applyPhysXActorWalkSurfaceDeltas(groundEntity: number | null, feet?: THREE.Vector3): void {
+  applyPhysXActorWalkSurfaceDeltas(
+    groundEntity: number | null,
+    feet?: THREE.Vector3,
+    descs?: PhysicsColliderDesc[]
+  ): void {
     if (groundEntity === null || groundEntity === INFINITE_GROUND_ENTITY) return
+    if (this.isWorldBakedStatic(groundEntity)) return
+
     const snapshot = this.physxActorSurfaceSnapshot.get(groundEntity)
-    const current = this.physxActorWalkSurfaceTop(groundEntity, feet)
+    const current = this.actorWalkSurfaceTopForFrame(groundEntity, feet, descs)
     if (!snapshot || !current) return
 
     this._v1.subVectors(current, snapshot)
@@ -1492,6 +1540,53 @@ export class PhysXWorld {
         { throttleKey: 'physx-bounds-delta', throttleMs: 400, alsoConsole: true }
       )
     }
+  }
+
+  private actorWalkSurfaceTopForFrame(
+    entity: number,
+    feet?: THREE.Vector3,
+    descs?: PhysicsColliderDesc[]
+  ): THREE.Vector3 | null {
+    const desc = descs?.find((d) => d.entity === entity)
+    if (desc?.fingerprint.startsWith('gltf-entity:')) {
+      return this.gltfShapeWalkSurfaceTop(desc, feet)
+    }
+    return this.physxActorWalkSurfaceTop(entity, feet)
+  }
+
+  /**
+   * When CCT still reports the infinite plane but an animated tread is under the capsule,
+   * snap feet onto the live PhysX tread and register the GLTF actor as ground.
+   */
+  reconcileStandSurfaceGrounding(
+    standPhysEntity: number | null,
+    descs: PhysicsColliderDesc[],
+    feet: THREE.Vector3
+  ): boolean {
+    if (standPhysEntity === null || standPhysEntity === INFINITE_GROUND_ENTITY) return false
+    const desc = descs.find((d) => d.entity === standPhysEntity)
+    if (!desc?.fingerprint.startsWith('gltf-entity:')) return false
+
+    const tread = this.gltfShapeWalkSurfaceTop(desc, feet)
+    if (!tread) return false
+
+    const gap = feet.y - tread.y
+    const onTread =
+      gap >= -STAND_SURFACE_CONTACT_TOLERANCE && gap <= STAND_SURFACE_MAX_VERT_GAP + 0.15
+    const belowRising =
+      gap < -STAND_SURFACE_CONTACT_TOLERANCE && gap >= -STAND_SURFACE_MAX_BELOW_TREAD
+    if (!onTread && !belowRising) return false
+
+    const groundIsInfinite = this.lastGroundPhysEntity === INFINITE_GROUND_ENTITY
+    const clipThrough = feet.y < tread.y - 0.12
+    if (clipThrough || (groundIsInfinite && onTread && feet.y < tread.y - 0.04)) {
+      this._v1.set(feet.x, tread.y, feet.z)
+      this.teleport(this._v1)
+      this.invalidateControllerCache()
+    }
+    this.lastGroundPhysEntity = standPhysEntity
+    this.standSurfaceGroundHint = standPhysEntity
+    return true
   }
 
   private physxActorWalkSurfaceTop(entity: number, feet?: THREE.Vector3): THREE.Vector3 | null {
@@ -1535,6 +1630,9 @@ export class PhysXWorld {
    */
   applyActorRootPoseDeltas(descs: PhysicsColliderDesc[], priorityEntity?: number | null): void {
     for (const desc of descs) {
+      if (priorityEntity !== null && priorityEntity !== undefined && desc.entity !== priorityEntity) {
+        continue
+      }
       const snapshot = this.actorRootPoseSnapshot.get(desc.entity)
       if (!snapshot) continue
       this._pos.setFromMatrixPosition(desc.matrix)
@@ -1563,7 +1661,7 @@ export class PhysXWorld {
   }
 
   private recordStickyPlatformDelta(entity: number, delta: THREE.Vector3): void {
-    if (!isSignificantPlatformDelta(delta) || !this.isPlausiblePlatformDelta(delta)) return
+    if (!isSignificantPlatformDelta(delta) || !this.isPlausibleRidingDelta(delta)) return
     let sticky = this.stickyPlatformDelta.get(entity)
     if (!sticky) {
       sticky = { delta: new THREE.Vector3(), framesLeft: 0 }
@@ -1822,7 +1920,7 @@ export class PhysXWorld {
     const delta =
       this.platformMotionDeltaForEntity(groundEntity) ?? this.stickyPlatformDeltaFor(groundEntity)
 
-    if (!delta || !isSignificantPlatformDelta(delta) || !this.isPlausiblePlatformDelta(delta)) {
+    if (!delta || !isSignificantPlatformDelta(delta) || !this.isPlausibleRidingDelta(delta)) {
       this.standingPlatformEntity = null
       return this.platformTransferDisp
     }
@@ -1844,7 +1942,7 @@ export class PhysXWorld {
    */
   applyPlatformVelocityTransfer(): boolean {
     const delta = this.getPlatformTransferDelta()
-    if (delta.lengthSq() >= 1e-12 && !this.isPlausiblePlatformDelta(delta)) {
+    if (delta.lengthSq() >= 1e-12 && !this.isPlausibleRidingDelta(delta)) {
       this.logRejectedPlatformDelta(
         'transfer',
         this.standingPlatformEntity ?? this.lastGroundPhysEntity ?? -1,
@@ -1852,6 +1950,9 @@ export class PhysXWorld {
         `feet=(${this.position.x.toFixed(2)},${this.position.y.toFixed(2)},${this.position.z.toFixed(2)})`
       )
       this.standingPlatformEntity = null
+      const rejectEntity =
+        this.platformMotionScopeEntity ?? this.lastGroundPhysEntity ?? this.standSurfaceGroundHint
+      if (rejectEntity !== null) this.stickyPlatformDelta.delete(rejectEntity)
       return false
     }
     if (!isSignificantPlatformDelta(delta)) {
@@ -1901,7 +2002,7 @@ export class PhysXWorld {
   ): void {
     for (const [entity, originDelta] of originDeltas) {
       if (!isSignificantPlatformDelta(originDelta)) continue
-      if (!this.isPlausiblePlatformDelta(originDelta)) {
+      if (!this.isPlausibleRidingDelta(originDelta)) {
         this.logRejectedPlatformDelta('animator-origin', entity, originDelta)
         continue
       }

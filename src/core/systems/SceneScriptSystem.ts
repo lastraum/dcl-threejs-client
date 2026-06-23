@@ -395,9 +395,13 @@ export class SceneScriptSystem {
     }
   }
 
-  private isAnimatedGltfCollider(entity: Entity): boolean {
+  isAnimatedGltfColliderEntity(entity: Entity): boolean {
     const { Animator, GltfContainer } = this.readComponents
     return GltfContainer.has(entity) && Animator.has(entity)
+  }
+
+  private isAnimatedGltfCollider(entity: Entity): boolean {
+    return this.isAnimatedGltfColliderEntity(entity)
   }
 
   /**
@@ -407,7 +411,10 @@ export class SceneScriptSystem {
     const out = new Set<Entity>(this.collectPhysXShapeMotionEntities(groundEcs, feet))
     if (groundEcs !== null) out.add(groundEcs)
     for (const entity of this.lastTweenMotionEntities) out.add(entity)
-    for (const entity of this.lastSyncFrameTransformEntities) out.add(entity)
+    // Only sync CRDT transform movers the avatar is grounded on — not every nearby composite parent.
+    for (const entity of this.lastSyncFrameTransformEntities) {
+      if (entity === groundEcs) out.add(entity)
+    }
     return [...out]
   }
 
@@ -432,6 +439,8 @@ export class SceneScriptSystem {
     return out
   }
 
+  private lastStandSurfacePhys: number | null = null
+
   /**
    * Riding + PhysX bounds scope — grounded actor, or animated tread under feet when stepping on.
    */
@@ -450,11 +459,30 @@ export class SceneScriptSystem {
       if (under !== null) animatedPhys = GLTF_COLLIDER_ENTITY_BASE + under
     }
 
+    if (animatedPhys === null && feet && nodes && this.lastStandSurfacePhys !== null) {
+      const ecs = this.standSurfaceEcsFromPhys(this.lastStandSurfacePhys)
+      if (
+        ecs !== null &&
+        this.gltfColliders?.hasAnimatedStandContact(ecs, nodes, feet)
+      ) {
+        animatedPhys = this.lastStandSurfacePhys
+      }
+    }
+
     if (groundPhysEntity !== null && groundPhysEntity !== -1) {
-      if (animatedPhys !== null && groundPhysEntity === animatedPhys) return groundPhysEntity
-      if (animatedPhys !== null) return animatedPhys
+      if (animatedPhys !== null && groundPhysEntity === animatedPhys) {
+        this.lastStandSurfacePhys = groundPhysEntity
+        return groundPhysEntity
+      }
+      if (animatedPhys !== null) {
+        this.lastStandSurfacePhys = animatedPhys
+        return animatedPhys
+      }
+      this.lastStandSurfacePhys = groundPhysEntity
       return groundPhysEntity
     }
+
+    this.lastStandSurfacePhys = animatedPhys
     return animatedPhys
   }
 

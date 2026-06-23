@@ -11,6 +11,7 @@ import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import {
   isSignificantPlatformDelta,
   STAND_SURFACE_CONTACT_TOLERANCE,
+  STAND_SURFACE_MAX_BELOW_TREAD,
   STAND_SURFACE_MAX_VERT_GAP
 } from '../physics/platformMotion'
 
@@ -447,12 +448,16 @@ export class GltfColliderExtractor {
     hasInvisiblePhysics: boolean
   ): boolean {
     const colliderMeshes = this.collectColliderMeshes(gltfRoot, hasVisiblePhysics, hasInvisiblePhysics)
-    if (!colliderMeshes.length || colliderMeshes.length !== shapes.length) return false
+    const eligibleMeshes = colliderMeshes.filter((mesh) => {
+      const posAttr = mesh.geometry.getAttribute('position')
+      return posAttr && posAttr.count >= 3
+    })
+    if (!eligibleMeshes.length || eligibleMeshes.length !== shapes.length) return false
 
     _entityInv.copy(entityObj.matrixWorld).invert()
     let changed = false
     for (let i = 0; i < shapes.length; i++) {
-      const mesh = colliderMeshes[i]!
+      const mesh = eligibleMeshes[i]!
       mesh.updateMatrixWorld(true)
       _worldMatrix.copy(mesh.matrixWorld).premultiply(_entityInv)
       const nextFp = colliderPoseFp(_worldMatrix)
@@ -550,6 +555,7 @@ export class GltfColliderExtractor {
   /**
    * Highest Animator GLTF tread under the capsule column — proactive stand surface before CCT
    * has registered grounding (avoids fall-through on bobbing props like SnoopCar).
+   * Works at any world Y (e.g. car on a 3rd floor): contact is relative to the animated tread.
    */
   findAnimatedStandSurfaceEntity(
     entityNodes: Map<Entity, THREE.Group>,
@@ -557,20 +563,101 @@ export class GltfColliderExtractor {
     isAnimatedCollider: (entity: Entity) => boolean
   ): Entity | null {
     let bestEntity: Entity | null = null
-    let bestTreadY = Number.NEGATIVE_INFINITY
+    let bestScore = Number.POSITIVE_INFINITY
 
     for (const entity of this.extracted.keys()) {
       if (!isAnimatedCollider(entity)) continue
-      const surface = this.colliderWalkSurfacePos(entity, entityNodes, feet)
+      const surface = this.animatedColliderContactSurface(entity, entityNodes, feet)
       if (!surface) continue
-      const gap = feet.y - surface.y
-      if (gap < -STAND_SURFACE_CONTACT_TOLERANCE || gap > STAND_SURFACE_MAX_VERT_GAP) continue
-      if (surface.y > bestTreadY) {
-        bestTreadY = surface.y
+      const gap = Math.abs(feet.y - surface.y)
+      const horizSq =
+        (feet.x - surface.x) * (feet.x - surface.x) +
+        (feet.z - surface.z) * (feet.z - surface.z)
+      const score = gap + horizSq * 0.08
+      if (score < bestScore) {
+        bestScore = score
         bestEntity = entity
       }
     }
     return bestEntity
+  }
+
+  hasAnimatedStandContact(
+    entity: Entity,
+    entityNodes: Map<Entity, THREE.Group>,
+    feet: THREE.Vector3
+  ): boolean {
+    return this.animatedColliderContactSurface(entity, entityNodes, feet) !== null
+  }
+
+  /**
+   * Highest animated collider tread contacting the capsule — on top, inside volume, or just below
+   * a rising bobbing surface (height-agnostic; no ground-level assumption).
+   */
+  private animatedColliderContactSurface(
+    entity: Entity,
+    entityNodes: Map<Entity, THREE.Group>,
+    feet: THREE.Vector3
+  ): THREE.Vector3 | null {
+    const state = this.syncState.get(entity)
+    const obj = entityNodes.get(entity)
+    if (!state || !obj) return null
+    const meshes = this.collectColliderMeshes(
+      state.mesh,
+      state.hasVisiblePhysics,
+      state.hasInvisiblePhysics
+    )
+    if (!meshes.length) return null
+
+    const columnMargin = 1.5
+    let bestTreadY = Number.NEGATIVE_INFINITY
+    let best: THREE.Vector3 | null = null
+
+    for (const mesh of meshes) {
+      mesh.updateMatrixWorld(true)
+      this._walkSurfaceBox.setFromObject(mesh)
+      if (!Number.isFinite(this._walkSurfaceBox.max.y)) continue
+
+      if (feet.x < this._walkSurfaceBox.min.x - columnMargin) continue
+      if (feet.x > this._walkSurfaceBox.max.x + columnMargin) continue
+      if (feet.z < this._walkSurfaceBox.min.z - columnMargin) continue
+      if (feet.z > this._walkSurfaceBox.max.z + columnMargin) continue
+
+      const treadCenterX = (this._walkSurfaceBox.min.x + this._walkSurfaceBox.max.x) * 0.5
+      const treadCenterZ = (this._walkSurfaceBox.min.z + this._walkSurfaceBox.max.z) * 0.5
+      const horizFromCenterSq =
+        (feet.x - treadCenterX) * (feet.x - treadCenterX) +
+        (feet.z - treadCenterZ) * (feet.z - treadCenterZ)
+      const meshHalfSpan =
+        Math.max(
+          this._walkSurfaceBox.max.x - this._walkSurfaceBox.min.x,
+          this._walkSurfaceBox.max.z - this._walkSurfaceBox.min.z
+        ) *
+          0.55 +
+        0.35
+
+      const gap = feet.y - this._walkSurfaceBox.max.y
+      const onTop =
+        gap >= -STAND_SURFACE_CONTACT_TOLERANCE && gap <= STAND_SURFACE_MAX_VERT_GAP
+      const insideVolume =
+        feet.y >= this._walkSurfaceBox.min.y - STAND_SURFACE_CONTACT_TOLERANCE &&
+        feet.y <= this._walkSurfaceBox.max.y + STAND_SURFACE_CONTACT_TOLERANCE &&
+        horizFromCenterSq <= meshHalfSpan * meshHalfSpan
+      const belowRising =
+        gap < -STAND_SURFACE_CONTACT_TOLERANCE && gap >= -STAND_SURFACE_MAX_BELOW_TREAD
+      if (!onTop && !insideVolume && !belowRising) continue
+
+      const top = this._walkSurfacePos.set(
+        (this._walkSurfaceBox.min.x + this._walkSurfaceBox.max.x) * 0.5,
+        this._walkSurfaceBox.max.y,
+        (this._walkSurfaceBox.min.z + this._walkSurfaceBox.max.z) * 0.5
+      )
+      if (top.y > bestTreadY) {
+        bestTreadY = top.y
+        best = top.clone()
+      }
+    }
+    return best
   }
 
   getPhysicsColliderForEntity(entity: Entity): PhysicsColliderDesc | null {

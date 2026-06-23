@@ -6,6 +6,7 @@ import { getSessionAssetCache, prefetchSceneManifestAssets } from '../rendering/
 import { applyClientPerformanceDefaults, detectPerformanceTier } from '../client/detectPerformanceTier'
 import { SceneHost } from '../rendering/SceneHost'
 
+import { GLTF_COLLIDER_ENTITY_BASE } from '../collision/GltfColliderExtractor'
 import { PhysXWorld } from '../physics/PhysXWorld'
 import { PlayerSystem } from '../player/PlayerSystem'
 import {
@@ -814,7 +815,7 @@ export class World {
       this.sceneScript.refreshColliderDescPoses(poseSync, shapeMotion)
       const standScoped = standPhysEntity !== null && standPhysEntity !== -1
       if (feet && standScoped) {
-        this.physics.snapshotPhysXActorWalkSurfaces(standPhysEntity, feet)
+        this.physics.snapshotPhysXActorWalkSurfaces(standPhysEntity, feet, descs)
       }
       const forceEntities = new Set<number>()
       for (const entity of poseSync) {
@@ -831,8 +832,9 @@ export class World {
       )
       this.physics.applyMeshColliderPoseDeltas(descs)
       if (feet && standScoped) {
-        this.physics.applyPhysXActorWalkSurfaceDeltas(standPhysEntity, feet)
+        this.physics.applyPhysXActorWalkSurfaceDeltas(standPhysEntity, feet, descs)
         this.physics.applyGroundContactDelta(feet)
+        this.physics.reconcileStandSurfaceGrounding(standPhysEntity, descs, feet)
       }
       this.physics.cullInsignificantPlatformMotionDeltas()
     }
@@ -1043,6 +1045,28 @@ export class World {
     const dx = desc.matrix.elements[12]! - feet.x
     const dz = desc.matrix.elements[14]! - feet.z
     return dx * dx + dz * dz <= maxHoriz * maxHoriz
+  }
+
+  /**
+   * Animator GLTF colliders must be entity-local (per-shape pose slides) — world-baked boot cooks
+   * freeze animated treads and cause fall-through on bobbing props (SnoopCar, lifts at any Y).
+   */
+  private recookAnimatedGltfEntityLocal(): void {
+    const stale: ReturnType<SceneScriptSystem['getAllPhysicsColliderDescs']> = []
+    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      if (!desc.fingerprint.startsWith('gltf-entity:')) continue
+      if (!this.physics.isWorldBakedStatic(desc.entity)) continue
+      const ecsEntity = (desc.entity - GLTF_COLLIDER_ENTITY_BASE) as Entity
+      if (!this.sceneScript.isAnimatedGltfColliderEntity(ecsEntity)) continue
+      stale.push(desc)
+    }
+    if (!stale.length) return
+    const result = this.physics.syncStaticColliders(stale, {
+      cookBudget: stale.length,
+      freezeRemoval: true,
+      geometryCache: true
+    })
+    if (result.geometryChanged) this.physics.warmStaticScene()
   }
 
   /** Down-ray at nearest GLTF descriptor origins — verifies PhysX actors landed where Three.js expects. */
@@ -1623,6 +1647,7 @@ export class World {
 
       await this.ensureSpawnAreaCollidersCooked(scene, started, maxWallMs, onProgress)
 
+      this.recookAnimatedGltfEntityLocal()
       this.physics.warmStaticScene()
 
       const finalRegistered = this.physics.gltfStaticActorCount

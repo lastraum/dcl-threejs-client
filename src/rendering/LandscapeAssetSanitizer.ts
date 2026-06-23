@@ -137,18 +137,12 @@ export function sanitizeSceneGltfMaterials(root: THREE.Object3D): void {
   })
 }
 
+/** Foliage cutout only — do not rewrite scene alpha-blend glass (e.g. La Cantina elevator tube). */
 function tuneFoliageMaterial(material: THREE.Material, meshName = ''): void {
   if (!(material instanceof THREE.MeshStandardMaterial)) return
 
-  const nameHint = /leaf|foliage|petal|flower|tree|plant|grass|bush|fern|vine|canopy|branch/i.test(meshName)
-  const needsCutout =
-    nameHint ||
-    material.alphaMap ||
-    material.transparent ||
-    material.opacity < 1 ||
-    material.map?.format === THREE.RGBAFormat
-
-  if (!needsCutout) return
+  const foliageMesh = /leaf|foliage|petal|flower|tree|plant|grass|bush|fern|vine|canopy|branch/i.test(meshName)
+  if (!foliageMesh) return
 
   material.side = THREE.DoubleSide
   material.transparent = false

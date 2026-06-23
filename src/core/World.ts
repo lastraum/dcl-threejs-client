@@ -808,20 +808,21 @@ export class World {
     }
     this.sceneScript.pumpMotionBridges(delta, startFrame)
     this.sceneScript.syncCollision()
-    let meshMotion: Entity[] = []
+    let poseSync: Entity[] = []
     if (this.collidersLoadingComplete && !this.deferPhysxCooks) {
-      this.sceneScript.refreshColliderDescPoses()
-      meshMotion = feet
-        ? this.sceneScript.detectAndMarkLiveColliderMeshMotion(feet, 96, groundPhysEntity)
-        : []
       const groundEcs = groundEcsEarly
+      poseSync = this.sceneScript.collectPhysXPoseSyncEntities(groundEcs)
+      const shapeMotion = this.sceneScript.collectPhysXShapeMotionEntities(groundEcs)
+      this.sceneScript.refreshColliderDescPoses(poseSync, shapeMotion)
       const groundScoped = groundPhysEntity !== null && groundPhysEntity !== -1
       if (feet && groundScoped) {
         this.physics.snapshotPhysXActorWalkSurfaces(groundPhysEntity, feet)
       }
-      const forceEntities = new Set(
-        meshMotion.map((entity) => GLTF_COLLIDER_ENTITY_BASE + entity)
-      )
+      const forceEntities = new Set<number>()
+      for (const entity of poseSync) {
+        const physId = this.sceneScript.physEntityIdForPoseSync(entity)
+        if (physId !== null) forceEntities.add(physId)
+      }
       this.pushColliderPosesToPhysX({ forceEntities })
       this.physics.applyGltfColliderPoseDeltas(descs, feet ?? undefined)
       this.physics.applyActorRootPoseDeltas(descs, groundPhysEntity)
@@ -847,7 +848,7 @@ export class World {
     }
     if (feet && platformMotionDebug.isEnabled()) {
       this.sceneScript.logPlatformMotionTick(feet, {
-        meshMotion,
+        meshMotion: poseSync,
         poseDirty: 0,
         platformDeltas: this.physics.getPlatformMotionDeltaSnapshot(),
         platformTransferApplied: false,

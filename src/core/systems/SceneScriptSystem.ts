@@ -382,12 +382,46 @@ export class SceneScriptSystem {
   }
 
   /** Live matrixWorld from Three.js — must run before isColliderSynced during loading. */
-  refreshColliderDescPoses(): void {
+  refreshColliderDescPoses(
+    poseSync?: Entity[],
+    shapeMotion?: ReadonlySet<Entity>
+  ): void {
     const nodes = this.bridge?.getEntityNodes()
     if (!nodes) return
     this.gltfColliders?.refreshLandscapeColliderPoses()
-    this.gltfColliders?.syncPoses(nodes)
-    this.collision?.syncPoses(nodes)
+    if (poseSync?.length) {
+      this.gltfColliders?.syncPosesForEntities(nodes, poseSync, shapeMotion)
+      this.collision?.syncPosesForEntities(nodes, poseSync)
+    }
+  }
+
+  /**
+   * PhysX pose slides follow entity transforms and the grounded GLTF tread — not every Animator
+   * in the scene (decorative mesh bob stays visual-only).
+   */
+  collectPhysXPoseSyncEntities(groundEcs: Entity | null): Entity[] {
+    const out = new Set<Entity>()
+    if (groundEcs !== null) out.add(groundEcs)
+    for (const entity of this.lastTweenMotionEntities) out.add(entity)
+    for (const entity of this.lastSyncFrameTransformEntities) out.add(entity)
+    return [...out]
+  }
+
+  /** GLTF tread shape locals — only the surface the CCT is grounded on (animated lift mesh). */
+  collectPhysXShapeMotionEntities(groundEcs: Entity | null): Set<Entity> {
+    const out = new Set<Entity>()
+    if (groundEcs !== null && this.gltfColliders?.hasExtractedCollider(groundEcs)) {
+      out.add(groundEcs)
+    }
+    return out
+  }
+
+  physEntityIdForPoseSync(entity: Entity): number | null {
+    if (this.gltfColliders?.hasExtractedCollider(entity)) {
+      return GLTF_COLLIDER_ENTITY_BASE + entity
+    }
+    if (this.colliderRootEntities.has(entity)) return entity
+    return null
   }
 
   /** Re-extract / refresh one actor desc immediately before PhysX cook (loading). */
@@ -2056,28 +2090,7 @@ export class SceneScriptSystem {
     return out
   }
 
-  /**
-   * Live `_collider` walk-surface motion — Animator / GLTF clips that skip ECS Transform updates.
-   * Call after motion bridges + syncCollision pose refresh (shape matrices current).
-   */
-  detectAndMarkLiveColliderMeshMotion(
-    feet?: THREE.Vector3,
-    maxHoriz = 96,
-    groundPhysEntity: number | null = null
-  ): Entity[] {
-    const nodes = this.bridge?.getEntityNodes()
-    if (!nodes || !this.gltfColliders) return []
-    const priority: Entity[] = []
-    if (groundPhysEntity !== null && groundPhysEntity >= GLTF_COLLIDER_ENTITY_BASE) {
-      priority.push((groundPhysEntity - GLTF_COLLIDER_ENTITY_BASE) as Entity)
-    }
-    const changed = this.gltfColliders.computeWalkSurfaceDeltas(nodes, feet, maxHoriz, priority)
-    for (const entity of changed) {
-      this.colliderPoseDirty.add(entity)
-      this.markDescendantColliderPosesDirty(entity)
-    }
-    return changed
-  }
+
 
   consumeWalkSurfaceDeltas(): Map<number, THREE.Vector3> {
     return this.gltfColliders?.consumeFrameWalkSurfaceDeltasPhys() ?? new Map()
@@ -2290,29 +2303,6 @@ export class SceneScriptSystem {
     }
   }
 
-  /** Push live Animator mesh poses into GLTF `_collider` shape locals before collision sync. */
-  private syncAnimatorGltfColliderPoses(): void {
-    const nodes = this.bridge?.getEntityNodes()
-    if (!nodes || !this.gltfColliders) return
-    const { Animator, GltfContainer } = this.readComponents
-    for (const [entity] of this.view.getEntitiesWith(Animator)) {
-      if (GltfContainer.has(entity)) {
-        this.gltfColliders.syncColliderEntityPose(entity, nodes)
-      }
-    }
-  }
-
-  /** AnimatorBridge moves GLTF child meshes — mark collider roots for pose slide. */
-  private markAnimatorColliderPosesDirty(): void {
-    const { Animator, GltfContainer, MeshCollider } = this.readComponents
-    for (const [entity] of this.view.getEntitiesWith(Animator)) {
-      if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
-        this.colliderPoseDirty.add(entity)
-      }
-      this.markDescendantColliderPosesDirty(entity)
-    }
-  }
-
   /** BillboardBridge rotates nodes renderer-side — slide PhysX / pointer collider poses. */
   private markBillboardColliderPosesDirty(): void {
     const { Billboard, MeshCollider, GltfContainer } = this.readComponents
@@ -2329,7 +2319,7 @@ export class SceneScriptSystem {
     if (!this.collision || !this.bridge) return
     const nodes = this.bridge.getEntityNodes()
     this.collision.syncPoses(nodes)
-    this.gltfColliders?.syncPoses(nodes)
+    this.gltfColliders?.syncPoses(nodes, new Set())
   }
 
   syncCollision(): void {
@@ -2463,8 +2453,6 @@ export class SceneScriptSystem {
     this.audioStreamBridge?.sync(this.view)
     this.avatarShapes?.update(delta)
     this.animatorBridge?.update(delta)
-    this.syncAnimatorGltfColliderPoses()
-    this.markAnimatorColliderPosesDirty()
     this.particleBridge?.update(delta)
     this.avatarAttachBridge?.update(this.view)
     this.flushAvatarAttachTransforms()

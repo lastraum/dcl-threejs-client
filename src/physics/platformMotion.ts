@@ -12,7 +12,11 @@
  *    Δ comes ONLY from the CCT-grounded PhysX actor (lastGroundPhysEntity), via actor-root /
  *    PhysX-bounds / ground-contact probes — never from distant mesh bbox animation.
  *
- * Mesh walk-surface Δ (GltfColliderExtractor) feeds pose-sync detection only, not riding transfer.
+ * Mesh walk-surface Δ does not drive either pipeline.
+ *
+ * 3. **Decorative animator** (SnoopCar, etc.)
+ *    Visual mesh may bob; PhysX stays at entity rest pose unless the player is grounded on
+ *    that collider (lift tread) or ECS Transform / Tween moves the whole entity.
  */
 
 /** Ignore sub-mm PhysX/probe jitter on static floors (~8 mm). */

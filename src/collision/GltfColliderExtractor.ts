@@ -205,8 +205,16 @@ export class GltfColliderExtractor {
     return true
   }
 
-  /** Pose-only update for one GLTF collider actor — no GLB tree traverse. */
-  syncColliderEntityPose(entity: Entity, entityNodes: Map<Entity, THREE.Group>): boolean {
+  /**
+   * Pose-only update for one GLTF collider actor.
+   * @param allowShapeMotion follow animated `_collider` child meshes — only when grounded on this
+   *   entity or ECS transform drives the platform; decorative animators stay at rest pose.
+   */
+  syncColliderEntityPose(
+    entity: Entity,
+    entityNodes: Map<Entity, THREE.Group>,
+    allowShapeMotion = false
+  ): boolean {
     const stored = this.extracted.get(entity)
     const obj = entityNodes.get(entity)
     if (!stored || !obj) return false
@@ -214,7 +222,7 @@ export class GltfColliderExtractor {
     const state = this.syncState.get(entity)
     const gltfMesh = state?.mesh ?? obj.children.find((c) => c.name.startsWith('__mesh_'))
     let shapesChanged = false
-    if (stored.shapes?.length && gltfMesh && state) {
+    if (allowShapeMotion && stored.shapes?.length && gltfMesh && state) {
       shapesChanged = this.refreshShapeLocalMatrices(
         gltfMesh,
         obj,
@@ -224,7 +232,9 @@ export class GltfColliderExtractor {
       )
     }
     stored.matrix.copy(obj.matrixWorld)
-    const poseFp = gltfColliderPoseFp(stored)
+    const poseFp = allowShapeMotion
+      ? gltfColliderPoseFp(stored)
+      : colliderPoseFp(stored.matrix)
     if (!shapesChanged && this.poseFingerprints.get(entity) === poseFp) return false
     this.poseFingerprints.set(entity, poseFp)
     return true
@@ -479,11 +489,29 @@ export class GltfColliderExtractor {
   }
 
   /** Pose-only pass for tweened entities — skips full GLTF mesh traversal. */
-  syncPoses(entityNodes: Map<Entity, THREE.Group>): void {
+  syncPoses(
+    entityNodes: Map<Entity, THREE.Group>,
+    shapeMotionEntities?: ReadonlySet<Entity>
+  ): void {
     if (!this.extracted.size) return
     let changed = false
     for (const entity of this.extracted.keys()) {
-      if (this.syncColliderEntityPose(entity, entityNodes)) changed = true
+      const allowShapes = shapeMotionEntities?.has(entity) ?? false
+      if (this.syncColliderEntityPose(entity, entityNodes, allowShapes)) changed = true
+    }
+    if (changed) this.recomputePhysicsBatchFingerprint()
+  }
+
+  syncPosesForEntities(
+    entityNodes: Map<Entity, THREE.Group>,
+    entities: Entity[],
+    shapeMotion?: ReadonlySet<Entity>
+  ): void {
+    let changed = false
+    for (const entity of entities) {
+      if (!this.extracted.has(entity)) continue
+      const allowShapes = shapeMotion?.has(entity) ?? false
+      if (this.syncColliderEntityPose(entity, entityNodes, allowShapes)) changed = true
     }
     if (changed) this.recomputePhysicsBatchFingerprint()
   }

@@ -6,6 +6,7 @@ import type { ResolvedScene } from '../dcl/content/types'
 import type { ContentFile } from '../dcl/content/types'
 import { buildParseUrlMappings } from './DclTextureResolver'
 import {
+  enableSceneGltfVertexColors,
   sanitizeSceneGltfColliders,
   sanitizeSceneGltfMaterials
 } from './LandscapeAssetSanitizer'
@@ -161,6 +162,22 @@ export class AssetCache {
 
   hasCached(key: string): boolean {
     return this.cache.has(key)
+  }
+
+  /** Drop a parsed GLB so the next load re-fetches bytes (e.g. after terrain re-save). */
+  evict(key: string): void {
+    const cacheKey = normalizeGlbCacheKey(key)
+    const entry = this.cache.get(cacheKey)
+    if (entry) {
+      disposeCachedRoot(entry.root)
+      this.cache.delete(cacheKey)
+    }
+    this.inflight.delete(cacheKey)
+    this.bytesInflight.delete(cacheKey)
+    this.givenUp.delete(cacheKey)
+    this.failedUntil.delete(cacheKey)
+    this.failCount.delete(cacheKey)
+    this.warnedFailed.delete(cacheKey)
   }
 
   /** True when bytes or parse is in flight — used to prioritize attach passes. */
@@ -331,7 +348,9 @@ export class AssetCache {
    */
   async clone(url: string, hash?: string): Promise<THREE.Group> {
     const { root } = await this.load(url, hash)
-    return cloneGltfInstance(root)
+    const instance = cloneGltfInstance(root)
+    enableSceneGltfVertexColors(instance)
+    return instance
   }
 
   private gltfResourcePath(url: string): string {

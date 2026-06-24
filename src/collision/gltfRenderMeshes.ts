@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { enableMeshVertexColors, tuneAuthorTerrainMeshMaterial } from '../rendering/LandscapeAssetSanitizer'
 import { isGltfInvisibleColliderName } from './gltfColliderNaming'
 
 function meshMaterials(mesh: THREE.Mesh): THREE.Material[] {
@@ -7,6 +8,7 @@ function meshMaterials(mesh: THREE.Mesh): THREE.Material[] {
 
 /** True when a mesh carries glTF-authored display maps (not a bare pointer/physics proxy). */
 export function gltfMeshHasDisplayMaps(mesh: THREE.Mesh): boolean {
+  if (mesh.geometry.getAttribute('color')) return true
   for (const material of meshMaterials(mesh)) {
     if (!material) continue
     const std = material as THREE.MeshStandardMaterial
@@ -73,4 +75,10 @@ export function syncGltfInstanceRenderState(root: THREE.Object3D): void {
   })
 
   unhideRenderAncestors(root)
+
+  root.traverse((node) => {
+    if (!(node instanceof THREE.Mesh) || !node.visible) return
+    enableMeshVertexColors(node)
+    tuneAuthorTerrainMeshMaterial(node)
+  })
 }

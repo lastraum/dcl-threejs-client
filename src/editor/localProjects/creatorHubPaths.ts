@@ -19,6 +19,15 @@ export function creatorHubProjectId(folderName: string): string {
   return `creator-hub:${folderName}`
 }
 
+/** Stable id for Creator Hub workspace paths outside the default Scenes folder. */
+export function creatorHubPathProjectId(fullPath: string): string {
+  let h = 0
+  for (let i = 0; i < fullPath.length; i++) {
+    h = (Math.imul(31, h) + fullPath.charCodeAt(i)) | 0
+  }
+  return `creator-hub-path:${(h >>> 0).toString(36)}`
+}
+
 export function isCreatorHubProjectId(projectId: string): boolean {
-  return projectId.startsWith('creator-hub:')
+  return projectId.startsWith('creator-hub:') || projectId.startsWith('creator-hub-path:')
 }

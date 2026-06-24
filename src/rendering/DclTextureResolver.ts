@@ -170,7 +170,14 @@ function resolveFromSceneManifest(url: string, leaf: string): string | null {
     sceneContentByKey.get(normalLeaf) ??
     sceneContentByKey.get(stripBlenderSuffix(normalLeaf) ?? '')
 
-  return hash ? sceneAssetUrl(hash) : null
+  if (hash) return sceneAssetUrl(hash)
+
+  const suffix = `/${normalLeaf}`
+  for (const [key, entryHash] of sceneContentByKey) {
+    if (key.endsWith(suffix) || key === normalLeaf) return sceneAssetUrl(entryHash)
+  }
+
+  return null
 }
 
 function resolveSharedTexture(leaf: string): string | null {
@@ -217,11 +224,26 @@ function isMissingHashContentUrl(url: string): boolean {
 const CONCATENATED_HASH_TEXTURE_RE =
   /\/content\/contents\/((?:bafy|bafkre|Qm)[a-z0-9]{46,})([^/?#]+\.(?:png|jpe?g|ktx2|webp|tga|bmp))/i
 
+function resolveKnownAssetUrl(url: string, leaf: string): string | null {
+  return (
+    resolveFromSceneManifest(url, leaf) ??
+    resolveFromWearableMappings(url, leaf) ??
+    resolveFromEmoteManifest(url, leaf) ??
+    (resolveSharedTexture(leaf) ? catalystAssetUrl(resolveSharedTexture(leaf)!) : null)
+  )
+}
+
 /** Rewrite glTF-relative texture paths to Catalyst content URLs. */
 export function resolveDclAssetUrl(url: string): string {
-  if (!url || url.startsWith('data:') || url.startsWith('blob:')) return url
+  if (!url || url.startsWith('data:')) return url
 
   const leaf = leafName(url)
+
+  if (url.startsWith('blob:')) {
+    const hit = resolveKnownAssetUrl(url, leaf)
+    return hit ?? url
+  }
+
   const sceneHit = resolveFromSceneManifest(url, leaf)
   if (sceneHit) return sceneHit
 

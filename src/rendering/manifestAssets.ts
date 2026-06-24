@@ -8,7 +8,7 @@ export type ManifestAssetsByKind = {
   audio: ManifestAssetEntry[]
 }
 
-const PREFETCH_EXTENSIONS = new Set(['glb', 'png', 'mp3'])
+const PREFETCH_EXTENSIONS = new Set(['glb', 'png', 'jpg', 'jpeg', 'mp3'])
 
 function extension(file: string): string {
   const dot = file.lastIndexOf('.')
@@ -31,7 +31,7 @@ export function collectManifestAssets(scene: ResolvedScene): ManifestAssetsByKin
 
     const item = { url: scene.assetUrl(entry.hash), hash: entry.hash }
     if (ext === 'glb') glbs.push(item)
-    else if (ext === 'png') textures.push(item)
+    else if (ext === 'png' || ext === 'jpg' || ext === 'jpeg') textures.push(item)
     else if (ext === 'mp3') audio.push(item)
   }
 

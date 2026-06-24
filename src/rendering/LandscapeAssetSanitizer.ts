@@ -115,7 +115,98 @@ function simplifyMaterial(material: THREE.Material): THREE.Material {
     stripOptionalMaps(material)
     return material
   }
+  if (material instanceof THREE.MeshBasicMaterial) {
+    return material
+  }
   return material
+}
+
+function isAuthorTerrainMesh(mesh: THREE.Mesh): boolean {
+  if (/^terrain_mesh_/i.test(mesh.name)) return true
+  if (mesh.userData.dclAuthorTerrain === true) return true
+  let parent: THREE.Object3D | null = mesh.parent
+  while (parent) {
+    if (parent.name === 'terrain_root' || parent.userData.dclAuthorTerrainRoot === true) return true
+    parent = parent.parent
+  }
+  return false
+}
+
+function terrainVertexColorAttribute(mesh: THREE.Mesh): THREE.BufferAttribute | null {
+  const attr = mesh.geometry.getAttribute('color')
+  return attr instanceof THREE.BufferAttribute ? attr : null
+}
+
+function terrainSourceMap(mesh: THREE.Mesh): THREE.Texture | null {
+  const mats = meshMaterials(mesh)
+  for (const mat of mats) {
+    if (!mat) continue
+    if (mat instanceof THREE.MeshBasicMaterial && mat.map) return mat.map
+    if (mat instanceof THREE.MeshStandardMaterial && mat.map) return mat.map
+    if (mat instanceof THREE.MeshLambertMaterial && mat.map) return mat.map
+  }
+  return null
+}
+
+/**
+ * Editor terrain.glb — per-instance unlit material.
+ * Prefer baked albedo map (reliable in ECS); fall back to COLOR_0 for Creator Hub parity.
+ */
+export function tuneAuthorTerrainMeshMaterial(mesh: THREE.Mesh): void {
+  if (!isAuthorTerrainMesh(mesh)) return
+  const colors = terrainVertexColorAttribute(mesh)
+  const map = terrainSourceMap(mesh)
+  if (!colors && !map) return
+
+  if (colors) colors.needsUpdate = true
+  if (map) {
+    map.colorSpace = THREE.SRGBColorSpace
+    map.needsUpdate = true
+  }
+
+  mesh.material = new THREE.MeshBasicMaterial({
+    name: 'dcl-author-terrain',
+    color: 0xffffff,
+    map,
+    vertexColors: !map && !!colors,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+    fog: false,
+    transparent: false,
+    opacity: 1,
+    depthWrite: true
+  })
+}
+
+function meshMaterials(mesh: THREE.Mesh): THREE.Material[] {
+  return Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+}
+
+/** GLTFLoader often omits vertexColors on PBR materials — required for editor terrain.glb. */
+export function enableMeshVertexColors(mesh: THREE.Mesh): void {
+  if (!mesh.geometry.getAttribute('color')) return
+  for (const material of meshMaterials(mesh)) {
+    if (!material) continue
+    if (
+      material instanceof THREE.MeshStandardMaterial ||
+      material instanceof THREE.MeshPhysicalMaterial ||
+      material instanceof THREE.MeshLambertMaterial ||
+      material instanceof THREE.MeshBasicMaterial
+    ) {
+      material.vertexColors = true
+      material.color.setRGB(1, 1, 1)
+      material.needsUpdate = true
+    }
+  }
+}
+
+/** Re-apply vertex color flags on every instance attach (shared materials + hydration replays). */
+export function enableSceneGltfVertexColors(root: THREE.Object3D): void {
+  root.traverse((node) => {
+    if (!(node instanceof THREE.Mesh)) return
+    enableMeshVertexColors(node)
+    tuneAuthorTerrainMeshMaterial(node)
+  })
 }
 
 /** Keep glTF materials under WebGL fragment texture unit limits (16 on many GPUs). */
@@ -128,9 +219,11 @@ export function sanitizeSceneGltfMaterials(root: THREE.Object3D): void {
     }
     if (Array.isArray(node.material)) {
       node.material = node.material.map((material) => simplifyMaterial(material))
-      return
+    } else {
+      node.material = simplifyMaterial(node.material)
     }
-    node.material = simplifyMaterial(node.material)
+    enableMeshVertexColors(node)
+    tuneAuthorTerrainMeshMaterial(node)
   })
 }
 

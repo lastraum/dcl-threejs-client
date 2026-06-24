@@ -132,6 +132,7 @@ function createNeonMaterial(mat: PbrMeshMaterial): THREE.MeshStandardMaterial {
     metalness: 0,
     roughness: 1,
     envMapIntensity: 0,
+    vertexColors: mat.vertexColors,
     side: mat.side,
     transparent: mat.transparent,
     opacity: mat.opacity,

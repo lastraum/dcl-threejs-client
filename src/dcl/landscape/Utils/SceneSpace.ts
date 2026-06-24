@@ -25,6 +25,22 @@ export const EMPTY_LAND_GROUND_OFFSET = {
   z: PARCEL_SIZE / 2
 } as const
 
+/**
+ * Terrain GLB child offset under an ECS entity whose root uses `dclToThree` on Transform.
+ * Landscape ground uses +X local offset from a negated-SW root; ECS props use negated world X.
+ * Mirror parcel mesh X (and scale.x = -1) so terrain aligns with composite entities.
+ */
+export function terrainGlbParcelMeshOffset(
+  parcelSwX: number,
+  parcelSwZ: number,
+  footprintOriginX: number,
+  footprintOriginZ: number
+): { x: number; y: number; z: number } {
+  const localX = parcelSwX - footprintOriginX + EMPTY_LAND_GROUND_OFFSET.x
+  const localZ = parcelSwZ - footprintOriginZ + EMPTY_LAND_GROUND_OFFSET.z
+  return { x: -localX, y: 0, z: localZ }
+}
+
 /** Parcel grid key for an absolute DCL scene-space X/Z (matches deployed parcel keys). */
 export function parcelKeyFromDclScene(dclX: number, dclZ: number, base: ParcelCoord): string {
   const px = base.x + Math.floor(dclX / PARCEL_SIZE)

@@ -1,6 +1,9 @@
 import type { ContentFile, ResolvedScene, SceneMetadata, SceneSpawn } from '../../dcl/content/types'
+import { layoutFromSceneMetadata } from '../../dcl/content/sceneLayout'
 import { BLANK_SCENE_TEMPLATE } from '../../dcl/content/types'
-import { walkProjectFiles, readFileText } from './localFileSystem'
+import { walkProjectFiles, readFileText, readFileBytes } from './localFileSystem'
+import type { ProjectRoot } from './projectRoot'
+import { projectRootLabel } from './projectRoot'
 
 const LOCAL_PREFIX = 'local://'
 
@@ -30,6 +33,8 @@ function isSceneAssetPath(path: string): boolean {
     lower.endsWith('.png') ||
     lower.endsWith('.jpg') ||
     lower.endsWith('.jpeg') ||
+    lower.endsWith('.webp') ||
+    lower.endsWith('.ktx2') ||
     lower.endsWith('.mp3') ||
     lower.endsWith('.wav') ||
     lower.endsWith('.js') ||
@@ -39,23 +44,31 @@ function isSceneAssetPath(path: string): boolean {
   )
 }
 
+function mimeForAssetPath(path: string): string {
+  const lower = path.toLowerCase()
+  if (lower.endsWith('.png')) return 'image/png'
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
+  if (lower.endsWith('.webp')) return 'image/webp'
+  if (lower.endsWith('.mp3')) return 'audio/mpeg'
+  if (lower.endsWith('.wav')) return 'audio/wav'
+  if (lower.endsWith('.glb')) return 'model/gltf-binary'
+  if (lower.endsWith('.gltf')) return 'model/gltf+json'
+  return 'application/octet-stream'
+}
+
 export type LocalSceneCache = {
   scene: ResolvedScene
   blobUrls: string[]
   revoke(): void
 }
 
-export async function resolveLocalScene(
-  projectId: string,
-  root: FileSystemDirectoryHandle
-): Promise<LocalSceneCache> {
+export async function resolveLocalScene(projectId: string, root: ProjectRoot): Promise<LocalSceneCache> {
   const sceneJsonText = await readFileText(root, 'scene.json')
   if (!sceneJsonText) throw new Error('scene.json not found in project folder')
 
   const metadata = JSON.parse(sceneJsonText) as SceneMetadata
-  const parcels = metadata.scene?.parcels ?? ['0,0']
-  const baseParcel = metadata.scene?.base ?? parcels[0] ?? '0,0'
-  const title = metadata.display?.title?.trim() || root.name
+  const { parcels, base: baseParcel } = layoutFromSceneMetadata(metadata)
+  const title = metadata.display?.title?.trim() || projectRootLabel(root)
 
   const paths = await walkProjectFiles(root)
   const assetPaths = paths.filter(isSceneAssetPath)
@@ -65,13 +78,11 @@ export async function resolveLocalScene(
 
   for (const file of assetPaths) {
     try {
-      const parts = file.split('/')
-      let dir = root
-      for (let i = 0; i < parts.length - 1; i++) {
-        dir = await dir.getDirectoryHandle(parts[i]!)
-      }
-      const fh = await dir.getFileHandle(parts[parts.length - 1]!)
-      const blob = await fh.getFile()
+      const bytes = await readFileBytes(root, file)
+      if (!bytes) continue
+      const copy = new Uint8Array(bytes.byteLength)
+      copy.set(bytes)
+      const blob = new Blob([copy], { type: mimeForAssetPath(file) })
       const url = URL.createObjectURL(blob)
       blobUrls.push(url)
       entries.push({ file, blobUrl: url })

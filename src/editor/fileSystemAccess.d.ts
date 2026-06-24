@@ -26,6 +26,24 @@ interface FileSystemWritableFileStream extends WritableStream {
   close(): Promise<void>
 }
 
+interface FilePickerAcceptType {
+  description?: string
+  accept: Record<string, string | string[]>
+}
+
 interface Window {
   showDirectoryPicker(options?: { mode?: 'read' | 'readwrite' }): Promise<FileSystemDirectoryHandle>
+  showOpenFilePicker(options?: {
+    multiple?: boolean
+    types?: FilePickerAcceptType[]
+  }): Promise<FileSystemFileHandle[]>
+}
+
+interface DataTransferItem {
+  getAsFileSystemHandle(): Promise<FileSystemHandle | null>
+}
+
+interface FileSystemHandle {
+  readonly kind: 'file' | 'directory'
+  readonly name: string
 }

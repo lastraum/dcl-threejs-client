@@ -91,6 +91,7 @@ export class World {
   private player: PlayerSystem | null = null
   private remoteAvatars: RemoteAvatarManager | null = null
   private playerMode = !useOrbitMode()
+  private editorPreviewMode = false
   private lastGltfColliderCount = 0
   private loggedGltfPhysMismatch = false
   private collidersPhysLastLog = 0
@@ -207,10 +208,11 @@ export class World {
     this.comms.setIdentity(this.session.getAddress(), this.session.getAuthIdentity())
   }
 
-  /** Local `/editor` preview — orbit camera, no player controller. */
+  /** Local `/editor` preview — fly camera, no player controller, lightweight frame loop. */
   enterEditorPreviewMode(): void {
     this.playerMode = false
-    this.host.setOrbitEnabled(true)
+    this.editorPreviewMode = true
+    this.host.setOrbitEnabled(false)
   }
 
   private buildCommsTarget(scene: ResolvedScene) {
@@ -720,19 +722,23 @@ export class World {
     this.host.start({
       onSyncFrame: (delta) => {
         startFrame++
-        this.ocean?.update(delta, this.host.camera)
-        if (this.ezTreeGrass) {
-          this.ezTreeGrassElapsed += delta
-          this.ezTreeGrass.update(this.ezTreeGrassElapsed, this.host.camera.position)
+        if (!this.editorPreviewMode) {
+          this.ocean?.update(delta, this.host.camera)
+          if (this.ezTreeGrass) {
+            this.ezTreeGrassElapsed += delta
+            this.ezTreeGrass.update(this.ezTreeGrassElapsed, this.host.camera.position)
+          }
+          this.foliageWindElapsed += delta
+          updateFoliageWind(this.foliageWindElapsed)
         }
-        this.foliageWindElapsed += delta
-        updateFoliageWind(this.foliageWindElapsed)
         this.lightManager.update(this.host.camera.position)
         if (!skipRemoteAvatars()) {
           this.remoteAvatars?.setCameraPosition(this.host.camera.position)
         }
-        this.environment.update(delta, this.sceneScript.view, this.sceneScript.readComponents)
-        this.syncOutdoorLighting()
+        if (!this.editorPreviewMode) {
+          this.environment.update(delta, this.sceneScript.view, this.sceneScript.readComponents)
+          this.syncOutdoorLighting()
+        }
 
         if (this.playerMode && this.player) {
           this.syncPlayerMotionFrame(delta, startFrame)
@@ -763,7 +769,7 @@ export class World {
         this.comms.flushBroadcast()
 
         // Tweens / billboards / GLTF animators — player path runs in syncPlayerMotionFrame first.
-        if (!this.playerMode || !this.player) {
+        if (!this.editorPreviewMode && (!this.playerMode || !this.player)) {
           this.sceneScript.pumpMotionBridges(delta, startFrame)
         }
         if (this.playerMode && this.player) {
@@ -772,12 +778,16 @@ export class World {
           this.sceneScript.updateRaycasts()
           this.sceneScript.updatePointerEvents(startFrame)
         }
-        // Campfire sprite UV animation — sync frame (tiny tracked set, self-prunes static planes).
-        this.sceneScript.syncAnimatedSprites()
-        // Texture retries — sync frame so failed loads don't block async projection drain.
-        this.sceneScript.tickDeferredMaterials()
+        if (!this.editorPreviewMode) {
+          // Campfire sprite UV animation — sync frame (tiny tracked set, self-prunes static planes).
+          this.sceneScript.syncAnimatedSprites()
+          // Texture retries — sync frame so failed loads don't block async projection drain.
+          this.sceneScript.tickDeferredMaterials()
+        }
       },
       onAsyncFrame: async (_delta) => {
+        if (this.editorPreviewMode) return
+
         await this.sceneScript.syncRenderer()
         if (this.playerMode && this.player) {
           this.sceneScript.preparePointerRaycast()

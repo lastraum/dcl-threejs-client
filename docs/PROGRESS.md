@@ -2,9 +2,47 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-06-22 (scene glTF alpha-blend ✅ · La Cantina `-150,95` elevator tube · foliage sanitizer scoped to landscape only)  
-> **Current phase:** **Phase 5 social polish** — scene media (audio/video/billboards/particles) + Genesis environments shipped; boot/hydration hardened; profile & settings shell restored. **Next:** voice/mic UI, in-scene ECS UI, Raycast scene callbacks polish; **PhysX cook worker** on `lastraum-cook` (merge when ready).
+> **Last updated:** 2026-06-24 (terrain editor + deploy export ✅ · `/editor` sculpt → `terrain.glb` · 5×5 ~4–5 MB default)  
+> **Current phase:** **Phase 5 social polish** + **creator tooling** — scene media + Genesis environments shipped; **in-browser terrain editor** for local Creator Hub projects. **Next:** voice/mic UI, in-scene ECS UI, Raycast scene callbacks polish; **PhysX cook worker** on `lastraum-cook` (merge when ready).
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
+
+---
+
+## ✨ Beyond Explorer parity — client improvements
+
+Features that **go past Unity Explorer parity** — new workflows, smaller deploys, or tooling the official client does not ship. Parity gaps and bridge work stay in [INTEGRATION.md](./INTEGRATION.md) and milestone sections below.
+
+| Improvement | Status | Why it matters |
+| ----------- | ------ | -------------- |
+| **In-browser terrain editor** (`/editor`) | 🟢 | Sculpt height + splat on local Creator Hub scenes; save `terrain.glb` + `main.composite` without leaving the client |
+| **Deploy-sized terrain export** | 🟢 | Per-parcel meshes with configurable density (default **64 segs**); 5×5 ~**4–5 MB** vs ~21 MB at old 128+64 dual-mesh export |
+| **Visible-mesh physics** | 🟢 | `CL_PHYSICS` on `terrain_mesh_*` only — no duplicate `_collider` layer (matches genesis-games DCL pattern) |
+| **Non-square footprints** | 🟢 | L-shaped / sparse parcel layouts export one plane per parcel, not a full bounding-box fill |
+| **Creator Hub project bridge** | 🟢 | Link `Scenes/` folder; FSA + dev-server save paths for local deploy folders |
+
+**Try it:** open **`/editor`** → pick a linked project → **Terrain sculpt** → **Save to project** → `dcl deploy` from that folder. Re-save once if you had an older dual-collider export.
+
+---
+
+## 🎉 Milestone — Terrain editor & deploy export (2026-06-24)
+
+**Status: shipped on `dev-latest`** — browser terrain sculpt for local scenes + deployable `assets/terrain/terrain.glb`.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Editor hub** | 🟢 | `/editor` project list; Creator Hub `Scenes/` auto-import via `link-creator-hub-scenes.mjs` |
+| **Sculpt session** | 🟢 | Height + splat brushes, undo/redo, procedural shading, max-height guide, fly camera |
+| **Draft storage** | 🟢 | 1024² height/splat/lava in IndexedDB per project (not deployed) |
+| **Deploy export** | 🟢 | `terrain.glb` + `main.composite` entity 9001; baked 512² albedo for Unity Explorer |
+| **Export density** | 🟢 | Panel option: **32 / 64 / 96 / 128** segments per 16 m parcel (default **64**) |
+| **Runtime** | 🟢 | Author terrain skips default landscape ground; `LandscapeAssetSanitizer` unlit vertex-color path |
+| **Collision** | 🟢 | `visibleMeshesCollisionMask: CL_PHYSICS`; invisible collider meshes removed from export |
+
+**Deploy size (approx., 5×5 parcels):** 128 segs ~17 MB · **64 segs ~4–5 MB** · 32 segs ~1–2 MB (sculpt preview stays full resolution).
+
+**Files:** `src/editor/**`, `terrainComposite.ts`, `sceneAuthorTerrain.ts`, `RenderGroundSystem.ts`, `LandscapeAssetSanitizer.ts`, `vite-plugins/localProjectsBridge.ts`
+
+**Branch:** `terrain-editor` → merged `dev-latest`
 
 ---
 

@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { parseParcelKey } from '../../content/parseParcel'
+import { sceneHasAuthorTerrain } from '../../content/sceneAuthorTerrain'
 import type { ResolvedScene } from '../../content/types'
 import type { AssetCache } from '../../../rendering/AssetCache'
 import { catalystAssetUrl } from '../Data/EmptyLandCatalog'
@@ -46,7 +47,8 @@ export async function buildParcelLandscape(
   }
 
   const circularShore = profile.circularShore === true
-  const proceduralDesert = profile.proceduralDesertPlane === true
+  const authorTerrain = sceneHasAuthorTerrain(scene)
+  const proceduralDesert = profile.proceduralDesertPlane === true && !authorTerrain
   const terrain = createTerrainModel(scene.parcels, profile.borderPadding, circularShore)
   const base = parseParcelKey(scene.baseParcel)
   const bounds = sceneParcelBounds(scene.parcels)
@@ -92,7 +94,8 @@ export async function buildParcelLandscape(
     const origin = parcelWorldOrigin(parcel, base)
     dclToThreePos(origin.x, origin.y, origin.z, parcelRoot.position)
 
-    if (!proceduralDesert) {
+    const skipSceneGround = authorTerrain && role === 'scene'
+    if (!proceduralDesert && !skipSceneGround) {
       const groundHash = role === 'scene' ? profile.sceneGround : profile.paddingGround
       const ground = await cache.clone(catalystAssetUrl(groundHash), groundHash)
       ground.position.set(

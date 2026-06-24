@@ -1,13 +1,12 @@
-import { defaultCreatorHubScenesPath } from '../localProjects/creatorHubPaths'
 import {
+  connectProjectFolder,
+  getDevBridgeStatus,
   isCreatorHubScenesLinked,
-  isFileSystemAccessSupported,
-  linkCreatorHubScenesFolder,
   listProjects,
-  pickAndAddProject,
   relinkProject,
   removeProject,
   rescanCreatorHubScenes,
+  syncDevBridgeProjects,
   type LocalProjectRecord
 } from '../localProjects/projectStore'
 
@@ -20,6 +19,7 @@ export class EditorHubPage {
   private grid: HTMLDivElement
   private errorEl: HTMLDivElement
   private statusEl: HTMLDivElement
+  private devBridgeAvailable = false
 
   constructor(
     container: HTMLElement,
@@ -33,44 +33,19 @@ export class EditorHubPage {
     header.className = 'editor-hub-header'
     const title = document.createElement('h1')
     title.textContent = 'Local Scenes'
-    const subtitle = document.createElement('p')
-    subtitle.textContent =
-      'Link your Creator Hub Scenes folder to auto-import SDK7 projects, or add individual folders manually.'
     header.appendChild(title)
-    header.appendChild(subtitle)
 
     const actions = document.createElement('div')
     actions.className = 'editor-hub-actions'
 
-    const chPath = defaultCreatorHubScenesPath()
-    const linkChBtn = document.createElement('button')
-    linkChBtn.type = 'button'
-    linkChBtn.className = 'editor-hub-add editor-hub-add--primary'
-    linkChBtn.textContent = 'Link Creator Hub Scenes'
-    linkChBtn.title = `Select: ${chPath}`
-    linkChBtn.addEventListener('click', () => void this.handleLinkCreatorHub())
+    const syncDevBtn = document.createElement('button')
+    syncDevBtn.type = 'button'
+    syncDevBtn.className = 'editor-hub-add editor-hub-add--primary'
+    syncDevBtn.textContent = 'Sync Creator Hub (dev)'
+    syncDevBtn.addEventListener('click', () => void this.handleSyncDevBridge())
 
-    const rescanBtn = document.createElement('button')
-    rescanBtn.type = 'button'
-    rescanBtn.className = 'editor-hub-add'
-    rescanBtn.textContent = 'Rescan'
-    rescanBtn.addEventListener('click', () => void this.handleRescan())
-
-    const addBtn = document.createElement('button')
-    addBtn.type = 'button'
-    addBtn.className = 'editor-hub-add'
-    addBtn.textContent = '+ Add folder'
-    addBtn.addEventListener('click', () => void this.handleAdd())
-
-    actions.appendChild(linkChBtn)
-    actions.appendChild(rescanBtn)
-    actions.appendChild(addBtn)
+    actions.appendChild(syncDevBtn)
     header.appendChild(actions)
-
-    const pathHint = document.createElement('p')
-    pathHint.className = 'editor-hub-path-hint'
-    pathHint.textContent = `Creator Hub default: ${chPath}`
-    header.appendChild(pathHint)
 
     this.root.appendChild(header)
 
@@ -84,10 +59,6 @@ export class EditorHubPage {
     this.statusEl.hidden = true
     this.root.appendChild(this.statusEl)
 
-    if (!isFileSystemAccessSupported()) {
-      this.showError('File System Access API is not available. Use Chrome or Edge for local project editing.')
-    }
-
     this.grid = document.createElement('div')
     this.grid.className = 'editor-hub-grid'
     this.root.appendChild(this.grid)
@@ -100,7 +71,19 @@ export class EditorHubPage {
   }
 
   private async bootstrap(): Promise<void> {
-    if (await isCreatorHubScenesLinked()) {
+    const bridgeStatus = await getDevBridgeStatus()
+    this.devBridgeAvailable = bridgeStatus.available
+
+    if (bridgeStatus.available) {
+      try {
+        const result = await syncDevBridgeProjects()
+        if (result && result.total > 0) {
+          this.showStatus(`Synced ${result.total} Creator Hub scene(s).`)
+        }
+      } catch {
+        /* ignore */
+      }
+    } else if (await isCreatorHubScenesLinked()) {
       try {
         const result = await rescanCreatorHubScenes()
         if (result && (result.imported > 0 || result.updated > 0)) {
@@ -119,10 +102,7 @@ export class EditorHubPage {
     if (projects.length === 0) {
       const empty = document.createElement('div')
       empty.className = 'editor-hub-empty'
-      empty.innerHTML =
-        `No projects indexed yet.<br><br>` +
-        `Click <b>Link Creator Hub Scenes</b> and select:<br>` +
-        `<code>${defaultCreatorHubScenesPath()}</code>`
+      empty.textContent = 'No projects yet. Click Sync Creator Hub (dev).'
       this.grid.appendChild(empty)
       return
     }
@@ -137,6 +117,12 @@ export class EditorHubPage {
     if (project.source === 'creator-hub') {
       card.classList.add('editor-hub-card--creator-hub')
     }
+    if (project.permission !== 'granted') {
+      card.classList.add('editor-hub-card--pending')
+    }
+    if (project.accessMode === 'dev-bridge') {
+      card.classList.add('editor-hub-card--dev-bridge')
+    }
 
     const name = document.createElement('h2')
     name.textContent = project.name
@@ -147,17 +133,24 @@ export class EditorHubPage {
     const parcel = project.parcelCount ? `${project.parcelCount} parcel(s)` : 'Unknown size'
     const base = project.baseParcel ? ` · base ${project.baseParcel}` : ''
     const opened = new Date(project.lastOpenedAt).toLocaleString()
-    const source =
-      project.source === 'creator-hub' && project.folderName
-        ? `Creator Hub · ${project.folderName} · `
-        : ''
-    meta.textContent = `${source}${parcel}${base} · opened ${opened}`
+    const access =
+      project.accessMode === 'dev-bridge' ? 'dev bridge · ' : project.source === 'creator-hub' ? 'Creator Hub · ' : ''
+    const folder = project.folderName ? `${project.folderName} · ` : ''
+    meta.textContent = `${access}${folder}${parcel}${base} · opened ${opened}`
     card.appendChild(meta)
+
+    if (project.pathHint && project.permission !== 'granted') {
+      const path = document.createElement('p')
+      path.className = 'editor-hub-card-path'
+      path.textContent = project.pathHint
+      path.title = project.pathHint
+      card.appendChild(path)
+    }
 
     if (project.permission !== 'granted') {
       const warn = document.createElement('p')
       warn.className = 'editor-hub-card-warn'
-      warn.textContent = 'Folder permission required — click Re-link or Open'
+      warn.textContent = 'Not connected — click Sync Creator Hub (dev)'
       card.appendChild(warn)
     }
 
@@ -167,12 +160,17 @@ export class EditorHubPage {
     const openBtn = document.createElement('button')
     openBtn.type = 'button'
     openBtn.textContent = 'Open'
+    openBtn.disabled = project.permission !== 'granted'
     openBtn.addEventListener('click', () => this.callbacks.onOpenProject(project.id))
 
-    const relinkBtn = document.createElement('button')
-    relinkBtn.type = 'button'
-    relinkBtn.textContent = 'Re-link'
-    relinkBtn.addEventListener('click', () => void this.handleRelink(project.id))
+    const connectBtn = document.createElement('button')
+    connectBtn.type = 'button'
+    connectBtn.textContent = project.permission !== 'granted' ? 'Connect' : 'Re-link'
+    connectBtn.addEventListener('click', () =>
+      void (project.permission !== 'granted'
+        ? this.handleConnect(project.id)
+        : this.handleRelink(project.id))
+    )
 
     const removeBtn = document.createElement('button')
     removeBtn.type = 'button'
@@ -180,7 +178,7 @@ export class EditorHubPage {
     removeBtn.addEventListener('click', () => void this.handleRemove(project.id))
 
     actions.appendChild(openBtn)
-    actions.appendChild(relinkBtn)
+    actions.appendChild(connectBtn)
     actions.appendChild(removeBtn)
     card.appendChild(actions)
     return card
@@ -203,37 +201,35 @@ export class EditorHubPage {
     this.statusEl.textContent = ''
   }
 
-  private async handleLinkCreatorHub(): Promise<void> {
+  private async handleSyncDevBridge(): Promise<void> {
     try {
       this.clearMessages()
-      const result = await linkCreatorHubScenesFolder()
-      this.showStatus(`Linked Creator Hub — imported ${result.imported} scene(s), ${result.total} total.`)
-      await this.refresh()
-    } catch (e) {
-      if (e instanceof Error && e.name === 'AbortError') return
-      this.showError(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  private async handleRescan(): Promise<void> {
-    try {
-      this.clearMessages()
-      const result = await rescanCreatorHubScenes()
+      const result = await syncDevBridgeProjects()
       if (!result) {
-        this.showError('Creator Hub not linked yet — use Link Creator Hub Scenes first.')
+        this.showError('Dev file bridge unavailable — run npm run dev.')
         return
       }
-      this.showStatus(`Rescanned — ${result.total} scene(s) (${result.imported} new, ${result.updated} updated).`)
+      const status = await getDevBridgeStatus()
+      this.devBridgeAvailable = status.available
+      this.showStatus(`Synced ${result.total} Creator Hub scene(s) (${result.imported} new).`)
       await this.refresh()
     } catch (e) {
       this.showError(e instanceof Error ? e.message : String(e))
     }
   }
 
-  private async handleAdd(): Promise<void> {
+  private async handleConnect(projectId: string): Promise<void> {
     try {
       this.clearMessages()
-      await pickAndAddProject()
+      if (this.devBridgeAvailable) {
+        const result = await syncDevBridgeProjects()
+        if (result && result.total > 0) {
+          this.showStatus(`Synced ${result.total} scene(s).`)
+          await this.refresh()
+          return
+        }
+      }
+      await connectProjectFolder(projectId)
       await this.refresh()
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') return

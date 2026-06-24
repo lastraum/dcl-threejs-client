@@ -1,6 +1,7 @@
 import type { RouteTarget } from './route'
 import type { ContentFile, RealmEndpoints, ResolvedScene, SceneMetadata, SceneSpawn, SpawnPoint } from './types'
 import { BLANK_SCENE_TEMPLATE } from './types'
+import { layoutFromSceneMetadata } from './sceneLayout'
 import { resolveSceneEnvironment } from '../landscape/resolveLandscapeEnvironment'
 import { catalystContentAssetUrl, catalystRootFromContentUrl, fetchSceneEntityByPointer } from '../../network/catalyst/CatalystClient'
 import { fetchCatalystRealmAbout, fetchWorldRealmAbout } from '../../network/catalyst/realmAbout'
@@ -52,13 +53,6 @@ function pickSpawn(metadata: SceneMetadata): SceneSpawn {
       ? { x: cameraTarget.x, y: cameraTarget.y, z: cameraTarget.z }
       : undefined
   }
-}
-
-function layoutFromMetadata(metadata: SceneMetadata): { parcels: string[]; base: string } {
-  const scene = metadata.scene
-  const parcels = Array.isArray(scene?.parcels) ? scene!.parcels!.filter(Boolean) : ['0,0']
-  const base = typeof scene?.base === 'string' ? scene.base : parcels[0] ?? '0,0'
-  return { parcels, base }
 }
 
 function findMainEntry(content: ContentFile[], metadata: SceneMetadata): string | null {
@@ -175,7 +169,7 @@ function resolvedFromEntity(
 ): ResolvedScene {
   const metadata = (entity.metadata ?? {}) as SceneMetadata
   const content = parseContent(entity.content)
-  const { parcels, base } = layoutFromMetadata(metadata)
+  const { parcels, base } = layoutFromSceneMetadata(metadata)
   const display = metadata.display
   const skyboxConfig = metadata.skyboxConfig
   const entityId = typeof entity.id === 'string' ? entity.id : null

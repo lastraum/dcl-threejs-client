@@ -84,8 +84,8 @@ export function mergeTerrainIntoComposite(
   gltf.data[entityId] = {
     json: {
       src: opts.glbSrc,
-      visibleMeshesCollisionMask: ColliderLayer.CL_NONE,
-      invisibleMeshesCollisionMask: ColliderLayer.CL_PHYSICS
+      visibleMeshesCollisionMask: ColliderLayer.CL_PHYSICS,
+      invisibleMeshesCollisionMask: ColliderLayer.CL_NONE
     }
   }
 

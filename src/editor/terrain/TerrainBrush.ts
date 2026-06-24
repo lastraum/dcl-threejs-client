@@ -5,6 +5,7 @@ export interface TerrainBrushConfig {
   strength: number
   mode: TerrainBrushMode
   waterLevelY: number
+  liveStroke?: boolean
 }
 
 function lerp(a: number, b: number, t: number): number {
@@ -17,23 +18,90 @@ function brushFalloff(dist: number, radius: number): number {
   return Math.pow(1 - n, 2.2)
 }
 
-function computeBrushRadiusCells(
-  sizeM: number,
+/** Wide, soft falloff for paint — smootherstep with slight radius bleed. */
+function paintBrushFalloff(dist: number, radius: number): number {
+  const n = dist / Math.max(radius * 1.12, 1e-6)
+  if (n >= 1) return 0
+  const t = 1 - n
+  return t * t * t * (t * (t * 6 - 15) + 10)
+}
+
+const PAINT_SOFTEN_RADIUS = 2
+
+function softenByteChannel(
+  grid: Uint8Array,
+  resolution: number,
+  minIx: number,
+  maxIx: number,
+  minIz: number,
+  maxIz: number,
+  stride: number,
+  offset: number,
+  radius: number
+): void {
+  const w = maxIx - minIx + 1
+  const h = maxIz - minIz + 1
+  const src = new Float32Array(w * h)
+  for (let iz = minIz; iz <= maxIz; iz++) {
+    for (let ix = minIx; ix <= maxIx; ix++) {
+      src[(iz - minIz) * w + (ix - minIx)] = grid[(iz * resolution + ix) * stride + offset]!
+    }
+  }
+  const tmp = new Float32Array(src.length)
+  const blurred = new Float32Array(src.length)
+  boxBlurHorizontal(src, tmp, w, h, radius)
+  boxBlurVertical(tmp, blurred, w, h, radius)
+  for (let iz = minIz; iz <= maxIz; iz++) {
+    for (let ix = minIx; ix <= maxIx; ix++) {
+      const v = blurred[(iz - minIz) * w + (ix - minIx)]!
+      grid[(iz * resolution + ix) * stride + offset] = Math.max(0, Math.min(255, Math.round(v)))
+    }
+  }
+}
+
+function softenSplatRegion(
+  splat: Uint8Array,
+  resolution: number,
+  minIx: number,
+  maxIx: number,
+  minIz: number,
+  maxIz: number
+): void {
+  for (let ch = 0; ch < 4; ch++) {
+    softenByteChannel(splat, resolution, minIx, maxIx, minIz, maxIz, 4, ch, PAINT_SOFTEN_RADIUS)
+  }
+}
+
+function softenLavaRegion(
+  lava: Uint8Array,
+  resolution: number,
+  minIx: number,
+  maxIx: number,
+  minIz: number,
+  maxIz: number
+): void {
+  softenByteChannel(lava, resolution, minIx, maxIx, minIz, maxIz, 1, 0, PAINT_SOFTEN_RADIUS)
+}
+
+/** `radiusM` is brush radius in world metres (matches sculpt panel “Radius” slider). */
+export function computeBrushRadiusCells(
+  radiusM: number,
   arenaWidthM: number,
   arenaDepthM: number,
   resolution: number
 ): number {
-  return (sizeM / Math.max(arenaWidthM, arenaDepthM)) * resolution
+  const spanM = Math.max(arenaWidthM, arenaDepthM, 1e-6)
+  return (Math.max(0, radiusM) / spanM) * resolution
 }
 
+/** Box-blur kernel — capped for 1024² interactive sculpt. */
 export function smoothKernelRadiusCells(brushRadiusCells: number): number {
-  return Math.max(3, Math.min(64, Math.round(brushRadiusCells * 0.42)))
+  return Math.max(4, Math.min(20, Math.round(brushRadiusCells * 0.35)))
 }
 
 function smoothPassCount(strength: number): number {
-  if (strength < 0.2) return 1
-  if (strength < 0.45) return 2
-  return 3
+  if (strength < 0.35) return 1
+  return 2
 }
 
 function copyHeightRegion(
@@ -55,45 +123,48 @@ function copyHeightRegion(
   return { data, width, height }
 }
 
-function weightedNeighborAverage(
-  region: Float32Array,
-  regionMinIx: number,
-  regionMinIz: number,
-  regionW: number,
-  regionH: number,
-  resolution: number,
-  x: number,
-  z: number,
-  kernelRadius: number
-): number {
-  let total = 0
-  let weight = 0
-  const sigma = Math.max(0.85, kernelRadius * 0.42)
-  const inv2sig2 = 1 / (2 * sigma * sigma)
-  const r2Max = kernelRadius * kernelRadius
-
-  for (let dz = -kernelRadius; dz <= kernelRadius; dz++) {
-    for (let dx = -kernelRadius; dx <= kernelRadius; dx++) {
-      const d2 = dx * dx + dz * dz
-      if (d2 > r2Max) continue
-      const nx = x + dx
-      const nz = z + dz
-      if (nx < 0 || nz < 0 || nx >= resolution || nz >= resolution) continue
-      const lx = nx - regionMinIx
-      const lz = nz - regionMinIz
-      if (lx < 0 || lz < 0 || lx >= regionW || lz >= regionH) continue
-      const w = Math.exp(-d2 * inv2sig2)
-      total += region[lz * regionW + lx]! * w
-      weight += w
+function boxBlurHorizontal(
+  src: Float32Array,
+  dst: Float32Array,
+  width: number,
+  height: number,
+  radius: number
+): void {
+  for (let iz = 0; iz < height; iz++) {
+    for (let ix = 0; ix < width; ix++) {
+      let sum = 0
+      let count = 0
+      for (let dx = -radius; dx <= radius; dx++) {
+        const sx = ix + dx
+        if (sx < 0 || sx >= width) continue
+        sum += src[iz * width + sx]!
+        count++
+      }
+      dst[iz * width + ix] = count > 0 ? sum / count : src[iz * width + ix]!
     }
   }
+}
 
-  if (weight <= 0) {
-    const lx = x - regionMinIx
-    const lz = z - regionMinIz
-    return region[lz * regionW + lx]!
+function boxBlurVertical(
+  src: Float32Array,
+  dst: Float32Array,
+  width: number,
+  height: number,
+  radius: number
+): void {
+  for (let iz = 0; iz < height; iz++) {
+    for (let ix = 0; ix < width; ix++) {
+      let sum = 0
+      let count = 0
+      for (let dz = -radius; dz <= radius; dz++) {
+        const sz = iz + dz
+        if (sz < 0 || sz >= height) continue
+        sum += src[sz * width + ix]!
+        count++
+      }
+      dst[iz * width + ix] = count > 0 ? sum / count : src[iz * width + ix]!
+    }
   }
-  return total / weight
 }
 
 function applySmoothBrush(
@@ -119,6 +190,7 @@ function applySmoothBrush(
   const readMaxIx = Math.min(resolution - 1, maxIx + kernelRadius)
   const readMinIz = Math.max(0, minIz - kernelRadius)
   const readMaxIz = Math.min(resolution - 1, maxIz + kernelRadius)
+  const regionH = readMaxIz - readMinIz + 1
 
   for (let pass = 0; pass < passes; pass++) {
     const { data: region, width: regionW } = copyHeightRegion(
@@ -129,7 +201,11 @@ function applySmoothBrush(
       readMinIz,
       readMaxIz
     )
-    const passStrength = baseStrength * (pass === passes - 1 ? 1 : 0.72)
+    const tmp = new Float32Array(region.length)
+    const blurred = new Float32Array(region.length)
+    boxBlurHorizontal(region, tmp, regionW, regionH, kernelRadius)
+    boxBlurVertical(tmp, blurred, regionW, regionH, kernelRadius)
+    const passStrength = baseStrength * (pass === passes - 1 ? 1 : 0.75)
 
     for (let iz = minIz; iz <= maxIz; iz++) {
       for (let ix = minIx; ix <= maxIx; ix++) {
@@ -137,20 +213,11 @@ function applySmoothBrush(
         if (dist > radiusCells) continue
         const falloff = brushFalloff(dist, radiusCells)
         const effective = Math.min(1, passStrength * falloff)
+        const lx = ix - readMinIx
+        const lz = iz - readMinIz
+        const target = blurred[lz * regionW + lx]!
         const idx = iz * resolution + ix
-        const current = heights[idx]!
-        const target = weightedNeighborAverage(
-          region,
-          readMinIx,
-          readMinIz,
-          regionW,
-          readMaxIz - readMinIz + 1,
-          resolution,
-          ix,
-          iz,
-          kernelRadius
-        )
-        heights[idx] = lerp(current, target, effective)
+        heights[idx] = lerp(heights[idx]!, target, effective)
       }
     }
   }
@@ -214,64 +281,73 @@ export function applyHeightBrush(
 export function applyLavaBrush(
   lava: Uint8Array,
   resolution: number,
-  centerIx: number,
-  centerIz: number,
+  centerFx: number,
+  centerFz: number,
   arenaWidthM: number,
+  arenaDepthM: number,
   sizeM: number,
   strength: number,
   erase: boolean
 ): void {
-  const brushRadiusCells = (sizeM / arenaWidthM) * resolution
-  const minIx = Math.max(0, centerIx - Math.ceil(brushRadiusCells))
-  const maxIx = Math.min(resolution - 1, centerIx + Math.ceil(brushRadiusCells))
-  const minIz = Math.max(0, centerIz - Math.ceil(brushRadiusCells))
-  const maxIz = Math.min(resolution - 1, centerIz + Math.ceil(brushRadiusCells))
-  const paintByte = Math.round(strength * 255)
+  const brushRadiusCells = computeBrushRadiusCells(sizeM, arenaWidthM, arenaDepthM, resolution)
+  const minIx = Math.max(0, Math.floor(centerFx - brushRadiusCells))
+  const maxIx = Math.min(resolution - 1, Math.ceil(centerFx + brushRadiusCells))
+  const minIz = Math.max(0, Math.floor(centerFz - brushRadiusCells))
+  const maxIz = Math.min(resolution - 1, Math.ceil(centerFz + brushRadiusCells))
+  const target = erase ? 0 : 255
 
   for (let iz = minIz; iz <= maxIz; iz++) {
     for (let ix = minIx; ix <= maxIx; ix++) {
-      const dist = Math.hypot(ix - centerIx, iz - centerIz)
-      if (dist > brushRadiusCells) continue
-      const f = brushFalloff(dist, brushRadiusCells)
+      const dist = Math.hypot(ix + 0.5 - centerFx, iz + 0.5 - centerFz)
+      if (dist > brushRadiusCells * 1.12) continue
+      const t = Math.min(1, paintBrushFalloff(dist, brushRadiusCells) * strength * 1.15)
       const idx = iz * resolution + ix
-      if (erase) {
-        lava[idx] = Math.max(0, lava[idx]! - Math.round(paintByte * f))
-      } else {
-        lava[idx] = Math.min(255, lava[idx]! + Math.round(paintByte * f))
-      }
+      lava[idx] = Math.round(lerp(lava[idx]!, target, t))
     }
   }
+
+  const softenMinIx = Math.max(0, minIx - PAINT_SOFTEN_RADIUS)
+  const softenMaxIx = Math.min(resolution - 1, maxIx + PAINT_SOFTEN_RADIUS)
+  const softenMinIz = Math.max(0, minIz - PAINT_SOFTEN_RADIUS)
+  const softenMaxIz = Math.min(resolution - 1, maxIz + PAINT_SOFTEN_RADIUS)
+  softenLavaRegion(lava, resolution, softenMinIx, softenMaxIx, softenMinIz, softenMaxIz)
 }
 
 export function applySplatBrush(
   rgba: Uint8Array,
   resolution: number,
-  centerIx: number,
-  centerIz: number,
+  centerFx: number,
+  centerFz: number,
   arenaWidthM: number,
+  arenaDepthM: number,
   sizeM: number,
   strength: number,
   channel: 0 | 1 | 2 | 3,
   erase: boolean
 ): void {
-  const brushRadiusCells = (sizeM / arenaWidthM) * resolution
-  const minIx = Math.max(0, centerIx - Math.ceil(brushRadiusCells))
-  const maxIx = Math.min(resolution - 1, centerIx + Math.ceil(brushRadiusCells))
-  const minIz = Math.max(0, centerIz - Math.ceil(brushRadiusCells))
-  const maxIz = Math.min(resolution - 1, centerIz + Math.ceil(brushRadiusCells))
-  const paintByte = Math.round(strength * 255)
+  const brushRadiusCells = computeBrushRadiusCells(sizeM, arenaWidthM, arenaDepthM, resolution)
+  const minIx = Math.max(0, Math.floor(centerFx - brushRadiusCells))
+  const maxIx = Math.min(resolution - 1, Math.ceil(centerFx + brushRadiusCells))
+  const minIz = Math.max(0, Math.floor(centerFz - brushRadiusCells))
+  const maxIz = Math.min(resolution - 1, Math.ceil(centerFz + brushRadiusCells))
+  const targets = [0, 0, 0, 0]
+  if (!erase) targets[channel] = 255
 
   for (let iz = minIz; iz <= maxIz; iz++) {
     for (let ix = minIx; ix <= maxIx; ix++) {
-      const dist = Math.hypot(ix - centerIx, iz - centerIz)
-      if (dist > brushRadiusCells) continue
-      const f = brushFalloff(dist, brushRadiusCells)
-      const idx = (iz * resolution + ix) * 4 + channel
-      if (erase) {
-        rgba[idx] = Math.max(0, rgba[idx]! - Math.round(paintByte * f))
-      } else {
-        rgba[idx] = Math.min(255, rgba[idx]! + Math.round(paintByte * f))
+      const dist = Math.hypot(ix + 0.5 - centerFx, iz + 0.5 - centerFz)
+      if (dist > brushRadiusCells * 1.12) continue
+      const t = Math.min(1, paintBrushFalloff(dist, brushRadiusCells) * strength * 1.15)
+      const base = (iz * resolution + ix) * 4
+      for (let ch = 0; ch < 4; ch++) {
+        rgba[base + ch] = Math.round(lerp(rgba[base + ch]!, targets[ch]!, t))
       }
     }
   }
+
+  const softenMinIx = Math.max(0, minIx - PAINT_SOFTEN_RADIUS)
+  const softenMaxIx = Math.min(resolution - 1, maxIx + PAINT_SOFTEN_RADIUS)
+  const softenMinIz = Math.max(0, minIz - PAINT_SOFTEN_RADIUS)
+  const softenMaxIz = Math.min(resolution - 1, maxIz + PAINT_SOFTEN_RADIUS)
+  softenSplatRegion(rgba, resolution, softenMinIx, softenMaxIx, softenMinIz, softenMaxIz)
 }

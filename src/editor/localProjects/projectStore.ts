@@ -1,3 +1,11 @@
+import { fetchDevBridgeHealth, fetchDevBridgeProjects } from '../localScene/devBridgeClient'
+import type { ProjectRoot } from '../localScene/projectRoot'
+import { isDevBridgeAvailable } from '../localScene/projectRoot'
+import {
+  entriesFromCreatorHubConfig,
+  parseCreatorHubConfig,
+  type CreatorHubConfigEntry
+} from './creatorHubConfig'
 import { creatorHubProjectId, isCreatorHubProjectId } from './creatorHubPaths'
 
 const META_KEY = 'dcl-editor-projects'
@@ -6,6 +14,7 @@ const HANDLE_STORE = 'handles'
 const CREATOR_HUB_ROOT_KEY = '__creator_hub_scenes_root__'
 
 export type ProjectSource = 'manual' | 'creator-hub'
+export type ProjectAccessMode = 'fsa' | 'dev-bridge'
 
 export type LocalProjectMeta = {
   id: string
@@ -17,6 +26,10 @@ export type LocalProjectMeta = {
   source?: ProjectSource
   /** Subfolder name under Creator Hub Scenes root. */
   folderName?: string
+  /** Full filesystem path from Creator Hub config (no handle until connected). */
+  pathHint?: string
+  /** How this project reads/writes files on disk. */
+  accessMode?: ProjectAccessMode
 }
 
 export type LocalProjectRecord = LocalProjectMeta & {
@@ -88,6 +101,37 @@ async function deleteHandle(key: string): Promise<void> {
 
 export function isFileSystemAccessSupported(): boolean {
   return typeof window !== 'undefined' && 'showDirectoryPicker' in window
+}
+
+export function isOpenFilePickerSupported(): boolean {
+  return typeof window !== 'undefined' && 'showOpenFilePicker' in window
+}
+
+export function formatFilePickerError(e: unknown): string {
+  if (!(e instanceof Error)) return String(e)
+  if (e.name === 'AbortError') return e.message
+  const msg = e.message.toLowerCase()
+  if (
+    msg.includes('system file') ||
+    msg.includes('system files') ||
+    msg.includes('contains system') ||
+    (e.name === 'NotAllowedError' && msg.includes('system'))
+  ) {
+    return (
+      'Chrome blocks ~/Library folders — picker and drag-drop both fail there. ' +
+      'While running npm run dev, click Sync Creator Hub (dev). ' +
+      'Otherwise symlink Scenes to ~/Documents or add folders outside Library.'
+    )
+  }
+  return e.message
+}
+
+async function hasStoredHandle(projectId: string): Promise<boolean> {
+  return (await getHandle(projectId)) !== null
+}
+
+export async function isProjectConnected(projectId: string): Promise<boolean> {
+  return hasStoredHandle(projectId)
 }
 
 async function readSceneJsonMeta(handle: FileSystemDirectoryHandle): Promise<{
@@ -200,13 +244,68 @@ export async function syncCreatorHubScenes(scenesRoot: FileSystemDirectoryHandle
   return { imported, updated, total: seenIds.size }
 }
 
-/** Pick Creator Hub Scenes folder (default: ~/Library/Application Support/creator-hub/Scenes on Mac). */
+function upsertCreatorHubConfigEntry(entry: CreatorHubConfigEntry): 'imported' | 'updated' {
+  const list = readMetaList()
+  const exists = list.some((p) => p.id === entry.id)
+  const now = Date.now()
+  const prev = list.find((p) => p.id === entry.id)
+
+  const meta: LocalProjectMeta = {
+    id: entry.id,
+    name: prev?.name ?? entry.folderName,
+    addedAt: prev?.addedAt ?? now,
+    lastOpenedAt: prev?.lastOpenedAt ?? now,
+    baseParcel: prev?.baseParcel,
+    parcelCount: prev?.parcelCount,
+    source: 'creator-hub',
+    folderName: entry.folderName,
+    pathHint: entry.pathHint
+  }
+
+  upsertMeta(meta)
+  return exists ? 'updated' : 'imported'
+}
+
+/** Import Creator Hub workspace list via Settings/config.json (avoids blocked Scenes folder picker). */
+export async function importCreatorHubConfig(): Promise<CreatorHubSyncResult> {
+  if (!isOpenFilePickerSupported()) {
+    throw new Error('File picker is not supported in this browser. Use Chrome or Edge.')
+  }
+
+  const [fileHandle] = await window.showOpenFilePicker({
+    multiple: false,
+    types: [{ description: 'Creator Hub config', accept: { 'application/json': ['.json'] } }]
+  })
+
+  const file = await fileHandle.getFile()
+  const config = parseCreatorHubConfig(JSON.parse(await file.text()))
+  const entries = entriesFromCreatorHubConfig(config)
+  if (entries.length === 0) {
+    throw new Error('No workspace paths found in Creator Hub config.')
+  }
+
+  let imported = 0
+  let updated = 0
+  for (const entry of entries) {
+    const result = upsertCreatorHubConfigEntry(entry)
+    if (result === 'imported') imported++
+    else updated++
+  }
+
+  return { imported, updated, total: entries.length }
+}
+
+/** Pick Creator Hub Scenes folder (often blocked under ~/Library — prefer import + drag-drop). */
 export async function linkCreatorHubScenesFolder(): Promise<CreatorHubSyncResult> {
   if (!isFileSystemAccessSupported()) {
     throw new Error('File System Access API is not supported in this browser. Use Chrome or Edge.')
   }
-  const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
-  return syncCreatorHubScenes(handle)
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
+    return syncCreatorHubScenes(handle)
+  } catch (e) {
+    throw new Error(formatFilePickerError(e))
+  }
 }
 
 /** Re-scan linked Creator Hub Scenes root (picks up new scenes). */
@@ -216,22 +315,26 @@ export async function rescanCreatorHubScenes(): Promise<CreatorHubSyncResult | n
   return syncCreatorHubScenes(root)
 }
 
-export async function pickAndAddProject(): Promise<LocalProjectRecord | null> {
-  if (!isFileSystemAccessSupported()) {
-    throw new Error('File System Access API is not supported in this browser. Use Chrome or Edge.')
-  }
-  const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
+export async function registerProjectFromHandle(
+  handle: FileSystemDirectoryHandle,
+  options?: { projectId?: string; source?: ProjectSource; pathHint?: string; accessMode?: ProjectAccessMode }
+): Promise<LocalProjectRecord> {
   const metaFromScene = await readSceneJsonMeta(handle)
-  const id = randomId()
+  const id = options?.projectId ?? randomId()
   const now = Date.now()
+  const list = readMetaList()
+  const prev = list.find((p) => p.id === id)
   const meta: LocalProjectMeta = {
     id,
     name: metaFromScene.name,
-    addedAt: now,
+    addedAt: prev?.addedAt ?? now,
     lastOpenedAt: now,
     baseParcel: metaFromScene.baseParcel,
     parcelCount: metaFromScene.parcelCount,
-    source: 'manual'
+    source: options?.source ?? prev?.source ?? 'manual',
+    folderName: prev?.folderName ?? handle.name,
+    pathHint: options?.pathHint ?? prev?.pathHint,
+    accessMode: 'fsa'
   }
   await putHandle(id, handle)
   upsertMeta(meta)
@@ -239,17 +342,127 @@ export async function pickAndAddProject(): Promise<LocalProjectRecord | null> {
   return { ...meta, permission }
 }
 
+async function findPendingCreatorHubMatch(
+  handle: FileSystemDirectoryHandle
+): Promise<LocalProjectMeta | null> {
+  const list = readMetaList()
+  for (const meta of list) {
+    if (meta.source !== 'creator-hub') continue
+    if (await hasStoredHandle(meta.id)) continue
+    if (meta.folderName === handle.name) return meta
+    if (meta.pathHint?.replace(/[/\\]+$/, '').endsWith(`/${handle.name}`)) return meta
+    if (meta.pathHint?.replace(/[/\\]+$/, '').endsWith(`\\${handle.name}`)) return meta
+  }
+  return null
+}
+
+/** Connect a dropped or picked folder to an imported Creator Hub entry, or add as manual. */
+export async function addProjectFromDroppedHandle(
+  handle: FileSystemDirectoryHandle
+): Promise<LocalProjectRecord> {
+  const pending = await findPendingCreatorHubMatch(handle)
+  if (pending) {
+    return registerProjectFromHandle(handle, {
+      projectId: pending.id,
+      source: 'creator-hub',
+      pathHint: pending.pathHint
+    })
+  }
+  return registerProjectFromHandle(handle, { source: 'manual' })
+}
+
+export async function connectProjectFolder(projectId: string): Promise<LocalProjectRecord | null> {
+  if (!isFileSystemAccessSupported()) {
+    throw new Error('File System Access API is not supported in this browser.')
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
+    return registerProjectFromHandle(handle, {
+      projectId,
+      source: isCreatorHubProjectId(projectId) ? 'creator-hub' : 'manual'
+    })
+  } catch (e) {
+    throw new Error(formatFilePickerError(e))
+  }
+}
+
+export async function pickAndAddProject(): Promise<LocalProjectRecord | null> {
+  if (!isFileSystemAccessSupported()) {
+    throw new Error('File System Access API is not supported in this browser. Use Chrome or Edge.')
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
+    return addProjectFromDroppedHandle(handle)
+  } catch (e) {
+    throw new Error(formatFilePickerError(e))
+  }
+}
+
+async function resolveProjectPermission(meta: LocalProjectMeta): Promise<LocalProjectRecord['permission']> {
+  const handle = await getHandle(meta.id)
+  if (handle) {
+    return queryPermission(handle)
+  }
+  if (meta.accessMode === 'dev-bridge' && meta.pathHint && (await isDevBridgeAvailable())) {
+    return 'granted'
+  }
+  return 'denied'
+}
+
+/** Sync Creator Hub projects via the Vite dev file bridge (bypasses ~/Library browser blocks). */
+export async function syncDevBridgeProjects(): Promise<CreatorHubSyncResult | null> {
+  const health = await fetchDevBridgeHealth()
+  if (!health?.ok) return null
+
+  const projects = await fetchDevBridgeProjects()
+  let imported = 0
+  let updated = 0
+
+  for (const project of projects) {
+    const list = readMetaList()
+    const exists = list.some((p) => p.id === project.id)
+    const prev = list.find((p) => p.id === project.id)
+    const now = Date.now()
+
+    const meta: LocalProjectMeta = {
+      id: project.id,
+      name: project.name,
+      addedAt: prev?.addedAt ?? now,
+      lastOpenedAt: prev?.lastOpenedAt ?? now,
+      baseParcel: project.baseParcel,
+      parcelCount: project.parcelCount,
+      source: 'creator-hub',
+      folderName: project.folderName,
+      pathHint: project.absolutePath,
+      accessMode: 'dev-bridge'
+    }
+
+    upsertMeta(meta)
+    if (exists) updated++
+    else imported++
+  }
+
+  return { imported, updated, total: projects.length }
+}
+
+export async function getDevBridgeStatus(): Promise<{
+  available: boolean
+  configPath: string | null
+  projectCount: number
+}> {
+  const health = await fetchDevBridgeHealth()
+  return {
+    available: Boolean(health?.ok),
+    configPath: health?.configPath ?? null,
+    projectCount: health?.projectCount ?? 0
+  }
+}
+
 export async function listProjects(): Promise<LocalProjectRecord[]> {
   const list = readMetaList()
   const out: LocalProjectRecord[] = []
   for (const meta of list) {
-    const handle = await getHandle(meta.id)
-    let permission: LocalProjectRecord['permission'] = 'unknown'
-    if (handle) {
-      permission = await queryPermission(handle)
-    } else {
-      permission = 'denied'
-    }
+    const permission = await resolveProjectPermission(meta)
     out.push({ ...meta, permission })
   }
   return out.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)
@@ -268,38 +481,54 @@ export async function touchProjectOpened(projectId: string): Promise<void> {
   writeMetaList(list)
 }
 
-export async function requestProjectHandle(projectId: string): Promise<FileSystemDirectoryHandle> {
+export async function requestProjectRoot(projectId: string): Promise<ProjectRoot> {
+  const meta = await getProjectMeta(projectId)
   const handle = await getHandle(projectId)
-  if (!handle) throw new Error('Project folder not found — re-link Creator Hub or add the folder again.')
-  const perm = await handle.requestPermission({ mode: 'readwrite' })
-  if (perm !== 'granted') throw new Error('Folder access was denied.')
-  await touchProjectOpened(projectId)
-  return handle
+  if (handle) {
+    const perm = await handle.requestPermission({ mode: 'readwrite' })
+    if (perm !== 'granted') throw new Error('Folder access was denied.')
+    await touchProjectOpened(projectId)
+    return { kind: 'fsa', handle, label: meta?.name ?? handle.name }
+  }
+
+  if (meta?.accessMode === 'dev-bridge' && meta.pathHint && (await isDevBridgeAvailable())) {
+    await touchProjectOpened(projectId)
+    return {
+      kind: 'dev-bridge',
+      absolutePath: meta.pathHint,
+      projectId,
+      label: meta.name
+    }
+  }
+
+  throw new Error(
+    'Project folder not connected. Use Sync Creator Hub (dev) while on npm run dev, or re-link the folder.'
+  )
+}
+
+/** @deprecated Use requestProjectRoot */
+export async function requestProjectHandle(projectId: string): Promise<FileSystemDirectoryHandle> {
+  const root = await requestProjectRoot(projectId)
+  if (root.kind !== 'fsa') {
+    throw new Error('This project uses the dev file bridge — requestProjectRoot instead.')
+  }
+  return root.handle
 }
 
 export async function relinkProject(projectId: string): Promise<LocalProjectRecord | null> {
   if (!isFileSystemAccessSupported()) {
     throw new Error('File System Access API is not supported in this browser.')
   }
-  const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
-  const metaFromScene = await readSceneJsonMeta(handle)
-  await putHandle(projectId, handle)
-  const list = readMetaList()
-  const idx = list.findIndex((p) => p.id === projectId)
-  if (idx >= 0) {
-    list[idx] = {
-      ...list[idx]!,
-      name: metaFromScene.name,
-      baseParcel: metaFromScene.baseParcel,
-      parcelCount: metaFromScene.parcelCount,
-      lastOpenedAt: Date.now(),
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
+    const record = await registerProjectFromHandle(handle, {
+      projectId,
       source: isCreatorHubProjectId(projectId) ? 'creator-hub' : 'manual'
-    }
-    writeMetaList(list)
-    const permission = await queryPermission(handle)
-    return { ...list[idx]!, permission }
+    })
+    return record
+  } catch (e) {
+    throw new Error(formatFilePickerError(e))
   }
-  return null
 }
 
 export async function getProjectMeta(projectId: string): Promise<LocalProjectMeta | null> {

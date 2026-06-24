@@ -17,6 +17,7 @@ import type { AssetCache } from '../rendering/AssetCache'
 import type { ComposeOptions } from './AvatarComposer'
 import type { BodyShape } from './types'
 import { VrmAvatar } from './vrm/VrmAvatar'
+import { VrmLocomotionAnimations } from './vrm/VrmLocomotionAnimations'
 import { applyVrmPivotOffset } from './vrm/vrmFeetAlign'
 import { getEquippedVrmHash } from './vrm/vrmEquipStorage'
 import { loadVrmLibraryBytes } from './vrm/VrmLibrary'
@@ -32,6 +33,7 @@ export class LocalAvatar {
   readonly nameTagAnchor = new THREE.Object3D()
   private model: THREE.Object3D | null = null
   private vrmAvatar: VrmAvatar | null = null
+  private vrmLocomotion: VrmLocomotionAnimations | null = null
   private renderMode: 'dcl' | 'vrm' = 'dcl'
   private animations: AvatarAnimations | null = null
   private identity: ProfileIdentity = defaultProfileIdentity()
@@ -71,6 +73,16 @@ export class LocalAvatar {
           this.model = this.vrmAvatar.root
           this.pivot.add(this.model)
           applyVrmPivotOffset(this.pivot, this.vrmAvatar.vrm, this.model)
+
+          this.vrmLocomotion = new VrmLocomotionAnimations()
+          try {
+            await this.vrmLocomotion.bind(this.vrmAvatar.vrm, this.vrmAvatar.root)
+          } catch (err) {
+            console.warn('[avatar] VRM locomotion bind failed — bind pose only', err)
+            this.vrmLocomotion.dispose()
+            this.vrmLocomotion = null
+          }
+
           updateNameTagAnchor(this.nameTagAnchor, this.model)
           return this.identity
         } catch (err) {
@@ -188,6 +200,7 @@ export class LocalAvatar {
 
   update(delta: number, state: AvatarLocomotionState): void {
     if (this.renderMode === 'vrm') {
+      this.vrmLocomotion?.update(delta, state)
       this.vrmAvatar?.update(delta)
     } else {
       this.animations?.update(delta, state)
@@ -210,6 +223,8 @@ export class LocalAvatar {
     this.animations?.dispose()
     this.animations = null
     if (this.vrmAvatar) {
+      this.vrmLocomotion?.dispose()
+      this.vrmLocomotion = null
       this.pivot.remove(this.vrmAvatar.root)
       this.vrmAvatar.dispose()
       this.vrmAvatar = null

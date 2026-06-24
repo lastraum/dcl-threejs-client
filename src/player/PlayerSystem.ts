@@ -27,6 +27,7 @@ import {
 import { PlayerInput } from './PlayerInput'
 import type { AssetCache } from '../rendering/AssetCache'
 import type { ResolvedProfileEmote } from '../avatar/profileEmotes'
+import { AVATAR_YAW_OFFSET } from '../avatar/constants'
 
 const UP = new THREE.Vector3(0, 1, 0)
 const _forward = new THREE.Vector3()
@@ -679,6 +680,16 @@ export class PlayerSystem {
     }
     this.syncNameTag()
     this.avatar?.setYaw(this.playerYaw)
+    let moveAxisX = 0
+    let moveAxisZ = 0
+    if (moving) {
+      const yaw = this.playerYaw + AVATAR_YAW_OFFSET
+      const cos = Math.cos(yaw)
+      const sin = Math.sin(yaw)
+      moveAxisX = _moveDir.x * cos + _moveDir.z * sin
+      moveAxisZ = -_moveDir.x * sin + _moveDir.z * cos
+    }
+
     this.avatar?.update(delta, {
       horizontalSpeed: moving || horizontalSpeed > 0.2 ? horizontalSpeed : 0,
       grounded: this.grounded,
@@ -688,7 +699,9 @@ export class PlayerSystem {
       jumping: this.jumping && !this.airJumped,
       doubleJumping: this.airJumped && !this.grounded,
       doubleJumpTriggered: this.doubleJumpTriggered,
-      falling: !this.grounded && !this.jumping && !this.jumped && !this.airJumped && _velocity.y < -1.5
+      falling: !this.grounded && !this.jumping && !this.jumped && !this.airJumped && _velocity.y < -1.5,
+      moveAxisX,
+      moveAxisZ
     })
     this.syncCamera(false, delta)
     this.input.endFrame()

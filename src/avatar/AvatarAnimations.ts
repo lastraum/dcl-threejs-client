@@ -38,6 +38,9 @@ export type AvatarLocomotionState = {
   /** One frame — air-jump impulse applied (twirl + spin puff). */
   doubleJumpTriggered?: boolean
   falling: boolean
+  /** Planar move axis in avatar-local space (+X right, -Z forward) for VRM directional locomotion. */
+  moveAxisX?: number
+  moveAxisZ?: number
 }
 
 /** DCL locomotion emotes retargeted to the composed avatar skeleton (Forge / wearable-preview). */

@@ -28,6 +28,37 @@ export function injectEditorStyles(): void {
   margin-bottom: 20px;
   line-height: 1.5;
 }
+.editor-hub-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.editor-hub-add--primary {
+  background: #065f46;
+  border-color: #10b981;
+  font-weight: 600;
+}
+.editor-hub-path-hint {
+  font-size: 12px;
+  color: #64748b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  line-height: 1.5;
+  word-break: break-all;
+}
+.editor-hub-path-hint code, .editor-hub-empty code {
+  color: #94a3b8;
+}
+.editor-hub-status {
+  max-width: 1100px;
+  margin: 0 auto 12px;
+  padding: 0 40px;
+  font-size: 13px;
+  color: #6ee7b7;
+}
+.editor-hub-card--creator-hub {
+  border-color: #065f46;
+}
 .editor-hub-add, .editor-hub-card-actions button, .editor-sculpt-btn, .editor-sculpt-tab {
   background: #1e293b;
   border: 1px solid #334155;

@@ -26,6 +26,35 @@ export async function fetchDevBridgeHealth(): Promise<DevBridgeHealth | null> {
   }
 }
 
+export type DevBridgeImportResult = {
+  ok: boolean
+  configPath: string | null
+  projects: DevBridgeProject[]
+  projectCount: number
+  error?: string
+}
+
+/** Server-side Creator Hub scan (Vite dev only — reads config.json from disk). */
+export async function importCreatorHubViaDevBridge(): Promise<DevBridgeImportResult | null> {
+  try {
+    const res = await fetch(`${BRIDGE_BASE}/import-creator-hub`, { method: 'POST' })
+    if (res.status === 404) {
+      const body = (await res.json().catch(() => null)) as { error?: string; configPath?: string } | null
+      return {
+        ok: false,
+        configPath: body?.configPath ?? null,
+        projects: [],
+        projectCount: 0,
+        error: body?.error ?? 'Creator Hub config not found'
+      }
+    }
+    if (!res.ok) return null
+    return (await res.json()) as DevBridgeImportResult
+  } catch {
+    return null
+  }
+}
+
 export async function fetchDevBridgeProjects(): Promise<DevBridgeProject[]> {
   try {
     const res = await fetch(`${BRIDGE_BASE}/projects`)

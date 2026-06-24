@@ -82,6 +82,24 @@ async function projectEntriesFromConfig(config: CreatorHubConfig): Promise<
     out.push({ id, folderName, absolutePath, underScenesPath })
   }
 
+  if (scenesPath) {
+    const scenesRoot = path.resolve(scenesPath)
+    try {
+      const entries = await fsp.readdir(scenesRoot, { withFileTypes: true })
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+        const absolutePath = path.join(scenesRoot, entry.name)
+        const folderName = entry.name
+        const id = creatorHubProjectId(folderName)
+        if (seen.has(id)) continue
+        seen.add(id)
+        out.push({ id, folderName, absolutePath, underScenesPath: true })
+      }
+    } catch {
+      /* scenesPath missing or unreadable */
+    }
+  }
+
   return out
 }
 
@@ -197,6 +215,25 @@ export function localProjectsBridgePlugin(): Plugin {
 
           if (req.method === 'GET' && pathname === `${API_PREFIX}/projects`) {
             sendJson(res, 200, { projects: await listBridgeProjects() })
+            return
+          }
+
+          if (req.method === 'POST' && pathname === `${API_PREFIX}/import-creator-hub`) {
+            const loaded = await readCreatorHubConfig()
+            if (!loaded) {
+              sendJson(res, 404, {
+                error: 'Creator Hub config not found on this machine.',
+                configPath: creatorHubConfigPath()
+              })
+              return
+            }
+            const projects = await listBridgeProjects()
+            sendJson(res, 200, {
+              ok: true,
+              configPath: loaded.configPath,
+              projects,
+              projectCount: projects.length
+            })
             return
           }
 

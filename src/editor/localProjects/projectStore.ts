@@ -1,7 +1,12 @@
-import { fetchDevBridgeHealth, fetchDevBridgeProjects } from '../localScene/devBridgeClient'
+import {
+  fetchDevBridgeHealth,
+  fetchDevBridgeProjects,
+  importCreatorHubViaDevBridge
+} from '../localScene/devBridgeClient'
 import type { ProjectRoot } from '../localScene/projectRoot'
 import { isDevBridgeAvailable } from '../localScene/projectRoot'
 import {
+  defaultCreatorHubConfigPath,
   entriesFromCreatorHubConfig,
   parseCreatorHubConfig,
   type CreatorHubConfigEntry
@@ -118,9 +123,8 @@ export function formatFilePickerError(e: unknown): string {
     (e.name === 'NotAllowedError' && msg.includes('system'))
   ) {
     return (
-      'Chrome blocks ~/Library folders — picker and drag-drop both fail there. ' +
-      'While running npm run dev, click Sync Creator Hub (dev). ' +
-      'Otherwise symlink Scenes to ~/Documents or add folders outside Library.'
+      'Chrome blocked that folder (common under ~/Library). ' +
+      'Use Import Creator Hub at http://localhost:5173/editor while npm run dev is running on this machine.'
     )
   }
   return e.message
@@ -272,9 +276,15 @@ export async function importCreatorHubConfig(): Promise<CreatorHubSyncResult> {
     throw new Error('File picker is not supported in this browser. Use Chrome or Edge.')
   }
 
+  const configHint = defaultCreatorHubConfigPath()
   const [fileHandle] = await window.showOpenFilePicker({
     multiple: false,
-    types: [{ description: 'Creator Hub config', accept: { 'application/json': ['.json'] } }]
+    types: [
+      {
+        description: `Creator Hub config (${configHint})`,
+        accept: { 'application/json': ['.json'] }
+      }
+    ]
   })
 
   const file = await fileHandle.getFile()
@@ -409,21 +419,59 @@ async function resolveProjectPermission(meta: LocalProjectMeta): Promise<LocalPr
   return 'denied'
 }
 
-/** Sync Creator Hub projects via the Vite dev file bridge (bypasses ~/Library browser blocks). */
-export async function syncDevBridgeProjects(): Promise<CreatorHubSyncResult | null> {
-  const health = await fetchDevBridgeHealth()
-  if (!health?.ok) return null
+export type CreatorHubImportMode = 'dev-bridge' | 'config-file'
 
-  const projects = await fetchDevBridgeProjects()
+export type CreatorHubImportOutcome = {
+  mode: CreatorHubImportMode
+  result: CreatorHubSyncResult
+  /** Set when live build should use localhost dev import instead. */
+  devImportUrl?: string
+}
+
+function isLocalhostEditor(): boolean {
+  if (typeof window === 'undefined') return false
+  const host = window.location.hostname
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]'
+}
+
+/**
+ * One editor action: dev bridge reads Creator Hub from disk (npm run dev),
+ * otherwise file picker for config.json then Connect per scene.
+ */
+export async function importCreatorHubProjects(): Promise<CreatorHubImportOutcome> {
+  const bridgeImport = await importCreatorHubViaDevBridge()
+  if (bridgeImport?.ok && bridgeImport.projects.length > 0) {
+    const result = await applyDevBridgeProjects(bridgeImport.projects)
+    return { mode: 'dev-bridge', result }
+  }
+  if (bridgeImport && !bridgeImport.ok && bridgeImport.error) {
+    throw new Error(bridgeImport.error)
+  }
+
+  const health = await fetchDevBridgeHealth()
+  if (health?.ok) {
+    const result = await syncDevBridgeProjects()
+    if (result) return { mode: 'dev-bridge', result }
+  }
+
+  const result = await importCreatorHubConfig()
+  return {
+    mode: 'config-file',
+    result,
+    devImportUrl: isLocalhostEditor() ? undefined : 'http://localhost:5173/editor'
+  }
+}
+
+async function applyDevBridgeProjects(
+  projects: Awaited<ReturnType<typeof fetchDevBridgeProjects>>
+): Promise<CreatorHubSyncResult> {
   let imported = 0
   let updated = 0
-
   for (const project of projects) {
     const list = readMetaList()
     const exists = list.some((p) => p.id === project.id)
     const prev = list.find((p) => p.id === project.id)
     const now = Date.now()
-
     const meta: LocalProjectMeta = {
       id: project.id,
       name: project.name,
@@ -436,13 +484,21 @@ export async function syncDevBridgeProjects(): Promise<CreatorHubSyncResult | nu
       pathHint: project.absolutePath,
       accessMode: 'dev-bridge'
     }
-
     upsertMeta(meta)
     if (exists) updated++
     else imported++
   }
-
   return { imported, updated, total: projects.length }
+}
+
+/** Sync Creator Hub projects via the Vite dev file bridge (bypasses ~/Library browser blocks). */
+export async function syncDevBridgeProjects(): Promise<CreatorHubSyncResult | null> {
+  const health = await fetchDevBridgeHealth()
+  if (!health?.ok) return null
+
+  const projects = await fetchDevBridgeProjects()
+  if (projects.length === 0) return { imported: 0, updated: 0, total: 0 }
+  return applyDevBridgeProjects(projects)
 }
 
 export async function getDevBridgeStatus(): Promise<{

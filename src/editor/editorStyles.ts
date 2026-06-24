@@ -39,6 +39,20 @@ export function injectEditorStyles(): void {
   border-color: #10b981;
   font-weight: 600;
 }
+.editor-hub-local-dev-link,
+.editor-hub-inline-link {
+  color: #6ee7b7;
+  text-decoration: none;
+}
+.editor-hub-local-dev-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+.editor-hub-local-dev-link:hover,
+.editor-hub-inline-link:hover {
+  text-decoration: underline;
+}
 .editor-hub-path-hint {
   font-size: 12px;
   color: #64748b;

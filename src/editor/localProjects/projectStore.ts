@@ -502,7 +502,8 @@ export async function requestProjectRoot(projectId: string): Promise<ProjectRoot
   }
 
   throw new Error(
-    'Project folder not connected. Use Sync Creator Hub (dev) while on npm run dev, or re-link the folder.'
+    'Project folder not connected. On live builds: Link Scenes folder or Connect and pick the scene directory. ' +
+      'Locally: Sync Creator Hub (dev) while npm run dev is running.'
   )
 }
 

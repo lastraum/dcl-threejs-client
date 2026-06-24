@@ -115,6 +115,11 @@ export function injectEditorStyles(): void {
   max-width: 1100px;
   margin: 0 auto;
 }
+.editor-hub-dropzone--active {
+  outline: 2px dashed #10b981;
+  outline-offset: 6px;
+  border-radius: 12px;
+}
 .editor-hub-empty {
   grid-column: 1 / -1;
   color: #64748b;

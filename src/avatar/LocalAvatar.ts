@@ -16,6 +16,10 @@ import { resolveProfileEmote, loadResolvedProfileEmote, isSceneEmoteUrn, type Re
 import type { AssetCache } from '../rendering/AssetCache'
 import type { ComposeOptions } from './AvatarComposer'
 import type { BodyShape } from './types'
+import { VrmAvatar } from './vrm/VrmAvatar'
+import { applyVrmPivotOffset } from './vrm/vrmFeetAlign'
+import { getEquippedVrmHash } from './vrm/vrmEquipStorage'
+import { loadVrmLibraryBytes } from './vrm/VrmLibrary'
 
 export type PlayEmoteOptions = {
   loop?: boolean
@@ -26,7 +30,9 @@ export type PlayEmoteOptions = {
 export class LocalAvatar {
   private readonly pivot = new THREE.Group()
   readonly nameTagAnchor = new THREE.Object3D()
-  private model: THREE.Group | null = null
+  private model: THREE.Object3D | null = null
+  private vrmAvatar: VrmAvatar | null = null
+  private renderMode: 'dcl' | 'vrm' = 'dcl'
   private animations: AvatarAnimations | null = null
   private identity: ProfileIdentity = defaultProfileIdentity()
   private bodyShape: BodyShape = 'male'
@@ -51,14 +57,37 @@ export class LocalAvatar {
   async load(options: ComposeOptions = {}): Promise<ProfileIdentity> {
     this.disposeModel()
     const profile = await resolveAvatarProfile(options.profileId, options.bodyShape)
-    this.model = await composeAvatarFromProfile(profile, this.peerUrl, this.assetCache)
-    this.pivot.add(this.model)
     this.identity = identityFromAvatarProfile(profile, options.profileId)
     this.bodyShape = profile.bodyShape
 
+    const profileAddress = options.profileId ?? profile.address ?? getActiveProfileAddress()
+    const equippedHash = getEquippedVrmHash(profileAddress)
+    if (equippedHash) {
+      const bytes = await loadVrmLibraryBytes(equippedHash)
+      if (bytes) {
+        try {
+          this.vrmAvatar = await VrmAvatar.fromBytes(bytes)
+          this.renderMode = 'vrm'
+          this.model = this.vrmAvatar.root
+          this.pivot.add(this.model)
+          applyVrmPivotOffset(this.pivot, this.vrmAvatar.vrm, this.model)
+          updateNameTagAnchor(this.nameTagAnchor, this.model)
+          return this.identity
+        } catch (err) {
+          console.warn('[avatar] custom VRM load failed — falling back to DCL compose', err)
+          this.vrmAvatar?.dispose()
+          this.vrmAvatar = null
+        }
+      }
+    }
+
+    this.renderMode = 'dcl'
+    this.model = await composeAvatarFromProfile(profile, this.peerUrl, this.assetCache)
+    this.pivot.add(this.model)
+
     this.animations = new AvatarAnimations()
     try {
-      await this.animations.bind(this.model, this.pivot, {
+      await this.animations.bind(this.model as THREE.Group, this.pivot, {
         bodyShape: profile.bodyShape,
         peerUrl: this.peerUrl,
         assetCache: this.assetCache
@@ -77,8 +106,12 @@ export class LocalAvatar {
     return this.identity
   }
 
-  getModel(): THREE.Group | null {
+  getModel(): THREE.Object3D | null {
     return this.model
+  }
+
+  isVrmMode(): boolean {
+    return this.renderMode === 'vrm'
   }
 
   getIdentity(): ProfileIdentity {
@@ -98,7 +131,7 @@ export class LocalAvatar {
   }
 
   async playEmote(emoteId: string, options: PlayEmoteOptions = {}): Promise<ResolvedProfileEmote | null> {
-    if (!this.model || !this.animations) return null
+    if (!this.model || !this.animations || this.renderMode === 'vrm') return null
 
     const normalizedId = emoteId.trim().toLowerCase()
     if (this.animations.isProfileEmoteActive() && this.activeEmoteUrn === normalizedId) {
@@ -154,7 +187,11 @@ export class LocalAvatar {
   }
 
   update(delta: number, state: AvatarLocomotionState): void {
-    this.animations?.update(delta, state)
+    if (this.renderMode === 'vrm') {
+      this.vrmAvatar?.update(delta)
+    } else {
+      this.animations?.update(delta, state)
+    }
     updateNameTagAnchor(this.nameTagAnchor, this.model)
   }
 
@@ -172,10 +209,19 @@ export class LocalAvatar {
   private disposeModel(): void {
     this.animations?.dispose()
     this.animations = null
+    if (this.vrmAvatar) {
+      this.pivot.remove(this.vrmAvatar.root)
+      this.vrmAvatar.dispose()
+      this.vrmAvatar = null
+      this.model = null
+      this.renderMode = 'dcl'
+      return
+    }
     if (!this.model) return
-    disposeWearableInstance(this.model)
+    disposeWearableInstance(this.model as THREE.Group)
     this.pivot.remove(this.model)
     this.model = null
+    this.renderMode = 'dcl'
   }
 }
 

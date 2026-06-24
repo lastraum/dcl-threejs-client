@@ -42,6 +42,7 @@ export type SettingsOverlayOptions = {
   worldName?: string | null
   onOpen?: () => void
   onClose?: () => void
+  onVrmEquipChange?: () => void | Promise<void>
 }
 
 export class SettingsOverlay {
@@ -66,6 +67,7 @@ export class SettingsOverlay {
   private visible = false
   private onOpen?: () => void
   private onClose?: () => void
+  private onVrmEquipChange?: () => void | Promise<void>
 
   constructor(opts: SettingsOverlayOptions) {
     this.session = opts.session
@@ -78,6 +80,7 @@ export class SettingsOverlay {
     this.worldName = opts.worldName
     this.onOpen = opts.onOpen
     this.onClose = opts.onClose
+    this.onVrmEquipChange = opts.onVrmEquipChange
 
     this.root = document.createElement('div')
     this.root.className = 'settings-overlay'
@@ -262,7 +265,9 @@ export class SettingsOverlay {
       this.contentArea.appendChild(this.galleryView.root)
       this.galleryView.mount()
     } else if (this.activeTab === 'backpack') {
-      this.backpackView = new BackpackView(this.session)
+      this.backpackView = new BackpackView(this.session, {
+        onVrmEquipChange: () => this.onVrmEquipChange?.()
+      })
       this.contentArea.appendChild(this.backpackView.root)
     } else if (this.activeTab === 'map' && this.getMapPlayerState) {
       this.mapView = new MapView({

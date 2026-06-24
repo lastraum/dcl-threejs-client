@@ -230,6 +230,13 @@ export class PlayerSystem {
     this.syncCamera(true)
   }
 
+  /** Reload avatar after backpack VRM equip / unequip. */
+  async reloadAvatar(onProgress?: (msg: string) => void): Promise<void> {
+    this.nameTag?.dispose()
+    this.nameTag = null
+    await this.loadAvatar(onProgress)
+  }
+
   setAssetCache(cache: AssetCache, peerUrl?: string): void {
     this.avatar?.setAssetCache(cache, peerUrl)
   }

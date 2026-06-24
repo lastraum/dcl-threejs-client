@@ -4,8 +4,25 @@ import { AvatarAnimations } from '../../../avatar/AvatarAnimations'
 import { composeAvatarFromProfile } from '../../../avatar/AvatarComposer'
 import { disposeWearableInstance } from '../../../avatar/loadWearable'
 import type { WearableCategory } from '../../../avatar/types'
+import { VrmAvatar } from '../../../avatar/vrm/VrmAvatar'
+import { disposeVrmRoot } from '../../../avatar/vrm/VrmLoader'
+import {
+  addVrmFile,
+  formatVrmByteSize,
+  listVrmLibrary,
+  loadVrmLibraryBytes,
+  removeVrmFromLibrary,
+  type VrmLibraryEntry
+} from '../../../avatar/vrm/VrmLibrary'
+import { getActiveProfileAddress } from '../../../avatar/LocalAvatar'
+import { getEquippedVrmHash, setEquippedVrmHash } from '../../../avatar/vrm/vrmEquipStorage'
 
 type CategoryDef = { id: WearableCategory | 'all'; label: string; icon: string }
+type BackpackSubTab = 'wearables' | 'emotes' | 'vrm'
+
+type BackpackViewOptions = {
+  onVrmEquipChange?: () => void | Promise<void>
+}
 
 const CATEGORIES: CategoryDef[] = [
   { id: 'all', label: 'All', icon: '∞' },
@@ -40,26 +57,35 @@ const ITEMS_PER_PAGE = 16
 export class BackpackView {
   readonly root: HTMLElement
   private session: SessionIdentity
+  private readonly onVrmEquipChange?: () => void | Promise<void>
+  private activeSubTab: BackpackSubTab = 'wearables'
   private selectedCategory: WearableCategory | 'all' = 'all'
   private currentPage = 1
   private selectedItem: string | null = null
   private wearableUrns: string[] = []
+  private vrmLibrary: VrmLibraryEntry[] = []
+  private selectedVrmHash: string | null = null
+  private vrmUploadBusy = false
 
   private previewCanvas: HTMLCanvasElement | null = null
   private renderer: THREE.WebGLRenderer | null = null
   private scene: THREE.Scene | null = null
   private camera: THREE.PerspectiveCamera | null = null
   private pivot: THREE.Group | null = null
-  private avatar: THREE.Group | null = null
+  private avatar: THREE.Object3D | null = null
+  private vrmPreview: VrmAvatar | null = null
   private animations: AvatarAnimations | null = null
   private raf = 0
   private lastFrame = 0
   private disposed = false
   private resizeObserver: ResizeObserver | null = null
   private subjectSize = new THREE.Vector3(1.8, 1.8, 0.8)
+  private previewMode: 'dcl' | 'vrm' = 'dcl'
+  private vrmFileInput: HTMLInputElement | null = null
 
-  constructor(session: SessionIdentity) {
+  constructor(session: SessionIdentity, options: BackpackViewOptions = {}) {
     this.session = session
+    this.onVrmEquipChange = options.onVrmEquipChange
     this.root = document.createElement('div')
     this.root.className = 'backpack-view'
 
@@ -73,10 +99,17 @@ export class BackpackView {
           <button class="backpack-view__sub-tab" data-subtab="emotes">
             <span>💃</span> Emotes
           </button>
+          <button class="backpack-view__sub-tab" data-subtab="vrm">
+            <span>🧬</span> Custom VRMs
+          </button>
         </div>
-        <div class="backpack-view__toolbar">
+        <div class="backpack-view__toolbar backpack-view__toolbar--wearables">
           <button class="backpack-view__filter-btn">⚙ FILTER &amp; SORT</button>
           <input class="backpack-view__search" type="text" placeholder="Search item" />
+        </div>
+        <div class="backpack-view__toolbar backpack-view__toolbar--vrm" hidden>
+          <button type="button" class="backpack-view__upload-vrm-btn">+ Upload VRM</button>
+          <input type="file" accept=".vrm,model/vrm" class="backpack-view__vrm-file-input" hidden />
         </div>
       </div>
       <div class="backpack-view__columns">
@@ -84,10 +117,13 @@ export class BackpackView {
           <div class="backpack-view__avatar-stage"></div>
         </div>
         <div class="backpack-view__middle">
-          <div class="backpack-view__middle-tabs">
+          <div class="backpack-view__middle-tabs backpack-view__middle-tabs--wearables">
             <button class="backpack-view__mid-tab is-active" data-midtab="categories">☰ CATEGORIES</button>
             <button class="backpack-view__mid-tab" data-midtab="outfits">♡ SAVED OUTFITS</button>
             <a class="backpack-view__marketplace-link" href="https://market.decentraland.org" target="_blank" rel="noopener">🛒 MARKETPLACE</a>
+          </div>
+          <div class="backpack-view__middle-tabs backpack-view__middle-tabs--vrm" hidden>
+            <span class="backpack-view__vrm-library-label">Your VRM library (stored on this device)</span>
           </div>
           <div class="backpack-view__middle-body">
             <aside class="backpack-view__categories"></aside>
@@ -105,25 +141,34 @@ export class BackpackView {
       </div>
     `
 
+    this.vrmFileInput = this.root.querySelector('.backpack-view__vrm-file-input')
     this.buildCategories()
     this.loadWearables()
     this.initAvatarPreview()
     this.wireSubTabs()
+    void this.refreshVrmLibrary()
   }
 
   updateSession(session: SessionIdentity): void {
     this.session = session
     this.loadWearables()
     this.updateCategoryEquipped()
-    this.loadAvatarModel()
+    void this.refreshVrmLibrary()
+    if (this.activeSubTab === 'wearables') {
+      void this.loadAvatarModel()
+    }
   }
 
   private wireSubTabs(): void {
     const subTabs = this.root.querySelectorAll('.backpack-view__sub-tab')
     subTabs.forEach((btn) => {
       btn.addEventListener('click', () => {
+        const tab = (btn as HTMLElement).dataset.subtab as BackpackSubTab | undefined
+        if (!tab || tab === this.activeSubTab) return
+        this.activeSubTab = tab
         subTabs.forEach((b) => b.classList.remove('is-active'))
         btn.classList.add('is-active')
+        this.applySubTabLayout()
       })
     })
 
@@ -134,6 +179,42 @@ export class BackpackView {
         btn.classList.add('is-active')
       })
     })
+
+    const uploadBtn = this.root.querySelector('.backpack-view__upload-vrm-btn')
+    uploadBtn?.addEventListener('click', () => this.vrmFileInput?.click())
+
+    this.vrmFileInput?.addEventListener('change', () => {
+      const file = this.vrmFileInput?.files?.[0]
+      if (this.vrmFileInput) this.vrmFileInput.value = ''
+      if (file) void this.handleVrmUpload(file)
+    })
+  }
+
+  private applySubTabLayout(): void {
+    const wearablesToolbar = this.root.querySelector('.backpack-view__toolbar--wearables') as HTMLElement
+    const vrmToolbar = this.root.querySelector('.backpack-view__toolbar--vrm') as HTMLElement
+    const wearablesMidTabs = this.root.querySelector('.backpack-view__middle-tabs--wearables') as HTMLElement
+    const vrmMidTabs = this.root.querySelector('.backpack-view__middle-tabs--vrm') as HTMLElement
+    const categories = this.root.querySelector('.backpack-view__categories') as HTMLElement
+    const isVrm = this.activeSubTab === 'vrm'
+
+    wearablesToolbar.hidden = isVrm
+    vrmToolbar.hidden = !isVrm
+    wearablesMidTabs.hidden = isVrm
+    vrmMidTabs.hidden = !isVrm
+    categories.hidden = isVrm
+
+    if (isVrm) {
+      this.renderVrmGrid()
+      void this.loadVrmPreview(this.selectedVrmHash)
+    } else if (this.activeSubTab === 'wearables') {
+      this.renderGrid()
+      void this.loadAvatarModel()
+    } else {
+      this.renderGrid()
+      const detailEl = this.root.querySelector('.backpack-view__detail')!
+      detailEl.innerHTML = `<p class="backpack-view__detail-empty">Emotes — use the emote wheel in-world</p>`
+    }
   }
 
   private buildCategories(): void {
@@ -200,6 +281,17 @@ export class BackpackView {
     this.updateCategoryEquipped()
   }
 
+  private async refreshVrmLibrary(): Promise<void> {
+    this.vrmLibrary = await listVrmLibrary()
+    const equipped = getEquippedVrmHash(this.resolveEquipAddress())
+    if (equipped && !this.selectedVrmHash) {
+      this.selectedVrmHash = equipped
+    }
+    if (this.activeSubTab === 'vrm') {
+      this.renderVrmGrid()
+    }
+  }
+
   private renderGrid(): void {
     const gridEl = this.root.querySelector('.backpack-view__grid')!
     const paginationEl = this.root.querySelector('.backpack-view__pagination')!
@@ -226,7 +318,6 @@ export class BackpackView {
       gridEl.appendChild(card)
     }
 
-    // fill empty slots
     const emptySlots = ITEMS_PER_PAGE - pageItems.length
     for (let i = 0; i < emptySlots; i++) {
       const empty = document.createElement('div')
@@ -234,7 +325,6 @@ export class BackpackView {
       gridEl.appendChild(empty)
     }
 
-    // pagination
     if (totalPages > 1) {
       const prev = document.createElement('button')
       prev.className = 'backpack-view__page-btn'
@@ -257,6 +347,164 @@ export class BackpackView {
       next.disabled = page >= totalPages
       next.addEventListener('click', () => { this.currentPage++; this.renderGrid() })
       paginationEl.appendChild(next)
+    }
+  }
+
+  private renderVrmGrid(): void {
+    const gridEl = this.root.querySelector('.backpack-view__grid')!
+    const paginationEl = this.root.querySelector('.backpack-view__pagination')!
+    gridEl.innerHTML = ''
+    paginationEl.innerHTML = ''
+
+    if (!this.vrmLibrary.length) {
+      const empty = document.createElement('div')
+      empty.className = 'backpack-view__vrm-empty'
+      empty.innerHTML = `
+        <p>No custom VRMs yet.</p>
+        <p class="backpack-view__vrm-empty-hint">Upload a <code>.vrm</code> file — stored only on this device.</p>
+      `
+      gridEl.appendChild(empty)
+      this.renderVrmDetail(null)
+      return
+    }
+
+    for (const entry of this.vrmLibrary) {
+      const card = document.createElement('button')
+      card.type = 'button'
+      const isSelected = entry.contentHash === this.selectedVrmHash
+      const isEquipped = entry.contentHash === getEquippedVrmHash(this.resolveEquipAddress())
+      card.className =
+        'backpack-view__vrm-card' +
+        (isSelected ? ' is-selected' : '') +
+        (isEquipped ? ' is-equipped' : '')
+      card.innerHTML = `
+        <div class="backpack-view__vrm-card-icon">🧬</div>
+        <span class="backpack-view__vrm-card-name">${this.escapeHtml(entry.fileName)}</span>
+        <span class="backpack-view__vrm-card-size">${formatVrmByteSize(entry.byteSize)}</span>
+        ${isEquipped ? '<span class="backpack-view__vrm-equipped-badge">Equipped</span>' : ''}
+      `
+      card.addEventListener('click', () => {
+        this.selectedVrmHash = entry.contentHash
+        this.renderVrmGrid()
+        void this.loadVrmPreview(entry.contentHash)
+      })
+      gridEl.appendChild(card)
+    }
+  }
+
+  private renderVrmDetail(entry: VrmLibraryEntry | null): void {
+    const detailEl = this.root.querySelector('.backpack-view__detail')!
+    if (!entry) {
+      detailEl.innerHTML = `<p class="backpack-view__detail-empty">Select or upload a VRM</p>`
+      return
+    }
+
+    const address = this.session.getAddress()
+    const equippedHash = getEquippedVrmHash(address)
+    const isEquipped = equippedHash === entry.contentHash
+
+    detailEl.innerHTML = `
+      <div class="backpack-view__detail-card backpack-view__detail-card--vrm">
+        <div class="backpack-view__vrm-detail-icon">🧬</div>
+        <h3 class="backpack-view__detail-name">${this.escapeHtml(entry.fileName)}</h3>
+        <p class="backpack-view__vrm-detail-meta">${formatVrmByteSize(entry.byteSize)} · ${new Date(entry.addedAt).toLocaleDateString()}</p>
+        <p class="backpack-view__detail-urn">${entry.contentHash.slice(0, 16)}…</p>
+        <div class="backpack-view__vrm-actions">
+          <button type="button" class="backpack-view__vrm-equip-btn" data-action="equip" ${isEquipped ? 'disabled' : ''}>
+            ${isEquipped ? 'Equipped' : 'Equip'}
+          </button>
+          <button type="button" class="backpack-view__vrm-unequip-btn" data-action="unequip" ${isEquipped ? '' : 'hidden'}>
+            Unequip (DCL avatar)
+          </button>
+          <button type="button" class="backpack-view__vrm-delete-btn" data-action="delete">
+            Delete from library
+          </button>
+        </div>
+      </div>
+    `
+
+    detailEl.querySelector('[data-action="equip"]')?.addEventListener('click', () => {
+      void this.equipVrm(entry.contentHash)
+    })
+    detailEl.querySelector('[data-action="unequip"]')?.addEventListener('click', () => {
+      void this.unequipVrm()
+    })
+    detailEl.querySelector('[data-action="delete"]')?.addEventListener('click', () => {
+      void this.deleteVrm(entry.contentHash)
+    })
+  }
+
+  private async handleVrmUpload(file: File): Promise<void> {
+    if (this.vrmUploadBusy) return
+    this.vrmUploadBusy = true
+    const uploadBtn = this.root.querySelector('.backpack-view__upload-vrm-btn') as HTMLButtonElement | null
+    if (uploadBtn) uploadBtn.disabled = true
+
+    try {
+      const entry = await addVrmFile(file)
+      await this.refreshVrmLibrary()
+      this.selectedVrmHash = entry.contentHash
+      this.activeSubTab = 'vrm'
+      this.root.querySelectorAll('.backpack-view__sub-tab').forEach((btn) => {
+        btn.classList.toggle('is-active', (btn as HTMLElement).dataset.subtab === 'vrm')
+      })
+      this.applySubTabLayout()
+      void this.loadVrmPreview(entry.contentHash)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      alert(`VRM upload failed: ${msg}`)
+    } finally {
+      this.vrmUploadBusy = false
+      if (uploadBtn) uploadBtn.disabled = false
+    }
+  }
+
+  private resolveEquipAddress(): string | undefined {
+    return this.session.getAddress() ?? getActiveProfileAddress()
+  }
+
+  private async equipVrm(contentHash: string): Promise<void> {
+    const address = this.resolveEquipAddress()
+    if (!address) {
+      alert('Set a profile wallet (?profile=0x…) or connect a wallet to equip a custom VRM.')
+      return
+    }
+    setEquippedVrmHash(address, contentHash)
+    this.selectedVrmHash = contentHash
+    this.renderVrmGrid()
+    this.renderVrmDetail(this.vrmLibrary.find((e) => e.contentHash === contentHash) ?? null)
+    await this.onVrmEquipChange?.()
+    void this.loadVrmPreview(contentHash)
+  }
+
+  private async unequipVrm(): Promise<void> {
+    const address = this.resolveEquipAddress()
+    if (!address) return
+    setEquippedVrmHash(address, null)
+    this.renderVrmGrid()
+    const entry = this.selectedVrmHash
+      ? this.vrmLibrary.find((e) => e.contentHash === this.selectedVrmHash) ?? null
+      : null
+    this.renderVrmDetail(entry)
+    await this.onVrmEquipChange?.()
+    void this.loadAvatarModel()
+  }
+
+  private async deleteVrm(contentHash: string): Promise<void> {
+    const address = this.resolveEquipAddress()
+    if (address && getEquippedVrmHash(address) === contentHash) {
+      await this.unequipVrm()
+    }
+    await removeVrmFromLibrary(contentHash)
+    if (this.selectedVrmHash === contentHash) {
+      this.selectedVrmHash = null
+    }
+    await this.refreshVrmLibrary()
+    this.renderVrmGrid()
+    if (this.selectedVrmHash) {
+      void this.loadVrmPreview(this.selectedVrmHash)
+    } else {
+      void this.loadVrmPreview(null)
     }
   }
 
@@ -287,6 +535,14 @@ export class BackpackView {
     return `https://peer.decentraland.org/lambdas/collections/contents/${urn}/thumbnail`
   }
 
+  private escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+  }
+
   // --- Avatar 3D Preview ---
 
   private initAvatarPreview(): void {
@@ -315,7 +571,6 @@ export class BackpackView {
     rim.position.set(-3, 2, -2)
     this.scene.add(rim)
 
-    // Gold platform
     const platformGeo = new THREE.CircleGeometry(0.72, 64)
     const platformMat = new THREE.MeshStandardMaterial({
       color: 0xf0b429,
@@ -352,10 +607,11 @@ export class BackpackView {
     this.lastFrame = performance.now()
     this.raf = requestAnimationFrame((t) => this.tick(t))
 
-    this.loadAvatarModel()
+    void this.loadAvatarModel()
   }
 
   private async loadAvatarModel(): Promise<void> {
+    this.previewMode = 'dcl'
     const profile = this.session.getProfile()
     const address = this.session.getAddress()
     if (!profile || !address) return
@@ -363,7 +619,7 @@ export class BackpackView {
     this.clearAvatar()
 
     const avatar = await composeAvatarFromProfile({ ...profile, address, fromWallet: true })
-    if (this.disposed) {
+    if (this.disposed || this.previewMode !== 'dcl') {
       this.disposeGraph(avatar)
       return
     }
@@ -388,20 +644,70 @@ export class BackpackView {
     this.frameCamera(this.subjectSize)
   }
 
+  private async loadVrmPreview(contentHash: string | null): Promise<void> {
+    const entry = contentHash ? this.vrmLibrary.find((e) => e.contentHash === contentHash) ?? null : null
+    this.renderVrmDetail(entry)
+
+    if (!contentHash) {
+      this.previewMode = 'dcl'
+      await this.loadAvatarModel()
+      return
+    }
+
+    const bytes = await loadVrmLibraryBytes(contentHash)
+    if (!bytes) {
+      this.previewMode = 'dcl'
+      await this.loadAvatarModel()
+      return
+    }
+
+    this.previewMode = 'vrm'
+    this.clearAvatar()
+
+    try {
+      const vrm = await VrmAvatar.fromBytes(bytes)
+      if (this.disposed || this.previewMode !== 'vrm') {
+        vrm.dispose()
+        return
+      }
+
+      const box = new THREE.Box3().setFromObject(vrm.root)
+      const center = box.getCenter(new THREE.Vector3())
+      vrm.root.position.set(-center.x, -box.min.y, -center.z)
+      this.vrmPreview = vrm
+      this.avatar = vrm.root
+      this.pivot!.add(vrm.root)
+
+      this.subjectSize = box.getSize(new THREE.Vector3())
+      this.subjectSize.y += 0.18
+      this.subjectSize.x = Math.max(this.subjectSize.x, 0.9)
+      this.frameCamera(this.subjectSize)
+    } catch (err) {
+      console.warn('[backpack] VRM preview failed', err)
+      this.previewMode = 'dcl'
+      await this.loadAvatarModel()
+    }
+  }
+
   private tick(now: number): void {
     if (this.disposed) return
     const delta = Math.min(0.05, (now - this.lastFrame) / 1000)
     this.lastFrame = now
 
     if (this.pivot) this.pivot.rotation.y += delta * 0.35
-    this.animations?.update(delta, {
-      horizontalSpeed: 0,
-      grounded: true,
-      locomotionMode: 'walk',
-      jumping: false,
-      doubleJumping: false,
-      falling: false
-    })
+
+    if (this.previewMode === 'vrm') {
+      this.vrmPreview?.update(delta)
+    } else {
+      this.animations?.update(delta, {
+        horizontalSpeed: 0,
+        grounded: true,
+        locomotionMode: 'walk',
+        jumping: false,
+        doubleJumping: false,
+        falling: false
+      })
+    }
 
     if (this.renderer && this.scene && this.camera) {
       this.renderer.render(this.scene, this.camera)
@@ -437,6 +743,13 @@ export class BackpackView {
   private clearAvatar(): void {
     this.animations?.dispose()
     this.animations = null
+    if (this.vrmPreview) {
+      this.pivot?.remove(this.vrmPreview.root)
+      this.vrmPreview.dispose()
+      this.vrmPreview = null
+      this.avatar = null
+      return
+    }
     if (!this.avatar || !this.pivot) return
     this.disposeGraph(this.avatar)
     this.pivot.remove(this.avatar)
@@ -444,7 +757,11 @@ export class BackpackView {
   }
 
   private disposeGraph(root: THREE.Object3D): void {
-    disposeWearableInstance(root)
+    if (root.name === 'custom-vrm') {
+      disposeVrmRoot(null, root)
+      return
+    }
+    disposeWearableInstance(root as THREE.Group)
   }
 
   dispose(): void {

@@ -272,7 +272,10 @@ export class AppController {
           this.preferencesPanel?.hide()
           this.shell?.getButton('settings')?.setActive(false)
         },
-        onClose: () => {}
+        onClose: () => {},
+        onVrmEquipChange: () => {
+          void world.reloadLocalAvatar()
+        }
       })
     } else {
       this.settingsOverlay.updateSession(world.session)

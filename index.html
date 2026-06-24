@@ -4542,6 +4542,141 @@
         word-break: break-all;
         line-height: 1.4;
       }
+      .backpack-view__upload-vrm-btn {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 999px;
+        background: #ff2d55;
+        color: #fff;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        cursor: pointer;
+      }
+      .backpack-view__upload-vrm-btn:disabled {
+        opacity: 0.55;
+        cursor: wait;
+      }
+      .backpack-view__vrm-library-label {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .backpack-view__vrm-empty {
+        grid-column: 1 / -1;
+        padding: 24px 12px;
+        text-align: center;
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .backpack-view__vrm-empty-hint {
+        margin-top: 8px;
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .backpack-view__vrm-card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        width: 100%;
+        aspect-ratio: 1;
+        min-height: 0;
+        padding: 10px 8px;
+        border-radius: 10px;
+        border: 2px solid rgba(255, 255, 255, 0.15);
+        background: rgba(0, 0, 0, 0.35);
+        color: #fff;
+        cursor: pointer;
+        transition: transform 0.12s, box-shadow 0.12s;
+      }
+      .backpack-view__vrm-card:hover {
+        transform: scale(1.04);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+      }
+      .backpack-view__vrm-card.is-selected {
+        box-shadow: 0 0 0 2px #fff, 0 4px 16px rgba(255, 255, 255, 0.2);
+      }
+      .backpack-view__vrm-card.is-equipped {
+        border-color: #57e389;
+      }
+      .backpack-view__vrm-card-icon {
+        font-size: 28px;
+        line-height: 1;
+      }
+      .backpack-view__vrm-card-name {
+        font-size: 10px;
+        font-weight: 700;
+        text-align: center;
+        word-break: break-word;
+        line-height: 1.25;
+        max-width: 100%;
+      }
+      .backpack-view__vrm-card-size {
+        font-size: 9px;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .backpack-view__vrm-equipped-badge {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: rgba(87, 227, 137, 0.25);
+        color: #57e389;
+        font-size: 8px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+      }
+      .backpack-view__vrm-detail-icon {
+        font-size: 48px;
+        line-height: 1;
+        margin-bottom: 8px;
+      }
+      .backpack-view__vrm-detail-meta {
+        margin: 4px 0 0;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .backpack-view__vrm-actions {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 16px;
+        width: 100%;
+      }
+      .backpack-view__vrm-equip-btn,
+      .backpack-view__vrm-unequip-btn,
+      .backpack-view__vrm-delete-btn {
+        padding: 10px 14px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        cursor: pointer;
+      }
+      .backpack-view__vrm-equip-btn {
+        background: #ff2d55;
+        border-color: transparent;
+        color: #fff;
+      }
+      .backpack-view__vrm-equip-btn:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      .backpack-view__vrm-unequip-btn {
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.9);
+      }
+      .backpack-view__vrm-delete-btn {
+        background: transparent;
+        color: rgba(255, 120, 120, 0.9);
+      }
 
       /* ===== Events View (settings overlay) ===== */
       .events-view {

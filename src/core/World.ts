@@ -1826,6 +1826,12 @@ export class World {
     })
   }
 
+  /** Reload local avatar after custom VRM equip / unequip from backpack. */
+  async reloadLocalAvatar(): Promise<void> {
+    if (!this.playerMode || !this.player) return
+    await this.player.reloadAvatar()
+  }
+
   getEmoteWheelSlots() {
     return buildEmoteWheelSlots(this.session.getProfile())
   }

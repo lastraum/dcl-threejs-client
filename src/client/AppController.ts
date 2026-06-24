@@ -7,6 +7,7 @@ import {
   type RouteTarget
 } from '../dcl/content/route'
 import { resolveSceneFromRoute, summarizeSceneContent } from '../dcl/content/resolveScene'
+import { EditorApp } from '../editor/EditorApp'
 import { World } from '../core/World'
 import { readSceneDevQueryKey } from '../environment/fftOcean/readFftOceanOverride'
 import { disconnectAll } from '../network/SessionConnections'
@@ -32,6 +33,7 @@ import { DEFAULT_TIMEOUT_MS, FAST_TIMEOUT_MS, type SceneHydrationStats } from '.
 import { resolveSceneLoadWarm } from '../rendering/sceneLoadWarm'
 import { formatSceneLoadError } from './formatSceneLoadError'
 import { ProfileUiController } from './ui/profile/ProfileUiController'
+import { recordLoginEvent } from '../analytics/recordLogin'
 
 /** Owns world lifecycle — splash → load → play, navigation, and sign-out. */
 export class AppController {
@@ -52,13 +54,26 @@ export class AppController {
   private mobileHud: MobileGameHud | null = null
   private profileUi: ProfileUiController | null = null
   private sceneContentUrl = 'https://peer.decentraland.org'
+  private editorApp: EditorApp | null = null
 
   async start(container: HTMLElement): Promise<void> {
     if (this.running) return
     this.running = true
     this.container = container
 
+    const initialRoute = resolveRouteTarget()
+    if (initialRoute.kind === 'editor') {
+      const hudEl = document.getElementById('hud')
+      if (hudEl) hudEl.hidden = true
+      this.currentRoute = initialRoute
+      this.editorApp = new EditorApp()
+      window.addEventListener('popstate', this.onPopState)
+      await this.editorApp.start(container)
+      return
+    }
+
     this.login = await showSplashScreen()
+    recordLoginEvent(this.login)
     window.addEventListener('popstate', this.onPopState)
 
     const loading = new LoadingScreen('Preparing your experience…')
@@ -141,6 +156,24 @@ export class AppController {
       onHydrationFinish?: (result: { timedOut: boolean; elapsedMs: number }) => void
     } = {}
   ): Promise<boolean> {
+    if (route.kind === 'editor') {
+      if (!opts.fromHistory) {
+        applyRouteToHistory(route, opts.replace ?? false)
+      }
+      this.currentRoute = route
+      await this.teardownScene()
+      this.editorApp?.dispose()
+      this.editorApp = new EditorApp()
+      if (!this.container) throw new Error('App container missing')
+      await this.editorApp.start(this.container)
+      return false
+    }
+
+    if (this.editorApp) {
+      this.editorApp.dispose()
+      this.editorApp = null
+    }
+
     if (!opts.fromHistory) {
       applyRouteToHistory(route, opts.replace ?? false)
     }
@@ -416,6 +449,8 @@ export class AppController {
   }
 
   private async teardownScene(): Promise<void> {
+    this.editorApp?.dispose()
+    this.editorApp = null
     this.profileUi?.dispose()
     this.profileUi = null
     this.mobileHud?.dispose()

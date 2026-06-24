@@ -4,6 +4,7 @@ export type SceneSource =
   | { kind: 'blank' }
   | { kind: 'world'; worldName: string; entityId: string }
   | { kind: 'coords'; x: number; y: number }
+  | { kind: 'local'; projectId: string }
 
 export type SceneLayout = {
   parcels: string[]

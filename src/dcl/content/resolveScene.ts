@@ -219,6 +219,10 @@ function resolvedFromEntity(
 }
 
 export async function resolveSceneFromRoute(target: RouteTarget): Promise<ResolvedScene> {
+  if (target.kind === 'editor') {
+    throw new Error('Editor route does not resolve a network scene — use EditorApp')
+  }
+
   if (target.kind === 'blank') {
     const metadata = { ...BLANK_SCENE_TEMPLATE.metadata, environment: 'none' as const }
     const resolvedEnv = resolveSceneEnvironment(metadata, { kind: 'blank' })

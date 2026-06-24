@@ -207,6 +207,12 @@ export class World {
     this.comms.setIdentity(this.session.getAddress(), this.session.getAuthIdentity())
   }
 
+  /** Local `/editor` preview — orbit camera, no player controller. */
+  enterEditorPreviewMode(): void {
+    this.playerMode = false
+    this.host.setOrbitEnabled(true)
+  }
+
   private buildCommsTarget(scene: ResolvedScene) {
     return {
       pointer: scene.commsPointer,
@@ -250,24 +256,28 @@ export class World {
       landscapeProfile.kind === 'island' || landscapeProfile.circularShore === true
     const openOcean = landscapeProfile.openOcean === true
 
-    await this.landscape.initialize(scene, this.assets, onProgress)
-    this.ezTreeGrass?.dispose()
-    this.ezTreeGrass =
-      (this.landscape.state.landscapeRoot?.userData.ezTreeGrass as EzTreeGrassFieldHandle | undefined) ??
-      null
-    this.ezTreeGrassElapsed = 0
-    this.foliageWindElapsed = 0
-    if (this.landscape.state.landscapeRoot) {
-      this.host.scene.add(this.landscape.state.landscapeRoot)
-    }
+    const skipClientLandscape = scene.source.kind === 'local'
     const terrain = createTerrainModel(
       scene.parcels,
       landscapeProfile.borderPadding,
       landscapeProfile.circularShore === true
     )
 
+    if (!skipClientLandscape) {
+      await this.landscape.initialize(scene, this.assets, onProgress)
+      this.ezTreeGrass?.dispose()
+      this.ezTreeGrass =
+        (this.landscape.state.landscapeRoot?.userData.ezTreeGrass as EzTreeGrassFieldHandle | undefined) ??
+        null
+      this.ezTreeGrassElapsed = 0
+      this.foliageWindElapsed = 0
+      if (this.landscape.state.landscapeRoot) {
+        this.host.scene.add(this.landscape.state.landscapeRoot)
+      }
+    }
+
     this.clearOcean()
-    if (landscapeProfile.showWater) {
+    if (!skipClientLandscape && landscapeProfile.showWater) {
       const fftSettings = readFftOceanOverride()
       const useFftOcean = fftSettings.enabled && this.host.renderer.capabilities.isWebGL2
       if (fftSettings.enabled && !useFftOcean) {

@@ -8,8 +8,11 @@ const ROUTE_STATIC_ASSET_RE =
 
 export type RouteTarget =
   | { kind: 'blank' }
+  | { kind: 'editor' }
   | { kind: 'world'; worldName: string; segment: string }
   | { kind: 'coords'; x: number; y: number; segment: string }
+
+const EDITOR_ROUTE_SEGMENT = 'editor'
 
 /** Default parcel when visiting `/` with no route segment (Genesis Plaza). */
 export const DEFAULT_PARCEL_ROUTE: Extract<RouteTarget, { kind: 'coords' }> = {
@@ -46,6 +49,8 @@ export function readRouteSegmentFromPath(pathname = window.location.pathname): s
 export function parseRouteTarget(segment: string | null): RouteTarget {
   if (!segment) return { kind: 'blank' }
 
+  if (segment.toLowerCase() === EDITOR_ROUTE_SEGMENT) return { kind: 'editor' }
+
   const coordMatch = /^(-?\d+)\s*,\s*(-?\d+)$/.exec(segment)
   if (coordMatch) {
     const x = Number(coordMatch[1])
@@ -80,13 +85,31 @@ export function routePathForWorld(worldName: string): string {
 
 export function routePathForTarget(target: RouteTarget): string {
   if (target.kind === 'blank') return '/'
+  if (target.kind === 'editor') return '/editor'
   if (target.kind === 'coords') return `/${encodeURIComponent(`${target.x},${target.y}`)}`
   return routePathForWorld(target.worldName)
 }
 
+/** Active local editor project id from `?project=` on `/editor`. */
+export function readEditorProjectIdFromUrl(url = window.location.href): string | null {
+  const params = new URLSearchParams(new URL(url).search)
+  const id = params.get('project')?.trim()
+  return id || null
+}
+
+export function editorUrlForProject(projectId: string | null, replace = false): void {
+  const url = new URL(window.location.href)
+  url.pathname = '/editor'
+  if (projectId) url.searchParams.set('project', projectId)
+  else url.searchParams.delete('project')
+  const state = { route: { kind: 'editor' as const }, editorProjectId: projectId }
+  if (replace) history.replaceState(state, '', url)
+  else history.pushState(state, '', url)
+}
+
 export function routeEquals(a: RouteTarget, b: RouteTarget): boolean {
   if (a.kind !== b.kind) return false
-  if (a.kind === 'blank') return true
+  if (a.kind === 'blank' || a.kind === 'editor') return true
   if (a.kind === 'coords' && b.kind === 'coords') return a.x === b.x && a.y === b.y
   if (a.kind === 'world' && b.kind === 'world') return a.worldName.toLowerCase() === b.worldName.toLowerCase()
   return false

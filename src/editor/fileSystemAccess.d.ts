@@ -32,7 +32,17 @@ interface FilePickerAcceptType {
 }
 
 interface Window {
-  showDirectoryPicker(options?: { mode?: 'read' | 'readwrite' }): Promise<FileSystemDirectoryHandle>
+  showDirectoryPicker(options?: {
+    mode?: 'read' | 'readwrite'
+    startIn?:
+      | 'desktop'
+      | 'documents'
+      | 'downloads'
+      | 'music'
+      | 'pictures'
+      | 'videos'
+      | FileSystemHandle
+  }): Promise<FileSystemDirectoryHandle>
   showOpenFilePicker(options?: {
     multiple?: boolean
     types?: FilePickerAcceptType[]

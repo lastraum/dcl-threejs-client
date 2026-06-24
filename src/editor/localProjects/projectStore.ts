@@ -108,6 +108,10 @@ export function isFileSystemAccessSupported(): boolean {
   return typeof window !== 'undefined' && 'showDirectoryPicker' in window
 }
 
+async function pickWritableDirectory(): Promise<FileSystemDirectoryHandle> {
+  return window.showDirectoryPicker({ mode: 'readwrite', startIn: 'documents' })
+}
+
 export function isOpenFilePickerSupported(): boolean {
   return typeof window !== 'undefined' && 'showOpenFilePicker' in window
 }
@@ -124,7 +128,7 @@ export function formatFilePickerError(e: unknown): string {
   ) {
     return (
       'Chrome blocked that folder (common under ~/Library). ' +
-      'Use Import Creator Hub at http://localhost:5173/editor while npm run dev is running on this machine.'
+      'Move or copy scenes to Documents, Downloads, or Desktop — e.g. ~/Documents/DCL-Scenes — then Link Scenes folder.'
     )
   }
   return e.message
@@ -311,7 +315,7 @@ export async function linkCreatorHubScenesFolder(): Promise<CreatorHubSyncResult
     throw new Error('File System Access API is not supported in this browser. Use Chrome or Edge.')
   }
   try {
-    const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
+    const handle = await pickWritableDirectory()
     return syncCreatorHubScenes(handle)
   } catch (e) {
     throw new Error(formatFilePickerError(e))
@@ -386,7 +390,7 @@ export async function connectProjectFolder(projectId: string): Promise<LocalProj
     throw new Error('File System Access API is not supported in this browser.')
   }
   try {
-    const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
+    const handle = await pickWritableDirectory()
     return registerProjectFromHandle(handle, {
       projectId,
       source: isCreatorHubProjectId(projectId) ? 'creator-hub' : 'manual'
@@ -401,7 +405,7 @@ export async function pickAndAddProject(): Promise<LocalProjectRecord | null> {
     throw new Error('File System Access API is not supported in this browser. Use Chrome or Edge.')
   }
   try {
-    const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
+    const handle = await pickWritableDirectory()
     return addProjectFromDroppedHandle(handle)
   } catch (e) {
     throw new Error(formatFilePickerError(e))
@@ -558,8 +562,7 @@ export async function requestProjectRoot(projectId: string): Promise<ProjectRoot
   }
 
   throw new Error(
-    'Project folder not connected. On live builds: Link Scenes folder or Connect and pick the scene directory. ' +
-      'Locally: Sync Creator Hub (dev) while npm run dev is running.'
+    'Project folder not connected. Click Connect and pick the scene folder, or Link Scenes folder for your projects directory.'
   )
 }
 
@@ -577,7 +580,7 @@ export async function relinkProject(projectId: string): Promise<LocalProjectReco
     throw new Error('File System Access API is not supported in this browser.')
   }
   try {
-    const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
+    const handle = await pickWritableDirectory()
     const record = await registerProjectFromHandle(handle, {
       projectId,
       source: isCreatorHubProjectId(projectId) ? 'creator-hub' : 'manual'

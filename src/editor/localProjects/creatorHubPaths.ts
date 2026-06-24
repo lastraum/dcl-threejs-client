@@ -1,3 +1,9 @@
+/**
+ * Browser-friendly folder for scene projects (Documents/Downloads/Desktop work;
+ * ~/Library/Application Support/creator-hub/Scenes is often blocked).
+ */
+export const RECOMMENDED_SCENES_FOLDER = '~/Documents/DCL-Scenes'
+
 /** Default Creator Hub `settings.scenesPath` locations (matches Creator Hub app data). */
 
 export function defaultCreatorHubScenesPath(): string {

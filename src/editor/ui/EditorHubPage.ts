@@ -1,29 +1,19 @@
-import { defaultCreatorHubConfigPath } from '../localProjects/creatorHubConfig'
+import { RECOMMENDED_SCENES_FOLDER } from '../localProjects/creatorHubPaths'
 import {
   addProjectFromDroppedHandle,
-  connectProjectFolder,
-  getDevBridgeStatus,
-  importCreatorHubProjects,
   isCreatorHubScenesLinked,
   isFileSystemAccessSupported,
+  linkCreatorHubScenesFolder,
   listProjects,
   pickAndAddProject,
   relinkProject,
   removeProject,
   rescanCreatorHubScenes,
-  syncDevBridgeProjects,
   type LocalProjectRecord
 } from '../localProjects/projectStore'
 
 export type EditorHubPageCallbacks = {
   onOpenProject: (projectId: string) => void
-}
-
-const LOCAL_DEV_EDITOR_URL = 'http://localhost:5173/editor'
-
-function isLocalhostEditor(): boolean {
-  const host = window.location.hostname
-  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]'
 }
 
 export class EditorHubPage {
@@ -32,8 +22,6 @@ export class EditorHubPage {
   private errorEl: HTMLDivElement
   private statusEl: HTMLDivElement
   private helpEl: HTMLParagraphElement
-  private localDevLink: HTMLAnchorElement | null = null
-  private devBridgeAvailable = false
 
   constructor(
     container: HTMLElement,
@@ -55,8 +43,10 @@ export class EditorHubPage {
 
     const actions = document.createElement('div')
     actions.className = 'editor-hub-actions'
+    this.renderActions(actions)
     header.appendChild(actions)
 
+    this.renderHelp()
     this.root.appendChild(header)
 
     this.errorEl = document.createElement('div')
@@ -74,7 +64,7 @@ export class EditorHubPage {
     this.root.appendChild(this.grid)
 
     this.bindFolderDrop()
-    void this.bootstrap(actions)
+    void this.bootstrap()
   }
 
   dispose(): void {
@@ -136,26 +126,12 @@ export class EditorHubPage {
     }
   }
 
-  private async bootstrap(actions: HTMLDivElement): Promise<void> {
-    const bridgeStatus = await getDevBridgeStatus()
-    this.devBridgeAvailable = bridgeStatus.available
-    this.renderActions(actions)
-    this.renderHelp()
-
-    if (bridgeStatus.available) {
-      try {
-        const result = await syncDevBridgeProjects()
-        if (result && result.total > 0) {
-          this.showStatus(`Imported ${result.total} Creator Hub scene(s) from this machine.`)
-        }
-      } catch {
-        /* ignore */
-      }
-    } else if (await isCreatorHubScenesLinked()) {
+  private async bootstrap(): Promise<void> {
+    if (await isCreatorHubScenesLinked()) {
       try {
         const result = await rescanCreatorHubScenes()
         if (result && (result.imported > 0 || result.updated > 0)) {
-          this.showStatus(`Creator Hub: ${result.total} scene(s) (${result.imported} new)`)
+          this.showStatus(`Found ${result.total} scene(s) (${result.imported} new).`)
         }
       } catch {
         /* permission may need re-grant on open */
@@ -165,50 +141,39 @@ export class EditorHubPage {
   }
 
   private renderHelp(): void {
-    const configPath = defaultCreatorHubConfigPath()
-
-    if (this.devBridgeAvailable) {
-      this.helpEl.innerHTML =
-        '<strong>Import Creator Hub</strong> reads your workspace from disk (same as the link script, no terminal). ' +
-        'Scenes open and save directly while <code>npm run dev</code> runs.'
-      return
-    }
-
     if (!isFileSystemAccessSupported()) {
       this.helpEl.textContent =
-        'Use Chrome or Edge on desktop. Safari/Firefox cannot open local scene folders in the browser.'
-      return
-    }
-
-    if (isLocalhostEditor()) {
-      this.helpEl.innerHTML =
-        'Start <code>npm run dev</code> in this repo, then click <strong>Import Creator Hub</strong> — ' +
-        'it reads <code>' +
-        configPath +
-        '</code> from your machine automatically.'
+        'Use Chrome or Edge on desktop. Safari and Firefox cannot open local scene folders in the browser.'
       return
     }
 
     this.helpEl.innerHTML =
-      'On the live site, <strong>Import Creator Hub</strong> asks you to pick <code>' +
-      configPath +
-      '</code>, then <strong>Connect</strong> each scene folder. ' +
-      'For one-click import (no folder picks), use the editor on this computer at ' +
-      `<a href="${LOCAL_DEV_EDITOR_URL}" class="editor-hub-inline-link">${LOCAL_DEV_EDITOR_URL}</a> ` +
-      'with <code>npm run dev</code> running.'
+      `Keep scene folders in <strong>Documents</strong>, <strong>Downloads</strong>, or <strong>Desktop</strong> ` +
+      `(Chrome blocks Creator Hub’s Library folder). Recommended: <code>${RECOMMENDED_SCENES_FOLDER}</code> ` +
+      '— each subfolder needs a <code>scene.json</code>. Click <strong>Link Scenes folder</strong> once; ' +
+      'use <strong>Rescan</strong> when you add scenes. You can also drag a scene folder here.'
   }
 
   private renderActions(actions: HTMLDivElement): void {
     actions.innerHTML = ''
 
-    const importBtn = document.createElement('button')
-    importBtn.type = 'button'
-    importBtn.className = 'editor-hub-add editor-hub-add--primary'
-    importBtn.textContent = 'Import Creator Hub'
-    importBtn.addEventListener('click', () => void this.handleImportCreatorHub())
-    actions.appendChild(importBtn)
-
     if (!isFileSystemAccessSupported()) return
+
+    const linkBtn = document.createElement('button')
+    linkBtn.type = 'button'
+    linkBtn.className = 'editor-hub-add editor-hub-add--primary'
+    linkBtn.textContent = 'Link Scenes folder'
+    linkBtn.title = `Pick ${RECOMMENDED_SCENES_FOLDER} or your projects parent folder`
+    linkBtn.addEventListener('click', () => void this.handleLinkScenesFolder())
+    actions.appendChild(linkBtn)
+
+    const rescanBtn = document.createElement('button')
+    rescanBtn.type = 'button'
+    rescanBtn.className = 'editor-hub-add'
+    rescanBtn.textContent = 'Rescan'
+    rescanBtn.title = 'Pick up new scene subfolders after linking'
+    rescanBtn.addEventListener('click', () => void this.handleRescan())
+    actions.appendChild(rescanBtn)
 
     const addBtn = document.createElement('button')
     addBtn.type = 'button'
@@ -216,15 +181,6 @@ export class EditorHubPage {
     addBtn.textContent = '+ Add scene folder'
     addBtn.addEventListener('click', () => void this.handleAddFolder())
     actions.appendChild(addBtn)
-
-    if (!this.devBridgeAvailable && !isLocalhostEditor()) {
-      this.localDevLink = document.createElement('a')
-      this.localDevLink.href = LOCAL_DEV_EDITOR_URL
-      this.localDevLink.className = 'editor-hub-add editor-hub-local-dev-link'
-      this.localDevLink.textContent = 'Open local dev editor'
-      this.localDevLink.title = 'One-click Creator Hub import while npm run dev runs on this machine'
-      actions.appendChild(this.localDevLink)
-    }
   }
 
   async refresh(): Promise<void> {
@@ -233,17 +189,10 @@ export class EditorHubPage {
     if (projects.length === 0) {
       const empty = document.createElement('div')
       empty.className = 'editor-hub-empty'
-      if (this.devBridgeAvailable) {
-        empty.innerHTML = 'No projects yet. Click <strong>Import Creator Hub</strong>.'
-      } else if (isLocalhostEditor()) {
+      if (isFileSystemAccessSupported()) {
         empty.innerHTML =
-          'No projects yet. Run <code>npm run dev</code>, then click <strong>Import Creator Hub</strong>.'
-      } else if (isFileSystemAccessSupported()) {
-        empty.innerHTML =
-          'No projects yet. Click <strong>Import Creator Hub</strong> and pick your config.json, ' +
-          'or open <a href="' +
-          LOCAL_DEV_EDITOR_URL +
-          '" class="editor-hub-inline-link">localhost editor</a> with npm run dev for automatic import.'
+          `No projects yet. Put scenes in <code>${RECOMMENDED_SCENES_FOLDER}</code>, ` +
+          'then click <strong>Link Scenes folder</strong> or drag a scene folder here.'
       } else {
         empty.textContent = 'No projects yet. Open this page in Chrome or Edge on desktop.'
       }
@@ -255,13 +204,6 @@ export class EditorHubPage {
     }
   }
 
-  private pendingConnectHint(project: LocalProjectRecord): string {
-    if (project.accessMode === 'dev-bridge' || this.devBridgeAvailable) {
-      return 'Ready — open when listed (dev bridge)'
-    }
-    return 'Click Connect and pick this scene folder on disk'
-  }
-
   private renderCard(project: LocalProjectRecord): HTMLDivElement {
     const card = document.createElement('div')
     card.className = 'editor-hub-card'
@@ -270,9 +212,6 @@ export class EditorHubPage {
     }
     if (project.permission !== 'granted') {
       card.classList.add('editor-hub-card--pending')
-    }
-    if (project.accessMode === 'dev-bridge') {
-      card.classList.add('editor-hub-card--dev-bridge')
     }
 
     const name = document.createElement('h2')
@@ -284,24 +223,14 @@ export class EditorHubPage {
     const parcel = project.parcelCount ? `${project.parcelCount} parcel(s)` : 'Unknown size'
     const base = project.baseParcel ? ` · base ${project.baseParcel}` : ''
     const opened = new Date(project.lastOpenedAt).toLocaleString()
-    const access =
-      project.accessMode === 'dev-bridge' ? 'dev bridge · ' : project.source === 'creator-hub' ? 'Creator Hub · ' : ''
     const folder = project.folderName ? `${project.folderName} · ` : ''
-    meta.textContent = `${access}${folder}${parcel}${base} · opened ${opened}`
+    meta.textContent = `${folder}${parcel}${base} · opened ${opened}`
     card.appendChild(meta)
 
-    if (project.pathHint && project.permission !== 'granted' && project.accessMode !== 'dev-bridge') {
-      const path = document.createElement('p')
-      path.className = 'editor-hub-card-path'
-      path.textContent = project.pathHint
-      path.title = project.pathHint
-      card.appendChild(path)
-    }
-
-    if (project.permission !== 'granted' && project.accessMode !== 'dev-bridge') {
+    if (project.permission !== 'granted') {
       const warn = document.createElement('p')
       warn.className = 'editor-hub-card-warn'
-      warn.textContent = this.pendingConnectHint(project)
+      warn.textContent = 'Folder access expired — click Re-link and pick this scene folder again'
       card.appendChild(warn)
     }
 
@@ -314,13 +243,10 @@ export class EditorHubPage {
     openBtn.disabled = project.permission !== 'granted'
     openBtn.addEventListener('click', () => this.callbacks.onOpenProject(project.id))
 
-    const connectBtn = document.createElement('button')
-    connectBtn.type = 'button'
-    const needsConnect = project.permission !== 'granted' && project.accessMode !== 'dev-bridge'
-    connectBtn.textContent = needsConnect ? 'Connect' : 'Re-link'
-    connectBtn.addEventListener('click', () =>
-      void (needsConnect ? this.handleConnect(project.id) : this.handleRelink(project.id))
-    )
+    const relinkBtn = document.createElement('button')
+    relinkBtn.type = 'button'
+    relinkBtn.textContent = project.permission !== 'granted' ? 'Re-link' : 'Change folder'
+    relinkBtn.addEventListener('click', () => void this.handleRelink(project.id))
 
     const removeBtn = document.createElement('button')
     removeBtn.type = 'button'
@@ -328,9 +254,7 @@ export class EditorHubPage {
     removeBtn.addEventListener('click', () => void this.handleRemove(project.id))
 
     actions.appendChild(openBtn)
-    if (project.accessMode !== 'dev-bridge') {
-      actions.appendChild(connectBtn)
-    }
+    actions.appendChild(relinkBtn)
     actions.appendChild(removeBtn)
     card.appendChild(actions)
     return card
@@ -353,28 +277,29 @@ export class EditorHubPage {
     this.statusEl.textContent = ''
   }
 
-  private async handleImportCreatorHub(): Promise<void> {
+  private async handleLinkScenesFolder(): Promise<void> {
     try {
       this.clearMessages()
-      const outcome = await importCreatorHubProjects()
-      const { result, mode } = outcome
-
-      if (mode === 'dev-bridge') {
-        const status = await getDevBridgeStatus()
-        this.devBridgeAvailable = status.available
-        this.showStatus(
-          `Imported ${result.total} scene(s) from Creator Hub on this machine (${result.imported} new).`
-        )
-      } else {
-        let msg = `Imported ${result.total} workspace path(s). Click Connect on each card and pick the matching scene folder.`
-        if (outcome.devImportUrl) {
-          msg += ` Tip: for automatic import, use ${outcome.devImportUrl} with npm run dev.`
-        }
-        this.showStatus(msg)
-      }
+      const result = await linkCreatorHubScenesFolder()
+      this.showStatus(`Linked — ${result.total} scene(s) ready (${result.imported} new).`)
       await this.refresh()
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') return
+      this.showError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  private async handleRescan(): Promise<void> {
+    try {
+      this.clearMessages()
+      const result = await rescanCreatorHubScenes()
+      if (!result) {
+        this.showError(`No folder linked yet. Click Link Scenes folder and choose e.g. ${RECOMMENDED_SCENES_FOLDER}.`)
+        return
+      }
+      this.showStatus(`Rescanned — ${result.total} scene(s) (${result.imported} new).`)
+      await this.refresh()
+    } catch (e) {
       this.showError(e instanceof Error ? e.message : String(e))
     }
   }
@@ -387,17 +312,6 @@ export class EditorHubPage {
         this.showStatus(`Added ${record.name}.`)
         await this.refresh()
       }
-    } catch (e) {
-      if (e instanceof Error && e.name === 'AbortError') return
-      this.showError(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  private async handleConnect(projectId: string): Promise<void> {
-    try {
-      this.clearMessages()
-      await connectProjectFolder(projectId)
-      await this.refresh()
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') return
       this.showError(e instanceof Error ? e.message : String(e))

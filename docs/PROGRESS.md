@@ -18,7 +18,7 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Deploy-sized terrain export** | 🟢 | Per-parcel meshes with configurable density (default **64 segs**); 5×5 ~**4–5 MB** vs ~21 MB at old 128+64 dual-mesh export |
 | **Visible-mesh physics** | 🟢 | `CL_PHYSICS` on `terrain_mesh_*` only — no duplicate `_collider` layer (matches genesis-games DCL pattern) |
 | **Non-square footprints** | 🟢 | L-shaped / sparse parcel layouts export one plane per parcel, not a full bounding-box fill |
-| **Creator Hub project bridge** | 🟢 | Link `Scenes/` folder; FSA + dev-server save paths for local deploy folders |
+| **Local scenes (browser)** | 🟢 | **Link Scenes folder** — pick `~/Documents/DCL-Scenes` (Documents/Downloads/Desktop); Rescan + drag-drop |
 
 **Try it:** open **`/editor`** → pick a linked project → **Terrain sculpt** → **Save to project** → `dcl deploy` from that folder. Re-save once if you had an older dual-collider export.
 
@@ -30,7 +30,7 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
-| **Editor hub** | 🟢 | `/editor` project list; Creator Hub `Scenes/` auto-import via `link-creator-hub-scenes.mjs` |
+| **Editor hub** | 🟢 | `/editor` project list; **Link Scenes folder** (FSA) — scenes in Documents/Downloads, not `~/Library` |
 | **Sculpt session** | 🟢 | Height + splat brushes, undo/redo, procedural shading, max-height guide, fly camera |
 | **Draft storage** | 🟢 | 1024² height/splat/lava in IndexedDB per project (not deployed) |
 | **Deploy export** | 🟢 | `terrain.glb` + `main.composite` entity 9001; baked 512² albedo for Unity Explorer |

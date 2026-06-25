@@ -49,7 +49,7 @@ export async function loadMeshTemplates(
   cache: AssetCache,
   hash: string
 ): Promise<MeshTemplate[]> {
-  const { root } = await cache.load(catalystAssetUrl(hash), hash)
+  const { root } = await cache.load(catalystAssetUrl(hash), hash, { landscape: true })
   return collectMeshTemplates(root)
 }
 

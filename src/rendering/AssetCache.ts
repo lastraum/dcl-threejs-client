@@ -26,6 +26,19 @@ import { disposeSessionAudioBufferCache, getSessionAudioBufferCache } from '../m
 import { collectManifestAssets } from './manifestAssets'
 import { preferFetchTextureLoad, proxiedTextureUrl } from './textureProxy'
 
+const LANDSCAPE_CACHE_SUFFIX = '#landscape'
+
+function glbCacheKey(hashOrUrl: string, landscape?: boolean): string {
+  const base = normalizeGlbCacheKey(hashOrUrl)
+  return landscape ? `${base}${LANDSCAPE_CACHE_SUFFIX}` : base
+}
+
+function glbBytesKey(cacheKey: string): string {
+  return cacheKey.endsWith(LANDSCAPE_CACHE_SUFFIX)
+    ? cacheKey.slice(0, -LANDSCAPE_CACHE_SUFFIX.length)
+    : cacheKey
+}
+
 export type CachedGltf = {
   root: THREE.Group
   animations: THREE.AnimationClip[]
@@ -245,7 +258,7 @@ export class AssetCache {
     hash?: string,
     options?: { emote?: boolean; wearable?: boolean; quiet?: boolean; landscape?: boolean }
   ): Promise<CachedGltf> {
-    const key = normalizeGlbCacheKey(hash ?? url)
+    const key = glbCacheKey(hash ?? url, options?.landscape)
     const hit = this.cache.get(key)
     if (hit) return hit
 
@@ -289,7 +302,7 @@ export class AssetCache {
     options?: { emote?: boolean; wearable?: boolean; quiet?: boolean; landscape?: boolean }
   ): Promise<CachedGltf> {
 
-    const gltf = await this.fetchAndParseGltf(url, key, options?.quiet)
+    const gltf = await this.fetchAndParseGltf(url, glbBytesKey(key), options?.quiet)
     const entry: CachedGltf = {
       root: gltf.scene,
       animations: gltf.animations ?? []

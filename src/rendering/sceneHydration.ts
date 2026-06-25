@@ -252,7 +252,7 @@ export async function waitForSceneAssets(
         await sceneScript.yieldForWorkerMessages()
         await sceneScript.syncRenderer()
         if (finished) return
-        sceneScript.syncCollision()
+        sceneScript.flushHydrationCollisionWork()
         sceneScript.pumpMotionBridges(1 / 60)
 
         const bridgeStats = sceneScript.getHydrationStats()

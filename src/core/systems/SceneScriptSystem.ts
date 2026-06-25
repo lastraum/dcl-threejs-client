@@ -681,9 +681,17 @@ export class SceneScriptSystem {
   flushIncrementalColliders(entity: Entity): void {
     this.colliderStructureDirty.add(entity)
     this.pointerStructureDirty = true
+    // Hydration batches collider extract on the loading tick — per-attach sync blocked attach bursts.
+    if (this.bridge?.isAssetHydrationMode()) return
     this.syncCollision()
     this.flushPointerStructureIfDirty()
     this.collidersCookCallback?.(entity)
+  }
+
+  /** Loading-screen tick — drain queued collider + pointer structure work in one pass. */
+  flushHydrationCollisionWork(): void {
+    this.syncCollision()
+    this.flushPointerStructureIfDirty()
   }
 
   /** Full GLTF/MeshCollider extraction — hydration, spawn cook, and force-recook only. */

@@ -83,7 +83,10 @@ const GROUND_STICK_DISTANCE = 0.55
 const MAX_PLATFORM_DELTA_HORIZ = 1.25
 const MAX_PLATFORM_DELTA_TOTAL = 2.5
 /** Ground-contact tread must stay under the capsule column — not a distant shape on the same actor. */
+/** Locomotion ground-stick — tight column avoids grabbing distant elevator treads. */
 const MAX_GROUND_CONTACT_HORIZ = 2
+/** Spawn / boot probes — entity pivots can sit far from mesh extents (plaza GLTFs). */
+const SPAWN_GROUND_PROBE_HORIZ = 48
 /** Tread Y must not jump more than this vs baseline (duplicate mesh at lift bottom). */
 const MAX_GROUND_CONTACT_VERT = 1.5
 /** Always-on floor at y=0 — large thin static box (PxPlane is unsupported by CCT/sweep queries), no render mesh. */
@@ -1701,8 +1704,8 @@ export class PhysXWorld {
   }
 
   /** Scene GLTF/prop floor only — spawn snap after boot cook (skips infinite y=0). */
-  snapFeetToSceneMesh(feet: THREE.Vector3, maxDrop = 32): boolean {
-    const hit = this.probeSceneMeshDownAt(feet, maxDrop)
+  snapFeetToSceneMesh(feet: THREE.Vector3, maxDrop = 32, maxHoriz = SPAWN_GROUND_PROBE_HORIZ): boolean {
+    const hit = this.probeSceneMeshDownAt(feet, maxDrop, maxHoriz)
     if (hit === null) return false
     const targetY = feet.y - hit
     if (Math.abs(targetY - this.position.y) < 0.02) return false

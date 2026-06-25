@@ -2113,9 +2113,15 @@ export class SceneScriptSystem {
     this.performanceTier = tier
   }
 
+  /** Pause worker scene onUpdate during GLB hydration — composite already kickstarted post-onStart. */
+  setSceneWorkerTicksPaused(paused: boolean): void {
+    this.worker?.postMessage({ type: 'pause-scene-ticks', paused } satisfies MainToWorker)
+  }
+
   /** Scene + PhysX colliders ready — throttle worker onUpdate (called from World after boot cook). */
   notifyPlayReady(): void {
     this.bridgeSyncEvery = BRIDGE_ECS_SYNC_RUNTIME
+    this.setSceneWorkerTicksPaused(false)
     if (this.playReadyNotified) return
     this.playReadyNotified = true
     this.worker?.postMessage({

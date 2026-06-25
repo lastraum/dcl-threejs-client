@@ -501,7 +501,7 @@ export class World {
     onProgress?.('Spawning player…')
     await this.player.initCapsule(scene.spawn, walkBounds, this.sceneScript.readComponents, onProgress)
     const feetAfterSpawn = this.player.getWorldPosition()
-    if (this.physics.snapFeetToSceneMesh(feetAfterSpawn, 48)) {
+    if (this.physics.snapFeetToSceneMesh(feetAfterSpawn, 48, 48)) {
       this.player.syncFromPhysics()
     }
     if (scene.spawn.y <= 0.01) {
@@ -518,7 +518,7 @@ export class World {
     const pos = this.player.getPosition()
     const feetThree = this.player.getWorldPosition()
     const nearestGltf = this.nearestGltfColliderHorizDist(feetThree)
-    const sceneProbe = this.physics.probeSceneMeshDownAt(feetThree, 12)
+    const sceneProbe = this.physics.probeSceneMeshDownAt(feetThree, 24, 48)
     console.info(
       `[World] player spawn — static=${spawnStatic} gltfRegistered=${spawnGltf} gltfExtracted=${this.lastGltfColliderCount}` +
         (gltfStats
@@ -676,6 +676,7 @@ export class World {
       this.remoteAvatars?.setHydrationLoading(true)
     }
 
+    this.sceneScript.setSceneWorkerTicksPaused(true)
     const hydration = waitForSceneAssets(scene, this.sceneScript, this.assets, onProgress, {
       ...options,
       onPrimeRender: () => this.primeRender(),
@@ -1215,7 +1216,7 @@ export class World {
       if (!this.physics.hasStaticActor(desc.entity)) missingActor++
       else if (!this.physics.geomFingerprintMatches(desc)) fpMismatch++
     }
-    const sceneProbe = this.physics.probeSceneMeshDownAt(probeAt, 12)
+    const sceneProbe = this.physics.probeSceneMeshDownAt(probeAt, 24, 48)
     const probe = this.physics.debugProbeDownHit(8)
     const nearestGltf = this.nearestGltfColliderHorizDist(probeAt)
     console.info(
@@ -1441,13 +1442,18 @@ export class World {
       const bootStyleCook =
         (loadingPass && !gltfEntityLocal) || (worldBakedRecook && !options?.entityLocal)
       const movingPlatformRecook = worldBakedRecook && !loadingPass
+      const bootGltfWorldBake = loadingPass && gltfEntityLocal
       const result = this.physics.syncStaticColliders(toCook, {
         cookBudget: toCook.length,
         freezeRemoval: true,
         // GLTF `_collider` actors stay entity-local so tween pose slides work (world-bake freezes lifts).
         forceRecookOnPoseChange: bootStyleCook && !movingPlatformRecook,
-        geometryCache:
-          gltfEntityLocal || movingPlatformRecook || options?.entityLocal ? true : !bootStyleCook
+        // Boot — world-bake GLTF trimesh once for accurate plaza placement; runtime uses entity-local cache.
+        geometryCache: bootGltfWorldBake
+          ? false
+          : gltfEntityLocal || movingPlatformRecook || options?.entityLocal
+            ? true
+            : !bootStyleCook
       })
       for (const desc of toCook) {
         if (this.physics.isColliderSynced(desc)) {

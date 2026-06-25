@@ -127,7 +127,8 @@ export class World {
   /** Burst cook after dynamic scene spawns (theatre) — higher per-frame budget. */
   private static readonly RUNTIME_COLLIDER_BURST_BUDGET = 64
   private static readonly RUNTIME_COLLIDER_BURST_MS = 12_000
-  private static readonly RUNTIME_COLLIDER_BURST_QUEUE = 24
+  /** Theatre / composite sub-scenes often spawn <24 GLTFs — burst earlier. */
+  private static readonly RUNTIME_COLLIDER_BURST_QUEUE = 8
   /** Hard cap for the single boot cook — load fails if the queue is not drained in time. */
   private static readonly LOADING_COLLIDER_WALL_MS = 180_000
   private static readonly LOADING_COLLIDER_WALL_TIMED_OUT_MS = 120_000
@@ -800,10 +801,6 @@ export class World {
         }
 
         if (this.playerMode && this.player) {
-          if (this.colliderCookQueue.size > 0) {
-            this.reconcileColliderCookQueue()
-            this.drainColliderCookQueue({ loading: true })
-          }
           this.applyPhysicsColliders()
           this.logCollidersPhysDebug()
         }
@@ -984,9 +981,14 @@ export class World {
     if (this.colliderCookQueue.size === 0) return
     const burstActive = performance.now() < this.runtimeColliderBurstUntil
     const pending = this.colliderCookQueue.size
-    if (pending >= World.RUNTIME_COLLIDER_BURST_QUEUE || burstActive) {
+    const nearPlayerPending = this.countNearPlayerColliderQueue()
+    if (
+      pending >= World.RUNTIME_COLLIDER_BURST_QUEUE ||
+      burstActive ||
+      nearPlayerPending >= 4
+    ) {
       let passes = 0
-      const maxPasses = burstActive ? 10 : 5
+      const maxPasses = burstActive ? 16 : nearPlayerPending >= 4 ? 8 : 5
       while (this.colliderCookQueue.size > 0 && passes < maxPasses) {
         this.drainColliderCookQueue({ initialOnly: true })
         passes++
@@ -1015,6 +1017,21 @@ export class World {
     if (this.colliderCookQueue.size > 0) {
       this.drainColliderCookQueue({ initialOnly: true })
     }
+  }
+
+  private countNearPlayerColliderQueue(maxHoriz = 32): number {
+    const feet = this.player?.getWorldPosition()
+    if (!feet) return 0
+    const maxHorizSq = maxHoriz * maxHoriz
+    let count = 0
+    for (const physId of this.colliderCookQueue) {
+      const desc = this.sceneScript.getPhysicsColliderDesc(physId)
+      if (!desc) continue
+      const dx = desc.matrix.elements[12]! - feet.x
+      const dz = desc.matrix.elements[14]! - feet.z
+      if (dx * dx + dz * dz <= maxHorizSq) count++
+    }
+    return count
   }
 
   /** Near-player colliders first — theatre floors under the avatar cook before distant props. */
@@ -1071,10 +1088,16 @@ export class World {
     const slideDescs: PhysicsColliderDesc[] = []
     for (const desc of descs) {
       if (this.physics.needsWorldBakedPoseRecook(desc)) {
+        // Runtime recook off — never removeStatic here (planter/theatre structure sync
+        // can false-trigger drift); queue initial-only cooks near the avatar instead.
+        if (!this.allowsRuntimeColliderRecook()) {
+          if (this.isColliderDescNearPlayer(desc)) this.colliderCookQueue.add(desc.entity)
+          continue
+        }
         const recook = this.physics.syncStaticColliders([desc], {
           cookBudget: 1,
           freezeRemoval: true,
-          forceRecookOnPoseChange: false,
+          forceRecookOnPoseChange: true,
           geometryCache: true
         })
         if (recook.geometryChanged) this.scheduleWarmStaticScene()
@@ -1161,7 +1184,8 @@ export class World {
       const py = desc.matrix.elements[13]!
       const pz = desc.matrix.elements[14]!
       const probeAt = new THREE.Vector3(px, py + 2, pz)
-      if (this.physics.probeSceneMeshDownAt(probeAt, 16) !== null) hits++
+      // Entity pivots are often far from mesh extents — boot placement uses a wide horizontal gate.
+      if (this.physics.probeSceneMeshDownAt(probeAt, 24, 48) !== null) hits++
     }
     return { hits, sampled: descs.length }
   }
@@ -1231,9 +1255,11 @@ export class World {
     if (!this.collidersLoadingComplete) return
     const pending = this.colliderCookQueue.size
     const delta = pending - queueBefore
+    const nearPlayer = this.countNearPlayerColliderQueue()
     if (
       pending >= World.RUNTIME_COLLIDER_BURST_QUEUE ||
-      delta >= World.RUNTIME_COLLIDER_BURST_QUEUE
+      delta >= World.RUNTIME_COLLIDER_BURST_QUEUE ||
+      nearPlayer >= 4
     ) {
       this.runtimeColliderBurstUntil = performance.now() + World.RUNTIME_COLLIDER_BURST_MS
       clientDebugLog.log(
@@ -1330,6 +1356,10 @@ export class World {
     for (const physId of queueOrder) {
       if (toCook.length >= budget) break
       if (loadingPass) {
+        this.sceneScript.flushSceneGraphMatrices()
+        this.sceneScript.refreshColliderBeforeCook(physId)
+      } else if (options?.initialOnly && !this.physics.hasStaticActor(physId)) {
+        // Composite/theatre spawns — parent transforms must settle before first PhysX cook.
         this.sceneScript.flushSceneGraphMatrices()
         this.sceneScript.refreshColliderBeforeCook(physId)
       } else {
@@ -1752,12 +1782,24 @@ export class World {
           ` nearestGltf=${nearestGltf !== null ? `${nearestGltf.toFixed(1)}m` : 'none'}` +
           (placementHits.sampled > 0 ? ` physPlacement=${placementHits.hits}/${placementHits.sampled}` : '')
       )
-      if (placementHits.sampled > 0 && placementHits.hits === 0) {
+      const spawnStaticProbe = this.physics.debugProbeStaticHit(3)
+      const spawnBlocked =
+        placementHits.sampled > 0 &&
+        placementHits.hits === 0 &&
+        spawnStaticProbe.distance === null &&
+        finalRegistered < finalGltfCount
+      if (spawnBlocked) {
         console.error(
-          `[World] PhysX GLTF colliders registered but placement probes missed all ${placementHits.sampled} nearest actors — recook or check cook failures`
+          `[World] PhysX GLTF colliders incomplete — registered=${finalRegistered}/${finalGltfCount}` +
+            ` placement=${placementHits.hits}/${placementHits.sampled} staticProbe=none`
+        )
+      } else if (placementHits.sampled > 0 && placementHits.hits === 0) {
+        console.warn(
+          `[World] spawn placement probes missed ${placementHits.sampled} nearest GLTF origins` +
+            ` (open spawn / wide meshes — staticProbe=${spawnStaticProbe.distance !== null ? `${spawnStaticProbe.distance.toFixed(1)}m` : 'none'})`
         )
       }
-      if (finalGltfCount >= 50 && downProbe === null) {
+      if (finalGltfCount >= 50 && downProbe === null && nearestGltf !== null && nearestGltf < 4) {
         let descProbeHits = 0
         let sampled = 0
         for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
@@ -1768,12 +1810,14 @@ export class World {
           const py = desc.matrix.elements[13]!
           const pz = desc.matrix.elements[14]!
           const probeAt = new THREE.Vector3(px, py + 2, pz)
-          if (this.physics.probeSceneMeshDownAt(probeAt, 16) !== null) descProbeHits++
+          if (this.physics.probeSceneMeshDownAt(probeAt, 24, 48) !== null) descProbeHits++
         }
-        console.warn(
-          `[World] spawn probe missed scene meshes — nearestDesc=${nearestGltf !== null ? `${nearestGltf.toFixed(1)}m` : 'none'}` +
-            ` descProbes=${descProbeHits}/${sampled}`
-        )
+        if (descProbeHits === 0) {
+          console.warn(
+            `[World] spawn area lacks walkable scene meshes under nearest GLTF origins` +
+              ` (nearest=${nearestGltf.toFixed(1)}m descProbes=0/${sampled})`
+          )
+        }
       }
       onProgress?.('Collisions ready', 0.96)
     } finally {

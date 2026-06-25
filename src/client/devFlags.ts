@@ -12,3 +12,10 @@ export function skipRemoteAvatars(): boolean {
   if (params?.has('noremote')) return true
   return false
 }
+
+/** Skip Genesis theatre `runShowSetup` + Scene 11/12 composite registration (`?notheatre` / `?skiptheatre`). */
+export function skipTheatreSceneScript(): boolean {
+  const params = readSearchParams()
+  if (!params) return false
+  return params.has('notheatre') || params.has('skiptheatre')
+}

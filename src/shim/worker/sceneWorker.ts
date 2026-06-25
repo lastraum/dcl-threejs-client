@@ -1412,7 +1412,12 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     debugPointerDeliver = msg.debug?.pointerDeliver === true
     debugTweenDeliver = msg.debug?.tweenDeliver === true
     debugMessageArrival = msg.debug?.messageArrival === true
+    const skipTheatre = msg.debug?.skipTheatre === true
+    ;(globalThis as Record<string, unknown>).__THREEJS_SKIP_THEATRE__ = skipTheatre
     patchWorkerConsole()
+    if (skipTheatre) {
+      workerLog('log', '[sceneWorker] theatre skip enabled — runShowSetup + Scene 11/12 registration suppressed (?notheatre)')
+    }
     workerLog('log', 'scene worker boot — console forwarding active')
     bootCrdtSnapshot = msg.scene.bootCrdtSnapshot
       ? {

@@ -23,6 +23,8 @@ export type SceneWorkerDebugFlags = {
   tweenDeliver?: boolean
   /** Log every worker onmessage arrival (`onmessage #N type=…`). */
   messageArrival?: boolean
+  /** `?notheatre` — skip Genesis theatre runShowSetup + Scene 11/12 registration. */
+  skipTheatre?: boolean
 }
 
 export type SceneWorkerBoot = {

@@ -1072,9 +1072,9 @@ export class PhysXWorld {
   }
 
   /** GLTF/prop floor probe at spawn — excludes infinite ground so prewarm waits for scene meshes. */
-  probeSceneMeshDownAt(feet: THREE.Vector3, maxDrop = 12): number | null {
+  probeSceneMeshDownAt(feet: THREE.Vector3, maxDrop = 12, maxHoriz = MAX_GROUND_CONTACT_HORIZ): number | null {
     if (!this.scene) return null
-    const hit = this.raycastDownAt(feet, SCENE_MESH_GROUND_MASK, maxDrop)
+    const hit = this.raycastDownAt(feet, SCENE_MESH_GROUND_MASK, maxDrop, maxHoriz)
     return hit?.distance ?? null
   }
 

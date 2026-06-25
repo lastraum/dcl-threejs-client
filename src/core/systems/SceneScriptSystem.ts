@@ -58,6 +58,7 @@ import type { AssetCache } from '../../rendering/AssetCache'
 import type { SceneHost } from '../../rendering/SceneHost'
 import type { PlayerMirrorIdentity } from '../../bridge/playerMirrorIdentity'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
+import { skipTheatreSceneScript } from '../../client/devFlags'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
 import { TriggerAreaSystem } from '../../input/TriggerAreaSystem'
 import { isTriggerAreaVerbose } from '../../input/triggerAreaConfig'
@@ -688,10 +689,12 @@ export class SceneScriptSystem {
     this.collidersCookCallback?.(entity)
   }
 
-  /** Loading-screen tick — drain queued collider + pointer structure work in one pass. */
+  /**
+   * Loading-screen tick — defer collider extract until prewarm/boot (syncCollisionForce).
+   * Extraction during attach blocked the 900+ GLTF hydration burst on plaza-scale scenes.
+   */
   flushHydrationCollisionWork(): void {
-    this.syncCollision()
-    this.flushPointerStructureIfDirty()
+    // colliderStructureDirty accumulates; prewarmPhysicsColliders runs the authoritative full walk.
   }
 
   /** Full GLTF/MeshCollider extraction — hydration, spawn cook, and force-recook only. */
@@ -906,7 +909,8 @@ export class SceneScriptSystem {
       type: 'boot',
       debug: {
         pointerDeliver: POINTER_VERBOSE,
-        tweenDeliver: isTweenVerbose()
+        tweenDeliver: isTweenVerbose(),
+        skipTheatre: skipTheatreSceneScript()
       },
       scene: {
         title: scene.title,
@@ -2493,8 +2497,11 @@ export class SceneScriptSystem {
     }
 
     if (structureTouched) {
-      for (const entity of structureEntities) {
-        if (!this.colliderStructureDirty.has(entity)) this.collidersCookCallback?.(entity)
+      const cooked = structureEntities.filter((entity) => !this.colliderStructureDirty.has(entity))
+      if (cooked.length >= 8) {
+        this.collidersCookCallback?.()
+      } else {
+        for (const entity of cooked) this.collidersCookCallback?.(entity)
       }
       this.refreshPointerTargets()
     }

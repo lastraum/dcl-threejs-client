@@ -1,6 +1,7 @@
 import type { Entity, IEngine } from '@dcl/ecs'
 import * as components from '@dcl/ecs/dist/components'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
+import { patchTheatreSkip } from './theatreSkipPatch'
 
 const STOCK_CHECKER_RE = /Missing MeshCollider component on entity/
 
@@ -253,6 +254,14 @@ export function patchSceneBundle(code: string, onStep?: PatchSceneBundleStepLog)
   let stepAt = performance.now()
   let out = patchCompositeSrcAlias(code)
   onStep?.('composite alias', performance.now() - stepAt)
+  stepAt = performance.now()
+  const theatre = patchTheatreSkip(out)
+  out = theatre.code
+  if (theatre.applied.length) {
+    onStep?.(`theatre skip hooks (${theatre.applied.join(',')})`, performance.now() - stepAt)
+  } else if (theatre.missed.length) {
+    onStep?.(`theatre skip missed (${theatre.missed.join(',')})`, performance.now() - stepAt)
+  }
   stepAt = performance.now()
   out = wrapAddTransportCalls(out, ADD_TRANSPORT_WRAP_LIMIT)
   onStep?.('addTransport capture', performance.now() - stepAt)

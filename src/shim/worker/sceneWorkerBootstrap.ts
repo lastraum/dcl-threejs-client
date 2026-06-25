@@ -5,11 +5,13 @@ export type SceneWorkerPriorityMessage =
   | { type: 'inject-pointer-click'; body: unknown }
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
   | { type: 'pause-scene-ticks'; paused?: boolean }
+  | { type: 'pause-scene-onupdate'; paused?: boolean }
 
 const PRIORITY_TYPES = new Set([
   'inject-pointer-click',
   'pointer-crdt-deliver',
-  'pause-scene-ticks'
+  'pause-scene-ticks',
+  'pause-scene-onupdate'
 ])
 
 const pending: SceneWorkerPriorityMessage[] = []

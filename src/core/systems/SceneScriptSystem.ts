@@ -2113,14 +2113,23 @@ export class SceneScriptSystem {
     this.performanceTier = tier
   }
 
-  /** Pause worker scene onUpdate during GLB hydration — composite already kickstarted post-onStart. */
+  /** Full pause — pointer delivery only; blocks engine.update (do not use during hydration). */
   setSceneWorkerTicksPaused(paused: boolean): void {
     this.worker?.postMessage({ type: 'pause-scene-ticks', paused } satisfies MainToWorker)
+  }
+
+  /**
+   * Hydration perf — skip exports.onUpdate (ChessGameManager, area scripts) while
+   * engine.update keeps publishing composite GltfContainer CRDT.
+   */
+  setSceneWorkerOnUpdatePaused(paused: boolean): void {
+    this.worker?.postMessage({ type: 'pause-scene-onupdate', paused } satisfies MainToWorker)
   }
 
   /** Scene + PhysX colliders ready — throttle worker onUpdate (called from World after boot cook). */
   notifyPlayReady(): void {
     this.bridgeSyncEvery = BRIDGE_ECS_SYNC_RUNTIME
+    this.setSceneWorkerOnUpdatePaused(false)
     this.setSceneWorkerTicksPaused(false)
     if (this.playReadyNotified) return
     this.playReadyNotified = true

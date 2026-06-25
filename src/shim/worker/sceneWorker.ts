@@ -105,6 +105,9 @@ let adaptiveLowPerfMode = false
 let sceneUpdateAbortStreak = 0
 let sceneUpdateAbortWindowStart = 0
 let sceneTicksPaused = false
+/** Hydration — block heavy exports.onUpdate; engine.update still publishes composite GLTFs. */
+let sceneOnUpdatePaused = false
+const HYDRATION_ENGINE_TICK_INTERVAL_MS = 200
 let sceneUpdateAbortTimer: ReturnType<typeof setTimeout> | null = null
 let sceneTickTimer: ReturnType<typeof setInterval> | null = null
 /** Set when inject arrives before sceneEngine is bound — drained after bundle eval. */
@@ -1168,13 +1171,16 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
     const pointerPending =
       sceneTicksPaused || pendingInjectPointer || queuedPointerDeliver || pointerDeliveryInFlight
 
+    const engineTickInterval = sceneOnUpdatePaused
+      ? HYDRATION_ENGINE_TICK_INTERVAL_MS
+      : SCENE_TICK_BASE_INTERVAL_MS
     if (
       sceneEngine &&
       !sceneUpdateInFlight &&
       !sceneUpdatePromiseActive &&
       !pointerPending &&
       !engineTickInFlight &&
-      now - lastEngineTickAt >= SCENE_TICK_BASE_INTERVAL_MS
+      now - lastEngineTickAt >= engineTickInterval
     ) {
       scheduleEngineTick(dt)
     }
@@ -1183,6 +1189,7 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
       ENABLE_FULL_SCENE_ONUPDATE &&
       sceneUpdate &&
       !sceneTicksPaused &&
+      !sceneOnUpdatePaused &&
       !sceneUpdateInFlight &&
       !sceneUpdatePromiseActive &&
       !pointerDeliveryInFlight &&
@@ -1641,6 +1648,14 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
       debugPointerDeliver,
       'log',
       `[sceneWorker] scene ticks ${sceneTicksPaused ? 'paused' : 'resumed'}`
+    )
+    return
+  }
+  if (msg.type === 'pause-scene-onupdate') {
+    sceneOnUpdatePaused = msg.paused !== false
+    workerLog(
+      'log',
+      `[sceneWorker] scene onUpdate ${sceneOnUpdatePaused ? 'paused (hydration)' : 'resumed'}`
     )
     return
   }

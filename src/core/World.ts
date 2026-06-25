@@ -676,7 +676,7 @@ export class World {
       this.remoteAvatars?.setHydrationLoading(true)
     }
 
-    this.sceneScript.setSceneWorkerTicksPaused(true)
+    this.sceneScript.setSceneWorkerOnUpdatePaused(true)
     const hydration = waitForSceneAssets(scene, this.sceneScript, this.assets, onProgress, {
       ...options,
       onPrimeRender: () => this.primeRender(),
@@ -989,7 +989,8 @@ export class World {
       nearPlayerPending >= 4
     ) {
       let passes = 0
-      const maxPasses = burstActive ? 16 : nearPlayerPending >= 4 ? 8 : 5
+      // Spread large post-composite queues across frames — avoid 200+ cooks in one async tick.
+      const maxPasses = burstActive ? 3 : nearPlayerPending >= 4 ? 2 : 1
       while (this.colliderCookQueue.size > 0 && passes < maxPasses) {
         this.drainColliderCookQueue({ initialOnly: true })
         passes++

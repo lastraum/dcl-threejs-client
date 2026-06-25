@@ -140,7 +140,7 @@ export async function loadCompositeScene(
       const node = nodes.get(job.entityId)
       if (!node) return
       try {
-        const model = await cache.clone(job.url, job.hash)
+        const model = await cache.clone(job.url, job.hash, { sceneGltf: true })
         model.name = `gltf-${job.entityId}`
         node.add(model)
       } catch (err) {

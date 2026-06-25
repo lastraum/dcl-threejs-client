@@ -72,7 +72,7 @@ async function placeProp(
   rotY: number,
   scale: number
 ): Promise<void> {
-  const clone = await cache.clone(catalystAssetUrl(hash), hash)
+  const clone = await cache.clone(catalystAssetUrl(hash), hash, { landscape: true })
   clone.rotation.y = rotY
   if (scale !== 1) clone.scale.setScalar(scale)
   clone.position.set(lx, 0, lz)

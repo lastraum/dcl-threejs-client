@@ -69,8 +69,8 @@ const PLAYER_TURN_SMOOTH = 12
 const FACING_SPEED_MIN = 0.12
 const GROUND_COYOTE_SECONDS = 0.15
 const AIR_JUMP_DELAY = 0.2
-/** Drop from above spawn so scene floors above y=0 win over the infinite ground plane. */
-const SPAWN_GROUND_PROBE_LIFT = 4
+/** Scene has no spawnPoints / default y=0 — start slightly above and let CCT fall. */
+const DEFAULT_SPAWN_FEET_Y = 1
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v))
@@ -149,42 +149,12 @@ export class PlayerSystem {
     this.readComponents = readComponents
     this.walkBounds = walkBounds
     this.input = new PlayerInput(this.host.renderer.domElement)
-    const spawnPos = dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y, spawn.z))
-    const probeDrop = SPAWN_GROUND_PROBE_LIFT + 64
-    this.physics.spawnPlayer(
-      dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y + SPAWN_GROUND_PROBE_LIFT, spawn.z))
-    )
-    // CCT obstacle cache must see static GLTF/MeshCollider actors registered during hydration.
+    const feetY = spawn.y <= 0.01 ? DEFAULT_SPAWN_FEET_Y : spawn.y
+    const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
+    this.physics.spawnPlayer(spawnThree)
     this.physics.warmStaticScene()
-    const liftedFeet = this.physics.positionOut
-    if (
-      !this.physics.snapFeetToSceneMesh(liftedFeet, probeDrop) &&
-      !this.physics.snapToGroundBelow(probeDrop)
-    ) {
-      this.physics.snapToGroundBelow(probeDrop, { preferSceneMeshes: false })
-    }
-    this.physics.invalidateControllerCache()
-    let spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
-    if (!spawnGrounded) {
-      this.physics.teleport(
-        dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y + SPAWN_GROUND_PROBE_LIFT, spawn.z))
-      )
-      const retryFeet = this.physics.positionOut
-      if (
-        !this.physics.snapFeetToSceneMesh(retryFeet, probeDrop) &&
-        !this.physics.snapToGroundBelow(probeDrop)
-      ) {
-        this.physics.snapToGroundBelow(probeDrop, { preferSceneMeshes: false })
-      }
-      this.physics.invalidateControllerCache()
-      spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
-    }
-    if (!spawnGrounded) {
-      this.physics.teleport(spawnPos)
-      spawnGrounded = true
-    }
-    this.grounded = spawnGrounded
-    this.groundCoyote = spawnGrounded ? GROUND_COYOTE_SECONDS : 0
+    this.grounded = false
+    this.groundCoyote = 0
     this.physics.attachCapsuleDebug(this.root)
     this.enabled = true
     this.host.setOrbitEnabled(false)
@@ -197,9 +167,8 @@ export class PlayerSystem {
     this.camDistance = CAM_DISTANCE_DEFAULT
 
     if (spawn.cameraTarget) {
-      const spawnPos = dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y, spawn.z))
-      this.applyAvatarLookTarget(spawnPos, spawn.cameraTarget)
-      this.applyCameraLookTarget(spawnPos, spawn.cameraTarget)
+      this.applyAvatarLookTarget(spawnThree, spawn.cameraTarget)
+      this.applyCameraLookTarget(spawnThree, spawn.cameraTarget)
     }
 
     this.root.position.copy(this.physics.positionOut)

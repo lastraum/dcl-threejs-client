@@ -23,6 +23,8 @@ export type SceneWorkerDebugFlags = {
   tweenDeliver?: boolean
   /** Log every worker onmessage arrival (`onmessage #N type=…`). */
   messageArrival?: boolean
+  /** `?notheatre` — skip Genesis theatre runShowSetup + Scene 11/12 registration. */
+  skipTheatre?: boolean
 }
 
 export type SceneWorkerBoot = {
@@ -204,6 +206,8 @@ export type MainToWorker =
   | { type: 'engine-api-enqueue'; events: EngineApiEvent[] }
   | { type: 'comms-receive-binary'; sender: string; data: Uint8Array }
   | { type: 'pause-scene-ticks'; paused?: boolean }
+  /** Hydration — skip exports.onUpdate only; engine.update still runs for composite CRDT. */
+  | { type: 'pause-scene-onupdate'; paused?: boolean }
   | { type: 'scene-play-ready'; performanceTier?: PerformanceTier }
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
   | { type: 'tween-state-deliver'; data: Uint8Array[] }

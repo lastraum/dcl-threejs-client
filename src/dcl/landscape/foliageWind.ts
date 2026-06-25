@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { tuneLandscapeFoliageMaterial } from '../../rendering/LandscapeAssetSanitizer'
 
 export type LandscapeMeshPart = 'foliage' | 'bark' | 'collider' | 'other'
 
@@ -191,6 +192,7 @@ export function prepareFoliageWindMaterial(
   const windMat = cloneForWind(material)
   if (!windMat) return material
 
+  tuneLandscapeFoliageMaterial(windMat, material.name)
   appendFoliageWindShader(windMat, instanced)
   windMaterialBySource.set(cacheKey, windMat)
   windMaterials.add(windMat)

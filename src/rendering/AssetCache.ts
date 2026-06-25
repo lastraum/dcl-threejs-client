@@ -7,6 +7,8 @@ import type { ContentFile } from '../dcl/content/types'
 import { buildParseUrlMappings } from './DclTextureResolver'
 import {
   enableSceneGltfVertexColors,
+  retuneScenePlantCutoutMaterials,
+  sanitizeLandscapeGltf,
   sanitizeSceneGltfColliders,
   sanitizeSceneGltfMaterials
 } from './LandscapeAssetSanitizer'
@@ -24,6 +26,19 @@ import { clearLocomotionClipCache } from '../avatar/locomotionClipCache'
 import { disposeSessionAudioBufferCache, getSessionAudioBufferCache } from '../media/AudioBufferCache'
 import { collectManifestAssets } from './manifestAssets'
 import { preferFetchTextureLoad, proxiedTextureUrl } from './textureProxy'
+
+const LANDSCAPE_CACHE_SUFFIX = '#landscape'
+
+function glbCacheKey(hashOrUrl: string, landscape?: boolean): string {
+  const base = normalizeGlbCacheKey(hashOrUrl)
+  return landscape ? `${base}${LANDSCAPE_CACHE_SUFFIX}` : base
+}
+
+function glbBytesKey(cacheKey: string): string {
+  return cacheKey.endsWith(LANDSCAPE_CACHE_SUFFIX)
+    ? cacheKey.slice(0, -LANDSCAPE_CACHE_SUFFIX.length)
+    : cacheKey
+}
 
 export type CachedGltf = {
   root: THREE.Group
@@ -239,8 +254,12 @@ export class AssetCache {
     }
   }
 
-  async load(url: string, hash?: string, options?: { emote?: boolean; wearable?: boolean; quiet?: boolean }): Promise<CachedGltf> {
-    const key = normalizeGlbCacheKey(hash ?? url)
+  async load(
+    url: string,
+    hash?: string,
+    options?: { emote?: boolean; wearable?: boolean; quiet?: boolean; landscape?: boolean }
+  ): Promise<CachedGltf> {
+    const key = glbCacheKey(hash ?? url, options?.landscape)
     const hit = this.cache.get(key)
     if (hit) return hit
 
@@ -281,10 +300,10 @@ export class AssetCache {
   private async loadFromDbOrNetwork(
     url: string,
     key: string,
-    options?: { emote?: boolean; wearable?: boolean; quiet?: boolean }
+    options?: { emote?: boolean; wearable?: boolean; quiet?: boolean; landscape?: boolean }
   ): Promise<CachedGltf> {
 
-    const gltf = await this.fetchAndParseGltf(url, key, options?.quiet)
+    const gltf = await this.fetchAndParseGltf(url, glbBytesKey(key), options?.quiet)
     const entry: CachedGltf = {
       root: gltf.scene,
       animations: gltf.animations ?? []
@@ -293,6 +312,8 @@ export class AssetCache {
       sanitizeSceneGltfMaterials(entry.root)
       prepareAvatarMaterials(entry.root)
       prepareWearableCacheRoot(entry.root)
+    } else if (options?.landscape) {
+      sanitizeLandscapeGltf(entry.root)
     } else if (!options?.emote) {
       sanitizeSceneGltfColliders(entry.root)
       sanitizeSceneGltfMaterials(entry.root)
@@ -346,10 +367,21 @@ export class AssetCache {
    * Returns a scene-graph clone for a new entity. Geometries and materials stay shared
    * with the cached GLB (one GPU upload per hash) — separate draw calls per instance.
    */
-  async clone(url: string, hash?: string): Promise<THREE.Group> {
-    const { root } = await this.load(url, hash)
+  async clone(
+    url: string,
+    hash?: string,
+    options?: { landscape?: boolean; sceneGltf?: boolean }
+  ): Promise<THREE.Group> {
+    const { root } = await this.load(url, hash, {
+      landscape: options?.landscape,
+      quiet: options?.landscape
+    })
     const instance = cloneGltfInstance(root)
-    enableSceneGltfVertexColors(instance)
+    if (options?.sceneGltf) {
+      enableSceneGltfVertexColors(instance)
+    } else if (!options?.landscape) {
+      retuneScenePlantCutoutMaterials(instance)
+    }
     return instance
   }
 

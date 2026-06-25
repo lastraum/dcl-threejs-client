@@ -58,6 +58,7 @@ import type { AssetCache } from '../../rendering/AssetCache'
 import type { SceneHost } from '../../rendering/SceneHost'
 import type { PlayerMirrorIdentity } from '../../bridge/playerMirrorIdentity'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
+import { skipTheatreSceneScript } from '../../client/devFlags'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
 import { TriggerAreaSystem } from '../../input/TriggerAreaSystem'
 import { isTriggerAreaVerbose } from '../../input/triggerAreaConfig'
@@ -299,7 +300,6 @@ export class SceneScriptSystem {
       scene,
       () => this.bridge!.getEntityNodes(),
       () => this.getSpatialAudioAnchors(),
-      () => this.host?.camera ?? null,
       () => this.bindLiveKitVideo,
       this.recordRendererAppend,
       this.recordRendererLww
@@ -681,9 +681,19 @@ export class SceneScriptSystem {
   flushIncrementalColliders(entity: Entity): void {
     this.colliderStructureDirty.add(entity)
     this.pointerStructureDirty = true
+    // Hydration batches collider extract on the loading tick — per-attach sync blocked attach bursts.
+    if (this.bridge?.isAssetHydrationMode()) return
     this.syncCollision()
     this.flushPointerStructureIfDirty()
     this.collidersCookCallback?.(entity)
+  }
+
+  /**
+   * Loading-screen tick — defer collider extract until prewarm/boot (syncCollisionForce).
+   * Extraction during attach blocked the 900+ GLTF hydration burst on plaza-scale scenes.
+   */
+  flushHydrationCollisionWork(): void {
+    // colliderStructureDirty accumulates; prewarmPhysicsColliders runs the authoritative full walk.
   }
 
   /** Full GLTF/MeshCollider extraction — hydration, spawn cook, and force-recook only. */
@@ -898,7 +908,8 @@ export class SceneScriptSystem {
       type: 'boot',
       debug: {
         pointerDeliver: POINTER_VERBOSE,
-        tweenDeliver: isTweenVerbose()
+        tweenDeliver: isTweenVerbose(),
+        skipTheatre: skipTheatreSceneScript()
       },
       scene: {
         title: scene.title,
@@ -2091,7 +2102,6 @@ export class SceneScriptSystem {
     this.pendingDiff.clear()
     this.pointerStructureDirty = true
     await this.bridge.sync(view)
-    this.colliderFullWalkRequested = true
     this.flushPointerStructureIfDirty()
   }
 
@@ -2102,9 +2112,24 @@ export class SceneScriptSystem {
     this.performanceTier = tier
   }
 
+  /** Full pause — pointer delivery only; blocks engine.update (do not use during hydration). */
+  setSceneWorkerTicksPaused(paused: boolean): void {
+    this.worker?.postMessage({ type: 'pause-scene-ticks', paused } satisfies MainToWorker)
+  }
+
+  /**
+   * Hydration perf — skip exports.onUpdate (ChessGameManager, area scripts) while
+   * engine.update keeps publishing composite GltfContainer CRDT.
+   */
+  setSceneWorkerOnUpdatePaused(paused: boolean): void {
+    this.worker?.postMessage({ type: 'pause-scene-onupdate', paused } satisfies MainToWorker)
+  }
+
   /** Scene + PhysX colliders ready — throttle worker onUpdate (called from World after boot cook). */
   notifyPlayReady(): void {
     this.bridgeSyncEvery = BRIDGE_ECS_SYNC_RUNTIME
+    this.setSceneWorkerOnUpdatePaused(false)
+    this.setSceneWorkerTicksPaused(false)
     if (this.playReadyNotified) return
     this.playReadyNotified = true
     this.worker?.postMessage({
@@ -2486,18 +2511,17 @@ export class SceneScriptSystem {
     }
 
     if (structureTouched) {
-      for (const entity of structureEntities) {
-        if (!this.colliderStructureDirty.has(entity)) this.collidersCookCallback?.(entity)
+      const cooked = structureEntities.filter((entity) => !this.colliderStructureDirty.has(entity))
+      if (cooked.length >= 8) {
+        this.collidersCookCallback?.()
+      } else {
+        for (const entity of cooked) this.collidersCookCallback?.(entity)
       }
       this.refreshPointerTargets()
     }
 
     if (poseChangedEntities.length > 0) {
       this.collidersPoseCallback?.(poseChangedEntities)
-      this.colliderPosesSyncedThisPass = true
-    } else if (structureTouched) {
-      // Fast-path structure sync can refresh matrixWorld without marking poseDirty — slide PhysX.
-      this.collidersPoseCallback?.(structureEntities)
       this.colliderPosesSyncedThisPass = true
     }
   }

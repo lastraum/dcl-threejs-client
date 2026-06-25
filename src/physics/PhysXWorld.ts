@@ -83,7 +83,10 @@ const GROUND_STICK_DISTANCE = 0.55
 const MAX_PLATFORM_DELTA_HORIZ = 1.25
 const MAX_PLATFORM_DELTA_TOTAL = 2.5
 /** Ground-contact tread must stay under the capsule column — not a distant shape on the same actor. */
+/** Locomotion ground-stick — tight column avoids grabbing distant elevator treads. */
 const MAX_GROUND_CONTACT_HORIZ = 2
+/** Spawn / boot probes — entity pivots can sit far from mesh extents (plaza GLTFs). */
+const SPAWN_GROUND_PROBE_HORIZ = 48
 /** Tread Y must not jump more than this vs baseline (duplicate mesh at lift bottom). */
 const MAX_GROUND_CONTACT_VERT = 1.5
 /** Always-on floor at y=0 — large thin static box (PxPlane is unsupported by CCT/sweep queries), no render mesh. */
@@ -1072,9 +1075,9 @@ export class PhysXWorld {
   }
 
   /** GLTF/prop floor probe at spawn — excludes infinite ground so prewarm waits for scene meshes. */
-  probeSceneMeshDownAt(feet: THREE.Vector3, maxDrop = 12): number | null {
+  probeSceneMeshDownAt(feet: THREE.Vector3, maxDrop = 12, maxHoriz = MAX_GROUND_CONTACT_HORIZ): number | null {
     if (!this.scene) return null
-    const hit = this.raycastDownAt(feet, SCENE_MESH_GROUND_MASK, maxDrop)
+    const hit = this.raycastDownAt(feet, SCENE_MESH_GROUND_MASK, maxDrop, maxHoriz)
     return hit?.distance ?? null
   }
 
@@ -1098,7 +1101,14 @@ export class PhysXWorld {
     )
     if (!didHit) return null
     const nbHits = this.raycastResult.getNbAnyHits?.() ?? 1
-    return this.pickWalkableGroundHit(this.raycastResult, nbHits, GROUND_RAY_OFFSET, feet, maxHoriz)
+    return this.pickWalkableGroundHit(
+      this.raycastResult,
+      nbHits,
+      GROUND_RAY_OFFSET,
+      feet,
+      maxHoriz,
+      maxDistance
+    )
   }
 
   private sweepDownAt(
@@ -1124,7 +1134,14 @@ export class PhysXWorld {
     )
     if (!didHit) return null
     const nbHits = this.sweepResult.getNbAnyHits?.() ?? 1
-    return this.pickWalkableGroundHit(this.sweepResult, nbHits, probeOffset, feet, maxHoriz)
+    return this.pickWalkableGroundHit(
+      this.sweepResult,
+      nbHits,
+      probeOffset,
+      feet,
+      maxHoriz,
+      maxDistance
+    )
   }
 
   debugProbeStaticHit(maxDistance = 2.5): { distance: number | null; staticCount: number; gltfCount: number } {
@@ -1227,10 +1244,15 @@ export class PhysXWorld {
     nbHits: number,
     probeOffset: number,
     feet?: THREE.Vector3,
-    maxHoriz = MAX_GROUND_CONTACT_HORIZ
+    maxHoriz = MAX_GROUND_CONTACT_HORIZ,
+    maxDrop = GROUND_CHECK_DISTANCE
   ): GroundSweepHit | null {
     let best: GroundSweepHit | null = null
     const maxHorizSq = maxHoriz * maxHoriz
+    const spawnProbe = maxHoriz >= SPAWN_GROUND_PROBE_HORIZ
+    const maxVertBelow = spawnProbe
+      ? Math.max(MAX_GROUND_CONTACT_VERT, maxDrop)
+      : MAX_GROUND_CONTACT_VERT
     for (let i = 0; i < nbHits; i++) {
       const hit = hits.getAnyHit(i)
       const normal = new THREE.Vector3(hit.normal.x, hit.normal.y, hit.normal.z)
@@ -1240,7 +1262,7 @@ export class PhysXWorld {
         const dx = point.x - feet.x
         const dz = point.z - feet.z
         if (dx * dx + dz * dz > maxHorizSq) continue
-        if (point.y < feet.y - MAX_GROUND_CONTACT_VERT) continue
+        if (point.y < feet.y - maxVertBelow) continue
         if (point.y > feet.y + MAX_GROUND_CONTACT_VERT + 0.5) continue
       }
       const distance = hit.distance
@@ -1700,9 +1722,9 @@ export class PhysXWorld {
     return isSignificantPlatformDelta(sticky.delta) ? sticky.delta : null
   }
 
-  /** Scene GLTF/prop floor only — spawn snap after boot cook (skips infinite y=0). */
-  snapFeetToSceneMesh(feet: THREE.Vector3, maxDrop = 32): boolean {
-    const hit = this.probeSceneMeshDownAt(feet, maxDrop)
+  /** Scene GLTF/prop floor only — optional snap (skips infinite y=0). */
+  snapFeetToSceneMesh(feet: THREE.Vector3, maxDrop = 32, maxHoriz = SPAWN_GROUND_PROBE_HORIZ): boolean {
+    const hit = this.probeSceneMeshDownAt(feet, maxDrop, maxHoriz)
     if (hit === null) return false
     const targetY = feet.y - hit
     if (Math.abs(targetY - this.position.y) < 0.02) return false

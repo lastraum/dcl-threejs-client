@@ -49,7 +49,7 @@ export async function loadMeshTemplates(
   cache: AssetCache,
   hash: string
 ): Promise<MeshTemplate[]> {
-  const { root } = await cache.load(catalystAssetUrl(hash), hash)
+  const { root } = await cache.load(catalystAssetUrl(hash), hash, { landscape: true })
   return collectMeshTemplates(root)
 }
 
@@ -183,7 +183,7 @@ async function measureBaseOffset(cache: AssetCache, hash: string): Promise<numbe
   const hit = baseOffsetCache.get(hash)
   if (hit !== undefined) return hit
 
-  const clone = await cache.clone(catalystAssetUrl(hash), hash)
+  const clone = await cache.clone(catalystAssetUrl(hash), hash, { landscape: true })
   const box = new THREE.Box3().setFromObject(clone)
   const y = (Number.isFinite(box.min.y) ? -box.min.y : 0) + (PROP_Y_SINK[hash] ?? 0)
   baseOffsetCache.set(hash, y)

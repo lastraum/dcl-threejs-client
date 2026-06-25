@@ -97,7 +97,7 @@ export async function buildParcelLandscape(
     const skipSceneGround = authorTerrain && role === 'scene'
     if (!proceduralDesert && !skipSceneGround) {
       const groundHash = role === 'scene' ? profile.sceneGround : profile.paddingGround
-      const ground = await cache.clone(catalystAssetUrl(groundHash), groundHash)
+      const ground = await cache.clone(catalystAssetUrl(groundHash), groundHash, { landscape: true })
       ground.position.set(
         EMPTY_LAND_GROUND_OFFSET.x,
         EMPTY_LAND_GROUND_OFFSET.y,

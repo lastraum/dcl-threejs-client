@@ -1136,7 +1136,7 @@ export class ThreeBridge {
         this.gltfBudgetRemaining--
         try {
           // Single pipeline for cold / IDB / memory: clone → load → bytes (prefetch/IDB/network) → parse → cache.
-          const clone = await this.cache.clone(url, isLocal ? url : hash)
+          const clone = await this.cache.clone(url, isLocal ? url : hash, { sceneGltf: true })
           obj.userData.gltfSrcKey = srcKey
           const hasGeometry = gltfInstanceHasGeometry(clone)
           if (!hasGeometry) {

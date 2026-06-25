@@ -182,8 +182,9 @@ function meshMaterials(mesh: THREE.Mesh): THREE.Material[] {
   return Array.isArray(mesh.material) ? mesh.material : [mesh.material]
 }
 
-/** GLTFLoader often omits vertexColors on PBR materials — required for editor terrain.glb. */
+/** GLTFLoader often omits vertexColors on PBR materials — editor terrain.glb only. */
 export function enableMeshVertexColors(mesh: THREE.Mesh): void {
+  if (!isAuthorTerrainMesh(mesh)) return
   if (!mesh.geometry.getAttribute('color')) return
   for (const material of meshMaterials(mesh)) {
     if (!material) continue
@@ -200,10 +201,11 @@ export function enableMeshVertexColors(mesh: THREE.Mesh): void {
   }
 }
 
-/** Re-apply vertex color flags on every instance attach (shared materials + hydration replays). */
+/** Re-apply author-terrain materials on scene GLTF instance attach (hydration replays). */
 export function enableSceneGltfVertexColors(root: THREE.Object3D): void {
   root.traverse((node) => {
     if (!(node instanceof THREE.Mesh)) return
+    if (!isAuthorTerrainMesh(node)) return
     enableMeshVertexColors(node)
     tuneAuthorTerrainMeshMaterial(node)
   })
@@ -222,8 +224,10 @@ export function sanitizeSceneGltfMaterials(root: THREE.Object3D): void {
     } else {
       node.material = simplifyMaterial(node.material)
     }
-    enableMeshVertexColors(node)
-    tuneAuthorTerrainMeshMaterial(node)
+    if (isAuthorTerrainMesh(node)) {
+      enableMeshVertexColors(node)
+      tuneAuthorTerrainMeshMaterial(node)
+    }
   })
 }
 

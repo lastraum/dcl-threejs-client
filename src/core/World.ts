@@ -59,6 +59,9 @@ import { LightManager } from '../rendering/LightManager'
 import { clearGeometryCookCache } from '../physics/geometryToPxMesh'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { skipRemoteAvatars } from '../client/devFlags'
+import { VrmPeerSync } from '../avatar/vrm/VrmPeerSync'
+import { clearVrmRamCache } from '../avatar/vrm/vrmRamCache'
+
 import { physxColliderDebug } from '../debug/PhysxColliderDebug'
 import { environmentDebug } from '../debug/EnvironmentDebug'
 import { platformMotionDebug } from '../debug/PlatformMotionDebug'
@@ -90,6 +93,7 @@ export class World {
   private ocean: SceneWater | null = null
   private player: PlayerSystem | null = null
   private remoteAvatars: RemoteAvatarManager | null = null
+  private readonly vrmPeerSync = new VrmPeerSync()
   private playerMode = !useOrbitMode()
   private editorPreviewMode = false
   private lastGltfColliderCount = 0
@@ -153,6 +157,17 @@ export class World {
 
     this.unsubEnvironmentDebug = environmentDebug.subscribe(() => this.applyEnvironmentDebugVisibility())
 
+    this.vrmPeerSync.attach(this.comms, {
+      onPeerVrmChanged: (address, contentHash) => {
+        if (skipRemoteAvatars()) return
+        this.remoteAvatars?.setPeerVrmHash(address, contentHash)
+      },
+      onPeerVrmBytesReady: (address, contentHash) => {
+        if (skipRemoteAvatars()) return
+        this.remoteAvatars?.onPeerVrmBytesReady(address, contentHash)
+      }
+    })
+
     this.remoteAvatars && this.comms.setHandlers({
       onPeerJoin: (address) => {
         if (skipRemoteAvatars()) return
@@ -163,6 +178,7 @@ export class World {
       },
       onPeerLeave: (address) => {
         if (skipRemoteAvatars()) return
+        this.vrmPeerSync.onPeerLeave(address)
         this.remoteAvatars?.removePeer(address)
       },
       onPeerTransform: (address, payload) => {
@@ -206,6 +222,8 @@ export class World {
   applyLogin(choice: LoginResult | null): void {
     this.session.applyLogin(choice)
     this.comms.setIdentity(this.session.getAddress(), this.session.getAuthIdentity())
+    this.vrmPeerSync.setLocalAddress(this.session.getAddress() ?? null)
+    void this.vrmPeerSync.refreshLocalEquipped(this.session.getAddress())
   }
 
   /** Local `/editor` preview — fly camera, no player controller, lightweight frame loop. */
@@ -469,11 +487,13 @@ export class World {
     this.comms.setCommsProfile(this.session.getCommsProfileEntity())
     this.comms.setLambdasUrl(scene.realm.lambdasUrl)
     this.remoteAvatars?.setLocalAddress(address)
+    this.vrmPeerSync.setLocalAddress(address)
     const connectResult = await this.comms.connectSceneRoom(this.buildCommsTarget(scene))
     if (connectResult.ok) {
       this.sceneCommsConnected = true
       clientDebugLog.log('comms', 'Early scene comms connected during hydration', { level: 'success' })
       onProgress?.('Receiving peer updates…')
+      await this.vrmPeerSync.onSceneConnected()
       return
     }
     if (connectResult.reason === 'duplicate_wallet') {
@@ -543,8 +563,12 @@ export class World {
         this.comms.setCommsProfile(this.session.getCommsProfileEntity())
         this.comms.setLambdasUrl(scene.realm.lambdasUrl)
         this.remoteAvatars?.setLocalAddress(address)
+        this.vrmPeerSync.setLocalAddress(address)
         const connectResult = await this.comms.connectSceneRoom(this.buildCommsTarget(scene))
         this.sceneCommsConnected = connectResult.ok
+        if (connectResult.ok) {
+          await this.vrmPeerSync.onSceneConnected()
+        }
         if (connectResult.ok) {
           onProgress?.('Connected to DCL comms')
         } else if (connectResult.reason === 'duplicate_wallet') {
@@ -764,6 +788,7 @@ export class World {
         }
 
         if (!skipRemoteAvatars()) {
+          this.vrmPeerSync.gcStaleFetches()
           this.remoteAvatars?.update(delta)
         }
         this.comms.flushBroadcast()
@@ -1830,6 +1855,7 @@ export class World {
   async reloadLocalAvatar(): Promise<void> {
     if (!this.playerMode || !this.player) return
     await this.player.reloadAvatar()
+    await this.vrmPeerSync.onLocalEquipChanged(this.session.getAddress())
   }
 
   getEmoteWheelSlots() {
@@ -1992,6 +2018,8 @@ export class World {
     this.sceneScript.dispose()
     this.physics.dispose()
 
+    this.vrmPeerSync.detach()
+    clearVrmRamCache()
     this.comms.dispose()
     this.social.dispose()
 

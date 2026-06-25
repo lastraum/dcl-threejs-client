@@ -19,6 +19,7 @@ import { CommsTopicService } from './comms/CommsTopicService'
 import { LiveKitCommsSession } from './comms/LiveKitCommsSession'
 import { parseCommsSceneOrigin, realmBoundsFromParcels, type RealmBounds } from './comms/movementCompressed'
 import { encodeRfc4SceneBinaryPacket, Rfc4Router } from './comms/Rfc4Router'
+import { DAV_SCENE_ID } from '../avatar/vrm/dclClientAvatar'
 import { Rfc5RoomClient } from './comms/Rfc5RoomClient'
 import { isLiveKitAdapter } from './comms/livekitAdapter'
 import type { ActiveVideoStream } from './comms/livekitVideoStreams'
@@ -97,6 +98,7 @@ export class CommsService {
   private sceneBinaryHandler: SceneBinaryHandler | null = null
   private chatHandler: SceneChatHandler | null = null
   private chatMediaHandler: SceneChatMediaHandler | null = null
+  private avatarVrmHandler: ((sender: string, data: Uint8Array) => void) | null = null
   private topicMessageHandler: ((topic: string, sender: string, payload: Uint8Array) => void) | null = null
   private lastBroadcast = 0
   private pendingTransform: AvatarTransformPayload | null = null
@@ -181,6 +183,11 @@ export class CommsService {
         if (transport === TransportType.World && this.sceneLiveKit.isConnected()) return
         if (transport === TransportType.Island) return
         this.chatMediaHandler?.({ senderAddress: address, data })
+      },
+      onPeerAvatarVrm: (address, data, transport) => {
+        if (transport === TransportType.World && this.sceneLiveKit.isConnected()) return
+        if (transport === TransportType.Island) return
+        this.avatarVrmHandler?.(address, data)
       }
     })
 
@@ -234,6 +241,35 @@ export class CommsService {
 
   setChatMediaHandler(handler: SceneChatMediaHandler | null): void {
     this.chatMediaHandler = handler
+  }
+
+  setAvatarVrmHandler(handler: ((sender: string, data: Uint8Array) => void) | null): void {
+    this.avatarVrmHandler = handler
+  }
+
+  /** DAV v1 — custom VRM P2P on RFC4 Scene `dcl.client.avatar`. */
+  async sendSceneAvatarVrm(envelopes: Uint8Array[]): Promise<boolean> {
+    const sessions = this.liveKitChatSessions()
+    if (!sessions.length || !envelopes.length) return false
+    const paceEvery = envelopes.length > 8 ? 8 : 0
+    const paceMs = envelopes.length > 64 ? 8 : 2
+    let sent = false
+    for (const session of sessions) {
+      try {
+        for (let i = 0; i < envelopes.length; i++) {
+          const packet = encodeRfc4SceneBinaryPacket(DAV_SCENE_ID, envelopes[i]!)
+          await session.publishReliableData(packet)
+          if (paceEvery > 0 && i > 0 && i % paceEvery === 0) {
+            await new Promise((resolve) => setTimeout(resolve, paceMs))
+          }
+        }
+        sent = true
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        clientDebugLog.log('comms', `DAV publish failed: ${msg}`, { level: 'error' })
+      }
+    }
+    return sent
   }
 
   setTopicMessageHandler(

@@ -18,6 +18,7 @@ import type { ComposeOptions } from './AvatarComposer'
 import type { BodyShape } from './types'
 import { VrmAvatar } from './vrm/VrmAvatar'
 import { VrmLocomotionAnimations } from './vrm/VrmLocomotionAnimations'
+import { retargetGltfClipToVrm } from './vrm/mixamoRetarget'
 import { applyVrmPivotOffset } from './vrm/vrmFeetAlign'
 import { getEquippedVrmHash } from './vrm/vrmEquipStorage'
 import { loadVrmLibraryBytes } from './vrm/VrmLibrary'
@@ -74,9 +75,12 @@ export class LocalAvatar {
           this.pivot.add(this.model)
           applyVrmPivotOffset(this.pivot, this.vrmAvatar.vrm, this.model)
 
+          this.vrmAvatar.vrm.humanoid.autoUpdateHumanBones = false
+
           this.vrmLocomotion = new VrmLocomotionAnimations()
           try {
             await this.vrmLocomotion.bind(this.vrmAvatar.vrm, this.vrmAvatar.root)
+            console.info('[avatar] custom VRM equipped — locomotion active')
           } catch (err) {
             console.warn('[avatar] VRM locomotion bind failed — bind pose only', err)
             this.vrmLocomotion.dispose()
@@ -143,10 +147,10 @@ export class LocalAvatar {
   }
 
   async playEmote(emoteId: string, options: PlayEmoteOptions = {}): Promise<ResolvedProfileEmote | null> {
-    if (!this.model || !this.animations || this.renderMode === 'vrm') return null
+    if (!this.model) return null
 
     const normalizedId = emoteId.trim().toLowerCase()
-    if (this.animations.isProfileEmoteActive() && this.activeEmoteUrn === normalizedId) {
+    if (this.isProfileEmoteActive() && this.activeEmoteUrn === normalizedId) {
       return null
     }
 
@@ -176,6 +180,21 @@ export class LocalAvatar {
 
       const loop = options.loop ?? resolved.loop
       const emoteKey = resolved.urn.trim().toLowerCase()
+
+      if (this.renderMode === 'vrm' && this.vrmAvatar && this.vrmLocomotion) {
+        const clip = retargetGltfClipToVrm(cached.animations[0]!, cached.root, this.vrmAvatar.vrm)
+        if (clip.tracks.length === 0) {
+          console.warn(`[avatar] VRM emote retarget produced no tracks: ${resolved.url}`)
+          return null
+        }
+        if (this.vrmLocomotion.playProfileEmote(clip, loop)) {
+          this.activeEmoteUrn = emoteKey
+          return resolved
+        }
+        return null
+      }
+
+      if (!this.animations) return null
       if (this.animations.playProfileEmoteFromGltf(cached, loop, emoteKey)) {
         this.activeEmoteUrn = emoteKey
         return resolved
@@ -191,10 +210,17 @@ export class LocalAvatar {
   stopEmote(): void {
     this.emotePlaySeq++
     this.activeEmoteUrn = null
-    this.animations?.stopProfileEmote()
+    if (this.renderMode === 'vrm') {
+      this.vrmLocomotion?.stopProfileEmote()
+    } else {
+      this.animations?.stopProfileEmote()
+    }
   }
 
   isProfileEmoteActive(): boolean {
+    if (this.renderMode === 'vrm') {
+      return this.vrmLocomotion?.isProfileEmoteActive() ?? false
+    }
     return this.animations?.isProfileEmoteActive() ?? false
   }
 

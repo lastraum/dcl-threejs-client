@@ -17,6 +17,7 @@ import {
   tryParseChatEmoteCommand
 } from '../../social/dclRfc4Chat'
 import { DCM_SCENE_ID } from '../../social/dcmChatMedia'
+import { DAV_SCENE_ID } from '../../avatar/vrm/dclClientAvatar'
 import { baseEmoteUrn } from '../../avatar/profileEmotes'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 
@@ -44,6 +45,7 @@ export type Rfc4RouterHandlers = {
   onSceneBinary: (sceneId: string, sender: string, data: Uint8Array) => void
   onPeerChat?: (address: string, text: string, time: number, transport: TransportType) => void
   onPeerChatMedia?: (address: string, data: Uint8Array, transport: TransportType) => void
+  onPeerAvatarVrm?: (address: string, data: Uint8Array, transport: TransportType) => void
 }
 
 /** Central RFC4 inbound dispatcher — Bevy `GlobalCrdtPlugin::process_transport_updates`. */
@@ -169,6 +171,10 @@ export class Rfc4Router {
     if (scenePacket) {
       if (scenePacket.sceneId === DCM_SCENE_ID) {
         this.handlers.onPeerChatMedia?.(address, scenePacket.data, transport)
+        return
+      }
+      if (scenePacket.sceneId === DAV_SCENE_ID) {
+        this.handlers.onPeerAvatarVrm?.(address, scenePacket.data, transport)
         return
       }
       this.handlers.onSceneBinary(scenePacket.sceneId, address, scenePacket.data)

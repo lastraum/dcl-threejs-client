@@ -163,6 +163,19 @@ export function retargetClipToVrm(
   return new THREE.AnimationClip(clip.name, clip.duration, tracks)
 }
 
+/** Retarget a loaded emote GLB (DCL / Mixamo bone names) onto a VRM skeleton. */
+export function retargetGltfClipToVrm(
+  clip: THREE.AnimationClip,
+  glbScene: THREE.Object3D,
+  vrm: VRM
+): THREE.AnimationClip {
+  glbScene.updateWorldMatrix(true, true)
+  const prepared = clip.clone()
+  filterAndPrepClip(prepared, glbScene, 1)
+  const rootToHips = extractRootToHipsMeters(vrm)
+  return retargetClipToVrm(prepared, glbScene, vrm, rootToHips, vrm.meta?.metaVersion)
+}
+
 export async function loadRetargetedClip(url: string, vrm: VRM): Promise<THREE.AnimationClip> {
   const gltf = await getLoader().loadAsync(url)
   const clipIn = gltf.animations[0]

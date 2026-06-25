@@ -692,6 +692,7 @@ export class PlayerSystem {
 
     this.avatar?.update(delta, {
       horizontalSpeed: moving || horizontalSpeed > 0.2 ? horizontalSpeed : 0,
+      targetLocomotionSpeed: moving ? moveSpeed : 0,
       grounded: this.grounded,
       nearGround: this.nearGround,
       verticalVelocity: _velocity.y,

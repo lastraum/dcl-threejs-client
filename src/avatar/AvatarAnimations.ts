@@ -41,6 +41,8 @@ export type AvatarLocomotionState = {
   /** Planar move axis in avatar-local space (+X right, -Z forward) for VRM directional locomotion. */
   moveAxisX?: number
   moveAxisZ?: number
+  /** Capsule target speed for active locomotion mode — stabilizes VRM foot cadence vs raw velocity. */
+  targetLocomotionSpeed?: number
 }
 
 /** DCL locomotion emotes retargeted to the composed avatar skeleton (Forge / wearable-preview). */

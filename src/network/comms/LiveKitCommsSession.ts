@@ -465,6 +465,12 @@ export class LiveKitCommsSession {
     await this.room.localParticipant.publishData(packet, { reliable: false })
   }
 
+  /** Reliable SCTP — required for large DAV VRM chunk streams (lossy drops under burst). */
+  async publishReliableData(packet: Uint8Array): Promise<void> {
+    if (!this.room || this.room.state !== ConnectionState.Connected) return
+    await this.room.localParticipant.publishData(packet, { reliable: true })
+  }
+
   async publishTopicData(topic: string, packet: Uint8Array, reliable = true): Promise<void> {
     if (!this.room || this.room.state !== ConnectionState.Connected) return
     await this.room.localParticipant.publishData(packet, { reliable, topic })

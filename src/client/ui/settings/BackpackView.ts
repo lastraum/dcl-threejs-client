@@ -107,10 +107,7 @@ export class BackpackView {
           <button class="backpack-view__filter-btn">⚙ FILTER &amp; SORT</button>
           <input class="backpack-view__search" type="text" placeholder="Search item" />
         </div>
-        <div class="backpack-view__toolbar backpack-view__toolbar--vrm" hidden>
-          <button type="button" class="backpack-view__upload-vrm-btn">+ Upload VRM</button>
-          <input type="file" accept=".vrm,model/vrm" class="backpack-view__vrm-file-input" hidden />
-        </div>
+        <input type="file" accept=".vrm,model/vrm" class="backpack-view__vrm-file-input" hidden />
       </div>
       <div class="backpack-view__columns">
         <div class="backpack-view__left">
@@ -128,6 +125,11 @@ export class BackpackView {
           <div class="backpack-view__middle-body">
             <aside class="backpack-view__categories"></aside>
             <div class="backpack-view__grid-area">
+              <div class="backpack-view__vrm-drop-hint" hidden>
+                <span class="backpack-view__vrm-drop-hint-icon" aria-hidden="true">🧬</span>
+                <p class="backpack-view__vrm-drop-hint-title">Drop your .vrm here</p>
+                <p class="backpack-view__vrm-drop-hint-sub">or click to browse · stored on this device only</p>
+              </div>
               <div class="backpack-view__grid"></div>
               <div class="backpack-view__pagination"></div>
             </div>
@@ -146,6 +148,7 @@ export class BackpackView {
     this.loadWearables()
     this.initAvatarPreview()
     this.wireSubTabs()
+    this.wireVrmDropZone()
     void this.refreshVrmLibrary()
   }
 
@@ -180,9 +183,6 @@ export class BackpackView {
       })
     })
 
-    const uploadBtn = this.root.querySelector('.backpack-view__upload-vrm-btn')
-    uploadBtn?.addEventListener('click', () => this.vrmFileInput?.click())
-
     this.vrmFileInput?.addEventListener('change', () => {
       const file = this.vrmFileInput?.files?.[0]
       if (this.vrmFileInput) this.vrmFileInput.value = ''
@@ -190,19 +190,63 @@ export class BackpackView {
     })
   }
 
+  private wireVrmDropZone(): void {
+    const gridArea = this.root.querySelector('.backpack-view__grid-area') as HTMLElement
+    const dropHint = this.root.querySelector('.backpack-view__vrm-drop-hint') as HTMLElement
+
+    dropHint?.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (this.activeSubTab === 'vrm' && !this.vrmUploadBusy) this.vrmFileInput?.click()
+    })
+
+    gridArea.addEventListener('dragenter', (e) => {
+      if (this.activeSubTab !== 'vrm' || this.vrmUploadBusy) return
+      e.preventDefault()
+      gridArea.classList.add('is-dragover')
+    })
+
+    gridArea.addEventListener('dragover', (e) => {
+      if (this.activeSubTab !== 'vrm' || this.vrmUploadBusy) return
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+      gridArea.classList.add('is-dragover')
+    })
+
+    gridArea.addEventListener('dragleave', (e) => {
+      if (!gridArea.contains(e.relatedTarget as Node)) {
+        gridArea.classList.remove('is-dragover')
+      }
+    })
+
+    gridArea.addEventListener('drop', (e) => {
+      gridArea.classList.remove('is-dragover')
+      if (this.activeSubTab !== 'vrm' || this.vrmUploadBusy) return
+      e.preventDefault()
+      const file = this.pickVrmFile(e.dataTransfer)
+      if (file) void this.handleVrmUpload(file)
+    })
+  }
+
+  private pickVrmFile(dataTransfer: DataTransfer | null): File | null {
+    if (!dataTransfer?.files?.length) return null
+    for (const file of dataTransfer.files) {
+      if (file.name.toLowerCase().endsWith('.vrm')) return file
+    }
+    return null
+  }
+
   private applySubTabLayout(): void {
     const wearablesToolbar = this.root.querySelector('.backpack-view__toolbar--wearables') as HTMLElement
-    const vrmToolbar = this.root.querySelector('.backpack-view__toolbar--vrm') as HTMLElement
     const wearablesMidTabs = this.root.querySelector('.backpack-view__middle-tabs--wearables') as HTMLElement
     const vrmMidTabs = this.root.querySelector('.backpack-view__middle-tabs--vrm') as HTMLElement
-    const categories = this.root.querySelector('.backpack-view__categories') as HTMLElement
+    const dropHint = this.root.querySelector('.backpack-view__vrm-drop-hint') as HTMLElement
     const isVrm = this.activeSubTab === 'vrm'
 
+    this.root.classList.toggle('backpack-view--vrm', isVrm)
     wearablesToolbar.hidden = isVrm
-    vrmToolbar.hidden = !isVrm
     wearablesMidTabs.hidden = isVrm
     vrmMidTabs.hidden = !isVrm
-    categories.hidden = isVrm
+    dropHint.hidden = !isVrm
 
     if (isVrm) {
       this.renderVrmGrid()
@@ -354,19 +398,16 @@ export class BackpackView {
     const gridEl = this.root.querySelector('.backpack-view__grid')!
     const paginationEl = this.root.querySelector('.backpack-view__pagination')!
     gridEl.innerHTML = ''
+    gridEl.classList.remove('backpack-view__grid--vrm-empty')
     paginationEl.innerHTML = ''
 
     if (!this.vrmLibrary.length) {
-      const empty = document.createElement('div')
-      empty.className = 'backpack-view__vrm-empty'
-      empty.innerHTML = `
-        <p>No custom VRMs yet.</p>
-        <p class="backpack-view__vrm-empty-hint">Upload a <code>.vrm</code> file — stored only on this device.</p>
-      `
-      gridEl.appendChild(empty)
+      gridEl.classList.add('backpack-view__grid--vrm-empty')
       this.renderVrmDetail(null)
       return
     }
+
+    gridEl.classList.remove('backpack-view__grid--vrm-empty')
 
     for (const entry of this.vrmLibrary) {
       const card = document.createElement('button')
@@ -437,8 +478,8 @@ export class BackpackView {
   private async handleVrmUpload(file: File): Promise<void> {
     if (this.vrmUploadBusy) return
     this.vrmUploadBusy = true
-    const uploadBtn = this.root.querySelector('.backpack-view__upload-vrm-btn') as HTMLButtonElement | null
-    if (uploadBtn) uploadBtn.disabled = true
+    const gridArea = this.root.querySelector('.backpack-view__grid-area') as HTMLElement
+    gridArea?.classList.add('is-uploading')
 
     try {
       const entry = await addVrmFile(file)
@@ -455,7 +496,7 @@ export class BackpackView {
       alert(`VRM upload failed: ${msg}`)
     } finally {
       this.vrmUploadBusy = false
-      if (uploadBtn) uploadBtn.disabled = false
+      gridArea?.classList.remove('is-uploading')
     }
   }
 

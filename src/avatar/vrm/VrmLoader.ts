@@ -8,14 +8,14 @@ export type ParsedVrm = {
   height: number
 }
 
-const DEG2RAD = Math.PI / 180
-
 let sharedLoader: GLTFLoader | null = null
 
 function getLoader(): GLTFLoader {
   if (!sharedLoader) {
     sharedLoader = new GLTFLoader()
-    sharedLoader.register((parser) => new VRMLoaderPlugin(parser))
+    sharedLoader.register(
+      (parser) => new VRMLoaderPlugin(parser, { autoUpdateHumanBones: false })
+    )
   }
   return sharedLoader
 }
@@ -32,14 +32,6 @@ function cleanupVrmScene(scene: THREE.Object3D): void {
       obj.receiveShadow = true
     }
   })
-}
-
-function poseArmsDown(vrm: VRM): void {
-  const leftUpperArm = vrm.humanoid.getNormalizedBoneNode('leftUpperArm')
-  const rightUpperArm = vrm.humanoid.getNormalizedBoneNode('rightUpperArm')
-  if (leftUpperArm) leftUpperArm.rotation.z = 75 * DEG2RAD
-  if (rightUpperArm) rightUpperArm.rotation.z = -75 * DEG2RAD
-  vrm.humanoid.update()
 }
 
 function measureHeight(scene: THREE.Object3D): number {
@@ -59,8 +51,7 @@ export async function parseVrmBytes(bytes: ArrayBuffer): Promise<ParsedVrm> {
   const vrm = gltf.userData.vrm as VRM | undefined
   if (!vrm) throw new Error('File is not a valid VRM')
 
-  VRMUtils.removeUnnecessaryVertices(gltf.scene)
-  VRMUtils.removeUnnecessaryJoints(gltf.scene)
+  VRMUtils.rotateVRM0(vrm)
 
   const root = gltf.scene as THREE.Group
   root.name = 'custom-vrm'
@@ -68,15 +59,7 @@ export async function parseVrmBytes(bytes: ArrayBuffer): Promise<ParsedVrm> {
   root.matrixWorldAutoUpdate = true
 
   cleanupVrmScene(root)
-  poseArmsDown(vrm)
-
-  root.traverse((obj) => {
-    if (obj instanceof THREE.SkinnedMesh) {
-      obj.bindMode = THREE.DetachedBindMode
-      obj.bindMatrix.copy(obj.matrixWorld)
-      obj.bindMatrixInverse.copy(obj.bindMatrix).invert()
-    }
-  })
+  root.updateWorldMatrix(true, true)
 
   const height = measureHeight(root)
   return { root, vrm, height }

@@ -19,9 +19,17 @@ export class VrmAvatar {
     return new VrmAvatar(parsed.root, parsed.vrm, parsed.height)
   }
 
-  /** Per-frame VRM systems (spring bones, etc.). */
+  /**
+   * Per-frame VRM extras while locomotion drives raw bones via AnimationMixer.
+   * Skips humanoid.update() — that would overwrite mixer poses every frame.
+   */
   update(delta: number): void {
-    this.vrm.update(delta)
+    this.vrm.nodeConstraintManager?.update()
+    this.vrm.springBoneManager?.update(delta)
+    this.vrm.materials?.forEach((material) => {
+      const m = material as THREE.Material & { update?: (d: number) => void }
+      m.update?.(delta)
+    })
   }
 
   dispose(): void {

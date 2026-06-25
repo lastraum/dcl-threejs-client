@@ -4418,6 +4418,69 @@
         padding: 12px;
         overflow-y: auto;
       }
+      .backpack-view--vrm .backpack-view__categories {
+        display: none;
+      }
+      .backpack-view--vrm .backpack-view__grid {
+        width: 100%;
+        max-width: none;
+      }
+      .backpack-view--vrm .backpack-view__grid-area {
+        position: relative;
+        border: 2px dashed rgba(255, 255, 255, 0.12);
+        border-radius: 14px;
+        margin: 8px;
+        transition: border-color 0.15s, background 0.15s;
+      }
+      .backpack-view--vrm .backpack-view__grid-area.is-dragover {
+        border-color: rgba(255, 45, 85, 0.75);
+        background: rgba(255, 45, 85, 0.08);
+      }
+      .backpack-view--vrm .backpack-view__grid-area.is-uploading {
+        opacity: 0.65;
+        pointer-events: none;
+      }
+      .backpack-view__vrm-drop-hint {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        min-height: 140px;
+        margin-bottom: 8px;
+        padding: 20px 16px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.03);
+        text-align: center;
+        cursor: pointer;
+        user-select: none;
+        transition: background 0.12s;
+      }
+      .backpack-view__vrm-drop-hint:hover {
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .backpack-view--vrm .backpack-view__grid-area.is-dragover .backpack-view__vrm-drop-hint {
+        background: rgba(255, 45, 85, 0.12);
+      }
+      .backpack-view__vrm-drop-hint-icon {
+        font-size: 36px;
+        line-height: 1;
+      }
+      .backpack-view__vrm-drop-hint-title {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 700;
+        color: rgba(255, 255, 255, 0.9);
+      }
+      .backpack-view__vrm-drop-hint-sub {
+        margin: 0;
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.45);
+        line-height: 1.4;
+      }
+      .backpack-view__grid--vrm-empty {
+        min-height: 0;
+      }
       .backpack-view__grid {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -4563,19 +4626,7 @@
         letter-spacing: 0.04em;
         color: rgba(255, 255, 255, 0.55);
       }
-      .backpack-view__vrm-empty {
-        grid-column: 1 / -1;
-        padding: 24px 12px;
-        text-align: center;
-        color: rgba(255, 255, 255, 0.7);
-        font-size: 13px;
-        line-height: 1.5;
-      }
-      .backpack-view__vrm-empty-hint {
-        margin-top: 8px;
-        font-size: 11px;
-        color: rgba(255, 255, 255, 0.45);
-      }
+
       .backpack-view__vrm-card {
         position: relative;
         display: flex;

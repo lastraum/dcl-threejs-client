@@ -30,7 +30,14 @@ import { resolveProfileEmote, loadResolvedProfileEmote } from '../avatar/profile
 import type { AssetCache } from '../rendering/AssetCache'
 import { createRemoteAvatarPlaceholder } from '../avatar/remotePlaceholder'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
+import { VrmAvatar } from '../avatar/vrm/VrmAvatar'
+import { VrmLocomotionAnimations } from '../avatar/vrm/VrmLocomotionAnimations'
+import { disposeVrmRoot } from '../avatar/vrm/VrmLoader'
+import { applyVrmPivotOffset } from '../avatar/vrm/vrmFeetAlign'
+import { retargetGltfClipToVrm } from '../avatar/vrm/mixamoRetarget'
+import { getVrmRamBytes } from '../avatar/vrm/vrmRamCache'
 import type { AvatarTransformPayload } from './comms/types'
+import type { LocomotionMode } from '../player/locomotion'
 import { RemoteAvatarLoadQueue } from './RemoteAvatarLoadQueue'
 import type { InteractiveNameTagHit } from '../client/ui/overlayHitTest'
 
@@ -41,8 +48,14 @@ type RemotePeerRecord = {
   pivot: THREE.Group
   nameTagAnchor: THREE.Object3D
   placeholder: THREE.Group | null
-  model: THREE.Group | null
+  model: THREE.Object3D | null
   animations: AvatarAnimations | null
+  vrmAvatar: VrmAvatar | null
+  vrmLocomotion: VrmLocomotionAnimations | null
+  renderMode: 'dcl' | 'vrm'
+  vrmContentHash: string | null
+  /** Content hash of the VRM mesh actually mounted (may lag vrmContentHash during swaps). */
+  vrmLoadedHash: string | null
   nameTag: NameTag | null
   identity: ProfileIdentity
   bodyShape: BodyShape
@@ -92,6 +105,7 @@ export class RemoteAvatarManager {
   private assetCache: AssetCache | null = null
   private readonly scene: THREE.Scene
   private readonly loadQueue = new RemoteAvatarLoadQueue()
+  private readonly peerReloadSeq = new Map<string, number>()
   private entityStore: EntityStore | null = null
   private localAddress: string | null = null
   constructor(scene: THREE.Scene) {
@@ -238,6 +252,41 @@ export class RemoteAvatarManager {
     }
   }
 
+  setPeerVrmHash(address: string, contentHash: string | null): void {
+    const key = address.toLowerCase()
+    const record = this.peers.get(key)
+    if (!record) return
+    const normalized = contentHash?.toLowerCase() ?? null
+    if (record.vrmContentHash === normalized) {
+      if (normalized && record.vrmLoadedHash === normalized && record.vrmAvatar) return
+      if (!normalized && record.renderMode !== 'vrm') return
+    }
+    record.vrmContentHash = normalized
+    if (!normalized) {
+      if (record.renderMode === 'vrm') {
+        void this.reloadPeerAvatar(key, record)
+      }
+      return
+    }
+    void this.reloadPeerAvatar(key, record)
+  }
+
+  onPeerVrmBytesReady(address: string, contentHash: string): void {
+    const key = address.toLowerCase()
+    const record = this.peers.get(key)
+    if (!record) return
+    const hash = contentHash.toLowerCase()
+    if (!record.vrmContentHash) {
+      record.vrmContentHash = hash
+    } else if (record.vrmContentHash !== hash) {
+      return
+    }
+    if (record.renderMode === 'vrm' && record.vrmAvatar && record.vrmLoadedHash === hash) {
+      return
+    }
+    void this.reloadPeerAvatar(key, record)
+  }
+
   playPeerEmote(address: string, emoteRef: string, incrementalId: number): void {
     const key = address.toLowerCase()
     const record = this.peers.get(key)
@@ -245,14 +294,15 @@ export class RemoteAvatarManager {
     record.lastEmoteId = incrementalId
 
     const normalizedRef = emoteRef.trim().toLowerCase()
-    if (
-      record.activeEmoteUrn === normalizedRef &&
-      record.animations?.isProfileEmoteActive()
-    ) {
+    const emoteActive =
+      record.renderMode === 'vrm'
+        ? record.vrmLocomotion?.isProfileEmoteActive()
+        : record.animations?.isProfileEmoteActive()
+    if (record.activeEmoteUrn === normalizedRef && emoteActive) {
       return
     }
 
-    if (!record.model || !record.animations) {
+    if (!record.model || (record.renderMode === 'dcl' && !record.animations)) {
       record.pendingEmote = emoteRef
       return
     }
@@ -285,6 +335,11 @@ export class RemoteAvatarManager {
         placeholder: null,
         model: null,
         animations: null,
+        vrmAvatar: null,
+        vrmLocomotion: null,
+        renderMode: 'dcl',
+        vrmContentHash: null,
+        vrmLoadedHash: null,
         nameTag: null,
         identity: defaultProfileIdentity(key.slice(0, 8)),
         bodyShape: 'male',
@@ -373,6 +428,7 @@ export class RemoteAvatarManager {
     } else {
       record.root.removeFromParent()
     }
+    this.peerReloadSeq.delete(key)
     this.peers.delete(key)
   }
 
@@ -474,8 +530,11 @@ export class RemoteAvatarManager {
 
       record.smoothedSpeed += (record.horizontalSpeed - record.smoothedSpeed) * speedAlpha
       const speed = record.smoothedSpeed
-      const emoteActive = record.animations?.isProfileEmoteActive() ?? false
-      const locomotionMode =
+      const emoteActive =
+        record.renderMode === 'vrm'
+          ? (record.vrmLocomotion?.isProfileEmoteActive() ?? false)
+          : (record.animations?.isProfileEmoteActive() ?? false)
+      const locomotionMode: LocomotionMode =
         speed > DCL_LOCOMOTION_DEFAULTS.runSpeed * 0.85
           ? 'run'
           : speed > DCL_LOCOMOTION_DEFAULTS.jogSpeed * 0.35
@@ -485,7 +544,7 @@ export class RemoteAvatarManager {
       const jumping = record.remoteJumping && record.jumpCount <= 1
       const doubleJumping = record.jumpCount >= 2 && !grounded
 
-      record.animations?.update(delta, {
+      const locomotionState = {
         horizontalSpeed: emoteActive ? 0 : speed,
         grounded,
         nearGround: grounded,
@@ -495,11 +554,21 @@ export class RemoteAvatarManager {
         doubleJumping,
         doubleJumpTriggered: record.doubleJumpTriggered,
         falling: !grounded && !jumping && !doubleJumping && record.verticalVelocity < -1.5
-      })
-      if (record.activeEmoteUrn && record.animations && !record.animations.isProfileEmoteActive()) {
+      }
+      if (record.renderMode === 'vrm') {
+        record.vrmLocomotion?.update(delta, locomotionState)
+        record.vrmAvatar?.update(delta)
+      } else {
+        record.animations?.update(delta, locomotionState)
+      }
+      const stillEmoting =
+        record.renderMode === 'vrm'
+          ? record.vrmLocomotion?.isProfileEmoteActive()
+          : record.animations?.isProfileEmoteActive()
+      if (record.activeEmoteUrn && !stillEmoting) {
         record.activeEmoteUrn = null
       }
-      if (record.deferredProfileReload && !record.animations?.isProfileEmoteActive()) {
+      if (record.deferredProfileReload && !stillEmoting) {
         record.deferredProfileReload = false
         void this.reloadPeerAvatar(key, record)
       }
@@ -520,12 +589,18 @@ export class RemoteAvatarManager {
     this.root.removeFromParent()
   }
 
-  private tryStartAvatarLoad(address: string, record: RemotePeerRecord, force = false): void {
-    if (!record.hasPosition || record.loading || record.model) return
+  private tryStartAvatarLoad(
+    address: string,
+    record: RemotePeerRecord,
+    force = false
+  ): Promise<void> | null {
+    if (!record.hasPosition || record.model) return null
+    if (record.loading && !force) return record.loading
     let resolveLoad!: () => void
-    record.loading = new Promise<void>((resolve) => {
+    const loadPromise = new Promise<void>((resolve) => {
       resolveLoad = resolve
     })
+    record.loading = loadPromise
     this.loadQueue.enqueue(
       address,
       record.targetPosition,
@@ -538,16 +613,31 @@ export class RemoteAvatarManager {
       },
       force
     )
+    return loadPromise
   }
 
   private async reloadPeerAvatar(address: string, record: RemotePeerRecord): Promise<void> {
-    if (record.loading) return
-    this.loadQueue.cancel(address)
+    const key = address.toLowerCase()
+    const seq = (this.peerReloadSeq.get(key) ?? 0) + 1
+    this.peerReloadSeq.set(key, seq)
+
+    this.loadQueue.cancel(key)
+    if (record.loading) {
+      await record.loading.catch(() => undefined)
+    }
+    if (this.peerReloadSeq.get(key) !== seq) return
+
     this.disposePeerModel(record)
-    record.nameTag?.dispose()
-    record.nameTag = null
-    this.tryStartAvatarLoad(address, record, true)
-    await record.loading
+    if (record.hasPosition) {
+      this.attachLoadingPresentation(record)
+    }
+
+    record.loading = null
+    const pendingLoad = this.tryStartAvatarLoad(key, record, true)
+    if (pendingLoad) {
+      await pendingLoad.catch(() => undefined)
+    }
+    if (this.peerReloadSeq.get(key) !== seq) return
   }
 
   private attachLoadingPresentation(record: RemotePeerRecord): void {
@@ -594,15 +684,31 @@ export class RemoteAvatarManager {
 
       if (!this.peers.has(key)) return
 
-      record.model = await composeAvatarFromProfile(profile, this.contentUrl || undefined, this.assetCache)
-      stabilizeSkinnedMeshes(record.model)
-
-      if (!this.peers.has(key)) {
-        this.disposeModel(record.model)
-        record.model = null
+      if (record.vrmContentHash) {
+        const vrmBytes = getVrmRamBytes(record.vrmContentHash)
+        if (vrmBytes) {
+          await this.loadVrmPeerAvatar(key, record, vrmBytes)
+          return
+        }
+        if (!record.placeholder) this.attachLoadingPresentation(record)
         return
       }
 
+      const composed = await composeAvatarFromProfile(profile, this.contentUrl || undefined, this.assetCache)
+      stabilizeSkinnedMeshes(composed)
+
+      if (!this.peers.has(key)) {
+        this.disposeModel(composed)
+        return
+      }
+
+      if (record.vrmContentHash) {
+        this.disposeModel(composed)
+        if (!record.placeholder) this.attachLoadingPresentation(record)
+        return
+      }
+
+      record.model = composed
       this.clearLoadingPresentation(record)
 
       record.pivot.add(record.model)
@@ -651,11 +757,79 @@ export class RemoteAvatarManager {
     }
   }
 
+  private async loadVrmPeerAvatar(
+    key: string,
+    record: RemotePeerRecord,
+    bytes: ArrayBuffer
+  ): Promise<void> {
+    try {
+      this.disposePeerModel(record)
+      if (record.hasPosition) {
+        this.attachLoadingPresentation(record)
+      }
+
+      const vrmAvatar = await VrmAvatar.fromBytes(bytes)
+      if (!this.peers.has(key)) {
+        vrmAvatar.dispose()
+        return
+      }
+
+      vrmAvatar.vrm.humanoid.autoUpdateHumanBones = false
+      record.vrmAvatar = vrmAvatar
+      record.model = vrmAvatar.root
+      record.renderMode = 'vrm'
+      record.vrmLoadedHash = record.vrmContentHash
+
+      this.clearLoadingPresentation(record)
+      record.pivot.add(vrmAvatar.root)
+      applyVrmPivotOffset(record.pivot, vrmAvatar.vrm, vrmAvatar.root)
+
+      record.vrmLocomotion = new VrmLocomotionAnimations()
+      try {
+        await record.vrmLocomotion.bind(vrmAvatar.vrm, vrmAvatar.root)
+      } catch (err) {
+        console.warn(`[network] remote VRM locomotion failed for ${record.address}`, err)
+        record.vrmLocomotion.dispose()
+        record.vrmLocomotion = null
+      }
+
+      record.nameTag?.dispose()
+      record.nameTag = NameTag.attach(record.nameTagAnchor, record.identity.displayName, {
+        textColor: record.identity.nameColor,
+        claimed: record.identity.hasClaimedName,
+        address: record.address,
+        interactive: true
+      })
+
+      clientDebugLog.log(
+        'network',
+        `Remote VRM ready · ${record.identity.displayName} (${record.vrmContentHash?.slice(0, 12)}…)`,
+        { level: 'success' }
+      )
+
+      if (record.pendingEmote) {
+        const pending = record.pendingEmote
+        record.pendingEmote = null
+        void this.applyPeerEmote(record, pending)
+      }
+    } catch (err) {
+      console.warn(`[network] remote VRM load failed for ${record.address}`, err)
+      record.vrmContentHash = null
+      record.vrmLoadedHash = null
+      record.renderMode = 'dcl'
+      await this.loadPeerAvatar(key, record)
+    }
+  }
+
   private async applyPeerEmote(record: RemotePeerRecord, emoteRef: string): Promise<void> {
-    if (!record.model || !record.animations) return
+    if (!record.model) return
 
     const normalizedRef = emoteRef.trim().toLowerCase()
-    if (record.activeEmoteUrn === normalizedRef && record.animations.isProfileEmoteActive()) {
+    const emoteActive =
+      record.renderMode === 'vrm'
+        ? record.vrmLocomotion?.isProfileEmoteActive()
+        : record.animations?.isProfileEmoteActive()
+    if (record.activeEmoteUrn === normalizedRef && emoteActive) {
       return
     }
 
@@ -666,6 +840,17 @@ export class RemoteAvatarManager {
     try {
       const cached = this.assetCache ? await loadResolvedProfileEmote(this.assetCache, resolved) : null
       if (!cached?.animations.length) return
+
+      if (record.renderMode === 'vrm' && record.vrmAvatar && record.vrmLocomotion) {
+        const clip = retargetGltfClipToVrm(cached.animations[0]!, cached.root, record.vrmAvatar.vrm)
+        if (clip.tracks.length === 0) return
+        if (record.vrmLocomotion.playProfileEmote(clip, resolved.loop)) {
+          record.activeEmoteUrn = resolved.urn.trim().toLowerCase()
+        }
+        return
+      }
+
+      if (!record.animations) return
       if (record.animations.playProfileEmoteFromGltf(cached, resolved.loop)) {
         record.activeEmoteUrn = resolved.urn.trim().toLowerCase()
       }
@@ -677,16 +862,32 @@ export class RemoteAvatarManager {
   private disposePeerModel(record: RemotePeerRecord): void {
     record.animations?.dispose()
     record.animations = null
+    record.vrmLocomotion?.dispose()
+    record.vrmLocomotion = null
     record.activeEmoteUrn = null
+    record.vrmLoadedHash = null
     this.clearLoadingPresentation(record)
-    if (record.model) {
-      this.disposeModel(record.model)
+    if (record.vrmAvatar) {
+      record.pivot.remove(record.vrmAvatar.root)
+      record.vrmAvatar.dispose()
+      record.vrmAvatar = null
       record.model = null
+      record.renderMode = 'dcl'
+      return
+    }
+    if (record.model) {
+      this.disposeModel(record.model as THREE.Group)
+      record.model = null
+      record.renderMode = 'dcl'
     }
   }
 
   private disposeModel(model: THREE.Group): void {
-    disposeWearableInstance(model)
+    if (model.name === 'custom-vrm') {
+      disposeVrmRoot(null, model)
+    } else {
+      disposeWearableInstance(model)
+    }
     model.removeFromParent()
   }
 }

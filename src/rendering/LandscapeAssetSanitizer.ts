@@ -245,6 +245,7 @@ export function enableSceneGltfVertexColors(root: THREE.Object3D): void {
       return
     }
     enableSceneMeshVertexColors(node)
+    tuneScenePlantCutoutMaterial(node)
   })
 }
 
@@ -275,34 +276,76 @@ function isPlantMeshName(meshName: string): boolean {
   return /leaf|foliage|petal|flower|tree|plant|grass|bush|fern|vine|canopy|branch/i.test(meshName)
 }
 
-/** Landscape tree cards — alpha cutout + double-sided. */
-export function tuneLandscapeFoliageMaterial(material: THREE.Material, meshName = ''): void {
-  if (!(material instanceof THREE.MeshStandardMaterial)) return
-  if (!isPlantMeshName(meshName)) return
+function meshOrAncestorIsPlant(mesh: THREE.Mesh): boolean {
+  let node: THREE.Object3D | null = mesh
+  while (node) {
+    if (isPlantMeshName(node.name)) return true
+    node = node.parent
+  }
+  return false
+}
+
+function foliageMaterialHasCutout(material: THREE.Material): boolean {
+  if (material instanceof THREE.MeshStandardMaterial) {
+    return !!(material.map || material.alphaMap)
+  }
+  if (material instanceof THREE.MeshBasicMaterial || material instanceof THREE.MeshLambertMaterial) {
+    return !!material.map
+  }
+  return false
+}
+
+/** Landscape + scene tree/bush cards — alpha cutout + double-sided (Unity MASK parity). */
+function tuneFoliageCutoutMaterial(
+  material: THREE.Material,
+  meshName = '',
+  mesh?: THREE.Mesh
+): void {
+  const plantContext =
+    isPlantMeshName(meshName) ||
+    isPlantMeshName(material.name) ||
+    (mesh !== undefined && meshOrAncestorIsPlant(mesh))
+  if (!plantContext) return
+  if (
+    !(material instanceof THREE.MeshStandardMaterial) &&
+    !(material instanceof THREE.MeshBasicMaterial) &&
+    !(material instanceof THREE.MeshLambertMaterial)
+  ) {
+    return
+  }
+  if (!foliageMaterialHasCutout(material)) return
 
   material.side = THREE.DoubleSide
   material.transparent = false
+  material.opacity = 1
   material.alphaTest = material.alphaMap ? 0.5 : 0.35
   material.depthWrite = true
+  material.needsUpdate = true
+}
+
+/** Landscape tree cards — alpha cutout + double-sided. */
+export function tuneLandscapeFoliageMaterial(material: THREE.Material, meshName = ''): void {
+  tuneFoliageCutoutMaterial(material, meshName)
 }
 
 /**
- * Scene GLB plant cutout — MASK-style cards only (skip creator alpha-blend glass).
+ * Scene GLB plant cutout — convert alpha-blend foliage cards to MASK cutout.
  * Shared tree hashes may load via scene cache before landscape instancing — apply on mesh.
  */
 function tuneScenePlantCutoutMaterial(mesh: THREE.Mesh): void {
-  if (!isPlantMeshName(mesh.name)) return
   const materials = meshMaterials(mesh)
   for (const material of materials) {
-    if (!(material instanceof THREE.MeshStandardMaterial)) continue
-    if (material.transparent) continue
-    if (!material.map && !material.alphaMap) continue
-    material.side = THREE.DoubleSide
-    material.transparent = false
-    material.alphaTest = material.alphaMap ? 0.5 : 0.35
-    material.depthWrite = true
-    material.needsUpdate = true
+    tuneFoliageCutoutMaterial(material, mesh.name, mesh)
   }
+}
+
+/** Re-apply plant cutout on hydrated scene instances (shared materials from cache). */
+export function retuneScenePlantCutoutMaterials(root: THREE.Object3D): void {
+  root.traverse((node) => {
+    if (!(node instanceof THREE.Mesh)) return
+    if (isGltfInvisibleColliderName(node.name)) return
+    tuneScenePlantCutoutMaterial(node)
+  })
 }
 
 /** Hide DCL `_collider` meshes on scene GLBs (do not use landscape shadow tuning). */

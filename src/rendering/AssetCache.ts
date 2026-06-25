@@ -7,6 +7,7 @@ import type { ContentFile } from '../dcl/content/types'
 import { buildParseUrlMappings } from './DclTextureResolver'
 import {
   enableSceneGltfVertexColors,
+  retuneScenePlantCutoutMaterials,
   sanitizeLandscapeGltf,
   sanitizeSceneGltfColliders,
   sanitizeSceneGltfMaterials
@@ -378,6 +379,8 @@ export class AssetCache {
     const instance = cloneGltfInstance(root)
     if (options?.sceneGltf) {
       enableSceneGltfVertexColors(instance)
+    } else if (!options?.landscape) {
+      retuneScenePlantCutoutMaterials(instance)
     }
     return instance
   }

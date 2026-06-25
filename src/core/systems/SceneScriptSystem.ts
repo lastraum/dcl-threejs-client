@@ -2524,10 +2524,6 @@ export class SceneScriptSystem {
     if (poseChangedEntities.length > 0) {
       this.collidersPoseCallback?.(poseChangedEntities)
       this.colliderPosesSyncedThisPass = true
-    } else if (structureTouched) {
-      // Fast-path structure sync can refresh matrixWorld without marking poseDirty — slide PhysX.
-      this.collidersPoseCallback?.(structureEntities)
-      this.colliderPosesSyncedThisPass = true
     }
   }
 

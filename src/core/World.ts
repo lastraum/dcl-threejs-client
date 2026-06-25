@@ -1090,10 +1090,10 @@ export class World {
     const slideDescs: PhysicsColliderDesc[] = []
     for (const desc of descs) {
       if (this.physics.needsWorldBakedPoseRecook(desc)) {
-        // Runtime recook off — never removeStatic here (planter/theatre structure sync
-        // can false-trigger drift); queue initial-only cooks near the avatar instead.
+        // Runtime recook off — ack pose drift and keep the boot-cooked actor (planter/structure
+        // sync can false-trigger matrixWorld refresh without real movement).
         if (!this.allowsRuntimeColliderRecook()) {
-          if (this.isColliderDescNearPlayer(desc)) this.colliderCookQueue.add(desc.entity)
+          this.physics.ackStaticPoseFingerprint(desc)
           continue
         }
         const recook = this.physics.syncStaticColliders([desc], {
@@ -1246,9 +1246,7 @@ export class World {
     this.reconcileColliderCookQueue()
     this.maybeBeginRuntimeColliderBurst(queueBefore)
     if (this.collidersLoadingComplete) {
-      const touched = [...this.colliderCookQueue]
       this.drainPendingColliderCooksInitialOnly()
-      this.applyColliderPoseSlidesForPhysIds(touched)
     }
   }
 
@@ -1304,7 +1302,9 @@ export class World {
         this.physics.geomFingerprintMatches(desc)
       ) {
         if (this.physics.needsWorldBakedPoseRecook(desc)) {
-          if (this.isColliderDescNearPlayer(desc)) {
+          if (!this.allowsRuntimeColliderRecook()) {
+            this.physics.ackStaticPoseFingerprint(desc)
+          } else if (this.isColliderDescNearPlayer(desc)) {
             this.colliderCookQueue.add(desc.entity)
           } else {
             this.colliderCookQueue.delete(desc.entity)
@@ -1373,17 +1373,13 @@ export class World {
         if (!loadingPass) this.colliderCookQueue.delete(physId)
         continue
       }
-      // Runtime: only register never-cooked actors — except world-baked pose drift near the avatar (moving platforms).
+      // Runtime recook off — never remove/recook boot world-baked actors; register only new ones.
       if (!loadingPass && !this.allowsRuntimeColliderRecook() && this.physics.hasStaticActor(physId)) {
-        const needsMovingPlatformRecook =
-          desc &&
-          this.physics.isWorldBakedStatic(physId) &&
-          this.physics.needsWorldBakedPoseRecook(desc) &&
-          this.isColliderDescNearPlayer(desc)
-        if (!needsMovingPlatformRecook) {
-          this.colliderCookQueue.delete(physId)
-          continue
+        if (desc && this.physics.needsWorldBakedPoseRecook(desc)) {
+          this.physics.ackStaticPoseFingerprint(desc)
         }
+        this.colliderCookQueue.delete(physId)
+        continue
       }
       if (!loadingPass && this.physics.isColliderSynced(desc)) {
         this.colliderCookQueue.delete(physId)
@@ -1416,7 +1412,12 @@ export class World {
         }
         if (this.physics.geomFingerprintMatches(desc)) {
           if (this.physics.needsWorldBakedPoseRecook(desc)) {
-            // fall through — world-baked actor needs a full recook
+            if (!this.allowsRuntimeColliderRecook()) {
+              this.physics.ackStaticPoseFingerprint(desc)
+              this.colliderCookQueue.delete(physId)
+              continue
+            }
+            // fall through — world-baked actor needs a full recook (runtime recook enabled)
           } else if (!this.physics.isWorldBakedStatic(physId)) {
             // Entity-local actor — pose slide only (theatre / composite parent moves).
             this.physics.applyStaticColliderPoseUpdates([desc])

@@ -1207,8 +1207,6 @@ export class ThreeBridge {
         }
       }
 
-      if (mesh && !obj.userData.emoteAnchor) syncGltfInstanceRenderState(mesh)
-
       if (touchMaterials && Material.has(entity) && mesh) {
         const pb = Material.get(entity) as PbMaterial
         if (!this.materials.needsReapply(entity, pb, mesh)) {

@@ -2091,7 +2091,6 @@ export class SceneScriptSystem {
     this.pendingDiff.clear()
     this.pointerStructureDirty = true
     await this.bridge.sync(view)
-    this.colliderFullWalkRequested = true
     this.flushPointerStructureIfDirty()
   }
 

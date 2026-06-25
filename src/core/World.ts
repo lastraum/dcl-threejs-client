@@ -953,13 +953,12 @@ export class World {
 
     if (fpDrifted) {
       const posesSynced = this.sceneScript.hadColliderPoseSyncThisPass()
-      if (!posesSynced) {
-        // Entity-local actors only — world-baked trimesh recooks run per-entity when
-        // syncCollision reports an actual pose change (not blanket batch-drift sweeps).
+      if (!posesSynced && this.allowsRuntimeColliderRecook()) {
         this.sceneScript.refreshColliderDescPoses()
         this.pushColliderPosesToPhysX()
       }
       this.lastPhysicsBatchFp = batchFp
+      if (!cookPending && !colliderWork && !this.allowsRuntimeColliderRecook()) return
     }
 
     if (!cookPending && !fpDrifted && !colliderWork) return
@@ -1444,15 +1443,13 @@ export class World {
       const bootStyleCook =
         (loadingPass && !gltfEntityLocal) || (worldBakedRecook && !options?.entityLocal)
       const movingPlatformRecook = worldBakedRecook && !loadingPass
-      const bootGltfWorldBake = loadingPass && gltfEntityLocal
       const result = this.physics.syncStaticColliders(toCook, {
         cookBudget: toCook.length,
         freezeRemoval: true,
         // GLTF `_collider` actors stay entity-local so tween pose slides work (world-bake freezes lifts).
         forceRecookOnPoseChange: bootStyleCook && !movingPlatformRecook,
-        // Boot — world-bake GLTF trimesh once for accurate plaza placement; runtime uses entity-local cache.
-        geometryCache: bootGltfWorldBake
-          ? false
+        geometryCache: loadingPass
+          ? true
           : gltfEntityLocal || movingPlatformRecook || options?.entityLocal
             ? true
             : !bootStyleCook
@@ -1645,7 +1642,7 @@ export class World {
     )
 
     let stallPasses = 0
-    while (this.physics.probeSceneMeshDownAt(this.colliderCookPriority, 12) === null) {
+    while (this.physics.probeSceneMeshDownAt(this.colliderCookPriority, 32, 48) === null) {
       if (performance.now() - started > maxWallMs) {
         console.warn(
           `[World] spawn collider probe still missing after boot — gltf=${this.physics.gltfStaticActorCount}/${gltfCount}`
@@ -1781,7 +1778,7 @@ export class World {
 
       const elapsedSec = ((performance.now() - started) / 1000).toFixed(1)
       const staticAfter = this.physics.staticColliderCount
-      const downProbe = this.physics.probeSceneMeshDownAt(this.colliderCookPriority, 12)
+      const downProbe = this.physics.probeSceneMeshDownAt(this.colliderCookPriority, 32, 48)
       const nearestGltf = this.nearestGltfColliderHorizDist(this.colliderCookPriority)
       const placementHits = this.probeNearestGltfColliderPlacement(5)
       console.info(

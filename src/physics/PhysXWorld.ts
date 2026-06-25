@@ -1101,7 +1101,14 @@ export class PhysXWorld {
     )
     if (!didHit) return null
     const nbHits = this.raycastResult.getNbAnyHits?.() ?? 1
-    return this.pickWalkableGroundHit(this.raycastResult, nbHits, GROUND_RAY_OFFSET, feet, maxHoriz)
+    return this.pickWalkableGroundHit(
+      this.raycastResult,
+      nbHits,
+      GROUND_RAY_OFFSET,
+      feet,
+      maxHoriz,
+      maxDistance
+    )
   }
 
   private sweepDownAt(
@@ -1127,7 +1134,14 @@ export class PhysXWorld {
     )
     if (!didHit) return null
     const nbHits = this.sweepResult.getNbAnyHits?.() ?? 1
-    return this.pickWalkableGroundHit(this.sweepResult, nbHits, probeOffset, feet, maxHoriz)
+    return this.pickWalkableGroundHit(
+      this.sweepResult,
+      nbHits,
+      probeOffset,
+      feet,
+      maxHoriz,
+      maxDistance
+    )
   }
 
   debugProbeStaticHit(maxDistance = 2.5): { distance: number | null; staticCount: number; gltfCount: number } {
@@ -1230,10 +1244,15 @@ export class PhysXWorld {
     nbHits: number,
     probeOffset: number,
     feet?: THREE.Vector3,
-    maxHoriz = MAX_GROUND_CONTACT_HORIZ
+    maxHoriz = MAX_GROUND_CONTACT_HORIZ,
+    maxDrop = GROUND_CHECK_DISTANCE
   ): GroundSweepHit | null {
     let best: GroundSweepHit | null = null
     const maxHorizSq = maxHoriz * maxHoriz
+    const spawnProbe = maxHoriz >= SPAWN_GROUND_PROBE_HORIZ
+    const maxVertBelow = spawnProbe
+      ? Math.max(MAX_GROUND_CONTACT_VERT, maxDrop)
+      : MAX_GROUND_CONTACT_VERT
     for (let i = 0; i < nbHits; i++) {
       const hit = hits.getAnyHit(i)
       const normal = new THREE.Vector3(hit.normal.x, hit.normal.y, hit.normal.z)
@@ -1243,7 +1262,7 @@ export class PhysXWorld {
         const dx = point.x - feet.x
         const dz = point.z - feet.z
         if (dx * dx + dz * dz > maxHorizSq) continue
-        if (point.y < feet.y - MAX_GROUND_CONTACT_VERT) continue
+        if (point.y < feet.y - maxVertBelow) continue
         if (point.y > feet.y + MAX_GROUND_CONTACT_VERT + 0.5) continue
       }
       const distance = hit.distance

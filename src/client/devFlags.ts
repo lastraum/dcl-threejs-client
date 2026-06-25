@@ -19,3 +19,10 @@ export function skipTheatreSceneScript(): boolean {
   if (!params) return false
   return params.has('notheatre') || params.has('skiptheatre')
 }
+
+/** Debug-only: skip ECS VideoPlayer decoders (`?novideo`). */
+export function skipSceneVideoPlayers(): boolean {
+  const params = readSearchParams()
+  if (!params) return false
+  return params.has('novideo')
+}

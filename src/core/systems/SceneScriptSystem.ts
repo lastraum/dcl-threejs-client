@@ -300,7 +300,6 @@ export class SceneScriptSystem {
       scene,
       () => this.bridge!.getEntityNodes(),
       () => this.getSpatialAudioAnchors(),
-      () => this.host?.camera ?? null,
       () => this.bindLiveKitVideo,
       this.recordRendererAppend,
       this.recordRendererLww

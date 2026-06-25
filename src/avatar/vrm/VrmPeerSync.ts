@@ -10,14 +10,23 @@ import {
   encodeDavVrmChunkStream,
   tryDecodeDavMessage
 } from './dclClientAvatar'
-import { VRM_MAX_BYTES } from './constants'
-import { getEquippedVrmHash } from './vrmEquipStorage'
-import { loadVrmLibraryBytes } from './VrmLibrary'
-import { getVrmRamBytes, hasVrmRamBytes, putVrmRamBytes } from './vrmRamCache'
+import { VRM_MAX_BYTES, type CustomAvatarFormat } from './constants'
+import { getEquippedCustomAvatar } from './vrmEquipStorage'
+import { getVrmLibraryEntry, loadVrmLibraryBytes } from './VrmLibrary'
+import {
+  getVrmRamBytes,
+  getVrmRamFormat,
+  hasVrmRamBytes,
+  putVrmRamBytes
+} from './vrmRamCache'
 
 export type VrmPeerSyncCallbacks = {
-  onPeerVrmChanged: (address: string, contentHash: string | null) => void
-  onPeerVrmBytesReady: (address: string, contentHash: string) => void
+  onPeerVrmChanged: (
+    address: string,
+    contentHash: string | null,
+    format?: CustomAvatarFormat | null
+  ) => void
+  onPeerVrmBytesReady: (address: string, contentHash: string, format: CustomAvatarFormat) => void
 }
 
 type IncomingFetch = {
@@ -38,6 +47,7 @@ export class VrmPeerSync {
   private localAddress: string | null = null
   private equippedHash: string | null = null
   private readonly peerEquippedHash = new Map<string, string | null>()
+  private readonly peerEquippedFormat = new Map<string, CustomAvatarFormat>()
   private readonly incomingFetches = new Map<string, IncomingFetch>()
   private readonly pendingRequests = new Set<string>()
   private readonly servingKeys = new Set<string>()
@@ -70,9 +80,40 @@ export class VrmPeerSync {
     return this.peerEquippedHash.get(address.toLowerCase()) ?? null
   }
 
+  getPeerEquippedFormat(address: string): CustomAvatarFormat | null {
+    const key = address.toLowerCase()
+    if (!this.peerEquippedHash.get(key)) return null
+    return this.peerEquippedFormat.get(key) ?? 'vrm'
+  }
+
+  /**
+   * Re-apply cached DAV equip state after a remote peer record is created.
+   * Announce / fetch can finish before onPeerJoin — without this, ODK mesh + locomotion never mount.
+   */
+  syncPeerToRemoteAvatars(
+    address: string,
+    remote: {
+      setPeerVrmHash: (
+        addr: string,
+        hash: string | null,
+        format?: CustomAvatarFormat | null
+      ) => void
+      onPeerVrmBytesReady: (addr: string, hash: string, format?: CustomAvatarFormat) => void
+    }
+  ): void {
+    const key = address.toLowerCase()
+    const hash = this.peerEquippedHash.get(key)
+    if (!hash) return
+    const format = this.peerEquippedFormat.get(key) ?? 'vrm'
+    remote.setPeerVrmHash(key, hash, format)
+    if (hasVrmRamBytes(hash)) {
+      remote.onPeerVrmBytesReady(key, hash, getVrmRamFormat(hash) ?? format)
+    }
+  }
+
   async refreshLocalEquipped(address?: string | null): Promise<void> {
-    const hash = getEquippedVrmHash(address ?? this.localAddress)
-    await this.applyLocalEquip(hash)
+    const equip = getEquippedCustomAvatar(address ?? this.localAddress)
+    await this.applyLocalEquip(equip?.contentHash ?? null, equip?.format ?? 'vrm')
   }
 
   async onLocalEquipChanged(address?: string | null): Promise<void> {
@@ -87,6 +128,7 @@ export class VrmPeerSync {
   onPeerLeave(address: string): void {
     const key = address.toLowerCase()
     this.peerEquippedHash.delete(key)
+    this.peerEquippedFormat.delete(key)
     this.clearPeerFetchState(key)
   }
 
@@ -103,7 +145,7 @@ export class VrmPeerSync {
     }
   }
 
-  private async applyLocalEquip(hash: string | null): Promise<void> {
+  private async applyLocalEquip(hash: string | null, format: CustomAvatarFormat = 'vrm'): Promise<void> {
     this.equippedHash = hash
     if (!hash) {
       await this.publish(encodeDavEnvelopes(encodeDavClear()))
@@ -115,15 +157,22 @@ export class VrmPeerSync {
       console.warn('[vrm] equipped hash missing from local library — skipping announce')
       return
     }
-    await this.publishAnnounce(hash, bytes.byteLength)
+    const entry = await getVrmLibraryEntry(hash)
+    const resolvedFormat = entry?.format ?? format
+    await this.publishAnnounce(hash, bytes.byteLength, resolvedFormat)
   }
 
-  private async publishAnnounce(hash: string, byteSize: number): Promise<void> {
-    await this.publish(encodeDavEnvelopes(encodeDavAnnounce(hash, byteSize)))
-    clientDebugLog.log('vrm', `DAV announce · ${hash.slice(0, 12)}… (${byteSize} B)`, {
-      level: 'success',
-      throttleMs: 0
-    })
+  private async publishAnnounce(
+    hash: string,
+    byteSize: number,
+    format: CustomAvatarFormat
+  ): Promise<void> {
+    await this.publish(encodeDavEnvelopes(encodeDavAnnounce(hash, byteSize, format)))
+    clientDebugLog.log(
+      'vrm',
+      `DAV announce · ${format} ${hash.slice(0, 12)}… (${byteSize} B)`,
+      { level: 'success', throttleMs: 0 }
+    )
   }
 
   private async publish(envelopes: Uint8Array[]): Promise<void> {
@@ -140,7 +189,7 @@ export class VrmPeerSync {
 
     switch (msg.type) {
       case DavMessageType.Announce:
-        this.onPeerAnnounce(from, msg.hash, msg.byteSize)
+        this.onPeerAnnounce(from, msg.hash, msg.byteSize, msg.format)
         break
       case DavMessageType.Clear:
         this.onPeerClear(from)
@@ -163,18 +212,25 @@ export class VrmPeerSync {
     }
   }
 
-  private onPeerAnnounce(address: string, hash: string, byteSize: number): void {
+  private onPeerAnnounce(
+    address: string,
+    hash: string,
+    byteSize: number,
+    format: CustomAvatarFormat
+  ): void {
     void byteSize
     const prev = this.peerEquippedHash.get(address)
-    if (prev === hash) return
+    if (prev === hash && this.peerEquippedFormat.get(address) === format) return
     if (prev) this.clearPeerFetchState(address)
     this.peerEquippedHash.set(address, hash)
-    this.callbacks?.onPeerVrmChanged(address, hash)
+    this.peerEquippedFormat.set(address, format)
+    this.callbacks?.onPeerVrmChanged(address, hash, format)
 
     if (hasVrmRamBytes(hash)) {
+      const cachedFormat = getVrmRamFormat(hash) ?? format
       queueMicrotask(() => {
         if (this.peerEquippedHash.get(address) !== hash) return
-        this.callbacks?.onPeerVrmBytesReady(address, hash)
+        this.callbacks?.onPeerVrmBytesReady(address, hash, cachedFormat)
       })
       return
     }
@@ -185,7 +241,8 @@ export class VrmPeerSync {
   private onPeerClear(address: string): void {
     if (!this.peerEquippedHash.has(address)) return
     this.peerEquippedHash.set(address, null)
-    this.callbacks?.onPeerVrmChanged(address, null)
+    this.peerEquippedFormat.delete(address)
+    this.callbacks?.onPeerVrmChanged(address, null, null)
   }
 
   private async requestPeerVrm(provider: string, hash: string, force = false): Promise<void> {
@@ -336,13 +393,14 @@ export class VrmPeerSync {
 
       this.incomingFetches.delete(key)
       const buffer = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer
-      putVrmRamBytes(hash, buffer)
+      const format = this.peerEquippedFormat.get(provider) ?? 'vrm'
+      putVrmRamBytes(hash, buffer, format)
       clientDebugLog.log(
         'vrm',
-        `DAV received · ${provider.slice(0, 8)}… ${hash.slice(0, 12)}… (${buffer.byteLength} B)`,
+        `DAV received · ${format} ${provider.slice(0, 8)}… ${hash.slice(0, 12)}… (${buffer.byteLength} B)`,
         { level: 'success' }
       )
-      this.callbacks?.onPeerVrmBytesReady(provider, hash)
+      this.callbacks?.onPeerVrmBytesReady(provider, hash, format)
     } catch (err) {
       this.failFetchAssembly(provider, hash, 'error', {
         message: err instanceof Error ? err.message : String(err)

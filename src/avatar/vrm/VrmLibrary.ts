@@ -1,4 +1,4 @@
-import { VRM_LIBRARY_META_KEY, VRM_MAX_BYTES } from './constants'
+import { VRM_LIBRARY_META_KEY, VRM_MAX_BYTES, type CustomAvatarFormat } from './constants'
 import { sha256Hex } from './vrmHash'
 import {
   deleteVrmBytes,
@@ -7,20 +7,42 @@ import {
   writeVrmBytes,
   writeVrmMetaStore
 } from './vrmByteCache'
+import {
+  fetchMmlText,
+  fetchUrlBytes,
+  parseMmlCharacter,
+  type MmlAttachmentSpec
+} from '../odk/parseMml'
+import { validateOdkSkeleton } from '../odk/odkSkeleton'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 
 export type VrmLibraryEntry = {
   contentHash: string
   fileName: string
   byteSize: number
   addedAt: number
+  format: CustomAvatarFormat
+  mmlSourceUrl?: string
+  mmlAttachments?: MmlAttachmentSpec[]
   thumbnailDataUrl?: string
 }
 
 type LibraryIndex = VrmLibraryEntry[]
 
+let probeLoader: GLTFLoader | null = null
+
+function getProbeLoader(): GLTFLoader {
+  if (!probeLoader) probeLoader = new GLTFLoader()
+  return probeLoader
+}
+
 async function readIndex(): Promise<LibraryIndex> {
   const index = await readVrmMetaStore<LibraryIndex>(VRM_LIBRARY_META_KEY)
-  return Array.isArray(index) ? index : []
+  if (!Array.isArray(index)) return []
+  return index.map((e) => ({
+    ...e,
+    format: e.format === 'odk' ? 'odk' : 'vrm'
+  }))
 }
 
 async function writeIndex(index: LibraryIndex): Promise<void> {
@@ -48,16 +70,25 @@ export async function loadVrmLibraryBytes(contentHash: string): Promise<ArrayBuf
   return readVrmBytes(contentHash.toLowerCase())
 }
 
-export async function addVrmFile(file: File): Promise<VrmLibraryEntry> {
-  if (!file.name.toLowerCase().endsWith('.vrm')) {
-    throw new Error('Only .vrm files are supported')
+async function validateOdkGlbBytes(bytes: ArrayBuffer): Promise<void> {
+  const gltf = await getProbeLoader().parseAsync(bytes, '')
+  const validation = validateOdkSkeleton(gltf.scene)
+  if (!validation.ok) {
+    throw new Error(`Not a valid ODK skeleton — missing: ${validation.missing.join(', ')}`)
   }
-  if (file.size <= 0) throw new Error('File is empty')
-  if (file.size > VRM_MAX_BYTES) {
-    throw new Error(`VRM must be under ${formatVrmByteSize(VRM_MAX_BYTES)}`)
+}
+
+async function storeLibraryEntry(
+  bytes: ArrayBuffer,
+  fileName: string,
+  format: CustomAvatarFormat,
+  extra?: Pick<VrmLibraryEntry, 'mmlSourceUrl' | 'mmlAttachments'>
+): Promise<VrmLibraryEntry> {
+  if (bytes.byteLength <= 0) throw new Error('File is empty')
+  if (bytes.byteLength > VRM_MAX_BYTES) {
+    throw new Error(`Avatar must be under ${formatVrmByteSize(VRM_MAX_BYTES)}`)
   }
 
-  const bytes = await file.arrayBuffer()
   const contentHash = await sha256Hex(bytes)
   const existing = await getVrmLibraryEntry(contentHash)
   if (existing) return existing
@@ -65,15 +96,58 @@ export async function addVrmFile(file: File): Promise<VrmLibraryEntry> {
   await writeVrmBytes(contentHash, bytes)
   const entry: VrmLibraryEntry = {
     contentHash,
-    fileName: file.name,
+    fileName,
     byteSize: bytes.byteLength,
-    addedAt: Date.now()
+    addedAt: Date.now(),
+    format,
+    ...extra
   }
 
   const index = await readIndex()
   index.push(entry)
   await writeIndex(index)
   return entry
+}
+
+export async function addVrmFile(file: File): Promise<VrmLibraryEntry> {
+  if (!file.name.toLowerCase().endsWith('.vrm')) {
+    throw new Error('Only .vrm files are supported')
+  }
+  const bytes = await file.arrayBuffer()
+  return storeLibraryEntry(bytes, file.name, 'vrm')
+}
+
+export async function addMmlFile(file: File): Promise<VrmLibraryEntry> {
+  if (!file.name.toLowerCase().endsWith('.mml')) {
+    throw new Error('Only .mml files are supported')
+  }
+  const text = await file.text()
+  const baseUrl =
+    typeof window !== 'undefined' ? window.location.href : undefined
+  return importMmlText(text, file.name, baseUrl)
+}
+
+export async function addMmlFromUrl(url: string): Promise<VrmLibraryEntry> {
+  const trimmed = url.trim()
+  if (!trimmed) throw new Error('MML URL is required')
+  const { text, baseUrl } = await fetchMmlText(trimmed)
+  const fileName = trimmed.split('/').pop()?.split('?')[0] || 'avatar.mml'
+  return importMmlText(text, fileName, baseUrl, trimmed)
+}
+
+async function importMmlText(
+  text: string,
+  fileName: string,
+  baseUrl?: string,
+  mmlSourceUrl?: string
+): Promise<VrmLibraryEntry> {
+  const spec = parseMmlCharacter(text, baseUrl)
+  const bytes = await fetchUrlBytes(spec.bodySrc)
+  await validateOdkGlbBytes(bytes)
+  return storeLibraryEntry(bytes, fileName, 'odk', {
+    mmlSourceUrl,
+    mmlAttachments: spec.attachments.length ? spec.attachments : undefined
+  })
 }
 
 export async function removeVrmFromLibrary(contentHash: string): Promise<void> {

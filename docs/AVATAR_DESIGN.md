@@ -85,6 +85,7 @@ User equips a `.vrm` URL instead of (or overriding) DCL profile composition.
 | **4f-b** | DAV wire protocol + P2P VRM transfer over scene comms |
 | **4f-c** | Remote VRM rendering + locomotion for peers |
 | **4f-d** | Profile emotes on VRM (Mixamo retarget) + polish |
+| **5** | MML / ODK custom avatars (parse `.mml` → GLB, Mixamo→ODK retarget, DAV v2 format) |
 
 ---
 
@@ -130,6 +131,39 @@ Custom VRM bytes are **not** uploaded to Catalyst. Peers exchange them over scen
 - Local: `LocalAvatar.playEmote()`; remote: `RemoteAvatarManager.applyPeerEmote()`.
 - Stale DAV fetches time out after 120 s (`VrmPeerSync.gcStaleFetches()` in the frame loop).
 - RAM cache cleared on world dispose.
+
+---
+
+## Phase 5 — MML / ODK custom avatars
+
+### Import
+
+- Users drop **`.mml`** or **`.vrm`** on the Backpack **Custom Avatars** tab, or paste an MML URL.
+- `parseMmlCharacter()` reads `<m-character src="…glb">` and optional child `<m-model socket="…">` attachments.
+- Runtime stores **resolved GLB bytes** in IndexedDB (SHA-256 hash); MML is only the import descriptor.
+- ODK skeleton validated against UE5 mannequin bone names (`pelvis`, `spine_01`…`spine_05`, `hand_l`, etc.).
+
+### Locomotion + emotes
+
+- Mixamo locomotion GLBs retarget via `TO_ODK` map in `src/avatar/odk/odkBoneMap.ts`.
+- Twist bones (`*_twist_*`, `spine_04`/`spine_05`) mirror parent rotations post-retarget.
+- Profile emotes use `retargetGltfClipToOdk()` (same pipeline as VRM emotes).
+
+### Multiplayer (DAV v2)
+
+- Announce payload adds 1-byte **format** (`0` = vrm, `1` = odk). v1 announces assumed VRM.
+- Chunked byte transfer unchanged; receivers pick `VrmAvatar` vs `OdkAvatar` loader by format.
+
+### Key files
+
+| Piece | Location |
+|-------|----------|
+| MML parser | `src/avatar/odk/parseMml.ts` |
+| ODK loader / avatar | `src/avatar/odk/OdkLoader.ts`, `OdkAvatar.ts` |
+| Retarget | `src/avatar/odk/odkRetarget.ts`, `odkBoneMap.ts` |
+| Locomotion | `src/avatar/odk/OdkLocomotionAnimations.ts` |
+| Attachments | `src/avatar/odk/odkAttachments.ts` |
+| Library + equip | `src/avatar/vrm/VrmLibrary.ts`, `vrmEquipStorage.ts` |
 
 ---
 

@@ -1,16 +1,17 @@
 /**
- * DAV — Decentraland Avatar VRM v1
- * P2P custom VRM over RFC4 `Packet.scene` with `scene_id = dcl.client.avatar`.
- * Chunked for LiveKit reliable SCTP limits; sent on reliable data (not lossy). RAM-only on receivers.
+ * DAV — Decentraland Avatar VRM v1 / v2
+ * P2P custom avatars over RFC4 `Packet.scene` with `scene_id = dcl.client.avatar`.
+ * v2 adds a format byte on Announce (vrm vs odk). Chunked for LiveKit reliable SCTP limits.
  */
-import { VRM_MAX_BYTES } from './constants'
+import { DavAvatarFormat, VRM_MAX_BYTES, type CustomAvatarFormat } from './constants'
 
 export const DAV_SCENE_ID = 'dcl.client.avatar'
 /** Payload bytes per LiveKit chunk (room for RFC4 + DAV headers). */
 export const DAV_CHUNK_DATA_SIZE = 12_000
 
 const MAGIC = new Uint8Array([0x44, 0x41, 0x56, 0x01])
-const VERSION = 1
+const VERSION_V1 = 1
+const VERSION_V2 = 2
 
 export const DavMessageType = {
   Announce: 1,
@@ -41,37 +42,42 @@ export function hashBytesToHex(bytes: Uint8Array): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-function writeHeader(type: number, payloadLen: number): Uint8Array {
+function writeHeader(version: number, type: number, payloadLen: number): Uint8Array {
   const out = new Uint8Array(6 + payloadLen)
   out.set(MAGIC, 0)
-  out[4] = VERSION
+  out[4] = version
   out[5] = type
   return out
 }
 
-export function encodeDavAnnounce(contentHashHex: string, byteSize: number): Uint8Array {
+export function encodeDavAnnounce(
+  contentHashHex: string,
+  byteSize: number,
+  format: CustomAvatarFormat = 'vrm'
+): Uint8Array {
   const hash = hashHexToBytes(contentHashHex)
-  const out = writeHeader(DavMessageType.Announce, 36)
+  const out = writeHeader(VERSION_V2, DavMessageType.Announce, 37)
   out.set(hash, 6)
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength)
   view.setUint32(38, byteSize, true)
+  out[42] = format === 'odk' ? DavAvatarFormat.odk : DavAvatarFormat.vrm
   return out
 }
 
 export function encodeDavClear(): Uint8Array {
-  return writeHeader(DavMessageType.Clear, 0)
+  return writeHeader(VERSION_V2, DavMessageType.Clear, 0)
 }
 
 export function encodeDavFetchRequest(contentHashHex: string): Uint8Array {
   const hash = hashHexToBytes(contentHashHex)
-  const out = writeHeader(DavMessageType.FetchRequest, 32)
+  const out = writeHeader(VERSION_V2, DavMessageType.FetchRequest, 32)
   out.set(hash, 6)
   return out
 }
 
 export function encodeDavFetchBegin(contentHashHex: string, totalSize: number): Uint8Array {
   const hash = hashHexToBytes(contentHashHex)
-  const out = writeHeader(DavMessageType.FetchBegin, 36)
+  const out = writeHeader(VERSION_V2, DavMessageType.FetchBegin, 36)
   out.set(hash, 6)
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength)
   view.setUint32(38, totalSize, true)
@@ -84,7 +90,7 @@ export function encodeDavFetchChunk(
   data: Uint8Array
 ): Uint8Array {
   const hash = hashHexToBytes(contentHashHex)
-  const out = writeHeader(DavMessageType.FetchChunk, 40 + data.length)
+  const out = writeHeader(VERSION_V2, DavMessageType.FetchChunk, 40 + data.length)
   out.set(hash, 6)
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength)
   view.setUint32(38, offset, true)
@@ -94,7 +100,7 @@ export function encodeDavFetchChunk(
 
 export function encodeDavFetchEnd(contentHashHex: string): Uint8Array {
   const hash = hashHexToBytes(contentHashHex)
-  const out = writeHeader(DavMessageType.FetchEnd, 32)
+  const out = writeHeader(VERSION_V2, DavMessageType.FetchEnd, 32)
   out.set(hash, 6)
   return out
 }
@@ -102,7 +108,7 @@ export function encodeDavFetchEnd(contentHashHex: string): Uint8Array {
 export function encodeDavFetchError(contentHashHex: string, reason: DavFetchErrorReason): Uint8Array {
   const hash = hashHexToBytes(contentHashHex)
   const reasonCode = reason === 'oversize' ? 2 : reason === 'busy' ? 3 : 1
-  const out = writeHeader(DavMessageType.FetchError, 33)
+  const out = writeHeader(VERSION_V2, DavMessageType.FetchError, 33)
   out.set(hash, 6)
   out[38] = reasonCode
   return out
@@ -127,7 +133,7 @@ export function encodeDavVrmChunkStream(contentHashHex: string, bytes: ArrayBuff
 }
 
 export type DecodedDavMessage =
-  | { type: typeof DavMessageType.Announce; hash: string; byteSize: number }
+  | { type: typeof DavMessageType.Announce; hash: string; byteSize: number; format: CustomAvatarFormat }
   | { type: typeof DavMessageType.Clear }
   | { type: typeof DavMessageType.FetchRequest; hash: string }
   | { type: typeof DavMessageType.FetchBegin; hash: string; totalSize: number }
@@ -140,17 +146,26 @@ export function tryDecodeDavMessage(data: Uint8Array): DecodedDavMessage | null 
   if (data[0] !== MAGIC[0] || data[1] !== MAGIC[1] || data[2] !== MAGIC[2] || data[3] !== MAGIC[3]) {
     return null
   }
-  if (data[4] !== VERSION) return null
+  const version = data[4]
+  if (version !== VERSION_V1 && version !== VERSION_V2) return null
 
   const type = data[5]
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
 
   switch (type) {
     case DavMessageType.Announce: {
+      if (version === VERSION_V2) {
+        if (data.length < 43) return null
+        const hash = hashBytesToHex(data.subarray(6, 38))
+        const byteSize = view.getUint32(38, true)
+        const formatCode = data[42]
+        const format: CustomAvatarFormat = formatCode === DavAvatarFormat.odk ? 'odk' : 'vrm'
+        return { type, hash, byteSize, format }
+      }
       if (data.length < 42) return null
       const hash = hashBytesToHex(data.subarray(6, 38))
       const byteSize = view.getUint32(38, true)
-      return { type, hash, byteSize }
+      return { type, hash, byteSize, format: 'vrm' }
     }
     case DavMessageType.Clear:
       return { type }

@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRMHumanBoneName, type VRM } from '@pixiv/three-vrm'
+import { normalizeMixamoBoneName } from '../odk/odkBoneMap'
 
 const q1 = new THREE.Quaternion()
 const restRotationInverse = new THREE.Quaternion()
@@ -67,7 +68,12 @@ function filterAndPrepClip(clip: THREE.AnimationClip, glbScene: THREE.Object3D, 
       const [, type] = track.name.split('.')
       if (type !== 'position') return false
       const [name] = track.name.split('.')
-      return name === 'Root' || name === 'mixamorigHips'
+      return (
+        name === 'Root' ||
+        name === 'mixamorigHips' ||
+        name === 'mixamorig:Hips' ||
+        name === 'Hips'
+      )
     }
     return true
   })
@@ -80,7 +86,9 @@ function filterAndPrepClip(clip: THREE.AnimationClip, glbScene: THREE.Object3D, 
 
   clip.tracks.forEach((track) => {
     const rigName = track.name.split('.')[0]
-    const node = glbScene.getObjectByName(rigName)
+    const node =
+      glbScene.getObjectByName(rigName) ??
+      glbScene.getObjectByName(normalizeMixamoBoneName(rigName ?? ''))
     if (!node) return
     node.getWorldQuaternion(restRotationInverse).invert()
     const parent = node.parent
@@ -132,7 +140,7 @@ export function retargetClipToVrm(
   const tracks: THREE.KeyframeTrack[] = []
   for (const track of clip.tracks) {
     const parts = track.name.split('.')
-    const vrmKey = TO_VRM[parts[0] ?? '']
+    const vrmKey = TO_VRM[normalizeMixamoBoneName(parts[0] ?? '')] ?? TO_VRM[parts[0] ?? '']
     if (!vrmKey) continue
     const nodeName = getBoneName(vrmKey)
     if (!nodeName) continue

@@ -158,13 +158,13 @@ export class World {
     this.unsubEnvironmentDebug = environmentDebug.subscribe(() => this.applyEnvironmentDebugVisibility())
 
     this.vrmPeerSync.attach(this.comms, {
-      onPeerVrmChanged: (address, contentHash) => {
+      onPeerVrmChanged: (address, contentHash, format) => {
         if (skipRemoteAvatars()) return
-        this.remoteAvatars?.setPeerVrmHash(address, contentHash)
+        this.remoteAvatars?.setPeerVrmHash(address, contentHash, format ?? null)
       },
-      onPeerVrmBytesReady: (address, contentHash) => {
+      onPeerVrmBytesReady: (address, contentHash, format) => {
         if (skipRemoteAvatars()) return
-        this.remoteAvatars?.onPeerVrmBytesReady(address, contentHash)
+        this.remoteAvatars?.onPeerVrmBytesReady(address, contentHash, format)
       }
     })
 
@@ -173,6 +173,9 @@ export class World {
         if (skipRemoteAvatars()) return
         if (address === this.session.getAddress()?.toLowerCase()) return
         this.remoteAvatars?.upsertPeer(address)
+        if (this.remoteAvatars) {
+          this.vrmPeerSync.syncPeerToRemoteAvatars(address, this.remoteAvatars)
+        }
         void this.social.ensurePeerProfile(address)
         this.social.onRemotePeerJoined(address)
       },

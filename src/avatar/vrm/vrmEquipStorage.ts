@@ -1,6 +1,25 @@
-import { VRM_EQUIP_STORAGE_KEY } from './constants'
+import { VRM_EQUIP_STORAGE_KEY, type CustomAvatarFormat } from './constants'
 
-type EquipStore = Record<string, string | null>
+export type EquippedCustomAvatar = {
+  format: CustomAvatarFormat
+  contentHash: string
+}
+
+type EquipStore = Record<string, EquippedCustomAvatar | string | null>
+
+function normalizeEntry(value: EquippedCustomAvatar | string | null | undefined): EquippedCustomAvatar | null {
+  if (!value) return null
+  if (typeof value === 'string') {
+    return value.length === 64 ? { format: 'vrm', contentHash: value.toLowerCase() } : null
+  }
+  if (typeof value.contentHash === 'string' && value.contentHash.length === 64) {
+    return {
+      format: value.format === 'odk' ? 'odk' : 'vrm',
+      contentHash: value.contentHash.toLowerCase()
+    }
+  }
+  return null
+}
 
 function readStore(): EquipStore {
   if (typeof window === 'undefined') return {}
@@ -19,27 +38,50 @@ function writeStore(store: EquipStore): void {
   try {
     localStorage.setItem(VRM_EQUIP_STORAGE_KEY, JSON.stringify(store))
   } catch (err) {
-    console.warn('[vrm] failed to persist equip prefs', err)
+    console.warn('[avatar] failed to persist equip prefs', err)
   }
 }
 
-export function getEquippedVrmHash(address?: string | null): string | null {
+export function getEquippedCustomAvatar(address?: string | null): EquippedCustomAvatar | null {
   if (!address) return null
-  const hash = readStore()[address.toLowerCase()]
-  return typeof hash === 'string' && hash.length === 64 ? hash : null
+  return normalizeEntry(readStore()[address.toLowerCase()])
 }
 
-export function setEquippedVrmHash(address: string, contentHash: string | null): void {
+export function setEquippedCustomAvatar(
+  address: string,
+  equip: EquippedCustomAvatar | null
+): void {
   const key = address.toLowerCase()
   const store = readStore()
-  if (contentHash) {
-    store[key] = contentHash.toLowerCase()
+  if (equip) {
+    store[key] = {
+      format: equip.format === 'odk' ? 'odk' : 'vrm',
+      contentHash: equip.contentHash.toLowerCase()
+    }
   } else {
     delete store[key]
   }
   writeStore(store)
 }
 
+/** @deprecated Use getEquippedCustomAvatar — returns hash when any custom avatar is equipped. */
+export function getEquippedVrmHash(address?: string | null): string | null {
+  return getEquippedCustomAvatar(address)?.contentHash ?? null
+}
+
+export function setEquippedVrmHash(address: string, contentHash: string | null): void {
+  if (contentHash) {
+    setEquippedCustomAvatar(address, { format: 'vrm', contentHash })
+  } else {
+    setEquippedCustomAvatar(address, null)
+  }
+}
+
+export function isCustomAvatarEquipped(address?: string | null): boolean {
+  return !!getEquippedCustomAvatar(address)
+}
+
 export function isVrmEquipped(address?: string | null): boolean {
-  return !!getEquippedVrmHash(address)
+  const equip = getEquippedCustomAvatar(address)
+  return equip?.format === 'vrm'
 }

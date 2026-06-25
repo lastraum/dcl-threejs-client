@@ -35,7 +35,13 @@ import { VrmLocomotionAnimations } from '../avatar/vrm/VrmLocomotionAnimations'
 import { disposeVrmRoot } from '../avatar/vrm/VrmLoader'
 import { applyVrmPivotOffset } from '../avatar/vrm/vrmFeetAlign'
 import { retargetGltfClipToVrm } from '../avatar/vrm/mixamoRetarget'
-import { getVrmRamBytes } from '../avatar/vrm/vrmRamCache'
+import { getVrmRamBytes, getVrmRamFormat } from '../avatar/vrm/vrmRamCache'
+import type { CustomAvatarFormat } from '../avatar/vrm/constants'
+import { OdkAvatar } from '../avatar/odk/OdkAvatar'
+import { OdkLocomotionAnimations } from '../avatar/odk/OdkLocomotionAnimations'
+import { disposeOdkRoot } from '../avatar/odk/OdkLoader'
+import { applyOdkPivotOffset } from '../avatar/odk/odkFeetAlign'
+import { applyOdkRestCorrection, retargetGltfClipToOdk } from '../avatar/odk/odkRetarget'
 import type { AvatarTransformPayload } from './comms/types'
 import type { LocomotionMode } from '../player/locomotion'
 import { RemoteAvatarLoadQueue } from './RemoteAvatarLoadQueue'
@@ -52,9 +58,12 @@ type RemotePeerRecord = {
   animations: AvatarAnimations | null
   vrmAvatar: VrmAvatar | null
   vrmLocomotion: VrmLocomotionAnimations | null
-  renderMode: 'dcl' | 'vrm'
+  odkAvatar: OdkAvatar | null
+  odkLocomotion: OdkLocomotionAnimations | null
+  renderMode: 'dcl' | 'vrm' | 'odk'
   vrmContentHash: string | null
-  /** Content hash of the VRM mesh actually mounted (may lag vrmContentHash during swaps). */
+  customAvatarFormat: CustomAvatarFormat | null
+  /** Content hash of the custom mesh actually mounted (may lag vrmContentHash during swaps). */
   vrmLoadedHash: string | null
   nameTag: NameTag | null
   identity: ProfileIdentity
@@ -252,18 +261,30 @@ export class RemoteAvatarManager {
     }
   }
 
-  setPeerVrmHash(address: string, contentHash: string | null): void {
+  setPeerVrmHash(
+    address: string,
+    contentHash: string | null,
+    format: CustomAvatarFormat | null = null
+  ): void {
     const key = address.toLowerCase()
     const record = this.peers.get(key)
     if (!record) return
     const normalized = contentHash?.toLowerCase() ?? null
-    if (record.vrmContentHash === normalized) {
-      if (normalized && record.vrmLoadedHash === normalized && record.vrmAvatar) return
-      if (!normalized && record.renderMode !== 'vrm') return
+    const resolvedFormat = normalized ? (format ?? record.customAvatarFormat ?? 'vrm') : null
+    if (record.vrmContentHash === normalized && record.customAvatarFormat === resolvedFormat) {
+      if (
+        normalized &&
+        record.vrmLoadedHash === normalized &&
+        (record.vrmAvatar || record.odkAvatar)
+      ) {
+        return
+      }
+      if (!normalized && record.renderMode === 'dcl') return
     }
     record.vrmContentHash = normalized
+    record.customAvatarFormat = resolvedFormat
     if (!normalized) {
-      if (record.renderMode === 'vrm') {
+      if (record.renderMode === 'vrm' || record.renderMode === 'odk') {
         void this.reloadPeerAvatar(key, record)
       }
       return
@@ -271,17 +292,28 @@ export class RemoteAvatarManager {
     void this.reloadPeerAvatar(key, record)
   }
 
-  onPeerVrmBytesReady(address: string, contentHash: string): void {
+  onPeerVrmBytesReady(
+    address: string,
+    contentHash: string,
+    format: CustomAvatarFormat = 'vrm'
+  ): void {
     const key = address.toLowerCase()
     const record = this.peers.get(key)
     if (!record) return
     const hash = contentHash.toLowerCase()
     if (!record.vrmContentHash) {
       record.vrmContentHash = hash
+      record.customAvatarFormat = format
     } else if (record.vrmContentHash !== hash) {
       return
+    } else if (!record.customAvatarFormat) {
+      record.customAvatarFormat = format
     }
-    if (record.renderMode === 'vrm' && record.vrmAvatar && record.vrmLoadedHash === hash) {
+    if (
+      record.vrmLoadedHash === hash &&
+      ((record.renderMode === 'vrm' && record.vrmAvatar) ||
+        (record.renderMode === 'odk' && record.odkAvatar))
+    ) {
       return
     }
     void this.reloadPeerAvatar(key, record)
@@ -297,7 +329,9 @@ export class RemoteAvatarManager {
     const emoteActive =
       record.renderMode === 'vrm'
         ? record.vrmLocomotion?.isProfileEmoteActive()
-        : record.animations?.isProfileEmoteActive()
+        : record.renderMode === 'odk'
+          ? record.odkLocomotion?.isProfileEmoteActive()
+          : record.animations?.isProfileEmoteActive()
     if (record.activeEmoteUrn === normalizedRef && emoteActive) {
       return
     }
@@ -337,8 +371,11 @@ export class RemoteAvatarManager {
         animations: null,
         vrmAvatar: null,
         vrmLocomotion: null,
+        odkAvatar: null,
+        odkLocomotion: null,
         renderMode: 'dcl',
         vrmContentHash: null,
+        customAvatarFormat: null,
         vrmLoadedHash: null,
         nameTag: null,
         identity: defaultProfileIdentity(key.slice(0, 8)),
@@ -533,7 +570,9 @@ export class RemoteAvatarManager {
       const emoteActive =
         record.renderMode === 'vrm'
           ? (record.vrmLocomotion?.isProfileEmoteActive() ?? false)
-          : (record.animations?.isProfileEmoteActive() ?? false)
+          : record.renderMode === 'odk'
+            ? (record.odkLocomotion?.isProfileEmoteActive() ?? false)
+            : (record.animations?.isProfileEmoteActive() ?? false)
       const locomotionMode: LocomotionMode =
         speed > DCL_LOCOMOTION_DEFAULTS.runSpeed * 0.85
           ? 'run'
@@ -558,13 +597,18 @@ export class RemoteAvatarManager {
       if (record.renderMode === 'vrm') {
         record.vrmLocomotion?.update(delta, locomotionState)
         record.vrmAvatar?.update(delta)
+      } else if (record.renderMode === 'odk') {
+        record.odkLocomotion?.update(delta, locomotionState)
+        record.odkAvatar?.update(delta)
       } else {
         record.animations?.update(delta, locomotionState)
       }
       const stillEmoting =
         record.renderMode === 'vrm'
           ? record.vrmLocomotion?.isProfileEmoteActive()
-          : record.animations?.isProfileEmoteActive()
+          : record.renderMode === 'odk'
+            ? record.odkLocomotion?.isProfileEmoteActive()
+            : record.animations?.isProfileEmoteActive()
       if (record.activeEmoteUrn && !stillEmoting) {
         record.activeEmoteUrn = null
       }
@@ -685,9 +729,18 @@ export class RemoteAvatarManager {
       if (!this.peers.has(key)) return
 
       if (record.vrmContentHash) {
-        const vrmBytes = getVrmRamBytes(record.vrmContentHash)
-        if (vrmBytes) {
-          await this.loadVrmPeerAvatar(key, record, vrmBytes)
+        const customBytes = getVrmRamBytes(record.vrmContentHash)
+        if (customBytes) {
+          const format =
+            record.customAvatarFormat ??
+            getVrmRamFormat(record.vrmContentHash) ??
+            'vrm'
+          record.customAvatarFormat = format
+          if (format === 'odk') {
+            await this.loadOdkPeerAvatar(key, record, customBytes)
+          } else {
+            await this.loadVrmPeerAvatar(key, record, customBytes)
+          }
           return
         }
         if (!record.placeholder) this.attachLoadingPresentation(record)
@@ -757,6 +810,72 @@ export class RemoteAvatarManager {
     }
   }
 
+  private async loadOdkPeerAvatar(
+    key: string,
+    record: RemotePeerRecord,
+    bytes: ArrayBuffer
+  ): Promise<void> {
+    try {
+      this.disposePeerModel(record)
+      if (record.hasPosition) {
+        this.attachLoadingPresentation(record)
+      }
+
+      const odkAvatar = await OdkAvatar.fromBytes(bytes)
+      if (!this.peers.has(key)) {
+        odkAvatar.dispose()
+        return
+      }
+
+      record.odkAvatar = odkAvatar
+      record.model = odkAvatar.root
+      record.renderMode = 'odk'
+      record.vrmLoadedHash = record.vrmContentHash
+      record.customAvatarFormat = 'odk'
+
+      this.clearLoadingPresentation(record)
+      record.pivot.add(odkAvatar.root)
+      applyOdkPivotOffset(record.pivot, odkAvatar.root)
+
+      record.odkLocomotion = new OdkLocomotionAnimations()
+      try {
+        await record.odkLocomotion.bind(odkAvatar.root)
+        console.info(`[network] remote ODK locomotion active · ${record.identity.displayName}`)
+      } catch (err) {
+        console.warn(`[network] remote ODK locomotion failed for ${record.address}`, err)
+        record.odkLocomotion.dispose()
+        record.odkLocomotion = null
+      }
+
+      record.nameTag?.dispose()
+      record.nameTag = NameTag.attach(record.nameTagAnchor, record.identity.displayName, {
+        textColor: record.identity.nameColor,
+        claimed: record.identity.hasClaimedName,
+        address: record.address,
+        interactive: true
+      })
+
+      clientDebugLog.log(
+        'network',
+        `Remote ODK ready · ${record.identity.displayName} (${record.vrmContentHash?.slice(0, 12)}…)`,
+        { level: 'success' }
+      )
+
+      if (record.pendingEmote) {
+        const pending = record.pendingEmote
+        record.pendingEmote = null
+        void this.applyPeerEmote(record, pending)
+      }
+    } catch (err) {
+      console.warn(`[network] remote ODK load failed for ${record.address}`, err)
+      record.vrmContentHash = null
+      record.vrmLoadedHash = null
+      record.customAvatarFormat = null
+      record.renderMode = 'dcl'
+      await this.loadPeerAvatar(key, record)
+    }
+  }
+
   private async loadVrmPeerAvatar(
     key: string,
     record: RemotePeerRecord,
@@ -779,6 +898,7 @@ export class RemoteAvatarManager {
       record.model = vrmAvatar.root
       record.renderMode = 'vrm'
       record.vrmLoadedHash = record.vrmContentHash
+      record.customAvatarFormat = 'vrm'
 
       this.clearLoadingPresentation(record)
       record.pivot.add(vrmAvatar.root)
@@ -828,7 +948,9 @@ export class RemoteAvatarManager {
     const emoteActive =
       record.renderMode === 'vrm'
         ? record.vrmLocomotion?.isProfileEmoteActive()
-        : record.animations?.isProfileEmoteActive()
+        : record.renderMode === 'odk'
+          ? record.odkLocomotion?.isProfileEmoteActive()
+          : record.animations?.isProfileEmoteActive()
     if (record.activeEmoteUrn === normalizedRef && emoteActive) {
       return
     }
@@ -850,6 +972,21 @@ export class RemoteAvatarManager {
         return
       }
 
+      if (record.renderMode === 'odk' && record.odkAvatar && record.odkLocomotion) {
+        const clip = retargetGltfClipToOdk(
+          cached.animations[0]!,
+          cached.root,
+          record.odkAvatar.root
+        )
+        const restCorrection = record.odkLocomotion.getRestCorrection()
+        if (restCorrection) applyOdkRestCorrection(clip, restCorrection)
+        if (clip.tracks.length === 0) return
+        if (record.odkLocomotion.playProfileEmote(clip, resolved.loop)) {
+          record.activeEmoteUrn = resolved.urn.trim().toLowerCase()
+        }
+        return
+      }
+
       if (!record.animations) return
       if (record.animations.playProfileEmoteFromGltf(cached, resolved.loop)) {
         record.activeEmoteUrn = resolved.urn.trim().toLowerCase()
@@ -864,6 +1001,8 @@ export class RemoteAvatarManager {
     record.animations = null
     record.vrmLocomotion?.dispose()
     record.vrmLocomotion = null
+    record.odkLocomotion?.dispose()
+    record.odkLocomotion = null
     record.activeEmoteUrn = null
     record.vrmLoadedHash = null
     this.clearLoadingPresentation(record)
@@ -871,6 +1010,14 @@ export class RemoteAvatarManager {
       record.pivot.remove(record.vrmAvatar.root)
       record.vrmAvatar.dispose()
       record.vrmAvatar = null
+      record.model = null
+      record.renderMode = 'dcl'
+      return
+    }
+    if (record.odkAvatar) {
+      record.pivot.remove(record.odkAvatar.root)
+      record.odkAvatar.dispose()
+      record.odkAvatar = null
       record.model = null
       record.renderMode = 'dcl'
       return
@@ -885,6 +1032,8 @@ export class RemoteAvatarManager {
   private disposeModel(model: THREE.Group): void {
     if (model.name === 'custom-vrm') {
       disposeVrmRoot(null, model)
+    } else if (model.name === 'custom-odk') {
+      disposeOdkRoot(model)
     } else {
       disposeWearableInstance(model)
     }

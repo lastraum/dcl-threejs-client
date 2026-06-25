@@ -152,9 +152,8 @@ export class PlayerSystem {
     const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
     this.physics.spawnPlayer(spawnThree)
     this.physics.warmStaticScene()
-    const spawnGrounded = this.physics.settleCapsuleToGround()
-    this.grounded = spawnGrounded
-    this.groundCoyote = spawnGrounded ? GROUND_COYOTE_SECONDS : 0
+    this.grounded = false
+    this.groundCoyote = 0
     this.physics.attachCapsuleDebug(this.root)
     this.enabled = true
     this.host.setOrbitEnabled(false)

@@ -501,9 +501,8 @@ export class World {
     onProgress?.('Spawning player…')
     await this.player.initCapsule(scene.spawn, walkBounds, this.sceneScript.readComponents, onProgress)
     if (scene.spawn.y <= 0.01) {
-      const pos = this.player.getPosition()
       console.info(
-        `[World] spawn — no spawnPoints; feet y=1 → PhysX settle · feet=(${pos?.y.toFixed(2) ?? '?'}) · parcel=${scene.commsPointer}`
+        `[World] spawn — no spawnPoints; feet y=1 (gravity on first frame) · parcel=${scene.commsPointer}`
       )
     }
     this.sceneScript.setSpatialAudioPlayerRoot(() => this.player!.getPlayerRoot())

@@ -45,8 +45,10 @@ export class NameTag {
   private readonly textEl: HTMLSpanElement
   private readonly badgeEl: HTMLSpanElement | null
   private readonly chatEl: HTMLDivElement
+  private readonly loadingEl: HTMLDivElement
 
   private label: string
+  private loading = false
   private style: NameTagStyle
   private readonly address: string | null
   private chatHideTimer: ReturnType<typeof setTimeout> | null = null
@@ -76,6 +78,14 @@ export class NameTag {
     this.chatEl.className = 'avatar-name-tag__chat'
     this.chatEl.setAttribute('aria-hidden', 'true')
     el.appendChild(this.chatEl)
+
+    this.loadingEl = document.createElement('div')
+    this.loadingEl.className = 'avatar-name-tag__loading'
+    this.loadingEl.setAttribute('aria-hidden', 'true')
+    const spinner = document.createElement('div')
+    spinner.className = 'avatar-name-tag__loading-spinner'
+    this.loadingEl.appendChild(spinner)
+    el.appendChild(this.loadingEl)
 
     this.label = text
     this.style = { textColor: options.textColor, claimed: options.claimed }
@@ -148,6 +158,14 @@ export class NameTag {
     this.chatEl.textContent = ''
     this.rootEl.classList.remove('avatar-name-tag--has-chat')
     this.chatEl.setAttribute('aria-hidden', 'true')
+  }
+
+  /** Centered spinner overlay while a remote avatar is still loading. */
+  setLoading(loading: boolean): void {
+    if (loading === this.loading) return
+    this.loading = loading
+    this.rootEl.classList.toggle('avatar-name-tag--loading', loading)
+    this.loadingEl.setAttribute('aria-hidden', loading ? 'false' : 'true')
   }
 
   dispose(): void {

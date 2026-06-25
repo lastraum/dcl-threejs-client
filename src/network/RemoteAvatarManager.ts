@@ -38,6 +38,7 @@ import { retargetGltfClipToVrm } from '../avatar/vrm/mixamoRetarget'
 import { getVrmRamBytes, getVrmRamFormat } from '../avatar/vrm/vrmRamCache'
 import type { CustomAvatarFormat } from '../avatar/vrm/constants'
 import { OdkAvatar } from '../avatar/odk/OdkAvatar'
+import { formatTag, odkNetInfo, odkNetWarn, shortAddr, shortHash } from '../avatar/odk/odkNetLog'
 import { OdkLocomotionAnimations } from '../avatar/odk/OdkLocomotionAnimations'
 import { disposeOdkRoot } from '../avatar/odk/OdkLoader'
 import { applyOdkPivotOffset } from '../avatar/odk/odkFeetAlign'
@@ -103,6 +104,36 @@ function blankProfile(address: string): AvatarProfile {
     fromWallet: false,
     address: address.toLowerCase()
   }
+}
+
+const REMOTE_LOCO_SPEED_CAP = DCL_LOCOMOTION_DEFAULTS.runSpeed * 1.15
+
+function inferRemoteLocomotionMode(speed: number): LocomotionMode {
+  if (speed > DCL_LOCOMOTION_DEFAULTS.runSpeed * 0.85) return 'run'
+  if (speed > DCL_LOCOMOTION_DEFAULTS.jogSpeed * 0.35) return 'jog'
+  return 'walk'
+}
+
+function remoteTargetLocomotionSpeed(mode: LocomotionMode): number {
+  switch (mode) {
+    case 'run':
+      return DCL_LOCOMOTION_DEFAULTS.runSpeed
+    case 'walk':
+      return DCL_LOCOMOTION_DEFAULTS.walkSpeed
+    default:
+      return DCL_LOCOMOTION_DEFAULTS.jogSpeed
+  }
+}
+
+function resolveRemoteHorizontalSpeed(
+  posSpeed: number,
+  velocity?: THREE.Vector3
+): number {
+  const cappedPos = Math.min(Math.max(0, posSpeed), REMOTE_LOCO_SPEED_CAP)
+  if (!velocity) return cappedPos
+  const wireHoriz = Math.hypot(velocity.x, velocity.z)
+  if (wireHoriz > 0.03) return Math.min(wireHoriz, REMOTE_LOCO_SPEED_CAP)
+  return cappedPos
 }
 
 /** Remote player avatars — blank body first, swap to Catalyst profile when ready. */
@@ -268,7 +299,14 @@ export class RemoteAvatarManager {
   ): void {
     const key = address.toLowerCase()
     const record = this.peers.get(key)
-    if (!record) return
+    if (!record) {
+      odkNetWarn('setPeerVrmHash — no remote peer record yet', {
+        peer: shortAddr(key),
+        format: formatTag(format),
+        hash: shortHash(contentHash)
+      })
+      return
+    }
     const normalized = contentHash?.toLowerCase() ?? null
     const resolvedFormat = normalized ? (format ?? record.customAvatarFormat ?? 'vrm') : null
     if (record.vrmContentHash === normalized && record.customAvatarFormat === resolvedFormat) {
@@ -277,6 +315,12 @@ export class RemoteAvatarManager {
         record.vrmLoadedHash === normalized &&
         (record.vrmAvatar || record.odkAvatar)
       ) {
+        odkNetInfo('setPeerVrmHash — already mounted', {
+          peer: shortAddr(key),
+          format: formatTag(resolvedFormat),
+          hash: shortHash(normalized),
+          renderMode: record.renderMode
+        })
         return
       }
       if (!normalized && record.renderMode === 'dcl') return
@@ -284,11 +328,22 @@ export class RemoteAvatarManager {
     record.vrmContentHash = normalized
     record.customAvatarFormat = resolvedFormat
     if (!normalized) {
+      odkNetInfo('setPeerVrmHash — peer cleared custom avatar', {
+        peer: shortAddr(key),
+        wasMode: record.renderMode
+      })
       if (record.renderMode === 'vrm' || record.renderMode === 'odk') {
         void this.reloadPeerAvatar(key, record)
       }
       return
     }
+    odkNetInfo('setPeerVrmHash — reload scheduled', {
+      peer: shortAddr(key),
+      format: formatTag(resolvedFormat),
+      hash: shortHash(normalized),
+      ramReady: !!getVrmRamBytes(normalized),
+      wasMode: record.renderMode
+    })
     void this.reloadPeerAvatar(key, record)
   }
 
@@ -299,12 +354,25 @@ export class RemoteAvatarManager {
   ): void {
     const key = address.toLowerCase()
     const record = this.peers.get(key)
-    if (!record) return
+    if (!record) {
+      odkNetWarn('onPeerVrmBytesReady — no remote peer record', {
+        peer: shortAddr(key),
+        format: formatTag(format),
+        hash: shortHash(contentHash)
+      })
+      return
+    }
     const hash = contentHash.toLowerCase()
     if (!record.vrmContentHash) {
       record.vrmContentHash = hash
       record.customAvatarFormat = format
     } else if (record.vrmContentHash !== hash) {
+      odkNetWarn('onPeerVrmBytesReady — hash mismatch, ignoring', {
+        peer: shortAddr(key),
+        expected: shortHash(record.vrmContentHash),
+        got: shortHash(hash),
+        format: formatTag(format)
+      })
       return
     } else if (!record.customAvatarFormat) {
       record.customAvatarFormat = format
@@ -314,8 +382,20 @@ export class RemoteAvatarManager {
       ((record.renderMode === 'vrm' && record.vrmAvatar) ||
         (record.renderMode === 'odk' && record.odkAvatar))
     ) {
+      odkNetInfo('onPeerVrmBytesReady — already mounted', {
+        peer: shortAddr(key),
+        format: formatTag(format),
+        hash: shortHash(hash),
+        renderMode: record.renderMode
+      })
       return
     }
+    odkNetInfo('onPeerVrmBytesReady — reload scheduled', {
+      peer: shortAddr(key),
+      format: formatTag(record.customAvatarFormat ?? format),
+      hash: shortHash(hash),
+      bytes: getVrmRamBytes(hash)?.byteLength ?? 0
+    })
     void this.reloadPeerAvatar(key, record)
   }
 
@@ -403,6 +483,7 @@ export class RemoteAvatarManager {
         verticalVelocity: 0
       }
       this.peers.set(key, record)
+      odkNetInfo('remote peer record created', { peer: shortAddr(key) })
     }
 
     if (positionDcl) {
@@ -499,13 +580,18 @@ export class RemoteAvatarManager {
 
     if (record.hasPosition && dt > 0.001) {
       const dist = position.distanceTo(prevTarget)
-      record.horizontalSpeed = dist / dt
+      const posSpeed = dist / dt
+      record.horizontalSpeed = resolveRemoteHorizontalSpeed(posSpeed, velocity)
       record.velocity.set(
         (position.x - prevTarget.x) / dt,
         (position.y - prevTarget.y) / dt,
         (position.z - prevTarget.z) / dt
       )
-      record.verticalVelocity = record.velocity.y
+      if (!velocity) {
+        record.verticalVelocity = record.velocity.y
+      }
+    } else if (velocity) {
+      record.horizontalSpeed = resolveRemoteHorizontalSpeed(0, velocity)
     }
 
     if (locomotion) {
@@ -573,18 +659,16 @@ export class RemoteAvatarManager {
           : record.renderMode === 'odk'
             ? (record.odkLocomotion?.isProfileEmoteActive() ?? false)
             : (record.animations?.isProfileEmoteActive() ?? false)
-      const locomotionMode: LocomotionMode =
-        speed > DCL_LOCOMOTION_DEFAULTS.runSpeed * 0.85
-          ? 'run'
-          : speed > DCL_LOCOMOTION_DEFAULTS.jogSpeed * 0.35
-            ? 'jog'
-            : 'walk'
+      const locomotionMode = inferRemoteLocomotionMode(speed)
+      const targetLocomotionSpeed =
+        !emoteActive && speed > 0.08 ? remoteTargetLocomotionSpeed(locomotionMode) : 0
       const grounded = record.remoteGrounded && record.verticalVelocity > -8
       const jumping = record.remoteJumping && record.jumpCount <= 1
       const doubleJumping = record.jumpCount >= 2 && !grounded
 
       const locomotionState = {
         horizontalSpeed: emoteActive ? 0 : speed,
+        targetLocomotionSpeed,
         grounded,
         nearGround: grounded,
         verticalVelocity: record.verticalVelocity,
@@ -684,19 +768,35 @@ export class RemoteAvatarManager {
     if (this.peerReloadSeq.get(key) !== seq) return
   }
 
+  private ensureNameTag(record: RemotePeerRecord, loading: boolean): void {
+    if (!record.nameTag) {
+      record.nameTag = NameTag.attach(record.nameTagAnchor, record.identity.displayName, {
+        textColor: record.identity.nameColor,
+        claimed: record.identity.hasClaimedName,
+        address: record.address,
+        interactive: true
+      })
+    } else {
+      record.nameTag.setText(record.identity.displayName)
+      record.nameTag.setStyle({
+        textColor: record.identity.nameColor,
+        claimed: record.identity.hasClaimedName
+      })
+    }
+    record.nameTag.setLoading(loading)
+  }
+
   private attachLoadingPresentation(record: RemotePeerRecord): void {
     if (!record.placeholder) {
       record.placeholder = createRemoteAvatarPlaceholder(true)
       record.pivot.add(record.placeholder)
     }
-    record.nameTag?.dispose()
-    record.nameTag = NameTag.attach(record.nameTagAnchor, record.identity.displayName, {
-      textColor: record.identity.nameColor,
-      claimed: record.identity.hasClaimedName,
-      address: record.address,
-      interactive: true
-    })
+    this.ensureNameTag(record, true)
     updateNameTagAnchor(record.nameTagAnchor, record.placeholder)
+  }
+
+  private finalizeNameTag(record: RemotePeerRecord): void {
+    this.ensureNameTag(record, false)
   }
 
   private clearLoadingPresentation(record: RemotePeerRecord): void {
@@ -736,6 +836,12 @@ export class RemoteAvatarManager {
             getVrmRamFormat(record.vrmContentHash) ??
             'vrm'
           record.customAvatarFormat = format
+          odkNetInfo('loadPeerAvatar — mounting custom mesh', {
+            peer: shortAddr(key),
+            format: formatTag(format),
+            hash: shortHash(record.vrmContentHash),
+            bytes: customBytes.byteLength
+          })
           if (format === 'odk') {
             await this.loadOdkPeerAvatar(key, record, customBytes)
           } else {
@@ -743,6 +849,11 @@ export class RemoteAvatarManager {
           }
           return
         }
+        odkNetInfo('loadPeerAvatar — waiting for DAV bytes', {
+          peer: shortAddr(key),
+          format: formatTag(record.customAvatarFormat),
+          hash: shortHash(record.vrmContentHash)
+        })
         if (!record.placeholder) this.attachLoadingPresentation(record)
         return
       }
@@ -781,13 +892,7 @@ export class RemoteAvatarManager {
         record.animations = null
       }
 
-      record.nameTag?.dispose()
-      record.nameTag = NameTag.attach(record.nameTagAnchor, record.identity.displayName, {
-        textColor: record.identity.nameColor,
-        claimed: record.identity.hasClaimedName,
-        address: record.address,
-        interactive: true
-      })
+      this.finalizeNameTag(record)
 
       const { x, y, z } = record.targetPosition
       clientDebugLog.log(
@@ -805,6 +910,7 @@ export class RemoteAvatarManager {
       const msg = err instanceof Error ? err.message : String(err)
       clientDebugLog.log('network', `Remote avatar failed · ${address.slice(0, 8)}… ${msg}`, { level: 'error' })
       console.warn(`[network] remote avatar failed for ${address}`, err)
+      this.finalizeNameTag(record)
     } finally {
       record.loading = null
     }
@@ -840,21 +946,24 @@ export class RemoteAvatarManager {
       record.odkLocomotion = new OdkLocomotionAnimations()
       try {
         await record.odkLocomotion.bind(odkAvatar.root)
-        console.info(`[network] remote ODK locomotion active · ${record.identity.displayName}`)
+        odkNetInfo('remote ODK locomotion active', {
+          peer: shortAddr(record.address),
+          name: record.identity.displayName,
+          hash: shortHash(record.vrmContentHash)
+        })
       } catch (err) {
         console.warn(`[network] remote ODK locomotion failed for ${record.address}`, err)
         record.odkLocomotion.dispose()
         record.odkLocomotion = null
       }
 
-      record.nameTag?.dispose()
-      record.nameTag = NameTag.attach(record.nameTagAnchor, record.identity.displayName, {
-        textColor: record.identity.nameColor,
-        claimed: record.identity.hasClaimedName,
-        address: record.address,
-        interactive: true
-      })
+      this.finalizeNameTag(record)
 
+      odkNetInfo('remote ODK avatar mounted', {
+        peer: shortAddr(record.address),
+        name: record.identity.displayName,
+        hash: shortHash(record.vrmContentHash)
+      })
       clientDebugLog.log(
         'network',
         `Remote ODK ready · ${record.identity.displayName} (${record.vrmContentHash?.slice(0, 12)}…)`,
@@ -867,7 +976,11 @@ export class RemoteAvatarManager {
         void this.applyPeerEmote(record, pending)
       }
     } catch (err) {
-      console.warn(`[network] remote ODK load failed for ${record.address}`, err)
+      odkNetWarn('remote ODK load failed — falling back to DCL avatar', {
+        peer: shortAddr(record.address),
+        hash: shortHash(record.vrmContentHash),
+        error: err instanceof Error ? err.message : String(err)
+      })
       record.vrmContentHash = null
       record.vrmLoadedHash = null
       record.customAvatarFormat = null
@@ -913,13 +1026,7 @@ export class RemoteAvatarManager {
         record.vrmLocomotion = null
       }
 
-      record.nameTag?.dispose()
-      record.nameTag = NameTag.attach(record.nameTagAnchor, record.identity.displayName, {
-        textColor: record.identity.nameColor,
-        claimed: record.identity.hasClaimedName,
-        address: record.address,
-        interactive: true
-      })
+      this.finalizeNameTag(record)
 
       clientDebugLog.log(
         'network',

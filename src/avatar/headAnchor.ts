@@ -2,22 +2,33 @@ import * as THREE from 'three'
 
 const _headWorld = new THREE.Vector3()
 
-/** DCL / Mixamo / CTRL rig head bone aliases (see emoteBoneMap Head variants). */
+/** DCL / Mixamo / CTRL / UE5 ODK head bone aliases (see emoteBoneMap Head variants). */
 const HEAD_BONE_NAMES = new Set(
-  ['Head', 'Avatar_Head', 'CTRL_Avatar_Head', 'CTRL_FK_Avatar_Head', 'mixamorigHead'].map((name) =>
-    name.toLowerCase()
-  )
+  [
+    'Head',
+    'head',
+    'Avatar_Head',
+    'CTRL_Avatar_Head',
+    'CTRL_FK_Avatar_Head',
+    'mixamorigHead',
+    'neck_01',
+    'neck_02'
+  ].map((name) => name.toLowerCase())
 )
 
+const PRIMARY_HEAD_NAMES = new Set(['head', 'avatar_head', 'mixamorighead'])
+
 export function findHeadBone(root: THREE.Object3D): THREE.Bone | null {
-  let found: THREE.Bone | null = null
+  let primary: THREE.Bone | null = null
+  let fallback: THREE.Bone | null = null
   root.traverse((obj) => {
-    if (found) return
     if (!(obj instanceof THREE.Bone)) return
-    const boneName = obj.name.replace(/\.\d+$/, '')
-    if (HEAD_BONE_NAMES.has(boneName.toLowerCase())) found = obj
+    const boneName = obj.name.replace(/\.\d+$/, '').toLowerCase()
+    if (!HEAD_BONE_NAMES.has(boneName)) return
+    if (PRIMARY_HEAD_NAMES.has(boneName)) primary = obj
+    else if (!fallback) fallback = obj
   })
-  return found
+  return primary ?? fallback
 }
 
 /** Gap above the animated head bone for name tags (Explorer ~0.4 m + client lift). */
@@ -48,5 +59,5 @@ export function updateNameTagAnchor(
   head.updateWorldMatrix(true, false)
   head.getWorldPosition(_headWorld)
   anchor.parent.worldToLocal(_headWorld)
-  anchor.position.set(0, _headWorld.y + offsetY, 0)
+  anchor.position.set(_headWorld.x, _headWorld.y + offsetY, _headWorld.z)
 }

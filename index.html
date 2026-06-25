@@ -490,6 +490,7 @@
       }
       .avatar-name-tag {
         --avatar-name-tag-chat-max-w: 200px;
+        position: relative;
         display: inline-flex;
         flex-direction: column;
         align-items: center;
@@ -506,6 +507,33 @@
         pointer-events: none;
         user-select: none;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+      }
+      .avatar-name-tag__loading {
+        display: none;
+        position: absolute;
+        inset: 0;
+        align-items: center;
+        justify-content: center;
+        border-radius: inherit;
+        background: rgba(0, 0, 0, 0.58);
+        pointer-events: none;
+        z-index: 3;
+      }
+      .avatar-name-tag--loading .avatar-name-tag__loading {
+        display: flex;
+      }
+      .avatar-name-tag__loading-spinner {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.18);
+        border-top-color: rgba(255, 255, 255, 0.9);
+        animation: avatar-name-tag-spin 0.75s linear infinite;
+      }
+      @keyframes avatar-name-tag-spin {
+        to {
+          transform: rotate(360deg);
+        }
       }
       .avatar-name-tag--has-chat {
         border-radius: 14px;

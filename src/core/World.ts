@@ -114,6 +114,8 @@ export class World {
   private readonly colliderCookPriority = new THREE.Vector3()
   private warmStaticScenePending = false
   private bootAssetsTimedOut = false
+  /** Plaza-scale scenes — keep cooking near-player GLTF colliders after hydration timeout. */
+  private postBootColliderCatchUpUntil = 0
   /** Runtime burst (e.g. theatre Scene 11/12) — drain with loading-style recook until idle. */
   private runtimeColliderBurstUntil = 0
   private unsubAvatarChat: (() => void) | null = null
@@ -177,6 +179,7 @@ export class World {
         if (this.remoteAvatars) {
           this.vrmPeerSync.syncPeerToRemoteAvatars(address, this.remoteAvatars)
         }
+        void this.vrmPeerSync.onPeerJoined(address)
         void this.social.ensurePeerProfile(address)
         this.social.onRemotePeerJoined(address)
       },
@@ -963,8 +966,11 @@ export class World {
     this.logRuntimeRecookDisabledOnce()
     const batchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
     const fpDrifted = batchFp !== this.lastPhysicsBatchFp
-    const cookPending = this.colliderCookQueue.size > 0
     const colliderWork = this.sceneScript.hasColliderWorkPending()
+
+    if (colliderWork) {
+      this.sceneScript.syncCollision()
+    }
 
     if (fpDrifted) {
       const posesSynced = this.sceneScript.hadColliderPoseSyncThisPass()
@@ -973,12 +979,11 @@ export class World {
         this.pushColliderPosesToPhysX()
       }
       this.lastPhysicsBatchFp = batchFp
-      if (!cookPending && !colliderWork && !this.allowsRuntimeColliderRecook()) return
     }
 
-    if (!cookPending && !fpDrifted && !colliderWork) return
-
     this.reconcileColliderCookQueue()
+    const cookPendingAfterReconcile = this.colliderCookQueue.size > 0
+    if (!cookPendingAfterReconcile && !fpDrifted && !colliderWork) return
     if (this.colliderCookQueue.size > 0) {
       if (this.allowsRuntimeColliderRecook()) {
         this.drainRuntimeColliderCookQueue()
@@ -995,16 +1000,24 @@ export class World {
   private drainPendingColliderCooksInitialOnly(): void {
     if (this.colliderCookQueue.size === 0) return
     const burstActive = performance.now() < this.runtimeColliderBurstUntil
+    const catchUpActive = performance.now() < this.postBootColliderCatchUpUntil
     const pending = this.colliderCookQueue.size
     const nearPlayerPending = this.countNearPlayerColliderQueue()
     if (
       pending >= World.RUNTIME_COLLIDER_BURST_QUEUE ||
       burstActive ||
-      nearPlayerPending >= 4
+      nearPlayerPending >= 4 ||
+      (catchUpActive && nearPlayerPending >= 1)
     ) {
       let passes = 0
       // Spread large post-composite queues across frames — avoid 200+ cooks in one async tick.
-      const maxPasses = burstActive ? 3 : nearPlayerPending >= 4 ? 2 : 1
+      const maxPasses = burstActive
+        ? 3
+        : catchUpActive && nearPlayerPending >= 1
+          ? 3
+          : nearPlayerPending >= 4
+            ? 2
+            : 1
       while (this.colliderCookQueue.size > 0 && passes < maxPasses) {
         this.drainColliderCookQueue({ initialOnly: true })
         passes++
@@ -1073,6 +1086,7 @@ export class World {
     this.colliderCookQueue.clear()
     this.pendingColliderCooks = 0
     this.lastPhysicsBatchFp = ''
+    this.postBootColliderCatchUpUntil = 0
   }
 
   /** Runtime tween / transform pose slide — only the entities that moved. */
@@ -1226,10 +1240,12 @@ export class World {
     const pending = this.colliderCookQueue.size
     const delta = pending - queueBefore
     const nearPlayer = this.countNearPlayerColliderQueue()
+    const catchUpActive = performance.now() < this.postBootColliderCatchUpUntil
     if (
       pending >= World.RUNTIME_COLLIDER_BURST_QUEUE ||
       delta >= World.RUNTIME_COLLIDER_BURST_QUEUE ||
-      nearPlayer >= 4
+      nearPlayer >= 4 ||
+      (catchUpActive && nearPlayer >= 1)
     ) {
       this.runtimeColliderBurstUntil = performance.now() + World.RUNTIME_COLLIDER_BURST_MS
       clientDebugLog.log(
@@ -1621,7 +1637,7 @@ export class World {
 
       if (assetsTimedOut) {
         onProgress?.('Waiting for collider extraction…')
-        await this.waitForColliderExtractionSettle(Math.min(12_000, maxWallMs * 0.25))
+        await this.waitForColliderExtractionSettle(Math.min(45_000, maxWallMs * 0.35))
       }
 
       this.deferPhysxCooks = false
@@ -1635,19 +1651,34 @@ export class World {
       let lastPending = this.colliderCookQueue.size
       let lastRegistered = this.physics.gltfStaticActorCount
 
-      while (this.colliderCookQueue.size > 0) {
+      while (
+        this.colliderCookQueue.size > 0 ||
+        (assetsTimedOut && this.sceneScript.hasColliderWorkPending())
+      ) {
         if (performance.now() - started > maxWallMs) {
           const pending = this.colliderCookQueue.size
           const registered = this.physics.gltfStaticActorCount
           const extracted = this.lastGltfColliderCount
+          if (assetsTimedOut && registered > 0) {
+            console.warn(
+              `[World] collider boot timed out after ${(maxWallMs / 1000).toFixed(0)}s — ` +
+                `gltf=${registered}/${extracted} pending=${pending}; continuing post-boot catch-up`
+            )
+            break
+          }
           throw new Error(
             `[World] collider boot incomplete after ${(maxWallMs / 1000).toFixed(0)}s — ` +
               `gltf=${registered}/${extracted} pending=${pending}`
           )
         }
 
+        if (this.sceneScript.hasColliderWorkPending()) {
+          this.sceneScript.syncCollision()
+        }
         this.reconcileColliderCookQueue()
-        this.drainColliderCookQueue({ loading: true })
+        if (this.colliderCookQueue.size > 0) {
+          this.drainColliderCookQueue({ loading: true })
+        }
         const gltfCount = this.lastGltfColliderCount
         const registered = this.physics.gltfStaticActorCount
         const pending = this.colliderCookQueue.size
@@ -1657,9 +1688,19 @@ export class World {
           this.colliderCookProgressFraction(registered, gltfCount)
         )
 
-        if (pending === lastPending && registered === lastRegistered && pending > 0) {
+        if (
+          pending === lastPending &&
+          registered === lastRegistered &&
+          (pending > 0 || (assetsTimedOut && this.sceneScript.hasColliderWorkPending()))
+        ) {
           stallPasses++
           if (stallPasses > 120) {
+            if (assetsTimedOut && registered > 0) {
+              console.warn(
+                `[World] collider boot stalled — gltf=${registered}/${gltfCount} pending=${pending}; continuing post-boot catch-up`
+              )
+              break
+            }
             throw new Error(
               `[World] collider boot stalled — gltf=${registered}/${gltfCount} pending=${pending} (cook failures?)`
             )
@@ -1679,13 +1720,25 @@ export class World {
       const finalRegistered = this.physics.gltfStaticActorCount
       const finalGltfCount = this.lastGltfColliderCount
       if (finalGltfCount > 0 && finalRegistered < finalGltfCount) {
-        throw new Error(
-          `[World] collider boot incomplete — gltf=${finalRegistered}/${finalGltfCount} PhysX actors`
-        )
+        if (assetsTimedOut) {
+          console.warn(
+            `[World] collider boot partial — gltf=${finalRegistered}/${finalGltfCount} PhysX actors; post-boot catch-up active`
+          )
+        } else {
+          throw new Error(
+            `[World] collider boot incomplete — gltf=${finalRegistered}/${finalGltfCount} PhysX actors`
+          )
+        }
       }
 
       this.collidersLoadingComplete = true
       this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
+      if (assetsTimedOut) {
+        this.postBootColliderCatchUpUntil = performance.now() + 60_000
+        console.info(
+          '[World] hydration timed out — post-boot near-player collider catch-up active (60s)'
+        )
+      }
       this.sceneScript.notifyPlayReady()
       if (platformMotionDebug.isEnabled() && this.player) {
         const feet = this.player.getWorldPosition()

@@ -1722,7 +1722,27 @@ export class PhysXWorld {
     return isSignificantPlatformDelta(sticky.delta) ? sticky.delta : null
   }
 
-  /** Scene GLTF/prop floor only — spawn snap after boot cook (skips infinite y=0). */
+  /**
+   * Drop the CCT onto the first blocking surface (scene mesh or infinite ground).
+   * Used at spawn instead of pre-placement raycasts.
+   */
+  settleCapsuleToGround(maxSeconds = 2): boolean {
+    if (!this.controller) return false
+    const dt = 1 / 60
+    const maxSteps = Math.ceil(maxSeconds / dt)
+    const gravity = 20
+    let grounded = false
+    for (let i = 0; i < maxSteps; i++) {
+      this._v1.set(0, -gravity * dt, 0)
+      grounded = this.movePlayer(this._v1, dt).grounded
+      this.step(dt)
+      if (grounded) break
+    }
+    this.invalidateControllerCache()
+    return grounded
+  }
+
+  /** Scene GLTF/prop floor only — optional snap (skips infinite y=0). */
   snapFeetToSceneMesh(feet: THREE.Vector3, maxDrop = 32, maxHoriz = SPAWN_GROUND_PROBE_HORIZ): boolean {
     const hit = this.probeSceneMeshDownAt(feet, maxDrop, maxHoriz)
     if (hit === null) return false

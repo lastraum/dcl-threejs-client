@@ -500,37 +500,25 @@ export class World {
 
     onProgress?.('Spawning player…')
     await this.player.initCapsule(scene.spawn, walkBounds, this.sceneScript.readComponents, onProgress)
-    const feetAfterSpawn = this.player.getWorldPosition()
-    if (this.physics.snapFeetToSceneMesh(feetAfterSpawn, 48, 48)) {
-      this.player.syncFromPhysics()
-    }
     if (scene.spawn.y <= 0.01) {
+      const pos = this.player.getPosition()
       console.info(
-        `[World] spawn — scene metadata has no spawnPoints; default y=0 · snapped feet=(${this.player.getPosition()?.y.toFixed(2) ?? '?'}) · parcel=${scene.commsPointer}`
+        `[World] spawn — no spawnPoints; feet y=1 → PhysX settle · feet=(${pos?.y.toFixed(2) ?? '?'}) · parcel=${scene.commsPointer}`
       )
     }
     this.sceneScript.setSpatialAudioPlayerRoot(() => this.player!.getPlayerRoot())
     const spawnStatic = this.physics.staticColliderCount
     const spawnGltf = this.physics.gltfStaticActorCount
     const gltfStats = this.sceneScript.gltfColliders?.getPhysicsExtractionStats()
-    const probe = this.physics.debugProbeStaticHit(2.5)
-    const downProbe = this.physics.debugProbeDownHit(8)
     const pos = this.player.getPosition()
-    const feetThree = this.player.getWorldPosition()
-    const nearestGltf = this.nearestGltfColliderHorizDist(feetThree)
-    const sceneProbe = this.physics.probeSceneMeshDownAt(feetThree, 24, 48)
     console.info(
       `[World] player spawn — static=${spawnStatic} gltfRegistered=${spawnGltf} gltfExtracted=${this.lastGltfColliderCount}` +
         (gltfStats
           ? ` shapes(inv=${gltfStats.invisibleShapes} vis=${gltfStats.visibleShapes})`
           : '') +
-        (pos ? ` feet=(${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})` : '') +
-        ` probeH=${probe.distance !== null ? `${probe.distance.toFixed(2)}m` : 'none'}` +
-        ` sceneProbe=${sceneProbe !== null ? `${sceneProbe.toFixed(2)}m` : 'none'}` +
-        ` nearestGltf=${nearestGltf !== null ? `${nearestGltf.toFixed(1)}m` : 'none'}` +
-        ` probeDown=${downProbe !== null ? `${downProbe.toFixed(2)}m` : 'none'}`
+        (pos ? ` feet=(${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})` : '')
     )
-    this.logBootColliderDiag(feetThree)
+    this.logBootColliderDiag()
     this.sceneScript.syncClientEntities(this.player.getEntityPose(), this.player.getCameraEntityPose())
 
     const address = this.session.getAddress()
@@ -1165,46 +1153,8 @@ export class World {
     if (result.geometryChanged) this.physics.warmStaticScene()
   }
 
-  /** Down-ray at nearest GLTF descriptor origins — verifies PhysX actors landed where Three.js expects. */
-  private probeNearestGltfColliderPlacement(maxSamples: number): { hits: number; sampled: number } {
-    const anchor = this.colliderCookPriority
-    const descs = this.sceneScript
-      .getAllPhysicsColliderDescs()
-      .filter((d) => d.fingerprint.startsWith('gltf-entity:'))
-      .map((desc) => {
-        const dx = desc.matrix.elements[12]! - anchor.x
-        const dz = desc.matrix.elements[14]! - anchor.z
-        return { desc, distSq: dx * dx + dz * dz }
-      })
-      .sort((a, b) => a.distSq - b.distSq)
-      .slice(0, maxSamples)
-
-    let hits = 0
-    for (const { desc } of descs) {
-      const px = desc.matrix.elements[12]!
-      const py = desc.matrix.elements[13]!
-      const pz = desc.matrix.elements[14]!
-      const probeAt = new THREE.Vector3(px, py + 2, pz)
-      // Entity pivots are often far from mesh extents — boot placement uses a wide horizontal gate.
-      if (this.physics.probeSceneMeshDownAt(probeAt, 24, 48) !== null) hits++
-    }
-    return { hits, sampled: descs.length }
-  }
-
-  private nearestGltfColliderHorizDist(feet: THREE.Vector3): number | null {
-    let nearest: number | null = null
-    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
-      if (!desc.fingerprint.startsWith('gltf-entity:')) continue
-      const dx = desc.matrix.elements[12]! - feet.x
-      const dz = desc.matrix.elements[14]! - feet.z
-      const d = Math.hypot(dx, dz)
-      if (nearest === null || d < nearest) nearest = d
-    }
-    return nearest
-  }
-
-  /** After boot cook — log probe health at spawn feet (once). */
-  private logBootColliderDiag(probeAt: THREE.Vector3): void {
+  /** After boot cook — one-line GLTF registration health (once). */
+  private logBootColliderDiag(): void {
     if (!this.playerMode || this.loggedFinalizePoseDiag) return
     if (this.physics.gltfStaticActorCount < 20) return
     this.loggedFinalizePoseDiag = true
@@ -1216,16 +1166,10 @@ export class World {
       if (!this.physics.hasStaticActor(desc.entity)) missingActor++
       else if (!this.physics.geomFingerprintMatches(desc)) fpMismatch++
     }
-    const sceneProbe = this.physics.probeSceneMeshDownAt(probeAt, 24, 48)
-    const probe = this.physics.debugProbeDownHit(8)
-    const nearestGltf = this.nearestGltfColliderHorizDist(probeAt)
     console.info(
       `[World] colliders booted — gltf=${this.physics.gltfStaticActorCount}` +
         (fpMismatch > 0 ? ` fpMismatch=${fpMismatch}` : '') +
-        (missingActor > 0 ? ` missingActor=${missingActor}` : '') +
-        ` sceneProbe=${sceneProbe !== null ? `${sceneProbe.toFixed(2)}m` : 'none'}` +
-        ` nearestGltf=${nearestGltf !== null ? `${nearestGltf.toFixed(1)}m` : 'none'}` +
-        ` probeDown=${probe !== null ? `${probe.toFixed(2)}m` : 'none'}`
+        (missingActor > 0 ? ` missingActor=${missingActor}` : '')
     )
   }
 
@@ -1623,56 +1567,6 @@ export class World {
     }
   }
 
-  /**
-   * After the global queue drains — keep cooking spawn-adjacent GLTF until the down-ray hits
-   * scene meshes (hydration timeout often leaves the avatar volume uncooked).
-   */
-  private async ensureSpawnAreaCollidersCooked(
-    scene: ResolvedScene,
-    started: number,
-    maxWallMs: number,
-    onProgress?: (msg: string, fraction?: number) => void
-  ): Promise<void> {
-    const gltfCount = this.lastGltfColliderCount
-    if (gltfCount <= 0) return
-
-    dclToThreeVec(
-      new THREE.Vector3(scene.spawn.x, scene.spawn.y, scene.spawn.z),
-      this.colliderCookPriority
-    )
-
-    let stallPasses = 0
-    while (this.physics.probeSceneMeshDownAt(this.colliderCookPriority, 32, 48) === null) {
-      if (performance.now() - started > maxWallMs) {
-        console.warn(
-          `[World] spawn collider probe still missing after boot — gltf=${this.physics.gltfStaticActorCount}/${gltfCount}`
-        )
-        break
-      }
-      if (this.physics.gltfStaticActorCount >= gltfCount) break
-
-      const beforePending = this.colliderCookQueue.size
-      const beforeRegistered = this.physics.gltfStaticActorCount
-      this.reconcileColliderCookQueue()
-      this.drainColliderCookQueue({ loading: true })
-      onProgress?.(
-        `Cooking spawn collisions… ${this.physics.gltfStaticActorCount}/${gltfCount} GLTF`,
-        this.colliderCookProgressFraction(this.physics.gltfStaticActorCount, gltfCount)
-      )
-
-      if (
-        this.colliderCookQueue.size === beforePending &&
-        this.physics.gltfStaticActorCount === beforeRegistered
-      ) {
-        stallPasses++
-        if (stallPasses > 90) break
-      } else {
-        stallPasses = 0
-      }
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-    }
-  }
-
   private async bootCookPhysicsColliders(
     scene: ResolvedScene,
     onProgress?: (msg: string, fraction?: number) => void,
@@ -1752,8 +1646,6 @@ export class World {
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
       }
 
-      await this.ensureSpawnAreaCollidersCooked(scene, started, maxWallMs, onProgress)
-
       this.recookAnimatedGltfEntityLocal()
       this.physics.warmStaticScene()
 
@@ -1778,52 +1670,9 @@ export class World {
 
       const elapsedSec = ((performance.now() - started) / 1000).toFixed(1)
       const staticAfter = this.physics.staticColliderCount
-      const downProbe = this.physics.probeSceneMeshDownAt(this.colliderCookPriority, 32, 48)
-      const nearestGltf = this.nearestGltfColliderHorizDist(this.colliderCookPriority)
-      const placementHits = this.probeNearestGltfColliderPlacement(5)
       console.info(
-        `[World] colliders ready — static=${staticAfter} gltf=${finalRegistered}/${finalGltfCount} (${elapsedSec}s)` +
-          ` sceneProbe=${downProbe !== null ? `${downProbe.toFixed(2)}m` : 'none'}` +
-          ` nearestGltf=${nearestGltf !== null ? `${nearestGltf.toFixed(1)}m` : 'none'}` +
-          (placementHits.sampled > 0 ? ` physPlacement=${placementHits.hits}/${placementHits.sampled}` : '')
+        `[World] colliders ready — static=${staticAfter} gltf=${finalRegistered}/${finalGltfCount} (${elapsedSec}s)`
       )
-      const spawnStaticProbe = this.physics.debugProbeStaticHit(3)
-      const spawnBlocked =
-        placementHits.sampled > 0 &&
-        placementHits.hits === 0 &&
-        spawnStaticProbe.distance === null &&
-        finalRegistered < finalGltfCount
-      if (spawnBlocked) {
-        console.error(
-          `[World] PhysX GLTF colliders incomplete — registered=${finalRegistered}/${finalGltfCount}` +
-            ` placement=${placementHits.hits}/${placementHits.sampled} staticProbe=none`
-        )
-      } else if (placementHits.sampled > 0 && placementHits.hits === 0) {
-        console.warn(
-          `[World] spawn placement probes missed ${placementHits.sampled} nearest GLTF origins` +
-            ` (open spawn / wide meshes — staticProbe=${spawnStaticProbe.distance !== null ? `${spawnStaticProbe.distance.toFixed(1)}m` : 'none'})`
-        )
-      }
-      if (finalGltfCount >= 50 && downProbe === null && nearestGltf !== null && nearestGltf < 4) {
-        let descProbeHits = 0
-        let sampled = 0
-        for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
-          if (!desc.fingerprint.startsWith('gltf-entity:')) continue
-          if (sampled >= 8) break
-          sampled++
-          const px = desc.matrix.elements[12]!
-          const py = desc.matrix.elements[13]!
-          const pz = desc.matrix.elements[14]!
-          const probeAt = new THREE.Vector3(px, py + 2, pz)
-          if (this.physics.probeSceneMeshDownAt(probeAt, 24, 48) !== null) descProbeHits++
-        }
-        if (descProbeHits === 0) {
-          console.warn(
-            `[World] spawn area lacks walkable scene meshes under nearest GLTF origins` +
-              ` (nearest=${nearestGltf.toFixed(1)}m descProbes=0/${sampled})`
-          )
-        }
-      }
       onProgress?.('Collisions ready', 0.96)
     } finally {
       this.sceneScript.setAssetHydrationMode(false)

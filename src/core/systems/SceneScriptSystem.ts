@@ -1654,19 +1654,23 @@ export class SceneScriptSystem {
         this.triggerStructureDirty = true
       }
 
-      if (change.componentId === Transform.componentId && change.kind !== 'delete') {
-        if (MeshCollider.has(change.entity) || GltfContainer.has(change.entity)) {
-          this.colliderPoseDirty.add(change.entity)
+      // Post-play-ready only — hydration/composite spawn floods transforms and must not
+      // slide or ack world-baked colliders before spawn seal (boot walk/pointer regression).
+      if (this.playReadyNotified) {
+        if (change.componentId === Transform.componentId && change.kind !== 'delete') {
+          if (MeshCollider.has(change.entity) || GltfContainer.has(change.entity)) {
+            this.colliderPoseDirty.add(change.entity)
+          }
+          this.markDescendantColliderPosesDirty(change.entity)
         }
-        this.markDescendantColliderPosesDirty(change.entity)
-      }
 
-      if (
-        change.componentId === GltfContainer.componentId ||
-        change.componentId === MeshCollider.componentId
-      ) {
-        this.colliderStructureDirty.add(change.entity)
-        this.pointerStructureDirty = true
+        if (
+          change.componentId === GltfContainer.componentId ||
+          change.componentId === MeshCollider.componentId
+        ) {
+          this.colliderStructureDirty.add(change.entity)
+          this.pointerStructureDirty = true
+        }
       }
 
       if (change.componentId === Billboard.componentId) {
@@ -1697,11 +1701,9 @@ export class SceneScriptSystem {
   /** MatrixWorld + collider pose sync immediately before pointer raycast. */
   preparePointerRaycast(): void {
     this.flushSceneGraphMatrices()
-    if (this.hasColliderWorkPending()) {
-      this.syncCollision()
-    } else {
-      this.syncCollisionPoses()
-    }
+    // Full syncCollision runs on the async frame (World.applyPhysicsColliders) — not here.
+    // Per-raycast incremental sync during composite spawn corrupted sealed boot colliders.
+    this.syncCollisionPoses()
   }
 
   private flushTriggerStructureIfDirty(): void {

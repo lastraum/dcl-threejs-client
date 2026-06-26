@@ -58,7 +58,7 @@ import type { AssetCache } from '../../rendering/AssetCache'
 import type { SceneHost } from '../../rendering/SceneHost'
 import type { PlayerMirrorIdentity } from '../../bridge/playerMirrorIdentity'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
-import { skipTheatreSceneScript } from '../../client/devFlags'
+import { skipTheatreSceneScript, useOneWayCrdt } from '../../client/devFlags'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
 import { TriggerAreaSystem } from '../../input/TriggerAreaSystem'
 import { isTriggerAreaVerbose } from '../../input/triggerAreaConfig'
@@ -130,6 +130,9 @@ export class SceneScriptSystem {
     this.encoder.recordLww(componentId, entity, value)
   }
   private encoderEnabledLogged = false
+  private oneWayCrdtLogged = false
+  /** Phase C — serializes async outbound apply + inbound deliver. */
+  private crdtOutboundSerial: Promise<void> = Promise.resolve()
   readonly reserved = new ReservedEntitiesSync(this.projection, this.readComponents, SDK_RESERVED)
   collision: CollisionSystem | null = null
   gltfColliders: GltfColliderExtractor | null = null
@@ -909,7 +912,8 @@ export class SceneScriptSystem {
       debug: {
         pointerDeliver: POINTER_VERBOSE,
         tweenDeliver: isTweenVerbose(),
-        skipTheatre: skipTheatreSceneScript()
+        skipTheatre: skipTheatreSceneScript(),
+        oneWayCrdt: useOneWayCrdt()
       },
       scene: {
         title: scene.title,
@@ -1230,6 +1234,17 @@ export class SceneScriptSystem {
       } satisfies MainToWorker)
       return
     }
+    if (msg.type === 'crdt-outbound') {
+      this.crdtOutboundSerial = this.crdtOutboundSerial
+        .then(() => this.handleCrdtOutbound(msg.data))
+        .catch((err) => {
+          console.error(
+            '[scene]',
+            `crdt-outbound handler failed — ${err instanceof Error ? err.message : String(err)}`
+          )
+        })
+      return
+    }
     if (msg.type === 'crdt-send') {
       if (this.bootPhaseActive) {
         await this.handleCrdtSendBootFast(msg)
@@ -1281,6 +1296,67 @@ export class SceneScriptSystem {
       )
       this.worker?.postMessage({ type: 'crdt-response', id: msg.id, data: [] } satisfies MainToWorker)
       throw err
+    }
+  }
+
+  /** Phase C — worker outbound without blocking on `crdt-response`; inbound via `renderer-inbound-deliver`. */
+  private async handleCrdtOutbound(data: Uint8Array): Promise<void> {
+    const inbound = await this.processWorkerOutboundCrdt(data)
+    this.postRendererInboundDeliver(inbound)
+  }
+
+  private postRendererInboundDeliver(chunks: Uint8Array[]): void {
+    if (!chunks.length || !this.worker) return
+    const copies = chunks.map((chunk) => chunk.slice())
+    const transfer: Transferable[] = []
+    for (const chunk of copies) {
+      const buffer = chunk.buffer
+      if (!transfer.includes(buffer)) transfer.push(buffer)
+    }
+    this.worker.postMessage({ type: 'renderer-inbound-deliver', data: copies } satisfies MainToWorker, transfer)
+  }
+
+  private async processWorkerOutboundCrdt(data: Uint8Array): Promise<Uint8Array[]> {
+    const isNudge = !data?.byteLength
+    try {
+      this.prepareRendererOutboundState()
+      this.projection.applyIncoming(data)
+      this.foldProjectionChanges()
+
+      if (this.pointerAwaitingWorkerApply) {
+        this.videoPlayerBridge?.notifyUserPointerDelivered()
+        this.videoPlayerBridge?.sync(this.view)
+        this.audioSourceBridge?.sync(this.view)
+        this.audioStreamBridge?.sync(this.view)
+      }
+
+      this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
+      this.syncTriggerAreas()
+      this.syncRaycasts()
+      this.syncTweenBeforeEncode()
+      this.crdtTick++
+
+      this.prepareRendererOutboundState()
+      const encoderBytes = this.encodeRendererCrdt()
+      const inbound = encoderBytes ? [encoderBytes] : []
+
+      if (!this.oneWayCrdtLogged) {
+        this.oneWayCrdtLogged = true
+        clientDebugLog.log(
+          'projection',
+          'one-way CRDT ACTIVE — worker outbound async, inbound via renderer-inbound-deliver (?onewaycrdt)',
+          { level: 'success', alsoConsole: true }
+        )
+      }
+
+      if (isNudge && !inbound.length) return []
+      return inbound
+    } catch (err) {
+      console.error(
+        '[scene]',
+        `processWorkerOutboundCrdt failed — ${err instanceof Error ? err.message : String(err)}`
+      )
+      return []
     }
   }
 

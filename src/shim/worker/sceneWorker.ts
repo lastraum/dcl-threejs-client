@@ -67,6 +67,7 @@ const pendingSignedFetchGetHeaders = new Map<number, (body: SignedFetchGetHeader
 const pendingCommsSend = new Map<number, (body: Record<string, never>) => void>()
 const pendingInboundBinaries: Uint8Array[] = []
 let rendererInboundApply: ((chunks: Uint8Array[]) => void) | null = null
+let oneWayCrdtEnabled = false
 let engineApiEvents: EngineApiEventState | null = null
 let sceneEngine: import('@dcl/ecs').IEngine | null = null
 let sceneRunning = false
@@ -470,6 +471,43 @@ function deliverRendererAppendInbound(chunks: Uint8Array[]): void {
     'log',
     `[sceneWorker] renderer-append-deliver — trigger=${triggerAppends} videoEvent=${videoAppends}`
   )
+  scheduleBatchedSceneEngineTick()
+}
+
+/** Phase C — full renderer inbound after async main encode (no crdt-response round-trip). */
+function deliverRendererInboundGeneral(chunks: Uint8Array[]): void {
+  if (!chunks.length) return
+  if (!sceneEngine || !sceneOnStartComplete) {
+    rendererInboundApply?.(chunks)
+    return
+  }
+  const { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends, pointerAppends } =
+    applyRendererInboundChunks(chunks)
+  if (
+    tweenPuts === 0 &&
+    raycastPuts === 0 &&
+    videoPlayerPuts === 0 &&
+    triggerAppends === 0 &&
+    videoAppends === 0 &&
+    pointerAppends === 0
+  ) {
+    return
+  }
+  const needsSceneTick =
+    raycastPuts > 0 || videoPlayerPuts > 0 || triggerAppends > 0 || pointerAppends > 0 || videoAppends > 0
+  if (needsSceneTick) {
+    void sceneEngine.update(0).catch((err) => {
+      workerLog(
+        'error',
+        `[sceneWorker] renderer-inbound-deliver engine tick failed — ${err instanceof Error ? err.message : String(err)}`
+      )
+    })
+    return
+  }
+  if (tweenPuts > 0) {
+    scheduleBatchedTweenEngineTick()
+    return
+  }
   scheduleBatchedSceneEngineTick()
 }
 
@@ -900,8 +938,14 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
   if (sceneEvalInProgress) {
     return Promise.resolve([])
   }
-  const id = ++requestId
   const copy = data.slice()
+  if (oneWayCrdtEnabled && !sceneBootInProgress) {
+    const msg = { type: 'crdt-outbound', data: copy } satisfies SceneWorkerOutbound
+    if (copy.byteLength === 0) ctx.postMessage(msg)
+    else ctx.postMessage(msg, [copy.buffer])
+    return Promise.resolve([])
+  }
+  const id = ++requestId
   return new Promise((resolve) => {
     pendingCrdt.set(id, resolve)
     const msg = { type: 'crdt-send', id, data: copy } satisfies SceneWorkerOutbound
@@ -1439,6 +1483,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     deliverRendererAppendInbound(msg.data)
     return
   }
+  if (msg.type === 'renderer-inbound-deliver') {
+    deliverRendererInboundGeneral(msg.data)
+    return
+  }
 
   if (msg.type !== 'boot') return
 
@@ -1449,6 +1497,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     debugPointerDeliver = msg.debug?.pointerDeliver === true
     debugTweenDeliver = msg.debug?.tweenDeliver === true
     debugMessageArrival = msg.debug?.messageArrival === true
+    oneWayCrdtEnabled = msg.debug?.oneWayCrdt === true
+    if (oneWayCrdtEnabled) {
+      workerLog('log', '[sceneWorker] one-way CRDT enabled — outbound fire-and-forget (?onewaycrdt)')
+    }
     const skipTheatre = msg.debug?.skipTheatre === true
     ;(globalThis as Record<string, unknown>).__THREEJS_SKIP_THEATRE__ = skipTheatre
     patchWorkerConsole()
@@ -1627,8 +1679,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
 const QUIET_MESSAGE_TYPES = new Set<string>([
   'crdt-response',
   'crdt-get-state-response',
+  'crdt-outbound',
   'pointer-crdt-deliver',
-  'tween-state-deliver'
+  'tween-state-deliver',
+  'renderer-inbound-deliver'
 ])
 let workerMessageCount = 0
 

@@ -25,6 +25,8 @@ export type SceneWorkerDebugFlags = {
   messageArrival?: boolean
   /** `?notheatre` — skip Genesis theatre runShowSetup + Scene 11/12 registration. */
   skipTheatre?: boolean
+  /** `?onewaycrdt` — runtime worker→main outbound without blocking `crdt-response`. */
+  oneWayCrdt?: boolean
 }
 
 export type SceneWorkerBoot = {
@@ -52,6 +54,12 @@ export type SceneWorkerBoot = {
 export type SceneWorkerCrdtRequest = {
   type: 'crdt-send'
   id: number
+  data: Uint8Array
+}
+
+/** Phase C — fire-and-forget worker outbound; main replies via `renderer-inbound-deliver`. */
+export type SceneWorkerCrdtOutbound = {
+  type: 'crdt-outbound'
   data: Uint8Array
 }
 
@@ -162,6 +170,7 @@ export type SceneWorkerOutbound =
   | SceneWorkerError
   | SceneWorkerLog
   | SceneWorkerCrdtRequest
+  | SceneWorkerCrdtOutbound
   | SceneWorkerMovePlayerTo
   | SceneWorkerTriggerEmote
   | SceneWorkerTriggerSceneEmote
@@ -219,6 +228,8 @@ export type MainToWorker =
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
   | { type: 'tween-state-deliver'; data: Uint8Array[] }
   | { type: 'renderer-append-deliver'; data: Uint8Array[] }
+  /** Phase C — main→worker renderer-owned inbound after async outbound apply. */
+  | { type: 'renderer-inbound-deliver'; data: Uint8Array[] }
   | { type: 'inject-pointer-click'; body: InjectPointerClickBody }
   | { type: 'avatar-attach-transforms'; entries: AvatarAttachTransformEntry[] }
 

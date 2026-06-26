@@ -80,8 +80,15 @@ let pointerDeliveryInFlight = false
 let pointerDeliveryStartedAt = 0
 /** Pointer deliver deferred until scene onUpdate finishes after a crdt interrupt. */
 let queuedPointerDeliver: Uint8Array[] | null = null
-/** Min ms between lightweight engine ticks (pointer/getClick systems). */
-const SCENE_TICK_BASE_INTERVAL_MS = 100
+/** Cooperative loop poll — must be ≤ play-ready engine tick for responsive pointers. */
+const SCENE_LOOP_POLL_MS = 25
+/** Min ms between lightweight engine ticks during boot. */
+const SCENE_TICK_BOOT_INTERVAL_MS = 100
+/** Play-ready engine tick — high tier ~30 Hz; overridden by main via tier detection. */
+const ENGINE_TICK_PLAY_HIGH_MS = 33
+const ENGINE_TICK_PLAY_MEDIUM_MS = 66
+const ENGINE_TICK_PLAY_LOW_MS = 100
+let engineTickIntervalMs = SCENE_TICK_BOOT_INTERVAL_MS
 /** Min ms between full scene onUpdate — fast during hydration, throttled after play-ready. */
 let fullSceneOnUpdateIntervalMs = 250
 /** After play-ready: keep onUpdate responsive for pointer/triggers; perf throttle is engine-tick + diff consumer. */
@@ -99,7 +106,7 @@ const SCENE_UPDATE_ABORT_ADAPTIVE_THRESHOLD = 4
 const POINTER_ENGINE_TICK_ABORT_MS = 4000
 /** Abort timer — shorter once the scene is interactive. */
 let sceneUpdateAbortMs = SCENE_UPDATE_ABORT_MS
-let sceneTickIntervalMs = SCENE_TICK_BASE_INTERVAL_MS
+let sceneTickIntervalMs = SCENE_LOOP_POLL_MS
 let playReadyPerformanceTier: PerformanceTier | undefined
 let adaptiveLowPerfMode = false
 let sceneUpdateAbortStreak = 0
@@ -175,10 +182,15 @@ function applyPlayReadyTiming(tier: PerformanceTier | undefined, reason: string)
     : medium
       ? SCENE_UPDATE_ABORT_PLAY_MEDIUM_MS
       : SCENE_UPDATE_ABORT_PLAY_MS
+  engineTickIntervalMs = low
+    ? ENGINE_TICK_PLAY_LOW_MS
+    : medium
+      ? ENGINE_TICK_PLAY_MEDIUM_MS
+      : ENGINE_TICK_PLAY_HIGH_MS
   workerLog(
     'log',
     `[sceneWorker] play-ready timing (${reason}) — tier=${tier ?? 'default'} adaptiveLow=${adaptiveLowPerfMode} ` +
-      `onUpdate interval ${fullSceneOnUpdateIntervalMs}ms, abort ${sceneUpdateAbortMs}ms`
+      `engineTick ${engineTickIntervalMs}ms, onUpdate interval ${fullSceneOnUpdateIntervalMs}ms, abort ${sceneUpdateAbortMs}ms`
   )
 }
 
@@ -1048,13 +1060,14 @@ function rpcSignedFetchGetHeaders(body: SignedFetchRequest): Promise<SignedFetch
 async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): Promise<void> {
   sceneRunning = true
   lastTick = performance.now()
-  sceneTickIntervalMs = SCENE_TICK_BASE_INTERVAL_MS
+  sceneTickIntervalMs = SCENE_LOOP_POLL_MS
+  engineTickIntervalMs = SCENE_TICK_BOOT_INTERVAL_MS
 
   const sceneUpdate = exports.onUpdate
   sceneOnUpdate = sceneUpdate ?? null
   workerLog(
     'log',
-    `[sceneWorker] scene loop started — onUpdate=${sceneUpdate ? 'present' : 'absent'}, interval=${SCENE_TICK_BASE_INTERVAL_MS}ms cooperative`
+    `[sceneWorker] scene loop started — onUpdate=${sceneUpdate ? 'present' : 'absent'}, poll=${SCENE_LOOP_POLL_MS}ms engineTick=${engineTickIntervalMs}ms`
   )
 
   let heartbeatPass = 0
@@ -1173,7 +1186,7 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
 
     const engineTickInterval = sceneOnUpdatePaused
       ? HYDRATION_ENGINE_TICK_INTERVAL_MS
-      : SCENE_TICK_BASE_INTERVAL_MS
+      : engineTickIntervalMs
     if (
       sceneEngine &&
       !sceneUpdateInFlight &&
@@ -1203,7 +1216,7 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
   }
 
   if (sceneTickTimer) clearInterval(sceneTickTimer)
-  sceneTickTimer = setInterval(runCooperativeTick, SCENE_TICK_BASE_INTERVAL_MS)
+  sceneTickTimer = setInterval(runCooperativeTick, SCENE_LOOP_POLL_MS)
   runCooperativeTick()
 }
 
@@ -1286,7 +1299,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   if (msg.type === 'scene-play-ready') {
     playReadyPerformanceTier = msg.performanceTier
     applyPlayReadyTiming(msg.performanceTier, 'scene-play-ready')
-    sceneTickIntervalMs = SCENE_TICK_BASE_INTERVAL_MS
+    sceneTickIntervalMs = SCENE_LOOP_POLL_MS
+  engineTickIntervalMs = SCENE_TICK_BOOT_INTERVAL_MS
     return
   }
   if (msg.type === 'crdt-response') {

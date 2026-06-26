@@ -10,6 +10,7 @@ import { extendThreePhysX } from './extendThreePhysX'
 import { CAMERA_QUERY_MASK, GROUND_QUERY_MASK, Layers, TRIGGER_QUERY_MASK } from './Layers'
 import { geometryToPxMesh, type PxMeshHandle } from './geometryToPxMesh'
 import { bakeTrimeshGeometry, isTrimeshGeometryCookable } from './bakeTrimeshGeometry'
+import { bootColliderCookSignature, entityLocalColliderCookSignature } from './physxCookBake'
 import { ensureIndexedForCook } from './colliderGeometryPrep'
 import { loadPhysX } from './loadPhysX'
 import {
@@ -700,8 +701,17 @@ export class PhysXWorld {
       forceRecookOnPoseChange?: boolean
       /** Share cooked trimesh meshes across instances — disable during boot cook. */
       geometryCache?: boolean
+      /** Write cooked streams to IndexedDB — boot loading only. */
+      persistCook?: boolean
+      /** Boot warm start — deserialize primed IndexedDB before worker streams. */
+      preferPersistedCook?: boolean
+      /** Boot authoritative path — skip worker streams; cook live baked geometry on main thread. */
+      skipWorkerStream?: boolean
     }
   ): { geometryChanged: boolean; pendingCooks: number } {
+    const persistCook = options?.persistCook === true
+    const preferPersistedCook = options?.preferPersistedCook === true
+    const skipWorkerStream = options?.skipWorkerStream === true
     const bootStyleCook = options?.geometryCache === false
     const active = new Set<number>()
     let cooksRemaining = options?.cookBudget ?? Number.POSITIVE_INFINITY
@@ -749,7 +759,14 @@ export class PhysXWorld {
 
         try {
           this.removeStatic(desc.entity)
-          if (!this.addMultiShapeStatic(desc, { geometryCache: !bootStyleCook })) {
+          if (
+            !this.addMultiShapeStatic(desc, {
+              geometryCache: !bootStyleCook,
+              persistCook,
+              preferPersistedCook,
+              skipWorkerStream
+            })
+          ) {
             this.failedCookFp.add(geomFp)
             continue
           }
@@ -810,7 +827,7 @@ export class PhysXWorld {
 
       try {
         this.removeStatic(desc.entity)
-        if (!this.addStatic(desc)) {
+        if (!this.addStatic(desc, persistCook, preferPersistedCook, skipWorkerStream)) {
           this.failedCookFp.add(desc.fingerprint)
           continue
         }
@@ -2213,9 +2230,17 @@ export class PhysXWorld {
 
   private addMultiShapeStatic(
     desc: PhysicsColliderDesc,
-    options?: { geometryCache?: boolean }
+    options?: {
+      geometryCache?: boolean
+      persistCook?: boolean
+      preferPersistedCook?: boolean
+      skipWorkerStream?: boolean
+    }
   ): boolean {
     const geometryCache = options?.geometryCache !== false
+    const persistCook = options?.persistCook === true
+    const preferPersistedCook = options?.preferPersistedCook === true
+    const skipWorkerStream = options?.skipWorkerStream === true
     const shapes = desc.shapes
     if (!shapes?.length || !this.physics || !this.scene) return false
 
@@ -2228,7 +2253,16 @@ export class PhysXWorld {
     for (const shapeDesc of shapes) {
       if (!shapeDesc.geometry) continue
       // Entity-local cook only — actor root carries world pose; no world-baked vertex teleport path.
-      const result = this.createLocalTrimeshShape(shapeDesc, handles, desc.matrix, false, geometryCache)
+      const result = this.createLocalTrimeshShape(
+        shapeDesc,
+        handles,
+        desc,
+        false,
+        geometryCache,
+        persistCook,
+        preferPersistedCook,
+        skipWorkerStream
+      )
       if (!result) continue
       if (result.worldBaked) actorAtOrigin = true
       pxShapes.push(result.shape)
@@ -2281,11 +2315,31 @@ export class PhysXWorld {
     return true
   }
 
-  private cookBakedGeometryToCache(bakedGeo: THREE.BufferGeometry): PxMeshHandle | null {
+  private cookBakedGeometryToCache(
+    bakedGeo: THREE.BufferGeometry,
+    persistCook = false,
+    workerStorageKey?: string,
+    preferPersistedCook = false,
+    skipWorkerStream = false
+  ): PxMeshHandle | null {
     if (!isTrimeshGeometryCookable(bakedGeo)) return null
-    let handle = geometryToPxMesh(this.cookingParams, bakedGeo, false, { cache: true })
+    let handle = geometryToPxMesh(this.cookingParams, bakedGeo, false, {
+      cache: true,
+      physics: this.physics,
+      persistCook,
+      preferPersistedCook,
+      skipWorkerStream,
+      workerStorageKey
+    })
     if (!handle?.value) {
-      handle = geometryToPxMesh(this.cookingParams, bakedGeo, true, { cache: true })
+      handle = geometryToPxMesh(this.cookingParams, bakedGeo, true, {
+        cache: true,
+        physics: this.physics,
+        persistCook,
+        preferPersistedCook,
+        skipWorkerStream,
+        workerStorageKey
+      })
     }
     return handle?.value ? handle : null
   }
@@ -2293,25 +2347,46 @@ export class PhysXWorld {
   private createLocalTrimeshShape(
     shapeDesc: PhysicsColliderShapeDesc,
     handles: PxMeshHandle[],
-    actorMatrix: THREE.Matrix4,
+    desc: PhysicsColliderDesc,
     allowWorldFallback: boolean,
-    geometryCache = true
+    geometryCache = true,
+    persistCook = false,
+    preferPersistedCook = false,
+    skipWorkerStream = false
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): { shape: any; worldBaked: boolean } | null {
     const geometry = shapeDesc.geometry
     if (!geometry) return null
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const cookBakedGeo = (bakedGeo: THREE.BufferGeometry, cache: boolean): any | null => {
+    const cookBakedGeo = (
+      bakedGeo: THREE.BufferGeometry,
+      cache: boolean,
+      workerStorageKey?: string
+    ): any | null => {
       if (!isTrimeshGeometryCookable(bakedGeo)) return null
 
+      const cookOpts = {
+        cache: false as const,
+        physics: this.physics,
+        persistCook,
+        preferPersistedCook,
+        skipWorkerStream,
+        workerStorageKey
+      }
       const pmeshHandle = cache
-        ? this.cookBakedGeometryToCache(bakedGeo)
-        : geometryToPxMesh(this.cookingParams, bakedGeo, false, { cache: false })
+        ? this.cookBakedGeometryToCache(
+            bakedGeo,
+            persistCook,
+            workerStorageKey,
+            preferPersistedCook,
+            skipWorkerStream
+          )
+        : geometryToPxMesh(this.cookingParams, bakedGeo, false, cookOpts)
       let pxGeometry: unknown = null
 
       if (!pmeshHandle?.value && !cache) {
-        const convexHandle = geometryToPxMesh(this.cookingParams, bakedGeo, true, { cache: false })
+        const convexHandle = geometryToPxMesh(this.cookingParams, bakedGeo, true, cookOpts)
         if (convexHandle?.value) {
           const meshScale = unitPxMeshScale()
           pxGeometry = new PHYSX.PxConvexMeshGeometry(convexHandle.value, meshScale)
@@ -2343,20 +2418,23 @@ export class PhysXWorld {
 
       if (!geometryCache) {
         // Boot cook — world-space vertices, actor at origin (matches placed Three.js object).
-        this._worldMatrix.copy(actorMatrix).multiply(shapeDesc.localMatrix)
+        this._worldMatrix.copy(desc.matrix).multiply(shapeDesc.localMatrix)
         const worldGeo = bakeTrimeshGeometry(indexed, this._worldMatrix)
-        pxGeometry = cookBakedGeo(worldGeo, false)
+        const workerKey = bootColliderCookSignature(geometry, desc, shapeDesc.localMatrix, false)
+        pxGeometry = cookBakedGeo(worldGeo, false, workerKey)
         if (pxGeometry) worldBaked = true
         worldGeo.dispose()
       } else {
         // Entity-local bake — scale stays in vertices; Animator slides via relative setLocalPose.
+        const workerKey = entityLocalColliderCookSignature(geometry, shapeDesc.localMatrix, false)
         entityLocalGeo = bakeTrimeshGeometry(indexed, shapeDesc.localMatrix)
-        pxGeometry = cookBakedGeo(entityLocalGeo, geometryCache)
+        pxGeometry = cookBakedGeo(entityLocalGeo, geometryCache, workerKey)
 
         if (!pxGeometry && allowWorldFallback) {
-          this._worldMatrix.copy(actorMatrix).multiply(shapeDesc.localMatrix)
+          this._worldMatrix.copy(desc.matrix).multiply(shapeDesc.localMatrix)
           const worldGeo = bakeTrimeshGeometry(indexed, this._worldMatrix)
-          pxGeometry = cookBakedGeo(worldGeo, false)
+          const workerKey = bootColliderCookSignature(geometry, desc, shapeDesc.localMatrix, false)
+          pxGeometry = cookBakedGeo(worldGeo, false, workerKey)
           if (pxGeometry) worldBaked = true
           worldGeo.dispose()
         }
@@ -2433,7 +2511,12 @@ export class PhysXWorld {
     }
   }
 
-  private addStatic(desc: PhysicsColliderDesc): boolean {
+  private addStatic(
+    desc: PhysicsColliderDesc,
+    persistCook = false,
+    preferPersistedCook = false,
+    skipWorkerStream = false
+  ): boolean {
     desc.matrix.decompose(this._pos, this._quat, this._scale)
     const kind = desc.kind.startsWith('cylinder') ? 'cylinder' : desc.kind.split(':')[0] ?? 'box'
 
@@ -2450,10 +2533,21 @@ export class PhysXWorld {
           this.logCookFailedOnce(desc.fingerprint, '[PhysXWorld] trimesh not cookable (degenerate):')
           return false
         }
-        const cookOpts = { cache: false }
+        const workerKey = bootColliderCookSignature(desc.geometry, desc, undefined, false)
+        const cookOpts = {
+          cache: false,
+          physics: this.physics,
+          persistCook,
+          preferPersistedCook,
+          skipWorkerStream,
+          workerStorageKey: workerKey
+        }
         pmeshHandle = geometryToPxMesh(this.cookingParams, bakedGeo, false, cookOpts)
         if (!pmeshHandle?.value) {
-          pmeshHandle = geometryToPxMesh(this.cookingParams, bakedGeo, true, cookOpts)
+          pmeshHandle = geometryToPxMesh(this.cookingParams, bakedGeo, true, {
+            ...cookOpts,
+            workerStorageKey: bootColliderCookSignature(desc.geometry, desc, undefined, true)
+          })
           if (pmeshHandle?.value) {
             const meshScale = unitPxMeshScale()
             geometry = new PHYSX.PxConvexMeshGeometry(pmeshHandle.value, meshScale)

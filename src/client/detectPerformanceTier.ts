@@ -4,6 +4,19 @@ import type { PerformanceTier } from '../shim/types'
 
 export type { PerformanceTier } from '../shim/types'
 
+/** Scene-worker engine tick interval after play-ready. Override with `?scenetick=25` (16–100 ms). */
+export function resolveEngineTickIntervalMs(tier: PerformanceTier): number {
+  if (typeof window === 'undefined') return 33
+  const raw = new URLSearchParams(window.location.search).get('scenetick')
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10)
+    if (Number.isFinite(parsed) && parsed >= 16 && parsed <= 100) return parsed
+  }
+  if (tier === 'low') return 100
+  if (tier === 'medium') return 66
+  return 33
+}
+
 function readPerfOverride(): PerformanceTier | null {
   if (typeof window === 'undefined') return null
   const raw = new URLSearchParams(window.location.search).get('perf')

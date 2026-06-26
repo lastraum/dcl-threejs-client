@@ -3,11 +3,7 @@ import type { ResolvedScene } from '../dcl/content/types'
 import * as THREE from 'three'
 import { createTerrainModel } from '../dcl/landscape/Worlds/TerrainModel'
 import { getSessionAssetCache, prefetchSceneManifestAssets } from '../rendering/AssetCache'
-import {
-  applyClientPerformanceDefaults,
-  detectPerformanceTier,
-  resolveEngineTickIntervalMs
-} from '../client/detectPerformanceTier'
+import { applyClientPerformanceDefaults, detectPerformanceTier } from '../client/detectPerformanceTier'
 import { SceneHost } from '../rendering/SceneHost'
 
 import { GLTF_COLLIDER_ENTITY_BASE } from '../collision/GltfColliderExtractor'
@@ -643,6 +639,10 @@ export class World {
       () => this.player!.isPointerBlocked(),
       () => this.physics
     )
+    await this.sealSpawnColliderPoses()
+    this.sceneScript.notifyPlayReady({
+      plazaScale: this.lastGltfColliderCount >= 200
+    })
     this.player.setOnUserGestureUnlock(() => {
       this.sceneScript.setVideoUserGestureUnlocked(true)
     })
@@ -1219,6 +1219,42 @@ export class World {
     if (result.geometryChanged) this.scheduleWarmStaticScene()
   }
 
+  /**
+   * Composite CRDT can shift transforms after boot cook while onUpdate is still paused.
+   * Re-world-bake near-player GLTF colliders before play-ready so walk surfaces match live poses.
+   */
+  private async sealSpawnColliderPoses(): Promise<void> {
+    if (!this.playerMode || !this.player) return
+    await this.sceneScript.syncRendererFull()
+    this.sceneScript.flushSceneGraphMatrices()
+    this.sceneScript.invalidateGltfColliderSyncCache()
+    this.sceneScript.syncCollisionForce()
+
+    let drifted = 0
+    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      if (!desc.fingerprint.startsWith('gltf-entity:')) continue
+      if (!this.physics.isWorldBakedStatic(desc.entity)) continue
+      if (!this.physics.needsWorldBakedPoseRecook(desc)) continue
+      if (!this.isColliderDescNearPlayer(desc, 72)) continue
+      this.physics.invalidateStaticCollider(desc.entity)
+      this.colliderCookQueue.add(desc.entity)
+      drifted++
+    }
+
+    if (drifted > 0) {
+      while (this.colliderCookQueue.size > 0) {
+        await this.drainColliderCookQueue({ loading: true })
+      }
+      const feet = this.player.getWorldPosition()
+      const sceneProbe = this.physics.probeSceneMeshDownAt(feet, 12)
+      console.info(
+        `[World] spawn collider seal — recooked ${drifted} drifted GLTF actor(s)` +
+          ` sceneProbe=${sceneProbe !== null ? `${sceneProbe.toFixed(2)}m` : 'none'}`
+      )
+    }
+    this.physics.warmStaticScene()
+  }
+
   private nearestGltfColliderHorizDist(feet: THREE.Vector3): number | null {
     let nearest: number | null = null
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
@@ -1791,10 +1827,6 @@ export class World {
           '[World] hydration timed out — post-boot near-player collider catch-up active (60s)'
         )
       }
-      this.sceneScript.notifyPlayReady({
-        plazaScale: finalGltfCount >= 200,
-        engineTickIntervalMs: resolveEngineTickIntervalMs(this.sceneScript.getPerformanceTier())
-      })
       if (platformMotionDebug.isEnabled() && this.player) {
         const feet = this.player.getWorldPosition()
         const origin = this.comms.getSceneOrigin()

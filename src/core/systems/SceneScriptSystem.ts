@@ -57,7 +57,7 @@ import type { AssetCache } from '../../rendering/AssetCache'
 import type { SceneHost } from '../../rendering/SceneHost'
 import type { PlayerMirrorIdentity } from '../../bridge/playerMirrorIdentity'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
-import { skipTheatreSceneScript, useOneWayCrdt } from '../../client/devFlags'
+import { skipTheatreSceneScript } from '../../client/devFlags'
 import { mirrorSceneBundle } from '../../dev/mirrorSceneBundle'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
 import { TriggerAreaSystem } from '../../input/TriggerAreaSystem'
@@ -129,8 +129,7 @@ export class SceneScriptSystem {
   private readonly recordRendererLww = (componentId: number, entity: Entity, value: unknown): void => {
     this.encoder.recordLww(componentId, entity, value)
   }
-  private encoderEnabledLogged = false
-  private oneWayCrdtLogged = false
+  private crdtOutboundLogged = false
   /** Phase C — serializes async outbound apply + inbound deliver. */
   private crdtOutboundSerial: Promise<void> = Promise.resolve()
   /** Phase C slice 2 — coalesce worker outbounds per microtask before one encode/deliver. */
@@ -208,8 +207,7 @@ export class SceneScriptSystem {
   private pointerFlushInFlight = false
   private motionFocusDumped = false
   private motionFocusDumpTicks = 0
-  /** Serializes crdt-send round-trips so mirror/encoder/stash cannot race. */
-  private crdtSendSerial: Promise<void> = Promise.resolve()
+  /** Serializes boot onStart crdt-send round-trips. */
   private bootCrdtSendSerial: Promise<void> = Promise.resolve()
   /** True from worker boot until `ready` — keeps fast CRDT path during onStart after eval-done. */
   private bootPhaseActive = false
@@ -993,8 +991,7 @@ export class SceneScriptSystem {
       debug: {
         pointerDeliver: POINTER_VERBOSE,
         tweenDeliver: isTweenVerbose(),
-        skipTheatre: skipTheatreSceneScript(),
-        oneWayCrdt: useOneWayCrdt()
+        skipTheatre: skipTheatreSceneScript()
       },
       scene: {
         title: scene.title,
@@ -1326,20 +1323,7 @@ export class SceneScriptSystem {
         await this.handleCrdtSendBootFast(msg)
         return
       }
-      const isNudge = !msg.data?.byteLength
-      if (isNudge || this.pointerAwaitingWorkerApply) {
-        // Priority lane — empty nudge / pointer flush must not queue behind mirror.flushOutgoing.
-        await this.handleCrdtSend(msg)
-      } else {
-        await (this.crdtSendSerial = this.crdtSendSerial
-          .then(() => this.handleCrdtSend(msg))
-          .catch((err) => {
-            console.error(
-              '[scene]',
-              `crdt-send handler failed — ${err instanceof Error ? err.message : String(err)}`
-            )
-          }))
-      }
+      console.warn('[scene] unexpected crdt-send after boot — worker should use crdt-outbound')
       return
     }
     if (msg.type === 'crdt-get-state') {
@@ -1395,19 +1379,16 @@ export class SceneScriptSystem {
     })
   }
 
-  /** Phase C — worker outbound without blocking on `crdt-response`; inbound via `renderer-inbound-deliver`. */
+  /** Worker outbound (post-onStart) — inbound via renderer-inbound-deliver, no crdt-response. */
   private async handleCrdtOutboundBatch(batch: Uint8Array[]): Promise<void> {
-    if (!this.playReadyNotified) return
+    if (!this.running) return
     const inbound = await this.processWorkerOutboundCrdtBatch(batch)
-    // Do not syncRenderer per outbound — plaza engine ticks flood main (~15/s) and
-    // each full bridge drain was ~15 FPS. Walkability is kept by round-trip until
-    // play-ready + onAsyncFrame syncRenderer / syncPlayerMotionFrame pose slides.
     this.postRendererInboundDeliver(inbound)
-    if (!this.oneWayCrdtLogged) {
-      this.oneWayCrdtLogged = true
+    if (!this.crdtOutboundLogged) {
+      this.crdtOutboundLogged = true
       clientDebugLog.log(
         'projection',
-        'one-way CRDT ACTIVE — worker outbound async, inbound via renderer-inbound-deliver',
+        'CRDT outbound ACTIVE — async worker→main, inbound via renderer-inbound-deliver',
         { level: 'success', alsoConsole: true }
       )
     }
@@ -1458,76 +1439,6 @@ export class SceneScriptSystem {
         `processWorkerOutboundCrdt failed — ${err instanceof Error ? err.message : String(err)}`
       )
       return []
-    }
-  }
-
-  /** Worker → main CRDT round-trip (serialized to avoid mirror/encoder races). */
-  private async handleCrdtSend(msg: Extract<SceneWorkerOutbound, { type: 'crdt-send' }>): Promise<void> {
-    const isNudge = !msg.data?.byteLength
-
-    // Empty nudge — respond without awaiting mirror.flushOutgoing (scene ticks must not stall behind it).
-    if (isNudge && !this.pointerAwaitingWorkerApply && !this.pointerResponseStash.length) {
-      try {
-        this.prepareRendererOutboundState()
-        this.projection.applyIncoming(msg.data)
-        this.foldProjectionChanges()
-        this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
-        this.syncTriggerAreas()
-        this.syncRaycasts()
-        this.syncTweenBeforeEncode()
-        this.crdtTick++
-        this.prepareRendererOutboundState()
-        const encoderBytes = this.encodeRendererCrdt()
-        const data = encoderBytes ? [encoderBytes] : []
-        this.worker?.postMessage({ type: 'crdt-response', id: msg.id, data } satisfies MainToWorker)
-        return
-      } catch (err) {
-        console.error(
-          '[scene]',
-          `nudge fast crdt-response failed — ${err instanceof Error ? err.message : String(err)}`
-        )
-      }
-    }
-
-    try {
-      this.prepareRendererOutboundState()
-      this.projection.applyIncoming(msg.data)
-      this.foldProjectionChanges()
-
-      if (this.pointerAwaitingWorkerApply) {
-        this.videoPlayerBridge?.notifyUserPointerDelivered()
-        this.videoPlayerBridge?.sync(this.view)
-        this.audioSourceBridge?.sync(this.view)
-        this.audioStreamBridge?.sync(this.view)
-      }
-
-      // Hover + PrimaryPointerInfo only. PET_DOWN/UP stay queued until click flush → pointer-crdt-deliver.
-      this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
-      this.syncTriggerAreas()
-      this.syncRaycasts()
-      this.syncTweenBeforeEncode()
-      this.crdtTick++
-
-      this.prepareRendererOutboundState()
-
-      const encoderBytes = this.encodeRendererCrdt()
-      const data = encoderBytes ? [encoderBytes] : []
-
-      if (!this.encoderEnabledLogged) {
-        this.encoderEnabledLogged = true
-        clientDebugLog.log('projection', 'encoder ACTIVE — crdt-response driven by CrdtEncoder (projection path)', {
-          level: 'success',
-          alsoConsole: true
-        })
-      }
-      this.worker?.postMessage({ type: 'crdt-response', id: msg.id, data } satisfies MainToWorker)
-    } catch (err) {
-      console.error(
-        '[scene]',
-        `crdt-send failed — replying empty: ${err instanceof Error ? err.message : String(err)}`
-      )
-      this.worker?.postMessage({ type: 'crdt-response', id: msg.id, data: [] } satisfies MainToWorker)
-      throw err
     }
   }
 

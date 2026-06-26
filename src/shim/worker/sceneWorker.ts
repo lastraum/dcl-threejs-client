@@ -67,11 +67,8 @@ const pendingSignedFetchGetHeaders = new Map<number, (body: SignedFetchGetHeader
 const pendingCommsSend = new Map<number, (body: Record<string, never>) => void>()
 const pendingInboundBinaries: Uint8Array[] = []
 let rendererInboundApply: ((chunks: Uint8Array[]) => void) | null = null
-let oneWayCrdtEnabled = false
-/** True after scene-play-ready — until then keep boot/hydration on round-trip CRDT. */
-let oneWayCrdtRuntime = false
-/** Coalesce one-way empty nudges to one post per microtask. */
-let oneWayEmptyNudgeCoalesced = false
+/** Coalesce outbound empty nudges to one post per microtask. */
+let crdtOutboundEmptyNudgeCoalesced = false
 let engineApiEvents: EngineApiEventState | null = null
 let sceneEngine: import('@dcl/ecs').IEngine | null = null
 let sceneRunning = false
@@ -926,12 +923,13 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
     return Promise.resolve([])
   }
   const copy = data.slice()
-  if (oneWayCrdtEnabled && oneWayCrdtRuntime && !sceneBootInProgress) {
+  // Post-onStart: fire-and-forget outbound; main replies via renderer-inbound-deliver.
+  if (sceneOnStartComplete && !sceneBootInProgress) {
     if (copy.byteLength === 0) {
-      if (oneWayEmptyNudgeCoalesced) return Promise.resolve([])
-      oneWayEmptyNudgeCoalesced = true
+      if (crdtOutboundEmptyNudgeCoalesced) return Promise.resolve([])
+      crdtOutboundEmptyNudgeCoalesced = true
       queueMicrotask(() => {
-        oneWayEmptyNudgeCoalesced = false
+        crdtOutboundEmptyNudgeCoalesced = false
       })
     }
     const msg = { type: 'crdt-outbound', data: copy } satisfies SceneWorkerOutbound
@@ -1355,10 +1353,6 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       engineTickOverrideMs: msg.engineTickIntervalMs
     })
     sceneTickIntervalMs = SCENE_LOOP_POLL_MS
-    if (oneWayCrdtEnabled) {
-      oneWayCrdtRuntime = true
-      workerLog('log', '[sceneWorker] one-way CRDT runtime enabled (post play-ready)')
-    }
     return
   }
   if (msg.type === 'crdt-response') {
@@ -1495,14 +1489,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     debugPointerDeliver = msg.debug?.pointerDeliver === true
     debugTweenDeliver = msg.debug?.tweenDeliver === true
     debugMessageArrival = msg.debug?.messageArrival === true
-    oneWayCrdtEnabled = msg.debug?.oneWayCrdt === true
-    oneWayCrdtRuntime = false
-    if (oneWayCrdtEnabled) {
-      workerLog(
-        'log',
-        '[sceneWorker] one-way CRDT armed — round-trip until play-ready, then fire-and-forget (default; ?roundtripcrdt to opt out)'
-      )
-    }
+    workerLog('log', '[sceneWorker] CRDT — round-trip during onStart only; outbound after onStart')
     const skipTheatre = msg.debug?.skipTheatre === true
     ;(globalThis as Record<string, unknown>).__THREEJS_SKIP_THEATRE__ = skipTheatre
     patchWorkerConsole()

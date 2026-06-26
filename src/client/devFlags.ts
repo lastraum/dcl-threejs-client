@@ -27,17 +27,6 @@ export function skipSceneVideoPlayers(): boolean {
   return params.has('novideo')
 }
 
-/**
- * Phase C — worker outbound CRDT fire-and-forget; inbound via `renderer-inbound-deliver`.
- * Enabled by default after play-ready; opt out with `?roundtripcrdt` (or `?roundtrip`).
- */
-export function useOneWayCrdt(): boolean {
-  const params = readSearchParams()
-  if (!params) return true
-  if (params.has('roundtripcrdt') || params.has('roundtrip')) return false
-  return true
-}
-
 /** Phase D0 — log rolling main-thread physics timings (`?perfdebug`). */
 export function usePerfDebug(): boolean {
   const params = readSearchParams()

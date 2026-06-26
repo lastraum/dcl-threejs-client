@@ -69,9 +69,8 @@ import {
 } from '../physics/geometryToPxMesh'
 import { clearPrimedPhysxCookStreams } from '../physics/physxCookByteCache'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
-import { skipRemoteAvatars, useWorkerPhysx } from '../client/devFlags'
+import { skipRemoteAvatars } from '../client/devFlags'
 import { initMainThreadPerfFromUrl, recordMainThreadPerf } from '../debug/MainThreadPerf'
-import { disposePhysxSimWorker, warmPhysxSimWorker } from '../physics/physxSimBridge'
 import { VrmPeerSync } from '../avatar/vrm/VrmPeerSync'
 import { clearVrmRamCache } from '../avatar/vrm/vrmRamCache'
 
@@ -672,11 +671,6 @@ export class World {
       )
       const plazaScale = this.lastGltfColliderCount >= 200
       this.sceneScript.notifyPlayReady({ plazaScale })
-      if (useWorkerPhysx()) {
-        void warmPhysxSimWorker().catch((err) => {
-          console.warn('[World] PhysX sim worker warm failed — main-thread fallback', err)
-        })
-      }
       if (!skipRemoteAvatars()) {
         this.remoteAvatars?.setPlayReady(plazaScale)
       }
@@ -2283,7 +2277,6 @@ export class World {
 
     this.sceneScript.dispose()
     this.physics.dispose()
-    disposePhysxSimWorker()
 
     this.vrmPeerSync.detach()
     clearVrmRamCache()

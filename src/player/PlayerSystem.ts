@@ -71,11 +71,6 @@ const GROUND_COYOTE_SECONDS = 0.15
 const AIR_JUMP_DELAY = 0.2
 /** Scene has no spawnPoints / default y=0 — start slightly above and let CCT fall. */
 const DEFAULT_SPAWN_FEET_Y = 1
-/**
- * When `avatarTarget` is set and the player is already within this horizontal distance of
- * `newRelativePosition`, RestrictedActions is look-only (Genesis planters / in-range interact).
- */
-const MOVE_LOOK_ONLY_HORIZONTAL_EPS = 0.2
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v))
@@ -341,20 +336,19 @@ export class PlayerSystem {
     const pos = request.newRelativePosition
     if (!pos) return false
 
+    const currentDcl = this.getPosition()
     const targetDcl = new THREE.Vector3(
-      pos.x ?? threeToDclVec(this.root.position).x,
-      pos.y ?? threeToDclVec(this.root.position).y,
-      pos.z ?? threeToDclVec(this.root.position).z
+      pos.x ?? currentDcl.x,
+      pos.y ?? currentDcl.y,
+      pos.z ?? currentDcl.z
     )
     clampToWalkBounds(targetDcl, this.walkBounds)
     const target = dclToThreeVec(targetDcl)
+    const reposition = !this.dclPositionsEqual(targetDcl, currentDcl)
 
     const avatarTarget = request.avatarTarget
     const from = this.root.position.clone()
-    const horizontalDelta = Math.hypot(target.x - from.x, target.z - from.z)
-    const lookOnly =
-      avatarTarget !== undefined && horizontalDelta < MOVE_LOOK_ONLY_HORIZONTAL_EPS
-    /** Face target from current feet — not destination (movePlayerTo look-at parity). */
+    /** Face target from current feet — scene passes PlayerEntity.position + avatarTarget for look-only. */
     if (avatarTarget) {
       this.applyAvatarLookTarget(from, avatarTarget)
     }
@@ -370,8 +364,8 @@ export class PlayerSystem {
     }
 
     const duration = request.duration ?? 0
-    if (duration <= 0 || lookOnly) {
-      if (!lookOnly) {
+    if (!reposition || duration <= 0) {
+      if (reposition) {
         this.teleportTo(target)
       }
       this.moveTask = null
@@ -785,6 +779,15 @@ export class PlayerSystem {
       textColor: identity.nameColor,
       claimed: identity.hasClaimedName
     })
+  }
+
+  /** Scene-relative DCL meters — matches `Transform.get(PlayerEntity).position` from the worker. */
+  private dclPositionsEqual(a: THREE.Vector3, b: THREE.Vector3): boolean {
+    return (
+      Math.abs(a.x - b.x) <= 1e-4 &&
+      Math.abs(a.y - b.y) <= 1e-4 &&
+      Math.abs(a.z - b.z) <= 1e-4
+    )
   }
 
   private teleportTo(positionThree: THREE.Vector3): void {

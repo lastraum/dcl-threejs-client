@@ -16,6 +16,13 @@ import {
 } from './locomotion'
 import type { SceneSpawn } from '../dcl/content/types'
 import type { MovePlayerToRequest } from './movePlayerTo'
+import {
+  dclPlayerEntityPositionsEqual,
+  feetDclToPlayerEntityPosition,
+  feetThreeFromPlayerEntityDcl,
+  playerEntityPositionFromThreeFeet,
+  playerEntityPositionToFeetDcl
+} from './dclPlayerEntity'
 import { clampToWalkBounds, type PlayerWalkBounds } from './SceneBounds'
 import { normalizeAngle } from '../network/comms/movementCompressed'
 import {
@@ -255,10 +262,15 @@ export class PlayerSystem {
     this.syncCamera(true)
   }
 
+  /** SDK7 `Transform.get(PlayerEntity).position` — chest height in scene-relative DCL meters. */
+  getPlayerEntityPositionDcl(): THREE.Vector3 {
+    return playerEntityPositionFromThreeFeet(this.root.position)
+  }
+
   /** PlayerEntity pose for CRDT / scene reads — rotation uses immediate wire yaw, not smoothed body turn. */
   getEntityPose(): EntityPose {
     return {
-      position: threeToDclVec(this.root.position),
+      position: this.getPlayerEntityPositionDcl(),
       rotation: threeToDclQuat(ReservedEntitiesSync.playerRotationFromYaw(this.getNetworkYaw()))
     }
   }
@@ -336,15 +348,17 @@ export class PlayerSystem {
     const pos = request.newRelativePosition
     if (!pos) return false
 
-    const currentDcl = this.getPosition()
-    const targetDcl = new THREE.Vector3(
-      pos.x ?? currentDcl.x,
-      pos.y ?? currentDcl.y,
-      pos.z ?? currentDcl.z
+    const currentPlayerEntityDcl = this.getPlayerEntityPositionDcl()
+    const targetPlayerEntityDcl = new THREE.Vector3(
+      pos.x ?? currentPlayerEntityDcl.x,
+      pos.y ?? currentPlayerEntityDcl.y,
+      pos.z ?? currentPlayerEntityDcl.z
     )
-    clampToWalkBounds(targetDcl, this.walkBounds)
-    const target = dclToThreeVec(targetDcl)
-    const reposition = !this.dclPositionsEqual(targetDcl, currentDcl)
+    const targetFeetDcl = playerEntityPositionToFeetDcl(targetPlayerEntityDcl)
+    clampToWalkBounds(targetFeetDcl, this.walkBounds)
+    targetPlayerEntityDcl.copy(feetDclToPlayerEntityPosition(targetFeetDcl))
+    const target = feetThreeFromPlayerEntityDcl(targetPlayerEntityDcl)
+    const reposition = !dclPlayerEntityPositionsEqual(targetPlayerEntityDcl, currentPlayerEntityDcl)
 
     const avatarTarget = request.avatarTarget
     const from = this.root.position.clone()
@@ -779,15 +793,6 @@ export class PlayerSystem {
       textColor: identity.nameColor,
       claimed: identity.hasClaimedName
     })
-  }
-
-  /** Scene-relative DCL meters — matches `Transform.get(PlayerEntity).position` from the worker. */
-  private dclPositionsEqual(a: THREE.Vector3, b: THREE.Vector3): boolean {
-    return (
-      Math.abs(a.x - b.x) <= 1e-4 &&
-      Math.abs(a.y - b.y) <= 1e-4 &&
-      Math.abs(a.z - b.z) <= 1e-4
-    )
   }
 
   private teleportTo(positionThree: THREE.Vector3): void {

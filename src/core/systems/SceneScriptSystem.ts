@@ -1303,7 +1303,9 @@ export class SceneScriptSystem {
   private async handleCrdtOutbound(data: Uint8Array): Promise<void> {
     if (!this.playReadyNotified) return
     const inbound = await this.processWorkerOutboundCrdt(data)
-    await this.drainOutboundProjectionToRenderer()
+    // Do not syncRenderer per outbound — plaza engine ticks flood main (~15/s) and
+    // each full bridge drain was ~15 FPS. Walkability is kept by round-trip until
+    // play-ready + onAsyncFrame syncRenderer / syncPlayerMotionFrame pose slides.
     this.postRendererInboundDeliver(inbound)
     if (!this.oneWayCrdtLogged) {
       this.oneWayCrdtLogged = true
@@ -1313,17 +1315,6 @@ export class SceneScriptSystem {
         { level: 'success', alsoConsole: true }
       )
     }
-  }
-
-  /** Apply worker outbound projection diff before physics — avoids walk-through on composite drift. */
-  private async drainOutboundProjectionToRenderer(): Promise<void> {
-    if (!this.pendingDiff.size) return
-    await this.syncRenderer()
-    if (this.hasColliderWorkPending()) {
-      this.syncCollision()
-    }
-    this.flushSceneGraphMatrices()
-    this.syncCollisionPoses()
   }
 
   private postRendererInboundDeliver(chunks: Uint8Array[]): void {

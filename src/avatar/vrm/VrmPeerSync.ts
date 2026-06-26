@@ -67,6 +67,10 @@ export class VrmPeerSync {
   }
 
   detach(): void {
+    if (this.peerJoinReannounceTimer) {
+      clearTimeout(this.peerJoinReannounceTimer)
+      this.peerJoinReannounceTimer = null
+    }
     this.comms?.setAvatarVrmHandler(null)
     this.comms = null
     this.callbacks = null
@@ -137,11 +141,22 @@ export class VrmPeerSync {
     await this.refreshLocalEquipped(this.localAddress)
   }
 
+  private peerJoinReannounceTimer: ReturnType<typeof setTimeout> | null = null
+
   /**
-   * Re-announce local equip when a peer joins so late joiners receive DAV state
-   * (scene packets are not replayed to participants who were not in the room yet).
+   * Re-announce local equip when peers join (debounced) so late joiners receive DAV state
+   * without spamming LiveKit when many participants connect at once (Genesis plaza).
    */
   async onPeerJoined(_address: string): Promise<void> {
+    if (!this.equippedHash) return
+    if (this.peerJoinReannounceTimer) return
+    this.peerJoinReannounceTimer = setTimeout(() => {
+      this.peerJoinReannounceTimer = null
+      void this.reannounceEquippedToPeers()
+    }, 2500)
+  }
+
+  private async reannounceEquippedToPeers(): Promise<void> {
     if (!this.equippedHash) return
     const bytes = await loadVrmLibraryBytes(this.equippedHash)
     if (!bytes) return

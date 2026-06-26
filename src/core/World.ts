@@ -640,9 +640,11 @@ export class World {
       () => this.physics
     )
     await this.sealSpawnColliderPoses()
-    this.sceneScript.notifyPlayReady({
-      plazaScale: this.lastGltfColliderCount >= 200
-    })
+    const plazaScale = this.lastGltfColliderCount >= 200
+    this.sceneScript.notifyPlayReady({ plazaScale })
+    if (!skipRemoteAvatars()) {
+      this.remoteAvatars?.setPlayReady(plazaScale)
+    }
     this.player.setOnUserGestureUnlock(() => {
       this.sceneScript.setVideoUserGestureUnlocked(true)
     })
@@ -727,12 +729,9 @@ export class World {
       }
     })
     if (!hydration) {
-      if (!skipRemoteAvatars()) this.remoteAvatars?.setHydrationLoading(false)
       return
     }
-    return hydration.finally(() => {
-      if (!skipRemoteAvatars()) this.remoteAvatars?.setHydrationLoading(false)
-    })
+    return hydration
   }
 
   /** One visible frame (sky/landscape/camera) before the loading overlay hides. */
@@ -800,6 +799,7 @@ export class World {
               'sceneOrigin:', this.comms.getSceneOrigin(),
               'cam:', this.host.camera.position.toArray().map((n) => n.toFixed(1)),
               'remotePeers:', this.remoteAvatars?.visiblePeerCount ?? 0,
+              'remoteLoaded:', this.remoteAvatars?.loadedPeerCount ?? 0,
               'gltfCached:', this.assets.getLoadStats().gltfCached)
           }
         }

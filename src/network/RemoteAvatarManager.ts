@@ -177,6 +177,15 @@ export class RemoteAvatarManager {
     return count
   }
 
+  /** Remote peers with a composed model (not placeholder-only). */
+  get loadedPeerCount(): number {
+    let count = 0
+    for (const record of this.peers.values()) {
+      if (record.model) count++
+    }
+    return count
+  }
+
   setCatalystEndpoints(contentUrl: string, lambdasUrl: string): void {
     this.contentUrl = contentUrl.replace(/\/$/, '')
     this.lambdasUrl = lambdasUrl.replace(/\/$/, '')
@@ -193,6 +202,16 @@ export class RemoteAvatarManager {
   /** Scene asset hydration — throttle remote composes so scene GLTF attach wins. */
   setHydrationLoading(active: boolean): void {
     this.loadQueue.setHydrationMode(active)
+  }
+
+  /** Begin remote avatar composes after spawn/play-ready (not at hydration end). */
+  setPlayReady(plazaScale = false): void {
+    this.loadQueue.setPlayReady(plazaScale)
+    clientDebugLog.log(
+      'network',
+      `Remote avatar composes enabled${plazaScale ? ' (plaza stagger)' : ''}`,
+      { alsoConsole: true, throttleMs: 30_000 }
+    )
   }
 
   setSceneAssetPressure(gltfInflight: number, textureInflight = 0): void {
@@ -575,18 +594,19 @@ export class RemoteAvatarManager {
 
     const now = performance.now()
     const dt = (now - record.receivedAt) / 1000
-    const prevTarget = record.targetPosition.clone()
+    const prevTargetX = record.targetPosition.x
+    const prevTargetY = record.targetPosition.y
+    const prevTargetZ = record.targetPosition.z
     const prevVy = record.verticalVelocity
 
     if (record.hasPosition && dt > 0.001) {
-      const dist = position.distanceTo(prevTarget)
+      const dx = position.x - prevTargetX
+      const dy = position.y - prevTargetY
+      const dz = position.z - prevTargetZ
+      const dist = Math.hypot(dx, dy, dz)
       const posSpeed = dist / dt
       record.horizontalSpeed = resolveRemoteHorizontalSpeed(posSpeed, velocity)
-      record.velocity.set(
-        (position.x - prevTarget.x) / dt,
-        (position.y - prevTarget.y) / dt,
-        (position.z - prevTarget.z) / dt
-      )
+      record.velocity.set(dx / dt, dy / dt, dz / dt)
       if (!velocity) {
         record.verticalVelocity = record.velocity.y
       }

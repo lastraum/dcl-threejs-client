@@ -885,33 +885,21 @@ export class World {
 
     const groundEcsEarly = this.sceneScript.standSurfaceEcsFromPhys(standPhysEntity)
     const onSceneGround = groundPhysEntity !== null && groundPhysEntity !== -1
-    const shapeMotionEarly = this.sceneScript.collectPhysXShapeMotionEntities(
-      groundEcsEarly,
-      feet ?? undefined,
-      groundPhysEntity
-    )
+    const motionSnapshotCandidates = this.sceneScript.collectMotionSnapshotCandidates(groundEcsEarly)
     const needsPlatformPipeline =
-      shapeMotionEarly.size > 0 || !onSceneGround || groundPhysEntity === -1
+      motionSnapshotCandidates.size > 0 || !onSceneGround || groundPhysEntity === -1
 
     if (needsPlatformPipeline && feet) {
-      this.sceneScript.snapshotWalkSurfacePositions(feet, 96)
-    }
-
-    let descs: ReturnType<SceneScriptSystem['getAllPhysicsColliderDescs']> | null = null
-    if (needsPlatformPipeline) {
-      descs = this.sceneScript.getAllPhysicsColliderDescs()
-      this.physics.snapshotColliderPositions(descs)
-      if (shapeMotionEarly.size > 0 || !onSceneGround) {
-        this.physics.snapshotActorRootPoses(descs)
-      }
-      if (shapeMotionEarly.size > 0 && standPhysEntity !== null && standPhysEntity !== -1) {
-        this.physics.snapshotGltfColliderWalkSurfaces(descs, feet ?? undefined, standPhysEntity)
+      this.sceneScript.snapshotMotionBaselines(motionSnapshotCandidates, feet, groundEcsEarly)
+      const meshEntities = [...motionSnapshotCandidates].filter((entity) =>
+        this.sceneScript.readComponents.MeshCollider.has(entity)
+      )
+      if (meshEntities.length) {
+        const meshDescs = this.sceneScript.getPhysicsColliderDescsForEntities(meshEntities)
+        this.physics.snapshotColliderPositions(meshDescs)
       }
       if (feet) {
         this.physics.snapshotGroundContactBaseline(feet)
-        if (groundEcsEarly !== null) {
-          this.sceneScript.snapshotAnimatorOriginPositions(feet, groundEcsEarly)
-        }
       }
     }
 
@@ -921,13 +909,29 @@ export class World {
     }
 
     let meshMotion: Entity[] = []
-    if (this.collidersLoadingComplete && !this.deferPhysxCooks && needsPlatformPipeline && descs) {
+    if (this.collidersLoadingComplete && !this.deferPhysxCooks && needsPlatformPipeline && feet) {
       const groundEcs = groundEcsEarly
-      const shapeMotion = shapeMotionEarly
-      meshMotion = feet
-        ? this.sceneScript.detectAndMarkLiveColliderMeshMotion(feet, 96, standPhysEntity)
-        : []
+      const frameMotion = this.sceneScript.consumeFrameMotionEntities()
+      const shapeMotion = this.sceneScript.getFrameShapeMotionEntities(groundEcs)
+      meshMotion = this.sceneScript.recordWalkSurfaceDeltasForEntities(
+        frameMotion,
+        shapeMotion,
+        feet,
+        standPhysEntity
+      )
       const poseSync = this.sceneScript.collectPhysXPoseSyncEntities(meshMotion, shapeMotion)
+      const platformEntities = new Set<Entity>(poseSync)
+      if (groundEcs !== null) platformEntities.add(groundEcs)
+
+      let platformDescs: ReturnType<SceneScriptSystem['getPhysicsColliderDescsForEntities']> | null =
+        null
+      const ensurePlatformDescs = (): NonNullable<typeof platformDescs> => {
+        if (!platformDescs) {
+          platformDescs = this.sceneScript.getPhysicsColliderDescsForEntities([...platformEntities])
+        }
+        return platformDescs
+      }
+
       if (poseSync.length) {
         this.sceneScript.refreshColliderDescPoses(poseSync, shapeMotion)
         const forceEntities = new Set<number>()
@@ -937,17 +941,30 @@ export class World {
         }
         this.pushColliderPosesToPhysX({ forceEntities })
       }
+
       const groundIsMoving =
         groundEcs !== null && (meshMotion.includes(groundEcs) || shapeMotion.has(groundEcs))
       const standScoped = standPhysEntity !== null && standPhysEntity !== -1
-      if (feet && standScoped && groundIsMoving) {
-        this.physics.snapshotPhysXActorWalkSurfaces(standPhysEntity, feet, descs)
+
+      if (groundIsMoving || shapeMotion.size > 0) {
+        const descs = ensurePlatformDescs()
+        if (!onSceneGround || shapeMotion.size > 0) {
+          this.physics.snapshotActorRootPoses(descs)
+        }
+        if (shapeMotion.size > 0 && standScoped) {
+          this.physics.snapshotGltfColliderWalkSurfaces(descs, feet, standPhysEntity)
+        }
       }
-      if (poseSync.length || groundIsMoving) {
-        this.physics.applyGltfColliderPoseDeltas(descs, feet ?? undefined)
+
+      if (feet && standScoped && groundIsMoving) {
+        this.physics.snapshotPhysXActorWalkSurfaces(standPhysEntity, feet, ensurePlatformDescs())
+      }
+
+      if (groundIsMoving || poseSync.length > 0) {
+        this.physics.applyGltfColliderPoseDeltas(ensurePlatformDescs(), feet)
       }
       if (groundIsMoving) {
-        this.physics.applyActorRootPoseDeltas(descs, standPhysEntity)
+        this.physics.applyActorRootPoseDeltas(ensurePlatformDescs(), standPhysEntity)
       }
       if (feet && groundEcs !== null && (groundIsMoving || shapeMotion.has(groundEcs))) {
         this.sceneScript.computeAnimatorOriginDeltas(feet, groundEcs)
@@ -956,15 +973,22 @@ export class World {
         this.sceneScript.consumeAnimatorOriginDeltasPhys(),
         this.sceneScript.consumeAnimatorOriginPositionsPhys()
       )
-      if (poseSync.length || groundIsMoving) {
-        this.physics.applyMeshColliderPoseDeltas(descs)
+      if (poseSync.length > 0 || groundIsMoving) {
+        const meshPoseEntities = poseSync.filter((entity) =>
+          this.sceneScript.readComponents.MeshCollider.has(entity)
+        )
+        if (meshPoseEntities.length) {
+          this.physics.applyMeshColliderPoseDeltas(
+            this.sceneScript.getPhysicsColliderDescsForEntities(meshPoseEntities)
+          )
+        }
       }
       if (feet && standScoped && groundIsMoving) {
-        this.physics.applyPhysXActorWalkSurfaceDeltas(standPhysEntity, feet, descs)
+        this.physics.applyPhysXActorWalkSurfaceDeltas(standPhysEntity, feet, ensurePlatformDescs())
         this.physics.applyGroundContactDelta(feet)
       }
       if (feet && standScoped && groundPhysEntity === -1) {
-        this.physics.reconcileStandSurfaceGrounding(standPhysEntity, descs, feet)
+        this.physics.reconcileStandSurfaceGrounding(standPhysEntity, ensurePlatformDescs(), feet)
       }
       this.physics.cullInsignificantPlatformMotionDeltas()
     }
@@ -1199,8 +1223,24 @@ export class World {
   /** Pose slide only — never recooks geometry (runtime + post-spawn CRDT drain). */
   private pushColliderPosesToPhysX(options?: { force?: boolean; forceEntities?: ReadonlySet<number> }): void {
     if (!this.playerMode) return
-    this.sceneScript.refreshColliderDescPoses()
-    const descs = this.sceneScript.getAllPhysicsColliderDescs()
+    const dirty = this.sceneScript.getLastPoseChangedEntities()
+    if (!options?.force && !options?.forceEntities?.size && !dirty.length) return
+
+    if (dirty.length) {
+      this.sceneScript.refreshColliderDescPoses(dirty)
+    } else if (options?.force) {
+      this.sceneScript.refreshColliderDescPoses()
+    }
+
+    const slideEntities = dirty.length ? dirty : []
+    const descs =
+      slideEntities.length > 0
+        ? this.sceneScript.getPhysicsColliderDescsForEntities(slideEntities)
+        : options?.force
+          ? this.sceneScript.getAllPhysicsColliderDescs()
+          : []
+    if (!descs.length) return
+
     const updated = this.physics.applyStaticColliderPoseUpdates(descs, options)
     if (updated > 0) this.physics.warmStaticScene()
     this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()

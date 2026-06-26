@@ -171,7 +171,7 @@ export class CollisionSystem {
     if (changed) this.recomputePhysicsBatchFingerprint()
   }
 
-  syncPosesForEntities(entityNodes: Map<Entity, THREE.Group>, entities: Entity[]): void {
+  syncPosesForEntities(entityNodes: Map<Entity, THREE.Group>, entities: readonly Entity[]): void {
     let changed = false
     for (const entity of entities) {
       if (!this.colliders.has(entity)) continue

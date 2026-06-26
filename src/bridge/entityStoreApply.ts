@@ -168,7 +168,7 @@ export function applySceneDiff(
       removeLightSource(obj, lk)
     }
 
-    // Tween refresh mutates matrixWorld in place — mark colliderPoseDirty via Transform notify.
+    // Tween refresh entities — notify Transform so collider pose dirty propagates on-change.
     if (shouldNotify(entity) && diffEntities.has(entity)) {
       store.notifyComponentChange(entity, Transform.componentId, 'put')
     }

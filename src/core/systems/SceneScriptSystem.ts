@@ -184,6 +184,7 @@ export class SceneScriptSystem {
   private readonly colliderPoseDirty = new Set<Entity>()
   private readonly lastTweenMotionEntities = new Set<Entity>()
   private readonly lastSyncFrameTransformEntities = new Set<Entity>()
+  private readonly lastPoseChangedEntities: Entity[] = []
   private platformMotionReportDumped = false
   private sceneBaseParcel: string | null = null
   /** True when syncCollision already pushed incremental pose slides this async pass. */
@@ -336,6 +337,11 @@ export class SceneScriptSystem {
     this.bridge.setAudioStreamBridge(this.audioStreamBridge)
     this.collision = new CollisionSystem(host.scene)
     this.gltfColliders = new GltfColliderExtractor(host.scene)
+    this.animatorBridge.setShapeMotionProbe((entity) => {
+      const nodes = this.bridge?.getEntityNodes()
+      if (!nodes || !this.gltfColliders) return false
+      return this.gltfColliders.probeColliderMeshMotion(entity, nodes)
+    })
     this.pointerEvents = new PointerEventsSystem(host.renderer.domElement)
     this.triggerAreas = new TriggerAreaSystem()
     this.raycasts = new RaycastSystem()
@@ -387,9 +393,116 @@ export class SceneScriptSystem {
     return [...mesh, ...gltf]
   }
 
+  /** Physics descriptors for motion emitter entities only — O(moved), not O(scene). */
+  getPhysicsColliderDescsForEntities(entities: readonly Entity[]): PhysicsColliderDesc[] {
+    const descs: PhysicsColliderDesc[] = []
+    for (const entity of entities) {
+      const mesh = this.collision?.getPhysicsColliderForEntity(entity)
+      if (mesh) descs.push(mesh)
+      const gltf = this.gltfColliders?.getPhysicsColliderForEntity(entity)
+      if (gltf) descs.push(gltf)
+    }
+    return descs
+  }
+
+  getLastPoseChangedEntities(): readonly Entity[] {
+    return this.lastPoseChangedEntities
+  }
+
+  /**
+   * Motion sources that may move this frame — O(active tweens/animators/billboards + ground),
+   * not O(all colliders).
+   */
+  collectMotionSnapshotCandidates(groundEcs: Entity | null): Set<Entity> {
+    const out = new Set<Entity>()
+    const { MeshCollider, GltfContainer } = this.readComponents
+
+    if (groundEcs !== null && this.gltfColliders?.hasExtractedCollider(groundEcs)) {
+      out.add(groundEcs)
+    }
+
+    for (const entity of this.tweenBridge?.getActiveTweenEntities() ?? []) {
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) out.add(entity)
+    }
+
+    for (const entity of this.animatorBridge?.getActiveEntities() ?? []) {
+      if (
+        GltfContainer.has(entity) &&
+        this.gltfColliders?.hasExtractedCollider(entity) &&
+        this.isAnimatedGltfCollider(entity)
+      ) {
+        out.add(entity)
+      }
+    }
+
+    for (const entity of this.entityStore?.getBillboardEntities() ?? []) {
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) out.add(entity)
+    }
+
+    for (const entity of this.lastSyncFrameTransformEntities) {
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) out.add(entity)
+    }
+
+    return out
+  }
+
+  /** Pre-bridge walk-surface / animator-origin baselines for motion candidates. */
+  snapshotMotionBaselines(
+    entities: ReadonlySet<Entity>,
+    feet: THREE.Vector3,
+    groundEcs: Entity | null
+  ): void {
+    const nodes = this.bridge?.getEntityNodes()
+    if (nodes) this.gltfColliders?.snapshotWalkSurfaceForEntities(nodes, entities, feet)
+    if (groundEcs !== null) this.snapshotAnimatorOriginPositions(feet, groundEcs)
+  }
+
+  /** Union of all motion emitters after bridges + syncCollision — O(moved). */
+  consumeFrameMotionEntities(): ReadonlySet<Entity> {
+    const out = new Set<Entity>()
+    for (const entity of this.lastTweenMotionEntities) out.add(entity)
+    for (const entity of this.billboardBridge?.consumeMotionEntities() ?? []) out.add(entity)
+    for (const entity of this.animatorBridge?.consumeShapeMotionEntities() ?? []) out.add(entity)
+    for (const entity of this.lastSyncFrameTransformEntities) out.add(entity)
+    for (const entity of this.lastPoseChangedEntities) out.add(entity)
+    return out
+  }
+
+  /** Animator shape motion + grounded animated platform (post-bridge). */
+  getFrameShapeMotionEntities(groundEcs: Entity | null): Set<Entity> {
+    const out = new Set<Entity>(this.animatorBridge?.pendingShapeMotionEntities() ?? [])
+    if (groundEcs !== null && this.isAnimatedGltfColliderEntity(groundEcs)) out.add(groundEcs)
+    return out
+  }
+
+  /** Walk-surface Δ for motion emitter union — replaces full extracted scan. */
+  recordWalkSurfaceDeltasForEntities(
+    motion: ReadonlySet<Entity>,
+    shapeMotion: ReadonlySet<Entity>,
+    feet?: THREE.Vector3,
+    standPhysEntity?: number | null
+  ): Entity[] {
+    const nodes = this.bridge?.getEntityNodes()
+    if (!nodes || !this.gltfColliders) return []
+    const entities = new Set<Entity>(motion)
+    for (const entity of shapeMotion) entities.add(entity)
+    const priority: Entity[] = []
+    if (standPhysEntity !== null && standPhysEntity !== undefined && standPhysEntity >= GLTF_COLLIDER_ENTITY_BASE) {
+      const ecs = (standPhysEntity - GLTF_COLLIDER_ENTITY_BASE) as Entity
+      priority.push(ecs)
+      entities.add(ecs)
+    }
+    const changed = this.gltfColliders.computeWalkSurfaceDeltasForEntities(nodes, entities, feet, priority)
+    for (const entity of changed) {
+      this.colliderPoseDirty.add(entity)
+      this.markDescendantColliderPosesDirty(entity)
+    }
+    return changed
+  }
+
   /** Live matrixWorld from Three.js — must run before isColliderSynced during loading. */
   refreshColliderDescPoses(
-    poseSync?: Entity[],
+    poseSync?: readonly Entity[],
     shapeMotion?: ReadonlySet<Entity>
   ): void {
     const nodes = this.bridge?.getEntityNodes()
@@ -423,55 +536,6 @@ export class SceneScriptSystem {
     return [...out]
   }
 
-  /**
-   * GLTF walk-surface Δ after motion bridges — returns ECS entities that actually moved this frame.
-   */
-  detectAndMarkLiveColliderMeshMotion(
-    feet?: THREE.Vector3,
-    maxHoriz = 96,
-    groundPhysEntity: number | null = null
-  ): Entity[] {
-    const nodes = this.bridge?.getEntityNodes()
-    if (!nodes || !this.gltfColliders) return []
-    const priority: Entity[] = []
-    if (groundPhysEntity !== null && groundPhysEntity >= GLTF_COLLIDER_ENTITY_BASE) {
-      priority.push((groundPhysEntity - GLTF_COLLIDER_ENTITY_BASE) as Entity)
-    }
-    const changed = this.gltfColliders.computeWalkSurfaceDeltas(nodes, feet, maxHoriz, priority)
-    for (const entity of changed) {
-      this.colliderPoseDirty.add(entity)
-      this.markDescendantColliderPosesDirty(entity)
-    }
-    return changed
-  }
-
-  /**
-   * GLTF shape-local sync — Animator treads under the capsule column or already grounded on.
-   * Distant bobbing props stay at rest pose until the player steps on them (no scene ground).
-   */
-  collectPhysXShapeMotionEntities(
-    groundEcs: Entity | null,
-    feet?: THREE.Vector3,
-    groundPhysEntity?: number | null
-  ): Set<Entity> {
-    const out = new Set<Entity>()
-    if (groundEcs !== null && this.gltfColliders?.hasExtractedCollider(groundEcs)) {
-      if (this.isAnimatedGltfCollider(groundEcs)) out.add(groundEcs)
-    }
-    const onSceneGround =
-      groundPhysEntity !== null && groundPhysEntity !== undefined && groundPhysEntity !== -1
-    const nodes = this.bridge?.getEntityNodes()
-    if (!onSceneGround && feet && nodes && this.gltfColliders) {
-      const under = this.gltfColliders.findAnimatedStandSurfaceEntity(
-        nodes,
-        feet,
-        (entity) => this.isAnimatedGltfCollider(entity)
-      )
-      if (under !== null) out.add(under)
-    }
-    return out
-  }
-
   private lastStandSurfacePhys: number | null = null
 
   /**
@@ -494,9 +558,10 @@ export class SceneScriptSystem {
     const nodes = this.bridge?.getEntityNodes()
     let animatedPhys: number | null = null
     if (feet && nodes && this.gltfColliders) {
-      const under = this.gltfColliders.findAnimatedStandSurfaceEntity(
+      const under = this.gltfColliders.findAnimatedStandSurfaceAmong(
         nodes,
         feet,
+        this.animatorBridge?.getActiveEntities() ?? [],
         (entity) => this.isAnimatedGltfCollider(entity)
       )
       if (under !== null) animatedPhys = GLTF_COLLIDER_ENTITY_BASE + under
@@ -624,7 +689,8 @@ export class SceneScriptSystem {
       TriggerArea,
       MeshRenderer,
       Animator,
-      AvatarShape
+      AvatarShape,
+      Billboard
     } = this.readComponents
 
     if (spriteSlot) {
@@ -653,6 +719,8 @@ export class SceneScriptSystem {
         this.colliderPoseDirty.add(entity)
       }
       this.markDescendantColliderPosesDirty(entity)
+    } else if (componentId === Billboard.componentId && change.kind === 'put') {
+      this.entityStore?.setBillboard(entity, true)
     }
 
     if (
@@ -2254,12 +2322,6 @@ export class SceneScriptSystem {
     }
   }
 
-  /** Frame-start walk-surface snapshot — before Animator / Tween motion (platform Δ baseline). */
-  snapshotWalkSurfacePositions(feet?: THREE.Vector3, maxHoriz = 96): void {
-    const nodes = this.bridge?.getEntityNodes()
-    if (nodes) this.gltfColliders?.snapshotWalkSurfacePositions(nodes, feet, maxHoriz)
-  }
-
   /** Frame-start Animator GLTF root world origin — lifts that move the entity node without `_collider` Δ. */
   private readonly animatorOriginSnapshot = new Map<Entity, THREE.Vector3>()
   private readonly frameAnimatorOriginDelta = new Map<Entity, THREE.Vector3>()
@@ -2530,15 +2592,17 @@ export class SceneScriptSystem {
     }
   }
 
-  /** BillboardBridge rotates nodes renderer-side — slide PhysX / pointer collider poses. */
-  private markBillboardColliderPosesDirty(): void {
-    const { Billboard, MeshCollider, GltfContainer } = this.readComponents
-    for (const [entity] of this.view.getEntitiesWith(Billboard)) {
+  /** Motion emitters (billboard / animator shape) → collider pose dirty before syncCollision. */
+  private markMotionEmitterColliderDirty(): void {
+    const { MeshCollider, GltfContainer } = this.readComponents
+    const mark = (entity: Entity) => {
       if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
         this.colliderPoseDirty.add(entity)
+        this.markDescendantColliderPosesDirty(entity)
       }
-      this.markDescendantColliderPosesDirty(entity)
     }
+    for (const entity of this.billboardBridge?.pendingMotionEntities() ?? []) mark(entity)
+    for (const entity of this.animatorBridge?.pendingShapeMotionEntities() ?? []) mark(entity)
   }
 
   /** Pose refresh before PhysX cook — keeps MeshCollider actors aligned with visuals. */
@@ -2594,14 +2658,20 @@ export class SceneScriptSystem {
     }
 
     const poseChangedEntities: Entity[] = []
+    this.lastPoseChangedEntities.length = 0
+    const shapeMotion = this.animatorBridge?.pendingShapeMotionEntities()
     if (this.colliderPoseDirty.size) {
       for (const entity of this.colliderPoseDirty) {
         let changed = false
         if (this.collision.syncColliderEntityPose(entity, nodes)) changed = true
-        if (this.gltfColliders?.syncColliderEntityPose(entity, nodes)) changed = true
+        const allowShapes = shapeMotion?.has(entity) ?? false
+        if (this.gltfColliders?.syncColliderEntityPose(entity, nodes, allowShapes)) changed = true
         if (changed) poseChangedEntities.push(entity)
       }
       this.colliderPoseDirty.clear()
+    }
+    if (poseChangedEntities.length) {
+      this.lastPoseChangedEntities.push(...poseChangedEntities)
     }
 
     if (structureTouched) {
@@ -2684,9 +2754,9 @@ export class SceneScriptSystem {
     this.flushAvatarAttachTransforms()
     this.tweenBridge?.update(delta, this.view)
     this.markTweenColliderPosesDirty()
-    // After tweens/animators — billboard rotation is renderer-owned, not in ECS Transform.
+    this.billboardBridge?.sync(this.view)
     this.billboardBridge?.update()
-    this.markBillboardColliderPosesDirty()
+    this.markMotionEmitterColliderDirty()
     this.deliverTweenStateToWorker()
     this.videoPlayerBridge?.update(tickNumber, this.view)
     this.audioSourceBridge?.update(tickNumber, this.view)

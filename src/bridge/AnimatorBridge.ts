@@ -99,6 +99,9 @@ export class AnimatorBridge {
   /** GLBs probed with no ECS Animator and zero embedded clips — skip re-probing each sync. */
   private readonly staticGltfNoClips = new Set<Entity>()
   private motionFocusView: ProjectionView | null = null
+  /** GLTF collider child meshes moved by skinning / clips this frame. */
+  private readonly shapeMotionEntities = new Set<Entity>()
+  private shapeMotionProbe: ((entity: Entity) => boolean) | null = null
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -112,6 +115,25 @@ export class AnimatorBridge {
         : 'Animator verbose — logging bind, clips, and playback (?animatorverbose)'
       clientDebugLog.log('animator', hint, { level: 'info', alsoConsole: true })
     }
+  }
+
+  /** After mixer.update — detect per-shape collider tread motion (GltfColliderExtractor probe). */
+  setShapeMotionProbe(probe: ((entity: Entity) => boolean) | null): void {
+    this.shapeMotionProbe = probe
+  }
+
+  getActiveEntities(): Entity[] {
+    return [...this.entries.keys()]
+  }
+
+  pendingShapeMotionEntities(): ReadonlySet<Entity> {
+    return this.shapeMotionEntities
+  }
+
+  consumeShapeMotionEntities(): ReadonlySet<Entity> {
+    const out = new Set(this.shapeMotionEntities)
+    this.shapeMotionEntities.clear()
+    return out
   }
 
   private logAnimator(
@@ -315,8 +337,11 @@ export class AnimatorBridge {
   update(delta: number): void {
     if (!this.entries.size) return
 
-    for (const entry of this.entries.values()) {
+    for (const [entity, entry] of this.entries) {
       entry.mixer.update(delta)
+      if (this.shapeMotionProbe?.(entity)) {
+        this.shapeMotionEntities.add(entity)
+      }
     }
 
     if (!this.verbose) return

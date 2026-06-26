@@ -245,87 +245,81 @@ export class GltfColliderExtractor {
     return true
   }
 
-  /** Snapshot walk-surface points before motion — baseline for per-frame platform Δ. */
-  snapshotWalkSurfacePositions(
+  /** Snapshot walk-surface baselines for motion emitter candidates only (pre-bridge). */
+  snapshotWalkSurfaceForEntities(
     entityNodes: Map<Entity, THREE.Group>,
-    feet?: THREE.Vector3,
-    maxHoriz = 96
+    entities: ReadonlySet<Entity>,
+    feet?: THREE.Vector3
   ): void {
-    this.walkSurfaceSnapshotPos.clear()
-    const maxHorizSq = maxHoriz * maxHoriz
-    for (const entity of this.extracted.keys()) {
-      const obj = entityNodes.get(entity)
-      if (feet && obj) {
-        obj.updateMatrixWorld(true)
-        const dx = obj.matrixWorld.elements[12]! - feet.x
-        const dz = obj.matrixWorld.elements[14]! - feet.z
-        if (dx * dx + dz * dz > maxHorizSq) continue
-      }
+    for (const entity of entities) {
+      if (!this.extracted.has(entity)) continue
       const surface = this.colliderWalkSurfacePos(entity, entityNodes, feet)
       if (surface) this.walkSurfaceSnapshotPos.set(entity, surface.clone())
+      else this.walkSurfaceSnapshotPos.delete(entity)
     }
   }
 
   /**
-   * Per-frame walk-surface Δ after motion bridges — same motion that slides PhysX collider poses.
+   * Per-frame walk-surface Δ for entities that moved this frame (motion emitter union).
    * Fed into CCT platform velocity transfer (capsule += Δ before controller.move).
    */
-  computeWalkSurfaceDeltas(
+  computeWalkSurfaceDeltasForEntities(
     entityNodes: Map<Entity, THREE.Group>,
+    entities: ReadonlySet<Entity>,
     feet?: THREE.Vector3,
-    maxHoriz = 96,
     priorityEntities: Entity[] = []
   ): Entity[] {
     this.frameWalkSurfaceDelta.clear()
     this.frameWalkSurfacePos.clear()
     const changed: Entity[] = []
     const priority = new Set(priorityEntities)
-    const visit = (entity: Entity, bypassHoriz = false): void => {
-      if (this.recordWalkSurfaceDelta(entity, entityNodes, feet, maxHoriz, changed, bypassHoriz)) {
+    for (const entity of priorityEntities) {
+      if (this.recordWalkSurfaceDelta(entity, entityNodes, feet, changed, true)) {
         // recorded
       }
     }
-    for (const entity of priorityEntities) visit(entity, true)
-    for (const entity of this.extracted.keys()) {
+    for (const entity of entities) {
       if (priority.has(entity)) continue
-      visit(entity, false)
+      if (!this.extracted.has(entity)) continue
+      this.recordWalkSurfaceDelta(entity, entityNodes, feet, changed, false)
     }
     return changed
+  }
+
+  /**
+   * Animator emitter — true when collider child mesh world positions changed since last probe.
+   */
+  probeColliderMeshMotion(entity: Entity, _entityNodes: Map<Entity, THREE.Group>): boolean {
+    const state = this.syncState.get(entity)
+    if (!state) return false
+    const fp = this.colliderMeshWorldFingerprint(
+      state.mesh,
+      state.hasVisiblePhysics,
+      state.hasInvisiblePhysics
+    )
+    if (!fp) return false
+    const prev = this.lastColliderMeshWorldFp.get(entity)
+    if (prev === fp) return false
+    this.lastColliderMeshWorldFp.set(entity, fp)
+    return true
   }
 
   private recordWalkSurfaceDelta(
     entity: Entity,
     entityNodes: Map<Entity, THREE.Group>,
     feet: THREE.Vector3 | undefined,
-    maxHoriz: number,
     changed: Entity[],
-    bypassHorizFilter: boolean
+    requireSnapshot: boolean
   ): boolean {
     const state = this.syncState.get(entity)
-    const obj = entityNodes.get(entity)
-    if (!state || !obj) return false
+    if (!state) return false
     const surface = this.colliderWalkSurfacePos(entity, entityNodes, feet)
-    if (!bypassHorizFilter && feet) {
-      if (surface) {
-        const dx = surface.x - feet.x
-        const dz = surface.z - feet.z
-        if (dx * dx + dz * dz > maxHoriz * maxHoriz) return false
-      } else {
-        obj.updateMatrixWorld(true)
-        const dx = obj.matrixWorld.elements[12]! - feet.x
-        const dz = obj.matrixWorld.elements[14]! - feet.z
-        if (dx * dx + dz * dz > maxHoriz * maxHoriz) return false
-      }
-    }
     const snapshot = this.walkSurfaceSnapshotPos.get(entity)
-    if (!surface || !snapshot) return false
-
-    const fp = this.colliderMeshWorldFingerprint(
-      state.mesh,
-      state.hasVisiblePhysics,
-      state.hasInvisiblePhysics
-    )
-    if (fp) this.lastColliderMeshWorldFp.set(entity, fp)
+    if (!surface || (requireSnapshot && !snapshot)) return false
+    if (!snapshot) {
+      this.walkSurfaceSnapshotPos.set(entity, surface.clone())
+      return false
+    }
 
     this.frameWalkSurfacePos.set(entity, surface.clone())
     this._walkSurfacePos.subVectors(surface, snapshot)
@@ -525,7 +519,7 @@ export class GltfColliderExtractor {
 
   syncPosesForEntities(
     entityNodes: Map<Entity, THREE.Group>,
-    entities: Entity[],
+    entities: readonly Entity[],
     shapeMotion?: ReadonlySet<Entity>
   ): void {
     let changed = false
@@ -569,16 +563,18 @@ export class GltfColliderExtractor {
    * has registered grounding (avoids fall-through on bobbing props like SnoopCar).
    * Works at any world Y (e.g. car on a 3rd floor): contact is relative to the animated tread.
    */
-  findAnimatedStandSurfaceEntity(
+  /** Stand-surface hint among active animator candidates only — not a full extracted scan. */
+  findAnimatedStandSurfaceAmong(
     entityNodes: Map<Entity, THREE.Group>,
     feet: THREE.Vector3,
+    candidates: readonly Entity[],
     isAnimatedCollider: (entity: Entity) => boolean
   ): Entity | null {
     let bestEntity: Entity | null = null
     let bestScore = Number.POSITIVE_INFINITY
 
-    for (const entity of this.extracted.keys()) {
-      if (!isAnimatedCollider(entity)) continue
+    for (const entity of candidates) {
+      if (!this.extracted.has(entity) || !isAnimatedCollider(entity)) continue
       const surface = this.animatedColliderContactSurface(entity, entityNodes, feet)
       if (!surface) continue
       const gap = Math.abs(feet.y - surface.y)

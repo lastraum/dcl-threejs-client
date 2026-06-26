@@ -1015,15 +1015,18 @@ export class RemoteAvatarManager {
 
       this.clearLoadingPresentation(record)
       record.pivot.add(vrmAvatar.root)
-      applyVrmPivotOffset(record.pivot, vrmAvatar.vrm, vrmAvatar.root)
 
       record.vrmLocomotion = new VrmLocomotionAnimations()
       try {
         await record.vrmLocomotion.bind(vrmAvatar.vrm, vrmAvatar.root)
+        applyVrmPivotOffset(record.pivot, vrmAvatar.vrm, vrmAvatar.root, {
+          measureActivePose: true
+        })
       } catch (err) {
         console.warn(`[network] remote VRM locomotion failed for ${record.address}`, err)
         record.vrmLocomotion.dispose()
         record.vrmLocomotion = null
+        applyVrmPivotOffset(record.pivot, vrmAvatar.vrm, vrmAvatar.root)
       }
 
       this.finalizeNameTag(record)
@@ -1104,6 +1107,7 @@ export class RemoteAvatarManager {
   }
 
   private disposePeerModel(record: RemotePeerRecord): void {
+    record.pivot.position.set(0, 0, 0)
     record.animations?.dispose()
     record.animations = null
     record.vrmLocomotion?.dispose()

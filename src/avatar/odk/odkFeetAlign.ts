@@ -41,17 +41,27 @@ function measureOdkSkinnedSoleY(avatarRoot: THREE.Object3D): number | null {
   return lowest
 }
 
+const MAX_SOLE_DROP_BELOW_BONE = 0.22
+
+function mergeFootContactY(boneY: number | null, soleY: number | null): number | null {
+  if (boneY === null) return soleY
+  if (soleY === null) return boneY
+  if (soleY < boneY - MAX_SOLE_DROP_BELOW_BONE) return boneY
+  if (soleY > boneY + 0.05) return boneY
+  return Math.min(boneY, soleY)
+}
+
 /** Lowest foot contact Y — min of foot bones and skinned sole bounds. */
 export function measureOdkFeetY(avatarRoot: THREE.Object3D): number | null {
   avatarRoot.updateWorldMatrix(true, true)
   const boneY = measureOdkFootBoneY(avatarRoot)
   const soleY = measureOdkSkinnedSoleY(avatarRoot)
-  if (boneY === null) return soleY
-  if (soleY === null) return boneY
-  return Math.min(boneY, soleY)
+  return mergeFootContactY(boneY, soleY)
 }
 
 export function applyOdkPivotOffset(pivot: THREE.Object3D, model: THREE.Object3D): void {
+  pivot.position.set(0, 0, 0)
+  model.position.set(0, 0, 0)
   const feetY = measureOdkFeetY(model)
   pivot.position.y = feetY !== null ? -feetY : 0
 }

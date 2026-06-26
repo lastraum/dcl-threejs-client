@@ -8,16 +8,29 @@ import { VrmAvatar } from '../../../avatar/vrm/VrmAvatar'
 import { disposeVrmRoot } from '../../../avatar/vrm/VrmLoader'
 import { OdkAvatar } from '../../../avatar/odk/OdkAvatar'
 import { disposeOdkRoot } from '../../../avatar/odk/OdkLoader'
+import { alignPreviewAvatarToGround } from '../../../avatar/avatarPreviewAlign'
+import { renderCustomAvatarThumbnail } from '../../../avatar/customAvatarThumbnail'
 import {
   addMmlFile,
   addMmlFromUrl,
   addVrmFile,
+  addVrmFromUrl,
+  findVrmLibraryByOsaId,
   formatVrmByteSize,
   listVrmLibrary,
   loadVrmLibraryBytes,
   removeVrmFromLibrary,
+  updateVrmThumbnail,
   type VrmLibraryEntry
 } from '../../../avatar/vrm/VrmLibrary'
+import {
+  fetchOsaGalleryCatalog,
+  filterOsaGallery,
+  OSA_GALLERY_URL,
+  osaAvatarFileName,
+  type OsaGalleryEntry
+} from '../../../avatar/vrm/osaGallery'
+import { fetchUrlBytes } from '../../../avatar/odk/parseMml'
 import { getActiveProfileAddress } from '../../../avatar/LocalAvatar'
 import {
   getEquippedCustomAvatar,
@@ -25,7 +38,11 @@ import {
 } from '../../../avatar/vrm/vrmEquipStorage'
 
 type CategoryDef = { id: WearableCategory | 'all'; label: string; icon: string }
-type BackpackSubTab = 'wearables' | 'emotes' | 'vrm'
+type BackpackSubTab = 'wearables' | 'emotes' | 'vrm' | 'osa'
+
+const OSA_GRID_COLUMNS = 3
+const OSA_GRID_ROWS = 3
+const OSA_ITEMS_PER_PAGE = OSA_GRID_COLUMNS * OSA_GRID_ROWS
 
 type BackpackViewOptions = {
   onVrmEquipChange?: () => void | Promise<void>
@@ -90,6 +107,16 @@ export class BackpackView {
   private subjectSize = new THREE.Vector3(1.8, 1.8, 0.8)
   private previewMode: 'dcl' | 'vrm' | 'odk' = 'dcl'
   private vrmFileInput: HTMLInputElement | null = null
+  private thumbGenGen = 0
+  private thumbGenInProgress = false
+  private osaCatalog: OsaGalleryEntry[] = []
+  private osaCatalogLoading = false
+  private osaCatalogError: string | null = null
+  private osaSearchQuery = ''
+  private selectedOsaId: string | null = null
+  private osaPage = 1
+  private osaPreviewRequest = 0
+  private osaImportBusy = false
 
   constructor(session: SessionIdentity, options: BackpackViewOptions = {}) {
     this.session = session
@@ -109,6 +136,9 @@ export class BackpackView {
           </button>
           <button class="backpack-view__sub-tab" data-subtab="vrm">
             <span>🧬</span> Custom Avatars
+          </button>
+          <button class="backpack-view__sub-tab" data-subtab="osa">
+            <span>🌐</span> Open Source
           </button>
         </div>
         <div class="backpack-view__toolbar backpack-view__toolbar--wearables">
@@ -133,6 +163,11 @@ export class BackpackView {
               <input class="backpack-view__vrm-url-input" type="url" placeholder="Paste .mml URL" />
               <button type="button" class="backpack-view__vrm-url-btn">Import MML</button>
             </div>
+          </div>
+          <div class="backpack-view__middle-tabs backpack-view__middle-tabs--osa" hidden>
+            <input class="backpack-view__osa-search" type="search" placeholder="Search open source avatars…" />
+            <span class="backpack-view__osa-count" aria-live="polite"></span>
+            <a class="backpack-view__osa-link" href="${OSA_GALLERY_URL}" target="_blank" rel="noopener">opensourceavatars.com</a>
           </div>
           <div class="backpack-view__middle-body">
             <aside class="backpack-view__categories"></aside>
@@ -162,7 +197,17 @@ export class BackpackView {
     this.wireSubTabs()
     this.wireVrmDropZone()
     this.wireMmlUrlImport()
+    this.wireOsaSearch()
     void this.refreshVrmLibrary()
+  }
+
+  private wireOsaSearch(): void {
+    const input = this.root.querySelector('.backpack-view__osa-search') as HTMLInputElement | null
+    input?.addEventListener('input', () => {
+      this.osaSearchQuery = input.value
+      this.osaPage = 1
+      if (this.activeSubTab === 'osa') this.renderOsaGrid()
+    })
   }
 
   private wireMmlUrlImport(): void {
@@ -269,18 +314,29 @@ export class BackpackView {
     const wearablesToolbar = this.root.querySelector('.backpack-view__toolbar--wearables') as HTMLElement
     const wearablesMidTabs = this.root.querySelector('.backpack-view__middle-tabs--wearables') as HTMLElement
     const vrmMidTabs = this.root.querySelector('.backpack-view__middle-tabs--vrm') as HTMLElement
+    const osaMidTabs = this.root.querySelector('.backpack-view__middle-tabs--osa') as HTMLElement
     const dropHint = this.root.querySelector('.backpack-view__vrm-drop-hint') as HTMLElement
+    const categories = this.root.querySelector('.backpack-view__categories') as HTMLElement
+    const gridArea = this.root.querySelector('.backpack-view__grid-area') as HTMLElement
     const isVrm = this.activeSubTab === 'vrm'
+    const isOsa = this.activeSubTab === 'osa'
+    const isAvatarLibraryTab = isVrm || isOsa
 
     this.root.classList.toggle('backpack-view--vrm', isVrm)
-    wearablesToolbar.hidden = isVrm
-    wearablesMidTabs.hidden = isVrm
+    this.root.classList.toggle('backpack-view--osa', isOsa)
+    wearablesToolbar.hidden = isAvatarLibraryTab
+    wearablesMidTabs.hidden = isAvatarLibraryTab
     vrmMidTabs.hidden = !isVrm
+    osaMidTabs.hidden = !isOsa
     dropHint.hidden = !isVrm
+    categories.hidden = isAvatarLibraryTab
+    gridArea?.classList.remove('is-dragover')
 
     if (isVrm) {
       this.renderVrmGrid()
       void this.loadCustomAvatarPreview(this.selectedVrmHash)
+    } else if (isOsa) {
+      void this.ensureOsaCatalog()
     } else if (this.activeSubTab === 'wearables') {
       this.renderGrid()
       void this.loadAvatarModel()
@@ -363,6 +419,8 @@ export class BackpackView {
     }
     if (this.activeSubTab === 'vrm') {
       this.renderVrmGrid()
+    } else if (this.activeSubTab === 'osa') {
+      this.renderOsaGrid()
     }
   }
 
@@ -424,7 +482,7 @@ export class BackpackView {
     }
   }
 
-  private renderVrmGrid(): void {
+  private renderVrmGrid(skipThumbGen = false): void {
     const gridEl = this.root.querySelector('.backpack-view__grid')!
     const paginationEl = this.root.querySelector('.backpack-view__pagination')!
     gridEl.innerHTML = ''
@@ -451,8 +509,12 @@ export class BackpackView {
         'backpack-view__vrm-card' +
         (isSelected ? ' is-selected' : '') +
         (isEquipped ? ' is-equipped' : '')
+      const thumbSrc = entry.thumbnailDataUrl ?? entry.externalThumbnailUrl
+      const thumbHtml = thumbSrc
+        ? `<img class="backpack-view__vrm-card-img" src="${this.escapeHtml(thumbSrc)}" alt="" loading="lazy" />`
+        : `<span class="backpack-view__vrm-card-fallback" aria-hidden="true">${entry.format === 'odk' ? '🌐' : '🧬'}</span>`
       card.innerHTML = `
-        <div class="backpack-view__vrm-card-icon">${entry.format === 'odk' ? '🌐' : '🧬'}</div>
+        <div class="backpack-view__vrm-card-thumb">${thumbHtml}</div>
         <span class="backpack-view__vrm-card-format">${formatLabel}</span>
         <span class="backpack-view__vrm-card-name">${this.escapeHtml(entry.fileName)}</span>
         <span class="backpack-view__vrm-card-size">${formatVrmByteSize(entry.byteSize)}</span>
@@ -464,6 +526,292 @@ export class BackpackView {
         void this.loadCustomAvatarPreview(entry.contentHash)
       })
       gridEl.appendChild(card)
+    }
+
+    if (!skipThumbGen) void this.ensureVrmThumbnails()
+  }
+
+  private async ensureOsaCatalog(): Promise<void> {
+    if (this.osaCatalog.length) {
+      this.renderOsaGrid()
+      return
+    }
+    if (this.osaCatalogLoading) return
+    this.osaCatalogLoading = true
+    this.osaCatalogError = null
+    this.renderOsaGrid()
+    try {
+      this.osaCatalog = await fetchOsaGalleryCatalog()
+      if (this.disposed || this.activeSubTab !== 'osa') return
+      this.renderOsaGrid()
+      if (!this.selectedOsaId && this.osaCatalog[0]) {
+        this.selectedOsaId = this.osaCatalog[0].id
+        void this.loadOsaPreview(this.osaCatalog[0])
+      }
+    } catch (err) {
+      this.osaCatalogError = err instanceof Error ? err.message : String(err)
+      if (this.activeSubTab === 'osa') this.renderOsaGrid()
+    } finally {
+      this.osaCatalogLoading = false
+    }
+  }
+
+  private getFilteredOsaCatalog(): OsaGalleryEntry[] {
+    return filterOsaGallery(this.osaCatalog, this.osaSearchQuery)
+  }
+
+  private renderOsaGrid(): void {
+    const gridEl = this.root.querySelector('.backpack-view__grid')!
+    const paginationEl = this.root.querySelector('.backpack-view__pagination')!
+    const countEl = this.root.querySelector('.backpack-view__osa-count') as HTMLElement | null
+    gridEl.innerHTML = ''
+    gridEl.classList.remove('backpack-view__grid--vrm-empty')
+    paginationEl.innerHTML = ''
+
+    if (this.osaCatalogLoading && !this.osaCatalog.length) {
+      gridEl.innerHTML = `<p class="backpack-view__osa-status">Loading open source avatars…</p>`
+      if (countEl) countEl.textContent = ''
+      this.renderOsaDetail(null)
+      return
+    }
+
+    if (this.osaCatalogError) {
+      gridEl.innerHTML = `<p class="backpack-view__osa-status backpack-view__osa-status--error">${this.escapeHtml(this.osaCatalogError)}</p>`
+      if (countEl) countEl.textContent = ''
+      this.renderOsaDetail(null)
+      return
+    }
+
+    const filtered = this.getFilteredOsaCatalog()
+    if (countEl) {
+      countEl.textContent =
+        filtered.length === this.osaCatalog.length
+          ? `${filtered.length} avatars`
+          : `${filtered.length} of ${this.osaCatalog.length}`
+    }
+
+    if (!filtered.length) {
+      gridEl.classList.add('backpack-view__grid--vrm-empty')
+      gridEl.innerHTML = `<p class="backpack-view__osa-status">No avatars match your search</p>`
+      this.renderOsaDetail(null)
+      return
+    }
+
+    const totalPages = Math.max(1, Math.ceil(filtered.length / OSA_ITEMS_PER_PAGE))
+    const page = Math.min(this.osaPage, totalPages)
+    const start = (page - 1) * OSA_ITEMS_PER_PAGE
+    const pageItems = filtered.slice(start, start + OSA_ITEMS_PER_PAGE)
+
+    for (const entry of pageItems) {
+      const card = document.createElement('button')
+      card.type = 'button'
+      const isSelected = entry.id === this.selectedOsaId
+      const inLibrary = this.vrmLibrary.some((e) => e.osaSourceId === entry.id)
+      card.className =
+        'backpack-view__vrm-card backpack-view__osa-card' +
+        (isSelected ? ' is-selected' : '') +
+        (inLibrary ? ' is-in-library' : '')
+      const thumb = entry.thumbnail_url
+        ? `<img class="backpack-view__vrm-card-img" src="${this.escapeHtml(entry.thumbnail_url)}" alt="" loading="lazy" />`
+        : `<span class="backpack-view__vrm-card-fallback" aria-hidden="true">🌐</span>`
+      card.innerHTML = `
+        <div class="backpack-view__vrm-card-thumb">${thumb}</div>
+        <span class="backpack-view__vrm-card-format">OSA · ${this.escapeHtml(entry.license)}</span>
+        <span class="backpack-view__vrm-card-name">${this.escapeHtml(entry.name)}</span>
+        <span class="backpack-view__vrm-card-size">${this.escapeHtml(entry.projectName)}</span>
+        ${inLibrary ? '<span class="backpack-view__osa-library-badge">In library</span>' : ''}
+      `
+      card.addEventListener('click', () => {
+        this.selectedOsaId = entry.id
+        this.renderOsaGrid()
+        void this.loadOsaPreview(entry)
+      })
+      gridEl.appendChild(card)
+    }
+
+    if (totalPages > 1) {
+      const prev = document.createElement('button')
+      prev.className = 'backpack-view__page-btn'
+      prev.textContent = '‹'
+      prev.disabled = page <= 1
+      prev.addEventListener('click', () => {
+        this.osaPage = Math.max(1, page - 1)
+        this.renderOsaGrid()
+      })
+      paginationEl.appendChild(prev)
+
+      for (let i = 1; i <= Math.min(totalPages, 5); i++) {
+        const pageBtn = document.createElement('button')
+        pageBtn.className = 'backpack-view__page-btn' + (i === page ? ' is-active' : '')
+        pageBtn.textContent = String(i)
+        pageBtn.addEventListener('click', () => {
+          this.osaPage = i
+          this.renderOsaGrid()
+        })
+        paginationEl.appendChild(pageBtn)
+      }
+
+      const next = document.createElement('button')
+      next.className = 'backpack-view__page-btn'
+      next.textContent = '›'
+      next.disabled = page >= totalPages
+      next.addEventListener('click', () => {
+        this.osaPage = Math.min(totalPages, page + 1)
+        this.renderOsaGrid()
+      })
+      paginationEl.appendChild(next)
+    }
+
+    const selected =
+      (this.selectedOsaId ? filtered.find((e) => e.id === this.selectedOsaId) : undefined) ??
+      pageItems[0] ??
+      null
+    if (selected && selected.id !== this.selectedOsaId) {
+      this.selectedOsaId = selected.id
+      void this.loadOsaPreview(selected)
+    }
+    this.renderOsaDetail(selected)
+  }
+
+  private renderOsaDetail(entry: OsaGalleryEntry | null): void {
+    const detailEl = this.root.querySelector('.backpack-view__detail')!
+    if (!entry) {
+      detailEl.innerHTML = `<p class="backpack-view__detail-empty">Select an open source avatar to preview</p>`
+      return
+    }
+
+    void findVrmLibraryByOsaId(entry.id).then((libraryEntry) => {
+      if (this.disposed || this.selectedOsaId !== entry.id) return
+      const inLibrary = !!libraryEntry
+      const address = this.resolveEquipAddress()
+      const equipped = getEquippedCustomAvatar(address)
+      const isEquipped =
+        !!libraryEntry &&
+        equipped?.contentHash === libraryEntry.contentHash &&
+        equipped.format === 'vrm'
+
+      detailEl.innerHTML = `
+        <div class="backpack-view__detail-card backpack-view__detail-card--vrm">
+          ${entry.thumbnail_url ? `<img class="backpack-view__osa-detail-thumb" src="${this.escapeHtml(entry.thumbnail_url)}" alt="" />` : '<div class="backpack-view__vrm-detail-icon">🌐</div>'}
+          <h3 class="backpack-view__detail-name">${this.escapeHtml(entry.name)}</h3>
+          <p class="backpack-view__vrm-detail-meta">${this.escapeHtml(entry.projectName)} · ${this.escapeHtml(entry.license)}</p>
+          ${entry.description ? `<p class="backpack-view__osa-detail-desc">${this.escapeHtml(entry.description)}</p>` : ''}
+          <p class="backpack-view__vrm-detail-meta"><a href="${OSA_GALLERY_URL}" target="_blank" rel="noopener">Open Source Avatars</a></p>
+          <div class="backpack-view__vrm-actions">
+            <button type="button" class="backpack-view__vrm-equip-btn" data-action="add-library" ${inLibrary || this.osaImportBusy ? 'disabled' : ''}>
+              ${inLibrary ? 'In your library' : 'Add to library'}
+            </button>
+            <button type="button" class="backpack-view__vrm-equip-btn" data-action="add-equip" ${!inLibrary || this.osaImportBusy ? 'disabled' : ''} ${isEquipped ? 'disabled' : ''}>
+              ${isEquipped ? 'Equipped' : inLibrary ? 'Equip' : 'Add & equip'}
+            </button>
+            ${inLibrary ? `<button type="button" class="backpack-view__vrm-unequip-btn" data-action="open-library">Open in Custom Avatars</button>` : ''}
+          </div>
+        </div>
+      `
+
+      detailEl.querySelector('[data-action="add-library"]')?.addEventListener('click', () => {
+        if (!inLibrary) void this.addOsaToLibrary(entry, false)
+      })
+      detailEl.querySelector('[data-action="add-equip"]')?.addEventListener('click', () => {
+        if (inLibrary && libraryEntry) void this.equipVrm(libraryEntry.contentHash)
+        else void this.addOsaToLibrary(entry, true)
+      })
+      detailEl.querySelector('[data-action="open-library"]')?.addEventListener('click', () => {
+        if (!libraryEntry) return
+        this.selectedVrmHash = libraryEntry.contentHash
+        this.activeSubTab = 'vrm'
+        this.root.querySelectorAll('.backpack-view__sub-tab').forEach((btn) => {
+          btn.classList.toggle('is-active', (btn as HTMLElement).dataset.subtab === 'vrm')
+        })
+        this.applySubTabLayout()
+      })
+    })
+  }
+
+  private async loadOsaPreview(entry: OsaGalleryEntry): Promise<void> {
+    const req = ++this.osaPreviewRequest
+    this.renderOsaDetail(entry)
+    this.previewMode = 'vrm'
+    this.clearAvatar()
+
+    try {
+      const bytes = await fetchUrlBytes(entry.model_file_url)
+      if (req !== this.osaPreviewRequest || this.disposed || this.activeSubTab !== 'osa') return
+
+      const vrm = await VrmAvatar.fromBytes(bytes)
+      if (req !== this.osaPreviewRequest || this.disposed || this.activeSubTab !== 'osa') {
+        vrm.dispose()
+        return
+      }
+
+      this.vrmPreview = vrm
+      this.avatar = vrm.root
+      this.pivot!.add(vrm.root)
+      this.subjectSize = alignPreviewAvatarToGround(vrm.root, 'vrm', vrm.vrm)
+      this.frameCamera(this.subjectSize)
+    } catch (err) {
+      console.warn('[backpack] OSA preview failed', err)
+      if (req === this.osaPreviewRequest && this.activeSubTab === 'osa') {
+        this.previewMode = 'dcl'
+        await this.loadAvatarModel()
+      }
+    }
+  }
+
+  private async addOsaToLibrary(entry: OsaGalleryEntry, equipAfter: boolean): Promise<void> {
+    if (this.osaImportBusy) return
+    this.osaImportBusy = true
+    const gridArea = this.root.querySelector('.backpack-view__grid-area') as HTMLElement
+    gridArea?.classList.add('is-uploading')
+    this.renderOsaDetail(entry)
+
+    try {
+      const libraryEntry = await addVrmFromUrl(entry.model_file_url, osaAvatarFileName(entry), {
+        osaSourceId: entry.id,
+        sourceModelUrl: entry.model_file_url,
+        externalThumbnailUrl: entry.thumbnail_url
+      })
+      await this.refreshVrmLibrary()
+      this.selectedVrmHash = libraryEntry.contentHash
+      this.renderOsaGrid()
+      this.renderOsaDetail(entry)
+
+      if (equipAfter) {
+        await this.equipVrm(libraryEntry.contentHash)
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      alert(`Could not add avatar: ${msg}`)
+    } finally {
+      this.osaImportBusy = false
+      gridArea?.classList.remove('is-uploading')
+      this.renderOsaDetail(entry)
+    }
+  }
+
+  private async ensureVrmThumbnails(): Promise<void> {
+    if (this.thumbGenInProgress) return
+    this.thumbGenInProgress = true
+    const gen = ++this.thumbGenGen
+    let changed = false
+    try {
+      for (const entry of this.vrmLibrary) {
+        if (entry.thumbnailDataUrl || entry.externalThumbnailUrl) continue
+        const bytes = await loadVrmLibraryBytes(entry.contentHash)
+        if (!bytes || gen !== this.thumbGenGen || this.disposed) return
+        try {
+          const dataUrl = await renderCustomAvatarThumbnail(bytes, entry.format, entry.mmlAttachments)
+          if (gen !== this.thumbGenGen || this.disposed) return
+          await updateVrmThumbnail(entry.contentHash, dataUrl)
+          entry.thumbnailDataUrl = dataUrl
+          changed = true
+        } catch (err) {
+          console.warn('[backpack] avatar thumbnail failed', entry.fileName, err)
+        }
+      }
+      if (changed && this.activeSubTab === 'vrm' && !this.disposed) this.renderVrmGrid(true)
+    } finally {
+      this.thumbGenInProgress = false
     }
   }
 
@@ -733,11 +1081,9 @@ export class BackpackView {
       return
     }
 
-    const box = new THREE.Box3().setFromObject(avatar)
-    const center = box.getCenter(new THREE.Vector3())
-    avatar.position.set(-center.x, -box.min.y, -center.z)
     this.avatar = avatar
     this.pivot!.add(avatar)
+    this.subjectSize = alignPreviewAvatarToGround(avatar, 'dcl')
 
     this.animations = new AvatarAnimations()
     try {
@@ -747,9 +1093,6 @@ export class BackpackView {
       this.animations = null
     }
 
-    this.subjectSize = box.getSize(new THREE.Vector3())
-    this.subjectSize.y += 0.18
-    this.subjectSize.x = Math.max(this.subjectSize.x, 0.9)
     this.frameCamera(this.subjectSize)
   }
 
@@ -781,30 +1124,22 @@ export class BackpackView {
           odk.dispose()
           return
         }
-        const box = new THREE.Box3().setFromObject(odk.root)
-        const center = box.getCenter(new THREE.Vector3())
-        odk.root.position.set(-center.x, -box.min.y, -center.z)
         this.odkPreview = odk
         this.avatar = odk.root
         this.pivot!.add(odk.root)
-        this.subjectSize = box.getSize(new THREE.Vector3())
+        this.subjectSize = alignPreviewAvatarToGround(odk.root, 'odk')
       } else {
         const vrm = await VrmAvatar.fromBytes(bytes)
         if (this.disposed || this.previewMode !== 'vrm') {
           vrm.dispose()
           return
         }
-        const box = new THREE.Box3().setFromObject(vrm.root)
-        const center = box.getCenter(new THREE.Vector3())
-        vrm.root.position.set(-center.x, -box.min.y, -center.z)
         this.vrmPreview = vrm
         this.avatar = vrm.root
         this.pivot!.add(vrm.root)
-        this.subjectSize = box.getSize(new THREE.Vector3())
+        this.subjectSize = alignPreviewAvatarToGround(vrm.root, 'vrm', vrm.vrm)
       }
 
-      this.subjectSize.y += 0.18
-      this.subjectSize.x = Math.max(this.subjectSize.x, 0.9)
       this.frameCamera(this.subjectSize)
     } catch (err) {
       console.warn('[backpack] custom avatar preview failed', err)
@@ -867,6 +1202,7 @@ export class BackpackView {
   }
 
   private clearAvatar(): void {
+    this.pivot?.position.set(0, 0, 0)
     this.animations?.dispose()
     this.animations = null
     if (this.vrmPreview) {

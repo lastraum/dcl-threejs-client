@@ -106,18 +106,20 @@ export class LocalAvatar {
             this.renderMode = 'vrm'
             this.model = this.vrmAvatar.root
             this.pivot.add(this.model)
-            applyVrmPivotOffset(this.pivot, this.vrmAvatar.vrm, this.model)
-
             this.vrmAvatar.vrm.humanoid.autoUpdateHumanBones = false
 
             this.vrmLocomotion = new VrmLocomotionAnimations()
             try {
               await this.vrmLocomotion.bind(this.vrmAvatar.vrm, this.vrmAvatar.root)
+              applyVrmPivotOffset(this.pivot, this.vrmAvatar.vrm, this.model, {
+                measureActivePose: true
+              })
               console.info('[avatar] custom VRM equipped — locomotion active')
             } catch (err) {
               console.warn('[avatar] VRM locomotion bind failed — bind pose only', err)
               this.vrmLocomotion.dispose()
               this.vrmLocomotion = null
+              applyVrmPivotOffset(this.pivot, this.vrmAvatar.vrm, this.model)
             }
           }
 
@@ -309,6 +311,7 @@ export class LocalAvatar {
   }
 
   private disposeModel(): void {
+    this.pivot.position.set(0, 0, 0)
     this.animations?.dispose()
     this.animations = null
     if (this.vrmAvatar) {

@@ -23,12 +23,14 @@ export function measureAvatarFeetY(avatarRoot: THREE.Object3D): number | null {
 
 /** Shift avatar pivot so soles meet the PhysX capsule base (y = 0 on player root). */
 export function applyAvatarPivotOffset(pivot: THREE.Object3D, model?: THREE.Object3D | null): void {
+  pivot.position.set(0, 0, 0)
   const avatar =
     model ??
     (pivot.children.find((child) => child.name === 'dcl-avatar') as THREE.Object3D | undefined) ??
     pivot.children[0] ??
     null
 
+  if (avatar) avatar.position.set(0, 0, 0)
   const feetY = avatar ? measureAvatarFeetY(avatar) : null
   pivot.position.y = feetY !== null ? -feetY : 0
 }

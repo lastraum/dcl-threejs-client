@@ -4330,6 +4330,20 @@
         border-bottom: 1px solid rgba(255, 255, 255, 0.06);
         flex-shrink: 0;
       }
+      .backpack-view__middle-tabs[hidden],
+      .backpack-view__categories[hidden],
+      .backpack-view__vrm-drop-hint[hidden],
+      .backpack-view__toolbar[hidden] {
+        display: none !important;
+      }
+      .backpack-view--vrm .backpack-view__middle-tabs--wearables,
+      .backpack-view--osa .backpack-view__middle-tabs--wearables {
+        display: none !important;
+      }
+      .backpack-view--osa .backpack-view__middle-tabs--vrm,
+      .backpack-view--osa .backpack-view__vrm-drop-hint {
+        display: none !important;
+      }
       .backpack-view__mid-tab {
         padding: 6px 12px;
         border: none;
@@ -4446,12 +4460,22 @@
         padding: 12px;
         overflow-y: auto;
       }
-      .backpack-view--vrm .backpack-view__categories {
-        display: none;
+      .backpack-view--vrm .backpack-view__categories,
+      .backpack-view--osa .backpack-view__categories {
+        display: none !important;
+        width: 0;
+        min-width: 0;
+        padding: 0;
+        border: none;
+        overflow: hidden;
       }
       .backpack-view--vrm .backpack-view__grid {
         width: 100%;
         max-width: none;
+        min-height: 0;
+        grid-template-rows: none;
+        grid-auto-rows: auto;
+        align-content: start;
       }
       .backpack-view--vrm .backpack-view__grid-area {
         position: relative;
@@ -4692,23 +4716,49 @@
         position: relative;
         display: flex;
         flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
+        align-items: stretch;
+        justify-content: flex-start;
+        gap: 4px;
         width: 100%;
-        aspect-ratio: 1;
+        height: auto;
         min-height: 0;
-        padding: 10px 8px;
+        padding: 0 0 8px;
         border-radius: 10px;
         border: 2px solid rgba(255, 255, 255, 0.15);
         background: rgba(0, 0, 0, 0.35);
         color: #fff;
         cursor: pointer;
+        overflow: hidden;
         transition: transform 0.12s, box-shadow 0.12s;
       }
+      .backpack-view__vrm-card-thumb {
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        flex: none;
+        width: 100%;
+        height: 104px;
+        padding: 8px 6px 4px;
+        background: rgba(0, 0, 0, 0.28);
+        overflow: hidden;
+      }
+      .backpack-view__vrm-card-img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        object-position: bottom center;
+        pointer-events: none;
+      }
+      .backpack-view__vrm-card-fallback {
+        font-size: 30px;
+        line-height: 1;
+        opacity: 0.55;
+      }
       .backpack-view__vrm-card:hover {
-        transform: scale(1.04);
+        transform: scale(1.02);
         box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+        z-index: 2;
       }
       .backpack-view__vrm-card.is-selected {
         box-shadow: 0 0 0 2px #fff, 0 4px 16px rgba(255, 255, 255, 0.2);
@@ -4716,9 +4766,10 @@
       .backpack-view__vrm-card.is-equipped {
         border-color: #57e389;
       }
-      .backpack-view__vrm-card-icon {
-        font-size: 28px;
-        line-height: 1;
+      .backpack-view__vrm-card-format,
+      .backpack-view__vrm-card-name,
+      .backpack-view__vrm-card-size {
+        padding: 0 8px;
       }
       .backpack-view__vrm-card-name {
         font-size: 10px;
@@ -4727,10 +4778,16 @@
         word-break: break-word;
         line-height: 1.25;
         max-width: 100%;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        min-height: 2.5em;
       }
       .backpack-view__vrm-card-size {
         font-size: 9px;
         color: rgba(255, 255, 255, 0.45);
+        text-align: center;
       }
       .backpack-view__vrm-equipped-badge {
         position: absolute;
@@ -4788,6 +4845,120 @@
       .backpack-view__vrm-delete-btn {
         background: transparent;
         color: rgba(255, 120, 120, 0.9);
+      }
+
+      .backpack-view--osa .backpack-view__grid {
+        width: 100%;
+        max-width: none;
+        min-height: 0;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-rows: none;
+        grid-auto-rows: auto;
+        gap: 12px;
+        align-content: start;
+      }
+      .backpack-view__osa-card .backpack-view__vrm-card-thumb {
+        height: 148px;
+        padding: 10px 8px 6px;
+      }
+      .backpack-view__osa-card .backpack-view__vrm-card-name {
+        font-size: 11px;
+        min-height: 2.75em;
+      }
+      .backpack-view--osa .backpack-view__grid-area {
+        border: none;
+        border-radius: 0;
+        margin: 0;
+      }
+      .backpack-view--osa .backpack-view__grid-area.is-uploading {
+        opacity: 0.65;
+        pointer-events: none;
+      }
+      .backpack-view__middle-tabs--osa {
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .backpack-view__osa-search {
+        flex: 1;
+        min-width: 160px;
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: rgba(0, 0, 0, 0.35);
+        color: #fff;
+        font-size: 12px;
+      }
+      .backpack-view__osa-search::placeholder {
+        color: rgba(255, 255, 255, 0.4);
+      }
+      .backpack-view__osa-count {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        color: rgba(255, 255, 255, 0.5);
+        white-space: nowrap;
+      }
+      .backpack-view__osa-link {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        color: #00b4d8;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+      .backpack-view__osa-link:hover {
+        text-decoration: underline;
+      }
+      .backpack-view__osa-status {
+        grid-column: 1 / -1;
+        margin: 24px 0;
+        text-align: center;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .backpack-view__osa-status--error {
+        color: #ff8a8a;
+      }
+      .backpack-view__osa-card .backpack-view__vrm-card-format {
+        color: #00b4d8;
+      }
+      .backpack-view__osa-card.is-in-library {
+        border-color: rgba(0, 180, 216, 0.45);
+      }
+      .backpack-view__osa-library-badge {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: rgba(0, 180, 216, 0.22);
+        color: #00b4d8;
+        font-size: 8px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+      }
+      .backpack-view__osa-detail-thumb {
+        width: 120px;
+        height: 120px;
+        border-radius: 12px;
+        object-fit: contain;
+        object-position: bottom center;
+        background: rgba(0, 0, 0, 0.3);
+      }
+      .backpack-view__osa-detail-desc {
+        margin: 8px 0 0;
+        font-size: 12px;
+        line-height: 1.45;
+        color: rgba(255, 255, 255, 0.65);
+        text-align: center;
+        max-width: 220px;
+      }
+      .backpack-view__vrm-detail-meta a {
+        color: #00b4d8;
+        text-decoration: none;
+      }
+      .backpack-view__vrm-detail-meta a:hover {
+        text-decoration: underline;
       }
 
       /* ===== Events View (settings overlay) ===== */

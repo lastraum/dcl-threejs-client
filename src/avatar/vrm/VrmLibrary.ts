@@ -25,6 +25,10 @@ export type VrmLibraryEntry = {
   mmlSourceUrl?: string
   mmlAttachments?: MmlAttachmentSpec[]
   thumbnailDataUrl?: string
+  /** opensourceavatars.com registry id when imported from OSA gallery. */
+  osaSourceId?: string
+  sourceModelUrl?: string
+  externalThumbnailUrl?: string
 }
 
 type LibraryIndex = VrmLibraryEntry[]
@@ -55,9 +59,19 @@ export function formatVrmByteSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function compareLibraryName(a: VrmLibraryEntry, b: VrmLibraryEntry): number {
+  return a.fileName.localeCompare(b.fileName, undefined, { sensitivity: 'base' })
+}
+
 export async function listVrmLibrary(): Promise<VrmLibraryEntry[]> {
   const index = await readIndex()
-  return [...index].sort((a, b) => b.addedAt - a.addedAt)
+  return [...index].sort(compareLibraryName)
+}
+
+export async function findVrmLibraryByOsaId(osaSourceId: string): Promise<VrmLibraryEntry | null> {
+  const key = osaSourceId.toLowerCase()
+  const index = await readIndex()
+  return index.find((e) => e.osaSourceId?.toLowerCase() === key) ?? null
 }
 
 export async function getVrmLibraryEntry(contentHash: string): Promise<VrmLibraryEntry | null> {
@@ -82,7 +96,10 @@ async function storeLibraryEntry(
   bytes: ArrayBuffer,
   fileName: string,
   format: CustomAvatarFormat,
-  extra?: Pick<VrmLibraryEntry, 'mmlSourceUrl' | 'mmlAttachments'>
+  extra?: Pick<
+    VrmLibraryEntry,
+    'mmlSourceUrl' | 'mmlAttachments' | 'osaSourceId' | 'sourceModelUrl' | 'externalThumbnailUrl'
+  >
 ): Promise<VrmLibraryEntry> {
   if (bytes.byteLength <= 0) throw new Error('File is empty')
   if (bytes.byteLength > VRM_MAX_BYTES) {
@@ -91,7 +108,18 @@ async function storeLibraryEntry(
 
   const contentHash = await sha256Hex(bytes)
   const existing = await getVrmLibraryEntry(contentHash)
-  if (existing) return existing
+  if (existing) {
+    if (extra?.osaSourceId && !existing.osaSourceId) {
+      const index = await readIndex()
+      const row = index.find((e) => e.contentHash === contentHash)
+      if (row) {
+        Object.assign(row, extra)
+        await writeIndex(index)
+        return { ...existing, ...extra }
+      }
+    }
+    return existing
+  }
 
   await writeVrmBytes(contentHash, bytes)
   const entry: VrmLibraryEntry = {
@@ -115,6 +143,20 @@ export async function addVrmFile(file: File): Promise<VrmLibraryEntry> {
   }
   const bytes = await file.arrayBuffer()
   return storeLibraryEntry(bytes, file.name, 'vrm')
+}
+
+export async function addVrmFromUrl(
+  url: string,
+  fileName: string,
+  extra?: Pick<VrmLibraryEntry, 'osaSourceId' | 'sourceModelUrl' | 'externalThumbnailUrl'>
+): Promise<VrmLibraryEntry> {
+  const trimmed = url.trim()
+  if (!trimmed) throw new Error('VRM URL is required')
+  const bytes = await fetchUrlBytes(trimmed)
+  return storeLibraryEntry(bytes, fileName, 'vrm', {
+    sourceModelUrl: trimmed,
+    ...extra
+  })
 }
 
 export async function addMmlFile(file: File): Promise<VrmLibraryEntry> {

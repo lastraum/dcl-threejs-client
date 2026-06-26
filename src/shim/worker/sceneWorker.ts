@@ -1499,7 +1499,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     if (oneWayCrdtEnabled) {
       workerLog(
         'log',
-        '[sceneWorker] one-way CRDT armed — round-trip until play-ready, then fire-and-forget (?onewaycrdt)'
+        '[sceneWorker] one-way CRDT armed — round-trip until play-ready, then fire-and-forget (default; ?roundtripcrdt to opt out)'
       )
     }
     const skipTheatre = msg.debug?.skipTheatre === true

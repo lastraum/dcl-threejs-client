@@ -25,7 +25,7 @@ export type SceneWorkerDebugFlags = {
   messageArrival?: boolean
   /** `?notheatre` — skip Genesis theatre runShowSetup + Scene 11/12 registration. */
   skipTheatre?: boolean
-  /** `?onewaycrdt` — runtime worker→main outbound without blocking `crdt-response`. */
+  /** One-way worker→main outbound after play-ready (default on; `?roundtripcrdt` opts out). */
   oneWayCrdt?: boolean
 }
 

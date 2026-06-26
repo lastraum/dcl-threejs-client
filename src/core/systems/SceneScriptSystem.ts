@@ -1311,7 +1311,7 @@ export class SceneScriptSystem {
       this.oneWayCrdtLogged = true
       clientDebugLog.log(
         'projection',
-        'one-way CRDT ACTIVE — worker outbound async, inbound via renderer-inbound-deliver (?onewaycrdt)',
+        'one-way CRDT ACTIVE — worker outbound async, inbound via renderer-inbound-deliver',
         { level: 'success', alsoConsole: true }
       )
     }

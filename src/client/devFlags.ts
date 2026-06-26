@@ -27,9 +27,13 @@ export function skipSceneVideoPlayers(): boolean {
   return params.has('novideo')
 }
 
-/** Phase C — worker outbound CRDT fire-and-forget; inbound via `renderer-inbound-deliver` (`?onewaycrdt`). */
+/**
+ * Phase C — worker outbound CRDT fire-and-forget; inbound via `renderer-inbound-deliver`.
+ * Enabled by default after play-ready; opt out with `?roundtripcrdt` (or `?roundtrip`).
+ */
 export function useOneWayCrdt(): boolean {
   const params = readSearchParams()
-  if (!params) return false
-  return params.has('onewaycrdt')
+  if (!params) return true
+  if (params.has('roundtripcrdt') || params.has('roundtrip')) return false
+  return true
 }

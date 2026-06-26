@@ -130,6 +130,8 @@ export class World {
   private postBootColliderCatchUpUntil = 0
   /** Runtime burst (e.g. theatre Scene 11/12) — drain with loading-style recook until idle. */
   private runtimeColliderBurstUntil = 0
+  /** False until sealSpawnColliderPoses finishes — gates world-baked pose-ack shortcuts. */
+  private spawnColliderSealComplete = false
   private unsubAvatarChat: (() => void) | null = null
   private playerWalkBounds: PlayerWalkBounds | null = null
   private ezTreeGrass: EzTreeGrassFieldHandle | null = null
@@ -553,7 +555,7 @@ export class World {
     const probeH = this.physics.debugProbeStaticHit(2.5)
     const probeDown = this.physics.debugProbeDownHit(8)
     const nearestGltf = this.nearestGltfColliderHorizDist(feetThree)
-    const sceneProbe = this.physics.probeSceneMeshDownAt(feetThree, 12)
+    const sceneProbe = this.physics.probeSceneMeshDownAt(feetThree, 32, 48)
     console.info(
       `[World] player spawn — static=${spawnStatic} gltfRegistered=${spawnGltf} gltfExtracted=${this.lastGltfColliderCount}` +
         (gltfStats
@@ -633,7 +635,9 @@ export class World {
     // Social/avatar load can overlap post-play-ready CRDT — sync + register before pointer bind.
     this.sceneScript.syncCollision()
     this.reconcileColliderCookQueue()
-    await this.drainPendingColliderCooksInitialOnly()
+    while (this.colliderCookQueue.size > 0) {
+      await this.drainColliderCookQueue({ loading: true })
+    }
     this.physics.warmStaticScene()
     this.sceneScript.flushSceneGraphMatrices()
     this.sceneScript.preparePointerRaycast()
@@ -1162,10 +1166,16 @@ export class World {
   private resetColliderBootState(): void {
     this.collidersLoadingComplete = false
     this.deferPhysxCooks = true
+    this.spawnColliderSealComplete = false
     this.colliderCookQueue.clear()
     this.pendingColliderCooks = 0
     this.lastPhysicsBatchFp = ''
     this.postBootColliderCatchUpUntil = 0
+  }
+
+  /** Near-player / pre-seal world-baked drift must recook — never ack stale PhysX geometry. */
+  private mustRecookWorldBakedPoseDrift(desc: PhysicsColliderDesc): boolean {
+    return !this.spawnColliderSealComplete || this.isColliderDescNearPlayer(desc, 72)
   }
 
   /** Runtime tween / transform pose slide — only the entities that moved. */
@@ -1198,10 +1208,12 @@ export class World {
     const slideDescs: PhysicsColliderDesc[] = []
     for (const desc of descs) {
       if (this.physics.needsWorldBakedPoseRecook(desc)) {
-        // Runtime recook off — ack pose drift and keep the boot-cooked actor (planter/structure
-        // sync can false-trigger matrixWorld refresh without real movement).
         if (!this.allowsRuntimeColliderRecook()) {
-          this.physics.ackStaticPoseFingerprint(desc)
+          if (this.mustRecookWorldBakedPoseDrift(desc)) {
+            this.colliderCookQueue.add(desc.entity)
+          } else {
+            this.physics.ackStaticPoseFingerprint(desc)
+          }
           continue
         }
         const recook = this.physics.syncStaticColliders([desc], {
@@ -1307,12 +1319,16 @@ export class World {
     this.sceneScript.invalidateGltfColliderSyncCache()
     this.sceneScript.syncCollisionForce()
 
+    const feetBeforeSeal = this.player.getWorldPosition()
+    const probeMissBeforeSeal =
+      this.physics.probeSceneMeshDownAt(feetBeforeSeal, 32, 48) === null
+
     let drifted = 0
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (!desc.fingerprint.startsWith('gltf-entity:')) continue
       if (!this.physics.isWorldBakedStatic(desc.entity)) continue
-      if (!this.physics.needsWorldBakedPoseRecook(desc)) continue
       if (!this.isColliderDescNearPlayer(desc, 72)) continue
+      if (!this.physics.needsWorldBakedPoseRecook(desc) && !probeMissBeforeSeal) continue
       this.physics.invalidateStaticCollider(desc.entity)
       this.colliderCookQueue.add(desc.entity)
       drifted++
@@ -1323,12 +1339,13 @@ export class World {
         await this.drainColliderCookQueue({ loading: true })
       }
       const feet = this.player.getWorldPosition()
-      const sceneProbe = this.physics.probeSceneMeshDownAt(feet, 12)
+      const sceneProbe = this.physics.probeSceneMeshDownAt(feet, 32, 48)
       console.info(
-        `[World] spawn collider seal — recooked ${drifted} drifted GLTF actor(s)` +
+        `[World] spawn collider seal — recooked ${drifted} near-player GLTF actor(s)` +
           ` sceneProbe=${sceneProbe !== null ? `${sceneProbe.toFixed(2)}m` : 'none'}`
       )
     }
+    this.spawnColliderSealComplete = true
     this.physics.warmStaticScene()
   }
 
@@ -1469,7 +1486,12 @@ export class World {
       ) {
         if (this.physics.needsWorldBakedPoseRecook(desc)) {
           if (!this.allowsRuntimeColliderRecook()) {
-            this.physics.ackStaticPoseFingerprint(desc)
+            if (this.mustRecookWorldBakedPoseDrift(desc)) {
+              this.colliderCookQueue.add(desc.entity)
+            } else {
+              this.physics.ackStaticPoseFingerprint(desc)
+              this.colliderCookQueue.delete(desc.entity)
+            }
           } else if (this.isColliderDescNearPlayer(desc)) {
             this.colliderCookQueue.add(desc.entity)
           } else {
@@ -1539,8 +1561,19 @@ export class World {
         if (!loadingPass) this.colliderCookQueue.delete(physId)
         continue
       }
-      // Runtime recook off — never remove/recook boot world-baked actors; register only new ones.
+      // Runtime recook off — register new actors only; near-player world-baked drift still recooks.
       if (!loadingPass && !this.allowsRuntimeColliderRecook() && this.physics.hasStaticActor(physId)) {
+        if (
+          desc &&
+          this.physics.isWorldBakedStatic(physId) &&
+          this.physics.needsWorldBakedPoseRecook(desc) &&
+          this.mustRecookWorldBakedPoseDrift(desc)
+        ) {
+          this.physics.invalidateStaticCollider(physId)
+          worldBakedRecook = true
+          toCook.push(desc)
+          continue
+        }
         if (desc && this.physics.needsWorldBakedPoseRecook(desc)) {
           this.physics.ackStaticPoseFingerprint(desc)
         }
@@ -1579,6 +1612,12 @@ export class World {
         if (this.physics.geomFingerprintMatches(desc)) {
           if (this.physics.needsWorldBakedPoseRecook(desc)) {
             if (!this.allowsRuntimeColliderRecook()) {
+              if (this.mustRecookWorldBakedPoseDrift(desc)) {
+                this.physics.invalidateStaticCollider(physId)
+                worldBakedRecook = true
+                toCook.push(desc)
+                continue
+              }
               this.physics.ackStaticPoseFingerprint(desc)
               this.colliderCookQueue.delete(physId)
               continue
@@ -1915,7 +1954,7 @@ export class World {
       const elapsedSec = ((performance.now() - started) / 1000).toFixed(1)
       const staticAfter = this.physics.staticColliderCount
       const cookStats = getGeometryCookCacheStats()
-      const downProbe = this.physics.probeSceneMeshDownAt(this.colliderCookPriority, 12)
+      const downProbe = this.physics.probeSceneMeshDownAt(this.colliderCookPriority, 32, 48)
       const nearestGltf = this.nearestGltfColliderHorizDist(this.colliderCookPriority)
       console.info(
         `[World] colliders ready — static=${staticAfter} gltf=${finalRegistered}/${finalGltfCount} (${elapsedSec}s)` +

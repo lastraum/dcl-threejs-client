@@ -37,3 +37,21 @@ export function useOneWayCrdt(): boolean {
   if (params.has('roundtripcrdt') || params.has('roundtrip')) return false
   return true
 }
+
+/** Phase D0 — log rolling main-thread physics timings (`?perfdebug`). */
+export function usePerfDebug(): boolean {
+  const params = readSearchParams()
+  if (!params) return false
+  return params.has('perfdebug') || params.has('perf')
+}
+
+/**
+ * Phase D — PhysX simulate + CCT on a dedicated worker (`?workerphysx` / `?physxworker`).
+ * Slice 1 warms the worker; locomotion routing lands in D2/D3. Opt out with `?nophysxworker`.
+ */
+export function useWorkerPhysx(): boolean {
+  const params = readSearchParams()
+  if (!params) return false
+  if (params.has('nophysxworker')) return false
+  return params.has('workerphysx') || params.has('physxworker')
+}

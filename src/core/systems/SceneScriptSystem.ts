@@ -223,10 +223,10 @@ export class SceneScriptSystem {
   private pointerAwaitingWorkerApply = false
   /** True after one watchdog retry — avoids infinite inject loops. */
   private pointerDeliverRetried = false
-  /** Plant watering / onUpdate can exceed 400ms — wait before CRDT-only retry. */
+  /** Plant watering / onUpdate can exceed 800ms — extend wait; never re-post CRDT (double-deliver). */
   private static readonly POINTER_DELIVER_STALL_MS = 800
   private static readonly POINTER_DELIVER_FAIL_MS = 2_500
-  private static readonly POINTER_DELIVER_FAIL_AFTER_RETRY_MS = 1_500
+  private static readonly POINTER_DELIVER_FAIL_EXTENDED_MS = 4_500
 
   private logPointer(...parts: unknown[]): void {
     if (POINTER_VERBOSE) console.log('[pointer]', ...parts)
@@ -1640,7 +1640,7 @@ export class SceneScriptSystem {
   /** Fold the latest projection decode batch into the render-frame diff accumulator. */
   private foldProjectionChanges(): void {
     const { PlayerEntity, CameraEntity, RootEntity } = this.view
-    const { TriggerArea, Transform, Billboard } = this.readComponents
+    const { TriggerArea, Transform, Billboard, MeshCollider, GltfContainer } = this.readComponents
 
     for (const change of this.projection.changes) {
       if (change.entity === PlayerEntity || change.entity === CameraEntity || change.entity === RootEntity) {
@@ -1652,6 +1652,21 @@ export class SceneScriptSystem {
         (change.componentId === Transform.componentId && TriggerArea.has(change.entity))
       ) {
         this.triggerStructureDirty = true
+      }
+
+      if (change.componentId === Transform.componentId && change.kind !== 'delete') {
+        if (MeshCollider.has(change.entity) || GltfContainer.has(change.entity)) {
+          this.colliderPoseDirty.add(change.entity)
+        }
+        this.markDescendantColliderPosesDirty(change.entity)
+      }
+
+      if (
+        change.componentId === GltfContainer.componentId ||
+        change.componentId === MeshCollider.componentId
+      ) {
+        this.colliderStructureDirty.add(change.entity)
+        this.pointerStructureDirty = true
       }
 
       if (change.componentId === Billboard.componentId) {
@@ -2059,35 +2074,52 @@ export class SceneScriptSystem {
   private onPointerDeliverDone(): void {
     this.logPointer('pointer-deliver-done — worker finished pointer tick + onUpdate CRDT flush')
     this.videoPlayerBridge?.notifyUserPointerDelivered()
-    this.finishPointerDelivery('pointer-deliver-done')
+    void this.finishPointerDeliveryAsync('pointer-deliver-done')
   }
 
   /**
-   * Worker onUpdate may publish transform diffs (plant growth) while delivery is in flight.
-   * Apply them + sync CL_POINTER colliders before the next click raycast.
+   * Worker onUpdate may publish transform / mesh diffs (plant growth) while delivery is in flight.
+   * Wait for one-way outbound, apply projection diff, then sync CL_POINTER colliders.
    */
-  private reconcilePointerCollisionAfterDelivery(): void {
-    this.consumeSyncFrameTransforms()
+  private async reconcilePointerCollisionAfterDelivery(): Promise<void> {
+    await this.crdtOutboundSerial
+    const bridge = this.bridge
+    const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+    if (bridge?.canConsumeDiff() && this.pendingDiff.size) {
+      const diff = this.pendingDiff
+      this.pendingDiff = new Map()
+      await bridge.consumeDiff(diff, this.view, tweenRefresh)
+    } else {
+      this.consumeSyncFrameTransforms()
+    }
     this.flushSceneGraphMatrices()
     if (this.hasColliderWorkPending()) {
       this.syncCollision()
     } else {
       this.syncCollisionPoses()
     }
+    const poseChanged = [...this.lastPoseChangedEntities]
+    if (poseChanged.length) {
+      this.collidersPoseCallback?.(poseChanged)
+    }
     this.refreshPointerTargets()
     this.collidersCookCallback?.()
   }
 
   /** Clear pointer flush state and resume worker scene ticks after delivery (idempotent). */
-  private finishPointerDelivery(source: string): void {
+  private async finishPointerDeliveryAsync(source: string): Promise<void> {
     if (!this.pointerAwaitingWorkerApply && !this.pointerDeliverAwaitingAck) return
     clientDebugLog.log('pointer', `delivery complete — ${source}`, { alsoConsole: false })
     this.pointerAwaitingWorkerApply = false
     this.pointerDeliverRetried = false
     this.clearPointerDeliverWatchdog()
-    this.reconcilePointerCollisionAfterDelivery()
+    await this.reconcilePointerCollisionAfterDelivery()
     this.proactiveTweenPushUntil = performance.now() + SceneScriptSystem.PROACTIVE_TWEEN_PUSH_MS
     this.worker?.postMessage({ type: 'pause-scene-ticks', paused: false } satisfies MainToWorker)
+  }
+
+  private finishPointerDelivery(source: string): void {
+    void this.finishPointerDeliveryAsync(source)
   }
 
   /** Worker path failed — surface loudly; scene triggers/tweens did not run. */
@@ -2099,16 +2131,15 @@ export class SceneScriptSystem {
     this.finishPointerDelivery('pointer-delivery-failed')
   }
 
-  /** One CRDT-only retry when worker onUpdate stalls; never re-inject (double-fires scene clicks). */
+  /** Extend ack timeout — worker onUpdate (plant growth) can exceed 800ms; never re-post CRDT. */
   private recoverStalledPointerDelivery(): void {
     if (!this.pointerDeliverAwaitingAck || !this.worker) return
     if (this.pointerDeliverRetried) return
     this.pointerDeliverRetried = true
-    console.warn('[pointer]', 'recovering stalled pointer delivery — CRDT retry only (no re-inject)')
-    this.deliverPointerCrdtDirect()
+    console.warn('[pointer]', 'pointer delivery still in flight — extending ack timeout (no CRDT retry)')
     this.armPointerDeliverWatchdog(
-      'pointer — no worker pointer-deliver-done after CRDT retry',
-      SceneScriptSystem.POINTER_DELIVER_FAIL_AFTER_RETRY_MS,
+      'pointer — no worker pointer-deliver-done after extended wait',
+      SceneScriptSystem.POINTER_DELIVER_FAIL_EXTENDED_MS,
       false
     )
   }

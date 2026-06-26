@@ -1403,6 +1403,10 @@ export class World {
     this.reconcileColliderCookQueue()
     this.maybeBeginRuntimeColliderBurst(queueBefore)
     if (this.collidersLoadingComplete) {
+      const nearPlayer = this.countNearPlayerColliderQueue()
+      if (nearPlayer >= 1) {
+        this.runtimeColliderBurstUntil = performance.now() + World.RUNTIME_COLLIDER_BURST_MS
+      }
       void this.drainPendingColliderCooksInitialOnly()
     }
   }

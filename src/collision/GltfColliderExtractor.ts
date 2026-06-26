@@ -563,6 +563,43 @@ export class GltfColliderExtractor {
    * has registered grounding (avoids fall-through on bobbing props like SnoopCar).
    * Works at any world Y (e.g. car on a 3rd floor): contact is relative to the animated tread.
    */
+  /**
+   * Highest static GLTF tread near feet — only when CCT reports infinite ground.
+   * Horiz-culled extracted scan (not a per-frame walk-surface pass).
+   */
+  findStaticStandSurfaceNearFeet(
+    entityNodes: Map<Entity, THREE.Group>,
+    feet: THREE.Vector3,
+    maxHoriz = 24
+  ): Entity | null {
+    let bestEntity: Entity | null = null
+    let bestScore = Number.POSITIVE_INFINITY
+    const maxHorizSq = maxHoriz * maxHoriz
+
+    for (const entity of this.extracted.keys()) {
+      const obj = entityNodes.get(entity)
+      if (!obj) continue
+      obj.updateMatrixWorld(true)
+      const dx = obj.matrixWorld.elements[12]! - feet.x
+      const dz = obj.matrixWorld.elements[14]! - feet.z
+      if (dx * dx + dz * dz > maxHorizSq) continue
+
+      const surface = this.colliderWalkSurfacePos(entity, entityNodes, feet)
+      if (!surface) continue
+      const gap = Math.abs(feet.y - surface.y)
+      if (gap > STAND_SURFACE_MAX_VERT_GAP + 2) continue
+      const horizSq =
+        (feet.x - surface.x) * (feet.x - surface.x) +
+        (feet.z - surface.z) * (feet.z - surface.z)
+      const score = gap + horizSq * 0.08
+      if (score < bestScore) {
+        bestScore = score
+        bestEntity = entity
+      }
+    }
+    return bestEntity
+  }
+
   /** Stand-surface hint among active animator candidates only — not a full extracted scan. */
   findAnimatedStandSurfaceAmong(
     entityNodes: Map<Entity, THREE.Group>,

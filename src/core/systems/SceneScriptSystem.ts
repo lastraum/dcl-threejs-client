@@ -577,6 +577,11 @@ export class SceneScriptSystem {
       }
     }
 
+    if (animatedPhys === null && feet && nodes && this.gltfColliders) {
+      const staticUnder = this.gltfColliders.findStaticStandSurfaceNearFeet(nodes, feet)
+      if (staticUnder !== null) animatedPhys = GLTF_COLLIDER_ENTITY_BASE + staticUnder
+    }
+
     this.lastStandSurfacePhys = animatedPhys
     return animatedPhys
   }

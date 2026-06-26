@@ -53,7 +53,6 @@ import type { MovePlayerToRequest, MovePlayerToResponse } from '../../player/mov
 import type { OpenExternalUrlRequest, OpenExternalUrlResponse } from '../../player/openExternalUrl'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/triggerEmote'
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../player/triggerSceneEmote'
-import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import type { AssetCache } from '../../rendering/AssetCache'
 import type { SceneHost } from '../../rendering/SceneHost'
 import type { PlayerMirrorIdentity } from '../../bridge/playerMirrorIdentity'
@@ -222,10 +221,12 @@ export class SceneScriptSystem {
   private pointerDeliverFailWatchdog: ReturnType<typeof setTimeout> | null = null
   /** Click flush pending — cleared on pointer-deliver-done. */
   private pointerAwaitingWorkerApply = false
-  /** Last inject payload — retried when worker ack stalls. */
-  private lastInjectPayload: InjectPointerClickBody | null = null
   /** True after one watchdog retry — avoids infinite inject loops. */
   private pointerDeliverRetried = false
+  /** Plant watering / onUpdate can exceed 400ms — wait before CRDT-only retry. */
+  private static readonly POINTER_DELIVER_STALL_MS = 800
+  private static readonly POINTER_DELIVER_FAIL_MS = 2_500
+  private static readonly POINTER_DELIVER_FAIL_AFTER_RETRY_MS = 1_500
 
   private logPointer(...parts: unknown[]): void {
     if (POINTER_VERBOSE) console.log('[pointer]', ...parts)
@@ -1681,7 +1682,11 @@ export class SceneScriptSystem {
   /** MatrixWorld + collider pose sync immediately before pointer raycast. */
   preparePointerRaycast(): void {
     this.flushSceneGraphMatrices()
-    this.syncCollisionPoses()
+    if (this.hasColliderWorkPending()) {
+      this.syncCollision()
+    } else {
+      this.syncCollisionPoses()
+    }
   }
 
   private flushTriggerStructureIfDirty(): void {
@@ -2023,7 +2028,6 @@ export class SceneScriptSystem {
 
     const inject = this.pointerEvents?.consumeInjectPayload()
     if (inject) {
-      this.lastInjectPayload = inject
       this.logPointer(
         `posting inject-pointer-click entity=${inject.entity} button=${inject.button} ts=${inject.downTimestamp}/${inject.upTimestamp}`
       )
@@ -2058,14 +2062,30 @@ export class SceneScriptSystem {
     this.finishPointerDelivery('pointer-deliver-done')
   }
 
+  /**
+   * Worker onUpdate may publish transform diffs (plant growth) while delivery is in flight.
+   * Apply them + sync CL_POINTER colliders before the next click raycast.
+   */
+  private reconcilePointerCollisionAfterDelivery(): void {
+    this.consumeSyncFrameTransforms()
+    this.flushSceneGraphMatrices()
+    if (this.hasColliderWorkPending()) {
+      this.syncCollision()
+    } else {
+      this.syncCollisionPoses()
+    }
+    this.refreshPointerTargets()
+    this.collidersCookCallback?.()
+  }
+
   /** Clear pointer flush state and resume worker scene ticks after delivery (idempotent). */
   private finishPointerDelivery(source: string): void {
     if (!this.pointerAwaitingWorkerApply && !this.pointerDeliverAwaitingAck) return
     clientDebugLog.log('pointer', `delivery complete — ${source}`, { alsoConsole: false })
     this.pointerAwaitingWorkerApply = false
-    this.lastInjectPayload = null
     this.pointerDeliverRetried = false
     this.clearPointerDeliverWatchdog()
+    this.reconcilePointerCollisionAfterDelivery()
     this.proactiveTweenPushUntil = performance.now() + SceneScriptSystem.PROACTIVE_TWEEN_PUSH_MS
     this.worker?.postMessage({ type: 'pause-scene-ticks', paused: false } satisfies MainToWorker)
   }
@@ -2079,22 +2099,25 @@ export class SceneScriptSystem {
     this.finishPointerDelivery('pointer-delivery-failed')
   }
 
-  /** One retry when inject + direct CRDT stall; no infinite inject loop. */
+  /** One CRDT-only retry when worker onUpdate stalls; never re-inject (double-fires scene clicks). */
   private recoverStalledPointerDelivery(): void {
     if (!this.pointerDeliverAwaitingAck || !this.worker) return
     if (this.pointerDeliverRetried) return
     this.pointerDeliverRetried = true
-    console.warn('[pointer]', 'recovering stalled pointer delivery — single retry inject/CRDT')
-    if (this.lastInjectPayload) {
-      this.worker.postMessage({
-        type: 'inject-pointer-click',
-        body: this.lastInjectPayload
-      } satisfies MainToWorker)
-    }
+    console.warn('[pointer]', 'recovering stalled pointer delivery — CRDT retry only (no re-inject)')
     this.deliverPointerCrdtDirect()
+    this.armPointerDeliverWatchdog(
+      'pointer — no worker pointer-deliver-done after CRDT retry',
+      SceneScriptSystem.POINTER_DELIVER_FAIL_AFTER_RETRY_MS,
+      false
+    )
   }
 
-  private armPointerDeliverWatchdog(detail: string): void {
+  private armPointerDeliverWatchdog(
+    detail: string,
+    failAfterMs: number = SceneScriptSystem.POINTER_DELIVER_FAIL_MS,
+    armStallWatchdog = true
+  ): void {
     if (this.pointerDeliverWatchdog) {
       clearTimeout(this.pointerDeliverWatchdog)
       this.pointerDeliverWatchdog = null
@@ -2103,15 +2126,17 @@ export class SceneScriptSystem {
       clearTimeout(this.pointerDeliverFailWatchdog)
       this.pointerDeliverFailWatchdog = null
     }
-    this.pointerDeliverWatchdog = setTimeout(() => {
-      if (!this.pointerDeliverAwaitingAck) return
-      console.error('[pointer]', `pointer deliver stalled — ${detail}`)
-      this.recoverStalledPointerDelivery()
-    }, 400)
+    if (armStallWatchdog) {
+      this.pointerDeliverWatchdog = setTimeout(() => {
+        if (!this.pointerDeliverAwaitingAck) return
+        console.error('[pointer]', `pointer deliver stalled — ${detail}`)
+        this.recoverStalledPointerDelivery()
+      }, SceneScriptSystem.POINTER_DELIVER_STALL_MS)
+    }
     this.pointerDeliverFailWatchdog = setTimeout(() => {
       if (!this.pointerDeliverAwaitingAck) return
       this.failPointerDelivery('no worker pointer-deliver-done after retry')
-    }, 1200)
+    }, failAfterMs)
   }
 
   private clearPointerDeliverWatchdog(): void {

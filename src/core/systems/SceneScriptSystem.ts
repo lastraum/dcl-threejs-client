@@ -1635,7 +1635,7 @@ export class SceneScriptSystem {
   /** Fold the latest projection decode batch into the render-frame diff accumulator. */
   private foldProjectionChanges(): void {
     const { PlayerEntity, CameraEntity, RootEntity } = this.view
-    const { TriggerArea, Transform, Billboard, MeshCollider, GltfContainer } = this.readComponents
+    const { TriggerArea, Transform, Billboard } = this.readComponents
 
     for (const change of this.projection.changes) {
       if (change.entity === PlayerEntity || change.entity === CameraEntity || change.entity === RootEntity) {
@@ -1647,25 +1647,6 @@ export class SceneScriptSystem {
         (change.componentId === Transform.componentId && TriggerArea.has(change.entity))
       ) {
         this.triggerStructureDirty = true
-      }
-
-      // Post-play-ready only — hydration/composite spawn floods transforms and must not
-      // slide or ack world-baked colliders before spawn seal (boot walk/pointer regression).
-      if (this.playReadyNotified) {
-        if (change.componentId === Transform.componentId && change.kind !== 'delete') {
-          if (MeshCollider.has(change.entity) || GltfContainer.has(change.entity)) {
-            this.colliderPoseDirty.add(change.entity)
-          }
-          this.markDescendantColliderPosesDirty(change.entity)
-        }
-
-        if (
-          change.componentId === GltfContainer.componentId ||
-          change.componentId === MeshCollider.componentId
-        ) {
-          this.colliderStructureDirty.add(change.entity)
-          this.pointerStructureDirty = true
-        }
       }
 
       if (change.componentId === Billboard.componentId) {

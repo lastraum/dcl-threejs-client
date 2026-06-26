@@ -21,7 +21,8 @@ import {
   feetDclToPlayerEntityPosition,
   feetThreeFromPlayerEntityDcl,
   playerEntityPositionFromThreeFeet,
-  playerEntityPositionToFeetDcl
+  playerEntityPositionToFeetDcl,
+  resolveMovePlayerToTargetPlayerEntity
 } from './dclPlayerEntity'
 import { clampToWalkBounds, type PlayerWalkBounds } from './SceneBounds'
 import { normalizeAngle } from '../network/comms/movementCompressed'
@@ -349,10 +350,14 @@ export class PlayerSystem {
     if (!pos) return false
 
     const currentPlayerEntityDcl = this.getPlayerEntityPositionDcl()
-    const targetPlayerEntityDcl = new THREE.Vector3(
-      pos.x ?? currentPlayerEntityDcl.x,
-      pos.y ?? currentPlayerEntityDcl.y,
-      pos.z ?? currentPlayerEntityDcl.z
+    const targetPlayerEntityDcl = resolveMovePlayerToTargetPlayerEntity(
+      new THREE.Vector3(
+        pos.x ?? currentPlayerEntityDcl.x,
+        pos.y ?? currentPlayerEntityDcl.y,
+        pos.z ?? currentPlayerEntityDcl.z
+      ),
+      currentPlayerEntityDcl,
+      request.avatarTarget
     )
     const targetFeetDcl = playerEntityPositionToFeetDcl(targetPlayerEntityDcl)
     clampToWalkBounds(targetFeetDcl, this.walkBounds)

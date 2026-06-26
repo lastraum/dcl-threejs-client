@@ -58,6 +58,7 @@ import type { SceneHost } from '../../rendering/SceneHost'
 import type { PlayerMirrorIdentity } from '../../bridge/playerMirrorIdentity'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import { skipTheatreSceneScript, useOneWayCrdt } from '../../client/devFlags'
+import { mirrorSceneBundle } from '../../dev/mirrorSceneBundle'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
 import { TriggerAreaSystem } from '../../input/TriggerAreaSystem'
 import { isTriggerAreaVerbose } from '../../input/triggerAreaConfig'
@@ -951,6 +952,14 @@ export class SceneScriptSystem {
       fetch(scriptUrl).then(async (res) => {
         if (!res.ok) throw new Error(`Scene script fetch failed (${res.status}): ${scriptUrl}`)
         const code = await res.text()
+        mirrorSceneBundle({
+          entityId: scene.entityId ?? scene.commsPointer,
+          commsPointer: scene.commsPointer,
+          title: scene.title,
+          hash: mainFile.hash,
+          scriptUrl,
+          code
+        })
         this.revokeScriptBlobUrl()
         this.scriptBlobUrl = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }))
         console.info(
@@ -1149,7 +1158,9 @@ export class SceneScriptSystem {
       return
     }
     if (msg.type === 'move-player-to') {
+      this.refreshClientPosesFromProvider()
       const success = this.movePlayerHandler?.(msg.body) ?? false
+      this.pushReservedTransformsToWorker()
       this.worker?.postMessage({
         type: 'move-player-to-response',
         id: msg.id,
@@ -1676,6 +1687,7 @@ export class SceneScriptSystem {
 
   /** MatrixWorld + collider pose sync immediately before pointer raycast. */
   preparePointerRaycast(): void {
+    this.consumeSyncFrameTransforms()
     this.flushSceneGraphMatrices()
     // Full syncCollision runs on the async frame (World.applyPhysicsColliders) — not here.
     // Per-raycast incremental sync during composite spawn corrupted sealed boot colliders.
@@ -2178,7 +2190,6 @@ export class SceneScriptSystem {
     this.refreshClientPosesFromProvider()
     if (!this.clientPlayerPose || !this.clientCameraPose) return
     this.reserved.prepareRendererRoundTrip(this.clientPlayerPose, this.clientCameraPose)
-    this.syncProjectionReservedTransforms()
   }
 
   private refreshClientPosesFromProvider(): void {
@@ -2192,19 +2203,21 @@ export class SceneScriptSystem {
     this.clientPlayerPose = player
     this.clientCameraPose = camera
     this.reserved.prepareRendererRoundTrip(player, camera)
-    this.syncProjectionReservedTransforms()
   }
 
-  /** Keep projection player/camera LWW ahead of stale worker inbound (avoids spawn snap on click). */
-  private syncProjectionReservedTransforms(): void {
-    const { Transform } = this.readComponents
-    const { PlayerEntity, CameraEntity } = this.view
-    if (Transform.has(PlayerEntity)) {
-      this.projection.setRenderer(Transform.componentId, PlayerEntity, Transform.get(PlayerEntity))
-    }
-    if (Transform.has(CameraEntity)) {
-      this.projection.setRenderer(Transform.componentId, CameraEntity, Transform.get(CameraEntity))
-    }
+  /** After movePlayerTo — sync worker PlayerEntity before the scene reads it again. */
+  private pushReservedTransformsToWorker(): void {
+    if (!this.worker || !this.running) return
+    this.refreshClientPosesFromProvider()
+    if (!this.clientPlayerPose || !this.clientCameraPose) return
+    this.reserved.prepareRendererRoundTrip(this.clientPlayerPose, this.clientCameraPose)
+    const bytes = this.encodeRendererCrdt()
+    if (!bytes?.byteLength) return
+    const copy = bytes.slice()
+    this.worker.postMessage(
+      { type: 'renderer-inbound-deliver', data: [copy] } satisfies MainToWorker,
+      [copy.buffer]
+    )
   }
 
   /** Fire network fetches for every GLB in the scene content manifest — downloads only, no attach. */

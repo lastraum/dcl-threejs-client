@@ -70,6 +70,8 @@ let rendererInboundApply: ((chunks: Uint8Array[]) => void) | null = null
 let oneWayCrdtEnabled = false
 /** True after scene-play-ready — until then keep boot/hydration on round-trip CRDT. */
 let oneWayCrdtRuntime = false
+/** Coalesce one-way empty nudges to one post per microtask. */
+let oneWayEmptyNudgeCoalesced = false
 let engineApiEvents: EngineApiEventState | null = null
 let sceneEngine: import('@dcl/ecs').IEngine | null = null
 let sceneRunning = false
@@ -489,12 +491,7 @@ function deliverRendererInboundGeneral(chunks: Uint8Array[]): void {
   const needsSceneTick =
     raycastPuts > 0 || videoPlayerPuts > 0 || triggerAppends > 0 || pointerAppends > 0 || videoAppends > 0
   if (needsSceneTick) {
-    void sceneEngine.update(0).catch((err) => {
-      workerLog(
-        'error',
-        `[sceneWorker] renderer-inbound-deliver engine tick failed — ${err instanceof Error ? err.message : String(err)}`
-      )
-    })
+    scheduleBatchedSceneEngineTick()
     return
   }
   if (tweenPuts > 0) {
@@ -933,6 +930,13 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
   }
   const copy = data.slice()
   if (oneWayCrdtEnabled && oneWayCrdtRuntime && !sceneBootInProgress) {
+    if (copy.byteLength === 0) {
+      if (oneWayEmptyNudgeCoalesced) return Promise.resolve([])
+      oneWayEmptyNudgeCoalesced = true
+      queueMicrotask(() => {
+        oneWayEmptyNudgeCoalesced = false
+      })
+    }
     const msg = { type: 'crdt-outbound', data: copy } satisfies SceneWorkerOutbound
     if (copy.byteLength === 0) ctx.postMessage(msg)
     else ctx.postMessage(msg, [copy.buffer])

@@ -133,6 +133,9 @@ export class SceneScriptSystem {
   private oneWayCrdtLogged = false
   /** Phase C — serializes async outbound apply + inbound deliver. */
   private crdtOutboundSerial: Promise<void> = Promise.resolve()
+  /** Phase C slice 2 — coalesce worker outbounds per microtask before one encode/deliver. */
+  private crdtOutboundPending: Uint8Array[] = []
+  private crdtOutboundFlushQueued = false
   readonly reserved = new ReservedEntitiesSync(this.projection, this.readComponents, SDK_RESERVED)
   collision: CollisionSystem | null = null
   gltfColliders: GltfColliderExtractor | null = null
@@ -1235,14 +1238,7 @@ export class SceneScriptSystem {
       return
     }
     if (msg.type === 'crdt-outbound') {
-      this.crdtOutboundSerial = this.crdtOutboundSerial
-        .then(() => this.handleCrdtOutbound(msg.data))
-        .catch((err) => {
-          console.error(
-            '[scene]',
-            `crdt-outbound handler failed — ${err instanceof Error ? err.message : String(err)}`
-          )
-        })
+      this.enqueueCrdtOutbound(msg.data)
       return
     }
     if (msg.type === 'crdt-send') {
@@ -1299,10 +1295,30 @@ export class SceneScriptSystem {
     }
   }
 
+  private enqueueCrdtOutbound(data: Uint8Array): void {
+    this.crdtOutboundPending.push(data)
+    if (this.crdtOutboundFlushQueued) return
+    this.crdtOutboundFlushQueued = true
+    queueMicrotask(() => {
+      this.crdtOutboundFlushQueued = false
+      const batch = this.crdtOutboundPending
+      this.crdtOutboundPending = []
+      if (!batch.length) return
+      this.crdtOutboundSerial = this.crdtOutboundSerial
+        .then(() => this.handleCrdtOutboundBatch(batch))
+        .catch((err) => {
+          console.error(
+            '[scene]',
+            `crdt-outbound handler failed — ${err instanceof Error ? err.message : String(err)}`
+          )
+        })
+    })
+  }
+
   /** Phase C — worker outbound without blocking on `crdt-response`; inbound via `renderer-inbound-deliver`. */
-  private async handleCrdtOutbound(data: Uint8Array): Promise<void> {
+  private async handleCrdtOutboundBatch(batch: Uint8Array[]): Promise<void> {
     if (!this.playReadyNotified) return
-    const inbound = await this.processWorkerOutboundCrdt(data)
+    const inbound = await this.processWorkerOutboundCrdtBatch(batch)
     // Do not syncRenderer per outbound — plaza engine ticks flood main (~15/s) and
     // each full bridge drain was ~15 FPS. Walkability is kept by round-trip until
     // play-ready + onAsyncFrame syncRenderer / syncPlayerMotionFrame pose slides.
@@ -1328,12 +1344,14 @@ export class SceneScriptSystem {
     this.worker.postMessage({ type: 'renderer-inbound-deliver', data: copies } satisfies MainToWorker, transfer)
   }
 
-  private async processWorkerOutboundCrdt(data: Uint8Array): Promise<Uint8Array[]> {
-    const isNudge = !data?.byteLength
+  private async processWorkerOutboundCrdtBatch(batch: Uint8Array[]): Promise<Uint8Array[]> {
+    const hasPayload = batch.some((data) => data?.byteLength > 0)
     try {
       this.prepareRendererOutboundState()
-      this.projection.applyIncoming(data)
-      this.foldProjectionChanges()
+      for (const data of batch) {
+        this.projection.applyIncoming(data)
+        this.foldProjectionChanges()
+      }
 
       if (this.pointerAwaitingWorkerApply) {
         this.videoPlayerBridge?.notifyUserPointerDelivered()
@@ -1352,7 +1370,7 @@ export class SceneScriptSystem {
       const encoderBytes = this.encodeRendererCrdt()
       const inbound = encoderBytes ? [encoderBytes] : []
 
-      if (isNudge && !inbound.length) return []
+      if (!hasPayload && !inbound.length) return []
       return inbound
     } catch (err) {
       console.error(

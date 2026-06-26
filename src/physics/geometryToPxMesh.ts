@@ -5,6 +5,13 @@ import {
   physxCookStorageKey,
   queuePhysxCookPersist,
 } from './physxCookByteCache'
+import {
+  cookGeometryToStream,
+  getMainThreadCookStats,
+  pmeshFromWorkerStream,
+  resetMainThreadCookStats,
+  tryLoadPersistedCook
+} from './geometryMainThreadCook'
 import { isCookedMeshValid } from './physxCookStream'
 import { isPhysxCookWorkerEnabled, takeCompletedPhysxCookStream } from './physxCookPool'
 
@@ -22,25 +29,6 @@ let nocacheSeq = 0
 let sessionCookHits = 0
 let sessionCookMisses = 0
 let sessionWorkerStreamHits = 0
-
-type MainCookModule = typeof import('./geometryMainThreadCook')
-let mainCookModule: MainCookModule | null = null
-let mainCookLoad: Promise<MainCookModule> | null = null
-
-export function preloadMainThreadCookModule(): Promise<void> {
-  if (mainCookModule) return Promise.resolve()
-  if (!mainCookLoad) {
-    mainCookLoad = import('./geometryMainThreadCook').then((mod) => {
-      mainCookModule = mod
-      return mod
-    })
-  }
-  return mainCookLoad.then(() => undefined)
-}
-
-function mainCook(): MainCookModule | null {
-  return mainCookModule
-}
 
 export type GeometryToPxMeshOptions = {
   /** Share cooked meshes by geometry signature. Disable for world-baked trimesh (unique placement per instance). */
@@ -169,11 +157,10 @@ export function geometryToPxMesh(
 
   let pmesh: unknown = null
   let streamBytes: ArrayBuffer | null = null
-  const cookMod = mainCook()
 
   const loadPersisted = (): void => {
-    if (pmesh || !options?.physics || !cookMod) return
-    const persisted = cookMod.tryLoadPersistedCook(options.physics, streamLookupKey, convex)
+    if (pmesh || !options?.physics) return
+    const persisted = tryLoadPersistedCook(options.physics, streamLookupKey, convex)
     if (!persisted) return
     pmesh = persisted
     if (useCache) {
@@ -185,10 +172,10 @@ export function geometryToPxMesh(
 
   if (options?.preferPersistedCook) loadPersisted()
 
-  if (!pmesh && !options?.skipWorkerStream && isPhysxCookWorkerEnabled() && options?.physics && cookMod) {
+  if (!pmesh && !options?.skipWorkerStream && isPhysxCookWorkerEnabled() && options?.physics) {
     const workerStream = takeCompletedPhysxCookStream(streamLookupKey)
     if (workerStream) {
-      pmesh = cookMod.pmeshFromWorkerStream(options.physics, workerStream, convex)
+      pmesh = pmeshFromWorkerStream(options.physics, workerStream, convex)
       if (pmesh && isCookedMeshValid(pmesh, convex)) {
         streamBytes = workerStream
         sessionWorkerStreamHits++
@@ -202,8 +189,8 @@ export function geometryToPxMesh(
 
   if (!pmesh && !options?.preferPersistedCook) loadPersisted()
 
-  if (!pmesh && cookMod) {
-    const cooked = cookMod.cookGeometryToStream(cookingParams, geo, convex)
+  if (!pmesh) {
+    const cooked = cookGeometryToStream(cookingParams, geo, convex)
     pmesh = cooked.pmesh
     streamBytes = cooked.streamBytes
   }
@@ -228,7 +215,7 @@ export function resetGeometryCookCacheStats(): void {
   sessionCookHits = 0
   sessionCookMisses = 0
   sessionWorkerStreamHits = 0
-  mainCook()?.resetMainThreadCookStats()
+  resetMainThreadCookStats()
 }
 
 export function getGeometryCookCacheStats(): {
@@ -240,7 +227,7 @@ export function getGeometryCookCacheStats(): {
   hitRate: number
 } {
   const total = sessionCookHits + sessionCookMisses
-  const mainStats = mainCook()?.getMainThreadCookStats()
+  const mainStats = getMainThreadCookStats()
   return {
     hits: sessionCookHits,
     misses: sessionCookMisses,

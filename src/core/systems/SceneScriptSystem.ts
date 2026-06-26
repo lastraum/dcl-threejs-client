@@ -1301,8 +1301,29 @@ export class SceneScriptSystem {
 
   /** Phase C — worker outbound without blocking on `crdt-response`; inbound via `renderer-inbound-deliver`. */
   private async handleCrdtOutbound(data: Uint8Array): Promise<void> {
+    if (!this.playReadyNotified) return
     const inbound = await this.processWorkerOutboundCrdt(data)
+    await this.drainOutboundProjectionToRenderer()
     this.postRendererInboundDeliver(inbound)
+    if (!this.oneWayCrdtLogged) {
+      this.oneWayCrdtLogged = true
+      clientDebugLog.log(
+        'projection',
+        'one-way CRDT ACTIVE — worker outbound async, inbound via renderer-inbound-deliver (?onewaycrdt)',
+        { level: 'success', alsoConsole: true }
+      )
+    }
+  }
+
+  /** Apply worker outbound projection diff before physics — avoids walk-through on composite drift. */
+  private async drainOutboundProjectionToRenderer(): Promise<void> {
+    if (!this.pendingDiff.size) return
+    await this.syncRenderer()
+    if (this.hasColliderWorkPending()) {
+      this.syncCollision()
+    }
+    this.flushSceneGraphMatrices()
+    this.syncCollisionPoses()
   }
 
   private postRendererInboundDeliver(chunks: Uint8Array[]): void {
@@ -1339,15 +1360,6 @@ export class SceneScriptSystem {
       this.prepareRendererOutboundState()
       const encoderBytes = this.encodeRendererCrdt()
       const inbound = encoderBytes ? [encoderBytes] : []
-
-      if (!this.oneWayCrdtLogged) {
-        this.oneWayCrdtLogged = true
-        clientDebugLog.log(
-          'projection',
-          'one-way CRDT ACTIVE — worker outbound async, inbound via renderer-inbound-deliver (?onewaycrdt)',
-          { level: 'success', alsoConsole: true }
-        )
-      }
 
       if (isNudge && !inbound.length) return []
       return inbound

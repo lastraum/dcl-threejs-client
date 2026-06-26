@@ -3,7 +3,11 @@ import type { ResolvedScene } from '../dcl/content/types'
 import * as THREE from 'three'
 import { createTerrainModel } from '../dcl/landscape/Worlds/TerrainModel'
 import { getSessionAssetCache, prefetchSceneManifestAssets } from '../rendering/AssetCache'
-import { applyClientPerformanceDefaults, detectPerformanceTier } from '../client/detectPerformanceTier'
+import {
+  applyClientPerformanceDefaults,
+  detectPerformanceTier,
+  resolveEngineTickIntervalMs
+} from '../client/detectPerformanceTier'
 import { SceneHost } from '../rendering/SceneHost'
 
 import { GLTF_COLLIDER_ENTITY_BASE } from '../collision/GltfColliderExtractor'
@@ -1787,7 +1791,10 @@ export class World {
           '[World] hydration timed out — post-boot near-player collider catch-up active (60s)'
         )
       }
-      this.sceneScript.notifyPlayReady()
+      this.sceneScript.notifyPlayReady({
+        plazaScale: finalGltfCount >= 200,
+        engineTickIntervalMs: resolveEngineTickIntervalMs(this.sceneScript.getPerformanceTier())
+      })
       if (platformMotionDebug.isEnabled() && this.player) {
         const feet = this.player.getWorldPosition()
         const origin = this.comms.getSceneOrigin()

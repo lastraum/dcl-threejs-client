@@ -2112,6 +2112,10 @@ export class SceneScriptSystem {
     this.performanceTier = tier
   }
 
+  getPerformanceTier(): PerformanceTier {
+    return this.performanceTier
+  }
+
   /** Full pause — pointer delivery only; blocks engine.update (do not use during hydration). */
   setSceneWorkerTicksPaused(paused: boolean): void {
     this.worker?.postMessage({ type: 'pause-scene-ticks', paused } satisfies MainToWorker)
@@ -2126,7 +2130,7 @@ export class SceneScriptSystem {
   }
 
   /** Scene + PhysX colliders ready — throttle worker onUpdate (called from World after boot cook). */
-  notifyPlayReady(): void {
+  notifyPlayReady(options?: { plazaScale?: boolean; engineTickIntervalMs?: number }): void {
     this.bridgeSyncEvery = BRIDGE_ECS_SYNC_RUNTIME
     this.setSceneWorkerOnUpdatePaused(false)
     this.setSceneWorkerTicksPaused(false)
@@ -2134,7 +2138,9 @@ export class SceneScriptSystem {
     this.playReadyNotified = true
     this.worker?.postMessage({
       type: 'scene-play-ready',
-      performanceTier: this.performanceTier
+      performanceTier: this.performanceTier,
+      plazaScale: options?.plazaScale,
+      engineTickIntervalMs: options?.engineTickIntervalMs
     } satisfies MainToWorker)
   }
 

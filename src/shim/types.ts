@@ -208,7 +208,14 @@ export type MainToWorker =
   | { type: 'pause-scene-ticks'; paused?: boolean }
   /** Hydration — skip exports.onUpdate only; engine.update still runs for composite CRDT. */
   | { type: 'pause-scene-onupdate'; paused?: boolean }
-  | { type: 'scene-play-ready'; performanceTier?: PerformanceTier }
+  | {
+      type: 'scene-play-ready'
+      performanceTier?: PerformanceTier
+      /** Genesis-scale composite — start with relaxed onUpdate before adaptive abort kicks in. */
+      plazaScale?: boolean
+      /** Override engine tick interval (ms) — from `?scenetick=` on main. */
+      engineTickIntervalMs?: number
+    }
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
   | { type: 'tween-state-deliver'; data: Uint8Array[] }
   | { type: 'renderer-append-deliver'; data: Uint8Array[] }

@@ -169,9 +169,14 @@ function recordSceneUpdateAbort(): void {
   }
 }
 
-function applyPlayReadyTiming(tier: PerformanceTier | undefined, reason: string): void {
+function applyPlayReadyTiming(
+  tier: PerformanceTier | undefined,
+  reason: string,
+  options?: { plazaScale?: boolean; engineTickOverrideMs?: number }
+): void {
   const low = tier === 'low' || adaptiveLowPerfMode
-  const medium = !low && tier === 'medium'
+  const plazaMedium = !low && options?.plazaScale === true && tier === 'high'
+  const medium = !low && (tier === 'medium' || plazaMedium)
   fullSceneOnUpdateIntervalMs = low
     ? FULL_SCENE_ONUPDATE_INTERVAL_PLAY_LOW_MS
     : medium
@@ -182,14 +187,23 @@ function applyPlayReadyTiming(tier: PerformanceTier | undefined, reason: string)
     : medium
       ? SCENE_UPDATE_ABORT_PLAY_MEDIUM_MS
       : SCENE_UPDATE_ABORT_PLAY_MS
-  engineTickIntervalMs = low
-    ? ENGINE_TICK_PLAY_LOW_MS
-    : medium
-      ? ENGINE_TICK_PLAY_MEDIUM_MS
-      : ENGINE_TICK_PLAY_HIGH_MS
+  if (
+    options?.engineTickOverrideMs !== undefined &&
+    options.engineTickOverrideMs >= 16 &&
+    options.engineTickOverrideMs <= 100
+  ) {
+    engineTickIntervalMs = options.engineTickOverrideMs
+  } else {
+    engineTickIntervalMs = low
+      ? ENGINE_TICK_PLAY_LOW_MS
+      : medium
+        ? ENGINE_TICK_PLAY_MEDIUM_MS
+        : ENGINE_TICK_PLAY_HIGH_MS
+  }
   workerLog(
     'log',
-    `[sceneWorker] play-ready timing (${reason}) — tier=${tier ?? 'default'} adaptiveLow=${adaptiveLowPerfMode} ` +
+    `[sceneWorker] play-ready timing (${reason}) — tier=${tier ?? 'default'} adaptiveLow=${adaptiveLowPerfMode}` +
+      `${plazaMedium ? ' plazaScale=true' : ''} ` +
       `engineTick ${engineTickIntervalMs}ms, onUpdate interval ${fullSceneOnUpdateIntervalMs}ms, abort ${sceneUpdateAbortMs}ms`
   )
 }
@@ -1298,9 +1312,11 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
 async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   if (msg.type === 'scene-play-ready') {
     playReadyPerformanceTier = msg.performanceTier
-    applyPlayReadyTiming(msg.performanceTier, 'scene-play-ready')
+    applyPlayReadyTiming(msg.performanceTier, 'scene-play-ready', {
+      plazaScale: msg.plazaScale,
+      engineTickOverrideMs: msg.engineTickIntervalMs
+    })
     sceneTickIntervalMs = SCENE_LOOP_POLL_MS
-  engineTickIntervalMs = SCENE_TICK_BOOT_INTERVAL_MS
     return
   }
   if (msg.type === 'crdt-response') {

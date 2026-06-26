@@ -71,6 +71,11 @@ const GROUND_COYOTE_SECONDS = 0.15
 const AIR_JUMP_DELAY = 0.2
 /** Scene has no spawnPoints / default y=0 — start slightly above and let CCT fall. */
 const DEFAULT_SPAWN_FEET_Y = 1
+/**
+ * When `avatarTarget` is set and the player is already within this horizontal distance of
+ * `newRelativePosition`, RestrictedActions is look-only (Genesis planters / in-range interact).
+ */
+const MOVE_LOOK_ONLY_HORIZONTAL_EPS = 0.2
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v))
@@ -346,6 +351,9 @@ export class PlayerSystem {
 
     const avatarTarget = request.avatarTarget
     const from = this.root.position.clone()
+    const horizontalDelta = Math.hypot(target.x - from.x, target.z - from.z)
+    const lookOnly =
+      avatarTarget !== undefined && horizontalDelta < MOVE_LOOK_ONLY_HORIZONTAL_EPS
     /** Face target from current feet — not destination (movePlayerTo look-at parity). */
     if (avatarTarget) {
       this.applyAvatarLookTarget(from, avatarTarget)
@@ -362,8 +370,10 @@ export class PlayerSystem {
     }
 
     const duration = request.duration ?? 0
-    if (duration <= 0) {
-      this.teleportTo(target)
+    if (duration <= 0 || lookOnly) {
+      if (!lookOnly) {
+        this.teleportTo(target)
+      }
       this.moveTask = null
       this.scenePositionLock = true
       return true

@@ -346,8 +346,7 @@ export class PlayerSystem {
 
     const avatarTarget = request.avatarTarget
     const from = this.root.position.clone()
-    const horizontalDelta = Math.hypot(target.x - from.x, target.z - from.z)
-    /** Face target from the avatar's current feet — not the destination (watering = rotate in place). */
+    /** Face target from current feet — not destination (movePlayerTo look-at parity). */
     if (avatarTarget) {
       this.applyAvatarLookTarget(from, avatarTarget)
     }
@@ -364,13 +363,12 @@ export class PlayerSystem {
 
     const duration = request.duration ?? 0
     if (duration <= 0) {
-      if (!avatarTarget || horizontalDelta >= 0.2) {
-        this.teleportTo(target)
-      }
+      this.teleportTo(target)
       this.moveTask = null
       this.scenePositionLock = true
       return true
     }
+
     let travelYaw: number | undefined
     if (!avatarTarget) {
       const dx = target.x - from.x
@@ -457,13 +455,8 @@ export class PlayerSystem {
     }
 
     if (this.scenePositionLock && !breakSceneHold) {
-      const pinX = this.root.position.x
-      const pinZ = this.root.position.z
       this.syncWireYawFromAvatar()
       this.physics.step(delta)
-      // Watering / scene emotes hold position — stale post-growth colliders must not shove the CCT.
-      this.physics.positionOut.x = pinX
-      this.physics.positionOut.z = pinZ
       this.root.position.copy(this.physics.positionOut)
       this.syncNameTag()
       this.avatar?.setYaw(this.playerYaw)

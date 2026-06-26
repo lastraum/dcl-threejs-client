@@ -217,16 +217,11 @@ export class SceneScriptSystem {
   private compileProgressTimer: ReturnType<typeof setInterval> | null = null
   /** Set when pointer-crdt-deliver is posted; cleared on pointer-deliver-done from worker. */
   private pointerDeliverAwaitingAck = false
-  private pointerDeliverWatchdog: ReturnType<typeof setTimeout> | null = null
   private pointerDeliverFailWatchdog: ReturnType<typeof setTimeout> | null = null
   /** Click flush pending — cleared on pointer-deliver-done. */
   private pointerAwaitingWorkerApply = false
-  /** True after one watchdog retry — avoids infinite inject loops. */
-  private pointerDeliverRetried = false
-  /** Plant watering / onUpdate can exceed 800ms — extend wait; never re-post CRDT (double-deliver). */
-  private static readonly POINTER_DELIVER_STALL_MS = 800
-  private static readonly POINTER_DELIVER_FAIL_MS = 2_500
-  private static readonly POINTER_DELIVER_FAIL_EXTENDED_MS = 4_500
+  /** Worker pointer engine tick abort is 4000ms — fail if deliver-done never arrives. */
+  private static readonly POINTER_DELIVER_FAIL_MS = 5_000
 
   private logPointer(...parts: unknown[]): void {
     if (POINTER_VERBOSE) console.log('[pointer]', ...parts)
@@ -2040,8 +2035,7 @@ export class SceneScriptSystem {
       return
     }
     this.pointerDeliverAwaitingAck = true
-    this.pointerDeliverRetried = false
-    this.armPointerDeliverWatchdog('pointer — no worker pointer-deliver-done (inject or crdt-deliver)')
+    this.armPointerDeliverWatchdog()
 
     const inject = this.pointerEvents?.consumeInjectPayload()
     if (inject) {
@@ -2113,7 +2107,6 @@ export class SceneScriptSystem {
     if (!this.pointerAwaitingWorkerApply && !this.pointerDeliverAwaitingAck) return
     clientDebugLog.log('pointer', `delivery complete — ${source}`, { alsoConsole: false })
     this.pointerAwaitingWorkerApply = false
-    this.pointerDeliverRetried = false
     this.clearPointerDeliverWatchdog()
     await this.reconcilePointerCollisionAfterDelivery()
     this.proactiveTweenPushUntil = performance.now() + SceneScriptSystem.PROACTIVE_TWEEN_PUSH_MS
@@ -2133,50 +2126,18 @@ export class SceneScriptSystem {
     this.finishPointerDelivery('pointer-delivery-failed')
   }
 
-  /** Extend ack timeout — worker onUpdate (plant growth) can exceed 800ms; never re-post CRDT. */
-  private recoverStalledPointerDelivery(): void {
-    if (!this.pointerDeliverAwaitingAck || !this.worker) return
-    if (this.pointerDeliverRetried) return
-    this.pointerDeliverRetried = true
-    console.warn('[pointer]', 'pointer delivery still in flight — extending ack timeout (no CRDT retry)')
-    this.armPointerDeliverWatchdog(
-      'pointer — no worker pointer-deliver-done after extended wait',
-      SceneScriptSystem.POINTER_DELIVER_FAIL_EXTENDED_MS,
-      false
-    )
-  }
-
-  private armPointerDeliverWatchdog(
-    detail: string,
-    failAfterMs: number = SceneScriptSystem.POINTER_DELIVER_FAIL_MS,
-    armStallWatchdog = true
-  ): void {
-    if (this.pointerDeliverWatchdog) {
-      clearTimeout(this.pointerDeliverWatchdog)
-      this.pointerDeliverWatchdog = null
-    }
+  private armPointerDeliverWatchdog(): void {
     if (this.pointerDeliverFailWatchdog) {
       clearTimeout(this.pointerDeliverFailWatchdog)
       this.pointerDeliverFailWatchdog = null
     }
-    if (armStallWatchdog) {
-      this.pointerDeliverWatchdog = setTimeout(() => {
-        if (!this.pointerDeliverAwaitingAck) return
-        console.error('[pointer]', `pointer deliver stalled — ${detail}`)
-        this.recoverStalledPointerDelivery()
-      }, SceneScriptSystem.POINTER_DELIVER_STALL_MS)
-    }
     this.pointerDeliverFailWatchdog = setTimeout(() => {
       if (!this.pointerDeliverAwaitingAck) return
-      this.failPointerDelivery('no worker pointer-deliver-done after retry')
-    }, failAfterMs)
+      this.failPointerDelivery('no worker pointer-deliver-done')
+    }, SceneScriptSystem.POINTER_DELIVER_FAIL_MS)
   }
 
   private clearPointerDeliverWatchdog(): void {
-    if (this.pointerDeliverWatchdog) {
-      clearTimeout(this.pointerDeliverWatchdog)
-      this.pointerDeliverWatchdog = null
-    }
     if (this.pointerDeliverFailWatchdog) {
       clearTimeout(this.pointerDeliverFailWatchdog)
       this.pointerDeliverFailWatchdog = null

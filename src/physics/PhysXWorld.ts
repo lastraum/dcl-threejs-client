@@ -616,7 +616,10 @@ export class PhysXWorld {
         if (!forceAll && this.staticPoseFp.get(desc.entity) === poseFp) continue
         const actor = this.staticActors.get(desc.entity)
         if (!actor || this.actorWorldBaked.get(desc.entity)) continue
-        if (!this.isPoseSlideSafe(actor, desc)) continue
+        if (!this.isPoseSlideSafe(actor, desc)) {
+          if (forceAll) this.invalidateStaticCollider(desc.entity)
+          continue
+        }
         try {
           this.updateMultiShapeActorPose(actor, desc)
           this.staticPoseFp.set(desc.entity, poseFp)

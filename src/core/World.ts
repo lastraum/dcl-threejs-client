@@ -557,22 +557,6 @@ export class World {
         `[World] spawn — no spawnPoints; feet y=1 fallback · parcel=${scene.commsPointer}`
       )
     }
-    await this.player.initCapsule(scene.spawn, walkBounds, this.sceneScript.readComponents, onProgress)
-    this.sceneScript.setSpatialAudioPlayerRoot(() => this.player!.getPlayerRoot())
-    const spawnStatic = this.physics.staticColliderCount
-    const spawnGltf = this.physics.gltfStaticActorCount
-    const gltfStats = this.sceneScript.gltfColliders?.getPhysicsExtractionStats()
-    const pos = this.player.getPosition()
-    console.info(
-      `[World] player spawn — static=${spawnStatic} gltfRegistered=${spawnGltf} gltfExtracted=${this.lastGltfColliderCount}` +
-        (gltfStats
-          ? ` shapes(inv=${gltfStats.invisibleShapes} vis=${gltfStats.visibleShapes})`
-          : '') +
-        (pos ? ` feet=(${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})` : '')
-    )
-    this.logBootColliderDiag()
-    this.sceneScript.syncClientEntities(this.player.getEntityPose(), this.player.getCameraEntityPose())
-
     const address = this.session.getAddress()
     const identity = this.session.getAuthIdentity()
     if (address && identity) {
@@ -635,12 +619,32 @@ export class World {
     this.player.setAssetCache(this.assets, scene.realm.contentUrl)
     await this.player.loadAvatar(onProgress)
     this.bindAvatarAttachTargets()
-    // Avatar load overlaps play-ready CRDT — sync poses + register stragglers before pointers.
+    // PhysX simulate(0) before CCT — pose slides that cannot move an actor trigger recook above.
+    await this.sceneScript.yieldForWorkerMessages()
+    await this.sceneScript.syncRendererFull()
+    this.sceneScript.flushSceneGraphMatrices()
+    this.sceneScript.syncCollisionForce()
     this.pushAllColliderPosesToPhysX()
-    this.sceneScript.syncCollision()
     this.reconcileColliderCookQueue()
     await this.drainPendingColliderCooksInitialOnly()
+    this.pushAllColliderPosesToPhysX()
     this.physics.warmStaticScene()
+    await this.player.initCapsule(scene.spawn, walkBounds, this.sceneScript.readComponents, onProgress)
+    this.sceneScript.setSpatialAudioPlayerRoot(() => this.player!.getPlayerRoot())
+    const spawnStatic = this.physics.staticColliderCount
+    const spawnGltf = this.physics.gltfStaticActorCount
+    const gltfStats = this.sceneScript.gltfColliders?.getPhysicsExtractionStats()
+    const pos = this.player.getPosition()
+    console.info(
+      `[World] player spawn — static=${spawnStatic} gltfRegistered=${spawnGltf} gltfExtracted=${this.lastGltfColliderCount}` +
+        (gltfStats
+          ? ` shapes(inv=${gltfStats.invisibleShapes} vis=${gltfStats.visibleShapes})`
+          : '') +
+        (pos ? ` feet=(${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})` : '')
+    )
+    this.logBootColliderDiag()
+    this.sceneScript.syncClientEntities(this.player.getEntityPose(), this.player.getCameraEntityPose())
+    this.physics.invalidateControllerCache()
     this.sceneScript.flushSceneGraphMatrices()
     this.sceneScript.preparePointerRaycast()
     this.sceneScript.refreshPointerTargets()
@@ -1238,11 +1242,22 @@ export class World {
     const descs = this.sceneScript.getAllPhysicsColliderDescs()
     if (!descs.length) return
     const updated = this.physics.applyStaticColliderPoseUpdates(descs, { force: true })
+    this.enqueueUnsyncedColliderCooks()
     if (updated > 0) this.physics.warmStaticScene()
     this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
     if (this.collidersLoadingComplete && !this.spawnColliderSealComplete) {
       console.info(`[World] pushAllColliderPoses — updated=${updated}/${descs.length}`)
     }
+  }
+
+  /** Pose-slide invalidation drops actors — ensure they re-enter the cook queue before spawn. */
+  private enqueueUnsyncedColliderCooks(): void {
+    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      if (!this.physics.isColliderSynced(desc)) {
+        this.colliderCookQueue.add(desc.entity)
+      }
+    }
+    this.pendingColliderCooks = this.colliderCookQueue.size
   }
 
   /**
@@ -1258,6 +1273,11 @@ export class World {
       this.sceneScript.flushSceneGraphMatrices()
       this.sceneScript.invalidateGltfColliderSyncCache()
       this.sceneScript.syncCollisionForce()
+      this.reconcileColliderCookQueue()
+      while (this.colliderCookQueue.size > 0) {
+        await this.drainColliderCookQueue({ loading: true })
+      }
+      this.pushAllColliderPosesToPhysX()
       this.reconcileColliderCookQueue()
       while (this.colliderCookQueue.size > 0) {
         await this.drainColliderCookQueue({ loading: true })

@@ -1,0 +1,43 @@
+name: Bug report
+description: Player-reported issue from the in-client dev panel
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Filed from the Three.js client **Submit bug** tab. Please keep repro steps and expected vs actual behavior.
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser
+      options:
+        - Chrome
+        - Safari
+        - Opera
+        - Brave
+        - Edge
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Steps to reproduce, what you expected, and what you saw instead.
+    validations:
+      required: true

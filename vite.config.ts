@@ -40,6 +40,14 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/places/, '')
       },
+      '/api/analytics': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true
+      },
+      '/api/report-bug': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true
+      },
       '/api/texture': {
         target: 'https://arweave.net',
         changeOrigin: true,

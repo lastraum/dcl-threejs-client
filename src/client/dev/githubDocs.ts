@@ -60,3 +60,18 @@ export function communityClaimNewIssueUrl(): string {
 export function communityClaimsIssuesUrl(): string {
   return `https://github.com/${GITHUB_DOCS_REPO}/issues?q=is%3Aopen+label%3Ain-progress`
 }
+
+/** New bug report issue (classic title/body prefilled — fallback when API unavailable). */
+export function bugReportNewIssueUrl(input: { title: string; body: string }): string {
+  const params = new URLSearchParams({
+    title: input.title,
+    body: input.body,
+    labels: 'bug'
+  })
+  return `https://github.com/${GITHUB_DOCS_REPO}/issues/new?${params.toString()}`
+}
+
+/** Issue form template (manual fill when URL length limits apply). */
+export function bugReportFormUrl(): string {
+  return `https://github.com/${GITHUB_DOCS_REPO}/issues/new?template=bug.yml`
+}

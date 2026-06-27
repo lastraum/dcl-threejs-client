@@ -2860,6 +2860,94 @@
         overflow: auto;
         padding: 0 18px 12px;
       }
+      .dev-progress__bug-form {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 4px 0 8px;
+      }
+      .dev-progress__bug-lead {
+        margin: 0;
+        font-size: 12px;
+        line-height: 1.45;
+        color: rgba(255, 255, 255, 0.62);
+      }
+      .dev-progress__bug-field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .dev-progress__bug-field--grow {
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      .dev-progress__bug-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .dev-progress__bug-field select,
+      .dev-progress__bug-field textarea {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.05);
+        color: rgba(255, 255, 255, 0.92);
+        font-size: 12px;
+        font-family: inherit;
+      }
+      .dev-progress__bug-field select:focus,
+      .dev-progress__bug-field textarea:focus {
+        outline: none;
+        border-color: rgba(120, 180, 255, 0.55);
+        box-shadow: 0 0 0 2px rgba(120, 180, 255, 0.15);
+      }
+      .dev-progress__bug-field textarea {
+        resize: vertical;
+        min-height: 140px;
+        line-height: 1.45;
+      }
+      .dev-progress__bug-actions {
+        display: flex;
+        justify-content: flex-start;
+        padding-top: 2px;
+      }
+      .dev-progress__bug-submit {
+        padding: 8px 16px;
+        border-radius: 8px;
+        border: 1px solid rgba(120, 180, 255, 0.45);
+        background: rgba(120, 180, 255, 0.2);
+        color: #fff;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .dev-progress__bug-submit:hover:not(:disabled) {
+        background: rgba(120, 180, 255, 0.32);
+      }
+      .dev-progress__bug-submit:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .dev-progress__bug-status {
+        margin: 0;
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.55);
+        line-height: 1.4;
+      }
+      .dev-progress__bug-status--success {
+        color: rgba(120, 220, 160, 0.9);
+      }
+      .dev-progress__bug-status--error {
+        color: rgba(255, 120, 120, 0.95);
+      }
+      .dev-progress__bug-status a {
+        color: rgba(120, 180, 255, 0.95);
+      }
       .dev-progress__section {
         margin-bottom: 18px;
       }

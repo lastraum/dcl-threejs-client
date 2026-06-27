@@ -29,8 +29,17 @@ import {
   type ProgressLoadResult
 } from '../dev/progressRegistry'
 import { renderInlineMarkdown, renderMarkdownToHtml } from '../dev/renderMarkdown'
+import {
+  bugReportRepoBrowseUrl,
+  detectBugBrowser,
+  detectBugOs,
+  openBugIssueUrl,
+  submitBugReport,
+  type BugBrowser,
+  type BugOs
+} from '../dev/submitBugReport'
 
-type DevTab = 'community' | 'status' | 'progress'
+type DevTab = 'bug' | 'community' | 'status' | 'progress'
 
 /** Dev overlay — community workflow + full parity matrix + PROGRESS.md milestones. */
 export class DevProgressPanel {
@@ -39,12 +48,14 @@ export class DevProgressPanel {
   private readonly panel: HTMLElement
   private readonly summaryEl: HTMLElement
   private readonly bodyEl: HTMLElement
+  private readonly tabBug: HTMLButtonElement
   private readonly tabCommunity: HTMLButtonElement
   private readonly tabStatus: HTMLButtonElement
   private readonly tabProgress: HTMLButtonElement
+  private bugSubmitting = false
   private readonly footerEl: HTMLElement
   private readonly metaEl: HTMLElement
-  private activeTab: DevTab = 'community'
+  private activeTab: DevTab = 'bug'
   private visible = false
   private claimsLoad: ClaimsLoadResult | null = null
   private progressLoad: ProgressLoadResult | null = null
@@ -75,7 +86,8 @@ export class DevProgressPanel {
       </header>
       <div class="dev-progress__meta"></div>
       <nav class="dev-progress__tabs" role="tablist">
-        <button type="button" class="dev-progress__tab is-active" data-tab="community" role="tab">Community</button>
+        <button type="button" class="dev-progress__tab is-active" data-tab="bug" role="tab">Submit bug</button>
+        <button type="button" class="dev-progress__tab" data-tab="community" role="tab">Community</button>
         <button type="button" class="dev-progress__tab" data-tab="status" role="tab">Full status</button>
         <button type="button" class="dev-progress__tab" data-tab="progress" role="tab">Shipped</button>
       </nav>
@@ -88,6 +100,7 @@ export class DevProgressPanel {
 
     this.summaryEl = this.panel.querySelector('.dev-progress__summary')!
     this.bodyEl = this.panel.querySelector('.dev-progress__body')!
+    this.tabBug = this.panel.querySelector('[data-tab="bug"]')!
     this.tabCommunity = this.panel.querySelector('[data-tab="community"]')!
     this.tabStatus = this.panel.querySelector('[data-tab="status"]')!
     this.tabProgress = this.panel.querySelector('[data-tab="progress"]')!
@@ -105,6 +118,7 @@ export class DevProgressPanel {
 
     this.panel.querySelector('.dev-progress__close')!.addEventListener('click', () => this.hide())
     this.backdrop.addEventListener('click', () => this.hide())
+    this.tabBug.addEventListener('click', () => this.setTab('bug'))
     this.tabCommunity.addEventListener('click', () => this.setTab('community'))
     this.tabStatus.addEventListener('click', () => this.setTab('status'))
     this.tabProgress.addEventListener('click', () => this.setTab('progress'))
@@ -173,6 +187,7 @@ export class DevProgressPanel {
 
   private setTab(tab: DevTab): void {
     this.activeTab = tab
+    this.tabBug.classList.toggle('is-active', tab === 'bug')
     this.tabCommunity.classList.toggle('is-active', tab === 'community')
     this.tabStatus.classList.toggle('is-active', tab === 'status')
     this.tabProgress.classList.toggle('is-active', tab === 'progress')
@@ -180,13 +195,113 @@ export class DevProgressPanel {
   }
 
   private render(): void {
-    if (this.activeTab === 'community') {
+    if (this.activeTab === 'bug') {
+      this.renderBugReport()
+    } else if (this.activeTab === 'community') {
       this.renderCommunity()
     } else if (this.activeTab === 'status') {
       this.renderIntegrationStatus()
     } else {
       this.renderProgress()
     }
+  }
+
+  private renderBugReport(): void {
+    this.summaryEl.innerHTML = `
+      <span class="dev-progress__chip">v${escapeHtml(APP_VERSION)} client</span>
+      <span class="dev-progress__chip dev-progress__chip--pending">Auto-attaches URL + recent log</span>
+    `
+    this.footerEl.innerHTML = `<span class="dev-progress__legend">Creates a GitHub issue when the server token is configured · otherwise opens a prefilled new issue · <a href="${escapeHtml(bugReportRepoBrowseUrl())}" target="_blank" rel="noopener">open bugs</a></span>`
+
+    this.bodyEl.innerHTML = `
+      <form class="dev-progress__bug-form" data-bug-form>
+        <p class="dev-progress__bug-lead">Tell us what broke. We attach client version, page URL, and the last few debug log lines.</p>
+        <label class="dev-progress__bug-field">
+          <span class="dev-progress__bug-label">Operating system</span>
+          <select name="os" data-bug-os required>
+            <option value="windows">Windows</option>
+            <option value="mac">macOS</option>
+            <option value="linux">Linux</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label class="dev-progress__bug-field">
+          <span class="dev-progress__bug-label">Browser</span>
+          <select name="browser" data-bug-browser required>
+            <option value="chrome">Chrome</option>
+            <option value="safari">Safari</option>
+            <option value="opera">Opera</option>
+            <option value="brave">Brave</option>
+            <option value="edge">Edge</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label class="dev-progress__bug-field dev-progress__bug-field--grow">
+          <span class="dev-progress__bug-label">What happened?</span>
+          <textarea name="description" data-bug-description rows="8" required placeholder="Steps to reproduce, what you expected, and what you saw instead."></textarea>
+        </label>
+        <div class="dev-progress__bug-actions">
+          <button type="submit" class="dev-progress__bug-submit" data-bug-submit>Send bug report</button>
+        </div>
+        <p class="dev-progress__bug-status" data-bug-status role="status" aria-live="polite"></p>
+      </form>
+    `
+
+    const form = this.bodyEl.querySelector('[data-bug-form]') as HTMLFormElement
+    const osSelect = form.querySelector('[data-bug-os]') as HTMLSelectElement
+    const browserSelect = form.querySelector('[data-bug-browser]') as HTMLSelectElement
+    const descriptionInput = form.querySelector('[data-bug-description]') as HTMLTextAreaElement
+    const statusEl = form.querySelector('[data-bug-status]') as HTMLParagraphElement
+    const submitBtn = form.querySelector('[data-bug-submit]') as HTMLButtonElement
+
+    osSelect.value = detectBugOs()
+    browserSelect.value = detectBugBrowser()
+
+    form.addEventListener('submit', (ev) => {
+      ev.preventDefault()
+      void this.handleBugSubmit(
+        {
+          os: osSelect.value as BugOs,
+          browser: browserSelect.value as BugBrowser,
+          description: descriptionInput.value
+        },
+        statusEl,
+        submitBtn
+      )
+    })
+  }
+
+  private async handleBugSubmit(
+    input: { os: BugOs; browser: BugBrowser; description: string },
+    statusEl: HTMLParagraphElement,
+    submitBtn: HTMLButtonElement
+  ): Promise<void> {
+    if (this.bugSubmitting) return
+    this.bugSubmitting = true
+    submitBtn.disabled = true
+    statusEl.className = 'dev-progress__bug-status'
+    statusEl.textContent = 'Sending…'
+
+    const result = await submitBugReport(input)
+    this.bugSubmitting = false
+    submitBtn.disabled = false
+
+    if (!result.ok) {
+      statusEl.classList.add('dev-progress__bug-status--error')
+      statusEl.textContent = result.error
+      return
+    }
+
+    if (result.mode === 'github_api') {
+      statusEl.classList.add('dev-progress__bug-status--success')
+      statusEl.innerHTML = `Issue <a href="${escapeHtml(result.issueUrl)}" target="_blank" rel="noopener">#${result.issueNumber}</a> created on GitHub.`
+      openBugIssueUrl(result.issueUrl)
+      return
+    }
+
+    statusEl.classList.add('dev-progress__bug-status--success')
+    statusEl.textContent = 'Opening GitHub with your report prefilled — submit the issue there to finish.'
+    openBugIssueUrl(result.issueUrl)
   }
 
   private countWorkflowStage(workflow: WorkflowItem[], stage: WorkflowStage): number {

@@ -1,6 +1,7 @@
 import type { Entity, IEngine } from '@dcl/ecs'
 import * as components from '@dcl/ecs/dist/components'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
+import { patchPhotoMuralOptionalChain } from './photoMuralPatch'
 import { patchTheatreSkip } from './theatreSkipPatch'
 
 const STOCK_CHECKER_RE = /Missing MeshCollider component on entity/
@@ -265,6 +266,12 @@ export function patchSceneBundle(code: string, onStep?: PatchSceneBundleStepLog)
   stepAt = performance.now()
   out = wrapAddTransportCalls(out, ADD_TRANSPORT_WRAP_LIMIT)
   onStep?.('addTransport capture', performance.now() - stepAt)
+  stepAt = performance.now()
+  const photoMural = patchPhotoMuralOptionalChain(out)
+  out = photoMural.code
+  if (photoMural.applied) {
+    onStep?.(`photo mural optional-chain (${photoMural.replacements})`, performance.now() - stepAt)
+  }
   return out
 }
 

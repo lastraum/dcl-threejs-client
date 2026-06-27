@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-06-24 (terrain editor + deploy export ✅ · `/editor` sculpt → `terrain.glb` · 5×5 ~4–5 MB default)  
-> **Current phase:** **Phase 5 social polish** + **creator tooling** — scene media + Genesis environments shipped; **in-browser terrain editor** for local Creator Hub projects. **Next:** voice/mic UI, in-scene ECS UI, Raycast scene callbacks polish; **PhysX cook worker** on `lastraum-cook` (merge when ready).
+> **Last updated:** 2026-06-27 (Genesis spawn physics ✅ · chat unix timestamps ✅ · pointer raycast perf ✅ · `lastraum` → `dev-latest`)  
+> **Current phase:** **Phase 5 social polish** + **creator tooling** — scene media + Genesis environments shipped; **in-browser terrain editor** for local Creator Hub projects. **Next:** smoke-test `dev-latest` for **v0.4.0** release → `main`; voice/mic UI, in-scene ECS UI, SDK7 Raycast `collisionMask` parity; **PhysX cook worker** on `lastraum-cook` (merge when ready).
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -21,6 +21,25 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Local scenes (browser)** | 🟢 | **Link Scenes folder** — pick `~/Documents/DCL-Scenes` (Documents/Downloads/Desktop); Rescan + drag-drop |
 
 **Try it:** open **`/editor`** → pick a linked project → **Terrain sculpt** → **Save to project** → `dcl deploy` from that folder. Re-save once if you had an older dual-collider export.
+
+---
+
+## 🎉 Milestone — Genesis spawn physics + chat/avatar polish (2026-06-27)
+
+**Status: shipped on `dev-latest`** (`f266be4`) — `lastraum` fast-forward merge after plaza spawn QA.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Genesis Plaza spawn** | 🟢 | CCT created **after** collider seal + `warmStaticScene()`; unsafe pose slides invalidate + recook instead of leaving stale actors |
+| **Collider runtime** | 🟢 | Entity-local boot cooks + incremental pose slides (6147e7e pipeline); no per-frame O(scene) PhysX walks at play time |
+| **Pointer raycast perf** | 🟢 | `preparePointerRaycast` syncs **CL_POINTER** MeshColliders only; GLTF targets use live scene graph (no PhysX extractor walk) |
+| **Chat timestamps (Explorer)** | 🟢 | RFC4 Chat `protocol_version` 100 + unix timestamp — fixes ~1970 dates in Unity Explorer (`4089a2c`) |
+| **RTFKT / L2 feet** | 🟢 | Hips-only shoe rig merge, cm→m bake, nested armature scale flatten (`4089a2c`) |
+
+**Commits:** `4089a2c` · `777762f` · `f266be4`  
+**Branch:** `lastraum` → merged `dev-latest`
+
+**QA before `main`:** Genesis Plaza spawn + short walk, RickRoll pointer clicks, Explorer chat timestamp cross-check, RTFKT feet if equipped.
 
 ---
 
@@ -728,7 +747,7 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 | Scene chat UI + RFC4 encode/decode | ✅ ChatPanel + LiveKit reliable chat publish |
 | Chat UX (140 char, links, @mentions, `/goto` styling) | ✅ `chatMentions.ts`, `linkifyText.ts`, `chatNavigationLinks.ts` — nav links teleport in-client |
 | **Scene chat outbound (LiveKit)** | ✅ dcl-companion wire + fan-out scene/world/island |
-| **Scene chat timestamps in Unity Explorer** | ⬜ **known gap** — wire uses session-elapsed (companion path); **Three.js UI shows correct local time**; Explorer shows wrong date until Unity-header + unix chat encode is verified on wire |
+| **Scene chat timestamps in Unity Explorer** | ✅ RFC4 unix encode (`protocol_version` 100) — inbound still accepts legacy session-elapsed (`4089a2c`); cross-check Explorer on next release |
 | Scene-mode rail transparency | ✅ rail hidden in scene mode until hover/pin |
 | Member communities rail (Signed Social API) | ✅ `fetchMemberCommunitiesSigned` |
 | Session identity expiry in localStorage | ✅ `identityStore` + splash expiry hint |

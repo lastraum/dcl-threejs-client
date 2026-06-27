@@ -4289,7 +4289,7 @@
       }
       .backpack-view__columns {
         display: grid;
-        grid-template-columns: 1fr 2fr 1fr;
+        grid-template-columns: 1fr 2fr 1.25fr;
         flex: 1;
         min-height: 0;
         overflow: hidden;
@@ -4307,6 +4307,8 @@
         width: 100%;
         height: 100%;
         min-height: 300px;
+        cursor: zoom-in;
+        touch-action: none;
       }
       .backpack-view__canvas {
         position: absolute;
@@ -4380,77 +4382,98 @@
       .backpack-view__categories {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px;
-        width: 188px;
+        gap: 6px 8px;
+        width: 220px;
         flex-shrink: 0;
         padding: 10px 8px;
         overflow-y: auto;
         border-right: 1px solid rgba(255, 255, 255, 0.06);
         align-content: start;
       }
-      .backpack-view__cat-btn {
-        display: flex;
-        flex-direction: column;
-        align-items: stretch;
-        gap: 4px;
+      .backpack-view__cat-row {
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr);
+        align-items: center;
+        gap: 6px;
         width: 100%;
-        padding: 0;
+        min-height: 52px;
+        padding: 4px 6px 4px 4px;
         border: 2px solid rgba(255, 255, 255, 0.1);
         border-radius: 10px;
         background: rgba(0, 0, 0, 0.22);
-        color: rgba(255, 255, 255, 0.72);
-        font-size: 9px;
-        font-weight: 700;
+        color: rgba(255, 255, 255, 0.85);
         cursor: pointer;
-        text-align: center;
-        overflow: hidden;
-        transition: border-color 0.12s, background 0.12s, color 0.12s, box-shadow 0.12s;
+        text-align: left;
+        transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
       }
-      .backpack-view__cat-btn--all {
+      .backpack-view__cat-row--all {
         grid-column: 1 / -1;
+        grid-template-columns: 28px 1fr;
       }
-      .backpack-view__cat-btn:hover {
+
+      .backpack-view__cat-row:hover {
         border-color: rgba(255, 255, 255, 0.22);
         background: rgba(255, 255, 255, 0.06);
-        color: rgba(255, 255, 255, 0.92);
       }
-      .backpack-view__cat-btn.is-active {
+      .backpack-view__cat-row.is-active {
         border-color: rgba(255, 45, 85, 0.75);
         background: rgba(255, 45, 85, 0.12);
-        color: #fff;
         box-shadow: 0 0 0 1px rgba(255, 45, 85, 0.35);
       }
-      .backpack-view__cat-thumb {
-        position: relative;
-        width: 100%;
-        aspect-ratio: 1;
-        background: rgba(0, 0, 0, 0.35);
-        overflow: hidden;
+      .backpack-view__cat-icon {
         display: grid;
         place-items: center;
+        width: 28px;
+        height: 28px;
+        flex-shrink: 0;
+        color: rgba(255, 255, 255, 0.88);
+      }
+      .backpack-view__cat-icon svg {
+        width: 22px;
+        height: 22px;
+        display: block;
+      }
+      .backpack-view__cat-preview {
+        display: block;
+        width: 100%;
+        height: 48px;
+        min-height: 48px;
+        max-height: 48px;
+        border-radius: 10px;
+        overflow: hidden;
+        border: 2px solid rgba(255, 255, 255, 0.14);
+        background: linear-gradient(180deg, rgba(120, 70, 180, 0.45) 0%, rgba(40, 18, 70, 0.85) 100%);
+      }
+      .backpack-view__cat-preview--equipped {
+        border: 2px solid rgba(255, 255, 255, 0.9);
+        background: var(--wearable-rarity-bg, #6b7280);
+        cursor: pointer;
+      }
+      .backpack-view__cat-preview--equipped.is-selected {
+        border: 4px solid #f0b429;
+        box-shadow: 0 0 10px rgba(240, 180, 41, 0.4);
+      }
+      .backpack-view__cat-preview--empty {
+        background: linear-gradient(180deg, rgba(120, 70, 180, 0.45) 0%, rgba(40, 18, 70, 0.85) 100%);
       }
       .backpack-view__cat-equipped {
         width: 100%;
         height: 100%;
-        object-fit: cover;
+        object-fit: contain;
+        object-position: center bottom;
         display: block;
+        padding: 6px;
       }
-      .backpack-view__cat-slot-icon,
-      .backpack-view__cat-all-icon {
-        font-size: 22px;
-        line-height: 1;
-        opacity: 0.55;
-      }
-      .backpack-view__cat-all-icon {
-        font-size: 26px;
-        opacity: 0.85;
-      }
-      .backpack-view__cat-label {
-        padding: 0 4px 6px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        letter-spacing: 0.02em;
+      .backpack-view__cat-all-label {
+        display: grid;
+        place-items: center;
+        width: 100%;
+        height: 100%;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.9);
       }
       .backpack-view__grid-area {
         display: flex;
@@ -4535,32 +4558,46 @@
       }
       .backpack-view__grid {
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        grid-template-rows: repeat(4, minmax(0, 1fr));
-        gap: 10px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-rows: repeat(3, minmax(0, 1fr));
+        gap: 12px;
         flex: 1;
-        width: min(100%, 392px);
-        min-height: 392px;
+        width: 100%;
+        min-height: 420px;
         align-content: start;
+      }
+      .backpack-view__grid-status {
+        grid-column: 1 / -1;
+        margin: 0;
+        padding: 24px 12px;
+        text-align: center;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .backpack-view__grid-status--error {
+        color: rgba(255, 140, 140, 0.9);
       }
       .backpack-view__item {
         position: relative;
         width: 100%;
         aspect-ratio: 1;
         min-height: 0;
-        border-radius: 10px;
-        border: 2px solid rgba(255, 255, 255, 0.15);
-        background: rgba(0, 0, 0, 0.3);
+        min-width: 0;
+        border-radius: 12px;
+        border: 2px solid rgba(255, 255, 255, 0.9);
+        background: var(--wearable-rarity-bg, #6b7280);
         overflow: hidden;
         cursor: pointer;
-        transition: transform 0.12s, box-shadow 0.12s;
+        padding: 0;
+        transition: transform 0.12s, box-shadow 0.12s, border-color 0.12s, border-width 0.12s;
       }
       .backpack-view__item:hover {
         transform: scale(1.04);
         box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
       }
       .backpack-view__item.is-selected {
-        box-shadow: 0 0 0 2px #fff, 0 4px 16px rgba(255, 255, 255, 0.2);
+        border: 4px solid #f0b429;
+        box-shadow: 0 4px 16px rgba(240, 180, 41, 0.35);
       }
       .backpack-view__item--empty {
         border-color: rgba(255, 255, 255, 0.06);
@@ -4573,8 +4610,10 @@
       .backpack-view__item-img {
         width: 100%;
         height: 100%;
-        object-fit: cover;
+        object-fit: contain;
+        object-position: center bottom;
         display: block;
+        padding: 6px;
       }
       .backpack-view__pagination {
         display: flex;
@@ -4628,24 +4667,38 @@
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 10px;
+        gap: 16px;
         text-align: center;
+        width: 100%;
+        max-width: 440px;
+      }
+      .backpack-view__detail-thumb {
+        width: min(420px, 100%);
+        height: min(420px, 100%);
+        aspect-ratio: 1;
+        border-radius: 16px;
+        border: 2px solid rgba(255, 255, 255, 0.9);
+        overflow: hidden;
+        margin-bottom: 4px;
+        display: grid;
+        place-items: end center;
       }
       .backpack-view__detail-img {
-        width: 120px;
-        height: 120px;
-        border-radius: 12px;
-        object-fit: cover;
-        background: rgba(0, 0, 0, 0.3);
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        object-position: center bottom;
+        padding: 20px;
       }
       .backpack-view__detail-name {
         margin: 0;
-        font-size: 16px;
+        font-size: 32px;
         font-weight: 700;
-        word-break: break-all;
+        line-height: 1.15;
+        word-break: break-word;
       }
       .backpack-view__detail-rarity {
-        font-size: 12px;
+        font-size: 14px;
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.08em;
@@ -4845,6 +4898,42 @@
       .backpack-view__vrm-delete-btn {
         background: transparent;
         color: rgba(255, 120, 120, 0.9);
+      }
+      .backpack-view__wearable-actions {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        width: 100%;
+        max-width: min(420px, 100%);
+        margin-top: 8px;
+      }
+      .backpack-view__wearable-equip-btn,
+      .backpack-view__wearable-market-btn {
+        padding: 12px 16px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        cursor: pointer;
+        width: 100%;
+      }
+      .backpack-view__wearable-equip-btn {
+        background: #ff2d55;
+        border-color: transparent;
+        color: #fff;
+      }
+      .backpack-view__wearable-equip-btn:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .backpack-view__wearable-market-btn {
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.45);
+        cursor: not-allowed;
+      }
+      .backpack-view__wearable-market-btn:disabled {
+        opacity: 0.7;
       }
 
       .backpack-view--osa .backpack-view__grid {

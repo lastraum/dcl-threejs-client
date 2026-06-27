@@ -1,7 +1,10 @@
+import { assetUrnFromCompleteUrn } from '../../../avatar/constants'
+
 /** Catalyst collections thumbnail URL — same source as BackpackView. */
 export function wearableThumbnailUrl(urn: string, peerUrl = 'https://peer.decentraland.org'): string {
   const base = peerUrl.replace(/\/$/, '')
-  return `${base}/lambdas/collections/contents/${encodeURIComponent(urn)}/thumbnail`
+  const assetUrn = assetUrnFromCompleteUrn(urn)
+  return `${base}/lambdas/collections/contents/${encodeURIComponent(assetUrn)}/thumbnail`
 }
 
 export function wearableShortLabel(urn: string): string {
@@ -42,16 +45,17 @@ export const WEARABLE_RARITY_COLORS: Record<string, string> = {
   mythic: '#ff6ad5'
 }
 
+/** Solid cell fills — matches DCL rarity swatches (no gradients). */
 export const WEARABLE_RARITY_BACKGROUNDS: Record<string, string> = {
-  legendary: 'linear-gradient(145deg, #5b1f8a 0%, #9b3fd4 55%, #ff8723 100%)',
-  epic: 'linear-gradient(145deg, #1a2f7a 0%, #4a3fd4 55%, #7b5cff 100%)',
-  rare: 'linear-gradient(145deg, #0a4a52 0%, #0d7a6a 55%, #57e389 100%)',
-  uncommon: 'linear-gradient(145deg, #6a2a10 0%, #b24a18 55%, #ff9a4a 100%)',
-  common: 'linear-gradient(145deg, #2a2d3a 0%, #3d4254 100%)',
-  base: 'linear-gradient(145deg, #2a2d3a 0%, #3d4254 100%)',
-  unique: 'linear-gradient(145deg, #5a4a10 0%, #c9a227 100%)',
-  exotic: 'linear-gradient(145deg, #5a1030 0%, #ff2d6f 100%)',
-  mythic: 'linear-gradient(145deg, #4a1050 0%, #ff6ad5 100%)'
+  legendary: '#ff8723',
+  epic: '#a335ee',
+  rare: '#00b4d8',
+  uncommon: '#57e389',
+  common: '#6b7280',
+  base: '#6b7280',
+  unique: '#ffd700',
+  exotic: '#ff2d6f',
+  mythic: '#ff6ad5'
 }
 
 export function wearableRarityLabel(rarity: string): string {
@@ -72,14 +76,15 @@ export async function fetchWearableDisplayCards(
 
   return Promise.all(
     equipped.map(async (urn): Promise<WearableDisplayCard> => {
+      const assetUrn = assetUrnFromCompleteUrn(urn)
       const fallback: WearableDisplayCard = {
         urn,
-        name: wearableShortLabel(urn),
-        rarity: guessWearableRarity(urn),
-        thumbnailUrl: wearableThumbnailUrl(urn, base)
+        name: wearableShortLabel(assetUrn),
+        rarity: guessWearableRarity(assetUrn),
+        thumbnailUrl: wearableThumbnailUrl(assetUrn, base)
       }
       try {
-        const url = `${base}/lambdas/collections/wearables?wearableId=${encodeURIComponent(urn)}`
+        const url = `${base}/lambdas/collections/wearables?wearableId=${encodeURIComponent(assetUrn)}`
         const res = await fetch(url)
         if (!res.ok) return fallback
         const raw = (await res.json()) as {

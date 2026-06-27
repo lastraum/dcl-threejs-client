@@ -1,0 +1,28 @@
+import type { WearableCategory } from '../../../avatar/types'
+
+/** Explorer-style line icons for backpack category rows. */
+export const BACKPACK_CATEGORY_ICONS: Record<WearableCategory | 'all', string> = {
+  all: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16v12H4z" stroke="currentColor" stroke-width="1.4"/><path d="M8 6V4.5A4 4 0 0 1 12 2.5 4 4 0 0 1 16 4.5V6" stroke="currentColor" stroke-width="1.4"/></svg>`,
+  body_shape: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="5.5" r="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M8 20v-5.5c0-2.2 1.8-4 4-4s4 1.8 4 4V20" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`,
+  hair: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 14c0-4 2.2-7 5-7s5 3 5 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M6.5 12.5c1-2.5 3-4 5.5-4s4.5 1.5 5.5 4" stroke="currentColor" stroke-width="1.2"/></svg>`,
+  upper_body: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 9.5 6 12v7h12v-7l-2-2.5" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 9.5h6l1.5 2.5H7.5L9 9.5z" stroke="currentColor" stroke-width="1.2"/></svg>`,
+  lower_body: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 8h6v3.5c0 1.2-.8 2.2-2 2.5v5H11v-5c-1.2-.3-2-1.3-2-2.5V8z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>`,
+  feet: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7.5 14.5c.5-2 1.8-3.5 4.5-3.5s4 .8 4.5 2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><ellipse cx="12" cy="16.5" rx="5" ry="2.2" stroke="currentColor" stroke-width="1.3"/></svg>`,
+  helmet: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6.5 12.5V11a5.5 5.5 0 0 1 11 0v1.5" stroke="currentColor" stroke-width="1.4"/><path d="M5 12.5h14v2.5a5 5 0 0 1-10 0v-2.5z" stroke="currentColor" stroke-width="1.4"/></svg>`,
+  hat: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><ellipse cx="12" cy="14" rx="7" ry="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M8.5 14V11a3.5 3.5 0 0 1 7 0v3" stroke="currentColor" stroke-width="1.4"/></svg>`,
+  mask: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 10.5c0-2.5 2.7-4.5 6-4.5s6 2 6 4.5c0 4.5-2.7 7.5-6 7.5S6 15 6 10.5z" stroke="currentColor" stroke-width="1.4"/><circle cx="9.5" cy="11" r=".8" fill="currentColor"/><circle cx="14.5" cy="11" r=".8" fill="currentColor"/></svg>`,
+  eyewear: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="8.5" cy="12" r="2.8" stroke="currentColor" stroke-width="1.4"/><circle cx="15.5" cy="12" r="2.8" stroke="currentColor" stroke-width="1.4"/><path d="M11.3 12h1.4" stroke="currentColor" stroke-width="1.4"/></svg>`,
+  earring: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 6.5v3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="9" cy="12.5" r="2" stroke="currentColor" stroke-width="1.4"/></svg>`,
+  tiara: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 15 8.5 9l3.5 4 4-4 3.5 6H6z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>`,
+  top_head: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 14c1.5-3 3.5-4.5 4-4.5s2.5 1.5 4 4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="12" cy="8.5" r="1.2" fill="currentColor"/></svg>`,
+  facial_hair: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8.5 12.5c.8 2 2.2 3 3.5 3s2.7-1 3.5-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M9 10.5h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`,
+  eyebrows: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 10.5c1-.8 2-.5 2.5 0M14.5 10.5c.5-.5 1.5-.8 2.5 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`,
+  mouth: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 13.5c.8.8 2 .8 2.8 0M12.2 13.5c.8.8 2 .8 2.8 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`,
+  eyes: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><ellipse cx="8.5" cy="12" rx="2.2" ry="1.6" stroke="currentColor" stroke-width="1.4"/><ellipse cx="15.5" cy="12" rx="2.2" ry="1.6" stroke="currentColor" stroke-width="1.4"/><circle cx="8.5" cy="12" r=".7" fill="currentColor"/><circle cx="15.5" cy="12" r=".7" fill="currentColor"/></svg>`,
+  skin: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 7.5c0-1.8 1.3-3 3-3s3 1.2 3 3v10H9V7.5z" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 10h1M12.5 10h1M14.5 10h1M10.5 12.5h1M12.5 12.5h1M14.5 12.5h1M10.5 15h1M12.5 15h1M14.5 15h1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`,
+  hands_wear: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9.5 8.5V6.5a1.5 1.5 0 0 1 3 0V11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M12.5 7V5.5a1.5 1.5 0 0 1 3 0V12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M8 12.5c0 3 1.8 5.5 4 5.5s4-2.5 4-5.5" stroke="currentColor" stroke-width="1.4"/></svg>`
+}
+
+export function backpackCategoryIcon(id: WearableCategory | 'all'): string {
+  return BACKPACK_CATEGORY_ICONS[id] ?? BACKPACK_CATEGORY_ICONS.all
+}

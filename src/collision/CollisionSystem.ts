@@ -171,6 +171,17 @@ export class CollisionSystem {
     if (changed) this.recomputePhysicsBatchFingerprint()
   }
 
+  /** CL_POINTER MeshColliders only — pointer raycast prep (skips CL_PHYSICS-only primitives). */
+  syncPointerPoses(entityNodes: Map<Entity, THREE.Group>): void {
+    if (!this.colliders.size) return
+    let changed = false
+    for (const [entity, record] of this.colliders) {
+      if (!hasColliderLayer(record.collisionMask, ColliderLayer.CL_POINTER)) continue
+      if (this.syncColliderEntityPose(entity, entityNodes)) changed = true
+    }
+    if (changed) this.recomputePhysicsBatchFingerprint()
+  }
+
   syncPosesForEntities(entityNodes: Map<Entity, THREE.Group>, entities: readonly Entity[]): void {
     let changed = false
     for (const entity of entities) {

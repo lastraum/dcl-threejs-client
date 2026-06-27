@@ -1585,13 +1585,22 @@ export class SceneScriptSystem {
     this.flushPointerStructureIfDirty()
   }
 
-  /** MatrixWorld + collider pose sync immediately before pointer raycast. */
+  /**
+   * MeshCollider CL_POINTER poses before pointer raycast.
+   * GLTF pointer targets read live scene-graph meshes (flushSceneGraphMatrices) — not PhysX extractor.
+   * SDK7 Raycast `collisionMask` filters may supersede this path later.
+   */
+  syncPointerCollisionPoses(): void {
+    if (!this.collision || !this.bridge) return
+    this.collision.syncPointerPoses(this.bridge.getEntityNodes())
+  }
+
+  /** MatrixWorld + CL_POINTER MeshCollider poses immediately before pointer raycast. */
   preparePointerRaycast(): void {
     this.consumeSyncFrameTransforms()
     this.flushSceneGraphMatrices()
     // Full syncCollision runs on the async frame (World.applyPhysicsColliders) — not here.
-    // Per-raycast incremental sync during composite spawn corrupted sealed boot colliders.
-    this.syncCollisionPoses()
+    this.syncPointerCollisionPoses()
   }
 
   private flushTriggerStructureIfDirty(): void {
@@ -1985,7 +1994,7 @@ export class SceneScriptSystem {
     if (this.hasColliderWorkPending()) {
       this.syncCollision()
     } else {
-      this.syncCollisionPoses()
+      this.syncPointerCollisionPoses()
     }
     const poseChanged = [...this.lastPoseChangedEntities]
     if (poseChanged.length) {

@@ -17,6 +17,26 @@ function rewriteFetchUrl(input: string): string {
   return input
 }
 
+function isPlacesApiUrl(url: string): boolean {
+  return url.includes('/api/places/') || url.includes('/api/places?')
+}
+
+/** Places lookups assume `data` is an array — normalize empty/error bodies. */
+async function normalizePlacesJsonResponse(res: Response): Promise<Response> {
+  if (!res.ok) return res
+  try {
+    const body = (await res.clone().json()) as { data?: unknown }
+    if (!body || typeof body !== 'object' || Array.isArray(body.data)) return res
+    return new Response(JSON.stringify({ ...body, data: [] }), {
+      status: res.status,
+      statusText: res.statusText,
+      headers: res.headers
+    })
+  } catch {
+    return res
+  }
+}
+
 function requestUrl(input: RequestInfo | URL): string | null {
   if (typeof input === 'string') return input
   if (input instanceof URL) return input.href
@@ -40,11 +60,16 @@ export function installSceneWorkerFetchProxy(): void {
     const rewritten = rewriteFetchUrl(url)
     if (rewritten === url) return nativeFetch(input, init)
 
+    const run = (target: RequestInfo | URL) => {
+      const promise = nativeFetch(target, init)
+      return isPlacesApiUrl(rewritten) ? promise.then(normalizePlacesJsonResponse) : promise
+    }
+
     if (typeof input === 'string' || input instanceof URL) {
-      return nativeFetch(rewritten, init)
+      return run(rewritten)
     }
     if (input instanceof Request) {
-      return nativeFetch(new Request(rewritten, input), init)
+      return run(new Request(rewritten, input))
     }
     return nativeFetch(input, init)
   }) as typeof fetch

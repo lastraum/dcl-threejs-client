@@ -4,6 +4,7 @@ import type { SceneScriptSystem } from '../core/systems/SceneScriptSystem'
 import {
   markSceneHydrated,
   primeManifestParses,
+  resolveSceneBytesWarm,
   resolveSceneLoadWarm
 } from './sceneLoadWarm'
 
@@ -193,9 +194,13 @@ export async function waitForSceneAssets(
   sceneScript.prefetchGltfs()
 
   const warmScene = await resolveSceneLoadWarm(assets, scene)
+  const bytesWarm = !warmScene && (await resolveSceneBytesWarm(scene))
   if (warmScene) {
     console.info('[Hydration] warm scene — parallel GLB parse + fast stability gate')
     await primeManifestParses(assets, scene, 16)
+  } else if (bytesWarm) {
+    console.info('[Hydration] IDB byte cache — parallel GLB prime (180s hydration timeout)')
+    await primeManifestParses(assets, scene, 12)
   } else {
     void primeManifestParses(assets, scene, 8)
   }

@@ -187,7 +187,8 @@ export function geometryToPxMesh(
     }
   }
 
-  if (!pmesh && !options?.preferPersistedCook) loadPersisted()
+  // Boot authoritative path — live main-thread cook only; skip stale IDB streams.
+  if (!pmesh && !options?.preferPersistedCook && !options?.skipWorkerStream) loadPersisted()
 
   if (!pmesh) {
     const cooked = cookGeometryToStream(cookingParams, geo, convex)

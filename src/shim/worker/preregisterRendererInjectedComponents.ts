@@ -1,5 +1,6 @@
 import type { IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
+import { guardVideoPlayerGetMutable } from './guardVideoPlayerGetMutable'
 
 /** Global hook invoked from patched bundle capture snippets (pre-seal). */
 export const PREREGISTER_RENDERER_COMPONENTS_KEY = '__THREEJS_PREREGISTER_RENDERER_COMPONENTS__'
@@ -24,6 +25,7 @@ export function preregisterRendererInjectedComponents(engine: IEngine): void {
   generated.VideoPlayer(engine)
   generated.AudioSource(engine)
   generated.PrimaryPointerInfo(engine)
+  guardVideoPlayerGetMutable(engine)
 }
 
 export function installPreregisterRendererComponentsHook(): void {

@@ -14,7 +14,7 @@ export function resolveEngineTickIntervalMs(tier: PerformanceTier): number {
   }
   if (tier === 'low') return 100
   if (tier === 'medium') return 66
-  return 33
+  return 100
 }
 
 function readPerfOverride(): PerformanceTier | null {

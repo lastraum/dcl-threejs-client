@@ -1,4 +1,5 @@
-import type { ContentFile, ResolvedScene, SceneMetadata, SceneSpawn } from '../../dcl/content/types'
+import type { ContentFile, ResolvedScene, SceneMetadata } from '../../dcl/content/types'
+import { pickSceneSpawn } from '../../dcl/content/pickSceneSpawn'
 import { layoutFromSceneMetadata } from '../../dcl/content/sceneLayout'
 import { BLANK_SCENE_TEMPLATE } from '../../dcl/content/types'
 import { walkProjectFiles, readFileText, readFileBytes } from './localFileSystem'
@@ -12,16 +13,9 @@ type LocalAssetEntry = {
   blobUrl: string
 }
 
-function pickSpawn(metadata: SceneMetadata): SceneSpawn {
-  const points = metadata.spawnPoints ?? []
-  const def = points.find((p) => p.default) ?? points[0]
-  if (!def) return { x: 8, y: 0, z: 8 }
-  const pos = def.position
-  const px = Array.isArray(pos.x) ? pos.x[0]! : pos.x
-  const py = Array.isArray(pos.y) ? pos.y[0]! : pos.y
-  const pz = Array.isArray(pos.z) ? pos.z[0]! : pos.z
-  const spawn: SceneSpawn = { x: Number(px) || 8, y: Number(py) || 0, z: Number(pz) || 8 }
-  if (def.cameraTarget) spawn.cameraTarget = def.cameraTarget
+function resolveLocalSpawn(metadata: SceneMetadata) {
+  const spawn = pickSceneSpawn(metadata)
+  if (!spawn.fromSpawnPoints) return { x: 8, y: 0, z: 8, fromSpawnPoints: false as const }
   return spawn
 }
 
@@ -114,7 +108,7 @@ export async function resolveLocalScene(projectId: string, root: ProjectRoot): P
     title,
     parcels,
     baseParcel,
-    spawn: pickSpawn(metadata),
+    spawn: resolveLocalSpawn(metadata),
     metadata: { ...metadata, environment: 'none' },
     landscapeEnvironment: 'none',
     skyLighting: { disableSun: false, disableMoon: false },

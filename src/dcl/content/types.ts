@@ -23,6 +23,10 @@ export type SceneSpawn = {
   y: number
   z: number
   cameraTarget?: { x: number; y: number; z: number }
+  /** True when resolved from scene.json `spawnPoints` (use Y as-authored). */
+  fromSpawnPoints?: boolean
+  /** Chosen entry name when `fromSpawnPoints` — boot log only. */
+  spawnPointName?: string
 }
 
 /** scene.json `environment` — biome for client landscape (worlds default island; parcel scenes default none). */

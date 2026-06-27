@@ -48,8 +48,17 @@ export async function isSceneBytesWarm(scene: ResolvedScene): Promise<boolean> {
   return warm / glbs.length >= 0.75
 }
 
+/**
+ * Fast-boot / short hydration timeout — memory parse cache or same-tab revisit only.
+ * IDB byte hits alone are NOT warm for timeout purposes (partial failed loads used to
+ * get 90s FAST_TIMEOUT then stall on "Waiting for collider extraction…").
+ */
 export async function resolveSceneLoadWarm(cache: AssetCache, scene: ResolvedScene): Promise<boolean> {
-  if (isSceneLoadWarm(cache, scene)) return true
+  return isSceneLoadWarm(cache, scene)
+}
+
+/** IndexedDB byte warm — speeds GLB prime inside hydration; does not shorten the hard timeout. */
+export async function resolveSceneBytesWarm(scene: ResolvedScene): Promise<boolean> {
   return isSceneBytesWarm(scene)
 }
 

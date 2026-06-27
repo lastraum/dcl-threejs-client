@@ -1,6 +1,7 @@
 import { clientDebugLog } from '../debug/ClientDebugLog'
 import { environmentDebug, type EnvironmentDebugState } from '../../debug/EnvironmentDebug'
 import { physxColliderDebug, type PhysxColliderDebugOptions } from '../../debug/PhysxColliderDebug'
+import { cameraCollisionDebug } from '../../debug/CameraCollisionDebug'
 import { platformMotionDebug } from '../../debug/PlatformMotionDebug'
 import {
   LIGHT_LIMITS,
@@ -42,6 +43,7 @@ export class DebugPanel {
   private readonly physxProbeToggle: HTMLInputElement
   private readonly physxRuntimeRecookToggle: HTMLInputElement
   private readonly platformMotionToggle: HTMLInputElement
+  private readonly cameraWallOcclusionToggle: HTMLInputElement
   private readonly environmentDisableToggle: HTMLInputElement
   private readonly environmentHint: HTMLDivElement
   private readonly physxRecookBtn: HTMLButtonElement
@@ -126,6 +128,10 @@ export class DebugPanel {
           <input type="checkbox" data-platform-motion />
           <span>Platform velocity transfer log</span>
         </label>
+        <label class="debug-panel__check">
+          <input type="checkbox" data-camera-wall-occlusion />
+          <span>Third-person camera wall sweep (camerasweep)</span>
+        </label>
         <button type="button" class="debug-panel__logs-btn" data-physx-recook>Force recook all colliders</button>
       </div>
       <div class="debug-panel__render-quality">
@@ -165,6 +171,9 @@ export class DebugPanel {
     this.physxProbeToggle = this.root.querySelector('[data-physx-probe]') as HTMLInputElement
     this.physxRuntimeRecookToggle = this.root.querySelector('[data-physx-runtime-recook]') as HTMLInputElement
     this.platformMotionToggle = this.root.querySelector('[data-platform-motion]') as HTMLInputElement
+    this.cameraWallOcclusionToggle = this.root.querySelector(
+      '[data-camera-wall-occlusion]'
+    ) as HTMLInputElement
     this.environmentDisableToggle = this.root.querySelector('[data-env-disable]') as HTMLInputElement
     this.environmentHint = this.root.querySelector('[data-env-hint]') as HTMLDivElement
     this.physxRecookBtn = this.root.querySelector('[data-physx-recook]') as HTMLButtonElement
@@ -190,6 +199,7 @@ export class DebugPanel {
 
     this.wirePhysxDebugControls()
     this.wirePlatformMotionControls()
+    this.wireCameraCollisionControls()
     this.wireEnvironmentDebugControls()
     this.wireRenderQualityControls()
 
@@ -429,6 +439,26 @@ export class DebugPanel {
       }
     })
     platformMotionDebug.subscribe(syncFromStore)
+  }
+
+  private wireCameraCollisionControls(): void {
+    const syncFromStore = () => {
+      this.cameraWallOcclusionToggle.checked = cameraCollisionDebug.isWallOcclusionEnabled()
+    }
+    syncFromStore()
+    this.cameraWallOcclusionToggle.addEventListener('change', () => {
+      cameraCollisionDebug.setOptions({
+        wallOcclusion: this.cameraWallOcclusionToggle.checked
+      })
+      if (this.cameraWallOcclusionToggle.checked) {
+        clientDebugLog.log(
+          'client',
+          'Third-person camera wall sweep ON — PhysX landscape sweep pulls camera in near walls',
+          { level: 'success', alsoConsole: true }
+        )
+      }
+    })
+    cameraCollisionDebug.subscribe(syncFromStore)
   }
 
   private async copyLogs(button: HTMLButtonElement): Promise<void> {

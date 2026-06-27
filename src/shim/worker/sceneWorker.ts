@@ -39,10 +39,14 @@ import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransfor
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
 import { resolveSceneEngine } from './resolveSceneEngine'
+import { guardVideoPlayerGetMutable } from './guardVideoPlayerGetMutable'
 import {
   installPreregisterRendererComponentsHook,
   preregisterRendererInjectedComponents
 } from './preregisterRendererInjectedComponents'
+import { installSceneWorkerFetchProxy } from './installSceneWorkerFetchProxy'
+
+const VIDEO_PLAYER_NULL_MUTABLE = /VideoPlayer for null not found/
 
 const ctx = self
 
@@ -82,12 +86,13 @@ let pointerDeliveryInFlight = false
 let pointerDeliveryStartedAt = 0
 /** Pointer deliver deferred until scene onUpdate finishes after a crdt interrupt. */
 let queuedPointerDeliver: Uint8Array[] | null = null
-/** Cooperative loop poll — must be ≤ play-ready engine tick for responsive pointers. */
+/** Boot cooperative poll — responsive pointer lane before play-ready. */
 const SCENE_LOOP_POLL_MS = 25
+/** Play-ready cooperative + engine tick — matches dev-latest (10 Hz). */
+const SCENE_TICK_PLAY_INTERVAL_MS = 100
 /** Min ms between lightweight engine ticks during boot. */
 const SCENE_TICK_BOOT_INTERVAL_MS = 100
-/** Play-ready engine tick — high tier ~30 Hz; overridden by main via tier detection. */
-const ENGINE_TICK_PLAY_HIGH_MS = 33
+const ENGINE_TICK_PLAY_HIGH_MS = SCENE_TICK_PLAY_INTERVAL_MS
 const ENGINE_TICK_PLAY_MEDIUM_MS = 66
 const ENGINE_TICK_PLAY_LOW_MS = 100
 let engineTickIntervalMs = SCENE_TICK_BOOT_INTERVAL_MS
@@ -119,6 +124,7 @@ let sceneOnUpdatePaused = false
 const HYDRATION_ENGINE_TICK_INTERVAL_MS = 200
 let sceneUpdateAbortTimer: ReturnType<typeof setTimeout> | null = null
 let sceneTickTimer: ReturnType<typeof setInterval> | null = null
+let cooperativeTickFn: (() => void) | null = null
 /** Set when inject arrives before sceneEngine is bound — drained after bundle eval. */
 let pendingInjectPointer: InjectPointerClickBody | null = null
 let lastHeartbeatAt = performance.now()
@@ -171,14 +177,21 @@ function recordSceneUpdateAbort(): void {
   }
 }
 
+function setCooperativeLoopInterval(intervalMs: number): void {
+  sceneTickIntervalMs = intervalMs
+  if (sceneTickTimer) clearInterval(sceneTickTimer)
+  if (cooperativeTickFn) {
+    sceneTickTimer = setInterval(cooperativeTickFn, intervalMs)
+  }
+}
+
 function applyPlayReadyTiming(
   tier: PerformanceTier | undefined,
   reason: string,
-  options?: { plazaScale?: boolean; engineTickOverrideMs?: number }
+  options?: { engineTickOverrideMs?: number }
 ): void {
   const low = tier === 'low' || adaptiveLowPerfMode
-  const plazaMedium = !low && options?.plazaScale === true && tier === 'high'
-  const medium = !low && (tier === 'medium' || plazaMedium)
+  const medium = !low && tier === 'medium'
   fullSceneOnUpdateIntervalMs = low
     ? FULL_SCENE_ONUPDATE_INTERVAL_PLAY_LOW_MS
     : medium
@@ -204,10 +217,10 @@ function applyPlayReadyTiming(
   }
   workerLog(
     'log',
-    `[sceneWorker] play-ready timing (${reason}) — tier=${tier ?? 'default'} adaptiveLow=${adaptiveLowPerfMode}` +
-      `${plazaMedium ? ' plazaScale=true' : ''} ` +
+    `[sceneWorker] play-ready timing (${reason}) — tier=${tier ?? 'default'} adaptiveLow=${adaptiveLowPerfMode} ` +
       `engineTick ${engineTickIntervalMs}ms, onUpdate interval ${fullSceneOnUpdateIntervalMs}ms, abort ${sceneUpdateAbortMs}ms`
   )
+  setCooperativeLoopInterval(engineTickIntervalMs)
 }
 
 function armSceneUpdateAbortTimer(): void {
@@ -1113,7 +1126,18 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
   sceneTickIntervalMs = SCENE_LOOP_POLL_MS
   engineTickIntervalMs = SCENE_TICK_BOOT_INTERVAL_MS
 
-  const sceneUpdate = exports.onUpdate
+  const rawOnUpdate = exports.onUpdate
+  const sceneUpdate =
+    rawOnUpdate &&
+    (async (dt: number) => {
+      try {
+        await Promise.resolve(rawOnUpdate(dt))
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        if (VIDEO_PLAYER_NULL_MUTABLE.test(message)) return
+        throw err
+      }
+    })
   sceneOnUpdate = sceneUpdate ?? null
   workerLog(
     'log',
@@ -1265,6 +1289,7 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
     }
   }
 
+  cooperativeTickFn = runCooperativeTick
   if (sceneTickTimer) clearInterval(sceneTickTimer)
   sceneTickTimer = setInterval(runCooperativeTick, SCENE_LOOP_POLL_MS)
   runCooperativeTick()
@@ -1300,6 +1325,14 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     return
   }
   workerLog('log', '[sceneWorker] sceneEngine ok after onStart')
+  try {
+    guardVideoPlayerGetMutable(sceneEngine)
+  } catch (err) {
+    workerLog(
+      'warn',
+      `[sceneWorker] VideoPlayer getMutable guard skipped — ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
   try {
     installPointerEventColliderChecker(sceneEngine)
     workerLog('log', '[sceneWorker] pointerEventColliderChecker installed (post-onStart)')
@@ -1349,10 +1382,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   if (msg.type === 'scene-play-ready') {
     playReadyPerformanceTier = msg.performanceTier
     applyPlayReadyTiming(msg.performanceTier, 'scene-play-ready', {
-      plazaScale: msg.plazaScale,
       engineTickOverrideMs: msg.engineTickIntervalMs
     })
-    sceneTickIntervalMs = SCENE_LOOP_POLL_MS
     return
   }
   if (msg.type === 'crdt-response') {
@@ -1489,6 +1520,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     debugPointerDeliver = msg.debug?.pointerDeliver === true
     debugTweenDeliver = msg.debug?.tweenDeliver === true
     debugMessageArrival = msg.debug?.messageArrival === true
+    installSceneWorkerFetchProxy()
     workerLog('log', '[sceneWorker] CRDT — round-trip during onStart only; outbound after onStart')
     const skipTheatre = msg.debug?.skipTheatre === true
     ;(globalThis as Record<string, unknown>).__THREEJS_SKIP_THEATRE__ = skipTheatre

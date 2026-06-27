@@ -336,8 +336,10 @@ export class AppController {
 
       const warmScene = await resolveSceneLoadWarm(getSessionAssetCache(), sceneConfig)
       const useFastBoot = opts.fastAssets ?? warmScene
-      if (warmScene && !opts.fastAssets) {
-        console.info('[client] warm scene cache — using fast boot timings')
+      if (useFastBoot && !opts.fastAssets) {
+        console.info('[client] warm scene cache — 90s hydration timeout')
+      } else if (!opts.fastAssets) {
+        console.info('[client] cold scene load — 180s hydration timeout')
       }
       const hydrationTimeoutMs = useFastBoot ? FAST_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
       opts.onHydrationStart?.(hydrationTimeoutMs)

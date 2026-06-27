@@ -38,6 +38,7 @@ import {
   gltfPhysicsEntityId
 } from '../../collision/GltfColliderExtractor'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
+import { resolveEngineTickIntervalMs } from '../../client/detectPerformanceTier'
 import { platformMotionDebug } from '../../debug/PlatformMotionDebug'
 import { GltfColliderExtractor } from '../../collision/GltfColliderExtractor'
 import type {
@@ -186,7 +187,7 @@ export class SceneScriptSystem {
   private readonly lastPoseChangedEntities: Entity[] = []
   private platformMotionReportDumped = false
   private sceneBaseParcel: string | null = null
-  /** True when syncCollision already pushed incremental pose slides this async pass. */
+  /** True when syncCollision already ran incremental pose descriptor refresh this pass. */
   private colliderPosesSyncedThisPass = false
   /** Transform parent → direct children — subtree walks for pose dirty propagation. */
   private readonly transformChildren = new Map<Entity, Set<Entity>>()
@@ -357,7 +358,35 @@ export class SceneScriptSystem {
 
   /** External systems (tweens, scripts) can mark movers without ECS Transform writes. */
   markColliderPoseDirty(entity: Entity): void {
-    this.colliderPoseDirty.add(entity)
+    const { MeshCollider, GltfContainer } = this.readComponents
+    if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
+      this.colliderPoseDirty.add(entity)
+    }
+    this.markDescendantColliderPosesDirty(entity)
+  }
+
+  /** Structure change on `root` and collider-bearing descendants only (never ancestors/siblings). */
+  markColliderStructureDirty(root: Entity): void {
+    const { MeshCollider, GltfContainer } = this.readComponents
+    if (MeshCollider.has(root) || GltfContainer.has(root)) {
+      this.colliderStructureDirty.add(root)
+    }
+    this.markDescendantColliderStructureDirty(root)
+  }
+
+  /** Transform subtree under `root` — collider roots for scoped PhysX cook enqueue. */
+  collectColliderEntitiesInSubtree(root: Entity): Entity[] {
+    const out: Entity[] = []
+    const stack: Entity[] = [root]
+    while (stack.length > 0) {
+      const entity = stack.pop()!
+      if (this.colliderRootEntities.has(entity)) out.push(entity)
+      const children = this.transformChildren.get(entity)
+      if (children) {
+        for (const child of children) stack.push(child)
+      }
+    }
+    return out
   }
 
   getPhysicsColliderDesc(physEntity: number): PhysicsColliderDesc | null {
@@ -531,54 +560,16 @@ export class SceneScriptSystem {
     return [...out]
   }
 
-  private lastStandSurfacePhys: number | null = null
-
-  /**
-   * Riding + PhysX bounds scope — CCT-grounded scene actor wins; animated tread hints apply
-   * only before CCT registers scene geometry (infinite plane / airborne).
-   */
+  /** Riding + platform-motion scope — only the PhysX actor CCT reported as ground last tick. */
   resolveStandSurfacePhysEntity(
-    feet: THREE.Vector3 | undefined,
+    _feet: THREE.Vector3 | undefined,
     groundPhysEntity: number | null
   ): number | null {
     const INFINITE_GROUND = -1
-    const hasSceneGround =
-      groundPhysEntity !== null && groundPhysEntity !== INFINITE_GROUND
-
-    if (hasSceneGround) {
-      this.lastStandSurfacePhys = groundPhysEntity
+    if (groundPhysEntity !== null && groundPhysEntity !== INFINITE_GROUND) {
       return groundPhysEntity
     }
-
-    const nodes = this.bridge?.getEntityNodes()
-    let animatedPhys: number | null = null
-    if (feet && nodes && this.gltfColliders) {
-      const under = this.gltfColliders.findAnimatedStandSurfaceAmong(
-        nodes,
-        feet,
-        this.animatorBridge?.getActiveEntities() ?? [],
-        (entity) => this.isAnimatedGltfCollider(entity)
-      )
-      if (under !== null) animatedPhys = GLTF_COLLIDER_ENTITY_BASE + under
-    }
-
-    if (animatedPhys === null && feet && nodes && this.lastStandSurfacePhys !== null) {
-      const ecs = this.standSurfaceEcsFromPhys(this.lastStandSurfacePhys)
-      if (
-        ecs !== null &&
-        this.gltfColliders?.hasAnimatedStandContact(ecs, nodes, feet)
-      ) {
-        animatedPhys = this.lastStandSurfacePhys
-      }
-    }
-
-    if (animatedPhys === null && feet && nodes && this.gltfColliders) {
-      const staticUnder = this.gltfColliders.findStaticStandSurfaceNearFeet(nodes, feet)
-      if (staticUnder !== null) animatedPhys = GLTF_COLLIDER_ENTITY_BASE + staticUnder
-    }
-
-    this.lastStandSurfacePhys = animatedPhys
-    return animatedPhys
+    return null
   }
 
   standSurfaceEcsFromPhys(physEntity: number | null): Entity | null {
@@ -702,13 +693,13 @@ export class SceneScriptSystem {
         this.pointerStructureDirty = true
       }
       if (componentId === MeshCollider.componentId || componentId === GltfContainer.componentId) {
-        this.colliderStructureDirty.add(entity)
+        this.markColliderStructureDirty(entity)
       }
       return
     }
 
     if (componentId === MeshCollider.componentId || componentId === GltfContainer.componentId) {
-      this.colliderStructureDirty.add(entity)
+      this.markColliderStructureDirty(entity)
     } else if (componentId === Transform.componentId) {
       if (change.kind === 'delete') {
         this.unlinkTransformEntity(entity)
@@ -751,15 +742,13 @@ export class SceneScriptSystem {
     }
   }
 
-  /** Re-extract colliders for one entity that just received a GLTF mesh, then enqueue PhysX cook. */
+  /**
+   * GLB mesh landed — mark collider structure dirty only.
+   * Extract / pose / PhysX cook commit in World.applyPhysicsColliders (async frame).
+   */
   flushIncrementalColliders(entity: Entity): void {
-    this.colliderStructureDirty.add(entity)
+    this.markColliderStructureDirty(entity)
     this.pointerStructureDirty = true
-    // Hydration batches collider extract on the loading tick — per-attach sync blocked attach bursts.
-    if (this.bridge?.isAssetHydrationMode()) return
-    this.syncCollision()
-    this.flushPointerStructureIfDirty()
-    this.collidersCookCallback?.(entity)
   }
 
   /**
@@ -2234,16 +2223,33 @@ export class SceneScriptSystem {
       type: 'scene-play-ready',
       performanceTier: this.performanceTier,
       plazaScale: options?.plazaScale,
-      engineTickIntervalMs: options?.engineTickIntervalMs
+      engineTickIntervalMs:
+        options?.engineTickIntervalMs ?? resolveEngineTickIntervalMs(this.performanceTier)
     } satisfies MainToWorker)
   }
 
-  /** When a parent Transform moves, child GltfContainer / MeshCollider world poses change too. */
+  /** Parent transform moved — mark collider poses dirty down the subtree only. */
   private markDescendantColliderPosesDirty(ancestor: Entity): void {
-    const stack: Entity[] = [ancestor]
+    const stack: Entity[] = [...(this.transformChildren.get(ancestor) ?? [])]
     while (stack.length > 0) {
       const entity = stack.pop()!
       if (this.colliderRootEntities.has(entity)) this.colliderPoseDirty.add(entity)
+      const children = this.transformChildren.get(entity)
+      if (children) {
+        for (const child of children) stack.push(child)
+      }
+    }
+  }
+
+  /** Parent structure changed — mark collider structure dirty down the subtree only. */
+  private markDescendantColliderStructureDirty(ancestor: Entity): void {
+    const { MeshCollider, GltfContainer } = this.readComponents
+    const stack: Entity[] = [...(this.transformChildren.get(ancestor) ?? [])]
+    while (stack.length > 0) {
+      const entity = stack.pop()!
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
+        this.colliderStructureDirty.add(entity)
+      }
       const children = this.transformChildren.get(entity)
       if (children) {
         for (const child of children) stack.push(child)
@@ -2511,7 +2517,14 @@ export class SceneScriptSystem {
     )
     applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh)
     this.lastSyncFrameTransformEntities.clear()
-    for (const entity of transformDiff.keys()) this.lastSyncFrameTransformEntities.add(entity)
+    const { MeshCollider, GltfContainer } = this.readComponents
+    for (const entity of transformDiff.keys()) {
+      this.lastSyncFrameTransformEntities.add(entity)
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
+        this.colliderPoseDirty.add(entity)
+      }
+      this.markDescendantColliderPosesDirty(entity)
+    }
 
     for (const entity of transformDiff.keys()) {
       const pending = this.pendingDiff.get(entity)
@@ -2623,7 +2636,6 @@ export class SceneScriptSystem {
     }
 
     if (poseChangedEntities.length > 0) {
-      this.collidersPoseCallback?.(poseChangedEntities)
       this.colliderPosesSyncedThisPass = true
     }
   }

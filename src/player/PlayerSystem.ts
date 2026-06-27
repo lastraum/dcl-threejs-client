@@ -5,6 +5,7 @@ import type { MirrorComponents } from '../bridge/mirrorComponents'
 import { SDK_RESERVED } from '../bridge/reservedEntities'
 import { ReservedEntitiesSync, type EntityPose } from '../bridge/ReservedEntitiesSync'
 import { NameTag } from '../client/ui/NameTag'
+import { cameraCollisionDebug } from '../debug/CameraCollisionDebug'
 import type { PhysXWorld } from '../physics/PhysXWorld'
 import type { SceneHost } from '../rendering/SceneHost'
 import {
@@ -77,7 +78,7 @@ const PLAYER_TURN_SMOOTH = 12
 const FACING_SPEED_MIN = 0.12
 const GROUND_COYOTE_SECONDS = 0.15
 const AIR_JUMP_DELAY = 0.2
-/** Scene has no spawnPoints / default y=0 — start slightly above and let CCT fall. */
+/** No scene.json spawnPoints — start slightly above y=0 and let CCT fall onto colliders. */
 const DEFAULT_SPAWN_FEET_Y = 1
 
 function clamp(v: number, min: number, max: number): number {
@@ -157,7 +158,11 @@ export class PlayerSystem {
     this.readComponents = readComponents
     this.walkBounds = walkBounds
     this.input = new PlayerInput(this.host.renderer.domElement)
-    const feetY = spawn.y <= 0.01 ? DEFAULT_SPAWN_FEET_Y : spawn.y
+    const feetY = spawn.fromSpawnPoints
+      ? spawn.y
+      : spawn.y <= 0.01
+        ? DEFAULT_SPAWN_FEET_Y
+        : spawn.y
     const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
     this.physics.spawnPlayer(spawnThree)
     this.physics.warmStaticScene()
@@ -773,6 +778,7 @@ export class PlayerSystem {
   }
 
   private resolveCameraDistance(pivot: THREE.Vector3, direction: THREE.Vector3, maxDistance: number): number {
+    if (!cameraCollisionDebug.isWallOcclusionEnabled()) return maxDistance
     const hitDist = this.physics.sweepRay(pivot, direction, maxDistance)
     if (hitDist === null) return maxDistance
     const occlusionThreshold = maxDistance * 0.82

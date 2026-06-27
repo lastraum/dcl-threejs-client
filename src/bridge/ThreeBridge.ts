@@ -317,7 +317,11 @@ export class ThreeBridge {
   }
 
   private notifyGltfAttached(entity: Entity): void {
-    this.onGltfAttached?.(entity)
+    try {
+      this.onGltfAttached?.(entity)
+    } catch (err) {
+      console.warn('[ThreeBridge] post-GLB collider sync failed', entity, err)
+    }
   }
 
   private notifyMeshComponent(entity: Entity, componentId: number): void {

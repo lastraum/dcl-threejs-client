@@ -1,5 +1,6 @@
 import type { RouteTarget } from './route'
-import type { ContentFile, RealmEndpoints, ResolvedScene, SceneMetadata, SceneSpawn, SpawnPoint } from './types'
+import type { ContentFile, RealmEndpoints, ResolvedScene, SceneMetadata } from './types'
+import { pickSceneSpawn } from './pickSceneSpawn'
 import { BLANK_SCENE_TEMPLATE } from './types'
 import { layoutFromSceneMetadata } from './sceneLayout'
 import { resolveSceneEnvironment } from '../landscape/resolveLandscapeEnvironment'
@@ -25,34 +26,6 @@ function parseContent(raw: unknown): ContentFile[] {
     }
   }
   return out
-}
-
-function pickSpawnCoord(value: number | number[] | undefined, fallback: number): number {
-  if (value === undefined || value === null) return fallback
-  if (Array.isArray(value)) {
-    const min = value[0] ?? fallback
-    const max = value[1] ?? min
-    return min + Math.random() * (max - min)
-  }
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
-}
-
-function pickSpawn(metadata: SceneMetadata): SceneSpawn {
-  const points = metadata.spawnPoints
-  if (!Array.isArray(points) || points.length === 0) {
-    return { x: 0, y: 0, z: 0 }
-  }
-  const def = points.find((p: SpawnPoint) => p.default) ?? points[0]
-  const pos = def?.position
-  const cameraTarget = def?.cameraTarget
-  return {
-    x: pickSpawnCoord(pos?.x, 0),
-    y: Math.max(0, pickSpawnCoord(pos?.y, 0)),
-    z: pickSpawnCoord(pos?.z, 0),
-    cameraTarget: cameraTarget
-      ? { x: cameraTarget.x, y: cameraTarget.y, z: cameraTarget.z }
-      : undefined
-  }
 }
 
 function findMainEntry(content: ContentFile[], metadata: SceneMetadata): string | null {
@@ -196,7 +169,7 @@ function resolvedFromEntity(
     title: display?.title ?? opts.title,
     parcels,
     baseParcel: base,
-    spawn: pickSpawn(metadata),
+    spawn: pickSceneSpawn(metadata),
     metadata,
     landscapeEnvironment: resolvedEnv.landscapeEnvironment,
     skyLighting: resolvedEnv.skyLighting,

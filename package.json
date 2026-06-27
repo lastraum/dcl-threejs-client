@@ -13,7 +13,8 @@
     "test:wearable-urns": "node scripts/test-wearable-urns.mjs",
     "bump": "npm version patch --no-git-tag-version",
     "release": "node scripts/release.mjs",
-    "analytics:server": "node server/analytics.mjs"
+    "analytics:server": "node server/analytics.mjs",
+    "analytics:smoke": "node scripts/analytics-smoke.mjs"
   },
   "dependencies": {
     "@dcl/crypto": "^3.6.0",

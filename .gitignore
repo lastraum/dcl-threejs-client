@@ -4,3 +4,4 @@ remote
 .DS_Store
 *.local
 dev/scene-bundles/
+data/*.jsonl

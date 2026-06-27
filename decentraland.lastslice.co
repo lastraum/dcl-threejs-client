@@ -1,0 +1,131 @@
+# Nginx for decentraland.lastslice.co
+#
+# Deploy: rsync dist/ → /var/www/dcl-threejs/
+# Certbot: certbot --nginx -d decentraland.lastslice.co
+#
+# Prod build (optional — same-origin proxies avoid CORS on custom domains):
+#   VITE_ARCHIPELAGO_PEERS_URL=/api/peers
+#   VITE_PARCELS_API_BASE=/api/parcels
+#   VITE_WORLDS_LIVE_DATA_URL=/api/worlds/live-data
+#   VITE_PLACES_API_BASE=/api/places
+#
+# 500 on / almost always means /var/www/dcl-threejs is missing or unreadable:
+#   sudo mkdir -p /var/www/dcl-threejs
+#   sudo rsync -av dist/ /var/www/dcl-threejs/
+#   sudo chown -R www-data:www-data /var/www/dcl-threejs
+#   sudo tail -20 /var/log/nginx/error.log
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name decentraland.lastslice.co www.decentraland.lastslice.co;
+
+    ssl_certificate /etc/letsencrypt/live/decentraland.lastslice.co/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/decentraland.lastslice.co/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    # Droplet has no IPv6 route; ipv6=off avoids upstream connect() failures to Cloudflare AAAA records.
+    resolver 1.1.1.1 8.8.8.8 ipv6=off valid=300s;
+
+    # --- Login analytics (run: npm run analytics:server on the droplet) ---
+
+    location /api/analytics/ {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location = /api/report-bug {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # --- DCL API proxies (mirror vite.config.ts dev proxy) ---
+
+    location /api/dcl-auth-api/ {
+        set $auth_host auth-api.decentraland.org;
+        proxy_pass https://$auth_host/;
+        proxy_http_version 1.1;
+        proxy_set_header Host auth-api.decentraland.org;
+        proxy_set_header Accept application/json;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_ssl_server_name on;
+    }
+
+    location = /api/peers {
+        set $peers_host archipelago-ea-stats.decentraland.org;
+        proxy_pass https://$peers_host/peers;
+        proxy_http_version 1.1;
+        proxy_set_header Host archipelago-ea-stats.decentraland.org;
+        proxy_set_header Accept application/json;
+        proxy_ssl_server_name on;
+    }
+
+    location /api/parcels/ {
+        set $parcels_host api.decentraland.org;
+        proxy_pass https://$parcels_host/v2/parcels/;
+        proxy_http_version 1.1;
+        proxy_set_header Host api.decentraland.org;
+        proxy_set_header Accept application/json;
+        proxy_ssl_server_name on;
+    }
+
+    location = /api/worlds/live-data {
+        set $worlds_host worlds-content-server.decentraland.org;
+        proxy_pass https://$worlds_host/live-data;
+        proxy_http_version 1.1;
+        proxy_set_header Host worlds-content-server.decentraland.org;
+        proxy_set_header Accept application/json;
+        proxy_ssl_server_name on;
+    }
+
+    location /api/places/ {
+        set $places_host places.decentraland.org;
+        proxy_pass https://$places_host/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host places.decentraland.org;
+        proxy_set_header Accept application/json;
+        proxy_ssl_server_name on;
+    }
+
+    # External scene textures (Arweave, etc.) — same-origin proxy for WebGL CORS.
+    location ~ ^/api/texture/(https?)/([^/]+)(/.*)?$ {
+        set $tex_proto $1;
+        set $tex_host $2;
+        set $tex_path $3;
+        if ($tex_path = "") { set $tex_path /; }
+        proxy_pass $tex_proto://$tex_host$tex_path$is_args$args;
+        proxy_http_version 1.1;
+        proxy_set_header Host $tex_host;
+        proxy_ssl_server_name on;
+        add_header Access-Control-Allow-Origin "*" always;
+        add_header Cache-Control "public, max-age=86400" always;
+    }
+
+    # --- Static SPA (Three.js DCL client) ---
+
+    location ~* \.wasm$ {
+        root /var/www/dcl-threejs;
+        types { application/wasm wasm; }
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+
+    location / {
+        root /var/www/dcl-threejs;
+        index index.html;
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name decentraland.lastslice.co www.decentraland.lastslice.co;
+    return 301 https://decentraland.lastslice.co$request_uri;
+}

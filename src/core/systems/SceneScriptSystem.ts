@@ -18,6 +18,7 @@ import { applySceneDiff } from '../../bridge/entityStoreApply'
 import { AvatarShapeBridge } from '../../bridge/AvatarShapeBridge'
 import { AvatarEmoteCommandBridge, type AvatarEmoteHandler } from '../../bridge/AvatarEmoteCommandBridge'
 import { BillboardBridge } from '../../bridge/BillboardBridge'
+import { VirtualCameraBridge } from '../../camera/VirtualCameraBridge'
 import { AnimatorBridge } from '../../bridge/AnimatorBridge'
 import { TweenBridge } from '../../bridge/TweenBridge'
 import { ParticleSystemBridge } from '../../bridge/ParticleSystemBridge'
@@ -150,6 +151,9 @@ export class SceneScriptSystem {
   private avatarShapes: AvatarShapeBridge | null = null
   private avatarEmoteBridge: AvatarEmoteCommandBridge | null = null
   private billboardBridge: BillboardBridge | null = null
+  private virtualCameraBridge: VirtualCameraBridge | null = null
+  private virtualCameraPlayerPose: (() => EntityPose) | null = null
+  private virtualCameraCameraPose: (() => EntityPose) | null = null
   private animatorBridge: AnimatorBridge | null = null
   private tweenBridge: TweenBridge | null = null
   private particleBridge: ParticleSystemBridge | null = null
@@ -273,6 +277,14 @@ export class SceneScriptSystem {
       this.readComponents,
       this.entityStore,
       () => this.host!.camera
+    )
+    this.virtualCameraBridge = new VirtualCameraBridge(
+      this.readComponents,
+      this.entityStore,
+      this.view,
+      () => this.host!.camera,
+      () => this.virtualCameraPlayerPose?.() ?? this.clientPlayerPose ?? emptyEntityPose(),
+      () => this.virtualCameraCameraPose?.() ?? this.clientCameraPose ?? emptyEntityPose()
     )
     this.animatorBridge = new AnimatorBridge(
       this.readComponents,
@@ -1615,6 +1627,15 @@ export class SceneScriptSystem {
     this.audioStreamBridge?.setUserGestureUnlocked(unlocked)
   }
 
+  getVirtualCameraBridge(): VirtualCameraBridge | null {
+    return this.virtualCameraBridge
+  }
+
+  setVirtualCameraPoseProviders(player: () => EntityPose, camera: () => EntityPose): void {
+    this.virtualCameraPlayerPose = player
+    this.virtualCameraCameraPose = camera
+  }
+
   /** Bind pointer raycast after player spawn — needs collision + camera + player pose. */
   bindPointerEvents(
     getPlayerPosition: () => THREE.Vector3 | null,
@@ -2808,5 +2829,12 @@ export class SceneScriptSystem {
     this.host = null
     this.running = false
     this.prepared = false
+  }
+}
+
+function emptyEntityPose(): EntityPose {
+  return {
+    position: new THREE.Vector3(),
+    rotation: new THREE.Quaternion()
   }
 }

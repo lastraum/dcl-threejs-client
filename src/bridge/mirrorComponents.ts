@@ -16,6 +16,7 @@ export type MirrorComponents = {
   Billboard: ReturnType<typeof generated.Billboard>
   Animator: ReturnType<typeof generated.Animator>
   MainCamera: ReturnType<typeof generated.MainCamera>
+  VirtualCamera: ReturnType<typeof generated.VirtualCamera>
   AvatarLocomotionSettings: ReturnType<typeof generated.AvatarLocomotionSettings>
   InputModifier: ReturnType<typeof generated.InputModifier>
   AvatarShape: ReturnType<typeof generated.AvatarShape>
@@ -58,6 +59,7 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     Billboard: generated.Billboard(engine),
     Animator: generated.Animator(engine),
     MainCamera: generated.MainCamera(engine),
+    VirtualCamera: generated.VirtualCamera(engine),
     AvatarLocomotionSettings: generated.AvatarLocomotionSettings(engine),
     InputModifier: generated.InputModifier(engine),
     AvatarShape: generated.AvatarShape(engine),

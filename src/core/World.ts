@@ -630,6 +630,11 @@ export class World {
     this.pushAllColliderPosesToPhysX()
     this.physics.warmStaticScene()
     await this.player.initCapsule(scene.spawn, walkBounds, this.sceneScript.readComponents, onProgress)
+    this.sceneScript.setVirtualCameraPoseProviders(
+      () => this.player!.getEntityPose(),
+      () => this.player!.getCameraEntityPose()
+    )
+    this.player.setVirtualCameraBridge(this.sceneScript.getVirtualCameraBridge())
     this.sceneScript.setSpatialAudioPlayerRoot(() => this.player!.getPlayerRoot())
     const spawnStatic = this.physics.staticColliderCount
     const spawnGltf = this.physics.gltfStaticActorCount

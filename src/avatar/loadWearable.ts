@@ -21,9 +21,11 @@ import type { BodyShape, WearableCategory, WearableDefinition } from './types'
 
 export { wearableGlbCacheKey } from './wearableCache'
 export {
+  bakeOversizedWearableGeometry,
   prepareCmScaleWearableForMerge,
   prepareWearableForCompose,
   pruneWearableDisplayMeshes,
+  type PruneWearableMeshesOptions,
   wearableHasCmScaleDisplayMesh
 } from './wearableSanitize'
 
@@ -190,6 +192,15 @@ function boneMapQuality(
 
 const FEET_MERGE_BONE_ALIASES = ['LeftFoot', 'RightFoot', 'LeftToeBase', 'RightToeBase'] as const
 
+function feetMergeUsedBones(
+  src: THREE.Skeleton,
+  usedBoneIndices: Set<number>
+): THREE.Bone[] {
+  return usedBoneIndices.size > 0
+    ? [...usedBoneIndices].map((i) => src.bones[i]).filter(Boolean)
+    : src.bones
+}
+
 function feetMergeHasFootBones(src: THREE.Skeleton, dst: THREE.Skeleton, usedBoneIndices: Set<number>): boolean {
   const dstBones = skeletonBoneSet(dst)
   const footTargets = new Set<string>()
@@ -199,15 +210,49 @@ function feetMergeHasFootBones(src: THREE.Skeleton, dst: THREE.Skeleton, usedBon
   }
   if (!footTargets.size) return false
 
-  const bones =
-    usedBoneIndices.size > 0
-      ? [...usedBoneIndices].map((i) => src.bones[i]).filter(Boolean)
-      : src.bones
-  for (const bone of bones) {
+  for (const bone of feetMergeUsedBones(src, usedBoneIndices)) {
     const resolved = resolveBoneName(bone.name, dstBones)
     if (resolved && footTargets.has(resolved)) return true
   }
   return false
+}
+
+/** RTFKT / L2 whole-shoe rigs skin only to Hips — merge onto body Hips instead of fallback attach. */
+function feetMergeUsesHipsOnly(
+  src: THREE.Skeleton,
+  dst: THREE.Skeleton,
+  usedBoneIndices: Set<number>
+): boolean {
+  const dstBones = skeletonBoneSet(dst)
+  const hipsResolved = resolveBoneName('Hips', dstBones)
+  if (!hipsResolved) return false
+
+  const footTargets = new Set<string>()
+  for (const alias of FEET_MERGE_BONE_ALIASES) {
+    const resolved = resolveBoneName(alias, dstBones)
+    if (resolved) footTargets.add(resolved)
+  }
+
+  let hasHips = false
+  let hasFoot = false
+  for (const bone of feetMergeUsedBones(src, usedBoneIndices)) {
+    const resolved = resolveBoneName(bone.name, dstBones)
+    if (!resolved) continue
+    if (resolved === hipsResolved) hasHips = true
+    if (footTargets.has(resolved)) hasFoot = true
+  }
+  return hasHips && !hasFoot
+}
+
+function feetMergeEligible(
+  src: THREE.Skeleton,
+  dst: THREE.Skeleton,
+  usedBoneIndices: Set<number>
+): boolean {
+  return (
+    feetMergeHasFootBones(src, dst, usedBoneIndices) ||
+    feetMergeUsesHipsOnly(src, dst, usedBoneIndices)
+  )
 }
 
 function mergeThresholdForCategory(category?: WearableCategory, wearableId?: string): number {
@@ -274,10 +319,7 @@ export function mergeWearableMeshes(
     const usedBones = collectUsedBoneIndices(obj)
     const quality = boneMapQuality(obj.skeleton, skeleton, usedBones)
     if (quality < threshold) return
-    if (
-      options.category === 'feet' &&
-      !feetMergeHasFootBones(obj.skeleton, skeleton, usedBones)
-    ) {
+    if (options.category === 'feet' && !feetMergeEligible(obj.skeleton, skeleton, usedBones)) {
       return
     }
 

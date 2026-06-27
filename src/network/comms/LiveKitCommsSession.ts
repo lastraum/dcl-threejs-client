@@ -424,13 +424,13 @@ export class LiveKitCommsSession {
     if (!this.room || this.room.state !== ConnectionState.Connected) return false
     const trimmed = text.trim()
     if (!trimmed) return false
-    const sessionElapsedSec = Math.max(0.001, (performance.now() - this.sessionStartedAt) / 1000)
-    const packet = encodeRfc4ChatPacket(trimmed, sessionElapsedSec)
+    const unixSec = Date.now() / 1000
+    const packet = encodeRfc4ChatPacket(trimmed, unixSec)
     try {
       await this.room.localParticipant.publishData(packet, { reliable: true })
       clientDebugLog.log(
         'comms',
-        `RFC4 Chat out → ${this.transport} len=${packet.byteLength} elapsed=${sessionElapsedSec.toFixed(1)}s`,
+        `RFC4 Chat out → ${this.transport} len=${packet.byteLength} unix=${unixSec.toFixed(0)}`,
         { throttleMs: 0, throttleKey: `chat-out:${this.transport}` }
       )
       return true

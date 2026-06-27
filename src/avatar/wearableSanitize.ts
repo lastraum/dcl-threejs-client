@@ -143,8 +143,45 @@ export function normalizeWearableArmatureToBody(
   const ratio = wearScale / bodyScale
   if (ratio > 2 || ratio < 0.5) {
     const factor = bodyScale / wearScale
-    wearableRoot.scale.multiplyScalar(factor)
+    let applied = false
+    wearableRoot.traverse((obj) => {
+      if (!/armature/i.test(obj.name)) return
+      obj.scale.multiplyScalar(factor)
+      applied = true
+    })
+    if (!applied) wearableRoot.scale.multiplyScalar(factor)
   }
+}
+
+/**
+ * RTFKT / L1 feet often ship vertex coords in cm while armature node scale reads ~1.
+ * Bake oversize local geometry down to meter-scale slot extents before merge or fallback.
+ */
+export function bakeOversizedWearableGeometry(
+  root: THREE.Object3D,
+  category?: WearableCategory
+): void {
+  const expected = (category && EXPECTED_WEARABLE_EXTENT_M[category]) ?? 2
+  const trigger = Math.max(expected * 4, 2.5)
+  root.traverse((obj) => {
+    if (!(obj instanceof THREE.Mesh)) return
+    const local = localMeshExtent(obj)
+    if (local <= trigger) return
+    const factor = expected / local
+    const pos = obj.geometry.attributes.position as THREE.BufferAttribute | undefined
+    if (!pos) return
+    for (let i = 0; i < pos.count; i++) {
+      pos.setXYZ(
+        i,
+        pos.getX(i) * factor,
+        pos.getY(i) * factor,
+        pos.getZ(i) * factor
+      )
+    }
+    pos.needsUpdate = true
+    obj.geometry.computeBoundingBox()
+    obj.geometry.computeBoundingSphere()
+  })
 }
 
 /** True when wearable rig units differ from body_shape — must normalize before extent-based prune. */
@@ -178,6 +215,7 @@ export function prepareWearableForCompose(
   wearableRoot.rotation.set(0, 0, 0)
   wearableRoot.scale.set(1, 1, 1)
   normalizeWearableArmatureToBody(wearableRoot, bodyRoot)
+  bakeOversizedWearableGeometry(wearableRoot, category)
   normalizeWearableWorldScale(wearableRoot, category)
   pruneWearableDisplayMeshes(wearableRoot)
 }

@@ -9,6 +9,7 @@ import {
   loadWearableSceneCached,
   mergeWearableMeshes,
   prepareWearableForCompose,
+  pruneWearableDisplayMeshes,
   sanitizeWearableRoot,
   disposeWearableInstance,
   buildMappingsForWearables
@@ -122,12 +123,23 @@ async function composeFromConfig(
         console.info(`[avatar] composing feet — ${entry.wearable.id}`)
       }
 
-      prepareWearableForCompose(entry.layer, bodyRoot, entry.wearable.data.category)
+      let merged = false
+      if (isFeet) {
+        // Merge on raw rig weights first — pre-scale can hide foot/Hips bind info (RTFKT/L2 shoes).
+        pruneWearableDisplayMeshes(entry.layer, { extentCheck: false })
+        merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
+        if (!merged) {
+          prepareWearableForCompose(entry.layer, bodyRoot, entry.wearable.data.category)
+          merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
+        }
+      } else {
+        prepareWearableForCompose(entry.layer, bodyRoot, entry.wearable.data.category)
+        merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
+      }
 
-      const merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
       if (!merged) {
         const attached = attachWearableFallback(entry.layer, skeleton, avatar, mergeOpts)
-        if (attached && entry.wearable.data.category === 'feet') {
+        if (attached && isFeet) {
           console.info(`[avatar] feet fallback attach — ${entry.wearable.id}`)
         }
         if (!attached) {

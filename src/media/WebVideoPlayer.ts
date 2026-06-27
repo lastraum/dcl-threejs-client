@@ -102,10 +102,10 @@ export class WebVideoPlayer {
     document.body.appendChild(this.video)
 
     this.video.addEventListener('loadstart', () => this.setState(VS_LOADING))
-    this.video.addEventListener('loadedmetadata', () => this.onFrameReady?.())
+    this.video.addEventListener('loadedmetadata', () => this.notifyDrawableFrame())
     this.video.addEventListener('loadeddata', () => {
       if (this.state !== VS_ERROR) this.setState(VS_READY)
-      this.onFrameReady?.()
+      this.notifyDrawableFrame()
     })
     this.video.addEventListener('canplay', () => {
       if (this.state !== VS_ERROR && !this.video.paused) return
@@ -113,8 +113,9 @@ export class WebVideoPlayer {
     })
     this.video.addEventListener('playing', () => {
       this.setState(VS_PLAYING)
-      this.onFrameReady?.()
+      this.notifyDrawableFrame()
     })
+    this.video.addEventListener('resize', () => this.notifyDrawableFrame())
     this.video.addEventListener('pause', () => {
       if (this.state !== VS_SEEKING && this.state !== VS_ERROR) {
         this.setState(VS_PAUSED)
@@ -232,12 +233,12 @@ export class WebVideoPlayer {
 
   canAttachTexture(): boolean {
     const video = this.usesSharedLiveKit ? getSharedLiveKitVideoStream().video : this.video
+    if (!this.loadedSrc || this.state === VS_ERROR) return false
+    if (video.videoWidth <= 0 || video.videoHeight <= 0) return false
     return (
-      !!this.loadedSrc &&
-      this.state !== VS_ERROR &&
-      (video.readyState >= HTMLMediaElement.HAVE_METADATA ||
-        this.hasHadRenderableFrame ||
-        (this.liveKitSource && video.videoWidth > 0))
+      video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA ||
+      this.hasHadRenderableFrame ||
+      this.liveKitSource
     )
   }
 
@@ -514,10 +515,10 @@ export class WebVideoPlayer {
     const shared = getSharedLiveKitVideoStream()
     const onTrackUpdate = (): void => {
       const video = shared.video
-      if (video.videoWidth > 0 || video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      if (video.videoWidth > 0 && video.readyState >= HTMLMediaElement.HAVE_METADATA) {
         if (this.state !== VS_ERROR) this.setState(VS_READY)
-        this.onFrameReady?.()
       }
+      this.notifyDrawableFrame()
       if (this.wantsPlaying && !this.isPlaybackBlocked()) void this.tryPlayShared(video)
     }
 
@@ -635,5 +636,15 @@ export class WebVideoPlayer {
       if (err instanceof DOMException && err.name === 'AbortError') return
       console.warn('[WebVideoPlayer] play() blocked or failed', err, this.loadedSrc)
     }
+  }
+
+  /** Push canvas uploads and re-queue materials once the decoder has drawable dimensions. */
+  private notifyDrawableFrame(): void {
+    const video = this.usesSharedLiveKit ? getSharedLiveKitVideoStream().video : this.video
+    if (video.videoWidth > 0 && video.videoHeight > 0) {
+      this.hasHadRenderableFrame = true
+      if (!this.usesSharedLiveKit) this.throttledTexture?.notifySourceChanged()
+    }
+    if (this.canAttachTexture()) this.onFrameReady?.()
   }
 }

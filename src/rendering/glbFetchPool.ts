@@ -12,7 +12,12 @@ type Pending = {
   reject: (err: Error) => void
 }
 
-const POOL_SIZE = 3
+/** Parallel Catalyst downloads — cold scenes have dozens of GLBs (Genesis ~100+). */
+const POOL_SIZE = (() => {
+  if (typeof navigator === 'undefined') return 6
+  const cores = navigator.hardwareConcurrency ?? 4
+  return Math.min(8, Math.max(6, Math.floor(cores * 1.5)))
+})()
 
 let workers: Worker[] | null = null
 const inflightByKey = new Map<string, Promise<ArrayBuffer>>()

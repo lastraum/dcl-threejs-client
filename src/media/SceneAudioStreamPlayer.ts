@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import type { PBAudioStream } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/audio_stream.gen'
 import { applyDclLocalTransform, type DclTransformValues } from '../bridge/dclTransform'
-import { inWorldVolumeMultiplier } from '../rendering/SoundSettings'
+import { spatialAudioGain } from '../rendering/SoundSettings'
 import {
   MS_BUFFERING,
   MS_ERROR,
@@ -251,7 +251,7 @@ export class SceneAudioStreamPlayer {
           this.setState(MS_ERROR)
           return
         }
-        const hls = new Hls() as HlsInstance
+        const hls = new Hls({ enableWorker: false }) as HlsInstance
         hls.attachMedia(this.audio)
         hls.loadSource(url)
         this.hls = hls
@@ -271,7 +271,7 @@ export class SceneAudioStreamPlayer {
   }
 
   private applyEffectiveVolume(): void {
-    const gain = clamp(this.lastSpecVolume * inWorldVolumeMultiplier(), 0, 1)
+    const gain = clamp(spatialAudioGain('voice', this.lastSpecVolume), 0, 1)
     this.sound.setVolume(gain)
   }
 

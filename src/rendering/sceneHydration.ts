@@ -1,6 +1,12 @@
 import type { ResolvedScene } from '../dcl/content/types'
 import type { AssetCache } from './AssetCache'
 import type { SceneScriptSystem } from '../core/systems/SceneScriptSystem'
+import {
+  markSceneHydrated,
+  primeManifestParses,
+  resolveSceneBytesWarm,
+  resolveSceneLoadWarm
+} from './sceneLoadWarm'
 
 export type SceneHydrationStats = {
   entityCount: number
@@ -33,6 +39,7 @@ export type WaitForSceneAssetsResult = {
 const DEFAULT_TIMEOUT_MS = 180_000
 const FAST_TIMEOUT_MS = 90_000
 const STABLE_MS = 400
+const STABLE_WARM_MS = 150
 /** Scene scripts keep spawning entities after boot — wait for the count to settle. */
 const ENTITY_STABLE_MS = 800
 const SOFT_HYDRATION_MS = 8_000
@@ -186,6 +193,20 @@ export async function waitForSceneAssets(
   sceneScript.setAssetHydrationMode(true)
   sceneScript.prefetchGltfs()
 
+  const warmScene = await resolveSceneLoadWarm(assets, scene)
+  const bytesWarm = !warmScene && (await resolveSceneBytesWarm(scene))
+  if (warmScene) {
+    console.info('[Hydration] warm scene — parallel GLB parse + fast stability gate')
+    await primeManifestParses(assets, scene, 16)
+  } else if (bytesWarm) {
+    console.info('[Hydration] IDB byte cache — parallel GLB prime (180s hydration timeout)')
+    await primeManifestParses(assets, scene, 12)
+  } else {
+    void primeManifestParses(assets, scene, 8)
+  }
+
+  const stableRequiredMs = warmScene ? STABLE_WARM_MS : stableMs
+
   return new Promise((resolve) => {
     let finished = false
     let lastProgressAt = performance.now()
@@ -196,6 +217,7 @@ export async function waitForSceneAssets(
       window.clearTimeout(hardTimeout)
       sceneScript.setAssetHydrationMode(false)
       sceneScript.extendSoftHydration(SOFT_HYDRATION_MS)
+      if (!timedOut) markSceneHydrated(scene)
       options.onPrimeRender?.()
       if (reason) console.warn(`[Hydration] ${reason}`)
       resolve({ timedOut, elapsedMs: performance.now() - started })
@@ -235,7 +257,7 @@ export async function waitForSceneAssets(
         await sceneScript.yieldForWorkerMessages()
         await sceneScript.syncRenderer()
         if (finished) return
-        sceneScript.syncCollision()
+        sceneScript.flushHydrationCollisionWork()
         sceneScript.pumpMotionBridges(1 / 60)
 
         const bridgeStats = sceneScript.getHydrationStats()
@@ -336,13 +358,15 @@ export async function waitForSceneAssets(
         }
 
         const elapsedMs = performance.now() - started
-        const entityStableMs = entityStableRequiredMs(peakGltfEntities, stats.gltfContainers)
+        const entityStableMs = warmScene
+          ? ENTITY_STABLE_FAST_MS
+          : entityStableRequiredMs(peakGltfEntities, stats.gltfContainers)
         if (
           isGltfAttachComplete(stats, peakGltfEntities, elapsedMs, manifestGlbCount) &&
           entityStableSince > 0
         ) {
           if (stableSince === 0) stableSince = performance.now()
-          const assetsStable = performance.now() - stableSince >= stableMs
+          const assetsStable = performance.now() - stableSince >= stableRequiredMs
           const entitiesStable = performance.now() - entityStableSince >= entityStableMs
           if (assetsStable && entitiesStable) {
             const elapsed = ((performance.now() - started) / 1000).toFixed(1)

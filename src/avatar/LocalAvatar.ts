@@ -16,6 +16,17 @@ import { resolveProfileEmote, loadResolvedProfileEmote, isSceneEmoteUrn, type Re
 import type { AssetCache } from '../rendering/AssetCache'
 import type { ComposeOptions } from './AvatarComposer'
 import type { BodyShape } from './types'
+import { VrmAvatar } from './vrm/VrmAvatar'
+import { VrmLocomotionAnimations } from './vrm/VrmLocomotionAnimations'
+import { retargetGltfClipToVrm } from './vrm/mixamoRetarget'
+import { applyVrmPivotOffset } from './vrm/vrmFeetAlign'
+import { getEquippedCustomAvatar } from './vrm/vrmEquipStorage'
+import { getVrmLibraryEntry, loadVrmLibraryBytes } from './vrm/VrmLibrary'
+import { OdkAvatar } from './odk/OdkAvatar'
+import { OdkLocomotionAnimations } from './odk/OdkLocomotionAnimations'
+import { applyOdkRestCorrection, retargetGltfClipToOdk } from './odk/odkRetarget'
+import { applyOdkPivotOffset } from './odk/odkFeetAlign'
+import type { CustomAvatarFormat } from './vrm/constants'
 
 export type PlayEmoteOptions = {
   loop?: boolean
@@ -26,7 +37,12 @@ export type PlayEmoteOptions = {
 export class LocalAvatar {
   private readonly pivot = new THREE.Group()
   readonly nameTagAnchor = new THREE.Object3D()
-  private model: THREE.Group | null = null
+  private model: THREE.Object3D | null = null
+  private vrmAvatar: VrmAvatar | null = null
+  private vrmLocomotion: VrmLocomotionAnimations | null = null
+  private odkAvatar: OdkAvatar | null = null
+  private odkLocomotion: OdkLocomotionAnimations | null = null
+  private renderMode: 'dcl' | 'vrm' | 'odk' = 'dcl'
   private animations: AvatarAnimations | null = null
   private identity: ProfileIdentity = defaultProfileIdentity()
   private bodyShape: BodyShape = 'male'
@@ -51,14 +67,81 @@ export class LocalAvatar {
   async load(options: ComposeOptions = {}): Promise<ProfileIdentity> {
     this.disposeModel()
     const profile = await resolveAvatarProfile(options.profileId, options.bodyShape)
-    this.model = await composeAvatarFromProfile(profile, this.peerUrl, this.assetCache)
-    this.pivot.add(this.model)
     this.identity = identityFromAvatarProfile(profile, options.profileId)
     this.bodyShape = profile.bodyShape
 
+    const profileAddress = options.profileId ?? profile.address ?? getActiveProfileAddress()
+    const equipped = getEquippedCustomAvatar(profileAddress)
+    if (equipped) {
+      const bytes = await loadVrmLibraryBytes(equipped.contentHash)
+      if (bytes) {
+        const entry = await getVrmLibraryEntry(equipped.contentHash)
+        const format: CustomAvatarFormat = entry?.format ?? equipped.format
+        try {
+          if (format === 'odk') {
+            this.odkAvatar = await OdkAvatar.fromBytes(bytes, entry?.mmlAttachments)
+            this.renderMode = 'odk'
+            this.model = this.odkAvatar.root
+            this.pivot.add(this.model)
+            applyOdkPivotOffset(this.pivot, this.model)
+
+            const odkBindPoseOnly =
+              typeof window !== 'undefined' &&
+              new URLSearchParams(window.location.search).has('odkBindPose')
+            if (odkBindPoseOnly) {
+              console.info('[avatar] custom ODK/MML equipped — bind pose only (?odkBindPose)')
+            } else {
+              this.odkLocomotion = new OdkLocomotionAnimations()
+              try {
+                await this.odkLocomotion.bind(this.odkAvatar.root)
+                console.info('[avatar] custom ODK/MML avatar equipped — locomotion active')
+              } catch (err) {
+                console.warn('[avatar] ODK locomotion bind failed — bind pose only', err)
+                this.odkLocomotion.dispose()
+                this.odkLocomotion = null
+              }
+            }
+          } else {
+            this.vrmAvatar = await VrmAvatar.fromBytes(bytes)
+            this.renderMode = 'vrm'
+            this.model = this.vrmAvatar.root
+            this.pivot.add(this.model)
+            this.vrmAvatar.vrm.humanoid.autoUpdateHumanBones = false
+
+            this.vrmLocomotion = new VrmLocomotionAnimations()
+            try {
+              await this.vrmLocomotion.bind(this.vrmAvatar.vrm, this.vrmAvatar.root)
+              applyVrmPivotOffset(this.pivot, this.vrmAvatar.vrm, this.model, {
+                measureActivePose: true
+              })
+              console.info('[avatar] custom VRM equipped — locomotion active')
+            } catch (err) {
+              console.warn('[avatar] VRM locomotion bind failed — bind pose only', err)
+              this.vrmLocomotion.dispose()
+              this.vrmLocomotion = null
+              applyVrmPivotOffset(this.pivot, this.vrmAvatar.vrm, this.model)
+            }
+          }
+
+          updateNameTagAnchor(this.nameTagAnchor, this.model)
+          return this.identity
+        } catch (err) {
+          console.warn('[avatar] custom avatar load failed — falling back to DCL compose', err)
+          this.vrmAvatar?.dispose()
+          this.vrmAvatar = null
+          this.odkAvatar?.dispose()
+          this.odkAvatar = null
+        }
+      }
+    }
+
+    this.renderMode = 'dcl'
+    this.model = await composeAvatarFromProfile(profile, this.peerUrl, this.assetCache)
+    this.pivot.add(this.model)
+
     this.animations = new AvatarAnimations()
     try {
-      await this.animations.bind(this.model, this.pivot, {
+      await this.animations.bind(this.model as THREE.Group, this.pivot, {
         bodyShape: profile.bodyShape,
         peerUrl: this.peerUrl,
         assetCache: this.assetCache
@@ -77,8 +160,16 @@ export class LocalAvatar {
     return this.identity
   }
 
-  getModel(): THREE.Group | null {
+  getModel(): THREE.Object3D | null {
     return this.model
+  }
+
+  isVrmMode(): boolean {
+    return this.renderMode === 'vrm'
+  }
+
+  isCustomAvatarMode(): boolean {
+    return this.renderMode === 'vrm' || this.renderMode === 'odk'
   }
 
   getIdentity(): ProfileIdentity {
@@ -98,10 +189,10 @@ export class LocalAvatar {
   }
 
   async playEmote(emoteId: string, options: PlayEmoteOptions = {}): Promise<ResolvedProfileEmote | null> {
-    if (!this.model || !this.animations) return null
+    if (!this.model) return null
 
     const normalizedId = emoteId.trim().toLowerCase()
-    if (this.animations.isProfileEmoteActive() && this.activeEmoteUrn === normalizedId) {
+    if (this.isProfileEmoteActive() && this.activeEmoteUrn === normalizedId) {
       return null
     }
 
@@ -131,6 +222,36 @@ export class LocalAvatar {
 
       const loop = options.loop ?? resolved.loop
       const emoteKey = resolved.urn.trim().toLowerCase()
+
+      if (this.renderMode === 'vrm' && this.vrmAvatar && this.vrmLocomotion) {
+        const clip = retargetGltfClipToVrm(cached.animations[0]!, cached.root, this.vrmAvatar.vrm)
+        if (clip.tracks.length === 0) {
+          console.warn(`[avatar] VRM emote retarget produced no tracks: ${resolved.url}`)
+          return null
+        }
+        if (this.vrmLocomotion.playProfileEmote(clip, loop)) {
+          this.activeEmoteUrn = emoteKey
+          return resolved
+        }
+        return null
+      }
+
+      if (this.renderMode === 'odk' && this.odkAvatar && this.odkLocomotion) {
+        const clip = retargetGltfClipToOdk(cached.animations[0]!, cached.root, this.odkAvatar.root)
+        const restCorrection = this.odkLocomotion.getRestCorrection()
+        if (restCorrection) applyOdkRestCorrection(clip, restCorrection)
+        if (clip.tracks.length === 0) {
+          console.warn(`[avatar] ODK emote retarget produced no tracks: ${resolved.url}`)
+          return null
+        }
+        if (this.odkLocomotion.playProfileEmote(clip, loop)) {
+          this.activeEmoteUrn = emoteKey
+          return resolved
+        }
+        return null
+      }
+
+      if (!this.animations) return null
       if (this.animations.playProfileEmoteFromGltf(cached, loop, emoteKey)) {
         this.activeEmoteUrn = emoteKey
         return resolved
@@ -146,15 +267,35 @@ export class LocalAvatar {
   stopEmote(): void {
     this.emotePlaySeq++
     this.activeEmoteUrn = null
-    this.animations?.stopProfileEmote()
+    if (this.renderMode === 'vrm') {
+      this.vrmLocomotion?.stopProfileEmote()
+    } else if (this.renderMode === 'odk') {
+      this.odkLocomotion?.stopProfileEmote()
+    } else {
+      this.animations?.stopProfileEmote()
+    }
   }
 
   isProfileEmoteActive(): boolean {
+    if (this.renderMode === 'vrm') {
+      return this.vrmLocomotion?.isProfileEmoteActive() ?? false
+    }
+    if (this.renderMode === 'odk') {
+      return this.odkLocomotion?.isProfileEmoteActive() ?? false
+    }
     return this.animations?.isProfileEmoteActive() ?? false
   }
 
   update(delta: number, state: AvatarLocomotionState): void {
-    this.animations?.update(delta, state)
+    if (this.renderMode === 'vrm') {
+      this.vrmLocomotion?.update(delta, state)
+      this.vrmAvatar?.update(delta)
+    } else if (this.renderMode === 'odk') {
+      this.odkLocomotion?.update(delta, state)
+      this.odkAvatar?.update(delta)
+    } else {
+      this.animations?.update(delta, state)
+    }
     updateNameTagAnchor(this.nameTagAnchor, this.model)
   }
 
@@ -170,12 +311,34 @@ export class LocalAvatar {
   }
 
   private disposeModel(): void {
+    this.pivot.position.set(0, 0, 0)
     this.animations?.dispose()
     this.animations = null
+    if (this.vrmAvatar) {
+      this.vrmLocomotion?.dispose()
+      this.vrmLocomotion = null
+      this.pivot.remove(this.vrmAvatar.root)
+      this.vrmAvatar.dispose()
+      this.vrmAvatar = null
+      this.model = null
+      this.renderMode = 'dcl'
+      return
+    }
+    if (this.odkAvatar) {
+      this.odkLocomotion?.dispose()
+      this.odkLocomotion = null
+      this.pivot.remove(this.odkAvatar.root)
+      this.odkAvatar.dispose()
+      this.odkAvatar = null
+      this.model = null
+      this.renderMode = 'dcl'
+      return
+    }
     if (!this.model) return
-    disposeWearableInstance(this.model)
+    disposeWearableInstance(this.model as THREE.Group)
     this.pivot.remove(this.model)
     this.model = null
+    this.renderMode = 'dcl'
   }
 }
 

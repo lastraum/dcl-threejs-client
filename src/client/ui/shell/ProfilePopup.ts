@@ -9,6 +9,7 @@ export type ProfilePopupData = {
 }
 
 export type ProfilePopupHandlers = {
+  onViewProfile?: () => void
   onSignOut: () => void | Promise<void>
   onExit: () => void | Promise<void>
 }
@@ -50,6 +51,10 @@ export class ProfilePopup {
     this.open = false
     this.root.hidden = true
     this.backdrop.hidden = true
+  }
+
+  setOnViewProfile(handler: (() => void) | null): void {
+    this.handlers.onViewProfile = handler ?? undefined
   }
 
   dispose(): void {
@@ -144,6 +149,11 @@ export class ProfilePopup {
     `
 
     this.root.querySelector('.profile-popup__view-btn')?.addEventListener('click', () => {
+      if (this.handlers.onViewProfile) {
+        this.hide()
+        this.handlers.onViewProfile()
+        return
+      }
       window.open(profileUrl, '_blank', 'noopener,noreferrer')
     })
 

@@ -1,7 +1,8 @@
 import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
 import type { CrdtProjection } from './CrdtProjection'
-import { threeToDclQuat, threeToDclVec } from './dclTransform'
+import { dclToThreeVec, threeToDclQuat, threeToDclVec } from './dclTransform'
+import { feetDclToPlayerEntityPosition } from '../player/dclPlayerEntity'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ReservedEntities } from './ProjectionView'
 import type { PlayerMirrorIdentity } from './playerMirrorIdentity'
@@ -39,14 +40,22 @@ export class ReservedEntitiesSync {
     }
     this.projection.setRenderer(Transform.componentId, this.reserved.root, identity)
 
-    const t = {
+    const feetDcl = dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y, spawn.z))
+    const playerEntityDcl = feetDclToPlayerEntityPosition(feetDcl)
+    const playerT = {
+      position: { x: playerEntityDcl.x, y: playerEntityDcl.y, z: playerEntityDcl.z },
+      rotation: { x: 0, y: 0, z: 0, w: 1 },
+      scale: { x: 1, y: 1, z: 1 },
+      parent: this.reserved.root
+    }
+    const cameraT = {
       position: { x: spawn.x, y: spawn.y, z: spawn.z },
       rotation: { x: 0, y: 0, z: 0, w: 1 },
       scale: { x: 1, y: 1, z: 1 },
       parent: this.reserved.root
     }
-    this.projection.setRenderer(Transform.componentId, this.reserved.player, t)
-    this.projection.setRenderer(Transform.componentId, this.reserved.camera, t)
+    this.projection.setRenderer(Transform.componentId, this.reserved.player, playerT)
+    this.projection.setRenderer(Transform.componentId, this.reserved.camera, cameraT)
     this.projection.setRenderer(MainCamera.componentId, this.reserved.camera, {})
   }
 

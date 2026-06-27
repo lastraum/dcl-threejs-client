@@ -1,5 +1,6 @@
 import * as THREE from 'three'
-import type { ResolvedScene, SkyboxConfig } from '../dcl/content/types'
+import type { ResolvedScene, SceneEnvironmentKind, SkyboxConfig } from '../dcl/content/types'
+import { landscapeEnvironmentProfile } from '../dcl/landscape/EnvironmentCatalog'
 import type { MirrorComponents } from '../bridge/mirrorComponents'
 import type { ProjectionView } from '../bridge/ProjectionView'
 import type { SceneHost } from '../rendering/SceneHost'
@@ -27,6 +28,11 @@ import {
   TransitionMode as TM
 } from './skyboxTime'
 import {
+  createOutdoorLightingSnapshot,
+  syncOutdoorLightingFromLights,
+  type OutdoorLightingSnapshot
+} from './OutdoorLighting'
+import {
   animatedLightIntensity,
   celestialDirection,
   isSunPeriod,
@@ -35,6 +41,11 @@ import {
 
 const _celestial = new THREE.Vector3()
 const _hemiGround = new THREE.Color()
+const _blackBackground = new THREE.Color(0x000000)
+/** Neutral void for blank scenes — no genesis dome nadir showing as a cyan “floor”. */
+const VOID_SKY_BACKGROUND = 0x1a1a2e
+/** Exposure when scene.json disables celestial lights — ECS LightSource carries the scene. */
+const CELESTIAL_OFF_EXPOSURE = 0.1
 
 /** Max reduction of sun/hemi when the nearby ECS light budget is fully saturated. */
 const ECS_HYBRID_SUN_REDUCTION = 0.25
@@ -60,6 +71,12 @@ export class EnvironmentSystem {
   private freezeClouds = false
   private uiOverrideTime: number | null = null
   private lastSkyboxKey = ''
+  private landscapeKind: SceneEnvironmentKind = 'island'
+  private disableSun = false
+  private disableMoon = false
+  /** Help panel — hide genesis dome and use void sky while keeping custom skybox textures. */
+  private landscapeVisualSuppressed = false
+  private readonly outdoorLighting = createOutdoorLightingSnapshot()
 
   constructor(
     private readonly host: SceneHost,
@@ -80,6 +97,11 @@ export class EnvironmentSystem {
 
   async init(scene: ResolvedScene): Promise<void> {
     const threeScene = this.host.scene
+    this.landscapeVisualSuppressed = false
+    this.landscapeKind = scene.landscapeEnvironment
+    this.disableSun = scene.skyLighting.disableSun
+    this.disableMoon = scene.skyLighting.disableMoon
+    const landscapeProfile = landscapeEnvironmentProfile(this.landscapeKind)
 
     threeScene.add(this.genesisSky.mesh)
     threeScene.add(this.hemi)
@@ -101,10 +123,26 @@ export class EnvironmentSystem {
     }
 
     await this.applyCustomSkybox(scene.skybox, scene.assetUrl)
-    if (!this.customCube && !this.customBackground) {
+    const hideSkyDome = landscapeProfile.spaceSky === true || landscapeProfile.voidSky === true
+    if (!this.customCube && !this.customBackground && !hideSkyDome) {
       await this.genesisSky.loadTextures()
+    } else if (landscapeProfile.spaceSky) {
+      this.host.scene.background = new THREE.Color(0x020208)
+      this.genesisSky.mesh.visible = false
+    } else if (landscapeProfile.voidSky) {
+      this.host.scene.background = new THREE.Color(VOID_SKY_BACKGROUND)
+      this.genesisSky.mesh.visible = false
     }
     this.applyTime(this.displayTime, 0)
+  }
+
+  /** Runtime debug — suppress genesis sky dome (landscape/ocean hidden separately in World). */
+  setLandscapeVisualSuppressed(suppressed: boolean): void {
+    this.landscapeVisualSuppressed = suppressed
+  }
+
+  isLandscapeVisualSuppressed(): boolean {
+    return this.landscapeVisualSuppressed
   }
 
   update(delta: number, view: ProjectionView, components: MirrorComponents): void {
@@ -132,6 +170,7 @@ export class EnvironmentSystem {
   }
 
   dispose(): void {
+    this.landscapeVisualSuppressed = false
     this.genesisSky.dispose()
     this.genesisSky.mesh.removeFromParent()
     this.hemi.removeFromParent()
@@ -145,6 +184,11 @@ export class EnvironmentSystem {
 
   getTimeOfDay(): number {
     return this.displayTime
+  }
+
+  /** Latest sun/moon + sky colours — updated every `update()` / `applyTime()`. */
+  getOutdoorLighting(): Readonly<OutdoorLightingSnapshot> {
+    return this.outdoorLighting
   }
 
   /** True when UI auto cycle is running (not manual override). */
@@ -221,19 +265,43 @@ export class EnvironmentSystem {
     this.transitionProgress = 0
   }
 
+  /** Sun/moon directional + hemisphere fill suppressed for the current day/night period. */
+  private celestialSkylightSuppressed(day: boolean): boolean {
+    if (this.disableSun && this.disableMoon) return true
+    if (this.disableSun && day) return true
+    if (this.disableMoon && !day) return true
+    return false
+  }
+
   private applyTime(seconds: number, delta: number): void {
     celestialDirection(seconds, _celestial)
     const day = isSunPeriod(seconds)
     const g = sampleSkyGradientsAt(seconds)
     const lit = animatedLightIntensity(seconds)
 
-    const useGenesis = !this.customCube && !this.customBackground
+    const skylightOff = this.celestialSkylightSuppressed(day)
+    const landscapeProfile = landscapeEnvironmentProfile(this.landscapeKind)
+    const forceVoidSky = this.landscapeVisualSuppressed
+    const spaceSky = !forceVoidSky && landscapeProfile.spaceSky === true
+    const voidSky = forceVoidSky || landscapeProfile.voidSky === true
+    const useGenesis =
+      !forceVoidSky &&
+      !this.customCube &&
+      !this.customBackground &&
+      !spaceSky &&
+      !voidSky &&
+      !skylightOff
     this.genesisSky.mesh.visible = useGenesis
 
     if (useGenesis) {
-      const cam = this.host.camera.position
-      this.genesisSky.mesh.position.set(cam.x, 0, cam.z)
+      this.genesisSky.mesh.position.copy(this.host.camera.position)
       this.genesisSky.update(seconds, _celestial, delta, this.freezeClouds)
+      if (this.disableSun) {
+        this.genesisSky.uniforms.uSunRadiance.value = 0
+      }
+      if (this.disableMoon) {
+        this.genesisSky.uniforms.uMoonMask.value = 0
+      }
     }
 
     const sunScale = this.hybridSunScale()
@@ -242,31 +310,63 @@ export class EnvironmentSystem {
     const sceneSunMul = sceneSunLightMultiplier(lighting.sceneSunLight)
     const sceneMoonMul = sceneMoonLightMultiplier(lighting.sceneMoonLight)
 
-    this.sun.intensity = (day ? lit * SUN_BRIGHTNESS : 0.02) * sunScale * sceneSunMul
+    this.sun.intensity = this.disableSun
+      ? 0
+      : (day ? lit * SUN_BRIGHTNESS : 0.02) * sunScale * sceneSunMul
     this.sun.color.copy(g.directional)
     this.sun.position.copy(_celestial).multiplyScalar(120)
     this.sun.target.position.set(0, 0, 0)
 
     const moonLit = moonLightIntensity(seconds)
-    this.moon.intensity = day ? 0 : moonLit * MOON_BRIGHTNESS * moonScale * sceneMoonMul
+    this.moon.intensity = this.disableMoon
+      ? 0
+      : day
+        ? 0
+        : moonLit * MOON_BRIGHTNESS * moonScale * sceneMoonMul
     this.moon.color.copy(g.directional)
     this.moon.position.copy(_celestial).multiplyScalar(120)
     this.moon.target.position.set(0, 0, 0)
 
-    this.hemi.intensity =
-      (day ? HEMI_DAY_INTENSITY * sceneSunMul : HEMI_NIGHT_INTENSITY * sceneMoonMul) * sunScale
+    this.hemi.intensity = skylightOff
+      ? 0
+      : (day ? HEMI_DAY_INTENSITY * sceneSunMul : HEMI_NIGHT_INTENSITY * sceneMoonMul) * sunScale
     this.hemi.color.copy(g.indirectSky)
     _hemiGround.copy(g.indirectGround)
     if (!day) _hemiGround.multiplyScalar(NIGHT_GROUND_HEMI_BOOST)
     this.hemi.groundColor.copy(_hemiGround)
 
     const tierExposure = TONE_MAPPING_EXPOSURE[renderQuality.getTier()]
-    const baseExposure = tierExposure * (day ? sunExposureMultiplier(lighting.exposure) : moonExposureMultiplier(lighting.moonExposure))
-    this.host.renderer.toneMappingExposure = baseExposure
+    this.host.renderer.toneMappingExposure = skylightOff
+      ? tierExposure * CELESTIAL_OFF_EXPOSURE
+      : tierExposure *
+        (day ? sunExposureMultiplier(lighting.exposure) : moonExposureMultiplier(lighting.moonExposure))
 
-    if (useGenesis && this.host.scene.background instanceof THREE.Color) {
+    if (spaceSky) {
+      if (!(this.host.scene.background instanceof THREE.Color)) {
+        this.host.scene.background = new THREE.Color(0x020208)
+      }
+      if (skylightOff) {
+        ;(this.host.scene.background as THREE.Color).setHex(0x000000)
+      }
+    } else if (voidSky) {
+      if (!(this.host.scene.background instanceof THREE.Color)) {
+        this.host.scene.background = new THREE.Color(VOID_SKY_BACKGROUND)
+      }
+      ;(this.host.scene.background as THREE.Color).setHex(skylightOff ? 0x000000 : VOID_SKY_BACKGROUND)
+    } else if (skylightOff && this.host.scene.background instanceof THREE.Color) {
+      this.host.scene.background.copy(_blackBackground)
+    } else if (useGenesis && this.host.scene.background instanceof THREE.Color) {
       this.host.scene.background.copy(g.indirectSky)
     }
+
+    syncOutdoorLightingFromLights(
+      this.outdoorLighting,
+      this.sun,
+      this.moon,
+      this.hemi,
+      { horizon: g.horizon, zenit: g.zenit },
+      day
+    )
   }
 
   /**

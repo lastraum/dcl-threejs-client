@@ -81,6 +81,10 @@ export function createSystemStubs(
       }),
       getWorldTime: async () => ({ seconds: Math.floor(Date.now() / 1000) }),
       readFile: async (body: { fileName: string }) => {
+        const cached = boot.preloadedFiles?.[body.fileName]
+        if (cached?.content?.byteLength) {
+          return { content: cached.content.slice(), hash: cached.hash }
+        }
         const entry = resolveContentEntry(boot.content, body.fileName)
         if (!entry) throw new Error(`readFile: ${body.fileName} not found in scene content`)
         const res = await fetch(assetUrlForHash(boot, entry.hash))
@@ -135,6 +139,9 @@ export function createSystemStubs(
     '~system/SignedFetch': {
       signedFetch: async (body: SignedFetchRequest) => rpc.signedFetch(body),
       getHeaders: async (body: SignedFetchRequest) => rpc.signedFetchGetHeaders(body)
+    },
+    '~system/UserActionModule': {
+      requestTeleport: async (_body: { destination?: string }) => ({})
     }
   } as Record<string, unknown>
 
@@ -197,6 +204,24 @@ export type EngineApiStub = {
   crdtGetState: () => Promise<{ hasEntities: boolean; data: Uint8Array[] }>
 }
 
+export type SceneBundleEvalTimings = {
+  patchMs: number
+  compileMs: number
+  executeMs: number
+}
+
+function fallbackSystemModule(_id: string): Record<string, unknown> {
+  return new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        if (prop === 'then' || typeof prop === 'symbol') return undefined
+        return async () => ({})
+      }
+    }
+  )
+}
+
 export function evaluateSceneBundle(
   code: string,
   requireMap: Record<string, unknown>,
@@ -205,11 +230,23 @@ export function evaluateSceneBundle(
   const require = (id: string) => {
     const mod = requireMap[id]
     if (mod) return mod
+    if (id.startsWith('~system/')) {
+      return fallbackSystemModule(id)
+    }
     throw new Error(`Cannot find module '${id}'`)
   }
   const module = { exports: {} as SceneBundleExports }
+  const patchStarted = performance.now()
   const source = transformCode ? transformCode(code) : code
+  const patchMs = performance.now() - patchStarted
+  const compileStarted = performance.now()
   const fn = new Function('require', 'module', 'exports', source)
+  const compileMs = performance.now() - compileStarted
+  const executeStarted = performance.now()
   fn(require, module, module.exports)
+  const executeMs = performance.now() - executeStarted
+  const timings: SceneBundleEvalTimings = { patchMs, compileMs, executeMs }
+  ;(module.exports as SceneBundleExports & { __evalTimings?: SceneBundleEvalTimings }).__evalTimings =
+    timings
   return module.exports
 }

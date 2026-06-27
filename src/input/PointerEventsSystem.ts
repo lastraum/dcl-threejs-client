@@ -15,6 +15,7 @@ import { collectGltfPointerTargetMeshes } from '../collision/gltfPointerMeshes'
 import { PointerHighlightFeedback } from './PointerHighlightFeedback'
 import { PointerHoverFeedback } from './PointerHoverFeedback'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
+import { findPeerPillAtPointer, tryOpenPeerContextMenu } from '../client/ui/overlayHitTest'
 import type { InjectPointerClickBody } from '../player/injectPointerClick'
 
 export type PointerHit = {
@@ -38,6 +39,8 @@ type PointerDeps = {
   getPlayerPosition: () => THREE.Vector3 | null
   isPointerBlocked: () => boolean
   flushPointerCrdt?: () => void
+  /** Flush matrixWorld + collider poses immediately before a raycast (click / hover). */
+  prepareRaycast?: () => void
   /** Source-capture each PointerEventsResult append for the outbound CrdtEncoder. */
   recordAppend?: (componentId: number, entity: Entity, value: unknown) => void
 }
@@ -122,6 +125,24 @@ export class PointerEventsSystem {
     this.rebuildChildrenByParent()
     this.collectPointerTargets()
     this.pointerCacheDirty = false
+  }
+
+  /** Right-click / F with zero scene PointerEvents is normal — don't spam the console. */
+  private shouldLogNoTarget(action: InputActionValue, clientX?: number, clientY?: number): boolean {
+    if (action === InputAction.IA_SECONDARY && clientX !== undefined && clientY !== undefined) {
+      if (findPeerPillAtPointer(clientX, clientY)) return false
+    }
+    if (this.pointerEntitySet.size > 0) return true
+    return action !== InputAction.IA_SECONDARY
+  }
+
+  private pointerClientCoords(clientX = this.screenX, clientY = this.screenY): { x: number; y: number } {
+    const locked = document.pointerLockElement === this.canvas
+    if (locked) {
+      const rect = this.canvas.getBoundingClientRect()
+      return { x: rect.left + rect.width * 0.5, y: rect.top + rect.height * 0.5 }
+    }
+    return { x: clientX, y: clientY }
   }
 
   /** Tooltip + mesh highlight only (no CRDT). */
@@ -238,6 +259,8 @@ export class PointerEventsSystem {
 
   private computeCurrentHit(): PointerHit | null {
     if (!this.deps || !this.pointerEntitySet.size) return null
+    this.deps.prepareRaycast?.()
+    this.rebuildPointerCacheIfNeeded()
     const { collision, camera, getPlayerPosition } = this.deps
 
     const pointerLocked = document.pointerLockElement === this.canvas
@@ -269,17 +292,27 @@ export class PointerEventsSystem {
     if (e.target !== this.canvas) return
     if (this.isTypingTarget()) return
     if (this.deps.isPointerBlocked()) return
+    if (e.button === 2) {
+      if (tryOpenPeerContextMenu(e.clientX, e.clientY)) {
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
+    }
 
     const button = mouseButtonToInputAction(e.button)
+    const coords = this.pointerClientCoords(e.clientX, e.clientY)
     const hit = this.resolveInteractHit(button)
     if (!this.canQueuePointerDown(button, hit)) {
       if (hit) {
-        this.logInteractBlocked(mouseInteractLabel(button), button, hit)
+        this.logInteractBlocked(mouseInteractLabel(button, e.button), button, hit)
+      } else if (!this.shouldLogNoTarget(button, coords.x, coords.y)) {
+        /* scene has no PointerEvents or right-click near a remote player — expected noise */
       } else {
         this.rebuildPointerCacheIfNeeded()
         clientDebugLog.log(
           'pointer',
-          `${mouseInteractLabel(button)} — no in-range target (entities=${this.pointerEntitySet.size} meshes=${this.pointerTargets.length})`,
+          `${mouseInteractLabel(button, e.button)} — no in-range target (entities=${this.pointerEntitySet.size} meshes=${this.pointerTargets.length})`,
           { level: 'warn', alsoConsole: true }
         )
       }
@@ -318,10 +351,13 @@ export class PointerEventsSystem {
     const { action, label, preventDefault } = binding
     if (preventDefault) e.preventDefault()
 
+    const coords = this.pointerClientCoords()
     const hit = this.resolveInteractHit(action)
     if (!this.canQueuePointerDown(action, hit)) {
       if (hit) {
         this.logInteractBlocked(label, action, hit)
+      } else if (!this.shouldLogNoTarget(action, coords.x, coords.y)) {
+        /* expected when the scene has no pointer targets */
       } else {
         this.rebuildPointerCacheIfNeeded()
         clientDebugLog.log(
@@ -503,6 +539,7 @@ export class PointerEventsSystem {
 
   private pickAtPointer(): PointerHit | null {
     if (!this.deps) return null
+    this.deps.prepareRaycast?.()
     this.rebuildPointerCacheIfNeeded()
     const ray = this.computePointerRay(this.deps.camera)
     this.deps.camera.getWorldPosition(_camPos)
@@ -984,7 +1021,8 @@ function mouseButtonToInputAction(button: number): InputActionValue {
   return InputAction.IA_POINTER
 }
 
-function mouseInteractLabel(button: InputActionValue): string {
+function mouseInteractLabel(button: InputActionValue, mouseButton?: number): string {
+  if (mouseButton === 2) return 'right-click'
   return inputActionInteractLabel(button)
 }
 

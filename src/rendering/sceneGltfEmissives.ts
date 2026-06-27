@@ -44,15 +44,27 @@ function isBakedEmissiveMaterial(mat: PbrMeshMaterial): boolean {
   return true
 }
 
+/** Shared map + emissiveMap at high intensity — flame/LED sprites (not textured facades). */
+function isGlowSpriteMaterial(mat: PbrMeshMaterial): boolean {
+  const intensity = mat.emissiveIntensity ?? 1
+  if (intensity < 1.5 || !mat.emissiveMap) return false
+  if (!mat.map) return true
+  return mat.map === mat.emissiveMap
+}
+
 function isNeonEmissiveMaterial(mat: PbrMeshMaterial): boolean {
   if (isBakedEmissiveMaterial(mat)) return false
 
   const intensity = mat.emissiveIntensity ?? 1
-  if (intensity > 1) return true
-
   const name = mat.name.toLowerCase()
   const emissiveLuma = mat.emissive.r + mat.emissive.g + mat.emissive.b
-  return NEON_MATERIAL_NAME.test(name) && emissiveLuma > 0.12
+
+  if (NEON_MATERIAL_NAME.test(name) && (emissiveLuma > 0.12 || intensity > 1)) return true
+
+  // KHR_materials_emissive_strength on albedo-textured meshes — not neon strips.
+  if (mat.map && intensity > 1 && !isGlowSpriteMaterial(mat)) return false
+
+  return isGlowSpriteMaterial(mat)
 }
 
 /** Fallback intensity when glTF omits KHR_materials_emissive_strength on named neon mats. */
@@ -94,12 +106,15 @@ function resolveNeonEmissive(mat: PbrMeshMaterial): { color: THREE.Color; intens
 
 function applyNeonEmissive(mat: PbrMeshMaterial): { color: THREE.Color; intensity: number } {
   const { color, intensity } = resolveNeonEmissive(mat)
-  mat.color.setRGB(0, 0, 0)
+  const emissiveOnly = !mat.map || mat.map === mat.emissiveMap
+  if (emissiveOnly) {
+    mat.color.setRGB(0, 0, 0)
+    mat.metalness = 0
+    mat.roughness = 1
+    mat.envMapIntensity = 0
+  }
   mat.emissive.copy(color)
   mat.emissiveIntensity = intensity
-  mat.metalness = 0
-  mat.roughness = 1
-  mat.envMapIntensity = 0
   mat.toneMapped = false
   ;(mat.userData as Record<string, unknown>).dclSceneNeonTuned = true
   return { color, intensity }
@@ -117,6 +132,7 @@ function createNeonMaterial(mat: PbrMeshMaterial): THREE.MeshStandardMaterial {
     metalness: 0,
     roughness: 1,
     envMapIntensity: 0,
+    vertexColors: mat.vertexColors,
     side: mat.side,
     transparent: mat.transparent,
     opacity: mat.opacity,
@@ -130,7 +146,17 @@ function createNeonMaterial(mat: PbrMeshMaterial): THREE.MeshStandardMaterial {
 function tuneNeonMaterial(mat: PbrMeshMaterial): THREE.Material {
   if ((mat.userData as Record<string, unknown>).dclSceneNeonTuned) return mat
 
-  if (!mat.emissiveMap) return createNeonMaterial(mat)
+  if (!mat.emissiveMap) {
+    if (mat.map) {
+      const { color, intensity } = resolveNeonEmissive(mat)
+      mat.emissive.copy(color)
+      mat.emissiveIntensity = intensity
+      mat.toneMapped = intensity > 1.5
+      ;(mat.userData as Record<string, unknown>).dclSceneNeonTuned = true
+      return mat
+    }
+    return createNeonMaterial(mat)
+  }
 
   applyNeonEmissive(mat)
   return mat

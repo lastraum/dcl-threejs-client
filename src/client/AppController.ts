@@ -7,14 +7,15 @@ import {
   type RouteTarget
 } from '../dcl/content/route'
 import { resolveSceneFromRoute, summarizeSceneContent } from '../dcl/content/resolveScene'
+import { EditorApp } from '../editor/EditorApp'
 import { World } from '../core/World'
+import { readSceneDevQueryKey } from '../environment/fftOcean/readFftOceanOverride'
 import { disconnectAll } from '../network/SessionConnections'
 import { ClientShell } from './ui/shell/ClientShell'
 import { clientDebugLog } from './debug/ClientDebugLog'
 import { DebugPanel } from './ui/DebugPanel'
 import { DevProgressPanel } from './ui/DevProgressPanel'
 import { LoadingScreen, POST_SPAWN_SETTLE_FAST_MS, POST_SPAWN_SETTLE_MS } from './ui/LoadingScreen'
-import { Minimap } from './ui/Minimap'
 import { WorldLocationCard } from './ui/WorldLocationCard'
 import { showSplashScreen } from './ui/SplashScreen'
 import { ChatPanel } from './ui/chat/ChatPanel'
@@ -27,8 +28,12 @@ import { fetchProfileFaceUrl } from '../avatar/peerApi'
 import { hydrateEmoteWheelSlots } from '../avatar/profileEmotes'
 import { InputAction } from '../input/pointerConstants'
 import { MobileGameHud } from './ui/MobileGameHud'
-import { disposeSessionAssetCache, getSessionAssetCache, prefetchSceneManifestGlbs } from '../rendering/AssetCache'
+import { disposeSessionAssetCache, getSessionAssetCache, prefetchSceneManifestAssets } from '../rendering/AssetCache'
 import { DEFAULT_TIMEOUT_MS, FAST_TIMEOUT_MS, type SceneHydrationStats } from '../rendering/sceneHydration'
+import { resolveSceneLoadWarm } from '../rendering/sceneLoadWarm'
+import { formatSceneLoadError } from './formatSceneLoadError'
+import { ProfileUiController } from './ui/profile/ProfileUiController'
+import { recordLoginEvent } from '../analytics/recordLogin'
 
 /** Owns world lifecycle — splash → load → play, navigation, and sign-out. */
 export class AppController {
@@ -37,23 +42,38 @@ export class AppController {
   private shell: ClientShell | null = null
   private debugPanel: DebugPanel | null = null
   private devProgressPanel: DevProgressPanel | null = null
-  private minimap: Minimap | null = null
   private worldLocationCard: WorldLocationCard | null = null
   private chatPanel: ChatPanel | null = null
   private settingsOverlay: SettingsOverlay | null = null
   private preferencesPanel: PreferencesPanel | null = null
   private login: LoginResult | null = null
   private currentRoute: RouteTarget | null = null
+  private lastSceneDevQueryKey = ''
   private running = false
   private navigating = false
   private mobileHud: MobileGameHud | null = null
+  private profileUi: ProfileUiController | null = null
+  private sceneContentUrl = 'https://peer.decentraland.org'
+  private editorApp: EditorApp | null = null
 
   async start(container: HTMLElement): Promise<void> {
     if (this.running) return
     this.running = true
     this.container = container
 
+    const initialRoute = resolveRouteTarget()
+    if (initialRoute.kind === 'editor') {
+      const hudEl = document.getElementById('hud')
+      if (hudEl) hudEl.hidden = true
+      this.currentRoute = initialRoute
+      this.editorApp = new EditorApp()
+      window.addEventListener('popstate', this.onPopState)
+      await this.editorApp.start(container)
+      return
+    }
+
     this.login = await showSplashScreen()
+    recordLoginEvent(this.login)
     window.addEventListener('popstate', this.onPopState)
 
     const loading = new LoadingScreen('Preparing your experience…')
@@ -73,9 +93,9 @@ export class AppController {
       await loading.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      loading.setStatus(msg, true)
+      const ui = formatSceneLoadError(msg)
+      loading.showFatalError(ui.title, ui.detail)
       clientDebugLog.log('client', `Failed to load scene: ${msg}`, { level: 'error' })
-      await loading.finish(Promise.resolve())
     }
   }
 
@@ -88,7 +108,15 @@ export class AppController {
     opts: { fromHistory?: boolean; replace?: boolean } = {}
   ): Promise<void> {
     if (this.navigating) return
-    if (this.currentRoute && routeEquals(this.currentRoute, target) && this.world) return
+    const devQueryKey = readSceneDevQueryKey()
+    if (
+      this.currentRoute &&
+      routeEquals(this.currentRoute, target) &&
+      this.world &&
+      devQueryKey === this.lastSceneDevQueryKey
+    ) {
+      return
+    }
 
     this.navigating = true
     const loading = new LoadingScreen('Teleporting…', { fast: true })
@@ -109,9 +137,9 @@ export class AppController {
       await loading.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      loading.setStatus(msg, true)
+      const ui = formatSceneLoadError(msg)
+      loading.showFatalError(ui.title, ui.detail)
       clientDebugLog.log('client', `Teleport failed: ${msg}`, { level: 'error' })
-      await loading.finish(Promise.resolve())
     } finally {
       this.navigating = false
     }
@@ -128,22 +156,53 @@ export class AppController {
       onHydrationFinish?: (result: { timedOut: boolean; elapsedMs: number }) => void
     } = {}
   ): Promise<boolean> {
+    if (route.kind === 'editor') {
+      if (!opts.fromHistory) {
+        applyRouteToHistory(route, opts.replace ?? false)
+      }
+      this.currentRoute = route
+      await this.teardownScene()
+      this.editorApp?.dispose()
+      this.editorApp = new EditorApp()
+      if (!this.container) throw new Error('App container missing')
+      await this.editorApp.start(this.container)
+      return false
+    }
+
+    if (this.editorApp) {
+      this.editorApp.dispose()
+      this.editorApp = null
+    }
+
     if (!opts.fromHistory) {
       applyRouteToHistory(route, opts.replace ?? false)
     }
     this.currentRoute = route
+    this.lastSceneDevQueryKey = readSceneDevQueryKey()
 
     await this.teardownScene()
 
     opts.onProgress?.('Resolving destination…')
     const sceneConfig = await resolveSceneFromRoute(route)
-    prefetchSceneManifestGlbs(getSessionAssetCache(), sceneConfig)
+    this.sceneContentUrl = sceneConfig.realm.contentUrl
+    prefetchSceneManifestAssets(getSessionAssetCache(), sceneConfig)
     opts.onProgress?.('Building world…')
     if (!this.container) throw new Error('App container missing')
 
     const world = new World(this.container)
     this.world = world
     world.applyLogin(this.login)
+
+    this.profileUi?.dispose()
+    this.profileUi = new ProfileUiController({
+      session: world.session,
+      social: world.social,
+      getPeerUrl: () => this.sceneContentUrl,
+      getRemoteAvatars: () => world.getRemoteAvatarManager(),
+      getCamera: () => world.host.camera,
+      onOpenChat: () => this.shell?.openChatPanel(),
+      onPrepareOverlay: () => this.world?.cancelCameraPointer()
+    })
 
     if (!this.debugPanel) {
       this.debugPanel = new DebugPanel({
@@ -191,15 +250,39 @@ export class AppController {
             segment: `${px},${py}`
           })
         },
+        onEventJumpIn: (target) => {
+          this.settingsOverlay?.hide()
+          void this.navigateTo(target)
+        },
+        onPlaceJumpIn: (target) => {
+          this.settingsOverlay?.hide()
+          void this.navigateTo(target)
+        },
+        getDefaultEventCoords: () => {
+          const state = this.getMapPlayerState()
+          if (!state?.parcelKey) return null
+          const parts = state.parcelKey.split(',').map((n) => Number(n.trim()))
+          if (parts.length !== 2 || !parts.every(Number.isFinite)) return null
+          return { x: parts[0]!, y: parts[1]! }
+        },
+        isWorldScene: sceneConfig.source.kind === 'world',
+        worldName: sceneConfig.source.kind === 'world' ? sceneConfig.source.worldName : null,
         onOpen: () => {
           if (document.pointerLockElement) document.exitPointerLock()
           this.preferencesPanel?.hide()
           this.shell?.getButton('settings')?.setActive(false)
         },
-        onClose: () => {}
+        onClose: () => {},
+        onVrmEquipChange: () => {
+          void world.reloadLocalAvatar()
+        }
       })
     } else {
       this.settingsOverlay.updateSession(world.session)
+      this.settingsOverlay.updateEventContext(
+        sceneConfig.source.kind === 'world',
+        sceneConfig.source.kind === 'world' ? sceneConfig.source.worldName : null
+      )
       this.settingsOverlay.updateMapPlayerState(() => this.getMapPlayerState())
       this.settingsOverlay.updateMapJumpIn((px, py) => {
         this.settingsOverlay?.hide()
@@ -210,6 +293,7 @@ export class AppController {
           segment: `${px},${py}`
         })
       })
+
     }
 
     if (!this.preferencesPanel) {
@@ -229,40 +313,38 @@ export class AppController {
       await world.loadScene(sceneConfig, opts.onProgress)
       const earlyCommsPromise = world.connectSceneCommsEarly(sceneConfig, opts.onProgress)
 
-      this.minimap?.dispose()
-      this.minimap = null
       this.worldLocationCard?.dispose()
       this.worldLocationCard = null
 
-      if (sceneConfig.source.kind === 'world') {
-        this.worldLocationCard = new WorldLocationCard({
-          scene: sceneConfig,
-          getPlayerPosition: () => world.getPlayerPosition(),
-          onJumpToGenesis: () => {
-            if (document.pointerLockElement) document.exitPointerLock()
-            void this.navigateTo({
-              kind: 'coords',
-              x: 0,
-              y: 0,
-              segment: '0,0'
-            })
-          }
-        })
-      } else {
-        this.minimap = new Minimap({
-          scene: sceneConfig,
-          getPlayerPosition: () => world.getPlayerPosition(),
-          onClick: () => {
-            if (document.pointerLockElement) document.exitPointerLock()
-            this.settingsOverlay?.show('map')
-          }
-        })
-      }
+      this.worldLocationCard = new WorldLocationCard({
+        scene: sceneConfig,
+        title: sceneDisplayTitle(sceneConfig),
+        getCoordsLabel: () => this.getLocationCoordsLabel(),
+        onJumpToGenesis:
+          sceneConfig.source.kind === 'world'
+            ? () => {
+                if (document.pointerLockElement) document.exitPointerLock()
+                void this.navigateTo({
+                  kind: 'coords',
+                  x: 0,
+                  y: 0,
+                  segment: '0,0'
+                })
+              }
+            : undefined
+      })
 
-      const hydrationTimeoutMs = opts.fastAssets ? FAST_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
+      const warmScene = await resolveSceneLoadWarm(getSessionAssetCache(), sceneConfig)
+      const useFastBoot = opts.fastAssets ?? warmScene
+      if (useFastBoot && !opts.fastAssets) {
+        console.info('[client] warm scene cache — 90s hydration timeout')
+      } else if (!opts.fastAssets) {
+        console.info('[client] cold scene load — 180s hydration timeout')
+      }
+      const hydrationTimeoutMs = useFastBoot ? FAST_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
       opts.onHydrationStart?.(hydrationTimeoutMs)
       const hydrationResult = await world.waitForSceneAssets(sceneConfig, opts.onProgress, {
-        timeoutMs: opts.fastAssets ? FAST_TIMEOUT_MS : undefined
+        timeoutMs: useFastBoot ? FAST_TIMEOUT_MS : undefined
       })
       if (hydrationResult) {
         hydrationTimedOut = hydrationResult.timedOut
@@ -279,7 +361,7 @@ export class AppController {
 
       world.start()
 
-      const settleMs = opts.fastAssets ? POST_SPAWN_SETTLE_FAST_MS : POST_SPAWN_SETTLE_MS
+      const settleMs = useFastBoot ? POST_SPAWN_SETTLE_FAST_MS : POST_SPAWN_SETTLE_MS
       if (settleMs > 0) {
         opts.onProgress?.('Settling world…', 0.985)
         await new Promise<void>((resolve) => window.setTimeout(resolve, settleMs))
@@ -290,7 +372,10 @@ export class AppController {
       const footer = 'Click to lock cursor · WASD move · /goto name or x,y in chat'
 
       this.debugPanel?.setStatusHtml(`${summarizeSceneContent(sceneConfig)}<br>${footer}`)
-      clientDebugLog.log('client', 'Scene loaded — open Help (?) for network debug log')
+      clientDebugLog.log(
+        'client',
+        'Scene loaded — Help (?) for debug log · moving platforms: ?platformdebug or Debug → Platform transfer log'
+      )
       const profile = world.session.getProfile()
       const peerUrl = sceneConfig.realm.contentUrl
       void hydrateEmoteWheelSlots(profile, peerUrl).then((slots) => {
@@ -300,10 +385,13 @@ export class AppController {
 
     await loadPromise
 
+    this.shell.setOnViewLocalProfile(() => this.profileUi?.openProfile({ kind: 'local' }))
+
     this.chatPanel?.dispose()
     this.chatPanel = new ChatPanel({
       social: world.social,
-      onGoto: (target) => this.navigateTo(target)
+      onGoto: (target) => this.navigateTo(target),
+      onOpenProfile: (address) => this.profileUi?.openProfileForAddress(address)
     })
     this.shell.attachChatPanel(this.chatPanel, world.social)
     if (this.settingsOverlay) this.shell.attachSettingsOverlay(this.settingsOverlay)
@@ -366,10 +454,12 @@ export class AppController {
   }
 
   private async teardownScene(): Promise<void> {
+    this.editorApp?.dispose()
+    this.editorApp = null
+    this.profileUi?.dispose()
+    this.profileUi = null
     this.mobileHud?.dispose()
     this.mobileHud = null
-    this.minimap?.dispose()
-    this.minimap = null
     this.worldLocationCard?.dispose()
     this.worldLocationCard = null
     this.chatPanel?.hide()
@@ -380,6 +470,8 @@ export class AppController {
 
   async signOut(): Promise<void> {
     window.removeEventListener('popstate', this.onPopState)
+    this.profileUi?.dispose()
+    this.profileUi = null
     this.chatPanel?.dispose()
     this.chatPanel = null
     this.settingsOverlay?.dispose()

@@ -1,4 +1,6 @@
 import { parseParcelKey, type ParcelCoord } from '../../content/parseParcel'
+import { PARCEL_SIZE } from '../../content/types'
+import { parcelWorldOrigin } from './SceneSpace'
 
 export type ParcelBounds = {
   minX: number
@@ -52,4 +54,31 @@ export function landscapeParcelKeys(sceneParcels: string[], padding = 1): string
 
 export function isSceneParcel(key: string, sceneParcels: string[]): boolean {
   return sceneParcels.includes(key)
+}
+
+/** World-space AABB covering padding parcels only (for sparse desert scatter). */
+export function paddingScatterBounds(
+  sceneParcels: string[],
+  baseParcel: string,
+  padding = 1
+): { minX: number; maxX: number; minZ: number; maxZ: number } | null {
+  const keys = landscapeParcelKeys(sceneParcels, padding).filter((k) => !isSceneParcel(k, sceneParcels))
+  if (!keys.length) return null
+
+  const base = parseParcelKey(baseParcel)
+  let minX = Infinity
+  let maxX = -Infinity
+  let minZ = Infinity
+  let maxZ = -Infinity
+
+  for (const key of keys) {
+    const parcel = parseParcelKey(key)
+    const origin = parcelWorldOrigin(parcel, base)
+    minX = Math.min(minX, origin.x)
+    maxX = Math.max(maxX, origin.x + PARCEL_SIZE)
+    minZ = Math.min(minZ, origin.z)
+    maxZ = Math.max(maxZ, origin.z + PARCEL_SIZE)
+  }
+
+  return { minX, maxX, minZ, maxZ }
 }

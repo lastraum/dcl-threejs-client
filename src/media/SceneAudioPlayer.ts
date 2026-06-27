@@ -1,9 +1,9 @@
 import * as THREE from 'three'
 import type { PBAudioSource } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/audio_source.gen'
 import { applyDclLocalTransform, type DclTransformValues } from '../bridge/dclTransform'
-import { resolveSceneTextureUrl } from '../bridge/material/resolveTexture'
+import { resolveSceneMediaUrl } from '../bridge/material/resolveTexture'
 import type { ResolvedScene } from '../dcl/content/types'
-import { inWorldVolumeMultiplier } from '../rendering/SoundSettings'
+import { spatialAudioGain } from '../rendering/SoundSettings'
 import type { AudioBufferCache } from './AudioBufferCache'
 import {
   MS_ERROR,
@@ -38,6 +38,7 @@ export class SceneAudioPlayer {
   private lastSpecCurrentTime: number | undefined
   private holdingAtEnd = false
   private lastSpecVolume = 1
+  private volumeCategory: 'inWorld' | 'emote' = 'inWorld'
   onNaturalEnd?: () => void
 
   constructor(
@@ -108,7 +109,7 @@ export class SceneAudioPlayer {
     const specCurrentTime = Math.max(spec.currentTime ?? 0, 0)
 
     const clipPath = spec.audioClipUrl?.trim() ?? ''
-    const url = clipPath ? resolveSceneTextureUrl(clipPath, this.scene) : null
+    const url = clipPath ? resolveSceneMediaUrl(clipPath, this.scene) : null
     if (url && url !== this.loadedClip) {
       void this.loadClip(url)
     } else if (!url && clipPath) {
@@ -169,6 +170,12 @@ export class SceneAudioPlayer {
     }
   }
 
+  setVolumeCategory(category: 'inWorld' | 'emote'): void {
+    if (this.volumeCategory === category) return
+    this.volumeCategory = category
+    this.applyEffectiveVolume()
+  }
+
   refreshVolume(): void {
     this.applyEffectiveVolume()
   }
@@ -189,7 +196,7 @@ export class SceneAudioPlayer {
   }
 
   private applyEffectiveVolume(): void {
-    const gain = clamp(this.lastSpecVolume * inWorldVolumeMultiplier(), 0, 1)
+    const gain = clamp(spatialAudioGain(this.volumeCategory, this.lastSpecVolume), 0, 1)
     this.sound.setVolume(gain)
   }
 

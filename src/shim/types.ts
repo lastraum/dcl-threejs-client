@@ -13,6 +13,9 @@ export type AvatarAttachTransformEntry = {
   scale: { x: number; y: number; z: number }
 }
 
+/** Client hardware heuristic — passed to the scene worker for timing budgets. */
+export type PerformanceTier = 'low' | 'medium' | 'high'
+
 export type SceneWorkerDebugFlags = {
   /** `?pointerverbose` — log pointer-crdt-deliver round-trips in the worker. */
   pointerDeliver?: boolean
@@ -20,6 +23,8 @@ export type SceneWorkerDebugFlags = {
   tweenDeliver?: boolean
   /** Log every worker onmessage arrival (`onmessage #N type=…`). */
   messageArrival?: boolean
+  /** `?notheatre` — skip Genesis theatre runShowSetup + Scene 11/12 registration. */
+  skipTheatre?: boolean
 }
 
 export type SceneWorkerBoot = {
@@ -31,6 +36,14 @@ export type SceneWorkerBoot = {
   > & {
     worldName?: string
     scriptUrl: string
+    /** Blob URL for main-thread-fetched script — avoids cloning multi-MB source in postMessage. */
+    scriptBlobUrl?: string
+    /** Inline script (fallback only — prefer `scriptBlobUrl`). */
+    scriptCode?: string
+    /** Renderer CRDT snapshot for sync bundle eval (avoids get-state deadlock in worker). */
+    bootCrdtSnapshot?: { hasEntities: boolean; data: Uint8Array[] }
+    /** Scene files preloaded on main (composite, etc.) — avoids worker fetch during eval/onStart. */
+    preloadedFiles?: Record<string, { hash: string; content: Uint8Array }>
     content: ContentFile[]
     metadataJson: string
   }
@@ -42,7 +55,15 @@ export type SceneWorkerCrdtRequest = {
   data: Uint8Array
 }
 
+/** Phase C — fire-and-forget worker outbound; main replies via `renderer-inbound-deliver`. */
+export type SceneWorkerCrdtOutbound = {
+  type: 'crdt-outbound'
+  data: Uint8Array
+}
+
 export type SceneWorkerReady = { type: 'ready' }
+/** Bundle eval finished — main may start asset hydration while onStart runs. */
+export type SceneWorkerEvalDone = { type: 'eval-done' }
 export type SceneWorkerError = { type: 'error'; message: string }
 export type SceneWorkerLog = { type: 'log'; message: string }
 
@@ -143,9 +164,11 @@ export type SceneWorkerSignedFetchGetHeaders = {
 
 export type SceneWorkerOutbound =
   | SceneWorkerReady
+  | SceneWorkerEvalDone
   | SceneWorkerError
   | SceneWorkerLog
   | SceneWorkerCrdtRequest
+  | SceneWorkerCrdtOutbound
   | SceneWorkerMovePlayerTo
   | SceneWorkerTriggerEmote
   | SceneWorkerTriggerSceneEmote
@@ -190,10 +213,21 @@ export type MainToWorker =
   | { type: 'engine-api-enqueue'; events: EngineApiEvent[] }
   | { type: 'comms-receive-binary'; sender: string; data: Uint8Array }
   | { type: 'pause-scene-ticks'; paused?: boolean }
-  | { type: 'scene-play-ready' }
+  /** Hydration — skip exports.onUpdate only; engine.update still runs for composite CRDT. */
+  | { type: 'pause-scene-onupdate'; paused?: boolean }
+  | {
+      type: 'scene-play-ready'
+      performanceTier?: PerformanceTier
+      /** Genesis-scale composite — start with relaxed onUpdate before adaptive abort kicks in. */
+      plazaScale?: boolean
+      /** Override engine tick interval (ms) — from `?scenetick=` on main. */
+      engineTickIntervalMs?: number
+    }
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
   | { type: 'tween-state-deliver'; data: Uint8Array[] }
   | { type: 'renderer-append-deliver'; data: Uint8Array[] }
+  /** Phase C — main→worker renderer-owned inbound after async outbound apply. */
+  | { type: 'renderer-inbound-deliver'; data: Uint8Array[] }
   | { type: 'inject-pointer-click'; body: InjectPointerClickBody }
   | { type: 'avatar-attach-transforms'; entries: AvatarAttachTransformEntry[] }
 

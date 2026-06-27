@@ -3,13 +3,13 @@ const STORAGE_KEY = 'dcl-sound-settings'
 export type SoundSettingsState = {
   /** 0–100 — scales AudioListener master gain */
   masterVolume: number
-  /** 0–100 — HUD / menu clicks (stored; not wired yet) */
+  /** 0–100 — HUD / menu clicks */
   uiSfxVolume: number
-  /** 0–100 — LiveKit voice + streams (stored; not wired yet) */
+  /** 0–100 — LiveKit voice, AudioStream, external stream video audio */
   voiceChatVolume: number
   /** 0–100 — ECS AudioSource scene clips */
   inWorldMusicSfxVolume: number
-  /** 0–100 — avatar emotes / locomotion (stored; not wired yet) */
+  /** 0–100 — player-parented spatial AudioSource (emotes / avatar-attached) */
   avatarEmotesVolume: number
   /** `deviceId` from `enumerateDevices`; empty = system default */
   microphoneDeviceId: string
@@ -41,8 +41,44 @@ export function volumeToGain(percent: number): number {
   return clampVolume(percent) / VOLUME_MAX
 }
 
+export function uiSfxVolumeMultiplier(): number {
+  return volumeToGain(soundSettings.get().uiSfxVolume)
+}
+
+export function voiceChatVolumeMultiplier(): number {
+  return volumeToGain(soundSettings.get().voiceChatVolume)
+}
+
 export function inWorldVolumeMultiplier(): number {
   return volumeToGain(soundSettings.get().inWorldMusicSfxVolume)
+}
+
+export function avatarEmotesVolumeMultiplier(): number {
+  return volumeToGain(soundSettings.get().avatarEmotesVolume)
+}
+
+/** HTMLMediaElement paths (video.volume) — includes master; THREE.Audio uses listener master only. */
+export function mediaElementGain(category: 'ui' | 'voice' | 'inWorld' | 'emote', specVolume: number): number {
+  const cat =
+    category === 'ui'
+      ? uiSfxVolumeMultiplier()
+      : category === 'voice'
+        ? voiceChatVolumeMultiplier()
+        : category === 'emote'
+          ? avatarEmotesVolumeMultiplier()
+          : inWorldVolumeMultiplier()
+  return Math.min(1, Math.max(0, specVolume * cat * volumeToGain(soundSettings.get().masterVolume)))
+}
+
+/** THREE.Audio.setVolume — master applied on AudioListener, not here. */
+export function spatialAudioGain(category: 'voice' | 'inWorld' | 'emote', specVolume: number): number {
+  const cat =
+    category === 'voice'
+      ? voiceChatVolumeMultiplier()
+      : category === 'emote'
+        ? avatarEmotesVolumeMultiplier()
+        : inWorldVolumeMultiplier()
+  return Math.min(1, Math.max(0, specVolume * cat))
 }
 
 class SoundSettingsStore {

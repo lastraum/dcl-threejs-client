@@ -16,7 +16,11 @@ type Pending = {
   reject: (err: Error) => void
 }
 
-const POOL_SIZE = 3
+const POOL_SIZE = (() => {
+  if (typeof navigator === 'undefined') return 4
+  const cores = navigator.hardwareConcurrency ?? 4
+  return Math.min(6, Math.max(3, cores - 1))
+})()
 
 let workers: Worker[] | null = null
 let nextId = 1

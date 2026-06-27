@@ -1,6 +1,9 @@
 import type { RouteTarget } from './route'
-import type { ContentFile, RealmEndpoints, ResolvedScene, SceneMetadata, SceneSpawn, SpawnPoint } from './types'
+import type { ContentFile, RealmEndpoints, ResolvedScene, SceneMetadata } from './types'
+import { pickSceneSpawn } from './pickSceneSpawn'
 import { BLANK_SCENE_TEMPLATE } from './types'
+import { layoutFromSceneMetadata } from './sceneLayout'
+import { resolveSceneEnvironment } from '../landscape/resolveLandscapeEnvironment'
 import { catalystContentAssetUrl, catalystRootFromContentUrl, fetchSceneEntityByPointer } from '../../network/catalyst/CatalystClient'
 import { fetchCatalystRealmAbout, fetchWorldRealmAbout } from '../../network/catalyst/realmAbout'
 
@@ -23,41 +26,6 @@ function parseContent(raw: unknown): ContentFile[] {
     }
   }
   return out
-}
-
-function pickSpawnCoord(value: number | number[] | undefined, fallback: number): number {
-  if (value === undefined || value === null) return fallback
-  if (Array.isArray(value)) {
-    const min = value[0] ?? fallback
-    const max = value[1] ?? min
-    return min + Math.random() * (max - min)
-  }
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
-}
-
-function pickSpawn(metadata: SceneMetadata): SceneSpawn {
-  const points = metadata.spawnPoints
-  if (!Array.isArray(points) || points.length === 0) {
-    return { x: 8, y: 0, z: 8 }
-  }
-  const def = points.find((p: SpawnPoint) => p.default) ?? points[0]
-  const pos = def?.position
-  const cameraTarget = def?.cameraTarget
-  return {
-    x: pickSpawnCoord(pos?.x, 8),
-    y: Math.max(0, pickSpawnCoord(pos?.y, 0)),
-    z: pickSpawnCoord(pos?.z, 8),
-    cameraTarget: cameraTarget
-      ? { x: cameraTarget.x, y: cameraTarget.y, z: cameraTarget.z }
-      : undefined
-  }
-}
-
-function layoutFromMetadata(metadata: SceneMetadata): { parcels: string[]; base: string } {
-  const scene = metadata.scene
-  const parcels = Array.isArray(scene?.parcels) ? scene!.parcels!.filter(Boolean) : ['0,0']
-  const base = typeof scene?.base === 'string' ? scene.base : parcels[0] ?? '0,0'
-  return { parcels, base }
 }
 
 function findMainEntry(content: ContentFile[], metadata: SceneMetadata): string | null {
@@ -174,7 +142,7 @@ function resolvedFromEntity(
 ): ResolvedScene {
   const metadata = (entity.metadata ?? {}) as SceneMetadata
   const content = parseContent(entity.content)
-  const { parcels, base } = layoutFromMetadata(metadata)
+  const { parcels, base } = layoutFromSceneMetadata(metadata)
   const display = metadata.display
   const skyboxConfig = metadata.skyboxConfig
   const entityId = typeof entity.id === 'string' ? entity.id : null
@@ -195,12 +163,16 @@ function resolvedFromEntity(
         }
       : undefined
 
+  const resolvedEnv = resolveSceneEnvironment(metadata, opts.source)
+
   return {
     title: display?.title ?? opts.title,
     parcels,
     baseParcel: base,
-    spawn: pickSpawn(metadata),
+    spawn: pickSceneSpawn(metadata),
     metadata,
+    landscapeEnvironment: resolvedEnv.landscapeEnvironment,
+    skyLighting: resolvedEnv.skyLighting,
     content,
     contentsBaseUrl: opts.contentsBaseUrl,
     assetUrl: opts.assetUrl,
@@ -214,7 +186,20 @@ function resolvedFromEntity(
 }
 
 export async function resolveSceneFromRoute(target: RouteTarget): Promise<ResolvedScene> {
-  if (target.kind === 'blank') return { ...BLANK_SCENE_TEMPLATE }
+  if (target.kind === 'editor') {
+    throw new Error('Editor route does not resolve a network scene — use EditorApp')
+  }
+
+  if (target.kind === 'blank') {
+    const metadata = { ...BLANK_SCENE_TEMPLATE.metadata, environment: 'none' as const }
+    const resolvedEnv = resolveSceneEnvironment(metadata, { kind: 'blank' })
+    return {
+      ...BLANK_SCENE_TEMPLATE,
+      metadata,
+      landscapeEnvironment: resolvedEnv.landscapeEnvironment,
+      skyLighting: resolvedEnv.skyLighting
+    }
+  }
 
   if (target.kind === 'coords') {
     const result = await fetchParcelEntity(target.x, target.y)

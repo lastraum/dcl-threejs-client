@@ -107,18 +107,146 @@ function downgradePhysicalMaterial(material: THREE.MeshPhysicalMaterial): THREE.
   return standard
 }
 
-function simplifyMaterial(material: THREE.Material, meshName = ''): THREE.Material {
-  let result: THREE.Material
+function simplifyMaterial(material: THREE.Material): THREE.Material {
   if (material instanceof THREE.MeshPhysicalMaterial) {
-    result = downgradePhysicalMaterial(material)
-  } else if (material instanceof THREE.MeshStandardMaterial) {
-    stripOptionalMaps(material)
-    result = material
-  } else {
-    result = material
+    return downgradePhysicalMaterial(material)
   }
-  tuneFoliageMaterial(result, meshName)
-  return result
+  if (material instanceof THREE.MeshStandardMaterial) {
+    stripOptionalMaps(material)
+    return material
+  }
+  if (material instanceof THREE.MeshBasicMaterial) {
+    return material
+  }
+  return material
+}
+
+function isAuthorTerrainMesh(mesh: THREE.Mesh): boolean {
+  if (/^terrain_mesh_/i.test(mesh.name)) return true
+  if (mesh.userData.dclAuthorTerrain === true) return true
+  let parent: THREE.Object3D | null = mesh.parent
+  while (parent) {
+    if (parent.name === 'terrain_root' || parent.userData.dclAuthorTerrainRoot === true) return true
+    parent = parent.parent
+  }
+  return false
+}
+
+function terrainVertexColorAttribute(mesh: THREE.Mesh): THREE.BufferAttribute | null {
+  const attr = mesh.geometry.getAttribute('color')
+  return attr instanceof THREE.BufferAttribute ? attr : null
+}
+
+function terrainSourceMap(mesh: THREE.Mesh): THREE.Texture | null {
+  const mats = meshMaterials(mesh)
+  for (const mat of mats) {
+    if (!mat) continue
+    if (mat instanceof THREE.MeshBasicMaterial && mat.map) return mat.map
+    if (mat instanceof THREE.MeshStandardMaterial && mat.map) return mat.map
+    if (mat instanceof THREE.MeshLambertMaterial && mat.map) return mat.map
+  }
+  return null
+}
+
+/**
+ * Editor terrain.glb — per-instance unlit material.
+ * Prefer baked albedo map (reliable in ECS); fall back to COLOR_0 for Creator Hub parity.
+ */
+export function tuneAuthorTerrainMeshMaterial(mesh: THREE.Mesh): void {
+  if (!isAuthorTerrainMesh(mesh)) return
+  const colors = terrainVertexColorAttribute(mesh)
+  const map = terrainSourceMap(mesh)
+  if (!colors && !map) return
+
+  if (colors) colors.needsUpdate = true
+  if (map) {
+    map.colorSpace = THREE.SRGBColorSpace
+    map.needsUpdate = true
+  }
+
+  mesh.material = new THREE.MeshBasicMaterial({
+    name: 'dcl-author-terrain',
+    color: 0xffffff,
+    map,
+    vertexColors: !map && !!colors,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+    fog: false,
+    transparent: false,
+    opacity: 1,
+    depthWrite: true
+  })
+}
+
+function meshMaterials(mesh: THREE.Mesh): THREE.Material[] {
+  return Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+}
+
+function meshHasVertexPaint(mesh: THREE.Mesh): boolean {
+  return !!mesh.geometry.getAttribute('color')
+}
+
+function meshHasAlbedoMap(mesh: THREE.Mesh): boolean {
+  for (const material of meshMaterials(mesh)) {
+    if (!material) continue
+    if (material instanceof THREE.MeshStandardMaterial && material.map) return true
+    if (material instanceof THREE.MeshPhysicalMaterial && material.map) return true
+    if (material instanceof THREE.MeshBasicMaterial && material.map) return true
+    if (material instanceof THREE.MeshLambertMaterial && material.map) return true
+  }
+  return false
+}
+
+/** Vertex-painted scene props (no albedo map) — not editor terrain or landscape tree cards. */
+export function enableSceneMeshVertexColors(mesh: THREE.Mesh): void {
+  if (isAuthorTerrainMesh(mesh)) return
+  if (!meshHasVertexPaint(mesh) || meshHasAlbedoMap(mesh)) return
+  for (const material of meshMaterials(mesh)) {
+    if (!material) continue
+    if (
+      material instanceof THREE.MeshStandardMaterial ||
+      material instanceof THREE.MeshPhysicalMaterial ||
+      material instanceof THREE.MeshLambertMaterial ||
+      material instanceof THREE.MeshBasicMaterial
+    ) {
+      material.vertexColors = true
+      material.color.setRGB(1, 1, 1)
+      material.needsUpdate = true
+    }
+  }
+}
+
+/** GLTFLoader often omits vertexColors on PBR materials — editor terrain.glb only. */
+export function enableMeshVertexColors(mesh: THREE.Mesh): void {
+  if (!isAuthorTerrainMesh(mesh)) return
+  if (!meshHasVertexPaint(mesh)) return
+  for (const material of meshMaterials(mesh)) {
+    if (!material) continue
+    if (
+      material instanceof THREE.MeshStandardMaterial ||
+      material instanceof THREE.MeshPhysicalMaterial ||
+      material instanceof THREE.MeshLambertMaterial ||
+      material instanceof THREE.MeshBasicMaterial
+    ) {
+      material.vertexColors = true
+      material.color.setRGB(1, 1, 1)
+      material.needsUpdate = true
+    }
+  }
+}
+
+/** Re-apply author-terrain materials on scene GLTF instance attach (hydration replays). */
+export function enableSceneGltfVertexColors(root: THREE.Object3D): void {
+  root.traverse((node) => {
+    if (!(node instanceof THREE.Mesh)) return
+    if (isAuthorTerrainMesh(node)) {
+      enableMeshVertexColors(node)
+      tuneAuthorTerrainMeshMaterial(node)
+      return
+    }
+    enableSceneMeshVertexColors(node)
+    tuneScenePlantCutoutMaterial(node)
+  })
 }
 
 /** Keep glTF materials under WebGL fragment texture unit limits (16 on many GPUs). */
@@ -130,30 +258,94 @@ export function sanitizeSceneGltfMaterials(root: THREE.Object3D): void {
       return
     }
     if (Array.isArray(node.material)) {
-      node.material = node.material.map((material) => simplifyMaterial(material, node.name))
-      return
+      node.material = node.material.map((material) => simplifyMaterial(material))
+    } else {
+      node.material = simplifyMaterial(node.material)
     }
-    node.material = simplifyMaterial(node.material, node.name)
+    if (isAuthorTerrainMesh(node)) {
+      enableMeshVertexColors(node)
+      tuneAuthorTerrainMeshMaterial(node)
+    } else {
+      enableSceneMeshVertexColors(node)
+      tuneScenePlantCutoutMaterial(node)
+    }
   })
 }
 
-function tuneFoliageMaterial(material: THREE.Material, meshName = ''): void {
-  if (!(material instanceof THREE.MeshStandardMaterial)) return
+function isPlantMeshName(meshName: string): boolean {
+  return /leaf|foliage|petal|flower|tree|plant|grass|bush|fern|vine|canopy|branch/i.test(meshName)
+}
 
-  const nameHint = /leaf|foliage|petal|flower|tree|plant|grass|bush|fern|vine|canopy|branch/i.test(meshName)
-  const needsCutout =
-    nameHint ||
-    material.alphaMap ||
-    material.transparent ||
-    material.opacity < 1 ||
-    material.map?.format === THREE.RGBAFormat
+function meshOrAncestorIsPlant(mesh: THREE.Mesh): boolean {
+  let node: THREE.Object3D | null = mesh
+  while (node) {
+    if (isPlantMeshName(node.name)) return true
+    node = node.parent
+  }
+  return false
+}
 
-  if (!needsCutout) return
+function foliageMaterialHasCutout(material: THREE.Material): boolean {
+  if (material instanceof THREE.MeshStandardMaterial) {
+    return !!(material.map || material.alphaMap)
+  }
+  if (material instanceof THREE.MeshBasicMaterial || material instanceof THREE.MeshLambertMaterial) {
+    return !!material.map
+  }
+  return false
+}
+
+/** Landscape + scene tree/bush cards — alpha cutout + double-sided (Unity MASK parity). */
+function tuneFoliageCutoutMaterial(
+  material: THREE.Material,
+  meshName = '',
+  mesh?: THREE.Mesh
+): void {
+  const plantContext =
+    isPlantMeshName(meshName) ||
+    isPlantMeshName(material.name) ||
+    (mesh !== undefined && meshOrAncestorIsPlant(mesh))
+  if (!plantContext) return
+  if (
+    !(material instanceof THREE.MeshStandardMaterial) &&
+    !(material instanceof THREE.MeshBasicMaterial) &&
+    !(material instanceof THREE.MeshLambertMaterial)
+  ) {
+    return
+  }
+  if (!foliageMaterialHasCutout(material)) return
 
   material.side = THREE.DoubleSide
   material.transparent = false
+  material.opacity = 1
   material.alphaTest = material.alphaMap ? 0.5 : 0.35
   material.depthWrite = true
+  material.needsUpdate = true
+}
+
+/** Landscape tree cards — alpha cutout + double-sided. */
+export function tuneLandscapeFoliageMaterial(material: THREE.Material, meshName = ''): void {
+  tuneFoliageCutoutMaterial(material, meshName)
+}
+
+/**
+ * Scene GLB plant cutout — convert alpha-blend foliage cards to MASK cutout.
+ * Shared tree hashes may load via scene cache before landscape instancing — apply on mesh.
+ */
+function tuneScenePlantCutoutMaterial(mesh: THREE.Mesh): void {
+  const materials = meshMaterials(mesh)
+  for (const material of materials) {
+    tuneFoliageCutoutMaterial(material, mesh.name, mesh)
+  }
+}
+
+/** Re-apply plant cutout on hydrated scene instances (shared materials from cache). */
+export function retuneScenePlantCutoutMaterials(root: THREE.Object3D): void {
+  root.traverse((node) => {
+    if (!(node instanceof THREE.Mesh)) return
+    if (isGltfInvisibleColliderName(node.name)) return
+    tuneScenePlantCutoutMaterial(node)
+  })
 }
 
 /** Hide DCL `_collider` meshes on scene GLBs (do not use landscape shadow tuning). */
@@ -177,9 +369,9 @@ export function sanitizeLandscapeGltf(root: THREE.Object3D): void {
     obj.receiveShadow = false
 
     if (Array.isArray(obj.material)) {
-      obj.material.forEach((m) => tuneFoliageMaterial(m, obj.name))
+      obj.material.forEach((m) => tuneLandscapeFoliageMaterial(m, obj.name))
     } else {
-      tuneFoliageMaterial(obj.material, obj.name)
+      tuneLandscapeFoliageMaterial(obj.material, obj.name)
     }
   })
 }

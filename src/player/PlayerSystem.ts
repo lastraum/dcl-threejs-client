@@ -5,6 +5,7 @@ import type { MirrorComponents } from '../bridge/mirrorComponents'
 import { SDK_RESERVED } from '../bridge/reservedEntities'
 import { ReservedEntitiesSync, type EntityPose } from '../bridge/ReservedEntitiesSync'
 import { NameTag } from '../client/ui/NameTag'
+import { cameraCollisionDebug } from '../debug/CameraCollisionDebug'
 import type { PhysXWorld } from '../physics/PhysXWorld'
 import type { SceneHost } from '../rendering/SceneHost'
 import {
@@ -16,7 +17,15 @@ import {
 } from './locomotion'
 import type { SceneSpawn } from '../dcl/content/types'
 import type { MovePlayerToRequest } from './movePlayerTo'
-import { clampToSceneBounds, type SceneWorldBounds } from './SceneBounds'
+import {
+  dclPlayerEntityPositionsEqual,
+  feetDclToPlayerEntityPosition,
+  feetThreeFromPlayerEntityDcl,
+  playerEntityPositionFromThreeFeet,
+  playerEntityPositionToFeetDcl,
+  resolveMovePlayerToTargetPlayerEntity
+} from './dclPlayerEntity'
+import { clampToWalkBounds, type PlayerWalkBounds } from './SceneBounds'
 import { normalizeAngle } from '../network/comms/movementCompressed'
 import {
   dclToThreeVec,
@@ -27,6 +36,7 @@ import {
 import { PlayerInput } from './PlayerInput'
 import type { AssetCache } from '../rendering/AssetCache'
 import type { ResolvedProfileEmote } from '../avatar/profileEmotes'
+import { AVATAR_YAW_OFFSET } from '../avatar/constants'
 
 const UP = new THREE.Vector3(0, 1, 0)
 const _forward = new THREE.Vector3()
@@ -68,6 +78,8 @@ const PLAYER_TURN_SMOOTH = 12
 const FACING_SPEED_MIN = 0.12
 const GROUND_COYOTE_SECONDS = 0.15
 const AIR_JUMP_DELAY = 0.2
+/** No scene.json spawnPoints — start slightly above y=0 and let CCT fall onto colliders. */
+const DEFAULT_SPAWN_FEET_Y = 1
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v))
@@ -113,7 +125,7 @@ export class PlayerSystem {
   private avatar: LocalAvatar | null = null
   private nameTag: NameTag | null = null
   private playerIdentity: ProfileIdentity | null = null
-  private bounds: SceneWorldBounds | null = null
+  private walkBounds: PlayerWalkBounds | null = null
   private moveTask: {
     from: THREE.Vector3
     to: THREE.Vector3
@@ -139,23 +151,23 @@ export class PlayerSystem {
 
   async initCapsule(
     spawn: SceneSpawn,
-    bounds: SceneWorldBounds,
+    walkBounds: PlayerWalkBounds,
     readComponents: MirrorComponents,
     onProgress?: (msg: string) => void
   ): Promise<void> {
     this.readComponents = readComponents
-    this.bounds = bounds
+    this.walkBounds = walkBounds
     this.input = new PlayerInput(this.host.renderer.domElement)
-    const spawnPos = dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y, spawn.z))
-    this.physics.spawnPlayer(spawnPos)
-    // CCT obstacle cache must see static GLTF/MeshCollider actors registered during hydration.
+    const feetY = spawn.fromSpawnPoints
+      ? spawn.y
+      : spawn.y <= 0.01
+        ? DEFAULT_SPAWN_FEET_Y
+        : spawn.y
+    const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
+    this.physics.spawnPlayer(spawnThree)
     this.physics.warmStaticScene()
-    if (spawnPos.y < 0) {
-      this.physics.snapToGroundBelow()
-    }
-    const spawnGrounded = this.physics.movePlayer(_displacement.set(0, 0, 0), 0).grounded
-    this.grounded = spawnGrounded
-    this.groundCoyote = spawnGrounded ? GROUND_COYOTE_SECONDS : 0
+    this.grounded = false
+    this.groundCoyote = 0
     this.physics.attachCapsuleDebug(this.root)
     this.enabled = true
     this.host.setOrbitEnabled(false)
@@ -168,9 +180,8 @@ export class PlayerSystem {
     this.camDistance = CAM_DISTANCE_DEFAULT
 
     if (spawn.cameraTarget) {
-      const spawnPos = dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y, spawn.z))
-      this.applyAvatarLookTarget(spawnPos, spawn.cameraTarget)
-      this.applyCameraLookTarget(spawnPos, spawn.cameraTarget)
+      this.applyAvatarLookTarget(spawnThree, spawn.cameraTarget)
+      this.applyCameraLookTarget(spawnThree, spawn.cameraTarget)
     }
 
     this.root.position.copy(this.physics.positionOut)
@@ -202,6 +213,13 @@ export class PlayerSystem {
     this.syncCamera(true)
   }
 
+  /** Reload avatar after backpack VRM equip / unequip. */
+  async reloadAvatar(onProgress?: (msg: string) => void): Promise<void> {
+    this.nameTag?.dispose()
+    this.nameTag = null
+    await this.loadAvatar(onProgress)
+  }
+
   setAssetCache(cache: AssetCache, peerUrl?: string): void {
     this.avatar?.setAssetCache(cache, peerUrl)
   }
@@ -225,11 +243,11 @@ export class PlayerSystem {
   /** @deprecated Use initCapsule + loadAvatar for social-first boot order. */
   async init(
     spawn: SceneSpawn,
-    bounds: SceneWorldBounds,
+    walkBounds: PlayerWalkBounds,
     readComponents: MirrorComponents,
     onProgress?: (msg: string) => void
   ): Promise<void> {
-    await this.initCapsule(spawn, bounds, readComponents, onProgress)
+    await this.initCapsule(spawn, walkBounds, readComponents, onProgress)
     await this.loadAvatar(onProgress)
   }
 
@@ -250,10 +268,15 @@ export class PlayerSystem {
     this.syncCamera(true)
   }
 
+  /** SDK7 `Transform.get(PlayerEntity).position` — chest height in scene-relative DCL meters. */
+  getPlayerEntityPositionDcl(): THREE.Vector3 {
+    return playerEntityPositionFromThreeFeet(this.root.position)
+  }
+
   /** PlayerEntity pose for CRDT / scene reads — rotation uses immediate wire yaw, not smoothed body turn. */
   getEntityPose(): EntityPose {
     return {
-      position: threeToDclVec(this.root.position),
+      position: this.getPlayerEntityPositionDcl(),
       rotation: threeToDclQuat(ReservedEntitiesSync.playerRotationFromYaw(this.getNetworkYaw()))
     }
   }
@@ -281,6 +304,10 @@ export class PlayerSystem {
 
   isPointerBlocked(): boolean {
     return this.input?.orbiting ?? false
+  }
+
+  cancelCameraPointer(): void {
+    this.input?.cancelCameraPointer()
   }
 
   setJumpHeld(down: boolean): void {
@@ -322,25 +349,35 @@ export class PlayerSystem {
 
   /** DCL `RestrictedActions.movePlayerTo` — position relative to scene origin. */
   movePlayerTo(request: MovePlayerToRequest): boolean {
-    if (!this.enabled || !this.bounds) return false
+    if (!this.enabled || !this.walkBounds) return false
 
     const pos = request.newRelativePosition
     if (!pos) return false
 
-    const targetDcl = new THREE.Vector3(
-      pos.x ?? threeToDclVec(this.root.position).x,
-      pos.y ?? threeToDclVec(this.root.position).y,
-      pos.z ?? threeToDclVec(this.root.position).z
+    const currentPlayerEntityDcl = this.getPlayerEntityPositionDcl()
+    const targetPlayerEntityDcl = resolveMovePlayerToTargetPlayerEntity(
+      new THREE.Vector3(
+        pos.x ?? currentPlayerEntityDcl.x,
+        pos.y ?? currentPlayerEntityDcl.y,
+        pos.z ?? currentPlayerEntityDcl.z
+      ),
+      currentPlayerEntityDcl,
+      request.avatarTarget
     )
-    clampToSceneBounds(targetDcl, this.bounds)
-    const target = dclToThreeVec(targetDcl)
+    const targetFeetDcl = playerEntityPositionToFeetDcl(targetPlayerEntityDcl)
+    clampToWalkBounds(targetFeetDcl, this.walkBounds)
+    targetPlayerEntityDcl.copy(feetDclToPlayerEntityPosition(targetFeetDcl))
+    const target = feetThreeFromPlayerEntityDcl(targetPlayerEntityDcl)
+    const reposition = !dclPlayerEntityPositionsEqual(targetPlayerEntityDcl, currentPlayerEntityDcl)
 
     const avatarTarget = request.avatarTarget
+    const from = this.root.position.clone()
+    /** Face target from current feet — scene passes PlayerEntity.position + avatarTarget for look-only. */
     if (avatarTarget) {
-      this.applyAvatarLookTarget(target, avatarTarget)
+      this.applyAvatarLookTarget(from, avatarTarget)
     }
     if (request.cameraTarget) {
-      this.applyCameraLookTarget(target, request.cameraTarget)
+      this.applyCameraLookTarget(from, request.cameraTarget)
     }
     if (this.isFirstPerson()) {
       if (request.avatarTarget) {
@@ -351,14 +388,15 @@ export class PlayerSystem {
     }
 
     const duration = request.duration ?? 0
-    if (duration <= 0) {
-      this.teleportTo(target)
+    if (!reposition || duration <= 0) {
+      if (reposition) {
+        this.teleportTo(target)
+      }
       this.moveTask = null
       this.scenePositionLock = true
       return true
     }
 
-    const from = this.root.position.clone()
     let travelYaw: number | undefined
     if (!avatarTarget) {
       const dx = target.x - from.x
@@ -433,6 +471,7 @@ export class PlayerSystem {
           doubleJumpTriggered: false,
           falling: false
         })
+        this.applyCameraInputFromPointer()
         this.syncCamera(false, delta)
         this.input.endFrame()
         if (t >= 1) {
@@ -460,25 +499,13 @@ export class PlayerSystem {
         doubleJumpTriggered: false,
         falling: false
       })
+      this.applyCameraInputFromPointer()
       this.syncCamera(false, delta)
       this.input.endFrame()
       return
     }
 
-    if (this.input.looking) {
-      this.camYaw -= this.input.pointer.dx * POINTER_LOOK_SPEED
-      this.camYaw = normalizeAngle(this.camYaw)
-      const pitchDelta = this.input.pointer.dy * POINTER_LOOK_SPEED
-      this.camPitch += this.isFirstPerson() ? -pitchDelta : pitchDelta
-      const pitchMin = this.isFirstPerson() ? -CAM_PITCH_MAX + 0.05 : CAM_PITCH_MIN
-      this.camPitch = clamp(this.camPitch, pitchMin, CAM_PITCH_MAX)
-    }
-
-    const zoomDelta = this.input.scrollDelta + this.input.pinchZoomDelta * 3
-    if (zoomDelta !== 0) {
-      this.camDistance += zoomDelta * ZOOM_WHEEL_SPEED
-      this.camDistance = clamp(this.camDistance, CAM_DISTANCE_MIN, CAM_DISTANCE_MAX)
-    }
+    this.applyCameraInputFromPointer()
 
     _moveDir.set(0, 0, 0)
     _forward.set(Math.sin(this.camYaw), 0, Math.cos(this.camYaw)).multiplyScalar(-1)
@@ -594,6 +621,13 @@ export class PlayerSystem {
       _displacement.y = 0
     }
 
+    if (!this.jumping && !this.jumped && !this.airJumpPending && (this.grounded || this.nearGround)) {
+      // CCT is kinematic — standing surface moved Δ this frame, so capsule += Δ before move().
+      this.physics.applyPlatformVelocityTransfer()
+    } else if (!this.grounded && !this.nearGround) {
+      this.physics.clearStandingPlatform()
+    }
+
     const moveResult = this.physics.movePlayer(_displacement, delta)
     this.grounded = moveResult.grounded
     if (this.grounded) {
@@ -633,9 +667,9 @@ export class PlayerSystem {
     }
 
     this.root.position.copy(this.physics.positionOut)
-    if (this.bounds) {
+    if (this.walkBounds) {
       const dclPos = threeToDclVec(this.root.position)
-      if (clampToSceneBounds(dclPos, this.bounds)) {
+      if (clampToWalkBounds(dclPos, this.walkBounds)) {
         this.physics.teleport(dclToThreeVec(dclPos))
         this.root.position.copy(this.physics.positionOut)
         _velocity.x = 0
@@ -644,8 +678,19 @@ export class PlayerSystem {
     }
     this.syncNameTag()
     this.avatar?.setYaw(this.playerYaw)
+    let moveAxisX = 0
+    let moveAxisZ = 0
+    if (moving) {
+      const yaw = this.playerYaw + AVATAR_YAW_OFFSET
+      const cos = Math.cos(yaw)
+      const sin = Math.sin(yaw)
+      moveAxisX = _moveDir.x * cos + _moveDir.z * sin
+      moveAxisZ = -_moveDir.x * sin + _moveDir.z * cos
+    }
+
     this.avatar?.update(delta, {
       horizontalSpeed: moving || horizontalSpeed > 0.2 ? horizontalSpeed : 0,
+      targetLocomotionSpeed: moving ? moveSpeed : 0,
       grounded: this.grounded,
       nearGround: this.nearGround,
       verticalVelocity: _velocity.y,
@@ -653,7 +698,9 @@ export class PlayerSystem {
       jumping: this.jumping && !this.airJumped,
       doubleJumping: this.airJumped && !this.grounded,
       doubleJumpTriggered: this.doubleJumpTriggered,
-      falling: !this.grounded && !this.jumping && !this.jumped && !this.airJumped && _velocity.y < -1.5
+      falling: !this.grounded && !this.jumping && !this.jumped && !this.airJumped && _velocity.y < -1.5,
+      moveAxisX,
+      moveAxisZ
     })
     this.syncCamera(false, delta)
     this.input.endFrame()
@@ -661,6 +708,26 @@ export class PlayerSystem {
 
   private isFirstPerson(): boolean {
     return this.camDistance <= CAM_FPV_MAX_DISTANCE
+  }
+
+  /** Orbit + zoom from pointer lock / drag — runs even when movement is scene-locked. */
+  private applyCameraInputFromPointer(): void {
+    if (!this.input) return
+
+    if (this.input.looking) {
+      this.camYaw -= this.input.pointer.dx * POINTER_LOOK_SPEED
+      this.camYaw = normalizeAngle(this.camYaw)
+      const pitchDelta = this.input.pointer.dy * POINTER_LOOK_SPEED
+      this.camPitch += this.isFirstPerson() ? -pitchDelta : pitchDelta
+      const pitchMin = this.isFirstPerson() ? -CAM_PITCH_MAX + 0.05 : CAM_PITCH_MIN
+      this.camPitch = clamp(this.camPitch, pitchMin, CAM_PITCH_MAX)
+    }
+
+    const zoomDelta = this.input.scrollDelta + this.input.pinchZoomDelta * 3
+    if (zoomDelta !== 0) {
+      this.camDistance += zoomDelta * ZOOM_WHEEL_SPEED
+      this.camDistance = clamp(this.camDistance, CAM_DISTANCE_MIN, CAM_DISTANCE_MAX)
+    }
   }
 
   private syncCamera(snap: boolean, delta = 0.016): void {
@@ -711,9 +778,12 @@ export class PlayerSystem {
   }
 
   private resolveCameraDistance(pivot: THREE.Vector3, direction: THREE.Vector3, maxDistance: number): number {
+    if (!cameraCollisionDebug.isWallOcclusionEnabled()) return maxDistance
     const hitDist = this.physics.sweepRay(pivot, direction, maxDistance)
-    if (hitDist !== null) return Math.max(0.8, hitDist - 0.25)
-    return maxDistance
+    if (hitDist === null) return maxDistance
+    const occlusionThreshold = maxDistance * 0.82
+    if (hitDist >= occlusionThreshold) return maxDistance
+    return Math.max(0.8, hitDist - 0.25)
   }
 
   private syncNameTag(): void {
@@ -737,9 +807,9 @@ export class PlayerSystem {
   }
 
   private teleportTo(positionThree: THREE.Vector3): void {
-    if (this.bounds) {
+    if (this.walkBounds) {
       const dclPos = threeToDclVec(positionThree)
-      clampToSceneBounds(dclPos, this.bounds)
+      clampToWalkBounds(dclPos, this.walkBounds)
       positionThree.copy(dclToThreeVec(dclPos))
     }
     this.physics.teleport(positionThree)

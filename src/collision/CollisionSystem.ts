@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
 import {
-  applyPrimitivePivotOffset,
+
   buildPrimitiveGeometry,
   primitiveKind,
   type PrimitiveMeshSpec
@@ -121,8 +121,6 @@ export class CollisionSystem {
       mesh.userData.colliderKind = kind
       mesh.userData.entity = entity
       mesh.userData.collisionMask = collisionMask
-      applyPrimitivePivotOffset(mesh, spec as PrimitiveMeshSpec)
-
       const root = new THREE.Object3D()
       root.name = `collider-root:${entity}`
       root.add(mesh)
@@ -168,6 +166,26 @@ export class CollisionSystem {
     if (!this.colliders.size) return
     let changed = false
     for (const [entity] of this.colliders) {
+      if (this.syncColliderEntityPose(entity, entityNodes)) changed = true
+    }
+    if (changed) this.recomputePhysicsBatchFingerprint()
+  }
+
+  /** CL_POINTER MeshColliders only — pointer raycast prep (skips CL_PHYSICS-only primitives). */
+  syncPointerPoses(entityNodes: Map<Entity, THREE.Group>): void {
+    if (!this.colliders.size) return
+    let changed = false
+    for (const [entity, record] of this.colliders) {
+      if (!hasColliderLayer(record.collisionMask, ColliderLayer.CL_POINTER)) continue
+      if (this.syncColliderEntityPose(entity, entityNodes)) changed = true
+    }
+    if (changed) this.recomputePhysicsBatchFingerprint()
+  }
+
+  syncPosesForEntities(entityNodes: Map<Entity, THREE.Group>, entities: readonly Entity[]): void {
+    let changed = false
+    for (const entity of entities) {
+      if (!this.colliders.has(entity)) continue
       if (this.syncColliderEntityPose(entity, entityNodes)) changed = true
     }
     if (changed) this.recomputePhysicsBatchFingerprint()

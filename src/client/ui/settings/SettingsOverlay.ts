@@ -1,7 +1,9 @@
 import type { SessionIdentity } from '../../../network/SessionIdentity'
 import { BackpackView } from './BackpackView'
-import { EventsView } from './EventsView'
+import { EventsView, type EventsViewOptions } from './EventsView'
 import { MapView, type MapPlayerState } from './MapView'
+import { GalleryView } from './GalleryView'
+import { PlacesView, type PlacesViewOptions } from './PlacesView'
 
 export type SettingsTab = 'events' | 'places' | 'communities' | 'map' | 'backpack' | 'gallery'
 
@@ -33,8 +35,14 @@ export type SettingsOverlayOptions = {
   session: SessionIdentity
   getMapPlayerState?: () => MapPlayerState | null
   onMapJumpIn?: (px: number, py: number) => void
+  onEventJumpIn?: EventsViewOptions['onJumpIn']
+  onPlaceJumpIn?: PlacesViewOptions['onJumpIn']
+  getDefaultEventCoords?: () => { x: number; y: number } | null
+  isWorldScene?: boolean
+  worldName?: string | null
   onOpen?: () => void
   onClose?: () => void
+  onVrmEquipChange?: () => void | Promise<void>
 }
 
 export class SettingsOverlay {
@@ -45,20 +53,34 @@ export class SettingsOverlay {
   private activeTab: SettingsTab | null = null
   private backpackView: BackpackView | null = null
   private eventsView: EventsView | null = null
+  private placesView: PlacesView | null = null
+  private galleryView: GalleryView | null = null
   private mapView: MapView | null = null
   private session: SessionIdentity
   private getMapPlayerState?: () => MapPlayerState | null
   private onMapJumpIn?: (px: number, py: number) => void
+  private onEventJumpIn?: EventsViewOptions['onJumpIn']
+  private onPlaceJumpIn?: PlacesViewOptions['onJumpIn']
+  private getDefaultEventCoords?: () => { x: number; y: number } | null
+  private isWorldScene?: boolean
+  private worldName?: string | null
   private visible = false
   private onOpen?: () => void
   private onClose?: () => void
+  private onVrmEquipChange?: () => void | Promise<void>
 
   constructor(opts: SettingsOverlayOptions) {
     this.session = opts.session
     this.getMapPlayerState = opts.getMapPlayerState
     this.onMapJumpIn = opts.onMapJumpIn
+    this.onEventJumpIn = opts.onEventJumpIn
+    this.onPlaceJumpIn = opts.onPlaceJumpIn
+    this.getDefaultEventCoords = opts.getDefaultEventCoords
+    this.isWorldScene = opts.isWorldScene
+    this.worldName = opts.worldName
     this.onOpen = opts.onOpen
     this.onClose = opts.onClose
+    this.onVrmEquipChange = opts.onVrmEquipChange
 
     this.root = document.createElement('div')
     this.root.className = 'settings-overlay'
@@ -182,6 +204,11 @@ export class SettingsOverlay {
     this.onMapJumpIn = handler
   }
 
+  updateEventContext(isWorldScene: boolean, worldName: string | null): void {
+    this.isWorldScene = isWorldScene
+    this.worldName = worldName
+  }
+
   private switchTab(id: SettingsTab): void {
     this.activeTab = id
     let activeBtn: HTMLElement | null = null
@@ -206,15 +233,41 @@ export class SettingsOverlay {
     this.backpackView = null
     this.eventsView?.dispose()
     this.eventsView = null
+    this.placesView?.dispose()
+    this.placesView = null
+    this.galleryView?.dispose()
+    this.galleryView = null
     this.mapView?.dispose()
     this.mapView = null
 
     if (this.activeTab === 'events') {
-      this.eventsView = new EventsView()
+      this.eventsView = new EventsView({
+        onJumpIn: this.onEventJumpIn,
+        getAuthIdentity: () => this.session.getAuthIdentity(),
+        getDefaultCoords: this.getDefaultEventCoords,
+        isWorldScene: this.isWorldScene,
+        worldName: this.worldName
+      })
       this.contentArea.appendChild(this.eventsView.root)
       this.eventsView.mount()
+    } else if (this.activeTab === 'places') {
+      this.placesView = new PlacesView({
+        onJumpIn: this.onPlaceJumpIn,
+        getAuthIdentity: () => this.session.getAuthIdentity()
+      })
+      this.contentArea.appendChild(this.placesView.root)
+      this.placesView.mount()
+    } else if (this.activeTab === 'gallery') {
+      this.galleryView = new GalleryView({
+        getWalletAddress: () => this.session.getAddress(),
+        getAuthIdentity: () => this.session.getAuthIdentity()
+      })
+      this.contentArea.appendChild(this.galleryView.root)
+      this.galleryView.mount()
     } else if (this.activeTab === 'backpack') {
-      this.backpackView = new BackpackView(this.session)
+      this.backpackView = new BackpackView(this.session, {
+        onVrmEquipChange: () => this.onVrmEquipChange?.()
+      })
       this.contentArea.appendChild(this.backpackView.root)
     } else if (this.activeTab === 'map' && this.getMapPlayerState) {
       this.mapView = new MapView({
@@ -241,6 +294,8 @@ export class SettingsOverlay {
     window.removeEventListener('keydown', this.onKeyDown)
     this.backpackView?.dispose()
     this.eventsView?.dispose()
+    this.placesView?.dispose()
+    this.galleryView?.dispose()
     this.mapView?.dispose()
     this.root.remove()
   }

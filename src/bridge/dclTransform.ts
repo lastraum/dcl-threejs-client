@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
+import type { SceneWorldBounds } from '../player/SceneBounds'
 import type { MirrorComponents } from './mirrorComponents'
 
 export type DclTransformValues = {
@@ -56,6 +57,16 @@ export function dclToThreeVec(v: THREE.Vector3, out = new THREE.Vector3()): THRE
 
 export function threeToDclVec(v: THREE.Vector3, out = new THREE.Vector3()): THREE.Vector3 {
   return threeToDclPos(v.x, v.y, v.z, out)
+}
+
+/** Reflect a DCL scene-space AABB into Three.js display space (X negated). */
+export function dclBoundsToThreeDisplay(bounds: SceneWorldBounds): SceneWorldBounds {
+  return {
+    minX: -bounds.maxX,
+    maxX: -bounds.minX,
+    minZ: bounds.minZ,
+    maxZ: bounds.maxZ
+  }
 }
 
 /** Yaw around world up — negates under X reflection. */

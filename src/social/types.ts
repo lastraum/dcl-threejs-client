@@ -13,13 +13,37 @@ export type CommunityListRow = {
   isPrivate?: boolean
 }
 
-export type ChatLine = {
+export type ChatTextLine = {
+  kind?: 'text'
   id: string
   text: string
   time: number
   self?: boolean
   senderName?: string
   senderAddress?: string
+}
+
+export type ChatImageLine = {
+  kind: 'image'
+  id: string
+  messageId: string
+  objectUrl: string
+  mime: string
+  width: number
+  height: number
+  time: number
+  self?: boolean
+  senderAddress?: string
+}
+
+export type ChatLine = ChatTextLine | ChatImageLine
+
+export function isChatImageLine(line: ChatLine): line is ChatImageLine {
+  return line.kind === 'image'
+}
+
+export function isChatTextLine(line: ChatLine): line is ChatTextLine {
+  return line.kind !== 'image'
 }
 
 export type SceneChatTab = {

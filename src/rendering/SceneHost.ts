@@ -22,6 +22,10 @@ export class SceneHost {
   private orbitEnabled = true
   private disposing = false
   private readonly clock = new THREE.Clock()
+  private readonly frameListeners = new Set<(delta: number) => void>()
+  private resizeObserver: ResizeObserver | null = null
+  private viewportElement: HTMLElement | null = null
+  private onViewportResize: ((width: number, height: number) => void) | null = null
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true })
@@ -49,18 +53,41 @@ export class SceneHost {
     this.controls.maxPolarAngle = Math.PI * 0.49
     this.nameTags = new NameTagRenderer(container)
     this.renderStats = new RenderStats()
+    this.renderStats.attachRenderer(this.renderer)
 
     clientSettings.subscribe((s) => {
       this.camera.fov = s.fov
       this.camera.updateProjectionMatrix()
     })
 
-    window.addEventListener('resize', () => {
-      this.camera.aspect = window.innerWidth / window.innerHeight
-      this.camera.updateProjectionMatrix()
-      this.renderer.setSize(window.innerWidth, window.innerHeight)
-      this.nameTags.setSize(window.innerWidth, window.innerHeight)
-    })
+    window.addEventListener('resize', () => this.applyViewportSize())
+  }
+
+  /** Size renderer/camera to a panel element (editor workspace) instead of the full window. */
+  bindViewport(element: HTMLElement, onResize?: (width: number, height: number) => void): void {
+    this.viewportElement = element
+    this.onViewportResize = onResize ?? null
+    this.resizeObserver?.disconnect()
+    this.resizeObserver = new ResizeObserver(() => this.applyViewportSize())
+    this.resizeObserver.observe(element)
+    this.applyViewportSize()
+  }
+
+  setViewportSize(width: number, height: number): void {
+    if (width < 1 || height < 1) return
+    this.camera.aspect = width / height
+    this.camera.updateProjectionMatrix()
+    this.renderer.setSize(width, height, false)
+    this.nameTags.setSize(width, height)
+    this.onViewportResize?.(width, height)
+  }
+
+  private applyViewportSize(): void {
+    if (this.viewportElement) {
+      this.setViewportSize(this.viewportElement.clientWidth, this.viewportElement.clientHeight)
+      return
+    }
+    this.setViewportSize(window.innerWidth, window.innerHeight)
   }
 
   focusSpawn(sceneConfig: ResolvedScene): void {
@@ -84,6 +111,11 @@ export class SceneHost {
   setOrbitEnabled(enabled: boolean): void {
     this.orbitEnabled = enabled
     this.controls.enabled = enabled
+  }
+
+  addFrameListener(listener: (delta: number) => void): () => void {
+    this.frameListeners.add(listener)
+    return () => this.frameListeners.delete(listener)
   }
 
   /** ACES tone mapping + exposure; spot shadows capped at 3 lights in LightManager. */
@@ -123,6 +155,14 @@ export class SceneHost {
         if (frameCount <= 3) console.error('[SceneHost] syncFrame error:', err)
       }
 
+      for (const listener of this.frameListeners) {
+        try {
+          listener(delta)
+        } catch (err) {
+          if (frameCount <= 3) console.error('[SceneHost] frameListener error:', err)
+        }
+      }
+
       this.renderStats.begin()
       if (this.orbitEnabled) this.controls.update()
       this.renderer.render(this.scene, this.camera)
@@ -153,6 +193,10 @@ export class SceneHost {
 
   dispose(): void {
     this.disposing = true
+    this.resizeObserver?.disconnect()
+    this.resizeObserver = null
+    this.viewportElement = null
+    this.onViewportResize = null
     this.stop()
     this.nameTags.dispose()
     this.controls.dispose()

@@ -4,15 +4,14 @@ import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 /** Renders CSS2D name tags on top of the WebGL canvas. */
 export class NameTagRenderer {
   private readonly renderer: CSS2DRenderer
+  readonly domElement: HTMLElement
 
   constructor(container: HTMLElement) {
     this.renderer = new CSS2DRenderer()
     this.renderer.setSize(window.innerWidth, window.innerHeight)
     const dom = this.renderer.domElement
-    dom.style.position = 'absolute'
-    dom.style.top = '0'
-    dom.style.left = '0'
-    dom.style.pointerEvents = 'none'
+    dom.className = 'name-tag-layer'
+    this.domElement = dom
     container.appendChild(dom)
   }
 

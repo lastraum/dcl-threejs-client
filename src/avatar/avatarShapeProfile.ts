@@ -1,7 +1,7 @@
 import type { PBAvatarShape } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/avatar_shape.gen'
 import { normalizeProfileWearables } from './peerApi'
 import {
-  avatarShapeDisplayName,
+  avatarShapeSceneLabel,
   defaultProfileIdentity,
   identityFromAvatarProfile,
   type ProfileIdentity
@@ -40,20 +40,20 @@ export function profileFromAvatarShape(shape: PBAvatarShape): AvatarProfile {
 
 /** Resolve visible name + profile color for an AvatarShape entity. */
 export async function resolveShapeIdentity(shape: PBAvatarShape): Promise<ProfileIdentity> {
-  const sceneName = shape.name?.trim()
-  const fallback = avatarShapeDisplayName(sceneName)
+  const sceneLabel = avatarShapeSceneLabel(shape.name)
   const address = shape.id?.trim().toLowerCase()
 
   if (address && WALLET.test(address)) {
     const profile = await fetchProfileCached(address)
     if (profile) {
       const identity = identityFromAvatarProfile(profile, address)
-      if (sceneName) return { ...identity, displayName: sceneName }
+      if (sceneLabel) return { ...identity, displayName: sceneLabel }
       return identity
     }
   }
 
-  return defaultProfileIdentity(fallback)
+  if (sceneLabel) return defaultProfileIdentity(sceneLabel)
+  return defaultProfileIdentity('')
 }
 
 /** Stable key for detecting appearance changes without deep compare. */

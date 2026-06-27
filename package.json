@@ -12,15 +12,18 @@
     "test:trigger": "node scripts/test-trigger-area-math.mjs",
     "test:wearable-urns": "node scripts/test-wearable-urns.mjs",
     "bump": "npm version patch --no-git-tag-version",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "analytics:server": "node server/analytics.mjs"
   },
   "dependencies": {
     "@dcl/crypto": "^3.6.0",
     "@dcl/ecs": "^7.24.1",
     "@dcl/protocol": "1.0.0-27222196396.commit-748bafb",
     "@metamask/sdk": "^0.34.0",
+    "@pixiv/three-vrm": "^3.5.4",
     "@protobufjs/utf8": "^1.1.1",
     "decentraland-crypto-fetch": "^2.0.1",
+    "gifenc": "^1.0.3",
     "hls.js": "^1.6.2",
     "livekit-client": "^2.19.2",
     "protobufjs": "^8.6.3",

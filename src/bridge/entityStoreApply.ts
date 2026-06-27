@@ -48,6 +48,11 @@ export type ApplySceneDiffOptions = {
   skipTransformApply?: (entity: Entity) => boolean
   /** Skip collision/pointer/bridge store notifications (campfire sprite pool — no colliders). */
   skipSecondaryNotify?: (entity: Entity) => boolean
+  /**
+   * Sprite pool recycle — process MeshRenderer/Material PUTs while Transform is absent;
+   * only treat as removal on delete-only batches.
+   */
+  allowTransformless?: (entity: Entity) => boolean
 }
 
 function notifyKind(kind: ProjectionChangeKind): 'put' | 'delete' {
@@ -70,6 +75,7 @@ export function applySceneDiff(
   const notifySecondary = options.notifySecondary !== false
   const skipTransformApply = options.skipTransformApply
   const skipSecondaryNotify = options.skipSecondaryNotify
+  const allowTransformless = options.allowTransformless
   const shouldNotify = (entity: Entity): boolean =>
     notifySecondary && !skipSecondaryNotify?.(entity)
   const { Transform, VisibilityComponent, LightSource } = components
@@ -92,6 +98,29 @@ export function applySceneDiff(
     if (isReserved(entity, view)) continue
 
     if (!Transform.has(entity)) {
+      if (allowTransformless?.(entity)) {
+        const hasPut = [...comps.values()].some((kind) => kind !== 'delete')
+        if (!hasPut && store.has(entity) && store.isSceneOwned(entity)) {
+          removals.push(entity)
+          continue
+        }
+        store.getOrCreateNode(entity)
+        diffEntities.add(entity)
+        const obj = store.getNode(entity)
+        if (obj) {
+          obj.visible = VisibilityComponent.has(entity)
+            ? VisibilityComponent.get(entity).visible !== false
+            : true
+        }
+        for (const [componentId, kind] of comps) {
+          if (meshComponentIds.has(componentId)) meshDirty.add(entity)
+          if (!shouldNotify(entity)) continue
+          if (secondaryNotifyIds.has(componentId) || bridgeNotifyIds.has(componentId)) {
+            store.notifyComponentChange(entity, componentId, notifyKind(kind))
+          }
+        }
+        continue
+      }
       if (store.has(entity) && store.isSceneOwned(entity)) removals.push(entity)
       continue
     }
@@ -139,7 +168,7 @@ export function applySceneDiff(
       removeLightSource(obj, lk)
     }
 
-    // Tween refresh mutates matrixWorld in place — mark colliderPoseDirty via Transform notify.
+    // Tween refresh entities — notify Transform so collider pose dirty propagates on-change.
     if (shouldNotify(entity) && diffEntities.has(entity)) {
       store.notifyComponentChange(entity, Transform.componentId, 'put')
     }

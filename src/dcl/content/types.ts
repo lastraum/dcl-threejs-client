@@ -4,6 +4,7 @@ export type SceneSource =
   | { kind: 'blank' }
   | { kind: 'world'; worldName: string; entityId: string }
   | { kind: 'coords'; x: number; y: number }
+  | { kind: 'local'; projectId: string }
 
 export type SceneLayout = {
   parcels: string[]
@@ -22,6 +23,35 @@ export type SceneSpawn = {
   y: number
   z: number
   cameraTarget?: { x: number; y: number; z: number }
+  /** True when resolved from scene.json `spawnPoints` (use Y as-authored). */
+  fromSpawnPoints?: boolean
+  /** Chosen entry name when `fromSpawnPoints` — boot log only. */
+  spawnPointName?: string
+}
+
+/** scene.json `environment` — biome for client landscape (worlds default island; parcel scenes default none). */
+export type SceneEnvironmentKind =
+  | 'none'
+  | 'island'
+  | 'water'
+  | 'space'
+  | 'mountains'
+  | 'desert'
+  | 'land'
+  | 'forest'
+
+/** `scene.json` → `environment` object — biome + optional celestial lighting toggles. */
+export type SceneEnvironmentConfig = {
+  kind?: SceneEnvironmentKind
+  /** No directional sun light or visible sun disc — scene relies on ECS / local lights. */
+  disableSun?: boolean
+  /** No directional moon light or visible moon disc. */
+  disableMoon?: boolean
+}
+
+export type SceneSkyLighting = {
+  disableSun: boolean
+  disableMoon: boolean
 }
 
 export type SceneMetadata = {
@@ -30,6 +60,8 @@ export type SceneMetadata = {
   spawnPoints?: SpawnPoint[]
   main?: string
   skyboxConfig?: { fixedTime?: number }
+  /** Biome id string or object — opt-in on parcel scenes; worlds fall back to island when omitted. */
+  environment?: SceneEnvironmentKind | SceneEnvironmentConfig
 }
 
 export type SkyboxConfig = {
@@ -54,6 +86,10 @@ export type ResolvedScene = {
   baseParcel: string
   spawn: SceneSpawn
   metadata: SceneMetadata
+  /** Resolved landscape biome (scene.json + URL override). */
+  landscapeEnvironment: SceneEnvironmentKind
+  /** Celestial lights from `environment.disableSun` / `disableMoon` (+ dev URL overrides). */
+  skyLighting: SceneSkyLighting
   content: ContentFile[]
   contentsBaseUrl: string
   assetUrl: (hash: string) => string
@@ -73,7 +109,9 @@ export const BLANK_SCENE_TEMPLATE: ResolvedScene = {
   parcels: ['0,0'],
   baseParcel: '0,0',
   spawn: { x: 8, y: 0, z: 8 },
-  metadata: {},
+  metadata: { environment: 'none' },
+  landscapeEnvironment: 'none',
+  skyLighting: { disableSun: false, disableMoon: false },
   content: [],
   contentsBaseUrl: 'https://peer.decentraland.org',
   assetUrl: (hash) => `https://peer.decentraland.org/content/contents/${encodeURIComponent(hash)}`,

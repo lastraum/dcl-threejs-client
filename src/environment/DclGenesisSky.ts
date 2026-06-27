@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { ENVIRONMENT_TEXTURES } from './environmentAssets'
 import { loadCrossCubemap } from './crossCubemap'
 import { sampleSkyGradients } from './skyGradients'
 import { normalizedTimeOfDay, SUN_BRIGHTNESS } from './skyboxTime'
@@ -10,11 +11,14 @@ import {
 } from '../rendering/SunEnvironmentSettings'
 
 const SKY_VERTEX = /* glsl */ `
-varying vec3 vWorldPosition;
+// Model-space ray — dome is centered on the camera each frame (see EnvironmentSystem).
+varying vec3 vDirection;
 void main() {
-  vec4 worldPos = modelMatrix * vec4(position, 1.0);
-  vWorldPosition = worldPos.xyz;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  vDirection = position;
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  vec4 clipPos = projectionMatrix * mvPosition;
+  // Infinite sky — push to far plane after projection (Three.js Sky / envmap pattern).
+  gl_Position = vec4(clipPos.x, clipPos.y, clipPos.w, clipPos.w);
 }
 `
 
@@ -45,7 +49,7 @@ uniform samplerCube uNearCloudsCube;
 uniform samplerCube uHorizonCloudsCube;
 uniform samplerCube uTopCloudsCube;
 
-varying vec3 vWorldPosition;
+varying vec3 vDirection;
 
 vec3 sampleGradient(vec3 dir, vec3 zenit, vec3 horizon, vec3 nadir) {
   float y = clamp(dir.y, -1.0, 1.0);
@@ -101,16 +105,15 @@ vec3 rotateY(vec3 dir, float angle) {
   return vec3(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
 }
 
-// DCL clouds gradient is HDR (keys >1 at midday). Bias bright hours toward white puffs.
+// DCL clouds gradient is HDR (keys >1 at midday). Keep hue, put brightness in intensity.
 vec3 cloudTintColor(vec3 hdr, float highlights, vec3 dir, vec3 sunDir) {
   float peak = max(max(hdr.r, hdr.g), hdr.b);
   vec3 hue = hdr / max(peak, 1e-4);
-  hue = mix(hue, vec3(1.0), clamp(highlights * 0.72, 0.0, 0.9));
-  float intensity = peak * (0.88 + highlights * 0.62);
+  float intensity = peak * (0.82 + highlights * 0.55);
   float sunSide = sunDir.y > 0.05
     ? smoothstep(-0.05, 0.45, dot(normalize(dir), normalize(sunDir)))
     : 0.0;
-  intensity *= mix(0.94, 1.22, sunSide * highlights);
+  intensity *= mix(0.88, 1.28, sunSide * highlights);
   return hue * intensity;
 }
 
@@ -118,22 +121,19 @@ float cloudLayerMask(
   vec3 dir,
   samplerCube map,
   float angle,
-  float layerWeight,
+  float opacity,
   float yMin,
   float yMax
 ) {
   if (dir.y < yMin) return 0.0;
   vec3 sampleDir = rotateY(normalize(dir), angle);
-  vec3 tex = textureCube(map, sampleDir, -1.0).rgb;
-  float n = max(dot(tex, vec3(0.299, 0.587, 0.114)), tex.r);
+  float n = textureCube(map, sampleDir, -1.0).r;
   float density = 1.0 - uCloudDensity;
-  // layerWeight shapes density (Explorer parity) — not final alpha; weak layers = softer wisps, not gray puffs
-  float falloff = mix(0.5, 0.66, layerWeight);
-  density = mix(density - 0.1, density + 0.02, layerWeight);
+  float falloff = 0.62;
   float mask = smoothstep(density, density + falloff, n);
   mask *= smoothstep(yMin, yMin + 0.15, dir.y);
   mask *= 1.0 - smoothstep(yMax - 0.1, yMax, dir.y);
-  return mask * uCloudOpacity;
+  return mask * opacity * uCloudOpacity;
 }
 
 vec3 blendCloudLayer(
@@ -141,22 +141,21 @@ vec3 blendCloudLayer(
   vec3 dir,
   samplerCube map,
   float angle,
-  float layerWeight,
+  float opacity,
   float yMin,
   float yMax
 ) {
-  float mask = cloudLayerMask(dir, map, angle, layerWeight, yMin, yMax);
+  float mask = cloudLayerMask(dir, map, angle, opacity, yMin, yMax);
   if (mask <= 0.001) return sky;
   vec3 cloud = cloudTintColor(uCloudsColor, uCloudHighlights, dir, uSunDirection);
-  vec3 layer = min(cloud, vec3(2.8));
+  // Screen-style brighten — lerp toward gray tint; DCL puffs read white over blue sky
+  vec3 layer = min(cloud, vec3(2.5));
   vec3 screen = vec3(1.0) - (vec3(1.0) - sky) * (vec3(1.0) - min(layer, vec3(1.0)));
-  vec3 outColor = max(screen, layer);
-  float blend = min(mask * mix(0.82, 1.05, uCloudHighlights), 1.0);
-  return mix(sky, outColor, blend);
+  return mix(sky, max(screen, layer), mask);
 }
 
 void main() {
-  vec3 dir = normalize(vWorldPosition);
+  vec3 dir = normalize(vDirection);
   vec3 sky = sampleGradient(dir, uZenitColor, uHorizonColor, uNadirColor);
 
   float night = 1.0 - smoothstep(-0.08, 0.12, uSunDirection.y);
@@ -261,15 +260,15 @@ export class DclGenesisSky {
 
   }
 
-  async loadTextures(baseUrl = '/environment/'): Promise<void> {
+  async loadTextures(): Promise<void> {
     const loader = new THREE.TextureLoader()
     const [moon, stars, farClouds, nearClouds, horizonClouds, topClouds] = await Promise.all([
-      loader.loadAsync(`${baseUrl}SkyboxMoon.png`),
-      loader.loadAsync(`${baseUrl}SkyboxStars.png`),
-      loadCrossCubemap(`${baseUrl}SkyboxFarClouds.png`),
-      loadCrossCubemap(`${baseUrl}SkyboxNearClouds.png`),
-      loadCrossCubemap(`${baseUrl}horizon_clouds2.png`),
-      loadCrossCubemap(`${baseUrl}top_clouds.png`)
+      loader.loadAsync(ENVIRONMENT_TEXTURES.moon),
+      loader.loadAsync(ENVIRONMENT_TEXTURES.stars),
+      loadCrossCubemap(ENVIRONMENT_TEXTURES.farClouds),
+      loadCrossCubemap(ENVIRONMENT_TEXTURES.nearClouds),
+      loadCrossCubemap(ENVIRONMENT_TEXTURES.horizonClouds),
+      loadCrossCubemap(ENVIRONMENT_TEXTURES.topClouds)
     ])
 
     for (const tex of [moon, stars]) {

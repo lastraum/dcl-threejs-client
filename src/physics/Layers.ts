@@ -10,5 +10,6 @@ export const Layers = {
 
 export const ENVIRONMENT_MASK = Layers.environment.group | Layers.prop.group
 export const GROUND_QUERY_MASK = Layers.environment.group | Layers.prop.group | Layers.gltfCollider.group
-export const CAMERA_QUERY_MASK = Layers.environment.group | Layers.prop.group
+/** Landscape / parcel walls only — scene GLTF trimesh colliders stay on prop and must not pull the camera in. */
+export const CAMERA_QUERY_MASK = Layers.environment.group
 export const TRIGGER_QUERY_MASK = Layers.trigger.group

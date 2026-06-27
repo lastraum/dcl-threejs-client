@@ -1,3 +1,5 @@
+import { isClientOverlayTarget } from '../client/ui/overlayHitTest'
+
 /** Keyboard + pointer-lock input for DCL-style third-person camera. */
 export class PlayerInput {
   readonly keys = { w: false, a: false, s: false, d: false, space: false, shift: false, ctrl: false }
@@ -137,7 +139,16 @@ export class PlayerInput {
     this.pointer.dy += dy
   }
 
+  /** Release orbit drag / pointer lock — e.g. before profile context menus open. */
+  cancelCameraPointer(): void {
+    this.stopOrbit()
+    if (document.pointerLockElement === this.canvas) {
+      document.exitPointerLock()
+    }
+  }
+
   private onPointerDown = (e: PointerEvent) => {
+    if (isClientOverlayTarget(e.target)) return
     if (e.target !== this.canvas) return
     if (this.isOverlayOpen()) return
 
@@ -165,7 +176,7 @@ export class PlayerInput {
     }
     if (e.button === 2) {
       e.preventDefault()
-      this.togglePointerLock()
+      return
     }
   }
 

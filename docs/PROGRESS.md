@@ -2,24 +2,222 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-06-18 (AudioSource + AudioStream ⬜ not tested · Preferences Sounds 🟡 · Lighting ✅)  
-> **Current phase:** **Phase 4 closed** — EntityStore + **AvatarAttach Tier B** + **TriggerArea Tier A** + **VideoPlayer** shipped. **Media:** AudioSource + AudioStream implemented (awaiting user test). Next: Raycast, voice UI, e10 perf.
-> **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Tasks:** [TASKS.yaml](./TASKS.yaml)
+> **Last updated:** 2026-06-27 (Genesis spawn physics ✅ · chat unix timestamps ✅ · pointer raycast perf ✅ · `lastraum` → `dev-latest`)  
+> **Current phase:** **Phase 5 social polish** + **creator tooling** — scene media + Genesis environments shipped; **in-browser terrain editor** for local Creator Hub projects. **Next:** smoke-test `dev-latest` for **v0.4.0** release → `main`; voice/mic UI, in-scene ECS UI, SDK7 Raycast `collisionMask` parity; **PhysX cook worker** on `lastraum-cook` (merge when ready).
+> **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
+
+---
+
+## ✨ Beyond Explorer parity — client improvements
+
+Features that **go past Unity Explorer parity** — new workflows, smaller deploys, or tooling the official client does not ship. Parity gaps and bridge work stay in [INTEGRATION.md](./INTEGRATION.md) and milestone sections below.
+
+| Improvement | Status | Why it matters |
+| ----------- | ------ | -------------- |
+| **In-browser terrain editor** (`/editor`) | 🟢 | Sculpt height + splat on local Creator Hub scenes; save `terrain.glb` + `main.composite` without leaving the client |
+| **Deploy-sized terrain export** | 🟢 | Per-parcel meshes with configurable density (default **64 segs**); 5×5 ~**4–5 MB** vs ~21 MB at old 128+64 dual-mesh export |
+| **Visible-mesh physics** | 🟢 | `CL_PHYSICS` on `terrain_mesh_*` only — no duplicate `_collider` layer (matches genesis-games DCL pattern) |
+| **Non-square footprints** | 🟢 | L-shaped / sparse parcel layouts export one plane per parcel, not a full bounding-box fill |
+| **Local scenes (browser)** | 🟢 | **Link Scenes folder** — pick `~/Documents/DCL-Scenes` (Documents/Downloads/Desktop); Rescan + drag-drop |
+
+**Try it:** open **`/editor`** → pick a linked project → **Terrain sculpt** → **Save to project** → `dcl deploy` from that folder. Re-save once if you had an older dual-collider export.
+
+---
+
+## 🎉 Milestone — Genesis spawn physics + chat/avatar polish (2026-06-27)
+
+**Status: shipped on `dev-latest`** (`f266be4`) — `lastraum` fast-forward merge after plaza spawn QA.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Genesis Plaza spawn** | 🟢 | CCT created **after** collider seal + `warmStaticScene()`; unsafe pose slides invalidate + recook instead of leaving stale actors |
+| **Collider runtime** | 🟢 | Entity-local boot cooks + incremental pose slides (6147e7e pipeline); no per-frame O(scene) PhysX walks at play time |
+| **Pointer raycast perf** | 🟢 | `preparePointerRaycast` syncs **CL_POINTER** MeshColliders only; GLTF targets use live scene graph (no PhysX extractor walk) |
+| **Chat timestamps (Explorer)** | 🟢 | RFC4 Chat `protocol_version` 100 + unix timestamp — fixes ~1970 dates in Unity Explorer (`4089a2c`) |
+| **RTFKT / L2 feet** | 🟢 | Hips-only shoe rig merge, cm→m bake, nested armature scale flatten (`4089a2c`) |
+
+**Commits:** `4089a2c` · `777762f` · `f266be4`  
+**Branch:** `lastraum` → merged `dev-latest`
+
+**QA before `main`:** Genesis Plaza spawn + short walk, RickRoll pointer clicks, Explorer chat timestamp cross-check, RTFKT feet if equipped.
+
+---
+
+## 🎉 Milestone — Terrain editor & deploy export (2026-06-24)
+
+**Status: shipped on `dev-latest`** — browser terrain sculpt for local scenes + deployable `assets/terrain/terrain.glb`.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Editor hub** | 🟢 | `/editor` project list; **Link Scenes folder** (FSA) — scenes in Documents/Downloads, not `~/Library` |
+| **Sculpt session** | 🟢 | Height + splat brushes, undo/redo, procedural shading, max-height guide, fly camera |
+| **Draft storage** | 🟢 | 1024² height/splat/lava in IndexedDB per project (not deployed) |
+| **Deploy export** | 🟢 | `terrain.glb` + `main.composite` entity 9001; baked 512² albedo for Unity Explorer |
+| **Export density** | 🟢 | Panel option: **32 / 64 / 96 / 128** segments per 16 m parcel (default **64**) |
+| **Runtime** | 🟢 | Author terrain skips default landscape ground; `LandscapeAssetSanitizer` unlit vertex-color path |
+| **Collision** | 🟢 | `visibleMeshesCollisionMask: CL_PHYSICS`; invisible collider meshes removed from export |
+
+**Deploy size (approx., 5×5 parcels):** 128 segs ~17 MB · **64 segs ~4–5 MB** · 32 segs ~1–2 MB (sculpt preview stays full resolution).
+
+**Files:** `src/editor/**`, `terrainComposite.ts`, `sceneAuthorTerrain.ts`, `RenderGroundSystem.ts`, `LandscapeAssetSanitizer.ts`, `vite-plugins/localProjectsBridge.ts`
+
+**Branch:** `terrain-editor` → merged `dev-latest`
+
+---
+
+## 🎉 Milestone — dev-latest rollup (2026-06-22)
+
+**Status: shipped on `dev-latest`** (`43aad5c`) — consolidates the June 22 `lastraum` → `dev-latest` merge batch. Dev panel **Shipped** + **Full status** tabs load this file from `dev-latest` at runtime.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Media ECS** | 🟢 | **AudioSource** + **AudioStream** + **VideoPlayer** production paths; **Billboard** + **Animator** + **ParticleSystem** GPU sprites |
+| **Preferences → Sounds** | 🟢 | Master, UI SFX, voice/streams, in-world, avatar-emote volume sliders wired (`58893b1`) |
+| **Genesis sky** | 🟢 | Camera-centered dome rays + correct far-plane depth — fixes pinwheel clouds + gray-sky regression (`43aad5c`) |
+| **Low-end perf** | 🟢 | Client tier detection → relaxed scene-worker abort/interval + adaptive backoff (`43aad5c`) |
+| **DCM chat images** | 🟢 | Drag-drop, auto-resize \< 1 MiB, animated GIF, inline chat display (`e19a32e`) |
+| **Environments** | 🟢 | Landscape parcels, **FFT ocean**, Perlin scatter foliage, outdoor lighting (`50c6021`) |
+| **Boot / hydration** | 🟢 | `main.crdt` seed, unified GLB pipeline, composite preload, fast onStart CRDT path, warm-scene load restore |
+| **Profile & pills** | 🟢 | User/remote pill hover, badges row, right-click profile menu, shared profile modal |
+| **Settings shell** | 🟢 | Events calendar, Places, Gallery restored; location pill (replaces minimap); fatal load errors |
+| **Scene stability** | 🟢 | React-heavy deploy engine capture; emote camera orbit while scene-locked |
+
+**Merged:** `lastraum` → `dev-latest` (2026-06-22, tip `43aad5c`)
+
+---
+
+## 🎉 Milestone — scene glTF alpha-blend parity (2026-06-22)
+
+**Status: shipped on `dev-latest`** (`e16fe81`) — faint blue elevator tube at **La Cantina `-150,95`** matches Unity Explorer.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Scene GLTF transparency** | 🟢 | `sanitizeSceneGltfMaterials` no longer forces foliage alpha-cutout on creator meshes |
+| **Landscape foliage** | 🟢 | `tuneFoliageMaterial` stays on `sanitizeLandscapeGltf` only (empty-land tree cards) |
+
+**Root cause:** `tuneFoliageMaterial` ran inside `simplifyMaterial` for every scene GLB — transparent / low-opacity materials were rewritten to `alphaTest` cutout instead of glTF **alpha blend**.
+
+**Files:** `LandscapeAssetSanitizer.ts`
+
+**Branch:** `hotfix-transparent-textures` → merged `dev-latest`
+
+---
+
+## 🎉 Milestone — DCM v1 chat images (2026-06-22)
+
+**Status: shipped** — inline images in scene chat (separate wire from 140-char text chat).
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Protocol** | 🟢 | `dcl.chat.media` over RFC4 `Packet.scene`, chunked ~12 KiB for LiveKit |
+| **Prepare** | 🟢 | Static → WebP/JPEG; animated GIF preserved; oversized GIF downscale via `ImageDecoder` + `gifenc` |
+| **UI** | 🟢 | Chat panel drag-drop; image lines render inline in chat box |
+| **Size cap** | 🟢 | Auto-resize to \< 1 MiB before send |
+
+**Files:** `dcmChatMedia.ts`, `prepareChatImage.ts`, `Rfc4Router.ts`, `CommsService.ts`, `LiveKitCommsSession.ts`, `SocialService.ts`, `ChatPanel.ts`
+
+**Merged:** `e19a32e` → `dev-latest`
+
+---
+
+## 🎉 Milestone — Environments: landscapes, FFT ocean, Perlin scatter (2026-06-22)
+
+**Status: shipped** — Genesis / island outdoor stack beyond the procedural skydome.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Landscape parcels** | 🟢 | `LandscapeSystem` + terrain model; parcel grid padding |
+| **FFT ocean** | 🟢 | `FftOceanWater`, island/open ocean rings, perf stats hook |
+| **Perlin scatter** | 🟢 | `EzTreeGrassField` + foliage wind on supported scenes |
+| **Outdoor lighting** | 🟢 | Sun/moon/hemi hybrid with ECS light budget dimming |
+| **Walk bounds** | 🟢 | Island circular bounds + scene footprint view distance |
+
+**Files:** `LandscapeSystem.ts`, `FftOceanWater.ts`, `OpenOceanWater.ts`, `IslandWater.ts`, `OceanRing.ts`, `resolveLandscapeEnvironment.ts`, `World.ts`
+
+**Merged:** `50c6021` → `dev-latest`
+
+---
+
+## 🎉 Milestone — Boot & hydration performance (2026-06-22)
+
+**Status: shipped** — cold Genesis loads and warm revisits after unified GLB pipeline.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **main.crdt seed** | 🟢 | Renderer snapshot before worker eval — fixes 0/0 GLTF hydration stalls |
+| **Unified GLB pipeline** | 🟢 | Bytes-only prefetch, parse pool, budgeted attach on main thread |
+| **Worker boot** | 🟢 | Main-thread script fetch; eval CRDT deadlock fix; composite preload after eval |
+| **onStart CRDT** | 🟢 | Fast path during scene `onStart`; hydration unblocked after bundle eval |
+| **Warm scenes** | 🟢 | Restored load times after unified pipeline (`cbdca8d`) |
+
+**Files:** `SceneScriptSystem.ts`, `AssetCache.ts`, `glbFetchPool.ts`, `sceneWorker.ts`, `ThreeBridge.ts`, `World.ts`
+
+---
+
+## 🎉 Milestone — Render bridges: Billboard, Animator, ParticleSystem (2026-06-22)
+
+**Status: shipped** — Phase 1b/6 sprite and animation paths used by Genesis Plaza and deploy scenes.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Billboard** (1090) | 🟢 | `BillboardBridge` — live ECS scan + post-tween reconcile |
+| **Animator** (1042) | 🟢 | `AnimatorBridge` — GLTF clip states |
+| **ParticleSystem** (1217) | 🟢 | `ParticleSystemBridge` — GPU-instanced billboard sprites, DCL gravity/blend |
+| **VideoPlayer** (1043) | 🟢 | See milestone below — RickRoll + scene screens |
+| **TextShape** (1030) | 🟢 | Canvas texture planes |
+
+**Files:** `BillboardBridge.ts`, `AnimatorBridge.ts`, `ParticleSystemBridge.ts`, `bridge/particles/*`, `SceneScriptSystem.ts`
+
+---
+
+## 🎉 Milestone — Profile, settings shell & social UI (2026-06-22)
+
+**Status: shipped** — Explorer-style chrome restored and extended.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Location pill** | 🟢 | Top-left scene name + parcel coords (replaces minimap) |
+| **Profile pills** | 🟢 | Hover state, badges row, right-click → profile menu |
+| **User pill menu** | 🟢 | Shared profile modal; overlay visibility fixes |
+| **Settings → Events** | 🟢 | DCL Events API weekly/calendar — full-height layout |
+| **Settings → Places** | 🟢 | Explore tab + CORS proxy; category filters |
+| **Settings → Gallery** | 🟢 | Camera Reel month grid |
+| **Name tags** | 🟢 | Raised offset; hidden on nameless `AvatarShape`; emote chat filter |
+| **Load errors** | 🟢 | Fatal scene load surfaced in UI |
+
+**Files:** `ClientShell.ts`, `LocationCard.ts`, `ProfileModal.ts`, `EventsView.ts`, `PlacesView.ts`, `GalleryView.ts`, `NameTagRenderer.ts`, `formatSceneLoadError.ts`
+
+---
+
+## 🎉 Milestone — Low-end perf + Genesis sky dome fix (2026-06-22)
+
+**Status: shipped** — Windows 10 / weak Chrome no longer spam-abort `onUpdate` or show broken skies.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Performance tier** | 🟢 | `detectPerformanceTier()` — CPU/RAM/GPU heuristic + `?perf=low` override |
+| **Scene worker** | 🟢 | Low/medium play-ready abort + interval; adaptive backoff; single-flight `onUpdate` |
+| **Render defaults** | 🟢 | Low tier → quality Low + pixel ratio cap |
+| **Sky dome** | 🟢 | Model-space view rays + `clipPos.xyww` far plane; full camera follow |
+
+**Files:** `detectPerformanceTier.ts`, `sceneWorker.ts`, `DclGenesisSky.ts`, `EnvironmentSystem.ts`, `World.ts`
+
+**Merged:** `43aad5c` → `dev-latest`
 
 ---
 
 ## 🎉 Milestone — Audio ECS + Preferences Sounds (2026-06-18)
 
-**Status: implemented, not user-tested yet** — build passes; no in-world confirmation on a stream/clip test scene.
+**Status: shipped** — Cantina Fashion + scene deploys load AudioSource/AudioStream; volume categories wired in preferences.
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
-| **AudioSource** (1020) | ⬜ **not tested** | `AudioSourceBridge` + `SceneAudioPlayer` — THREE buffer clips, spatial/global, play/pause/seek/loop/volume/pitch |
-| **AudioStream** (1021) | ⬜ **not tested** | `AudioStreamBridge` + `SceneAudioStreamPlayer` — HTTP/HLS via hidden `HTMLAudioElement`, spatial min/max distance |
-| **AudioEvent** (1105) | ⬜ **not tested** | Grow-only `MediaState` → worker (source + stream entities) |
-| **Shared listener** | ✅ code | One `AudioListener` on camera; master volume from preferences |
-| **Preferences → Sounds** | 🟡 **partial** | Volume sliders + mic picker + mute-in-background toggle; **live:** master + in-world; **saved only:** UI SFX, voice, avatar emotes |
-| **Natural end sync** | ⬜ **not tested** | AudioSource writes `playing:false` LWW on clip end |
+| **AudioSource** (1020) | 🟢 | `AudioSourceBridge` + `SceneAudioPlayer` — buffer clips, spatial/global, in-world vs player-parented emote gain |
+| **AudioStream** (1021) | 🟢 | `AudioStreamBridge` + `SceneAudioStreamPlayer` — HTTP/HLS, voice-chat volume category |
+| **AudioEvent** (1105) | 🟢 | Grow-only `MediaState` → worker (source + stream entities) |
+| **Shared listener** | 🟢 | One `AudioListener` on camera; master volume from preferences |
+| **Preferences → Sounds** | 🟡 **partial** | **Live:** master, UI SFX, voice/streams, in-world, avatar-emote categories; **pending:** mic device + mute-in-background (needs voice UI) |
+| **Natural end sync** | 🟢 | AudioSource writes `playing:false` LWW on clip end |
 
 **Files:** `AudioSourceBridge.ts`, `SceneAudioPlayer.ts`, `AudioStreamBridge.ts`, `SceneAudioStreamPlayer.ts`, `AudioBufferCache.ts`, `SoundSettings.ts`, `SoundsSettingsView.ts`, `MicDeviceService.ts`, `mirrorComponents.ts`, `CrdtEncoder.ts`, `SceneScriptSystem.ts`
 
@@ -491,7 +689,7 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 | `sceneWorker` + ~system stubs                               | ✅ `onStart` + `onUpdate` loop; see **no-ops** below            |
 | `ThreeBridge` — Transform hierarchy + parent order          | ✅ `dclTransform.ts` — depth-sorted parents + LH→RH conversion   |
 | `ThreeBridge` — MeshRenderer primitives                     | ✅ box/sphere/cylinder/plane — **plane vertical + double-sided**; **box/plane custom `uvs`** |
-| `ThreeBridge` — Material (PBR/unlit, textures, alpha)     | ✅ `MaterialApplier.ts`                                        |
+| `ThreeBridge` — Material (PBR/unlit, textures, alpha)     | ✅ `MaterialApplier.ts` + scene GLTF blend preserved (`e16fe81`) |
 | `ThreeBridge` — GltfContainer, Visibility                   | ✅ reload on src change — all GLTF scenes (Plaza, RickRoll, parcels) |
 | Phase 1b — `LightSource`, `TextShape`                       | ✅ `LightSourceSync.ts` + `LightManager` culling + quality tiers |
 | Phase 1b — `Billboard`, `Animator`                          | ✅ `BillboardBridge.ts`, `AnimatorBridge.ts` in `SceneScriptSystem` |
@@ -549,7 +747,7 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 | Scene chat UI + RFC4 encode/decode | ✅ ChatPanel + LiveKit reliable chat publish |
 | Chat UX (140 char, links, @mentions, `/goto` styling) | ✅ `chatMentions.ts`, `linkifyText.ts`, `chatNavigationLinks.ts` — nav links teleport in-client |
 | **Scene chat outbound (LiveKit)** | ✅ dcl-companion wire + fan-out scene/world/island |
-| **Scene chat timestamps in Unity Explorer** | ⬜ **known gap** — wire uses session-elapsed (companion path); **Three.js UI shows correct local time**; Explorer shows wrong date until Unity-header + unix chat encode is verified on wire |
+| **Scene chat timestamps in Unity Explorer** | ✅ RFC4 unix encode (`protocol_version` 100) — inbound still accepts legacy session-elapsed (`4089a2c`); cross-check Explorer on next release |
 | Scene-mode rail transparency | ✅ rail hidden in scene mode until hover/pin |
 | Member communities rail (Signed Social API) | ✅ `fetchMemberCommunitiesSigned` |
 | Session identity expiry in localStorage | ✅ `identityStore` + splash expiry hint |
@@ -909,6 +1107,7 @@ Tracked in `src/shim/system/createSystemStubs.ts`. These are **deliberately stub
 - **Interaction:** **`PointerEvents` ✅** — camera raycast, hover icons + tooltips, green/red highlight, full desktop input actions, click/key CRDT to scene worker. Remaining: proximity, UI pointers.
 - **GLTF colliders:** **✅ fixed (2026-06-13)** — shared cook cache bug, PhysX release crash, degenerate mesh skip. Genesis plaza blocking confirmed.
 - **GltfContainer / Visibility:** **✅** — `ThreeBridge` + `AssetCache`; used on Genesis Plaza, RickRoll, parcel scenes.
+- **Scene GLTF alpha blend:** **✅ fixed (2026-06-22)** — creator transparency (La Cantina elevator tube `-150,95`); foliage cutout scoped to landscape GLBs only.
 - **Profile emotes:** Bundled defaults + wheel + remote RFC4 + AvatarShape loop + **GLB props ✅** + **`AvatarEmoteCommand` ECS bridge ✅** + **locomotion VFX (foot/air puffs) ✅**.
 - **Tween:** **`TweenBridge` ✅** — transform + textureMove + **`TweenSequence`** (Genesis blimp orbit) + `pumpMotionBridges` sync-frame fix — see **Tween status** section.
 - **Session assets:** GLB/texture cache survives teleports (`getSessionAssetCache`); sign-out evicts via `disposeSessionAssetCache`. **UnityGLTF null-padded JSON chunks** sanitized in `glbSanitizer.ts`. **Hydration gate** — failed GLB loads no longer cached as empty placeholders; loading screen waits for real mesh geometry + unresolved src count; **elapsed timer** (count-up from 0:00; timeout at 3:00 / 1:30 teleport) shows early ready vs fallback.

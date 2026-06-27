@@ -13,6 +13,7 @@ import type {
   CommsTopicRequest,
   ConsumeMessagesResponse,
   MainToWorker,
+  PerformanceTier,
   RealmResponse,
   SceneWorkerOutbound,
   SendBinaryRequest,
@@ -28,7 +29,8 @@ import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/tri
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../player/triggerSceneEmote'
 import {
   installPointerEventColliderChecker,
-  patchSceneBundle
+  patchSceneBundle,
+  patchSceneBundleWithCheckerStrip
 } from './pointerEventColliderCheckerPatch'
 import { injectPointerClickOnEngine } from './injectPointerClick'
 import { injectRendererGrowOnlyAppendsOnEngine } from './injectRendererGrowOnlyAppends'
@@ -37,10 +39,14 @@ import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransfor
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
 import { resolveSceneEngine } from './resolveSceneEngine'
+import { guardVideoPlayerGetMutable } from './guardVideoPlayerGetMutable'
 import {
   installPreregisterRendererComponentsHook,
   preregisterRendererInjectedComponents
 } from './preregisterRendererInjectedComponents'
+import { installSceneWorkerFetchProxy } from './installSceneWorkerFetchProxy'
+
+const VIDEO_PLAYER_NULL_MUTABLE = /VideoPlayer for null not found/
 
 const ctx = self
 
@@ -65,34 +71,60 @@ const pendingSignedFetchGetHeaders = new Map<number, (body: SignedFetchGetHeader
 const pendingCommsSend = new Map<number, (body: Record<string, never>) => void>()
 const pendingInboundBinaries: Uint8Array[] = []
 let rendererInboundApply: ((chunks: Uint8Array[]) => void) | null = null
+/** Coalesce outbound empty nudges to one post per microtask. */
+let crdtOutboundEmptyNudgeCoalesced = false
 let engineApiEvents: EngineApiEventState | null = null
 let sceneEngine: import('@dcl/ecs').IEngine | null = null
 let sceneRunning = false
 let lastTick = performance.now()
 /** True while scene onUpdate promise is in flight (may be awaiting crdtSendToRenderer). */
 let sceneUpdateInFlight = false
+/** Stays true until the onUpdate promise settles — prevents overlap after abort preemption. */
+let sceneUpdatePromiseActive = false
 /** True while pointer inbound apply + engine tick is running — scene loop yields. */
 let pointerDeliveryInFlight = false
 let pointerDeliveryStartedAt = 0
 /** Pointer deliver deferred until scene onUpdate finishes after a crdt interrupt. */
 let queuedPointerDeliver: Uint8Array[] | null = null
-/** Min ms between lightweight engine ticks (pointer/getClick systems). */
-const SCENE_TICK_BASE_INTERVAL_MS = 100
+/** Boot cooperative poll — responsive pointer lane before play-ready. */
+const SCENE_LOOP_POLL_MS = 25
+/** Play-ready cooperative + engine tick — matches dev-latest (10 Hz). */
+const SCENE_TICK_PLAY_INTERVAL_MS = 100
+/** Min ms between lightweight engine ticks during boot. */
+const SCENE_TICK_BOOT_INTERVAL_MS = 100
+const ENGINE_TICK_PLAY_HIGH_MS = SCENE_TICK_PLAY_INTERVAL_MS
+const ENGINE_TICK_PLAY_MEDIUM_MS = 66
+const ENGINE_TICK_PLAY_LOW_MS = 100
+let engineTickIntervalMs = SCENE_TICK_BOOT_INTERVAL_MS
 /** Min ms between full scene onUpdate — fast during hydration, throttled after play-ready. */
 let fullSceneOnUpdateIntervalMs = 250
 /** After play-ready: keep onUpdate responsive for pointer/triggers; perf throttle is engine-tick + diff consumer. */
 const FULL_SCENE_ONUPDATE_INTERVAL_PLAY_MS = 400
+const FULL_SCENE_ONUPDATE_INTERVAL_PLAY_LOW_MS = 900
+const FULL_SCENE_ONUPDATE_INTERVAL_PLAY_MEDIUM_MS = 650
 /** Abort in-flight scene onUpdate after this — pointer inject must not queue behind Genesis-scale sync work. */
 const SCENE_UPDATE_ABORT_MS = 2000
 const SCENE_UPDATE_ABORT_PLAY_MS = 600
+const SCENE_UPDATE_ABORT_PLAY_MEDIUM_MS = 1400
+const SCENE_UPDATE_ABORT_PLAY_LOW_MS = 2800
+const SCENE_UPDATE_ABORT_ADAPTIVE_WINDOW_MS = 20_000
+const SCENE_UPDATE_ABORT_ADAPTIVE_THRESHOLD = 4
 /** Abort pointer engine tick if sceneEngine.update / onUpdate stalls awaiting main-thread CRDT. */
 const POINTER_ENGINE_TICK_ABORT_MS = 4000
 /** Abort timer — shorter once the scene is interactive. */
 let sceneUpdateAbortMs = SCENE_UPDATE_ABORT_MS
-let sceneTickIntervalMs = SCENE_TICK_BASE_INTERVAL_MS
+let sceneTickIntervalMs = SCENE_LOOP_POLL_MS
+let playReadyPerformanceTier: PerformanceTier | undefined
+let adaptiveLowPerfMode = false
+let sceneUpdateAbortStreak = 0
+let sceneUpdateAbortWindowStart = 0
 let sceneTicksPaused = false
+/** Hydration — block heavy exports.onUpdate; engine.update still publishes composite GLTFs. */
+let sceneOnUpdatePaused = false
+const HYDRATION_ENGINE_TICK_INTERVAL_MS = 200
 let sceneUpdateAbortTimer: ReturnType<typeof setTimeout> | null = null
 let sceneTickTimer: ReturnType<typeof setInterval> | null = null
+let cooperativeTickFn: (() => void) | null = null
 /** Set when inject arrives before sceneEngine is bound — drained after bundle eval. */
 let pendingInjectPointer: InjectPointerClickBody | null = null
 let lastHeartbeatAt = performance.now()
@@ -107,6 +139,10 @@ let sceneOnUpdate: ((dt: number) => unknown) | null = null
 let sceneOnStartComplete = false
 /** True from boot message until onStart completes — priority inject/deliver is queued. */
 let sceneBootInProgress = false
+/** True during synchronous evaluateSceneBundle — get-state must not RPC main (deadlock). */
+let sceneEvalInProgress = false
+/** Boot snapshot from main — satisfies crdtGetState during bundle eval without worker↔main RPC. */
+let bootCrdtSnapshot: { hasEntities: boolean; data: Uint8Array[] } | null = null
 /** Priority lane messages received while sceneBootInProgress — drained after onStart. */
 const pendingBootPriority: SceneWorkerPriorityMessage[] = []
 /** True after inject until deliver (or fallback) finalizes the batch. */
@@ -128,6 +164,65 @@ function clearSceneUpdateAbortTimer(): void {
   }
 }
 
+function recordSceneUpdateAbort(): void {
+  const now = performance.now()
+  if (!sceneUpdateAbortWindowStart || now - sceneUpdateAbortWindowStart > SCENE_UPDATE_ABORT_ADAPTIVE_WINDOW_MS) {
+    sceneUpdateAbortWindowStart = now
+    sceneUpdateAbortStreak = 0
+  }
+  sceneUpdateAbortStreak++
+  if (sceneUpdateAbortStreak >= SCENE_UPDATE_ABORT_ADAPTIVE_THRESHOLD && !adaptiveLowPerfMode) {
+    adaptiveLowPerfMode = true
+    applyPlayReadyTiming(playReadyPerformanceTier, 'adaptive-abort-backoff')
+  }
+}
+
+function setCooperativeLoopInterval(intervalMs: number): void {
+  sceneTickIntervalMs = intervalMs
+  if (sceneTickTimer) clearInterval(sceneTickTimer)
+  if (cooperativeTickFn) {
+    sceneTickTimer = setInterval(cooperativeTickFn, intervalMs)
+  }
+}
+
+function applyPlayReadyTiming(
+  tier: PerformanceTier | undefined,
+  reason: string,
+  options?: { engineTickOverrideMs?: number }
+): void {
+  const low = tier === 'low' || adaptiveLowPerfMode
+  const medium = !low && tier === 'medium'
+  fullSceneOnUpdateIntervalMs = low
+    ? FULL_SCENE_ONUPDATE_INTERVAL_PLAY_LOW_MS
+    : medium
+      ? FULL_SCENE_ONUPDATE_INTERVAL_PLAY_MEDIUM_MS
+      : FULL_SCENE_ONUPDATE_INTERVAL_PLAY_MS
+  sceneUpdateAbortMs = low
+    ? SCENE_UPDATE_ABORT_PLAY_LOW_MS
+    : medium
+      ? SCENE_UPDATE_ABORT_PLAY_MEDIUM_MS
+      : SCENE_UPDATE_ABORT_PLAY_MS
+  if (
+    options?.engineTickOverrideMs !== undefined &&
+    options.engineTickOverrideMs >= 16 &&
+    options.engineTickOverrideMs <= 100
+  ) {
+    engineTickIntervalMs = options.engineTickOverrideMs
+  } else {
+    engineTickIntervalMs = low
+      ? ENGINE_TICK_PLAY_LOW_MS
+      : medium
+        ? ENGINE_TICK_PLAY_MEDIUM_MS
+        : ENGINE_TICK_PLAY_HIGH_MS
+  }
+  workerLog(
+    'log',
+    `[sceneWorker] play-ready timing (${reason}) — tier=${tier ?? 'default'} adaptiveLow=${adaptiveLowPerfMode} ` +
+      `engineTick ${engineTickIntervalMs}ms, onUpdate interval ${fullSceneOnUpdateIntervalMs}ms, abort ${sceneUpdateAbortMs}ms`
+  )
+  setCooperativeLoopInterval(engineTickIntervalMs)
+}
+
 function armSceneUpdateAbortTimer(): void {
   clearSceneUpdateAbortTimer()
   sceneUpdateAbortTimer = setTimeout(() => {
@@ -136,7 +231,9 @@ function armSceneUpdateAbortTimer(): void {
       'error',
       `[sceneWorker] scene onUpdate exceeded ${sceneUpdateAbortMs}ms — aborting for pointer priority`
     )
+    recordSceneUpdateAbort()
     sceneUpdateInFlight = false
+    // sceneUpdatePromiseActive stays true until the promise finally() — no overlapping onUpdate.
     // Do not set sceneTicksPaused here — pointer batches pause explicitly; a stuck pause
     // freezes worker onUpdate (campfire sprite pool) while trigger delivers keep firing.
     // Do not interrupt pending CRDT — empty responses drop composite/sprite diffs on main.
@@ -391,6 +488,29 @@ function deliverRendererAppendInbound(chunks: Uint8Array[]): void {
   scheduleBatchedSceneEngineTick()
 }
 
+/** Phase C — full renderer inbound after async main encode (no crdt-response round-trip). */
+function deliverRendererInboundGeneral(chunks: Uint8Array[]): void {
+  if (!chunks.length) return
+  if (!sceneEngine || !sceneOnStartComplete) {
+    rendererInboundApply?.(chunks)
+    return
+  }
+  const { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends, pointerAppends } =
+    applyRendererInboundChunks(chunks)
+  if (pointerDeliveryInFlight || sceneTicksPaused) return
+  const needsSceneTick =
+    raycastPuts > 0 || videoPlayerPuts > 0 || triggerAppends > 0 || pointerAppends > 0 || videoAppends > 0
+  if (needsSceneTick) {
+    scheduleBatchedSceneEngineTick()
+    return
+  }
+  if (tweenPuts > 0) {
+    scheduleBatchedTweenEngineTick()
+    return
+  }
+  scheduleBatchedSceneEngineTick()
+}
+
 function patchWorkerConsole(): void {
   const forward =
     (level: 'log' | 'info' | 'warn' | 'error' | 'debug') =>
@@ -485,6 +605,7 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
   tweenPuts: number
   raycastPuts: number
   videoPlayerPuts: number
+  reservedTransformPuts: number
   triggerAppends: number
   videoAppends: number
   pointerAppends: number
@@ -492,6 +613,7 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
   let tweenPuts = 0
   let raycastPuts = 0
   let videoPlayerPuts = 0
+  let reservedTransformPuts = 0
   let triggerAppends = 0
   let videoAppends = 0
   let pointerAppends = 0
@@ -500,23 +622,18 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
     tweenPuts = lww.tweenPuts
     raycastPuts = lww.raycastPuts
     videoPlayerPuts = lww.videoPlayerPuts
+    reservedTransformPuts = lww.reservedTransformPuts
     const growOnly = injectRendererGrowOnlyAppendsOnEngine(sceneEngine, chunks)
     triggerAppends = growOnly.triggerAppends
     videoAppends = growOnly.videoAppends
     pointerAppends = growOnly.pointerAppends
   }
-  if (
-    tweenPuts === 0 &&
-    raycastPuts === 0 &&
-    videoPlayerPuts === 0 &&
-    triggerAppends === 0 &&
-    videoAppends === 0 &&
-    pointerAppends === 0 &&
-    rendererInboundApply
-  ) {
+  // Transport still applies identity / camera / grow-only; direct inject above guarantees
+  // PlayerEntity Transform is current before the next scene read (movePlayerTo, etc.).
+  if (rendererInboundApply) {
     rendererInboundApply(chunks)
   }
-  return { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends, pointerAppends }
+  return { tweenPuts, raycastPuts, videoPlayerPuts, reservedTransformPuts, triggerAppends, videoAppends, pointerAppends }
 }
 
 function executePointerDelivery(chunks: Uint8Array[]): void {
@@ -815,8 +932,25 @@ function bindRendererInbound(
 }
 
 function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
-  const id = ++requestId
+  if (sceneEvalInProgress) {
+    return Promise.resolve([])
+  }
   const copy = data.slice()
+  // Post-onStart: fire-and-forget outbound; main replies via renderer-inbound-deliver.
+  if (sceneOnStartComplete && !sceneBootInProgress) {
+    if (copy.byteLength === 0) {
+      if (crdtOutboundEmptyNudgeCoalesced) return Promise.resolve([])
+      crdtOutboundEmptyNudgeCoalesced = true
+      queueMicrotask(() => {
+        crdtOutboundEmptyNudgeCoalesced = false
+      })
+    }
+    const msg = { type: 'crdt-outbound', data: copy } satisfies SceneWorkerOutbound
+    if (copy.byteLength === 0) ctx.postMessage(msg)
+    else ctx.postMessage(msg, [copy.buffer])
+    return Promise.resolve([])
+  }
+  const id = ++requestId
   return new Promise((resolve) => {
     pendingCrdt.set(id, resolve)
     const msg = { type: 'crdt-send', id, data: copy } satisfies SceneWorkerOutbound
@@ -827,6 +961,15 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
 }
 
 function rpcGetState(): Promise<{ hasEntities: boolean; data: Uint8Array[] }> {
+  if (sceneEvalInProgress) {
+    if (bootCrdtSnapshot) {
+      return Promise.resolve({
+        hasEntities: bootCrdtSnapshot.hasEntities,
+        data: bootCrdtSnapshot.data.map((chunk) => chunk.slice())
+      })
+    }
+    return Promise.resolve({ hasEntities: false, data: [] })
+  }
   const id = ++requestId
   return new Promise((resolve) => {
     pendingGetState.set(id, resolve)
@@ -980,13 +1123,25 @@ function rpcSignedFetchGetHeaders(body: SignedFetchRequest): Promise<SignedFetch
 async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): Promise<void> {
   sceneRunning = true
   lastTick = performance.now()
-  sceneTickIntervalMs = SCENE_TICK_BASE_INTERVAL_MS
+  sceneTickIntervalMs = SCENE_LOOP_POLL_MS
+  engineTickIntervalMs = SCENE_TICK_BOOT_INTERVAL_MS
 
-  const sceneUpdate = exports.onUpdate
+  const rawOnUpdate = exports.onUpdate
+  const sceneUpdate =
+    rawOnUpdate &&
+    (async (dt: number) => {
+      try {
+        await Promise.resolve(rawOnUpdate(dt))
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        if (VIDEO_PLAYER_NULL_MUTABLE.test(message)) return
+        throw err
+      }
+    })
   sceneOnUpdate = sceneUpdate ?? null
   workerLog(
     'log',
-    `[sceneWorker] scene loop started — onUpdate=${sceneUpdate ? 'present' : 'absent'}, interval=${SCENE_TICK_BASE_INTERVAL_MS}ms cooperative`
+    `[sceneWorker] scene loop started — onUpdate=${sceneUpdate ? 'present' : 'absent'}, poll=${SCENE_LOOP_POLL_MS}ms engineTick=${engineTickIntervalMs}ms`
   )
 
   let heartbeatPass = 0
@@ -1018,23 +1173,25 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
     lastHeartbeatAt = now
     workerLog(
       'log',
-      `[sceneWorker] heartbeat — tick=${heartbeatPass} sceneUpdateInFlight=${sceneUpdateInFlight} pointerDeliveryInFlight=${pointerDeliveryInFlight} pendingCrdt=${pendingCrdt.size} sceneEngine=${sceneEngine ? 'ok' : 'missing'} sceneTickIntervalMs=${sceneTickIntervalMs}`
+      `[sceneWorker] heartbeat — tick=${heartbeatPass} sceneUpdateInFlight=${sceneUpdateInFlight} sceneUpdatePromiseActive=${sceneUpdatePromiseActive} pointerDeliveryInFlight=${pointerDeliveryInFlight} pendingCrdt=${pendingCrdt.size} sceneEngine=${sceneEngine ? 'ok' : 'missing'} sceneTickIntervalMs=${sceneTickIntervalMs}`
     )
   }, 5000)
 
   const scheduleSceneUpdate = (dt: number): void => {
-    if (!sceneUpdate || sceneUpdateInFlight) return
+    if (!sceneUpdate || sceneUpdateInFlight || sceneUpdatePromiseActive) return
     lastFullSceneUpdateAt = performance.now()
     setTimeout(() => {
       if (
         sceneTicksPaused ||
         pendingInjectPointer ||
         queuedPointerDeliver ||
-        pointerDeliveryInFlight
+        pointerDeliveryInFlight ||
+        sceneUpdatePromiseActive
       ) {
         return
       }
       sceneUpdateInFlight = true
+      sceneUpdatePromiseActive = true
       sceneUpdateStartedAt = performance.now()
       armSceneUpdateAbortTimer()
       void Promise.resolve(sceneUpdate(dt))
@@ -1058,6 +1215,7 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
         .finally(() => {
           clearSceneUpdateAbortTimer()
           sceneUpdateInFlight = false
+          sceneUpdatePromiseActive = false
           resumeSceneTicksAfterPointer()
           drainQueuedPointerDeliver()
         })
@@ -1065,7 +1223,15 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
   }
 
   const scheduleEngineTick = (dt: number): void => {
-    if (!sceneEngine || sceneUpdateInFlight || pointerDeliveryInFlight || engineTickInFlight) return
+    if (
+      !sceneEngine ||
+      sceneUpdateInFlight ||
+      sceneUpdatePromiseActive ||
+      pointerDeliveryInFlight ||
+      engineTickInFlight
+    ) {
+      return
+    }
     if (sceneTicksPaused || pendingInjectPointer || queuedPointerDeliver) return
     engineTickInFlight = true
     setTimeout(() => {
@@ -1092,12 +1258,16 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
     const pointerPending =
       sceneTicksPaused || pendingInjectPointer || queuedPointerDeliver || pointerDeliveryInFlight
 
+    const engineTickInterval = sceneOnUpdatePaused
+      ? HYDRATION_ENGINE_TICK_INTERVAL_MS
+      : engineTickIntervalMs
     if (
       sceneEngine &&
       !sceneUpdateInFlight &&
+      !sceneUpdatePromiseActive &&
       !pointerPending &&
       !engineTickInFlight &&
-      now - lastEngineTickAt >= SCENE_TICK_BASE_INTERVAL_MS
+      now - lastEngineTickAt >= engineTickInterval
     ) {
       scheduleEngineTick(dt)
     }
@@ -1106,7 +1276,9 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
       ENABLE_FULL_SCENE_ONUPDATE &&
       sceneUpdate &&
       !sceneTicksPaused &&
+      !sceneOnUpdatePaused &&
       !sceneUpdateInFlight &&
+      !sceneUpdatePromiseActive &&
       !pointerDeliveryInFlight &&
       !engineTickInFlight &&
       !queuedPointerDeliver &&
@@ -1117,8 +1289,9 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
     }
   }
 
+  cooperativeTickFn = runCooperativeTick
   if (sceneTickTimer) clearInterval(sceneTickTimer)
-  sceneTickTimer = setInterval(runCooperativeTick, SCENE_TICK_BASE_INTERVAL_MS)
+  sceneTickTimer = setInterval(runCooperativeTick, SCENE_LOOP_POLL_MS)
   runCooperativeTick()
 }
 
@@ -1153,6 +1326,14 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
   }
   workerLog('log', '[sceneWorker] sceneEngine ok after onStart')
   try {
+    guardVideoPlayerGetMutable(sceneEngine)
+  } catch (err) {
+    workerLog(
+      'warn',
+      `[sceneWorker] VideoPlayer getMutable guard skipped — ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+  try {
     installPointerEventColliderChecker(sceneEngine)
     workerLog('log', '[sceneWorker] pointerEventColliderChecker installed (post-onStart)')
   } catch (err) {
@@ -1168,7 +1349,7 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     allowGraphSearch: true
   })
   try {
-    sceneEngine.update(0)
+    await sceneEngine.update(0)
     workerLog('log', '[sceneWorker] post-onStart engine.update(0) — composite CRDT flushed to renderer')
   } catch (err) {
     workerLog(
@@ -1199,13 +1380,10 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
 
 async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   if (msg.type === 'scene-play-ready') {
-    fullSceneOnUpdateIntervalMs = FULL_SCENE_ONUPDATE_INTERVAL_PLAY_MS
-    sceneUpdateAbortMs = SCENE_UPDATE_ABORT_PLAY_MS
-    sceneTickIntervalMs = SCENE_TICK_BASE_INTERVAL_MS
-    workerLog(
-      'log',
-      `[sceneWorker] scene-play-ready — onUpdate interval ${fullSceneOnUpdateIntervalMs}ms, abort ${sceneUpdateAbortMs}ms`
-    )
+    playReadyPerformanceTier = msg.performanceTier
+    applyPlayReadyTiming(msg.performanceTier, 'scene-play-ready', {
+      engineTickOverrideMs: msg.engineTickIntervalMs
+    })
     return
   }
   if (msg.type === 'crdt-response') {
@@ -1328,6 +1506,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     deliverRendererAppendInbound(msg.data)
     return
   }
+  if (msg.type === 'renderer-inbound-deliver') {
+    deliverRendererInboundGeneral(msg.data)
+    return
+  }
 
   if (msg.type !== 'boot') return
 
@@ -1338,11 +1520,40 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     debugPointerDeliver = msg.debug?.pointerDeliver === true
     debugTweenDeliver = msg.debug?.tweenDeliver === true
     debugMessageArrival = msg.debug?.messageArrival === true
+    installSceneWorkerFetchProxy()
+    workerLog('log', '[sceneWorker] CRDT — round-trip during onStart only; outbound after onStart')
+    const skipTheatre = msg.debug?.skipTheatre === true
+    ;(globalThis as Record<string, unknown>).__THREEJS_SKIP_THEATRE__ = skipTheatre
     patchWorkerConsole()
+    if (skipTheatre) {
+      workerLog('log', '[sceneWorker] theatre skip enabled — runShowSetup + Scene 11/12 registration suppressed (?notheatre)')
+    }
     workerLog('log', 'scene worker boot — console forwarding active')
-    const res = await fetch(msg.scene.scriptUrl)
-    if (!res.ok) throw new Error(`Script fetch ${res.status}`)
-    const code = await res.text()
+    bootCrdtSnapshot = msg.scene.bootCrdtSnapshot
+      ? {
+          hasEntities: msg.scene.bootCrdtSnapshot.hasEntities,
+          data: msg.scene.bootCrdtSnapshot.data.map((chunk) => chunk.slice())
+        }
+      : null
+
+    let code: string
+    const scriptSource = msg.scene.scriptBlobUrl ?? msg.scene.scriptUrl
+    if (msg.scene.scriptCode) {
+      code = msg.scene.scriptCode
+      workerLog(
+        'log',
+        `[sceneWorker] using inline script (${(code.length / 1024).toFixed(0)} KB)`
+      )
+    } else {
+      workerLog(
+        'log',
+        `[sceneWorker] fetching script ${msg.scene.scriptBlobUrl ? 'from blob URL' : msg.scene.scriptUrl}`
+      )
+      const res = await fetch(scriptSource)
+      if (!res.ok) throw new Error(`Script fetch ${res.status}`)
+      code = await res.text()
+      workerLog('log', `[sceneWorker] script fetched (${(code.length / 1024).toFixed(0)} KB)`)
+    }
 
     engineApiEvents = createEngineApiEventState({
       onSubscribe: (eventId) => ctx.postMessage({ type: 'engine-api-subscribe', eventId } satisfies SceneWorkerOutbound),
@@ -1378,7 +1589,58 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
     installPreregisterRendererComponentsHook()
-    const exports = evaluateSceneBundle(code, requireMap, patchSceneBundle)
+    const evalStarted = performance.now()
+    const evalKb = (code.length / 1024).toFixed(0)
+    const patchStarted = performance.now()
+    workerLog('log', `[sceneWorker] patching scene bundle (${evalKb} KB)…`)
+    const logPatchStep = (step: string, ms: number) => {
+      workerLog('log', `[sceneWorker] patch — ${step} ${ms.toFixed(0)}ms`)
+    }
+    const compositePatched = patchSceneBundle(code, logPatchStep)
+    const checkerPatched = patchSceneBundleWithCheckerStrip(code, logPatchStep)
+    workerLog(
+      'log',
+      `[sceneWorker] bundle patch ready (${((performance.now() - patchStarted) / 1000).toFixed(2)}s)`
+    )
+    workerLog('log', `[sceneWorker] compiling scene bundle…`)
+    sceneEvalInProgress = true
+    let exports: ReturnType<typeof evaluateSceneBundle>
+    const compileBundle = (source: string, label: string): ReturnType<typeof evaluateSceneBundle> | null => {
+      try {
+        const result = evaluateSceneBundle(source, requireMap)
+        workerLog('log', `[sceneWorker] ${label}`)
+        return result
+      } catch (err) {
+        workerLog(
+          'warn',
+          `[sceneWorker] ${label} failed — ${err instanceof Error ? err.message : String(err)}`
+        )
+        return null
+      }
+    }
+    try {
+      const compiled =
+        compileBundle(compositePatched, 'compiled capture-patched bundle') ??
+        compileBundle(code, 'compiled original bundle') ??
+        compileBundle(checkerPatched, 'compiled checker-patched bundle')
+      if (!compiled) {
+        throw new Error('Scene bundle compile failed (original and patched sources are invalid)')
+      }
+      exports = compiled
+    } finally {
+      sceneEvalInProgress = false
+    }
+    const timings = (exports as { __evalTimings?: { patchMs: number; compileMs: number; executeMs: number } })
+      .__evalTimings
+    workerLog(
+      'log',
+      `[sceneWorker] scene bundle evaluated (${((performance.now() - evalStarted) / 1000).toFixed(2)}s` +
+        (timings
+          ? ` — patch ${timings.patchMs.toFixed(0)}ms, compile ${timings.compileMs.toFixed(0)}ms, run ${timings.executeMs.toFixed(0)}ms`
+          : '') +
+        ')'
+    )
+    ctx.postMessage({ type: 'eval-done' } satisfies SceneWorkerOutbound)
     sceneEngine = resolveSceneEngine(exports)
     if (sceneEngine) {
       try {
@@ -1438,8 +1700,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
 const QUIET_MESSAGE_TYPES = new Set<string>([
   'crdt-response',
   'crdt-get-state-response',
+  'crdt-outbound',
   'pointer-crdt-deliver',
-  'tween-state-deliver'
+  'tween-state-deliver',
+  'renderer-inbound-deliver'
 ])
 let workerMessageCount = 0
 
@@ -1489,6 +1753,14 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
       debugPointerDeliver,
       'log',
       `[sceneWorker] scene ticks ${sceneTicksPaused ? 'paused' : 'resumed'}`
+    )
+    return
+  }
+  if (msg.type === 'pause-scene-onupdate') {
+    sceneOnUpdatePaused = msg.paused !== false
+    workerLog(
+      'log',
+      `[sceneWorker] scene onUpdate ${sceneOnUpdatePaused ? 'paused (hydration)' : 'resumed'}`
     )
     return
   }

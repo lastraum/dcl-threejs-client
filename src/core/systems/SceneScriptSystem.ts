@@ -14,6 +14,7 @@ import { CrdtProjection, type ProjectionChangeKind } from '../../bridge/CrdtProj
 import { CrdtEncoder } from '../../bridge/CrdtEncoder'
 import { ReservedEntitiesSync, type EntityPose } from '../../bridge/ReservedEntitiesSync'
 import { ThreeBridge } from '../../bridge/ThreeBridge'
+import { applySceneDiff } from '../../bridge/entityStoreApply'
 import { AvatarShapeBridge } from '../../bridge/AvatarShapeBridge'
 import { AvatarEmoteCommandBridge, type AvatarEmoteHandler } from '../../bridge/AvatarEmoteCommandBridge'
 import { BillboardBridge } from '../../bridge/BillboardBridge'
@@ -37,10 +38,13 @@ import {
   gltfPhysicsEntityId
 } from '../../collision/GltfColliderExtractor'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
+import { resolveEngineTickIntervalMs } from '../../client/detectPerformanceTier'
+import { platformMotionDebug } from '../../debug/PlatformMotionDebug'
 import { GltfColliderExtractor } from '../../collision/GltfColliderExtractor'
 import type {
   CommsRpcHandler,
   MainToWorker,
+  PerformanceTier,
   SceneWorkerBoot,
   SceneWorkerOutbound,
   SignedFetchHandler,
@@ -50,11 +54,12 @@ import type { MovePlayerToRequest, MovePlayerToResponse } from '../../player/mov
 import type { OpenExternalUrlRequest, OpenExternalUrlResponse } from '../../player/openExternalUrl'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/triggerEmote'
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../player/triggerSceneEmote'
-import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import type { AssetCache } from '../../rendering/AssetCache'
 import type { SceneHost } from '../../rendering/SceneHost'
 import type { PlayerMirrorIdentity } from '../../bridge/playerMirrorIdentity'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
+import { skipTheatreSceneScript } from '../../client/devFlags'
+import { mirrorSceneBundle } from '../../dev/mirrorSceneBundle'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
 import { TriggerAreaSystem } from '../../input/TriggerAreaSystem'
 import { isTriggerAreaVerbose } from '../../input/triggerAreaConfig'
@@ -94,10 +99,14 @@ const PROJ_PARITY_AUDIT = ((): boolean => {
 export class SceneScriptSystem {
   readonly componentHost = new RendererComponentHost()
   /** Typed projection is the renderer-side CRDT state (inbound decode + renderer-owned writes). */
-  private readonly projection = new CrdtProjection(this.componentHost.components, {
-    networkEntity: this.componentHost.networkEntity,
-    networkParent: this.componentHost.networkParent
-  })
+  private readonly projection = new CrdtProjection(
+    this.componentHost.components,
+    {
+      networkEntity: this.componentHost.networkEntity,
+      networkParent: this.componentHost.networkParent
+    },
+    new Set<Entity>([SDK_RESERVED.root, SDK_RESERVED.player, SDK_RESERVED.camera])
+  )
   private readonly storeComponents = createStoreComponents(this.componentHost.components, this.projection)
   readonly readComponents: MirrorComponents = this.storeComponents
   readonly view: ProjectionView = projectionViewFromProjection(
@@ -121,7 +130,12 @@ export class SceneScriptSystem {
   private readonly recordRendererLww = (componentId: number, entity: Entity, value: unknown): void => {
     this.encoder.recordLww(componentId, entity, value)
   }
-  private encoderEnabledLogged = false
+  private crdtOutboundLogged = false
+  /** Phase C — serializes async outbound apply + inbound deliver. */
+  private crdtOutboundSerial: Promise<void> = Promise.resolve()
+  /** Phase C slice 2 — coalesce worker outbounds per microtask before one encode/deliver. */
+  private crdtOutboundPending: Uint8Array[] = []
+  private crdtOutboundFlushQueued = false
   readonly reserved = new ReservedEntitiesSync(this.projection, this.readComponents, SDK_RESERVED)
   collision: CollisionSystem | null = null
   gltfColliders: GltfColliderExtractor | null = null
@@ -168,7 +182,12 @@ export class SceneScriptSystem {
   private readonly colliderStructureDirty = new Set<Entity>()
   /** EntityStore onChange — Transform on collider-bearing entities (pose only). */
   private readonly colliderPoseDirty = new Set<Entity>()
-  /** True when syncCollision already pushed incremental pose slides this async pass. */
+  private readonly lastTweenMotionEntities = new Set<Entity>()
+  private readonly lastSyncFrameTransformEntities = new Set<Entity>()
+  private readonly lastPoseChangedEntities: Entity[] = []
+  private platformMotionReportDumped = false
+  private sceneBaseParcel: string | null = null
+  /** True when syncCollision already ran incremental pose descriptor refresh this pass. */
   private colliderPosesSyncedThisPass = false
   /** Transform parent → direct children — subtree walks for pose dirty propagation. */
   private readonly transformChildren = new Map<Entity, Set<Entity>>()
@@ -189,18 +208,20 @@ export class SceneScriptSystem {
   private pointerFlushInFlight = false
   private motionFocusDumped = false
   private motionFocusDumpTicks = 0
-  /** Serializes crdt-send round-trips so mirror/encoder/stash cannot race. */
-  private crdtSendSerial: Promise<void> = Promise.resolve()
+  /** Serializes boot onStart crdt-send round-trips. */
+  private bootCrdtSendSerial: Promise<void> = Promise.resolve()
+  /** True from worker boot until `ready` — keeps fast CRDT path during onStart after eval-done. */
+  private bootPhaseActive = false
+  private bootProgressReporter: ((msg: string) => void) | null = null
+  private scriptBlobUrl: string | null = null
+  private compileProgressTimer: ReturnType<typeof setInterval> | null = null
   /** Set when pointer-crdt-deliver is posted; cleared on pointer-deliver-done from worker. */
   private pointerDeliverAwaitingAck = false
-  private pointerDeliverWatchdog: ReturnType<typeof setTimeout> | null = null
   private pointerDeliverFailWatchdog: ReturnType<typeof setTimeout> | null = null
   /** Click flush pending — cleared on pointer-deliver-done. */
   private pointerAwaitingWorkerApply = false
-  /** Last inject payload — retried when worker ack stalls. */
-  private lastInjectPayload: InjectPointerClickBody | null = null
-  /** True after one watchdog retry — avoids infinite inject loops. */
-  private pointerDeliverRetried = false
+  /** Worker pointer engine tick abort is 4000ms — fail if deliver-done never arrives. */
+  private static readonly POINTER_DELIVER_FAIL_MS = 5_000
 
   private logPointer(...parts: unknown[]): void {
     if (POINTER_VERBOSE) console.log('[pointer]', ...parts)
@@ -211,10 +232,32 @@ export class SceneScriptSystem {
     return this.entityStore
   }
 
+  /** Loading-screen progress while the worker compiles the scene bundle (main thread is free). */
+  setBootProgressReporter(fn: ((msg: string) => void) | null): void {
+    this.bootProgressReporter = fn
+  }
+
+  private clearCompileProgressTimer(): void {
+    if (!this.compileProgressTimer) return
+    clearInterval(this.compileProgressTimer)
+    this.compileProgressTimer = null
+  }
+
+  private startCompileProgressTimer(): void {
+    this.clearCompileProgressTimer()
+    const compileStarted = performance.now()
+    this.compileProgressTimer = setInterval(() => {
+      const seconds = Math.floor((performance.now() - compileStarted) / 1000)
+      this.bootProgressReporter?.(`Compiling scene script… (${seconds}s)`)
+    }, 1000)
+  }
+
   /** Mirror + bridge setup — call before player spawn so reserved entities exist. */
   prepare(scene: ResolvedScene, cache: AssetCache, host: SceneHost): void {
     if (!scene.mainEntry || !scene.entityId) return
 
+    this.sceneBaseParcel = scene.baseParcel
+    this.platformMotionReportDumped = false
     this.reserved.initialize(scene.spawn)
     this.host = host
     this.entityStore = new EntityStore(host.scene, 'scene-entities')
@@ -228,7 +271,7 @@ export class SceneScriptSystem {
     this.avatarEmoteBridge = new AvatarEmoteCommandBridge(this.readComponents, this.avatarShapes)
     this.billboardBridge = new BillboardBridge(
       this.readComponents,
-      () => this.bridge?.getEntityNodes(),
+      this.entityStore,
       () => this.host!.camera
     )
     this.animatorBridge = new AnimatorBridge(
@@ -247,7 +290,7 @@ export class SceneScriptSystem {
     this.bridge.setAvatarTextureResolver(async (userId) => {
       const url = await fetchProfileFaceUrl(userId)
       if (!url) return null
-      return cache.loadTexture(url)
+      return cache.loadTexture(url).catch(() => null)
     })
     this.avatarAttachBridge = new AvatarAttachBridge(
       this.readComponents,
@@ -260,7 +303,6 @@ export class SceneScriptSystem {
       scene,
       () => this.bridge!.getEntityNodes(),
       () => this.getSpatialAudioAnchors(),
-      () => this.host?.camera ?? null,
       () => this.bindLiveKitVideo,
       this.recordRendererAppend,
       this.recordRendererLww
@@ -291,6 +333,11 @@ export class SceneScriptSystem {
     this.bridge.setAudioStreamBridge(this.audioStreamBridge)
     this.collision = new CollisionSystem(host.scene)
     this.gltfColliders = new GltfColliderExtractor(host.scene)
+    this.animatorBridge.setShapeMotionProbe((entity) => {
+      const nodes = this.bridge?.getEntityNodes()
+      if (!nodes || !this.gltfColliders) return false
+      return this.gltfColliders.probeColliderMeshMotion(entity, nodes)
+    })
     this.pointerEvents = new PointerEventsSystem(host.renderer.domElement)
     this.triggerAreas = new TriggerAreaSystem()
     this.raycasts = new RaycastSystem()
@@ -311,7 +358,35 @@ export class SceneScriptSystem {
 
   /** External systems (tweens, scripts) can mark movers without ECS Transform writes. */
   markColliderPoseDirty(entity: Entity): void {
-    this.colliderPoseDirty.add(entity)
+    const { MeshCollider, GltfContainer } = this.readComponents
+    if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
+      this.colliderPoseDirty.add(entity)
+    }
+    this.markDescendantColliderPosesDirty(entity)
+  }
+
+  /** Structure change on `root` and collider-bearing descendants only (never ancestors/siblings). */
+  markColliderStructureDirty(root: Entity): void {
+    const { MeshCollider, GltfContainer } = this.readComponents
+    if (MeshCollider.has(root) || GltfContainer.has(root)) {
+      this.colliderStructureDirty.add(root)
+    }
+    this.markDescendantColliderStructureDirty(root)
+  }
+
+  /** Transform subtree under `root` — collider roots for scoped PhysX cook enqueue. */
+  collectColliderEntitiesInSubtree(root: Entity): Entity[] {
+    const out: Entity[] = []
+    const stack: Entity[] = [root]
+    while (stack.length > 0) {
+      const entity = stack.pop()!
+      if (this.colliderRootEntities.has(entity)) out.push(entity)
+      const children = this.transformChildren.get(entity)
+      if (children) {
+        for (const child of children) stack.push(child)
+      }
+    }
+    return out
   }
 
   getPhysicsColliderDesc(physEntity: number): PhysicsColliderDesc | null {
@@ -342,13 +417,172 @@ export class SceneScriptSystem {
     return [...mesh, ...gltf]
   }
 
+  /** Physics descriptors for motion emitter entities only — O(moved), not O(scene). */
+  getPhysicsColliderDescsForEntities(entities: readonly Entity[]): PhysicsColliderDesc[] {
+    const descs: PhysicsColliderDesc[] = []
+    for (const entity of entities) {
+      const mesh = this.collision?.getPhysicsColliderForEntity(entity)
+      if (mesh) descs.push(mesh)
+      const gltf = this.gltfColliders?.getPhysicsColliderForEntity(entity)
+      if (gltf) descs.push(gltf)
+    }
+    return descs
+  }
+
+  getLastPoseChangedEntities(): readonly Entity[] {
+    return this.lastPoseChangedEntities
+  }
+
+  /**
+   * Motion sources that may move this frame — O(active tweens/animators/billboards + ground),
+   * not O(all colliders).
+   */
+  collectMotionSnapshotCandidates(groundEcs: Entity | null): Set<Entity> {
+    const out = new Set<Entity>()
+    const { MeshCollider, GltfContainer } = this.readComponents
+
+    if (groundEcs !== null && this.gltfColliders?.hasExtractedCollider(groundEcs)) {
+      out.add(groundEcs)
+    }
+
+    for (const entity of this.tweenBridge?.getActiveTweenEntities() ?? []) {
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) out.add(entity)
+    }
+
+    for (const entity of this.animatorBridge?.getActiveEntities() ?? []) {
+      if (
+        GltfContainer.has(entity) &&
+        this.gltfColliders?.hasExtractedCollider(entity) &&
+        this.isAnimatedGltfCollider(entity)
+      ) {
+        out.add(entity)
+      }
+    }
+
+    for (const entity of this.entityStore?.getBillboardEntities() ?? []) {
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) out.add(entity)
+    }
+
+    for (const entity of this.lastSyncFrameTransformEntities) {
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) out.add(entity)
+    }
+
+    return out
+  }
+
+  /** Pre-bridge walk-surface / animator-origin baselines for motion candidates. */
+  snapshotMotionBaselines(
+    entities: ReadonlySet<Entity>,
+    feet: THREE.Vector3,
+    groundEcs: Entity | null
+  ): void {
+    const nodes = this.bridge?.getEntityNodes()
+    if (nodes) this.gltfColliders?.snapshotWalkSurfaceForEntities(nodes, entities, feet)
+    if (groundEcs !== null) this.snapshotAnimatorOriginPositions(feet, groundEcs)
+  }
+
+  /** Union of all motion emitters after bridges + syncCollision — O(moved). */
+  consumeFrameMotionEntities(): ReadonlySet<Entity> {
+    const out = new Set<Entity>()
+    for (const entity of this.lastTweenMotionEntities) out.add(entity)
+    for (const entity of this.billboardBridge?.consumeMotionEntities() ?? []) out.add(entity)
+    for (const entity of this.animatorBridge?.consumeShapeMotionEntities() ?? []) out.add(entity)
+    for (const entity of this.lastSyncFrameTransformEntities) out.add(entity)
+    for (const entity of this.lastPoseChangedEntities) out.add(entity)
+    return out
+  }
+
+  /** Animator shape motion + grounded animated platform (post-bridge). */
+  getFrameShapeMotionEntities(groundEcs: Entity | null): Set<Entity> {
+    const out = new Set<Entity>(this.animatorBridge?.pendingShapeMotionEntities() ?? [])
+    if (groundEcs !== null && this.isAnimatedGltfColliderEntity(groundEcs)) out.add(groundEcs)
+    return out
+  }
+
+  /** Walk-surface Δ for motion emitter union — replaces full extracted scan. */
+  recordWalkSurfaceDeltasForEntities(
+    motion: ReadonlySet<Entity>,
+    shapeMotion: ReadonlySet<Entity>,
+    feet?: THREE.Vector3,
+    standPhysEntity?: number | null
+  ): Entity[] {
+    const nodes = this.bridge?.getEntityNodes()
+    if (!nodes || !this.gltfColliders) return []
+    const entities = new Set<Entity>(motion)
+    for (const entity of shapeMotion) entities.add(entity)
+    const priority: Entity[] = []
+    if (standPhysEntity !== null && standPhysEntity !== undefined && standPhysEntity >= GLTF_COLLIDER_ENTITY_BASE) {
+      const ecs = (standPhysEntity - GLTF_COLLIDER_ENTITY_BASE) as Entity
+      priority.push(ecs)
+      entities.add(ecs)
+    }
+    const changed = this.gltfColliders.computeWalkSurfaceDeltasForEntities(nodes, entities, feet, priority)
+    for (const entity of changed) {
+      this.colliderPoseDirty.add(entity)
+      this.markDescendantColliderPosesDirty(entity)
+    }
+    return changed
+  }
+
   /** Live matrixWorld from Three.js — must run before isColliderSynced during loading. */
-  refreshColliderDescPoses(): void {
+  refreshColliderDescPoses(
+    poseSync?: readonly Entity[],
+    shapeMotion?: ReadonlySet<Entity>
+  ): void {
     const nodes = this.bridge?.getEntityNodes()
     if (!nodes) return
     this.gltfColliders?.refreshLandscapeColliderPoses()
-    this.gltfColliders?.syncPoses(nodes)
-    this.collision?.syncPoses(nodes)
+    if (poseSync?.length) {
+      this.gltfColliders?.syncPosesForEntities(nodes, poseSync, shapeMotion)
+      this.collision?.syncPosesForEntities(nodes, poseSync)
+    }
+  }
+
+  isAnimatedGltfColliderEntity(entity: Entity): boolean {
+    const { Animator, GltfContainer } = this.readComponents
+    return GltfContainer.has(entity) && Animator.has(entity)
+  }
+
+  private isAnimatedGltfCollider(entity: Entity): boolean {
+    return this.isAnimatedGltfColliderEntity(entity)
+  }
+
+  /**
+   * PhysX pose slides — only entities with live tread motion or active animated shape sync.
+   * Do not blanket-sync every scene tween (static floors stay put; avoids CCT cache churn).
+   */
+  collectPhysXPoseSyncEntities(
+    meshMotion: readonly Entity[],
+    shapeMotion: ReadonlySet<Entity>
+  ): Entity[] {
+    const out = new Set<Entity>(meshMotion)
+    for (const entity of shapeMotion) out.add(entity)
+    return [...out]
+  }
+
+  /** Riding + platform-motion scope — only the PhysX actor CCT reported as ground last tick. */
+  resolveStandSurfacePhysEntity(
+    _feet: THREE.Vector3 | undefined,
+    groundPhysEntity: number | null
+  ): number | null {
+    const INFINITE_GROUND = -1
+    if (groundPhysEntity !== null && groundPhysEntity !== INFINITE_GROUND) {
+      return groundPhysEntity
+    }
+    return null
+  }
+
+  standSurfaceEcsFromPhys(physEntity: number | null): Entity | null {
+    if (physEntity === null || physEntity < GLTF_COLLIDER_ENTITY_BASE) return null
+    return (physEntity - GLTF_COLLIDER_ENTITY_BASE) as Entity
+  }
+
+  physEntityIdForPoseSync(entity: Entity): number | null {
+    if (this.gltfColliders?.hasExtractedCollider(entity)) {
+      return GLTF_COLLIDER_ENTITY_BASE + entity
+    }
+    if (this.colliderRootEntities.has(entity)) return entity
+    return null
   }
 
   /** Re-extract / refresh one actor desc immediately before PhysX cook (loading). */
@@ -446,7 +680,8 @@ export class SceneScriptSystem {
       TriggerArea,
       MeshRenderer,
       Animator,
-      AvatarShape
+      AvatarShape,
+      Billboard
     } = this.readComponents
 
     if (spriteSlot) {
@@ -458,13 +693,13 @@ export class SceneScriptSystem {
         this.pointerStructureDirty = true
       }
       if (componentId === MeshCollider.componentId || componentId === GltfContainer.componentId) {
-        this.colliderStructureDirty.add(entity)
+        this.markColliderStructureDirty(entity)
       }
       return
     }
 
     if (componentId === MeshCollider.componentId || componentId === GltfContainer.componentId) {
-      this.colliderStructureDirty.add(entity)
+      this.markColliderStructureDirty(entity)
     } else if (componentId === Transform.componentId) {
       if (change.kind === 'delete') {
         this.unlinkTransformEntity(entity)
@@ -475,6 +710,8 @@ export class SceneScriptSystem {
         this.colliderPoseDirty.add(entity)
       }
       this.markDescendantColliderPosesDirty(entity)
+    } else if (componentId === Billboard.componentId && change.kind === 'put') {
+      this.entityStore?.setBillboard(entity, true)
     }
 
     if (
@@ -505,13 +742,21 @@ export class SceneScriptSystem {
     }
   }
 
-  /** Re-extract colliders for one entity that just received a GLTF mesh, then enqueue PhysX cook. */
+  /**
+   * GLB mesh landed — mark collider structure dirty only.
+   * Extract / pose / PhysX cook commit in World.applyPhysicsColliders (async frame).
+   */
   flushIncrementalColliders(entity: Entity): void {
-    this.colliderStructureDirty.add(entity)
+    this.markColliderStructureDirty(entity)
     this.pointerStructureDirty = true
-    this.syncCollision()
-    this.flushPointerStructureIfDirty()
-    this.collidersCookCallback?.(entity)
+  }
+
+  /**
+   * Loading-screen tick — defer collider extract until prewarm/boot (syncCollisionForce).
+   * Extraction during attach blocked the 900+ GLTF hydration burst on plaza-scale scenes.
+   */
+  flushHydrationCollisionWork(): void {
+    // colliderStructureDirty accumulates; prewarmPhysicsColliders runs the authoritative full walk.
   }
 
   /** Full GLTF/MeshCollider extraction — hydration, spawn cook, and force-recook only. */
@@ -674,21 +919,68 @@ export class SceneScriptSystem {
     await this.bootWorker(scene)
   }
 
+  private revokeScriptBlobUrl(): void {
+    if (!this.scriptBlobUrl) return
+    URL.revokeObjectURL(this.scriptBlobUrl)
+    this.scriptBlobUrl = null
+  }
+
   private async bootWorker(scene: ResolvedScene): Promise<void> {
     if (!scene.mainEntry || !scene.entityId) return
 
     const mainFile = scene.content.find((c) => c.file === scene.mainEntry)
     if (!mainFile) throw new Error(`Main entry not in content: ${scene.mainEntry}`)
 
+    const scriptUrl = scene.assetUrl(mainFile.hash)
+    const scriptStarted = performance.now()
+    this.bootProgressReporter?.('Fetching scene script…')
+    console.info('[scene] loading scene script and boot files…')
+    const [, preloadedFiles, bootSnapshot] = await Promise.all([
+      fetch(scriptUrl).then(async (res) => {
+        if (!res.ok) throw new Error(`Scene script fetch failed (${res.status}): ${scriptUrl}`)
+        const code = await res.text()
+        mirrorSceneBundle({
+          entityId: scene.entityId ?? scene.commsPointer,
+          commsPointer: scene.commsPointer,
+          title: scene.title,
+          hash: mainFile.hash,
+          scriptUrl,
+          code
+        })
+        this.revokeScriptBlobUrl()
+        this.scriptBlobUrl = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }))
+        console.info(
+          `[scene] scene script ready (${(code.length / 1024).toFixed(0)} KB, ${((performance.now() - scriptStarted) / 1000).toFixed(1)}s)`
+        )
+      }),
+      this.preloadSceneBootFiles(scene),
+      this.seedProjectionFromMainCrdt(scene).then(() => this.buildBootCrdtSnapshot())
+    ])
+
     this.worker = new Worker(new URL('../../shim/worker/sceneWorkerEntry.ts', import.meta.url), {
       type: 'module'
     })
+
+    const transfer: Transferable[] = []
+    const transferredBuffers = new Set<ArrayBufferLike>()
+    const preloadedPayload: Record<string, { hash: string; content: Uint8Array }> = {}
+    for (const [key, file] of Object.entries(preloadedFiles)) {
+      const content = file.content
+      const buffer = content.buffer
+      if (!transferredBuffers.has(buffer)) {
+        transferredBuffers.add(buffer)
+        transfer.push(buffer as ArrayBuffer)
+      }
+      preloadedPayload[key] = { hash: file.hash, content }
+    }
+    const bootCrdtData = bootSnapshot.data.map((chunk) => chunk.slice())
 
     const boot: SceneWorkerBoot = {
       type: 'boot',
       debug: {
         pointerDeliver: POINTER_VERBOSE,
-        tweenDeliver: isTweenVerbose()
+        tweenDeliver: isTweenVerbose(),
+        skipTheatre: skipTheatreSceneScript()
       },
       scene: {
         title: scene.title,
@@ -699,13 +991,21 @@ export class SceneScriptSystem {
         entityId: scene.entityId,
         mainEntry: scene.mainEntry,
         worldName: scene.source.kind === 'world' ? scene.source.worldName : undefined,
-        scriptUrl: scene.assetUrl(mainFile.hash),
+        scriptUrl,
+        scriptBlobUrl: this.scriptBlobUrl ?? undefined,
+        bootCrdtSnapshot: {
+          hasEntities: bootSnapshot.hasEntities,
+          data: bootCrdtData
+        },
+        preloadedFiles: Object.keys(preloadedPayload).length ? preloadedPayload : undefined,
         content: scene.content,
         metadataJson: JSON.stringify(scene.metadata ?? {})
       }
     }
 
-    const BOOT_TIMEOUT_MS = 60_000
+    const BOOT_TIMEOUT_MS = 120_000
+    this.bootCrdtSendSerial = Promise.resolve()
+    this.bootPhaseActive = true
     await new Promise<void>((resolve, reject) => {
       if (!this.worker) return reject(new Error('Worker missing'))
 
@@ -714,6 +1014,8 @@ export class SceneScriptSystem {
         if (settled) return
         settled = true
         clearTimeout(bootTimer)
+        this.clearCompileProgressTimer()
+        this.revokeScriptBlobUrl()
         fn()
       }
 
@@ -721,7 +1023,7 @@ export class SceneScriptSystem {
         finish(() =>
           reject(
             new Error(
-              'Scene worker boot timed out (60s) — check console for [sceneWorker] onStart / crdt-get-state logs; hard-refresh if the worker bundle is stale'
+              'Scene worker bundle compile timed out (120s) — check console for [sceneWorker] compile / onStart logs; hard-refresh if the worker bundle is stale'
             )
           )
         )
@@ -733,24 +1035,55 @@ export class SceneScriptSystem {
 
       this.worker.onmessage = (ev: MessageEvent<SceneWorkerOutbound>) => {
         const msg = ev.data
-        // Priority lane — pointer-deliver-done must not queue behind handleCrdtSend.
         if (msg?.type === 'pointer-deliver-done') {
           this.onPointerDeliverDone()
           return
         }
-        // Boot lane — crdt-get-state must not queue behind log spam or serialized crdt-send.
         if (msg?.type === 'crdt-get-state') {
           this.respondCrdtGetState(msg.id)
           return
         }
+        if (msg?.type === 'eval-done') {
+          clientDebugLog.log('scene', 'Scene bundle compiled — hydrating while onStart runs', {
+            level: 'success',
+            alsoConsole: true
+          })
+          this.running = true
+          this.bootProgressReporter?.('Scene script compiled — loading assets…')
+          if (!settled) finish(resolve)
+          return
+        }
+        if (msg?.type === 'crdt-send' && this.bootPhaseActive) {
+          this.bootCrdtSendSerial = this.bootCrdtSendSerial
+            .then(() => this.handleCrdtSendBootFast(msg))
+            .catch((err) => {
+              console.error(
+                '[scene]',
+                `boot crdt-send failed — ${err instanceof Error ? err.message : String(err)}`
+              )
+            })
+          return
+        }
         void this.handleWorkerMessage(msg, () => finish(resolve), (err) => finish(() => reject(err)))
       }
-      this.worker.onerror = (err) => finish(() => reject(err))
+      this.worker.onerror = (err) => finish(() => reject(err instanceof ErrorEvent ? err : new Error('Scene worker error')))
 
-      this.worker.postMessage(boot)
+      this.startCompileProgressTimer()
+      this.bootProgressReporter?.('Compiling scene script… (0s)')
+      // Yield so the loading screen can paint before the (still non-trivial) boot postMessage clone.
+      requestAnimationFrame(() => {
+        try {
+          this.worker?.postMessage(boot, transfer)
+        } catch (err) {
+          finish(() =>
+            reject(err instanceof Error ? err : new Error(`Scene worker boot postMessage failed — ${String(err)}`))
+          )
+        }
+      })
     })
 
-    this.running = true
+    this.bootProgressReporter = null
+    if (!this.running) this.running = true
     if (isMotionFocusActive() && typeof globalThis !== 'undefined') {
       const g = globalThis as typeof globalThis & {
         __dumpMotionFocus?: () => void
@@ -781,8 +1114,12 @@ export class SceneScriptSystem {
     onError: (err: Error) => void
   ): Promise<void> {
     if (msg.type === 'ready') {
+      this.bootPhaseActive = false
       clientDebugLog.log('scene', 'Scene worker ready (main thread)', { level: 'success' })
       onReady()
+      return
+    }
+    if (msg.type === 'eval-done') {
       return
     }
     if (msg.type === 'error') {
@@ -807,7 +1144,9 @@ export class SceneScriptSystem {
       return
     }
     if (msg.type === 'move-player-to') {
+      this.refreshClientPosesFromProvider()
       const success = this.movePlayerHandler?.(msg.body) ?? false
+      this.pushReservedTransformsToWorker()
       this.worker?.postMessage({
         type: 'move-player-to-response',
         id: msg.id,
@@ -964,21 +1303,16 @@ export class SceneScriptSystem {
       } satisfies MainToWorker)
       return
     }
+    if (msg.type === 'crdt-outbound') {
+      this.enqueueCrdtOutbound(msg.data)
+      return
+    }
     if (msg.type === 'crdt-send') {
-      const isNudge = !msg.data?.byteLength
-      if (isNudge || this.pointerAwaitingWorkerApply) {
-        // Priority lane — empty nudge / pointer flush must not queue behind mirror.flushOutgoing.
-        await this.handleCrdtSend(msg)
-      } else {
-        await (this.crdtSendSerial = this.crdtSendSerial
-          .then(() => this.handleCrdtSend(msg))
-          .catch((err) => {
-            console.error(
-              '[scene]',
-              `crdt-send handler failed — ${err instanceof Error ? err.message : String(err)}`
-            )
-          }))
+      if (this.bootPhaseActive) {
+        await this.handleCrdtSendBootFast(msg)
+        return
       }
+      console.warn('[scene] unexpected crdt-send after boot — worker should use crdt-outbound')
       return
     }
     if (msg.type === 'crdt-get-state') {
@@ -987,38 +1321,87 @@ export class SceneScriptSystem {
     }
   }
 
-  /** Worker → main CRDT round-trip (serialized to avoid mirror/encoder races). */
-  private async handleCrdtSend(msg: Extract<SceneWorkerOutbound, { type: 'crdt-send' }>): Promise<void> {
-    const isNudge = !msg.data?.byteLength
-
-    // Empty nudge — respond without awaiting mirror.flushOutgoing (scene ticks must not stall behind it).
-    if (isNudge && !this.pointerAwaitingWorkerApply && !this.pointerResponseStash.length) {
-      try {
-        this.prepareRendererOutboundState()
-        this.projection.applyIncoming(msg.data)
-        this.foldProjectionChanges()
-        this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
-        this.syncTriggerAreas()
-        this.syncRaycasts()
-        this.syncTweenBeforeEncode()
-        this.crdtTick++
-        this.prepareRendererOutboundState()
-        const encoderBytes = this.encodeRendererCrdt()
-        const data = encoderBytes ? [encoderBytes] : []
-        this.worker?.postMessage({ type: 'crdt-response', id: msg.id, data } satisfies MainToWorker)
-        return
-      } catch (err) {
-        console.error(
-          '[scene]',
-          `nudge fast crdt-response failed — ${err instanceof Error ? err.message : String(err)}`
-        )
-      }
-    }
-
+  /**
+   * Lightweight CRDT apply during worker boot (onStart).
+   * Skips pointer/trigger/raycast/tween — those run after `ready` and would serialize
+   * hundreds of onStart round-trips behind full renderer sync (~45s stalls).
+   */
+  private async handleCrdtSendBootFast(
+    msg: Extract<SceneWorkerOutbound, { type: 'crdt-send' }>
+  ): Promise<void> {
     try {
       this.prepareRendererOutboundState()
       this.projection.applyIncoming(msg.data)
       this.foldProjectionChanges()
+      this.crdtTick++
+      this.prepareRendererOutboundState()
+      const encoderBytes = this.encodeRendererCrdt()
+      const data = encoderBytes ? [encoderBytes] : []
+      this.worker?.postMessage({ type: 'crdt-response', id: msg.id, data } satisfies MainToWorker)
+    } catch (err) {
+      console.error(
+        '[scene]',
+        `boot crdt-send failed — replying empty: ${err instanceof Error ? err.message : String(err)}`
+      )
+      this.worker?.postMessage({ type: 'crdt-response', id: msg.id, data: [] } satisfies MainToWorker)
+      throw err
+    }
+  }
+
+  private enqueueCrdtOutbound(data: Uint8Array): void {
+    this.crdtOutboundPending.push(data)
+    if (this.crdtOutboundFlushQueued) return
+    this.crdtOutboundFlushQueued = true
+    queueMicrotask(() => {
+      this.crdtOutboundFlushQueued = false
+      const batch = this.crdtOutboundPending
+      this.crdtOutboundPending = []
+      if (!batch.length) return
+      this.crdtOutboundSerial = this.crdtOutboundSerial
+        .then(() => this.handleCrdtOutboundBatch(batch))
+        .catch((err) => {
+          console.error(
+            '[scene]',
+            `crdt-outbound handler failed — ${err instanceof Error ? err.message : String(err)}`
+          )
+        })
+    })
+  }
+
+  /** Worker outbound (post-onStart) — inbound via renderer-inbound-deliver, no crdt-response. */
+  private async handleCrdtOutboundBatch(batch: Uint8Array[]): Promise<void> {
+    if (!this.running) return
+    const inbound = await this.processWorkerOutboundCrdtBatch(batch)
+    this.postRendererInboundDeliver(inbound)
+    if (!this.crdtOutboundLogged) {
+      this.crdtOutboundLogged = true
+      clientDebugLog.log(
+        'projection',
+        'CRDT outbound ACTIVE — async worker→main, inbound via renderer-inbound-deliver',
+        { level: 'success', alsoConsole: true }
+      )
+    }
+  }
+
+  private postRendererInboundDeliver(chunks: Uint8Array[]): void {
+    if (!chunks.length || !this.worker) return
+    const copies = chunks.map((chunk) => chunk.slice())
+    const transfer: Transferable[] = []
+    for (const chunk of copies) {
+      const buffer = chunk.buffer
+      if (!transfer.includes(buffer)) transfer.push(buffer)
+    }
+    this.worker.postMessage({ type: 'renderer-inbound-deliver', data: copies } satisfies MainToWorker, transfer)
+  }
+
+  private async processWorkerOutboundCrdtBatch(batch: Uint8Array[]): Promise<Uint8Array[]> {
+    const hasPayload = batch.some((data) => data?.byteLength > 0)
+    try {
+      this.prepareRendererOutboundState()
+      for (const data of batch) {
+        this.projection.applyIncoming(data)
+        this.foldProjectionChanges()
+      }
 
       if (this.pointerAwaitingWorkerApply) {
         this.videoPlayerBridge?.notifyUserPointerDelivered()
@@ -1027,7 +1410,6 @@ export class SceneScriptSystem {
         this.audioStreamBridge?.sync(this.view)
       }
 
-      // Hover + PrimaryPointerInfo only. PET_DOWN/UP stay queued until click flush → pointer-crdt-deliver.
       this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
       this.syncTriggerAreas()
       this.syncRaycasts()
@@ -1035,25 +1417,17 @@ export class SceneScriptSystem {
       this.crdtTick++
 
       this.prepareRendererOutboundState()
-
       const encoderBytes = this.encodeRendererCrdt()
-      const data = encoderBytes ? [encoderBytes] : []
+      const inbound = encoderBytes ? [encoderBytes] : []
 
-      if (!this.encoderEnabledLogged) {
-        this.encoderEnabledLogged = true
-        clientDebugLog.log('projection', 'encoder ACTIVE — crdt-response driven by CrdtEncoder (projection path)', {
-          level: 'success',
-          alsoConsole: true
-        })
-      }
-      this.worker?.postMessage({ type: 'crdt-response', id: msg.id, data } satisfies MainToWorker)
+      if (!hasPayload && !inbound.length) return []
+      return inbound
     } catch (err) {
       console.error(
         '[scene]',
-        `crdt-send failed — replying empty: ${err instanceof Error ? err.message : String(err)}`
+        `processWorkerOutboundCrdt failed — ${err instanceof Error ? err.message : String(err)}`
       )
-      this.worker?.postMessage({ type: 'crdt-response', id: msg.id, data: [] } satisfies MainToWorker)
-      throw err
+      return []
     }
   }
 
@@ -1085,6 +1459,73 @@ export class SceneScriptSystem {
     } satisfies MainToWorker)
   }
 
+  /**
+   * Deployed scenes ship static ECS state in `main.crdt`. Seed the renderer projection
+   * before the worker's onStart crdt-get-state — otherwise hasEntities stays false, composite
+   * is missing, and hydration never receives GltfContainer (0/0 forever).
+   */
+  private async seedProjectionFromMainCrdt(scene: ResolvedScene): Promise<void> {
+    const entry = scene.content.find((file) => file.file === 'main.crdt')
+    if (!entry?.hash) return
+    try {
+      const res = await fetch(scene.assetUrl(entry.hash))
+      if (!res.ok) return
+      const bytes = new Uint8Array(await res.arrayBuffer())
+      if (!bytes.byteLength) return
+      this.projection.applyIncoming(bytes)
+      this.foldProjectionChanges()
+      const entities = this.projection.sceneEntityCount(this.reservedEntities())
+      console.info(
+        `[scene] main.crdt seeded projection (${(bytes.byteLength / 1024).toFixed(0)} KB, ${entities} entities)`
+      )
+    } catch (err) {
+      console.warn(
+        '[scene]',
+        `main.crdt seed failed — ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+  }
+
+  private async preloadSceneBootFiles(
+    scene: ResolvedScene
+  ): Promise<Record<string, { hash: string; content: Uint8Array }>> {
+    const out: Record<string, { hash: string; content: Uint8Array }> = {}
+    const names = ['main.composite', 'assets/scene/main.composite']
+    await Promise.all(
+      names.map(async (fileName) => {
+        const entry =
+          scene.content.find((file) => file.file === fileName) ??
+          (fileName === 'main.composite'
+            ? scene.content.find((file) => file.file === 'assets/scene/main.composite')
+            : undefined)
+        if (!entry?.hash) return
+        try {
+          const res = await fetch(scene.assetUrl(entry.hash))
+          if (!res.ok) return
+          const content = new Uint8Array(await res.arrayBuffer())
+          out[fileName] = { hash: entry.hash, content }
+          if (fileName === 'assets/scene/main.composite') {
+            out['main.composite'] = { hash: entry.hash, content: content.slice() }
+          }
+        } catch {
+          /* composite optional */
+        }
+      })
+    )
+    const keys = Object.keys(out)
+    if (keys.length) {
+      const kb = keys.reduce((sum, key) => sum + out[key]!.content.byteLength, 0) / 1024
+      console.info(`[scene] preloaded ${keys.length} boot file(s) (${kb.toFixed(0)} KB)`)
+    }
+    return out
+  }
+
+  /** Renderer CRDT snapshot for worker bundle eval (must not round-trip main during sync eval). */
+  private buildBootCrdtSnapshot(): { hasEntities: boolean; data: Uint8Array[] } {
+    this.prepareRendererOutboundState()
+    return this.buildBootstrapSnapshot()
+  }
+
   /** e9: projection + encoder boot snapshot (replaces mirror.getState on the wire). */
   private buildBootstrapSnapshot(): { hasEntities: boolean; data: Uint8Array[] } {
     const reserved = this.reservedEntities()
@@ -1105,7 +1546,7 @@ export class SceneScriptSystem {
   /** Fold the latest projection decode batch into the render-frame diff accumulator. */
   private foldProjectionChanges(): void {
     const { PlayerEntity, CameraEntity, RootEntity } = this.view
-    const { TriggerArea, Transform } = this.readComponents
+    const { TriggerArea, Transform, Billboard } = this.readComponents
 
     for (const change of this.projection.changes) {
       if (change.entity === PlayerEntity || change.entity === CameraEntity || change.entity === RootEntity) {
@@ -1117,6 +1558,10 @@ export class SceneScriptSystem {
         (change.componentId === Transform.componentId && TriggerArea.has(change.entity))
       ) {
         this.triggerStructureDirty = true
+      }
+
+      if (change.componentId === Billboard.componentId) {
+        this.entityStore?.setBillboard(change.entity, change.kind !== 'delete')
       }
 
       let comps = this.pendingDiff.get(change.entity)
@@ -1132,6 +1577,30 @@ export class SceneScriptSystem {
     if (!this.pointerStructureDirty) return
     this.pointerStructureDirty = false
     this.pointerEvents?.invalidatePointerCache()
+  }
+
+  /** Rebuild pointer raycast targets after collision sync (spawn / incremental colliders). */
+  refreshPointerTargets(): void {
+    this.pointerStructureDirty = true
+    this.flushPointerStructureIfDirty()
+  }
+
+  /**
+   * MeshCollider CL_POINTER poses before pointer raycast.
+   * GLTF pointer targets read live scene-graph meshes (flushSceneGraphMatrices) — not PhysX extractor.
+   * SDK7 Raycast `collisionMask` filters may supersede this path later.
+   */
+  syncPointerCollisionPoses(): void {
+    if (!this.collision || !this.bridge) return
+    this.collision.syncPointerPoses(this.bridge.getEntityNodes())
+  }
+
+  /** MatrixWorld + CL_POINTER MeshCollider poses immediately before pointer raycast. */
+  preparePointerRaycast(): void {
+    this.consumeSyncFrameTransforms()
+    this.flushSceneGraphMatrices()
+    // Full syncCollision runs on the async frame (World.applyPhysicsColliders) — not here.
+    this.syncPointerCollisionPoses()
   }
 
   private flushTriggerStructureIfDirty(): void {
@@ -1168,6 +1637,7 @@ export class SceneScriptSystem {
       flushPointerCrdt: () => {
         void this.flushPendingPointerCrdt()
       },
+      prepareRaycast: () => this.preparePointerRaycast(),
       recordAppend: this.recordRendererAppend
     })
     let pointerEntities = 0
@@ -1467,12 +1937,10 @@ export class SceneScriptSystem {
       return
     }
     this.pointerDeliverAwaitingAck = true
-    this.pointerDeliverRetried = false
-    this.armPointerDeliverWatchdog('pointer — no worker pointer-deliver-done (inject or crdt-deliver)')
+    this.armPointerDeliverWatchdog()
 
     const inject = this.pointerEvents?.consumeInjectPayload()
     if (inject) {
-      this.lastInjectPayload = inject
       this.logPointer(
         `posting inject-pointer-click entity=${inject.entity} button=${inject.button} ts=${inject.downTimestamp}/${inject.upTimestamp}`
       )
@@ -1504,19 +1972,51 @@ export class SceneScriptSystem {
   private onPointerDeliverDone(): void {
     this.logPointer('pointer-deliver-done — worker finished pointer tick + onUpdate CRDT flush')
     this.videoPlayerBridge?.notifyUserPointerDelivered()
-    this.finishPointerDelivery('pointer-deliver-done')
+    void this.finishPointerDeliveryAsync('pointer-deliver-done')
+  }
+
+  /**
+   * Worker onUpdate may publish transform / mesh diffs (plant growth) while delivery is in flight.
+   * Wait for one-way outbound, apply projection diff, then sync CL_POINTER colliders.
+   */
+  private async reconcilePointerCollisionAfterDelivery(): Promise<void> {
+    await this.crdtOutboundSerial
+    const bridge = this.bridge
+    const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+    if (bridge?.canConsumeDiff() && this.pendingDiff.size) {
+      const diff = this.pendingDiff
+      this.pendingDiff = new Map()
+      await bridge.consumeDiff(diff, this.view, tweenRefresh)
+    } else {
+      this.consumeSyncFrameTransforms()
+    }
+    this.flushSceneGraphMatrices()
+    if (this.hasColliderWorkPending()) {
+      this.syncCollision()
+    } else {
+      this.syncPointerCollisionPoses()
+    }
+    const poseChanged = [...this.lastPoseChangedEntities]
+    if (poseChanged.length) {
+      this.collidersPoseCallback?.(poseChanged)
+    }
+    this.refreshPointerTargets()
+    this.collidersCookCallback?.()
   }
 
   /** Clear pointer flush state and resume worker scene ticks after delivery (idempotent). */
-  private finishPointerDelivery(source: string): void {
+  private async finishPointerDeliveryAsync(source: string): Promise<void> {
     if (!this.pointerAwaitingWorkerApply && !this.pointerDeliverAwaitingAck) return
     clientDebugLog.log('pointer', `delivery complete — ${source}`, { alsoConsole: false })
     this.pointerAwaitingWorkerApply = false
-    this.lastInjectPayload = null
-    this.pointerDeliverRetried = false
     this.clearPointerDeliverWatchdog()
+    await this.reconcilePointerCollisionAfterDelivery()
     this.proactiveTweenPushUntil = performance.now() + SceneScriptSystem.PROACTIVE_TWEEN_PUSH_MS
     this.worker?.postMessage({ type: 'pause-scene-ticks', paused: false } satisfies MainToWorker)
+  }
+
+  private finishPointerDelivery(source: string): void {
+    void this.finishPointerDeliveryAsync(source)
   }
 
   /** Worker path failed — surface loudly; scene triggers/tweens did not run. */
@@ -1528,46 +2028,18 @@ export class SceneScriptSystem {
     this.finishPointerDelivery('pointer-delivery-failed')
   }
 
-  /** One retry when inject + direct CRDT stall; no infinite inject loop. */
-  private recoverStalledPointerDelivery(): void {
-    if (!this.pointerDeliverAwaitingAck || !this.worker) return
-    if (this.pointerDeliverRetried) return
-    this.pointerDeliverRetried = true
-    console.warn('[pointer]', 'recovering stalled pointer delivery — single retry inject/CRDT')
-    if (this.lastInjectPayload) {
-      this.worker.postMessage({
-        type: 'inject-pointer-click',
-        body: this.lastInjectPayload
-      } satisfies MainToWorker)
-    }
-    this.deliverPointerCrdtDirect()
-  }
-
-  private armPointerDeliverWatchdog(detail: string): void {
-    if (this.pointerDeliverWatchdog) {
-      clearTimeout(this.pointerDeliverWatchdog)
-      this.pointerDeliverWatchdog = null
-    }
+  private armPointerDeliverWatchdog(): void {
     if (this.pointerDeliverFailWatchdog) {
       clearTimeout(this.pointerDeliverFailWatchdog)
       this.pointerDeliverFailWatchdog = null
     }
-    this.pointerDeliverWatchdog = setTimeout(() => {
-      if (!this.pointerDeliverAwaitingAck) return
-      console.error('[pointer]', `pointer deliver stalled — ${detail}`)
-      this.recoverStalledPointerDelivery()
-    }, 400)
     this.pointerDeliverFailWatchdog = setTimeout(() => {
       if (!this.pointerDeliverAwaitingAck) return
-      this.failPointerDelivery('no worker pointer-deliver-done after retry')
-    }, 1200)
+      this.failPointerDelivery('no worker pointer-deliver-done')
+    }, SceneScriptSystem.POINTER_DELIVER_FAIL_MS)
   }
 
   private clearPointerDeliverWatchdog(): void {
-    if (this.pointerDeliverWatchdog) {
-      clearTimeout(this.pointerDeliverWatchdog)
-      this.pointerDeliverWatchdog = null
-    }
     if (this.pointerDeliverFailWatchdog) {
       clearTimeout(this.pointerDeliverFailWatchdog)
       this.pointerDeliverFailWatchdog = null
@@ -1627,7 +2099,6 @@ export class SceneScriptSystem {
     this.refreshClientPosesFromProvider()
     if (!this.clientPlayerPose || !this.clientCameraPose) return
     this.reserved.prepareRendererRoundTrip(this.clientPlayerPose, this.clientCameraPose)
-    this.syncProjectionReservedTransforms()
   }
 
   private refreshClientPosesFromProvider(): void {
@@ -1641,19 +2112,21 @@ export class SceneScriptSystem {
     this.clientPlayerPose = player
     this.clientCameraPose = camera
     this.reserved.prepareRendererRoundTrip(player, camera)
-    this.syncProjectionReservedTransforms()
   }
 
-  /** Keep projection player/camera LWW ahead of stale worker inbound (avoids spawn snap on click). */
-  private syncProjectionReservedTransforms(): void {
-    const { Transform } = this.readComponents
-    const { PlayerEntity, CameraEntity } = this.view
-    if (Transform.has(PlayerEntity)) {
-      this.projection.setRenderer(Transform.componentId, PlayerEntity, Transform.get(PlayerEntity))
-    }
-    if (Transform.has(CameraEntity)) {
-      this.projection.setRenderer(Transform.componentId, CameraEntity, Transform.get(CameraEntity))
-    }
+  /** After movePlayerTo — sync worker PlayerEntity before the scene reads it again. */
+  private pushReservedTransformsToWorker(): void {
+    if (!this.worker || !this.running) return
+    this.refreshClientPosesFromProvider()
+    if (!this.clientPlayerPose || !this.clientCameraPose) return
+    this.reserved.prepareRendererRoundTrip(this.clientPlayerPose, this.clientCameraPose)
+    const bytes = this.encodeRendererCrdt()
+    if (!bytes?.byteLength) return
+    const copy = bytes.slice()
+    this.worker.postMessage(
+      { type: 'renderer-inbound-deliver', data: [copy] } satisfies MainToWorker,
+      [copy.buffer]
+    )
   }
 
   /** Fire network fetches for every GLB in the scene content manifest — downloads only, no attach. */
@@ -1707,8 +2180,10 @@ export class SceneScriptSystem {
       }
       const { spriteDiff, sceneDiff } = this.bridge.partitionSpriteDiff(diff, view)
       if (spriteDiff.size) this.bridge.consumeSpriteDiff(spriteDiff, view)
-      if (sceneDiff.size) await this.bridge.consumeDiff(sceneDiff, view)
+      const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+      if (sceneDiff.size) await this.bridge.consumeDiff(sceneDiff, view, tweenRefresh)
       else await this.bridge.drainPendingWork()
+      this.bridge.reconcileBillboardFlags()
       this.flushPointerStructureIfDirty()
       return
     }
@@ -1719,23 +2194,52 @@ export class SceneScriptSystem {
     this.pendingDiff.clear()
     this.pointerStructureDirty = true
     await this.bridge.sync(view)
-    this.colliderFullWalkRequested = true
     this.flushPointerStructureIfDirty()
   }
 
   private playReadyNotified = false
+  private performanceTier: PerformanceTier = 'high'
 
-  /** Scene + PhysX colliders ready — throttle worker onUpdate (called from World after boot cook). */
-  notifyPlayReady(): void {
-    this.bridgeSyncEvery = BRIDGE_ECS_SYNC_RUNTIME
-    if (this.playReadyNotified) return
-    this.playReadyNotified = true
-    this.worker?.postMessage({ type: 'scene-play-ready' } satisfies MainToWorker)
+  setPerformanceTier(tier: PerformanceTier): void {
+    this.performanceTier = tier
   }
 
-  /** When a parent Transform moves, child GltfContainer / MeshCollider world poses change too. */
+  getPerformanceTier(): PerformanceTier {
+    return this.performanceTier
+  }
+
+  /** Full pause — pointer delivery only; blocks engine.update (do not use during hydration). */
+  setSceneWorkerTicksPaused(paused: boolean): void {
+    this.worker?.postMessage({ type: 'pause-scene-ticks', paused } satisfies MainToWorker)
+  }
+
+  /**
+   * Hydration perf — skip exports.onUpdate (ChessGameManager, area scripts) while
+   * engine.update keeps publishing composite GltfContainer CRDT.
+   */
+  setSceneWorkerOnUpdatePaused(paused: boolean): void {
+    this.worker?.postMessage({ type: 'pause-scene-onupdate', paused } satisfies MainToWorker)
+  }
+
+  /** Scene + PhysX colliders ready — throttle worker onUpdate (called from World after boot cook). */
+  notifyPlayReady(options?: { plazaScale?: boolean; engineTickIntervalMs?: number }): void {
+    this.bridgeSyncEvery = BRIDGE_ECS_SYNC_RUNTIME
+    this.setSceneWorkerOnUpdatePaused(false)
+    this.setSceneWorkerTicksPaused(false)
+    if (this.playReadyNotified) return
+    this.playReadyNotified = true
+    this.worker?.postMessage({
+      type: 'scene-play-ready',
+      performanceTier: this.performanceTier,
+      plazaScale: options?.plazaScale,
+      engineTickIntervalMs:
+        options?.engineTickIntervalMs ?? resolveEngineTickIntervalMs(this.performanceTier)
+    } satisfies MainToWorker)
+  }
+
+  /** Parent transform moved — mark collider poses dirty down the subtree only. */
   private markDescendantColliderPosesDirty(ancestor: Entity): void {
-    const stack: Entity[] = [ancestor]
+    const stack: Entity[] = [...(this.transformChildren.get(ancestor) ?? [])]
     while (stack.length > 0) {
       const entity = stack.pop()!
       if (this.colliderRootEntities.has(entity)) this.colliderPoseDirty.add(entity)
@@ -1746,11 +2250,253 @@ export class SceneScriptSystem {
     }
   }
 
+  /** Parent structure changed — mark collider structure dirty down the subtree only. */
+  private markDescendantColliderStructureDirty(ancestor: Entity): void {
+    const { MeshCollider, GltfContainer } = this.readComponents
+    const stack: Entity[] = [...(this.transformChildren.get(ancestor) ?? [])]
+    while (stack.length > 0) {
+      const entity = stack.pop()!
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
+        this.colliderStructureDirty.add(entity)
+      }
+      const children = this.transformChildren.get(entity)
+      if (children) {
+        for (const child of children) stack.push(child)
+      }
+    }
+  }
+
+  /** Frame-start Animator GLTF root world origin — lifts that move the entity node without `_collider` Δ. */
+  private readonly animatorOriginSnapshot = new Map<Entity, THREE.Vector3>()
+  private readonly frameAnimatorOriginDelta = new Map<Entity, THREE.Vector3>()
+  private readonly frameAnimatorOriginPos = new Map<Entity, THREE.Vector3>()
+
+  snapshotAnimatorOriginPositions(_feet: THREE.Vector3, scopeEntity?: Entity): void {
+    this.animatorOriginSnapshot.clear()
+    const nodes = this.bridge?.getEntityNodes()
+    if (!nodes || scopeEntity === undefined) return
+    const node = nodes.get(scopeEntity)
+    if (!node) return
+    node.updateMatrixWorld(true)
+    this.animatorOriginSnapshot.set(
+      scopeEntity,
+      new THREE.Vector3().setFromMatrixPosition(node.matrixWorld)
+    )
+  }
+
+  /** Animator root Δ after motion bridges — only the grounded platform entity. */
+  computeAnimatorOriginDeltas(_feet: THREE.Vector3, scopeEntity?: Entity): Entity[] {
+    this.frameAnimatorOriginDelta.clear()
+    this.frameAnimatorOriginPos.clear()
+    const changed: Entity[] = []
+    const nodes = this.bridge?.getEntityNodes()
+    if (!nodes) return changed
+    for (const [entity, snapshot] of this.animatorOriginSnapshot) {
+      if (scopeEntity !== undefined && entity !== scopeEntity) continue
+      const node = nodes.get(entity)
+      if (!node) continue
+      node.updateMatrixWorld(true)
+      const pos = new THREE.Vector3().setFromMatrixPosition(node.matrixWorld)
+      const delta = pos.clone().sub(snapshot)
+      this.frameAnimatorOriginPos.set(entity, pos)
+      if (delta.lengthSq() > 1e-14) {
+        this.frameAnimatorOriginDelta.set(entity, delta)
+        changed.push(entity)
+      }
+    }
+    return changed
+  }
+
+  consumeAnimatorOriginDeltasPhys(): Map<number, THREE.Vector3> {
+    const out = new Map<number, THREE.Vector3>()
+    for (const [entity, delta] of this.frameAnimatorOriginDelta) {
+      out.set(GLTF_COLLIDER_ENTITY_BASE + entity, delta.clone())
+    }
+    return out
+  }
+
+  consumeAnimatorOriginPositionsPhys(): Map<number, THREE.Vector3> {
+    const out = new Map<number, THREE.Vector3>()
+    for (const [entity, pos] of this.frameAnimatorOriginPos) {
+      out.set(GLTF_COLLIDER_ENTITY_BASE + entity, pos.clone())
+    }
+    return out
+  }
+
+
+
+  consumeWalkSurfaceDeltas(): Map<number, THREE.Vector3> {
+    return this.gltfColliders?.consumeFrameWalkSurfaceDeltasPhys() ?? new Map()
+  }
+
+  consumeWalkSurfacePositions(): Map<number, THREE.Vector3> {
+    return this.gltfColliders?.consumeFrameWalkSurfacePositionsPhys() ?? new Map()
+  }
+
+  motionSourceLabel(entity: Entity): string {
+    const { Tween, Animator, GltfContainer } = this.readComponents
+    const parts: string[] = []
+    if (this.lastTweenMotionEntities.has(entity)) parts.push('tween')
+    if (this.lastSyncFrameTransformEntities.has(entity)) parts.push('sync-transform')
+    if (Animator.has(entity)) parts.push('animator')
+    if (Tween.has(entity)) parts.push(`tween-ecs:${Tween.get(entity).mode?.$case ?? '?'}`)
+    if (GltfContainer.has(entity)) parts.push('gltf-collider')
+    return parts.length ? parts.join('+') : 'mesh/system'
+  }
+
+  /** One-shot ECS report — scene-wide motion + entities near the avatar (any parcel/scene). */
+  dumpPlatformMotionReport(
+    feet: THREE.Vector3,
+    sceneOrigin?: { x: number; z: number } | null,
+    nearHoriz = 96
+  ): void {
+    if (!platformMotionDebug.isEnabled() || this.platformMotionReportDumped) return
+    this.platformMotionReportDumped = true
+    const { GltfContainer, Tween, Animator, Transform } = this.readComponents
+    const nodes = this.bridge?.getEntityNodes()
+    const parcel = this.sceneBaseParcel ?? '?'
+    const worldX = feet.x + (sceneOrigin?.x ?? 0)
+    const worldZ = feet.z + (sceneOrigin?.z ?? 0)
+    const lines: string[] = [
+      `Platform motion report — parcel ${parcel}` +
+        ` · feet scene (${feet.x.toFixed(1)}, ${feet.y.toFixed(1)}, ${feet.z.toFixed(1)})` +
+        ` · world (${worldX.toFixed(1)}, ${feet.y.toFixed(1)}, ${worldZ.toFixed(1)})`
+    ]
+    const horizSq = (entity: Entity): number => {
+      if (!Transform.has(entity)) return Number.POSITIVE_INFINITY
+      const p = Transform.get(entity).position
+      const dx = p.x - feet.x
+      const dz = p.z - feet.z
+      return dx * dx + dz * dz
+    }
+    const nearSq = nearHoriz * nearHoriz
+    const formatTween = (entity: Entity): string => {
+      const t = Tween.get(entity)
+      const src = GltfContainer.has(entity) ? GltfContainer.get(entity).src : '(no gltf)'
+      const pos = Transform.has(entity) ? Transform.get(entity).position : null
+      const posStr = pos ? `@(${pos.x.toFixed(1)},${pos.y.toFixed(1)},${pos.z.toFixed(1)})` : ''
+      return `  tween ${entity}${posStr} · ${t.mode?.$case ?? '?'} · ${t.playing !== false ? 'play' : 'stop'} · ${src}`
+    }
+    const formatAnimator = (entity: Entity): string => {
+      const states = Animator.get(entity).states ?? []
+      const playing = states
+        .filter((s) => s.playing !== false && s.clip)
+        .map((s) => s.clip)
+        .join(',')
+      const src = GltfContainer.has(entity) ? GltfContainer.get(entity).src : '(no gltf)'
+      const pos = Transform.has(entity) ? Transform.get(entity).position : null
+      const posStr = pos ? `@(${pos.x.toFixed(1)},${pos.y.toFixed(1)},${pos.z.toFixed(1)})` : ''
+      return `  animator ${entity}${posStr} · [${playing || 'idle'}] · ${src}`
+    }
+
+    const allPlayingTweens: Entity[] = []
+    const allPlayingAnimators: Entity[] = []
+    for (const [entity] of this.view.getEntitiesWith(Tween)) {
+      const t = Tween.get(entity)
+      if (t.playing !== false) allPlayingTweens.push(entity)
+    }
+    for (const [entity] of this.view.getEntitiesWith(Animator)) {
+      const states = Animator.get(entity).states ?? []
+      if (states.some((s) => s.playing !== false && s.clip)) allPlayingAnimators.push(entity)
+    }
+
+    lines.push(`Scene-wide playing tweens (${allPlayingTweens.length}):`)
+    if (allPlayingTweens.length) {
+      for (const entity of allPlayingTweens.slice(0, 40)) lines.push(formatTween(entity))
+      if (allPlayingTweens.length > 40) lines.push(`  … +${allPlayingTweens.length - 40} more`)
+    } else {
+      lines.push('  (none — lift may use Animator or scene-script Transform)')
+    }
+
+    lines.push(`Scene-wide playing animators (${allPlayingAnimators.length}):`)
+    if (allPlayingAnimators.length) {
+      for (const entity of allPlayingAnimators.slice(0, 40)) lines.push(formatAnimator(entity))
+      if (allPlayingAnimators.length > 40) lines.push(`  … +${allPlayingAnimators.length - 40} more`)
+    } else {
+      lines.push('  (none)')
+    }
+
+    lines.push(`Near avatar (within ${nearHoriz}m):`)
+    let nearTween = 0
+    let nearAnim = 0
+    let nearGltf = 0
+    for (const [entity] of this.view.getEntitiesWith(Tween)) {
+      if (horizSq(entity) > nearSq) continue
+      nearTween++
+      lines.push(formatTween(entity))
+    }
+    for (const [entity] of this.view.getEntitiesWith(Animator)) {
+      if (horizSq(entity) > nearSq) continue
+      nearAnim++
+      lines.push(formatAnimator(entity))
+    }
+    for (const desc of this.gltfColliders?.getPhysicsColliders() ?? []) {
+      const ecsEntity = (desc.entity - GLTF_COLLIDER_ENTITY_BASE) as Entity
+      if (horizSq(ecsEntity) > nearSq) continue
+      nearGltf++
+      const src = GltfContainer.has(ecsEntity) ? GltfContainer.get(ecsEntity).src : '(no gltf)'
+      const node = nodes?.has(ecsEntity) ? 'yes' : 'no'
+      lines.push(`  gltf-collider ${ecsEntity} · phys=${desc.entity} · node=${node} · ${src}`)
+    }
+    lines.push(`Near totals — tween:${nearTween} animator:${nearAnim} gltf-collider:${nearGltf}`)
+    const message = lines.join('\n')
+    clientDebugLog.log('motion', message, { level: 'info', alsoConsole: true })
+    console.info('[motion]', message)
+  }
+
+  logPlatformMotionTick(
+    feet: THREE.Vector3,
+    options: {
+      meshMotion: Entity[]
+      poseDirty: number
+      platformDeltas: { entity: number; dx: number; dy: number; dz: number }[]
+      platformTransferApplied: boolean
+      lastGround?: number | null
+      standingPlatform?: number | null
+      sceneOrigin?: { x: number; z: number } | null
+    }
+  ): void {
+    if (!platformMotionDebug.isEnabled()) return
+    const worldX = feet.x + (options.sceneOrigin?.x ?? 0)
+    const worldZ = feet.z + (options.sceneOrigin?.z ?? 0)
+    const parcel = this.sceneBaseParcel
+    const parts = [
+      parcel ? `parcel=${parcel}` : 'parcel=?',
+      `feet=(${feet.x.toFixed(2)},${feet.y.toFixed(2)},${feet.z.toFixed(2)})`,
+      `world=(${worldX.toFixed(1)},${feet.y.toFixed(2)},${worldZ.toFixed(1)})`,
+      `poseDirty=${options.poseDirty}`,
+      `meshMotion=${options.meshMotion.length}`,
+      `platformΔ=${options.platformDeltas.length}`,
+      `transfer=${options.platformTransferApplied ? 'yes' : 'no'}`
+    ]
+    if (options.lastGround != null) parts.push(`ground=${options.lastGround}`)
+    if (options.standingPlatform != null) parts.push(`platform=${options.standingPlatform}`)
+    if (options.meshMotion.length) {
+      parts.push(
+        `mesh[${options.meshMotion.map((e) => `${e}:${this.motionSourceLabel(e)}`).join(', ')}]`
+      )
+    }
+    if (options.platformDeltas.length) {
+      parts.push(
+        options.platformDeltas
+          .map((d) => `Δ${d.entity}=(${d.dx.toFixed(3)},${d.dy.toFixed(3)},${d.dz.toFixed(3)})`)
+          .join(' ')
+      )
+    }
+    clientDebugLog.log('motion', parts.join(' · '), {
+      throttleKey: 'platform-motion-tick',
+      throttleMs: 400,
+      alsoConsole: true
+    })
+  }
+
   /** TweenBridge updates matrixWorld on the sync frame — mark affected collider subtrees. */
   private markTweenColliderPosesDirty(): void {
     if (!this.tweenBridge) return
+    this.lastTweenMotionEntities.clear()
     const { MeshCollider, GltfContainer } = this.readComponents
     for (const entity of this.tweenBridge.consumeTransformMotionEntities()) {
+      this.lastTweenMotionEntities.add(entity)
       if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
         this.colliderPoseDirty.add(entity)
       }
@@ -1758,12 +2504,64 @@ export class SceneScriptSystem {
     }
   }
 
+  /**
+   * Scene-script Transform updates arrive via projection diff — apply on the sync frame
+   * before player CCT so moving platforms record walk-surface Δ the same frame.
+   */
+  consumeSyncFrameTransforms(): void {
+    if (!this.running || !this.bridge || !this.entityStore || !this.pendingDiff.size) return
+    if (!this.bridge.canConsumeDiff()) return
+
+    const { Transform, AvatarAttach } = this.readComponents
+    const transformDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    for (const [entity, comps] of this.pendingDiff) {
+      const transformKind = comps.get(Transform.componentId)
+      if (transformKind === undefined) continue
+      transformDiff.set(entity, new Map([[Transform.componentId, transformKind]]))
+    }
+    if (!transformDiff.size) return
+
+    const tweenRefresh = (this.tweenBridge?.getActiveTweenEntities() ?? []).filter(
+      (entity) => !AvatarAttach.has(entity)
+    )
+    applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh)
+    this.lastSyncFrameTransformEntities.clear()
+    const { MeshCollider, GltfContainer } = this.readComponents
+    for (const entity of transformDiff.keys()) {
+      this.lastSyncFrameTransformEntities.add(entity)
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
+        this.colliderPoseDirty.add(entity)
+      }
+      this.markDescendantColliderPosesDirty(entity)
+    }
+
+    for (const entity of transformDiff.keys()) {
+      const pending = this.pendingDiff.get(entity)
+      if (!pending) continue
+      pending.delete(Transform.componentId)
+      if (pending.size === 0) this.pendingDiff.delete(entity)
+    }
+  }
+
+  /** Motion emitters (billboard / animator shape) → collider pose dirty before syncCollision. */
+  private markMotionEmitterColliderDirty(): void {
+    const { MeshCollider, GltfContainer } = this.readComponents
+    const mark = (entity: Entity) => {
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
+        this.colliderPoseDirty.add(entity)
+        this.markDescendantColliderPosesDirty(entity)
+      }
+    }
+    for (const entity of this.billboardBridge?.pendingMotionEntities() ?? []) mark(entity)
+    for (const entity of this.animatorBridge?.pendingShapeMotionEntities() ?? []) mark(entity)
+  }
+
   /** Pose refresh before PhysX cook — keeps MeshCollider actors aligned with visuals. */
   syncCollisionPoses(): void {
     if (!this.collision || !this.bridge) return
     const nodes = this.bridge.getEntityNodes()
     this.collision.syncPoses(nodes)
-    this.gltfColliders?.syncPoses(nodes)
+    this.gltfColliders?.syncPoses(nodes, new Set())
   }
 
   syncCollision(): void {
@@ -1790,6 +2588,7 @@ export class SceneScriptSystem {
       this.rebuildColliderRootEntities()
       // Scene graph parents may settle after extract — align PhysX poses to live matrixWorld.
       this.syncCollisionPoses()
+      this.refreshPointerTargets()
       return
     }
 
@@ -1810,14 +2609,20 @@ export class SceneScriptSystem {
     }
 
     const poseChangedEntities: Entity[] = []
+    this.lastPoseChangedEntities.length = 0
+    const shapeMotion = this.animatorBridge?.pendingShapeMotionEntities()
     if (this.colliderPoseDirty.size) {
       for (const entity of this.colliderPoseDirty) {
         let changed = false
         if (this.collision.syncColliderEntityPose(entity, nodes)) changed = true
-        if (this.gltfColliders?.syncColliderEntityPose(entity, nodes)) changed = true
+        const allowShapes = shapeMotion?.has(entity) ?? false
+        if (this.gltfColliders?.syncColliderEntityPose(entity, nodes, allowShapes)) changed = true
         if (changed) poseChangedEntities.push(entity)
       }
       this.colliderPoseDirty.clear()
+    }
+    if (poseChangedEntities.length) {
+      this.lastPoseChangedEntities.push(...poseChangedEntities)
     }
 
     if (structureTouched) {
@@ -1830,17 +2635,16 @@ export class SceneScriptSystem {
     }
 
     if (structureTouched) {
-      for (const entity of structureEntities) {
-        if (!this.colliderStructureDirty.has(entity)) this.collidersCookCallback?.(entity)
+      const cooked = structureEntities.filter((entity) => !this.colliderStructureDirty.has(entity))
+      if (cooked.length >= 8) {
+        this.collidersCookCallback?.()
+      } else {
+        for (const entity of cooked) this.collidersCookCallback?.(entity)
       }
+      this.refreshPointerTargets()
     }
 
     if (poseChangedEntities.length > 0) {
-      this.collidersPoseCallback?.(poseChangedEntities)
-      this.colliderPosesSyncedThisPass = true
-    } else if (structureTouched) {
-      // Fast-path structure sync can refresh matrixWorld without marking poseDirty — slide PhysX.
-      this.collidersPoseCallback?.(structureEntities)
       this.colliderPosesSyncedThisPass = true
     }
   }
@@ -1893,7 +2697,6 @@ export class SceneScriptSystem {
     this.videoPlayerBridge?.sync(this.view)
     this.audioSourceBridge?.sync(this.view)
     this.audioStreamBridge?.sync(this.view)
-    this.billboardBridge?.update()
     this.avatarShapes?.update(delta)
     this.animatorBridge?.update(delta)
     this.particleBridge?.update(delta)
@@ -1901,6 +2704,9 @@ export class SceneScriptSystem {
     this.flushAvatarAttachTransforms()
     this.tweenBridge?.update(delta, this.view)
     this.markTweenColliderPosesDirty()
+    this.billboardBridge?.sync(this.view)
+    this.billboardBridge?.update()
+    this.markMotionEmitterColliderDirty()
     this.deliverTweenStateToWorker()
     this.videoPlayerBridge?.update(tickNumber, this.view)
     this.audioSourceBridge?.update(tickNumber, this.view)

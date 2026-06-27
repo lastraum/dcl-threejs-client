@@ -5,12 +5,13 @@ import type { PBVideoPlayer } from '@dcl/ecs/dist/components/generated/pb/decent
 import type { MirrorComponents } from '../bridge/mirrorComponents'
 import type { ProjectionView } from '../bridge/ProjectionView'
 import type { ResolvedScene } from '../dcl/content/types'
-import { renderQuality, VIDEO_PLAYER_LIMITS } from '../rendering/RenderQualitySettings'
 import { VS_NONE, type VideoStateValue } from './videoConstants'
 import type { LiveKitVideoBinder } from './WebVideoPlayer'
 import { WebVideoPlayer } from './WebVideoPlayer'
 import { resolveSpatialAudioAttach, type SpatialAudioAnchors } from './spatialAudioParent'
-import { selectBudgetedVideoEntities, type VideoBudgetInput } from './videoPlayerBudget'
+import { soundSettings } from '../rendering/SoundSettings'
+import { skipSceneVideoPlayers } from '../client/devFlags'
+import { clientDebugLog } from '../client/debug/ClientDebugLog'
 
 type DecoderEntry = {
   player: WebVideoPlayer
@@ -22,7 +23,6 @@ type DecoderEntry = {
   lastState: VideoStateValue
   lastOffset: number
   lastLength: number
-  lastBudgetPaused: boolean
 }
 
 /** ECS VideoPlayer → HTML decoders (one per playing entity); grow-only VideoEvent back to mirror. */
@@ -33,17 +33,22 @@ export class VideoPlayerBridge {
   private pendingUserVideoToggle = false
   private pendingUserVideoToggleFrames = 0
   private listener: THREE.AudioListener | null = null
+  private loggedVideoSkip = false
+  private readonly unsubscribeSoundSettings: () => void
 
   constructor(
     private readonly ecs: MirrorComponents,
     private readonly scene: ResolvedScene,
     private readonly getEntityNodes: () => Map<Entity, THREE.Group>,
     private readonly getSpatialAnchors: () => SpatialAudioAnchors | null,
-    private readonly getCamera: () => THREE.Camera | null,
     private readonly getLiveKitBinder: () => LiveKitVideoBinder | null,
     private readonly recordAppend?: (componentId: number, entity: Entity, value: unknown) => void,
     private readonly recordLww?: (componentId: number, entity: Entity, value: unknown) => void
-  ) {}
+  ) {
+    this.unsubscribeSoundSettings = soundSettings.subscribe(() => {
+      for (const entry of this.decoders.values()) entry.player.refreshVolume()
+    })
+  }
 
   onLwwFlush?: () => void
   onTextureReady?: (videoPlayerEntity: Entity) => void
@@ -68,18 +73,33 @@ export class VideoPlayerBridge {
     }
   }
 
-  getTexture(entity: Entity): THREE.VideoTexture | null {
+  getTexture(entity: Entity): THREE.Texture | null {
     const entry = this.decoders.get(entity)
     if (!entry?.player.canAttachTexture()) return null
     return entry.player.texture
   }
 
+  private drainIfVideoSkipped(): boolean {
+    if (!skipSceneVideoPlayers()) return false
+    if (!this.loggedVideoSkip) {
+      this.loggedVideoSkip = true
+      clientDebugLog.log(
+        'client',
+        'Scene VideoPlayer disabled (?novideo) — skips theatre LiveKit screen decoders'
+      )
+    }
+    if (this.decoders.size) {
+      for (const entity of [...this.decoders.keys()]) this.removeDecoder(entity)
+    }
+    return true
+  }
+
   sync(view: ProjectionView): void {
+    if (this.drainIfVideoSkipped()) return
     const { VideoPlayer, VisibilityComponent, Transform } = this.ecs
     const active = new Set<Entity>()
     const fromUserToggle = this.pendingUserVideoToggle
     let userToggleConsumed = false
-    const budgetInputs: VideoBudgetInput[] = []
 
     for (const [entity, spec] of view.getEntitiesWith(VideoPlayer)) {
       active.add(entity)
@@ -126,35 +146,8 @@ export class VideoPlayerBridge {
         entry.player.applySpatialDistances(spatialMin, spatialMax)
       }
 
-      budgetInputs.push({
-        entity,
-        ecsWantsPlaying: spec.playing !== false,
-        visible
-      })
-
       if (this.applySpec(entity, spec, fromUserToggle)) {
         userToggleConsumed = true
-      }
-    }
-
-    const camera = this.getCamera()
-    const budgeted = camera
-      ? selectBudgetedVideoEntities(
-          budgetInputs,
-          view,
-          Transform,
-          this.getEntityNodes,
-          this.getSpatialAnchors(),
-          camera,
-          VIDEO_PLAYER_LIMITS[renderQuality.getTier()]
-        )
-      : new Set<Entity>(budgetInputs.map((b) => b.entity))
-
-    for (const [entity, entry] of this.decoders) {
-      const allowed = budgeted.has(entity)
-      if (entry.lastBudgetPaused !== !allowed) {
-        entry.lastBudgetPaused = !allowed
-        entry.player.setBudgetPaused(!allowed)
       }
     }
 
@@ -185,6 +178,7 @@ export class VideoPlayerBridge {
   }
 
   update(tickNumber: number, view: ProjectionView): void {
+    if (skipSceneVideoPlayers()) return
     const { VideoPlayer, VideoEvent } = this.ecs
 
     for (const [entity] of view.getEntitiesWith(VideoPlayer)) {
@@ -222,6 +216,7 @@ export class VideoPlayerBridge {
   }
 
   dispose(): void {
+    this.unsubscribeSoundSettings()
     for (const entity of [...this.decoders.keys()]) {
       this.removeDecoder(entity)
     }
@@ -244,8 +239,7 @@ export class VideoPlayerBridge {
       lastSpatialMax: 60,
       lastState: VS_NONE,
       lastOffset: -1,
-      lastLength: -1,
-      lastBudgetPaused: false
+      lastLength: -1
     })
     this.onTextureReady?.(entity)
   }

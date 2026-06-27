@@ -12,15 +12,25 @@ import {
 } from './videoConstants'
 import type { PBVideoPlayer } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/video_player.gen'
 import { applyDclLocalTransform, type DclTransformValues } from '../bridge/dclTransform'
-import { resolveSceneTextureUrl } from '../bridge/material/resolveTexture'
+import { resolveSceneMediaUrl } from '../bridge/material/resolveTexture'
+import { unwrapMisroutedMediaUrl } from '../rendering/textureProxy'
 import type { ResolvedScene } from '../dcl/content/types'
 import { isLiveKitCurrentStreamSrc, isLiveKitVideoSrc } from './livekitVideoSource'
-import { configureSceneVideoTexture } from './videoTextureOrientation'
+import { mediaElementGain, spatialAudioGain } from '../rendering/SoundSettings'
+import { ThrottledVideoTexture } from './ThrottledVideoTexture'
+import { getSharedLiveKitVideoStream } from './SharedLiveKitVideoStream'
 
 type HlsInstance = {
   loadSource(url: string): void
   attachMedia(video: HTMLMediaElement): void
   destroy(): void
+  on?(event: string, handler: (event: string, data: { type?: string; details?: string; fatal?: boolean }) => void): void
+}
+
+type HlsConstructor = {
+  new (config?: Record<string, unknown>): HlsInstance
+  isSupported(): boolean
+  Events?: { ERROR: string }
 }
 
 export type LiveKitVideoBinder = (video: HTMLVideoElement, onUpdate?: () => void) => () => void
@@ -44,7 +54,9 @@ function clamp(v: number, min: number, max: number): number {
 /** Hidden HTMLVideoElement decoder for scene VideoPlayer components. */
 export class WebVideoPlayer {
   readonly video: HTMLVideoElement
-  readonly texture: THREE.VideoTexture
+  private throttledTexture: ThrottledVideoTexture | null = null
+  private usesSharedLiveKit = false
+  private sharedLiveKitUnsubscribe: (() => void) | null = null
 
   private hls: HlsInstance | null = null
   private liveKitCleanup: (() => void) | null = null
@@ -70,6 +82,13 @@ export class WebVideoPlayer {
   onNaturalEnd?: () => void
   onReplayStarted?: () => void
 
+  get texture(): THREE.Texture {
+    if (this.usesSharedLiveKit) {
+      return getSharedLiveKitVideoStream().getTexture() ?? this.ensureLocalTexture().texture
+    }
+    return this.ensureLocalTexture().texture
+  }
+
   constructor(
     private readonly scene: ResolvedScene,
     private readonly bindLiveKitVideo: LiveKitVideoBinder | null = null
@@ -81,13 +100,6 @@ export class WebVideoPlayer {
     this.video.style.cssText =
       'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none'
     document.body.appendChild(this.video)
-
-    this.texture = new THREE.VideoTexture(this.video)
-    this.texture.colorSpace = THREE.SRGBColorSpace
-    this.texture.generateMipmaps = false
-    this.texture.minFilter = THREE.LinearFilter
-    this.texture.magFilter = THREE.LinearFilter
-    configureSceneVideoTexture(this.texture)
 
     this.video.addEventListener('loadstart', () => this.setState(VS_LOADING))
     this.video.addEventListener('loadedmetadata', () => this.onFrameReady?.())
@@ -196,21 +208,22 @@ export class WebVideoPlayer {
   }
 
   getCurrentOffset(): number {
-    const t = this.video.currentTime
+    const t = this.activeVideo().currentTime
     return Number.isFinite(t) ? t : 0
   }
 
   getVideoLength(): number {
-    const d = this.video.duration
+    const d = this.activeVideo().duration
     return Number.isFinite(d) ? d : 0
   }
 
   hasRenderableFrame(): boolean {
-    if (this.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    const video = this.usesSharedLiveKit ? getSharedLiveKitVideoStream().video : this.video
+    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
       this.hasHadRenderableFrame = true
       return true
     }
-    if (this.liveKitSource && this.video.videoWidth > 0) {
+    if (this.liveKitSource && video.videoWidth > 0) {
       this.hasHadRenderableFrame = true
       return true
     }
@@ -218,12 +231,13 @@ export class WebVideoPlayer {
   }
 
   canAttachTexture(): boolean {
+    const video = this.usesSharedLiveKit ? getSharedLiveKitVideoStream().video : this.video
     return (
       !!this.loadedSrc &&
       this.state !== VS_ERROR &&
-      (this.video.readyState >= HTMLMediaElement.HAVE_METADATA ||
+      (video.readyState >= HTMLMediaElement.HAVE_METADATA ||
         this.hasHadRenderableFrame ||
-        (this.liveKitSource && this.video.videoWidth > 0))
+        (this.liveKitSource && video.videoWidth > 0))
     )
   }
 
@@ -294,7 +308,7 @@ export class WebVideoPlayer {
         if (isLiveKitCurrentStreamSrc(src)) void this.loadLiveKitSource(src)
         else this.setState(VS_ERROR)
       } else {
-        const url = resolveSceneTextureUrl(src, this.scene)
+        const url = resolveSceneMediaUrl(src, this.scene)
         if (url) void this.loadSource(url)
         else this.setState(VS_ERROR)
       }
@@ -346,18 +360,22 @@ export class WebVideoPlayer {
         this.video.pause()
         return
       }
-      void this.tryPlay()
+      if (this.usesSharedLiveKit) void this.tryPlayShared(getSharedLiveKitVideoStream().video)
+      else void this.tryPlay()
+      this.syncThrottledPlayback()
     } else {
       this.bumpPlayGeneration()
-      this.video.pause()
+      if (!this.usesSharedLiveKit) this.video.pause()
+      this.syncThrottledPlayback()
     }
   }
 
   dispose(): void {
     this.clearMediaSource()
     this.disposeSpatialSound()
-    this.texture.dispose()
-    this.video.remove()
+    this.throttledTexture?.dispose()
+    this.throttledTexture = null
+    if (!this.usesSharedLiveKit) this.video.remove()
   }
 
   wouldEcsPlayingChange(ecsPlaying: boolean): boolean {
@@ -367,6 +385,10 @@ export class WebVideoPlayer {
   alignEcsPlaying(playing: boolean): void {
     this.lastEcsPlaying = playing
     this.wantsPlaying = playing
+  }
+
+  refreshVolume(): void {
+    this.applyEffectiveVolume()
   }
 
   needsReplayAfterEnd(playingChanged: boolean, fromUserToggle: boolean): boolean {
@@ -390,19 +412,36 @@ export class WebVideoPlayer {
   private syncPlaybackPause(): void {
     if (this.isPlaybackBlocked()) {
       this.bumpPlayGeneration()
-      this.video.pause()
+      if (this.usesSharedLiveKit) {
+        // Shared decode keeps running for other theatre screens.
+      } else {
+        this.video.pause()
+      }
+      this.syncThrottledPlayback()
     } else if (this.wantsPlaying) {
-      void this.tryPlay()
+      if (this.usesSharedLiveKit) void this.tryPlayShared(getSharedLiveKitVideoStream().video)
+      else void this.tryPlay()
+      this.syncThrottledPlayback()
     }
   }
 
+  private resolveVolumeCategory(src: string): 'voice' | 'inWorld' {
+    if (this.liveKitSource || isLiveKitVideoSrc(src)) return 'voice'
+    const trimmed = src.trim()
+    if (isHlsUrl(trimmed)) return 'voice'
+    if (/^https?:\/\//i.test(trimmed) && !/\/contents?\//i.test(trimmed)) return 'voice'
+    return 'inWorld'
+  }
+
   private applyEffectiveVolume(): void {
-    const gain = clamp(this.lastSpecVolume, 0, 1)
+    const category = this.resolveVolumeCategory(this.loadedSrc)
     if (this.spatial && this.sound) {
+      const gain = clamp(spatialAudioGain(category, this.lastSpecVolume), 0, 1)
       this.video.volume = 0
       this.video.muted = true
       this.sound.setVolume(gain)
     } else {
+      const gain = clamp(mediaElementGain(category, this.lastSpecVolume), 0, 1)
       this.video.muted = false
       this.video.volume = gain
       this.sound?.setVolume(0)
@@ -439,17 +478,23 @@ export class WebVideoPlayer {
   }
 
   private clearMediaSource(): void {
+    this.sharedLiveKitUnsubscribe?.()
+    this.sharedLiveKitUnsubscribe = null
     this.liveKitCleanup?.()
     this.liveKitCleanup = null
     this.hls?.destroy()
     this.hls = null
     this.bumpPlayGeneration()
-    this.video.pause()
-    this.video.srcObject = null
-    this.video.removeAttribute('src')
-    this.video.load()
+    if (!this.usesSharedLiveKit) {
+      this.throttledTexture?.stop()
+      this.video.pause()
+      this.video.srcObject = null
+      this.video.removeAttribute('src')
+      this.video.load()
+    }
     this.loadedSrc = ''
     this.liveKitSource = false
+    this.usesSharedLiveKit = false
     this.hasHadRenderableFrame = false
   }
 
@@ -462,44 +507,111 @@ export class WebVideoPlayer {
     this.clearMediaSource()
     this.loadedSrc = src
     this.liveKitSource = true
+    this.usesSharedLiveKit = true
     this.holdingAtEnd = false
     this.setState(VS_LOADING)
 
-    this.liveKitCleanup = this.bindLiveKitVideo(this.video, () => {
-      if (this.video.videoWidth > 0 || this.video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+    const shared = getSharedLiveKitVideoStream()
+    const onTrackUpdate = (): void => {
+      const video = shared.video
+      if (video.videoWidth > 0 || video.readyState >= HTMLMediaElement.HAVE_METADATA) {
         if (this.state !== VS_ERROR) this.setState(VS_READY)
         this.onFrameReady?.()
       }
-      if (this.wantsPlaying && !this.isPlaybackBlocked()) void this.tryPlay()
-    })
+      if (this.wantsPlaying && !this.isPlaybackBlocked()) void this.tryPlayShared(video)
+    }
+
+    this.sharedLiveKitUnsubscribe = shared.subscribe(this.bindLiveKitVideo, onTrackUpdate)
+    this.liveKitCleanup = () => {
+      this.sharedLiveKitUnsubscribe?.()
+      this.sharedLiveKitUnsubscribe = null
+    }
+    onTrackUpdate()
   }
 
   private async loadSource(url: string): Promise<void> {
+    const mediaUrl = unwrapMisroutedMediaUrl(url)
+    if (mediaUrl !== url) {
+      console.warn('[WebVideoPlayer] unwrapped texture-proxy media URL', url, '→', mediaUrl)
+    }
     this.clearMediaSource()
-    this.loadedSrc = url
+    this.loadedSrc = mediaUrl
     this.hasHadRenderableFrame = false
     this.setState(VS_LOADING)
 
-    if (isHlsUrl(url) && !safariNativeHls(this.video)) {
+    if (isHlsUrl(mediaUrl)) {
       try {
         const mod = await import('hls.js')
-        const Hls = mod.default
-        if (!Hls.isSupported()) {
-          this.setState(VS_ERROR)
+        const Hls = mod.default as HlsConstructor
+        if (Hls.isSupported()) {
+          const hls = new Hls({
+            // Vite-bundled worker URLs often break TS demux (DEMUXER_ERROR_COULD_NOT_PARSE).
+            enableWorker: false,
+            lowLatencyMode: false
+          })
+          const errorEvent = Hls.Events?.ERROR ?? 'hlsError'
+          hls.on?.(errorEvent, (_event, data) => {
+            if (!data.fatal) return
+            console.warn('[WebVideoPlayer] HLS fatal error', data.type, data.details, mediaUrl)
+            this.setState(VS_ERROR)
+          })
+          hls.attachMedia(this.video)
+          hls.loadSource(mediaUrl)
+          this.hls = hls
+          this.ensureLocalTexture().start()
           return
         }
-        const hls = new Hls() as HlsInstance
-        hls.attachMedia(this.video)
-        hls.loadSource(url)
-        this.hls = hls
-      } catch {
-        this.setState(VS_ERROR)
+      } catch (err) {
+        console.warn('[WebVideoPlayer] HLS.js init failed', err, mediaUrl)
       }
+
+      if (safariNativeHls(this.video)) {
+        this.video.src = mediaUrl
+        this.video.load()
+        this.ensureLocalTexture().start()
+        return
+      }
+
+      console.warn('[WebVideoPlayer] HLS playback unavailable', mediaUrl)
+      this.setState(VS_ERROR)
       return
     }
 
-    this.video.src = url
+    this.video.src = mediaUrl
     this.video.load()
+    this.ensureLocalTexture().start()
+  }
+
+  private activeVideo(): HTMLVideoElement {
+    return this.usesSharedLiveKit ? getSharedLiveKitVideoStream().video : this.video
+  }
+
+  private ensureLocalTexture(): ThrottledVideoTexture {
+    if (!this.throttledTexture) {
+      this.throttledTexture = new ThrottledVideoTexture(this.video)
+    }
+    return this.throttledTexture
+  }
+
+  private syncThrottledPlayback(): void {
+    if (this.usesSharedLiveKit || !this.throttledTexture) return
+    if (this.isPlaybackBlocked() || !this.wantsPlaying) {
+      this.throttledTexture.stop()
+    } else {
+      this.throttledTexture.start()
+    }
+  }
+
+  private async tryPlayShared(video: HTMLVideoElement): Promise<void> {
+    if (!this.userGestureUnlocked || this.isPlaybackBlocked() || !this.wantsPlaying) return
+    const gen = ++this.playGeneration
+    try {
+      await video.play()
+    } catch (err) {
+      if (gen !== this.playGeneration) return
+      if (err instanceof DOMException && err.name === 'AbortError') return
+      console.warn('[WebVideoPlayer] shared LiveKit play() blocked or failed', err, this.loadedSrc)
+    }
   }
 
   private bumpPlayGeneration(): void {

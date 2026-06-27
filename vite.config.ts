@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 const ARCHIPELAGO_PEERS = 'https://archipelago-ea-stats.decentraland.org/peers'
 const PARCELS_API = 'https://api.decentraland.org/v2/parcels'
 const WORLDS_LIVE_DATA = 'https://worlds-content-server.decentraland.org/live-data'
+const PLACES_API = 'https://places.decentraland.org/api'
 
 export default defineConfig({
   define: {
@@ -33,6 +34,27 @@ export default defineConfig({
         target: WORLDS_LIVE_DATA,
         changeOrigin: true,
         rewrite: () => ''
+      },
+      '/api/places': {
+        target: PLACES_API,
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/places/, '')
+      },
+      '/api/texture': {
+        target: 'https://arweave.net',
+        changeOrigin: true,
+        secure: true,
+        followRedirects: true,
+        router: (req) => {
+          const path = req.url ?? ''
+          const match = path.match(/^\/api\/texture\/(https?)\/([^/?#]+)/)
+          if (!match) return 'https://arweave.net'
+          return `${match[1]}://${match[2]}`
+        },
+        rewrite: (path) => {
+          const match = path.match(/^\/api\/texture\/https?:\/[^/]+(\/.*)?$/)
+          return match?.[1] || '/'
+        }
       }
     }
   },

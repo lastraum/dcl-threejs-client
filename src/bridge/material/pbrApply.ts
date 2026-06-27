@@ -26,6 +26,55 @@ export function applyHdrAlbedoAndEmissive(
   material.emissiveIntensity = emissiveIntensity ?? 1
 }
 
+/**
+ * Apply ECS PBR color scalars — only touches albedo tint when `albedoColor` is set.
+ * Genesis firepit sets texture + emissiveTexture + emissiveColor, not albedoColor.
+ */
+export function applyPbrColors(
+  material: THREE.MeshPhysicalMaterial,
+  pbr: {
+    albedoColor?: Color4
+    emissiveColor?: Color3
+    emissiveIntensity?: number
+  }
+): void {
+  if (pbr.albedoColor) {
+    applyHdrAlbedoAndEmissive(material, pbr.albedoColor, pbr.emissiveColor, pbr.emissiveIntensity)
+    return
+  }
+
+  const ec = pbr.emissiveColor
+  if (ec) {
+    material.emissive.setRGB(ec.r ?? 0, ec.g ?? 0, ec.b ?? 0)
+  } else {
+    material.emissive.setRGB(0, 0, 0)
+  }
+  material.emissiveIntensity = pbr.emissiveIntensity ?? 1
+}
+
+/**
+ * DCL sprite flames (Genesis firepit): same texture on map + emissiveMap, metallic 0,
+ * roughness 1, emissiveIntensity ~6 — glow is emissive-only; diffuse lighting washes them out.
+ */
+export function configureEmissiveRendering(
+  material: THREE.MeshPhysicalMaterial,
+  emissiveIntensity?: number,
+  hasEmissiveMap?: boolean
+): void {
+  const intensity = emissiveIntensity ?? 1
+  const glowSprite = !!hasEmissiveMap && intensity >= 1.5
+  if (glowSprite) {
+    material.color.setRGB(0, 0, 0)
+    material.metalness = 0
+    material.roughness = 1
+    material.envMapIntensity = 0
+    material.toneMapped = false
+    applyDirectIntensity(material, 0)
+    return
+  }
+  material.toneMapped = intensity <= 1.5
+}
+
 export function applyPbrScalars(
   material: THREE.MeshPhysicalMaterial,
   pbr: {

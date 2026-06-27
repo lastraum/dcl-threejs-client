@@ -14,16 +14,26 @@ import {
   findAttachBoneForCategory,
   findSkeletonHips,
   normalizeWearableWorldScale,
+  prepareWearableForCompose,
   pruneWearableDisplayMeshes
 } from './wearableSanitize'
 import type { BodyShape, WearableCategory, WearableDefinition } from './types'
 
 export { wearableGlbCacheKey } from './wearableCache'
-export { pruneWearableDisplayMeshes } from './wearableSanitize'
+export {
+  bakeOversizedWearableGeometry,
+  prepareCmScaleWearableForMerge,
+  prepareWearableForCompose,
+  pruneWearableDisplayMeshes,
+  type PruneWearableMeshesOptions,
+  wearableHasCmScaleDisplayMesh
+} from './wearableSanitize'
 
 export type MergeWearableOptions = {
   category?: WearableCategory
   wearableId?: string
+  /** body_shape root — needed to normalize mismatched armature scales on fallback attach. */
+  bodyRoot?: THREE.Object3D
 }
 
 export function createGltfLoader(mappings: Record<string, string>): GLTFLoader {
@@ -76,6 +86,10 @@ export async function loadWearableSceneCached(
   const hash = wearableGlbCacheKey(url)
   const root = await cache.loadWearableClone(url, mappings, hash)
   root.name = `wearable:${wearable.data.category}`
+  // Cached roots may still carry visible=false from older prune rules — compose prep resets again.
+  root.traverse((obj) => {
+    if (obj instanceof THREE.Mesh) obj.visible = true
+  })
   tintWearableMaterials(root, skin, hair)
   prepareAvatarMaterials(root)
   return root
@@ -178,6 +192,15 @@ function boneMapQuality(
 
 const FEET_MERGE_BONE_ALIASES = ['LeftFoot', 'RightFoot', 'LeftToeBase', 'RightToeBase'] as const
 
+function feetMergeUsedBones(
+  src: THREE.Skeleton,
+  usedBoneIndices: Set<number>
+): THREE.Bone[] {
+  return usedBoneIndices.size > 0
+    ? [...usedBoneIndices].map((i) => src.bones[i]).filter(Boolean)
+    : src.bones
+}
+
 function feetMergeHasFootBones(src: THREE.Skeleton, dst: THREE.Skeleton, usedBoneIndices: Set<number>): boolean {
   const dstBones = skeletonBoneSet(dst)
   const footTargets = new Set<string>()
@@ -187,15 +210,49 @@ function feetMergeHasFootBones(src: THREE.Skeleton, dst: THREE.Skeleton, usedBon
   }
   if (!footTargets.size) return false
 
-  const bones =
-    usedBoneIndices.size > 0
-      ? [...usedBoneIndices].map((i) => src.bones[i]).filter(Boolean)
-      : src.bones
-  for (const bone of bones) {
+  for (const bone of feetMergeUsedBones(src, usedBoneIndices)) {
     const resolved = resolveBoneName(bone.name, dstBones)
     if (resolved && footTargets.has(resolved)) return true
   }
   return false
+}
+
+/** RTFKT / L2 whole-shoe rigs skin only to Hips — merge onto body Hips instead of fallback attach. */
+function feetMergeUsesHipsOnly(
+  src: THREE.Skeleton,
+  dst: THREE.Skeleton,
+  usedBoneIndices: Set<number>
+): boolean {
+  const dstBones = skeletonBoneSet(dst)
+  const hipsResolved = resolveBoneName('Hips', dstBones)
+  if (!hipsResolved) return false
+
+  const footTargets = new Set<string>()
+  for (const alias of FEET_MERGE_BONE_ALIASES) {
+    const resolved = resolveBoneName(alias, dstBones)
+    if (resolved) footTargets.add(resolved)
+  }
+
+  let hasHips = false
+  let hasFoot = false
+  for (const bone of feetMergeUsedBones(src, usedBoneIndices)) {
+    const resolved = resolveBoneName(bone.name, dstBones)
+    if (!resolved) continue
+    if (resolved === hipsResolved) hasHips = true
+    if (footTargets.has(resolved)) hasFoot = true
+  }
+  return hasHips && !hasFoot
+}
+
+function feetMergeEligible(
+  src: THREE.Skeleton,
+  dst: THREE.Skeleton,
+  usedBoneIndices: Set<number>
+): boolean {
+  return (
+    feetMergeHasFootBones(src, dst, usedBoneIndices) ||
+    feetMergeUsesHipsOnly(src, dst, usedBoneIndices)
+  )
 }
 
 function mergeThresholdForCategory(category?: WearableCategory, wearableId?: string): number {
@@ -232,9 +289,13 @@ function remapSkinIndices(geometry: THREE.BufferGeometry, indexMap: number[], bo
   attr.needsUpdate = true
 }
 
-function bindSkinnedMesh(mesh: THREE.SkinnedMesh, skeleton: THREE.Skeleton): void {
+function bindSkinnedMesh(
+  mesh: THREE.SkinnedMesh,
+  skeleton: THREE.Skeleton,
+  bindMatrix: THREE.Matrix4
+): void {
   mesh.skeleton = skeleton
-  mesh.bind(skeleton, mesh.bindMatrix)
+  mesh.bind(skeleton, bindMatrix)
   mesh.frustumCulled = false
 }
 
@@ -253,15 +314,12 @@ export function mergeWearableMeshes(
   let merged = 0
 
   wearableRoot.traverse((obj) => {
-    if (!(obj instanceof THREE.SkinnedMesh) || !obj.skeleton) return
+    if (!(obj instanceof THREE.SkinnedMesh) || !obj.skeleton || !obj.visible) return
 
     const usedBones = collectUsedBoneIndices(obj)
     const quality = boneMapQuality(obj.skeleton, skeleton, usedBones)
     if (quality < threshold) return
-    if (
-      options.category === 'feet' &&
-      !feetMergeHasFootBones(obj.skeleton, skeleton, usedBones)
-    ) {
+    if (options.category === 'feet' && !feetMergeEligible(obj.skeleton, skeleton, usedBones)) {
       return
     }
 
@@ -271,7 +329,7 @@ export function mergeWearableMeshes(
 
     const mesh = new THREE.SkinnedMesh(geometry, cloneMaterials(obj.material))
     mesh.name = obj.name
-    bindSkinnedMesh(mesh, skeleton)
+    bindSkinnedMesh(mesh, skeleton, obj.bindMatrix)
     repairSkinnedMesh(mesh)
     target.add(mesh)
     merged++
@@ -290,7 +348,17 @@ export function attachWearableFallback(
   target: THREE.Object3D,
   options: MergeWearableOptions = {}
 ): boolean {
-  if (isL1WearableUrn(options.wearableId)) return false
+  if (isL1WearableUrn(options.wearableId) && options.category !== 'feet') return false
+
+  if (options.bodyRoot) {
+    prepareWearableForCompose(wearableRoot, options.bodyRoot, options.category)
+  } else {
+    wearableRoot.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) obj.visible = true
+    })
+    pruneWearableDisplayMeshes(wearableRoot)
+  }
+  normalizeWearableWorldScale(wearableRoot, options.category)
 
   const visibleMeshes = pruneWearableDisplayMeshes(wearableRoot)
   if (visibleMeshes === 0) return false
@@ -298,7 +366,6 @@ export function attachWearableFallback(
   const attachBone = findAttachBoneForCategory(skeleton, options.category) ?? findSkeletonHips(skeleton)
   wearableRoot.position.set(0, 0, 0)
   wearableRoot.rotation.set(0, 0, 0)
-  normalizeWearableWorldScale(wearableRoot, options.category)
   if (attachBone) {
     attachBone.add(wearableRoot)
   } else {
@@ -334,4 +401,12 @@ export function findSkeleton(root: THREE.Object3D): THREE.Skeleton | null {
     }
   })
   return skeleton
+}
+
+/** Locomotion mixer must target body_shape only — not parallel wearable rigs. */
+export function findBodyShapeRoot(avatar: THREE.Object3D): THREE.Object3D {
+  for (const child of avatar.children) {
+    if (child.name === 'wearable:body_shape') return child
+  }
+  return avatar
 }

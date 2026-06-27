@@ -6,6 +6,9 @@ import type { ResolvedScene } from '../dcl/content/types'
 import type { ContentFile } from '../dcl/content/types'
 import { buildParseUrlMappings } from './DclTextureResolver'
 import {
+  enableSceneGltfVertexColors,
+  retuneScenePlantCutoutMaterials,
+  sanitizeLandscapeGltf,
   sanitizeSceneGltfColliders,
   sanitizeSceneGltfMaterials
 } from './LandscapeAssetSanitizer'
@@ -20,6 +23,22 @@ import { cloneGltfInstance } from './skinnedMeshInstance'
 import { prepareAvatarMaterials } from '../avatar/materials'
 import { prepareWearableCacheRoot } from '../avatar/wearableCache'
 import { clearLocomotionClipCache } from '../avatar/locomotionClipCache'
+import { disposeSessionAudioBufferCache, getSessionAudioBufferCache } from '../media/AudioBufferCache'
+import { collectManifestAssets } from './manifestAssets'
+import { preferFetchTextureLoad, proxiedTextureUrl } from './textureProxy'
+
+const LANDSCAPE_CACHE_SUFFIX = '#landscape'
+
+function glbCacheKey(hashOrUrl: string, landscape?: boolean): string {
+  const base = normalizeGlbCacheKey(hashOrUrl)
+  return landscape ? `${base}${LANDSCAPE_CACHE_SUFFIX}` : base
+}
+
+function glbBytesKey(cacheKey: string): string {
+  return cacheKey.endsWith(LANDSCAPE_CACHE_SUFFIX)
+    ? cacheKey.slice(0, -LANDSCAPE_CACHE_SUFFIX.length)
+    : cacheKey
+}
 
 export type CachedGltf = {
   root: THREE.Group
@@ -48,28 +67,55 @@ export function disposeSessionAssetCache(): void {
   clearLocomotionClipCache()
   disposeGlbFetchPool()
   disposeGlbParsePool()
+  disposeSessionAudioBufferCache()
 }
 
-/** Start byte fetches for every `.glb` in the scene manifest — safe to call multiple times. */
-export function prefetchSceneManifestGlbs(cache: AssetCache, scene: ResolvedScene): void {
-  const urls: Array<{ url: string; hash: string }> = []
-  const seen = new Set<string>()
+const prefetchedSceneIds = new Set<string>()
 
-  for (const entry of scene.content) {
-    if (!entry.file.toLowerCase().endsWith('.glb')) continue
-    if (!entry.hash || seen.has(entry.hash)) continue
-    seen.add(entry.hash)
-    urls.push({ url: scene.assetUrl(entry.hash), hash: entry.hash })
+/** Start parallel warmup for manifest GLBs (bytes), PNGs (GPU textures), MP3s (decoded buffers). */
+export function prefetchSceneManifestAssets(cache: AssetCache, scene: ResolvedScene): void {
+  const sceneKey = scene.entityId ?? scene.title
+  if (sceneKey && prefetchedSceneIds.has(sceneKey)) return
+
+  const { glbs, textures, audio } = collectManifestAssets(scene)
+  if (!glbs.length && !textures.length && !audio.length) return
+
+  if (sceneKey) prefetchedSceneIds.add(sceneKey)
+
+  const parts: string[] = []
+  if (glbs.length) {
+    parts.push(`${glbs.length} GLB(s) (bytes)`)
+    cache.prefetchAll(glbs)
   }
-
-  if (urls.length) cache.prefetchAll(urls)
+  if (textures.length) {
+    parts.push(`${textures.length} PNG(s)`)
+    cache.prefetchTextures(textures.map((t) => t.url))
+  }
+  if (audio.length) {
+    parts.push(`${audio.length} MP3(s)`)
+    getSessionAudioBufferCache().prefetch(audio.map((a) => a.url))
+  }
+  console.info(`[assets] prefetching scene manifest — ${parts.join(', ')}`)
 }
 
+/** @deprecated Use `prefetchSceneManifestAssets` */
+export function prefetchSceneManifestGlbs(cache: AssetCache, scene: ResolvedScene): void {
+  prefetchSceneManifestAssets(cache, scene)
+}
+
+/**
+ * GLB pipeline (one consumer path):
+ * 1. `prefetchAll` / manifest — bytes only (worker pool + IndexedDB), no parse.
+ * 2. `load` / `clone` — IDB → in-flight bytes → network → parse → `cache`.
+ * Warm revisits hit step 2 immediately; cold loads reuse step 1 bytes in step 2.
+ */
 export class AssetCache {
   private loader: GLTFLoader
   private textureLoader: THREE.TextureLoader
   private cache = new Map<string, CachedGltf>()
   private inflight = new Map<string, Promise<CachedGltf>>()
+  /** Raw byte prefetch (network/IDB only) — consumed by `load` via `resolveGlbBytes`. */
+  private bytesInflight = new Map<string, Promise<ArrayBuffer>>()
   private textures = new Map<string, THREE.Texture>()
   private textureInflight = new Map<string, Promise<THREE.Texture>>()
   private warnedFailed = new Set<string>()
@@ -110,6 +156,7 @@ export class AssetCache {
     }
     this.cache.clear()
     this.inflight.clear()
+    this.bytesInflight.clear()
 
     for (const texture of this.textures.values()) {
       texture.dispose()
@@ -121,7 +168,7 @@ export class AssetCache {
 
   getLoadStats(): AssetLoadStats {
     return {
-      gltfInflight: this.inflight.size,
+      gltfInflight: this.inflight.size + this.bytesInflight.size,
       gltfCached: this.cache.size,
       textureInflight: this.textureInflight.size,
       textureCached: this.textures.size
@@ -132,42 +179,87 @@ export class AssetCache {
     return this.cache.has(key)
   }
 
+  /** Drop a parsed GLB so the next load re-fetches bytes (e.g. after terrain re-save). */
+  evict(key: string): void {
+    const cacheKey = normalizeGlbCacheKey(key)
+    const entry = this.cache.get(cacheKey)
+    if (entry) {
+      disposeCachedRoot(entry.root)
+      this.cache.delete(cacheKey)
+    }
+    this.inflight.delete(cacheKey)
+    this.bytesInflight.delete(cacheKey)
+    this.givenUp.delete(cacheKey)
+    this.failedUntil.delete(cacheKey)
+    this.failCount.delete(cacheKey)
+    this.warnedFailed.delete(cacheKey)
+  }
+
+  /** True when bytes or parse is in flight — used to prioritize attach passes. */
+  isResolving(key: string): boolean {
+    return this.inflight.has(key) || this.bytesInflight.has(key)
+  }
+
   hasGivenUp(key: string): boolean {
     return this.givenUp.has(key)
   }
 
-  /** Start a background fetch if this hash is not cached or already downloading. */
-  ensureLoading(url: string, hash?: string): void {
-    const key = normalizeGlbCacheKey(hash ?? url)
-    if (this.cache.has(key) || this.inflight.has(key) || this.givenUp.has(key)) return
-    const retryAt = this.failedUntil.get(key) ?? 0
-    if (performance.now() < retryAt) return
-    void this.load(url, hash, { quiet: true }).catch(() => {})
-  }
-
   hasPendingLoads(): boolean {
-    return this.inflight.size > 0 || this.textureInflight.size > 0
+    return this.inflight.size > 0 || this.bytesInflight.size > 0 || this.textureInflight.size > 0
   }
 
   async preload(urls: Array<{ url: string; hash?: string }>): Promise<void> {
     await Promise.all(urls.map(({ url, hash }) => this.load(url, hash)))
   }
 
-  /** Fire off network requests for all hashes without waiting. Does not block. */
+  /** Fire off network/IDB byte fetches for all hashes without parsing. Does not block. */
   prefetchAll(urls: Array<{ url: string; hash?: string }>): void {
     for (const { url, hash } of urls) {
-      const key = normalizeGlbCacheKey(hash ?? url)
-      if (this.cache.has(key) || this.inflight.has(key)) continue
-      void this.load(url, hash).catch(() => {})
+      this.prefetchBytes(url, hash)
     }
   }
 
-  async preloadTextures(urls: string[]): Promise<void> {
-    await Promise.all(urls.map((url) => this.textureLoader.loadAsync(url)))
+  /** Download GLB bytes only — keeps main thread free for hydration attach + PhysX. */
+  prefetchBytes(url: string, hash?: string): void {
+    const key = normalizeGlbCacheKey(hash ?? url)
+    if (
+      this.cache.has(key) ||
+      this.inflight.has(key) ||
+      this.bytesInflight.has(key) ||
+      this.givenUp.has(key)
+    ) {
+      return
+    }
+    const retryAt = this.failedUntil.get(key) ?? 0
+    if (performance.now() < retryAt) return
+
+    const task = fetchGlbBytesOffThread(url, key)
+      .then((buffer) => buffer.slice(0))
+      .finally(() => {
+        this.bytesInflight.delete(key)
+      })
+
+    this.bytesInflight.set(key, task)
+    void task.catch(() => {})
   }
 
-  async load(url: string, hash?: string, options?: { emote?: boolean; wearable?: boolean; quiet?: boolean }): Promise<CachedGltf> {
-    const key = normalizeGlbCacheKey(hash ?? url)
+  async preloadTextures(urls: string[]): Promise<void> {
+    await Promise.all(urls.map((url) => this.loadTexture(url)))
+  }
+
+  /** Fire-and-forget texture warmup — deduped via `loadTexture`. */
+  prefetchTextures(urls: string[]): void {
+    for (const url of urls) {
+      void this.loadTexture(url).catch(() => {})
+    }
+  }
+
+  async load(
+    url: string,
+    hash?: string,
+    options?: { emote?: boolean; wearable?: boolean; quiet?: boolean; landscape?: boolean }
+  ): Promise<CachedGltf> {
+    const key = glbCacheKey(hash ?? url, options?.landscape)
     const hit = this.cache.get(key)
     if (hit) return hit
 
@@ -208,10 +300,10 @@ export class AssetCache {
   private async loadFromDbOrNetwork(
     url: string,
     key: string,
-    options?: { emote?: boolean; wearable?: boolean; quiet?: boolean }
+    options?: { emote?: boolean; wearable?: boolean; quiet?: boolean; landscape?: boolean }
   ): Promise<CachedGltf> {
 
-    const gltf = await this.fetchAndParseGltf(url, key, options?.quiet)
+    const gltf = await this.fetchAndParseGltf(url, glbBytesKey(key), options?.quiet)
     const entry: CachedGltf = {
       root: gltf.scene,
       animations: gltf.animations ?? []
@@ -220,6 +312,8 @@ export class AssetCache {
       sanitizeSceneGltfMaterials(entry.root)
       prepareAvatarMaterials(entry.root)
       prepareWearableCacheRoot(entry.root)
+    } else if (options?.landscape) {
+      sanitizeLandscapeGltf(entry.root)
     } else if (!options?.emote) {
       sanitizeSceneGltfColliders(entry.root)
       sanitizeSceneGltfMaterials(entry.root)
@@ -273,9 +367,22 @@ export class AssetCache {
    * Returns a scene-graph clone for a new entity. Geometries and materials stay shared
    * with the cached GLB (one GPU upload per hash) — separate draw calls per instance.
    */
-  async clone(url: string, hash?: string): Promise<THREE.Group> {
-    const { root } = await this.load(url, hash)
-    return cloneGltfInstance(root)
+  async clone(
+    url: string,
+    hash?: string,
+    options?: { landscape?: boolean; sceneGltf?: boolean }
+  ): Promise<THREE.Group> {
+    const { root } = await this.load(url, hash, {
+      landscape: options?.landscape,
+      quiet: options?.landscape
+    })
+    const instance = cloneGltfInstance(root)
+    if (options?.sceneGltf) {
+      enableSceneGltfVertexColors(instance)
+    } else if (!options?.landscape) {
+      retuneScenePlantCutoutMaterials(instance)
+    }
+    return instance
   }
 
   private gltfResourcePath(url: string): string {
@@ -285,23 +392,7 @@ export class AssetCache {
   }
 
   private async fetchAndParseGltf(url: string, cacheKey: string, quiet?: boolean) {
-    let buffer = await readGlbBytes(cacheKey)
-    if (buffer) {
-      const prepared = prepareGlbBytes(buffer)
-      if (prepared) {
-        buffer = prepared
-      } else {
-        if (!quiet) {
-          console.warn('[AssetCache] invalid GLB in IndexedDB — re-fetching', cacheKey.slice(0, 16))
-        }
-        void deleteGlbBytes(cacheKey)
-        buffer = null
-      }
-    }
-
-    if (!buffer) {
-      buffer = await fetchGlbBytesOffThread(url, cacheKey)
-    }
+    let buffer = await this.resolveGlbBytes(url, cacheKey, quiet)
 
     const resourcePath = this.gltfResourcePath(url)
     if (isGlbOffThreadParseEnabled()) {
@@ -315,27 +406,92 @@ export class AssetCache {
     return this.loader.parseAsync(buffer, resourcePath)
   }
 
+  private async resolveGlbBytes(url: string, cacheKey: string, quiet?: boolean): Promise<ArrayBuffer> {
+    let buffer = await readGlbBytes(cacheKey)
+    if (buffer) {
+      const prepared = prepareGlbBytes(buffer)
+      if (prepared) return prepared
+      if (!quiet) {
+        console.warn('[AssetCache] invalid GLB in IndexedDB — re-fetching', cacheKey.slice(0, 16))
+      }
+      void deleteGlbBytes(cacheKey)
+      buffer = null
+    }
+
+    const bytesPending = this.bytesInflight.get(cacheKey)
+    if (bytesPending) {
+      try {
+        return await bytesPending
+      } catch {
+        /* fall through to direct fetch */
+      }
+    }
+
+    return fetchGlbBytesOffThread(url, cacheKey)
+  }
+
   async loadTexture(url: string): Promise<THREE.Texture> {
-    const hit = this.textures.get(url)
+    const fetchUrl = proxiedTextureUrl(url)
+    const hit = this.textures.get(url) ?? this.textures.get(fetchUrl)
     if (hit) return hit
+
+    if (this.givenUp.has(url)) {
+      throw new Error(`texture load given up: ${url}`)
+    }
 
     const pending = this.textureInflight.get(url)
     if (pending) return pending
 
-    const task = this.textureLoader
-      .loadAsync(url)
+    const task = this.loadTextureData(fetchUrl)
       .then((tex) => {
         this.textures.set(url, tex)
         this.textureInflight.delete(url)
+        this.failedUntil.delete(url)
+        this.failCount.delete(url)
+        this.givenUp.delete(url)
         return tex
       })
       .catch((err) => {
         this.textureInflight.delete(url)
-        throw err
+        const attempts = (this.failCount.get(url) ?? 0) + 1
+        this.failCount.set(url, attempts)
+        if (attempts >= AssetCache.MAX_LOAD_ATTEMPTS) {
+          this.givenUp.add(url)
+          this.failedUntil.delete(url)
+        } else {
+          this.failedUntil.set(url, performance.now() + AssetCache.FAILED_RETRY_MS)
+        }
+        if (!this.warnedFailed.has(url)) {
+          this.warnedFailed.add(url)
+          const detail = err instanceof Error ? err.message : String(err?.type ?? err)
+          console.warn('[AssetCache] texture load failed', fetchUrl, detail)
+        }
+        throw err instanceof Error ? err : new Error(`texture load failed: ${url}`)
       })
 
     this.textureInflight.set(url, task)
     return task
+  }
+
+  private async loadTextureData(url: string): Promise<THREE.Texture> {
+    if (preferFetchTextureLoad(url)) {
+      return this.loadTextureViaFetch(url)
+    }
+    return this.textureLoader.loadAsync(url)
+  }
+
+  /** fetch + blob — follows Arweave 302 redirects; works through same-origin proxy. */
+  private async loadTextureViaFetch(url: string): Promise<THREE.Texture> {
+    const res = await fetch(url, { redirect: 'follow', credentials: 'omit' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const blob = await res.blob()
+    if (!blob.size) throw new Error('empty texture response')
+    const objectUrl = URL.createObjectURL(blob)
+    try {
+      return await this.textureLoader.loadAsync(objectUrl)
+    } finally {
+      URL.revokeObjectURL(objectUrl)
+    }
   }
 }
 

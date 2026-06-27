@@ -18,6 +18,8 @@ import {
   movementBlendTier
 } from './dclRfc4Comms'
 import { encodeRfc4ChatPacket } from '../../social/dclRfc4Chat'
+import { DCM_SCENE_ID } from '../../social/dcmChatMedia'
+import { encodeRfc4SceneBinaryPacket } from './Rfc4Router'
 import {
   playerYawToMovementRotationDeg,
   sceneLocalToGenesis,
@@ -396,17 +398,39 @@ export class LiveKitCommsSession {
     )
   }
 
+  async publishChatMedia(envelopes: Uint8Array[]): Promise<boolean> {
+    if (!this.room || this.room.state !== ConnectionState.Connected || !envelopes.length) return false
+    try {
+      for (const envelope of envelopes) {
+        const packet = encodeRfc4SceneBinaryPacket(DCM_SCENE_ID, envelope)
+        await this.room.localParticipant.publishData(packet, { reliable: true })
+      }
+      clientDebugLog.log(
+        'comms',
+        `DCM ChatMedia out → ${this.transport} chunks=${envelopes.length}`,
+        { throttleMs: 0, throttleKey: `chat-media-out:${this.transport}` }
+      )
+      return true
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      clientDebugLog.log('comms', `DCM ChatMedia publish failed (${this.transport}): ${msg}`, {
+        level: 'error'
+      })
+      return false
+    }
+  }
+
   async publishChat(text: string): Promise<boolean> {
     if (!this.room || this.room.state !== ConnectionState.Connected) return false
     const trimmed = text.trim()
     if (!trimmed) return false
-    const sessionElapsedSec = Math.max(0.001, (performance.now() - this.sessionStartedAt) / 1000)
-    const packet = encodeRfc4ChatPacket(trimmed, sessionElapsedSec)
+    const unixSec = Date.now() / 1000
+    const packet = encodeRfc4ChatPacket(trimmed, unixSec)
     try {
       await this.room.localParticipant.publishData(packet, { reliable: true })
       clientDebugLog.log(
         'comms',
-        `RFC4 Chat out → ${this.transport} len=${packet.byteLength} elapsed=${sessionElapsedSec.toFixed(1)}s`,
+        `RFC4 Chat out → ${this.transport} len=${packet.byteLength} unix=${unixSec.toFixed(0)}`,
         { throttleMs: 0, throttleKey: `chat-out:${this.transport}` }
       )
       return true
@@ -439,6 +463,12 @@ export class LiveKitCommsSession {
   async publishData(packet: Uint8Array): Promise<void> {
     if (!this.room || this.room.state !== ConnectionState.Connected) return
     await this.room.localParticipant.publishData(packet, { reliable: false })
+  }
+
+  /** Reliable SCTP — required for large DAV VRM chunk streams (lossy drops under burst). */
+  async publishReliableData(packet: Uint8Array): Promise<void> {
+    if (!this.room || this.room.state !== ConnectionState.Connected) return
+    await this.room.localParticipant.publishData(packet, { reliable: true })
   }
 
   async publishTopicData(topic: string, packet: Uint8Array, reliable = true): Promise<void> {

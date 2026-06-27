@@ -3,6 +3,9 @@
  * Base: https://events.decentraland.org/api
  */
 
+import type { RouteTarget } from '../dcl/content/route'
+import { resolveFaceSnapshotUrl } from '../avatar/peerApi'
+
 const EVENTS_LIST_URL = 'https://events.decentraland.org/api/events'
 
 export type DclEventListFilter = 'all' | 'active' | 'live' | 'upcoming'
@@ -26,8 +29,16 @@ export type DclEvent = {
   y?: number
   coordinates?: number[]
   url?: string
+  user?: string | null
   user_name?: string | null
+  scene_name?: string | null
   total_attendees?: number
+  recurrent?: boolean
+  recurrent_frequency?: string | null
+  recurrent_until?: string | null
+  recurrent_dates?: string[] | null
+  schedules?: unknown[]
+  all_day?: boolean
 }
 
 export function eventPosterSrc(e: DclEvent): string | null {
@@ -73,12 +84,98 @@ export function eventSortTimeMs(e: DclEvent): number {
   return Number.isFinite(t) ? t : 0
 }
 
-export function eventLocationLabel(e: DclEvent): string {
-  if (e.world) return 'World'
+export function eventParcelCoords(e: DclEvent): { x: number; y: number } | null {
   const x = typeof e.x === 'number' ? e.x : Array.isArray(e.coordinates) ? e.coordinates[0] : undefined
   const y = typeof e.y === 'number' ? e.y : Array.isArray(e.coordinates) ? e.coordinates[1] : undefined
-  if (typeof x === 'number' && typeof y === 'number') return `${x}, ${y}`
+  if (typeof x === 'number' && typeof y === 'number') return { x, y }
+  return null
+}
+
+export function eventLocationLabel(e: DclEvent): string {
+  if (e.world) {
+    const name = e.scene_name?.trim()
+    return name || 'World'
+  }
+  const coords = eventParcelCoords(e)
+  if (coords) return `${coords.x}, ${coords.y}`
   return 'Decentraland'
+}
+
+export function eventCreatorFaceUrl(e: DclEvent): string | null {
+  return resolveFaceSnapshotUrl(e.user)
+}
+
+export function eventShareUrl(e: DclEvent): string {
+  const direct = e.url?.trim()
+  if (direct) return direct
+  return `https://decentraland.org/events/event?id=${encodeURIComponent(e.id)}`
+}
+
+export function eventJumpRoute(e: DclEvent): RouteTarget | null {
+  if (e.world) {
+    const raw = e.scene_name?.trim()
+    if (!raw) return null
+    const worldName = raw.includes('.') ? raw : `${raw}.dcl.eth`
+    return { kind: 'world', worldName, segment: worldName }
+  }
+  const coords = eventParcelCoords(e)
+  if (!coords) return null
+  return {
+    kind: 'coords',
+    x: coords.x,
+    y: coords.y,
+    segment: `${coords.x},${coords.y}`
+  }
+}
+
+export function isEventRecurring(e: DclEvent): boolean {
+  return Boolean(e.recurrent || (e.recurrent_dates?.length ?? 0) > 1)
+}
+
+export function eventRecurrenceLabel(e: DclEvent): string | null {
+  if (!isEventRecurring(e)) return null
+  const freq = e.recurrent_frequency?.trim().toUpperCase()
+  if (freq === 'DAILY') return 'Repeats daily'
+  if (freq === 'WEEKLY') return 'Repeats weekly'
+  if (freq === 'MONTHLY') return 'Repeats monthly'
+  if (freq === 'YEARLY') return 'Repeats yearly'
+  return 'Recurring event'
+}
+
+export function formatEventScheduleRange(e: DclEvent): string {
+  const startMs = eventOccurrenceStartMs(e)
+  const endMs = eventOccurrenceEndMs(e)
+  if (!Number.isFinite(startMs)) return 'Schedule TBC'
+
+  const dayFmt = new Intl.DateTimeFormat(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric'
+  })
+  const timeFmt = new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit'
+  })
+
+  const startDay = dayFmt.format(new Date(startMs))
+  const startTime = timeFmt.format(new Date(startMs))
+  if (!Number.isFinite(endMs) || e.all_day) {
+    return `Starting ${startDay} · ${startTime}`
+  }
+  const endTime = timeFmt.format(new Date(endMs))
+  return `Starting ${startDay} · ${startTime} – ${endTime}`
+}
+
+export function formatLocalDayHeading(dayStartMs: number): string {
+  const todayMs = localDayStartMs(Date.now())
+  const tomorrowMs = localDayStartMs(Date.now() + 86_400_000)
+  if (dayStartMs === todayMs) return 'Today'
+  if (dayStartMs === tomorrowMs) return 'Tomorrow'
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric'
+  }).format(new Date(dayStartMs))
 }
 
 export function dedupeEventsById(events: DclEvent[]): DclEvent[] {
@@ -133,6 +230,12 @@ export type RollingLocalDayColumn = {
 export function localDayStartMs(ms: number): number {
   const d = new Date(ms)
   return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime()
+}
+
+export function localDayStartAfterOffset(offsetDays: number, nowMs = Date.now()): number {
+  const d = new Date(localDayStartMs(nowMs))
+  d.setDate(d.getDate() + offsetDays)
+  return localDayStartMs(d.getTime())
 }
 
 function addLocalDays(dayStartMs: number, deltaDays: number): number {

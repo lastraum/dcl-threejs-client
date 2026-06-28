@@ -22,11 +22,14 @@ export type LocomotionConfig = {
   jumpHeight: number
   runJumpHeight: number
   doubleJumpHeight: number
+  disableAll: boolean
   disableWalk: boolean
   disableJog: boolean
   disableRun: boolean
   disableJump: boolean
   disableDoubleJump: boolean
+  disableEmote: boolean
+  disableGliding: boolean
 }
 
 export type LocomotionKeys = {
@@ -37,11 +40,14 @@ export type LocomotionKeys = {
 export function defaultLocomotionConfig(): LocomotionConfig {
   return {
     ...DCL_LOCOMOTION_DEFAULTS,
+    disableAll: false,
     disableWalk: false,
     disableJog: false,
     disableRun: false,
     disableJump: false,
-    disableDoubleJump: false
+    disableDoubleJump: false,
+    disableEmote: false,
+    disableGliding: false
   }
 }
 
@@ -56,6 +62,7 @@ export function resolveLocomotionMode(keys: LocomotionKeys, config: LocomotionCo
 }
 
 export function speedForMode(mode: LocomotionMode, config: LocomotionConfig): number {
+  if (!canLocomote(config)) return 0
   switch (mode) {
     case 'walk':
       return config.walkSpeed
@@ -68,6 +75,60 @@ export function speedForMode(mode: LocomotionMode, config: LocomotionConfig): nu
 
 export function jumpHeightForMode(mode: LocomotionMode, config: LocomotionConfig): number {
   return mode === 'run' ? config.runJumpHeight : config.jumpHeight
+}
+
+/** WASD / shift / ctrl locomotion — InputModifier blocks avatar only, not SDK input events. */
+export function canLocomote(config: LocomotionConfig): boolean {
+  if (config.disableAll) return false
+  return !config.disableWalk || !config.disableJog || !config.disableRun
+}
+
+export function canJumpLocomotion(config: LocomotionConfig): boolean {
+  return !config.disableAll && !config.disableJump && config.jumpHeight > 0
+}
+
+export function canDoubleJumpLocomotion(config: LocomotionConfig): boolean {
+  return !config.disableAll && !config.disableDoubleJump && config.doubleJumpHeight > 0
+}
+
+/** Voluntary emotes (wheel / HUD) — scene-triggered emotes bypass this. */
+export function canVoluntaryEmote(config: LocomotionConfig): boolean {
+  return !config.disableAll && !config.disableEmote
+}
+
+/** Reserved for glide locomotion when implemented. */
+export function canGlide(config: LocomotionConfig): boolean {
+  return !config.disableAll && !config.disableGliding
+}
+
+function applyInputModifier(config: LocomotionConfig, std: {
+  disableAll?: boolean
+  disableWalk?: boolean
+  disableJog?: boolean
+  disableRun?: boolean
+  disableJump?: boolean
+  disableEmote?: boolean
+  disableDoubleJump?: boolean
+  disableGliding?: boolean
+}): void {
+  if (std.disableAll) {
+    config.disableAll = true
+    config.disableWalk = true
+    config.disableJog = true
+    config.disableRun = true
+    config.disableJump = true
+    config.disableDoubleJump = true
+    config.disableEmote = true
+    config.disableGliding = true
+    return
+  }
+  if (std.disableWalk) config.disableWalk = true
+  if (std.disableJog) config.disableJog = true
+  if (std.disableRun) config.disableRun = true
+  if (std.disableJump) config.disableJump = true
+  if (std.disableDoubleJump) config.disableDoubleJump = true
+  if (std.disableEmote) config.disableEmote = true
+  if (std.disableGliding) config.disableGliding = true
 }
 
 export function readLocomotionFromComponents(components: MirrorComponents, player: Entity): LocomotionConfig {
@@ -85,11 +146,7 @@ export function readLocomotionFromComponents(components: MirrorComponents, playe
   if (components.InputModifier.has(player)) {
     const mod = components.InputModifier.get(player)
     const std = mod.mode?.$case === 'standard' ? mod.mode.standard : undefined
-    if (std?.disableWalk) config.disableWalk = true
-    if (std?.disableJog) config.disableJog = true
-    if (std?.disableRun) config.disableRun = true
-    if (std?.disableJump) config.disableJump = true
-    if (std?.disableDoubleJump) config.disableDoubleJump = true
+    if (std) applyInputModifier(config, std)
   }
 
   return config

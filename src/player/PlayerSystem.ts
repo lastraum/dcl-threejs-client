@@ -9,10 +9,16 @@ import { cameraCollisionDebug } from '../debug/CameraCollisionDebug'
 import type { PhysXWorld } from '../physics/PhysXWorld'
 import type { SceneHost } from '../rendering/SceneHost'
 import {
+  canDoubleJumpLocomotion,
+  canJumpLocomotion,
+  canLocomote,
+  canVoluntaryEmote,
+  defaultLocomotionConfig,
   jumpHeightForMode,
   readLocomotionFromComponents,
   resolveLocomotionMode,
   speedForMode,
+  type LocomotionConfig,
   type LocomotionMode
 } from './locomotion'
 import type { SceneSpawn } from '../dcl/content/types'
@@ -228,6 +234,15 @@ export class PlayerSystem {
     this.avatar?.setLocomotionVfxScene(scene)
   }
 
+  getLocomotionConfig(): LocomotionConfig {
+    if (!this.readComponents) return defaultLocomotionConfig()
+    return readLocomotionFromComponents(this.readComponents, SDK_RESERVED.player)
+  }
+
+  canPlayVoluntaryEmote(): boolean {
+    return canVoluntaryEmote(this.getLocomotionConfig())
+  }
+
   playEmote(emoteId: string, options?: PlayEmoteOptions): Promise<ResolvedProfileEmote | null> {
     return this.avatar?.playEmote(emoteId, options) ?? Promise.resolve(null)
   }
@@ -428,6 +443,11 @@ export class PlayerSystem {
     if (!this.enabled || !this.input) return
     delta = Math.min(delta, 1 / 20)
 
+    const locomotion = this.getLocomotionConfig()
+    const locomotionAllowed = canLocomote(locomotion)
+    const jumpLocomotionAllowed = canJumpLocomotion(locomotion)
+    const doubleJumpLocomotionAllowed = canDoubleJumpLocomotion(locomotion)
+
     const emoteActive = this.avatar?.isProfileEmoteActive() ?? false
     if (this.wasProfileEmoteActive && !emoteActive) {
       this.scenePositionLock = false
@@ -436,7 +456,9 @@ export class PlayerSystem {
 
     const movingKeys =
       this.input.keys.w || this.input.keys.a || this.input.keys.s || this.input.keys.d
-    const breakSceneHold = movingKeys || this.input.spacePressed
+    const breakSceneHold =
+      (movingKeys && locomotionAllowed) ||
+      (this.input.spacePressed && (jumpLocomotionAllowed || doubleJumpLocomotionAllowed))
     if (breakSceneHold && this.scenePositionLock) {
       this.scenePositionLock = false
       this.avatar?.stopEmote()
@@ -510,14 +532,18 @@ export class PlayerSystem {
     _moveDir.set(0, 0, 0)
     _forward.set(Math.sin(this.camYaw), 0, Math.cos(this.camYaw)).multiplyScalar(-1)
     _right.set(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw))
-    if (this.input.keys.w) _moveDir.add(_forward)
-    if (this.input.keys.s) _moveDir.sub(_forward)
-    if (this.input.keys.a) _moveDir.sub(_right)
-    if (this.input.keys.d) _moveDir.add(_right)
-    const moving = _moveDir.lengthSq() > 0
+    if (locomotionAllowed) {
+      if (this.input.keys.w) _moveDir.add(_forward)
+      if (this.input.keys.s) _moveDir.sub(_forward)
+      if (this.input.keys.a) _moveDir.sub(_right)
+      if (this.input.keys.d) _moveDir.add(_right)
+    }
+    const moving = locomotionAllowed && _moveDir.lengthSq() > 0
     if (moving) _moveDir.normalize()
 
-    if (moving || this.input.spacePressed) {
+    const jumpPressedForLocomotion =
+      this.input.spacePressed && (jumpLocomotionAllowed || doubleJumpLocomotionAllowed)
+    if (moving || jumpPressedForLocomotion) {
       this.scenePositionLock = false
       this.avatar?.stopEmote()
     }
@@ -543,7 +569,6 @@ export class PlayerSystem {
       this.jumping = false
     }
 
-    const locomotion = readLocomotionFromComponents(this.readComponents!, SDK_RESERVED.player)
     this.locomotionMode = resolveLocomotionMode(this.input.keys, locomotion)
     const moveSpeed = speedForMode(this.locomotionMode, locomotion)
 
@@ -574,13 +599,7 @@ export class PlayerSystem {
       _velocity.z *= drag
     }
 
-    if (
-      onGround &&
-      !this.jumping &&
-      this.input.spacePressed &&
-      !locomotion.disableJump &&
-      locomotion.jumpHeight > 0
-    ) {
+    if (onGround && !this.jumping && this.input.spacePressed && jumpLocomotionAllowed) {
       _velocity.y = Math.sqrt(2 * GRAVITY * jumpHeightForMode(this.locomotionMode, locomotion))
       this.jumped = true
       this.jumpCount = 1
@@ -589,8 +608,7 @@ export class PlayerSystem {
       !this.airJumped &&
       !this.airJumpPending &&
       this.input.spacePressed &&
-      !locomotion.disableDoubleJump &&
-      locomotion.doubleJumpHeight > 0
+      doubleJumpLocomotionAllowed
     ) {
       this.airJumpPending = true
       this.airJumpDelayLeft = AIR_JUMP_DELAY

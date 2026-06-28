@@ -449,7 +449,7 @@ export class World {
         const emote = request.predefinedEmote?.trim()
         if (!emote) return false
         clientDebugLog.log('pointer', `triggerEmote → ${emote}`, { alsoConsole: true })
-        void this.playLocalEmote(emote, { loop: undefined })
+        void this.playLocalEmote(emote, { loop: undefined, sceneTriggered: true })
         return true
       })
       this.sceneScript.setTriggerSceneEmoteHandler((request) => {
@@ -464,13 +464,13 @@ export class World {
         }
         console.log('[pointer]', `triggerSceneEmote → ${resolved.urn}`)
         clientDebugLog.log('pointer', `triggerSceneEmote → ${resolved.urn}`, { alsoConsole: true })
-        void this.playLocalEmote(resolved.urn, { loop: resolved.loop })
+        void this.playLocalEmote(resolved.urn, { loop: resolved.loop, sceneTriggered: true })
         return true
       })
       this.sceneScript.setAvatarEmoteHandler({
         play: (emoteUrn, loop) => {
           if (!emoteUrn.trim()) return false
-          void this.playLocalEmote(emoteUrn.trim(), { loop, broadcast: true })
+          void this.playLocalEmote(emoteUrn.trim(), { loop, broadcast: true, sceneTriggered: true })
           return true
         },
         stop: () => this.player!.stopEmote()
@@ -1910,8 +1910,12 @@ export class World {
     return this.remoteAvatars
   }
 
-  playLocalEmote(emoteRef: string, options?: { loop?: boolean; broadcast?: boolean }): void {
+  playLocalEmote(
+    emoteRef: string,
+    options?: { loop?: boolean; broadcast?: boolean; /** Scene triggerEmote / AvatarEmoteCommand — bypass disableEmote. */ sceneTriggered?: boolean }
+  ): void {
     if (!this.playerMode || !this.player) return
+    if (!options?.sceneTriggered && !this.player.canPlayVoluntaryEmote()) return
     void this.player.playEmote(emoteRef, { loop: options?.loop }).then((resolved) => {
       if (resolved && options?.broadcast !== false) {
         void this.comms.broadcastEmote(resolved.urn)

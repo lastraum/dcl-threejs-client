@@ -45,6 +45,48 @@
         position: relative;
         z-index: 1;
       }
+      #scene-ui-root {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        overflow: hidden;
+        pointer-events: none;
+      }
+      .scene-ui-node {
+        position: absolute;
+        box-sizing: border-box;
+        pointer-events: none;
+      }
+      .scene-ui-node__bg {
+        pointer-events: none;
+      }
+      .scene-ui-node__text {
+        user-select: none;
+        position: relative;
+        z-index: 2;
+        pointer-events: none;
+      }
+      .scene-ui-node__input {
+        user-select: text;
+        -webkit-user-select: text;
+        position: relative;
+        z-index: 2;
+        cursor: text;
+        pointer-events: auto;
+      }
+      .scene-ui-node__input::placeholder {
+        color: var(--placeholder-color, rgba(128, 128, 128, 0.9));
+      }
+      .scene-ui-node__select {
+        user-select: none;
+        position: relative;
+        z-index: 2;
+        cursor: pointer;
+        pointer-events: auto;
+      }
+      .scene-ui-node {
+        isolation: isolate;
+      }
       .name-tag-layer {
         position: absolute;
         top: 0;

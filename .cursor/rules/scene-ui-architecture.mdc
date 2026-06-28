@@ -1,0 +1,87 @@
+---
+description: Scene ECS UI — architectural north star vs bandaids (Yoga, DOM overlay, pointers, forms)
+alwaysApply: true
+---
+
+# Scene UI architecture (ThreejsClient)
+
+Design reference: `docs/SCENE_UI_DESIGN.md` · Explorer model: Yoga @ virtual canvas → screen overlay → `UiCanvasInformation` back to scene.
+
+## What is architectural (keep investing here)
+
+| Layer | Responsibility |
+|-------|----------------|
+| **SceneUiBridge** | Orchestrate layout, DOM draw, hit regions, `UiCanvasInformation`, writeback |
+| **Yoga + virtual canvas** | Single coordinate system; `%` / `px` / position in layout space only |
+| **SceneUiHitMap** | Screen-space regions from layout — same source for hover, block-3D, UI pointer pick |
+| **SceneUiDomRenderer** | DOM pool keyed by entity; nested by `UiTransform.parent` |
+| **Form writeback** | `UiInputResult` / `UiDropdownResult` via renderer LWW — scene reads results, not fake pointer clicks |
+| **Channel split** | **Form controls** = DOM focus + keyboard + result components. **Buttons/labels** = ECS `PointerEvents` screen hits |
+
+These are the right seams. Extend them; do not add parallel paths.
+
+## What has been bandaid (do not extend)
+
+Stop stacking fixes in these patterns:
+
+1. **Many detectors for the same form click** — `pickUiFormEntity` + `elementFromPoint` + `domNestedFormEntity` + `isSceneUiFormControl` + `tryWritePointerDown` skip + host `pointerdown` listeners. One gate should decide “form vs pointer”.
+2. **`requestFormFocus` / `restoreFormFocus` after every sync** — treats blur as inevitable. Root cause: full re-render or pointer CRDT flush while typing; fix incremental DOM or defer sync for focused entity.
+3. **`stopPropagation` at window capture** — fights `PlayerInput`, canvas orbit, and ECS pointer queue. Prefer routing policy in one place, not event suppression at multiple layers.
+4. **DOM fallbacks when hit regions ≠ DOM boxes** — symptom of layout/viewport mismatch. Fix mapping (Yoga box → screen px → DOM position) instead of guessing entity from `elementFromPoint`.
+5. **Descendant walks / “any input under panel”** — broke buttons; narrowed to candidates only. Still a smell if parent hit regions swallow child inputs.
+
+If a fix adds a *sixth* branch to pointer/form handling, **stop** and consolidate (see “Next architectural tranche”).
+
+## Invariants (must hold; if violated, fix architecture not symptoms)
+
+1. **Click on `UiInput` / `UiDropdown` never emits `PointerEventsResult` PET_DOWN/UP** unless product explicitly requires it (default: no).
+2. **Hit region for an entity ≡ DOM box for that entity** (within subpixel tolerance). No canvas-as-`e.target` when visually over UI.
+3. **Focused form control survives `SceneUiBridge.sync()`** without a refocus hack — sync must be non-destructive for the active field (reuse node, no value clobber, no detach).
+4. **One pick function** for “what UI entity is under (x,y)?” — hit map drives DOM, pointers, and form routing.
+5. **Padding/borders/margins live in Yoga only** — not duplicated in CSS (double inset = layout bugs).
+
+## Red flags — pause and redesign
+
+- Same bug fixed twice in `PointerEventsSystem` and `SceneUiDomRenderer`
+- New `closest()` / `querySelector` logic in input code
+- `requestAnimationFrame` used to “make focus stick”
+- Entity id in logs (`PET_DOWN entity=596`) for a control that should be typing
+- Feature works only when click lands on canvas vs DOM differently
+
+## Implemented architecture (`SceneUiInputController`)
+
+1. **`SceneUiInputController`** (`src/ui/scene/SceneUiInputController.ts`): sole owner of form focus, keyboard capture, hit-map pick, and `consumePointerDown`.
+2. **`PointerEventsSystem`**: calls `consumeSceneUiFormPointer` only — no DOM form queries.
+3. **`pickUiPointerHit`**: skips `UiInput` / `UiDropdown` entities (buttons only).
+
+## Incremental DOM sync (implemented)
+
+- **`syncUiInput` / `syncUiDropdown`**: reuse existing field nodes; `applyUiInputStyles(..., syncValue: !editing)`.
+- **`isEditingEntity`**: `SceneUiInputController.editingEntities` — DOM authoritative until blur; no post-sync refocus.
+- **`adoptNode`**: reparent only when `parentElement` changes; preserve focus inside moved subtree.
+
+## Yoga layout cache (implemented)
+
+- **`computeUiLayoutKey`**: fingerprint of virtual canvas + layout-affecting `UiTransform` fields + text intrinsic size.
+- **`UiLayoutCache`**: skip `calculateLayout` on cache hit (e.g. typing only changes `UiInput` / `UiInputResult`).
+- **`visibleLayoutBoxes`**: opacity / `display:none` filter runs every sync without re-running Yoga.
+
+## Next tranche (still open)
+
+1. **Align hit map with DOM**: assert/dev overlay `?sceneuidebug` comparing region rects vs `getBoundingClientRect()`.
+2. **Update `SCENE_UI_DESIGN.md` component matrix** when `UiInput` path is stable.
+
+## Do not
+
+- Add another form-detection helper without removing an old one
+- Deliver ECS pointer CRDT for inputs “so onClick fires” — use `UiInputResult` / scene systems
+- Reintroduce letterboxing or CSS padding on `.scene-ui-node` without Yoga parity
+- Use descendant scans across the whole UI tree on every click
+
+## PR / commit bar for scene UI
+
+Before merging scene UI pointer/input changes, answer:
+
+1. Did we remove or merge an existing branch? (If only added, likely bandaid.)
+2. Does a form click still log `PET_DOWN`? (Must be no.)
+3. Does focus survive one full `sync()` without `restoreFormFocus`? (Target yes.)

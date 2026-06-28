@@ -1,4 +1,5 @@
 import { isClientOverlayTarget } from '../client/ui/overlayHitTest'
+import { isSceneUiTypingFocus } from '../ui/scene/sceneUiTyping'
 
 /** Keyboard + pointer-lock input for DCL-style third-person camera. */
 export class PlayerInput {
@@ -99,6 +100,7 @@ export class PlayerInput {
   }
 
   private onKeyUp = (e: KeyboardEvent) => {
+    if (this.isTypingTarget() || this.isOverlayOpen()) return
     this.setMoveKey(e.code, false)
     if (e.code === 'Space') this.keys.space = false
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') this.keys.shift = false
@@ -229,6 +231,7 @@ export class PlayerInput {
   }
 
   private isTypingTarget(): boolean {
+    if (isSceneUiTypingFocus()) return true
     const el = document.activeElement
     if (!el || el === this.canvas) return false
     if (el instanceof HTMLInputElement) {

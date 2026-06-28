@@ -30,6 +30,7 @@ import { AudioSourceBridge } from '../../media/AudioSourceBridge'
 import { AudioStreamBridge } from '../../media/AudioStreamBridge'
 import type { SpatialAudioAnchors } from '../../media/spatialAudioParent'
 import { VideoPlayerBridge } from '../../media/VideoPlayerBridge'
+import { SceneUiBridge } from '../../ui/scene/SceneUiBridge'
 import type { LiveKitVideoBinder } from '../../media/WebVideoPlayer'
 import { CollisionSystem } from '../../collision/CollisionSystem'
 import {
@@ -153,6 +154,7 @@ export class SceneScriptSystem {
   private animatorBridge: AnimatorBridge | null = null
   private tweenBridge: TweenBridge | null = null
   private particleBridge: ParticleSystemBridge | null = null
+  private sceneUiBridge: SceneUiBridge | null = null
   private avatarAttachBridge: AvatarAttachBridge | null = null
   private videoPlayerBridge: VideoPlayerBridge | null = null
   private audioSourceBridge: AudioSourceBridge | null = null
@@ -287,6 +289,21 @@ export class SceneScriptSystem {
       scene,
       () => this.bridge?.getEntityNodes()
     )
+    this.sceneUiBridge?.dispose()
+    this.sceneUiBridge = new SceneUiBridge(scene, () => this.host?.renderer.domElement ?? null)
+    this.sceneUiBridge.bindWriteback({
+      writeInputResult: (entity, value, isSubmit) => {
+        const result = { value, isSubmit: isSubmit ?? false }
+        this.readComponents.UiInputResult.createOrReplace(entity, result)
+        this.recordRendererLww(this.readComponents.UiInputResult.componentId, entity, result)
+      },
+      writeDropdownResult: (entity, index) => {
+        const result = { value: index }
+        this.readComponents.UiDropdownResult.createOrReplace(entity, result)
+        this.recordRendererLww(this.readComponents.UiDropdownResult.componentId, entity, result)
+      },
+      flushLww: () => this.flushRendererLwwToWorker()
+    })
     this.bridge.setAvatarTextureResolver(async (userId) => {
       const url = await fetchProfileFaceUrl(userId)
       if (!url) return null
@@ -1135,6 +1152,10 @@ export class SceneScriptSystem {
       this.onPointerDeliverDone()
       return
     }
+    if (msg.type === 'ui-virtual-canvas') {
+      this.sceneUiBridge?.setVirtualSize(msg.width, msg.height)
+      return
+    }
     if (msg.type === 'engine-api-subscribe') {
       this.engineApiEvents.onWorkerSubscribe(msg.eventId)
       return
@@ -1410,6 +1431,9 @@ export class SceneScriptSystem {
         this.audioStreamBridge?.sync(this.view)
       }
 
+      // react-ecs UI deltas (conditional unmount / view swaps) — always sync so stale overlays prune.
+      this.sceneUiBridge?.sync(this.view)
+
       this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
       this.syncTriggerAreas()
       this.syncRaycasts()
@@ -1638,7 +1662,21 @@ export class SceneScriptSystem {
         void this.flushPendingPointerCrdt()
       },
       prepareRaycast: () => this.preparePointerRaycast(),
-      recordAppend: this.recordRendererAppend
+      recordAppend: this.recordRendererAppend,
+      pickUiHit: (clientX, clientY) =>
+        this.sceneUiBridge?.pickUiPointerHit(
+          clientX,
+          clientY,
+          this.readComponents,
+          this.view,
+          this.host!.camera
+        ) ?? null,
+      consumeSceneUiFormPointer: (clientX, clientY, target) =>
+        this.sceneUiBridge?.consumeFormPointerDown(clientX, clientY, target) ?? false,
+      isSceneUiFormEntity: (entity) => this.sceneUiBridge?.isFormEntity(entity) ?? false,
+      isSceneUiTypingActive: () => this.sceneUiBridge?.isTypingActive() ?? false,
+      pickUiRegionHit: (clientX, clientY) =>
+        this.sceneUiBridge?.pickUiRegionHit(clientX, clientY, this.host!.camera) ?? null
     })
     let pointerEntities = 0
     for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
@@ -2002,6 +2040,7 @@ export class SceneScriptSystem {
     }
     this.refreshPointerTargets()
     this.collidersCookCallback?.()
+    this.sceneUiBridge?.sync(this.view)
   }
 
   /** Clear pointer flush state and resume worker scene ticks after delivery (idempotent). */
@@ -2156,6 +2195,7 @@ export class SceneScriptSystem {
     await this.bridge.sync(view)
     this.colliderFullWalkRequested = true
     this.flushPointerStructureIfDirty()
+    this.sceneUiBridge?.sync(view)
   }
 
   /** ECS projection → Three.js — runs during hydration before the worker loop is marked running. */
@@ -2169,6 +2209,7 @@ export class SceneScriptSystem {
       this.pendingDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
       if (!diff.size) {
         await this.bridge.drainPendingWork()
+        this.sceneUiBridge?.sync(view)
         return
       }
       if (!this.projectionDiffActive) {
@@ -2185,6 +2226,7 @@ export class SceneScriptSystem {
       else await this.bridge.drainPendingWork()
       this.bridge.reconcileBillboardFlags()
       this.flushPointerStructureIfDirty()
+      this.sceneUiBridge?.sync(view)
       return
     }
 
@@ -2195,6 +2237,7 @@ export class SceneScriptSystem {
     this.pointerStructureDirty = true
     await this.bridge.sync(view)
     this.flushPointerStructureIfDirty()
+    this.sceneUiBridge?.sync(view)
   }
 
   private playReadyNotified = false
@@ -2783,6 +2826,8 @@ export class SceneScriptSystem {
     this.tweenBridge = null
     this.particleBridge?.dispose()
     this.particleBridge = null
+    this.sceneUiBridge?.dispose()
+    this.sceneUiBridge = null
     this.avatarAttachBridge?.dispose()
     this.avatarAttachBridge = null
     this.videoPlayerBridge = null

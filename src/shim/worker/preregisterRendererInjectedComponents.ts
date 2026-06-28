@@ -4,6 +4,8 @@ import { guardVideoPlayerGetMutable } from './guardVideoPlayerGetMutable'
 
 /** Global hook invoked from patched bundle capture snippets (pre-seal). */
 export const PREREGISTER_RENDERER_COMPONENTS_KEY = '__THREEJS_PREREGISTER_RENDERER_COMPONENTS__'
+/** Patched setUiRenderer/addUiRenderer reports virtual canvas size to the worker. */
+export const UI_VIRTUAL_CANVAS_KEY = '__THREEJS_UI_VIRTUAL_CANVAS__'
 
 const preregistered = new WeakSet<IEngine>()
 
@@ -22,7 +24,10 @@ export const RENDERER_PREREGISTER_FACTORIES: readonly RendererComponentFactory[]
   (engine) => generated.RaycastResult(engine),
   (engine) => generated.VideoPlayer(engine),
   (engine) => generated.AudioSource(engine),
-  (engine) => generated.PrimaryPointerInfo(engine)
+  (engine) => generated.PrimaryPointerInfo(engine),
+  (engine) => generated.UiCanvasInformation(engine),
+  (engine) => generated.UiInputResult(engine),
+  (engine) => generated.UiDropdownResult(engine)
 ]
 
 /**
@@ -44,5 +49,16 @@ export function installPreregisterRendererComponentsHook(): void {
   g[PREREGISTER_RENDERER_COMPONENTS_KEY] = preregisterRendererInjectedComponents
   if (RENDERER_PREREGISTER_FACTORIES.length === 0) {
     throw new Error('[sceneWorker] renderer preregister factories missing')
+  }
+}
+
+export function installUiVirtualCanvasHook(
+  post: (width: number, height: number) => void
+): void {
+  const g = globalThis as Record<string, unknown>
+  g[UI_VIRTUAL_CANVAS_KEY] = (width: number, height: number) => {
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return
+    if (width <= 0 || height <= 0) return
+    post(Math.floor(width), Math.floor(height))
   }
 }

@@ -28,7 +28,8 @@
     "livekit-client": "^2.19.2",
     "protobufjs": "^8.6.3",
     "three": "^0.175.0",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.0",
+    "yoga-layout-prebuilt": "^1.10.0"
   },
   "devDependencies": {
     "@types/three": "^0.175.0",

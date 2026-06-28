@@ -42,6 +42,7 @@ import { resolveSceneEngine } from './resolveSceneEngine'
 import { guardVideoPlayerGetMutable } from './guardVideoPlayerGetMutable'
 import {
   installPreregisterRendererComponentsHook,
+  installUiVirtualCanvasHook,
   preregisterRendererInjectedComponents
 } from './preregisterRendererInjectedComponents'
 import { installSceneWorkerFetchProxy } from './installSceneWorkerFetchProxy'
@@ -248,7 +249,7 @@ function resumeSceneTicksAfterPointer(): void {
 
 function postPointerDeliverDone(label: string): void {
   ctx.postMessage({ type: 'pointer-deliver-done' } satisfies SceneWorkerOutbound)
-  workerLog('log', `[sceneWorker] ${label} — pointer-deliver-done posted to main`)
+  workerVerboseLog(debugPointerDeliver, 'log', `[sceneWorker] ${label} — pointer-deliver-done posted to main`)
 }
 
 /**
@@ -542,7 +543,8 @@ function chunkByteCount(chunks: Uint8Array[]): number {
 function executePointerInjection(body: InjectPointerClickBody): void {
   preemptForPointerDelivery()
   sceneTicksPaused = true
-  workerLog(
+  workerVerboseLog(
+    debugPointerDeliver,
     'log',
     `[sceneWorker] inject-pointer-click entity=${body.entity} button=${body.button} ts=${body.downTimestamp}/${body.upTimestamp}`
   )
@@ -554,7 +556,7 @@ function executePointerInjection(body: InjectPointerClickBody): void {
   pendingInjectPointer = null
   try {
     injectPointerClickOnEngine(sceneEngine, body)
-    workerLog('log', '[sceneWorker] inject-pointer-click — PointerEventsResult written')
+    workerVerboseLog(debugPointerDeliver, 'log', '[sceneWorker] inject-pointer-click — PointerEventsResult written')
     beginPointerDeliverBatch('inject-pointer-click')
   } catch (err) {
     workerLog(
@@ -608,7 +610,9 @@ const EMPTY_RENDERER_INJECT_COUNTS = {
   reservedTransformPuts: 0,
   triggerAppends: 0,
   videoAppends: 0,
-  pointerAppends: 0
+  pointerAppends: 0,
+  uiInputResultPuts: 0,
+  uiDropdownResultPuts: 0
 }
 
 function isSealedEngineError(err: unknown): boolean {
@@ -624,6 +628,8 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
   triggerAppends: number
   videoAppends: number
   pointerAppends: number
+  uiInputResultPuts: number
+  uiDropdownResultPuts: number
 } {
   let tweenPuts = 0
   let raycastPuts = 0
@@ -632,6 +638,8 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
   let triggerAppends = 0
   let videoAppends = 0
   let pointerAppends = 0
+  let uiInputResultPuts = 0
+  let uiDropdownResultPuts = 0
   if (sceneEngine) {
     try {
       const lww = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
@@ -639,6 +647,8 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
       raycastPuts = lww.raycastPuts
       videoPlayerPuts = lww.videoPlayerPuts
       reservedTransformPuts = lww.reservedTransformPuts
+      uiInputResultPuts = lww.uiInputResultPuts
+      uiDropdownResultPuts = lww.uiDropdownResultPuts
       const growOnly = injectRendererGrowOnlyAppendsOnEngine(sceneEngine, chunks)
       triggerAppends = growOnly.triggerAppends
       videoAppends = growOnly.videoAppends
@@ -659,7 +669,17 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
   if (rendererInboundApply) {
     rendererInboundApply(chunks)
   }
-  return { tweenPuts, raycastPuts, videoPlayerPuts, reservedTransformPuts, triggerAppends, videoAppends, pointerAppends }
+  return {
+    tweenPuts,
+    raycastPuts,
+    videoPlayerPuts,
+    reservedTransformPuts,
+    triggerAppends,
+    videoAppends,
+    pointerAppends,
+    uiInputResultPuts,
+    uiDropdownResultPuts
+  }
 }
 
 function executePointerDelivery(chunks: Uint8Array[]): void {
@@ -673,24 +693,33 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
   // Lightweight path — no scene-tick pause (tween/transform transport-only).
   if (canDirectInject) {
     try {
-      const { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends, pointerAppends } =
-        applyRendererInboundChunks(chunks)
+      const {
+        tweenPuts,
+        raycastPuts,
+        videoPlayerPuts,
+        triggerAppends,
+        videoAppends,
+        pointerAppends,
+        uiInputResultPuts,
+        uiDropdownResultPuts
+      } = applyRendererInboundChunks(chunks)
       const needsSceneTick =
         raycastPuts > 0 ||
         videoPlayerPuts > 0 ||
         triggerAppends > 0 ||
-        pointerAppends > 0
+        pointerAppends > 0 ||
+        uiInputResultPuts > 0 ||
+        uiDropdownResultPuts > 0
       if (needsSceneTick) {
         preemptForPointerDelivery()
         sceneTicksPaused = true
         workerVerboseLog(
           debugPointerDeliver,
           'log',
-          `[sceneWorker] pointer-crdt-deliver — inject trigger=${triggerAppends} videoEvent=${videoAppends} pointer=${pointerAppends} raycast=${raycastPuts} videoPlayer=${videoPlayerPuts}`
+          `[sceneWorker] pointer-crdt-deliver — inject trigger=${triggerAppends} videoEvent=${videoAppends} pointer=${pointerAppends} raycast=${raycastPuts} videoPlayer=${videoPlayerPuts} uiInput=${uiInputResultPuts} uiDropdown=${uiDropdownResultPuts}`
         )
-        void runPointerEngineTickSync('pointer-crdt-deliver-renderer-inject').then(() => {
-          postPointerDeliverDone('pointer-crdt-deliver-renderer-inject')
-        })
+        // Raycast / video LWW reuse this channel — only click batches ack main (pointerDeliverBatchOpen).
+        void runPointerEngineTickSync('pointer-crdt-deliver-renderer-inject')
         return
       }
       if (tweenPuts > 0) {
@@ -1615,6 +1644,9 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
     installPreregisterRendererComponentsHook()
+    installUiVirtualCanvasHook((width, height) => {
+      ctx.postMessage({ type: 'ui-virtual-canvas', width, height } satisfies SceneWorkerOutbound)
+    })
     const evalStarted = performance.now()
     const evalKb = (code.length / 1024).toFixed(0)
     const patchStarted = performance.now()

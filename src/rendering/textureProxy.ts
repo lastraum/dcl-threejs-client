@@ -24,6 +24,8 @@ export function isCorsSafeTextureUrl(url: string): boolean {
   // Arweave gateways send ACAO:* — direct fetch/Image works after redirect.
   if (/\.arweave\.net\//i.test(url)) return true
   if (/^https?:\/\/arweave\.net\//i.test(url)) return true
+  // RickRoll CameraOperator QR images — server sends ACAO:*.
+  if (/\.lastslice\.co\//i.test(url)) return true
   return false
 }
 

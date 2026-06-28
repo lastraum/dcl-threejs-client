@@ -189,6 +189,7 @@ export type SceneWorkerOutbound =
   | { type: 'engine-api-unsubscribe'; eventId: string }
   | { type: 'crdt-get-state'; id: number }
   | { type: 'pointer-deliver-done' }
+  | { type: 'ui-virtual-canvas'; width: number; height: number }
 
 export type MainToWorker =
   | SceneWorkerBoot

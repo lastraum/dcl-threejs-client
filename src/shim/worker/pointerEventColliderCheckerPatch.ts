@@ -250,6 +250,31 @@ function wrapAddTransportCalls(code: string, limit: number): string {
 
 export type PatchSceneBundleStepLog = (step: string, ms: number) => void
 
+const SET_UI_RENDERER_BODY = 'setUiRenderer(E,T){n=E,r=T'
+const ADD_UI_RENDERER_BODY = 'addUiRenderer(E,T,A){o.set(E,{ui:T,options:A'
+const VIRTUAL_CANVAS_NOTIFY =
+  'try{if(T&&T.virtualWidth>0&&T.virtualHeight>0&&globalThis.__THREEJS_UI_VIRTUAL_CANVAS__)globalThis.__THREEJS_UI_VIRTUAL_CANVAS__(T.virtualWidth,T.virtualHeight)}catch(__err){}'
+const VIRTUAL_CANVAS_NOTIFY_ADD =
+  'try{if(A&&A.virtualWidth>0&&A.virtualHeight>0&&globalThis.__THREEJS_UI_VIRTUAL_CANVAS__)globalThis.__THREEJS_UI_VIRTUAL_CANVAS__(A.virtualWidth,A.virtualHeight)}catch(__err){}'
+
+/** Patch ReactEcsRenderer setUiRenderer/addUiRenderer to report virtual canvas size to main. */
+function patchUiVirtualCanvasHooks(code: string): string {
+  let out = code
+  if (out.includes(SET_UI_RENDERER_BODY)) {
+    out = out.replace(
+      SET_UI_RENDERER_BODY,
+      `setUiRenderer(E,T){${VIRTUAL_CANVAS_NOTIFY}n=E,r=T`
+    )
+  }
+  if (out.includes(ADD_UI_RENDERER_BODY)) {
+    out = out.replace(
+      ADD_UI_RENDERER_BODY,
+      `addUiRenderer(E,T,A){${VIRTUAL_CANVAS_NOTIFY_ADD}o.set(E,{ui:T,options:A`
+    )
+  }
+  return out
+}
+
 /** Default bundle patch — composite alias + safe engine capture (no checker strip). */
 export function patchSceneBundle(code: string, onStep?: PatchSceneBundleStepLog): string {
   let stepAt = performance.now()
@@ -266,6 +291,9 @@ export function patchSceneBundle(code: string, onStep?: PatchSceneBundleStepLog)
   stepAt = performance.now()
   out = wrapAddTransportCalls(out, ADD_TRANSPORT_WRAP_LIMIT)
   onStep?.('addTransport capture', performance.now() - stepAt)
+  stepAt = performance.now()
+  out = patchUiVirtualCanvasHooks(out)
+  onStep?.('ui virtual canvas', performance.now() - stepAt)
   stepAt = performance.now()
   const photoMural = patchPhotoMuralOptionalChain(out)
   out = photoMural.code

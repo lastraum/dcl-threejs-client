@@ -10,6 +10,14 @@ export const CLAIMS_FALLBACK: ClaimsRegistry = {
   "workflow": [
     {
       "stage": "merged",
+      "integration_ref": "editor:large-scene-perf",
+      "title": "Terrain editor — large-scene RAM, camera, avatar slider, merged export",
+      "owner": "lastraum",
+      "updated": "2026-07-02",
+      "notes": "editor-update → dev-latest; 300×300 footprint QA — see PROGRESS.md July 2 large-scene milestone"
+    },
+    {
+      "stage": "merged",
       "integration_ref": "editor:terrain-ux-polish",
       "title": "Terrain editor UX — height biomes, fly camera, avatar scale guides",
       "owner": "lastraum",

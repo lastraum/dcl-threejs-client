@@ -4,10 +4,18 @@ import type { ClaimsRegistry } from './claimsRegistry'
 
 export const CLAIMS_FALLBACK: ClaimsRegistry = {
   "schema_version": 2,
-  "updated": "2026-06-22",
+  "updated": "2026-07-02",
   "source": "github",
   "base_branch": "dev-latest",
   "workflow": [
+    {
+      "stage": "merged",
+      "integration_ref": "editor:terrain-ux-polish",
+      "title": "Terrain editor UX — height biomes, fly camera, avatar scale guides",
+      "owner": "lastraum",
+      "updated": "2026-07-02",
+      "notes": "6888496 — editor-update → dev-latest; see PROGRESS.md July 2 milestone"
+    },
     {
       "stage": "merged",
       "integration_ref": "perf:low-end-scene-worker",

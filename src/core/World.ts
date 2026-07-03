@@ -144,6 +144,8 @@ export class World {
   private ezTreeGrassElapsed = 0
   private foliageWindElapsed = 0
   private unsubEnvironmentDebug: (() => void) | null = null
+  private lastVoluntaryEmoteAllowed = true
+  private onVoluntaryEmoteAllowedChange: ((allowed: boolean) => void) | null = null
 
   /** Per-tick budget while GLBs still attaching on the loading screen. */
   private static readonly HYDRATION_COLLIDER_COOK_BUDGET = 80
@@ -651,7 +653,12 @@ export class World {
     this.sceneScript.bindPointerEvents(
       () => this.player!.getWorldPosition(),
       () => this.player!.isPointerBlocked(),
-      () => this.physics
+      () => this.physics,
+      {
+        isRelayBlocked: () => this.player!.isSceneRelayBlocked(),
+        isLocomotionBlocked: () => this.player!.isLocomotionBlocked(),
+        clearPlayerMoveKeys: () => this.player!.clearMoveKeys()
+      }
     )
     const plazaScale = this.lastGltfColliderCount >= 200
     this.sceneScript.notifyPlayReady({
@@ -806,6 +813,11 @@ export class World {
           this.player.update(delta)
           const playerMs = performance.now() - playerT0
           recordMainThreadPerf({ platformMotionMs: platformMs, playerUpdateMs: playerMs, colliderApplyMs: 0 })
+          const emoteAllowed = this.player.canPlayVoluntaryEmote()
+          if (emoteAllowed !== this.lastVoluntaryEmoteAllowed) {
+            this.lastVoluntaryEmoteAllowed = emoteAllowed
+            this.onVoluntaryEmoteAllowedChange?.(emoteAllowed)
+          }
           this.sceneScript.syncClientEntities(this.player.getEntityPose(), this.player.getCameraEntityPose())
 
           const pos = this.player.getPosition()
@@ -842,6 +854,7 @@ export class World {
           this.sceneScript.updateTriggerAreas()
           this.sceneScript.updateRaycasts()
           this.sceneScript.updatePointerEvents(startFrame)
+          this.sceneScript.syncSceneInputRelay(startFrame)
         }
         if (!this.editorPreviewMode) {
           // Campfire sprite UV animation — sync frame (tiny tracked set, self-prunes static planes).
@@ -1910,6 +1923,19 @@ export class World {
     return this.remoteAvatars
   }
 
+  canPlayVoluntaryEmote(): boolean {
+    return this.player?.canPlayVoluntaryEmote() ?? true
+  }
+
+  setVoluntaryEmoteAllowedHandler(handler: ((allowed: boolean) => void) | null): void {
+    this.onVoluntaryEmoteAllowedChange = handler
+    if (handler && this.player) {
+      const allowed = this.player.canPlayVoluntaryEmote()
+      this.lastVoluntaryEmoteAllowed = allowed
+      handler(allowed)
+    }
+  }
+
   playLocalEmote(
     emoteRef: string,
     options?: { loop?: boolean; broadcast?: boolean; /** Scene triggerEmote / AvatarEmoteCommand — bypass disableEmote. */ sceneTriggered?: boolean }
@@ -2066,6 +2092,8 @@ export class World {
   }
 
   dispose(): void {
+    this.onVoluntaryEmoteAllowedChange = null
+    this.lastVoluntaryEmoteAllowed = true
     this.unsubAvatarChat?.()
     this.unsubAvatarChat = null
     this.unsubEnvironmentDebug?.()

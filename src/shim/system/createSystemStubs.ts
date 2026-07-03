@@ -155,6 +155,10 @@ export type SceneBundleExports = {
   onStart?: () => Promise<void>
   onUpdate?: (dt: number) => Promise<void>
   main?: () => unknown
+  /** SDK7 deploy bundles — script graph init before main(). */
+  initializeScripts?: (engine?: import('@dcl/ecs').IEngine) => unknown
+  /** Minified deploy export (`_initializeScripts:()=>vq`). */
+  _initializeScripts?: (engine?: import('@dcl/ecs').IEngine) => unknown
   /** @dcl/sdk runtime export — used to apply renderer CRDT inbound. */
   rendererTransport?: RendererTransportExport
   /** SDK7 scenes also export the engine singleton. */

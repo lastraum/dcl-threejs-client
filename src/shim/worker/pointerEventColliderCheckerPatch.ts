@@ -1,6 +1,7 @@
 import type { Entity, IEngine } from '@dcl/ecs'
 import * as components from '@dcl/ecs/dist/components'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
+import { patchEngineSystemLoopPartition } from './patchEngineSystemLoop'
 import { patchPhotoMuralOptionalChain } from './photoMuralPatch'
 import { patchTheatreSkip } from './theatreSkipPatch'
 
@@ -250,6 +251,38 @@ function wrapAddTransportCalls(code: string, limit: number): string {
 
 export type PatchSceneBundleStepLog = (step: string, ms: number) => void
 
+const REACT_ECS_ADD_RE = /e\.addSystem\(d,1e5,"@dcl\/react-ecs"\)/g
+
+const SET_UI_RENDERER_RE =
+  /setUiRenderer\((\w+),(\w+)\)\{(\w+)=\1,(\w+)=\2\}/g
+const ADD_UI_RENDERER_RE =
+  /addUiRenderer\((\w+),(\w+),(\w+)\)\{(\w+)\.set\(\1,\{ui:\2,options:\3\}\)\}/g
+
+/** Only the scene react-ecs renderer may register — asset packs call sw() again with n unset. */
+function patchReactEcsOnceGuard(code: string): string {
+  if (!code.includes('addSystem(d,1e5,"@dcl/react-ecs")')) return code
+  return code.replace(
+    REACT_ECS_ADD_RE,
+    'globalThis.__THREEJS_UI_REACT_ECS_ONCE__&&globalThis.__THREEJS_UI_REACT_ECS_ONCE__(d,e)'
+  )
+}
+
+/** Patch ReactEcsRenderer setUiRenderer/addUiRenderer to report virtual canvas size to main. */
+function patchUiVirtualCanvasHooks(code: string): string {
+  let out = code
+  out = out.replace(
+    SET_UI_RENDERER_RE,
+    (_match, entityArg, optionsArg, lhs, rhs) =>
+      `setUiRenderer(${entityArg},${optionsArg}){try{if(${optionsArg}&&${optionsArg}.virtualWidth>0&&${optionsArg}.virtualHeight>0&&globalThis.__THREEJS_UI_VIRTUAL_CANVAS__)globalThis.__THREEJS_UI_VIRTUAL_CANVAS__(${optionsArg}.virtualWidth,${optionsArg}.virtualHeight)}catch(__err){}${lhs}=${entityArg},${rhs}=${optionsArg}}`
+  )
+  out = out.replace(
+    ADD_UI_RENDERER_RE,
+    (_match, entityArg, uiArg, optionsArg, mapVar) =>
+      `addUiRenderer(${entityArg},${uiArg},${optionsArg}){try{if(${optionsArg}&&${optionsArg}.virtualWidth>0&&${optionsArg}.virtualHeight>0&&globalThis.__THREEJS_UI_VIRTUAL_CANVAS__)globalThis.__THREEJS_UI_VIRTUAL_CANVAS__(${optionsArg}.virtualWidth,${optionsArg}.virtualHeight)}catch(__err){}${mapVar}.set(${entityArg},{ui:${uiArg},options:${optionsArg}})}`
+  )
+  return out
+}
+
 /** Default bundle patch — composite alias + safe engine capture (no checker strip). */
 export function patchSceneBundle(code: string, onStep?: PatchSceneBundleStepLog): string {
   let stepAt = performance.now()
@@ -266,6 +299,15 @@ export function patchSceneBundle(code: string, onStep?: PatchSceneBundleStepLog)
   stepAt = performance.now()
   out = wrapAddTransportCalls(out, ADD_TRANSPORT_WRAP_LIMIT)
   onStep?.('addTransport capture', performance.now() - stepAt)
+  stepAt = performance.now()
+  out = patchReactEcsOnceGuard(out)
+  onStep?.('react-ecs once guard', performance.now() - stepAt)
+  stepAt = performance.now()
+  out = patchUiVirtualCanvasHooks(out)
+  onStep?.('ui virtual canvas', performance.now() - stepAt)
+  stepAt = performance.now()
+  out = patchEngineSystemLoopPartition(out)
+  onStep?.('engine ui system loop', performance.now() - stepAt)
   stepAt = performance.now()
   const photoMural = patchPhotoMuralOptionalChain(out)
   out = photoMural.code

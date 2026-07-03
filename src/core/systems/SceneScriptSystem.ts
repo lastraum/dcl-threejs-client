@@ -10,7 +10,7 @@ import {
   type ProjectionView
 } from '../../bridge/ProjectionView'
 import type { MirrorComponents } from '../../bridge/mirrorComponents'
-import { CrdtProjection, type ProjectionChangeKind } from '../../bridge/CrdtProjection'
+import { CrdtProjection, type ProjectionChange, type ProjectionChangeKind } from '../../bridge/CrdtProjection'
 import { CrdtEncoder } from '../../bridge/CrdtEncoder'
 import { ReservedEntitiesSync, type EntityPose } from '../../bridge/ReservedEntitiesSync'
 import { ThreeBridge } from '../../bridge/ThreeBridge'
@@ -30,6 +30,7 @@ import { AudioSourceBridge } from '../../media/AudioSourceBridge'
 import { AudioStreamBridge } from '../../media/AudioStreamBridge'
 import type { SpatialAudioAnchors } from '../../media/spatialAudioParent'
 import { VideoPlayerBridge } from '../../media/VideoPlayerBridge'
+import { SceneUiBridge } from '../../ui/scene/SceneUiBridge'
 import type { LiveKitVideoBinder } from '../../media/WebVideoPlayer'
 import { CollisionSystem } from '../../collision/CollisionSystem'
 import {
@@ -61,6 +62,7 @@ import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import { skipTheatreSceneScript } from '../../client/devFlags'
 import { mirrorSceneBundle } from '../../dev/mirrorSceneBundle'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
+import { SceneInputRelay } from '../../input/SceneInputRelay'
 import { TriggerAreaSystem } from '../../input/TriggerAreaSystem'
 import { isTriggerAreaVerbose } from '../../input/triggerAreaConfig'
 import { RaycastSystem } from '../../input/RaycastSystem'
@@ -80,6 +82,15 @@ const BRIDGE_ECS_SYNC_RUNTIME = 12
 const POINTER_VERBOSE = ((): boolean => {
   try {
     return typeof location !== 'undefined' && new URLSearchParams(location.search).has('pointerverbose')
+  } catch {
+    return false
+  }
+})()
+
+/** Scene UI CRDT + repaint tracing (`?sceneuilog`). */
+const SCENE_UI_LOG = ((): boolean => {
+  try {
+    return typeof location !== 'undefined' && new URLSearchParams(location.search).has('sceneuilog')
   } catch {
     return false
   }
@@ -134,12 +145,13 @@ export class SceneScriptSystem {
   /** Phase C — serializes async outbound apply + inbound deliver. */
   private crdtOutboundSerial: Promise<void> = Promise.resolve()
   /** Phase C slice 2 — coalesce worker outbounds per microtask before one encode/deliver. */
-  private crdtOutboundPending: Uint8Array[] = []
+  private crdtOutboundPending: { id?: number; data: Uint8Array; uiEntities?: number[] }[] = []
   private crdtOutboundFlushQueued = false
   readonly reserved = new ReservedEntitiesSync(this.projection, this.readComponents, SDK_RESERVED)
   collision: CollisionSystem | null = null
   gltfColliders: GltfColliderExtractor | null = null
   pointerEvents: PointerEventsSystem | null = null
+  sceneInputRelay: SceneInputRelay | null = null
   triggerAreas: TriggerAreaSystem | null = null
   raycasts: RaycastSystem | null = null
   readonly engineApiEvents = new EngineApiEventBridge()
@@ -153,6 +165,7 @@ export class SceneScriptSystem {
   private animatorBridge: AnimatorBridge | null = null
   private tweenBridge: TweenBridge | null = null
   private particleBridge: ParticleSystemBridge | null = null
+  private sceneUiBridge: SceneUiBridge | null = null
   private avatarAttachBridge: AvatarAttachBridge | null = null
   private videoPlayerBridge: VideoPlayerBridge | null = null
   private audioSourceBridge: AudioSourceBridge | null = null
@@ -220,6 +233,14 @@ export class SceneScriptSystem {
   private pointerDeliverFailWatchdog: ReturnType<typeof setTimeout> | null = null
   /** Click flush pending — cleared on pointer-deliver-done. */
   private pointerAwaitingWorkerApply = false
+  /** Mount set commit deferred — projection UiTransform lagging worker uiEntities. */
+  private projectionLagPendingUi = false
+  /** Worker uiEntities held until applyUiFrame can commit mount set + paint atomically. */
+  private pendingUiEntities: number[] | undefined
+  /** setUiRenderer virtual canvas — may arrive before SceneUiBridge exists. */
+  private pendingVirtualCanvas: { width: number; height: number } | null = null
+  private projectionLagLoggedAt = 0
+  private sceneUiRepaintLogCount = 0
   /** Worker pointer engine tick abort is 4000ms — fail if deliver-done never arrives. */
   private static readonly POINTER_DELIVER_FAIL_MS = 5_000
 
@@ -287,6 +308,27 @@ export class SceneScriptSystem {
       scene,
       () => this.bridge?.getEntityNodes()
     )
+    this.sceneUiBridge?.dispose()
+    this.sceneUiBridge = new SceneUiBridge(scene, () => this.host?.renderer.domElement ?? null)
+    if (this.pendingVirtualCanvas) {
+      this.sceneUiBridge.setVirtualSize(
+        this.pendingVirtualCanvas.width,
+        this.pendingVirtualCanvas.height
+      )
+    }
+    this.sceneUiBridge.bindWriteback({
+      writeInputResult: (entity, value, isSubmit) => {
+        const result = { value, isSubmit: isSubmit ?? false }
+        this.readComponents.UiInputResult.createOrReplace(entity, result)
+        this.recordRendererLww(this.readComponents.UiInputResult.componentId, entity, result)
+      },
+      writeDropdownResult: (entity, index) => {
+        const result = { value: index }
+        this.readComponents.UiDropdownResult.createOrReplace(entity, result)
+        this.recordRendererLww(this.readComponents.UiDropdownResult.componentId, entity, result)
+      },
+      flushLww: () => this.flushRendererLwwToWorker()
+    })
     this.bridge.setAvatarTextureResolver(async (userId) => {
       const url = await fetchProfileFaceUrl(userId)
       if (!url) return null
@@ -339,6 +381,7 @@ export class SceneScriptSystem {
       return this.gltfColliders.probeColliderMeshMotion(entity, nodes)
     })
     this.pointerEvents = new PointerEventsSystem(host.renderer.domElement)
+    this.sceneInputRelay = new SceneInputRelay()
     this.triggerAreas = new TriggerAreaSystem()
     this.raycasts = new RaycastSystem()
     this.avatarShapes.setAssetCache(cache, scene.realm.contentUrl)
@@ -980,7 +1023,8 @@ export class SceneScriptSystem {
       debug: {
         pointerDeliver: POINTER_VERBOSE,
         tweenDeliver: isTweenVerbose(),
-        skipTheatre: skipTheatreSceneScript()
+        skipTheatre: skipTheatreSceneScript(),
+        sceneUiLog: SCENE_UI_LOG
       },
       scene: {
         title: scene.title,
@@ -1115,6 +1159,11 @@ export class SceneScriptSystem {
   ): Promise<void> {
     if (msg.type === 'ready') {
       this.bootPhaseActive = false
+      const readyUiEntities = msg.uiEntities
+      // engine.update(0) outbound may still be in the microtask queue — paint after it lands.
+      this.crdtOutboundSerial = this.crdtOutboundSerial.then(() => {
+        this.applyUiFrame([], readyUiEntities)
+      })
       clientDebugLog.log('scene', 'Scene worker ready (main thread)', { level: 'success' })
       onReady()
       return
@@ -1133,6 +1182,11 @@ export class SceneScriptSystem {
     }
     if (msg.type === 'pointer-deliver-done') {
       this.onPointerDeliverDone()
+      return
+    }
+    if (msg.type === 'ui-virtual-canvas') {
+      this.pendingVirtualCanvas = { width: msg.width, height: msg.height }
+      this.sceneUiBridge?.setVirtualSize(msg.width, msg.height)
       return
     }
     if (msg.type === 'engine-api-subscribe') {
@@ -1304,7 +1358,7 @@ export class SceneScriptSystem {
       return
     }
     if (msg.type === 'crdt-outbound') {
-      this.enqueueCrdtOutbound(msg.data)
+      this.enqueueCrdtOutbound({ id: msg.id, data: msg.data, uiEntities: msg.uiEntities })
       return
     }
     if (msg.type === 'crdt-send') {
@@ -1348,8 +1402,10 @@ export class SceneScriptSystem {
     }
   }
 
-  private enqueueCrdtOutbound(data: Uint8Array): void {
-    this.crdtOutboundPending.push(data)
+  private lastOutboundUiEntitiesKey = ''
+
+  private enqueueCrdtOutbound(item: { id?: number; data: Uint8Array; uiEntities?: number[] }): void {
+    this.crdtOutboundPending.push(item)
     if (this.crdtOutboundFlushQueued) return
     this.crdtOutboundFlushQueued = true
     queueMicrotask(() => {
@@ -1368,18 +1424,27 @@ export class SceneScriptSystem {
     })
   }
 
-  /** Worker outbound (post-onStart) — inbound via renderer-inbound-deliver, no crdt-response. */
-  private async handleCrdtOutboundBatch(batch: Uint8Array[]): Promise<void> {
-    if (!this.running) return
-    const inbound = await this.processWorkerOutboundCrdtBatch(batch)
-    this.postRendererInboundDeliver(inbound)
-    if (!this.crdtOutboundLogged) {
-      this.crdtOutboundLogged = true
-      clientDebugLog.log(
-        'projection',
-        'CRDT outbound ACTIVE — async worker→main, inbound via renderer-inbound-deliver',
-        { level: 'success', alsoConsole: true }
-      )
+  /** Worker outbound (post-onStart) — ack + renderer-inbound-deliver. */
+  private async handleCrdtOutboundBatch(
+    batch: { id?: number; data: Uint8Array; uiEntities?: number[] }[]
+  ): Promise<void> {
+    const ackIds = batch.map((item) => item.id).filter((id): id is number => id !== undefined)
+    try {
+      if (!this.running) return
+      const inbound = await this.processWorkerOutboundCrdtBatch(batch)
+      this.postRendererInboundDeliver(inbound)
+      if (!this.crdtOutboundLogged) {
+        this.crdtOutboundLogged = true
+        clientDebugLog.log(
+          'projection',
+          'CRDT outbound ACTIVE — worker→main with ack, inbound via renderer-inbound-deliver',
+          { level: 'success', alsoConsole: true }
+        )
+      }
+    } finally {
+      for (const id of ackIds) {
+        this.worker?.postMessage({ type: 'crdt-outbound-ack', id } satisfies MainToWorker)
+      }
     }
   }
 
@@ -1394,13 +1459,54 @@ export class SceneScriptSystem {
     this.worker.postMessage({ type: 'renderer-inbound-deliver', data: copies } satisfies MainToWorker, transfer)
   }
 
-  private async processWorkerOutboundCrdtBatch(batch: Uint8Array[]): Promise<Uint8Array[]> {
-    const hasPayload = batch.some((data) => data?.byteLength > 0)
+  private async processWorkerOutboundCrdtBatch(
+    batch: { id?: number; data: Uint8Array; uiEntities?: number[] }[]
+  ): Promise<Uint8Array[]> {
+    const hasPayload = batch.some((item) => item.data?.byteLength > 0)
     try {
       this.prepareRendererOutboundState()
-      for (const data of batch) {
-        this.projection.applyIncoming(data)
+      const projectionDeletes: ProjectionChange[] = []
+      const { UiTransform, UiText, UiBackground, UiInput, UiDropdown, PointerEvents } =
+        this.readComponents
+      const uiComponentIds = new Set([
+        UiTransform.componentId,
+        UiText.componentId,
+        UiBackground.componentId,
+        UiInput.componentId,
+        UiDropdown.componentId,
+        PointerEvents.componentId
+      ])
+      let batchTouchesUi = false
+      const uiTransformId = UiTransform.componentId
+      for (const item of batch) {
+        if (!item.data?.byteLength) continue
+        this.projection.applyIncoming(item.data)
+        for (const change of this.projection.changes) {
+          if (change.kind === 'delete' && change.componentId === uiTransformId) {
+            projectionDeletes.push(change)
+          }
+          if (uiComponentIds.has(change.componentId)) {
+            batchTouchesUi = true
+          }
+        }
         this.foldProjectionChanges()
+      }
+
+      // Coalesced batches can carry stale uiEntities on earlier chunks — always take the last snapshot.
+      const latestUiEntities = [...batch].reverse().find((item) => item.uiEntities !== undefined)?.uiEntities
+      const uiKey = latestUiEntities?.join(',') ?? ''
+      const mountChanged = uiKey.length > 0 && uiKey !== this.lastOutboundUiEntitiesKey
+      if (uiKey) this.lastOutboundUiEntitiesKey = uiKey
+      if (hasPayload || batchTouchesUi || projectionDeletes.length > 0 || mountChanged) {
+        if (SCENE_UI_LOG && hasPayload) {
+          console.info(
+            `[scene-ui] crdt batch — bytes=${batch.reduce((n, item) => n + (item.data?.byteLength ?? 0), 0)} ` +
+              `touchesUi=${batchTouchesUi} mountChanged=${mountChanged} deletes=${projectionDeletes.length}`
+          )
+        }
+        this.applyUiFrame(projectionDeletes, latestUiEntities)
+      } else if (this.projectionLagPendingUi) {
+        this.flushUiFrame()
       }
 
       if (this.pointerAwaitingWorkerApply) {
@@ -1411,6 +1517,7 @@ export class SceneScriptSystem {
       }
 
       this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
+      this.sceneInputRelay?.sync(this.crdtTick)
       this.syncTriggerAreas()
       this.syncRaycasts()
       this.syncTweenBeforeEncode()
@@ -1543,7 +1650,88 @@ export class SceneScriptSystem {
     return new Set<Entity>([SDK_RESERVED.root, SDK_RESERVED.player, SDK_RESERVED.camera])
   }
 
-  /** Fold the latest projection decode batch into the render-frame diff accumulator. */
+  private purgeProjectionUiOutsideWorkerMount(): void {
+    const workerSet = this.sceneUiBridge?.getWorkerUiEntities()
+    if (!workerSet?.size) return
+    const { UiTransform, UiText, UiBackground, UiInput, UiDropdown, PointerEvents } = this.readComponents
+    this.projection.purgeEntitiesOutsideSet(workerSet, [
+      UiTransform.componentId,
+      UiText.componentId,
+      UiBackground.componentId,
+      UiInput.componentId,
+      UiDropdown.componentId,
+      PointerEvents.componentId
+    ])
+  }
+
+  /**
+   * Single scene UI frame boundary — CRDT must already be applied to projection.
+   * Mount set + DOM advance atomically; defers only when projection UiTransform lags uiEntities.
+   */
+  private applyUiFrame(
+    projectionDeletes: readonly ProjectionChange[] = [],
+    uiEntities?: number[]
+  ): void {
+    const bridge = this.sceneUiBridge
+    if (!bridge) return
+
+    bridge.applyProjectionChanges(projectionDeletes)
+    this.flushUiFrame(uiEntities)
+  }
+
+  /** Resume a deferred applyUiFrame after pointer-deliver-done or when projection catches up. */
+  private flushUiFrame(uiEntities?: number[]): void {
+    const bridge = this.sceneUiBridge
+    if (!bridge) return
+
+    const mountUpdate = uiEntities ?? this.pendingUiEntities
+    this.pendingUiEntities = undefined
+
+    if (mountUpdate !== undefined) {
+      const nextSet = new Set(mountUpdate.map((e) => e as Entity))
+      if (!bridge.isMountSetReady(this.view, nextSet)) {
+        this.pendingUiEntities = mountUpdate
+        this.projectionLagPendingUi = true
+        this.logProjectionLagIfStale(nextSet)
+        return
+      }
+      const mountChanged = bridge.commitMountSet(nextSet)
+      this.purgeProjectionUiOutsideWorkerMount()
+      bridge.paint(this.view)
+      this.projectionLagPendingUi = false
+      this.projectionLagLoggedAt = 0
+      this.logSceneUiRepaintIfEnabled()
+      if (mountChanged) {
+        this.pointerStructureDirty = true
+        this.flushPointerStructureIfDirty()
+      }
+      return
+    }
+
+    if (!bridge.hasCommittedMountSet()) return
+    if (!bridge.isMountSetReady(this.view)) {
+      this.projectionLagPendingUi = true
+      this.logProjectionLagIfStale(bridge.getWorkerUiEntities())
+      return
+    }
+    this.purgeProjectionUiOutsideWorkerMount()
+    bridge.paint(this.view)
+    this.projectionLagPendingUi = false
+    this.logSceneUiRepaintIfEnabled()
+  }
+
+  private logSceneUiRepaintIfEnabled(): void {
+    if (!SCENE_UI_LOG) return
+    this.sceneUiRepaintLogCount++
+    if (this.sceneUiRepaintLogCount > 8 && this.sceneUiRepaintLogCount % 25 !== 0) return
+    console.info(`[scene-ui] repaint #${this.sceneUiRepaintLogCount}`)
+  }
+
+  /** Re-assert held WASD to worker — every sync frame while keys are down. */
+  syncSceneInputRelay(tickNumber: number): void {
+    this.sceneInputRelay?.sync(tickNumber)
+  }
+
   private foldProjectionChanges(): void {
     const { PlayerEntity, CameraEntity, RootEntity } = this.view
     const { TriggerArea, Transform, Billboard } = this.readComponents
@@ -1619,7 +1807,12 @@ export class SceneScriptSystem {
   bindPointerEvents(
     getPlayerPosition: () => THREE.Vector3 | null,
     isPointerBlocked: () => boolean,
-    getPhysics?: () => PhysXWorld | null
+    getPhysics?: () => PhysXWorld | null,
+    sceneInput?: {
+      isRelayBlocked: () => boolean
+      isLocomotionBlocked?: () => boolean
+      clearPlayerMoveKeys?: () => void
+    }
   ): void {
     if (!this.pointerEvents || !this.collision || !this.bridge || !this.host) {
       clientDebugLog.log('pointer', 'bind skipped — scene not prepared', { level: 'warn' })
@@ -1638,7 +1831,23 @@ export class SceneScriptSystem {
         void this.flushPendingPointerCrdt()
       },
       prepareRaycast: () => this.preparePointerRaycast(),
-      recordAppend: this.recordRendererAppend
+      recordAppend: this.recordRendererAppend,
+      pickUiHit: (clientX, clientY, target) =>
+        this.sceneUiBridge?.pickUiPointerHit(
+          clientX,
+          clientY,
+          this.readComponents,
+          this.view,
+          this.host!.camera,
+          undefined,
+          target
+        ) ?? null,
+      consumeSceneUiFieldPointer: (clientX, clientY, target) =>
+        this.sceneUiBridge?.consumeFieldPointerDown(clientX, clientY, target) ?? false,
+      isSceneUiFieldEntity: (entity) => this.sceneUiBridge?.isFieldEntity(entity) ?? false,
+      isSceneUiTypingActive: () => this.sceneUiBridge?.isTypingActive() ?? false,
+      pickUiRegionHit: (clientX, clientY) =>
+        this.sceneUiBridge?.pickUiRegionHit(clientX, clientY, this.host!.camera) ?? null
     })
     let pointerEntities = 0
     for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
@@ -1668,6 +1877,17 @@ export class SceneScriptSystem {
       getEntityNodes: () => this.bridge!.getEntityNodes(),
       recordLww: this.recordRendererLww
     })
+    if (this.sceneInputRelay && sceneInput) {
+      this.sceneInputRelay.bind({
+        ecs: this.readComponents,
+        view: this.view,
+        recordAppend: this.recordRendererAppend,
+        isRelayBlocked: sceneInput.isRelayBlocked,
+        isLocomotionBlocked: sceneInput.isLocomotionBlocked,
+        clearPlayerMoveKeys: sceneInput.clearPlayerMoveKeys,
+        injectToWorker: (body) => this.injectSceneInputToWorker(body)
+      })
+    }
     let triggerEntities = 0
     for (const [entity] of this.view.getEntitiesWith(this.readComponents.TriggerArea)) {
       if (
@@ -1853,6 +2073,12 @@ export class SceneScriptSystem {
     this.pointerEvents?.triggerInputAction(action, phase)
   }
 
+  /** Priority lane — scene keyboard relay (WASD) for worker inputSystem.isPressed. */
+  private injectSceneInputToWorker(body: import('../../player/injectSceneInput').InjectSceneInputBody): void {
+    if (!this.running || !this.worker) return
+    this.worker.postMessage({ type: 'inject-scene-input', body } satisfies MainToWorker)
+  }
+
   updatePointerEvents(tickNumber: number): void {
     this.pointerEvents?.updateVisuals(tickNumber)
   }
@@ -1940,11 +2166,17 @@ export class SceneScriptSystem {
     this.armPointerDeliverWatchdog()
 
     const inject = this.pointerEvents?.consumeInjectPayload()
+    const pointerChunks = this.pointerResponseStash.filter((c) => c.byteLength > 0)
+    const injectOnly = pointerChunks.length === 0
     if (inject) {
       this.logPointer(
-        `posting inject-pointer-click entity=${inject.entity} button=${inject.button} ts=${inject.downTimestamp}/${inject.upTimestamp}`
+        `posting inject-pointer-click entity=${inject.entity} button=${inject.button} ts=${inject.downTimestamp}/${inject.upTimestamp}${injectOnly ? ' (inject-only)' : ''}`
       )
-      this.worker.postMessage({ type: 'inject-pointer-click', body: inject } satisfies MainToWorker)
+      this.worker.postMessage({
+        type: 'inject-pointer-click',
+        body: inject,
+        injectOnly
+      } satisfies MainToWorker)
     } else {
       this.logPointer('inject payload missing — direct CRDT only')
     }
@@ -2010,6 +2242,8 @@ export class SceneScriptSystem {
     clientDebugLog.log('pointer', `delivery complete — ${source}`, { alsoConsole: false })
     this.pointerAwaitingWorkerApply = false
     this.clearPointerDeliverWatchdog()
+    await this.crdtOutboundSerial
+    this.flushUiFrame()
     await this.reconcilePointerCollisionAfterDelivery()
     this.proactiveTweenPushUntil = performance.now() + SceneScriptSystem.PROACTIVE_TWEEN_PUSH_MS
     this.worker?.postMessage({ type: 'pause-scene-ticks', paused: false } satisfies MainToWorker)
@@ -2156,6 +2390,63 @@ export class SceneScriptSystem {
     await this.bridge.sync(view)
     this.colliderFullWalkRequested = true
     this.flushPointerStructureIfDirty()
+    this.applyUiFrame([])
+  }
+
+  /**
+   * Scene UI is event-driven — repaint when projection diff touches UI components, or when
+   * mount commit was deferred waiting for UiTransform rows. Worker→main CRDT outbound already
+   * calls applyUiFrame in the same batch as applyIncoming (primary path for bg/display churn).
+   */
+  private syncSceneUiAfterRenderer(
+    sceneDiff?: Map<Entity, Map<number, ProjectionChangeKind>>
+  ): void {
+    if (!this.sceneUiBridge) return
+    if (this.projectionLagPendingUi || this.pendingUiEntities !== undefined) {
+      this.flushUiFrame()
+      return
+    }
+    if (
+      sceneDiff?.size &&
+      this.sceneUiBridge.hasCommittedMountSet() &&
+      this.diffTouchesSceneUi(sceneDiff)
+    ) {
+      this.applyUiFrame([])
+    }
+  }
+
+  private diffTouchesSceneUi(diff: Map<Entity, Map<number, ProjectionChangeKind>>): boolean {
+    const { UiTransform, UiText, UiBackground, UiInput, UiDropdown, PointerEvents } = this.readComponents
+    const uiIds = new Set([
+      UiTransform.componentId,
+      UiText.componentId,
+      UiBackground.componentId,
+      UiInput.componentId,
+      UiDropdown.componentId,
+      PointerEvents.componentId
+    ])
+    for (const comps of diff.values()) {
+      for (const id of comps.keys()) {
+        if (uiIds.has(id)) return true
+      }
+    }
+    return false
+  }
+
+  private logProjectionLagIfStale(mountSet: ReadonlySet<Entity> | null | undefined): void {
+    if (!mountSet?.size) return
+    const now = performance.now()
+    if (this.projectionLagLoggedAt && now - this.projectionLagLoggedAt < 3000) return
+    this.projectionLagLoggedAt = now
+    const ecs = this.view.components
+    let withTransform = 0
+    for (const entity of mountSet) {
+      if (ecs.UiTransform.has(entity)) withTransform++
+    }
+    console.warn(
+      `[scene-ui] mount commit deferred — worker=${mountSet.size} projection UiTransform=${withTransform}/${mountSet.size} ` +
+        '(add ?sceneuidebug for yoga/DOM detail)'
+    )
   }
 
   /** ECS projection → Three.js — runs during hydration before the worker loop is marked running. */
@@ -2169,6 +2460,7 @@ export class SceneScriptSystem {
       this.pendingDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
       if (!diff.size) {
         await this.bridge.drainPendingWork()
+        this.syncSceneUiAfterRenderer()
         return
       }
       if (!this.projectionDiffActive) {
@@ -2185,6 +2477,7 @@ export class SceneScriptSystem {
       else await this.bridge.drainPendingWork()
       this.bridge.reconcileBillboardFlags()
       this.flushPointerStructureIfDirty()
+      this.syncSceneUiAfterRenderer(sceneDiff)
       return
     }
 
@@ -2195,6 +2488,7 @@ export class SceneScriptSystem {
     this.pointerStructureDirty = true
     await this.bridge.sync(view)
     this.flushPointerStructureIfDirty()
+    this.applyUiFrame([])
   }
 
   private playReadyNotified = false
@@ -2783,6 +3077,12 @@ export class SceneScriptSystem {
     this.tweenBridge = null
     this.particleBridge?.dispose()
     this.particleBridge = null
+    this.sceneUiBridge?.dispose()
+    this.sceneUiBridge = null
+    this.pendingVirtualCanvas = null
+    this.pendingUiEntities = undefined
+    this.projectionLagPendingUi = false
+    this.projectionLagLoggedAt = 0
     this.avatarAttachBridge?.dispose()
     this.avatarAttachBridge = null
     this.videoPlayerBridge = null
@@ -2796,6 +3096,8 @@ export class SceneScriptSystem {
     this.gltfColliders = null
     this.pointerEvents?.dispose()
     this.pointerEvents = null
+    this.sceneInputRelay?.dispose()
+    this.sceneInputRelay = null
     this.triggerAreas?.dispose()
     this.triggerAreas = null
     this.raycasts?.dispose()

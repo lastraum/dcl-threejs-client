@@ -279,6 +279,27 @@ export class CrdtProjection {
     return buf
   }
 
+  /** Drop decoded rows for entities outside the worker mount set (prevents ghost UiTransform round-trips). */
+  purgeEntitiesOutsideSet(
+    keepEntities: ReadonlySet<Entity>,
+    componentIds: readonly number[],
+    options?: { recordChanges?: boolean }
+  ): void {
+    const recordChanges = options?.recordChanges === true
+    for (const componentId of componentIds) {
+      const map = this.components.get(componentId)
+      if (!map) continue
+      for (const entity of [...map.keys()]) {
+        if (keepEntities.has(entity)) continue
+        map.delete(entity)
+        this.timestamps.get(componentId)?.delete(entity)
+        if (recordChanges) {
+          this.changes.push({ entity, componentId, kind: 'delete' })
+        }
+      }
+    }
+  }
+
   /** Count of distinct non-reserved entities currently carrying a Transform (boot `hasEntities` gate). */
   sceneEntityCount(reserved: ReadonlySet<Entity>): number {
     const map = this.components.get(this.transformId)

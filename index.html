@@ -45,6 +45,71 @@
         position: relative;
         z-index: 1;
       }
+      #scene-ui-root {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        overflow: hidden;
+        pointer-events: none;
+      }
+      .scene-ui-canvas {
+        position: relative;
+        transform-origin: top left;
+        pointer-events: none;
+      }
+      .scene-ui-node {
+        display: flex;
+        box-sizing: border-box;
+        pointer-events: none;
+        isolation: isolate;
+        min-width: 0;
+        min-height: 0;
+      }
+      .scene-ui-node.scene-ui-node--positioned {
+        position: absolute;
+        left: 0;
+        top: 0;
+        margin: 0;
+      }
+      .scene-ui-node__content {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        box-sizing: border-box;
+        min-width: 0;
+        min-height: 0;
+        position: relative;
+      }
+      .scene-ui-node.scene-ui-node--interactive {
+        pointer-events: auto;
+      }
+      .scene-ui-node__bg {
+        pointer-events: none;
+      }
+      .scene-ui-node__text {
+        user-select: none;
+        position: relative;
+        z-index: 2;
+        pointer-events: none;
+      }
+      .scene-ui-node__input {
+        user-select: text;
+        -webkit-user-select: text;
+        position: relative;
+        z-index: 2;
+        cursor: text;
+        pointer-events: auto;
+      }
+      .scene-ui-node__input::placeholder {
+        color: var(--placeholder-color, rgba(128, 128, 128, 0.9));
+      }
+      .scene-ui-node__select {
+        user-select: none;
+        position: relative;
+        z-index: 2;
+        cursor: pointer;
+        pointer-events: auto;
+      }
       .name-tag-layer {
         position: absolute;
         top: 0;
@@ -752,6 +817,12 @@
       .client-sidebar__btn:active {
         transform: scale(0.96);
       }
+      .client-sidebar__btn:disabled,
+      .client-sidebar__btn.is-disabled {
+        opacity: 0.38;
+        cursor: not-allowed;
+        pointer-events: none;
+      }
       .client-sidebar__icon {
         display: grid;
         place-items: center;
@@ -979,6 +1050,12 @@
         .mobile-game-hud__btn.is-active {
           background: rgba(255, 255, 255, 0.14);
           color: #fff;
+        }
+        .mobile-game-hud__btn:disabled,
+        .mobile-game-hud__btn.is-disabled {
+          opacity: 0.38;
+          cursor: not-allowed;
+          pointer-events: none;
         }
         .mobile-game-hud__icon {
           display: grid;

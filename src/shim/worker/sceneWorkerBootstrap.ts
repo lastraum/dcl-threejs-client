@@ -3,12 +3,14 @@ const ctx = self
 
 export type SceneWorkerPriorityMessage =
   | { type: 'inject-pointer-click'; body: unknown }
+  | { type: 'inject-scene-input'; body: unknown }
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
   | { type: 'pause-scene-ticks'; paused?: boolean }
   | { type: 'pause-scene-onupdate'; paused?: boolean }
 
 const PRIORITY_TYPES = new Set([
   'inject-pointer-click',
+  'inject-scene-input',
   'pointer-crdt-deliver',
   'pause-scene-ticks',
   'pause-scene-onupdate'

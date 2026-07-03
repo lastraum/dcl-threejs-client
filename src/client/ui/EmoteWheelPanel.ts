@@ -4,6 +4,8 @@ import type { AvatarProfile } from '../../avatar/types'
 export type EmoteWheelCallbacks = {
   onEmoteSelected?: (emoteId: string, slotIndex: number) => void
   onVisibilityChange?: (visible: boolean) => void
+  /** When false, B / sidebar / mobile emote controls cannot open the wheel. */
+  canOpen?: () => boolean
 }
 
 const SLOT_COUNT = 10
@@ -168,11 +170,11 @@ export class EmoteWheelPanel {
 
   toggle(): void {
     if (this.visible) this.hide()
-    else this.show()
+    else if (this.canOpen()) this.show()
   }
 
   show(): void {
-    if (this.visible) return
+    if (this.visible || !this.canOpen()) return
     if (document.pointerLockElement) document.exitPointerLock()
     this.visible = true
     this.element.hidden = false
@@ -235,8 +237,13 @@ export class EmoteWheelPanel {
     return false
   }
 
+  private canOpen(): boolean {
+    return this.callbacks.canOpen?.() ?? true
+  }
+
   private onKeyDown = (e: KeyboardEvent): void => {
     if (e.code === 'KeyB' && !this.isTyping()) {
+      if (!this.visible && !this.canOpen()) return
       e.preventDefault()
       e.stopPropagation()
       this.toggle()

@@ -67,4 +67,10 @@ export class SidebarButton {
   isActive(): boolean {
     return this.active
   }
+
+  setDisabled(disabled: boolean): void {
+    this.element.disabled = disabled
+    this.element.classList.toggle('is-disabled', disabled)
+    if (disabled) this.setActive(false)
+  }
 }

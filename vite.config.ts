@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import { fileURLToPath } from 'node:url'
+import { patchYogaNbindSource } from './src/shim/vite/yogaNbindFix'
 
 const ARCHIPELAGO_PEERS = 'https://archipelago-ea-stats.decentraland.org/peers'
 const PARCELS_API = 'https://api.decentraland.org/v2/parcels'
@@ -59,7 +60,21 @@ export default defineConfig({
     }
   },
   optimizeDeps: {
-    exclude: ['src/physics/vendor/physx-js-webidl.js']
+    exclude: ['src/physics/vendor/physx-js-webidl.js'],
+    esbuildOptions: {
+      plugins: [
+        {
+          name: 'yoga-nbind-fix-deps',
+          setup(build) {
+            build.onLoad({ filter: /yoga-layout-prebuilt\/.*\/nbind\.js$/ }, async (args) => {
+              const { readFile } = await import('node:fs/promises')
+              const contents = patchYogaNbindSource(await readFile(args.path, 'utf8'))
+              return { contents, loader: 'js' }
+            })
+          }
+        }
+      ]
+    }
   },
   worker: {
     format: 'es',

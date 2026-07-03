@@ -25,6 +25,18 @@ function isGatekeeperSignedFetchUrl(url: string): boolean {
   }
 }
 
+/**
+ * LastSlice camera-operator (RickRoll creator UI) authenticates via POST body wallet + JWT —
+ * not ADR-44 gatekeeper signing. Plain fetch avoids crypto-fetch failures on third-party hosts.
+ */
+function prefersPlainSceneHttpFetch(url: string): boolean {
+  try {
+    return /\.lastslice\.co$/i.test(new URL(url).hostname)
+  } catch {
+    return /\.lastslice\.co/i.test(url)
+  }
+}
+
 function gatekeeperMetadata(context: SignedFetchSceneContext) {
   return {
     signer: 'decentraland-kernel-scene',
@@ -94,15 +106,20 @@ export async function performSignedFetch(
   }
 
   try {
+    const usePlainFetch = prefersPlainSceneHttpFetch(request.url)
     const useGatekeeperMetadata =
-      !!identity && !!sceneContext?.sceneId && isGatekeeperSignedFetchUrl(request.url)
-    const res = identity
-      ? await signedFetch(request.url, {
-          ...fetchInit,
-          identity,
-          ...(useGatekeeperMetadata ? { metadata: gatekeeperMetadata(sceneContext!) } : {})
-        })
-      : await fetch(request.url, fetchInit)
+      !usePlainFetch &&
+      !!identity &&
+      !!sceneContext?.sceneId &&
+      isGatekeeperSignedFetchUrl(request.url)
+    const res =
+      identity && !usePlainFetch
+        ? await signedFetch(request.url, {
+            ...fetchInit,
+            identity,
+            ...(useGatekeeperMetadata ? { metadata: gatekeeperMetadata(sceneContext!) } : {})
+          })
+        : await fetch(request.url, fetchInit)
 
     const body = await res.text()
     return {

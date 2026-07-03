@@ -25,6 +25,8 @@ export type SceneWorkerDebugFlags = {
   messageArrival?: boolean
   /** `?notheatre` — skip Genesis theatre runShowSetup + Scene 11/12 registration. */
   skipTheatre?: boolean
+  /** `?sceneuilog` — throttled worker outbound + main repaint logs for scene UI sync. */
+  sceneUiLog?: boolean
 }
 
 export type SceneWorkerBoot = {
@@ -55,13 +57,21 @@ export type SceneWorkerCrdtRequest = {
   data: Uint8Array
 }
 
-/** Phase C — fire-and-forget worker outbound; main replies via `renderer-inbound-deliver`. */
+/** Phase C — worker outbound; main applies then `crdt-outbound-ack` + `renderer-inbound-deliver`. */
 export type SceneWorkerCrdtOutbound = {
   type: 'crdt-outbound'
   data: Uint8Array
+  /** Correlates with `crdt-outbound-ack` for non-empty payloads (worker awaits before next tick). */
+  id?: number
+  /** Worker engine UiTransform entity ids after this CRDT tick — authoritative mount set for DOM. */
+  uiEntities?: number[]
 }
 
-export type SceneWorkerReady = { type: 'ready' }
+export type SceneWorkerReady = {
+  type: 'ready'
+  /** Initial worker UiTransform mount set — same authority as crdt-outbound.uiEntities. */
+  uiEntities?: number[]
+}
 /** Bundle eval finished — main may start asset hydration while onStart runs. */
 export type SceneWorkerEvalDone = { type: 'eval-done' }
 export type SceneWorkerError = { type: 'error'; message: string }
@@ -189,6 +199,7 @@ export type SceneWorkerOutbound =
   | { type: 'engine-api-unsubscribe'; eventId: string }
   | { type: 'crdt-get-state'; id: number }
   | { type: 'pointer-deliver-done' }
+  | { type: 'ui-virtual-canvas'; width: number; height: number }
 
 export type MainToWorker =
   | SceneWorkerBoot
@@ -228,7 +239,9 @@ export type MainToWorker =
   | { type: 'renderer-append-deliver'; data: Uint8Array[] }
   /** Phase C — main→worker renderer-owned inbound after async outbound apply. */
   | { type: 'renderer-inbound-deliver'; data: Uint8Array[] }
-  | { type: 'inject-pointer-click'; body: InjectPointerClickBody }
+  | { type: 'crdt-outbound-ack'; id: number }
+  | { type: 'inject-pointer-click'; body: InjectPointerClickBody; injectOnly?: boolean }
+  | { type: 'inject-scene-input'; body: import('../player/injectSceneInput').InjectSceneInputBody }
   | { type: 'avatar-attach-transforms'; entries: AvatarAttachTransformEntry[] }
 
 export type CrdtGetStateResponse = {

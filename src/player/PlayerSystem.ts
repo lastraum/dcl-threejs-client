@@ -39,6 +39,7 @@ import {
   threeToDclVec,
   threeYawToDclYaw
 } from '../bridge/dclTransform'
+import type { SceneKeyboardSnapshot } from '../input/SceneInputRelay'
 import { PlayerInput } from './PlayerInput'
 import type { AssetCache } from '../rendering/AssetCache'
 import type { ResolvedProfileEmote } from '../avatar/profileEmotes'
@@ -164,6 +165,7 @@ export class PlayerSystem {
     this.readComponents = readComponents
     this.walkBounds = walkBounds
     this.input = new PlayerInput(this.host.renderer.domElement)
+    this.input.setLocomotionBlocked(() => !canLocomote(this.getLocomotionConfig()))
     const feetY = spawn.fromSpawnPoints
       ? spawn.y
       : spawn.y <= 0.01
@@ -321,6 +323,35 @@ export class PlayerSystem {
     return this.input?.orbiting ?? false
   }
 
+  getSceneKeyboardSnapshot(): SceneKeyboardSnapshot {
+    return (
+      this.input?.getSceneKeyboardSnapshot() ?? {
+        forward: false,
+        backward: false,
+        left: false,
+        right: false,
+        jump: false,
+        ctrl: false,
+        action3: false,
+        action4: false,
+        action5: false,
+        action6: false
+      }
+    )
+  }
+
+  isSceneRelayBlocked(): boolean {
+    return this.input?.isSceneRelayBlocked() ?? true
+  }
+
+  isLocomotionBlocked(): boolean {
+    return !canLocomote(this.getLocomotionConfig())
+  }
+
+  clearMoveKeys(): void {
+    this.input?.clearMovementKeys()
+  }
+
   cancelCameraPointer(): void {
     this.input?.cancelCameraPointer()
   }
@@ -445,6 +476,9 @@ export class PlayerSystem {
 
     const locomotion = this.getLocomotionConfig()
     const locomotionAllowed = canLocomote(locomotion)
+    if (!locomotionAllowed) {
+      this.input.clearMovementKeys()
+    }
     const jumpLocomotionAllowed = canJumpLocomotion(locomotion)
     const doubleJumpLocomotionAllowed = canDoubleJumpLocomotion(locomotion)
 

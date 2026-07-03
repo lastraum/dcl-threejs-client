@@ -17,6 +17,15 @@ import { PointerHoverFeedback } from './PointerHoverFeedback'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { findPeerPillAtPointer, tryOpenPeerContextMenu } from '../client/ui/overlayHitTest'
 import type { InjectPointerClickBody } from '../player/injectPointerClick'
+import {
+  collectUiPointerResultTargets,
+  hasUiPointerEvent,
+  resolveUiPointerResultEntity
+} from '../ui/scene/uiPointer'
+import { isPointerOverSceneUi, isSceneUiDomTarget } from '../ui/scene/sceneUiOverlay'
+import { isSceneUiFieldDom, isSceneUiTypingFocus } from '../ui/scene/sceneUiTyping'
+import { nextPointerEventTimestamp } from './pointerEventTimestamp'
+
 
 export type PointerHit = {
   entity: Entity
@@ -28,6 +37,8 @@ export type PointerHit = {
   cameraDistance: number
   playerDistance: number
   inRange: boolean
+  /** Screen-space ECS UI — skip 3D distance checks. */
+  isSceneUi?: boolean
 }
 
 type PointerDeps = {
@@ -43,6 +54,14 @@ type PointerDeps = {
   prepareRaycast?: () => void
   /** Source-capture each PointerEventsResult append for the outbound CrdtEncoder. */
   recordAppend?: (componentId: number, entity: Entity, value: unknown) => void
+  /** Scene UI click — DOM overlay (`#scene-ui-root`) → entity → worker inject. */
+  pickUiHit?: (clientX: number, clientY: number, target?: EventTarget | null) => PointerHit | null
+  /** SceneUiInputController — UiInput / UiDropdown clicks must not become ECS pointer events. */
+  consumeSceneUiFieldPointer?: (clientX: number, clientY: number, target: EventTarget | null) => boolean
+  isSceneUiFieldEntity?: (entity: Entity) => boolean
+  isSceneUiTypingActive?: () => boolean
+  /** Interactive scene UI at coords — blocks 3D raycast when over the DOM overlay. */
+  pickUiRegionHit?: (clientX: number, clientY: number) => PointerHit | null
 }
 
 const _ray = new THREE.Ray()
@@ -75,10 +94,10 @@ export class PointerEventsSystem {
   private hoverEntity: Entity | null = null
   private lastHit: PointerHit | null = null
   private readonly downEntityByButton = new Map<InputActionValue, Entity>()
-  private timestamp = 1
   private tickNumber = 0
   private readonly downTimestampByButton = new Map<InputActionValue, number>()
   private pendingInjectPayload: InjectPointerClickBody | null = null
+  private readonly uiPointerButtons = new Set<InputActionValue>()
 
   private lastPrimaryInfoKey = ''
 
@@ -90,6 +109,9 @@ export class PointerEventsSystem {
     // Capture pointerdown before PlayerInput sets orbiting on bubble-phase pointerdown.
     this.canvas.addEventListener('pointerdown', this.onPointerDown, PointerEventsSystem.captureMouse)
     window.addEventListener('pointerup', this.onPointerUp, PointerEventsSystem.captureMouse)
+    window.addEventListener('pointerdown', this.onWindowUiPointerDown, PointerEventsSystem.captureMouse)
+    window.addEventListener('pointerup', this.onWindowUiPointerUp, PointerEventsSystem.captureMouse)
+    document.addEventListener('pointermove', this.onDocumentPointerMove, PointerEventsSystem.captureMouse)
     window.addEventListener('keydown', this.onKeyDown)
     window.addEventListener('keyup', this.onKeyUp)
     this.screenX = window.innerWidth * 0.5
@@ -100,6 +122,9 @@ export class PointerEventsSystem {
     this.canvas.removeEventListener('mousemove', this.onMouseMove)
     this.canvas.removeEventListener('pointerdown', this.onPointerDown, PointerEventsSystem.captureMouse)
     window.removeEventListener('pointerup', this.onPointerUp, PointerEventsSystem.captureMouse)
+    window.removeEventListener('pointerdown', this.onWindowUiPointerDown, PointerEventsSystem.captureMouse)
+    window.removeEventListener('pointerup', this.onWindowUiPointerUp, PointerEventsSystem.captureMouse)
+    document.removeEventListener('pointermove', this.onDocumentPointerMove, PointerEventsSystem.captureMouse)
     window.removeEventListener('keydown', this.onKeyDown)
     window.removeEventListener('keyup', this.onKeyUp)
     this.hoverFeedback.dispose()
@@ -165,7 +190,7 @@ export class PointerEventsSystem {
     const hit = this.computeCurrentHit()
     this.lastHit = hit
 
-    if (!this.pointerEntitySet.size || !hit) {
+    if (!hit) {
       this.hoverFeedback.hide()
       this.highlightFeedback.clear()
       this.screenDx = 0
@@ -182,6 +207,11 @@ export class PointerEventsSystem {
 
   private applyHoverFromHit(hit: PointerHit): void {
     if (!this.deps) return
+    if (hit.isSceneUi) {
+      this.hoverFeedback.hide()
+      this.highlightFeedback.clear()
+      return
+    }
     const { ecs } = this.deps
     const targetEntity = this.resolvePointerResultEntity(hit.entity, InputAction.IA_POINTER)
     const spec = ecs.PointerEvents.getOrNull(targetEntity)
@@ -220,7 +250,7 @@ export class PointerEventsSystem {
     this.tickNumber = tickNumber
     this.rebuildPointerCacheIfNeeded()
 
-    const hit = this.pointerEntitySet.size ? this.computeCurrentHit() : null
+    const hit = this.computeCurrentHit()
     this.lastHit = hit
 
     if (processPendingDown) {
@@ -237,15 +267,14 @@ export class PointerEventsSystem {
       this.pendingPointerUp.clear()
     }
 
-    if (!this.pointerEntitySet.size) {
+    this.syncPrimaryPointerInfo(camera, hit)
+
+    if (!hit) {
       this.clearHoverIfNeeded(ecs)
-      this.syncPrimaryPointerInfo(camera, null)
       return
     }
 
-    this.syncPrimaryPointerInfo(camera, hit)
-
-    const nextHover = hit ? this.resolvePointerResultEntity(hit.entity, InputAction.IA_POINTER) : null
+    const nextHover = this.resolveHoverEntity(hit)
     if (nextHover !== this.hoverEntity) {
       if (this.hoverEntity !== null) {
         this.emitHover(ecs, this.hoverEntity, PointerEventType.PET_HOVER_LEAVE, hit)
@@ -258,7 +287,12 @@ export class PointerEventsSystem {
   }
 
   private computeCurrentHit(): PointerHit | null {
-    if (!this.deps || !this.pointerEntitySet.size) return null
+    if (!this.deps) return null
+
+    const uiRegionHit = this.deps.pickUiRegionHit?.(this.screenX, this.screenY)
+    if (uiRegionHit) return uiRegionHit
+
+    if (!this.pointerEntitySet.size) return null
     this.deps.prepareRaycast?.()
     this.rebuildPointerCacheIfNeeded()
     const { collision, camera, getPlayerPosition } = this.deps
@@ -287,9 +321,24 @@ export class PointerEventsSystem {
     this.pointerDirty = true
   }
 
+  private onDocumentPointerMove = (e: PointerEvent): void => {
+    if (!isSceneUiDomTarget(e.target)) return
+    this.screenX = e.clientX
+    this.screenY = e.clientY
+    this.pointerDirty = true
+  }
+
   private onPointerDown = (e: PointerEvent): void => {
     if (!this.deps) return
     if (e.target !== this.canvas) return
+    if (isPointerOverSceneUi(e.clientX, e.clientY)) {
+      e.stopPropagation()
+      return
+    }
+    if (this.deps.consumeSceneUiFieldPointer?.(e.clientX, e.clientY, e.target)) {
+      e.stopPropagation()
+      return
+    }
     if (this.isTypingTarget()) return
     if (this.deps.isPointerBlocked()) return
     if (e.button === 2) {
@@ -334,15 +383,62 @@ export class PointerEventsSystem {
     if (!this.deps) return
     const button = mouseButtonToInputAction(e.button)
     if (!this.downEntityByButton.has(button)) return
+    if (this.uiPointerButtons.has(button)) return
     this.pendingPointerUp.add(button)
     console.log('[pointer]', `mouseup → flush entity=${this.downEntityByButton.get(button)} button=${button}`)
+    this.deps.flushPointerCrdt?.()
+  }
+
+  private onWindowUiPointerDown = (e: PointerEvent): void => {
+    if (!this.deps?.pickUiHit) return
+    // Left-drag orbit — never hijack canvas clicks without an interactive scene-ui node.
+    if (!isPointerOverSceneUi(e.clientX, e.clientY)) return
+    if (this.deps.consumeSceneUiFieldPointer?.(e.clientX, e.clientY, e.target)) {
+      if (!(e.target instanceof Element) || !isSceneUiFieldDom(e.target)) e.stopPropagation()
+      return
+    }
+    if (this.isTypingTarget() || this.deps.isSceneUiTypingActive?.()) return
+    if (this.deps.isPointerBlocked()) return
+
+    const hit = this.deps.pickUiHit(e.clientX, e.clientY, e.target)
+    const button = mouseButtonToInputAction(e.button)
+    if (!hit) {
+      if (isSceneUiDomTarget(e.target)) e.stopPropagation()
+      return
+    }
+    if (!this.canQueuePointerDown(button, hit)) {
+      if (isSceneUiDomTarget(e.target)) e.stopPropagation()
+      return
+    }
+
+    e.stopPropagation()
+    const targetEntity = this.resolvePointerResultEntity(hit.entity, button)
+    this.uiPointerButtons.add(button)
+    this.downEntityByButton.set(button, targetEntity)
+    this.pendingPointerDown.set(button, hit)
+    if (button === InputAction.IA_POINTER) {
+      clientDebugLog.log('pointer', `ui down → entity ${targetEntity}`, { alsoConsole: true })
+    }
+  }
+
+  private onWindowUiPointerUp = (e: PointerEvent): void => {
+    if (!this.deps) return
+    const button = mouseButtonToInputAction(e.button)
+    if (!this.uiPointerButtons.has(button)) return
+    if (!this.downEntityByButton.has(button)) {
+      this.uiPointerButtons.delete(button)
+      return
+    }
+    this.pendingPointerUp.add(button)
+    this.uiPointerButtons.delete(button)
     this.deps.flushPointerCrdt?.()
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {
     if (e.repeat) return
     if (!this.deps) return
-    if (this.isTypingTarget()) return
+    if (this.isTypingTarget() || this.deps.isSceneUiTypingActive?.()) return
+    if (this.isPointerOverSceneUiField()) return
     if (this.deps.isPointerBlocked()) return
 
     const binding = keyCodeToInputActionBinding(e.code)
@@ -435,8 +531,18 @@ export class PointerEventsSystem {
     if (!activeHit) return
 
     const targetEntity = this.resolvePointerResultEntity(activeHit.entity, button)
+    if (
+      this.deps.isSceneUiFieldEntity?.(targetEntity) ||
+      this.deps.isSceneUiFieldEntity?.(activeHit.entity)
+    ) {
+      return
+    }
     const spec = this.deps.ecs.PointerEvents.getOrNull(targetEntity)
-    if (!hasPointerEvent(spec, PointerEventType.PET_DOWN, button)) return
+    if (activeHit.isSceneUi) {
+      if (!hasUiPointerEvent(spec, PointerEventType.PET_DOWN, button)) return
+    } else if (!hasPointerEvent(spec, PointerEventType.PET_DOWN, button)) {
+      return
+    }
     if (!this.hitAllowsPointerDown(spec, button, activeHit)) return
 
     this.downEntityByButton.set(button, targetEntity)
@@ -462,6 +568,9 @@ export class PointerEventsSystem {
     if (!this.deps || !hit) return false
     const targetEntity = this.resolvePointerResultEntity(hit.entity, button)
     const spec = this.deps.ecs.PointerEvents.getOrNull(targetEntity)
+    if (hit.isSceneUi) {
+      return hasUiPointerEvent(spec, PointerEventType.PET_DOWN, button)
+    }
     if (!hasPointerEvent(spec, PointerEventType.PET_DOWN, button)) return false
     return pointerEventInRange(spec, PointerEventType.PET_DOWN, button, hit)
   }
@@ -469,8 +578,11 @@ export class PointerEventsSystem {
   private hitAllowsPointerDown(
     spec: { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> } | null | undefined,
     button: InputActionValue,
-    hit: Pick<PointerHit, 'cameraDistance' | 'playerDistance'>
+    hit: Pick<PointerHit, 'cameraDistance' | 'playerDistance' | 'isSceneUi'>
   ): boolean {
+    if (hit.isSceneUi) {
+      return hasUiPointerEvent(spec, PointerEventType.PET_DOWN, button)
+    }
     return pointerEventInRange(spec, PointerEventType.PET_DOWN, button, hit)
   }
 
@@ -506,8 +618,17 @@ export class PointerEventsSystem {
     this.deps.camera.getWorldPosition(_camPos)
 
     const spec = this.deps.ecs.PointerEvents.getOrNull(downEntity)
+    const isSceneUi = this.deps.ecs.UiTransform.has(downEntity)
     // onClick registers PET_DOWN only — renderer must still emit PET_UP (Unity / @dcl/ecs parity).
-    if (
+    if (isSceneUi) {
+      if (
+        !spec ||
+        (!hasUiPointerEvent(spec, PointerEventType.PET_UP, button) &&
+          !hasUiPointerEvent(spec, PointerEventType.PET_DOWN, button))
+      ) {
+        return false
+      }
+    } else if (
       !spec ||
       (!hasPointerEvent(spec, PointerEventType.PET_UP, button) &&
         !hasPointerEvent(spec, PointerEventType.PET_DOWN, button))
@@ -521,13 +642,15 @@ export class PointerEventsSystem {
     const upHit: PointerHit =
       activeHit && activeTarget === downEntity
         ? activeHit
-        : buildSyntheticHit(
-            this.deps.ecs,
-            downEntity,
-            _camPos,
-            this.deps.getPlayerPosition(),
-            this.deps.getEntityNodes()
-          )
+        : this.deps.ecs.UiTransform.has(downEntity)
+          ? this.buildUiPointerHit(downEntity, _camPos)
+          : buildSyntheticHit(
+              this.deps.ecs,
+              downEntity,
+              _camPos,
+              this.deps.getPlayerPosition(),
+              this.deps.getEntityNodes()
+            )
 
     this.writeResult(this.deps.ecs, downEntity, upHit, PointerEventType.PET_UP, button)
     return true
@@ -539,11 +662,28 @@ export class PointerEventsSystem {
 
   private pickAtPointer(): PointerHit | null {
     if (!this.deps) return null
+    const uiRegionHit = this.deps.pickUiRegionHit?.(this.screenX, this.screenY)
+    if (uiRegionHit) return uiRegionHit
     this.deps.prepareRaycast?.()
     this.rebuildPointerCacheIfNeeded()
     const ray = this.computePointerRay(this.deps.camera)
     this.deps.camera.getWorldPosition(_camPos)
     return this.pickPointerHit(this.deps.collision, ray, _camPos, this.deps.getPlayerPosition())
+  }
+
+  private resolveHoverEntity(hit: PointerHit): Entity | null {
+    if (!this.deps) return null
+    const { ecs, view } = this.deps
+    const button = InputAction.IA_POINTER
+    const state = PointerEventType.PET_HOVER_ENTER
+    if (hit.isSceneUi) {
+      const target = resolveUiPointerResultEntity(ecs, view, hit.entity, button, state)
+      const spec = ecs.PointerEvents.getOrNull(target)
+      return hasUiPointerEvent(spec, state, button) ? target : null
+    }
+    const target = this.resolvePointerResultEntity(hit.entity, button, state)
+    const spec = ecs.PointerEvents.getOrNull(target)
+    return hasPointerEvent(spec, state, button) ? target : null
   }
 
   private computePointerRay(camera: THREE.Camera): THREE.Ray {
@@ -834,7 +974,12 @@ export class PointerEventsSystem {
     if (!spec) return
 
     const button = hoverButtonForSpec(spec, state)
-    if (!hasPointerEvent(spec, state, button)) return
+    const isUi = ecs.UiTransform.has(entity)
+    if (isUi) {
+      if (!hasUiPointerEvent(spec, state, button)) return
+    } else if (!hasPointerEvent(spec, state, button)) {
+      return
+    }
 
     const syntheticHit: PointerHit =
       hit ??
@@ -863,6 +1008,20 @@ export class PointerEventsSystem {
    * Prefer topmost ancestor with matching PointerEvents — asset-packs registers onPointerDown
    * on the Triggers entity (often parent) while the raycast hits a child MeshCollider.
    */
+  private buildUiPointerHit(entity: Entity, cameraPos: THREE.Vector3): PointerHit {
+    return {
+      entity,
+      point: cameraPos.clone(),
+      distance: 0,
+      normal: new THREE.Vector3(0, 1, 0),
+      priority: 0,
+      cameraDistance: 0,
+      playerDistance: 0,
+      inRange: true,
+      isSceneUi: true
+    }
+  }
+
   private resolvePointerResultEntity(
     entity: Entity,
     button: InputActionValue,
@@ -870,6 +1029,9 @@ export class PointerEventsSystem {
   ): Entity {
     if (!this.deps) return entity
     const { ecs, view } = this.deps
+    if (ecs.UiTransform.has(entity)) {
+      return resolveUiPointerResultEntity(ecs, view, entity, button, state)
+    }
     const { RootEntity: Root, PlayerEntity: Player, CameraEntity: Camera } = view
     let current: Entity = entity
     let best: Entity | null = null
@@ -898,6 +1060,9 @@ export class PointerEventsSystem {
   ): Entity[] {
     if (!this.deps) return [entity]
     const { ecs, view } = this.deps
+    if (ecs.UiTransform.has(entity)) {
+      return collectUiPointerResultTargets(ecs, view, entity, button, state)
+    }
     const { RootEntity: Root, PlayerEntity: Player, CameraEntity: Camera } = view
     const targets: Entity[] = []
     let current: Entity = entity
@@ -926,12 +1091,13 @@ export class PointerEventsSystem {
     const result: PBPointerEventsResult = {
       button,
       state,
-      timestamp: this.timestamp++,
+      timestamp: nextPointerEventTimestamp(),
       tickNumber: this.tickNumber,
       hit: buildRaycastHit(hit),
       analog: undefined
     }
-    const targets = this.collectPointerResultTargets(targetEntity, button, state)
+    const bubbleFrom = hit.isSceneUi ? hit.entity : targetEntity
+    const targets = this.collectPointerResultTargets(bubbleFrom, button, state)
     for (const entity of targets) {
       ecs.PointerEventsResult.addValue(entity, result)
       this.deps?.recordAppend?.(ecs.PointerEventsResult.componentId, entity, result)
@@ -993,7 +1159,15 @@ export class PointerEventsSystem {
     ecs.PrimaryPointerInfo.createOrReplace(view.RootEntity, info)
   }
 
+  /** Crosshair over UiInput / UiDropdown — never route E/F/etc. as ECS pointer keys. */
+  private isPointerOverSceneUiField(): boolean {
+    if (!this.deps?.pickUiRegionHit || !this.deps.isSceneUiFieldEntity) return false
+    const hit = this.deps.pickUiRegionHit(this.screenX, this.screenY)
+    return hit !== null && this.deps.isSceneUiFieldEntity(hit.entity)
+  }
+
   private isTypingTarget(): boolean {
+    if (isSceneUiTypingFocus()) return true
     const el = document.activeElement
     if (!el || el === this.canvas) return false
     if (el instanceof HTMLElement && !isVisibleTypingElement(el)) return false

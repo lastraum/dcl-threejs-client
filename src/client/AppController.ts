@@ -413,6 +413,10 @@ export class AppController {
     })
     this.mobileHud.setShellVisible(true)
     this.shell.setOnEmoteWheelVisibility((visible) => this.mobileHud?.setEmoteActive(visible))
+    world.setVoluntaryEmoteAllowedHandler((allowed) => {
+      this.shell?.setEmoteWheelEnabled(allowed)
+      this.mobileHud?.setEmoteEnabled(allowed)
+    })
 
     const address = world.session.getAddress()
     const profile = world.session.getProfile()
@@ -454,6 +458,7 @@ export class AppController {
   }
 
   private async teardownScene(): Promise<void> {
+    this.world?.setVoluntaryEmoteAllowedHandler(null)
     this.editorApp?.dispose()
     this.editorApp = null
     this.profileUi?.dispose()

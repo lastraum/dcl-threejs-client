@@ -6,12 +6,20 @@ import type {
   TerrainSplatChannel
 } from '../terrain/terrainSculptConstants'
 import {
+  EDITOR_AVATAR_SCALE_MAX_PER_PARCEL,
+  EDITOR_AVATAR_SCALE_MIN_PER_PARCEL,
+  formatAvatarScaleCountLabel,
+  type AvatarScalePlacementPlan
+} from '../EditorAvatarScaleGuides'
+import {
   TERRAIN_BIOME_COLORS,
   TERRAIN_BRUSH_RADIUS_MAX_M,
   TERRAIN_BRUSH_RADIUS_MIN_M,
   TERRAIN_EXPORT_SEGMENT_PRESETS,
   TERRAIN_SPLAT_CHANNEL_LABELS,
-  TERRAIN_SPLAT_PAINT_UI_ORDER
+  TERRAIN_SPLAT_PAINT_UI_ORDER,
+  terrainColorFromHex,
+  terrainColorToHex
 } from '../terrain/terrainSculptConstants'
 
 export class TerrainSculptPanel {
@@ -31,8 +39,19 @@ export class TerrainSculptPanel {
   private rockFromInput: HTMLInputElement | null = null
   private rockToInput: HTMLInputElement | null = null
   private rockBlendInput: HTMLInputElement | null = null
-  private shoreSandCb: HTMLInputElement | null = null
+  private waterColorInput: HTMLInputElement | null = null
+  private waterFromInput: HTMLInputElement | null = null
+  private waterToInput: HTMLInputElement | null = null
+  private waterBlendInput: HTMLInputElement | null = null
+  private sandColorInput: HTMLInputElement | null = null
+  private grassColorInput: HTMLInputElement | null = null
+  private rockColorInput: HTMLInputElement | null = null
   private maxHeightGuideCb: HTMLInputElement | null = null
+  private gridCb: HTMLInputElement | null = null
+  private avatarScaleGuidesCb: HTMLInputElement | null = null
+  private avatarScaleCountSlider: HTMLInputElement | null = null
+  private avatarScaleCountValue: HTMLSpanElement | null = null
+  private avatarScaleCapNote: HTMLDivElement | null = null
   private brushRadiusSlider: HTMLInputElement | null = null
   private brushRadiusValue: HTMLSpanElement | null = null
   private brushStrengthSlider: HTMLInputElement | null = null
@@ -52,6 +71,13 @@ export class TerrainSculptPanel {
       setProceduralShading?: (patch: Partial<TerrainProceduralShading>) => void
       getMaxHeightGuideVisible?: () => boolean
       setMaxHeightGuideVisible?: (visible: boolean) => void
+      getAvatarScaleGuidesVisible?: () => boolean
+      setAvatarScaleGuidesVisible?: (visible: boolean) => void
+      getGridVisible?: () => boolean
+      setGridVisible?: (visible: boolean) => void
+      getAvatarScaleGuidesCount?: () => number
+      getAvatarScaleGuidesPlan?: () => AvatarScalePlacementPlan | undefined
+      setAvatarScaleGuidesCount?: (count: number) => void
     }
   ) {
     this.host = document.createElement('div')
@@ -65,7 +91,7 @@ export class TerrainSculptPanel {
 
     const hint = document.createElement('div')
     hint.textContent =
-      'WASD move · Q/E height · Shift sprint · right-drag orbit · scroll zoom · left-drag sculpt/paint · G max height · Cmd/Ctrl+Z undo'
+      'WASD move · Space up · Shift down · Q/E rotate · Alt sprint · right-drag orbit · scroll zoom · left-drag sculpt/paint · G max height · B avatar scale · Cmd/Ctrl+Z undo'
     hint.className = 'editor-sculpt-hint'
     this.host.appendChild(hint)
 
@@ -112,8 +138,36 @@ export class TerrainSculptPanel {
     if (this.maxHeightGuideCb) this.maxHeightGuideCb.checked = checked
   }
 
+  setAvatarScaleGuidesChecked(checked: boolean): void {
+    if (this.avatarScaleGuidesCb) this.avatarScaleGuidesCb.checked = checked
+  }
+
+  setAvatarScaleGuidesCount(count: number, plan?: AvatarScalePlacementPlan): void {
+    if (this.avatarScaleCountSlider) {
+      this.avatarScaleCountSlider.value = String(count)
+    }
+    if (this.avatarScaleCountValue) {
+      this.avatarScaleCountValue.textContent = formatAvatarScaleCountLabel(count, plan)
+    }
+  }
+
+  setGridChecked(checked: boolean): void {
+    if (this.gridCb) this.gridCb.checked = checked
+  }
+
+  setAvatarScaleCapNote(capped: boolean): void {
+    if (this.avatarScaleCapNote) {
+      this.avatarScaleCapNote.hidden = !capped
+    }
+  }
+
   private addViewportControls(): void {
-    if (!this.refApi?.getMaxHeightGuideVisible || !this.refApi.setMaxHeightGuideVisible) return
+    const hasMaxHeight =
+      this.refApi?.getMaxHeightGuideVisible && this.refApi.setMaxHeightGuideVisible
+    const hasGrid = this.refApi?.getGridVisible && this.refApi.setGridVisible
+    const hasAvatarScale =
+      this.refApi?.getAvatarScaleGuidesVisible && this.refApi.setAvatarScaleGuidesVisible
+    if (!hasMaxHeight && !hasGrid && !hasAvatarScale) return
 
     const wrap = document.createElement('div')
     wrap.className = 'editor-sculpt-viewport-box'
@@ -123,17 +177,77 @@ export class TerrainSculptPanel {
     title.className = 'editor-sculpt-shading-title'
     wrap.appendChild(title)
 
-    const row = document.createElement('label')
-    row.className = 'editor-sculpt-check'
-    this.maxHeightGuideCb = document.createElement('input')
-    this.maxHeightGuideCb.type = 'checkbox'
-    this.maxHeightGuideCb.checked = this.refApi.getMaxHeightGuideVisible()
-    this.maxHeightGuideCb.addEventListener('change', () => {
-      this.refApi!.setMaxHeightGuideVisible!(this.maxHeightGuideCb!.checked)
-    })
-    row.appendChild(this.maxHeightGuideCb)
-    row.append(' Max height guide (axis → peak) — G')
-    wrap.appendChild(row)
+    if (hasMaxHeight) {
+      const row = document.createElement('label')
+      row.className = 'editor-sculpt-check'
+      this.maxHeightGuideCb = document.createElement('input')
+      this.maxHeightGuideCb.type = 'checkbox'
+      this.maxHeightGuideCb.checked = this.refApi!.getMaxHeightGuideVisible!()
+      this.maxHeightGuideCb.addEventListener('change', () => {
+        this.refApi!.setMaxHeightGuideVisible!(this.maxHeightGuideCb!.checked)
+      })
+      row.appendChild(this.maxHeightGuideCb)
+      row.append(' Max height guide (axis → peak) — G')
+      wrap.appendChild(row)
+    }
+
+    if (hasGrid) {
+      const row = document.createElement('label')
+      row.className = 'editor-sculpt-check'
+      this.gridCb = document.createElement('input')
+      this.gridCb.type = 'checkbox'
+      this.gridCb.checked = this.refApi!.getGridVisible!()
+      this.gridCb.addEventListener('change', () => {
+        this.refApi!.setGridVisible!(this.gridCb!.checked)
+      })
+      row.appendChild(this.gridCb)
+      row.append(' Parcel grid (1 m)')
+      wrap.appendChild(row)
+    }
+
+    if (hasAvatarScale) {
+      const row = document.createElement('label')
+      row.className = 'editor-sculpt-check'
+      this.avatarScaleGuidesCb = document.createElement('input')
+      this.avatarScaleGuidesCb.type = 'checkbox'
+      this.avatarScaleGuidesCb.checked = this.refApi!.getAvatarScaleGuidesVisible!()
+      this.avatarScaleGuidesCb.addEventListener('change', () => {
+        this.refApi!.setAvatarScaleGuidesVisible!(this.avatarScaleGuidesCb!.checked)
+      })
+      row.appendChild(this.avatarScaleGuidesCb)
+      row.append(' BaseMale mannequins — B')
+      wrap.appendChild(row)
+
+      const initialCount = this.refApi!.getAvatarScaleGuidesCount?.() ?? 16
+      const countRow = this.sliderRow(
+        'Mannequins per parcel',
+        EDITOR_AVATAR_SCALE_MIN_PER_PARCEL,
+        EDITOR_AVATAR_SCALE_MAX_PER_PARCEL,
+        initialCount,
+        (v) => {
+          this.refApi!.setAvatarScaleGuidesCount?.(Math.round(v))
+        },
+        1,
+        formatAvatarScaleCountLabel
+      )
+      this.avatarScaleCountSlider = countRow.querySelector('input') as HTMLInputElement
+      this.avatarScaleCountValue = countRow.querySelector('span') as HTMLSpanElement
+      if (this.avatarScaleCountValue) {
+        this.avatarScaleCountValue.textContent = formatAvatarScaleCountLabel(
+          initialCount,
+          this.refApi!.getAvatarScaleGuidesPlan?.()
+        )
+      }
+      wrap.appendChild(countRow)
+
+      this.avatarScaleCapNote = document.createElement('div')
+      this.avatarScaleCapNote.className = 'editor-sculpt-hint'
+      this.avatarScaleCapNote.hidden = true
+      this.avatarScaleCapNote.textContent =
+        'Large scene: mannequin count capped for performance (max 8k instances).'
+      wrap.appendChild(this.avatarScaleCapNote)
+    }
+
     this.host.appendChild(wrap)
   }
 
@@ -150,7 +264,7 @@ export class TerrainSculptPanel {
 
     const note = document.createElement('div')
     note.textContent =
-      'Procedural sand/grass/rock where splat paint is empty. Set Y from/to bands (m) and blend width per biome. Water line Y=5 m.'
+      'Procedural biomes use height Y (m). Water To = surface for shading + “to water” sculpt. Splat paint overrides empty areas.'
     note.className = 'editor-sculpt-shading-note'
     wrap.appendChild(note)
 
@@ -159,39 +273,34 @@ export class TerrainSculptPanel {
     this.shadingLegendEl = legend
     wrap.appendChild(legend)
 
-    const shoreRow = document.createElement('label')
-    shoreRow.className = 'editor-sculpt-check'
-    this.shoreSandCb = document.createElement('input')
-    this.shoreSandCb.type = 'checkbox'
-    this.shoreSandCb.checked = this.refApi.getProceduralShading().sandEnabled
-    this.shoreSandCb.addEventListener('change', () => {
-      this.refApi!.setProceduralShading!({ sandEnabled: this.shoreSandCb!.checked })
-      this.updateShadingLegendText()
-    })
-    shoreRow.appendChild(this.shoreSandCb)
-    shoreRow.append(' Shore sand strip')
-    wrap.appendChild(shoreRow)
-
     const shading = this.refApi.getProceduralShading()
     wrap.appendChild(
-      this.biomeShadingSection('Sand (Y m)', TERRAIN_BIOME_COLORS.sand, {
+      this.biomeShadingSection('Water', 'waterColor', shading.waterColor, {
+        from: { value: shading.waterFromY, min: -2, max: 40, step: 0.1, key: 'waterFromY' },
+        to: { value: shading.waterToY, min: -2, max: 40, step: 0.1, key: 'waterToY' },
+        blend: { value: shading.waterBlendM, min: 0.1, max: 12, step: 0.05, key: 'waterBlendM', unit: 'm' }
+      })
+    )
+
+    wrap.appendChild(
+      this.biomeShadingSection('Sand', 'sandColor', shading.sandColor, {
         from: { value: shading.sandFromY, min: -2, max: 40, step: 0.1, key: 'sandFromY' },
         to: { value: shading.sandToY, min: -2, max: 40, step: 0.1, key: 'sandToY' },
         blend: { value: shading.sandBlendM, min: 0.1, max: 12, step: 0.05, key: 'sandBlendM', unit: 'm' }
       })
     )
     wrap.appendChild(
-      this.biomeShadingSection('Grass (Y m)', TERRAIN_BIOME_COLORS.grass, {
+      this.biomeShadingSection('Grass', 'grassColor', shading.grassColor, {
         from: { value: shading.grassFromY, min: -2, max: 120, step: 0.1, key: 'grassFromY' },
         to: { value: shading.grassToY, min: 0, max: 120, step: 0.5, key: 'grassToY' },
         blend: { value: shading.grassBlendM, min: 0.1, max: 16, step: 0.05, key: 'grassBlendM', unit: 'm' }
       })
     )
     wrap.appendChild(
-      this.biomeShadingSection('Rock (slope)', TERRAIN_BIOME_COLORS.rock, {
-        from: { value: shading.rockSlopeFrom, min: 0, max: 1, step: 0.01, key: 'rockSlopeFrom' },
-        to: { value: shading.rockSlopeTo, min: 0, max: 1, step: 0.01, key: 'rockSlopeTo' },
-        blend: { value: shading.rockBlend, min: 0.02, max: 0.45, step: 0.01, key: 'rockBlend', unit: 'slope' }
+      this.biomeShadingSection('Rock', 'rockColor', shading.rockColor, {
+        from: { value: shading.rockFromY, min: 0, max: 120, step: 0.5, key: 'rockFromY' },
+        to: { value: shading.rockToY, min: 0, max: 120, step: 0.5, key: 'rockToY' },
+        blend: { value: shading.rockBlendM, min: 0.1, max: 16, step: 0.05, key: 'rockBlendM', unit: 'm' }
       })
     )
 
@@ -203,18 +312,58 @@ export class TerrainSculptPanel {
     if (!this.shadingLegendEl || !this.refApi?.getProceduralShading) return
     const s = this.refApi.getProceduralShading()
     this.shadingLegendEl.innerHTML = `
-      <span class="editor-sculpt-legend-chip" style="background:#${TERRAIN_BIOME_COLORS.sand.toString(16).padStart(6, '0')}">Sand</span>
+      <span class="editor-sculpt-legend-chip" style="background:${terrainColorToHex(s.waterColor)}">Water</span>
+      <span>Y ${s.waterFromY.toFixed(1)}–${s.waterToY.toFixed(1)} ±${s.waterBlendM.toFixed(1)}m</span>
+      <span class="editor-sculpt-legend-chip" style="background:${terrainColorToHex(s.sandColor)}">Sand</span>
       <span>Y ${s.sandFromY.toFixed(1)}–${s.sandToY.toFixed(1)} ±${s.sandBlendM.toFixed(1)}m</span>
-      <span class="editor-sculpt-legend-chip" style="background:#${TERRAIN_BIOME_COLORS.grass.toString(16).padStart(6, '0')}">Grass</span>
+      <span class="editor-sculpt-legend-chip" style="background:${terrainColorToHex(s.grassColor)}">Grass</span>
       <span>Y ${s.grassFromY.toFixed(1)}–${s.grassToY.toFixed(1)} ±${s.grassBlendM.toFixed(1)}m</span>
-      <span class="editor-sculpt-legend-chip" style="background:#${TERRAIN_BIOME_COLORS.rock.toString(16).padStart(6, '0')}">Rock</span>
-      <span>${s.rockSlopeFrom.toFixed(2)}–${s.rockSlopeTo.toFixed(2)} ±${s.rockBlend.toFixed(2)}</span>
+      <span class="editor-sculpt-legend-chip" style="background:${terrainColorToHex(s.rockColor)}">Rock</span>
+      <span>Y ${s.rockFromY.toFixed(1)}–${s.rockToY.toFixed(1)} ±${s.rockBlendM.toFixed(1)}m</span>
     `
   }
 
-  private syncShadingInput(input: HTMLInputElement | null, value: number): void {
+  private formatShadingNumber(value: number, step: number): string {
+    if (step >= 1) return String(Math.round(value))
+    if (step >= 0.1) return value.toFixed(1)
+    return value.toFixed(2)
+  }
+
+  private shadingInputStep(input: HTMLInputElement | null): number {
+    if (!input) return 0.1
+    const step = Number(input.dataset.step)
+    return Number.isFinite(step) && step > 0 ? step : 0.1
+  }
+
+  private shadingInputUiScale(input: HTMLInputElement | null): number {
+    if (!input) return 1
+    const scale = Number(input.dataset.uiScale)
+    return Number.isFinite(scale) && scale > 0 ? scale : 1
+  }
+
+  private getShadingFieldValue(key: keyof TerrainProceduralShading): number {
+    const shading = this.refApi?.getProceduralShading?.()
+    if (!shading) return 0
+    return shading[key] as number
+  }
+
+  private parseShadingNumber(
+    raw: string,
+    field: { min: number; max: number; step: number; key: keyof TerrainProceduralShading }
+  ): number | null {
+    const trimmed = raw.trim()
+    if (!trimmed || trimmed === '-' || trimmed === '.' || trimmed === '-.' || trimmed.endsWith('.')) {
+      return null
+    }
+    const value = Number(trimmed)
+    if (!Number.isFinite(value)) return null
+    return Math.max(field.min, Math.min(field.max, value))
+  }
+
+  private syncShadingInput(input: HTMLInputElement | null, storedValue: number): void {
     if (!input || this.shadingInputs.has(input)) return
-    input.value = String(value)
+    const scale = this.shadingInputUiScale(input)
+    input.value = this.formatShadingNumber(storedValue * scale, this.shadingInputStep(input))
   }
 
   private syncShadingLegend(): void {
@@ -227,18 +376,88 @@ export class TerrainSculptPanel {
     this.syncShadingInput(this.grassFromInput, s.grassFromY)
     this.syncShadingInput(this.grassToInput, s.grassToY)
     if (this.grassBlendInput) this.grassBlendInput.value = String(s.grassBlendM)
-    this.syncShadingInput(this.rockFromInput, s.rockSlopeFrom)
-    this.syncShadingInput(this.rockToInput, s.rockSlopeTo)
-    if (this.rockBlendInput) this.rockBlendInput.value = String(s.rockBlend)
-    if (this.shoreSandCb) this.shoreSandCb.checked = s.sandEnabled
+    this.syncShadingInput(this.rockFromInput, s.rockFromY)
+    this.syncShadingInput(this.rockToInput, s.rockToY)
+    if (this.rockBlendInput) this.rockBlendInput.value = String(s.rockBlendM)
+    this.syncShadingInput(this.waterFromInput, s.waterFromY)
+    this.syncShadingInput(this.waterToInput, s.waterToY)
+    if (this.waterBlendInput) this.waterBlendInput.value = String(s.waterBlendM)
+    this.syncColorInput(this.waterColorInput, s.waterColor)
+    this.syncColorInput(this.sandColorInput, s.sandColor)
+    this.syncColorInput(this.grassColorInput, s.grassColor)
+    this.syncColorInput(this.rockColorInput, s.rockColor)
+    this.syncSplatSwatchColors()
+  }
+
+  private syncColorInput(input: HTMLInputElement | null, color: number): void {
+    if (!input || this.shadingInputs.has(input)) return
+    input.value = terrainColorToHex(color)
+  }
+
+  private biomeSectionTitle(title: string): HTMLDivElement {
+    const head = document.createElement('div')
+    head.className = 'editor-sculpt-shading-biome-title'
+    head.textContent = title
+    return head
+  }
+
+  private syncSplatSwatchColors(): void {
+    if (!this.refApi?.getProceduralShading) return
+    const s = this.refApi.getProceduralShading()
+    for (const ch of TERRAIN_SPLAT_PAINT_UI_ORDER) {
+      const btn = this.splatChannelButtons.get(ch)
+      if (!btn) continue
+      btn.style.background = terrainColorToHex(this.channelColor(ch, s))
+    }
+  }
+
+  private colorPickerRow(
+    label: string,
+    color: number,
+    colorKey: 'waterColor' | 'sandColor' | 'grassColor' | 'rockColor'
+  ): HTMLDivElement {
+    const row = document.createElement('div')
+    row.className = 'editor-sculpt-shading-row'
+    const lbl = document.createElement('label')
+    lbl.textContent = label
+    const input = document.createElement('input')
+    input.type = 'color'
+    input.className = 'editor-sculpt-color-input'
+    input.value = terrainColorToHex(color)
+    input.addEventListener('focus', () => this.shadingInputs.add(input))
+    input.addEventListener('blur', () => this.shadingInputs.delete(input))
+    input.addEventListener('input', () => {
+      const next = terrainColorFromHex(input.value)
+      this.refApi!.setProceduralShading!({ [colorKey]: next })
+      this.updateShadingLegendText()
+      this.syncSplatSwatchColors()
+    })
+    lbl.appendChild(input)
+    row.appendChild(lbl)
+    return row
   }
 
   private biomeShadingSection(
     title: string,
+    colorKey: 'waterColor' | 'sandColor' | 'grassColor' | 'rockColor',
     color: number,
     fields: {
-      from: { value: number; min: number; max: number; step: number; key: keyof TerrainProceduralShading }
-      to: { value: number; min: number; max: number; step: number; key: keyof TerrainProceduralShading }
+      from: {
+        value: number
+        min: number
+        max: number
+        step: number
+        key: keyof TerrainProceduralShading
+        uiScale?: number
+      }
+      to: {
+        value: number
+        min: number
+        max: number
+        step: number
+        key: keyof TerrainProceduralShading
+        uiScale?: number
+      }
       blend: {
         value: number
         min: number
@@ -252,33 +471,39 @@ export class TerrainSculptPanel {
     const section = document.createElement('div')
     section.className = 'editor-sculpt-shading-biome'
 
-    const head = document.createElement('div')
-    head.className = 'editor-sculpt-shading-biome-title'
-    const chip = document.createElement('span')
-    chip.className = 'editor-sculpt-legend-chip'
-    chip.style.background = `#${color.toString(16).padStart(6, '0')}`
-    chip.textContent = title.split(' ')[0]!
-    head.appendChild(chip)
-    head.append(title)
-    section.appendChild(head)
+    section.appendChild(this.biomeSectionTitle(title))
+    section.appendChild(this.colorPickerRow('Color', color, colorKey))
 
-    const fromRow = this.shadingFromToRow('From', fields.from, (v) => {
+    if (colorKey === 'waterColor') {
+      this.waterColorInput = section.querySelector('input[type=color]') as HTMLInputElement
+    }
+    if (colorKey === 'sandColor') {
+      this.sandColorInput = section.querySelector('input[type=color]') as HTMLInputElement
+    }
+    if (colorKey === 'grassColor') {
+      this.grassColorInput = section.querySelector('input[type=color]') as HTMLInputElement
+    }
+    if (colorKey === 'rockColor') {
+      this.rockColorInput = section.querySelector('input[type=color]') as HTMLInputElement
+    }
+
+    const fromToRow = this.shadingFromToPairRow(fields.from, fields.to, (v) => {
       this.refApi!.setProceduralShading!({ [fields.from.key]: v })
       this.updateShadingLegendText()
-    })
-    const toRow = this.shadingFromToRow('To', fields.to, (v) => {
+    }, (v) => {
       this.refApi!.setProceduralShading!({ [fields.to.key]: v })
       this.updateShadingLegendText()
     })
-    section.appendChild(fromRow.row)
-    section.appendChild(toRow.row)
+    section.appendChild(fromToRow.row)
 
-    if (fields.from.key === 'sandFromY') this.sandFromInput = fromRow.input
-    if (fields.from.key === 'grassFromY') this.grassFromInput = fromRow.input
-    if (fields.from.key === 'rockSlopeFrom') this.rockFromInput = fromRow.input
-    if (fields.to.key === 'sandToY') this.sandToInput = toRow.input
-    if (fields.to.key === 'grassToY') this.grassToInput = toRow.input
-    if (fields.to.key === 'rockSlopeTo') this.rockToInput = toRow.input
+    if (fields.from.key === 'waterFromY') this.waterFromInput = fromToRow.fromInput
+    if (fields.from.key === 'sandFromY') this.sandFromInput = fromToRow.fromInput
+    if (fields.from.key === 'grassFromY') this.grassFromInput = fromToRow.fromInput
+    if (fields.from.key === 'rockFromY') this.rockFromInput = fromToRow.fromInput
+    if (fields.to.key === 'waterToY') this.waterToInput = fromToRow.toInput
+    if (fields.to.key === 'sandToY') this.sandToInput = fromToRow.toInput
+    if (fields.to.key === 'grassToY') this.grassToInput = fromToRow.toInput
+    if (fields.to.key === 'rockToY') this.rockToInput = fromToRow.toInput
 
     const blendLabel =
       fields.blend.unit === 'm' ? 'Blend width (m)' : 'Blend width (slope)'
@@ -294,47 +519,88 @@ export class TerrainSculptPanel {
       fields.blend.step
     )
     const blendInput = blendRow.querySelector('input') as HTMLInputElement
+    if (fields.blend.key === 'waterBlendM') this.waterBlendInput = blendInput
     if (fields.blend.key === 'sandBlendM') this.sandBlendInput = blendInput
     if (fields.blend.key === 'grassBlendM') this.grassBlendInput = blendInput
-    if (fields.blend.key === 'rockBlend') this.rockBlendInput = blendInput
+    if (fields.blend.key === 'rockBlendM') this.rockBlendInput = blendInput
     section.appendChild(blendRow)
 
     return section
   }
 
-  private shadingFromToRow(
-    label: string,
-    field: { value: number; min: number; max: number; step: number },
+  private createShadingNumberInput(
+    field: {
+      value: number
+      min: number
+      max: number
+      step: number
+      key: keyof TerrainProceduralShading
+      uiScale?: number
+    },
     onChange: (v: number) => void
-  ): { row: HTMLDivElement; input: HTMLInputElement } {
-    const row = document.createElement('div')
-    row.className = 'editor-sculpt-shading-row'
-    const lbl = document.createElement('label')
-    lbl.textContent = label
+  ): HTMLInputElement {
+    const uiScale = field.uiScale ?? 1
     const input = document.createElement('input')
     input.type = 'text'
     input.inputMode = 'decimal'
     input.autocomplete = 'off'
     input.className = 'editor-sculpt-shading-number'
-    input.value = String(field.value)
+    input.dataset.step = String(field.step)
+    input.dataset.uiScale = String(uiScale)
+    input.value = this.formatShadingNumber(field.value * uiScale, field.step)
     input.addEventListener('focus', () => this.shadingInputs.add(input))
     input.addEventListener('blur', () => {
       this.shadingInputs.delete(input)
-      const v = Number(input.value.trim())
-      if (!Number.isFinite(v)) {
-        input.value = String(field.value)
+      const parsed = this.parseShadingNumber(input.value, field)
+      if (parsed === null) {
+        input.value = this.formatShadingNumber(this.getShadingFieldValue(field.key) * uiScale, field.step)
         return
       }
-      const clamped = Math.max(field.min, Math.min(field.max, v))
-      input.value = String(clamped)
-      onChange(clamped)
+      input.value = this.formatShadingNumber(parsed, field.step)
+      onChange(parsed / uiScale)
     })
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') input.blur()
     })
-    lbl.appendChild(input)
-    row.appendChild(lbl)
-    return { row, input }
+    return input
+  }
+
+  private shadingFromToPairRow(
+    fromField: {
+      value: number
+      min: number
+      max: number
+      step: number
+      key: keyof TerrainProceduralShading
+      uiScale?: number
+    },
+    toField: {
+      value: number
+      min: number
+      max: number
+      step: number
+      key: keyof TerrainProceduralShading
+      uiScale?: number
+    },
+    onFromChange: (v: number) => void,
+    onToChange: (v: number) => void
+  ): { row: HTMLDivElement; fromInput: HTMLInputElement; toInput: HTMLInputElement } {
+    const row = document.createElement('div')
+    row.className = 'editor-sculpt-shading-row editor-sculpt-shading-from-to'
+
+    const fromLabel = document.createElement('label')
+    fromLabel.textContent = 'From'
+    const fromInput = this.createShadingNumberInput(fromField, onFromChange)
+    fromLabel.appendChild(fromInput)
+
+    const toLabel = document.createElement('label')
+    toLabel.textContent = 'To'
+    const toInput = this.createShadingNumberInput(toField, onToChange)
+    toLabel.appendChild(toInput)
+
+    row.appendChild(fromLabel)
+    row.appendChild(toLabel)
+    return { row, fromInput, toInput }
   }
 
   private addLayerTabs(): void {
@@ -405,20 +671,21 @@ export class TerrainSculptPanel {
     this.host.appendChild(strengthRow)
   }
 
-  private channelColor(ch: TerrainSplatChannel): number {
+  private channelColor(ch: TerrainSplatChannel, shading?: TerrainProceduralShading): number {
+    const colors = shading ?? this.refApi?.getProceduralShading?.()
     switch (ch) {
       case 0:
-        return TERRAIN_BIOME_COLORS.grass
+        return colors?.grassColor ?? TERRAIN_BIOME_COLORS.grass
       case 1:
         return TERRAIN_BIOME_COLORS.dirt
       case 2:
-        return TERRAIN_BIOME_COLORS.rock
+        return colors?.rockColor ?? TERRAIN_BIOME_COLORS.rock
       case 3:
-        return TERRAIN_BIOME_COLORS.sand
+        return colors?.sandColor ?? TERRAIN_BIOME_COLORS.sand
       case 4:
         return TERRAIN_BIOME_COLORS.lava
       default:
-        return TERRAIN_BIOME_COLORS.grass
+        return colors?.grassColor ?? TERRAIN_BIOME_COLORS.grass
     }
   }
 
@@ -431,7 +698,7 @@ export class TerrainSculptPanel {
       btn.type = 'button'
       btn.title = label
       btn.className = 'editor-sculpt-swatch'
-      btn.style.background = `#${this.channelColor(ch).toString(16).padStart(6, '0')}`
+      btn.style.background = terrainColorToHex(this.channelColor(ch))
       btn.addEventListener('click', () => {
         this.session.patchSettings({ paintLayer: 'splat', splatChannel: ch })
         this.onStatus(`Paint: ${label}`)
@@ -457,7 +724,8 @@ export class TerrainSculptPanel {
     max: number,
     initial: number,
     onChange: (v: number) => void,
-    step = (max - min) / 100
+    step = (max - min) / 100,
+    formatValue?: (v: number) => string
   ): HTMLDivElement {
     const row = document.createElement('div')
     row.className = 'editor-sculpt-slider'
@@ -470,10 +738,11 @@ export class TerrainSculptPanel {
     input.step = String(step)
     input.value = String(initial)
     const val = document.createElement('span')
-    val.textContent = initial.toFixed(step < 0.1 ? 2 : 1)
+    const format = formatValue ?? ((v: number) => v.toFixed(step < 0.1 ? 2 : 1))
+    val.textContent = format(initial)
     input.addEventListener('input', () => {
       const v = Number(input.value)
-      val.textContent = v.toFixed(step < 0.1 ? 2 : 1)
+      val.textContent = format(v)
       onChange(v)
     })
     row.appendChild(lbl)

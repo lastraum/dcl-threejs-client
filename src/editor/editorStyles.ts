@@ -204,15 +204,163 @@ export function injectEditorStyles(): void {
 }
 .editor-viewport-compass {
   position: absolute;
-  right: 14px;
-  bottom: 14px;
+  left: 14px;
+  top: 14px;
   z-index: 4;
   pointer-events: none;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   user-select: none;
+}
+.editor-terrain-height-hud {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  z-index: 4;
+  pointer-events: none;
+  user-select: none;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #e2e8f0;
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 8px;
+  padding: 6px 10px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+.editor-camera-reset-wrap {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+.editor-camera-controls-wrap {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+}
+.editor-camera-controls-btn {
+  width: 38px;
+  box-sizing: border-box;
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #e2e8f0;
+  border-radius: 8px;
+  padding: 4px 0;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+.editor-camera-controls-btn:hover,
+.editor-camera-controls-btn.editor-camera-controls-btn--open {
+  background: rgba(30, 41, 59, 0.92);
+  border-color: rgba(148, 163, 184, 0.55);
+}
+.editor-camera-controls-icon {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+.editor-camera-controls-popover {
+  position: absolute;
+  right: calc(100% + 8px);
+  bottom: 0;
+  min-width: 196px;
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(15, 23, 42, 0.94);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+}
+.editor-camera-controls-popover--open {
+  display: flex;
+}
+.editor-camera-controls-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+.editor-camera-controls-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.editor-camera-controls-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: #e2e8f0;
+}
+.editor-camera-controls-keys {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #cbd5e1;
+  white-space: nowrap;
+}
+.editor-camera-controls-label {
+  color: #94a3b8;
+  text-align: right;
+}
+.editor-camera-zoom-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+.editor-camera-zoom-btn {
+  width: 38px;
+  box-sizing: border-box;
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #e2e8f0;
+  border-radius: 8px;
+  padding: 2px 0;
+  min-height: 30px;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+.editor-camera-zoom-btn:hover {
+  background: rgba(30, 41, 59, 0.92);
+  border-color: rgba(148, 163, 184, 0.55);
+}
+.editor-camera-reset-btn {
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #e2e8f0;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+.editor-camera-reset-btn:hover {
+  background: rgba(30, 41, 59, 0.92);
+  border-color: rgba(148, 163, 184, 0.55);
 }
 .editor-compass-ring {
   position: relative;
@@ -399,13 +547,11 @@ export function injectEditorStyles(): void {
   padding-top: 0;
 }
 .editor-sculpt-shading-biome-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  font-weight: 600;
-  color: #cbd5e1;
-  letter-spacing: 0.04em;
+  font-size: 30px;
+  font-weight: 700;
+  color: #e2e8f0;
+  letter-spacing: 0.02em;
+  line-height: 1.1;
 }
 .editor-sculpt-shading-row {
   display: flex;
@@ -418,6 +564,10 @@ export function injectEditorStyles(): void {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+.editor-sculpt-shading-from-to {
+  gap: 12px;
+  flex-wrap: wrap;
 }
 .editor-sculpt-shading-row input[type=number],
 .editor-sculpt-shading-row .editor-sculpt-shading-number,
@@ -435,6 +585,22 @@ export function injectEditorStyles(): void {
   width: auto;
   min-width: 168px;
   flex: 1;
+}
+.editor-sculpt-color-input {
+  width: 40px;
+  height: 28px;
+  padding: 2px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.65);
+  cursor: pointer;
+}
+.editor-sculpt-color-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+.editor-sculpt-color-input::-webkit-color-swatch {
+  border: none;
+  border-radius: 4px;
 }
 `
   document.head.appendChild(style)

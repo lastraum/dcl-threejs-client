@@ -134,3 +134,8 @@ export function clampTerrainExportSegments(value: number): number {
     Math.min(TERRAIN_EXPORT_SEGMENTS_MAX, Math.round(value))
   )
 }
+
+/** Above this parcel count, export one capped footprint mesh instead of one plane per parcel. */
+export const TERRAIN_MERGED_EXPORT_PARCEL_THRESHOLD = 512
+/** Max plane segments per axis for merged large-footprint export (keeps GLB build under ~1M verts). */
+export const TERRAIN_MERGED_EXPORT_MAX_SEGS_PER_AXIS = 512

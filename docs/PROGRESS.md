@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-02 (terrain editor UX polish ✅ · avatar scale guides ✅ · `editor-update` → `dev-latest`)  
-> **Current phase:** **Phase 5 social polish** + **creator tooling** — in-browser terrain editor polish shipped on `dev-latest`. **Next:** smoke-test `dev-latest` for **v0.4.0** release → `main`; voice/mic UI, in-scene ECS UI, SDK7 Raycast `collisionMask` parity; **PhysX cook worker** on `lastraum-cook` (merge when ready).
+> **Last updated:** 2026-07-02 (terrain editor large-scene perf ✅ · 300×300 QA ✅ · `editor-update` → `dev-latest`)  
+> **Current phase:** **Phase 5 social polish** + **creator tooling** — terrain editor handles huge footprints (300×300+) on `dev-latest`. **Next:** smoke-test `dev-latest` for **v0.4.0** release → `main`; voice/mic UI, in-scene ECS UI, SDK7 Raycast `collisionMask` parity; **PhysX cook worker** on `lastraum-cook` (merge when ready).
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -15,7 +15,7 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | Improvement | Status | Why it matters |
 | ----------- | ------ | -------------- |
 | **In-browser terrain editor** (`/editor`) | 🟢 | Sculpt height + splat; height-band biomes (water/sand/grass/rock); avatar scale mannequins (1–256/parcel); fly camera + viewport HUD |
-| **Deploy-sized terrain export** | 🟢 | Per-parcel meshes with configurable density (default **64 segs**); 5×5 ~**4–5 MB** vs ~21 MB at old 128+64 dual-mesh export |
+| **Deploy-sized terrain export** | 🟢 | Per-parcel meshes (small scenes) or **merged footprint mesh** (\>512 parcels); configurable density (default **64 segs**); 5×5 ~**4–5 MB** |
 | **Visible-mesh physics** | 🟢 | `CL_PHYSICS` on `terrain_mesh_*` only — no duplicate `_collider` layer (matches genesis-games DCL pattern) |
 | **Non-square footprints** | 🟢 | L-shaped / sparse parcel layouts export one plane per parcel, not a full bounding-box fill |
 | **Local scenes (browser)** | 🟢 | **Link Scenes folder** — pick `~/Documents/DCL-Scenes` (Documents/Downloads/Desktop); Rescan + drag-drop |
@@ -42,6 +42,23 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 **Branch:** `editor-update` → merged `dev-latest`
 
 **QA:** sculpt on sloped terrain — height HUD matches brush; toggle mannequins at 1 / 64 / 256 density; water/sand/grass transitions at configured From/To; save + reload draft.
+
+---
+
+## 🎉 Milestone — Terrain editor large-scene performance (2026-07-02)
+
+**Status: shipped on `dev-latest`** — `editor-update` follow-up: 300×300 parcel scenes stay usable (~200 MB tab RAM vs multi‑GB OOM).
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Avatar guides memory** | 🟢 | Lazy GLB/GPU init on toggle **B** only; freed when hidden; **8k** instance cap with parcel stride (slider keeps per-parcel density) |
+| **Parcel grid** | 🟢 | Lazy alloc + Viewport checkbox; fixed 1 m division math; off by default on huge footprints |
+| **Camera overview** | 🟢 | Large-footprint framing + extended far plane — fixes invisible terrain on 4800×4800 m scenes |
+| **Merged export** | 🟢 | \>512 parcels → single capped footprint mesh in `terrain.glb` (avoids 90k-plane save OOM) |
+
+**Branch:** `editor-update` → merged `dev-latest`
+
+**QA:** open 300×300 project — terrain + composite visible on load; toggle mannequins, drag density slider (16 vs 64 changes layout); Save without ArrayBuffer OOM.
 
 ---
 

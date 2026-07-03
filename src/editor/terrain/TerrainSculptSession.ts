@@ -1,7 +1,6 @@
 import * as THREE from 'three'
 import { threeToDclPos } from '../../bridge/dclTransform'
 import {
-  ARENA_WATER_SURFACE_Y,
   DEFAULT_TERRAIN_EXPORT_SETTINGS,
   DEFAULT_TERRAIN_SCULPT_SETTINGS,
   TERRAIN_BRUSH_RADIUS_MAX_M,
@@ -18,7 +17,7 @@ import {
   computeBrushRadiusCells,
   smoothKernelRadiusCells
 } from './TerrainBrush'
-import { SCULPT_RESOLUTION, worldToHeightIndex, worldToHeightUv } from './heightmapCodec'
+import { SCULPT_RESOLUTION, worldToHeightUv } from './heightmapCodec'
 import { TerrainSculptUndoStack } from './TerrainSculptUndoStack'
 import type { ProjectRoot } from '../localScene/projectRoot'
 import { saveTerrainToProject } from './saveTerrainToProject'
@@ -44,6 +43,7 @@ export class TerrainSculptSession {
   private strokeRaf = 0
   private strokePending = false
   private pendingCamera: THREE.Camera | null = null
+  private hoveredSurfaceProbe: { heightM: number; slope: number } | null = null
 
   constructor(
     private readonly projectId: string,
@@ -52,8 +52,7 @@ export class TerrainSculptSession {
     private readonly arenaWidthM: number,
     private readonly arenaDepthM: number,
     private readonly arenaOriginX: number,
-    private readonly arenaOriginZ: number,
-    private readonly waterLevelY = ARENA_WATER_SURFACE_Y
+    private readonly arenaOriginZ: number
   ) {}
 
   getSettings(): TerrainSculptSettings {
@@ -231,6 +230,14 @@ export class TerrainSculptSession {
     if (this.strokeOpen) this.scheduleStroke(camera)
   }
 
+  clearHoveredSurfaceProbe(): void {
+    this.hoveredSurfaceProbe = null
+  }
+
+  getHoveredSurfaceProbe(): { heightM: number; slope: number } | null {
+    return this.hoveredSurfaceProbe
+  }
+
   handleMouseUp(): void {
     this.endStroke()
   }
@@ -285,20 +292,21 @@ export class TerrainSculptSession {
     return { x: dcl.x, z: dcl.z }
   }
 
+  private heightAtRaycastPoint(p: THREE.Vector3): number {
+    const dcl = this.dclPointFromRaycast(p)
+    return this.terrain.probeSurfaceAtDcl(dcl.x, dcl.z).heightM
+  }
+
+  private probeAtRaycastPoint(p: THREE.Vector3): { heightM: number; slope: number } {
+    const dcl = this.dclPointFromRaycast(p)
+    const sampled = this.terrain.probeSurfaceAtDcl(dcl.x, dcl.z)
+    return { heightM: p.y, slope: sampled.slope }
+  }
+
   private sampleHeightAtPointer(camera: THREE.Camera): number | null {
     const p = this.raycastWorldPoint(camera)
     if (!p) return null
-    const dcl = this.dclPointFromRaycast(p)
-    const { ix, iz } = worldToHeightIndex(
-      dcl.x,
-      dcl.z,
-      this.resolution,
-      this.arenaWidthM,
-      this.arenaDepthM,
-      this.arenaOriginX,
-      this.arenaOriginZ
-    )
-    return this.heights[iz * this.resolution + ix]!
+    return this.heightAtRaycastPoint(p)
   }
 
   private applyStroke(camera: THREE.Camera): void {
@@ -373,7 +381,7 @@ export class TerrainSculptSession {
         sizeM: this.settings.brushSizeM,
         strength: this.settings.brushStrength,
         mode: this.settings.brushMode,
-        waterLevelY: this.waterLevelY
+        waterLevelY: this.terrain.getProceduralShading().waterToY
       },
       this.flattenTargetY
     )
@@ -456,9 +464,11 @@ export class TerrainSculptSession {
     if (!this.brushRing) return
     const p = this.raycastWorldPoint(camera)
     if (!p) {
+      this.hoveredSurfaceProbe = null
       if (!this.lastBrushPoint) this.brushRing.visible = false
       return
     }
+    this.hoveredSurfaceProbe = this.probeAtRaycastPoint(p)
     this.lastBrushPoint = p
     this.placeBrushRing(p)
   }

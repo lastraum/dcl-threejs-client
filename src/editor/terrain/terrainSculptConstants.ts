@@ -17,8 +17,18 @@ export const TERRAIN_BIOME_COLORS = {
   dirt: 0x8b6914,
   rock: 0x8a8a8a,
   sand: 0xd4b878,
-  lava: 0xe85a0a
+  lava: 0xe85a0a,
+  water: 0x000a14
 } as const
+
+export function terrainColorToHex(color: number): string {
+  return `#${(color & 0xffffff).toString(16).padStart(6, '0')}`
+}
+
+export function terrainColorFromHex(hex: string): number {
+  const parsed = Number.parseInt(hex.replace(/^#/, ''), 16)
+  return Number.isFinite(parsed) ? parsed & 0xffffff : 0
+}
 
 export const TERRAIN_SPLAT_PAINT_UI_ORDER: readonly TerrainSplatChannel[] = [3, 0, 1, 2, 4]
 
@@ -44,7 +54,16 @@ export const DEFAULT_TERRAIN_SCULPT_SETTINGS: TerrainSculptSettings = {
 }
 
 export interface TerrainProceduralShading {
-  sandEnabled: boolean
+  sandColor: number
+  grassColor: number
+  rockColor: number
+  waterColor: number
+  /** World Y where submerged water weight begins. */
+  waterFromY: number
+  /** World Y of the water surface (“to water” sculpt target). */
+  waterToY: number
+  /** Vertical blend width (m) for water transitions. */
+  waterBlendM: number
   /** World Y where sand weight begins to rise. */
   sandFromY: number
   /** World Y where sand weight peaks before fading toward grass. */
@@ -57,25 +76,31 @@ export interface TerrainProceduralShading {
   grassToY: number
   /** Vertical blend width (m) for grass transitions. */
   grassBlendM: number
-  /** Slope 0–1 where rock begins. */
-  rockSlopeFrom: number
-  /** Slope 0–1 where rock is fully blended. */
-  rockSlopeTo: number
-  /** Slope blend width (0–1) for rock transitions. */
-  rockBlend: number
+  /** World Y where rock begins to replace grass. */
+  rockFromY: number
+  /** World Y where rock weight peaks before fading. */
+  rockToY: number
+  /** Vertical blend width (m) for rock transitions. */
+  rockBlendM: number
 }
 
 export const DEFAULT_TERRAIN_PROCEDURAL_SHADING: TerrainProceduralShading = {
-  sandEnabled: true,
+  sandColor: TERRAIN_BIOME_COLORS.sand,
+  grassColor: TERRAIN_BIOME_COLORS.grass,
+  rockColor: TERRAIN_BIOME_COLORS.rock,
+  waterColor: TERRAIN_BIOME_COLORS.water,
+  waterFromY: TERRAIN_SEA_FLOOR_WORLD_Y,
+  waterToY: ARENA_WATER_SURFACE_Y,
+  waterBlendM: 1.5,
   sandFromY: TERRAIN_SEA_FLOOR_WORLD_Y,
   sandToY: ARENA_WATER_SURFACE_Y + 1.3,
   sandBlendM: 1.5,
   grassFromY: ARENA_WATER_SURFACE_Y + 0.5,
   grassToY: GENESIS_HEIGHTMAP_MAX_METERS,
   grassBlendM: 2,
-  rockSlopeFrom: 0.42,
-  rockSlopeTo: 0.62,
-  rockBlend: 0.12
+  rockFromY: 40,
+  rockToY: GENESIS_HEIGHTMAP_MAX_METERS,
+  rockBlendM: 2
 }
 
 export const TERRAIN_ASSET_DIR = 'assets/terrain'

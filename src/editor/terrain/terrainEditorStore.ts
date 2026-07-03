@@ -2,6 +2,7 @@ import { encodeHeightsBin, decodeHeightsBin } from './heightmapHeightsBin'
 import {
   DEFAULT_TERRAIN_EXPORT_SETTINGS,
   DEFAULT_TERRAIN_PROCEDURAL_SHADING,
+  GENESIS_HEIGHTMAP_MAX_METERS,
   clampTerrainExportSegments,
   type TerrainExportSettings,
   type TerrainProceduralShading
@@ -32,10 +33,55 @@ type TerrainEditorDraftRecord = {
   updatedAt: number
 }
 
+type LegacyTerrainProceduralShading = TerrainProceduralShading & {
+  rockSlopeFrom?: number
+  rockSlopeTo?: number
+  rockBlend?: number
+  waterLevelY?: number
+}
+
 function normalizeProceduralShading(
-  value: TerrainProceduralShading | undefined
+  value: LegacyTerrainProceduralShading | undefined
 ): TerrainProceduralShading {
-  return value ? { ...DEFAULT_TERRAIN_PROCEDURAL_SHADING, ...value } : { ...DEFAULT_TERRAIN_PROCEDURAL_SHADING }
+  if (!value) return { ...DEFAULT_TERRAIN_PROCEDURAL_SHADING }
+
+  const merged: LegacyTerrainProceduralShading = {
+    ...DEFAULT_TERRAIN_PROCEDURAL_SHADING,
+    ...value
+  }
+
+  if (merged.rockFromY === undefined && merged.rockSlopeFrom !== undefined) {
+    const grassTo =
+      typeof merged.grassToY === 'number' ? merged.grassToY : DEFAULT_TERRAIN_PROCEDURAL_SHADING.grassToY
+    merged.rockFromY = grassTo >= 5 ? grassTo : DEFAULT_TERRAIN_PROCEDURAL_SHADING.rockFromY
+    merged.rockToY = GENESIS_HEIGHTMAP_MAX_METERS
+    merged.rockBlendM = DEFAULT_TERRAIN_PROCEDURAL_SHADING.rockBlendM
+  }
+
+  if (merged.waterToY === undefined && merged.waterLevelY !== undefined) {
+    merged.waterToY = merged.waterLevelY
+    merged.waterFromY = DEFAULT_TERRAIN_PROCEDURAL_SHADING.waterFromY
+    merged.waterBlendM = DEFAULT_TERRAIN_PROCEDURAL_SHADING.waterBlendM
+  }
+
+  return {
+    sandColor: merged.sandColor,
+    grassColor: merged.grassColor,
+    rockColor: merged.rockColor,
+    waterColor: merged.waterColor,
+    waterFromY: merged.waterFromY,
+    waterToY: merged.waterToY,
+    waterBlendM: merged.waterBlendM,
+    sandFromY: merged.sandFromY,
+    sandToY: merged.sandToY,
+    sandBlendM: merged.sandBlendM,
+    grassFromY: merged.grassFromY,
+    grassToY: merged.grassToY,
+    grassBlendM: merged.grassBlendM,
+    rockFromY: merged.rockFromY,
+    rockToY: merged.rockToY,
+    rockBlendM: merged.rockBlendM
+  }
 }
 
 function normalizeExportSettings(value: TerrainExportSettings | undefined): TerrainExportSettings {

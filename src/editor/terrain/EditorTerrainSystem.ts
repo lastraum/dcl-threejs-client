@@ -36,15 +36,6 @@ function heightBandWeight(value: number, fromY: number, toY: number, blendM: num
   return rise * fall
 }
 
-function slopeBandWeight(value: number, from: number, to: number, blend: number): number {
-  const lo = Math.min(from, to)
-  const hi = Math.max(from, to)
-  const b = Math.max(0.02, blend)
-  const rise = glslSmoothstep(lo - b, lo, value)
-  const fall = 1 - glslSmoothstep(hi, hi + b, value)
-  return rise * fall
-}
-
 /** Parcel-sized sculpt terrain mesh for the editor workspace. */
 export class EditorTerrainSystem {
   private footprintState: TerrainSceneFootprint
@@ -69,7 +60,8 @@ export class EditorTerrainSystem {
     dirt: new THREE.Color(TERRAIN_BIOME_COLORS.dirt),
     rock: new THREE.Color(TERRAIN_BIOME_COLORS.rock),
     sand: new THREE.Color(TERRAIN_BIOME_COLORS.sand),
-    lava: new THREE.Color(TERRAIN_BIOME_COLORS.lava)
+    lava: new THREE.Color(TERRAIN_BIOME_COLORS.lava),
+    water: new THREE.Color(TERRAIN_BIOME_COLORS.water)
   }
   private readonly colorScratch = {
     procedural: new THREE.Color(),
@@ -86,6 +78,7 @@ export class EditorTerrainSystem {
     this.previewSegments = previewSegments
     this.activeSegments = previewSegments
     this.heights.fill(TERRAIN_SEA_FLOOR_WORLD_Y)
+    this.syncBiomeColorsFromProcedural()
     this.buildMesh()
   }
 
@@ -146,11 +139,23 @@ export class EditorTerrainSystem {
 
   setProceduralShading(patch: Partial<TerrainProceduralShading>): void {
     this.procedural = { ...this.procedural, ...patch }
+    this.syncBiomeColorsFromProcedural()
     this.updateVertexColors()
   }
 
   getProceduralShading(): TerrainProceduralShading {
     return { ...this.procedural }
+  }
+
+  /** Bilinear height + slope at a DCL world XZ — matches preview vertex-color shading. */
+  probeSurfaceAtDcl(dclX: number, dclZ: number): { heightM: number; slope: number } {
+    const u = Math.max(0, Math.min(1, (dclX - this.originX) / this.widthM))
+    const v = Math.max(0, Math.min(1, (dclZ - this.originZ) / this.depthM))
+    const heightM = sampleBilinearWorldY(this.heights, this.resolution, u, v)
+    const ix = Math.round(u * (this.resolution - 1))
+    const iz = Math.round(v * (this.resolution - 1))
+    const slope = this.sampleSlopeAt(ix, iz)
+    return { heightM, slope }
   }
 
   beginSculptStroke(sharpPreview = true): void {
@@ -297,6 +302,13 @@ export class EditorTerrainSystem {
     this.updateVertexColors()
   }
 
+  private syncBiomeColorsFromProcedural(): void {
+    this.biomeColors.grass.setHex(this.procedural.grassColor)
+    this.biomeColors.sand.setHex(this.procedural.sandColor)
+    this.biomeColors.rock.setHex(this.procedural.rockColor)
+    this.biomeColors.water.setHex(this.procedural.waterColor)
+  }
+
   private buildMesh(): void {
     const geo = this.createTerrainGeometry(this.activeSegments)
     this.mesh = new THREE.Mesh(geo, this.lambertMat)
@@ -329,6 +341,11 @@ export class EditorTerrainSystem {
     this.mesh.geometry.computeVertexNormals()
   }
 
+  /** Heightmap U for a preview mesh column — DCL X rises with column after `mesh.scale.x = -1`. */
+  private heightmapUAtMeshCol(col: number, segs: number): number {
+    return col / segs
+  }
+
   private rebuildPreviewPositions(): void {
     if (!this.mesh) return
     const pos = this.mesh.geometry.attributes.position as THREE.BufferAttribute
@@ -336,7 +353,7 @@ export class EditorTerrainSystem {
     for (let row = 0; row <= segs; row++) {
       for (let col = 0; col <= segs; col++) {
         const vertIdx = row * (segs + 1) + col
-        const u = col / segs
+        const u = this.heightmapUAtMeshCol(col, segs)
         const v = row / segs
         pos.setY(vertIdx, this.samplePreviewWorldY(u, v))
       }
@@ -361,7 +378,7 @@ export class EditorTerrainSystem {
     for (let row = row0; row <= row1; row++) {
       for (let col = col0; col <= col1; col++) {
         const vertIdx = row * (segs + 1) + col
-        const u = col / segs
+        const u = this.heightmapUAtMeshCol(col, segs)
         const v = row / segs
         pos.setY(vertIdx, this.samplePreviewWorldY(u, v))
       }
@@ -411,11 +428,13 @@ export class EditorTerrainSystem {
     const fu = Math.max(0, Math.min(1, u)) * (res - 1)
     const fv = Math.max(0, Math.min(1, v)) * (res - 1)
     const slope = this.sampleSlopeAt(Math.round(fu), Math.round(fv))
-    const { grass, sand, rock } = this.biomeColors
-    const sandW = this.procedural.sandEnabled
-      ? heightBandWeight(h, this.procedural.sandFromY, this.procedural.sandToY, this.procedural.sandBlendM) *
-        (1 - slope * 0.08)
-      : 0
+    const { grass, sand, rock, water } = this.biomeColors
+    const sandW =
+      heightBandWeight(h, this.procedural.sandFromY, this.procedural.sandToY, this.procedural.sandBlendM) *
+      (1 - slope * 0.08)
+    const waterW =
+      heightBandWeight(h, this.procedural.waterFromY, this.procedural.waterToY, this.procedural.waterBlendM) *
+      (1 - sandW * 0.85)
     const grassW = heightBandWeight(
       h,
       this.procedural.grassFromY,
@@ -423,10 +442,11 @@ export class EditorTerrainSystem {
       this.procedural.grassBlendM
     )
     const rockW =
-      slopeBandWeight(slope, this.procedural.rockSlopeFrom, this.procedural.rockSlopeTo, this.procedural.rockBlend) *
+      heightBandWeight(h, this.procedural.rockFromY, this.procedural.rockToY, this.procedural.rockBlendM) *
       (1 - sandW * 0.85)
     out.copy(grass)
     out.multiplyScalar(THREE.MathUtils.clamp(grassW, 0.15, 1))
+    out.lerp(water, THREE.MathUtils.clamp(waterW, 0, 1))
     out.lerp(sand, THREE.MathUtils.clamp(sandW, 0, 1))
     out.lerp(rock, THREE.MathUtils.clamp(rockW, 0, 1))
     return out
@@ -480,7 +500,7 @@ export class EditorTerrainSystem {
     for (let row = 0; row <= segs; row++) {
       for (let col = 0; col <= segs; col++) {
         const vertIdx = row * (segs + 1) + col
-        const u = col / segs
+        const u = this.heightmapUAtMeshCol(col, segs)
         const v = row / segs
         const c = this.colorForVertexAtUv(u, v, tmp)
         colors.setXYZ(vertIdx, c.r, c.g, c.b)
@@ -507,7 +527,7 @@ export class EditorTerrainSystem {
     for (let row = row0; row <= row1; row++) {
       for (let col = col0; col <= col1; col++) {
         const vertIdx = row * (segs + 1) + col
-        const u = col / segs
+        const u = this.heightmapUAtMeshCol(col, segs)
         const v = row / segs
         const c = this.colorForVertexAtUv(u, v, tmp)
         colors.setXYZ(vertIdx, c.r, c.g, c.b)

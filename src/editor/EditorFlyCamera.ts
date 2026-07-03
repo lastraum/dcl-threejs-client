@@ -2,7 +2,11 @@ import * as THREE from 'three'
 import type { SceneWorldBounds } from '../player/SceneBounds'
 
 const ORBIT_SPEED = 0.005
+/** Keyboard yaw — ~1.6 rad/s, scaled to match right-drag orbit feel. */
+const YAW_SPEED = ORBIT_SPEED * 320
 const WHEEL_DOLLY = 0.28 * 0.8
+/** One scroll-notch equivalent for zoom +/- buttons. */
+const ZOOM_BUTTON_WHEEL_DELTA = 100
 const MOVE_SPEED = 42
 const FAST_MULT = 3
 const MIN_PITCH = 0.12
@@ -16,7 +20,7 @@ function isTypingInField(): boolean {
 }
 
 /**
- * Genesis MapBuilderCamera — drives an existing scene camera (WASD, Q/E, right-drag orbit, wheel).
+ * Genesis MapBuilderCamera — drives an existing scene camera (WASD, Space/Shift height, Q/E yaw, right-drag orbit, wheel).
  */
 export class EditorFlyCamera {
   private yaw = Math.PI
@@ -28,6 +32,8 @@ export class EditorFlyCamera {
   private lastY = 0
   private readonly keys = new Set<string>()
   private enabled = true
+  private defaultBounds: SceneWorldBounds | null = null
+  private defaultCenterY = 0
   private readonly removeListeners: Array<() => void> = []
 
   constructor(
@@ -58,10 +64,7 @@ export class EditorFlyCamera {
     const onWheel = (e: WheelEvent) => {
       if (!this.enabled) return
       e.preventDefault()
-      const dir = this.lookDir(this.look)
-      const alt = Math.max(1, this.pos.y / 50)
-      this.pos.addScaledVector(dir, -e.deltaY * WHEEL_DOLLY * alt)
-      this.syncCamera()
+      this.dollyByWheelDelta(e.deltaY)
     }
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || isTypingInField()) return
@@ -130,12 +133,30 @@ export class EditorFlyCamera {
     this.yaw = 0
     const lookDist = standoff + depthM * 0.55
     this.pitch = Math.max(MIN_PITCH, Math.min(MAX_PITCH, Math.atan(height / lookDist)))
+    this.defaultBounds = { ...bounds }
+    this.defaultCenterY = centerY
     this.syncCamera()
+  }
+
+  /** Restore the initial south-facing overview (position + zoom). */
+  resetView(): void {
+    if (!this.defaultBounds) return
+    this.focusSouthFacingNorth(this.defaultBounds, this.defaultCenterY)
+  }
+
+  zoomIn(): void {
+    if (!this.enabled) return
+    this.dollyByWheelDelta(-ZOOM_BUTTON_WHEEL_DELTA)
+  }
+
+  zoomOut(): void {
+    if (!this.enabled) return
+    this.dollyByWheelDelta(ZOOM_BUTTON_WHEEL_DELTA)
   }
 
   update(deltaS: number): void {
     if (!this.enabled) return
-    const fast = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')
+    const fast = this.keys.has('AltLeft') || this.keys.has('AltRight')
     const speed = MOVE_SPEED * (fast ? FAST_MULT : 1) * Math.max(1, this.pos.y / 40) * deltaS
     const fwdX = Math.sin(this.yaw)
     const fwdZ = Math.cos(this.yaw)
@@ -157,8 +178,11 @@ export class EditorFlyCamera {
       this.pos.x += rightX * speed
       this.pos.z += rightZ * speed
     }
-    if (this.keys.has('KeyE') || this.keys.has('Space')) this.pos.y += speed
-    if (this.keys.has('KeyQ') || this.keys.has('KeyC')) this.pos.y -= speed
+    if (this.keys.has('Space')) this.pos.y += speed
+    if (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) this.pos.y -= speed
+    const yawSpeed = YAW_SPEED * (fast ? FAST_MULT : 1) * deltaS
+    if (this.keys.has('KeyQ')) this.yaw += yawSpeed
+    if (this.keys.has('KeyE')) this.yaw -= yawSpeed
     this.syncCamera()
   }
 
@@ -178,6 +202,13 @@ export class EditorFlyCamera {
   /** Horizontal orbit angle (radians) — for viewport compass. */
   getYaw(): number {
     return this.yaw
+  }
+
+  private dollyByWheelDelta(wheelDeltaY: number): void {
+    const dir = this.lookDir(this.look)
+    const alt = Math.max(1, this.pos.y / 50)
+    this.pos.addScaledVector(dir, -wheelDeltaY * WHEEL_DOLLY * alt)
+    this.syncCamera()
   }
 
   private lookDir(out: THREE.Vector3): THREE.Vector3 {

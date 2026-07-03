@@ -15,6 +15,9 @@ import { loadCompositeScene, type CompositeSceneHandle } from './composite/loadC
 import { EditorViewportCompass } from './EditorViewportCompass'
 import { EditorAxisGizmo } from './EditorAxisGizmo'
 import { EditorMaxHeightGuide } from './EditorMaxHeightGuide'
+import { EditorAvatarScaleGuides } from './EditorAvatarScaleGuides'
+import { EditorTerrainHeightHud } from './ui/EditorTerrainHeightHud'
+import { EditorCameraResetButton } from './ui/EditorCameraResetButton'
 import { dclBoundsToThreeDisplay, dclToThreePos } from '../bridge/dclTransform'
 
 
@@ -49,13 +52,17 @@ export class TerrainEditorWorkspace {
   private removeFrameListener: (() => void) | null = null
   private gridHelper: THREE.GridHelper | null = null
   private compass: EditorViewportCompass | null = null
+  private heightHud: EditorTerrainHeightHud | null = null
+  private cameraReset: EditorCameraResetButton | null = null
   private axisGizmo: EditorAxisGizmo | null = null
   private maxHeightGuide: EditorMaxHeightGuide | null = null
+  private avatarScaleGuides: EditorAvatarScaleGuides | null = null
   private projectRoot: ProjectRoot | null = null
   private keyHandler: ((e: KeyboardEvent) => void) | null = null
   private mouseUpHandler: (() => void) | null = null
   private mouseMoveHandler: ((e: MouseEvent) => void) | null = null
   private mouseDownHandler: ((e: MouseEvent) => void) | null = null
+  private mouseLeaveHandler: (() => void) | null = null
 
   constructor(
     private container: HTMLElement,
@@ -143,6 +150,12 @@ export class TerrainEditorWorkspace {
     this.flyCamera.onResize(canvasHost.clientWidth, canvasHost.clientHeight)
     this.flyCamera.focusSouthFacingNorth(displayBounds, scene.spawn.y)
     this.compass = new EditorViewportCompass(canvasHost)
+    this.heightHud = new EditorTerrainHeightHud(canvasHost)
+    this.cameraReset = new EditorCameraResetButton(canvasHost, {
+      onZoomIn: () => this.flyCamera?.zoomIn(),
+      onZoomOut: () => this.flyCamera?.zoomOut(),
+      onReset: () => this.flyCamera?.resetView()
+    })
     this.removeFrameListener = host.addFrameListener((delta) => {
       this.flyCamera?.update(delta)
       this.compass?.updateFromCamera(cam, this.flyCamera)
@@ -192,6 +205,13 @@ export class TerrainEditorWorkspace {
       bounds.minZ
     )
     await this.sculpt.initialize()
+
+    this.avatarScaleGuides = new EditorAvatarScaleGuides(terrainFootprint, (dclX, dclZ) =>
+      this.terrain!.probeSurfaceAtDcl(dclX, dclZ).heightM
+    )
+    this.avatarScaleGuides.mount(host.scene)
+    await this.avatarScaleGuides.initialize()
+
     if (terrainLoad.exportSettings) {
       this.sculpt.setExportSettings(terrainLoad.exportSettings)
     }
@@ -223,11 +243,26 @@ export class TerrainEditorWorkspace {
           this.maxHeightGuide?.update(this.terrain.getMaxHeightSample())
         }
         this.panel?.setMaxHeightGuideChecked(visible)
+      },
+      getAvatarScaleGuidesVisible: () => this.avatarScaleGuides?.getVisible() ?? false,
+      setAvatarScaleGuidesVisible: (visible) => {
+        this.avatarScaleGuides?.setVisible(visible)
+        this.panel?.setAvatarScaleGuidesChecked(visible)
+      },
+      getAvatarScaleGuidesCount: () => this.avatarScaleGuides?.getCountPerParcel() ?? 256,
+      setAvatarScaleGuidesCount: (count) => {
+        this.avatarScaleGuides?.setCountPerParcel(count)
+        this.panel?.setAvatarScaleGuidesCount(this.avatarScaleGuides?.getCountPerParcel() ?? count)
       }
     })
 
     this.mouseMoveHandler = (e) => {
       this.sculpt?.handleMouseMove(e, cam, canvas)
+      this.heightHud?.setProbe(this.sculpt?.getHoveredSurfaceProbe() ?? null)
+    }
+    this.mouseLeaveHandler = () => {
+      this.sculpt?.clearHoveredSurfaceProbe()
+      this.heightHud?.setProbe(null)
     }
     this.mouseUpHandler = () => {
       this.sculpt?.handleMouseUp()
@@ -240,6 +275,7 @@ export class TerrainEditorWorkspace {
     }
 
     canvas.addEventListener('mousemove', this.mouseMoveHandler)
+    canvas.addEventListener('mouseleave', this.mouseLeaveHandler)
     canvas.addEventListener('mousedown', this.mouseDownHandler)
     window.addEventListener('mouseup', this.mouseUpHandler)
 
@@ -259,6 +295,13 @@ export class TerrainEditorWorkspace {
           this.maxHeightGuide?.update(this.terrain.getMaxHeightSample())
         }
         this.panel?.setMaxHeightGuideChecked(next)
+        return
+      }
+      if (e.code === 'KeyB') {
+        e.preventDefault()
+        const next = !(this.avatarScaleGuides?.getVisible() ?? false)
+        this.avatarScaleGuides?.setVisible(next)
+        this.panel?.setAvatarScaleGuidesChecked(next)
       }
     }
     window.addEventListener('keydown', this.keyHandler)
@@ -273,6 +316,7 @@ export class TerrainEditorWorkspace {
     if (this.mouseHandlersAttached()) {
       const canvas = this.host!.renderer.domElement
       if (this.mouseMoveHandler) canvas.removeEventListener('mousemove', this.mouseMoveHandler)
+      if (this.mouseLeaveHandler) canvas.removeEventListener('mouseleave', this.mouseLeaveHandler)
       if (this.mouseDownHandler) canvas.removeEventListener('mousedown', this.mouseDownHandler)
       if (this.mouseUpHandler) window.removeEventListener('mouseup', this.mouseUpHandler)
     }
@@ -283,10 +327,16 @@ export class TerrainEditorWorkspace {
     this.composite = null
     this.compass?.dispose()
     this.compass = null
+    this.heightHud?.dispose()
+    this.heightHud = null
+    this.cameraReset?.dispose()
+    this.cameraReset = null
     this.axisGizmo?.dispose()
     this.axisGizmo = null
     this.maxHeightGuide?.dispose()
     this.maxHeightGuide = null
+    this.avatarScaleGuides?.dispose()
+    this.avatarScaleGuides = null
     if (this.gridHelper && this.host) {
       this.host.scene.remove(this.gridHelper)
       this.gridHelper.dispose()
@@ -304,6 +354,7 @@ export class TerrainEditorWorkspace {
     this.mouseMoveHandler = null
     this.mouseDownHandler = null
     this.mouseUpHandler = null
+    this.mouseLeaveHandler = null
   }
 
   private mouseHandlersAttached(): boolean {

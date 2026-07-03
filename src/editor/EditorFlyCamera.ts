@@ -117,6 +117,23 @@ export class EditorFlyCamera {
     )
   }
 
+  /** Min camera.far so the south-facing overview keeps the full footprint in frustum. */
+  static overviewFarPlaneM(bounds: SceneWorldBounds, fovDeg: number): number {
+    const widthM = bounds.maxX - bounds.minX
+    const depthM = bounds.maxZ - bounds.minZ
+    const span = Math.max(widthM, depthM)
+    const large = span > 320
+    const standoffScale = large ? 0.58 : 1.65
+    const heightFactor = large ? 0.4 : 1.15
+    const vFovRad = (fovDeg * Math.PI) / 180
+    const distForHeight = (span * 1.08) / (2 * Math.tan(vFovRad / 2))
+    const standoff = distForHeight * standoffScale
+    const height = Math.max(90, span * heightFactor)
+    const lookDist = standoff + depthM * 0.55
+    const eyeToCenter = Math.hypot(lookDist, height)
+    return Math.max(800, eyeToCenter * 1.35, span * 2.5)
+  }
+
   /** South of parcel footprint, looking north (+Z) with full scene in frame. */
   focusSouthFacingNorth(bounds: SceneWorldBounds, centerY: number): void {
     const centerX = (bounds.minX + bounds.maxX) / 2
@@ -125,10 +142,13 @@ export class EditorFlyCamera {
     const span = Math.max(widthM, depthM)
     const vFovRad = (this.camera.fov * Math.PI) / 180
     const hFovRad = 2 * Math.atan(Math.tan(vFovRad / 2) * this.camera.aspect)
+    const large = span > 320
+    const standoffScale = large ? 0.58 : 1.65
+    const heightFactor = large ? 0.4 : 1.15
     const distForHeight = (span * 1.08) / (2 * Math.tan(vFovRad / 2))
     const distForWidth = (widthM * 1.08) / (2 * Math.tan(hFovRad / 2))
-    const standoff = Math.max(distForHeight, distForWidth) * 1.65
-    const height = Math.max(90, span * 1.15)
+    const standoff = Math.max(distForHeight, distForWidth) * standoffScale
+    const height = Math.max(90, span * heightFactor)
     this.pos.set(centerX, centerY + height, bounds.minZ - standoff)
     this.yaw = 0
     const lookDist = standoff + depthM * 0.55

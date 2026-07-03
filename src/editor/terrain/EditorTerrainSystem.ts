@@ -3,9 +3,12 @@ import { parseParcelKey, parcelWorldOrigin } from '../../dcl/content/parseParcel
 import { PARCEL_SIZE } from '../../dcl/content/types'
 import { terrainGlbParcelMeshOffset } from '../../dcl/landscape/Utils/SceneSpace'
 import {
+  clampTerrainExportSegments,
   DEFAULT_TERRAIN_PROCEDURAL_SHADING,
   TERRAIN_ALBEDO_EXPORT_RESOLUTION,
   TERRAIN_BIOME_COLORS,
+  TERRAIN_MERGED_EXPORT_MAX_SEGS_PER_AXIS,
+  TERRAIN_MERGED_EXPORT_PARCEL_THRESHOLD,
   TERRAIN_SEA_FLOOR_WORLD_Y,
   type TerrainProceduralShading
 } from './terrainSculptConstants'
@@ -603,8 +606,15 @@ export class EditorTerrainSystem {
     return geo
   }
 
-  /** One 16×16 m plane per parcel — PBR albedo + CL_PHYSICS on visible meshes (no `_collider` layer). */
+  usesMergedExportMesh(): boolean {
+    return this.footprint.parcels.length > TERRAIN_MERGED_EXPORT_PARCEL_THRESHOLD
+  }
+
+  /** One 16×16 m plane per parcel — or one capped footprint mesh on very large scenes. */
   buildExportMeshes(exportSegmentsPerParcel: number): THREE.Group {
+    if (this.usesMergedExportMesh()) {
+      return this.buildMergedFootprintExportMeshes(exportSegmentsPerParcel)
+    }
     const root = new THREE.Group()
     root.name = 'terrain_root'
     root.userData.dclAuthorTerrainRoot = true
@@ -639,6 +649,58 @@ export class EditorTerrainSystem {
       visible.scale.x = -1
       root.add(visible)
     }
+
+    return root
+  }
+
+  /** Single footprint mesh — avoids O(parcel count) geometry allocation on huge scenes. */
+  private buildMergedFootprintExportMeshes(exportSegmentsPerParcel: number): THREE.Group {
+    const root = new THREE.Group()
+    root.name = 'terrain_root'
+    root.userData.dclAuthorTerrainRoot = true
+
+    const seg = clampTerrainExportSegments(exportSegmentsPerParcel)
+    const cols = Math.max(1, Math.round(this.widthM / PARCEL_SIZE))
+    const rows = Math.max(1, Math.round(this.depthM / PARCEL_SIZE))
+    const segsX = Math.min(TERRAIN_MERGED_EXPORT_MAX_SEGS_PER_AXIS, cols * seg)
+    const segsZ = Math.min(TERRAIN_MERGED_EXPORT_MAX_SEGS_PER_AXIS, rows * seg)
+
+    const albedoMap = this.buildFootprintAlbedoTexture()
+    const visibleMat = new THREE.MeshStandardMaterial({
+      name: 'Terrain_Albedo_MAT',
+      color: 0xffffff,
+      map: albedoMap,
+      metalness: 0,
+      roughness: 1,
+      side: THREE.DoubleSide
+    })
+
+    const geo = new THREE.PlaneGeometry(this.widthM, this.depthM, segsX, segsZ)
+    geo.rotateX(-Math.PI / 2)
+    geo.translate(this.originX + this.widthM / 2, 0, this.originZ + this.depthM / 2)
+    const pos = geo.attributes.position as THREE.BufferAttribute
+    const uv = geo.attributes.uv as THREE.BufferAttribute
+    const res = this.resolution
+
+    for (let row = 0; row <= segsZ; row++) {
+      for (let col = 0; col <= segsX; col++) {
+        const vi = row * (segsX + 1) + col
+        const worldX = pos.getX(vi)
+        const worldZ = pos.getZ(vi)
+        const { u, v } = this.gridUvAtWorld(worldX, worldZ)
+        pos.setY(vi, sampleBilinearWorldY(this.heights, res, u, v))
+        uv.setXY(vi, u, v)
+      }
+    }
+    pos.needsUpdate = true
+    uv.needsUpdate = true
+    geo.computeVertexNormals()
+
+    const visible = new THREE.Mesh(geo, visibleMat)
+    visible.name = 'terrain_mesh_merged'
+    visible.userData.dclAuthorTerrain = true
+    visible.scale.x = -1
+    root.add(visible)
 
     return root
   }

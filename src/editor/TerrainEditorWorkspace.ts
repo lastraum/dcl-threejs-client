@@ -18,6 +18,7 @@ import { EditorMaxHeightGuide } from './EditorMaxHeightGuide'
 import { EditorAvatarScaleGuides } from './EditorAvatarScaleGuides'
 import { EditorTerrainHeightHud } from './ui/EditorTerrainHeightHud'
 import { EditorCameraResetButton } from './ui/EditorCameraResetButton'
+import { PARCEL_SIZE } from '../dcl/content/types'
 import { dclBoundsToThreeDisplay, dclToThreePos } from '../bridge/dclTransform'
 
 
@@ -51,6 +52,9 @@ export class TerrainEditorWorkspace {
   private flyCamera: EditorFlyCamera | null = null
   private removeFrameListener: (() => void) | null = null
   private gridHelper: THREE.GridHelper | null = null
+  private gridSizeM = 0
+  private gridDivisions = 0
+  private gridCenterDcl = { x: 0, z: 0 }
   private compass: EditorViewportCompass | null = null
   private heightHud: EditorTerrainHeightHud | null = null
   private cameraReset: EditorCameraResetButton | null = null
@@ -126,8 +130,6 @@ export class TerrainEditorWorkspace {
     const cam = host.camera
     cam.fov = 60
     cam.near = 0.05
-    cam.far = 8000
-    cam.updateProjectionMatrix()
     host.configureViewDistance(bounds)
 
     const assets = getSessionAssetCache()
@@ -149,6 +151,12 @@ export class TerrainEditorWorkspace {
     this.flyCamera = new EditorFlyCamera(cam, canvas)
     this.flyCamera.onResize(canvasHost.clientWidth, canvasHost.clientHeight)
     this.flyCamera.focusSouthFacingNorth(displayBounds, scene.spawn.y)
+    cam.far = Math.max(
+      cam.far,
+      EditorFlyCamera.overviewFarPlaneM(displayBounds, cam.fov)
+    )
+    cam.near = Math.min(0.5, cam.far / 50_000)
+    cam.updateProjectionMatrix()
     this.compass = new EditorViewportCompass(canvasHost)
     this.heightHud = new EditorTerrainHeightHud(canvasHost)
     this.cameraReset = new EditorCameraResetButton(canvasHost, {
@@ -170,17 +178,16 @@ export class TerrainEditorWorkspace {
     this.terrain.mount(host.scene)
     const terrainLoad = await loadTerrainFromProject(this.projectId, root, this.terrain)
 
-    this.gridHelper = new THREE.GridHelper(gridSizeM, Math.max(scene.parcels.length, 1) * 16, 0x446688, 0x223344)
-    dclToThreePos((bounds.minX + bounds.maxX) / 2, 0, (bounds.minZ + bounds.maxZ) / 2, this.gridHelper.position)
-    const gridMat = this.gridHelper.material
-    const materials = Array.isArray(gridMat) ? gridMat : [gridMat]
-    for (const mat of materials) {
-      mat.transparent = true
-      mat.opacity = 0.9
-      mat.depthWrite = false
+    const parcelCols = Math.max(1, Math.round(widthM / PARCEL_SIZE))
+    const parcelRows = Math.max(1, Math.round(depthM / PARCEL_SIZE))
+    const MAX_GRID_DIVISIONS = 2048
+    this.gridSizeM = gridSizeM
+    this.gridDivisions = Math.min(Math.max(parcelCols, parcelRows) * 16, MAX_GRID_DIVISIONS)
+    this.gridCenterDcl = { x: (bounds.minX + bounds.maxX) / 2, z: (bounds.minZ + bounds.maxZ) / 2 }
+    if (scene.parcels.length <= 256) {
+      this.ensureGridHelper(host.scene)
+      if (this.gridHelper) this.gridHelper.visible = true
     }
-    this.gridHelper.renderOrder = 2
-    host.scene.add(this.gridHelper)
 
     const axisLen = Math.min(14, Math.max(8, Math.min(widthM, depthM) * 0.4))
     const axisOrigin = dclToThreePos(bounds.minX + 0.15, 0.12, bounds.minZ + 0.15)
@@ -210,7 +217,6 @@ export class TerrainEditorWorkspace {
       this.terrain!.probeSurfaceAtDcl(dclX, dclZ).heightM
     )
     this.avatarScaleGuides.mount(host.scene)
-    await this.avatarScaleGuides.initialize()
 
     if (terrainLoad.exportSettings) {
       this.sculpt.setExportSettings(terrainLoad.exportSettings)
@@ -248,11 +254,27 @@ export class TerrainEditorWorkspace {
       setAvatarScaleGuidesVisible: (visible) => {
         this.avatarScaleGuides?.setVisible(visible)
         this.panel?.setAvatarScaleGuidesChecked(visible)
+        const guides = this.avatarScaleGuides
+        if (guides) {
+          this.panel?.setAvatarScaleGuidesCount(guides.getCountPerParcel(), guides.getPlacementPlan())
+          this.panel?.setAvatarScaleCapNote(guides.isPlacementCapped())
+        }
       },
-      getAvatarScaleGuidesCount: () => this.avatarScaleGuides?.getCountPerParcel() ?? 256,
+      getGridVisible: () => this.gridHelper?.visible ?? false,
+      setGridVisible: (visible) => {
+        if (visible) this.ensureGridHelper(this.host?.scene)
+        if (this.gridHelper) this.gridHelper.visible = visible
+        this.panel?.setGridChecked(visible)
+      },
+      getAvatarScaleGuidesCount: () => this.avatarScaleGuides?.getCountPerParcel() ?? 16,
+      getAvatarScaleGuidesPlan: () => this.avatarScaleGuides?.getPlacementPlan(),
       setAvatarScaleGuidesCount: (count) => {
-        this.avatarScaleGuides?.setCountPerParcel(count)
-        this.panel?.setAvatarScaleGuidesCount(this.avatarScaleGuides?.getCountPerParcel() ?? count)
+        const guides = this.avatarScaleGuides
+        guides?.setCountPerParcel(count)
+        if (guides) {
+          this.panel?.setAvatarScaleGuidesCount(guides.getCountPerParcel(), guides.getPlacementPlan())
+          this.panel?.setAvatarScaleCapNote(guides.isPlacementCapped())
+        }
       }
     })
 
@@ -299,9 +321,14 @@ export class TerrainEditorWorkspace {
       }
       if (e.code === 'KeyB') {
         e.preventDefault()
-        const next = !(this.avatarScaleGuides?.getVisible() ?? false)
-        this.avatarScaleGuides?.setVisible(next)
+        const guides = this.avatarScaleGuides
+        const next = !(guides?.getVisible() ?? false)
+        guides?.setVisible(next)
         this.panel?.setAvatarScaleGuidesChecked(next)
+        if (guides) {
+          this.panel?.setAvatarScaleGuidesCount(guides.getCountPerParcel(), guides.getPlacementPlan())
+          this.panel?.setAvatarScaleCapNote(guides.isPlacementCapped())
+        }
       }
     }
     window.addEventListener('keydown', this.keyHandler)
@@ -359,5 +386,24 @@ export class TerrainEditorWorkspace {
 
   private mouseHandlersAttached(): boolean {
     return Boolean(this.host && this.mouseMoveHandler)
+  }
+
+  /** Lazy — large scenes skip grid GPU buffers until the user enables it. */
+  private ensureGridHelper(scene: THREE.Scene | undefined): void {
+    if (!scene || this.gridHelper || this.gridSizeM <= 0) return
+
+    const grid = new THREE.GridHelper(this.gridSizeM, this.gridDivisions, 0x446688, 0x223344)
+    dclToThreePos(this.gridCenterDcl.x, 0, this.gridCenterDcl.z, grid.position)
+    const gridMat = grid.material
+    const materials = Array.isArray(gridMat) ? gridMat : [gridMat]
+    for (const mat of materials) {
+      mat.transparent = true
+      mat.opacity = 0.9
+      mat.depthWrite = false
+    }
+    grid.renderOrder = 2
+    grid.visible = false
+    scene.add(grid)
+    this.gridHelper = grid
   }
 }

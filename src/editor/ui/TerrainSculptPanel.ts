@@ -6,10 +6,10 @@ import type {
   TerrainSplatChannel
 } from '../terrain/terrainSculptConstants'
 import {
-  EDITOR_AVATAR_SCALE_DEFAULT_PER_PARCEL,
   EDITOR_AVATAR_SCALE_MAX_PER_PARCEL,
   EDITOR_AVATAR_SCALE_MIN_PER_PARCEL,
-  formatAvatarScaleCountLabel
+  formatAvatarScaleCountLabel,
+  type AvatarScalePlacementPlan
 } from '../EditorAvatarScaleGuides'
 import {
   TERRAIN_BIOME_COLORS,
@@ -47,9 +47,11 @@ export class TerrainSculptPanel {
   private grassColorInput: HTMLInputElement | null = null
   private rockColorInput: HTMLInputElement | null = null
   private maxHeightGuideCb: HTMLInputElement | null = null
+  private gridCb: HTMLInputElement | null = null
   private avatarScaleGuidesCb: HTMLInputElement | null = null
   private avatarScaleCountSlider: HTMLInputElement | null = null
   private avatarScaleCountValue: HTMLSpanElement | null = null
+  private avatarScaleCapNote: HTMLDivElement | null = null
   private brushRadiusSlider: HTMLInputElement | null = null
   private brushRadiusValue: HTMLSpanElement | null = null
   private brushStrengthSlider: HTMLInputElement | null = null
@@ -71,7 +73,10 @@ export class TerrainSculptPanel {
       setMaxHeightGuideVisible?: (visible: boolean) => void
       getAvatarScaleGuidesVisible?: () => boolean
       setAvatarScaleGuidesVisible?: (visible: boolean) => void
+      getGridVisible?: () => boolean
+      setGridVisible?: (visible: boolean) => void
       getAvatarScaleGuidesCount?: () => number
+      getAvatarScaleGuidesPlan?: () => AvatarScalePlacementPlan | undefined
       setAvatarScaleGuidesCount?: (count: number) => void
     }
   ) {
@@ -137,21 +142,32 @@ export class TerrainSculptPanel {
     if (this.avatarScaleGuidesCb) this.avatarScaleGuidesCb.checked = checked
   }
 
-  setAvatarScaleGuidesCount(count: number): void {
+  setAvatarScaleGuidesCount(count: number, plan?: AvatarScalePlacementPlan): void {
     if (this.avatarScaleCountSlider) {
       this.avatarScaleCountSlider.value = String(count)
     }
     if (this.avatarScaleCountValue) {
-      this.avatarScaleCountValue.textContent = formatAvatarScaleCountLabel(count)
+      this.avatarScaleCountValue.textContent = formatAvatarScaleCountLabel(count, plan)
+    }
+  }
+
+  setGridChecked(checked: boolean): void {
+    if (this.gridCb) this.gridCb.checked = checked
+  }
+
+  setAvatarScaleCapNote(capped: boolean): void {
+    if (this.avatarScaleCapNote) {
+      this.avatarScaleCapNote.hidden = !capped
     }
   }
 
   private addViewportControls(): void {
     const hasMaxHeight =
       this.refApi?.getMaxHeightGuideVisible && this.refApi.setMaxHeightGuideVisible
+    const hasGrid = this.refApi?.getGridVisible && this.refApi.setGridVisible
     const hasAvatarScale =
       this.refApi?.getAvatarScaleGuidesVisible && this.refApi.setAvatarScaleGuidesVisible
-    if (!hasMaxHeight && !hasAvatarScale) return
+    if (!hasMaxHeight && !hasGrid && !hasAvatarScale) return
 
     const wrap = document.createElement('div')
     wrap.className = 'editor-sculpt-viewport-box'
@@ -175,6 +191,20 @@ export class TerrainSculptPanel {
       wrap.appendChild(row)
     }
 
+    if (hasGrid) {
+      const row = document.createElement('label')
+      row.className = 'editor-sculpt-check'
+      this.gridCb = document.createElement('input')
+      this.gridCb.type = 'checkbox'
+      this.gridCb.checked = this.refApi!.getGridVisible!()
+      this.gridCb.addEventListener('change', () => {
+        this.refApi!.setGridVisible!(this.gridCb!.checked)
+      })
+      row.appendChild(this.gridCb)
+      row.append(' Parcel grid (1 m)')
+      wrap.appendChild(row)
+    }
+
     if (hasAvatarScale) {
       const row = document.createElement('label')
       row.className = 'editor-sculpt-check'
@@ -188,8 +218,7 @@ export class TerrainSculptPanel {
       row.append(' BaseMale mannequins — B')
       wrap.appendChild(row)
 
-      const initialCount =
-        this.refApi!.getAvatarScaleGuidesCount?.() ?? EDITOR_AVATAR_SCALE_DEFAULT_PER_PARCEL
+      const initialCount = this.refApi!.getAvatarScaleGuidesCount?.() ?? 16
       const countRow = this.sliderRow(
         'Mannequins per parcel',
         EDITOR_AVATAR_SCALE_MIN_PER_PARCEL,
@@ -204,9 +233,19 @@ export class TerrainSculptPanel {
       this.avatarScaleCountSlider = countRow.querySelector('input') as HTMLInputElement
       this.avatarScaleCountValue = countRow.querySelector('span') as HTMLSpanElement
       if (this.avatarScaleCountValue) {
-        this.avatarScaleCountValue.textContent = formatAvatarScaleCountLabel(initialCount)
+        this.avatarScaleCountValue.textContent = formatAvatarScaleCountLabel(
+          initialCount,
+          this.refApi!.getAvatarScaleGuidesPlan?.()
+        )
       }
       wrap.appendChild(countRow)
+
+      this.avatarScaleCapNote = document.createElement('div')
+      this.avatarScaleCapNote.className = 'editor-sculpt-hint'
+      this.avatarScaleCapNote.hidden = true
+      this.avatarScaleCapNote.textContent =
+        'Large scene: mannequin count capped for performance (max 8k instances).'
+      wrap.appendChild(this.avatarScaleCapNote)
     }
 
     this.host.appendChild(wrap)

@@ -1,0 +1,43 @@
+---
+description: Scene worker input, pointer, and UI CRDT — no defensive fallbacks
+alwaysApply: true
+---
+
+# Worker input & pointer architecture
+
+## Lanes (strict priority)
+
+| Lane | Messages | Handler |
+|------|----------|---------|
+| Pointer | `inject-pointer-click`, `pointer-crdt-deliver` | Priority bootstrap → `sceneWorker` deliver queue |
+| Keyboard | `scene-input-snapshot`, `pump-scene-engine-tick` | Normal worker message path |
+| Cooperative | `renderer-inbound-deliver`, RPC, boot | Normal path |
+
+Main posts freely. Worker owns ordering via `sceneWorkerInputSession` (snapshots coalesce during pointer session).
+
+## Pointer interactive tick (only path for UI clicks)
+
+One pipeline in `runSceneEnginePointerTick` — do **not** reuse cooperative tick with flags:
+
+1. `engine.update(0)` — EventSystem/getClick + deferred react-ecs (inject already on engine)
+2. `scene.exports.onUpdate(0)`
+3. `engine.update(0)` — react-ecs reconciles onUpdate closure mutations
+4. `emitSceneUiCrdtIfDirty` — **single** Ui CRDT transport emit
+
+Never emit Ui CRDT between phases 1 and 3.
+
+## Pointer timestamps
+
+All worker `PointerEventsResult` rows use `workerPointerEventTimestamp.ts` (keyboard snapshots, inject-pointer-click, renderer pointer appends). Main-thread timestamps are not authoritative on the worker.
+
+UI clicks: `inject-pointer-click` only — do not also ship main-encoded pointer appends.
+
+## Ui CRDT dirty touch
+
+`touchDirtyWorkerUiComponentsForCrdt` must emit removals via LWW `deleteFrom(entity)` when entities leave the fingerprint. No full-mount fallback. Fingerprint change without transport emit is a bug.
+
+## Do not
+
+- `deferUiEmit`, `pendingSceneInputSnapshot`, full-mount touch fallback, or `resumeSceneTicksAfterPointer` on skipped finalize
+- Defensive “belt-and-suspenders” paths — fix phase boundaries, queues, or delete semantics instead
+- Mid-tick Ui CRDT emit during pointer delivery

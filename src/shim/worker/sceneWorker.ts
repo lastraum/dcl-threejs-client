@@ -45,6 +45,13 @@ import { injectRendererLwwPutsOnEngine } from './injectRendererLwwPuts'
 import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransforms'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
+import {
+  coalesceKeyboardSnapshotDuringPointerSession,
+  enterPointerInputSession,
+  isPointerInputSessionActive,
+  leavePointerInputSession,
+  resetPointerInputSession
+} from './sceneWorkerInputSession'
 import { resolveSceneEngine } from './resolveSceneEngine'
 import { guardVideoPlayerGetMutable } from './guardVideoPlayerGetMutable'
 import { installVirtualCameraBindGuard } from './virtualCameraBindGuard'
@@ -197,7 +204,8 @@ const ENABLE_FULL_SCENE_ONUPDATE = true
 let debugSceneInputSnapshot = false
 let debugPointerDeliver = false
 let workerSnapshotPressed = new Set<InputActionValue>()
-let deferredSceneInputSnapshot: SceneInputSnapshotBody | null = null
+const pointerDeliverQueue: string[] = []
+let pointerDeliverDrainInFlight = false
 let debugSceneUiLog = false
 let sceneUiOutboundLogCount = 0
 /** Always log the first N post-boot UI CRDT outbounds (diagnose stuck black scrims). */
@@ -473,7 +481,10 @@ async function runPointerEngineTickWork(label: string): Promise<void> {
  * Same-tick engine tick after inject + CRDT apply — getClick() must run before main resumes ticks.
  * Do not defer via setTimeout; worker priority handlers were starving the timer queue.
  */
-async function runPointerEngineTickSync(label: string): Promise<void> {
+async function runPointerEngineTickSync(
+  label: string,
+  options?: { holdSceneTicksUntilBatchDrain?: boolean }
+): Promise<void> {
   pointerDeliveryInFlight = true
   pointerDeliveryStartedAt = performance.now()
   let timedOut = false
@@ -505,29 +516,48 @@ async function runPointerEngineTickSync(label: string): Promise<void> {
     clearTimeout(abortTimer)
     pointerDeliveryInFlight = false
     pointerDeliveryStartedAt = 0
+    if (!options?.holdSceneTicksUntilBatchDrain) {
+      resumeSceneTicksAfterPointer()
+      drainQueuedPointerDeliver()
+    }
+  }
+}
+
+/** Serialize pointer interactive ticks — one batch → one deliver-done. */
+function enqueuePointerDeliver(label: string): void {
+  pointerDeliverQueue.push(label)
+  void drainPointerDeliverQueue()
+}
+
+async function drainPointerDeliverQueue(): Promise<void> {
+  if (pointerDeliverDrainInFlight || !pointerDeliverQueue.length) return
+  pointerDeliverDrainInFlight = true
+  try {
+    while (pointerDeliverQueue.length) {
+      const label = pointerDeliverQueue.shift()!
+      await runPointerEngineTickSync(label, { holdSceneTicksUntilBatchDrain: true })
+      flushPointerDeferredOutbounds()
+      postPointerDeliverDone(label)
+    }
+    const snapshot = leavePointerInputSession()
+    if (snapshot) applyCoalescedKeyboardSnapshot(snapshot)
     resumeSceneTicksAfterPointer()
     drainQueuedPointerDeliver()
+  } finally {
+    pointerDeliverDrainInFlight = false
+    if (pointerDeliverQueue.length) void drainPointerDeliverQueue()
   }
 }
 
 /** Run engine tick + onUpdate flush, then ack main — Tween CRDT must finish before deliver-done. */
 function finalizePointerDelivery(label: string): void {
   if (!pointerDeliverBatchOpen) {
-    workerVerboseLog(
-      debugPointerDeliver,
-      'warn',
-      `[sceneWorker] ${label} — finalize skipped (no open pointer batch)`
-    )
-    resumeSceneTicksAfterPointer()
+    workerLog('error', `[sceneWorker] ${label} — finalize called without open pointer batch`)
     return
   }
   pointerDeliverBatchOpen = false
   clearPointerDeliverAckFallback()
-  void runPointerEngineTickSync(label).then(() => {
-    flushPointerDeferredOutbounds()
-    flushDeferredSceneInputSnapshot()
-    postPointerDeliverDone(label)
-  })
+  enqueuePointerDeliver(label)
 }
 
 function armPointerDeliverAckFallback(label: string): void {
@@ -541,6 +571,7 @@ function armPointerDeliverAckFallback(label: string): void {
 }
 
 function beginPointerDeliverBatch(label: string): void {
+  if (!isPointerInputSessionActive()) enterPointerInputSession()
   pointerDeliverBatchOpen = true
   armPointerDeliverAckFallback(label)
 }
@@ -577,20 +608,15 @@ function applySceneInputSnapshotNow(body: SceneInputSnapshotBody): boolean {
   }
 }
 
-function executeSceneInputSnapshot(body: SceneInputSnapshotBody): void {
+function applyCoalescedKeyboardSnapshot(body: SceneInputSnapshotBody): void {
   if (!sceneEngine) return
-  if (pointerDeliveryInFlight || pointerDeliverBatchOpen) {
-    deferredSceneInputSnapshot = body
-    return
-  }
   if (applySceneInputSnapshotNow(body)) scheduleSceneInputEngineTick()
 }
 
-function flushDeferredSceneInputSnapshot(): void {
-  if (!deferredSceneInputSnapshot) return
-  const body = deferredSceneInputSnapshot
-  deferredSceneInputSnapshot = null
-  if (applySceneInputSnapshotNow(body)) scheduleSceneInputEngineTick()
+function executeSceneInputSnapshot(body: SceneInputSnapshotBody): void {
+  if (!sceneEngine) return
+  if (coalesceKeyboardSnapshotDuringPointerSession(body)) return
+  applyCoalescedKeyboardSnapshot(body)
 }
 
 function publishVcPoseLiveIfBound(): void {
@@ -1864,7 +1890,9 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     debugPointerDeliver = msg.debug?.pointerDeliver === true
     resetWorkerInputSnapshotState()
     workerSnapshotPressed = new Set()
-    deferredSceneInputSnapshot = null
+    resetPointerInputSession()
+    pointerDeliverQueue.length = 0
+    pointerDeliverDrainInFlight = false
     debugTweenDeliver = msg.debug?.tweenDeliver === true
     debugMessageArrival = msg.debug?.messageArrival === true
     debugSceneUiLog = msg.debug?.sceneUiLog === true

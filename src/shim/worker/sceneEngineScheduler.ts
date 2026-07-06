@@ -8,13 +8,15 @@ import {
 /**
  * Single worker entry for sceneEngine.update — boot, hydration, play, inbound, pointer.
  *
- * Tick phases (one mutex, no parallel engine.update):
+ * Cooperative tick phases:
  *   1. engine.update(dt) — closure/timers + deferred react-ecs
- *   2. planSceneUiCrdtEmit — touch dirty Ui* when fingerprint changed
- *   3. engine.update(0) — transport emit only when step 2 touched rows
- *   4. commitSceneUiCrdtBaseline
+ *   2. emitSceneUiCrdtIfDirty — touch dirty Ui* + transport emit + baseline commit
  *
- * Inbound renderer CRDT applies state only; it requests a tick when inject counts need systems.
+ * Pointer interactive tick (separate pipeline — see runSceneEnginePointerTick):
+ *   1. engine.update(0) — getClick + react-ecs
+ *   2. scene.exports.onUpdate(0)
+ *   3. engine.update(0) — react-ecs after onUpdate
+ *   4. emitSceneUiCrdtIfDirty — one Ui CRDT emit
  */
 
 export type SceneEngineSchedulerConfig = {
@@ -25,7 +27,6 @@ export type SceneEngineSchedulerConfig = {
   resolvePlayIntervalMs: () => number
   pointerBlocksTick: () => boolean
   onStuckRecover: () => void
-  /** After each engine.update — e.g. live VC pose to main thread. */
   onAfterEngineTick?: () => void
 }
 
@@ -47,7 +48,6 @@ let lastExecutedAt = 0
 let bootSealed = false
 let hydrationTimer: ReturnType<typeof setInterval> | null = null
 let diagCount = 0
-/** Bumped on preempt/recovery — stale tick promises must not release the mutex or re-queue. */
 let tickEpoch = 0
 
 export function initSceneEngineScheduler(cfg: SceneEngineSchedulerConfig): void {
@@ -112,13 +112,15 @@ export function sceneEngineTickDue(now: number): boolean {
   return now - lastExecutedAt >= resolveIntervalMs()
 }
 
-type EngineTickPhaseOptions = {
-  /** Pointer batch — emit Ui CRDT once after onUpdate, not on intermediate react-ecs passes. */
-  deferUiEmit?: boolean
+async function emitSceneUiCrdtIfDirty(eng: IEngine): Promise<void> {
+  const cfg = config!
+  if (!planSceneUiCrdtEmit(eng, cfg.log)) return
+  await eng.update(0)
+  commitSceneUiCrdtBaseline(eng)
 }
 
-/** Systems pass + optional Ui CRDT transport emit — always under scheduler mutex. */
-async function runEngineTickPhases(engineDt: number, options?: EngineTickPhaseOptions): Promise<void> {
+/** Cooperative play / hydration tick. */
+async function runCooperativeEngineTickPhases(engineDt: number): Promise<void> {
   const cfg = config!
   const eng = engine!
   if (diagCount < 8) {
@@ -130,15 +132,7 @@ async function runEngineTickPhases(engineDt: number, options?: EngineTickPhaseOp
   await eng.update(engineDt)
   lastExecutedAt = performance.now()
   cfg.onAfterEngineTick?.()
-  if (options?.deferUiEmit) return
-  await flushSceneUiCrdtEmit(eng)
-}
-
-async function flushSceneUiCrdtEmit(eng: IEngine): Promise<void> {
-  const cfg = config!
-  if (!planSceneUiCrdtEmit(eng, cfg.log)) return
-  await eng.update(0)
-  commitSceneUiCrdtBaseline(eng)
+  await emitSceneUiCrdtIfDirty(eng)
 }
 
 async function executeTickWork(engineDt: number): Promise<void> {
@@ -146,7 +140,7 @@ async function executeTickWork(engineDt: number): Promise<void> {
   let abortTimer: ReturnType<typeof setTimeout> | null = null
   try {
     await Promise.race([
-      runEngineTickPhases(engineDt),
+      runCooperativeEngineTickPhases(engineDt),
       new Promise<never>((_, reject) => {
         abortTimer = setTimeout(
           () => reject(new Error(`engine tick exceeded ${cfg.tickAbortMs}ms`)),
@@ -182,7 +176,6 @@ export function forceRecoverStuckSceneEngineTick(reason: string): void {
   }
 }
 
-/** Pointer priority — drop in-flight mutex without re-queue (pointer tick runs its own phases). */
 export function preemptSceneEngineTick(): void {
   if (!tickInFlight) return
   tickEpoch++
@@ -190,7 +183,6 @@ export function preemptSceneEngineTick(): void {
   tickStartedAt = 0
 }
 
-/** All non-boot engine.update sources coalesce here. */
 export function requestSceneEngineTick(): void {
   if (!engine || !bootSealed || !config) return
   if (config.pointerBlocksTick()) {
@@ -223,16 +215,12 @@ export function drainQueuedSceneEngineTick(): void {
   requestSceneEngineTick()
 }
 
-/**
- * Boot boundary — onStart → one engine tick → seed fingerprint → sealed.
- * No hydration / inbound / cooperative ticks until this returns.
- */
 export async function runSceneEngineBootTick(eng: IEngine): Promise<void> {
   bootSealed = false
   tickInFlight = true
   tickStartedAt = performance.now()
   try {
-    await runEngineTickPhases(0)
+    await runCooperativeEngineTickPhases(0)
     seedWorkerUiFingerprint(eng)
     bootSealed = true
     diagCount = 0
@@ -242,7 +230,6 @@ export async function runSceneEngineBootTick(eng: IEngine): Promise<void> {
   }
 }
 
-/** Inbound CRDT — apply only; request a tick when injected components need systems. */
 export function sceneEngineTickAfterInboundInject(counts: RendererInboundInjectCounts): void {
   const needsSystems =
     counts.raycastPuts > 0 ||
@@ -255,21 +242,22 @@ export function sceneEngineTickAfterInboundInject(counts: RendererInboundInjectC
 }
 
 /**
- * Pointer batch — multi-phase tick (engine → ui emit → onUpdate → engine → ui emit).
- * Runs under pointer delivery mutex in sceneWorker; does not use requestSceneEngineTick queue.
+ * Pointer interactive tick — inject is already on the engine before this runs.
+ * Separate from cooperative ticks; one Ui CRDT emit at the end.
  */
 export async function runSceneEnginePointerTick(
   eng: IEngine,
   runOnUpdate: () => Promise<void>
 ): Promise<void> {
   const cfg = config!
-  // Click → react-ecs → onUpdate → react-ecs; one Ui CRDT emit at the end (mid-tick emit + revert flashed UI).
-  await runEngineTickPhases(0, { deferUiEmit: true })
+  await eng.update(0)
+  lastExecutedAt = performance.now()
+  cfg.onAfterEngineTick?.()
   await runOnUpdate()
   await eng.update(0)
   lastExecutedAt = performance.now()
   cfg.onAfterEngineTick?.()
-  await flushSceneUiCrdtEmit(eng)
+  await emitSceneUiCrdtIfDirty(eng)
 }
 
 export function syncSceneEngineHydrationTimer(): void {

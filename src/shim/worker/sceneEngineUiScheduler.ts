@@ -236,6 +236,46 @@ export function touchWorkerUiComponentsForCrdt(engine: IEngine): number {
   return touched
 }
 
+function touchRemovedUiEntityForCrdt(
+  entity: Entity,
+  components: {
+    UiTransform: ReturnType<typeof resolveWorkerUiTransform>
+    UiBackground: ReturnType<typeof resolveWorkerUiBackground>
+    UiText: ReturnType<typeof resolveWorkerUiText>
+    UiInput: ReturnType<typeof resolveWorkerUiInput>
+    UiDropdown: ReturnType<typeof resolveWorkerUiDropdown>
+    PointerEvents: ReturnType<typeof generated.PointerEvents>
+  }
+): number {
+  const id = entity as Entity
+  let touched = 0
+  if (components.PointerEvents.has(id)) {
+    components.PointerEvents.deleteFrom(id)
+    touched++
+  }
+  if (components.UiDropdown.has(id)) {
+    components.UiDropdown.deleteFrom(id)
+    touched++
+  }
+  if (components.UiInput.has(id)) {
+    components.UiInput.deleteFrom(id)
+    touched++
+  }
+  if (components.UiText.has(id)) {
+    components.UiText.deleteFrom(id)
+    touched++
+  }
+  if (components.UiBackground.has(id)) {
+    components.UiBackground.deleteFrom(id)
+    touched++
+  }
+  if (components.UiTransform.has(id)) {
+    components.UiTransform.deleteFrom(id)
+    touched++
+  }
+  return touched
+}
+
 /** Touch only entities whose fingerprint line changed — boot baseline uses full mount when prev is empty. */
 function touchDirtyWorkerUiComponentsForCrdt(engine: IEngine, prevFingerprint: string): number {
   const fingerprint = computeWorkerUiFingerprint(engine)
@@ -264,7 +304,12 @@ function touchDirtyWorkerUiComponentsForCrdt(engine: IEngine, prevFingerprint: s
   }
   let touched = 0
   for (const entity of dirty) {
-    touched += touchWorkerUiEntityForCrdt(entity, components)
+    const key = String(entity)
+    if (prevLines.has(key) && !currLines.has(key)) {
+      touched += touchRemovedUiEntityForCrdt(entity, components)
+    } else {
+      touched += touchWorkerUiEntityForCrdt(entity, components)
+    }
   }
   return touched
 }
@@ -278,16 +323,11 @@ export function planSceneUiCrdtEmit(engine: IEngine, log?: (message: string) => 
   if (fingerprint === lastWorkerUiFingerprint) return false
 
   const prevLen = lastWorkerUiFingerprint.length
-  let touched = touchDirtyWorkerUiComponentsForCrdt(engine, lastWorkerUiFingerprint)
-  // Collapse paths may delete Ui* rows — dirty ids exist but per-entity touch returns 0; force full mount.
-  if (touched <= 0 && fingerprint !== lastWorkerUiFingerprint) {
-    touched = touchWorkerUiComponentsForCrdt(engine)
-  }
+  const touched = touchDirtyWorkerUiComponentsForCrdt(engine, lastWorkerUiFingerprint)
   if (touched <= 0) {
     log?.(
-      `[sceneWorker] ui fingerprint changed but no touch — fp=${prevLen}→${fingerprint.length}B`
+      `[sceneWorker] ui fingerprint changed without transport touch — fp=${prevLen}→${fingerprint.length}B`
     )
-    lastWorkerUiFingerprint = fingerprint
     return false
   }
   log?.(`[sceneWorker] ui fingerprint flush — touched=${touched} fp=${prevLen}→${fingerprint.length}B`)

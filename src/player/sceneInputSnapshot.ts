@@ -4,6 +4,10 @@ import { preregisterRendererInjectedComponents } from '../shim/worker/preregiste
 import { InputAction, PointerEventType, type InputActionValue } from '../input/pointerConstants'
 import type { InjectSceneInputBody } from './injectSceneInput'
 import { injectSceneKeyOnEngine } from './injectSceneInput'
+import {
+  nextWorkerPointerEventTimestamp,
+  resetWorkerPointerEventTimestamp
+} from '../shim/worker/workerPointerEventTimestamp'
 
 /** Level-state keyboard snapshot — Phase 1+ replacement for per-edge PointerEventsResult relay. */
 export type SceneInputSnapshotBody = {
@@ -52,12 +56,6 @@ export function sceneInputSnapshotPressedEqual(
   return true
 }
 
-let workerInputTimestamp = 1
-
-function nextWorkerInputTimestamp(): number {
-  return workerInputTimestamp++
-}
-
 /** Mirror `inputSystem.isPressed` — latest PET_DOWN/UP on PlayerEntity PointerEventsResult. */
 export function isSceneInputPressedOnPlayer(
   engine: IEngine,
@@ -76,7 +74,7 @@ export function isSceneInputPressedOnPlayer(
 }
 
 export function resetWorkerInputSnapshotState(): void {
-  workerInputTimestamp = 1
+  resetWorkerPointerEventTimestamp()
 }
 
 /** Compare worker pressed state against main-thread level snapshot (shadow parity). */
@@ -114,7 +112,7 @@ export function applySceneInputSnapshotOnEngine(
       playerEntity,
       button: action,
       state: now ? PointerEventType.PET_DOWN : PointerEventType.PET_UP,
-      timestamp: nextWorkerInputTimestamp(),
+      timestamp: nextWorkerPointerEventTimestamp(),
       tickNumber
     }
     injectSceneKeyOnEngine(engine, body)

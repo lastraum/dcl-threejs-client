@@ -4,6 +4,7 @@ import { preregisterRendererInjectedComponents } from './preregisterRendererInje
 import { ReadWriteByteBuffer } from '@dcl/ecs/dist/serialization/ByteBuffer'
 import { readMessage } from '@dcl/ecs/dist/serialization/crdt/message'
 import { CrdtMessageType } from '@dcl/ecs/dist/serialization/crdt/types'
+import { nextWorkerPointerEventTimestamp } from './workerPointerEventTimestamp'
 
 /** `core::TriggerAreaResult` — grow-only trigger events from the renderer. */
 const TRIGGER_AREA_RESULT_ID = 1061
@@ -52,6 +53,7 @@ export function injectRendererGrowOnlyAppendsOnEngine(
         } else if (msg.componentId === POINTER_EVENTS_RESULT_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = PointerEventsResult.schema.deserialize(valueBuf)
+          value.timestamp = nextWorkerPointerEventTimestamp()
           PointerEventsResult.addValue(msg.entityId as Entity, value)
           pointerAppends++
         }

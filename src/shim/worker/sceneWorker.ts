@@ -781,7 +781,7 @@ function executePointerInjection(body: InjectPointerClickBody, injectOnly = fals
     workerVerboseLog(debugPointerDeliver, 'log', '[sceneWorker] inject-pointer-click — PointerEventsResult written')
     beginPointerDeliverBatch('inject-pointer-click')
     if (injectOnly) {
-      queueMicrotask(() => finalizePointerDelivery('inject-pointer-click'))
+      finalizePointerDelivery('inject-pointer-click')
     }
   } catch (err) {
     workerLog(
@@ -790,7 +790,7 @@ function executePointerInjection(body: InjectPointerClickBody, injectOnly = fals
     )
     beginPointerDeliverBatch('inject-pointer-click')
     if (injectOnly) {
-      queueMicrotask(() => finalizePointerDelivery('inject-pointer-click-error'))
+      finalizePointerDelivery('inject-pointer-click-error')
     }
   }
 }
@@ -1846,6 +1846,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     executeSceneInputSnapshot(msg.body)
     return
   }
+  if (msg.type === 'pump-scene-engine-tick') {
+    scheduleSceneInputEngineTick({ flightPump: true })
+    return
+  }
 
   if (msg.type !== 'boot') return
 
@@ -2117,10 +2121,6 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
       'log',
       `[sceneWorker] scene onUpdate ${sceneOnUpdatePaused ? 'paused (hydration)' : 'resumed'}`
     )
-    return
-  }
-  if (msg.type === 'pump-scene-engine-tick') {
-    scheduleSceneInputEngineTick({ flightPump: true })
     return
   }
   if (msg.type === 'inject-pointer-click') {

@@ -3,6 +3,7 @@ import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
 import { PointerEventType } from '../../input/pointerConstants'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
+import { nextWorkerPointerEventTimestamp } from './workerPointerEventTimestamp'
 
 /** Write PointerEventsResult directly on the scene worker engine (same-tick getClick). */
 export function injectPointerClickOnEngine(engine: IEngine, body: InjectPointerClickBody): void {
@@ -18,10 +19,14 @@ export function injectPointerClickOnEngine(engine: IEngine, body: InjectPointerC
     meshName: body.meshName ?? ''
   }
 
+  // Main-thread timestamps (1,2,…) fall behind worker keyboard snapshots — getClick() rejects them.
+  const downTimestamp = nextWorkerPointerEventTimestamp()
+  const upTimestamp = nextWorkerPointerEventTimestamp()
+
   const down = {
     button: body.button,
     state: PointerEventType.PET_DOWN,
-    timestamp: body.downTimestamp,
+    timestamp: downTimestamp,
     tickNumber: body.tickNumber,
     hit,
     analog: undefined
@@ -29,7 +34,7 @@ export function injectPointerClickOnEngine(engine: IEngine, body: InjectPointerC
   const up = {
     button: body.button,
     state: PointerEventType.PET_UP,
-    timestamp: body.upTimestamp,
+    timestamp: upTimestamp,
     tickNumber: body.tickNumber,
     hit,
     analog: undefined

@@ -2224,6 +2224,9 @@ export class SceneScriptSystem {
   /** ~60Hz worker ticks during held flight keys — snapshot is level-state (no edge spam). */
   private pumpSceneEngineTick(): void {
     if (!this.running || !this.worker) return
+    if (this.pointerFlushInFlight || this.pointerAwaitingWorkerApply || this.pointerDeliverAwaitingAck) {
+      return
+    }
     this.worker.postMessage({ type: 'pump-scene-engine-tick' } satisfies MainToWorker)
   }
 
@@ -2298,18 +2301,24 @@ export class SceneScriptSystem {
       this.syncPointerInput(this.crdtTick, { processPendingDown: true, processPendingUp: true })
       this.crdtTick++
 
-      // Source-capture already queued appends — encode pointer appends only (no player/camera LWW).
-      const pendingAppends = this.encoder.pendingAppendCount
-      const appendBytes = this.encoder.encodeAppendsOnly()
-      if (appendBytes) {
+      // inject-pointer-click is authoritative on the worker — skip main-encoded pointer appends
+      // (stale low timestamps would poison getClick even after inject remaps).
+      const directInject = this.pointerEvents.hasPendingInjectPayload()
+      if (directInject) {
         this.pointerResponseStash.length = 0
-        this.pointerResponseStash.push(appendBytes.slice())
       } else {
-        console.warn(
-          '[pointer]',
-          `pointer flush — encoder append encode empty (pendingAppends=${pendingAppends})`
-        )
-        this.pointerResponseStash.length = 0
+        const pendingAppends = this.encoder.pendingAppendCount
+        const appendBytes = this.encoder.encodeAppendsOnly()
+        if (appendBytes) {
+          this.pointerResponseStash.length = 0
+          this.pointerResponseStash.push(appendBytes.slice())
+        } else {
+          console.warn(
+            '[pointer]',
+            `pointer flush — encoder append encode empty (pendingAppends=${pendingAppends})`
+          )
+          this.pointerResponseStash.length = 0
+        }
       }
       this.consolidatePointerStash()
       const stashedBytes = this.pointerResponseStash.reduce((n, c) => n + c.byteLength, 0)

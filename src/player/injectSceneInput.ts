@@ -51,11 +51,7 @@ const SCENE_RELAY_ACTIONS: readonly InputActionValue[] = [
   InputAction.IA_ACTION_6
 ]
 
-let workerInputTimestamp = 1
-
-function nextWorkerInputTimestamp(): number {
-  return workerInputTimestamp++
-}
+import { nextWorkerPointerEventTimestamp } from '../shim/worker/workerPointerEventTimestamp'
 
 export function releaseAllSceneKeysOnEngine(
   engine: IEngine,
@@ -67,7 +63,7 @@ export function releaseAllSceneKeysOnEngine(
       playerEntity,
       button: action,
       state: PointerEventType.PET_UP,
-      timestamp: nextWorkerInputTimestamp(),
+      timestamp: nextWorkerPointerEventTimestamp(),
       tickNumber
     })
   }

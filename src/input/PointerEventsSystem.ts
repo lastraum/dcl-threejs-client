@@ -495,6 +495,11 @@ export class PointerEventsSystem {
     return this.pendingPointerDown.size > 0 || this.pendingPointerUp.size > 0
   }
 
+  /** True after syncInput PET_UP — direct worker inject will carry the click. */
+  hasPendingInjectPayload(): boolean {
+    return this.pendingInjectPayload !== null
+  }
+
   /** Mobile HUD — same path as E/F keyboard interact. */
   triggerInputAction(action: InputActionValue, phase: 'down' | 'up'): void {
     if (!this.deps) return

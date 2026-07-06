@@ -31,7 +31,29 @@ type SceneInputRelayDeps = {
   isLocomotionBlocked?: () => boolean
   clearPlayerMoveKeys?: () => void
   injectToWorker: (body: InjectSceneInputBody) => void
+  /** High-rate worker ticks while flight keys are held — no input re-inject (avoids VC drift). */
+  pumpWorkerTick?: () => void
+  /** Belt-and-suspenders PET_UP for all flight actions on worker. */
+  releaseWorkerKeys?: () => void
+  /** Drop VC live-lane LWW so final worker Transform CRDT can land. */
+  onFlightKeysReleased?: () => void
 }
+
+/** Keys that drive creator VC flight — pump worker engine ticks while these are held. */
+const FLIGHT_TICK_ACTIONS: ReadonlySet<InputActionValue> = new Set([
+  InputAction.IA_FORWARD,
+  InputAction.IA_BACKWARD,
+  InputAction.IA_RIGHT,
+  InputAction.IA_LEFT,
+  InputAction.IA_JUMP,
+  InputAction.IA_WALK,
+  InputAction.IA_PRIMARY,
+  InputAction.IA_SECONDARY,
+  InputAction.IA_ACTION_3,
+  InputAction.IA_ACTION_4,
+  InputAction.IA_ACTION_5,
+  InputAction.IA_ACTION_6
+])
 
 /** Explorer parity — see `inputActionBinding.ts` + WASD arrows for flight. */
 const CODE_TO_ACTIONS: ReadonlyArray<{ codes: readonly string[]; actions: readonly InputActionValue[] }> = [
@@ -70,9 +92,8 @@ export class SceneInputRelay {
   private readonly codeDownCount = new Map<string, number>()
   private tickNumber = 0
   private bound = false
-  private lastHeartbeatMs = 0
-  /** Re-assert held keys at display rate — 100ms caused ~10Hz creator camera steps. */
-  private static readonly HEARTBEAT_MS = 16
+  private lastFlightPumpMs = 0
+  private static readonly FLIGHT_PUMP_MS = 16
 
   bind(deps: SceneInputRelayDeps): void {
     this.unbindListeners()
@@ -82,6 +103,8 @@ export class SceneInputRelay {
     this.tickNumber = 0
     window.addEventListener('keydown', this.onKeyDown, true)
     window.addEventListener('keyup', this.onKeyUp, true)
+    window.addEventListener('blur', this.onWindowBlur)
+    document.addEventListener('visibilitychange', this.onVisibilityChange)
     this.bound = true
   }
 
@@ -96,30 +119,44 @@ export class SceneInputRelay {
     if (!this.bound) return
     window.removeEventListener('keydown', this.onKeyDown, true)
     window.removeEventListener('keyup', this.onKeyUp, true)
+    window.removeEventListener('blur', this.onWindowBlur)
+    document.removeEventListener('visibilitychange', this.onVisibilityChange)
     this.bound = false
   }
 
-  /** Re-assert held keys while creator camera flight is active (throttled — avoids inject spam). */
+  /**
+   * Per-frame hook — Explorer reads hardware state each tick; worker `isPressed` persists
+   * after edge injects, so heartbeat re-injection only spams engine ticks (VC tween drift).
+   */
   sync(tickNumber: number): void {
-    if (!this.deps || !this.relayPressed.size) return
+    if (!this.deps) return
     this.tickNumber = tickNumber
-
     if (this.deps.isRelayBlocked()) {
       this.releaseAll('blocked')
       return
     }
 
-    if (this.deps.isLocomotionBlocked?.()) {
-      this.deps.clearPlayerMoveKeys?.()
+    this.reconcileHardwareKeys()
+
+    if (!this.deps.pumpWorkerTick || !this.relayPressed.size) return
+    let needsPump = false
+    for (const action of this.relayPressed) {
+      if (FLIGHT_TICK_ACTIONS.has(action)) {
+        needsPump = true
+        break
+      }
     }
+    if (!needsPump) return
 
     const now = performance.now()
-    if (now - this.lastHeartbeatMs < SceneInputRelay.HEARTBEAT_MS) return
-    this.lastHeartbeatMs = now
+    if (now - this.lastFlightPumpMs < SceneInputRelay.FLIGHT_PUMP_MS) return
+    this.lastFlightPumpMs = now
+    this.deps.pumpWorkerTick()
+  }
 
-    for (const action of this.relayPressed) {
-      this.emit(action, PointerEventType.PET_DOWN, true)
-    }
+  /** Drop relayed keys on the main thread and send matching PET_UP to the worker. */
+  releaseHeldKeys(reason: string): void {
+    this.releaseAll(reason)
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {
@@ -162,24 +199,75 @@ export class SceneInputRelay {
     }
     this.codeDownCount.delete(e.code)
 
+    let releasedFlight = false
     for (const action of actions) {
       if (!this.relayPressed.has(action)) continue
-      this.emit(action, PointerEventType.PET_UP, false)
       this.relayPressed.delete(action)
+      this.emit(action, PointerEventType.PET_UP, false)
+      if (FLIGHT_TICK_ACTIONS.has(action)) releasedFlight = true
+    }
+    if (releasedFlight) this.notifyWorkerIfRelayEmpty()
+  }
+
+  private onWindowBlur = (): void => {
+    this.releaseAll('blur')
+  }
+
+  private onVisibilityChange = (): void => {
+    if (document.visibilityState === 'hidden') {
+      this.releaseAll('hidden')
     }
   }
 
   private releaseAll(reason: string): void {
-    if (!this.relayPressed.size) return
+    const hadFlight = [...this.relayPressed].some((action) => FLIGHT_TICK_ACTIONS.has(action))
+    const hadKeys = this.relayPressed.size > 0
     for (const action of [...this.relayPressed]) {
       this.emit(action, PointerEventType.PET_UP, true)
     }
     this.relayPressed.clear()
     this.codeDownCount.clear()
-    clientDebugLog.log('input', `scene relay release — ${reason}`, { throttleMs: 500 })
+    if (hadKeys) {
+      clientDebugLog.log('input', `scene relay release — ${reason}`, { throttleMs: 500 })
+    }
+    if (hadFlight) {
+      this.deps?.releaseWorkerKeys?.()
+      this.deps?.onFlightKeysReleased?.()
+    }
   }
 
-  private emit(action: InputActionValue, state: PointerEventTypeValue, heartbeat: boolean): void {
+  private notifyWorkerIfRelayEmpty(): void {
+    if (!this.relayPressed.size) {
+      this.deps?.releaseWorkerKeys?.()
+      this.deps?.onFlightKeysReleased?.()
+    }
+  }
+
+  /**
+   * Relay-owned key counts — PlayerInput skips WASD while InputModifier blocks avatar
+   * locomotion (creator MOVE CAMERA), so hardware snapshot reconcile falsely released
+   * held flight keys and spammed worker release/ticks (breaking first UI click).
+   */
+  private reconcileHardwareKeys(): void {
+    let releasedFlight = false
+    for (const action of [...this.relayPressed]) {
+      if (this.isActionPhysicallyDown(action)) continue
+      this.relayPressed.delete(action)
+      this.emit(action, PointerEventType.PET_UP, false)
+      if (FLIGHT_TICK_ACTIONS.has(action)) releasedFlight = true
+    }
+    if (releasedFlight) this.notifyWorkerIfRelayEmpty()
+  }
+
+  private isActionPhysicallyDown(action: InputActionValue): boolean {
+    for (const [code, actions] of codeToActions) {
+      if (!actions.includes(action)) continue
+      if ((this.codeDownCount.get(code) ?? 0) > 0) return true
+    }
+    return false
+  }
+
+  private emit(action: InputActionValue, state: PointerEventTypeValue, silent: boolean): void {
     if (!this.deps) return
     const { ecs, view, recordAppend, injectToWorker } = this.deps
     const player = view.PlayerEntity
@@ -200,7 +288,7 @@ export class SceneInputRelay {
       timestamp: result.timestamp,
       tickNumber: this.tickNumber
     })
-    if (!heartbeat) {
+    if (!silent) {
       const line = `scene relay ${state === PointerEventType.PET_DOWN ? 'DOWN' : 'UP'} button=${action}`
       clientDebugLog.log('input', line, { throttleMs: 80, alsoConsole: true })
     }

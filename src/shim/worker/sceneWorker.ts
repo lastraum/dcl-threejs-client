@@ -36,6 +36,7 @@ import { injectPointerClickOnEngine } from './injectPointerClick'
 import {
   applySceneInputSnapshotOnEngine,
   resetWorkerInputSnapshotState,
+  sceneInputSnapshotPressedEqual,
   type SceneInputSnapshotBody
 } from '../../player/sceneInputSnapshot'
 import type { InputActionValue } from '../../input/pointerConstants'
@@ -196,6 +197,7 @@ const ENABLE_FULL_SCENE_ONUPDATE = true
 let debugSceneInputSnapshot = false
 let debugPointerDeliver = false
 let workerSnapshotPressed = new Set<InputActionValue>()
+let deferredSceneInputSnapshot: SceneInputSnapshotBody | null = null
 let debugSceneUiLog = false
 let sceneUiOutboundLogCount = 0
 /** Always log the first N post-boot UI CRDT outbounds (diagnose stuck black scrims). */
@@ -511,13 +513,19 @@ async function runPointerEngineTickSync(label: string): Promise<void> {
 /** Run engine tick + onUpdate flush, then ack main — Tween CRDT must finish before deliver-done. */
 function finalizePointerDelivery(label: string): void {
   if (!pointerDeliverBatchOpen) {
-    workerLog('warn', `[sceneWorker] ${label} — finalize skipped (no open pointer batch)`)
+    workerVerboseLog(
+      debugPointerDeliver,
+      'warn',
+      `[sceneWorker] ${label} — finalize skipped (no open pointer batch)`
+    )
+    resumeSceneTicksAfterPointer()
     return
   }
   pointerDeliverBatchOpen = false
   clearPointerDeliverAckFallback()
   void runPointerEngineTickSync(label).then(() => {
     flushPointerDeferredOutbounds()
+    flushDeferredSceneInputSnapshot()
     postPointerDeliverDone(label)
   })
 }
@@ -544,8 +552,9 @@ function workerLog(level: 'log' | 'info' | 'warn' | 'error' | 'debug', message: 
 
 let lastVcPoseLiveKey = ''
 
-function executeSceneInputSnapshot(body: SceneInputSnapshotBody): void {
-  if (!sceneEngine) return
+function applySceneInputSnapshotNow(body: SceneInputSnapshotBody): boolean {
+  if (!sceneEngine) return false
+  if (sceneInputSnapshotPressedEqual(workerSnapshotPressed, body.pressed)) return false
   try {
     workerSnapshotPressed = applySceneInputSnapshotOnEngine(
       sceneEngine,
@@ -558,13 +567,30 @@ function executeSceneInputSnapshot(body: SceneInputSnapshotBody): void {
       'log',
       `[sceneWorker] scene-input-snapshot — tick=${body.tickNumber} pressed=[${body.pressed.join(', ')}]`
     )
-    scheduleSceneInputEngineTick()
+    return true
   } catch (err) {
     workerLog(
       'error',
       `[sceneWorker] scene-input-snapshot failed — ${err instanceof Error ? err.message : String(err)}`
     )
+    return false
   }
+}
+
+function executeSceneInputSnapshot(body: SceneInputSnapshotBody): void {
+  if (!sceneEngine) return
+  if (pointerDeliveryInFlight || pointerDeliverBatchOpen) {
+    deferredSceneInputSnapshot = body
+    return
+  }
+  if (applySceneInputSnapshotNow(body)) scheduleSceneInputEngineTick()
+}
+
+function flushDeferredSceneInputSnapshot(): void {
+  if (!deferredSceneInputSnapshot) return
+  const body = deferredSceneInputSnapshot
+  deferredSceneInputSnapshot = null
+  if (applySceneInputSnapshotNow(body)) scheduleSceneInputEngineTick()
 }
 
 function publishVcPoseLiveIfBound(): void {
@@ -1816,6 +1842,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     deliverRendererInboundGeneral(msg.data)
     return
   }
+  if (msg.type === 'scene-input-snapshot') {
+    executeSceneInputSnapshot(msg.body)
+    return
+  }
 
   if (msg.type !== 'boot') return
 
@@ -1830,6 +1860,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     debugPointerDeliver = msg.debug?.pointerDeliver === true
     resetWorkerInputSnapshotState()
     workerSnapshotPressed = new Set()
+    deferredSceneInputSnapshot = null
     debugTweenDeliver = msg.debug?.tweenDeliver === true
     debugMessageArrival = msg.debug?.messageArrival === true
     debugSceneUiLog = msg.debug?.sceneUiLog === true
@@ -2090,10 +2121,6 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
   }
   if (msg.type === 'pump-scene-engine-tick') {
     scheduleSceneInputEngineTick({ flightPump: true })
-    return
-  }
-  if (msg.type === 'scene-input-snapshot') {
-    executeSceneInputSnapshot(msg.body as SceneInputSnapshotBody)
     return
   }
   if (msg.type === 'inject-pointer-click') {

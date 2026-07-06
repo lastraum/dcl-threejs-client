@@ -36,6 +36,22 @@ export function buildSceneInputSnapshot(
   return { tickNumber, pressed: [...pressed] }
 }
 
+export function sceneInputSnapshotSignature(pressed: readonly InputActionValue[]): string {
+  if (!pressed.length) return ''
+  return [...pressed].sort((a, b) => a - b).join(',')
+}
+
+export function sceneInputSnapshotPressedEqual(
+  applied: ReadonlySet<InputActionValue>,
+  pressed: readonly InputActionValue[]
+): boolean {
+  if (applied.size !== pressed.length) return false
+  for (const action of pressed) {
+    if (!applied.has(action)) return false
+  }
+  return true
+}
+
 let workerInputTimestamp = 1
 
 function nextWorkerInputTimestamp(): number {

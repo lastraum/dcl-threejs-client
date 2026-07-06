@@ -255,6 +255,9 @@ export class SceneScriptSystem {
   private pointerDeliverFailWatchdog: ReturnType<typeof setTimeout> | null = null
   /** Click flush pending — cleared on pointer-deliver-done. */
   private pointerAwaitingWorkerApply = false
+  /** Keyboard snapshot held while pointer inject/deliver is in flight. */
+  private pendingSceneInputSnapshot: import('../../player/sceneInputSnapshot').SceneInputSnapshotBody | null =
+    null
   /** Mount set commit deferred — projection UiTransform lagging worker uiEntities. */
   private projectionLagPendingUi = false
   /** Worker uiEntities held until applyUiFrame can commit mount set + paint atomically. */
@@ -2229,6 +2232,21 @@ export class SceneScriptSystem {
     body: import('../../player/sceneInputSnapshot').SceneInputSnapshotBody
   ): void {
     if (!this.running || !this.worker) return
+    if (
+      this.pointerFlushInFlight ||
+      this.pointerAwaitingWorkerApply ||
+      this.pointerDeliverAwaitingAck
+    ) {
+      this.pendingSceneInputSnapshot = body
+      return
+    }
+    this.worker.postMessage({ type: 'scene-input-snapshot', body } satisfies MainToWorker)
+  }
+
+  private flushPendingSceneInputSnapshot(): void {
+    const body = this.pendingSceneInputSnapshot
+    if (!body || !this.running || !this.worker) return
+    this.pendingSceneInputSnapshot = null
     this.worker.postMessage({ type: 'scene-input-snapshot', body } satisfies MainToWorker)
   }
 
@@ -2400,6 +2418,7 @@ export class SceneScriptSystem {
     await this.reconcilePointerCollisionAfterDelivery()
     this.proactiveTweenPushUntil = performance.now() + SceneScriptSystem.PROACTIVE_TWEEN_PUSH_MS
     this.worker?.postMessage({ type: 'pause-scene-ticks', paused: false } satisfies MainToWorker)
+    this.flushPendingSceneInputSnapshot()
   }
 
   private finishPointerDelivery(source: string): void {
@@ -3256,6 +3275,7 @@ export class SceneScriptSystem {
     this.pointerEvents = null
     this.sceneInputRelay?.dispose()
     this.sceneInputRelay = null
+    this.pendingSceneInputSnapshot = null
     this.triggerAreas?.dispose()
     this.triggerAreas = null
     this.raycasts?.dispose()

@@ -1,5 +1,9 @@
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
-import { buildSceneInputSnapshot, type SceneInputSnapshotBody } from '../player/sceneInputSnapshot'
+import {
+  buildSceneInputSnapshot,
+  sceneInputSnapshotSignature,
+  type SceneInputSnapshotBody
+} from '../player/sceneInputSnapshot'
 import { InputAction, type InputActionValue } from './pointerConstants'
 
 /** @deprecated SceneInputRelay tracks keys directly — kept for PlayerSystem passthrough. */
@@ -80,6 +84,7 @@ export class SceneInputRelay {
   private tickNumber = 0
   private bound = false
   private lastFlightPumpMs = 0
+  private lastSnapshotSig = ''
   private static readonly FLIGHT_PUMP_MS = 16
 
   bind(deps: SceneInputRelayDeps): void {
@@ -88,6 +93,7 @@ export class SceneInputRelay {
     this.relayPressed.clear()
     this.codeDownCount.clear()
     this.tickNumber = 0
+    this.lastSnapshotSig = ''
     window.addEventListener('keydown', this.onKeyDown, true)
     window.addEventListener('keyup', this.onKeyUp, true)
     window.addEventListener('blur', this.onWindowBlur)
@@ -121,7 +127,9 @@ export class SceneInputRelay {
     }
 
     this.reconcileHardwareKeys()
-    this.publishSnapshot()
+    if (this.relayPressed.size > 0) {
+      this.publishSnapshotIfChanged()
+    }
 
     if (!this.deps.pumpWorkerTick || !this.relayPressed.size) return
     let needsPump = false
@@ -162,7 +170,7 @@ export class SceneInputRelay {
       changed = true
       clientDebugLog.log('input', `scene relay DOWN button=${action}`, { throttleMs: 80, alsoConsole: true })
     }
-    if (changed) this.publishSnapshot()
+    if (changed) this.publishSnapshotIfChanged()
 
     if (actions.some((a) => isSceneRelayAction(a))) {
       e.preventDefault()
@@ -197,7 +205,7 @@ export class SceneInputRelay {
       clientDebugLog.log('input', `scene relay UP button=${action}`, { throttleMs: 80, alsoConsole: true })
     }
     if (changed) {
-      this.publishSnapshot()
+      this.publishSnapshotIfChanged()
       if (releasedFlight && !this.relayPressed.size) this.deps.onFlightKeysReleased?.()
     }
   }
@@ -217,7 +225,7 @@ export class SceneInputRelay {
     const hadKeys = this.relayPressed.size > 0
     this.relayPressed.clear()
     this.codeDownCount.clear()
-    this.publishSnapshot()
+    this.publishSnapshotIfChanged()
     if (hadKeys) {
       clientDebugLog.log('input', `scene relay release — ${reason}`, { throttleMs: 500 })
     }
@@ -234,7 +242,7 @@ export class SceneInputRelay {
       if (FLIGHT_TICK_ACTIONS.has(action)) releasedFlight = true
     }
     if (!changed) return
-    this.publishSnapshot()
+    this.publishSnapshotIfChanged()
     if (releasedFlight && !this.relayPressed.size) this.deps?.onFlightKeysReleased?.()
   }
 
@@ -246,8 +254,11 @@ export class SceneInputRelay {
     return false
   }
 
-  private publishSnapshot(): void {
+  private publishSnapshotIfChanged(): void {
     if (!this.deps) return
+    const sig = sceneInputSnapshotSignature([...this.relayPressed])
+    if (sig === this.lastSnapshotSig) return
+    this.lastSnapshotSig = sig
     this.deps.publishInputSnapshot(buildSceneInputSnapshot(this.tickNumber, this.relayPressed))
   }
 }

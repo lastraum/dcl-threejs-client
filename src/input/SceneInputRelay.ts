@@ -1,13 +1,6 @@
-import type { Entity } from '@dcl/ecs'
-import type { PBPointerEventsResult } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/pointer_events_result.gen'
-import type { RaycastHit } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/common/raycast_hit.gen'
-import type { ProjectionView } from '../bridge/ProjectionView'
-import type { MirrorComponents } from '../bridge/mirrorComponents'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
-import type { InjectSceneInputBody } from '../player/injectSceneInput'
 import { buildSceneInputSnapshot, type SceneInputSnapshotBody } from '../player/sceneInputSnapshot'
-import { InputAction, PointerEventType, type InputActionValue, type PointerEventTypeValue } from './pointerConstants'
-import { nextPointerEventTimestamp } from './pointerEventTimestamp'
+import { InputAction, type InputActionValue } from './pointerConstants'
 
 /** @deprecated SceneInputRelay tracks keys directly — kept for PlayerSystem passthrough. */
 export type SceneKeyboardSnapshot = {
@@ -24,22 +17,16 @@ export type SceneKeyboardSnapshot = {
 }
 
 type SceneInputRelayDeps = {
-  ecs: MirrorComponents
-  view: ProjectionView
-  recordAppend: (componentId: number, entity: Entity, value: unknown) => void
   isRelayBlocked: () => boolean
   /** Scene InputModifier — avatar must not consume the same WASD keys. */
   isLocomotionBlocked?: () => boolean
   clearPlayerMoveKeys?: () => void
-  injectToWorker: (body: InjectSceneInputBody) => void
-  /** High-rate worker ticks while flight keys are held — no input re-inject (avoids VC drift). */
+  /** Phase 2 — level keyboard state to worker (replaces per-edge inject-scene-input). */
+  publishInputSnapshot: (body: SceneInputSnapshotBody) => void
+  /** High-rate worker ticks while flight keys are held. */
   pumpWorkerTick?: () => void
-  /** Belt-and-suspenders PET_UP for all flight actions on worker. */
-  releaseWorkerKeys?: () => void
   /** Drop VC live-lane LWW so final worker Transform CRDT can land. */
   onFlightKeysReleased?: () => void
-  /** Phase 1 — parallel level-state channel (relay remains authoritative). */
-  publishInputSnapshot?: (body: SceneInputSnapshotBody) => void
 }
 
 /** Keys that drive creator VC flight — pump worker engine ticks while these are held. */
@@ -83,11 +70,8 @@ for (const entry of CODE_TO_ACTIONS) {
 }
 
 /**
- * Relays global keyboard state to the scene worker as PointerEventsResult on PlayerEntity.
- * Avatar locomotion blocking (InputModifier) is main-thread only — scenes still read
- * `inputSystem.isPressed()` for creator camera flight and similar systems.
- *
- * Uses capture-phase listeners so scene UI / avatar gates do not swallow WASD before relay.
+ * Tracks global keyboard state and publishes level snapshots to the scene worker.
+ * Scenes read `inputSystem.isPressed()` in the worker — no main-thread PointerEventsResult relay.
  */
 export class SceneInputRelay {
   private deps: SceneInputRelayDeps | null = null
@@ -127,21 +111,17 @@ export class SceneInputRelay {
     this.bound = false
   }
 
-  /**
-   * Per-frame hook — Explorer reads hardware state each tick; worker `isPressed` persists
-   * after edge injects, so heartbeat re-injection only spams engine ticks (VC tween drift).
-   */
+  /** Per-frame hook — republish snapshot + pump worker ticks while flight keys are held. */
   sync(tickNumber: number): void {
     if (!this.deps) return
     this.tickNumber = tickNumber
     if (this.deps.isRelayBlocked()) {
       this.releaseAll('blocked')
-      this.deps.publishInputSnapshot?.(buildSceneInputSnapshot(tickNumber, this.relayPressed))
       return
     }
 
     this.reconcileHardwareKeys()
-    this.deps.publishInputSnapshot?.(buildSceneInputSnapshot(tickNumber, this.relayPressed))
+    this.publishSnapshot()
 
     if (!this.deps.pumpWorkerTick || !this.relayPressed.size) return
     let needsPump = false
@@ -159,7 +139,7 @@ export class SceneInputRelay {
     this.deps.pumpWorkerTick()
   }
 
-  /** Drop relayed keys on the main thread and send matching PET_UP to the worker. */
+  /** Drop relayed keys and publish empty snapshot to the worker. */
   releaseHeldKeys(reason: string): void {
     this.releaseAll(reason)
   }
@@ -175,11 +155,14 @@ export class SceneInputRelay {
     this.codeDownCount.set(e.code, count + 1)
     if (count > 0) return
 
+    let changed = false
     for (const action of actions) {
       if (this.relayPressed.has(action)) continue
-      this.emit(action, PointerEventType.PET_DOWN, false)
       this.relayPressed.add(action)
+      changed = true
+      clientDebugLog.log('input', `scene relay DOWN button=${action}`, { throttleMs: 80, alsoConsole: true })
     }
+    if (changed) this.publishSnapshot()
 
     if (actions.some((a) => isSceneRelayAction(a))) {
       e.preventDefault()
@@ -205,13 +188,18 @@ export class SceneInputRelay {
     this.codeDownCount.delete(e.code)
 
     let releasedFlight = false
+    let changed = false
     for (const action of actions) {
       if (!this.relayPressed.has(action)) continue
       this.relayPressed.delete(action)
-      this.emit(action, PointerEventType.PET_UP, false)
+      changed = true
       if (FLIGHT_TICK_ACTIONS.has(action)) releasedFlight = true
+      clientDebugLog.log('input', `scene relay UP button=${action}`, { throttleMs: 80, alsoConsole: true })
     }
-    if (releasedFlight) this.notifyWorkerIfRelayEmpty()
+    if (changed) {
+      this.publishSnapshot()
+      if (releasedFlight && !this.relayPressed.size) this.deps.onFlightKeysReleased?.()
+    }
   }
 
   private onWindowBlur = (): void => {
@@ -227,41 +215,27 @@ export class SceneInputRelay {
   private releaseAll(reason: string): void {
     const hadFlight = [...this.relayPressed].some((action) => FLIGHT_TICK_ACTIONS.has(action))
     const hadKeys = this.relayPressed.size > 0
-    for (const action of [...this.relayPressed]) {
-      this.emit(action, PointerEventType.PET_UP, true)
-    }
     this.relayPressed.clear()
     this.codeDownCount.clear()
+    this.publishSnapshot()
     if (hadKeys) {
       clientDebugLog.log('input', `scene relay release — ${reason}`, { throttleMs: 500 })
     }
-    if (hadFlight) {
-      this.deps?.releaseWorkerKeys?.()
-      this.deps?.onFlightKeysReleased?.()
-    }
+    if (hadFlight) this.deps?.onFlightKeysReleased?.()
   }
 
-  private notifyWorkerIfRelayEmpty(): void {
-    if (!this.relayPressed.size) {
-      this.deps?.releaseWorkerKeys?.()
-      this.deps?.onFlightKeysReleased?.()
-    }
-  }
-
-  /**
-   * Relay-owned key counts — PlayerInput skips WASD while InputModifier blocks avatar
-   * locomotion (creator MOVE CAMERA), so hardware snapshot reconcile falsely released
-   * held flight keys and spammed worker release/ticks (breaking first UI click).
-   */
   private reconcileHardwareKeys(): void {
     let releasedFlight = false
+    let changed = false
     for (const action of [...this.relayPressed]) {
       if (this.isActionPhysicallyDown(action)) continue
       this.relayPressed.delete(action)
-      this.emit(action, PointerEventType.PET_UP, false)
+      changed = true
       if (FLIGHT_TICK_ACTIONS.has(action)) releasedFlight = true
     }
-    if (releasedFlight) this.notifyWorkerIfRelayEmpty()
+    if (!changed) return
+    this.publishSnapshot()
+    if (releasedFlight && !this.relayPressed.size) this.deps?.onFlightKeysReleased?.()
   }
 
   private isActionPhysicallyDown(action: InputActionValue): boolean {
@@ -272,31 +246,9 @@ export class SceneInputRelay {
     return false
   }
 
-  private emit(action: InputActionValue, state: PointerEventTypeValue, silent: boolean): void {
+  private publishSnapshot(): void {
     if (!this.deps) return
-    const { ecs, view, recordAppend, injectToWorker } = this.deps
-    const player = view.PlayerEntity
-    const result: PBPointerEventsResult = {
-      button: action,
-      state,
-      timestamp: nextPointerEventTimestamp(),
-      tickNumber: this.tickNumber,
-      hit: buildPlayerRelayHit(player),
-      analog: undefined
-    }
-    ecs.PointerEventsResult.addValue(player, result)
-    recordAppend(ecs.PointerEventsResult.componentId, player, result)
-    injectToWorker({
-      playerEntity: player as number,
-      button: action,
-      state,
-      timestamp: result.timestamp,
-      tickNumber: this.tickNumber
-    })
-    if (!silent) {
-      const line = `scene relay ${state === PointerEventType.PET_DOWN ? 'DOWN' : 'UP'} button=${action}`
-      clientDebugLog.log('input', line, { throttleMs: 80, alsoConsole: true })
-    }
+    this.deps.publishInputSnapshot(buildSceneInputSnapshot(this.tickNumber, this.relayPressed))
   }
 }
 
@@ -316,16 +268,4 @@ function isSceneRelayAction(action: InputActionValue): boolean {
     action === InputAction.IA_ACTION_5 ||
     action === InputAction.IA_ACTION_6
   )
-}
-
-function buildPlayerRelayHit(playerEntity: Entity): RaycastHit {
-  return {
-    entityId: playerEntity,
-    position: { x: 0, y: 0, z: 0 },
-    globalOrigin: undefined,
-    direction: undefined,
-    normalHit: { x: 0, y: 1, z: 0 },
-    length: 0,
-    meshName: ''
-  }
 }

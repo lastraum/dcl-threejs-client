@@ -33,13 +33,12 @@ import {
   patchSceneBundleWithCheckerStrip
 } from './pointerEventColliderCheckerPatch'
 import { injectPointerClickOnEngine } from './injectPointerClick'
-import { injectSceneKeyOnEngine, releaseAllSceneKeysOnEngine } from '../../player/injectSceneInput'
-import type { InjectSceneInputBody } from '../../player/injectSceneInput'
 import {
+  applySceneInputSnapshotOnEngine,
   resetWorkerInputSnapshotState,
-  sceneInputSnapshotMismatches,
   type SceneInputSnapshotBody
 } from '../../player/sceneInputSnapshot'
+import type { InputActionValue } from '../../input/pointerConstants'
 import { injectRendererGrowOnlyAppendsOnEngine } from './injectRendererGrowOnlyAppends'
 import { injectRendererLwwPutsOnEngine } from './injectRendererLwwPuts'
 import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransforms'
@@ -196,9 +195,7 @@ const ENABLE_FULL_SCENE_ONUPDATE = true
 /** Boot `debug` flags from main (`?pointerverbose` / `?tweenverbose`). */
 let debugSceneInputSnapshot = false
 let debugPointerDeliver = false
-let pendingSceneInputSnapshot: SceneInputSnapshotBody | null = null
-let sceneInputSnapshotParityChecks = 0
-let sceneInputSnapshotMismatchTotal = 0
+let workerSnapshotPressed = new Set<InputActionValue>()
 let debugSceneUiLog = false
 let sceneUiOutboundLogCount = 0
 /** Always log the first N post-boot UI CRDT outbounds (diagnose stuck black scrims). */
@@ -547,27 +544,27 @@ function workerLog(level: 'log' | 'info' | 'warn' | 'error' | 'debug', message: 
 
 let lastVcPoseLiveKey = ''
 
-function checkSceneInputSnapshotParity(): void {
-  const snapshot = pendingSceneInputSnapshot
-  if (!snapshot || !sceneEngine || !sceneOnStartComplete) return
-  pendingSceneInputSnapshot = null
-  sceneInputSnapshotParityChecks++
-  const mismatches = sceneInputSnapshotMismatches(
-    sceneEngine,
-    sceneEngine.PlayerEntity as Entity,
-    snapshot
-  )
-  if (!mismatches.length) return
-  sceneInputSnapshotMismatchTotal += mismatches.length
-  if (!debugSceneInputSnapshot) return
-  workerLog(
-    'warn',
-    `[sceneWorker] scene-input-snapshot parity — tick=${snapshot.tickNumber} mismatched=[${mismatches.join(', ')}] pressed=[${snapshot.pressed.join(', ')}]`
-  )
-}
-
-function storeSceneInputSnapshot(body: SceneInputSnapshotBody): void {
-  pendingSceneInputSnapshot = body
+function executeSceneInputSnapshot(body: SceneInputSnapshotBody): void {
+  if (!sceneEngine) return
+  try {
+    workerSnapshotPressed = applySceneInputSnapshotOnEngine(
+      sceneEngine,
+      sceneEngine.PlayerEntity as number,
+      body,
+      workerSnapshotPressed
+    )
+    workerVerboseLog(
+      debugSceneInputSnapshot,
+      'log',
+      `[sceneWorker] scene-input-snapshot — tick=${body.tickNumber} pressed=[${body.pressed.join(', ')}]`
+    )
+    scheduleSceneInputEngineTick()
+  } catch (err) {
+    workerLog(
+      'error',
+      `[sceneWorker] scene-input-snapshot failed — ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
 }
 
 function publishVcPoseLiveIfBound(): void {
@@ -616,10 +613,7 @@ initSceneEngineScheduler({
     interruptPendingOutboundAcks()
     interruptPendingCrdtRoundTrips()
   },
-  onAfterEngineTick: () => {
-    publishVcPoseLiveIfBound()
-    checkSceneInputSnapshotParity()
-  }
+  onAfterEngineTick: publishVcPoseLiveIfBound
 })
 
 function workerVerboseLog(
@@ -740,32 +734,6 @@ function patchWorkerConsole(): void {
 
 function chunkByteCount(chunks: Uint8Array[]): number {
   return chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
-}
-
-function executeSceneInputInjection(body: InjectSceneInputBody): void {
-  if (!sceneEngine) return
-  try {
-    injectSceneKeyOnEngine(sceneEngine, body)
-    scheduleSceneInputEngineTick()
-  } catch (err) {
-    workerLog(
-      'error',
-      `[sceneWorker] inject-scene-input failed — ${err instanceof Error ? err.message : String(err)}`
-    )
-  }
-}
-
-function executeSceneInputRelease(tickNumber: number): void {
-  if (!sceneEngine) return
-  try {
-    releaseAllSceneKeysOnEngine(sceneEngine, sceneEngine.PlayerEntity as number, tickNumber)
-    scheduleSceneInputEngineTick()
-  } catch (err) {
-    workerLog(
-      'error',
-      `[sceneWorker] release-scene-input failed — ${err instanceof Error ? err.message : String(err)}`
-    )
-  }
 }
 
 function executePointerInjection(body: InjectPointerClickBody, injectOnly = false): void {
@@ -1861,9 +1829,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     debugSceneInputSnapshot = msg.debug?.sceneInputSnapshot === true
     debugPointerDeliver = msg.debug?.pointerDeliver === true
     resetWorkerInputSnapshotState()
-    pendingSceneInputSnapshot = null
-    sceneInputSnapshotParityChecks = 0
-    sceneInputSnapshotMismatchTotal = 0
+    workerSnapshotPressed = new Set()
     debugTweenDeliver = msg.debug?.tweenDeliver === true
     debugMessageArrival = msg.debug?.messageArrival === true
     debugSceneUiLog = msg.debug?.sceneUiLog === true
@@ -2122,20 +2088,12 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
     )
     return
   }
-  if (msg.type === 'inject-scene-input') {
-    executeSceneInputInjection(msg.body as InjectSceneInputBody)
-    return
-  }
-  if (msg.type === 'release-scene-input') {
-    executeSceneInputRelease((msg as { tickNumber: number }).tickNumber)
-    return
-  }
   if (msg.type === 'pump-scene-engine-tick') {
     scheduleSceneInputEngineTick({ flightPump: true })
     return
   }
   if (msg.type === 'scene-input-snapshot') {
-    storeSceneInputSnapshot(msg.body as SceneInputSnapshotBody)
+    executeSceneInputSnapshot(msg.body as SceneInputSnapshotBody)
     return
   }
   if (msg.type === 'inject-pointer-click') {

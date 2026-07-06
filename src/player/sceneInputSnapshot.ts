@@ -79,10 +79,7 @@ export function sceneInputSnapshotMismatches(
   return mismatches
 }
 
-/**
- * Apply level snapshot as edge injects (Phase 2 write path — not used while relay is authoritative).
- * Diff against `previousPressed` so only changed buttons get PET_DOWN/PET_UP.
- */
+/** Apply level snapshot as PET_DOWN/PET_UP edge diffs on the worker PlayerEntity. */
 export function applySceneInputSnapshotOnEngine(
   engine: IEngine,
   playerEntity: number,

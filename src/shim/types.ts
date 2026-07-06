@@ -17,7 +17,7 @@ export type AvatarAttachTransformEntry = {
 export type PerformanceTier = 'low' | 'medium' | 'high'
 
 export type SceneWorkerDebugFlags = {
-  /** `?sceneinputsnapshot` — log relay vs snapshot parity mismatches in the worker. */
+  /** `?sceneinputsnapshot` — log scene-input-snapshot apply on the worker. */
   sceneInputSnapshot?: boolean
   /** `?pointerverbose` — log pointer-crdt-deliver round-trips in the worker. */
   pointerDeliver?: boolean
@@ -254,10 +254,8 @@ export type MainToWorker =
   | { type: 'renderer-inbound-deliver'; data: Uint8Array[] }
   | { type: 'crdt-outbound-ack'; id: number }
   | { type: 'inject-pointer-click'; body: InjectPointerClickBody; injectOnly?: boolean }
-  | { type: 'inject-scene-input'; body: import('../player/injectSceneInput').InjectSceneInputBody }
-  | { type: 'release-scene-input'; tickNumber: number }
   | { type: 'pump-scene-engine-tick' }
-  /** Phase 1 — level keyboard state shadow channel (relay remains authoritative). */
+  /** Level keyboard state — authoritative worker input path (phase 2). */
   | { type: 'scene-input-snapshot'; body: import('../player/sceneInputSnapshot').SceneInputSnapshotBody }
   | { type: 'avatar-attach-transforms'; entries: AvatarAttachTransformEntry[] }
 

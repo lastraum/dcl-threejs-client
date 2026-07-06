@@ -3,8 +3,6 @@ const ctx = self
 
 export type SceneWorkerPriorityMessage =
   | { type: 'inject-pointer-click'; body: unknown }
-  | { type: 'inject-scene-input'; body: unknown }
-  | { type: 'release-scene-input'; tickNumber: number }
   | { type: 'pump-scene-engine-tick' }
   | { type: 'scene-input-snapshot'; body: unknown }
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
@@ -13,8 +11,6 @@ export type SceneWorkerPriorityMessage =
 
 const PRIORITY_TYPES = new Set([
   'inject-pointer-click',
-  'inject-scene-input',
-  'release-scene-input',
   'pump-scene-engine-tick',
   'scene-input-snapshot',
   'pointer-crdt-deliver',

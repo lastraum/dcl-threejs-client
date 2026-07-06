@@ -81,7 +81,7 @@ type OpenExternalUrlHandler = (request: OpenExternalUrlRequest) => boolean
 /** Async bridge ECS sync (Animator / AvatarShape load paths) — playback still runs every sync frame. */
 const BRIDGE_ECS_SYNC_RUNTIME = 12
 
-/** Phase 1 — log relay vs scene-input-snapshot parity in worker (`?sceneinputsnapshot`). */
+/** Log scene-input-snapshot apply on worker (`?sceneinputsnapshot`). */
 const SCENE_INPUT_SNAPSHOT_VERBOSE = ((): boolean => {
   try {
     return typeof location !== 'undefined' && new URLSearchParams(location.search).has('sceneinputsnapshot')
@@ -1818,15 +1818,6 @@ export class SceneScriptSystem {
   /** Clear stuck relay + worker inputSystem state (e.g. VIEW SHOT MainCamera bind). */
   flushSceneKeyboardRelay(reason: string): void {
     this.sceneInputRelay?.releaseHeldKeys(reason)
-    this.releaseSceneInputOnWorker()
-  }
-
-  private releaseSceneInputOnWorker(): void {
-    if (!this.running || !this.worker) return
-    this.worker.postMessage({
-      type: 'release-scene-input',
-      tickNumber: this.crdtTick
-    } satisfies MainToWorker)
   }
 
   /** After flight keys release — let inbound worker VC Transform CRDT apply again. */
@@ -2033,17 +2024,13 @@ export class SceneScriptSystem {
     })
     if (this.sceneInputRelay && sceneInput) {
       this.sceneInputRelay.bind({
-        ecs: this.readComponents,
-        view: this.view,
-        recordAppend: this.recordRendererAppend,
         isRelayBlocked: sceneInput.isRelayBlocked,
         isLocomotionBlocked: sceneInput.isLocomotionBlocked,
         clearPlayerMoveKeys: sceneInput.clearPlayerMoveKeys,
-        injectToWorker: (body) => this.injectSceneInputToWorker(body),
         pumpWorkerTick: () => this.pumpSceneEngineTick(),
-        releaseWorkerKeys: () => this.releaseSceneInputOnWorker(),
         onFlightKeysReleased: () => this.clearVcLiveTransformLane(),
-        publishInputSnapshot: (body) => this.publishSceneInputSnapshot(body)
+        publishInputSnapshot: (body) =>
+          this.publishSceneInputSnapshot({ ...body, tickNumber: this.crdtTick })
       })
     }
     let triggerEntities = 0
@@ -2231,19 +2218,13 @@ export class SceneScriptSystem {
     this.pointerEvents?.triggerInputAction(action, phase)
   }
 
-  /** Priority lane — scene keyboard relay (WASD) for worker inputSystem.isPressed. */
-  private injectSceneInputToWorker(body: import('../../player/injectSceneInput').InjectSceneInputBody): void {
-    if (!this.running || !this.worker) return
-    this.worker.postMessage({ type: 'inject-scene-input', body } satisfies MainToWorker)
-  }
-
-  /** ~60Hz worker ticks during held flight keys — no PointerEventsResult spam. */
+  /** ~60Hz worker ticks during held flight keys — snapshot is level-state (no edge spam). */
   private pumpSceneEngineTick(): void {
     if (!this.running || !this.worker) return
     this.worker.postMessage({ type: 'pump-scene-engine-tick' } satisfies MainToWorker)
   }
 
-  /** Phase 1 shadow channel — level keyboard state; relay edge injects remain authoritative. */
+  /** Level keyboard snapshot — authoritative worker input path. */
   private publishSceneInputSnapshot(
     body: import('../../player/sceneInputSnapshot').SceneInputSnapshotBody
   ): void {

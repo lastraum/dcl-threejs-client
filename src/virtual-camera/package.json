@@ -1,0 +1,21 @@
+{
+  "name": "@lastslice/virtual-camera",
+  "version": "1.0.0",
+  "description": "ECS-authoritative VirtualCamera pose helpers for SDK7 scenes (ThreejsClient)",
+  "typesVersions": {
+    "*": {
+      "scene": ["scene.ts"],
+      "core": ["core.ts"],
+      "*": ["index.ts"]
+    }
+  },
+  "exports": {
+    ".": "./index.ts",
+    "./scene": "./scene.ts",
+    "./core": "./core.ts"
+  },
+  "dependencies": {
+    "@dcl/ecs": "^7.24.1",
+    "@dcl/sdk": "^7.22.4"
+  }
+}

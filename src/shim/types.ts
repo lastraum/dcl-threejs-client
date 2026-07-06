@@ -200,6 +200,17 @@ export type SceneWorkerOutbound =
   | { type: 'crdt-get-state'; id: number }
   | { type: 'pointer-deliver-done' }
   | { type: 'ui-virtual-canvas'; width: number; height: number }
+  /** Bound VC world Transform — bypasses CRDT ack latency for lens + gizmo during flight. */
+  | {
+      type: 'vc-pose-live'
+      entity: number
+      transform: {
+        position: { x: number; y: number; z: number }
+        rotation: { x: number; y: number; z: number; w: number }
+        scale: { x: number; y: number; z: number }
+        parent?: number
+      }
+    }
 
 export type MainToWorker =
   | SceneWorkerBoot
@@ -242,6 +253,8 @@ export type MainToWorker =
   | { type: 'crdt-outbound-ack'; id: number }
   | { type: 'inject-pointer-click'; body: InjectPointerClickBody; injectOnly?: boolean }
   | { type: 'inject-scene-input'; body: import('../player/injectSceneInput').InjectSceneInputBody }
+  | { type: 'release-scene-input'; tickNumber: number }
+  | { type: 'pump-scene-engine-tick' }
   | { type: 'avatar-attach-transforms'; entries: AvatarAttachTransformEntry[] }
 
 export type CrdtGetStateResponse = {

@@ -278,7 +278,11 @@ export function planSceneUiCrdtEmit(engine: IEngine, log?: (message: string) => 
   if (fingerprint === lastWorkerUiFingerprint) return false
 
   const prevLen = lastWorkerUiFingerprint.length
-  const touched = touchDirtyWorkerUiComponentsForCrdt(engine, lastWorkerUiFingerprint)
+  let touched = touchDirtyWorkerUiComponentsForCrdt(engine, lastWorkerUiFingerprint)
+  // Collapse paths may delete Ui* rows — dirty ids exist but per-entity touch returns 0; force full mount.
+  if (touched <= 0 && fingerprint !== lastWorkerUiFingerprint) {
+    touched = touchWorkerUiComponentsForCrdt(engine)
+  }
   if (touched <= 0) {
     log?.(
       `[sceneWorker] ui fingerprint changed but no touch — fp=${prevLen}→${fingerprint.length}B`

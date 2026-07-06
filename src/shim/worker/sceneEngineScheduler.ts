@@ -112,8 +112,13 @@ export function sceneEngineTickDue(now: number): boolean {
   return now - lastExecutedAt >= resolveIntervalMs()
 }
 
+type EngineTickPhaseOptions = {
+  /** Pointer batch — emit Ui CRDT once after onUpdate, not on intermediate react-ecs passes. */
+  deferUiEmit?: boolean
+}
+
 /** Systems pass + optional Ui CRDT transport emit — always under scheduler mutex. */
-async function runEngineTickPhases(engineDt: number): Promise<void> {
+async function runEngineTickPhases(engineDt: number, options?: EngineTickPhaseOptions): Promise<void> {
   const cfg = config!
   const eng = engine!
   if (diagCount < 8) {
@@ -125,10 +130,15 @@ async function runEngineTickPhases(engineDt: number): Promise<void> {
   await eng.update(engineDt)
   lastExecutedAt = performance.now()
   cfg.onAfterEngineTick?.()
-  if (planSceneUiCrdtEmit(eng, cfg.log)) {
-    await eng.update(0)
-    commitSceneUiCrdtBaseline(eng)
-  }
+  if (options?.deferUiEmit) return
+  await flushSceneUiCrdtEmit(eng)
+}
+
+async function flushSceneUiCrdtEmit(eng: IEngine): Promise<void> {
+  const cfg = config!
+  if (!planSceneUiCrdtEmit(eng, cfg.log)) return
+  await eng.update(0)
+  commitSceneUiCrdtBaseline(eng)
 }
 
 async function executeTickWork(engineDt: number): Promise<void> {
@@ -253,14 +263,13 @@ export async function runSceneEnginePointerTick(
   runOnUpdate: () => Promise<void>
 ): Promise<void> {
   const cfg = config!
-  await runEngineTickPhases(0)
+  // Click → react-ecs → onUpdate → react-ecs; one Ui CRDT emit at the end (mid-tick emit + revert flashed UI).
+  await runEngineTickPhases(0, { deferUiEmit: true })
   await runOnUpdate()
   await eng.update(0)
   lastExecutedAt = performance.now()
-  if (planSceneUiCrdtEmit(eng, cfg.log)) {
-    await eng.update(0)
-    commitSceneUiCrdtBaseline(eng)
-  }
+  cfg.onAfterEngineTick?.()
+  await flushSceneUiCrdtEmit(eng)
 }
 
 export function syncSceneEngineHydrationTimer(): void {

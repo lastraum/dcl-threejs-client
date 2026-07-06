@@ -33,7 +33,7 @@ import {
   patchSceneBundleWithCheckerStrip
 } from './pointerEventColliderCheckerPatch'
 import { injectPointerClickOnEngine } from './injectPointerClick'
-import { injectSceneKeyOnEngine } from '../../player/injectSceneInput'
+import { injectSceneKeyOnEngine, releaseAllSceneKeysOnEngine } from '../../player/injectSceneInput'
 import type { InjectSceneInputBody } from '../../player/injectSceneInput'
 import { injectRendererGrowOnlyAppendsOnEngine } from './injectRendererGrowOnlyAppends'
 import { injectRendererLwwPutsOnEngine } from './injectRendererLwwPuts'
@@ -42,6 +42,10 @@ import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
 import { resolveSceneEngine } from './resolveSceneEngine'
 import { guardVideoPlayerGetMutable } from './guardVideoPlayerGetMutable'
+import { installVirtualCameraBindGuard } from './virtualCameraBindGuard'
+import type { Entity } from '@dcl/ecs'
+import * as extended from '@dcl/ecs/dist/components'
+import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import {
   installPreregisterRendererComponentsHook,
   installUiVirtualCanvasHook,
@@ -50,12 +54,28 @@ import {
 import { installSceneWorkerFetchProxy } from './installSceneWorkerFetchProxy'
 import { collectWorkerUiTransformEntityIds } from './resolveBundledUiComponents'
 import {
-  flushWorkerSceneUiAfterEngineTick,
   hasWorkerReactEcsSync,
   resetWorkerUiFingerprint,
-  seedWorkerUiCanvasInformation,
-  seedWorkerUiFingerprint
+  seedWorkerUiCanvasInformation
 } from './workerSceneUiSync'
+import {
+  bindSceneEngineScheduler,
+  drainQueuedSceneEngineTick,
+  forceRecoverStuckSceneEngineTick,
+  getSceneEngineLastExecutedAt,
+  getSceneEngineTickStartedAt,
+  initSceneEngineScheduler,
+  isSceneEngineTickInFlight,
+  preemptSceneEngineTick,
+  requestSceneEngineTick,
+  resetSceneEngineDiagCount,
+  resetSceneEngineScheduler,
+  runSceneEngineBootTick,
+  runSceneEnginePointerTick,
+  sceneEngineTickAfterInboundInject,
+  sceneEngineTickDue,
+  syncSceneEngineHydrationTimer
+} from './sceneEngineScheduler'
 const VIDEO_PLAYER_NULL_MUTABLE = /VideoPlayer for null not found/
 
 const ctx = self
@@ -103,7 +123,7 @@ let queuedPointerDeliver: Uint8Array[] | null = null
 /** Boot cooperative poll — responsive pointer lane before play-ready. */
 const SCENE_LOOP_POLL_MS = 25
 /** Play-ready cooperative + engine tick — matches dev-latest (10 Hz). */
-const SCENE_TICK_PLAY_INTERVAL_MS = 100
+const SCENE_TICK_PLAY_INTERVAL_MS = 16
 /** Min ms between lightweight engine ticks during boot. */
 const SCENE_TICK_BOOT_INTERVAL_MS = 100
 const ENGINE_TICK_PLAY_HIGH_MS = SCENE_TICK_PLAY_INTERVAL_MS
@@ -137,8 +157,10 @@ let sceneTicksPaused = false
 let deferredRendererInbound: Uint8Array[][] = []
 /** Hydration — block heavy exports.onUpdate; engine.update still publishes composite GLTFs. */
 let sceneOnUpdatePaused = false
-/** Hydration engine ticks — 100ms × dt≤0.1 keeps closure timers (~5s splash) near wall clock. */
+/** Min ms between engine ticks while exports.onUpdate is paused (hydration). */
 const HYDRATION_ENGINE_TICK_INTERVAL_MS = 100
+/** Abort hydration/play engine tick if sceneEngine.update stalls awaiting main-thread CRDT ack. */
+const ENGINE_TICK_ABORT_MS = 5000
 let sceneUpdateAbortTimer: ReturnType<typeof setTimeout> | null = null
 let sceneTickTimer: ReturnType<typeof setInterval> | null = null
 let cooperativeTickFn: (() => void) | null = null
@@ -146,15 +168,7 @@ let cooperativeTickFn: (() => void) | null = null
 let pendingInjectPointer: InjectPointerClickBody | null = null
 let lastHeartbeatAt = performance.now()
 let sceneUpdateStartedAt = 0
-/** Last cooperative engine-tick request (interval gate — not execution time). */
-let lastEngineTickAt = 0
-/** Wall clock when sceneEngine.update last completed — drives splash / timer dt. */
-let lastEngineTickExecutedAt = 0
 let lastFullSceneUpdateAt = 0
-/** True while a deferred sceneEngine.update tick is running. */
-let engineTickInFlight = false
-/** Coalesce inbound CRDT / cooperative requests while a tick is in flight. */
-let engineTickQueued = false
 /** Scene exports.onUpdate — set when the cooperative loop starts. */
 let sceneOnUpdate: ((dt: number) => unknown) | null = null
 /** False until exports.onStart resolves — sceneEngine.update during boot can stall Rick Roll worlds. */
@@ -182,9 +196,6 @@ let sceneUiOutboundLogCount = 0
 const SCENE_UI_OUTBOUND_LOG_LIMIT = 12
 let debugTweenDeliver = false
 let debugMessageArrival = false
-/** Coalesce proactive tween-state injects into one engine tick per frame. */
-let tweenEngineTickQueued = false
-
 async function invokeSceneMainBootstrap(
   exports: import('../system/createSystemStubs').SceneBundleExports
 ): Promise<void> {
@@ -309,7 +320,7 @@ function armSceneUpdateAbortTimer(): void {
 function resumeSceneTicksAfterPointer(): void {
   if (pointerDeliveryInFlight || sceneUpdateInFlight || queuedPointerDeliver || pendingInjectPointer) return
   sceneTicksPaused = false
-  if (engineTickQueued) queueSceneEngineTickWithFlush()
+  drainQueuedSceneEngineTick()
 }
 
 function postPointerDeliverDone(label: string): void {
@@ -355,7 +366,7 @@ function drainQueuedPointerDeliver(): void {
 function preemptForPointerDelivery(): void {
   const hadSceneUpdate = sceneUpdateInFlight
   sceneUpdateInFlight = false
-  engineTickInFlight = false
+  preemptSceneEngineTick()
   clearSceneUpdateAbortTimer()
   // Never abort an in-flight pointer engine tick CRDT flush (post-onUpdate Tween sync depends on it).
   if (pointerDeliveryInFlight) return
@@ -429,10 +440,8 @@ async function runPointerEngineTickWork(label: string): Promise<void> {
     workerLog('warn', `[sceneWorker] ${label} — sceneEngine missing, skip update`)
     return
   }
-  await sceneEngine.update(0)
-  workerVerboseLog(debugPointerDeliver, 'log', `[sceneWorker] ${label} — sceneEngine.update(0) done`)
-  await flushWorkerSceneUiAfterEngineTick(sceneEngine, (message) => workerLog('log', message))
-  if (sceneOnUpdate) {
+  await runSceneEnginePointerTick(sceneEngine, async () => {
+    if (!sceneOnUpdate) return
     try {
       const result = sceneOnUpdate(0)
       if (result != null && typeof (result as Promise<void>).then === 'function') {
@@ -447,16 +456,9 @@ async function runPointerEngineTickWork(label: string): Promise<void> {
         `[sceneWorker] ${label} scene onUpdate(0) failed — ${err instanceof Error ? err.message : String(err)}`
       )
     }
-    // Push UI mount changes to main while the pointer batch finishes — avoids stale DOM between clicks.
     flushPointerDeferredOutbounds()
-  }
-  // onUpdate may add Tween / mutate ECS — flush to renderer before pointer batch ends.
-  await sceneEngine.update(0)
-  workerVerboseLog(
-    debugPointerDeliver,
-    'log',
-    `[sceneWorker] ${label} — sceneEngine.update(0) post-onUpdate flush done`
-  )
+  })
+  workerVerboseLog(debugPointerDeliver, 'log', `[sceneWorker] ${label} — pointer scheduler tick done`)
 }
 
 /**
@@ -534,6 +536,57 @@ function workerLog(level: 'log' | 'info' | 'warn' | 'error' | 'debug', message: 
   ctx.postMessage({ type: 'log', message: `[${level}] ${message}` } satisfies SceneWorkerOutbound)
 }
 
+let lastVcPoseLiveKey = ''
+
+function publishVcPoseLiveIfBound(): void {
+  if (!sceneEngine || !sceneOnStartComplete) return
+  const MainCamera = generated.MainCamera(sceneEngine)
+  const Transform = extended.Transform(sceneEngine)
+  const main = MainCamera.getOrNull(sceneEngine.CameraEntity) as { virtualCameraEntity?: number } | null
+  const vc = main?.virtualCameraEntity
+  if (vc === undefined || vc === null) {
+    lastVcPoseLiveKey = ''
+    return
+  }
+  const tr = Transform.getOrNull(vc as Entity)
+  if (!tr) return
+  const key = [
+    tr.position.x.toFixed(4),
+    tr.position.y.toFixed(4),
+    tr.position.z.toFixed(4),
+    tr.rotation.x.toFixed(5),
+    tr.rotation.y.toFixed(5),
+    tr.rotation.z.toFixed(5),
+    tr.rotation.w.toFixed(5)
+  ].join(',')
+  if (key === lastVcPoseLiveKey) return
+  lastVcPoseLiveKey = key
+  ctx.postMessage({
+    type: 'vc-pose-live',
+    entity: vc as number,
+    transform: {
+      position: { x: tr.position.x, y: tr.position.y, z: tr.position.z },
+      rotation: { x: tr.rotation.x, y: tr.rotation.y, z: tr.rotation.z, w: tr.rotation.w },
+      scale: { x: tr.scale.x, y: tr.scale.y, z: tr.scale.z },
+      parent: tr.parent as number | undefined
+    }
+  } satisfies SceneWorkerOutbound)
+}
+
+initSceneEngineScheduler({
+  log: (message) => workerLog('log', message),
+  hydrationIntervalMs: HYDRATION_ENGINE_TICK_INTERVAL_MS,
+  tickAbortMs: ENGINE_TICK_ABORT_MS,
+  isHydration: () => sceneOnUpdatePaused,
+  resolvePlayIntervalMs: () => engineTickIntervalMs,
+  pointerBlocksTick: () => pointerBlocksEngineTick(),
+  onStuckRecover: () => {
+    interruptPendingOutboundAcks()
+    interruptPendingCrdtRoundTrips()
+  },
+  onAfterEngineTick: publishVcPoseLiveIfBound
+})
+
 function workerVerboseLog(
   enabled: boolean,
   level: 'log' | 'info' | 'warn' | 'error' | 'debug',
@@ -543,69 +596,24 @@ function workerVerboseLog(
   workerLog(level, message)
 }
 
-function resolveSceneEngineDt(): number {
-  const now = performance.now()
-  const elapsed =
-    lastEngineTickExecutedAt > 0 ? (now - lastEngineTickExecutedAt) / 1000 : 0.1
-  return Math.min(Math.max(elapsed, 0), 0.1)
+/** Hydration keeps engine.update alive for splash/composite — pointer pause must not freeze it. */
+function pointerBlocksEngineTick(): boolean {
+  if (pointerDeliveryInFlight || queuedPointerDeliver) return true
+  if (sceneOnUpdatePaused) return false
+  return sceneTicksPaused || !!pendingInjectPointer
 }
 
-/**
- * Single engine.update entry — all post-boot ticks share one mutex, non-zero dt, and UI flush.
- * Inbound CRDT batches previously called update(0), so splash timers (TU / yU) never advanced.
- */
-function queueSceneEngineTickWithFlush(): void {
-  if (!sceneEngine || !sceneOnStartComplete) return
-  if (sceneTicksPaused || pointerDeliveryInFlight || pendingInjectPointer || queuedPointerDeliver) {
-    engineTickQueued = true
-    return
-  }
-  if (engineTickInFlight) {
-    engineTickQueued = true
-    return
-  }
-  engineTickInFlight = true
-  const engineDt = resolveSceneEngineDt()
-  setTimeout(() => {
-    void (async () => {
-      try {
-        if (!sceneEngine || sceneTicksPaused || pointerDeliveryInFlight) return
-        await sceneEngine.update(engineDt)
-        lastEngineTickExecutedAt = performance.now()
-        await flushWorkerSceneUiAfterEngineTick(sceneEngine, (message) => workerLog('log', message))
-      } catch (err) {
-        workerLog(
-          'error',
-          `[sceneWorker] engine tick failed — ${err instanceof Error ? err.message : String(err)}`
-        )
-      } finally {
-        engineTickInFlight = false
-        if (engineTickQueued) {
-          engineTickQueued = false
-          queueSceneEngineTickWithFlush()
-        }
-      }
-    })()
-  }, 0)
-}
-
-function scheduleBatchedSceneEngineTick(): void {
-  if (tweenEngineTickQueued || !sceneEngine) return
-  tweenEngineTickQueued = true
-  setTimeout(() => {
-    tweenEngineTickQueued = false
-    queueSceneEngineTickWithFlush()
-  }, 0)
-}
+/** Matches camera-operator `Math.max(16, dt * 1000)` — do not outrun scene integration. */
+const SCENE_FLIGHT_TICK_MIN_MS = 16
 
 /** Keyboard relay — creator camera flight must run even when pointer batches paused scene ticks. */
-function scheduleSceneInputEngineTick(): void {
+function scheduleSceneInputEngineTick(opts?: { flightPump?: boolean }): void {
   if (!sceneEngine || pointerDeliveryInFlight) return
-  queueSceneEngineTickWithFlush()
-}
-
-function scheduleBatchedTweenEngineTick(): void {
-  scheduleBatchedSceneEngineTick()
+  if (opts?.flightPump) {
+    const since = performance.now() - getSceneEngineLastExecutedAt()
+    if (getSceneEngineLastExecutedAt() > 0 && since < SCENE_FLIGHT_TICK_MIN_MS) return
+  }
+  requestSceneEngineTick()
 }
 
 /** Lightweight tween-state path — no pointer pause / preempt / full deliver batch. */
@@ -618,20 +626,20 @@ function deliverTweenStateInbound(chunks: Uint8Array[]): void {
     'log',
     `[sceneWorker] tween-state-deliver — inject ${tweenPuts} TweenState PUT(s)`
   )
-  scheduleBatchedTweenEngineTick()
+  sceneEngineTickAfterInboundInject({ tweenPuts, raycastPuts: 0, videoPlayerPuts: 0, triggerAppends: 0, videoAppends: 0, pointerAppends: 0 })
 }
 
 /** TriggerAreaResult / VideoEvent — engine tick only; must not pause scene onUpdate (sprite pool). */
 function deliverRendererAppendInbound(chunks: Uint8Array[]): void {
   if (!sceneEngine || !sceneOnStartComplete) return
-  const { triggerAppends, videoAppends } = applyRendererInboundChunks(chunks)
-  if (triggerAppends === 0 && videoAppends === 0) return
+  const counts = applyRendererInboundChunks(chunks)
+  if (counts.triggerAppends === 0 && counts.videoAppends === 0) return
   workerVerboseLog(
     debugPointerDeliver,
     'log',
-    `[sceneWorker] renderer-append-deliver — trigger=${triggerAppends} videoEvent=${videoAppends}`
+    `[sceneWorker] renderer-append-deliver — trigger=${counts.triggerAppends} videoEvent=${counts.videoAppends}`
   )
-  scheduleBatchedSceneEngineTick()
+  sceneEngineTickAfterInboundInject(counts)
 }
 
 function flushDeferredRendererInbound(): void {
@@ -667,19 +675,8 @@ function deliverRendererInboundGeneral(chunks: Uint8Array[]): void {
     deferredRendererInbound.push(chunks.map((chunk) => chunk.slice()))
     return
   }
-  const { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends, pointerAppends } =
-    applyRendererInboundChunks(chunks)
-  const needsSceneTick =
-    raycastPuts > 0 || videoPlayerPuts > 0 || triggerAppends > 0 || pointerAppends > 0 || videoAppends > 0
-  if (needsSceneTick) {
-    scheduleBatchedSceneEngineTick()
-    return
-  }
-  if (tweenPuts > 0) {
-    scheduleBatchedTweenEngineTick()
-    return
-  }
-  scheduleBatchedSceneEngineTick()
+  const counts = applyRendererInboundChunks(chunks)
+  sceneEngineTickAfterInboundInject(counts)
 }
 
 function patchWorkerConsole(): void {
@@ -719,6 +716,19 @@ function executeSceneInputInjection(body: InjectSceneInputBody): void {
     workerLog(
       'error',
       `[sceneWorker] inject-scene-input failed — ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+}
+
+function executeSceneInputRelease(tickNumber: number): void {
+  if (!sceneEngine) return
+  try {
+    releaseAllSceneKeysOnEngine(sceneEngine, sceneEngine.PlayerEntity as number, tickNumber)
+    scheduleSceneInputEngineTick()
+  } catch (err) {
+    workerLog(
+      'error',
+      `[sceneWorker] release-scene-input failed — ${err instanceof Error ? err.message : String(err)}`
     )
   }
 }
@@ -917,7 +927,14 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
           'log',
           `[sceneWorker] pointer-crdt-deliver — tween inject ${tweenPuts} TweenState PUT(s)`
         )
-        scheduleBatchedTweenEngineTick()
+        sceneEngineTickAfterInboundInject({
+          tweenPuts,
+          raycastPuts: 0,
+          videoPlayerPuts: 0,
+          triggerAppends: 0,
+          videoAppends: 0,
+          pointerAppends: 0
+        })
       }
       return
     } catch (err) {
@@ -1187,6 +1204,14 @@ function resolveOutboundAck(id: number): void {
   pendingOutboundAck.delete(id)
 }
 
+function interruptPendingOutboundAcks(): void {
+  if (!pendingOutboundAck.size) return
+  const count = pendingOutboundAck.size
+  for (const finish of pendingOutboundAck.values()) finish()
+  pendingOutboundAck.clear()
+  workerLog('log', `[sceneWorker] interrupted ${count} pending crdt-outbound-ack waiter(s)`)
+}
+
 function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
   if (sceneEvalInProgress) {
     return Promise.resolve([])
@@ -1452,10 +1477,17 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
     ) {
       forceRecoverStuckPointerDelivery('heartbeat-stuck-pointer-delivery')
     }
+    if (
+      isSceneEngineTickInFlight() &&
+      getSceneEngineTickStartedAt() > 0 &&
+      now - getSceneEngineTickStartedAt() > ENGINE_TICK_ABORT_MS + 500
+    ) {
+      forceRecoverStuckSceneEngineTick('heartbeat-stuck-engine-tick')
+    }
     lastHeartbeatAt = now
     workerLog(
       'log',
-      `[sceneWorker] heartbeat — tick=${heartbeatPass} sceneUpdateInFlight=${sceneUpdateInFlight} sceneUpdatePromiseActive=${sceneUpdatePromiseActive} pointerDeliveryInFlight=${pointerDeliveryInFlight} pendingCrdt=${pendingCrdt.size} sceneEngine=${sceneEngine ? 'ok' : 'missing'} sceneTickIntervalMs=${sceneTickIntervalMs}`
+      `[sceneWorker] heartbeat — tick=${heartbeatPass} sceneUpdateInFlight=${sceneUpdateInFlight} sceneUpdatePromiseActive=${sceneUpdatePromiseActive} pointerDeliveryInFlight=${pointerDeliveryInFlight} engineTickInFlight=${isSceneEngineTickInFlight()} pendingCrdt=${pendingCrdt.size} sceneEngine=${sceneEngine ? 'ok' : 'missing'} sceneTickIntervalMs=${sceneTickIntervalMs}`
     )
   }, 5000)
 
@@ -1482,18 +1514,6 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
       sceneUpdateStartedAt = performance.now()
       armSceneUpdateAbortTimer()
       void Promise.resolve(sceneUpdate(onUpdateDt))
-        .then(async () => {
-          if (!sceneEngine || sceneTicksPaused) return
-          try {
-            await sceneEngine.update(0)
-            await flushWorkerSceneUiAfterEngineTick(sceneEngine, (message) => workerLog('log', message))
-          } catch (err) {
-            workerLog(
-              'error',
-              `[sceneWorker] post-onUpdate engine flush failed — ${err instanceof Error ? err.message : String(err)}`
-            )
-          }
-        })
         .catch((err) => {
           workerLog(
             'error',
@@ -1504,19 +1524,13 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
           clearSceneUpdateAbortTimer()
           sceneUpdateInFlight = false
           sceneUpdatePromiseActive = false
+          if (sceneEngine && !sceneTicksPaused) {
+            requestSceneEngineTick()
+          }
           resumeSceneTicksAfterPointer()
           drainQueuedPointerDeliver()
         })
     }, 0)
-  }
-
-  const scheduleEngineTick = (_pollDt: number): void => {
-    if (!sceneEngine || sceneUpdateInFlight || sceneUpdatePromiseActive) {
-      return
-    }
-    if (sceneTicksPaused || pendingInjectPointer || queuedPointerDeliver) return
-    lastEngineTickAt = performance.now()
-    queueSceneEngineTickWithFlush()
   }
 
   const runCooperativeTick = (): void => {
@@ -1525,20 +1539,17 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
     const dt = Math.min((now - lastTick) / 1000, 0.1)
     lastTick = now
 
-    const pointerPending =
-      sceneTicksPaused || pendingInjectPointer || queuedPointerDeliver || pointerDeliveryInFlight
+    drainQueuedSceneEngineTick()
 
-    const engineTickInterval = sceneOnUpdatePaused
-      ? HYDRATION_ENGINE_TICK_INTERVAL_MS
-      : engineTickIntervalMs
+    // engine.update keeps running during hydration — only exports.onUpdate is paused.
     if (
-      sceneEngine &&
+      !sceneOnUpdatePaused &&
       !sceneUpdateInFlight &&
       !sceneUpdatePromiseActive &&
-      !pointerPending &&
-      now - lastEngineTickAt >= engineTickInterval
+      !pointerBlocksEngineTick() &&
+      sceneEngineTickDue(now)
     ) {
-      scheduleEngineTick(dt)
+      requestSceneEngineTick()
     }
 
     if (
@@ -1549,7 +1560,7 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
       !sceneUpdateInFlight &&
       !sceneUpdatePromiseActive &&
       !pointerDeliveryInFlight &&
-      !engineTickInFlight &&
+      !isSceneEngineTickInFlight() &&
       !queuedPointerDeliver &&
       !pendingInjectPointer &&
       now - lastFullSceneUpdateAt >= fullSceneOnUpdateIntervalMs
@@ -1562,7 +1573,7 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
   if (sceneTickTimer) clearInterval(sceneTickTimer)
   sceneTickTimer = setInterval(runCooperativeTick, SCENE_LOOP_POLL_MS)
   runCooperativeTick()
-
+  syncSceneEngineHydrationTimer()
 }
 
 /** onStart + post-onStart setup — scheduled as a macrotask so eval microtasks can finish first. */
@@ -1606,6 +1617,8 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
   try {
     installPointerEventColliderChecker(sceneEngine)
     workerLog('log', '[sceneWorker] pointerEventColliderChecker installed (post-onStart)')
+    installVirtualCameraBindGuard(sceneEngine)
+    workerLog('log', '[sceneWorker] virtualCamera bind guard installed (post-onStart)')
   } catch (err) {
     workerLog(
       'warn',
@@ -1625,21 +1638,23 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
       '[sceneWorker] scene UI scheduler inactive — bundled engine system loop was not partitioned'
     )
   }
+  bindSceneEngineScheduler(sceneEngine)
+  const readyUiEntities = collectWorkerUiEntityIds()
+  lastOutboundUiEntitiesKey = readyUiEntities.join(',')
   try {
-    await sceneEngine.update(0)
-    lastEngineTickExecutedAt = performance.now()
+    await runSceneEngineBootTick(sceneEngine)
     const postUpdateUi = collectWorkerUiEntityIds().length
     workerLog(
       'log',
-      `[sceneWorker] post-onStart engine.update(0) — UiTransform=${postUpdateUi} composite CRDT flushed`
+      `[sceneWorker] post-onStart boot tick — UiTransform=${postUpdateUi} composite CRDT flushed`
     )
-    await flushWorkerSceneUiAfterEngineTick(sceneEngine, (message) => workerLog('log', message))
   } catch (err) {
     workerLog(
       'error',
-      `[sceneWorker] post-onStart engine.update failed — ${err instanceof Error ? err.message : String(err)}`
+      `[sceneWorker] post-onStart boot tick failed — ${err instanceof Error ? err.message : String(err)}`
     )
   }
+
   if (exports.onUpdate) {
     try {
       await Promise.resolve(exports.onUpdate(0))
@@ -1652,11 +1667,8 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     }
   }
   workerLog('log', 'scene worker ready — onStart complete')
-  const readyUiEntities = collectWorkerUiEntityIds()
-  lastOutboundUiEntitiesKey = readyUiEntities.join(',')
-  resetWorkerUiFingerprint()
-  if (sceneEngine) seedWorkerUiFingerprint(sceneEngine)
   ctx.postMessage({ type: 'ready', uiEntities: readyUiEntities } satisfies SceneWorkerOutbound)
+  syncSceneEngineHydrationTimer()
   startSceneLoop(exports).catch((err) =>
     workerLog(
       'error',
@@ -1807,6 +1819,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   try {
     sceneOnStartComplete = false
     sceneBootInProgress = true
+    resetSceneEngineScheduler()
+    resetWorkerUiFingerprint()
     pendingOutboundAck.clear()
     pendingBootPriority.length = 0
     debugPointerDeliver = msg.debug?.pointerDeliver === true
@@ -1941,6 +1955,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     )
     ctx.postMessage({ type: 'eval-done' } satisfies SceneWorkerOutbound)
     sceneEngine = resolveSceneEngine(exports)
+    bindSceneEngineScheduler(sceneEngine)
     if (sceneEngine) {
       try {
         preregisterRendererInjectedComponents(sceneEngine)
@@ -2057,7 +2072,10 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
     return
   }
   if (msg.type === 'pause-scene-onupdate') {
+    const wasPaused = sceneOnUpdatePaused
     sceneOnUpdatePaused = msg.paused !== false
+    if (sceneOnUpdatePaused && !wasPaused) resetSceneEngineDiagCount()
+    syncSceneEngineHydrationTimer()
     workerLog(
       'log',
       `[sceneWorker] scene onUpdate ${sceneOnUpdatePaused ? 'paused (hydration)' : 'resumed'}`
@@ -2066,6 +2084,14 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
   }
   if (msg.type === 'inject-scene-input') {
     executeSceneInputInjection(msg.body as InjectSceneInputBody)
+    return
+  }
+  if (msg.type === 'release-scene-input') {
+    executeSceneInputRelease((msg as { tickNumber: number }).tickNumber)
+    return
+  }
+  if (msg.type === 'pump-scene-engine-tick') {
+    scheduleSceneInputEngineTick({ flightPump: true })
     return
   }
   if (msg.type === 'inject-pointer-click') {

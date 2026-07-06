@@ -41,6 +41,7 @@ import {
 } from '../bridge/dclTransform'
 import type { SceneKeyboardSnapshot } from '../input/SceneInputRelay'
 import { PlayerInput } from './PlayerInput'
+import type { VirtualCameraBridge } from '../camera/VirtualCameraBridge'
 import type { AssetCache } from '../rendering/AssetCache'
 import type { ResolvedProfileEmote } from '../avatar/profileEmotes'
 import { AVATAR_YAW_OFFSET } from '../avatar/constants'
@@ -146,6 +147,7 @@ export class PlayerSystem {
   /** Holds capsule after scene `movePlayerTo` until emote starts or the player moves. */
   private scenePositionLock = false
   private wasProfileEmoteActive = false
+  private virtualCamera: VirtualCameraBridge | null = null
 
   constructor(
     private readonly host: SceneHost,
@@ -199,6 +201,10 @@ export class PlayerSystem {
 
   getLocalAvatar(): LocalAvatar | null {
     return this.avatar
+  }
+
+  setVirtualCameraBridge(bridge: VirtualCameraBridge | null): void {
+    this.virtualCamera = bridge
   }
 
   async loadAvatar(onProgress?: (msg: string) => void): Promise<void> {
@@ -765,6 +771,7 @@ export class PlayerSystem {
   /** Orbit + zoom from pointer lock / drag — runs even when movement is scene-locked. */
   private applyCameraInputFromPointer(): void {
     if (!this.input) return
+    if (this.virtualCamera?.isActive()) return
 
     if (this.input.looking) {
       this.camYaw -= this.input.pointer.dx * POINTER_LOOK_SPEED
@@ -783,6 +790,12 @@ export class PlayerSystem {
   }
 
   private syncCamera(snap: boolean, delta = 0.016): void {
+    if (this.virtualCamera?.apply(delta)) {
+      this.avatar?.setBodyVisible(true)
+      if (this.nameTag) this.nameTag.object.visible = true
+      return
+    }
+
     const fpv = this.isFirstPerson()
     this.avatar?.setBodyVisible(!fpv)
     if (this.nameTag) this.nameTag.object.visible = !fpv

@@ -15,9 +15,12 @@ import { CrdtEncoder } from '../../bridge/CrdtEncoder'
 import { ReservedEntitiesSync, type EntityPose } from '../../bridge/ReservedEntitiesSync'
 import { ThreeBridge } from '../../bridge/ThreeBridge'
 import { applySceneDiff } from '../../bridge/entityStoreApply'
+import type { DclTransformValues } from '../../bridge/dclTransform'
 import { AvatarShapeBridge } from '../../bridge/AvatarShapeBridge'
 import { AvatarEmoteCommandBridge, type AvatarEmoteHandler } from '../../bridge/AvatarEmoteCommandBridge'
 import { BillboardBridge } from '../../bridge/BillboardBridge'
+import { VirtualCameraBridge } from '../../camera/VirtualCameraBridge'
+import type { EntityWorldTransformDeps } from '../../transform/entityWorldTransform'
 import { AnimatorBridge } from '../../bridge/AnimatorBridge'
 import { TweenBridge } from '../../bridge/TweenBridge'
 import { ParticleSystemBridge } from '../../bridge/ParticleSystemBridge'
@@ -116,7 +119,12 @@ export class SceneScriptSystem {
       networkEntity: this.componentHost.networkEntity,
       networkParent: this.componentHost.networkParent
     },
-    new Set<Entity>([SDK_RESERVED.root, SDK_RESERVED.player, SDK_RESERVED.camera])
+    new Set<Entity>([SDK_RESERVED.root, SDK_RESERVED.player, SDK_RESERVED.camera]),
+    {
+      cameraEntity: SDK_RESERVED.camera,
+      mainCameraComponentId: this.componentHost.components.MainCamera.componentId,
+      virtualCameraComponentId: this.componentHost.components.VirtualCamera.componentId
+    }
   )
   private readonly storeComponents = createStoreComponents(this.componentHost.components, this.projection)
   readonly readComponents: MirrorComponents = this.storeComponents
@@ -162,10 +170,15 @@ export class SceneScriptSystem {
   private avatarShapes: AvatarShapeBridge | null = null
   private avatarEmoteBridge: AvatarEmoteCommandBridge | null = null
   private billboardBridge: BillboardBridge | null = null
+  private virtualCameraBridge: VirtualCameraBridge | null = null
+  private virtualCameraPlayerPose: (() => EntityPose) | null = null
+  private virtualCameraCameraPose: (() => EntityPose) | null = null
   private animatorBridge: AnimatorBridge | null = null
   private tweenBridge: TweenBridge | null = null
   private particleBridge: ParticleSystemBridge | null = null
   private sceneUiBridge: SceneUiBridge | null = null
+  private sceneUiResizeObserver: ResizeObserver | null = null
+  private unbindSceneUiWindowResize: (() => void) | null = null
   private avatarAttachBridge: AvatarAttachBridge | null = null
   private videoPlayerBridge: VideoPlayerBridge | null = null
   private audioSourceBridge: AudioSourceBridge | null = null
@@ -295,6 +308,14 @@ export class SceneScriptSystem {
       this.entityStore,
       () => this.host!.camera
     )
+    this.virtualCameraBridge = new VirtualCameraBridge(
+      this.readComponents,
+      this.view,
+      () => this.host!.camera,
+      () => this.virtualCameraPlayerPose?.() ?? this.clientCameraPose ?? emptyEntityPose(),
+      () => this.virtualCameraCameraPose?.() ?? this.clientCameraPose ?? emptyEntityPose(),
+      () => this.bridge?.getEntityNodes()
+    )
     this.animatorBridge = new AnimatorBridge(
       this.readComponents,
       cache,
@@ -386,7 +407,33 @@ export class SceneScriptSystem {
     this.raycasts = new RaycastSystem()
     this.avatarShapes.setAssetCache(cache, scene.realm.contentUrl)
     this.bridge.setOnGltfAttached((entity) => this.flushIncrementalColliders(entity))
+    this.bindSceneUiViewportSync(host)
     this.prepared = true
+  }
+
+  /** Re-layout DOM overlay when the WebGL canvas rect changes (window resize, sidebar, etc.). */
+  repaintSceneUiOnViewportResize(): void {
+    if (!this.sceneUiBridge?.hasCommittedMountSet()) return
+    this.applyUiFrame([])
+  }
+
+  private bindSceneUiViewportSync(host: SceneHost): void {
+    this.unbindSceneUiViewportSync()
+    const repaint = () => this.repaintSceneUiOnViewportResize()
+    const onWindowResize = () => repaint()
+    window.addEventListener('resize', onWindowResize)
+    this.unbindSceneUiWindowResize = () => window.removeEventListener('resize', onWindowResize)
+    if (typeof ResizeObserver !== 'undefined') {
+      this.sceneUiResizeObserver = new ResizeObserver(() => repaint())
+      this.sceneUiResizeObserver.observe(host.renderer.domElement)
+    }
+  }
+
+  private unbindSceneUiViewportSync(): void {
+    this.sceneUiResizeObserver?.disconnect()
+    this.sceneUiResizeObserver = null
+    this.unbindSceneUiWindowResize?.()
+    this.unbindSceneUiWindowResize = null
   }
 
   /** Called by World — per-entity enqueue or queue drain while GLBs attach. */
@@ -1079,6 +1126,10 @@ export class SceneScriptSystem {
 
       this.worker.onmessage = (ev: MessageEvent<SceneWorkerOutbound>) => {
         const msg = ev.data
+        if (msg?.type === 'vc-pose-live') {
+          this.applyVcPoseLive(msg.entity as Entity, msg.transform as DclTransformValues)
+          return
+        }
         if (msg?.type === 'pointer-deliver-done') {
           this.onPointerDeliverDone()
           return
@@ -1429,22 +1480,21 @@ export class SceneScriptSystem {
     batch: { id?: number; data: Uint8Array; uiEntities?: number[] }[]
   ): Promise<void> {
     const ackIds = batch.map((item) => item.id).filter((id): id is number => id !== undefined)
-    try {
-      if (!this.running) return
-      const inbound = await this.processWorkerOutboundCrdtBatch(batch)
-      this.postRendererInboundDeliver(inbound)
-      if (!this.crdtOutboundLogged) {
-        this.crdtOutboundLogged = true
-        clientDebugLog.log(
-          'projection',
-          'CRDT outbound ACTIVE — worker→main with ack, inbound via renderer-inbound-deliver',
-          { level: 'success', alsoConsole: true }
-        )
-      }
-    } finally {
-      for (const id of ackIds) {
-        this.worker?.postMessage({ type: 'crdt-outbound-ack', id } satisfies MainToWorker)
-      }
+    // Ack immediately — worker transport must not block on yoga/layout for large UI flushes.
+    // Apply stays serial via crdtOutboundSerial; ordering is preserved.
+    for (const id of ackIds) {
+      this.worker?.postMessage({ type: 'crdt-outbound-ack', id } satisfies MainToWorker)
+    }
+    if (!this.running) return
+    const inbound = await this.processWorkerOutboundCrdtBatch(batch)
+    this.postRendererInboundDeliver(inbound)
+    if (!this.crdtOutboundLogged) {
+      this.crdtOutboundLogged = true
+      clientDebugLog.log(
+        'projection',
+        'CRDT outbound ACTIVE — worker→main with ack, inbound via renderer-inbound-deliver',
+        { level: 'success', alsoConsole: true }
+      )
     }
   }
 
@@ -1727,16 +1777,88 @@ export class SceneScriptSystem {
     console.info(`[scene-ui] repaint #${this.sceneUiRepaintLogCount}`)
   }
 
-  /** Re-assert held WASD to worker — every sync frame while keys are down. */
+  /** Per-frame relay hook — edge injects only (see SceneInputRelay.sync). */
   syncSceneInputRelay(tickNumber: number): void {
     this.sceneInputRelay?.sync(tickNumber)
   }
 
+  /**
+   * Worker→main live VC Transform (no CRDT ack wait). Keeps projection + gizmo in sync
+   * with engine ticks during MOVE CAMERA flight.
+   */
+  private applyVcPoseLive(entity: Entity, transform: DclTransformValues): void {
+    if (!this.running || !this.entityStore || !this.bridge) return
+    const { Transform, MainCamera } = this.readComponents
+    const { CameraEntity } = this.view
+    const main = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
+    const bound = main?.virtualCameraEntity
+    if (bound === undefined || bound === null || entity !== bound) return
+
+    this.projection.setVcLiveTransform(entity, transform)
+
+    const comps = new Map<number, ProjectionChangeKind>([[Transform.componentId, 'put']])
+    const diff = new Map<Entity, Map<number, ProjectionChangeKind>>([[entity, comps]])
+    applySceneDiff(this.entityStore, diff, this.view, this.readComponents, [], {
+      notifySecondary: false,
+      skipSecondaryNotify: () => true
+    })
+    this.bridge.getEntityNodes()?.get(entity)?.updateMatrixWorld(true)
+  }
+
+  /** Clear stuck relay + worker inputSystem state (e.g. VIEW SHOT MainCamera bind). */
+  flushSceneKeyboardRelay(reason: string): void {
+    this.sceneInputRelay?.releaseHeldKeys(reason)
+    this.releaseSceneInputOnWorker()
+  }
+
+  private releaseSceneInputOnWorker(): void {
+    if (!this.running || !this.worker) return
+    this.worker.postMessage({
+      type: 'release-scene-input',
+      tickNumber: this.crdtTick
+    } satisfies MainToWorker)
+  }
+
+  /** After flight keys release — let inbound worker VC Transform CRDT apply again. */
+  private clearVcLiveTransformLane(): void {
+    const { MainCamera } = this.readComponents
+    const main = MainCamera.getOrNull(this.view.CameraEntity) as { virtualCameraEntity?: number } | null
+    const vc = main?.virtualCameraEntity
+    if (vc !== undefined && vc !== null) {
+      this.projection.clearVcLiveTransform(vc as Entity)
+    }
+  }
+
   private foldProjectionChanges(): void {
     const { PlayerEntity, CameraEntity, RootEntity } = this.view
-    const { TriggerArea, Transform, Billboard } = this.readComponents
+    const { TriggerArea, Transform, Billboard, MainCamera } = this.readComponents
 
     for (const change of this.projection.changes) {
+      if (
+        change.entity === CameraEntity &&
+        change.componentId === MainCamera.componentId &&
+        change.kind === 'put'
+      ) {
+        const value = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
+        const vc = value?.virtualCameraEntity
+        if (vc !== undefined && vc !== null) {
+          this.flushSceneKeyboardRelay('vc-bind')
+        } else {
+          this.projection.clearVcLiveTransformForUnbind()
+        }
+        this.virtualCameraBridge?.logLensParity(
+          `projection MainCamera put → vc=${vc ?? 'cleared'}`
+        )
+      }
+
+      if (change.kind === 'put' && change.componentId === Transform.componentId) {
+        const mainVc = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
+        const boundVc = mainVc?.virtualCameraEntity
+        if (boundVc !== undefined && boundVc !== null && change.entity === boundVc) {
+          this.virtualCameraBridge?.logLensParity(`projection VC Transform put e${boundVc}`)
+        }
+      }
+
       if (change.entity === PlayerEntity || change.entity === CameraEntity || change.entity === RootEntity) {
         continue
       }
@@ -1803,6 +1925,25 @@ export class SceneScriptSystem {
     this.audioStreamBridge?.setUserGestureUnlocked(unlocked)
   }
 
+  getVirtualCameraBridge(): VirtualCameraBridge | null {
+    return this.virtualCameraBridge
+  }
+
+  setVirtualCameraPoseProviders(player: () => EntityPose, camera: () => EntityPose): void {
+    this.virtualCameraPlayerPose = player
+    this.virtualCameraCameraPose = camera
+  }
+
+  /** Shared world-transform context for camera, pointer, trigger, and raycast systems. */
+  getWorldTransformDeps(): EntityWorldTransformDeps | null {
+    if (!this.entityStore) return null
+    return {
+      view: this.view,
+      playerPose: () => this.virtualCameraPlayerPose?.() ?? this.clientPlayerPose ?? emptyEntityPose(),
+      cameraPose: () => this.virtualCameraCameraPose?.() ?? this.clientCameraPose ?? emptyEntityPose()
+    }
+  }
+
   /** Bind pointer raycast after player spawn — needs collision + camera + player pose. */
   bindPointerEvents(
     getPlayerPosition: () => THREE.Vector3 | null,
@@ -1824,6 +1965,7 @@ export class SceneScriptSystem {
       view: this.view,
       collision: this.collision,
       getEntityNodes: () => this.bridge!.getEntityNodes(),
+      getWorldTransformDeps: () => this.getWorldTransformDeps(),
       camera: this.host.camera,
       getPlayerPosition,
       isPointerBlocked,
@@ -1866,6 +2008,7 @@ export class SceneScriptSystem {
       ecs: this.readComponents,
       view: this.view,
       getEntityNodes: () => this.bridge!.getEntityNodes(),
+      getWorldTransformDeps: () => this.getWorldTransformDeps(),
       getPlayerWorldPosition: getPlayerPosition,
       getPhysics,
       recordAppend: this.recordRendererAppend
@@ -1875,6 +2018,7 @@ export class SceneScriptSystem {
       view: this.view,
       collision: this.collision,
       getEntityNodes: () => this.bridge!.getEntityNodes(),
+      getWorldTransformDeps: () => this.getWorldTransformDeps(),
       recordLww: this.recordRendererLww
     })
     if (this.sceneInputRelay && sceneInput) {
@@ -1885,7 +2029,10 @@ export class SceneScriptSystem {
         isRelayBlocked: sceneInput.isRelayBlocked,
         isLocomotionBlocked: sceneInput.isLocomotionBlocked,
         clearPlayerMoveKeys: sceneInput.clearPlayerMoveKeys,
-        injectToWorker: (body) => this.injectSceneInputToWorker(body)
+        injectToWorker: (body) => this.injectSceneInputToWorker(body),
+        pumpWorkerTick: () => this.pumpSceneEngineTick(),
+        releaseWorkerKeys: () => this.releaseSceneInputOnWorker(),
+        onFlightKeysReleased: () => this.clearVcLiveTransformLane()
       })
     }
     let triggerEntities = 0
@@ -2077,6 +2224,12 @@ export class SceneScriptSystem {
   private injectSceneInputToWorker(body: import('../../player/injectSceneInput').InjectSceneInputBody): void {
     if (!this.running || !this.worker) return
     this.worker.postMessage({ type: 'inject-scene-input', body } satisfies MainToWorker)
+  }
+
+  /** ~60Hz worker ticks during held flight keys — no PointerEventsResult spam. */
+  private pumpSceneEngineTick(): void {
+    if (!this.running || !this.worker) return
+    this.worker.postMessage({ type: 'pump-scene-engine-tick' } satisfies MainToWorker)
   }
 
   updatePointerEvents(tickNumber: number): void {
@@ -2330,6 +2483,7 @@ export class SceneScriptSystem {
 
   /** Apply latest client poses to projection before renderer outbound CRDT. */
   private prepareRendererOutboundState(): void {
+    this.projection.flushPendingMainCameraBind()
     this.refreshClientPosesFromProvider()
     if (!this.clientPlayerPose || !this.clientCameraPose) return
     this.reserved.prepareRendererRoundTrip(this.clientPlayerPose, this.clientCameraPose)
@@ -3073,10 +3227,14 @@ export class SceneScriptSystem {
     this.avatarShapes = null
     this.avatarEmoteBridge = null
     this.billboardBridge = null
+    this.virtualCameraBridge = null
+    this.virtualCameraPlayerPose = null
+    this.virtualCameraCameraPose = null
     this.animatorBridge = null
     this.tweenBridge = null
     this.particleBridge?.dispose()
     this.particleBridge = null
+    this.unbindSceneUiViewportSync()
     this.sceneUiBridge?.dispose()
     this.sceneUiBridge = null
     this.pendingVirtualCanvas = null
@@ -3110,5 +3268,12 @@ export class SceneScriptSystem {
     this.host = null
     this.running = false
     this.prepared = false
+  }
+}
+
+function emptyEntityPose(): EntityPose {
+  return {
+    position: new THREE.Vector3(),
+    rotation: new THREE.Quaternion()
   }
 }

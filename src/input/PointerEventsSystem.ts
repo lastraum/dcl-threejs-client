@@ -7,7 +7,11 @@ import type { RaycastHit } from '@dcl/ecs/dist/components/generated/pb/decentral
 import { InputAction, InteractionType, PointerEventType, type InputActionValue, type PointerEventTypeValue } from './pointerConstants'
 import { inputActionBinding, inputActionInteractLabel, keyCodeToInputActionBinding } from './inputActionBinding'
 import type { MirrorComponents } from '../bridge/mirrorComponents'
-import { dclToThreeVec, threeToDclVec } from '../bridge/dclTransform'
+import { threeToDclVec } from '../bridge/dclTransform'
+import {
+  resolveEntityWorldPosition,
+  type EntityWorldTransformDeps
+} from '../transform/entityWorldTransform'
 import type { CollisionSystem } from '../collision/CollisionSystem'
 import { ColliderLayer } from '../collision/ColliderLayer'
 import { isGltfInvisibleColliderMesh } from '../collision/gltfColliderNaming'
@@ -46,6 +50,7 @@ type PointerDeps = {
   view: ProjectionView
   collision: CollisionSystem
   getEntityNodes: () => Map<Entity, THREE.Group>
+  getWorldTransformDeps: () => EntityWorldTransformDeps | null
   camera: THREE.Camera
   getPlayerPosition: () => THREE.Vector3 | null
   isPointerBlocked: () => boolean
@@ -645,11 +650,10 @@ export class PointerEventsSystem {
         : this.deps.ecs.UiTransform.has(downEntity)
           ? this.buildUiPointerHit(downEntity, _camPos)
           : buildSyntheticHit(
-              this.deps.ecs,
               downEntity,
               _camPos,
               this.deps.getPlayerPosition(),
-              this.deps.getEntityNodes()
+              this.deps.getWorldTransformDeps()
             )
 
     this.writeResult(this.deps.ecs, downEntity, upHit, PointerEventType.PET_UP, button)
@@ -792,18 +796,16 @@ export class PointerEventsSystem {
       if (!hasPointerEvent(spec, PointerEventType.PET_DOWN, button, InteractionType.PROXIMITY)) continue
 
       const distances = measureEntityDistances(
-        ecs,
         entity,
         _camPos,
         playerPos,
-        this.deps.getEntityNodes()
+        this.deps.getWorldTransformDeps()
       )
       const hit = buildSyntheticProximityHit(
-        ecs,
         entity,
         spec!,
         distances,
-        this.deps.getEntityNodes()
+        this.deps.getWorldTransformDeps()
       )
       if (!pointerEventInRange(spec, PointerEventType.PET_DOWN, button, hit)) continue
 
@@ -1253,33 +1255,13 @@ function measureHitDistances(
   }
 }
 
-function resolveEntityWorldPosition(
-  ecs: MirrorComponents,
-  entity: Entity,
-  nodes: Map<Entity, THREE.Group>,
-  out: THREE.Vector3
-): THREE.Vector3 | null {
-  const node = nodes.get(entity)
-  if (node) {
-    node.updateWorldMatrix(true, false)
-    return node.getWorldPosition(out)
-  }
-  const transform = ecs.Transform.getOrNull(entity)
-  if (!transform) return null
-  return dclToThreeVec(
-    new THREE.Vector3(transform.position.x, transform.position.y, transform.position.z),
-    out
-  )
-}
-
 function measureEntityDistances(
-  ecs: MirrorComponents,
   entity: Entity,
   cameraPos: THREE.Vector3,
   playerPos: THREE.Vector3 | null,
-  nodes: Map<Entity, THREE.Group>
+  worldDeps: EntityWorldTransformDeps | null
 ): { cameraDistance: number; playerDistance: number } {
-  if (!resolveEntityWorldPosition(ecs, entity, nodes, _entityPos)) {
+  if (!worldDeps || !resolveEntityWorldPosition(entity, worldDeps, _entityPos)) {
     return { cameraDistance: Infinity, playerDistance: Infinity }
   }
   return {
@@ -1380,13 +1362,14 @@ function pointerEventInRange(
 }
 
 function buildSyntheticProximityHit(
-  ecs: MirrorComponents,
   entity: Entity,
   spec: { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> },
   distances: { cameraDistance: number; playerDistance: number },
-  nodes: Map<Entity, THREE.Group>
+  worldDeps: EntityWorldTransformDeps | null
 ): PointerHit {
-  const point = resolveEntityWorldPosition(ecs, entity, nodes, new THREE.Vector3()) ?? _camPos.clone()
+  const point =
+    (worldDeps && resolveEntityWorldPosition(entity, worldDeps, new THREE.Vector3())) ??
+    _camPos.clone()
   return {
     entity,
     point,
@@ -1435,21 +1418,21 @@ function hoverButtonForSpec(
 }
 
 function buildSyntheticHit(
-  ecs: MirrorComponents,
   entity: Entity,
   cameraPos: THREE.Vector3,
   playerPos: THREE.Vector3 | null,
-  nodes: Map<Entity, THREE.Group>
+  worldDeps: EntityWorldTransformDeps | null
 ): PointerHit {
-  const spec = ecs.PointerEvents.getOrNull(entity)
+  const spec = worldDeps?.view.components.PointerEvents.getOrNull(entity) ?? null
   const { cameraDistance, playerDistance } = measureEntityDistances(
-    ecs,
     entity,
     cameraPos,
     playerPos,
-    nodes
+    worldDeps
   )
-  const point = resolveEntityWorldPosition(ecs, entity, nodes, new THREE.Vector3()) ?? cameraPos.clone()
+  const point =
+    (worldDeps && resolveEntityWorldPosition(entity, worldDeps, new THREE.Vector3())) ??
+    cameraPos.clone()
   return {
     entity,
     point,

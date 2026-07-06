@@ -33,14 +33,14 @@ export function createStoreComponents(
     const facade = Object.create(def) as Record<string, unknown>
 
     facade.get = (entity: Entity): unknown => {
-      const value = projection.get(componentId, entity)
+      const value = projection.getEffective(componentId, entity)
       if (value === undefined) {
         throw new Error(`[StoreComponents] ${def.componentName}.get(${entity}) on entity without the component`)
       }
       return value
     }
     facade.getOrNull = (entity: Entity): unknown => {
-      const value = projection.get(componentId, entity)
+      const value = projection.getEffective(componentId, entity)
       return value === undefined ? null : value
     }
     facade.has = (entity: Entity): boolean => projection.has(componentId, entity)

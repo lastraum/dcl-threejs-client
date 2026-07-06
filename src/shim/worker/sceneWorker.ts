@@ -1700,8 +1700,6 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     )
   }
   bindSceneEngineScheduler(sceneEngine)
-  const readyUiEntities = collectWorkerUiEntityIds()
-  lastOutboundUiEntitiesKey = readyUiEntities.join(',')
   try {
     await runSceneEngineBootTick(sceneEngine)
     const postUpdateUi = collectWorkerUiEntityIds().length
@@ -1728,7 +1726,13 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     }
   }
   workerLog('log', 'scene worker ready — onStart complete')
-  ctx.postMessage({ type: 'ready', uiEntities: readyUiEntities } satisfies SceneWorkerOutbound)
+  const readyUiEntities = collectWorkerUiEntityIds()
+  if (readyUiEntities.length) lastOutboundUiEntitiesKey = readyUiEntities.join(',')
+  ctx.postMessage(
+    readyUiEntities.length
+      ? ({ type: 'ready', uiEntities: readyUiEntities } satisfies SceneWorkerOutbound)
+      : ({ type: 'ready' } satisfies SceneWorkerOutbound)
+  )
   syncSceneEngineHydrationTimer()
   startSceneLoop(exports).catch((err) =>
     workerLog(

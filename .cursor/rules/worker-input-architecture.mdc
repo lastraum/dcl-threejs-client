@@ -38,7 +38,9 @@ UI clicks: `inject-pointer-click` only — do not also ship main-encoded pointer
 
 ## Ui mount snapshot (`uiEntities`)
 
-Attach `uiEntities` to `crdt-outbound` **only** during `emitSceneUiCrdtIfDirty` transport (`shouldAttachUiMountSnapshot`) and `flushPointerDeferredOutbounds` after pointer batch drain. Never attach on arbitrary cooperative `engine.update` transport — empty nudges with a shrunk `uiEntities` unmount main DOM without DeleteComponent bytes (UI flash).
+Attach `uiEntities` to `crdt-outbound` **only** during `emitSceneUiCrdtIfDirty` transport (`shouldAttachUiMountSnapshot`) and `flushPointerDeferredOutbounds` after pointer batch drain. **Never** attach on **empty** transport nudges — shrunk `uiEntities` unmounts main DOM without DeleteComponent bytes (UI flash).
+
+`ready` must post `uiEntities` collected **after** `runSceneEngineBootTick`, never `[]` — an empty mount commit clears DOM that boot flush already painted.
 
 Pointer `onUpdate(0)` advances `lastFullSceneUpdateAt` — it satisfies one cooperative onUpdate interval; do not run a second `exports.onUpdate` immediately after pointer tick.
 

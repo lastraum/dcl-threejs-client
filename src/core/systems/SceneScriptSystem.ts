@@ -1222,8 +1222,10 @@ export class SceneScriptSystem {
       this.bootPhaseActive = false
       const readyUiEntities = msg.uiEntities
       // engine.update(0) outbound may still be in the microtask queue — paint after it lands.
+      // Omit uiEntities when boot had none — never commit an empty mount over a prior flush.
       this.crdtOutboundSerial = this.crdtOutboundSerial.then(() => {
-        this.applyUiFrame([], readyUiEntities)
+        if (readyUiEntities?.length) this.applyUiFrame([], readyUiEntities)
+        else this.flushUiFrame()
       })
       clientDebugLog.log('scene', 'Scene worker ready (main thread)', { level: 'success' })
       onReady()

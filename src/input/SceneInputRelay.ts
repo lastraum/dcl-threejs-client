@@ -5,6 +5,7 @@ import type { ProjectionView } from '../bridge/ProjectionView'
 import type { MirrorComponents } from '../bridge/mirrorComponents'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import type { InjectSceneInputBody } from '../player/injectSceneInput'
+import { buildSceneInputSnapshot, type SceneInputSnapshotBody } from '../player/sceneInputSnapshot'
 import { InputAction, PointerEventType, type InputActionValue, type PointerEventTypeValue } from './pointerConstants'
 import { nextPointerEventTimestamp } from './pointerEventTimestamp'
 
@@ -37,6 +38,8 @@ type SceneInputRelayDeps = {
   releaseWorkerKeys?: () => void
   /** Drop VC live-lane LWW so final worker Transform CRDT can land. */
   onFlightKeysReleased?: () => void
+  /** Phase 1 — parallel level-state channel (relay remains authoritative). */
+  publishInputSnapshot?: (body: SceneInputSnapshotBody) => void
 }
 
 /** Keys that drive creator VC flight — pump worker engine ticks while these are held. */
@@ -133,10 +136,12 @@ export class SceneInputRelay {
     this.tickNumber = tickNumber
     if (this.deps.isRelayBlocked()) {
       this.releaseAll('blocked')
+      this.deps.publishInputSnapshot?.(buildSceneInputSnapshot(tickNumber, this.relayPressed))
       return
     }
 
     this.reconcileHardwareKeys()
+    this.deps.publishInputSnapshot?.(buildSceneInputSnapshot(tickNumber, this.relayPressed))
 
     if (!this.deps.pumpWorkerTick || !this.relayPressed.size) return
     let needsPump = false

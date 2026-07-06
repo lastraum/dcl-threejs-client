@@ -6,6 +6,7 @@ export type SceneWorkerPriorityMessage =
   | { type: 'inject-scene-input'; body: unknown }
   | { type: 'release-scene-input'; tickNumber: number }
   | { type: 'pump-scene-engine-tick' }
+  | { type: 'scene-input-snapshot'; body: unknown }
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
   | { type: 'pause-scene-ticks'; paused?: boolean }
   | { type: 'pause-scene-onupdate'; paused?: boolean }
@@ -15,6 +16,7 @@ const PRIORITY_TYPES = new Set([
   'inject-scene-input',
   'release-scene-input',
   'pump-scene-engine-tick',
+  'scene-input-snapshot',
   'pointer-crdt-deliver',
   'pause-scene-ticks',
   'pause-scene-onupdate'

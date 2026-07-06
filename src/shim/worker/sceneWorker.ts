@@ -35,6 +35,11 @@ import {
 import { injectPointerClickOnEngine } from './injectPointerClick'
 import { injectSceneKeyOnEngine, releaseAllSceneKeysOnEngine } from '../../player/injectSceneInput'
 import type { InjectSceneInputBody } from '../../player/injectSceneInput'
+import {
+  resetWorkerInputSnapshotState,
+  sceneInputSnapshotMismatches,
+  type SceneInputSnapshotBody
+} from '../../player/sceneInputSnapshot'
 import { injectRendererGrowOnlyAppendsOnEngine } from './injectRendererGrowOnlyAppends'
 import { injectRendererLwwPutsOnEngine } from './injectRendererLwwPuts'
 import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransforms'
@@ -189,7 +194,11 @@ const pointerDeferredOutbounds: Uint8Array[] = []
 /** Genesis composite spawn runs in exports.onUpdate — must stay on (engine.update alone does not load composite). */
 const ENABLE_FULL_SCENE_ONUPDATE = true
 /** Boot `debug` flags from main (`?pointerverbose` / `?tweenverbose`). */
+let debugSceneInputSnapshot = false
 let debugPointerDeliver = false
+let pendingSceneInputSnapshot: SceneInputSnapshotBody | null = null
+let sceneInputSnapshotParityChecks = 0
+let sceneInputSnapshotMismatchTotal = 0
 let debugSceneUiLog = false
 let sceneUiOutboundLogCount = 0
 /** Always log the first N post-boot UI CRDT outbounds (diagnose stuck black scrims). */
@@ -538,6 +547,29 @@ function workerLog(level: 'log' | 'info' | 'warn' | 'error' | 'debug', message: 
 
 let lastVcPoseLiveKey = ''
 
+function checkSceneInputSnapshotParity(): void {
+  const snapshot = pendingSceneInputSnapshot
+  if (!snapshot || !sceneEngine || !sceneOnStartComplete) return
+  pendingSceneInputSnapshot = null
+  sceneInputSnapshotParityChecks++
+  const mismatches = sceneInputSnapshotMismatches(
+    sceneEngine,
+    sceneEngine.PlayerEntity as Entity,
+    snapshot
+  )
+  if (!mismatches.length) return
+  sceneInputSnapshotMismatchTotal += mismatches.length
+  if (!debugSceneInputSnapshot) return
+  workerLog(
+    'warn',
+    `[sceneWorker] scene-input-snapshot parity — tick=${snapshot.tickNumber} mismatched=[${mismatches.join(', ')}] pressed=[${snapshot.pressed.join(', ')}]`
+  )
+}
+
+function storeSceneInputSnapshot(body: SceneInputSnapshotBody): void {
+  pendingSceneInputSnapshot = body
+}
+
 function publishVcPoseLiveIfBound(): void {
   if (!sceneEngine || !sceneOnStartComplete) return
   const MainCamera = generated.MainCamera(sceneEngine)
@@ -584,7 +616,10 @@ initSceneEngineScheduler({
     interruptPendingOutboundAcks()
     interruptPendingCrdtRoundTrips()
   },
-  onAfterEngineTick: publishVcPoseLiveIfBound
+  onAfterEngineTick: () => {
+    publishVcPoseLiveIfBound()
+    checkSceneInputSnapshotParity()
+  }
 })
 
 function workerVerboseLog(
@@ -1823,7 +1858,12 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     resetWorkerUiFingerprint()
     pendingOutboundAck.clear()
     pendingBootPriority.length = 0
+    debugSceneInputSnapshot = msg.debug?.sceneInputSnapshot === true
     debugPointerDeliver = msg.debug?.pointerDeliver === true
+    resetWorkerInputSnapshotState()
+    pendingSceneInputSnapshot = null
+    sceneInputSnapshotParityChecks = 0
+    sceneInputSnapshotMismatchTotal = 0
     debugTweenDeliver = msg.debug?.tweenDeliver === true
     debugMessageArrival = msg.debug?.messageArrival === true
     debugSceneUiLog = msg.debug?.sceneUiLog === true
@@ -2092,6 +2132,10 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
   }
   if (msg.type === 'pump-scene-engine-tick') {
     scheduleSceneInputEngineTick({ flightPump: true })
+    return
+  }
+  if (msg.type === 'scene-input-snapshot') {
+    storeSceneInputSnapshot(msg.body as SceneInputSnapshotBody)
     return
   }
   if (msg.type === 'inject-pointer-click') {

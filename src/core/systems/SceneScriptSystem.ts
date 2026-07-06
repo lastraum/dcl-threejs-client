@@ -81,6 +81,15 @@ type OpenExternalUrlHandler = (request: OpenExternalUrlRequest) => boolean
 /** Async bridge ECS sync (Animator / AvatarShape load paths) — playback still runs every sync frame. */
 const BRIDGE_ECS_SYNC_RUNTIME = 12
 
+/** Phase 1 — log relay vs scene-input-snapshot parity in worker (`?sceneinputsnapshot`). */
+const SCENE_INPUT_SNAPSHOT_VERBOSE = ((): boolean => {
+  try {
+    return typeof location !== 'undefined' && new URLSearchParams(location.search).has('sceneinputsnapshot')
+  } catch {
+    return false
+  }
+})()
+
 /** Extra pointer round-trip diagnostics (`?pointerverbose`). */
 const POINTER_VERBOSE = ((): boolean => {
   try {
@@ -1068,6 +1077,7 @@ export class SceneScriptSystem {
     const boot: SceneWorkerBoot = {
       type: 'boot',
       debug: {
+        sceneInputSnapshot: SCENE_INPUT_SNAPSHOT_VERBOSE,
         pointerDeliver: POINTER_VERBOSE,
         tweenDeliver: isTweenVerbose(),
         skipTheatre: skipTheatreSceneScript(),
@@ -2032,7 +2042,8 @@ export class SceneScriptSystem {
         injectToWorker: (body) => this.injectSceneInputToWorker(body),
         pumpWorkerTick: () => this.pumpSceneEngineTick(),
         releaseWorkerKeys: () => this.releaseSceneInputOnWorker(),
-        onFlightKeysReleased: () => this.clearVcLiveTransformLane()
+        onFlightKeysReleased: () => this.clearVcLiveTransformLane(),
+        publishInputSnapshot: (body) => this.publishSceneInputSnapshot(body)
       })
     }
     let triggerEntities = 0
@@ -2230,6 +2241,14 @@ export class SceneScriptSystem {
   private pumpSceneEngineTick(): void {
     if (!this.running || !this.worker) return
     this.worker.postMessage({ type: 'pump-scene-engine-tick' } satisfies MainToWorker)
+  }
+
+  /** Phase 1 shadow channel — level keyboard state; relay edge injects remain authoritative. */
+  private publishSceneInputSnapshot(
+    body: import('../../player/sceneInputSnapshot').SceneInputSnapshotBody
+  ): void {
+    if (!this.running || !this.worker) return
+    this.worker.postMessage({ type: 'scene-input-snapshot', body } satisfies MainToWorker)
   }
 
   updatePointerEvents(tickNumber: number): void {

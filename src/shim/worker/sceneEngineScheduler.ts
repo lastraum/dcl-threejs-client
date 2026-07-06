@@ -49,6 +49,12 @@ let bootSealed = false
 let hydrationTimer: ReturnType<typeof setInterval> | null = null
 let diagCount = 0
 let tickEpoch = 0
+/** True only during intentional Ui CRDT transport emit — rpcCrdt must not attach uiEntities otherwise. */
+let attachUiMountSnapshot = false
+
+export function shouldAttachUiMountSnapshot(): boolean {
+  return attachUiMountSnapshot
+}
 
 export function initSceneEngineScheduler(cfg: SceneEngineSchedulerConfig): void {
   config = cfg
@@ -115,8 +121,13 @@ export function sceneEngineTickDue(now: number): boolean {
 async function emitSceneUiCrdtIfDirty(eng: IEngine): Promise<void> {
   const cfg = config!
   if (!planSceneUiCrdtEmit(eng, cfg.log)) return
-  await eng.update(0)
-  commitSceneUiCrdtBaseline(eng)
+  attachUiMountSnapshot = true
+  try {
+    await eng.update(0)
+    commitSceneUiCrdtBaseline(eng)
+  } finally {
+    attachUiMountSnapshot = false
+  }
 }
 
 /** Cooperative play / hydration tick. */

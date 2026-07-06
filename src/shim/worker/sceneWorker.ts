@@ -84,6 +84,7 @@ import {
   resetSceneEngineScheduler,
   runSceneEngineBootTick,
   runSceneEnginePointerTick,
+  shouldAttachUiMountSnapshot,
   sceneEngineTickAfterInboundInject,
   sceneEngineTickDue,
   syncSceneEngineHydrationTimer
@@ -472,7 +473,7 @@ async function runPointerEngineTickWork(label: string): Promise<void> {
         `[sceneWorker] ${label} scene onUpdate(0) failed — ${err instanceof Error ? err.message : String(err)}`
       )
     }
-    flushPointerDeferredOutbounds()
+    lastFullSceneUpdateAt = performance.now()
   })
   workerVerboseLog(debugPointerDeliver, 'log', `[sceneWorker] ${label} — pointer scheduler tick done`)
 }
@@ -1278,10 +1279,11 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
       if (copy.byteLength > 0) pointerDeferredOutbounds.push(copy)
       return Promise.resolve([])
     }
-    const uiEntities = collectWorkerUiEntityIds()
-    const uiKey = uiEntities.join(',')
+    const attachUiMount = shouldAttachUiMountSnapshot()
+    const uiEntities = attachUiMount ? collectWorkerUiEntityIds() : undefined
+    const uiKey = attachUiMount ? uiEntities!.join(',') : lastOutboundUiEntitiesKey
     if (copy.byteLength === 0) {
-      if (crdtOutboundEmptyNudgeCoalesced && uiKey === lastOutboundUiEntitiesKey) {
+      if (crdtOutboundEmptyNudgeCoalesced && (!attachUiMount || uiKey === lastOutboundUiEntitiesKey)) {
         return Promise.resolve([])
       }
       crdtOutboundEmptyNudgeCoalesced = true
@@ -1289,10 +1291,12 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
         crdtOutboundEmptyNudgeCoalesced = false
       })
     }
-    lastOutboundUiEntitiesKey = uiKey
+    if (attachUiMount) lastOutboundUiEntitiesKey = uiKey
     if (copy.byteLength === 0) {
       logSceneUiOutbound(copy, uiEntities)
-      const msg = { type: 'crdt-outbound', data: copy, uiEntities } satisfies SceneWorkerOutbound
+      const msg = attachUiMount
+        ? ({ type: 'crdt-outbound', data: copy, uiEntities } satisfies SceneWorkerOutbound)
+        : ({ type: 'crdt-outbound', data: copy } satisfies SceneWorkerOutbound)
       ctx.postMessage(msg)
       return Promise.resolve([])
     }
@@ -1308,7 +1312,9 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
       }
       pendingOutboundAck.set(id, finish)
       setTimeout(finish, OUTBOUND_ACK_TIMEOUT_MS)
-      const msg = { type: 'crdt-outbound', id, data: copy, uiEntities } satisfies SceneWorkerOutbound
+      const msg = attachUiMount
+        ? ({ type: 'crdt-outbound', id, data: copy, uiEntities } satisfies SceneWorkerOutbound)
+        : ({ type: 'crdt-outbound', id, data: copy } satisfies SceneWorkerOutbound)
       ctx.postMessage(msg, [copy.buffer])
     })
   }

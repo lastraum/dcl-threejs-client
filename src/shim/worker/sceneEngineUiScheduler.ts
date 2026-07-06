@@ -236,6 +236,21 @@ export function touchWorkerUiComponentsForCrdt(engine: IEngine): number {
   return touched
 }
 
+/** Queue DeleteComponent transport when react-ecs already removed the row (no has() left). */
+function forceLwwDelete<T extends object>(
+  comp: { has(entity: Entity): boolean; create(entity: Entity, val?: T): T; deleteFrom(entity: Entity): T | null },
+  entity: Entity,
+  stub: T
+): boolean {
+  if (comp.has(entity)) {
+    comp.deleteFrom(entity)
+    return true
+  }
+  comp.create(entity, stub)
+  comp.deleteFrom(entity)
+  return true
+}
+
 function touchRemovedUiEntityForCrdt(
   entity: Entity,
   components: {
@@ -249,30 +264,21 @@ function touchRemovedUiEntityForCrdt(
 ): number {
   const id = entity as Entity
   let touched = 0
-  if (components.PointerEvents.has(id)) {
-    components.PointerEvents.deleteFrom(id)
+  if (forceLwwDelete(components.PointerEvents, id, { pointerEvents: [] })) touched++
+  if (
+    forceLwwDelete(components.UiDropdown, id, {
+      options: [],
+      selectedIndex: 0,
+      acceptEmpty: true,
+      disabled: false
+    })
+  ) {
     touched++
   }
-  if (components.UiDropdown.has(id)) {
-    components.UiDropdown.deleteFrom(id)
-    touched++
-  }
-  if (components.UiInput.has(id)) {
-    components.UiInput.deleteFrom(id)
-    touched++
-  }
-  if (components.UiText.has(id)) {
-    components.UiText.deleteFrom(id)
-    touched++
-  }
-  if (components.UiBackground.has(id)) {
-    components.UiBackground.deleteFrom(id)
-    touched++
-  }
-  if (components.UiTransform.has(id)) {
-    components.UiTransform.deleteFrom(id)
-    touched++
-  }
+  if (forceLwwDelete(components.UiInput, id, { value: '', placeholder: '', disabled: false })) touched++
+  if (forceLwwDelete(components.UiText, id, { value: '' })) touched++
+  if (forceLwwDelete(components.UiBackground, id, { textureMode: 0, uvs: [] })) touched++
+  if (forceLwwDelete(components.UiTransform, id, { width: 1, height: 1 } as never)) touched++
   return touched
 }
 

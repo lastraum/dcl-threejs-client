@@ -328,32 +328,66 @@ export function patchSceneBundleWithCheckerStrip(code: string, onStep?: PatchSce
   return out
 }
 
-/** Suppress false warnings — any descendant MeshCollider/GltfContainer is a valid trigger setup. */
-function descendantHasColliderSupport(
+/** True when `entity` carries geometry the client pointer raycast can hit. */
+function entityHasPointerCollider(
+  entity: Entity,
+  MeshCollider: ReturnType<typeof components.MeshCollider>,
+  GltfContainer: ReturnType<typeof generated.GltfContainer>,
+  MeshRenderer: ReturnType<typeof components.MeshRenderer>
+): boolean {
+  if (GltfContainer.has(entity)) return true
+  if (MeshCollider.has(entity)) return true
+  if (MeshRenderer.has(entity)) return true
+  return false
+}
+
+/** BFS descendants — asset-pack Triggers put PointerEvents on parents, colliders on children. */
+function descendantHasPointerCollider(
   entity: Entity,
   childrenByParent: Map<Entity, Entity[]>,
   MeshCollider: ReturnType<typeof components.MeshCollider>,
-  GltfContainer: ReturnType<typeof generated.GltfContainer>
+  GltfContainer: ReturnType<typeof generated.GltfContainer>,
+  MeshRenderer: ReturnType<typeof components.MeshRenderer>
 ): boolean {
   const stack = [...(childrenByParent.get(entity) ?? [])]
   while (stack.length) {
     const current = stack.pop()!
-    if (GltfContainer.has(current) || MeshCollider.has(current)) return true
+    if (entityHasPointerCollider(current, MeshCollider, GltfContainer, MeshRenderer)) return true
     const children = childrenByParent.get(current)
     if (children?.length) stack.push(...children)
   }
   return false
 }
 
-/** True when `entity` itself has a pointer-blocking collider (SDK parity for same-entity check). */
-function entityHasPointerCollider(
-  entity: Entity,
+/** Walk parent chain from each collider/mesh entity → mark PointerEvents ancestors as supported. */
+function buildPointerEventsWithColliderSupport(
+  engine: IEngine,
+  PointerEvents: ReturnType<typeof generated.PointerEvents>,
+  Transform: ReturnType<typeof components.Transform>,
   MeshCollider: ReturnType<typeof components.MeshCollider>,
-  GltfContainer: ReturnType<typeof generated.GltfContainer>
-): boolean {
-  if (GltfContainer.has(entity)) return true
-  if (MeshCollider.has(entity)) return true
-  return false
+  GltfContainer: ReturnType<typeof generated.GltfContainer>,
+  MeshRenderer: ReturnType<typeof components.MeshRenderer>
+): Set<Entity> {
+  const supported = new Set<Entity>()
+  const visitAncestors = (start: Entity): void => {
+    let current: Entity | undefined = start
+    const seen = new Set<Entity>()
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current)
+      if (PointerEvents.has(current)) {
+        supported.add(current)
+        return
+      }
+      const parent = Transform.getOrNull(current)?.parent
+      if (parent === undefined) return
+      current = parent as Entity
+    }
+  }
+
+  for (const [entity] of engine.getEntitiesWith(MeshCollider)) visitAncestors(entity)
+  for (const [entity] of engine.getEntitiesWith(GltfContainer)) visitAncestors(entity)
+  for (const [entity] of engine.getEntitiesWith(MeshRenderer)) visitAncestors(entity)
+  return supported
 }
 
 /**
@@ -367,6 +401,7 @@ export function installPointerEventColliderChecker(engine: IEngine): void {
   const PointerEvents = generated.PointerEvents(engine)
   const MeshCollider = components.MeshCollider(engine)
   const GltfContainer = generated.GltfContainer(engine)
+  const MeshRenderer = components.MeshRenderer(engine)
   const UiTransform = generated.UiTransform(engine)
   const Transform = components.Transform(engine)
 
@@ -390,18 +425,37 @@ export function installPointerEventColliderChecker(engine: IEngine): void {
     return childrenByParent
   }
 
+  function pointerEventsColliderSupported(
+    entity: Entity,
+    childrenByParent: Map<Entity, Entity[]>,
+    supportedByAncestors: Set<Entity>
+  ): boolean {
+    if (supportedByAncestors.has(entity)) return true
+    if (entityHasPointerCollider(entity, MeshCollider, GltfContainer, MeshRenderer)) return true
+    return descendantHasPointerCollider(entity, childrenByParent, MeshCollider, GltfContainer, MeshRenderer)
+  }
+
   function threejsPointerEventColliderChecker(dt: number): void {
     timer += dt
     if (timer <= 10) return
     timer = 0
 
     const childrenByParent = buildChildrenByParent()
+    const supportedByAncestors = buildPointerEventsWithColliderSupport(
+      engine,
+      PointerEvents,
+      Transform,
+      MeshCollider,
+      GltfContainer,
+      MeshRenderer
+    )
 
     for (const [entity] of engine.getEntitiesWith(PointerEvents)) {
       if (alreadyShown.has(entity)) continue
       if (UiTransform.has(entity)) continue
-      if (entityHasPointerCollider(entity, MeshCollider, GltfContainer)) continue
-      if (descendantHasColliderSupport(entity, childrenByParent, MeshCollider, GltfContainer)) continue
+      if (pointerEventsColliderSupported(entity, childrenByParent, supportedByAncestors)) continue
+      // Asset-pack / composite Triggers: PointerEvents on parent, colliders on instanced children.
+      if ((childrenByParent.get(entity)?.length ?? 0) > 0) continue
 
       alreadyShown.add(entity)
       console.log(

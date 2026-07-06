@@ -1,6 +1,7 @@
 import type { IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { guardVideoPlayerGetMutable } from './guardVideoPlayerGetMutable'
+import { installVirtualCameraBindGuard } from './virtualCameraBindGuard'
 import { installReactEcsOnceGuard } from './reactEcsOnce'
 import { installEngineSystemLoopPartition, installSceneEngineUiScheduler } from './sceneEngineUiScheduler'
 
@@ -45,6 +46,7 @@ export function preregisterRendererInjectedComponents(engine: IEngine): void {
     register(engine)
   }
   guardVideoPlayerGetMutable(engine)
+  installVirtualCameraBindGuard(engine)
 }
 
 export function installPreregisterRendererComponentsHook(): void {

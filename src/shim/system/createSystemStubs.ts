@@ -1,3 +1,5 @@
+import * as virtualCameraCore from '../../virtual-camera/core'
+import * as virtualCameraScene from '../../virtual-camera/scene'
 import type { MovePlayerToRequest, MovePlayerToResponse } from '../../player/movePlayerTo'
 import type { OpenExternalUrlRequest, OpenExternalUrlResponse } from '../../player/openExternalUrl'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/triggerEmote'
@@ -142,7 +144,10 @@ export function createSystemStubs(
     },
     '~system/UserActionModule': {
       requestTeleport: async (_body: { destination?: string }) => ({})
-    }
+    },
+    '@lastslice/virtual-camera': virtualCameraCore,
+    '@lastslice/virtual-camera/core': virtualCameraCore,
+    '@lastslice/virtual-camera/scene': virtualCameraScene
   } as Record<string, unknown>
 
   return {

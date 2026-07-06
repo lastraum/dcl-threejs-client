@@ -1,6 +1,7 @@
 import type { Entity, IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { extractUiTextureSrc } from '../../ui/scene/uiBackgroundStyle'
+import { normalizePointerFilterMode, normalizeYGDisplay } from '../../ui/scene/yogaEnums'
 
 import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
 import {
@@ -116,16 +117,27 @@ function colorKey(c: { r?: number; g?: number; b?: number; a?: number } | undefi
   return `${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 0}`
 }
 
+function pointerEventsKey(
+  spec: { pointerEvents: ReadonlyArray<{ eventType?: number; interactionType?: number }> } | null | undefined
+): string {
+  if (!spec?.pointerEvents.length) return ''
+  return [...spec.pointerEvents]
+    .map((entry) => `${entry.eventType ?? -1}.${entry.interactionType ?? 0}`)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    .join(',')
+}
+
 export function computeWorkerUiFingerprint(engine: IEngine): string {
   preregisterRendererInjectedComponents(engine)
   const UiTransform = resolveWorkerUiTransform(engine)
   const UiBackground = resolveWorkerUiBackground(engine)
   const UiText = resolveWorkerUiText(engine)
+  const PointerEvents = generated.PointerEvents(engine)
   const parts: string[] = []
   for (const [entity] of engine.getEntitiesWith(UiTransform)) {
     const t = UiTransform.getOrNull(entity)
     if (!t) continue
-    let line = `${entity}:d${t.display ?? 0}:o${t.opacity ?? 1}:p${t.parent ?? 0}`
+    let line = `${entity}:d${normalizeYGDisplay(t.display)}:o${t.opacity ?? 1}:p${t.parent ?? 0}:pf${normalizePointerFilterMode(t.pointerFilter)}`
     const bg = UiBackground.getOrNull(entity)
     if (bg) {
       line += `:bg${colorKey(bg.color)}:${extractUiTextureSrc(bg.texture) ?? ''}`
@@ -135,76 +147,164 @@ export function computeWorkerUiFingerprint(engine: IEngine): string {
       const value = text.value ?? ''
       line += `:tx${value.length}:${value.slice(0, 32)}`
     }
+    const pointer = PointerEvents.getOrNull(entity)
+    const peKey = pointerEventsKey(pointer)
+    if (peKey) line += `:pe${peKey}`
     parts.push(line)
   }
   parts.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
   return parts.join('|')
 }
 
-/** Force LWW PUTs when react-ecs reconciled via getMutable (transport may skip byte-identical rows). */
-export function touchWorkerUiComponentsForCrdt(engine: IEngine): number {
-  preregisterRendererInjectedComponents(engine)
-  const UiTransform = resolveWorkerUiTransform(engine)
-  const UiBackground = resolveWorkerUiBackground(engine)
-  const UiText = resolveWorkerUiText(engine)
-  const UiInput = resolveWorkerUiInput(engine)
-  const UiDropdown = resolveWorkerUiDropdown(engine)
+function parseFingerprintEntityLines(fingerprint: string): Map<string, string> {
+  const lines = new Map<string, string>()
+  if (!fingerprint) return lines
+  for (const line of fingerprint.split('|')) {
+    const colon = line.indexOf(':')
+    if (colon <= 0) continue
+    lines.set(line.slice(0, colon), line)
+  }
+  return lines
+}
+
+function touchWorkerUiEntityForCrdt(
+  entity: Entity,
+  components: {
+    UiTransform: ReturnType<typeof resolveWorkerUiTransform>
+    UiBackground: ReturnType<typeof resolveWorkerUiBackground>
+    UiText: ReturnType<typeof resolveWorkerUiText>
+    UiInput: ReturnType<typeof resolveWorkerUiInput>
+    UiDropdown: ReturnType<typeof resolveWorkerUiDropdown>
+    PointerEvents: ReturnType<typeof generated.PointerEvents>
+  }
+): number {
+  const id = entity as Entity
   let touched = 0
-  for (const [entity] of engine.getEntitiesWith(UiTransform)) {
-    const id = entity as Entity
-    const transform = UiTransform.getOrNull(id)
-    if (transform) {
-      UiTransform.createOrReplace(id, { ...transform })
-      touched++
-    }
-    const background = UiBackground.getOrNull(id)
-    if (background) {
-      UiBackground.createOrReplace(id, { ...background })
-      touched++
-    }
-    const text = UiText.getOrNull(id)
-    if (text) {
-      UiText.createOrReplace(id, { ...text })
-      touched++
-    }
-    const input = UiInput.getOrNull(id)
-    if (input) {
-      UiInput.createOrReplace(id, { ...input })
-      touched++
-    }
-    const dropdown = UiDropdown.getOrNull(id)
-    if (dropdown) {
-      UiDropdown.createOrReplace(id, { ...dropdown })
-      touched++
-    }
+  const transform = components.UiTransform.getOrNull(id)
+  if (transform) {
+    components.UiTransform.createOrReplace(id, { ...transform })
+    touched++
+  }
+  const background = components.UiBackground.getOrNull(id)
+  if (background) {
+    components.UiBackground.createOrReplace(id, { ...background })
+    touched++
+  }
+  const text = components.UiText.getOrNull(id)
+  if (text) {
+    components.UiText.createOrReplace(id, { ...text })
+    touched++
+  }
+  const input = components.UiInput.getOrNull(id)
+  if (input) {
+    components.UiInput.createOrReplace(id, { ...input })
+    touched++
+  }
+  const dropdown = components.UiDropdown.getOrNull(id)
+  if (dropdown) {
+    components.UiDropdown.createOrReplace(id, { ...dropdown })
+    touched++
+  }
+  const pointer = components.PointerEvents.getOrNull(id)
+  if (pointer) {
+    components.PointerEvents.createOrReplace(id, {
+      pointerEvents: pointer.pointerEvents.map((entry) => ({
+        ...entry,
+        eventInfo: entry.eventInfo ? { ...entry.eventInfo } : entry.eventInfo
+      }))
+    })
+    touched++
   }
   return touched
 }
 
-/** Propagate worker Ui* churn to main when fingerprint changes after a tick. */
-export async function flushWorkerSceneUiAfterEngineTick(
-  engine: IEngine,
-  log?: (message: string) => void
-): Promise<boolean> {
+/** Force LWW PUTs when react-ecs reconciled via getMutable (transport may skip byte-identical rows). */
+export function touchWorkerUiComponentsForCrdt(engine: IEngine): number {
+  preregisterRendererInjectedComponents(engine)
+  const components = {
+    UiTransform: resolveWorkerUiTransform(engine),
+    UiBackground: resolveWorkerUiBackground(engine),
+    UiText: resolveWorkerUiText(engine),
+    UiInput: resolveWorkerUiInput(engine),
+    UiDropdown: resolveWorkerUiDropdown(engine),
+    PointerEvents: generated.PointerEvents(engine)
+  }
+  let touched = 0
+  for (const [entity] of engine.getEntitiesWith(components.UiTransform)) {
+    touched += touchWorkerUiEntityForCrdt(entity as Entity, components)
+  }
+  return touched
+}
+
+/** Touch only entities whose fingerprint line changed — boot baseline uses full mount when prev is empty. */
+function touchDirtyWorkerUiComponentsForCrdt(engine: IEngine, prevFingerprint: string): number {
+  const fingerprint = computeWorkerUiFingerprint(engine)
+  if (!prevFingerprint) return touchWorkerUiComponentsForCrdt(engine)
+
+  const prevLines = parseFingerprintEntityLines(prevFingerprint)
+  const currLines = parseFingerprintEntityLines(fingerprint)
+  const dirty = new Set<Entity>()
+  for (const [entityKey, line] of currLines) {
+    if (prevLines.get(entityKey) !== line) dirty.add(Number(entityKey) as Entity)
+  }
+  for (const entityKey of prevLines.keys()) {
+    if (!currLines.has(entityKey)) dirty.add(Number(entityKey) as Entity)
+  }
+
+  if (!dirty.size) return 0
+
+  preregisterRendererInjectedComponents(engine)
+  const components = {
+    UiTransform: resolveWorkerUiTransform(engine),
+    UiBackground: resolveWorkerUiBackground(engine),
+    UiText: resolveWorkerUiText(engine),
+    UiInput: resolveWorkerUiInput(engine),
+    UiDropdown: resolveWorkerUiDropdown(engine),
+    PointerEvents: generated.PointerEvents(engine)
+  }
+  let touched = 0
+  for (const entity of dirty) {
+    touched += touchWorkerUiEntityForCrdt(entity, components)
+  }
+  return touched
+}
+
+/**
+ * Phase 2 of a scheduler tick — touch dirty Ui* when fingerprint changed.
+ * Caller runs engine.update(0) for transport emit, then commitSceneUiCrdtBaseline.
+ */
+export function planSceneUiCrdtEmit(engine: IEngine, log?: (message: string) => void): boolean {
   const fingerprint = computeWorkerUiFingerprint(engine)
   if (fingerprint === lastWorkerUiFingerprint) return false
 
   const prevLen = lastWorkerUiFingerprint.length
-
-  try {
-    const touched = touchWorkerUiComponentsForCrdt(engine)
-    if (touched > 0) {
-      log?.(
-        `[sceneWorker] ui fingerprint flush — touched=${touched} fp=${prevLen}→${fingerprint.length}B`
-      )
-      await engine.update(0)
-      lastWorkerUiFingerprint = fingerprint
-      return true
-    }
+  const touched = touchDirtyWorkerUiComponentsForCrdt(engine, lastWorkerUiFingerprint)
+  if (touched <= 0) {
     log?.(
-      `[sceneWorker] ui fingerprint changed but touch skipped — fp=${prevLen}→${fingerprint.length}B`
+      `[sceneWorker] ui fingerprint changed but no touch — fp=${prevLen}→${fingerprint.length}B`
     )
+    lastWorkerUiFingerprint = fingerprint
     return false
+  }
+  log?.(`[sceneWorker] ui fingerprint flush — touched=${touched} fp=${prevLen}→${fingerprint.length}B`)
+  return true
+}
+
+/** Phase 4 — after transport emit tick. */
+export function commitSceneUiCrdtBaseline(engine: IEngine): void {
+  lastWorkerUiFingerprint = computeWorkerUiFingerprint(engine)
+}
+
+/** @deprecated Use planSceneUiCrdtEmit + scheduler tick phases. */
+export async function flushWorkerSceneUiAfterEngineTick(
+  engine: IEngine,
+  log?: (message: string) => void
+): Promise<boolean> {
+  if (!planSceneUiCrdtEmit(engine, log)) return false
+  try {
+    await engine.update(0)
+    commitSceneUiCrdtBaseline(engine)
+    return true
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     log?.(`[sceneWorker] ui fingerprint flush failed — ${msg || 'unknown error'}`)

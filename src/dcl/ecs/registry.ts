@@ -32,7 +32,7 @@ export const DCL_ECS_COMPONENTS: EcsComponentEntry[] = [
   { name: 'PointerLock', coreId: 1074, phase: 2, status: 'stub', category: 'input' },
   { name: 'InputModifier', coreId: 1078, phase: 3, status: 'render', category: 'input' },
   { name: 'MainCamera', coreId: 1075, phase: 2, status: 'client-only', category: 'camera' },
-  { name: 'VirtualCamera', coreId: 1076, phase: 3, status: 'none', category: 'camera' },
+  { name: 'VirtualCamera', coreId: 1076, phase: 3, status: 'render', category: 'camera' },
   { name: 'CameraMode', coreId: 1072, phase: 4, status: 'none', category: 'camera' },
   { name: 'CameraModeArea', coreId: 1071, phase: 4, status: 'none', category: 'camera' },
   { name: 'PointerEvents', coreId: 1062, phase: 3, status: 'render', category: 'input' },

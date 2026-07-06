@@ -259,6 +259,8 @@ export class SceneScriptSystem {
   private projectionLagPendingUi = false
   /** Worker uiEntities held until applyUiFrame can commit mount set + paint atomically. */
   private pendingUiEntities: number[] | undefined
+  /** Renderer inbound held while UI mount commit is deferred — must not echo stale state to worker early. */
+  private pendingInboundAfterUiMount: Uint8Array[] = []
   /** setUiRenderer virtual canvas — may arrive before SceneUiBridge exists. */
   private pendingVirtualCanvas: { width: number; height: number } | null = null
   private projectionLagLoggedAt = 0
@@ -1587,7 +1589,19 @@ export class SceneScriptSystem {
 
       this.prepareRendererOutboundState()
       const encoderBytes = this.encodeRendererCrdt()
-      const inbound = encoderBytes ? [encoderBytes] : []
+      let inbound = encoderBytes ? [encoderBytes] : []
+      const mountSet =
+        latestUiEntities?.length && mountChanged
+          ? new Set(latestUiEntities.map((e) => e as Entity))
+          : undefined
+      if (
+        mountSet &&
+        this.sceneUiBridge &&
+        !this.sceneUiBridge.isMountSetReady(this.view, mountSet)
+      ) {
+        if (inbound.length) this.pendingInboundAfterUiMount = inbound
+        inbound = []
+      }
 
       if (!hasPayload && !inbound.length) return []
       return inbound
@@ -2405,6 +2419,10 @@ export class SceneScriptSystem {
     this.clearPointerDeliverWatchdog()
     await this.crdtOutboundSerial
     this.flushUiFrame()
+    if (this.pendingInboundAfterUiMount.length) {
+      this.postRendererInboundDeliver(this.pendingInboundAfterUiMount)
+      this.pendingInboundAfterUiMount = []
+    }
     await this.reconcilePointerCollisionAfterDelivery()
     this.proactiveTweenPushUntil = performance.now() + SceneScriptSystem.PROACTIVE_TWEEN_PUSH_MS
     this.worker?.postMessage({ type: 'pause-scene-ticks', paused: false } satisfies MainToWorker)
@@ -3247,6 +3265,7 @@ export class SceneScriptSystem {
     this.sceneUiBridge = null
     this.pendingVirtualCanvas = null
     this.pendingUiEntities = undefined
+    this.pendingInboundAfterUiMount = []
     this.projectionLagPendingUi = false
     this.projectionLagLoggedAt = 0
     this.avatarAttachBridge?.dispose()

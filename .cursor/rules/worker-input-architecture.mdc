@@ -44,6 +44,10 @@ Attach `uiEntities` to `crdt-outbound` **only** during `emitSceneUiCrdtIfDirty` 
 
 Pointer `onUpdate(0)` advances `lastFullSceneUpdateAt` — it satisfies one cooperative onUpdate interval; do not run a second `exports.onUpdate` immediately after pointer tick.
 
+Cooperative ticks resume **only** on main `pause-scene-ticks:false` (after `crdtOutboundSerial` + `flushUiFrame`). Never `resumeSceneTicksAfterPointer` from `drainPointerDeliverQueue` — early resume runs cooperative `engine.update` before main applies open UI CRDT (679→111 revert + mount lag flash).
+
+When UI mount commit is deferred (`projection UiTransform` lagging `uiEntities`), hold `renderer-inbound-deliver` until `finishPointerDeliveryAsync` flush — do not echo renderer state to worker while mount is pending.
+
 ## Do not
 
 - `deferUiEmit`, `pendingSceneInputSnapshot`, full-mount touch fallback, or `resumeSceneTicksAfterPointer` on skipped finalize

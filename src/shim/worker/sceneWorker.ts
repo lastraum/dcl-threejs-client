@@ -540,10 +540,7 @@ async function drainPointerDeliverQueue(): Promise<void> {
       flushPointerDeferredOutbounds()
       postPointerDeliverDone(label)
     }
-    const snapshot = leavePointerInputSession()
-    if (snapshot) applyCoalescedKeyboardSnapshot(snapshot)
-    resumeSceneTicksAfterPointer()
-    drainQueuedPointerDeliver()
+    // Ticks resume only on main pause-scene-ticks:false after CRDT apply + mount paint.
   } finally {
     pointerDeliverDrainInFlight = false
     if (pointerDeliverQueue.length) void drainPointerDeliverQueue()
@@ -2140,8 +2137,10 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
     if (sceneTicksPaused) {
       preemptForPointerDelivery()
     } else {
-      resumeSceneTicksAfterPointer()
       flushDeferredRendererInbound()
+      const snapshot = leavePointerInputSession()
+      if (snapshot) applyCoalescedKeyboardSnapshot(snapshot)
+      resumeSceneTicksAfterPointer()
     }
     workerVerboseLog(
       debugPointerDeliver,

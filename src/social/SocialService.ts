@@ -38,6 +38,18 @@ type SocialInitOptions = {
   contentUrl: string
 }
 
+type SocialShellInitOptions = {
+  address: string
+  identity: AuthIdentity
+  contentUrl?: string
+}
+
+type SocialSceneAttachOptions = {
+  comms: CommsService | null
+  sceneTab: SceneChatTab
+  contentUrl: string
+}
+
 let lineCounter = 0
 
 function channelKey(channel: ChatChannelChoice): string {
@@ -58,12 +70,15 @@ export class SocialService {
   private displayName = 'You'
   private localFaceUrl: string | null = null
   private localNameColor = '#b8ff66'
-  private sceneTab: SceneChatTab | null = null
+  private sceneTabs: SceneChatTab[] = []
+  /** Live comms room — incoming scene chat routes here. */
+  private connectedSceneKey: string | null = null
   private communities: CommunityListRow[] = []
   private channel: ChatChannelChoice = { kind: 'messages' }
   private readonly messages = new Map<string, ChatLine[]>()
   private readonly listeners = new Set<(event: SocialChatEvent) => void>()
   private readonly channelListeners = new Set<() => void>()
+  private readonly friendshipListeners = new Set<() => void>()
   private readonly peerProfiles = new ChatPeerProfiles()
   private authIdentity: AuthIdentity | null = null
   private friendshipSnapshot: FriendshipSnapshot | null = null
@@ -72,8 +87,48 @@ export class SocialService {
   private ready = false
   private readonly seenChatKeys = new Map<string, number>()
   private readonly seenMediaKeys = new Map<string, number>()
+  private readonly unreadCounts = new Map<string, number>()
+  /** True while the active channel thread is open — suppresses unread on that channel. */
+  private channelThreadOpen = false
   private readonly mediaAssembler = new DcmInboundAssembler()
   private readonly mediaObjectUrls = new Set<string>()
+
+  /** 2D shell bootstrap — communities + profile without scene comms. */
+  async initShell(options: SocialShellInitOptions): Promise<void> {
+    this.authIdentity = options.identity
+    this.localAddress = options.address.toLowerCase()
+    this.displayName = 'You'
+    this.sceneTabs = []
+    this.connectedSceneKey = null
+    this.comms = null
+    this.channel = { kind: 'messages' }
+    this.peerProfiles.setPeerUrl(options.contentUrl ?? 'https://peer.decentraland.org')
+    await this.loadMemberCommunities(options.identity)
+    void this.ensureFriendshipSnapshot()
+    this.ready = true
+    this.notifyChannelChange()
+  }
+
+  /** Wire scene comms after shell init or refresh scene tab when the landing changes. */
+  async attachSceneComms(options: SocialSceneAttachOptions): Promise<void> {
+    this.comms = options.comms
+    this.upsertSceneTab(options.sceneTab)
+    this.peerProfiles.setPeerUrl(options.contentUrl)
+    if (options.comms && options.sceneTab.browserChatEnabled) {
+      this.wireCommsHandlers()
+    }
+    if (this.channel.kind === 'messages') {
+      this.channel = {
+        kind: 'scene',
+        sceneKey: options.sceneTab.key,
+        label: options.sceneTab.label
+      }
+    }
+    if (!this.ready) {
+      this.ready = true
+    }
+    this.notifyChannelChange()
+  }
 
   async init(options: SocialInitOptions): Promise<void> {
     this.comms = options.comms
@@ -83,57 +138,13 @@ export class SocialService {
     this.friendshipSnapshot = null
     this.friendshipRelationByAddress.clear()
     this.friendshipLoad = null
-    this.sceneTab = options.sceneTab
+    this.upsertSceneTab(options.sceneTab)
     this.channel = { kind: 'scene', sceneKey: options.sceneTab.key, label: options.sceneTab.label }
     this.peerProfiles.setPeerUrl(options.contentUrl)
-
-    this.comms.setChatHandler((payload) => {
-      if (this.channel.kind !== 'scene') return
-      if (isSceneChatEmoteWireText(payload.text)) return
-      if (this.isDuplicateChat(payload.senderAddress, payload.text, payload.time)) return
-      const key = channelKey(this.channel)
-      void this.ensurePeerProfile(payload.senderAddress)
-      this.appendLine(key, {
-        id: `in-${++lineCounter}`,
-        text: payload.text,
-        time: payload.time,
-        senderAddress: payload.senderAddress
-      })
-    })
-
-    this.comms.setChatMediaHandler((payload) => {
-      if (this.channel.kind !== 'scene') return
-      const decoded = this.mediaAssembler.ingest(payload.senderAddress, payload.data)
-      if (!decoded) return
-      if (this.isDuplicateMedia(payload.senderAddress, decoded.messageId)) return
-      const key = channelKey(this.channel)
-      void this.ensurePeerProfile(payload.senderAddress)
-      const objectUrl = this.registerMediaObjectUrl(
-        URL.createObjectURL(chatMediaBlob(decoded.bytes, decoded.mime))
-      )
-      this.appendLine(key, {
-        kind: 'image',
-        id: `in-${++lineCounter}`,
-        messageId: decoded.messageId,
-        objectUrl,
-        mime: decoded.mime,
-        width: decoded.width,
-        height: decoded.height,
-        time: decoded.time,
-        senderAddress: payload.senderAddress
-      })
-    })
+    this.wireCommsHandlers()
 
     if (!options.isGuest && options.identity) {
-      try {
-        const { communities } = await fetchMemberCommunitiesSigned(options.identity)
-        this.communities = communities
-        clientDebugLog.log('social', `Loaded ${communities.length} member communities`, { level: 'success' })
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        clientDebugLog.log('social', `Member communities failed: ${msg}`, { level: 'warn' })
-      }
-      void this.ensureFriendshipSnapshot()
+      await this.loadMemberCommunities(options.identity)
     }
 
     this.ready = true
@@ -144,8 +155,22 @@ export class SocialService {
     return this.ready
   }
 
+  getSceneTabs(): SceneChatTab[] {
+    return [...this.sceneTabs]
+  }
+
+  /** Most recently visited / comms-connected scene tab. */
   getSceneTab(): SceneChatTab | null {
-    return this.sceneTab
+    if (this.connectedSceneKey) {
+      return this.findSceneTab(this.connectedSceneKey) ?? null
+    }
+    return this.sceneTabs[0] ?? null
+  }
+
+  isSceneBrowserChatEnabled(): boolean {
+    if (this.channel.kind !== 'scene') return true
+    const tab = this.findSceneTab(this.channel.sceneKey)
+    return tab?.browserChatEnabled !== false
   }
 
   getCommunities(): CommunityListRow[] {
@@ -163,14 +188,30 @@ export class SocialService {
   }
 
   getChannelSubtitle(): string {
-    if (this.channel.kind === 'scene') return 'Scene chat'
+    if (this.channel.kind === 'scene') {
+      return this.isSceneBrowserChatEnabled() ? 'Scene chat' : 'Chat disabled by creator'
+    }
     if (this.channel.kind === 'community') return 'Community chat'
     return 'Coming soon'
   }
 
   selectChannel(channel: ChatChannelChoice): void {
     this.channel = channel
+    this.unreadCounts.delete(channelKey(channel))
     this.notifyChannelChange()
+  }
+
+  setChannelThreadOpen(open: boolean): void {
+    if (this.channelThreadOpen === open) return
+    this.channelThreadOpen = open
+    if (open) {
+      this.unreadCounts.delete(channelKey(this.channel))
+      this.notifyChannelChange()
+    }
+  }
+
+  getUnreadCount(channel: ChatChannelChoice): number {
+    return this.unreadCounts.get(channelKey(channel)) ?? 0
   }
 
   getMessages(): ChatLine[] {
@@ -257,6 +298,29 @@ export class SocialService {
       })
   }
 
+  getIncomingFriendAddresses(): string[] {
+    if (!this.friendshipSnapshot) return []
+    return [...this.friendshipSnapshot.incoming].sort((a, b) => a.localeCompare(b))
+  }
+
+  getTotalUnreadCount(): number {
+    let total = 0
+    for (const count of this.unreadCounts.values()) total += count
+    return total
+  }
+
+  onFriendshipChange(listener: () => void): () => void {
+    this.friendshipListeners.add(listener)
+    return () => this.friendshipListeners.delete(listener)
+  }
+
+  async refreshFriendshipSnapshot(): Promise<void> {
+    if (!this.authIdentity || !this.localAddress) return
+    this.friendshipSnapshot = null
+    this.friendshipLoad = null
+    await this.ensureFriendshipSnapshot()
+  }
+
   async ensureFriendshipSnapshot(): Promise<void> {
     if (!this.authIdentity || !this.localAddress) return
     if (this.friendshipSnapshot) return
@@ -271,7 +335,8 @@ export class SocialService {
       })
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err)
-        clientDebugLog.log('social', `Friendships failed: ${msg}`, { level: 'warn' })
+        clientDebugLog.log('social', `Friendships unavailable: ${msg}`, { level: 'warn' })
+        this.applyFriendshipSnapshot({ friends: new Set(), incoming: new Set(), outgoing: new Set() })
       })
       .finally(() => {
         this.friendshipLoad = null
@@ -371,6 +436,82 @@ export class SocialService {
     return true
   }
 
+  private wireCommsHandlers(): void {
+    if (!this.comms) return
+    this.comms.setChatHandler((payload) => {
+      const sceneChannel = this.sceneChannelChoice()
+      if (!sceneChannel) return
+      if (isSceneChatEmoteWireText(payload.text)) return
+      if (this.isDuplicateChat(payload.senderAddress, payload.text, payload.time)) return
+      void this.ensurePeerProfile(payload.senderAddress)
+      this.appendLine(channelKey(sceneChannel), {
+        id: `in-${++lineCounter}`,
+        text: payload.text,
+        time: payload.time,
+        senderAddress: payload.senderAddress
+      })
+    })
+
+    this.comms.setChatMediaHandler((payload) => {
+      const sceneChannel = this.sceneChannelChoice()
+      if (!sceneChannel) return
+      const decoded = this.mediaAssembler.ingest(payload.senderAddress, payload.data)
+      if (!decoded) return
+      if (this.isDuplicateMedia(payload.senderAddress, decoded.messageId)) return
+      void this.ensurePeerProfile(payload.senderAddress)
+      const objectUrl = this.registerMediaObjectUrl(
+        URL.createObjectURL(chatMediaBlob(decoded.bytes, decoded.mime))
+      )
+      this.appendLine(channelKey(sceneChannel), {
+        kind: 'image',
+        id: `in-${++lineCounter}`,
+        messageId: decoded.messageId,
+        objectUrl,
+        mime: decoded.mime,
+        width: decoded.width,
+        height: decoded.height,
+        time: decoded.time,
+        senderAddress: payload.senderAddress
+      })
+    })
+  }
+
+  private sceneChannelChoice(): ChatChannelChoice | null {
+    if (!this.connectedSceneKey) return null
+    const tab = this.findSceneTab(this.connectedSceneKey)
+    if (!tab) return null
+    return { kind: 'scene', sceneKey: tab.key, label: tab.label }
+  }
+
+  private findSceneTab(key: string): SceneChatTab | undefined {
+    return this.sceneTabs.find((tab) => tab.key === key)
+  }
+
+  /** Newest scene first; revisiting moves an existing entry to the front. */
+  private upsertSceneTab(tab: SceneChatTab): void {
+    const idx = this.sceneTabs.findIndex((row) => row.key === tab.key)
+    if (idx >= 0) {
+      const merged = { ...this.sceneTabs[idx]!, ...tab }
+      this.sceneTabs.splice(idx, 1)
+      this.sceneTabs.unshift(merged)
+    } else {
+      this.sceneTabs.unshift(tab)
+    }
+    this.connectedSceneKey = tab.key
+  }
+
+  private async loadMemberCommunities(identity: AuthIdentity): Promise<void> {
+    try {
+      const { communities } = await fetchMemberCommunitiesSigned(identity)
+      this.communities = communities
+      clientDebugLog.log('social', `Loaded ${communities.length} member communities`, { level: 'success' })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      clientDebugLog.log('social', `Member communities failed: ${msg}`, { level: 'warn' })
+    }
+    void this.ensureFriendshipSnapshot()
+  }
+
   dispose(): void {
     this.comms?.setChatHandler(null)
     this.comms?.setChatMediaHandler(null)
@@ -380,17 +521,27 @@ export class SocialService {
     this.listeners.clear()
     this.channelListeners.clear()
     this.messages.clear()
+    this.unreadCounts.clear()
+    this.channelThreadOpen = false
+    this.sceneTabs = []
+    this.connectedSceneKey = null
     this.peerProfiles.clear()
     this.authIdentity = null
     this.friendshipSnapshot = null
     this.friendshipRelationByAddress.clear()
     this.friendshipLoad = null
+    this.friendshipListeners.clear()
     this.ready = false
   }
 
   private applyFriendshipSnapshot(snapshot: FriendshipSnapshot): void {
     this.friendshipSnapshot = snapshot
     this.friendshipRelationByAddress = buildFriendshipRelationMap(snapshot)
+    this.notifyFriendshipChange()
+  }
+
+  private notifyFriendshipChange(): void {
+    for (const listener of this.friendshipListeners) listener()
   }
 
   static formatLineTime(line: ChatLine): string {
@@ -402,6 +553,13 @@ export class SocialService {
     bucket.push(line)
     if (bucket.length > 200) bucket.splice(0, bucket.length - 200)
     this.messages.set(key, bucket)
+    const isIncoming = !line.self
+    const isActiveChannel = key === channelKey(this.channel)
+    const countsAsUnread = isIncoming && (!isActiveChannel || !this.channelThreadOpen)
+    if (countsAsUnread) {
+      this.unreadCounts.set(key, (this.unreadCounts.get(key) ?? 0) + 1)
+      this.notifyChannelChange()
+    }
     for (const listener of this.listeners) listener({ channelKey: key, line })
   }
 

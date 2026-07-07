@@ -1,6 +1,24 @@
-/** Reserved single-segment paths — not scene/world routes. */
+/**
+ * Reserved single-segment paths — not scene/world routes.
+ * Keep in sync with dcl-companion `ROOT_SCENE_SEGMENT_DENY` / SPA fallback.
+ */
 const ROUTE_SEGMENT_DENY = new Set(
-  ['assets', 'favicon.ico', 'robots.txt', 'sitemap.xml', 'index.html'].map((s) => s.toLowerCase())
+  [
+    'assets',
+    'admin',
+    'api',
+    'backpack',
+    'community',
+    'events',
+    'communities',
+    'map',
+    'profile',
+    'chat',
+    'favicon.ico',
+    'robots.txt',
+    'sitemap.xml',
+    'index.html'
+  ].map((s) => s.toLowerCase())
 )
 
 const ROUTE_STATIC_ASSET_RE =
@@ -8,9 +26,25 @@ const ROUTE_STATIC_ASSET_RE =
 
 export type RouteTarget =
   | { kind: 'blank' }
+  | { kind: 'map' }
+  | { kind: 'events' }
+  | { kind: 'communities' }
+  | { kind: 'profile' }
   | { kind: 'editor' }
   | { kind: 'world'; worldName: string; segment: string }
   | { kind: 'coords'; x: number; y: number; segment: string }
+
+const EVENTS_ROUTE_SEGMENT = 'events'
+const COMMUNITIES_ROUTE_SEGMENT = 'communities'
+const MAP_ROUTE_SEGMENT = 'map'
+const PROFILE_ROUTE_SEGMENT = 'profile'
+
+const APP_ROUTE_SEGMENTS = new Set([
+  EVENTS_ROUTE_SEGMENT,
+  COMMUNITIES_ROUTE_SEGMENT,
+  MAP_ROUTE_SEGMENT,
+  PROFILE_ROUTE_SEGMENT
+])
 
 const EDITOR_ROUTE_SEGMENT = 'editor'
 
@@ -36,6 +70,7 @@ export function readRouteSegmentFromPath(pathname = window.location.pathname): s
     segment = match[1]
   }
 
+  if (APP_ROUTE_SEGMENTS.has(segment.toLowerCase())) return segment
   if (ROUTE_SEGMENT_DENY.has(segment.toLowerCase())) return null
   if (ROUTE_STATIC_ASSET_RE.test(segment) && !/^-?\d+\s*,\s*-?\d+$/.test(segment)) return null
 
@@ -50,6 +85,10 @@ export function parseRouteTarget(segment: string | null): RouteTarget {
   if (!segment) return { kind: 'blank' }
 
   if (segment.toLowerCase() === EDITOR_ROUTE_SEGMENT) return { kind: 'editor' }
+  if (segment.toLowerCase() === EVENTS_ROUTE_SEGMENT) return { kind: 'events' }
+  if (segment.toLowerCase() === COMMUNITIES_ROUTE_SEGMENT) return { kind: 'communities' }
+  if (segment.toLowerCase() === MAP_ROUTE_SEGMENT) return { kind: 'map' }
+  if (segment.toLowerCase() === PROFILE_ROUTE_SEGMENT) return { kind: 'profile' }
 
   const coordMatch = /^(-?\d+)\s*,\s*(-?\d+)$/.exec(segment)
   if (coordMatch) {
@@ -68,7 +107,7 @@ export function parseRouteTarget(segment: string | null): RouteTarget {
   return { kind: 'blank' }
 }
 
-/** Path route wins; `?world=` is legacy fallback; `/` defaults to Genesis Plaza `0,0`. */
+/** Path route wins; `?world=` is legacy fallback; `/` is Explorer (no scene segment). */
 export function resolveRouteTarget(): RouteTarget {
   const fromPath = parseRouteTarget(readRouteSegmentFromPath())
   if (fromPath.kind !== 'blank') return fromPath
@@ -76,7 +115,7 @@ export function resolveRouteTarget(): RouteTarget {
   const fromQuery = new URLSearchParams(window.location.search).get('world')?.trim()
   if (fromQuery) return parseRouteTarget(fromQuery)
 
-  return DEFAULT_PARCEL_ROUTE
+  return { kind: 'blank' }
 }
 
 export function routePathForWorld(worldName: string): string {
@@ -85,6 +124,10 @@ export function routePathForWorld(worldName: string): string {
 
 export function routePathForTarget(target: RouteTarget): string {
   if (target.kind === 'blank') return '/'
+  if (target.kind === 'events') return '/events'
+  if (target.kind === 'communities') return '/communities'
+  if (target.kind === 'map') return '/map'
+  if (target.kind === 'profile') return '/profile'
   if (target.kind === 'editor') return '/editor'
   if (target.kind === 'coords') return `/${encodeURIComponent(`${target.x},${target.y}`)}`
   return routePathForWorld(target.worldName)
@@ -109,7 +152,16 @@ export function editorUrlForProject(projectId: string | null, replace = false): 
 
 export function routeEquals(a: RouteTarget, b: RouteTarget): boolean {
   if (a.kind !== b.kind) return false
-  if (a.kind === 'blank' || a.kind === 'editor') return true
+  if (
+    a.kind === 'blank' ||
+    a.kind === 'editor' ||
+    a.kind === 'events' ||
+    a.kind === 'communities' ||
+    a.kind === 'map' ||
+    a.kind === 'profile'
+  ) {
+    return true
+  }
   if (a.kind === 'coords' && b.kind === 'coords') return a.x === b.x && a.y === b.y
   if (a.kind === 'world' && b.kind === 'world') return a.worldName.toLowerCase() === b.worldName.toLowerCase()
   return false

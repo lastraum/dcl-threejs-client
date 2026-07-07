@@ -1,8 +1,14 @@
 import * as THREE from 'three'
+import { alignPreviewAvatarToGround } from '../../../avatar/avatarPreviewAlign'
 import { AvatarAnimations } from '../../../avatar/AvatarAnimations'
 import { composeAvatarFromProfile } from '../../../avatar/AvatarComposer'
 import { disposeWearableInstance } from '../../../avatar/loadWearable'
 import type { AvatarProfile } from '../../../avatar/types'
+
+export type AvatarPreviewOptions = {
+  /** Values above 1 move the camera closer (larger subject). Default 1. */
+  zoom?: number
+}
 
 /** Compact 3D avatar preview for profile modals. */
 export class AvatarPreviewMini {
@@ -14,6 +20,8 @@ export class AvatarPreviewMini {
   private pivot: THREE.Group | null = null
   private avatar: THREE.Group | null = null
   private animations: AvatarAnimations | null = null
+  private subjectSize: THREE.Vector3 | null = null
+  private previewOptions: AvatarPreviewOptions = {}
   private raf = 0
   private lastFrame = 0
   private disposed = false
@@ -23,7 +31,12 @@ export class AvatarPreviewMini {
     this.stage = stage
   }
 
-  async showProfile(profile: AvatarProfile, contentUrl?: string): Promise<void> {
+  async showProfile(
+    profile: AvatarProfile,
+    contentUrl?: string,
+    options: AvatarPreviewOptions = {}
+  ): Promise<void> {
+    this.previewOptions = options
     this.clear()
     this.canvas = document.createElement('canvas')
     this.canvas.className = 'user-profile-modal__avatar-canvas'
@@ -37,8 +50,6 @@ export class AvatarPreviewMini {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.scene = new THREE.Scene()
     this.camera = new THREE.PerspectiveCamera(28, 1, 0.1, 100)
-    this.camera.position.set(0, 1.45, 3.2)
-    this.camera.lookAt(0, 1.1, 0)
 
     const hemi = new THREE.HemisphereLight(0xffffff, 0x2a1a44, 1.1)
     this.scene.add(hemi)
@@ -51,6 +62,7 @@ export class AvatarPreviewMini {
 
     try {
       this.avatar = await composeAvatarFromProfile(profile, contentUrl)
+      this.subjectSize = alignPreviewAvatarToGround(this.avatar, 'dcl')
       this.pivot.add(this.avatar)
       this.animations = new AvatarAnimations()
       await this.animations.bind(this.avatar, this.pivot, {
@@ -74,7 +86,11 @@ export class AvatarPreviewMini {
     }
 
     this.resize()
-    this.resizeObserver = new ResizeObserver(() => this.resize())
+    this.frameCamera()
+    this.resizeObserver = new ResizeObserver(() => {
+      this.resize()
+      this.frameCamera()
+    })
     this.resizeObserver.observe(this.stage)
     this.lastFrame = performance.now()
     this.tick()
@@ -91,6 +107,8 @@ export class AvatarPreviewMini {
       disposeWearableInstance(this.avatar)
       this.avatar = null
     }
+    this.subjectSize = null
+    this.previewOptions = {}
     this.pivot?.clear()
     this.pivot = null
     this.scene?.clear()
@@ -113,6 +131,22 @@ export class AvatarPreviewMini {
     const h = Math.max(1, this.stage.clientHeight)
     this.renderer.setSize(w, h, false)
     this.camera.aspect = w / h
+    this.camera.updateProjectionMatrix()
+  }
+
+  private frameCamera(): void {
+    if (!this.camera || !this.subjectSize) return
+    const size = this.subjectSize
+    const lookY = size.y * 0.42
+    const fovRad = THREE.MathUtils.degToRad(this.camera.fov)
+    const aspect = Math.max(this.camera.aspect, 0.35)
+    const zoom = Math.max(0.5, this.previewOptions.zoom ?? 1)
+    const pad = 1.28 / zoom
+    const fitHeight = ((size.y + 0.35) * pad) / (2 * Math.tan(fovRad / 2))
+    const fitWidth = ((size.x + 0.5) * pad) / (2 * Math.tan(fovRad / 2) * aspect)
+    const distance = Math.max(fitHeight, fitWidth, 2.4)
+    this.camera.position.set(0, lookY, distance)
+    this.camera.lookAt(0, lookY, 0)
     this.camera.updateProjectionMatrix()
   }
 

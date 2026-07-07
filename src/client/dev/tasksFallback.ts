@@ -4,7 +4,7 @@ import type { TasksRegistry } from './tasksRegistry'
 
 export const TASKS_FALLBACK: TasksRegistry = {
   "schema_version": 1,
-  "updated": "2026-06-17",
+  "updated": "2026-07-07",
   "tasks": [
     {
       "id": "rearch-e7-pointer-same-tick",
@@ -348,6 +348,86 @@ export const TASKS_FALLBACK: TasksRegistry = {
         "Genesis Plaza blimp orbit — rotate Tween + TweenSequence"
       ],
       "notes": "Shipped with pumpMotionBridges fix."
+    },
+    {
+      "id": "social-shell-phase-1-2",
+      "title": "Companion social shell — Explorer + scene landing (Phases 1–2)",
+      "status": "done",
+      "owner": "maintainer",
+      "track": "social",
+      "phase": 5,
+      "complexity": "high",
+      "priority": "P0",
+      "dependencies": [],
+      "blocks": [],
+      "files": [
+        "src/client/AppController.ts",
+        "src/client/appMode.ts",
+        "src/client/ui/explore/ExplorerView.ts",
+        "src/client/ui/landing/SceneLandingView.ts",
+        "src/dcl/content/route.ts",
+        "src/social/sceneLanding.ts"
+      ],
+      "acceptance_criteria": [
+        "Cold / shows ExplorerView without WebGL",
+        "Visit navigates to scene landing, not direct 3D",
+        "Jump in enters play mode on same URL; Leave returns to landing"
+      ],
+      "notes": "Shipped 2026-07-07 — decentraland-social-merge → dev-latest (33bf03d…c53af86). See docs/SOCIAL_MERGE_PLAN.md."
+    },
+    {
+      "id": "social-shell-phase-2-5",
+      "title": "Companion 2D shell nav + communities (Phase 2.5)",
+      "status": "done",
+      "owner": "maintainer",
+      "track": "social",
+      "phase": 5,
+      "complexity": "medium",
+      "priority": "P1",
+      "dependencies": [
+        "social-shell-phase-1-2"
+      ],
+      "blocks": [],
+      "files": [
+        "src/client/ui/explore/SocialShellTopNav.ts",
+        "src/client/ui/explore/CommunitiesPageView.ts",
+        "src/client/ui/explore/EventsPageView.ts",
+        "src/social/socialApi.ts",
+        "src/social/communityThumbnails.ts"
+      ],
+      "acceptance_criteria": [
+        "Explore / Communities / Events tabs on all non-play surfaces",
+        "/communities browse loads for guest and signed-in",
+        "communityDisplayImageUrl with 404 detail fallback"
+      ],
+      "notes": "Shipped 2026-07-07 on dev-latest. CommunityModal + ProfilePageView + MapPageView included."
+    },
+    {
+      "id": "social-2d-chat-dock",
+      "title": "2D social chat dock + landing Jump-in polish (Phase 3 partial)",
+      "status": "partial",
+      "owner": "maintainer",
+      "track": "social",
+      "phase": 5,
+      "complexity": "medium",
+      "priority": "P1",
+      "dependencies": [
+        "social-shell-phase-1-2"
+      ],
+      "blocks": [],
+      "files": [
+        "src/client/ui/chat/SocialChatDock.ts",
+        "src/client/ui/chat/SocialChatController.ts",
+        "src/social/sceneDisplayTitle.ts",
+        "src/client/ui/shell/ClientShell.ts"
+      ],
+      "acceptance_criteria": [
+        "Chat dock on explorer and scene landing surfaces",
+        "Jump in shows progress bar; sidebar deferred until world handoff",
+        "2D sign-out disconnects comms and disposes dock",
+        "Landing title matches in-world chat (deployed display.title)"
+      ],
+      "notes": "Partial 2026-07-07 — Watch Lite (landing LiveKit/voice) still pending."
     }
   ]
 } as TasksRegistry

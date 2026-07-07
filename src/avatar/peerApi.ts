@@ -4,6 +4,7 @@ import {
   normalizeUrn,
   PEER_URL
 } from './constants'
+import { catalystPeerBaseUrl } from '../map/mapConfig'
 import { applyBundledWearableUrls, preloadBundledWearableManifests, tryBundledWearableDefinition } from './bundledWearables'
 import { catalystPointerForWearableUrn } from './wearablePointers'
 import { shortenAddress } from './displayName'
@@ -33,6 +34,7 @@ type LambdaAvatarEntry = {
   version?: number
   name?: string
   unclaimedName?: string
+  description?: string
   hasClaimedName?: boolean
   nameColor?: { r: number; g: number; b: number; a?: number }
   userId?: string
@@ -259,7 +261,7 @@ export async function fetchWearablesByUrns(urns: string[], peerUrl = PEER_URL): 
 
 const profileCache = new Map<string, Promise<AvatarProfile | null>>()
 const commsProfileCache = new Map<string, Promise<CommsProfileEntity | null>>()
-const profileFaceCache = new Map<string, Promise<string | null>>()
+const profileLambdaEntryCache = new Map<string, Promise<LambdaAvatarEntry | null>>()
 
 /** Wait for RFC4 profile broadcast before lambda fallback during remote avatar load. */
 export const PROFILE_COMMS_WAIT_MS = 2_500
@@ -359,22 +361,33 @@ export function resolveFaceSnapshotUrl(raw: unknown): string | null {
   return `https://profile-images.decentraland.org/entities/${value}/face.png`
 }
 
+export async function fetchProfileLambdaEntryCached(
+  profileId: string,
+  peerUrl = PEER_URL
+): Promise<LambdaAvatarEntry | null> {
+  const key = profileId.toLowerCase()
+  let pending = profileLambdaEntryCache.get(key)
+  if (!pending) {
+    pending = fetchLambdaAvatarEntry(key, peerUrl)
+    profileLambdaEntryCache.set(key, pending)
+  }
+  return pending
+}
+
+export async function fetchProfileDescriptionCached(
+  profileId: string,
+  peerUrl = PEER_URL
+): Promise<string | null> {
+  const entry = await fetchProfileLambdaEntryCached(profileId, peerUrl)
+  const description = entry?.description?.trim()
+  return description || null
+}
+
 export async function fetchProfileFaceUrl(profileId: string, peerUrl = PEER_URL): Promise<string | null> {
   const address = profileId.toLowerCase()
   if (!/^0x[a-f0-9]{40}$/.test(address)) return null
-
-  let pending = profileFaceCache.get(address)
-  if (!pending) {
-    pending = (async () => {
-      const res = await fetch(profileRequestUrl(peerUrl, address))
-      if (!res.ok) return null
-      const data = (await res.json()) as ProfileResponse
-      const entry = data.avatars?.[0]
-      return resolveFaceSnapshotUrl(entry?.avatar?.snapshots?.face256)
-    })()
-    profileFaceCache.set(address, pending)
-  }
-  return pending
+  const entry = await fetchProfileLambdaEntryCached(address, peerUrl)
+  return resolveFaceSnapshotUrl(entry?.avatar?.snapshots?.face256)
 }
 
 export async function fetchProfileCached(profileId: string, peerUrl = PEER_URL): Promise<AvatarProfile | null> {
@@ -436,6 +449,41 @@ export function profileRequestUrl(baseUrl: string, address: string): string {
   return `${base}/lambdas/profiles/${address.toLowerCase()}`
 }
 
+const PROFILE_CATALYST_FALLBACKS = [
+  () => catalystPeerBaseUrl(),
+  () => PEER_URL,
+  () => 'https://peer.decentraland.org',
+  () => 'https://peer-ec1.decentraland.org',
+  () => 'https://peer-ec2.decentraland.org'
+]
+
+function profileCatalystCandidates(primary?: string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  const add = (raw: string | undefined) => {
+    const base = String(raw ?? '').trim().replace(/\/$/, '')
+    if (!base || seen.has(base)) return
+    seen.add(base)
+    out.push(base)
+  }
+  add(primary)
+  for (const pick of PROFILE_CATALYST_FALLBACKS) add(pick())
+  return out
+}
+
+async function fetchLambdaAvatarEntryFromPeer(
+  address: string,
+  lambdasUrl: string
+): Promise<LambdaAvatarEntry | null> {
+  const res = await fetch(profileRequestUrl(lambdasUrl, address))
+  if (res.status === 404) return null
+  if (!res.ok) return null
+
+  const data = (await res.json()) as ProfileResponse
+  const entry = data.avatars?.[0]
+  return entry?.avatar ? entry : null
+}
+
 async function fetchLambdaAvatarEntry(
   profileId: string,
   lambdasUrl: string
@@ -445,24 +493,16 @@ async function fetchLambdaAvatarEntry(
   const address = profileId.toLowerCase()
   if (!/^0x[a-f0-9]{40}$/.test(address)) return null
 
-  const res = await fetch(profileRequestUrl(lambdasUrl, address))
-  if (!res.ok) {
-    console.warn(`Profile fetch failed for ${address}: ${res.status}`)
-    return null
+  for (const peer of profileCatalystCandidates(lambdasUrl)) {
+    const entry = await fetchLambdaAvatarEntryFromPeer(address, peer)
+    if (entry) return entry
   }
 
-  const data = (await res.json()) as ProfileResponse
-  const entry = data.avatars?.[0]
-  if (!entry?.avatar) {
-    console.warn(`Profile ${address} has no avatar data`)
-    return null
-  }
-
-  return entry
+  return null
 }
 
 export async function fetchProfile(profileId: string, peerUrl = PEER_URL): Promise<AvatarProfile | null> {
-  const entry = await fetchLambdaAvatarEntry(profileId, peerUrl)
+  const entry = await fetchProfileLambdaEntryCached(profileId, peerUrl)
   if (!entry) return null
   return avatarEntryToProfile(entry, profileId.toLowerCase())
 }

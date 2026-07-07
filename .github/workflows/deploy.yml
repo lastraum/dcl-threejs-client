@@ -1,0 +1,86 @@
+name: Deploy to DigitalOcean
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build
+        env:
+          SKIP_VERSION_BUMP: 1
+          VITE_ARCHIPELAGO_PEERS_URL: ${{ vars.VITE_ARCHIPELAGO_PEERS_URL }}
+          VITE_PARCELS_API_BASE: ${{ vars.VITE_PARCELS_API_BASE }}
+          VITE_WORLDS_LIVE_DATA_URL: ${{ vars.VITE_WORLDS_LIVE_DATA_URL }}
+        run: npm run build
+
+      - name: Validate deploy secrets
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          missing=0
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_PATH DEPLOY_SSH_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository secret $name is empty — Settings → Secrets and variables → Actions"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          if ! printf '%s' "$DEPLOY_SSH_KEY" | grep -q 'BEGIN .*PRIVATE KEY'; then
+            echo "::error::DEPLOY_SSH_KEY must be a full PEM/OpenSSH private key (include BEGIN/END lines)"
+            exit 1
+          fi
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Trust deploy host
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Verify SSH (publickey)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o PreferredAuthentications=publickey \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" "echo deploy-ssh-ok"
+
+      - name: Rsync dist to droplet
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          rsync -avzr --delete \
+            -e "ssh -o BatchMode=yes -o ConnectTimeout=120" \
+            dist/ "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"

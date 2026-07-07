@@ -1,4 +1,4 @@
-import type { EthereumProvider } from './ethereumProvider'
+import { resolveMetaMaskProvider, type EthereumProvider } from './ethereumProvider'
 
 type MetaMaskSdkModule = typeof import('@metamask/sdk')
 type MetaMaskSdkInstance = InstanceType<MetaMaskSdkModule['default']>
@@ -13,9 +13,7 @@ function isMobileDevice(): boolean {
 }
 
 function hasInjectedMetaMask(): boolean {
-  if (typeof window === 'undefined') return false
-  const eth = window.ethereum as (EthereumProvider & { isMetaMask?: boolean }) | undefined
-  return Boolean(eth?.isMetaMask)
+  return resolveMetaMaskProvider() !== null
 }
 
 export function shouldUseMetaMaskSdk(): boolean {
@@ -81,8 +79,9 @@ export async function connectMetaMaskSdk(): Promise<string[]> {
 export async function ensureMetaMaskProvider(
   onStatus?: (msg: string) => void
 ): Promise<EthereumProvider> {
-  if (hasInjectedMetaMask() && window.ethereum) {
-    return window.ethereum
+  const injected = resolveMetaMaskProvider()
+  if (injected) {
+    return injected
   }
 
   if (!shouldUseMetaMaskSdk()) {

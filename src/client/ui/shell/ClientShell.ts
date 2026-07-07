@@ -256,6 +256,12 @@ export class ClientShell {
     this.applyMobileLayout()
   }
 
+  hide(): void {
+    this.root.hidden = true
+    this.setMobileDrawerOpen(false)
+    this.applyMobileLayout()
+  }
+
   attachChatPanel(panel: ChatPanel, social: SocialService): void {
     this.unsubChatUnread?.()
     this.chatPanel = panel

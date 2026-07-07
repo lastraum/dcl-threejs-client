@@ -6,11 +6,27 @@ export type ChatChannelChoice =
 export type CommunityListRow = {
   id: string
   name: string
+  description?: string
   ownerAddress?: string
+  ownerName?: string
   role?: string
   thumbnails?: Record<string, string>
   memberCount?: number
   isPrivate?: boolean
+}
+
+export type CommunityDetail = {
+  id: string
+  name: string
+  description: string
+  thumbnails?: Record<string, string>
+  isPrivate?: boolean
+  memberCount?: number
+  ownerAddress?: string
+  ownerName?: string
+  role?: string
+  voiceChatActive?: boolean
+  voiceParticipantCount?: number
 }
 
 export type ChatTextLine = {
@@ -50,4 +66,5 @@ export type SceneChatTab = {
   key: string
   label: string
   pointer: string
+  browserChatEnabled: boolean
 }

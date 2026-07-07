@@ -212,21 +212,47 @@ server {
   }
 
   # Map API proxies (optional — prod hits these if VITE_* not set to direct URLs)
-  location /api/peers {
+  location = /api/peers {
     proxy_pass https://archipelago-ea-stats.decentraland.org/peers;
     proxy_ssl_server_name on;
+    proxy_set_header Host archipelago-ea-stats.decentraland.org;
   }
 
   location /api/parcels/ {
     proxy_pass https://api.decentraland.org/v2/parcels/;
     proxy_ssl_server_name on;
+    proxy_set_header Host api.decentraland.org;
   }
 
-  location /api/worlds/live-data {
+  location = /api/worlds/live-data {
     proxy_pass https://worlds-content-server.decentraland.org/live-data;
     proxy_ssl_server_name on;
+    proxy_set_header Host worlds-content-server.decentraland.org;
+  }
+
+  # Required for v0.5.0 Explorer — client always calls /api/places/* (no direct CORS fallback)
+  location /api/places/ {
+    proxy_pass https://places.decentraland.org/api/;
+    proxy_ssl_server_name on;
+    proxy_set_header Host places.decentraland.org;
+  }
+
+  location /api/marketplace/ {
+    proxy_pass https://marketplace-api.decentraland.org/;
+    proxy_ssl_server_name on;
+    proxy_set_header Host marketplace-api.decentraland.org;
   }
 }
+```
+
+**Full reference:** [`deploy/nginx.conf`](../deploy/nginx.conf) — copy to the droplet site config. After v0.5.0, missing `/api/places/` causes Explorer 404s (`places/worlds`, `places/places`).
+
+**Droplet apply (one-time or after editing):**
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+curl -sS 'https://decentraland.lastslice.co/api/places/worlds?limit=1' | head -c 120
+# expect {"total":...,"ok":true,...} not {"code":"not_found"}
 ```
 
 Point env vars at proxies (build-time):
@@ -258,7 +284,7 @@ COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
 ```
 
-(Copy the nginx block above into `deploy/nginx.conf` when you add Docker — not in repo yet.)
+Reference config: [`deploy/nginx.conf`](../deploy/nginx.conf).
 
 ---
 
@@ -273,8 +299,19 @@ Set before `npm run build`. All are optional; defaults hit public DCL endpoints 
 | `VITE_PARCELS_API_BASE` | `https://api.decentraland.org/v2/parcels` | Parcel metadata for map popup |
 | `VITE_WORLDS_LIVE_DATA_URL` | worlds-content-server direct | Worlds sidebar on map |
 | `VITE_SOCIAL_API_URL` | `https://social-api.decentraland.org` | Signed communities fetch |
+| `VITE_PLACES_API_BASE` | `/api/places` (always same-origin in prod build) | **Requires nginx** `location /api/places/` — see [`deploy/nginx.conf`](../deploy/nginx.conf) |
 
 Wallet login uses MetaMask `personal_sign` directly in the browser (no auth-server proxy).
+
+### Production console noise (usually not nginx)
+
+| Message | Cause | Fix |
+| ------- | ----- | --- |
+| `ObjectMultiplex - orphaned data for stream "background-liveness"` | MetaMask browser extension | Ignore — not your app |
+| `GET /api/places/... 404` | nginx missing or wrong `/api/places/` proxy | Add `deploy/nginx.conf` block; trailing slashes matter |
+| `social.decentraland.org ... 530` | DCL friendships API upstream down | Transient; client returns empty friends list (no console spam) |
+| `peer-wc1.decentraland.org ERR_NAME_NOT_RESOLVED` | Retired catalyst in Places thumbnails | Client rewrites to `VITE_CATALYST_BASE_URL` / `peer-ec2` |
+| `lambdas/profiles/0x… 404` | Scene owner has no Catalyst profile deployed | Expected — explorer shows initials, not an nginx bug |
 
 ---
 

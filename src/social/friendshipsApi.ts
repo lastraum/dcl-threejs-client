@@ -124,7 +124,7 @@ export async function fetchFriendshipSnapshotSigned(
   if (friendsRes.ok) {
     const raw = (await friendsRes.json().catch(() => ({}))) as Record<string, unknown>
     friends = collectAddresses(raw.friends ?? raw.data ?? raw)
-  } else {
+  } else if (friendsRes.status < 500) {
     console.warn(
       `[social] friendships list ${friendsRes.status}: ${await readSocialServiceError(friendsRes)} (${base}/v1/friendships/${userId})`
     )
@@ -136,13 +136,17 @@ export async function fetchFriendshipSnapshotSigned(
     const raw = (await requestsRes.json().catch(() => ({}))) as Record<string, unknown>
     incoming = collectRequestAddresses(raw, 'incoming')
     outgoing = collectRequestAddresses(raw, 'outgoing')
-  } else {
+  } else if (requestsRes.status < 500) {
     console.warn(
       `[social] friendship requests ${requestsRes.status}: ${await readSocialServiceError(requestsRes)} (${base}/v1/friendships/me/requests)`
     )
   }
 
   if (!friendsRes.ok && !requestsRes.ok) {
+    // social.decentraland.org returns 530 when the friendships service is down — degrade gracefully.
+    if (friendsRes.status >= 500 || requestsRes.status >= 500) {
+      return { friends: new Set(), incoming: new Set(), outgoing: new Set() }
+    }
     throw new Error(`Social service friendships unavailable (${friendsRes.status}/${requestsRes.status})`)
   }
 

@@ -410,6 +410,35 @@ export function placeLocationLabel(item: DclGenesisPlace | DclPlacesWorld): stri
 
 export type ExplorerSortMode = 'most_users' | 'name_az'
 
+/** Genesis Plaza — base parcel 0,0 on the Genesis City map. */
+export function isGenesisPlazaPlace(place: DclGenesisPlace): boolean {
+  return place.baseX === 0 && place.baseY === 0
+}
+
+export function isGenesisPlazaExploreItem(item: DclExploreItem): boolean {
+  return item.kind === 'scene' && isGenesisPlazaPlace(item.place)
+}
+
+function genesisPlazaExploreItem(place: DclGenesisPlace): DclExploreItem {
+  return {
+    id: `scene:${place.id}`,
+    kind: 'scene',
+    title: place.title,
+    userCount: place.userCount,
+    place
+  }
+}
+
+/** Live Now — Genesis Plaza pinned first (companion / Explorer parity). */
+export function pinGenesisPlazaFirst(
+  items: DclExploreItem[],
+  genesisPlace: DclGenesisPlace | undefined
+): DclExploreItem[] {
+  if (!genesisPlace) return items
+  const rest = items.filter((item) => !isGenesisPlazaExploreItem(item))
+  return [genesisPlazaExploreItem(genesisPlace), ...rest]
+}
+
 export function buildUnifiedExplorerItems(
   places: DclGenesisPlace[],
   worlds: DclPlacesWorld[],
@@ -449,11 +478,17 @@ export async function fetchDclExplorerLiveItems(
     fetchDclGenesisPlaces({ orderBy: 'most_active', limit: EXPLORER_LIVE_SCAN_LIMIT }),
     fetchDclPlacesWorlds({ orderBy: 'most_active', limit: EXPLORER_LIVE_SCAN_LIMIT })
   ])
-  return buildUnifiedExplorerItems(
+  let genesisPlace = places.find(isGenesisPlazaPlace)
+  if (!genesisPlace) {
+    const fallback = await fetchDclGenesisPlaces({ search: 'Genesis Plaza', limit: 12 })
+    genesisPlace = fallback.find(isGenesisPlazaPlace)
+  }
+  const live = buildUnifiedExplorerItems(
     places.filter((p) => p.userCount > 0),
     worlds.filter((w) => w.userCount > 0),
     'most_users'
-  ).slice(0, limit)
+  )
+  return pinGenesisPlazaFirst(live, genesisPlace).slice(0, limit)
 }
 
 /** Curated highlighted places — Featured grid (Places API `only_highlighted`). */

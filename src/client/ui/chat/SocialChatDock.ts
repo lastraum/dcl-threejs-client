@@ -15,8 +15,10 @@ import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import { isAllowedChatImageFile } from '../../../social/prepareChatImage'
 import { SocialService } from '../../../social/SocialService'
 import { isChatImageLine, type ChatChannelChoice, type ChatLine } from '../../../social/types'
-import { SCENE_CHAT_RAIL_ICON } from '../shell/icons'
+import { SCENE_CHAT_RAIL_ICON, SIDEBAR_ICONS } from '../shell/icons'
 import type { SocialChatController, SocialChatStatus } from './SocialChatController'
+
+const SOCIAL_CHAT_MOBILE_MQ = '(max-width: 767px)'
 
 export type SocialChatDockOptions = {
   controller: SocialChatController
@@ -46,10 +48,18 @@ export class SocialChatDock {
   private readonly inputEl: HTMLInputElement
   private readonly backBtn: HTMLButtonElement
   private readonly pillTipFloatEl: HTMLElement
+  private readonly mobileFab: HTMLButtonElement
+  private readonly mobileFabBadge: HTMLElement
+  private readonly mobileBackdrop: HTMLElement
+  private readonly mobileMq: MediaQueryList
+  private readonly onMobileMqChange = (): void => {
+    this.syncLayout()
+  }
   private visible = false
   private mounted = false
   private threadOpen = false
   private listExpanded = false
+  private mobilePanelOpen = false
   private unsubChat: (() => void) | null = null
   private unsubChannel: (() => void) | null = null
   private unsubProfiles: (() => void) | null = null
@@ -145,7 +155,9 @@ export class SocialChatDock {
 
     this.backBtn.addEventListener('click', () => {
       this.threadOpen = false
+      if (this.isMobileLayout()) this.listExpanded = true
       this.syncLayout()
+      this.renderPills()
     })
 
     this.expandBtn.addEventListener('click', () => {
@@ -169,13 +181,36 @@ export class SocialChatDock {
     this.composerEl.addEventListener('dragover', this.onComposerDragOver)
     this.composerEl.addEventListener('dragleave', this.onComposerDragLeave)
     this.composerEl.addEventListener('drop', this.onComposerDrop)
+
+    this.mobileBackdrop = document.createElement('div')
+    this.mobileBackdrop.className = 'social-chat-dock__mobile-backdrop'
+    this.mobileBackdrop.hidden = true
+    this.mobileBackdrop.addEventListener('click', () => this.closeMobilePanel())
+
+    this.mobileFab = document.createElement('button')
+    this.mobileFab.type = 'button'
+    this.mobileFab.className = 'social-chat-dock__mobile-fab'
+    this.mobileFab.setAttribute('aria-label', 'Open chat')
+    this.mobileFab.setAttribute('aria-expanded', 'false')
+    this.mobileFab.hidden = true
+    this.mobileFab.innerHTML = `
+      <span class="social-chat-dock__mobile-fab-icon" aria-hidden="true">${SIDEBAR_ICONS.chat}</span>
+    `
+    this.mobileFabBadge = document.createElement('span')
+    this.mobileFabBadge.className = 'social-chat-dock__mobile-fab-badge'
+    this.mobileFabBadge.hidden = true
+    this.mobileFab.appendChild(this.mobileFabBadge)
+    this.mobileFab.addEventListener('click', () => this.toggleMobilePanel())
+
+    this.mobileMq = window.matchMedia(SOCIAL_CHAT_MOBILE_MQ)
+    this.mobileMq.addEventListener('change', this.onMobileMqChange)
   }
 
   show(): void {
     this.ensureMounted()
     this.visible = true
-    this.root.hidden = false
     this.threadOpen = false
+    this.mobilePanelOpen = false
     this.bindSocial()
     this.renderAll()
     this.syncLayout()
@@ -187,11 +222,15 @@ export class SocialChatDock {
     this.visible = false
     this.threadOpen = false
     this.listExpanded = false
+    this.mobilePanelOpen = false
     this.root.hidden = true
+    this.mobileFab.hidden = true
+    this.mobileBackdrop.hidden = true
     this.hidePillTip()
     this.unbindSocial()
     this.unbindContentAlign()
     this.clearContentAlign()
+    document.body.classList.remove('social-chat-mobile-open')
   }
 
   refresh(): void {
@@ -213,15 +252,19 @@ export class SocialChatDock {
     })
     this.listExpanded = true
     this.threadOpen = true
+    if (this.isMobileLayout()) this.mobilePanelOpen = true
     this.syncLayout()
     this.renderAll()
   }
 
   dispose(): void {
     this.hide()
+    this.mobileMq.removeEventListener('change', this.onMobileMqChange)
     if (this.mounted) {
       this.root.remove()
       this.pillTipFloatEl.remove()
+      this.mobileFab.remove()
+      this.mobileBackdrop.remove()
     }
     this.mounted = false
   }
@@ -230,7 +273,34 @@ export class SocialChatDock {
     if (this.mounted) return
     document.body.appendChild(this.root)
     document.body.appendChild(this.pillTipFloatEl)
+    document.body.appendChild(this.mobileBackdrop)
+    document.body.appendChild(this.mobileFab)
     this.mounted = true
+  }
+
+  private isMobileLayout(): boolean {
+    return this.mobileMq.matches
+  }
+
+  private toggleMobilePanel(): void {
+    if (this.mobilePanelOpen) this.closeMobilePanel()
+    else this.openMobilePanel()
+  }
+
+  private openMobilePanel(): void {
+    if (!this.visible || !this.isMobileLayout()) return
+    this.mobilePanelOpen = true
+    if (!this.threadOpen) this.listExpanded = true
+    this.hidePillTip()
+    this.syncLayout()
+  }
+
+  private closeMobilePanel(): void {
+    if (!this.mobilePanelOpen) return
+    this.mobilePanelOpen = false
+    this.threadOpen = false
+    this.hidePillTip()
+    this.syncLayout()
   }
 
   private bindSocial(): void {
@@ -266,6 +336,54 @@ export class SocialChatDock {
     this.renderThreadHeader()
     this.renderMessages()
     this.updateComposerUi()
+    this.updateMobileFab()
+  }
+
+  private totalUnreadCount(): number {
+    const social = this.social()
+    const current = social.getChannel()
+    let total = 0
+
+    for (const scene of social.getSceneTabs()) {
+      const channel = { kind: 'scene' as const, sceneKey: scene.key, label: scene.label }
+      const active = current.kind === 'scene' && current.sceneKey === scene.key
+      if (!active) total += social.getUnreadCount(channel)
+    }
+
+    for (const community of social.getCommunities()) {
+      const channel = {
+        kind: 'community' as const,
+        communityId: community.id,
+        displayName: community.name
+      }
+      const active = current.kind === 'community' && current.communityId === community.id
+      if (!active) total += social.getUnreadCount(channel)
+    }
+
+    return total
+  }
+
+  private updateMobileFab(): void {
+    if (!this.mounted) return
+    const mobile = this.isMobileLayout()
+    this.mobileFab.hidden = !this.visible || !mobile
+    if (!mobile) return
+
+    this.mobileFab.classList.toggle('is-active', this.mobilePanelOpen)
+    this.mobileFab.setAttribute('aria-expanded', String(this.mobilePanelOpen))
+    this.mobileFab.setAttribute(
+      'aria-label',
+      this.mobilePanelOpen ? 'Close chat' : 'Open chat'
+    )
+
+    const unread = this.mobilePanelOpen ? 0 : this.totalUnreadCount()
+    if (unread > 0) {
+      this.mobileFabBadge.hidden = false
+      this.mobileFabBadge.textContent = unread > 99 ? '99+' : String(unread)
+    } else {
+      this.mobileFabBadge.hidden = true
+      this.mobileFabBadge.textContent = ''
+    }
   }
 
   private renderStatus(status: SocialChatStatus): void {
@@ -937,19 +1055,43 @@ export class SocialChatDock {
   }
 
   private syncLayout(): void {
+    const mobile = this.isMobileLayout()
+
+    if (mobile) {
+      this.listExpanded = !this.threadOpen
+      this.clearContentAlign()
+    }
+
     this.root.classList.toggle('social-chat-dock--thread-open', this.threadOpen)
     this.root.classList.toggle('social-chat-dock--list-expanded', this.listExpanded && !this.threadOpen)
+    this.root.classList.toggle('social-chat-dock--mobile', mobile)
+    this.root.classList.toggle('social-chat-dock--mobile-open', mobile && this.mobilePanelOpen)
+
     this.threadEl.hidden = !this.threadOpen
     this.pillsEl.hidden = this.threadOpen
-    this.expandBtn.hidden = this.threadOpen
+    this.expandBtn.hidden = this.threadOpen || mobile
     this.expandBtn.setAttribute('aria-expanded', String(this.listExpanded))
     this.expandBtn.setAttribute(
       'aria-label',
       this.listExpanded ? 'Collapse chat list' : 'Expand chat list'
     )
     this.expandBtn.textContent = this.listExpanded ? '›' : '‹'
+
+    if (mobile) {
+      this.root.hidden = !this.visible || !this.mobilePanelOpen
+      this.mobileBackdrop.hidden = !this.visible || !this.mobilePanelOpen
+      document.body.classList.toggle('social-chat-mobile-open', this.visible && this.mobilePanelOpen)
+    } else {
+      this.mobilePanelOpen = false
+      this.root.hidden = !this.visible
+      this.mobileBackdrop.hidden = true
+      document.body.classList.remove('social-chat-mobile-open')
+    }
+
     if (this.listExpanded || this.threadOpen) this.hidePillTip()
-    this.syncContentAlign()
+    this.updateMobileFab()
+
+    if (!mobile) this.syncContentAlign()
   }
 
   private bindContentAlign(): void {
@@ -991,7 +1133,7 @@ export class SocialChatDock {
 
   /** On scene landing, align chat top to the scene info card; keep full height to viewport bottom. */
   private syncContentAlign(): void {
-    if (!this.visible) return
+    if (!this.visible || this.isMobileLayout()) return
 
     if (!document.body.classList.contains('scene-landing-route')) {
       this.clearContentAlign()

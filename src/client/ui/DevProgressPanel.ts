@@ -359,7 +359,7 @@ export class DevProgressPanel {
     section.innerHTML = `
       <h3 class="dev-progress__section-title">Suggest an improvement</h3>
       <p class="dev-progress__suggest-hint">
-        Submits in-app via GitHub Action → issue labeled <code>suggestion</code>.
+        Submits in-app → GitHub issue labeled <code>suggestion</code>.
         Submitting as <strong>${escapeHtml(authorLabel)}</strong>.
       </p>
       <form class="dev-progress__suggest-form">
@@ -432,7 +432,12 @@ export class DevProgressPanel {
 
     if (result.ok) {
       statusEl.className = 'dev-progress__suggest-status dev-progress__suggest-status--ok'
-      statusEl.textContent = 'Sent — GitHub Action is filing your suggestion issue now.'
+      if (result.issueUrl) {
+        const label = result.issueNumber ? `#${result.issueNumber}` : 'issue'
+        statusEl.innerHTML = `Created <a href="${escapeHtml(result.issueUrl)}" target="_blank" rel="noopener">${escapeHtml(label)}</a> with label <code>suggestion</code>.`
+      } else {
+        statusEl.textContent = 'Sent — your suggestion issue is being filed now.'
+      }
       form.reset()
       return
     }

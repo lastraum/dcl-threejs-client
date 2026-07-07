@@ -28,7 +28,9 @@ export type ClientSuggestionPayload = ClientSuggestionInput & {
   user_agent: string
 }
 
-export type SubmitSuggestionResult = { ok: true } | { ok: false; error: string }
+export type SubmitSuggestionResult =
+  | { ok: true; issueUrl?: string; issueNumber?: number }
+  | { ok: false; error: string }
 
 async function readDispatchError(res: Response): Promise<string> {
   const contentType = res.headers.get('content-type') ?? ''
@@ -104,9 +106,20 @@ export async function submitClientSuggestion(
           error: `${error} — export SUGGESTION_DISPATCH_TOKEN and restart npm run dev.`
         }
       }
+      if (res.status === 403) {
+        return {
+          ok: false,
+          error: `${error} — token needs Issues: Read and write on lastraum/dcl-threejs-client.`
+        }
+      }
       return { ok: false, error }
     }
-    return { ok: true }
+    try {
+      const json = (await res.json()) as { issue_url?: string; issue_number?: number }
+      return { ok: true, issueUrl: json.issue_url, issueNumber: json.issue_number }
+    } catch {
+      return { ok: true }
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Network error'
     return { ok: false, error: message }

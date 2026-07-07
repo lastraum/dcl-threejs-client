@@ -1,8 +1,10 @@
 /**
- * POST /api/suggestions → GitHub repository_dispatch (client-suggestion).
+ * POST /api/suggestions → GitHub Issues API (labeled `suggestion`).
  * Used by vite dev middleware and optional production edge proxy.
  *
- * Env: SUGGESTION_DISPATCH_TOKEN — PAT or fine-grained token with `repo` / contents write.
+ * Env: SUGGESTION_DISPATCH_TOKEN — PAT with Issues write on the repo.
+ *   Fine-grained: Repository access → dcl-threejs-client, Issues → Read and write.
+ *   Classic: `public_repo` (public repo) or `repo` scope.
  */
 
 const REPO = process.env.SUGGESTION_DISPATCH_REPO ?? 'lastraum/dcl-threejs-client'
@@ -38,31 +40,89 @@ export function validateSuggestionPayload(body) {
   }
 }
 
-export async function dispatchClientSuggestion(clientPayload) {
+export function formatSuggestionIssue(p) {
+  const title = `[suggestion] ${p.summary}`.slice(0, 256)
+  const body = [
+    '### Summary',
+    p.summary,
+    '',
+    '### Category',
+    p.category,
+    '',
+    '### Details',
+    p.details,
+    '',
+    '### Context',
+    `- Client: \`${p.client_version}\``,
+    p.route ? `- Route: \`${p.route}\`` : null,
+    p.page_url ? `- Page: ${p.page_url}` : null,
+    p.author ? `- Author: ${p.author}` : null,
+    p.user_agent ? `- UA: \`${p.user_agent}\`` : null,
+    '',
+    '---',
+    '_Submitted from the Three.js client dev panel._'
+  ]
+    .filter((line) => line !== null)
+    .join('\n')
+  return { title, body }
+}
+
+function githubHeaders() {
+  return {
+    Accept: 'application/vnd.github+json',
+    Authorization: `Bearer ${TOKEN}`,
+    'Content-Type': 'application/json',
+    'X-GitHub-Api-Version': '2022-11-28'
+  }
+}
+
+async function readGitHubError(res) {
+  const text = await res.text().catch(() => '')
+  let error = text.trim() || `GitHub request failed (${res.status})`
+  try {
+    const json = JSON.parse(text)
+    if (json?.message) {
+      error = String(json.message)
+      if (json.documentation_url) error += ` — see ${json.documentation_url}`
+    }
+  } catch {
+    /* keep raw text */
+  }
+  return error
+}
+
+/** Create a labeled suggestion issue (Issues API — no repository_dispatch scope needed). */
+export async function createClientSuggestionIssue(clientPayload) {
   if (!TOKEN) {
     return { ok: false, status: 503, error: 'SUGGESTION_DISPATCH_TOKEN not configured' }
   }
-  const res = await fetch(`https://api.github.com/repos/${REPO}/dispatches`, {
+  const { title, body } = formatSuggestionIssue(clientPayload)
+  const res = await fetch(`https://api.github.com/repos/${REPO}/issues`, {
     method: 'POST',
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${TOKEN}`,
-      'Content-Type': 'application/json',
-      'X-GitHub-Api-Version': '2022-11-28'
-    },
+    headers: githubHeaders(),
     body: JSON.stringify({
-      event_type: 'client-suggestion',
-      client_payload: clientPayload
+      title,
+      body,
+      labels: ['suggestion']
     })
   })
-  if (res.status === 204) return { ok: true, status: 204 }
-  const text = await res.text().catch(() => '')
-  let error = text.trim() || `GitHub dispatch failed (${res.status})`
-  try {
-    const json = JSON.parse(text)
-    if (json?.message) error = String(json.message)
-  } catch {
-    /* keep raw text */
+  if (res.status === 201) {
+    const issue = await res.json()
+    return {
+      ok: true,
+      status: 201,
+      issue_number: issue.number,
+      issue_url: issue.html_url
+    }
+  }
+  const error = await readGitHubError(res)
+  if (res.status === 403 && error.includes('personal access token')) {
+    return {
+      ok: false,
+      status: 403,
+      error:
+        `${error} — use a fine-grained PAT with Issues: Read and write on ${REPO}, or a classic PAT with public_repo/repo scope.`
+    }
   }
   return { ok: false, status: res.status || 502, error }
 }
@@ -96,13 +156,19 @@ export function createSuggestionProxyMiddleware() {
         res.end(JSON.stringify({ error: validated.error }))
         return
       }
-      const dispatched = await dispatchClientSuggestion(validated.payload)
-      res.statusCode = dispatched.status
+      const created = await createClientSuggestionIssue(validated.payload)
+      res.statusCode = created.status
       res.setHeader('Content-Type', 'application/json')
-      if (dispatched.ok) {
-        res.end(JSON.stringify({ ok: true }))
+      if (created.ok) {
+        res.end(
+          JSON.stringify({
+            ok: true,
+            issue_number: created.issue_number,
+            issue_url: created.issue_url
+          })
+        )
       } else {
-        res.end(JSON.stringify({ error: dispatched.error }))
+        res.end(JSON.stringify({ error: created.error }))
       }
     })
   }

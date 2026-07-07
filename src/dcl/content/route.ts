@@ -11,6 +11,7 @@ const ROUTE_SEGMENT_DENY = new Set(
     'community',
     'events',
     'communities',
+    'map',
     'chat',
     'favicon.ico',
     'robots.txt',
@@ -24,6 +25,7 @@ const ROUTE_STATIC_ASSET_RE =
 
 export type RouteTarget =
   | { kind: 'blank' }
+  | { kind: 'map' }
   | { kind: 'events' }
   | { kind: 'communities' }
   | { kind: 'editor' }
@@ -32,8 +34,9 @@ export type RouteTarget =
 
 const EVENTS_ROUTE_SEGMENT = 'events'
 const COMMUNITIES_ROUTE_SEGMENT = 'communities'
+const MAP_ROUTE_SEGMENT = 'map'
 
-const APP_ROUTE_SEGMENTS = new Set([EVENTS_ROUTE_SEGMENT, COMMUNITIES_ROUTE_SEGMENT])
+const APP_ROUTE_SEGMENTS = new Set([EVENTS_ROUTE_SEGMENT, COMMUNITIES_ROUTE_SEGMENT, MAP_ROUTE_SEGMENT])
 
 const EDITOR_ROUTE_SEGMENT = 'editor'
 
@@ -76,6 +79,7 @@ export function parseRouteTarget(segment: string | null): RouteTarget {
   if (segment.toLowerCase() === EDITOR_ROUTE_SEGMENT) return { kind: 'editor' }
   if (segment.toLowerCase() === EVENTS_ROUTE_SEGMENT) return { kind: 'events' }
   if (segment.toLowerCase() === COMMUNITIES_ROUTE_SEGMENT) return { kind: 'communities' }
+  if (segment.toLowerCase() === MAP_ROUTE_SEGMENT) return { kind: 'map' }
 
   const coordMatch = /^(-?\d+)\s*,\s*(-?\d+)$/.exec(segment)
   if (coordMatch) {
@@ -113,6 +117,7 @@ export function routePathForTarget(target: RouteTarget): string {
   if (target.kind === 'blank') return '/'
   if (target.kind === 'events') return '/events'
   if (target.kind === 'communities') return '/communities'
+  if (target.kind === 'map') return '/map'
   if (target.kind === 'editor') return '/editor'
   if (target.kind === 'coords') return `/${encodeURIComponent(`${target.x},${target.y}`)}`
   return routePathForWorld(target.worldName)
@@ -137,7 +142,13 @@ export function editorUrlForProject(projectId: string | null, replace = false): 
 
 export function routeEquals(a: RouteTarget, b: RouteTarget): boolean {
   if (a.kind !== b.kind) return false
-  if (a.kind === 'blank' || a.kind === 'editor' || a.kind === 'events' || a.kind === 'communities') {
+  if (
+    a.kind === 'blank' ||
+    a.kind === 'editor' ||
+    a.kind === 'events' ||
+    a.kind === 'communities' ||
+    a.kind === 'map'
+  ) {
     return true
   }
   if (a.kind === 'coords' && b.kind === 'coords') return a.x === b.x && a.y === b.y

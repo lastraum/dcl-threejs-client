@@ -1,7 +1,7 @@
 import type { LoginResult } from '../../../auth/AuthClient'
 import { SocialProfileMenu } from './SocialProfileMenu'
 
-export type SocialShellTab = 'explore' | 'communities' | 'events'
+export type SocialShellTab = 'explore' | 'map' | 'communities' | 'events'
 
 export type SocialShellTopNavOptions = {
   activeTab: SocialShellTab | null
@@ -13,7 +13,7 @@ export type SocialShellTopNavOptions = {
   onOpenBackpack?: () => void
 }
 
-/** Shared 2D shell nav — Explore · Communities · Events + account chrome. */
+/** Shared 2D shell nav — Explore · Map · Communities · Events + account chrome. */
 export class SocialShellTopNav {
   readonly el: HTMLElement
 
@@ -30,6 +30,7 @@ export class SocialShellTopNav {
     this.el.innerHTML = `
       <nav class="social-shell-topnav__nav" aria-label="Main">
         <button type="button" class="social-shell-topnav__link" data-shell-tab="explore">Explore</button>
+        <button type="button" class="social-shell-topnav__link" data-shell-tab="map">Map</button>
         <button type="button" class="social-shell-topnav__link" data-shell-tab="communities">Communities</button>
         <button type="button" class="social-shell-topnav__link" data-shell-tab="events">Events</button>
       </nav>
@@ -49,7 +50,7 @@ export class SocialShellTopNav {
 
     for (const btn of this.el.querySelectorAll<HTMLButtonElement>('[data-shell-tab]')) {
       const tab = btn.dataset.shellTab as SocialShellTab | undefined
-      if (tab === 'explore' || tab === 'communities' || tab === 'events') {
+      if (tab === 'explore' || tab === 'map' || tab === 'communities' || tab === 'events') {
         this.tabButtons[tab] = btn
         btn.addEventListener('click', () => opts.onNavigate(tab))
       }

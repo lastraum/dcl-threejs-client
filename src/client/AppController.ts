@@ -38,6 +38,7 @@ import type { AppMode } from './appMode'
 import { CommunitiesPageView } from './ui/explore/CommunitiesPageView'
 import { EventsPageView } from './ui/explore/EventsPageView'
 import { ExplorerView } from './ui/explore/ExplorerView'
+import { MapPageView } from './ui/explore/MapPageView'
 import type { SocialShellTab } from './ui/explore/SocialShellTopNav'
 import { SceneLandingView } from './ui/landing/SceneLandingView'
 import type { DclEvent } from '../social/dclEvents'
@@ -63,6 +64,7 @@ export class AppController {
   private sceneContentUrl = 'https://peer.decentraland.org'
   private editorApp: EditorApp | null = null
   private explorerView: ExplorerView | null = null
+  private mapPageView: MapPageView | null = null
   private eventsPageView: EventsPageView | null = null
   private communitiesPageView: CommunitiesPageView | null = null
   private sceneLandingView: SceneLandingView | null = null
@@ -96,6 +98,11 @@ export class AppController {
 
     if (postLoginRoute.kind === 'events') {
       await this.showEventsPage({ replace: true })
+      return
+    }
+
+    if (postLoginRoute.kind === 'map') {
+      await this.showMapPage({ replace: true })
       return
     }
 
@@ -144,6 +151,16 @@ export class AppController {
       return
     }
 
+    if (target.kind === 'map') {
+      this.navigating = true
+      try {
+        await this.showMapPage({ fromHistory: opts.fromHistory, replace: opts.replace })
+      } finally {
+        this.navigating = false
+      }
+      return
+    }
+
     if (target.kind === 'communities') {
       this.navigating = true
       try {
@@ -174,6 +191,7 @@ export class AppController {
 
   private navigateSocialShell(tab: SocialShellTab): void {
     if (tab === 'explore') void this.navigateTo({ kind: 'blank' })
+    else if (tab === 'map') void this.navigateTo({ kind: 'map' })
     else if (tab === 'communities') void this.navigateTo({ kind: 'communities' })
     else void this.navigateTo({ kind: 'events' })
   }
@@ -209,6 +227,7 @@ export class AppController {
 
     await this.teardownScene()
     this.teardownLanding()
+    this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownCommunitiesPage()
 
@@ -226,6 +245,47 @@ export class AppController {
     this.explorerView.mount(this.container)
   }
 
+  private async showMapPage(
+    opts: { fromHistory?: boolean; replace?: boolean } = {}
+  ): Promise<void> {
+    if (this.appMode === 'play') {
+      await this.teardownScene()
+    }
+
+    if (!opts.fromHistory) {
+      applyRouteToHistory({ kind: 'map' }, opts.replace ?? false)
+    }
+    this.currentRoute = { kind: 'map' }
+    this.appMode = 'map'
+
+    this.teardownExplorer()
+    this.teardownLanding()
+    this.teardownMapPage()
+    this.teardownEventsPage()
+    this.teardownCommunitiesPage()
+
+    if (!this.container || !this.login) return
+
+    const hudEl = document.getElementById('hud')
+    if (hudEl) hudEl.hidden = true
+
+    this.mapPageView = new MapPageView({
+      login: this.login,
+      onNavigate: (tab) => this.navigateSocialShell(tab),
+      onParcelVisit: (px, py) => {
+        void this.showSceneLanding({
+          kind: 'coords',
+          x: px,
+          y: py,
+          segment: `${px},${py}`
+        })
+      },
+      getPlayerState: () => this.getMapPlayerState(),
+      ...this.socialShellLoginHandlers()
+    })
+    this.mapPageView.mount(this.container)
+  }
+
   private async showEventsPage(
     opts: { fromHistory?: boolean; replace?: boolean } = {}
   ): Promise<void> {
@@ -241,6 +301,7 @@ export class AppController {
 
     this.teardownExplorer()
     this.teardownLanding()
+    this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownCommunitiesPage()
 
@@ -278,6 +339,7 @@ export class AppController {
 
     this.teardownExplorer()
     this.teardownLanding()
+    this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownCommunitiesPage()
 
@@ -297,6 +359,11 @@ export class AppController {
   private teardownExplorer(): void {
     this.explorerView?.dispose()
     this.explorerView = null
+  }
+
+  private teardownMapPage(): void {
+    this.mapPageView?.dispose()
+    this.mapPageView = null
   }
 
   private teardownEventsPage(): void {
@@ -335,6 +402,7 @@ export class AppController {
 
     this.teardownExplorer()
     this.teardownLanding()
+    this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownCommunitiesPage()
 
@@ -386,6 +454,7 @@ export class AppController {
     try {
       this.teardownLanding()
       this.teardownExplorer()
+      this.teardownMapPage()
       const hydrationTimedOut = await this.loadRoute(target, {
         ...opts,
         fastAssets: opts.fastAssets ?? this.appMode === 'play',
@@ -751,6 +820,7 @@ export class AppController {
     clearStoredIdentity()
     this.login = { kind: 'guest' }
     this.explorerView?.setLogin(this.login)
+    this.mapPageView?.setLogin(this.login)
     this.eventsPageView?.setLogin(this.login)
     this.communitiesPageView?.setLogin(this.login)
     this.sceneLandingView?.setLogin(this.login)

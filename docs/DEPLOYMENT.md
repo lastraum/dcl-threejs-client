@@ -309,7 +309,9 @@ Wallet login uses MetaMask `personal_sign` directly in the browser (no auth-serv
 | ------- | ----- | --- |
 | `ObjectMultiplex - orphaned data for stream "background-liveness"` | MetaMask browser extension | Ignore — not your app |
 | `GET /api/places/... 404` | nginx missing or wrong `/api/places/` proxy | Add `deploy/nginx.conf` block; trailing slashes matter |
-| `social.decentraland.org ... 530` | DCL friendships API upstream down | Transient; friendships UI degrades gracefully |
+| `social.decentraland.org ... 530` | DCL friendships API upstream down | Transient; client returns empty friends list (no console spam) |
+| `peer-wc1.decentraland.org ERR_NAME_NOT_RESOLVED` | Retired catalyst in Places thumbnails | Client rewrites to `VITE_CATALYST_BASE_URL` / `peer-ec2` |
+| `lambdas/profiles/0x… 404` | Scene owner has no Catalyst profile deployed | Expected — explorer shows initials, not an nginx bug |
 
 ---
 

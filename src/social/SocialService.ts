@@ -299,7 +299,8 @@ export class SocialService {
       })
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err)
-        clientDebugLog.log('social', `Friendships failed: ${msg}`, { level: 'warn' })
+        clientDebugLog.log('social', `Friendships unavailable: ${msg}`, { level: 'warn' })
+        this.applyFriendshipSnapshot({ friends: new Set(), incoming: new Set(), outgoing: new Set() })
       })
       .finally(() => {
         this.friendshipLoad = null

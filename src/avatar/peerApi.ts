@@ -4,6 +4,7 @@ import {
   normalizeUrn,
   PEER_URL
 } from './constants'
+import { catalystPeerBaseUrl } from '../map/mapConfig'
 import { applyBundledWearableUrls, preloadBundledWearableManifests, tryBundledWearableDefinition } from './bundledWearables'
 import { catalystPointerForWearableUrn } from './wearablePointers'
 import { shortenAddress } from './displayName'
@@ -448,6 +449,41 @@ export function profileRequestUrl(baseUrl: string, address: string): string {
   return `${base}/lambdas/profiles/${address.toLowerCase()}`
 }
 
+const PROFILE_CATALYST_FALLBACKS = [
+  () => catalystPeerBaseUrl(),
+  () => PEER_URL,
+  () => 'https://peer.decentraland.org',
+  () => 'https://peer-ec1.decentraland.org',
+  () => 'https://peer-ec2.decentraland.org'
+]
+
+function profileCatalystCandidates(primary?: string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  const add = (raw: string | undefined) => {
+    const base = String(raw ?? '').trim().replace(/\/$/, '')
+    if (!base || seen.has(base)) return
+    seen.add(base)
+    out.push(base)
+  }
+  add(primary)
+  for (const pick of PROFILE_CATALYST_FALLBACKS) add(pick())
+  return out
+}
+
+async function fetchLambdaAvatarEntryFromPeer(
+  address: string,
+  lambdasUrl: string
+): Promise<LambdaAvatarEntry | null> {
+  const res = await fetch(profileRequestUrl(lambdasUrl, address))
+  if (res.status === 404) return null
+  if (!res.ok) return null
+
+  const data = (await res.json()) as ProfileResponse
+  const entry = data.avatars?.[0]
+  return entry?.avatar ? entry : null
+}
+
 async function fetchLambdaAvatarEntry(
   profileId: string,
   lambdasUrl: string
@@ -457,20 +493,12 @@ async function fetchLambdaAvatarEntry(
   const address = profileId.toLowerCase()
   if (!/^0x[a-f0-9]{40}$/.test(address)) return null
 
-  const res = await fetch(profileRequestUrl(lambdasUrl, address))
-  if (!res.ok) {
-    console.warn(`Profile fetch failed for ${address}: ${res.status}`)
-    return null
+  for (const peer of profileCatalystCandidates(lambdasUrl)) {
+    const entry = await fetchLambdaAvatarEntryFromPeer(address, peer)
+    if (entry) return entry
   }
 
-  const data = (await res.json()) as ProfileResponse
-  const entry = data.avatars?.[0]
-  if (!entry?.avatar) {
-    console.warn(`Profile ${address} has no avatar data`)
-    return null
-  }
-
-  return entry
+  return null
 }
 
 export async function fetchProfile(profileId: string, peerUrl = PEER_URL): Promise<AvatarProfile | null> {

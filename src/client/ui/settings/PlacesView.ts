@@ -1,6 +1,7 @@
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import type { RouteTarget } from '../../../dcl/content/route'
 import { fetchProfileFaceUrl } from '../../../avatar/peerApi'
+import { rewriteCatalystUrl } from '../../../network/catalyst/rewriteCatalystUrl'
 import {
   EXPLORER_FEATURED_LIMIT,
   EXPLORER_FEATURED_PAGE_SIZE,
@@ -645,7 +646,7 @@ export class PlacesView {
 
   private renderLiveCard(item: DclExploreItem): string {
     const data = item.kind === 'scene' ? item.place : item.world
-    const thumb = data.image
+    const thumb = this.sceneThumbUrl(data.image)
     const location = placeLocationLabel(data)
     const jumpKind = item.kind
     const jumpId = item.kind === 'scene' ? item.place.id : item.world.id
@@ -675,7 +676,7 @@ export class PlacesView {
 
   private renderPillCard(item: DclExploreItem): string {
     const data = item.kind === 'scene' ? item.place : item.world
-    const thumb = data.image
+    const thumb = this.sceneThumbUrl(data.image)
     const owner = placeOwnerAddress(data)
     const ownerShort = formatOwnerShort(owner)
     const location = placeLocationLabel(data)
@@ -716,7 +717,7 @@ export class PlacesView {
 
   private renderCard(item: DclExploreItem, layout: CardLayout): string {
     const data = item.kind === 'scene' ? item.place : item.world
-    const thumb = data.image
+    const thumb = this.sceneThumbUrl(data.image)
     const owner = placeOwnerAddress(data)
     const ownerShort = formatOwnerShort(owner)
     const ownerLabel = ownerShort ? `By ${ownerShort}` : ''
@@ -789,6 +790,10 @@ export class PlacesView {
         </div>
       </article>
     `
+  }
+
+  private sceneThumbUrl(raw: string | null | undefined): string | null {
+    return rewriteCatalystUrl(raw)
   }
 
   private async hydrateFaceUrls(items: DclExploreItem[]): Promise<void> {

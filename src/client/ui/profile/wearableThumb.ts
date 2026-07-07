@@ -13,13 +13,15 @@ export function parseCollectionsV2WearableUrn(
 }
 
 /** Catalyst content hash, IPFS id, or absolute URL → browser-loadable image URL. */
+import { rewriteCatalystUrl } from '../../../network/catalyst/rewriteCatalystUrl'
+
 export function resolveContentImageUrl(
   raw: string | null | undefined,
   peerUrl = DEFAULT_CATALYST
 ): string | null {
   const value = String(raw ?? '').trim()
   if (!value) return null
-  if (/^https?:\/\//i.test(value)) return value
+  if (/^https?:\/\//i.test(value)) return rewriteCatalystUrl(value, peerUrl) ?? value
   if (value.startsWith('ipfs://')) {
     const hash = value.slice('ipfs://'.length).replace(/^ipfs\//, '')
     return `${peerUrl.replace(/\/$/, '')}/content/contents/${hash}`

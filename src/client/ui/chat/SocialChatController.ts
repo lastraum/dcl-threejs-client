@@ -7,8 +7,10 @@ import { fetchPublicSceneTitle } from '../../../social/sceneDisplayTitle'
 import type { ResolvedScene } from '../../../dcl/content/types'
 import { clientDebugLog } from '../../debug/ClientDebugLog'
 import { CommsService, type SceneCommsTarget } from '../../../network/CommsService'
+import { blacklistFromMetadata } from '../../../network/sceneAccess/sceneAccessCommon'
 import { SessionIdentity } from '../../../network/SessionIdentity'
 import { SocialService } from '../../../social/SocialService'
+import type { SceneLoadErrorMessage } from '../../formatSceneLoadError'
 import { UserProfileModal } from '../profile/UserProfileModal'
 
 export type SocialChatStatus =
@@ -18,6 +20,7 @@ export type SocialChatStatus =
   | { kind: 'connected'; sceneLabel: string }
   | { kind: 'browser_chat_disabled'; sceneLabel: string }
   | { kind: 'duplicate_wallet' }
+  | { kind: 'scene_ban'; title: string; detail: string }
   | { kind: 'failed'; message: string }
 
 export type SocialChatControllerOptions = {
@@ -32,7 +35,9 @@ function buildCommsTarget(scene: ResolvedScene): SceneCommsTarget {
     realmName: scene.realm.realmName,
     contentUrl: scene.realm.contentUrl,
     parcels: scene.parcels,
-    isWorld: scene.source.kind === 'world'
+    isWorld: scene.source.kind === 'world',
+    sceneTitle: scene.title,
+    metadataBlacklist: blacklistFromMetadata(scene.metadata)
   }
 }
 
@@ -183,6 +188,11 @@ export class SocialChatController {
           this.setStatus({ kind: 'duplicate_wallet' })
         } else if (connectResult.reason === 'no_identity') {
           this.setStatus({ kind: 'guest' })
+        } else if (connectResult.reason === 'scene_ban') {
+          this.applySceneBan({
+            title: "You're banned from this place",
+            detail: 'Your wallet cannot join chat in this place.'
+          })
         } else {
           this.setStatus({ kind: 'failed', message: 'Could not join scene chat' })
         }
@@ -218,6 +228,22 @@ export class SocialChatController {
       return
     }
     void modal.show({ kind: 'remote', address: address.toLowerCase() })
+  }
+
+  /** Mid-session or pre-connect ban — tear down comms and block scene chat. */
+  applySceneBan(message: SceneLoadErrorMessage): void {
+    if (this.disposed) return
+    this.comms.disconnect()
+    this.connectedPointer = null
+    const sceneTab = this.social.getSceneTabs()[0]
+    if (sceneTab) {
+      void this.social.attachSceneComms({
+        comms: null,
+        sceneTab,
+        contentUrl: this.getContentUrl()
+      })
+    }
+    this.setStatus({ kind: 'scene_ban', title: message.title, detail: message.detail })
   }
 
   /** Disconnect 2D-shell comms so World can join the same room (landing → play handoff). */

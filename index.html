@@ -7431,6 +7431,11 @@
       .social-chat-dock__status--error {
         color: #ff8fa3;
       }
+      .social-chat-dock__status--scene-ban {
+        white-space: pre-line;
+        line-height: 1.45;
+        text-align: center;
+      }
       .social-chat-dock__body {
         flex: 1 1 auto;
         height: 100%;
@@ -10997,6 +11002,46 @@
       }
       .scene-watch-dest-jump-in-loading--error .scene-watch-dest-jump-in-loading-status {
         color: rgba(252, 165, 165, 0.92);
+      }
+      .scene-watch-dest-scene-ban {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 20px 18px;
+        border-radius: 12px;
+        background: linear-gradient(180deg, rgba(48, 10, 16, 0.92) 0%, rgba(24, 6, 10, 0.94) 100%);
+        border: 1px solid rgba(248, 113, 113, 0.42);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        text-align: center;
+      }
+      .scene-watch-dest-scene-ban-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 52px;
+        height: 52px;
+        border-radius: 999px;
+        background: rgba(127, 29, 29, 0.45);
+        color: #fca5a5;
+      }
+      .scene-watch-dest-scene-ban-title {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 800;
+        letter-spacing: 0.01em;
+        color: #fecaca;
+      }
+      .scene-watch-dest-scene-ban-detail {
+        margin: 0;
+        font-size: 0.875rem;
+        font-weight: 600;
+        line-height: 1.45;
+        color: rgba(254, 226, 226, 0.9);
+        max-width: 34rem;
       }
       /* 3D play chrome must not appear on 2D landing or during landing → play load */
       body.scene-landing-route #client-shell,

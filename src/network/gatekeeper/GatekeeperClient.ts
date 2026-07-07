@@ -13,7 +13,25 @@ export type SceneAdapterParams = {
 
 export type GetSceneAdapterResult =
   | { ok: true; adapter: string }
-  | { ok: false; status: number; error: string }
+  | { ok: false; status: number; error: string; customMessage?: string }
+
+function gatekeeperErrorFields(body: unknown): { error: string; customMessage?: string } {
+  if (!body || typeof body !== 'object') {
+    return { error: 'gatekeeper_error' }
+  }
+
+  const record = body as Record<string, unknown>
+  const error =
+    typeof record.error === 'string' && record.error.trim()
+      ? record.error.trim()
+      : 'gatekeeper_error'
+  const customMessage =
+    typeof record.customMessage === 'string' && record.customMessage.trim()
+      ? record.customMessage.trim()
+      : undefined
+
+  return { error, customMessage }
+}
 
 export async function getSceneAdapter(
   identity: AuthIdentity,
@@ -58,14 +76,13 @@ export async function getSceneAdapter(
   }
 
   if (!res.ok) {
-    const err =
-      body &&
-      typeof body === 'object' &&
-      'error' in body &&
-      typeof (body as { error: unknown }).error === 'string'
-        ? (body as { error: string }).error
-        : res.statusText || 'gatekeeper_error'
-    return { ok: false, status: res.status, error: err }
+    const fields = gatekeeperErrorFields(body)
+    return {
+      ok: false,
+      status: res.status,
+      error: fields.error === 'gatekeeper_error' ? res.statusText || fields.error : fields.error,
+      customMessage: fields.customMessage
+    }
   }
 
   if (

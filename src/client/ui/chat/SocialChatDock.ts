@@ -440,6 +440,10 @@ export class SocialChatDock {
         message = 'This wallet is already connected in another session'
         tone = 'error'
         break
+      case 'scene_ban':
+        message = `${status.title}\n${status.detail}`
+        tone = 'error'
+        break
       case 'failed':
         message = status.message
         tone = 'error'
@@ -463,7 +467,9 @@ export class SocialChatDock {
     }
 
     this.statusEl.hidden = false
-    this.statusEl.className = `social-chat-dock__status social-chat-dock__status--${tone}`
+    this.statusEl.className = `social-chat-dock__status social-chat-dock__status--${tone}${
+      status.kind === 'scene_ban' ? ' social-chat-dock__status--scene-ban' : ''
+    }`
     this.statusEl.textContent = message
   }
 
@@ -873,7 +879,9 @@ export class SocialChatDock {
     this.composerEl.classList.toggle('social-chat-dock__composer--disabled', !canChat)
 
     if (!this.imageSending) {
-      if (channel.kind === 'scene' && !social.isSceneBrowserChatEnabled()) {
+      if (channel.kind === 'scene' && status.kind === 'scene_ban') {
+        this.inputEl.placeholder = status.title
+      } else if (channel.kind === 'scene' && !social.isSceneBrowserChatEnabled()) {
         this.inputEl.placeholder = 'Browser chat is disabled for this scene'
       } else if (channel.kind === 'scene') {
         this.inputEl.placeholder = 'Press Enter to chat — drop an image'

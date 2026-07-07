@@ -38,6 +38,7 @@ import { resetFoliageWindRegistry, updateFoliageWind } from '../dcl/landscape/fo
 import { SessionIdentity } from '../network/SessionIdentity'
 import { RemoteAvatarManager } from '../network/RemoteAvatarManager'
 import { CommsService } from '../network/CommsService'
+import { blacklistFromMetadata } from '../network/sceneAccess/sceneAccessCommon'
 import { buildEmoteWheelSlots, resolveSceneEmoteFromSrc } from '../avatar/profileEmotes'
 import { SocialService } from '../social/SocialService'
 import { isChatTextLine } from '../social/types'
@@ -267,7 +268,9 @@ export class World {
       realmName: scene.realm.realmName,
       contentUrl: scene.realm.contentUrl,
       parcels: scene.parcels,
-      isWorld: scene.source.kind === 'world'
+      isWorld: scene.source.kind === 'world',
+      sceneTitle: scene.title,
+      metadataBlacklist: blacklistFromMetadata(scene.metadata)
     }
   }
 
@@ -528,6 +531,10 @@ export class World {
       onProgress?.('This wallet is already connected in another session — close the other client first')
       return
     }
+    if (connectResult.reason === 'scene_ban') {
+      onProgress?.('Access denied — you cannot join comms in this place')
+      return
+    }
     onProgress?.('Comms connection failed — check console')
   }
 
@@ -578,6 +585,8 @@ export class World {
           onProgress?.('Connected to DCL comms')
         } else if (connectResult.reason === 'duplicate_wallet') {
           onProgress?.('This wallet is already connected in another session — close the other client first')
+        } else if (connectResult.reason === 'scene_ban') {
+          onProgress?.('Access denied — you cannot join comms in this place')
         } else {
           onProgress?.('Comms connection failed — check console')
         }

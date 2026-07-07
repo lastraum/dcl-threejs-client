@@ -34,7 +34,12 @@ import { MobileGameHud } from './ui/MobileGameHud'
 import { disposeSessionAssetCache, getSessionAssetCache, prefetchSceneManifestAssets } from '../rendering/AssetCache'
 import { DEFAULT_TIMEOUT_MS, FAST_TIMEOUT_MS, type SceneHydrationStats } from '../rendering/sceneHydration'
 import { resolveSceneLoadWarm } from '../rendering/sceneLoadWarm'
-import { formatSceneLoadError } from './formatSceneLoadError'
+import { formatSceneBanMessage } from './formatSceneBanMessage'
+import { formatSceneLoadError, type SceneLoadErrorMessage } from './formatSceneLoadError'
+import { assertSceneAccess } from '../network/sceneAccess/assertSceneAccess'
+import { sceneBanDebug } from '../network/sceneAccess/sceneBanDebug'
+import { SceneBanMonitor } from '../network/sceneAccess/SceneBanMonitor'
+import { SceneAccessDeniedError } from '../network/sceneAccess/SceneAccessDeniedError'
 import { ProfileUiController } from './ui/profile/ProfileUiController'
 import type { AppMode } from './appMode'
 import { CommunitiesPageView } from './ui/explore/CommunitiesPageView'
@@ -78,6 +83,11 @@ export class AppController {
   private socialChatDock: SocialChatDock | null = null
   private socialMobileNotifications: SocialMobileNotifications | null = null
   private appMode: AppMode = 'explorer'
+  private monitoredScene: ResolvedScene | null = null
+  private sceneBanMonitor: SceneBanMonitor | null = null
+  private sceneBanActive = false
+  private handlingSceneBan = false
+  private sceneBanDebugUnsub: (() => void) | null = null
 
   async start(container: HTMLElement): Promise<void> {
     if (this.running) return
@@ -96,6 +106,7 @@ export class AppController {
     }
 
     window.addEventListener('popstate', this.onPopState)
+    this.wireSceneBanDebug()
 
     const postLoginRoute = resolveRouteTarget()
     this.login = resolveInitialLogin()
@@ -293,6 +304,7 @@ export class AppController {
     }
     this.currentRoute = { kind: 'blank' }
     this.appMode = 'explorer'
+    this.clearSceneBanWatch()
 
     await this.teardownScene()
     this.teardownLanding()
@@ -328,6 +340,7 @@ export class AppController {
     }
     this.currentRoute = { kind: 'map' }
     this.appMode = 'map'
+    this.clearSceneBanWatch()
 
     this.teardownExplorer()
     this.teardownLanding()
@@ -371,6 +384,7 @@ export class AppController {
     }
     this.currentRoute = { kind: 'events' }
     this.appMode = 'events'
+    this.clearSceneBanWatch()
 
     this.teardownExplorer()
     this.teardownLanding()
@@ -411,6 +425,7 @@ export class AppController {
     }
     this.currentRoute = { kind: 'communities' }
     this.appMode = 'communities'
+    this.clearSceneBanWatch()
 
     this.teardownExplorer()
     this.teardownLanding()
@@ -445,6 +460,7 @@ export class AppController {
     }
     this.currentRoute = { kind: 'profile' }
     this.appMode = 'profile'
+    this.clearSceneBanWatch()
 
     this.teardownExplorer()
     this.teardownLanding()
@@ -505,7 +521,7 @@ export class AppController {
 
   private async showSceneLanding(
     target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>,
-    opts: { fromHistory?: boolean; replace?: boolean } = {}
+    opts: { fromHistory?: boolean; replace?: boolean; sceneBan?: SceneLoadErrorMessage } = {}
   ): Promise<void> {
     if (this.appMode === 'play') {
       await this.teardownScene()
@@ -546,7 +562,17 @@ export class AppController {
     })
     this.sceneLandingView.mount(this.container)
     this.ensureSocialChatShell()
-    void this.connectSceneLandingChat(target)
+    void this.refreshMonitoredScene(target)
+    if (opts.sceneBan) {
+      this.sceneBanActive = true
+      this.stopSceneBanMonitor()
+      this.socialChat?.applySceneBan(opts.sceneBan)
+      this.sceneLandingView.setPendingBan(opts.sceneBan)
+    } else {
+      this.sceneBanActive = false
+      void this.connectSceneLandingChat(target)
+      this.ensureSceneBanMonitor()
+    }
   }
 
   private async connectSceneLandingChat(
@@ -689,14 +715,24 @@ export class AppController {
         await loading!.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      const ui = formatSceneLoadError(msg)
-      if (fromSceneLanding) {
-        this.sceneLandingView?.showJumpInError(ui.title, ui.detail)
+      if (err instanceof SceneAccessDeniedError) {
+        const ui = formatSceneBanMessage(err)
+        if (fromSceneLanding) {
+          this.sceneLandingView?.showSceneBan(ui)
+        } else {
+          loading?.showFatalError(ui.title, ui.detail)
+        }
+        clientDebugLog.log('client', `Scene access denied: ${err.source}`, { level: 'warn' })
       } else {
-        loading?.showFatalError(ui.title, ui.detail)
+        const msg = err instanceof Error ? err.message : String(err)
+        const ui = formatSceneLoadError(msg)
+        if (fromSceneLanding) {
+          this.sceneLandingView?.showJumpInError(ui.title, ui.detail)
+        } else {
+          loading?.showFatalError(ui.title, ui.detail)
+        }
+        clientDebugLog.log('client', `Failed to load scene: ${msg}`, { level: 'error' })
       }
-      clientDebugLog.log('client', `Failed to load scene: ${msg}`, { level: 'error' })
     } finally {
       this.navigating = false
     }
@@ -754,6 +790,9 @@ export class AppController {
     if (route.kind === 'coords' || route.kind === 'world') {
       sceneConfig = await enrichResolvedScenePublicTitle(sceneConfig, route)
     }
+    opts.onProgress?.('Checking access…', 0.08)
+    await assertSceneAccess(sceneConfig, this.login)
+    this.monitoredScene = sceneConfig
     this.sceneContentUrl = sceneConfig.realm.contentUrl
     prefetchSceneManifestAssets(getSessionAssetCache(), sceneConfig)
     opts.onProgress?.('Building world…')
@@ -1011,7 +1050,92 @@ export class AppController {
       })
     }
 
+    this.ensureSceneBanMonitor()
     return hydrationTimedOut
+  }
+
+  private wireSceneBanDebug(): void {
+    this.sceneBanDebugUnsub?.()
+    this.sceneBanDebugUnsub = sceneBanDebug.onTrigger(() => {
+      if (!sceneBanDebug.isSimulatingBan() || this.sceneBanActive || this.handlingSceneBan) return
+      const scene = this.monitoredScene
+      if (!scene) return
+      void this.handleMidSessionSceneBan(sceneBanDebug.simulatedBanError(scene.title))
+    })
+  }
+
+  private async refreshMonitoredScene(
+    target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
+  ): Promise<void> {
+    try {
+      let scene = await resolveSceneFromRoute(target)
+      scene = await enrichResolvedScenePublicTitle(scene, target)
+      this.monitoredScene = scene
+    } catch {
+      this.monitoredScene = null
+    }
+  }
+
+  private ensureSceneBanMonitor(): void {
+    if (this.sceneBanActive) return
+    if (!this.login || this.login.kind !== 'wallet') return
+    if (this.appMode !== 'play' && this.appMode !== 'landing') return
+    if (!this.monitoredScene) return
+    if (!this.currentRoute || (this.currentRoute.kind !== 'coords' && this.currentRoute.kind !== 'world')) {
+      return
+    }
+
+    if (!this.sceneBanMonitor) {
+      this.sceneBanMonitor = new SceneBanMonitor({
+        getScene: () => this.monitoredScene,
+        getLogin: () => this.login,
+        isEnabled: () =>
+          !this.sceneBanActive &&
+          !this.handlingSceneBan &&
+          (this.appMode === 'play' || this.appMode === 'landing') &&
+          this.login?.kind === 'wallet',
+        onBanned: (denied) => this.handleMidSessionSceneBan(denied)
+      })
+    }
+    this.sceneBanMonitor.start()
+  }
+
+  private stopSceneBanMonitor(): void {
+    this.sceneBanMonitor?.stop()
+  }
+
+  private clearSceneBanWatch(): void {
+    this.stopSceneBanMonitor()
+    this.monitoredScene = null
+    this.sceneBanActive = false
+  }
+
+  private async handleMidSessionSceneBan(err: SceneAccessDeniedError): Promise<void> {
+    if (this.handlingSceneBan || this.sceneBanActive) return
+    this.handlingSceneBan = true
+    try {
+      const ui = formatSceneBanMessage(err)
+      this.stopSceneBanMonitor()
+      this.sceneBanActive = true
+
+      const route = this.currentRoute
+      if (!route || (route.kind !== 'coords' && route.kind !== 'world')) return
+
+      clientDebugLog.log('client', `Mid-session scene ban · ${err.source}`, { level: 'warn' })
+
+      if (this.appMode === 'play') {
+        this.hidePlayChrome()
+        await this.showSceneLanding(route, { replace: true, sceneBan: ui })
+        return
+      }
+
+      if (this.appMode === 'landing') {
+        this.socialChat?.applySceneBan(ui)
+        this.sceneLandingView?.showSceneBan(ui)
+      }
+    } finally {
+      this.handlingSceneBan = false
+    }
   }
 
   private hidePlayChrome(): void {
@@ -1110,6 +1234,7 @@ export class AppController {
     this.teardownSocialChatShell(true)
     this.teardownExplorer()
     this.teardownLanding()
+    this.clearSceneBanWatch()
     await this.teardownScene()
     disposeSessionAssetCache()
 

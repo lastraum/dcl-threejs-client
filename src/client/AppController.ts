@@ -218,6 +218,27 @@ export class AppController {
     else void this.navigateTo({ kind: 'events' })
   }
 
+  private socialShellSocialHandlers(): {
+    getSocial: () => ReturnType<SocialChatController['getSocial']> | null
+    onEnsureSocial: () => Promise<void>
+    onOpenChat: () => void
+    onOpenUserProfile: (address: string) => void
+  } {
+    return {
+      getSocial: () => this.socialChat?.getSocial() ?? null,
+      onEnsureSocial: async () => {
+        this.ensureSocialChatShell()
+        this.socialChat?.applyLogin(this.login)
+        await this.socialChat?.ensureShellInit()
+      },
+      onOpenChat: () => {
+        this.ensureSocialChatShell()
+        this.socialChatDock?.openFromNotification()
+      },
+      onOpenUserProfile: (address) => this.socialChat?.openProfileForAddress(address)
+    }
+  }
+
   private socialShellLoginHandlers(): {
     onLoginChange: (login: LoginResult) => void
     onSignOut: () => void
@@ -248,7 +269,8 @@ export class AppController {
       onOpenBackpack: () => {
         this.settingsOverlay?.show('backpack')
       },
-      onOpenProfile: () => this.openLocalProfileFromShell()
+      onOpenProfile: () => this.openLocalProfileFromShell(),
+      ...this.socialShellSocialHandlers()
     }
   }
 

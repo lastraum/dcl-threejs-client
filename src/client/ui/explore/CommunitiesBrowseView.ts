@@ -1,6 +1,9 @@
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import { CommunityModal } from '../communities/CommunityModal'
-import { communityThumbnailUrl } from '../../../social/memberCommunities'
+import {
+  communityDisplayImageUrl,
+  enrichCommunityThumbnailFromDetail
+} from '../../../social/communityThumbnails'
 import { fetchCommunitiesBrowsePublic, fetchCommunitiesBrowseSigned } from '../../../social/socialApi'
 import type { CommunityListRow } from '../../../social/types'
 
@@ -145,7 +148,7 @@ export class CommunitiesBrowseView {
   }
 
   private renderCard(c: CommunityListRow): string {
-    const thumb = communityThumbnailUrl(c.id)
+    const thumb = communityDisplayImageUrl(c.id, c.thumbnails)
     const initial = c.name.trim().charAt(0).toUpperCase() || '?'
     const privacy = c.isPrivate ? '<span class="communities-browse-view__badge">Private</span>' : ''
 
@@ -196,22 +199,48 @@ export class CommunitiesBrowseView {
       img.addEventListener(
         'error',
         () => {
-          const initial =
-            img.closest('.communities-browse-view__card')
-              ?.querySelector('.communities-browse-view__card-name')
-              ?.textContent?.trim()
-              .charAt(0)
-              .toUpperCase() || '?'
-          img.replaceWith(
-            Object.assign(document.createElement('span'), {
-              className: 'communities-browse-view__card-fallback',
-              textContent: initial,
-              ariaHidden: 'true'
-            })
-          )
+          void this.onCardImageError(img)
         },
         { once: true }
       )
     }
+  }
+
+  private async onCardImageError(img: HTMLImageElement): Promise<void> {
+    const card = img.closest<HTMLElement>('.communities-browse-view__card')
+    const communityId = card?.dataset.communityId?.trim()
+    if (communityId) {
+      try {
+        const enriched = await enrichCommunityThumbnailFromDetail(communityId, this.getAuthIdentity)
+        if (enriched && enriched !== img.src && !this.disposed) {
+          img.addEventListener(
+            'error',
+            () => this.replaceCardImageWithFallback(img),
+            { once: true }
+          )
+          img.src = enriched
+          return
+        }
+      } catch {
+        /* fall through to letter fallback */
+      }
+    }
+    this.replaceCardImageWithFallback(img)
+  }
+
+  private replaceCardImageWithFallback(img: HTMLImageElement): void {
+    const initial =
+      img.closest('.communities-browse-view__card')
+        ?.querySelector('.communities-browse-view__card-name')
+        ?.textContent?.trim()
+        .charAt(0)
+        .toUpperCase() || '?'
+    img.replaceWith(
+      Object.assign(document.createElement('span'), {
+        className: 'communities-browse-view__card-fallback',
+        textContent: initial,
+        ariaHidden: 'true'
+      })
+    )
   }
 }

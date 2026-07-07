@@ -3,6 +3,7 @@ import { identityFromAvatarProfile } from '../../../avatar/displayName'
 import { fetchProfileFaceUrl } from '../../../avatar/peerApi'
 import type { RouteTarget } from '../../../dcl/content/route'
 import { resolveSceneFromRoute } from '../../../dcl/content/resolveScene'
+import { fetchPublicSceneTitle } from '../../../social/sceneDisplayTitle'
 import type { ResolvedScene } from '../../../dcl/content/types'
 import { clientDebugLog } from '../../debug/ClientDebugLog'
 import { CommsService, type SceneCommsTarget } from '../../../network/CommsService'
@@ -74,7 +75,25 @@ export class SocialChatController {
       void this.ensureShellInit()
       return
     }
+    this.comms.disconnect()
+    this.connectedPointer = null
     this.comms.setIdentity(undefined, null)
+    this.profileModal?.hide()
+    this.setStatus({ kind: 'guest' })
+  }
+
+  /** Wallet sign-out from 2D shell — tear down comms, social state, and profile UI. */
+  signOut(): void {
+    if (this.disposed) return
+    this.comms.disconnect()
+    this.connectedPointer = null
+    this.comms.setIdentity(undefined, null)
+    this.profileModal?.dispose()
+    this.profileModal = null
+    this.social.dispose()
+    this.social = new SocialService()
+    this.login = { kind: 'guest' }
+    this.session.applyLogin(this.login)
     this.setStatus({ kind: 'guest' })
   }
 
@@ -111,7 +130,7 @@ export class SocialChatController {
       const scene = await resolveSceneFromRoute(route)
       if (this.disposed) return false
 
-      const sceneLabel = scene.title.trim() || scene.commsPointer
+      const sceneLabel = (await fetchPublicSceneTitle(route, scene.title)).trim() || scene.commsPointer
       const sceneTab = {
         key: scene.commsPointer,
         label: sceneLabel,
@@ -199,6 +218,16 @@ export class SocialChatController {
       return
     }
     void modal.show({ kind: 'remote', address: address.toLowerCase() })
+  }
+
+  /** Disconnect 2D-shell comms so World can join the same room (landing → play handoff). */
+  releaseCommsForWorldHandoff(): void {
+    if (this.disposed) return
+    this.comms.disconnect()
+    this.connectedPointer = null
+    if (this.status.kind === 'connected' || this.status.kind === 'browser_chat_disabled') {
+      this.setStatus({ kind: 'connecting' })
+    }
   }
 
   dispose(): void {

@@ -1,6 +1,6 @@
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import { fetchProfileFaceUrl } from '../../../avatar/peerApi'
-import { communityThumbnailUrl } from '../../../social/memberCommunities'
+import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import { fetchCommunityByIdPublic, fetchCommunityByIdSigned } from '../../../social/socialApi'
 import type { CommunityDetail, CommunityListRow } from '../../../social/types'
 
@@ -181,7 +181,7 @@ export class CommunityModal {
     merged: CommunityDetail,
     opts: { loading: boolean; detailError?: string | null }
   ): string {
-    const thumb = communityThumbnailUrl(merged.id)
+    const thumb = communityDisplayImageUrl(merged.id, merged.thumbnails)
     const owner = ownerLabel(merged)
     const ownerInitial = owner.charAt(0).toUpperCase() || '?'
     const members = formatMemberCount(merged.memberCount)

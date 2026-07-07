@@ -10,7 +10,10 @@ import {
   WEARABLE_RARITY_COLORS,
   type WearableDisplayCard
 } from '../profile/wearableThumb'
-import { communityThumbnailUrl } from '../../../social/memberCommunities'
+import {
+  communityDisplayImageUrl,
+  enrichCommunityThumbnailFromDetail
+} from '../../../social/communityThumbnails'
 import type { CommunityListRow } from '../../../social/types'
 import { SocialShellTopNav, type SocialShellChromeHandlers, type SocialShellTab } from './SocialShellTopNav'
 
@@ -305,7 +308,7 @@ export class ProfilePageView {
   }
 
   private renderCommunityCard(c: CommunityListRow): string {
-    const thumb = communityThumbnailUrl(c.id)
+    const thumb = communityDisplayImageUrl(c.id, c.thumbnails)
     const initial = c.name.trim().charAt(0).toUpperCase() || '?'
     const privacy = c.isPrivate ? '<span class="profile-page-view__community-privacy">Private</span>' : ''
 
@@ -396,14 +399,13 @@ export class ProfilePageView {
 
   private wireCommunities(): void {
     for (const img of this.contentEl.querySelectorAll<HTMLImageElement>('.profile-page-view__community-card-media img')) {
-      img.addEventListener('error', () => {
-        const btn = img.closest('.profile-page-view__community-card')
-        const name = btn?.querySelector('.profile-page-view__community-card-name')?.textContent?.trim() ?? '?'
-        const initial = name.charAt(0).toUpperCase() || '?'
-        const icon = img.parentElement
-        if (!icon) return
-        icon.innerHTML = `<span class="profile-page-view__community-fallback" aria-hidden="true">${escapeHtml(initial)}</span>`
-      })
+      img.addEventListener(
+        'error',
+        () => {
+          void this.onCommunityCardImageError(img)
+        },
+        { once: true }
+      )
     }
 
     for (const btn of this.contentEl.querySelectorAll<HTMLButtonElement>('[data-community-id]')) {
@@ -414,6 +416,39 @@ export class ProfilePageView {
         if (row) this.communityModal.open(row)
       })
     }
+  }
+
+  private async onCommunityCardImageError(img: HTMLImageElement): Promise<void> {
+    const btn = img.closest<HTMLButtonElement>('.profile-page-view__community-card')
+    const communityId = btn?.dataset.communityId?.trim()
+    if (communityId) {
+      try {
+        const enriched = await enrichCommunityThumbnailFromDetail(communityId, () =>
+          this.login.kind === 'wallet' ? this.login.identity : null
+        )
+        if (enriched && enriched !== img.src) {
+          img.addEventListener(
+            'error',
+            () => this.replaceCommunityCardImageWithFallback(img),
+            { once: true }
+          )
+          img.src = enriched
+          return
+        }
+      } catch {
+        /* fall through to letter fallback */
+      }
+    }
+    this.replaceCommunityCardImageWithFallback(img)
+  }
+
+  private replaceCommunityCardImageWithFallback(img: HTMLImageElement): void {
+    const btn = img.closest('.profile-page-view__community-card')
+    const name = btn?.querySelector('.profile-page-view__community-card-name')?.textContent?.trim() ?? '?'
+    const initial = name.charAt(0).toUpperCase() || '?'
+    const icon = img.parentElement
+    if (!icon) return
+    icon.innerHTML = `<span class="profile-page-view__community-fallback" aria-hidden="true">${escapeHtml(initial)}</span>`
   }
 
   private async ensureAvatarPreview(token: number): Promise<void> {

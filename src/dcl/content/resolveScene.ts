@@ -187,6 +187,31 @@ function resolvedFromEntity(
   }
 }
 
+function displayTitleFromEntity(entity: Record<string, unknown>): string | null {
+  const metadata = (entity.metadata ?? {}) as SceneMetadata
+  const title = metadata.display?.title
+  if (typeof title === 'string' && title.trim()) return title.trim()
+  return null
+}
+
+/** Deployed scene `scene.json` display title — canonical creator metadata. */
+export async function fetchDeployedSceneDisplayTitle(
+  target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
+): Promise<string | null> {
+  if (target.kind === 'coords') {
+    const result = await fetchParcelEntity(target.x, target.y)
+    return result ? displayTitleFromEntity(result.entity) : null
+  }
+
+  for (const pointer of worldPointersForTarget(target)) {
+    const result = await fetchWorldEntity(pointer)
+    if (!result) continue
+    const title = displayTitleFromEntity(result.entity)
+    if (title) return title
+  }
+  return null
+}
+
 export async function resolveSceneFromRoute(target: RouteTarget): Promise<ResolvedScene> {
   if (target.kind === 'editor') {
     throw new Error('Editor route does not resolve a network scene — use EditorApp')

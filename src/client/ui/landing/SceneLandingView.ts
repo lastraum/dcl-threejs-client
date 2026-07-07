@@ -1,6 +1,7 @@
 import type { LoginResult } from '../../../auth/AuthClient'
 import { fetchProfileFaceUrl } from '../../../avatar/peerApi'
 import type { RouteTarget } from '../../../dcl/content/route'
+import { progressFromStatus } from '../loadingProgress'
 import {
   formatEventCardTimeShort,
   isEventLiveNow,
@@ -27,6 +28,8 @@ function escapeHtml(value: string): string {
     .replace(/"/g, '&quot;')
 }
 
+const JUMP_IN_PROGRESS_LERP = 0.12
+
 /** Scene landing at `/<segment>` — companion `PublicSceneStreamPage` card layout (Phase 2). */
 export class SceneLandingView {
   readonly root: HTMLElement
@@ -40,6 +43,13 @@ export class SceneLandingView {
   private meta: SceneLandingMeta | null = null
   private relatedEvents: DclEvent[] = []
   private disposed = false
+  private jumpInLoading = false
+  private targetProgress = 0
+  private displayedProgress = 0
+  private progressAnimFrame = 0
+  private progressFillEl: HTMLElement | null = null
+  private progressPctEl: HTMLElement | null = null
+  private progressStatusEl: HTMLElement | null = null
 
   constructor(opts: SceneLandingViewOptions) {
     this.route = opts.route
@@ -94,10 +104,136 @@ export class SceneLandingView {
 
   dispose(): void {
     this.disposed = true
-    document.body.classList.remove('scene-landing-route')
+    this.stopProgressAnimation()
+    document.body.classList.remove('scene-landing-route', 'scene-landing-jump-in-loading')
     this.eventModal.dispose()
     this.topNav.dispose()
     this.root.remove()
+  }
+
+  /** Reparent above #app so world canvas can mount while this overlay stays visible. */
+  preserveDuringWorldLoad(): void {
+    if (this.root.parentElement !== document.body) {
+      document.body.appendChild(this.root)
+    }
+  }
+
+  /** Jump in clicked — hide CTA, show top bar + percent (stay on scene card, no slideshow). */
+  beginJumpInLoading(): void {
+    if (this.disposed || this.jumpInLoading) return
+    this.jumpInLoading = true
+    document.body.classList.add('scene-landing-jump-in-loading')
+
+    if (!this.root.querySelector('[data-load-progress]')) {
+      const bar = document.createElement('div')
+      bar.className = 'scene-landing-view__load-progress'
+      bar.dataset.loadProgress = ''
+      bar.setAttribute('aria-hidden', 'true')
+      bar.innerHTML = `
+        <div class="scene-landing-view__load-progress-track">
+          <div class="scene-landing-view__load-progress-fill" data-load-progress-fill></div>
+        </div>
+      `
+      this.root.prepend(bar)
+    }
+
+    const ctaRow = this.root.querySelector('.scene-watch-dest-scene-card-cta-row')
+    if (ctaRow) {
+      ctaRow.innerHTML = `
+        <div class="scene-watch-dest-jump-in-loading" data-jump-in-loading>
+          <span class="scene-watch-dest-jump-in-loading-pct" data-load-pct>0%</span>
+          <span class="scene-watch-dest-jump-in-loading-status" data-load-status>Preparing your experience…</span>
+        </div>
+      `
+    }
+
+    this.progressFillEl = this.root.querySelector('[data-load-progress-fill]')
+    this.progressPctEl = this.root.querySelector('[data-load-pct]')
+    this.progressStatusEl = this.root.querySelector('[data-load-status]')
+
+    this.targetProgress = 0.02
+    this.displayedProgress = 0
+    this.updateProgressUi()
+    this.startProgressAnimation()
+  }
+
+  updateJumpInProgress(fraction: number | undefined, status?: string): void {
+    if (this.disposed || !this.jumpInLoading) return
+    if (typeof status === 'string' && status.trim()) {
+      this.targetProgress = progressFromStatus(status, this.targetProgress)
+      if (this.progressStatusEl) this.progressStatusEl.textContent = status
+    }
+    if (typeof fraction === 'number' && Number.isFinite(fraction)) {
+      this.targetProgress = Math.max(this.targetProgress, Math.min(1, fraction))
+    }
+  }
+
+  async completeJumpInLoading(): Promise<void> {
+    if (this.disposed || !this.jumpInLoading) return
+    this.targetProgress = 1
+    await new Promise<void>((resolve) => {
+      const wait = (): void => {
+        if (this.disposed) {
+          resolve()
+          return
+        }
+        if (Math.abs(this.targetProgress - this.displayedProgress) < 0.008) {
+          this.displayedProgress = 1
+          this.updateProgressUi()
+          resolve()
+          return
+        }
+        requestAnimationFrame(wait)
+      }
+      wait()
+    })
+    await new Promise((r) => setTimeout(r, 280))
+  }
+
+  showJumpInError(title: string, detail: string): void {
+    if (this.disposed) return
+    this.stopProgressAnimation()
+    const loadingPanel = this.root.querySelector('[data-jump-in-loading]') as HTMLElement | null
+    if (loadingPanel) {
+      loadingPanel.classList.add('scene-watch-dest-jump-in-loading--error')
+      loadingPanel.innerHTML = `
+        <span class="scene-watch-dest-jump-in-loading-pct scene-watch-dest-jump-in-loading-pct--error">${escapeHtml(title)}</span>
+        <span class="scene-watch-dest-jump-in-loading-status">${escapeHtml(detail)}</span>
+      `
+    }
+    this.root.querySelector('[data-load-progress]')?.classList.add('scene-landing-view__load-progress--error')
+    document.body.classList.remove('scene-landing-jump-in-loading')
+    this.jumpInLoading = false
+  }
+
+  private startProgressAnimation(): void {
+    this.stopProgressAnimation()
+    const tick = (): void => {
+      if (this.disposed || !this.jumpInLoading) return
+      const delta = this.targetProgress - this.displayedProgress
+      if (Math.abs(delta) > 0.001) {
+        this.displayedProgress += delta * JUMP_IN_PROGRESS_LERP
+      } else if (this.displayedProgress !== this.targetProgress) {
+        this.displayedProgress = this.targetProgress
+      }
+      this.updateProgressUi()
+      this.progressAnimFrame = requestAnimationFrame(tick)
+    }
+    this.progressAnimFrame = requestAnimationFrame(tick)
+  }
+
+  private stopProgressAnimation(): void {
+    if (this.progressAnimFrame) {
+      cancelAnimationFrame(this.progressAnimFrame)
+      this.progressAnimFrame = 0
+    }
+  }
+
+  private updateProgressUi(): void {
+    const pct = Math.round(this.displayedProgress * 1000) / 10
+    if (this.progressFillEl) this.progressFillEl.style.width = `${pct}%`
+    if (this.progressPctEl) this.progressPctEl.textContent = `${Math.round(pct)}%`
+    this.root.style.setProperty('--scene-landing-load-progress', String(this.displayedProgress))
   }
 
   private async load(): Promise<void> {
@@ -120,7 +256,10 @@ export class SceneLandingView {
   }
 
   private bindJumpIn(): void {
-    this.root.querySelector('[data-jump-in]')?.addEventListener('click', () => this.onJumpIn())
+    this.root.querySelector('[data-jump-in]')?.addEventListener('click', () => {
+      if (this.jumpInLoading) return
+      this.onJumpIn()
+    })
   }
 
   private async loadRelatedEvents(): Promise<void> {

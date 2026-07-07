@@ -10284,6 +10284,11 @@
       .scene-watch-dest-jump-in-bar:hover {
         filter: brightness(1.06);
       }
+      .scene-watch-dest-jump-in-bar[hidden],
+      body.scene-landing-jump-in-loading .scene-watch-dest-jump-in-bar,
+      body.scene-landing-jump-in-loading .scene-watch-dest-scene-card-cta-row > .scene-watch-dest-jump-in-bar {
+        display: none !important;
+      }
       .scene-watch-dest-jump-in-bar-label {
         text-transform: uppercase;
       }
@@ -10295,6 +10300,94 @@
         height: 28px;
         border: 1.5px solid #fff;
         border-radius: 6px;
+      }
+      .scene-landing-view__load-progress {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 6;
+        flex-shrink: 0;
+        padding-top: env(safe-area-inset-top, 0px);
+        pointer-events: none;
+      }
+      .scene-landing-view__load-progress-track {
+        height: 9px;
+        width: 100%;
+        background: rgba(255, 255, 255, 0.1);
+        overflow: hidden;
+      }
+      .scene-landing-view__load-progress-fill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #ff2d55 0%, #ff5478 100%);
+        box-shadow: 0 0 16px rgba(255, 45, 85, 0.45);
+        transition: width 0.08s linear;
+      }
+      .scene-landing-view__load-progress--error .scene-landing-view__load-progress-fill {
+        background: linear-gradient(90deg, #dc2626 0%, #f87171 100%);
+        box-shadow: none;
+      }
+      .scene-watch-dest-jump-in-loading {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 18px 20px;
+        border-radius: 10px;
+        background: rgba(12, 8, 20, 0.72);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        min-height: 56px;
+      }
+      .scene-watch-dest-jump-in-loading-pct {
+        font-size: 1.75rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: #fff;
+        font-variant-numeric: tabular-nums;
+      }
+      .scene-watch-dest-jump-in-loading-pct--error {
+        font-size: 1rem;
+        letter-spacing: 0.02em;
+        color: #fca5a5;
+      }
+      .scene-watch-dest-jump-in-loading-status {
+        font-size: 0.8125rem;
+        font-weight: 600;
+        color: rgba(244, 244, 245, 0.72);
+        text-align: center;
+        line-height: 1.35;
+        max-width: 100%;
+      }
+      .scene-watch-dest-jump-in-loading--error .scene-watch-dest-jump-in-loading-status {
+        color: rgba(252, 165, 165, 0.92);
+      }
+      /* 3D play chrome must not appear on 2D landing or during landing → play load */
+      body.scene-landing-route #client-shell,
+      body.scene-landing-route #world-location-card,
+      body.scene-landing-route .mobile-game-hud,
+      body.scene-landing-route .mobile-profile-fab,
+      body.scene-landing-route .mobile-chat-fab,
+      body.scene-landing-jump-in-loading #client-shell,
+      body.scene-landing-jump-in-loading #world-location-card,
+      body.scene-landing-jump-in-loading .mobile-game-hud,
+      body.scene-landing-jump-in-loading .mobile-profile-fab,
+      body.scene-landing-jump-in-loading .mobile-chat-fab {
+        display: none !important;
+        pointer-events: none !important;
+      }
+      body.scene-landing-jump-in-loading .scene-landing-view__main {
+        pointer-events: none;
+      }
+      body.scene-landing-jump-in-loading .social-shell-topnav,
+      body.scene-landing-jump-in-loading .social-chat-dock {
+        pointer-events: auto;
+      }
+      body.scene-landing-jump-in-loading .social-chat-dock {
+        z-index: 35;
       }
       .scene-watch-dest-events-banner {
         position: relative;

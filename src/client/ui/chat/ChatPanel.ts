@@ -13,7 +13,7 @@ import { appendLinkifiedText } from '../../../social/linkifyText'
 import type { RouteTarget } from '../../../dcl/content/route'
 import { parseGotoCommand } from '../../../dcl/content/route'
 import { SCENE_CHAT_RAIL_ICON } from '../shell/icons'
-import { communityThumbnailUrl } from '../../../social/memberCommunities'
+import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import { isAllowedChatImageFile } from '../../../social/prepareChatImage'
 import { isChatImageLine, type ChatChannelChoice, type ChatLine } from '../../../social/types'
 
@@ -308,7 +308,7 @@ export class ChatPanel {
         this.createRailButton({
           channel: { kind: 'community', communityId: community.id, displayName: community.name },
           title: community.name,
-          imageUrl: communityThumbnailUrl(community.id) ?? undefined,
+          imageUrl: communityDisplayImageUrl(community.id, community.thumbnails),
           fallback: community.name.slice(0, 1).toUpperCase(),
           active: current.kind === 'community' && current.communityId === community.id
         })

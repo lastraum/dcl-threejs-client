@@ -119,6 +119,10 @@ export class WorldLocationCard {
     this.expandBtn.setAttribute('aria-label', next ? 'Expand location card' : 'Collapse location card')
   }
 
+  setVisible(visible: boolean): void {
+    this.root.hidden = !visible
+  }
+
   dispose(): void {
     this.disposed = true
     this.root.remove()

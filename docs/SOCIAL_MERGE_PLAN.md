@@ -2,7 +2,7 @@
 
 > Integrates [dcl-companion `threejs-client-ux-spec.md`](../../dcl-companion/docs/threejs-client-ux-spec.md) into this repo on branch `decentraland-social-merge`.
 
-**Status:** Phase 2.5 in progress
+**Status:** Phase 2.5 done · Phase 3 partial (2D chat dock)
 **Reference:** `dcl-companion/web-app-social/` (browser-only mode)
 
 ---
@@ -102,7 +102,7 @@ type SceneContext = { segment: string; mode: AppMode }
 
 **Deferred to later:** community detail modal, join/voice, full `CommunitiesView` parity.
 
-**TODO:** Community browse cover images — list API omits `thumbnails`; CDN `raw-thumbnail.png` fallback is incomplete (many 404). Port companion `communityThumbnailProxy` + per-id detail enrichment (`resolveCommunityDisplayImageUrl`).
+**Thumbnails:** `communityDisplayImageUrl` + `communityThumbnailProxy` (browser passthrough) + detail enrichment on image 404 (`communityThumbnails.ts`).
 
 ---
 

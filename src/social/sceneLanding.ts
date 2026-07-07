@@ -18,6 +18,7 @@ import {
   resolveParcelBasePosition,
   type DclPlacesWorld
 } from './dclPlaces'
+import { fetchPublicSceneTitle } from './sceneDisplayTitle'
 
 const WORLDS = 'https://worlds-content-server.decentraland.org'
 
@@ -169,12 +170,10 @@ export async function fetchSceneLandingMeta(
     const fallbackOwner = parcel?.sceneName ?? place?.title ?? parcel?.parcelLabel ?? 'Creator'
     const ownerDisplay = await ownerDisplayName(owner, fallbackOwner)
 
+    const title = await fetchPublicSceneTitle(route)
+
     return {
-      title:
-        parcel?.sceneName ??
-        place?.title ??
-        parcel?.parcelLabel ??
-        `Parcel ${route.x}, ${route.y}`,
+      title,
       description: parcel?.description?.trim() ?? '',
       imageUrl: parcel?.imageUrl ?? place?.image ?? null,
       pointerLabel: `${route.x}, ${route.y}`,
@@ -202,9 +201,10 @@ export async function fetchSceneLandingMeta(
   const shortName = route.worldName.replace(/\.dcl\.eth$/i, '').trim() || route.worldName
   const ownerDisplay = await ownerDisplayName(owner, shortName)
   const description = await resolveWorldDescription(route.worldName)
+  const title = await fetchPublicSceneTitle(route)
 
   return {
-    title: world?.title ?? shortName,
+    title,
     description,
     imageUrl: world?.image ?? null,
     pointerLabel: route.worldName,

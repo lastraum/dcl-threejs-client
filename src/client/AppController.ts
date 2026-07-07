@@ -45,6 +45,7 @@ import { ProfilePageView } from './ui/explore/ProfilePageView'
 import type { SocialShellTab } from './ui/explore/SocialShellTopNav'
 import { SceneLandingView } from './ui/landing/SceneLandingView'
 import type { DclEvent } from '../social/dclEvents'
+import { enrichResolvedScenePublicTitle } from '../social/sceneDisplayTitle'
 
 /** Owns world lifecycle — splash → load → play, navigation, and sign-out. */
 export class AppController {
@@ -227,15 +228,20 @@ export class AppController {
     return {
       onLoginChange: (login) => {
         this.login = login
-        this.socialChat?.applyLogin(login)
-        if (
-          this.currentRoute &&
-          (this.currentRoute.kind === 'coords' || this.currentRoute.kind === 'world')
-        ) {
-          void this.connectSceneLandingChat(this.currentRoute)
+        this.applyLoginToSocialShellViews(login)
+        if (login.kind === 'wallet') {
+          if (
+            this.appMode === 'landing' &&
+            this.currentRoute &&
+            (this.currentRoute.kind === 'coords' || this.currentRoute.kind === 'world')
+          ) {
+            this.ensureSocialChatShell()
+            this.socialChat?.applyLogin(login)
+            void this.connectSceneLandingChat(this.currentRoute)
+          }
         }
       },
-      onSignOut: () => void this.signOutFromExplorer(),
+      onSignOut: () => void this.signOutFrom2dShell(),
       onOpenSettings: () => {
         this.preferencesPanel?.show('graphics')
       },
@@ -497,6 +503,7 @@ export class AppController {
 
     const hudEl = document.getElementById('hud')
     if (hudEl) hudEl.hidden = true
+    this.hidePlayChrome()
 
     this.sceneLandingView = new SceneLandingView({
       route: target,
@@ -574,36 +581,71 @@ export class AppController {
       return
     }
 
-    this.teardownSocialChatShell(true)
+    const fromSceneLanding =
+      this.appMode === 'landing' &&
+      this.sceneLandingView !== null &&
+      this.currentRoute !== null &&
+      routeEquals(this.currentRoute, target)
+
+    if (!fromSceneLanding) {
+      this.teardownSocialChatShell(true)
+    }
 
     this.navigating = true
-    const loading = new LoadingScreen(
-      this.appMode === 'play' ? 'Teleporting…' : 'Preparing your experience…',
-      { fast: this.appMode === 'play' }
-    )
-    loading.mount()
-    loading.startLoadingTimer()
+    let loading: LoadingScreen | null = null
+    if (fromSceneLanding) {
+      this.hidePlayChrome()
+      this.sceneLandingView!.preserveDuringWorldLoad()
+      this.sceneLandingView!.beginJumpInLoading()
+    } else {
+      loading = new LoadingScreen(
+        this.appMode === 'play' ? 'Teleporting…' : 'Preparing your experience…',
+        { fast: this.appMode === 'play' }
+      )
+      loading.mount()
+      loading.startLoadingTimer()
+    }
+
     try {
-      this.teardownLanding()
+      if (!fromSceneLanding) {
+        this.teardownLanding()
+      }
       this.teardownExplorer()
       this.teardownMapPage()
       const hydrationTimedOut = await this.loadRoute(target, {
         ...opts,
         fastAssets: opts.fastAssets ?? this.appMode === 'play',
+        handoffShellComms: fromSceneLanding,
+        deferPlayChromeReveal: fromSceneLanding,
         onProgress: (msg, fraction, stats) => {
-          loading.setStatus(msg)
-          if (fraction !== undefined) loading.setProgress(fraction)
-          if (stats) loading.setHydrationStats(stats)
+          if (fromSceneLanding) {
+            this.sceneLandingView?.updateJumpInProgress(fraction, msg)
+          } else if (loading) {
+            loading.setStatus(msg)
+            if (fraction !== undefined) loading.setProgress(fraction)
+            if (stats) loading.setHydrationStats(stats)
+          }
         },
-        onHydrationStart: (timeoutMs) => loading.setHydrationTimeoutMs(timeoutMs),
-        onHydrationFinish: (result) => loading.noteHydrationComplete(result)
+        onHydrationStart: (timeoutMs) => loading?.setHydrationTimeoutMs(timeoutMs),
+        onHydrationFinish: (result) => loading?.noteHydrationComplete(result)
       })
       this.appMode = 'play'
-      await loading.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
+      if (fromSceneLanding) {
+        await this.sceneLandingView?.completeJumpInLoading()
+        this.teardownLanding()
+        this.teardownSocialChatShell(true)
+        this.revealPlayChrome()
+      } else {
+        await loading!.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       const ui = formatSceneLoadError(msg)
-      loading.showFatalError(ui.title, ui.detail)
+      if (fromSceneLanding) {
+        this.sceneLandingView?.showJumpInError(ui.title, ui.detail)
+      } else {
+        loading?.showFatalError(ui.title, ui.detail)
+      }
       clientDebugLog.log('client', `Failed to load scene: ${msg}`, { level: 'error' })
     } finally {
       this.navigating = false
@@ -622,6 +664,8 @@ export class AppController {
       fromHistory?: boolean
       replace?: boolean
       fastAssets?: boolean
+      handoffShellComms?: boolean
+      deferPlayChromeReveal?: boolean
       onProgress?: (msg: string, fraction?: number, stats?: SceneHydrationStats) => void
       onHydrationStart?: (timeoutMs: number) => void
       onHydrationFinish?: (result: { timedOut: boolean; elapsedMs: number }) => void
@@ -656,7 +700,10 @@ export class AppController {
     await this.teardownScene()
 
     opts.onProgress?.('Resolving destination…')
-    const sceneConfig = await resolveSceneFromRoute(route)
+    let sceneConfig = await resolveSceneFromRoute(route)
+    if (route.kind === 'coords' || route.kind === 'world') {
+      sceneConfig = await enrichResolvedScenePublicTitle(sceneConfig, route)
+    }
     this.sceneContentUrl = sceneConfig.realm.contentUrl
     prefetchSceneManifestAssets(getSessionAssetCache(), sceneConfig)
     opts.onProgress?.('Building world…')
@@ -708,6 +755,9 @@ export class AppController {
     } else {
       this.shell.updateWorldBindings(world.session, world.environment)
       this.shell.setEmoteHandler((emoteId) => world.playLocalEmote(emoteId, { loop: false }))
+    }
+    if (opts.deferPlayChromeReveal) {
+      this.hidePlayChrome()
     }
 
     if (!this.settingsOverlay) {
@@ -790,6 +840,9 @@ export class AppController {
 
     const loadPromise = (async () => {
       await world.loadScene(sceneConfig, opts.onProgress)
+      if (opts.handoffShellComms) {
+        this.socialChat?.releaseCommsForWorldHandoff()
+      }
       const earlyCommsPromise = world.connectSceneCommsEarly(sceneConfig, opts.onProgress)
 
       this.worldLocationCard?.dispose()
@@ -812,6 +865,9 @@ export class AppController {
               }
             : undefined
       })
+      if (opts.deferPlayChromeReveal) {
+        this.worldLocationCard.setVisible(false)
+      }
 
       const warmScene = await resolveSceneLoadWarm(getSessionAssetCache(), sceneConfig)
       const useFastBoot = opts.fastAssets ?? warmScene
@@ -876,7 +932,9 @@ export class AppController {
     if (this.settingsOverlay) this.shell.attachSettingsOverlay(this.settingsOverlay)
     if (this.preferencesPanel) this.shell.attachPreferencesPanel(this.preferencesPanel)
     opts.onProgress?.('Almost ready…')
-    this.shell.show()
+    if (!opts.deferPlayChromeReveal) {
+      this.revealPlayChrome()
+    }
     void this.shell.refreshProfile()
     this.shell.setSceneLocation(sceneDisplayTitle(sceneConfig), () => this.getLocationCoordsLabel())
 
@@ -890,8 +948,10 @@ export class AppController {
       onJumpDown: () => world.setJumpHeld(true),
       onJumpUp: () => world.setJumpHeld(false)
     })
-    this.mobileHud.setShellVisible(true)
     this.shell.setOnEmoteWheelVisibility((visible) => this.mobileHud?.setEmoteActive(visible))
+    if (!opts.deferPlayChromeReveal) {
+      this.mobileHud.setShellVisible(true)
+    }
 
     const address = world.session.getAddress()
     const profile = world.session.getProfile()
@@ -902,6 +962,18 @@ export class AppController {
     }
 
     return hydrationTimedOut
+  }
+
+  private hidePlayChrome(): void {
+    this.shell?.hide()
+    this.worldLocationCard?.setVisible(false)
+    this.mobileHud?.setShellVisible(false)
+  }
+
+  private revealPlayChrome(): void {
+    this.shell?.show()
+    this.worldLocationCard?.setVisible(true)
+    this.mobileHud?.setShellVisible(true)
   }
 
   private getLocationCoordsLabel(): string {
@@ -943,21 +1015,28 @@ export class AppController {
     this.worldLocationCard?.dispose()
     this.worldLocationCard = null
     this.chatPanel?.hide()
+    this.hidePlayChrome()
     await disconnectAll(this.world)
     this.world = null
     if (this.container) this.container.innerHTML = ''
   }
 
-  private async signOutFromExplorer(): Promise<void> {
+  /** Sign out from any 2D shell surface — close chat UI and disconnect all comms. */
+  private signOutFrom2dShell(): void {
     clearStoredIdentity()
     this.login = { kind: 'guest' }
-    this.explorerView?.setLogin(this.login)
-    this.mapPageView?.setLogin(this.login)
-    this.eventsPageView?.setLogin(this.login)
-    this.communitiesPageView?.setLogin(this.login)
-    this.profilePageView?.setLogin(this.login)
-    this.sceneLandingView?.setLogin(this.login)
-    this.socialChat?.applyLogin(this.login)
+    this.applyLoginToSocialShellViews(this.login)
+    this.socialChat?.signOut()
+    this.teardownSocialChatShell(true)
+  }
+
+  private applyLoginToSocialShellViews(login: LoginResult): void {
+    this.explorerView?.setLogin(login)
+    this.mapPageView?.setLogin(login)
+    this.eventsPageView?.setLogin(login)
+    this.communitiesPageView?.setLogin(login)
+    this.profilePageView?.setLogin(login)
+    this.sceneLandingView?.setLogin(login)
   }
 
   async signOut(): Promise<void> {

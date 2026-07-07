@@ -11,7 +11,7 @@ import {
   type MentionCandidate
 } from '../../../social/chatMentions'
 import { appendLinkifiedText } from '../../../social/linkifyText'
-import { communityThumbnailUrl } from '../../../social/memberCommunities'
+import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import { isAllowedChatImageFile } from '../../../social/prepareChatImage'
 import { SocialService } from '../../../social/SocialService'
 import { isChatImageLine, type ChatChannelChoice, type ChatLine } from '../../../social/types'
@@ -185,6 +185,8 @@ export class SocialChatDock {
 
   hide(): void {
     this.visible = false
+    this.threadOpen = false
+    this.listExpanded = false
     this.root.hidden = true
     this.hidePillTip()
     this.unbindSocial()
@@ -324,7 +326,8 @@ export class SocialChatDock {
     }
 
     if (channel.kind === 'community') {
-      const thumb = communityThumbnailUrl(channel.communityId)
+      const community = this.social().getCommunities().find((c) => c.id === channel.communityId)
+      const thumb = communityDisplayImageUrl(channel.communityId, community?.thumbnails)
       const fallback = channel.displayName.slice(0, 1).toUpperCase() || '?'
       if (thumb) {
         const img = document.createElement('img')
@@ -378,7 +381,7 @@ export class SocialChatDock {
           channel,
           title: community.name,
           subtitle: 'Community',
-          imageUrl: communityThumbnailUrl(community.id) ?? undefined,
+          imageUrl: communityDisplayImageUrl(community.id, community.thumbnails),
           fallback: community.name.slice(0, 1).toUpperCase(),
           active,
           unreadCount: active ? 0 : social.getUnreadCount(channel)

@@ -11,6 +11,7 @@ export default defineConfig({
   plugins: [
     {
       name: 'suggestion-dispatch-proxy',
+      enforce: 'pre',
       configureServer(server) {
         server.middlewares.use(createSuggestionProxyMiddleware())
       }

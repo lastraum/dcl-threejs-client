@@ -26,10 +26,24 @@ export type ClientSuggestionPayload = ClientSuggestionInput & {
   user_agent: string
 }
 
-export type SubmitSuggestionResult =
-  | { ok: true; mode: 'dispatch' }
-  | { ok: false; mode: 'dispatch'; error: string }
-  | { ok: true; mode: 'fallback'; url: string }
+export type SubmitSuggestionResult = { ok: true } | { ok: false; error: string }
+
+async function readDispatchError(res: Response): Promise<string> {
+  const contentType = res.headers.get('content-type') ?? ''
+  if (contentType.includes('application/json')) {
+    try {
+      const json = (await res.json()) as { error?: string }
+      if (json.error) return json.error
+    } catch {
+      /* fall through */
+    }
+  }
+  const text = await res.text().catch(() => '')
+  if (text.trim().startsWith('<!')) {
+    return 'Suggestion dispatch proxy unavailable. Restart dev server with SUGGESTION_DISPATCH_TOKEN set.'
+  }
+  return text.trim() || `Request failed (${res.status})`
+}
 
 function buildPayload(input: ClientSuggestionInput): ClientSuggestionPayload {
   return {
@@ -68,7 +82,10 @@ export async function submitClientSuggestion(
   const dispatchUrl = suggestionDispatchUrl()
 
   if (!dispatchUrl) {
-    return { ok: true, mode: 'fallback', url: communitySuggestionNewIssueUrl(input) }
+    return {
+      ok: false,
+      error: 'Suggestion dispatch is disabled. Remove suggestionDispatch=0 from localStorage.'
+    }
   }
 
   try {
@@ -78,19 +95,18 @@ export async function submitClientSuggestion(
       body: JSON.stringify(payload)
     })
     if (!res.ok) {
-      if (res.status === 503 || res.status === 404) {
-        return { ok: true, mode: 'fallback', url: communitySuggestionNewIssueUrl(input) }
+      const error = await readDispatchError(res)
+      if (res.status === 503) {
+        return {
+          ok: false,
+          error: `${error} — export SUGGESTION_DISPATCH_TOKEN and restart npm run dev.`
+        }
       }
-      const text = await res.text().catch(() => '')
-      return {
-        ok: false,
-        mode: 'dispatch',
-        error: text.trim() || `Request failed (${res.status})`
-      }
+      return { ok: false, error }
     }
-    return { ok: true, mode: 'dispatch' }
+    return { ok: true }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Network error'
-    return { ok: false, mode: 'dispatch', error: message }
+    return { ok: false, error: message }
   }
 }

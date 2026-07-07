@@ -10,13 +10,10 @@ import {
 import {
   communityClaimNewIssueUrl,
   communityClaimsIssuesUrl,
-  communitySuggestionTemplateUrl,
   docsClaimsBrowseUrl,
-  docsGithubFetchEnabled,
-  suggestionDispatchUrl
+  docsGithubFetchEnabled
 } from '../dev/githubDocs'
 import {
-  communitySuggestionsIssuesUrl,
   SUGGESTION_CATEGORIES,
   submitClientSuggestion,
   type SuggestionCategory
@@ -60,6 +57,7 @@ export class DevProgressPanel {
   private claimsLoading = false
   private progressLoading = false
   private suggestionSubmitting = false
+  private suggestionFormOpen = false
 
   constructor() {
     this.root = document.createElement('div')
@@ -81,7 +79,10 @@ export class DevProgressPanel {
           <h2 class="dev-progress__title">Three.js Client — Dev Progress</h2>
           <p class="dev-progress__subtitle"></p>
         </div>
-        <button type="button" class="dev-progress__close" aria-label="Close">&times;</button>
+        <div class="dev-progress__header-actions">
+          <button type="button" class="dev-progress__header-suggest" data-suggest-toggle>💡 Suggest</button>
+          <button type="button" class="dev-progress__close" aria-label="Close">&times;</button>
+        </div>
       </header>
       <div class="dev-progress__meta"></div>
       <nav class="dev-progress__tabs" role="tablist">
@@ -114,6 +115,7 @@ export class DevProgressPanel {
     document.body.appendChild(this.root)
 
     this.panel.querySelector('.dev-progress__close')!.addEventListener('click', () => this.hide())
+    this.panel.querySelector('[data-suggest-toggle]')!.addEventListener('click', () => this.openSuggestionForm())
     this.backdrop.addEventListener('click', () => this.hide())
     this.tabCommunity.addEventListener('click', () => this.setTab('community'))
     this.tabStatus.addEventListener('click', () => this.setTab('status'))
@@ -214,7 +216,7 @@ export class DevProgressPanel {
       <span class="dev-progress__chip dev-progress__chip--pending">🟠 ${pending} pending review</span>
       <span class="dev-progress__chip dev-progress__chip--done">🟢 ${merged} merged</span>
       <a class="dev-progress__chip dev-progress__chip--claim" href="${escapeHtml(communityClaimNewIssueUrl())}" target="_blank" rel="noopener">+ Claim work</a>
-      <a class="dev-progress__chip dev-progress__chip--suggest" href="${escapeHtml(communitySuggestionsIssuesUrl())}" target="_blank" rel="noopener">💡 Suggestions</a>
+      <button type="button" class="dev-progress__chip dev-progress__chip--suggest" data-suggest-toggle>+ Suggest</button>
     `
 
     const branch = this.claimsLoad?.branch ?? this.progressLoad?.branch ?? 'dev-latest'
@@ -231,7 +233,18 @@ export class DevProgressPanel {
     const intro = this.buildProgressIntroSection()
     if (intro) this.bodyEl.appendChild(intro)
 
-    this.bodyEl.appendChild(this.buildSuggestionSection())
+    const suggestionSection = this.buildSuggestionSection()
+    this.bodyEl.appendChild(suggestionSection)
+    if (this.suggestionFormOpen) {
+      requestAnimationFrame(() => {
+        suggestionSection.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+        suggestionSection.querySelector<HTMLInputElement>('input[name="summary"]')?.focus()
+      })
+    }
+
+    this.summaryEl.querySelectorAll('[data-suggest-toggle]').forEach((el) => {
+      el.addEventListener('click', () => this.openSuggestionForm())
+    })
 
     if (!this.claimsLoad) {
       const loading = document.createElement('p')
@@ -294,6 +307,12 @@ export class DevProgressPanel {
     this.bodyEl.appendChild(article)
   }
 
+  private openSuggestionForm(): void {
+    this.suggestionFormOpen = true
+    if (this.activeTab !== 'community') this.setTab('community')
+    else this.renderCommunity()
+  }
+
   private formatRouteContext(): string | undefined {
     const route = resolveRouteTarget()
     if (route.kind === 'coords') return `${route.x},${route.y}`
@@ -309,17 +328,11 @@ export class DevProgressPanel {
   private buildSuggestionSection(): HTMLElement {
     const section = document.createElement('section')
     section.className = 'dev-progress__section dev-progress__suggest'
-    const dispatchEnabled = suggestionDispatchUrl() !== null
+    if (!this.suggestionFormOpen) section.hidden = true
     section.innerHTML = `
       <h3 class="dev-progress__section-title">Suggest an improvement</h3>
       <p class="dev-progress__suggest-hint">
-        ${
-          dispatchEnabled
-            ? 'Submits via GitHub Action → issue labeled <code>suggestion</code>.'
-            : 'Dispatch proxy off — opens a pre-filled GitHub issue form.'
-        }
-        <a href="${escapeHtml(communitySuggestionTemplateUrl())}" target="_blank" rel="noopener">Template</a>
-        · <a href="${escapeHtml(communitySuggestionsIssuesUrl())}" target="_blank" rel="noopener">Open suggestions</a>
+        Submits in-app via GitHub Action → issue labeled <code>suggestion</code>. No redirect.
       </p>
       <form class="dev-progress__suggest-form">
         <label class="dev-progress__suggest-field">
@@ -394,17 +407,10 @@ export class DevProgressPanel {
     this.suggestionSubmitting = false
     submitBtn.disabled = false
 
-    if (result.ok && result.mode === 'dispatch') {
+    if (result.ok) {
       statusEl.className = 'dev-progress__suggest-status dev-progress__suggest-status--ok'
-      statusEl.innerHTML = `Sent — GitHub Action will open a <a href="${escapeHtml(communitySuggestionsIssuesUrl())}" target="_blank" rel="noopener">suggestion</a> issue shortly.`
+      statusEl.textContent = 'Sent — GitHub Action is filing your suggestion issue now.'
       form.reset()
-      return
-    }
-
-    if (result.ok && result.mode === 'fallback') {
-      statusEl.className = 'dev-progress__suggest-status dev-progress__suggest-status--ok'
-      statusEl.textContent = 'Opening GitHub issue form…'
-      window.open(result.url, '_blank', 'noopener')
       return
     }
 

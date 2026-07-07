@@ -57,13 +57,21 @@ export async function dispatchClientSuggestion(clientPayload) {
   })
   if (res.status === 204) return { ok: true, status: 204 }
   const text = await res.text().catch(() => '')
-  return { ok: false, status: res.status || 502, error: text.trim() || `GitHub dispatch failed (${res.status})` }
+  let error = text.trim() || `GitHub dispatch failed (${res.status})`
+  try {
+    const json = JSON.parse(text)
+    if (json?.message) error = String(json.message)
+  } catch {
+    /* keep raw text */
+  }
+  return { ok: false, status: res.status || 502, error }
 }
 
 /** Vite connect middleware handler. */
 export function createSuggestionProxyMiddleware() {
   return async function suggestionProxy(req, res, next) {
-    if (req.method !== 'POST' || req.url !== '/api/suggestions') {
+    const path = (req.url ?? '').split('?')[0]
+    if (req.method !== 'POST' || path !== '/api/suggestions') {
       next()
       return
     }

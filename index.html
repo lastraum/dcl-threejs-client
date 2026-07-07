@@ -2766,6 +2766,25 @@
         color: rgba(255, 255, 255, 0.58);
         line-height: 1.4;
       }
+      .dev-progress__header-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .dev-progress__header-suggest {
+        border: 1px solid rgba(180, 140, 255, 0.45);
+        background: rgba(180, 140, 255, 0.18);
+        color: rgba(235, 225, 255, 0.95);
+        font-size: 12px;
+        font-weight: 600;
+        padding: 7px 12px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .dev-progress__header-suggest:hover {
+        background: rgba(180, 140, 255, 0.28);
+      }
       .dev-progress__close {
         border: none;
         background: rgba(255, 255, 255, 0.08);
@@ -2864,12 +2883,16 @@
       a.dev-progress__chip--claim:hover {
         background: rgba(120, 180, 255, 0.22);
       }
+      button.dev-progress__chip--suggest,
       a.dev-progress__chip--suggest {
         text-decoration: none;
         background: rgba(180, 140, 255, 0.14);
         border-color: rgba(180, 140, 255, 0.35);
         color: rgba(220, 205, 255, 0.95);
+        cursor: pointer;
+        font: inherit;
       }
+      button.dev-progress__chip--suggest:hover,
       a.dev-progress__chip--suggest:hover {
         background: rgba(180, 140, 255, 0.22);
       }

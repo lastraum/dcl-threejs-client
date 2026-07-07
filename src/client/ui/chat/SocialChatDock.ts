@@ -241,6 +241,19 @@ export class SocialChatDock {
     this.syncContentAlign()
   }
 
+  /** Notifications bell — open chat panel (mobile sheet or desktop expanded list). */
+  openFromNotification(): void {
+    if (!this.visible) return
+    if (this.isMobileLayout()) {
+      this.openMobilePanel()
+      return
+    }
+    this.listExpanded = true
+    this.threadOpen = false
+    this.syncLayout()
+    this.renderPills()
+  }
+
   /** Scene landing — select scene channel; desktop opens thread, mobile stays on FAB only. */
   openSceneChatThread(): void {
     if (!this.visible) return

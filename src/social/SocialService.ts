@@ -78,6 +78,7 @@ export class SocialService {
   private readonly messages = new Map<string, ChatLine[]>()
   private readonly listeners = new Set<(event: SocialChatEvent) => void>()
   private readonly channelListeners = new Set<() => void>()
+  private readonly friendshipListeners = new Set<() => void>()
   private readonly peerProfiles = new ChatPeerProfiles()
   private authIdentity: AuthIdentity | null = null
   private friendshipSnapshot: FriendshipSnapshot | null = null
@@ -101,6 +102,7 @@ export class SocialService {
     this.channel = { kind: 'messages' }
     this.peerProfiles.setPeerUrl(options.contentUrl ?? 'https://peer.decentraland.org')
     await this.loadMemberCommunities(options.identity)
+    void this.ensureFriendshipSnapshot()
     this.ready = true
     this.notifyChannelChange()
   }
@@ -283,6 +285,29 @@ export class SocialService {
         const peer = this.getPeerDisplay(address)
         return { address, displayName: peer.displayName, faceUrl: peer.faceUrl }
       })
+  }
+
+  getIncomingFriendAddresses(): string[] {
+    if (!this.friendshipSnapshot) return []
+    return [...this.friendshipSnapshot.incoming].sort((a, b) => a.localeCompare(b))
+  }
+
+  getTotalUnreadCount(): number {
+    let total = 0
+    for (const count of this.unreadCounts.values()) total += count
+    return total
+  }
+
+  onFriendshipChange(listener: () => void): () => void {
+    this.friendshipListeners.add(listener)
+    return () => this.friendshipListeners.delete(listener)
+  }
+
+  async refreshFriendshipSnapshot(): Promise<void> {
+    if (!this.authIdentity || !this.localAddress) return
+    this.friendshipSnapshot = null
+    this.friendshipLoad = null
+    await this.ensureFriendshipSnapshot()
   }
 
   async ensureFriendshipSnapshot(): Promise<void> {
@@ -493,12 +518,18 @@ export class SocialService {
     this.friendshipSnapshot = null
     this.friendshipRelationByAddress.clear()
     this.friendshipLoad = null
+    this.friendshipListeners.clear()
     this.ready = false
   }
 
   private applyFriendshipSnapshot(snapshot: FriendshipSnapshot): void {
     this.friendshipSnapshot = snapshot
     this.friendshipRelationByAddress = buildFriendshipRelationMap(snapshot)
+    this.notifyFriendshipChange()
+  }
+
+  private notifyFriendshipChange(): void {
+    for (const listener of this.friendshipListeners) listener()
   }
 
   static formatLineTime(line: ChatLine): string {

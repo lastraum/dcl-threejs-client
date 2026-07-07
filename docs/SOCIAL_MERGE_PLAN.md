@@ -1,8 +1,9 @@
 # Social / Companion UX Merge — Implementation Plan
 
-> Integrates [dcl-companion `threejs-client-ux-spec.md`](../../dcl-companion/docs/threejs-client-ux-spec.md) into this repo on branch `decentraland-social-merge`.
+> Integrates [dcl-companion `threejs-client-ux-spec.md`](../../dcl-companion/docs/threejs-client-ux-spec.md) into this repo.
 
-**Status:** Phase 2.5 done · Phase 3 partial (2D chat dock)
+**Status:** **Merged into `dev-latest`** (`c53af86`, 2026-07-07) — Phases 1–2.5 ✅ · Phase 3 partial (2D chat dock)  
+**Source branch:** `decentraland-social-merge` (fast-forward, no conflicts)  
 **Reference:** `dcl-companion/web-app-social/` (browser-only mode)
 
 ---
@@ -17,7 +18,7 @@
 | `/goto` in 3D chat | Teleport in-place; no URL route |
 | Login | Global across Explorer, landing, 3D |
 
-**Mode state** (not yet wired):
+**Mode state** (`src/client/appMode.ts`):
 
 ```ts
 type AppMode = 'landing' | 'play'
@@ -40,7 +41,7 @@ type SceneContext = { segment: string; mode: AppMode }
 
 ## Phases
 
-### Phase 1 — Explorer at `/` ✅ (this PR)
+### Phase 1 — Explorer at `/` ✅ (shipped `dev-latest`)
 
 **Goal:** Cold visit to `/` shows the explore page; no scene load.
 
@@ -55,13 +56,11 @@ type SceneContext = { segment: string; mode: AppMode }
 
 **Auth:** No blocking splash on `/` — session auto-resumes from storage; inline sign-in sheet in explorer header (companion `ExploreProfileMenu` parity, wallet + guest).
 
-**Temporary deviation:** Card "Visit" still loads 3D until Phase 2 landing exists.
-
 **Exit criteria:**
-- [ ] `http://localhost:5173/` shows places/worlds grid after login
-- [ ] No WebGL scene on `/`
-- [ ] Browser back from a scene returns to explorer when URL is `/`
-- [ ] Favorites tab works when wallet-signed-in
+- [x] `http://localhost:5173/` shows places/worlds grid after login
+- [x] No WebGL scene on `/`
+- [x] Browser back from a scene returns to explorer when URL is `/`
+- [x] Favorites tab works when wallet-signed-in
 
 ---
 
@@ -84,7 +83,7 @@ type SceneContext = { segment: string; mode: AppMode }
 
 ---
 
-### Phase 2.5 — 2D shell nav (Explore · Communities · Events)
+### Phase 2.5 — 2D shell nav (Explore · Communities · Events) ✅
 
 **Goal:** Companion-style top tabs on every non-3D surface; browse communities without entering a scene.
 
@@ -96,19 +95,21 @@ type SceneContext = { segment: string; mode: AppMode }
 | Public communities API | `src/social/socialApi.ts` |
 
 **Exit criteria:**
-- [ ] Explore / Communities / Events tabs visible on `/`, `/events`, `/communities`, and `/<segment>` landing
-- [ ] Tab highlights match current page (landing: none active)
-- [ ] `/communities` loads browse list (guest or signed-in)
+- [x] Explore / Communities / Events tabs visible on `/`, `/events`, `/communities`, and `/<segment>` landing
+- [x] Tab highlights match current page (landing: none active)
+- [x] `/communities` loads browse list (guest or signed-in)
 
-**Deferred to later:** community detail modal, join/voice, full `CommunitiesView` parity.
+**Also shipped:** `CommunityModal`, full-screen `ProfilePageView`, `MapPageView`, community thumbnails (`communityDisplayImageUrl`, `communityThumbnailProxy`, 404 detail enrichment).
 
-**Thumbnails:** `communityDisplayImageUrl` + `communityThumbnailProxy` (browser passthrough) + detail enrichment on image 404 (`communityThumbnails.ts`).
+**Deferred to later:** join/voice on communities, full `CommunitiesView` in-world parity.
 
 ---
 
-### Phase 3 — Watch Lite on landing
+### Phase 3 — Watch Lite on landing 🟡 partial
 
 **Goal:** Voice + text chat on landing without WebGL (mobile-first).
+
+**Shipped (partial):** `SocialChatDock` + `SocialChatController` on 2D surfaces; scene title parity; landing Jump-in loading handoff; 2D sign-out. **Remaining:** gatekeeper client, LiveKit room on landing, HLS embed.
 
 | Task | Files |
 |------|-------|

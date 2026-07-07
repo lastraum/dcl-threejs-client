@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-02 (terrain editor large-scene perf ✅ · 300×300 QA ✅ · `editor-update` → `dev-latest`)  
-> **Current phase:** **Phase 5 social polish** + **creator tooling** — terrain editor handles huge footprints (300×300+) on `dev-latest`. **Next:** smoke-test `dev-latest` for **v0.4.0** release → `main`; voice/mic UI, in-scene ECS UI, SDK7 Raycast `collisionMask` parity; **PhysX cook worker** on `lastraum-cook` (merge when ready).
+> **Last updated:** 2026-07-07 (companion social shell ✅ · Phases 1–2.5 + partial 3 ✅ · `decentraland-social-merge` → `dev-latest`)  
+> **Current phase:** **Companion social UX** on `dev-latest` — Explorer at `/`, scene landing + Jump in, 2D shell nav, chat dock, profile page. **Next:** Phase 3 Watch Lite (landing voice/chat), Phase 4 `/goto` in 3D; smoke-test **v0.4.0** → `main`; later **`dev-latest` → `lastraum`** (scene-UI worker vs mesh-collider pointer stack).
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -19,8 +19,38 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Visible-mesh physics** | 🟢 | `CL_PHYSICS` on `terrain_mesh_*` only — no duplicate `_collider` layer (matches genesis-games DCL pattern) |
 | **Non-square footprints** | 🟢 | L-shaped / sparse parcel layouts export one plane per parcel, not a full bounding-box fill |
 | **Local scenes (browser)** | 🟢 | **Link Scenes folder** — pick `~/Documents/DCL-Scenes` (Documents/Downloads/Desktop); Rescan + drag-drop |
+| **Companion 2D social shell** | 🟢 | `/` = Explorer (no WebGL) · `/<segment>` = scene landing · Jump in = only 3D entry · Leave returns to landing |
+| **2D shell nav + pages** | 🟢 | **Explore · Communities · Events** tabs on all non-play surfaces; `/communities`, `/events`, `/map`, full-screen `/profile` |
+| **2D social chat dock** | 🟡 **partial** | Floating dock on explorer/landing — thread list, scene chat, community thumbnails; **3D in-world chat** unchanged |
+| **Scene landing hub** | 🟢 | Hero, crowd, owner, description, events banner; companion-style **Jump in** progress bar (sidebar/HUD deferred until handoff) |
+| **Community thumbnails** | 🟢 | `communityDisplayImageUrl` + proxy passthrough; detail-fetch fallback on image 404 |
 
-**Try it:** open **`/editor`** → pick a linked project → **Terrain sculpt** → toggle **B** for avatar scale guides → **Save to project** → `dcl deploy` from that folder. Re-save once if you had an older dual-collider export.
+**Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**.
+
+---
+
+## 🎉 Milestone — Companion social shell merge (2026-07-07)
+
+**Status: shipped on `dev-latest`** (`c53af86`) — `decentraland-social-merge` fast-forward merge (5 commits, 50 files, ~11k LOC). Implements [SOCIAL_MERGE_PLAN.md](./SOCIAL_MERGE_PLAN.md) Phases **1**, **2**, **2.5**, and **partial 3**.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Phase 1 — Explorer at `/`** | 🟢 | Cold `/` shows `ExplorerView` + `PlacesView`; no scene load; inline wallet/guest auth; card **Visit** → `/<segment>` landing |
+| **Phase 2 — Scene landing** | 🟢 | `SceneLandingView` info hub; `AppMode` landing ↔ play; **Jump in** / **Leave** on same URL; events banner + `EventModal` |
+| **Phase 2.5 — Shell nav** | 🟢 | `SocialShellTopNav` on explorer, landing, events, communities, map, profile; `/communities` browse grid + `CommunityModal` |
+| **Phase 3 — 2D chat dock** | 🟡 **partial** | `SocialChatDock` + `SocialChatController` on 2D surfaces; scene title from deployed `display.title` (`sceneDisplayTitle.ts`) |
+| **Profile page** | 🟢 | Full-screen `ProfilePageView` — wearables, communities, social shell parity |
+| **Map page** | 🟢 | `MapPageView` — Genesis map outside in-world settings overlay |
+| **Jump-in loading UX** | 🟢 | Companion-style top progress bar + status on landing; `ClientShell` hidden until world handoff; comms preserved across Jump in |
+| **2D sign-out** | 🟢 | `signOutFrom2dShell()` — full comms disconnect + chat dock dispose (guest + wallet) |
+| **Community thumbnails** | 🟢 | `communityThumbnailProxy`, `communityThumbnails`, enriched `memberCommunities`; wired in browse, profile, modal, chat dock |
+
+**Commits:** `33bf03d` · `3a7232d` · `f6bf4d8` · `b1a8a38` · `c53af86`  
+**Branch:** `decentraland-social-merge` → merged `dev-latest` (fast-forward, no conflicts)
+
+**Not in this merge:** Phase 3 Watch Lite (landing LiveKit/voice), Phase 4 `/goto` teleport in 3D play mode, `lastraum` branch (deferred — ~20-commit divergence, `AppController.ts` + `wearableThumb.ts` conflicts).
+
+**QA:** `/` no WebGL · Visit → landing not play · Jump in loads 3D with deferred sidebar · Leave → landing · Explore/Communities/Events tabs · chat dock sign-out · community thumb 404 fallback · landing title matches in-world chat.
 
 ---
 
@@ -452,7 +482,7 @@ Goal: see other players in-scene **and** in the social layer (voice/presence) li
 
 ## Summary
 
-Phase 0 **done**. Phase 1 **closed** (**GltfContainer ✅** — `ThreeBridge` + `AssetCache` on all GLTF scenes). **Phase 1b render bridges wired** (LightSource ✅ + LightManager, TextShape, Billboard, Animator). Phase 2a player **done** (PhysX grounding ✅, **GLTF `_collider` trimesh blocking ✅**). Phase 2c reserved entities **done**. Phase 4a–4c + 4b avatar **done** — **emote GLB props ✅**, **double-jump VFX ✅**, **`AvatarEmoteCommand` bridge ✅**. Phase 3 motion **`Tween` bridge ✅** — transform + textureMove + **Genesis blimp orbit (`TweenSequence`) ✅**. Phase 3a environment **closed** (sun + clouds ✅, **moon fill + night exposure ✅**). **Phase 3b `PointerEvents` ✅** — camera raycast + hover tooltips + CRDT results + **Explorer parity (2026-06-14)**: button icons, green/red highlight, per-entry distance, E/F/click/1–4/Space/Ctrl, scene `console.log` → client debug. Client chrome **expanded** (map, events, chat nav links + @mentions, **world location card**, **dev progress panel**, loading hold + **hydration elapsed timer (count-up)**). **Session GLB cache ✅** — survives teleports. **Explorer layout parity ✅**. Phase 5 **position sync aligned** + scene chat ✅ (140 char, nav links, @mention bubble highlight; Explorer dates ⬜). **Pre-live blockers cleared** — browser push candidate.
+Phase 0 **done**. Phase 1 **closed** (**GltfContainer ✅** — `ThreeBridge` + `AssetCache` on all GLTF scenes). **Phase 1b render bridges wired** (LightSource ✅ + LightManager, TextShape, Billboard, Animator). Phase 2a player **done** (PhysX grounding ✅, **GLTF `_collider` trimesh blocking ✅**). Phase 2c reserved entities **done**. Phase 4a–4c + 4b avatar **done** — **emote GLB props ✅**, **double-jump VFX ✅**, **`AvatarEmoteCommand` bridge ✅**. Phase 3 motion **`Tween` bridge ✅** — transform + textureMove + **Genesis blimp orbit (`TweenSequence`) ✅**. Phase 3a environment **closed** (sun + clouds ✅, **moon fill + night exposure ✅**). **Phase 3b `PointerEvents` ✅** — camera raycast + hover tooltips + CRDT results + **Explorer parity (2026-06-14)**: button icons, green/red highlight, per-entry distance, E/F/click/1–4/Space/Ctrl, scene `console.log` → client debug. Client chrome **expanded** (map, events, chat nav links + @mentions, **world location card**, **dev progress panel**, loading hold + **hydration elapsed timer (count-up)**). **Session GLB cache ✅** — survives teleports. **Explorer layout parity ✅**. Phase 5 **position sync aligned** + scene chat ✅ (140 char, nav links, @mention bubble highlight; Explorer dates ⬜). **Companion social shell ✅ (2026-07-07)** — Explorer `/`, scene landing, shell nav, 2D chat dock partial, profile/map pages on `dev-latest`. **Pre-live blockers cleared** — browser push candidate.
 
 **Run:** `npm run dev` → `http://localhost:5173`
 
@@ -463,8 +493,13 @@ Prefer **Unity Foundation Client / DCL Explorer** behavior for WASM (PhysX, comm
 
 | Route                 | Result                                                 |
 | --------------------- | ------------------------------------------------------ |
-| `/`                   | Blank 1×1 template + 3×3 padding                       |
-| `/rickroll.dcl.eth`   | RickRoll world — parcels, spawn, full content manifest |
+| `/`                   | **Explorer** — places/worlds grid (no WebGL)           |
+| `/communities`        | Communities browse + shell nav                         |
+| `/events`             | Events calendar page                                   |
+| `/map`                | Genesis map (2D shell)                                   |
+| `/profile`            | Full-screen profile (signed-in)                        |
+| `/<segment>`          | **Scene landing** (cold) or **3D play** (after Jump in) |
+| `/rickroll.dcl.eth`   | RickRoll — landing hub → Jump in for 3D                |
 | `/name`               | Normalizes to `name.dcl.eth`                           |
 | `/80,-1`              | Parcel coords (stub — throws)                          |
 | `?world=name.dcl.eth` | Legacy query fallback                                  |
@@ -773,6 +808,12 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 
 | Task | Status |
 |------|--------|
+| **Companion 2D shell (Phases 1–2.5)** | ✅ Explorer `/`, scene landing, shell nav, communities/events/map/profile pages — `decentraland-social-merge` → `dev-latest` (`c53af86`) |
+| **2D social chat dock** | 🟡 **partial** — `SocialChatDock` on explorer/landing; in-world `ChatPanel` unchanged |
+| **Scene landing Jump in UX** | ✅ Progress bar + `ClientShell` defer/hide; comms handoff on world load |
+| **2D sign-out** | ✅ `signOutFrom2dShell` — disconnect comms, dispose dock, reset social |
+| **Community thumbnails** | ✅ `communityDisplayImageUrl` + proxy + 404 detail enrichment |
+| **Scene display title parity** | ✅ Deployed `display.title` before Places API — landing + chat agree |
 | Splash login screen | ✅ **Connect Wallet** only (+ returning-user jump-in); guest via `?guest` / `?skipLogin` |
 | `@dcl/crypto` AuthIdentity + localStorage | ✅ `AuthClient` + `identityStore` |
 | `SessionIdentity` — Catalyst profile connect | ✅ post-login profile fetch |
@@ -795,6 +836,8 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 | Voice / presence (LiveKit / realm adapter) | ⬜ |
 | Gatekeeper / signed-login (realm-dependent) | ⬜ |
 | Direct messages channel | ⬜ placeholder in rail |
+| **Watch Lite on landing (Phase 3)** | ⬜ gatekeeper + LiveKit room without WebGL |
+| **`/goto` in 3D play mode (Phase 4)** | ⬜ teleport in-place; no SPA route change |
 
 ---
 

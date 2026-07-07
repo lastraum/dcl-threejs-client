@@ -54,6 +54,19 @@ export type SceneSkyLighting = {
   disableMoon: boolean
 }
 
+export type SceneFeatureToggle = 'enabled' | 'disabled' | 'hideUi'
+
+export type SceneFeatureToggles = {
+  voiceChat?: SceneFeatureToggle
+  portableExperiences?: SceneFeatureToggle
+  browserChat?: SceneFeatureToggle
+}
+
+export type SceneBrowserChatConfig = {
+  enabled?: boolean
+  disabled?: boolean
+}
+
 export type SceneMetadata = {
   display?: { title?: string; description?: string; skybox?: string; skyboxTexture?: string }
   scene?: SceneLayout
@@ -62,6 +75,9 @@ export type SceneMetadata = {
   skyboxConfig?: { fixedTime?: number }
   /** Biome id string or object — opt-in on parcel scenes; worlds fall back to island when omitted. */
   environment?: SceneEnvironmentKind | SceneEnvironmentConfig
+  featureToggles?: SceneFeatureToggles
+  /** `featureToggles.browserChat` alias — `"disabled"` or `{ "enabled": false }`. */
+  browserChat?: SceneFeatureToggle | SceneBrowserChatConfig
 }
 
 export type SkyboxConfig = {
@@ -99,6 +115,8 @@ export type ResolvedScene = {
   skybox?: SkyboxConfig
   /** Base parcel or world name used for comms-gatekeeper. */
   commsPointer: string
+  /** scene.json `featureToggles.browserChat` (+ `?browserChat=` URL override). */
+  browserChatEnabled: boolean
   realm: RealmEndpoints
 }
 
@@ -119,6 +137,7 @@ export const BLANK_SCENE_TEMPLATE: ResolvedScene = {
   entityId: null,
   mainEntry: null,
   commsPointer: '0,0',
+  browserChatEnabled: true,
   realm: {
     realmName: 'main',
     networkId: 1,

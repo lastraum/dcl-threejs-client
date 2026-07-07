@@ -20,6 +20,8 @@ import { WorldLocationCard } from './ui/WorldLocationCard'
 import { resolveInitialLogin } from './auth/resolveInitialLogin'
 
 import { ChatPanel } from './ui/chat/ChatPanel'
+import { SocialChatController } from './ui/chat/SocialChatController'
+import { SocialChatDock } from './ui/chat/SocialChatDock'
 import { PreferencesPanel } from './ui/settings/PreferencesPanel'
 import { SettingsOverlay } from './ui/settings/SettingsOverlay'
 import type { MapPlayerState } from './ui/settings/MapView'
@@ -70,6 +72,8 @@ export class AppController {
   private communitiesPageView: CommunitiesPageView | null = null
   private profilePageView: ProfilePageView | null = null
   private sceneLandingView: SceneLandingView | null = null
+  private socialChat: SocialChatController | null = null
+  private socialChatDock: SocialChatDock | null = null
   private appMode: AppMode = 'explorer'
 
   async start(container: HTMLElement): Promise<void> {
@@ -223,6 +227,13 @@ export class AppController {
     return {
       onLoginChange: (login) => {
         this.login = login
+        this.socialChat?.applyLogin(login)
+        if (
+          this.currentRoute &&
+          (this.currentRoute.kind === 'coords' || this.currentRoute.kind === 'world')
+        ) {
+          void this.connectSceneLandingChat(this.currentRoute)
+        }
       },
       onSignOut: () => void this.signOutFromExplorer(),
       onOpenSettings: () => {
@@ -271,6 +282,7 @@ export class AppController {
       ...this.socialShellLoginHandlers()
     })
     this.explorerView.mount(this.container)
+    this.ensureSocialChatShell()
   }
 
   private async showMapPage(
@@ -313,6 +325,7 @@ export class AppController {
       ...this.socialShellLoginHandlers()
     })
     this.mapPageView.mount(this.container)
+    this.ensureSocialChatShell()
   }
 
   private async showEventsPage(
@@ -352,6 +365,7 @@ export class AppController {
       ...this.socialShellLoginHandlers()
     })
     this.eventsPageView.mount(this.container)
+    this.ensureSocialChatShell()
   }
 
   private async showCommunitiesPage(
@@ -385,6 +399,7 @@ export class AppController {
       ...this.socialShellLoginHandlers()
     })
     this.communitiesPageView.mount(this.container)
+    this.ensureSocialChatShell()
   }
 
   private async showProfilePage(
@@ -419,6 +434,7 @@ export class AppController {
       ...this.socialShellLoginHandlers()
     })
     this.profilePageView.mount(this.container)
+    this.ensureSocialChatShell()
   }
 
   private teardownExplorer(): void {
@@ -496,6 +512,49 @@ export class AppController {
       ...this.socialShellLoginHandlers()
     })
     this.sceneLandingView.mount(this.container)
+    this.ensureSocialChatShell()
+    void this.connectSceneLandingChat(target)
+  }
+
+  private async connectSceneLandingChat(
+    target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
+  ): Promise<void> {
+    const connected = await this.socialChat?.connectForRoute(target)
+    if (connected) this.socialChatDock?.openSceneChatThread()
+  }
+
+  private ensureSocialChatShell(): void {
+    if (!this.socialChat) {
+      this.socialChat = new SocialChatController({
+        onStatusChange: () => this.socialChatDock?.refresh()
+      })
+      this.socialChat.applyLogin(this.login)
+    }
+    if (!this.socialChatDock) {
+      this.socialChatDock = new SocialChatDock({
+        controller: this.socialChat,
+        onGoto: (gotoTarget) => {
+          if (gotoTarget.kind === 'coords' || gotoTarget.kind === 'world') {
+            void this.showSceneLanding(gotoTarget)
+          }
+        },
+        onOpenProfile: (address) => this.socialChat?.openProfileForAddress(address)
+      })
+    }
+    this.socialChatDock.show()
+    document.body.classList.add('social-shell-with-chat')
+    void this.socialChat.ensureShellInit()
+  }
+
+  private teardownSocialChatShell(disposeComms = false): void {
+    this.socialChatDock?.hide()
+    document.body.classList.remove('social-shell-with-chat')
+    if (disposeComms) {
+      this.socialChat?.dispose()
+      this.socialChat = null
+      this.socialChatDock?.dispose()
+      this.socialChatDock = null
+    }
   }
 
   private async jumpInToScene(
@@ -514,6 +573,8 @@ export class AppController {
     ) {
       return
     }
+
+    this.teardownSocialChatShell(true)
 
     this.navigating = true
     const loading = new LoadingScreen(
@@ -896,6 +957,7 @@ export class AppController {
     this.communitiesPageView?.setLogin(this.login)
     this.profilePageView?.setLogin(this.login)
     this.sceneLandingView?.setLogin(this.login)
+    this.socialChat?.applyLogin(this.login)
   }
 
   async signOut(): Promise<void> {
@@ -916,6 +978,7 @@ export class AppController {
     this.mobileHud = null
     this.shell?.dispose()
     this.shell = null
+    this.teardownSocialChatShell(true)
     this.teardownExplorer()
     this.teardownLanding()
     await this.teardownScene()

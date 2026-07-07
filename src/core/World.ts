@@ -592,7 +592,8 @@ export class World {
         sceneTab: {
           key: scene.commsPointer,
           label: scene.title || scene.commsPointer,
-          pointer: scene.commsPointer
+          pointer: scene.commsPointer,
+          browserChatEnabled: scene.browserChatEnabled
         },
         comms: this.comms,
         contentUrl: scene.realm.contentUrl

@@ -11,7 +11,7 @@ import {
   type DclEvent
 } from './dclEvents'
 import {
-  fetchDclGenesisPlaces,
+  fetchDclGenesisPlaceAtPosition,
   fetchDclWorldsWithNameFallback,
   formatOwnerShort,
   placeOwnerAddress,
@@ -160,32 +160,23 @@ export async function fetchSceneLandingMeta(
   route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
 ): Promise<SceneLandingMeta> {
   if (route.kind === 'coords') {
-    const [parcel, places] = await Promise.all([
+    const [parcel, place] = await Promise.all([
       fetchParcelInfo(route.x, route.y).catch(() => null),
-      fetchDclGenesisPlaces({
-        search: `${route.x},${route.y}`,
-        limit: 12,
-        orderBy: 'most_active'
-      }).catch(() => [] as Awaited<ReturnType<typeof fetchDclGenesisPlaces>>)
+      fetchDclGenesisPlaceAtPosition(route.x, route.y).catch(() => null)
     ])
 
-    const place =
-      places.find((p) => p.baseX === route.x && p.baseY === route.y) ??
-      places.find((p) => `${p.baseX},${p.baseY}` === `${route.x},${route.y}`) ??
-      places[0]
-
     const owner = place ? placeOwnerAddress(place) : null
-    const fallbackOwner = place?.title ?? parcel?.sceneName ?? 'Creator'
+    const fallbackOwner = parcel?.sceneName ?? place?.title ?? parcel?.parcelLabel ?? 'Creator'
     const ownerDisplay = await ownerDisplayName(owner, fallbackOwner)
 
     return {
       title:
-        place?.title ??
         parcel?.sceneName ??
+        place?.title ??
         parcel?.parcelLabel ??
         `Parcel ${route.x}, ${route.y}`,
       description: parcel?.description?.trim() ?? '',
-      imageUrl: place?.image ?? parcel?.imageUrl ?? null,
+      imageUrl: parcel?.imageUrl ?? place?.image ?? null,
       pointerLabel: `${route.x}, ${route.y}`,
       kind: 'parcel',
       userCount: place?.userCount ?? 0,

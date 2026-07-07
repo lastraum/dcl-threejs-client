@@ -129,6 +129,24 @@ function parseBasePosition(raw: unknown): { x: number; y: number } | null {
 
 const parcelBasePositionCache = new Map<string, { x: number; y: number } | null>()
 
+/** Genesis place covering a parcel position (Places API `positions` query). */
+export async function fetchDclGenesisPlaceAtPosition(
+  x: number,
+  y: number
+): Promise<DclGenesisPlace | null> {
+  try {
+    const params = new URLSearchParams({ limit: '5', positions: `${x},${y}` })
+    const { data } = await placesApiGet('places', params)
+    for (const item of data) {
+      const place = mapGenesisPlace(item)
+      if (place) return place
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 /** Genesis parcel → Places scene base (`base_position`), for multi-parcel scene matching. */
 export async function resolveParcelBasePosition(
   x: number,

@@ -302,12 +302,6 @@ export class SceneLandingView {
                     </div>
                   </div>
                 </div>
-                <aside class="scene-watch-dest-v2-chat-dock" aria-label="Scene chat">
-                  <div class="scene-landing-chat-placeholder">
-                    <p class="scene-landing-chat-placeholder__title">Scene chat</p>
-                    <p class="scene-landing-chat-placeholder__muted">Voice &amp; text chat on landing — Phase 3</p>
-                  </div>
-                </aside>
               </div>
             </div>
           </div>

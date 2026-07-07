@@ -66,4 +66,5 @@ export type SceneChatTab = {
   key: string
   label: string
   pointer: string
+  browserChatEnabled: boolean
 }

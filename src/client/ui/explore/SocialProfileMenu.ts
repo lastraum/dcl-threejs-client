@@ -49,6 +49,9 @@ export class SocialProfileMenu {
   private readonly onOpenProfile?: () => void
   private readonly onDocMouseDown: (ev: MouseEvent) => void
   private readonly onKeyDown: (ev: KeyboardEvent) => void
+  private readonly onViewportChange = (): void => {
+    if (this.open) this.syncDropdownPosition()
+  }
 
   constructor(opts: SocialProfileMenuOptions) {
     this.login = opts.login
@@ -78,7 +81,8 @@ export class SocialProfileMenu {
 
     this.onDocMouseDown = (ev: MouseEvent) => {
       if (!this.open) return
-      if (!this.wrap.contains(ev.target as Node)) this.close()
+      const target = ev.target as Node
+      if (!this.wrap.contains(target) && !this.menuEl.contains(target)) this.close()
     }
     this.onKeyDown = (ev: KeyboardEvent) => {
       if (ev.key === 'Escape') this.close()
@@ -88,6 +92,8 @@ export class SocialProfileMenu {
   mount(): void {
     document.addEventListener('mousedown', this.onDocMouseDown)
     window.addEventListener('keydown', this.onKeyDown)
+    window.addEventListener('resize', this.onViewportChange)
+    window.addEventListener('scroll', this.onViewportChange, true)
     this.refreshAvatar()
     this.renderMenu()
   }
@@ -101,6 +107,9 @@ export class SocialProfileMenu {
   dispose(): void {
     document.removeEventListener('mousedown', this.onDocMouseDown)
     window.removeEventListener('keydown', this.onKeyDown)
+    window.removeEventListener('resize', this.onViewportChange)
+    window.removeEventListener('scroll', this.onViewportChange, true)
+    this.restoreDropdownParent()
     this.wrap.remove()
   }
 
@@ -116,6 +125,11 @@ export class SocialProfileMenu {
   private openMenu(): void {
     this.open = true
     this.menuEl.hidden = false
+    this.menuEl.classList.add('social-profile-menu__dropdown--portaled')
+    if (this.menuEl.parentElement !== document.body) {
+      document.body.appendChild(this.menuEl)
+    }
+    this.syncDropdownPosition()
     this.profileBtn.classList.add('social-profile-menu__avatar-btn--open')
     this.profileBtn.setAttribute('aria-expanded', 'true')
     this.renderMenu()
@@ -124,8 +138,24 @@ export class SocialProfileMenu {
   private close(): void {
     this.open = false
     this.menuEl.hidden = true
+    this.menuEl.classList.remove('social-profile-menu__dropdown--portaled')
+    this.restoreDropdownParent()
     this.profileBtn.classList.remove('social-profile-menu__avatar-btn--open')
     this.profileBtn.setAttribute('aria-expanded', 'false')
+  }
+
+  private restoreDropdownParent(): void {
+    this.menuEl.style.top = ''
+    this.menuEl.style.right = ''
+    if (this.menuEl.parentElement !== this.wrap) {
+      this.wrap.appendChild(this.menuEl)
+    }
+  }
+
+  private syncDropdownPosition(): void {
+    const rect = this.profileBtn.getBoundingClientRect()
+    this.menuEl.style.top = `${Math.round(rect.bottom + 10)}px`
+    this.menuEl.style.right = `${Math.round(window.innerWidth - rect.right)}px`
   }
 
   private refreshAvatar(): void {

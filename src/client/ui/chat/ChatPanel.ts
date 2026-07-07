@@ -292,14 +292,13 @@ export class ChatPanel {
     this.railScrollEl.innerHTML = ''
     const current = this.social.getChannel()
 
-    const scene = this.social.getSceneTab()
-    if (scene) {
+    for (const scene of this.social.getSceneTabs()) {
       this.railScrollEl.appendChild(
         this.createRailButton({
           channel: { kind: 'scene', sceneKey: scene.key, label: scene.label },
           title: scene.label,
           iconSvg: SCENE_CHAT_RAIL_ICON,
-          active: current.kind === 'scene'
+          active: current.kind === 'scene' && current.sceneKey === scene.key
         })
       )
     }

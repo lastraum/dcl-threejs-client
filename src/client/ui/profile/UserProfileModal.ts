@@ -90,6 +90,8 @@ export class UserProfileModal {
     this.avatarAddress = null
     this.renderShell()
     this.visible = true
+    document.body.appendChild(this.backdrop)
+    document.body.appendChild(this.root)
     this.root.hidden = false
     this.backdrop.hidden = false
     void this.loadContent(true)

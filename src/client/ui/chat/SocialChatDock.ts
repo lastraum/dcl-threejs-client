@@ -241,7 +241,7 @@ export class SocialChatDock {
     this.syncContentAlign()
   }
 
-  /** Scene landing — expand dock, select scene channel, open thread. */
+  /** Scene landing — select scene channel; desktop opens thread, mobile stays on FAB only. */
   openSceneChatThread(): void {
     if (!this.visible) return
     const scene = this.controller.getSocial().getSceneTab()
@@ -253,8 +253,12 @@ export class SocialChatDock {
       label: scene.label
     })
     this.listExpanded = true
-    this.threadOpen = true
-    if (this.isMobileLayout()) this.mobilePanelOpen = true
+    if (this.isMobileLayout()) {
+      this.threadOpen = false
+      this.mobilePanelOpen = false
+    } else {
+      this.threadOpen = true
+    }
     this.syncLayout()
     this.renderAll()
   }

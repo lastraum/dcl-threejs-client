@@ -516,6 +516,7 @@ export class AppController {
           void this.showSceneLanding(jumpTarget)
         }
       },
+      onOpenUserProfile: (address) => this.socialChat?.openProfileForAddress(address),
       ...this.socialShellLoginHandlers()
     })
     this.sceneLandingView.mount(this.container)

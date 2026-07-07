@@ -10171,6 +10171,189 @@
         border-radius: 999px;
         background: rgba(14, 155, 218, 0.95);
         color: #fff;
+        border: none;
+        font-family: inherit;
+        cursor: pointer;
+        transition: background 0.15s ease, transform 0.15s ease;
+      }
+      .scene-watch-dest-scene-card-in-world:hover {
+        background: rgba(24, 175, 238, 0.98);
+        transform: translateY(-1px);
+      }
+      .scene-watch-dest-scene-card-in-world:focus-visible {
+        outline: 2px solid rgba(255, 255, 255, 0.85);
+        outline-offset: 2px;
+      }
+
+      /* Scene users roster modal (landing crowd badge) */
+      .scene-users-modal-host[hidden] {
+        display: none;
+      }
+      body.scene-users-modal-open {
+        overflow: hidden;
+      }
+      .scene-users-modal-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 300;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: max(16px, env(safe-area-inset-top, 0)) 16px max(16px, env(safe-area-inset-bottom, 0));
+        background: rgba(0, 0, 0, 0.72);
+        -webkit-overflow-scrolling: touch;
+      }
+      .scene-users-modal-panel {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        width: min(420px, 100%);
+        max-height: min(78vh, 640px);
+        border-radius: 16px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+        background: #1a0f28;
+      }
+      .scene-users-modal-close {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        padding: 0;
+        border: none;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.5);
+        color: #fff;
+        font-size: 1.5rem;
+        line-height: 1;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .scene-users-modal-close:hover {
+        background: rgba(0, 0, 0, 0.65);
+      }
+      .scene-users-modal-header {
+        padding: 22px 48px 14px 22px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .scene-users-modal-title {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #fff;
+        line-height: 1.2;
+      }
+      .scene-users-modal-subtitle {
+        margin: 8px 0 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.72);
+      }
+      .scene-users-modal-pill-svg {
+        flex-shrink: 0;
+        opacity: 0.9;
+      }
+      .scene-users-modal-body {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: auto;
+        padding: 8px 10px 14px;
+      }
+      .scene-users-modal-loading {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+        padding: 28px 16px;
+        color: rgba(255, 255, 255, 0.75);
+        font-size: 0.85rem;
+      }
+      .scene-users-modal-spinner {
+        width: 28px;
+        height: 28px;
+        border: 2px solid rgba(255, 255, 255, 0.15);
+        border-top-color: rgba(14, 155, 218, 0.95);
+        border-radius: 50%;
+        animation: scene-users-modal-spin 0.8s linear infinite;
+      }
+      @keyframes scene-users-modal-spin {
+        to { transform: rotate(360deg); }
+      }
+      .scene-users-modal-empty {
+        margin: 0;
+        padding: 24px 14px;
+        text-align: center;
+        font-size: 0.85rem;
+        line-height: 1.45;
+        color: rgba(255, 255, 255, 0.68);
+      }
+      .scene-users-modal-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .scene-users-modal-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        padding: 10px 12px;
+        border: none;
+        border-radius: 10px;
+        background: transparent;
+        color: #fff;
+        font-family: inherit;
+        font-size: 0.92rem;
+        font-weight: 600;
+        text-align: left;
+        cursor: pointer;
+        transition: background 0.15s ease;
+      }
+      .scene-users-modal-row:hover {
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .scene-users-modal-row--static {
+        cursor: default;
+      }
+      .scene-users-modal-row--static:hover {
+        background: transparent;
+      }
+      .scene-users-modal-row-avatar,
+      .scene-users-modal-row-fallback {
+        flex-shrink: 0;
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        object-fit: cover;
+      }
+      .scene-users-modal-row-fallback {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: linear-gradient(145deg, #3d1f55 0%, #120a1c 100%);
+        font-size: 0.95rem;
+        font-weight: 800;
+        color: rgba(255, 255, 255, 0.9);
+      }
+      .scene-users-modal-row-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .scene-watch-dest-scene-card-body {
         padding: clamp(22px, 2.5vw, 32px);

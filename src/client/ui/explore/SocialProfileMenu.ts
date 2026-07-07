@@ -2,6 +2,7 @@ import type { LoginResult } from '../../../auth/AuthClient'
 import { loginWithMetaMask } from '../../../auth/AuthClient'
 import { identityFromAvatarProfile } from '../../../avatar/displayName'
 import { fetchProfileCached, fetchProfileFaceUrl } from '../../../avatar/peerApi'
+import { notificationPrefs } from '../../../social/notificationPrefs'
 import { ICON_METAMASK } from './explorerAuthIcons'
 
 export type SocialProfileMenuOptions = {
@@ -47,6 +48,7 @@ export class SocialProfileMenu {
   private readonly onOpenSettings?: () => void
   private readonly onOpenBackpack?: () => void
   private readonly onOpenProfile?: () => void
+  private unsubPrefs: (() => void) | null = null
   private readonly onDocMouseDown: (ev: MouseEvent) => void
   private readonly onKeyDown: (ev: KeyboardEvent) => void
   private readonly onViewportChange = (): void => {
@@ -94,6 +96,9 @@ export class SocialProfileMenu {
     window.addEventListener('keydown', this.onKeyDown)
     window.addEventListener('resize', this.onViewportChange)
     window.addEventListener('scroll', this.onViewportChange, true)
+    this.unsubPrefs = notificationPrefs.subscribe(() => {
+      if (this.open) this.renderMenu()
+    })
     this.refreshAvatar()
     this.renderMenu()
   }
@@ -109,6 +114,8 @@ export class SocialProfileMenu {
     window.removeEventListener('keydown', this.onKeyDown)
     window.removeEventListener('resize', this.onViewportChange)
     window.removeEventListener('scroll', this.onViewportChange, true)
+    this.unsubPrefs?.()
+    this.unsubPrefs = null
     this.restoreDropdownParent()
     this.wrap.remove()
   }
@@ -240,6 +247,13 @@ export class SocialProfileMenu {
         <p class="social-profile-menu__connection-meta">${escapeHtml(walletShort(address))}</p>
       </div>
       <div class="social-profile-menu__items">
+        <label class="social-profile-menu__toggle-row">
+          <span class="social-profile-menu__toggle-label">Notifications</span>
+          <span class="social-profile-menu__toggle">
+            <input type="checkbox" data-notifications-toggle ${notificationPrefs.isEnabled() ? 'checked' : ''} />
+            <span class="social-profile-menu__toggle-track" aria-hidden="true"></span>
+          </span>
+        </label>
         <button type="button" class="social-profile-menu__item" data-open-profile>
           <span class="social-profile-menu__item-icon" aria-hidden="true">${ICON_GUEST_HEAD}</span>
           <span>View profile</span>
@@ -272,6 +286,11 @@ export class SocialProfileMenu {
   }
 
   private wireSignedInMenu(): void {
+    const notifToggle = this.menuBody.querySelector<HTMLInputElement>('[data-notifications-toggle]')
+    notifToggle?.addEventListener('change', () => {
+      notificationPrefs.setEnabled(notifToggle.checked)
+    })
+
     this.menuBody.querySelector('[data-sign-out]')?.addEventListener('click', () => {
       this.close()
       this.onSignOut?.()

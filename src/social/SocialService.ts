@@ -88,6 +88,8 @@ export class SocialService {
   private readonly seenChatKeys = new Map<string, number>()
   private readonly seenMediaKeys = new Map<string, number>()
   private readonly unreadCounts = new Map<string, number>()
+  /** True while the active channel thread is open — suppresses unread on that channel. */
+  private channelThreadOpen = false
   private readonly mediaAssembler = new DcmInboundAssembler()
   private readonly mediaObjectUrls = new Set<string>()
 
@@ -197,6 +199,15 @@ export class SocialService {
     this.channel = channel
     this.unreadCounts.delete(channelKey(channel))
     this.notifyChannelChange()
+  }
+
+  setChannelThreadOpen(open: boolean): void {
+    if (this.channelThreadOpen === open) return
+    this.channelThreadOpen = open
+    if (open) {
+      this.unreadCounts.delete(channelKey(this.channel))
+      this.notifyChannelChange()
+    }
   }
 
   getUnreadCount(channel: ChatChannelChoice): number {
@@ -511,6 +522,7 @@ export class SocialService {
     this.channelListeners.clear()
     this.messages.clear()
     this.unreadCounts.clear()
+    this.channelThreadOpen = false
     this.sceneTabs = []
     this.connectedSceneKey = null
     this.peerProfiles.clear()
@@ -543,7 +555,8 @@ export class SocialService {
     this.messages.set(key, bucket)
     const isIncoming = !line.self
     const isActiveChannel = key === channelKey(this.channel)
-    if (isIncoming && !isActiveChannel) {
+    const countsAsUnread = isIncoming && (!isActiveChannel || !this.channelThreadOpen)
+    if (countsAsUnread) {
       this.unreadCounts.set(key, (this.unreadCounts.get(key) ?? 0) + 1)
       this.notifyChannelChange()
     }

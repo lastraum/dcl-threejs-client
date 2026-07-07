@@ -241,11 +241,20 @@ export class SocialChatDock {
     this.syncContentAlign()
   }
 
+  /** Suppress toast banners while the user is actively reading a chat thread. */
+  isChatNotificationSuppressed(): boolean {
+    if (!this.visible || !this.threadOpen) return false
+    if (this.isMobileLayout()) return this.mobilePanelOpen
+    return true
+  }
+
   /** Notifications bell — open chat panel (mobile sheet or desktop expanded list). */
   openFromNotification(): void {
     if (!this.visible) return
     if (this.isMobileLayout()) {
+      this.threadOpen = true
       this.openMobilePanel()
+      this.renderAll()
       return
     }
     this.listExpanded = true
@@ -267,7 +276,7 @@ export class SocialChatDock {
     })
     this.listExpanded = true
     if (this.isMobileLayout()) {
-      this.threadOpen = false
+      this.threadOpen = true
       this.mobilePanelOpen = false
     } else {
       this.threadOpen = true
@@ -335,6 +344,8 @@ export class SocialChatDock {
     const social = this.controller.getSocial()
     this.unsubChat = social.onChat(() => {
       this.renderMessages()
+      this.renderPills()
+      this.updateMobileFab()
       this.updateComposerUi()
     })
     this.unsubChannel = social.onChannelChange(() => this.renderAll())
@@ -502,6 +513,7 @@ export class SocialChatDock {
     for (const scene of social.getSceneTabs()) {
       const channel = { kind: 'scene' as const, sceneKey: scene.key, label: scene.label }
       const active = current.kind === 'scene' && current.sceneKey === scene.key
+      const viewingChannel = active && this.threadOpen
       this.pillsScrollEl.appendChild(
         this.createChannelEntry({
           channel,
@@ -509,7 +521,7 @@ export class SocialChatDock {
           subtitle: scene.browserChatEnabled ? 'Scene chat' : 'Chat disabled',
           iconSvg: SCENE_CHAT_RAIL_ICON,
           active,
-          unreadCount: active ? 0 : social.getUnreadCount(channel)
+          unreadCount: viewingChannel ? 0 : social.getUnreadCount(channel)
         })
       )
     }
@@ -521,6 +533,7 @@ export class SocialChatDock {
         displayName: community.name
       }
       const active = current.kind === 'community' && current.communityId === community.id
+      const viewingChannel = active && this.threadOpen
       this.pillsScrollEl.appendChild(
         this.createChannelEntry({
           channel,
@@ -529,7 +542,7 @@ export class SocialChatDock {
           imageUrl: communityDisplayImageUrl(community.id, community.thumbnails),
           fallback: community.name.slice(0, 1).toUpperCase(),
           active,
-          unreadCount: active ? 0 : social.getUnreadCount(channel)
+          unreadCount: viewingChannel ? 0 : social.getUnreadCount(channel)
         })
       )
     }
@@ -1081,8 +1094,18 @@ export class SocialChatDock {
     this.updateComposerUi()
   }
 
+  private isMobilePeek(): boolean {
+    return (
+      this.isMobileLayout() &&
+      this.visible &&
+      !this.mobilePanelOpen &&
+      this.threadOpen
+    )
+  }
+
   private syncLayout(): void {
     const mobile = this.isMobileLayout()
+    const mobilePeek = this.isMobilePeek()
 
     if (mobile) {
       this.listExpanded = true
@@ -1096,9 +1119,12 @@ export class SocialChatDock {
     )
     this.root.classList.toggle('social-chat-dock--mobile', mobile)
     this.root.classList.toggle('social-chat-dock--mobile-open', mobile && this.mobilePanelOpen)
+    this.root.classList.toggle('social-chat-dock--mobile-peek', mobilePeek)
+
+    this.social().setChannelThreadOpen(this.threadOpen)
 
     this.threadEl.hidden = !this.threadOpen
-    this.pillsEl.hidden = this.threadOpen
+    this.pillsEl.hidden = this.threadOpen && mobile
     this.pillsToolbarEl.hidden = mobile
     this.expandBtn.hidden = this.threadOpen || mobile
     this.expandBtn.setAttribute('aria-expanded', String(this.listExpanded))
@@ -1109,7 +1135,7 @@ export class SocialChatDock {
     this.expandBtn.textContent = this.listExpanded ? '›' : '‹'
 
     if (mobile) {
-      this.root.hidden = !this.visible || !this.mobilePanelOpen
+      this.root.hidden = !this.visible || (!this.mobilePanelOpen && !mobilePeek)
       this.mobileBackdrop.hidden = !this.visible || !this.mobilePanelOpen
       document.body.classList.toggle('social-chat-mobile-open', this.visible && this.mobilePanelOpen)
     } else {

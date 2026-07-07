@@ -10,9 +10,18 @@ import {
 import {
   communityClaimNewIssueUrl,
   communityClaimsIssuesUrl,
+  communitySuggestionTemplateUrl,
   docsClaimsBrowseUrl,
-  docsGithubFetchEnabled
+  docsGithubFetchEnabled,
+  suggestionDispatchUrl
 } from '../dev/githubDocs'
+import {
+  communitySuggestionsIssuesUrl,
+  SUGGESTION_CATEGORIES,
+  submitClientSuggestion,
+  type SuggestionCategory
+} from '../dev/submitSuggestion'
+import { resolveRouteTarget } from '../../dcl/content/route'
 import {
   ALL_INTEGRATION_ENTRIES,
   countIntegrationByStatus,
@@ -50,6 +59,7 @@ export class DevProgressPanel {
   private progressLoad: ProgressLoadResult | null = null
   private claimsLoading = false
   private progressLoading = false
+  private suggestionSubmitting = false
 
   constructor() {
     this.root = document.createElement('div')
@@ -204,6 +214,7 @@ export class DevProgressPanel {
       <span class="dev-progress__chip dev-progress__chip--pending">🟠 ${pending} pending review</span>
       <span class="dev-progress__chip dev-progress__chip--done">🟢 ${merged} merged</span>
       <a class="dev-progress__chip dev-progress__chip--claim" href="${escapeHtml(communityClaimNewIssueUrl())}" target="_blank" rel="noopener">+ Claim work</a>
+      <a class="dev-progress__chip dev-progress__chip--suggest" href="${escapeHtml(communitySuggestionsIssuesUrl())}" target="_blank" rel="noopener">💡 Suggestions</a>
     `
 
     const branch = this.claimsLoad?.branch ?? this.progressLoad?.branch ?? 'dev-latest'
@@ -219,6 +230,8 @@ export class DevProgressPanel {
 
     const intro = this.buildProgressIntroSection()
     if (intro) this.bodyEl.appendChild(intro)
+
+    this.bodyEl.appendChild(this.buildSuggestionSection())
 
     if (!this.claimsLoad) {
       const loading = document.createElement('p')
@@ -279,6 +292,124 @@ export class DevProgressPanel {
     article.className = 'dev-progress__markdown'
     article.innerHTML = renderMarkdownToHtml(stripProgressIntro(markdown))
     this.bodyEl.appendChild(article)
+  }
+
+  private formatRouteContext(): string | undefined {
+    const route = resolveRouteTarget()
+    if (route.kind === 'coords') return `${route.x},${route.y}`
+    if (route.kind === 'world') return route.worldName
+    if (route.kind === 'map') return 'map'
+    if (route.kind === 'events') return 'events'
+    if (route.kind === 'communities') return 'communities'
+    if (route.kind === 'profile') return 'profile'
+    if (route.kind === 'editor') return 'editor'
+    return undefined
+  }
+
+  private buildSuggestionSection(): HTMLElement {
+    const section = document.createElement('section')
+    section.className = 'dev-progress__section dev-progress__suggest'
+    const dispatchEnabled = suggestionDispatchUrl() !== null
+    section.innerHTML = `
+      <h3 class="dev-progress__section-title">Suggest an improvement</h3>
+      <p class="dev-progress__suggest-hint">
+        ${
+          dispatchEnabled
+            ? 'Submits via GitHub Action → issue labeled <code>suggestion</code>.'
+            : 'Dispatch proxy off — opens a pre-filled GitHub issue form.'
+        }
+        <a href="${escapeHtml(communitySuggestionTemplateUrl())}" target="_blank" rel="noopener">Template</a>
+        · <a href="${escapeHtml(communitySuggestionsIssuesUrl())}" target="_blank" rel="noopener">Open suggestions</a>
+      </p>
+      <form class="dev-progress__suggest-form">
+        <label class="dev-progress__suggest-field">
+          <span>Summary</span>
+          <input type="text" name="summary" maxlength="120" required placeholder="One-line idea" />
+        </label>
+        <label class="dev-progress__suggest-field">
+          <span>Category</span>
+          <select name="category" required>
+            ${SUGGESTION_CATEGORIES.map(
+              (c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`
+            ).join('')}
+          </select>
+        </label>
+        <label class="dev-progress__suggest-field dev-progress__suggest-field--wide">
+          <span>Details</span>
+          <textarea name="details" rows="4" maxlength="8000" required placeholder="What you tried, expected behavior, or mockup notes"></textarea>
+        </label>
+        <label class="dev-progress__suggest-field">
+          <span>Contact (optional)</span>
+          <input type="text" name="contact" maxlength="120" placeholder="@github-handle" />
+        </label>
+        <div class="dev-progress__suggest-actions">
+          <button type="submit" class="dev-progress__suggest-submit">Submit suggestion</button>
+          <span class="dev-progress__suggest-status" hidden></span>
+        </div>
+      </form>
+    `
+
+    const form = section.querySelector('form')!
+    const statusEl = section.querySelector('.dev-progress__suggest-status') as HTMLElement
+    form.addEventListener('submit', (ev) => {
+      ev.preventDefault()
+      void this.submitSuggestionForm(form, statusEl)
+    })
+    return section
+  }
+
+  private async submitSuggestionForm(
+    form: HTMLFormElement,
+    statusEl: HTMLElement
+  ): Promise<void> {
+    if (this.suggestionSubmitting) return
+    const data = new FormData(form)
+    const summary = String(data.get('summary') ?? '').trim()
+    const details = String(data.get('details') ?? '').trim()
+    const category = String(data.get('category') ?? 'Other') as SuggestionCategory
+    const contact = String(data.get('contact') ?? '').trim()
+
+    if (summary.length < 4 || details.length < 10) {
+      statusEl.hidden = false
+      statusEl.textContent = 'Summary (4+) and details (10+) required.'
+      statusEl.className = 'dev-progress__suggest-status dev-progress__suggest-status--error'
+      return
+    }
+
+    this.suggestionSubmitting = true
+    const submitBtn = form.querySelector('.dev-progress__suggest-submit') as HTMLButtonElement
+    submitBtn.disabled = true
+    statusEl.hidden = false
+    statusEl.className = 'dev-progress__suggest-status'
+    statusEl.textContent = 'Sending…'
+
+    const result = await submitClientSuggestion({
+      summary,
+      category,
+      details,
+      contact: contact || undefined,
+      route: this.formatRouteContext()
+    })
+
+    this.suggestionSubmitting = false
+    submitBtn.disabled = false
+
+    if (result.ok && result.mode === 'dispatch') {
+      statusEl.className = 'dev-progress__suggest-status dev-progress__suggest-status--ok'
+      statusEl.innerHTML = `Sent — GitHub Action will open a <a href="${escapeHtml(communitySuggestionsIssuesUrl())}" target="_blank" rel="noopener">suggestion</a> issue shortly.`
+      form.reset()
+      return
+    }
+
+    if (result.ok && result.mode === 'fallback') {
+      statusEl.className = 'dev-progress__suggest-status dev-progress__suggest-status--ok'
+      statusEl.textContent = 'Opening GitHub issue form…'
+      window.open(result.url, '_blank', 'noopener')
+      return
+    }
+
+    statusEl.className = 'dev-progress__suggest-status dev-progress__suggest-status--error'
+    statusEl.textContent = result.error || 'Submit failed'
   }
 
   private buildProgressIntroSection(): HTMLElement | null {

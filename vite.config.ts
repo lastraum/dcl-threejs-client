@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import { fileURLToPath } from 'node:url'
+import { createSuggestionProxyMiddleware } from './scripts/suggestion-dispatch-proxy.mjs'
 
 const ARCHIPELAGO_PEERS = 'https://archipelago-ea-stats.decentraland.org/peers'
 const PARCELS_API = 'https://api.decentraland.org/v2/parcels'
@@ -7,6 +8,14 @@ const WORLDS_LIVE_DATA = 'https://worlds-content-server.decentraland.org/live-da
 const PLACES_API = 'https://places.decentraland.org/api'
 
 export default defineConfig({
+  plugins: [
+    {
+      name: 'suggestion-dispatch-proxy',
+      configureServer(server) {
+        server.middlewares.use(createSuggestionProxyMiddleware())
+      }
+    }
+  ],
   define: {
     __BUILD_DATE__: JSON.stringify(new Date().toISOString().slice(0, 10))
   },

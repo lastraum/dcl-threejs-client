@@ -12,6 +12,7 @@ const ROUTE_SEGMENT_DENY = new Set(
     'events',
     'communities',
     'map',
+    'profile',
     'chat',
     'favicon.ico',
     'robots.txt',
@@ -28,6 +29,7 @@ export type RouteTarget =
   | { kind: 'map' }
   | { kind: 'events' }
   | { kind: 'communities' }
+  | { kind: 'profile' }
   | { kind: 'editor' }
   | { kind: 'world'; worldName: string; segment: string }
   | { kind: 'coords'; x: number; y: number; segment: string }
@@ -35,8 +37,14 @@ export type RouteTarget =
 const EVENTS_ROUTE_SEGMENT = 'events'
 const COMMUNITIES_ROUTE_SEGMENT = 'communities'
 const MAP_ROUTE_SEGMENT = 'map'
+const PROFILE_ROUTE_SEGMENT = 'profile'
 
-const APP_ROUTE_SEGMENTS = new Set([EVENTS_ROUTE_SEGMENT, COMMUNITIES_ROUTE_SEGMENT, MAP_ROUTE_SEGMENT])
+const APP_ROUTE_SEGMENTS = new Set([
+  EVENTS_ROUTE_SEGMENT,
+  COMMUNITIES_ROUTE_SEGMENT,
+  MAP_ROUTE_SEGMENT,
+  PROFILE_ROUTE_SEGMENT
+])
 
 const EDITOR_ROUTE_SEGMENT = 'editor'
 
@@ -80,6 +88,7 @@ export function parseRouteTarget(segment: string | null): RouteTarget {
   if (segment.toLowerCase() === EVENTS_ROUTE_SEGMENT) return { kind: 'events' }
   if (segment.toLowerCase() === COMMUNITIES_ROUTE_SEGMENT) return { kind: 'communities' }
   if (segment.toLowerCase() === MAP_ROUTE_SEGMENT) return { kind: 'map' }
+  if (segment.toLowerCase() === PROFILE_ROUTE_SEGMENT) return { kind: 'profile' }
 
   const coordMatch = /^(-?\d+)\s*,\s*(-?\d+)$/.exec(segment)
   if (coordMatch) {
@@ -118,6 +127,7 @@ export function routePathForTarget(target: RouteTarget): string {
   if (target.kind === 'events') return '/events'
   if (target.kind === 'communities') return '/communities'
   if (target.kind === 'map') return '/map'
+  if (target.kind === 'profile') return '/profile'
   if (target.kind === 'editor') return '/editor'
   if (target.kind === 'coords') return `/${encodeURIComponent(`${target.x},${target.y}`)}`
   return routePathForWorld(target.worldName)
@@ -147,7 +157,8 @@ export function routeEquals(a: RouteTarget, b: RouteTarget): boolean {
     a.kind === 'editor' ||
     a.kind === 'events' ||
     a.kind === 'communities' ||
-    a.kind === 'map'
+    a.kind === 'map' ||
+    a.kind === 'profile'
   ) {
     return true
   }

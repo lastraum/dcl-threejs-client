@@ -1,16 +1,12 @@
 import type { LoginResult } from '../../../auth/AuthClient'
 import { MapView, type MapPlayerState } from '../settings/MapView'
-import { SocialShellTopNav, type SocialShellTab } from './SocialShellTopNav'
+import { SocialShellTopNav, type SocialShellChromeHandlers, type SocialShellTab } from './SocialShellTopNav'
 
-export type MapPageViewOptions = {
+export type MapPageViewOptions = SocialShellChromeHandlers & {
   login: LoginResult
   onNavigate: (tab: SocialShellTab) => void
   onParcelVisit: (px: number, py: number) => void
   getPlayerState?: () => MapPlayerState | null
-  onLoginChange?: (login: LoginResult) => void
-  onSignOut?: () => void
-  onOpenSettings?: () => void
-  onOpenBackpack?: () => void
 }
 
 /** Full-page Genesis City Live map at `/map` — map.lastslice.co parity. */
@@ -31,7 +27,8 @@ export class MapPageView {
       onLoginChange: opts.onLoginChange,
       onSignOut: opts.onSignOut,
       onOpenSettings: opts.onOpenSettings,
-      onOpenBackpack: opts.onOpenBackpack
+      onOpenBackpack: opts.onOpenBackpack,
+      onOpenProfile: opts.onOpenProfile
     })
 
     this.mapView = new MapView({

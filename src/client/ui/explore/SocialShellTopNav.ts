@@ -3,14 +3,18 @@ import { SocialProfileMenu } from './SocialProfileMenu'
 
 export type SocialShellTab = 'explore' | 'map' | 'communities' | 'events'
 
-export type SocialShellTopNavOptions = {
-  activeTab: SocialShellTab | null
-  login: LoginResult
-  onNavigate: (tab: SocialShellTab) => void
+export type SocialShellChromeHandlers = {
   onLoginChange?: (login: LoginResult) => void
   onSignOut?: () => void
   onOpenSettings?: () => void
   onOpenBackpack?: () => void
+  onOpenProfile?: () => void
+}
+
+export type SocialShellTopNavOptions = SocialShellChromeHandlers & {
+  activeTab: SocialShellTab | null
+  login: LoginResult
+  onNavigate: (tab: SocialShellTab) => void
 }
 
 /** Shared 2D shell nav — Explore · Map · Communities · Events + account chrome. */
@@ -44,7 +48,8 @@ export class SocialShellTopNav {
       onLoginChange: opts.onLoginChange,
       onSignOut: opts.onSignOut,
       onOpenSettings: opts.onOpenSettings,
-      onOpenBackpack: opts.onOpenBackpack
+      onOpenBackpack: opts.onOpenBackpack,
+      onOpenProfile: opts.onOpenProfile
     })
     accountEl.appendChild(this.profileMenu.wrap)
 

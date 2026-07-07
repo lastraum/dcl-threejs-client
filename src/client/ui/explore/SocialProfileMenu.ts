@@ -10,6 +10,7 @@ export type SocialProfileMenuOptions = {
   onSignOut?: () => void
   onOpenSettings?: () => void
   onOpenBackpack?: () => void
+  onOpenProfile?: () => void
 }
 
 const ICON_GUEST_HEAD = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm0 2c-4.42 0-8 2.24-8 5v1h16v-1c0-2.76-3.58-5-8-5Z" fill="currentColor" fill-opacity="0.9"/></svg>`
@@ -45,6 +46,7 @@ export class SocialProfileMenu {
   private readonly onSignOut?: () => void
   private readonly onOpenSettings?: () => void
   private readonly onOpenBackpack?: () => void
+  private readonly onOpenProfile?: () => void
   private readonly onDocMouseDown: (ev: MouseEvent) => void
   private readonly onKeyDown: (ev: KeyboardEvent) => void
 
@@ -54,6 +56,7 @@ export class SocialProfileMenu {
     this.onSignOut = opts.onSignOut
     this.onOpenSettings = opts.onOpenSettings
     this.onOpenBackpack = opts.onOpenBackpack
+    this.onOpenProfile = opts.onOpenProfile
 
     this.wrap = document.createElement('div')
     this.wrap.className = 'social-profile-menu'
@@ -196,8 +199,6 @@ export class SocialProfileMenu {
     if (this.login.kind !== 'wallet') return ''
     const address = this.login.address
     const name = this.displayName?.trim() || walletShort(address)
-    const profileUrl = `https://decentraland.org/profile/accounts/${address}`
-
     return `
       <div class="social-profile-menu__connection" role="group" aria-label="Connection">
         <div class="social-profile-menu__connection-label">Connection</div>
@@ -209,10 +210,10 @@ export class SocialProfileMenu {
         <p class="social-profile-menu__connection-meta">${escapeHtml(walletShort(address))}</p>
       </div>
       <div class="social-profile-menu__items">
-        <a class="social-profile-menu__item social-profile-menu__item--link" href="${escapeHtml(profileUrl)}" target="_blank" rel="noopener noreferrer">
+        <button type="button" class="social-profile-menu__item" data-open-profile>
           <span class="social-profile-menu__item-icon" aria-hidden="true">${ICON_GUEST_HEAD}</span>
           <span>View profile</span>
-        </a>
+        </button>
         <button type="button" class="social-profile-menu__item" data-open-settings>
           <span class="social-profile-menu__item-icon" aria-hidden="true">${ICON_SETTINGS}</span>
           <span>Settings</span>
@@ -245,6 +246,10 @@ export class SocialProfileMenu {
       this.close()
       this.onSignOut?.()
     })
+    this.menuBody.querySelector('[data-open-profile]')?.addEventListener('click', () => {
+      this.close()
+      if (this.onOpenProfile) this.onOpenProfile()
+    })
     this.menuBody.querySelector('[data-open-settings]')?.addEventListener('click', () => {
       this.close()
       if (this.onOpenSettings) this.onOpenSettings()
@@ -255,7 +260,6 @@ export class SocialProfileMenu {
       if (this.onOpenBackpack) this.onOpenBackpack()
       else window.alert('Open your backpack from the in-world sidebar after you jump into a scene.')
     })
-    this.menuBody.querySelector('.social-profile-menu__item--link')?.addEventListener('click', () => this.close())
   }
 
   private setSignInStatus(msg: string | null, isError = false): void {

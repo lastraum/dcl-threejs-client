@@ -1,9 +1,6 @@
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import { CommunityModal } from '../communities/CommunityModal'
-import {
-  communityThumbnailUrlOrCdnFallback,
-  pickCommunityThumbnailUrl
-} from '../../../social/memberCommunities'
+import { communityThumbnailUrl } from '../../../social/memberCommunities'
 import { fetchCommunitiesBrowsePublic, fetchCommunitiesBrowseSigned } from '../../../social/socialApi'
 import type { CommunityListRow } from '../../../social/types'
 
@@ -148,9 +145,7 @@ export class CommunitiesBrowseView {
   }
 
   private renderCard(c: CommunityListRow): string {
-    // TODO(social-merge): community cover images — browse API omits thumbnails; CDN fallback
-    // often 404s. Port companion `communityThumbnailProxy` / per-id detail enrichment.
-    const thumb = communityThumbnailUrlOrCdnFallback(pickCommunityThumbnailUrl(c.thumbnails), c.id)
+    const thumb = communityThumbnailUrl(c.id)
     const initial = c.name.trim().charAt(0).toUpperCase() || '?'
     const privacy = c.isPrivate ? '<span class="communities-browse-view__badge">Private</span>' : ''
 

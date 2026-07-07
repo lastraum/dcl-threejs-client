@@ -8,17 +8,15 @@ import {
 } from '../../../social/dclEvents'
 import { fetchSceneLandingMeta, fetchSceneRelatedEvents, type SceneLandingMeta } from '../../../social/sceneLanding'
 import { EventModal } from '../events/EventModal'
-import { SocialShellTopNav, type SocialShellTab } from '../explore/SocialShellTopNav'
+import { SocialShellTopNav, type SocialShellChromeHandlers, type SocialShellTab } from '../explore/SocialShellTopNav'
 
-export type SceneLandingViewOptions = {
+export type SceneLandingViewOptions = SocialShellChromeHandlers & {
   route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
   login: LoginResult
   onJumpIn: () => void
   onNavigate: (tab: SocialShellTab) => void
   onEventJumpIn?: (target: RouteTarget, event: DclEvent) => void
   onEventViewScene?: (target: RouteTarget, event: DclEvent) => void
-  onLoginChange?: (login: LoginResult) => void
-  onSignOut?: () => void
 }
 
 function escapeHtml(value: string): string {
@@ -53,7 +51,10 @@ export class SceneLandingView {
       login: opts.login,
       onNavigate: opts.onNavigate,
       onLoginChange: opts.onLoginChange,
-      onSignOut: opts.onSignOut
+      onSignOut: opts.onSignOut,
+      onOpenSettings: opts.onOpenSettings,
+      onOpenBackpack: opts.onOpenBackpack,
+      onOpenProfile: opts.onOpenProfile
     })
 
     this.eventModal = new EventModal({

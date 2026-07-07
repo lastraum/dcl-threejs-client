@@ -91,12 +91,18 @@ export function buildDclAssetsSocialCommunityRawThumbnailUrl(communityId: string
   return `https://assets-cdn.decentraland.org/social/communities/${id}/raw-thumbnail.png`
 }
 
-/** API thumbnail URL, else Social CDN `raw-thumbnail.png` by community id. */
+/** Canonical community icon URL from Social CDN (`raw-thumbnail.png`). */
+export function communityThumbnailUrl(communityId: string): string | null {
+  return buildDclAssetsSocialCommunityRawThumbnailUrl(communityId)
+}
+
+/** Prefer Social CDN icon by community id; API thumbnail is legacy fallback only. */
 export function communityThumbnailUrlOrCdnFallback(
   thumbnailUrl: string | null | undefined,
   communityId: string
 ): string | null {
+  const fromCdn = communityThumbnailUrl(communityId)
+  if (fromCdn) return fromCdn
   const fromApi = thumbnailUrl?.trim()
-  if (fromApi) return fromApi
-  return buildDclAssetsSocialCommunityRawThumbnailUrl(communityId)
+  return fromApi || null
 }

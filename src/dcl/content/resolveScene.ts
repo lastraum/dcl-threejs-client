@@ -202,6 +202,10 @@ export async function resolveSceneFromRoute(target: RouteTarget): Promise<Resolv
     throw new Error('Map route does not resolve a network scene')
   }
 
+  if (target.kind === 'profile') {
+    throw new Error('Profile route does not resolve a network scene')
+  }
+
   if (target.kind === 'blank') {
     const metadata = { ...BLANK_SCENE_TEMPLATE.metadata, environment: 'none' as const }
     const resolvedEnv = resolveSceneEnvironment(metadata, { kind: 'blank' })

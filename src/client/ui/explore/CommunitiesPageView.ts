@@ -1,13 +1,10 @@
 import type { LoginResult } from '../../../auth/AuthClient'
-import type { SocialShellTab } from './SocialShellTopNav'
 import { CommunitiesBrowseView } from './CommunitiesBrowseView'
-import { SocialShellTopNav } from './SocialShellTopNav'
+import { SocialShellTopNav, type SocialShellChromeHandlers, type SocialShellTab } from './SocialShellTopNav'
 
-export type CommunitiesPageViewOptions = {
+export type CommunitiesPageViewOptions = SocialShellChromeHandlers & {
   login: LoginResult
   onNavigate: (tab: SocialShellTab) => void
-  onLoginChange?: (login: LoginResult) => void
-  onSignOut?: () => void
 }
 
 /** Full-page communities browse at `/communities`. */
@@ -29,7 +26,10 @@ export class CommunitiesPageView {
       login: opts.login,
       onNavigate: opts.onNavigate,
       onLoginChange: opts.onLoginChange,
-      onSignOut: opts.onSignOut
+      onSignOut: opts.onSignOut,
+      onOpenSettings: opts.onOpenSettings,
+      onOpenBackpack: opts.onOpenBackpack,
+      onOpenProfile: opts.onOpenProfile
     })
 
     this.browseView = new CommunitiesBrowseView({

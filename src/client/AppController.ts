@@ -39,6 +39,7 @@ import { CommunitiesPageView } from './ui/explore/CommunitiesPageView'
 import { EventsPageView } from './ui/explore/EventsPageView'
 import { ExplorerView } from './ui/explore/ExplorerView'
 import { MapPageView } from './ui/explore/MapPageView'
+import { ProfilePageView } from './ui/explore/ProfilePageView'
 import type { SocialShellTab } from './ui/explore/SocialShellTopNav'
 import { SceneLandingView } from './ui/landing/SceneLandingView'
 import type { DclEvent } from '../social/dclEvents'
@@ -67,6 +68,7 @@ export class AppController {
   private mapPageView: MapPageView | null = null
   private eventsPageView: EventsPageView | null = null
   private communitiesPageView: CommunitiesPageView | null = null
+  private profilePageView: ProfilePageView | null = null
   private sceneLandingView: SceneLandingView | null = null
   private appMode: AppMode = 'explorer'
 
@@ -108,6 +110,11 @@ export class AppController {
 
     if (postLoginRoute.kind === 'communities') {
       await this.showCommunitiesPage({ replace: true })
+      return
+    }
+
+    if (postLoginRoute.kind === 'profile') {
+      await this.showProfilePage({ replace: true })
       return
     }
 
@@ -171,6 +178,16 @@ export class AppController {
       return
     }
 
+    if (target.kind === 'profile') {
+      this.navigating = true
+      try {
+        await this.showProfilePage({ fromHistory: opts.fromHistory, replace: opts.replace })
+      } finally {
+        this.navigating = false
+      }
+      return
+    }
+
     if (target.kind === 'editor') {
       await this.jumpInToScene(target, opts)
       return
@@ -201,6 +218,7 @@ export class AppController {
     onSignOut: () => void
     onOpenSettings: () => void
     onOpenBackpack: () => void
+    onOpenProfile: () => void
   } {
     return {
       onLoginChange: (login) => {
@@ -212,8 +230,17 @@ export class AppController {
       },
       onOpenBackpack: () => {
         this.settingsOverlay?.show('backpack')
-      }
+      },
+      onOpenProfile: () => this.openLocalProfileFromShell()
     }
+  }
+
+  private openLocalProfileFromShell(): void {
+    if (this.profileUi) {
+      this.profileUi.openProfile({ kind: 'local' })
+      return
+    }
+    void this.navigateTo({ kind: 'profile' })
   }
 
   private async showExplorer(
@@ -230,6 +257,7 @@ export class AppController {
     this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownCommunitiesPage()
+    this.teardownProfilePage()
 
     if (!this.container || !this.login) return
 
@@ -263,6 +291,7 @@ export class AppController {
     this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownCommunitiesPage()
+    this.teardownProfilePage()
 
     if (!this.container || !this.login) return
 
@@ -304,6 +333,7 @@ export class AppController {
     this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownCommunitiesPage()
+    this.teardownProfilePage()
 
     if (!this.container || !this.login) return
 
@@ -342,6 +372,7 @@ export class AppController {
     this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownCommunitiesPage()
+    this.teardownProfilePage()
 
     if (!this.container || !this.login) return
 
@@ -354,6 +385,40 @@ export class AppController {
       ...this.socialShellLoginHandlers()
     })
     this.communitiesPageView.mount(this.container)
+  }
+
+  private async showProfilePage(
+    opts: { fromHistory?: boolean; replace?: boolean } = {}
+  ): Promise<void> {
+    if (this.appMode === 'play') {
+      await this.teardownScene()
+    }
+
+    if (!opts.fromHistory) {
+      applyRouteToHistory({ kind: 'profile' }, opts.replace ?? false)
+    }
+    this.currentRoute = { kind: 'profile' }
+    this.appMode = 'profile'
+
+    this.teardownExplorer()
+    this.teardownLanding()
+    this.teardownMapPage()
+    this.teardownEventsPage()
+    this.teardownCommunitiesPage()
+    this.teardownProfilePage()
+
+    if (!this.container || !this.login) return
+
+    const hudEl = document.getElementById('hud')
+    if (hudEl) hudEl.hidden = true
+
+    this.profilePageView = new ProfilePageView({
+      login: this.login,
+      catalystUrl: this.sceneContentUrl,
+      onNavigate: (tab) => this.navigateSocialShell(tab),
+      ...this.socialShellLoginHandlers()
+    })
+    this.profilePageView.mount(this.container)
   }
 
   private teardownExplorer(): void {
@@ -374,6 +439,11 @@ export class AppController {
   private teardownCommunitiesPage(): void {
     this.communitiesPageView?.dispose()
     this.communitiesPageView = null
+  }
+
+  private teardownProfilePage(): void {
+    this.profilePageView?.dispose()
+    this.profilePageView = null
   }
 
   private teardownLanding(): void {
@@ -405,6 +475,7 @@ export class AppController {
     this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownCommunitiesPage()
+    this.teardownProfilePage()
 
     if (!this.container || !this.login) return
 
@@ -823,6 +894,7 @@ export class AppController {
     this.mapPageView?.setLogin(this.login)
     this.eventsPageView?.setLogin(this.login)
     this.communitiesPageView?.setLogin(this.login)
+    this.profilePageView?.setLogin(this.login)
     this.sceneLandingView?.setLogin(this.login)
   }
 

@@ -1,14 +1,12 @@
 import type { LoginResult } from '../../../auth/AuthClient'
 import type { RouteTarget } from '../../../dcl/content/route'
 import { PlacesView } from '../settings/PlacesView'
-import { SocialShellTopNav, type SocialShellTab } from './SocialShellTopNav'
+import { SocialShellTopNav, type SocialShellChromeHandlers, type SocialShellTab } from './SocialShellTopNav'
 
-export type ExplorerViewOptions = {
+export type ExplorerViewOptions = SocialShellChromeHandlers & {
   login: LoginResult
   onOpenScene: (target: RouteTarget) => void
   onNavigate: (tab: SocialShellTab) => void
-  onLoginChange?: (login: LoginResult) => void
-  onSignOut?: () => void
 }
 
 /** Full-page Explorer at `/` — Bevy-style layout, purple theme. */
@@ -31,7 +29,10 @@ export class ExplorerView {
       login: opts.login,
       onNavigate: opts.onNavigate,
       onLoginChange: opts.onLoginChange,
-      onSignOut: opts.onSignOut
+      onSignOut: opts.onSignOut,
+      onOpenSettings: opts.onOpenSettings,
+      onOpenBackpack: opts.onOpenBackpack,
+      onOpenProfile: opts.onOpenProfile
     })
 
     this.scrollEl = document.createElement('main')

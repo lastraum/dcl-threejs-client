@@ -12,6 +12,35 @@ export function getSocialApiBaseUrl(): string {
   return SOCIAL_API_URL
 }
 
+export async function fetchMemberCommunitiesByAddressPublic(
+  memberAddress: string,
+  params: { limit?: number; offset?: number } = {}
+): Promise<{ communities: CommunityListRow[]; total: number }> {
+  const address = memberAddress.trim().toLowerCase()
+  const url = new URL(`${getSocialApiBaseUrl()}/v1/communities`)
+  url.searchParams.set('limit', String(params.limit ?? 100))
+  url.searchParams.set('offset', String(params.offset ?? 0))
+  url.searchParams.set('onlyMemberOf', 'true')
+  url.searchParams.set('memberAddress', address)
+
+  const res = await fetch(url.toString(), { headers: { Accept: 'application/json' } })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string }
+    throw new Error(body.message ?? body.error ?? `Social API ${res.status}`)
+  }
+
+  const raw = (await res.json()) as Record<string, unknown>
+  const communities = parseCommunitiesListFromJson(raw)
+  const data = raw.data
+  let total = communities.length
+  if (typeof raw.total === 'number') total = raw.total
+  else if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const t = (data as { total?: unknown }).total
+    if (typeof t === 'number') total = t
+  }
+  return { communities, total }
+}
+
 export async function fetchMemberCommunitiesSigned(
   identity: AuthIdentity
 ): Promise<{ communities: CommunityListRow[]; total: number }> {

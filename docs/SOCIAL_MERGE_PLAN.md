@@ -2,8 +2,8 @@
 
 > Integrates [dcl-companion `threejs-client-ux-spec.md`](../../dcl-companion/docs/threejs-client-ux-spec.md) into this repo.
 
-**Status:** **Merged into `dev-latest`** (`c53af86`, 2026-07-07) — Phases 1–2.5 ✅ · Phase 3 partial (2D chat dock)  
-**Source branch:** `decentraland-social-merge` (fast-forward, no conflicts)  
+**Status:** **Merged into `dev-latest`** — Phases 1–2.5 ✅ · Phase 3 partial (2D chat dock) · deploy at **decentraland.social** / **dev.decentraland.social**  
+**Source branch:** `decentraland-social-merge`
 **Reference:** `dcl-companion/web-app-social/` (browser-only mode)
 
 ---
@@ -77,6 +77,7 @@ type SceneContext = { segment: string; mode: AppMode }
 | Explorer / landing links never skip to play | route + mode guards |
 | Scene metadata fetch | Catalyst + Places APIs |
 | Events banner + `EventModal` on landing | `sceneLanding.ts`, `EventModal.ts` |
+| Crowd badge → player roster modal | `SceneUsersModal.ts`, `sceneParticipants.ts` |
 | `/events` page + in-app events calendar | `EventsPageView.ts` |
 
 **Reference:** companion `sceneWatchRoute.ts`, scene watch page layout.

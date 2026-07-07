@@ -10,6 +10,7 @@ import {
 import { fetchSceneLandingMeta, fetchSceneRelatedEvents, type SceneLandingMeta } from '../../../social/sceneLanding'
 import { EventModal } from '../events/EventModal'
 import { SocialShellTopNav, type SocialShellChromeHandlers, type SocialShellTab } from '../explore/SocialShellTopNav'
+import { SceneUsersModal } from './SceneUsersModal'
 
 export type SceneLandingViewOptions = SocialShellChromeHandlers & {
   route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
@@ -18,6 +19,7 @@ export type SceneLandingViewOptions = SocialShellChromeHandlers & {
   onNavigate: (tab: SocialShellTab) => void
   onEventJumpIn?: (target: RouteTarget, event: DclEvent) => void
   onEventViewScene?: (target: RouteTarget, event: DclEvent) => void
+  onOpenUserProfile?: (address: string) => void
 }
 
 function escapeHtml(value: string): string {
@@ -40,6 +42,7 @@ export class SceneLandingView {
   private readonly topNav: SocialShellTopNav
   private readonly mainEl: HTMLElement
   private readonly eventModal: EventModal
+  private readonly sceneUsersModal: SceneUsersModal
   private meta: SceneLandingMeta | null = null
   private relatedEvents: DclEvent[] = []
   private disposed = false
@@ -72,6 +75,10 @@ export class SceneLandingView {
       onViewScene: opts.onEventViewScene
     })
 
+    this.sceneUsersModal = new SceneUsersModal({
+      onOpenProfile: opts.onOpenUserProfile
+    })
+
     this.root = document.createElement('div')
     this.root.className = 'scene-landing-view'
 
@@ -95,6 +102,7 @@ export class SceneLandingView {
     container.appendChild(this.root)
     this.topNav.mount()
     this.eventModal.mount()
+    this.sceneUsersModal.mount()
     void this.load()
   }
 
@@ -107,6 +115,7 @@ export class SceneLandingView {
     this.stopProgressAnimation()
     document.body.classList.remove('scene-landing-route', 'scene-landing-jump-in-loading')
     this.eventModal.dispose()
+    this.sceneUsersModal.dispose()
     this.topNav.dispose()
     this.root.remove()
   }
@@ -246,6 +255,7 @@ export class SceneLandingView {
       loadingEl.remove()
       this.mainEl.innerHTML = this.renderLayout(this.meta)
       this.bindJumpIn()
+      this.bindCrowdBadge()
       void this.hydrateOwnerAvatar()
       void this.loadRelatedEvents()
     } catch {
@@ -259,6 +269,13 @@ export class SceneLandingView {
     this.root.querySelector('[data-jump-in]')?.addEventListener('click', () => {
       if (this.jumpInLoading) return
       this.onJumpIn()
+    })
+  }
+
+  private bindCrowdBadge(): void {
+    this.root.querySelector('[data-scene-crowd]')?.addEventListener('click', () => {
+      if (!this.meta || this.meta.userCount <= 0) return
+      this.sceneUsersModal.open(this.route, this.meta.title, this.meta.userCount)
     })
   }
 
@@ -361,9 +378,10 @@ export class SceneLandingView {
   private renderLayout(meta: SceneLandingMeta): string {
     const kindLabel = meta.kind === 'world' ? 'World' : 'Parcel'
     const creatorLabel = meta.kind === 'world' ? 'World owner' : 'Creator'
+    const inWorldLabel = meta.kind === 'world' ? 'in world' : 'here'
     const crowdBadge =
       meta.userCount > 0
-        ? `<span class="scene-watch-dest-scene-card-in-world" aria-label="${meta.userCount} people here">${meta.userCount} in world</span>`
+        ? `<button type="button" class="scene-watch-dest-scene-card-in-world" data-scene-crowd aria-label="${meta.userCount} people ${inWorldLabel} — view list">${meta.userCount} ${inWorldLabel}</button>`
         : ''
     const categories = meta.categories
       .slice(0, 4)

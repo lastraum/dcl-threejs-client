@@ -1,6 +1,12 @@
 # Droplet nginx — API proxies for custom domain
 
-**Canonical FTP copies:** [`../remote/decentraland.lastslice.co`](../remote/decentraland.lastslice.co) (prod) and [`../remote/decentraland-dev.lastslice.co`](../remote/decentraland-dev.lastslice.co) (staging).
+**Canonical FTP copies:**
+
+| Domain | Config | Web root |
+| ------ | ------ | -------- |
+| **decentraland.social** (prod) | [`../remote/decentraland.social`](../remote/decentraland.social) | `/var/www/dcl-threejs` |
+| **dev.decentraland.social** (staging) | [`../remote/dev.decentraland.social`](../remote/dev.decentraland.social) | `/var/www/dcl-threejs-dev` |
+| decentraland.lastslice.co (legacy) | [`../remote/decentraland.lastslice.co`](../remote/decentraland.lastslice.co) | `/var/www/dcl-threejs` |
 
 The v0.5.0 explorer loads places/worlds via **same-origin** `/api/places/*` (see `src/map/mapConfig.ts`). Vite proxies this in dev; production needs nginx.
 
@@ -23,7 +29,8 @@ Without rewrite, upstream receives `/api/places/worlds` → Places API `not_foun
 
 ```bash
 sudo nginx -t && sudo systemctl reload nginx
-curl -sS 'https://decentraland.lastslice.co/api/places/worlds?limit=1' | head -c 80
+curl -sS 'https://decentraland.social/api/places/worlds?limit=1' | head -c 80
+curl -sS 'https://dev.decentraland.social/api/places/worlds?limit=1' | head -c 80
 ```
 
 ## Full site config

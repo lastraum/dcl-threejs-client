@@ -828,7 +828,9 @@ export class AppController {
     }
 
     if (!this.devProgressPanel) {
-      this.devProgressPanel = new DevProgressPanel()
+      this.devProgressPanel = new DevProgressPanel({
+        getSession: () => this.world?.session ?? null
+      })
     }
 
     if (!this.shell) {

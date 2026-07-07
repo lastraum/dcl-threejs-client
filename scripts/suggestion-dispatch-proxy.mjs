@@ -29,7 +29,7 @@ export function validateSuggestionPayload(body) {
       summary,
       details,
       category,
-      contact: String(body?.contact ?? '').trim().slice(0, 120) || undefined,
+      author: String(body?.author ?? body?.contact ?? '').trim().slice(0, 120) || undefined,
       client_version: String(body?.client_version ?? 'unknown').trim().slice(0, 40),
       page_url: String(body?.page_url ?? '').trim().slice(0, 500),
       route: String(body?.route ?? '').trim().slice(0, 120) || undefined,

@@ -26,12 +26,12 @@ body:
     attributes:
       label: Category
       options:
-        - UX / polish
-        - Performance
-        - Parity gap (ECS / SDK7)
         - Bug report
         - Docs / dev panel
         - Other
+        - Parity gap (ECS / SDK7)
+        - Performance
+        - UX / polish
     validations:
       required: true
 
@@ -43,9 +43,3 @@ body:
     validations:
       required: true
 
-  - type: input
-    id: contact
-    attributes:
-      label: Contact (optional)
-      description: GitHub handle, Discord, or email if we should follow up
-      placeholder: "@you"

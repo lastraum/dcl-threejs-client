@@ -1,13 +1,14 @@
 import { APP_VERSION } from '../appVersion'
 import { GITHUB_DOCS_REPO, suggestionDispatchUrl } from './githubDocs'
 
+/** Alphabetical — keep in sync with .github/ISSUE_TEMPLATE/suggestion.yml */
 export const SUGGESTION_CATEGORIES = [
-  'UX / polish',
-  'Performance',
-  'Parity gap (ECS / SDK7)',
   'Bug report',
   'Docs / dev panel',
-  'Other'
+  'Other',
+  'Parity gap (ECS / SDK7)',
+  'Performance',
+  'UX / polish'
 ] as const
 
 export type SuggestionCategory = (typeof SUGGESTION_CATEGORIES)[number]
@@ -16,7 +17,8 @@ export type ClientSuggestionInput = {
   summary: string
   category: SuggestionCategory
   details: string
-  contact?: string
+  /** DCL display name (+ wallet when connected). */
+  author?: string
   route?: string
 }
 
@@ -50,7 +52,7 @@ function buildPayload(input: ClientSuggestionInput): ClientSuggestionPayload {
     summary: input.summary.trim(),
     category: input.category,
     details: input.details.trim(),
-    contact: input.contact?.trim() || undefined,
+    author: input.author?.trim() || undefined,
     route: input.route?.trim() || undefined,
     client_version: APP_VERSION,
     page_url: typeof window !== 'undefined' ? window.location.href : '',
@@ -67,7 +69,7 @@ export function communitySuggestionNewIssueUrl(input: ClientSuggestionInput): st
     category: input.category,
     details: input.details.trim()
   })
-  if (input.contact?.trim()) params.set('contact', input.contact.trim())
+  if (input.author?.trim()) params.set('author', input.author.trim())
   return `https://github.com/${GITHUB_DOCS_REPO}/issues/new?${params.toString()}`
 }
 

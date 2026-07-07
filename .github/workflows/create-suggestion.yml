@@ -28,7 +28,7 @@ jobs:
               core.setFailed('details must be 10–8000 characters')
               return
             }
-            const contact = String(p.contact ?? '').trim().slice(0, 120)
+            const author = String(p.author ?? p.contact ?? '').trim().slice(0, 120)
             const clientVersion = String(p.client_version ?? 'unknown').trim().slice(0, 40)
             const pageUrl = String(p.page_url ?? '').trim().slice(0, 500)
             const route = String(p.route ?? '').trim().slice(0, 120)
@@ -49,7 +49,7 @@ jobs:
               `- Client: \`${clientVersion}\``,
               route ? `- Route: \`${route}\`` : null,
               pageUrl ? `- Page: ${pageUrl}` : null,
-              contact ? `- Contact: ${contact}` : null,
+              author ? `- Author: ${author}` : null,
               userAgent ? `- UA: \`${userAgent}\`` : null,
               '',
               '---',

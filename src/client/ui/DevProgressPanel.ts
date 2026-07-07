@@ -18,7 +18,9 @@ import {
   submitClientSuggestion,
   type SuggestionCategory
 } from '../dev/submitSuggestion'
+import { identityFromAvatarProfile, shortenAddress } from '../../avatar/displayName'
 import { resolveRouteTarget } from '../../dcl/content/route'
+import type { SessionIdentity } from '../../network/SessionIdentity'
 import {
   ALL_INTEGRATION_ENTRIES,
   countIntegrationByStatus,
@@ -37,6 +39,10 @@ import {
 import { renderInlineMarkdown, renderMarkdownToHtml } from '../dev/renderMarkdown'
 
 type DevTab = 'community' | 'status' | 'progress'
+
+export type DevProgressPanelOptions = {
+  getSession?: () => SessionIdentity | null
+}
 
 /** Dev overlay — community workflow + full parity matrix + PROGRESS.md milestones. */
 export class DevProgressPanel {
@@ -58,8 +64,10 @@ export class DevProgressPanel {
   private progressLoading = false
   private suggestionSubmitting = false
   private suggestionFormOpen = false
+  private readonly getSession: () => SessionIdentity | null
 
-  constructor() {
+  constructor(options: DevProgressPanelOptions = {}) {
+    this.getSession = options.getSession ?? (() => null)
     this.root = document.createElement('div')
     this.root.className = 'dev-progress'
     this.root.hidden = true
@@ -216,7 +224,6 @@ export class DevProgressPanel {
       <span class="dev-progress__chip dev-progress__chip--pending">🟠 ${pending} pending review</span>
       <span class="dev-progress__chip dev-progress__chip--done">🟢 ${merged} merged</span>
       <a class="dev-progress__chip dev-progress__chip--claim" href="${escapeHtml(communityClaimNewIssueUrl())}" target="_blank" rel="noopener">+ Claim work</a>
-      <button type="button" class="dev-progress__chip dev-progress__chip--suggest" data-suggest-toggle>+ Suggest</button>
     `
 
     const branch = this.claimsLoad?.branch ?? this.progressLoad?.branch ?? 'dev-latest'
@@ -241,10 +248,6 @@ export class DevProgressPanel {
         suggestionSection.querySelector<HTMLInputElement>('input[name="summary"]')?.focus()
       })
     }
-
-    this.summaryEl.querySelectorAll('[data-suggest-toggle]').forEach((el) => {
-      el.addEventListener('click', () => this.openSuggestionForm())
-    })
 
     if (!this.claimsLoad) {
       const loading = document.createElement('p')
@@ -313,6 +316,29 @@ export class DevProgressPanel {
     else this.renderCommunity()
   }
 
+  private resolveSuggestionAuthor(): string | undefined {
+    const session = this.getSession()
+    if (!session) return undefined
+    const address = session.getAddress()
+    const profile = session.getProfile()
+    if (profile) {
+      const identity = identityFromAvatarProfile(profile, address)
+      if (address) return `${identity.displayName} (${address})`
+      return identity.displayName
+    }
+    if (address) return shortenAddress(address)
+    return undefined
+  }
+
+  private suggestionAuthorLabel(): string {
+    const session = this.getSession()
+    if (!session?.getAddress()) return 'Guest'
+    const profile = session.getProfile()
+    if (profile?.displayName?.trim()) return profile.displayName.trim()
+    const address = session.getAddress()
+    return address ? shortenAddress(address) : 'Guest'
+  }
+
   private formatRouteContext(): string | undefined {
     const route = resolveRouteTarget()
     if (route.kind === 'coords') return `${route.x},${route.y}`
@@ -329,10 +355,12 @@ export class DevProgressPanel {
     const section = document.createElement('section')
     section.className = 'dev-progress__section dev-progress__suggest'
     if (!this.suggestionFormOpen) section.hidden = true
+    const authorLabel = this.suggestionAuthorLabel()
     section.innerHTML = `
       <h3 class="dev-progress__section-title">Suggest an improvement</h3>
       <p class="dev-progress__suggest-hint">
-        Submits in-app via GitHub Action → issue labeled <code>suggestion</code>. No redirect.
+        Submits in-app via GitHub Action → issue labeled <code>suggestion</code>.
+        Submitting as <strong>${escapeHtml(authorLabel)}</strong>.
       </p>
       <form class="dev-progress__suggest-form">
         <label class="dev-progress__suggest-field">
@@ -350,10 +378,6 @@ export class DevProgressPanel {
         <label class="dev-progress__suggest-field dev-progress__suggest-field--wide">
           <span>Details</span>
           <textarea name="details" rows="4" maxlength="8000" required placeholder="What you tried, expected behavior, or mockup notes"></textarea>
-        </label>
-        <label class="dev-progress__suggest-field">
-          <span>Contact (optional)</span>
-          <input type="text" name="contact" maxlength="120" placeholder="@github-handle" />
         </label>
         <div class="dev-progress__suggest-actions">
           <button type="submit" class="dev-progress__suggest-submit">Submit suggestion</button>
@@ -380,7 +404,6 @@ export class DevProgressPanel {
     const summary = String(data.get('summary') ?? '').trim()
     const details = String(data.get('details') ?? '').trim()
     const category = String(data.get('category') ?? 'Other') as SuggestionCategory
-    const contact = String(data.get('contact') ?? '').trim()
 
     if (summary.length < 4 || details.length < 10) {
       statusEl.hidden = false
@@ -400,7 +423,7 @@ export class DevProgressPanel {
       summary,
       category,
       details,
-      contact: contact || undefined,
+      author: this.resolveSuggestionAuthor(),
       route: this.formatRouteContext()
     })
 

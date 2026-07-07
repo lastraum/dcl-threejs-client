@@ -2,6 +2,9 @@ import type { Entity } from '@dcl/ecs'
 import type { MirrorComponents } from '../../bridge/mirrorComponents'
 import type { ProjectionView } from '../../bridge/ProjectionView'
 import type { PBPointerEvents_Entry } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/pointer_events.gen'
+export type UiPointerEventsLookup = (
+  entity: Entity
+) => { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> } | null | undefined
 import {
   InputAction,
   InteractionType,
@@ -60,12 +63,14 @@ export function resolveUiPointerResultEntity(
   view: ProjectionView,
   entity: Entity,
   button: InputActionValue,
-  state: PointerEventTypeValue = PointerEventType.PET_DOWN
+  state: PointerEventTypeValue = PointerEventType.PET_DOWN,
+  pointerEventsOf?: UiPointerEventsLookup
 ): Entity {
   let current: Entity = entity
   const root = view.RootEntity
+  const specOf = (id: Entity) => pointerEventsOf?.(id) ?? ecs.PointerEvents.getOrNull(id)
   for (;;) {
-    const spec = ecs.PointerEvents.getOrNull(current)
+    const spec = specOf(current)
     if (spec && hasUiPointerEvent(spec, state, button)) {
       return current
     }
@@ -76,18 +81,56 @@ export function resolveUiPointerResultEntity(
   return entity
 }
 
+/** True when this entity (not ancestors) has a matching cursor PET_DOWN/PET_UP handler. */
+export function hasDirectUiPointerHandler(
+  ecs: MirrorComponents,
+  entity: Entity,
+  button: InputActionValue,
+  state: PointerEventTypeValue = PointerEventType.PET_DOWN,
+  pointerEventsOf?: UiPointerEventsLookup
+): boolean {
+  const spec = pointerEventsOf?.(entity) ?? ecs.PointerEvents.getOrNull(entity)
+  return hasUiPointerEvent(spec, state, button)
+}
+
+/** Walk UiTransform parents — first entity with PET_DOWN/PET_UP, or null when none. */
+export function findUiPointerHandlerEntity(
+  ecs: MirrorComponents,
+  view: ProjectionView,
+  entity: Entity,
+  button: InputActionValue,
+  state: PointerEventTypeValue = PointerEventType.PET_DOWN,
+  pointerEventsOf?: UiPointerEventsLookup
+): Entity | null {
+  let current: Entity = entity
+  const root = view.RootEntity
+  const specOf = (id: Entity) => pointerEventsOf?.(id) ?? ecs.PointerEvents.getOrNull(id)
+  for (;;) {
+    const spec = specOf(current)
+    if (spec && hasUiPointerEvent(spec, state, button)) {
+      return current
+    }
+    const parent = ecs.UiTransform.getOrNull(current)?.parent ?? 0
+    if (!parent || parent === root || parent === 0) break
+    current = parent as Entity
+  }
+  return null
+}
+
 export function collectUiPointerResultTargets(
   ecs: MirrorComponents,
   view: ProjectionView,
   entity: Entity,
   button: InputActionValue,
-  state: PointerEventTypeValue
+  state: PointerEventTypeValue,
+  pointerEventsOf?: UiPointerEventsLookup
 ): Entity[] {
   const targets: Entity[] = []
   let current: Entity = entity
   const root = view.RootEntity
+  const specOf = (id: Entity) => pointerEventsOf?.(id) ?? ecs.PointerEvents.getOrNull(id)
   for (;;) {
-    const spec = ecs.PointerEvents.getOrNull(current)
+    const spec = specOf(current)
     if (spec) {
       if (hasUiPointerEvent(spec, state, button)) targets.push(current)
       else if (

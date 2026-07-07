@@ -2,8 +2,12 @@
 export type InjectPointerClickBody = {
   /** PointerEvents entity (resolved target, not necessarily raycast mesh). */
   entity: number
-  /** All entities that receive PointerEventsResult (ancestor chain). */
+  /** All entities that receive PointerEventsResult on PET_UP (ancestor chain). */
   entities: number[]
+  /** PET_DOWN bubble targets — defaults to `entities` when omitted. */
+  downEntities?: number[]
+  /** PET_UP bubble targets — defaults to `entities` when omitted. */
+  upEntities?: number[]
   /** Raycast hit entity id. */
   hitEntity: number
   button: number

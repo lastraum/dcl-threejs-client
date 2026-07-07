@@ -4,6 +4,7 @@ import { extractUiTextureSrc } from '../../ui/scene/uiBackgroundStyle'
 import { normalizePointerFilterMode, normalizeYGDisplay } from '../../ui/scene/yogaEnums'
 
 import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
+import { shouldSuppressCooperativeReactEcs } from './sceneWorkerInputSession'
 import {
   resolveWorkerUiBackground,
   resolveWorkerUiDropdown,
@@ -53,8 +54,9 @@ export function installEngineSystemLoopPartition(): void {
       }
       runOne(system, dt)
     }
-    if (scale) runOne(scale, dt)
-    if (react) runOne(react, dt)
+    const suppressReact = shouldSuppressCooperativeReactEcs()
+    if (scale && !suppressReact) runOne(scale, dt)
+    if (react && !suppressReact) runOne(react, dt)
   }
 }
 
@@ -106,6 +108,10 @@ export function resetWorkerUiFingerprint(): void {
 
 export function seedWorkerUiFingerprint(engine: IEngine): void {
   lastWorkerUiFingerprint = computeWorkerUiFingerprint(engine)
+}
+
+export function getWorkerUiFingerprintBaseline(): string {
+  return lastWorkerUiFingerprint
 }
 
 export function hasWorkerReactEcsSync(_engine: IEngine): boolean {
@@ -282,6 +288,9 @@ function touchRemovedUiEntityForCrdt(
   return touched
 }
 
+/** Bulk menu/panel open — dirty-only can miss transport PUTs; touch every mounted Ui* row. */
+const UI_MOUNT_GROWTH_FULL_TOUCH_MIN = 4
+
 /** Touch only entities whose fingerprint line changed — boot baseline uses full mount when prev is empty. */
 function touchDirtyWorkerUiComponentsForCrdt(engine: IEngine, prevFingerprint: string): number {
   const fingerprint = computeWorkerUiFingerprint(engine)
@@ -289,6 +298,10 @@ function touchDirtyWorkerUiComponentsForCrdt(engine: IEngine, prevFingerprint: s
 
   const prevLines = parseFingerprintEntityLines(prevFingerprint)
   const currLines = parseFingerprintEntityLines(fingerprint)
+  const entityGrowth = currLines.size - prevLines.size
+  if (entityGrowth >= UI_MOUNT_GROWTH_FULL_TOUCH_MIN) {
+    return touchWorkerUiComponentsForCrdt(engine)
+  }
   const dirty = new Set<Entity>()
   for (const [entityKey, line] of currLines) {
     if (prevLines.get(entityKey) !== line) dirty.add(Number(entityKey) as Entity)
@@ -320,16 +333,30 @@ function touchDirtyWorkerUiComponentsForCrdt(engine: IEngine, prevFingerprint: s
   return touched
 }
 
+export type PlanSceneUiCrdtEmitOptions = {
+  /** Pointer interactive tick — full mount touch + deterministic encode. */
+  pointerTick?: boolean
+  /** Pointer tick — touch every mounted Ui* row before manual encode. */
+  forceFullTouch?: boolean
+}
+
 /**
  * Phase 2 of a scheduler tick — touch dirty Ui* when fingerprint changed.
  * Caller runs engine.update(0) for transport emit, then commitSceneUiCrdtBaseline.
  */
-export function planSceneUiCrdtEmit(engine: IEngine, log?: (message: string) => void): boolean {
+export function planSceneUiCrdtEmit(
+  engine: IEngine,
+  log?: (message: string) => void,
+  opts?: PlanSceneUiCrdtEmitOptions
+): boolean {
   const fingerprint = computeWorkerUiFingerprint(engine)
   if (fingerprint === lastWorkerUiFingerprint) return false
 
   const prevLen = lastWorkerUiFingerprint.length
-  const touched = touchDirtyWorkerUiComponentsForCrdt(engine, lastWorkerUiFingerprint)
+
+  const touched = opts?.forceFullTouch
+    ? touchWorkerUiComponentsForCrdt(engine)
+    : touchDirtyWorkerUiComponentsForCrdt(engine, lastWorkerUiFingerprint)
   if (touched <= 0) {
     log?.(
       `[sceneWorker] ui fingerprint changed without transport touch — fp=${prevLen}→${fingerprint.length}B`

@@ -8,6 +8,7 @@ import type { PBUiText } from '@dcl/ecs/dist/components/generated/pb/decentralan
 import type { PBUiTransform } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_transform.gen'
 import type { ProjectionChange } from '../../bridge/CrdtProjection'
 import type { ProjectionView } from '../../bridge/ProjectionView'
+import type { WorkerUiMountSnapshotRow } from '../../shim/types'
 import type { MirrorComponents } from '../../bridge/mirrorComponents'
 import type { ResolvedScene } from '../../dcl/content/types'
 import type { PointerHit } from '../../input/PointerEventsSystem'
@@ -22,20 +23,29 @@ import {
   readInteractableArea,
   type VirtualCanvasSize
 } from './virtualCanvas'
-import { SceneUiHitMap } from './uiHitMap'
+import { SceneUiHitMap, type UiScreenRegion } from './uiHitMap'
 import { disposeSceneUiDebug, reportInputModifierState, reportSceneUiDebug } from './sceneUiDebug'
 import {
+  collectSceneUiEntitiesFromDom,
   entityFromSceneUiDomTarget,
   pickSceneUiEntityFromDom,
   setSceneUiAuthoritativeEntityCheck
 } from './uiDomPick'
-import { hasUiPointerEvent, isUiPointerBlocking, resolveUiPointerResultEntity } from './uiPointer'
+import {
+  hasDirectUiPointerHandler,
+  hasUiPointerDownOrUp,
+  hasUiPointerEvent,
+  resolveUiPointerResultEntity,
+  type UiPointerEventsLookup
+} from './uiPointer'
+import { normalizePointerFilterMode, PointerFilterMode } from './yogaEnums'
 import { InputAction, PointerEventType, type PointerEventTypeValue } from '../../input/pointerConstants'
 import { computeUiLayoutKey, UiLayoutCache, visibleLayoutBoxes } from './uiLayoutCache'
 import { layoutUiTree, type LayoutBox } from './yogaLayout'
 import { onSceneUiImageLoaded } from './uiImageLoad'
 
 const _camPos = new THREE.Vector3()
+const POINTER_EVENTS_COMPONENT_ID = 1062
 
 export type SceneUiWriteback = {
   writeInputResult: (entity: Entity, value: string, isSubmit?: boolean) => void
@@ -67,6 +77,8 @@ export class SceneUiBridge {
   private paintCount = 0
   private readonly unbindImageLoaded: () => void
   private imageRepaintQueued = false
+  /** Latest pointer phase-4 rows — authoritative for DOM hits when projection lags. */
+  private mountSnapshotPointerEvents = new Map<Entity, unknown>()
 
   constructor(scene: ResolvedScene | null = null, getCanvas: () => HTMLElement | null = () => null) {
     this.scene = scene
@@ -110,6 +122,28 @@ export class SceneUiBridge {
   bindWriteback(writeback: SceneUiWriteback): void {
     this.writeback = writeback
   }
+
+  /** Pointer phase-4 structured mount — feed DOM paint + hit tests before projection fold. */
+  ingestMountSnapshot(rows: readonly WorkerUiMountSnapshotRow[]): void {
+    this.mountSnapshotPointerEvents.clear()
+    for (const row of rows) {
+      if (row.componentId !== POINTER_EVENTS_COMPONENT_ID) continue
+      this.mountSnapshotPointerEvents.set(row.entity as Entity, row.value)
+    }
+  }
+
+  private pointerEventsLookup: UiPointerEventsLookup = (entity) => {
+    const ecs = this.mirrorEcs
+    const fromProjection = ecs?.PointerEvents.getOrNull(entity) ?? null
+    if (fromProjection) return fromProjection
+    if (!this.isAuthoritativeUiEntity(entity)) return null
+    return (
+      (this.mountSnapshotPointerEvents.get(entity) as ReturnType<UiPointerEventsLookup>) ?? null
+    )
+  }
+
+  /** Projection + phase-4 snapshot — used by pointer flush and DOM interactivity. */
+  pointerEventsOf: UiPointerEventsLookup = (entity) => this.pointerEventsLookup(entity)
 
   hasCommittedMountSet(): boolean {
     return this.workerUiEntitiesKnown && (this.workerUiEntities?.size ?? 0) > 0
@@ -333,6 +367,7 @@ export class SceneUiBridge {
       viewport,
       scene: this.scene,
       ecs,
+      pointerEventsOf: this.pointerEventsLookup,
       transformOf,
       textOf,
       inputOf,
@@ -380,7 +415,7 @@ export class SceneUiBridge {
     const view = this.lastView
     if (!ecs || !view) return null
     const entity = pickSceneUiEntityFromDom(clientX, clientY, (e) =>
-      this.acceptBlockingUiEntity(ecs, e)
+      this.acceptPickableUiEntity(ecs, e)
     )
     if (entity === null) return null
     const handler = resolveUiPointerResultEntity(
@@ -388,30 +423,128 @@ export class SceneUiBridge {
       view,
       entity,
       InputAction.IA_POINTER,
-      PointerEventType.PET_DOWN
+      PointerEventType.PET_DOWN,
+      this.pointerEventsLookup
     )
     return this.buildDomPointerHit(handler, camera)
   }
 
-  /** Worker mount + pointerFilter BLOCK or onPointerDown/onPointerUp (or UiInput/UiDropdown). */
-  private acceptBlockingUiEntity(ecs: MirrorComponents, entity: Entity): boolean {
+  /**
+   * Pick list membership — explicit pointerFilter BLOCK, onPointerDown/Up (PointerEvents),
+   * or UiInput/UiDropdown only. Default is pass-through (pointer-events: none).
+   */
+  private acceptPickableUiEntity(ecs: MirrorComponents, entity: Entity): boolean {
+    if (!this.isAuthoritativeUiEntity(entity)) return false
+    if (this.input.isFieldEntity(entity)) return true
+    const spec = this.pointerEventsLookup(entity)
+    if (hasUiPointerDownOrUp(spec)) return true
+    const transform = ecs.UiTransform.getOrNull(entity)
     return (
-      this.isAuthoritativeUiEntity(entity) &&
-      (isUiPointerBlocking(ecs, entity) || this.input.isFieldEntity(entity))
+      transform !== null &&
+      transform !== undefined &&
+      normalizePointerFilterMode(transform.pointerFilter) === PointerFilterMode.BLOCK
     )
   }
 
-  /** Interactive DOM nodes — pointerFilter BLOCK or PET_DOWN/PET_UP on self. */
+  private filterPickRegions(clientX: number, clientY: number, regions: readonly UiScreenRegion[]): UiScreenRegion[] {
+    let filtered = [...regions]
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 1920
+    const vh = typeof window !== 'undefined' ? window.innerHeight : 1080
+    const nestedDialogs = filtered.filter(
+      (r) => r.width < vw * 0.75 && r.height < vh * 0.75 && r.width > 48 && r.height > 48
+    )
+    if (
+      nestedDialogs.some(
+        (r) =>
+          clientX >= r.left &&
+          clientX <= r.left + r.width &&
+          clientY >= r.top &&
+          clientY <= r.top + r.height
+      )
+    ) {
+      filtered = filtered.filter((r) => !(r.width >= vw * 0.85 && r.height >= vh * 0.85))
+    }
+
+    const headerBands = filtered.filter(
+      (r) => r.height > 0 && r.height <= 80 && clientY >= r.top && clientY <= r.top + r.height
+    )
+    if (headerBands.length) {
+      const bandBottom = Math.max(...headerBands.map((r) => r.top + r.height))
+      filtered = filtered.filter((r) => {
+        if (r.height <= 80) return true
+        if (r.top >= bandBottom - 1 && r.height > 96) return false
+        return true
+      })
+    }
+    return filtered
+  }
+
+  /**
+   * Deepest yoga layout box at (x,y) — parent-walk for onMouseDown happens in resolveUiHandlerAtPoint.
+   * Header-band filter keeps tab-row clicks off panel BLOCK regions stacked below.
+   */
   private pickDomEntity(
     clientX: number,
     clientY: number,
     ecs: MirrorComponents,
     target?: EventTarget | null
   ): Entity | null {
-    const accept = (e: Entity) => this.acceptBlockingUiEntity(ecs, e)
-    const fromTarget = entityFromSceneUiDomTarget(target ?? null, accept)
-    if (fromTarget !== null) return fromTarget
-    return pickSceneUiEntityFromDom(clientX, clientY, accept)
+    const view = this.lastView
+    const accept = (e: Entity) => this.acceptPickableUiEntity(ecs, e)
+
+    const domCandidates: Entity[] = []
+    const seenDom = new Set<number>()
+    const pushDom = (entity: Entity | null): void => {
+      if (entity === null || !accept(entity)) return
+      const id = entity as number
+      if (seenDom.has(id)) return
+      seenDom.add(id)
+      domCandidates.push(entity)
+    }
+    pushDom(entityFromSceneUiDomTarget(target ?? null, accept))
+    for (const entity of collectSceneUiEntitiesFromDom(clientX, clientY, accept)) {
+      pushDom(entity)
+    }
+
+    if (view) {
+      for (const entity of domCandidates) {
+        if (
+          hasDirectUiPointerHandler(
+            ecs,
+            entity,
+            InputAction.IA_POINTER,
+            PointerEventType.PET_DOWN,
+            this.pointerEventsLookup
+          )
+        ) {
+          return entity
+        }
+      }
+    }
+
+    const regions = this.filterPickRegions(
+      clientX,
+      clientY,
+      this.hitMap.hitTestRegionCandidates(clientX, clientY)
+    )
+    if (view) {
+      for (const region of regions) {
+        if (!this.isAuthoritativeUiEntity(region.entity)) continue
+        if (
+          hasDirectUiPointerHandler(
+            ecs,
+            region.entity,
+            InputAction.IA_POINTER,
+            PointerEventType.PET_DOWN,
+            this.pointerEventsLookup
+          )
+        ) {
+          return region.entity
+        }
+      }
+    }
+
+    return null
   }
 
   /** Interactive DOM only — must not steal canvas orbit / 3D clicks. */
@@ -427,7 +560,14 @@ export class SceneUiBridge {
 
     const domEntity = this.pickDomEntity(clientX, clientY, ecs, eventTarget)
     if (domEntity === null) return null
-    return resolveUiPointerResultEntity(ecs, view, domEntity, InputAction.IA_POINTER, state)
+    return resolveUiPointerResultEntity(
+      ecs,
+      view,
+      domEntity,
+      InputAction.IA_POINTER,
+      state,
+      this.pointerEventsLookup
+    )
   }
 
   /**
@@ -449,7 +589,7 @@ export class SceneUiBridge {
     if (handlerEntity === null || this.input.isFieldEntity(handlerEntity)) return null
 
     const button = InputAction.IA_POINTER
-    const spec = ecs.PointerEvents.getOrNull(handlerEntity)
+    const spec = this.pointerEventsLookup(handlerEntity)
     const hasDown = hasUiPointerEvent(spec, PointerEventType.PET_DOWN, button)
     const hasState = hasUiPointerEvent(spec, state, button)
     if (!hasState && !(state === PointerEventType.PET_UP && hasDown)) {

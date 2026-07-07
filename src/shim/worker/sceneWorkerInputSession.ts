@@ -7,6 +7,8 @@ import type { SceneInputSnapshotBody } from '../../player/sceneInputSnapshot'
  */
 let pointerInputSessionDepth = 0
 let coalescedKeyboardSnapshot: SceneInputSnapshotBody | null = null
+/** True during runSceneEnginePointerTick — react-ecs must run inside pointer phases 1/3. */
+let pointerInteractiveTickActive = false
 
 export function enterPointerInputSession(): void {
   pointerInputSessionDepth++
@@ -34,4 +36,18 @@ export function coalesceKeyboardSnapshotDuringPointerSession(body: SceneInputSna
 export function resetPointerInputSession(): void {
   pointerInputSessionDepth = 0
   coalescedKeyboardSnapshot = null
+  pointerInteractiveTickActive = false
+}
+
+export function setPointerInteractiveTickActive(active: boolean): void {
+  pointerInteractiveTickActive = active
+}
+
+/**
+ * Cooperative engine.update only — skip react-ecs while a pointer batch is open.
+ * Pointer interactive tick sets pointerInteractiveTickActive so react-ecs still runs there.
+ */
+export function shouldSuppressCooperativeReactEcs(): boolean {
+  if (pointerInteractiveTickActive) return false
+  return pointerInputSessionDepth > 0
 }

@@ -49,11 +49,15 @@ function nodePointerEventsAuto(node: HTMLElement): boolean {
   return sceneUiNodeHitVisible(node)
 }
 
-/** True when `el` is an interactive scene UI control (button host, UiInput, UiDropdown). */
+/** True when `el` is a pickable scene UI control — BLOCK, onPointerDown/Up, or field. */
 export function isInteractiveSceneUiElement(el: Element): boolean {
   if (isSceneUiFieldDom(el)) return true
   const node = sceneUiNodeFromElement(el)
-  return node !== null && nodePointerEventsAuto(node)
+  return (
+    node !== null &&
+    node.classList.contains('scene-ui-node--interactive') &&
+    sceneUiNodeHitVisible(node)
+  )
 }
 
 /** Event target is inside the scene ECS UI overlay. */
@@ -85,19 +89,18 @@ export function entityFromSceneUiDomTarget(
   return entity
 }
 
-/**
- * Topmost interactive scene UI entity at screen coords.
- * Authoritative input path — matches rendered DOM (scroll-aware).
- */
-export function pickSceneUiEntityFromDom(
+/** All interactive scene UI entities under (clientX, clientY), topmost DOM order first. */
+export function collectSceneUiEntitiesFromDom(
   clientX: number,
   clientY: number,
   acceptEntity?: (entity: Entity) => boolean
-): Entity | null {
-  if (typeof document.elementsFromPoint !== 'function') return null
+): Entity[] {
+  if (typeof document.elementsFromPoint !== 'function') return []
   const root = sceneUiRoot()
-  if (!root) return null
+  if (!root) return []
   const accept = resolveAcceptEntity(acceptEntity)
+  const seen = new Set<number>()
+  const entities: Entity[] = []
 
   for (const el of document.elementsFromPoint(clientX, clientY)) {
     if (!(el instanceof Element)) continue
@@ -108,9 +111,24 @@ export function pickSceneUiEntityFromDom(
     const entity = entityFromSceneUiNode(node)
     if (entity === null) continue
     if (accept && !accept(entity)) continue
-    return entity
+    const id = entity as number
+    if (seen.has(id)) continue
+    seen.add(id)
+    entities.push(entity)
   }
-  return null
+  return entities
+}
+
+/**
+ * Topmost interactive scene UI entity at screen coords.
+ * Authoritative input path — matches rendered DOM (scroll-aware).
+ */
+export function pickSceneUiEntityFromDom(
+  clientX: number,
+  clientY: number,
+  acceptEntity?: (entity: Entity) => boolean
+): Entity | null {
+  return collectSceneUiEntitiesFromDom(clientX, clientY, acceptEntity)[0] ?? null
 }
 
 /** Topmost interactive scene UI at screen coords — blocks 3D raycast when over overlay. */

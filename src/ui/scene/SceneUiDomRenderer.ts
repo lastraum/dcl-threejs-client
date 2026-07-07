@@ -17,7 +17,7 @@ import {
   normalizeBackgroundTextureMode,
   resolveUiBackgroundImageUrl
 } from './uiBackgroundStyle'
-import { isUiPointerBlocking } from './uiPointer'
+import { hasUiPointerDownOrUp, type UiPointerEventsLookup } from './uiPointer'
 import type { MirrorComponents } from '../../bridge/mirrorComponents'
 import type { UiScreenRegion } from './uiHitMap'
 import { CANVAS_ROOT_ENTITY } from './uiTree'
@@ -48,6 +48,8 @@ export type SceneUiDrawInput = {
   viewport: UiViewport
   scene: ResolvedScene | null
   ecs: MirrorComponents
+  /** Worker mount snapshot PointerEvents — projection can lag one frame behind paint. */
+  pointerEventsOf?: UiPointerEventsLookup
   /** DOM screen rects for `?sceneuidebug` — same source as pointer hits. */
   onRegions?: (regions: UiScreenRegion[]) => void
   /**
@@ -66,11 +68,13 @@ function isSceneUiNodeInteractive(
   ecs: MirrorComponents,
   transform: PBUiTransform,
   inputOf: (e: Entity) => PBUiInput | null,
-  dropdownOf: (e: Entity) => PBUiDropdown | null
+  dropdownOf: (e: Entity) => PBUiDropdown | null,
+  pointerEventsOf?: UiPointerEventsLookup
 ): boolean {
+  const spec = pointerEventsOf?.(entity) ?? ecs.PointerEvents.getOrNull(entity)
   return (
     normalizePointerFilterMode(transform.pointerFilter) === PointerFilterMode.BLOCK ||
-    isUiPointerBlocking(ecs, entity) ||
+    hasUiPointerDownOrUp(spec) ||
     !!inputOf(entity) ||
     !!dropdownOf(entity)
   )
@@ -391,7 +395,8 @@ export class SceneUiDomRenderer {
       input.ecs,
       transform,
       input.inputOf,
-      input.dropdownOf
+      input.dropdownOf,
+      input.pointerEventsOf
     )
 
     const compactControl =

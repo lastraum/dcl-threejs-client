@@ -15,41 +15,59 @@ alwaysApply: true
 
 Main posts freely. Worker owns ordering via `sceneWorkerInputSession` (snapshots coalesce during pointer session).
 
-## Pointer interactive tick (only path for UI clicks)
+## Ui CRDT egress boundary (hard rule)
 
-One pipeline in `runSceneEnginePointerTick` — do **not** reuse cooperative tick with flags:
+Scene UI bytes (`UiTransform`, `UiBackground`, `UiText`, `UiInput`, `UiDropdown`, `PointerEvents`) may leave the worker **only** during pointer interactive tick phase 4 (`shouldAttachUiMountSnapshot`).
 
-1. `engine.update(0)` — EventSystem/getClick + deferred react-ecs (inject already on engine)
+- `stripSceneUiCrdtBytes` strips all Ui* PUT/DELETE from every other `rpcCrdt` call (cooperative `engine.update`, phases 1–3).
+- Play-mode cooperative ticks do **not** call `emitSceneUiCrdtIfDirty` — hydration/boot only.
+- Pointer phase 4 uses `collectWorkerUiMountSnapshot` (structured component values) — not CRDT wire or bundled `engine.update(0)` transport.
+
+## Pointer egress buffers
+
+During pointer defer (`shouldDeferPointerOutbound`):
+
+- Phases 1–3 → `pointerDeferredNonUi` (Ui* stripped)
+- Phase 4 → `collectWorkerUiMountSnapshot` → `pointerUiMountSnapshot`; non-Ui remainder → `pointerDeferredNonUi`
+
+`flushPointerDeferredOutboundsAsync`:
+
+1. Post all non-Ui chunks (no `uiEntities`)
+2. Post **one** atomic Ui snapshot last with `uiMountSnapshot + uiEntities` (empty CRDT data)
+3. Await all `crdt-outbound-ack` before `pointer-deliver-done`
+
+No gap force-flush, no shrink skip, no mid-tick Ui emit.
+
+## Pointer interactive tick
+
+One pipeline in `runSceneEnginePointerTick` — inject runs immediately before each `engine.update(0)`, never on the `inject-pointer-click` message:
+
+1. `inject PET_DOWN` → `engine.update(0)` — getClick(DOWN) + react-ecs
 2. `scene.exports.onUpdate(0)`
-3. `engine.update(0)` — react-ecs reconciles onUpdate closure mutations
-4. `emitSceneUiCrdtIfDirty` — **single** Ui CRDT transport emit
+3. `inject PET_UP` → `engine.update(0)` — getClick(UP) + react-ecs after onUpdate
+4. `runPointerUiPhase4Egress` — structured snapshot → `pointerUiMountSnapshot` (always, not fingerprint-gated)
+
+`awaitEngineUpdateIdle` before pointer deliver — no cooperative `engine.update` interleaving.
+
+Cooperative ticks during pointer **session** skip `@dcl/react-ecs` (`pointerInputSessionDepth > 0`). Pointer phases 1/3 still run react-ecs (`pointerInteractiveTickActive`).
 
 Never emit Ui CRDT between phases 1 and 3.
 
 ## Pointer timestamps
 
-All worker `PointerEventsResult` rows use `workerPointerEventTimestamp.ts` (keyboard snapshots, inject-pointer-click, renderer pointer appends). Main-thread timestamps are not authoritative on the worker.
+All worker `PointerEventsResult` rows use `workerPointerEventTimestamp.ts`. UI clicks: `inject-pointer-click` only.
 
-UI clicks: `inject-pointer-click` only — do not also ship main-encoded pointer appends.
+## Pointer delivery & tick resume
 
-## Ui CRDT dirty touch
-
-`touchDirtyWorkerUiComponentsForCrdt` must emit removals via LWW `deleteFrom(entity)` when entities leave the fingerprint. If react-ecs already removed rows, use create+`deleteFrom` to queue DeleteComponent transport. No full-mount fallback.
-
-## Ui mount snapshot (`uiEntities`)
-
-Attach `uiEntities` to `crdt-outbound` **only** during `emitSceneUiCrdtIfDirty` transport (`shouldAttachUiMountSnapshot`) and `flushPointerDeferredOutbounds` after pointer batch drain. **Never** attach on **empty** transport nudges — shrunk `uiEntities` unmounts main DOM without DeleteComponent bytes (UI flash).
-
-`ready` must post `uiEntities` collected **after** `runSceneEngineBootTick`, never `[]` — an empty mount commit clears DOM that boot flush already painted.
-
-Pointer `onUpdate(0)` advances `lastFullSceneUpdateAt` — it satisfies one cooperative onUpdate interval; do not run a second `exports.onUpdate` immediately after pointer tick.
-
-Cooperative ticks resume **only** on main `pause-scene-ticks:false` (after `crdtOutboundSerial` + `flushUiFrame`). Never `resumeSceneTicksAfterPointer` from `drainPointerDeliverQueue` — early resume runs cooperative `engine.update` before main applies open UI CRDT (679→111 revert + mount lag flash).
-
-When UI mount commit is deferred (`projection UiTransform` lagging `uiEntities`), hold `renderer-inbound-deliver` until `finishPointerDeliveryAsync` flush — do not echo renderer state to worker while mount is pending.
+- `flushPointerDeferredOutboundsAsync` awaits `crdt-outbound-ack` (after main apply) before `pointer-deliver-done`.
+- Main sets `pointerHoldTicksUntilMount` on deliver; resumes via `pause-scene-ticks:false` only when `isMountSetReady`.
+- `pause-scene-ticks:false` ends pointer input session (keyboard coalesce) + `flushDeferredRendererInbound({ applyOnly: true })`.
+- Bulk mount: `clearLwwSlotsForEntities` on main before apply when `mountChanged` or pointer-open batch.
 
 ## Do not
 
-- `deferUiEmit`, `pendingSceneInputSnapshot`, full-mount touch fallback, or `resumeSceneTicksAfterPointer` on skipped finalize
-- Defensive “belt-and-suspenders” paths — fix phase boundaries, queues, or delete semantics instead
+- Shrink heuristics (`suppressShrink`, `pointer ui shrink skipped`) — hard strip instead
+- Transport gap force-flush or `pointer-input-session-end` maze
+- `deferUiEmit`, `pendingSceneInputSnapshot`, or cooperative tick resume before mount commit
 - Mid-tick Ui CRDT emit during pointer delivery
+- Defensive belt-and-suspenders paths — fix phase boundaries instead

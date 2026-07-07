@@ -16,6 +16,16 @@ export interface ProjectionNetworkDefs {
   networkParent: { componentId: number }
 }
 
+/** Worker-owned scene UI LWW ids — pointer mount batch may force-apply over stale timestamps. */
+export const WORKER_OWNED_UI_COMPONENT_IDS = new Set([
+  1050, // UiTransform
+  1052, // UiBackground
+  1053, // UiText
+  1093, // UiInput
+  1094, // UiDropdown
+  1062 // PointerEvents
+])
+
 /** Commit MainCamera.virtualCameraEntity only once target VC is hydrated on projection. */
 export type VirtualCameraProjectionGate = {
   cameraEntity: Entity
@@ -86,6 +96,8 @@ export class CrdtProjection {
   private readonly reservedEntities: ReadonlySet<Entity>
   private readonly virtualCameraGate: VirtualCameraProjectionGate | null
   private pendingMainCameraBind: PendingMainCameraBind | null = null
+  /** Pointer uiEntities batch — recycled entity ids must not lose to pre-clear stale LWW rows. */
+  private forceWorkerUiPuts = false
 
   constructor(
     components: MirrorComponents,
@@ -135,6 +147,32 @@ export class CrdtProjection {
     this.flushPendingMainCameraBindInternal()
   }
 
+  /** Pointer atomic UI chunk — ignore stale LWW timestamps for worker-owned Ui* PUTs. */
+  beginForceWorkerUiPuts(): void {
+    this.forceWorkerUiPuts = true
+  }
+
+  endForceWorkerUiPuts(): void {
+    this.forceWorkerUiPuts = false
+  }
+
+  /**
+   * Pointer phase 4 structured mount — store decoded values directly (no wire deserialize).
+   * Call under beginForceWorkerUiPuts; records changes for foldProjectionChanges.
+   */
+  applyWorkerUiMountSnapshot(
+    rows: readonly { entity: Entity; componentId: number; value: unknown }[]
+  ): void {
+    const tsBase = 1_000_000
+    let seq = 0
+    for (const row of rows) {
+      if (!WORKER_OWNED_UI_COMPONENT_IDS.has(row.componentId)) continue
+      if (!this.meta.has(row.componentId)) continue
+      this.deletedEntities.delete(row.entity)
+      this.storeComponentPut(row.entity, row.componentId, tsBase + ++seq, row.value)
+    }
+  }
+
   private applyMessage(msg: CrdtMessage): void {
     switch (msg.type) {
       case CrdtMessageType.PUT_COMPONENT:
@@ -169,9 +207,11 @@ export class CrdtProjection {
 
     const tsMap = this.timestamps.get(componentId)!
     const existing = tsMap.get(entity)
+    const forceUi =
+      this.forceWorkerUiPuts && WORKER_OWNED_UI_COMPONENT_IDS.has(componentId)
     // LWW: only a single worker writes scene components, so timestamps are
     // monotonic per (entity, component). Reject strictly-older messages.
-    if (existing !== undefined && timestamp < existing) return
+    if (!forceUi && existing !== undefined && timestamp < existing) return
 
     // Replicate the engine's receive-side `fixTransformParent` (crdt/index.js): a
     // network-parented entity's incoming Transform has its parent stripped (the wire
@@ -181,7 +221,12 @@ export class CrdtProjection {
     const effectiveData =
       componentId === this.transformId && this.hasNetworkParent(entity) ? fixTransformParent({ data } as never) : data
 
-    const value = meta.deserialize(new ReadWriteByteBuffer(effectiveData))
+    let value: unknown
+    try {
+      value = meta.deserialize(new ReadWriteByteBuffer(effectiveData))
+    } catch {
+      return
+    }
 
     if (this.shouldDeferMainCameraPut(entity, componentId, value)) {
       this.pendingMainCameraBind = { entity, componentId, timestamp, value }
@@ -476,6 +521,22 @@ export class CrdtProjection {
       }
     }
     return buf
+  }
+
+  /**
+   * Clear LWW rows + timestamps for recycled UI entity ids before a bulk mount open.
+   * Stale main timestamps from prior pool cycles reject worker PUTs (projection 4/23).
+   */
+  clearLwwSlotsForEntities(entities: ReadonlySet<Entity>, componentIds: readonly number[]): void {
+    for (const componentId of componentIds) {
+      const map = this.components.get(componentId)
+      const tsMap = this.timestamps.get(componentId)
+      if (!map || !tsMap) continue
+      for (const entity of entities) {
+        map.delete(entity)
+        tsMap.delete(entity)
+      }
+    }
   }
 
   /** Drop decoded rows for entities outside the worker mount set (prevents ghost UiTransform round-trips). */

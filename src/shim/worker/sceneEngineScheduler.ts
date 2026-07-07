@@ -1,22 +1,29 @@
 import type { IEngine } from '@dcl/ecs'
+import type { InjectPointerClickBody } from '../../player/injectPointerClick'
+import { injectPointerClickDownOnEngine, injectPointerClickUpOnEngine } from './injectPointerClick'
 import {
   commitSceneUiCrdtBaseline,
   planSceneUiCrdtEmit,
   seedWorkerUiFingerprint
 } from './sceneEngineUiScheduler'
+import {
+  collectWorkerUiMountSnapshot,
+  type WorkerUiMountSnapshotRow
+} from './workerSceneUiCrdtOutbound'
+import { setPointerInteractiveTickActive } from './sceneWorkerInputSession'
 
 /**
  * Single worker entry for sceneEngine.update — boot, hydration, play, inbound, pointer.
  *
- * Cooperative tick phases:
+ * Cooperative tick phases (hydration only for Ui CRDT):
  *   1. engine.update(dt) — closure/timers + deferred react-ecs
- *   2. emitSceneUiCrdtIfDirty — touch dirty Ui* + transport emit + baseline commit
+ *   2. emitSceneUiCrdtIfDirty — hydration splash/composite only
  *
- * Pointer interactive tick (separate pipeline — see runSceneEnginePointerTick):
- *   1. engine.update(0) — getClick + react-ecs
+ * Pointer interactive tick (only play-mode Ui CRDT egress):
+ *   1. engine.update(0) — getClick(PET_DOWN)
  *   2. scene.exports.onUpdate(0)
- *   3. engine.update(0) — react-ecs after onUpdate
- *   4. emitSceneUiCrdtIfDirty — one Ui CRDT emit
+ *   3. inject PET_UP → engine.update(0) — getClick(PET_UP) + react-ecs
+ *   4. renderer-aligned Ui encode → pointerUiEgressChunks (atomic flush)
  */
 
 export type SceneEngineSchedulerConfig = {
@@ -26,6 +33,8 @@ export type SceneEngineSchedulerConfig = {
   isHydration: () => boolean
   resolvePlayIntervalMs: () => number
   pointerBlocksTick: () => boolean
+  /** Queue phase-4 structured UI mount for flushPointerDeferredOutboundsAsync. */
+  queuePointerUiEgress?: (snapshot: WorkerUiMountSnapshotRow[]) => void
   onStuckRecover: () => void
   onAfterEngineTick?: () => void
 }
@@ -49,11 +58,24 @@ let bootSealed = false
 let hydrationTimer: ReturnType<typeof setInterval> | null = null
 let diagCount = 0
 let tickEpoch = 0
+/** Serialize engine.update — cooperative ticks must not interleave with pointer interactive ticks. */
+let engineUpdateMutex: Promise<void> = Promise.resolve()
+let engineUpdateInFlight = false
 /** True only during intentional Ui CRDT transport emit — rpcCrdt must not attach uiEntities otherwise. */
 let attachUiMountSnapshot = false
 
 export function shouldAttachUiMountSnapshot(): boolean {
   return attachUiMountSnapshot
+}
+
+/** Run fn while rpcCrdt may attach uiEntities (pointer UI transport). */
+export async function runWithUiMountSnapshot(fn: () => Promise<void>): Promise<void> {
+  attachUiMountSnapshot = true
+  try {
+    await fn()
+  } finally {
+    attachUiMountSnapshot = false
+  }
 }
 
 export function initSceneEngineScheduler(cfg: SceneEngineSchedulerConfig): void {
@@ -96,6 +118,39 @@ export function getSceneEngineLastExecutedAt(): number {
   return lastExecutedAt
 }
 
+export function isEngineUpdateInFlight(): boolean {
+  return engineUpdateInFlight || tickInFlight
+}
+
+/** Wait for any in-flight cooperative engine.update before pointer interactive tick. */
+export async function awaitEngineUpdateIdle(timeoutMs = 4000): Promise<void> {
+  const deadline = performance.now() + timeoutMs
+  while (isEngineUpdateInFlight()) {
+    if (performance.now() >= deadline) {
+      forceRecoverStuckSceneEngineTick('pointer-await-engine-idle')
+      break
+    }
+    await new Promise<void>((resolve) => queueMicrotask(resolve))
+  }
+  await engineUpdateMutex.catch(() => {})
+}
+
+async function runSerializedEngineUpdate(fn: () => Promise<void>): Promise<void> {
+  const prior = engineUpdateMutex
+  let release!: () => void
+  engineUpdateMutex = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await prior.catch(() => {})
+  engineUpdateInFlight = true
+  try {
+    await fn()
+  } finally {
+    engineUpdateInFlight = false
+    release()
+  }
+}
+
 export function setSceneEngineLastExecutedAt(ms: number): void {
   lastExecutedAt = ms
 }
@@ -120,6 +175,8 @@ export function sceneEngineTickDue(now: number): boolean {
 
 async function emitSceneUiCrdtIfDirty(eng: IEngine): Promise<void> {
   const cfg = config!
+  if (cfg.pointerBlocksTick()) return
+  if (!cfg.isHydration()) return
   if (!planSceneUiCrdtEmit(eng, cfg.log)) return
   attachUiMountSnapshot = true
   try {
@@ -130,20 +187,74 @@ async function emitSceneUiCrdtIfDirty(eng: IEngine): Promise<void> {
   }
 }
 
+/** Pointer phase 4 — sole play-mode UI egress (structured mount snapshot, not CRDT wire). */
+function runPointerUiPhase4Egress(eng: IEngine): void {
+  const cfg = config!
+  planSceneUiCrdtEmit(eng, cfg.log, {
+    pointerTick: true,
+    forceFullTouch: true
+  })
+  const snapshot = collectWorkerUiMountSnapshot(eng)
+  let uiTransform = 0
+  let uiBackground = 0
+  let uiText = 0
+  let uiInput = 0
+  let pointerEvents = 0
+  for (const row of snapshot) {
+    switch (row.componentId) {
+      case 1050:
+        uiTransform++
+        break
+      case 1052:
+        uiBackground++
+        break
+      case 1053:
+        uiText++
+        break
+      case 1093:
+        uiInput++
+        break
+      case 1062:
+        pointerEvents++
+        break
+      default:
+        break
+    }
+  }
+  const mountEntities = new Set(snapshot.filter((r) => r.componentId === 1050).map((r) => r.entity))
+  cfg.log(
+    `[sceneWorker] pointer ui snapshot — mount=${mountEntities.size} rows=${snapshot.length} ` +
+      `UiTransform=${uiTransform} UiBackground=${uiBackground} UiText=${uiText} ` +
+      `UiInput=${uiInput} PointerEvents=${pointerEvents}`
+  )
+  cfg.queuePointerUiEgress?.(snapshot)
+  commitSceneUiCrdtBaseline(eng)
+}
+
 /** Cooperative play / hydration tick. */
 async function runCooperativeEngineTickPhases(engineDt: number): Promise<void> {
   const cfg = config!
   const eng = engine!
+  if (cfg.pointerBlocksTick()) return
+  const epoch = tickEpoch
   if (diagCount < 8) {
     diagCount++
     cfg.log(
       `[sceneWorker] engine tick #${diagCount} dt=${engineDt.toFixed(3)} hydration=${cfg.isHydration()}`
     )
   }
-  await eng.update(engineDt)
+  await runSerializedEngineUpdate(async () => {
+    await eng.update(engineDt)
+  })
+  if (epoch !== tickEpoch) {
+    cfg.log('[sceneWorker] cooperative tick — preempted during engine.update')
+    return
+  }
   lastExecutedAt = performance.now()
   cfg.onAfterEngineTick?.()
-  await emitSceneUiCrdtIfDirty(eng)
+  if (cfg.isHydration()) {
+    await emitSceneUiCrdtIfDirty(eng)
+  }
 }
 
 async function executeTickWork(engineDt: number): Promise<void> {
@@ -253,22 +364,43 @@ export function sceneEngineTickAfterInboundInject(counts: RendererInboundInjectC
 }
 
 /**
- * Pointer interactive tick — inject is already on the engine before this runs.
- * Separate from cooperative ticks; one Ui CRDT emit at the end.
+ * Pointer interactive tick — DOWN/UP inject immediately before each engine.update(0).
+ * Separate from cooperative ticks; one Ui mount snapshot at the end.
  */
 export async function runSceneEnginePointerTick(
   eng: IEngine,
-  runOnUpdate: () => Promise<void>
+  runOnUpdate: () => Promise<void>,
+  splitPointerInject?: InjectPointerClickBody | null
 ): Promise<void> {
   const cfg = config!
-  await eng.update(0)
-  lastExecutedAt = performance.now()
-  cfg.onAfterEngineTick?.()
-  await runOnUpdate()
-  await eng.update(0)
-  lastExecutedAt = performance.now()
-  cfg.onAfterEngineTick?.()
-  await emitSceneUiCrdtIfDirty(eng)
+  setPointerInteractiveTickActive(true)
+  try {
+    await runSerializedEngineUpdate(async () => {
+      if (splitPointerInject) {
+        injectPointerClickDownOnEngine(eng, splitPointerInject)
+      }
+      await eng.update(0)
+    })
+    lastExecutedAt = performance.now()
+    cfg.onAfterEngineTick?.()
+    await runOnUpdate()
+    await runSerializedEngineUpdate(async () => {
+      if (splitPointerInject) {
+        injectPointerClickUpOnEngine(eng, splitPointerInject)
+      }
+      await eng.update(0)
+    })
+    lastExecutedAt = performance.now()
+    cfg.onAfterEngineTick?.()
+    // react-ecs may run after getClick in the same update — one flush before mount snapshot.
+    await runSerializedEngineUpdate(async () => {
+      await eng.update(0)
+    })
+    lastExecutedAt = performance.now()
+    runPointerUiPhase4Egress(eng)
+  } finally {
+    setPointerInteractiveTickActive(false)
+  }
 }
 
 export function syncSceneEngineHydrationTimer(): void {

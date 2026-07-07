@@ -7,6 +7,7 @@ const UI_BACKGROUND_ID = 1052
 const UI_TEXT_ID = 1053
 const UI_INPUT_ID = 1093
 const UI_DROPDOWN_ID = 1094
+const POINTER_EVENTS_ID = 1062
 
 type UiTransform = ReturnType<typeof generated.UiTransform>
 type UiBackground = ReturnType<typeof generated.UiBackground>
@@ -41,6 +42,10 @@ export function resolveWorkerUiInput(engine: IEngine): UiInput {
 
 export function resolveWorkerUiDropdown(engine: IEngine): UiDropdown {
   return resolveByCoreId(engine, UI_DROPDOWN_ID, generated.UiDropdown)
+}
+
+export function resolveWorkerPointerEvents(engine: IEngine): ReturnType<typeof generated.PointerEvents> {
+  return resolveByCoreId(engine, POINTER_EVENTS_ID, generated.PointerEvents)
 }
 
 /** UiTransform entity ids on the worker — mount set for main-thread DOM. */

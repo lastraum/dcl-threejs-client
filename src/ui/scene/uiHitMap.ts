@@ -12,8 +12,8 @@ export type UiScreenRegion = {
 }
 
 /**
- * DOM screen regions from the last paint — debug / alignment audit only (`?sceneuidebug`).
- * Pointer routing uses `uiDomPick` (rendered DOM), not this map.
+ * DOM screen regions from the last paint — pointer pick ranking + debug (`?sceneuidebug`).
+ * `SceneUiBridge` walks candidates deepest / smallest area first; `uiDomPick` is fallback pre-paint.
  */
 export class SceneUiHitMap {
   private regions: UiScreenRegion[] = []
@@ -26,8 +26,7 @@ export class SceneUiHitMap {
     this.regions = []
   }
 
-  /** Regions containing (clientX, clientY), deepest / most specific first. */
-  hitTestCandidates(clientX: number, clientY: number): Entity[] {
+  private regionsAt(clientX: number, clientY: number): UiScreenRegion[] {
     if (!this.regions.length) return []
     const hits: UiScreenRegion[] = []
     for (const r of this.regions) {
@@ -49,7 +48,17 @@ export class SceneUiHitMap {
       if (areaA !== areaB) return areaA - areaB
       return (a.entity as number) - (b.entity as number)
     })
-    return hits.map((r) => r.entity)
+    return hits
+  }
+
+  /** Regions containing (clientX, clientY), deepest / most specific first. */
+  hitTestRegionCandidates(clientX: number, clientY: number): readonly UiScreenRegion[] {
+    return this.regionsAt(clientX, clientY)
+  }
+
+  /** Regions containing (clientX, clientY), deepest / most specific first. */
+  hitTestCandidates(clientX: number, clientY: number): Entity[] {
+    return this.regionsAt(clientX, clientY).map((r) => r.entity)
   }
 
   /** Deepest visible region containing (clientX, clientY), or null. */

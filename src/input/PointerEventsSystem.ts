@@ -54,6 +54,8 @@ type PointerDeps = {
   camera: THREE.Camera
   getPlayerPosition: () => THREE.Vector3 | null
   isPointerBlocked: () => boolean
+  /** Worker mount snapshot fallback when projection PointerEvents lags paint. */
+  pointerEventsOf?: (entity: Entity) => { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> } | null | undefined
   flushPointerCrdt?: () => void
   /** Flush matrixWorld + collider poses immediately before a raycast (click / hover). */
   prepareRaycast?: () => void
@@ -102,6 +104,8 @@ export class PointerEventsSystem {
   private tickNumber = 0
   private readonly downTimestampByButton = new Map<InputActionValue, number>()
   private pendingInjectPayload: InjectPointerClickBody | null = null
+  /** PET_DOWN bubble targets from the same flush — worker inject uses these for split DOWN/UP. */
+  private pendingInjectDownEntities: number[] | null = null
   private readonly uiPointerButtons = new Set<InputActionValue>()
 
   private lastPrimaryInfoKey = ''
@@ -547,7 +551,7 @@ export class PointerEventsSystem {
     ) {
       return
     }
-    const spec = this.deps.ecs.PointerEvents.getOrNull(targetEntity)
+    const spec = activeHit.isSceneUi ? this.uiPointerSpec(targetEntity) : this.deps.ecs.PointerEvents.getOrNull(targetEntity)
     if (activeHit.isSceneUi) {
       if (!hasUiPointerEvent(spec, PointerEventType.PET_DOWN, button)) return
     } else if (!hasPointerEvent(spec, PointerEventType.PET_DOWN, button)) {
@@ -577,7 +581,7 @@ export class PointerEventsSystem {
   private canQueuePointerDown(button: InputActionValue, hit: PointerHit | null): boolean {
     if (!this.deps || !hit) return false
     const targetEntity = this.resolvePointerResultEntity(hit.entity, button)
-    const spec = this.deps.ecs.PointerEvents.getOrNull(targetEntity)
+    const spec = this.uiPointerSpec(targetEntity)
     if (hit.isSceneUi) {
       return hasUiPointerEvent(spec, PointerEventType.PET_DOWN, button)
     }
@@ -602,7 +606,7 @@ export class PointerEventsSystem {
       return
     }
     const targetEntity = this.resolvePointerResultEntity(hit.entity, button)
-    const spec = this.deps?.ecs.PointerEvents.getOrNull(targetEntity)
+    const spec = hit.isSceneUi ? this.uiPointerSpec(targetEntity) : this.deps?.ecs.PointerEvents.getOrNull(targetEntity)
     if (!hasPointerEvent(spec, PointerEventType.PET_DOWN, button)) {
       clientDebugLog.log(
         'pointer',
@@ -627,8 +631,8 @@ export class PointerEventsSystem {
 
     this.deps.camera.getWorldPosition(_camPos)
 
-    const spec = this.deps.ecs.PointerEvents.getOrNull(downEntity)
     const isSceneUi = this.deps.ecs.UiTransform.has(downEntity)
+    const spec = isSceneUi ? this.uiPointerSpec(downEntity) : this.deps.ecs.PointerEvents.getOrNull(downEntity)
     // onClick registers PET_DOWN only — renderer must still emit PET_UP (Unity / @dcl/ecs parity).
     if (isSceneUi) {
       if (
@@ -686,8 +690,15 @@ export class PointerEventsSystem {
     const button = InputAction.IA_POINTER
     const state = PointerEventType.PET_HOVER_ENTER
     if (hit.isSceneUi) {
-      const target = resolveUiPointerResultEntity(ecs, view, hit.entity, button, state)
-      const spec = ecs.PointerEvents.getOrNull(target)
+      const target = resolveUiPointerResultEntity(
+        ecs,
+        view,
+        hit.entity,
+        button,
+        state,
+        this.deps.pointerEventsOf
+      )
+      const spec = this.uiPointerSpec(target)
       return hasUiPointerEvent(spec, state, button) ? target : null
     }
     const target = this.resolvePointerResultEntity(hit.entity, button, state)
@@ -1029,6 +1040,13 @@ export class PointerEventsSystem {
     }
   }
 
+  private uiPointerSpec(
+    entity: Entity
+  ): { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> } | null | undefined {
+    if (!this.deps) return null
+    return this.deps.pointerEventsOf?.(entity) ?? this.deps.ecs.PointerEvents.getOrNull(entity)
+  }
+
   private resolvePointerResultEntity(
     entity: Entity,
     button: InputActionValue,
@@ -1037,7 +1055,7 @@ export class PointerEventsSystem {
     if (!this.deps) return entity
     const { ecs, view } = this.deps
     if (ecs.UiTransform.has(entity)) {
-      return resolveUiPointerResultEntity(ecs, view, entity, button, state)
+      return resolveUiPointerResultEntity(ecs, view, entity, button, state, this.deps.pointerEventsOf)
     }
     const { RootEntity: Root, PlayerEntity: Player, CameraEntity: Camera } = view
     let current: Entity = entity
@@ -1068,7 +1086,7 @@ export class PointerEventsSystem {
     if (!this.deps) return [entity]
     const { ecs, view } = this.deps
     if (ecs.UiTransform.has(entity)) {
-      return collectUiPointerResultTargets(ecs, view, entity, button, state)
+      return collectUiPointerResultTargets(ecs, view, entity, button, state, this.deps.pointerEventsOf)
     }
     const { RootEntity: Root, PlayerEntity: Player, CameraEntity: Camera } = view
     const targets: Entity[] = []
@@ -1104,22 +1122,31 @@ export class PointerEventsSystem {
       analog: undefined
     }
     const bubbleFrom = hit.isSceneUi ? hit.entity : targetEntity
-    const targets = this.collectPointerResultTargets(bubbleFrom, button, state)
+    let targets = this.collectPointerResultTargets(bubbleFrom, button, state)
+    // react-ecs onMouseDown registers on the resolved leaf — never bubble UI inject to scrim ancestors.
+    if (hit.isSceneUi) {
+      targets = [targetEntity]
+    }
     for (const entity of targets) {
       ecs.PointerEventsResult.addValue(entity, result)
       this.deps?.recordAppend?.(ecs.PointerEventsResult.componentId, entity, result)
     }
     if (state === PointerEventType.PET_DOWN) {
       this.downTimestampByButton.set(button, result.timestamp)
+      this.pendingInjectDownEntities = [...targets]
     } else if (state === PointerEventType.PET_UP) {
       const downTs = this.downTimestampByButton.get(button)
       if (downTs !== undefined) {
         this.downTimestampByButton.delete(button)
         const dclPoint = threeToDclVec(hit.point)
         const dclNormal = threeToDclVec(hit.normal)
+        const downEntities = this.pendingInjectDownEntities ?? [...targets]
+        this.pendingInjectDownEntities = null
         this.pendingInjectPayload = {
           entity: targetEntity,
           entities: [...targets],
+          downEntities,
+          upEntities: [...targets],
           hitEntity: hit.entity,
           button,
           tickNumber: this.tickNumber,

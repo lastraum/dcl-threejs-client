@@ -59,6 +59,13 @@ export type SceneWorkerCrdtRequest = {
   data: Uint8Array
 }
 
+/** Structured worker UI row — pointer phase 4; main applies without wire deserialize. */
+export type WorkerUiMountSnapshotRow = {
+  entity: number
+  componentId: number
+  value: unknown
+}
+
 /** Phase C — worker outbound; main applies then `crdt-outbound-ack` + `renderer-inbound-deliver`. */
 export type SceneWorkerCrdtOutbound = {
   type: 'crdt-outbound'
@@ -67,6 +74,8 @@ export type SceneWorkerCrdtOutbound = {
   id?: number
   /** Worker engine UiTransform entity ids after this CRDT tick — authoritative mount set for DOM. */
   uiEntities?: number[]
+  /** Pointer mount batch — plain component values; bypasses CRDT wire deserialize on main. */
+  uiMountSnapshot?: WorkerUiMountSnapshotRow[]
 }
 
 export type SceneWorkerReady = {

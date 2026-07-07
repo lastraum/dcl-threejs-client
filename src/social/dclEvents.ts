@@ -91,10 +91,37 @@ export function eventParcelCoords(e: DclEvent): { x: number; y: number } | null 
   return null
 }
 
+/** World/realm pointer from `scene_name` or play.decentraland.org `realm` query param. */
+export function eventWorldRealmName(e: DclEvent): string | null {
+  const scene = e.scene_name?.trim()
+  if (scene) return scene
+
+  const urlStr = e.url?.trim()
+  if (!urlStr) return null
+  try {
+    const u = new URL(urlStr, 'https://play.decentraland.org')
+    const host = u.hostname.toLowerCase()
+    const isPlay =
+      host === 'play.decentraland.org' || host.endsWith('.decentraland.org') || host === 'decentraland.org'
+    if (!isPlay) return null
+    const realm = u.searchParams.get('realm')?.trim() || u.searchParams.get('realm_name')?.trim()
+    return realm || null
+  } catch {
+    return null
+  }
+}
+
+export function formatWorldDisplayName(worldName: string): string {
+  const trimmed = worldName.trim()
+  if (!trimmed) return trimmed
+  return trimmed.replace(/\.dcl\.eth$/i, '') || trimmed
+}
+
 export function eventLocationLabel(e: DclEvent): string {
   if (e.world) {
-    const name = e.scene_name?.trim()
-    return name || 'World'
+    const name = eventWorldRealmName(e)
+    if (name) return formatWorldDisplayName(name)
+    return 'World'
   }
   const coords = eventParcelCoords(e)
   if (coords) return `${coords.x}, ${coords.y}`
@@ -113,7 +140,7 @@ export function eventShareUrl(e: DclEvent): string {
 
 export function eventJumpRoute(e: DclEvent): RouteTarget | null {
   if (e.world) {
-    const raw = e.scene_name?.trim()
+    const raw = eventWorldRealmName(e)
     if (!raw) return null
     const worldName = raw.includes('.') ? raw : `${raw}.dcl.eth`
     return { kind: 'world', worldName, segment: worldName }
@@ -140,6 +167,15 @@ export function eventRecurrenceLabel(e: DclEvent): string | null {
   if (freq === 'MONTHLY') return 'Repeats monthly'
   if (freq === 'YEARLY') return 'Repeats yearly'
   return 'Recurring event'
+}
+
+export function formatEventCardTimeShort(iso: string): string {
+  const t = Date.parse(iso)
+  if (!Number.isFinite(t)) return ''
+  return new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(t)
 }
 
 export function formatEventScheduleRange(e: DclEvent): string {

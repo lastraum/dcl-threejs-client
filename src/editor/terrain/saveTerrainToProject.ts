@@ -67,10 +67,13 @@ export async function saveTerrainToProject(
   paths.push(COMPOSITE_PATH)
 
   const glbMb = (glb.byteLength / (1024 * 1024)).toFixed(2)
+  const meshNote = terrain.usesMergedExportMesh()
+    ? `merged footprint mesh (${terrain.footprint.parcels.length} parcels)`
+    : `${terrain.footprint.parcels.length} parcel plane(s), ${exportSettings.exportSegmentsPerParcel} segs/parcel`
   return {
     ok: true,
     message:
-      `Saved deploy files: terrain.glb (${glbMb} MB, ${terrain.footprint.parcels.length} parcel plane(s), ${exportSettings.exportSegmentsPerParcel} segs/parcel, visible CL_PHYSICS, baked albedo) + main.composite @ (${compositePos.x}, ${compositePos.y}, ${compositePos.z}) base=${terrain.footprint.baseParcel}. ` +
+      `Saved deploy files: terrain.glb (${glbMb} MB, ${meshNote}, visible CL_PHYSICS, baked albedo) + main.composite @ (${compositePos.x}, ${compositePos.y}, ${compositePos.z}) base=${terrain.footprint.baseParcel}. ` +
       `Unity Explorer ignores vertex paint — colors are baked into the GLB texture. Disable Creator Hub “Landscape Terrain Enabled” so default grass does not cover your mesh. ` +
       `Editor sculpt data stored in this browser (IndexedDB) for project ${projectId}. ` +
       `dcl deploy will not include heightmap/splat sidecars.`,

@@ -80,6 +80,7 @@ export type FetchPlacesGenesisOpts = {
   limit?: number
   offset?: number
   onlyFavorites?: boolean
+  onlyHighlighted?: boolean
   identity?: AuthIdentity | null
 }
 
@@ -90,8 +91,14 @@ export type FetchPlacesWorldsOpts = {
   limit?: number
   offset?: number
   onlyFavorites?: boolean
+  onlyHighlighted?: boolean
   identity?: AuthIdentity | null
 }
+
+export const EXPLORER_LIVE_LIMIT = 4
+export const EXPLORER_FEATURED_PAGE_SIZE = 8
+export const EXPLORER_FEATURED_LIMIT = 32
+export const EXPLORER_LIVE_SCAN_LIMIT = 48
 
 function clampLimit(limit: number | undefined): number {
   if (typeof limit !== 'number' || !Number.isFinite(limit)) return PLACES_PAGE_SIZE
@@ -118,6 +125,55 @@ function parseBasePosition(raw: unknown): { x: number; y: number } | null {
   const y = Number(m[2])
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null
   return { x, y }
+}
+
+const parcelBasePositionCache = new Map<string, { x: number; y: number } | null>()
+
+/** Genesis place covering a parcel position (Places API `positions` query). */
+export async function fetchDclGenesisPlaceAtPosition(
+  x: number,
+  y: number
+): Promise<DclGenesisPlace | null> {
+  try {
+    const params = new URLSearchParams({ limit: '5', positions: `${x},${y}` })
+    const { data } = await placesApiGet('places', params)
+    for (const item of data) {
+      const place = mapGenesisPlace(item)
+      if (place) return place
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** Genesis parcel → Places scene base (`base_position`), for multi-parcel scene matching. */
+export async function resolveParcelBasePosition(
+  x: number,
+  y: number
+): Promise<{ x: number; y: number }> {
+  const key = `${x},${y}`
+  if (parcelBasePositionCache.has(key)) {
+    return parcelBasePositionCache.get(key) ?? { x, y }
+  }
+  try {
+    const params = new URLSearchParams({ limit: '5', positions: key })
+    const { data } = await placesApiGet('places', params)
+    for (const item of data) {
+      if (!item || typeof item !== 'object') continue
+      const o = item as Record<string, unknown>
+      if (o.world === true) continue
+      const coords = parseBasePosition(o.base_position)
+      if (coords) {
+        parcelBasePositionCache.set(key, coords)
+        return coords
+      }
+    }
+    parcelBasePositionCache.set(key, null)
+    return { x, y }
+  } catch {
+    return { x, y }
+  }
 }
 
 function mapGenesisPlace(item: unknown): DclGenesisPlace | null {
@@ -234,6 +290,7 @@ export async function fetchDclGenesisPlaces(opts?: FetchPlacesGenesisOpts): Prom
     if (c.length > 0 && /^[a-z0-9_-]+$/i.test(c)) qs.append('categories', c)
   }
   if (opts?.onlyFavorites) qs.set('only_favorites', 'true')
+  if (opts?.onlyHighlighted) qs.set('only_highlighted', 'true')
 
   const { data } = await placesApiGet('places', qs, opts?.onlyFavorites ? opts.identity : null)
   const out: DclGenesisPlace[] = []
@@ -263,6 +320,7 @@ export async function fetchDclPlacesWorlds(opts?: FetchPlacesWorldsOpts): Promis
     if (n.length > 0) qs.append('names', n)
   }
   if (opts?.onlyFavorites) qs.set('only_favorites', 'true')
+  if (opts?.onlyHighlighted) qs.set('only_highlighted', 'true')
 
   const { data } = await placesApiGet('worlds', qs, opts?.onlyFavorites ? opts.identity : null)
   const out: DclPlacesWorld[] = []
@@ -381,6 +439,32 @@ export function buildUnifiedExplorerItems(
       b.userCount - a.userCount ||
       a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
   )
+}
+
+/** Hot scenes with active users — Live Now row (Places API `most_active`). */
+export async function fetchDclExplorerLiveItems(
+  limit = EXPLORER_LIVE_LIMIT
+): Promise<DclExploreItem[]> {
+  const [places, worlds] = await Promise.all([
+    fetchDclGenesisPlaces({ orderBy: 'most_active', limit: EXPLORER_LIVE_SCAN_LIMIT }),
+    fetchDclPlacesWorlds({ orderBy: 'most_active', limit: EXPLORER_LIVE_SCAN_LIMIT })
+  ])
+  return buildUnifiedExplorerItems(
+    places.filter((p) => p.userCount > 0),
+    worlds.filter((w) => w.userCount > 0),
+    'most_users'
+  ).slice(0, limit)
+}
+
+/** Curated highlighted places — Featured grid (Places API `only_highlighted`). */
+export async function fetchDclExplorerFeaturedItems(
+  limit = EXPLORER_FEATURED_LIMIT
+): Promise<DclExploreItem[]> {
+  const [places, worlds] = await Promise.all([
+    fetchDclGenesisPlaces({ onlyHighlighted: true, limit }),
+    fetchDclPlacesWorlds({ onlyHighlighted: true, limit })
+  ])
+  return buildUnifiedExplorerItems(places, worlds, 'most_users').slice(0, limit)
 }
 
 export async function fetchDclWorldsWithNameFallback(

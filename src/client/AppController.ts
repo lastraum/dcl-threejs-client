@@ -17,8 +17,11 @@ import { DebugPanel } from './ui/DebugPanel'
 import { DevProgressPanel } from './ui/DevProgressPanel'
 import { LoadingScreen, POST_SPAWN_SETTLE_FAST_MS, POST_SPAWN_SETTLE_MS } from './ui/LoadingScreen'
 import { WorldLocationCard } from './ui/WorldLocationCard'
-import { showSplashScreen } from './ui/SplashScreen'
+import { resolveInitialLogin } from './auth/resolveInitialLogin'
+
 import { ChatPanel } from './ui/chat/ChatPanel'
+import { SocialChatController } from './ui/chat/SocialChatController'
+import { SocialChatDock } from './ui/chat/SocialChatDock'
 import { PreferencesPanel } from './ui/settings/PreferencesPanel'
 import { SettingsOverlay } from './ui/settings/SettingsOverlay'
 import type { MapPlayerState } from './ui/settings/MapView'
@@ -33,7 +36,16 @@ import { DEFAULT_TIMEOUT_MS, FAST_TIMEOUT_MS, type SceneHydrationStats } from '.
 import { resolveSceneLoadWarm } from '../rendering/sceneLoadWarm'
 import { formatSceneLoadError } from './formatSceneLoadError'
 import { ProfileUiController } from './ui/profile/ProfileUiController'
-import { recordLoginEvent } from '../analytics/recordLogin'
+import type { AppMode } from './appMode'
+import { CommunitiesPageView } from './ui/explore/CommunitiesPageView'
+import { EventsPageView } from './ui/explore/EventsPageView'
+import { ExplorerView } from './ui/explore/ExplorerView'
+import { MapPageView } from './ui/explore/MapPageView'
+import { ProfilePageView } from './ui/explore/ProfilePageView'
+import type { SocialShellTab } from './ui/explore/SocialShellTopNav'
+import { SceneLandingView } from './ui/landing/SceneLandingView'
+import type { DclEvent } from '../social/dclEvents'
+import { enrichResolvedScenePublicTitle } from '../social/sceneDisplayTitle'
 
 /** Owns world lifecycle — splash → load → play, navigation, and sign-out. */
 export class AppController {
@@ -55,6 +67,15 @@ export class AppController {
   private profileUi: ProfileUiController | null = null
   private sceneContentUrl = 'https://peer.decentraland.org'
   private editorApp: EditorApp | null = null
+  private explorerView: ExplorerView | null = null
+  private mapPageView: MapPageView | null = null
+  private eventsPageView: EventsPageView | null = null
+  private communitiesPageView: CommunitiesPageView | null = null
+  private profilePageView: ProfilePageView | null = null
+  private sceneLandingView: SceneLandingView | null = null
+  private socialChat: SocialChatController | null = null
+  private socialChatDock: SocialChatDock | null = null
+  private appMode: AppMode = 'explorer'
 
   async start(container: HTMLElement): Promise<void> {
     if (this.running) return
@@ -72,30 +93,43 @@ export class AppController {
       return
     }
 
-    this.login = await showSplashScreen()
-    recordLoginEvent(this.login)
     window.addEventListener('popstate', this.onPopState)
 
-    const loading = new LoadingScreen('Preparing your experience…')
-    loading.mount()
-    loading.startLoadingTimer()
-    try {
-      const hydrationTimedOut = await this.loadRoute(resolveRouteTarget(), {
-        replace: true,
-        onProgress: (msg, fraction, stats) => {
-          loading.setStatus(msg)
-          if (fraction !== undefined) loading.setProgress(fraction)
-          if (stats) loading.setHydrationStats(stats)
-        },
-        onHydrationStart: (timeoutMs) => loading.setHydrationTimeoutMs(timeoutMs),
-        onHydrationFinish: (result) => loading.noteHydrationComplete(result)
-      })
-      await loading.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      const ui = formatSceneLoadError(msg)
-      loading.showFatalError(ui.title, ui.detail)
-      clientDebugLog.log('client', `Failed to load scene: ${msg}`, { level: 'error' })
+    const postLoginRoute = resolveRouteTarget()
+    this.login = resolveInitialLogin()
+
+    if (postLoginRoute.kind === 'blank') {
+      await this.showExplorer({ replace: true })
+      return
+    }
+
+    if (postLoginRoute.kind === 'events') {
+      await this.showEventsPage({ replace: true })
+      return
+    }
+
+    if (postLoginRoute.kind === 'map') {
+      await this.showMapPage({ replace: true })
+      return
+    }
+
+    if (postLoginRoute.kind === 'communities') {
+      await this.showCommunitiesPage({ replace: true })
+      return
+    }
+
+    if (postLoginRoute.kind === 'profile') {
+      await this.showProfilePage({ replace: true })
+      return
+    }
+
+    if (postLoginRoute.kind === 'editor') {
+      await this.jumpInToScene(postLoginRoute, { replace: true })
+      return
+    }
+
+    if (postLoginRoute.kind === 'coords' || postLoginRoute.kind === 'world') {
+      await this.showSceneLanding(postLoginRoute, { replace: true })
     }
   }
 
@@ -108,8 +142,437 @@ export class AppController {
     opts: { fromHistory?: boolean; replace?: boolean } = {}
   ): Promise<void> {
     if (this.navigating) return
+
+    if (target.kind === 'blank') {
+      this.navigating = true
+      try {
+        await this.showExplorer({ fromHistory: opts.fromHistory, replace: opts.replace })
+      } finally {
+        this.navigating = false
+      }
+      return
+    }
+
+    if (target.kind === 'events') {
+      this.navigating = true
+      try {
+        await this.showEventsPage({ fromHistory: opts.fromHistory, replace: opts.replace })
+      } finally {
+        this.navigating = false
+      }
+      return
+    }
+
+    if (target.kind === 'map') {
+      this.navigating = true
+      try {
+        await this.showMapPage({ fromHistory: opts.fromHistory, replace: opts.replace })
+      } finally {
+        this.navigating = false
+      }
+      return
+    }
+
+    if (target.kind === 'communities') {
+      this.navigating = true
+      try {
+        await this.showCommunitiesPage({ fromHistory: opts.fromHistory, replace: opts.replace })
+      } finally {
+        this.navigating = false
+      }
+      return
+    }
+
+    if (target.kind === 'profile') {
+      this.navigating = true
+      try {
+        await this.showProfilePage({ fromHistory: opts.fromHistory, replace: opts.replace })
+      } finally {
+        this.navigating = false
+      }
+      return
+    }
+
+    if (target.kind === 'editor') {
+      await this.jumpInToScene(target, opts)
+      return
+    }
+
+    if (target.kind === 'coords' || target.kind === 'world') {
+      this.navigating = true
+      try {
+        await this.showSceneLanding(target, {
+          fromHistory: opts.fromHistory,
+          replace: opts.replace
+        })
+      } finally {
+        this.navigating = false
+      }
+    }
+  }
+
+  private navigateSocialShell(tab: SocialShellTab): void {
+    if (tab === 'explore') void this.navigateTo({ kind: 'blank' })
+    else if (tab === 'map') void this.navigateTo({ kind: 'map' })
+    else if (tab === 'communities') void this.navigateTo({ kind: 'communities' })
+    else void this.navigateTo({ kind: 'events' })
+  }
+
+  private socialShellLoginHandlers(): {
+    onLoginChange: (login: LoginResult) => void
+    onSignOut: () => void
+    onOpenSettings: () => void
+    onOpenBackpack: () => void
+    onOpenProfile: () => void
+  } {
+    return {
+      onLoginChange: (login) => {
+        this.login = login
+        this.applyLoginToSocialShellViews(login)
+        if (login.kind === 'wallet') {
+          if (
+            this.appMode === 'landing' &&
+            this.currentRoute &&
+            (this.currentRoute.kind === 'coords' || this.currentRoute.kind === 'world')
+          ) {
+            this.ensureSocialChatShell()
+            this.socialChat?.applyLogin(login)
+            void this.connectSceneLandingChat(this.currentRoute)
+          }
+        }
+      },
+      onSignOut: () => void this.signOutFrom2dShell(),
+      onOpenSettings: () => {
+        this.preferencesPanel?.show('graphics')
+      },
+      onOpenBackpack: () => {
+        this.settingsOverlay?.show('backpack')
+      },
+      onOpenProfile: () => this.openLocalProfileFromShell()
+    }
+  }
+
+  private openLocalProfileFromShell(): void {
+    if (this.profileUi) {
+      this.profileUi.openProfile({ kind: 'local' })
+      return
+    }
+    void this.navigateTo({ kind: 'profile' })
+  }
+
+  private async showExplorer(
+    opts: { fromHistory?: boolean; replace?: boolean } = {}
+  ): Promise<void> {
+    if (!opts.fromHistory) {
+      applyRouteToHistory({ kind: 'blank' }, opts.replace ?? false)
+    }
+    this.currentRoute = { kind: 'blank' }
+    this.appMode = 'explorer'
+
+    await this.teardownScene()
+    this.teardownLanding()
+    this.teardownMapPage()
+    this.teardownEventsPage()
+    this.teardownCommunitiesPage()
+    this.teardownProfilePage()
+
+    if (!this.container || !this.login) return
+
+    const hudEl = document.getElementById('hud')
+    if (hudEl) hudEl.hidden = true
+
+    this.explorerView = new ExplorerView({
+      login: this.login,
+      onOpenScene: (target) => void this.openSceneLanding(target),
+      onNavigate: (tab) => this.navigateSocialShell(tab),
+      ...this.socialShellLoginHandlers()
+    })
+    this.explorerView.mount(this.container)
+    this.ensureSocialChatShell()
+  }
+
+  private async showMapPage(
+    opts: { fromHistory?: boolean; replace?: boolean } = {}
+  ): Promise<void> {
+    if (this.appMode === 'play') {
+      await this.teardownScene()
+    }
+
+    if (!opts.fromHistory) {
+      applyRouteToHistory({ kind: 'map' }, opts.replace ?? false)
+    }
+    this.currentRoute = { kind: 'map' }
+    this.appMode = 'map'
+
+    this.teardownExplorer()
+    this.teardownLanding()
+    this.teardownMapPage()
+    this.teardownEventsPage()
+    this.teardownCommunitiesPage()
+    this.teardownProfilePage()
+
+    if (!this.container || !this.login) return
+
+    const hudEl = document.getElementById('hud')
+    if (hudEl) hudEl.hidden = true
+
+    this.mapPageView = new MapPageView({
+      login: this.login,
+      onNavigate: (tab) => this.navigateSocialShell(tab),
+      onParcelVisit: (px, py) => {
+        void this.showSceneLanding({
+          kind: 'coords',
+          x: px,
+          y: py,
+          segment: `${px},${py}`
+        })
+      },
+      getPlayerState: () => this.getMapPlayerState(),
+      ...this.socialShellLoginHandlers()
+    })
+    this.mapPageView.mount(this.container)
+    this.ensureSocialChatShell()
+  }
+
+  private async showEventsPage(
+    opts: { fromHistory?: boolean; replace?: boolean } = {}
+  ): Promise<void> {
+    if (this.appMode === 'play') {
+      await this.teardownScene()
+    }
+
+    if (!opts.fromHistory) {
+      applyRouteToHistory({ kind: 'events' }, opts.replace ?? false)
+    }
+    this.currentRoute = { kind: 'events' }
+    this.appMode = 'events'
+
+    this.teardownExplorer()
+    this.teardownLanding()
+    this.teardownMapPage()
+    this.teardownEventsPage()
+    this.teardownCommunitiesPage()
+    this.teardownProfilePage()
+
+    if (!this.container || !this.login) return
+
+    const hudEl = document.getElementById('hud')
+    if (hudEl) hudEl.hidden = true
+
+    this.eventsPageView = new EventsPageView({
+      login: this.login,
+      onNavigate: (tab) => this.navigateSocialShell(tab),
+      onEventJumpIn: (target, _event) => void this.jumpInToScene(target),
+      onEventViewScene: (target, _event) => {
+        if (target.kind === 'coords' || target.kind === 'world') {
+          void this.showSceneLanding(target)
+        }
+      },
+      ...this.socialShellLoginHandlers()
+    })
+    this.eventsPageView.mount(this.container)
+    this.ensureSocialChatShell()
+  }
+
+  private async showCommunitiesPage(
+    opts: { fromHistory?: boolean; replace?: boolean } = {}
+  ): Promise<void> {
+    if (this.appMode === 'play') {
+      await this.teardownScene()
+    }
+
+    if (!opts.fromHistory) {
+      applyRouteToHistory({ kind: 'communities' }, opts.replace ?? false)
+    }
+    this.currentRoute = { kind: 'communities' }
+    this.appMode = 'communities'
+
+    this.teardownExplorer()
+    this.teardownLanding()
+    this.teardownMapPage()
+    this.teardownEventsPage()
+    this.teardownCommunitiesPage()
+    this.teardownProfilePage()
+
+    if (!this.container || !this.login) return
+
+    const hudEl = document.getElementById('hud')
+    if (hudEl) hudEl.hidden = true
+
+    this.communitiesPageView = new CommunitiesPageView({
+      login: this.login,
+      onNavigate: (tab) => this.navigateSocialShell(tab),
+      ...this.socialShellLoginHandlers()
+    })
+    this.communitiesPageView.mount(this.container)
+    this.ensureSocialChatShell()
+  }
+
+  private async showProfilePage(
+    opts: { fromHistory?: boolean; replace?: boolean } = {}
+  ): Promise<void> {
+    if (this.appMode === 'play') {
+      await this.teardownScene()
+    }
+
+    if (!opts.fromHistory) {
+      applyRouteToHistory({ kind: 'profile' }, opts.replace ?? false)
+    }
+    this.currentRoute = { kind: 'profile' }
+    this.appMode = 'profile'
+
+    this.teardownExplorer()
+    this.teardownLanding()
+    this.teardownMapPage()
+    this.teardownEventsPage()
+    this.teardownCommunitiesPage()
+    this.teardownProfilePage()
+
+    if (!this.container || !this.login) return
+
+    const hudEl = document.getElementById('hud')
+    if (hudEl) hudEl.hidden = true
+
+    this.profilePageView = new ProfilePageView({
+      login: this.login,
+      catalystUrl: this.sceneContentUrl,
+      onNavigate: (tab) => this.navigateSocialShell(tab),
+      ...this.socialShellLoginHandlers()
+    })
+    this.profilePageView.mount(this.container)
+    this.ensureSocialChatShell()
+  }
+
+  private teardownExplorer(): void {
+    this.explorerView?.dispose()
+    this.explorerView = null
+  }
+
+  private teardownMapPage(): void {
+    this.mapPageView?.dispose()
+    this.mapPageView = null
+  }
+
+  private teardownEventsPage(): void {
+    this.eventsPageView?.dispose()
+    this.eventsPageView = null
+  }
+
+  private teardownCommunitiesPage(): void {
+    this.communitiesPageView?.dispose()
+    this.communitiesPageView = null
+  }
+
+  private teardownProfilePage(): void {
+    this.profilePageView?.dispose()
+    this.profilePageView = null
+  }
+
+  private teardownLanding(): void {
+    this.sceneLandingView?.dispose()
+    this.sceneLandingView = null
+  }
+
+  private openSceneLanding(target: RouteTarget): void {
+    if (target.kind !== 'coords' && target.kind !== 'world') return
+    void this.showSceneLanding(target)
+  }
+
+  private async showSceneLanding(
+    target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>,
+    opts: { fromHistory?: boolean; replace?: boolean } = {}
+  ): Promise<void> {
+    if (this.appMode === 'play') {
+      await this.teardownScene()
+    }
+
+    if (!opts.fromHistory) {
+      applyRouteToHistory(target, opts.replace ?? false)
+    }
+    this.currentRoute = target
+    this.appMode = 'landing'
+
+    this.teardownExplorer()
+    this.teardownLanding()
+    this.teardownMapPage()
+    this.teardownEventsPage()
+    this.teardownCommunitiesPage()
+    this.teardownProfilePage()
+
+    if (!this.container || !this.login) return
+
+    const hudEl = document.getElementById('hud')
+    if (hudEl) hudEl.hidden = true
+    this.hidePlayChrome()
+
+    this.sceneLandingView = new SceneLandingView({
+      route: target,
+      login: this.login,
+      onJumpIn: () => void this.jumpInToScene(target),
+      onNavigate: (tab) => this.navigateSocialShell(tab),
+      onEventJumpIn: (jumpTarget) => void this.jumpInToScene(jumpTarget),
+      onEventViewScene: (jumpTarget) => {
+        if (jumpTarget.kind === 'coords' || jumpTarget.kind === 'world') {
+          void this.showSceneLanding(jumpTarget)
+        }
+      },
+      ...this.socialShellLoginHandlers()
+    })
+    this.sceneLandingView.mount(this.container)
+    this.ensureSocialChatShell()
+    void this.connectSceneLandingChat(target)
+  }
+
+  private async connectSceneLandingChat(
+    target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
+  ): Promise<void> {
+    const connected = await this.socialChat?.connectForRoute(target)
+    if (connected) this.socialChatDock?.openSceneChatThread()
+  }
+
+  private ensureSocialChatShell(): void {
+    if (!this.socialChat) {
+      this.socialChat = new SocialChatController({
+        onStatusChange: () => this.socialChatDock?.refresh()
+      })
+      this.socialChat.applyLogin(this.login)
+    }
+    if (!this.socialChatDock) {
+      this.socialChatDock = new SocialChatDock({
+        controller: this.socialChat,
+        onGoto: (gotoTarget) => {
+          if (gotoTarget.kind === 'coords' || gotoTarget.kind === 'world') {
+            void this.showSceneLanding(gotoTarget)
+          }
+        },
+        onOpenProfile: (address) => this.socialChat?.openProfileForAddress(address)
+      })
+    }
+    this.socialChatDock.show()
+    document.body.classList.add('social-shell-with-chat')
+    void this.socialChat.ensureShellInit()
+  }
+
+  private teardownSocialChatShell(disposeComms = false): void {
+    this.socialChatDock?.hide()
+    document.body.classList.remove('social-shell-with-chat')
+    if (disposeComms) {
+      this.socialChat?.dispose()
+      this.socialChat = null
+      this.socialChatDock?.dispose()
+      this.socialChatDock = null
+    }
+  }
+
+  private async jumpInToScene(
+    target: RouteTarget,
+    opts: { fromHistory?: boolean; replace?: boolean; fastAssets?: boolean } = {}
+  ): Promise<void> {
+    if (target.kind !== 'coords' && target.kind !== 'world' && target.kind !== 'editor') return
+
     const devQueryKey = readSceneDevQueryKey()
     if (
+      this.appMode === 'play' &&
       this.currentRoute &&
       routeEquals(this.currentRoute, target) &&
       this.world &&
@@ -118,31 +581,81 @@ export class AppController {
       return
     }
 
+    const fromSceneLanding =
+      this.appMode === 'landing' &&
+      this.sceneLandingView !== null &&
+      this.currentRoute !== null &&
+      routeEquals(this.currentRoute, target)
+
+    if (!fromSceneLanding) {
+      this.teardownSocialChatShell(true)
+    }
+
     this.navigating = true
-    const loading = new LoadingScreen('Teleporting…', { fast: true })
-    loading.mount()
-    loading.startLoadingTimer()
+    let loading: LoadingScreen | null = null
+    if (fromSceneLanding) {
+      this.hidePlayChrome()
+      this.sceneLandingView!.preserveDuringWorldLoad()
+      this.sceneLandingView!.beginJumpInLoading()
+    } else {
+      loading = new LoadingScreen(
+        this.appMode === 'play' ? 'Teleporting…' : 'Preparing your experience…',
+        { fast: this.appMode === 'play' }
+      )
+      loading.mount()
+      loading.startLoadingTimer()
+    }
+
     try {
+      if (!fromSceneLanding) {
+        this.teardownLanding()
+      }
+      this.teardownExplorer()
+      this.teardownMapPage()
       const hydrationTimedOut = await this.loadRoute(target, {
         ...opts,
-        fastAssets: true,
+        fastAssets: opts.fastAssets ?? this.appMode === 'play',
+        handoffShellComms: fromSceneLanding,
+        deferPlayChromeReveal: fromSceneLanding,
         onProgress: (msg, fraction, stats) => {
-          loading.setStatus(msg)
-          if (fraction !== undefined) loading.setProgress(fraction)
-          if (stats) loading.setHydrationStats(stats)
+          if (fromSceneLanding) {
+            this.sceneLandingView?.updateJumpInProgress(fraction, msg)
+          } else if (loading) {
+            loading.setStatus(msg)
+            if (fraction !== undefined) loading.setProgress(fraction)
+            if (stats) loading.setHydrationStats(stats)
+          }
         },
-        onHydrationStart: (timeoutMs) => loading.setHydrationTimeoutMs(timeoutMs),
-        onHydrationFinish: (result) => loading.noteHydrationComplete(result)
+        onHydrationStart: (timeoutMs) => loading?.setHydrationTimeoutMs(timeoutMs),
+        onHydrationFinish: (result) => loading?.noteHydrationComplete(result)
       })
-      await loading.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
+      this.appMode = 'play'
+      if (fromSceneLanding) {
+        await this.sceneLandingView?.completeJumpInLoading()
+        this.teardownLanding()
+        this.teardownSocialChatShell(true)
+        this.revealPlayChrome()
+      } else {
+        await loading!.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       const ui = formatSceneLoadError(msg)
-      loading.showFatalError(ui.title, ui.detail)
-      clientDebugLog.log('client', `Teleport failed: ${msg}`, { level: 'error' })
+      if (fromSceneLanding) {
+        this.sceneLandingView?.showJumpInError(ui.title, ui.detail)
+      } else {
+        loading?.showFatalError(ui.title, ui.detail)
+      }
+      clientDebugLog.log('client', `Failed to load scene: ${msg}`, { level: 'error' })
     } finally {
       this.navigating = false
     }
+  }
+
+  private async leavePlayMode(): Promise<void> {
+    if (this.appMode !== 'play' || !this.currentRoute) return
+    if (this.currentRoute.kind !== 'coords' && this.currentRoute.kind !== 'world') return
+    await this.showSceneLanding(this.currentRoute, { replace: true })
   }
 
   private async loadRoute(
@@ -151,6 +664,8 @@ export class AppController {
       fromHistory?: boolean
       replace?: boolean
       fastAssets?: boolean
+      handoffShellComms?: boolean
+      deferPlayChromeReveal?: boolean
       onProgress?: (msg: string, fraction?: number, stats?: SceneHydrationStats) => void
       onHydrationStart?: (timeoutMs: number) => void
       onHydrationFinish?: (result: { timedOut: boolean; elapsedMs: number }) => void
@@ -174,6 +689,8 @@ export class AppController {
       this.editorApp = null
     }
 
+    this.teardownExplorer()
+
     if (!opts.fromHistory) {
       applyRouteToHistory(route, opts.replace ?? false)
     }
@@ -183,7 +700,10 @@ export class AppController {
     await this.teardownScene()
 
     opts.onProgress?.('Resolving destination…')
-    const sceneConfig = await resolveSceneFromRoute(route)
+    let sceneConfig = await resolveSceneFromRoute(route)
+    if (route.kind === 'coords' || route.kind === 'world') {
+      sceneConfig = await enrichResolvedScenePublicTitle(sceneConfig, route)
+    }
     this.sceneContentUrl = sceneConfig.realm.contentUrl
     prefetchSceneManifestAssets(getSessionAssetCache(), sceneConfig)
     opts.onProgress?.('Building world…')
@@ -230,11 +750,14 @@ export class AppController {
         devProgressPanel: this.devProgressPanel,
         onEmoteSelected: (emoteId) => world.playLocalEmote(emoteId, { loop: false }),
         onSignOut: () => this.signOut(),
-        onExit: () => this.signOut()
+        onExit: () => this.leavePlayMode()
       })
     } else {
       this.shell.updateWorldBindings(world.session, world.environment)
       this.shell.setEmoteHandler((emoteId) => world.playLocalEmote(emoteId, { loop: false }))
+    }
+    if (opts.deferPlayChromeReveal) {
+      this.hidePlayChrome()
     }
 
     if (!this.settingsOverlay) {
@@ -250,9 +773,15 @@ export class AppController {
             segment: `${px},${py}`
           })
         },
-        onEventJumpIn: (target) => {
+        onEventJumpIn: (target, _event: DclEvent) => {
           this.settingsOverlay?.hide()
-          void this.navigateTo(target)
+          void this.jumpInToScene(target, { fastAssets: true })
+        },
+        onEventViewScene: (target, _event: DclEvent) => {
+          this.settingsOverlay?.hide()
+          if (target.kind === 'coords' || target.kind === 'world') {
+            void this.showSceneLanding(target)
+          }
         },
         onPlaceJumpIn: (target) => {
           this.settingsOverlay?.hide()
@@ -311,6 +840,9 @@ export class AppController {
 
     const loadPromise = (async () => {
       await world.loadScene(sceneConfig, opts.onProgress)
+      if (opts.handoffShellComms) {
+        this.socialChat?.releaseCommsForWorldHandoff()
+      }
       const earlyCommsPromise = world.connectSceneCommsEarly(sceneConfig, opts.onProgress)
 
       this.worldLocationCard?.dispose()
@@ -333,6 +865,9 @@ export class AppController {
               }
             : undefined
       })
+      if (opts.deferPlayChromeReveal) {
+        this.worldLocationCard.setVisible(false)
+      }
 
       const warmScene = await resolveSceneLoadWarm(getSessionAssetCache(), sceneConfig)
       const useFastBoot = opts.fastAssets ?? warmScene
@@ -390,14 +925,16 @@ export class AppController {
     this.chatPanel?.dispose()
     this.chatPanel = new ChatPanel({
       social: world.social,
-      onGoto: (target) => this.navigateTo(target),
+      onGoto: (target) => void this.jumpInToScene(target, { fastAssets: true }),
       onOpenProfile: (address) => this.profileUi?.openProfileForAddress(address)
     })
     this.shell.attachChatPanel(this.chatPanel, world.social)
     if (this.settingsOverlay) this.shell.attachSettingsOverlay(this.settingsOverlay)
     if (this.preferencesPanel) this.shell.attachPreferencesPanel(this.preferencesPanel)
     opts.onProgress?.('Almost ready…')
-    this.shell.show()
+    if (!opts.deferPlayChromeReveal) {
+      this.revealPlayChrome()
+    }
     void this.shell.refreshProfile()
     this.shell.setSceneLocation(sceneDisplayTitle(sceneConfig), () => this.getLocationCoordsLabel())
 
@@ -411,8 +948,10 @@ export class AppController {
       onJumpDown: () => world.setJumpHeld(true),
       onJumpUp: () => world.setJumpHeld(false)
     })
-    this.mobileHud.setShellVisible(true)
     this.shell.setOnEmoteWheelVisibility((visible) => this.mobileHud?.setEmoteActive(visible))
+    if (!opts.deferPlayChromeReveal) {
+      this.mobileHud.setShellVisible(true)
+    }
 
     const address = world.session.getAddress()
     const profile = world.session.getProfile()
@@ -423,6 +962,18 @@ export class AppController {
     }
 
     return hydrationTimedOut
+  }
+
+  private hidePlayChrome(): void {
+    this.shell?.hide()
+    this.worldLocationCard?.setVisible(false)
+    this.mobileHud?.setShellVisible(false)
+  }
+
+  private revealPlayChrome(): void {
+    this.shell?.show()
+    this.worldLocationCard?.setVisible(true)
+    this.mobileHud?.setShellVisible(true)
   }
 
   private getLocationCoordsLabel(): string {
@@ -454,6 +1005,7 @@ export class AppController {
   }
 
   private async teardownScene(): Promise<void> {
+    this.teardownExplorer()
     this.editorApp?.dispose()
     this.editorApp = null
     this.profileUi?.dispose()
@@ -463,9 +1015,28 @@ export class AppController {
     this.worldLocationCard?.dispose()
     this.worldLocationCard = null
     this.chatPanel?.hide()
+    this.hidePlayChrome()
     await disconnectAll(this.world)
     this.world = null
     if (this.container) this.container.innerHTML = ''
+  }
+
+  /** Sign out from any 2D shell surface — close chat UI and disconnect all comms. */
+  private signOutFrom2dShell(): void {
+    clearStoredIdentity()
+    this.login = { kind: 'guest' }
+    this.applyLoginToSocialShellViews(this.login)
+    this.socialChat?.signOut()
+    this.teardownSocialChatShell(true)
+  }
+
+  private applyLoginToSocialShellViews(login: LoginResult): void {
+    this.explorerView?.setLogin(login)
+    this.mapPageView?.setLogin(login)
+    this.eventsPageView?.setLogin(login)
+    this.communitiesPageView?.setLogin(login)
+    this.profilePageView?.setLogin(login)
+    this.sceneLandingView?.setLogin(login)
   }
 
   async signOut(): Promise<void> {
@@ -486,6 +1057,9 @@ export class AppController {
     this.mobileHud = null
     this.shell?.dispose()
     this.shell = null
+    this.teardownSocialChatShell(true)
+    this.teardownExplorer()
+    this.teardownLanding()
     await this.teardownScene()
     disposeSessionAssetCache()
 
@@ -502,6 +1076,7 @@ export class AppController {
       await this.start(this.container)
     }
   }
+
 }
 
 function sceneDisplayTitle(scene: ResolvedScene): string {

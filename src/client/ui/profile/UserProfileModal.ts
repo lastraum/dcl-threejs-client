@@ -8,9 +8,11 @@ import { friendshipActionLabel } from '../../../social/friendshipsApi'
 import { AvatarPreviewMini } from './AvatarPreviewMini'
 import {
   fetchWearableDisplayCards,
+  resolveContentImageUrl,
   type WearableDisplayCard,
   wearableRarityBackground,
   wearableRarityLabel,
+  wearableThumbnailUrl,
   WEARABLE_RARITY_COLORS
 } from './wearableThumb'
 
@@ -88,6 +90,8 @@ export class UserProfileModal {
     this.avatarAddress = null
     this.renderShell()
     this.visible = true
+    document.body.appendChild(this.backdrop)
+    document.body.appendChild(this.root)
     this.root.hidden = false
     this.backdrop.hidden = false
     void this.loadContent(true)
@@ -183,7 +187,7 @@ export class UserProfileModal {
       return
     }
 
-    const peerUrl = this.getPeerUrl()
+    const peerUrl = this.getPeerUrl().replace(/\/$/, '') || 'https://peer.decentraland.org'
     let address: string | undefined
     let profile: AvatarProfile | null = null
     let isSelf = false
@@ -394,15 +398,20 @@ export class UserProfileModal {
     if (!wearables.length) {
       return `<p class="user-profile-modal__empty">No equipped wearables loaded.</p>`
     }
+    const peerUrl = this.getPeerUrl().replace(/\/$/, '') || 'https://peer.decentraland.org'
     return wearables
       .map((item) => {
         const rarity = item.rarity.toLowerCase()
         const bg = wearableRarityBackground(rarity)
         const color = WEARABLE_RARITY_COLORS[rarity] ?? WEARABLE_RARITY_COLORS.common!
+        const thumb =
+          resolveContentImageUrl(item.thumbnailUrl, peerUrl) ??
+          wearableThumbnailUrl(item.urn, peerUrl)
+        const fallback = escapeHtml(wearableThumbnailUrl(item.urn, peerUrl))
         return `
           <article class="user-profile-modal__wearable is-${escapeHtml(rarity)}" style="--wearable-rarity-bg:${escapeHtml(bg)};--wearable-rarity-color:${escapeHtml(color)}">
             <div class="user-profile-modal__wearable-thumb">
-              <img src="${escapeHtml(item.thumbnailUrl)}" alt="${escapeHtml(item.name)}" loading="lazy" />
+              <img src="${escapeHtml(thumb)}" alt="${escapeHtml(item.name)}" loading="lazy" onerror="this.onerror=null;this.src='${fallback}'" />
             </div>
             <div class="user-profile-modal__wearable-name">${escapeHtml(item.name)}</div>
             <div class="user-profile-modal__wearable-rarity">${escapeHtml(wearableRarityLabel(rarity))}</div>

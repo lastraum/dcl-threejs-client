@@ -1,0 +1,330 @@
+import type { LoginResult } from '../../../auth/AuthClient'
+import { loginWithMetaMask } from '../../../auth/AuthClient'
+import { identityFromAvatarProfile } from '../../../avatar/displayName'
+import { fetchProfileCached, fetchProfileFaceUrl } from '../../../avatar/peerApi'
+import { ICON_METAMASK } from './explorerAuthIcons'
+
+export type SocialProfileMenuOptions = {
+  login: LoginResult
+  onLoginChange?: (login: LoginResult) => void
+  onSignOut?: () => void
+  onOpenSettings?: () => void
+  onOpenBackpack?: () => void
+  onOpenProfile?: () => void
+}
+
+const ICON_GUEST_HEAD = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm0 2c-4.42 0-8 2.24-8 5v1h16v-1c0-2.76-3.58-5-8-5Z" fill="currentColor" fill-opacity="0.9"/></svg>`
+const ICON_SIGN_OUT = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+const ICON_BACKPACK = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true"><path d="M8 8V6.5A4 4 0 0 1 12 2.5 4 4 0 0 1 16 6.5V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="6" y="8" width="12" height="12.5" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M12 12v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`
+const ICON_SETTINGS = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`
+
+function walletShort(address: string): string {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/** Companion ExploreProfileMenu — avatar circle + account dropdown. */
+export class SocialProfileMenu {
+  readonly wrap: HTMLElement
+
+  private readonly profileBtn: HTMLButtonElement
+  private readonly avatarSlot: HTMLElement
+  private readonly menuEl: HTMLElement
+  private readonly menuBody: HTMLElement
+  private login: LoginResult
+  private open = false
+  private busy = false
+  private displayName: string | null = null
+  private readonly onLoginChange?: (login: LoginResult) => void
+  private readonly onSignOut?: () => void
+  private readonly onOpenSettings?: () => void
+  private readonly onOpenBackpack?: () => void
+  private readonly onOpenProfile?: () => void
+  private readonly onDocMouseDown: (ev: MouseEvent) => void
+  private readonly onKeyDown: (ev: KeyboardEvent) => void
+  private readonly onViewportChange = (): void => {
+    if (this.open) this.syncDropdownPosition()
+  }
+
+  constructor(opts: SocialProfileMenuOptions) {
+    this.login = opts.login
+    this.onLoginChange = opts.onLoginChange
+    this.onSignOut = opts.onSignOut
+    this.onOpenSettings = opts.onOpenSettings
+    this.onOpenBackpack = opts.onOpenBackpack
+    this.onOpenProfile = opts.onOpenProfile
+
+    this.wrap = document.createElement('div')
+    this.wrap.className = 'social-profile-menu'
+    this.wrap.innerHTML = `
+      <button type="button" class="social-profile-menu__avatar-btn" data-profile-btn aria-haspopup="menu" aria-expanded="false">
+        <span class="social-profile-menu__avatar-slot" data-avatar-slot></span>
+      </button>
+      <div class="social-profile-menu__dropdown" data-menu hidden role="region" aria-label="Account and settings"></div>
+    `
+
+    this.profileBtn = this.wrap.querySelector('[data-profile-btn]') as HTMLButtonElement
+    this.avatarSlot = this.wrap.querySelector('[data-avatar-slot]') as HTMLElement
+    this.menuEl = this.wrap.querySelector('[data-menu]') as HTMLElement
+    this.menuBody = document.createElement('div')
+    this.menuBody.className = 'social-profile-menu__body'
+    this.menuEl.appendChild(this.menuBody)
+
+    this.profileBtn.addEventListener('click', () => this.toggle())
+
+    this.onDocMouseDown = (ev: MouseEvent) => {
+      if (!this.open) return
+      const target = ev.target as Node
+      if (!this.wrap.contains(target) && !this.menuEl.contains(target)) this.close()
+    }
+    this.onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') this.close()
+    }
+  }
+
+  mount(): void {
+    document.addEventListener('mousedown', this.onDocMouseDown)
+    window.addEventListener('keydown', this.onKeyDown)
+    window.addEventListener('resize', this.onViewportChange)
+    window.addEventListener('scroll', this.onViewportChange, true)
+    this.refreshAvatar()
+    this.renderMenu()
+  }
+
+  setLogin(login: LoginResult): void {
+    this.login = login
+    this.refreshAvatar()
+    if (this.open) this.renderMenu()
+  }
+
+  dispose(): void {
+    document.removeEventListener('mousedown', this.onDocMouseDown)
+    window.removeEventListener('keydown', this.onKeyDown)
+    window.removeEventListener('resize', this.onViewportChange)
+    window.removeEventListener('scroll', this.onViewportChange, true)
+    this.restoreDropdownParent()
+    this.wrap.remove()
+  }
+
+  private isWallet(): boolean {
+    return this.login.kind === 'wallet'
+  }
+
+  private toggle(): void {
+    if (this.open) this.close()
+    else this.openMenu()
+  }
+
+  private openMenu(): void {
+    this.open = true
+    this.menuEl.hidden = false
+    this.menuEl.classList.add('social-profile-menu__dropdown--portaled')
+    if (this.menuEl.parentElement !== document.body) {
+      document.body.appendChild(this.menuEl)
+    }
+    this.syncDropdownPosition()
+    this.profileBtn.classList.add('social-profile-menu__avatar-btn--open')
+    this.profileBtn.setAttribute('aria-expanded', 'true')
+    this.renderMenu()
+  }
+
+  private close(): void {
+    this.open = false
+    this.menuEl.hidden = true
+    this.menuEl.classList.remove('social-profile-menu__dropdown--portaled')
+    this.restoreDropdownParent()
+    this.profileBtn.classList.remove('social-profile-menu__avatar-btn--open')
+    this.profileBtn.setAttribute('aria-expanded', 'false')
+  }
+
+  private restoreDropdownParent(): void {
+    this.menuEl.style.top = ''
+    this.menuEl.style.right = ''
+    if (this.menuEl.parentElement !== this.wrap) {
+      this.wrap.appendChild(this.menuEl)
+    }
+  }
+
+  private syncDropdownPosition(): void {
+    const rect = this.profileBtn.getBoundingClientRect()
+    this.menuEl.style.top = `${Math.round(rect.bottom + 10)}px`
+    this.menuEl.style.right = `${Math.round(window.innerWidth - rect.right)}px`
+  }
+
+  private refreshAvatar(): void {
+    const signedIn = this.isWallet()
+    this.profileBtn.classList.toggle('social-profile-menu__avatar-btn--signed-out', !signedIn)
+
+    if (!signedIn) {
+      this.displayName = null
+      this.avatarSlot.innerHTML = `<span class="social-profile-menu__guest-icon">${ICON_GUEST_HEAD}</span>`
+      this.profileBtn.setAttribute('aria-label', 'Account and sign in')
+      return
+    }
+
+    if (this.login.kind !== 'wallet') return
+    const address = this.login.address
+    const letter = address.slice(2, 3).toUpperCase()
+    this.avatarSlot.innerHTML = `<span class="social-profile-menu__avatar-fallback" data-fallback>${escapeHtml(letter)}</span>`
+    this.profileBtn.setAttribute('aria-label', 'Account and settings')
+
+    void fetchProfileFaceUrl(address).then((url) => {
+      if (!url || this.login.kind !== 'wallet' || this.login.address !== address) return
+      this.avatarSlot.innerHTML = `<img class="social-profile-menu__avatar-img" src="${escapeHtml(url)}" alt="" width="44" height="44" decoding="async" />`
+      const img = this.avatarSlot.querySelector('img')
+      img?.addEventListener(
+        'error',
+        () => {
+          this.avatarSlot.innerHTML = `<span class="social-profile-menu__avatar-fallback">${escapeHtml(letter)}</span>`
+        },
+        { once: true }
+      )
+    })
+
+    void fetchProfileCached(address).then((profile) => {
+      if (!profile || this.login.kind !== 'wallet' || this.login.address !== address) return
+      this.displayName = identityFromAvatarProfile(profile, address).displayName
+      if (this.open) this.renderMenu()
+      this.profileBtn.setAttribute(
+        'aria-label',
+        `Account and settings — ${this.displayName}`
+      )
+    })
+  }
+
+  private renderMenu(): void {
+    if (this.isWallet()) {
+      this.menuBody.innerHTML = this.renderSignedInMenu()
+      this.wireSignedInMenu()
+      return
+    }
+    this.menuBody.innerHTML = this.renderSignInMenu()
+    this.wireSignInMenu()
+  }
+
+  private renderSignInMenu(): string {
+    return `
+      <div class="social-profile-menu__section">
+        <p class="social-profile-menu__hint">Sign in with your wallet to use favorites, chat, voice, and your avatar.</p>
+        <p class="social-profile-menu__status" data-signin-status hidden></p>
+        <button type="button" class="social-profile-menu__wallet-btn" data-metamask ${this.busy ? 'disabled' : ''}>
+          <span class="social-profile-menu__wallet-btn-icon" aria-hidden="true">${ICON_METAMASK}</span>
+          <span>Continue with MetaMask</span>
+        </button>
+        <button type="button" class="social-profile-menu__ghost-btn" data-guest ${this.busy ? 'disabled' : ''}>
+          Continue as Guest
+        </button>
+      </div>
+    `
+  }
+
+  private renderSignedInMenu(): string {
+    if (this.login.kind !== 'wallet') return ''
+    const address = this.login.address
+    const name = this.displayName?.trim() || walletShort(address)
+    return `
+      <div class="social-profile-menu__connection" role="group" aria-label="Connection">
+        <div class="social-profile-menu__connection-label">Connection</div>
+        <div class="social-profile-menu__pill">
+          <span class="social-profile-menu__pill-dot" aria-hidden="true"></span>
+          Wallet
+        </div>
+        <p class="social-profile-menu__connection-primary">${escapeHtml(name)}</p>
+        <p class="social-profile-menu__connection-meta">${escapeHtml(walletShort(address))}</p>
+      </div>
+      <div class="social-profile-menu__items">
+        <button type="button" class="social-profile-menu__item" data-open-profile>
+          <span class="social-profile-menu__item-icon" aria-hidden="true">${ICON_GUEST_HEAD}</span>
+          <span>View profile</span>
+        </button>
+        <button type="button" class="social-profile-menu__item" data-open-settings>
+          <span class="social-profile-menu__item-icon" aria-hidden="true">${ICON_SETTINGS}</span>
+          <span>Settings</span>
+        </button>
+        <button type="button" class="social-profile-menu__item" data-open-backpack>
+          <span class="social-profile-menu__item-icon" aria-hidden="true">${ICON_BACKPACK}</span>
+          <span>Backpack</span>
+        </button>
+      </div>
+      <div class="social-profile-menu__actions">
+        <button type="button" class="social-profile-menu__item social-profile-menu__item--danger" data-sign-out>
+          <span class="social-profile-menu__item-icon" aria-hidden="true">${ICON_SIGN_OUT}</span>
+          <span>Sign out</span>
+        </button>
+      </div>
+    `
+  }
+
+  private wireSignInMenu(): void {
+    this.menuBody.querySelector('[data-metamask]')?.addEventListener('click', () => void this.runMetaMask())
+    this.menuBody.querySelector('[data-guest]')?.addEventListener('click', () => {
+      this.onLoginChange?.({ kind: 'guest' })
+      this.setLogin({ kind: 'guest' })
+      this.close()
+    })
+  }
+
+  private wireSignedInMenu(): void {
+    this.menuBody.querySelector('[data-sign-out]')?.addEventListener('click', () => {
+      this.close()
+      this.onSignOut?.()
+    })
+    this.menuBody.querySelector('[data-open-profile]')?.addEventListener('click', () => {
+      this.close()
+      if (this.onOpenProfile) this.onOpenProfile()
+    })
+    this.menuBody.querySelector('[data-open-settings]')?.addEventListener('click', () => {
+      this.close()
+      if (this.onOpenSettings) this.onOpenSettings()
+      else window.alert('Settings are available from the in-world menu after you jump in.')
+    })
+    this.menuBody.querySelector('[data-open-backpack]')?.addEventListener('click', () => {
+      this.close()
+      if (this.onOpenBackpack) this.onOpenBackpack()
+      else window.alert('Open your backpack from the in-world sidebar after you jump into a scene.')
+    })
+  }
+
+  private setSignInStatus(msg: string | null, isError = false): void {
+    const el = this.menuBody.querySelector('[data-signin-status]') as HTMLElement | null
+    if (!el) return
+    if (!msg) {
+      el.hidden = true
+      el.textContent = ''
+      el.className = 'social-profile-menu__status'
+      return
+    }
+    el.hidden = false
+    el.textContent = msg
+    el.className = `social-profile-menu__status${isError ? ' social-profile-menu__status--error' : ''}`
+  }
+
+  private async runMetaMask(): Promise<void> {
+    if (this.busy) return
+    this.busy = true
+    this.setSignInStatus('Connecting…')
+    for (const btn of this.menuBody.querySelectorAll('button')) {
+      ;(btn as HTMLButtonElement).disabled = true
+    }
+    try {
+      const result = await loginWithMetaMask((msg) => this.setSignInStatus(msg))
+      this.onLoginChange?.(result)
+      this.setLogin(result)
+      this.close()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.setSignInStatus(msg, true)
+      for (const btn of this.menuBody.querySelectorAll('button')) {
+        ;(btn as HTMLButtonElement).disabled = false
+      }
+      this.busy = false
+    }
+  }
+}

@@ -164,10 +164,6 @@ export class MapView {
       </div>
 
       <header class="dcl-map__hud dcl-map__hud--top">
-        <div class="dcl-map__hud-copy">
-          <p class="dcl-map__eyebrow">Decentraland · EA realm</p>
-          <h1 class="dcl-map__title">Genesis City Live</h1>
-        </div>
         <div class="dcl-map__hud-controls">
           <span class="dcl-map__status" role="status"></span>
           <span class="dcl-map__count"></span>
@@ -507,6 +503,7 @@ export class MapView {
       this.peersError.textContent = `Genesis peers: ${this.peersErrorMsg}`
     } else {
       this.peersError.hidden = true
+      this.peersError.textContent = ''
     }
 
     if (this.worldsErrorMsg && this.worldsConnection === 'error') {
@@ -515,6 +512,7 @@ export class MapView {
       this.worldsError.querySelector('.dcl-map__btn')?.addEventListener('click', () => void this.worldsPoller.refresh())
     } else {
       this.worldsError.hidden = true
+      this.worldsError.textContent = ''
     }
   }
 
@@ -617,19 +615,27 @@ export class MapView {
       seen.add(key)
       let img = this.tileNodes.get(key)
       if (!img) {
-        img = document.createElement('img')
-        img.alt = ''
-        img.draggable = false
-        img.decoding = 'async'
-        img.loading = 'lazy'
-        img.src = mapTileUrl(VIEWPORT_FETCH_ZOOM, tile.tx, tile.ty)
-        this.tilesLayer.appendChild(img)
-        this.tileNodes.set(key, img)
+        const tileImg = document.createElement('img')
+        tileImg.alt = ''
+        tileImg.draggable = false
+        tileImg.decoding = 'async'
+        tileImg.loading = 'lazy'
+        tileImg.addEventListener('error', () => {
+          tileImg.style.visibility = 'hidden'
+        })
+        tileImg.addEventListener('load', () => {
+          tileImg.style.visibility = ''
+        })
+        tileImg.src = mapTileUrl(VIEWPORT_FETCH_ZOOM, tile.tx, tile.ty)
+        this.tilesLayer.appendChild(tileImg)
+        this.tileNodes.set(key, tileImg)
+        img = tileImg
       }
       img.style.left = `${tile.left}px`
       img.style.top = `${tile.top}px`
       img.style.width = `${tile.size}px`
       img.style.height = `${tile.size}px`
+      if (img.complete && img.naturalWidth > 0) img.style.visibility = ''
     }
 
     for (const [key, img] of this.tileNodes) {

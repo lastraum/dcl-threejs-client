@@ -36,6 +36,7 @@ export type SettingsOverlayOptions = {
   getMapPlayerState?: () => MapPlayerState | null
   onMapJumpIn?: (px: number, py: number) => void
   onEventJumpIn?: EventsViewOptions['onJumpIn']
+  onEventViewScene?: EventsViewOptions['onViewScene']
   onPlaceJumpIn?: PlacesViewOptions['onJumpIn']
   getDefaultEventCoords?: () => { x: number; y: number } | null
   isWorldScene?: boolean
@@ -60,6 +61,7 @@ export class SettingsOverlay {
   private getMapPlayerState?: () => MapPlayerState | null
   private onMapJumpIn?: (px: number, py: number) => void
   private onEventJumpIn?: EventsViewOptions['onJumpIn']
+  private onEventViewScene?: EventsViewOptions['onViewScene']
   private onPlaceJumpIn?: PlacesViewOptions['onJumpIn']
   private getDefaultEventCoords?: () => { x: number; y: number } | null
   private isWorldScene?: boolean
@@ -74,6 +76,7 @@ export class SettingsOverlay {
     this.getMapPlayerState = opts.getMapPlayerState
     this.onMapJumpIn = opts.onMapJumpIn
     this.onEventJumpIn = opts.onEventJumpIn
+    this.onEventViewScene = opts.onEventViewScene
     this.onPlaceJumpIn = opts.onPlaceJumpIn
     this.getDefaultEventCoords = opts.getDefaultEventCoords
     this.isWorldScene = opts.isWorldScene
@@ -243,6 +246,7 @@ export class SettingsOverlay {
     if (this.activeTab === 'events') {
       this.eventsView = new EventsView({
         onJumpIn: this.onEventJumpIn,
+        onViewScene: this.onEventViewScene,
         getAuthIdentity: () => this.session.getAuthIdentity(),
         getDefaultCoords: this.getDefaultEventCoords,
         isWorldScene: this.isWorldScene,

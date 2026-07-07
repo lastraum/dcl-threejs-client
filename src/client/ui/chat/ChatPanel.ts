@@ -13,7 +13,7 @@ import { appendLinkifiedText } from '../../../social/linkifyText'
 import type { RouteTarget } from '../../../dcl/content/route'
 import { parseGotoCommand } from '../../../dcl/content/route'
 import { SCENE_CHAT_RAIL_ICON } from '../shell/icons'
-import { pickCommunityThumbnailUrl } from '../../../social/memberCommunities'
+import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import { isAllowedChatImageFile } from '../../../social/prepareChatImage'
 import { isChatImageLine, type ChatChannelChoice, type ChatLine } from '../../../social/types'
 
@@ -292,14 +292,13 @@ export class ChatPanel {
     this.railScrollEl.innerHTML = ''
     const current = this.social.getChannel()
 
-    const scene = this.social.getSceneTab()
-    if (scene) {
+    for (const scene of this.social.getSceneTabs()) {
       this.railScrollEl.appendChild(
         this.createRailButton({
           channel: { kind: 'scene', sceneKey: scene.key, label: scene.label },
           title: scene.label,
           iconSvg: SCENE_CHAT_RAIL_ICON,
-          active: current.kind === 'scene'
+          active: current.kind === 'scene' && current.sceneKey === scene.key
         })
       )
     }
@@ -309,7 +308,7 @@ export class ChatPanel {
         this.createRailButton({
           channel: { kind: 'community', communityId: community.id, displayName: community.name },
           title: community.name,
-          imageUrl: pickCommunityThumbnailUrl(community.thumbnails),
+          imageUrl: communityDisplayImageUrl(community.id, community.thumbnails),
           fallback: community.name.slice(0, 1).toUpperCase(),
           active: current.kind === 'community' && current.communityId === community.id
         })

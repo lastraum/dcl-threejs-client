@@ -7,6 +7,24 @@ export const PREREGISTER_RENDERER_COMPONENTS_KEY = '__THREEJS_PREREGISTER_RENDER
 
 const preregistered = new WeakSet<IEngine>()
 
+type RendererComponentFactory = (engine: IEngine) => unknown
+
+/**
+ * Exported + iterated from the hook so the worker bundle cannot tree-shake
+ * registration calls away (empty preregister → "Engine is already sealed" at runtime).
+ */
+export const RENDERER_PREREGISTER_FACTORIES: readonly RendererComponentFactory[] = [
+  (engine) => generated.PointerEventsResult(engine),
+  (engine) => generated.TriggerAreaResult(engine),
+  (engine) => generated.VideoEvent(engine),
+  (engine) => generated.AudioEvent(engine),
+  (engine) => generated.TweenState(engine),
+  (engine) => generated.RaycastResult(engine),
+  (engine) => generated.VideoPlayer(engine),
+  (engine) => generated.AudioSource(engine),
+  (engine) => generated.PrimaryPointerInfo(engine)
+]
+
 /**
  * Declare renderer→worker CRDT components on the scene engine before `engine.seal()`.
  * Direct inject (`addValue` / `createOrReplace`) fails with "Engine is already sealed"
@@ -15,20 +33,16 @@ const preregistered = new WeakSet<IEngine>()
 export function preregisterRendererInjectedComponents(engine: IEngine): void {
   if (preregistered.has(engine)) return
   preregistered.add(engine)
-
-  generated.PointerEventsResult(engine)
-  generated.TriggerAreaResult(engine)
-  generated.VideoEvent(engine)
-  generated.AudioEvent(engine)
-  generated.TweenState(engine)
-  generated.RaycastResult(engine)
-  generated.VideoPlayer(engine)
-  generated.AudioSource(engine)
-  generated.PrimaryPointerInfo(engine)
+  for (const register of RENDERER_PREREGISTER_FACTORIES) {
+    register(engine)
+  }
   guardVideoPlayerGetMutable(engine)
 }
 
 export function installPreregisterRendererComponentsHook(): void {
   const g = globalThis as Record<string, unknown>
   g[PREREGISTER_RENDERER_COMPONENTS_KEY] = preregisterRendererInjectedComponents
+  if (RENDERER_PREREGISTER_FACTORIES.length === 0) {
+    throw new Error('[sceneWorker] renderer preregister factories missing')
+  }
 }

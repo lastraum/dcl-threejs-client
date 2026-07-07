@@ -601,6 +601,21 @@ function deliverPointerCrdtInbound(chunks: Uint8Array[]): void {
   executePointerDelivery(chunks)
 }
 
+const EMPTY_RENDERER_INJECT_COUNTS = {
+  tweenPuts: 0,
+  raycastPuts: 0,
+  videoPlayerPuts: 0,
+  reservedTransformPuts: 0,
+  triggerAppends: 0,
+  videoAppends: 0,
+  pointerAppends: 0
+}
+
+function isSealedEngineError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return msg.includes('already sealed')
+}
+
 function applyRendererInboundChunks(chunks: Uint8Array[]): {
   tweenPuts: number
   raycastPuts: number
@@ -618,15 +633,26 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
   let videoAppends = 0
   let pointerAppends = 0
   if (sceneEngine) {
-    const lww = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
-    tweenPuts = lww.tweenPuts
-    raycastPuts = lww.raycastPuts
-    videoPlayerPuts = lww.videoPlayerPuts
-    reservedTransformPuts = lww.reservedTransformPuts
-    const growOnly = injectRendererGrowOnlyAppendsOnEngine(sceneEngine, chunks)
-    triggerAppends = growOnly.triggerAppends
-    videoAppends = growOnly.videoAppends
-    pointerAppends = growOnly.pointerAppends
+    try {
+      const lww = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
+      tweenPuts = lww.tweenPuts
+      raycastPuts = lww.raycastPuts
+      videoPlayerPuts = lww.videoPlayerPuts
+      reservedTransformPuts = lww.reservedTransformPuts
+      const growOnly = injectRendererGrowOnlyAppendsOnEngine(sceneEngine, chunks)
+      triggerAppends = growOnly.triggerAppends
+      videoAppends = growOnly.videoAppends
+      pointerAppends = growOnly.pointerAppends
+    } catch (err) {
+      if (!isSealedEngineError(err) || !rendererInboundApply) throw err
+      workerVerboseLog(
+        debugPointerDeliver,
+        'warn',
+        '[sceneWorker] renderer inject blocked (sealed) — falling back to transport'
+      )
+      rendererInboundApply(chunks)
+      return EMPTY_RENDERER_INJECT_COUNTS
+    }
   }
   // Transport still applies identity / camera / grow-only; direct inject above guarantees
   // PlayerEntity Transform is current before the next scene read (movePlayerTo, etc.).

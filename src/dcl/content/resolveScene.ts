@@ -3,6 +3,7 @@ import type { ContentFile, RealmEndpoints, ResolvedScene, SceneMetadata } from '
 import { pickSceneSpawn } from './pickSceneSpawn'
 import { BLANK_SCENE_TEMPLATE } from './types'
 import { layoutFromSceneMetadata } from './sceneLayout'
+import { resolveBrowserChatEnabled } from './resolveBrowserChat'
 import { resolveSceneEnvironment } from '../landscape/resolveLandscapeEnvironment'
 import { catalystContentAssetUrl, catalystRootFromContentUrl, fetchSceneEntityByPointer } from '../../network/catalyst/CatalystClient'
 import { fetchCatalystRealmAbout, fetchWorldRealmAbout } from '../../network/catalyst/realmAbout'
@@ -181,13 +182,55 @@ function resolvedFromEntity(
     mainEntry: findMainEntry(content, metadata),
     skybox,
     commsPointer: opts.commsPointer,
+    browserChatEnabled: resolveBrowserChatEnabled(metadata),
     realm: opts.realm
   }
+}
+
+function displayTitleFromEntity(entity: Record<string, unknown>): string | null {
+  const metadata = (entity.metadata ?? {}) as SceneMetadata
+  const title = metadata.display?.title
+  if (typeof title === 'string' && title.trim()) return title.trim()
+  return null
+}
+
+/** Deployed scene `scene.json` display title — canonical creator metadata. */
+export async function fetchDeployedSceneDisplayTitle(
+  target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
+): Promise<string | null> {
+  if (target.kind === 'coords') {
+    const result = await fetchParcelEntity(target.x, target.y)
+    return result ? displayTitleFromEntity(result.entity) : null
+  }
+
+  for (const pointer of worldPointersForTarget(target)) {
+    const result = await fetchWorldEntity(pointer)
+    if (!result) continue
+    const title = displayTitleFromEntity(result.entity)
+    if (title) return title
+  }
+  return null
 }
 
 export async function resolveSceneFromRoute(target: RouteTarget): Promise<ResolvedScene> {
   if (target.kind === 'editor') {
     throw new Error('Editor route does not resolve a network scene — use EditorApp')
+  }
+
+  if (target.kind === 'events') {
+    throw new Error('Events route does not resolve a network scene')
+  }
+
+  if (target.kind === 'communities') {
+    throw new Error('Communities route does not resolve a network scene')
+  }
+
+  if (target.kind === 'map') {
+    throw new Error('Map route does not resolve a network scene')
+  }
+
+  if (target.kind === 'profile') {
+    throw new Error('Profile route does not resolve a network scene')
   }
 
   if (target.kind === 'blank') {
@@ -197,7 +240,8 @@ export async function resolveSceneFromRoute(target: RouteTarget): Promise<Resolv
       ...BLANK_SCENE_TEMPLATE,
       metadata,
       landscapeEnvironment: resolvedEnv.landscapeEnvironment,
-      skyLighting: resolvedEnv.skyLighting
+      skyLighting: resolvedEnv.skyLighting,
+      browserChatEnabled: resolveBrowserChatEnabled(metadata)
     }
   }
 

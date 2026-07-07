@@ -1,6 +1,5 @@
 import type { LoginResult } from '../../../auth/AuthClient'
 import type { SocialService } from '../../../social/SocialService'
-import { SocialNotificationsMenu } from './SocialNotificationsMenu'
 import { SocialProfileMenu } from './SocialProfileMenu'
 
 export type SocialShellTab = 'explore' | 'map' | 'communities' | 'events'
@@ -27,7 +26,6 @@ export type SocialShellTopNavOptions = SocialShellChromeHandlers & {
 export class SocialShellTopNav {
   readonly el: HTMLElement
 
-  private readonly notificationsMenu: SocialNotificationsMenu
   private readonly profileMenu: SocialProfileMenu
   private readonly tabButtons: Partial<Record<SocialShellTab, HTMLButtonElement>> = {}
   private activeTab: SocialShellTab | null
@@ -50,14 +48,6 @@ export class SocialShellTopNav {
 
     const accountEl = this.el.querySelector('[data-account]') as HTMLElement
 
-    this.notificationsMenu = new SocialNotificationsMenu({
-      login: opts.login,
-      getSocial: opts.getSocial ?? (() => null),
-      onEnsureSocial: opts.onEnsureSocial,
-      onOpenChat: opts.onOpenChat,
-      onOpenUserProfile: opts.onOpenUserProfile
-    })
-
     this.profileMenu = new SocialProfileMenu({
       login: opts.login,
       onLoginChange: opts.onLoginChange,
@@ -66,7 +56,6 @@ export class SocialShellTopNav {
       onOpenBackpack: opts.onOpenBackpack,
       onOpenProfile: opts.onOpenProfile
     })
-    accountEl.appendChild(this.notificationsMenu.wrap)
     accountEl.appendChild(this.profileMenu.wrap)
 
     for (const btn of this.el.querySelectorAll<HTMLButtonElement>('[data-shell-tab]')) {
@@ -81,12 +70,10 @@ export class SocialShellTopNav {
   }
 
   mount(): void {
-    this.notificationsMenu.mount()
     this.profileMenu.mount()
   }
 
   setLogin(login: LoginResult): void {
-    this.notificationsMenu.setLogin(login)
     this.profileMenu.setLogin(login)
   }
 
@@ -96,7 +83,6 @@ export class SocialShellTopNav {
   }
 
   dispose(): void {
-    this.notificationsMenu.dispose()
     this.profileMenu.dispose()
     this.el.remove()
   }

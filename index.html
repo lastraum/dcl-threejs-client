@@ -1080,10 +1080,13 @@
           pointer-events: auto;
         }
         .client-mobile .chat-panel-wrap {
-          left: max(12px, env(safe-area-inset-left, 0px));
+          left: calc(max(12px, env(safe-area-inset-left, 0px)) + 48px + 10px);
           right: var(--client-safe-right);
           bottom: calc(max(12px, env(safe-area-inset-bottom, 0px)) + 56px);
           width: auto;
+        }
+        .client-mobile .chat-panel-wrap.is-scene-mode {
+          bottom: calc(max(12px, env(safe-area-inset-bottom, 0px)) + 56px);
         }
         .client-mobile .chat-panel {
           width: 100%;
@@ -1463,6 +1466,23 @@
           min-height: 0;
           max-height: none;
           height: auto;
+        }
+        .splash-screen--signed-in .splash-screen__copy {
+          align-items: center;
+          text-align: center;
+        }
+        .splash-screen--signed-in .splash-screen__logo {
+          display: flex;
+          justify-content: center;
+          width: 100%;
+        }
+        .splash-screen--signed-in .splash-screen__actions {
+          width: 100%;
+          max-width: 360px;
+          margin: 0 auto;
+        }
+        .splash-screen--signed-in .splash-session-hint {
+          text-align: center;
         }
         .splash-screen__copy {
           flex: 0 0 auto;
@@ -7318,6 +7338,11 @@
         --social-chat-dock-z: 25;
         --social-shell-overlay-z: 40;
         --social-profile-modal-z: 200;
+        --social-chat-mobile-fab-size: 52px;
+        --social-chat-mobile-fab-inset: max(14px, env(safe-area-inset-bottom, 0px));
+        --social-chat-mobile-fab-stack: calc(
+          var(--social-chat-mobile-fab-inset) + var(--social-chat-mobile-fab-size) + 10px
+        );
       }
       body.social-shell-with-chat:has(.social-chat-dock--list-expanded):not(:has(.social-chat-dock--thread-open)),
       body.social-shell-with-chat:has(.social-chat-dock--thread-open) {
@@ -7468,6 +7493,7 @@
       .social-chat-dock__pills .chat-panel__rail-btn {
         background: transparent;
         border-color: rgba(255, 255, 255, 0.14);
+        overflow: visible;
       }
       .social-chat-dock__pills .chat-panel__rail-btn--svg {
         background: transparent;
@@ -7530,8 +7556,8 @@
       }
       .social-chat-dock__unread {
         position: absolute;
-        top: -3px;
-        right: -3px;
+        top: -4px;
+        right: -4px;
         min-width: 16px;
         height: 16px;
         padding: 0 4px;
@@ -7544,7 +7570,10 @@
         text-align: center;
         pointer-events: none;
         box-shadow: 0 0 0 2px rgba(18, 8, 30, 0.9);
-        z-index: 2;
+        z-index: 3;
+      }
+      .social-chat-dock__pills .chat-panel__rail-scroll {
+        overflow-x: visible;
       }
       .social-chat-dock__list-avatar {
         position: relative;
@@ -7553,7 +7582,7 @@
         height: 36px;
         border-radius: 50%;
         border: 2px solid rgba(255, 255, 255, 0.14);
-        overflow: hidden;
+        overflow: visible;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -7565,6 +7594,7 @@
         width: 100%;
         height: 100%;
         object-fit: cover;
+        border-radius: 50%;
       }
       .social-chat-dock__list-avatar--svg svg {
         width: 20px;
@@ -7604,6 +7634,27 @@
       }
       .social-chat-dock__thread[hidden] {
         display: none !important;
+      }
+      @media (min-width: 768px) {
+        .social-chat-dock--thread-open:not(.social-chat-dock--mobile) .social-chat-dock__body {
+          flex-direction: row;
+          align-items: stretch;
+        }
+        .social-chat-dock--thread-open:not(.social-chat-dock--mobile) .social-chat-dock__pills {
+          flex: 0 0 var(--social-chat-dock-pills-width);
+          width: var(--social-chat-dock-pills-width);
+          min-width: var(--social-chat-dock-pills-width);
+          border-right: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .social-chat-dock--thread-open:not(.social-chat-dock--mobile).social-chat-dock--list-expanded .social-chat-dock__pills {
+          flex: 0 0 min(280px, 42%);
+          width: min(280px, 42%);
+          min-width: min(280px, 42%);
+        }
+        .social-chat-dock--thread-open:not(.social-chat-dock--mobile) .social-chat-dock__thread {
+          flex: 1 1 auto;
+          min-width: 0;
+        }
       }
       .social-chat-dock--thread-open .social-chat-dock__status {
         display: none;
@@ -7847,10 +7898,55 @@
           padding: 12px 14px 10px;
         }
         .social-chat-dock--mobile .social-chat-dock__composer {
-          margin: 0 12px calc(14px + env(safe-area-inset-bottom, 0px));
+          margin: 0 12px calc(14px + var(--social-chat-mobile-fab-stack));
         }
         .social-chat-dock--mobile .chat-panel__bubble {
           max-width: min(100%, 320px);
+        }
+        .social-chat-dock.social-chat-dock--mobile-peek {
+          top: auto !important;
+          left: max(14px, env(safe-area-inset-left, 0px));
+          right: max(14px, env(safe-area-inset-right, 0px));
+          bottom: var(--social-chat-mobile-fab-stack);
+          width: auto !important;
+          height: auto !important;
+          max-height: none;
+          border-radius: 0;
+          background: transparent;
+          border: none;
+          box-shadow: none;
+          pointer-events: none;
+          z-index: calc(var(--social-chat-dock-z, 25) + 1);
+        }
+        .social-chat-dock--mobile-peek .social-chat-dock__status,
+        .social-chat-dock--mobile-peek .social-chat-dock__pills,
+        .social-chat-dock--mobile-peek .social-chat-dock__thread-header,
+        .social-chat-dock--mobile-peek .social-chat-dock__messages {
+          display: none !important;
+        }
+        .social-chat-dock--mobile-peek .social-chat-dock__body {
+          display: block;
+          pointer-events: none;
+        }
+        .social-chat-dock--mobile-peek .social-chat-dock__thread {
+          display: block;
+          height: auto;
+          min-height: 0;
+          pointer-events: none;
+        }
+        .social-chat-dock--mobile-peek .social-chat-dock__composer {
+          margin: 0;
+          pointer-events: auto;
+          border-radius: 16px;
+          background: rgba(12, 8, 20, 0.96);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+          padding: 8px 10px;
+        }
+        .social-chat-dock--mobile-peek .social-chat-dock__input,
+        .social-chat-dock--mobile-peek .chat-panel__input {
+          background: rgba(0, 0, 0, 0.28) !important;
+          border-radius: 12px;
         }
       }
       .explorer-view__header {
@@ -9949,210 +10045,179 @@
         }
       }
 
-      /* Notifications bell (2D shell top-right) */
-      .social-notifications-menu {
-        position: relative;
-        flex-shrink: 0;
-      }
-      .social-notifications-menu__bell {
-        position: relative;
-        width: 40px;
-        height: 40px;
-        margin: 0;
-        padding: 0;
-        border: 1px solid rgba(255, 255, 255, 0.16);
-        border-radius: 12px;
-        background: rgba(255, 255, 255, 0.08);
-        color: rgba(255, 255, 255, 0.9);
-        cursor: pointer;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        font-family: inherit;
-        transition: background 0.15s ease, border-color 0.15s ease;
-      }
-      .social-notifications-menu__bell:hover {
-        background: rgba(255, 255, 255, 0.14);
-        border-color: rgba(255, 255, 255, 0.28);
-      }
-      .social-notifications-menu__bell--open {
-        border-color: rgba(94, 228, 255, 0.55);
-        box-shadow: 0 0 0 1px rgba(94, 228, 255, 0.22);
-      }
-      .social-notifications-menu__bell-icon {
-        display: grid;
-        place-items: center;
-        width: 20px;
-        height: 20px;
-      }
-      .social-notifications-menu__bell-icon svg {
-        width: 100%;
-        height: 100%;
-      }
-      .social-notifications-menu__badge {
-        position: absolute;
-        top: -4px;
-        right: -4px;
-        min-width: 16px;
-        height: 16px;
-        padding: 0 4px;
-        border-radius: 999px;
-        background: #ff3b5c;
-        color: #fff;
-        font-size: 9px;
-        font-weight: 800;
-        line-height: 16px;
-        text-align: center;
-        box-shadow: 0 0 0 2px #670693;
-      }
-      .social-notifications-menu__badge[hidden] {
-        display: none !important;
-      }
-      .social-notifications-menu__dropdown {
-        position: absolute;
-        top: calc(100% + 10px);
-        right: 0;
-        width: min(320px, calc(100vw - 28px));
-        max-height: min(70vh, 480px);
-        border-radius: 14px;
-        background: rgba(14, 10, 24, 0.97);
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
-        z-index: var(--social-shell-overlay-z, 40);
-        backdrop-filter: blur(12px);
-        overflow-y: auto;
-        -webkit-overflow-scrolling: touch;
-      }
-      .social-notifications-menu__dropdown--portaled {
+      /* Transient toast notifications (no nav trigger) */
+
+      /* Mobile iPhone-style notification banners */
+      .social-mobile-notif-host {
         position: fixed;
-        top: auto;
-        right: auto;
-      }
-      .social-notifications-menu__body {
-        padding: 12px 10px 14px;
-      }
-      .social-notifications-menu__section + .social-notifications-menu__section {
-        margin-top: 10px;
-        padding-top: 10px;
-        border-top: 1px solid rgba(255, 255, 255, 0.08);
-      }
-      .social-notifications-menu__heading {
-        margin: 0 8px 8px;
-        font-size: 10px;
-        font-weight: 800;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: rgba(255, 255, 255, 0.48);
-      }
-      .social-notifications-menu__hint,
-      .social-notifications-menu__empty {
-        margin: 0;
-        padding: 12px 10px;
-        font-size: 12px;
-        line-height: 1.45;
-        color: rgba(255, 255, 255, 0.68);
-        text-align: center;
-      }
-      .social-notifications-menu__list {
-        list-style: none;
-        margin: 0;
-        padding: 0;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: calc(var(--social-shell-overlay-z, 40) + 12);
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 8px;
+        padding:
+          calc(8px + env(safe-area-inset-top, 0px))
+          max(12px, env(safe-area-inset-right, 0px))
+          0
+          max(12px, env(safe-area-inset-left, 0px));
+        pointer-events: none;
       }
-      .social-notifications-menu__row {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        width: 100%;
-        padding: 8px 10px;
+      .social-mobile-notif-host[hidden] {
+        display: none !important;
+      }
+      .social-mobile-notif {
+        margin: 0;
+        padding: 0;
         border: none;
-        border-radius: 10px;
         background: transparent;
-        color: inherit;
         font-family: inherit;
         text-align: left;
+        width: 100%;
+        pointer-events: auto;
         cursor: pointer;
-        transition: background 0.15s ease;
+        transform: translateY(calc(-100% - 16px));
+        opacity: 0;
+        transition:
+          transform 0.38s cubic-bezier(0.22, 1, 0.36, 1),
+          opacity 0.28s ease;
       }
-      .social-notifications-menu__row:hover {
-        background: rgba(255, 255, 255, 0.06);
+      .social-mobile-notif--visible {
+        transform: translateY(0);
+        opacity: 1;
       }
-      .social-notifications-menu__row--friend {
-        cursor: default;
-      }
-      .social-notifications-menu__row--friend:hover {
-        background: transparent;
-      }
-      .social-notifications-menu__row-icon {
-        flex-shrink: 0;
-        width: 32px;
-        height: 32px;
-        display: grid;
-        place-items: center;
-        border-radius: 10px;
-        background: rgba(255, 255, 255, 0.06);
-      }
-      .social-notifications-menu__row-icon svg {
-        width: 18px;
-        height: 18px;
-      }
-      .social-notifications-menu__avatar {
-        flex-shrink: 0;
-        width: 36px;
-        height: 36px;
-        border-radius: 50%;
+      .social-mobile-notif__card {
+        border-radius: 16px;
+        background: rgba(22, 24, 32, 0.92);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow:
+          0 12px 40px rgba(0, 0, 0, 0.45),
+          0 0 0 0.5px rgba(255, 255, 255, 0.06) inset;
+        backdrop-filter: blur(18px) saturate(1.4);
+        -webkit-backdrop-filter: blur(18px) saturate(1.4);
         overflow: hidden;
+      }
+      .social-mobile-notif__header {
         display: flex;
         align-items: center;
-        justify-content: center;
-        border: 2px solid rgba(255, 255, 255, 0.14);
+        gap: 8px;
+        padding: 10px 14px 0;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.52);
       }
-      .social-notifications-menu__avatar-img {
+      .social-mobile-notif__app-icon {
+        width: 18px;
+        height: 18px;
+        border-radius: 5px;
+        background: linear-gradient(135deg, #ff2d55, #ff6b35);
+        color: #fff;
+        font-size: 10px;
+        font-weight: 900;
+        display: grid;
+        place-items: center;
+        flex-shrink: 0;
+      }
+      .social-mobile-notif__app-name {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .social-mobile-notif__time {
+        flex-shrink: 0;
+        color: rgba(255, 255, 255, 0.38);
+      }
+      .social-mobile-notif__body {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px 14px;
+      }
+      .social-mobile-notif__avatar,
+      .social-mobile-notif__glyph {
+        flex-shrink: 0;
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        overflow: hidden;
+        display: grid;
+        place-items: center;
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .social-mobile-notif__glyph {
+        font-size: 1.15rem;
+      }
+      .social-mobile-notif__avatar-img {
         width: 100%;
         height: 100%;
         object-fit: cover;
       }
-      .social-notifications-menu__avatar-fallback {
-        font-size: 0.9rem;
+      .social-mobile-notif__avatar-fallback {
+        font-size: 0.95rem;
         font-weight: 800;
         color: #fff;
       }
-      .social-notifications-menu__row-text {
+      .social-mobile-notif__text {
         flex: 1 1 auto;
         min-width: 0;
         display: flex;
         flex-direction: column;
         gap: 2px;
       }
-      .social-notifications-menu__row-title {
-        font-size: 12px;
+      .social-mobile-notif__title {
+        font-size: 14px;
         font-weight: 700;
+        color: #fff;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .social-notifications-menu__row-sub {
-        font-size: 10px;
-        color: rgba(255, 255, 255, 0.48);
+      .social-mobile-notif__sub {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.58);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
-      .social-notifications-menu__action {
-        flex-shrink: 0;
-        padding: 6px 10px;
-        border: none;
-        border-radius: 8px;
-        background: rgba(14, 155, 218, 0.22);
-        color: #fff;
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        cursor: pointer;
-        font-family: inherit;
-      }
-      .social-notifications-menu__action:hover {
-        background: rgba(14, 155, 218, 0.38);
+      @media (min-width: 768px) {
+        .social-mobile-notif-host--desktop {
+          top: calc(var(--social-shell-header-height) + 8px);
+          left: auto;
+          right: max(18px, env(safe-area-inset-right, 0px));
+          width: clamp(240px, 16vw, 320px);
+          min-width: 0;
+          max-width: clamp(240px, 16vw, 320px);
+          padding: 0;
+          align-items: stretch;
+        }
+        .social-mobile-notif-host--desktop .social-mobile-notif {
+          width: 100%;
+          transform: translateX(calc(100% + 16px));
+        }
+        .social-mobile-notif-host--desktop .social-mobile-notif--visible {
+          transform: translateX(0);
+        }
+        .social-mobile-notif-host--desktop .social-mobile-notif__header {
+          padding: 8px 10px 0;
+          font-size: 9px;
+        }
+        .social-mobile-notif-host--desktop .social-mobile-notif__body {
+          gap: 8px;
+          padding: 8px 10px 10px;
+        }
+        .social-mobile-notif-host--desktop .social-mobile-notif__avatar,
+        .social-mobile-notif-host--desktop .social-mobile-notif__glyph {
+          width: 32px;
+          height: 32px;
+        }
+        .social-mobile-notif-host--desktop .social-mobile-notif__title {
+          font-size: 12px;
+        }
+        .social-mobile-notif-host--desktop .social-mobile-notif__sub {
+          font-size: 10px;
+        }
       }
 
       /* Profile avatar + dropdown (companion ExploreProfileMenu) */
@@ -10354,6 +10419,58 @@
       .social-profile-menu__items,
       .social-profile-menu__actions {
         padding: 4px 8px;
+      }
+      .social-profile-menu__toggle-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 12px;
+        margin: 0;
+        cursor: pointer;
+      }
+      .social-profile-menu__toggle-label {
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.9);
+      }
+      .social-profile-menu__toggle {
+        position: relative;
+        display: inline-flex;
+        flex-shrink: 0;
+      }
+      .social-profile-menu__toggle input {
+        position: absolute;
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .social-profile-menu__toggle-track {
+        position: relative;
+        display: block;
+        width: 38px;
+        height: 20px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.18);
+        transition: background 0.2s ease;
+      }
+      .social-profile-menu__toggle-track::after {
+        content: '';
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: #fff;
+        transition: transform 0.2s ease;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+      }
+      .social-profile-menu__toggle input:checked + .social-profile-menu__toggle-track {
+        background: #5ee4ff;
+      }
+      .social-profile-menu__toggle input:checked + .social-profile-menu__toggle-track::after {
+        transform: translateX(18px);
       }
       .social-profile-menu__item {
         display: flex;

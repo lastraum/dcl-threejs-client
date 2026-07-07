@@ -43,6 +43,7 @@ import { ExplorerView } from './ui/explore/ExplorerView'
 import { MapPageView } from './ui/explore/MapPageView'
 import { ProfilePageView } from './ui/explore/ProfilePageView'
 import type { SocialShellTab } from './ui/explore/SocialShellTopNav'
+import { SocialMobileNotifications } from './ui/explore/SocialMobileNotifications'
 import { SceneLandingView } from './ui/landing/SceneLandingView'
 import type { DclEvent } from '../social/dclEvents'
 import { enrichResolvedScenePublicTitle } from '../social/sceneDisplayTitle'
@@ -75,6 +76,7 @@ export class AppController {
   private sceneLandingView: SceneLandingView | null = null
   private socialChat: SocialChatController | null = null
   private socialChatDock: SocialChatDock | null = null
+  private socialMobileNotifications: SocialMobileNotifications | null = null
   private appMode: AppMode = 'explorer'
 
   async start(container: HTMLElement): Promise<void> {
@@ -249,6 +251,7 @@ export class AppController {
     return {
       onLoginChange: (login) => {
         this.login = login
+        this.socialMobileNotifications?.setLogin(login)
         this.applyLoginToSocialShellViews(login)
         if (login.kind === 'wallet') {
           if (
@@ -571,15 +574,39 @@ export class AppController {
         onOpenProfile: (address) => this.socialChat?.openProfileForAddress(address)
       })
     }
+    this.ensureSocialMobileNotifications()
     this.socialChatDock.show()
     document.body.classList.add('social-shell-with-chat')
     void this.socialChat.ensureShellInit()
+  }
+
+  private ensureSocialMobileNotifications(): void {
+    if (this.socialMobileNotifications) return
+    this.socialMobileNotifications = new SocialMobileNotifications({
+      login: this.login ?? { kind: 'guest' },
+      getSocial: () => this.socialChat?.getSocial() ?? null,
+      onEnsureSocial: async () => {
+        this.ensureSocialChatShell()
+        this.socialChat?.applyLogin(this.login)
+        await this.socialChat?.ensureShellInit()
+      },
+      onOpenChat: () => {
+        this.ensureSocialChatShell()
+        this.socialChatDock?.openFromNotification()
+      },
+      onOpenUserProfile: (address) => this.socialChat?.openProfileForAddress(address),
+      isChatNotificationSuppressed: () =>
+        this.socialChatDock?.isChatNotificationSuppressed() ?? false
+    })
+    this.socialMobileNotifications.mount()
   }
 
   private teardownSocialChatShell(disposeComms = false): void {
     this.socialChatDock?.hide()
     document.body.classList.remove('social-shell-with-chat')
     if (disposeComms) {
+      this.socialMobileNotifications?.dispose()
+      this.socialMobileNotifications = null
       this.socialChat?.dispose()
       this.socialChat = null
       this.socialChatDock?.dispose()

@@ -7750,7 +7750,7 @@
         }
         .social-chat-dock__mobile-fab {
           position: fixed;
-          right: max(14px, env(safe-area-inset-right, 0px));
+          left: max(14px, env(safe-area-inset-left, 0px));
           bottom: max(14px, env(safe-area-inset-bottom, 0px));
           z-index: calc(var(--social-chat-dock-z, 25) + 1);
           width: 52px;
@@ -7835,8 +7835,10 @@
           margin: 10px 14px 0;
         }
         .social-chat-dock--mobile .social-chat-dock__pills-toolbar {
-          justify-content: flex-start;
-          padding: 10px 14px 6px;
+          display: none;
+        }
+        .social-chat-dock--mobile.social-chat-dock--list-expanded .social-chat-dock__pills {
+          width: 100%;
         }
         .social-chat-dock--mobile .social-chat-dock__pills .chat-panel__rail-scroll {
           padding: 4px 12px calc(16px + env(safe-area-inset-bottom, 0px));

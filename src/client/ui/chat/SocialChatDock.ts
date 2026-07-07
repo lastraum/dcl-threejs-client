@@ -34,6 +34,7 @@ export class SocialChatDock {
   private readonly onGoto?: SocialChatDockOptions['onGoto']
   private readonly onOpenProfile?: SocialChatDockOptions['onOpenProfile']
   private readonly pillsEl: HTMLElement
+  private readonly pillsToolbarEl: HTMLElement
   private readonly pillsScrollEl: HTMLElement
   private readonly expandBtn: HTMLButtonElement
   private readonly threadEl: HTMLElement
@@ -93,19 +94,19 @@ export class SocialChatDock {
     this.pillsEl.className = 'social-chat-dock__pills chat-panel__rail'
     this.pillsEl.setAttribute('aria-label', 'Chat channels')
 
-    const pillsToolbar = document.createElement('div')
-    pillsToolbar.className = 'social-chat-dock__pills-toolbar'
+    this.pillsToolbarEl = document.createElement('div')
+    this.pillsToolbarEl.className = 'social-chat-dock__pills-toolbar'
     this.expandBtn = document.createElement('button')
     this.expandBtn.type = 'button'
     this.expandBtn.className = 'social-chat-dock__expand'
     this.expandBtn.setAttribute('aria-label', 'Expand chat list')
     this.expandBtn.setAttribute('aria-expanded', 'false')
     this.expandBtn.textContent = '‹'
-    pillsToolbar.appendChild(this.expandBtn)
+    this.pillsToolbarEl.appendChild(this.expandBtn)
 
     this.pillsScrollEl = document.createElement('div')
     this.pillsScrollEl.className = 'chat-panel__rail-scroll'
-    this.pillsEl.appendChild(pillsToolbar)
+    this.pillsEl.appendChild(this.pillsToolbarEl)
     this.pillsEl.appendChild(this.pillsScrollEl)
 
     this.threadEl = document.createElement('section')
@@ -211,6 +212,7 @@ export class SocialChatDock {
     this.visible = true
     this.threadOpen = false
     this.mobilePanelOpen = false
+    if (this.isMobileLayout()) this.listExpanded = true
     this.bindSocial()
     this.renderAll()
     this.syncLayout()
@@ -290,17 +292,25 @@ export class SocialChatDock {
   private openMobilePanel(): void {
     if (!this.visible || !this.isMobileLayout()) return
     this.mobilePanelOpen = true
-    if (!this.threadOpen) this.listExpanded = true
+    this.threadOpen = false
+    this.listExpanded = true
     this.hidePillTip()
     this.syncLayout()
+    this.renderPills()
   }
 
   private closeMobilePanel(): void {
     if (!this.mobilePanelOpen) return
     this.mobilePanelOpen = false
     this.threadOpen = false
+    this.listExpanded = true
     this.hidePillTip()
     this.syncLayout()
+  }
+
+  /** Mobile always uses full channel rows — never the narrow pill rail. */
+  private useExpandedChannelList(): boolean {
+    return this.listExpanded || this.isMobileLayout()
   }
 
   private bindSocial(): void {
@@ -470,7 +480,7 @@ export class SocialChatDock {
     const social = this.social()
     const current = social.getChannel()
     this.pillsScrollEl.innerHTML = ''
-    this.pillsScrollEl.classList.toggle('social-chat-dock__list-scroll', this.listExpanded)
+    this.pillsScrollEl.classList.toggle('social-chat-dock__list-scroll', this.useExpandedChannelList())
 
     for (const scene of social.getSceneTabs()) {
       const channel = { kind: 'scene' as const, sceneKey: scene.key, label: scene.label }
@@ -519,7 +529,7 @@ export class SocialChatDock {
     disabled?: boolean
     unreadCount?: number
   }): HTMLButtonElement {
-    if (this.listExpanded) return this.createListRow(options)
+    if (this.useExpandedChannelList()) return this.createListRow(options)
     return this.createPillButton(options)
   }
 
@@ -1058,17 +1068,21 @@ export class SocialChatDock {
     const mobile = this.isMobileLayout()
 
     if (mobile) {
-      this.listExpanded = !this.threadOpen
+      this.listExpanded = true
       this.clearContentAlign()
     }
 
     this.root.classList.toggle('social-chat-dock--thread-open', this.threadOpen)
-    this.root.classList.toggle('social-chat-dock--list-expanded', this.listExpanded && !this.threadOpen)
+    this.root.classList.toggle(
+      'social-chat-dock--list-expanded',
+      this.useExpandedChannelList() && !this.threadOpen
+    )
     this.root.classList.toggle('social-chat-dock--mobile', mobile)
     this.root.classList.toggle('social-chat-dock--mobile-open', mobile && this.mobilePanelOpen)
 
     this.threadEl.hidden = !this.threadOpen
     this.pillsEl.hidden = this.threadOpen
+    this.pillsToolbarEl.hidden = mobile
     this.expandBtn.hidden = this.threadOpen || mobile
     this.expandBtn.setAttribute('aria-expanded', String(this.listExpanded))
     this.expandBtn.setAttribute(

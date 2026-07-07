@@ -36,3 +36,56 @@ curl -sS 'https://dev.decentraland.social/api/places/worlds?limit=1' | head -c 8
 ## Full site config
 
 See [`nginx.conf`](./nginx.conf) for peers, parcels, worlds live-data, texture proxy, and SPA fallback.
+
+## Dev panel suggestions (production)
+
+The client POSTs same-origin `/api/suggestions`. Nginx forwards to a small Node service on the droplet (token stays server-side).
+
+**1. Sync app + server files on droplet** (not just `dist/`):
+
+```bash
+sudo mkdir -p /opt/dcl-threejs-client
+sudo rsync -av --delete \
+  dist/ server/ scripts/suggestion-dispatch-proxy.mjs package.json \
+  /opt/dcl-threejs-client/
+sudo chown -R www-data:www-data /opt/dcl-threejs-client
+```
+
+**2. Token env** (`/etc/dcl-threejs/suggestion-api.env`):
+
+```bash
+sudo mkdir -p /etc/dcl-threejs
+sudo tee /etc/dcl-threejs/suggestion-api.env <<'EOF'
+SUGGESTION_DISPATCH_TOKEN=github_pat_REPLACE_ME
+SUGGESTION_DISPATCH_REPO=lastraum/dcl-threejs-client
+SUGGESTION_API_PORT=8788
+EOF
+sudo chmod 600 /etc/dcl-threejs/suggestion-api.env
+```
+
+Fine-grained PAT: **Issues → Read and write** on `lastraum/dcl-threejs-client`.
+
+**3. systemd**
+
+```bash
+sudo cp deploy/suggestion-api.service /etc/systemd/system/dcl-suggestion-api.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now dcl-suggestion-api
+sudo systemctl status dcl-suggestion-api
+```
+
+**4. nginx** — add `location = /api/suggestions` from [`nginx.conf`](./nginx.conf) or [`../remote/decentraland.social`](../remote/decentraland.social), then:
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+**5. Smoke test**
+
+```bash
+curl -sS -X POST https://decentraland.social/api/suggestions \
+  -H 'Content-Type: application/json' \
+  -d '{"summary":"prod smoke test","category":"Other","details":"ignore — droplet curl smoke test","client_version":"0.5.0"}'
+```
+
+Expect `{"ok":true,"issue_number":...,"issue_url":"..."}`.

@@ -1,6 +1,9 @@
 import type { CommunityListRow } from './types'
 
-function coerceThumbnailRecord(source: unknown): Record<string, string> | undefined {
+const COMMUNITY_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export function coerceThumbnailRecord(source: unknown): Record<string, string> | undefined {
   if (source === null || source === undefined) return undefined
   if (typeof source === 'string' && source.trim()) return { raw: source.trim() }
   if (typeof source !== 'object' || Array.isArray(source)) return undefined
@@ -25,12 +28,14 @@ function mapRowFromApi(item: unknown): CommunityListRow | null {
   return {
     id,
     name: name.trim(),
+    description: typeof source.description === 'string' ? source.description.trim() : undefined,
     ownerAddress:
       typeof source.ownerAddress === 'string'
         ? source.ownerAddress
         : typeof source.owner_address === 'string'
           ? source.owner_address
           : undefined,
+    ownerName: typeof source.ownerName === 'string' ? source.ownerName.trim() : undefined,
     role: typeof o.role === 'string' ? o.role : typeof source.role === 'string' ? source.role : undefined,
     thumbnails: coerceThumbnailRecord(source),
     memberCount:
@@ -67,9 +72,9 @@ export function parseCommunitiesListFromJson(raw: Record<string, unknown>): Comm
   return out.sort((a, b) => a.name.localeCompare(b.name))
 }
 
-export function pickCommunityThumbnailUrl(thumbnails?: Record<string, string>): string | undefined {
+export function pickCommunityThumbnailUrl(thumbnails?: Record<string, string> | null): string | undefined {
   if (!thumbnails) return undefined
-  for (const key of ['256', '128', 'raw', 'communityImage', 'profileImage']) {
+  for (const key of ['raw', '256', '128', 'communityImage', 'thumbnail', 'image', 'profileImage']) {
     const hit = thumbnails[key]
     if (typeof hit === 'string' && hit.trim()) return hit.trim()
   }
@@ -77,4 +82,21 @@ export function pickCommunityThumbnailUrl(thumbnails?: Record<string, string>): 
     if (typeof v === 'string' && v.trim()) return v.trim()
   }
   return undefined
+}
+
+/** Canonical Social CDN cover when the list API omits thumbnail fields. */
+export function buildDclAssetsSocialCommunityRawThumbnailUrl(communityId: string): string | null {
+  const id = communityId.trim().toLowerCase()
+  if (!id || !COMMUNITY_UUID_RE.test(id)) return null
+  return `https://assets-cdn.decentraland.org/social/communities/${id}/raw-thumbnail.png`
+}
+
+/** API thumbnail URL, else Social CDN `raw-thumbnail.png` by community id. */
+export function communityThumbnailUrlOrCdnFallback(
+  thumbnailUrl: string | null | undefined,
+  communityId: string
+): string | null {
+  const fromApi = thumbnailUrl?.trim()
+  if (fromApi) return fromApi
+  return buildDclAssetsSocialCommunityRawThumbnailUrl(communityId)
 }

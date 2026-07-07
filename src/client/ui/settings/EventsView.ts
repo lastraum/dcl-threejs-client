@@ -21,6 +21,7 @@ import {
 } from '../../../social/dclEvents'
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import type { RouteTarget } from '../../../dcl/content/route'
+import { EventModal } from '../events/EventModal'
 import { CreateEventView } from './CreateEventView'
 
 const DOW_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
@@ -37,6 +38,7 @@ type MonthCell = {
 
 export type EventsViewOptions = {
   onJumpIn?: (target: RouteTarget, event: DclEvent) => void
+  onViewScene?: (target: RouteTarget, event: DclEvent) => void
   getAuthIdentity?: () => AuthIdentity | null
   getDefaultCoords?: () => { x: number; y: number } | null
   isWorldScene?: boolean
@@ -57,6 +59,7 @@ export class EventsView {
   private readonly weekNavNext: HTMLButtonElement
 
   private readonly onJumpIn?: (target: RouteTarget, event: DclEvent) => void
+  private readonly eventModal: EventModal
   private readonly getAuthIdentity?: () => AuthIdentity | null
   private readonly getDefaultCoords?: () => { x: number; y: number } | null
   private readonly isWorldScene?: boolean
@@ -80,6 +83,10 @@ export class EventsView {
 
   constructor(opts: EventsViewOptions = {}) {
     this.onJumpIn = opts.onJumpIn
+    this.eventModal = new EventModal({
+      onJumpIn: opts.onJumpIn,
+      onViewScene: opts.onViewScene
+    })
     this.getAuthIdentity = opts.getAuthIdentity
     this.getDefaultCoords = opts.getDefaultCoords
     this.isWorldScene = opts.isWorldScene
@@ -175,12 +182,14 @@ export class EventsView {
   }
 
   mount(): void {
+    this.eventModal.mount()
     void this.loadEvents()
     this.renderAll()
   }
 
   dispose(): void {
     this.disposed = true
+    this.eventModal.dispose()
     this.closeCreateEvent()
     window.clearTimeout(this.toastTimer)
     this.root.remove()
@@ -312,6 +321,7 @@ export class EventsView {
       this.viewMonth = d.getMonth()
     }
     this.renderAll()
+    this.eventModal.open(event)
   }
 
   private scrollColumnIntoView(dayStartMs: number): void {
@@ -394,6 +404,16 @@ export class EventsView {
       ev.preventDefault()
       this.selectedEventId = null
       this.renderHighlight()
+      return
+    }
+
+    const detailsBtn = target.closest<HTMLButtonElement>('[data-open-event]')
+    if (detailsBtn) {
+      ev.preventDefault()
+      ev.stopPropagation()
+      const id = detailsBtn.dataset.openEvent
+      const event = id ? this.events.find((e) => e.id === id) : null
+      if (event) this.eventModal.open(event)
       return
     }
 
@@ -624,6 +644,7 @@ export class EventsView {
         <p class="events-view__highlight-meta">${escapeHtml(formatEventTime(event))}</p>
         ${organizerRow}
         <div class="events-view__highlight-actions">
+          <button type="button" class="events-view__jump-btn events-view__jump-btn--ghost" data-open-event="${escapeHtml(event.id)}">Details</button>
           <button type="button" class="events-view__jump-btn" data-jump-event="${escapeHtml(event.id)}">Jump In</button>
           <button type="button" class="events-view__icon-btn" data-copy-event="${escapeHtml(event.id)}" aria-label="Copy event link" title="Copy link">${COPY_ICON}</button>
         </div>

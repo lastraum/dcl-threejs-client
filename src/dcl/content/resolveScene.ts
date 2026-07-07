@@ -190,6 +190,14 @@ export async function resolveSceneFromRoute(target: RouteTarget): Promise<Resolv
     throw new Error('Editor route does not resolve a network scene — use EditorApp')
   }
 
+  if (target.kind === 'events') {
+    throw new Error('Events route does not resolve a network scene')
+  }
+
+  if (target.kind === 'communities') {
+    throw new Error('Communities route does not resolve a network scene')
+  }
+
   if (target.kind === 'blank') {
     const metadata = { ...BLANK_SCENE_TEMPLATE.metadata, environment: 'none' as const }
     const resolvedEnv = resolveSceneEnvironment(metadata, { kind: 'blank' })

@@ -48,13 +48,23 @@ export function hasUiPointerDownOrUp(
 }
 
 /**
- * Entity blocks scene pointer raycast / receives DOM hits — pointerFilter BLOCK or
- * onPointerDown/onPointerUp only (hover-only PointerEvents do not block).
+ * Entity blocks scene pointer raycast — pointerFilter BLOCK or onPointerDown/onPointerUp.
+ * Hover-only PointerEvents do not block. Optional lookup covers phase-4 mount snapshot lag.
  */
-export function isUiPointerBlocking(ecs: MirrorComponents, entity: Entity): boolean {
+export function isUiEntityBlocking(
+  ecs: MirrorComponents,
+  entity: Entity,
+  pointerEventsOf?: UiPointerEventsLookup
+): boolean {
   const t = ecs.UiTransform.getOrNull(entity)
   if (t && normalizePointerFilterMode(t.pointerFilter) === PointerFilterMode.BLOCK) return true
-  return hasUiPointerDownOrUp(ecs.PointerEvents.getOrNull(entity))
+  const spec = pointerEventsOf?.(entity) ?? ecs.PointerEvents.getOrNull(entity)
+  return hasUiPointerDownOrUp(spec)
+}
+
+/** @deprecated Use isUiEntityBlocking — projection-only PointerEvents lookup. */
+export function isUiPointerBlocking(ecs: MirrorComponents, entity: Entity): boolean {
+  return isUiEntityBlocking(ecs, entity)
 }
 
 /** Deepest UiEntity with a matching handler — react-ecs registers onMouseDown on the hit leaf. */

@@ -23,22 +23,19 @@ import {
   readInteractableArea,
   type VirtualCanvasSize
 } from './virtualCanvas'
-import { SceneUiHitMap, type UiScreenRegion } from './uiHitMap'
+import { SceneUiHitMap } from './uiHitMap'
 import { disposeSceneUiDebug, reportInputModifierState, reportSceneUiDebug } from './sceneUiDebug'
 import {
   collectSceneUiEntitiesFromDom,
   entityFromSceneUiDomTarget,
-  pickSceneUiEntityFromDom,
   setSceneUiAuthoritativeEntityCheck
 } from './uiDomPick'
 import {
-  hasDirectUiPointerHandler,
-  hasUiPointerDownOrUp,
+  findUiPointerHandlerEntity,
   hasUiPointerEvent,
-  resolveUiPointerResultEntity,
+  isUiEntityBlocking,
   type UiPointerEventsLookup
 } from './uiPointer'
-import { normalizePointerFilterMode, PointerFilterMode } from './yogaEnums'
 import { InputAction, PointerEventType, type PointerEventTypeValue } from '../../input/pointerConstants'
 import { computeUiLayoutKey, UiLayoutCache, visibleLayoutBoxes } from './uiLayoutCache'
 import { layoutUiTree, type LayoutBox } from './yogaLayout'
@@ -405,7 +402,10 @@ export class SceneUiBridge {
     reportInputModifierState(ecs, view.PlayerEntity)
   }
 
-  /** Blocks 3D raycast only over DOM nodes that are themselves blocking. */
+  /**
+   * Blocks 3D raycast when the topmost authoritative UI layer at (x,y) is blocking.
+   * UI stacks above scene pointers — BLOCK shells consume the ray without falling through.
+   */
   pickUiRegionHit(
     clientX: number,
     clientY: number,
@@ -414,140 +414,84 @@ export class SceneUiBridge {
     const ecs = this.mirrorEcs
     const view = this.lastView
     if (!ecs || !view) return null
-    const entity = pickSceneUiEntityFromDom(clientX, clientY, (e) =>
-      this.acceptPickableUiEntity(ecs, e)
-    )
-    if (entity === null) return null
-    const handler = resolveUiPointerResultEntity(
-      ecs,
-      view,
-      entity,
-      InputAction.IA_POINTER,
-      PointerEventType.PET_DOWN,
-      this.pointerEventsLookup
-    )
+
+    const topmost = this.pickTopmostUiLayer(clientX, clientY)
+    if (topmost === null) return null
+    if (this.input.isFieldEntity(topmost.entity)) {
+      return this.buildDomPointerHit(topmost.entity, camera)
+    }
+    if (!topmost.blocking) return null
+
+    const handler =
+      findUiPointerHandlerEntity(
+        ecs,
+        view,
+        topmost.entity,
+        InputAction.IA_POINTER,
+        PointerEventType.PET_DOWN,
+        this.pointerEventsLookup
+      ) ?? topmost.entity
     return this.buildDomPointerHit(handler, camera)
   }
 
   /**
-   * Pick list membership — explicit pointerFilter BLOCK, onPointerDown/Up (PointerEvents),
-   * or UiInput/UiDropdown only. Default is pass-through (pointer-events: none).
+   * Pick candidates at the deepest hit-map layer only, then DOM topmost.
+   * Overlapping siblings (modal scrim behind panel) must not win after a no-handler ancestor.
    */
-  private acceptPickableUiEntity(ecs: MirrorComponents, entity: Entity): boolean {
-    if (!this.isAuthoritativeUiEntity(entity)) return false
-    if (this.input.isFieldEntity(entity)) return true
-    const spec = this.pointerEventsLookup(entity)
-    if (hasUiPointerDownOrUp(spec)) return true
-    const transform = ecs.UiTransform.getOrNull(entity)
-    return (
-      transform !== null &&
-      transform !== undefined &&
-      normalizePointerFilterMode(transform.pointerFilter) === PointerFilterMode.BLOCK
-    )
-  }
-
-  private filterPickRegions(clientX: number, clientY: number, regions: readonly UiScreenRegion[]): UiScreenRegion[] {
-    let filtered = [...regions]
-    const vw = typeof window !== 'undefined' ? window.innerWidth : 1920
-    const vh = typeof window !== 'undefined' ? window.innerHeight : 1080
-    const nestedDialogs = filtered.filter(
-      (r) => r.width < vw * 0.75 && r.height < vh * 0.75 && r.width > 48 && r.height > 48
-    )
-    if (
-      nestedDialogs.some(
-        (r) =>
-          clientX >= r.left &&
-          clientX <= r.left + r.width &&
-          clientY >= r.top &&
-          clientY <= r.top + r.height
-      )
-    ) {
-      filtered = filtered.filter((r) => !(r.width >= vw * 0.85 && r.height >= vh * 0.85))
-    }
-
-    const headerBands = filtered.filter(
-      (r) => r.height > 0 && r.height <= 80 && clientY >= r.top && clientY <= r.top + r.height
-    )
-    if (headerBands.length) {
-      const bandBottom = Math.max(...headerBands.map((r) => r.top + r.height))
-      filtered = filtered.filter((r) => {
-        if (r.height <= 80) return true
-        if (r.top >= bandBottom - 1 && r.height > 96) return false
-        return true
-      })
-    }
-    return filtered
-  }
-
-  /**
-   * Deepest yoga layout box at (x,y) — parent-walk for onMouseDown happens in resolveUiHandlerAtPoint.
-   * Header-band filter keeps tab-row clicks off panel BLOCK regions stacked below.
-   */
-  private pickDomEntity(
+  private collectTopClusterPickCandidates(
     clientX: number,
     clientY: number,
-    ecs: MirrorComponents,
-    target?: EventTarget | null
-  ): Entity | null {
-    const view = this.lastView
-    const accept = (e: Entity) => this.acceptPickableUiEntity(ecs, e)
-
-    const domCandidates: Entity[] = []
-    const seenDom = new Set<number>()
-    const pushDom = (entity: Entity | null): void => {
-      if (entity === null || !accept(entity)) return
+    eventTarget?: EventTarget | null
+  ): Entity[] {
+    const seen = new Set<number>()
+    const out: Entity[] = []
+    const push = (entity: Entity | null): void => {
+      if (entity === null || !this.isAuthoritativeUiEntity(entity)) return
       const id = entity as number
-      if (seenDom.has(id)) return
-      seenDom.add(id)
-      domCandidates.push(entity)
-    }
-    pushDom(entityFromSceneUiDomTarget(target ?? null, accept))
-    for (const entity of collectSceneUiEntitiesFromDom(clientX, clientY, accept)) {
-      pushDom(entity)
+      if (seen.has(id)) return
+      seen.add(id)
+      out.push(entity)
     }
 
-    if (view) {
-      for (const entity of domCandidates) {
-        if (
-          hasDirectUiPointerHandler(
-            ecs,
-            entity,
-            InputAction.IA_POINTER,
-            PointerEventType.PET_DOWN,
-            this.pointerEventsLookup
-          )
-        ) {
-          return entity
-        }
+    const regions = this.hitMap.hitTestRegionCandidates(clientX, clientY)
+    const topDepth = regions[0]?.depth
+    for (const region of regions) {
+      if (topDepth !== undefined && region.depth !== topDepth) break
+      push(region.entity)
+    }
+
+    const acceptMounted = (entity: Entity) => this.isAuthoritativeUiEntity(entity)
+    push(entityFromSceneUiDomTarget(eventTarget ?? null, acceptMounted))
+    for (const entity of collectSceneUiEntitiesFromDom(clientX, clientY, acceptMounted)) {
+      push(entity)
+    }
+
+    return out
+  }
+
+  private pickTopmostUiLayer(
+    clientX: number,
+    clientY: number,
+    eventTarget?: EventTarget | null
+  ): { entity: Entity; blocking: boolean } | null {
+    const ecs = this.mirrorEcs
+    if (!ecs) return null
+
+    const candidates = this.collectTopClusterPickCandidates(clientX, clientY, eventTarget)
+
+    for (const entity of candidates) {
+      if (this.input.isFieldEntity(entity)) return { entity, blocking: true }
+      if (isUiEntityBlocking(ecs, entity, this.pointerEventsLookup)) {
+        return { entity, blocking: true }
       }
     }
-
-    const regions = this.filterPickRegions(
-      clientX,
-      clientY,
-      this.hitMap.hitTestRegionCandidates(clientX, clientY)
-    )
-    if (view) {
-      for (const region of regions) {
-        if (!this.isAuthoritativeUiEntity(region.entity)) continue
-        if (
-          hasDirectUiPointerHandler(
-            ecs,
-            region.entity,
-            InputAction.IA_POINTER,
-            PointerEventType.PET_DOWN,
-            this.pointerEventsLookup
-          )
-        ) {
-          return region.entity
-        }
-      }
-    }
-
     return null
   }
 
-  /** Interactive DOM only — must not steal canvas orbit / 3D clicks. */
+  /**
+   * Resolve the react-ecs onMouseDown handler for a click.
+   * Walks up from the topmost UI layer; BLOCK shells without handlers stop fall-through to scrim/scene.
+   */
   private resolveUiHandlerAtPoint(
     clientX: number,
     clientY: number,
@@ -558,16 +502,47 @@ export class SceneUiBridge {
     const view = this.lastView
     if (!ecs || !view) return null
 
-    const domEntity = this.pickDomEntity(clientX, clientY, ecs, eventTarget)
-    if (domEntity === null) return null
-    return resolveUiPointerResultEntity(
-      ecs,
-      view,
-      domEntity,
-      InputAction.IA_POINTER,
-      state,
-      this.pointerEventsLookup
-    )
+    const candidates = this.collectTopClusterPickCandidates(clientX, clientY, eventTarget)
+    const debugPick =
+      typeof location !== 'undefined' &&
+      location.search.includes('sceneuidebug') &&
+      state === PointerEventType.PET_DOWN
+    if (debugPick && candidates.length) {
+      console.log(
+        `[scene-ui] pick cluster (${clientX},${clientY}):`,
+        candidates.map((e) => `e${e}`).join(' → ')
+      )
+    }
+    for (const entity of candidates) {
+      if (this.input.isFieldEntity(entity)) return null
+
+      const handler = findUiPointerHandlerEntity(
+        ecs,
+        view,
+        entity,
+        InputAction.IA_POINTER,
+        state,
+        this.pointerEventsLookup
+      )
+      if (handler !== null) {
+        if (debugPick) {
+          console.log(
+            `[scene-ui] pick handler e${handler} from e${entity} (${clientX},${clientY}) state=${state}`
+          )
+        }
+        return handler
+      }
+
+      if (isUiEntityBlocking(ecs, entity, this.pointerEventsLookup)) {
+        if (debugPick) {
+          console.log(
+            `[scene-ui] pick blocked at e${entity} (${clientX},${clientY}) — no handler on stack layer`
+          )
+        }
+        return null
+      }
+    }
+    return null
   }
 
   /**

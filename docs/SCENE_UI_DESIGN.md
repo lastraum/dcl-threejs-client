@@ -106,10 +106,10 @@ Later options:
 
 ### Phase B — Input parity
 
-- [ ] Ui pointer hit-testing (block scene ray when over UI)
+- [x] Ui pointer hit-testing — z-ordered hit map (depth + `zIndex`) above 3D raycasts; BLOCK stops fall-through
 - [ ] `UiInput` / `UiInputResult`
 - [ ] `UiDropdown` / `UiDropdownResult`
-- [ ] react-ecs `onMouseDown` / `onMouseUp` → pointer events on UI entities
+- [x] react-ecs `onMouseDown` / `onMouseUp` → worker inject via `SceneUiBridge.pickUiPointerHit`
 
 ### Phase C — Polish
 

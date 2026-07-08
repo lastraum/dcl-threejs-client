@@ -1,7 +1,7 @@
 # Scene UI pointer — remaining work (RickRoll / camera-operator)
 
 **Branch:** `lastraum`  
-**Status:** WIP committed; **Creator UI click still broken** as of last test.  
+**Status:** Z-ordered pick refactor landed (2026-07-07) — retest CREATOR MODE on RickRoll.  
 **Scene bundle:** do not modify `camera-operator/scene` — client-only fixes.
 
 ## Goal
@@ -41,15 +41,26 @@ Other rules enforced:
 - Structured mount snapshot applied on main via `applyWorkerUiMountSnapshot`
 - DOM-only hit test; `pointer-events: auto` only for BLOCK / PointerEvents / UiInput / UiDropdown
 
-## Latest client edits (did not fix Creator click)
+## Z-ordered pick (2026-07-07 — architectural fix)
 
-| Area | Change | Intent |
-|------|--------|--------|
-| `PointerEventsSystem.writeResult` | UI inject targets = `[targetEntity]` only | Stop scrim ancestor bubble closing modal |
-| `SceneUiBridge.pickDomEntity` | Direct-handler pick only; no BLOCK fallback | Don't resolve BLOCK shells to scrim |
-| `SceneUiBridge.pointerEventsLookup` | Snapshot fallback gated by worker mount set | Avoid stale PointerEvents on recycled ids |
-| `uiPointer` | `hasDirectUiPointerHandler`, `pointerEventsOf` in `collectUiPointerResultTargets` | Pick/inject parity with phase-4 snapshot |
-| `sceneEngineScheduler` | Pre-phase-4 `engine.update(0)` | Mount conditional UI before snapshot |
+**Model:** Scene UI is always above 3D pointer raycasts. At `(clientX, clientY)`:
+
+1. Collect candidates from **hit map** (ECS depth + `zIndex`, deepest first) then DOM `elementsFromPoint`.
+2. Walk candidates in stack order. For each layer:
+   - `findUiPointerHandlerEntity` (parent walk) → deliver click to that handler only.
+   - Else if `pointerFilter: BLOCK` or `onMouseDown`/`onMouseUp` → **stop** (block raycast; do not fall through to scrim/scene).
+3. `pickUiRegionHit` uses the same topmost blocking layer to suppress 3D raycasts.
+
+**Removed:** `filterPickRegions` (nested-dialog + header-band heuristics), `hasDirectUiPointerHandler`-only pick (skipped BLOCK parents and fell through to modal scrim `onMouseDown`).
+
+**Retained:** Single-entity UI inject (`writeResult` → `[targetEntity]`), phase-4 mount snapshot egress, `pointerEventsLookup` snapshot fallback.
+
+| Area | Role |
+|------|------|
+| `SceneUiBridge.collectPickCandidates` | Hit map depth/zIndex + DOM |
+| `SceneUiBridge.resolveUiHandlerAtPoint` | Handler walk + BLOCK stop |
+| `uiPointer.isUiEntityBlocking` | BLOCK / onPointerDown/Up with snapshot lookup |
+| `PointerEventsSystem.writeResult` | UI inject targets = `[targetEntity]` only |
 
 ## Open hypotheses (prioritized)
 

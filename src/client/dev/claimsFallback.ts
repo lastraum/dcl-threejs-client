@@ -4,7 +4,7 @@ import type { ClaimsRegistry } from './claimsRegistry'
 
 export const CLAIMS_FALLBACK: ClaimsRegistry = {
   "schema_version": 2,
-  "updated": "2026-07-07",
+  "updated": "2026-07-08",
   "source": "github",
   "base_branch": "dev-latest",
   "workflow": [

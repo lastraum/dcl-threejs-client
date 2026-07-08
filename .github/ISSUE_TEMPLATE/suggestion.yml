@@ -8,7 +8,7 @@ body:
       value: |
         Ideas, UX feedback, and feature requests for [lastraum/dcl-threejs-client](https://github.com/lastraum/dcl-threejs-client).
 
-        **In-client:** dev panel (`</>`) → **Suggest** — submits via GitHub Action when the dispatch proxy is configured.
+        **In-client:** dev panel (`</>`) → **💡 Suggest** — in-panel form → Cloudflare Worker → GitHub issue (label `suggestion`).
 
         **Track:** [open suggestions](https://github.com/lastraum/dcl-threejs-client/issues?q=is%3Aopen+label%3Asuggestion).
 

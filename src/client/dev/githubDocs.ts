@@ -61,7 +61,10 @@ export function communityClaimsIssuesUrl(): string {
   return `https://github.com/${GITHUB_DOCS_REPO}/issues?q=is%3Aopen+label%3Ain-progress`
 }
 
-/** Same-origin proxy → GitHub `repository_dispatch` (dev vite middleware or nginx). */
+export const SUGGESTION_WORKER_URL =
+  'https://dcl-threejs-client-suggestions.lastraum.workers.dev'
+
+/** Dev: /api/suggestions (vite middleware). Prod: Cloudflare Worker unless overridden. */
 export function suggestionDispatchUrl(): string | null {
   if (typeof window === 'undefined') return null
   const fromEnv = import.meta.env.VITE_SUGGESTION_DISPATCH_URL
@@ -72,6 +75,7 @@ export function suggestionDispatchUrl(): string | null {
   } catch {
     /* ignore */
   }
+  if (import.meta.env.PROD) return SUGGESTION_WORKER_URL
   return '/api/suggestions'
 }
 

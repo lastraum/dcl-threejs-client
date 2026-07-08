@@ -3,6 +3,7 @@ import { environmentDebug, type EnvironmentDebugState } from '../../debug/Enviro
 import { physxColliderDebug, type PhysxColliderDebugOptions } from '../../debug/PhysxColliderDebug'
 import { cameraCollisionDebug } from '../../debug/CameraCollisionDebug'
 import { platformMotionDebug } from '../../debug/PlatformMotionDebug'
+import { sceneBanDebug } from '../../network/sceneAccess/sceneBanDebug'
 import {
   LIGHT_LIMITS,
   MAX_SHADOW_SPOT_LIGHTS,
@@ -102,6 +103,11 @@ export class DebugPanel {
         </label>
         <div class="debug-panel__render-quality-hint" data-env-hint></div>
       </div>
+      <div class="debug-panel__scene-ban">
+        <div class="debug-panel__physx-title">Scene ban (dev)</div>
+        <button type="button" class="debug-panel__logs-btn" data-scene-ban-sim>Simulate scene ban</button>
+        <div class="debug-panel__render-quality-hint">URL: ?sceneban or ?sceneban=15 (delay seconds)</div>
+      </div>
       <div class="debug-panel__physx">
         <div class="debug-panel__physx-title">PhysX colliders</div>
         <label class="debug-panel__check">
@@ -197,6 +203,7 @@ export class DebugPanel {
 
     this.unsubscribeLogs = clientDebugLog.subscribe((entries) => this.renderLogs(entries))
 
+    this.wireSceneBanDebugControls()
     this.wirePhysxDebugControls()
     this.wirePlatformMotionControls()
     this.wireCameraCollisionControls()
@@ -421,6 +428,13 @@ export class DebugPanel {
     })
 
     this.unsubscribeEnvironmentDebug = environmentDebug.subscribe(syncFromStore)
+  }
+
+  private wireSceneBanDebugControls(): void {
+    const btn = this.root.querySelector('[data-scene-ban-sim]') as HTMLButtonElement | null
+    btn?.addEventListener('click', () => {
+      sceneBanDebug.triggerNow()
+    })
   }
 
   private wirePlatformMotionControls(): void {

@@ -2843,6 +2843,25 @@
         color: rgba(255, 255, 255, 0.58);
         line-height: 1.4;
       }
+      .dev-progress__header-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .dev-progress__header-suggest {
+        border: 1px solid rgba(180, 140, 255, 0.45);
+        background: rgba(180, 140, 255, 0.18);
+        color: rgba(235, 225, 255, 0.95);
+        font-size: 12px;
+        font-weight: 600;
+        padding: 7px 12px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .dev-progress__header-suggest:hover {
+        background: rgba(180, 140, 255, 0.28);
+      }
       .dev-progress__close {
         border: none;
         background: rgba(255, 255, 255, 0.08);
@@ -2940,6 +2959,105 @@
       }
       a.dev-progress__chip--claim:hover {
         background: rgba(120, 180, 255, 0.22);
+      }
+      button.dev-progress__chip--suggest,
+      a.dev-progress__chip--suggest {
+        text-decoration: none;
+        background: rgba(180, 140, 255, 0.14);
+        border-color: rgba(180, 140, 255, 0.35);
+        color: rgba(220, 205, 255, 0.95);
+        cursor: pointer;
+        font: inherit;
+      }
+      button.dev-progress__chip--suggest:hover,
+      a.dev-progress__chip--suggest:hover {
+        background: rgba(180, 140, 255, 0.22);
+      }
+      .dev-progress__suggest-hint {
+        margin: 0 0 10px;
+        font-size: 11px;
+        line-height: 1.45;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .dev-progress__suggest-hint a {
+        color: rgba(180, 200, 255, 0.9);
+      }
+      .dev-progress__suggest-form {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px 10px;
+        padding: 12px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .dev-progress__suggest-field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .dev-progress__suggest-field--wide {
+        grid-column: 1 / -1;
+      }
+      .dev-progress__suggest-field input,
+      .dev-progress__suggest-field select,
+      .dev-progress__suggest-field textarea {
+        font: inherit;
+        font-size: 12px;
+        font-weight: 400;
+        letter-spacing: normal;
+        text-transform: none;
+        color: rgba(255, 255, 255, 0.92);
+        background: rgba(0, 0, 0, 0.25);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 6px;
+        padding: 7px 9px;
+      }
+      .dev-progress__suggest-field textarea {
+        resize: vertical;
+        min-height: 72px;
+      }
+      .dev-progress__suggest-actions {
+        grid-column: 1 / -1;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .dev-progress__suggest-submit {
+        font-size: 12px;
+        font-weight: 600;
+        padding: 7px 14px;
+        border-radius: 8px;
+        border: 1px solid rgba(180, 140, 255, 0.45);
+        background: rgba(180, 140, 255, 0.18);
+        color: rgba(235, 225, 255, 0.95);
+        cursor: pointer;
+      }
+      .dev-progress__suggest-submit:hover:not(:disabled) {
+        background: rgba(180, 140, 255, 0.28);
+      }
+      .dev-progress__suggest-submit:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .dev-progress__suggest-status {
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.65);
+      }
+      .dev-progress__suggest-status--ok {
+        color: rgba(140, 220, 160, 0.95);
+      }
+      .dev-progress__suggest-status--ok a {
+        color: inherit;
+      }
+      .dev-progress__suggest-status--error {
+        color: rgba(255, 150, 130, 0.95);
       }
       .dev-progress__chip--pending {
         background: rgba(255, 170, 80, 0.12);
@@ -7597,6 +7715,11 @@
       .social-chat-dock__status--error {
         color: #ff8fa3;
       }
+      .social-chat-dock__status--scene-ban {
+        white-space: pre-line;
+        line-height: 1.45;
+        text-align: center;
+      }
       .social-chat-dock__body {
         flex: 1 1 auto;
         height: 100%;
@@ -11163,6 +11286,46 @@
       }
       .scene-watch-dest-jump-in-loading--error .scene-watch-dest-jump-in-loading-status {
         color: rgba(252, 165, 165, 0.92);
+      }
+      .scene-watch-dest-scene-ban {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 20px 18px;
+        border-radius: 12px;
+        background: linear-gradient(180deg, rgba(48, 10, 16, 0.92) 0%, rgba(24, 6, 10, 0.94) 100%);
+        border: 1px solid rgba(248, 113, 113, 0.42);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        text-align: center;
+      }
+      .scene-watch-dest-scene-ban-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 52px;
+        height: 52px;
+        border-radius: 999px;
+        background: rgba(127, 29, 29, 0.45);
+        color: #fca5a5;
+      }
+      .scene-watch-dest-scene-ban-title {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 800;
+        letter-spacing: 0.01em;
+        color: #fecaca;
+      }
+      .scene-watch-dest-scene-ban-detail {
+        margin: 0;
+        font-size: 0.875rem;
+        font-weight: 600;
+        line-height: 1.45;
+        color: rgba(254, 226, 226, 0.9);
+        max-width: 34rem;
       }
       /* 3D play chrome must not appear on 2D landing or during landing → play load */
       body.scene-landing-route #client-shell,

@@ -3,8 +3,15 @@ import { needsCommsPeerProfile, type CommsProfileEntity } from '../avatar/peerAp
 import { encodeRfc4ProfileRequestPacket } from './comms/dclRfc4Comms'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { resolveCommsSceneId } from './catalyst/CatalystClient'
-import { normalizePointer, realmNameForCommsPointer, isParcelPointer } from './catalyst/pointer'
+import { normalizePointer, isParcelPointer } from './catalyst/pointer'
 import type { RealmEndpoints } from '../dcl/content/types'
+import { checkGatekeeperSceneAccess } from './sceneAccess/checkGatekeeperSceneAccess'
+import { sceneBanDebug } from './sceneAccess/sceneBanDebug'
+import {
+  gatekeeperParcelForComms,
+  gatekeeperRealmNameForComms,
+  isAddressMetadataBlacklisted
+} from './sceneAccess/sceneAccessCommon'
 import { fetchSceneParticipants, getSceneAdapter } from './gatekeeper/GatekeeperClient'
 import {
   acquireWalletSessionLock,
@@ -37,6 +44,7 @@ export type SceneCommsFailureReason =
   | 'duplicate_wallet'
   | 'no_identity'
   | 'scene_id'
+  | 'scene_ban'
   | 'gatekeeper'
   | 'livekit'
 
@@ -50,6 +58,9 @@ export type SceneCommsTarget = {
   contentUrl: string
   parcels?: string[]
   isWorld?: boolean
+  sceneTitle?: string
+  /** Catalyst `metadata.policy.blacklist` — checked again before comms connect. */
+  metadataBlacklist?: string[]
 }
 
 export type CommsPeerHandlers = {
@@ -401,7 +412,7 @@ export class CommsService {
       return { ok: false, reason: 'duplicate_wallet' }
     }
 
-    const realmName = realmNameForCommsPointer(target.pointer)
+    const realmName = gatekeeperRealmNameForComms(target)
 
     try {
       const alreadyInScene = await isWalletListedInScene(target.pointer, realmName, this.localAddress)
@@ -432,6 +443,52 @@ export class CommsService {
       clientDebugLog.log('comms', `Could not resolve scene id for ${target.pointer}`, { level: 'error' })
       return { ok: false, reason: 'scene_id' }
     }
+
+    if (sceneBanDebug.isSimulatingBan()) {
+      this.releaseWalletSessionIfHeld()
+      clientDebugLog.log('comms', `Scene access denied · simulated ban · ${target.pointer}`, {
+        level: 'error'
+      })
+      return { ok: false, reason: 'scene_ban' }
+    }
+
+    if (isAddressMetadataBlacklisted(target.metadataBlacklist, this.localAddress)) {
+      this.releaseWalletSessionIfHeld()
+      clientDebugLog.log('comms', `Scene access denied · metadata blacklist · ${target.pointer}`, {
+        level: 'error'
+      })
+      return { ok: false, reason: 'scene_ban' }
+    }
+
+    const parcel = gatekeeperParcelForComms(target)
+    clientDebugLog.log(
+      'comms',
+      `Gatekeeper access check · realm=${realmName} parcel=${parcel} scene=${sceneId.slice(0, 12)}… world=${isWorld}`,
+      { level: 'info' }
+    )
+
+    const access = await checkGatekeeperSceneAccess(this.identity, {
+      sceneId,
+      parcel,
+      realmName,
+      isWorld
+    })
+    if (access.denied) {
+      this.releaseWalletSessionIfHeld()
+      clientDebugLog.log('comms', `Scene access denied before comms · ${access.source}: ${access.error}`, {
+        level: 'error'
+      })
+      return { ok: false, reason: 'scene_ban' }
+    }
+    if (access.adapter === null) {
+      clientDebugLog.log(
+        'comms',
+        `Gatekeeper access check unavailable (${access.status}) — continuing comms connect: ${access.error}`,
+        { level: 'warn' }
+      )
+    }
+
+    let sceneAdapter = access.adapter
 
     this.disconnectSceneTransports()
     this.realm = {
@@ -473,33 +530,37 @@ export class CommsService {
 
     clientDebugLog.log('comms', `Joining scene room · pointer=${target.pointer} scene=${sceneId.slice(0, 12)}…`)
 
-    const parcel = isParcelPointer(normalizePointer(target.pointer))
-      ? normalizePointer(target.pointer)
-      : normalizePointer(target.baseParcel)
-
-    clientDebugLog.log(
-      'comms',
-      `Gatekeeper request · realm=${realmName} parcel=${parcel} scene=${sceneId.slice(0, 12)}… world=false`,
-      { level: 'info' }
-    )
-
-    const adapterResult = await getSceneAdapter(this.identity, {
-      sceneId,
-      parcel,
-      realmName,
-      isWorld: false
-    })
-    if (!adapterResult.ok) {
-      this.releaseWalletSessionIfHeld()
-      clientDebugLog.log('comms', `Gatekeeper failed: ${adapterResult.error}`, { level: 'error' })
-      return { ok: false, reason: 'gatekeeper' }
+    if (!sceneAdapter) {
+      clientDebugLog.log(
+        'comms',
+        `Gatekeeper adapter retry · realm=${realmName} parcel=${parcel} scene=${sceneId.slice(0, 12)}…`,
+        { level: 'info' }
+      )
+      const adapterResult = await getSceneAdapter(this.identity, {
+        sceneId,
+        parcel,
+        realmName,
+        isWorld: false
+      })
+      if (!adapterResult.ok) {
+        this.releaseWalletSessionIfHeld()
+        if (adapterResult.status === 403 || adapterResult.status === 401) {
+          clientDebugLog.log('comms', `Scene access denied at comms connect: ${adapterResult.error}`, {
+            level: 'error'
+          })
+          return { ok: false, reason: 'scene_ban' }
+        }
+        clientDebugLog.log('comms', `Gatekeeper failed: ${adapterResult.error}`, { level: 'error' })
+        return { ok: false, reason: 'gatekeeper' }
+      }
+      sceneAdapter = adapterResult.adapter
     }
 
     clientDebugLog.log('comms', 'Gatekeeper adapter received · connecting scene LiveKit…', { level: 'success' })
 
-    this.realm.commsAdapter = adapterResult.adapter
+    this.realm.commsAdapter = sceneAdapter
 
-    const connected = await this.sceneLiveKit.connect(adapterResult.adapter)
+    const connected = await this.sceneLiveKit.connect(sceneAdapter)
     if (!connected) {
       this.releaseWalletSessionIfHeld()
       clientDebugLog.log('comms', 'Scene LiveKit failed to connect', { level: 'error' })

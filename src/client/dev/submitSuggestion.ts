@@ -1,0 +1,127 @@
+import { APP_VERSION } from '../appVersion'
+import { GITHUB_DOCS_REPO, suggestionDispatchUrl } from './githubDocs'
+
+/** Alphabetical — keep in sync with .github/ISSUE_TEMPLATE/suggestion.yml */
+export const SUGGESTION_CATEGORIES = [
+  'Bug report',
+  'Docs / dev panel',
+  'Other',
+  'Parity gap (ECS / SDK7)',
+  'Performance',
+  'UX / polish'
+] as const
+
+export type SuggestionCategory = (typeof SUGGESTION_CATEGORIES)[number]
+
+export type ClientSuggestionInput = {
+  summary: string
+  category: SuggestionCategory
+  details: string
+  /** DCL display name (+ wallet when connected). */
+  author?: string
+  route?: string
+}
+
+export type ClientSuggestionPayload = ClientSuggestionInput & {
+  client_version: string
+  page_url: string
+  user_agent: string
+}
+
+export type SubmitSuggestionResult =
+  | { ok: true; issueUrl?: string; issueNumber?: number }
+  | { ok: false; error: string }
+
+async function readDispatchError(res: Response): Promise<string> {
+  const contentType = res.headers.get('content-type') ?? ''
+  if (contentType.includes('application/json')) {
+    try {
+      const json = (await res.json()) as { error?: string }
+      if (json.error) return json.error
+    } catch {
+      /* fall through */
+    }
+  }
+  const text = await res.text().catch(() => '')
+  if (text.trim().startsWith('<!')) {
+    return 'Suggestion dispatch proxy unavailable. Restart dev server with SUGGESTION_DISPATCH_TOKEN set.'
+  }
+  return text.trim() || `Request failed (${res.status})`
+}
+
+function buildPayload(input: ClientSuggestionInput): ClientSuggestionPayload {
+  return {
+    summary: input.summary.trim(),
+    category: input.category,
+    details: input.details.trim(),
+    author: input.author?.trim() || undefined,
+    route: input.route?.trim() || undefined,
+    client_version: APP_VERSION,
+    page_url: typeof window !== 'undefined' ? window.location.href : '',
+    user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : ''
+  }
+}
+
+/** Pre-filled GitHub issue form when dispatch proxy is unavailable. */
+export function communitySuggestionNewIssueUrl(input: ClientSuggestionInput): string {
+  const params = new URLSearchParams({
+    template: 'suggestion.yml',
+    title: `[suggestion] ${input.summary.trim().slice(0, 80)}`,
+    summary: input.summary.trim(),
+    category: input.category,
+    details: input.details.trim()
+  })
+  if (input.author?.trim()) params.set('author', input.author.trim())
+  return `https://github.com/${GITHUB_DOCS_REPO}/issues/new?${params.toString()}`
+}
+
+export function communitySuggestionsIssuesUrl(): string {
+  return `https://github.com/${GITHUB_DOCS_REPO}/issues?q=is%3Aopen+label%3Asuggestion`
+}
+
+export async function submitClientSuggestion(
+  input: ClientSuggestionInput
+): Promise<SubmitSuggestionResult> {
+  const payload = buildPayload(input)
+  const dispatchUrl = suggestionDispatchUrl()
+
+  if (!dispatchUrl) {
+    return {
+      ok: false,
+      error: 'Suggestion dispatch is disabled. Remove suggestionDispatch=0 from localStorage.'
+    }
+  }
+
+  try {
+    const res = await fetch(dispatchUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!res.ok) {
+      const error = await readDispatchError(res)
+      if (res.status === 503) {
+        return {
+          ok: false,
+          error: `${error} — export SUGGESTION_DISPATCH_TOKEN and restart npm run dev.`
+        }
+      }
+      if (res.status === 403) {
+        return {
+          ok: false,
+          error: `${error} — token needs Issues: Read and write on lastraum/dcl-threejs-client.`
+        }
+      }
+      return { ok: false, error }
+    }
+    try {
+      const json = (await res.json()) as { issue_url?: string; issue_number?: number }
+      return { ok: true, issueUrl: json.issue_url, issueNumber: json.issue_number }
+    } catch {
+      return { ok: true }
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Network error'
+    return { ok: false, error: message }
+  }
+}

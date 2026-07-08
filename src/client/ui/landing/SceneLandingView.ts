@@ -1,3 +1,4 @@
+import type { SceneLoadErrorMessage } from '../../formatSceneLoadError'
 import type { LoginResult } from '../../../auth/AuthClient'
 import { fetchProfileFaceUrl } from '../../../avatar/peerApi'
 import type { RouteTarget } from '../../../dcl/content/route'
@@ -53,6 +54,7 @@ export class SceneLandingView {
   private progressFillEl: HTMLElement | null = null
   private progressPctEl: HTMLElement | null = null
   private progressStatusEl: HTMLElement | null = null
+  private pendingBan: SceneLoadErrorMessage | null = null
 
   constructor(opts: SceneLandingViewOptions) {
     this.route = opts.route
@@ -215,6 +217,44 @@ export class SceneLandingView {
     this.jumpInLoading = false
   }
 
+  /** Wallet banned or blacklisted — stop load and show scene-card ban panel. */
+  showSceneBan(message: SceneLoadErrorMessage): void {
+    if (this.disposed) return
+    this.stopProgressAnimation()
+    document.body.classList.remove('scene-landing-jump-in-loading')
+    this.jumpInLoading = false
+    this.root.querySelector('[data-load-progress]')?.remove()
+
+    const ctaRow = this.root.querySelector('.scene-watch-dest-scene-card-cta-row')
+    if (!ctaRow) {
+      this.showJumpInError(message.title, message.detail)
+      return
+    }
+
+    ctaRow.innerHTML = `
+      <div class="scene-watch-dest-scene-ban" data-scene-ban role="alert" aria-live="assertive">
+        <div class="scene-watch-dest-scene-ban-icon" aria-hidden>
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.75"/>
+            <path d="M7 7l10 10M17 7L7 17" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <p class="scene-watch-dest-scene-ban-title">${escapeHtml(message.title)}</p>
+        <p class="scene-watch-dest-scene-ban-detail">${escapeHtml(message.detail)}</p>
+      </div>
+    `
+  }
+
+  /** Apply ban UI once the scene card layout is ready (e.g. mid-session boot from 3D). */
+  setPendingBan(message: SceneLoadErrorMessage): void {
+    if (this.disposed) return
+    this.pendingBan = message
+    if (this.root.querySelector('.scene-watch-dest-scene-card-cta-row')) {
+      this.showSceneBan(message)
+      this.pendingBan = null
+    }
+  }
+
   private startProgressAnimation(): void {
     this.stopProgressAnimation()
     const tick = (): void => {
@@ -254,7 +294,13 @@ export class SceneLandingView {
       if (this.disposed) return
       loadingEl.remove()
       this.mainEl.innerHTML = this.renderLayout(this.meta)
-      this.bindJumpIn()
+      if (this.pendingBan) {
+        const ban = this.pendingBan
+        this.pendingBan = null
+        this.showSceneBan(ban)
+      } else {
+        this.bindJumpIn()
+      }
       this.bindCrowdBadge()
       void this.hydrateOwnerAvatar()
       void this.loadRelatedEvents()

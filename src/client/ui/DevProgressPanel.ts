@@ -14,6 +14,14 @@ import {
   docsGithubFetchEnabled
 } from '../dev/githubDocs'
 import {
+  SUGGESTION_CATEGORIES,
+  submitClientSuggestion,
+  type SuggestionCategory
+} from '../dev/submitSuggestion'
+import { identityFromAvatarProfile, shortenAddress } from '../../avatar/displayName'
+import { resolveRouteTarget } from '../../dcl/content/route'
+import type { SessionIdentity } from '../../network/SessionIdentity'
+import {
   ALL_INTEGRATION_ENTRIES,
   countIntegrationByStatus,
   INTEGRATION_CATEGORIES,
@@ -31,6 +39,10 @@ import {
 import { renderInlineMarkdown, renderMarkdownToHtml } from '../dev/renderMarkdown'
 
 type DevTab = 'community' | 'status' | 'progress'
+
+export type DevProgressPanelOptions = {
+  getSession?: () => SessionIdentity | null
+}
 
 /** Dev overlay — community workflow + full parity matrix + PROGRESS.md milestones. */
 export class DevProgressPanel {
@@ -50,8 +62,12 @@ export class DevProgressPanel {
   private progressLoad: ProgressLoadResult | null = null
   private claimsLoading = false
   private progressLoading = false
+  private suggestionSubmitting = false
+  private suggestionFormOpen = false
+  private readonly getSession: () => SessionIdentity | null
 
-  constructor() {
+  constructor(options: DevProgressPanelOptions = {}) {
+    this.getSession = options.getSession ?? (() => null)
     this.root = document.createElement('div')
     this.root.className = 'dev-progress'
     this.root.hidden = true
@@ -71,7 +87,10 @@ export class DevProgressPanel {
           <h2 class="dev-progress__title">Three.js Client — Dev Progress</h2>
           <p class="dev-progress__subtitle"></p>
         </div>
-        <button type="button" class="dev-progress__close" aria-label="Close">&times;</button>
+        <div class="dev-progress__header-actions">
+          <button type="button" class="dev-progress__header-suggest" data-suggest-toggle>💡 Suggest</button>
+          <button type="button" class="dev-progress__close" aria-label="Close">&times;</button>
+        </div>
       </header>
       <div class="dev-progress__meta"></div>
       <nav class="dev-progress__tabs" role="tablist">
@@ -104,6 +123,7 @@ export class DevProgressPanel {
     document.body.appendChild(this.root)
 
     this.panel.querySelector('.dev-progress__close')!.addEventListener('click', () => this.hide())
+    this.panel.querySelector('[data-suggest-toggle]')!.addEventListener('click', () => this.openSuggestionForm())
     this.backdrop.addEventListener('click', () => this.hide())
     this.tabCommunity.addEventListener('click', () => this.setTab('community'))
     this.tabStatus.addEventListener('click', () => this.setTab('status'))
@@ -220,6 +240,15 @@ export class DevProgressPanel {
     const intro = this.buildProgressIntroSection()
     if (intro) this.bodyEl.appendChild(intro)
 
+    const suggestionSection = this.buildSuggestionSection()
+    this.bodyEl.appendChild(suggestionSection)
+    if (this.suggestionFormOpen) {
+      requestAnimationFrame(() => {
+        suggestionSection.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+        suggestionSection.querySelector<HTMLInputElement>('input[name="summary"]')?.focus()
+      })
+    }
+
     if (!this.claimsLoad) {
       const loading = document.createElement('p')
       loading.className = 'dev-progress__loading'
@@ -279,6 +308,142 @@ export class DevProgressPanel {
     article.className = 'dev-progress__markdown'
     article.innerHTML = renderMarkdownToHtml(stripProgressIntro(markdown))
     this.bodyEl.appendChild(article)
+  }
+
+  private openSuggestionForm(): void {
+    this.suggestionFormOpen = true
+    if (this.activeTab !== 'community') this.setTab('community')
+    else this.renderCommunity()
+  }
+
+  private resolveSuggestionAuthor(): string | undefined {
+    const session = this.getSession()
+    if (!session) return undefined
+    const address = session.getAddress()
+    const profile = session.getProfile()
+    if (profile) {
+      const identity = identityFromAvatarProfile(profile, address)
+      if (address) return `${identity.displayName} (${address})`
+      return identity.displayName
+    }
+    if (address) return shortenAddress(address)
+    return undefined
+  }
+
+  private suggestionAuthorLabel(): string {
+    const session = this.getSession()
+    if (!session?.getAddress()) return 'Guest'
+    const profile = session.getProfile()
+    if (profile?.displayName?.trim()) return profile.displayName.trim()
+    const address = session.getAddress()
+    return address ? shortenAddress(address) : 'Guest'
+  }
+
+  private formatRouteContext(): string | undefined {
+    const route = resolveRouteTarget()
+    if (route.kind === 'coords') return `${route.x},${route.y}`
+    if (route.kind === 'world') return route.worldName
+    if (route.kind === 'map') return 'map'
+    if (route.kind === 'events') return 'events'
+    if (route.kind === 'communities') return 'communities'
+    if (route.kind === 'profile') return 'profile'
+    if (route.kind === 'editor') return 'editor'
+    return undefined
+  }
+
+  private buildSuggestionSection(): HTMLElement {
+    const section = document.createElement('section')
+    section.className = 'dev-progress__section dev-progress__suggest'
+    if (!this.suggestionFormOpen) section.hidden = true
+    const authorLabel = this.suggestionAuthorLabel()
+    section.innerHTML = `
+      <h3 class="dev-progress__section-title">Suggest an improvement</h3>
+      <p class="dev-progress__suggest-hint">
+        Submits in-app → GitHub issue labeled <code>suggestion</code>.
+        Submitting as <strong>${escapeHtml(authorLabel)}</strong>.
+      </p>
+      <form class="dev-progress__suggest-form">
+        <label class="dev-progress__suggest-field">
+          <span>Summary</span>
+          <input type="text" name="summary" maxlength="120" required placeholder="One-line idea" />
+        </label>
+        <label class="dev-progress__suggest-field">
+          <span>Category</span>
+          <select name="category" required>
+            ${SUGGESTION_CATEGORIES.map(
+              (c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`
+            ).join('')}
+          </select>
+        </label>
+        <label class="dev-progress__suggest-field dev-progress__suggest-field--wide">
+          <span>Details</span>
+          <textarea name="details" rows="4" maxlength="8000" required placeholder="What you tried, expected behavior, or mockup notes"></textarea>
+        </label>
+        <div class="dev-progress__suggest-actions">
+          <button type="submit" class="dev-progress__suggest-submit">Submit suggestion</button>
+          <span class="dev-progress__suggest-status" hidden></span>
+        </div>
+      </form>
+    `
+
+    const form = section.querySelector('form')!
+    const statusEl = section.querySelector('.dev-progress__suggest-status') as HTMLElement
+    form.addEventListener('submit', (ev) => {
+      ev.preventDefault()
+      void this.submitSuggestionForm(form, statusEl)
+    })
+    return section
+  }
+
+  private async submitSuggestionForm(
+    form: HTMLFormElement,
+    statusEl: HTMLElement
+  ): Promise<void> {
+    if (this.suggestionSubmitting) return
+    const data = new FormData(form)
+    const summary = String(data.get('summary') ?? '').trim()
+    const details = String(data.get('details') ?? '').trim()
+    const category = String(data.get('category') ?? 'Other') as SuggestionCategory
+
+    if (summary.length < 4 || details.length < 10) {
+      statusEl.hidden = false
+      statusEl.textContent = 'Summary (4+) and details (10+) required.'
+      statusEl.className = 'dev-progress__suggest-status dev-progress__suggest-status--error'
+      return
+    }
+
+    this.suggestionSubmitting = true
+    const submitBtn = form.querySelector('.dev-progress__suggest-submit') as HTMLButtonElement
+    submitBtn.disabled = true
+    statusEl.hidden = false
+    statusEl.className = 'dev-progress__suggest-status'
+    statusEl.textContent = 'Sending…'
+
+    const result = await submitClientSuggestion({
+      summary,
+      category,
+      details,
+      author: this.resolveSuggestionAuthor(),
+      route: this.formatRouteContext()
+    })
+
+    this.suggestionSubmitting = false
+    submitBtn.disabled = false
+
+    if (result.ok) {
+      statusEl.className = 'dev-progress__suggest-status dev-progress__suggest-status--ok'
+      if (result.issueUrl) {
+        const label = result.issueNumber ? `#${result.issueNumber}` : 'issue'
+        statusEl.innerHTML = `Created <a href="${escapeHtml(result.issueUrl)}" target="_blank" rel="noopener">${escapeHtml(label)}</a> with label <code>suggestion</code>.`
+      } else {
+        statusEl.textContent = 'Sent — your suggestion issue is being filed now.'
+      }
+      form.reset()
+      return
+    }
+
+    statusEl.className = 'dev-progress__suggest-status dev-progress__suggest-status--error'
+    statusEl.textContent = result.error || 'Submit failed'
   }
 
   private buildProgressIntroSection(): HTMLElement | null {

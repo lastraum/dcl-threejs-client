@@ -29,6 +29,7 @@ jobs:
           VITE_ARCHIPELAGO_PEERS_URL: ${{ vars.VITE_ARCHIPELAGO_PEERS_URL }}
           VITE_PARCELS_API_BASE: ${{ vars.VITE_PARCELS_API_BASE }}
           VITE_WORLDS_LIVE_DATA_URL: ${{ vars.VITE_WORLDS_LIVE_DATA_URL }}
+          VITE_SUGGESTION_DISPATCH_URL: ${{ vars.VITE_SUGGESTION_DISPATCH_URL }}
         run: npm run build
 
       - name: Validate deploy secrets

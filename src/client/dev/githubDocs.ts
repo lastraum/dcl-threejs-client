@@ -60,3 +60,26 @@ export function communityClaimNewIssueUrl(): string {
 export function communityClaimsIssuesUrl(): string {
   return `https://github.com/${GITHUB_DOCS_REPO}/issues?q=is%3Aopen+label%3Ain-progress`
 }
+
+export const SUGGESTION_WORKER_URL =
+  'https://dcl-threejs-client-suggestions.lastraum.workers.dev'
+
+/** Dev: /api/suggestions (vite middleware). Prod: Cloudflare Worker unless overridden. */
+export function suggestionDispatchUrl(): string | null {
+  if (typeof window === 'undefined') return null
+  const fromEnv = import.meta.env.VITE_SUGGESTION_DISPATCH_URL
+  if (fromEnv === '0' || fromEnv === 'false') return null
+  if (typeof fromEnv === 'string' && fromEnv.trim()) return fromEnv.trim()
+  try {
+    if (localStorage.getItem('suggestionDispatch') === '0') return null
+  } catch {
+    /* ignore */
+  }
+  if (import.meta.env.PROD) return SUGGESTION_WORKER_URL
+  return '/api/suggestions'
+}
+
+/** New suggestion issue form (fallback when dispatch proxy is off). */
+export function communitySuggestionTemplateUrl(): string {
+  return `https://github.com/${GITHUB_DOCS_REPO}/issues/new?template=suggestion.yml`
+}

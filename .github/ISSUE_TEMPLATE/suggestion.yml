@@ -1,0 +1,45 @@
+name: Suggestion
+description: Share feedback or ideas for the Three.js client (from dev panel or GitHub)
+title: "[suggestion] "
+labels: ["suggestion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas, UX feedback, and feature requests for [lastraum/dcl-threejs-client](https://github.com/lastraum/dcl-threejs-client).
+
+        **In-client:** dev panel (`</>`) → **💡 Suggest** — in-panel form → Cloudflare Worker → GitHub issue (label `suggestion`).
+
+        **Track:** [open suggestions](https://github.com/lastraum/dcl-threejs-client/issues?q=is%3Aopen+label%3Asuggestion).
+
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: One-line title for your idea
+      placeholder: Keyboard shortcuts for emote wheel
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - Bug report
+        - Docs / dev panel
+        - Other
+        - Parity gap (ECS / SDK7)
+        - Performance
+        - UX / polish
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: What you tried, what you expected, reproduction steps, or mockups
+    validations:
+      required: true
+

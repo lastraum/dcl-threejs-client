@@ -67,8 +67,14 @@ export type SceneBrowserChatConfig = {
   disabled?: boolean
 }
 
+export type ScenePolicy = {
+  /** Catalyst entity metadata — wallet addresses denied entry before gatekeeper. */
+  blacklist?: string[]
+}
+
 export type SceneMetadata = {
   display?: { title?: string; description?: string; skybox?: string; skyboxTexture?: string }
+  policy?: ScenePolicy
   scene?: SceneLayout
   spawnPoints?: SpawnPoint[]
   main?: string

@@ -1,0 +1,68 @@
+name: Create client suggestion
+
+on:
+  repository_dispatch:
+    types: [client-suggestion]
+
+permissions:
+  issues: write
+
+jobs:
+  create:
+    if: github.repository == 'lastraum/dcl-threejs-client'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create suggestion issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const p = context.payload.client_payload ?? {}
+            const summary = String(p.summary ?? '').trim()
+            const details = String(p.details ?? '').trim()
+            const category = String(p.category ?? 'Other').trim() || 'Other'
+            if (summary.length < 4 || summary.length > 120) {
+              core.setFailed('summary must be 4–120 characters')
+              return
+            }
+            if (details.length < 10 || details.length > 8000) {
+              core.setFailed('details must be 10–8000 characters')
+              return
+            }
+            const author = String(p.author ?? p.contact ?? '').trim().slice(0, 120)
+            const clientVersion = String(p.client_version ?? 'unknown').trim().slice(0, 40)
+            const pageUrl = String(p.page_url ?? '').trim().slice(0, 500)
+            const route = String(p.route ?? '').trim().slice(0, 120)
+            const userAgent = String(p.user_agent ?? '').trim().slice(0, 300)
+
+            const title = `[suggestion] ${summary}`.slice(0, 256)
+            const body = [
+              '### Summary',
+              summary,
+              '',
+              '### Category',
+              category,
+              '',
+              '### Details',
+              details,
+              '',
+              '### Context',
+              `- Client: \`${clientVersion}\``,
+              route ? `- Route: \`${route}\`` : null,
+              pageUrl ? `- Page: ${pageUrl}` : null,
+              author ? `- Author: ${author}` : null,
+              userAgent ? `- UA: \`${userAgent}\`` : null,
+              '',
+              '---',
+              '_Submitted from the Three.js client dev panel via `repository_dispatch`._'
+            ]
+              .filter((line) => line !== null)
+              .join('\n')
+
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['suggestion']
+            })
+            core.notice(`Created suggestion issue #${issue.data.number}`)

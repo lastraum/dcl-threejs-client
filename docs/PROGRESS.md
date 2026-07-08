@@ -2,7 +2,7 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-07 (companion social shell ✅ · Phases 1–2.5 + partial 3 ✅ · `decentraland-social-merge` → `dev-latest`)  
+> **Last updated:** 2026-07-07 (dev panel in-app suggestions ✅ · companion social shell ✅ · `decentraland-social-merge` → `dev-latest`)  
 > **Current phase:** **Companion social UX** on `dev-latest` — Explorer at `/`, scene landing + Jump in, 2D shell nav, chat dock, profile page. **Next:** Phase 3 Watch Lite (landing voice/chat), Phase 4 `/goto` in 3D; smoke-test **v0.4.0** → `main`; later **`dev-latest` → `lastraum`** (scene-UI worker vs mesh-collider pointer stack).
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
@@ -24,8 +24,26 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **2D social chat dock** | 🟡 **partial** | Floating dock on explorer/landing — thread list, scene chat, community thumbnails; **3D in-world chat** unchanged |
 | **Scene landing hub** | 🟢 | Hero, crowd, owner, description, events banner; companion-style **Jump in** progress bar (sidebar/HUD deferred until handoff) |
 | **Community thumbnails** | 🟢 | `communityDisplayImageUrl` + proxy passthrough; detail-fetch fallback on image 404 |
+| **Dev panel in-app suggestions** | 🟢 | `</>` → **💡 Suggest** — form in panel; auto-attaches DCL name + route; files GitHub issues labeled `suggestion` via Cloudflare Worker (prod) or vite proxy (local dev) |
 
-**Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**.
+**Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**. Suggestions: dev panel → **💡 Suggest**.
+
+---
+
+## 🎉 Milestone — Dev panel in-app suggestions (2026-07-07)
+
+**Status: shipped on `dev-latest`** — in-client feedback loop without leaving the app or opening GitHub manually.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Suggest form** | 🟢 | Dev panel header **💡 Suggest** → summary, category, details; alphabetized categories |
+| **Author context** | 🟢 | Auto-attaches wallet DCL display name + route + client version |
+| **GitHub issues** | 🟢 | Creates `[suggestion]` issues with `suggestion` label |
+| **Production** | 🟢 | [Cloudflare Worker](https://dcl-threejs-client-suggestions.lastraum.workers.dev) — baked into prod builds (`githubDocs.SUGGESTION_WORKER_URL`) |
+| **Local dev** | 🟢 | `POST /api/suggestions` via vite middleware + `SUGGESTION_DISPATCH_TOKEN` |
+| **Issue template** | 🟢 | `.github/ISSUE_TEMPLATE/suggestion.yml` for manual GitHub filing |
+
+**QA:** `npm run dev` with token → submit → issue appears on GitHub. Prod build → same from live site. No new-tab redirect.
 
 ---
 

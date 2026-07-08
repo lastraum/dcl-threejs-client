@@ -298,6 +298,11 @@ export class SceneScriptSystem {
     return this.entityStore
   }
 
+  /** Gate `#scene-ui-root` — hidden during 2D landing / hydration until play chrome reveals. */
+  setSceneUiVisible(visible: boolean): void {
+    this.sceneUiBridge?.setVisible(visible)
+  }
+
   /** Loading-screen progress while the worker compiles the scene bundle (main thread is free). */
   setBootProgressReporter(fn: ((msg: string) => void) | null): void {
     this.bootProgressReporter = fn

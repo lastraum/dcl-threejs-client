@@ -1151,12 +1151,14 @@ export class AppController {
     this.shell?.hide()
     this.worldLocationCard?.setVisible(false)
     this.mobileHud?.setShellVisible(false)
+    this.world?.setSceneUiVisible(false)
   }
 
   private revealPlayChrome(): void {
     this.shell?.show()
     this.worldLocationCard?.setVisible(true)
     this.mobileHud?.setShellVisible(true)
+    this.world?.setSceneUiVisible(true)
   }
 
   private getLocationCoordsLabel(): string {

@@ -1902,6 +1902,10 @@ export class World {
     }
   }
 
+  setSceneUiVisible(visible: boolean): void {
+    this.sceneScript.setSceneUiVisible(visible)
+  }
+
   getPlayerPosition(): THREE.Vector3 | null {
     if (!this.playerMode || !this.player) return null
     return this.player.getPosition()

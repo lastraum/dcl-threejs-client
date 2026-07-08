@@ -72,6 +72,8 @@ export class SceneUiBridge {
   private lastMountedUiEntities = new Set<Entity>()
   private firstPaintLogged = false
   private paintCount = 0
+  /** False until AppController reveals 3D play chrome — avoids UI on 2D landing during hydration. */
+  private domVisible = false
   private readonly unbindImageLoaded: () => void
   private imageRepaintQueued = false
   /** Latest pointer phase-4 rows — authoritative for DOM hits when projection lags. */
@@ -81,6 +83,7 @@ export class SceneUiBridge {
     this.scene = scene
     this.getCanvas = getCanvas
     this.root = ensureSceneUiRoot()
+    this.setVisible(false)
     this.dom = new SceneUiDomRenderer(this.root, {
       onInputChange: (entity, value) => {
         this.input.onDomInput(entity, value)
@@ -114,6 +117,19 @@ export class SceneUiBridge {
       this.imageRepaintQueued = false
       if (this.lastView) this.paint(this.lastView)
     })
+  }
+
+  /** Show/hide `#scene-ui-root` — only enable in 3D play mode, not 2D landing/explorer. */
+  setVisible(visible: boolean): void {
+    this.domVisible = visible
+    this.root.hidden = !visible
+    if (visible && this.lastView) {
+      this.paint(this.lastView)
+    }
+  }
+
+  isVisible(): boolean {
+    return this.domVisible
   }
 
   bindWriteback(writeback: SceneUiWriteback): void {
@@ -295,6 +311,7 @@ export class SceneUiBridge {
   paint(view: ProjectionView): void {
     this.mirrorEcs = view.components
     this.lastView = view
+    if (!this.domVisible) return
     const ecs = view.components
 
     const interactable = readInteractableArea(this.getCanvas())
@@ -411,6 +428,7 @@ export class SceneUiBridge {
     clientY: number,
     camera: THREE.Camera
   ): PointerHit | null {
+    if (!this.domVisible) return null
     const ecs = this.mirrorEcs
     const view = this.lastView
     if (!ecs || !view) return null
@@ -558,6 +576,7 @@ export class SceneUiBridge {
     state: PointerEventTypeValue = PointerEventType.PET_DOWN,
     eventTarget?: EventTarget | null
   ): PointerHit | null {
+    if (!this.domVisible) return null
     this.mirrorEcs = ecs
     this.lastView = view
     const handlerEntity = this.resolveUiHandlerAtPoint(clientX, clientY, state, eventTarget)

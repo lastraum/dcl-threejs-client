@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import { fileURLToPath } from 'node:url'
 import { createSuggestionProxyMiddleware } from './scripts/suggestion-dispatch-proxy.mjs'
+import { createTextureProxyMiddleware } from './scripts/texture-dispatch-proxy.mjs'
 
 const ARCHIPELAGO_PEERS = 'https://archipelago-ea-stats.decentraland.org/peers'
 const PARCELS_API = 'https://api.decentraland.org/v2/parcels'
@@ -14,6 +15,13 @@ export default defineConfig({
       enforce: 'pre',
       configureServer(server) {
         server.middlewares.use(createSuggestionProxyMiddleware())
+      }
+    },
+    {
+      name: 'texture-dispatch-proxy',
+      enforce: 'pre',
+      configureServer(server) {
+        server.middlewares.use(createTextureProxyMiddleware())
       }
     }
   ],
@@ -49,22 +57,6 @@ export default defineConfig({
         target: PLACES_API,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/places/, '')
-      },
-      '/api/texture': {
-        target: 'https://arweave.net',
-        changeOrigin: true,
-        secure: true,
-        followRedirects: true,
-        router: (req) => {
-          const path = req.url ?? ''
-          const match = path.match(/^\/api\/texture\/(https?)\/([^/?#]+)/)
-          if (!match) return 'https://arweave.net'
-          return `${match[1]}://${match[2]}`
-        },
-        rewrite: (path) => {
-          const match = path.match(/^\/api\/texture\/https?:\/[^/]+(\/.*)?$/)
-          return match?.[1] || '/'
-        }
       }
     }
   },

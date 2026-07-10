@@ -23,8 +23,9 @@ import { cloneGltfInstance } from './skinnedMeshInstance'
 import { prepareAvatarMaterials } from '../avatar/materials'
 import { prepareWearableCacheRoot } from '../avatar/wearableCache'
 import { clearLocomotionClipCache } from '../avatar/locomotionClipCache'
-import { disposeSessionAudioBufferCache, getSessionAudioBufferCache } from '../media/AudioBufferCache'
+import { disposeSessionAudioBufferCache } from '../media/AudioBufferCache'
 import { collectManifestAssets } from './manifestAssets'
+import { isSceneBytesWarm } from './sceneLoadWarm'
 import { preferFetchTextureLoad, proxiedTextureUrl } from './textureProxy'
 
 const LANDSCAPE_CACHE_SUFFIX = '#landscape'
@@ -72,7 +73,12 @@ export function disposeSessionAssetCache(): void {
 
 const prefetchedSceneIds = new Set<string>()
 
-/** Start parallel warmup for manifest GLBs (bytes), PNGs (GPU textures), MP3s (decoded buffers). */
+/**
+ * Warm only GLB **bytes** into IndexedDB (worker pool). Never bulk-decode PNGs/MP3s
+ * (TextureLoader on main for ~200 PNGs → 70+ rAF violations / ~1fps). Never
+ * transfer all IDB-hit buffers onto main just to drop them (GC thrash).
+ * Textures/audio load on demand at attach.
+ */
 export function prefetchSceneManifestAssets(cache: AssetCache, scene: ResolvedScene): void {
   const sceneKey = scene.entityId ?? scene.title
   if (sceneKey && prefetchedSceneIds.has(sceneKey)) return
@@ -83,19 +89,39 @@ export function prefetchSceneManifestAssets(cache: AssetCache, scene: ResolvedSc
   if (sceneKey) prefetchedSceneIds.add(sceneKey)
 
   const parts: string[] = []
-  if (glbs.length) {
-    parts.push(`${glbs.length} GLB(s) (bytes)`)
-    cache.prefetchAll(glbs)
+  if (textures.length) parts.push(`${textures.length} PNG(s) on-demand`)
+  if (audio.length) parts.push(`${audio.length} MP3(s) on-demand`)
+
+  if (!glbs.length) {
+    console.info(`[assets] scene manifest — ${parts.join(', ') || 'empty'}`)
+    return
   }
-  if (textures.length) {
-    parts.push(`${textures.length} PNG(s)`)
-    cache.prefetchTextures(textures.map((t) => t.url))
-  }
-  if (audio.length) {
-    parts.push(`${audio.length} MP3(s)`)
-    getSessionAudioBufferCache().prefetch(audio.map((a) => a.url))
-  }
-  console.info(`[assets] prefetching scene manifest — ${parts.join(', ')}`)
+
+  void (async () => {
+    try {
+      if (await isSceneBytesWarm(scene)) {
+        console.info(
+          `[assets] IDB warm — skip main-thread transfer of ${glbs.length} GLB(s)` +
+            (parts.length ? `; ${parts.join(', ')}` : '')
+        )
+        return
+      }
+      // Cold: trickle bytes into IDB (concurrency 4) so we don't flood main with 214 ArrayBuffers.
+      console.info(
+        `[assets] prefetching ${glbs.length} GLB(s) into IDB (concurrency=4)` +
+          (parts.length ? `; ${parts.join(', ')}` : '')
+      )
+      const CONCURRENCY = 4
+      for (let i = 0; i < glbs.length; i += CONCURRENCY) {
+        const batch = glbs.slice(i, i + CONCURRENCY)
+        await Promise.all(batch.map(({ url, hash }) => cache.prefetchBytesSettled(url, hash)))
+        // Yield so rAF / UI can run between batches.
+        await new Promise<void>((r) => setTimeout(r, 0))
+      }
+    } catch {
+      /* best-effort warm */
+    }
+  })()
 }
 
 /** @deprecated Use `prefetchSceneManifestAssets` */
@@ -122,7 +148,10 @@ export class AssetCache {
   private failedUntil = new Map<string, number>()
   private failCount = new Map<string, number>()
   private givenUp = new Set<string>()
-
+  /** Cap concurrent Three.GLTFLoader.parseAsync — parallel parses freeze the main thread. */
+  private parseSlotsInUse = 0
+  private readonly parseWaiters: Array<() => void> = []
+  private static readonly MAX_CONCURRENT_PARSES = 1
   private static readonly FAILED_RETRY_MS = 2_000
   private static readonly MAX_LOAD_ATTEMPTS = 5
 
@@ -176,7 +205,12 @@ export class AssetCache {
   }
 
   hasCached(key: string): boolean {
-    return this.cache.has(key)
+    return this.cache.has(normalizeGlbCacheKey(key))
+  }
+
+  /** Sync template peek — only for attach/clone when already parsed (never triggers load). */
+  peekCached(key: string): CachedGltf | undefined {
+    return this.cache.get(normalizeGlbCacheKey(key))
   }
 
   /** Drop a parsed GLB so the next load re-fetches bytes (e.g. after terrain re-save). */
@@ -197,15 +231,29 @@ export class AssetCache {
 
   /** True when bytes or parse is in flight — used to prioritize attach passes. */
   isResolving(key: string): boolean {
-    return this.inflight.has(key) || this.bytesInflight.has(key)
+    const k = normalizeGlbCacheKey(key)
+    return this.inflight.has(k) || this.bytesInflight.has(k)
   }
 
   hasGivenUp(key: string): boolean {
-    return this.givenUp.has(key)
+    return this.givenUp.has(normalizeGlbCacheKey(key))
   }
 
   hasPendingLoads(): boolean {
     return this.inflight.size > 0 || this.bytesInflight.size > 0 || this.textureInflight.size > 0
+  }
+
+  /** Wait until raw GLB byte prefetches settle (or timeout). Does not parse to Three. */
+  async waitForPrefetchBytes(timeoutMs = 60_000): Promise<{ remaining: number; waitedMs: number }> {
+    const started = performance.now()
+    while (this.bytesInflight.size > 0 && performance.now() - started < timeoutMs) {
+      const pending = [...this.bytesInflight.values()]
+      await Promise.race([
+        Promise.allSettled(pending),
+        new Promise<void>((r) => setTimeout(r, 250))
+      ])
+    }
+    return { remaining: this.bytesInflight.size, waitedMs: performance.now() - started }
   }
 
   async preload(urls: Array<{ url: string; hash?: string }>): Promise<void> {
@@ -219,28 +267,32 @@ export class AssetCache {
     }
   }
 
-  /** Download GLB bytes only — keeps main thread free for hydration attach + PhysX. */
+  /** Download GLB bytes only — drop buffer after settle (IDB warm). Does not parse. */
   prefetchBytes(url: string, hash?: string): void {
+    void this.prefetchBytesSettled(url, hash)
+  }
+
+  /**
+   * Prefetch that settles when the worker has finished IDB/network work.
+   * Buffer is not retained after settle (load() re-reads IDB). Concurrent load() can
+   * still await the same inflight promise while it is live.
+   */
+  prefetchBytesSettled(url: string, hash?: string): Promise<void> {
     const key = normalizeGlbCacheKey(hash ?? url)
-    if (
-      this.cache.has(key) ||
-      this.inflight.has(key) ||
-      this.bytesInflight.has(key) ||
-      this.givenUp.has(key)
-    ) {
-      return
+    if (this.cache.has(key) || this.inflight.has(key) || this.givenUp.has(key)) {
+      return Promise.resolve()
     }
+    const existing = this.bytesInflight.get(key)
+    if (existing) return existing.then(() => undefined).catch(() => undefined)
+
     const retryAt = this.failedUntil.get(key) ?? 0
-    if (performance.now() < retryAt) return
+    if (performance.now() < retryAt) return Promise.resolve()
 
-    const task = fetchGlbBytesOffThread(url, key)
-      .then((buffer) => buffer.slice(0))
-      .finally(() => {
-        this.bytesInflight.delete(key)
-      })
-
+    const task = fetchGlbBytesOffThread(url, key).finally(() => {
+      this.bytesInflight.delete(key)
+    })
     this.bytesInflight.set(key, task)
-    void task.catch(() => {})
+    return task.then(() => undefined).catch(() => undefined)
   }
 
   async preloadTextures(urls: string[]): Promise<void> {
@@ -391,19 +443,51 @@ export class AssetCache {
     return slash >= 0 ? `${clean.slice(0, slash + 1)}` : ''
   }
 
+  private acquireParseSlot(): Promise<void> {
+    if (this.parseSlotsInUse < AssetCache.MAX_CONCURRENT_PARSES) {
+      this.parseSlotsInUse++
+      return Promise.resolve()
+    }
+    return new Promise((resolve) => {
+      this.parseWaiters.push(() => {
+        this.parseSlotsInUse++
+        resolve()
+      })
+    })
+  }
+
+  private releaseParseSlot(): void {
+    this.parseSlotsInUse = Math.max(0, this.parseSlotsInUse - 1)
+    const next = this.parseWaiters.shift()
+    if (next) next()
+  }
+
   private async fetchAndParseGltf(url: string, cacheKey: string, quiet?: boolean) {
     let buffer = await this.resolveGlbBytes(url, cacheKey, quiet)
 
     const resourcePath = this.gltfResourcePath(url)
-    if (isGlbOffThreadParseEnabled()) {
-      try {
-        const parsed = await parseGlbOffThread(buffer, resourcePath, buildParseUrlMappings())
-        return { scene: parsed.scene, animations: parsed.animations }
-      } catch {
-        // THREE graphs are not postMessage-safe — fall back silently.
+    // Serialize parse + yield so rAF can run between multi-second GLB parses.
+    await this.acquireParseSlot()
+    try {
+      // Yield before and after parse so rAF/UI can run around multi-second main-thread parses.
+      await new Promise<void>((r) => setTimeout(r, 0))
+      let result: { scene: THREE.Group; animations: THREE.AnimationClip[] }
+      if (isGlbOffThreadParseEnabled()) {
+        try {
+          const parsed = await parseGlbOffThread(buffer, resourcePath, buildParseUrlMappings())
+          result = { scene: parsed.scene, animations: parsed.animations }
+        } catch {
+          // THREE graphs are not postMessage-safe — fall back silently.
+          result = await this.loader.parseAsync(buffer, resourcePath)
+        }
+      } else {
+        result = await this.loader.parseAsync(buffer, resourcePath)
       }
+      await new Promise<void>((r) => setTimeout(r, 0))
+      return result
+    } finally {
+      this.releaseParseSlot()
     }
-    return this.loader.parseAsync(buffer, resourcePath)
   }
 
   private async resolveGlbBytes(url: string, cacheKey: string, quiet?: boolean): Promise<ArrayBuffer> {

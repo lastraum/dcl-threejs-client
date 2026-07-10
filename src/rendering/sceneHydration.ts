@@ -42,7 +42,8 @@ const STABLE_MS = 400
 const STABLE_WARM_MS = 150
 /** Scene scripts keep spawning entities after boot — wait for the count to settle. */
 const ENTITY_STABLE_MS = 800
-const SOFT_HYDRATION_MS = 8_000
+/** Brief soft attach budget only — long soft windows + high budgets freeze select UI. */
+const SOFT_HYDRATION_MS = 2_000
 /** No attach progress + no downloads — unrecoverable tail (disabled: loading waits for full attach). */
 const ATTACH_STALL_MS = 20_000
 const ENABLE_ATTACH_STALL_BAILOUT = false
@@ -195,14 +196,32 @@ export async function waitForSceneAssets(
 
   const warmScene = await resolveSceneLoadWarm(assets, scene)
   const bytesWarm = !warmScene && (await resolveSceneBytesWarm(scene))
-  if (warmScene) {
-    console.info('[Hydration] warm scene — parallel GLB parse + fast stability gate')
-    await primeManifestParses(assets, scene, 16)
-  } else if (bytesWarm) {
-    console.info('[Hydration] IDB byte cache — parallel GLB prime (180s hydration timeout)')
-    await primeManifestParses(assets, scene, 12)
+  /**
+   * Bytes only before play. Never bulk-parse the content map into Three templates —
+   * soft concurrency=2 still finished 214 parses and left gltfCached≈225 → GC ~1fps.
+   * Parse only on GltfContainer attach (clone if already in session cache).
+   * Dev-only escape: ?softPrime=1 (explicit, never default).
+   */
+  onProgress?.('Downloading scene models…')
+  const cacheAtStart = assets.getLoadStats().gltfCached
+  if (!bytesWarm && !warmScene) {
+    const wait = await assets.waitForPrefetchBytes(90_000)
+    console.info(
+      `[Hydration] content-map GLB bytes ready — remainingInflight=${wait.remaining} waited=${(wait.waitedMs / 1000).toFixed(1)}s gltfCached=${cacheAtStart} (no bulk parse)`
+    )
   } else {
-    void primeManifestParses(assets, scene, 8)
+    console.info(
+      `[Hydration] ${warmScene ? 'session already has templates' : 'IDB bytes warm'} — no bulk parse (gltfCached=${cacheAtStart})`
+    )
+  }
+  // NEVER auto-prime. Prior soft-prime left 214 Three graphs in heap → 1fps at select.
+  // Only if you intentionally want template parse for profiling: ?softPrime=1
+  const softPrime =
+    typeof location !== 'undefined' &&
+    new URLSearchParams(location.search).get('softPrime') === '1'
+  if (softPrime) {
+    console.warn('[Hydration] ?softPrime=1 — background template parse (WILL hurt FPS)')
+    void primeManifestParses(assets, scene, 2).catch(() => {})
   }
 
   const stableRequiredMs = warmScene ? STABLE_WARM_MS : stableMs

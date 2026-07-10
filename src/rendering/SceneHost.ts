@@ -53,7 +53,7 @@ export class SceneHost {
     this.controls.maxPolarAngle = Math.PI * 0.49
     this.nameTags = new NameTagRenderer(container)
     this.renderStats = new RenderStats()
-    this.renderStats.attachRenderer(this.renderer)
+    this.renderStats.attachRenderer(this.renderer, this.scene)
 
     clientSettings.subscribe((s) => {
       this.camera.fov = s.fov
@@ -144,16 +144,26 @@ export class SceneHost {
     this.clock.start()
     let asyncBusy = false
     let frameCount = 0
+    let windowStart = performance.now()
+    let windowSyncMs = 0
+    let windowRenderMs = 0
+    let windowAsyncMs = 0
+    let windowFrames = 0
+    let windowSlow = 0
+    let lastAsyncMs = 0
 
     this.renderer.setAnimationLoop(() => {
+      const frameT0 = performance.now()
       const delta = Math.min(this.clock.getDelta(), 0.1)
       frameCount++
 
+      const syncT0 = performance.now()
       try {
         opts.onSyncFrame?.(delta)
       } catch (err) {
         if (frameCount <= 3) console.error('[SceneHost] syncFrame error:', err)
       }
+      const syncMs = performance.now() - syncT0
 
       for (const listener of this.frameListeners) {
         try {
@@ -165,8 +175,10 @@ export class SceneHost {
 
       this.renderStats.begin()
       if (this.orbitEnabled) this.controls.update()
+      const renderT0 = performance.now()
       this.renderer.render(this.scene, this.camera)
       this.nameTags.render(this.scene, this.camera)
+      const renderMs = performance.now() - renderT0
       this.renderStats.end()
       this.renderStats.update()
 
@@ -180,9 +192,38 @@ export class SceneHost {
 
       if (!asyncBusy && opts.onAsyncFrame) {
         asyncBusy = true
+        const asyncT0 = performance.now()
         opts.onAsyncFrame(delta)
           .catch((err) => console.error('[SceneHost] async frame failed', err))
-          .finally(() => { asyncBusy = false })
+          .finally(() => {
+            lastAsyncMs = performance.now() - asyncT0
+            asyncBusy = false
+          })
+      }
+
+      const totalMs = performance.now() - frameT0
+      windowSyncMs += syncMs
+      windowRenderMs += renderMs
+      windowAsyncMs += lastAsyncMs
+      windowFrames++
+      if (totalMs > 33) windowSlow++
+      // Rollup every ~1s — always-on so 1fps is diagnosable without ?perfdebug.
+      if (performance.now() - windowStart >= 1000) {
+        const n = Math.max(1, windowFrames)
+        const fps = (windowFrames * 1000) / Math.max(1, performance.now() - windowStart)
+        if (fps < 45 || windowSlow > n * 0.2) {
+          console.warn(
+            `[fps] ${fps.toFixed(0)}fps over ${windowFrames}f — ` +
+              `sync=${(windowSyncMs / n).toFixed(1)}ms render=${(windowRenderMs / n).toFixed(1)}ms ` +
+              `async~=${(windowAsyncMs / n).toFixed(1)}ms slow>${33}ms=${windowSlow}`
+          )
+        }
+        windowStart = performance.now()
+        windowSyncMs = 0
+        windowRenderMs = 0
+        windowAsyncMs = 0
+        windowFrames = 0
+        windowSlow = 0
       }
     })
   }

@@ -15,8 +15,6 @@ import type { AssetCache } from '../rendering/AssetCache'
 import { prefetchSceneManifestAssets } from '../rendering/AssetCache'
 import type { ResolvedScene } from '../dcl/content/types'
 import { resolveGltfSrcHash, GLTF_LOCAL_PREFIX, isEmoteAnchorGltfSrc } from '../rendering/DclTextureResolver'
-import { isMotionFocusActive, matchesMotionFocusSrc } from './motionFocus'
-import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { syncGltfInstanceRenderState } from '../collision/gltfRenderMeshes'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionChangeKind } from './CrdtProjection'
@@ -29,6 +27,9 @@ import type { VideoPlayerBridge } from '../media/VideoPlayerBridge'
 import type { EntityStore } from './EntityStore'
 import { applySceneDiff, type ApplySceneDiffOptions } from './entityStoreApply'
 import { disposeOwnedObject3D } from '../rendering/sharedAsset'
+import { enableSceneGltfVertexColors } from '../rendering/LandscapeAssetSanitizer'
+import { cloneGltfInstance } from '../rendering/skinnedMeshInstance'
+import { SceneGltfInstancer, templateIsInstancable } from '../rendering/SceneGltfInstancer'
 
 function materialReferencesVideoPlayer(pb: PbMaterial, videoPlayerEntity: Entity): boolean {
   const materialCase = pb.material?.$case
@@ -54,8 +55,20 @@ function materialReferencesVideoPlayer(pb: PbMaterial, videoPlayerEntity: Entity
   return false
 }
 
+/** Per-src hash memo — uncached resolve is O(content map) and was ~4.7s for 3k pending/frame. */
+const hashFromSrcCache = new WeakMap<ResolvedScene, Map<string, string | null>>()
+
 function hashFromSrc(src: string, scene: ResolvedScene): string | null {
-  return resolveGltfSrcHash(scene.content, src)
+  let map = hashFromSrcCache.get(scene)
+  if (!map) {
+    map = new Map()
+    hashFromSrcCache.set(scene, map)
+  }
+  const key = src.trim()
+  if (map.has(key)) return map.get(key)!
+  const hash = resolveGltfSrcHash(scene.content, key)
+  map.set(key, hash)
+  return hash
 }
 
 /** True when the clone has at least one mesh with triangle geometry (visible, invisible _collider, or mis-export art). */
@@ -103,16 +116,40 @@ function enableMeshReceiveShadow(root: THREE.Object3D): void {
   })
 }
 
+function countObjectTriangles(root: THREE.Object3D): number {
+  let tris = 0
+  root.traverse((obj) => {
+    if (!(obj as THREE.Mesh).isMesh) return
+    const geom = (obj as THREE.Mesh).geometry
+    if (!geom) return
+    const idx = geom.index
+    if (idx) tris += idx.count / 3
+    else {
+      const pos = geom.getAttribute('position')
+      if (pos) tris += pos.count / 3
+    }
+  })
+  return tris
+}
+
 /** Sync mirror ECS state → Three.js scene graph (Phase 1 + 1b render components). */
 export class ThreeBridge {
-  private static readonly GLTF_BUDGET_PER_FRAME = 6
+  /** Runtime attach slots — keep ≤1 heavy unit per play frame (P0 mesh frame law). */
+  private static readonly GLTF_BUDGET_PER_FRAME = 1
   private static readonly GLTF_HYDRATION_BUDGET_PER_FRAME = 80
-  private static readonly GLTF_SOFT_HYDRATION_BUDGET_PER_FRAME = 24
-  private static readonly MESH_PASS_BUDGET_MS = 8
+  private static readonly GLTF_SOFT_HYDRATION_BUDGET_PER_FRAME = 1
+  private static readonly MESH_PASS_BUDGET_MS = 6
   private static readonly MESH_PASS_HYDRATION_BUDGET_MS = 48
-  /** Extra attach-only passes per hydration sync (transform/light already applied). */
   private static readonly HYDRATION_ATTACH_PASSES = 6
   private static readonly HYDRATION_ATTACH_TOTAL_MS = 72
+  /**
+   * P0 frame law (not streaming): SkeletonUtils.clone of large templates can take seconds.
+   * Those attach via a serial idle queue so rAF/UI stay alive. Scene still gets every entity.
+   * Always applied (including hydration) — one unbounded clone freezes the whole frame.
+   */
+  private static readonly LARGE_TEMPLATE_TRIS = 80_000
+  /** rAF frames to yield after each large clone before the next (keeps select UI alive). */
+  private static readonly LARGE_ATTACH_YIELD_FRAMES = 3
 
   private readonly store: EntityStore
   /** Phase 2 — entities whose GLB/mesh/material still needs an attach pass (budgeted, retried). */
@@ -125,7 +162,6 @@ export class ThreeBridge {
   private softHydrationUntil = 0
   private gltfBudgetRemaining = ThreeBridge.GLTF_BUDGET_PER_FRAME
   private readonly emptyGltfHashes = new Set<string>()
-  /** Log once per src — emote anchor GLBs often have no render geometry. */
   private readonly loggedEmptyGltfSrcs = new Set<string>()
   private readonly loggedGltfAttachFailures = new Set<string>()
   private onGltfAttached: ((entity: Entity) => void) | null = null
@@ -133,6 +169,27 @@ export class ThreeBridge {
   private audioSourceBridge: AudioSourceBridge | null = null
   private audioStreamBridge: AudioStreamBridge | null = null
   private skipTransformApply?: (entity: Entity) => boolean
+  /** Dedup idle parse kicks (content-map never bulk-parsed; per-entity only). */
+  private readonly loadScheduled = new Set<string>()
+  /** Serial large-clone queue — never run multiple multi-second clones back-to-back. */
+  private readonly largeAttachQueue: Entity[] = []
+  private readonly largeAttachQueued = new Set<Entity>()
+  private largeAttachDraining = false
+  private attachedSceneGltfCount = 0
+  private attachedSceneTris = 0
+  /**
+   * Pending-mesh drain cursor — NEVER full-scan thousands of pending entities per frame.
+   * Smoke showed gltfAttach=1/3365 with renderer≈4.7s from O(pending×content) hash walks.
+   */
+  private pendingMeshCursor = 0
+  /** Sample size when grouping pending by hash (not a hard full-set walk every frame). */
+  private static readonly MESH_DRAIN_HASH_SAMPLE = 512
+  private static readonly MESH_DRAIN_HARD_MS = 10
+  /** Ready instance/clone attaches per drain — tiles share hash and are cheap. */
+  private static readonly MESH_DRAIN_MAX_ATTACH = 64
+  /** Unique cold hashes to kick parse on per drain (diversity before mass tiles). */
+  private static readonly MESH_DRAIN_MAX_COLD_HASHES = 4
+  private readonly instancer: SceneGltfInstancer
 
   constructor(
     private readonly sceneConfig: ResolvedScene,
@@ -142,6 +199,12 @@ export class ThreeBridge {
   ) {
     this.store = store
     this.materials = new MaterialApplier(sceneConfig, cache)
+    this.instancer = new SceneGltfInstancer(() => this.store.root)
+  }
+
+  /** After Transform apply — refresh GPU instance matrices for instanced GltfContainers. */
+  syncInstancedTransforms(entities: Iterable<Entity>): void {
+    this.instancer.updateEntities(entities, this.store.nodes)
   }
 
   getEntityStore(): EntityStore {
@@ -373,15 +436,6 @@ export class ThreeBridge {
       : ThreeBridge.MESH_PASS_BUDGET_MS
   }
 
-  /** Scale mesh drain when a large pending queue would otherwise stall GLTF attach + colliders. */
-  private meshDrainBudgetMs(): number {
-    const base = this.meshPassBudgetMs()
-    const pending = this.pendingMeshEntities.size
-    if (pending > 200) return Math.max(base, 16)
-    if (pending > 50) return Math.max(base, 12)
-    return base
-  }
-
   /** Defer texture loads only during the loading-screen hydration burst — not soft GLTF cap. */
   private shouldDeferMaterials(): boolean {
     return this.hydrationMode
@@ -442,6 +496,7 @@ export class ThreeBridge {
       const mesh = obj.getObjectByName(meshKey(entity))
       if (!mesh || obj.userData.gltfSrcKey !== hash) return true
       if (obj.userData.animationRig) return false
+      if (obj.userData.dclInstanced) return false
       return !gltfInstanceHasGeometry(mesh)
     }
 
@@ -461,6 +516,34 @@ export class ThreeBridge {
 
   private gltfCacheKey(hash: string): string {
     return hash.startsWith(GLTF_LOCAL_PREFIX) ? hash.slice(GLTF_LOCAL_PREFIX.length) : hash
+  }
+
+  /**
+   * Kick GLB parse off the rAF path (idle / timeout). Never await from drain.
+   * Content-map is NOT bulk-parsed — only hashes the scene actually requests via ECS.
+   */
+  private scheduleBackgroundLoad(url: string, hash: string, cacheKey: string): void {
+    if (this.loadScheduled.has(cacheKey)) return
+    if (this.cache.hasCached(cacheKey) || this.cache.isResolving(cacheKey) || this.cache.hasGivenUp(cacheKey)) {
+      return
+    }
+    this.loadScheduled.add(cacheKey)
+    const kick = (): void => {
+      if (this.cache.hasCached(cacheKey) || this.cache.isResolving(cacheKey) || this.cache.hasGivenUp(cacheKey)) {
+        this.loadScheduled.delete(cacheKey)
+        return
+      }
+      void this.cache
+        .load(url, hash, { quiet: true })
+        .catch(() => {})
+        .finally(() => {
+          this.loadScheduled.delete(cacheKey)
+        })
+    }
+    const ric = (globalThis as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void })
+      .requestIdleCallback
+    if (typeof ric === 'function') ric(kick, { timeout: 2000 })
+    else setTimeout(kick, 48)
   }
 
   private gltfAttachPriority(entity: Entity): 'ready' | 'waiting' | 'blocked' | 'other' {
@@ -483,8 +566,8 @@ export class ThreeBridge {
       if (!obj || !this.entityNeedsMeshWork(entity, obj, { includeMaterial })) continue
       needsWork.push(entity)
     }
-    if (!this.shouldDeferMaterials()) return needsWork
 
+    // Ready (cached template) before cold (needs parse) so attach work progresses while parses idle.
     const ready: Entity[] = []
     const waiting: Entity[] = []
     const blocked: Entity[] = []
@@ -504,16 +587,20 @@ export class ThreeBridge {
   private async runMeshAttachPass(
     sorted: Entity[],
     meshEcs: Pick<MirrorComponents, 'MeshRenderer' | 'Material' | 'GltfContainer' | 'TextShape'>,
-    deferMaterials: boolean,
+    _deferMaterials: boolean,
     touchMaterials = true
   ): Promise<number> {
     const budgetStart = this.gltfBudgetRemaining
-    const meshEntities = this.meshEntitiesForPass(sorted, touchMaterials)
+    const meshEntities = this.meshEntitiesForPass(sorted, false)
     const meshPassStart = performance.now()
     for (const entity of meshEntities) {
       if (performance.now() - meshPassStart >= this.meshPassBudgetMs()) break
-      const obj = this.store.nodes.get(entity)!
-      await this.syncMesh(entity, obj, meshEcs, deferMaterials, touchMaterials)
+      const obj = this.store.nodes.get(entity)
+      if (!obj) continue
+      this.syncMeshSync(entity, obj, meshEcs, touchMaterials)
+      if (touchMaterials && this.entityNeedsMaterialWork(entity, obj)) {
+        this.pendingMaterialEntities.add(entity)
+      }
     }
     return budgetStart - this.gltfBudgetRemaining
   }
@@ -585,8 +672,9 @@ export class ThreeBridge {
       }
       const obj = this.store.getNode(entity)
       if (!obj) continue
+      // Cheap attached check — avoid gltfInstanceHasGeometry full traverse on 3k entities.
       const mesh = obj.getObjectByName(meshKey(entity))
-      if (mesh && obj.userData.gltfSrcKey === hash && gltfInstanceHasGeometry(mesh)) gltfLoaded++
+      if (mesh && obj.userData.gltfSrcKey === hash) gltfLoaded++
     }
 
     const assetStats = this.cache.getLoadStats()
@@ -600,6 +688,15 @@ export class ThreeBridge {
       gltfUnresolved,
       gltfInflight: assetStats.gltfInflight,
       textureInflight: assetStats.textureInflight
+    }
+  }
+
+  /** Cheap attach progress for fps logs — no full projection walk. */
+  getAttachProgressLite(): { attached: number; pendingMesh: number; sceneTris: number } {
+    return {
+      attached: this.attachedSceneGltfCount,
+      pendingMesh: this.pendingMeshEntities.size,
+      sceneTris: this.attachedSceneTris
     }
   }
 
@@ -722,6 +819,7 @@ export class ThreeBridge {
     tweenRefresh: Entity[] = []
   ): Promise<void> {
     if (!diff.size) return
+    const consumeStart = performance.now()
     this.gltfBudgetRemaining = this.resolveGltfBudget()
     const { MeshRenderer, Material, GltfContainer, TextShape, Billboard, AvatarAttach } = this.ecs
     const meshEcs = { MeshRenderer, Material, GltfContainer, TextShape }
@@ -765,38 +863,184 @@ export class ThreeBridge {
       }
     }
 
+    // Cap UV pass — mass meshDirty (3k+) must not walk every entity every frame.
+    const uvBudgetEnd = consumeStart + 4
+    let uvN = 0
+    for (const entity of applied.meshDirty) {
+      if (uvN >= 64 || performance.now() >= uvBudgetEnd) break
+      this.applyAnimatedPlaneUvs(entity)
+      uvN++
+    }
+
+    // Instanced GltfContainers live outside entity groups — refresh matrices after pose apply.
+    this.instancer.updateEntities(applied.upserts, this.store.nodes)
+
     await this.runDiffMeshPass(meshEcs, deferMaterials)
-    for (const entity of applied.meshDirty) this.applyAnimatedPlaneUvs(entity)
-    await this.runMaterialPass(Material)
+    // Do not await texture loads here — one PNG decode was ~3s and froze the async frame.
+    // tickDeferredMaterials (sync rAF) drains pendingMaterialEntities with a hard ms budget.
   }
 
-  /** Budgeted attach pass over the standing pending-mesh set (drained as entities finish). */
+  /** Resolve GltfContainer content key for drain grouping (null = non-gltf / unresolved). */
+  private gltfDrainKey(entity: Entity): {
+    hash: string
+    cacheKey: string
+    url: string
+    ready: boolean
+  } | null {
+    const { GltfContainer } = this.ecs
+    if (!GltfContainer.has(entity)) return null
+    const src = GltfContainer.get(entity).src?.trim()
+    if (!src) return null
+    const hash = hashFromSrc(src, this.sceneConfig)
+    if (!hash || hash.startsWith(GLTF_LOCAL_PREFIX)) return null
+    if (this.emptyGltfHashes.has(hash)) return null
+    const isLocal = hash.startsWith(GLTF_LOCAL_PREFIX)
+    const url = isLocal ? hash.slice(GLTF_LOCAL_PREFIX.length) : this.sceneConfig.assetUrl(hash)
+    const cacheKey = this.gltfCacheKey(isLocal ? url : hash)
+    if (this.cache.hasGivenUp(cacheKey)) return null
+    return {
+      hash,
+      cacheKey,
+      url,
+      ready: this.cache.hasCached(cacheKey)
+    }
+  }
+
+  /**
+   * Budgeted attach pass — group pending by content hash (structural, not product priority).
+   *
+   * Only invents: (1) sample + time budget, (2) at most one cold kick **per hash** (so 2k
+   * tile entities do not re-request the same parse 2k times), (3) batch attach when ready.
+   * No “characters first” / rarity ranking — discovery order from the ring sample.
+   */
   private async runDiffMeshPass(
     meshEcs: Pick<MirrorComponents, 'MeshRenderer' | 'Material' | 'GltfContainer' | 'TextShape'>,
-    deferMaterials: boolean
+    _deferMaterials: boolean
   ): Promise<void> {
     if (!this.pendingMeshEntities.size) return
 
-    // Drop entities that no longer need mesh work (attached, abandoned, or removed).
-    for (const entity of [...this.pendingMeshEntities]) {
-      const obj = this.store.nodes.get(entity)
-      if (!obj || !this.entityNeedsMeshWork(entity, obj)) this.pendingMeshEntities.delete(entity)
-    }
-    if (!this.pendingMeshEntities.size) return
-
-    const ordered = this.meshEntitiesForPass([...this.pendingMeshEntities])
     const passStart = performance.now()
-    const budgetMs = this.meshDrainBudgetMs()
-    for (const entity of ordered) {
-      if (performance.now() - passStart >= budgetMs) break
+    const hardMs = ThreeBridge.MESH_DRAIN_HARD_MS
+    const pendingArr = [...this.pendingMeshEntities]
+    const n = pendingArr.length
+    if (n === 0) return
+    if (this.pendingMeshCursor >= n) this.pendingMeshCursor = 0
+
+    type HashBucket = {
+      hash: string
+      cacheKey: string
+      url: string
+      ready: boolean
+      entities: Entity[]
+    }
+    const byHash = new Map<string, HashBucket>()
+    const nonGltf: Entity[] = []
+
+    const sample = Math.min(ThreeBridge.MESH_DRAIN_HASH_SAMPLE, n)
+    for (let i = 0; i < sample; i++) {
+      if (performance.now() - passStart >= hardMs * 0.4) break
+      const entity = pendingArr[(this.pendingMeshCursor + i) % n]!
       const obj = this.store.nodes.get(entity)
       if (!obj) {
         this.pendingMeshEntities.delete(entity)
         continue
       }
-      await this.syncMesh(entity, obj, meshEcs, deferMaterials, true)
-      // GLB still downloading → stays queued; otherwise it's done.
-      if (!this.entityNeedsMeshWork(entity, obj)) this.pendingMeshEntities.delete(entity)
+      if (!this.entityNeedsMeshWork(entity, obj, { includeMaterial: false })) {
+        if (this.entityNeedsMaterialWork(entity, obj)) this.pendingMaterialEntities.add(entity)
+        this.pendingMeshEntities.delete(entity)
+        continue
+      }
+      const key = this.gltfDrainKey(entity)
+      if (!key) {
+        nonGltf.push(entity)
+        continue
+      }
+      let bucket = byHash.get(key.hash)
+      if (!bucket) {
+        bucket = {
+          hash: key.hash,
+          cacheKey: key.cacheKey,
+          url: key.url,
+          ready: key.ready,
+          entities: []
+        }
+        byHash.set(key.hash, bucket)
+      } else if (key.ready) {
+        bucket.ready = true
+      }
+      bucket.entities.push(entity)
+    }
+    this.pendingMeshCursor =
+      (this.pendingMeshCursor + sample) % Math.max(1, this.pendingMeshEntities.size)
+
+    if (!byHash.size && !nonGltf.length) return
+
+    // Map iteration order = first-seen in the ring sample (fair over time as cursor moves).
+    const buckets = [...byHash.values()]
+
+    // Cold: one scheduleBackgroundLoad per hash (deduped in scheduleBackgroundLoad too).
+    let coldKicks = 0
+    for (const bucket of buckets) {
+      if (performance.now() - passStart >= hardMs) break
+      if (bucket.ready) continue
+      if (coldKicks >= ThreeBridge.MESH_DRAIN_MAX_COLD_HASHES) break
+      if (
+        this.cache.hasCached(bucket.cacheKey) ||
+        this.cache.isResolving(bucket.cacheKey) ||
+        this.cache.hasGivenUp(bucket.cacheKey)
+      ) {
+        continue
+      }
+      this.scheduleBackgroundLoad(bucket.url, bucket.hash, bucket.cacheKey)
+      coldKicks++
+    }
+
+    // Ready: attach entities; stay on one hash while budget allows (cheap for InstancedMesh).
+    let attaches = 0
+    this.gltfBudgetRemaining = Math.max(this.gltfBudgetRemaining, ThreeBridge.MESH_DRAIN_MAX_ATTACH)
+    for (const bucket of buckets) {
+      if (performance.now() - passStart >= hardMs) break
+      if (!bucket.ready && !this.cache.hasCached(bucket.cacheKey)) continue
+
+      for (const entity of bucket.entities) {
+        if (performance.now() - passStart >= hardMs) break
+        if (attaches >= ThreeBridge.MESH_DRAIN_MAX_ATTACH) break
+        if (!this.pendingMeshEntities.has(entity)) continue
+        const obj = this.store.nodes.get(entity)
+        if (!obj) {
+          this.pendingMeshEntities.delete(entity)
+          continue
+        }
+        if (!this.entityNeedsMeshWork(entity, obj, { includeMaterial: false })) {
+          if (this.entityNeedsMaterialWork(entity, obj)) this.pendingMaterialEntities.add(entity)
+          this.pendingMeshEntities.delete(entity)
+          continue
+        }
+        const before = this.attachedSceneGltfCount
+        this.syncMeshSync(entity, obj, meshEcs, true)
+        if (this.attachedSceneGltfCount > before) attaches++
+        if (!this.entityNeedsMeshWork(entity, obj, { includeMaterial: false })) {
+          if (this.entityNeedsMaterialWork(entity, obj)) this.pendingMaterialEntities.add(entity)
+          this.pendingMeshEntities.delete(entity)
+        }
+      }
+      if (attaches >= ThreeBridge.MESH_DRAIN_MAX_ATTACH) break
+    }
+
+    for (const entity of nonGltf) {
+      if (performance.now() - passStart >= hardMs) break
+      if (attaches >= ThreeBridge.MESH_DRAIN_MAX_ATTACH) break
+      const obj = this.store.nodes.get(entity)
+      if (!obj) {
+        this.pendingMeshEntities.delete(entity)
+        continue
+      }
+      this.syncMeshSync(entity, obj, meshEcs, true)
+      attaches++
+      if (!this.entityNeedsMeshWork(entity, obj, { includeMaterial: false })) {
+        if (this.entityNeedsMaterialWork(entity, obj)) this.pendingMaterialEntities.add(entity)
+        this.pendingMeshEntities.delete(entity)
+      }
     }
   }
 
@@ -837,8 +1081,13 @@ export class ThreeBridge {
     }
   }
 
-  /** Reconcile billboard tracked flags from live ECS (hydration + post-diff). */
+  /**
+   * Reconcile billboard tracked flags from live ECS.
+   * Diff path already calls syncBillboardFlagsFromDiff — full walk is hydration-only
+   * (was O(all scene entities) every async frame after mass spawn).
+   */
   reconcileBillboardFlags(): void {
+    if (!this.hydrationMode) return
     const { Billboard } = this.ecs
     this.store.forEachSceneEntity((entity) => {
       this.store.setBillboard(entity, Billboard.has(entity))
@@ -887,14 +1136,15 @@ export class ThreeBridge {
   private materialTickBusy = false
 
   /** Retry deferred sprite/material textures without blocking the render loop. */
-  tickDeferredMaterials(budgetMs = 8, maxEntities = 8): void {
+  tickDeferredMaterials(budgetMs = 6, maxEntities = 2): void {
     if (this.materialTickBusy) return
     if (!this.pendingMaterialEntities.size) return
     // After hydration, apply deferred textures even if the global defer gate is still set.
     const deferTextures = this.shouldDeferTextures() && this.hydrationMode
     if (deferTextures) return
     this.materialTickBusy = true
-    void this.runMaterialPass(this.ecs.Material, budgetMs, maxEntities, deferTextures)
+    // Fire-and-forget — must not be awaited from the async frame path.
+    void this.runMaterialPass(this.ecs.Material, budgetMs, maxEntities, false)
       .catch((err) => console.warn('[ThreeBridge] deferred material pass failed', err))
       .finally(() => {
         this.materialTickBusy = false
@@ -1058,6 +1308,11 @@ export class ThreeBridge {
     this.audioStreamBridge = null
     this.pendingMeshEntities.clear()
     this.pendingMaterialEntities.clear()
+    this.pendingMeshCursor = 0
+    this.largeAttachQueue.length = 0
+    this.largeAttachQueued.clear()
+    this.largeAttachDraining = false
+    this.instancer.dispose()
   }
 
   private removeEntityVisuals(entity: Entity, obj: THREE.Group): void {
@@ -1065,9 +1320,18 @@ export class ThreeBridge {
     const tk = textKey(entity)
     const lk = lightKey(entity)
     const pk = particleKey(entity)
+    const attachedTris = (obj.userData.dclAttachedTris as number | undefined) ?? 0
+    let removedGltf = false
+    if (obj.userData.dclInstanced) {
+      this.instancer.detach(entity)
+      delete obj.userData.dclInstanced
+      delete obj.userData.dclInstanceTemplateTris
+      removedGltf = true
+    }
     for (const name of [mk, tk, pk]) {
       const child = obj.getObjectByName(name)
       if (!child) continue
+      if (name === mk && obj.userData.gltfSrcKey) removedGltf = true
       if (name === tk) disposeTextShapeMesh(child)
       else if (name === pk && (child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh
@@ -1078,16 +1342,218 @@ export class ThreeBridge {
       } else disposeOwnedObject3D(child)
       obj.remove(child)
     }
+    if (removedGltf) {
+      this.attachedSceneGltfCount = Math.max(0, this.attachedSceneGltfCount - 1)
+      this.attachedSceneTris = Math.max(0, this.attachedSceneTris - attachedTris)
+      delete obj.userData.gltfSrcKey
+      delete obj.userData.dclAttachedTris
+    }
     removeLightSource(obj, lk)
   }
 
-  private async syncMesh(
+  /**
+   * Enqueue a large-template attach. One clone at a time + multi-rAF yield between clones.
+   * requestIdleCallback alone is not enough — each clone can still block for seconds, and
+   * N concurrent idle callbacks stack freezes into a permanent 0 FPS window.
+   */
+  private queueIdleGltfAttach(entity: Entity): void {
+    if (this.largeAttachQueued.has(entity)) return
+    this.largeAttachQueued.add(entity)
+    this.largeAttachQueue.push(entity)
+    this.drainLargeAttachQueue()
+  }
+
+  private drainLargeAttachQueue(): void {
+    if (this.largeAttachDraining) return
+    this.largeAttachDraining = true
+
+    const scheduleNext = (fn: () => void): void => {
+      const ric = (
+        globalThis as {
+          requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void
+        }
+      ).requestIdleCallback
+      if (typeof ric === 'function') ric(fn, { timeout: 800 })
+      else setTimeout(fn, 48)
+    }
+
+    const yieldFrames = (n: number): Promise<void> =>
+      new Promise((resolve) => {
+        let left = Math.max(1, n)
+        const step = (): void => {
+          left--
+          if (left <= 0) resolve()
+          else requestAnimationFrame(step)
+        }
+        requestAnimationFrame(step)
+      })
+
+    const pump = (): void => {
+      while (this.largeAttachQueue.length) {
+        const entity = this.largeAttachQueue.shift()!
+        this.largeAttachQueued.delete(entity)
+        const obj = this.store.nodes.get(entity)
+        if (!obj) continue
+        if (!this.entityNeedsMeshWork(entity, obj, { includeMaterial: false })) {
+          this.pendingMeshEntities.delete(entity)
+          continue
+        }
+
+        const src =
+          this.ecs.GltfContainer.has(entity) ? this.ecs.GltfContainer.get(entity).src?.trim() : ''
+        const t0 = performance.now()
+        // Force one attach (bypass LARGE_TEMPLATE re-queue).
+        obj.userData.dclForceIdleAttach = true
+        const meshEcs = {
+          MeshRenderer: this.ecs.MeshRenderer,
+          Material: this.ecs.Material,
+          GltfContainer: this.ecs.GltfContainer,
+          TextShape: this.ecs.TextShape
+        }
+        const prev = this.gltfBudgetRemaining
+        this.gltfBudgetRemaining = Math.max(this.gltfBudgetRemaining, 1)
+        this.syncMeshSync(entity, obj, meshEcs, true)
+        this.gltfBudgetRemaining = prev
+        delete obj.userData.dclForceIdleAttach
+        const ms = performance.now() - t0
+        const tris = (obj.userData.dclAttachedTris as number | undefined) ?? 0
+        if (ms > 50 || tris >= ThreeBridge.LARGE_TEMPLATE_TRIS) {
+          console.info(
+            `[ThreeBridge] large GLB attach ${ms.toFixed(0)}ms · ~${(tris / 1000).toFixed(0)}k tris` +
+              (src ? ` · ${src}` : '') +
+              ` · queue=${this.largeAttachQueue.length} · sceneTris=${(this.attachedSceneTris / 1e6).toFixed(2)}M`
+          )
+        }
+        if (!this.entityNeedsMeshWork(entity, obj, { includeMaterial: false })) {
+          this.pendingMeshEntities.delete(entity)
+        }
+
+        // Yield rAF frames after every large clone so Sync/select UI can paint.
+        void yieldFrames(ThreeBridge.LARGE_ATTACH_YIELD_FRAMES).then(() => scheduleNext(pump))
+        return
+      }
+      this.largeAttachDraining = false
+    }
+
+    scheduleNext(pump)
+  }
+
+  /** Prefer GPU InstancedMesh for static same-hash GLBs; clone for skinned / Animator. */
+  private canInstanceAttach(
+    entity: Entity,
+    template: { root: THREE.Group; animations: THREE.AnimationClip[] }
+  ): boolean {
+    // Skinned / Animator need full clone + mixer rebind.
+    if (this.ecs.Animator.has(entity)) return false
+    // PointerEvents / MeshCollider need `_collider` meshes in the entity graph for raycast/PhysX.
+    // Instancing only stores GPU matrices — no per-entity collider meshes (broke character select picks).
+    if (this.ecs.PointerEvents.has(entity)) return false
+    if (this.ecs.MeshCollider.has(entity)) return false
+    return templateIsInstancable(template.root)
+  }
+
+  /** Clone a cached template onto the entity node. Returns false on failure / skip. */
+  private attachCachedGltf(
+    entity: Entity,
+    obj: THREE.Group,
+    mk: string,
+    src: string,
+    srcKey: string,
+    hash: string,
+    template: { root: THREE.Group; animations: THREE.AnimationClip[] },
+    templateTris: number
+  ): boolean {
+    try {
+      // Static multi-instance path (parcel tiles, props) — no SkeletonUtils.clone.
+      if (this.canInstanceAttach(entity, template)) {
+        // Drop prior instance if re-attaching with new src
+        if (obj.userData.dclInstanced) this.instancer.detach(entity)
+        const result = this.instancer.attach(entity, obj, hash, template.root, mk)
+        if (result.ok) {
+          obj.userData.gltfSrcKey = srcKey
+          enableSceneGltfVertexColors(template.root)
+          this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
+          this.notifyGltfAttached(entity)
+          this.attachedSceneGltfCount++
+          // Inventory: count template once per entity for HUD (instance draws share GPU geo).
+          const tris = result.templateTris || templateTris
+          obj.userData.dclAttachedTris = tris
+          this.attachedSceneTris += tris
+          return true
+        }
+        // Fall through to clone if template has no instancable leaves.
+      }
+
+      const clone = cloneGltfInstance(template.root)
+      enableSceneGltfVertexColors(clone)
+      obj.userData.gltfSrcKey = srcKey
+      obj.userData.dclAttachedTris = templateTris
+      const hasGeometry = gltfInstanceHasGeometry(clone)
+      if (!hasGeometry) {
+        const wantsAnimatorRig = this.ecs.Animator.has(entity)
+        if (wantsAnimatorRig && template.animations.length > 0) {
+          clone.name = mk
+          hideGltfRenderMeshes(clone)
+          obj.userData.animationRig = true
+          obj.add(clone)
+          this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
+          this.notifyGltfAttached(entity)
+          this.attachedSceneGltfCount++
+          this.attachedSceneTris += templateTris
+          return true
+        }
+        if (isEmoteAnchorGltfSrc(src)) {
+          this.emptyGltfHashes.add(hash)
+          disposeOwnedObject3D(clone)
+          const anchor = new THREE.Group()
+          anchor.name = mk
+          obj.userData.emoteAnchor = true
+          obj.add(anchor)
+          this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
+          return true
+        }
+        this.emptyGltfHashes.add(hash)
+        disposeOwnedObject3D(clone)
+        if (!this.loggedEmptyGltfSrcs.has(src)) {
+          this.loggedEmptyGltfSrcs.add(src)
+          console.warn('[ThreeBridge] GLB has no renderable geometry — skipping', src)
+        }
+        return false
+      }
+      clone.name = mk
+      if (isEmoteAnchorGltfSrc(src) && !this.ecs.Animator.has(entity)) {
+        hideGltfRenderMeshes(clone)
+        obj.userData.emoteAnchor = true
+      } else {
+        syncGltfInstanceRenderState(clone)
+        enableMeshReceiveShadow(clone)
+      }
+      obj.add(clone)
+      this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
+      this.notifyGltfAttached(entity)
+      this.attachedSceneGltfCount++
+      this.attachedSceneTris += templateTris
+      return true
+    } catch (err) {
+      obj.userData.gltfSrcKey = srcKey
+      if (!this.loggedGltfAttachFailures.has(src)) {
+        this.loggedGltfAttachFailures.add(src)
+        console.warn('[ThreeBridge] GLB attach failed', src, err)
+      }
+      return false
+    }
+  }
+
+  /**
+   * Synchronous mesh attach for the async frame — never awaits GLB parse or texture load.
+   * Cold GLBs: kick background parse, return. Cached: SkeletonUtils clone + queue materials.
+   */
+  private syncMeshSync(
     entity: Entity,
     obj: THREE.Group,
     ecs: Pick<MirrorComponents, 'MeshRenderer' | 'Material' | 'GltfContainer' | 'TextShape'>,
-    deferMaterials = false,
     touchMaterials = true
-  ): Promise<void> {
+  ): void {
     const { MeshRenderer, Material, GltfContainer, TextShape } = ecs
     const mk = meshKey(entity)
     const tk = textKey(entity)
@@ -1097,9 +1563,9 @@ export class ThreeBridge {
       let textMesh = obj.getObjectByName(tk) as THREE.Mesh | undefined
       if (!textMesh) {
         const stale = obj.getObjectByName(mk)
-      if (stale) {
-        disposeOwnedObject3D(stale)
-        obj.remove(stale)
+        if (stale) {
+          disposeOwnedObject3D(stale)
+          obj.remove(stale)
         }
         textMesh = buildTextShapeMesh(spec)
         textMesh.name = tk
@@ -1127,6 +1593,10 @@ export class ThreeBridge {
       if (!hash) return
 
       if (!mesh || obj.userData.gltfSrcKey !== srcKey) {
+        if (obj.userData.dclInstanced) {
+          this.instancer.detach(entity)
+          delete obj.userData.dclInstanced
+        }
         if (mesh) {
           disposeOwnedObject3D(mesh)
           obj.remove(mesh)
@@ -1134,94 +1604,53 @@ export class ThreeBridge {
 
         const isLocal = hash.startsWith(GLTF_LOCAL_PREFIX)
         const url = isLocal ? hash.slice(GLTF_LOCAL_PREFIX.length) : this.sceneConfig.assetUrl(hash)
+        const cacheKey = this.gltfCacheKey(isLocal ? url : hash)
 
         if (this.gltfBudgetRemaining <= 0) return
 
-        this.gltfBudgetRemaining--
-        try {
-          // Single pipeline for cold / IDB / memory: clone → load → bytes (prefetch/IDB/network) → parse → cache.
-          const clone = await this.cache.clone(url, isLocal ? url : hash, { sceneGltf: true })
-          obj.userData.gltfSrcKey = srcKey
-          const hasGeometry = gltfInstanceHasGeometry(clone)
-          if (!hasGeometry) {
-            const wantsAnimatorRig = this.ecs.Animator.has(entity)
-            if (wantsAnimatorRig) {
-              const cached = await this.cache.load(url, isLocal ? url : hash)
-              if (cached.animations.length > 0) {
-                clone.name = mk
-                hideGltfRenderMeshes(clone)
-                obj.userData.animationRig = true
-                obj.add(clone)
-                mesh = clone
-                this.notifyMeshComponent(entity, GltfContainer.componentId)
-                this.notifyGltfAttached(entity)
-                return
-              }
-            }
-            if (isEmoteAnchorGltfSrc(src)) {
-              this.gltfBudgetRemaining++
-              this.emptyGltfHashes.add(hash)
-              disposeOwnedObject3D(clone)
-              const anchor = new THREE.Group()
-              anchor.name = mk
-              obj.userData.emoteAnchor = true
-              obj.add(anchor)
-              mesh = anchor
-              this.notifyMeshComponent(entity, GltfContainer.componentId)
-              return
-            }
-            this.gltfBudgetRemaining++
-            this.emptyGltfHashes.add(hash)
-            disposeOwnedObject3D(clone)
-            if (!this.loggedEmptyGltfSrcs.has(src)) {
-              this.loggedEmptyGltfSrcs.add(src)
-              console.warn('[ThreeBridge] GLB has no renderable geometry — skipping', src)
-            }
-            return
-          }
-          clone.name = mk
-          if (isEmoteAnchorGltfSrc(src) && !this.ecs.Animator.has(entity)) {
-            hideGltfRenderMeshes(clone)
-            obj.userData.emoteAnchor = true
-          } else {
-            syncGltfInstanceRenderState(clone)
-            enableMeshReceiveShadow(clone)
-          }
-          obj.add(clone)
-          mesh = clone
-          this.notifyMeshComponent(entity, GltfContainer.componentId)
-          this.notifyGltfAttached(entity)
-          if (isMotionFocusActive() && matchesMotionFocusSrc(src)) {
-            const loaded = await this.cache.load(url, isLocal ? url : hash)
-            const clipNames = loaded.animations.map((c) => c.name)
-            clientDebugLog.log(
-              'motion',
-              `Blimp GLB attached — entity ${entity} · clips [${clipNames.join(', ') || '(none)'}] · ECS Animator ${this.ecs.Animator.has(entity) ? 'yes' : 'no — default auto-play first clip (ArmatureAction propellers)'}`,
-              { level: clipNames.length ? 'info' : 'warn', alsoConsole: true }
-            )
-          }
-        } catch (err) {
-          this.gltfBudgetRemaining++
-          obj.userData.gltfSrcKey = srcKey
-          if (!this.loggedGltfAttachFailures.has(src)) {
-            this.loggedGltfAttachFailures.add(src)
-            console.warn('[ThreeBridge] GLB attach failed', src, err)
+        const template = this.cache.peekCached(cacheKey)
+        const templateTris = template
+          ? ((template.root.userData.dclTriCount as number | undefined) ??
+            (() => {
+              const t = countObjectTriangles(template.root)
+              template.root.userData.dclTriCount = t
+              return t
+            })())
+          : 0
+
+        // Cold: schedule parse off the frame path — never await load() here.
+        if (!template) {
+          if (this.gltfBudgetRemaining > 0) {
+            this.gltfBudgetRemaining--
+            this.scheduleBackgroundLoad(url, isLocal ? url : hash, cacheKey)
           }
           return
         }
+
+        // Large *clones* off the attach pass. Static instancable templates stay on-path
+        // (matrix write only — mountains / tiles must not wait behind SkeletonUtils).
+        if (
+          !obj.userData.dclForceIdleAttach &&
+          templateTris >= ThreeBridge.LARGE_TEMPLATE_TRIS &&
+          !this.canInstanceAttach(entity, template)
+        ) {
+          this.queueIdleGltfAttach(entity)
+          return
+        }
+
+        this.gltfBudgetRemaining--
+        if (!this.attachCachedGltf(entity, obj, mk, src, srcKey, hash, template, templateTris)) {
+          return
+        }
+        mesh = obj.getObjectByName(mk) as THREE.Object3D | undefined
       }
 
+      // Never await textures here — queue for tickDeferredMaterials (budgeted, fire-and-forget).
       if (touchMaterials && Material.has(entity) && mesh) {
         const pb = Material.get(entity) as PbMaterial
-        if (!this.materials.needsReapply(entity, pb, mesh)) {
-          /* material already matches ECS — skip destructive re-apply on hydration full-walk */
-        } else if (deferMaterials || this.shouldDeferTextures()) {
+        if (this.materials.needsReapply(entity, pb, mesh)) {
           this.pendingMaterialEntities.add(entity)
           this.materials.applyScalarsToObject3D(mesh, entity, pb)
-        } else {
-          await this.materials.applyToObject3D(mesh, entity, pb)
-          this.notifyMeshComponent(entity, Material.componentId)
-          if (!this.materials.needsReapply(entity, pb, mesh)) this.pendingMaterialEntities.delete(entity)
         }
       }
       return
@@ -1275,17 +1704,12 @@ export class ThreeBridge {
 
       if (touchMaterials && Material.has(entity)) {
         const pb = Material.get(entity) as PbMaterial
-        if (!this.materials.needsReapply(entity, pb, primitive)) {
-          /* material already matches ECS — skip destructive re-apply on hydration full-walk */
-        } else if (deferMaterials || this.shouldDeferTextures()) {
+        if (this.materials.needsReapply(entity, pb, primitive)) {
           this.pendingMaterialEntities.add(entity)
           this.materials.applyScalarsToObject3D(primitive, entity, pb)
-        } else {
-          await this.materials.applyToObject3D(primitive, entity, pb)
-          this.notifyMeshComponent(entity, Material.componentId)
-          if (!this.materials.needsReapply(entity, pb, primitive)) this.pendingMaterialEntities.delete(entity)
         }
       }
     }
   }
+
 }

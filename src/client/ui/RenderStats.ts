@@ -19,6 +19,11 @@ export class RenderStats {
   private readonly extra: HTMLDivElement
   private oceanInfo: OceanPerfInfo | null = null
   private renderer: THREE.WebGLRenderer | null = null
+  private scene: THREE.Scene | null = null
+  private uniqueTris = 0
+  private uniqueMeshes = 0
+  private uniqueCastShadowMeshes = 0
+  private inventoryAt = 0
 
   constructor() {
     this.stats = new Stats()
@@ -36,8 +41,9 @@ export class RenderStats {
     this.refreshExtra()
   }
 
-  attachRenderer(renderer: THREE.WebGLRenderer): void {
+  attachRenderer(renderer: THREE.WebGLRenderer, scene?: THREE.Scene): void {
     this.renderer = renderer
+    if (scene) this.scene = scene
   }
 
   setOceanPerf(info: OceanPerfInfo | null): void {
@@ -73,9 +79,54 @@ export class RenderStats {
       }
     }
     if (this.renderer) {
-      const { render } = this.renderer.info
-      lines.push(`draws: ${render.calls}  tris: ${render.triangles}`)
+      const { render, memory } = this.renderer.info
+      this.refreshMeshInventoryIfDue()
+      // submitTris = GPU work last frame (shadow map passes + main camera).
+      // meshTris = unique visible Mesh geometry once (inventory — no multi-pass).
+      const ratio =
+        this.uniqueTris > 0 ? (render.triangles / this.uniqueTris).toFixed(2) : '—'
+      lines.push(
+        `draws: ${render.calls}  submitTris: ${formatCount(render.triangles)}`,
+        `meshTris: ${formatCount(this.uniqueTris)}  meshes: ${this.uniqueMeshes}  castSh: ${this.uniqueCastShadowMeshes}`,
+        `submit/mesh: ${ratio}×  (shadow passes multiply submit)`,
+        `gpu: geo=${memory.geometries} tex=${memory.textures}`
+      )
     }
     this.extra.textContent = lines.join('\n')
   }
+
+  /** Throttled scene walk — unique mesh triangle inventory (not multi-pass). */
+  private refreshMeshInventoryIfDue(): void {
+    if (!this.scene) return
+    const now = performance.now()
+    if (now - this.inventoryAt < 1000) return
+    this.inventoryAt = now
+    let tris = 0
+    let meshes = 0
+    let castSh = 0
+    this.scene.traverseVisible((obj) => {
+      if (!(obj as THREE.Mesh).isMesh) return
+      const mesh = obj as THREE.Mesh
+      if (!mesh.visible) return
+      meshes++
+      if (mesh.castShadow) castSh++
+      const geom = mesh.geometry
+      if (!geom) return
+      const idx = geom.index
+      if (idx) tris += idx.count / 3
+      else {
+        const pos = geom.getAttribute('position')
+        if (pos) tris += pos.count / 3
+      }
+    })
+    this.uniqueTris = Math.round(tris)
+    this.uniqueMeshes = meshes
+    this.uniqueCastShadowMeshes = castSh
+  }
+}
+
+function formatCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
 }

@@ -101,12 +101,46 @@ function normalizeColor3(c?: Color3): Color3 | undefined {
 /** Accept SDK TextureUnion and legacy `{ src }` shapes from composite JSON. */
 function coerceTextureUnion(u?: TextureUnion | { src?: string; wrapMode?: number; filterMode?: number }): TextureUnion | undefined {
   if (!u) return undefined
-  if ('tex' in u && u.tex) return u as TextureUnion
+  if ('tex' in u && u.tex) {
+    // Creator Hub composites can emit texture slots with an empty src — treat as absent.
+    if (u.tex.$case === 'texture' && !u.tex.texture.src?.trim()) return undefined
+    return u as TextureUnion
+  }
   const flat = u as { src?: string; wrapMode?: number; filterMode?: number }
   if (flat.src?.trim()) {
     return { tex: { $case: 'texture', texture: { src: flat.src, wrapMode: flat.wrapMode, filterMode: flat.filterMode } } }
   }
   return undefined
+}
+
+/** Sample a loaded texture (downscaled) for a meaningful alpha channel; cached on userData. */
+function textureHasAlpha(tex: THREE.Texture): boolean {
+  const cached = tex.userData.__hasAlpha
+  if (typeof cached === 'boolean') return cached
+  const image = tex.image as CanvasImageSource | undefined
+  let result = false
+  if (image && typeof document !== 'undefined') {
+    try {
+      const canvas = document.createElement('canvas')
+      canvas.width = 32
+      canvas.height = 32
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      if (ctx) {
+        ctx.drawImage(image, 0, 0, 32, 32)
+        const data = ctx.getImageData(0, 0, 32, 32).data
+        for (let i = 3; i < data.length; i += 4) {
+          if (data[i]! < 255) {
+            result = true
+            break
+          }
+        }
+      }
+    } catch {
+      result = false
+    }
+  }
+  tex.userData.__hasAlpha = result
+  return result
 }
 
 function normalizeTextureUnion(u?: TextureUnion): unknown {
@@ -323,7 +357,7 @@ export class MaterialApplier {
       if ((child as THREE.Mesh).isMesh) meshes.push(child as THREE.Mesh)
     })
 
-    let texturesOk = !materialHasTextureSlots(pb)
+    let texturesOk = true
     for (const mesh of meshes) {
       const ok = await this.applyToMesh(mesh, pb)
       if (!ok) texturesOk = false
@@ -458,7 +492,7 @@ export class MaterialApplier {
       alpha,
       inner.alphaTest,
       transparencyMode,
-      !!alphaTex || !!m.alphaMap
+      !!alphaTex || !!m.alphaMap || (!!m.map && textureHasAlpha(m.map))
     )
     if (transparencyMode === MTM_ALPHA_BLEND || transparencyMode === MTM_ALPHA_TEST_AND_ALPHA_BLEND) {
       m.depthWrite = false

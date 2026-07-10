@@ -5,10 +5,24 @@
 # Dev panel Community tab renders this as a single workflow table.
 
 schema_version: 2
-updated: 2026-07-08
+updated: 2026-07-10
 source: github
 base_branch: dev-latest
 workflow:
+  - stage: pending_review
+    integration_ref: pr:11
+    title: scene UI stack + pointer/input path (lastraum → dev-latest)
+    owner: lastraum
+    pr: 11
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/11
+    updated: 2026-07-10
+  - stage: merged
+    integration_ref: pr:10
+    title: route /api/texture to the encoded host instead of arweave.net
+    owner: awedjob
+    pr: 10
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/10
+    updated: 2026-07-09
   - stage: merged
     integration_ref: pr:5
     title: "perf(tween): stop Genesis hot-loop + silence worker deliver logs"

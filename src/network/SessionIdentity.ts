@@ -98,4 +98,9 @@ export class SessionIdentity {
     this.commsProfile = null
     this.identity = null
   }
+
+  /** Update in-memory profile after local backpack equip/unequip (not persisted to Catalyst yet). */
+  setProfile(profile: AvatarProfile): void {
+    this.profile = profile
+  }
 }

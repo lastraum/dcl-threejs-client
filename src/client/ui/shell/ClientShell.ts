@@ -76,6 +76,7 @@ export class ClientShell {
   private preferencesPanel: PreferencesPanel | null
   private session: SessionIdentity
   private onEmoteSelected: ((emoteId: string) => void) | null = null
+  private emoteWheelEnabled = true
   private unreadChat = 0
   private unsubChatUnread: (() => void) | null = null
   private onEmoteWheelVisibility: ((visible: boolean) => void) | null = null
@@ -125,6 +126,7 @@ export class ClientShell {
 
     this.emoteWheel = new EmoteWheelPanel()
     this.emoteWheel.setCallbacks({
+      canOpen: () => this.emoteWheelEnabled,
       onEmoteSelected: (emoteId) => this.onEmoteSelected?.(emoteId),
       onVisibilityChange: (visible) => {
         this.buttons.get('emotes')?.setActive(visible)
@@ -303,6 +305,13 @@ export class ClientShell {
     this.onEmoteWheelVisibility = handler
   }
 
+  setEmoteWheelEnabled(enabled: boolean): void {
+    if (this.emoteWheelEnabled === enabled) return
+    this.emoteWheelEnabled = enabled
+    this.buttons.get('emotes')?.setDisabled(!enabled)
+    if (!enabled) this.emoteWheel.hide()
+  }
+
   private wireChatPanel(panel: ChatPanel): void {
     panel.setOnVisibilityChange((visible) => {
       this.buttons.get('chat')?.setActive(visible)
@@ -476,6 +485,7 @@ export class ClientShell {
     if (id === 'emotes') {
       return (ev) => {
         ev.stopPropagation()
+        if (!this.emoteWheelEnabled) return
         this.closeMobileDrawerForOverlay()
         this.emoteWheel.toggle()
       }
@@ -539,6 +549,7 @@ export class ClientShell {
   }
 
   toggleEmotes(): void {
+    if (!this.emoteWheelEnabled) return
     this.emoteWheel.toggle()
   }
 

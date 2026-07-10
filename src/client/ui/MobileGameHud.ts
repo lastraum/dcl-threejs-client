@@ -78,6 +78,14 @@ export class MobileGameHud {
     this.root.querySelector('.mobile-game-hud__btn--emote')?.classList.toggle('is-active', active)
   }
 
+  setEmoteEnabled(enabled: boolean): void {
+    const btn = this.root.querySelector('.mobile-game-hud__btn--emote') as HTMLButtonElement | null
+    if (!btn) return
+    btn.disabled = !enabled
+    btn.classList.toggle('is-disabled', !enabled)
+    if (!enabled) btn.classList.remove('is-active')
+  }
+
   private syncVisibility(): void {
     const show = this.mobileQuery.matches && this.shellVisible
     this.root.hidden = !show

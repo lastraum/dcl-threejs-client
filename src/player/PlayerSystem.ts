@@ -9,10 +9,16 @@ import { cameraCollisionDebug } from '../debug/CameraCollisionDebug'
 import type { PhysXWorld } from '../physics/PhysXWorld'
 import type { SceneHost } from '../rendering/SceneHost'
 import {
+  canDoubleJumpLocomotion,
+  canJumpLocomotion,
+  canLocomote,
+  canVoluntaryEmote,
+  defaultLocomotionConfig,
   jumpHeightForMode,
   readLocomotionFromComponents,
   resolveLocomotionMode,
   speedForMode,
+  type LocomotionConfig,
   type LocomotionMode
 } from './locomotion'
 import type { SceneSpawn } from '../dcl/content/types'
@@ -33,7 +39,9 @@ import {
   threeToDclVec,
   threeYawToDclYaw
 } from '../bridge/dclTransform'
+import type { SceneKeyboardSnapshot } from '../input/SceneInputRelay'
 import { PlayerInput } from './PlayerInput'
+import type { VirtualCameraBridge } from '../camera/VirtualCameraBridge'
 import type { AssetCache } from '../rendering/AssetCache'
 import type { ResolvedProfileEmote } from '../avatar/profileEmotes'
 import { AVATAR_YAW_OFFSET } from '../avatar/constants'
@@ -139,6 +147,7 @@ export class PlayerSystem {
   /** Holds capsule after scene `movePlayerTo` until emote starts or the player moves. */
   private scenePositionLock = false
   private wasProfileEmoteActive = false
+  private virtualCamera: VirtualCameraBridge | null = null
 
   constructor(
     private readonly host: SceneHost,
@@ -158,6 +167,7 @@ export class PlayerSystem {
     this.readComponents = readComponents
     this.walkBounds = walkBounds
     this.input = new PlayerInput(this.host.renderer.domElement)
+    this.input.setLocomotionBlocked(() => !canLocomote(this.getLocomotionConfig()))
     const feetY = spawn.fromSpawnPoints
       ? spawn.y
       : spawn.y <= 0.01
@@ -193,6 +203,10 @@ export class PlayerSystem {
     return this.avatar
   }
 
+  setVirtualCameraBridge(bridge: VirtualCameraBridge | null): void {
+    this.virtualCamera = bridge
+  }
+
   async loadAvatar(onProgress?: (msg: string) => void): Promise<void> {
     onProgress?.('Loading avatar…')
     const avatarOptions = avatarOptionsFromUrl()
@@ -226,6 +240,15 @@ export class PlayerSystem {
 
   setLocomotionVfxScene(scene: THREE.Scene): void {
     this.avatar?.setLocomotionVfxScene(scene)
+  }
+
+  getLocomotionConfig(): LocomotionConfig {
+    if (!this.readComponents) return defaultLocomotionConfig()
+    return readLocomotionFromComponents(this.readComponents, SDK_RESERVED.player)
+  }
+
+  canPlayVoluntaryEmote(): boolean {
+    return canVoluntaryEmote(this.getLocomotionConfig())
   }
 
   playEmote(emoteId: string, options?: PlayEmoteOptions): Promise<ResolvedProfileEmote | null> {
@@ -304,6 +327,35 @@ export class PlayerSystem {
 
   isPointerBlocked(): boolean {
     return this.input?.orbiting ?? false
+  }
+
+  getSceneKeyboardSnapshot(): SceneKeyboardSnapshot {
+    return (
+      this.input?.getSceneKeyboardSnapshot() ?? {
+        forward: false,
+        backward: false,
+        left: false,
+        right: false,
+        jump: false,
+        ctrl: false,
+        action3: false,
+        action4: false,
+        action5: false,
+        action6: false
+      }
+    )
+  }
+
+  isSceneRelayBlocked(): boolean {
+    return this.input?.isSceneRelayBlocked() ?? true
+  }
+
+  isLocomotionBlocked(): boolean {
+    return !canLocomote(this.getLocomotionConfig())
+  }
+
+  clearMoveKeys(): void {
+    this.input?.clearMovementKeys()
   }
 
   cancelCameraPointer(): void {
@@ -428,6 +480,14 @@ export class PlayerSystem {
     if (!this.enabled || !this.input) return
     delta = Math.min(delta, 1 / 20)
 
+    const locomotion = this.getLocomotionConfig()
+    const locomotionAllowed = canLocomote(locomotion)
+    if (!locomotionAllowed) {
+      this.input.clearMovementKeys()
+    }
+    const jumpLocomotionAllowed = canJumpLocomotion(locomotion)
+    const doubleJumpLocomotionAllowed = canDoubleJumpLocomotion(locomotion)
+
     const emoteActive = this.avatar?.isProfileEmoteActive() ?? false
     if (this.wasProfileEmoteActive && !emoteActive) {
       this.scenePositionLock = false
@@ -436,7 +496,9 @@ export class PlayerSystem {
 
     const movingKeys =
       this.input.keys.w || this.input.keys.a || this.input.keys.s || this.input.keys.d
-    const breakSceneHold = movingKeys || this.input.spacePressed
+    const breakSceneHold =
+      (movingKeys && locomotionAllowed) ||
+      (this.input.spacePressed && (jumpLocomotionAllowed || doubleJumpLocomotionAllowed))
     if (breakSceneHold && this.scenePositionLock) {
       this.scenePositionLock = false
       this.avatar?.stopEmote()
@@ -510,14 +572,18 @@ export class PlayerSystem {
     _moveDir.set(0, 0, 0)
     _forward.set(Math.sin(this.camYaw), 0, Math.cos(this.camYaw)).multiplyScalar(-1)
     _right.set(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw))
-    if (this.input.keys.w) _moveDir.add(_forward)
-    if (this.input.keys.s) _moveDir.sub(_forward)
-    if (this.input.keys.a) _moveDir.sub(_right)
-    if (this.input.keys.d) _moveDir.add(_right)
-    const moving = _moveDir.lengthSq() > 0
+    if (locomotionAllowed) {
+      if (this.input.keys.w) _moveDir.add(_forward)
+      if (this.input.keys.s) _moveDir.sub(_forward)
+      if (this.input.keys.a) _moveDir.sub(_right)
+      if (this.input.keys.d) _moveDir.add(_right)
+    }
+    const moving = locomotionAllowed && _moveDir.lengthSq() > 0
     if (moving) _moveDir.normalize()
 
-    if (moving || this.input.spacePressed) {
+    const jumpPressedForLocomotion =
+      this.input.spacePressed && (jumpLocomotionAllowed || doubleJumpLocomotionAllowed)
+    if (moving || jumpPressedForLocomotion) {
       this.scenePositionLock = false
       this.avatar?.stopEmote()
     }
@@ -543,7 +609,6 @@ export class PlayerSystem {
       this.jumping = false
     }
 
-    const locomotion = readLocomotionFromComponents(this.readComponents!, SDK_RESERVED.player)
     this.locomotionMode = resolveLocomotionMode(this.input.keys, locomotion)
     const moveSpeed = speedForMode(this.locomotionMode, locomotion)
 
@@ -574,13 +639,7 @@ export class PlayerSystem {
       _velocity.z *= drag
     }
 
-    if (
-      onGround &&
-      !this.jumping &&
-      this.input.spacePressed &&
-      !locomotion.disableJump &&
-      locomotion.jumpHeight > 0
-    ) {
+    if (onGround && !this.jumping && this.input.spacePressed && jumpLocomotionAllowed) {
       _velocity.y = Math.sqrt(2 * GRAVITY * jumpHeightForMode(this.locomotionMode, locomotion))
       this.jumped = true
       this.jumpCount = 1
@@ -589,8 +648,7 @@ export class PlayerSystem {
       !this.airJumped &&
       !this.airJumpPending &&
       this.input.spacePressed &&
-      !locomotion.disableDoubleJump &&
-      locomotion.doubleJumpHeight > 0
+      doubleJumpLocomotionAllowed
     ) {
       this.airJumpPending = true
       this.airJumpDelayLeft = AIR_JUMP_DELAY
@@ -713,6 +771,7 @@ export class PlayerSystem {
   /** Orbit + zoom from pointer lock / drag — runs even when movement is scene-locked. */
   private applyCameraInputFromPointer(): void {
     if (!this.input) return
+    if (this.virtualCamera?.isActive()) return
 
     if (this.input.looking) {
       this.camYaw -= this.input.pointer.dx * POINTER_LOOK_SPEED
@@ -731,6 +790,12 @@ export class PlayerSystem {
   }
 
   private syncCamera(snap: boolean, delta = 0.016): void {
+    if (this.virtualCamera?.apply(delta)) {
+      this.avatar?.setBodyVisible(true)
+      if (this.nameTag) this.nameTag.object.visible = true
+      return
+    }
+
     const fpv = this.isFirstPerson()
     this.avatar?.setBodyVisible(!fpv)
     if (this.nameTag) this.nameTag.object.visible = !fpv

@@ -3,12 +3,10 @@ import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
 import { PointerEventType } from '../../input/pointerConstants'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
+import { nextWorkerPointerEventTimestamp } from './workerPointerEventTimestamp'
 
-/** Write PointerEventsResult directly on the scene worker engine (same-tick getClick). */
-export function injectPointerClickOnEngine(engine: IEngine, body: InjectPointerClickBody): void {
-  preregisterRendererInjectedComponents(engine)
-  const PointerEventsResult = generated.PointerEventsResult(engine)
-  const hit = {
+function buildPointerHit(body: InjectPointerClickBody) {
+  return {
     entityId: body.hitEntity,
     position: { ...body.hitPosition },
     globalOrigin: undefined,
@@ -17,27 +15,56 @@ export function injectPointerClickOnEngine(engine: IEngine, body: InjectPointerC
     length: body.hitDistance,
     meshName: body.meshName ?? ''
   }
+}
 
+function pointerDownTargets(body: InjectPointerClickBody): number[] {
+  const list = body.downEntities ?? body.entities
+  return list.length ? list : [body.entity]
+}
+
+function pointerUpTargets(body: InjectPointerClickBody): number[] {
+  const list = body.upEntities ?? body.entities
+  return list.length ? list : [body.entity]
+}
+
+/** PET_DOWN only — must run before the first pointer-tick `engine.update(0)`. */
+export function injectPointerClickDownOnEngine(engine: IEngine, body: InjectPointerClickBody): void {
+  preregisterRendererInjectedComponents(engine)
+  const PointerEventsResult = generated.PointerEventsResult(engine)
+  const hit = buildPointerHit(body)
   const down = {
     button: body.button,
     state: PointerEventType.PET_DOWN,
-    timestamp: body.downTimestamp,
+    timestamp: nextWorkerPointerEventTimestamp(),
     tickNumber: body.tickNumber,
     hit,
     analog: undefined
   }
+  for (const entity of pointerDownTargets(body)) {
+    PointerEventsResult.addValue(entity as Entity, down)
+  }
+}
+
+/** PET_UP only — after onUpdate, before the second pointer-tick `engine.update(0)`. */
+export function injectPointerClickUpOnEngine(engine: IEngine, body: InjectPointerClickBody): void {
+  preregisterRendererInjectedComponents(engine)
+  const PointerEventsResult = generated.PointerEventsResult(engine)
+  const hit = buildPointerHit(body)
   const up = {
     button: body.button,
     state: PointerEventType.PET_UP,
-    timestamp: body.upTimestamp,
+    timestamp: nextWorkerPointerEventTimestamp(),
     tickNumber: body.tickNumber,
     hit,
     analog: undefined
   }
-
-  const entities = body.entities.length ? body.entities : [body.entity]
-  for (const entity of entities) {
-    PointerEventsResult.addValue(entity as Entity, down)
+  for (const entity of pointerUpTargets(body)) {
     PointerEventsResult.addValue(entity as Entity, up)
   }
+}
+
+/** Write PointerEventsResult directly on the scene worker engine (same-tick getClick). */
+export function injectPointerClickOnEngine(engine: IEngine, body: InjectPointerClickBody): void {
+  injectPointerClickDownOnEngine(engine, body)
+  injectPointerClickUpOnEngine(engine, body)
 }

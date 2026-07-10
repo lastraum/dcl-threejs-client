@@ -16,6 +16,7 @@ export type MirrorComponents = {
   Billboard: ReturnType<typeof generated.Billboard>
   Animator: ReturnType<typeof generated.Animator>
   MainCamera: ReturnType<typeof generated.MainCamera>
+  VirtualCamera: ReturnType<typeof generated.VirtualCamera>
   AvatarLocomotionSettings: ReturnType<typeof generated.AvatarLocomotionSettings>
   InputModifier: ReturnType<typeof generated.InputModifier>
   AvatarShape: ReturnType<typeof generated.AvatarShape>
@@ -41,6 +42,14 @@ export type MirrorComponents = {
   AudioStream: ReturnType<typeof generated.AudioStream>
   AudioEvent: ReturnType<typeof generated.AudioEvent>
   ParticleSystem: ReturnType<typeof generated.ParticleSystem>
+  UiTransform: ReturnType<typeof generated.UiTransform>
+  UiText: ReturnType<typeof generated.UiText>
+  UiBackground: ReturnType<typeof generated.UiBackground>
+  UiInput: ReturnType<typeof generated.UiInput>
+  UiInputResult: ReturnType<typeof generated.UiInputResult>
+  UiDropdown: ReturnType<typeof generated.UiDropdown>
+  UiDropdownResult: ReturnType<typeof generated.UiDropdownResult>
+  UiCanvasInformation: ReturnType<typeof generated.UiCanvasInformation>
 }
 
 /** Register mirror ECS components so incoming scene CRDT can be applied. */
@@ -58,6 +67,7 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     Billboard: generated.Billboard(engine),
     Animator: generated.Animator(engine),
     MainCamera: generated.MainCamera(engine),
+    VirtualCamera: generated.VirtualCamera(engine),
     AvatarLocomotionSettings: generated.AvatarLocomotionSettings(engine),
     InputModifier: generated.InputModifier(engine),
     AvatarShape: generated.AvatarShape(engine),
@@ -82,6 +92,14 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     AudioSource: generated.AudioSource(engine),
     AudioStream: generated.AudioStream(engine),
     AudioEvent: generated.AudioEvent(engine),
-    ParticleSystem: generated.ParticleSystem(engine)
+    ParticleSystem: generated.ParticleSystem(engine),
+    UiTransform: generated.UiTransform(engine),
+    UiText: generated.UiText(engine),
+    UiBackground: generated.UiBackground(engine),
+    UiInput: generated.UiInput(engine),
+    UiInputResult: generated.UiInputResult(engine),
+    UiDropdown: generated.UiDropdown(engine),
+    UiDropdownResult: generated.UiDropdownResult(engine),
+    UiCanvasInformation: generated.UiCanvasInformation(engine)
   }
 }

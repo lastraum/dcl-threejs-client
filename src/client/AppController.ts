@@ -52,6 +52,7 @@ import { SocialMobileNotifications } from './ui/explore/SocialMobileNotification
 import { SceneLandingView } from './ui/landing/SceneLandingView'
 import type { DclEvent } from '../social/dclEvents'
 import { enrichResolvedScenePublicTitle } from '../social/sceneDisplayTitle'
+import { recordLoginEvent } from '../analytics/recordLogin'
 
 /** Owns world lifecycle — splash → load → play, navigation, and sign-out. */
 export class AppController {
@@ -110,6 +111,7 @@ export class AppController {
 
     const postLoginRoute = resolveRouteTarget()
     this.login = resolveInitialLogin()
+    recordLoginEvent(this.login)
 
     if (postLoginRoute.kind === 'blank') {
       await this.showExplorer({ replace: true })
@@ -262,6 +264,7 @@ export class AppController {
     return {
       onLoginChange: (login) => {
         this.login = login
+        recordLoginEvent(login)
         this.socialMobileNotifications?.setLogin(login)
         this.applyLoginToSocialShellViews(login)
         if (login.kind === 'wallet') {
@@ -1040,6 +1043,10 @@ export class AppController {
       onJumpUp: () => world.setJumpHeld(false)
     })
     this.shell.setOnEmoteWheelVisibility((visible) => this.mobileHud?.setEmoteActive(visible))
+    world.setVoluntaryEmoteAllowedHandler((allowed) => {
+      this.shell?.setEmoteWheelEnabled(allowed)
+      this.mobileHud?.setEmoteEnabled(allowed)
+    })
     if (!opts.deferPlayChromeReveal) {
       this.mobileHud.setShellVisible(true)
     }
@@ -1144,12 +1151,14 @@ export class AppController {
     this.shell?.hide()
     this.worldLocationCard?.setVisible(false)
     this.mobileHud?.setShellVisible(false)
+    this.world?.setSceneUiVisible(false)
   }
 
   private revealPlayChrome(): void {
     this.shell?.show()
     this.worldLocationCard?.setVisible(true)
     this.mobileHud?.setShellVisible(true)
+    this.world?.setSceneUiVisible(true)
   }
 
   private getLocationCoordsLabel(): string {
@@ -1181,6 +1190,7 @@ export class AppController {
   }
 
   private async teardownScene(): Promise<void> {
+    this.world?.setVoluntaryEmoteAllowedHandler(null)
     this.teardownExplorer()
     this.editorApp?.dispose()
     this.editorApp = null

@@ -1,0 +1,392 @@
+import type { Entity, IEngine } from '@dcl/ecs'
+import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
+import { extractUiTextureSrc } from '../../ui/scene/uiBackgroundStyle'
+import { normalizePointerFilterMode, normalizeYGDisplay } from '../../ui/scene/yogaEnums'
+
+import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
+import { shouldSuppressCooperativeReactEcs } from './sceneWorkerInputSession'
+import {
+  resolveWorkerUiBackground,
+  resolveWorkerUiDropdown,
+  resolveWorkerUiInput,
+  resolveWorkerUiText,
+  resolveWorkerUiTransform
+} from './resolveBundledUiComponents'
+
+/**
+ * Scene UI scheduler — scene-agnostic infrastructure matching Explorer ordering.
+ *
+ * SDK7 scenes (Planet Angzaar, Genesis, etc.) drive UI through:
+ *   closure / timers / onUpdate  →  @dcl/react-ecs reconcile  →  Ui* ECS  →  CRDT  →  renderer
+ *
+ * Stock @dcl/ecs registers react-ecs @ 1e5, which runs BEFORE default-priority systems that
+ * mutate closure state (splash timers, loading screens, menu flags). Explorer avoids stale UI
+ * by running UI reconcile after scene logic; we patch the bundled engine system loop to match.
+ *
+ * Layers:
+ * 1. patchEngineSystemLoopPartition — defer @dcl/react-ecs* to end of engine.update (bundle)
+ * 2. installSceneEngineUiScheduler — per-engine addSystem idempotency + post-update CRDT flush
+ */
+
+export const ENGINE_SYSTEM_LOOP_KEY = '__THREEJS_ENGINE_SYSTEM_LOOP__'
+
+/** System names reconciled after all other systems in a tick. */
+const DEFERRED_UI_SYSTEM_NAMES = new Set(['@dcl/react-ecs', '@dcl/react-ecs-ui-scale'])
+
+type SystemItem = { fn: (dt: number) => void; name?: string; priority: number }
+
+/** Installed once in the worker before scene bundle eval. */
+export function installEngineSystemLoopPartition(): void {
+  const g = globalThis as Record<string, unknown>
+  if (typeof g[ENGINE_SYSTEM_LOOP_KEY] === 'function') return
+  g[ENGINE_SYSTEM_LOOP_KEY] = (systems: SystemItem[], dt: number, runOne: (s: SystemItem, dt: number) => void) => {
+    let react: SystemItem | undefined
+    let scale: SystemItem | undefined
+    for (const system of systems) {
+      const name = system.name
+      if (name === '@dcl/react-ecs') {
+        react = system
+        continue
+      }
+      if (name === '@dcl/react-ecs-ui-scale') {
+        scale = system
+        continue
+      }
+      runOne(system, dt)
+    }
+    const suppressReact = shouldSuppressCooperativeReactEcs()
+    if (scale && !suppressReact) runOne(scale, dt)
+    if (react && !suppressReact) runOne(react, dt)
+  }
+}
+
+/** Seed RootEntity canvas info on the worker — react-ecs ui-scale reads this before main paints. */
+export function seedWorkerUiCanvasInformation(engine: IEngine, width: number, height: number): void {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return
+  preregisterRendererInjectedComponents(engine)
+  const UiCanvasInformation = generated.UiCanvasInformation(engine)
+  const w = Math.floor(width)
+  const h = Math.floor(height)
+  const fullCanvas = { left: 0, top: 0, right: w, bottom: h }
+  UiCanvasInformation.createOrReplace(0 as Entity, {
+    devicePixelRatio: 1,
+    width: w,
+    height: h,
+    interactableArea: fullCanvas,
+    screenInsetArea: { left: 0, top: 0, right: 0, bottom: 0 }
+  })
+}
+
+let lastWorkerUiFingerprint = ''
+const engineUiHooked = new WeakSet<IEngine>()
+
+const DUPLICATE_SYSTEM_RE = /already added to the engine/i
+
+/** Attach per-engine hooks (idempotent addSystem for duplicate bootstrap paths). */
+export function installSceneEngineUiScheduler(engine: IEngine): void {
+  if (engineUiHooked.has(engine)) return
+  engineUiHooked.add(engine)
+
+  const nativeAdd = engine.addSystem.bind(engine)
+  engine.addSystem = (fn, priority, name) => {
+    try {
+      nativeAdd(fn, priority, name)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (DUPLICATE_SYSTEM_RE.test(msg)) return
+      throw err
+    }
+  }
+}
+
+/** @deprecated Use installSceneEngineUiScheduler */
+export const installWorkerEngineUiHooks = installSceneEngineUiScheduler
+
+export function resetWorkerUiFingerprint(): void {
+  lastWorkerUiFingerprint = ''
+}
+
+export function seedWorkerUiFingerprint(engine: IEngine): void {
+  lastWorkerUiFingerprint = computeWorkerUiFingerprint(engine)
+}
+
+export function getWorkerUiFingerprintBaseline(): string {
+  return lastWorkerUiFingerprint
+}
+
+export function hasWorkerReactEcsSync(_engine: IEngine): boolean {
+  return typeof (globalThis as Record<string, unknown>)[ENGINE_SYSTEM_LOOP_KEY] === 'function'
+}
+
+function colorKey(c: { r?: number; g?: number; b?: number; a?: number } | undefined): string {
+  if (!c) return ''
+  return `${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 0}`
+}
+
+function pointerEventsKey(
+  spec: { pointerEvents: ReadonlyArray<{ eventType?: number; interactionType?: number }> } | null | undefined
+): string {
+  if (!spec?.pointerEvents.length) return ''
+  return [...spec.pointerEvents]
+    .map((entry) => `${entry.eventType ?? -1}.${entry.interactionType ?? 0}`)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    .join(',')
+}
+
+export function computeWorkerUiFingerprint(engine: IEngine): string {
+  preregisterRendererInjectedComponents(engine)
+  const UiTransform = resolveWorkerUiTransform(engine)
+  const UiBackground = resolveWorkerUiBackground(engine)
+  const UiText = resolveWorkerUiText(engine)
+  const PointerEvents = generated.PointerEvents(engine)
+  const parts: string[] = []
+  for (const [entity] of engine.getEntitiesWith(UiTransform)) {
+    const t = UiTransform.getOrNull(entity)
+    if (!t) continue
+    let line = `${entity}:d${normalizeYGDisplay(t.display)}:o${t.opacity ?? 1}:p${t.parent ?? 0}:pf${normalizePointerFilterMode(t.pointerFilter)}`
+    const bg = UiBackground.getOrNull(entity)
+    if (bg) {
+      line += `:bg${colorKey(bg.color)}:${extractUiTextureSrc(bg.texture) ?? ''}`
+    }
+    const text = UiText.getOrNull(entity)
+    if (text) {
+      const value = text.value ?? ''
+      line += `:tx${value.length}:${value.slice(0, 32)}`
+    }
+    const pointer = PointerEvents.getOrNull(entity)
+    const peKey = pointerEventsKey(pointer)
+    if (peKey) line += `:pe${peKey}`
+    parts.push(line)
+  }
+  parts.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+  return parts.join('|')
+}
+
+function parseFingerprintEntityLines(fingerprint: string): Map<string, string> {
+  const lines = new Map<string, string>()
+  if (!fingerprint) return lines
+  for (const line of fingerprint.split('|')) {
+    const colon = line.indexOf(':')
+    if (colon <= 0) continue
+    lines.set(line.slice(0, colon), line)
+  }
+  return lines
+}
+
+function touchWorkerUiEntityForCrdt(
+  entity: Entity,
+  components: {
+    UiTransform: ReturnType<typeof resolveWorkerUiTransform>
+    UiBackground: ReturnType<typeof resolveWorkerUiBackground>
+    UiText: ReturnType<typeof resolveWorkerUiText>
+    UiInput: ReturnType<typeof resolveWorkerUiInput>
+    UiDropdown: ReturnType<typeof resolveWorkerUiDropdown>
+    PointerEvents: ReturnType<typeof generated.PointerEvents>
+  }
+): number {
+  const id = entity as Entity
+  let touched = 0
+  const transform = components.UiTransform.getOrNull(id)
+  if (transform) {
+    components.UiTransform.createOrReplace(id, { ...transform })
+    touched++
+  }
+  const background = components.UiBackground.getOrNull(id)
+  if (background) {
+    components.UiBackground.createOrReplace(id, { ...background })
+    touched++
+  }
+  const text = components.UiText.getOrNull(id)
+  if (text) {
+    components.UiText.createOrReplace(id, { ...text })
+    touched++
+  }
+  const input = components.UiInput.getOrNull(id)
+  if (input) {
+    components.UiInput.createOrReplace(id, { ...input })
+    touched++
+  }
+  const dropdown = components.UiDropdown.getOrNull(id)
+  if (dropdown) {
+    components.UiDropdown.createOrReplace(id, { ...dropdown })
+    touched++
+  }
+  const pointer = components.PointerEvents.getOrNull(id)
+  if (pointer) {
+    components.PointerEvents.createOrReplace(id, {
+      pointerEvents: pointer.pointerEvents.map((entry) => ({
+        ...entry,
+        eventInfo: entry.eventInfo ? { ...entry.eventInfo } : entry.eventInfo
+      }))
+    })
+    touched++
+  }
+  return touched
+}
+
+/** Force LWW PUTs when react-ecs reconciled via getMutable (transport may skip byte-identical rows). */
+export function touchWorkerUiComponentsForCrdt(engine: IEngine): number {
+  preregisterRendererInjectedComponents(engine)
+  const components = {
+    UiTransform: resolveWorkerUiTransform(engine),
+    UiBackground: resolveWorkerUiBackground(engine),
+    UiText: resolveWorkerUiText(engine),
+    UiInput: resolveWorkerUiInput(engine),
+    UiDropdown: resolveWorkerUiDropdown(engine),
+    PointerEvents: generated.PointerEvents(engine)
+  }
+  let touched = 0
+  for (const [entity] of engine.getEntitiesWith(components.UiTransform)) {
+    touched += touchWorkerUiEntityForCrdt(entity as Entity, components)
+  }
+  return touched
+}
+
+/** Queue DeleteComponent transport when react-ecs already removed the row (no has() left). */
+function forceLwwDelete<T extends object>(
+  comp: { has(entity: Entity): boolean; create(entity: Entity, val?: T): T; deleteFrom(entity: Entity): T | null },
+  entity: Entity,
+  stub: T
+): boolean {
+  if (comp.has(entity)) {
+    comp.deleteFrom(entity)
+    return true
+  }
+  comp.create(entity, stub)
+  comp.deleteFrom(entity)
+  return true
+}
+
+function touchRemovedUiEntityForCrdt(
+  entity: Entity,
+  components: {
+    UiTransform: ReturnType<typeof resolveWorkerUiTransform>
+    UiBackground: ReturnType<typeof resolveWorkerUiBackground>
+    UiText: ReturnType<typeof resolveWorkerUiText>
+    UiInput: ReturnType<typeof resolveWorkerUiInput>
+    UiDropdown: ReturnType<typeof resolveWorkerUiDropdown>
+    PointerEvents: ReturnType<typeof generated.PointerEvents>
+  }
+): number {
+  const id = entity as Entity
+  let touched = 0
+  if (forceLwwDelete(components.PointerEvents, id, { pointerEvents: [] })) touched++
+  if (
+    forceLwwDelete(components.UiDropdown, id, {
+      options: [],
+      selectedIndex: 0,
+      acceptEmpty: true,
+      disabled: false
+    })
+  ) {
+    touched++
+  }
+  if (forceLwwDelete(components.UiInput, id, { value: '', placeholder: '', disabled: false })) touched++
+  if (forceLwwDelete(components.UiText, id, { value: '' })) touched++
+  if (forceLwwDelete(components.UiBackground, id, { textureMode: 0, uvs: [] })) touched++
+  if (forceLwwDelete(components.UiTransform, id, { width: 1, height: 1 } as never)) touched++
+  return touched
+}
+
+/** Bulk menu/panel open — dirty-only can miss transport PUTs; touch every mounted Ui* row. */
+const UI_MOUNT_GROWTH_FULL_TOUCH_MIN = 4
+
+/** Touch only entities whose fingerprint line changed — boot baseline uses full mount when prev is empty. */
+function touchDirtyWorkerUiComponentsForCrdt(engine: IEngine, prevFingerprint: string): number {
+  const fingerprint = computeWorkerUiFingerprint(engine)
+  if (!prevFingerprint) return touchWorkerUiComponentsForCrdt(engine)
+
+  const prevLines = parseFingerprintEntityLines(prevFingerprint)
+  const currLines = parseFingerprintEntityLines(fingerprint)
+  const entityGrowth = currLines.size - prevLines.size
+  if (entityGrowth >= UI_MOUNT_GROWTH_FULL_TOUCH_MIN) {
+    return touchWorkerUiComponentsForCrdt(engine)
+  }
+  const dirty = new Set<Entity>()
+  for (const [entityKey, line] of currLines) {
+    if (prevLines.get(entityKey) !== line) dirty.add(Number(entityKey) as Entity)
+  }
+  for (const entityKey of prevLines.keys()) {
+    if (!currLines.has(entityKey)) dirty.add(Number(entityKey) as Entity)
+  }
+
+  if (!dirty.size) return 0
+
+  preregisterRendererInjectedComponents(engine)
+  const components = {
+    UiTransform: resolveWorkerUiTransform(engine),
+    UiBackground: resolveWorkerUiBackground(engine),
+    UiText: resolveWorkerUiText(engine),
+    UiInput: resolveWorkerUiInput(engine),
+    UiDropdown: resolveWorkerUiDropdown(engine),
+    PointerEvents: generated.PointerEvents(engine)
+  }
+  let touched = 0
+  for (const entity of dirty) {
+    const key = String(entity)
+    if (prevLines.has(key) && !currLines.has(key)) {
+      touched += touchRemovedUiEntityForCrdt(entity, components)
+    } else {
+      touched += touchWorkerUiEntityForCrdt(entity, components)
+    }
+  }
+  return touched
+}
+
+export type PlanSceneUiCrdtEmitOptions = {
+  /** Pointer interactive tick — full mount touch + deterministic encode. */
+  pointerTick?: boolean
+  /** Pointer tick — touch every mounted Ui* row before manual encode. */
+  forceFullTouch?: boolean
+}
+
+/**
+ * Phase 2 of a scheduler tick — touch dirty Ui* when fingerprint changed.
+ * Caller runs engine.update(0) for transport emit, then commitSceneUiCrdtBaseline.
+ */
+export function planSceneUiCrdtEmit(
+  engine: IEngine,
+  log?: (message: string) => void,
+  opts?: PlanSceneUiCrdtEmitOptions
+): boolean {
+  const fingerprint = computeWorkerUiFingerprint(engine)
+  if (fingerprint === lastWorkerUiFingerprint) return false
+
+  const prevLen = lastWorkerUiFingerprint.length
+
+  const touched = opts?.forceFullTouch
+    ? touchWorkerUiComponentsForCrdt(engine)
+    : touchDirtyWorkerUiComponentsForCrdt(engine, lastWorkerUiFingerprint)
+  if (touched <= 0) {
+    log?.(
+      `[sceneWorker] ui fingerprint changed without transport touch — fp=${prevLen}→${fingerprint.length}B`
+    )
+    return false
+  }
+  log?.(`[sceneWorker] ui fingerprint flush — touched=${touched} fp=${prevLen}→${fingerprint.length}B`)
+  return true
+}
+
+/** Phase 4 — after transport emit tick. */
+export function commitSceneUiCrdtBaseline(engine: IEngine): void {
+  lastWorkerUiFingerprint = computeWorkerUiFingerprint(engine)
+}
+
+/** @deprecated Use planSceneUiCrdtEmit + scheduler tick phases. */
+export async function flushWorkerSceneUiAfterEngineTick(
+  engine: IEngine,
+  log?: (message: string) => void
+): Promise<boolean> {
+  if (!planSceneUiCrdtEmit(engine, log)) return false
+  try {
+    await engine.update(0)
+    commitSceneUiCrdtBaseline(engine)
+    return true
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    log?.(`[sceneWorker] ui fingerprint flush failed — ${msg || 'unknown error'}`)
+    return false
+  }
+}
+
+export { DEFERRED_UI_SYSTEM_NAMES }

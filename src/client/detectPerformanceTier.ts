@@ -14,7 +14,8 @@ export function resolveEngineTickIntervalMs(tier: PerformanceTier): number {
   }
   if (tier === 'low') return 100
   if (tier === 'medium') return 66
-  return 100
+  // Match camera-operator Math.max(16, dt*1000) — ~60Hz engine integration in Explorer.
+  return 16
 }
 
 function readPerfOverride(): PerformanceTier | null {

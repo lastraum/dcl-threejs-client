@@ -1,8 +1,8 @@
 import type { Entity } from '@dcl/ecs'
 import * as THREE from 'three'
 import type { PBRaycast } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/raycast.gen'
-import type { MirrorComponents } from '../bridge/mirrorComponents'
-import { dclToThreePos, dclToThreeVec, threeToDclPos, threeToDclVec } from '../bridge/dclTransform'
+import { dclToThreePos, threeToDclPos, threeToDclVec } from '../bridge/dclTransform'
+import type { EntityWorldTransformDeps } from '../transform/entityWorldTransform'
 import { composeTriggerWorldMatrix } from './triggerAreaMath'
 
 const _worldMatrix = new THREE.Matrix4()
@@ -20,11 +20,9 @@ export type SceneRay = {
 export function buildSceneRay(
   entity: Entity,
   raycast: PBRaycast,
-  Transform: MirrorComponents['Transform'],
-  view: { RootEntity: Entity },
-  nodes: Map<Entity, THREE.Group>
+  deps: EntityWorldTransformDeps
 ): SceneRay | null {
-  if (!composeTriggerWorldMatrix(entity, Transform, view, nodes, _worldMatrix, 'three')) {
+  if (!composeTriggerWorldMatrix(entity, deps, _worldMatrix)) {
     return null
   }
 
@@ -46,10 +44,7 @@ export function buildSceneRay(
     }
     case 'globalDirection': {
       const global = direction.globalDirection
-      directionThree = dclToThreeVec(
-        new THREE.Vector3(global.x, global.y, global.z),
-        new THREE.Vector3()
-      ).normalize()
+      directionThree = dclToThreePos(global.x, global.y, global.z, new THREE.Vector3()).normalize()
       break
     }
     case 'globalTarget': {
@@ -60,7 +55,7 @@ export function buildSceneRay(
     }
     case 'targetEntity': {
       const targetEntity = direction.targetEntity as Entity
-      if (!composeTriggerWorldMatrix(targetEntity, Transform, view, nodes, _worldMatrix, 'three')) {
+      if (!composeTriggerWorldMatrix(targetEntity, deps, _worldMatrix)) {
         return null
       }
       _target.setFromMatrixPosition(_worldMatrix)

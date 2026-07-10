@@ -10,12 +10,14 @@ import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { buildRaycastResult, hitFromCollider, putRaycastResult } from './raycastEmit'
 import { buildSceneRay, raycastRequestKey, type SceneRay } from './raycastMath'
 import { isRaycastVerbose } from './raycastConfig'
+import type { EntityWorldTransformDeps } from '../transform/entityWorldTransform'
 
 type RaycastDeps = {
   ecs: MirrorComponents
   view: ProjectionView
   collision: CollisionSystem
   getEntityNodes: () => Map<Entity, THREE.Group>
+  getWorldTransformDeps: () => EntityWorldTransformDeps | null
   recordLww?: (componentId: number, entity: Entity, value: unknown) => void
 }
 
@@ -51,7 +53,8 @@ export class RaycastSystem {
   sync(tickNumber: number): void {
     if (!this.deps) return
     const { ecs, view, collision } = this.deps
-    const nodes = this.deps.getEntityNodes()
+    const worldDeps = this.deps.getWorldTransformDeps()
+    if (!worldDeps) return
 
     for (const [entity, spec] of view.getEntitiesWith(ecs.Raycast)) {
       if (
@@ -70,7 +73,7 @@ export class RaycastSystem {
         continue
       }
 
-      const ray = buildSceneRay(entity, raycast, ecs.Transform, view, nodes)
+      const ray = buildSceneRay(entity, raycast, worldDeps)
       let hits: RaycastHit[] = []
       if (raycast.queryType !== RQT_NONE && ray) {
         hits = this.castRay(collision, ray, raycast)

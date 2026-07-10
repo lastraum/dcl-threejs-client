@@ -16,6 +16,30 @@ export interface ProjectionNetworkDefs {
   networkParent: { componentId: number }
 }
 
+/** Worker-owned scene UI LWW ids — pointer mount batch may force-apply over stale timestamps. */
+export const WORKER_OWNED_UI_COMPONENT_IDS = new Set([
+  1050, // UiTransform
+  1052, // UiBackground
+  1053, // UiText
+  1093, // UiInput
+  1094, // UiDropdown
+  1062 // PointerEvents
+])
+
+/** Commit MainCamera.virtualCameraEntity only once target VC is hydrated on projection. */
+export type VirtualCameraProjectionGate = {
+  cameraEntity: Entity
+  mainCameraComponentId: number
+  virtualCameraComponentId: number
+}
+
+type PendingMainCameraBind = {
+  entity: Entity
+  componentId: number
+  timestamp: number
+  value: unknown
+}
+
 /**
  * Phase 1 typed CRDT projection (REARCHITECTURE_PLAN.md §5.1).
  *
@@ -49,11 +73,16 @@ interface ComponentMeta {
   serialize?: (value: unknown, writer: ReadWriteByteBuffer) => void
 }
 
+/** Live VC pose lane — outranks async worker CRDT during MOVE CAMERA flight. */
+const VC_LIVE_TS_BASE = 10_000_000_000
+
 export class CrdtProjection {
   /** componentId → (entity → latest decoded value). */
   readonly components = new Map<number, Map<Entity, unknown>>()
   /** componentId → (entity → last applied Lamport timestamp). */
   private readonly timestamps = new Map<number, Map<Entity, number>>()
+  private vcLiveSeq = 0
+  private vcLiveEntity: Entity | null = null
   private readonly meta = new Map<number, ComponentMeta>()
   private readonly deletedEntities = new Set<Entity>()
   /** Change set for the most recent `applyIncoming` (cleared on each call). */
@@ -65,11 +94,16 @@ export class CrdtProjection {
   private readonly networkParentId: number | null
   /** Renderer-owned entities — inbound worker Transform must not overwrite (spawn snap). */
   private readonly reservedEntities: ReadonlySet<Entity>
+  private readonly virtualCameraGate: VirtualCameraProjectionGate | null
+  private pendingMainCameraBind: PendingMainCameraBind | null = null
+  /** Pointer uiEntities batch — recycled entity ids must not lose to pre-clear stale LWW rows. */
+  private forceWorkerUiPuts = false
 
   constructor(
     components: MirrorComponents,
     network?: ProjectionNetworkDefs,
-    reservedEntities?: ReadonlySet<Entity>
+    reservedEntities?: ReadonlySet<Entity>,
+    virtualCameraGate?: VirtualCameraProjectionGate
   ) {
   for (const def of Object.values(components)) {
     if (!def?.componentId) continue
@@ -88,6 +122,7 @@ export class CrdtProjection {
     this.networkEntityId = network?.networkEntity?.componentId ?? null
     this.networkParentId = network?.networkParent?.componentId ?? null
     this.reservedEntities = reservedEntities ?? new Set()
+    this.virtualCameraGate = virtualCameraGate ?? null
     // The engine's CRDT system stores NetworkEntity/NetworkParent (built-in components) so
     // it can detect network-parented entities on receive. Register them here too — but as
     // raw passthrough (no typed schema): we only need presence, not the decoded value.
@@ -108,6 +143,33 @@ export class CrdtProjection {
     while (msg) {
       this.applyMessage(msg)
       msg = readMessage(buf)
+    }
+    this.flushPendingMainCameraBindInternal()
+  }
+
+  /** Pointer atomic UI chunk — ignore stale LWW timestamps for worker-owned Ui* PUTs. */
+  beginForceWorkerUiPuts(): void {
+    this.forceWorkerUiPuts = true
+  }
+
+  endForceWorkerUiPuts(): void {
+    this.forceWorkerUiPuts = false
+  }
+
+  /**
+   * Pointer phase 4 structured mount — store decoded values directly (no wire deserialize).
+   * Call under beginForceWorkerUiPuts; records changes for foldProjectionChanges.
+   */
+  applyWorkerUiMountSnapshot(
+    rows: readonly { entity: Entity; componentId: number; value: unknown }[]
+  ): void {
+    const tsBase = 1_000_000
+    let seq = 0
+    for (const row of rows) {
+      if (!WORKER_OWNED_UI_COMPONENT_IDS.has(row.componentId)) continue
+      if (!this.meta.has(row.componentId)) continue
+      this.deletedEntities.delete(row.entity)
+      this.storeComponentPut(row.entity, row.componentId, tsBase + ++seq, row.value)
     }
   }
 
@@ -139,14 +201,17 @@ export class CrdtProjection {
     // DCL recycles entity ids after DELETE_ENTITY — next PUT revives the slot (campfire sprite pool, etc.).
     this.deletedEntities.delete(entity)
     if (componentId === this.transformId && this.reservedEntities.has(entity)) return
+    if (this.shouldRejectStaleInboundVcTransform(entity, componentId, timestamp)) return
     const meta = this.meta.get(componentId)
     if (!meta) return
 
     const tsMap = this.timestamps.get(componentId)!
     const existing = tsMap.get(entity)
+    const forceUi =
+      this.forceWorkerUiPuts && WORKER_OWNED_UI_COMPONENT_IDS.has(componentId)
     // LWW: only a single worker writes scene components, so timestamps are
     // monotonic per (entity, component). Reject strictly-older messages.
-    if (existing !== undefined && timestamp < existing) return
+    if (!forceUi && existing !== undefined && timestamp < existing) return
 
     // Replicate the engine's receive-side `fixTransformParent` (crdt/index.js): a
     // network-parented entity's incoming Transform has its parent stripped (the wire
@@ -156,10 +221,82 @@ export class CrdtProjection {
     const effectiveData =
       componentId === this.transformId && this.hasNetworkParent(entity) ? fixTransformParent({ data } as never) : data
 
-    const value = meta.deserialize(new ReadWriteByteBuffer(effectiveData))
+    let value: unknown
+    try {
+      value = meta.deserialize(new ReadWriteByteBuffer(effectiveData))
+    } catch {
+      return
+    }
+
+    if (this.shouldDeferMainCameraPut(entity, componentId, value)) {
+      this.pendingMainCameraBind = { entity, componentId, timestamp, value }
+      return
+    }
+
+    this.storeComponentPut(entity, componentId, timestamp, value)
+
+    if (
+      componentId === this.transformId ||
+      componentId === this.virtualCameraGate?.virtualCameraComponentId
+    ) {
+      this.flushPendingMainCameraBindInternal()
+    }
+  }
+
+  private storeComponentPut(entity: Entity, componentId: number, timestamp: number, value: unknown): void {
+    const tsMap = this.timestamps.get(componentId)!
     tsMap.set(entity, timestamp)
     this.components.get(componentId)!.set(entity, value)
     this.changes.push({ entity, componentId, kind: 'put' })
+  }
+
+  private isMainCameraOnCameraEntity(entity: Entity, componentId: number): boolean {
+    const gate = this.virtualCameraGate
+    return gate != null && entity === gate.cameraEntity && componentId === gate.mainCameraComponentId
+  }
+
+  private virtualCameraTargetFromMain(value: unknown): Entity | null {
+    const target = (value as { virtualCameraEntity?: number | null } | null)?.virtualCameraEntity
+    if (target === undefined || target === null) return null
+    return target as Entity
+  }
+
+  private isVirtualCameraTargetHydrated(target: Entity): boolean {
+    const gate = this.virtualCameraGate
+    if (!gate) return true
+    return (
+      this.has(this.transformId, target) && this.has(gate.virtualCameraComponentId, target)
+    )
+  }
+
+  private shouldDeferMainCameraPut(entity: Entity, componentId: number, value: unknown): boolean {
+    if (!this.isMainCameraOnCameraEntity(entity, componentId)) return false
+    const target = this.virtualCameraTargetFromMain(value)
+    if (target === null) {
+      this.pendingMainCameraBind = null
+      return false
+    }
+    return !this.isVirtualCameraTargetHydrated(target)
+  }
+
+  private shouldDeferMainCameraRendererValue(entity: Entity, componentId: number, value: unknown): boolean {
+    return this.shouldDeferMainCameraPut(entity, componentId, value)
+  }
+
+  private flushPendingMainCameraBindInternal(): void {
+    const pending = this.pendingMainCameraBind
+    if (!pending) return
+    const target = this.virtualCameraTargetFromMain(pending.value)
+    if (target !== null && !this.isVirtualCameraTargetHydrated(target)) return
+    this.pendingMainCameraBind = null
+    this.storeComponentPut(pending.entity, pending.componentId, pending.timestamp, pending.value)
+  }
+
+  private clearPendingMainCameraBindForEntity(entity: Entity): void {
+    const pending = this.pendingMainCameraBind
+    if (!pending) return
+    const target = this.virtualCameraTargetFromMain(pending.value)
+    if (target === entity) this.pendingMainCameraBind = null
   }
 
   /** True when `entity` carries both NetworkEntity and NetworkParent (engine network entity). */
@@ -179,6 +316,11 @@ export class CrdtProjection {
     const existing = tsMap.get(entity)
     if (existing !== undefined && timestamp < existing) return
 
+    if (this.isMainCameraOnCameraEntity(entity, componentId)) {
+      this.pendingMainCameraBind = null
+    }
+    this.clearPendingMainCameraBindForEntity(entity)
+
     tsMap.set(entity, timestamp)
     if (this.components.get(componentId)!.delete(entity)) {
       this.changes.push({ entity, componentId, kind: 'delete' })
@@ -186,6 +328,7 @@ export class CrdtProjection {
   }
 
   private deleteEntity(entity: Entity): void {
+    this.clearPendingMainCameraBindForEntity(entity)
     this.deletedEntities.add(entity)
     for (const [componentId, map] of this.components) {
       if (map.delete(entity)) {
@@ -202,13 +345,91 @@ export class CrdtProjection {
    * against the scene's). Does NOT push to `changes` — renderer writes are not part of
    * the inbound scene diff (the diff consumer handles tween/reserved separately).
    */
+  /**
+   * Worker→main live VC Transform (MOVE CAMERA flight). High monotonic timestamps
+   * beat async inbound CRDT so lens/gizmo stay aligned between engine ticks.
+   */
+  setVcLiveTransform(entity: Entity, value: unknown): void {
+    if (this.deletedEntities.has(entity)) return
+    const map = this.components.get(this.transformId)
+    if (!map) return
+
+    const ts = VC_LIVE_TS_BASE + ++this.vcLiveSeq
+    const tsMap = this.timestamps.get(this.transformId)!
+    tsMap.set(entity, ts)
+    map.set(entity, value)
+    this.vcLiveEntity = entity
+  }
+
+  /** Drop live-lane priority when MainCamera.virtualCameraEntity clears. */
+  clearVcLiveTransformForUnbind(): void {
+    if (this.vcLiveEntity !== null) {
+      this.clearVcLiveTransform(this.vcLiveEntity)
+    }
+  }
+
+  /** Drop live-lane priority so inbound worker Transform can apply again (VIEW SHOT unbind). */
+  clearVcLiveTransform(entity: Entity): void {
+    const tsMap = this.timestamps.get(this.transformId)
+    if (!tsMap) return
+    const ts = tsMap.get(entity) ?? 0
+    if (ts >= VC_LIVE_TS_BASE) {
+      tsMap.set(entity, ts - VC_LIVE_TS_BASE)
+    }
+    if (this.vcLiveEntity === entity) this.vcLiveEntity = null
+  }
+
+  private getBoundVirtualCameraEntity(): Entity | null {
+    const gate = this.virtualCameraGate
+    if (!gate) return null
+    const main = this.get(gate.mainCameraComponentId, gate.cameraEntity) as
+      | { virtualCameraEntity?: number | null }
+      | undefined
+    const vc = main?.virtualCameraEntity
+    return vc === undefined || vc === null ? null : (vc as Entity)
+  }
+
+  private shouldRejectStaleInboundVcTransform(
+    entity: Entity,
+    componentId: number,
+    timestamp: number
+  ): boolean {
+    if (componentId !== this.transformId) return false
+    const bound = this.getBoundVirtualCameraEntity()
+    if (bound === null || entity !== bound) {
+      if (this.vcLiveEntity === entity) this.vcLiveEntity = null
+      return false
+    }
+    const liveTs = this.timestamps.get(this.transformId)?.get(entity) ?? 0
+    return liveTs >= VC_LIVE_TS_BASE && timestamp < liveTs
+  }
+
   setRenderer(componentId: number, entity: Entity, value: unknown): void {
     if (this.deletedEntities.has(entity)) return
     const map = this.components.get(componentId)
     if (!map) return
+
+    if (this.shouldDeferMainCameraRendererValue(entity, componentId, value)) {
+      const tsMap = this.timestamps.get(componentId)!
+      this.pendingMainCameraBind = {
+        entity,
+        componentId,
+        timestamp: (tsMap.get(entity) ?? 0) + 1,
+        value
+      }
+      return
+    }
+
     const tsMap = this.timestamps.get(componentId)!
     tsMap.set(entity, (tsMap.get(entity) ?? 0) + 1)
     map.set(entity, value)
+
+    if (
+      componentId === this.transformId ||
+      componentId === this.virtualCameraGate?.virtualCameraComponentId
+    ) {
+      this.flushPendingMainCameraBindInternal()
+    }
   }
 
   /** Renderer-owned grow-only append. Stores the latest value (parity with inbound APPEND handling). */
@@ -224,9 +445,32 @@ export class CrdtProjection {
     return this.components.get(componentId)?.get(entity)
   }
 
+  /**
+   * Read path for renderer facades — includes a deferred MainCamera bind while the VC
+   * target is still hydrating (gate has not committed the PUT to the typed map yet).
+   */
+  getEffective(componentId: number, entity: Entity): unknown {
+    const pending = this.pendingMainCameraBind
+    const gate = this.virtualCameraGate
+    if (
+      pending &&
+      gate &&
+      entity === gate.cameraEntity &&
+      componentId === gate.mainCameraComponentId
+    ) {
+      return pending.value
+    }
+    return this.get(componentId, entity)
+  }
+
   /** Whether the entity currently has a value for the component. */
   has(componentId: number, entity: Entity): boolean {
-    return this.components.get(componentId)?.has(entity) ?? false
+    return this.getEffective(componentId, entity) !== undefined
+  }
+
+  /** Commit a deferred MainCamera bind before encode / virtual-camera reads. */
+  flushPendingMainCameraBind(): void {
+    this.flushPendingMainCameraBindInternal()
   }
 
   /** Whether the entity is between DELETE_ENTITY and the next inbound PUT (id may be recycled). */
@@ -277,6 +521,43 @@ export class CrdtProjection {
       }
     }
     return buf
+  }
+
+  /**
+   * Clear LWW rows + timestamps for recycled UI entity ids before a bulk mount open.
+   * Stale main timestamps from prior pool cycles reject worker PUTs (projection 4/23).
+   */
+  clearLwwSlotsForEntities(entities: ReadonlySet<Entity>, componentIds: readonly number[]): void {
+    for (const componentId of componentIds) {
+      const map = this.components.get(componentId)
+      const tsMap = this.timestamps.get(componentId)
+      if (!map || !tsMap) continue
+      for (const entity of entities) {
+        map.delete(entity)
+        tsMap.delete(entity)
+      }
+    }
+  }
+
+  /** Drop decoded rows for entities outside the worker mount set (prevents ghost UiTransform round-trips). */
+  purgeEntitiesOutsideSet(
+    keepEntities: ReadonlySet<Entity>,
+    componentIds: readonly number[],
+    options?: { recordChanges?: boolean }
+  ): void {
+    const recordChanges = options?.recordChanges === true
+    for (const componentId of componentIds) {
+      const map = this.components.get(componentId)
+      if (!map) continue
+      for (const entity of [...map.keys()]) {
+        if (keepEntities.has(entity)) continue
+        map.delete(entity)
+        this.timestamps.get(componentId)?.delete(entity)
+        if (recordChanges) {
+          this.changes.push({ entity, componentId, kind: 'delete' })
+        }
+      }
+    }
   }
 
   /** Count of distinct non-reserved entities currently carrying a Transform (boot `hasEntities` gate). */

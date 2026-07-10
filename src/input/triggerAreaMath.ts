@@ -1,11 +1,9 @@
-import type { Entity } from '@dcl/ecs'
 import * as THREE from 'three'
-import type { MirrorComponents } from '../bridge/mirrorComponents'
+import type { Entity } from '@dcl/ecs'
 import {
-  dclToThreePos,
-  dclToThreeQuat,
-  type DclTransformValues
-} from '../bridge/dclTransform'
+  resolveEntityWorldMatrix,
+  type EntityWorldTransformDeps
+} from '../transform/entityWorldTransform'
 
 /** Matches `TriggerAreaMeshType.TAMT_SPHERE`. */
 export const TRIGGER_MESH_SPHERE = 1
@@ -15,10 +13,7 @@ export const PLAYER_PROBE_HEIGHTS_DCL = [0, 0.55, 1.1] as const
 
 const _inv = new THREE.Matrix4()
 const _local = new THREE.Vector3()
-const _compose = new THREE.Matrix4()
 const _pos = new THREE.Vector3()
-const _quat = new THREE.Quaternion()
-const _scale = new THREE.Vector3()
 
 /** Unit box/sphere in entity local space (DCL default trigger primitives). */
 export function isPointInsideTriggerLocal(local: THREE.Vector3, mesh: number): boolean {
@@ -49,100 +44,37 @@ export function isPointInsideTriggerVolume(
   return isPointInsideTriggerMatrix(worldPoint, triggerNode.matrixWorld, mesh)
 }
 
-function composeTransformMatrixDcl(t: DclTransformValues, out: THREE.Matrix4): void {
-  _pos.set(t.position.x, t.position.y, t.position.z)
-  _quat.set(t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w)
-  _scale.set(t.scale.x, t.scale.y, t.scale.z)
-  out.compose(_pos, _quat, _scale)
-}
-
-function composeTransformMatrixThree(t: DclTransformValues, out: THREE.Matrix4): void {
-  dclToThreePos(t.position.x, t.position.y, t.position.z, _pos)
-  dclToThreeQuat(t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w, _quat)
-  _scale.set(t.scale.x, t.scale.y, t.scale.z)
-  out.compose(_pos, _quat, _scale)
-}
-
-function collectTransformChain(
-  entity: Entity,
-  Transform: MirrorComponents['Transform'],
-  view: { RootEntity: Entity }
-): Entity[] {
-  const chain: Entity[] = []
-  let current: Entity | undefined = entity
-  const seen = new Set<Entity>()
-  while (current !== undefined && current !== view.RootEntity && !seen.has(current)) {
-    seen.add(current)
-    chain.push(current)
-    const tr = Transform.getOrNull(current)
-    if (!tr?.parent || tr.parent === view.RootEntity || tr.parent === 0) break
-    current = tr.parent as Entity
-  }
-  chain.reverse()
-  return chain
-}
-
 /**
  * World matrix from projection CRDT transforms in **DCL scene space** (Tier A default).
  * Matches SDK TriggerArea semantics — do not mix with Three.js display reflection.
  */
 export function composeTriggerWorldMatrixDcl(
   entity: Entity,
-  Transform: MirrorComponents['Transform'],
-  view: { RootEntity: Entity },
+  deps: EntityWorldTransformDeps,
   out: THREE.Matrix4
 ): boolean {
-  const chain = collectTransformChain(entity, Transform, view)
-  if (!chain.length) return false
-  out.identity()
-  for (const e of chain) {
-    composeTransformMatrixDcl(Transform.get(e) as DclTransformValues, _compose)
-    out.multiply(_compose)
-  }
-  return true
-}
-
-function composeTransformMatrix(
-  t: DclTransformValues,
-  out: THREE.Matrix4,
-  space: 'dcl' | 'three'
-): void {
-  if (space === 'dcl') composeTransformMatrixDcl(t, out)
-  else composeTransformMatrixThree(t, out)
+  return resolveEntityWorldMatrix(entity, deps, { space: 'dcl', out }) !== null
 }
 
 /**
- * World matrix for a trigger entity — prefers the live scene-graph node, falls back to
- * projection Transform parent chain (store nodes can lag behind CRDT during spawn).
+ * World matrix for a trigger entity in Three.js display space — prefers the live scene-graph
+ * node, falls back to projection Transform parent chain (store nodes can lag behind CRDT during spawn).
  */
 export function composeTriggerWorldMatrix(
   entity: Entity,
-  Transform: MirrorComponents['Transform'],
-  view: { RootEntity: Entity },
-  nodes: Map<Entity, THREE.Group>,
-  out: THREE.Matrix4,
-  space: 'dcl' | 'three' = 'three'
+  deps: EntityWorldTransformDeps,
+  out: THREE.Matrix4
 ): boolean {
-  const node = nodes.get(entity)
-  if (node && space === 'three') {
-    node.updateWorldMatrix(true, false)
-    out.copy(node.matrixWorld)
-    return true
-  }
-
-  const chain = collectTransformChain(entity, Transform, view)
-  if (!chain.length) return false
-  out.identity()
-  for (const e of chain) {
-    composeTransformMatrix(Transform.get(e) as DclTransformValues, _compose, space)
-    out.multiply(_compose)
-  }
-  return true
+  return resolveEntityWorldMatrix(entity, deps, { space: 'three', out }) !== null
 }
 
 /** True when any vertical probe at the player's DCL Transform origin is inside the volume. */
 export function isPlayerInsideTriggerDcl(
-  playerTransform: DclTransformValues,
+  playerTransform: {
+    position: { x: number; y: number; z: number }
+    rotation: { x: number; y: number; z: number; w: number }
+    scale: { x: number; y: number; z: number }
+  },
   worldMatrix: THREE.Matrix4,
   mesh: number,
   probeHeights: readonly number[] = PLAYER_PROBE_HEIGHTS_DCL

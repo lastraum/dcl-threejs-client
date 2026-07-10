@@ -1,8 +1,12 @@
 import { isClientOverlayTarget } from '../client/ui/overlayHitTest'
+import type { SceneKeyboardSnapshot } from '../input/SceneInputRelay'
+import { isPointerOverSceneUi, isSceneUiInteractiveTarget } from '../ui/scene/sceneUiOverlay'
+import { isSceneUiTypingFocus } from '../ui/scene/sceneUiTyping'
 
 /** Keyboard + pointer-lock input for DCL-style third-person camera. */
 export class PlayerInput {
   readonly keys = { w: false, a: false, s: false, d: false, space: false, shift: false, ctrl: false }
+  readonly actionKeys = { digit1: false, digit2: false, digit3: false, digit4: false }
   readonly pointer = { locked: false, dx: 0, dy: 0 }
   scrollDelta = 0
   pinchZoomDelta = 0
@@ -16,6 +20,7 @@ export class PlayerInput {
   private lastPointerY = 0
   private readonly activePointers = new Map<number, { x: number; y: number }>()
   private lastPinchSpan = 0
+  private isLocomotionBlocked: () => boolean = () => false
 
   constructor(private readonly canvas: HTMLElement) {
     window.addEventListener('keydown', this.onKeyDown)
@@ -61,6 +66,33 @@ export class PlayerInput {
     return this.pointer.locked || this.orbiting
   }
 
+  /** Snapshot for SceneInputRelay — avatar InputModifier does not gate this path. */
+  getSceneKeyboardSnapshot(): SceneKeyboardSnapshot {
+    return {
+      forward: this.keys.w,
+      backward: this.keys.s,
+      left: this.keys.a,
+      right: this.keys.d,
+      jump: this.keys.space,
+      ctrl: this.keys.ctrl,
+      action3: this.actionKeys.digit1,
+      action4: this.actionKeys.digit2,
+      action5: this.actionKeys.digit3,
+      action6: this.actionKeys.digit4
+    }
+  }
+
+  /** Scene InputModifier on PlayerEntity — block avatar WASD while creator/camera UI is active. */
+  setLocomotionBlocked(fn: () => boolean): void {
+    this.isLocomotionBlocked = fn
+  }
+
+  /** Block scene WASD relay only while typing in a scene UI field or client overlay. */
+  isSceneRelayBlocked(): boolean {
+    if (this.isOverlayOpen()) return true
+    return isSceneUiTypingFocus()
+  }
+
   setOnUserGestureUnlock(callback: () => void): void {
     this.onUserGestureUnlock = callback
     if (this.userGestureUnlocked) callback()
@@ -74,6 +106,7 @@ export class PlayerInput {
 
   private onKeyDown = (e: KeyboardEvent) => {
     if (this.isTypingTarget() || this.isOverlayOpen()) return
+    if (this.isLocomotionBlocked() && this.isMoveKeyCode(e.code)) return
 
     if (this.setMoveKey(e.code, true)) e.preventDefault()
 
@@ -87,6 +120,7 @@ export class PlayerInput {
       this.keys.ctrl = true
       e.preventDefault()
     }
+    this.setActionKey(e.code, true)
 
     if (e.code === 'Tab') {
       e.preventDefault()
@@ -99,10 +133,16 @@ export class PlayerInput {
   }
 
   private onKeyUp = (e: KeyboardEvent) => {
+    if (this.isTypingTarget() || this.isOverlayOpen()) return
+    if (this.isLocomotionBlocked() && this.isMoveKeyCode(e.code)) {
+      this.setMoveKey(e.code, false)
+      return
+    }
     this.setMoveKey(e.code, false)
     if (e.code === 'Space') this.keys.space = false
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') this.keys.shift = false
     if (e.code === 'ControlLeft' || e.code === 'ControlRight') this.keys.ctrl = false
+    this.setActionKey(e.code, false)
   }
 
   private onLockChange = () => {
@@ -149,6 +189,7 @@ export class PlayerInput {
 
   private onPointerDown = (e: PointerEvent) => {
     if (isClientOverlayTarget(e.target)) return
+    if (isSceneUiInteractiveTarget(e.target) || isPointerOverSceneUi(e.clientX, e.clientY)) return
     if (e.target !== this.canvas) return
     if (this.isOverlayOpen()) return
 
@@ -220,6 +261,7 @@ export class PlayerInput {
   }
 
   private onWheel = (e: WheelEvent) => {
+    if (isPointerOverSceneUi(e.clientX, e.clientY)) return
     e.preventDefault()
     this.scrollDelta += e.deltaY
   }
@@ -229,6 +271,7 @@ export class PlayerInput {
   }
 
   private isTypingTarget(): boolean {
+    if (isSceneUiTypingFocus()) return true
     const el = document.activeElement
     if (!el || el === this.canvas) return false
     if (el instanceof HTMLInputElement) {
@@ -244,7 +287,7 @@ export class PlayerInput {
     return document.querySelector('.settings-overlay.is-open') !== null
   }
 
-  private clearMovementKeys(): void {
+  clearMovementKeys(): void {
     this.keys.w = false
     this.keys.a = false
     this.keys.s = false
@@ -252,7 +295,24 @@ export class PlayerInput {
     this.keys.space = false
     this.keys.shift = false
     this.keys.ctrl = false
+    this.actionKeys.digit1 = false
+    this.actionKeys.digit2 = false
+    this.actionKeys.digit3 = false
+    this.actionKeys.digit4 = false
     this.spacePressed = false
+  }
+
+  private isMoveKeyCode(code: string): boolean {
+    return (
+      code === 'KeyW' ||
+      code === 'KeyA' ||
+      code === 'KeyS' ||
+      code === 'KeyD' ||
+      code === 'ArrowUp' ||
+      code === 'ArrowDown' ||
+      code === 'ArrowLeft' ||
+      code === 'ArrowRight'
+    )
   }
 
   /** WASD + arrow keys → movement vector. Returns true if code is a move key. */
@@ -273,6 +333,29 @@ export class PlayerInput {
       case 'KeyD':
       case 'ArrowRight':
         this.keys.d = down
+        return true
+      default:
+        return false
+    }
+  }
+
+  private setActionKey(code: string, down: boolean): boolean {
+    switch (code) {
+      case 'Digit1':
+      case 'Numpad1':
+        this.actionKeys.digit1 = down
+        return true
+      case 'Digit2':
+      case 'Numpad2':
+        this.actionKeys.digit2 = down
+        return true
+      case 'Digit3':
+      case 'Numpad3':
+        this.actionKeys.digit3 = down
+        return true
+      case 'Digit4':
+      case 'Numpad4':
+        this.actionKeys.digit4 = down
         return true
       default:
         return false

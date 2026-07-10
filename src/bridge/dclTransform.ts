@@ -69,6 +69,41 @@ export function dclBoundsToThreeDisplay(bounds: SceneWorldBounds): SceneWorldBou
   }
 }
 
+/** DCL entities face +Z; Three.js PerspectiveCamera looks down -Z (self-inverse). */
+const _ENTITY_TO_CAMERA_YAW = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI)
+
+/** DCL entity world rotation → Three.js camera quaternion (display space). */
+export function dclEntityQuatToThreeCameraQuat(
+  x: number,
+  y: number,
+  z: number,
+  w: number,
+  out = new THREE.Quaternion()
+): THREE.Quaternion {
+  dclToThreeQuat(x, y, z, w, out)
+  return out.multiply(_ENTITY_TO_CAMERA_YAW)
+}
+
+/**
+ * Entity orientation already in Three.js display space (e.g. {@link resolveEntityWorldPose})
+ * → camera quaternion. Do not pass through {@link dclToThreeQuat} again.
+ */
+export function entityDisplayQuatToThreeCameraQuat(
+  entityQuat: THREE.Quaternion,
+  out = new THREE.Quaternion()
+): THREE.Quaternion {
+  return out.copy(entityQuat).multiply(_ENTITY_TO_CAMERA_YAW)
+}
+
+/** Three.js camera quaternion → DCL entity rotation (display space). */
+export function threeCameraQuatToDclEntityQuat(
+  q: THREE.Quaternion,
+  out = new THREE.Quaternion()
+): THREE.Quaternion {
+  out.copy(q).multiply(_ENTITY_TO_CAMERA_YAW)
+  return threeToDclQuat(out, out)
+}
+
 /** Yaw around world up — negates under X reflection. */
 export function dclYawToThreeYaw(yaw: number): number {
   return -yaw

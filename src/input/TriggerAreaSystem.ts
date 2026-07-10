@@ -24,11 +24,13 @@ import {
   isPlayerInsideTriggerDcl,
   TRIGGER_MESH_SPHERE
 } from './triggerAreaMath'
+import type { EntityWorldTransformDeps } from '../transform/entityWorldTransform'
 
 type TriggerDeps = {
   ecs: MirrorComponents
   view: ProjectionView
   getEntityNodes: () => Map<Entity, THREE.Group>
+  getWorldTransformDeps: () => EntityWorldTransformDeps | null
   getPlayerWorldPosition: () => THREE.Vector3 | null
   getPhysics?: () => PhysXWorld | null
   recordAppend?: (componentId: number, entity: Entity, value: unknown) => void
@@ -153,11 +155,12 @@ export class TriggerAreaSystem {
     out: Set<Entity>
   ): void {
     if (!this.deps) return
-    const { ecs, view } = this.deps
+    const worldDeps = this.deps.getWorldTransformDeps()
+    if (!worldDeps) return
     out.clear()
     for (const vol of this.volumes) {
       if ((vol.collisionMask & LOCAL_PLAYER_LAYERS) === 0) continue
-      if (!composeTriggerWorldMatrixDcl(vol.entity, ecs.Transform, view, this._worldMatrix)) {
+      if (!composeTriggerWorldMatrixDcl(vol.entity, worldDeps, this._worldMatrix)) {
         continue
       }
       if (isPlayerInsideTriggerDcl(playerTransform, this._worldMatrix, vol.mesh)) {
@@ -175,17 +178,19 @@ export class TriggerAreaSystem {
     inside: Set<Entity>
   ): void {
     if (!this.verbose || !this.deps) return
+    const worldDeps = this.deps.getWorldTransformDeps()
+    if (!worldDeps) return
     const now = performance.now()
     if (now - this.lastVerboseProbeAt < 3_000) return
     this.lastVerboseProbeAt = now
-    const { ecs, view } = this.deps
+    const { ecs } = this.deps
     const p = playerTransform.position
     const parts: string[] = []
     for (const vol of this.volumes) {
       const t = ecs.Transform.getOrNull(vol.entity)
       const pos = t?.position
       const hasNode = nodes.has(vol.entity)
-      const hasMatrix = composeTriggerWorldMatrixDcl(vol.entity, ecs.Transform, view, this._worldMatrix)
+      const hasMatrix = composeTriggerWorldMatrixDcl(vol.entity, worldDeps, this._worldMatrix)
       parts.push(
         `e${vol.entity} mask=${vol.collisionMask} ` +
           `@${pos ? `${pos.x.toFixed(1)},${pos.y.toFixed(1)},${pos.z.toFixed(1)}` : 'no-t'} ` +

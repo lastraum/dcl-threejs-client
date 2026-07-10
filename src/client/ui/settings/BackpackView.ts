@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { SessionIdentity } from '../../../network/SessionIdentity'
+import { assetUrnFromCompleteUrn } from '../../../avatar/constants'
 import { AvatarAnimations } from '../../../avatar/AvatarAnimations'
 import { composeAvatarFromProfile } from '../../../avatar/AvatarComposer'
 import { disposeWearableInstance } from '../../../avatar/loadWearable'
@@ -36,8 +37,27 @@ import {
   getEquippedCustomAvatar,
   setEquippedCustomAvatar
 } from '../../../avatar/vrm/vrmEquipStorage'
+import { backpackCategoryIcon } from './backpackCategoryIcons'
+import {
+  filterBackpackWearables,
+  loadBackpackWearables,
+  loadEquippedWearablesByCategory,
+  mergeEquippedIntoInventory,
+  type BackpackWearableItem
+} from './backpackWearables'
+import {
+  equipWearableOnProfile,
+  isWearableEquipped,
+  unequipWearableFromProfile
+} from './profileWearableEquip'
+import {
+  guessWearableRarity,
+  wearableRarityBackground,
+  wearableRarityLabel,
+  WEARABLE_RARITY_COLORS
+} from '../profile/wearableThumb'
 
-type CategoryDef = { id: WearableCategory | 'all'; label: string; icon: string }
+type CategoryDef = { id: WearableCategory | 'all'; label: string }
 type BackpackSubTab = 'wearables' | 'emotes' | 'vrm' | 'osa'
 
 const OSA_GRID_COLUMNS = 3
@@ -49,34 +69,29 @@ type BackpackViewOptions = {
 }
 
 const CATEGORIES: CategoryDef[] = [
-  { id: 'all', label: 'All', icon: '∞' },
-  { id: 'body_shape', label: 'Body', icon: '👤' },
-  { id: 'hair', label: 'Hair', icon: '💇' },
-  { id: 'upper_body', label: 'Upper Body', icon: '👕' },
-  { id: 'lower_body', label: 'Lower Body', icon: '👖' },
-  { id: 'feet', label: 'Feet', icon: '👟' },
-  { id: 'helmet', label: 'Helmet', icon: '⛑️' },
-  { id: 'hat', label: 'Hat', icon: '🎩' },
-  { id: 'mask', label: 'Mask', icon: '🎭' },
-  { id: 'eyewear', label: 'Eyewear', icon: '👓' },
-  { id: 'earring', label: 'Earring', icon: '💎' },
-  { id: 'tiara', label: 'Tiara', icon: '👑' },
-  { id: 'top_head', label: 'Top Head', icon: '🎀' },
-  { id: 'facial_hair', label: 'Facial Hair', icon: '🧔' },
-  { id: 'eyebrows', label: 'Eyebrows', icon: '🤨' },
-  { id: 'mouth', label: 'Mouth', icon: '👄' },
-  { id: 'hands_wear', label: 'Handwear', icon: '🧤' }
+  { id: 'all', label: 'All' },
+  { id: 'body_shape', label: 'Body' },
+  { id: 'skin', label: 'Skin' },
+  { id: 'hair', label: 'Hair' },
+  { id: 'upper_body', label: 'Upper Body' },
+  { id: 'lower_body', label: 'Lower Body' },
+  { id: 'feet', label: 'Feet' },
+  { id: 'helmet', label: 'Helmet' },
+  { id: 'hat', label: 'Hat' },
+  { id: 'mask', label: 'Mask' },
+  { id: 'eyewear', label: 'Eyewear' },
+  { id: 'earring', label: 'Earring' },
+  { id: 'tiara', label: 'Tiara' },
+  { id: 'top_head', label: 'Top Head' },
+  { id: 'facial_hair', label: 'Facial Hair' },
+  { id: 'eyebrows', label: 'Eyebrows' },
+  { id: 'mouth', label: 'Mouth' },
+  { id: 'hands_wear', label: 'Handwear' }
 ]
 
-const RARITY_COLORS: Record<string, string> = {
-  legendary: '#ff8723',
-  epic: '#a335ee',
-  rare: '#00b4d8',
-  uncommon: '#57e389',
-  common: '#888'
-}
-
-const ITEMS_PER_PAGE = 16
+const ITEMS_PER_PAGE = 9
+const PREVIEW_ZOOM_MIN = 0.55
+const PREVIEW_ZOOM_MAX = 2.5
 
 export class BackpackView {
   readonly root: HTMLElement
@@ -86,7 +101,14 @@ export class BackpackView {
   private selectedCategory: WearableCategory | 'all' = 'all'
   private currentPage = 1
   private selectedItem: string | null = null
-  private wearableUrns: string[] = []
+  private wearableItems: BackpackWearableItem[] = []
+  private equippedByCategory = new Map<WearableCategory, BackpackWearableItem>()
+  private wearablesLoading = false
+  private wearablesError: string | null = null
+  private wearablesLoadGen = 0
+  private equippedLoadGen = 0
+  private searchQuery = ''
+  private previewZoom = 1
   private vrmLibrary: VrmLibraryEntry[] = []
   private selectedVrmHash: string | null = null
   private vrmUploadBusy = false
@@ -192,8 +214,10 @@ export class BackpackView {
 
     this.vrmFileInput = this.root.querySelector('.backpack-view__vrm-file-input')
     this.buildCategories()
-    this.loadWearables()
+    void this.loadWearables()
+    void this.loadEquippedWearables()
     this.initAvatarPreview()
+    this.wireWearablesSearch()
     this.wireSubTabs()
     this.wireVrmDropZone()
     this.wireMmlUrlImport()
@@ -226,10 +250,19 @@ export class BackpackView {
     })
   }
 
+  private wireWearablesSearch(): void {
+    const input = this.root.querySelector('.backpack-view__search') as HTMLInputElement | null
+    input?.addEventListener('input', () => {
+      this.searchQuery = input.value
+      this.currentPage = 1
+      if (this.activeSubTab === 'wearables') this.renderGrid()
+    })
+  }
+
   updateSession(session: SessionIdentity): void {
     this.session = session
-    this.loadWearables()
-    this.updateCategoryEquipped()
+    void this.loadWearables()
+    void this.loadEquippedWearables()
     void this.refreshVrmLibrary()
     if (this.activeSubTab === 'wearables') {
       void this.loadAvatarModel()
@@ -349,66 +382,192 @@ export class BackpackView {
 
   private buildCategories(): void {
     const container = this.root.querySelector('.backpack-view__categories')!
+    container.innerHTML = ''
     for (const cat of CATEGORIES) {
       const btn = document.createElement('button')
+      btn.type = 'button'
       btn.className =
-        'backpack-view__cat-btn' +
-        (cat.id === 'all' ? ' backpack-view__cat-btn--all is-active' : cat.id === this.selectedCategory ? ' is-active' : '')
+        'backpack-view__cat-row' +
+        (cat.id === 'all' ? ' backpack-view__cat-row--all' : '') +
+        (cat.id === this.selectedCategory ? ' is-active' : '')
       btn.dataset.category = cat.id
+      btn.title = cat.label
       btn.innerHTML = `
-        <div class="backpack-view__cat-thumb">${this.renderCategoryThumb(cat)}</div>
-        <span class="backpack-view__cat-label">${cat.label}</span>
+        <span class="backpack-view__cat-icon">${backpackCategoryIcon(cat.id)}</span>
+        <span class="backpack-view__cat-preview"></span>
       `
-      btn.addEventListener('click', () => {
-        this.selectedCategory = cat.id
-        this.currentPage = 1
-        container.querySelectorAll('.backpack-view__cat-btn').forEach((b) => b.classList.remove('is-active'))
+      this.applyCategoryPreview(btn, cat)
+      btn.addEventListener('click', (e) => {
+        container.querySelectorAll('.backpack-view__cat-row').forEach((b) => b.classList.remove('is-active'))
         btn.classList.add('is-active')
-        this.renderGrid()
+
+        const preview = btn.querySelector('.backpack-view__cat-preview')
+        const equipped = cat.id !== 'all' ? this.equippedByCategory.get(cat.id) : undefined
+        const clickedEquippedPreview =
+          !!equipped &&
+          !!preview &&
+          preview.classList.contains('backpack-view__cat-preview--equipped') &&
+          (e.target === preview || preview.contains(e.target as Node))
+
+        if (clickedEquippedPreview && cat.id !== 'all') {
+          this.focusEquippedInCategory(cat.id)
+        } else {
+          this.selectCategory(cat.id)
+        }
       })
       container.appendChild(btn)
     }
   }
 
-  private renderCategoryThumb(cat: CategoryDef): string {
+  private isSameWearableUrn(a: string | null | undefined, b: string | null | undefined): boolean {
+    if (!a || !b) return false
+    return assetUrnFromCompleteUrn(a) === assetUrnFromCompleteUrn(b)
+  }
+
+  private selectCategory(cat: WearableCategory | 'all'): void {
+    this.selectedCategory = cat
+    this.currentPage = 1
+    this.selectedItem = null
+    const detailEl = this.root.querySelector('.backpack-view__detail')!
+    detailEl.innerHTML = `<p class="backpack-view__detail-empty">No item selected</p>`
+    this.renderGrid()
+    this.updateCategoryEquipped()
+  }
+
+  /** Jump to the inventory page containing the equipped item and select it. */
+  private focusEquippedInCategory(cat: WearableCategory): void {
+    const equipped = this.equippedByCategory.get(cat)
+    if (!equipped) {
+      this.selectCategory(cat)
+      return
+    }
+
+    this.selectedCategory = cat
+    let items = filterBackpackWearables(this.wearableItems, cat, this.searchQuery)
+    let index = items.findIndex((i) => this.isSameWearableUrn(i.urn, equipped.urn))
+
+    if (index < 0) {
+      const invItem = this.wearableItems.find((i) => this.isSameWearableUrn(i.urn, equipped.urn))
+      if (invItem && invItem.category !== cat) {
+        invItem.category = cat
+        items = filterBackpackWearables(this.wearableItems, cat, this.searchQuery)
+        index = items.findIndex((i) => this.isSameWearableUrn(i.urn, equipped.urn))
+      }
+    }
+
+    const item = index >= 0 ? items[index]! : equipped
+
+    if (index >= 0) {
+      this.currentPage = Math.floor(index / ITEMS_PER_PAGE) + 1
+    } else {
+      this.currentPage = 1
+    }
+
+    this.selectedItem = item.urn
+    this.renderGrid()
+    this.renderWearableDetail(item)
+    this.updateCategoryEquipped()
+  }
+
+  private applyCategoryPreview(btn: Element, cat: CategoryDef): void {
+    const preview = btn.querySelector('.backpack-view__cat-preview') as HTMLElement | null
+    if (!preview) return
+
+    preview.className = 'backpack-view__cat-preview'
+    preview.style.removeProperty('--wearable-rarity-bg')
+    preview.style.removeProperty('--wearable-rarity-color')
+
     if (cat.id === 'all') {
-      return `<span class="backpack-view__cat-all-icon">${cat.icon}</span>`
+      preview.innerHTML = `<span class="backpack-view__cat-all-label">All</span>`
+      return
     }
-    const equippedUrn = this.getEquippedUrn(cat.id)
-    if (equippedUrn) {
-      return `<img class="backpack-view__cat-equipped" src="${this.getItemThumbnail(equippedUrn)}" alt="" loading="lazy" />`
+
+    const item = this.equippedByCategory.get(cat.id)
+    if (!item) {
+      preview.classList.add('backpack-view__cat-preview--empty')
+      preview.innerHTML = ''
+      return
     }
-    return `<span class="backpack-view__cat-slot-icon">${cat.icon}</span>`
+
+    const rarity = item.rarity || guessWearableRarity(item.urn)
+    preview.classList.add('backpack-view__cat-preview--equipped', `is-${rarity}`)
+    preview.style.setProperty('--wearable-rarity-bg', wearableRarityBackground(rarity))
+    preview.innerHTML = `<img class="backpack-view__cat-equipped" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" />`
+    if (this.isSameWearableUrn(item.urn, this.selectedItem)) {
+      preview.classList.add('is-selected')
+    }
   }
 
   private updateCategoryEquipped(): void {
     const container = this.root.querySelector('.backpack-view__categories')
     if (!container) return
     for (const cat of CATEGORIES) {
-      if (cat.id === 'all') continue
       const btn = container.querySelector(`[data-category="${cat.id}"]`)
       if (!btn) continue
-      const thumb = btn.querySelector('.backpack-view__cat-thumb')
-      if (thumb) thumb.innerHTML = this.renderCategoryThumb(cat)
+      this.applyCategoryPreview(btn, cat)
     }
   }
 
-  private getEquippedUrn(category: WearableCategory): string | null {
+  private async loadEquippedWearables(): Promise<void> {
     const profile = this.session.getProfile()
-    if (!profile) return null
-    const match = profile.wearables.find((urn) => urn.includes(`/${category}/`) || urn.includes(`:${category}:`))
-    return match ?? null
-  }
-
-  private loadWearables(): void {
-    const profile = this.session.getProfile()
-    if (profile) {
-      this.wearableUrns = profile.wearables.filter((u) => !u.includes('basemale') && !u.includes('basefemale'))
-    } else {
-      this.wearableUrns = []
+    const gen = ++this.equippedLoadGen
+    if (!profile?.wearables?.length) {
+      this.equippedByCategory = new Map()
+      this.updateCategoryEquipped()
+      return
     }
-    this.renderGrid()
+
+    try {
+      const map = await loadEquippedWearablesByCategory(profile, this.session.getLambdasUrl())
+      if (gen !== this.equippedLoadGen || this.disposed) return
+      this.equippedByCategory = map
+    } catch (err) {
+      console.warn('[backpack] equipped wearables metadata failed', err)
+      if (gen !== this.equippedLoadGen || this.disposed) return
+      this.equippedByCategory = new Map()
+    }
     this.updateCategoryEquipped()
+  }
+
+  private resolveWearablesAddress(): string | undefined {
+    return this.session.getAddress() ?? getActiveProfileAddress()
+  }
+
+  private async loadWearables(): Promise<void> {
+    const address = this.resolveWearablesAddress()
+    const gen = ++this.wearablesLoadGen
+    if (!address) {
+      this.wearableItems = []
+      this.wearablesError = 'Connect a wallet or set ?profile=0x… to load your inventory'
+      this.wearablesLoading = false
+      this.renderGrid()
+      return
+    }
+
+    this.wearablesLoading = true
+    this.wearablesError = null
+    this.renderGrid()
+
+    try {
+      const lambdasUrl = this.session.getLambdasUrl()
+      let items = await loadBackpackWearables(address, lambdasUrl)
+      const profile = this.session.getProfile()
+      if (profile?.wearables?.length) {
+        items = mergeEquippedIntoInventory(items, profile.wearables)
+      }
+      if (gen !== this.wearablesLoadGen || this.disposed) return
+      this.wearableItems = items
+      this.wearablesError = items.length ? null : 'No wearables found for this wallet'
+    } catch (err) {
+      if (gen !== this.wearablesLoadGen || this.disposed) return
+      this.wearableItems = []
+      this.wearablesError = err instanceof Error ? err.message : String(err)
+    } finally {
+      if (gen === this.wearablesLoadGen) {
+        this.wearablesLoading = false
+        this.renderGrid()
+      }
+    }
   }
 
   private async refreshVrmLibrary(): Promise<void> {
@@ -430,23 +589,40 @@ export class BackpackView {
     gridEl.innerHTML = ''
     paginationEl.innerHTML = ''
 
-    const items = this.selectedCategory === 'all'
-      ? this.wearableUrns
-      : this.wearableUrns.filter((u) => u.includes(this.selectedCategory))
+    if (this.wearablesLoading) {
+      gridEl.innerHTML = `<p class="backpack-view__grid-status">Loading your wearables…</p>`
+      return
+    }
+
+    if (this.wearablesError && !this.wearableItems.length) {
+      gridEl.innerHTML = `<p class="backpack-view__grid-status backpack-view__grid-status--error">${this.escapeHtml(this.wearablesError)}</p>`
+      return
+    }
+
+    const items = filterBackpackWearables(this.wearableItems, this.selectedCategory, this.searchQuery)
     const totalPages = Math.max(1, Math.ceil(items.length / ITEMS_PER_PAGE))
     const page = Math.min(this.currentPage, totalPages)
+    this.currentPage = page
     const start = (page - 1) * ITEMS_PER_PAGE
     const pageItems = items.slice(start, start + ITEMS_PER_PAGE)
 
-    for (const urn of pageItems) {
-      const card = document.createElement('div')
-      const isSelected = urn === this.selectedItem
-      card.className = 'backpack-view__item' + (isSelected ? ' is-selected' : '')
-      const rarity = this.guessRarity(urn)
-      card.style.borderColor = RARITY_COLORS[rarity] ?? RARITY_COLORS.common
-      const thumbUrl = this.getItemThumbnail(urn)
-      card.innerHTML = `<img class="backpack-view__item-img" src="${thumbUrl}" alt="" loading="lazy" />`
-      card.addEventListener('click', () => { this.selectItem(urn); this.renderGrid() })
+    if (!pageItems.length) {
+      gridEl.innerHTML = `<p class="backpack-view__grid-status">No wearables in this category</p>`
+      return
+    }
+
+    for (const item of pageItems) {
+      const card = document.createElement('button')
+      card.type = 'button'
+      const isSelected = this.isSameWearableUrn(item.urn, this.selectedItem)
+      const rarity = item.rarity || guessWearableRarity(item.urn)
+      card.className = 'backpack-view__item is-' + rarity + (isSelected ? ' is-selected' : '')
+      card.style.setProperty('--wearable-rarity-bg', wearableRarityBackground(rarity))
+      card.innerHTML = `<img class="backpack-view__item-img" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" />`
+      card.addEventListener('click', () => {
+        this.selectItem(item)
+        this.renderGrid()
+      })
       gridEl.appendChild(card)
     }
 
@@ -454,6 +630,7 @@ export class BackpackView {
     for (let i = 0; i < emptySlots; i++) {
       const empty = document.createElement('div')
       empty.className = 'backpack-view__item backpack-view__item--empty'
+      empty.setAttribute('aria-hidden', 'true')
       gridEl.appendChild(empty)
     }
 
@@ -965,31 +1142,69 @@ export class BackpackView {
     }
   }
 
-  private selectItem(urn: string): void {
-    this.selectedItem = urn
+  private selectItem(item: BackpackWearableItem): void {
+    this.selectedItem = item.urn
+    this.renderWearableDetail(item)
+    this.updateCategoryEquipped()
+  }
+
+  private renderWearableDetail(item: BackpackWearableItem): void {
     const detailEl = this.root.querySelector('.backpack-view__detail')!
-    const shortUrn = urn.split(':').pop() ?? urn
-    const rarity = this.guessRarity(urn)
+    const profile = this.session.getProfile()
+    const equipped = profile ? isWearableEquipped(profile, item.urn) : false
+    const rarity = item.rarity || guessWearableRarity(item.urn)
+    const color = WEARABLE_RARITY_COLORS[rarity] ?? WEARABLE_RARITY_COLORS.common
+    const canEquip = !!profile && item.category !== 'unknown'
+
     detailEl.innerHTML = `
       <div class="backpack-view__detail-card">
-        <img class="backpack-view__detail-img" src="${this.getItemThumbnail(urn)}" alt="" />
-        <h3 class="backpack-view__detail-name">${shortUrn}</h3>
-        <span class="backpack-view__detail-rarity" style="color:${RARITY_COLORS[rarity] ?? '#888'}">${rarity}</span>
-        <p class="backpack-view__detail-urn">${urn}</p>
+        <div class="backpack-view__detail-thumb" style="background:${wearableRarityBackground(rarity)}">
+          <img class="backpack-view__detail-img" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" />
+        </div>
+        <h3 class="backpack-view__detail-name">${this.escapeHtml(item.name)}</h3>
+        <span class="backpack-view__detail-rarity" style="color:${color}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
+        <div class="backpack-view__wearable-actions">
+          <button type="button" class="backpack-view__wearable-equip-btn" data-action="toggle-equip" ${canEquip ? '' : 'disabled'}>
+            ${equipped ? 'Unequip' : 'Equip'}
+          </button>
+          <button type="button" class="backpack-view__wearable-market-btn" disabled title="Coming soon">
+            Marketplace
+          </button>
+        </div>
       </div>
     `
+
+    detailEl.querySelector('[data-action="toggle-equip"]')?.addEventListener('click', () => {
+      if (!canEquip) return
+      if (equipped) void this.unequipWearable(item)
+      else void this.equipWearable(item)
+    })
   }
 
-  private guessRarity(urn: string): string {
-    if (urn.includes('legendary')) return 'legendary'
-    if (urn.includes('epic')) return 'epic'
-    if (urn.includes('rare')) return 'rare'
-    if (urn.includes('uncommon')) return 'uncommon'
-    return 'common'
+  private async equipWearable(item: BackpackWearableItem): Promise<void> {
+    const profile = this.session.getProfile()
+    if (!profile || item.category === 'unknown') return
+
+    const wearables = equipWearableOnProfile(profile, item, this.equippedByCategory)
+    this.session.setProfile({ ...profile, wearables })
+    await this.applyWearableProfileChange(item)
   }
 
-  private getItemThumbnail(urn: string): string {
-    return `https://peer.decentraland.org/lambdas/collections/contents/${urn}/thumbnail`
+  private async unequipWearable(item: BackpackWearableItem): Promise<void> {
+    const profile = this.session.getProfile()
+    if (!profile) return
+
+    const wearables = unequipWearableFromProfile(profile, item.urn)
+    this.session.setProfile({ ...profile, wearables })
+    await this.applyWearableProfileChange(item)
+  }
+
+  private async applyWearableProfileChange(item: BackpackWearableItem): Promise<void> {
+    void this.loadEquippedWearables()
+    this.renderGrid()
+    this.renderWearableDetail(item)
+    await this.onVrmEquipChange?.()
+    void this.loadAvatarModel()
   }
 
   private escapeHtml(text: string): string {
@@ -1060,6 +1275,22 @@ export class BackpackView {
     this.resizeObserver = new ResizeObserver(() => this.resizePreview())
     this.resizeObserver.observe(stage)
     this.resizePreview()
+
+    stage.addEventListener(
+      'wheel',
+      (e) => {
+        if (this.disposed) return
+        e.preventDefault()
+        const factor = e.deltaY < 0 ? 1.1 : 0.9
+        this.previewZoom = THREE.MathUtils.clamp(
+          this.previewZoom * factor,
+          PREVIEW_ZOOM_MIN,
+          PREVIEW_ZOOM_MAX
+        )
+        this.frameCamera(this.subjectSize)
+      },
+      { passive: false }
+    )
 
     this.lastFrame = performance.now()
     this.raf = requestAnimationFrame((t) => this.tick(t))
@@ -1184,7 +1415,7 @@ export class BackpackView {
     const pad = 0.92
     const fitHeight = ((size.y + 0.35) * pad) / (2 * Math.tan(fovRad / 2))
     const fitWidth = ((size.x + 0.5) * pad) / (2 * Math.tan(fovRad / 2) * aspect)
-    const distance = Math.max(fitHeight, fitWidth, 1.5)
+    const distance = Math.max(fitHeight, fitWidth, 1.5) / this.previewZoom
     this.camera.position.set(0, lookY, distance)
     this.camera.lookAt(0, lookY, 0)
     this.camera.updateProjectionMatrix()

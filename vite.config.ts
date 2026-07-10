@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import { fileURLToPath } from 'node:url'
+import { patchYogaNbindSource } from './src/shim/vite/yogaNbindFix'
 import { createSuggestionProxyMiddleware } from './scripts/suggestion-dispatch-proxy.mjs'
 import { createTextureProxyMiddleware } from './scripts/texture-dispatch-proxy.mjs'
 
@@ -61,7 +62,21 @@ export default defineConfig({
     }
   },
   optimizeDeps: {
-    exclude: ['src/physics/vendor/physx-js-webidl.js']
+    exclude: ['src/physics/vendor/physx-js-webidl.js'],
+    esbuildOptions: {
+      plugins: [
+        {
+          name: 'yoga-nbind-fix-deps',
+          setup(build) {
+            build.onLoad({ filter: /yoga-layout-prebuilt\/.*\/nbind\.js$/ }, async (args) => {
+              const { readFile } = await import('node:fs/promises')
+              const contents = patchYogaNbindSource(await readFile(args.path, 'utf8'))
+              return { contents, loader: 'js' }
+            })
+          }
+        }
+      ]
+    }
   },
   worker: {
     format: 'es',

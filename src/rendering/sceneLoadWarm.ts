@@ -62,23 +62,82 @@ export async function resolveSceneBytesWarm(scene: ResolvedScene): Promise<boole
   return isSceneBytesWarm(scene)
 }
 
-/** Parse manifest GLBs in parallel so attach only clones from memory on warm revisits. */
+export type PrimeManifestParsesResult = {
+  total: number
+  alreadyParsed: number
+  attempted: number
+  parsed: number
+  failed: number
+  elapsedMs: number
+}
+
+/**
+ * Parse every content-map (catalyst) GLB into AssetCache Three templates.
+ * Blocks until each hash is parsed or has permanently failed — attach later only clones.
+ * Does NOT cook colliders (cook stays attach/runtime for entities that exist).
+ */
 export async function primeManifestParses(
   cache: AssetCache,
   scene: ResolvedScene,
-  concurrency = 12
-): Promise<void> {
+  concurrency = 12,
+  onProgress?: (done: number, total: number) => void
+): Promise<PrimeManifestParsesResult> {
   const glbs = collectManifestGlbs(scene)
+  const total = glbs.length
+  if (!total) {
+    return { total: 0, alreadyParsed: 0, attempted: 0, parsed: 0, failed: 0, elapsedMs: 0 }
+  }
+
   const pending = glbs.filter(({ hash }) => !cache.hasCached(normalizeGlbCacheKey(hash)))
-  if (!pending.length) return
+  const alreadyParsed = total - pending.length
+  if (!pending.length) {
+    onProgress?.(total, total)
+    console.info(`[Hydration] content GLB templates already parsed — ${total}/${total}`)
+    return {
+      total,
+      alreadyParsed,
+      attempted: 0,
+      parsed: total,
+      failed: 0,
+      elapsedMs: 0
+    }
+  }
 
   const started = performance.now()
+  let completed = alreadyParsed
+  let failed = 0
+  onProgress?.(completed, total)
+
   for (let i = 0; i < pending.length; i += concurrency) {
     const batch = pending.slice(i, i + concurrency)
-    await Promise.all(
-      batch.map(({ url, hash }) => cache.load(url, hash, { quiet: true }).catch(() => null))
+    const results = await Promise.all(
+      batch.map(({ url, hash }) =>
+        cache.load(url, hash, { quiet: true }).then(
+          () => true as const,
+          () => false as const
+        )
+      )
     )
+    for (const ok of results) {
+      completed++
+      if (!ok) failed++
+    }
+    onProgress?.(completed, total)
   }
-  const elapsed = ((performance.now() - started) / 1000).toFixed(1)
-  console.info(`[Hydration] primed ${pending.length} GLB parse(s) in ${elapsed}s`)
+
+  const elapsedMs = performance.now() - started
+  const parsed = total - failed
+  console.info(
+    `[Hydration] primed content GLB templates — ${parsed}/${total} ok` +
+      (failed ? ` (${failed} failed)` : '') +
+      ` in ${(elapsedMs / 1000).toFixed(1)}s (concurrency=${concurrency})`
+  )
+  return {
+    total,
+    alreadyParsed,
+    attempted: pending.length,
+    parsed,
+    failed,
+    elapsedMs
+  }
 }

@@ -42,8 +42,22 @@ function isAnimatorFocusSrc(src: string): boolean {
   return ANIMATOR_FOCUS_SRC.test(src)
 }
 
+/** One name→node map per bind — per-track traverse was O(tracks × nodes) on huge characters. */
+function buildNodeNameMap(root: THREE.Object3D): Map<string, THREE.Object3D> {
+  const byName = new Map<string, THREE.Object3D>()
+  root.traverse((obj) => {
+    if (obj.name && !byName.has(obj.name)) byName.set(obj.name, obj)
+  })
+  return byName
+}
+
 /** Rebind cached GLTF clip tracks from source UUIDs → cloned instance nodes. */
-function retargetAnimationClip(clip: THREE.AnimationClip, root: THREE.Object3D): THREE.AnimationClip {
+function retargetAnimationClip(
+  clip: THREE.AnimationClip,
+  root: THREE.Object3D,
+  nodeByName?: Map<string, THREE.Object3D>
+): THREE.AnimationClip {
+  const nameMap = nodeByName ?? buildNodeNameMap(root)
   const tracks: THREE.KeyframeTrack[] = []
   for (const track of clip.tracks) {
     const parsed = THREE.PropertyBinding.parseTrackName(track.name)
@@ -52,12 +66,7 @@ function retargetAnimationClip(clip: THREE.AnimationClip, root: THREE.Object3D):
       tracks.push(track)
       continue
     }
-    let target: THREE.Object3D | undefined = root.getObjectByName(nodeName)
-    if (!target) {
-      root.traverse((obj) => {
-        if (!target && obj.name === nodeName) target = obj
-      })
-    }
+    const target = nameMap.get(nodeName) ?? root.getObjectByName(nodeName) ?? undefined
     if (!target) {
       continue
     }
@@ -208,8 +217,19 @@ export class AnimatorBridge {
       let entry = this.entries.get(entity)
       const rebinding = !entry || entry.gltfHash !== hash || entry.root !== mesh
       if (rebinding) {
+        // P0 mesh: never await cold parse on the bridge tick. Peek cache only; kick idle load if cold.
+        const template =
+          this.cache.peekCached(hash) ?? this.cache.peekCached(this.sceneConfig.assetUrl(hash))
+        if (!template) {
+          if (!this.cache.isResolving(hash) && !this.cache.hasGivenUp(hash)) {
+            void this.cache
+              .load(this.sceneConfig.assetUrl(hash), hash, { quiet: true })
+              .catch(() => {})
+          }
+          continue
+        }
         entry?.mixer.stopAllAction()
-        const loaded = await this.cache.load(this.sceneConfig.assetUrl(hash), hash)
+        const loaded = template
         const clipNames = loaded.animations.map((c) => c.name)
         entry = {
           mixer: new THREE.AnimationMixer(mesh),
@@ -218,8 +238,10 @@ export class AnimatorBridge {
           gltfHash: hash,
           gltfSrc: src
         }
+        // Build name map once for all clips (characters can have dozens of tracks × many bones).
+        const nodeByName = loaded.animations.length ? buildNodeNameMap(mesh) : undefined
         for (const clip of loaded.animations) {
-          const instanceClip = retargetAnimationClip(clip, mesh)
+          const instanceClip = retargetAnimationClip(clip, mesh, nodeByName)
           entry.actions.set(clip.name, entry.mixer.clipAction(instanceClip, mesh))
         }
         if (!hasExplicitAnimator && !clipNames.length) {

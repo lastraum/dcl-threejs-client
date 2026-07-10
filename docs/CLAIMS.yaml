@@ -9,7 +9,7 @@ updated: 2026-07-10
 source: github
 base_branch: dev-latest
 workflow:
-  - stage: pending_review
+  - stage: merged
     integration_ref: pr:11
     title: scene UI stack + pointer/input path (lastraum → dev-latest)
     owner: lastraum

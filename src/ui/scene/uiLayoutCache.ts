@@ -55,6 +55,57 @@ export function computeUiLayoutKey(
   return parts.join('\n')
 }
 
+/**
+ * Per-entity paint fingerprint for fields that change DOM without Yoga geometry
+ * (opacity, colors, PE, textures). Used for skip-paint + dirty DOM patch.
+ */
+export function entityUiVisualPaintKey(
+  entity: Entity,
+  transform: PBUiTransform,
+  text: PBUiText | null,
+  bg: { color?: { r?: number; g?: number; b?: number; a?: number }; texture?: unknown } | null,
+  pointerKey: string
+): string {
+  const o = transform.opacity ?? 1
+  const z = transform.zIndex ?? 0
+  const pf = transform.pointerFilter ?? 0
+  const d = transform.display ?? 0
+  let t = ''
+  if (text?.value != null) {
+    t = `t${text.value.length}:${text.value.slice(0, 48)}:${text.fontSize ?? 10}:${text.textWrap ?? 0}:${text.color?.r ?? 1},${text.color?.g ?? 1},${text.color?.b ?? 1},${text.color?.a ?? 1}`
+  }
+  let b = ''
+  if (bg) {
+    const c = bg.color
+    b = c ? `bg${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 1}` : 'bg'
+    if (bg.texture) b += ':tex'
+  }
+  return `${entity}|d${d}|o${o}|z${z}|pf${pf}|${t}|${b}|pe${pointerKey}`
+}
+
+export function computeUiVisualPaintKey(
+  records: UiEntityRecord[],
+  textOf: (e: Entity) => PBUiText | null,
+  backgroundOf: (e: Entity) => { color?: { r?: number; g?: number; b?: number; a?: number }; texture?: unknown } | null,
+  pointerKeyOf: (e: Entity) => string
+): { full: string; byEntity: Map<Entity, string> } {
+  const byEntity = new Map<Entity, string>()
+  const parts: string[] = []
+  const sorted = [...records].sort((a, b) => (a.entity as number) - (b.entity as number))
+  for (const { entity, transform } of sorted) {
+    const key = entityUiVisualPaintKey(
+      entity,
+      transform,
+      textOf(entity),
+      backgroundOf(entity),
+      pointerKeyOf(entity)
+    )
+    byEntity.set(entity, key)
+    parts.push(key)
+  }
+  return { full: parts.join('\n'), byEntity }
+}
+
 /** Drop entities hidden by display:none / opacity along the ancestor chain. */
 export function visibleLayoutBoxes(
   boxes: LayoutBox[],

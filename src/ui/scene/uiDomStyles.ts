@@ -197,7 +197,9 @@ export function applyYogaLayoutBox(
   el: HTMLElement,
   box: LayoutBox,
   scale: UiScreenScale = VIRTUAL_LAYOUT_SCALE,
-  coords: 'canvas' | 'parent' = 'canvas'
+  coords: 'canvas' | 'parent' = 'canvas',
+  /** When true, keep overflow for border-radius / YGOverflow.HIDDEN clip of nested shells. */
+  clipOverflow = false
 ): void {
   const x = (coords === 'parent' ? box.relLeft : box.left) * scale.scaleX
   const y = (coords === 'parent' ? box.relTop : box.top) * scale.scaleY
@@ -214,7 +216,8 @@ export function applyYogaLayoutBox(
   el.style.setProperty('transform', `translate(${x}px, ${y}px)`, 'important')
   el.style.display = 'block'
   el.style.boxSizing = 'border-box'
-  el.style.overflow = 'visible'
+  // Default visible so non-clipping panels don't trap absolute children; clip when radius/overflow require it.
+  el.style.overflow = clipOverflow ? 'hidden' : 'visible'
   el.style.margin = '0'
   el.style.right = ''
   el.style.bottom = ''
@@ -320,30 +323,30 @@ export function applyUiTextStyles(label: HTMLElement, text: PBUiText, scale: UiS
   label.style.fontSize = `${fontPx}px`
   label.style.fontFamily = FONT_FAMILY[text.font ?? 0] ?? FONT_FAMILY[0]
   label.style.textAlign = align.textAlign
+  // SDK default is TW_WRAP (0). Only TW_NO_WRAP (1) is single-line.
   const singleLine = text.textWrap === 1
+  // Fill the UiTransform box and honor TextAlignMode (default TAM_MIDDLE_CENTER).
+  // Prior wrap path used display:block + height:auto → always top-aligned.
   label.style.width = '100%'
+  label.style.height = '100%'
   label.style.maxWidth = '100%'
+  label.style.minWidth = '0'
+  label.style.minHeight = '0'
   label.style.flex = '1 1 auto'
-  label.style.alignSelf = 'auto'
+  label.style.alignSelf = 'stretch'
   label.style.margin = '0'
   label.style.padding = '0'
   label.style.boxSizing = 'border-box'
+  label.style.display = 'flex'
+  label.style.flexDirection = 'row'
+  // TEXT_ALIGN_MODES: justifyContent = horizontal, alignItems = vertical (row flex).
+  label.style.justifyContent = align.justifyContent
+  label.style.alignItems = align.alignItems
   label.style.wordBreak = singleLine ? 'normal' : 'break-word'
+  label.style.overflowWrap = singleLine ? 'normal' : 'anywhere'
   label.style.whiteSpace = singleLine ? 'nowrap' : 'pre-wrap'
-  label.style.overflow = 'visible'
-  if (singleLine) {
-    label.style.height = '100%'
-    label.style.display = 'flex'
-    label.style.flexDirection = 'row'
-    label.style.alignItems = 'center'
-    label.style.justifyContent =
-      align.textAlign === 'center' ? 'center' : align.textAlign === 'right' ? 'flex-end' : 'flex-start'
-    label.style.lineHeight = `${fontPx}px`
-  } else {
-    label.style.height = 'auto'
-    label.style.display = 'block'
-    label.style.lineHeight = '1.25'
-  }
+  label.style.overflow = singleLine ? 'hidden' : 'hidden'
+  label.style.lineHeight = singleLine ? `${fontPx}px` : '1.25'
   label.style.pointerEvents = 'none'
   label.style.position = 'relative'
   label.style.zIndex = '2'

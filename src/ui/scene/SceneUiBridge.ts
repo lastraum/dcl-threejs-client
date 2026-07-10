@@ -23,8 +23,13 @@ import {
   readInteractableArea,
   type VirtualCanvasSize
 } from './virtualCanvas'
-import { SceneUiHitMap } from './uiHitMap'
-import { disposeSceneUiDebug, reportInputModifierState, reportSceneUiDebug } from './sceneUiDebug'
+import { SceneUiHitMap, type UiScreenRegion } from './uiHitMap'
+import {
+  disposeSceneUiDebug,
+  isSceneUiDebugEnabled,
+  reportInputModifierState,
+  reportSceneUiDebug
+} from './sceneUiDebug'
 import {
   collectSceneUiEntitiesFromDom,
   entityFromSceneUiDomTarget,
@@ -37,7 +42,12 @@ import {
   type UiPointerEventsLookup
 } from './uiPointer'
 import { InputAction, PointerEventType, type PointerEventTypeValue } from '../../input/pointerConstants'
-import { computeUiLayoutKey, UiLayoutCache, visibleLayoutBoxes } from './uiLayoutCache'
+import {
+  computeUiLayoutKey,
+  computeUiVisualPaintKey,
+  UiLayoutCache,
+  visibleLayoutBoxes
+} from './uiLayoutCache'
 import { layoutUiTree, type LayoutBox } from './yogaLayout'
 import { onSceneUiImageLoaded } from './uiImageLoad'
 
@@ -72,12 +82,20 @@ export class SceneUiBridge {
   private lastMountedUiEntities = new Set<Entity>()
   private firstPaintLogged = false
   private paintCount = 0
+  private lastLoggedPaintMount = 0
+  /** Skip full paint when layout + visual fingerprints match previous frame. */
+  private lastPaintLayoutKey = ''
+  private lastPaintVisualKey = ''
+  private lastEntityVisualKeys = new Map<Entity, string>()
   /** False until AppController reveals 3D play chrome — avoids UI on 2D landing during hydration. */
   private domVisible = false
   private readonly unbindImageLoaded: () => void
   private imageRepaintQueued = false
   /** Latest pointer phase-4 rows — authoritative for DOM hits when projection lags. */
   private mountSnapshotPointerEvents = new Map<Entity, unknown>()
+  /** Last pointer position — re-evaluate cursor after Sync/modal DOM swaps. */
+  private lastPointerClientX = 0
+  private lastPointerClientY = 0
 
   constructor(scene: ResolvedScene | null = null, getCanvas: () => HTMLElement | null = () => null) {
     this.scene = scene
@@ -111,12 +129,14 @@ export class SceneUiBridge {
   }
 
   private scheduleImageRepaint(): void {
-    if (this.imageRepaintQueued || !this.lastView) return
+    if (!this.lastView) return
+    // Many UiBackground textures finish in a burst (menus / character UI) — one paint, not N full Yoga passes.
+    if (this.imageRepaintQueued) return
     this.imageRepaintQueued = true
-    queueMicrotask(() => {
+    window.setTimeout(() => {
       this.imageRepaintQueued = false
       if (this.lastView) this.paint(this.lastView)
-    })
+    }, 80)
   }
 
   /** Show/hide `#scene-ui-root` — only enable in 3D play mode, not 2D landing/explorer. */
@@ -147,12 +167,11 @@ export class SceneUiBridge {
 
   private pointerEventsLookup: UiPointerEventsLookup = (entity) => {
     const ecs = this.mirrorEcs
-    const fromProjection = ecs?.PointerEvents.getOrNull(entity) ?? null
-    if (fromProjection) return fromProjection
-    if (!this.isAuthoritativeUiEntity(entity)) return null
-    return (
-      (this.mountSnapshotPointerEvents.get(entity) as ReturnType<UiPointerEventsLookup>) ?? null
-    )
+    if (this.isAuthoritativeUiEntity(entity)) {
+      const fromSnapshot = this.mountSnapshotPointerEvents.get(entity)
+      if (fromSnapshot) return fromSnapshot as ReturnType<UiPointerEventsLookup>
+    }
+    return ecs?.PointerEvents.getOrNull(entity) ?? null
   }
 
   /** Projection + phase-4 snapshot — used by pointer flush and DOM interactivity. */
@@ -198,10 +217,16 @@ export class SceneUiBridge {
       this.dom.releaseAll()
       this.hitMap.clear()
       this.lastMountedUiEntities.clear()
+      this.lastPaintLayoutKey = ''
+      this.lastPaintVisualKey = ''
+      this.lastEntityVisualKeys.clear()
       this.input.pruneStaleEntities(new Set())
     } else if (changed) {
       this.lastMountedUiEntities.clear()
       this.layoutCache.clear()
+      this.lastPaintLayoutKey = ''
+      this.lastPaintVisualKey = ''
+      this.lastEntityVisualKeys.clear()
     }
 
     this.workerUiEntitiesKnown = true
@@ -300,6 +325,7 @@ export class SceneUiBridge {
     this.lastWorkerUiKey = ''
     this.lastMountedUiEntities.clear()
     this.firstPaintLogged = false
+    this.lastLoggedPaintMount = 0
     this.mirrorEcs = null
     this.lastView = null
     disposeSceneUiDebug()
@@ -322,6 +348,9 @@ export class SceneUiBridge {
     if (!this.workerUiEntitiesKnown || !this.workerUiEntities?.size) {
       this.scrubUnauthoritativeDom()
       disposeSceneUiDebug()
+      this.lastPaintLayoutKey = ''
+      this.lastPaintVisualKey = ''
+      this.lastEntityVisualKeys.clear()
       return
     }
 
@@ -335,25 +364,62 @@ export class SceneUiBridge {
     if (records.length === 0) {
       this.scrubUnauthoritativeDom()
       disposeSceneUiDebug()
+      this.lastPaintLayoutKey = ''
+      this.lastPaintVisualKey = ''
+      this.lastEntityVisualKeys.clear()
       return
-    }
-
-    this.paintCount++
-    if (!this.firstPaintLogged) {
-      this.firstPaintLogged = true
-      console.info(
-        `[scene-ui] first paint — mount=${this.workerUiEntities?.size ?? 0} canvas=${records.length} virtual=${this.virtual.width}×${this.virtual.height}`
-      )
-    } else if (this.paintCount <= 12) {
-      console.info(`[scene-ui] repaint #${this.paintCount} — canvas=${records.length}`)
     }
 
     const forest = buildUiForest(records)
     const transformOf = (e: Entity) => ecs.UiTransform.getOrNull(e) as PBUiTransform | null
     const textOf = (e: Entity) => ecs.UiText.getOrNull(e) as PBUiText | null
     const inputOf = (e: Entity) => ecs.UiInput.getOrNull(e) as PBUiInput | null
+    const backgroundOf = (e: Entity) => ecs.UiBackground.getOrNull(e) as PBUiBackground | null
+    const dropdownOf = (e: Entity) => ecs.UiDropdown.getOrNull(e) as PBUiDropdown | null
+    const pointerKeyOf = (e: Entity) => {
+      const pe = this.pointerEventsLookup(e) as { pointerEvents?: unknown[] } | null
+      return pe?.pointerEvents?.length ? String(pe.pointerEvents.length) : ''
+    }
 
     const layoutKey = computeUiLayoutKey(records, this.virtual, textOf, inputOf)
+    const { full: visualKey, byEntity: entityVisualKeys } = computeUiVisualPaintKey(
+      records,
+      textOf,
+      backgroundOf,
+      pointerKeyOf
+    )
+
+    // No layout or visual change — skip Yoga + DOM entirely.
+    if (
+      this.paintCount > 0 &&
+      layoutKey === this.lastPaintLayoutKey &&
+      visualKey === this.lastPaintVisualKey
+    ) {
+      return
+    }
+
+    this.paintCount++
+    const mountSize = this.workerUiEntities?.size ?? 0
+    if (!this.firstPaintLogged) {
+      this.firstPaintLogged = true
+      console.info(
+        `[scene-ui] first paint — mount=${mountSize} canvas=${records.length} virtual=${this.virtual.width}×${this.virtual.height}`
+      )
+    } else if (this.paintCount <= 12) {
+      console.info(`[scene-ui] repaint #${this.paintCount} — mount=${mountSize} canvas=${records.length}`)
+    } else if (mountSize !== this.lastLoggedPaintMount) {
+      this.lastLoggedPaintMount = mountSize
+      console.info(`[scene-ui] repaint mount change — mount=${mountSize} canvas=${records.length}`)
+      if (isSceneUiDebugEnabled() && mountSize >= 10) {
+        const peIds = [...this.mountSnapshotPointerEvents.keys()]
+          .sort((a, b) => (a as number) - (b as number))
+          .map((e) => `e${e}`)
+        console.log(
+          `[scene-ui] mount snapshot PointerEvents (${peIds.length}): ${peIds.join(', ') || '(none)'}`
+        )
+      }
+    }
+
     let layoutBoxes = this.layoutCache.get(layoutKey)
     let layoutCacheHit = true
     if (!layoutBoxes) {
@@ -374,7 +440,7 @@ export class SceneUiBridge {
       visibleLayoutBoxes(layoutBoxes, transformOf).map((box) => [box.entity, box])
     )
 
-    this.dom.render({
+    const drawInput = {
       forest,
       virtual: this.virtual,
       interactable,
@@ -385,13 +451,40 @@ export class SceneUiBridge {
       transformOf,
       textOf,
       inputOf,
-      dropdownOf: (e) => ecs.UiDropdown.getOrNull(e) as PBUiDropdown | null,
-      backgroundOf: (e) => ecs.UiBackground.getOrNull(e) as PBUiBackground | null,
+      dropdownOf,
+      backgroundOf,
       mountedEntities: mounted,
-      authoritativeEntities: this.workerUiEntities,
+      authoritativeEntities: this.workerUiEntities!,
       layoutBoxes: layoutBoxMap,
-      onRegions: (regions) => this.hitMap.replace(regions)
-    })
+      onRegions: (regions: UiScreenRegion[]) => this.hitMap.replace(regions)
+    }
+
+    // Layout stable + few visual-only dirties → patch DOM only (skip full tree walk).
+    let usedPatch = false
+    if (layoutCacheHit && this.lastEntityVisualKeys.size > 0 && this.paintCount > 1) {
+      const dirty: Entity[] = []
+      for (const [entity, key] of entityVisualKeys) {
+        if (this.lastEntityVisualKeys.get(entity) !== key) dirty.push(entity)
+      }
+      for (const entity of this.lastEntityVisualKeys.keys()) {
+        if (!entityVisualKeys.has(entity)) dirty.push(entity)
+      }
+      if (dirty.length > 0 && dirty.length <= 32 && dirty.length < mounted.size * 0.25) {
+        usedPatch = this.dom.patchEntities(dirty, drawInput)
+        if (usedPatch && this.paintCount <= 20) {
+          console.info(`[scene-ui] incremental paint — dirty=${dirty.length} mount=${mounted.size}`)
+        }
+      }
+    }
+
+    if (!usedPatch) {
+      this.dom.render(drawInput)
+    }
+
+    this.lastPaintLayoutKey = layoutKey
+    this.lastPaintVisualKey = visualKey
+    this.lastEntityVisualKeys = entityVisualKeys
+
     this.input.pruneStaleEntities(mounted)
     this.input.releaseAllIfNothingMounted(mounted)
 
@@ -417,6 +510,28 @@ export class SceneUiBridge {
       virtual: this.virtual
     })
     reportInputModifierState(ecs, view.PlayerEntity)
+    // Sync / modal unmount often leaves browser cursor stuck on pointer (node removed mid-hover).
+    this.refreshHoverCursor()
+  }
+
+  /** Recompute cursor from element under last pointer — call after DOM mount changes. */
+  private refreshHoverCursor(): void {
+    const canvas = this.getCanvas()
+    if (!canvas || typeof document === 'undefined') return
+    const x = this.lastPointerClientX
+    const y = this.lastPointerClientY
+    if (!x && !y) {
+      canvas.style.cursor = 'default'
+      this.root.style.cursor = 'default'
+      return
+    }
+    const under = document.elementFromPoint(x, y)
+    const interactive =
+      under instanceof Element &&
+      !!under.closest('.scene-ui-node--interactive, .scene-ui-node__input, .scene-ui-node__select')
+    const next = interactive ? 'pointer' : 'default'
+    canvas.style.cursor = next
+    this.root.style.cursor = next
   }
 
   /**
@@ -428,6 +543,8 @@ export class SceneUiBridge {
     clientY: number,
     camera: THREE.Camera
   ): PointerHit | null {
+    this.lastPointerClientX = clientX
+    this.lastPointerClientY = clientY
     if (!this.domVisible) return null
     const ecs = this.mirrorEcs
     const view = this.lastView
@@ -452,39 +569,59 @@ export class SceneUiBridge {
     return this.buildDomPointerHit(handler, camera)
   }
 
+  private candidatePickArea(entity: Entity): number {
+    const region = this.hitMap.regionFor(entity)
+    return region ? region.width * region.height : Number.POSITIVE_INFINITY
+  }
+
   /**
-   * Pick candidates at the deepest hit-map layer only, then DOM topmost.
-   * Overlapping siblings (modal scrim behind panel) must not win after a no-handler ancestor.
+   * Hit map + DOM candidates, ranked deepest / smallest-area first.
+   * All overlapping hit-map regions are included so label leaves can ancestor-walk to card handlers.
    */
   private collectTopClusterPickCandidates(
     clientX: number,
     clientY: number,
     eventTarget?: EventTarget | null
   ): Entity[] {
+    const acceptMounted = (entity: Entity) => this.isAuthoritativeUiEntity(entity)
     const seen = new Set<number>()
-    const out: Entity[] = []
-    const push = (entity: Entity | null): void => {
-      if (entity === null || !this.isAuthoritativeUiEntity(entity)) return
+    const ranked: {
+      entity: Entity
+      depth: number
+      zIndex: number
+      area: number
+    }[] = []
+
+    const consider = (entity: Entity | null): void => {
+      if (entity === null || !acceptMounted(entity)) return
       const id = entity as number
       if (seen.has(id)) return
       seen.add(id)
-      out.push(entity)
+      const region = this.hitMap.regionFor(entity)
+      ranked.push({
+        entity,
+        depth: region?.depth ?? 0,
+        zIndex: region?.zIndex ?? 0,
+        area: region ? region.width * region.height : Number.POSITIVE_INFINITY
+      })
     }
 
-    const regions = this.hitMap.hitTestRegionCandidates(clientX, clientY)
-    const topDepth = regions[0]?.depth
-    for (const region of regions) {
-      if (topDepth !== undefined && region.depth !== topDepth) break
-      push(region.entity)
+    for (const region of this.hitMap.hitTestRegionCandidates(clientX, clientY)) {
+      consider(region.entity)
     }
-
-    const acceptMounted = (entity: Entity) => this.isAuthoritativeUiEntity(entity)
-    push(entityFromSceneUiDomTarget(eventTarget ?? null, acceptMounted))
+    consider(entityFromSceneUiDomTarget(eventTarget ?? null, acceptMounted))
     for (const entity of collectSceneUiEntitiesFromDom(clientX, clientY, acceptMounted)) {
-      push(entity)
+      consider(entity)
     }
 
-    return out
+    ranked.sort((a, b) => {
+      if (a.depth !== b.depth) return b.depth - a.depth
+      if (a.zIndex !== b.zIndex) return b.zIndex - a.zIndex
+      if (a.area !== b.area) return a.area - b.area
+      return (a.entity as number) - (b.entity as number)
+    })
+
+    return ranked.map((row) => row.entity)
   }
 
   private pickTopmostUiLayer(
@@ -496,19 +633,24 @@ export class SceneUiBridge {
     if (!ecs) return null
 
     const candidates = this.collectTopClusterPickCandidates(clientX, clientY, eventTarget)
+    let best: { entity: Entity; blocking: boolean } | null = null
+    let bestArea = Number.POSITIVE_INFINITY
 
     for (const entity of candidates) {
       if (this.input.isFieldEntity(entity)) return { entity, blocking: true }
-      if (isUiEntityBlocking(ecs, entity, this.pointerEventsLookup)) {
-        return { entity, blocking: true }
+      if (!isUiEntityBlocking(ecs, entity, this.pointerEventsLookup)) continue
+      const area = this.candidatePickArea(entity)
+      if (area < bestArea) {
+        bestArea = area
+        best = { entity, blocking: true }
       }
     }
-    return null
+    return best
   }
 
   /**
    * Resolve the react-ecs onMouseDown handler for a click.
-   * Walks up from the topmost UI layer; BLOCK shells without handlers stop fall-through to scrim/scene.
+   * Smallest leaf region wins — label → card beats fullscreen modal scrim.
    */
   private resolveUiHandlerAtPoint(
     clientX: number,
@@ -521,19 +663,39 @@ export class SceneUiBridge {
     if (!ecs || !view) return null
 
     const candidates = this.collectTopClusterPickCandidates(clientX, clientY, eventTarget)
-    const debugPick =
-      typeof location !== 'undefined' &&
-      location.search.includes('sceneuidebug') &&
-      state === PointerEventType.PET_DOWN
-    if (debugPick && candidates.length) {
+    const debugPick = isSceneUiDebugEnabled() && state === PointerEventType.PET_DOWN
+    if (debugPick) {
+      const regions = this.hitMap.hitTestRegionCandidates(clientX, clientY)
       console.log(
-        `[scene-ui] pick cluster (${clientX},${clientY}):`,
-        candidates.map((e) => `e${e}`).join(' → ')
+        `[scene-ui] pick @(${clientX},${clientY}) regions=${regions.length} candidates=${candidates.length} mount=${this.workerUiEntities?.size ?? 0}`
       )
+      for (const region of regions.slice(0, 12)) {
+        const handler = findUiPointerHandlerEntity(
+          ecs,
+          view,
+          region.entity,
+          InputAction.IA_POINTER,
+          state,
+          this.pointerEventsLookup
+        )
+        const area = region.width * region.height
+        console.log(
+          `[scene-ui]   region e${region.entity} depth=${region.depth} z=${region.zIndex} ${Math.round(region.width)}×${Math.round(region.height)} area=${Math.round(area)} handler=${handler ?? '—'}`
+        )
+      }
     }
-    for (const entity of candidates) {
-      if (this.input.isFieldEntity(entity)) return null
 
+    let bestHandler: Entity | null = null
+    let bestHandlerArea = Number.POSITIVE_INFINITY
+    let blockingEntity: Entity | null = null
+    let blockingArea = Number.POSITIVE_INFINITY
+
+    for (const entity of candidates) {
+      // Skip field rows — SceneUiInputController owns them; do not abort the whole pick (search
+      // input is an ancestor candidate when clicking LOAD/DEL pills in the presets table).
+      if (this.input.isFieldEntity(entity)) continue
+
+      const area = this.candidatePickArea(entity)
       const handler = findUiPointerHandlerEntity(
         ecs,
         view,
@@ -543,22 +705,40 @@ export class SceneUiBridge {
         this.pointerEventsLookup
       )
       if (handler !== null) {
-        if (debugPick) {
-          console.log(
-            `[scene-ui] pick handler e${handler} from e${entity} (${clientX},${clientY}) state=${state}`
-          )
+        if (area < bestHandlerArea) {
+          bestHandlerArea = area
+          bestHandler = handler
         }
-        return handler
+        continue
       }
 
-      if (isUiEntityBlocking(ecs, entity, this.pointerEventsLookup)) {
-        if (debugPick) {
-          console.log(
-            `[scene-ui] pick blocked at e${entity} (${clientX},${clientY}) — no handler on stack layer`
-          )
-        }
-        return null
+      if (isUiEntityBlocking(ecs, entity, this.pointerEventsLookup) && area < blockingArea) {
+        blockingArea = area
+        blockingEntity = entity
       }
+    }
+
+    if (bestHandler !== null) {
+      if (debugPick) {
+        const fromSnapshot = this.mountSnapshotPointerEvents.has(bestHandler)
+        const parent = ecs.UiTransform.getOrNull(bestHandler)?.parent ?? 0
+        console.log(
+          `[scene-ui] pick → handler e${bestHandler} parent=e${parent} leafArea=${Math.round(bestHandlerArea)} snapshotPe=${fromSnapshot} (${clientX},${clientY})`
+        )
+      }
+      return bestHandler
+    }
+
+    if (blockingEntity !== null) {
+      if (debugPick) {
+        console.log(
+          `[scene-ui] pick → blocked e${blockingEntity} area=${Math.round(blockingArea)} (${clientX},${clientY})`
+        )
+      }
+      return null
+    }
+    if (debugPick) {
+      console.warn(`[scene-ui] pick → no target (${clientX},${clientY})`)
     }
     return null
   }
@@ -576,6 +756,8 @@ export class SceneUiBridge {
     state: PointerEventTypeValue = PointerEventType.PET_DOWN,
     eventTarget?: EventTarget | null
   ): PointerHit | null {
+    this.lastPointerClientX = clientX
+    this.lastPointerClientY = clientY
     if (!this.domVisible) return null
     this.mirrorEcs = ecs
     this.lastView = view

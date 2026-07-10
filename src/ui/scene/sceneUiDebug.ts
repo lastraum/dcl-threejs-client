@@ -19,8 +19,12 @@ let lastStatusKey = ''
 let lastInputModifierKey = ''
 let overlayHost: HTMLElement | null = null
 
-function isDebugEnabled(): boolean {
+export function isSceneUiDebugEnabled(): boolean {
   return typeof location !== 'undefined' && location.search.includes('sceneuidebug')
+}
+
+function isDebugEnabled(): boolean {
+  return isSceneUiDebugEnabled()
 }
 
 /** Compare hit-map screen rects vs DOM getBoundingClientRect for visible UiInput / UiDropdown fields. */

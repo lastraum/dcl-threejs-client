@@ -36,6 +36,8 @@ import {
   uiScreenScaleFromViewport,
   type UiScreenScale
 } from './uiDomStyles'
+
+const yogaUnusableWarned = new Set<number>()
 export type SceneUiDrawInput = {
   forest: Map<Entity, Entity[]>
   transformOf: (e: Entity) => PBUiTransform | null
@@ -265,6 +267,58 @@ export class SceneUiDomRenderer {
     input.onRegions?.(regions)
   }
 
+  /**
+   * Layout-stable paint: re-style only dirty entities, then rebuild hit regions from DOM rects.
+   * Returns false if a dirty entity has no node yet (caller must full render).
+   */
+  patchEntities(dirty: readonly Entity[], input: SceneUiDrawInput): boolean {
+    const scale = uiScreenScaleFromViewport(input.viewport)
+    const alive = new Set<Entity>(input.mountedEntities)
+    for (const entity of dirty) {
+      if (!alive.has(entity)) {
+        const el = this.nodes.get(entity)
+        if (el) this.applyHiddenDomState(el)
+        continue
+      }
+      if (!this.nodes.has(entity) && isUiEntityVisible(entity, input.transformOf)) {
+        return false
+      }
+      // depth ignored for patch (regions rebuilt below)
+      this.renderEntityTree(entity, input, alive, new Set(), 0, [], scale)
+    }
+    const regions: UiScreenRegion[] = []
+    this.collectHitRegionsFromForest(input, regions)
+    input.onRegions?.(regions)
+    return true
+  }
+
+  /** Hit-map refresh without re-styling — uses live DOM boxes after a style patch. */
+  private collectHitRegionsFromForest(input: SceneUiDrawInput, regions: UiScreenRegion[]): void {
+    const walk = (entity: Entity, depth: number): void => {
+      if (!input.mountedEntities.has(entity)) return
+      const transform = input.transformOf(entity)
+      if (transform && isUiEntityVisible(entity, input.transformOf)) {
+        const shell = this.nodes.get(entity)
+        if (shell?.isConnected) {
+          const rect = shell.getBoundingClientRect()
+          if (rect.width > 0.5 && rect.height > 0.5) {
+            regions.push({
+              entity,
+              left: rect.left,
+              top: rect.top,
+              width: rect.width,
+              height: rect.height,
+              zIndex: transform.zIndex ?? 0,
+              depth
+            })
+          }
+        }
+      }
+      for (const child of input.forest.get(entity) ?? []) walk(child, depth + 1)
+    }
+    for (const root of input.forest.get(CANVAS_ROOT_ENTITY) ?? []) walk(root, 0)
+  }
+
   /** `#scene-ui-root` is the layout containing block (aligned to interactable canvas rect). */
   private ensureLayoutHost(): HTMLElement {
     this.host.style.pointerEvents = 'none'
@@ -353,8 +407,12 @@ export class SceneUiDomRenderer {
         location.search.includes('sceneuidebug') &&
         input.mountedEntities.has(entity)
       ) {
-        const size = layoutBox ? `${layoutBox.width.toFixed(1)}×${layoutBox.height.toFixed(1)}` : 'none'
-        console.warn(`[scene-ui] yoga box unusable for mounted entity ${entity} (${size})`)
+        const id = entity as number
+        if (!yogaUnusableWarned.has(id)) {
+          yogaUnusableWarned.add(id)
+          const size = layoutBox ? `${layoutBox.width.toFixed(1)}×${layoutBox.height.toFixed(1)}` : 'none'
+          console.warn(`[scene-ui] yoga box unusable for mounted entity ${entity} (${size})`)
+        }
       }
       const children = input.forest.get(entity) ?? []
       for (const child of children) {
@@ -372,10 +430,16 @@ export class SceneUiDomRenderer {
     shell.removeAttribute('inert')
     shell.removeAttribute('aria-hidden')
 
+    // Clip on shell — child UiEntity shells nest under the parent shell (siblings of
+    // .scene-ui-node__content), so content-only overflow/radius never rounded the minimap.
+    const clipShell =
+      !!radius || transform.overflow === YGOverflow.HIDDEN || transform.overflow === YGOverflow.SCROLL
     if (radius) {
+      shell.style.borderRadius = radius
       el.style.borderRadius = radius
-      if (transform.overflow !== YGOverflow.HIDDEN) el.style.overflow = 'hidden'
+      el.style.overflow = 'hidden'
     } else {
+      shell.style.borderRadius = ''
       el.style.borderRadius = ''
     }
 
@@ -473,7 +537,7 @@ export class SceneUiDomRenderer {
     }
 
     // Yoga screen-mapped geometry on shell — nested nodes use parent-relative coords.
-    applyYogaLayoutBox(shell, layoutBox, scale, coords)
+    applyYogaLayoutBox(shell, layoutBox, scale, coords, clipShell)
 
     const rect = shell.getBoundingClientRect()
     if (rect.width > 0.5 && rect.height > 0.5) {

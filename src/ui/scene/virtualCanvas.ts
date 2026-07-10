@@ -15,8 +15,8 @@ export type ScreenUiRect = {
 
 /**
  * Viewport mapping virtual Yoga space → screen pixels.
- * Fills the interactable area (no letterbox) so fullscreen scrims and `right: 0` panels
- * anchor to the actual screen edges — matches Explorer stretch behavior.
+ * Fills the interactable area (no letterbox) so fullscreen scrims and edge-anchored panels
+ * hit the real screen edges — Explorer stretch behavior. Typography/radii use `uniform`.
  */
 export type UiViewport = {
   scaleX: number

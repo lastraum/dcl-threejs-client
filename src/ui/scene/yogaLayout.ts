@@ -123,8 +123,17 @@ function applyEdge(
 
 function applyTextMinSize(node: YogaNode, text: PBUiText | null | undefined): void {
   if (!text?.value?.trim()) return
+  // TW_NO_WRAP = 1; default / TW_WRAP = 0 / unset → wrap (SDK default TW_WRAP).
+  const noWrap = text.textWrap === 1
   const measured = measureUiText(text, 1)
-  if (measured.width > 0) node.setMinWidth(measured.width)
+  if (noWrap) {
+    // Single line: intrinsic width is the unwrapped run.
+    if (measured.width > 0) node.setMinWidth(measured.width)
+    if (measured.height > 0) node.setMinHeight(measured.height)
+    return
+  }
+  // Wrapping text must shrink to the parent width — minWidth = full unwrapped measure
+  // forces overflow (Planetangzaar character description, etc.).
   if (measured.height > 0) node.setMinHeight(measured.height)
 }
 

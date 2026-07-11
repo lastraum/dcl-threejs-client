@@ -5,7 +5,6 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "prebuild": "node scripts/sync-dev-progress.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "bundle:wearables": "node scripts/bundle-base-wearables.mjs",

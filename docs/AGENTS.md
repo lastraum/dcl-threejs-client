@@ -45,7 +45,7 @@ Raw URLs (default branch `dev-latest`):
 - `https://raw.githubusercontent.com/lastraum/dcl-threejs-client/main/docs/PROGRESS.md`
 
 Override branch: `?docsBranch=your-branch` or `localStorage.docsBranch`.  
-Offline: `?docsGithubFetch=0` uses bundled snapshots (`claimsFallback.ts`, `progressFallback.ts` from `npm run prebuild`).
+Offline: `?docsGithubFetch=0` uses Vite-bundled snapshots of `docs/PROGRESS.md` / `docs/CLAIMS.yaml` / `docs/TASKS.yaml` (`?raw` imports in `*Fallback.ts` — no prebuild rewrite).
 
 ## Where to start (common areas)
 

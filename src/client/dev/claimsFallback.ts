@@ -1,39 +1,9 @@
-/** Auto-generated from docs/CLAIMS.yaml by scripts/sync-dev-progress.mjs — do not edit manually. */
-
+/**
+ * Offline CLAIMS.yaml snapshot for the dev panel when GitHub fetch is disabled.
+ * Bundled at build/dev time via Vite `?raw` — does not rewrite this file on `npm run build`.
+ */
+import { parse as parseYaml } from 'yaml'
+import claimsYaml from '../../../docs/CLAIMS.yaml?raw'
 import type { ClaimsRegistry } from './claimsRegistry'
 
-export const CLAIMS_FALLBACK: ClaimsRegistry = {
-  "schema_version": 2,
-  "updated": "2026-07-08",
-  "source": "github",
-  "base_branch": "dev-latest",
-  "workflow": [
-    {
-      "stage": "merged",
-      "integration_ref": "pr:5",
-      "title": "perf(tween): stop Genesis hot-loop + silence worker deliver logs",
-      "owner": "lastraum",
-      "pr": 5,
-      "pr_url": "https://github.com/lastraum/dcl-threejs-client/pull/5",
-      "updated": "2026-06-17"
-    },
-    {
-      "stage": "merged",
-      "integration_ref": "pr:4",
-      "title": "proactive TweenState delivery for tweenCompleted parity",
-      "owner": "lastraum",
-      "pr": 4,
-      "pr_url": "https://github.com/lastraum/dcl-threejs-client/pull/4",
-      "updated": "2026-06-17"
-    },
-    {
-      "stage": "merged",
-      "integration_ref": "ecs:TriggerArea",
-      "title": "TriggerArea Tier A — volume enter/exit and scene callbacks",
-      "owner": "lastraum",
-      "pr": 2,
-      "pr_url": "https://github.com/lastraum/dcl-threejs-client/pull/2",
-      "updated": "2026-06-17"
-    }
-  ]
-} as ClaimsRegistry
+export const CLAIMS_FALLBACK: ClaimsRegistry = parseYaml(claimsYaml) as ClaimsRegistry

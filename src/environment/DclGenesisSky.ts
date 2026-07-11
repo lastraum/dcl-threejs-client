@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { ENVIRONMENT_TEXTURES } from './environmentAssets'
 import { loadCrossCubemap } from './crossCubemap'
 import { sampleSkyGradients } from './skyGradients'
-import { normalizedTimeOfDay, SUN_BRIGHTNESS } from './skyboxTime'
+import { normalizedTimeOfDay } from './skyboxTime'
 import { isSunPeriod } from './sunCycleSampler'
 import {
   FIXED_SUN_DISC_CORE_GAIN,

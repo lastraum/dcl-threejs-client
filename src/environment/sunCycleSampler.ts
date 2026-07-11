@@ -113,31 +113,32 @@ export function animatedLightIntensity(seconds: number): number {
 }
 
 /**
- * Moon directional fill — Unity uses `directionalLightLayer.intensity` (Generic_Skybox ~0.2 at dusk,
- * ~0.5 at midnight), NOT the sun anim intensity curve (which hits 0 for the moon quaternion half).
+ * Moon directional fill at night. Unity sun anim intensity is ~0 overnight; night scenes
+ * still read via ambient + residual directional. We keep a clear moon key light so vertical
+ * planes (PNG character boards) light like Explorer at 23:59.
  */
 export function moonLightIntensity(seconds: number): number {
   if (isSunPeriod(seconds)) return 0
   const t = normalizedTimeOfDay(seconds)
   const hours = t * 24
 
-  // Generic_Skybox Moon satellite visible ~21:00–02:00; keep fill through twilight shoulders.
+  // Peak around midnight; stay usable through full night arc.
   if (hours >= 21 || hours <= 2) {
     const distFromMidnight = hours >= 12 ? 24 - hours : hours
     if (distFromMidnight <= 5) {
-      return THREE.MathUtils.lerp(0.58, 0.36, distFromMidnight / 5)
+      return THREE.MathUtils.lerp(1.05, 0.72, distFromMidnight / 5)
     }
-    return THREE.MathUtils.lerp(0.36, 0.26, (distFromMidnight - 5) / 2)
+    return THREE.MathUtils.lerp(0.72, 0.55, (distFromMidnight - 5) / 2)
   }
 
   if (hours < SUNRISE / 3600) {
-    return THREE.MathUtils.lerp(0.26, 0.38, hours / (SUNRISE / 3600))
+    return THREE.MathUtils.lerp(0.55, 0.7, hours / (SUNRISE / 3600))
   }
   if (hours > SUNSET / 3600) {
-    return THREE.MathUtils.lerp(0.38, 0.26, (hours - SUNSET / 3600) / (21 - SUNSET / 3600))
+    return THREE.MathUtils.lerp(0.7, 0.5, (hours - SUNSET / 3600) / (21 - SUNSET / 3600))
   }
 
-  return 0.22
+  return 0.48
 }
 
 export { normalizeDaySeconds, normalizedTimeOfDay, SECONDS_PER_DAY }

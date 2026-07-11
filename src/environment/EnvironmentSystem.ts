@@ -114,6 +114,7 @@ export class EnvironmentSystem {
     configureDirectionalSunShadow(this.sun)
 
     this.moon = new THREE.DirectionalLight(0x8370ff, 0.4)
+    configureDirectionalSunShadow(this.moon)
     this.moon.castShadow = false
 
     this.sun.target = new THREE.Object3D()
@@ -200,6 +201,7 @@ export class EnvironmentSystem {
     this.moon.removeFromParent()
     this.moon.target.removeFromParent()
     this.sun.shadow.map?.dispose()
+    this.moon.shadow.map?.dispose()
     this.customCube?.dispose()
     this.customBackground?.dispose()
   }
@@ -455,11 +457,23 @@ export class EnvironmentSystem {
       : (day ? EQUATOR_AMBIENT_DAY : EQUATOR_AMBIENT_NIGHT) * ambientMul
     this.equatorAmbient.color.copy(g.indirectEquator)
 
-    // Soft sun shadows — follow camera focus (Unity soft directional).
+    // Soft directional shadows: sun by day, moon by night (Unity soft directional feel).
     const sunShadowsOn = !skylightOff && day && !this.disableSun && this.sun.intensity > 0.05
+    const moonShadowsOn =
+      !skylightOff && !day && !this.disableMoon && this.moon.intensity > 0.08
     refreshDirectionalSunShadowMapSize(this.sun)
-    updateDirectionalSunShadowFocus(this.sun, this.host.camera.position, _celestial, sunShadowsOn)
-    if (!sunShadowsOn) {
+    refreshDirectionalSunShadowMapSize(this.moon)
+    if (sunShadowsOn) {
+      updateDirectionalSunShadowFocus(this.sun, this.host.camera.position, _celestial, true)
+      this.moon.castShadow = false
+    } else if (moonShadowsOn) {
+      this.sun.castShadow = false
+      this.sun.position.copy(_celestial).multiplyScalar(120)
+      this.sun.target.position.set(0, 0, 0)
+      updateDirectionalSunShadowFocus(this.moon, this.host.camera.position, _celestial, true)
+    } else {
+      this.sun.castShadow = false
+      this.moon.castShadow = false
       this.sun.position.copy(_celestial).multiplyScalar(120)
       this.sun.target.position.set(0, 0, 0)
     }

@@ -60,40 +60,45 @@ vec3 sampleGradient(vec3 dir, vec3 zenit, vec3 horizon, vec3 nadir) {
 }
 
 /**
- * Night moon disc — billboarded SkyboxMoon texture along moon direction.
- * Unity Explorer drives _Moon_Mask_Size (~0.16 at night) + celestial tint; we draw a
- * real disc (previous sky-sphere UV never sampled the moon face, so it was invisible).
+ * Night moon — Unity GenesisSky style:
+ * bright disc with offset bite (crescent), small companion, soft glow.
+ * _Moon_Mask_Size ~0.16 night; mask offset (~0.01,-0.01) carves the C.
  */
 vec3 moonDisc(vec3 dir, vec3 moonDir, sampler2D map, float mask) {
   if (mask < 0.001) return vec3(0.0);
   vec3 m = normalize(moonDir);
   if (m.y < -0.08) return vec3(0.0);
   vec3 v = normalize(dir);
-  float d = dot(v, m);
-  // Small disc, similar angular size to our sun core.
-  float cosEdge = 0.9970;
-  float cosGlow = cosEdge - 0.02;
-  if (d < cosGlow) return vec3(0.0);
+  float moonDot = dot(v, m);
 
-  float ang = acos(clamp(d, -1.0, 1.0));
-  float edge = acos(cosEdge);
-  float core = 1.0 - smoothstep(0.0, max(edge * 1.1, 0.001), ang);
-  core = pow(max(core, 0.0), 1.2);
+  // Angular size of the lit moon disc (small, Explorer-like).
+  float moonSize = 0.038;
+  float disc = step(cos(moonSize), moonDot);
 
-  // Billboard UVs in the plane perpendicular to moonDir.
+  // Tangent frame for bite offset + companion (Unity moon_mask_offset).
   vec3 up = abs(m.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-  vec3 t = normalize(cross(up, m));
-  vec3 b = cross(m, t);
-  float invR = 1.0 / max(sin(edge * 1.5), 1e-4);
-  vec2 uv = vec2(dot(v, t), dot(v, b)) * invR * 0.5 + 0.5;
+  vec3 tang = normalize(cross(up, m));
+  vec3 bitang = cross(m, tang);
+  // Offset sphere that subtracts from the disc → crescent.
+  vec3 biteDir = normalize(m + (tang * 0.42 + bitang * (-0.18)) * moonSize * 12.0);
+  float bite = step(cos(moonSize * 0.92), dot(v, biteDir));
+  float crescent = disc * (1.0 - bite);
+
+  // Small secondary companion (Unity second_sun / flare twin near the moon).
+  vec3 companionDir = normalize(m + tang * 0.065 + bitang * 0.055);
+  float companion = step(cos(moonSize * 0.2), dot(v, companionDir));
+
+  float softCore = pow(max(moonDot, 0.0), 90.0) * 0.55;
+  float softHalo = pow(max(moonDot, 0.0), 28.0) * 0.25;
+
+  // Optional texture detail inside the crescent (does not force a full circle).
+  vec2 uv = vec2(dot(v, tang), dot(v, bitang)) / max(sin(moonSize * 1.4), 1e-4) * 0.5 + 0.5;
   vec4 tex = texture2D(map, uv);
   float inUv = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
-  vec3 surface = mix(vec3(0.72, 0.76, 0.92), tex.rgb, clamp(tex.a * inUv, 0.0, 1.0));
-  float glow = exp(-ang / 0.032) * 0.55;
-  float halo = exp(-ang / 0.075) * 0.22;
-  // Unity mask ~0.16 ⇒ treat as full opacity when night is active.
+  vec3 surface = mix(vec3(1.9, 1.95, 2.15), tex.rgb * 1.6, clamp(tex.a * inUv * 0.35, 0.0, 1.0));
+
   float opacity = clamp(mask * 6.25, 0.0, 1.0);
-  return surface * (core * 2.4 + glow + halo) * opacity;
+  return surface * (crescent * 2.8 + companion * 2.0 + softCore + softHalo) * opacity;
 }
 
 // Small warm disc + light soft halo. Visual only — scene lighting uses DirectionalLight.

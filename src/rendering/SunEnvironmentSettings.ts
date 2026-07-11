@@ -26,11 +26,11 @@ export const FIXED_SUN_DISC_CORE_GAIN = 0.55
 export const FIXED_SUN_DISC_GLOW_GAIN = 0.28
 
 const DEFAULTS: SunEnvironmentSettingsState = {
-  /** Scene mesh lighting (Reset lighting). Mid defaults with trilight ambient. */
+  /** Scene mesh lighting (Reset lighting). Night moon exposure higher so 23:59 planes read. */
   sceneSunLight: 52,
   exposure: 70,
-  sceneMoonLight: 52,
-  moonExposure: 50
+  sceneMoonLight: 58,
+  moonExposure: 62
 }
 
 type Listener = (state: SunEnvironmentSettingsState) => void

@@ -3456,6 +3456,34 @@
       .gfx-settings__toggle input:checked + .gfx-settings__toggle-track::after {
         transform: translateX(18px);
       }
+      .gfx-settings__actions {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 10px;
+        padding-top: 4px;
+      }
+      .gfx-settings__reset-btn {
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.88);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        padding: 7px 14px;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease;
+      }
+      .gfx-settings__reset-btn:hover {
+        background: rgba(255, 255, 255, 0.12);
+        border-color: rgba(255, 255, 255, 0.28);
+      }
+      .gfx-settings__reset-btn:active {
+        background: rgba(255, 107, 107, 0.2);
+        border-color: rgba(255, 107, 107, 0.45);
+      }
 
       /* ===== Map View (settings overlay — neurolink dcl-map parity) ===== */
       .map-view.dcl-map-page {

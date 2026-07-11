@@ -167,7 +167,20 @@ export class GraphicsSettingsView {
         }
       ]
     }
-    return this.buildSection(section)
+    const el = this.buildSection(section)
+
+    const actions = document.createElement('div')
+    actions.className = 'gfx-settings__actions'
+    const resetBtn = document.createElement('button')
+    resetBtn.type = 'button'
+    resetBtn.className = 'gfx-settings__reset-btn'
+    resetBtn.textContent = 'Reset lighting'
+    resetBtn.title = 'Restore Scene Sun Light, Exposure, Moon Light, and Moon Exposure to defaults'
+    resetBtn.addEventListener('click', () => sunEnvironmentSettings.reset())
+    actions.appendChild(resetBtn)
+    el.appendChild(actions)
+
+    return el
   }
 
   private syncSunControls(state: SunEnvironmentSettingsState): void {

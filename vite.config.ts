@@ -68,7 +68,7 @@ export default defineConfig({
         {
           name: 'yoga-nbind-fix-deps',
           setup(build) {
-            build.onLoad({ filter: /yoga-layout-prebuilt\/.*\/nbind\.js$/ }, async (args) => {
+            build.onLoad({ filter: /yoga-layout-prebuilt[\\/].*[\\/]nbind\.js$/ }, async (args) => {
               const { readFile } = await import('node:fs/promises')
               const contents = patchYogaNbindSource(await readFile(args.path, 'utf8'))
               return { contents, loader: 'js' }

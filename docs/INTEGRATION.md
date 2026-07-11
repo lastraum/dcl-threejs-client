@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-11 (VirtualCamera bind hydrate + PE-follow — see PROGRESS.md)
+> **Last updated:** 2026-07-11 (materials + sun azimuth + skybox authority — see PROGRESS.md)
 
 ---
 
@@ -51,7 +51,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | VisibilityComponent | 1081 | 🟢 | `obj.visible` |
 | GltfContainer | 1041 | 🟢 | Budgeted attach + reload on src change |
 | MeshRenderer | 1018 | 🟢 | Primitives + custom UVs |
-| Material | 1017 | 🟢 | PBR/unlit + video textures |
+| Material | 1017 | 🟢 | PBR/unlit + video textures; empty Creator Hub slots ignored; AUTO cutout only with alphaMap (Unity) |
 | Animator | 1042 | 🟢 | `AnimatorBridge` |
 | Billboard | 1090 | 🟢 | `BillboardBridge` |
 | LightSource | 1079 | 🟢 | Culling + quality tiers |
@@ -107,7 +107,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | Component | ID | Status | Notes |
 | --------- | -- | ------ | ----- |
 | NetworkEntity / NetworkParent | — | 🟡 | Projection decode + parent strip |
-| SkyboxTime | 1210 | 🟢 | Day/night + fixed time |
+| SkyboxTime | 1210 | 🟢 | Scene fixed → session custom → Auto; ECS/json lock snaps on cold bind |
 | UiTransform … UiDropdown | 1050+ | ⬜ | In-scene UI (HUD is separate) |
 | ParticleSystem | 1217 | 🟢 | `ParticleSystemBridge` — GPU billboard sprites |
 | NftShape | 1040 | ⬜ | |
@@ -168,11 +168,14 @@ DOM overlay — not in-scene `UiTransform`.
 | **AvatarAttach Tier B** | **🟢** |
 | PointerEvents cache, LightManager culling | 🟢 |
 | Genesis sky + cloud lighting (camera-centered dome) | 🟢 |
+| Sun/moon azimuth parity vs Explorer (negate-X celestial) | 🟢 |
+| Skybox time authority (scene / session / auto) | 🟢 |
 | Low-end scene worker timing + adaptive abort backoff | 🟢 |
 | Boot/hydration: main.crdt seed, composite preload, unified GLB | 🟢 |
 | Landscapes, FFT ocean, Perlin scatter foliage | 🟢 |
 | Scene GLTF emissive LEDs (neon mats) | 🟡 partial |
 | User sun/moon lighting + exposure sliders | 🟢 |
+| Sun/hemi intensity match vs Explorer | 🟡 partial |
 | GLTF hydration budgets, GLB parse pool, AssetCache IDB | 🟢 |
 | PhysX lazy load, collider prewarm, Hyperfy grouped GLTF actors | 🟢 |
 | GLTF InstancedMesh | ⬜ |

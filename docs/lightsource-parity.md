@@ -52,6 +52,8 @@ Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not rep
 - Skydome sun disc: fixed small disc / no corona (user sliders removed 2026-06-18); hybrid does **not** dim the sky dome
 - **Cloud layers:** cubemap density mask → HDR `clouds` gradient tint + **screen brighten** over sky; sun-facing lift at day; `toneMapped: false` on sky material; soft `smoothstep` falloff **0.62** + mipmap bias **-1.0**; per-ray `sunFacing` on **mask** removed (was blue speckle) — sun used for **tint** only
 - `LightManager.getActiveNearbyCount()` drives the scale; `World` runs light culling **before** environment update
+- **Azimuth parity (2026-07-11, [#15](https://github.com/lastraum/dcl-threejs-client/pull/15)):** `unityQuatToThreeDirection` uses the same YZ-plane reflection (**negate X**) as `dclTransform` — was negate-Z, which put sun/moon/disc/ocean 180° of azimuth off vs Unity Explorer. Elevation unchanged.
+- **Skybox time authority (2026-07-11):** (1) scene.json / ECS `SkyboxTime` (2) session custom TOD (`sessionStorage`) (3) Auto 60× cycle. Scene lock always syncs and preempts session custom.
 
 ### Tone mapping + exposure (`SceneHost.ts`, `EnvironmentSystem.ts`)
 
@@ -86,6 +88,7 @@ Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not rep
 | **Exact Explorer tier numbers** | Tier limits (4 / 6 / 10) are reasonable parity targets; Unity Explorer source values not verified byte-for-byte — adjust after side-by-side profiling. |
 | **Player vs camera cull origin** | Culling uses **camera** position (works in orbit mode). Explorer may use avatar position in some cases. |
 | **Directional sun shadows** | Environment sun/moon remain non-shadow-casting; only ECS spot lights cast. |
+| **Sun/hemi intensity vs Explorer** | Azimuth fixed; overall brightness / `SUN_BRIGHTNESS` / exposure may still read hotter than Unity on PBR planes. |
 | **GltfNodeModifiers castShadows** | Per-node GLTF shadow flags not wired; Material `castShadows` is. |
 | **Per-layer cloud tints** | Explorer uses per-layer gradients; we use one global `uCloudsColor` for all cubemap layers. |
 | **Graphics settings stubs** | Preferences panel MSAA/bloom/shadows/resolution — UI only, not wired to renderer. |

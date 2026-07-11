@@ -70,3 +70,39 @@ export function sliderMinutesToSeconds(minutes: number): number {
   const clamped = Math.max(0, Math.min(MINUTES_PER_DAY, Math.round(minutes)))
   return clamped * 60
 }
+
+/** Browser-tab session custom TOD (Night/Day panel). Cleared when Auto is enabled. */
+const SESSION_SKYBOX_KEY = 'dcl-threejs-skybox-session'
+
+export type SessionSkyboxPreference =
+  | { mode: 'auto' }
+  | { mode: 'custom'; seconds: number }
+
+export function loadSessionSkyboxPreference(): SessionSkyboxPreference {
+  try {
+    const raw = sessionStorage.getItem(SESSION_SKYBOX_KEY)
+    if (!raw) return { mode: 'auto' }
+    const parsed = JSON.parse(raw) as { mode?: string; seconds?: number }
+    if (parsed.mode === 'custom' && typeof parsed.seconds === 'number' && Number.isFinite(parsed.seconds)) {
+      return { mode: 'custom', seconds: normalizeDaySeconds(parsed.seconds) }
+    }
+  } catch {
+    /* private mode / corrupt */
+  }
+  return { mode: 'auto' }
+}
+
+export function saveSessionSkyboxPreference(pref: SessionSkyboxPreference): void {
+  try {
+    if (pref.mode === 'auto') {
+      sessionStorage.removeItem(SESSION_SKYBOX_KEY)
+      return
+    }
+    sessionStorage.setItem(
+      SESSION_SKYBOX_KEY,
+      JSON.stringify({ mode: 'custom', seconds: normalizeDaySeconds(pref.seconds) })
+    )
+  } catch {
+    /* quota / private mode */
+  }
+}

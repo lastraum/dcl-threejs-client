@@ -19,10 +19,12 @@ import {
   HEMI_DAY_INTENSITY,
   HEMI_NIGHT_INTENSITY,
   lerpDaySeconds,
+  loadSessionSkyboxPreference,
   MIDDAY_SECONDS,
   MOON_BRIGHTNESS,
   NIGHT_GROUND_HEMI_BOOST,
   normalizeDaySeconds,
+  saveSessionSkyboxPreference,
   SUN_BRIGHTNESS,
   TRANSITION_WALL_SEC,
   TransitionMode as TM
@@ -66,11 +68,22 @@ export class EnvironmentSystem {
   private transitionFrom = MIDDAY_SECONDS
   private transitionProgress = 1
   private transitionBackward = false
-  private fixedMode = false
+  /**
+   * Skybox time authority (highest wins):
+   * 1) Scene fixed — scene.json `skyboxConfig.fixedTime` or ECS `SkyboxTime`
+   * 2) Session custom — Night/Day panel (sessionStorage)
+   * 3) Auto — 60× day cycle
+   */
+  private sceneJsonFixedTime: number | null = null
+  /** True while scene.json or ECS locks time (beats session custom + auto). */
+  private sceneLocked = false
   private cycleMode = true
   private freezeClouds = false
+  /** Session custom TOD when not scene-locked; persisted in sessionStorage. */
   private uiOverrideTime: number | null = null
   private lastSkyboxKey = ''
+  /** First ECS SkyboxTime after init snaps; later changes use TRANSITION_WALL_SEC. */
+  private ecsSkyboxEverApplied = false
   private landscapeKind: SceneEnvironmentKind = 'island'
   private disableSun = false
   private disableMoon = false
@@ -110,17 +123,10 @@ export class EnvironmentSystem {
     threeScene.add(this.moon)
     threeScene.add(this.moon.target)
 
-    const initial = scene.skybox?.fixedTime
-    if (typeof initial === 'number' && Number.isFinite(initial)) {
-      this.displayTime = normalizeDaySeconds(initial)
-      this.targetTime = this.displayTime
-      this.fixedMode = true
-      this.cycleMode = false
-    } else {
-      this.displayTime = MIDDAY_SECONDS
-      this.targetTime = MIDDAY_SECONDS
-      this.cycleMode = true
-    }
+    this.lastSkyboxKey = ''
+    this.ecsSkyboxEverApplied = false
+    this.transitionProgress = 1
+    this.applyInitialTimeAuthority(scene)
 
     await this.applyCustomSkybox(scene.skybox, scene.assetUrl)
     const hideSkyDome = landscapeProfile.spaceSky === true || landscapeProfile.voidSky === true
@@ -146,9 +152,8 @@ export class EnvironmentSystem {
   }
 
   update(delta: number, view: ProjectionView, components: MirrorComponents): void {
-    if (this.uiOverrideTime === null) {
-      this.syncSkyboxTime(view, components)
-    }
+    // Always sync scene lock (priority 1) so it can preempt session custom.
+    this.syncSkyboxTime(view, components)
 
     if (this.transitionProgress < 1) {
       this.transitionProgress = Math.min(1, this.transitionProgress + delta / TRANSITION_WALL_SEC)
@@ -158,9 +163,11 @@ export class EnvironmentSystem {
         this.transitionProgress,
         this.transitionBackward
       )
+    } else if (this.sceneLocked) {
+      this.displayTime = this.targetTime
     } else if (this.uiOverrideTime !== null) {
       this.displayTime = this.uiOverrideTime
-    } else if (this.cycleMode && !this.fixedMode) {
+    } else if (this.cycleMode) {
       this.displayTime = normalizeDaySeconds(this.displayTime + delta * CYCLE_RATE)
     } else {
       this.displayTime = this.targetTime
@@ -191,71 +198,162 @@ export class EnvironmentSystem {
     return this.outdoorLighting
   }
 
-  /** True when UI auto cycle is running (not manual override). */
+  /** True when Auto is active (not scene-locked, no session custom). */
   isUiAutoCycle(): boolean {
-    return this.uiOverrideTime === null && this.cycleMode
+    return !this.sceneLocked && this.uiOverrideTime === null && this.cycleMode
   }
 
-  /** True when the player pinned a manual time via the skybox panel. */
+  /** True when session custom TOD is active (not scene-locked). */
   isUiManualOverride(): boolean {
-    return this.uiOverrideTime !== null
+    return !this.sceneLocked && this.uiOverrideTime !== null
   }
 
-  /** UI skybox slider — pauses ECS sync while active. Pass null to resume cycle/ECS. */
+  /** Scene.json or ECS fixed time currently owns the clock. */
+  isSceneTimeLocked(): boolean {
+    return this.sceneLocked
+  }
+
+  /**
+   * Session custom TOD (priority 2). Stored in sessionStorage for the tab.
+   * No-ops display while scene-locked, but still persists for when the lock clears.
+   * Pass null to clear custom and fall through to Auto (if not scene-locked).
+   */
   setUiTimeOverride(seconds: number | null): void {
     if (seconds === null) {
       this.uiOverrideTime = null
-      this.freezeClouds = false
+      saveSessionSkyboxPreference({ mode: 'auto' })
+      if (!this.sceneLocked) {
+        this.cycleMode = true
+        this.freezeClouds = false
+        this.targetTime = this.displayTime
+        this.transitionProgress = 1
+      }
       return
     }
-    this.uiOverrideTime = normalizeDaySeconds(seconds)
-    this.freezeClouds = true
-    this.fixedMode = true
+
+    const t = normalizeDaySeconds(seconds)
+    this.uiOverrideTime = t
+    saveSessionSkyboxPreference({ mode: 'custom', seconds: t })
     this.cycleMode = false
-    this.displayTime = this.uiOverrideTime
-    this.targetTime = this.uiOverrideTime
-    this.transitionProgress = 1
+    this.freezeClouds = true
+    if (!this.sceneLocked) {
+      this.displayTime = t
+      this.targetTime = t
+      this.transitionProgress = 1
+    }
   }
 
   setUiCycleEnabled(enabled: boolean): void {
     if (enabled) {
       this.uiOverrideTime = null
-      this.fixedMode = false
-      this.cycleMode = true
-      this.freezeClouds = false
-      this.targetTime = this.displayTime
+      saveSessionSkyboxPreference({ mode: 'auto' })
+      if (!this.sceneLocked) {
+        this.cycleMode = true
+        this.freezeClouds = false
+        this.targetTime = this.displayTime
+        this.transitionProgress = 1
+      }
+      return
+    }
+    // Pin current display as session custom (priority 2).
+    this.setUiTimeOverride(this.displayTime)
+  }
+
+  /**
+   * Priority on boot:
+   * 1) scene.json fixedTime → 2) session custom → 3) auto from midday.
+   * ECS SkyboxTime is applied later in update via syncSkyboxTime (still priority 1).
+   */
+  private applyInitialTimeAuthority(scene: ResolvedScene): void {
+    const raw = scene.skybox?.fixedTime
+    this.sceneJsonFixedTime =
+      typeof raw === 'number' && Number.isFinite(raw) ? normalizeDaySeconds(raw) : null
+
+    const session = loadSessionSkyboxPreference()
+    this.uiOverrideTime = session.mode === 'custom' ? session.seconds : null
+
+    if (this.sceneJsonFixedTime !== null) {
+      this.sceneLocked = true
+      this.cycleMode = false
+      this.freezeClouds = true
+      this.displayTime = this.sceneJsonFixedTime
+      this.targetTime = this.sceneJsonFixedTime
+      return
+    }
+
+    this.sceneLocked = false
+    if (this.uiOverrideTime !== null) {
+      this.cycleMode = false
+      this.freezeClouds = true
+      this.displayTime = this.uiOverrideTime
+      this.targetTime = this.uiOverrideTime
+      return
+    }
+
+    this.cycleMode = true
+    this.freezeClouds = false
+    this.displayTime = MIDDAY_SECONDS
+    this.targetTime = MIDDAY_SECONDS
+  }
+
+  private applyUnlockedFallback(): void {
+    this.sceneLocked = false
+    if (this.uiOverrideTime !== null) {
+      this.cycleMode = false
+      this.freezeClouds = true
+      this.displayTime = this.uiOverrideTime
+      this.targetTime = this.uiOverrideTime
       this.transitionProgress = 1
       return
     }
-    this.setUiTimeOverride(this.displayTime)
+    this.cycleMode = true
+    this.freezeClouds = false
   }
 
   private syncSkyboxTime(view: ProjectionView, { SkyboxTime }: MirrorComponents): void {
     const root = view.RootEntity
-    const has = SkyboxTime.has(root)
-    const key = has
-      ? `${SkyboxTime.get(root).fixedTime}|${SkyboxTime.get(root).transitionMode ?? TM.TM_FORWARD}`
-      : 'cycle'
+    const hasEcs = SkyboxTime.has(root)
+    const key = hasEcs
+      ? `ecs:${SkyboxTime.get(root).fixedTime}|${SkyboxTime.get(root).transitionMode ?? TM.TM_FORWARD}`
+      : this.sceneJsonFixedTime !== null
+        ? `json:${this.sceneJsonFixedTime}`
+        : 'unlocked'
 
     if (key === this.lastSkyboxKey) return
     this.lastSkyboxKey = key
 
-    if (!has) {
-      this.fixedMode = false
-      this.cycleMode = true
-      this.freezeClouds = false
+    if (hasEcs) {
+      const { fixedTime, transitionMode } = SkyboxTime.get(root)
+      const to = normalizeDaySeconds(fixedTime)
+      const backward = (transitionMode ?? TM.TM_FORWARD) === TM.TM_BACKWARD
+      this.sceneLocked = true
+      this.cycleMode = false
+      this.freezeClouds = true
+
+      // Cold bind: snap (avoid 4s dark→bright on load). Live scene changes: smooth transition.
+      if (!this.ecsSkyboxEverApplied) {
+        this.ecsSkyboxEverApplied = true
+        this.displayTime = to
+        this.targetTime = to
+        this.transitionProgress = 1
+        return
+      }
+      this.beginTransition(this.displayTime, to, backward)
       return
     }
 
-    const { fixedTime, transitionMode } = SkyboxTime.get(root)
-    this.fixedMode = true
-    this.cycleMode = false
-    this.freezeClouds = true
-    this.beginTransition(
-      this.displayTime,
-      normalizeDaySeconds(fixedTime),
-      (transitionMode ?? TM.TM_FORWARD) === TM.TM_BACKWARD
-    )
+    if (this.sceneJsonFixedTime !== null) {
+      this.sceneLocked = true
+      this.cycleMode = false
+      this.freezeClouds = true
+      this.displayTime = this.sceneJsonFixedTime
+      this.targetTime = this.sceneJsonFixedTime
+      this.transitionProgress = 1
+      return
+    }
+
+    // Priority 2 session custom, else priority 3 auto.
+    this.applyUnlockedFallback()
   }
 
   private beginTransition(from: number, to: number, backward: boolean): void {

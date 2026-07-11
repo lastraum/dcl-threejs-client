@@ -9,27 +9,27 @@ updated: 2026-07-11
 source: github
 base_branch: dev-latest
 workflow:
-  - stage: pending_review
-    integration_ref: pr:15
-    title: sun/moon azimuth 180° off vs Unity Explorer
-    owner: awedjob
-    pr: 15
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/15
-    updated: 2026-07-10
-  - stage: pending_review
+  - stage: merged
     integration_ref: pr:14
     title: match Windows paths in yoga nbind esbuild filter
     owner: awedjob
     pr: 14
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/14
-    updated: 2026-07-10
-  - stage: pending_review
+    updated: 2026-07-11
+  - stage: merged
+    integration_ref: pr:15
+    title: sun/moon azimuth 180° off vs Unity Explorer
+    owner: awedjob
+    pr: 15
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/15
+    updated: 2026-07-11
+  - stage: merged
     integration_ref: pr:13
     title: empty texture slots, AUTO alpha parity, per-frame re-apply loop
     owner: awedjob
     pr: 13
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/13
-    updated: 2026-07-10
+    updated: 2026-07-11
   - stage: merged
     integration_ref: pr:16
     title: VirtualCamera bind reliability, PE-follow, and chrome cleanup

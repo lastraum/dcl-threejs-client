@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-11 (VirtualCamera bind hydrate + PE-follow — [PLAYER_FRAME_CHANNEL.md](./PLAYER_FRAME_CHANNEL.md))  
-> **Current phase:** Companion social UX + mesh P0 + **VirtualCamera reliability** on `dev-latest`. **Next:** Phase 3 Watch Lite (landing voice/chat), Phase 4 `/goto` in 3D; smoke-test **v0.4.0** → `main`.  
+> **Last updated:** 2026-07-11 (**v0.6.0** cut → `main`)  
+> **Current phase:** **v0.6.0** on `main` / `dev-latest`. **Next:** Phase 3 Watch Lite, Phase 4 `/goto`; MOVE CAMERA residual; sun intensity + directional shadows polish.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -26,8 +26,64 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Community thumbnails** | 🟢 | `communityDisplayImageUrl` + proxy passthrough; detail-fetch fallback on image 404 |
 | **Dev panel in-app suggestions** | 🟢 | `</>` → **💡 Suggest** — form in panel; auto-attaches DCL name + route; files GitHub issues labeled `suggestion` via Cloudflare Worker (prod) or vite proxy (local dev) |
 | **VirtualCamera bind reliability** | 🟢 | Scene-agnostic MainCamera→VC hydrate; locked shots use worker world pose; follow is f(player)+local; live Transform exclusive while bound |
+| **Skybox time authority** | 🟢 | Scene fixed → session custom (tab) → Auto cycle; Night/Day panel respects scene lock |
 
 **Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**. Suggestions: dev panel → **💡 Suggest**.
+
+---
+
+## 🎉 Release — v0.6.0 (2026-07-11)
+
+**Status: cut from `dev-latest` → `main` · tag `v0.6.0`** — reliability + parity batch after companion social **v0.5.0**.
+
+### Highlights since v0.5.0
+
+| Area | Notes |
+| ---- | ----- |
+| **Scene UI + pointer** | [#11](https://github.com/lastraum/dcl-threejs-client/pull/11) — stack, z-order pick, play-mode gate |
+| **Mesh P0** | [#12](https://github.com/lastraum/dcl-threejs-client/pull/12) — hash drain, instancing, no bulk soft-prime |
+| **VirtualCamera** | [#16](https://github.com/lastraum/dcl-threejs-client/pull/16) — bind hydrate, PE-follow, HUD above scene UI |
+| **Materials** | [#13](https://github.com/lastraum/dcl-threejs-client/pull/13) + follow-up — empty Creator Hub slots; stop re-apply thrash; AUTO cutout = Unity (alphaMap only) |
+| **Sun azimuth** | [#15](https://github.com/lastraum/dcl-threejs-client/pull/15) — celestial negate-X matches scene `dclTransform` |
+| **Skybox authority** | Scene fixed → session custom → Auto cycle |
+| **Windows yoga** | [#14](https://github.com/lastraum/dcl-threejs-client/pull/14) — nbind path filter; fixes black screen |
+| **Dev panel** | In-app suggestions; version from `package.json`; progress live from GitHub |
+
+### Known limitations (not blocking 0.6.0)
+
+| Gap | Notes |
+| --- | ----- |
+| **MOVE CAMERA** edit-flight residual | Avatar freeze OK; WASD/STOP still shim-debt — [ARCHITECTURE_AND_TECH_DEBT](./ARCHITECTURE_AND_TECH_DEBT.md) |
+| **Sun/hemi intensity** vs Explorer | Azimuth fixed; overall brightness may still read hotter |
+| **Directional sun shadows** | Only ECS spot shadows; environment sun does not cast |
+| **Watch Lite / `/goto`** | Companion Phase 3–4 still open |
+| **Graphics prefs stubs** | MSAA/bloom/shadows/resolution UI not wired |
+
+### Smoke (pre-cut)
+
+Genesis spawn walk · VC character-select/follow · `threejs.dcl.eth` materials + ~07:30 sun side · Night/Day authority · Windows yoga if available.
+
+**Changelog:** https://github.com/lastraum/dcl-threejs-client/compare/v0.5.0...v0.6.0
+
+---
+
+## 🎉 Milestone — Materials + sun azimuth + skybox authority (2026-07-11)
+
+**Status: shipped on `dev-latest`** — community materials/sun PRs merged and QA’d; AUTO cutout matched to Unity; skybox clock priority fixed.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Material empty slots + re-apply** | 🟢 | [#13](https://github.com/lastraum/dcl-threejs-client/pull/13) — Creator Hub empty `alphaTexture`/`emissiveTexture`/`bumpTexture` `src` ignored; textured materials fingerprint after apply (no per-frame shader recompile thrash) |
+| **AUTO alpha vs Unity** | 🟢 | Follow-up `98f830b` — do **not** cut out from albedo PNG alpha alone; dedicated `alphaMap` only (black plate matches Explorer on `threejs.dcl.eth`) |
+| **Sun/moon azimuth** | 🟢 | [#15](https://github.com/lastraum/dcl-threejs-client/pull/15) — `unityQuatToThreeDirection` uses same YZ/negate-X as `dclTransform` (was 180° azimuth off); QA morning light on vertical plane |
+| **Skybox time authority** | 🟢 | `f112671` — (1) scene.json / ECS `SkyboxTime` (2) session custom TOD in `sessionStorage` (3) Auto 60× cycle; scene lock always syncs and preempts custom |
+| **Night/Day panel** | 🟢 | Auto disabled while scene-locked; custom slider respects authority |
+
+**Docs:** [lightsource-parity.md](./lightsource-parity.md) · [INTEGRATION.md](./INTEGRATION.md)
+
+**QA:** `threejs.dcl.eth` — black plate like Unity · pin ~07:30 front-lit plane same side as Explorer · Auto vs custom session survives reload in-tab · no material.version thrash after load.
+
+**Still open (not this milestone):** sun/hemi **intensity** vs Explorer; directional sun shadows; graphics prefs stubs. Yoga Windows shipped in **v0.6.0** ([#14](https://github.com/lastraum/dcl-threejs-client/pull/14)).
 
 ---
 
@@ -944,7 +1000,7 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 - **Chat nav links** — parcel coords (`80,-1`), `.dcl.eth` names, Decentraland play URLs → in-client teleport (not new tab) — `chatNavigationLinks.ts`, `linkifyText.ts`
 - **Chat @mention highlight** — purple `is-mentioned` on **bubble only** (not whole row) when message @-mentions local user — `chatMentionDetection.ts`, `ChatPanel.ts`
 - **Login** — removed **Sign in with Decentraland** (auth-server popup); wallet connect remains primary path
-- **Dev progress panel** — `</>` sidebar → Roadmap (`TASKS.yaml`), Integration status, and Progress (`PROGRESS.md`) fetched live from `lastraum/dcl-threejs-client` `main` — `DevProgressPanel.ts`, `githubDocs.ts`. Offline: `?docsGithubFetch=0` uses bundled snapshots; **`npm run prebuild`** → `sync-dev-progress.mjs` regenerates `tasksFallback.ts` + `progressFallback.ts` from local `docs/`.
+- **Dev progress panel** — `</>` → community claims + Progress log **live from GitHub** (`dev-latest` docs). Client version chip is **`package.json` only**. Offline (`?docsGithubFetch=0`) shows a placeholder notice, not a progress snapshot.
 
 **ECS bridges**
 - **`TweenBridge`** — wired in `SceneScriptSystem` + `mirrorComponents` (`Tween`, `TweenState`); move/rotate/scale/moveRotateScale + continuous modes; 31 easing curves; writes `TweenState` for worker `tweenCompleted()` — see **Tween status** below

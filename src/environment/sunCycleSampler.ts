@@ -64,7 +64,11 @@ export function sampleSunCycleQuaternion(normalizedT: number): [number, number, 
   return [last[1], last[2], last[3], last[4]]
 }
 
-/** Unity directional light forward: rotate local (0,0,-1) by quaternion, then convert to Three.js (+Z flip). */
+/**
+ * Unity directional light forward: rotate local (0,0,-1) by quaternion, then convert to
+ * Three.js with the same YZ-plane reflection (negate X) as scene geometry (`dclTransform.ts`).
+ * Mirroring on Z instead put the sun 180° of azimuth away from the Unity Explorer.
+ */
 export function unityQuatToThreeDirection(q: [number, number, number, number], out = _dir): THREE.Vector3 {
   const [x, y, z, w] = q
   const vx = 0, vy = 0, vz = -1
@@ -75,7 +79,7 @@ export function unityQuatToThreeDirection(q: [number, number, number, number], o
   const ox = iw * -x + ix * w + iy * -z - iz * -y
   const oy = iw * -y + iy * w + iz * -x - ix * -z
   const oz = iw * -z + iz * w + ix * -y - iy * -x
-  return out.set(ox, oy, -oz).normalize()
+  return out.set(-ox, oy, oz).normalize()
 }
 
 /** Celestial body direction in sky (where sun/moon disc is drawn). */

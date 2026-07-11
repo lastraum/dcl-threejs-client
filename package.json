@@ -1,11 +1,10 @@
 {
   "name": "threejs-dcl-client",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "prebuild": "node scripts/sync-dev-progress.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "bundle:wearables": "node scripts/bundle-base-wearables.mjs",

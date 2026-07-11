@@ -40,7 +40,7 @@ Do not open contributor PRs directly into `main` unless a maintainer asks you to
 ```bash
 npm install
 npm run dev        # Vite dev server
-npm run build      # tsc + vite production build (prebuild refreshes offline doc fallbacks)
+npm run build      # tsc + vite production build (no progress-file rewrite; version from package.json)
 npm run preview    # serve dist/
 ```
 

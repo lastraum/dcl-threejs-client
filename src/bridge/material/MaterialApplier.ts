@@ -101,7 +101,11 @@ function normalizeColor3(c?: Color3): Color3 | undefined {
 /** Accept SDK TextureUnion and legacy `{ src }` shapes from composite JSON. */
 function coerceTextureUnion(u?: TextureUnion | { src?: string; wrapMode?: number; filterMode?: number }): TextureUnion | undefined {
   if (!u) return undefined
-  if ('tex' in u && u.tex) return u as TextureUnion
+  if ('tex' in u && u.tex) {
+    // Creator Hub composites can emit texture slots with an empty src — treat as absent.
+    if (u.tex.$case === 'texture' && !u.tex.texture.src?.trim()) return undefined
+    return u as TextureUnion
+  }
   const flat = u as { src?: string; wrapMode?: number; filterMode?: number }
   if (flat.src?.trim()) {
     return { tex: { $case: 'texture', texture: { src: flat.src, wrapMode: flat.wrapMode, filterMode: flat.filterMode } } }
@@ -323,7 +327,7 @@ export class MaterialApplier {
       if ((child as THREE.Mesh).isMesh) meshes.push(child as THREE.Mesh)
     })
 
-    let texturesOk = !materialHasTextureSlots(pb)
+    let texturesOk = true
     for (const mesh of meshes) {
       const ok = await this.applyToMesh(mesh, pb)
       if (!ok) texturesOk = false
@@ -453,6 +457,8 @@ export class MaterialApplier {
     const transparencyMode = isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO
     const alpha =
       (isPbr ? (inner as PbrMaterial).albedoColor?.a : (inner as UnlitMaterial).diffuseColor?.a) ?? 1
+    // AUTO cutout only when a dedicated alphaTexture/alphaMap is set — match Unity Explorer.
+    // Do not sample albedo map alpha; PNG-with-alpha albedo stays opaque (black RGB shows).
     applyTransparency(
       m,
       alpha,
@@ -655,7 +661,8 @@ function applyTransparency(
     return
   }
 
-  // AUTO — DCL picks alpha-cutout when the albedo texture has alpha; not alpha-blend.
+  // AUTO — cutout only with a dedicated alpha map (Unity Explorer parity).
+  // Albedo-only PNG alpha is ignored; transparent texels draw as their RGB (often black).
   if (hasAlphaMap) {
     m.alphaTest = alphaTest ?? 0.5
     return

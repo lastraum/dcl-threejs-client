@@ -69,36 +69,30 @@ vec3 celestialDisc(vec3 dir, vec3 lightDir, sampler2D map, float mask, float siz
   return tint * (core * 2.5 + halo * 0.8) * tex.a * mask;
 }
 
-// Explorer-style sun: bright warm core + soft multi-layer corona (not a tiny cyan pin).
+// Small warm disc + light soft halo. Visual only — scene lighting uses DirectionalLight.
 vec3 sunDisc(vec3 dir, vec3 sunDir, vec3 sunColor, float radiance) {
   vec3 sDir = normalize(sunDir);
   float d = dot(normalize(dir), sDir);
   float glowAmt = max(uSunDiscGlowGain, 0.0);
-  // Glow extends well past the hard disc so corona reads like Unity Generic_Skybox.
-  float glowReach = uSunDiscCutoff - mix(0.02, 0.09, glowAmt);
+  // Halo only slightly larger than the core (avoid screen-filling white blob).
+  float glowReach = uSunDiscCutoff - mix(0.004, 0.022, glowAmt);
   if (d < glowReach) return vec3(0.0);
 
   float ang = acos(clamp(d, -1.0, 1.0));
   float coreEdge = acos(clamp(uSunDiscCutoff, -1.0, 1.0));
-  float core = 1.0 - smoothstep(0.0, max(coreEdge * 1.05, 0.0012), ang);
-  core = pow(max(core, 0.0), 1.12);
+  float core = 1.0 - smoothstep(0.0, max(coreEdge * 0.95, 0.0008), ang);
+  core = pow(max(core, 0.0), 1.3);
 
   float rPos = max(radiance, 0.0);
-  float innerSpread = mix(0.014, 0.075, glowAmt);
-  float midSpread = max(innerSpread * 2.4, 0.025);
-  float outerSpread = max(innerSpread * 5.8, 0.05);
-  float corona = exp(-ang / innerSpread) * glowAmt * (1.75 + rPos * 1.5);
-  float midHalo = exp(-ang / midSpread) * glowAmt * (0.7 + rPos * 0.35);
-  // Soft diffraction-ish ring outside the core (Explorer noon has a faint multi-ring look).
-  float ringCenter = coreEdge * 2.6;
-  float ringWidth = max(coreEdge * 1.4, 0.005);
-  float ring = exp(-pow((ang - ringCenter) / ringWidth, 2.0)) * glowAmt * 0.42;
-  float bloom = exp(-ang / outerSpread) * glowAmt * (0.85 + rPos * 0.55);
+  float innerSpread = mix(0.005, 0.028, glowAmt);
+  float outerSpread = max(innerSpread * 3.2, 0.012);
+  float corona = exp(-ang / innerSpread) * glowAmt * (1.1 + rPos * 0.6);
+  float bloom = exp(-ang / outerSpread) * glowAmt * (0.4 + rPos * 0.25);
 
-  // Cream / warm white — Unity midday disc, not cool cyan.
-  vec3 warm = sunColor * vec3(1.42, 1.14, 0.78);
-  float rad = 0.75 + rPos * 1.15;
-  return warm * rad * (core * uSunDiscCoreGain + corona + midHalo + ring + bloom);
+  // Warm white disc (not cool cyan); keep gains modest so core stays a small circle.
+  vec3 warm = sunColor * vec3(1.28, 1.08, 0.86);
+  float rad = 0.5 + rPos * 0.55;
+  return warm * rad * (core * uSunDiscCoreGain + corona + bloom);
 }
 
 vec3 starField(vec3 dir, sampler2D map, float night) {
@@ -321,11 +315,8 @@ export class DclGenesisSky {
     this.uniforms.uSunDirection.value.copy(day ? celestialDir : _zeroSun)
     this.uniforms.uMoonDirection.value.copy(day ? _zeroSun : celestialDir)
     this.uniforms.uMoonMask.value = day ? 0 : g.moonMask
-    // Disc radiance is independent of scene directional scale — keep a solid midday floor
-    // so the skydome sun matches Explorer even when sunRadiance gradient dips.
-    this.uniforms.uSunRadiance.value = day
-      ? Math.max(0.35, g.sunRadiance + 0.55) * Math.min(SUN_BRIGHTNESS, 1.45)
-      : 0
+    // Disc visual only — do not scale with scene SUN_BRIGHTNESS (user asked: look ≠ light power).
+    this.uniforms.uSunRadiance.value = day ? Math.max(0.15, g.sunRadiance + 0.25) : 0
     this.uniforms.uCloudHighlights.value = g.cloudHighlights
     this.uniforms.uTime.value = freezeClouds ? 0 : this.elapsed
   }

@@ -49,7 +49,7 @@ Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not rep
 - Hemisphere fill **0.5** day / **0.6** night × user sun/moon light sliders
 - **User tuning** (`SunEnvironmentSettings`, Preferences → Graphics): defaults **54 / 72 / 54 / 50**; **Reset lighting** restores them
 - **Hybrid scale:** when nearby ECS lights exceed **40%** of the quality-tier budget, sun/moon/hemi blend down by up to **25%** (`ECS_HYBRID_SUN_REDUCTION`) — sparse outdoor scenes keep full sun; saturated Genesis Plaza clusters avoid double-lit look
-- **Skydome sun disc (Explorer parity):** warm multi-layer core + corona — cutoff **0.9964**, core gain **1.0**, glow **0.78**; disc radiance floor independent of scene directional; sky `toneMapped: false`
+- **Skydome sun disc (visual only):** small warm disc + soft halo — cutoff **0.99855**, core **0.55**, glow **0.28**; radiance **not** scaled by scene `SUN_BRIGHTNESS` (look decoupled from mesh lighting); sky `toneMapped: false`
 - **Cloud layers:** cubemap density mask → HDR `clouds` gradient tint + **screen brighten** over sky; sun-facing lift at day; soft `smoothstep` falloff **0.62** + mipmap bias **-1.0**
 - `LightManager.getActiveNearbyCount()` drives the scale; `World` runs light culling **before** environment update
 - **Azimuth parity ([#15](https://github.com/lastraum/dcl-threejs-client/pull/15)):** celestial direction uses YZ/negate-X like `dclTransform`

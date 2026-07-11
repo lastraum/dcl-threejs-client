@@ -17,15 +17,16 @@ export const SUN_SLIDER_MIN = 0
 export const SUN_SLIDER_MAX = 100
 
 /**
- * Skydome sun disc — tuned to Unity Explorer noon (large warm core + soft corona).
- * Cutoff closer to 1 = tinier disc; lower = larger. Glow 0 kills all corona/bloom.
+ * Skydome sun disc (visual only — independent of scene directional intensity).
+ * Cutoff closer to 1 = smaller disc. Glow adds soft halo; keep modest so the disc
+ * is a small warm dot, not a screen-filling white circle.
  */
-export const FIXED_SUN_DISC_CUTOFF = 0.9964
-export const FIXED_SUN_DISC_CORE_GAIN = 1.0
-export const FIXED_SUN_DISC_GLOW_GAIN = 0.78
+export const FIXED_SUN_DISC_CUTOFF = 0.99855
+export const FIXED_SUN_DISC_CORE_GAIN = 0.55
+export const FIXED_SUN_DISC_GLOW_GAIN = 0.28
 
 const DEFAULTS: SunEnvironmentSettingsState = {
-  /** Scene lighting defaults — readable PBR without washing sky disc. */
+  /** Scene mesh lighting (Reset lighting) — not tied to disc size. */
   sceneSunLight: 54,
   exposure: 72,
   sceneMoonLight: 54,

@@ -35,7 +35,7 @@ export class SkyboxPanel {
       <div class="skybox-panel__row">
         <span class="skybox-panel__label">Auto</span>
         <label class="skybox-panel__switch">
-          <input type="checkbox" data-auto checked />
+          <input type="checkbox" data-auto />
           <span class="skybox-panel__switch-track" aria-hidden="true"></span>
         </label>
       </div>
@@ -137,9 +137,12 @@ export class SkyboxPanel {
 
   private syncFromEnvironment(): void {
     const env = this.environment
+    const sceneLocked = env.isSceneTimeLocked()
     const auto = env.isUiAutoCycle()
-    this.autoToggle.checked = auto
-    this.setCustomEnabled(!auto)
+    // Scene fixed time owns the clock — show Auto off + slider at scene time (read-only-ish).
+    this.autoToggle.checked = sceneLocked ? false : auto
+    this.setCustomEnabled(!sceneLocked && !auto)
+    this.autoToggle.disabled = sceneLocked
 
     const minutes = secondsToSliderMinutes(env.getTimeOfDay())
     this.slider.value = String(minutes)

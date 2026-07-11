@@ -10,13 +10,6 @@ source: github
 base_branch: dev-latest
 workflow:
   - stage: pending_review
-    integration_ref: pr:16
-    title: VirtualCamera bind reliability, PE-follow, and chrome cleanup
-    owner: lastraum
-    pr: 16
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/16
-    updated: 2026-07-11
-  - stage: pending_review
     integration_ref: pr:15
     title: sun/moon azimuth 180° off vs Unity Explorer
     owner: awedjob
@@ -37,6 +30,13 @@ workflow:
     pr: 13
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/13
     updated: 2026-07-10
+  - stage: merged
+    integration_ref: pr:16
+    title: VirtualCamera bind reliability, PE-follow, and chrome cleanup
+    owner: lastraum
+    pr: 16
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/16
+    updated: 2026-07-11
   - stage: merged
     integration_ref: pr:12
     title: "perf(mesh): P0 frame law — hash drain, instancing, no bulk soft-prime"

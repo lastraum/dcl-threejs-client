@@ -108,8 +108,8 @@ export function animatedLightIntensity(seconds: number): number {
   if (!isSunPeriod(seconds)) return 0
   const animTime = normalizedTimeOfDay(seconds) * SUN_CYCLE_CLIP_LENGTH
   const raw = sampleCurve(SUN_CYCLE_LIGHT_INTENSITY, animTime)
-  // Unity SunCycle24h peaks ~2.72 — light scale for directional only (disc uses its own radiance).
-  return THREE.MathUtils.clamp(raw * 1.02, 0.05, 2.5)
+  // Unity SunCycle24h.anim m_Intensity peaks at 2.72 — pass through (no extra ×1.1).
+  return THREE.MathUtils.clamp(raw, 0.05, 2.72)
 }
 
 /**

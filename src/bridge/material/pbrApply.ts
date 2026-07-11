@@ -85,12 +85,19 @@ export function applyPbrScalars(
     directIntensity?: number
   }
 ): void {
-  material.metalness = pbr.metallic ?? 0.5
-  material.roughness = pbr.roughness ?? 0.5
+  // Soft outdoor response (Unity Explorer lit feel): less mirror, higher roughness floor.
+  // Creator Hub often stamps metallic/roughness 0.5 — treat as mid, not chrome.
+  const metalIn = pbr.metallic ?? 0.2
+  const roughIn = pbr.roughness ?? 0.65
+  material.metalness = Math.min(1, metalIn * 0.55)
+  material.roughness = Math.min(1, Math.max(0.28, roughIn * 0.82 + 0.2))
 
   const spec = pbr.reflectivityColor ?? { r: 1, g: 1, b: 1 }
   material.specularColor.setRGB(spec.r ?? 1, spec.g ?? 1, spec.b ?? 1)
-  material.specularIntensity = pbr.specularIntensity ?? 1
+  material.specularIntensity = (pbr.specularIntensity ?? 1) * 0.65
+  if (material.envMapIntensity === undefined || material.envMapIntensity === 1) {
+    material.envMapIntensity = 0.4
+  }
 
   applyDirectIntensity(material, pbr.directIntensity ?? 1)
 }

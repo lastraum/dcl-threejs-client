@@ -16,6 +16,8 @@ import {
 import { DclGenesisSky, sampleSkyGradientsAt } from './DclGenesisSky'
 import {
   CYCLE_RATE,
+  EQUATOR_AMBIENT_DAY,
+  EQUATOR_AMBIENT_NIGHT,
   HEMI_DAY_INTENSITY,
   HEMI_NIGHT_INTENSITY,
   lerpDaySeconds,
@@ -29,6 +31,11 @@ import {
   TRANSITION_WALL_SEC,
   TransitionMode as TM
 } from './skyboxTime'
+import {
+  configureDirectionalSunShadow,
+  refreshDirectionalSunShadowMapSize,
+  updateDirectionalSunShadowFocus
+} from '../rendering/directionalSunShadow'
 import {
   createOutdoorLightingSnapshot,
   syncOutdoorLightingFromLights,
@@ -59,7 +66,10 @@ export class EnvironmentSystem {
   private readonly genesisSky: DclGenesisSky
   private readonly sun: THREE.DirectionalLight
   private readonly moon: THREE.DirectionalLight
+  /** Unity Trilight: sky + ground (HemisphereLight). */
   private readonly hemi: THREE.HemisphereLight
+  /** Unity Trilight equator band — soft fill on vertical surfaces (AmbientLight). */
+  private readonly equatorAmbient: THREE.AmbientLight
   private customCube: THREE.CubeTexture | null = null
   private customBackground: THREE.Texture | null = null
 
@@ -97,9 +107,10 @@ export class EnvironmentSystem {
   ) {
     this.genesisSky = new DclGenesisSky()
 
-    this.hemi = new THREE.HemisphereLight(0xddeeff, 0x445533, 0.55)
+    this.hemi = new THREE.HemisphereLight(0xddeeff, 0x445533, 0.42)
+    this.equatorAmbient = new THREE.AmbientLight(0x8cb8d0, 0.48)
     this.sun = new THREE.DirectionalLight(0xffffff, 1.0)
-    this.sun.castShadow = false
+    configureDirectionalSunShadow(this.sun)
 
     this.moon = new THREE.DirectionalLight(0x8370ff, 0.4)
     this.moon.castShadow = false
@@ -118,6 +129,7 @@ export class EnvironmentSystem {
 
     threeScene.add(this.genesisSky.mesh)
     threeScene.add(this.hemi)
+    threeScene.add(this.equatorAmbient)
     threeScene.add(this.sun)
     threeScene.add(this.sun.target)
     threeScene.add(this.moon)
@@ -181,10 +193,12 @@ export class EnvironmentSystem {
     this.genesisSky.dispose()
     this.genesisSky.mesh.removeFromParent()
     this.hemi.removeFromParent()
+    this.equatorAmbient.removeFromParent()
     this.sun.removeFromParent()
     this.sun.target.removeFromParent()
     this.moon.removeFromParent()
     this.moon.target.removeFromParent()
+    this.sun.shadow.map?.dispose()
     this.customCube?.dispose()
     this.customBackground?.dispose()
   }
@@ -407,13 +421,13 @@ export class EnvironmentSystem {
     const lighting = sunEnvironmentSettings.get()
     const sceneSunMul = sceneSunLightMultiplier(lighting.sceneSunLight)
     const sceneMoonMul = sceneMoonLightMultiplier(lighting.sceneMoonLight)
+    const ambientMul = (day ? sceneSunMul : sceneMoonMul) * sunScale
 
+    // Directional: Unity uses anim intensity ~2.72 peak × color ramp (SUN_BRIGHTNESS ≈ 1).
     this.sun.intensity = this.disableSun
       ? 0
       : (day ? lit * SUN_BRIGHTNESS : 0.02) * sunScale * sceneSunMul
     this.sun.color.copy(g.directional)
-    this.sun.position.copy(_celestial).multiplyScalar(120)
-    this.sun.target.position.set(0, 0, 0)
 
     const moonLit = moonLightIntensity(seconds)
     this.moon.intensity = this.disableMoon
@@ -425,13 +439,26 @@ export class EnvironmentSystem {
     this.moon.position.copy(_celestial).multiplyScalar(120)
     this.moon.target.position.set(0, 0, 0)
 
-    this.hemi.intensity = skylightOff
-      ? 0
-      : (day ? HEMI_DAY_INTENSITY * sceneSunMul : HEMI_NIGHT_INTENSITY * sceneMoonMul) * sunScale
+    // Trilight ambient (SkyboxRenderController.UpdateIndirectLight).
+    this.hemi.intensity = skylightOff ? 0 : (day ? HEMI_DAY_INTENSITY : HEMI_NIGHT_INTENSITY) * ambientMul
     this.hemi.color.copy(g.indirectSky)
     _hemiGround.copy(g.indirectGround)
     if (!day) _hemiGround.multiplyScalar(NIGHT_GROUND_HEMI_BOOST)
     this.hemi.groundColor.copy(_hemiGround)
+
+    this.equatorAmbient.intensity = skylightOff
+      ? 0
+      : (day ? EQUATOR_AMBIENT_DAY : EQUATOR_AMBIENT_NIGHT) * ambientMul
+    this.equatorAmbient.color.copy(g.indirectEquator)
+
+    // Soft sun shadows — follow camera focus (Unity soft directional).
+    const sunShadowsOn = !skylightOff && day && !this.disableSun && this.sun.intensity > 0.05
+    refreshDirectionalSunShadowMapSize(this.sun)
+    updateDirectionalSunShadowFocus(this.sun, this.host.camera.position, _celestial, sunShadowsOn)
+    if (!sunShadowsOn) {
+      this.sun.position.copy(_celestial).multiplyScalar(120)
+      this.sun.target.position.set(0, 0, 0)
+    }
 
     const tierExposure = TONE_MAPPING_EXPOSURE[renderQuality.getTier()]
     this.host.renderer.toneMappingExposure = skylightOff
@@ -462,6 +489,7 @@ export class EnvironmentSystem {
       this.sun,
       this.moon,
       this.hemi,
+      this.equatorAmbient,
       { horizon: g.horizon, zenit: g.zenit },
       day
     )

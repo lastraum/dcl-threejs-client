@@ -26,10 +26,10 @@ export const FIXED_SUN_DISC_CORE_GAIN = 0.55
 export const FIXED_SUN_DISC_GLOW_GAIN = 0.28
 
 const DEFAULTS: SunEnvironmentSettingsState = {
-  /** Scene mesh lighting (Reset lighting) — not tied to disc size. */
-  sceneSunLight: 54,
-  exposure: 72,
-  sceneMoonLight: 54,
+  /** Scene mesh lighting (Reset lighting). Mid defaults with trilight ambient. */
+  sceneSunLight: 52,
+  exposure: 70,
+  sceneMoonLight: 52,
   moonExposure: 50
 }
 

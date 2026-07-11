@@ -9,17 +9,23 @@ export const SUNRISE = 6 * 3600 + 15 * 60 /** 6:15 → 22500 */
 export const SUNSET = 19 * 3600 + 50 * 60 /** 19:50 → 71400 */
 export const TRANSITION_WALL_SEC = 4
 /**
- * Directional sun multiplier vs SunCycle24h curve (scene meshes / hemi hybrid).
- * Separate from skydome disc look (FIXED_SUN_DISC_*).
+ * Directional sun vs SunCycle24h m_Intensity (Unity peaks ~2.72 raw).
+ * Near 1.0 — anim carries the punch; avoids double-boost harsh speculars.
  */
-export const SUN_BRIGHTNESS = 1.38
-/** Moon fill directional — Unity Generic_Skybox ~0.2–0.55 at night (separate from sun anim curve). */
-export const MOON_BRIGHTNESS = 1.3
-/** Hemisphere ambient — day / night multipliers on SkyboxRenderController indirect colors. */
-export const HEMI_DAY_INTENSITY = 0.5
-export const HEMI_NIGHT_INTENSITY = 0.6
-/** Boost hemi groundColor at night — indirectGround gradient is very dark (0.08) but avatars need fill. */
-export const NIGHT_GROUND_HEMI_BOOST = 3.0
+export const SUN_BRIGHTNESS = 1.0
+/** Moon fill directional — Unity Generic_Skybox ~0.2–0.55 at night. */
+export const MOON_BRIGHTNESS = 1.15
+/**
+ * Unity Trilight ambient (SkyboxRenderController.UpdateIndirectLight):
+ * Hemisphere = sky + ground; AmbientLight = equator band (soft fill on vertical surfaces).
+ */
+export const HEMI_DAY_INTENSITY = 0.42
+export const HEMI_NIGHT_INTENSITY = 0.52
+/** Equator ambient — primary reason vertical PNG planes read soft in Explorer. */
+export const EQUATOR_AMBIENT_DAY = 0.48
+export const EQUATOR_AMBIENT_NIGHT = 0.38
+/** Boost hemi groundColor at night — indirectGround gradient is very dark. */
+export const NIGHT_GROUND_HEMI_BOOST = 2.4
 /** ACES tone-mapping headroom at night (fixed daytime exposure crushes moon + hemi). */
 export const NIGHT_EXPOSURE_BOOST = 1.32
 

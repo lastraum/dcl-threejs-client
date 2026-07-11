@@ -45,6 +45,7 @@ export function syncOutdoorLightingFromLights(
   sun: THREE.DirectionalLight,
   moon: THREE.DirectionalLight,
   hemi: THREE.HemisphereLight,
+  equatorAmbient: THREE.AmbientLight,
   sky: { horizon: THREE.Color; zenit: THREE.Color },
   isDay: boolean
 ): void {
@@ -56,16 +57,20 @@ export function syncOutdoorLightingFromLights(
   out.sunLight.set(sun.color.r, sun.color.g, sun.color.b).multiplyScalar(sun.intensity)
   out.moonLight.set(moon.color.r, moon.color.g, moon.color.b).multiplyScalar(moon.intensity)
 
+  // Approximate Unity Trilight average for single-ambient water shaders.
   const skyAmbR = hemi.color.r * hemi.intensity
   const skyAmbG = hemi.color.g * hemi.intensity
   const skyAmbB = hemi.color.b * hemi.intensity
   const gndAmbR = hemi.groundColor.r * hemi.intensity
   const gndAmbG = hemi.groundColor.g * hemi.intensity
   const gndAmbB = hemi.groundColor.b * hemi.intensity
+  const eqR = equatorAmbient.color.r * equatorAmbient.intensity
+  const eqG = equatorAmbient.color.g * equatorAmbient.intensity
+  const eqB = equatorAmbient.color.b * equatorAmbient.intensity
   out.ambient.set(
-    skyAmbR * 0.62 + gndAmbR * 0.38,
-    skyAmbG * 0.62 + gndAmbG * 0.38,
-    skyAmbB * 0.62 + gndAmbB * 0.38
+    skyAmbR * 0.35 + eqR * 0.4 + gndAmbR * 0.25,
+    skyAmbG * 0.35 + eqG * 0.4 + gndAmbG * 0.25,
+    skyAmbB * 0.35 + eqB * 0.4 + gndAmbB * 0.25
   )
 
   out.skyHorizon.copy(sky.horizon)

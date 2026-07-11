@@ -169,17 +169,19 @@ DOM overlay — not in-scene `UiTransform`.
 | PointerEvents cache, LightManager culling | 🟢 |
 | Genesis sky + cloud lighting (camera-centered dome) | 🟢 |
 | Sun/moon azimuth parity vs Explorer (negate-X celestial) | 🟢 |
+| Trilight ambient (sky + equator + ground) | 🟢 |
+| Soft directional sun shadows | 🟢 |
 | Skybox time authority (scene / session / auto) | 🟢 |
 | Low-end scene worker timing + adaptive abort backoff | 🟢 |
 | Boot/hydration: main.crdt seed, composite preload, unified GLB | 🟢 |
 | Landscapes, FFT ocean, Perlin scatter foliage | 🟢 |
 | Scene GLTF emissive LEDs (neon mats) | 🟡 partial |
 | User sun/moon lighting + exposure sliders | 🟢 |
-| Sun/hemi intensity match vs Explorer | 🟢 | post-0.6 dim pass (`SUN_BRIGHTNESS` 1.22, cooler defaults); user sliders still override |
+| Sun/hemi intensity match vs Explorer | 🟢 | anim peak 2.72 + trilight; user sliders still override |
 | GLTF hydration budgets, GLB parse pool, AssetCache IDB | 🟢 |
 | PhysX lazy load, collider prewarm, Hyperfy grouped GLTF actors | 🟢 |
 | GLTF InstancedMesh | ⬜ |
-| Shadow pass tuning | 🟡 partial |
+| Shadow pass tuning | 🟢 | soft + soft directional sun |
 
 ---
 

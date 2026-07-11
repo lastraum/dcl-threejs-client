@@ -43,17 +43,14 @@ renderQuality.setTier(RenderQualityTier.High)
 
 Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not replace them):
 
-- Base sun: `DirectionalLight` × `SUN_BRIGHTNESS` **1.38** × SunCycle24h anim curve
-- Moon fill: **`moonLightIntensity()`** × `MOON_BRIGHTNESS` **1.3** × user **`sceneMoonLight`** multiplier — separate from sun anim curve
-- Moon color from **`directional` sky gradient** (purple at night), not hardcoded RGB
-- Hemisphere fill **0.5** day / **0.6** night × user sun/moon light sliders
-- **User tuning** (`SunEnvironmentSettings`, Preferences → Graphics): defaults **54 / 72 / 54 / 50**; **Reset lighting** restores them
-- **Hybrid scale:** when nearby ECS lights exceed **40%** of the quality-tier budget, sun/moon/hemi blend down by up to **25%** (`ECS_HYBRID_SUN_REDUCTION`) — sparse outdoor scenes keep full sun; saturated Genesis Plaza clusters avoid double-lit look
-- **Skydome sun disc (visual only):** small warm disc + soft halo — cutoff **0.99855**, core **0.55**, glow **0.28**; radiance **not** scaled by scene `SUN_BRIGHTNESS` (look decoupled from mesh lighting); sky `toneMapped: false`
-- **Cloud layers:** cubemap density mask → HDR `clouds` gradient tint + **screen brighten** over sky; sun-facing lift at day; soft `smoothstep` falloff **0.62** + mipmap bias **-1.0**
-- `LightManager.getActiveNearbyCount()` drives the scale; `World` runs light culling **before** environment update
-- **Azimuth parity ([#15](https://github.com/lastraum/dcl-threejs-client/pull/15)):** celestial direction uses YZ/negate-X like `dclTransform`
-- **Skybox time authority:** (1) scene.json / ECS `SkyboxTime` (2) session custom TOD (3) Auto 60× cycle
+- Base sun: `DirectionalLight` × SunCycle24h **m_Intensity** (peak **2.72**, `SUN_BRIGHTNESS` **1.0**) + color ramp
+- Moon fill: **`moonLightIntensity()`** × `MOON_BRIGHTNESS` **1.15** × user moon slider
+- **Trilight ambient (Unity `UpdateIndirectLight`):** HemisphereLight sky+ground + **AmbientLight equator** (`indirectEquator` gradient) — soft fill on vertical surfaces
+- Soft **directional sun shadows** (`directionalSunShadow.ts`, PCF, ortho map follows camera) — day only
+- **User tuning:** defaults **52 / 70 / 52 / 50**; **Reset lighting** button
+- Hybrid ECS light scale still dims sun/hemi when nearby spots saturate
+- **Skydome disc (visual only):** small warm disc + soft halo; radiance not scaled by scene brightness
+- **Azimuth parity ([#15](https://github.com/lastraum/dcl-threejs-client/pull/15))** · **Skybox time authority** scene → session → auto
 
 ### Tone mapping + exposure (`SceneHost.ts`, `EnvironmentSystem.ts`)
 
@@ -87,8 +84,8 @@ Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not rep
 | **Directional LightSource** | **Not in current `PBLightSource` protobuf** (point + spot only). Revisit when SDK schema adds a directional variant. |
 | **Exact Explorer tier numbers** | Tier limits (4 / 6 / 10) are reasonable parity targets; Unity Explorer source values not verified byte-for-byte — adjust after side-by-side profiling. |
 | **Player vs camera cull origin** | Culling uses **camera** position (works in orbit mode). Explorer may use avatar position in some cases. |
-| **Directional sun shadows** | Environment sun/moon remain non-shadow-casting; only ECS spot lights cast. |
-| **Sun/hemi intensity vs Explorer** | Disc + directional rebalanced toward Unity; use **Reset lighting** if localStorage still has old slider values. |
+| **Directional sun shadows** | Soft sun shadows enabled (day); refine cascade extent / bias if acne or peter-panning. |
+| **Sun/hemi intensity vs Explorer** | Trilight + anim peak 2.72; **Reset lighting** if old localStorage sliders persist. |
 | **GltfNodeModifiers castShadows** | Per-node GLTF shadow flags not wired; Material `castShadows` is. |
 | **Per-layer cloud tints** | Explorer uses per-layer gradients; we use one global `uCloudsColor` for all cubemap layers. |
 | **Graphics settings stubs** | Preferences panel MSAA/bloom/shadows/resolution — UI only, not wired to renderer. |

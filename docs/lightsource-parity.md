@@ -43,11 +43,11 @@ renderQuality.setTier(RenderQualityTier.High)
 
 Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not replace them):
 
-- Base sun: `DirectionalLight` 1.0 × `SUN_BRIGHTNESS` **1.55** × anim curve (clamped **1.45** at midday)
-- Moon fill: **`moonLightIntensity()`** × `MOON_BRIGHTNESS` **1.35** × user **`sceneMoonLight`** multiplier — separate from sun anim curve
+- Base sun: `DirectionalLight` × `SUN_BRIGHTNESS` **1.22** × SunCycle24h anim curve (raw, clamp **2.4** midday peak)
+- Moon fill: **`moonLightIntensity()`** × `MOON_BRIGHTNESS` **1.28** × user **`sceneMoonLight`** multiplier — separate from sun anim curve
 - Moon color from **`directional` sky gradient** (purple at night), not hardcoded RGB
-- Hemisphere fill **0.54** day / **0.65** night × user sun/moon light sliders
-- **User tuning** (`SunEnvironmentSettings`, Preferences → Graphics): Scene Sun Light, Exposure (day), Scene Moon Light, Moon Exposure (night) — persisted localStorage
+- Hemisphere fill **0.46** day / **0.58** night × user sun/moon light sliders
+- **User tuning** (`SunEnvironmentSettings`, Preferences → Graphics): Scene Sun Light, Exposure (day), Scene Moon Light, Moon Exposure (night) — persisted localStorage; defaults **50 / 65 / 52 / 48** (cooler than pre-0.6 56/80 so new sessions match Explorer better)
 - **Hybrid scale:** when nearby ECS lights exceed **40%** of the quality-tier budget, sun/moon/hemi blend down by up to **25%** (`ECS_HYBRID_SUN_REDUCTION`) — sparse outdoor scenes keep full sun; saturated Genesis Plaza clusters avoid double-lit look
 - Skydome sun disc: fixed small disc / no corona (user sliders removed 2026-06-18); hybrid does **not** dim the sky dome
 - **Cloud layers:** cubemap density mask → HDR `clouds` gradient tint + **screen brighten** over sky; sun-facing lift at day; `toneMapped: false` on sky material; soft `smoothstep` falloff **0.62** + mipmap bias **-1.0**; per-ray `sunFacing` on **mask** removed (was blue speckle) — sun used for **tint** only
@@ -88,7 +88,7 @@ Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not rep
 | **Exact Explorer tier numbers** | Tier limits (4 / 6 / 10) are reasonable parity targets; Unity Explorer source values not verified byte-for-byte — adjust after side-by-side profiling. |
 | **Player vs camera cull origin** | Culling uses **camera** position (works in orbit mode). Explorer may use avatar position in some cases. |
 | **Directional sun shadows** | Environment sun/moon remain non-shadow-casting; only ECS spot lights cast. |
-| **Sun/hemi intensity vs Explorer** | Azimuth fixed; overall brightness / `SUN_BRIGHTNESS` / exposure may still read hotter than Unity on PBR planes. |
+| **Sun/hemi intensity vs Explorer** | **Tuned on lastraum (post-0.6):** lower `SUN_BRIGHTNESS` / hemi / defaults / tier exposure; re-verify side-by-side if still hot (localStorage may keep old Preferences values). |
 | **GltfNodeModifiers castShadows** | Per-node GLTF shadow flags not wired; Material `castShadows` is. |
 | **Per-layer cloud tints** | Explorer uses per-layer gradients; we use one global `uCloudsColor` for all cubemap layers. |
 | **Graphics settings stubs** | Preferences panel MSAA/bloom/shadows/resolution — UI only, not wired to renderer. |

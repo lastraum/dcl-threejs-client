@@ -8,13 +8,16 @@ export const CYCLE_RATE = 60 /** DCL seconds advanced per real second (24 min fu
 export const SUNRISE = 6 * 3600 + 15 * 60 /** 6:15 → 22500 */
 export const SUNSET = 19 * 3600 + 50 * 60 /** 19:50 → 71400 */
 export const TRANSITION_WALL_SEC = 4
-/** Directional sun + skydome disc intensity multiplier vs Explorer defaults. */
-export const SUN_BRIGHTNESS = 1.55
+/**
+ * Directional sun multiplier vs SunCycle24h curve.
+ * Was 1.55 (read hot vs Unity Explorer on PBR planes after ACES); 1.22 ~matches side-by-side on threejs.dcl.eth.
+ */
+export const SUN_BRIGHTNESS = 1.22
 /** Moon fill directional — Unity Generic_Skybox ~0.2–0.55 at night (separate from sun anim curve). */
-export const MOON_BRIGHTNESS = 1.35
+export const MOON_BRIGHTNESS = 1.28
 /** Hemisphere ambient — day / night multipliers on SkyboxRenderController indirect colors. */
-export const HEMI_DAY_INTENSITY = 0.54
-export const HEMI_NIGHT_INTENSITY = 0.65
+export const HEMI_DAY_INTENSITY = 0.46
+export const HEMI_NIGHT_INTENSITY = 0.58
 /** Boost hemi groundColor at night — indirectGround gradient is very dark (0.08) but avatars need fill. */
 export const NIGHT_GROUND_HEMI_BOOST = 3.0
 /** ACES tone-mapping headroom at night (fixed daytime exposure crushes moon + hemi). */

@@ -22,10 +22,11 @@ export const FIXED_SUN_DISC_CORE_GAIN = 0.15
 export const FIXED_SUN_DISC_GLOW_GAIN = 0
 
 const DEFAULTS: SunEnvironmentSettingsState = {
-  sceneSunLight: 56,
-  exposure: 80,
-  sceneMoonLight: 56,
-  moonExposure: 50
+  /** Mid-slider with slightly less directional punch than pre-0.6 (was 56/80 — hotter than Explorer). */
+  sceneSunLight: 50,
+  exposure: 65,
+  sceneMoonLight: 52,
+  moonExposure: 48
 }
 
 type Listener = (state: SunEnvironmentSettingsState) => void

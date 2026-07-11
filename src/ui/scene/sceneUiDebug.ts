@@ -46,6 +46,7 @@ function ensureOverlay(): HTMLElement {
   if (overlayHost?.isConnected) return overlayHost
   overlayHost = document.createElement('div')
   overlayHost.id = 'scene-ui-debug-overlay'
+  // Just above --z-scene-ui (40), below --z-client-hud (100)
   overlayHost.style.cssText =
     'position:fixed;inset:0;z-index:41;pointer-events:none;overflow:hidden;'
   document.body.appendChild(overlayHost)

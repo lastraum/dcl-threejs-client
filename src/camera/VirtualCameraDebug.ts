@@ -90,6 +90,9 @@ export function logVcLensParity(
   report: VcLensParityReport,
   options?: { throttleMs?: number; force?: boolean }
 ): void {
+  // Default off — console + DevTools stack capture on the rAF path = ~1fps.
+  if (!vcDebugVerbose()) return
+
   const mismatch =
     report.lensEcsDeltaM !== null && report.lensEcsDeltaM > 0.08
   const level = mismatch || report.inactiveReason ? 'warn' : 'info'
@@ -120,7 +123,9 @@ export function logVcLensParity(
       .join(' '),
     {
       level,
-      throttleMs: force ? undefined : (options?.throttleMs ?? 800),
+      // Always throttle — never unbounded console on a hot path.
+      throttleMs: force ? 250 : (options?.throttleMs ?? 800),
+      throttleKey: `vc-lens:${label}:${report.vcEntity}`,
       alsoConsole: true
     }
   )

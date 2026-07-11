@@ -1418,10 +1418,14 @@ export class ThreeBridge {
         const ms = performance.now() - t0
         const tris = (obj.userData.dclAttachedTris as number | undefined) ?? 0
         if (ms > 50 || tris >= ThreeBridge.LARGE_TEMPLATE_TRIS) {
+          obj.updateMatrixWorld(true)
+          const wp = new THREE.Vector3()
+          obj.getWorldPosition(wp)
           console.info(
             `[ThreeBridge] large GLB attach ${ms.toFixed(0)}ms · ~${(tris / 1000).toFixed(0)}k tris` +
               (src ? ` · ${src}` : '') +
-              ` · queue=${this.largeAttachQueue.length} · sceneTris=${(this.attachedSceneTris / 1e6).toFixed(2)}M`
+              ` · queue=${this.largeAttachQueue.length} · sceneTris=${(this.attachedSceneTris / 1e6).toFixed(2)}M` +
+              ` · world=(${wp.x.toFixed(1)},${wp.y.toFixed(1)},${wp.z.toFixed(1)})`
           )
         }
         if (!this.entityNeedsMeshWork(entity, obj, { includeMaterial: false })) {

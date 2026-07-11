@@ -183,6 +183,29 @@ export type SceneWorkerSignedFetchGetHeaders = {
   body: SignedFetchRequest
 }
 
+export type PlayerFrameBoundVcTransform = {
+  position: { x: number; y: number; z: number }
+  rotation: { x: number; y: number; z: number; w: number }
+  scale: { x: number; y: number; z: number }
+  parent?: number
+}
+
+/** Bound MainCamera→VC snapshot for main projection (Transform + VirtualCamera + anchors). */
+export type PlayerFrameBoundVc = {
+  entity: number
+  virtualCamera: unknown
+  /**
+   * VC Transform for main.
+   * - Follow rig (parent===lookAt): local + parent hierarchy via `anchors`.
+   * - Locked/cinematic shot: **worker world pose under Root** (`worldFlattened`).
+   */
+  transform: PlayerFrameBoundVcTransform
+  /** Parent / lookAt anchors (follow rig, or non-mesh lookAt world under Root). */
+  anchors: Array<{ entity: number; transform: PlayerFrameBoundVcTransform }>
+  /** True when `transform` is already world-space under RootEntity (do not re-parent on main). */
+  worldFlattened?: boolean
+}
+
 export type SceneWorkerOutbound =
   | SceneWorkerReady
   | SceneWorkerEvalDone
@@ -211,16 +234,31 @@ export type SceneWorkerOutbound =
   | { type: 'crdt-get-state'; id: number }
   | { type: 'pointer-deliver-done' }
   | { type: 'ui-virtual-canvas'; width: number; height: number }
-  /** Bound VC world Transform — bypasses CRDT ack latency for lens + gizmo during flight. */
+  /** Bound VC world Transform — bypasses CRDT ack latency for lens + gizmo pose sync. */
   | {
       type: 'vc-pose-live'
       entity: number
-      transform: {
-        position: { x: number; y: number; z: number }
-        rotation: { x: number; y: number; z: number; w: number }
-        scale: { x: number; y: number; z: number }
-        parent?: number
-      }
+      transform: PlayerFrameBoundVcTransform
+    }
+  /**
+   * Structural hydrate for bound MainCamera→VirtualCamera (Transform + VirtualCamera + ancestors).
+   * Posted before player-frame when bind graph changes. player-frame stays IM + MainCamera only.
+   */
+  | {
+      type: 'vc-bind-hydrate'
+      bind: PlayerFrameBoundVc
+      graphKey: string
+    }
+  /**
+   * Hot player state — InputModifier + MainCamera without CRDT ack (play mode).
+   * See docs/PLAYER_FRAME_CHANNEL.md.
+   */
+  | {
+      type: 'player-frame'
+      frameId: number
+      inputModifierHas: boolean
+      inputModifier?: unknown
+      mainCamera: unknown
     }
 
 export type MainToWorker =
@@ -264,6 +302,23 @@ export type MainToWorker =
   | { type: 'crdt-outbound-ack'; id: number }
   | { type: 'inject-pointer-click'; body: InjectPointerClickBody; injectOnly?: boolean }
   | { type: 'pump-scene-engine-tick' }
+  /** Main: MainCamera bound but VC Transform/VirtualCamera still missing — one-shot hydrate pull. */
+  | { type: 'request-vc-bind-hydrate' }
+  /**
+   * Phase 2 — main rAF drives one unified worker play frame (engine.update + pollEvents).
+   * Optional reserved poses apply *before* systems (CameraFollowSystem reads PlayerEntity).
+   */
+  | {
+      type: 'play-frame-tick'
+      player?: {
+        position: { x: number; y: number; z: number }
+        rotation: { x: number; y: number; z: number; w: number }
+      }
+      camera?: {
+        position: { x: number; y: number; z: number }
+        rotation: { x: number; y: number; z: number; w: number }
+      }
+    }
   /** Level keyboard state — authoritative worker input path (phase 2). */
   | { type: 'scene-input-snapshot'; body: import('../player/sceneInputSnapshot').SceneInputSnapshotBody }
   | { type: 'avatar-attach-transforms'; entries: AvatarAttachTransformEntry[] }

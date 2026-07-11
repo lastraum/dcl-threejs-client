@@ -66,7 +66,7 @@ export class PlayerInput {
     return this.pointer.locked || this.orbiting
   }
 
-  /** Snapshot for SceneInputRelay — avatar InputModifier does not gate this path. */
+  /** Snapshot for SceneInputRelay — scene worker inputSystem; separate from avatar InputModifier. */
   getSceneKeyboardSnapshot(): SceneKeyboardSnapshot {
     return {
       forward: this.keys.w,
@@ -82,7 +82,7 @@ export class PlayerInput {
     }
   }
 
-  /** Scene InputModifier on PlayerEntity — block avatar WASD while creator/camera UI is active. */
+  /** Main projection InputModifier — block avatar WASD/jump when scene disables locomotion. */
   setLocomotionBlocked(fn: () => boolean): void {
     this.isLocomotionBlocked = fn
   }

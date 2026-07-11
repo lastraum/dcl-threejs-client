@@ -40,18 +40,30 @@ No gap force-flush, no shrink skip, no mid-tick Ui emit.
 
 ## Pointer interactive tick
 
-One pipeline in `runSceneEnginePointerTick` — inject runs immediately before each `engine.update(0)`, never on the `inject-pointer-click` message:
+One universal pipeline in `runSceneEnginePointerTick` — same for every scene, no per-scene tuning. Inject runs immediately before each `engine.update(0)`, never on the `inject-pointer-click` message:
 
-1. `inject PET_DOWN` → `engine.update(0)` — getClick(DOWN) + react-ecs
-2. `scene.exports.onUpdate(0)`
-3. `inject PET_UP` → `engine.update(0)` — getClick(UP) + react-ecs after onUpdate
-4. `runPointerUiPhase4Egress` — structured snapshot → `pointerUiMountSnapshot` (always, not fingerprint-gated)
+1. `inject PET_DOWN` → `engine.update(0)` — handlers + systems + react-ecs
+2. `inject PET_UP` → `engine.update(0)` — no `exports.onUpdate` on inject path (pollEvents must not run mid-batch)
+3. react-ecs flush until UI fingerprint stable (two identical passes, not mount thresholds)
+4. `runPointerUiPhase4Egress` — structured snapshot → `pointerUiMountSnapshot` (sole UI egress)
+5. `engine.update(0)` — react-ecs off (`pointerInteractiveTickActive` false, session still open); non-Ui CRDT → `pointerDeferredNonUi`
+6. `flushPointerDeferredOutboundsAsync` — non-Ui chunks then atomic UI snapshot; await acks
+7. `pointer-deliver-done`
+8. cooperative ticks resume on main mount commit — **do not** replay skipped `exports.onUpdate` in the deliver chain (pollEvents undoes handler egress: MainCamera, UI flags)
 
 `awaitEngineUpdateIdle` before pointer deliver — no cooperative `engine.update` interleaving.
 
-Cooperative ticks during pointer **session** skip `@dcl/react-ecs` (`pointerInputSessionDepth > 0`). Pointer phases 1/3 still run react-ecs (`pointerInteractiveTickActive`).
+Cooperative ticks during pointer **session** skip `@dcl/react-ecs` (`pointerInputSessionDepth > 0`). Pointer phases 1–3 still run react-ecs (`pointerInteractiveTickActive`). Phase 5 runs with react-ecs off.
 
-Never emit Ui CRDT between phases 1 and 3.
+Never emit Ui CRDT between phases 1 and 4. Main must not echo `InputModifier` / `MainCamera` inbound during open pointer session.
+
+Components are independent — no cross-component input gating.
+
+- **MainCamera** (`reconcileMainCameraCrdtEgress`, `installVirtualCameraBindGuard`): lens projection / VIEW SHOT bind only. Stale `{}` clears must not override an active bind. RETURN TO PLAYER clears run in pointer non-Ui phase (pointer input session open). **No input role.**
+- **InputModifier** (`player-frame` hot path + optional `reconcileInputModifierCrdtEgress`): **scene-authoritative**. Do not latch/re-apply freeze on the worker — camera-operator re-freezes every frame while MOVE CAMERA is active; a shim latch blocked STOP permanently. Main `readLocomotionFromComponents` → `PlayerSystem` blocks avatar locomotion/emotes. **No MainCamera coupling.**
+- **SceneInputRelay**: keyboard level-state to worker `inputSystem` — gated only by UI typing / overlay (`isRelayBlocked`), not by MainCamera or VC bind. Flight keys (`scene-input-snapshot` with WASD) apply immediately even during a pointer input session. While flight keys are held, `pump-scene-engine-tick` runs worker `engine.update` only (VirtualCameraRig is `engine.addSystem`; do **not** run full `exports.onUpdate` / pollEvents mid-flight — it replays UI clicks and toggles flight off).
+
+Pointer deferred non-Ui chunks are LWW-coalesced, then each reconcile runs as its own pass at `flushPointerDeferredOutboundsAsync`. Worker `rendererInboundApply` strips worker-authoritative inbound (`InputModifier`, `MainCamera`) so main does not echo during pointer session.
 
 ## Pointer timestamps
 

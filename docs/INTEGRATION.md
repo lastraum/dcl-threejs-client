@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-06-22 (dev-latest rollup — see PROGRESS.md milestones)
+> **Last updated:** 2026-07-11 (VirtualCamera bind hydrate + PE-follow — see PROGRESS.md)
 
 ---
 
@@ -71,6 +71,13 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | Raycast | 1067 | 🟢 | `RaycastSystem` + grow-only `RaycastResult` |
 | TriggerArea | 1060 | 🟢 | Volume enter/exit — `TriggerAreaSystem` + grow-only `TriggerAreaResult` |
 
+### Camera (Phase 2–3)
+
+| Component | ID | Status | Notes |
+| --------- | -- | ------ | ----- |
+| MainCamera | 1075 | 🟢 | Hot `player-frame`; bind target via `vc-bind-hydrate` |
+| VirtualCamera | 1076 | 🟢 | `VirtualCameraBridge` — locked world-flat hydrate; `parent===lookAt` PE-follow; live Transform exclusive while bound |
+
 ### Media & motion (Phase 3)
 
 | Component | ID | Status | Notes |
@@ -126,7 +133,7 @@ DOM overlay — not in-scene `UiTransform`.
 
 | Feature | Status |
 | ------- | ------ |
-| Splash / login, loading + hydration timer | 🟢 |
+| Explorer auth sheet + session resume; loading + hydration timer | 🟢 |
 | Sidebar, chat (+ DCM v1 inline images), emote wheel, location pill | 🟢 |
 | Debug panel, dev progress panel (`</>`) | 🟢 |
 | Settings overlay: Events, Map, Backpack, Places, Gallery | 🟢 |

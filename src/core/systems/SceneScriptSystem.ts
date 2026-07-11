@@ -42,6 +42,7 @@ import {
   gltfPhysicsEntityId
 } from '../../collision/GltfColliderExtractor'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
+import { canLocomote, readLocomotionFromComponents } from '../../player/locomotion'
 import { resolveEngineTickIntervalMs } from '../../client/detectPerformanceTier'
 import { platformMotionDebug } from '../../debug/PlatformMotionDebug'
 import { GltfColliderExtractor } from '../../collision/GltfColliderExtractor'
@@ -76,7 +77,8 @@ import { EngineApiEventBridge } from './EngineApiEventBridge'
 import {
   extractSnapshotMountEntityIds,
   stripEntityDeletesFromCrdtBytes,
-  stripSceneUiCrdtBytes
+  stripSceneUiCrdtBytes,
+  stripWorkerAuthoritativeCrdtBytes
 } from '../../shim/worker/workerSceneUiCrdtOutbound'
 type MovePlayerHandler = (request: MovePlayerToRequest) => boolean
 type TriggerEmoteHandler = (request: TriggerEmoteRequest) => boolean
@@ -179,6 +181,7 @@ export class SceneScriptSystem {
   gltfColliders: GltfColliderExtractor | null = null
   pointerEvents: PointerEventsSystem | null = null
   sceneInputRelay: SceneInputRelay | null = null
+  private clearPlayerMoveKeys: (() => void) | null = null
   triggerAreas: TriggerAreaSystem | null = null
   raycasts: RaycastSystem | null = null
   readonly engineApiEvents = new EngineApiEventBridge()
@@ -349,7 +352,7 @@ export class SceneScriptSystem {
       this.readComponents,
       this.view,
       () => this.host!.camera,
-      () => this.virtualCameraPlayerPose?.() ?? this.clientCameraPose ?? emptyEntityPose(),
+      () => this.virtualCameraPlayerPose?.() ?? this.clientPlayerPose ?? emptyEntityPose(),
       () => this.virtualCameraCameraPose?.() ?? this.clientCameraPose ?? emptyEntityPose(),
       () => this.bridge?.getEntityNodes()
     )
@@ -819,14 +822,23 @@ export class SceneScriptSystem {
       ) {
         this.pointerStructureDirty = true
       }
-      if (componentId === MeshCollider.componentId || componentId === GltfContainer.componentId) {
+      if (componentId === MeshCollider.componentId) {
         this.markColliderStructureDirty(entity)
+      } else if (componentId === GltfContainer.componentId) {
+        this.colliderStructureDirty.add(entity)
       }
       return
     }
 
-    if (componentId === MeshCollider.componentId || componentId === GltfContainer.componentId) {
+    if (componentId === MeshCollider.componentId) {
+      // MeshCollider put may affect child colliders under this root.
       this.markColliderStructureDirty(entity)
+    } else if (componentId === GltfContainer.componentId) {
+      // GltfContainer put: mark THIS entity only. Descendant walk on mass spawn
+      // (3k+ GltfContainers) was O(n²) and multi-second — children get their own puts.
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
+        this.colliderStructureDirty.add(entity)
+      }
     } else if (componentId === Transform.componentId) {
       if (change.kind === 'delete') {
         this.unlinkTransformEntity(entity)
@@ -1164,6 +1176,14 @@ export class SceneScriptSystem {
 
       this.worker.onmessage = (ev: MessageEvent<SceneWorkerOutbound>) => {
         const msg = ev.data
+        if (msg?.type === 'vc-bind-hydrate') {
+          this.applyVcBindHydrate(msg.bind, msg.graphKey)
+          return
+        }
+        if (msg?.type === 'player-frame') {
+          this.applyPlayerFrame(msg)
+          return
+        }
         if (msg?.type === 'vc-pose-live') {
           this.applyVcPoseLive(msg.entity as Entity, msg.transform as DclTransformValues)
           return
@@ -1268,7 +1288,18 @@ export class SceneScriptSystem {
       return
     }
     if (msg.type === 'log') {
-      clientDebugLog.log('scene', msg.message, { alsoConsole: true })
+      // Scene can emit thousands of unique log lines after connect; never mirror every one
+      // to console (main-thread freeze). Keep a throttled sample in the debug panel.
+      const noisy =
+        /\[DEBUG:POINTER\]|npc:staticData|Animations received|NPC added|equipment:attachments/i.test(
+          msg.message
+        )
+      if (noisy) return
+      clientDebugLog.log('scene', msg.message, {
+        alsoConsole: true,
+        throttleMs: 50,
+        throttleKey: 'scene-worker-log'
+      })
       return
     }
     if (msg.type === 'pointer-deliver-done') {
@@ -1514,8 +1545,15 @@ export class SceneScriptSystem {
     if (this.pointerAwaitingWorkerApply && item.uiEntities !== undefined) {
       const batch = [...this.pointerOutboundDeferBuffer, item]
       this.pointerOutboundDeferBuffer = []
-      this.crdtOutboundPending.push(...batch)
-      this.flushCrdtOutboundPendingSynchronously()
+      // Serial with hydration batches but do not block enqueue — worker awaits ack before deliver-done.
+      this.crdtOutboundSerial = this.crdtOutboundSerial
+        .then(() => this.handleCrdtOutboundBatch(batch))
+        .catch((err) => {
+          console.error(
+            '[scene]',
+            `pointer ui outbound failed — ${err instanceof Error ? err.message : String(err)}`
+          )
+        })
       return
     }
     this.crdtOutboundPending.push(item)
@@ -1582,9 +1620,17 @@ export class SceneScriptSystem {
     }
   }
 
+  private filterRendererInboundDuringPointerSession(chunks: Uint8Array[]): Uint8Array[] {
+    if (!this.pointerAwaitingWorkerApply && !this.pointerDeliverAwaitingAck) return chunks
+    return chunks
+      .map((chunk) => stripWorkerAuthoritativeCrdtBytes(chunk))
+      .filter((chunk) => chunk.byteLength > 0)
+  }
+
   private postRendererInboundDeliver(chunks: Uint8Array[]): void {
-    if (!chunks.length || !this.worker) return
-    const copies = chunks.map((chunk) => chunk.slice())
+    const filtered = this.filterRendererInboundDuringPointerSession(chunks)
+    if (!filtered.length || !this.worker) return
+    const copies = filtered.map((chunk) => chunk.slice())
     const transfer: Transferable[] = []
     for (const chunk of copies) {
       const buffer = chunk.buffer
@@ -1605,15 +1651,14 @@ export class SceneScriptSystem {
     try {
       this.prepareRendererOutboundState()
       const projectionDeletes: ProjectionChange[] = []
-      const { UiTransform, UiText, UiBackground, UiInput, UiDropdown, PointerEvents } =
-        this.readComponents
+      const { UiTransform, UiText, UiBackground, UiInput, UiDropdown } = this.readComponents
+      // Ui* only — PointerEvents is world+UI shared and travels normal CRDT (not UI-strip).
       const uiComponentIds = new Set([
         UiTransform.componentId,
         UiText.componentId,
         UiBackground.componentId,
         UiInput.componentId,
-        UiDropdown.componentId,
-        PointerEvents.componentId
+        UiDropdown.componentId
       ])
       let batchTouchesUi = false
       const uiTransformId = UiTransform.componentId
@@ -1635,14 +1680,21 @@ export class SceneScriptSystem {
         (latestUiEntities.length > 0 || mountChanged) &&
         (pointerUiMountBatch || mountChanged || hasPayload)
       if (clearUiLwwSlots) {
+        // Partial dirty snapshots only touch a few entities — clear LWW only for those rows
+        // so we do not thrash the entire 200–350 entity UI tree every hover/timer flip.
+        const snapEntities = new Set<Entity>()
+        if (latestUiMountSnapshot?.length) {
+          for (const row of latestUiMountSnapshot) snapEntities.add(row.entity as Entity)
+        }
         const mountSet = new Set(latestUiEntities!.map((e) => e as Entity))
-        this.projection.clearLwwSlotsForEntities(mountSet, [
+        const clearSet =
+          snapEntities.size > 0 && snapEntities.size < mountSet.size * 0.5 ? snapEntities : mountSet
+        this.projection.clearLwwSlotsForEntities(clearSet, [
           UiTransform.componentId,
           UiText.componentId,
           UiBackground.componentId,
           UiInput.componentId,
-          UiDropdown.componentId,
-          PointerEvents.componentId
+          UiDropdown.componentId
         ])
       }
       if (pointerUiMountBatch) this.projection.beginForceWorkerUiPuts()
@@ -1731,7 +1783,8 @@ export class SceneScriptSystem {
               `projection=${projectionUiTransform}/${mountSize} text=${projectionUiText} bg=${projectionUiBackground}`
           )
         }
-        if (latestUiEntities !== undefined || !this.pointerHoldTicksUntilMount) {
+        // Never defer DOM paint during pointer delivery when this batch touched UI (modal open/close).
+        if (latestUiEntities !== undefined || !this.pointerHoldTicksUntilMount || batchTouchesUi) {
           this.applyUiFrame(projectionDeletes, latestUiEntities)
         }
       } else if (this.projectionLagPendingUi && batchTouchesUi) {
@@ -1767,8 +1820,12 @@ export class SceneScriptSystem {
         this.sceneUiBridge &&
         !this.sceneUiBridge.isMountSetReady(this.view, mountSet)
       ) {
-        if (inbound.length) this.pendingInboundAfterUiMount = inbound
+        if (inbound.length) {
+          this.pendingInboundAfterUiMount = this.filterRendererInboundDuringPointerSession(inbound)
+        }
         inbound = []
+      } else if (this.pointerAwaitingWorkerApply && inbound.length) {
+        inbound = this.filterRendererInboundDuringPointerSession(inbound)
       }
 
       if (!hasPayload && !inbound.length) return []
@@ -1897,14 +1954,14 @@ export class SceneScriptSystem {
   private purgeProjectionUiOutsideWorkerMount(): void {
     const workerSet = this.sceneUiBridge?.getWorkerUiEntities()
     if (!workerSet?.size) return
-    const { UiTransform, UiText, UiBackground, UiInput, UiDropdown, PointerEvents } = this.readComponents
+    const { UiTransform, UiText, UiBackground, UiInput, UiDropdown } = this.readComponents
+    // Never purge PointerEvents here — world props share PE and live outside the UI mount set.
     this.projection.purgeEntitiesOutsideSet(workerSet, [
       UiTransform.componentId,
       UiText.componentId,
       UiBackground.componentId,
       UiInput.componentId,
-      UiDropdown.componentId,
-      PointerEvents.componentId
+      UiDropdown.componentId
     ])
   }
 
@@ -1947,6 +2004,11 @@ export class SceneScriptSystem {
     hasUiMountSnapshot: boolean
   ): number[] | undefined {
     if (hasUiMountSnapshot) {
+      // Prefer explicit mount list — partial dirty snapshots no longer enumerate every UiTransform.
+      const withMount = [...batch]
+        .reverse()
+        .find((item) => item.uiMountSnapshot !== undefined && (item.uiEntities?.length ?? 0) > 0)
+      if (withMount?.uiEntities?.length) return withMount.uiEntities
       const snap = [...batch].reverse().find((item) => item.uiMountSnapshot !== undefined)
       return extractSnapshotMountEntityIds(snap?.uiMountSnapshot ?? [])
     }
@@ -2029,17 +2091,119 @@ export class SceneScriptSystem {
     this.sceneInputRelay?.sync(tickNumber)
   }
 
+  private lastPlayerFrameId = 0
+  /** MOVE CAMERA — apply vc-pose-live without MainCamera bind while locomotion is frozen. */
+  private playerEditFlightLiveLane = false
+  private lastPlayerFrameMainCameraKey = ''
+  private lastVcBindHydrateLogKey = ''
+  /** One-shot pull if MainCamera is bound but VC components still missing after hydrate race. */
+  private vcBindHydratePullPending = false
+
   /**
-   * Worker→main live VC Transform (no CRDT ack wait). Keeps projection + gizmo in sync
-   * with engine ticks during MOVE CAMERA flight.
+   * Hot path — InputModifier + MainCamera only (play mode).
+   * VC Transform/VirtualCamera arrive via `vc-bind-hydrate` (graph-hash cold path).
+   */
+  private applyPlayerFrame(
+    msg: Extract<import('../../shim/types').SceneWorkerOutbound, { type: 'player-frame' }>
+  ): void {
+    if (!this.running) return
+    if (msg.frameId <= this.lastPlayerFrameId) return
+    this.lastPlayerFrameId = msg.frameId
+    const { InputModifier, MainCamera, Transform, VirtualCamera } = this.readComponents
+    const { PlayerEntity, CameraEntity } = this.view
+    if (msg.inputModifierHas && msg.inputModifier !== undefined) {
+      InputModifier.createOrReplace(PlayerEntity, msg.inputModifier as never)
+    } else {
+      InputModifier.deleteFrom(PlayerEntity)
+    }
+    MainCamera.createOrReplace(CameraEntity, (msg.mainCamera ?? {}) as never)
+    this.foldProjectionChanges()
+    const mainCam = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
+    const locomotion = readLocomotionFromComponents(this.readComponents, PlayerEntity)
+    const vcUnbound =
+      mainCam?.virtualCameraEntity === undefined || mainCam?.virtualCameraEntity === null
+    this.playerEditFlightLiveLane = !canLocomote(locomotion) && vcUnbound
+    if (vcUnbound && !this.playerEditFlightLiveLane) {
+      this.projection.clearVcLiveTransformForUnbind()
+      this.vcBindHydratePullPending = false
+    }
+    const vcKey = vcUnbound ? 'cleared' : `e${mainCam!.virtualCameraEntity}`
+    if (vcKey !== this.lastPlayerFrameMainCameraKey) {
+      this.lastPlayerFrameMainCameraKey = vcKey
+      const vcEnt = mainCam?.virtualCameraEntity
+      const hasTr = vcEnt != null && Transform.has(vcEnt as never)
+      const hasVc = vcEnt != null && VirtualCamera.has(vcEnt as never)
+      console.info(
+        `[vc-lens] player-frame MainCamera → ${vcKey}` +
+          (vcUnbound ? '' : ` transform=${hasTr} virtualCamera=${hasVc}`)
+      )
+      if (!vcUnbound && (!hasTr || !hasVc)) {
+        this.requestVcBindHydrateOnce()
+      }
+    } else if (!vcUnbound) {
+      const vcEnt = mainCam!.virtualCameraEntity!
+      if (!Transform.has(vcEnt as never) || !VirtualCamera.has(vcEnt as never)) {
+        this.requestVcBindHydrateOnce()
+      }
+    }
+  }
+
+  /** Cold-path structural hydrate — Transform + VirtualCamera + ancestors (before / with bind). */
+  private applyVcBindHydrate(
+    bound: import('../../shim/types').PlayerFrameBoundVc,
+    graphKey: string
+  ): void {
+    if (!this.running) return
+    const { VirtualCamera } = this.readComponents
+    // Live-lane Transform so cold CRDT cannot overwrite with incomplete local hierarchy mid-frame.
+    const putLiveTransform = (
+      entity: number,
+      tr: import('../../shim/types').PlayerFrameBoundVcTransform
+    ): void => {
+      this.projection.setVcLiveTransform(entity as never, {
+        position: tr.position,
+        rotation: tr.rotation,
+        scale: tr.scale,
+        parent: tr.parent as never
+      })
+    }
+    for (const anchor of bound.anchors) {
+      putLiveTransform(anchor.entity, anchor.transform)
+    }
+    putLiveTransform(bound.entity, bound.transform)
+    VirtualCamera.createOrReplace(bound.entity as never, (bound.virtualCamera ?? {}) as never)
+    this.vcBindHydratePullPending = false
+    if (graphKey !== this.lastVcBindHydrateLogKey) {
+      this.lastVcBindHydrateLogKey = graphKey
+      const lookAt = (bound.virtualCamera as { lookAtEntity?: number } | null)?.lookAtEntity
+      console.info(
+        `[vc-lens] vc-bind-hydrate e${bound.entity} anchors=${bound.anchors.length} ` +
+          `flat=${bound.worldFlattened === true} parent=${bound.transform.parent ?? '∅'} lookAt=${lookAt ?? '∅'} ` +
+          `pos=(${bound.transform.position.x.toFixed(1)},${bound.transform.position.y.toFixed(1)},${bound.transform.position.z.toFixed(1)})`
+      )
+    }
+  }
+
+  private requestVcBindHydrateOnce(): void {
+    if (this.vcBindHydratePullPending || !this.worker) return
+    this.vcBindHydratePullPending = true
+    this.worker.postMessage({ type: 'request-vc-bind-hydrate' } satisfies MainToWorker)
+  }
+
+  /**
+   * Worker→main live Transform (no CRDT ack wait) — pure pipe of scene engine state.
+   * Worker only posts bound-VC hierarchy or edit-flight VCs after systems run.
    */
   private applyVcPoseLive(entity: Entity, transform: DclTransformValues): void {
     if (!this.running || !this.entityStore || !this.bridge) return
-    const { Transform, MainCamera } = this.readComponents
+    const { MainCamera, Transform } = this.readComponents
     const { CameraEntity } = this.view
     const main = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
-    const bound = main?.virtualCameraEntity
-    if (bound === undefined || bound === null || entity !== bound) return
+    const boundActive =
+      main?.virtualCameraEntity !== undefined && main?.virtualCameraEntity !== null
+
+    // Unbound: only MOVE CAMERA flight lane. Bound: trust worker filter (VC + parents/lookAt).
+    if (!boundActive && !this.playerEditFlightLiveLane) return
 
     this.projection.setVcLiveTransform(entity, transform)
 
@@ -2052,26 +2216,29 @@ export class SceneScriptSystem {
     this.bridge.getEntityNodes()?.get(entity)?.updateMatrixWorld(true)
   }
 
-  /** Clear stuck relay + worker inputSystem state (e.g. VIEW SHOT MainCamera bind). */
+  /** Drop relayed keys and publish empty snapshot to the worker. */
   flushSceneKeyboardRelay(reason: string): void {
     this.sceneInputRelay?.releaseHeldKeys(reason)
   }
 
-  /** After flight keys release — let inbound worker VC Transform CRDT apply again. */
+  /** After flight keys release / unbind — drop live-lane TS so inbound CRDT can reapply. */
   private clearVcLiveTransformLane(): void {
-    const { MainCamera } = this.readComponents
-    const main = MainCamera.getOrNull(this.view.CameraEntity) as { virtualCameraEntity?: number } | null
-    const vc = main?.virtualCameraEntity
-    if (vc !== undefined && vc !== null) {
-      this.projection.clearVcLiveTransform(vc as Entity)
-    }
+    this.projection.clearVcLiveTransformForUnbind()
   }
 
   private foldProjectionChanges(): void {
     const { PlayerEntity, CameraEntity, RootEntity } = this.view
-    const { TriggerArea, Transform, Billboard, MainCamera } = this.readComponents
+    const { TriggerArea, Transform, Billboard, MainCamera, InputModifier } = this.readComponents
 
     for (const change of this.projection.changes) {
+      if (
+        change.entity === PlayerEntity &&
+        change.componentId === InputModifier.componentId &&
+        change.kind === 'put'
+      ) {
+        this.clearPlayerMoveKeys?.()
+      }
+
       if (
         change.entity === CameraEntity &&
         change.componentId === MainCamera.componentId &&
@@ -2079,9 +2246,7 @@ export class SceneScriptSystem {
       ) {
         const value = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
         const vc = value?.virtualCameraEntity
-        if (vc !== undefined && vc !== null) {
-          this.flushSceneKeyboardRelay('vc-bind')
-        } else {
+        if (vc === undefined || vc === null) {
           this.projection.clearVcLiveTransformForUnbind()
         }
         this.virtualCameraBridge?.logLensParity(
@@ -2197,6 +2362,7 @@ export class SceneScriptSystem {
       clientDebugLog.log('pointer', 'bind skipped — scene not prepared', { level: 'warn' })
       return
     }
+    this.clearPlayerMoveKeys = sceneInput?.clearPlayerMoveKeys ?? null
     // Pointer reads/iteration go through the projection view + facade (writes via setRenderer/appendRenderer + source capture).
     this.pointerEvents.bind({
       ecs: this.readComponents,
@@ -2460,6 +2626,57 @@ export class SceneScriptSystem {
   private pumpSceneEngineTick(): void {
     if (!this.running || !this.worker) return
     this.worker.postMessage({ type: 'pump-scene-engine-tick' } satisfies MainToWorker)
+  }
+
+  /** Phase 2 — one unified worker play frame per main rAF (engine.update + pollEvents). */
+  tickPlayFrame(): void {
+    if (!this.running || !this.worker || this.bootPhaseActive) return
+    // CameraFollowSystem (and similar) read Transform.get(PlayerEntity) on the worker.
+    // Embed poses on play-frame-tick (same message) so PE is current before engine.update —
+    // separate renderer-inbound CRDT raced / dirty-skipped and left follow anchors at spawn.
+    this.refreshClientPosesFromProvider()
+    if (this.clientPlayerPose && this.clientCameraPose) {
+      this.reserved.prepareRendererRoundTrip(this.clientPlayerPose, this.clientCameraPose)
+    }
+    const player = this.clientPlayerPose
+    const camera = this.clientCameraPose
+    this.worker.postMessage({
+      type: 'play-frame-tick',
+      ...(player
+        ? {
+            player: {
+              position: {
+                x: player.position.x,
+                y: player.position.y,
+                z: player.position.z
+              },
+              rotation: {
+                x: player.rotation.x,
+                y: player.rotation.y,
+                z: player.rotation.z,
+                w: player.rotation.w
+              }
+            }
+          }
+        : {}),
+      ...(camera
+        ? {
+            camera: {
+              position: {
+                x: camera.position.x,
+                y: camera.position.y,
+                z: camera.position.z
+              },
+              rotation: {
+                x: camera.rotation.x,
+                y: camera.rotation.y,
+                z: camera.rotation.z,
+                w: camera.rotation.w
+              }
+            }
+          }
+        : {})
+    } satisfies MainToWorker)
   }
 
   /** Level keyboard snapshot — worker coalesces during pointer input session. */
@@ -2857,14 +3074,13 @@ export class SceneScriptSystem {
   }
 
   private diffTouchesSceneUi(diff: Map<Entity, Map<number, ProjectionChangeKind>>): boolean {
-    const { UiTransform, UiText, UiBackground, UiInput, UiDropdown, PointerEvents } = this.readComponents
+    const { UiTransform, UiText, UiBackground, UiInput, UiDropdown } = this.readComponents
     const uiIds = new Set([
       UiTransform.componentId,
       UiText.componentId,
       UiBackground.componentId,
       UiInput.componentId,
-      UiDropdown.componentId,
-      PointerEvents.componentId
+      UiDropdown.componentId
     ])
     for (const comps of diff.values()) {
       for (const id of comps.keys()) {
@@ -3260,6 +3476,7 @@ export class SceneScriptSystem {
       (entity) => !AvatarAttach.has(entity)
     )
     applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh)
+    this.bridge.syncInstancedTransforms(transformDiff.keys())
     this.lastSyncFrameTransformEntities.clear()
     const { MeshCollider, GltfContainer } = this.readComponents
     for (const entity of transformDiff.keys()) {
@@ -3490,6 +3707,11 @@ export class SceneScriptSystem {
   getHydrationStats() {
     if (!this.bridge) return null
     return this.bridge.getHydrationStats(this.view)
+  }
+
+  /** Cheap mesh-queue counters for fps diagnostics (no full projection walk). */
+  getAttachProgressLite(): { attached: number; pendingMesh: number; sceneTris: number } | null {
+    return this.bridge?.getAttachProgressLite() ?? null
   }
 
   setAssetHydrationMode(enabled: boolean): void {

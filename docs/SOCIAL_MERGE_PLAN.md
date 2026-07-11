@@ -33,7 +33,7 @@ type SceneContext = { segment: string; mode: AppMode }
 |-------|----------|-------|
 | Places grid + API | `src/client/ui/settings/PlacesView.ts`, `src/social/dclPlaces.ts` | HotScenesCrowd parity |
 | Route parsing | `src/dcl/content/route.ts` | Coords, worlds, `/goto` |
-| Auth / identity | `src/auth/`, splash screen | Wallet + guest |
+| Auth / identity | `src/auth/`, explorer auth sheet | Wallet + guest |
 | In-world social | `src/social/`, chat, LiveKit | Phase 5 work |
 | Events / map / backpack | `SettingsOverlay` tabs | In-world only today |
 
@@ -160,7 +160,7 @@ type SceneContext = { segment: string; mode: AppMode }
 │  /<segment>     → SceneLandingView (mode=landing)       │
 │  /<segment>     → World + ClientShell (mode=play)        │
 ├─────────────────────────────────────────────────────────┤
-│  Global login (SplashScreen / stored identity)          │
+│  Session resume + explorer auth sheet (no splash)         │
 │  AuthProvider scope — same session all modes              │
 └─────────────────────────────────────────────────────────┘
 ```

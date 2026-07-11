@@ -67,7 +67,7 @@ export async function loginWithMetaMask(onStatus?: StatusCallback): Promise<Logi
   return { kind: 'wallet', address, identity }
 }
 
-/** Resume cached identity or show splash choices. */
+/** Resume cached wallet identity from localStorage, or null if none / guest. */
 export function resumeStoredLogin(): LoginResult | null {
   const stored = readStoredIdentity()
   if (!stored) return null

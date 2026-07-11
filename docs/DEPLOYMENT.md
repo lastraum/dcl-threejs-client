@@ -10,7 +10,7 @@
 |------|-------|
 | **Build** | `npm run build` → `dist/` static SPA |
 | **Runtime** | Any static host + SPA fallback (nginx, Cloudflare Pages, S3+CloudFront, etc.) |
-| **Auth** | Wallet connect — guest via `?guest` / `?skipLogin` only (no splash button) |
+| **Auth** | Non-blocking session resume; explorer auth sheet for wallet/guest (dev: `?guest` / `?skipLogin`) |
 | **Realm** | Default catalyst `https://peer-ec2.decentraland.org` (override via env) |
 | **Workers** | Scene script runs in Web Worker — host must serve `.js` with correct MIME |
 
@@ -30,11 +30,11 @@ Run through this on a **production build** (`npm run build && npm run preview` o
 
 ### Login & session
 
-- [ ] Splash shows **Connect Wallet** only (no DCL auth-server button; no guest button)
+- [ ] Cold load resumes stored wallet or continues as guest (no full-screen splash)
+- [ ] Explorer header **Sign in** → wallet + guest sheet works
 - [ ] Wallet login → profile loads → avatar composes with wearables
-- [ ] Returning user: **Jump into Decentraland** + **Use a different account**
-- [ ] Guest dev URLs: `?guest` or `?skipLogin` still bypass splash
-- [ ] Loading overlay stays **5s after scene load** on first entry; teleports dismiss fast
+- [ ] Guest dev URLs: `?guest` or `?skipLogin` still force guest without wallet sheet
+- [ ] Landing **Jump in** uses landing progress bar; in-play teleports use loading overlay
 
 ### Core scene
 
@@ -106,7 +106,7 @@ Code path: `PointerEventsSystem.ts` → mirror `PointerEventsResult` + `PrimaryP
 - [ ] Voice / LiveKit audio not wired
 - [x] `PointerEvents` — hover icons, highlight, full input actions (see [manual test](#pointerevents-manual-test))
 - [ ] Parcel route `/80,-1` catalyst fetch stub
-- [ ] Guest only via dev URL `?guest` / `?skipLogin` (not in splash)
+- [ ] Guest also available from explorer auth sheet; dev URL `?guest` / `?skipLogin` still force guest
 
 ### Browser matrix (spot-check)
 
@@ -340,7 +340,7 @@ Keep previous `dist/` artifact or CDN deployment ID. Static SPA rollback = redep
 emote props, LightSource culling, Genesis map, events calendar.
 
 **Known limitations:** No voice, proximity pointer events, in-world UI (`UiTransform`), Explorer chat date quirk,
-guest login removed from splash (wallet required for comms).
+guest available via explorer auth sheet or `?guest` / `?skipLogin`.
 ```
 
 ---

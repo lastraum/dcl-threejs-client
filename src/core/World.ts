@@ -25,7 +25,10 @@ import { FftOceanWater } from '../environment/FftOceanWater'
 import { IslandWater } from '../environment/IslandWater'
 import { OpenOceanWater } from '../environment/OpenOceanWater'
 import { OceanRing } from '../environment/OceanRing'
-import { readFftOceanOverride } from '../environment/fftOcean/readFftOceanOverride'
+import {
+  isClientWaterDisabled,
+  readFftOceanOverride
+} from '../environment/fftOcean/readFftOceanOverride'
 import type { OceanPerfInfo } from '../client/ui/RenderStats'
 import type { OutdoorLightingSnapshot } from '../environment/OutdoorLighting'
 import type { IslandShoreMaterial } from '../dcl/landscape/IslandShoreMaterial'
@@ -328,7 +331,9 @@ export class World {
     }
 
     this.clearOcean()
-    if (!skipClientLandscape && landscapeProfile.showWater) {
+    if (!skipClientLandscape && landscapeProfile.showWater && isClientWaterDisabled()) {
+      console.info('[ocean] disabled (?water=0 / ?noWater=1) — no water mesh or GPGPU')
+    } else if (!skipClientLandscape && landscapeProfile.showWater) {
       const fftSettings = readFftOceanOverride()
       const useFftOcean = fftSettings.enabled && this.host.renderer.capabilities.isWebGL2
       if (fftSettings.enabled && !useFftOcean) {
@@ -803,7 +808,12 @@ export class World {
       onSyncFrame: (delta) => {
         startFrame++
         if (!this.editorPreviewMode) {
-          this.ocean?.update(delta, this.host.camera)
+          // Character select / menus bind VirtualCamera — skip FFT ocean GPGPU while VC is live
+          // so main-thread budget goes to UI + late GLB attach (Explorer is not paying this tax).
+          const vcActive = this.sceneScript.getVirtualCameraBridge()?.isActive() === true
+          if (!vcActive) {
+            this.ocean?.update(delta, this.host.camera)
+          }
           if (this.ezTreeGrass) {
             this.ezTreeGrassElapsed += delta
             this.ezTreeGrass.update(this.ezTreeGrassElapsed, this.host.camera.position)
@@ -821,6 +831,7 @@ export class World {
         }
 
         if (this.playerMode && this.player) {
+          this.sceneScript.tickPlayFrame()
           const platformT0 = performance.now()
           this.syncPlayerMotionFrame(delta, startFrame)
           const platformMs = performance.now() - platformT0
@@ -881,29 +892,52 @@ export class World {
       onAsyncFrame: async (_delta) => {
         if (this.editorPreviewMode) return
 
+        const t0 = performance.now()
         await this.sceneScript.syncRenderer()
+        const rendererMs = performance.now() - t0
+
         if (this.playerMode && this.player) {
           this.sceneScript.preparePointerRaycast()
         }
 
         // Sync frame already runs syncCollision after motion bridges — async only when
         // projection diff or entity-store changes mark new collider work this frame.
+        const t1 = performance.now()
         if (this.sceneScript.hasColliderWorkPending()) {
           this.sceneScript.syncCollision()
         }
 
+        let colliderMs = 0
         if (this.playerMode && this.player) {
           const colliderT0 = performance.now()
           this.applyPhysicsColliders()
+          colliderMs = performance.now() - colliderT0
           recordMainThreadPerf({
             platformMotionMs: 0,
             playerUpdateMs: 0,
-            colliderApplyMs: performance.now() - colliderT0
+            colliderApplyMs: colliderMs
           })
           this.logCollidersPhysDebug()
         }
+        const collisionMs = performance.now() - t1
 
+        const t2 = performance.now()
         await this.sceneScript.syncAsyncBridges()
+        const bridgesMs = performance.now() - t2
+        const totalMs = performance.now() - t0
+        // Diagnose multi-second async frames (was ~3300ms = cold GLB parse await / 3k pending walk).
+        if (totalMs > 100) {
+          // Lite counters only — full getHydrationStats walks every GltfContainer (was 3k+).
+          const lite = this.sceneScript.getAttachProgressLite()
+          console.warn(
+            `[fps] async breakdown ${totalMs.toFixed(0)}ms — renderer=${rendererMs.toFixed(0)} ` +
+              `collision=${collisionMs.toFixed(0)} bridges=${bridgesMs.toFixed(0)} ` +
+              `gltfCached=${this.assets.getLoadStats().gltfCached} inflight=${this.assets.getLoadStats().gltfInflight}` +
+              (lite
+                ? ` attached=${lite.attached} pendingMesh=${lite.pendingMesh} sceneTris=${(lite.sceneTris / 1e6).toFixed(2)}M`
+                : '')
+          )
+        }
       }
     })
   }

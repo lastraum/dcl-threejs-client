@@ -1,9 +1,13 @@
 /**
- * Offline CLAIMS.yaml snapshot for the dev panel when GitHub fetch is disabled.
- * Bundled at build/dev time via Vite `?raw` — does not rewrite this file on `npm run build`.
+ * Offline placeholder registry — not live community claims.
+ * Live claims load from GitHub docs/CLAIMS.yaml. Client version is package.json only.
  */
-import { parse as parseYaml } from 'yaml'
-import claimsYaml from '../../../docs/CLAIMS.yaml?raw'
 import type { ClaimsRegistry } from './claimsRegistry'
 
-export const CLAIMS_FALLBACK: ClaimsRegistry = parseYaml(claimsYaml) as ClaimsRegistry
+export const CLAIMS_FALLBACK: ClaimsRegistry = {
+  schema_version: 2,
+  updated: undefined,
+  source: 'offline-placeholder',
+  base_branch: 'dev-latest',
+  workflow: []
+}

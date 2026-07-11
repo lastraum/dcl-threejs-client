@@ -228,12 +228,11 @@ export class DevProgressPanel {
 
     const branch = this.claimsLoad?.branch ?? this.progressLoad?.branch ?? 'dev-latest'
     const baseBranch = this.claimsLoad?.registry.base_branch ?? 'dev-latest'
-    const sourceLabel =
-      this.claimsLoad?.source === 'github' || this.progressLoad?.source === 'github'
-        ? 'GitHub'
-        : 'offline snapshot'
+    const claimsLive = this.claimsLoad?.source === 'github'
     const prsUrl = `https://github.com/lastraum/dcl-threejs-client/pulls?q=is%3Aopen+base%3A${encodeURIComponent(baseBranch)}`
-    this.footerEl.innerHTML = `<span class="dev-progress__legend">${sourceLabel} · docs <code>${escapeHtml(branch)}</code> · PRs → <code>${escapeHtml(baseBranch)}</code> · <a href="${escapeHtml(communityClaimsIssuesUrl())}" target="_blank" rel="noopener">claims</a> · <a href="${escapeHtml(prsUrl)}" target="_blank" rel="noopener">open PRs</a> · <a href="${escapeHtml(docsClaimsBrowseUrl(branch))}" target="_blank" rel="noopener">CLAIMS.yaml</a></span>`
+    this.footerEl.innerHTML = `<span class="dev-progress__legend">${
+      claimsLive ? 'Live claims from GitHub' : 'Claims offline (empty placeholder — not live workflow)'
+    } · docs <code>${escapeHtml(branch)}</code> · PRs → <code>${escapeHtml(baseBranch)}</code> · <a href="${escapeHtml(communityClaimsIssuesUrl())}" target="_blank" rel="noopener">claims</a> · <a href="${escapeHtml(prsUrl)}" target="_blank" rel="noopener">open PRs</a> · <a href="${escapeHtml(docsClaimsBrowseUrl(branch))}" target="_blank" rel="noopener">CLAIMS.yaml</a></span>`
 
     this.bodyEl.innerHTML = ''
 
@@ -297,16 +296,32 @@ export class DevProgressPanel {
     }
 
     const { markdown, source, branch } = this.progressLoad
-    const sourceLabel = source === 'github' ? 'GitHub' : 'offline snapshot'
+    // Version = this build (package.json). Progress body = live GitHub PROGRESS.md when source=github.
     this.summaryEl.innerHTML = `
-      <span class="dev-progress__chip dev-progress__chip--done">v${escapeHtml(APP_VERSION)} client</span>
+      <span class="dev-progress__chip dev-progress__chip--done" title="From package.json">client ${escapeHtml(APP_VERSION)}</span>
+      <span class="dev-progress__chip ${source === 'github' ? 'dev-progress__chip--done' : 'dev-progress__chip--pending'}" title="Milestone log source">
+        ${source === 'github' ? `live progress @ ${escapeHtml(branch)}` : 'progress offline (not live)'}
+      </span>
     `
-    this.footerEl.innerHTML = `<span class="dev-progress__legend">${sourceLabel} · branch <code>${escapeHtml(branch)}</code> · <a href="${escapeHtml(progressBrowseUrl(branch))}" target="_blank" rel="noopener">PROGRESS.md</a> · <a href="${escapeHtml(progressMdUrl(branch))}" target="_blank" rel="noopener">raw</a></span>`
+    this.footerEl.innerHTML = `<span class="dev-progress__legend">${
+      source === 'github'
+        ? `Live from GitHub · <code>${escapeHtml(branch)}</code>`
+        : 'Could not load live docs — offline notice only (not a progress snapshot)'
+    } · <a href="${escapeHtml(progressBrowseUrl(branch))}" target="_blank" rel="noopener">PROGRESS.md</a> · <a href="${escapeHtml(progressMdUrl(branch))}" target="_blank" rel="noopener">raw</a></span>`
 
     this.bodyEl.innerHTML = ''
+    if (source !== 'github') {
+      const banner = document.createElement('p')
+      banner.className = 'dev-progress__registry-meta'
+      banner.textContent =
+        'Client version is from package.json. Milestone notes load live from GitHub — this offline path is not the project progress log.'
+      this.bodyEl.appendChild(banner)
+    }
     const article = document.createElement('article')
     article.className = 'dev-progress__markdown'
-    article.innerHTML = renderMarkdownToHtml(stripProgressIntro(markdown))
+    article.innerHTML = renderMarkdownToHtml(
+      source === 'github' ? stripProgressIntro(markdown) : markdown
+    )
     this.bodyEl.appendChild(article)
   }
 

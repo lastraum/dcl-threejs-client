@@ -45,7 +45,7 @@ Raw URLs (default branch `dev-latest`):
 - `https://raw.githubusercontent.com/lastraum/dcl-threejs-client/main/docs/PROGRESS.md`
 
 Override branch: `?docsBranch=your-branch` or `localStorage.docsBranch`.  
-Offline: `?docsGithubFetch=0` uses Vite-bundled snapshots of `docs/PROGRESS.md` / `docs/CLAIMS.yaml` / `docs/TASKS.yaml` (`?raw` imports in `*Fallback.ts` — no prebuild rewrite).
+Offline: `?docsGithubFetch=0` shows placeholder notices only (not live progress). Live progress/claims always fetch from GitHub `dev-latest`. Client version is always `package.json` (`APP_VERSION`).
 
 ## Where to start (common areas)
 

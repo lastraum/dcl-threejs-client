@@ -1,12 +1,16 @@
 /**
- * Offline PROGRESS.md snapshot for the dev panel when GitHub fetch is disabled.
- * Bundled at build/dev time via Vite `?raw` — does not rewrite this file on `npm run build`.
+ * Offline notice only — not the community progress log.
+ * Live “what’s been worked on” always comes from GitHub (docs/PROGRESS.md on the docs branch).
+ * Client version is never read from this file — use `appVersion.ts` / package.json.
  */
-import progressMd from '../../../docs/PROGRESS.md?raw'
+export const PROGRESS_FALLBACK = `## Progress unavailable offline
 
-const PROGRESS_FALLBACK_MAX_CHARS = 24_000
+The dev panel loads **live** milestone notes from GitHub:
 
-export const PROGRESS_FALLBACK =
-  progressMd.length > PROGRESS_FALLBACK_MAX_CHARS
-    ? `${progressMd.slice(0, PROGRESS_FALLBACK_MAX_CHARS)}\n\n… (truncated — see GitHub PROGRESS.md)`
-    : progressMd
+[\`docs/PROGRESS.md\`](https://github.com/lastraum/dcl-threejs-client/blob/dev-latest/docs/PROGRESS.md) on branch \`dev-latest\` (override with \`?docsBranch=\`).
+
+This offline notice is **not** a snapshot of project progress and is **not** the client version.
+
+- Client version: \`package.json\` → \`APP_VERSION\`
+- Force offline (for testing): \`?docsGithubFetch=0\`
+`

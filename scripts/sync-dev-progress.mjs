@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 /**
- * @deprecated No longer used by `npm run build`.
+ * @deprecated
  *
- * Dev-panel offline fallbacks import docs via Vite `?raw`:
- *   src/client/dev/progressFallback.ts → docs/PROGRESS.md
- *   src/client/dev/claimsFallback.ts   → docs/CLAIMS.yaml
- *   src/client/dev/tasksFallback.ts    → docs/TASKS.yaml
+ * Client version: package.json → src/client/appVersion.ts
+ * Progress / claims display: live GitHub fetch (githubDocs.ts + *Registry.ts)
+ * Offline: short placeholders in *Fallback.ts (not progress snapshots)
  *
- * That embeds the current docs at bundle time without rewriting tracked `.ts` files.
+ * Nothing in the build rewrites tracked sources for version or progress.
  */
 console.log(
-  'sync-dev-progress: obsolete — fallbacks use Vite ?raw imports of docs/*.md|yaml (no prebuild write).'
+  'sync-dev-progress: obsolete — version=package.json; progress/claims=live GitHub (offline=placeholder only).'
 )
 process.exit(0)

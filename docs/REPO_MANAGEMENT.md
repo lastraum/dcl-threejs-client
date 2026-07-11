@@ -169,7 +169,7 @@ git tag v0.2.0 && git push origin v0.2.0
 
 Live docs: `lastraum/dcl-threejs-client` / `main` — `TASKS.yaml` (Roadmap tab) and `PROGRESS.md` (Progress tab). Integration status stays bundled in `integrationRegistry.ts`.
 
-Offline fallbacks: Vite `?raw` imports of `docs/TASKS.yaml` / `PROGRESS.md` / `CLAIMS.yaml` in `*Fallback.ts` (no prebuild file rewrite). Force offline: `?docsGithubFetch=0` or `localStorage.docsGithubFetch=0`.
+Dev panel: **version** = `package.json`; **progress/claims** = live GitHub (`dev-latest`). Offline (`?docsGithubFetch=0`) is a short notice only, not a progress snapshot.
 
 Branch overrides for testing: `?docsBranch=feat/my-branch` (or legacy `?tasksBranch=`) or `localStorage.docsBranch`.
 

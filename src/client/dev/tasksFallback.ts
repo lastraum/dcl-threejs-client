@@ -1,9 +1,10 @@
 /**
- * Offline TASKS.yaml snapshot for the dev panel when GitHub fetch is disabled.
- * Bundled at build/dev time via Vite `?raw` — does not rewrite this file on `npm run build`.
+ * Offline placeholder — not the live TASKS.yaml roadmap.
+ * Live tasks load from GitHub. Client version is package.json only.
  */
-import { parse as parseYaml } from 'yaml'
-import tasksYaml from '../../../docs/TASKS.yaml?raw'
 import type { TasksRegistry } from './tasksRegistry'
 
-export const TASKS_FALLBACK: TasksRegistry = parseYaml(tasksYaml) as TasksRegistry
+export const TASKS_FALLBACK: TasksRegistry = {
+  schema_version: 1,
+  tasks: []
+}

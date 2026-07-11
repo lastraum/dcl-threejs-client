@@ -944,7 +944,7 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 - **Chat nav links** — parcel coords (`80,-1`), `.dcl.eth` names, Decentraland play URLs → in-client teleport (not new tab) — `chatNavigationLinks.ts`, `linkifyText.ts`
 - **Chat @mention highlight** — purple `is-mentioned` on **bubble only** (not whole row) when message @-mentions local user — `chatMentionDetection.ts`, `ChatPanel.ts`
 - **Login** — removed **Sign in with Decentraland** (auth-server popup); wallet connect remains primary path
-- **Dev progress panel** — `</>` sidebar → Roadmap (`TASKS.yaml`), Integration status, and Progress (`PROGRESS.md`) fetched live from `lastraum/dcl-threejs-client` — `DevProgressPanel.ts`, `githubDocs.ts`. Offline: `?docsGithubFetch=0` uses Vite-bundled `docs/*` via `?raw` imports (`*Fallback.ts`; no prebuild rewrite of tracked sources).
+- **Dev progress panel** — `</>` → community claims + Progress log **live from GitHub** (`dev-latest` docs). Client version chip is **`package.json` only**. Offline (`?docsGithubFetch=0`) shows a placeholder notice, not a progress snapshot.
 
 **ECS bridges**
 - **`TweenBridge`** — wired in `SceneScriptSystem` + `mirrorComponents` (`Tween`, `TweenState`); move/rotate/scale/moveRotateScale + continuous modes; 31 easing curves; writes `TweenState` for worker `tweenCompleted()` — see **Tween status** below

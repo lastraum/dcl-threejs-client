@@ -44,13 +44,12 @@ renderQuality.setTier(RenderQualityTier.High)
 Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not replace them):
 
 - Base sun: `DirectionalLight` × SunCycle24h **m_Intensity** (peak **2.72**, `SUN_BRIGHTNESS` **1.0**) + color ramp
-- Moon fill: **`moonLightIntensity()`** × `MOON_BRIGHTNESS` **1.15** × user moon slider
-- **Trilight ambient (Unity `UpdateIndirectLight`):** HemisphereLight sky+ground + **AmbientLight equator** (`indirectEquator` gradient) — soft fill on vertical surfaces
-- Soft **directional sun shadows** (`directionalSunShadow.ts`, PCF, ortho map follows camera) — day only
+- Moon fill: **`moonLightIntensity()`** × `MOON_BRIGHTNESS` **1.15** × user moon slider; cool tint; light follows camera focus at night
+- **Moon disc:** billboarded `SkyboxMoon.png` on night celestial arc; Unity `_Moon_Mask_Size` ~**0.16** overnight (was broken sky-sphere UV → invisible)
+- **Trilight ambient (Unity `UpdateIndirectLight`):** HemisphereLight sky+ground + **AmbientLight equator**
+- Soft **directional sun shadows** (day); skydome sun disc visual-only (small warm halo)
 - **User tuning:** defaults **52 / 70 / 52 / 50**; **Reset lighting** button
-- Hybrid ECS light scale still dims sun/hemi when nearby spots saturate
-- **Skydome disc (visual only):** small warm disc + soft halo; radiance not scaled by scene brightness
-- **Azimuth parity ([#15](https://github.com/lastraum/dcl-threejs-client/pull/15))** · **Skybox time authority** scene → session → auto
+- **Azimuth parity ([#15](https://github.com/lastraum/dcl-threejs-client/pull/15))** · skybox authority scene → session → auto
 
 ### Tone mapping + exposure (`SceneHost.ts`, `EnvironmentSystem.ts`)
 

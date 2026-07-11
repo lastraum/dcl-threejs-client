@@ -136,8 +136,16 @@ export function sampleSkyGradients(t: number): {
   cloudHighlights: number
   sunRadiance: number
 } {
+  // Unity _Moon_Mask_Size — ~0.16 overnight, 0 midday (SkyboxRenderController + GenesisSky mat).
+  // Wider night window so the disc is on for the full isSunPeriod=false arc.
   const moonMask =
-    t <= 0.25 ? THREE.MathUtils.lerp(0.16, 0.17, t / 0.25) : t >= 0.84 ? 0.16 : 0
+    t < 0.27 || t > 0.79
+      ? 0.16
+      : t < 0.32
+        ? THREE.MathUtils.lerp(0.16, 0, (t - 0.27) / 0.05)
+        : t > 0.74
+          ? THREE.MathUtils.lerp(0, 0.16, (t - 0.74) / 0.05)
+          : 0
 
   const cloudHighlights =
     t < 0.3 ? 0.45 : t < 0.5 ? THREE.MathUtils.lerp(0.45, 1.0, (t - 0.3) / 0.2) : t < 0.75 ? 1.0 : 0.55

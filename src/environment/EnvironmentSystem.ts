@@ -50,6 +50,7 @@ import {
 
 const _celestial = new THREE.Vector3()
 const _hemiGround = new THREE.Color()
+const _moonCool = new THREE.Color(0.55, 0.62, 0.95)
 const _blackBackground = new THREE.Color(0x000000)
 /** Neutral void for blank scenes — no genesis dome nadir showing as a cyan “floor”. */
 const VOID_SKY_BACKGROUND = 0x1a1a2e
@@ -435,9 +436,12 @@ export class EnvironmentSystem {
       : day
         ? 0
         : moonLit * MOON_BRIGHTNESS * moonScale * sceneMoonMul
-    this.moon.color.copy(g.directional)
-    this.moon.position.copy(_celestial).multiplyScalar(120)
-    this.moon.target.position.set(0, 0, 0)
+    // Cool moon fill — Unity night directional is purple/blue from the ramp, not warm sun.
+    this.moon.color.copy(g.directional).lerp(_moonCool, 0.4)
+    // Anchor moon light on camera focus so night scenes get stable directional fill.
+    this.moon.target.position.copy(this.host.camera.position)
+    this.moon.position.copy(this.host.camera.position).addScaledVector(_celestial, 90)
+    this.moon.target.updateMatrixWorld()
 
     // Trilight ambient (SkyboxRenderController.UpdateIndirectLight).
     this.hemi.intensity = skylightOff ? 0 : (day ? HEMI_DAY_INTENSITY : HEMI_NIGHT_INTENSITY) * ambientMul

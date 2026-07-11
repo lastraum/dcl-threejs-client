@@ -59,14 +59,41 @@ vec3 sampleGradient(vec3 dir, vec3 zenit, vec3 horizon, vec3 nadir) {
   return y >= 0.0 ? upBlend : downBlend;
 }
 
-vec3 celestialDisc(vec3 dir, vec3 lightDir, sampler2D map, float mask, float size, vec3 tint, float glow) {
-  if (mask <= 0.001) return vec3(0.0);
-  float d = dot(normalize(dir), normalize(lightDir));
-  float core = smoothstep(1.0 - size * 0.015, 1.0 - size * 0.002, d);
-  float halo = pow(max(d, 0.0), 24.0) * glow;
-  vec2 uv = vec2(atan(dir.z, dir.x) / 6.2831853 + 0.5, dir.y * 0.5 + 0.5);
-  vec4 tex = texture2D(map, uv * 2.0);
-  return tint * (core * 2.5 + halo * 0.8) * tex.a * mask;
+/**
+ * Night moon disc — billboarded SkyboxMoon texture along moon direction.
+ * Unity Explorer drives _Moon_Mask_Size (~0.16 at night) + celestial tint; we draw a
+ * real disc (previous sky-sphere UV never sampled the moon face, so it was invisible).
+ */
+vec3 moonDisc(vec3 dir, vec3 moonDir, sampler2D map, float mask) {
+  if (mask < 0.001) return vec3(0.0);
+  vec3 m = normalize(moonDir);
+  if (m.y < -0.08) return vec3(0.0);
+  vec3 v = normalize(dir);
+  float d = dot(v, m);
+  // Small disc, similar angular size to our sun core.
+  float cosEdge = 0.9970;
+  float cosGlow = cosEdge - 0.02;
+  if (d < cosGlow) return vec3(0.0);
+
+  float ang = acos(clamp(d, -1.0, 1.0));
+  float edge = acos(cosEdge);
+  float core = 1.0 - smoothstep(0.0, max(edge * 1.1, 0.001), ang);
+  core = pow(max(core, 0.0), 1.2);
+
+  // Billboard UVs in the plane perpendicular to moonDir.
+  vec3 up = abs(m.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+  vec3 t = normalize(cross(up, m));
+  vec3 b = cross(m, t);
+  float invR = 1.0 / max(sin(edge * 1.5), 1e-4);
+  vec2 uv = vec2(dot(v, t), dot(v, b)) * invR * 0.5 + 0.5;
+  vec4 tex = texture2D(map, uv);
+  float inUv = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+  vec3 surface = mix(vec3(0.72, 0.76, 0.92), tex.rgb, clamp(tex.a * inUv, 0.0, 1.0));
+  float glow = exp(-ang / 0.032) * 0.55;
+  float halo = exp(-ang / 0.075) * 0.22;
+  // Unity mask ~0.16 ⇒ treat as full opacity when night is active.
+  float opacity = clamp(mask * 6.25, 0.0, 1.0);
+  return surface * (core * 2.4 + glow + halo) * opacity;
 }
 
 // Small warm disc + light soft halo. Visual only — scene lighting uses DirectionalLight.
@@ -165,7 +192,7 @@ void main() {
   float night = 1.0 - smoothstep(-0.08, 0.12, uSunDirection.y);
   sky += starField(dir, uStarsMap, night);
   sky += sunDisc(dir, uSunDirection, uSunColor, uSunRadiance);
-  sky += celestialDisc(dir, uMoonDirection, uMoonMap, uMoonMask, 0.16, vec3(1.2), 1.4);
+  sky += moonDisc(dir, uMoonDirection, uMoonMap, uMoonMask);
 
   float cloudAngle = uTime * uCloudsRotationSpeed;
   sky = blendCloudLayer(sky, dir, uHorizonCloudsCube, cloudAngle * 0.5, 0.85, 0.02, 0.42);
@@ -313,9 +340,12 @@ export class DclGenesisSky {
     this.uniforms.uRimColor.value.copy(g.rim)
     this.uniforms.uCloudsColor.value.copy(g.clouds)
     this.uniforms.uSunDirection.value.copy(day ? celestialDir : _zeroSun)
+    // Night: moon follows celestial arc (same SunCycle half that is not the sun).
     this.uniforms.uMoonDirection.value.copy(day ? _zeroSun : celestialDir)
-    this.uniforms.uMoonMask.value = day ? 0 : g.moonMask
-    // Disc visual only — do not scale with scene SUN_BRIGHTNESS (user asked: look ≠ light power).
+    // Unity _Moon_Mask_Size ~0.16 overnight; 0 by day. Always enable disc when night
+    // (gradient moonMask was 0 for most of 06:00–20:00 including some dark hours).
+    this.uniforms.uMoonMask.value = day ? 0 : Math.max(g.moonMask, 0.16)
+    // Disc visual only — do not scale with scene SUN_BRIGHTNESS.
     this.uniforms.uSunRadiance.value = day ? Math.max(0.15, g.sunRadiance + 0.25) : 0
     this.uniforms.uCloudHighlights.value = g.cloudHighlights
     this.uniforms.uTime.value = freezeClouds ? 0 : this.elapsed

@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-11 (VirtualCamera bind hydrate + PE-follow — [PLAYER_FRAME_CHANNEL.md](./PLAYER_FRAME_CHANNEL.md))  
-> **Current phase:** Companion social UX + mesh P0 + **VirtualCamera reliability** on `dev-latest`. **Next:** Phase 3 Watch Lite (landing voice/chat), Phase 4 `/goto` in 3D; smoke-test **v0.4.0** → `main`.  
+> **Last updated:** 2026-07-11 (materials + sun azimuth + skybox authority)  
+> **Current phase:** Companion social UX + mesh P0 + VC reliability + **lighting/material parity** on `dev-latest`. **Next:** Phase 3 Watch Lite, Phase 4 `/goto`; optional sun intensity/exposure tuning vs Explorer; smoke-test **v0.4.0** → `main`.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -26,8 +26,29 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Community thumbnails** | 🟢 | `communityDisplayImageUrl` + proxy passthrough; detail-fetch fallback on image 404 |
 | **Dev panel in-app suggestions** | 🟢 | `</>` → **💡 Suggest** — form in panel; auto-attaches DCL name + route; files GitHub issues labeled `suggestion` via Cloudflare Worker (prod) or vite proxy (local dev) |
 | **VirtualCamera bind reliability** | 🟢 | Scene-agnostic MainCamera→VC hydrate; locked shots use worker world pose; follow is f(player)+local; live Transform exclusive while bound |
+| **Skybox time authority** | 🟢 | Scene fixed → session custom (tab) → Auto cycle; Night/Day panel respects scene lock |
 
 **Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**. Suggestions: dev panel → **💡 Suggest**.
+
+---
+
+## 🎉 Milestone — Materials + sun azimuth + skybox authority (2026-07-11)
+
+**Status: shipped on `dev-latest`** — community materials/sun PRs merged and QA’d; AUTO cutout matched to Unity; skybox clock priority fixed.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Material empty slots + re-apply** | 🟢 | [#13](https://github.com/lastraum/dcl-threejs-client/pull/13) — Creator Hub empty `alphaTexture`/`emissiveTexture`/`bumpTexture` `src` ignored; textured materials fingerprint after apply (no per-frame shader recompile thrash) |
+| **AUTO alpha vs Unity** | 🟢 | Follow-up `98f830b` — do **not** cut out from albedo PNG alpha alone; dedicated `alphaMap` only (black plate matches Explorer on `threejs.dcl.eth`) |
+| **Sun/moon azimuth** | 🟢 | [#15](https://github.com/lastraum/dcl-threejs-client/pull/15) — `unityQuatToThreeDirection` uses same YZ/negate-X as `dclTransform` (was 180° azimuth off); QA morning light on vertical plane |
+| **Skybox time authority** | 🟢 | `f112671` — (1) scene.json / ECS `SkyboxTime` (2) session custom TOD in `sessionStorage` (3) Auto 60× cycle; scene lock always syncs and preempts custom |
+| **Night/Day panel** | 🟢 | Auto disabled while scene-locked; custom slider respects authority |
+
+**Docs:** [lightsource-parity.md](./lightsource-parity.md) · [INTEGRATION.md](./INTEGRATION.md)
+
+**QA:** `threejs.dcl.eth` — black plate like Unity · pin ~07:30 front-lit plane same side as Explorer · Auto vs custom session survives reload in-tab · no material.version thrash after load.
+
+**Still open (not this milestone):** sun/hemi **intensity** vs Explorer (separate from azimuth); directional sun shadows; graphics prefs stubs; PR [#14](https://github.com/lastraum/dcl-threejs-client/pull/14) yoga Windows paths.
 
 ---
 

@@ -43,17 +43,17 @@ renderQuality.setTier(RenderQualityTier.High)
 
 Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not replace them):
 
-- Base sun: `DirectionalLight` × `SUN_BRIGHTNESS` **1.22** × SunCycle24h anim curve (raw, clamp **2.4** midday peak)
-- Moon fill: **`moonLightIntensity()`** × `MOON_BRIGHTNESS` **1.28** × user **`sceneMoonLight`** multiplier — separate from sun anim curve
+- Base sun: `DirectionalLight` × `SUN_BRIGHTNESS` **1.38** × SunCycle24h anim curve
+- Moon fill: **`moonLightIntensity()`** × `MOON_BRIGHTNESS` **1.3** × user **`sceneMoonLight`** multiplier — separate from sun anim curve
 - Moon color from **`directional` sky gradient** (purple at night), not hardcoded RGB
-- Hemisphere fill **0.46** day / **0.58** night × user sun/moon light sliders
-- **User tuning** (`SunEnvironmentSettings`, Preferences → Graphics): Scene Sun Light, Exposure (day), Scene Moon Light, Moon Exposure (night) — persisted localStorage; defaults **50 / 65 / 52 / 48** (cooler than pre-0.6 56/80 so new sessions match Explorer better)
+- Hemisphere fill **0.5** day / **0.6** night × user sun/moon light sliders
+- **User tuning** (`SunEnvironmentSettings`, Preferences → Graphics): defaults **54 / 72 / 54 / 50**; **Reset lighting** restores them
 - **Hybrid scale:** when nearby ECS lights exceed **40%** of the quality-tier budget, sun/moon/hemi blend down by up to **25%** (`ECS_HYBRID_SUN_REDUCTION`) — sparse outdoor scenes keep full sun; saturated Genesis Plaza clusters avoid double-lit look
-- Skydome sun disc: fixed small disc / no corona (user sliders removed 2026-06-18); hybrid does **not** dim the sky dome
-- **Cloud layers:** cubemap density mask → HDR `clouds` gradient tint + **screen brighten** over sky; sun-facing lift at day; `toneMapped: false` on sky material; soft `smoothstep` falloff **0.62** + mipmap bias **-1.0**; per-ray `sunFacing` on **mask** removed (was blue speckle) — sun used for **tint** only
+- **Skydome sun disc (Explorer parity):** warm multi-layer core + corona — cutoff **0.9964**, core gain **1.0**, glow **0.78**; disc radiance floor independent of scene directional; sky `toneMapped: false`
+- **Cloud layers:** cubemap density mask → HDR `clouds` gradient tint + **screen brighten** over sky; sun-facing lift at day; soft `smoothstep` falloff **0.62** + mipmap bias **-1.0**
 - `LightManager.getActiveNearbyCount()` drives the scale; `World` runs light culling **before** environment update
-- **Azimuth parity (2026-07-11, [#15](https://github.com/lastraum/dcl-threejs-client/pull/15)):** `unityQuatToThreeDirection` uses the same YZ-plane reflection (**negate X**) as `dclTransform` — was negate-Z, which put sun/moon/disc/ocean 180° of azimuth off vs Unity Explorer. Elevation unchanged.
-- **Skybox time authority (2026-07-11):** (1) scene.json / ECS `SkyboxTime` (2) session custom TOD (`sessionStorage`) (3) Auto 60× cycle. Scene lock always syncs and preempts session custom.
+- **Azimuth parity ([#15](https://github.com/lastraum/dcl-threejs-client/pull/15)):** celestial direction uses YZ/negate-X like `dclTransform`
+- **Skybox time authority:** (1) scene.json / ECS `SkyboxTime` (2) session custom TOD (3) Auto 60× cycle
 
 ### Tone mapping + exposure (`SceneHost.ts`, `EnvironmentSystem.ts`)
 
@@ -88,7 +88,7 @@ Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not rep
 | **Exact Explorer tier numbers** | Tier limits (4 / 6 / 10) are reasonable parity targets; Unity Explorer source values not verified byte-for-byte — adjust after side-by-side profiling. |
 | **Player vs camera cull origin** | Culling uses **camera** position (works in orbit mode). Explorer may use avatar position in some cases. |
 | **Directional sun shadows** | Environment sun/moon remain non-shadow-casting; only ECS spot lights cast. |
-| **Sun/hemi intensity vs Explorer** | **Tuned on lastraum (post-0.6):** lower `SUN_BRIGHTNESS` / hemi / defaults / tier exposure; re-verify side-by-side if still hot (localStorage may keep old Preferences values). |
+| **Sun/hemi intensity vs Explorer** | Disc + directional rebalanced toward Unity; use **Reset lighting** if localStorage still has old slider values. |
 | **GltfNodeModifiers castShadows** | Per-node GLTF shadow flags not wired; Material `castShadows` is. |
 | **Per-layer cloud tints** | Explorer uses per-layer gradients; we use one global `uCloudsColor` for all cubemap layers. |
 | **Graphics settings stubs** | Preferences panel MSAA/bloom/shadows/resolution — UI only, not wired to renderer. |

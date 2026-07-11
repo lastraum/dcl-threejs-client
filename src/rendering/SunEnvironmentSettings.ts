@@ -16,17 +16,20 @@ export type SunEnvironmentSettingsState = {
 export const SUN_SLIDER_MIN = 0
 export const SUN_SLIDER_MAX = 100
 
-/** Locked skydome sun — matches former slider 0% (small disc, no corona, dim core). */
-export const FIXED_SUN_DISC_CUTOFF = 0.99885
-export const FIXED_SUN_DISC_CORE_GAIN = 0.15
-export const FIXED_SUN_DISC_GLOW_GAIN = 0
+/**
+ * Skydome sun disc — tuned to Unity Explorer noon (large warm core + soft corona).
+ * Cutoff closer to 1 = tinier disc; lower = larger. Glow 0 kills all corona/bloom.
+ */
+export const FIXED_SUN_DISC_CUTOFF = 0.9964
+export const FIXED_SUN_DISC_CORE_GAIN = 1.0
+export const FIXED_SUN_DISC_GLOW_GAIN = 0.78
 
 const DEFAULTS: SunEnvironmentSettingsState = {
-  /** Mid-slider with slightly less directional punch than pre-0.6 (was 56/80 — hotter than Explorer). */
-  sceneSunLight: 50,
-  exposure: 65,
-  sceneMoonLight: 52,
-  moonExposure: 48
+  /** Scene lighting defaults — readable PBR without washing sky disc. */
+  sceneSunLight: 54,
+  exposure: 72,
+  sceneMoonLight: 54,
+  moonExposure: 50
 }
 
 type Listener = (state: SunEnvironmentSettingsState) => void

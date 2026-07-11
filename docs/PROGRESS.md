@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-11 (materials + sun azimuth + skybox authority)  
-> **Current phase:** Companion social UX + mesh P0 + VC reliability + **lighting/material parity** on `dev-latest`. **Next:** Phase 3 Watch Lite, Phase 4 `/goto`; optional sun intensity/exposure tuning vs Explorer; smoke-test **v0.4.0** → `main`.  
+> **Last updated:** 2026-07-11 (**v0.6.0** cut → `main`)  
+> **Current phase:** **v0.6.0** on `main` / `dev-latest`. **Next:** Phase 3 Watch Lite, Phase 4 `/goto`; MOVE CAMERA residual; sun intensity + directional shadows polish.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -32,6 +32,41 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 
 ---
 
+## 🎉 Release — v0.6.0 (2026-07-11)
+
+**Status: cut from `dev-latest` → `main` · tag `v0.6.0`** — reliability + parity batch after companion social **v0.5.0**.
+
+### Highlights since v0.5.0
+
+| Area | Notes |
+| ---- | ----- |
+| **Scene UI + pointer** | [#11](https://github.com/lastraum/dcl-threejs-client/pull/11) — stack, z-order pick, play-mode gate |
+| **Mesh P0** | [#12](https://github.com/lastraum/dcl-threejs-client/pull/12) — hash drain, instancing, no bulk soft-prime |
+| **VirtualCamera** | [#16](https://github.com/lastraum/dcl-threejs-client/pull/16) — bind hydrate, PE-follow, HUD above scene UI |
+| **Materials** | [#13](https://github.com/lastraum/dcl-threejs-client/pull/13) + follow-up — empty Creator Hub slots; stop re-apply thrash; AUTO cutout = Unity (alphaMap only) |
+| **Sun azimuth** | [#15](https://github.com/lastraum/dcl-threejs-client/pull/15) — celestial negate-X matches scene `dclTransform` |
+| **Skybox authority** | Scene fixed → session custom → Auto cycle |
+| **Windows yoga** | [#14](https://github.com/lastraum/dcl-threejs-client/pull/14) — nbind path filter; fixes black screen |
+| **Dev panel** | In-app suggestions; version from `package.json`; progress live from GitHub |
+
+### Known limitations (not blocking 0.6.0)
+
+| Gap | Notes |
+| --- | ----- |
+| **MOVE CAMERA** edit-flight residual | Avatar freeze OK; WASD/STOP still shim-debt — [ARCHITECTURE_AND_TECH_DEBT](./ARCHITECTURE_AND_TECH_DEBT.md) |
+| **Sun/hemi intensity** vs Explorer | Azimuth fixed; overall brightness may still read hotter |
+| **Directional sun shadows** | Only ECS spot shadows; environment sun does not cast |
+| **Watch Lite / `/goto`** | Companion Phase 3–4 still open |
+| **Graphics prefs stubs** | MSAA/bloom/shadows/resolution UI not wired |
+
+### Smoke (pre-cut)
+
+Genesis spawn walk · VC character-select/follow · `threejs.dcl.eth` materials + ~07:30 sun side · Night/Day authority · Windows yoga if available.
+
+**Changelog:** https://github.com/lastraum/dcl-threejs-client/compare/v0.5.0...v0.6.0
+
+---
+
 ## 🎉 Milestone — Materials + sun azimuth + skybox authority (2026-07-11)
 
 **Status: shipped on `dev-latest`** — community materials/sun PRs merged and QA’d; AUTO cutout matched to Unity; skybox clock priority fixed.
@@ -48,7 +83,7 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 
 **QA:** `threejs.dcl.eth` — black plate like Unity · pin ~07:30 front-lit plane same side as Explorer · Auto vs custom session survives reload in-tab · no material.version thrash after load.
 
-**Still open (not this milestone):** sun/hemi **intensity** vs Explorer (separate from azimuth); directional sun shadows; graphics prefs stubs; PR [#14](https://github.com/lastraum/dcl-threejs-client/pull/14) yoga Windows paths.
+**Still open (not this milestone):** sun/hemi **intensity** vs Explorer; directional sun shadows; graphics prefs stubs. Yoga Windows shipped in **v0.6.0** ([#14](https://github.com/lastraum/dcl-threejs-client/pull/14)).
 
 ---
 

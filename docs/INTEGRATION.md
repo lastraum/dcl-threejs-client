@@ -126,7 +126,7 @@ DOM overlay — not in-scene `UiTransform`.
 
 | Feature | Status |
 | ------- | ------ |
-| Splash / login, loading + hydration timer | 🟢 |
+| Explorer auth sheet + session resume; loading + hydration timer | 🟢 |
 | Sidebar, chat (+ DCM v1 inline images), emote wheel, location pill | 🟢 |
 | Debug panel, dev progress panel (`</>`) | 🟢 |
 | Settings overlay: Events, Map, Backpack, Places, Gallery | 🟢 |

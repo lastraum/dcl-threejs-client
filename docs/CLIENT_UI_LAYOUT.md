@@ -1,6 +1,6 @@
 # Client UI layout (responsive HUD)
 
-> **Scope:** Browser DOM chrome only (sidebar, chat, minimap, settings, splash, loading).  
+> **Scope:** Browser DOM chrome only (sidebar, chat, minimap, settings, loading, explorer shell).  
 > **Not in scope:** In-scene ECS UI (`UiTransform`, React scene UI) — separate system later.
 
 ## Design reference
@@ -19,8 +19,18 @@ Layout is **fluid**, not fixed to one resolution. Reference desktop: **1920×108
 | `--client-panel-max-w` | Generic popup max width |
 | `--client-hud-max-w` | Minimap / world card / chat width cap |
 | `--client-chat-max-h` | Chat column height cap |
+| `--z-scene-ui` | Scene ECS UI (`#scene-ui-root`) — **below** client HUD |
+| `--z-client-hud` | Sidebar, minimap, world card, skybox, mobile chrome |
+| `--z-client-hud-raised` | Chat wrap, mobile game HUD fabs |
+| `--z-client-overlay` | Settings / emote wheel full-screen overlays |
+| `--z-client-system` | Full-screen loading overlay (above HUD) |
+| `--z-client-debug` | Debug panel |
 
 **Rule:** Never use raw `2vw` for panel offsets. Always `var(--client-safe-left)`.
+
+**Stacking rule:** Client HUD (`--z-client-hud` = 100) always paints over scene UI (`--z-scene-ui` = 40). Do not assign HUD chrome below 40.
+
+**Auth:** No full-screen splash. Session resumes via `resolveInitialLogin`; wallet/guest sign-in is the explorer auth sheet.
 
 ## Measured sidebar (`ClientUiLayout.ts`)
 
@@ -35,7 +45,7 @@ Layout is **fluid**, not fixed to one resolution. Reference desktop: **1920×108
 | Mobile | `max-width: 767px` | 48px sidebar, 44px touch targets, full-width chat |
 | Short viewport | `max-height: 700px` | Reduced chat max height |
 
-Splash, loading, map, events, and graphics settings use the same **767 / 1023** tiers.
+Loading, map, events, and graphics settings use the same **767 / 1023** tiers.
 
 ## QA matrix
 
@@ -45,7 +55,7 @@ Manually verify controls are visible and not clipped:
 - 1024×768 (tablet landscape)  
 - 390×844 (phone portrait), 844×390 (phone landscape)
 
-Check: sidebar, chat input, emote wheel, settings close, loading bar, splash login grid.
+Check: sidebar, chat input, emote wheel, settings close, loading bar, explorer auth sheet.
 
 ## Adding a new panel
 

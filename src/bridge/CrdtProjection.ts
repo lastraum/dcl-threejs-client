@@ -16,14 +16,19 @@ export interface ProjectionNetworkDefs {
   networkParent: { componentId: number }
 }
 
-/** Worker-owned scene UI LWW ids — pointer mount batch may force-apply over stale timestamps. */
+/**
+ * Worker-owned scene UI LWW ids — mount snapshot may force-apply over stale timestamps.
+ * Includes PointerEvents only for UI-entity rows in the structured snapshot (entities that
+ * also have UiTransform). World PE without UiTransform never appears in that snapshot and
+ * continues to use normal CRDT only (not stripped with scene UI).
+ */
 export const WORKER_OWNED_UI_COMPONENT_IDS = new Set([
   1050, // UiTransform
   1052, // UiBackground
   1053, // UiText
   1093, // UiInput
   1094, // UiDropdown
-  1062 // PointerEvents
+  1062 // PointerEvents (UI mount snapshot rows only)
 ])
 
 /** Commit MainCamera.virtualCameraEntity only once target VC is hydrated on projection. */
@@ -82,7 +87,8 @@ export class CrdtProjection {
   /** componentId → (entity → last applied Lamport timestamp). */
   private readonly timestamps = new Map<number, Map<Entity, number>>()
   private vcLiveSeq = 0
-  private vcLiveEntity: Entity | null = null
+  /** Entities holding live Transform priority (bound VC + lookAt/parent follow rig). */
+  private readonly vcLiveEntities = new Set<Entity>()
   private readonly meta = new Map<number, ComponentMeta>()
   private readonly deletedEntities = new Set<Entity>()
   /** Change set for the most recent `applyIncoming` (cleared on each call). */
@@ -228,19 +234,12 @@ export class CrdtProjection {
       return
     }
 
-    if (this.shouldDeferMainCameraPut(entity, componentId, value)) {
-      this.pendingMainCameraBind = { entity, componentId, timestamp, value }
-      return
-    }
-
+    // Always commit MainCamera immediately. Deferring until VC Transform+VirtualCamera
+    // were on the projection left the lens freecam-bound forever when those rows arrived
+    // late / out of order (planet-angzaar select stage). VirtualCameraBridge.isActive()
+    // already no-ops until the target VC is fully hydrated.
     this.storeComponentPut(entity, componentId, timestamp, value)
-
-    if (
-      componentId === this.transformId ||
-      componentId === this.virtualCameraGate?.virtualCameraComponentId
-    ) {
-      this.flushPendingMainCameraBindInternal()
-    }
+    this.pendingMainCameraBind = null
   }
 
   private storeComponentPut(entity: Entity, componentId: number, timestamp: number, value: unknown): void {
@@ -261,35 +260,9 @@ export class CrdtProjection {
     return target as Entity
   }
 
-  private isVirtualCameraTargetHydrated(target: Entity): boolean {
-    const gate = this.virtualCameraGate
-    if (!gate) return true
-    return (
-      this.has(this.transformId, target) && this.has(gate.virtualCameraComponentId, target)
-    )
-  }
-
-  private shouldDeferMainCameraPut(entity: Entity, componentId: number, value: unknown): boolean {
-    if (!this.isMainCameraOnCameraEntity(entity, componentId)) return false
-    const target = this.virtualCameraTargetFromMain(value)
-    if (target === null) {
-      this.pendingMainCameraBind = null
-      return false
-    }
-    return !this.isVirtualCameraTargetHydrated(target)
-  }
-
-  private shouldDeferMainCameraRendererValue(entity: Entity, componentId: number, value: unknown): boolean {
-    return this.shouldDeferMainCameraPut(entity, componentId, value)
-  }
-
   private flushPendingMainCameraBindInternal(): void {
-    const pending = this.pendingMainCameraBind
-    if (!pending) return
-    const target = this.virtualCameraTargetFromMain(pending.value)
-    if (target !== null && !this.isVirtualCameraTargetHydrated(target)) return
+    // MainCamera is committed immediately; drain any stale pending from older sessions.
     this.pendingMainCameraBind = null
-    this.storeComponentPut(pending.entity, pending.componentId, pending.timestamp, pending.value)
   }
 
   private clearPendingMainCameraBindForEntity(entity: Entity): void {
@@ -346,8 +319,8 @@ export class CrdtProjection {
    * the inbound scene diff (the diff consumer handles tween/reserved separately).
    */
   /**
-   * Worker→main live VC Transform (MOVE CAMERA flight). High monotonic timestamps
-   * beat async inbound CRDT so lens/gizmo stay aligned between engine ticks.
+   * Worker→main live Transform for bound VC follow rig and MOVE CAMERA flight.
+   * High monotonic timestamps beat async inbound CRDT so the lens stays aligned.
    */
   setVcLiveTransform(entity: Entity, value: unknown): void {
     if (this.deletedEntities.has(entity)) return
@@ -358,17 +331,17 @@ export class CrdtProjection {
     const tsMap = this.timestamps.get(this.transformId)!
     tsMap.set(entity, ts)
     map.set(entity, value)
-    this.vcLiveEntity = entity
+    this.vcLiveEntities.add(entity)
   }
 
   /** Drop live-lane priority when MainCamera.virtualCameraEntity clears. */
   clearVcLiveTransformForUnbind(): void {
-    if (this.vcLiveEntity !== null) {
-      this.clearVcLiveTransform(this.vcLiveEntity)
+    for (const entity of [...this.vcLiveEntities]) {
+      this.clearVcLiveTransform(entity)
     }
   }
 
-  /** Drop live-lane priority so inbound worker Transform can apply again (VIEW SHOT unbind). */
+  /** Drop live-lane priority so inbound worker Transform can apply again. */
   clearVcLiveTransform(entity: Entity): void {
     const tsMap = this.timestamps.get(this.transformId)
     if (!tsMap) return
@@ -376,32 +349,20 @@ export class CrdtProjection {
     if (ts >= VC_LIVE_TS_BASE) {
       tsMap.set(entity, ts - VC_LIVE_TS_BASE)
     }
-    if (this.vcLiveEntity === entity) this.vcLiveEntity = null
-  }
-
-  private getBoundVirtualCameraEntity(): Entity | null {
-    const gate = this.virtualCameraGate
-    if (!gate) return null
-    const main = this.get(gate.mainCameraComponentId, gate.cameraEntity) as
-      | { virtualCameraEntity?: number | null }
-      | undefined
-    const vc = main?.virtualCameraEntity
-    return vc === undefined || vc === null ? null : (vc as Entity)
+    this.vcLiveEntities.delete(entity)
   }
 
   private shouldRejectStaleInboundVcTransform(
     entity: Entity,
     componentId: number,
-    timestamp: number
+    _timestamp: number
   ): boolean {
     if (componentId !== this.transformId) return false
-    const bound = this.getBoundVirtualCameraEntity()
-    if (bound === null || entity !== bound) {
-      if (this.vcLiveEntity === entity) this.vcLiveEntity = null
-      return false
-    }
+    // Live lane is exclusive while held. Cold CRDT local-hierarchy puts (often high TS) must
+    // never clobber world-flattened / follow poses — that caused FPS-dip "map flicker".
+    if (this.vcLiveEntities.has(entity)) return true
     const liveTs = this.timestamps.get(this.transformId)?.get(entity) ?? 0
-    return liveTs >= VC_LIVE_TS_BASE && timestamp < liveTs
+    return liveTs >= VC_LIVE_TS_BASE
   }
 
   setRenderer(componentId: number, entity: Entity, value: unknown): void {
@@ -409,27 +370,13 @@ export class CrdtProjection {
     const map = this.components.get(componentId)
     if (!map) return
 
-    if (this.shouldDeferMainCameraRendererValue(entity, componentId, value)) {
-      const tsMap = this.timestamps.get(componentId)!
-      this.pendingMainCameraBind = {
-        entity,
-        componentId,
-        timestamp: (tsMap.get(entity) ?? 0) + 1,
-        value
-      }
-      return
+    if (this.isMainCameraOnCameraEntity(entity, componentId)) {
+      this.pendingMainCameraBind = null
     }
 
     const tsMap = this.timestamps.get(componentId)!
     tsMap.set(entity, (tsMap.get(entity) ?? 0) + 1)
     map.set(entity, value)
-
-    if (
-      componentId === this.transformId ||
-      componentId === this.virtualCameraGate?.virtualCameraComponentId
-    ) {
-      this.flushPendingMainCameraBindInternal()
-    }
   }
 
   /** Renderer-owned grow-only append. Stores the latest value (parity with inbound APPEND handling). */
@@ -445,21 +392,8 @@ export class CrdtProjection {
     return this.components.get(componentId)?.get(entity)
   }
 
-  /**
-   * Read path for renderer facades — includes a deferred MainCamera bind while the VC
-   * target is still hydrating (gate has not committed the PUT to the typed map yet).
-   */
+  /** Read path for renderer facades (MainCamera is never deferred). */
   getEffective(componentId: number, entity: Entity): unknown {
-    const pending = this.pendingMainCameraBind
-    const gate = this.virtualCameraGate
-    if (
-      pending &&
-      gate &&
-      entity === gate.cameraEntity &&
-      componentId === gate.mainCameraComponentId
-    ) {
-      return pending.value
-    }
     return this.get(componentId, entity)
   }
 

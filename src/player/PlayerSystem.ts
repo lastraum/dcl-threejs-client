@@ -48,6 +48,7 @@ import { AVATAR_YAW_OFFSET } from '../avatar/constants'
 
 const UP = new THREE.Vector3(0, 1, 0)
 const _forward = new THREE.Vector3()
+let lastLocomotionDiagMs = 0
 const _right = new THREE.Vector3()
 const _moveDir = new THREE.Vector3()
 const _velocity = new THREE.Vector3()
@@ -148,7 +149,6 @@ export class PlayerSystem {
   private scenePositionLock = false
   private wasProfileEmoteActive = false
   private virtualCamera: VirtualCameraBridge | null = null
-
   constructor(
     private readonly host: SceneHost,
     private readonly physics: PhysXWorld
@@ -484,6 +484,9 @@ export class PlayerSystem {
     const locomotionAllowed = canLocomote(locomotion)
     if (!locomotionAllowed) {
       this.input.clearMovementKeys()
+      _velocity.x = 0
+      _velocity.z = 0
+      _force.set(0, 0, 0)
     }
     const jumpLocomotionAllowed = canJumpLocomotion(locomotion)
     const doubleJumpLocomotionAllowed = canDoubleJumpLocomotion(locomotion)
@@ -570,8 +573,28 @@ export class PlayerSystem {
     this.applyCameraInputFromPointer()
 
     _moveDir.set(0, 0, 0)
-    _forward.set(Math.sin(this.camYaw), 0, Math.cos(this.camYaw)).multiplyScalar(-1)
-    _right.set(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw))
+    // Bound VirtualCamera owns the lens — WASD follows live camera facing (not freecam yaw).
+    // Right = forward × worldUp so A/D match freecam and Explorer (was inverted when VC active).
+    if (this.virtualCamera?.isActive()) {
+      _forward.set(0, 0, -1).applyQuaternion(this.host.camera.quaternion)
+      _forward.y = 0
+      if (_forward.lengthSq() < 1e-8) {
+        _forward.set(Math.sin(this.camYaw), 0, Math.cos(this.camYaw)).multiplyScalar(-1)
+      } else {
+        _forward.normalize()
+      }
+      _right.crossVectors(_forward, UP)
+      if (_right.lengthSq() < 1e-8) {
+        _right.set(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw))
+      } else {
+        _right.normalize()
+      }
+      // Keep freecam yaw aligned so unbind does not snap locomotion facing.
+      this.camYaw = Math.atan2(-_forward.x, -_forward.z)
+    } else {
+      _forward.set(Math.sin(this.camYaw), 0, Math.cos(this.camYaw)).multiplyScalar(-1)
+      _right.set(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw))
+    }
     if (locomotionAllowed) {
       if (this.input.keys.w) _moveDir.add(_forward)
       if (this.input.keys.s) _moveDir.sub(_forward)
@@ -611,6 +634,16 @@ export class PlayerSystem {
 
     this.locomotionMode = resolveLocomotionMode(this.input.keys, locomotion)
     const moveSpeed = speedForMode(this.locomotionMode, locomotion)
+    if (moving && (locomotion.disableJog || locomotion.disableRun || locomotion.disableWalk)) {
+      const now = performance.now()
+      if (now - lastLocomotionDiagMs > 2500) {
+        lastLocomotionDiagMs = now
+        console.info(
+          `[player] locomotion mode=${this.locomotionMode} speed=${moveSpeed.toFixed(1)} ` +
+            `disable walk=${locomotion.disableWalk} jog=${locomotion.disableJog} run=${locomotion.disableRun} all=${locomotion.disableAll}`
+        )
+      }
+    }
 
     if (!this.grounded && !this.airJumpPending) {
       _velocity.y -= GRAVITY * delta
@@ -768,7 +801,11 @@ export class PlayerSystem {
     return this.camDistance <= CAM_FPV_MAX_DISTANCE
   }
 
-  /** Orbit + zoom from pointer lock / drag — runs even when movement is scene-locked. */
+  /**
+   * Player main-camera orbit / zoom when MainCamera is not VC-bound.
+   * InputModifier freezes avatar locomotion only — does not gate player look or scene key relay.
+   * When a VC is bound, the lens is scene-driven; do not layer player orbit on top.
+   */
   private applyCameraInputFromPointer(): void {
     if (!this.input) return
     if (this.virtualCamera?.isActive()) return

@@ -16,7 +16,10 @@ export function applyAvatarAttachTransformsOnEngine(
       position: entry.position,
       rotation: entry.rotation,
       scale: entry.scale,
-      parent: prev?.parent
+      parent:
+        entry.parent !== undefined && entry.parent !== null
+          ? (entry.parent as Entity)
+          : (prev?.parent ?? engine.PlayerEntity)
     })
   }
 }

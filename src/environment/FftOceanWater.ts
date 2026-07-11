@@ -15,7 +15,8 @@ import type { OutdoorLightingSnapshot } from './OutdoorLighting'
 import { OCEAN_FRAG, OCEAN_VERT } from './fftOcean/shaders'
 
 const FOAM_TEXTURE_URL = '/textures/foam/foam.webp'
-const GPGPU_INTERVAL = 1 / 30
+/** 15 Hz sim — 30 Hz × 17 passes was a large fixed main-thread tax during character select / menus. */
+const GPGPU_INTERVAL = 1 / 15
 
 export type FftOceanPerfSnapshot = {
   backend: 'fft-ocean'

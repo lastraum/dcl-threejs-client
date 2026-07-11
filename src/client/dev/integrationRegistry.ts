@@ -44,10 +44,22 @@ function ecsToIntegration(c: EcsComponentEntry): IntegrationEntry {
 /** In-scene ECS components — full list from @dcl/sdk7 (see docs/INTEGRATION.md). */
 export const ECS_INTEGRATION: IntegrationEntry[] = DCL_ECS_COMPONENTS.map(ecsToIntegration)
 
-/** Browser DOM HUD, settings overlay, splash — not in-scene UiTransform ECS. */
+/** Browser DOM HUD, settings overlay, loading — not in-scene UiTransform ECS. */
 export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
-  { id: 'ui:splash-login', name: 'Splash / login', status: 'render', category: 'client-ui', notes: 'Catalyst + wallet session' },
-  { id: 'ui:loading-screen', name: 'Loading screen + hydration timer', status: 'render', category: 'client-ui', notes: 'Count-up elapsed, attach stall timeout' },
+  {
+    id: 'ui:explorer-auth',
+    name: 'Explorer auth sheet',
+    status: 'render',
+    category: 'client-ui',
+    notes: 'Inline wallet/guest sign-in; session resume via resolveInitialLogin (no full-screen splash)'
+  },
+  {
+    id: 'ui:loading-screen',
+    name: 'Loading screen + hydration timer',
+    status: 'render',
+    category: 'client-ui',
+    notes: 'In-play teleports / non-landing 3D entry; landing Jump in uses SceneLandingView progress'
+  },
   { id: 'ui:sidebar-shell', name: 'Sidebar shell + responsive layout', status: 'render', category: 'client-ui', notes: 'ClientUiLayout CSS tokens' },
   { id: 'ui:chat-panel', name: 'Scene chat panel', status: 'render', category: 'client-ui', notes: 'LiveKit RFC4, unread badge, nav links → teleport, DCM v1 inline images' },
   { id: 'ui:profile-pill', name: 'Profile / name pills + menu', status: 'render', category: 'client-ui', notes: 'Hover, badges row, right-click profile modal' },

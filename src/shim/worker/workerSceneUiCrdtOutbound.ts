@@ -11,6 +11,7 @@ import { DeleteEntityNetwork } from '@dcl/ecs/dist/serialization/crdt/network/de
 import { PutNetworkComponentOperation } from '@dcl/ecs/dist/serialization/crdt/network/putComponentNetwork'
 import { PutComponentOperation } from '@dcl/ecs/dist/serialization/crdt/putComponent'
 import { CrdtMessageType, type CrdtMessage } from '@dcl/ecs/dist/serialization/crdt/types'
+import { shouldBlockPlayerLocomotionClear } from './inputModifierLocomotionGuard'
 import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
 import {
   resolveWorkerPointerEvents,
@@ -21,14 +22,25 @@ import {
   resolveWorkerUiTransform
 } from './resolveBundledUiComponents'
 
-/** Scene UI LWW ids the worker owns — must match main `processWorkerOutboundCrdtBatch` uiComponentIds. */
+/** Worker-authoritative LWW — main must not echo these back during an open pointer session. */
+export const WORKER_AUTHORITATIVE_COMPONENT_IDS = new Set([
+  1075, // MainCamera
+  1078 // InputModifier
+])
+
+/**
+ * Scene UI LWW ids stripped from cooperative CRDT (phase-4 mount snapshot only).
+ *
+ * Do NOT include PointerEvents (1062) — PE is shared by world props and UI. Stripping
+ * it left main with only UI-snapshot PE (entities=1 meshes=0) and killed in-world hover/click.
+ * PE still rides normal CRDT; mount snapshot may still include PE for UI LWW lag fill.
+ */
 export const WORKER_SCENE_UI_COMPONENT_IDS = new Set([
   1050, // UiTransform
   1052, // UiBackground
   1053, // UiText
   1093, // UiInput
-  1094, // UiDropdown
-  1062 // PointerEvents (UI hit targets)
+  1094 // UiDropdown
 ])
 
 /** Beat recycled-entity stale timestamps on main projection. */
@@ -95,6 +107,8 @@ function rendererAlignedUiSchemas(): {
 
 export function resetWorkerSceneUiCrdtLamport(): void {
   lamport.clear()
+  resetMainCameraEgressBaseline()
+  resetInputModifierEgressBaseline()
 }
 
 function lamportKey(entity: Entity, componentId: number): string {
@@ -237,6 +251,265 @@ function filterSceneUiCrdtBytes(data: Uint8Array, keepUi: boolean): Uint8Array {
   return wrote ? out.toBinary() : new Uint8Array(0)
 }
 
+function isWorkerAuthoritativeComponentMessage(msg: CrdtMessage): boolean {
+  if (
+    msg.type === CrdtMessageType.PUT_COMPONENT ||
+    msg.type === CrdtMessageType.PUT_COMPONENT_NETWORK ||
+    msg.type === CrdtMessageType.DELETE_COMPONENT ||
+    msg.type === CrdtMessageType.DELETE_COMPONENT_NETWORK
+  ) {
+    return WORKER_AUTHORITATIVE_COMPONENT_IDS.has(msg.componentId)
+  }
+  return false
+}
+
+function filterWorkerAuthoritativeCrdtBytes(data: Uint8Array): Uint8Array {
+  if (!data.byteLength) return data
+  const out = new ReadWriteByteBuffer()
+  const readBuf = new ReadWriteByteBuffer(data)
+  let wrote = false
+  try {
+    let msg = readMessage(readBuf)
+    while (msg) {
+      if (!isWorkerAuthoritativeComponentMessage(msg)) {
+        rewriteCrdtMessage(msg, out)
+        wrote = true
+      }
+      msg = readMessage(readBuf)
+    }
+  } catch {
+    return new Uint8Array(0)
+  }
+  return wrote ? out.toBinary() : new Uint8Array(0)
+}
+
+/** Remove worker-authoritative PUT/DELETE — inbound during open pointer session. */
+export function stripWorkerAuthoritativeCrdtBytes(data: Uint8Array): Uint8Array {
+  return filterWorkerAuthoritativeCrdtBytes(data)
+}
+
+const MAIN_CAMERA_COMPONENT_ID = 1075
+const INPUT_MODIFIER_COMPONENT_ID = 1078
+
+let lastMainCameraEgressKey = ''
+let lastInputModifierEgressKey = ''
+
+export function resetMainCameraEgressBaseline(): void {
+  lastMainCameraEgressKey = ''
+}
+
+export function resetInputModifierEgressBaseline(): void {
+  lastInputModifierEgressKey = ''
+}
+
+/** @deprecated Use resetMainCameraEgressBaseline */
+export function resetWorkerMainCameraEgressBaseline(): void {
+  resetMainCameraEgressBaseline()
+}
+
+function mainCameraEgressKey(engine: IEngine): string {
+  const MainCamera = generated.MainCamera(engine)
+  const entity = engine.CameraEntity as Entity
+  const value = MainCamera.getOrNull(entity) as { virtualCameraEntity?: number | null } | null
+  const vc = value?.virtualCameraEntity
+  return vc === undefined || vc === null ? 'cleared' : `vc=${vc}`
+}
+
+function inputModifierEgressKey(engine: IEngine): string {
+  const InputModifier = generated.InputModifier(engine)
+  const entity = engine.PlayerEntity as Entity
+  const value = InputModifier.getOrNull(entity)
+  if (!value) return 'cleared'
+  const dataBuf = new ReadWriteByteBuffer()
+  InputModifier.schema.serialize(value, dataBuf)
+  const bytes = dataBuf.toBinary()
+  return Array.from(bytes).join(',')
+}
+
+export function stripComponentIdsFromCrdtBytes(data: Uint8Array, componentIds: ReadonlySet<number>): Uint8Array {
+  if (!data.byteLength || !componentIds.size) return data
+  const out = new ReadWriteByteBuffer()
+  const readBuf = new ReadWriteByteBuffer(data)
+  let wrote = false
+  try {
+    let msg = readMessage(readBuf)
+    while (msg) {
+      const isStripped =
+        (msg.type === CrdtMessageType.PUT_COMPONENT ||
+          msg.type === CrdtMessageType.PUT_COMPONENT_NETWORK ||
+          msg.type === CrdtMessageType.DELETE_COMPONENT ||
+          msg.type === CrdtMessageType.DELETE_COMPONENT_NETWORK) &&
+        componentIds.has(msg.componentId)
+      if (!isStripped) {
+        rewriteCrdtMessage(msg, out)
+        wrote = true
+      }
+      msg = readMessage(readBuf)
+    }
+  } catch {
+    return new Uint8Array(0)
+  }
+  return wrote ? out.toBinary() : new Uint8Array(0)
+}
+
+function crdtBlobTouchesComponent(data: Uint8Array, componentId: number): boolean {
+  if (!data.byteLength) return false
+  const readBuf = new ReadWriteByteBuffer(data)
+  try {
+    let msg = readMessage(readBuf)
+    while (msg) {
+      if (
+        (msg.type === CrdtMessageType.PUT_COMPONENT ||
+          msg.type === CrdtMessageType.PUT_COMPONENT_NETWORK ||
+          msg.type === CrdtMessageType.DELETE_COMPONENT ||
+          msg.type === CrdtMessageType.DELETE_COMPONENT_NETWORK) &&
+        msg.componentId === componentId
+      ) {
+        return true
+      }
+      msg = readMessage(readBuf)
+    }
+  } catch {
+    return false
+  }
+  return false
+}
+
+function encodeLiveMainCameraPut(engine: IEngine): Uint8Array | null {
+  preregisterRendererInjectedComponents(engine)
+  const MainCamera = generated.MainCamera(engine)
+  const entity = engine.CameraEntity as Entity
+  const value = MainCamera.getOrNull(entity)
+  const dataBuf = new ReadWriteByteBuffer()
+  MainCamera.schema.serialize(value ?? {}, dataBuf)
+  const out = new ReadWriteByteBuffer()
+  const ts = nextLamport(entity, MAIN_CAMERA_COMPONENT_ID)
+  PutComponentOperation.write(entity, ts, MainCamera.componentId, dataBuf.toBinary(), out)
+  return out.toBinary()
+}
+
+function encodeLiveInputModifierPut(engine: IEngine): Uint8Array | null {
+  preregisterRendererInjectedComponents(engine)
+  const InputModifier = generated.InputModifier(engine)
+  const entity = engine.PlayerEntity as Entity
+  const value = InputModifier.getOrNull(entity)
+  if (!value) return null
+  const dataBuf = new ReadWriteByteBuffer()
+  InputModifier.schema.serialize(value, dataBuf)
+  const out = new ReadWriteByteBuffer()
+  const ts = nextLamport(entity, INPUT_MODIFIER_COMPONENT_ID)
+  PutComponentOperation.write(entity, ts, InputModifier.componentId, dataBuf.toBinary(), out)
+  return out.toBinary()
+}
+
+/**
+ * Append live MainCamera + InputModifier snapshots — pointer flush when deferred non-Ui queue is empty.
+ */
+export function reconcileWorkerAuthoritativeCrdtEgress(engine: IEngine, data: Uint8Array): Uint8Array {
+  let out = reconcileMainCameraCrdtEgress(engine, data)
+  out = reconcileInputModifierCrdtEgress(engine, out)
+  return out
+}
+
+/**
+ * MainCamera egress — stale `{}` clears in the transport queue must not override an active VC bind.
+ */
+export function reconcileMainCameraCrdtEgress(engine: IEngine, data: Uint8Array): Uint8Array {
+  const liveKey = mainCameraEgressKey(engine)
+  const touchesMainCamera = crdtBlobTouchesComponent(data, MAIN_CAMERA_COMPONENT_ID)
+  const copy = touchesMainCamera
+    ? stripComponentIdsFromCrdtBytes(data, new Set([MAIN_CAMERA_COMPONENT_ID]))
+    : data
+  const needsLiveSnapshot = touchesMainCamera || liveKey !== lastMainCameraEgressKey
+  if (!needsLiveSnapshot) return copy
+
+  const liveMainCamera = encodeLiveMainCameraPut(engine)
+  if (!liveMainCamera?.byteLength) return copy
+  lastMainCameraEgressKey = liveKey
+
+  if (!copy.byteLength) return liveMainCamera
+  const merged = new Uint8Array(copy.byteLength + liveMainCamera.byteLength)
+  merged.set(copy, 0)
+  merged.set(liveMainCamera, copy.byteLength)
+  return merged
+}
+
+/**
+ * InputModifier egress — scene-applied avatar locomotion/emote lock on PlayerEntity (not VC).
+ * Strip stale wire ops and append a live engine snapshot so main projection matches worker state.
+ */
+export function reconcileInputModifierCrdtEgress(engine: IEngine, data: Uint8Array): Uint8Array {
+  const liveKey = inputModifierEgressKey(engine)
+  const touchesInputModifier = crdtBlobTouchesComponent(data, INPUT_MODIFIER_COMPONENT_ID)
+  const copy = touchesInputModifier
+    ? stripComponentIdsFromCrdtBytes(data, new Set([INPUT_MODIFIER_COMPONENT_ID]))
+    : data
+  const needsLiveSnapshot =
+    touchesInputModifier ||
+    liveKey !== lastInputModifierEgressKey ||
+    shouldBlockPlayerLocomotionClear(engine)
+  if (!needsLiveSnapshot) return copy
+
+  const liveInputModifier = encodeLiveInputModifierPut(engine)
+  if (!liveInputModifier?.byteLength) return copy
+  lastInputModifierEgressKey = liveKey
+
+  if (!copy.byteLength) return liveInputModifier
+  const merged = new Uint8Array(copy.byteLength + liveInputModifier.byteLength)
+  merged.set(copy, 0)
+  merged.set(liveInputModifier, copy.byteLength)
+  return merged
+}
+
+type LwwCrdtEntry = { msg: CrdtMessage; timestamp: number }
+
+function lwwEntryKey(msg: CrdtMessage): string | null {
+  if (
+    msg.type === CrdtMessageType.PUT_COMPONENT ||
+    msg.type === CrdtMessageType.PUT_COMPONENT_NETWORK ||
+    msg.type === CrdtMessageType.DELETE_COMPONENT ||
+    msg.type === CrdtMessageType.DELETE_COMPONENT_NETWORK
+  ) {
+    return `${msg.componentId}:${msg.entityId}`
+  }
+  return null
+}
+
+/** Merge pointer-deferred chunks — highest timestamp wins per (componentId, entity). */
+export function coalesceCrdtChunksLww(chunks: Uint8Array[]): Uint8Array[] {
+  if (chunks.length <= 1) return chunks
+  const lww = new Map<string, LwwCrdtEntry>()
+  const passthrough: CrdtMessage[] = []
+
+  for (const chunk of chunks) {
+    if (!chunk.byteLength) continue
+    const readBuf = new ReadWriteByteBuffer(chunk)
+    try {
+      let msg = readMessage(readBuf)
+      while (msg) {
+        const key = lwwEntryKey(msg)
+        if (!key) {
+          passthrough.push(msg)
+        } else {
+          const ts =
+            'timestamp' in msg && typeof msg.timestamp === 'number' ? msg.timestamp : 0
+          const prev = lww.get(key)
+          if (!prev || ts >= prev.timestamp) lww.set(key, { msg, timestamp: ts })
+        }
+        msg = readMessage(readBuf)
+      }
+    } catch {
+      return chunks
+    }
+  }
+
+  const out = new ReadWriteByteBuffer()
+  for (const msg of passthrough) rewriteCrdtMessage(msg, out)
+  for (const entry of lww.values()) rewriteCrdtMessage(entry.msg, out)
+  const merged = out.toBinary()
+  return merged.byteLength ? [merged] : []
+}
+
 /** Remove Ui* PUT/DELETE — cooperative ticks and pointer phases 1–3. */
 export function stripSceneUiCrdtBytes(data: Uint8Array): Uint8Array {
   return filterSceneUiCrdtBytes(data, false)
@@ -336,11 +609,26 @@ export function extractSnapshotMountEntityIds(snapshot: readonly WorkerUiMountSn
   return out
 }
 
+/** Mount entity ids currently holding UiTransform (worker authority set). */
+export function collectWorkerUiMountEntityIds(engine: IEngine): number[] {
+  preregisterRendererInjectedComponents(engine)
+  const UiTransform = resolveWorkerUiTransform(engine)
+  const out: number[] = []
+  for (const [entity] of engine.getEntitiesWith(UiTransform)) {
+    out.push(entity as number)
+  }
+  return out
+}
+
 /**
- * Plain component values for every mounted UI entity — pointer phase 4 structured egress.
+ * Plain component values for mounted UI entities — structured egress to main.
+ * Optional `onlyEntities` limits rows to dirty entities (full mount ids travel separately).
  * Main applies directly to projection (no bundled/client schema wire round-trip).
  */
-export function collectWorkerUiMountSnapshot(engine: IEngine): WorkerUiMountSnapshotRow[] {
+export function collectWorkerUiMountSnapshot(
+  engine: IEngine,
+  onlyEntities?: ReadonlySet<number>
+): WorkerUiMountSnapshotRow[] {
   preregisterRendererInjectedComponents(engine)
   const UiTransform = resolveWorkerUiTransform(engine)
   const pairs: Array<{ read: BundledUiRead; componentId: number }> = [
@@ -352,14 +640,24 @@ export function collectWorkerUiMountSnapshot(engine: IEngine): WorkerUiMountSnap
     { read: resolveWorkerPointerEvents(engine) as BundledUiRead, componentId: 1062 }
   ]
   const rows: WorkerUiMountSnapshotRow[] = []
-  for (const [entity] of engine.getEntitiesWith(UiTransform)) {
-    const id = entity as Entity
+  const pushEntity = (id: Entity) => {
     for (const { read, componentId } of pairs) {
       if (!read.has(id)) continue
       const value = read.getOrNull(id)
       if (value == null) continue
       rows.push({ entity: id as number, componentId, value: toPlainComponentValue(value) })
     }
+  }
+  if (onlyEntities) {
+    for (const entity of onlyEntities) {
+      const id = entity as Entity
+      if (!UiTransform.has(id)) continue
+      pushEntity(id)
+    }
+    return rows
+  }
+  for (const [entity] of engine.getEntitiesWith(UiTransform)) {
+    pushEntity(entity as Entity)
   }
   return rows
 }

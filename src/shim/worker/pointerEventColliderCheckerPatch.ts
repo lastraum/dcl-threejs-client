@@ -1,7 +1,10 @@
 import type { Entity, IEngine } from '@dcl/ecs'
 import * as components from '@dcl/ecs/dist/components'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
+import { patchClearPlayerInputModifierBoundary } from './patchClearPlayerInputModifier'
 import { patchEngineSystemLoopPartition } from './patchEngineSystemLoop'
+import { patchInputModifierSdkSpread } from './patchInputModifierSdkSpread'
+import { patchSdkOnUpdatePollEventsBoundary } from './patchSdkOnUpdatePollEvents'
 import { patchPhotoMuralOptionalChain } from './photoMuralPatch'
 import { patchTheatreSkip } from './theatreSkipPatch'
 
@@ -306,8 +309,30 @@ export function patchSceneBundle(code: string, onStep?: PatchSceneBundleStepLog)
   out = patchUiVirtualCanvasHooks(out)
   onStep?.('ui virtual canvas', performance.now() - stepAt)
   stepAt = performance.now()
+  const beforeEngineLoop = out
   out = patchEngineSystemLoopPartition(out)
-  onStep?.('engine ui system loop', performance.now() - stepAt)
+  onStep?.(
+    out !== beforeEngineLoop ? 'engine ui system loop (applied)' : 'engine ui system loop (missed)',
+    performance.now() - stepAt
+  )
+  stepAt = performance.now()
+  const inputModifierSdk = patchInputModifierSdkSpread(out)
+  out = inputModifierSdk.code
+  if (inputModifierSdk.applied) {
+    onStep?.('input modifier sdk guard hook', performance.now() - stepAt)
+  }
+  stepAt = performance.now()
+  const clearPlayerIm = patchClearPlayerInputModifierBoundary(out)
+  out = clearPlayerIm.code
+  if (clearPlayerIm.applied) {
+    onStep?.('clearPlayerInputModifier guard hook', performance.now() - stepAt)
+  }
+  stepAt = performance.now()
+  const pollEventsBoundary = patchSdkOnUpdatePollEventsBoundary(out)
+  out = pollEventsBoundary.code
+  if (pollEventsBoundary.applied) {
+    onStep?.('sdk onUpdate pollEvents boundary', performance.now() - stepAt)
+  }
   stepAt = performance.now()
   const photoMural = patchPhotoMuralOptionalChain(out)
   out = photoMural.code

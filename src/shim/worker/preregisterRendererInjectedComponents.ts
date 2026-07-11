@@ -1,8 +1,14 @@
 import type { IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { guardVideoPlayerGetMutable } from './guardVideoPlayerGetMutable'
+import {
+  installClearPlayerInputModifierBlockHook,
+  installInputModifierLocomotionGuard,
+  installInputModifierSdkPatchHook
+} from './inputModifierLocomotionGuard'
 import { installVirtualCameraBindGuard } from './virtualCameraBindGuard'
 import { installReactEcsOnceGuard } from './reactEcsOnce'
+import { installSdkPollEventsLatchHook } from './patchSdkOnUpdatePollEvents'
 import { installEngineSystemLoopPartition, installSceneEngineUiScheduler } from './sceneEngineUiScheduler'
 
 /** Global hook invoked from patched bundle capture snippets (pre-seal). */
@@ -47,11 +53,15 @@ export function preregisterRendererInjectedComponents(engine: IEngine): void {
   }
   guardVideoPlayerGetMutable(engine)
   installVirtualCameraBindGuard(engine)
+  installInputModifierLocomotionGuard(engine)
 }
 
 export function installPreregisterRendererComponentsHook(): void {
   installReactEcsOnceGuard()
   installEngineSystemLoopPartition()
+  installInputModifierSdkPatchHook()
+  installClearPlayerInputModifierBlockHook()
+  installSdkPollEventsLatchHook()
   const g = globalThis as Record<string, unknown>
   g[PREREGISTER_RENDERER_COMPONENTS_KEY] = preregisterRendererInjectedComponents
   if (RENDERER_PREREGISTER_FACTORIES.length === 0) {

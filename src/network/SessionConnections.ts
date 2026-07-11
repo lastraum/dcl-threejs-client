@@ -23,7 +23,7 @@ export async function disconnectLiveKit(): Promise<void> {
   }
 }
 
-/** Tear down comms, voice, and world runtime before returning to splash. */
+/** Tear down comms, voice, and world runtime (leave play / switch scenes). */
 export async function disconnectAll(world: World | null): Promise<void> {
   await disconnectLiveKit()
   world?.dispose()

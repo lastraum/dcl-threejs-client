@@ -298,8 +298,10 @@ export class PointerEventsSystem {
   private computeCurrentHit(): PointerHit | null {
     if (!this.deps) return null
 
-    const uiRegionHit = this.deps.pickUiRegionHit?.(this.screenX, this.screenY)
-    if (uiRegionHit) return uiRegionHit
+    if (isPointerOverSceneUi(this.screenX, this.screenY)) {
+      const uiRegionHit = this.deps.pickUiRegionHit?.(this.screenX, this.screenY)
+      if (uiRegionHit) return uiRegionHit
+    }
 
     if (!this.pointerEntitySet.size) return null
     this.deps.prepareRaycast?.()
@@ -340,6 +342,12 @@ export class PointerEventsSystem {
   private onPointerDown = (e: PointerEvent): void => {
     if (!this.deps) return
     if (e.target !== this.canvas) return
+    // Canvas received the event — not over interactive scene-UI DOM. Update ray origin
+    // from this click (mousemove may be stale) and raycast world only. UI clicks use
+    // onWindowUiPointerDown; pickUiRegionHit must not short-circuit canvas → 3D.
+    this.screenX = e.clientX
+    this.screenY = e.clientY
+    this.pointerDirty = true
     if (isPointerOverSceneUi(e.clientX, e.clientY)) {
       e.stopPropagation()
       return
@@ -360,7 +368,7 @@ export class PointerEventsSystem {
 
     const button = mouseButtonToInputAction(e.button)
     const coords = this.pointerClientCoords(e.clientX, e.clientY)
-    const hit = this.resolveInteractHit(button)
+    const hit = this.resolveWorldInteractHit(button)
     if (!this.canQueuePointerDown(button, hit)) {
       if (hit) {
         this.logInteractBlocked(mouseInteractLabel(button, e.button), button, hit)
@@ -457,7 +465,8 @@ export class PointerEventsSystem {
     if (preventDefault) e.preventDefault()
 
     const coords = this.pointerClientCoords()
-    const hit = this.resolveInteractHit(action)
+    // Keyboard interact (E/F/1–4) targets the world under the cursor, not scene UI.
+    const hit = this.resolveWorldInteractHit(action)
     if (!this.canQueuePointerDown(action, hit)) {
       if (hit) {
         this.logInteractBlocked(label, action, hit)
@@ -574,17 +583,41 @@ export class PointerEventsSystem {
       })
       return proximity
     }
-    if (this.lastHit && this.canQueuePointerDown(button, this.lastHit)) return this.lastHit
+    if (this.lastHit && !this.lastHit.isSceneUi && this.canQueuePointerDown(button, this.lastHit)) {
+      return this.lastHit
+    }
     return fresh ?? proximity ?? this.lastHit
+  }
+
+  /**
+   * Canvas / keyboard world interact — never short-circuit on scene-UI hit-map regions.
+   * UI inject uses `onWindowUiPointerDown` + `pickUiHit` only.
+   */
+  private resolveWorldInteractHit(button: InputActionValue): PointerHit | null {
+    const fresh = this.pickWorldHitAtPointer()
+    if (fresh && this.canQueuePointerDown(button, fresh)) return fresh
+    const proximity = this.pickProximityTarget(button)
+    if (proximity && this.canQueuePointerDown(button, proximity)) {
+      clientDebugLog.log('pointer', `proximity target entity=${proximity.entity} player=${proximity.playerDistance.toFixed(1)}m`, {
+        alsoConsole: true
+      })
+      return proximity
+    }
+    if (this.lastHit && !this.lastHit.isSceneUi && this.canQueuePointerDown(button, this.lastHit)) {
+      return this.lastHit
+    }
+    return fresh ?? proximity
   }
 
   private canQueuePointerDown(button: InputActionValue, hit: PointerHit | null): boolean {
     if (!this.deps || !hit) return false
     const targetEntity = this.resolvePointerResultEntity(hit.entity, button)
-    const spec = this.uiPointerSpec(targetEntity)
     if (hit.isSceneUi) {
+      const spec = this.uiPointerSpec(targetEntity)
       return hasUiPointerEvent(spec, PointerEventType.PET_DOWN, button)
     }
+    // World props: always use projection PointerEvents — mount snapshot is UI-only.
+    const spec = this.deps.ecs.PointerEvents.getOrNull(targetEntity)
     if (!hasPointerEvent(spec, PointerEventType.PET_DOWN, button)) return false
     return pointerEventInRange(spec, PointerEventType.PET_DOWN, button, hit)
   }
@@ -675,8 +708,19 @@ export class PointerEventsSystem {
 
   private pickAtPointer(): PointerHit | null {
     if (!this.deps) return null
-    const uiRegionHit = this.deps.pickUiRegionHit?.(this.screenX, this.screenY)
-    if (uiRegionHit) return uiRegionHit
+    // Hover / PrimaryPointerInfo: UI above 3D when interactive/BLOCK region is under cursor.
+    // Only when DOM also reports interactive scene UI — hit-map-only BLOCK must not kill world
+    // hits when the canvas received the event (pointer-events:none pass-through).
+    if (isPointerOverSceneUi(this.screenX, this.screenY)) {
+      const uiRegionHit = this.deps.pickUiRegionHit?.(this.screenX, this.screenY)
+      if (uiRegionHit) return uiRegionHit
+    }
+    return this.pickWorldHitAtPointer()
+  }
+
+  /** 3D MeshCollider / GLTF / MeshRenderer raycast at current screen pointer. */
+  private pickWorldHitAtPointer(): PointerHit | null {
+    if (!this.deps) return null
     this.deps.prepareRaycast?.()
     this.rebuildPointerCacheIfNeeded()
     const ray = this.computePointerRay(this.deps.camera)
@@ -757,27 +801,56 @@ export class PointerEventsSystem {
   ): PointerHit | null {
     if (!this.deps || !this.pointerEntitySet.size) return null
 
-    if (!this.pointerTargets.length) return null
-
-    this.raycaster.layers.set(0)
-    this.raycaster.set(ray.origin, ray.direction)
-    const hits = this.raycaster.intersectObjects(this.pointerTargets, true)
-
     let best: PointerHit | null = null
-    for (const hit of hits) {
-      const hitEntity = hit.object.userData.entity as Entity | undefined
-      if (hitEntity === undefined) continue
-      const entity = this.resolveColliderPointerEntity(hitEntity) ?? hitEntity
-      if (!this.pointerEntitySet.has(entity)) continue
 
-      const spec = this.deps.ecs.PointerEvents.getOrNull(entity)
-      if (!spec) continue
+    if (this.pointerTargets.length) {
+      // THREE.Raycaster skips object.visible === false. DCL `_collider` hulls are often hidden
+      // but still CL_POINTER — temporarily unhide for the intersect, then restore.
+      const visibilityRestore: { obj: THREE.Object3D; visible: boolean }[] = []
+      for (const obj of this.pointerTargets) {
+        if (obj.visible === false) {
+          visibilityRestore.push({ obj, visible: false })
+          obj.visible = true
+        }
+        // Hidden ancestors also block raycasts.
+        let p: THREE.Object3D | null = obj.parent
+        while (p) {
+          if (p.visible === false) {
+            visibilityRestore.push({ obj: p, visible: false })
+            p.visible = true
+          }
+          p = p.parent
+        }
+      }
+      try {
+        this.raycaster.layers.set(0)
+        this.raycaster.set(ray.origin, ray.direction)
+        const hits = this.raycaster.intersectObjects(this.pointerTargets, true)
 
-      const pointerHit = buildPointerHit(this.deps.ecs, entity, hit, spec, cameraPos, playerPos)
-      pointerHit.entity = entity
+        for (const hit of hits) {
+          const hitEntity = hit.object.userData.entity as Entity | undefined
+          if (hitEntity === undefined) continue
+          const entity = this.resolveColliderPointerEntity(hitEntity) ?? hitEntity
+          if (!this.pointerEntitySet.has(entity)) continue
 
-      if (!best || pointerHit.priority > best.priority || (pointerHit.priority === best.priority && hit.distance < best.distance)) {
-        best = pointerHit
+          const spec = this.deps.ecs.PointerEvents.getOrNull(entity)
+          if (!spec) continue
+
+          const pointerHit = buildPointerHit(this.deps.ecs, entity, hit, spec, cameraPos, playerPos)
+          pointerHit.entity = entity
+
+          if (
+            !best ||
+            pointerHit.priority > best.priority ||
+            (pointerHit.priority === best.priority && hit.distance < best.distance)
+          ) {
+            best = pointerHit
+          }
+        }
+      } finally {
+        for (const { obj, visible } of visibilityRestore) {
+          obj.visible = visible
+        }
       }
     }
 
@@ -790,7 +863,11 @@ export class PointerEventsSystem {
         if (!spec) continue
         const pointerHit = buildPointerHitFromCollider(this.deps.ecs, hit, spec, cameraPos, playerPos)
         pointerHit.entity = targetEntity
-        if (!best || pointerHit.priority > best.priority || (pointerHit.priority === best.priority && hit.distance < best.distance)) {
+        if (
+          !best ||
+          pointerHit.priority > best.priority ||
+          (pointerHit.priority === best.priority && hit.distance < best.distance)
+        ) {
           best = pointerHit
         }
       }

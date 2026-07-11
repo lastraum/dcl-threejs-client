@@ -54,7 +54,7 @@ import type { DclEvent } from '../social/dclEvents'
 import { enrichResolvedScenePublicTitle } from '../social/sceneDisplayTitle'
 import { recordLoginEvent } from '../analytics/recordLogin'
 
-/** Owns world lifecycle — splash → load → play, navigation, and sign-out. */
+/** Owns world lifecycle — explorer / landing / play, navigation, and sign-out. */
 export class AppController {
   private container: HTMLElement | null = null
   private world: World | null = null

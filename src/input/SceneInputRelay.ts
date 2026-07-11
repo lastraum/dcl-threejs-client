@@ -22,7 +22,11 @@ export type SceneKeyboardSnapshot = {
 
 type SceneInputRelayDeps = {
   isRelayBlocked: () => boolean
-  /** Scene InputModifier — avatar must not consume the same WASD keys. */
+  /**
+   * Avatar locomotion via main InputModifier — clear overlapping move keys on the player only.
+   * Does **not** gate scene relay: the scene owns isPressed() and may drive a VC, a prop,
+   * UI, or nothing. Client never invents “freeze + VC ⇒ drop WASD”.
+   */
   isLocomotionBlocked?: () => boolean
   clearPlayerMoveKeys?: () => void
   /** Phase 2 — level keyboard state to worker (replaces per-edge inject-scene-input). */
@@ -41,6 +45,7 @@ const FLIGHT_TICK_ACTIONS: ReadonlySet<InputActionValue> = new Set([
   InputAction.IA_LEFT,
   InputAction.IA_JUMP,
   InputAction.IA_WALK,
+  InputAction.IA_MODIFIER, // Shift — camera-operator descend (WALK_ACTION=14)
   InputAction.IA_PRIMARY,
   InputAction.IA_SECONDARY,
   InputAction.IA_ACTION_3,
@@ -127,6 +132,10 @@ export class SceneInputRelay {
     }
 
     this.reconcileHardwareKeys()
+    // InputModifier freezes the avatar only — still relay keys so the scene can read isPressed.
+    if (this.deps.isLocomotionBlocked?.()) {
+      this.deps.clearPlayerMoveKeys?.()
+    }
     if (this.relayPressed.size > 0) {
       this.publishSnapshotIfChanged()
     }

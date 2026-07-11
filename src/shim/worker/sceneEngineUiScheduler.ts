@@ -4,7 +4,11 @@ import { extractUiTextureSrc } from '../../ui/scene/uiBackgroundStyle'
 import { normalizePointerFilterMode, normalizeYGDisplay } from '../../ui/scene/yogaEnums'
 
 import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
-import { shouldSuppressCooperativeReactEcs } from './sceneWorkerInputSession'
+import { ensureWorkerLocomotionFreezePersisted } from './workerPlayerFrameEgress'
+import {
+  isPointerInteractiveTickActive,
+  shouldSuppressCooperativeReactEcs as shouldSuppressPointerSessionReactEcs
+} from './sceneWorkerInputSession'
 import {
   resolveWorkerUiBackground,
   resolveWorkerUiDropdown,
@@ -35,11 +39,70 @@ const DEFERRED_UI_SYSTEM_NAMES = new Set(['@dcl/react-ecs', '@dcl/react-ecs-ui-s
 
 type SystemItem = { fn: (dt: number) => void; name?: string; priority: number }
 
+let boundWorkerEngine: IEngine | null = null
+/** Non-zero only during sceneEngineScheduler cooperative ticks — not sceneOnUpdate/inbound. */
+let cooperativeSchedulerTickDepth = 0
+
+export function bindWorkerUiSchedulerEngine(eng: IEngine | null): void {
+  boundWorkerEngine = eng
+}
+
+/** @deprecated No longer gates react-ecs — kept for call-site compatibility. */
+export function notePlayModePointerUiEgress(_mountCount: number): void {}
+
+/** @deprecated No longer gates react-ecs — kept for call-site compatibility. */
+export function resetPlayModePointerUiEgress(): void {}
+
+export function enterCooperativeSchedulerTick(): void {
+  cooperativeSchedulerTickDepth++
+}
+
+export function leaveCooperativeSchedulerTick(): void {
+  cooperativeSchedulerTickDepth = Math.max(0, cooperativeSchedulerTickDepth - 1)
+}
+
+/**
+ * Min spacing between cooperative react-ecs reconciles (not pointer ticks).
+ * Systems still run every engine tick (timers, LoadingScreen wall-clock).
+ * Full react-ecs on 250–350 Ui* entities every 16ms saturates the worker after
+ * connect (NPC flood + character UI) → engine-tick recovery / ~1fps.
+ */
+const COOPERATIVE_REACT_ECS_MIN_MS = 100
+let lastCooperativeReactEcsAt = 0
+/** True when the current cooperative eng.update skipped react-ecs (throttle). */
+let cooperativeReactEcsSkippedThisTick = false
+
+/**
+ * Play-mode react-ecs gate.
+ *
+ * - Pointer interactive tick: always reconcile.
+ * - Pointer session (non-interactive): suppress (pointer batch owns UI).
+ * - Cooperative: at most every COOPERATIVE_REACT_ECS_MIN_MS (systems still run).
+ *
+ * Do NOT gate on freeze latch or inject-only pollEvents DEFER.
+ */
+export function shouldDeferCooperativeReactEcs(): boolean {
+  if (isPointerInteractiveTickActive()) return false
+  if (shouldSuppressPointerSessionReactEcs()) return true
+  if (cooperativeSchedulerTickDepth > 0) {
+    const now = performance.now()
+    if (now - lastCooperativeReactEcsAt < COOPERATIVE_REACT_ECS_MIN_MS) return true
+  }
+  return false
+}
+
+/** Whether the last cooperative eng.update skipped react-ecs (skip UI fingerprint scan). */
+export function didSkipCooperativeReactEcsThisTick(): boolean {
+  return cooperativeReactEcsSkippedThisTick
+}
+
 /** Installed once in the worker before scene bundle eval. */
 export function installEngineSystemLoopPartition(): void {
   const g = globalThis as Record<string, unknown>
   if (typeof g[ENGINE_SYSTEM_LOOP_KEY] === 'function') return
   g[ENGINE_SYSTEM_LOOP_KEY] = (systems: SystemItem[], dt: number, runOne: (s: SystemItem, dt: number) => void) => {
+    if (boundWorkerEngine) ensureWorkerLocomotionFreezePersisted(boundWorkerEngine)
+    cooperativeReactEcsSkippedThisTick = false
     let react: SystemItem | undefined
     let scale: SystemItem | undefined
     for (const system of systems) {
@@ -54,9 +117,15 @@ export function installEngineSystemLoopPartition(): void {
       }
       runOne(system, dt)
     }
-    const suppressReact = shouldSuppressCooperativeReactEcs()
+    const suppressReact = shouldDeferCooperativeReactEcs()
+    if (suppressReact && cooperativeSchedulerTickDepth > 0 && !isPointerInteractiveTickActive()) {
+      cooperativeReactEcsSkippedThisTick = true
+    }
     if (scale && !suppressReact) runOne(scale, dt)
-    if (react && !suppressReact) runOne(react, dt)
+    if (react && !suppressReact) {
+      runOne(react, dt)
+      if (cooperativeSchedulerTickDepth > 0) lastCooperativeReactEcsAt = performance.now()
+    }
   }
 }
 
@@ -290,17 +359,54 @@ function touchRemovedUiEntityForCrdt(
 
 /** Bulk menu/panel open — dirty-only can miss transport PUTs; touch every mounted Ui* row. */
 const UI_MOUNT_GROWTH_FULL_TOUCH_MIN = 4
+/**
+ * When dirty entity count is below this fraction of mount (and under the absolute cap),
+ * cooperative egress ships dirty rows only + full mount id list (not a full 500–800 row blob).
+ */
+const UI_DIRTY_SNAPSHOT_MAX_ENTITIES = 24
+const UI_DIRTY_SNAPSHOT_MAX_FRACTION = 0.2
+
+/** Entities touched by the last successful planSceneUiCrdtEmit (for dirty-only snapshot). */
+let lastPlannedUiDirtyEntities: Entity[] = []
+/** True when last plan used full-mount touch (boot growth / pointer force). */
+let lastPlannedUiFullTouch = false
+
+export function getLastPlannedUiDirtyEntities(): readonly Entity[] {
+  return lastPlannedUiDirtyEntities
+}
+
+export function lastPlannedUiEmitWasFullTouch(): boolean {
+  return lastPlannedUiFullTouch
+}
+
+/** Whether cooperative snapshot can ship dirty rows only (main still gets full mount ids). */
+export function shouldUsePartialUiMountSnapshot(mountCount: number): boolean {
+  if (lastPlannedUiFullTouch) return false
+  if (mountCount <= 0) return false
+  const dirty = lastPlannedUiDirtyEntities.length
+  if (dirty <= 0) return false
+  if (dirty > UI_DIRTY_SNAPSHOT_MAX_ENTITIES) return false
+  if (dirty >= mountCount) return false
+  return dirty / mountCount <= UI_DIRTY_SNAPSHOT_MAX_FRACTION
+}
 
 /** Touch only entities whose fingerprint line changed — boot baseline uses full mount when prev is empty. */
-function touchDirtyWorkerUiComponentsForCrdt(engine: IEngine, prevFingerprint: string): number {
-  const fingerprint = computeWorkerUiFingerprint(engine)
-  if (!prevFingerprint) return touchWorkerUiComponentsForCrdt(engine)
+function touchDirtyWorkerUiComponentsForCrdt(
+  engine: IEngine,
+  prevFingerprint: string,
+  currFingerprint: string
+): { touched: number; dirty: Entity[]; fullTouch: boolean } {
+  if (!prevFingerprint) {
+    const touched = touchWorkerUiComponentsForCrdt(engine)
+    return { touched, dirty: [], fullTouch: true }
+  }
 
   const prevLines = parseFingerprintEntityLines(prevFingerprint)
-  const currLines = parseFingerprintEntityLines(fingerprint)
+  const currLines = parseFingerprintEntityLines(currFingerprint)
   const entityGrowth = currLines.size - prevLines.size
   if (entityGrowth >= UI_MOUNT_GROWTH_FULL_TOUCH_MIN) {
-    return touchWorkerUiComponentsForCrdt(engine)
+    const touched = touchWorkerUiComponentsForCrdt(engine)
+    return { touched, dirty: [], fullTouch: true }
   }
   const dirty = new Set<Entity>()
   for (const [entityKey, line] of currLines) {
@@ -310,7 +416,7 @@ function touchDirtyWorkerUiComponentsForCrdt(engine: IEngine, prevFingerprint: s
     if (!currLines.has(entityKey)) dirty.add(Number(entityKey) as Entity)
   }
 
-  if (!dirty.size) return 0
+  if (!dirty.size) return { touched: 0, dirty: [], fullTouch: false }
 
   preregisterRendererInjectedComponents(engine)
   const components = {
@@ -330,7 +436,7 @@ function touchDirtyWorkerUiComponentsForCrdt(engine: IEngine, prevFingerprint: s
       touched += touchWorkerUiEntityForCrdt(entity, components)
     }
   }
-  return touched
+  return { touched, dirty: [...dirty], fullTouch: false }
 }
 
 export type PlanSceneUiCrdtEmitOptions = {
@@ -353,17 +459,39 @@ export function planSceneUiCrdtEmit(
   if (fingerprint === lastWorkerUiFingerprint) return false
 
   const prevLen = lastWorkerUiFingerprint.length
+  lastPlannedUiDirtyEntities = []
+  lastPlannedUiFullTouch = false
 
-  const touched = opts?.forceFullTouch
-    ? touchWorkerUiComponentsForCrdt(engine)
-    : touchDirtyWorkerUiComponentsForCrdt(engine, lastWorkerUiFingerprint)
+  if (opts?.forceFullTouch) {
+    const touched = touchWorkerUiComponentsForCrdt(engine)
+    if (touched <= 0) {
+      log?.(
+        `[sceneWorker] ui fingerprint changed without transport touch — fp=${prevLen}→${fingerprint.length}B`
+      )
+      return false
+    }
+    lastPlannedUiFullTouch = true
+    log?.(`[sceneWorker] ui fingerprint flush — touched=${touched} fp=${prevLen}→${fingerprint.length}B full`)
+    return true
+  }
+
+  const { touched, dirty, fullTouch } = touchDirtyWorkerUiComponentsForCrdt(
+    engine,
+    lastWorkerUiFingerprint,
+    fingerprint
+  )
   if (touched <= 0) {
     log?.(
       `[sceneWorker] ui fingerprint changed without transport touch — fp=${prevLen}→${fingerprint.length}B`
     )
     return false
   }
-  log?.(`[sceneWorker] ui fingerprint flush — touched=${touched} fp=${prevLen}→${fingerprint.length}B`)
+  lastPlannedUiDirtyEntities = dirty
+  lastPlannedUiFullTouch = fullTouch
+  log?.(
+    `[sceneWorker] ui fingerprint flush — touched=${touched} dirtyEntities=${dirty.length || 'all'} ` +
+      `fp=${prevLen}→${fingerprint.length}B${fullTouch ? ' full' : ''}`
+  )
   return true
 }
 

@@ -22,6 +22,8 @@ export type AvatarAttachWorkerEntry = {
   position: { x: number; y: number; z: number }
   rotation: { x: number; y: number; z: number; w: number }
   scale: { x: number; y: number; z: number }
+  /** PlayerEntity (or remote player) — worker Transform parent for world pose parity. */
+  parent?: number
 }
 
 type CachedBone = {
@@ -74,9 +76,6 @@ export class AvatarAttachBridge {
       active.add(entity)
       this.attached.add(entity)
 
-      const node = nodes.get(entity)
-      if (!node) continue
-
       const playerTransform = resolver.getPlayerTransformDcl(spec.avatarId)
       if (!playerTransform) continue
 
@@ -94,23 +93,35 @@ export class AvatarAttachBridge {
         ? (Transform.get(entity) as DclTransformValues)
         : undefined
 
+      // Player-local relative + parent PlayerEntity so resolveEntityWorldPose (VC, etc.) follows.
       const relative = anchorWorldToRelativeTransform(
         playerTransform,
         anchorPose.position,
         anchorPose.quaternion,
         existing
       )
+      const relativeWithParent: DclTransformValues = {
+        ...relative,
+        parent: (existing?.parent && existing.parent !== 0
+          ? existing.parent
+          : view.PlayerEntity) as DclTransformValues['parent']
+      }
 
-      this.projection.setRenderer(Transform.componentId, entity, relative)
+      this.projection.setRenderer(Transform.componentId, entity, relativeWithParent)
 
-      const world = composeAvatarAttachedWorldTransform(playerTransform, relative)
-      applyWorldDclTransformToObject(node, world)
+      // Mesh optional — lights / VC-adjacent attach entities may have no store node yet.
+      const node = nodes.get(entity)
+      if (node) {
+        const world = composeAvatarAttachedWorldTransform(playerTransform, relativeWithParent)
+        applyWorldDclTransformToObject(node, world)
+      }
 
       workerBatch.push({
         entity: entity as number,
-        position: relative.position,
-        rotation: relative.rotation,
-        scale: relative.scale
+        position: relativeWithParent.position,
+        rotation: relativeWithParent.rotation,
+        scale: relativeWithParent.scale,
+        parent: relativeWithParent.parent as number | undefined
       })
 
       this.cache.set(entity, {

@@ -136,8 +136,13 @@ export function commitVcPoseForLensBind(engine: IEngine, camera: VcPoseCache): v
 }
 
 /**
- * Before MainCamera binds CameraEntity → VC: ensure VirtualCamera + Transform exist and
- * world pose is published under RootEntity (client lens reads this via CRDT).
+ * Before MainCamera binds CameraEntity → VC: ensure VirtualCamera + Transform exist.
+ *
+ * Do NOT reparent/flatten to Root. Gameplay third-person rigs parent the VC under
+ * cameraParent with lookAtEntity === parent; flattening (publishVcWorldPoseUnderRoot)
+ * permanently detaches the lens from CameraFollow / PE-follow and leaves it at bind-time
+ * world pose (often origin / corner). Locked shots still resolve via entity world pose
+ * hierarchy on the client — they do not need a Root-only transform.
  */
 export function prepareVcForMainCameraBind(
   engine: IEngine,
@@ -162,10 +167,7 @@ export function prepareVcForMainCameraBind(
       rotation: Quaternion.Identity(),
       scale: Vector3.create(1, 1, 1)
     })
-    return
   }
-
-  publishVcWorldPoseUnderRoot(engine, vcEntity)
 }
 
 /** Scene helper — bind explorer camera to a virtual camera (instant cut). */

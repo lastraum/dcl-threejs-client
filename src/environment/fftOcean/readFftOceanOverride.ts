@@ -25,7 +25,8 @@ function fftOceanParam(params: URLSearchParams): string | null {
 /** FFTOCEAN GPGPU ocean by default; `?fftOcean=0` falls back to Water.js. */
 export function readFftOceanOverride(): FftOceanSettings {
   if (typeof window === 'undefined') {
-    return { enabled: true, meshResolution: 256, fftResolution: 256 }
+    // Default 128 FFT — 256 costs ~17 GPGPU passes/frame @30Hz and starves play (menus, select).
+    return { enabled: true, meshResolution: 256, fftResolution: 128 }
   }
 
   const params = new URLSearchParams(window.location.search)
@@ -34,8 +35,23 @@ export function readFftOceanOverride(): FftOceanSettings {
   return {
     enabled: parseBoolQueryOptional(fftOceanParam(params)) ?? true,
     meshResolution: parseIntQuery(params.get('oceanResolution'), 256),
-    fftResolution: parseIntQuery(params.get('fftResolution'), mobile ? 128 : 256)
+    // Desktop default 128 (use `?fftResolution=256` for high quality).
+    fftResolution: parseIntQuery(params.get('fftResolution'), mobile ? 64 : 128)
   }
+}
+
+/**
+ * Disable all client water (FFT + Water.js island/open).
+ * `?water=0` / `?noWater=1` / `?disableWater=1`
+ */
+export function isClientWaterDisabled(): boolean {
+  if (typeof window === 'undefined') return false
+  const params = new URLSearchParams(window.location.search)
+  const water = parseBoolQueryOptional(params.get('water'))
+  if (water === false) return true
+  if (parseBoolQueryOptional(params.get('noWater')) === true) return true
+  if (parseBoolQueryOptional(params.get('disableWater')) === true) return true
+  return false
 }
 
 /** Keys that must trigger a full scene reload when changed (path unchanged). */
@@ -48,6 +64,9 @@ export function readSceneDevQueryKey(): string {
     params.get('disableMoon') ?? '',
     fftOceanParam(params) ?? '',
     params.get('fftResolution') ?? '',
-    params.get('oceanResolution') ?? ''
+    params.get('oceanResolution') ?? '',
+    params.get('water') ?? '',
+    params.get('noWater') ?? '',
+    params.get('disableWater') ?? ''
   ].join('|')
 }

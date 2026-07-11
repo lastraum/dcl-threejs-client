@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-07 (dev panel in-app suggestions ✅ · companion social shell ✅ · `decentraland-social-merge` → `dev-latest`)  
-> **Current phase:** **Companion social UX** on `dev-latest` — Explorer at `/`, scene landing + Jump in, 2D shell nav, chat dock, profile page. **Next:** Phase 3 Watch Lite (landing voice/chat), Phase 4 `/goto` in 3D; smoke-test **v0.4.0** → `main`; later **`dev-latest` → `lastraum`** (scene-UI worker vs mesh-collider pointer stack).
+> **Last updated:** 2026-07-08 (player-frame hot path Phase 1 🔄 — see [PLAYER_FRAME_PROGRESS.md](./PLAYER_FRAME_PROGRESS.md))  
+> **Current phase:** **Player frame channel (Option B)** on `lastraum` — Explorer-parity input order; then companion social UX on `dev-latest` — Explorer at `/`, scene landing + Jump in, 2D shell nav, chat dock, profile page. **Next:** Phase 3 Watch Lite (landing voice/chat), Phase 4 `/goto` in 3D; smoke-test **v0.4.0** → `main`; later **`dev-latest` → `lastraum`** (scene-UI worker vs mesh-collider pointer stack).
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -832,7 +832,7 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 | **2D sign-out** | ✅ `signOutFrom2dShell` — disconnect comms, dispose dock, reset social |
 | **Community thumbnails** | ✅ `communityDisplayImageUrl` + proxy + 404 detail enrichment |
 | **Scene display title parity** | ✅ Deployed `display.title` before Places API — landing + chat agree |
-| Splash login screen | ✅ **Connect Wallet** only (+ returning-user jump-in); guest via `?guest` / `?skipLogin` |
+| Splash login screen | ❌ Removed — explorer auth sheet + session resume (companion UX) |
 | `@dcl/crypto` AuthIdentity + localStorage | ✅ `AuthClient` + `identityStore` |
 | `SessionIdentity` — Catalyst profile connect | ✅ post-login profile fetch |
 | `CommsService` + RFC4 room client | ✅ `setCommunicationsAdapter` worker bridge |
@@ -847,7 +847,7 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 | **Scene chat timestamps in Unity Explorer** | ✅ RFC4 unix encode (`protocol_version` 100) — inbound still accepts legacy session-elapsed (`4089a2c`); cross-check Explorer on next release |
 | Scene-mode rail transparency | ✅ rail hidden in scene mode until hover/pin |
 | Member communities rail (Signed Social API) | ✅ `fetchMemberCommunitiesSigned` |
-| Session identity expiry in localStorage | ✅ `identityStore` + splash expiry hint |
+| Session identity expiry in localStorage | ✅ `identityStore` + resume / re-auth via explorer sheet |
 | Avatar spawn after social/comms load | ✅ `initCapsule` → comms → social → `loadAvatar` |
 | Profile on join + remote avatar parity | ⬜ |
 | Community text (PM router / LiveKit pool) | ⬜ stub — local echo only |

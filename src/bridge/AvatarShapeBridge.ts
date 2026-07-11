@@ -11,7 +11,11 @@ import {
   type AvatarShapeExpressionState
 } from '../avatar/avatarShapeEmote'
 import { SceneAvatar } from '../avatar/SceneAvatar'
-import { identityShowsNameTag, type ProfileIdentity } from '../avatar/displayName'
+import {
+  defaultProfileIdentity,
+  identityShowsNameTag,
+  type ProfileIdentity
+} from '../avatar/displayName'
 import { NameTag, type NameTagStyle } from '../client/ui/NameTag'
 import type { AssetCache } from '../rendering/AssetCache'
 import type { AvatarSkeletonTarget } from '../avatar/AvatarAttachTargets'
@@ -75,6 +79,11 @@ export class AvatarShapeBridge {
   private readonly avatars = new Map<Entity, AvatarEntry>()
   private assetCache: AssetCache | null = null
   private peerUrl = ''
+  /** Cap concurrent full composes — sequential await of many NPCs freezes the async frame (~1fps). */
+  private composeInFlight = 0
+  private static readonly MAX_COMPOSE_IN_FLIGHT = 1
+  private readonly composeFailedUntil = new Map<Entity, number>()
+  private static readonly COMPOSE_RETRY_MS = 8_000
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -111,7 +120,10 @@ export class AvatarShapeBridge {
       if (!entry) {
         const avatar = new SceneAvatar(node)
         avatar.setAssetCache(this.assetCache, this.peerUrl || undefined)
-        const identity = await resolveShapeIdentity(shape)
+        // Placeholder identity — never await profile fetch inside syncAsyncBridges.
+        const identity: ProfileIdentity = defaultProfileIdentity(
+          typeof shape.name === 'string' && shape.name.trim() ? shape.name.trim() : 'Guest'
+        )
         entry = {
           avatar,
           nameTag: null,
@@ -125,47 +137,32 @@ export class AvatarShapeBridge {
         }
         syncNameTag(entry, identity)
         this.avatars.set(entity, entry)
+        const created = entry
+        void resolveShapeIdentity(shape).then((resolved) => {
+          if (this.avatars.get(entity) !== created) return
+          created.nameKey = avatarShapeNameKey(shape)
+          syncNameTag(created, resolved)
+        })
       } else if (entry.nameKey !== nameKey) {
         entry.nameKey = nameKey
-        syncNameTag(entry, await resolveShapeIdentity(shape))
+        const current = entry
+        void resolveShapeIdentity(shape).then((resolved) => {
+          if (this.avatars.get(entity) !== current) return
+          syncNameTag(current, resolved)
+        })
       }
 
       if (entry.signature !== signature && !entry.loading) {
         if (entry.avatar.isProfileEmoteActive()) {
           entry.pendingSignatureReload = signature
         } else {
-          entry.pendingSignatureReload = null
-          entry.loading = true
-          entry.signature = signature
-          const profile = profileFromAvatarShape(shape)
-          try {
-            await entry.avatar.load(profile, entry.identity.displayName)
-            syncNameTag(entry, await resolveShapeIdentity(shape))
-          } catch (err) {
-            console.warn(`[AvatarShape] entity ${entity} compose failed:`, err)
-            entry.signature = ''
-          } finally {
-            entry.loading = false
-            flushPendingAvatarShapeEmote(entry)
-          }
+          this.startCompose(entity, entry, shape, signature)
         }
       } else if (entry.pendingSignatureReload && !entry.avatar.isProfileEmoteActive() && !entry.loading) {
         const pendingSignature = entry.pendingSignatureReload
         entry.pendingSignatureReload = null
         if (entry.signature !== pendingSignature) {
-          entry.loading = true
-          entry.signature = pendingSignature
-          const profile = profileFromAvatarShape(shape)
-          try {
-            await entry.avatar.load(profile, entry.identity.displayName)
-            syncNameTag(entry, await resolveShapeIdentity(shape))
-          } catch (err) {
-            console.warn(`[AvatarShape] entity ${entity} compose failed:`, err)
-            entry.signature = ''
-          } finally {
-            entry.loading = false
-            flushPendingAvatarShapeEmote(entry)
-          }
+          this.startCompose(entity, entry, shape, pendingSignature)
         }
       }
 
@@ -185,8 +182,53 @@ export class AvatarShapeBridge {
         entry.nameTag?.dispose()
         entry.avatar.dispose()
         this.avatars.delete(entity)
+        this.composeFailedUntil.delete(entity)
       }
     }
+  }
+
+  /**
+   * Start at most one full wearable compose per bridge tick (fire-and-forget).
+   * Awaiting many NPC AvatarShapes in one syncAsyncBridges call freezes the main thread.
+   */
+  private startCompose(
+    entity: Entity,
+    entry: AvatarEntry,
+    shape: Parameters<typeof profileFromAvatarShape>[0],
+    signature: string
+  ): void {
+    if (entry.loading) return
+    if (this.composeInFlight >= AvatarShapeBridge.MAX_COMPOSE_IN_FLIGHT) {
+      entry.pendingSignatureReload = signature
+      return
+    }
+    const failedUntil = this.composeFailedUntil.get(entity) ?? 0
+    if (performance.now() < failedUntil) {
+      entry.pendingSignatureReload = signature
+      return
+    }
+
+    entry.loading = true
+    entry.signature = signature
+    entry.pendingSignatureReload = null
+    this.composeInFlight++
+    const profile = profileFromAvatarShape(shape)
+    void entry.avatar
+      .load(profile, entry.identity.displayName)
+      .then(async () => {
+        syncNameTag(entry, await resolveShapeIdentity(shape))
+        this.composeFailedUntil.delete(entity)
+      })
+      .catch((err) => {
+        console.warn(`[AvatarShape] entity ${entity} compose failed:`, err)
+        entry.signature = ''
+        this.composeFailedUntil.set(entity, performance.now() + AvatarShapeBridge.COMPOSE_RETRY_MS)
+      })
+      .finally(() => {
+        entry.loading = false
+        this.composeInFlight = Math.max(0, this.composeInFlight - 1)
+        flushPendingAvatarShapeEmote(entry)
+      })
   }
 
   getNpcSkeleton(entity: Entity): AvatarSkeletonTarget | null {
@@ -222,5 +264,7 @@ export class AvatarShapeBridge {
       entry.avatar.dispose()
     }
     this.avatars.clear()
+    this.composeFailedUntil.clear()
+    this.composeInFlight = 0
   }
 }

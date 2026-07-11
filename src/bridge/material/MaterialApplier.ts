@@ -113,36 +113,6 @@ function coerceTextureUnion(u?: TextureUnion | { src?: string; wrapMode?: number
   return undefined
 }
 
-/** Sample a loaded texture (downscaled) for a meaningful alpha channel; cached on userData. */
-function textureHasAlpha(tex: THREE.Texture): boolean {
-  const cached = tex.userData.__hasAlpha
-  if (typeof cached === 'boolean') return cached
-  const image = tex.image as CanvasImageSource | undefined
-  let result = false
-  if (image && typeof document !== 'undefined') {
-    try {
-      const canvas = document.createElement('canvas')
-      canvas.width = 32
-      canvas.height = 32
-      const ctx = canvas.getContext('2d', { willReadFrequently: true })
-      if (ctx) {
-        ctx.drawImage(image, 0, 0, 32, 32)
-        const data = ctx.getImageData(0, 0, 32, 32).data
-        for (let i = 3; i < data.length; i += 4) {
-          if (data[i]! < 255) {
-            result = true
-            break
-          }
-        }
-      }
-    } catch {
-      result = false
-    }
-  }
-  tex.userData.__hasAlpha = result
-  return result
-}
-
 function normalizeTextureUnion(u?: TextureUnion): unknown {
   const coerced = coerceTextureUnion(u)
   const tex = coerced?.tex
@@ -487,12 +457,14 @@ export class MaterialApplier {
     const transparencyMode = isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO
     const alpha =
       (isPbr ? (inner as PbrMaterial).albedoColor?.a : (inner as UnlitMaterial).diffuseColor?.a) ?? 1
+    // AUTO cutout only when a dedicated alphaTexture/alphaMap is set — match Unity Explorer.
+    // Do not sample albedo map alpha; PNG-with-alpha albedo stays opaque (black RGB shows).
     applyTransparency(
       m,
       alpha,
       inner.alphaTest,
       transparencyMode,
-      !!alphaTex || !!m.alphaMap || (!!m.map && textureHasAlpha(m.map))
+      !!alphaTex || !!m.alphaMap
     )
     if (transparencyMode === MTM_ALPHA_BLEND || transparencyMode === MTM_ALPHA_TEST_AND_ALPHA_BLEND) {
       m.depthWrite = false
@@ -689,7 +661,8 @@ function applyTransparency(
     return
   }
 
-  // AUTO — DCL picks alpha-cutout when the albedo texture has alpha; not alpha-blend.
+  // AUTO — cutout only with a dedicated alpha map (Unity Explorer parity).
+  // Albedo-only PNG alpha is ignored; transparent texels draw as their RGB (often black).
   if (hasAlphaMap) {
     m.alphaTest = alphaTest ?? 0.5
     return

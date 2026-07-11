@@ -4,24 +4,26 @@
 > Pointer/UI rules: `.cursor/rules/worker-input-architecture.mdc` (note: flight pump wording may be stale — see log below)
 
 **Started:** 2026-07-08  
-**Last updated:** 2026-07-08 (removed freeze latch; flight keyboard apply)  
-**Branch:** `lastraum`  
-**Test scene:** `rickroll.dcl.eth` (camera-operator / MOVE CAMERA)  
+**Last updated:** 2026-07-11 (VC bind hydrate + PE-follow reliability)  
+**Branch:** `lastraum` → `dev-latest` ([#16](https://github.com/lastraum/dcl-threejs-client/pull/16))  
 **Architecture debt:** [ARCHITECTURE_AND_TECH_DEBT.md](./ARCHITECTURE_AND_TECH_DEBT.md)
 
 ---
 
 ## Summary for handoff
 
-Phases **1–4** landed. MOVE CAMERA QA still failed after latch-window tweak. **Revised fix:** remove freeze latch entirely + apply flight keys during pointer session.
+Phases **1–4** landed. **2026-07-11:** VirtualCamera bind is production-ready for locked shots and third-person follow (scene-agnostic). MOVE CAMERA edit-flight STOP/WASD still tracked as residual QA below.
 
-| Step | Expected | Last QA | Status |
-|------|----------|---------|--------|
-| Click MOVE CAMERA | Locomotion blocked | ✅ Player locks | Keep |
-| WASD during edit | VC / gizmo moves | ❌ No move | ⬜ retest after keyboard fix |
-| Click STOP MOVE CAMERA | Walk restored | ❌ Stays locked | ⬜ retest after latch removal |
+| Step | Expected | Status |
+|------|----------|--------|
+| MainCamera bind + Transform/VirtualCamera on main | Lens active | ✅ `vc-bind-hydrate` + live lane |
+| Locked / cinematic VC | Worker world pose under Root | ✅ |
+| `parent === lookAt` follow | f(player)+local every frame | ✅ no hitch flicker |
+| Hydrate only on structure change | No per-frame spam | ✅ |
+| WASD under active VC | Matches freecam basis | ✅ |
+| MOVE CAMERA freeze + flight + STOP | Full edit-flight loop | 🟡 residual (see Phase 1 QA) |
 
-See architecture debt doc for full client review.
+See [PLAYER_FRAME_CHANNEL.md](./PLAYER_FRAME_CHANNEL.md) for the transport model.
 
 ---
 

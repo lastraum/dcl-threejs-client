@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-08 (player-frame hot path Phase 1 🔄 — see [PLAYER_FRAME_PROGRESS.md](./PLAYER_FRAME_PROGRESS.md))  
-> **Current phase:** **Player frame channel (Option B)** on `lastraum` — Explorer-parity input order; then companion social UX on `dev-latest` — Explorer at `/`, scene landing + Jump in, 2D shell nav, chat dock, profile page. **Next:** Phase 3 Watch Lite (landing voice/chat), Phase 4 `/goto` in 3D; smoke-test **v0.4.0** → `main`; later **`dev-latest` → `lastraum`** (scene-UI worker vs mesh-collider pointer stack).
+> **Last updated:** 2026-07-11 (VirtualCamera bind hydrate + PE-follow — [PLAYER_FRAME_CHANNEL.md](./PLAYER_FRAME_CHANNEL.md))  
+> **Current phase:** Companion social UX + mesh P0 + **VirtualCamera reliability** on `dev-latest`. **Next:** Phase 3 Watch Lite (landing voice/chat), Phase 4 `/goto` in 3D; smoke-test **v0.4.0** → `main`.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -25,8 +25,32 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Scene landing hub** | 🟢 | Hero, crowd, owner, description, events banner; companion-style **Jump in** progress bar (sidebar/HUD deferred until handoff) |
 | **Community thumbnails** | 🟢 | `communityDisplayImageUrl` + proxy passthrough; detail-fetch fallback on image 404 |
 | **Dev panel in-app suggestions** | 🟢 | `</>` → **💡 Suggest** — form in panel; auto-attaches DCL name + route; files GitHub issues labeled `suggestion` via Cloudflare Worker (prod) or vite proxy (local dev) |
+| **VirtualCamera bind reliability** | 🟢 | Scene-agnostic MainCamera→VC hydrate; locked shots use worker world pose; follow is f(player)+local; live Transform exclusive while bound |
 
 **Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**. Suggestions: dev panel → **💡 Suggest**.
+
+---
+
+## 🎉 Milestone — VirtualCamera bind + PE-follow reliability (2026-07-11)
+
+**Status: shipped on `dev-latest`** ([#16](https://github.com/lastraum/dcl-threejs-client/pull/16)) — scene-agnostic VirtualCamera / player-frame work so cinematic and third-person rigs stay correct under load.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **`vc-bind-hydrate`** | 🟢 | Structural package before `player-frame`: VirtualCamera + Transform (+ ancestors when needed) when MainCamera bind **graph** changes |
+| **Locked / cinematic shots** | 🟢 | Worker `getWorldPosition` / rotation under Root — main does not rebuild incomplete parent trees |
+| **Third-person follow** | 🟢 | Classic `parent === lookAt` → main `f(PlayerEntity) + local` every frame; no lag fallback to stale cameraParent CRDT |
+| **Hydrate spam / hitch flicker** | 🟢 | Follow graph key is **structure-only** (not moving parent pose); live lane rejects cold Transform while held |
+| **WASD with VC active** | 🟢 | Move relative to lens; right = forward × world up (matches freecam) |
+| **Player-frame hot path** | 🟢 | `InputModifier` + `MainCamera` only; pose on `vc-pose-live` |
+| **Client HUD stack** | 🟢 | Sidebar / minimap / chat above scene ECS UI (`--z-client-hud` > `--z-scene-ui`) |
+| **Splash removal** | 🟢 | No full-screen splash; session resume + explorer auth sheet |
+
+**Docs:** [PLAYER_FRAME_CHANNEL.md](./PLAYER_FRAME_CHANNEL.md) · [PLAYER_FRAME_PROGRESS.md](./PLAYER_FRAME_PROGRESS.md) · [ARCHITECTURE_AND_TECH_DEBT.md](./ARCHITECTURE_AND_TECH_DEBT.md)
+
+**QA:** Jump in → character-select or cinematic VC shows stage content (not freecam at spawn) · gameplay follow tracks player under FPS dips · A/D not inverted under VC · HUD above dense scene UI · no hydrate spam in console on follow.
+
+**Not in this PR:** MOVE CAMERA edit-flight STOP polish (see player-frame progress), Watch Lite voice, in-world `/goto`.
 
 ---
 

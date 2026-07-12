@@ -27,8 +27,34 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Dev panel in-app suggestions** | 🟢 | `</>` → **💡 Suggest** — form in panel; auto-attaches DCL name + route; files GitHub issues labeled `suggestion` via Cloudflare Worker (prod) or vite proxy (local dev) |
 | **VirtualCamera bind reliability** | 🟢 | Scene-agnostic MainCamera→VC hydrate; locked shots use worker world pose; follow is f(player)+local; live Transform exclusive while bound |
 | **Skybox time authority** | 🟢 | Scene fixed → session custom (tab) → Auto cycle; Night/Day panel respects scene lock |
+| **Unity outdoor lighting parity** | 🟢 | Trilight ambient, soft sun/moon shadows, anim intensity, soft PBR; crescent moon + night fill |
 
 **Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**. Suggestions: dev panel → **💡 Suggest**.
+
+---
+
+## 🎉 Milestone — Unity lighting + moon parity (2026-07-11)
+
+**Status: shipped on `dev-latest`** (`0267d38`, via `lastraum`) — outdoor light/shadow/moon closer to Unity Explorer after v0.6.0.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Trilight ambient** | 🟢 | Hemisphere sky+ground + **equator AmbientLight** (`indirectEquator`) — soft fill on vertical planes |
+| **Soft directional shadows** | 🟢 | Day sun + night moon; PCF ortho map follows camera (`directionalSunShadow.ts`) |
+| **Intensity curve** | 🟢 | SunCycle **m_Intensity** peak **2.72**, `SUN_BRIGHTNESS` **1.0** (no double boost) |
+| **Outdoor PBR softness** | 🟢 | Lower metal / higher roughness floor / reduced specular on scene materials |
+| **Sun disc visual** | 🟢 | Small warm disc; look **decoupled** from scene light power; **Reset lighting** in Preferences |
+| **Moon disc** | 🟢 | Unity-style **crescent** (disc + offset bite) + companion; small visual size |
+| **Night fill** | 🟢 | Stronger night hemi/equator + moon key so PNG planes read at 23:59 |
+| **Skybox authority** | 🟢 | (already on v0.6.0) scene → session → auto |
+
+**Docs:** [lightsource-parity.md](./lightsource-parity.md) · [INTEGRATION.md](./INTEGRATION.md)
+
+**QA:** Reset lighting · noon plane soft not silhouette · look up small sun · 23:59 crescent moon + soft purple fill + shadows · Night/Day scrub.
+
+**Still open:** MOVE CAMERA residual · Watch Lite / `/goto` · graphics prefs stubs (MSAA/bloom UI) · multi-cascade shadow polish.
+
+**Not on `main` yet** — v0.6.0 release notes still list sun intensity/shadows as gaps; next cut can fold this milestone in.
 
 ---
 
@@ -54,8 +80,7 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | Gap | Notes |
 | --- | ----- |
 | **MOVE CAMERA** edit-flight residual | Avatar freeze OK; WASD/STOP still shim-debt — [ARCHITECTURE_AND_TECH_DEBT](./ARCHITECTURE_AND_TECH_DEBT.md) |
-| **Sun/hemi intensity** vs Explorer | Azimuth fixed; overall brightness may still read hotter |
-| **Directional sun shadows** | Only ECS spot shadows; environment sun does not cast |
+| **Sun intensity / directional shadows** | **Addressed on `dev-latest` post-release** — see [Unity lighting + moon parity](#-milestone--unity-lighting--moon-parity-2026-07-11) |
 | **Watch Lite / `/goto`** | Companion Phase 3–4 still open |
 | **Graphics prefs stubs** | MSAA/bloom/shadows/resolution UI not wired |
 
@@ -83,7 +108,7 @@ Genesis spawn walk · VC character-select/follow · `threejs.dcl.eth` materials 
 
 **QA:** `threejs.dcl.eth` — black plate like Unity · pin ~07:30 front-lit plane same side as Explorer · Auto vs custom session survives reload in-tab · no material.version thrash after load.
 
-**Still open (not this milestone):** sun/hemi **intensity** vs Explorer; directional sun shadows; graphics prefs stubs. Yoga Windows shipped in **v0.6.0** ([#14](https://github.com/lastraum/dcl-threejs-client/pull/14)).
+**Follow-up:** intensity + sun/moon shadows + moon disc shipped in [Unity lighting + moon parity](#-milestone--unity-lighting--moon-parity-2026-07-11). Yoga Windows shipped in **v0.6.0** ([#14](https://github.com/lastraum/dcl-threejs-client/pull/14)).
 
 ---
 

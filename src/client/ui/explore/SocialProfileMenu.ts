@@ -1,4 +1,4 @@
-import type { AuthDappLoginMethod, LoginResult } from '../../../auth/AuthClient'
+import type { AuthDappLoginMethod, AuthProgress, LoginResult } from '../../../auth/AuthClient'
 import { loginWithMetaMask, loginWithProvider } from '../../../auth/AuthClient'
 import { identityFromAvatarProfile } from '../../../avatar/displayName'
 import { fetchProfileCached, fetchProfileFaceUrl } from '../../../avatar/peerApi'
@@ -244,6 +244,12 @@ export class SocialProfileMenu {
           <button type="button" class="social-profile-menu__provider-btn" data-login-method="x" title="X" aria-label="X" ${disabled}>${ICON_X}</button>
           <button type="button" class="social-profile-menu__provider-btn" data-login-method="wallet-connect" title="WalletConnect" aria-label="WalletConnect" ${disabled}>${ICON_WALLET_CONNECT}</button>
         </div>
+        <div class="explorer-auth-verify social-profile-menu__verify" data-verify hidden>
+          <p class="explorer-auth-verify__label">Verify Sign In</p>
+          <p class="explorer-auth-verify__hint">Does this number match the one in the login tab?</p>
+          <p class="explorer-auth-verify__code" data-verify-code aria-live="polite">—</p>
+          <p class="explorer-auth-verify__wait">Waiting for confirmation…</p>
+        </div>
         <button type="button" class="social-profile-menu__ghost-btn" data-guest ${disabled}>
           Continue as Guest
         </button>
@@ -350,9 +356,28 @@ export class SocialProfileMenu {
     el.className = `social-profile-menu__status${isError ? ' social-profile-menu__status--error' : ''}`
   }
 
+  private setVerifyCode(code: number | null | undefined): void {
+    const box = this.menuBody.querySelector('[data-verify]') as HTMLElement | null
+    const num = this.menuBody.querySelector('[data-verify-code]') as HTMLElement | null
+    if (!box || !num) return
+    if (code == null || !Number.isFinite(code)) {
+      box.hidden = true
+      num.textContent = '—'
+      return
+    }
+    box.hidden = false
+    num.textContent = String(Math.trunc(code)).padStart(2, '0')
+  }
+
+  private onAuthProgress = (p: AuthProgress): void => {
+    this.setSignInStatus(p.message)
+    if (p.verificationCode !== undefined) this.setVerifyCode(p.verificationCode)
+  }
+
   private async runLoginMethod(method: AuthDappLoginMethod): Promise<void> {
     if (this.busy) return
     this.busy = true
+    this.setVerifyCode(null)
     this.setSignInStatus('Connecting…')
     for (const btn of this.menuBody.querySelectorAll('button')) {
       ;(btn as HTMLButtonElement).disabled = true
@@ -364,16 +389,17 @@ export class SocialProfileMenu {
               const msg = err instanceof Error ? err.message : String(err)
               if (/not found|install/i.test(msg)) {
                 this.setSignInStatus('Opening Decentraland login…')
-                return loginWithProvider('metamask', (m) => this.setSignInStatus(m))
+                return loginWithProvider('metamask', this.onAuthProgress)
               }
               throw err
             })
-          : await loginWithProvider(method, (msg) => this.setSignInStatus(msg))
+          : await loginWithProvider(method, this.onAuthProgress)
       this.onLoginChange?.(result)
       this.setLogin(result)
       this.close()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+      this.setVerifyCode(null)
       this.setSignInStatus(msg, true)
       for (const btn of this.menuBody.querySelectorAll('button')) {
         ;(btn as HTMLButtonElement).disabled = false

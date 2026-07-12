@@ -19,12 +19,21 @@ export type LoginResult =
 
 export type StatusCallback = (msg: string) => void
 
+/** Progress for auth-dapp flows — includes 0–99 verification code to show in-app. */
+export type AuthProgress = {
+  message: string
+  /** Present while waiting for the auth tab to confirm (matches Explorer). */
+  verificationCode?: number | null
+}
+
+export type AuthProgressCallback = (progress: AuthProgress) => void
+
 export type { AuthDappLoginMethod }
 
-/** Social / WalletConnect / etc. via decentraland.org/auth popup + auth-api. */
+/** Social / WalletConnect / etc. via decentraland.org/auth tab + auth-api. */
 export async function loginWithProvider(
   method: AuthDappLoginMethod,
-  onStatus?: StatusCallback
+  onStatus?: StatusCallback | AuthProgressCallback
 ): Promise<LoginResult> {
   return loginWithAuthDapp(method, onStatus)
 }

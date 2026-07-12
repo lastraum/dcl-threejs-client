@@ -1,4 +1,4 @@
-import type { AuthDappLoginMethod, LoginResult } from '../../../auth/AuthClient'
+import type { AuthDappLoginMethod, AuthProgress, LoginResult } from '../../../auth/AuthClient'
 import { loginWithMetaMask, loginWithProvider } from '../../../auth/AuthClient'
 import {
   ICON_APPLE,
@@ -41,6 +41,8 @@ export class ExplorerAuthPanel {
   readonly root: HTMLElement
 
   private readonly statusEl: HTMLElement
+  private readonly verifyEl: HTMLElement
+  private readonly verifyCodeEl: HTMLElement
   private readonly moreEl: HTMLElement
   private readonly moreToggle: HTMLButtonElement
   private moreOpen = true
@@ -70,6 +72,12 @@ export class ExplorerAuthPanel {
         <div class="explorer-auth-panel__more" data-more>
           <div class="explorer-auth-panel__icon-row" data-more-icons></div>
         </div>
+        <div class="explorer-auth-verify" data-verify hidden>
+          <p class="explorer-auth-verify__label">Verify Sign In</p>
+          <p class="explorer-auth-verify__hint">Does this number match the one in the login tab?</p>
+          <p class="explorer-auth-verify__code" data-verify-code aria-live="polite">—</p>
+          <p class="explorer-auth-verify__wait">Waiting for confirmation…</p>
+        </div>
         <button type="button" class="explorer-auth-panel__btn explorer-auth-panel__btn--ghost" data-guest>
           Continue as Guest
         </button>
@@ -77,6 +85,8 @@ export class ExplorerAuthPanel {
     `
 
     this.statusEl = this.root.querySelector('[data-status]')!
+    this.verifyEl = this.root.querySelector('[data-verify]')!
+    this.verifyCodeEl = this.root.querySelector('[data-verify-code]')!
     this.moreEl = this.root.querySelector('[data-more]')!
     this.moreToggle = this.root.querySelector('[data-more-toggle]')!
 
@@ -113,6 +123,7 @@ export class ExplorerAuthPanel {
   close(): void {
     this.root.setAttribute('hidden', '')
     this.setStatus(null)
+    this.setVerifyCode(null)
     this.setBusy(false)
     this.opts.onClose?.()
   }
@@ -162,6 +173,21 @@ export class ExplorerAuthPanel {
     this.statusEl.className = `explorer-auth-panel__status${isError ? ' is-error' : ''}`
   }
 
+  private setVerifyCode(code: number | null | undefined): void {
+    if (code == null || !Number.isFinite(code)) {
+      this.verifyEl.hidden = true
+      this.verifyCodeEl.textContent = '—'
+      return
+    }
+    this.verifyEl.hidden = false
+    this.verifyCodeEl.textContent = String(Math.trunc(code)).padStart(2, '0')
+  }
+
+  private onAuthProgress = (p: AuthProgress): void => {
+    this.setStatus(p.message)
+    if (p.verificationCode !== undefined) this.setVerifyCode(p.verificationCode)
+  }
+
   private setBusy(busy: boolean): void {
     this.busy = busy
     for (const btn of this.root.querySelectorAll('button')) {
@@ -173,6 +199,7 @@ export class ExplorerAuthPanel {
   private async runMethod(method: AuthDappLoginMethod): Promise<void> {
     if (this.busy) return
     this.setBusy(true)
+    this.setVerifyCode(null)
     this.setStatus('Connecting…')
     try {
       // Local MetaMask when extension/SDK available — skip auth dapp hop.
@@ -183,16 +210,17 @@ export class ExplorerAuthPanel {
               const msg = err instanceof Error ? err.message : String(err)
               if (/not found|install/i.test(msg)) {
                 this.setStatus('Opening Decentraland login…')
-                return loginWithProvider('metamask', (m) => this.setStatus(m))
+                return loginWithProvider('metamask', this.onAuthProgress)
               }
               throw err
             })
-          : await loginWithProvider(method, (msg) => this.setStatus(msg))
+          : await loginWithProvider(method, this.onAuthProgress)
 
       this.opts.onComplete(result)
       this.close()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+      this.setVerifyCode(null)
       this.setStatus(msg, true)
       this.setBusy(false)
     }

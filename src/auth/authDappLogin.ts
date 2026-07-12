@@ -2,7 +2,7 @@ import { Authenticator, getEphemeralSignatureType } from '@dcl/crypto'
 import { createUnsafeIdentity } from '@dcl/crypto/dist/crypto'
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import { AuthLinkType } from '@dcl/schemas'
-import type { LoginResult, StatusCallback } from './AuthClient'
+import type { AuthProgressCallback, LoginResult, StatusCallback } from './AuthClient'
 import {
   AUTH_API_URL,
   AUTH_SITE_URL,
@@ -131,39 +131,54 @@ function extractSignature(result: unknown): string {
   throw new Error('Auth dapp returned an unexpected signature payload')
 }
 
+function emitProgress(
+  onStatus: StatusCallback | AuthProgressCallback | undefined,
+  message: string,
+  verificationCode?: number | null
+): void {
+  if (!onStatus) return
+  // Always pass AuthProgress — UI handlers accept this shape; string-only
+  // handlers (MetaMask) are not used on this path.
+  ;(onStatus as AuthProgressCallback)({ message, verificationCode: verificationCode ?? null })
+}
+
 /**
  * Sign-in via Decentraland auth dapp (Google / Discord / Apple / X / WalletConnect / …).
  *
  * 1. Create ephemeral identity + login message
- * 2. POST auth-api `/requests` (`dcl_personal_sign`)
+ * 2. POST auth-api `/requests` (`dcl_personal_sign`) → verification `code` (0–99)
  * 3. Open `decentraland.org/auth/login?loginMethod=…&redirectTo=/auth/requests/{id}`
- * 4. Poll until signature + sender address
+ * 4. Poll GET `/requests/{id}` until signature + sender (204 = still pending)
  * 5. Build DCL AuthChain identity (same as wallet MetaMask path)
  */
 export async function loginWithAuthDapp(
   loginMethod: AuthDappLoginMethod,
-  onStatus?: StatusCallback
+  onStatus?: StatusCallback | AuthProgressCallback
 ): Promise<LoginResult> {
   const abort = new AbortController()
   let authTab: Window | null = null
   let closedPoll: number | null = null
 
+  const progress = (message: string, verificationCode?: number | null) =>
+    emitProgress(onStatus, message, verificationCode)
+
   try {
-    onStatus?.('Preparing secure login…')
+    progress('Preparing secure login…', null)
     const ephemeral = createUnsafeIdentity()
     const expiration = new Date(Date.now() + IDENTITY_TTL_MS)
     const ephemeralMessage = Authenticator.getEphemeralMessage(ephemeral.address, expiration)
 
-    onStatus?.('Opening Decentraland login…')
+    progress('Opening Decentraland login…', null)
     // Open blank tab on the user gesture first (avoids blockers after await).
     authTab = openAuthTab('about:blank')
 
     const created = await createSignRequest(ephemeralMessage)
     const loginUrl = buildAuthLoginUrl(created.requestId, loginMethod)
+    const code = created.code
 
     if (authTab && !authTab.closed) {
       try {
-        // about:blank + noopener may block location writes — reopen if needed.
+        // about:blank may block location writes in some browsers — reopen if needed.
         authTab.location.href = loginUrl
       } catch {
         authTab = openAuthTab(loginUrl)
@@ -175,15 +190,31 @@ export async function loginWithAuthDapp(
       throw new Error('Tab blocked — allow popups/tabs for this site and try again')
     }
 
-    onStatus?.(
-      `Confirm code ${String(created.code).padStart(2, '0')} in the login tab…`
+    // Show the same verification number the auth tab displays (Explorer parity).
+    progress(
+      'Does this number match the one in the login tab? Tap Yes there when it does.',
+      code
     )
 
     closedPoll = window.setInterval(() => {
       if (authTab?.closed) abort.abort()
     }, 800)
 
-    const outcome = await pollSignOutcome(created.requestId, created.expiration, abort.signal)
+    // Keep re-emitting code while waiting so UI stays in sync if menu re-renders.
+    const codePulse = window.setInterval(() => {
+      if (abort.signal.aborted) return
+      progress(
+        'Waiting for confirmation in the login tab…',
+        code
+      )
+    }, 4000)
+
+    let outcome: PollOutcome
+    try {
+      outcome = await pollSignOutcome(created.requestId, created.expiration, abort.signal)
+    } finally {
+      window.clearInterval(codePulse)
+    }
 
     if (outcome.error) {
       throw new Error(outcome.error.message || 'Login failed')
@@ -210,7 +241,7 @@ export async function loginWithAuthDapp(
       ]
     }
 
-    onStatus?.('Identity created ✓')
+    progress('Identity created ✓', null)
     writeStoredIdentity(sender, identity)
     return { kind: 'wallet', address: sender, identity }
   } catch (err) {

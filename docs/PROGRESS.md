@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-11 (**v0.6.0** cut → `main`)  
-> **Current phase:** **v0.6.0** on `main` / `dev-latest`. **Next:** Phase 3 Watch Lite, Phase 4 `/goto`; MOVE CAMERA residual; sun intensity + directional shadows polish.  
+> **Last updated:** 2026-07-11 (Unity lighting + moon parity on `dev-latest`)  
+> **Current phase:** **v0.6.0** on `main`; **lighting/moon parity** on `dev-latest` (post-release). **Next:** Phase 3 Watch Lite, Phase 4 `/goto`; MOVE CAMERA residual.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -35,7 +35,7 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 
 ## 🎉 Milestone — Unity lighting + moon parity (2026-07-11)
 
-**Status: shipped on `dev-latest`** (`0267d38`, via `lastraum`) — outdoor light/shadow/moon closer to Unity Explorer after v0.6.0.
+**Status: shipped on `dev-latest`** (`2f9b0df` / code tip `0267d38`, via `lastraum`) — outdoor light/shadow/moon closer to Unity Explorer after v0.6.0.
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |

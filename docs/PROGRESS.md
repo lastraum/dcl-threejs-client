@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-11 (Graphics prefs P0–P2 MSAA/VSync on `lastraum`)  
-> **Current phase:** **v0.6.0** on `main`; **lighting/moon + graphics prefs P0–P2** post-release. **Next:** Phase 4 `/goto`, Phase 3 Watch Lite; MOVE CAMERA residual; graphics P3 distances / P4 bloom.  
+> **Last updated:** 2026-07-11 (Graphics P0–P2 + Genesis/comms polish merged to `dev-latest`)  
+> **Current phase:** **v0.6.0** on `main`; **lighting + graphics prefs P0–P2** on `dev-latest`. **Next:** graphics **P3 distances** / **P4 bloom**; Phase 4 `/goto`; Phase 3 Watch Lite; MOVE CAMERA residual.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -28,7 +28,7 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **VirtualCamera bind reliability** | 🟢 | Scene-agnostic MainCamera→VC hydrate; locked shots use worker world pose; follow is f(player)+local; live Transform exclusive while bound |
 | **Skybox time authority** | 🟢 | Scene fixed → session custom (tab) → Auto cycle; Night/Day panel respects scene lock |
 | **Unity outdoor lighting parity** | 🟢 | Trilight ambient, soft sun/moon shadows, anim intensity, soft PBR; crescent moon + night fill |
-| **Graphics prefs (P0–P2)** | 🟢 | Preset / shadows / lights / res scale / FPS / **MSAA** / VSync / Fullscreen; bloom/HDR/distances still stubs |
+| **Graphics prefs (P0–P2)** | 🟢 | Preset L/M/H/Custom · shadows · lights · res scale · FPS · **MSAA**; Resolution/Fullscreen/VSync hidden or stub; bloom/HDR/distances still stubs |
 
 **Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**. Suggestions: dev panel → **💡 Suggest**.
 
@@ -59,19 +59,59 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 
 ---
 
-## 🎉 Milestone — Graphics prefs P2 MSAA + VSync (2026-07-11)
+## 🎉 Milestone — lastraum batch → `dev-latest` (2026-07-11)
 
-**Status: on `lastraum`** — multisample main pass + prefs UI.
+**Status: merged `lastraum` → `dev-latest`** — graphics prefs P0–P2 plus Genesis/product reliability after lighting milestone.
+
+### Graphics prefs (P0–P2)
+
+| Control | Status | Notes |
+| ------- | ------ | ----- |
+| **Graphics Preset** | 🟢 | Preferences: **Low / Medium / High / Custom** (Ultra bundle remains in store; not offered in UI) |
+| **Shadows Quality** | 🟢 | Off + Low→Ultra map size |
+| **Scene lights** | 🟢 | Enable + max 0–20 |
+| **Resolution Scale** | 🟢 | 50–200% × devicePixelRatio |
+| **FPS Limit** | 🟢 | 30 / 60 / 120 / Max |
+| **MSAA** | 🟢 | Off / 2x / 4x / 8x — WebGL2 multisample RT → blit (`SceneHost`) |
+| **Resolution dropdown** | ⬜ | stub (browser owns window size) |
+| **Fullscreen** | ⬜ | stub (hidden/disabled for now) |
+| **VSync** | — | **hidden** — browsers always rAF-composite; no free-run/tear |
+| **Bloom / HDR / outline / distances** | ⬜ | stubs → **P3 distances**, **P4 post-FX** |
+
+**Persist:** `localStorage` `dcl-render-quality`.
+
+**Files:** `RenderQualitySettings.ts`, `SceneHost.ts`, `GraphicsSettingsView.ts`, `LightManager.ts`, shadow helpers, `detectPerformanceTier.ts`, `integrationRegistry.ts`
+
+**QA:** P → Graphics — Low vs High (scale + FPS + MSAA); MSAA Off vs 8x on building edges; Custom when diverging; Resolution/Fullscreen greyed.
+
+### Product / reliability (same branch)
+
+| Area | Notes |
+| ---- | ----- |
+| **Auth gate** | Jump In requires Guest or wallet |
+| **y=0 ground** | Thick infinite ground + fall-through clamp |
+| **Instanced GLB colliders** | Shared template shapes + dual-path extract |
+| **Comms / archipelago** | `realm-provider-ea` primary Genesis `/about`; island join when adapter empty |
+| **Genesis default env** | Sky + quiet ground; no empty-land GLB under genesis |
+| **Chat keyboard** | WASD not stolen when chat/text focused |
+
+**Next graphics:** **P3** scene/landscape/shadow distance sliders → cull backends · **P4** bloom/HDR EffectComposer path.
+
+---
+
+## 🎉 Milestone — Graphics prefs P2 MSAA (2026-07-11)
+
+**Status: shipped on `dev-latest`** (via lastraum batch) — multisample main pass.
 
 | Control | Status | Backend |
 | ------- | ------ | ------- |
 | **MSAA** | 🟢 | Off / 2x / 4x / 8x via WebGL2 multisample `WebGLRenderTarget` → blit to canvas (`antialias: false` on context) |
-| **VSync** | 🟢 | Persisted preference; browsers still rAF-composite (no free-run tear) — Max FPS = display-aligned when On |
-| **Fullscreen** | 🟢 | `documentElement.requestFullscreen` + `fullscreenchange` sync |
+| **VSync** | — | Store default only; **UI hidden** (browser rAF limit) |
+| **Fullscreen** | ⬜ | Preferences stub |
 
-**Presets:** Low 0× · Medium/High 4× · Ultra 8× (clamped to `renderer.capabilities.maxSamples`).
+**Presets (store):** Low 0× · Medium/High 4× · Ultra 8× (clamped to `renderer.capabilities.maxSamples`). Preferences offers Low/Medium/High only.
 
-**QA:** P → Graphics → MSAA Off vs 8x (edges on buildings/sky); Fullscreen Esc exit; Low preset forces MSAA Off.
+**QA:** P → Graphics → MSAA Off vs 8x (edges on buildings/sky); Low preset forces MSAA Off.
 
 ---
 
@@ -81,21 +121,21 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 
 | Control | Status | Backend |
 | ------- | ------ | ------- |
-| **Graphics Preset** | 🟢 | Low / Medium / High / Ultra / Custom → `renderQuality` bundle |
+| **Graphics Preset** | 🟢 | Low / Medium / High (+ Custom) → `renderQuality` bundle |
 | **Shadows Quality** | 🟢 | Off + Low→Ultra map size / soft radius; sun + spots |
 | **Enable Scene Lights** | 🟢 | `LightManager` master switch |
 | **Max Lights in a Scene** | 🟢 | Cap 0–20 (preset defaults 4/6/10/16) |
 | **Resolution Scale** | 🟢 | `devicePixelRatio × scale%` (50–200%) |
 | **FPS Limit** | 🟢 | 30 / 60 / 120 / Max — throttle in `SceneHost` |
 | **FOV + lighting sliders** | 🟢 | already live |
-| **MSAA / VSync / Fullscreen** | 🟢 | see **P2** milestone above |
+| **MSAA** | 🟢 | see **P2** milestone above |
 | **Bloom / HDR / distances** | ⬜ | labeled stubs only |
 
 **Persist:** `localStorage` key `dcl-render-quality`. Auto perf defaults skip when user has saved prefs.
 
 **Files:** `RenderQualitySettings.ts`, `SceneHost.ts`, `LightManager.ts`, `directionalSunShadow.ts`, `spotLightShadow.ts`, `GraphicsSettingsView.ts`, `detectPerformanceTier.ts`
 
-**QA:** P → Graphics — switch Low vs Ultra (pixel ratio + FPS); Off shadows; Max lights 0; toggle scene lights; confirm Custom when diverging; Debug panel tier still works.
+**QA:** P → Graphics — switch Low vs High (pixel ratio + FPS); Off shadows; Max lights 0; toggle scene lights; confirm Custom when diverging; Debug panel tier still works.
 
 ---
 
@@ -123,7 +163,7 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **MOVE CAMERA** edit-flight residual | Avatar freeze OK; WASD/STOP still shim-debt — [ARCHITECTURE_AND_TECH_DEBT](./ARCHITECTURE_AND_TECH_DEBT.md) |
 | **Sun intensity / directional shadows** | **Addressed on `dev-latest` post-release** — see [Unity lighting + moon parity](#-milestone--unity-lighting--moon-parity-2026-07-11) |
 | **Watch Lite / `/goto`** | Companion Phase 3–4 still open |
-| **Graphics post-FX stubs** | Bloom/HDR still UI-only; **MSAA + VSync + Fullscreen** live (P2); preset/shadows/lights/res/FPS live |
+| **Graphics post-FX stubs** | Bloom/HDR still UI-only; **MSAA** live (P2); VSync hidden; Fullscreen stub; preset/shadows/lights/res/FPS live |
 
 ### Smoke (pre-cut)
 
@@ -469,7 +509,7 @@ Genesis spawn walk · VC character-select/follow · `threejs.dcl.eth` materials 
 | **Skybox clouds** | ✅ | HDR cloud gradient tint + screen brighten + sun-facing lift; `toneMapped: false` on sky shader |
 | **Scene GLTF emissives** | 🟡 **partial** | DCL model: clamp emissive RGB → `emissiveIntensity` (KHR strength 2–80+); named neon mats (`LightLED`, etc.) — **decent, room to improve** |
 | **Baked emissive maps** | ✅ | Floor/wall bake mats skipped — no blowout |
-| **Graphics quality prefs** | 🟢 | Preset, shadows, lights, res scale, FPS, MSAA, VSync, Fullscreen live; bloom/HDR stubs |
+| **Graphics quality prefs** | 🟢 | Preset L/M/H, shadows, lights, res scale, FPS, MSAA live; VSync hidden; Fullscreen stub; bloom/HDR stubs |
 | **Custom skybox worlds** | 🟡 | User sliders affect Genesis path only; cubemap `/about` scenes hide `DclGenesisSky` |
 
 **Files:** `PreferencesPanel.ts`, `SunEnvironmentSettings.ts`, `DclGenesisSky.ts`, `EnvironmentSystem.ts`, `sceneGltfEmissives.ts`, `GraphicsSettingsView.ts`
@@ -763,7 +803,7 @@ mrdoob **stats.js** panel top-center — closes out Phase 0 perf/viewer checkmar
 | **Now** | PhysX player grounding + capsule debug | ✅ feet on y=0; bone-based pivot; debug panel toggles |
 | **Now** | Sun / ECS hybrid + ACES exposure | ✅ hybrid dim + tier exposure; user day/night exposure sliders |
 | **Now** | Scene GLTF neon / LED emissives | 🟡 DCL color×intensity split — warm LEDs at night; not full Explorer parity |
-| **Now** | Preferences → Graphics quality + lighting | 🟢 preset/shadows/lights/res/FPS/MSAA/VSync + 4 lighting sliders; bloom/HDR stubs |
+| **Now** | Preferences → Graphics quality + lighting | 🟢 preset/shadows/lights/res/FPS/MSAA + 4 lighting sliders on `dev-latest`; bloom/HDR/distances stubs |
 | **Pre-live** | Emote GLB props | ✅ `SkeletonUtils.clone` + scene-emote URNs (2026-06-13) |
 | Full Explorer ShaderGraph parity (bloom, dual sun logo) | ⬜ polish |
 | Per-layer cloud tint gradients (Explorer Far/Near) | ⬜ single global `uCloudsColor` today |

@@ -34,9 +34,30 @@ function authSiteBase(): string {
   return AUTH_SITE_URL.replace(/\/+$/, '')
 }
 
-/** Build official auth dapp URL — same shape as Explorer. */
+/**
+ * Build official auth dapp URL.
+ *
+ * After the user approves the request, auth-site chooses between:
+ * - Explorer flow (`skipSetup`): auto-opens the desktop app via `decentraland://`
+ * - Web flow: "Sign in complete — close this window" only
+ *
+ * `skipSetup` is true when targetConfig says so, OR when the
+ * ONBOARDING_TO_EXPLORER flag is on and there is no "explicit" redirect
+ * (internal `/auth/requests/…` alone counts as non-explicit). That matches
+ * Explorer, but opens the DCL client for our poll-only web client.
+ *
+ * Passing `redirectTo=/` on the request URL is treated as an explicit
+ * non-auth redirect, so skipSetup stays false and success does not deep-link.
+ * We still land on the request page (path is `/auth/requests/{id}`) and poll
+ * auth-api from this app for the signature.
+ */
 export function buildAuthLoginUrl(requestId: string, loginMethod: AuthDappLoginMethod): string {
-  const redirectPath = `/auth/requests/${requestId}?targetConfigId=default`
+  const requestQuery = new URLSearchParams({
+    targetConfigId: 'default',
+    // Sentinel for auth-site useSkipSetup / hasExplicitRedirect — do not remove.
+    redirectTo: '/'
+  })
+  const redirectPath = `/auth/requests/${requestId}?${requestQuery.toString()}`
   const params = new URLSearchParams({
     redirectTo: redirectPath,
     loginMethod
@@ -131,15 +152,24 @@ function extractSignature(result: unknown): string {
   throw new Error('Auth dapp returned an unexpected signature payload')
 }
 
+/**
+ * Emit auth UI progress. Only include `verificationCode` when the caller
+ * passes it — intermediate status lines must not wipe a code already shown.
+ * Pass `null` explicitly to clear the code (e.g. after success).
+ */
 function emitProgress(
   onStatus: StatusCallback | AuthProgressCallback | undefined,
   message: string,
   verificationCode?: number | null
 ): void {
   if (!onStatus) return
+  const progress: { message: string; verificationCode?: number | null } = { message }
+  if (verificationCode !== undefined) {
+    progress.verificationCode = verificationCode
+  }
   // Always pass AuthProgress — UI handlers accept this shape; string-only
   // handlers (MetaMask) are not used on this path.
-  ;(onStatus as AuthProgressCallback)({ message, verificationCode: verificationCode ?? null })
+  ;(onStatus as AuthProgressCallback)(progress)
 }
 
 /**
@@ -150,25 +180,28 @@ function emitProgress(
  * 3. Open `decentraland.org/auth/login?loginMethod=…&redirectTo=/auth/requests/{id}`
  * 4. Poll GET `/requests/{id}` until signature + sender (204 = still pending)
  * 5. Build DCL AuthChain identity (same as wallet MetaMask path)
+ *
+ * Note: do not abort when `authTab.closed` is true — auth.dapp COOP often
+ * detaches the opener so `closed` is a false positive while the tab is open.
+ * Wait on auth-api until the user confirms or the request expires.
  */
 export async function loginWithAuthDapp(
   loginMethod: AuthDappLoginMethod,
   onStatus?: StatusCallback | AuthProgressCallback
 ): Promise<LoginResult> {
-  const abort = new AbortController()
   let authTab: Window | null = null
-  let closedPoll: number | null = null
+  let codePulse: number | null = null
 
   const progress = (message: string, verificationCode?: number | null) =>
     emitProgress(onStatus, message, verificationCode)
 
   try {
-    progress('Preparing secure login…', null)
+    progress('Preparing secure login…')
     const ephemeral = createUnsafeIdentity()
     const expiration = new Date(Date.now() + IDENTITY_TTL_MS)
     const ephemeralMessage = Authenticator.getEphemeralMessage(ephemeral.address, expiration)
 
-    progress('Opening Decentraland login…', null)
+    progress('Opening Decentraland login…')
     // Open blank tab on the user gesture first (avoids blockers after await).
     authTab = openAuthTab('about:blank')
 
@@ -190,30 +223,23 @@ export async function loginWithAuthDapp(
       throw new Error('Tab blocked — allow popups/tabs for this site and try again')
     }
 
-    // Show the same verification number the auth tab displays (Explorer parity).
+    // Same verification number the auth tab displays (Explorer parity).
     progress(
       'Does this number match the one in the login tab? Tap Yes there when it does.',
       code
     )
 
-    closedPoll = window.setInterval(() => {
-      if (authTab?.closed) abort.abort()
-    }, 800)
-
-    // Keep re-emitting code while waiting so UI stays in sync if menu re-renders.
-    const codePulse = window.setInterval(() => {
-      if (abort.signal.aborted) return
-      progress(
-        'Waiting for confirmation in the login tab…',
-        code
-      )
-    }, 4000)
+    // Re-emit code while waiting so the modal stays in sync if it re-renders.
+    codePulse = window.setInterval(() => {
+      progress('Waiting for confirmation in the login tab…', code)
+    }, 2000)
 
     let outcome: PollOutcome
     try {
-      outcome = await pollSignOutcome(created.requestId, created.expiration, abort.signal)
+      outcome = await pollSignOutcome(created.requestId, created.expiration)
     } finally {
-      window.clearInterval(codePulse)
+      if (codePulse != null) window.clearInterval(codePulse)
+      codePulse = null
     }
 
     if (outcome.error) {
@@ -244,11 +270,9 @@ export async function loginWithAuthDapp(
     progress('Identity created ✓', null)
     writeStoredIdentity(sender, identity)
     return { kind: 'wallet', address: sender, identity }
-  } catch (err) {
-    if (abort.signal.aborted) throw new Error('Login tab closed')
-    throw err
   } finally {
-    if (closedPoll != null) window.clearInterval(closedPoll)
+    if (codePulse != null) window.clearInterval(codePulse)
+    // Best-effort close — COOP may make this a no-op; leave tab if we can't.
     try {
       if (authTab && !authTab.closed) authTab.close()
     } catch {

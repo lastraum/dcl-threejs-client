@@ -229,6 +229,12 @@ export class SocialProfileMenu {
       <div class="social-profile-menu__section">
         <p class="social-profile-menu__hint">Log in with Google, Discord, Apple, X, or a wallet — same as Explorer.</p>
         <p class="social-profile-menu__status" data-signin-status hidden></p>
+        <div class="explorer-auth-verify social-profile-menu__verify" data-verify hidden>
+          <p class="explorer-auth-verify__label">Verify Sign In</p>
+          <p class="explorer-auth-verify__hint">Does this number match the one in the login tab?</p>
+          <p class="explorer-auth-verify__code" data-verify-code aria-live="polite">—</p>
+          <p class="explorer-auth-verify__wait">Waiting for confirmation…</p>
+        </div>
         <button type="button" class="social-profile-menu__wallet-btn" data-login-method="google" ${disabled}>
           <span class="social-profile-menu__wallet-btn-icon" aria-hidden="true">${ICON_GOOGLE}</span>
           <span>Continue with Google</span>
@@ -243,12 +249,6 @@ export class SocialProfileMenu {
           <button type="button" class="social-profile-menu__provider-btn" data-login-method="apple" title="Apple" aria-label="Apple" ${disabled}>${ICON_APPLE}</button>
           <button type="button" class="social-profile-menu__provider-btn" data-login-method="x" title="X" aria-label="X" ${disabled}>${ICON_X}</button>
           <button type="button" class="social-profile-menu__provider-btn" data-login-method="wallet-connect" title="WalletConnect" aria-label="WalletConnect" ${disabled}>${ICON_WALLET_CONNECT}</button>
-        </div>
-        <div class="explorer-auth-verify social-profile-menu__verify" data-verify hidden>
-          <p class="explorer-auth-verify__label">Verify Sign In</p>
-          <p class="explorer-auth-verify__hint">Does this number match the one in the login tab?</p>
-          <p class="explorer-auth-verify__code" data-verify-code aria-live="polite">—</p>
-          <p class="explorer-auth-verify__wait">Waiting for confirmation…</p>
         </div>
         <button type="button" class="social-profile-menu__ghost-btn" data-guest ${disabled}>
           Continue as Guest
@@ -394,12 +394,14 @@ export class SocialProfileMenu {
               throw err
             })
           : await loginWithProvider(method, this.onAuthProgress)
+      this.setVerifyCode(null)
       this.onLoginChange?.(result)
       this.setLogin(result)
       this.close()
     } catch (err) {
+      // Keep verification code visible if we already have one — user may still
+      // need it, or retry after a transient error.
       const msg = err instanceof Error ? err.message : String(err)
-      this.setVerifyCode(null)
       this.setSignInStatus(msg, true)
       for (const btn of this.menuBody.querySelectorAll('button')) {
         ;(btn as HTMLButtonElement).disabled = false

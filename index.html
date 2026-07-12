@@ -7762,6 +7762,45 @@
       .social-chat-dock--thread-open .social-chat-dock__status {
         display: none;
       }
+      /* Guest "Sign in to chat": center the pill in the panel, keep close caret. */
+      .social-chat-dock__guest-close {
+        display: none;
+        flex-shrink: 0;
+        align-self: flex-end;
+        width: 32px;
+        height: 28px;
+        margin: 8px 12px 0 0;
+        border: none;
+        border-radius: 8px;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.72);
+        font-size: 18px;
+        line-height: 1;
+        cursor: pointer;
+        font-family: inherit;
+        pointer-events: auto;
+      }
+      .social-chat-dock__guest-close:hover {
+        color: #fff;
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .social-chat-dock__guest-close[hidden] {
+        display: none !important;
+      }
+      .social-chat-dock--guest-prompt .social-chat-dock__guest-close {
+        display: block;
+      }
+      .social-chat-dock--guest-prompt .social-chat-dock__body {
+        display: none !important;
+      }
+      .social-chat-dock--guest-prompt .social-chat-dock__status {
+        display: block;
+        flex: 0 0 auto;
+        margin: auto 16px;
+      }
+      .social-chat-dock--thread-open.social-chat-dock--guest-prompt .social-chat-dock__status {
+        display: block;
+      }
       .social-chat-dock__thread-header {
         flex-shrink: 0;
         display: flex;

@@ -8151,13 +8151,15 @@
         body.social-shell-with-chat {
           --social-chat-dock-width: 0;
         }
+        /* Mobile has no chat rail — keep horizontal content inset (was 0 and clipped cards). */
         body.social-shell-with-chat .explorer-view__main,
         body.social-shell-with-chat .events-page-view__main,
         body.social-shell-with-chat .communities-page-view__main,
         body.social-shell-with-chat .map-page-view__main,
         body.social-shell-with-chat .profile-page-view__main,
         body.social-shell-with-chat .scene-landing-view__main {
-          padding-right: 0 !important;
+          padding-right: max(16px, env(safe-area-inset-right, 0px)) !important;
+          padding-left: max(16px, env(safe-area-inset-left, 0px));
         }
         body.social-chat-mobile-open {
           overflow: hidden;

@@ -8167,20 +8167,115 @@
         border: 1px solid rgba(255, 255, 255, 0.12);
         transition: background 0.15s;
       }
+      .explorer-auth-panel__btn:disabled {
+        opacity: 0.55;
+        cursor: wait;
+      }
       .explorer-auth-panel__btn--primary {
         background: rgba(255, 45, 85, 0.25);
         border-color: rgba(255, 45, 85, 0.45);
         color: #fff;
       }
-      .explorer-auth-panel__btn--primary:hover {
+      .explorer-auth-panel__btn--primary:hover:not(:disabled) {
         background: rgba(255, 45, 85, 0.38);
+      }
+      .explorer-auth-panel__btn--social {
+        background: rgba(72, 36, 120, 0.85);
+        border-color: rgba(255, 255, 255, 0.12);
+        color: #fff;
+      }
+      .explorer-auth-panel__btn--social:hover:not(:disabled) {
+        background: rgba(90, 48, 150, 0.95);
       }
       .explorer-auth-panel__btn--ghost {
         background: rgba(255, 255, 255, 0.06);
         color: rgba(255, 255, 255, 0.88);
+        margin-top: 12px;
       }
-      .explorer-auth-panel__btn--ghost:hover {
+      .explorer-auth-panel__btn--ghost:hover:not(:disabled) {
         background: rgba(255, 255, 255, 0.12);
+      }
+      .explorer-auth-panel__btn-icon {
+        display: inline-flex;
+        width: 22px;
+        height: 22px;
+        align-items: center;
+        justify-content: center;
+      }
+      .explorer-auth-panel__btn-icon svg {
+        display: block;
+      }
+      .explorer-auth-panel__divider {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin: 16px 0 10px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: lowercase;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .explorer-auth-panel__divider::before,
+      .explorer-auth-panel__divider::after {
+        content: '';
+        flex: 1;
+        height: 1px;
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .explorer-auth-panel__more-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        width: 100%;
+        margin: 0 0 10px;
+        padding: 8px;
+        border: none;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+      .explorer-auth-panel__more-toggle:hover {
+        color: #fff;
+      }
+      .explorer-auth-panel__chevron {
+        display: inline-block;
+        transition: transform 0.15s ease;
+      }
+      .explorer-auth-panel__more-toggle.is-open .explorer-auth-panel__chevron {
+        transform: rotate(180deg);
+      }
+      .explorer-auth-panel__icon-row {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 10px;
+        margin-bottom: 4px;
+      }
+      .explorer-auth-panel__icon-btn {
+        width: 48px;
+        height: 48px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(72, 36, 120, 0.9);
+        color: #fff;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .explorer-auth-panel__icon-btn:hover:not(:disabled) {
+        background: rgba(100, 52, 160, 0.95);
+      }
+      .explorer-auth-panel__icon-btn:disabled {
+        opacity: 0.55;
+        cursor: wait;
       }
       .explorer-view__main {
         flex: 1;

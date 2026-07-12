@@ -10,12 +10,24 @@ import {
   signPersonalMessage
 } from './ethereumProvider'
 import { ensureMetaMaskProvider, shouldUseMetaMaskSdk } from './metaMaskSdk'
+import { loginWithAuthDapp } from './authDappLogin'
+import type { AuthDappLoginMethod } from './constants'
 
 export type LoginResult =
   | { kind: 'guest' }
   | { kind: 'wallet'; address: string; identity: AuthIdentity }
 
 export type StatusCallback = (msg: string) => void
+
+export type { AuthDappLoginMethod }
+
+/** Social / WalletConnect / etc. via decentraland.org/auth popup + auth-api. */
+export async function loginWithProvider(
+  method: AuthDappLoginMethod,
+  onStatus?: StatusCallback
+): Promise<LoginResult> {
+  return loginWithAuthDapp(method, onStatus)
+}
 
 async function createWalletIdentity(
   address: string,

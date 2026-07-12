@@ -29,11 +29,7 @@ import { applySceneDiff, type ApplySceneDiffOptions } from './entityStoreApply'
 import { disposeOwnedObject3D } from '../rendering/sharedAsset'
 import { enableSceneGltfVertexColors } from '../rendering/LandscapeAssetSanitizer'
 import { cloneGltfInstance } from '../rendering/skinnedMeshInstance'
-import {
-  SceneGltfInstancer,
-  templateHasInvisibleColliders,
-  templateIsInstancable
-} from '../rendering/SceneGltfInstancer'
+import { SceneGltfInstancer, templateIsInstancable } from '../rendering/SceneGltfInstancer'
 
 function materialReferencesVideoPlayer(pb: PbMaterial, videoPlayerEntity: Entity): boolean {
   const materialCase = pb.material?.$case
@@ -1333,7 +1329,7 @@ export class ThreeBridge {
     const attachedTris = (obj.userData.dclAttachedTris as number | undefined) ?? 0
     let removedGltf = false
     if (obj.userData.dclInstanced) {
-      this.instancer.detach(entity)
+      this.instancer.detach(entity, obj)
       delete obj.userData.dclInstanced
       delete obj.userData.dclInstanceTemplateTris
       removedGltf = true
@@ -1459,12 +1455,10 @@ export class ThreeBridge {
   ): boolean {
     // Skinned / Animator need full clone + mixer rebind.
     if (this.ecs.Animator.has(entity)) return false
-    // PointerEvents / MeshCollider need `_collider` meshes in the entity graph for raycast/PhysX.
-    // Instancing only stores GPU matrices — no per-entity collider meshes (broke character select picks).
+    // PointerEvents / MeshCollider need live meshes in the entity graph (raycast / ECS MeshCollider).
+    // GLB `_collider` physics uses template shapes + entity pose (see InstanceColliderShape).
     if (this.ecs.PointerEvents.has(entity)) return false
     if (this.ecs.MeshCollider.has(entity)) return false
-    // GLB-embedded invisible colliders (Genesis buildings) — must clone so PhysX can extract.
-    if (templateHasInvisibleColliders(template.root)) return false
     return templateIsInstancable(template.root)
   }
 
@@ -1483,7 +1477,7 @@ export class ThreeBridge {
       // Static multi-instance path (parcel tiles, props) — no SkeletonUtils.clone.
       if (this.canInstanceAttach(entity, template)) {
         // Drop prior instance if re-attaching with new src
-        if (obj.userData.dclInstanced) this.instancer.detach(entity)
+        if (obj.userData.dclInstanced) this.instancer.detach(entity, obj)
         const result = this.instancer.attach(entity, obj, hash, template.root, mk)
         if (result.ok) {
           obj.userData.gltfSrcKey = srcKey
@@ -1610,7 +1604,7 @@ export class ThreeBridge {
 
       if (!mesh || obj.userData.gltfSrcKey !== srcKey) {
         if (obj.userData.dclInstanced) {
-          this.instancer.detach(entity)
+          this.instancer.detach(entity, obj)
           delete obj.userData.dclInstanced
         }
         if (mesh) {

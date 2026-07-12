@@ -6,6 +6,10 @@ import type { PhysicsColliderDesc, PhysicsColliderShapeDesc } from '../physics/P
 import { physxColliderDebug } from '../debug/PhysxColliderDebug'
 import { ColliderLayer, hasColliderLayer } from './ColliderLayer'
 import { isGltfInvisibleColliderMesh, isGltfVisibleClassMesh } from './gltfColliderNaming'
+import {
+  INSTANCE_COLLIDER_SHAPES_KEY,
+  type InstanceColliderShape
+} from '../rendering/SceneGltfInstancer'
 import { bakeTrimeshGeometry } from '../physics/bakeTrimeshGeometry'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import {
@@ -177,9 +181,27 @@ export class GltfColliderExtractor {
       return true
     }
 
-    const desc = this.extractColliderDesc(entity, gltfMesh, obj, hasVisiblePhysics, hasInvisiblePhysics)
+    // Instanced GLBs: no mesh graph — use template collider shapes + entity world pose.
+    const instanceShapes = obj.userData[INSTANCE_COLLIDER_SHAPES_KEY] as
+      | InstanceColliderShape[]
+      | undefined
+    const desc = instanceShapes?.length
+      ? this.extractColliderDescFromInstanceShapes(
+          entity,
+          obj,
+          instanceShapes,
+          hasVisiblePhysics,
+          hasInvisiblePhysics
+        )
+      : this.extractColliderDesc(entity, gltfMesh, obj, hasVisiblePhysics, hasInvisiblePhysics)
 
-    if (!desc && !hasVisiblePhysics && !hasInvisiblePhysics && !hasAnyInvisibleColliderMesh(gltfMesh)) {
+    if (
+      !desc &&
+      !hasVisiblePhysics &&
+      !hasInvisiblePhysics &&
+      !instanceShapes?.length &&
+      !hasAnyInvisibleColliderMesh(gltfMesh)
+    ) {
       this.removeColliderEntity(entity)
       return true
     }
@@ -917,6 +939,42 @@ export class GltfColliderExtractor {
       kind: 'gltf-multi',
       // v3 — entity-local baked geometry + relative per-shape pose slides (Animator walk surfaces).
       fingerprint: `gltf-entity:v3:${entity}:${geomKey}`,
+      matrix: entityObj.matrixWorld.clone(),
+      shapes
+    }
+  }
+
+  /**
+   * Instanced GLB path — shapes from shared template (entity-local), actor at entity world pose.
+   * Same geometry fingerprint across instances so PhysX can reuse cooked trimeshes.
+   */
+  private extractColliderDescFromInstanceShapes(
+    entity: Entity,
+    entityObj: THREE.Object3D,
+    instanceShapes: InstanceColliderShape[],
+    hasVisiblePhysics: boolean,
+    hasInvisiblePhysics: boolean
+  ): PhysicsColliderDesc | null {
+    const shapes: PhysicsColliderShapeDesc[] = []
+    for (const shape of instanceShapes) {
+      if (shape.kind === 'inv' && !hasInvisiblePhysics) continue
+      if (shape.kind === 'vis' && !hasVisiblePhysics) continue
+      if (shape.kind === 'unnamed' && !hasVisiblePhysics) continue
+      shapes.push({
+        fingerprint: shape.fingerprint,
+        geometry: shape.geometry,
+        localMatrix: shape.localMatrix
+      })
+    }
+    if (!shapes.length) return null
+
+    entityObj.updateMatrixWorld(true)
+    const geomKey = shapes.map((s) => s.fingerprint).join('|')
+    return {
+      entity: GLTF_COLLIDER_ENTITY_BASE + entity,
+      kind: 'gltf-multi',
+      // Shared geom key (no entity id) — cook cache reuses trimeshes across instances.
+      fingerprint: `gltf-entity:v3-inst:${geomKey}`,
       matrix: entityObj.matrixWorld.clone(),
       shapes
     }

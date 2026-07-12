@@ -2,12 +2,18 @@ import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
 import {
   isGltfInvisibleColliderMesh,
-  isGltfInvisibleColliderName
+  isGltfInvisibleColliderName,
+  isGltfVisibleClassMesh
 } from '../collision/gltfColliderNaming'
+import type { PhysicsColliderShapeDesc } from '../physics/PhysXWorld'
 
 /**
  * GPU instancing for scene GltfContainers that share a content hash.
  * Static (non-skinned) templates only — skinned / Animator entities stay on SkeletonUtils.clone.
+ *
+ * Dual path for colliders: render leaves go to InstancedMesh; `_collider` shapes are collected
+ * once from the template (entity-local matrices) and stored on the entity so PhysX can place a
+ * unique actor per instance without cloning the full GLB.
  *
  * GltfNodeModifiers (future): promote instance → private clone on first modifier write
  * so edits never mutate sibling instances.
@@ -19,9 +25,19 @@ export type InstancerMeshLeaf = {
   localMatrix: THREE.Matrix4
 }
 
+/** Template collider leaf — entity-local pose; actor world pose is entity.matrixWorld. */
+export type InstanceColliderShape = PhysicsColliderShapeDesc & {
+  /** Matches GltfColliderExtractor inv/vis filter. */
+  kind: 'inv' | 'vis' | 'unnamed'
+}
+
+export const INSTANCE_COLLIDER_SHAPES_KEY = 'dclInstanceColliderShapes'
+
 type Bucket = {
   hash: string
   leaves: InstancerMeshLeaf[]
+  /** Shared collider template for all entities in this bucket. */
+  colliderShapes: InstanceColliderShape[]
   meshes: THREE.InstancedMesh[]
   /** entity → slot index */
   entityIndex: Map<Entity, number>
@@ -35,6 +51,7 @@ type Bucket = {
 
 const _entityWorld = new THREE.Matrix4()
 const _instance = new THREE.Matrix4()
+const _shapeLocal = new THREE.Matrix4()
 
 export function templateIsInstancable(root: THREE.Object3D): boolean {
   let hasRenderMesh = false
@@ -54,22 +71,41 @@ export function templateIsInstancable(root: THREE.Object3D): boolean {
 }
 
 /**
- * Templates with embedded `_collider` meshes cannot be GPU-instanced — PhysX extract
- * walks the entity graph, and instancing only places a marker (no collider geometry).
+ * Collect `_collider` / visible-physics leaves once per content hash (entity-local matrices).
+ * PhysX places one actor per instance using these shapes + that entity's matrixWorld.
  */
-export function templateHasInvisibleColliders(root: THREE.Object3D): boolean {
-  let found = false
+export function collectTemplateColliderShapes(
+  root: THREE.Object3D,
+  contentHash: string
+): InstanceColliderShape[] {
+  const out: InstanceColliderShape[] = []
+  root.updateMatrixWorld(true)
+  const rootInv = new THREE.Matrix4().copy(root.matrixWorld).invert()
+
   root.traverse((node) => {
-    if (found) return
-    if (isGltfInvisibleColliderName(node.name)) {
-      found = true
-      return
-    }
-    if ((node as THREE.Mesh).isMesh && isGltfInvisibleColliderMesh(node as THREE.Mesh, root)) {
-      found = true
-    }
+    if (!(node instanceof THREE.Mesh)) return
+    if ((node as THREE.SkinnedMesh).isSkinnedMesh) return
+
+    let kind: InstanceColliderShape['kind'] | null = null
+    if (isGltfVisibleClassMesh(node)) kind = 'vis'
+    else if (isGltfInvisibleColliderMesh(node, root)) kind = 'inv'
+    else if (node.name.length === 0) kind = 'unnamed'
+    else return
+
+    const sourceGeo = node.geometry
+    const posAttr = sourceGeo?.getAttribute('position')
+    if (!posAttr || posAttr.count < 3) return
+
+    node.updateMatrixWorld(true)
+    _shapeLocal.copy(node.matrixWorld).premultiply(rootInv)
+    out.push({
+      fingerprint: `gltf:${kind}:inst:${contentHash}:${out.length}:${node.name}:${sourceGeo.uuid}`,
+      geometry: sourceGeo,
+      localMatrix: _shapeLocal.clone(),
+      kind
+    })
   })
-  return found
+  return out
 }
 
 /** Collect render mesh leaves (shared geometry/materials) relative to template root. */
@@ -126,7 +162,8 @@ export class SceneGltfInstancer {
     if (!bucket) {
       const leaves = collectInstancerLeaves(templateRoot)
       if (!leaves.length) return { ok: false, templateTris: 0 }
-      bucket = this.createBucket(hash, leaves)
+      const colliderShapes = collectTemplateColliderShapes(templateRoot, hash)
+      bucket = this.createBucket(hash, leaves, colliderShapes)
       this.buckets.set(hash, bucket)
     }
 
@@ -141,6 +178,8 @@ export class SceneGltfInstancer {
     entityObj.add(marker)
     entityObj.userData.dclInstanced = true
     entityObj.userData.gltfSrcKey = hash
+    // Shared template colliders — PhysX places one actor per entity at matrixWorld.
+    entityObj.userData[INSTANCE_COLLIDER_SHAPES_KEY] = bucket.colliderShapes
 
     this.writeMatrix(bucket, index, entityObj)
 
@@ -216,11 +255,15 @@ export class SceneGltfInstancer {
     }
   }
 
-  detach(entity: Entity): void {
+  detach(entity: Entity, entityObj?: THREE.Group): void {
     const hash = this.entityHash.get(entity)
     if (!hash) return
     const bucket = this.buckets.get(hash)
     this.entityHash.delete(entity)
+    if (entityObj) {
+      delete entityObj.userData.dclInstanced
+      delete entityObj.userData[INSTANCE_COLLIDER_SHAPES_KEY]
+    }
     if (!bucket) return
     const index = bucket.entityIndex.get(entity)
     if (index === undefined) return
@@ -237,12 +280,21 @@ export class SceneGltfInstancer {
     }
   }
 
+  /** Content hash for an instanced entity (if any). */
+  getEntityHash(entity: Entity): string | undefined {
+    return this.entityHash.get(entity)
+  }
+
   dispose(): void {
     for (const hash of [...this.buckets.keys()]) this.disposeBucket(hash)
     this.entityHash.clear()
   }
 
-  private createBucket(hash: string, leaves: InstancerMeshLeaf[]): Bucket {
+  private createBucket(
+    hash: string,
+    leaves: InstancerMeshLeaf[],
+    colliderShapes: InstanceColliderShape[]
+  ): Bucket {
     const capacity = 32
     const root = new THREE.Group()
     root.name = `gltf-instances:${hash.slice(0, 16)}`
@@ -269,6 +321,7 @@ export class SceneGltfInstancer {
     return {
       hash,
       leaves,
+      colliderShapes,
       meshes,
       entityIndex: new Map(),
       free: [],

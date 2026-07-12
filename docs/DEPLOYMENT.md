@@ -155,7 +155,7 @@ flowchart TB
     Gatekeeper[Gatekeeper get-scene-adapter]
     LiveKit[LiveKit WSS rooms]
     Auth[auth-api.decentraland.org]
-    Map[genesis.city tiles + archipelago peers]
+    Map[Genesis map tiles GitHub LFS + archipelago peers]
     Events[events.decentraland.org]
     Social[social-api.decentraland.org]
   end
@@ -186,7 +186,10 @@ Upload `dist/` to Cloudflare Pages, Netlify, S3+CloudFront, GitHub Pages, etc.
 2. **Correct MIME** — `.wasm` → `application/wasm`, `.js` → `application/javascript`
 3. **HTTPS** — required for wallet + LiveKit
 
-**CORS:** Most DCL APIs allow browser origins. Map tiles load from `https://genesis.city` (images). If any API blocks your domain, use Option B proxies.
+**CORS:** Most DCL APIs allow browser origins. Map tiles load from GitHub LFS media
+(`media.githubusercontent.com/.../genesis.city/.../map/latest`) — same images as
+genesis.city, valid TLS. Override with `VITE_GENESIS_TILE_BASE_URL` if needed.
+If any API blocks your domain, use Option B proxies.
 
 ### Option B — Static SPA + nginx proxies (recommended)
 

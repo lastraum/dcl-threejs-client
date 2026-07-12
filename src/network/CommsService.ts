@@ -370,17 +370,33 @@ export class CommsService {
       this.adapterManager.setContentUrl(this.contentUrl)
     }
     const hint = this.realmCommsHint || this.realm.commsAdapter
-    if (!hint) return false
+    if (!hint) {
+      clientDebugLog.log(
+        'network',
+        'Realm comms adapter missing — Genesis island peers will not connect (no archipelago)',
+        { level: 'error', alsoConsole: true }
+      )
+      return false
+    }
 
     const parsed = this.adapterManager.parse(hint)
     clientDebugLog.log(
-      'comms',
-      `Realm comms adapter · ${parsed?.kind ?? 'unknown'} ${hint.slice(0, 64)}`,
-      { level: 'info' }
+      'network',
+      `Realm comms adapter · ${parsed?.kind ?? 'unknown'} · ${hint.slice(0, 80)}`,
+      { level: 'info', alsoConsole: true }
     )
 
     const connected = await this.adapterManager.connect(hint, 'world')
     this.worldConnected = this.worldLiveKit.isConnected()
+    if (parsed?.kind === 'archipelago') {
+      clientDebugLog.log(
+        'network',
+        connected
+          ? 'Archipelago control plane connecting (island LiveKit follows islandChanged)…'
+          : 'Archipelago connect failed',
+        { level: connected ? 'success' : 'error', alsoConsole: true }
+      )
+    }
     return connected
   }
 
@@ -817,9 +833,13 @@ export class CommsService {
     }
     const connected = await this.islandLiveKit.connect(connStr)
     this.islandConnected = connected
-    if (connected) {
-      clientDebugLog.log('comms', 'Island LiveKit connected (archipelago)', { level: 'success' })
-    }
+    clientDebugLog.log(
+      'network',
+      connected
+        ? `Island LiveKit connected (archipelago) · remotes=${this.islandLiveKit.getRemotePeerAddresses().length}`
+        : 'Island LiveKit connect failed (archipelago)',
+      { level: connected ? 'success' : 'error', alsoConsole: true }
+    )
   }
 
   private async connectLiveKitLabel(

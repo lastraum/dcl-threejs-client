@@ -38,7 +38,15 @@ export class AdapterManager {
     if (!raw) return null
     if (raw.startsWith('fixed-adapter:')) raw = raw.slice('fixed-adapter:'.length)
     if (raw.startsWith('offline:') || raw === 'offline') return { kind: 'offline' }
-    if (raw.startsWith('archipelago:')) return { kind: 'archipelago', url: raw.slice('archipelago:'.length) }
+    // Realm-provider sometimes returns `archipelago:archipelago:wss://…` — strip all prefixes.
+    if (raw.startsWith('archipelago:') || raw.startsWith('wss://') || raw.startsWith('ws://')) {
+      while (raw.startsWith('archipelago:')) raw = raw.slice('archipelago:'.length)
+      if (raw.startsWith('wss://') || raw.startsWith('ws://')) {
+        return { kind: 'archipelago', url: raw }
+      }
+      // leftover host without scheme
+      if (raw.length > 0) return { kind: 'archipelago', url: raw }
+    }
     if (raw.startsWith('signed-login:')) return { kind: 'signed-login', url: raw.slice('signed-login:'.length) }
     if (isLiveKitAdapter(raw)) return { kind: 'livekit', adapter: raw }
     const ws = parseCommsAdapter(raw)

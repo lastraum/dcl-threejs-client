@@ -143,17 +143,18 @@ export class ArchipelagoClient {
         break
       }
       case 'welcome':
-        clientDebugLog.log('comms', `Archipelago welcome · peer=${message.welcome.peerId}`, {
-          level: 'success'
+        clientDebugLog.log('network', `Archipelago welcome · peer=${message.welcome.peerId}`, {
+          level: 'success',
+          alsoConsole: true
         })
         this.flushHeartbeat()
         break
       case 'islandChanged': {
         const change = message.islandChanged
         clientDebugLog.log(
-          'comms',
-          `Archipelago island → ${change.islandId} · conn=${change.connStr.slice(0, 32)}…`,
-          { level: 'success' }
+          'network',
+          `Archipelago island → ${change.islandId} · conn=${change.connStr.slice(0, 48)}…`,
+          { level: 'success', alsoConsole: true }
         )
         this.onIslandChanged?.({
           islandId: change.islandId,

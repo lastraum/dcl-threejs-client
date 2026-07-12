@@ -36,8 +36,6 @@ export class SceneHost {
     this.renderer.setPixelRatio(effectivePixelRatio(renderQuality.getResolutionScale()))
     this.renderer.setSize(window.innerWidth, window.innerHeight)
     this.renderer.setClearColor(0x1a1a2e)
-    this.applyRendererQuality(renderQuality.getOptions())
-    renderQuality.subscribe((options) => this.applyRendererQuality(options))
     container.appendChild(this.renderer.domElement)
 
     this.renderer.domElement.addEventListener('webglcontextlost', (e) => {
@@ -59,6 +57,10 @@ export class SceneHost {
     this.renderStats = new RenderStats()
     this.renderStats.attachRenderer(this.renderer, this.scene)
 
+    // Quality apply resizes the viewport — camera + nameTags must already exist.
+    this.applyRendererQuality(renderQuality.getOptions())
+    renderQuality.subscribe((options) => this.applyRendererQuality(options))
+
     clientSettings.subscribe((s) => {
       this.camera.fov = s.fov
       this.camera.updateProjectionMatrix()
@@ -79,10 +81,12 @@ export class SceneHost {
 
   setViewportSize(width: number, height: number): void {
     if (width < 1 || height < 1) return
-    this.camera.aspect = width / height
-    this.camera.updateProjectionMatrix()
+    if (this.camera) {
+      this.camera.aspect = width / height
+      this.camera.updateProjectionMatrix()
+    }
     this.renderer.setSize(width, height, false)
-    this.nameTags.setSize(width, height)
+    this.nameTags?.setSize(width, height)
     this.onViewportResize?.(width, height)
   }
 

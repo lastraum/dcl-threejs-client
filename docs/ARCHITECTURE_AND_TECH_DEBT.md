@@ -97,7 +97,7 @@ Expect WASD: gizmo moves; worker may log `scene-input-snapshot` with `?sceneinpu
 | **pollEvents defer while frozen** | Can hide side effects; STOP uses inject not pollEvents | Keep for now; re-evaluate if UI stalls |
 | **Async play-frame-tick vs rAF** | `player-frame` may land after `PlayerSystem.tick` same frame | Apply pending player-frame sync at start of locomotion tick |
 | **Ui mount vs DOM hit-map drift** | `hit map ≠ DOM` warnings; bad picks | Single authority: mount snapshot + yoga layout parity |
-| **Edit-flight InputModifier / VC shim leftover** | `inputModifierLocomotionGuard`, clear-block hooks, freeze latch reads, `vc-pose-live` + `playerEditFlightLiveLane`, flight reassert in `sceneWorker` still invent client policy around MOVE CAMERA | **After mesh revamp** — audit + strip to pure transport: scene owns freeze/clear/WASD→VC; shim only mirrors IM/MC and optional live Transform without blocking scene writes. See [PLAYER_FRAME_CHANNEL.md](./PLAYER_FRAME_CHANNEL.md). |
+| **Edit-flight InputModifier / VC shim leftover** | Latch/guards remain; 2026-07-11: flight pump works when MainCamera **bound** (MOVE lens preview) via `isWorkerMoveCameraFlightLatched` + bound VC target | Retest MOVE/WASD/STOP; then strip remaining invent-policy toward pure transport. See [PLAYER_FRAME_PROGRESS.md](./PLAYER_FRAME_PROGRESS.md). |
 
 ### P1 — Performance (Explorer-class browser budget)
 

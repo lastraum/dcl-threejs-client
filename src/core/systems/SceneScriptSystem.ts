@@ -2122,8 +2122,10 @@ export class SceneScriptSystem {
     const locomotion = readLocomotionFromComponents(this.readComponents, PlayerEntity)
     const vcUnbound =
       mainCam?.virtualCameraEntity === undefined || mainCam?.virtualCameraEntity === null
-    this.playerEditFlightLiveLane = !canLocomote(locomotion) && vcUnbound
-    if (vcUnbound && !this.playerEditFlightLiveLane) {
+    // MOVE CAMERA: frozen locomotion — accept vc-pose-live whether lens is bound or not.
+    // (Bound = preview through the VC being flown; unbound = free edit flight.)
+    this.playerEditFlightLiveLane = !canLocomote(locomotion)
+    if (vcUnbound && canLocomote(locomotion)) {
       this.projection.clearVcLiveTransformForUnbind()
       this.vcBindHydratePullPending = false
     }

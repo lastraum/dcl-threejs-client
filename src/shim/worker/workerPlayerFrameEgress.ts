@@ -124,6 +124,15 @@ export function isWorkerLocomotionFreezeLatched(): boolean {
   return locomotionFreezeLatch !== null
 }
 
+/** MOVE CAMERA edit-flight only (not menu lock-all / character-select freeze). */
+export function isWorkerMoveCameraFlightLatched(): boolean {
+  return locomotionFreezeLatch !== null && locomotionFreezeLatchSource === 'pointer-move'
+}
+
+export function getWorkerLocomotionFreezeLatchSource(): 'pointer-move' | 'scene' | null {
+  return locomotionFreezeLatchSource
+}
+
 export function isRefuseFreezeWrites(): boolean {
   return refuseFreezeWrites
 }

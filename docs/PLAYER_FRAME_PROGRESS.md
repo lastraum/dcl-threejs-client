@@ -4,15 +4,15 @@
 > Pointer/UI rules: `.cursor/rules/worker-input-architecture.mdc` (note: flight pump wording may be stale — see log below)
 
 **Started:** 2026-07-08  
-**Last updated:** 2026-07-11 (VC bind hydrate + PE-follow reliability)  
-**Branch:** `lastraum` → `dev-latest` ([#16](https://github.com/lastraum/dcl-threejs-client/pull/16))  
+**Last updated:** 2026-07-11 (MOVE CAMERA edit-flight: flight when lens bound)  
+**Branch:** `lastraum` / `dev-latest`  
 **Architecture debt:** [ARCHITECTURE_AND_TECH_DEBT.md](./ARCHITECTURE_AND_TECH_DEBT.md)
 
 ---
 
 ## Summary for handoff
 
-Phases **1–4** landed. **2026-07-11:** VirtualCamera bind is production-ready for locked shots and third-person follow (scene-agnostic). MOVE CAMERA edit-flight STOP/WASD still tracked as residual QA below.
+Phases **1–4** landed. **2026-07-11:** VirtualCamera bind production-ready. MOVE CAMERA residual: flight pump no longer requires MainCamera unbound (bound lens preview can fly that VC).
 
 | Step | Expected | Status |
 |------|----------|--------|
@@ -21,7 +21,7 @@ Phases **1–4** landed. **2026-07-11:** VirtualCamera bind is production-ready 
 | `parent === lookAt` follow | f(player)+local every frame | ✅ no hitch flicker |
 | Hydrate only on structure change | No per-frame spam | ✅ |
 | WASD under active VC | Matches freecam basis | ✅ |
-| MOVE CAMERA freeze + flight + STOP | Full edit-flight loop | 🟡 residual (see Phase 1 QA) |
+| MOVE CAMERA freeze + flight + STOP | Full edit-flight loop | 🟡 retest (flight when bound fixed) |
 
 See [PLAYER_FRAME_CHANNEL.md](./PLAYER_FRAME_CHANNEL.md) for the transport model.
 
@@ -117,12 +117,17 @@ Manual: load RickRoll with `?sceneuidebug`, CREATOR MODE → MOVE CAMERA → WAS
 
 ## Next investigation (priority order)
 
-1. **STOP / latch** — Trace STOP UI click through pointer phases (`inject` vs `flush`). Confirm scene calls `clearPlayerInputModifier` or cleared IM. Check whether `collectPlayerFrameSnapshot` re-latches after clear because `intentionalLocomotionUnfreezePhase()` is false outside `inject`. Fix candidate: clear latch + force `player-frame` egress on successful guarded unfreeze; widen unfreeze phase to STOP handler window.
-2. **Flight / gizmo** — With `?sceneinputsnapshot`, confirm WASD reaches worker during edit flight. Confirm `isWorkerLocomotionFreezeLatched()` true and `publishVcPoseLiveDuringEditFlight` posts `vc-pose-live`. On main, confirm `playerEditFlightLiveLane` and `applyVcPoseLive` run.
-3. **pollEvents vs latch** — Unified frame defers pollEvents while latch active; confirm STOP handler is not pollEvents-dependent while deferred.
-4. **rAF ordering** — `play-frame-tick` is async; evaluate applying pending `player-frame` synchronously at start of `PlayerSystem.tick` if message arrived same frame.
+1. **Manual QA** — RickRoll `?sceneuidebug`: CREATOR → MOVE CAMERA → WASD (gizmo/lens moves) → STOP (walk restored). Prefer bound-lens and unbound paths.
+2. **STOP / latch** — If unlock still fails: trace `forceUnfreeze` + `refuseFreezeWrites` vs scene re-freeze every tick.
+3. **rAF ordering** — Apply pending `player-frame` at start of `PlayerSystem.tick` if one-frame lag remains.
+4. **Strip shim policy** — Longer-term: scene-authoritative IM only; drop belt-and-suspenders once QA green.
 
 **Do not change** camera-operator scene bundle — ThreejsClient shim only.
+
+### 2026-07-11 (MOVE CAMERA flight when lens bound)
+
+- Root cause of WASD no-op: `isEditFlightMode()` and shim flight required MainCamera **unbound**, but MOVE CAMERA often **binds** the VC for lens preview → flight pump never ran.
+- Fix: edit flight = `pointer-move` freeze latch only; resolve flight target prefers bound `MainCamera.virtualCameraEntity`; main `playerEditFlightLiveLane` accepts frozen locomotion even when bound.
 
 ---
 

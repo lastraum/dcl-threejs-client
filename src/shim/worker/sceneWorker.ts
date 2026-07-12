@@ -96,7 +96,7 @@ import {
 } from './workerSceneUiCrdtOutbound'
 import {
   collectPlayerFrameSnapshot,
-  isWorkerLocomotionFreezeLatched,
+  isWorkerMoveCameraFlightLatched,
   resetPlayerFrameEgressBaseline,
   stripPlayerFrameComponentsFromCrdt
 } from './workerPlayerFrameEgress'
@@ -1054,7 +1054,8 @@ function publishVcPoseLiveIfBound(): void {
  * Phase 1 hot lane alongside player-frame (no CRDT ack wait).
  */
 function publishVcPoseLiveDuringEditFlight(): void {
-  if (!sceneEngine || !sceneOnStartComplete || !isWorkerLocomotionFreezeLatched()) {
+  // Only MOVE CAMERA (pointer-move latch) — not menu freezes.
+  if (!sceneEngine || !sceneOnStartComplete || !isWorkerMoveCameraFlightLatched()) {
     editFlightVcPoseKeys.clear()
     return
   }
@@ -1220,12 +1221,21 @@ function captureAllVcPoseKeys(): string {
 /**
  * Resolve selected VirtualCamera: gizmo body is parented under VC with green emissive
  * (selected) vs red (unselected) — see camera-operator setCameraBoxSelected.
+ * Prefer MainCamera bind target when MOVE CAMERA previews through that lens.
  */
 function resolveShimFlightVcEntity(): Entity | null {
   if (!sceneEngine) return null
   const VirtualCamera = generated.VirtualCamera(sceneEngine)
   const Transform = extended.Transform(sceneEngine)
   const Material = generated.Material(sceneEngine)
+  const MainCamera = generated.MainCamera(sceneEngine)
+
+  const main = MainCamera.getOrNull(sceneEngine.CameraEntity) as { virtualCameraEntity?: number } | null
+  const bound = main?.virtualCameraEntity
+  if (bound !== undefined && bound !== null && VirtualCamera.has(bound as Entity)) {
+    shimFlightVcEntity = bound
+    return bound as Entity
+  }
 
   if (shimFlightVcEntity != null && VirtualCamera.has(shimFlightVcEntity as Entity)) {
     return shimFlightVcEntity as Entity
@@ -1352,34 +1362,25 @@ function rotationFromYawPitch(yawDeg: number, pitchDeg: number, rollDeg = 0): {
 }
 
 /** MainCamera has a bound virtualCameraEntity (VIEW SHOT / select) — not MOVE CAMERA flight. */
-function isMainCameraVirtualCameraBound(): boolean {
-  if (!sceneEngine) return false
-  const MainCamera = generated.MainCamera(sceneEngine)
-  const main = MainCamera.getOrNull(sceneEngine.CameraEntity) as { virtualCameraEntity?: number } | null
-  return main?.virtualCameraEntity !== undefined && main?.virtualCameraEntity !== null
-}
-
 /**
- * MOVE CAMERA edit flight only: locomotion freeze latch + MainCamera unbound.
- * Character select freezes InputModifier and *binds* a VC — must not run flight pump / shim WASD.
+ * MOVE CAMERA edit flight: pointer-move freeze latch (not menu lock-all).
+ * May run with MainCamera bound (lens preview) — then we fly that bound VC.
+ * Character-select freezes via scene latch + bound VC — no flight pump.
  */
 function isEditFlightMode(): boolean {
-  return isWorkerLocomotionFreezeLatched() && !isMainCameraVirtualCameraBound()
+  return isWorkerMoveCameraFlightLatched()
 }
 
 /**
  * Fallback when scene updateCreatorEditFlight does not run (editFlightActive cleared by
- * double-toggle) but freeze latch is still active — move the *selected* VirtualCamera only.
+ * double-toggle) but MOVE freeze is still active — move selected / bound VirtualCamera.
  *
- * Scene has no freelook rotation UI buttons (position/rotation rows disabled). Flight is
- * MOVE CAMERA only; VIEW SHOT only binds the lens. Keyboard (VirtualCameraRig):
- * WASD · Space/Shift · Digit1/2 yaw · E/F pitch.
+ * Keyboard (VirtualCameraRig): WASD · Space/Shift · Digit1/2 yaw · E/F pitch.
  */
 function applyShimVcFlightFromRelay(dtSec: number): number {
   if (!sceneEngine || workerSnapshotPressed.size === 0) return 0
-  // Never invent flight while MainCamera is bound to a VC (fixed shot / character select).
-  if (isMainCameraVirtualCameraBound()) return 0
-  if (!isWorkerLocomotionFreezeLatched()) return 0
+  // Menu freezes bind VC for character select — never invent flight on scene latch.
+  if (!isWorkerMoveCameraFlightLatched()) return 0
   const target = resolveShimFlightVcEntity()
   if (target == null) return 0
   const Transform = extended.Transform(sceneEngine)

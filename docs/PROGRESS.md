@@ -2,8 +2,10 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-12 (chat people list + mouse sensitivity)  
-> **Current phase:** **v0.6.0** on `main`; **lighting + graphics prefs P0–P2** on `dev-latest`. **Next:** graphics **P3 distances** / **P4 bloom**; Phase 4 `/goto`; Phase 3 Watch Lite; MOVE CAMERA residual.  
+> **Last updated:** 2026-07-12 (UI polish on `dev-latest`: chat people list + mouse sensitivity)  
+> **Current phase:** **v0.6.0** on `main`; lighting + **graphics prefs P0–P2** on `dev-latest`.  
+> **Graphics next (not started):** **P3 distance culls** (Scene / Landscape / Shadows Distance still UI stubs only) · **P4** bloom/HDR.  
+> **Product next:** Phase 4 `/goto` · Phase 3 Watch Lite · MOVE CAMERA residual.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -28,7 +30,9 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **VirtualCamera bind reliability** | 🟢 | Scene-agnostic MainCamera→VC hydrate; locked shots use worker world pose; follow is f(player)+local; live Transform exclusive while bound |
 | **Skybox time authority** | 🟢 | Scene fixed → session custom (tab) → Auto cycle; Night/Day panel respects scene lock |
 | **Unity outdoor lighting parity** | 🟢 | Trilight ambient, soft sun/moon shadows, anim intensity, soft PBR; crescent moon + night fill |
-| **Graphics prefs (P0–P2)** | 🟢 | Preset L/M/H/Custom · shadows · lights · res scale · FPS · **MSAA**; Resolution/Fullscreen/VSync hidden or stub; bloom/HDR/distances still stubs |
+| **Graphics prefs (P0–P2)** | 🟢 | Preset L/M/H/Custom · shadows · lights · res scale · FPS · **MSAA**; Resolution/Fullscreen/VSync hidden or stub |
+| **Graphics P3 distances** | ⬜ | **Not started** — Scene Distance / Landscape Distance / Shadows Distance still gray stubs (no cull backend) |
+| **Graphics P4 post-FX** | ⬜ | Bloom / HDR / avatar outline still stubs |
 
 **Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**. Suggestions: dev panel → **💡 Suggest**.
 
@@ -59,11 +63,31 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 
 ---
 
+## 🎉 Milestone — UI polish → `dev-latest` (2026-07-12)
+
+**Status: shipped on `dev-latest`** (`bcd1253`, via `lastraum`) — chat presence + controls after graphics P0–P2 batch.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Chat people count** | 🟢 | Scene chat header pill `N people` → inline roster (you + LiveKit peers); row opens profile; Back to chat |
+| **Mouse sensitivity** | 🟢 | Preferences → **Controls** · 10–200% · persisted `clientSettings` · scales pointer look in `PlayerSystem` |
+
+**Not in this ship / still open for graphics:**
+
+| Item | Status |
+| ---- | ------ |
+| **P3 — Scene Distance** | ⬜ UI stub only — no draw/cull distance backend |
+| **P3 — Landscape Distance** | ⬜ UI stub only |
+| **P3 — Shadows Distance** | ⬜ UI stub only (shadow *quality* is live; range slider is not) |
+| **P4 — Bloom / HDR / outline** | ⬜ UI stubs only |
+
+---
+
 ## 🎉 Milestone — lastraum batch → `dev-latest` (2026-07-11)
 
 **Status: merged `lastraum` → `dev-latest`** — graphics prefs P0–P2 plus Genesis/product reliability after lighting milestone.
 
-### Graphics prefs (P0–P2)
+### Graphics prefs (P0–P2) — done
 
 | Control | Status | Notes |
 | ------- | ------ | ----- |
@@ -76,15 +100,23 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Resolution dropdown** | ⬜ | stub (browser owns window size) |
 | **Fullscreen** | ⬜ | stub (hidden/disabled for now) |
 | **VSync** | — | **hidden** — browsers always rAF-composite; no free-run/tear |
-| **Bloom / HDR / outline / distances** | ⬜ | stubs → **P3 distances**, **P4 post-FX** |
 
-**Persist:** `localStorage` `dcl-render-quality`.
+### Graphics P3 / P4 — **not done**
+
+| Control | Status | Notes |
+| ------- | ------ | ----- |
+| **Scene Distance** | ⬜ | Preferences slider present; **no runtime cull** |
+| **Landscape Distance** | ⬜ | Preferences slider present; **no runtime cull** |
+| **Shadows Distance** | ⬜ | Preferences slider present; **no shadow range backend** |
+| **Bloom / HDR / Avatar Outline** | ⬜ | Preferences stubs → **P4** post-FX stack |
+
+**Persist (quality):** `localStorage` `dcl-render-quality`.
 
 **Files:** `RenderQualitySettings.ts`, `SceneHost.ts`, `GraphicsSettingsView.ts`, `LightManager.ts`, shadow helpers, `detectPerformanceTier.ts`, `integrationRegistry.ts`
 
-**QA:** P → Graphics — Low vs High (scale + FPS + MSAA); MSAA Off vs 8x on building edges; Custom when diverging; Resolution/Fullscreen greyed.
+**QA:** P → Graphics — Low vs High (scale + FPS + MSAA); MSAA Off vs 8x on building edges; Custom when diverging; Resolution/Fullscreen greyed; confirm distance sliders still do nothing.
 
-### Product / reliability (same branch)
+### Product / reliability (same branch + follow-ups)
 
 | Area | Notes |
 | ---- | ----- |
@@ -94,10 +126,10 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Comms / archipelago** | `realm-provider-ea` primary Genesis `/about`; island join when adapter empty |
 | **Genesis default env** | Sky + quiet ground; no empty-land GLB under genesis |
 | **Chat keyboard** | WASD not stolen when chat/text focused |
-| **Chat people list** | Header count pill → inline scene roster (LiveKit peers + you); row opens profile |
-| **Mouse sensitivity** | Preferences → Controls · 10–200% · `clientSettings` → look speed |
+| **Chat people list** | See **UI polish** milestone (2026-07-12) |
+| **Mouse sensitivity** | See **UI polish** milestone (2026-07-12) |
 
-**Next graphics:** **P3** scene/landscape/shadow distance sliders → cull backends · **P4** bloom/HDR EffectComposer path.
+**Next graphics:** **P3** wire Scene / Landscape / Shadows Distance → cull backends · **P4** bloom/HDR EffectComposer path.
 
 ---
 
@@ -805,7 +837,7 @@ mrdoob **stats.js** panel top-center — closes out Phase 0 perf/viewer checkmar
 | **Now** | PhysX player grounding + capsule debug | ✅ feet on y=0; bone-based pivot; debug panel toggles |
 | **Now** | Sun / ECS hybrid + ACES exposure | ✅ hybrid dim + tier exposure; user day/night exposure sliders |
 | **Now** | Scene GLTF neon / LED emissives | 🟡 DCL color×intensity split — warm LEDs at night; not full Explorer parity |
-| **Now** | Preferences → Graphics quality + lighting | 🟢 preset/shadows/lights/res/FPS/MSAA + 4 lighting sliders on `dev-latest`; bloom/HDR/distances stubs |
+| **Now** | Preferences → Graphics + Controls + chat people | 🟢 P0–P2 quality + mouse sens + chat roster on `dev-latest`; **P3 distances + P4 bloom not started** |
 | **Pre-live** | Emote GLB props | ✅ `SkeletonUtils.clone` + scene-emote URNs (2026-06-13) |
 | Full Explorer ShaderGraph parity (bloom, dual sun logo) | ⬜ polish |
 | Per-layer cloud tint gradients (Explorer Far/Near) | ⬜ single global `uCloudsColor` today |

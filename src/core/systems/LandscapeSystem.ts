@@ -23,7 +23,8 @@ export class LandscapeSystem {
     onProgress?: (msg: string) => void
   ): Promise<void> {
     const profile = landscapeProfileForScene(scene)
-    if (profile.kind === 'none' || profile.kind === 'water') {
+    // none / genesis / water — no empty-land ground.glb preload
+    if (profile.kind === 'none' || profile.kind === 'genesis' || profile.kind === 'water') {
       this.state.landscapeRoot = await buildParcelLandscape(scene, cache, onProgress)
       return
     }

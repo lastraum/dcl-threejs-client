@@ -163,7 +163,12 @@ export class SceneInputRelay {
 
   private onKeyDown = (e: KeyboardEvent): void => {
     if (e.repeat || !this.deps) return
-    if (this.deps.isRelayBlocked()) return
+    // Chat / text fields win — never preventDefault WASD into a focused input.
+    if (this.deps.isRelayBlocked()) {
+      this.releaseAll('blocked')
+      this.deps.clearPlayerMoveKeys?.()
+      return
+    }
 
     const actions = codeToActions.get(e.code)
     if (!actions?.length) return

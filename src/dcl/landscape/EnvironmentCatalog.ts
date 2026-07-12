@@ -83,9 +83,8 @@ export const LANDSCAPE_ENVIRONMENTS: Record<LandscapeEnvironmentKind, LandscapeE
     grass: []
   },
   /**
-   * Default for Genesis City parcels — Explorer-like: Genesis sky dome + sun/moon,
-   * no void background, no infinite empty-land tiling or prop scatter.
-   * Scene content sits on y=0 infinite physics ground; optional quiet grass under footprint only.
+   * Default for Genesis City parcels — Genesis sky dome + sun/moon, no void sky,
+   * **no** empty-land ground.glb (physics uses y=0 infinite plane only).
    */
   genesis: {
     kind: 'genesis',

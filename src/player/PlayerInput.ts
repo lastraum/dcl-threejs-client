@@ -1,4 +1,5 @@
 import { isClientOverlayTarget } from '../client/ui/overlayHitTest'
+import { isTextInputFocused } from '../client/ui/textInputFocus'
 import type { SceneKeyboardSnapshot } from '../input/SceneInputRelay'
 import { isPointerOverSceneUi, isSceneUiInteractiveTarget } from '../ui/scene/sceneUiOverlay'
 import { isSceneUiTypingFocus } from '../ui/scene/sceneUiTyping'
@@ -23,9 +24,10 @@ export class PlayerInput {
   private isLocomotionBlocked: () => boolean = () => false
 
   constructor(private readonly canvas: HTMLElement) {
-    window.addEventListener('keydown', this.onKeyDown)
-    window.addEventListener('keyup', this.onKeyUp)
-    document.addEventListener('focusin', this.onFocusIn)
+    // Capture phase so chat/text focus beats locomotion before bubble handlers run.
+    window.addEventListener('keydown', this.onKeyDown, true)
+    window.addEventListener('keyup', this.onKeyUp, true)
+    document.addEventListener('focusin', this.onFocusIn, true)
     document.addEventListener('pointerlockchange', this.onLockChange)
     this.canvas.addEventListener('pointerdown', this.onPointerDown)
     this.canvas.addEventListener('pointermove', this.onPointerMove)
@@ -36,9 +38,9 @@ export class PlayerInput {
   }
 
   dispose(): void {
-    window.removeEventListener('keydown', this.onKeyDown)
-    window.removeEventListener('keyup', this.onKeyUp)
-    document.removeEventListener('focusin', this.onFocusIn)
+    window.removeEventListener('keydown', this.onKeyDown, true)
+    window.removeEventListener('keyup', this.onKeyUp, true)
+    document.removeEventListener('focusin', this.onFocusIn, true)
     document.removeEventListener('pointerlockchange', this.onLockChange)
     this.canvas.removeEventListener('pointerdown', this.onPointerDown)
     this.canvas.removeEventListener('pointermove', this.onPointerMove)
@@ -87,9 +89,13 @@ export class PlayerInput {
     this.isLocomotionBlocked = fn
   }
 
-  /** Block scene WASD relay only while typing in a scene UI field or client overlay. */
+  /**
+   * Block scene WASD relay while typing in any text field (client chat dock, scene UI, etc.)
+   * or when a full-screen overlay is open. Highest priority over locomotion.
+   */
   isSceneRelayBlocked(): boolean {
     if (this.isOverlayOpen()) return true
+    if (isTextInputFocused()) return true
     return isSceneUiTypingFocus()
   }
 
@@ -271,20 +277,17 @@ export class PlayerInput {
   }
 
   private isTypingTarget(): boolean {
+    if (isTextInputFocused()) return true
     if (isSceneUiTypingFocus()) return true
-    const el = document.activeElement
-    if (!el || el === this.canvas) return false
-    if (el instanceof HTMLInputElement) {
-      const type = el.type.toLowerCase()
-      return type !== 'checkbox' && type !== 'radio' && type !== 'button' && type !== 'submit' && type !== 'reset'
-    }
-    if (el instanceof HTMLTextAreaElement) return true
-    if (el instanceof HTMLElement && el.isContentEditable) return true
     return false
   }
 
   private isOverlayOpen(): boolean {
-    return document.querySelector('.settings-overlay.is-open') !== null
+    return (
+      document.querySelector('.settings-overlay.is-open') !== null ||
+      document.querySelector('.preferences-panel.is-open') !== null ||
+      document.querySelector('.explorer-auth-panel:not([hidden])') !== null
+    )
   }
 
   clearMovementKeys(): void {

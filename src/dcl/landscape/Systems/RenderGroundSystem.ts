@@ -36,8 +36,13 @@ export async function buildParcelLandscape(
   const profile = landscapeProfileForResolvedScene(scene)
   landscape.userData.environment = profile.kind
 
-  if (profile.kind === 'none') {
-    onProgress?.('Landscape: none (blank scene)')
+  // none = void authoring; genesis = skybox only (no empty-land ground.glb under city scenes).
+  if (profile.kind === 'none' || profile.kind === 'genesis') {
+    onProgress?.(
+      profile.kind === 'genesis'
+        ? 'Landscape: genesis (sky only — no empty-land tiles)'
+        : 'Landscape: none (blank scene)'
+    )
     return landscape
   }
 

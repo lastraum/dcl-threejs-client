@@ -27,6 +27,7 @@ import {
   resolveUiPointerResultEntity
 } from '../ui/scene/uiPointer'
 import { isPointerOverSceneUi, isSceneUiDomTarget } from '../ui/scene/sceneUiOverlay'
+import { isTextInputFocused } from '../client/ui/textInputFocus'
 import { isSceneUiFieldDom, isSceneUiTypingFocus } from '../ui/scene/sceneUiTyping'
 import { nextPointerEventTimestamp } from './pointerEventTimestamp'
 
@@ -1278,25 +1279,10 @@ export class PointerEventsSystem {
   }
 
   private isTypingTarget(): boolean {
+    if (isTextInputFocused()) return true
     if (isSceneUiTypingFocus()) return true
-    const el = document.activeElement
-    if (!el || el === this.canvas) return false
-    if (el instanceof HTMLElement && !isVisibleTypingElement(el)) return false
-    if (el instanceof HTMLInputElement) {
-      const type = el.type.toLowerCase()
-      return type !== 'checkbox' && type !== 'radio' && type !== 'button' && type !== 'submit' && type !== 'reset'
-    }
-    if (el instanceof HTMLTextAreaElement) return true
-    if (el instanceof HTMLElement && el.isContentEditable) return true
     return false
   }
-}
-
-function isVisibleTypingElement(el: HTMLElement): boolean {
-  if (!el.isConnected) return false
-  if (el.closest('[hidden]')) return false
-  const style = window.getComputedStyle(el)
-  return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0'
 }
 
 function mouseButtonToInputAction(button: number): InputActionValue {

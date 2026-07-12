@@ -43,7 +43,7 @@ export class ExplorerAuthPanel {
   private readonly statusEl: HTMLElement
   private readonly moreEl: HTMLElement
   private readonly moreToggle: HTMLButtonElement
-  private moreOpen = false
+  private moreOpen = true
   private busy = false
 
   constructor(private readonly opts: ExplorerAuthPanelOptions) {
@@ -63,11 +63,11 @@ export class ExplorerAuthPanel {
         <div class="explorer-auth-panel__divider" role="separator">
           <span>or continue with</span>
         </div>
-        <button type="button" class="explorer-auth-panel__more-toggle" data-more-toggle aria-expanded="false">
+        <button type="button" class="explorer-auth-panel__more-toggle is-open" data-more-toggle aria-expanded="true">
           More options
           <span class="explorer-auth-panel__chevron" aria-hidden="true">▾</span>
         </button>
-        <div class="explorer-auth-panel__more" data-more hidden>
+        <div class="explorer-auth-panel__more" data-more>
           <div class="explorer-auth-panel__icon-row" data-more-icons></div>
         </div>
         <button type="button" class="explorer-auth-panel__btn explorer-auth-panel__btn--ghost" data-guest>

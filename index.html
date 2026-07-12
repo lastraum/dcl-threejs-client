@@ -10548,12 +10548,55 @@
       }
       .social-profile-menu__wallet-btn {
         margin-bottom: 8px;
-        background: rgba(255, 45, 85, 0.22);
-        border-color: rgba(255, 45, 85, 0.45);
+        background: rgba(72, 36, 120, 0.95);
+        border-color: rgba(255, 255, 255, 0.14);
         color: #fff;
       }
       .social-profile-menu__wallet-btn:hover:not(:disabled) {
+        background: rgba(90, 48, 150, 0.98);
+      }
+      .social-profile-menu__wallet-btn--secondary {
+        background: rgba(255, 45, 85, 0.22);
+        border-color: rgba(255, 45, 85, 0.45);
+      }
+      .social-profile-menu__wallet-btn--secondary:hover:not(:disabled) {
         background: rgba(255, 45, 85, 0.38);
+      }
+      .social-profile-menu__or {
+        margin: 4px 0 10px;
+        text-align: center;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: rgba(255, 255, 255, 0.45);
+        text-transform: lowercase;
+      }
+      .social-profile-menu__provider-row {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .social-profile-menu__provider-btn {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(72, 36, 120, 0.9);
+        color: #fff;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        padding: 0;
+      }
+      .social-profile-menu__provider-btn:hover:not(:disabled) {
+        background: rgba(100, 52, 160, 0.95);
+      }
+      .social-profile-menu__provider-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
       }
       .social-profile-menu__ghost-btn {
         background: rgba(255, 255, 255, 0.06);

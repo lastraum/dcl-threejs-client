@@ -1,9 +1,16 @@
-import type { LoginResult } from '../../../auth/AuthClient'
-import { loginWithMetaMask } from '../../../auth/AuthClient'
+import type { AuthDappLoginMethod, LoginResult } from '../../../auth/AuthClient'
+import { loginWithMetaMask, loginWithProvider } from '../../../auth/AuthClient'
 import { identityFromAvatarProfile } from '../../../avatar/displayName'
 import { fetchProfileCached, fetchProfileFaceUrl } from '../../../avatar/peerApi'
 import { notificationPrefs } from '../../../social/notificationPrefs'
-import { ICON_METAMASK } from './explorerAuthIcons'
+import {
+  ICON_APPLE,
+  ICON_DISCORD,
+  ICON_GOOGLE,
+  ICON_METAMASK,
+  ICON_WALLET_CONNECT,
+  ICON_X
+} from './explorerAuthIcons'
 
 export type SocialProfileMenuOptions = {
   login: LoginResult
@@ -217,15 +224,27 @@ export class SocialProfileMenu {
   }
 
   private renderSignInMenu(): string {
+    const disabled = this.busy ? 'disabled' : ''
     return `
       <div class="social-profile-menu__section">
-        <p class="social-profile-menu__hint">Sign in with your wallet to use favorites, chat, voice, and your avatar.</p>
+        <p class="social-profile-menu__hint">Log in with Google, Discord, Apple, X, or a wallet — same as Explorer.</p>
         <p class="social-profile-menu__status" data-signin-status hidden></p>
-        <button type="button" class="social-profile-menu__wallet-btn" data-metamask ${this.busy ? 'disabled' : ''}>
+        <button type="button" class="social-profile-menu__wallet-btn" data-login-method="google" ${disabled}>
+          <span class="social-profile-menu__wallet-btn-icon" aria-hidden="true">${ICON_GOOGLE}</span>
+          <span>Continue with Google</span>
+        </button>
+        <button type="button" class="social-profile-menu__wallet-btn social-profile-menu__wallet-btn--secondary" data-login-method="metamask" ${disabled}>
           <span class="social-profile-menu__wallet-btn-icon" aria-hidden="true">${ICON_METAMASK}</span>
           <span>Continue with MetaMask</span>
         </button>
-        <button type="button" class="social-profile-menu__ghost-btn" data-guest ${this.busy ? 'disabled' : ''}>
+        <p class="social-profile-menu__or">or continue with</p>
+        <div class="social-profile-menu__provider-row" role="group" aria-label="More sign-in options">
+          <button type="button" class="social-profile-menu__provider-btn" data-login-method="discord" title="Discord" aria-label="Discord" ${disabled}>${ICON_DISCORD}</button>
+          <button type="button" class="social-profile-menu__provider-btn" data-login-method="apple" title="Apple" aria-label="Apple" ${disabled}>${ICON_APPLE}</button>
+          <button type="button" class="social-profile-menu__provider-btn" data-login-method="x" title="X" aria-label="X" ${disabled}>${ICON_X}</button>
+          <button type="button" class="social-profile-menu__provider-btn" data-login-method="wallet-connect" title="WalletConnect" aria-label="WalletConnect" ${disabled}>${ICON_WALLET_CONNECT}</button>
+        </div>
+        <button type="button" class="social-profile-menu__ghost-btn" data-guest ${disabled}>
           Continue as Guest
         </button>
       </div>
@@ -277,8 +296,14 @@ export class SocialProfileMenu {
   }
 
   private wireSignInMenu(): void {
-    this.menuBody.querySelector('[data-metamask]')?.addEventListener('click', () => void this.runMetaMask())
+    for (const btn of this.menuBody.querySelectorAll<HTMLButtonElement>('[data-login-method]')) {
+      btn.addEventListener('click', () => {
+        const method = btn.dataset.loginMethod as AuthDappLoginMethod | undefined
+        if (method) void this.runLoginMethod(method)
+      })
+    }
     this.menuBody.querySelector('[data-guest]')?.addEventListener('click', () => {
+      if (this.busy) return
       this.onLoginChange?.({ kind: 'guest' })
       this.setLogin({ kind: 'guest' })
       this.close()
@@ -325,7 +350,7 @@ export class SocialProfileMenu {
     el.className = `social-profile-menu__status${isError ? ' social-profile-menu__status--error' : ''}`
   }
 
-  private async runMetaMask(): Promise<void> {
+  private async runLoginMethod(method: AuthDappLoginMethod): Promise<void> {
     if (this.busy) return
     this.busy = true
     this.setSignInStatus('Connecting…')
@@ -333,7 +358,17 @@ export class SocialProfileMenu {
       ;(btn as HTMLButtonElement).disabled = true
     }
     try {
-      const result = await loginWithMetaMask((msg) => this.setSignInStatus(msg))
+      const result =
+        method === 'metamask'
+          ? await loginWithMetaMask((msg) => this.setSignInStatus(msg)).catch(async (err) => {
+              const msg = err instanceof Error ? err.message : String(err)
+              if (/not found|install/i.test(msg)) {
+                this.setSignInStatus('Opening Decentraland login…')
+                return loginWithProvider('metamask', (m) => this.setSignInStatus(m))
+              }
+              throw err
+            })
+          : await loginWithProvider(method, (msg) => this.setSignInStatus(msg))
       this.onLoginChange?.(result)
       this.setLogin(result)
       this.close()

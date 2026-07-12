@@ -8,14 +8,16 @@ export type RealmAbout = {
   healthy: boolean
 }
 
-const DEFAULT_CATALYST = 'https://peer.decentraland.org'
+/** Content/lambdas peer (CDN) — not the realm control plane. */
+const DEFAULT_CONTENT_PEER = 'https://peer.decentraland.org'
 const WORLDS = 'https://worlds-content-server.decentraland.org'
-/** Genesis main realm — still publishes archipelago adapter (catalyst /about often omits comms). */
-const REALM_PROVIDER_ABOUT = 'https://realm-provider-ea.decentraland.org/main/about'
 /**
- * Production Archipelago WS (EA). Used when /about has no adapter — without this,
- * island LiveKit never joins and Genesis remotes stay at 0.
+ * Genesis main realm control plane (Explorer / EA).
+ * This is the correct `/about` for comms.adapter + realm metadata.
+ * Plain `peer.decentraland.org/about` often omits `comms` entirely.
  */
+export const GENESIS_REALM_PROVIDER_ABOUT = 'https://realm-provider-ea.decentraland.org/main/about'
+/** Hard fallback if realm-provider is down. */
 export const DEFAULT_GENESIS_ARCHIPELAGO_ADAPTER =
   'archipelago:wss://archipelago-ea-ws-connector.decentraland.org/ws'
 
@@ -29,8 +31,8 @@ type AboutJson = {
 }
 
 function parseAbout(raw: AboutJson, fallbackRealmName: string): RealmAbout {
-  const contentUrl = raw.content?.publicUrl?.replace(/\/$/, '') ?? DEFAULT_CATALYST
-  const lambdasUrl = raw.lambdas?.publicUrl?.replace(/\/$/, '') ?? `${DEFAULT_CATALYST}/lambdas`
+  const contentUrl = raw.content?.publicUrl?.replace(/\/$/, '') ?? DEFAULT_CONTENT_PEER
+  const lambdasUrl = raw.lambdas?.publicUrl?.replace(/\/$/, '') ?? `${DEFAULT_CONTENT_PEER}/lambdas`
   return {
     realmName: raw.configurations?.realmName?.trim() || fallbackRealmName,
     networkId: raw.configurations?.networkId ?? 1,
@@ -52,21 +54,29 @@ async function fetchAboutJson(url: string): Promise<AboutJson | null> {
   }
 }
 
-/** Resolve archipelago adapter when catalyst /about omits `comms` (common since realm-provider split). */
-async function resolveCommsAdapterHint(primary?: string): Promise<string | undefined> {
-  if (primary?.trim()) return primary.trim()
-  const provider = await fetchAboutJson(REALM_PROVIDER_ABOUT)
-  const fromProvider = provider?.comms?.adapter?.trim()
-  if (fromProvider) return fromProvider
-  return DEFAULT_GENESIS_ARCHIPELAGO_ADAPTER
-}
+/**
+ * Genesis / catalyst realm about — prefer realm-provider-ea (has archipelago adapter).
+ * Optional `catalystBase` only used if realm-provider is unreachable.
+ */
+export async function fetchCatalystRealmAbout(catalystBase = DEFAULT_CONTENT_PEER): Promise<RealmAbout> {
+  // 1) Authoritative Genesis main realm
+  const providerJson = await fetchAboutJson(GENESIS_REALM_PROVIDER_ABOUT)
+  if (providerJson) {
+    const about = parseAbout(providerJson, 'main')
+    if (!about.commsAdapterHint) {
+      about.commsAdapterHint = DEFAULT_GENESIS_ARCHIPELAGO_ADAPTER
+    }
+    return about
+  }
 
-export async function fetchCatalystRealmAbout(catalystBase = DEFAULT_CATALYST): Promise<RealmAbout> {
+  // 2) Fallback: direct catalyst peer /about (may lack comms)
   const base = catalystBase.replace(/\/$/, '')
   const res = await fetch(`${base}/about`, { headers: { Accept: 'application/json' } })
   if (!res.ok) throw new Error(`Catalyst about failed (${res.status})`)
   const about = parseAbout((await res.json()) as AboutJson, 'main')
-  about.commsAdapterHint = await resolveCommsAdapterHint(about.commsAdapterHint)
+  if (!about.commsAdapterHint) {
+    about.commsAdapterHint = DEFAULT_GENESIS_ARCHIPELAGO_ADAPTER
+  }
   return about
 }
 

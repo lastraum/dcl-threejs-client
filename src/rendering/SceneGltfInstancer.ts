@@ -147,10 +147,48 @@ export class SceneGltfInstancer {
     this.writeMatrix(bucket, index, entityObj)
   }
 
-  /** Refresh instance matrices for a set of entities (after transform apply). */
+  /**
+   * Refresh instance matrices after Transform apply.
+   * InstancedMesh stores **world** matrices — when a parent moves, every instanced
+   * descendant must rewrite even if that child entity was not in the CRDT diff
+   * (common during hydration parent reparent / plaza group moves).
+   */
   updateEntities(entities: Iterable<Entity>, nodes: Map<Entity, THREE.Group>): void {
+    const dirtyNodes = new Set<THREE.Object3D>()
+    for (const entity of entities) {
+      const obj = nodes.get(entity)
+      if (obj) dirtyNodes.add(obj)
+    }
+    if (dirtyNodes.size === 0) return
+
+    const refreshed = new Set<Entity>()
     for (const entity of entities) {
       if (!this.entityHash.has(entity)) continue
+      const obj = nodes.get(entity)
+      if (!obj) continue
+      this.update(entity, obj)
+      refreshed.add(entity)
+    }
+
+    // Descendants of dirty parents (world matrix inherited — not in CRDT upsert list).
+    for (const entity of this.entityHash.keys()) {
+      if (refreshed.has(entity)) continue
+      const obj = nodes.get(entity)
+      if (!obj) continue
+      let p: THREE.Object3D | null = obj.parent
+      while (p) {
+        if (dirtyNodes.has(p)) {
+          this.update(entity, obj)
+          break
+        }
+        p = p.parent
+      }
+    }
+  }
+
+  /** Full rewrite — call after hydration seal / large hierarchy rebuild. */
+  updateAll(nodes: Map<Entity, THREE.Group>): void {
+    for (const entity of this.entityHash.keys()) {
       const obj = nodes.get(entity)
       if (obj) this.update(entity, obj)
     }

@@ -743,6 +743,11 @@ export class SceneScriptSystem {
     this.entityStore?.root.updateMatrixWorld(true)
   }
 
+  /** Rewrite all GPU-instanced GLTF world matrices after hierarchy is stable. */
+  refreshAllInstancedTransforms(): void {
+    this.bridge?.refreshAllInstancedTransforms()
+  }
+
   /** Pose-only refresh before runtime PhysX pose push. */
   refreshColliderPose(physEntity: number): void {
     const nodes = this.bridge?.getEntityNodes()
@@ -3179,6 +3184,7 @@ export class SceneScriptSystem {
     this.bridgeSyncEvery = BRIDGE_ECS_SYNC_RUNTIME
     this.setSceneWorkerOnUpdatePaused(false)
     this.setSceneWorkerTicksPaused(false)
+    this.avatarShapes?.setPlayReady(true)
     if (this.playReadyNotified) return
     this.playReadyNotified = true
     this.worker?.postMessage({

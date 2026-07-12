@@ -668,6 +668,8 @@ export class World {
     this.sceneScript.syncClientEntities(this.player.getEntityPose(), this.player.getCameraEntityPose())
     this.physics.invalidateControllerCache()
     this.sceneScript.flushSceneGraphMatrices()
+    // One more instance rewrite at spawn — catch late parent transforms after seal.
+    this.sceneScript.refreshAllInstancedTransforms()
     this.sceneScript.preparePointerRaycast()
     this.sceneScript.refreshPointerTargets()
     this.sceneScript.bindPointerEvents(
@@ -680,7 +682,10 @@ export class World {
         clearPlayerMoveKeys: () => this.player!.clearMoveKeys()
       }
     )
-    const plazaScale = this.lastGltfColliderCount >= 200
+    // Plaza-scale from entity count when GLTF collider extract is sparse (Genesis ~18 colliders).
+    const hydration = this.sceneScript.getHydrationStats()
+    const plazaScale =
+      this.lastGltfColliderCount >= 200 || (hydration?.gltfEntities ?? 0) >= 400
     this.sceneScript.notifyPlayReady({
       plazaScale,
       engineTickIntervalMs: resolveEngineTickIntervalMs(this.sceneScript.getPerformanceTier())
@@ -855,13 +860,25 @@ export class World {
           if (startFrame === 60) {
             const worldX = pos.x + (this.comms.getSceneOrigin()?.x ?? 0)
             const worldZ = pos.z + (this.comms.getSceneOrigin()?.z ?? 0)
-            console.info('[World] frame 60 — playerSceneLocal:', `(${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})`,
-              'playerWorld:', `(${worldX.toFixed(1)}, ${pos.y.toFixed(1)}, ${worldZ.toFixed(1)})`,
-              'sceneOrigin:', this.comms.getSceneOrigin(),
-              'cam:', this.host.camera.position.toArray().map((n) => n.toFixed(1)),
-              'remotePeers:', this.remoteAvatars?.visiblePeerCount ?? 0,
-              'remoteLoaded:', this.remoteAvatars?.loadedPeerCount ?? 0,
-              'gltfCached:', this.assets.getLoadStats().gltfCached)
+            const localAvatar = this.player.getLocalAvatar()
+            console.info(
+              '[World] frame 60 — playerSceneLocal:',
+              `(${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})`,
+              'playerWorld:',
+              `(${worldX.toFixed(1)}, ${pos.y.toFixed(1)}, ${worldZ.toFixed(1)})`,
+              'sceneOrigin:',
+              this.comms.getSceneOrigin(),
+              'cam:',
+              this.host.camera.position.toArray().map((n) => n.toFixed(1)),
+              'remotePeers:',
+              this.remoteAvatars?.visiblePeerCount ?? 0,
+              'remoteLoaded:',
+              this.remoteAvatars?.loadedPeerCount ?? 0,
+              'localAvatar:',
+              localAvatar?.getModel() ? 'yes' : 'no',
+              'gltfCached:',
+              this.assets.getLoadStats().gltfCached
+            )
           }
         }
 
@@ -1880,6 +1897,8 @@ export class World {
       // Final matrix pass — last GLB attach / composite flush can land on the queue-empty frame.
       await this.sceneScript.syncRendererFull()
       this.sceneScript.flushSceneGraphMatrices()
+      // Instanced props bake world matrices — parent reparent during hydration leaves them stale.
+      this.sceneScript.refreshAllInstancedTransforms()
       this.sceneScript.invalidateGltfColliderSyncCache()
       this.sceneScript.syncCollisionForce()
       this.reconcileColliderCookQueue()

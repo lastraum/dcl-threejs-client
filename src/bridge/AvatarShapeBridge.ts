@@ -81,7 +81,10 @@ export class AvatarShapeBridge {
   private peerUrl = ''
   /** Cap concurrent full composes — sequential await of many NPCs freezes the async frame (~1fps). */
   private composeInFlight = 0
-  private static readonly MAX_COMPOSE_IN_FLIGHT = 1
+  /** During hydration keep 1; after play-ready allow a small burst so plaza NPCs appear. */
+  private maxComposeInFlight = 1
+  private static readonly MAX_COMPOSE_HYDRATION = 1
+  private static readonly MAX_COMPOSE_PLAY = 2
   private readonly composeFailedUntil = new Map<Entity, number>()
   private static readonly COMPOSE_RETRY_MS = 8_000
 
@@ -96,6 +99,13 @@ export class AvatarShapeBridge {
     for (const entry of this.avatars.values()) {
       entry.avatar.setAssetCache(cache, this.peerUrl || undefined)
     }
+  }
+
+  /** Call when scene play-ready so NPC AvatarShapes compose faster than hydration. */
+  setPlayReady(playReady: boolean): void {
+    this.maxComposeInFlight = playReady
+      ? AvatarShapeBridge.MAX_COMPOSE_PLAY
+      : AvatarShapeBridge.MAX_COMPOSE_HYDRATION
   }
 
   async sync(view: ProjectionView): Promise<void> {
@@ -198,7 +208,7 @@ export class AvatarShapeBridge {
     signature: string
   ): void {
     if (entry.loading) return
-    if (this.composeInFlight >= AvatarShapeBridge.MAX_COMPOSE_IN_FLIGHT) {
+    if (this.composeInFlight >= this.maxComposeInFlight) {
       entry.pendingSignatureReload = signature
       return
     }

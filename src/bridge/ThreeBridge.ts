@@ -207,6 +207,12 @@ export class ThreeBridge {
     this.instancer.updateEntities(entities, this.store.nodes)
   }
 
+  /** Full instanced world-matrix rewrite (post-hydration / hierarchy seal). */
+  refreshAllInstancedTransforms(): void {
+    this.store.root.updateMatrixWorld(true)
+    this.instancer.updateAll(this.store.nodes)
+  }
+
   getEntityStore(): EntityStore {
     return this.store
   }

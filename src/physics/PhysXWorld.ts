@@ -60,13 +60,21 @@ const MAX_PLATFORM_DELTA_TOTAL = 2.5
 const MAX_GROUND_CONTACT_HORIZ = 2
 /** Tread Y must not jump more than this vs baseline (duplicate mesh at lift bottom). */
 const MAX_GROUND_CONTACT_VERT = 1.5
-/** Always-on floor at y=0 — large thin static box (PxPlane is unsupported by CCT/sweep queries), no render mesh. */
+/** Always-on floor at y=0 — large thick static box (PxPlane is unsupported by CCT/sweep queries), no render mesh. */
 const INFINITE_GROUND_ENTITY = -1
 const INFINITE_GROUND_FINGERPRINT = 'infinite-ground-plane'
-/** Half-extent of the ground box in X/Z — effectively "infinite" for a single parcel-scale scene. */
+/** Half-extent of the ground box in X/Z — effectively "infinite" for genesis multi-parcel. */
 const GROUND_BOX_HALF_EXTENT = 5000
-/** Half-thickness; box centred at y=-halfHeight so its top face sits exactly at y=0. */
-const GROUND_BOX_HALF_HEIGHT = 0.5
+/**
+ * Half-thickness; box centred at y=-halfHeight so its top face sits exactly at y=0.
+ * Thick enough that heavy-load frames (delta clamped ~0.1s, GRAVITY 20) cannot tunnel.
+ */
+const GROUND_BOX_HALF_HEIGHT = 2.5
+/** Max vertical displacement per CCT substep — avoids tunneling when FPS tanks. */
+const CCT_MAX_VERTICAL_STEP_M = 0.4
+const CCT_MAX_SUBSTEPS = 8
+/** Absolute floor — if CCT still reports feet below this, snap up and force grounded. */
+const HARD_FLOOR_Y = 0
 
 export type ControllerMoveResult = {
   grounded: boolean
@@ -372,15 +380,16 @@ export class PhysXWorld {
     this.ensureInfiniteGroundPlane()
   }
 
-  /** Scene-agnostic ground at y=0 — never removed when landscape/walls refresh. */
-  private ensureInfiniteGroundPlane(): void {
-    if (this.staticActors.has(INFINITE_GROUND_ENTITY) || !this.physics || !this.scene) return
+  /**
+   * Scene-agnostic ground at y=0 — highest priority collider, never removed when
+   * landscape/walls/GLTF refresh. Idempotent; re-creates if the actor map lost it.
+   */
+  ensureInfiniteGroundPlane(): void {
+    if (!this.physics || !this.scene) return
+    if (this.staticActors.has(INFINITE_GROUND_ENTITY)) return
 
-    // Large thin BOX with its top face at y=0 — NOT a PxPlane. PhysX CCT collision and
-    // overlap/sweep scene queries do not support PxPlaneGeometry, so a plane leaves the
-    // controller ungrounded (cctDown never set) and invisible to the ground probe — the
-    // player ends up held only by the position.y<0 backstop and can never rest on or step
-    // onto raised colliders. A box behaves like any other static collider.
+    // Large BOX with top face at y=0 — NOT a PxPlane. PhysX CCT + sweep/overlap queries
+    // do not support PxPlaneGeometry (player never grounds / falls forever).
     const halfY = GROUND_BOX_HALF_HEIGHT
     const geometry = new PHYSX.PxBoxGeometry(GROUND_BOX_HALF_EXTENT, halfY, GROUND_BOX_HALF_EXTENT)
     const shapeFlags = new PHYSX.PxShapeFlags(
@@ -405,6 +414,7 @@ export class PhysXWorld {
     this.staticActors.set(INFINITE_GROUND_ENTITY, actor)
     this.registerStaticActor(INFINITE_GROUND_ENTITY, actor)
     this.staticFp.set(INFINITE_GROUND_ENTITY, INFINITE_GROUND_FINGERPRINT)
+    console.info('[PhysXWorld] infinite ground plane ready (y=0 top face)')
   }
 
   private setupControllerManager(): void {
@@ -442,6 +452,8 @@ export class PhysXWorld {
       throw new Error('PhysXWorld not initialised')
     }
 
+    // Ground before capsule — heavy scenes must never spawn into empty air with no floor.
+    this.ensureInfiniteGroundPlane()
     this.releasePlayer()
 
     const radius = this.capsuleRadius
@@ -517,6 +529,7 @@ export class PhysXWorld {
     for (const entity of [...this.staticActors.keys()]) {
       if (this.isGltfStaticActor(entity)) this.removeStatic(entity)
     }
+    this.ensureInfiniteGroundPlane()
   }
 
   /** Remove every scene static actor (keeps infinite ground) — manual recook / pose drift reset. */
@@ -525,6 +538,7 @@ export class PhysXWorld {
       if (entity === INFINITE_GROUND_ENTITY) continue
       this.removeStatic(entity)
     }
+    this.ensureInfiniteGroundPlane()
   }
 
   /** Remove one static actor + sync fingerprints — boot cook always recooks fresh. */
@@ -859,6 +873,7 @@ export class PhysXWorld {
    */
   warmStaticScene(): void {
     if (!this.scene) return
+    this.ensureInfiniteGroundPlane()
     try {
       this.scene.simulate(0)
       this.scene.fetchResults(true)
@@ -979,22 +994,50 @@ export class PhysXWorld {
   movePlayer(displacement: THREE.Vector3, delta: number): ControllerMoveResult {
     if (!this.controller) return { grounded: false }
 
+    // Always re-assert y=0 floor before any move (scene cook churn must not strand the avatar).
+    this.ensureInfiniteGroundPlane()
+
     this.pendingCctGroundEntity = null
     this.pendingCctGroundY = Number.NEGATIVE_INFINITY
     this.pendingCctGroundContact = null
 
-    const flags = this.controller.move(
-      displacement.toPxVec3(this._pv2),
-      0,
-      delta,
-      this.controllerFilters
+    // Substep large vertical moves so low-FPS genesis loads cannot tunnel the thick ground box.
+    const absY = Math.abs(displacement.y)
+    const substeps = Math.min(
+      CCT_MAX_SUBSTEPS,
+      Math.max(1, Math.ceil(absY / CCT_MAX_VERTICAL_STEP_M))
     )
-    let grounded = flags.isSet(PHYSX.PxControllerCollisionFlagEnum.eCOLLISION_DOWN)
-    const hitUp = flags.isSet(PHYSX.PxControllerCollisionFlagEnum.eCOLLISION_UP)
+    const inv = 1 / substeps
+    const stepDisp = this._v1.copy(displacement).multiplyScalar(inv)
+    const stepDt = Math.max(1e-4, delta * inv)
+
+    let grounded = false
+    let hitUp = false
+    for (let i = 0; i < substeps; i++) {
+      const flags = this.controller.move(
+        stepDisp.toPxVec3(this._pv2),
+        0,
+        stepDt,
+        this.controllerFilters
+      )
+      if (flags.isSet(PHYSX.PxControllerCollisionFlagEnum.eCOLLISION_DOWN)) grounded = true
+      if (flags.isSet(PHYSX.PxControllerCollisionFlagEnum.eCOLLISION_UP)) hitUp = true
+    }
     this.syncPlayerTransform()
 
     if (hitUp && this.correctDescendingPlatformHeadCrush()) {
       grounded = true
+    }
+
+    // Hard floor — last line of defence if CCT still reports feet under y=0.
+    if (this.position.y < HARD_FLOOR_Y) {
+      this.position.y = HARD_FLOOR_Y
+      this.controller.setFootPosition(this.position.toPxExtVec3())
+      this.syncPlayerTransform()
+      grounded = true
+      this.lastGroundPhysEntity = INFINITE_GROUND_ENTITY
+      this.pendingCctGroundEntity = INFINITE_GROUND_ENTITY
+      this.pendingCctGroundY = HARD_FLOOR_Y
     }
 
     if (grounded && this.pendingCctGroundEntity !== null) {

@@ -208,21 +208,24 @@ export class PlayerInput {
 
     if (e.button === 0) {
       this.notifyUserGesture()
-      if (!this.pointer.locked) {
-        this.orbiting = true
-        this.orbitPointerId = e.pointerId
-        this.lastPointerX = e.clientX
-        this.lastPointerY = e.clientY
-        try {
-          this.canvas.setPointerCapture(e.pointerId)
-        } catch {
-          // ignore capture failures on unsupported browsers
-        }
+      // Left-click drag orbit only when unlocked. In pointer lock, movement alone orbits.
+      if (this.pointer.locked) return
+      this.orbiting = true
+      this.orbitPointerId = e.pointerId
+      this.lastPointerX = e.clientX
+      this.lastPointerY = e.clientY
+      try {
+        this.canvas.setPointerCapture(e.pointerId)
+      } catch {
+        // ignore capture failures on unsupported browsers
       }
       return
     }
     if (e.button === 2) {
       e.preventDefault()
+      this.notifyUserGesture()
+      // Right-click toggles pointer lock (look without holding a button).
+      this.togglePointerLock()
       return
     }
   }

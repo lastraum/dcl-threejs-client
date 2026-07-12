@@ -139,6 +139,9 @@ export class CrdtEncoder {
       // MainCamera.virtualCameraEntity is scene-worker authoritative (VIEW SHOT bind).
       // Round-tripping client projection `{}` cleared worker binds before VC hydrated.
       // Renderer reads MainCamera from worker outbound only (VirtualCameraBridge).
+      // Renderer writes 1st/3rd person + pointer-lock state on CameraEntity.
+      mk(components.CameraMode, reserved.camera),
+      mk(components.PointerLock, reserved.camera),
       // Renderer writes pointer screen/hover state to RootEntity (PointerEventsSystem).
       mk(components.PrimaryPointerInfo, reserved.root),
       // Scene UI canvas dimensions for react-ecs / UiCanvasInformation.get(RootEntity).

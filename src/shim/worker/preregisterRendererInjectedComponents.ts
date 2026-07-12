@@ -34,6 +34,8 @@ export const RENDERER_PREREGISTER_FACTORIES: readonly RendererComponentFactory[]
   (engine) => generated.VideoPlayer(engine),
   (engine) => generated.AudioSource(engine),
   (engine) => generated.PrimaryPointerInfo(engine),
+  (engine) => generated.CameraMode(engine),
+  (engine) => generated.PointerLock(engine),
   (engine) => generated.UiCanvasInformation(engine),
   (engine) => generated.UiInputResult(engine),
   (engine) => generated.UiDropdownResult(engine)

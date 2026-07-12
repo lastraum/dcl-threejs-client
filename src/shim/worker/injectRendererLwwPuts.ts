@@ -21,6 +21,10 @@ const UI_CANVAS_INFORMATION_ID = 1054
 const UI_INPUT_RESULT_ID = 1095
 /** `core::UiDropdownResult` — renderer writes selected index back to scene systems. */
 const UI_DROPDOWN_RESULT_ID = 1096
+/** `core::CameraMode` — renderer reports 1st/3rd person on CameraEntity. */
+const CAMERA_MODE_ID = 1072
+/** `core::PointerLock` — renderer reports pointer-lock state on CameraEntity. */
+const POINTER_LOCK_ID = 1074
 
 export type RendererLwwInjectCounts = {
   tweenPuts: number
@@ -29,6 +33,8 @@ export type RendererLwwInjectCounts = {
   uiCanvasPuts: number
   uiInputResultPuts: number
   uiDropdownResultPuts: number
+  cameraModePuts: number
+  pointerLockPuts: number
   reservedTransformPuts: number
 }
 
@@ -46,12 +52,16 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
   const UiCanvasInformation = generated.UiCanvasInformation(engine)
   const UiInputResult = generated.UiInputResult(engine)
   const UiDropdownResult = generated.UiDropdownResult(engine)
+  const CameraMode = generated.CameraMode(engine)
+  const PointerLock = generated.PointerLock(engine)
   let tweenPuts = 0
   let raycastPuts = 0
   let videoPlayerPuts = 0
   let uiCanvasPuts = 0
   let uiInputResultPuts = 0
   let uiDropdownResultPuts = 0
+  let cameraModePuts = 0
+  let pointerLockPuts = 0
   let reservedTransformPuts = 0
 
   for (const chunk of chunks) {
@@ -94,6 +104,16 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
           const value = UiDropdownResult.schema.deserialize(valueBuf)
           UiDropdownResult.createOrReplace(msg.entityId as Entity, value)
           uiDropdownResultPuts++
+        } else if (msg.componentId === CAMERA_MODE_ID) {
+          const valueBuf = new ReadWriteByteBuffer(msg.data)
+          const value = CameraMode.schema.deserialize(valueBuf)
+          CameraMode.createOrReplace(msg.entityId as Entity, value)
+          cameraModePuts++
+        } else if (msg.componentId === POINTER_LOCK_ID) {
+          const valueBuf = new ReadWriteByteBuffer(msg.data)
+          const value = PointerLock.schema.deserialize(valueBuf)
+          PointerLock.createOrReplace(msg.entityId as Entity, value)
+          pointerLockPuts++
         }
       }
       msg = readMessage(buf)
@@ -107,6 +127,8 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
     uiCanvasPuts,
     uiInputResultPuts,
     uiDropdownResultPuts,
+    cameraModePuts,
+    pointerLockPuts,
     reservedTransformPuts
   }
 }

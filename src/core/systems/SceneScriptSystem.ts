@@ -70,6 +70,8 @@ import { PointerEventsSystem } from '../../input/PointerEventsSystem'
 import { SceneInputRelay } from '../../input/SceneInputRelay'
 import { TriggerAreaSystem } from '../../input/TriggerAreaSystem'
 import { isTriggerAreaVerbose } from '../../input/triggerAreaConfig'
+import { CameraModeAreaSystem } from '../../input/CameraModeAreaSystem'
+import type { ForcedCameraMode } from '../../input/CameraModeAreaSystem'
 import { RaycastSystem } from '../../input/RaycastSystem'
 import { isRaycastVerbose } from '../../input/raycastConfig'
 import type { PhysXWorld } from '../../physics/PhysXWorld'
@@ -183,6 +185,8 @@ export class SceneScriptSystem {
   sceneInputRelay: SceneInputRelay | null = null
   private clearPlayerMoveKeys: (() => void) | null = null
   triggerAreas: TriggerAreaSystem | null = null
+  cameraModeAreas: CameraModeAreaSystem | null = null
+  private setForcedCameraMode: ((mode: ForcedCameraMode | null) => void) | null = null
   raycasts: RaycastSystem | null = null
   readonly engineApiEvents = new EngineApiEventBridge()
   private bridge: ThreeBridge | null = null
@@ -444,6 +448,7 @@ export class SceneScriptSystem {
     this.pointerEvents = new PointerEventsSystem(host.renderer.domElement)
     this.sceneInputRelay = new SceneInputRelay()
     this.triggerAreas = new TriggerAreaSystem()
+    this.cameraModeAreas = new CameraModeAreaSystem()
     this.raycasts = new RaycastSystem()
     this.avatarShapes.setAssetCache(cache, scene.realm.contentUrl)
     this.bridge.setOnGltfAttached((entity) => this.flushIncrementalColliders(entity))
@@ -2235,7 +2240,8 @@ export class SceneScriptSystem {
 
   private foldProjectionChanges(): void {
     const { PlayerEntity, CameraEntity, RootEntity } = this.view
-    const { TriggerArea, Transform, Billboard, MainCamera, InputModifier } = this.readComponents
+    const { TriggerArea, CameraModeArea, Transform, Billboard, MainCamera, InputModifier } =
+      this.readComponents
 
     for (const change of this.projection.changes) {
       if (
@@ -2275,7 +2281,9 @@ export class SceneScriptSystem {
 
       if (
         change.componentId === TriggerArea.componentId ||
-        (change.componentId === Transform.componentId && TriggerArea.has(change.entity))
+        change.componentId === CameraModeArea.componentId ||
+        (change.componentId === Transform.componentId &&
+          (TriggerArea.has(change.entity) || CameraModeArea.has(change.entity)))
       ) {
         this.triggerStructureDirty = true
       }
@@ -2327,6 +2335,7 @@ export class SceneScriptSystem {
     if (!this.triggerStructureDirty) return
     this.triggerStructureDirty = false
     this.triggerAreas?.invalidateCache()
+    this.cameraModeAreas?.invalidateCache()
   }
 
   setVideoUserGestureUnlocked(unlocked: boolean): void {
@@ -2363,13 +2372,15 @@ export class SceneScriptSystem {
       isRelayBlocked: () => boolean
       isLocomotionBlocked?: () => boolean
       clearPlayerMoveKeys?: () => void
-    }
+    },
+    setForcedCameraMode?: (mode: ForcedCameraMode | null) => void
   ): void {
     if (!this.pointerEvents || !this.collision || !this.bridge || !this.host) {
       clientDebugLog.log('pointer', 'bind skipped — scene not prepared', { level: 'warn' })
       return
     }
     this.clearPlayerMoveKeys = sceneInput?.clearPlayerMoveKeys ?? null
+    this.setForcedCameraMode = setForcedCameraMode ?? null
     // Pointer reads/iteration go through the projection view + facade (writes via setRenderer/appendRenderer + source capture).
     this.pointerEvents.bind({
       ecs: this.readComponents,
@@ -2425,6 +2436,18 @@ export class SceneScriptSystem {
       getPhysics,
       recordAppend: this.recordRendererAppend
     })
+    this.cameraModeAreas?.bind({
+      ecs: this.readComponents,
+      view: this.view,
+      getWorldTransformDeps: () => this.getWorldTransformDeps(),
+      getPlayerDclPosition: () => {
+        // DCL scene-space feet/origin — same frame as CameraModeArea Transform volumes.
+        const pose = this.virtualCameraPlayerPose?.() ?? this.clientPlayerPose
+        if (!pose) return null
+        return { x: pose.position.x, y: pose.position.y, z: pose.position.z }
+      },
+      setForcedCameraMode: (mode) => this.setForcedCameraMode?.(mode)
+    })
     this.raycasts?.bind({
       ecs: this.readComponents,
       view: this.view,
@@ -2476,6 +2499,7 @@ export class SceneScriptSystem {
   private syncTriggerAreas(): void {
     this.flushTriggerStructureIfDirty()
     this.triggerAreas?.sync()
+    this.cameraModeAreas?.sync()
   }
 
   private syncRaycasts(): void {
@@ -3779,6 +3803,9 @@ export class SceneScriptSystem {
     this.sceneInputRelay = null
     this.triggerAreas?.dispose()
     this.triggerAreas = null
+    this.cameraModeAreas?.dispose()
+    this.cameraModeAreas = null
+    this.setForcedCameraMode = null
     this.raycasts?.dispose()
     this.raycasts = null
     this.engineApiEvents.dispose()

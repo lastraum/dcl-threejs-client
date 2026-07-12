@@ -534,7 +534,9 @@ export function checkProjectionParity(
   const reserved = new Set<Entity>([engine.RootEntity, engine.PlayerEntity, engine.CameraEntity])
   const excludedIds = new Set<number>([
     components.PrimaryPointerInfo.componentId,
-    components.TweenState.componentId
+    components.TweenState.componentId,
+    components.CameraMode.componentId,
+    components.PointerLock.componentId
   ])
   const transformId = components.Transform.componentId
   const tween = components.Tween

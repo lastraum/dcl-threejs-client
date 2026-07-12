@@ -2,10 +2,11 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-12 (UI polish on `dev-latest`: chat people list + mouse sensitivity)  
+> **Last updated:** 2026-07-12 (ECS CameraMode + CameraModeArea + PointerLock on `lastraum`)  
 > **Current phase:** **v0.6.0** on `main`; lighting + **graphics prefs P0–P2** on `dev-latest`.  
-> **Graphics next (not started):** **P3 distance culls** (Scene / Landscape / Shadows Distance still UI stubs only) · **P4** bloom/HDR.  
-> **Product next:** Phase 4 `/goto` · Phase 3 Watch Lite · MOVE CAMERA residual.  
+> **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
+> **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
+> **Product next:** Phase 4 `/goto` · Phase 3 Watch Lite.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -60,6 +61,22 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 **Still open:** MOVE CAMERA residual · Watch Lite / `/goto` · multi-cascade shadow polish · post-FX bloom/HDR · distance culls (P3).
 
 **Not on `main` yet** — v0.6.0 release notes still list sun intensity/shadows as gaps; next cut can fold this milestone in.
+
+---
+
+## 🎉 Milestone — CameraMode / CameraModeArea / PointerLock (2026-07-12)
+
+**Status: on `lastraum`** — freecam mode report + area force + pointer-lock look.
+
+| Component | Status | Notes |
+| --------- | ------ | ----- |
+| **PointerLock** (1074) | 🔵 | Written on CameraEntity; **right-click** (or Tab) toggles lock; locked mouse movement = look; left-click does not orbit when locked |
+| **CameraMode** (1072) | 🔵 | Written on CameraEntity each frame — 1st/3rd from freecam distance (area force overrides) |
+| **CameraModeArea** (1071) | 🟢 | DCL volume from Transform + `area` size; forces FPV/TPV while inside; restores distance on leave |
+
+**Not done:** NftShape · GltfContainerLoadingState · AvatarModifierArea · graphics P3 distances.
+
+**QA:** Right-click lock → move mouse orbits without LMB; unlock Esc/Tab/right-click; scene with CameraModeArea FPV zone snaps to first person; leave restores third.
 
 ---
 

@@ -46,6 +46,11 @@ import type { AssetCache } from '../rendering/AssetCache'
 import type { ResolvedProfileEmote } from '../avatar/profileEmotes'
 import { AVATAR_YAW_OFFSET } from '../avatar/constants'
 import { clientSettings } from '../rendering/ClientSettings'
+import type { ForcedCameraMode } from '../input/CameraModeAreaSystem'
+
+/** PB CameraType — numeric (isolatedModules cannot import const enum). */
+const CT_FIRST_PERSON = 0
+const CT_THIRD_PERSON = 1
 
 const UP = new THREE.Vector3(0, 1, 0)
 const _forward = new THREE.Vector3()
@@ -150,6 +155,9 @@ export class PlayerSystem {
   private scenePositionLock = false
   private wasProfileEmoteActive = false
   private virtualCamera: VirtualCameraBridge | null = null
+  /** CameraModeArea force — null when freecam is player-controlled. */
+  private forcedCameraMode: ForcedCameraMode | null = null
+  private preForceCamDistance: number | null = null
   constructor(
     private readonly host: SceneHost,
     private readonly physics: PhysXWorld
@@ -327,7 +335,39 @@ export class PlayerSystem {
   }
 
   isPointerBlocked(): boolean {
+    // Orbit drag blocks some HUD picks; pointer-lock look does not (Explorer parity).
     return this.input?.orbiting ?? false
+  }
+
+  isPointerLocked(): boolean {
+    return this.input?.pointer.locked ?? false
+  }
+
+  /**
+   * CameraModeArea — force freecam 1st/3rd while inside. Restores prior distance on clear.
+   * No-op while a VirtualCamera owns the lens.
+   */
+  setForcedCameraMode(mode: ForcedCameraMode | null): void {
+    if (mode === this.forcedCameraMode) return
+    if (mode !== null && this.forcedCameraMode === null) {
+      this.preForceCamDistance = this.camDistance
+    }
+    if (mode === null) {
+      if (this.preForceCamDistance !== null) {
+        this.camDistance = this.preForceCamDistance
+        this.preForceCamDistance = null
+      }
+      this.forcedCameraMode = null
+      return
+    }
+    this.forcedCameraMode = mode
+    if (mode === 'first_person') {
+      this.camDistance = 0
+    } else if (this.camDistance <= CAM_FPV_MAX_DISTANCE) {
+      const restore = this.preForceCamDistance
+      this.camDistance =
+        restore !== null && restore > CAM_FPV_MAX_DISTANCE ? restore : CAM_DISTANCE_DEFAULT
+    }
   }
 
   getSceneKeyboardSnapshot(): SceneKeyboardSnapshot {
@@ -795,11 +835,24 @@ export class PlayerSystem {
       moveAxisZ
     })
     this.syncCamera(false, delta)
+    this.syncCameraModeAndPointerLockEcs()
     this.input.endFrame()
   }
 
   private isFirstPerson(): boolean {
+    if (this.forcedCameraMode === 'first_person') return true
+    if (this.forcedCameraMode === 'third_person') return false
     return this.camDistance <= CAM_FPV_MAX_DISTANCE
+  }
+
+  /** Report freecam mode + pointer lock to scene (CameraEntity). */
+  private syncCameraModeAndPointerLockEcs(): void {
+    if (!this.readComponents) return
+    const mode = this.isFirstPerson() ? CT_FIRST_PERSON : CT_THIRD_PERSON
+    this.readComponents.CameraMode.createOrReplace(SDK_RESERVED.camera as never, { mode })
+    this.readComponents.PointerLock.createOrReplace(SDK_RESERVED.camera as never, {
+      isPointerLocked: this.input?.pointer.locked ?? false
+    })
   }
 
   /**
@@ -822,9 +875,17 @@ export class PlayerSystem {
     }
 
     const zoomDelta = this.input.scrollDelta + this.input.pinchZoomDelta * 3
-    if (zoomDelta !== 0) {
+    if (zoomDelta !== 0 && this.forcedCameraMode === null) {
       this.camDistance += zoomDelta * ZOOM_WHEEL_SPEED
       this.camDistance = clamp(this.camDistance, CAM_DISTANCE_MIN, CAM_DISTANCE_MAX)
+    } else if (this.forcedCameraMode === 'first_person') {
+      this.camDistance = 0
+    } else if (this.forcedCameraMode === 'third_person') {
+      this.camDistance = clamp(
+        Math.max(this.camDistance, CAM_FPV_MAX_DISTANCE + 0.15),
+        CAM_FPV_MAX_DISTANCE + 0.15,
+        CAM_DISTANCE_MAX
+      )
     }
   }
 

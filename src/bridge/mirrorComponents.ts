@@ -17,6 +17,9 @@ export type MirrorComponents = {
   Animator: ReturnType<typeof generated.Animator>
   MainCamera: ReturnType<typeof generated.MainCamera>
   VirtualCamera: ReturnType<typeof generated.VirtualCamera>
+  CameraMode: ReturnType<typeof generated.CameraMode>
+  CameraModeArea: ReturnType<typeof generated.CameraModeArea>
+  PointerLock: ReturnType<typeof generated.PointerLock>
   AvatarLocomotionSettings: ReturnType<typeof generated.AvatarLocomotionSettings>
   InputModifier: ReturnType<typeof generated.InputModifier>
   AvatarShape: ReturnType<typeof generated.AvatarShape>
@@ -68,6 +71,9 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     Animator: generated.Animator(engine),
     MainCamera: generated.MainCamera(engine),
     VirtualCamera: generated.VirtualCamera(engine),
+    CameraMode: generated.CameraMode(engine),
+    CameraModeArea: generated.CameraModeArea(engine),
+    PointerLock: generated.PointerLock(engine),
     AvatarLocomotionSettings: generated.AvatarLocomotionSettings(engine),
     InputModifier: generated.InputModifier(engine),
     AvatarShape: generated.AvatarShape(engine),

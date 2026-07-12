@@ -685,7 +685,8 @@ export class World {
         isRelayBlocked: () => this.player!.isSceneRelayBlocked(),
         isLocomotionBlocked: () => this.player!.isLocomotionBlocked(),
         clearPlayerMoveKeys: () => this.player!.clearMoveKeys()
-      }
+      },
+      (mode) => this.player!.setForcedCameraMode(mode)
     )
     // Plaza-scale from entity count when GLTF collider extract is sparse (Genesis ~18 colliders).
     const hydration = this.sceneScript.getHydrationStats()

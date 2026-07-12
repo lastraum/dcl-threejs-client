@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-11 (materials + sun azimuth + skybox authority — see PROGRESS.md)
+> **Last updated:** 2026-07-12 (CameraMode / CameraModeArea / PointerLock — see PROGRESS.md)
 
 ---
 
@@ -65,6 +65,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | MeshCollider | 1019 | 🟢 | PhysX static + GLTF trimesh |
 | AvatarLocomotionSettings | 1211 | 🟢 | Read for jump tuning |
 | InputModifier | 1078 | 🟢 | Read path |
+| PointerLock | 1074 | 🔵 | Renderer writes CameraEntity; right-click (or Tab) toggles lock; lock movement = orbit look |
 | PointerEvents | 1062 | 🟢 | Raycast + hover hints + CRDT |
 | PointerEventsResult | 1063 | 🔵 | Grow-only to worker |
 | PrimaryPointerInfo | 1209 | 🔵 | Cursor ray on RootEntity |
@@ -77,6 +78,8 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | --------- | -- | ------ | ----- |
 | MainCamera | 1075 | 🟢 | Hot `player-frame`; bind target via `vc-bind-hydrate` |
 | VirtualCamera | 1076 | 🟢 | `VirtualCameraBridge` — locked world-flat hydrate; `parent===lookAt` PE-follow; live Transform exclusive while bound |
+| CameraMode | 1072 | 🔵 | Renderer writes 1st/3rd on CameraEntity from freecam distance |
+| CameraModeArea | 1071 | 🟢 | Volume forces 1st/3rd freecam; cinematic ignored (VC path) |
 
 ### Media & motion (Phase 3)
 

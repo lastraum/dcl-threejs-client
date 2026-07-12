@@ -6,9 +6,11 @@ import { dclToThreePos } from '../bridge/dclTransform'
 import { NameTagRenderer } from '../client/ui/NameTagRenderer'
 import { RenderStats } from '../client/ui/RenderStats'
 import {
+  clampMsaaSamples,
   effectivePixelRatio,
   renderQuality,
   TONE_MAPPING_EXPOSURE,
+  type MsaaSamples,
   type RenderQualityOptions
 } from './RenderQualitySettings'
 import { clientSettings } from './ClientSettings'
@@ -30,13 +32,31 @@ export class SceneHost {
   /** Min ms between full frames; 0 = every rAF. */
   private frameIntervalMs = 0
   private lastFrameTime = 0
+  /** Effective MSAA after GPU clamp (0 = render straight to canvas). */
+  private msaaSamples: MsaaSamples = 0
+  private msaaTarget: THREE.WebGLRenderTarget | null = null
+  private readonly blitScene = new THREE.Scene()
+  private readonly blitCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
+  private readonly blitMaterial: THREE.MeshBasicMaterial
+  private viewportCssW = 1
+  private viewportCssH = 1
 
   constructor(container: HTMLElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true })
+    // Canvas AA off — sample count is controlled via multisample render target (runtime prefs).
+    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
     this.renderer.setPixelRatio(effectivePixelRatio(renderQuality.getResolutionScale()))
     this.renderer.setSize(window.innerWidth, window.innerHeight)
     this.renderer.setClearColor(0x1a1a2e)
     container.appendChild(this.renderer.domElement)
+
+    this.blitMaterial = new THREE.MeshBasicMaterial({
+      map: null,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false
+    })
+    const blitMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.blitMaterial)
+    this.blitScene.add(blitMesh)
 
     this.renderer.domElement.addEventListener('webglcontextlost', (e) => {
       if (this.disposing) {
@@ -81,11 +101,14 @@ export class SceneHost {
 
   setViewportSize(width: number, height: number): void {
     if (width < 1 || height < 1) return
+    this.viewportCssW = width
+    this.viewportCssH = height
     if (this.camera) {
       this.camera.aspect = width / height
       this.camera.updateProjectionMatrix()
     }
     this.renderer.setSize(width, height, false)
+    this.ensureMsaaTargetSize()
     this.nameTags?.setSize(width, height)
     this.onViewportResize?.(width, height)
   }
@@ -126,7 +149,7 @@ export class SceneHost {
     return () => this.frameListeners.delete(listener)
   }
 
-  /** ACES tone mapping + exposure, shadows, resolution scale, FPS cap. */
+  /** ACES tone mapping + exposure, shadows, resolution scale, FPS cap, MSAA. */
   private applyRendererQuality(options: RenderQualityOptions): void {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
@@ -134,16 +157,84 @@ export class SceneHost {
     this.renderer.shadowMap.enabled = options.shadowQuality !== 'off'
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
     this.renderer.setPixelRatio(effectivePixelRatio(options.resolutionScale))
-    this.frameIntervalMs = options.fpsLimit > 0 ? 1000 / options.fpsLimit : 0
-    // Re-apply size so backing store matches new pixel ratio.
+
+    // VSync On + Max FPS → pure rAF (display-aligned). VSync Off still uses rAF (browser limit).
+    // Explicit FPS caps always apply.
+    if (options.fpsLimit > 0) {
+      this.frameIntervalMs = 1000 / options.fpsLimit
+    } else {
+      this.frameIntervalMs = 0
+    }
+
+    const maxSamples = this.renderer.capabilities.maxSamples ?? 0
+    this.msaaSamples = clampMsaaSamples(options.msaaSamples, maxSamples)
+    this.rebuildMsaaTarget()
+    // Re-apply size so backing store matches new pixel ratio / MSAA buffer.
     this.applyViewportSize()
+  }
+
+  private rebuildMsaaTarget(): void {
+    if (this.msaaSamples <= 0) {
+      this.msaaTarget?.dispose()
+      this.msaaTarget = null
+      this.blitMaterial.map = null
+      return
+    }
+    const pr = this.renderer.getPixelRatio()
+    const w = Math.max(1, Math.floor(this.viewportCssW * pr))
+    const h = Math.max(1, Math.floor(this.viewportCssH * pr))
+    if (
+      this.msaaTarget &&
+      this.msaaTarget.width === w &&
+      this.msaaTarget.height === h &&
+      this.msaaTarget.samples === this.msaaSamples
+    ) {
+      return
+    }
+    this.msaaTarget?.dispose()
+    this.msaaTarget = new THREE.WebGLRenderTarget(w, h, {
+      samples: this.msaaSamples,
+      type: THREE.UnsignedByteType,
+      format: THREE.RGBAFormat,
+      colorSpace: THREE.SRGBColorSpace,
+      depthBuffer: true,
+      stencilBuffer: false
+    })
+    this.msaaTarget.texture.name = 'msaa-color'
+    this.blitMaterial.map = this.msaaTarget.texture
+    this.blitMaterial.needsUpdate = true
+  }
+
+  private ensureMsaaTargetSize(): void {
+    if (this.msaaSamples <= 0) return
+    this.rebuildMsaaTarget()
+  }
+
+  private renderMainPass(): void {
+    if (this.msaaTarget && this.msaaSamples > 0) {
+      this.renderer.setRenderTarget(this.msaaTarget)
+      this.renderer.clear(true, true, true)
+      this.renderer.render(this.scene, this.camera)
+      this.renderer.setRenderTarget(null)
+      // Resolved MSAA color → canvas (tone mapping already applied in main pass).
+      const prevTone = this.renderer.toneMapping
+      const prevAutoClear = this.renderer.autoClear
+      this.renderer.toneMapping = THREE.NoToneMapping
+      this.renderer.autoClear = true
+      this.renderer.render(this.blitScene, this.blitCamera)
+      this.renderer.toneMapping = prevTone
+      this.renderer.autoClear = prevAutoClear
+    } else {
+      this.renderer.setRenderTarget(null)
+      this.renderer.render(this.scene, this.camera)
+    }
   }
 
   /** Draw one frame without starting the animation loop (used after asset hydration). */
   renderFrame(): void {
     if (this.orbitEnabled) this.controls.update()
     this.renderStats.begin()
-    this.renderer.render(this.scene, this.camera)
+    this.renderMainPass()
     this.nameTags.render(this.scene, this.camera)
     this.renderStats.end()
     this.renderStats.update()
@@ -194,7 +285,7 @@ export class SceneHost {
       this.renderStats.begin()
       if (this.orbitEnabled) this.controls.update()
       const renderT0 = performance.now()
-      this.renderer.render(this.scene, this.camera)
+      this.renderMainPass()
       this.nameTags.render(this.scene, this.camera)
       const renderMs = performance.now() - renderT0
       this.renderStats.end()
@@ -204,14 +295,18 @@ export class SceneHost {
         console.info(
           '[SceneHost] first frame — cam:',
           this.camera.position.toArray().map((n) => n.toFixed(1)),
-          'children:', this.scene.children.length
+          'children:',
+          this.scene.children.length,
+          'msaa:',
+          this.msaaSamples
         )
       }
 
       if (!asyncBusy && opts.onAsyncFrame) {
         asyncBusy = true
         const asyncT0 = performance.now()
-        opts.onAsyncFrame(delta)
+        opts
+          .onAsyncFrame(delta)
           .catch((err) => console.error('[SceneHost] async frame failed', err))
           .finally(() => {
             lastAsyncMs = performance.now() - asyncT0
@@ -257,6 +352,9 @@ export class SceneHost {
     this.viewportElement = null
     this.onViewportResize = null
     this.stop()
+    this.msaaTarget?.dispose()
+    this.msaaTarget = null
+    this.blitMaterial.dispose()
     this.nameTags.dispose()
     this.controls.dispose()
     this.renderStats.dom.remove()

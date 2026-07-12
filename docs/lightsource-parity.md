@@ -87,7 +87,7 @@ Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not rep
 | **Sun/hemi intensity vs Explorer** | Trilight + anim peak 2.72; **Reset lighting** if old localStorage sliders persist. |
 | **GltfNodeModifiers castShadows** | Per-node GLTF shadow flags not wired; Material `castShadows` is. |
 | **Per-layer cloud tints** | Explorer uses per-layer gradients; we use one global `uCloudsColor` for all cubemap layers. |
-| **Graphics post-FX stubs** | Preferences MSAA/bloom/HDR/outline/distance still UI-only; **preset / shadows / scene lights / res scale / FPS** are live. |
+| **Graphics post-FX stubs** | Preferences bloom/HDR/outline/distance still UI-only; **preset / shadows / scene lights / res scale / FPS / MSAA / VSync / Fullscreen** are live. |
 | **Custom skybox + user sliders** | Worlds with `/about` cubemap hide GenesisSky; lighting sliders don't affect custom backgrounds. |
 
 ## Key files

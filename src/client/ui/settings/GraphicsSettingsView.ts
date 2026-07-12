@@ -12,6 +12,7 @@ import {
   renderQuality,
   type FpsLimitOption,
   type GraphicsPreset,
+  type MsaaSamples,
   type RenderQualityOptions,
   type ShadowQuality
 } from '../../../rendering/RenderQualitySettings'
@@ -55,6 +56,7 @@ type SectionDef = {
 const PRESET_LABELS = ['Low', 'Medium', 'High', 'Ultra', 'Custom'] as const
 const SHADOW_LABELS = ['Off', 'Low', 'Medium', 'High', 'Ultra'] as const
 const FPS_LABELS = ['30', '60', '120', 'Max'] as const
+const MSAA_LABELS = ['Off', '2x', '4x', '8x'] as const
 
 function presetLabel(preset: GraphicsPreset): string {
   return preset.charAt(0).toUpperCase() + preset.slice(1)
@@ -68,9 +70,38 @@ function fpsLabel(limit: FpsLimitOption): string {
   return limit === 0 ? 'Max' : String(limit)
 }
 
+function msaaLabel(samples: MsaaSamples): string {
+  return samples === 0 ? 'Off' : `${samples}x`
+}
+
+function parseMsaaLabel(label: string): MsaaSamples | null {
+  if (label === 'Off') return 0
+  const m = /^(\d+)x$/i.exec(label.trim())
+  if (!m) return null
+  const n = Number(m[1])
+  if (n === 2 || n === 4 || n === 8) return n
+  return null
+}
+
 function indexOfLabel(options: readonly string[], label: string, fallback: number): number {
   const i = options.indexOf(label)
   return i >= 0 ? i : fallback
+}
+
+function isDocumentFullscreen(): boolean {
+  return document.fullscreenElement != null
+}
+
+async function setDocumentFullscreen(on: boolean): Promise<void> {
+  try {
+    if (on) {
+      if (!isDocumentFullscreen()) await document.documentElement.requestFullscreen()
+    } else if (isDocumentFullscreen()) {
+      await document.exitFullscreen()
+    }
+  } catch {
+    /* user gesture / browser policy */
+  }
 }
 
 function buildSections(rq: RenderQualityOptions): SectionDef[] {
@@ -121,7 +152,14 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
           suffix: '°',
           onChange: (v) => clientSettings.setFov(v)
         },
-        { type: 'toggle', label: 'Fullscreen', defaultOn: false, stub: true },
+        {
+          type: 'toggle',
+          label: 'Fullscreen',
+          defaultOn: isDocumentFullscreen(),
+          onChange: (on) => {
+            void setDocumentFullscreen(on)
+          }
+        },
         {
           type: 'dropdown',
           label: 'FPS Limit',
@@ -136,13 +174,27 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
             if (n === 30 || n === 60 || n === 120) renderQuality.setFpsLimit(n)
           }
         },
-        { type: 'toggle', label: 'VSync', defaultOn: true, stub: true }
+        {
+          type: 'toggle',
+          label: 'VSync',
+          defaultOn: rq.vsync,
+          onChange: (on) => renderQuality.setVsync(on)
+        }
       ]
     },
     {
       title: 'Post Processing',
       items: [
-        { type: 'dropdown', label: 'MSAA', options: ['Off', '2x', '4x', '8x'], defaultIndex: 2, stub: true },
+        {
+          type: 'dropdown',
+          label: 'MSAA',
+          options: [...MSAA_LABELS],
+          defaultIndex: indexOfLabel(MSAA_LABELS, msaaLabel(rq.msaaSamples), 2),
+          onChange: (v) => {
+            const samples = parseMsaaLabel(v)
+            if (samples !== null) renderQuality.setMsaaSamples(samples)
+          }
+        },
         { type: 'toggle', label: 'HDR', defaultOn: true, stub: true },
         { type: 'toggle', label: 'Bloom', defaultOn: true, stub: true },
         { type: 'toggle', label: 'Avatar Outline', defaultOn: false, stub: true }
@@ -217,6 +269,7 @@ export class GraphicsSettingsView {
   private readonly boundControls: BoundControl[] = []
   private readonly unsubscribeSun?: () => void
   private readonly unsubscribeQuality?: () => void
+  private readonly onFullscreenChange: () => void
   private syncing = false
 
   constructor() {
@@ -234,6 +287,9 @@ export class GraphicsSettingsView {
     this.root.appendChild(scrollArea)
     this.unsubscribeSun = sunEnvironmentSettings.subscribe((state) => this.syncSunControls(state))
     this.unsubscribeQuality = renderQuality.subscribe((opts) => this.syncQualityControls(opts))
+
+    this.onFullscreenChange = () => this.syncFullscreenControl()
+    document.addEventListener('fullscreenchange', this.onFullscreenChange)
   }
 
   private buildLightingSection(): HTMLElement {
@@ -330,6 +386,12 @@ export class GraphicsSettingsView {
           case 'FPS Limit':
             if (control.kind === 'dropdown') control.select.value = fpsLabel(opts.fpsLimit)
             break
+          case 'VSync':
+            if (control.kind === 'toggle') control.input.checked = opts.vsync
+            break
+          case 'MSAA':
+            if (control.kind === 'dropdown') control.select.value = msaaLabel(opts.msaaSamples)
+            break
           case 'Enable Scene Lights':
             if (control.kind === 'toggle') control.input.checked = opts.sceneLightsEnabled
             break
@@ -343,6 +405,19 @@ export class GraphicsSettingsView {
           case 'Quality':
             if (control.kind === 'dropdown') control.select.value = shadowLabel(opts.shadowQuality)
             break
+        }
+      }
+    } finally {
+      this.syncing = false
+    }
+  }
+
+  private syncFullscreenControl(): void {
+    this.syncing = true
+    try {
+      for (const control of this.boundControls) {
+        if (control.name === 'Fullscreen' && control.kind === 'toggle') {
+          control.input.checked = isDocumentFullscreen()
         }
       }
     } finally {
@@ -534,6 +609,7 @@ export class GraphicsSettingsView {
   }
 
   dispose(): void {
+    document.removeEventListener('fullscreenchange', this.onFullscreenChange)
     this.unsubscribeSun?.()
     this.unsubscribeQuality?.()
     this.root.remove()

@@ -11,6 +11,8 @@ export type GraphicsPreset = 'low' | 'medium' | 'high' | 'ultra' | 'custom'
 export type ShadowQuality = 'off' | 'low' | 'medium' | 'high' | 'ultra'
 /** 0 = uncapped (display refresh). */
 export type FpsLimitOption = 30 | 60 | 120 | 0
+/** Multisample AA sample count (0 = off). WebGL2 RT path. */
+export type MsaaSamples = 0 | 2 | 4 | 8
 
 export type RenderQualityOptions = {
   tier: RenderQualityTier
@@ -21,6 +23,13 @@ export type RenderQualityOptions = {
   /** Percent of devicePixelRatio (50–200). */
   resolutionScale: number
   fpsLimit: FpsLimitOption
+  /** MSAA samples for the main color buffer (0/2/4/8). */
+  msaaSamples: MsaaSamples
+  /**
+   * Prefer display-aligned pacing when FPS is Max.
+   * Browsers still composite with the display; Off does not enable free-run tearing.
+   */
+  vsync: boolean
 }
 
 /** Max ECS LightSource lights active at once (nearest to view) — preset defaults. */
@@ -71,7 +80,9 @@ const PRESET_BUNDLES: Record<PresetId, Omit<RenderQualityOptions, 'preset'>> = {
     sceneLightsEnabled: true,
     maxSceneLights: LIGHT_LIMITS[RenderQualityTier.Low],
     resolutionScale: 75,
-    fpsLimit: 30
+    fpsLimit: 30,
+    msaaSamples: 0,
+    vsync: true
   },
   medium: {
     tier: RenderQualityTier.Medium,
@@ -79,7 +90,9 @@ const PRESET_BUNDLES: Record<PresetId, Omit<RenderQualityOptions, 'preset'>> = {
     sceneLightsEnabled: true,
     maxSceneLights: LIGHT_LIMITS[RenderQualityTier.Medium],
     resolutionScale: 100,
-    fpsLimit: 60
+    fpsLimit: 60,
+    msaaSamples: 4,
+    vsync: true
   },
   high: {
     tier: RenderQualityTier.High,
@@ -87,7 +100,9 @@ const PRESET_BUNDLES: Record<PresetId, Omit<RenderQualityOptions, 'preset'>> = {
     sceneLightsEnabled: true,
     maxSceneLights: LIGHT_LIMITS[RenderQualityTier.High],
     resolutionScale: 100,
-    fpsLimit: 60
+    fpsLimit: 60,
+    msaaSamples: 4,
+    vsync: true
   },
   ultra: {
     tier: RenderQualityTier.Ultra,
@@ -95,7 +110,9 @@ const PRESET_BUNDLES: Record<PresetId, Omit<RenderQualityOptions, 'preset'>> = {
     sceneLightsEnabled: true,
     maxSceneLights: LIGHT_LIMITS[RenderQualityTier.Ultra],
     resolutionScale: 125,
-    fpsLimit: 0
+    fpsLimit: 0,
+    msaaSamples: 8,
+    vsync: true
   }
 }
 
@@ -126,6 +143,10 @@ function isFpsLimit(v: unknown): v is FpsLimitOption {
   return v === 0 || v === 30 || v === 60 || v === 120
 }
 
+function isMsaaSamples(v: unknown): v is MsaaSamples {
+  return v === 0 || v === 2 || v === 4 || v === 8
+}
+
 function isPreset(v: unknown): v is GraphicsPreset {
   return v === 'low' || v === 'medium' || v === 'high' || v === 'ultra' || v === 'custom'
 }
@@ -140,13 +161,36 @@ function normalizeFpsLimit(v: unknown): FpsLimitOption | null {
   return null
 }
 
+function normalizeMsaa(v: unknown): MsaaSamples | null {
+  if (isMsaaSamples(v)) return v
+  if (v === 'Off' || v === 'off') return 0
+  if (typeof v === 'string') {
+    const m = /^(\d+)x$/i.exec(v.trim())
+    if (m) {
+      const n = Number(m[1])
+      if (isMsaaSamples(n)) return n
+    }
+    const n = Number(v)
+    if (isMsaaSamples(n)) return n
+  }
+  return null
+}
+
 /** Effective WebGL pixel ratio from device DPR × resolution scale %. */
 export function effectivePixelRatio(resolutionScale: number, devicePixelRatio = window.devicePixelRatio): number {
   const scale = clampResolutionScale(resolutionScale) / 100
   return Math.max(0.5, Math.min(3, devicePixelRatio * scale))
 }
 
-/** Client render quality — LightManager, shadows, resolution scale, FPS (debug + Preferences). */
+/** Clamp requested MSAA to GPU maxSamples (WebGL2). */
+export function clampMsaaSamples(requested: MsaaSamples, maxSamples: number): MsaaSamples {
+  if (requested <= 0 || maxSamples <= 0) return 0
+  if (requested <= 2) return maxSamples >= 2 ? 2 : 0
+  if (requested <= 4) return maxSamples >= 4 ? 4 : maxSamples >= 2 ? 2 : 0
+  return maxSamples >= 8 ? 8 : maxSamples >= 4 ? 4 : maxSamples >= 2 ? 2 : 0
+}
+
+/** Client render quality — LightManager, shadows, resolution scale, FPS, MSAA (debug + Preferences). */
 class RenderQualityStore {
   private options: RenderQualityOptions = { ...DEFAULT_OPTIONS }
   private readonly listeners = new Set<Listener>()
@@ -204,6 +248,14 @@ class RenderQualityStore {
     return this.options.fpsLimit
   }
 
+  getMsaaSamples(): MsaaSamples {
+    return this.options.msaaSamples
+  }
+
+  getVsync(): boolean {
+    return this.options.vsync
+  }
+
   /** Apply a named preset bundle (not custom). */
   applyPreset(preset: PresetId): void {
     const bundle = PRESET_BUNDLES[preset]
@@ -232,6 +284,14 @@ class RenderQualityStore {
 
   setFpsLimit(fpsLimit: FpsLimitOption): void {
     this.patch({ fpsLimit })
+  }
+
+  setMsaaSamples(msaaSamples: MsaaSamples): void {
+    this.patch({ msaaSamples })
+  }
+
+  setVsync(vsync: boolean): void {
+    this.patch({ vsync })
   }
 
   setOptions(partial: Partial<RenderQualityOptions>): void {
@@ -263,6 +323,8 @@ class RenderQualityStore {
     if (!isFpsLimit(next.fpsLimit)) next.fpsLimit = this.options.fpsLimit
     if (!isShadowQuality(next.shadowQuality)) next.shadowQuality = this.options.shadowQuality
     if (!isTier(next.tier)) next.tier = this.options.tier
+    if (!isMsaaSamples(next.msaaSamples)) next.msaaSamples = this.options.msaaSamples
+    if (typeof next.vsync !== 'boolean') next.vsync = this.options.vsync
 
     if (partial.preset === undefined || partial.preset === 'custom') {
       next.preset = this.inferPreset(next)
@@ -281,7 +343,9 @@ class RenderQualityStore {
         state.sceneLightsEnabled === b.sceneLightsEnabled &&
         state.maxSceneLights === b.maxSceneLights &&
         state.resolutionScale === b.resolutionScale &&
-        state.fpsLimit === b.fpsLimit
+        state.fpsLimit === b.fpsLimit &&
+        state.msaaSamples === b.msaaSamples &&
+        state.vsync === b.vsync
       ) {
         return id
       }
@@ -297,7 +361,9 @@ class RenderQualityStore {
       a.sceneLightsEnabled === b.sceneLightsEnabled &&
       a.maxSceneLights === b.maxSceneLights &&
       a.resolutionScale === b.resolutionScale &&
-      a.fpsLimit === b.fpsLimit
+      a.fpsLimit === b.fpsLimit &&
+      a.msaaSamples === b.msaaSamples &&
+      a.vsync === b.vsync
     )
   }
 
@@ -335,18 +401,29 @@ class RenderQualityStore {
       if (typeof parsed.resolutionScale === 'number') next.resolutionScale = clampResolutionScale(parsed.resolutionScale)
       const fps = normalizeFpsLimit(parsed.fpsLimit)
       if (fps !== null) next.fpsLimit = fps
+      const msaa = normalizeMsaa(parsed.msaaSamples)
+      if (msaa !== null) next.msaaSamples = msaa
+      if (typeof parsed.vsync === 'boolean') next.vsync = parsed.vsync
+
       if (isPreset(parsed.preset)) {
         next.preset = parsed.preset === 'custom' ? this.inferPreset(next) : parsed.preset
         if (next.preset !== 'custom') {
-          const bundle = PRESET_BUNDLES[next.preset]
-          // Only fill missing fields from bundle if user had an old {tier}-only save
-          if (!isShadowQuality(parsed.shadowQuality)) Object.assign(next, { ...bundle, preset: next.preset })
+          // Only fill missing fields from bundle if user had an old partial save
+          if (!isShadowQuality(parsed.shadowQuality)) {
+            Object.assign(next, { ...PRESET_BUNDLES[next.preset], preset: next.preset })
+          } else {
+            // Merge newer fields that old saves lack
+            if (msaa === null) next.msaaSamples = PRESET_BUNDLES[next.preset].msaaSamples
+            if (typeof parsed.vsync !== 'boolean') next.vsync = PRESET_BUNDLES[next.preset].vsync
+          }
         }
       } else if (isTier(parsed.tier)) {
-        // Legacy: only tier was stored (in-memory previously; tolerate if someone saved it)
         next.preset = parsed.tier
         if (!isShadowQuality(parsed.shadowQuality)) {
           Object.assign(next, { ...PRESET_BUNDLES[parsed.tier], preset: parsed.tier })
+        } else {
+          if (msaa === null) next.msaaSamples = PRESET_BUNDLES[parsed.tier].msaaSamples
+          if (typeof parsed.vsync !== 'boolean') next.vsync = PRESET_BUNDLES[parsed.tier].vsync
         }
       }
 

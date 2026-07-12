@@ -53,12 +53,15 @@ type SectionDef = {
   items: SettingDef[]
 }
 
-const PRESET_LABELS = ['Low', 'Medium', 'High', 'Ultra', 'Custom'] as const
+/** UI presets — Ultra bundle still exists in store but is not offered in Preferences. */
+const PRESET_LABELS = ['Low', 'Medium', 'High', 'Custom'] as const
 const SHADOW_LABELS = ['Off', 'Low', 'Medium', 'High', 'Ultra'] as const
 const FPS_LABELS = ['30', '60', '120', 'Max'] as const
 const MSAA_LABELS = ['Off', '2x', '4x', '8x'] as const
 
 function presetLabel(preset: GraphicsPreset): string {
+  // Ultra is not in the Preferences dropdown; surface as Custom.
+  if (preset === 'ultra') return 'Custom'
   return preset.charAt(0).toUpperCase() + preset.slice(1)
 }
 
@@ -88,22 +91,6 @@ function indexOfLabel(options: readonly string[], label: string, fallback: numbe
   return i >= 0 ? i : fallback
 }
 
-function isDocumentFullscreen(): boolean {
-  return document.fullscreenElement != null
-}
-
-async function setDocumentFullscreen(on: boolean): Promise<void> {
-  try {
-    if (on) {
-      if (!isDocumentFullscreen()) await document.documentElement.requestFullscreen()
-    } else if (isDocumentFullscreen()) {
-      await document.exitFullscreen()
-    }
-  } catch {
-    /* user gesture / browser policy */
-  }
-}
-
 function buildSections(rq: RenderQualityOptions): SectionDef[] {
   return [
     {
@@ -115,9 +102,9 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
           options: [...PRESET_LABELS],
           defaultIndex: indexOfLabel(PRESET_LABELS, presetLabel(rq.preset), 1),
           onChange: (v) => {
-            const key = v.toLowerCase() as GraphicsPreset
+            const key = v.toLowerCase()
             if (key === 'custom') return
-            if (key === 'low' || key === 'medium' || key === 'high' || key === 'ultra') {
+            if (key === 'low' || key === 'medium' || key === 'high') {
               renderQuality.applyPreset(key)
             }
           }
@@ -152,14 +139,7 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
           suffix: '°',
           onChange: (v) => clientSettings.setFov(v)
         },
-        {
-          type: 'toggle',
-          label: 'Fullscreen',
-          defaultOn: isDocumentFullscreen(),
-          onChange: (on) => {
-            void setDocumentFullscreen(on)
-          }
-        },
+        { type: 'toggle', label: 'Fullscreen', defaultOn: false, stub: true },
         {
           type: 'dropdown',
           label: 'FPS Limit',
@@ -269,7 +249,6 @@ export class GraphicsSettingsView {
   private readonly boundControls: BoundControl[] = []
   private readonly unsubscribeSun?: () => void
   private readonly unsubscribeQuality?: () => void
-  private readonly onFullscreenChange: () => void
   private syncing = false
 
   constructor() {
@@ -287,9 +266,6 @@ export class GraphicsSettingsView {
     this.root.appendChild(scrollArea)
     this.unsubscribeSun = sunEnvironmentSettings.subscribe((state) => this.syncSunControls(state))
     this.unsubscribeQuality = renderQuality.subscribe((opts) => this.syncQualityControls(opts))
-
-    this.onFullscreenChange = () => this.syncFullscreenControl()
-    document.addEventListener('fullscreenchange', this.onFullscreenChange)
   }
 
   private buildLightingSection(): HTMLElement {
@@ -405,19 +381,6 @@ export class GraphicsSettingsView {
           case 'Quality':
             if (control.kind === 'dropdown') control.select.value = shadowLabel(opts.shadowQuality)
             break
-        }
-      }
-    } finally {
-      this.syncing = false
-    }
-  }
-
-  private syncFullscreenControl(): void {
-    this.syncing = true
-    try {
-      for (const control of this.boundControls) {
-        if (control.name === 'Fullscreen' && control.kind === 'toggle') {
-          control.input.checked = isDocumentFullscreen()
         }
       }
     } finally {
@@ -609,7 +572,6 @@ export class GraphicsSettingsView {
   }
 
   dispose(): void {
-    document.removeEventListener('fullscreenchange', this.onFullscreenChange)
     this.unsubscribeSun?.()
     this.unsubscribeQuality?.()
     this.root.remove()

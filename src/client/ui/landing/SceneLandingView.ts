@@ -16,6 +16,8 @@ import { SceneUsersModal } from './SceneUsersModal'
 export type SceneLandingViewOptions = SocialShellChromeHandlers & {
   route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
   login: LoginResult
+  /** When false, CTA shows "Sign in" and must complete Guest/wallet before Jump in. */
+  playSessionReady?: boolean
   onJumpIn: () => void
   onNavigate: (tab: SocialShellTab) => void
   onEventJumpIn?: (target: RouteTarget, event: DclEvent) => void
@@ -48,6 +50,7 @@ export class SceneLandingView {
   private relatedEvents: DclEvent[] = []
   private disposed = false
   private jumpInLoading = false
+  private playSessionReady = false
   private targetProgress = 0
   private displayedProgress = 0
   private progressAnimFrame = 0
@@ -60,6 +63,7 @@ export class SceneLandingView {
     this.route = opts.route
     this.onJumpIn = opts.onJumpIn
     this.onNavigate = opts.onNavigate
+    this.playSessionReady = opts.playSessionReady === true
 
     this.topNav = new SocialShellTopNav({
       activeTab: null,
@@ -110,6 +114,12 @@ export class SceneLandingView {
 
   setLogin(login: LoginResult): void {
     this.topNav.setLogin(login)
+  }
+
+  /** Update Jump in / Sign in CTA after auth panel or profile login. */
+  setPlaySessionReady(ready: boolean): void {
+    this.playSessionReady = ready
+    this.syncJumpInLabel()
   }
 
   dispose(): void {
@@ -312,10 +322,23 @@ export class SceneLandingView {
   }
 
   private bindJumpIn(): void {
+    this.syncJumpInLabel()
     this.root.querySelector('[data-jump-in]')?.addEventListener('click', () => {
       if (this.jumpInLoading) return
       this.onJumpIn()
     })
+  }
+
+  private syncJumpInLabel(): void {
+    const label = this.root.querySelector('.scene-watch-dest-jump-in-bar-label')
+    if (label) label.textContent = this.playSessionReady ? 'Jump in' : 'Sign in'
+    const btn = this.root.querySelector('[data-jump-in]') as HTMLButtonElement | null
+    if (btn) {
+      btn.setAttribute('aria-label', this.playSessionReady ? 'Jump in' : 'Sign in to jump in')
+      btn.title = this.playSessionReady
+        ? 'Enter the scene'
+        : 'Sign in with wallet or continue as guest to enter'
+    }
   }
 
   private bindCrowdBadge(): void {
@@ -483,7 +506,7 @@ export class SceneLandingView {
                           <div class="scene-watch-dest-scene-card-actions">
                             <div class="scene-watch-dest-scene-card-cta-row">
                               <button type="button" class="scene-watch-dest-jump-in-bar" data-jump-in>
-                                <span class="scene-watch-dest-jump-in-bar-label">Jump in</span>
+                                <span class="scene-watch-dest-jump-in-bar-label">${this.playSessionReady ? 'Jump in' : 'Sign in'}</span>
                                 <span class="scene-watch-dest-jump-in-arrow-box" aria-hidden>
                                   <svg class="scene-watch-dest-jump-in-arrow-svg" viewBox="0 0 24 24" width="14" height="14" fill="none">
                                     <path d="M5 12h12M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>

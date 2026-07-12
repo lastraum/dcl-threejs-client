@@ -23,7 +23,7 @@ export class ExplorerAuthPanel {
       <div class="explorer-auth-panel__sheet" role="dialog" aria-label="Sign in" aria-modal="true">
         <button type="button" class="explorer-auth-panel__close" data-close aria-label="Close">&times;</button>
         <h2 class="explorer-auth-panel__title">Sign in to Decentraland</h2>
-        <p class="explorer-auth-panel__subtitle">Connect your wallet for favorites, chat, and voice.</p>
+        <p class="explorer-auth-panel__subtitle">Wallet for full social (chat, voice, favorites) — or continue as Guest to explore.</p>
         <p class="explorer-auth-panel__status" data-status hidden></p>
         <div class="explorer-auth-panel__actions">
           <button type="button" class="explorer-auth-panel__btn explorer-auth-panel__btn--primary" data-metamask>

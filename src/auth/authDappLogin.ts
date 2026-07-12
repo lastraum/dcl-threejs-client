@@ -25,7 +25,6 @@ type PollOutcome = {
 }
 
 const POLL_MS = 1500
-const POPUP_FEATURES = 'popup=yes,width=480,height=720,menubar=no,toolbar=no,location=yes,status=no'
 
 function authApiBase(): string {
   return AUTH_API_URL.replace(/\/+$/, '')
@@ -109,8 +108,11 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
-function openAuthPopup(url: string): Window | null {
-  const w = window.open(url, 'dcl-auth-login', POPUP_FEATURES)
+/** Prefer a full browser tab (not a sized popup window). */
+function openAuthTab(url: string): Window | null {
+  // No windowFeatures → browsers open a normal tab. Avoid noopener so we can
+  // set location after create-request and detect tab close while polling.
+  const w = window.open(url, '_blank')
   try {
     w?.focus()
   } catch {
@@ -143,7 +145,7 @@ export async function loginWithAuthDapp(
   onStatus?: StatusCallback
 ): Promise<LoginResult> {
   const abort = new AbortController()
-  let popup: Window | null = null
+  let authTab: Window | null = null
   let closedPoll: number | null = null
 
   try {
@@ -153,31 +155,32 @@ export async function loginWithAuthDapp(
     const ephemeralMessage = Authenticator.getEphemeralMessage(ephemeral.address, expiration)
 
     onStatus?.('Opening Decentraland login…')
-    // Open blank first so the click gesture is preserved for popup blockers.
-    popup = openAuthPopup('about:blank')
+    // Open blank tab on the user gesture first (avoids blockers after await).
+    authTab = openAuthTab('about:blank')
 
     const created = await createSignRequest(ephemeralMessage)
     const loginUrl = buildAuthLoginUrl(created.requestId, loginMethod)
 
-    if (popup && !popup.closed) {
+    if (authTab && !authTab.closed) {
       try {
-        popup.location.href = loginUrl
+        // about:blank + noopener may block location writes — reopen if needed.
+        authTab.location.href = loginUrl
       } catch {
-        popup = openAuthPopup(loginUrl)
+        authTab = openAuthTab(loginUrl)
       }
     } else {
-      popup = openAuthPopup(loginUrl)
+      authTab = openAuthTab(loginUrl)
     }
-    if (!popup) {
-      throw new Error('Popup blocked — allow popups for this site and try again')
+    if (!authTab) {
+      throw new Error('Tab blocked — allow popups/tabs for this site and try again')
     }
 
     onStatus?.(
-      `Confirm code ${String(created.code).padStart(2, '0')} in the login window…`
+      `Confirm code ${String(created.code).padStart(2, '0')} in the login tab…`
     )
 
     closedPoll = window.setInterval(() => {
-      if (popup?.closed) abort.abort()
+      if (authTab?.closed) abort.abort()
     }, 800)
 
     const outcome = await pollSignOutcome(created.requestId, created.expiration, abort.signal)
@@ -211,12 +214,12 @@ export async function loginWithAuthDapp(
     writeStoredIdentity(sender, identity)
     return { kind: 'wallet', address: sender, identity }
   } catch (err) {
-    if (abort.signal.aborted) throw new Error('Login window closed')
+    if (abort.signal.aborted) throw new Error('Login tab closed')
     throw err
   } finally {
     if (closedPoll != null) window.clearInterval(closedPoll)
     try {
-      if (popup && !popup.closed) popup.close()
+      if (authTab && !authTab.closed) authTab.close()
     } catch {
       /* ignore */
     }

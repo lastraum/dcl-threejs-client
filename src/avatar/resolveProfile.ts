@@ -1,4 +1,5 @@
 import {
+  assetUrnFromCompleteUrn,
   BODY_SHAPE_URN,
   DEFAULT_WEARABLE_CATEGORIES,
   defaultWearableUrn,
@@ -15,6 +16,29 @@ import {
 import { getSlots } from './slots'
 import type { AvatarComposeConfig, AvatarProfile, BodyShape, WearableDefinition } from './types'
 
+/** True when every profile wearable pointer resolved into a definition (avoids bald-cache hits). */
+function wearablesCoverProfileUrns(
+  wearables: WearableDefinition[],
+  profileUrns: string[],
+  bodyShape: BodyShape
+): boolean {
+  const have = new Set<string>()
+  for (const w of wearables) {
+    if (!hasRepresentation(w, bodyShape)) continue
+    have.add(normalizeUrn(w.id))
+    have.add(assetUrnFromCompleteUrn(w.id))
+    have.add(normalizeUrn(catalystPointerForWearableUrn(w.id)))
+  }
+  for (const urn of profileUrns) {
+    const pointer = normalizeUrn(catalystPointerForWearableUrn(urn))
+    const asset = assetUrnFromCompleteUrn(pointer)
+    if (!have.has(pointer) && !have.has(asset) && !have.has(normalizeUrn(urn))) {
+      return false
+    }
+  }
+  return true
+}
+
 export async function buildComposeConfig(
   profile: AvatarProfile,
   address?: string,
@@ -24,42 +48,44 @@ export async function buildComposeConfig(
   const cacheKey = address?.toLowerCase() ?? profile.address?.toLowerCase()
   const fingerprint = profileWearableFingerprint(profile)
 
+  const profileUrns = profile.wearables.map(normalizeUrn)
+  if (
+    !profileUrns.some(
+      (u) => normalizeUrn(u).includes('basemale') || normalizeUrn(u).includes('basefemale')
+    )
+  ) {
+    profileUrns.unshift(BODY_SHAPE_URN[profile.bodyShape])
+  }
+
   if (cacheKey) {
     const cached = readCachedAvatar(cacheKey, fingerprint)
     if (cached) {
       const wearables = cached.wearables.filter((w) => hasRepresentation(w, profile.bodyShape))
-      const slots = getSlots({
-        bodyShape: profile.bodyShape,
-        wearables,
-        forceRender: profile.forceRender
-      })
-      const slotted = Array.from(slots.values())
-      if (getBodyShapeWearable(slotted, profile.bodyShape)) {
+      if (
+        wearablesCoverProfileUrns(wearables, profileUrns, profile.bodyShape) &&
+        getBodyShapeWearable(wearables, profile.bodyShape)
+      ) {
+        const slots = getSlots({
+          bodyShape: profile.bodyShape,
+          wearables,
+          forceRender: profile.forceRender
+        })
         return {
           bodyShape: profile.bodyShape,
           skin: profile.skin,
           hair: profile.hair,
           eyes: profile.eyes,
-          wearables: slotted,
+          wearables: Array.from(slots.values()),
           forceRender: profile.forceRender
         }
       }
     }
   }
 
-  const urns = profile.wearables.map(normalizeUrn)
-  if (
-    !urns.some(
-      (u) => normalizeUrn(u).includes('basemale') || normalizeUrn(u).includes('basefemale')
-    )
-  ) {
-    urns.unshift(BODY_SHAPE_URN[profile.bodyShape])
-  }
-
-  const pointers = urns.map((urn) => catalystPointerForWearableUrn(urn))
+  const pointers = profileUrns.map((urn) => catalystPointerForWearableUrn(urn))
   await preloadBundledWearableManifests(pointers)
 
-  let wearables = await fetchWearablesByUrns(urns, catalystUrl)
+  let wearables = await fetchWearablesByUrns(profileUrns, catalystUrl)
   wearables = wearables.filter((w) => hasRepresentation(w, profile.bodyShape))
 
   if (!profile.fromWallet) {
@@ -72,9 +98,9 @@ export async function buildComposeConfig(
     if (missing.length) {
       wearables.push(...(await fetchWearablesByUrns(missing, catalystUrl)))
     }
-  } else if (wearables.length < urns.length) {
+  } else if (!wearablesCoverProfileUrns(wearables, profileUrns, profile.bodyShape)) {
     console.warn(
-      `Loaded ${wearables.length}/${urns.length} profile wearables — some URNs may have failed Catalyst lookup`
+      `Loaded ${wearables.length}/${profileUrns.length} profile wearables — some URNs may have failed Catalyst lookup`
     )
   }
 
@@ -93,7 +119,12 @@ export async function buildComposeConfig(
     forceRender: profile.forceRender
   }
 
-  if (cacheKey && profile.fromWallet) {
+  // Only persist complete resolves — partial cache was leaving avatars bald (e.g. missing base hair).
+  if (
+    cacheKey &&
+    profile.fromWallet &&
+    wearablesCoverProfileUrns(wearables, profileUrns, profile.bodyShape)
+  ) {
     writeCachedAvatar(cacheKey, {
       fingerprint,
       profile,

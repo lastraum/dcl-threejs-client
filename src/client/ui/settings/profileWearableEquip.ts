@@ -16,18 +16,21 @@ export function equipWearableOnProfile(
   if (item.category === 'unknown') return [...profile.wearables]
 
   const slotItem = equippedByCategory.get(item.category)
+  const slotAsset = slotItem ? assetUrnFromCompleteUrn(slotItem.urn) : null
+  const equipUrn = normalizeUrn(item.urn)
+  const asset = assetUrnFromCompleteUrn(equipUrn)
+
+  // Drop the previous slot URN when known. Also drop any other copy of the same asset.
   const wearables = profile.wearables.filter((urn) => {
-    if (!slotItem) return true
-    return assetUrnFromCompleteUrn(urn) !== assetUrnFromCompleteUrn(slotItem.urn)
+    const u = assetUrnFromCompleteUrn(urn)
+    if (u === asset) return false
+    if (slotAsset && u === slotAsset) return false
+    return true
   })
 
   // Prefer inventory item URN as returned (should include tokenId from individualData).
   // Do NOT invent `:0` — Catalyst ownership checks fail on fake tokens.
-  const equipUrn = normalizeUrn(item.urn)
-  const asset = assetUrnFromCompleteUrn(equipUrn)
-  if (!wearables.some((u) => assetUrnFromCompleteUrn(u) === asset)) {
-    wearables.push(equipUrn)
-  }
+  wearables.push(equipUrn)
   return wearables
 }
 

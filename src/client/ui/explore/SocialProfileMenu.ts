@@ -271,7 +271,17 @@ export class SocialProfileMenu {
           Wallet
         </div>
         <p class="social-profile-menu__connection-primary">${escapeHtml(name)}</p>
-        <p class="social-profile-menu__connection-meta">${escapeHtml(walletShort(address))}</p>
+        <button
+          type="button"
+          class="social-profile-menu__connection-meta social-profile-menu__wallet-copy"
+          data-copy-wallet
+          data-wallet="${escapeHtml(address)}"
+          title="Click to copy full address"
+          aria-label="Copy wallet address ${escapeHtml(address)}"
+        >
+          <code class="social-profile-menu__wallet-code">${escapeHtml(walletShort(address))}</code>
+          <span class="social-profile-menu__wallet-copy-hint" data-copy-hint>Copy</span>
+        </button>
       </div>
       <div class="social-profile-menu__items">
         <label class="social-profile-menu__toggle-row">
@@ -322,6 +332,27 @@ export class SocialProfileMenu {
     const notifToggle = this.menuBody.querySelector<HTMLInputElement>('[data-notifications-toggle]')
     notifToggle?.addEventListener('change', () => {
       notificationPrefs.setEnabled(notifToggle.checked)
+    })
+
+    this.menuBody.querySelector('[data-copy-wallet]')?.addEventListener('click', async (ev) => {
+      const btn = ev.currentTarget as HTMLButtonElement
+      const value = btn.dataset.wallet?.trim()
+      if (!value) return
+      const hint = btn.querySelector('[data-copy-hint]') as HTMLElement | null
+      try {
+        await navigator.clipboard.writeText(value)
+        btn.classList.add('is-copied')
+        if (hint) hint.textContent = 'Copied!'
+        window.setTimeout(() => {
+          btn.classList.remove('is-copied')
+          if (hint) hint.textContent = 'Copy'
+        }, 1400)
+      } catch {
+        if (hint) hint.textContent = 'Failed'
+        window.setTimeout(() => {
+          if (hint) hint.textContent = 'Copy'
+        }, 1400)
+      }
     })
 
     this.menuBody.querySelector('[data-sign-out]')?.addEventListener('click', () => {

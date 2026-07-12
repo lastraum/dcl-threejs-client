@@ -86,16 +86,62 @@ function fallbackItem(urn: string, amount = 1): BackpackWearableItem {
   }
 }
 
+/**
+ * Complete free base-avatar hair catalog (Catalyst off-chain collection).
+ * Several omit the word "hair" — without this set equip fallbacks mark them `unknown`.
+ */
+const BASE_HAIR_SLUGS = new Set([
+  'casual_hair_01',
+  'casual_hair_02',
+  'casual_hair_03',
+  'cool_hair',
+  'cornrows',
+  'curly_hair',
+  'curtained_hair',
+  'double_bun',
+  'hair_anime_01',
+  'hair_bun',
+  'hair_coolshortstyle',
+  'hair_f_oldie',
+  'hair_f_oldie_02',
+  'hair_oldie',
+  'hair_punk',
+  'hair_stylish_hair',
+  'hair_undere',
+  'keanu_hair',
+  'modern_hair',
+  'moptop',
+  'pompous',
+  'pony_tail',
+  'punk',
+  'rasta',
+  'semi_afro',
+  'semi_bold',
+  'short_hair',
+  'shoulder_bob_hair',
+  'shoulder_hair',
+  'slicked_hair',
+  'standard_hair',
+  'tall_front_01',
+  'two_tails'
+])
+
 function guessCategoryFromUrn(urn: string): WearableCategory | 'unknown' {
   const low = urn.toLowerCase()
-  const colonHit = low.match(/:([a-z_]+)$/)
+  const colonHit = low.match(/:([a-z0-9_]+)$/)
   const tail = colonHit?.[1] ?? ''
+  if (BASE_HAIR_SLUGS.has(tail)) {
+    return 'hair'
+  }
   const patterns: Array<[RegExp, WearableCategory]> = [
     [/body_shape|basemale|basefemale/, 'body_shape'],
-    [/\bhair\b|_hair|hair_/, 'hair'],
+    [
+      /\bhair\b|_hair|hair_|mohawk|cornrow|rasta|pompous|semi_bold|semi_afro|double_bun|two_tails|moptop|pony_tail|tall_front/,
+      'hair'
+    ],
     [/upper_body|hoodie|jacket|shirt|sweater|torso/, 'upper_body'],
     [/lower_body|pants|jeans|shorts|skirt/, 'lower_body'],
-    [/\bfeet\b|shoes|sneaker|boot|sandal/, 'feet'],
+    [/\bfeet\b|shoes|sneaker|boot|sandal|espadrille/, 'feet'],
     [/eyebrow/, 'eyebrows'],
     [/\beyes\b|_eyes/, 'eyes'],
     [/\bmouth\b|_mouth/, 'mouth'],

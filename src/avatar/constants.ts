@@ -51,6 +51,8 @@ export function defaultWearableUrn(category: WearableCategory, shape: BodyShape)
       return shape === 'male'
         ? 'urn:decentraland:off-chain:base-avatars:sneakers'
         : 'urn:decentraland:off-chain:base-avatars:bun_shoes'
+    case 'hair':
+      return 'urn:decentraland:off-chain:base-avatars:standard_hair'
     default:
       return null
   }
@@ -60,6 +62,7 @@ export const DEFAULT_WEARABLE_CATEGORIES: WearableCategory[] = [
   'eyebrows',
   'mouth',
   'eyes',
+  'hair',
   'upper_body',
   'lower_body',
   'feet'

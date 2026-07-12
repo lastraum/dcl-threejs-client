@@ -1,0 +1,49 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:rasta",
+  "data": {
+    "category": "hair",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "hair",
+      "Dreads",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "Hair_Rasta_01.glb",
+        "contents": [
+          {
+            "key": "Hair_Rasta_01.glb",
+            "url": "Hair_Rasta_01.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "Hair_Rasta_01.glb",
+        "contents": [
+          {
+            "key": "Hair_Rasta_01.glb",
+            "url": "Hair_Rasta_01.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      }
+    ]
+  }
+}

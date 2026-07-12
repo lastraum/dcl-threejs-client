@@ -1,4 +1,9 @@
 import { assetUrnFromCompleteUrn, BODY_SHAPE_URN } from '../../../avatar/constants'
+import {
+  expandOwnedWearableRows,
+  type OwnedWearableApiRow,
+  type OwnedWearableEntry
+} from '../../../avatar/ownedWearables'
 import type { AvatarProfile, WearableCategory } from '../../../avatar/types'
 import {
   filterEquippedWearables,
@@ -13,7 +18,7 @@ export type BackpackWearableItem = WearableDisplayCard & {
   amount: number
 }
 
-type OwnedEntry = { urn: string; amount?: number }
+type OwnedEntry = OwnedWearableEntry
 
 type WearableApiHit = {
   id?: string
@@ -25,21 +30,48 @@ type WearableApiHit = {
 
 const METADATA_CONCURRENCY = 14
 
-/** Catalyst lambdas — full wallet inventory (not just equipped profile slots). */
+/**
+ * Catalyst lambdas — full wallet inventory with tokenIds.
+ * Prefer `/users/{addr}/wearables` (includes individualData). Fall back to
+ * `wearables-by-owner` which often only returns asset URNs without tokens.
+ */
 export async function fetchOwnedWearableUrns(
   address: string,
   lambdasUrl: string
 ): Promise<OwnedEntry[]> {
   const base = lambdasUrl.replace(/\/$/, '')
-  const res = await fetch(`${base}/collections/wearables-by-owner/${address.toLowerCase()}`)
+  const addr = address.toLowerCase()
+
+  // Primary: has individualData[].id / tokenId (required for profile deploy).
+  try {
+    const res = await fetch(`${base}/users/${addr}/wearables`)
+    if (res.ok) {
+      const raw = (await res.json()) as
+        | OwnedWearableApiRow[]
+        | { elements?: OwnedWearableApiRow[]; error?: string }
+      const rows = Array.isArray(raw)
+        ? raw
+        : Array.isArray(raw.elements)
+          ? raw.elements
+          : null
+      if (rows) {
+        const expanded = expandOwnedWearableRows(rows).filter((e) => e.urn?.trim())
+        if (expanded.length) return expanded
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+
+  const res = await fetch(`${base}/collections/wearables-by-owner/${addr}`)
   if (!res.ok) {
-    throw new Error(`wearables-by-owner failed (${res.status})`)
+    throw new Error(`wearables inventory failed (${res.status})`)
   }
-  const raw = (await res.json()) as OwnedEntry[] | { error?: string }
+  const raw = (await res.json()) as OwnedWearableApiRow[] | { error?: string }
   if (!Array.isArray(raw)) {
-    throw new Error('wearables-by-owner returned unexpected payload')
+    throw new Error('wearables inventory returned unexpected payload')
   }
-  return raw.filter((e) => e.urn?.trim())
+  return expandOwnedWearableRows(raw).filter((e) => e.urn?.trim())
 }
 
 function fallbackItem(urn: string, amount = 1): BackpackWearableItem {

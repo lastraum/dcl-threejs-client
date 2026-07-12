@@ -50,6 +50,7 @@ import {
   isWearableEquipped,
   unequipWearableFromProfile
 } from './profileWearableEquip'
+import { wearablesForProfileDeploy } from '../../../avatar/deployProfile'
 import {
   guessWearableRarity,
   wearableRarityBackground,
@@ -90,8 +91,11 @@ const CATEGORIES: CategoryDef[] = [
 ]
 
 const ITEMS_PER_PAGE = 9
+const PREVIEW_ZOOM_STEP = 1.1
+/** Three scroll-in steps above 1.0 — closer default framing on the disc. */
+const PREVIEW_ZOOM_DEFAULT = PREVIEW_ZOOM_STEP ** 3
 const PREVIEW_ZOOM_MIN = 0.55
-const PREVIEW_ZOOM_MAX = 2.5
+const PREVIEW_ZOOM_MAX = 2.8
 
 export class BackpackView {
   readonly root: HTMLElement
@@ -108,7 +112,10 @@ export class BackpackView {
   private wearablesLoadGen = 0
   private equippedLoadGen = 0
   private searchQuery = ''
-  private previewZoom = 1
+  private previewZoom = PREVIEW_ZOOM_DEFAULT
+  private orbitYaw = 0
+  private dragPointerId: number | null = null
+  private dragLastX = 0
   private vrmLibrary: VrmLibraryEntry[] = []
   private selectedVrmHash: string | null = null
   private vrmUploadBusy = false
@@ -139,10 +146,13 @@ export class BackpackView {
   private osaPage = 1
   private osaPreviewRequest = 0
   private osaImportBusy = false
+  /** Snapshot of equipped wearables when the view opened / last committed. */
+  private baselineWearablesKey = ''
 
   constructor(session: SessionIdentity, options: BackpackViewOptions = {}) {
     this.session = session
     this.onVrmEquipChange = options.onVrmEquipChange
+    this.baselineWearablesKey = this.wearablesKeyFromProfile()
     this.root = document.createElement('div')
     this.root.className = 'backpack-view'
 
@@ -261,6 +271,7 @@ export class BackpackView {
 
   updateSession(session: SessionIdentity): void {
     this.session = session
+    this.baselineWearablesKey = this.wearablesKeyFromProfile()
     void this.loadWearables()
     void this.loadEquippedWearables()
     void this.refreshVrmLibrary()
@@ -1148,6 +1159,11 @@ export class BackpackView {
     this.updateCategoryEquipped()
   }
 
+  private categoryLabel(category: BackpackWearableItem['category']): string {
+    if (category === 'unknown') return 'Unknown'
+    return CATEGORIES.find((c) => c.id === category)?.label ?? category.replace(/_/g, ' ')
+  }
+
   private renderWearableDetail(item: BackpackWearableItem): void {
     const detailEl = this.root.querySelector('.backpack-view__detail')!
     const profile = this.session.getProfile()
@@ -1155,6 +1171,7 @@ export class BackpackView {
     const rarity = item.rarity || guessWearableRarity(item.urn)
     const color = WEARABLE_RARITY_COLORS[rarity] ?? WEARABLE_RARITY_COLORS.common
     const canEquip = !!profile && item.category !== 'unknown'
+    const category = this.categoryLabel(item.category)
 
     detailEl.innerHTML = `
       <div class="backpack-view__detail-card">
@@ -1162,6 +1179,7 @@ export class BackpackView {
           <img class="backpack-view__detail-img" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" />
         </div>
         <h3 class="backpack-view__detail-name">${this.escapeHtml(item.name)}</h3>
+        <span class="backpack-view__detail-category">${this.escapeHtml(category)}</span>
         <span class="backpack-view__detail-rarity" style="color:${color}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
         <div class="backpack-view__wearable-actions">
           <button type="button" class="backpack-view__wearable-equip-btn" data-action="toggle-equip" ${canEquip ? '' : 'disabled'}>
@@ -1179,6 +1197,42 @@ export class BackpackView {
       if (equipped) void this.unequipWearable(item)
       else void this.equipWearable(item)
     })
+  }
+
+  private wearablesKeyFromProfile(): string {
+    const profile = this.session.getProfile()
+    if (!profile) return ''
+    return wearablesForProfileDeploy(profile)
+      .map((u) => u.toLowerCase())
+      .sort()
+      .join('|')
+  }
+
+  /** True when equip/unequip changed wearables since open or last successful deploy. */
+  hasPendingProfileChanges(): boolean {
+    if (this.session.getProfile()?.fromWallet !== true) return false
+    const current = this.wearablesKeyFromProfile()
+    return Boolean(current) && current !== this.baselineWearablesKey
+  }
+
+  /** Called after SettingsOverlay successfully deploys the profile. */
+  markProfileBaselineSynced(): void {
+    this.baselineWearablesKey = this.wearablesKeyFromProfile()
+  }
+
+  /**
+   * After a successful Catalyst deploy — only refresh equipped state + avatar preview.
+   * Inventory list is unchanged; no full re-fetch.
+   */
+  refreshAfterProfileSave(): void {
+    this.baselineWearablesKey = this.wearablesKeyFromProfile()
+    void this.loadEquippedWearables()
+    this.renderGrid()
+    const selected = this.selectedItem
+      ? this.wearableItems.find((i) => i.urn === this.selectedItem)
+      : null
+    if (selected) this.renderWearableDetail(selected)
+    void this.loadAvatarModel()
   }
 
   private async equipWearable(item: BackpackWearableItem): Promise<void> {
@@ -1203,7 +1257,7 @@ export class BackpackView {
     void this.loadEquippedWearables()
     this.renderGrid()
     this.renderWearableDetail(item)
-    await this.onVrmEquipChange?.()
+    // Preview updates locally; Catalyst deploy happens when the settings panel closes.
     void this.loadAvatarModel()
   }
 
@@ -1276,14 +1330,19 @@ export class BackpackView {
     this.resizeObserver.observe(stage)
     this.resizePreview()
 
+    stage.style.cursor = 'grab'
+    stage.style.touchAction = 'none'
+    stage.addEventListener('pointerdown', this.onPreviewPointerDown)
+    stage.addEventListener('pointermove', this.onPreviewPointerMove)
+    stage.addEventListener('pointerup', this.onPreviewPointerUp)
+    stage.addEventListener('pointercancel', this.onPreviewPointerUp)
     stage.addEventListener(
       'wheel',
       (e) => {
         if (this.disposed) return
         e.preventDefault()
-        const factor = e.deltaY < 0 ? 1.1 : 0.9
         this.previewZoom = THREE.MathUtils.clamp(
-          this.previewZoom * factor,
+          this.previewZoom * (e.deltaY < 0 ? PREVIEW_ZOOM_STEP : 1 / PREVIEW_ZOOM_STEP),
           PREVIEW_ZOOM_MIN,
           PREVIEW_ZOOM_MAX
         )
@@ -1296,6 +1355,35 @@ export class BackpackView {
     this.raf = requestAnimationFrame((t) => this.tick(t))
 
     void this.loadAvatarModel()
+  }
+
+  private readonly onPreviewPointerDown = (e: PointerEvent): void => {
+    if (this.disposed || e.button !== 0) return
+    const stage = e.currentTarget as HTMLElement
+    this.dragPointerId = e.pointerId
+    this.dragLastX = e.clientX
+    stage.setPointerCapture(e.pointerId)
+    stage.style.cursor = 'grabbing'
+  }
+
+  private readonly onPreviewPointerMove = (e: PointerEvent): void => {
+    if (this.disposed || this.dragPointerId !== e.pointerId) return
+    const dx = e.clientX - this.dragLastX
+    this.dragLastX = e.clientX
+    this.orbitYaw += dx * 0.01
+    if (this.pivot) this.pivot.rotation.y = this.orbitYaw
+  }
+
+  private readonly onPreviewPointerUp = (e: PointerEvent): void => {
+    if (this.dragPointerId !== e.pointerId) return
+    this.dragPointerId = null
+    const stage = e.currentTarget as HTMLElement
+    try {
+      stage.releasePointerCapture(e.pointerId)
+    } catch {
+      /* ignore */
+    }
+    stage.style.cursor = 'grab'
   }
 
   private async loadAvatarModel(): Promise<void> {
@@ -1314,6 +1402,8 @@ export class BackpackView {
 
     this.avatar = avatar
     this.pivot!.add(avatar)
+    // Align with pivot rotation at 0 so XZ center matches the ground ring.
+    this.pivot!.rotation.y = 0
     this.subjectSize = alignPreviewAvatarToGround(avatar, 'dcl')
 
     this.animations = new AvatarAnimations()
@@ -1324,6 +1414,9 @@ export class BackpackView {
       this.animations = null
     }
 
+    // Idle pose shifts bones — re-seat feet on the ring after bind.
+    this.subjectSize = alignPreviewAvatarToGround(avatar, 'dcl')
+    this.pivot!.rotation.y = this.orbitYaw
     this.frameCamera(this.subjectSize)
   }
 
@@ -1358,6 +1451,7 @@ export class BackpackView {
         this.odkPreview = odk
         this.avatar = odk.root
         this.pivot!.add(odk.root)
+        this.pivot!.rotation.y = this.orbitYaw
         this.subjectSize = alignPreviewAvatarToGround(odk.root, 'odk')
       } else {
         const vrm = await VrmAvatar.fromBytes(bytes)
@@ -1368,6 +1462,7 @@ export class BackpackView {
         this.vrmPreview = vrm
         this.avatar = vrm.root
         this.pivot!.add(vrm.root)
+        this.pivot!.rotation.y = this.orbitYaw
         this.subjectSize = alignPreviewAvatarToGround(vrm.root, 'vrm', vrm.vrm)
       }
 
@@ -1384,7 +1479,7 @@ export class BackpackView {
     const delta = Math.min(0.05, (now - this.lastFrame) / 1000)
     this.lastFrame = now
 
-    if (this.pivot) this.pivot.rotation.y += delta * 0.35
+    if (this.pivot) this.pivot.rotation.y = this.orbitYaw
 
     if (this.previewMode === 'vrm') {
       this.vrmPreview?.update(delta)
@@ -1472,6 +1567,13 @@ export class BackpackView {
     this.disposed = true
     cancelAnimationFrame(this.raf)
     this.resizeObserver?.disconnect()
+    const stage = this.root.querySelector('.backpack-view__avatar-stage') as HTMLElement | null
+    if (stage) {
+      stage.removeEventListener('pointerdown', this.onPreviewPointerDown)
+      stage.removeEventListener('pointermove', this.onPreviewPointerMove)
+      stage.removeEventListener('pointerup', this.onPreviewPointerUp)
+      stage.removeEventListener('pointercancel', this.onPreviewPointerUp)
+    }
     this.clearAvatar()
     if (this.renderer) {
       this.renderer.forceContextLoss()

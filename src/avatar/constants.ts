@@ -92,6 +92,14 @@ export function assetUrnFromCompleteUrn(completeUrn: string): string {
   return urn
 }
 
+/**
+ * Normalize a wearable URN for storage. Does **not** invent tokenIds — Catalyst rejects
+ * synthetic `:0` tokens the wallet does not own. Prefer inventory `individualData` URNs.
+ */
+export function ensureItemWearableUrn(completeUrn: string): string {
+  return normalizeUrn(completeUrn)
+}
+
 export function bodyShapeFromUrn(urn: string): BodyShape {
   return urn.toLowerCase().includes('basefemale') ? 'female' : 'male'
 }

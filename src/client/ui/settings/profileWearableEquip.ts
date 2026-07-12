@@ -1,4 +1,4 @@
-import { assetUrnFromCompleteUrn } from '../../../avatar/constants'
+import { assetUrnFromCompleteUrn, normalizeUrn } from '../../../avatar/constants'
 import type { AvatarProfile, WearableCategory } from '../../../avatar/types'
 import type { BackpackWearableItem } from './backpackWearables'
 
@@ -21,9 +21,12 @@ export function equipWearableOnProfile(
     return assetUrnFromCompleteUrn(urn) !== assetUrnFromCompleteUrn(slotItem.urn)
   })
 
-  const asset = assetUrnFromCompleteUrn(item.urn)
+  // Prefer inventory item URN as returned (should include tokenId from individualData).
+  // Do NOT invent `:0` — Catalyst ownership checks fail on fake tokens.
+  const equipUrn = normalizeUrn(item.urn)
+  const asset = assetUrnFromCompleteUrn(equipUrn)
   if (!wearables.some((u) => assetUrnFromCompleteUrn(u) === asset)) {
-    wearables.push(item.urn)
+    wearables.push(equipUrn)
   }
   return wearables
 }

@@ -1,4 +1,8 @@
 import type { SessionIdentity } from '../../../network/SessionIdentity'
+import {
+  deployAvatarProfile,
+  wearablesForProfileDeploy
+} from '../../../avatar/deployProfile'
 import { BackpackView } from './BackpackView'
 import { EventsView, type EventsViewOptions } from './EventsView'
 import { MapView, type MapPlayerState } from './MapView'
@@ -67,6 +71,9 @@ export class SettingsOverlay {
   private isWorldScene?: boolean
   private worldName?: string | null
   private visible = false
+  private closing = false
+  /** Wearables fingerprint when the overlay opened (or last successful save). */
+  private profileBaselineKey = ''
   private onOpen?: () => void
   private onClose?: () => void
   private onVrmEquipChange?: () => void | Promise<void>
@@ -170,19 +177,232 @@ export class SettingsOverlay {
     this.visible = true
     this.root.removeAttribute('hidden')
     requestAnimationFrame(() => this.root.classList.add('is-open'))
+    this.profileBaselineKey = this.wearablesFingerprint()
     this.updateUserInfo()
     this.switchTab(tab)
     this.onOpen?.()
   }
 
   hide(): void {
-    if (!this.visible) return
-    this.visible = false
-    this.root.classList.remove('is-open')
-    setTimeout(() => {
-      if (!this.visible) this.root.setAttribute('hidden', '')
-    }, 300)
-    this.onClose?.()
+    void this.hideAndSaveProfile()
+  }
+
+  private wearablesFingerprint(): string {
+    const profile = this.session.getProfile()
+    if (!profile?.fromWallet) return ''
+    return wearablesForProfileDeploy(profile)
+      .map((u) => u.toLowerCase())
+      .sort()
+      .join('|')
+  }
+
+  private hasPendingProfileChanges(): boolean {
+    const current = this.wearablesFingerprint()
+    return Boolean(current) && current !== this.profileBaselineKey
+  }
+
+  /**
+   * Close settings. If equipped wearables changed, deploy first.
+   * On successful save: stay on backpack with refreshed avatar (do not close).
+   * On no pending changes: close the overlay.
+   * @see https://docs.decentraland.org/contributor/content/entity-types/profiles#pointers
+   */
+  private async hideAndSaveProfile(): Promise<void> {
+    if (!this.visible || this.closing) return
+    this.closing = true
+
+    try {
+      if (this.hasPendingProfileChanges()) {
+        this.hideSaveErrorModal()
+        this.setCloseBusy(true)
+        this.showSavingModal(true)
+        try {
+          await this.deployPendingProfile()
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          console.warn('[settings] profile deploy failed', err)
+          this.showSavingModal(false)
+          this.setCloseBusy(false)
+          this.closing = false
+          this.showSaveErrorModal(msg)
+          return
+        }
+        this.showSavingModal(false)
+        this.setCloseBusy(false)
+        // Stay on backpack so the user sees the updated preview.
+        this.switchTab('backpack')
+        this.showSaveSuccessModal()
+        return
+      }
+
+      this.visible = false
+      this.root.classList.remove('is-open')
+      setTimeout(() => {
+        if (!this.visible) this.root.setAttribute('hidden', '')
+      }, 300)
+      this.onClose?.()
+    } finally {
+      this.showSavingModal(false)
+      this.closing = false
+    }
+  }
+
+  private async deployPendingProfile(): Promise<void> {
+    const profile = this.session.getProfile()
+    const address = this.session.getAddress()
+    const identity = this.session.getAuthIdentity()
+    if (!profile?.fromWallet || !address || !identity) {
+      throw new Error('Wallet session required to save avatar')
+    }
+
+    const peerRoot = this.session.getLambdasUrl().replace(/\/lambdas\/?$/i, '') || undefined
+    const result = await deployAvatarProfile({
+      address,
+      identity,
+      profile,
+      peerUrl: peerRoot
+    })
+
+    // Keep session wearables in sync with what Catalyst accepted (real tokenIds).
+    const bodyShapeUrns = profile.wearables.filter((u) => {
+      const n = u.toLowerCase()
+      return n.includes('basemale') || n.includes('basefemale')
+    })
+    this.session.setProfile({
+      ...profile,
+      wearables: [...bodyShapeUrns, ...result.wearables]
+    })
+    this.profileBaselineKey = this.wearablesFingerprint()
+    this.backpackView?.markProfileBaselineSynced()
+    this.backpackView?.refreshAfterProfileSave()
+    this.updateUserInfo()
+    await this.onVrmEquipChange?.()
+  }
+
+  private setCloseBusy(busy: boolean): void {
+    this.closeBtn.toggleAttribute('disabled', busy)
+    this.closeBtn.setAttribute('aria-busy', busy ? 'true' : 'false')
+    if (busy) {
+      this.closeBtn.setAttribute('title', 'Saving wearables…')
+    } else {
+      this.closeBtn.removeAttribute('title')
+    }
+  }
+
+  private showSavingModal(show: boolean): void {
+    let el = this.root.querySelector('.settings-overlay__saving') as HTMLElement | null
+    if (!el) {
+      el = document.createElement('div')
+      el.className = 'settings-overlay__saving'
+      el.setAttribute('role', 'status')
+      el.setAttribute('aria-live', 'polite')
+      el.innerHTML = `
+        <div class="settings-overlay__saving-card">
+          <div class="settings-overlay__saving-spinner" aria-hidden="true"></div>
+          <p class="settings-overlay__saving-title">Saving wearables…</p>
+          <p class="settings-overlay__saving-sub">Updating your Decentraland profile</p>
+        </div>
+      `
+      this.root.appendChild(el)
+    }
+    el.hidden = !show
+    el.classList.toggle('is-visible', show)
+  }
+
+  private formatSaveError(raw: string): string {
+    // Prefer human text from Catalyst JSON: {"errors":["The following items (…)"]}
+    try {
+      const jsonStart = raw.indexOf('{')
+      if (jsonStart >= 0) {
+        const parsed = JSON.parse(raw.slice(jsonStart)) as { errors?: unknown }
+        if (Array.isArray(parsed.errors) && parsed.errors.length) {
+          return parsed.errors.map((e) => String(e)).join('\n\n')
+        }
+      }
+    } catch {
+      /* keep raw */
+    }
+    return raw
+      .replace(/^Profile deploy failed \(\d+\):\s*/i, '')
+      .replace(/^Could not save avatar to Decentraland:\s*/i, '')
+      .trim() || raw
+  }
+
+  private showSaveErrorModal(rawMessage: string): void {
+    this.showSavingModal(false)
+    let el = this.root.querySelector('.settings-overlay__save-error') as HTMLElement | null
+    if (!el) {
+      el = document.createElement('div')
+      el.className = 'settings-overlay__save-error'
+      el.setAttribute('role', 'alertdialog')
+      el.setAttribute('aria-modal', 'true')
+      el.setAttribute('aria-labelledby', 'settings-save-error-title')
+      el.innerHTML = `
+        <div class="settings-overlay__save-error-card">
+          <div class="settings-overlay__save-error-icon" aria-hidden="true">!</div>
+          <p class="settings-overlay__save-error-title" id="settings-save-error-title">Couldn’t save wearables</p>
+          <p class="settings-overlay__save-error-body" data-error-body></p>
+          <div class="settings-overlay__save-error-actions">
+            <button type="button" class="settings-overlay__save-error-btn" data-error-dismiss>OK</button>
+          </div>
+        </div>
+      `
+      el.addEventListener('click', (ev) => {
+        if (ev.target === el) this.hideSaveErrorModal()
+      })
+      el.querySelector('[data-error-dismiss]')?.addEventListener('click', () => this.hideSaveErrorModal())
+      this.root.appendChild(el)
+    }
+
+    const body = el.querySelector('[data-error-body]') as HTMLElement | null
+    if (body) body.textContent = this.formatSaveError(rawMessage)
+
+    el.hidden = false
+    el.classList.add('is-visible')
+    const btn = el.querySelector('[data-error-dismiss]') as HTMLButtonElement | null
+    btn?.focus()
+  }
+
+  private hideSaveErrorModal(): void {
+    const el = this.root.querySelector('.settings-overlay__save-error') as HTMLElement | null
+    if (!el) return
+    el.hidden = true
+    el.classList.remove('is-visible')
+  }
+
+  private showSaveSuccessModal(): void {
+    let el = this.root.querySelector('.settings-overlay__save-success') as HTMLElement | null
+    if (!el) {
+      el = document.createElement('div')
+      el.className = 'settings-overlay__save-success'
+      el.setAttribute('role', 'status')
+      el.setAttribute('aria-live', 'polite')
+      el.innerHTML = `
+        <div class="settings-overlay__save-success-card">
+          <div class="settings-overlay__save-success-icon" aria-hidden="true">✓</div>
+          <p class="settings-overlay__save-success-title">Wearables saved</p>
+          <p class="settings-overlay__save-success-sub">Your Decentraland profile was updated</p>
+          <button type="button" class="settings-overlay__save-success-btn" data-success-dismiss>Continue</button>
+        </div>
+      `
+      el.addEventListener('click', (ev) => {
+        if (ev.target === el) this.hideSaveSuccessModal()
+      })
+      el.querySelector('[data-success-dismiss]')?.addEventListener('click', () =>
+        this.hideSaveSuccessModal()
+      )
+      this.root.appendChild(el)
+    }
+    el.hidden = false
+    el.classList.add('is-visible')
+    window.setTimeout(() => this.hideSaveSuccessModal(), 2800)
+  }
+
+  private hideSaveSuccessModal(): void {
+    const el = this.root.querySelector('.settings-overlay__save-success') as HTMLElement | null
+    if (!el) return
+    el.hidden = true
+    el.classList.remove('is-visible')
   }
 
   toggle(tab?: SettingsTab): void {

@@ -112,6 +112,8 @@ export class SocialProfileMenu {
 
   setLogin(login: LoginResult): void {
     this.login = login
+    // Sign-out / guest must not keep buttons disabled from a prior login attempt.
+    if (login.kind !== 'wallet') this.busy = false
     this.refreshAvatar()
     if (this.open) this.renderMenu()
   }
@@ -395,6 +397,7 @@ export class SocialProfileMenu {
             })
           : await loginWithProvider(method, this.onAuthProgress)
       this.setVerifyCode(null)
+      this.busy = false
       this.onLoginChange?.(result)
       this.setLogin(result)
       this.close()

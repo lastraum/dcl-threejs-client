@@ -3060,6 +3060,224 @@
       .settings-overlay__close:hover {
         background: rgba(255, 255, 255, 0.2);
       }
+      .settings-overlay__close[disabled] {
+        opacity: 0.55;
+        cursor: wait;
+        pointer-events: none;
+      }
+      .settings-overlay__saving {
+        position: absolute;
+        inset: 0;
+        z-index: 40;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(8, 6, 16, 0.72);
+        backdrop-filter: blur(6px);
+        pointer-events: all;
+      }
+      .settings-overlay__saving.is-visible,
+      .settings-overlay__saving:not([hidden]) {
+        display: flex;
+      }
+      .settings-overlay__saving[hidden] {
+        display: none !important;
+      }
+      .settings-overlay__saving-card {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+        padding: 28px 32px;
+        min-width: min(320px, 86vw);
+        border-radius: 16px;
+        background: rgba(22, 16, 36, 0.96);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+        text-align: center;
+      }
+      .settings-overlay__saving-spinner {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        border: 3px solid rgba(255, 255, 255, 0.18);
+        border-top-color: #ff2d55;
+        animation: settings-overlay-spin 0.75s linear infinite;
+      }
+      @keyframes settings-overlay-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .settings-overlay__saving-title {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 800;
+        color: #fff;
+      }
+      .settings-overlay__saving-sub {
+        margin: 0;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .settings-overlay__save-error {
+        position: absolute;
+        inset: 0;
+        z-index: 45;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: rgba(8, 6, 16, 0.78);
+        backdrop-filter: blur(6px);
+        pointer-events: all;
+      }
+      .settings-overlay__save-error.is-visible,
+      .settings-overlay__save-error:not([hidden]) {
+        display: flex;
+      }
+      .settings-overlay__save-error[hidden] {
+        display: none !important;
+      }
+      .settings-overlay__save-error-card {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+        padding: 28px 28px 22px;
+        width: min(420px, 92vw);
+        max-height: min(70vh, 520px);
+        border-radius: 16px;
+        background: rgba(22, 16, 36, 0.98);
+        border: 1px solid rgba(255, 143, 163, 0.28);
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+        text-align: center;
+      }
+      .settings-overlay__save-error-icon {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: rgba(255, 45, 85, 0.18);
+        border: 1px solid rgba(255, 45, 85, 0.45);
+        color: #ff8fa3;
+        font-size: 20px;
+        font-weight: 800;
+        line-height: 1;
+      }
+      .settings-overlay__save-error-title {
+        margin: 0;
+        font-size: 17px;
+        font-weight: 800;
+        color: #fff;
+      }
+      .settings-overlay__save-error-body {
+        margin: 0;
+        max-height: 240px;
+        overflow-y: auto;
+        padding: 0 4px;
+        font-size: 12px;
+        line-height: 1.45;
+        color: rgba(255, 255, 255, 0.68);
+        text-align: left;
+        white-space: pre-wrap;
+        word-break: break-word;
+        width: 100%;
+      }
+      .settings-overlay__save-error-actions {
+        display: flex;
+        justify-content: center;
+        width: 100%;
+        margin-top: 4px;
+      }
+      .settings-overlay__save-error-btn {
+        min-width: 120px;
+        padding: 10px 22px;
+        border: none;
+        border-radius: 999px;
+        background: #ff2d55;
+        color: #fff;
+        font-size: 13px;
+        font-weight: 700;
+        font-family: inherit;
+        cursor: pointer;
+      }
+      .settings-overlay__save-error-btn:hover {
+        filter: brightness(1.08);
+      }
+      .settings-overlay__save-success {
+        position: absolute;
+        inset: 0;
+        z-index: 45;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: rgba(8, 6, 16, 0.55);
+        backdrop-filter: blur(4px);
+        pointer-events: all;
+      }
+      .settings-overlay__save-success.is-visible,
+      .settings-overlay__save-success:not([hidden]) {
+        display: flex;
+      }
+      .settings-overlay__save-success[hidden] {
+        display: none !important;
+      }
+      .settings-overlay__save-success-card {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        padding: 28px 32px 22px;
+        min-width: min(300px, 86vw);
+        border-radius: 16px;
+        background: rgba(22, 16, 36, 0.98);
+        border: 1px solid rgba(52, 206, 119, 0.35);
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+        text-align: center;
+      }
+      .settings-overlay__save-success-icon {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: rgba(52, 206, 119, 0.18);
+        border: 1px solid rgba(52, 206, 119, 0.45);
+        color: #34ce77;
+        font-size: 20px;
+        font-weight: 800;
+        line-height: 1;
+      }
+      .settings-overlay__save-success-title {
+        margin: 0;
+        font-size: 17px;
+        font-weight: 800;
+        color: #fff;
+      }
+      .settings-overlay__save-success-sub {
+        margin: 0;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .settings-overlay__save-success-btn {
+        margin-top: 6px;
+        min-width: 120px;
+        padding: 10px 22px;
+        border: none;
+        border-radius: 999px;
+        background: #34ce77;
+        color: #0c1a12;
+        font-size: 13px;
+        font-weight: 800;
+        font-family: inherit;
+        cursor: pointer;
+      }
+      .settings-overlay__save-success-btn:hover {
+        filter: brightness(1.06);
+      }
       .settings-overlay__content {
         position: relative;
         flex: 1 1 0;
@@ -4596,6 +4814,19 @@
         font-weight: 700;
         line-height: 1.15;
         word-break: break-word;
+      }
+      .backpack-view__detail-category {
+        display: inline-block;
+        margin-top: -4px;
+        padding: 4px 12px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.78);
       }
       .backpack-view__detail-rarity {
         font-size: 14px;

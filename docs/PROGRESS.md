@@ -2,7 +2,7 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-11 (Graphics P0–P2 + Genesis/comms polish merged to `dev-latest`)  
+> **Last updated:** 2026-07-12 (chat people list + mouse sensitivity)  
 > **Current phase:** **v0.6.0** on `main`; **lighting + graphics prefs P0–P2** on `dev-latest`. **Next:** graphics **P3 distances** / **P4 bloom**; Phase 4 `/goto`; Phase 3 Watch Lite; MOVE CAMERA residual.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
@@ -94,6 +94,8 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Comms / archipelago** | `realm-provider-ea` primary Genesis `/about`; island join when adapter empty |
 | **Genesis default env** | Sky + quiet ground; no empty-land GLB under genesis |
 | **Chat keyboard** | WASD not stolen when chat/text focused |
+| **Chat people list** | Header count pill → inline scene roster (LiveKit peers + you); row opens profile |
+| **Mouse sensitivity** | Preferences → Controls · 10–200% · `clientSettings` → look speed |
 
 **Next graphics:** **P3** scene/landscape/shadow distance sliders → cull backends · **P4** bloom/HDR EffectComposer path.
 

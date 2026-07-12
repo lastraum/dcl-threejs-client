@@ -24,6 +24,10 @@ export type ChatPanelOptions = {
   onOpenProfile?: (address: string) => void
 }
 
+type ChatBodyMode = 'messages' | 'users'
+
+const USERS_ICON = `<svg class="chat-panel__users-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden><circle cx="9" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 17c0-2.2 2-4 4.5-4s4.5 1.8 4.5 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="16.5" cy="9" r="2" stroke="currentColor" stroke-width="1.3"/><path d="M13.5 17c.4-1.6 1.7-2.8 3.3-2.8 1 0 1.9.4 2.5 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`
+
 /** Compact bottom-left chat window with a vertical channel rail on the right. */
 export class ChatPanel {
   readonly root: HTMLElement
@@ -32,6 +36,7 @@ export class ChatPanel {
   private readonly railScrollEl: HTMLElement
   private readonly headerTitle: HTMLElement
   private readonly headerSubtitle: HTMLElement
+  private readonly usersBtn: HTMLButtonElement
   private readonly messagesEl: HTMLElement
   private readonly composerEl: HTMLElement
   private readonly mentionDockEl: HTMLElement
@@ -42,9 +47,11 @@ export class ChatPanel {
   private readonly onOpenProfile?: ChatPanelOptions['onOpenProfile']
   private onVisibilityChange: ((visible: boolean) => void) | null = null
   private visible = false
+  private bodyMode: ChatBodyMode = 'messages'
   private unsubChat: (() => void) | null = null
   private unsubChannel: (() => void) | null = null
   private unsubProfiles: (() => void) | null = null
+  private presenceTimer: number | null = null
   private mounted = false
   private readonly sceneCanvas: HTMLElement | null
   private inputCaret = 0
@@ -72,7 +79,10 @@ export class ChatPanel {
       <header class="chat-panel__header">
         <div class="chat-panel__header-text">
           <div class="chat-panel__title"></div>
-          <div class="chat-panel__subtitle"></div>
+          <div class="chat-panel__subtitle-row">
+            <div class="chat-panel__subtitle"></div>
+            <button type="button" class="chat-panel__users-btn" hidden aria-pressed="false"></button>
+          </div>
         </div>
         <button type="button" class="chat-panel__close" aria-label="Close chat">×</button>
       </header>
@@ -99,6 +109,7 @@ export class ChatPanel {
 
     this.headerTitle = this.panelEl.querySelector('.chat-panel__title')!
     this.headerSubtitle = this.panelEl.querySelector('.chat-panel__subtitle')!
+    this.usersBtn = this.panelEl.querySelector('.chat-panel__users-btn')!
     this.messagesEl = this.panelEl.querySelector('.chat-panel__messages')!
     this.composerEl = this.panelEl.querySelector('.chat-panel__composer')!
     this.mentionDockEl = this.panelEl.querySelector('.chat-panel__mention-dock')!
@@ -111,6 +122,7 @@ export class ChatPanel {
     this.inputEl.addEventListener('keydown', this.onInputKeyDown)
 
     this.panelEl.querySelector('.chat-panel__close')?.addEventListener('click', () => this.hide())
+    this.usersBtn.addEventListener('click', () => this.toggleUsersView())
     this.panelEl.querySelector('.chat-panel__composer')?.addEventListener('submit', (ev) => {
       ev.preventDefault()
       void this.submitMessage()
@@ -145,16 +157,27 @@ export class ChatPanel {
     this.unsubChannel?.()
     this.unsubProfiles?.()
     this.unsubChat = this.social.onChat(() => {
-      this.renderMessages()
+      if (this.bodyMode === 'messages') this.renderMessages()
       this.updateComposerUi()
+      this.updateUsersButton()
     })
-    this.unsubChannel = this.social.onChannelChange(() => this.renderAll())
+    this.unsubChannel = this.social.onChannelChange(() => {
+      if (this.social.getChannel().kind !== 'scene' && this.bodyMode === 'users') {
+        this.bodyMode = 'messages'
+      }
+      this.renderAll()
+    })
     this.unsubProfiles = this.social.onPeerProfilesChange(() => {
-      this.renderMessages()
+      if (this.bodyMode === 'users') this.renderUsersList()
+      else this.renderMessages()
       this.updateComposerUi()
+      this.updateUsersButton()
     })
+    this.startPresencePoll()
     this.onVisibilityChange?.(true)
-    window.setTimeout(() => this.focusComposer(), 0)
+    window.setTimeout(() => {
+      if (this.bodyMode === 'messages') this.focusComposer()
+    }, 0)
   }
 
   hide(): void {
@@ -162,6 +185,7 @@ export class ChatPanel {
     this.root.hidden = true
     this.inputEl.blur()
     this.resetBackgroundMode()
+    this.stopPresencePoll()
     this.unsubChat?.()
     this.unsubChannel?.()
     this.unsubProfiles?.()
@@ -276,16 +300,130 @@ export class ChatPanel {
 
   private renderAll(): void {
     this.headerTitle.textContent = this.social.getChannelTitle()
-    this.headerSubtitle.textContent = this.social.getChannelSubtitle()
+    this.headerSubtitle.textContent =
+      this.bodyMode === 'users' ? 'People in scene' : this.social.getChannelSubtitle()
+    this.updateUsersButton()
     this.renderRail()
-    this.renderMessages()
+    if (this.bodyMode === 'users') this.renderUsersList()
+    else this.renderMessages()
+    this.composerEl.hidden = this.bodyMode === 'users'
     this.updateComposerUi()
-    this.inputEl.disabled = this.imageSending
-    this.inputEl.placeholder =
-      this.social.getChannel().kind === 'scene'
-        ? 'Press Enter to chat — drop an image'
-        : 'Press Enter to chat'
+    this.inputEl.disabled = this.imageSending || this.bodyMode === 'users'
+    if (this.bodyMode === 'messages') {
+      this.inputEl.placeholder =
+        this.social.getChannel().kind === 'scene'
+          ? 'Press Enter to chat — drop an image'
+          : 'Press Enter to chat'
+    }
     this.updateComposerDropUi()
+  }
+
+  private startPresencePoll(): void {
+    this.stopPresencePoll()
+    this.presenceTimer = window.setInterval(() => {
+      if (!this.visible) return
+      this.updateUsersButton()
+      if (this.bodyMode === 'users') this.renderUsersList()
+    }, 2500)
+  }
+
+  private stopPresencePoll(): void {
+    if (this.presenceTimer != null) {
+      window.clearInterval(this.presenceTimer)
+      this.presenceTimer = null
+    }
+  }
+
+  private toggleUsersView(): void {
+    if (this.social.getChannel().kind !== 'scene') return
+    this.bodyMode = this.bodyMode === 'users' ? 'messages' : 'users'
+    this.renderAll()
+    if (this.bodyMode === 'messages') {
+      window.setTimeout(() => this.focusComposer(), 0)
+    }
+  }
+
+  private updateUsersButton(): void {
+    const isScene = this.social.getChannel().kind === 'scene'
+    if (!isScene) {
+      this.usersBtn.hidden = true
+      this.usersBtn.classList.remove('is-active')
+      return
+    }
+    const count = Math.max(1, this.social.getScenePresenceCount() || 1)
+    const label =
+      this.bodyMode === 'users'
+        ? 'Back to chat'
+        : `${count} ${count === 1 ? 'person' : 'people'}`
+    this.usersBtn.hidden = false
+    this.usersBtn.classList.toggle('is-active', this.bodyMode === 'users')
+    this.usersBtn.setAttribute('aria-pressed', this.bodyMode === 'users' ? 'true' : 'false')
+    this.usersBtn.setAttribute(
+      'aria-label',
+      this.bodyMode === 'users' ? 'Back to chat messages' : `View ${count} people in this scene`
+    )
+    this.usersBtn.innerHTML =
+      this.bodyMode === 'users'
+        ? `<span class="chat-panel__users-label">${label}</span>`
+        : `${USERS_ICON}<span class="chat-panel__users-label">${label}</span>`
+  }
+
+  private renderUsersList(): void {
+    const rows = this.social.getScenePresenceRows()
+    this.messagesEl.innerHTML = ''
+    this.messagesEl.classList.add('chat-panel__messages--users')
+    this.messagesEl.setAttribute('role', 'list')
+    this.messagesEl.removeAttribute('aria-live')
+
+    if (rows.length === 0) {
+      const empty = document.createElement('div')
+      empty.className = 'chat-panel__empty'
+      empty.textContent = 'No one listed yet — peers appear as they join the room.'
+      this.messagesEl.appendChild(empty)
+      return
+    }
+
+    const list = document.createElement('ul')
+    list.className = 'chat-panel__users-list'
+    for (const row of rows) {
+      const li = document.createElement('li')
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'chat-panel__user-row'
+      btn.dataset.address = row.address
+
+      const avatar = document.createElement('div')
+      avatar.className = 'chat-panel__user-avatar'
+      this.fillAvatar(avatar, row.faceUrl, row.displayName)
+
+      const meta = document.createElement('div')
+      meta.className = 'chat-panel__user-meta'
+      const name = document.createElement('span')
+      name.className = 'chat-panel__user-name'
+      name.textContent = row.displayName
+      meta.appendChild(name)
+      if (row.isSelf) {
+        const you = document.createElement('span')
+        you.className = 'chat-panel__user-you'
+        you.textContent = 'You'
+        meta.appendChild(you)
+      }
+
+      btn.appendChild(avatar)
+      btn.appendChild(meta)
+      if (this.onOpenProfile) {
+        btn.addEventListener('click', () => {
+          if (document.pointerLockElement) document.exitPointerLock()
+          this.onOpenProfile?.(row.address)
+        })
+      } else {
+        btn.disabled = true
+        btn.classList.add('is-static')
+      }
+      li.appendChild(btn)
+      list.appendChild(li)
+    }
+    this.messagesEl.appendChild(list)
   }
 
   private renderRail(): void {
@@ -356,8 +494,12 @@ export class ChatPanel {
   }
 
   private renderMessages(): void {
+    if (this.bodyMode !== 'messages') return
     const lines = this.social.getMessages()
     this.messagesEl.innerHTML = ''
+    this.messagesEl.classList.remove('chat-panel__messages--users')
+    this.messagesEl.setAttribute('role', 'log')
+    this.messagesEl.setAttribute('aria-live', 'polite')
 
     if (!lines.length) {
       const empty = document.createElement('div')

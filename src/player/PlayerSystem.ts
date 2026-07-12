@@ -45,6 +45,7 @@ import type { VirtualCameraBridge } from '../camera/VirtualCameraBridge'
 import type { AssetCache } from '../rendering/AssetCache'
 import type { ResolvedProfileEmote } from '../avatar/profileEmotes'
 import { AVATAR_YAW_OFFSET } from '../avatar/constants'
+import { clientSettings } from '../rendering/ClientSettings'
 
 const UP = new THREE.Vector3(0, 1, 0)
 const _forward = new THREE.Vector3()
@@ -811,9 +812,10 @@ export class PlayerSystem {
     if (this.virtualCamera?.isActive()) return
 
     if (this.input.looking) {
-      this.camYaw -= this.input.pointer.dx * POINTER_LOOK_SPEED
+      const look = POINTER_LOOK_SPEED * clientSettings.getMouseSensitivityScale()
+      this.camYaw -= this.input.pointer.dx * look
       this.camYaw = normalizeAngle(this.camYaw)
-      const pitchDelta = this.input.pointer.dy * POINTER_LOOK_SPEED
+      const pitchDelta = this.input.pointer.dy * look
       this.camPitch += this.isFirstPerson() ? -pitchDelta : pitchDelta
       const pitchMin = this.isFirstPerson() ? -CAM_PITCH_MAX + 0.05 : CAM_PITCH_MIN
       this.camPitch = clamp(this.camPitch, pitchMin, CAM_PITCH_MAX)

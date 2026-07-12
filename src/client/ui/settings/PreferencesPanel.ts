@@ -1,4 +1,5 @@
 import { playUiClick } from '../UiSfx'
+import { ControlsSettingsView } from './ControlsSettingsView'
 import { GraphicsSettingsView } from './GraphicsSettingsView'
 import { SoundsSettingsView } from './SoundsSettingsView'
 
@@ -46,6 +47,7 @@ export class PreferencesPanel {
   private readonly closeBtn: HTMLElement
   private graphicsSettingsView: GraphicsSettingsView | null = null
   private soundsSettingsView: SoundsSettingsView | null = null
+  private controlsSettingsView: ControlsSettingsView | null = null
   private activeTab: PreferencesTab = 'graphics'
   private visible = false
   private readonly onVisibilityChange?: (visible: boolean) => void
@@ -174,6 +176,8 @@ export class PreferencesPanel {
     this.graphicsSettingsView = null
     this.soundsSettingsView?.dispose()
     this.soundsSettingsView = null
+    this.controlsSettingsView?.dispose()
+    this.controlsSettingsView = null
 
     if (this.activeTab === 'graphics') {
       this.graphicsSettingsView = new GraphicsSettingsView()
@@ -187,6 +191,12 @@ export class PreferencesPanel {
       return
     }
 
+    if (this.activeTab === 'controls') {
+      this.controlsSettingsView = new ControlsSettingsView()
+      this.contentArea.appendChild(this.controlsSettingsView.root)
+      return
+    }
+
     const placeholder = document.createElement('div')
     placeholder.className = 'preferences-panel__placeholder'
     placeholder.textContent = `${this.activeTab.toUpperCase()} — Coming soon`
@@ -197,6 +207,7 @@ export class PreferencesPanel {
     window.removeEventListener('keydown', this.onKeyDown)
     this.graphicsSettingsView?.dispose()
     this.soundsSettingsView?.dispose()
+    this.controlsSettingsView?.dispose()
     this.root.remove()
   }
 }

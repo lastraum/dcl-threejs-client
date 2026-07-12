@@ -2,16 +2,29 @@ const STORAGE_KEY = 'dcl-client-settings'
 
 export type ClientSettingsState = {
   fov: number
+  /** Percent of base look speed (10–200). 100 = default. */
+  mouseSensitivity: number
 }
 
 const DEFAULTS: ClientSettingsState = {
-  fov: 60
+  fov: 60,
+  mouseSensitivity: 100
 }
 
 export const FOV_MIN = 40
 export const FOV_MAX = 120
+export const MOUSE_SENSITIVITY_MIN = 10
+export const MOUSE_SENSITIVITY_MAX = 200
 
 type Listener = (state: ClientSettingsState) => void
+
+function clampFov(fov: number): number {
+  return Math.round(Math.max(FOV_MIN, Math.min(FOV_MAX, fov)))
+}
+
+function clampMouseSensitivity(value: number): number {
+  return Math.round(Math.max(MOUSE_SENSITIVITY_MIN, Math.min(MOUSE_SENSITIVITY_MAX, value)))
+}
 
 class ClientSettingsStore {
   private state: ClientSettingsState
@@ -31,9 +44,26 @@ class ClientSettingsStore {
   }
 
   setFov(fov: number): void {
-    const clamped = Math.round(Math.max(FOV_MIN, Math.min(FOV_MAX, fov)))
+    const clamped = clampFov(fov)
     if (clamped === this.state.fov) return
     this.state = { ...this.state, fov: clamped }
+    this.persist()
+    this.notify()
+  }
+
+  getMouseSensitivity(): number {
+    return this.state.mouseSensitivity
+  }
+
+  /** Multiplier for pointer look (1.0 = default). */
+  getMouseSensitivityScale(): number {
+    return this.state.mouseSensitivity / 100
+  }
+
+  setMouseSensitivity(value: number): void {
+    const clamped = clampMouseSensitivity(value)
+    if (clamped === this.state.mouseSensitivity) return
+    this.state = { ...this.state, mouseSensitivity: clamped }
     this.persist()
     this.notify()
   }
@@ -58,9 +88,12 @@ class ClientSettingsStore {
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
       if (!raw) return
-      const parsed = JSON.parse(raw)
+      const parsed = JSON.parse(raw) as Partial<ClientSettingsState>
       if (typeof parsed.fov === 'number') {
-        this.state.fov = Math.round(Math.max(FOV_MIN, Math.min(FOV_MAX, parsed.fov)))
+        this.state.fov = clampFov(parsed.fov)
+      }
+      if (typeof parsed.mouseSensitivity === 'number') {
+        this.state.mouseSensitivity = clampMouseSensitivity(parsed.mouseSensitivity)
       }
     } catch { /* corrupt data */ }
   }

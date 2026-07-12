@@ -298,6 +298,62 @@ export class SocialService {
       })
   }
 
+  /**
+   * Live scene room roster for chat header / people list.
+   * Local player + LiveKit/gatekeeper scene-room peers (same set as @-mentions).
+   */
+  getScenePresenceRows(): Array<{
+    address: string
+    displayName: string
+    faceUrl: string | null
+    isSelf: boolean
+  }> {
+    const rows: Array<{
+      address: string
+      displayName: string
+      faceUrl: string | null
+      isSelf: boolean
+    }> = []
+    const seen = new Set<string>()
+
+    if (this.localAddress) {
+      const local = this.getLocalDisplay()
+      rows.push({
+        address: this.localAddress,
+        displayName: local.displayName,
+        faceUrl: local.faceUrl,
+        isSelf: true
+      })
+      seen.add(this.localAddress)
+    }
+
+    for (const addr of this.comms?.getSceneChatMentionAddresses() ?? []) {
+      const key = addr.toLowerCase()
+      if (seen.has(key) || !isEvmAddress(key)) continue
+      seen.add(key)
+      const peer = this.getPeerDisplay(key)
+      rows.push({
+        address: key,
+        displayName: peer.displayName,
+        faceUrl: peer.faceUrl,
+        isSelf: false
+      })
+      void this.peerProfiles.ensurePeer(key)
+    }
+
+    rows.sort((a, b) => {
+      if (a.isSelf !== b.isSelf) return a.isSelf ? -1 : 1
+      return a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' })
+    })
+    return rows
+  }
+
+  getScenePresenceCount(): number {
+    const remotes = this.comms?.getSceneChatMentionAddresses().length ?? 0
+    const self = this.localAddress ? 1 : 0
+    return remotes + self
+  }
+
   getIncomingFriendAddresses(): string[] {
     if (!this.friendshipSnapshot) return []
     return [...this.friendshipSnapshot.incoming].sort((a, b) => a.localeCompare(b))

@@ -1,5 +1,5 @@
 import type * as THREE from 'three'
-import { renderQuality, RenderQualityTier } from '../rendering/RenderQualitySettings'
+import { effectivePixelRatio, renderQuality, RenderQualityTier } from '../rendering/RenderQualitySettings'
 import type { PerformanceTier } from '../shim/types'
 
 export type { PerformanceTier } from '../shim/types'
@@ -73,17 +73,24 @@ export function detectPerformanceTier(
   return 'high'
 }
 
-/** Lower pixel ratio and render quality on weak GPUs — call once after WebGL context exists. */
+/**
+ * Apply auto render defaults on first visit (no saved Preferences).
+ * When the user has persisted graphics settings, only re-apply pixel ratio from store.
+ * Low devices get the Low preset (persisted so Preferences matches). Medium/high leave
+ * in-memory Medium defaults without writing localStorage (user can still raise to High/Ultra).
+ */
 export function applyClientPerformanceDefaults(
   renderer: THREE.WebGLRenderer,
   tier: PerformanceTier
 ): void {
-  if (tier === 'low') {
-    renderQuality.setTier(RenderQualityTier.Low)
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1))
+  if (renderQuality.hasPersistedSettings()) {
+    renderer.setPixelRatio(effectivePixelRatio(renderQuality.getResolutionScale()))
     return
   }
-  if (tier === 'medium') {
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
+  if (tier === 'low') {
+    renderQuality.setTier(RenderQualityTier.Low)
+    return
   }
+  // medium/high: SceneHost already applied store defaults + pixel ratio via subscribe
+  renderer.setPixelRatio(effectivePixelRatio(renderQuality.getResolutionScale()))
 }

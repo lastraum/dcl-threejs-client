@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-11 (Unity lighting + moon parity on `dev-latest`)  
-> **Current phase:** **v0.6.0** on `main`; **lighting/moon parity** on `dev-latest` (post-release). **Next:** Phase 3 Watch Lite, Phase 4 `/goto`; MOVE CAMERA residual.  
+> **Last updated:** 2026-07-11 (Graphics prefs P0+P1 on `dev-latest`)  
+> **Current phase:** **v0.6.0** on `main`; **lighting/moon + graphics prefs** on `dev-latest` (post-release). **Next:** Phase 4 `/goto`, Phase 3 Watch Lite; MOVE CAMERA residual.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -28,6 +28,7 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **VirtualCamera bind reliability** | 🟢 | Scene-agnostic MainCamera→VC hydrate; locked shots use worker world pose; follow is f(player)+local; live Transform exclusive while bound |
 | **Skybox time authority** | 🟢 | Scene fixed → session custom (tab) → Auto cycle; Night/Day panel respects scene lock |
 | **Unity outdoor lighting parity** | 🟢 | Trilight ambient, soft sun/moon shadows, anim intensity, soft PBR; crescent moon + night fill |
+| **Graphics prefs (P0+P1)** | 🟢 | Preset / shadows / scene lights / res scale / FPS wired; MSAA/bloom still stubs |
 
 **Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**. Suggestions: dev panel → **💡 Suggest**.
 
@@ -52,9 +53,32 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 
 **QA:** Reset lighting · noon plane soft not silhouette · look up small sun · 23:59 crescent moon + soft purple fill + shadows · Night/Day scrub.
 
-**Still open:** MOVE CAMERA residual · Watch Lite / `/goto` · graphics prefs stubs (MSAA/bloom UI) · multi-cascade shadow polish.
+**Still open:** MOVE CAMERA residual · Watch Lite / `/goto` · multi-cascade shadow polish · post-FX (MSAA/bloom).
 
 **Not on `main` yet** — v0.6.0 release notes still list sun intensity/shadows as gaps; next cut can fold this milestone in.
+
+---
+
+## 🎉 Milestone — Graphics prefs P0+P1 (2026-07-11)
+
+**Status: shipped on `dev-latest`** — Preferences → Graphics wires into existing render backends (no new post-FX).
+
+| Control | Status | Backend |
+| ------- | ------ | ------- |
+| **Graphics Preset** | 🟢 | Low / Medium / High / Ultra / Custom → `renderQuality` bundle |
+| **Shadows Quality** | 🟢 | Off + Low→Ultra map size / soft radius; sun + spots |
+| **Enable Scene Lights** | 🟢 | `LightManager` master switch |
+| **Max Lights in a Scene** | 🟢 | Cap 0–20 (preset defaults 4/6/10/16) |
+| **Resolution Scale** | 🟢 | `devicePixelRatio × scale%` (50–200%) |
+| **FPS Limit** | 🟢 | 30 / 60 / 120 / Max — throttle in `SceneHost` |
+| **FOV + lighting sliders** | 🟢 | already live |
+| **MSAA / Bloom / HDR / distances** | ⬜ | labeled stubs only |
+
+**Persist:** `localStorage` key `dcl-render-quality`. Auto perf defaults skip when user has saved prefs.
+
+**Files:** `RenderQualitySettings.ts`, `SceneHost.ts`, `LightManager.ts`, `directionalSunShadow.ts`, `spotLightShadow.ts`, `GraphicsSettingsView.ts`, `detectPerformanceTier.ts`
+
+**QA:** P → Graphics — switch Low vs Ultra (pixel ratio + FPS); Off shadows; Max lights 0; toggle scene lights; confirm Custom when diverging; Debug panel tier still works.
 
 ---
 
@@ -82,7 +106,7 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **MOVE CAMERA** edit-flight residual | Avatar freeze OK; WASD/STOP still shim-debt — [ARCHITECTURE_AND_TECH_DEBT](./ARCHITECTURE_AND_TECH_DEBT.md) |
 | **Sun intensity / directional shadows** | **Addressed on `dev-latest` post-release** — see [Unity lighting + moon parity](#-milestone--unity-lighting--moon-parity-2026-07-11) |
 | **Watch Lite / `/goto`** | Companion Phase 3–4 still open |
-| **Graphics prefs stubs** | MSAA/bloom/shadows/resolution UI not wired |
+| **Graphics post-FX stubs** | MSAA/bloom still UI-only; preset/shadows/lights/res/FPS live on `dev-latest` |
 
 ### Smoke (pre-cut)
 
@@ -428,7 +452,7 @@ Genesis spawn walk · VC character-select/follow · `threejs.dcl.eth` materials 
 | **Skybox clouds** | ✅ | HDR cloud gradient tint + screen brighten + sun-facing lift; `toneMapped: false` on sky shader |
 | **Scene GLTF emissives** | 🟡 **partial** | DCL model: clamp emissive RGB → `emissiveIntensity` (KHR strength 2–80+); named neon mats (`LightLED`, etc.) — **decent, room to improve** |
 | **Baked emissive maps** | ✅ | Floor/wall bake mats skipped — no blowout |
-| **Graphics settings stubs** | ⬜ | MSAA, bloom, resolution scale, shadow quality — UI placeholders only |
+| **Graphics quality prefs** | 🟢 | Preset, shadows, scene lights, res scale, FPS live; MSAA/bloom still stubs |
 | **Custom skybox worlds** | 🟡 | User sliders affect Genesis path only; cubemap `/about` scenes hide `DclGenesisSky` |
 
 **Files:** `PreferencesPanel.ts`, `SunEnvironmentSettings.ts`, `DclGenesisSky.ts`, `EnvironmentSystem.ts`, `sceneGltfEmissives.ts`, `GraphicsSettingsView.ts`
@@ -722,7 +746,7 @@ mrdoob **stats.js** panel top-center — closes out Phase 0 perf/viewer checkmar
 | **Now** | PhysX player grounding + capsule debug | ✅ feet on y=0; bone-based pivot; debug panel toggles |
 | **Now** | Sun / ECS hybrid + ACES exposure | ✅ hybrid dim + tier exposure; user day/night exposure sliders |
 | **Now** | Scene GLTF neon / LED emissives | 🟡 DCL color×intensity split — warm LEDs at night; not full Explorer parity |
-| **Now** | Preferences → Graphics lighting UI | 🟡 4 live sliders + stub sections (MSAA, bloom, etc.) |
+| **Now** | Preferences → Graphics quality + lighting | 🟢 preset/shadows/lights/res/FPS + 4 lighting sliders; MSAA/bloom stubs |
 | **Pre-live** | Emote GLB props | ✅ `SkeletonUtils.clone` + scene-emote URNs (2026-06-13) |
 | Full Explorer ShaderGraph parity (bloom, dual sun logo) | ⬜ polish |
 | Per-layer cloud tint gradients (Explorer Far/Near) | ⬜ single global `uCloudsColor` today |
@@ -759,7 +783,7 @@ Default sky time: **midday (12:00)** on load. Day/night cycle still available wh
 | **World location card** (replaces minimap in worlds) | ✅ `WorldLocationCard.ts` — name, live coords, **Jump back to Genesis City** → `0,0` |
 | Debug panel (right-anchored, hidden by default) | ✅ toggled from Help icon; live scene-local + world position HUD |
 | Settings overlay (tabbed) | ✅ Events, Places, Communities, Map, Backpack, Gallery |
-| **Preferences panel (P / ⚙)** | ✅ Graphics live · **Sounds partial** (volume + mic UI) · Controls/Chat stubs |
+| **Preferences panel (P / ⚙)** | ✅ Graphics quality + lighting live · **Sounds partial** · Controls/Chat stubs |
 | **Dev progress panel** | ✅ `</>` sidebar — TASKS.yaml + PROGRESS.md from GitHub + integration registry |
 | **Map tab** — Genesis City stitched tiles | ✅ click mini-map / **M** — parcel popup + Jump In + peer sidebar (dcl-neurolink parity) |
 | **Events tab** — calendar + weekly views | ✅ DCL Events API · Weekly (4 day columns) / Calendar toggle · Today + Create Event stub |

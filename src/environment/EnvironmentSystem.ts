@@ -520,8 +520,8 @@ export class EnvironmentSystem {
   private hybridSunScale(): number {
     if (!this.lightManager) return 1
     const active = this.lightManager.getActiveNearbyCount()
-    if (active <= 0) return 1
     const max = renderQuality.getMaxActiveLights()
+    if (active <= 0 || max <= 0) return 1
     const fill = active / max
     if (fill <= ECS_HYBRID_FILL_START) return 1
     const t = (fill - ECS_HYBRID_FILL_START) / (1 - ECS_HYBRID_FILL_START)

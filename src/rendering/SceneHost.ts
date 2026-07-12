@@ -6,6 +6,7 @@ import { dclToThreePos } from '../bridge/dclTransform'
 import { NameTagRenderer } from '../client/ui/NameTagRenderer'
 import { RenderStats } from '../client/ui/RenderStats'
 import {
+  effectivePixelRatio,
   renderQuality,
   TONE_MAPPING_EXPOSURE,
   type RenderQualityOptions
@@ -26,10 +27,13 @@ export class SceneHost {
   private resizeObserver: ResizeObserver | null = null
   private viewportElement: HTMLElement | null = null
   private onViewportResize: ((width: number, height: number) => void) | null = null
+  /** Min ms between full frames; 0 = every rAF. */
+  private frameIntervalMs = 0
+  private lastFrameTime = 0
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true })
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
+    this.renderer.setPixelRatio(effectivePixelRatio(renderQuality.getResolutionScale()))
     this.renderer.setSize(window.innerWidth, window.innerHeight)
     this.renderer.setClearColor(0x1a1a2e)
     this.applyRendererQuality(renderQuality.getOptions())
@@ -118,13 +122,17 @@ export class SceneHost {
     return () => this.frameListeners.delete(listener)
   }
 
-  /** ACES tone mapping + exposure; spot shadows capped at 3 lights in LightManager. */
-  private applyRendererQuality(_options: RenderQualityOptions): void {
+  /** ACES tone mapping + exposure, shadows, resolution scale, FPS cap. */
+  private applyRendererQuality(options: RenderQualityOptions): void {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = TONE_MAPPING_EXPOSURE[renderQuality.getTier()]
-    this.renderer.shadowMap.enabled = true
+    this.renderer.toneMappingExposure = TONE_MAPPING_EXPOSURE[options.tier]
+    this.renderer.shadowMap.enabled = options.shadowQuality !== 'off'
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
+    this.renderer.setPixelRatio(effectivePixelRatio(options.resolutionScale))
+    this.frameIntervalMs = options.fpsLimit > 0 ? 1000 / options.fpsLimit : 0
+    // Re-apply size so backing store matches new pixel ratio.
+    this.applyViewportSize()
   }
 
   /** Draw one frame without starting the animation loop (used after asset hydration). */
@@ -151,9 +159,15 @@ export class SceneHost {
     let windowFrames = 0
     let windowSlow = 0
     let lastAsyncMs = 0
+    this.lastFrameTime = 0
 
     this.renderer.setAnimationLoop(() => {
       const frameT0 = performance.now()
+      if (this.frameIntervalMs > 0 && this.lastFrameTime > 0) {
+        if (frameT0 - this.lastFrameTime < this.frameIntervalMs) return
+      }
+      this.lastFrameTime = frameT0
+
       const delta = Math.min(this.clock.getDelta(), 0.1)
       frameCount++
 

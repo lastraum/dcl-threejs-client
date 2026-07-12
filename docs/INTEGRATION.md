@@ -138,7 +138,7 @@ DOM overlay — not in-scene `UiTransform`.
 | Debug panel, dev progress panel (`</>`) | 🟢 |
 | Settings overlay: Events, Map, Backpack, Places, Gallery | 🟢 |
 | Profile pills + right-click profile menu | 🟢 |
-| Preferences panel (P / ⚙): Graphics lighting sliders | 🟢 |
+| Preferences panel (P / ⚙): Graphics preset/shadows/lights/res/FPS + lighting | 🟢 |
 | Preferences → Sounds volume sliders | 🟢 |
 | Preferences: Controls, Chat tabs | 🟡 stub |
 | Settings: Communities | ⬜ |

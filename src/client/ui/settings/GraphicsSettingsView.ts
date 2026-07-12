@@ -5,12 +5,25 @@ import {
   SUN_SLIDER_MIN,
   type SunEnvironmentSettingsState
 } from '../../../rendering/SunEnvironmentSettings'
+import {
+  MAX_SCENE_LIGHTS_CAP,
+  RESOLUTION_SCALE_MAX,
+  RESOLUTION_SCALE_MIN,
+  renderQuality,
+  type FpsLimitOption,
+  type GraphicsPreset,
+  type RenderQualityOptions,
+  type ShadowQuality
+} from '../../../rendering/RenderQualitySettings'
 
 type DropdownDef = {
   type: 'dropdown'
   label: string
   options: string[]
   defaultIndex: number
+  onChange?: (value: string) => void
+  /** UI-only placeholder — not wired to runtime. */
+  stub?: boolean
 }
 
 type SliderDef = {
@@ -21,6 +34,7 @@ type SliderDef = {
   defaultValue: number
   suffix?: string
   onChange?: (value: number) => void
+  stub?: boolean
 }
 
 type ToggleDef = {
@@ -28,6 +42,7 @@ type ToggleDef = {
   label: string
   defaultOn: boolean
   onChange?: (on: boolean) => void
+  stub?: boolean
 }
 
 type SettingDef = DropdownDef | SliderDef | ToggleDef
@@ -37,76 +52,172 @@ type SectionDef = {
   items: SettingDef[]
 }
 
-const SECTIONS: SectionDef[] = [
-  {
-    title: 'General',
-    items: [
-      { type: 'dropdown', label: 'Graphics Preset', options: ['Low', 'Medium', 'High', 'Ultra', 'Custom'], defaultIndex: 2 }
-    ]
-  },
-  {
-    title: 'Display',
-    items: [
-      { type: 'dropdown', label: 'Resolution', options: ['1920x1080', '2560x1440', '3014x1952', '3840x2160'], defaultIndex: 2 },
-      { type: 'slider', label: 'Resolution Scale', min: 0, max: 200, defaultValue: 120, suffix: '%' },
-      { type: 'slider', label: 'Field of View', min: FOV_MIN, max: FOV_MAX, defaultValue: clientSettings.getFov(), suffix: '°', onChange: (v) => clientSettings.setFov(v) },
-      { type: 'toggle', label: 'Fullscreen', defaultOn: false },
-      { type: 'dropdown', label: 'FPS Limit', options: ['30', '60', '120', 'Max'], defaultIndex: 1 },
-      { type: 'toggle', label: 'VSync', defaultOn: true }
-    ]
-  },
-  {
-    title: 'Post Processing',
-    items: [
-      { type: 'dropdown', label: 'MSAA', options: ['Off', '2x', '4x', '8x'], defaultIndex: 2 },
-      { type: 'toggle', label: 'HDR', defaultOn: true },
-      { type: 'toggle', label: 'Bloom', defaultOn: true },
-      { type: 'toggle', label: 'Avatar Outline', defaultOn: false }
-    ]
-  },
-  {
-    title: 'Landscape and Foliage',
-    items: [
-      { type: 'slider', label: 'Scene Distance', min: 0, max: 200, defaultValue: 100 },
-      { type: 'slider', label: 'Landscape Distance', min: 0, max: 10000, defaultValue: 7000 }
-    ]
-  },
-  {
-    title: 'Scene Lighting',
-    items: [
-      { type: 'toggle', label: 'Enable Scene Lights', defaultOn: true },
-      { type: 'slider', label: 'Max Lights in a Scene', min: 0, max: 20, defaultValue: 10 }
-    ]
-  },
-  {
-    title: 'Shadows',
-    items: [
-      { type: 'dropdown', label: 'Quality', options: ['Off', 'Low', 'Medium', 'High', 'Ultra'], defaultIndex: 3 },
-      { type: 'slider', label: 'Shadows Distance', min: 0, max: 200, defaultValue: 100 }
-    ]
-  },
-  {
-    title: 'Other',
-    items: [
-      { type: 'toggle', label: 'Play current scene streams only', defaultOn: true }
-    ]
-  },
-  {
-    title: 'Physics',
-    items: [
-      { type: 'toggle', label: 'Jiggle Bones', defaultOn: false }
-    ]
-  }
-]
+const PRESET_LABELS = ['Low', 'Medium', 'High', 'Ultra', 'Custom'] as const
+const SHADOW_LABELS = ['Off', 'Low', 'Medium', 'High', 'Ultra'] as const
+const FPS_LABELS = ['30', '60', '120', 'Max'] as const
+
+function presetLabel(preset: GraphicsPreset): string {
+  return preset.charAt(0).toUpperCase() + preset.slice(1)
+}
+
+function shadowLabel(q: ShadowQuality): string {
+  return q.charAt(0).toUpperCase() + q.slice(1)
+}
+
+function fpsLabel(limit: FpsLimitOption): string {
+  return limit === 0 ? 'Max' : String(limit)
+}
+
+function indexOfLabel(options: readonly string[], label: string, fallback: number): number {
+  const i = options.indexOf(label)
+  return i >= 0 ? i : fallback
+}
+
+function buildSections(rq: RenderQualityOptions): SectionDef[] {
+  return [
+    {
+      title: 'General',
+      items: [
+        {
+          type: 'dropdown',
+          label: 'Graphics Preset',
+          options: [...PRESET_LABELS],
+          defaultIndex: indexOfLabel(PRESET_LABELS, presetLabel(rq.preset), 1),
+          onChange: (v) => {
+            const key = v.toLowerCase() as GraphicsPreset
+            if (key === 'custom') return
+            if (key === 'low' || key === 'medium' || key === 'high' || key === 'ultra') {
+              renderQuality.applyPreset(key)
+            }
+          }
+        }
+      ]
+    },
+    {
+      title: 'Display',
+      items: [
+        {
+          type: 'dropdown',
+          label: 'Resolution',
+          options: ['1920x1080', '2560x1440', '3014x1952', '3840x2160'],
+          defaultIndex: 2,
+          stub: true
+        },
+        {
+          type: 'slider',
+          label: 'Resolution Scale',
+          min: RESOLUTION_SCALE_MIN,
+          max: RESOLUTION_SCALE_MAX,
+          defaultValue: rq.resolutionScale,
+          suffix: '%',
+          onChange: (v) => renderQuality.setResolutionScale(v)
+        },
+        {
+          type: 'slider',
+          label: 'Field of View',
+          min: FOV_MIN,
+          max: FOV_MAX,
+          defaultValue: clientSettings.getFov(),
+          suffix: '°',
+          onChange: (v) => clientSettings.setFov(v)
+        },
+        { type: 'toggle', label: 'Fullscreen', defaultOn: false, stub: true },
+        {
+          type: 'dropdown',
+          label: 'FPS Limit',
+          options: [...FPS_LABELS],
+          defaultIndex: indexOfLabel(FPS_LABELS, fpsLabel(rq.fpsLimit), 1),
+          onChange: (v) => {
+            if (v === 'Max') {
+              renderQuality.setFpsLimit(0)
+              return
+            }
+            const n = Number(v)
+            if (n === 30 || n === 60 || n === 120) renderQuality.setFpsLimit(n)
+          }
+        },
+        { type: 'toggle', label: 'VSync', defaultOn: true, stub: true }
+      ]
+    },
+    {
+      title: 'Post Processing',
+      items: [
+        { type: 'dropdown', label: 'MSAA', options: ['Off', '2x', '4x', '8x'], defaultIndex: 2, stub: true },
+        { type: 'toggle', label: 'HDR', defaultOn: true, stub: true },
+        { type: 'toggle', label: 'Bloom', defaultOn: true, stub: true },
+        { type: 'toggle', label: 'Avatar Outline', defaultOn: false, stub: true }
+      ]
+    },
+    {
+      title: 'Landscape and Foliage',
+      items: [
+        { type: 'slider', label: 'Scene Distance', min: 0, max: 200, defaultValue: 100, stub: true },
+        { type: 'slider', label: 'Landscape Distance', min: 0, max: 10000, defaultValue: 7000, stub: true }
+      ]
+    },
+    {
+      title: 'Scene Lighting',
+      items: [
+        {
+          type: 'toggle',
+          label: 'Enable Scene Lights',
+          defaultOn: rq.sceneLightsEnabled,
+          onChange: (on) => renderQuality.setSceneLightsEnabled(on)
+        },
+        {
+          type: 'slider',
+          label: 'Max Lights in a Scene',
+          min: 0,
+          max: MAX_SCENE_LIGHTS_CAP,
+          defaultValue: rq.maxSceneLights,
+          onChange: (v) => renderQuality.setMaxSceneLights(v)
+        }
+      ]
+    },
+    {
+      title: 'Shadows',
+      items: [
+        {
+          type: 'dropdown',
+          label: 'Quality',
+          options: [...SHADOW_LABELS],
+          defaultIndex: indexOfLabel(SHADOW_LABELS, shadowLabel(rq.shadowQuality), 3),
+          onChange: (v) => {
+            const key = v.toLowerCase() as ShadowQuality
+            if (key === 'off' || key === 'low' || key === 'medium' || key === 'high' || key === 'ultra') {
+              renderQuality.setShadowQuality(key)
+            }
+          }
+        },
+        { type: 'slider', label: 'Shadows Distance', min: 0, max: 200, defaultValue: 100, stub: true }
+      ]
+    },
+    {
+      title: 'Other',
+      items: [
+        { type: 'toggle', label: 'Play current scene streams only', defaultOn: true, stub: true }
+      ]
+    },
+    {
+      title: 'Physics',
+      items: [
+        { type: 'toggle', label: 'Jiggle Bones', defaultOn: false, stub: true }
+      ]
+    }
+  ]
+}
 
 type BoundControl =
-  | { kind: 'slider'; input: HTMLInputElement; label: HTMLSpanElement; suffix?: string; min: number; max: number }
-  | { kind: 'toggle'; input: HTMLInputElement }
+  | { kind: 'slider'; input: HTMLInputElement; label: HTMLSpanElement; suffix?: string; min: number; max: number; name: string }
+  | { kind: 'toggle'; input: HTMLInputElement; name: string }
+  | { kind: 'dropdown'; select: HTMLSelectElement; name: string }
 
 export class GraphicsSettingsView {
   readonly root: HTMLElement
   private readonly boundControls: BoundControl[] = []
   private readonly unsubscribeSun?: () => void
+  private readonly unsubscribeQuality?: () => void
+  private syncing = false
 
   constructor() {
     this.root = document.createElement('div')
@@ -115,13 +226,14 @@ export class GraphicsSettingsView {
     const scrollArea = document.createElement('div')
     scrollArea.className = 'gfx-settings__scroll'
 
-    for (const section of SECTIONS) {
+    for (const section of buildSections(renderQuality.getOptions())) {
       scrollArea.appendChild(this.buildSection(section))
     }
     scrollArea.appendChild(this.buildLightingSection())
 
     this.root.appendChild(scrollArea)
     this.unsubscribeSun = sunEnvironmentSettings.subscribe((state) => this.syncSunControls(state))
+    this.unsubscribeQuality = renderQuality.subscribe((opts) => this.syncQualityControls(opts))
   }
 
   private buildLightingSection(): HTMLElement {
@@ -193,12 +305,48 @@ export class GraphicsSettingsView {
 
     for (const control of this.boundControls) {
       if (control.kind !== 'slider') continue
-      const row = control.input.closest('.gfx-settings__row')
-      const name = row?.querySelector('.gfx-settings__label')?.textContent
-      if (!name || values[name] === undefined) continue
-      control.input.value = values[name]
-      control.label.textContent = `${values[name]}${control.suffix ?? ''}`
+      if (values[control.name] === undefined) continue
+      control.input.value = values[control.name]!
+      control.label.textContent = `${values[control.name]}${control.suffix ?? ''}`
       this.setSliderPct(control.input, control.min, control.max)
+    }
+  }
+
+  private syncQualityControls(opts: RenderQualityOptions): void {
+    this.syncing = true
+    try {
+      for (const control of this.boundControls) {
+        switch (control.name) {
+          case 'Graphics Preset':
+            if (control.kind === 'dropdown') control.select.value = presetLabel(opts.preset)
+            break
+          case 'Resolution Scale':
+            if (control.kind === 'slider') {
+              control.input.value = String(opts.resolutionScale)
+              control.label.textContent = `${opts.resolutionScale}${control.suffix ?? ''}`
+              this.setSliderPct(control.input, control.min, control.max)
+            }
+            break
+          case 'FPS Limit':
+            if (control.kind === 'dropdown') control.select.value = fpsLabel(opts.fpsLimit)
+            break
+          case 'Enable Scene Lights':
+            if (control.kind === 'toggle') control.input.checked = opts.sceneLightsEnabled
+            break
+          case 'Max Lights in a Scene':
+            if (control.kind === 'slider') {
+              control.input.value = String(opts.maxSceneLights)
+              control.label.textContent = `${opts.maxSceneLights}${control.suffix ?? ''}`
+              this.setSliderPct(control.input, control.min, control.max)
+            }
+            break
+          case 'Quality':
+            if (control.kind === 'dropdown') control.select.value = shadowLabel(opts.shadowQuality)
+            break
+        }
+      }
+    } finally {
+      this.syncing = false
     }
   }
 
@@ -225,10 +373,14 @@ export class GraphicsSettingsView {
   private buildItem(def: SettingDef): HTMLElement {
     const row = document.createElement('div')
     row.className = 'gfx-settings__row'
+    if (def.stub) {
+      row.title = 'Not wired yet — UI placeholder'
+      row.style.opacity = '0.55'
+    }
 
     const label = document.createElement('span')
     label.className = 'gfx-settings__label'
-    label.textContent = def.label
+    label.textContent = def.stub ? `${def.label} (soon)` : def.label
     row.appendChild(label)
 
     switch (def.type) {
@@ -252,6 +404,7 @@ export class GraphicsSettingsView {
 
     const select = document.createElement('select')
     select.className = 'gfx-settings__select'
+    if (def.stub) select.disabled = true
     for (let i = 0; i < def.options.length; i++) {
       const opt = document.createElement('option')
       opt.value = def.options[i]!
@@ -260,12 +413,26 @@ export class GraphicsSettingsView {
       select.appendChild(opt)
     }
 
+    if (def.onChange && !def.stub) {
+      select.addEventListener('change', () => {
+        if (this.syncing) return
+        def.onChange?.(select.value)
+      })
+    }
+
+    // Custom is display-only when auto-inferred
+    if (def.label === 'Graphics Preset') {
+      const customOpt = select.querySelector('option[value="Custom"]') as HTMLOptionElement | null
+      if (customOpt) customOpt.disabled = true
+    }
+
     const chevron = document.createElement('span')
     chevron.className = 'gfx-settings__chevron'
     chevron.innerHTML = `<svg width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
 
     wrap.appendChild(select)
     wrap.appendChild(chevron)
+    this.boundControls.push({ kind: 'dropdown', select, name: def.label })
     return wrap
   }
 
@@ -278,12 +445,14 @@ export class GraphicsSettingsView {
     prevBtn.className = 'gfx-settings__slider-btn'
     prevBtn.textContent = '‹'
     prevBtn.setAttribute('aria-label', 'Decrease')
+    if (def.stub) prevBtn.disabled = true
 
     const nextBtn = document.createElement('button')
     nextBtn.type = 'button'
     nextBtn.className = 'gfx-settings__slider-btn'
     nextBtn.textContent = '›'
     nextBtn.setAttribute('aria-label', 'Increase')
+    if (def.stub) nextBtn.disabled = true
 
     const slider = document.createElement('input')
     slider.type = 'range'
@@ -291,6 +460,7 @@ export class GraphicsSettingsView {
     slider.min = String(def.min)
     slider.max = String(def.max)
     slider.value = String(def.defaultValue)
+    if (def.stub) slider.disabled = true
 
     const valueLabel = document.createElement('span')
     valueLabel.className = 'gfx-settings__slider-value'
@@ -301,15 +471,17 @@ export class GraphicsSettingsView {
     const updateLabel = () => {
       valueLabel.textContent = `${slider.value}${def.suffix ?? ''}`
       this.setSliderPct(slider, def.min, def.max)
-      def.onChange?.(Number(slider.value))
+      if (!this.syncing && !def.stub) def.onChange?.(Number(slider.value))
     }
 
     slider.addEventListener('input', updateLabel)
     prevBtn.addEventListener('click', () => {
+      if (def.stub) return
       slider.value = String(Math.max(def.min, Number(slider.value) - step))
       updateLabel()
     })
     nextBtn.addEventListener('click', () => {
+      if (def.stub) return
       slider.value = String(Math.min(def.max, Number(slider.value) + step))
       updateLabel()
     })
@@ -319,7 +491,15 @@ export class GraphicsSettingsView {
     wrap.appendChild(nextBtn)
     wrap.appendChild(valueLabel)
     this.setSliderPct(slider, def.min, def.max)
-    this.boundControls.push({ kind: 'slider', input: slider, label: valueLabel, suffix: def.suffix, min: def.min, max: def.max })
+    this.boundControls.push({
+      kind: 'slider',
+      input: slider,
+      label: valueLabel,
+      suffix: def.suffix,
+      min: def.min,
+      max: def.max,
+      name: def.label
+    })
     return wrap
   }
 
@@ -337,20 +517,25 @@ export class GraphicsSettingsView {
     const input = document.createElement('input')
     input.type = 'checkbox'
     input.checked = def.defaultOn
+    if (def.stub) input.disabled = true
 
     const track = document.createElement('span')
     track.className = 'gfx-settings__toggle-track'
 
-    input.addEventListener('change', () => def.onChange?.(input.checked))
+    input.addEventListener('change', () => {
+      if (this.syncing || def.stub) return
+      def.onChange?.(input.checked)
+    })
 
     label.appendChild(input)
     label.appendChild(track)
-    this.boundControls.push({ kind: 'toggle', input })
+    this.boundControls.push({ kind: 'toggle', input, name: def.label })
     return label
   }
 
   dispose(): void {
     this.unsubscribeSun?.()
+    this.unsubscribeQuality?.()
     this.root.remove()
   }
 }

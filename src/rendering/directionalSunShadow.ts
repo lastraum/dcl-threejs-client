@@ -1,19 +1,21 @@
 import * as THREE from 'three'
-import { renderQuality, RenderQualityTier, SHADOW_MAP_SIZE } from './RenderQualitySettings'
+import { renderQuality, type ShadowQuality, SHADOW_MAP_SIZE } from './RenderQualitySettings'
 
 /** Ortho half-extent (m) around focus — wider = softer large-area contact, less dense texels. */
-const SUN_SHADOW_EXTENT_M: Record<RenderQualityTier, number> = {
-  [RenderQualityTier.Low]: 36,
-  [RenderQualityTier.Medium]: 52,
-  [RenderQualityTier.High]: 60
+const SUN_SHADOW_EXTENT_M: Record<Exclude<ShadowQuality, 'off'>, number> = {
+  low: 36,
+  medium: 52,
+  high: 60,
+  ultra: 72
 }
 /** Distance along sun direction from focus to the light. */
 const SUN_SHADOW_DISTANCE_M = 100
 /** PCF blur radius — higher = broader, softer edges (Unity soft directional feel). */
-const SUN_SHADOW_RADIUS: Record<RenderQualityTier, number> = {
-  [RenderQualityTier.Low]: 2.5,
-  [RenderQualityTier.Medium]: 4,
-  [RenderQualityTier.High]: 5
+const SUN_SHADOW_RADIUS: Record<Exclude<ShadowQuality, 'off'>, number> = {
+  low: 2.5,
+  medium: 4,
+  high: 5,
+  ultra: 6
 }
 
 const _focus = new THREE.Vector3()
@@ -24,21 +26,29 @@ const _dir = new THREE.Vector3()
  * Single ortho map following the camera focus — not full cascades (cost).
  */
 export function configureDirectionalSunShadow(light: THREE.DirectionalLight): void {
+  if (!renderQuality.shadowsEnabled()) {
+    light.castShadow = false
+    return
+  }
   light.castShadow = true
   applyDirectionalShadowQuality(light)
   light.shadow.autoUpdate = true
 }
 
 function applyDirectionalShadowQuality(light: THREE.DirectionalLight): void {
-  const tier = renderQuality.getTier()
-  const size = SHADOW_MAP_SIZE[tier]
-  const extent = SUN_SHADOW_EXTENT_M[tier]
+  const q = renderQuality.getShadowQuality()
+  if (q === 'off') {
+    light.castShadow = false
+    return
+  }
+  const size = SHADOW_MAP_SIZE[q]
+  const extent = SUN_SHADOW_EXTENT_M[q]
   light.shadow.mapSize.set(size, size)
   // Slightly positive-leaning normal bias + small constant bias reduces acne without
   // lifting shadows off the ground (peter-panning) as badly as large constant bias alone.
   light.shadow.bias = -0.00012
   light.shadow.normalBias = 0.035
-  light.shadow.radius = SUN_SHADOW_RADIUS[tier]
+  light.shadow.radius = SUN_SHADOW_RADIUS[q]
 
   const cam = light.shadow.camera as THREE.OrthographicCamera
   cam.near = 1
@@ -57,7 +67,7 @@ export function updateDirectionalSunShadowFocus(
   sunDirFromSurface: THREE.Vector3,
   enabled: boolean
 ): void {
-  if (!enabled) {
+  if (!enabled || !renderQuality.shadowsEnabled()) {
     light.castShadow = false
     return
   }
@@ -76,8 +86,16 @@ export function updateDirectionalSunShadowFocus(
 }
 
 export function refreshDirectionalSunShadowMapSize(light: THREE.DirectionalLight): void {
+  if (!renderQuality.shadowsEnabled()) {
+    light.castShadow = false
+    return
+  }
   if (!light.castShadow && !light.shadow.map) return
-  const size = SHADOW_MAP_SIZE[renderQuality.getTier()]
+  const size = renderQuality.getShadowMapSize()
+  if (size <= 0) {
+    light.castShadow = false
+    return
+  }
   if (light.shadow.mapSize.x !== size) {
     light.shadow.mapSize.set(size, size)
     light.shadow.map?.dispose()

@@ -34,6 +34,7 @@ export class LightManager {
   update(viewPosition: THREE.Vector3): void {
     this.viewPos.copy(viewPosition)
     const maxLights = renderQuality.getMaxActiveLights()
+    const shadowsOn = renderQuality.shadowsEnabled()
     const candidates: Candidate[] = []
 
     this.scene.traverse((obj) => {
@@ -42,7 +43,7 @@ export class LightManager {
       const meta = obj.userData.lightSource as LightSourceMeta | undefined
       if (!meta) return
 
-      if (!meta.ecsActive) {
+      if (!meta.ecsActive || maxLights <= 0) {
         obj.visible = false
         obj.castShadow = false
         return
@@ -59,12 +60,17 @@ export class LightManager {
       candidates.push({ light: obj, distSq, meta })
     })
 
+    if (maxLights <= 0) {
+      this.activeNearbyCount = 0
+      return
+    }
+
     candidates.sort((a, b) => a.distSq - b.distSq)
 
-    let shadowSlots = MAX_SHADOW_SPOT_LIGHTS
+    let shadowSlots = shadowsOn ? MAX_SHADOW_SPOT_LIGHTS : 0
     let activeCount = 0
     for (let i = 0; i < candidates.length; i++) {
-      const { light, meta } = candidates[i]
+      const { light, meta } = candidates[i]!
       const active = i < maxLights
       if (active) activeCount++
       light.visible = active
@@ -74,8 +80,8 @@ export class LightManager {
       }
       if (meta.isSpot && meta.wantsShadow && shadowSlots > 0 && light instanceof THREE.SpotLight) {
         configureSpotLightShadow(light)
-        light.castShadow = true
-        shadowSlots--
+        light.castShadow = shadowsOn
+        if (shadowsOn) shadowSlots--
       } else {
         light.castShadow = false
       }

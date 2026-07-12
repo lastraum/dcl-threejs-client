@@ -5,7 +5,6 @@ import { cameraCollisionDebug } from '../../debug/CameraCollisionDebug'
 import { platformMotionDebug } from '../../debug/PlatformMotionDebug'
 import { sceneBanDebug } from '../../network/sceneAccess/sceneBanDebug'
 import {
-  LIGHT_LIMITS,
   MAX_SHADOW_SPOT_LIGHTS,
   LIGHT_CULL_DISTANCE_M,
   renderQuality,
@@ -148,6 +147,7 @@ export class DebugPanel {
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
+            <option value="ultra">Ultra</option>
           </select>
         </label>
         <div class="debug-panel__render-quality-hint" data-render-quality-hint></div>
@@ -329,15 +329,23 @@ export class DebugPanel {
   private wireRenderQualityControls(): void {
     const syncFromStore = (options: RenderQualityOptions) => {
       this.renderQualitySelect.value = options.tier
-      const maxLights = LIGHT_LIMITS[options.tier]
-      this.renderQualityHint.textContent = `≤${maxLights} lights within ${LIGHT_CULL_DISTANCE_M}m · ≤${MAX_SHADOW_SPOT_LIGHTS} spot shadows`
+      const maxLights = options.maxSceneLights
+      const shadows = options.shadowQuality
+      this.renderQualityHint.textContent =
+        `≤${maxLights} lights within ${LIGHT_CULL_DISTANCE_M}m · shadows ${shadows}` +
+        (shadows !== 'off' ? ` · ≤${MAX_SHADOW_SPOT_LIGHTS} spot shadows` : '')
     }
 
     syncFromStore(renderQuality.getOptions())
 
     this.renderQualitySelect.addEventListener('change', () => {
       const tier = this.renderQualitySelect.value as RenderQualityTier
-      if (tier === RenderQualityTier.Low || tier === RenderQualityTier.Medium || tier === RenderQualityTier.High) {
+      if (
+        tier === RenderQualityTier.Low ||
+        tier === RenderQualityTier.Medium ||
+        tier === RenderQualityTier.High ||
+        tier === RenderQualityTier.Ultra
+      ) {
         renderQuality.setTier(tier)
       }
     })

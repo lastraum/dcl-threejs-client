@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-12 (CameraMode / CameraModeArea / PointerLock + reticle merged to `dev-latest`)  
-> **Current phase:** **v0.6.0** on `main`; lighting + graphics P0–P2 + **camera ECS** on `dev-latest`.  
+> **Last updated:** 2026-07-12 (**v0.7.0** on `main`)  
+> **Current phase:** **v0.7.0** released — lighting, graphics prefs P0–P2, Genesis reliability, camera ECS.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
 > **Product next:** Phase 4 `/goto` · Phase 3 Watch Lite.  
@@ -39,9 +39,39 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 
 ---
 
+## 🎉 Release — v0.7.0 (2026-07-12)
+
+**Status: cut from `dev-latest` → `main` · tag `v0.7.0`** — post-0.6.0 lighting, graphics prefs, Genesis reliability, camera/input ECS.
+
+### Highlights since v0.6.0
+
+| Area | Notes |
+| ---- | ----- |
+| **Unity outdoor lighting** | Trilight ambient, soft sun/moon shadows, crescent moon, night fill, lighting sliders + Reset |
+| **Graphics prefs P0–P2** | Preset L/M/H, shadows, scene lights, res scale, FPS, **MSAA**; VSync hidden; Fullscreen stub |
+| **Genesis / comms** | `realm-provider-ea` /about, archipelago when adapter empty, genesis sky + quiet ground (no empty-land GLB) |
+| **Physics / mesh** | y=0 ground clamp; instanced GLB + shared template colliders |
+| **Auth** | Jump In requires Guest or wallet |
+| **Chat** | People count → inline roster; WASD not stolen while typing |
+| **Controls** | Mouse sensitivity 10–200% |
+| **Camera ECS** | **CameraMode**, **CameraModeArea**, **PointerLock** + RMB look lock + fixed elevated reticle |
+
+### Still open (not blocking 0.7.0)
+
+| Gap | Notes |
+| --- | ----- |
+| **Graphics P3/P4** | Distance culls + bloom/HDR stubs |
+| **MOVE CAMERA residual** | Edit-flight shim debt |
+| **Watch Lite / `/goto`** | Product phases |
+| **NftShape / AvatarModifierArea** | Deferred ECS |
+
+**Changelog:** https://github.com/lastraum/dcl-threejs-client/compare/v0.6.0...v0.7.0
+
+---
+
 ## 🎉 Milestone — Unity lighting + moon parity (2026-07-11)
 
-**Status: shipped on `dev-latest`** (`2f9b0df` / code tip `0267d38`, via `lastraum`) — outdoor light/shadow/moon closer to Unity Explorer after v0.6.0.
+**Status: shipped in v0.7.0** (was on `dev-latest` post-0.6.0) — outdoor light/shadow/moon closer to Unity Explorer.
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
@@ -60,13 +90,13 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 
 **Still open:** MOVE CAMERA residual · Watch Lite / `/goto` · multi-cascade shadow polish · post-FX bloom/HDR · distance culls (P3).
 
-**Not on `main` yet** — v0.6.0 release notes still list sun intensity/shadows as gaps; next cut can fold this milestone in.
+**On `main` as of v0.7.0.**
 
 ---
 
 ## 🎉 Milestone — CameraMode / CameraModeArea / PointerLock (2026-07-12)
 
-**Status: shipped on `dev-latest`** (via `lastraum`) — freecam mode report + area force + pointer-lock look + fixed reticle.
+**Status: shipped in v0.7.0** — freecam mode report + area force + pointer-lock look + fixed reticle.
 
 | Component / UX | Status | Notes |
 | -------------- | ------ | ----- |

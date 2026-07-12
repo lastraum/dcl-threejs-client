@@ -71,8 +71,8 @@ vec3 moonDisc(vec3 dir, vec3 moonDir, sampler2D map, float mask) {
   vec3 v = normalize(dir);
   float moonDot = dot(v, m);
 
-  // Angular size of the lit moon disc (small, Explorer-like).
-  float moonSize = 0.038;
+  // Visual only — keep smaller than sun-style blobs (Explorer crescent is modest on screen).
+  float moonSize = 0.018;
   float disc = step(cos(moonSize), moonDot);
 
   // Tangent frame for bite offset + companion (Unity moon_mask_offset).
@@ -85,11 +85,12 @@ vec3 moonDisc(vec3 dir, vec3 moonDir, sampler2D map, float mask) {
   float crescent = disc * (1.0 - bite);
 
   // Small secondary companion (Unity second_sun / flare twin near the moon).
-  vec3 companionDir = normalize(m + tang * 0.065 + bitang * 0.055);
-  float companion = step(cos(moonSize * 0.2), dot(v, companionDir));
+  vec3 companionDir = normalize(m + tang * 0.032 + bitang * 0.028);
+  float companion = step(cos(moonSize * 0.18), dot(v, companionDir));
 
-  float softCore = pow(max(moonDot, 0.0), 90.0) * 0.55;
-  float softHalo = pow(max(moonDot, 0.0), 28.0) * 0.25;
+  // Tight glow so we don't inflate the apparent size with a huge bloom.
+  float softCore = pow(max(moonDot, 0.0), 220.0) * 0.35;
+  float softHalo = pow(max(moonDot, 0.0), 90.0) * 0.12;
 
   // Optional texture detail inside the crescent (does not force a full circle).
   vec2 uv = vec2(dot(v, tang), dot(v, bitang)) / max(sin(moonSize * 1.4), 1e-4) * 0.5 + 0.5;
@@ -98,7 +99,7 @@ vec3 moonDisc(vec3 dir, vec3 moonDir, sampler2D map, float mask) {
   vec3 surface = mix(vec3(1.9, 1.95, 2.15), tex.rgb * 1.6, clamp(tex.a * inUv * 0.35, 0.0, 1.0));
 
   float opacity = clamp(mask * 6.25, 0.0, 1.0);
-  return surface * (crescent * 2.8 + companion * 2.0 + softCore + softHalo) * opacity;
+  return surface * (crescent * 2.4 + companion * 1.6 + softCore + softHalo) * opacity;
 }
 
 // Small warm disc + light soft halo. Visual only — scene lighting uses DirectionalLight.

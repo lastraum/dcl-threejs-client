@@ -24,6 +24,17 @@ export default defineConfig({
       configureServer(server) {
         server.middlewares.use(createTextureProxyMiddleware())
       }
+    },
+    // Production + dev: yoga nbind assigns `_a` without declaring it (strict ESM crash).
+    // optimizeDeps alone only covers prebundle — rollup must patch too.
+    {
+      name: 'yoga-nbind-fix',
+      enforce: 'pre',
+      async load(id) {
+        if (!/yoga-layout-prebuilt[/\\].*[/\\]nbind\.js$/.test(id)) return null
+        const { readFile } = await import('node:fs/promises')
+        return patchYogaNbindSource(await readFile(id, 'utf8'))
+      }
     }
   ],
   define: {

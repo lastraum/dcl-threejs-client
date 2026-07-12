@@ -7,7 +7,8 @@ export function configureSpotLightShadow(light: THREE.SpotLight): void {
   light.shadow.mapSize.set(size, size)
   light.shadow.camera.near = 0.25
   light.shadow.camera.far = Math.max(light.distance, 1)
-  light.shadow.bias = -0.0001
-  light.shadow.normalBias = 0.015
-  light.shadow.radius = 2
+  light.shadow.bias = -0.00012
+  light.shadow.normalBias = 0.02
+  // Match soft directional feel (broader penumbra).
+  light.shadow.radius = 3
 }

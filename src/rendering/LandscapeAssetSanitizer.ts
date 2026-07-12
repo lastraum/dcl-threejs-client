@@ -365,8 +365,9 @@ export function sanitizeLandscapeGltf(root: THREE.Object3D): void {
 
     if (!(obj instanceof THREE.Mesh)) return
 
+    // Landscape is huge — do not cast (cost). Do receive soft sun/moon contact shadows.
     obj.castShadow = false
-    obj.receiveShadow = false
+    obj.receiveShadow = true
 
     if (Array.isArray(obj.material)) {
       obj.material.forEach((m) => tuneLandscapeFoliageMaterial(m, obj.name))

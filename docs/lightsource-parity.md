@@ -47,7 +47,7 @@ Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not rep
 - Moon fill: **`moonLightIntensity()`** × `MOON_BRIGHTNESS` **1.15** × user moon slider; cool tint; light follows camera focus at night
 - **Moon disc:** billboarded `SkyboxMoon.png` on night celestial arc; Unity `_Moon_Mask_Size` ~**0.16** overnight (was broken sky-sphere UV → invisible)
 - **Trilight ambient (Unity `UpdateIndirectLight`):** HemisphereLight sky+ground + **AmbientLight equator**
-- Soft **directional sun shadows** (day); skydome sun disc visual-only (small warm halo)
+- Soft **directional sun/moon shadows**: tiered ortho extent (36–60 m) + PCF radius (2.5–5); landscape receives contact shadows; skydome disc visual-only
 - **User tuning:** defaults **52 / 70 / 52 / 50**; **Reset lighting** button
 - **Azimuth parity ([#15](https://github.com/lastraum/dcl-threejs-client/pull/15))** · skybox authority scene → session → auto
 
@@ -83,7 +83,7 @@ Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not rep
 | **Directional LightSource** | **Not in current `PBLightSource` protobuf** (point + spot only). Revisit when SDK schema adds a directional variant. |
 | **Exact Explorer tier numbers** | Tier limits (4 / 6 / 10) are reasonable parity targets; Unity Explorer source values not verified byte-for-byte — adjust after side-by-side profiling. |
 | **Player vs camera cull origin** | Culling uses **camera** position (works in orbit mode). Explorer may use avatar position in some cases. |
-| **Directional sun shadows** | Soft sun shadows enabled (day); refine cascade extent / bias if acne or peter-panning. |
+| **Directional sun shadows** | Soft sun/moon shadows: tier extent + PCF radius; landscape **receives** (does not cast). Full multi-cascade still optional. |
 | **Sun/hemi intensity vs Explorer** | Trilight + anim peak 2.72; **Reset lighting** if old localStorage sliders persist. |
 | **GltfNodeModifiers castShadows** | Per-node GLTF shadow flags not wired; Material `castShadows` is. |
 | **Per-layer cloud tints** | Explorer uses per-layer gradients; we use one global `uCloudsColor` for all cubemap layers. |

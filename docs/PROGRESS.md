@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-12 (ECS CameraMode + CameraModeArea + PointerLock on `lastraum`)  
-> **Current phase:** **v0.6.0** on `main`; lighting + **graphics prefs P0–P2** on `dev-latest`.  
+> **Last updated:** 2026-07-12 (CameraMode / CameraModeArea / PointerLock + reticle merged to `dev-latest`)  
+> **Current phase:** **v0.6.0** on `main`; lighting + graphics P0–P2 + **camera ECS** on `dev-latest`.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
 > **Product next:** Phase 4 `/goto` · Phase 3 Watch Lite.  
@@ -66,17 +66,18 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 
 ## 🎉 Milestone — CameraMode / CameraModeArea / PointerLock (2026-07-12)
 
-**Status: on `lastraum`** — freecam mode report + area force + pointer-lock look.
+**Status: shipped on `dev-latest`** (via `lastraum`) — freecam mode report + area force + pointer-lock look + fixed reticle.
 
-| Component | Status | Notes |
-| --------- | ------ | ----- |
+| Component / UX | Status | Notes |
+| -------------- | ------ | ----- |
 | **PointerLock** (1074) | 🔵 | Written on CameraEntity; **right-click** (or Tab) toggles lock; locked mouse movement = look; left-click does not orbit when locked |
+| **Pointer-lock reticle** | 🟢 | Fixed elevated aim mark (above canvas center); clicks/raycasts share same point — Explorer-style |
 | **CameraMode** (1072) | 🔵 | Written on CameraEntity each frame — 1st/3rd from freecam distance (area force overrides) |
 | **CameraModeArea** (1071) | 🟢 | DCL volume from Transform + `area` size; forces FPV/TPV while inside; restores distance on leave |
 
 **Not done:** NftShape · GltfContainerLoadingState · AvatarModifierArea · graphics P3 distances.
 
-**QA:** Right-click lock → move mouse orbits without LMB; unlock Esc/Tab/right-click; scene with CameraModeArea FPV zone snaps to first person; leave restores third.
+**QA:** Right-click lock → reticle fixed above center → move mouse orbits without LMB; unlock Esc/Tab/right-click; CameraModeArea FPV zone snaps to first person; leave restores third.
 
 ---
 

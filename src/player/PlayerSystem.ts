@@ -47,6 +47,7 @@ import type { ResolvedProfileEmote } from '../avatar/profileEmotes'
 import { AVATAR_YAW_OFFSET } from '../avatar/constants'
 import { clientSettings } from '../rendering/ClientSettings'
 import type { ForcedCameraMode } from '../input/CameraModeAreaSystem'
+import { clearPointerLockAim, setPointerLockAimFromCanvas } from '../input/pointerLockAim'
 
 /** PB CameraType — numeric (isolatedModules cannot import const enum). */
 const CT_FIRST_PERSON = 0
@@ -835,8 +836,29 @@ export class PlayerSystem {
       moveAxisZ
     })
     this.syncCamera(false, delta)
+    this.syncPointerLockAim()
     this.syncCameraModeAndPointerLockEcs()
     this.input.endFrame()
+  }
+
+  /**
+   * Fixed on-screen aim while locked (above center) — reticle + raycasts share it.
+   * Does not track the avatar in screen space (stays put as you look around).
+   */
+  private syncPointerLockAim(): void {
+    if (!this.input?.pointer.locked) {
+      clearPointerLockAim()
+      return
+    }
+
+    const rect = this.host.renderer.domElement.getBoundingClientRect()
+    if (rect.width < 1 || rect.height < 1) {
+      clearPointerLockAim()
+      return
+    }
+
+    setPointerLockAimFromCanvas(rect)
+    this.input.syncReticleLayout()
   }
 
   private isFirstPerson(): boolean {

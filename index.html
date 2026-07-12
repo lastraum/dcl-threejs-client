@@ -31,6 +31,7 @@
         --z-canvas: 1;
         --z-name-tags: 6;
         --z-scene-ui: 40;
+        --z-pointer-reticle: 50;
         --z-client-hud: 100;
         --z-client-hud-raised: 111;
         --z-client-overlay: 200;
@@ -56,6 +57,40 @@
         display: block;
         position: relative;
         z-index: var(--z-canvas);
+      }
+      /* Canvas-center aim mark while pointer-locked (clicks raycast from center). */
+      .pointer-lock-reticle {
+        position: fixed;
+        width: 28px;
+        height: 28px;
+        margin: 0;
+        padding: 0;
+        transform: translate(-50%, -50%);
+        pointer-events: none;
+        z-index: var(--z-pointer-reticle);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .pointer-lock-reticle[hidden] {
+        display: none !important;
+      }
+      .pointer-lock-reticle__ring {
+        position: absolute;
+        inset: 0;
+        border: 2px solid rgba(255, 255, 255, 0.88);
+        border-radius: 50%;
+        box-shadow:
+          0 0 0 1px rgba(0, 0, 0, 0.45),
+          0 0 10px rgba(0, 0, 0, 0.35);
+        box-sizing: border-box;
+      }
+      .pointer-lock-reticle__dot {
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.95);
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
       }
       #scene-ui-root {
         position: fixed;

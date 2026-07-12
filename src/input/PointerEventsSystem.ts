@@ -28,6 +28,7 @@ import {
 } from '../ui/scene/uiPointer'
 import { isPointerOverSceneUi, isSceneUiDomTarget } from '../ui/scene/sceneUiOverlay'
 import { isTextInputFocused } from '../client/ui/textInputFocus'
+import { POINTER_LOCK_AIM_NDC_Y, pointerLockAim } from './pointerLockAim'
 import { isSceneUiFieldDom, isSceneUiTypingFocus } from '../ui/scene/sceneUiTyping'
 import { nextPointerEventTimestamp } from './pointerEventTimestamp'
 
@@ -174,8 +175,15 @@ export class PointerEventsSystem {
   private pointerClientCoords(clientX = this.screenX, clientY = this.screenY): { x: number; y: number } {
     const locked = document.pointerLockElement === this.canvas
     if (locked) {
+      if (pointerLockAim.active) {
+        return { x: pointerLockAim.clientX, y: pointerLockAim.clientY }
+      }
       const rect = this.canvas.getBoundingClientRect()
-      return { x: rect.left + rect.width * 0.5, y: rect.top + rect.height * 0.5 }
+      const ndcY = POINTER_LOCK_AIM_NDC_Y
+      return {
+        x: rect.left + rect.width * 0.5,
+        y: rect.top + (-ndcY * 0.5 + 0.5) * rect.height
+      }
     }
     return { x: clientX, y: clientY }
   }
@@ -754,7 +762,11 @@ export class PointerEventsSystem {
   private computePointerRay(camera: THREE.Camera): THREE.Ray {
     const pointerLocked = document.pointerLockElement === this.canvas
     if (pointerLocked) {
-      _ndc.set(0, 0)
+      // Fixed elevated aim (same as reticle) — not screen center / not world-tracked.
+      _ndc.set(
+        pointerLockAim.active ? pointerLockAim.ndcX : 0,
+        pointerLockAim.active ? pointerLockAim.ndcY : POINTER_LOCK_AIM_NDC_Y
+      )
     } else {
       const rect = this.canvas.getBoundingClientRect()
       _ndc.x = ((this.screenX - rect.left) / rect.width) * 2 - 1

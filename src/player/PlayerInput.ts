@@ -1,5 +1,7 @@
 import { isClientOverlayTarget } from '../client/ui/overlayHitTest'
+import { PointerLockReticle } from '../client/ui/PointerLockReticle'
 import { isTextInputFocused } from '../client/ui/textInputFocus'
+import { clearPointerLockAim } from '../input/pointerLockAim'
 import type { SceneKeyboardSnapshot } from '../input/SceneInputRelay'
 import { isPointerOverSceneUi, isSceneUiInteractiveTarget } from '../ui/scene/sceneUiOverlay'
 import { isSceneUiTypingFocus } from '../ui/scene/sceneUiTyping'
@@ -22,8 +24,10 @@ export class PlayerInput {
   private readonly activePointers = new Map<number, { x: number; y: number }>()
   private lastPinchSpan = 0
   private isLocomotionBlocked: () => boolean = () => false
+  private readonly reticle: PointerLockReticle
 
   constructor(private readonly canvas: HTMLElement) {
+    this.reticle = new PointerLockReticle(canvas)
     // Capture phase so chat/text focus beats locomotion before bubble handlers run.
     window.addEventListener('keydown', this.onKeyDown, true)
     window.addEventListener('keyup', this.onKeyUp, true)
@@ -35,6 +39,8 @@ export class PlayerInput {
     window.addEventListener('pointercancel', this.onPointerUp)
     this.canvas.addEventListener('contextmenu', this.onContextMenu)
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false })
+    // Sync if lock already active (rare).
+    this.onLockChange()
   }
 
   dispose(): void {
@@ -48,6 +54,7 @@ export class PlayerInput {
     window.removeEventListener('pointercancel', this.onPointerUp)
     this.canvas.removeEventListener('contextmenu', this.onContextMenu)
     this.canvas.removeEventListener('wheel', this.onWheel)
+    this.reticle.dispose()
     if (document.pointerLockElement === this.canvas) document.exitPointerLock()
   }
 
@@ -154,10 +161,18 @@ export class PlayerInput {
   private onLockChange = () => {
     this.pointer.locked = document.pointerLockElement === this.canvas
     this.canvas.style.cursor = this.pointer.locked ? 'none' : 'default'
+    this.reticle.setVisible(this.pointer.locked)
     if (this.pointer.locked) {
       this.stopOrbit()
       this.notifyUserGesture()
+    } else {
+      clearPointerLockAim()
     }
+  }
+
+  /** Keep reticle on the projected aim point (above avatar) while locked. */
+  syncReticleLayout(): void {
+    if (this.pointer.locked) this.reticle.syncLayout()
   }
 
   private onPointerMove = (e: PointerEvent) => {

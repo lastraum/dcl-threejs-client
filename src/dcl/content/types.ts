@@ -29,9 +29,10 @@ export type SceneSpawn = {
   spawnPointName?: string
 }
 
-/** scene.json `environment` — biome for client landscape (worlds default island; parcel scenes default none). */
+/** scene.json `environment` — biome for client landscape (worlds default island; parcels default genesis). */
 export type SceneEnvironmentKind =
   | 'none'
+  | 'genesis'
   | 'island'
   | 'water'
   | 'space'
@@ -134,7 +135,7 @@ export const BLANK_SCENE_TEMPLATE: ResolvedScene = {
   baseParcel: '0,0',
   spawn: { x: 8, y: 0, z: 8 },
   metadata: { environment: 'none' },
-  landscapeEnvironment: 'none',
+  landscapeEnvironment: 'genesis',
   skyLighting: { disableSun: false, disableMoon: false },
   content: [],
   contentsBaseUrl: 'https://peer.decentraland.org',

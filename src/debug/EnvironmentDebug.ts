@@ -29,6 +29,7 @@ class EnvironmentDebugStore {
 
   /** Called when a scene finishes resolving its environment. Resets the runtime toggle. */
   setSceneEnvironment(kind: LandscapeEnvironmentKind): void {
+    // `none` is void authoring sky with no landscape to toggle.
     const loaded = kind === 'none' ? null : kind
     if (this.loadedKind === loaded && !this.disabled) return
     this.loadedKind = loaded

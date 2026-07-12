@@ -3,6 +3,8 @@ import { EMPTY_LAND } from './Data/EmptyLandCatalog'
 /** Landscape biomes — read from scene.json `environment` (URL override until scenes ship the field). */
 export type LandscapeEnvironmentKind =
   | 'none'
+  /** Default Genesis City look — skybox + quiet ground, no empty-land clutter. */
+  | 'genesis'
   | 'island'
   | 'water'
   | 'space'
@@ -75,6 +77,24 @@ export const LANDSCAPE_ENVIRONMENTS: Record<LandscapeEnvironmentKind, LandscapeE
     decoration: 'none',
     borderPadding: 0,
     voidSky: true,
+    trees: [],
+    rocks: [],
+    bushes: [],
+    grass: []
+  },
+  /**
+   * Default for Genesis City parcels — Explorer-like: Genesis sky dome + sun/moon,
+   * no void background, no infinite empty-land tiling or prop scatter.
+   * Scene content sits on y=0 infinite physics ground; optional quiet grass under footprint only.
+   */
+  genesis: {
+    kind: 'genesis',
+    sceneGround: RED_GRASS,
+    paddingGround: RED_GRASS,
+    showWater: false,
+    infiniteGround: false,
+    decoration: 'none',
+    borderPadding: 0,
     trees: [],
     rocks: [],
     bushes: [],

@@ -125,15 +125,17 @@ export type ResolvedSceneEnvironment = {
 
 function defaultLandscapeEnvironmentForSource(source: SceneSource): LandscapeEnvironmentKind {
   if (source.kind === 'world') return 'island'
-  return 'none'
+  // Local authoring keeps void/blank; Genesis City parcels get skybox + quiet ground.
+  if (source.kind === 'local' || source.kind === 'blank') return 'none'
+  return 'genesis'
 }
 
 /**
  * Resolve biome + celestial flags together. URL `?environment=` always wins for biome so
  * `?environment=none&disableSun=1` cannot fall back to island when `kind` is omitted from JSON.
  *
- * Parcel scenes (`coords`) default to `none` unless `scene.json` declares `environment`.
- * Worlds default to `island` when the field is absent.
+ * Parcel scenes (`coords`) default to `genesis` (skybox, no void) unless `scene.json` sets `environment`.
+ * Worlds default to `island`. Local/blank default to `none` (void authoring sky).
  */
 export function resolveSceneEnvironment(
   metadata: SceneMetadata,
@@ -156,7 +158,7 @@ export function resolveSceneEnvironment(
 }
 
 /**
- * Resolve landscape biome for a parcel scene: URL override, then scene.json, else `none`.
+ * Resolve landscape biome for a parcel scene: URL override, then scene.json, else `genesis`.
  */
 export function resolveLandscapeEnvironment(metadata: SceneMetadata): LandscapeEnvironmentKind {
   return resolveSceneEnvironment(metadata, { kind: 'coords', x: 0, y: 0 }).landscapeEnvironment

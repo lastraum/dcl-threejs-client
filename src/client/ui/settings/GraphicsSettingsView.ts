@@ -153,13 +153,8 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
             const n = Number(v)
             if (n === 30 || n === 60 || n === 120) renderQuality.setFpsLimit(n)
           }
-        },
-        {
-          type: 'toggle',
-          label: 'VSync',
-          defaultOn: rq.vsync,
-          onChange: (on) => renderQuality.setVsync(on)
         }
+        // VSync omitted: browsers always rAF-composite; toggle would not free-run or tear.
       ]
     },
     {
@@ -361,9 +356,6 @@ export class GraphicsSettingsView {
             break
           case 'FPS Limit':
             if (control.kind === 'dropdown') control.select.value = fpsLabel(opts.fpsLimit)
-            break
-          case 'VSync':
-            if (control.kind === 'toggle') control.input.checked = opts.vsync
             break
           case 'MSAA':
             if (control.kind === 'dropdown') control.select.value = msaaLabel(opts.msaaSamples)

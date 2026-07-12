@@ -266,9 +266,9 @@ export class LiveKitCommsSession {
       }
 
       clientDebugLog.log(
-        'comms',
-        `LiveKit connected (${this.transport}) · room=${room.name} · identity=${room.localParticipant.identity} · remotes=${room.remoteParticipants.size}`,
-        { level: 'success' }
+        'network',
+        `LiveKit connected (${this.transport}) · room=${room.name} · remotes=${room.remoteParticipants.size}`,
+        { level: 'success', alsoConsole: true }
       )
 
       for (const participant of room.remoteParticipants.values()) {

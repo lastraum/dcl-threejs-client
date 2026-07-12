@@ -529,7 +529,12 @@ export class World {
     const connectResult = await this.comms.connectSceneRoom(this.buildCommsTarget(scene))
     if (connectResult.ok) {
       this.sceneCommsConnected = true
-      clientDebugLog.log('comms', 'Early scene comms connected during hydration', { level: 'success' })
+      // Genesis island routing needs world meters ASAP (not after first render frame).
+      this.comms.seedArchipelagoSceneLocal(scene.spawn.x, scene.spawn.y, scene.spawn.z)
+      clientDebugLog.log('network', 'Early scene comms connected during hydration', {
+        level: 'success',
+        alsoConsole: true
+      })
       onProgress?.('Receiving peer updates…')
       await this.vrmPeerSync.onSceneConnected()
       return
@@ -861,6 +866,7 @@ export class World {
             const worldX = pos.x + (this.comms.getSceneOrigin()?.x ?? 0)
             const worldZ = pos.z + (this.comms.getSceneOrigin()?.z ?? 0)
             const localAvatar = this.player.getLocalAvatar()
+            const livePeers = this.comms.getLivePeerCounts()
             console.info(
               '[World] frame 60 — playerSceneLocal:',
               `(${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})`,
@@ -874,6 +880,8 @@ export class World {
               this.remoteAvatars?.visiblePeerCount ?? 0,
               'remoteLoaded:',
               this.remoteAvatars?.loadedPeerCount ?? 0,
+              'liveKit:',
+              `scene=${livePeers.scene} island=${livePeers.island} world=${livePeers.world} islandOn=${livePeers.islandConnected}`,
               'localAvatar:',
               localAvatar?.getModel() ? 'yes' : 'no',
               'gltfCached:',

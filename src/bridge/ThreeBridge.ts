@@ -29,7 +29,11 @@ import { applySceneDiff, type ApplySceneDiffOptions } from './entityStoreApply'
 import { disposeOwnedObject3D } from '../rendering/sharedAsset'
 import { enableSceneGltfVertexColors } from '../rendering/LandscapeAssetSanitizer'
 import { cloneGltfInstance } from '../rendering/skinnedMeshInstance'
-import { SceneGltfInstancer, templateIsInstancable } from '../rendering/SceneGltfInstancer'
+import {
+  SceneGltfInstancer,
+  templateHasInvisibleColliders,
+  templateIsInstancable
+} from '../rendering/SceneGltfInstancer'
 
 function materialReferencesVideoPlayer(pb: PbMaterial, videoPlayerEntity: Entity): boolean {
   const materialCase = pb.material?.$case
@@ -1459,6 +1463,8 @@ export class ThreeBridge {
     // Instancing only stores GPU matrices — no per-entity collider meshes (broke character select picks).
     if (this.ecs.PointerEvents.has(entity)) return false
     if (this.ecs.MeshCollider.has(entity)) return false
+    // GLB-embedded invisible colliders (Genesis buildings) — must clone so PhysX can extract.
+    if (templateHasInvisibleColliders(template.root)) return false
     return templateIsInstancable(template.root)
   }
 

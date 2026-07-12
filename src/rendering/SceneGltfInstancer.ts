@@ -1,6 +1,9 @@
 import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
-import { isGltfInvisibleColliderName } from '../collision/gltfColliderNaming'
+import {
+  isGltfInvisibleColliderMesh,
+  isGltfInvisibleColliderName
+} from '../collision/gltfColliderNaming'
 
 /**
  * GPU instancing for scene GltfContainers that share a content hash.
@@ -48,6 +51,25 @@ export function templateIsInstancable(root: THREE.Object3D): boolean {
     if (pos && pos.count >= 3) hasRenderMesh = true
   })
   return hasRenderMesh && !hasSkinned
+}
+
+/**
+ * Templates with embedded `_collider` meshes cannot be GPU-instanced — PhysX extract
+ * walks the entity graph, and instancing only places a marker (no collider geometry).
+ */
+export function templateHasInvisibleColliders(root: THREE.Object3D): boolean {
+  let found = false
+  root.traverse((node) => {
+    if (found) return
+    if (isGltfInvisibleColliderName(node.name)) {
+      found = true
+      return
+    }
+    if ((node as THREE.Mesh).isMesh && isGltfInvisibleColliderMesh(node as THREE.Mesh, root)) {
+      found = true
+    }
+  })
+  return found
 }
 
 /** Collect render mesh leaves (shared geometry/materials) relative to template root. */

@@ -24,7 +24,12 @@ import { ArchipelagoClient } from './comms/ArchipelagoClient'
 import { CommsInboundQueue } from './comms/CommsInboundQueue'
 import { CommsTopicService } from './comms/CommsTopicService'
 import { LiveKitCommsSession } from './comms/LiveKitCommsSession'
-import { parseCommsSceneOrigin, realmBoundsFromParcels, type RealmBounds } from './comms/movementCompressed'
+import {
+  parseCommsSceneOrigin,
+  realmBoundsFromParcels,
+  sceneLocalToGenesis,
+  type RealmBounds
+} from './comms/movementCompressed'
 import { encodeRfc4SceneBinaryPacket, Rfc4Router } from './comms/Rfc4Router'
 import { DAV_SCENE_ID } from '../avatar/vrm/dclClientAvatar'
 import { Rfc5RoomClient } from './comms/Rfc5RoomClient'
@@ -620,6 +625,26 @@ export class CommsService {
     return this.sceneOriginMeters
   }
 
+  /** LiveKit remote participant counts (debug / frame-60 diagnostics). */
+  getLivePeerCounts(): { scene: number; island: number; world: number; islandConnected: boolean } {
+    return {
+      scene: this.sceneLiveKit.getRemotePeerAddresses().length,
+      island: this.islandLiveKit.getRemotePeerAddresses().length,
+      world: this.worldLiveKit.getRemotePeerAddresses().length,
+      islandConnected: this.islandConnected
+    }
+  }
+
+  /** Seed archipelago with spawn so island assignment does not wait for first post-start frame. */
+  seedArchipelagoSceneLocal(x: number, y: number, z: number): void {
+    if (this.sceneOrigin) {
+      const g = sceneLocalToGenesis(x, y, z, this.sceneOrigin)
+      this.archipelago.queuePosition(g.x, g.y, g.z)
+      return
+    }
+    this.archipelago.queuePosition(x, y, z)
+  }
+
   /** Scene-room wallets for @-mentions — gatekeeper seed list + LiveKit remotes. */
   getSceneChatMentionAddresses(): string[] {
     const self = this.localAddress
@@ -660,7 +685,13 @@ export class CommsService {
       if (this.islandConnected) {
         this.islandLiveKit.queueTransform(x, y, z, yaw, isEmoting, locomotion)
       }
-      this.archipelago.queuePosition(x, y, z)
+      // Archipelago heartbeats are genesis (world) meters — not scene-local.
+      if (this.sceneOrigin) {
+        const g = sceneLocalToGenesis(x, y, z, this.sceneOrigin)
+        this.archipelago.queuePosition(g.x, g.y, g.z)
+      } else {
+        this.archipelago.queuePosition(x, y, z)
+      }
       return
     }
     if (!this.rfc5.isConnected()) return

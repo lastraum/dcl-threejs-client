@@ -39,6 +39,13 @@ function wearablesCoverProfileUrns(
   return true
 }
 
+/** Every default category resolved — cached/live sets missing these render bald or blank-faced. */
+function coversDefaultCategories(wearables: WearableDefinition[]): boolean {
+  return DEFAULT_WEARABLE_CATEGORIES.every((category) =>
+    wearables.some((w) => w.data.category === category)
+  )
+}
+
 export async function buildComposeConfig(
   profile: AvatarProfile,
   address?: string,
@@ -63,6 +70,7 @@ export async function buildComposeConfig(
       const wearables = cached.wearables.filter((w) => hasRepresentation(w, profile.bodyShape))
       if (
         wearablesCoverProfileUrns(wearables, profileUrns, profile.bodyShape) &&
+        coversDefaultCategories(wearables) &&
         getBodyShapeWearable(wearables, profile.bodyShape)
       ) {
         const slots = getSlots({
@@ -88,17 +96,20 @@ export async function buildComposeConfig(
   let wearables = await fetchWearablesByUrns(profileUrns, catalystUrl)
   wearables = wearables.filter((w) => hasRepresentation(w, profile.bodyShape))
 
-  if (!profile.fromWallet) {
-    const missing: string[] = []
-    for (const category of DEFAULT_WEARABLE_CATEGORIES) {
-      if (wearables.some((w) => w.data.category === category)) continue
-      const urn = defaultWearableUrn(category, profile.bodyShape)
-      if (urn) missing.push(urn)
-    }
-    if (missing.length) {
-      wearables.push(...(await fetchWearablesByUrns(missing, catalystUrl)))
-    }
-  } else if (!wearablesCoverProfileUrns(wearables, profileUrns, profile.bodyShape)) {
+  // Profiles omit default head/body items (only colors are stored) — clients are expected
+  // to backfill defaults for missing categories, like the Unity Explorer. Wallet profiles
+  // relying on defaults were rendering bald / blank-faced when this only ran for guests.
+  const missing: string[] = []
+  for (const category of DEFAULT_WEARABLE_CATEGORIES) {
+    if (wearables.some((w) => w.data.category === category)) continue
+    const urn = defaultWearableUrn(category, profile.bodyShape)
+    if (urn) missing.push(urn)
+  }
+  if (missing.length) {
+    wearables.push(...(await fetchWearablesByUrns(missing, catalystUrl)))
+  }
+
+  if (profile.fromWallet && !wearablesCoverProfileUrns(wearables, profileUrns, profile.bodyShape)) {
     console.warn(
       `Loaded ${wearables.length}/${profileUrns.length} profile wearables — some URNs may have failed Catalyst lookup`
     )
@@ -123,7 +134,8 @@ export async function buildComposeConfig(
   if (
     cacheKey &&
     profile.fromWallet &&
-    wearablesCoverProfileUrns(wearables, profileUrns, profile.bodyShape)
+    wearablesCoverProfileUrns(wearables, profileUrns, profile.bodyShape) &&
+    coversDefaultCategories(wearables)
   ) {
     writeCachedAvatar(cacheKey, {
       fingerprint,

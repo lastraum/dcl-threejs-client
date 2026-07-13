@@ -32,6 +32,9 @@ export class PlayerInput {
     window.addEventListener('keydown', this.onKeyDown, true)
     window.addEventListener('keyup', this.onKeyUp, true)
     document.addEventListener('focusin', this.onFocusIn, true)
+    window.addEventListener('blur', this.onWindowBlur)
+    document.addEventListener('visibilitychange', this.onVisibilityChange)
+    window.addEventListener('focus', this.onWindowFocus)
     document.addEventListener('pointerlockchange', this.onLockChange)
     this.canvas.addEventListener('pointerdown', this.onPointerDown)
     this.canvas.addEventListener('pointermove', this.onPointerMove)
@@ -47,6 +50,9 @@ export class PlayerInput {
     window.removeEventListener('keydown', this.onKeyDown, true)
     window.removeEventListener('keyup', this.onKeyUp, true)
     document.removeEventListener('focusin', this.onFocusIn, true)
+    window.removeEventListener('blur', this.onWindowBlur)
+    document.removeEventListener('visibilitychange', this.onVisibilityChange)
+    window.removeEventListener('focus', this.onWindowFocus)
     document.removeEventListener('pointerlockchange', this.onLockChange)
     this.canvas.removeEventListener('pointerdown', this.onPointerDown)
     this.canvas.removeEventListener('pointermove', this.onPointerMove)
@@ -146,16 +152,29 @@ export class PlayerInput {
   }
 
   private onKeyUp = (e: KeyboardEvent) => {
-    if (this.isTypingTarget() || this.isOverlayOpen()) return
-    if (this.isLocomotionBlocked() && this.isMoveKeyCode(e.code)) {
-      this.setMoveKey(e.code, false)
-      return
-    }
+    // Always release — keyup is often lost when focus moves to chat/settings or another tab.
+    // Ignoring keyup while typing left WASD stuck until a full page reload.
     this.setMoveKey(e.code, false)
     if (e.code === 'Space') this.keys.space = false
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') this.keys.shift = false
     if (e.code === 'ControlLeft' || e.code === 'ControlRight') this.keys.ctrl = false
     this.setActionKey(e.code, false)
+  }
+
+  private onWindowBlur = (): void => {
+    this.clearMovementKeys()
+    this.stopOrbit()
+  }
+
+  private onVisibilityChange = (): void => {
+    // Hidden: browser often skips keyup. Visible: sanitize after resume (keys may be stale).
+    this.clearMovementKeys()
+    this.stopOrbit()
+  }
+
+  private onWindowFocus = (): void => {
+    // Tab return — force clean slate so the next physical keydown re-arms locomotion.
+    this.clearMovementKeys()
   }
 
   private onLockChange = () => {
@@ -213,6 +232,13 @@ export class PlayerInput {
     if (isSceneUiInteractiveTarget(e.target) || isPointerOverSceneUi(e.clientX, e.clientY)) return
     if (e.target !== this.canvas) return
     if (this.isOverlayOpen()) return
+
+    // Clicking the world should reclaim keyboard from chat/composer so WASD works again.
+    if (this.isTypingTarget()) {
+      const active = document.activeElement
+      if (active instanceof HTMLElement) active.blur()
+      this.clearMovementKeys()
+    }
 
     this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
     if (this.activePointers.size >= 2) {

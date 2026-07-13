@@ -51,6 +51,8 @@ export function defaultWearableUrn(category: WearableCategory, shape: BodyShape)
       return shape === 'male'
         ? 'urn:decentraland:off-chain:base-avatars:sneakers'
         : 'urn:decentraland:off-chain:base-avatars:bun_shoes'
+    case 'hair':
+      return 'urn:decentraland:off-chain:base-avatars:standard_hair'
     default:
       return null
   }
@@ -60,6 +62,7 @@ export const DEFAULT_WEARABLE_CATEGORIES: WearableCategory[] = [
   'eyebrows',
   'mouth',
   'eyes',
+  'hair',
   'upper_body',
   'lower_body',
   'feet'
@@ -90,6 +93,14 @@ export function assetUrnFromCompleteUrn(completeUrn: string): string {
     return parts.slice(0, -1).join(':')
   }
   return urn
+}
+
+/**
+ * Normalize a wearable URN for storage. Does **not** invent tokenIds — Catalyst rejects
+ * synthetic `:0` tokens the wallet does not own. Prefer inventory `individualData` URNs.
+ */
+export function ensureItemWearableUrn(completeUrn: string): string {
+  return normalizeUrn(completeUrn)
 }
 
 export function bodyShapeFromUrn(urn: string): BodyShape {

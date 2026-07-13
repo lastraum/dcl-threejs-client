@@ -134,6 +134,26 @@ function buildDstBoneIndexMap(dst: THREE.Skeleton): Map<string, number> {
   return map
 }
 
+/**
+ * Base-avatar hair / facial hair GLBs weight verts onto secondary spring bones
+ * (`Hair_springBone*`, etc.) that do not exist on body_shape. Map those to Head
+ * so merge quality passes and the mesh skins with the head.
+ */
+function isSecondaryHeadBone(boneName: string): boolean {
+  const n = normalizeBoneName(boneName).toLowerCase()
+  if (n.includes('hair')) return true
+  if (n.includes('spring')) return true
+  if (n.includes('beard') || n.includes('mustache') || n.includes('facial')) return true
+  return false
+}
+
+function headBoneIndex(dstIndexByName: Map<string, number>, dstBones: Set<string>): number | null {
+  const resolved = resolveBoneName('Head', dstBones) ?? resolveBoneName('Avatar_Head', dstBones)
+  if (!resolved) return null
+  const idx = dstIndexByName.get(resolved)
+  return idx !== undefined ? idx : null
+}
+
 function resolveDstBoneIndex(
   boneName: string,
   dstIndexByName: Map<string, number>,
@@ -145,7 +165,13 @@ function resolveDstBoneIndex(
     if (idx !== undefined) return idx
   }
   const exact = dstIndexByName.get(normalizeBoneName(boneName))
-  return exact !== undefined ? exact : 0
+  if (exact !== undefined) return exact
+
+  if (isSecondaryHeadBone(boneName)) {
+    const headIdx = headBoneIndex(dstIndexByName, dstBones)
+    if (headIdx !== null) return headIdx
+  }
+  return 0
 }
 
 function buildBoneIndexMap(src: THREE.Skeleton, dst: THREE.Skeleton): number[] {
@@ -177,6 +203,7 @@ function boneMapQuality(
   usedBoneIndices?: Set<number>
 ): number {
   const dstBones = skeletonBoneSet(dst)
+  const hasHead = !!(resolveBoneName('Head', dstBones) ?? resolveBoneName('Avatar_Head', dstBones))
   const bones =
     usedBoneIndices && usedBoneIndices.size > 0
       ? [...usedBoneIndices].map((i) => src.bones[i]).filter(Boolean)
@@ -185,7 +212,12 @@ function boneMapQuality(
 
   let matched = 0
   for (const bone of bones) {
-    if (resolveBoneName(bone.name, dstBones)) matched++
+    if (resolveBoneName(bone.name, dstBones)) {
+      matched++
+      continue
+    }
+    // Spring / hair secondary bones count as matched when Head exists (remapped on merge).
+    if (hasHead && isSecondaryHeadBone(bone.name)) matched++
   }
   return matched / bones.length
 }
@@ -260,6 +292,10 @@ function mergeThresholdForCategory(category?: WearableCategory, wearableId?: str
   switch (category) {
     case 'feet':
       return 0.55
+    case 'hair':
+    case 'facial_hair':
+      // Base hairs weight onto Head + spring bones; spring bones remap to Head.
+      return 0.35
     case 'earring':
     case 'eyewear':
       return 0.35

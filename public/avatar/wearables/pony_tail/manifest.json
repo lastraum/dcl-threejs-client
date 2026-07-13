@@ -1,0 +1,49 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:pony_tail",
+  "data": {
+    "category": "hair",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "hair",
+      "Ponytail",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "Hair_PonyTail.glb",
+        "contents": [
+          {
+            "key": "Hair_PonyTail.glb",
+            "url": "Hair_PonyTail.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "Hair_PonyTail.glb",
+        "contents": [
+          {
+            "key": "Hair_PonyTail.glb",
+            "url": "Hair_PonyTail.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      }
+    ]
+  }
+}

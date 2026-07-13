@@ -2,11 +2,11 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-12 (**v0.7.0** on `main`)  
-> **Current phase:** **v0.7.0** released — lighting, graphics prefs P0–P2, Genesis reliability, camera ECS.  
+> **Last updated:** 2026-07-13 (**backpack emotes + WASD** on `dev-latest`; **v0.7.2** on `main`)  
+> **Current phase:** Post-**v0.7.2** integration — multi-provider auth, 2D backpack (wearables + emotes), mobile inventory.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
-> **Product next:** Phase 4 `/goto` · Phase 3 Watch Lite.  
+> **Product next:** Phase 4 `/goto` · Phase 3 Watch Lite · remaining backpack parity gaps (below).  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -34,8 +34,69 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Graphics prefs (P0–P2)** | 🟢 | Preset L/M/H/Custom · shadows · lights · res scale · FPS · **MSAA**; Resolution/Fullscreen/VSync hidden or stub |
 | **Graphics P3 distances** | ⬜ | **Not started** — Scene Distance / Landscape Distance / Shadows Distance still gray stubs (no cull backend) |
 | **Graphics P4 post-FX** | ⬜ | Bloom / HDR / avatar outline still stubs |
+| **Multi-provider auth (DCL auth-dapp)** | 🟢 | Google / Discord / Apple / X / WalletConnect / MetaMask via Explorer auth-dapp + verification code; profile menu + Jump In |
+| **2D backpack equip + Catalyst deploy** | 🟡 **partial** | Wearables + **emotes** equip/unequip, profile deploy on save, mobile Equipped/Inventory; outfits/marketplace still open |
+| **Custom VRM / OSA library** | 🟢 | Device library + open-source avatars tab (client-only; beyond Unity Explorer) |
 
 **Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**. Suggestions: dev panel → **💡 Suggest**.
+
+---
+
+## 🎉 Milestone — Backpack emotes + input → `dev-latest` (2026-07-13)
+
+**Status: merged `lastraum` → `dev-latest`** (`7890e17`) — Explorer-style emotes tab + WASD after tab blur.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Emotes tab UI** | 🟢 | Wheel slots 1–9/0, paginated inventory, detail panel; select slot then equip |
+| **Emote inventory metadata** | 🟢 | Wallet `/users/{addr}/emotes` + base catalog; Catalyst name/rarity/thumbnail (same pattern as wearables) |
+| **Equip / unequip / play** | 🟢 | Assign to profile wheel slots; Play preview on avatar; dirty profile deploys with wearables |
+| **WASD after background tab** | 🟢 | Clear keys on blur/visibility/focus; blur chat composer on world click |
+
+**Still open:** saved outfits · marketplace · full filter/sort · mobile emotes sheet · continuous Catalyst sync while equipping.
+
+**QA focus:** Backpack → Emotes → equip custom NFT emote to slot → Play preview → close settings → deploy → reload wheel. Tab away 1 min → return → click world → WASD.
+
+---
+
+## 🎉 Milestone — Auth + backpack → `dev-latest` (2026-07-12)
+
+**Status: merged `lastraum` → `dev-latest`** (`9f6eae4`) — multi-provider sign-in, wearable backpack equip/deploy, mobile inventory, base-hair compose fix.
+
+### Shipped
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Auth-dapp providers** | 🟢 | Google, Discord, Apple, X, WalletConnect, MetaMask; new-tab login (not popup); verification code in client while polling |
+| **Auth reliability** | 🟢 | No false “login tab closed”; sign-in after sign-out; guest “Sign in to chat” only when chat opens |
+| **Backpack wearables** | 🟢 | Wallet inventory + equipped slots; equip/unequip into session profile; 3D preview (drag orbit, zoom, foot stance) |
+| **Catalyst profile deploy** | 🟢 | Deploy wearables on settings close when dirty; ownership URNs via `/users/{addr}/wearables` individualData; saving/error/success UX |
+| **Mobile backpack** | 🟢 | Full-height avatar; Equipped sheet; Inventory sheet with search + category filter + full detail + equip |
+| **Base-avatar hairs** | 🟢 | All **33** free base hairs bundled; spring-bone → Head remapping so mohawks/default hairs compose (no more bald defaults) |
+| **Wallet copy** | 🟢 | Profile menu address click-to-copy (desktop + mobile) |
+| **Explore mobile padding** | 🟢 | Place cards no longer clipped by side padding |
+| **Non-commercial license** | 🟢 | `LICENSE` + README — all branches; commercial use needs written permission |
+
+### Parity gaps still open (expected)
+
+These are **known incomplete** vs full Explorer / product polish — not blockers for this merge, good follow-ups:
+
+| Gap | Notes |
+| --- | ----- |
+| **Backpack emotes mobile sheet** | Desktop emotes tab shipped; mobile bottom-sheet for emotes still TBD |
+| **Saved outfits** | Mid-tab “Saved outfits” not implemented |
+| **Marketplace / buy flow** | Buttons present but disabled / “coming soon” |
+| **Filter & sort** | Desktop filter button hidden on mobile; no full Explorer sort (rarity, newest, etc.) |
+| **Live profile sync** | Deploy on panel close, not continuous Catalyst sync while equipping |
+| **NFT / L1 wearables edge cases** | Most GLB wearables compose; odd L1 bone/export cases may still skip or fallback |
+| **Facial feature inventory polish** | Eyes/eyebrows/mouth work via profile; backpack category UX may lag Explorer |
+| **AvatarModifierArea / AvatarBase ECS** | Still ⬜ in integration matrix |
+| **Graphics P3/P4** | Distance culls + bloom/HDR stubs (unchanged) |
+| **2D social chat** | Still 🟡 partial (thread dock vs full companion parity) |
+
+**QA focus:** Sign in with Google or MetaMask → open Backpack → equip base hair + wearable → close settings → confirm deploy → reload profile hair/clothes. Mobile: Inventory search/filter → detail → equip; Equipped unequip.
+
+**Branch:** `lastraum` → `dev-latest`. License already on `main`.
 
 ---
 

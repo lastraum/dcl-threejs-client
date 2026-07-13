@@ -11,6 +11,7 @@ import { EditorApp } from '../editor/EditorApp'
 import { World } from '../core/World'
 import { readSceneDevQueryKey } from '../environment/fftOcean/readFftOceanOverride'
 import { disconnectAll } from '../network/SessionConnections'
+import { SessionIdentity } from '../network/SessionIdentity'
 import { ClientShell } from './ui/shell/ClientShell'
 import { clientDebugLog } from './debug/ClientDebugLog'
 import { DebugPanel } from './ui/DebugPanel'
@@ -65,6 +66,8 @@ export class AppController {
   private worldLocationCard: WorldLocationCard | null = null
   private chatPanel: ChatPanel | null = null
   private settingsOverlay: SettingsOverlay | null = null
+  /** Session used by Settings/Backpack when no World is loaded (2D shell). */
+  private shellSession: SessionIdentity | null = null
   private preferencesPanel: PreferencesPanel | null = null
   private login: LoginResult | null = null
   /**
@@ -295,11 +298,114 @@ export class AppController {
         this.preferencesPanel?.show('graphics')
       },
       onOpenBackpack: () => {
-        this.settingsOverlay?.show('backpack')
+        void this.openBackpackFromShell()
       },
       onOpenProfile: () => this.openLocalProfileFromShell(),
       ...this.socialShellSocialHandlers()
     }
+  }
+
+  /** Open backpack from 2D profile menu — SettingsOverlay is play-only unless we create it here. */
+  private async openBackpackFromShell(): Promise<void> {
+    if (this.login?.kind !== 'wallet') return
+    try {
+      const overlay = await this.ensureSettingsOverlay()
+      overlay.show('backpack')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      clientDebugLog.log('client', `Backpack open failed: ${msg}`, { level: 'error' })
+    }
+  }
+
+  /**
+   * Settings overlay for play chrome and 2D shell backpack.
+   * Play mode uses World.session; 2D builds a shell SessionIdentity from wallet login.
+   */
+  private async ensureSettingsOverlay(sceneConfig?: {
+    source: { kind: string; worldName?: string }
+  }): Promise<SettingsOverlay> {
+    const world = this.world
+    if (world) {
+      if (!this.settingsOverlay) {
+        this.settingsOverlay = this.createSettingsOverlay(world.session, sceneConfig)
+      } else {
+        this.settingsOverlay.updateSession(world.session)
+        if (sceneConfig) {
+          this.settingsOverlay.updateEventContext(
+            sceneConfig.source.kind === 'world',
+            sceneConfig.source.kind === 'world' ? sceneConfig.source.worldName ?? null : null
+          )
+        }
+      }
+      return this.settingsOverlay
+    }
+
+    if (this.login?.kind !== 'wallet') {
+      throw new Error('Sign in with a wallet to open your backpack')
+    }
+
+    if (!this.shellSession) this.shellSession = new SessionIdentity()
+    this.shellSession.applyLogin(this.login)
+    await this.shellSession.connect()
+
+    if (!this.settingsOverlay) {
+      this.settingsOverlay = this.createSettingsOverlay(this.shellSession)
+    } else {
+      this.settingsOverlay.updateSession(this.shellSession)
+    }
+    return this.settingsOverlay
+  }
+
+  private createSettingsOverlay(
+    session: SessionIdentity,
+    sceneConfig?: { source: { kind: string; worldName?: string } }
+  ): SettingsOverlay {
+    return new SettingsOverlay({
+      session,
+      getMapPlayerState: () => this.getMapPlayerState(),
+      onMapJumpIn: (px, py) => {
+        this.settingsOverlay?.hide()
+        void this.navigateTo({
+          kind: 'coords',
+          x: px,
+          y: py,
+          segment: `${px},${py}`
+        })
+      },
+      onEventJumpIn: (target, _event: DclEvent) => {
+        this.settingsOverlay?.hide()
+        void this.jumpInToScene(target, { fastAssets: true })
+      },
+      onEventViewScene: (target, _event: DclEvent) => {
+        this.settingsOverlay?.hide()
+        if (target.kind === 'coords' || target.kind === 'world') {
+          void this.showSceneLanding(target)
+        }
+      },
+      onPlaceJumpIn: (target) => {
+        this.settingsOverlay?.hide()
+        void this.navigateTo(target)
+      },
+      getDefaultEventCoords: () => {
+        const state = this.getMapPlayerState()
+        if (!state?.parcelKey) return null
+        const parts = state.parcelKey.split(',').map((n) => Number(n.trim()))
+        if (parts.length !== 2 || !parts.every(Number.isFinite)) return null
+        return { x: parts[0]!, y: parts[1]! }
+      },
+      isWorldScene: sceneConfig?.source.kind === 'world',
+      worldName:
+        sceneConfig?.source.kind === 'world' ? sceneConfig.source.worldName ?? null : null,
+      onOpen: () => {
+        if (document.pointerLockElement) document.exitPointerLock()
+        this.preferencesPanel?.hide()
+        this.shell?.getButton('settings')?.setActive(false)
+      },
+      onClose: () => {},
+      onVrmEquipChange: () => {
+        void this.world?.reloadLocalAvatar()
+      }
+    })
   }
 
   private openLocalProfileFromShell(): void {
@@ -906,51 +1012,7 @@ export class AppController {
     }
 
     if (!this.settingsOverlay) {
-      this.settingsOverlay = new SettingsOverlay({
-        session: world.session,
-        getMapPlayerState: () => this.getMapPlayerState(),
-        onMapJumpIn: (px, py) => {
-          this.settingsOverlay?.hide()
-          void this.navigateTo({
-            kind: 'coords',
-            x: px,
-            y: py,
-            segment: `${px},${py}`
-          })
-        },
-        onEventJumpIn: (target, _event: DclEvent) => {
-          this.settingsOverlay?.hide()
-          void this.jumpInToScene(target, { fastAssets: true })
-        },
-        onEventViewScene: (target, _event: DclEvent) => {
-          this.settingsOverlay?.hide()
-          if (target.kind === 'coords' || target.kind === 'world') {
-            void this.showSceneLanding(target)
-          }
-        },
-        onPlaceJumpIn: (target) => {
-          this.settingsOverlay?.hide()
-          void this.navigateTo(target)
-        },
-        getDefaultEventCoords: () => {
-          const state = this.getMapPlayerState()
-          if (!state?.parcelKey) return null
-          const parts = state.parcelKey.split(',').map((n) => Number(n.trim()))
-          if (parts.length !== 2 || !parts.every(Number.isFinite)) return null
-          return { x: parts[0]!, y: parts[1]! }
-        },
-        isWorldScene: sceneConfig.source.kind === 'world',
-        worldName: sceneConfig.source.kind === 'world' ? sceneConfig.source.worldName : null,
-        onOpen: () => {
-          if (document.pointerLockElement) document.exitPointerLock()
-          this.preferencesPanel?.hide()
-          this.shell?.getButton('settings')?.setActive(false)
-        },
-        onClose: () => {},
-        onVrmEquipChange: () => {
-          void world.reloadLocalAvatar()
-        }
-      })
+      this.settingsOverlay = this.createSettingsOverlay(world.session, sceneConfig)
     } else {
       this.settingsOverlay.updateSession(world.session)
       this.settingsOverlay.updateEventContext(
@@ -967,7 +1029,6 @@ export class AppController {
           segment: `${px},${py}`
         })
       })
-
     }
 
     if (!this.preferencesPanel) {
@@ -1263,6 +1324,14 @@ export class AppController {
     clearStoredIdentity()
     this.login = { kind: 'guest' }
     this.playSessionReady = false
+    this.shellSession = null
+    // Drop shell-created settings (backpack) when not in play — session is gone.
+    if (!this.world) {
+      this.settingsOverlay?.dispose()
+      this.settingsOverlay = null
+    } else {
+      this.settingsOverlay?.hide()
+    }
     this.applyLoginToSocialShellViews(this.login)
     this.sceneLandingView?.setPlaySessionReady(false)
     this.socialChat?.signOut()
@@ -1286,6 +1355,7 @@ export class AppController {
     this.chatPanel = null
     this.settingsOverlay?.dispose()
     this.settingsOverlay = null
+    this.shellSession = null
     this.preferencesPanel?.dispose()
     this.preferencesPanel = null
     this.debugPanel?.dispose()

@@ -1,4 +1,9 @@
 import { assetUrnFromCompleteUrn, BODY_SHAPE_URN } from '../../../avatar/constants'
+import {
+  expandOwnedWearableRows,
+  type OwnedWearableApiRow,
+  type OwnedWearableEntry
+} from '../../../avatar/ownedWearables'
 import type { AvatarProfile, WearableCategory } from '../../../avatar/types'
 import {
   filterEquippedWearables,
@@ -13,7 +18,7 @@ export type BackpackWearableItem = WearableDisplayCard & {
   amount: number
 }
 
-type OwnedEntry = { urn: string; amount?: number }
+type OwnedEntry = OwnedWearableEntry
 
 type WearableApiHit = {
   id?: string
@@ -25,21 +30,48 @@ type WearableApiHit = {
 
 const METADATA_CONCURRENCY = 14
 
-/** Catalyst lambdas — full wallet inventory (not just equipped profile slots). */
+/**
+ * Catalyst lambdas — full wallet inventory with tokenIds.
+ * Prefer `/users/{addr}/wearables` (includes individualData). Fall back to
+ * `wearables-by-owner` which often only returns asset URNs without tokens.
+ */
 export async function fetchOwnedWearableUrns(
   address: string,
   lambdasUrl: string
 ): Promise<OwnedEntry[]> {
   const base = lambdasUrl.replace(/\/$/, '')
-  const res = await fetch(`${base}/collections/wearables-by-owner/${address.toLowerCase()}`)
+  const addr = address.toLowerCase()
+
+  // Primary: has individualData[].id / tokenId (required for profile deploy).
+  try {
+    const res = await fetch(`${base}/users/${addr}/wearables`)
+    if (res.ok) {
+      const raw = (await res.json()) as
+        | OwnedWearableApiRow[]
+        | { elements?: OwnedWearableApiRow[]; error?: string }
+      const rows = Array.isArray(raw)
+        ? raw
+        : Array.isArray(raw.elements)
+          ? raw.elements
+          : null
+      if (rows) {
+        const expanded = expandOwnedWearableRows(rows).filter((e) => e.urn?.trim())
+        if (expanded.length) return expanded
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+
+  const res = await fetch(`${base}/collections/wearables-by-owner/${addr}`)
   if (!res.ok) {
-    throw new Error(`wearables-by-owner failed (${res.status})`)
+    throw new Error(`wearables inventory failed (${res.status})`)
   }
-  const raw = (await res.json()) as OwnedEntry[] | { error?: string }
+  const raw = (await res.json()) as OwnedWearableApiRow[] | { error?: string }
   if (!Array.isArray(raw)) {
-    throw new Error('wearables-by-owner returned unexpected payload')
+    throw new Error('wearables inventory returned unexpected payload')
   }
-  return raw.filter((e) => e.urn?.trim())
+  return expandOwnedWearableRows(raw).filter((e) => e.urn?.trim())
 }
 
 function fallbackItem(urn: string, amount = 1): BackpackWearableItem {
@@ -54,16 +86,62 @@ function fallbackItem(urn: string, amount = 1): BackpackWearableItem {
   }
 }
 
+/**
+ * Complete free base-avatar hair catalog (Catalyst off-chain collection).
+ * Several omit the word "hair" — without this set equip fallbacks mark them `unknown`.
+ */
+const BASE_HAIR_SLUGS = new Set([
+  'casual_hair_01',
+  'casual_hair_02',
+  'casual_hair_03',
+  'cool_hair',
+  'cornrows',
+  'curly_hair',
+  'curtained_hair',
+  'double_bun',
+  'hair_anime_01',
+  'hair_bun',
+  'hair_coolshortstyle',
+  'hair_f_oldie',
+  'hair_f_oldie_02',
+  'hair_oldie',
+  'hair_punk',
+  'hair_stylish_hair',
+  'hair_undere',
+  'keanu_hair',
+  'modern_hair',
+  'moptop',
+  'pompous',
+  'pony_tail',
+  'punk',
+  'rasta',
+  'semi_afro',
+  'semi_bold',
+  'short_hair',
+  'shoulder_bob_hair',
+  'shoulder_hair',
+  'slicked_hair',
+  'standard_hair',
+  'tall_front_01',
+  'two_tails'
+])
+
 function guessCategoryFromUrn(urn: string): WearableCategory | 'unknown' {
   const low = urn.toLowerCase()
-  const colonHit = low.match(/:([a-z_]+)$/)
+  const colonHit = low.match(/:([a-z0-9_]+)$/)
   const tail = colonHit?.[1] ?? ''
+  if (BASE_HAIR_SLUGS.has(tail)) {
+    return 'hair'
+  }
   const patterns: Array<[RegExp, WearableCategory]> = [
     [/body_shape|basemale|basefemale/, 'body_shape'],
-    [/\bhair\b|_hair|hair_/, 'hair'],
+    [
+      /\bhair\b|_hair|hair_|mohawk|cornrow|rasta|pompous|semi_bold|semi_afro|double_bun|two_tails|moptop|pony_tail|tall_front/,
+      'hair'
+    ],
     [/upper_body|hoodie|jacket|shirt|sweater|torso/, 'upper_body'],
     [/lower_body|pants|jeans|shorts|skirt/, 'lower_body'],
-    [/\bfeet\b|shoes|sneaker|boot|sandal/, 'feet'],
+    [/\bfeet\b|shoes|sneaker|boot|sandal|espadrille/, 'feet'],
     [/eyebrow/, 'eyebrows'],
     [/\beyes\b|_eyes/, 'eyes'],
     [/\bmouth\b|_mouth/, 'mouth'],

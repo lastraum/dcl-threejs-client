@@ -253,6 +253,9 @@ export class ChatPanel {
     if (!this.visible) return
     this.root.classList.add('is-scene-mode')
     this.root.classList.remove('is-chat-pinned')
+    // Release composer focus so WASD is not gated by isTextInputFocused after clicking the world
+    // (or returning from another browser tab with chat still focused).
+    if (document.activeElement === this.inputEl) this.inputEl.blur()
   }
 
   private onChatPointerDown = (e: MouseEvent): void => {

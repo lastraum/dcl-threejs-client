@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import type { SessionIdentity } from '../../../network/SessionIdentity'
-import { assetUrnFromCompleteUrn } from '../../../avatar/constants'
+import { assetUrnFromCompleteUrn, PEER_URL } from '../../../avatar/constants'
 import { AvatarAnimations } from '../../../avatar/AvatarAnimations'
 import { composeAvatarFromProfile } from '../../../avatar/AvatarComposer'
 import { disposeWearableInstance } from '../../../avatar/loadWearable'
@@ -50,6 +50,30 @@ import {
   isWearableEquipped,
   unequipWearableFromProfile
 } from './profileWearableEquip'
+import { wearablesForProfileDeploy } from '../../../avatar/deployProfile'
+import {
+  baseEmoteSlugFromRef,
+  baseEmoteUrn,
+  buildEmoteBackpackWheelSlots,
+  emoteLabel,
+  emoteWheelIndexToKey,
+  emoteWheelKeyToIndex,
+  loadResolvedProfileEmote,
+  resolveProfileEmote
+} from '../../../avatar/profileEmotes'
+import {
+  baseEmoteCatalogAsItems,
+  filterBackpackEmotes,
+  loadBackpackEmotes,
+  type BackpackEmoteItem
+} from './backpackEmotes'
+import {
+  equipEmoteOnProfile,
+  isEmoteEquippedOnProfile,
+  profileSlotsForEmote,
+  unequipEmoteFromProfile
+} from './profileEmoteEquip'
+import { getSessionAssetCache } from '../../../rendering/AssetCache'
 import {
   guessWearableRarity,
   wearableRarityBackground,
@@ -63,6 +87,7 @@ type BackpackSubTab = 'wearables' | 'emotes' | 'vrm' | 'osa'
 const OSA_GRID_COLUMNS = 3
 const OSA_GRID_ROWS = 3
 const OSA_ITEMS_PER_PAGE = OSA_GRID_COLUMNS * OSA_GRID_ROWS
+const EMOTE_ITEMS_PER_PAGE = 12
 
 type BackpackViewOptions = {
   onVrmEquipChange?: () => void | Promise<void>
@@ -90,8 +115,11 @@ const CATEGORIES: CategoryDef[] = [
 ]
 
 const ITEMS_PER_PAGE = 9
+const PREVIEW_ZOOM_STEP = 1.1
+/** Three scroll-in steps above 1.0 — closer default framing on the disc. */
+const PREVIEW_ZOOM_DEFAULT = PREVIEW_ZOOM_STEP ** 3
 const PREVIEW_ZOOM_MIN = 0.55
-const PREVIEW_ZOOM_MAX = 2.5
+const PREVIEW_ZOOM_MAX = 2.8
 
 export class BackpackView {
   readonly root: HTMLElement
@@ -108,7 +136,10 @@ export class BackpackView {
   private wearablesLoadGen = 0
   private equippedLoadGen = 0
   private searchQuery = ''
-  private previewZoom = 1
+  private previewZoom = PREVIEW_ZOOM_DEFAULT
+  private orbitYaw = 0
+  private dragPointerId: number | null = null
+  private dragLastX = 0
   private vrmLibrary: VrmLibraryEntry[] = []
   private selectedVrmHash: string | null = null
   private vrmUploadBusy = false
@@ -139,10 +170,21 @@ export class BackpackView {
   private osaPage = 1
   private osaPreviewRequest = 0
   private osaImportBusy = false
+  /** Snapshot of equipped wearables when the view opened / last committed. */
+  private baselineWearablesKey = ''
+  private emotePage = 1
+  private selectedEmoteId: string | null = null
+  private selectedEmoteSlotKey: string | null = null
+  private emotePlayGen = 0
+  private emoteItems: BackpackEmoteItem[] = []
+  private emotesLoading = false
+  private emotesError: string | null = null
+  private emotesLoadGen = 0
 
   constructor(session: SessionIdentity, options: BackpackViewOptions = {}) {
     this.session = session
     this.onVrmEquipChange = options.onVrmEquipChange
+    this.baselineWearablesKey = this.wearablesKeyFromProfile()
     this.root = document.createElement('div')
     this.root.className = 'backpack-view'
 
@@ -210,19 +252,272 @@ export class BackpackView {
           </div>
         </div>
       </div>
+      <nav class="backpack-view__mobile-bar" aria-label="Backpack panels">
+        <button type="button" class="backpack-view__mobile-bar-btn" data-mobile-drawer="equipped">
+          <span class="backpack-view__mobile-bar-icon" aria-hidden="true">◎</span>
+          <span>Equipped</span>
+        </button>
+        <button type="button" class="backpack-view__mobile-bar-btn" data-mobile-drawer="inventory">
+          <span class="backpack-view__mobile-bar-icon" aria-hidden="true">☰</span>
+          <span>Inventory</span>
+        </button>
+      </nav>
+      <div class="backpack-view__mobile-scrim" data-mobile-scrim hidden></div>
+      <aside class="backpack-view__mobile-drawer" data-mobile-drawer-panel="equipped" hidden>
+        <header class="backpack-view__mobile-drawer-head">
+          <h3 class="backpack-view__mobile-drawer-title">Equipped</h3>
+          <button type="button" class="backpack-view__mobile-drawer-close" data-mobile-drawer-close aria-label="Close">×</button>
+        </header>
+        <div class="backpack-view__mobile-drawer-body">
+          <div class="backpack-view__mobile-equipped" data-mobile-equipped-list role="list"></div>
+        </div>
+      </aside>
+      <aside class="backpack-view__mobile-drawer backpack-view__mobile-drawer--inventory" data-mobile-drawer-panel="inventory" hidden>
+        <header class="backpack-view__mobile-drawer-head" data-mobile-inv-head>
+          <button
+            type="button"
+            class="backpack-view__mobile-inv-back"
+            data-mobile-inv-back
+            hidden
+            aria-label="Back to inventory"
+          >
+            ‹ Back
+          </button>
+          <h3 class="backpack-view__mobile-drawer-title" data-mobile-inv-title>Inventory</h3>
+          <button type="button" class="backpack-view__mobile-drawer-close" data-mobile-drawer-close aria-label="Close">×</button>
+        </header>
+        <div class="backpack-view__mobile-drawer-body backpack-view__mobile-drawer-body--inventory">
+          <div class="backpack-view__mobile-inv-list" data-mobile-inv-list>
+            <div class="backpack-view__mobile-inv-toolbar">
+              <input
+                class="backpack-view__mobile-inv-search"
+                type="search"
+                data-mobile-inv-search
+                placeholder="Search items"
+                autocomplete="off"
+                enterkeyhint="search"
+              />
+              <select class="backpack-view__mobile-inv-filter" data-mobile-inv-filter aria-label="Category filter">
+                ${CATEGORIES.map(
+                  (c) =>
+                    `<option value="${c.id}"${c.id === 'all' ? ' selected' : ''}>${c.label}</option>`
+                ).join('')}
+              </select>
+            </div>
+            <div class="backpack-view__mobile-inv-grid backpack-view__grid" data-mobile-inv-grid></div>
+            <div class="backpack-view__mobile-inv-pagination backpack-view__pagination" data-mobile-inv-pagination></div>
+          </div>
+          <div class="backpack-view__mobile-inv-detail" data-mobile-inv-detail hidden></div>
+        </div>
+      </aside>
     `
 
     this.vrmFileInput = this.root.querySelector('.backpack-view__vrm-file-input')
     this.buildCategories()
     void this.loadWearables()
     void this.loadEquippedWearables()
+    void this.loadEmotes()
     this.initAvatarPreview()
     this.wireWearablesSearch()
+    this.wireMobileInventoryToolbar()
     this.wireSubTabs()
     this.wireVrmDropZone()
     this.wireMmlUrlImport()
     this.wireOsaSearch()
+    this.wireMobileDrawers()
     void this.refreshVrmLibrary()
+  }
+
+  private mobileDrawer: 'equipped' | 'inventory' | null = null
+
+  private wireMobileDrawers(): void {
+    for (const btn of this.root.querySelectorAll<HTMLButtonElement>('[data-mobile-drawer]')) {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.mobileDrawer as 'equipped' | 'inventory' | undefined
+        if (!id) return
+        if (this.mobileDrawer === id) this.closeMobileDrawer()
+        else this.openMobileDrawer(id)
+      })
+    }
+    this.root.querySelectorAll('[data-mobile-drawer-close]').forEach((el) => {
+      el.addEventListener('click', () => this.closeMobileDrawer())
+    })
+    this.root.querySelector('[data-mobile-scrim]')?.addEventListener('click', () => this.closeMobileDrawer())
+    this.root.querySelector('[data-mobile-inv-back]')?.addEventListener('click', () => {
+      this.hideMobileInventoryDetail()
+    })
+  }
+
+  private wireMobileInventoryToolbar(): void {
+    const search = this.root.querySelector('[data-mobile-inv-search]') as HTMLInputElement | null
+    const filter = this.root.querySelector('[data-mobile-inv-filter]') as HTMLSelectElement | null
+    search?.addEventListener('input', () => {
+      this.searchQuery = search.value
+      this.currentPage = 1
+      // Keep desktop search in sync when present.
+      const desktop = this.root.querySelector('.backpack-view__search') as HTMLInputElement | null
+      if (desktop && desktop !== search) desktop.value = search.value
+      if (this.activeSubTab === 'wearables') this.renderGrid()
+      if (this.activeSubTab === 'emotes') {
+        this.emotePage = 1
+        this.renderEmoteGrid()
+      }
+    })
+    filter?.addEventListener('change', () => {
+      const cat = filter.value as WearableCategory | 'all'
+      this.selectedCategory = cat
+      this.currentPage = 1
+      this.selectedItem = null
+      this.syncDesktopCategoryActive()
+      this.renderGrid()
+      this.hideMobileInventoryDetail()
+      this.updateCategoryEquipped()
+    })
+  }
+
+  private setMobileInvHeader(mode: 'list' | 'detail', title = 'Inventory'): void {
+    const head = this.root.querySelector('[data-mobile-inv-head]') as HTMLElement | null
+    const back = this.root.querySelector('[data-mobile-inv-back]') as HTMLElement | null
+    const titleEl = this.root.querySelector('[data-mobile-inv-title]') as HTMLElement | null
+    head?.classList.toggle('backpack-view__mobile-drawer-head--detail', mode === 'detail')
+    if (back) back.hidden = mode !== 'detail'
+    if (titleEl) titleEl.textContent = title
+  }
+
+  private hideMobileInventoryDetail(): void {
+    const list = this.root.querySelector('[data-mobile-inv-list]') as HTMLElement | null
+    const detail = this.root.querySelector('[data-mobile-inv-detail]') as HTMLElement | null
+    if (list) list.hidden = false
+    if (detail) {
+      detail.hidden = true
+      detail.innerHTML = ''
+    }
+    this.setMobileInvHeader('list')
+  }
+
+  private syncDesktopCategoryActive(): void {
+    const container = this.root.querySelector('.backpack-view__categories')
+    if (!container) return
+    for (const btn of container.querySelectorAll<HTMLElement>('.backpack-view__cat-row')) {
+      btn.classList.toggle('is-active', btn.dataset.category === this.selectedCategory)
+    }
+  }
+
+  private syncMobileInventoryToolbar(): void {
+    const search = this.root.querySelector('[data-mobile-inv-search]') as HTMLInputElement | null
+    const filter = this.root.querySelector('[data-mobile-inv-filter]') as HTMLSelectElement | null
+    if (search) search.value = this.searchQuery
+    if (filter) filter.value = this.selectedCategory
+  }
+
+  private openMobileDrawer(id: 'equipped' | 'inventory'): void {
+    this.mobileDrawer = id
+    this.root.classList.toggle('backpack-view--drawer-equipped', id === 'equipped')
+    this.root.classList.toggle('backpack-view--drawer-inventory', id === 'inventory')
+    const scrim = this.root.querySelector('[data-mobile-scrim]') as HTMLElement | null
+    if (scrim) scrim.hidden = false
+    for (const panel of this.root.querySelectorAll<HTMLElement>('[data-mobile-drawer-panel]')) {
+      panel.hidden = panel.dataset.mobileDrawerPanel !== id
+    }
+    for (const btn of this.root.querySelectorAll<HTMLButtonElement>('[data-mobile-drawer]')) {
+      btn.classList.toggle('is-active', btn.dataset.mobileDrawer === id)
+    }
+    if (id === 'equipped') this.renderMobileEquippedList()
+    if (id === 'inventory') {
+      this.syncMobileInventoryToolbar()
+      this.renderGrid()
+      // Always land on the grid; item tap drills into detail.
+      this.hideMobileInventoryDetail()
+    }
+  }
+
+  private closeMobileDrawer(): void {
+    this.mobileDrawer = null
+    this.hideMobileInventoryDetail()
+    this.root.classList.remove('backpack-view--drawer-equipped', 'backpack-view--drawer-inventory')
+    const scrim = this.root.querySelector('[data-mobile-scrim]') as HTMLElement | null
+    if (scrim) scrim.hidden = true
+    for (const panel of this.root.querySelectorAll<HTMLElement>('[data-mobile-drawer-panel]')) {
+      panel.hidden = true
+    }
+    for (const btn of this.root.querySelectorAll<HTMLButtonElement>('[data-mobile-drawer]')) {
+      btn.classList.remove('is-active')
+    }
+  }
+
+  /** Mobile Equipped sheet — one row per wearable slot from `equippedByCategory`. */
+  private renderMobileEquippedList(): void {
+    const list = this.root.querySelector('[data-mobile-equipped-list]') as HTMLElement | null
+    if (!list) return
+
+    const slots = CATEGORIES.filter((c) => c.id !== 'all') as Array<{
+      id: WearableCategory
+      label: string
+    }>
+
+    list.innerHTML = ''
+    for (const cat of slots) {
+      const item = this.equippedByCategory.get(cat.id)
+      const rarity = item ? item.rarity || guessWearableRarity(item.urn) : null
+      const rarityBg = rarity ? wearableRarityBackground(rarity) : ''
+      const rarityColor = rarity
+        ? (WEARABLE_RARITY_COLORS[rarity] ?? WEARABLE_RARITY_COLORS.common)
+        : ''
+      const isSelected = item ? this.isSameWearableUrn(item.urn, this.selectedItem) : false
+
+      const row = document.createElement('div')
+      row.className =
+        'backpack-view__mobile-equipped-row' +
+        (item ? ' is-filled' : ' is-empty') +
+        (isSelected ? ' is-selected' : '')
+      row.setAttribute('role', 'listitem')
+      row.dataset.category = cat.id
+
+      row.innerHTML = `
+        <span class="backpack-view__mobile-equipped-icon" aria-hidden="true">${backpackCategoryIcon(cat.id)}</span>
+        <div class="backpack-view__mobile-equipped-thumb"${rarityBg ? ` style="background:${rarityBg}"` : ''}>
+          ${
+            item
+              ? `<img src="${this.escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" decoding="async" />`
+              : `<span class="backpack-view__mobile-equipped-empty-mark">—</span>`
+          }
+        </div>
+        <div class="backpack-view__mobile-equipped-meta">
+          <span class="backpack-view__mobile-equipped-slot">${this.escapeHtml(cat.label)}</span>
+          <span class="backpack-view__mobile-equipped-name"${rarityColor ? ` style="color:${rarityColor}"` : ''}>
+            ${item ? this.escapeHtml(item.name) : 'Empty'}
+          </span>
+        </div>
+        ${
+          item
+            ? `<button type="button" class="backpack-view__mobile-equipped-unequip" data-unequip-urn="${this.escapeHtml(item.urn)}" aria-label="Unequip ${this.escapeHtml(item.name)}">Unequip</button>`
+            : `<button type="button" class="backpack-view__mobile-equipped-browse" data-browse-category="${cat.id}">Browse</button>`
+        }
+      `
+
+      if (item) {
+        row.addEventListener('click', (e) => {
+          if ((e.target as HTMLElement).closest('[data-unequip-urn]')) return
+          this.selectedItem = item.urn
+          this.selectedCategory = cat.id
+          this.renderMobileEquippedList()
+          this.updateCategoryEquipped()
+          // Keep drawer open so user can unequip; avatar already shows current outfit.
+        })
+        row.querySelector('[data-unequip-urn]')?.addEventListener('click', (e) => {
+          e.stopPropagation()
+          void this.unequipWearable(item)
+        })
+      } else {
+        row.querySelector('[data-browse-category]')?.addEventListener('click', (e) => {
+          e.stopPropagation()
+          this.selectCategory(cat.id)
+          this.openMobileDrawer('inventory')
+        })
+      }
+
+      list.appendChild(row)
+    }
   }
 
   private wireOsaSearch(): void {
@@ -251,20 +546,28 @@ export class BackpackView {
   }
 
   private wireWearablesSearch(): void {
-    const input = this.root.querySelector('.backpack-view__search') as HTMLInputElement | null
+    const input = this.root.querySelector(
+      '.backpack-view__sub-header .backpack-view__search'
+    ) as HTMLInputElement | null
     input?.addEventListener('input', () => {
       this.searchQuery = input.value
       this.currentPage = 1
+      this.emotePage = 1
+      const mobile = this.root.querySelector('[data-mobile-inv-search]') as HTMLInputElement | null
+      if (mobile) mobile.value = input.value
       if (this.activeSubTab === 'wearables') this.renderGrid()
+      if (this.activeSubTab === 'emotes') this.renderEmoteGrid()
     })
   }
 
   updateSession(session: SessionIdentity): void {
     this.session = session
+    this.baselineWearablesKey = this.wearablesKeyFromProfile()
     void this.loadWearables()
     void this.loadEquippedWearables()
+    void this.loadEmotes()
     void this.refreshVrmLibrary()
-    if (this.activeSubTab === 'wearables') {
+    if (this.activeSubTab === 'wearables' || this.activeSubTab === 'emotes') {
       void this.loadAvatarModel()
     }
   }
@@ -353,15 +656,19 @@ export class BackpackView {
     const gridArea = this.root.querySelector('.backpack-view__grid-area') as HTMLElement
     const isVrm = this.activeSubTab === 'vrm'
     const isOsa = this.activeSubTab === 'osa'
+    const isEmotes = this.activeSubTab === 'emotes'
     const isAvatarLibraryTab = isVrm || isOsa
 
     this.root.classList.toggle('backpack-view--vrm', isVrm)
     this.root.classList.toggle('backpack-view--osa', isOsa)
+    this.root.classList.toggle('backpack-view--emotes', isEmotes)
+    // Keep search on emotes; hide filter+search only for VRM/OSA library tabs.
     wearablesToolbar.hidden = isAvatarLibraryTab
-    wearablesMidTabs.hidden = isAvatarLibraryTab
+    wearablesMidTabs.hidden = isAvatarLibraryTab || isEmotes
     vrmMidTabs.hidden = !isVrm
     osaMidTabs.hidden = !isOsa
     dropHint.hidden = !isVrm
+    // Emotes reuses the left rail for wheel slots (not wearable categories).
     categories.hidden = isAvatarLibraryTab
     gridArea?.classList.remove('is-dragover')
 
@@ -370,18 +677,331 @@ export class BackpackView {
       void this.loadCustomAvatarPreview(this.selectedVrmHash)
     } else if (isOsa) {
       void this.ensureOsaCatalog()
+    } else if (isEmotes) {
+      if (!this.emoteItems.length && !this.emotesLoading) void this.loadEmotes()
+      this.renderEmotesUi()
+      void this.loadAvatarModel()
     } else if (this.activeSubTab === 'wearables') {
+      this.buildCategories()
       this.renderGrid()
       void this.loadAvatarModel()
-    } else {
-      this.renderGrid()
-      const detailEl = this.root.querySelector('.backpack-view__detail')!
-      detailEl.innerHTML = `<p class="backpack-view__detail-empty">Emotes — use the emote wheel in-world</p>`
+    }
+  }
+
+  private renderEmotesUi(): void {
+    if (this.activeSubTab !== 'emotes' || this.disposed) return
+    this.renderEmoteSlots()
+    this.renderEmoteGrid()
+    this.renderEmoteDetail(this.selectedEmoteId)
+  }
+
+  private async loadEmotes(): Promise<void> {
+    const gen = ++this.emotesLoadGen
+    this.emotesLoading = true
+    this.emotesError = null
+    if (this.activeSubTab === 'emotes') this.renderEmoteGrid()
+
+    try {
+      const address = this.resolveWearablesAddress()
+      const profile = this.session.getProfile()
+      const equipped = (profile?.emotes ?? []).map((e) => e.urn).filter(Boolean)
+      const items = await loadBackpackEmotes(
+        address,
+        this.session.getLambdasUrl(),
+        equipped,
+        PEER_URL
+      )
+      if (gen !== this.emotesLoadGen || this.disposed) return
+      this.emoteItems = items.length ? items : baseEmoteCatalogAsItems()
+      this.emotesError = null
+    } catch (err) {
+      if (gen !== this.emotesLoadGen || this.disposed) return
+      this.emoteItems = baseEmoteCatalogAsItems()
+      this.emotesError = err instanceof Error ? err.message : String(err)
+      console.warn('[backpack] emote inventory failed — base catalog only', err)
+    } finally {
+      if (gen === this.emotesLoadGen) {
+        this.emotesLoading = false
+        if (this.activeSubTab === 'emotes') this.renderEmotesUi()
+      }
+    }
+  }
+
+  private emoteMatches(a: string, b: string): boolean {
+    if (!a || !b) return false
+    if (a.toLowerCase() === b.toLowerCase()) return true
+    const sa = baseEmoteSlugFromRef(a)
+    const sb = baseEmoteSlugFromRef(b)
+    if (sa && sb && sa === sb) return true
+    return assetUrnFromCompleteUrn(a) === assetUrnFromCompleteUrn(b)
+  }
+
+  private findEmoteItem(emoteId: string): BackpackEmoteItem | null {
+    return this.emoteItems.find((e) => this.emoteMatches(e.urn, emoteId)) ?? null
+  }
+
+  /** Prefer inventory/Catalyst display name over URN tail (token ids look like "105312291…"). */
+  private emoteDisplayName(emoteId: string, fallbackLabel?: string): string {
+    const inv = this.findEmoteItem(emoteId)
+    if (inv?.name?.trim()) {
+      const raw = inv.name.trim()
+      // Ignore pure-numeric labels that are really token fragments.
+      if (!/^\d{6,}$/.test(raw)) return raw
+    }
+    const fromHelper = emoteLabel(emoteId, fallbackLabel)
+    if (fromHelper && !/^\d{6,}/.test(fromHelper)) return fromHelper
+    return fallbackLabel?.trim() || inv?.name || fromHelper || 'Emote'
+  }
+
+  /** Badge slot for grid cards — only profile-assigned wheel entries (not in-world defaults). */
+  private emoteSlotBadgeKey(emoteId: string): string | null {
+    const profile = this.session.getProfile()
+    if (!profile) return null
+    const slots = profileSlotsForEmote(profile, emoteId)
+    if (!slots.length) return null
+    return emoteWheelIndexToKey(slots[0]!)
+  }
+
+  private renderEmoteSlots(): void {
+    const container = this.root.querySelector('.backpack-view__categories') as HTMLElement | null
+    if (!container) return
+    const profile = this.session.getProfile()
+    const slots = buildEmoteBackpackWheelSlots(profile)
+
+    container.innerHTML = ''
+    container.classList.add('backpack-view__categories--emotes')
+
+    for (const slot of slots) {
+      const inv = slot.empty ? null : this.findEmoteItem(slot.id)
+      const label = slot.empty ? 'Empty' : this.emoteDisplayName(slot.id, slot.label)
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className =
+        'backpack-view__emote-slot' +
+        (this.selectedEmoteSlotKey === slot.key ? ' is-active' : '') +
+        (!slot.empty && this.selectedEmoteId && this.emoteMatches(this.selectedEmoteId, slot.id)
+          ? ' is-selected-emote'
+          : '') +
+        (slot.empty ? ' is-empty' : '')
+      btn.dataset.slotKey = slot.key
+      btn.dataset.emoteId = slot.id
+      btn.title = label
+      const thumb = inv?.thumbnailUrl
+        ? `<img class="backpack-view__emote-slot-img" src="${this.escapeHtml(inv.thumbnailUrl)}" alt="" />`
+        : `<span class="backpack-view__emote-slot-thumb" aria-hidden="true">${slot.empty ? '—' : '💃'}</span>`
+      btn.innerHTML = `
+        <span class="backpack-view__emote-slot-num" aria-hidden="true">${this.escapeHtml(slot.key)}</span>
+        <span class="backpack-view__emote-slot-label">${this.escapeHtml(label)}</span>
+        ${thumb}
+      `
+      btn.addEventListener('click', () => {
+        this.selectedEmoteSlotKey = slot.key
+        if (!slot.empty) this.selectedEmoteId = slot.id
+        // Select only — play via "Play preview" in the detail panel.
+        this.renderEmotesUi()
+      })
+      container.appendChild(btn)
+    }
+  }
+
+  private renderEmoteGrid(): void {
+    if (this.activeSubTab !== 'emotes') return
+    const gridEl = this.root.querySelector('.backpack-view__middle .backpack-view__grid') as HTMLElement | null
+    const paginationEl = this.root.querySelector(
+      '.backpack-view__middle .backpack-view__pagination'
+    ) as HTMLElement | null
+    if (!gridEl || !paginationEl) return
+
+    gridEl.innerHTML = ''
+    gridEl.classList.add('backpack-view__grid--emotes')
+    paginationEl.innerHTML = ''
+
+    if (this.emotesLoading && !this.emoteItems.length) {
+      gridEl.innerHTML = `<p class="backpack-view__grid-status">Loading emotes…</p>`
+      return
+    }
+
+    const catalog = filterBackpackEmotes(this.emoteItems, this.searchQuery)
+    if (!catalog.length) {
+      gridEl.innerHTML = `<p class="backpack-view__grid-status${
+        this.emotesError ? ' backpack-view__grid-status--error' : ''
+      }">${this.escapeHtml(this.emotesError || 'No emotes found')}</p>`
+      return
+    }
+
+    const totalPages = Math.max(1, Math.ceil(catalog.length / EMOTE_ITEMS_PER_PAGE))
+    const page = Math.min(this.emotePage, totalPages)
+    this.emotePage = page
+    const start = (page - 1) * EMOTE_ITEMS_PER_PAGE
+    const pageItems = catalog.slice(start, start + EMOTE_ITEMS_PER_PAGE)
+
+    for (const item of pageItems) {
+      const badgeKey = this.emoteSlotBadgeKey(item.urn)
+      const isSelected = !!this.selectedEmoteId && this.emoteMatches(this.selectedEmoteId, item.urn)
+      const rarity = item.rarity || 'common'
+      const card = document.createElement('button')
+      card.type = 'button'
+      card.className =
+        'backpack-view__emote-card is-' +
+        rarity +
+        (isSelected ? ' is-selected' : '') +
+        (badgeKey ? ' is-equipped' : '')
+      card.dataset.emoteId = item.urn
+      card.style.setProperty('--wearable-rarity-bg', wearableRarityBackground(rarity))
+      card.innerHTML = `
+        <img class="backpack-view__emote-card-thumb" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" />
+        ${badgeKey ? `<span class="backpack-view__emote-card-badge">${this.escapeHtml(badgeKey)}</span>` : ''}
+        <span class="backpack-view__emote-card-name">${this.escapeHtml(item.name)}</span>
+      `
+      card.addEventListener('click', () => {
+        this.selectedEmoteId = item.urn
+        // Select only — play via "Play preview" in the detail panel.
+        this.renderEmotesUi()
+      })
+      gridEl.appendChild(card)
+    }
+
+    if (totalPages > 1) {
+      const prev = document.createElement('button')
+      prev.type = 'button'
+      prev.className = 'backpack-view__page-btn'
+      prev.textContent = '‹'
+      prev.disabled = page <= 1
+      prev.addEventListener('click', () => {
+        this.emotePage--
+        this.renderEmoteGrid()
+      })
+      paginationEl.appendChild(prev)
+
+      for (let i = 1; i <= Math.min(totalPages, 6); i++) {
+        const pageBtn = document.createElement('button')
+        pageBtn.type = 'button'
+        pageBtn.className = 'backpack-view__page-btn' + (i === page ? ' is-active' : '')
+        pageBtn.textContent = String(i)
+        pageBtn.addEventListener('click', () => {
+          this.emotePage = i
+          this.renderEmoteGrid()
+        })
+        paginationEl.appendChild(pageBtn)
+      }
+
+      const next = document.createElement('button')
+      next.type = 'button'
+      next.className = 'backpack-view__page-btn'
+      next.textContent = '›'
+      next.disabled = page >= totalPages
+      next.addEventListener('click', () => {
+        this.emotePage++
+        this.renderEmoteGrid()
+      })
+      paginationEl.appendChild(next)
+    }
+  }
+
+  private renderEmoteDetail(emoteId: string | null): void {
+    const detailEl = this.root.querySelector('.backpack-view__detail') as HTMLElement | null
+    if (!detailEl) return
+    if (!emoteId) {
+      detailEl.innerHTML = `<p class="backpack-view__detail-empty">Select an emote · click a wheel slot to choose equip target</p>`
+      return
+    }
+    const profile = this.session.getProfile()
+    const item = this.findEmoteItem(emoteId)
+    const label = this.emoteDisplayName(emoteId)
+    const urn = emoteId.startsWith('urn:') ? emoteId : baseEmoteUrn(emoteId)
+    const rarity = item?.rarity || 'base'
+    const rarityColor = WEARABLE_RARITY_COLORS[rarity] ?? WEARABLE_RARITY_COLORS.common
+    const equipped = profile ? isEmoteEquippedOnProfile(profile, emoteId) : false
+    const onSlots = profile ? profileSlotsForEmote(profile, emoteId) : []
+    const targetKey =
+      this.selectedEmoteSlotKey ??
+      (onSlots[0] != null ? emoteWheelIndexToKey(onSlots[0]) : null) ??
+      '1'
+    const targetIndex = emoteWheelKeyToIndex(targetKey)
+    const slotHint = equipped
+      ? `On wheel · slot ${onSlots.map((i) => emoteWheelIndexToKey(i)).join(', ')}`
+      : `Equip to slot ${targetKey}`
+    const canEquip = !!profile && targetIndex >= 0
+
+    detailEl.innerHTML = `
+      <div class="backpack-view__detail-card backpack-view__detail-card--emote">
+        ${
+          item?.thumbnailUrl
+            ? `<div class="backpack-view__detail-thumb" style="background:${wearableRarityBackground(rarity)}">
+                <img class="backpack-view__detail-img" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" />
+              </div>`
+            : `<div class="backpack-view__emote-detail-icon" aria-hidden="true">💃</div>`
+        }
+        <h3 class="backpack-view__detail-name">${this.escapeHtml(label)}</h3>
+        <span class="backpack-view__detail-category">${this.escapeHtml(slotHint)}</span>
+        <span class="backpack-view__detail-rarity" style="color:${rarityColor}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
+        <p class="backpack-view__detail-urn">${this.escapeHtml(urn)}</p>
+        <div class="backpack-view__wearable-actions">
+          <button type="button" class="backpack-view__wearable-equip-btn" data-action="play-emote">
+            Play preview
+          </button>
+          <button type="button" class="backpack-view__wearable-equip-btn" data-action="toggle-emote-equip" ${canEquip ? '' : 'disabled'}>
+            ${equipped ? 'Unequip' : `Equip · slot ${this.escapeHtml(targetKey)}`}
+          </button>
+        </div>
+      </div>
+    `
+    detailEl.querySelector('[data-action="play-emote"]')?.addEventListener('click', () => {
+      void this.playBackpackEmote(emoteId)
+    })
+    detailEl.querySelector('[data-action="toggle-emote-equip"]')?.addEventListener('click', () => {
+      if (!canEquip || !profile) return
+      if (equipped) this.unequipEmote(emoteId)
+      else this.equipEmote(emoteId, targetIndex)
+    })
+  }
+
+  private equipEmote(emoteId: string, slotIndex: number): void {
+    const profile = this.session.getProfile()
+    if (!profile || slotIndex < 0) return
+    const emotes = equipEmoteOnProfile(profile, emoteId, slotIndex)
+    this.session.setProfile({ ...profile, emotes })
+    this.selectedEmoteSlotKey = emoteWheelIndexToKey(slotIndex)
+    this.selectedEmoteId = emoteId
+    this.renderEmotesUi()
+  }
+
+  private unequipEmote(emoteId: string): void {
+    const profile = this.session.getProfile()
+    if (!profile) return
+    const emotes = unequipEmoteFromProfile(profile, emoteId)
+    this.session.setProfile({ ...profile, emotes })
+    this.renderEmotesUi()
+  }
+
+  private async playBackpackEmote(emoteId: string): Promise<void> {
+    const profile = this.session.getProfile()
+    if (!profile || !this.animations) {
+      // Ensure DCL avatar + mixer exist (e.g. switched from VRM).
+      await this.loadAvatarModel()
+    }
+    if (!this.animations || this.disposed || this.activeSubTab !== 'emotes') return
+
+    const gen = ++this.emotePlayGen
+    const bodyShape = profile?.bodyShape ?? this.session.getProfile()?.bodyShape ?? 'male'
+    try {
+      const resolved = await resolveProfileEmote(emoteId, bodyShape, PEER_URL)
+      if (gen !== this.emotePlayGen || this.disposed) return
+      if (!resolved) {
+        console.warn('[backpack] unknown emote', emoteId)
+        return
+      }
+      const gltf = await loadResolvedProfileEmote(getSessionAssetCache(), resolved)
+      if (gen !== this.emotePlayGen || this.disposed || !gltf || !this.animations) return
+      this.animations.playProfileEmoteFromGltf(gltf, resolved.loop, resolved.urn)
+    } catch (err) {
+      if (gen === this.emotePlayGen) console.warn('[backpack] emote preview failed', err)
     }
   }
 
   private buildCategories(): void {
     const container = this.root.querySelector('.backpack-view__categories')!
+    container.classList.remove('backpack-view__categories--emotes')
     container.innerHTML = ''
     for (const cat of CATEGORIES) {
       const btn = document.createElement('button')
@@ -430,7 +1050,10 @@ export class BackpackView {
     this.selectedItem = null
     const detailEl = this.root.querySelector('.backpack-view__detail')!
     detailEl.innerHTML = `<p class="backpack-view__detail-empty">No item selected</p>`
+    this.syncMobileInventoryToolbar()
+    this.syncDesktopCategoryActive()
     this.renderGrid()
+    this.hideMobileInventoryDetail()
     this.updateCategoryEquipped()
   }
 
@@ -464,8 +1087,11 @@ export class BackpackView {
     }
 
     this.selectedItem = item.urn
+    this.syncMobileInventoryToolbar()
+    this.syncDesktopCategoryActive()
     this.renderGrid()
     this.renderWearableDetail(item)
+    this.renderMobileInventoryDetail(item)
     this.updateCategoryEquipped()
   }
 
@@ -500,12 +1126,14 @@ export class BackpackView {
 
   private updateCategoryEquipped(): void {
     const container = this.root.querySelector('.backpack-view__categories')
-    if (!container) return
-    for (const cat of CATEGORIES) {
-      const btn = container.querySelector(`[data-category="${cat.id}"]`)
-      if (!btn) continue
-      this.applyCategoryPreview(btn, cat)
+    if (container) {
+      for (const cat of CATEGORIES) {
+        const btn = container.querySelector(`[data-category="${cat.id}"]`)
+        if (!btn) continue
+        this.applyCategoryPreview(btn, cat)
+      }
     }
+    if (this.mobileDrawer === 'equipped') this.renderMobileEquippedList()
   }
 
   private async loadEquippedWearables(): Promise<void> {
@@ -513,7 +1141,7 @@ export class BackpackView {
     const gen = ++this.equippedLoadGen
     if (!profile?.wearables?.length) {
       this.equippedByCategory = new Map()
-      this.updateCategoryEquipped()
+      if (this.activeSubTab === 'wearables') this.updateCategoryEquipped()
       return
     }
 
@@ -526,7 +1154,7 @@ export class BackpackView {
       if (gen !== this.equippedLoadGen || this.disposed) return
       this.equippedByCategory = new Map()
     }
-    this.updateCategoryEquipped()
+    if (this.activeSubTab === 'wearables') this.updateCategoryEquipped()
   }
 
   private resolveWearablesAddress(): string | undefined {
@@ -540,13 +1168,13 @@ export class BackpackView {
       this.wearableItems = []
       this.wearablesError = 'Connect a wallet or set ?profile=0x… to load your inventory'
       this.wearablesLoading = false
-      this.renderGrid()
+      if (this.activeSubTab === 'wearables') this.renderGrid()
       return
     }
 
     this.wearablesLoading = true
     this.wearablesError = null
-    this.renderGrid()
+    if (this.activeSubTab === 'wearables') this.renderGrid()
 
     try {
       const lambdasUrl = this.session.getLambdasUrl()
@@ -565,7 +1193,8 @@ export class BackpackView {
     } finally {
       if (gen === this.wearablesLoadGen) {
         this.wearablesLoading = false
-        this.renderGrid()
+        // Async completion must not stomp the Emotes / VRM / OSA UI.
+        if (this.activeSubTab === 'wearables') this.renderGrid()
       }
     }
   }
@@ -583,19 +1212,50 @@ export class BackpackView {
     }
   }
 
+  /** Desktop grid + optional mobile inventory grid (both stay in sync). */
+  private inventoryGridTargets(): Array<{ grid: HTMLElement; pagination: HTMLElement }> {
+    const targets: Array<{ grid: HTMLElement; pagination: HTMLElement }> = []
+    const desktopGrid = this.root.querySelector(
+      '.backpack-view__middle .backpack-view__grid'
+    ) as HTMLElement | null
+    const desktopPag = this.root.querySelector(
+      '.backpack-view__middle .backpack-view__pagination'
+    ) as HTMLElement | null
+    if (desktopGrid && desktopPag) targets.push({ grid: desktopGrid, pagination: desktopPag })
+
+    const mobileGrid = this.root.querySelector('[data-mobile-inv-grid]') as HTMLElement | null
+    const mobilePag = this.root.querySelector('[data-mobile-inv-pagination]') as HTMLElement | null
+    if (mobileGrid && mobilePag) targets.push({ grid: mobileGrid, pagination: mobilePag })
+
+    return targets
+  }
+
   private renderGrid(): void {
-    const gridEl = this.root.querySelector('.backpack-view__grid')!
-    const paginationEl = this.root.querySelector('.backpack-view__pagination')!
-    gridEl.innerHTML = ''
-    paginationEl.innerHTML = ''
+    // Wearables inventory only — never paint over emotes/VRM/OSA grids.
+    if (this.activeSubTab !== 'wearables') return
+
+    const targets = this.inventoryGridTargets()
+    if (!targets.length) return
+
+    for (const { grid, pagination } of targets) {
+      grid.innerHTML = ''
+      grid.classList.remove('backpack-view__grid--emotes')
+      pagination.innerHTML = ''
+    }
+
+    const paintStatus = (html: string): void => {
+      for (const { grid } of targets) grid.innerHTML = html
+    }
 
     if (this.wearablesLoading) {
-      gridEl.innerHTML = `<p class="backpack-view__grid-status">Loading your wearables…</p>`
+      paintStatus(`<p class="backpack-view__grid-status">Loading your wearables…</p>`)
       return
     }
 
     if (this.wearablesError && !this.wearableItems.length) {
-      gridEl.innerHTML = `<p class="backpack-view__grid-status backpack-view__grid-status--error">${this.escapeHtml(this.wearablesError)}</p>`
+      paintStatus(
+        `<p class="backpack-view__grid-status backpack-view__grid-status--error">${this.escapeHtml(this.wearablesError)}</p>`
+      )
       return
     }
 
@@ -607,61 +1267,140 @@ export class BackpackView {
     const pageItems = items.slice(start, start + ITEMS_PER_PAGE)
 
     if (!pageItems.length) {
-      gridEl.innerHTML = `<p class="backpack-view__grid-status">No wearables in this category</p>`
+      paintStatus(`<p class="backpack-view__grid-status">No wearables in this category</p>`)
       return
     }
 
-    for (const item of pageItems) {
-      const card = document.createElement('button')
-      card.type = 'button'
-      const isSelected = this.isSameWearableUrn(item.urn, this.selectedItem)
-      const rarity = item.rarity || guessWearableRarity(item.urn)
-      card.className = 'backpack-view__item is-' + rarity + (isSelected ? ' is-selected' : '')
-      card.style.setProperty('--wearable-rarity-bg', wearableRarityBackground(rarity))
-      card.innerHTML = `<img class="backpack-view__item-img" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" />`
-      card.addEventListener('click', () => {
-        this.selectItem(item)
-        this.renderGrid()
-      })
-      gridEl.appendChild(card)
-    }
-
-    const emptySlots = ITEMS_PER_PAGE - pageItems.length
-    for (let i = 0; i < emptySlots; i++) {
-      const empty = document.createElement('div')
-      empty.className = 'backpack-view__item backpack-view__item--empty'
-      empty.setAttribute('aria-hidden', 'true')
-      gridEl.appendChild(empty)
-    }
-
-    if (totalPages > 1) {
-      const prev = document.createElement('button')
-      prev.className = 'backpack-view__page-btn'
-      prev.textContent = '‹'
-      prev.disabled = page <= 1
-      prev.addEventListener('click', () => { this.currentPage--; this.renderGrid() })
-      paginationEl.appendChild(prev)
-
-      for (let i = 1; i <= Math.min(totalPages, 5); i++) {
-        const pageBtn = document.createElement('button')
-        pageBtn.className = 'backpack-view__page-btn' + (i === page ? ' is-active' : '')
-        pageBtn.textContent = String(i)
-        pageBtn.addEventListener('click', () => { this.currentPage = i; this.renderGrid() })
-        paginationEl.appendChild(pageBtn)
+    for (const { grid, pagination } of targets) {
+      const isMobileGrid = grid.hasAttribute('data-mobile-inv-grid')
+      for (const item of pageItems) {
+        const card = document.createElement('button')
+        card.type = 'button'
+        const isSelected = this.isSameWearableUrn(item.urn, this.selectedItem)
+        const rarity = item.rarity || guessWearableRarity(item.urn)
+        const equipped = this.session.getProfile()
+          ? isWearableEquipped(this.session.getProfile()!, item.urn)
+          : false
+        card.className =
+          'backpack-view__item is-' +
+          rarity +
+          (isSelected ? ' is-selected' : '') +
+          (equipped ? ' is-equipped' : '')
+        card.style.setProperty('--wearable-rarity-bg', wearableRarityBackground(rarity))
+        card.innerHTML = `<img class="backpack-view__item-img" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" />`
+        card.addEventListener('click', () => {
+          this.selectItem(item)
+          this.renderGrid()
+        })
+        grid.appendChild(card)
       }
 
-      const next = document.createElement('button')
-      next.className = 'backpack-view__page-btn'
-      next.textContent = '›'
-      next.disabled = page >= totalPages
-      next.addEventListener('click', () => { this.currentPage++; this.renderGrid() })
-      paginationEl.appendChild(next)
+      // Desktop keeps a fixed 3×3 board; mobile inventory only shows real items.
+      if (!isMobileGrid) {
+        const emptySlots = ITEMS_PER_PAGE - pageItems.length
+        for (let i = 0; i < emptySlots; i++) {
+          const empty = document.createElement('div')
+          empty.className = 'backpack-view__item backpack-view__item--empty'
+          empty.setAttribute('aria-hidden', 'true')
+          grid.appendChild(empty)
+        }
+      }
+
+      if (totalPages > 1) {
+        const prev = document.createElement('button')
+        prev.className = 'backpack-view__page-btn'
+        prev.textContent = '‹'
+        prev.disabled = page <= 1
+        prev.addEventListener('click', () => {
+          this.currentPage--
+          this.renderGrid()
+        })
+        pagination.appendChild(prev)
+
+        for (let i = 1; i <= Math.min(totalPages, 5); i++) {
+          const pageBtn = document.createElement('button')
+          pageBtn.className = 'backpack-view__page-btn' + (i === page ? ' is-active' : '')
+          pageBtn.textContent = String(i)
+          pageBtn.addEventListener('click', () => {
+            this.currentPage = i
+            this.renderGrid()
+          })
+          pagination.appendChild(pageBtn)
+        }
+
+        const next = document.createElement('button')
+        next.className = 'backpack-view__page-btn'
+        next.textContent = '›'
+        next.disabled = page >= totalPages
+        next.addEventListener('click', () => {
+          this.currentPage++
+          this.renderGrid()
+        })
+        pagination.appendChild(next)
+      }
     }
   }
 
+  private renderMobileInventoryDetail(item: BackpackWearableItem | null): void {
+    const list = this.root.querySelector('[data-mobile-inv-list]') as HTMLElement | null
+    const el = this.root.querySelector('[data-mobile-inv-detail]') as HTMLElement | null
+    if (!el) return
+
+    if (!item) {
+      this.hideMobileInventoryDetail()
+      return
+    }
+
+    // Only drill into the detail panel while the inventory drawer is open on mobile.
+    if (this.mobileDrawer !== 'inventory') {
+      el.hidden = true
+      el.innerHTML = ''
+      if (list) list.hidden = false
+      return
+    }
+
+    if (list) list.hidden = true
+    el.hidden = false
+
+    const profile = this.session.getProfile()
+    const equipped = profile ? isWearableEquipped(profile, item.urn) : false
+    const rarity = item.rarity || guessWearableRarity(item.urn)
+    const color = WEARABLE_RARITY_COLORS[rarity] ?? WEARABLE_RARITY_COLORS.common
+    const canEquip = !!profile && item.category !== 'unknown'
+    const category = this.categoryLabel(item.category)
+
+    this.setMobileInvHeader('detail', 'Details')
+
+    el.innerHTML = `
+      <div class="backpack-view__mobile-inv-detail-card">
+        <div class="backpack-view__mobile-inv-detail-thumb" style="background:${wearableRarityBackground(rarity)}">
+          <img src="${this.escapeHtml(item.thumbnailUrl)}" alt="" />
+        </div>
+        <h4 class="backpack-view__mobile-inv-detail-name">${this.escapeHtml(item.name)}</h4>
+        <span class="backpack-view__mobile-inv-detail-category">${this.escapeHtml(category)}</span>
+        <span class="backpack-view__mobile-inv-detail-rarity" style="color:${color}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
+        <div class="backpack-view__mobile-inv-detail-actions">
+          <button type="button" class="backpack-view__mobile-inv-detail-equip" data-mobile-equip ${canEquip ? '' : 'disabled'}>
+            ${equipped ? 'Unequip' : 'Equip'}
+          </button>
+          <button type="button" class="backpack-view__mobile-inv-detail-market" disabled title="Coming soon">
+            Marketplace
+          </button>
+        </div>
+      </div>
+    `
+    el.querySelector('[data-mobile-equip]')?.addEventListener('click', () => {
+      if (!canEquip) return
+      if (equipped) void this.unequipWearable(item)
+      else void this.equipWearable(item)
+    })
+  }
+
   private renderVrmGrid(skipThumbGen = false): void {
-    const gridEl = this.root.querySelector('.backpack-view__grid')!
-    const paginationEl = this.root.querySelector('.backpack-view__pagination')!
+    const gridEl = this.root.querySelector('.backpack-view__middle .backpack-view__grid')!
+    const paginationEl = this.root.querySelector(
+      '.backpack-view__middle .backpack-view__pagination'
+    )!
     gridEl.innerHTML = ''
     gridEl.classList.remove('backpack-view__grid--vrm-empty')
     paginationEl.innerHTML = ''
@@ -738,8 +1477,10 @@ export class BackpackView {
   }
 
   private renderOsaGrid(): void {
-    const gridEl = this.root.querySelector('.backpack-view__grid')!
-    const paginationEl = this.root.querySelector('.backpack-view__pagination')!
+    const gridEl = this.root.querySelector('.backpack-view__middle .backpack-view__grid')!
+    const paginationEl = this.root.querySelector(
+      '.backpack-view__middle .backpack-view__pagination'
+    )!
     const countEl = this.root.querySelector('.backpack-view__osa-count') as HTMLElement | null
     gridEl.innerHTML = ''
     gridEl.classList.remove('backpack-view__grid--vrm-empty')
@@ -1144,8 +1885,16 @@ export class BackpackView {
 
   private selectItem(item: BackpackWearableItem): void {
     this.selectedItem = item.urn
+    if (item.category !== 'unknown') this.selectedCategory = item.category
+    this.syncMobileInventoryToolbar()
     this.renderWearableDetail(item)
+    this.renderMobileInventoryDetail(item)
     this.updateCategoryEquipped()
+  }
+
+  private categoryLabel(category: BackpackWearableItem['category']): string {
+    if (category === 'unknown') return 'Unknown'
+    return CATEGORIES.find((c) => c.id === category)?.label ?? category.replace(/_/g, ' ')
   }
 
   private renderWearableDetail(item: BackpackWearableItem): void {
@@ -1155,6 +1904,7 @@ export class BackpackView {
     const rarity = item.rarity || guessWearableRarity(item.urn)
     const color = WEARABLE_RARITY_COLORS[rarity] ?? WEARABLE_RARITY_COLORS.common
     const canEquip = !!profile && item.category !== 'unknown'
+    const category = this.categoryLabel(item.category)
 
     detailEl.innerHTML = `
       <div class="backpack-view__detail-card">
@@ -1162,6 +1912,7 @@ export class BackpackView {
           <img class="backpack-view__detail-img" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" />
         </div>
         <h3 class="backpack-view__detail-name">${this.escapeHtml(item.name)}</h3>
+        <span class="backpack-view__detail-category">${this.escapeHtml(category)}</span>
         <span class="backpack-view__detail-rarity" style="color:${color}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
         <div class="backpack-view__wearable-actions">
           <button type="button" class="backpack-view__wearable-equip-btn" data-action="toggle-equip" ${canEquip ? '' : 'disabled'}>
@@ -1179,6 +1930,56 @@ export class BackpackView {
       if (equipped) void this.unequipWearable(item)
       else void this.equipWearable(item)
     })
+  }
+
+  private wearablesKeyFromProfile(): string {
+    const profile = this.session.getProfile()
+    if (!profile) return ''
+    const wearables = wearablesForProfileDeploy(profile)
+      .map((u) => u.toLowerCase())
+      .sort()
+      .join('|')
+    const emotes = (profile.emotes ?? [])
+      .map((e) => `${e.slot}:${e.urn.toLowerCase()}`)
+      .sort()
+      .join('|')
+    return `${wearables}||${emotes}`
+  }
+
+  /** True when equip/unequip changed wearables or emote wheel since open or last deploy. */
+  hasPendingProfileChanges(): boolean {
+    if (this.session.getProfile()?.fromWallet !== true) return false
+    const current = this.wearablesKeyFromProfile()
+    return Boolean(current) && current !== this.baselineWearablesKey
+  }
+
+  /** Called after SettingsOverlay successfully deploys the profile. */
+  markProfileBaselineSynced(): void {
+    this.baselineWearablesKey = this.wearablesKeyFromProfile()
+  }
+
+  /**
+   * After a successful Catalyst deploy — only refresh equipped state + avatar preview.
+   * Inventory list is unchanged; no full re-fetch.
+   */
+  refreshAfterProfileSave(): void {
+    this.baselineWearablesKey = this.wearablesKeyFromProfile()
+    void this.loadEquippedWearables()
+    void this.loadEmotes()
+    if (this.activeSubTab === 'wearables') {
+      this.renderGrid()
+      const selected = this.selectedItem
+        ? this.wearableItems.find((i) => this.isSameWearableUrn(i.urn, this.selectedItem))
+        : null
+      if (selected) {
+        this.renderWearableDetail(selected)
+        this.renderMobileInventoryDetail(selected)
+      }
+    } else if (this.activeSubTab === 'emotes') {
+      this.renderEmotesUi()
+    }
+    if (this.mobileDrawer === 'equipped') this.renderMobileEquippedList()
+    void this.loadAvatarModel()
   }
 
   private async equipWearable(item: BackpackWearableItem): Promise<void> {
@@ -1200,10 +2001,12 @@ export class BackpackView {
   }
 
   private async applyWearableProfileChange(item: BackpackWearableItem): Promise<void> {
-    void this.loadEquippedWearables()
+    await this.loadEquippedWearables()
     this.renderGrid()
     this.renderWearableDetail(item)
-    await this.onVrmEquipChange?.()
+    this.renderMobileInventoryDetail(item)
+    if (this.mobileDrawer === 'equipped') this.renderMobileEquippedList()
+    // Preview updates locally; Catalyst deploy happens when the settings panel closes.
     void this.loadAvatarModel()
   }
 
@@ -1276,14 +2079,19 @@ export class BackpackView {
     this.resizeObserver.observe(stage)
     this.resizePreview()
 
+    stage.style.cursor = 'grab'
+    stage.style.touchAction = 'none'
+    stage.addEventListener('pointerdown', this.onPreviewPointerDown)
+    stage.addEventListener('pointermove', this.onPreviewPointerMove)
+    stage.addEventListener('pointerup', this.onPreviewPointerUp)
+    stage.addEventListener('pointercancel', this.onPreviewPointerUp)
     stage.addEventListener(
       'wheel',
       (e) => {
         if (this.disposed) return
         e.preventDefault()
-        const factor = e.deltaY < 0 ? 1.1 : 0.9
         this.previewZoom = THREE.MathUtils.clamp(
-          this.previewZoom * factor,
+          this.previewZoom * (e.deltaY < 0 ? PREVIEW_ZOOM_STEP : 1 / PREVIEW_ZOOM_STEP),
           PREVIEW_ZOOM_MIN,
           PREVIEW_ZOOM_MAX
         )
@@ -1296,6 +2104,35 @@ export class BackpackView {
     this.raf = requestAnimationFrame((t) => this.tick(t))
 
     void this.loadAvatarModel()
+  }
+
+  private readonly onPreviewPointerDown = (e: PointerEvent): void => {
+    if (this.disposed || e.button !== 0) return
+    const stage = e.currentTarget as HTMLElement
+    this.dragPointerId = e.pointerId
+    this.dragLastX = e.clientX
+    stage.setPointerCapture(e.pointerId)
+    stage.style.cursor = 'grabbing'
+  }
+
+  private readonly onPreviewPointerMove = (e: PointerEvent): void => {
+    if (this.disposed || this.dragPointerId !== e.pointerId) return
+    const dx = e.clientX - this.dragLastX
+    this.dragLastX = e.clientX
+    this.orbitYaw += dx * 0.01
+    if (this.pivot) this.pivot.rotation.y = this.orbitYaw
+  }
+
+  private readonly onPreviewPointerUp = (e: PointerEvent): void => {
+    if (this.dragPointerId !== e.pointerId) return
+    this.dragPointerId = null
+    const stage = e.currentTarget as HTMLElement
+    try {
+      stage.releasePointerCapture(e.pointerId)
+    } catch {
+      /* ignore */
+    }
+    stage.style.cursor = 'grab'
   }
 
   private async loadAvatarModel(): Promise<void> {
@@ -1314,6 +2151,8 @@ export class BackpackView {
 
     this.avatar = avatar
     this.pivot!.add(avatar)
+    // Align with pivot rotation at 0 so XZ center matches the ground ring.
+    this.pivot!.rotation.y = 0
     this.subjectSize = alignPreviewAvatarToGround(avatar, 'dcl')
 
     this.animations = new AvatarAnimations()
@@ -1324,6 +2163,9 @@ export class BackpackView {
       this.animations = null
     }
 
+    // Idle pose shifts bones — re-seat feet on the ring after bind.
+    this.subjectSize = alignPreviewAvatarToGround(avatar, 'dcl')
+    this.pivot!.rotation.y = this.orbitYaw
     this.frameCamera(this.subjectSize)
   }
 
@@ -1358,6 +2200,7 @@ export class BackpackView {
         this.odkPreview = odk
         this.avatar = odk.root
         this.pivot!.add(odk.root)
+        this.pivot!.rotation.y = this.orbitYaw
         this.subjectSize = alignPreviewAvatarToGround(odk.root, 'odk')
       } else {
         const vrm = await VrmAvatar.fromBytes(bytes)
@@ -1368,6 +2211,7 @@ export class BackpackView {
         this.vrmPreview = vrm
         this.avatar = vrm.root
         this.pivot!.add(vrm.root)
+        this.pivot!.rotation.y = this.orbitYaw
         this.subjectSize = alignPreviewAvatarToGround(vrm.root, 'vrm', vrm.vrm)
       }
 
@@ -1384,7 +2228,7 @@ export class BackpackView {
     const delta = Math.min(0.05, (now - this.lastFrame) / 1000)
     this.lastFrame = now
 
-    if (this.pivot) this.pivot.rotation.y += delta * 0.35
+    if (this.pivot) this.pivot.rotation.y = this.orbitYaw
 
     if (this.previewMode === 'vrm') {
       this.vrmPreview?.update(delta)
@@ -1472,6 +2316,13 @@ export class BackpackView {
     this.disposed = true
     cancelAnimationFrame(this.raf)
     this.resizeObserver?.disconnect()
+    const stage = this.root.querySelector('.backpack-view__avatar-stage') as HTMLElement | null
+    if (stage) {
+      stage.removeEventListener('pointerdown', this.onPreviewPointerDown)
+      stage.removeEventListener('pointermove', this.onPreviewPointerMove)
+      stage.removeEventListener('pointerup', this.onPreviewPointerUp)
+      stage.removeEventListener('pointercancel', this.onPreviewPointerUp)
+    }
     this.clearAvatar()
     if (this.renderer) {
       this.renderer.forceContextLoss()

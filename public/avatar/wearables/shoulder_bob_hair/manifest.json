@@ -1,0 +1,51 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:shoulder_bob_hair",
+  "data": {
+    "category": "hair",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "hair",
+      "Shoulder",
+      "Bob",
+      "Hair",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "Hair_ShoulderBobHair.glb",
+        "contents": [
+          {
+            "key": "Hair_ShoulderBobHair.glb",
+            "url": "Hair_ShoulderBobHair.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "Hair_ShoulderBobHair.glb",
+        "contents": [
+          {
+            "key": "Hair_ShoulderBobHair.glb",
+            "url": "Hair_ShoulderBobHair.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      }
+    ]
+  }
+}

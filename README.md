@@ -14,6 +14,8 @@ A **browser-native Decentraland SDK7 Explorer** — Three.js renderer, Web Worke
 
 **Open contribution.** Parity gaps live in the integration registry; contributors self-claim via GitHub issues — see [Community contributions](#community-contributions) below.
 
+**Non-commercial license.** Free to use, fork, and contribute; commercial / for-profit use needs written permission — see [License](#license).
+
 ## Community contributions
 
 ### Who can contribute
@@ -99,5 +101,20 @@ Production build: `npm run build` → static SPA in `dist/`. Preview: `npm run p
 | [docs/PROGRESS.md](docs/PROGRESS.md) | Milestone log (live in dev panel from public repo) |
 | [docs/REPO_MANAGEMENT.md](docs/REPO_MANAGEMENT.md) | Public repo migration and branch strategy |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to claim tasks and submit PRs |
+| [LICENSE](LICENSE) | Non-commercial license (all branches) |
 
 Deploy: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Dev overlay: `</>` sidebar → Community claims + parity gaps + `PROGRESS.md` from GitHub `dev-latest`.
+
+## License
+
+This project is licensed under the **[ThreejsClient Non-Commercial License](LICENSE)**.
+
+| You may | You may not (without written permission) |
+| --- | --- |
+| Use, copy, and modify the Software for non-commercial purposes | Sell the Software or a fork, or charge for access to it |
+| Fork any branch and open pull requests / issues | Offer paid hosting, SaaS, or a paid product built primarily on this Software |
+| Redistribute with attribution under the same terms | Use it primarily to generate revenue (ads, subscriptions, paid features, etc.) |
+
+The license applies to the **entire repository** — **all branches, tags, commits, and releases** — and to any fork or derivative based on any of them. Contributing does **not** grant commercial rights.
+
+For commercial or for-profit use, obtain **prior written permission** from the copyright holder(s). Full terms: **[LICENSE](LICENSE)**.

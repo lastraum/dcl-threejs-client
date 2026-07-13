@@ -16,6 +16,13 @@ workflow:
     pr: 20
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/20
     updated: 2026-07-13
+  - stage: pending_review
+    integration_ref: pr:22
+    title: "default wearable backfill + face texture (PR #20 + review)"
+    owner: lastraum
+    pr: 22
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/22
+    updated: 2026-07-13
   - stage: merged
     integration_ref: pr:17
     title: scene.json skyboxConfig sun/moon settings

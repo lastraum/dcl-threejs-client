@@ -23,8 +23,14 @@ function pngUrl(wearable: WearableDefinition, bodyShape: BodyShape, mask: boolea
 }
 
 async function loadFeatureTexture(url: string, cache?: AssetCache): Promise<THREE.Texture> {
-  const texture = cache ? await cache.loadTexture(url) : await fallbackTextureLoader.loadAsync(url)
+  // Clone so face flipY/colorSpace never pollute a shared AssetCache entry.
+  const loaded = cache ? await cache.loadTexture(url) : await fallbackTextureLoader.loadAsync(url)
+  const texture = loaded.clone()
   texture.colorSpace = THREE.SRGBColorSpace
+  // Mask-mesh UVs follow the glTF convention (flipY off); TextureLoader defaults flipY on,
+  // which mirrors sampling into the transparent half of the feature sheet — blank faces.
+  texture.flipY = false
+  texture.needsUpdate = true
   return texture
 }
 
@@ -99,6 +105,8 @@ export async function applyFacialFeatures(
   const lipColor = lipColorFromSkin(config.skin)
 
   bodyRoot.traverse((obj) => {
+    // Keep head-hide from applyBodyShapeVisibility (helmets/skins): applyFeatureMaterial
+    // forces mesh.visible = true, so re-touching hidden masks would float face features.
     if (!(obj instanceof THREE.Mesh) || !obj.visible) return
     const name = obj.name.toLowerCase()
 

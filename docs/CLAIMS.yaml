@@ -16,6 +16,13 @@ workflow:
     pr: 17
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/17
     updated: 2026-07-13
+  - stage: pending_review
+    integration_ref: pr:20
+    title: default wearable backfill for wallet profiles + face texture orientation
+    owner: awedjob
+    pr: 20
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/20
+    updated: 2026-07-13
   - stage: merged
     integration_ref: pr:14
     title: match Windows paths in yoga nbind esbuild filter

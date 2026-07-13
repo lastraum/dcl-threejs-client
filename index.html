@@ -5051,6 +5051,179 @@
         border-right: 1px solid rgba(255, 255, 255, 0.06);
         align-content: start;
       }
+      /* Emotes: left rail is wheel slots 1–9,0 (Explorer-style). */
+      .backpack-view__categories--emotes {
+        display: flex;
+        flex-direction: column;
+        grid-template-columns: none;
+        width: 200px;
+        gap: 6px;
+      }
+      .backpack-view__emote-slot {
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr) 40px;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        min-height: 48px;
+        padding: 6px 8px;
+        border: 2px solid rgba(255, 255, 255, 0.12);
+        border-radius: 12px;
+        background: rgba(0, 0, 0, 0.22);
+        color: #fff;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .backpack-view__emote-slot:hover {
+        border-color: rgba(255, 255, 255, 0.28);
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .backpack-view__emote-slot.is-active,
+      .backpack-view__emote-slot.is-selected-emote {
+        border-color: rgba(255, 140, 60, 0.9);
+        background: rgba(255, 120, 40, 0.18);
+        box-shadow: 0 0 0 1px rgba(255, 140, 60, 0.35);
+      }
+      .backpack-view__emote-slot-num {
+        display: grid;
+        place-items: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.35);
+        font-size: 11px;
+        font-weight: 800;
+        color: rgba(255, 255, 255, 0.85);
+      }
+      .backpack-view__emote-slot.is-active .backpack-view__emote-slot-num {
+        border-color: rgba(255, 160, 70, 0.95);
+        background: rgba(255, 140, 50, 0.35);
+      }
+      .backpack-view__emote-slot-label {
+        font-size: 12px;
+        font-weight: 700;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .backpack-view__emote-slot-thumb {
+        display: grid;
+        place-items: center;
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.08);
+        font-size: 16px;
+      }
+      .backpack-view__emote-slot-img {
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+        object-fit: contain;
+        object-position: center bottom;
+        background: rgba(255, 255, 255, 0.08);
+        display: block;
+      }
+      .backpack-view__emote-slot.is-empty {
+        opacity: 0.72;
+      }
+      .backpack-view__emote-slot.is-empty .backpack-view__emote-slot-label {
+        color: rgba(255, 255, 255, 0.45);
+        font-style: italic;
+        font-weight: 600;
+      }
+      .backpack-view__grid--emotes {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-rows: none;
+        grid-auto-rows: minmax(0, auto);
+        min-height: 0;
+      }
+      .backpack-view__emote-card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        aspect-ratio: 1;
+        min-height: 0;
+        min-width: 0;
+        padding: 10px 6px;
+        border: 2px solid rgba(255, 255, 255, 0.55);
+        border-radius: 12px;
+        background: var(
+          --wearable-rarity-bg,
+          linear-gradient(160deg, rgba(255, 255, 255, 0.14) 0%, rgba(80, 40, 120, 0.35) 100%)
+        );
+        color: #fff;
+        font: inherit;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+      }
+      .backpack-view__emote-card:hover {
+        transform: scale(1.03);
+        border-color: rgba(255, 255, 255, 0.9);
+      }
+      .backpack-view__emote-card.is-selected {
+        border: 3px solid #f0a020;
+        box-shadow: 0 4px 16px rgba(240, 160, 32, 0.4);
+      }
+      .backpack-view__emote-card.is-equipped {
+        border-color: rgba(255, 160, 70, 0.85);
+      }
+      .backpack-view__emote-card-icon {
+        font-size: 28px;
+        line-height: 1;
+        opacity: 0.92;
+      }
+      .backpack-view__emote-card-thumb {
+        width: 72%;
+        height: 62%;
+        object-fit: contain;
+        object-position: center bottom;
+        display: block;
+        filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
+      }
+      .backpack-view__emote-card-badge {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 4px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.55);
+        font-size: 10px;
+        font-weight: 800;
+        line-height: 18px;
+        text-align: center;
+      }
+      .backpack-view__emote-card-name {
+        font-size: 10px;
+        font-weight: 700;
+        text-align: center;
+        line-height: 1.2;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        opacity: 0.9;
+      }
+      .backpack-view__detail-card--emote {
+        align-items: center;
+        text-align: center;
+      }
+      .backpack-view__emote-detail-icon {
+        font-size: 48px;
+        line-height: 1;
+        margin: 8px 0 4px;
+      }
+      .backpack-view--emotes .backpack-view__middle-tabs--wearables {
+        display: none;
+      }
       .backpack-view__cat-row {
         display: grid;
         grid-template-columns: 28px minmax(0, 1fr);

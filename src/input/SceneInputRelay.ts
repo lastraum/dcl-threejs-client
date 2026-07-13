@@ -229,9 +229,9 @@ export class SceneInputRelay {
   }
 
   private onVisibilityChange = (): void => {
-    if (document.visibilityState === 'hidden') {
-      this.releaseAll('hidden')
-    }
+    // Both hidden and visible: clear held keys. Browsers often drop keyup while backgrounded;
+    // on return, force a clean snapshot so the worker is not stuck mid-flight.
+    this.releaseAll(document.visibilityState === 'hidden' ? 'hidden' : 'visible')
   }
 
   private releaseAll(reason: string): void {

@@ -73,13 +73,31 @@ export type ScenePolicy = {
   blacklist?: string[]
 }
 
+/** `scene.json` → `skyboxConfig` — fixed time plus optional creator sun/moon settings. */
+export type SceneSkyboxConfigMetadata = {
+  /** Seconds since midnight (0–86400) — pins skybox time like the desktop client. */
+  fixedTime?: number
+  /** No directional sun light or visible sun disc (same effect as `environment.disableSun`). */
+  disableSun?: boolean
+  /** No directional moon light or visible moon disc. */
+  disableMoon?: boolean
+  /** Directional sun + day hemi scene lighting (0–100, Skybox-overrides panel scale). */
+  sunLight?: number
+  /** ACES exposure multiplier during day (0–100). */
+  exposure?: number
+  /** Directional moon + night hemi scene lighting (0–100). */
+  moonLight?: number
+  /** ACES exposure multiplier during night (0–100). */
+  moonExposure?: number
+}
+
 export type SceneMetadata = {
   display?: { title?: string; description?: string; skybox?: string; skyboxTexture?: string }
   policy?: ScenePolicy
   scene?: SceneLayout
   spawnPoints?: SpawnPoint[]
   main?: string
-  skyboxConfig?: { fixedTime?: number }
+  skyboxConfig?: SceneSkyboxConfigMetadata
   /** Biome id string or object — opt-in on parcel scenes; worlds fall back to island when omitted. */
   environment?: SceneEnvironmentKind | SceneEnvironmentConfig
   featureToggles?: SceneFeatureToggles
@@ -92,6 +110,11 @@ export type SkyboxConfig = {
   fixedTime?: number
   /** Custom cubemap face hashes/URLs from world `/about`. */
   textures?: string[]
+  /** Creator sun/moon scene lighting from `scene.json` `skyboxConfig` (0–100 panel scale). */
+  sunLight?: number
+  exposure?: number
+  moonLight?: number
+  moonExposure?: number
 }
 
 /** Catalyst / worlds realm endpoints from `/about`. */

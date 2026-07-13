@@ -156,11 +156,22 @@ function resolvedFromEntity(
     else textures.unshift(displaySky.trim())
   }
 
+  const finiteSlider = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) ? v : undefined
+  const skyboxLighting = {
+    sunLight: finiteSlider(skyboxConfig?.sunLight),
+    exposure: finiteSlider(skyboxConfig?.exposure),
+    moonLight: finiteSlider(skyboxConfig?.moonLight),
+    moonExposure: finiteSlider(skyboxConfig?.moonExposure)
+  }
+  const hasSkyboxLighting = Object.values(skyboxLighting).some((v) => v !== undefined)
+
   const skybox =
-    typeof skyboxConfig?.fixedTime === 'number' || textures.length
+    typeof skyboxConfig?.fixedTime === 'number' || textures.length || hasSkyboxLighting
       ? {
           fixedTime: skyboxConfig?.fixedTime,
-          textures: textures.length ? textures : undefined
+          textures: textures.length ? textures : undefined,
+          ...skyboxLighting
         }
       : undefined
 

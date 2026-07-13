@@ -5,10 +5,17 @@
 # Dev panel Community tab renders this as a single workflow table.
 
 schema_version: 2
-updated: 2026-07-11
+updated: 2026-07-13
 source: github
 base_branch: dev-latest
 workflow:
+  - stage: pending_review
+    integration_ref: pr:17
+    title: scene.json skyboxConfig sun/moon settings
+    owner: awedjob
+    pr: 17
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/17
+    updated: 2026-07-13
   - stage: merged
     integration_ref: pr:14
     title: match Windows paths in yoga nbind esbuild filter

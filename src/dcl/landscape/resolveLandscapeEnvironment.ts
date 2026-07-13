@@ -59,15 +59,13 @@ function readKindFromMetadata(metadata: SceneMetadata): LandscapeEnvironmentKind
 
 function readSkyLightingFromMetadata(metadata: SceneMetadata): SceneSkyLighting {
   const env = metadata.environment
-  const envFlags =
-    !env || typeof env === 'string'
-      ? { disableSun: false, disableMoon: false }
-      : { disableSun: env.disableSun === true, disableMoon: env.disableMoon === true }
-  // `skyboxConfig` flags (issue #8) win over the `environment` object when both are set.
-  const sky = metadata.skyboxConfig
+  // Client-only: `environment` object (not official skyboxConfig).
+  if (!env || typeof env === 'string') {
+    return { disableSun: false, disableMoon: false }
+  }
   return {
-    disableSun: typeof sky?.disableSun === 'boolean' ? sky.disableSun : envFlags.disableSun,
-    disableMoon: typeof sky?.disableMoon === 'boolean' ? sky.disableMoon : envFlags.disableMoon
+    disableSun: env.disableSun === true,
+    disableMoon: env.disableMoon === true
   }
 }
 
@@ -109,7 +107,8 @@ export function readSkyLightingUrlOverride(): Partial<SceneSkyLighting> | null {
 }
 
 /**
- * Celestial lighting flags: URL overrides win per-field, then `scene.json` `environment` object.
+ * Celestial disable flags: URL per-field wins, then `scene.json` `environment` object
+ * (ThreejsClient-only; not official `skyboxConfig`).
  */
 export function resolveSceneSkyLighting(metadata: SceneMetadata): SceneSkyLighting {
   const fromScene = readSkyLightingFromMetadata(metadata)

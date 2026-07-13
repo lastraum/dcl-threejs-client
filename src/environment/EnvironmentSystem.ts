@@ -10,6 +10,7 @@ import {
   moonExposureMultiplier,
   sceneMoonLightMultiplier,
   sceneSunLightMultiplier,
+  isDefaultSunEnvironmentSettings,
   sunEnvironmentSettings,
   sunExposureMultiplier,
   type SunEnvironmentSettingsState
@@ -63,8 +64,8 @@ const ECS_HYBRID_SUN_REDUCTION = 0.25
 /** Hybrid dimming starts once this fraction of the quality-tier light budget is in use. */
 const ECS_HYBRID_FILL_START = 0.4
 
-/** Map scene.json `skyboxConfig` sun/moon fields to Skybox-overrides panel state keys. */
-function sceneLightingFromSkybox(skybox?: SkyboxConfig): Partial<SunEnvironmentSettingsState> {
+/** Map resolved creator lighting (from scene.json `environment`) to panel state keys. */
+function sceneLightingFromResolvedSkybox(skybox?: SkyboxConfig): Partial<SunEnvironmentSettingsState> {
   if (!skybox) return {}
   const finite = (v: number | undefined): number | undefined =>
     typeof v === 'number' && Number.isFinite(v) ? v : undefined
@@ -116,7 +117,7 @@ export class EnvironmentSystem {
   private landscapeKind: SceneEnvironmentKind = 'island'
   private disableSun = false
   private disableMoon = false
-  /** Creator sun/moon values from scene.json `skyboxConfig` (issue #8) — per-scene defaults. */
+  /** Creator sun/moon values from scene.json `environment` (issue #8) — per-scene defaults. */
   private sceneLighting: Partial<SunEnvironmentSettingsState> = {}
   /** Panel fields the player adjusted this scene — player wins over creator defaults. */
   private readonly userAdjustedLighting = new Set<keyof SunEnvironmentSettingsState>()
@@ -161,7 +162,7 @@ export class EnvironmentSystem {
     threeScene.add(this.moon)
     threeScene.add(this.moon.target)
 
-    this.sceneLighting = sceneLightingFromSkybox(scene.skybox)
+    this.sceneLighting = sceneLightingFromResolvedSkybox(scene.skybox)
     this.userAdjustedLighting.clear()
     this.lastUserLighting = sunEnvironmentSettings.get()
     this.unsubscribeLighting?.()
@@ -169,6 +170,11 @@ export class EnvironmentSystem {
       const prev = this.lastUserLighting
       this.lastUserLighting = state
       if (!prev) return
+      // Reset lighting → re-enable creator `environment` defaults for this scene.
+      if (isDefaultSunEnvironmentSettings(state)) {
+        this.userAdjustedLighting.clear()
+        return
+      }
       for (const key of Object.keys(state) as Array<keyof SunEnvironmentSettingsState>) {
         if (state[key] !== prev[key]) this.userAdjustedLighting.add(key)
       }
@@ -227,7 +233,7 @@ export class EnvironmentSystem {
     this.applyTime(this.displayTime, delta)
   }
 
-  /** Player panel (fields touched this scene) > scene.json skyboxConfig > player defaults. */
+  /** Player panel (fields touched this scene) > scene.json `environment` > player store defaults. */
   private effectiveLighting(): SunEnvironmentSettingsState {
     const user = sunEnvironmentSettings.get()
     const merged = { ...user }

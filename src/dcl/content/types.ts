@@ -41,13 +41,32 @@ export type SceneEnvironmentKind =
   | 'land'
   | 'forest'
 
-/** `scene.json` → `environment` object — biome + optional celestial lighting toggles. */
+/**
+ * `scene.json` → `environment` object — **ThreejsClient-only** landscape + celestial defaults.
+ * Not part of official DCL SDK / Unity Explorer metadata (they ignore unknown fields).
+ * Official time pin remains `skyboxConfig.fixedTime` only.
+ */
 export type SceneEnvironmentConfig = {
+  /** Landscape biome (`none`, `genesis`, `island`, …). String form `"environment": "none"` sets kind only. */
   kind?: SceneEnvironmentKind
-  /** No directional sun light or visible sun disc — scene relies on ECS / local lights. */
+  /**
+   * Full skylight-off while the sun period is active: no sun disc/directional,
+   * hemi/equator zeroed, void-style exposure (same as URL `?disableSun=1`).
+   */
   disableSun?: boolean
-  /** No directional moon light or visible moon disc. */
+  /**
+   * Full skylight-off while the moon period is active: no moon disc/directional,
+   * hemi/equator zeroed — not “moon disc only” (same as URL `?disableMoon=1`).
+   */
   disableMoon?: boolean
+  /** Directional sun + day hemi (0–100, Skybox-overrides panel scale). Creator per-scene default. */
+  sunLight?: number
+  /** ACES exposure multiplier during day (0–100). */
+  exposure?: number
+  /** Directional moon + night hemi (0–100). */
+  moonLight?: number
+  /** ACES exposure multiplier during night (0–100). */
+  moonExposure?: number
 }
 
 export type SceneSkyLighting = {
@@ -73,14 +92,27 @@ export type ScenePolicy = {
   blacklist?: string[]
 }
 
+/**
+ * Official DCL `scene.json` → `skyboxConfig` (SDK / Explorer).
+ * Only `fixedTime` is documented — do not put client-only lighting here.
+ */
+export type SceneSkyboxConfigMetadata = {
+  /** Seconds since midnight (0–86400) — pins skybox time like Unity Explorer. */
+  fixedTime?: number
+}
+
 export type SceneMetadata = {
   display?: { title?: string; description?: string; skybox?: string; skyboxTexture?: string }
   policy?: ScenePolicy
   scene?: SceneLayout
   spawnPoints?: SpawnPoint[]
   main?: string
-  skyboxConfig?: { fixedTime?: number }
-  /** Biome id string or object — opt-in on parcel scenes; worlds fall back to island when omitted. */
+  /** Official: fixed time of day only. */
+  skyboxConfig?: SceneSkyboxConfigMetadata
+  /**
+   * ThreejsClient landscape + celestial defaults (kind, disable*, light sliders).
+   * String form sets biome only; object form may include lighting.
+   */
   environment?: SceneEnvironmentKind | SceneEnvironmentConfig
   featureToggles?: SceneFeatureToggles
   /** `featureToggles.browserChat` alias — `"disabled"` or `{ "enabled": false }`. */
@@ -92,6 +124,14 @@ export type SkyboxConfig = {
   fixedTime?: number
   /** Custom cubemap face hashes/URLs from world `/about`. */
   textures?: string[]
+  /**
+   * Creator sun/moon defaults resolved from `scene.json` `environment` (0–100 panel scale).
+   * Not official SDK fields — carried on ResolvedScene for EnvironmentSystem only.
+   */
+  sunLight?: number
+  exposure?: number
+  moonLight?: number
+  moonExposure?: number
 }
 
 /** Catalyst / worlds realm endpoints from `/about`. */
@@ -111,7 +151,7 @@ export type ResolvedScene = {
   metadata: SceneMetadata
   /** Resolved landscape biome (scene.json + URL override). */
   landscapeEnvironment: SceneEnvironmentKind
-  /** Celestial lights from `environment.disableSun` / `disableMoon` (+ dev URL overrides). */
+  /** Celestial disable flags from `environment` (+ URL overrides). */
   skyLighting: SceneSkyLighting
   content: ContentFile[]
   contentsBaseUrl: string

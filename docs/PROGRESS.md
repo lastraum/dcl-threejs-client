@@ -2,11 +2,11 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-12 (**auth + backpack** on `dev-latest`; **v0.7.2** on `main`)  
-> **Current phase:** Post-**v0.7.2** integration — multi-provider auth, 2D backpack equip/deploy, mobile inventory.  
+> **Last updated:** 2026-07-13 (**backpack emotes + WASD** on `dev-latest`; **v0.7.2** on `main`)  
+> **Current phase:** Post-**v0.7.2** integration — multi-provider auth, 2D backpack (wearables + emotes), mobile inventory.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
-> **Product next:** Phase 4 `/goto` · Phase 3 Watch Lite · backpack parity gaps (below).  
+> **Product next:** Phase 4 `/goto` · Phase 3 Watch Lite · remaining backpack parity gaps (below).  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -35,10 +35,27 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Graphics P3 distances** | ⬜ | **Not started** — Scene Distance / Landscape Distance / Shadows Distance still gray stubs (no cull backend) |
 | **Graphics P4 post-FX** | ⬜ | Bloom / HDR / avatar outline still stubs |
 | **Multi-provider auth (DCL auth-dapp)** | 🟢 | Google / Discord / Apple / X / WalletConnect / MetaMask via Explorer auth-dapp + verification code; profile menu + Jump In |
-| **2D backpack equip + Catalyst deploy** | 🟡 **partial** | Wearable equip/unequip, profile deploy on save, mobile Equipped/Inventory sheets; **not** full Explorer backpack parity (see milestone) |
+| **2D backpack equip + Catalyst deploy** | 🟡 **partial** | Wearables + **emotes** equip/unequip, profile deploy on save, mobile Equipped/Inventory; outfits/marketplace still open |
 | **Custom VRM / OSA library** | 🟢 | Device library + open-source avatars tab (client-only; beyond Unity Explorer) |
 
 **Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**. Suggestions: dev panel → **💡 Suggest**.
+
+---
+
+## 🎉 Milestone — Backpack emotes + input → `dev-latest` (2026-07-13)
+
+**Status: merged `lastraum` → `dev-latest`** (`7890e17`) — Explorer-style emotes tab + WASD after tab blur.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Emotes tab UI** | 🟢 | Wheel slots 1–9/0, paginated inventory, detail panel; select slot then equip |
+| **Emote inventory metadata** | 🟢 | Wallet `/users/{addr}/emotes` + base catalog; Catalyst name/rarity/thumbnail (same pattern as wearables) |
+| **Equip / unequip / play** | 🟢 | Assign to profile wheel slots; Play preview on avatar; dirty profile deploys with wearables |
+| **WASD after background tab** | 🟢 | Clear keys on blur/visibility/focus; blur chat composer on world click |
+
+**Still open:** saved outfits · marketplace · full filter/sort · mobile emotes sheet · continuous Catalyst sync while equipping.
+
+**QA focus:** Backpack → Emotes → equip custom NFT emote to slot → Play preview → close settings → deploy → reload wheel. Tab away 1 min → return → click world → WASD.
 
 ---
 
@@ -66,7 +83,7 @@ These are **known incomplete** vs full Explorer / product polish — not blocker
 
 | Gap | Notes |
 | --- | ----- |
-| **Backpack emotes tab** | Stub — emote wheel remains the emote path; no emote inventory grid yet |
+| **Backpack emotes mobile sheet** | Desktop emotes tab shipped; mobile bottom-sheet for emotes still TBD |
 | **Saved outfits** | Mid-tab “Saved outfits” not implemented |
 | **Marketplace / buy flow** | Buttons present but disabled / “coming soon” |
 | **Filter & sort** | Desktop filter button hidden on mobile; no full Explorer sort (rarity, newest, etc.) |

@@ -20,18 +20,24 @@ const THREE_BOX_FACE_CORNER_TO_THREE: ReadonlyArray<readonly number[]> = [
 
 /**
  * Full-tile north + south UVs for a double-sided DCL plane (no custom MeshRenderer uvs).
- * Corner order per side: SW, SE, NE, NW (spatial bottom-left → top-right).
+ *
+ * Official corner order (docs.decentraland.org materials / setUVs):
+ * - North: lower-left, lower-right, upper-right, upper-left  (BL, BR, TR, TL)
+ * - South: lower-right, lower-left, upper-left, upper-right (BR, BL, TL, TR)
  */
 const DEFAULT_DCL_PLANE_UVS = [
   0, 0, 1, 0, 1, 1, 0, 1,
   1, 0, 0, 0, 0, 1, 1, 1
 ]
 
-/** DCL plane corner order SW, SE, NE, NW → spatial vertex index (BL, BR, TR, TL). */
-const DCL_PLANE_CORNER_TO_THREE = [2, 3, 1, 0]
+/** North face: BL, BR, TR, TL → spatial vertex index. */
+const DCL_PLANE_NORTH_CORNER_TO_THREE = [2, 3, 1, 0]
+
+/** South face: BR, BL, TL, TR → spatial vertex index (docs order, not north mirrored). */
+const DCL_PLANE_SOUTH_CORNER_TO_THREE = [3, 2, 0, 1]
 
 /** Bump when plane topology/UV layout changes — busts primitiveMeshKey mesh cache. */
-const PLANE_GEOMETRY_REVISION = 'v3'
+const PLANE_GEOMETRY_REVISION = 'v4'
 
 export type PrimitiveMeshSpec = {
   mesh?:
@@ -170,8 +176,8 @@ function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
     0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1
   ])
   const uvAttr = new THREE.BufferAttribute(new Float32Array(16), 2)
-  applyFaceUvs(uvAttr, 0, DCL_PLANE_CORNER_TO_THREE, north)
-  applyFaceUvs(uvAttr, 1, DCL_PLANE_CORNER_TO_THREE, south)
+  applyFaceUvs(uvAttr, 0, DCL_PLANE_NORTH_CORNER_TO_THREE, north)
+  applyFaceUvs(uvAttr, 1, DCL_PLANE_SOUTH_CORNER_TO_THREE, south)
 
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
@@ -192,19 +198,29 @@ export function updatePlaneGeometryUvs(geometry: THREE.BufferGeometry, uvs: numb
 
   const north = uvs.slice(0, 8)
   const south = uvs.length >= 16 ? uvs.slice(8, 16) : mirrorSouthPlaneUvs(north)
-  applyFaceUvs(attr, 0, DCL_PLANE_CORNER_TO_THREE, north)
-  applyFaceUvs(attr, 1, DCL_PLANE_CORNER_TO_THREE, south)
+  applyFaceUvs(attr, 0, DCL_PLANE_NORTH_CORNER_TO_THREE, north)
+  applyFaceUvs(attr, 1, DCL_PLANE_SOUTH_CORNER_TO_THREE, south)
   attr.needsUpdate = true
   return true
 }
 
-/** Mirror U for the south face when only 8 custom UVs are provided (SW, SE, NE, NW). */
+/**
+ * Build south-face UVs (BR, BL, TL, TR) from north (BL, BR, TR, TL) with U mirrored.
+ * Matches DEFAULT_DCL_PLANE_UVS south packing and Explorer setUVs helpers.
+ */
 function mirrorSouthPlaneUvs(north: readonly number[]): number[] {
-  const out: number[] = []
-  for (let corner = 0; corner < 4; corner++) {
-    const u = north[corner * 2] ?? 0
-    const v = north[corner * 2 + 1] ?? 0
-    out.push(1 - u, v)
-  }
-  return out
+  const blU = north[0] ?? 0
+  const blV = north[1] ?? 0
+  const brU = north[2] ?? 0
+  const brV = north[3] ?? 0
+  const trU = north[4] ?? 0
+  const trV = north[5] ?? 0
+  const tlU = north[6] ?? 0
+  const tlV = north[7] ?? 0
+  return [
+    1 - brU, brV,
+    1 - blU, blV,
+    1 - tlU, tlV,
+    1 - trU, trV
+  ]
 }

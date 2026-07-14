@@ -2,11 +2,11 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-13 (**backpack emotes + WASD** on `dev-latest`; **v0.7.2** on `main`)  
-> **Current phase:** Post-**v0.7.2** integration — multi-provider auth, 2D backpack (wearables + emotes), mobile inventory.  
+> **Last updated:** 2026-07-14 (**scene stream watch + backpack colors** on `dev-latest`; **v0.7.2** on `main`)  
+> **Current phase:** Post-**v0.7.2** integration — companion landing stream keys / Join Live, 2D backpack parity (base wearables + colors + emotes).  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
-> **Product next:** Phase 4 `/goto` · Phase 3 Watch Lite · remaining backpack parity gaps (below).  
+> **Product next:** Phase 4 `/goto` · Watch Lite polish (I'm live CTA deferred) · remaining backpack parity gaps (below).  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -26,19 +26,92 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **2D shell nav + pages** | 🟢 | **Explore · Communities · Events** tabs on all non-play surfaces; `/communities`, `/events`, `/map`, full-screen `/profile` |
 | **2D social chat dock** | 🟡 **partial** | Floating dock on explorer/landing — thread list, scene chat, community thumbnails; **3D in-world chat** unchanged |
 | **Scene landing hub** | 🟢 | Hero, crowd, owner, description, events banner; companion-style **Jump in** progress bar (sidebar/HUD deferred until handoff) |
+| **Landing stream keys + Join Live** | 🟢 | Owner gear → OBS RTMP keys; live detect via scene LiveKit; cast stage (pill, FS, hard media stop); **I'm live** CTA deferred |
 | **Community thumbnails** | 🟢 | `communityDisplayImageUrl` + proxy passthrough; detail-fetch fallback on image 404 |
 | **Dev panel in-app suggestions** | 🟢 | `</>` → **💡 Suggest** — form in panel; auto-attaches DCL name + route; files GitHub issues labeled `suggestion` via Cloudflare Worker (prod) or vite proxy (local dev) |
 | **VirtualCamera bind reliability** | 🟢 | Scene-agnostic MainCamera→VC hydrate; locked shots use worker world pose; follow is f(player)+local; live Transform exclusive while bound |
 | **Skybox time authority** | 🟢 | Scene fixed → session custom (tab) → Auto cycle; Night/Day panel respects scene lock |
+| **scene.json skyboxConfig sun/moon** | 🟢 | Creator sun/moon intensity + colors from `skyboxConfig` / environment (#17) |
 | **Unity outdoor lighting parity** | 🟢 | Trilight ambient, soft sun/moon shadows, anim intensity, soft PBR; crescent moon + night fill |
 | **Graphics prefs (P0–P2)** | 🟢 | Preset L/M/H/Custom · shadows · lights · res scale · FPS · **MSAA**; Resolution/Fullscreen/VSync hidden or stub |
 | **Graphics P3 distances** | ⬜ | **Not started** — Scene Distance / Landscape Distance / Shadows Distance still gray stubs (no cull backend) |
 | **Graphics P4 post-FX** | ⬜ | Bloom / HDR / avatar outline still stubs |
 | **Multi-provider auth (DCL auth-dapp)** | 🟢 | Google / Discord / Apple / X / WalletConnect / MetaMask via Explorer auth-dapp + verification code; profile menu + Jump In |
-| **2D backpack equip + Catalyst deploy** | 🟡 **partial** | Wearables + **emotes** equip/unequip, profile deploy on save, mobile Equipped/Inventory; outfits/marketplace still open |
+| **2D backpack equip + Catalyst deploy** | 🟡 **partial** | Wearables + **emotes** + **base eyes/body shape** + **eye/hair/skin colors**; deploy on save; outfits/marketplace still open |
 | **Custom VRM / OSA library** | 🟢 | Device library + open-source avatars tab (client-only; beyond Unity Explorer) |
+| **Dev texture proxy host fix** | 🟢 | `/api/texture` routes to encoded host (not hard-coded arweave) — PR #10 |
 
-**Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**. Suggestions: dev panel → **💡 Suggest**.
+**Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**. Suggestions: dev panel → **💡 Suggest**. Stream: owner gear → stream keys → OBS → **Join Live**.
+
+---
+
+## 🎉 Milestone — Scene stream watch → `dev-latest` (2026-07-14)
+
+**Status: merged `lastraum` → `dev-latest`** — companion-parity stream keys + Join Live cast stage on scene landing.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Owner stream settings gear** | 🟢 | Wallet ∈ `ownerAddresses` (Places + NAME NFT); live `getLogin` after sign-in |
+| **Stream keys (OBS)** | 🟢 | Gatekeeper `scene-stream-access` RTMP/key mint; click-to-copy; not Cast 2.0 watcher-token |
+| **Live detect** | 🟢 | Scene LiveKit remote video pubs; Join Live once room ready |
+| **Join Live cast stage** | 🟢 | Full-viewport player, scene info pill, mute/volume, fullscreen, X exits FS then closes |
+| **Video attach stability** | 🟢 | Same-SID no remount; hard pause/mute on close (`clearCastVideoHost`) |
+| **Jump In gate** | 🟢 | Hidden until LiveKit up / scene.json blocks chat / guest terminal |
+| **I'm live CTA** | ⬜ | Intentionally removed for now (HLS / cast listing UI deferred) |
+| **Plaza marquee / TextureMove** | 🟡 | UV + wall-clock `engine.update` dt fixes on `lastraum`; NeonScreen `pauseDuration` still flaky |
+
+**QA focus:** Own a world → gear → Get stream access → OBS → go live → visitor **Join Live** → video + audio → fullscreen → Esc stays in watch → X stops media → landing restored.
+
+**Branch:** `lastraum` → `dev-latest`.
+
+---
+
+## 🎉 Milestone — Backpack base wearables + avatar colors → `dev-latest` (2026-07-14)
+
+**Status: merged PRs [#23](https://github.com/lastraum/dcl-threejs-client/pull/23) + [#24](https://github.com/lastraum/dcl-threejs-client/pull/24)** (`c660f7f`) — base-avatars eyes/body shape + eye/hair/skin picker.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Base eyes tab + body shape** | 🟢 | PR #23 — base-avatars parity for eyes inventory + body-shape switching |
+| **Eye / hair / skin colors** | 🟢 | PR #24 — color picker + iris tinting; Catalyst deploy includes colors + bodyShape |
+| **Deploy fix** | 🟢 | `bodyShape` + skin/hair/eye colors dirty key + profile deploy |
+
+**Still open:** saved outfits · marketplace · mobile emotes sheet · continuous Catalyst sync while equipping.
+
+**QA focus:** Backpack → Eyes → pick base eye → Hair/Skin color → close settings → deploy → reload colors. Switch body shape (male/female) → recompose.
+
+---
+
+## 🎉 Milestone — Avatar facial features backfill → `dev-latest` (2026-07-13)
+
+**Status: merged PR [#22](https://github.com/lastraum/dcl-threejs-client/pull/22)** (supersedes closed #20) — wallet profiles get default facial wearables + face texture orientation fixes.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Default wearable backfill** | 🟢 | Wallet profiles missing eyes/eyebrows/mouth filled from base catalog |
+| **Face texture orientation** | 🟢 | Texture clone + head-hide coverage review fixes |
+| **Review follow-ups** | 🟢 | Head-hide, texture clone, coverage (`4b80a77`) |
+
+---
+
+## 🎉 Milestone — scene.json skyboxConfig sun/moon → `dev-latest` (2026-07-13)
+
+**Status: merged PR [#17](https://github.com/lastraum/dcl-threejs-client/pull/17)** — creator lighting from `scene.json` environment / `skyboxConfig`.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **skyboxConfig sun/moon** | 🟢 | Intensity + color knobs for sun/moon from scene metadata |
+| **Creator lighting path** | 🟢 | Moved outdoor lighting config under scene.json environment |
+
+---
+
+## 🎉 Milestone — Dev texture proxy host fix → `dev-latest` (2026-07-09)
+
+**Status: merged PR [#10](https://github.com/lastraum/dcl-threejs-client/pull/10)** — `/api/texture` uses the encoded host instead of hard-coded `arweave.net`.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Texture proxy routing** | 🟢 | Correct upstream host from encoded URL; fixes broken IPFS/Arweave thumbs in local/dev |
 
 ---
 

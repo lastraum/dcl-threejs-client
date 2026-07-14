@@ -182,6 +182,16 @@ function collectTextureTargets(root: THREE.Object3D): THREE.Texture[] {
   return out
 }
 
+/** True when every cached target is still referenced by a mesh under `root`. */
+function textureTargetsLive(root: THREE.Object3D, targets: THREE.Texture[]): boolean {
+  if (!targets.length) return false
+  const live = new Set(collectTextureTargets(root))
+  for (const t of targets) {
+    if (!live.has(t)) return false
+  }
+  return true
+}
+
 function ensureRepeatWrapping(tex: THREE.Texture): void {
   if (tex.wrapS !== THREE.RepeatWrapping || tex.wrapT !== THREE.RepeatWrapping) {
     tex.wrapS = THREE.RepeatWrapping
@@ -472,8 +482,10 @@ export class TweenBridge {
     eased: number,
     playing: boolean
   ): boolean {
+    // Re-collect when empty or stale — MaterialApplier clones maps on apply, so a cached
+    // target list can point at orphaned textures after a deferred material attach.
     let targets = runtime?.textureTargets
-    if (!targets?.length) {
+    if (!targets?.length || !textureTargetsLive(node, targets)) {
       targets = collectTextureTargets(node)
       if (runtime) runtime.textureTargets = targets
     }

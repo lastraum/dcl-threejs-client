@@ -1,4 +1,5 @@
 import type { PBUiText } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_text.gen'
+import { stripUiTextMarkup } from './uiDomStyles'
 
 const FONT_FAMILY: Record<number, string> = {
   0: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
@@ -16,10 +17,6 @@ function measureContext(): CanvasRenderingContext2D | null {
     measureCtx = measureCanvas.getContext('2d')
   }
   return measureCtx
-}
-
-function stripUiTextMarkup(value: string): string {
-  return value.replace(/<\/?[bi]>/gi, '')
 }
 
 /** Canvas-based intrinsic text box (virtual canvas px) for Yoga + DOM sizing. */

@@ -494,6 +494,35 @@ export class MaterialApplier {
     return false
   }
 
+  /**
+   * Clone material maps so wrap/offset/tiling (and Tween textureMove) never mutate the
+   * shared AssetCache / video / avatar entry. Shared mutation was scrambling marquees
+   * and blanking panels that reuse the same content URL.
+   */
+  private materialTextureInstance(
+    base: THREE.Texture,
+    opts: {
+      wrapMode?: number
+      filterMode?: number
+      normalMap?: boolean
+    }
+  ): THREE.Texture {
+    // Clone so wrap/offset/tiling/tween UV never mutate the AssetCache entry.
+    const tex = base.clone()
+    tex.wrapS = wrapMode(opts.wrapMode)
+    tex.wrapT = wrapMode(opts.wrapMode)
+    tex.minFilter =
+      opts.filterMode === TFM_POINT
+        ? THREE.NearestFilter
+        : opts.filterMode === TFM_TRILINEAR
+          ? THREE.LinearMipmapLinearFilter
+          : THREE.LinearFilter
+    tex.magFilter = opts.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
+    tex.colorSpace = opts.normalMap ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace
+    tex.needsUpdate = true
+    return tex
+  }
+
   private async loadUnionTexture(
     union?: TextureUnion,
     options?: { normalMap?: boolean }
@@ -503,31 +532,25 @@ export class MaterialApplier {
       const def = union.tex.avatarTexture
       const userId = def.userId?.trim()
       if (!userId || !this.getAvatarTexture) return null
-      let tex = this.resolvedAvatarTextures.get(userId)
-      if (tex === undefined) {
-        tex = await this.getAvatarTexture(userId)
-        this.resolvedAvatarTextures.set(userId, tex)
+      let base = this.resolvedAvatarTextures.get(userId)
+      if (base === undefined) {
+        base = await this.getAvatarTexture(userId)
+        this.resolvedAvatarTextures.set(userId, base)
       }
-      if (!tex) return null
-      tex.wrapS = wrapMode(def.wrapMode)
-      tex.wrapT = wrapMode(def.wrapMode)
-      tex.minFilter =
-        def.filterMode === TFM_POINT
-          ? THREE.NearestFilter
-          : def.filterMode === TFM_TRILINEAR
-            ? THREE.LinearMipmapLinearFilter
-            : THREE.LinearFilter
-      tex.magFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
-      tex.colorSpace = options?.normalMap ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace
-      return tex
+      if (!base) return null
+      return this.materialTextureInstance(base, {
+        wrapMode: def.wrapMode,
+        filterMode: def.filterMode,
+        normalMap: options?.normalMap
+      })
     }
     if (union?.tex?.$case === 'videoTexture') {
       const def = union.tex.videoTexture
+      // Do not clone VideoTexture — frame uploads bind to the live instance in the render loop.
       const tex = this.getVideoTexture?.(def.videoPlayerEntity) ?? null
       if (!tex) return null
       tex.wrapS = wrapMode(def.wrapMode)
       tex.wrapT = wrapMode(def.wrapMode)
-      // VideoTexture has no mipmaps — mipmap min filters render blank/corrupt.
       tex.generateMipmaps = false
       tex.minFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
       tex.magFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
@@ -539,23 +562,17 @@ export class MaterialApplier {
     const def = union.tex.texture
     const url = resolveSceneTextureUrl(def.src, this.scene)
     if (!url) return null
-    let tex: THREE.Texture
+    let base: THREE.Texture
     try {
-      tex = await this.cache.loadTexture(url)
+      base = await this.cache.loadTexture(url)
     } catch {
       return null
     }
-    tex.wrapS = wrapMode(def.wrapMode)
-    tex.wrapT = wrapMode(def.wrapMode)
-    tex.minFilter =
-      def.filterMode === TFM_POINT
-        ? THREE.NearestFilter
-        : def.filterMode === TFM_TRILINEAR
-          ? THREE.LinearMipmapLinearFilter
-          : THREE.LinearFilter
-    tex.magFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
-    tex.colorSpace = options?.normalMap ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace
-    return tex
+    return this.materialTextureInstance(base, {
+      wrapMode: def.wrapMode,
+      filterMode: def.filterMode,
+      normalMap: options?.normalMap
+    })
   }
 
   private hasUnresolvedAvatar(pb: PbMaterial): boolean {

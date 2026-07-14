@@ -86,6 +86,17 @@ function textShapeSignature(spec: PBTextShape): string {
   })
 }
 
+/** Strip DCL / TextMeshPro-style tags so canvas text matches Explorer (no raw `<color=…>`). */
+function stripTextShapeMarkup(text: string): string {
+  return text
+    .replace(/<\/?(?:b|i|u)>/gi, '')
+    .replace(/<\/?color(?:=[^>]*)?>/gi, '')
+    .replace(/<\/?size(?:=[^>]*)?>/gi, '')
+    .replace(/<\/?space(?:=[^>]*)?>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?[a-zA-Z][^>]*>/g, '')
+}
+
 function paintTextShape(ctx: CanvasRenderingContext2D, spec: PBTextShape, w: number, h: number): void {
   ctx.clearRect(0, 0, w, h)
 
@@ -110,7 +121,8 @@ function paintTextShape(ctx: CanvasRenderingContext2D, spec: PBTextShape, w: num
   const shadowX = spec.shadowOffsetX ?? 0
   const shadowY = spec.shadowOffsetY ?? 0
 
-  const lines = wrapLines(ctx, spec.text ?? '', innerW, spec.textWrapping === true)
+  const plain = stripTextShapeMarkup(spec.text ?? '')
+  const lines = wrapLines(ctx, plain, innerW, spec.textWrapping === true)
   const lineHeight = fontSize * (1.2 + (spec.lineSpacing ?? 0) * 0.1)
   const blockH = lines.length * lineHeight
   let y = padT + innerH / 2 - blockH / 2 + lineHeight / 2
@@ -136,19 +148,26 @@ function paintTextShape(ctx: CanvasRenderingContext2D, spec: PBTextShape, w: num
 }
 
 function wrapLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, wrap: boolean): string[] {
-  if (!wrap) return [text]
-  const words = text.split(/\s+/)
+  const paragraphs = text.split(/\n/)
+  if (!wrap) return paragraphs.length ? paragraphs : ['']
   const lines: string[] = []
-  let line = ''
-  for (const word of words) {
-    const test = line ? `${line} ${word}` : word
-    if (ctx.measureText(test).width > maxWidth && line) {
-      lines.push(line)
-      line = word
-    } else {
-      line = test
+  for (const para of paragraphs) {
+    const words = para.split(/\s+/).filter(Boolean)
+    if (!words.length) {
+      lines.push('')
+      continue
     }
+    let line = ''
+    for (const word of words) {
+      const test = line ? `${line} ${word}` : word
+      if (ctx.measureText(test).width > maxWidth && line) {
+        lines.push(line)
+        line = word
+      } else {
+        line = test
+      }
+    }
+    if (line) lines.push(line)
   }
-  if (line) lines.push(line)
   return lines.length ? lines : ['']
 }

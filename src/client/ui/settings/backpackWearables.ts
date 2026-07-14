@@ -16,6 +16,10 @@ import {
 export type BackpackWearableItem = WearableDisplayCard & {
   category: WearableCategory | 'unknown'
   amount: number
+  /** Free base-avatars catalog item (not wallet-owned). */
+  isBase?: boolean
+  /** Body-shape URNs with a representation; undefined = fits all shapes. */
+  bodyShapes?: string[]
 }
 
 type OwnedEntry = OwnedWearableEntry
@@ -28,7 +32,17 @@ type WearableApiHit = {
   data?: { category?: string }
 }
 
+type BaseCatalogHit = WearableApiHit & {
+  i18n?: Array<{ code?: string; text?: string }>
+  data?: {
+    category?: string
+    representations?: Array<{ bodyShapes?: string[] }>
+  }
+}
+
 const METADATA_CONCURRENCY = 14
+
+const BASE_COLLECTION_ID = 'urn:decentraland:off-chain:base-avatars'
 
 /**
  * Catalyst lambdas — full wallet inventory with tokenIds.
@@ -239,6 +253,77 @@ export async function loadBackpackWearables(
 
   enriched.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
   return enriched
+}
+
+let baseCatalogCache: { lambdasUrl: string; promise: Promise<BackpackWearableItem[]> } | null =
+  null
+
+/**
+ * Full base-avatars catalog (free off-chain wearables, ~282 items incl. the two
+ * body shapes) — one lambdas call, unpaginated. Memoized per session; a failed
+ * fetch clears the memo so the next backpack open retries. Body shapes are kept
+ * and surfaced as switch tiles (see BackpackView.switchBodyShape).
+ */
+export function loadBaseWearableCatalog(lambdasUrl: string): Promise<BackpackWearableItem[]> {
+  if (baseCatalogCache?.lambdasUrl === lambdasUrl) return baseCatalogCache.promise
+  const promise = fetchBaseWearableCatalog(lambdasUrl).catch((err) => {
+    if (baseCatalogCache?.promise === promise) baseCatalogCache = null
+    throw err
+  })
+  baseCatalogCache = { lambdasUrl, promise }
+  return promise
+}
+
+async function fetchBaseWearableCatalog(lambdasUrl: string): Promise<BackpackWearableItem[]> {
+  const base = lambdasUrl.replace(/\/$/, '')
+  const res = await fetch(
+    `${base}/collections/wearables?collectionId=${encodeURIComponent(BASE_COLLECTION_ID)}`
+  )
+  if (!res.ok) throw new Error(`base wearables catalog failed (${res.status})`)
+  const raw = (await res.json()) as { wearables?: BaseCatalogHit[] }
+  const hits = Array.isArray(raw.wearables) ? raw.wearables : []
+
+  const items: BackpackWearableItem[] = []
+  for (const hit of hits) {
+    const urn = hit.id?.trim()
+    if (!urn) continue
+    const categoryRaw = hit.data?.category?.trim().toLowerCase()
+    const category = (categoryRaw as WearableCategory | undefined) ?? guessCategoryFromUrn(urn)
+    // body_shape (BaseMale/BaseFemale) is kept: the backpack shows both as selectable
+    // tiles and clicking one switches profile.bodyShape rather than equipping a slot.
+    const enName = hit.i18n?.find((row) => row.code === 'en')?.text?.trim()
+    const bodyShapes = [
+      ...new Set((hit.data?.representations ?? []).flatMap((rep) => rep.bodyShapes ?? []))
+    ]
+    items.push({
+      urn,
+      name: enName || hit.name?.trim() || wearableShortLabel(urn),
+      rarity: 'base',
+      thumbnailUrl: hit.thumbnail?.trim() || wearableThumbnailUrl(urn),
+      category,
+      amount: 1,
+      isBase: true,
+      bodyShapes: bodyShapes.length ? bodyShapes : undefined
+    })
+  }
+  return items
+}
+
+/** Owned inventory + free base catalog, deduped by asset URN (owned metadata wins). */
+export function mergeBaseIntoInventory(
+  items: BackpackWearableItem[],
+  baseItems: BackpackWearableItem[]
+): BackpackWearableItem[] {
+  const seen = new Set(items.map((i) => assetUrnFromCompleteUrn(i.urn)))
+  const merged = [...items]
+  for (const item of baseItems) {
+    const asset = assetUrnFromCompleteUrn(item.urn)
+    if (seen.has(asset)) continue
+    seen.add(asset)
+    merged.push(item)
+  }
+  merged.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+  return merged
 }
 
 /** Profile equipped URNs merged into inventory when Catalyst omits free/base items. */

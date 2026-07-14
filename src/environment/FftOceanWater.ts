@@ -149,6 +149,10 @@ export class FftOceanWater {
         uColorMaxHeight: { value: 1.5 },
         uSunPosition: { value: new THREE.Vector3(-200, 150, -500) },
         uSunColor: { value: new THREE.Color('#ffdf70') },
+        /** Hemisphere/ambient fill from OutdoorLighting (linear RGB). */
+        uAmbient: { value: new THREE.Vector3(0.48, 0.5, 0.52) },
+        /** 0 = lights off / night-black, ~1 = full day — scales body + reflection. */
+        uLightLevel: { value: 1.0 },
         uSpecularPower: { value: 250 },
         uSpecularMin: { value: 0.9 },
         uSpecularMax: { value: 0.99 },
@@ -249,11 +253,21 @@ export class FftOceanWater {
       THREE.MathUtils.clamp(active.z, 0, 4)
     )
 
-    ;(u.uSkyHorizon.value as THREE.Color).copy(lighting.skyHorizon)
-    ;(u.uSkyZenith.value as THREE.Color).copy(lighting.skyZenith)
+    const ambient = u.uAmbient.value as THREE.Vector3
+    ambient.copy(lighting.ambient)
 
-    const specIntensity = lighting.isDay ? 4.7 : 1.8
-    u.uSpecularIntensity.value = specIntensity
+    // Directional + ambient magnitude — day sunLight ~2–3, night moon ~0.2–0.5, celestials-off ~0.
+    const key = Math.max(active.length(), lighting.ambient.length())
+    const lightLevel = THREE.MathUtils.clamp(key / 1.35, 0, 1.35)
+    u.uLightLevel.value = lightLevel
+
+    // Dim sky reflection with overall light (sky gradient hues alone stay bright at midnight).
+    const skyScale = THREE.MathUtils.clamp(lightLevel, 0, 1)
+    ;(u.uSkyHorizon.value as THREE.Color).copy(lighting.skyHorizon).multiplyScalar(skyScale)
+    ;(u.uSkyZenith.value as THREE.Color).copy(lighting.skyZenith).multiplyScalar(skyScale)
+
+    // Specular tracks actual light power, not a day/night constant.
+    u.uSpecularIntensity.value = THREE.MathUtils.clamp(active.length() * 2.4, 0, 5.5)
   }
 
   update(delta: number, camera: THREE.Camera): void {

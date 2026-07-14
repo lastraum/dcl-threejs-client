@@ -2,8 +2,14 @@ name: Deploy to DigitalOcean
 
 on:
   push:
+    branches:
+      - dev-latest
     tags:
       - 'v*'
+    # Bot CLAIMS commits should not redeploy the droplet.
+    paths-ignore:
+      - 'docs/CLAIMS.yaml'
+      - 'docs/**/*.md'
   workflow_dispatch:
 
 concurrency:
@@ -18,7 +24,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
 
       - run: npm ci

@@ -14,11 +14,16 @@ jobs:
     if: github.repository == 'lastraum/dcl-threejs-client'
     runs-on: ubuntu-latest
     steps:
+      # Always update CLAIMS on the integration branch. PR heads (esp. forks) may not
+      # exist on this repo after merge/close — committing there fails with
+      # "fatal: invalid reference: <pr-branch>".
       - uses: actions/checkout@v4
+        with:
+          ref: dev-latest
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
 
       - name: Install dependencies
@@ -30,7 +35,8 @@ jobs:
         run: node scripts/sync-claims-from-issues.mjs
 
       - name: Commit if changed
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@v7
         with:
           commit_message: 'chore: sync CLAIMS.yaml from GitHub issues'
           file_pattern: docs/CLAIMS.yaml
+          branch: dev-latest

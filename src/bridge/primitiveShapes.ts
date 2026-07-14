@@ -37,7 +37,7 @@ const DCL_PLANE_NORTH_CORNER_TO_THREE = [2, 3, 1, 0]
 const DCL_PLANE_SOUTH_CORNER_TO_THREE = [3, 2, 0, 1]
 
 /** Bump when plane topology/UV layout changes — busts primitiveMeshKey mesh cache. */
-const PLANE_GEOMETRY_REVISION = 'v17'
+const PLANE_GEOMETRY_REVISION = 'v18'
 
 /**
  * userData: marquee atlas plane. MaterialApplier: flipY=false, FrontSide only.
@@ -161,18 +161,25 @@ export function buildDclPlaneGeometry(width = 1, height = 1): THREE.BufferGeomet
 }
 
 /**
- * True when atlas U (text) runs along plane local Y (BL→BR varies V more than U).
- * Genesis Plaza LED marquees author this while local Y is world-up.
+ * True when atlas U (text) runs along plane local Y (plaza LED marquees).
+ * Require a full axis swap: bottom edge (BL→BR / local +X) is mostly V, and
+ * left edge (BL→TL / local +Y) is mostly U. A single-edge V-heavy check false-
+ * positives normal/cutout images and rewrites them as inward marquee planes
+ * (mirrored / wrong basis).
  */
 function planeUvsMapTextAlongLocalY(uvs: readonly number[]): boolean {
-  const du = Math.abs((uvs[2] ?? 0) - (uvs[0] ?? 0))
-  const dv = Math.abs((uvs[3] ?? 0) - (uvs[1] ?? 0))
-  return dv > du + 1e-5
+  // BL→BR (local +X)
+  const duX = Math.abs((uvs[2] ?? 0) - (uvs[0] ?? 0))
+  const dvX = Math.abs((uvs[3] ?? 0) - (uvs[1] ?? 0))
+  // BL→TL (local +Y) — north packing BL,BR,TR,TL so TL is indices 6,7
+  const duY = Math.abs((uvs[6] ?? 0) - (uvs[0] ?? 0))
+  const dvY = Math.abs((uvs[7] ?? 0) - (uvs[1] ?? 0))
+  return dvX > duX + 1e-5 && duY > dvY + 1e-5
 }
 
 /**
  * Build south-face UVs (BR, BL, TL, TR) from north (BL, BR, TR, TL) with U mirrored.
- * Matches DEFAULT_DCL_PLANE_UVS south packing and Explorer setUVs helpers.
+ * Matches DEFAULT_DCL_PLANE_UVS south packing: full-tile north → 1,0, 0,0, 0,1, 1,1.
  */
 function mirrorSouthPlaneUvs(north: readonly number[]): number[] {
   const blU = north[0] ?? 0
@@ -183,7 +190,8 @@ function mirrorSouthPlaneUvs(north: readonly number[]): number[] {
   const trV = north[5] ?? 0
   const tlU = north[6] ?? 0
   const tlV = north[7] ?? 0
-  return [1 - brU, brV, 1 - blU, blV, 1 - tlU, tlV, 1 - trU, trV]
+  // South corner order BR, BL, TL, TR — U mirrored so both faces read correctly.
+  return [1 - blU, blV, 1 - brU, brV, 1 - trU, trV, 1 - tlU, tlV]
 }
 
 /**

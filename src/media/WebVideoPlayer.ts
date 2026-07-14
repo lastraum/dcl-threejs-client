@@ -329,20 +329,26 @@ export class WebVideoPlayer {
       const positionFieldChanged =
         this.lastSpecPosition === undefined || Math.abs(specPosition - this.lastSpecPosition) > 0.05
       if (positionFieldChanged) {
+        // Scenes often leave position=0 (or re-send it) while the decoder has advanced.
+        // Seeking back freezes/restarts playback ~1s in.
+        const staleZeroWhilePlaying =
+          ecsPlaying &&
+          !ecsPlayingChanged &&
+          specPosition < 0.05 &&
+          this.video.currentTime > 0.5
         const stalePositionOnPlayToggle =
           ecsPlayingChanged &&
           this.video.currentTime > 0.5 &&
           Math.abs(specPosition - this.video.currentTime) > 1.5
+        const skipSeek = staleZeroWhilePlaying || stalePositionOnPlayToggle
         if (
-          !stalePositionOnPlayToggle &&
+          !skipSeek &&
           Number.isFinite(specPosition) &&
           Math.abs(this.video.currentTime - specPosition) > 0.25
         ) {
           this.video.currentTime = specPosition
         }
-        this.lastSpecPosition = stalePositionOnPlayToggle
-          ? this.video.currentTime
-          : specPosition
+        this.lastSpecPosition = skipSeek ? this.video.currentTime : specPosition
       } else if (ecsPlayingChanged) {
         this.lastSpecPosition = this.video.currentTime
       }
@@ -354,6 +360,8 @@ export class WebVideoPlayer {
     if (this.isPlaybackBlocked()) return
 
     if (ecsPlaying) {
+      // Only hold at a real end (HTML ended / stable duration). Partial HLS
+      // duration used to trip isAtEnd ~1s in and permanently pause.
       if (!this.liveKitSource && this.isAtEnd() && !ecsPlayingChanged) {
         this.wantsPlaying = false
         this.bumpPlayGeneration()
@@ -400,8 +408,11 @@ export class WebVideoPlayer {
   isAtEnd(): boolean {
     if (this.liveKitSource) return false
     if (this.video.ended) return true
+    // HLS reports unstable / partial duration while levels load — never end on that alone.
+    if (this.hls) return false
     const duration = this.video.duration
-    if (!Number.isFinite(duration) || duration <= 0) return false
+    if (!Number.isFinite(duration) || duration <= 1.5) return false
+    if (this.video.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA) return false
     return this.video.currentTime >= duration - 0.35
   }
 

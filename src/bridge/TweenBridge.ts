@@ -200,30 +200,17 @@ function ensureRepeatWrapping(tex: THREE.Texture): void {
   }
 }
 
-/**
- * DCL TextureMove Vector2 → Three.js texture UV.
- *
- * With Material maps using glTF flipY=false (see MaterialApplier), Explorer ST and
- * Three offset share the same V sense. DCL y is still the plaza marquee crawl axis
- * and must map to Three U (not V) or the LED board crawls sideways.
- */
-function dclTextureUvToThree(uv: Vec2): Vec2 {
-  return { x: uv.y, y: uv.x }
-}
-
-function threeTextureUvToDcl(uv: Vec2): Vec2 {
-  return { x: uv.y, y: uv.x }
-}
-
 function applyTextureUvToTargets(targets: THREE.Texture[], uv: Vec2, movementType?: number): void {
   const tiling = movementType === TMT_TILING
-  const threeUv = dclTextureUvToThree(uv)
   for (const tex of targets) {
     ensureRepeatWrapping(tex)
     if (tiling) {
-      tex.repeat.set(threeUv.x, threeUv.y)
+      tex.repeat.set(uv.x, uv.y)
     } else {
-      tex.offset.set(threeUv.x, threeUv.y)
+      // DCL Vector2 (x,y) = Three (offset.x/U, offset.y/V). Genesis Plaza LED
+      // marquees tween Y only: (0,0.4)→(0,-0.4) through a vertical word atlas —
+      // never swap axes (that sliced letters into garble).
+      tex.offset.set(uv.x, uv.y)
     }
   }
 }
@@ -231,11 +218,10 @@ function applyTextureUvToTargets(targets: THREE.Texture[], uv: Vec2, movementTyp
 function readTextureUvFromTargets(targets: THREE.Texture[], movementType?: number): Vec2 | null {
   const tex = targets[0]
   if (!tex) return null
-  const threeUv =
-    movementType === TMT_TILING
-      ? { x: tex.repeat.x, y: tex.repeat.y }
-      : { x: tex.offset.x, y: tex.offset.y }
-  return threeTextureUvToDcl(threeUv)
+  if (movementType === TMT_TILING) {
+    return { x: tex.repeat.x, y: tex.repeat.y }
+  }
+  return { x: tex.offset.x, y: tex.offset.y }
 }
 
 function tweenModeLabel(tween: PBTween): string {

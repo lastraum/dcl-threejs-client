@@ -1,10 +1,10 @@
 import * as THREE from 'three'
 import type { SessionIdentity } from '../../../network/SessionIdentity'
-import { assetUrnFromCompleteUrn, PEER_URL } from '../../../avatar/constants'
+import { assetUrnFromCompleteUrn, bodyShapeFromUrn, BODY_SHAPE_URN, PEER_URL } from '../../../avatar/constants'
 import { AvatarAnimations } from '../../../avatar/AvatarAnimations'
 import { composeAvatarFromProfile } from '../../../avatar/AvatarComposer'
 import { disposeWearableInstance } from '../../../avatar/loadWearable'
-import type { WearableCategory } from '../../../avatar/types'
+import type { AvatarProfile, WearableCategory } from '../../../avatar/types'
 import { VrmAvatar } from '../../../avatar/vrm/VrmAvatar'
 import { disposeVrmRoot } from '../../../avatar/vrm/VrmLoader'
 import { OdkAvatar } from '../../../avatar/odk/OdkAvatar'
@@ -41,7 +41,9 @@ import { backpackCategoryIcon } from './backpackCategoryIcons'
 import {
   filterBackpackWearables,
   loadBackpackWearables,
+  loadBaseWearableCatalog,
   loadEquippedWearablesByCategory,
+  mergeBaseIntoInventory,
   mergeEquippedIntoInventory,
   type BackpackWearableItem
 } from './backpackWearables'
@@ -110,6 +112,7 @@ const CATEGORIES: CategoryDef[] = [
   { id: 'top_head', label: 'Top Head' },
   { id: 'facial_hair', label: 'Facial Hair' },
   { id: 'eyebrows', label: 'Eyebrows' },
+  { id: 'eyes', label: 'Eyes' },
   { id: 'mouth', label: 'Mouth' },
   { id: 'hands_wear', label: 'Handwear' }
 ]
@@ -1164,13 +1167,6 @@ export class BackpackView {
   private async loadWearables(): Promise<void> {
     const address = this.resolveWearablesAddress()
     const gen = ++this.wearablesLoadGen
-    if (!address) {
-      this.wearableItems = []
-      this.wearablesError = 'Connect a wallet or set ?profile=0x… to load your inventory'
-      this.wearablesLoading = false
-      if (this.activeSubTab === 'wearables') this.renderGrid()
-      return
-    }
 
     this.wearablesLoading = true
     this.wearablesError = null
@@ -1178,14 +1174,27 @@ export class BackpackView {
 
     try {
       const lambdasUrl = this.session.getLambdasUrl()
-      let items = await loadBackpackWearables(address, lambdasUrl)
+      // Wallet inventory + free base-avatars catalog in parallel. Guests get the
+      // base catalog alone; a base-catalog failure degrades to owned-only.
+      const [owned, baseCatalog] = await Promise.all([
+        address ? loadBackpackWearables(address, lambdasUrl) : Promise.resolve([]),
+        loadBaseWearableCatalog(lambdasUrl).catch((err) => {
+          console.warn('[backpack] base wearables catalog failed', err)
+          return [] as BackpackWearableItem[]
+        })
+      ])
+      let items = mergeBaseIntoInventory(owned, baseCatalog)
       const profile = this.session.getProfile()
       if (profile?.wearables?.length) {
         items = mergeEquippedIntoInventory(items, profile.wearables)
       }
       if (gen !== this.wearablesLoadGen || this.disposed) return
       this.wearableItems = items
-      this.wearablesError = items.length ? null : 'No wearables found for this wallet'
+      this.wearablesError = items.length
+        ? null
+        : address
+          ? 'No wearables found for this wallet'
+          : 'Wearables catalog unavailable — connect a wallet or reopen the backpack to retry'
     } catch (err) {
       if (gen !== this.wearablesLoadGen || this.disposed) return
       this.wearableItems = []
@@ -1278,9 +1287,8 @@ export class BackpackView {
         card.type = 'button'
         const isSelected = this.isSameWearableUrn(item.urn, this.selectedItem)
         const rarity = item.rarity || guessWearableRarity(item.urn)
-        const equipped = this.session.getProfile()
-          ? isWearableEquipped(this.session.getProfile()!, item.urn)
-          : false
+        const gridProfile = this.session.getProfile()
+        const equipped = gridProfile ? this.isItemEquipped(gridProfile, item) : false
         card.className =
           'backpack-view__item is-' +
           rarity +
@@ -1317,7 +1325,9 @@ export class BackpackView {
         })
         pagination.appendChild(prev)
 
-        for (let i = 1; i <= Math.min(totalPages, 5); i++) {
+        // Sliding 5-button window centered on the current page (base catalog can span 30+ pages).
+        const firstBtn = Math.max(1, Math.min(page - 2, totalPages - 4))
+        for (let i = firstBtn; i <= Math.min(totalPages, firstBtn + 4); i++) {
           const pageBtn = document.createElement('button')
           pageBtn.className = 'backpack-view__page-btn' + (i === page ? ' is-active' : '')
           pageBtn.textContent = String(i)
@@ -1363,10 +1373,14 @@ export class BackpackView {
     el.hidden = false
 
     const profile = this.session.getProfile()
-    const equipped = profile ? isWearableEquipped(profile, item.urn) : false
+    const equipped = profile ? this.isItemEquipped(profile, item) : false
+    const isBodyShape = item.category === 'body_shape'
     const rarity = item.rarity || guessWearableRarity(item.urn)
     const color = WEARABLE_RARITY_COLORS[rarity] ?? WEARABLE_RARITY_COLORS.common
-    const canEquip = !!profile && item.category !== 'unknown'
+    const fitsShape = this.itemFitsBodyShape(item)
+    const canEquip =
+      !!profile && item.category !== 'unknown' && (equipped || fitsShape) && !(isBodyShape && equipped)
+    const equipLabel = isBodyShape ? (equipped ? 'Worn' : 'Wear') : equipped ? 'Unequip' : 'Equip'
     const category = this.categoryLabel(item.category)
 
     this.setMobileInvHeader('detail', 'Details')
@@ -1381,7 +1395,7 @@ export class BackpackView {
         <span class="backpack-view__mobile-inv-detail-rarity" style="color:${color}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
         <div class="backpack-view__mobile-inv-detail-actions">
           <button type="button" class="backpack-view__mobile-inv-detail-equip" data-mobile-equip ${canEquip ? '' : 'disabled'}>
-            ${equipped ? 'Unequip' : 'Equip'}
+            ${equipLabel}
           </button>
           <button type="button" class="backpack-view__mobile-inv-detail-market" disabled title="Coming soon">
             Marketplace
@@ -1391,7 +1405,8 @@ export class BackpackView {
     `
     el.querySelector('[data-mobile-equip]')?.addEventListener('click', () => {
       if (!canEquip) return
-      if (equipped) void this.unequipWearable(item)
+      if (isBodyShape) void this.switchBodyShape(item)
+      else if (equipped) void this.unequipWearable(item)
       else void this.equipWearable(item)
     })
   }
@@ -1897,13 +1912,36 @@ export class BackpackView {
     return CATEGORIES.find((c) => c.id === category)?.label ?? category.replace(/_/g, ' ')
   }
 
+  /** False only when the item declares representations and none match the profile's shape. */
+  private itemFitsBodyShape(item: BackpackWearableItem): boolean {
+    // Both body-shape tiles are always selectable — they switch shape, not fill a slot.
+    if (item.category === 'body_shape') return true
+    if (!item.bodyShapes?.length) return true
+    const profile = this.session.getProfile()
+    if (!profile) return true
+    const shapeUrn = BODY_SHAPE_URN[profile.bodyShape]?.toLowerCase()
+    if (!shapeUrn) return true
+    return item.bodyShapes.some((s) => s.trim().toLowerCase() === shapeUrn)
+  }
+
+  /** Equipped state, with body-shape tiles marked active when they match the profile's shape. */
+  private isItemEquipped(profile: AvatarProfile, item: BackpackWearableItem): boolean {
+    if (item.category === 'body_shape') return bodyShapeFromUrn(item.urn) === profile.bodyShape
+    return isWearableEquipped(profile, item.urn)
+  }
+
   private renderWearableDetail(item: BackpackWearableItem): void {
     const detailEl = this.root.querySelector('.backpack-view__detail')!
     const profile = this.session.getProfile()
-    const equipped = profile ? isWearableEquipped(profile, item.urn) : false
+    const equipped = profile ? this.isItemEquipped(profile, item) : false
+    const isBodyShape = item.category === 'body_shape'
     const rarity = item.rarity || guessWearableRarity(item.urn)
     const color = WEARABLE_RARITY_COLORS[rarity] ?? WEARABLE_RARITY_COLORS.common
-    const canEquip = !!profile && item.category !== 'unknown'
+    const fitsShape = this.itemFitsBodyShape(item)
+    // Body-shape tiles: the active shape is a no-op ("Worn"); the other is clickable to switch.
+    const canEquip =
+      !!profile && item.category !== 'unknown' && (equipped || fitsShape) && !(isBodyShape && equipped)
+    const equipLabel = isBodyShape ? (equipped ? 'Worn' : 'Wear') : equipped ? 'Unequip' : 'Equip'
     const category = this.categoryLabel(item.category)
 
     detailEl.innerHTML = `
@@ -1915,8 +1953,8 @@ export class BackpackView {
         <span class="backpack-view__detail-category">${this.escapeHtml(category)}</span>
         <span class="backpack-view__detail-rarity" style="color:${color}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
         <div class="backpack-view__wearable-actions">
-          <button type="button" class="backpack-view__wearable-equip-btn" data-action="toggle-equip" ${canEquip ? '' : 'disabled'}>
-            ${equipped ? 'Unequip' : 'Equip'}
+          <button type="button" class="backpack-view__wearable-equip-btn" data-action="toggle-equip" ${canEquip ? '' : 'disabled'}${!fitsShape && !equipped ? ' title="Not available for your body shape"' : ''}>
+            ${equipLabel}
           </button>
           <button type="button" class="backpack-view__wearable-market-btn" disabled title="Coming soon">
             Marketplace
@@ -1927,7 +1965,8 @@ export class BackpackView {
 
     detailEl.querySelector('[data-action="toggle-equip"]')?.addEventListener('click', () => {
       if (!canEquip) return
-      if (equipped) void this.unequipWearable(item)
+      if (isBodyShape) void this.switchBodyShape(item)
+      else if (equipped) void this.unequipWearable(item)
       else void this.equipWearable(item)
     })
   }
@@ -1943,7 +1982,9 @@ export class BackpackView {
       .map((e) => `${e.slot}:${e.urn.toLowerCase()}`)
       .sort()
       .join('|')
-    return `${wearables}||${emotes}`
+    // bodyShape is stripped from the deploy wearables list, so track it here or a pure
+    // shape switch would read as "no change" and never deploy.
+    return `${profile.bodyShape}::${wearables}||${emotes}`
   }
 
   /** True when equip/unequip changed wearables or emote wheel since open or last deploy. */
@@ -1997,6 +2038,26 @@ export class BackpackView {
 
     const wearables = unequipWearableFromProfile(profile, item.urn)
     this.session.setProfile({ ...profile, wearables })
+    await this.applyWearableProfileChange(item)
+  }
+
+  /**
+   * Switch the avatar's body shape. Unlike equip, this sets profile.bodyShape and lets
+   * buildComposeConfig re-derive the base body + shape-specific defaults on rebuild. Any
+   * stale BaseMale/BaseFemale URN is dropped so the new shape's body is prepended cleanly.
+   */
+  private async switchBodyShape(item: BackpackWearableItem): Promise<void> {
+    const profile = this.session.getProfile()
+    if (!profile) return
+
+    const target = bodyShapeFromUrn(item.urn)
+    if (profile.bodyShape === target) return
+
+    const wearables = profile.wearables.filter((u) => {
+      const lower = u.toLowerCase()
+      return !lower.includes('basemale') && !lower.includes('basefemale')
+    })
+    this.session.setProfile({ ...profile, bodyShape: target, wearables })
     await this.applyWearableProfileChange(item)
   }
 

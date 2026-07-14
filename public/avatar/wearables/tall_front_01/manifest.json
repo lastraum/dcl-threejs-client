@@ -1,0 +1,50 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:tall_front_01",
+  "data": {
+    "category": "hair",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "hair",
+      "Pompadour",
+      "hair",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "Hair_TallFront.glb",
+        "contents": [
+          {
+            "key": "Hair_TallFront.glb",
+            "url": "Hair_TallFront.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "Hair_TallFront.glb",
+        "contents": [
+          {
+            "key": "Hair_TallFront.glb",
+            "url": "Hair_TallFront.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      }
+    ]
+  }
+}

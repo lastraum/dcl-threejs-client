@@ -1,0 +1,49 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:hair_punk",
+  "data": {
+    "category": "hair",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "hair",
+      "Punk",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "Hair_Punk.glb",
+        "contents": [
+          {
+            "key": "Hair_Punk.glb",
+            "url": "Hair_Punk.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "Hair_Punk.glb",
+        "contents": [
+          {
+            "key": "Hair_Punk.glb",
+            "url": "Hair_Punk.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      }
+    ]
+  }
+}

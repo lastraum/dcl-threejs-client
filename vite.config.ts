@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { patchYogaNbindSource } from './src/shim/vite/yogaNbindFix'
 import { createSuggestionProxyMiddleware } from './scripts/suggestion-dispatch-proxy.mjs'
 import { createTextureProxyMiddleware } from './scripts/texture-dispatch-proxy.mjs'
+import { sceneBundleMirrorPlugin } from './vite-plugins/sceneBundleMirror'
 
 const ARCHIPELAGO_PEERS = 'https://archipelago-ea-stats.decentraland.org/peers'
 const PARCELS_API = 'https://api.decentraland.org/v2/parcels'
@@ -25,6 +26,8 @@ export default defineConfig({
         server.middlewares.use(createTextureProxyMiddleware())
       }
     },
+    // Dev-only: POST /api/mirror-scene-bundle → dev/scene-bundles/ (inspect scene scripts).
+    sceneBundleMirrorPlugin(),
     // Production + dev: yoga nbind assigns `_a` without declaring it (strict ESM crash).
     // optimizeDeps alone only covers prebundle — rollup must patch too.
     {

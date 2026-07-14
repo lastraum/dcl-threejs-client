@@ -266,14 +266,19 @@ export class World {
   }
 
   private buildCommsTarget(scene: ResolvedScene) {
+    const isWorld = scene.source.kind === 'world'
+    // Lowercase world realm for gatekeeper so Cast/stream-keys share the same LiveKit room.
+    const realmName = isWorld
+      ? scene.commsPointer.trim().toLowerCase()
+      : scene.realm.realmName?.trim() || 'main'
     return {
       pointer: scene.commsPointer,
       baseParcel: scene.baseParcel,
       sceneId: scene.entityId ?? '',
-      realmName: scene.realm.realmName,
+      realmName,
       contentUrl: scene.realm.contentUrl,
       parcels: scene.parcels,
-      isWorld: scene.source.kind === 'world',
+      isWorld,
       sceneTitle: scene.title,
       metadataBlacklist: blacklistFromMetadata(scene.metadata)
     }

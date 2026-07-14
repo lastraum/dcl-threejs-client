@@ -1,0 +1,51 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:hair_coolshortstyle",
+  "data": {
+    "category": "hair",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "hair",
+      "Short",
+      "Modern",
+      "Style",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "Hair_CoolShortStyle.glb",
+        "contents": [
+          {
+            "key": "Hair_CoolShortStyle.glb",
+            "url": "Hair_CoolShortStyle.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "Hair_CoolShortStyle.glb",
+        "contents": [
+          {
+            "key": "Hair_CoolShortStyle.glb",
+            "url": "Hair_CoolShortStyle.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -137,10 +137,12 @@ DOM overlay — not in-scene `UiTransform`.
 | Feature | Status |
 | ------- | ------ |
 | Explorer auth sheet + session resume; loading + hydration timer | 🟢 |
+| Multi-provider auth (Google/Discord/Apple/X/WC/MetaMask via auth-dapp) | 🟢 |
 | Sidebar, chat (+ DCM v1 inline images), emote wheel, location pill | 🟢 |
 | Debug panel, dev progress panel (`</>`) | 🟢 |
 | Settings overlay: Events, Map, Backpack, Places, Gallery | 🟢 |
-| Profile pills + right-click profile menu | 🟢 |
+| Backpack wearables equip + Catalyst profile deploy | 🟡 | Inventory/equip/preview/deploy 🟢 · emotes tab / outfits / marketplace ⬜ · mobile sheets 🟢 |
+| Profile pills + right-click profile menu (+ copy wallet) | 🟢 |
 | Preferences panel (P / ⚙): Graphics preset/shadows/lights/res/FPS + lighting | 🟢 |
 | Preferences → Sounds volume sliders | 🟢 |
 | Preferences: Controls, Chat tabs | 🟡 stub |

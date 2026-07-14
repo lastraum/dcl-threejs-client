@@ -19,7 +19,9 @@ export function isCorsSafeTextureUrl(url: string): boolean {
   if (url.startsWith(TEXTURE_PROXY_PREFIX)) return true
   if (!/^https?:/i.test(url)) return true
   if (typeof window !== 'undefined' && url.startsWith(window.location.origin)) return true
-  if (/\.decentraland\.org\//i.test(url)) return true
+  // Peer / content / events / marketplace CDNs (Genesis Plaza event cards, posters).
+  if (/\.decentraland\.(org|zone|today)\//i.test(url)) return true
+  if (/^https?:\/\/decentraland\.(org|zone)\//i.test(url)) return true
   if (/gstatic\.com\//i.test(url)) return true
   // Arweave gateways send ACAO:* — direct fetch/Image works after redirect.
   if (/\.arweave\.net\//i.test(url)) return true
@@ -28,6 +30,10 @@ export function isCorsSafeTextureUrl(url: string): boolean {
   if (/\.lastslice\.co\//i.test(url)) return true
   // Planet Angzaar cutscene / stream thumbnails.
   if (/dclstreams\.com\//i.test(url)) return true
+  // Event / social image hosts commonly used by plaza boards.
+  if (/images\.unsplash\.com\//i.test(url)) return true
+  if (/res\.cloudinary\.com\//i.test(url)) return true
+  if (/imgur\.com\//i.test(url) || /i\.imgur\.com\//i.test(url)) return true
   return false
 }
 

@@ -42,7 +42,8 @@ export type EmoteWheelSlot = {
   id: string
 }
 
-const WHEEL_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'] as const
+export const EMOTE_WHEEL_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'] as const
+const WHEEL_KEYS = EMOTE_WHEEL_KEYS
 
 const EMOTE_LABELS: Record<string, string> = {
   wave: 'Wave',
@@ -241,15 +242,60 @@ export function catalystPointerForEmoteUrn(urn: string): string {
 export function emoteLabel(ref: string, fallback?: string): string {
   const slug = baseEmoteSlugFromRef(ref)
   if (slug && EMOTE_LABELS[slug]) return EMOTE_LABELS[slug]
-  if (fallback) return fallback
+  if (fallback && !/^\d{6,}/.test(fallback.trim())) return fallback
   const token = normalizeEmoteId(ref)
-  return EMOTE_LABELS[token] ?? token.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase())
+  if (EMOTE_LABELS[token]) return EMOTE_LABELS[token]
+  // collections-v2 item URNs end in itemId or tokenId — prefer itemId when tail is a long token.
+  const parts = ref.split(':')
+  const tail = parts[parts.length - 1] ?? token
+  const itemId = parts.length >= 6 && parts[3] === 'collections-v2' ? parts[5] : null
+  if (/^\d{10,}$/.test(tail) && itemId && !/^\d{10,}$/.test(itemId)) {
+    return `Emote #${itemId}`
+  }
+  if (/^\d{10,}$/.test(tail)) {
+    return fallback?.trim() || 'Emote'
+  }
+  return token.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase())
 }
 
 function normalizeWheelSlot(slot: number): number | null {
   if (slot >= 0 && slot < 10) return slot
   if (slot >= 1 && slot <= 10) return slot - 1
   return null
+}
+
+/**
+ * Playable base emotes for backpack inventory (excludes locomotion-only clips).
+ * Labels from EMOTE_LABELS; ids are slugs accepted by resolveProfileEmote.
+ */
+export function listBaseEmoteCatalog(): Array<{ id: string; label: string; urn: string }> {
+  const locomotionOnly = new Set(['idle', 'walk', 'run', 'jump', 'double_jump'])
+  const seen = new Set<string>()
+  const out: Array<{ id: string; label: string; urn: string }> = []
+
+  const push = (slug: string): void => {
+    const key = slug.trim()
+    if (!key || locomotionOnly.has(key) || seen.has(key)) return
+    if (!BUNDLED_EMOTE_FILES[key] && !EMOTE_LABELS[key]) return
+    seen.add(key)
+    out.push({ id: key, label: emoteLabel(key), urn: baseEmoteUrn(key) })
+  }
+
+  // Wheel defaults first (Explorer order), then remaining bundled expressives.
+  for (let i = 0; i < 10; i++) {
+    const slug = DEFAULT_WHEEL_BY_SLOT[i]
+    if (slug) push(slug)
+  }
+  for (const slug of Object.keys(BUNDLED_EMOTE_FILES)) {
+    if (/^sitting|^button|^getHit|^knockOut|^lever|^open|^punch|^push|^swing|^throw/i.test(slug)) {
+      continue // interaction / sit props — keep wheel + social dances primary
+    }
+    push(slug)
+  }
+  // Named socials that may only exist in labels
+  for (const slug of Object.keys(EMOTE_LABELS)) push(slug)
+
+  return out
 }
 
 /** Ten wheel slots — profile equipped emotes per slot, else default base-emotes. */
@@ -266,6 +312,42 @@ export function buildEmoteWheelSlots(profile?: AvatarProfile | null): EmoteWheel
     const ref = equipped.get(index) ?? DEFAULT_WHEEL_BY_SLOT[index] ?? 'wave'
     const fallbackLabel = EMOTE_LABELS[DEFAULT_WHEEL_BY_SLOT[index] ?? 'wave']
     return { key, label: emoteLabel(ref, fallbackLabel), id: ref }
+  })
+}
+
+/** Wheel key `'1'`…`'0'` → profile slot index 0–9. */
+export function emoteWheelKeyToIndex(key: string): number {
+  return WHEEL_KEYS.indexOf(key as (typeof WHEEL_KEYS)[number])
+}
+
+export function emoteWheelIndexToKey(index: number): string {
+  return WHEEL_KEYS[index] ?? String(index)
+}
+
+/**
+ * Backpack equip UI — only profile-assigned slots count as filled.
+ * Empty slots show as Empty (defaults apply in-world via buildEmoteWheelSlots).
+ */
+export type EmoteBackpackWheelSlot = EmoteWheelSlot & {
+  index: number
+  empty: boolean
+}
+
+export function buildEmoteBackpackWheelSlots(
+  profile?: AvatarProfile | null
+): EmoteBackpackWheelSlot[] {
+  const equipped = new Map<number, string>()
+  for (const entry of profile?.emotes ?? []) {
+    const index = normalizeWheelSlot(entry.slot)
+    if (index !== null && entry.urn) equipped.set(index, entry.urn)
+  }
+
+  return WHEEL_KEYS.map((key, index) => {
+    const ref = equipped.get(index)
+    if (!ref) {
+      return { key, index, id: '', label: 'Empty', empty: true }
+    }
+    return { key, index, id: ref, label: emoteLabel(ref), empty: false }
   })
 }
 

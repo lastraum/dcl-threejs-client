@@ -2,7 +2,6 @@ import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
 import type { ProjectionView } from './ProjectionView'
 import {
-
   buildPrimitiveGeometry,
   primitiveDoubleSided,
   hasAnimatedPlaneUvs,
@@ -1238,9 +1237,10 @@ export class ThreeBridge {
         primitive.geometry.dispose()
         obj.remove(primitive)
       }
+      const geo = buildPrimitiveGeometry(spec)
       const doubleSided = primitiveDoubleSided(spec)
       primitive = new THREE.Mesh(
-        buildPrimitiveGeometry(spec),
+        geo,
         new THREE.MeshStandardMaterial({
           color: 0xffffff,
           side: doubleSided ? THREE.DoubleSide : THREE.FrontSide
@@ -1695,9 +1695,10 @@ export class ThreeBridge {
           ;(primitive as THREE.Mesh).geometry.dispose()
           obj.remove(primitive)
         }
+        const geo = buildPrimitiveGeometry(spec)
         const doubleSided = primitiveDoubleSided(spec)
         primitive = new THREE.Mesh(
-          buildPrimitiveGeometry(spec),
+          geo,
           new THREE.MeshStandardMaterial({
             color: 0xffffff,
             side: doubleSided ? THREE.DoubleSide : THREE.FrontSide

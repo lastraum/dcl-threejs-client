@@ -352,13 +352,58 @@ export function applyUiTextStyles(label: HTMLElement, text: PBUiText, scale: UiS
   label.style.zIndex = '2'
 }
 
+/**
+ * DCL / TextMeshPro-style rich text → safe HTML for scene UiText.
+ * Explorer parses color/size/bold; unknown tags (e.g. `<space=…>`) must be stripped,
+ * not escaped as visible garbage on event cards.
+ */
 export function sanitizeUiTextHtml(raw: string): string {
-  return raw
+  let s = raw
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
+
+  // Bold / italic
+  s = s
     .replace(/&lt;b&gt;/gi, '<b>')
     .replace(/&lt;\/b&gt;/gi, '</b>')
     .replace(/&lt;i&gt;/gi, '<i>')
     .replace(/&lt;\/i&gt;/gi, '</i>')
+    .replace(/&lt;u&gt;/gi, '<u>')
+    .replace(/&lt;\/u&gt;/gi, '</u>')
+
+  // <color=#RRGGBB[AA]> / <color="red"> … </color>
+  s = s
+    .replace(
+      /&lt;color=#([0-9a-fA-F]{3,8})&gt;/gi,
+      (_m, hex: string) => `<span style="color:#${hex.length === 8 ? hex.slice(0, 6) : hex}">`
+    )
+    .replace(/&lt;color=["']([^"']+)["']&gt;/gi, '<span style="color:$1">')
+    .replace(/&lt;color=([a-zA-Z]+)&gt;/gi, '<span style="color:$1">')
+    .replace(/&lt;\/color&gt;/gi, '</span>')
+
+  // <size=N> … </size> — N in SDK units ≈ px after screen scale is applied on the label
+  s = s
+    .replace(
+      /&lt;size=(\d+(?:\.\d+)?)(?:px|em|%)?&gt;/gi,
+      '<span style="font-size:$1em">'
+    )
+    .replace(/&lt;\/size&gt;/gi, '</span>')
+
+  // Layout-only / unknown tags — drop (do not show as text)
+  s = s
+    .replace(/&lt;space=[^&]*&gt;/gi, '')
+    .replace(/&lt;\/space&gt;/gi, '')
+    .replace(/&lt;br\s*\/?&gt;/gi, '<br/>')
+    .replace(/&lt;\/?[a-zA-Z][^&]*&gt;/g, '')
+
+  return s
+}
+
+/** Plain text for measurement — strip DCL rich-text markup. */
+export function stripUiTextMarkup(value: string): string {
+  return value
+    .replace(/<\/?(?:b|i|u|color|size|space)(?:\s*=[^>]*)?>/gi, '')
+    .replace(/<\/?[a-zA-Z][^>]*>/g, '')
+    .replace(/&lt;\/?[a-zA-Z][^&]*&gt;/gi, '')
 }

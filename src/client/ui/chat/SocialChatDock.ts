@@ -37,6 +37,7 @@ export class SocialChatDock {
   private readonly pillsToolbarEl: HTMLElement
   private readonly pillsScrollEl: HTMLElement
   private readonly expandBtn: HTMLButtonElement
+  private readonly guestCloseBtn: HTMLButtonElement
   private readonly threadEl: HTMLElement
   private readonly statusEl: HTMLElement
   private readonly headerAvatarEl: HTMLElement
@@ -90,6 +91,14 @@ export class SocialChatDock {
     this.statusEl.className = 'social-chat-dock__status'
     this.statusEl.hidden = true
 
+    this.guestCloseBtn = document.createElement('button')
+    this.guestCloseBtn.type = 'button'
+    this.guestCloseBtn.className = 'social-chat-dock__guest-close'
+    this.guestCloseBtn.setAttribute('aria-label', 'Close chat')
+    this.guestCloseBtn.textContent = '›'
+    this.guestCloseBtn.hidden = true
+    this.guestCloseBtn.addEventListener('click', () => this.closeChatPanel())
+
     this.pillsEl = document.createElement('nav')
     this.pillsEl.className = 'social-chat-dock__pills chat-panel__rail'
     this.pillsEl.setAttribute('aria-label', 'Chat channels')
@@ -136,6 +145,7 @@ export class SocialChatDock {
     body.appendChild(this.pillsEl)
     body.appendChild(this.threadEl)
 
+    this.root.appendChild(this.guestCloseBtn)
     this.root.appendChild(this.statusEl)
     this.root.appendChild(body)
 
@@ -424,14 +434,23 @@ export class SocialChatDock {
     }
   }
 
+  /** Desktop: thread or expanded list; mobile: sheet open. Collapsed rail stays clean. */
+  private isChatPanelOpen(): boolean {
+    if (this.isMobileLayout()) return this.mobilePanelOpen
+    return this.threadOpen || this.listExpanded
+  }
+
   private renderStatus(status: SocialChatStatus): void {
     let message = ''
     let tone: 'info' | 'warn' | 'error' = 'info'
 
     switch (status.kind) {
       case 'guest':
-        message = 'Sign in to chat'
-        tone = 'warn'
+        // Only prompt once the user opens chat — not on the collapsed pill rail.
+        if (this.isChatPanelOpen()) {
+          message = 'Sign in to chat'
+          tone = 'warn'
+        }
         break
       case 'connecting':
         message = 'Connecting to scene chat…'
@@ -460,6 +479,10 @@ export class SocialChatDock {
         break
     }
 
+    const guestCentered = status.kind === 'guest' && Boolean(message)
+    this.root.classList.toggle('social-chat-dock--guest-prompt', guestCentered)
+    this.guestCloseBtn.hidden = !guestCentered
+
     if (!message) {
       this.statusEl.hidden = true
       this.statusEl.textContent = ''
@@ -471,6 +494,19 @@ export class SocialChatDock {
       status.kind === 'scene_ban' ? ' social-chat-dock__status--scene-ban' : ''
     }`
     this.statusEl.textContent = message
+  }
+
+  /** Collapse expanded list / thread, or dismiss the mobile chat sheet. */
+  private closeChatPanel(): void {
+    if (this.isMobileLayout()) {
+      this.closeMobilePanel()
+      this.renderStatus(this.controller.getStatus())
+      return
+    }
+    this.threadOpen = false
+    this.listExpanded = false
+    this.syncLayout()
+    this.renderPills()
   }
 
   private renderThreadHeader(): void {
@@ -1155,6 +1191,8 @@ export class SocialChatDock {
 
     if (this.listExpanded || this.threadOpen) this.hidePillTip()
     this.updateMobileFab()
+    // Guest "Sign in to chat" visibility depends on panel open state.
+    this.renderStatus(this.controller.getStatus())
 
     if (!mobile) this.syncContentAlign()
   }

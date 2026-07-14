@@ -408,44 +408,54 @@ export class MaterialApplier {
 
     this.applyScalarsToMesh(mesh, pb)
     const m = mesh.material as THREE.MeshBasicMaterial | THREE.MeshPhysicalMaterial
+    // MeshRenderer planes: flipY on (TextureLoader). Marquee re-basis planes keep flipY off
+    // so TextureMove Y + atlas row order match Explorer.
+    const geo = mesh.geometry as THREE.BufferGeometry | undefined
+    const marqueeAtlas = !!geo?.userData?.dclTextAlongYBasis
+    const flipY = mesh.userData.primitiveMeshKey != null && !marqueeAtlas
 
     let texturesOk = true
     let alphaTex: THREE.Texture | null = null
     const mainUnion = coerceTextureUnion(inner.texture)
     if (mainUnion) {
-      const mainTex = await this.loadUnionTexture(mainUnion)
+      const prev = m.map
+      const mainTex = await this.loadUnionTexture(mainUnion, { flipY })
       m.map = mainTex
       if (!mainTex) texturesOk = false
-      else this.applyUvTransform(mainTex, getTextureDef(mainUnion))
+      else this.applyUvTransform(mainTex, getTextureDef(mainUnion), prev, mesh)
     }
     const alphaUnion = coerceTextureUnion(inner.alphaTexture)
     if (alphaUnion) {
-      alphaTex = await this.loadUnionTexture(alphaUnion)
+      const prev = m.alphaMap
+      alphaTex = await this.loadUnionTexture(alphaUnion, { flipY })
       m.alphaMap = alphaTex
       if (!alphaTex) texturesOk = false
-      else this.applyUvTransform(alphaTex, getTextureDef(alphaUnion))
+      else this.applyUvTransform(alphaTex, getTextureDef(alphaUnion), prev, mesh)
     }
 
     if (m instanceof THREE.MeshPhysicalMaterial && isPbr) {
       const pbr = inner as PbrMaterial
       const emissiveUnion = coerceTextureUnion(pbr.emissiveTexture)
       if (emissiveUnion) {
-        let emissiveTex = await this.loadUnionTexture(emissiveUnion)
+        const prev = m.emissiveMap
+        let emissiveTex = await this.loadUnionTexture(emissiveUnion, { flipY })
         if (!emissiveTex && m.map && textureUnionSameSrc(emissiveUnion, mainUnion)) {
           emissiveTex = m.map
         }
         m.emissiveMap = emissiveTex
         if (!emissiveTex) texturesOk = false
-        else this.applyUvTransform(emissiveTex, getTextureDef(emissiveUnion))
+        else if (emissiveTex !== m.map)
+          this.applyUvTransform(emissiveTex, getTextureDef(emissiveUnion), prev, mesh)
       }
       const bumpUnion = coerceTextureUnion(pbr.bumpTexture)
       if (bumpUnion) {
-        const bumpTex = await this.loadUnionTexture(bumpUnion, { normalMap: true })
+        const prev = m.normalMap
+        const bumpTex = await this.loadUnionTexture(bumpUnion, { normalMap: true, flipY })
         m.normalMap = bumpTex
         if (!bumpTex) texturesOk = false
         else {
           bumpTex.colorSpace = THREE.LinearSRGBColorSpace
-          this.applyUvTransform(bumpTex, getTextureDef(bumpUnion))
+          this.applyUvTransform(bumpTex, getTextureDef(bumpUnion), prev, mesh)
         }
       }
       // Re-apply after maps land — emissiveIntensity drives flame brightness when albedoColor is absent.
@@ -472,6 +482,8 @@ export class MaterialApplier {
 
     mesh.castShadow = inner.castShadows === true
     mesh.receiveShadow = true
+    // Marquees face inward (FrontSide). Never DoubleSide — back face is mirrored and
+    // was the “split + mirrored” LED look from inside the plaza.
     m.side = mesh.userData.primitiveDoubleSided === true ? THREE.DoubleSide : THREE.FrontSide
     m.needsUpdate = true
     return texturesOk && meshHasTextureMaps(mesh, pb)
@@ -494,40 +506,69 @@ export class MaterialApplier {
     return false
   }
 
+  /**
+   * Clone material maps so wrap/offset/tiling (and Tween textureMove) never mutate the
+   * shared AssetCache / video / avatar entry. Shared mutation was scrambling marquees
+   * and blanking panels that reuse the same content URL.
+   */
+  private materialTextureInstance(
+    base: THREE.Texture,
+    opts: {
+      wrapMode?: number
+      filterMode?: number
+      normalMap?: boolean
+      /** undefined = leave clone's flipY from the loader/cache. */
+      flipY?: boolean
+    }
+  ): THREE.Texture {
+    // Clone so wrap/offset/tiling/tween UV never mutate the AssetCache entry.
+    const tex = base.clone()
+    tex.wrapS = wrapMode(opts.wrapMode)
+    tex.wrapT = wrapMode(opts.wrapMode)
+    tex.minFilter =
+      opts.filterMode === TFM_POINT
+        ? THREE.NearestFilter
+        : opts.filterMode === TFM_TRILINEAR
+          ? THREE.LinearMipmapLinearFilter
+          : THREE.LinearFilter
+    tex.magFilter = opts.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
+    tex.colorSpace = opts.normalMap ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace
+    if (opts.flipY !== undefined && tex.flipY !== opts.flipY) {
+      tex.flipY = opts.flipY
+    }
+    tex.needsUpdate = true
+    return tex
+  }
+
   private async loadUnionTexture(
     union?: TextureUnion,
-    options?: { normalMap?: boolean }
+    options?: { normalMap?: boolean; flipY?: boolean }
   ): Promise<THREE.Texture | null> {
     union = coerceTextureUnion(union)
     if (union?.tex?.$case === 'avatarTexture') {
       const def = union.tex.avatarTexture
       const userId = def.userId?.trim()
       if (!userId || !this.getAvatarTexture) return null
-      let tex = this.resolvedAvatarTextures.get(userId)
-      if (tex === undefined) {
-        tex = await this.getAvatarTexture(userId)
-        this.resolvedAvatarTextures.set(userId, tex)
+      let base = this.resolvedAvatarTextures.get(userId)
+      if (base === undefined) {
+        base = await this.getAvatarTexture(userId)
+        this.resolvedAvatarTextures.set(userId, base)
       }
-      if (!tex) return null
-      tex.wrapS = wrapMode(def.wrapMode)
-      tex.wrapT = wrapMode(def.wrapMode)
-      tex.minFilter =
-        def.filterMode === TFM_POINT
-          ? THREE.NearestFilter
-          : def.filterMode === TFM_TRILINEAR
-            ? THREE.LinearMipmapLinearFilter
-            : THREE.LinearFilter
-      tex.magFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
-      tex.colorSpace = options?.normalMap ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace
-      return tex
+      if (!base) return null
+      return this.materialTextureInstance(base, {
+        wrapMode: def.wrapMode,
+        filterMode: def.filterMode,
+        normalMap: options?.normalMap,
+        flipY: options?.flipY
+      })
     }
     if (union?.tex?.$case === 'videoTexture') {
       const def = union.tex.videoTexture
+      // Do not clone VideoTexture — frame uploads bind to the live instance in the render loop.
       const tex = this.getVideoTexture?.(def.videoPlayerEntity) ?? null
       if (!tex) return null
       tex.wrapS = wrapMode(def.wrapMode)
       tex.wrapT = wrapMode(def.wrapMode)
-      // VideoTexture has no mipmaps — mipmap min filters render blank/corrupt.
       tex.generateMipmaps = false
       tex.minFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
       tex.magFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
@@ -539,23 +580,19 @@ export class MaterialApplier {
     const def = union.tex.texture
     const url = resolveSceneTextureUrl(def.src, this.scene)
     if (!url) return null
-    let tex: THREE.Texture
+    let base: THREE.Texture
     try {
-      tex = await this.cache.loadTexture(url)
+      base = await this.cache.loadTexture(url)
     } catch {
       return null
     }
-    tex.wrapS = wrapMode(def.wrapMode)
-    tex.wrapT = wrapMode(def.wrapMode)
-    tex.minFilter =
-      def.filterMode === TFM_POINT
-        ? THREE.NearestFilter
-        : def.filterMode === TFM_TRILINEAR
-          ? THREE.LinearMipmapLinearFilter
-          : THREE.LinearFilter
-    tex.magFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
-    tex.colorSpace = options?.normalMap ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace
-    return tex
+    return this.materialTextureInstance(base, {
+      wrapMode: def.wrapMode,
+      filterMode: def.filterMode,
+      normalMap: options?.normalMap,
+      // Default false for Material→mesh (GLTF UV space). Callers pass true for MeshRenderer planes.
+      flipY: options?.flipY ?? false
+    })
   }
 
   private hasUnresolvedAvatar(pb: PbMaterial): boolean {
@@ -607,12 +644,35 @@ export class MaterialApplier {
     return false
   }
 
-  private applyUvTransform(tex: THREE.Texture, def?: TextureDef): void {
-    if (!def) return
-    const tiling = def.tiling ?? { x: 1, y: 1 }
-    const offset = def.offset ?? { x: 0, y: 0 }
-    tex.repeat.set(tiling.x ?? 1, tiling.y ?? 1)
-    tex.offset.set(offset.x ?? 0, offset.y ?? 0)
+  /**
+   * Apply TextureMove ST first (persisted on mesh userData), else authored, else previous map.
+   * Clones start at (0,0) — authored offset must not wipe live TextureMove offset mid-scroll.
+   */
+  private applyUvTransform(
+    tex: THREE.Texture,
+    def?: TextureDef,
+    previous?: THREE.Texture | null,
+    mesh?: THREE.Mesh
+  ): void {
+    const held = mesh?.userData?.dclTextureMoveST as
+      | { tiling?: boolean; x: number; y: number }
+      | undefined
+
+    if (held?.tiling) {
+      tex.repeat.set(held.x, held.y)
+    } else if (def?.tiling) {
+      tex.repeat.set(def.tiling.x ?? 1, def.tiling.y ?? 1)
+    } else if (previous && previous !== tex) {
+      tex.repeat.copy(previous.repeat)
+    }
+
+    if (held && !held.tiling) {
+      tex.offset.set(held.x, held.y)
+    } else if (def?.offset) {
+      tex.offset.set(def.offset.x ?? 0, def.offset.y ?? 0)
+    } else if (previous && previous !== tex) {
+      tex.offset.copy(previous.offset)
+    }
   }
 }
 

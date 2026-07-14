@@ -24,7 +24,12 @@ type HlsInstance = {
   loadSource(url: string): void
   attachMedia(video: HTMLMediaElement): void
   destroy(): void
-  on?(event: string, handler: (event: string, data: { type?: string; details?: string; fatal?: boolean }) => void): void
+  recoverMediaError?(): void
+  startLoad?(startPosition?: number): void
+  on?(
+    event: string,
+    handler: (event: string, data: { type?: string; details?: string; fatal?: boolean }) => void
+  ): void
 }
 
 type HlsConstructor = {
@@ -35,11 +40,15 @@ type HlsConstructor = {
 
 export type LiveKitVideoBinder = (video: HTMLVideoElement, onUpdate?: () => void) => () => void
 
+/**
+ * Only treat real HLS playlists as HLS.
+ * Older heuristic treated every external https URL without a video extension as
+ * m3u8 — progressive CDN mp4s then failed ~1s into demux.
+ */
 function isHlsUrl(url: string): boolean {
   if (/\.m3u8(\?|#|$)/i.test(url)) return true
-  if (/^https?:\/\//i.test(url) && !/\/contents?\//i.test(url)) {
-    return !/\.(mp4|webm|ogv|mov|m4v)(\?|#|$)/i.test(url)
-  }
+  if (/[?&](?:format|ext|type)=m3u8\b/i.test(url)) return true
+  if (/\/playlist\.m3u8\b/i.test(url) || /\/index\.m3u8\b/i.test(url)) return true
   return false
 }
 
@@ -68,7 +77,11 @@ export class WebVideoPlayer {
   private budgetPaused = false
   private wantsPlaying = true
   private playGeneration = 0
+  /** Prevents stacked play() calls from aborting each other every frame. */
+  private playInFlight = false
   private hasHadRenderableFrame = false
+  /** True after first successful `playing` event — blocks ECS position seeks. */
+  private hasStartedPlayback = false
   private lastSpecPosition: number | undefined
   private lastEcsPlaying: boolean | undefined
   private holdingAtEnd = false
@@ -78,6 +91,8 @@ export class WebVideoPlayer {
   private spatialMax = 60
   private sound: THREE.Audio | null = null
   private listener: THREE.AudioListener | null = null
+  /** performance.now() when we last observed pause while wanting play. */
+  private pausedWantingPlaySince = 0
   onFrameReady?: () => void
   onNaturalEnd?: () => void
   onReplayStarted?: () => void
@@ -102,22 +117,30 @@ export class WebVideoPlayer {
     document.body.appendChild(this.video)
 
     this.video.addEventListener('loadstart', () => this.setState(VS_LOADING))
-    this.video.addEventListener('loadedmetadata', () => this.onFrameReady?.())
+    this.video.addEventListener('loadedmetadata', () => this.notifyDrawableFrame())
     this.video.addEventListener('loadeddata', () => {
       if (this.state !== VS_ERROR) this.setState(VS_READY)
-      this.onFrameReady?.()
+      this.notifyDrawableFrame()
     })
     this.video.addEventListener('canplay', () => {
-      if (this.state !== VS_ERROR && !this.video.paused) return
-      if (this.state !== VS_ERROR) this.setState(VS_READY)
+      if (this.state !== VS_ERROR) this.setState(this.video.paused ? VS_READY : VS_PLAYING)
     })
     this.video.addEventListener('playing', () => {
       this.setState(VS_PLAYING)
-      this.onFrameReady?.()
+      this.holdingAtEnd = false
+      this.hasStartedPlayback = true
+      this.pausedWantingPlaySince = 0
+      this.playInFlight = false
+      this.notifyDrawableFrame()
+      this.syncThrottledPlayback()
     })
+    this.video.addEventListener('resize', () => this.notifyDrawableFrame())
     this.video.addEventListener('pause', () => {
       if (this.state !== VS_SEEKING && this.state !== VS_ERROR) {
         this.setState(VS_PAUSED)
+      }
+      if (this.wantsPlaying && !this.isPlaybackBlocked() && !this.holdingAtEnd) {
+        this.pausedWantingPlaySince = performance.now()
       }
     })
     this.video.addEventListener('waiting', () => {
@@ -125,10 +148,16 @@ export class WebVideoPlayer {
         this.setState(VS_BUFFERING)
       }
     })
+    this.video.addEventListener('stalled', () => {
+      if (this.wantsPlaying && !this.isPlaybackBlocked()) {
+        this.setState(VS_BUFFERING)
+      }
+    })
     this.video.addEventListener('seeking', () => this.setState(VS_SEEKING))
     this.video.addEventListener('seeked', () => {
       if (this.wantsPlaying && !this.isPlaybackBlocked()) {
         this.setState(this.video.paused ? VS_PAUSED : VS_PLAYING)
+        // Don't immediately tryPlay — seeked often races; tickPlayback recovers.
       } else {
         this.setState(VS_PAUSED)
       }
@@ -232,13 +261,40 @@ export class WebVideoPlayer {
 
   canAttachTexture(): boolean {
     const video = this.usesSharedLiveKit ? getSharedLiveKitVideoStream().video : this.video
+    if (!this.loadedSrc || this.state === VS_ERROR) return false
+    // Require real dimensions — HAVE_METADATA alone can bind a 1×1 canvas forever.
+    if (video.videoWidth <= 0 || video.videoHeight <= 0) return false
     return (
-      !!this.loadedSrc &&
-      this.state !== VS_ERROR &&
-      (video.readyState >= HTMLMediaElement.HAVE_METADATA ||
-        this.hasHadRenderableFrame ||
-        (this.liveKitSource && video.videoWidth > 0))
+      video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA ||
+      this.hasHadRenderableFrame ||
+      this.liveKitSource
     )
+  }
+
+  /**
+   * Per-frame recovery: re-issue play() only after a short pause debounce so we
+   * never stack concurrent play() promises (each aborts the previous).
+   */
+  tickPlayback(): void {
+    if (this.liveKitSource || this.isPlaybackBlocked() || !this.wantsPlaying) return
+    if (this.holdingAtEnd || this.video.ended) return
+    if (!this.video.paused) {
+      this.pausedWantingPlaySince = 0
+      this.syncThrottledPlayback()
+      return
+    }
+    if (!this.userGestureUnlocked || this.playInFlight) return
+    const now = performance.now()
+    if (this.pausedWantingPlaySince === 0) {
+      this.pausedWantingPlaySince = now
+      return
+    }
+    // Debounce: only recover after 400ms of unexpected pause (buffer / aborted play).
+    if (now - this.pausedWantingPlaySince >= 400) {
+      this.pausedWantingPlaySince = now
+      void this.tryPlay()
+    }
+    this.syncThrottledPlayback()
   }
 
   isHoldingAtEnd(): boolean {
@@ -325,27 +381,7 @@ export class WebVideoPlayer {
     this.video.playbackRate = Math.max(spec.playbackRate ?? 1, 0.01)
 
     if (!this.liveKitSource) {
-      const specPosition = Math.max(spec.position ?? 0, 0)
-      const positionFieldChanged =
-        this.lastSpecPosition === undefined || Math.abs(specPosition - this.lastSpecPosition) > 0.05
-      if (positionFieldChanged) {
-        const stalePositionOnPlayToggle =
-          ecsPlayingChanged &&
-          this.video.currentTime > 0.5 &&
-          Math.abs(specPosition - this.video.currentTime) > 1.5
-        if (
-          !stalePositionOnPlayToggle &&
-          Number.isFinite(specPosition) &&
-          Math.abs(this.video.currentTime - specPosition) > 0.25
-        ) {
-          this.video.currentTime = specPosition
-        }
-        this.lastSpecPosition = stalePositionOnPlayToggle
-          ? this.video.currentTime
-          : specPosition
-      } else if (ecsPlayingChanged) {
-        this.lastSpecPosition = this.video.currentTime
-      }
+      this.maybeApplyEcsPosition(spec.position, ecsPlaying, ecsPlayingChanged, options)
     }
 
     this.wantsPlaying = ecsPlaying
@@ -354,10 +390,11 @@ export class WebVideoPlayer {
     if (this.isPlaybackBlocked()) return
 
     if (ecsPlaying) {
-      if (!this.liveKitSource && this.isAtEnd() && !ecsPlayingChanged) {
+      // Only hold when the browser truly finished (video.ended). Never use partial duration.
+      if (!this.liveKitSource && this.video.ended && !ecsPlayingChanged) {
+        this.holdingAtEnd = true
         this.wantsPlaying = false
         this.bumpPlayGeneration()
-        this.video.pause()
         return
       }
       if (this.usesSharedLiveKit) void this.tryPlayShared(getSharedLiveKitVideoStream().video)
@@ -365,9 +402,54 @@ export class WebVideoPlayer {
       this.syncThrottledPlayback()
     } else {
       this.bumpPlayGeneration()
+      this.playInFlight = false
       if (!this.usesSharedLiveKit) this.video.pause()
       this.syncThrottledPlayback()
     }
+  }
+
+  /**
+   * ECS position is almost always stale (default 0, multiplayer sync, VideoEvent lag).
+   * Only seek when paused / cold start / explicit user restart — never mid-playback.
+   */
+  private maybeApplyEcsPosition(
+    rawPosition: number | undefined,
+    ecsPlaying: boolean,
+    ecsPlayingChanged: boolean,
+    options?: { fromEcsSync?: boolean; fromUserToggle?: boolean }
+  ): void {
+    const specPosition = Math.max(rawPosition ?? 0, 0)
+    const positionFieldChanged =
+      this.lastSpecPosition === undefined || Math.abs(specPosition - this.lastSpecPosition) > 0.05
+    if (!positionFieldChanged) {
+      if (ecsPlayingChanged) this.lastSpecPosition = this.video.currentTime
+      return
+    }
+
+    const userToggle = options?.fromUserToggle === true
+    // After first frame of playback, ignore ECS position entirely while ECS wants play
+    // (threejs.dcl.eth Sync-Components + asset-pack rebroadcast position:0).
+    if (ecsPlaying && this.hasStartedPlayback && !userToggle) {
+      this.lastSpecPosition = this.video.currentTime
+      return
+    }
+    // While HTML element is playing, never seek (even before hasStartedPlayback settles).
+    if (!this.video.paused && !this.video.ended && !userToggle) {
+      this.lastSpecPosition = this.video.currentTime
+      return
+    }
+
+    if (
+      Number.isFinite(specPosition) &&
+      Math.abs(this.video.currentTime - specPosition) > 0.25
+    ) {
+      try {
+        this.video.currentTime = specPosition
+      } catch {
+        /* ignore seek before metadata */
+      }
+    }
+    this.lastSpecPosition = specPosition
   }
 
   dispose(): void {
@@ -399,10 +481,9 @@ export class WebVideoPlayer {
 
   isAtEnd(): boolean {
     if (this.liveKitSource) return false
-    if (this.video.ended) return true
-    const duration = this.video.duration
-    if (!Number.isFinite(duration) || duration <= 0) return false
-    return this.video.currentTime >= duration - 0.35
+    // Duration-based end is unsafe for HLS/Vimeo (partial duration reports).
+    // Only the browser `ended` event is authoritative.
+    return this.video.ended === true || this.holdingAtEnd
   }
 
   private isPlaybackBlocked(): boolean {
@@ -537,6 +618,9 @@ export class WebVideoPlayer {
     this.clearMediaSource()
     this.loadedSrc = mediaUrl
     this.hasHadRenderableFrame = false
+    this.hasStartedPlayback = false
+    this.playInFlight = false
+    this.pausedWantingPlaySince = 0
     this.setState(VS_LOADING)
 
     if (isHlsUrl(mediaUrl)) {
@@ -544,16 +628,46 @@ export class WebVideoPlayer {
         const mod = await import('hls.js')
         const Hls = mod.default as HlsConstructor
         if (Hls.isSupported()) {
+          // Vimeo external playlists: fMP4 + separate audio groups. Vite worker URLs
+          // break TS demux — keep enableWorker false. Larger buffers help multi-audio.
           const hls = new Hls({
-            // Vite-bundled worker URLs often break TS demux (DEMUXER_ERROR_COULD_NOT_PARSE).
             enableWorker: false,
-            lowLatencyMode: false
+            lowLatencyMode: false,
+            maxBufferLength: 60,
+            maxMaxBufferLength: 120,
+            backBufferLength: 30,
+            startLevel: -1,
+            capLevelToPlayerSize: false
           })
           const errorEvent = Hls.Events?.ERROR ?? 'hlsError'
+          let mediaErrorRecoveries = 0
           hls.on?.(errorEvent, (_event, data) => {
             if (!data.fatal) return
+            if (data.type === 'mediaError' && mediaErrorRecoveries < 3) {
+              mediaErrorRecoveries += 1
+              try {
+                hls.recoverMediaError?.()
+                this.playInFlight = false
+                if (this.wantsPlaying && !this.isPlaybackBlocked()) void this.tryPlay()
+                return
+              } catch {
+                /* fall through */
+              }
+            }
+            if (data.type === 'networkError') {
+              try {
+                hls.startLoad?.(-1)
+                return
+              } catch {
+                /* fall through */
+              }
+            }
             console.warn('[WebVideoPlayer] HLS fatal error', data.type, data.details, mediaUrl)
             this.setState(VS_ERROR)
+          })
+          // Auto-start once levels/audio groups are ready (Vimeo multi-audio).
+          hls.on?.('hlsManifestParsed', () => {
+            if (this.wantsPlaying && !this.isPlaybackBlocked()) void this.tryPlay()
           })
           hls.attachMedia(this.video)
           hls.loadSource(mediaUrl)
@@ -616,24 +730,50 @@ export class WebVideoPlayer {
 
   private bumpPlayGeneration(): void {
     this.playGeneration++
+    this.playInFlight = false
   }
 
   private restartFromBeginning(): void {
     this.holdingAtEnd = false
-    this.video.currentTime = 0
+    this.hasStartedPlayback = false
+    this.playInFlight = false
+    try {
+      this.video.currentTime = 0
+    } catch {
+      /* ignore */
+    }
     this.lastSpecPosition = 0
     this.wantsPlaying = true
   }
 
   private async tryPlay(): Promise<void> {
     if (!this.userGestureUnlocked || this.isPlaybackBlocked() || !this.wantsPlaying) return
+    if (this.holdingAtEnd || this.video.ended) return
+    // Already playing or a play() promise is in flight — don't abort it.
+    if (!this.video.paused && this.state === VS_PLAYING) return
+    if (this.playInFlight) return
+
+    this.playInFlight = true
     const gen = ++this.playGeneration
     try {
       await this.video.play()
     } catch (err) {
       if (gen !== this.playGeneration) return
+      // AbortError: another pause/load raced — tickPlayback will recover after debounce.
       if (err instanceof DOMException && err.name === 'AbortError') return
       console.warn('[WebVideoPlayer] play() blocked or failed', err, this.loadedSrc)
+    } finally {
+      if (gen === this.playGeneration) this.playInFlight = false
     }
+  }
+
+  /** Push canvas uploads and re-queue materials once the decoder has drawable dimensions. */
+  private notifyDrawableFrame(): void {
+    const video = this.usesSharedLiveKit ? getSharedLiveKitVideoStream().video : this.video
+    if (video.videoWidth > 0 && video.videoHeight > 0) {
+      this.hasHadRenderableFrame = true
+      if (!this.usesSharedLiveKit) this.throttledTexture?.notifySourceChanged()
+    }
+    if (this.canAttachTexture()) this.onFrameReady?.()
   }
 }

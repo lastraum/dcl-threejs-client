@@ -310,6 +310,8 @@ uniform float uColorMaxHeight;
 
 uniform vec3 uSunPosition;
 uniform vec3 uSunColor;
+uniform vec3 uAmbient;
+uniform float uLightLevel;
 uniform float uSpecularPower;
 uniform float uSpecularMin;
 uniform float uSpecularMax;
@@ -362,17 +364,24 @@ void main() {
     vec3 normal = normalize(vNormal);
     vec3 viewDirection = normalize(vViewDirection);
     vec3 lightDirection = normalize(uSunPosition);
+    float lightLevel = max(0.0, uLightLevel);
 
     float heightMask = smoothstep(uColorMinHeight, uColorMaxHeight, vHeight);
     vec3 baseWaterColor = mix(uWaterDeep, uWaterShallow, heightMask);
+
+    // Body lighting: fixed deep/shallow albedo was full-bright day or night (#21).
+    // Multiply by ambient + scaled key so midnight / celestials-off go dark.
+    float ndl = max(0.0, dot(normal, lightDirection));
+    vec3 bodyLight = uAmbient * 1.65 + uSunColor * (0.22 + 0.55 * ndl);
+    bodyLight *= mix(0.08, 1.0, clamp(lightLevel, 0.0, 1.0));
 
     float sssAlignment = max(0.0, dot(viewDirection, -lightDirection));
     float sssTerm = pow(sssAlignment, uSssPower) * uSssScale;
     float sssMask = smoothstep(uSssMinHeight, uSssMaxHeight, vHeight);
     float sssLightEmmission = max(0.0, dot(normal, -lightDirection) + uSssWrap);
-    sssMask *= sssLightEmmission;
+    sssMask *= sssLightEmmission * lightLevel;
     vec3 sssColor = uWaterSSS * sssTerm * sssMask;
-    vec3 waterInside = baseWaterColor + sssColor;
+    vec3 waterInside = baseWaterColor * bodyLight + sssColor;
 
     vec3 upVector = vec3(0.0, 1.0, 0.0);
     vec3 fresnelNormal = normalize(mix(normal, upVector, uFresnelSmoothness));
@@ -380,6 +389,8 @@ void main() {
     vec3 envReflection = uUseEnvMap
         ? textureLod(uEnvMap, reflectionVector, 1.5).rgb
         : mix(uSkyHorizon, uSkyZenith, smoothstep(-0.15, 0.85, reflectionVector.y));
+    // uSky* already scaled in JS; keep a hard floor of zero when lights are off.
+    envReflection *= clamp(lightLevel, 0.0, 1.0);
 
     float fresnelFactor = calculateFresnel(viewDirection, fresnelNormal, 0.02, 1.0);
 
@@ -389,7 +400,7 @@ void main() {
     vec3 directSpecular = uSunColor * sunPathMask * uSpecularIntensity;
     vec3 surfaceReflection = envReflection + directSpecular;
 
-    vec3 finalColor = mix(waterInside, surfaceReflection, fresnelFactor);
+    vec3 finalColor = mix(waterInside, surfaceReflection, fresnelFactor * clamp(lightLevel * 1.15, 0.0, 1.0));
     finalColor = clamp(finalColor, 0.0, 1.0);
 
     vec2 foamUv1 = vUv * uFoamScale;
@@ -404,24 +415,25 @@ void main() {
     turbulence *= uScale * uFoamPower * 10.0;
     float jacobianCoverage = smoothstep(uFoamThreshold, uFoamThreshold + uFoamEdgeSoftness, turbulence);
     float foamMask = jacobianCoverage * pow(foamNoise, 1.0 / uFoamDistortion);
-    foamMask = clamp(foamMask, 0.0, 1.0);
+    foamMask = clamp(foamMask, 0.0, 1.0) * clamp(lightLevel, 0.0, 1.0);
 
-    finalColor = mix(finalColor, uFoamColor, foamMask);
+    finalColor = mix(finalColor, uFoamColor * lightLevel, foamMask);
 
-    float alpha = 1.0;
+    // Island: opaque water + cutout shore (not alpha-blend). Soft alpha was drawing
+    // the whole ocean in Three's transparent pass and overdrawing cutout planes (#19).
     if (uIslandMask) {
         float waterSurfaceY = vWorldPosition.y;
         float landLift = vTerrainY - waterSurfaceY;
-        if (landLift > 0.25) discard;
-
-        alpha = 1.0 - smoothstep(-0.1, 0.2, landLift);
+        // Cutout-style edge: discard land + soft shore band; keep foam where we remain.
+        float shoreKeep = 1.0 - smoothstep(-0.08, 0.18, landLift);
+        if (shoreKeep < 0.5) discard;
 
         float shoreMeet = 1.0 - smoothstep(0.0, 1.4, abs(vTerrainY - waterSurfaceY));
-        float foamBand = shoreMeet * (0.55 + 0.45 * foamMask);
-        finalColor = mix(finalColor, vec3(0.95, 0.97, 0.96), foamBand * 0.5);
+        float foamBand = shoreMeet * (0.55 + 0.45 * foamMask) * clamp(lightLevel, 0.0, 1.0);
+        finalColor = mix(finalColor, vec3(0.95, 0.97, 0.96) * lightLevel, foamBand * 0.5);
     }
 
-    fragColor = vec4(finalColor, alpha);
+    fragColor = vec4(finalColor, 1.0);
 }
 `
 

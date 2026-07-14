@@ -12,15 +12,21 @@ import {
 } from './dclEvents'
 import {
   fetchDclGenesisPlaceAtPosition,
+  fetchDclPlacesWorlds,
   fetchDclWorldsWithNameFallback,
   formatOwnerShort,
   placeOwnerAddress,
   resolveParcelBasePosition,
+  worldNameSearchCandidates,
   type DclPlacesWorld
 } from './dclPlaces'
 import { fetchPublicSceneTitle } from './sceneDisplayTitle'
 
 const WORLDS = 'https://worlds-content-server.decentraland.org'
+/** Same default as dcl-companion server (`MARKETPLACE_SUBGRAPH_URL`). */
+const MARKETPLACE_SUBGRAPH =
+  (import.meta.env.VITE_MARKETPLACE_SUBGRAPH_URL as string | undefined)?.trim().replace(/\/$/, '') ||
+  'https://subgraph.decentraland.org/marketplace'
 
 export type SceneLandingMeta = {
   title: string
@@ -30,8 +36,83 @@ export type SceneLandingMeta = {
   kind: 'parcel' | 'world'
   userCount: number
   ownerAddress: string | null
+  /**
+   * Owner wallets for settings gear — mirrors companion `sceneProfile.ownerAddresses`:
+   * Places owner/creator + marketplace NAME NFT owner (worlds). No worlds `/about`.
+   */
+  ownerAddresses: string[]
   ownerDisplayName: string
   categories: string[]
+}
+
+/** ENS label for a world pointer: `rickroll.dcl.eth` → `rickroll`. */
+export function worldNameLabelFromPointer(worldName: string): string {
+  const n = worldName.trim().toLowerCase()
+  if (n.endsWith('.dcl.eth')) return n.slice(0, -'.dcl.eth'.length)
+  return n
+}
+
+/**
+ * On-chain owner of the Decentraland NAME NFT for `{label}.dcl.eth`.
+ * Same GraphQL as dcl-companion `fetchDclWorldNameOwnerAddress` (marketplace subgraph).
+ */
+export async function fetchWorldNameOwnerAddress(worldName: string): Promise<string | null> {
+  const label = worldNameLabelFromPointer(worldName)
+  if (!label || !/^[a-z0-9][a-z0-9-]*$/.test(label)) return null
+  const query = `query worldNameOwner($subLabel: String!) {
+    nfts(first: 25, where: { category: ens, ens_: { subdomain_starts_with_nocase: $subLabel } }) {
+      name
+      owner { id }
+      ens { subdomain }
+    }
+  }`
+  try {
+    const res = await fetch(MARKETPLACE_SUBGRAPH, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        operationName: 'worldNameOwner',
+        query,
+        variables: { subLabel: label }
+      })
+    })
+    if (!res.ok) return null
+    const body = (await res.json()) as {
+      data?: {
+        nfts?: Array<{
+          name?: string | null
+          owner?: { id?: string | null } | null
+          ens?: { subdomain?: string | null } | null
+        } | null>
+      }
+    }
+    const nfts = body.data?.nfts ?? []
+    const realm = `${label}.dcl.eth`
+    for (const row of nfts) {
+      const ownerId = row?.owner?.id?.trim().toLowerCase()
+      if (!ownerId || !/^0x[a-f0-9]{40}$/.test(ownerId)) continue
+      const nm = (typeof row?.name === 'string' ? row.name : '').toLowerCase()
+      const sd = (typeof row?.ens?.subdomain === 'string' ? row.ens.subdomain : '').toLowerCase()
+      if (sd === label || nm === label || nm === realm) return ownerId
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function collectOwnerAddresses(
+  ...candidates: Array<string | null | undefined>
+): { primary: string | null; all: string[] } {
+  const all: string[] = []
+  const seen = new Set<string>()
+  for (const raw of candidates) {
+    const a = raw?.trim().toLowerCase()
+    if (!a || !/^0x[a-f0-9]{40}$/.test(a) || seen.has(a)) continue
+    seen.add(a)
+    all.push(a)
+  }
+  return { primary: all[0] ?? null, all }
 }
 
 async function ownerDisplayName(address: string | null, fallback: string): Promise<string> {
@@ -166,9 +247,11 @@ export async function fetchSceneLandingMeta(
       fetchDclGenesisPlaceAtPosition(route.x, route.y).catch(() => null)
     ])
 
-    const owner = place ? placeOwnerAddress(place) : null
+    const owners = place
+      ? collectOwnerAddresses(place.creatorAddress, place.owner, placeOwnerAddress(place))
+      : collectOwnerAddresses(null)
     const fallbackOwner = parcel?.sceneName ?? place?.title ?? parcel?.parcelLabel ?? 'Creator'
-    const ownerDisplay = await ownerDisplayName(owner, fallbackOwner)
+    const ownerDisplay = await ownerDisplayName(owners.primary, fallbackOwner)
 
     const title = await fetchPublicSceneTitle(route)
 
@@ -179,27 +262,55 @@ export async function fetchSceneLandingMeta(
       pointerLabel: `${route.x}, ${route.y}`,
       kind: 'parcel',
       userCount: place?.userCount ?? 0,
-      ownerAddress: owner,
+      ownerAddress: owners.primary,
+      ownerAddresses: owners.all,
       ownerDisplayName: ownerDisplay,
       categories: place?.categories ?? []
     }
   }
 
-  const worlds = await fetchDclWorldsWithNameFallback({
-    search: route.worldName,
-    limit: 8,
-    orderBy: 'most_active'
-  }).catch(() => [] as DclPlacesWorld[])
+  // Prefer exact `names=` match so Places owner wallet is reliable for world-name owners.
+  const nameCandidates = worldNameSearchCandidates(route.worldName)
+  const [byName, bySearch] = await Promise.all([
+    nameCandidates.length
+      ? fetchDclPlacesWorlds({
+          names: nameCandidates,
+          limit: 8,
+          orderBy: 'most_active'
+        }).catch(() => [] as DclPlacesWorld[])
+      : Promise.resolve([] as DclPlacesWorld[]),
+    fetchDclWorldsWithNameFallback({
+      search: route.worldName,
+      limit: 8,
+      orderBy: 'most_active'
+    }).catch(() => [] as DclPlacesWorld[])
+  ])
+  const worlds = [...byName]
+  for (const w of bySearch) {
+    if (!worlds.some((x) => x.id === w.id || x.worldName.toLowerCase() === w.worldName.toLowerCase())) {
+      worlds.push(w)
+    }
+  }
 
   const needle = route.worldName.toLowerCase()
+  const needleShort = worldNameLabelFromPointer(route.worldName)
   const world =
     worlds.find((w) => w.worldName.toLowerCase() === needle) ??
+    worlds.find((w) => w.worldName.toLowerCase() === `${needleShort}.dcl.eth`) ??
+    worlds.find((w) => w.worldName.toLowerCase() === needleShort) ??
     worlds.find((w) => w.id.toLowerCase() === needle) ??
     worlds[0]
 
-  const owner = world ? placeOwnerAddress(world) : null
+  // Companion discover: Places/deploy owners + marketplace NAME owner (not worlds /about).
+  const chainOwner = await fetchWorldNameOwnerAddress(route.worldName).catch(() => null)
+  const owners = collectOwnerAddresses(
+    chainOwner,
+    world?.creatorAddress,
+    world?.owner,
+    world ? placeOwnerAddress(world) : null
+  )
   const shortName = route.worldName.replace(/\.dcl\.eth$/i, '').trim() || route.worldName
-  const ownerDisplay = await ownerDisplayName(owner, shortName)
+  const ownerDisplay = await ownerDisplayName(owners.primary, shortName)
   const description = await resolveWorldDescription(route.worldName)
   const title = await fetchPublicSceneTitle(route)
 
@@ -210,7 +321,8 @@ export async function fetchSceneLandingMeta(
     pointerLabel: route.worldName,
     kind: 'world',
     userCount: world?.userCount ?? 0,
-    ownerAddress: owner,
+    ownerAddress: owners.primary,
+    ownerAddresses: owners.all,
     ownerDisplayName: ownerDisplay,
     categories: []
   }

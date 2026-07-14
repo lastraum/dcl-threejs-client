@@ -99,6 +99,16 @@ let tickInFlight = false
 let tickQueued = false
 let tickStartedAt = 0
 let lastExecutedAt = 0
+/**
+ * Scene-time ledger — sum of positive dt passed to engine.update since wallClockOriginMs.
+ * Intended so NeonScreen pauseDuration/scrollDuration (`elapsed += dt`) track wall clock.
+ *
+ * KNOWN (lastraum, 2026-07-14): still insufficient — plaza marquee row pause does not honor
+ * scene pauseDuration (no hold / ~instant). Wall-clock ledger + engine.update wrap did not fix
+ * it. Parked for follow-up; see TweenBridge KNOWN note.
+ */
+let wallClockOriginMs = 0
+let sceneTimeSec = 0
 let bootSealed = false
 let hydrationTimer: ReturnType<typeof setInterval> | null = null
 let diagCount = 0
@@ -127,8 +137,28 @@ export function initSceneEngineScheduler(cfg: SceneEngineSchedulerConfig): void 
   config = cfg
 }
 
+type WallClockWrappedEngine = IEngine & { __threejsWallClockWrapped?: boolean }
+
+/**
+ * Intercept every engine.update — SDK onUpdate, pointer ticks, cooperative, flight.
+ * Positive dt is clamped to wall-clock debt and committed to the scene-time ledger so
+ * NeonScreen pauseDuration cannot be compressed by double ticks or unpatched paths.
+ */
+function wrapEngineUpdateWithWallClock(eng: IEngine): void {
+  const wrapped = eng as WallClockWrappedEngine
+  if (wrapped.__threejsWallClockWrapped) return
+  const nativeUpdate = eng.update.bind(eng)
+  wrapped.update = async (dt: number) => {
+    const applied = dt > 0 ? clampDtToWallClock(dt) : 0
+    await nativeUpdate(applied)
+    commitSceneDt(applied)
+  }
+  wrapped.__threejsWallClockWrapped = true
+}
+
 export function bindSceneEngineScheduler(eng: IEngine | null): void {
   engine = eng
+  if (eng) wrapEngineUpdateWithWallClock(eng)
   bindWorkerUiSchedulerEngine(eng)
 }
 
@@ -139,6 +169,8 @@ export function resetSceneEngineScheduler(): void {
   tickQueued = false
   tickStartedAt = 0
   lastExecutedAt = 0
+  wallClockOriginMs = 0
+  sceneTimeSec = 0
   bootSealed = false
   diagCount = 0
   tickEpoch = 0
@@ -234,11 +266,53 @@ export function setSceneEngineLastExecutedAt(ms: number): void {
   lastExecutedAt = ms
 }
 
+/**
+ * Wall-clock debt still available for scene systems (seconds).
+ * sum(positive engine.update dt) is not allowed to exceed wall time since origin.
+ */
+function wallClockDebtSec(now = performance.now()): number {
+  if (wallClockOriginMs <= 0) return 0
+  const wallSec = (now - wallClockOriginMs) / 1000
+  return Math.max(0, wallSec - sceneTimeSec)
+}
+
+/**
+ * Positive dt for engine.update (seconds), hard-capped by wall-clock debt.
+ * dt=0 callers (TweenState inject, pointer UI) must pass 0 explicitly and not call this.
+ */
 function resolveDt(): number {
-  const cfg = config!
-  const elapsed = lastExecutedAt > 0 ? (performance.now() - lastExecutedAt) / 1000 : 0.1
-  const floor = cfg.isHydration() ? cfg.hydrationIntervalMs / 1000 : 1 / 120
-  return Math.min(Math.max(elapsed, floor), 0.1)
+  const now = performance.now()
+  if (wallClockOriginMs <= 0) {
+    // Seed origin one starter interval in the past so the first tick has real debt
+    // (origin=now would yield debt=0 forever until a later frame).
+    const starter = Math.min(0.1, Math.max(1 / 120, resolveIntervalMs() / 1000))
+    wallClockOriginMs = now - starter * 1000
+    sceneTimeSec = 0
+    return starter
+  }
+  const debt = wallClockDebtSec(now)
+  if (debt <= 1e-6) return 0
+  return Math.min(debt, 0.1)
+}
+
+/** Clamp an explicit dt (e.g. flight pump) so it cannot race NeonScreen past wall clock. */
+function clampDtToWallClock(requested: number): number {
+  if (!(requested > 0)) return 0
+  if (wallClockOriginMs <= 0) {
+    // Seed ledger, then clamp request to the first-tick debt.
+    const starter = resolveDt()
+    return Math.min(requested, starter, 0.1)
+  }
+  const debt = wallClockDebtSec()
+  if (debt <= 1e-6) return 0
+  return Math.min(requested, debt, 0.1)
+}
+
+/** Commit scene time after a successful eng.update with dt>0. */
+function commitSceneDt(dt: number): void {
+  if (!(dt > 0)) return
+  sceneTimeSec += dt
+  lastExecutedAt = performance.now()
 }
 
 function resolveIntervalMs(): number {
@@ -248,7 +322,10 @@ function resolveIntervalMs(): number {
 
 export function sceneEngineTickDue(now: number): boolean {
   if (!engine || !bootSealed) return false
-  if (lastExecutedAt <= 0) return true
+  // Prefer wall-clock debt: if we already spent scene time up to wall, wait.
+  // Also respect the configured play/hydration interval so we don't thrash at 0-debt.
+  if (wallClockOriginMs <= 0 || lastExecutedAt <= 0) return true
+  if (wallClockDebtSec(now) <= 1e-6) return false
   return now - lastExecutedAt >= resolveIntervalMs()
 }
 
@@ -338,17 +415,26 @@ async function runCooperativeEngineTickPhases(engineDt: number): Promise<void> {
   const cfg = config!
   const eng = engine!
   if (cfg.pointerBlocksTick()) return
+  // Re-clamp at execution time — resolveDt may have been computed before an async gap.
+  // eng.update is wall-clock wrapped (clamp + ledger commit); skip empty positive requests.
+  const dt = clampDtToWallClock(engineDt)
+  if (dt <= 0 && engineDt > 0) {
+    // No wall debt left (another path already spent it) — skip systems this turn.
+    return
+  }
   const epoch = tickEpoch
   if (diagCount < 8) {
     diagCount++
     cfg.log(
-      `[sceneWorker] engine tick #${diagCount} dt=${engineDt.toFixed(3)} hydration=${cfg.isHydration()}`
+      `[sceneWorker] engine tick #${diagCount} dt=${dt.toFixed(3)} hydration=${cfg.isHydration()}` +
+        ` sceneT=${sceneTimeSec.toFixed(2)}s debt=${wallClockDebtSec().toFixed(3)}`
     )
   }
   enterCooperativeSchedulerTick()
   try {
     await runSerializedEngineUpdate(async () => {
-      await eng.update(engineDt)
+      // Wrapped update clamps again + commits sceneTimeSec.
+      await eng.update(dt)
     })
   } finally {
     leaveCooperativeSchedulerTick()
@@ -357,14 +443,13 @@ async function runCooperativeEngineTickPhases(engineDt: number): Promise<void> {
     cfg.log('[sceneWorker] cooperative tick — preempted during engine.update')
     return
   }
-  lastExecutedAt = performance.now()
   cfg.onAfterEngineTick?.()
   // UI fingerprint only when react-ecs ran — skipped ticks cannot flip display/text via react.
   if (!didSkipCooperativeReactEcsThisTick()) {
     await emitSceneUiMountSnapshotIfDirty(eng)
   }
   if (!cfg.isHydration() && cfg.onUnifiedPlayFrameComplete) {
-    await cfg.onUnifiedPlayFrameComplete(engineDt)
+    await cfg.onUnifiedPlayFrameComplete(dt)
   }
 }
 
@@ -405,7 +490,15 @@ export function forceRecoverStuckSceneEngineTick(reason: string): void {
   const requeue = tickQueued
   tickQueued = false
   if (requeue) {
-    queueMicrotask(() => requestSceneEngineTick())
+    // Only re-fire when the play/hydration interval has elapsed — immediate re-entry
+    // with a dt floor used to invent NeonScreen wall-clock (row pause disappeared).
+    queueMicrotask(() => {
+      if (sceneEngineTickDue(performance.now())) {
+        requestSceneEngineTick()
+      } else {
+        tickQueued = true
+      }
+    })
   }
 }
 
@@ -416,15 +509,29 @@ export function preemptSceneEngineTick(): void {
   tickStartedAt = 0
 }
 
-/** One engine.update flush — used after MOVE CAMERA flight onUpdate while ticks are paused. */
+/**
+ * One engine.update flush — used after MOVE CAMERA flight onUpdate while ticks are paused,
+ * and after TweenState inject (dt=0) so tweenCompleted can fire without advancing wall clocks.
+ *
+ * eng.update is wall-clock wrapped: dt=0 commits nothing; positive dt is clamped to debt.
+ */
 export async function runSceneEngineUpdateNow(engineDt?: number): Promise<void> {
   const eng = engine
   if (!eng || !bootSealed || !config) return
-  const dt = engineDt ?? resolveDt()
-  await runSerializedEngineUpdate(async () => {
-    await eng.update(dt)
-  })
-  lastExecutedAt = performance.now()
+  // Explicit 0 → transport-only (TweenState / pointer). Undefined → cooperative wall debt.
+  const dt = engineDt === undefined ? resolveDt() : engineDt <= 0 ? 0 : engineDt
+  try {
+    await runSerializedEngineUpdate(async () => {
+      await eng.update(dt)
+    })
+  } catch (err) {
+    // Scene systems can throw after system-loop catch if update itself rejects.
+    config.log(
+      `[sceneWorker] engine.update(${dt}) failed (continuing): ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    )
+  }
   config.onAfterEngineTick?.()
 }
 
@@ -438,17 +545,24 @@ export function requestSceneEngineTick(): void {
     tickQueued = true
     return
   }
+  const dt = resolveDt()
+  // No wall time since last real tick — skip. Queued thrash must not invent scene time.
+  if (dt <= 0 && lastExecutedAt > 0) {
+    return
+  }
   const epoch = tickEpoch
   tickInFlight = true
   tickStartedAt = performance.now()
-  const dt = resolveDt()
   void executeTickWork(dt).finally(() => {
     if (epoch !== tickEpoch) return
     tickInFlight = false
     tickStartedAt = 0
     if (tickQueued && config && !config.pointerBlocksTick()) {
-      tickQueued = false
-      requestSceneEngineTick()
+      // Keep tickQueued if interval not due yet — drainQueued / play-frame will fire later.
+      if (sceneEngineTickDue(performance.now())) {
+        tickQueued = false
+        requestSceneEngineTick()
+      }
     }
   })
 }
@@ -456,6 +570,7 @@ export function requestSceneEngineTick(): void {
 export function drainQueuedSceneEngineTick(): void {
   if (!tickQueued || tickInFlight || !config) return
   if (config.pointerBlocksTick()) return
+  if (!sceneEngineTickDue(performance.now())) return
   tickQueued = false
   requestSceneEngineTick()
 }
@@ -475,15 +590,22 @@ export async function runSceneEngineBootTick(eng: IEngine): Promise<void> {
   }
 }
 
+/**
+ * After inbound LWW/append inject — request a real-dt engine tick only when systems need
+ * time to advance (raycast/video/trigger/pointer).
+ *
+ * TweenState inject must NOT request a real-dt tick: NeonScreen (and similar) use wall-clock
+ * elapsed in addSystem; extra ticks from ambient tween-state-deliver compressed pauseDuration
+ * to near zero. Tween paths use runSceneEngineUpdateNow(0) instead.
+ */
 export function sceneEngineTickAfterInboundInject(counts: RendererInboundInjectCounts): void {
-  const needsSystems =
+  const needsTimedSystems =
     counts.raycastPuts > 0 ||
     counts.videoPlayerPuts > 0 ||
     counts.triggerAppends > 0 ||
     counts.pointerAppends > 0 ||
-    counts.videoAppends > 0 ||
-    counts.tweenPuts > 0
-  if (needsSystems) requestSceneEngineTick()
+    counts.videoAppends > 0
+  if (needsTimedSystems) requestSceneEngineTick()
 }
 
 function countWorkerUiMount(eng: IEngine): number {
@@ -508,7 +630,7 @@ async function flushReactEcsForUiSnapshot(
     await runSerializedEngineUpdate(async () => {
       await eng.update(0)
     })
-    lastExecutedAt = performance.now()
+    // Do not bump lastExecutedAt on dt=0 — preserves wall-clock for NeonScreen etc.
     const mount = countWorkerUiMount(eng)
     const fp = computeWorkerUiFingerprint(eng)
     log(
@@ -533,7 +655,6 @@ async function runPointerNonUiPhase(eng: IEngine): Promise<void> {
   await runSerializedEngineUpdate(async () => {
     await eng.update(0)
   })
-  lastExecutedAt = performance.now()
   config?.onAfterEngineTick?.()
 }
 
@@ -569,8 +690,8 @@ export async function runSceneEnginePointerTick(
         await eng.update(0)
       })
     }
-    lastExecutedAt = performance.now()
     // After DOWN — MOVE CAMERA freeze / STOP clear may already be applied.
+    // dt=0 updates must not advance lastExecutedAt (marquee NeonScreen wall-clock).
     cfg.onAfterEngineTick?.()
     if (injectOnlyUiClick) {
       cfg.log('[sceneWorker] pointer tick — skipping exports.onUpdate (inject-only UI click)')
@@ -583,7 +704,6 @@ export async function runSceneEnginePointerTick(
         await eng.update(0)
       })
       // After UP — republish player-frame if STOP/clear landed on this edge.
-      lastExecutedAt = performance.now()
       cfg.onAfterEngineTick?.()
     }
     if (injectOnlyUiClick) {

@@ -1,0 +1,50 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:curtained_hair",
+  "data": {
+    "category": "hair",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "hair",
+      "Curtained",
+      "hair",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "Hair_BookStyle.glb",
+        "contents": [
+          {
+            "key": "Hair_BookStyle.glb",
+            "url": "Hair_BookStyle.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "Hair_BookStyle.glb",
+        "contents": [
+          {
+            "key": "Hair_BookStyle.glb",
+            "url": "Hair_BookStyle.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      }
+    ]
+  }
+}

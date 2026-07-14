@@ -1,0 +1,59 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:casual_hair_01",
+  "data": {
+    "category": "hair",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "hair",
+      "Casual",
+      "Hair",
+      "Style",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "M_Hair_Standard_01.glb",
+        "contents": [
+          {
+            "key": "F_Hair_Standard_01.glb",
+            "url": "F_Hair_Standard_01.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          },
+          {
+            "key": "M_Hair_Standard_01.glb",
+            "url": "M_Hair_Standard_01.glb"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "F_Hair_Standard_01.glb",
+        "contents": [
+          {
+            "key": "F_Hair_Standard_01.glb",
+            "url": "F_Hair_Standard_01.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          },
+          {
+            "key": "M_Hair_Standard_01.glb",
+            "url": "M_Hair_Standard_01.glb"
+          }
+        ]
+      }
+    ]
+  }
+}

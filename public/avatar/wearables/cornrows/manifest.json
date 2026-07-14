@@ -1,0 +1,49 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:cornrows",
+  "data": {
+    "category": "hair",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "hair",
+      "Cornrow",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "Hair_Cornrows.glb",
+        "contents": [
+          {
+            "key": "Hair_Cornrows.glb",
+            "url": "Hair_Cornrows.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "Hair_Cornrows.glb",
+        "contents": [
+          {
+            "key": "Hair_Cornrows.glb",
+            "url": "Hair_Cornrows.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      }
+    ]
+  }
+}

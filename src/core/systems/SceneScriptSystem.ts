@@ -2514,9 +2514,13 @@ export class SceneScriptSystem {
   /** While GLTFs stream in, avoid pointer-crdt-deliver storms (each can run worker onUpdate). */
   private static readonly HYDRATION_CRDT_FLUSH_MIN_MS = 500
   private lastTweenDeliverAt = 0
-  /** Proactive TweenState push only after pointer delivery (click→complete parity). */
+  /**
+   * After pointer delivery, deliver at a faster cadence for click→tweenCompleted.
+   * Ambient textureMove (plaza marquee pause) always delivers via the lightweight path.
+   */
   private proactiveTweenPushUntil = 0
   private static readonly TWEEN_DELIVER_MIN_MS = 100
+  private static readonly TWEEN_DELIVER_FAST_MS = 50
   private static readonly PROACTIVE_TWEEN_PUSH_MS = 3000
 
   /**
@@ -2571,15 +2575,21 @@ export class SceneScriptSystem {
   }
 
   /**
-   * Push `TweenState` to the worker after pointer delivery only (throttled).
-   * Ambient Genesis tweens use the normal worker `crdt-send` path — no hot-loop push.
+   * Push renderer-owned `TweenState` to the worker (throttled, lightweight message).
+   * Ambient textureMove needs this for tweenCompleted → scene pauseDuration → next row;
+   * play-mode cold CRDT is fire-and-forget and too sparse. Uses encodeTweenStateOnly.
    */
   private deliverTweenStateToWorker(): void {
-    if (performance.now() > this.proactiveTweenPushUntil) return
     if (!this.worker || !this.running || !this.tweenBridge?.hasEncodeDirty()) return
     if (this.pointerAwaitingWorkerApply || this.pointerFlushInFlight) return
+    // Defer ambient push while GLTFs stream — avoid worker tick storms mid-hydration.
+    if (this.bridge?.isAssetHydrationMode()) return
     const now = performance.now()
-    if (now - this.lastTweenDeliverAt < SceneScriptSystem.TWEEN_DELIVER_MIN_MS) return
+    const minMs =
+      now <= this.proactiveTweenPushUntil
+        ? SceneScriptSystem.TWEEN_DELIVER_FAST_MS
+        : SceneScriptSystem.TWEEN_DELIVER_MIN_MS
+    if (now - this.lastTweenDeliverAt < minMs) return
     this.lastTweenDeliverAt = now
 
     const tweenDirty = this.tweenBridge.consumeEncodeDirty()

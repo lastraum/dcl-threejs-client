@@ -30,7 +30,7 @@ export type CommsProfileEntity = {
   baseUrl: string
 }
 
-type LambdaAvatarEntry = {
+export type LambdaAvatarEntry = {
   version?: number
   name?: string
   unclaimedName?: string
@@ -279,6 +279,22 @@ type ProfileWaiter = {
 
 const commsPeerProfiles = new Map<string, CommsPeerProfile>()
 const profileWaiters = new Map<string, Set<ProfileWaiter>>()
+
+/** Drop cached lambdas/profile rows after a successful Catalyst deploy. */
+export function clearProfileCaches(address?: string): void {
+  if (!address) {
+    profileCache.clear()
+    profileLambdaEntryCache.clear()
+    commsProfileCache.clear()
+    commsPeerProfiles.clear()
+    return
+  }
+  const key = address.toLowerCase()
+  profileCache.delete(key)
+  profileLambdaEntryCache.delete(key)
+  commsProfileCache.delete(key)
+  commsPeerProfiles.delete(key)
+}
 
 function resolveProfileWaiters(key: string, profile: AvatarProfile): void {
   const waiters = profileWaiters.get(key)

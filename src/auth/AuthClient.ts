@@ -10,12 +10,33 @@ import {
   signPersonalMessage
 } from './ethereumProvider'
 import { ensureMetaMaskProvider, shouldUseMetaMaskSdk } from './metaMaskSdk'
+import { loginWithAuthDapp } from './authDappLogin'
+import type { AuthDappLoginMethod } from './constants'
 
 export type LoginResult =
   | { kind: 'guest' }
   | { kind: 'wallet'; address: string; identity: AuthIdentity }
 
 export type StatusCallback = (msg: string) => void
+
+/** Progress for auth-dapp flows — includes 0–99 verification code to show in-app. */
+export type AuthProgress = {
+  message: string
+  /** Present while waiting for the auth tab to confirm (matches Explorer). */
+  verificationCode?: number | null
+}
+
+export type AuthProgressCallback = (progress: AuthProgress) => void
+
+export type { AuthDappLoginMethod }
+
+/** Social / WalletConnect / etc. via decentraland.org/auth tab + auth-api. */
+export async function loginWithProvider(
+  method: AuthDappLoginMethod,
+  onStatus?: StatusCallback | AuthProgressCallback
+): Promise<LoginResult> {
+  return loginWithAuthDapp(method, onStatus)
+}
 
 async function createWalletIdentity(
   address: string,

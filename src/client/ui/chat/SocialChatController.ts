@@ -28,14 +28,20 @@ export type SocialChatControllerOptions = {
 }
 
 function buildCommsTarget(scene: ResolvedScene): SceneCommsTarget {
+  const isWorld = scene.source.kind === 'world'
+  // Worlds: use lowercased commsPointer for gatekeeper (matches scene-stream-access + companion).
+  // about.realmName can be mixed-case (RickRoll.dcl.eth) and would join a different LiveKit room.
+  const realmName = isWorld
+    ? scene.commsPointer.trim().toLowerCase()
+    : scene.realm.realmName?.trim() || 'main'
   return {
     pointer: scene.commsPointer,
     baseParcel: scene.baseParcel,
     sceneId: scene.entityId ?? '',
-    realmName: scene.realm.realmName,
+    realmName,
     contentUrl: scene.realm.contentUrl,
     parcels: scene.parcels,
-    isWorld: scene.source.kind === 'world',
+    isWorld,
     sceneTitle: scene.title,
     metadataBlacklist: blacklistFromMetadata(scene.metadata)
   }
@@ -69,6 +75,38 @@ export class SocialChatController {
 
   getContentUrl(): string {
     return this.session.getLambdasUrl().replace(/\/lambdas$/, '')
+  }
+
+  /** Active scene-room LiveKit Cast/OBS video presence. */
+  hasRemoteVideoLive(): boolean {
+    return this.comms.hasRemoteVideoLive()
+  }
+
+  /** True when world/scene LiveKit is up (Join live can be offered). */
+  isLiveKitConnected(): boolean {
+    return this.comms.isLiveKitConnected()
+  }
+
+  /**
+   * Watch for remote LiveKit video (Cast / stream keys). Returns unsubscribe.
+   * Dynamically tracks world + scene rooms and keeps polling after OBS goes live.
+   */
+  watchRemoteVideoLive(onChange: (live: boolean) => void): () => void {
+    return this.comms.watchRemoteVideoLive(onChange)
+  }
+
+  /** Bind landing/player element to current Cast video track. */
+  bindLiveKitVideoSource(video: HTMLVideoElement, onUpdate?: () => void): () => void {
+    return this.comms.bindLiveKitVideoSource(video, onUpdate)
+  }
+
+  /** Companion-style Cast: attach best remote video into a host div. */
+  bindRemoteCastVideoToHost(
+    host: HTMLElement,
+    onUpdate?: (attached: boolean) => void,
+    opts?: { muted?: boolean; volume?: number }
+  ): () => void {
+    return this.comms.bindRemoteCastVideoToHost(host, onUpdate, opts)
   }
 
   applyLogin(login: LoginResult | null): void {

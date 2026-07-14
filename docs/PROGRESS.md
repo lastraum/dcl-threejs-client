@@ -2,11 +2,11 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-12 (**v0.7.0** on `main`)  
-> **Current phase:** **v0.7.0** released — lighting, graphics prefs P0–P2, Genesis reliability, camera ECS.  
+> **Last updated:** 2026-07-14 (**cast room-match fix** on `dev-latest` — ready for **v0.8.0** release)  
+> **Current phase:** Cut **v0.8.0** from `dev-latest` → `main` (landing Cast/stream keys, backpack colors, media/env fixes).  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
-> **Product next:** Phase 4 `/goto` · Phase 3 Watch Lite.  
+> **Product next:** Phase 4 `/goto` · Watch Lite polish (I'm live CTA deferred) · remaining backpack parity gaps (below).  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 
 ---
@@ -26,16 +26,154 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **2D shell nav + pages** | 🟢 | **Explore · Communities · Events** tabs on all non-play surfaces; `/communities`, `/events`, `/map`, full-screen `/profile` |
 | **2D social chat dock** | 🟡 **partial** | Floating dock on explorer/landing — thread list, scene chat, community thumbnails; **3D in-world chat** unchanged |
 | **Scene landing hub** | 🟢 | Hero, crowd, owner, description, events banner; companion-style **Jump in** progress bar (sidebar/HUD deferred until handoff) |
+| **Landing stream keys + Join Live** | 🟢 | Owner gear → OBS RTMP keys; scene LiveKit live detect (lowercase world realm = stream-key room); cast stage; go-live after landing open; **I'm live** CTA deferred |
 | **Community thumbnails** | 🟢 | `communityDisplayImageUrl` + proxy passthrough; detail-fetch fallback on image 404 |
 | **Dev panel in-app suggestions** | 🟢 | `</>` → **💡 Suggest** — form in panel; auto-attaches DCL name + route; files GitHub issues labeled `suggestion` via Cloudflare Worker (prod) or vite proxy (local dev) |
 | **VirtualCamera bind reliability** | 🟢 | Scene-agnostic MainCamera→VC hydrate; locked shots use worker world pose; follow is f(player)+local; live Transform exclusive while bound |
 | **Skybox time authority** | 🟢 | Scene fixed → session custom (tab) → Auto cycle; Night/Day panel respects scene lock |
+| **scene.json skyboxConfig sun/moon** | 🟢 | Creator sun/moon intensity + colors from `skyboxConfig` / environment (#17) |
 | **Unity outdoor lighting parity** | 🟢 | Trilight ambient, soft sun/moon shadows, anim intensity, soft PBR; crescent moon + night fill |
 | **Graphics prefs (P0–P2)** | 🟢 | Preset L/M/H/Custom · shadows · lights · res scale · FPS · **MSAA**; Resolution/Fullscreen/VSync hidden or stub |
 | **Graphics P3 distances** | ⬜ | **Not started** — Scene Distance / Landscape Distance / Shadows Distance still gray stubs (no cull backend) |
 | **Graphics P4 post-FX** | ⬜ | Bloom / HDR / avatar outline still stubs |
+| **Multi-provider auth (DCL auth-dapp)** | 🟢 | Google / Discord / Apple / X / WalletConnect / MetaMask via Explorer auth-dapp + verification code; profile menu + Jump In |
+| **2D backpack equip + Catalyst deploy** | 🟡 **partial** | Wearables + **emotes** + **base eyes/body shape** + **eye/hair/skin colors**; deploy on save; outfits/marketplace still open |
+| **Custom VRM / OSA library** | 🟢 | Device library + open-source avatars tab (client-only; beyond Unity Explorer) |
+| **Dev texture proxy host fix** | 🟢 | `/api/texture` routes to encoded host (not hard-coded arweave) — PR #10 |
 
-**Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**. Suggestions: dev panel → **💡 Suggest**.
+**Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**. Suggestions: dev panel → **💡 Suggest**. Stream: owner gear → stream keys → OBS → **Join Live**.
+
+---
+
+## 🎉 Milestone — Scene stream watch → `dev-latest` (2026-07-14)
+
+**Status: merged `lastraum` → `dev-latest` (`3b2f40f`)** — companion-parity stream keys + Join Live; cast room identity fixed for release.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Owner stream settings gear** | 🟢 | Wallet ∈ `ownerAddresses` (Places + NAME NFT); live `getLogin` after sign-in |
+| **Stream keys (OBS)** | 🟢 | Gatekeeper `scene-stream-access` RTMP/key mint; click-to-copy; not Cast 2.0 watcher-token |
+| **Live detect** | 🟢 | Scene LiveKit remote video pubs; continuous poll after landing open |
+| **World realm room match** | 🟢 | Gatekeeper realm always lowercased (companion) — fixes OBS in wrong room vs `RickRoll.dcl.eth` about casing (`e798eb0`) |
+| **Join Live CTA** | 🟢 | Shown only when cast video is actually live (not mere room ready) |
+| **Join Live cast stage** | 🟢 | Full-viewport player, scene info pill, mute/volume, fullscreen, X exits FS then closes |
+| **Video attach stability** | 🟢 | Same-SID no remount; hard pause/mute on close (`clearCastVideoHost`) |
+| **Jump In gate** | 🟢 | Hidden until LiveKit up / scene.json blocks chat / guest terminal |
+| **I'm live CTA** | ⬜ | Intentionally removed for now (HLS / cast listing UI deferred) |
+| **Plaza marquee / TextureMove** | 🟡 | UV + wall-clock `engine.update` dt fixes; NeonScreen `pauseDuration` still flaky |
+
+**Also on this slice (post-v0.7.2):** backpack base eyes/body + avatar colors (#23/#24); VideoPlayer continuous play / HLS abort storm; plane L–R under DCL X reflection; FFT ocean cutouts (#19) + outdoor light intensity (#21).
+
+**QA (owner-confirmed):** RickRoll landing → stream keys → OBS go live (incl. after landing open) → **Join Live** detects remote video.
+
+**Branch:** `lastraum` → `dev-latest` → **`main` as v0.8.0**.
+
+---
+
+## 🎉 Milestone — Backpack base wearables + avatar colors → `dev-latest` (2026-07-14)
+
+**Status: merged PRs [#23](https://github.com/lastraum/dcl-threejs-client/pull/23) + [#24](https://github.com/lastraum/dcl-threejs-client/pull/24)** (`c660f7f`) — base-avatars eyes/body shape + eye/hair/skin picker.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Base eyes tab + body shape** | 🟢 | PR #23 — base-avatars parity for eyes inventory + body-shape switching |
+| **Eye / hair / skin colors** | 🟢 | PR #24 — color picker + iris tinting; Catalyst deploy includes colors + bodyShape |
+| **Deploy fix** | 🟢 | `bodyShape` + skin/hair/eye colors dirty key + profile deploy |
+
+**Still open:** saved outfits · marketplace · mobile emotes sheet · continuous Catalyst sync while equipping.
+
+**QA focus:** Backpack → Eyes → pick base eye → Hair/Skin color → close settings → deploy → reload colors. Switch body shape (male/female) → recompose.
+
+---
+
+## 🎉 Milestone — Avatar facial features backfill → `dev-latest` (2026-07-13)
+
+**Status: merged PR [#22](https://github.com/lastraum/dcl-threejs-client/pull/22)** (supersedes closed #20) — wallet profiles get default facial wearables + face texture orientation fixes.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Default wearable backfill** | 🟢 | Wallet profiles missing eyes/eyebrows/mouth filled from base catalog |
+| **Face texture orientation** | 🟢 | Texture clone + head-hide coverage review fixes |
+| **Review follow-ups** | 🟢 | Head-hide, texture clone, coverage (`4b80a77`) |
+
+---
+
+## 🎉 Milestone — scene.json skyboxConfig sun/moon → `dev-latest` (2026-07-13)
+
+**Status: merged PR [#17](https://github.com/lastraum/dcl-threejs-client/pull/17)** — creator lighting from `scene.json` environment / `skyboxConfig`.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **skyboxConfig sun/moon** | 🟢 | Intensity + color knobs for sun/moon from scene metadata |
+| **Creator lighting path** | 🟢 | Moved outdoor lighting config under scene.json environment |
+
+---
+
+## 🎉 Milestone — Dev texture proxy host fix → `dev-latest` (2026-07-09)
+
+**Status: merged PR [#10](https://github.com/lastraum/dcl-threejs-client/pull/10)** — `/api/texture` uses the encoded host instead of hard-coded `arweave.net`.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Texture proxy routing** | 🟢 | Correct upstream host from encoded URL; fixes broken IPFS/Arweave thumbs in local/dev |
+
+---
+
+## 🎉 Milestone — Backpack emotes + input → `dev-latest` (2026-07-13)
+
+**Status: merged `lastraum` → `dev-latest`** (`7890e17`) — Explorer-style emotes tab + WASD after tab blur.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Emotes tab UI** | 🟢 | Wheel slots 1–9/0, paginated inventory, detail panel; select slot then equip |
+| **Emote inventory metadata** | 🟢 | Wallet `/users/{addr}/emotes` + base catalog; Catalyst name/rarity/thumbnail (same pattern as wearables) |
+| **Equip / unequip / play** | 🟢 | Assign to profile wheel slots; Play preview on avatar; dirty profile deploys with wearables |
+| **WASD after background tab** | 🟢 | Clear keys on blur/visibility/focus; blur chat composer on world click |
+
+**Still open:** saved outfits · marketplace · full filter/sort · mobile emotes sheet · continuous Catalyst sync while equipping.
+
+**QA focus:** Backpack → Emotes → equip custom NFT emote to slot → Play preview → close settings → deploy → reload wheel. Tab away 1 min → return → click world → WASD.
+
+---
+
+## 🎉 Milestone — Auth + backpack → `dev-latest` (2026-07-12)
+
+**Status: merged `lastraum` → `dev-latest`** (`9f6eae4`) — multi-provider sign-in, wearable backpack equip/deploy, mobile inventory, base-hair compose fix.
+
+### Shipped
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Auth-dapp providers** | 🟢 | Google, Discord, Apple, X, WalletConnect, MetaMask; new-tab login (not popup); verification code in client while polling |
+| **Auth reliability** | 🟢 | No false “login tab closed”; sign-in after sign-out; guest “Sign in to chat” only when chat opens |
+| **Backpack wearables** | 🟢 | Wallet inventory + equipped slots; equip/unequip into session profile; 3D preview (drag orbit, zoom, foot stance) |
+| **Catalyst profile deploy** | 🟢 | Deploy wearables on settings close when dirty; ownership URNs via `/users/{addr}/wearables` individualData; saving/error/success UX |
+| **Mobile backpack** | 🟢 | Full-height avatar; Equipped sheet; Inventory sheet with search + category filter + full detail + equip |
+| **Base-avatar hairs** | 🟢 | All **33** free base hairs bundled; spring-bone → Head remapping so mohawks/default hairs compose (no more bald defaults) |
+| **Wallet copy** | 🟢 | Profile menu address click-to-copy (desktop + mobile) |
+| **Explore mobile padding** | 🟢 | Place cards no longer clipped by side padding |
+| **Non-commercial license** | 🟢 | `LICENSE` + README — all branches; commercial use needs written permission |
+
+### Parity gaps still open (expected)
+
+These are **known incomplete** vs full Explorer / product polish — not blockers for this merge, good follow-ups:
+
+| Gap | Notes |
+| --- | ----- |
+| **Backpack emotes mobile sheet** | Desktop emotes tab shipped; mobile bottom-sheet for emotes still TBD |
+| **Saved outfits** | Mid-tab “Saved outfits” not implemented |
+| **Marketplace / buy flow** | Buttons present but disabled / “coming soon” |
+| **Filter & sort** | Desktop filter button hidden on mobile; no full Explorer sort (rarity, newest, etc.) |
+| **Live profile sync** | Deploy on panel close, not continuous Catalyst sync while equipping |
+| **NFT / L1 wearables edge cases** | Most GLB wearables compose; odd L1 bone/export cases may still skip or fallback |
+| **Facial feature inventory polish** | Eyes/eyebrows/mouth work via profile; backpack category UX may lag Explorer |
+| **AvatarModifierArea / AvatarBase ECS** | Still ⬜ in integration matrix |
+| **Graphics P3/P4** | Distance culls + bloom/HDR stubs (unchanged) |
+| **2D social chat** | Still 🟡 partial (thread dock vs full companion parity) |
+
+**QA focus:** Sign in with Google or MetaMask → open Backpack → equip base hair + wearable → close settings → confirm deploy → reload profile hair/clothes. Mobile: Inventory search/filter → detail → equip; Equipped unequip.
+
+**Branch:** `lastraum` → `dev-latest`. License already on `main`.
 
 ---
 

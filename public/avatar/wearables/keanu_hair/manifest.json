@@ -1,0 +1,50 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:keanu_hair",
+  "data": {
+    "category": "hair",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "Keanu",
+      "Hair",
+      "Style",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "Hair_Keanu.glb",
+        "contents": [
+          {
+            "key": "Hair_Keanu.glb",
+            "url": "Hair_Keanu.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "Hair_Keanu.glb",
+        "contents": [
+          {
+            "key": "Hair_Keanu.glb",
+            "url": "Hair_Keanu.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      }
+    ]
+  }
+}

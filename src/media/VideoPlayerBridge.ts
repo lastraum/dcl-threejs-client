@@ -185,6 +185,9 @@ export class VideoPlayerBridge {
       const entry = this.decoders.get(entity)
       if (!entry) continue
 
+      // Keep progressive / HLS playback alive through stalls and aborted seeks.
+      entry.player.tickPlayback()
+
       const state = entry.player.getVideoState()
       const currentOffset = entry.player.getCurrentOffset()
       const videoLength = entry.player.getVideoLength()

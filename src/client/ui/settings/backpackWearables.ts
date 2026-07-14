@@ -1,4 +1,9 @@
 import { assetUrnFromCompleteUrn, BODY_SHAPE_URN } from '../../../avatar/constants'
+import {
+  expandOwnedWearableRows,
+  type OwnedWearableApiRow,
+  type OwnedWearableEntry
+} from '../../../avatar/ownedWearables'
 import type { AvatarProfile, WearableCategory } from '../../../avatar/types'
 import {
   filterEquippedWearables,
@@ -11,9 +16,13 @@ import {
 export type BackpackWearableItem = WearableDisplayCard & {
   category: WearableCategory | 'unknown'
   amount: number
+  /** Free base-avatars catalog item (not wallet-owned). */
+  isBase?: boolean
+  /** Body-shape URNs with a representation; undefined = fits all shapes. */
+  bodyShapes?: string[]
 }
 
-type OwnedEntry = { urn: string; amount?: number }
+type OwnedEntry = OwnedWearableEntry
 
 type WearableApiHit = {
   id?: string
@@ -23,23 +32,60 @@ type WearableApiHit = {
   data?: { category?: string }
 }
 
+type BaseCatalogHit = WearableApiHit & {
+  i18n?: Array<{ code?: string; text?: string }>
+  data?: {
+    category?: string
+    representations?: Array<{ bodyShapes?: string[] }>
+  }
+}
+
 const METADATA_CONCURRENCY = 14
 
-/** Catalyst lambdas — full wallet inventory (not just equipped profile slots). */
+const BASE_COLLECTION_ID = 'urn:decentraland:off-chain:base-avatars'
+
+/**
+ * Catalyst lambdas — full wallet inventory with tokenIds.
+ * Prefer `/users/{addr}/wearables` (includes individualData). Fall back to
+ * `wearables-by-owner` which often only returns asset URNs without tokens.
+ */
 export async function fetchOwnedWearableUrns(
   address: string,
   lambdasUrl: string
 ): Promise<OwnedEntry[]> {
   const base = lambdasUrl.replace(/\/$/, '')
-  const res = await fetch(`${base}/collections/wearables-by-owner/${address.toLowerCase()}`)
+  const addr = address.toLowerCase()
+
+  // Primary: has individualData[].id / tokenId (required for profile deploy).
+  try {
+    const res = await fetch(`${base}/users/${addr}/wearables`)
+    if (res.ok) {
+      const raw = (await res.json()) as
+        | OwnedWearableApiRow[]
+        | { elements?: OwnedWearableApiRow[]; error?: string }
+      const rows = Array.isArray(raw)
+        ? raw
+        : Array.isArray(raw.elements)
+          ? raw.elements
+          : null
+      if (rows) {
+        const expanded = expandOwnedWearableRows(rows).filter((e) => e.urn?.trim())
+        if (expanded.length) return expanded
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+
+  const res = await fetch(`${base}/collections/wearables-by-owner/${addr}`)
   if (!res.ok) {
-    throw new Error(`wearables-by-owner failed (${res.status})`)
+    throw new Error(`wearables inventory failed (${res.status})`)
   }
-  const raw = (await res.json()) as OwnedEntry[] | { error?: string }
+  const raw = (await res.json()) as OwnedWearableApiRow[] | { error?: string }
   if (!Array.isArray(raw)) {
-    throw new Error('wearables-by-owner returned unexpected payload')
+    throw new Error('wearables inventory returned unexpected payload')
   }
-  return raw.filter((e) => e.urn?.trim())
+  return expandOwnedWearableRows(raw).filter((e) => e.urn?.trim())
 }
 
 function fallbackItem(urn: string, amount = 1): BackpackWearableItem {
@@ -54,16 +100,62 @@ function fallbackItem(urn: string, amount = 1): BackpackWearableItem {
   }
 }
 
+/**
+ * Complete free base-avatar hair catalog (Catalyst off-chain collection).
+ * Several omit the word "hair" — without this set equip fallbacks mark them `unknown`.
+ */
+const BASE_HAIR_SLUGS = new Set([
+  'casual_hair_01',
+  'casual_hair_02',
+  'casual_hair_03',
+  'cool_hair',
+  'cornrows',
+  'curly_hair',
+  'curtained_hair',
+  'double_bun',
+  'hair_anime_01',
+  'hair_bun',
+  'hair_coolshortstyle',
+  'hair_f_oldie',
+  'hair_f_oldie_02',
+  'hair_oldie',
+  'hair_punk',
+  'hair_stylish_hair',
+  'hair_undere',
+  'keanu_hair',
+  'modern_hair',
+  'moptop',
+  'pompous',
+  'pony_tail',
+  'punk',
+  'rasta',
+  'semi_afro',
+  'semi_bold',
+  'short_hair',
+  'shoulder_bob_hair',
+  'shoulder_hair',
+  'slicked_hair',
+  'standard_hair',
+  'tall_front_01',
+  'two_tails'
+])
+
 function guessCategoryFromUrn(urn: string): WearableCategory | 'unknown' {
   const low = urn.toLowerCase()
-  const colonHit = low.match(/:([a-z_]+)$/)
+  const colonHit = low.match(/:([a-z0-9_]+)$/)
   const tail = colonHit?.[1] ?? ''
+  if (BASE_HAIR_SLUGS.has(tail)) {
+    return 'hair'
+  }
   const patterns: Array<[RegExp, WearableCategory]> = [
     [/body_shape|basemale|basefemale/, 'body_shape'],
-    [/\bhair\b|_hair|hair_/, 'hair'],
+    [
+      /\bhair\b|_hair|hair_|mohawk|cornrow|rasta|pompous|semi_bold|semi_afro|double_bun|two_tails|moptop|pony_tail|tall_front/,
+      'hair'
+    ],
     [/upper_body|hoodie|jacket|shirt|sweater|torso/, 'upper_body'],
     [/lower_body|pants|jeans|shorts|skirt/, 'lower_body'],
-    [/\bfeet\b|shoes|sneaker|boot|sandal/, 'feet'],
+    [/\bfeet\b|shoes|sneaker|boot|sandal|espadrille/, 'feet'],
     [/eyebrow/, 'eyebrows'],
     [/\beyes\b|_eyes/, 'eyes'],
     [/\bmouth\b|_mouth/, 'mouth'],
@@ -161,6 +253,77 @@ export async function loadBackpackWearables(
 
   enriched.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
   return enriched
+}
+
+let baseCatalogCache: { lambdasUrl: string; promise: Promise<BackpackWearableItem[]> } | null =
+  null
+
+/**
+ * Full base-avatars catalog (free off-chain wearables, ~282 items incl. the two
+ * body shapes) — one lambdas call, unpaginated. Memoized per session; a failed
+ * fetch clears the memo so the next backpack open retries. Body shapes are kept
+ * and surfaced as switch tiles (see BackpackView.switchBodyShape).
+ */
+export function loadBaseWearableCatalog(lambdasUrl: string): Promise<BackpackWearableItem[]> {
+  if (baseCatalogCache?.lambdasUrl === lambdasUrl) return baseCatalogCache.promise
+  const promise = fetchBaseWearableCatalog(lambdasUrl).catch((err) => {
+    if (baseCatalogCache?.promise === promise) baseCatalogCache = null
+    throw err
+  })
+  baseCatalogCache = { lambdasUrl, promise }
+  return promise
+}
+
+async function fetchBaseWearableCatalog(lambdasUrl: string): Promise<BackpackWearableItem[]> {
+  const base = lambdasUrl.replace(/\/$/, '')
+  const res = await fetch(
+    `${base}/collections/wearables?collectionId=${encodeURIComponent(BASE_COLLECTION_ID)}`
+  )
+  if (!res.ok) throw new Error(`base wearables catalog failed (${res.status})`)
+  const raw = (await res.json()) as { wearables?: BaseCatalogHit[] }
+  const hits = Array.isArray(raw.wearables) ? raw.wearables : []
+
+  const items: BackpackWearableItem[] = []
+  for (const hit of hits) {
+    const urn = hit.id?.trim()
+    if (!urn) continue
+    const categoryRaw = hit.data?.category?.trim().toLowerCase()
+    const category = (categoryRaw as WearableCategory | undefined) ?? guessCategoryFromUrn(urn)
+    // body_shape (BaseMale/BaseFemale) is kept: the backpack shows both as selectable
+    // tiles and clicking one switches profile.bodyShape rather than equipping a slot.
+    const enName = hit.i18n?.find((row) => row.code === 'en')?.text?.trim()
+    const bodyShapes = [
+      ...new Set((hit.data?.representations ?? []).flatMap((rep) => rep.bodyShapes ?? []))
+    ]
+    items.push({
+      urn,
+      name: enName || hit.name?.trim() || wearableShortLabel(urn),
+      rarity: 'base',
+      thumbnailUrl: hit.thumbnail?.trim() || wearableThumbnailUrl(urn),
+      category,
+      amount: 1,
+      isBase: true,
+      bodyShapes: bodyShapes.length ? bodyShapes : undefined
+    })
+  }
+  return items
+}
+
+/** Owned inventory + free base catalog, deduped by asset URN (owned metadata wins). */
+export function mergeBaseIntoInventory(
+  items: BackpackWearableItem[],
+  baseItems: BackpackWearableItem[]
+): BackpackWearableItem[] {
+  const seen = new Set(items.map((i) => assetUrnFromCompleteUrn(i.urn)))
+  const merged = [...items]
+  for (const item of baseItems) {
+    const asset = assetUrnFromCompleteUrn(item.urn)
+    if (seen.has(asset)) continue
+    seen.add(asset)
+    merged.push(item)
+  }
+  merged.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+  return merged
 }
 
 /** Profile equipped URNs merged into inventory when Catalyst omits free/base items. */

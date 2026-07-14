@@ -23,8 +23,14 @@ function pngUrl(wearable: WearableDefinition, bodyShape: BodyShape, mask: boolea
 }
 
 async function loadFeatureTexture(url: string, cache?: AssetCache): Promise<THREE.Texture> {
-  const texture = cache ? await cache.loadTexture(url) : await fallbackTextureLoader.loadAsync(url)
+  // Clone so face flipY/colorSpace never pollute a shared AssetCache entry.
+  const loaded = cache ? await cache.loadTexture(url) : await fallbackTextureLoader.loadAsync(url)
+  const texture = loaded.clone()
   texture.colorSpace = THREE.SRGBColorSpace
+  // Mask-mesh UVs follow the glTF convention (flipY off); TextureLoader defaults flipY on,
+  // which mirrors sampling into the transparent half of the feature sheet — blank faces.
+  texture.flipY = false
+  texture.needsUpdate = true
   return texture
 }
 
@@ -73,6 +79,45 @@ function applyFeatureMaterial(
   mesh.visible = true
 }
 
+/**
+ * Eyes are a single grayscale sheet (white sclera, gray iris, black pupil) with no
+ * tint mask. A flat `color` multiply would dye the sclera too, so tint proportionally
+ * to darkness: pure-white sclera keeps white, the mid-gray iris takes the eye color,
+ * the black pupil stays black. Custom (non-base) eyes pass tint=white → unchanged.
+ */
+function applyEyeMaterial(mesh: THREE.Mesh, texture: THREE.Texture, tint: THREE.Color): void {
+  const mat = new THREE.MeshStandardMaterial({
+    map: texture,
+    transparent: true,
+    alphaTest: 0.01,
+    depthWrite: true,
+    side: THREE.DoubleSide,
+    metalness: 0,
+    roughness: 1
+  })
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.eyeTint = { value: tint }
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform vec3 eyeTint;')
+      .replace(
+        '#include <map_fragment>',
+        `#include <map_fragment>
+        {
+          float eyeLum = max(max(diffuseColor.r, diffuseColor.g), diffuseColor.b);
+          // How much this pixel is "iris": ~0 at the white sclera, ~1 across the iris.
+          float eyeW = clamp((1.0 - eyeLum) * 1.7, 0.0, 1.0);
+          // Multiply the tint by the pixel's brightness relative to a reference iris value
+          // (0.30 linear) so a mid-iris pixel lands on the picked color exactly — lightness
+          // included, so black stays black — while darker/lighter pixels keep iris shading.
+          vec3 eyeColorized = eyeTint * (eyeLum / 0.30);
+          diffuseColor.rgb = mix(diffuseColor.rgb, eyeColorized, eyeW);
+        }`
+      )
+  }
+  mesh.material = mat
+  mesh.visible = true
+}
+
 /** Apply eyes / eyebrows / mouth textures to body_shape mask meshes — Forge `face.ts`. */
 export async function applyFacialFeatures(
   bodyRoot: THREE.Object3D,
@@ -92,20 +137,24 @@ export async function applyFacialFeatures(
     loadFeaturePair(mouthWearable, config.bodyShape, cache)
   ])
 
-  const eyeColor = isDefaultWearable(eyesWearable)
-    ? hexToColor(config.eyes)
-    : new THREE.Color(1, 1, 1)
+  // Base eyes are grayscale masks colorized to the eye color; custom (NFT) eyes are already
+  // full-color and render untinted (plain white multiply = identity).
+  const eyesBase = isDefaultWearable(eyesWearable)
+  const eyeColor = hexToColor(config.eyes)
   const hairColor = hexToColor(config.hair)
   const lipColor = lipColorFromSkin(config.skin)
 
   bodyRoot.traverse((obj) => {
+    // Keep head-hide from applyBodyShapeVisibility (helmets/skins): applyFeatureMaterial
+    // forces mesh.visible = true, so re-touching hidden masks would float face features.
     if (!(obj instanceof THREE.Mesh) || !obj.visible) return
     const name = obj.name.toLowerCase()
 
     if (name.endsWith('mask_eyes')) {
       const [texture, mask] = eyes
-      if (texture) applyFeatureMaterial(obj, texture, eyeColor, mask)
-      else obj.visible = false
+      if (!texture) obj.visible = false
+      else if (eyesBase) applyEyeMaterial(obj, texture, eyeColor)
+      else applyFeatureMaterial(obj, texture, new THREE.Color(1, 1, 1), mask)
     }
     if (name.endsWith('mask_eyebrows')) {
       const [texture, mask] = eyebrows

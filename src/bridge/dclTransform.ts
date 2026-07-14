@@ -117,6 +117,8 @@ export function threeYawToDclYaw(yaw: number): number {
 export function applyDclLocalTransform(obj: THREE.Object3D, t: DclTransformValues): void {
   dclToThreePos(t.position.x, t.position.y, t.position.z, obj.position)
   dclToThreeQuat(t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w, obj.quaternion)
+  // Keep authored scale (do not swap for marquee re-basis — panels are spaced by scale.x
+  // along the curve; swapping made them overlap and double-draw LED rows).
   obj.scale.set(t.scale.x, t.scale.y, t.scale.z)
 }
 

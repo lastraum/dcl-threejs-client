@@ -1,0 +1,49 @@
+{
+  "id": "urn:decentraland:off-chain:base-avatars:hair_bun",
+  "data": {
+    "category": "hair",
+    "hides": [],
+    "replaces": [],
+    "removesDefaultHiding": [],
+    "tags": [
+      "unisex",
+      "Hair",
+      "Bun",
+      "base-wearable"
+    ],
+    "representations": [
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseFemale"
+        ],
+        "mainFile": "Hair_Bun.glb",
+        "contents": [
+          {
+            "key": "Hair_Bun.glb",
+            "url": "Hair_Bun.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      },
+      {
+        "bodyShapes": [
+          "urn:decentraland:off-chain:base-avatars:BaseMale"
+        ],
+        "mainFile": "Hair_Bun.glb",
+        "contents": [
+          {
+            "key": "Hair_Bun.glb",
+            "url": "Hair_Bun.glb"
+          },
+          {
+            "key": "Image_0.png",
+            "url": "Image_0.png"
+          }
+        ]
+      }
+    ]
+  }
+}

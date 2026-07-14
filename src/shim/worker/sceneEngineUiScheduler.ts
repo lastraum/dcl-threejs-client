@@ -96,6 +96,35 @@ export function didSkipCooperativeReactEcsThisTick(): boolean {
   return cooperativeReactEcsSkippedThisTick
 }
 
+/** Throttle scene-system error spam (plaza flower-component getFrom races, etc.). */
+const systemErrorLastLog = new Map<string, number>()
+const SYSTEM_ERROR_LOG_MS = 5000
+
+/**
+ * Run one system without aborting the rest of engine.update.
+ * Genesis Plaza throws e.g. `[getFrom] Component flower-component for entity #885 not found`
+ * from a custom system during TweenState dt=0 ticks — uncaught, not client logic.
+ */
+function safeRunSystem(
+  system: SystemItem,
+  dt: number,
+  runOne: (s: SystemItem, dt: number) => void
+): void {
+  try {
+    runOne(system, dt)
+  } catch (err) {
+    const name = system.name || 'anonymous'
+    const msg = err instanceof Error ? err.message : String(err)
+    const key = `${name}|${msg}`
+    const now = performance.now()
+    const last = systemErrorLastLog.get(key) ?? 0
+    if (now - last >= SYSTEM_ERROR_LOG_MS) {
+      systemErrorLastLog.set(key, now)
+      console.warn(`[sceneWorker] system "${name}" threw (continuing): ${msg}`)
+    }
+  }
+}
+
 /** Installed once in the worker before scene bundle eval. */
 export function installEngineSystemLoopPartition(): void {
   const g = globalThis as Record<string, unknown>
@@ -115,15 +144,15 @@ export function installEngineSystemLoopPartition(): void {
         scale = system
         continue
       }
-      runOne(system, dt)
+      safeRunSystem(system, dt, runOne)
     }
     const suppressReact = shouldDeferCooperativeReactEcs()
     if (suppressReact && cooperativeSchedulerTickDepth > 0 && !isPointerInteractiveTickActive()) {
       cooperativeReactEcsSkippedThisTick = true
     }
-    if (scale && !suppressReact) runOne(scale, dt)
+    if (scale && !suppressReact) safeRunSystem(scale, dt, runOne)
     if (react && !suppressReact) {
-      runOne(react, dt)
+      safeRunSystem(react, dt, runOne)
       if (cooperativeSchedulerTickDepth > 0) lastCooperativeReactEcsAt = performance.now()
     }
   }

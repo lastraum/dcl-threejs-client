@@ -1540,7 +1540,11 @@ function scheduleSceneInputEngineTick(opts?: { flightPump?: boolean }): void {
   requestSceneEngineTick()
 }
 
-/** Lightweight tween-state path — no pointer pause / preempt / full deliver batch. */
+/**
+ * Lightweight tween-state path — no pointer pause / preempt / full deliver batch.
+ * Inject TweenState then engine.update(0) so tweenCompleted can fire without advancing
+ * wall-clock systems (NeonScreen pauseDuration / scrollDuration).
+ */
 function deliverTweenStateInbound(chunks: Uint8Array[]): void {
   if (!sceneEngine || !sceneOnStartComplete) return
   const { tweenPuts } = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
@@ -1550,7 +1554,7 @@ function deliverTweenStateInbound(chunks: Uint8Array[]): void {
     'log',
     `[sceneWorker] tween-state-deliver — inject ${tweenPuts} TweenState PUT(s)`
   )
-  sceneEngineTickAfterInboundInject({ tweenPuts, raycastPuts: 0, videoPlayerPuts: 0, triggerAppends: 0, videoAppends: 0, pointerAppends: 0 })
+  void runSceneEngineUpdateNow(0)
 }
 
 /** TriggerAreaResult / VideoEvent — engine tick only; must not pause scene onUpdate (sprite pool). */
@@ -1875,14 +1879,8 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
           'log',
           `[sceneWorker] pointer-crdt-deliver — tween inject ${tweenPuts} TweenState PUT(s)`
         )
-        sceneEngineTickAfterInboundInject({
-          tweenPuts,
-          raycastPuts: 0,
-          videoPlayerPuts: 0,
-          triggerAppends: 0,
-          videoAppends: 0,
-          pointerAppends: 0
-        })
+        // dt=0: tweenCompleted only — do not advance NeonScreen wall-clock.
+        void runSceneEngineUpdateNow(0)
       }
       return
     } catch (err) {

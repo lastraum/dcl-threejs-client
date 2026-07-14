@@ -20,18 +20,37 @@ const THREE_BOX_FACE_CORNER_TO_THREE: ReadonlyArray<readonly number[]> = [
 
 /**
  * Full-tile north + south UVs for a double-sided DCL plane (no custom MeshRenderer uvs).
- * Corner order per side: SW, SE, NE, NW (spatial bottom-left → top-right).
+ *
+ * Official corner order (docs.decentraland.org materials / setUVs):
+ * - North: lower-left, lower-right, upper-right, upper-left  (BL, BR, TR, TL)
+ * - South: lower-right, lower-left, upper-left, upper-right (BR, BL, TL, TR)
  */
 const DEFAULT_DCL_PLANE_UVS = [
   0, 0, 1, 0, 1, 1, 0, 1,
   1, 0, 0, 0, 0, 1, 1, 1
 ]
 
-/** DCL plane corner order SW, SE, NE, NW → spatial vertex index (BL, BR, TR, TL). */
-const DCL_PLANE_CORNER_TO_THREE = [2, 3, 1, 0]
+/**
+ * Spatial verts: 0=TL(−X,+Y) 1=TR(+X,+Y) 2=BL(−X,−Y) 3=BR(+X,−Y).
+ *
+ * DCL docs map BL,BR,TR,TL → [2,3,1,0], but the client reflects DCL +X → Three −X
+ * (`dclToThreePos`). Without a compensating U swap, plane textures read L-R mirrored
+ * vs Unity Explorer. Maps below are the docs order with L-R swapped.
+ */
+/** North face: BL, BR, TR, TL → verts (L-R compensated). */
+const DCL_PLANE_NORTH_CORNER_TO_THREE = [3, 2, 0, 1]
+
+/** South face: BR, BL, TL, TR → verts (L-R compensated). */
+const DCL_PLANE_SOUTH_CORNER_TO_THREE = [2, 3, 1, 0]
 
 /** Bump when plane topology/UV layout changes — busts primitiveMeshKey mesh cache. */
-const PLANE_GEOMETRY_REVISION = 'v3'
+const PLANE_GEOMETRY_REVISION = 'v19'
+
+/**
+ * userData: marquee atlas plane. MaterialApplier: flipY=false, FrontSide only.
+ * Faces inward (normal −Z) so plaza view is the front face — not a mirrored DoubleSide back.
+ */
+export const DCL_TEXT_ALONG_Y_BASIS = 'dclTextAlongYBasis'
 
 export type PrimitiveMeshSpec = {
   mesh?:
@@ -148,63 +167,134 @@ export function buildDclPlaneGeometry(width = 1, height = 1): THREE.BufferGeomet
   return geometry
 }
 
+/**
+ * True when atlas U (text) runs along plane local Y (plaza LED marquees).
+ * Require a full axis swap: bottom edge (BL→BR / local +X) is mostly V, and
+ * left edge (BL→TL / local +Y) is mostly U. A single-edge V-heavy check false-
+ * positives normal/cutout images and rewrites them as inward marquee planes
+ * (mirrored / wrong basis).
+ */
+function planeUvsMapTextAlongLocalY(uvs: readonly number[]): boolean {
+  // BL→BR (local +X)
+  const duX = Math.abs((uvs[2] ?? 0) - (uvs[0] ?? 0))
+  const dvX = Math.abs((uvs[3] ?? 0) - (uvs[1] ?? 0))
+  // BL→TL (local +Y) — north packing BL,BR,TR,TL so TL is indices 6,7
+  const duY = Math.abs((uvs[6] ?? 0) - (uvs[0] ?? 0))
+  const dvY = Math.abs((uvs[7] ?? 0) - (uvs[1] ?? 0))
+  return dvX > duX + 1e-5 && duY > dvY + 1e-5
+}
+
+/**
+ * Build south-face UVs (BR, BL, TL, TR) from north (BL, BR, TR, TL) with U mirrored.
+ * Matches DEFAULT_DCL_PLANE_UVS south packing: full-tile north → 1,0, 0,0, 0,1, 1,1.
+ */
+function mirrorSouthPlaneUvs(north: readonly number[]): number[] {
+  const blU = north[0] ?? 0
+  const blV = north[1] ?? 0
+  const brU = north[2] ?? 0
+  const brV = north[3] ?? 0
+  const trU = north[4] ?? 0
+  const trV = north[5] ?? 0
+  const tlU = north[6] ?? 0
+  const tlV = north[7] ?? 0
+  // South corner order BR, BL, TL, TR — U mirrored so both faces read correctly.
+  return [1 - blU, blV, 1 - brU, brV, 1 - trU, trV, 1 - tlU, tlV]
+}
+
+/**
+ * Marquee / text-along-Y plane.
+ *
+ * Scene north UVs (BL,BR,TR,TL): U (text) along local Y, V along local X.
+ * We rewrite to standard: U along X, V along Y.
+ *
+ * Plaza panels mount with local +Z *outward*. Camera is inside the plaza, so it sees the
+ * **back** of a +Z plane. DoubleSide then shows a mirrored back face → “split + mirrored”.
+ *
+ * Fix: face **inward** (normal −Z, winding for that front) + FrontSide only + U flip so
+ * text still reads left→right when viewed from the plaza.
+ *
+ * PlaneGeometry verts: 0=TL (−X,+Y) 1=TR (+X,+Y) 2=BL (−X,−Y) 3=BR (+X,−Y).
+ */
+function buildMarqueePlaneGeometry(north: readonly number[]): THREE.BufferGeometry {
+  const u0 = north[0] ?? 0 // text start
+  const vA = north[1] ?? 0
+  const vB = north[3] ?? 0
+  const u1 = north[6] ?? 0 // text end
+  const vTop = Math.min(vA, vB)
+  const vBot = Math.max(vA, vB)
+
+  const geometry = new THREE.PlaneGeometry(1, 1)
+  const normals = geometry.getAttribute('normal')
+  const uv = geometry.getAttribute('uv')
+  if (!(normals instanceof THREE.BufferAttribute) || !(uv instanceof THREE.BufferAttribute)) {
+    return geometry
+  }
+
+  // Inward front face (toward plaza / camera).
+  for (let i = 0; i < normals.count; i++) normals.setXYZ(i, 0, 0, -1)
+  normals.needsUpdate = true
+  // CCW when viewed from −Z (front).
+  geometry.setIndex([0, 1, 2, 1, 3, 2])
+
+  // From −Z, local +X is screen-left → text start (u0) on +X (TR/BR).
+  uv.setXY(0, u1, vTop) // TL −X
+  uv.setXY(1, u0, vTop) // TR +X
+  uv.setXY(2, u1, vBot) // BL −X
+  uv.setXY(3, u0, vBot) // BR +X
+  uv.needsUpdate = true
+
+  geometry.userData[DCL_TEXT_ALONG_Y_BASIS] = true
+  return geometry
+}
+
 function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
   const perSide = uvs.length >= 16 ? 8 : uvs.length >= 8 ? 8 : 0
   if (!perSide) return buildPlaneGeometryWithUvs(DEFAULT_DCL_PLANE_UVS)
 
   const north = uvs.slice(0, 8)
-  const south = uvs.length >= 16 ? uvs.slice(8, 16) : mirrorSouthPlaneUvs(north)
+  if (planeUvsMapTextAlongLocalY(north)) {
+    return buildMarqueePlaneGeometry(north)
+  }
 
+  const south = uvs.length >= 16 ? uvs.slice(8, 16) : mirrorSouthPlaneUvs(north)
   const positions = new Float32Array([
-    -0.5, 0.5, 0,
-    0.5, 0.5, 0,
-    -0.5, -0.5, 0,
-    0.5, -0.5, 0,
-    -0.5, 0.5, 0,
-    0.5, 0.5, 0,
-    -0.5, -0.5, 0,
-    0.5, -0.5, 0
+    -0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0,
+    -0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0
   ])
   const normals = new Float32Array([
-    0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1,
-    0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1
+    0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1
   ])
   const uvAttr = new THREE.BufferAttribute(new Float32Array(16), 2)
-  applyFaceUvs(uvAttr, 0, DCL_PLANE_CORNER_TO_THREE, north)
-  applyFaceUvs(uvAttr, 1, DCL_PLANE_CORNER_TO_THREE, south)
+  applyFaceUvs(uvAttr, 0, DCL_PLANE_NORTH_CORNER_TO_THREE, north)
+  applyFaceUvs(uvAttr, 1, DCL_PLANE_SOUTH_CORNER_TO_THREE, south)
 
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
   geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
   geometry.setAttribute('uv', uvAttr)
-  // North (+Z): CCW from +Z. South (-Z): opposite winding so both sides render with FrontSide.
   geometry.setIndex([0, 2, 1, 2, 3, 1, 4, 5, 6, 5, 7, 6])
   return geometry
 }
 
-/** Update an existing double-sided plane geometry in place (sprite UV animation). */
+/**
+ * In-place UV update for sprite planes only.
+ * Marquee always returns false → force full mesh rebuild.
+ */
 export function updatePlaneGeometryUvs(geometry: THREE.BufferGeometry, uvs: number[]): boolean {
   const perSide = uvs.length >= 16 ? 8 : uvs.length >= 8 ? 8 : 0
   if (!perSide) return false
 
+  const north = uvs.slice(0, 8)
+  if (planeUvsMapTextAlongLocalY(north) || geometry.userData[DCL_TEXT_ALONG_Y_BASIS]) {
+    return false
+  }
+
   const attr = geometry.getAttribute('uv')
   if (!(attr instanceof THREE.BufferAttribute) || attr.count < 8) return false
 
-  const north = uvs.slice(0, 8)
   const south = uvs.length >= 16 ? uvs.slice(8, 16) : mirrorSouthPlaneUvs(north)
-  applyFaceUvs(attr, 0, DCL_PLANE_CORNER_TO_THREE, north)
-  applyFaceUvs(attr, 1, DCL_PLANE_CORNER_TO_THREE, south)
+  applyFaceUvs(attr, 0, DCL_PLANE_NORTH_CORNER_TO_THREE, north)
+  applyFaceUvs(attr, 1, DCL_PLANE_SOUTH_CORNER_TO_THREE, south)
   attr.needsUpdate = true
   return true
-}
-
-/** Mirror U for the south face when only 8 custom UVs are provided (SW, SE, NE, NW). */
-function mirrorSouthPlaneUvs(north: readonly number[]): number[] {
-  const out: number[] = []
-  for (let corner = 0; corner < 4; corner++) {
-    const u = north[corner * 2] ?? 0
-    const v = north[corner * 2 + 1] ?? 0
-    out.push(1 - u, v)
-  }
-  return out
 }

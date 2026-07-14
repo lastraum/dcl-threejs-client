@@ -24,6 +24,7 @@ import { ArchipelagoClient } from './comms/ArchipelagoClient'
 import { CommsInboundQueue } from './comms/CommsInboundQueue'
 import { CommsTopicService } from './comms/CommsTopicService'
 import { LiveKitCommsSession } from './comms/LiveKitCommsSession'
+import { clearCastVideoHost, reattachFirstRemoteVideoToHost } from './comms/livekitVideoStreams'
 import {
   parseCommsSceneOrigin,
   realmBoundsFromParcels,
@@ -487,6 +488,11 @@ export class CommsService {
       `Gatekeeper access check · realm=${realmName} parcel=${parcel} scene=${sceneId.slice(0, 12)}… world=${isWorld}`,
       { level: 'info' }
     )
+    if (isWorld) {
+      console.log(
+        `[cast] gatekeeper realm=${realmName} sceneId=${sceneId.slice(0, 24)}… parcel=${parcel} (must match stream-key mint)`
+      )
+    }
 
     const access = await checkGatekeeperSceneAccess(this.identity, {
       sceneId,
@@ -543,9 +549,50 @@ export class CommsService {
         clientDebugLog.log('comms', `world-participants fetch failed: ${msg}`, { level: 'warn' })
       }
 
-      clientDebugLog.log('comms', 'Transport: LiveKit world room · RFC4 Movement + chat', {
-        level: 'success'
-      })
+      // Cast / OBS / livekit-video://current-stream publish into the **scene** LiveKit room
+      // (gatekeeper get-scene-adapter), not the world signed-login room. Companion scene-watch
+      // connects this room to count remote video and show Join live.
+      if (!sceneAdapter) {
+        clientDebugLog.log(
+          'comms',
+          `Gatekeeper scene adapter for world Cast · realm=${realmName} scene=${sceneId.slice(0, 12)}…`,
+          { level: 'info' }
+        )
+        const adapterResult = await getSceneAdapter(this.identity, {
+          sceneId,
+          parcel,
+          realmName,
+          isWorld: true
+        })
+        if (adapterResult.ok) sceneAdapter = adapterResult.adapter
+        else {
+          clientDebugLog.log(
+            'comms',
+            `World scene-room adapter unavailable (Cast detect limited): ${adapterResult.error}`,
+            { level: 'warn' }
+          )
+        }
+      }
+      if (sceneAdapter) {
+        this.realm.commsAdapter = sceneAdapter
+        const sceneOk = await this.sceneLiveKit.connect(sceneAdapter)
+        this.realm.isConnectedSceneRoom = sceneOk
+        if (sceneOk) {
+          clientDebugLog.log(
+            'comms',
+            'Transport: LiveKit world + scene rooms · chat on world, Cast/video on scene',
+            { level: 'success' }
+          )
+        } else {
+          clientDebugLog.log('comms', 'World scene LiveKit failed — chat still on world room', {
+            level: 'warn'
+          })
+        }
+      } else {
+        clientDebugLog.log('comms', 'Transport: LiveKit world room only · RFC4 Movement + chat', {
+          level: 'success'
+        })
+      }
       return { ok: true }
     }
 
@@ -789,17 +836,268 @@ export class CommsService {
     return { streams }
   }
 
+  /** Prefer scene room, then world, then island LiveKit sessions. */
+  private preferredLiveKitSession() {
+    if (this.sceneLiveKit.isConnected()) return this.sceneLiveKit
+    if (this.worldLiveKit.isConnected()) return this.worldLiveKit
+    if (this.islandLiveKit.isConnected()) return this.islandLiveKit
+    return null
+  }
+
+  private connectedLiveKitSessions() {
+    return [this.sceneLiveKit, this.worldLiveKit, this.islandLiveKit].filter((s) => s.isConnected())
+  }
+
   /** Bind `livekit-video://current-stream` to a scene VideoPlayer HTML element. */
   bindLiveKitVideoSource(video: HTMLVideoElement, onUpdate?: () => void): () => void {
-    const session = this.sceneLiveKit.isConnected()
-      ? this.sceneLiveKit
-      : this.worldLiveKit.isConnected()
-        ? this.worldLiveKit
-        : this.islandLiveKit.isConnected()
-          ? this.islandLiveKit
-          : null
+    // Cast/OBS lives on the scene room for worlds — prefer it for attach.
+    const session = this.preferredLiveKitSession()
     if (!session) return () => {}
     return session.bindCurrentVideoStream(video, onUpdate)
+  }
+
+  /**
+   * Companion Cast attach into a host element.
+   * Polls **all** connected rooms (scene + world) — Cast is on the scene room for worlds;
+   * binding only the first empty room used to show a permanent black screen.
+   */
+  bindRemoteCastVideoToHost(
+    host: HTMLElement,
+    onUpdate?: (attached: boolean) => void,
+    opts?: { muted?: boolean; volume?: number }
+  ): () => void {
+    const sessions = this.connectedLiveKitSessions()
+    if (sessions.length === 0) {
+      onUpdate?.(false)
+      console.log('[cast] bindRemoteCastVideoToHost: no LiveKit sessions')
+      return () => {}
+    }
+
+    for (const s of sessions) {
+      const room = s.getRoom()
+      if (room) void room.startAudio().catch(() => {})
+    }
+
+    let lastOk = false
+    let ticks = 0
+    const tryAll = (force = false): void => {
+      // Already showing video — only refresh audio props on same track (no remount).
+      if (lastOk && !force && host.querySelector('video') && host.dataset.castTrackSid) {
+        reattachFirstRemoteVideoToHost(sessions[0]?.getRoom() ?? null, host, {
+          muted: opts?.muted,
+          volume: opts?.volume,
+          controls: false
+        })
+        // Still try preferred rooms so SID can update if publisher switches
+        const orderedKeep = [...sessions].sort((a, b) => {
+          const aScene = a.getRoomName().includes('scene-room') ? 0 : 1
+          const bScene = b.getRoomName().includes('scene-room') ? 0 : 1
+          return aScene - bScene
+        })
+        for (const s of orderedKeep) {
+          const room = s.getRoom()
+          if (!room) continue
+          if (
+            reattachFirstRemoteVideoToHost(room, host, {
+              muted: opts?.muted,
+              volume: opts?.volume,
+              controls: false
+            })
+          ) {
+            return
+          }
+        }
+        return
+      }
+
+      ticks += 1
+      const ordered = [...sessions].sort((a, b) => {
+        const aScene = a.getRoomName().includes('scene-room') ? 0 : 1
+        const bScene = b.getRoomName().includes('scene-room') ? 0 : 1
+        if (aScene !== bScene) return aScene - bScene
+        const aLive = a.hasRemoteVideoLive() ? 0 : 1
+        const bLive = b.hasRemoteVideoLive() ? 0 : 1
+        return aLive - bLive
+      })
+
+      let attached = false
+      const diag: string[] = []
+      for (const s of ordered) {
+        const room = s.getRoom()
+        if (!room) continue
+        const snap = s.getRemoteVideoPresenceSnapshot()
+        diag.push(
+          `${s.getRoomName().slice(0, 40) || '?'} remotes=${snap.remoteParticipants} video=${snap.remoteVideoPubs}`
+        )
+        if (
+          reattachFirstRemoteVideoToHost(room, host, {
+            muted: opts?.muted,
+            volume: opts?.volume,
+            controls: false
+          })
+        ) {
+          attached = true
+          break
+        }
+      }
+
+      if (ticks <= 6 || attached !== lastOk) {
+        console.log(`[cast] attach tick=${ticks} ok=${attached} · ${diag.join(' | ') || 'no rooms'}`)
+      }
+      if (attached !== lastOk) {
+        lastOk = attached
+        onUpdate?.(attached)
+      }
+    }
+
+    const eventUnsubs: Array<() => void> = []
+    for (const s of sessions) {
+      eventUnsubs.push(s.watchRemoteVideoLive(() => tryAll(true)))
+    }
+
+    tryAll(true)
+    // Poll only while not attached (late RTMP publisher).
+    const poll = window.setInterval(() => {
+      if (!lastOk) tryAll(false)
+    }, 2000)
+
+    return () => {
+      window.clearInterval(poll)
+      for (const u of eventUnsubs) u()
+      clearCastVideoHost(host)
+    }
+  }
+
+  /** Any LiveKit room connected (world and/or scene). */
+  isLiveKitConnected(): boolean {
+    return this.connectedLiveKitSessions().length > 0
+  }
+
+  /** Cast/OBS live: remote (or non-camera local) video on any connected room. */
+  hasRemoteVideoLive(): boolean {
+    return this.connectedLiveKitSessions().some((s) => s.hasRemoteVideoLive())
+  }
+
+  /**
+   * Subscribe to Cast/OBS live presence on **all** connected rooms (OR).
+   *
+   * Dynamically rebinds when rooms connect later (world first, scene Cast room lag)
+   * and keeps polling so OBS going live *after* landing still flips Join live.
+   */
+  watchRemoteVideoLive(onChange: (live: boolean) => void): () => void {
+    const liveBySession = new Map<LiveKitCommsSession, boolean>()
+    const unsubBySession = new Map<LiveKitCommsSession, () => void>()
+    let lastEmitted: boolean | null = null
+    let disposed = false
+    let sceneEnsureInFlight = false
+
+    const emit = (): void => {
+      if (disposed) return
+      // Direct scan each tick so we never miss pubs even if a child watcher lags.
+      const any = this.hasRemoteVideoLive()
+      if (any === lastEmitted) return
+      lastEmitted = any
+      onChange(any)
+    }
+
+    const syncSessions = (): void => {
+      if (disposed) return
+      const connected = this.connectedLiveKitSessions()
+      const connectedSet = new Set(connected)
+
+      for (const [session, unsub] of [...unsubBySession.entries()]) {
+        if (connectedSet.has(session)) continue
+        unsub()
+        unsubBySession.delete(session)
+        liveBySession.delete(session)
+      }
+
+      for (const session of connected) {
+        if (unsubBySession.has(session)) continue
+        liveBySession.set(session, session.hasRemoteVideoLive())
+        unsubBySession.set(
+          session,
+          session.watchRemoteVideoLive((live) => {
+            liveBySession.set(session, live)
+            emit()
+          })
+        )
+      }
+
+      emit()
+    }
+
+    const tick = (): void => {
+      if (disposed) return
+      if (!sceneEnsureInFlight && !this.sceneLiveKit.isConnected()) {
+        sceneEnsureInFlight = true
+        void this.ensureSceneRoomForCastDetection()
+          .catch(() => false)
+          .finally(() => {
+            sceneEnsureInFlight = false
+            if (!disposed) syncSessions()
+          })
+      } else {
+        syncSessions()
+      }
+    }
+
+    tick()
+    const poll = window.setInterval(tick, 2000)
+
+    return () => {
+      disposed = true
+      window.clearInterval(poll)
+      for (const unsub of unsubBySession.values()) unsub()
+      unsubBySession.clear()
+      liveBySession.clear()
+    }
+  }
+
+  /**
+   * Worlds connect world LiveKit first; Cast/OBS stream keys publish to the **scene** room.
+   * Retry scene-room join while landing so going live after open still detects video.
+   */
+  async ensureSceneRoomForCastDetection(): Promise<boolean> {
+    if (this.sceneLiveKit.isConnected()) return false
+    if (!this.identity || !this.localAddress) return false
+    const target = this.sceneTarget
+    if (!target) return false
+
+    const isWorld = target.isWorld ?? !isParcelPointer(normalizePointer(target.pointer))
+    // Genesis parcels already use sceneLiveKit as primary; only worlds need a second room.
+    if (!isWorld) return false
+    if (!this.worldLiveKit.isConnected()) return false
+
+    const sceneId = this.sceneId?.trim() || target.sceneId?.trim()
+    if (!sceneId) return false
+
+    const realmName = gatekeeperRealmNameForComms(target)
+    const parcel = gatekeeperParcelForComms(target)
+    try {
+      const adapterResult = await getSceneAdapter(this.identity, {
+        sceneId,
+        parcel,
+        realmName,
+        isWorld: true
+      })
+      if (!adapterResult.ok) return false
+      const ok = await this.sceneLiveKit.connect(adapterResult.adapter)
+      this.realm.isConnectedSceneRoom = ok
+      if (ok) {
+        this.realm.commsAdapter = adapterResult.adapter
+        console.log('[cast] scene room joined for Cast detection (late / retry)')
+        clientDebugLog.log('cast', 'Scene LiveKit joined for Cast detection', {
+          level: 'success',
+          alsoConsole: true
+        })
+      }
+      return ok
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.warn('[cast] ensureSceneRoomForCastDetection failed', msg)
+      return false
+    }
   }
 
   disconnect(): void {

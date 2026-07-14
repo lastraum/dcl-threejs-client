@@ -46,14 +46,23 @@ export function extractUiTextureSrc(texture: unknown): string | null {
   if (typeof texture === 'string') return texture.trim() || null
 
   const t = texture as Record<string, unknown>
-  const tex = t.tex as { $case?: string; texture?: { src?: string } } | undefined
+  const tex = t.tex as
+    | { $case?: string; texture?: { src?: string }; avatarTexture?: { userId?: string } }
+    | undefined
   if (tex?.$case === 'texture' && typeof tex.texture?.src === 'string') {
+    return tex.texture.src.trim() || null
+  }
+  // Some CRDT decodes omit $case but still nest texture.src
+  if (tex && typeof tex.texture?.src === 'string') {
     return tex.texture.src.trim() || null
   }
   if (typeof t.src === 'string') return t.src.trim() || null
 
-  const nested = t.texture as { src?: string } | undefined
+  const nested = t.texture as { src?: string; tex?: { $case?: string; texture?: { src?: string } } } | undefined
   if (typeof nested?.src === 'string') return nested.src.trim() || null
+  if (nested?.tex?.$case === 'texture' && typeof nested.tex.texture?.src === 'string') {
+    return nested.tex.texture.src.trim() || null
+  }
 
   return null
 }

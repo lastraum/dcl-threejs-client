@@ -10,8 +10,10 @@ import {
   moonExposureMultiplier,
   sceneMoonLightMultiplier,
   sceneSunLightMultiplier,
+  isDefaultSunEnvironmentSettings,
   sunEnvironmentSettings,
-  sunExposureMultiplier
+  sunExposureMultiplier,
+  type SunEnvironmentSettingsState
 } from '../rendering/SunEnvironmentSettings'
 import { DclGenesisSky, sampleSkyGradientsAt } from './DclGenesisSky'
 import {
@@ -62,6 +64,23 @@ const ECS_HYBRID_SUN_REDUCTION = 0.25
 /** Hybrid dimming starts once this fraction of the quality-tier light budget is in use. */
 const ECS_HYBRID_FILL_START = 0.4
 
+/** Map resolved creator lighting (from scene.json `environment`) to panel state keys. */
+function sceneLightingFromResolvedSkybox(skybox?: SkyboxConfig): Partial<SunEnvironmentSettingsState> {
+  if (!skybox) return {}
+  const finite = (v: number | undefined): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) ? v : undefined
+  const out: Partial<SunEnvironmentSettingsState> = {}
+  const sunLight = finite(skybox.sunLight)
+  const exposure = finite(skybox.exposure)
+  const moonLight = finite(skybox.moonLight)
+  const moonExposure = finite(skybox.moonExposure)
+  if (sunLight !== undefined) out.sceneSunLight = sunLight
+  if (exposure !== undefined) out.exposure = exposure
+  if (moonLight !== undefined) out.sceneMoonLight = moonLight
+  if (moonExposure !== undefined) out.moonExposure = moonExposure
+  return out
+}
+
 /** DCL GenesisSky dome + sun/moon lighting — driven by SkyboxTime + SunCycle24h.anim. */
 export class EnvironmentSystem {
   private readonly genesisSky: DclGenesisSky
@@ -98,6 +117,12 @@ export class EnvironmentSystem {
   private landscapeKind: SceneEnvironmentKind = 'island'
   private disableSun = false
   private disableMoon = false
+  /** Creator sun/moon values from scene.json `environment` (issue #8) — per-scene defaults. */
+  private sceneLighting: Partial<SunEnvironmentSettingsState> = {}
+  /** Panel fields the player adjusted this scene — player wins over creator defaults. */
+  private readonly userAdjustedLighting = new Set<keyof SunEnvironmentSettingsState>()
+  private lastUserLighting: SunEnvironmentSettingsState | null = null
+  private unsubscribeLighting: (() => void) | null = null
   /** Help panel — hide genesis dome and use void sky while keeping custom skybox textures. */
   private landscapeVisualSuppressed = false
   private readonly outdoorLighting = createOutdoorLightingSnapshot()
@@ -136,6 +161,24 @@ export class EnvironmentSystem {
     threeScene.add(this.sun.target)
     threeScene.add(this.moon)
     threeScene.add(this.moon.target)
+
+    this.sceneLighting = sceneLightingFromResolvedSkybox(scene.skybox)
+    this.userAdjustedLighting.clear()
+    this.lastUserLighting = sunEnvironmentSettings.get()
+    this.unsubscribeLighting?.()
+    this.unsubscribeLighting = sunEnvironmentSettings.subscribe((state) => {
+      const prev = this.lastUserLighting
+      this.lastUserLighting = state
+      if (!prev) return
+      // Reset lighting → re-enable creator `environment` defaults for this scene.
+      if (isDefaultSunEnvironmentSettings(state)) {
+        this.userAdjustedLighting.clear()
+        return
+      }
+      for (const key of Object.keys(state) as Array<keyof SunEnvironmentSettingsState>) {
+        if (state[key] !== prev[key]) this.userAdjustedLighting.add(key)
+      }
+    })
 
     this.lastSkyboxKey = ''
     this.ecsSkyboxEverApplied = false
@@ -190,8 +233,26 @@ export class EnvironmentSystem {
     this.applyTime(this.displayTime, delta)
   }
 
+  /** Player panel (fields touched this scene) > scene.json `environment` > player store defaults. */
+  private effectiveLighting(): SunEnvironmentSettingsState {
+    const user = sunEnvironmentSettings.get()
+    const merged = { ...user }
+    for (const key of Object.keys(this.sceneLighting) as Array<keyof SunEnvironmentSettingsState>) {
+      const sceneValue = this.sceneLighting[key]
+      if (sceneValue !== undefined && !this.userAdjustedLighting.has(key)) {
+        merged[key] = sceneValue
+      }
+    }
+    return merged
+  }
+
   dispose(): void {
     this.landscapeVisualSuppressed = false
+    this.unsubscribeLighting?.()
+    this.unsubscribeLighting = null
+    this.sceneLighting = {}
+    this.userAdjustedLighting.clear()
+    this.lastUserLighting = null
     this.genesisSky.dispose()
     this.genesisSky.mesh.removeFromParent()
     this.hemi.removeFromParent()
@@ -421,7 +482,7 @@ export class EnvironmentSystem {
 
     const sunScale = this.hybridSunScale()
     const moonScale = 1 - (1 - sunScale) * 0.4
-    const lighting = sunEnvironmentSettings.get()
+    const lighting = this.effectiveLighting()
     const sceneSunMul = sceneSunLightMultiplier(lighting.sceneSunLight)
     const sceneMoonMul = sceneMoonLightMultiplier(lighting.sceneMoonLight)
     const ambientMul = (day ? sceneSunMul : sceneMoonMul) * sunScale

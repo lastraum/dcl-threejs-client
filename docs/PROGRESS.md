@@ -2,12 +2,28 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-14 (**cast room-match fix** on `dev-latest` — ready for **v0.8.0** release)  
-> **Current phase:** Cut **v0.8.0** from `dev-latest` → `main` (landing Cast/stream keys, backpack colors, media/env fixes).  
+> **Last updated:** 2026-07-14 (**v0.8.0** shipped on `main`)  
+> **Current phase:** Post-**v0.8.0** — Watch Lite polish, backpack gaps, graphics P3/P4.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
 > **Product next:** Phase 4 `/goto` · Watch Lite polish (I'm live CTA deferred) · remaining backpack parity gaps (below).  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
+
+---
+
+## 🎉 Release — v0.8.0 (2026-07-14)
+
+**Status: cut from `dev-latest` → `main` · tag `v0.8.0`** — landing Cast/stream keys, backpack colors, media + environment fixes.
+
+| Area | Notes |
+| ---- | ----- |
+| **Landing stream keys + Join Live** | OBS RTMP via gatekeeper; scene LiveKit detect; cast stage; go-live after landing open |
+| **World realm room match** | Lowercase gatekeeper realm so stream-key ingress matches Join Live room (`e798eb0`) |
+| **Backpack** | Base eyes/body shape (#23) + eye/hair/skin colors (#24) + Catalyst deploy |
+| **VideoPlayer** | Continuous play; HLS `play()` abort storm + ECS seek fixes |
+| **Planes / ocean** | L–R under DCL X reflection; FFT cutouts (#19); outdoor light intensity (#21) |
+
+**Changelog:** https://github.com/lastraum/dcl-threejs-client/compare/v0.7.2...v0.8.0
 
 ---
 

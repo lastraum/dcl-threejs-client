@@ -39,6 +39,12 @@ import {
 } from '../../../avatar/vrm/vrmEquipStorage'
 import { backpackCategoryIcon } from './backpackCategoryIcons'
 import {
+  createColorPicker,
+  makeThumbnailTinter,
+  tintChannelForCategory,
+  type ColorChannel
+} from './backpackColorPicker'
+import {
   filterBackpackWearables,
   loadBackpackWearables,
   loadBaseWearableCatalog,
@@ -1409,6 +1415,8 @@ export class BackpackView {
       else if (equipped) void this.unequipWearable(item)
       else void this.equipWearable(item)
     })
+
+    this.appendColorPicker(el.querySelector('.backpack-view__mobile-inv-detail-card'), item, profile)
   }
 
   private renderVrmGrid(skipThumbGen = false): void {
@@ -1969,6 +1977,97 @@ export class BackpackView {
       else if (equipped) void this.unequipWearable(item)
       else void this.equipWearable(item)
     })
+
+    this.appendColorPicker(detailEl.querySelector('.backpack-view__detail-card'), item, profile)
+  }
+
+  /**
+   * Adds a COLOR button above the detail thumbnail for tintable categories. Clicking it
+   * opens a popover (overlaying the name/actions) with presets + HSV sliders and an Apply
+   * button that closes it. Color changes preview live; Apply just dismisses the window.
+   */
+  private appendColorPicker(
+    card: Element | null,
+    item: BackpackWearableItem,
+    profile: AvatarProfile | null
+  ): void {
+    if (!card || !profile) return
+    const channel = tintChannelForCategory(item.category)
+    if (!channel) return
+    const value = this.avatarColorValue(profile, channel)
+
+    const trigger = document.createElement('button')
+    trigger.type = 'button'
+    trigger.className = 'backpack-view__color-trigger'
+    const caption = document.createElement('span')
+    caption.textContent = 'COLOR'
+    const swatch = document.createElement('span')
+    swatch.className = 'backpack-view__color-trigger-swatch'
+    swatch.style.background = `#${value.replace('#', '')}`
+    trigger.append(caption, swatch)
+    card.prepend(trigger)
+
+    // Eyes are a transparent grayscale sheet, so the thumbnail can be tinted to match the
+    // avatar. Hair/skin thumbnails are full renders, not tint masks — leave those untouched.
+    const thumbImg = channel === 'eyes' ? (card.querySelector('img') as HTMLImageElement | null) : null
+    const tintThumb = thumbImg ? makeThumbnailTinter(thumbImg.src) : null
+    const applyThumbTint = (hex: string): void => {
+      if (!tintThumb || !thumbImg) return
+      void tintThumb(hex).then((url) => {
+        if (url) thumbImg.src = url
+      })
+    }
+    applyThumbTint(value)
+
+    const popover = document.createElement('div')
+    popover.className = 'backpack-view__color-popover'
+    popover.hidden = true
+
+    const picker = createColorPicker({
+      channel,
+      value,
+      onCommit: (hex) => {
+        swatch.style.background = `#${hex}`
+        applyThumbTint(hex)
+        void this.setAvatarColor(channel, hex)
+      }
+    })
+    picker.classList.add('backpack-color--popover')
+
+    const apply = document.createElement('button')
+    apply.type = 'button'
+    apply.className = 'backpack-view__color-apply'
+    apply.textContent = 'Apply Color'
+    apply.addEventListener('click', () => {
+      popover.hidden = true
+      trigger.classList.remove('is-open')
+    })
+
+    popover.append(picker, apply)
+    card.appendChild(popover)
+
+    trigger.addEventListener('click', () => {
+      popover.hidden = !popover.hidden
+      trigger.classList.toggle('is-open', !popover.hidden)
+    })
+  }
+
+  private avatarColorValue(profile: AvatarProfile, channel: ColorChannel): string {
+    return channel === 'eyes' ? profile.eyes : channel === 'hair' ? profile.hair : profile.skin
+  }
+
+  private async setAvatarColor(channel: ColorChannel, hex: string): Promise<void> {
+    const profile = this.session.getProfile()
+    if (!profile) return
+    const next: AvatarProfile =
+      channel === 'eyes'
+        ? { ...profile, eyes: hex }
+        : channel === 'hair'
+          ? { ...profile, hair: hex }
+          : { ...profile, skin: hex }
+    this.session.setProfile(next)
+    // Rebuild the preview only — re-rendering the detail would rebuild the picker mid-drag.
+    void this.loadAvatarModel()
   }
 
   private wearablesKeyFromProfile(): string {
@@ -1982,9 +2081,10 @@ export class BackpackView {
       .map((e) => `${e.slot}:${e.urn.toLowerCase()}`)
       .sort()
       .join('|')
-    // bodyShape is stripped from the deploy wearables list, so track it here or a pure
-    // shape switch would read as "no change" and never deploy.
-    return `${profile.bodyShape}::${wearables}||${emotes}`
+    // bodyShape + body colors aren't in the deploy wearables list, so track them here or a
+    // pure shape switch / color edit would read as "no change" and never deploy.
+    const colors = `${profile.skin}:${profile.hair}:${profile.eyes}`.toLowerCase()
+    return `${profile.bodyShape}::${colors}::${wearables}||${emotes}`
   }
 
   /** True when equip/unequip changed wearables or emote wheel since open or last deploy. */

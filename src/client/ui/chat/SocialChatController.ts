@@ -82,8 +82,8 @@ export class SocialChatController {
   }
 
   /**
-   * Watch for remote LiveKit video (Cast). Returns unsubscribe.
-   * Only works while connected to a scene room (wallet chat path).
+   * Watch for remote LiveKit video (Cast / stream keys). Returns unsubscribe.
+   * Dynamically tracks world + scene rooms and keeps polling after OBS goes live.
    */
   watchRemoteVideoLive(onChange: (live: boolean) => void): () => void {
     return this.comms.watchRemoteVideoLive(onChange)

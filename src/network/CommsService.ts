@@ -975,44 +975,123 @@ export class CommsService {
 
   /**
    * Subscribe to Cast/OBS live presence on **all** connected rooms (OR).
-   * Worlds join both world (chat) + scene (Cast) rooms — only watching one misses tracks.
+   *
+   * Dynamically rebinds when rooms connect later (world first, scene Cast room lag)
+   * and keeps polling so OBS going live *after* landing still flips Join live.
    */
   watchRemoteVideoLive(onChange: (live: boolean) => void): () => void {
-    const sessions = this.connectedLiveKitSessions()
-    if (sessions.length === 0) {
-      onChange(false)
-      return () => {}
-    }
-
-    const liveBySession = new Map<number, boolean>()
-    const unsubs: Array<() => void> = []
+    const liveBySession = new Map<LiveKitCommsSession, boolean>()
+    const unsubBySession = new Map<LiveKitCommsSession, () => void>()
+    let lastEmitted: boolean | null = null
+    let disposed = false
+    let sceneEnsureInFlight = false
 
     const emit = (): void => {
-      let any = false
-      for (const v of liveBySession.values()) {
-        if (v) {
-          any = true
-          break
-        }
-      }
+      if (disposed) return
+      // Direct scan each tick so we never miss pubs even if a child watcher lags.
+      const any = this.hasRemoteVideoLive()
+      if (any === lastEmitted) return
+      lastEmitted = any
       onChange(any)
     }
 
-    sessions.forEach((session, i) => {
-      liveBySession.set(i, false)
-      unsubs.push(
-        session.watchRemoteVideoLive((live) => {
-          liveBySession.set(i, live)
-          emit()
-        })
-      )
-    })
+    const syncSessions = (): void => {
+      if (disposed) return
+      const connected = this.connectedLiveKitSessions()
+      const connectedSet = new Set(connected)
 
-    // Initial OR (each watch also emits start; this covers empty maps).
-    emit()
+      for (const [session, unsub] of [...unsubBySession.entries()]) {
+        if (connectedSet.has(session)) continue
+        unsub()
+        unsubBySession.delete(session)
+        liveBySession.delete(session)
+      }
+
+      for (const session of connected) {
+        if (unsubBySession.has(session)) continue
+        liveBySession.set(session, session.hasRemoteVideoLive())
+        unsubBySession.set(
+          session,
+          session.watchRemoteVideoLive((live) => {
+            liveBySession.set(session, live)
+            emit()
+          })
+        )
+      }
+
+      emit()
+    }
+
+    const tick = (): void => {
+      if (disposed) return
+      if (!sceneEnsureInFlight && !this.sceneLiveKit.isConnected()) {
+        sceneEnsureInFlight = true
+        void this.ensureSceneRoomForCastDetection()
+          .catch(() => false)
+          .finally(() => {
+            sceneEnsureInFlight = false
+            if (!disposed) syncSessions()
+          })
+      } else {
+        syncSessions()
+      }
+    }
+
+    tick()
+    const poll = window.setInterval(tick, 2000)
 
     return () => {
-      for (const u of unsubs) u()
+      disposed = true
+      window.clearInterval(poll)
+      for (const unsub of unsubBySession.values()) unsub()
+      unsubBySession.clear()
+      liveBySession.clear()
+    }
+  }
+
+  /**
+   * Worlds connect world LiveKit first; Cast/OBS stream keys publish to the **scene** room.
+   * Retry scene-room join while landing so going live after open still detects video.
+   */
+  async ensureSceneRoomForCastDetection(): Promise<boolean> {
+    if (this.sceneLiveKit.isConnected()) return false
+    if (!this.identity || !this.localAddress) return false
+    const target = this.sceneTarget
+    if (!target) return false
+
+    const isWorld = target.isWorld ?? !isParcelPointer(normalizePointer(target.pointer))
+    // Genesis parcels already use sceneLiveKit as primary; only worlds need a second room.
+    if (!isWorld) return false
+    if (!this.worldLiveKit.isConnected()) return false
+
+    const sceneId = this.sceneId?.trim() || target.sceneId?.trim()
+    if (!sceneId) return false
+
+    const realmName = gatekeeperRealmNameForComms(target)
+    const parcel = gatekeeperParcelForComms(target)
+    try {
+      const adapterResult = await getSceneAdapter(this.identity, {
+        sceneId,
+        parcel,
+        realmName,
+        isWorld: true
+      })
+      if (!adapterResult.ok) return false
+      const ok = await this.sceneLiveKit.connect(adapterResult.adapter)
+      this.realm.isConnectedSceneRoom = ok
+      if (ok) {
+        this.realm.commsAdapter = adapterResult.adapter
+        console.log('[cast] scene room joined for Cast detection (late / retry)')
+        clientDebugLog.log('cast', 'Scene LiveKit joined for Cast detection', {
+          level: 'success',
+          alsoConsole: true
+        })
+      }
+      return ok
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.warn('[cast] ensureSceneRoomForCastDetection failed', msg)
+      return false
     }
   }
 

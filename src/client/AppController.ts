@@ -758,12 +758,14 @@ export class AppController {
       console.log(
         `[cast] landing chat connected=${connected} liveKit=${lkReady} jumpIn=${jumpInReady} status=${status?.kind ?? 'none'}`
       )
+      // Continuous presence: room may connect late, and OBS may go live after landing opens.
       this.castLiveUnsub = this.socialChat.watchRemoteVideoLive((live) => {
         console.log(`[cast] scene-room video live=${live}`)
         this.sceneLandingView?.setCastLive(live)
       })
       this.sceneLandingView?.setCastLive(this.socialChat.hasRemoteVideoLive())
-      for (const ms of [800, 2000, 5000, 10000]) {
+      // Jump-in unlock retries (separate from cast presence poll inside the watcher).
+      for (const ms of [800, 2000, 5000]) {
         window.setTimeout(() => {
           if (!this.sceneLandingView || !this.socialChat) return
           if (this.socialChat.isLiveKitConnected()) {

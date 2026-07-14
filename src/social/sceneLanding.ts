@@ -23,9 +23,10 @@ import {
 import { fetchPublicSceneTitle } from './sceneDisplayTitle'
 
 const WORLDS = 'https://worlds-content-server.decentraland.org'
-const CATALYST_LAMBDAS =
-  (import.meta.env.VITE_CATALYST_LAMBDAS_URL as string | undefined)?.trim().replace(/\/$/, '') ||
-  'https://peer.decentraland.org/lambdas'
+/** Same default as dcl-companion server (`MARKETPLACE_SUBGRAPH_URL`). */
+const MARKETPLACE_SUBGRAPH =
+  (import.meta.env.VITE_MARKETPLACE_SUBGRAPH_URL as string | undefined)?.trim().replace(/\/$/, '') ||
+  'https://subgraph.decentraland.org/marketplace'
 
 export type SceneLandingMeta = {
   title: string
@@ -35,7 +36,10 @@ export type SceneLandingMeta = {
   kind: 'parcel' | 'world'
   userCount: number
   ownerAddress: string | null
-  /** All known owner wallets (Places owner + creator, lowercased) for settings-gear checks. */
+  /**
+   * Owner wallets for settings gear — mirrors companion `sceneProfile.ownerAddresses`:
+   * Places owner/creator + marketplace NAME NFT owner (worlds). No worlds `/about`.
+   */
   ownerAddresses: string[]
   ownerDisplayName: string
   categories: string[]
@@ -49,32 +53,51 @@ export function worldNameLabelFromPointer(worldName: string): string {
 }
 
 /**
- * True when `wallet` owns the DCL NAME NFT for this world (authoritative for world-name owners).
- * Places `owner` is usually the same, but name ownership is what “I own this world name” means.
+ * On-chain owner of the Decentraland NAME NFT for `{label}.dcl.eth`.
+ * Same GraphQL as dcl-companion `fetchDclWorldNameOwnerAddress` (marketplace subgraph).
  */
-export async function walletOwnsWorldName(
-  walletAddress: string,
-  worldName: string
-): Promise<boolean> {
-  const wallet = walletAddress.trim().toLowerCase()
-  if (!/^0x[a-f0-9]{40}$/.test(wallet)) return false
+export async function fetchWorldNameOwnerAddress(worldName: string): Promise<string | null> {
   const label = worldNameLabelFromPointer(worldName)
-  if (!label) return false
-  try {
-    const res = await fetch(`${CATALYST_LAMBDAS}/users/${encodeURIComponent(wallet)}/names`, {
-      headers: { Accept: 'application/json' }
-    })
-    if (!res.ok) return false
-    const body = (await res.json()) as { elements?: unknown }
-    const elements = Array.isArray(body.elements) ? body.elements : []
-    for (const row of elements) {
-      if (!row || typeof row !== 'object') continue
-      const name = (row as { name?: unknown }).name
-      if (typeof name === 'string' && name.trim().toLowerCase() === label) return true
+  if (!label || !/^[a-z0-9][a-z0-9-]*$/.test(label)) return null
+  const query = `query worldNameOwner($subLabel: String!) {
+    nfts(first: 25, where: { category: ens, ens_: { subdomain_starts_with_nocase: $subLabel } }) {
+      name
+      owner { id }
+      ens { subdomain }
     }
-    return false
+  }`
+  try {
+    const res = await fetch(MARKETPLACE_SUBGRAPH, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        operationName: 'worldNameOwner',
+        query,
+        variables: { subLabel: label }
+      })
+    })
+    if (!res.ok) return null
+    const body = (await res.json()) as {
+      data?: {
+        nfts?: Array<{
+          name?: string | null
+          owner?: { id?: string | null } | null
+          ens?: { subdomain?: string | null } | null
+        } | null>
+      }
+    }
+    const nfts = body.data?.nfts ?? []
+    const realm = `${label}.dcl.eth`
+    for (const row of nfts) {
+      const ownerId = row?.owner?.id?.trim().toLowerCase()
+      if (!ownerId || !/^0x[a-f0-9]{40}$/.test(ownerId)) continue
+      const nm = (typeof row?.name === 'string' ? row.name : '').toLowerCase()
+      const sd = (typeof row?.ens?.subdomain === 'string' ? row.ens.subdomain : '').toLowerCase()
+      if (sd === label || nm === label || nm === realm) return ownerId
+    }
+    return null
   } catch {
-    return false
+    return null
   }
 }
 
@@ -278,9 +301,14 @@ export async function fetchSceneLandingMeta(
     worlds.find((w) => w.id.toLowerCase() === needle) ??
     worlds[0]
 
-  const owners = world
-    ? collectOwnerAddresses(world.creatorAddress, world.owner, placeOwnerAddress(world))
-    : collectOwnerAddresses(null)
+  // Companion discover: Places/deploy owners + marketplace NAME owner (not worlds /about).
+  const chainOwner = await fetchWorldNameOwnerAddress(route.worldName).catch(() => null)
+  const owners = collectOwnerAddresses(
+    chainOwner,
+    world?.creatorAddress,
+    world?.owner,
+    world ? placeOwnerAddress(world) : null
+  )
   const shortName = route.worldName.replace(/\.dcl\.eth$/i, '').trim() || route.worldName
   const ownerDisplay = await ownerDisplayName(owners.primary, shortName)
   const description = await resolveWorldDescription(route.worldName)

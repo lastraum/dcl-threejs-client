@@ -11,7 +11,6 @@ import {
 import {
   fetchSceneLandingMeta,
   fetchSceneRelatedEvents,
-  walletOwnsWorldName,
   type SceneLandingMeta
 } from '../../../social/sceneLanding'
 import {
@@ -79,9 +78,6 @@ export class SceneLandingView {
   private pendingBan: SceneLoadErrorMessage | null = null
   private hlsPlayer: Hls | null = null
   private streamDocClickBound = false
-  /** Async world-name ownership (Places list alone is not enough for “I own this name”). */
-  private worldNameOwnerVerified = false
-  private ownerCheckSeq = 0
   private readonly onDocClick = (ev: MouseEvent): void => {
     if (!this.joinLiveMenuOpen) return
     const t = ev.target
@@ -147,10 +143,8 @@ export class SceneLandingView {
   setLogin(login: LoginResult): void {
     this.login = login
     this.topNav.setLogin(login)
-    // Re-evaluate owner gear after sign-in (layout may already be mounted).
-    this.worldNameOwnerVerified = false
+    // Companion: gear = session wallet ∈ ownerAddresses (re-check after sign-in).
     this.refreshStreamChrome()
-    void this.recheckWorldNameOwnership()
   }
 
   /** Update Jump in / Sign in CTA after auth panel or profile login. */
@@ -158,7 +152,6 @@ export class SceneLandingView {
     this.playSessionReady = ready
     this.syncJumpInLabel()
     this.refreshStreamChrome()
-    void this.recheckWorldNameOwnership()
   }
 
   dispose(): void {
@@ -360,7 +353,6 @@ export class SceneLandingView {
       this.bindStreamChrome()
       // Login may have completed while meta was loading — re-apply owner gear / I'm live.
       this.refreshStreamChrome()
-      void this.recheckWorldNameOwnership()
       void this.hydrateOwnerAvatar()
       void this.loadRelatedEvents()
     } catch {
@@ -380,8 +372,12 @@ export class SceneLandingView {
     return /^0x[a-f0-9]{40}$/.test(a) ? a : null
   }
 
-  /** Places/catalyst wallet list match (sync). */
-  private isListedSceneOwner(): boolean {
+  /**
+   * Companion `canEditSceneCustomStream`:
+   * wallet session && sessionAddress ∈ sceneProfile.ownerAddresses
+   * (ownerAddresses filled at meta load from Places + marketplace NAME subgraph).
+   */
+  private isSceneOwner(): boolean {
     const wallet = this.sessionWallet()
     if (!wallet || !this.meta) return false
     const owners = this.meta.ownerAddresses?.length
@@ -390,40 +386,6 @@ export class SceneLandingView {
         ? [this.meta.ownerAddress]
         : []
     return owners.some((o) => o.trim().toLowerCase() === wallet)
-  }
-
-  /**
-   * Settings gear: listed Places owner **or** DCL NAME NFT owner for this world.
-   * (Scene.json often has contact name “Lastraum” without a 0x — Places alone can lag.)
-   */
-  private isSceneOwner(): boolean {
-    if (this.isListedSceneOwner()) return true
-    if (this.route.kind === 'world' && this.worldNameOwnerVerified) return true
-    return false
-  }
-
-  /**
-   * After wallet login / meta load: confirm world-name ownership via Catalyst names API.
-   * This is what “I own rickroll.dcl.eth” means for Decentraland Worlds.
-   */
-  private async recheckWorldNameOwnership(): Promise<void> {
-    const seq = ++this.ownerCheckSeq
-    const wallet = this.sessionWallet()
-    if (!wallet || this.route.kind !== 'world' || !this.meta) {
-      this.worldNameOwnerVerified = false
-      this.syncOwnerSettingsVisibility()
-      return
-    }
-    // Already matched Places — no need for the extra round-trip.
-    if (this.isListedSceneOwner()) {
-      this.worldNameOwnerVerified = false
-      this.syncOwnerSettingsVisibility()
-      return
-    }
-    const owns = await walletOwnsWorldName(wallet, this.route.worldName)
-    if (this.disposed || seq !== this.ownerCheckSeq) return
-    this.worldNameOwnerVerified = owns
-    this.syncOwnerSettingsVisibility()
   }
 
   private refreshJoinLiveOptions(): void {

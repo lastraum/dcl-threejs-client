@@ -28,14 +28,20 @@ export type SocialChatControllerOptions = {
 }
 
 function buildCommsTarget(scene: ResolvedScene): SceneCommsTarget {
+  const isWorld = scene.source.kind === 'world'
+  // Worlds: use lowercased commsPointer for gatekeeper (matches scene-stream-access + companion).
+  // about.realmName can be mixed-case (RickRoll.dcl.eth) and would join a different LiveKit room.
+  const realmName = isWorld
+    ? scene.commsPointer.trim().toLowerCase()
+    : scene.realm.realmName?.trim() || 'main'
   return {
     pointer: scene.commsPointer,
     baseParcel: scene.baseParcel,
     sceneId: scene.entityId ?? '',
-    realmName: scene.realm.realmName,
+    realmName,
     contentUrl: scene.realm.contentUrl,
     parcels: scene.parcels,
-    isWorld: scene.source.kind === 'world',
+    isWorld,
     sceneTitle: scene.title,
     metadataBlacklist: blacklistFromMetadata(scene.metadata)
   }
@@ -82,8 +88,8 @@ export class SocialChatController {
   }
 
   /**
-   * Watch for remote LiveKit video (Cast). Returns unsubscribe.
-   * Only works while connected to a scene room (wallet chat path).
+   * Watch for remote LiveKit video (Cast / stream keys). Returns unsubscribe.
+   * Dynamically tracks world + scene rooms and keeps polling after OBS goes live.
    */
   watchRemoteVideoLive(onChange: (live: boolean) => void): () => void {
     return this.comms.watchRemoteVideoLive(onChange)

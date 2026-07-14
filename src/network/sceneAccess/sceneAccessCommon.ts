@@ -40,11 +40,22 @@ export function isAddressMetadataBlacklisted(
 export function gatekeeperParcelForComms(target: GatekeeperCommsContext): string {
   const pointer = normalizePointer(target.pointer)
   if (isParcelPointer(pointer)) return pointer
-  return normalizePointer(target.baseParcel)
+  // Worlds: gatekeeper + stream-access always use 0,0 (not scene baseParcel).
+  return '0,0'
 }
 
+/**
+ * Realm name for gatekeeper `get-scene-adapter` / scene-stream-access.
+ * Worlds must be **lowercase** so adapter joins match stream-key ingress rooms
+ * (companion + `/scene-stream-access` always lowercases; about API may return mixed case e.g. RickRoll.dcl.eth).
+ */
 export function gatekeeperRealmNameForComms(target: GatekeeperCommsContext): string {
+  const pointer = normalizePointer(target.pointer)
+  if (isParcelPointer(pointer)) {
+    const fromTarget = target.realmName?.trim()
+    return fromTarget || 'main'
+  }
   const fromTarget = target.realmName?.trim()
-  if (fromTarget) return fromTarget
-  return realmNameForCommsPointer(target.pointer)
+  const name = fromTarget || realmNameForCommsPointer(target.pointer)
+  return name.toLowerCase()
 }

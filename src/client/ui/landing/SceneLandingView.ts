@@ -92,10 +92,8 @@ export class SceneLandingView {
   private liveKitVideoCleanup: (() => void) | null = null
   private streamDocClickBound = false
   private settingsModal: SceneStreamSettingsModal | null = null
-  /** Remote LiveKit video present (Cast/OBS) — from social chat scene room. */
+  /** Remote LiveKit video present (Cast/OBS stream keys) — from social chat scene room. */
   private castLive = false
-  /** Scene/world LiveKit connected — show Join live even before video pubs appear. */
-  private castRoomReady = false
   /** Companion streamPlaybackStarted — destination card swaps to full cast stage. */
   private streamWatchActive = false
   private castMuted = false
@@ -218,7 +216,6 @@ export class SceneLandingView {
       return
     }
     this.castLive = live
-    if (live) this.castRoomReady = true
     this.syncLiveBadge()
     this.refreshJoinLiveOptions()
     if (!live && this.liveKitVideoCleanup) {
@@ -226,14 +223,12 @@ export class SceneLandingView {
     }
   }
 
-  /** LiveKit room connected (pipeline ready) — offer Join live even if video pubs lag OBS. */
-  setCastRoomReady(ready: boolean): void {
-    if (this.castRoomReady === ready) {
-      this.refreshJoinLiveOptions()
-      return
-    }
-    this.castRoomReady = ready
-    this.refreshJoinLiveOptions()
+  /**
+   * LiveKit room connected (chat pipeline). Kept for AppController call sites —
+   * does **not** surface Join live (that requires castLive / remote video pubs).
+   */
+  setCastRoomReady(_ready: boolean): void {
+    /* no-op: room-ready alone must not show Join live */
   }
 
   dispose(): void {
@@ -492,12 +487,13 @@ export class SceneLandingView {
   private refreshJoinLiveOptions(): void {
     const { pointer, kind } = this.streamTarget()
     this.joinLiveOptions = listJoinLiveOptions(pointer, kind)
-    // Companion: offer Join live once Cast pipeline is ready; emphasize when video is actually live.
-    if (this.castLive || this.castRoomReady) {
+    // Only offer scene LiveKit cast when remote video is actually published (OBS / ingress).
+    // LiveKit chat connect alone must not show Join live — scene VideoPlayer is unrelated.
+    if (this.castLive) {
       this.joinLiveOptions = [
         {
           id: 'cast-livekit',
-          label: this.castLive ? 'LIVE · Cast' : 'Join live (Cast)',
+          label: 'LIVE · Cast',
           kind: 'cast-live'
         },
         ...this.joinLiveOptions
@@ -697,13 +693,9 @@ export class SceneLandingView {
       const labelEl = btn.querySelector('[data-join-live-label]')
       const labelText = sole
         ? sole.kind === 'cast-live'
-          ? this.castLive
-            ? 'LIVE · CAST'
-            : 'JOIN LIVE'
+          ? 'LIVE · CAST'
           : sole.label.replace(/^Live:\s*/i, '').toUpperCase().slice(0, 18)
-        : multi
-          ? 'JOIN LIVE'
-          : 'JOIN LIVE'
+        : 'JOIN LIVE'
       if (labelEl) labelEl.textContent = labelText
       else {
         // Fallback if template missing label span
@@ -756,6 +748,11 @@ export class SceneLandingView {
     const opt = this.joinLiveOptions.find((o) => o.id === optionId)
     if (!opt) return
     if (opt.kind === 'cast-live') {
+      if (!this.castLive) {
+        this.showStreamNotice('No live stream right now — wait for OBS / stream keys to go live.')
+        this.refreshJoinLiveOptions()
+        return
+      }
       this.openLiveKitCastPlayer(opt.label)
       return
     }
@@ -1367,14 +1364,14 @@ export class SceneLandingView {
                           ${categories ? `<div class="scene-watch-dest-scene-card-badges" aria-label="Categories">${categories}</div>` : ''}
                           <div class="scene-watch-dest-scene-card-actions">
                             <div class="scene-watch-dest-scene-card-cta-row">
-                              <div class="scene-watch-join-live-split" data-join-live-root ${this.castLive || this.castRoomReady || this.joinLiveOptions.length > 0 ? '' : 'hidden'}>
+                              <div class="scene-watch-join-live-split" data-join-live-root ${this.castLive || this.joinLiveOptions.length > 0 ? '' : 'hidden'}>
                                 <button
                                   type="button"
                                   class="scene-watch-dest-btn scene-watch-dest-btn--secondary scene-watch-dest-btn--watch-live-cta scene-watch-join-live-caret-in-btn scene-watch-join-live-caret-in-btn--single"
                                   data-join-live-toggle
                                   aria-haspopup="false"
                                   aria-expanded="false"
-                                  title="Watch Cast / live stream"
+                                  title="Watch live stream"
                                 >
                                   <span data-join-live-label>JOIN LIVE</span>
                                   <span class="scene-watch-join-live-caret-glyph" data-join-live-caret aria-hidden hidden>▾</span>

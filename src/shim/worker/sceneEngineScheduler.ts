@@ -101,9 +101,11 @@ let tickStartedAt = 0
 let lastExecutedAt = 0
 /**
  * Scene-time ledger — sum of positive dt passed to engine.update since wallClockOriginMs.
- * NeonScreen (pauseDuration/scrollDuration) does `elapsed += dt`; any path that invents dt
- * (floor, double ticks, flight clamp misses) compresses the 0.5s row hold to ~10ms.
- * Guarantees: sceneTimeSec never exceeds wall seconds since origin.
+ * Intended so NeonScreen pauseDuration/scrollDuration (`elapsed += dt`) track wall clock.
+ *
+ * KNOWN (lastraum, 2026-07-14): still insufficient — plaza marquee row pause does not honor
+ * scene pauseDuration (no hold / ~instant). Wall-clock ledger + engine.update wrap did not fix
+ * it. Parked for follow-up; see TweenBridge KNOWN note.
  */
 let wallClockOriginMs = 0
 let sceneTimeSec = 0

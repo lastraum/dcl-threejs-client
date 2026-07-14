@@ -344,6 +344,12 @@ function isPlazaMarqueeTextureMove(tween: PBTween): boolean {
  *
  * SDK parity: `@dcl/ecs` `createTweenSystem()` reads `TweenState.state` (0 active / 1 completed / 2 paused)
  * and `currentTime` (0–1 progress) to fire `tweenCompleted()` and advance `TweenSequence` yoyo/restart.
+ *
+ * KNOWN (lastraum, 2026-07-14): Genesis NeonScreen row pause is still broken. Scene owns
+ * pauseDuration/scrollDuration via addSystem(dt); client no longer fakes a 0.5s hold. TextureMove
+ * scrolls, but the authored inter-row pause does not hold (was ~10ms or none after wall-clock
+ * ledger attempts). Needs a dedicated follow-up — do not reintroduce TEXTURE_MOVE_PAUSE_OVER_SCROLL
+ * without fixing worker scene-time vs NeonScreen properly.
  */
 export class TweenBridge {
   private readonly runtime = new Map<Entity, TweenRuntime>()

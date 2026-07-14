@@ -200,14 +200,32 @@ function ensureRepeatWrapping(tex: THREE.Texture): void {
   }
 }
 
+/**
+ * DCL TextureMove Vector2 → Three.js texture UV.
+ *
+ * Explorer/Unity apply material ST so scene `direction.y` scrolls marquees along the
+ * board's long axis (vertical crawl of LED text on Genesis Plaza). Three.js maps
+ * Vector2 (x,y) straight onto (offset.x/U, offset.y/V), which makes that same
+ * `direction.y` crawl horizontally on our UV layout. Swap axes so DCL y → U and
+ * DCL x → V, matching Explorer motion.
+ */
+function dclTextureUvToThree(uv: Vec2): Vec2 {
+  return { x: uv.y, y: uv.x }
+}
+
+function threeTextureUvToDcl(uv: Vec2): Vec2 {
+  return { x: uv.y, y: uv.x }
+}
+
 function applyTextureUvToTargets(targets: THREE.Texture[], uv: Vec2, movementType?: number): void {
   const tiling = movementType === TMT_TILING
+  const threeUv = dclTextureUvToThree(uv)
   for (const tex of targets) {
     ensureRepeatWrapping(tex)
     if (tiling) {
-      tex.repeat.set(uv.x, uv.y)
+      tex.repeat.set(threeUv.x, threeUv.y)
     } else {
-      tex.offset.set(uv.x, uv.y)
+      tex.offset.set(threeUv.x, threeUv.y)
     }
   }
 }
@@ -215,10 +233,11 @@ function applyTextureUvToTargets(targets: THREE.Texture[], uv: Vec2, movementTyp
 function readTextureUvFromTargets(targets: THREE.Texture[], movementType?: number): Vec2 | null {
   const tex = targets[0]
   if (!tex) return null
-  if (movementType === TMT_TILING) {
-    return { x: tex.repeat.x, y: tex.repeat.y }
-  }
-  return { x: tex.offset.x, y: tex.offset.y }
+  const threeUv =
+    movementType === TMT_TILING
+      ? { x: tex.repeat.x, y: tex.repeat.y }
+      : { x: tex.offset.x, y: tex.offset.y }
+  return threeTextureUvToDcl(threeUv)
 }
 
 function tweenModeLabel(tween: PBTween): string {

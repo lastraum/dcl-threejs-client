@@ -37,7 +37,10 @@ const DCL_PLANE_NORTH_CORNER_TO_THREE = [2, 3, 1, 0]
 const DCL_PLANE_SOUTH_CORNER_TO_THREE = [3, 2, 0, 1]
 
 /** Bump when plane topology/UV layout changes — busts primitiveMeshKey mesh cache. */
-const PLANE_GEOMETRY_REVISION = 'v4'
+const PLANE_GEOMETRY_REVISION = 'v5'
+
+/** userData key: plane re-based so atlas U (text) runs along local +X. */
+export const DCL_TEXT_ALONG_Y_BASIS = 'dclTextAlongYBasis'
 
 export type PrimitiveMeshSpec = {
   mesh?:
@@ -154,6 +157,32 @@ export function buildDclPlaneGeometry(width = 1, height = 1): THREE.BufferGeomet
   return geometry
 }
 
+/**
+ * True when atlas U (text) runs along plane local Y (BL→TL), not local X (BL→BR).
+ * Genesis Plaza LED marquees author UVs this way while entity local Y is world-up, so
+ * without a basis fix text is sideways and TextureMove Y crawls horizontally.
+ */
+function planeUvsMapTextAlongLocalY(uvs: readonly number[]): boolean {
+  const du = Math.abs((uvs[2] ?? 0) - (uvs[0] ?? 0))
+  const dv = Math.abs((uvs[3] ?? 0) - (uvs[1] ?? 0))
+  return dv > du + 1e-5
+}
+
+/** (x,y)→(y,-x): local +Y (atlas U / text) becomes local +X (horizontal on upright planes). */
+function applyTextAlongYPlaneBasis(geometry: THREE.BufferGeometry): void {
+  const pos = geometry.getAttribute('position')
+  if (!(pos instanceof THREE.BufferAttribute)) return
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i)
+    const y = pos.getY(i)
+    pos.setXY(i, y, -x)
+  }
+  pos.needsUpdate = true
+  geometry.computeBoundingBox()
+  geometry.computeBoundingSphere()
+  geometry.userData[DCL_TEXT_ALONG_Y_BASIS] = true
+}
+
 function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
   const perSide = uvs.length >= 16 ? 8 : uvs.length >= 8 ? 8 : 0
   if (!perSide) return buildPlaneGeometryWithUvs(DEFAULT_DCL_PLANE_UVS)
@@ -185,6 +214,13 @@ function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
   geometry.setAttribute('uv', uvAttr)
   // North (+Z): CCW from +Z. South (-Z): opposite winding so both sides render with FrontSide.
   geometry.setIndex([0, 2, 1, 2, 3, 1, 4, 5, 6, 5, 7, 6])
+
+  // Custom atlas UVs with text along local Y (plaza marquees) → re-basis so text is horizontal.
+  // Default full-quad UVs (video, etc.) keep the standard XY plane.
+  if (planeUvsMapTextAlongLocalY(north)) {
+    applyTextAlongYPlaneBasis(geometry)
+  }
+
   return geometry
 }
 

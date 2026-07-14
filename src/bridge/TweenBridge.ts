@@ -203,19 +203,16 @@ function ensureRepeatWrapping(tex: THREE.Texture): void {
 /**
  * DCL TextureMove Vector2 → Three.js texture UV.
  *
- * Explorer/Unity material ST vs Three plane/GLTF UV layout:
- * - Axis: DCL y is the marquee crawl axis; without a swap it drives Three V and
- *   scrolls horizontally on plaza LED boards. Map y → U, x → V.
- * - Sign: Unity V increases opposite Three's default flipY sampling, so the crawl
- *   (and letter uprightness through the scroll) is inverted unless we negate U.
+ * With Material maps using glTF flipY=false (see MaterialApplier), Explorer ST and
+ * Three offset share the same V sense. DCL y is still the plaza marquee crawl axis
+ * and must map to Three U (not V) or the LED board crawls sideways.
  */
 function dclTextureUvToThree(uv: Vec2): Vec2 {
-  return { x: -uv.y, y: uv.x }
+  return { x: uv.y, y: uv.x }
 }
 
 function threeTextureUvToDcl(uv: Vec2): Vec2 {
-  // Inverse of { x: -dcl.y, y: dcl.x }
-  return { x: uv.y, y: -uv.x }
+  return { x: uv.y, y: uv.x }
 }
 
 function applyTextureUvToTargets(targets: THREE.Texture[], uv: Vec2, movementType?: number): void {

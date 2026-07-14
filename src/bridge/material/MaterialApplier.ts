@@ -408,19 +408,22 @@ export class MaterialApplier {
 
     this.applyScalarsToMesh(mesh, pb)
     const m = mesh.material as THREE.MeshBasicMaterial | THREE.MeshPhysicalMaterial
+    // MeshRenderer planes use TextureLoader-style UVs (flipY on). GLTF meshes use
+    // glTF UV space (flipY off) — TextureLoader default flipped LED marquees/garbled text.
+    const flipY = mesh.userData.primitiveMeshKey != null
 
     let texturesOk = true
     let alphaTex: THREE.Texture | null = null
     const mainUnion = coerceTextureUnion(inner.texture)
     if (mainUnion) {
-      const mainTex = await this.loadUnionTexture(mainUnion)
+      const mainTex = await this.loadUnionTexture(mainUnion, { flipY })
       m.map = mainTex
       if (!mainTex) texturesOk = false
       else this.applyUvTransform(mainTex, getTextureDef(mainUnion))
     }
     const alphaUnion = coerceTextureUnion(inner.alphaTexture)
     if (alphaUnion) {
-      alphaTex = await this.loadUnionTexture(alphaUnion)
+      alphaTex = await this.loadUnionTexture(alphaUnion, { flipY })
       m.alphaMap = alphaTex
       if (!alphaTex) texturesOk = false
       else this.applyUvTransform(alphaTex, getTextureDef(alphaUnion))
@@ -430,7 +433,7 @@ export class MaterialApplier {
       const pbr = inner as PbrMaterial
       const emissiveUnion = coerceTextureUnion(pbr.emissiveTexture)
       if (emissiveUnion) {
-        let emissiveTex = await this.loadUnionTexture(emissiveUnion)
+        let emissiveTex = await this.loadUnionTexture(emissiveUnion, { flipY })
         if (!emissiveTex && m.map && textureUnionSameSrc(emissiveUnion, mainUnion)) {
           emissiveTex = m.map
         }
@@ -440,7 +443,7 @@ export class MaterialApplier {
       }
       const bumpUnion = coerceTextureUnion(pbr.bumpTexture)
       if (bumpUnion) {
-        const bumpTex = await this.loadUnionTexture(bumpUnion, { normalMap: true })
+        const bumpTex = await this.loadUnionTexture(bumpUnion, { normalMap: true, flipY })
         m.normalMap = bumpTex
         if (!bumpTex) texturesOk = false
         else {
@@ -505,6 +508,8 @@ export class MaterialApplier {
       wrapMode?: number
       filterMode?: number
       normalMap?: boolean
+      /** undefined = leave clone's flipY from the loader/cache. */
+      flipY?: boolean
     }
   ): THREE.Texture {
     // Clone so wrap/offset/tiling/tween UV never mutate the AssetCache entry.
@@ -519,13 +524,16 @@ export class MaterialApplier {
           : THREE.LinearFilter
     tex.magFilter = opts.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
     tex.colorSpace = opts.normalMap ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace
+    if (opts.flipY !== undefined && tex.flipY !== opts.flipY) {
+      tex.flipY = opts.flipY
+    }
     tex.needsUpdate = true
     return tex
   }
 
   private async loadUnionTexture(
     union?: TextureUnion,
-    options?: { normalMap?: boolean }
+    options?: { normalMap?: boolean; flipY?: boolean }
   ): Promise<THREE.Texture | null> {
     union = coerceTextureUnion(union)
     if (union?.tex?.$case === 'avatarTexture') {
@@ -541,7 +549,8 @@ export class MaterialApplier {
       return this.materialTextureInstance(base, {
         wrapMode: def.wrapMode,
         filterMode: def.filterMode,
-        normalMap: options?.normalMap
+        normalMap: options?.normalMap,
+        flipY: options?.flipY
       })
     }
     if (union?.tex?.$case === 'videoTexture') {
@@ -571,7 +580,9 @@ export class MaterialApplier {
     return this.materialTextureInstance(base, {
       wrapMode: def.wrapMode,
       filterMode: def.filterMode,
-      normalMap: options?.normalMap
+      normalMap: options?.normalMap,
+      // Default false for Material→mesh (GLTF UV space). Callers pass true for MeshRenderer planes.
+      flipY: options?.flipY ?? false
     })
   }
 

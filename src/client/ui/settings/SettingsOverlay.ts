@@ -1,7 +1,7 @@
 import type { SessionIdentity } from '../../../network/SessionIdentity'
 import {
   deployAvatarProfile,
-  wearablesForProfileDeploy
+  profileDeployFingerprint
 } from '../../../avatar/deployProfile'
 import { BackpackView } from './BackpackView'
 import { EventsView, type EventsViewOptions } from './EventsView'
@@ -190,10 +190,8 @@ export class SettingsOverlay {
   private wearablesFingerprint(): string {
     const profile = this.session.getProfile()
     if (!profile?.fromWallet) return ''
-    return wearablesForProfileDeploy(profile)
-      .map((u) => u.toLowerCase())
-      .sort()
-      .join('|')
+    // bodyShape + skin/hair/eyes + wearables + emotes — same key as BackpackView.
+    return profileDeployFingerprint(profile)
   }
 
   private hasPendingProfileChanges(): boolean {
@@ -202,7 +200,8 @@ export class SettingsOverlay {
   }
 
   /**
-   * Close settings. If equipped wearables changed, deploy first.
+   * Close settings. If avatar profile fields changed (wearables, emotes, body
+   * shape, or skin/hair/eye colours), deploy first.
    * On successful save: stay on backpack with refreshed avatar (do not close).
    * On no pending changes: close the overlay.
    * @see https://docs.decentraland.org/contributor/content/entity-types/profiles#pointers

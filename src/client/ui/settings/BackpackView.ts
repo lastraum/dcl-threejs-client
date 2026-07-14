@@ -58,7 +58,7 @@ import {
   isWearableEquipped,
   unequipWearableFromProfile
 } from './profileWearableEquip'
-import { wearablesForProfileDeploy } from '../../../avatar/deployProfile'
+import { profileDeployFingerprint } from '../../../avatar/deployProfile'
 import {
   baseEmoteSlugFromRef,
   baseEmoteUrn,
@@ -2073,21 +2073,11 @@ export class BackpackView {
   private wearablesKeyFromProfile(): string {
     const profile = this.session.getProfile()
     if (!profile) return ''
-    const wearables = wearablesForProfileDeploy(profile)
-      .map((u) => u.toLowerCase())
-      .sort()
-      .join('|')
-    const emotes = (profile.emotes ?? [])
-      .map((e) => `${e.slot}:${e.urn.toLowerCase()}`)
-      .sort()
-      .join('|')
-    // bodyShape + body colors aren't in the deploy wearables list, so track them here or a
-    // pure shape switch / color edit would read as "no change" and never deploy.
-    const colors = `${profile.skin}:${profile.hair}:${profile.eyes}`.toLowerCase()
-    return `${profile.bodyShape}::${colors}::${wearables}||${emotes}`
+    // Shared with SettingsOverlay so colour / bodyShape / emote edits deploy.
+    return profileDeployFingerprint(profile)
   }
 
-  /** True when equip/unequip changed wearables or emote wheel since open or last deploy. */
+  /** True when profile fields that deploy to Catalyst changed since open or last save. */
   hasPendingProfileChanges(): boolean {
     if (this.session.getProfile()?.fromWallet !== true) return false
     const current = this.wearablesKeyFromProfile()

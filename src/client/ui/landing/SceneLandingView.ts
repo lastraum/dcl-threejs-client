@@ -9,9 +9,20 @@ import {
   type DclEvent
 } from '../../../social/dclEvents'
 import { fetchSceneLandingMeta, fetchSceneRelatedEvents, type SceneLandingMeta } from '../../../social/sceneLanding'
+import {
+  getCustomHlsUrl,
+  isHttpsM3u8,
+  listJoinLiveOptions,
+  registerUserM3u8Stream,
+  removeUserStream,
+  sceneStreamTargetFromRoute,
+  setCustomHlsUrl,
+  type JoinLiveOption
+} from '../../../social/sceneStreams'
 import { EventModal } from '../events/EventModal'
 import { SocialShellTopNav, type SocialShellChromeHandlers, type SocialShellTab } from '../explore/SocialShellTopNav'
 import { SceneUsersModal } from './SceneUsersModal'
+import Hls from 'hls.js'
 
 export type SceneLandingViewOptions = SocialShellChromeHandlers & {
   route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
@@ -51,6 +62,9 @@ export class SceneLandingView {
   private disposed = false
   private jumpInLoading = false
   private playSessionReady = false
+  private login: LoginResult
+  private joinLiveOptions: JoinLiveOption[] = []
+  private joinLiveMenuOpen = false
   private targetProgress = 0
   private displayedProgress = 0
   private progressAnimFrame = 0
@@ -58,12 +72,22 @@ export class SceneLandingView {
   private progressPctEl: HTMLElement | null = null
   private progressStatusEl: HTMLElement | null = null
   private pendingBan: SceneLoadErrorMessage | null = null
+  private hlsPlayer: Hls | null = null
+  private streamDocClickBound = false
+  private readonly onDocClick = (ev: MouseEvent): void => {
+    if (!this.joinLiveMenuOpen) return
+    const t = ev.target
+    if (!(t instanceof Node)) return
+    if (this.root.querySelector('[data-join-live-root]')?.contains(t)) return
+    this.setJoinLiveMenuOpen(false)
+  }
 
   constructor(opts: SceneLandingViewOptions) {
     this.route = opts.route
     this.onJumpIn = opts.onJumpIn
     this.onNavigate = opts.onNavigate
     this.playSessionReady = opts.playSessionReady === true
+    this.login = opts.login
 
     this.topNav = new SocialShellTopNav({
       activeTab: null,
@@ -113,7 +137,9 @@ export class SceneLandingView {
   }
 
   setLogin(login: LoginResult): void {
+    this.login = login
     this.topNav.setLogin(login)
+    this.refreshStreamChrome()
   }
 
   /** Update Jump in / Sign in CTA after auth panel or profile login. */
@@ -124,7 +150,12 @@ export class SceneLandingView {
 
   dispose(): void {
     this.disposed = true
+    this.teardownStreamPlayer()
     this.stopProgressAnimation()
+    if (this.streamDocClickBound) {
+      document.removeEventListener('click', this.onDocClick, true)
+      this.streamDocClickBound = false
+    }
     document.body.classList.remove('scene-landing-route', 'scene-landing-jump-in-loading')
     this.eventModal.dispose()
     this.sceneUsersModal.dispose()
@@ -304,6 +335,7 @@ export class SceneLandingView {
       if (this.disposed) return
       loadingEl.remove()
       this.mainEl.innerHTML = this.renderLayout(this.meta)
+      this.refreshJoinLiveOptions()
       if (this.pendingBan) {
         const ban = this.pendingBan
         this.pendingBan = null
@@ -312,6 +344,7 @@ export class SceneLandingView {
         this.bindJumpIn()
       }
       this.bindCrowdBadge()
+      this.bindStreamChrome()
       void this.hydrateOwnerAvatar()
       void this.loadRelatedEvents()
     } catch {
@@ -319,6 +352,311 @@ export class SceneLandingView {
       loadingEl.innerHTML =
         '<p class="scene-landing-view__error">Could not load this place. Try again from Explore.</p>'
     }
+  }
+
+  private streamTarget(): { pointer: string; kind: 'world' | 'parcel' } {
+    return sceneStreamTargetFromRoute(this.route)
+  }
+
+  private sessionWallet(): string | null {
+    if (this.login.kind !== 'wallet') return null
+    return this.login.address.trim().toLowerCase()
+  }
+
+  private isSceneOwner(): boolean {
+    const wallet = this.sessionWallet()
+    const owner = this.meta?.ownerAddress?.trim().toLowerCase()
+    return Boolean(wallet && owner && wallet === owner)
+  }
+
+  private refreshJoinLiveOptions(): void {
+    const { pointer, kind } = this.streamTarget()
+    this.joinLiveOptions = listJoinLiveOptions(pointer, kind)
+    this.renderJoinLiveMenu()
+    this.syncJoinLiveVisibility()
+  }
+
+  private refreshStreamChrome(): void {
+    if (!this.meta) return
+    this.syncOwnerSettingsVisibility()
+    this.syncGoLiveVisibility()
+    this.refreshJoinLiveOptions()
+  }
+
+  private bindStreamChrome(): void {
+    if (!this.streamDocClickBound) {
+      document.addEventListener('click', this.onDocClick, true)
+      this.streamDocClickBound = true
+    }
+    this.root.querySelector('[data-join-live-toggle]')?.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.setJoinLiveMenuOpen(!this.joinLiveMenuOpen)
+    })
+    this.root.querySelector('[data-scene-settings]')?.addEventListener('click', () => {
+      this.openSceneSettingsModal()
+    })
+    this.root.querySelector('[data-go-live]')?.addEventListener('click', () => {
+      this.openGoLiveModal()
+    })
+    this.syncOwnerSettingsVisibility()
+    this.syncGoLiveVisibility()
+    this.renderJoinLiveMenu()
+    this.syncJoinLiveVisibility()
+  }
+
+  private setJoinLiveMenuOpen(open: boolean): void {
+    this.joinLiveMenuOpen = open
+    const menu = this.root.querySelector('[data-join-live-menu]') as HTMLElement | null
+    const btn = this.root.querySelector('[data-join-live-toggle]') as HTMLButtonElement | null
+    if (menu) menu.hidden = !open
+    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false')
+  }
+
+  private syncJoinLiveVisibility(): void {
+    const root = this.root.querySelector('[data-join-live-root]') as HTMLElement | null
+    if (!root) return
+    root.hidden = this.joinLiveOptions.length === 0
+  }
+
+  private syncOwnerSettingsVisibility(): void {
+    const btn = this.root.querySelector('[data-scene-settings]') as HTMLElement | null
+    if (btn) btn.hidden = !this.isSceneOwner()
+  }
+
+  private syncGoLiveVisibility(): void {
+    const btn = this.root.querySelector('[data-go-live]') as HTMLElement | null
+    if (!btn) return
+    // Wallet users can list an HLS stream for this place (companion “I'm live”).
+    btn.hidden = this.sessionWallet() == null
+  }
+
+  private renderJoinLiveMenu(): void {
+    const menu = this.root.querySelector('[data-join-live-menu]')
+    if (!menu) return
+    if (this.joinLiveOptions.length === 0) {
+      menu.innerHTML =
+        '<p class="scene-watch-join-live-empty">No live streams listed for this place yet.</p>'
+      return
+    }
+    menu.innerHTML = this.joinLiveOptions
+      .map((opt) => {
+        const cast =
+          opt.kind === 'user' && opt.stream.source === 'cast'
+            ? ' data-cast="1"'
+            : ''
+        return `<button type="button" role="menuitem" class="scene-watch-join-live-split-menu-item" data-join-live-id="${escapeHtml(opt.id)}"${cast}>${escapeHtml(opt.label)}</button>`
+      })
+      .join('')
+    menu.querySelectorAll<HTMLButtonElement>('[data-join-live-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.joinLiveId
+        if (!id) return
+        this.setJoinLiveMenuOpen(false)
+        void this.startJoinLive(id)
+      })
+    })
+  }
+
+  private async startJoinLive(optionId: string): Promise<void> {
+    const opt = this.joinLiveOptions.find((o) => o.id === optionId)
+    if (!opt) return
+    if (opt.kind === 'user' && opt.stream.source === 'cast') {
+      this.showStreamNotice(
+        `Cast listing “${opt.stream.displayName}” uses LiveKit in-world video. Jump in to watch Cast, or open a saved HLS stream.`
+      )
+      return
+    }
+    const url =
+      opt.kind === 'custom'
+        ? opt.m3u8Url
+        : opt.kind === 'user'
+          ? opt.stream.m3u8Url
+          : null
+    if (!url || !isHttpsM3u8(url)) {
+      this.showStreamNotice('This listing has no playable HTTPS .m3u8 URL.')
+      return
+    }
+    this.openStreamPlayer(url, opt.label)
+  }
+
+  private showStreamNotice(message: string): void {
+    const existing = this.root.querySelector('[data-stream-notice]')
+    existing?.remove()
+    const el = document.createElement('div')
+    el.className = 'scene-watch-stream-notice'
+    el.dataset.streamNotice = ''
+    el.setAttribute('role', 'status')
+    el.textContent = message
+    this.root.querySelector('.scene-watch-dest-scene-card-body')?.appendChild(el)
+    window.setTimeout(() => el.remove(), 6000)
+  }
+
+  private teardownStreamPlayer(): void {
+    if (this.hlsPlayer) {
+      this.hlsPlayer.destroy()
+      this.hlsPlayer = null
+    }
+    this.root.querySelector('[data-stream-player]')?.remove()
+  }
+
+  private openStreamPlayer(m3u8Url: string, title: string): void {
+    this.teardownStreamPlayer()
+    const wrap = document.createElement('div')
+    wrap.className = 'scene-watch-stream-player'
+    wrap.dataset.streamPlayer = ''
+    wrap.innerHTML = `
+      <div class="scene-watch-stream-player__bar">
+        <span class="scene-watch-stream-player__title">${escapeHtml(title)}</span>
+        <button type="button" class="scene-watch-stream-player__close" data-stream-close aria-label="Close stream">Close</button>
+      </div>
+      <video class="scene-watch-stream-player__video" controls playsinline autoplay></video>
+      <p class="scene-watch-stream-player__hint" data-stream-hint hidden></p>
+    `
+    const card = this.root.querySelector('.scene-watch-dest-scene-card')
+    if (card) card.appendChild(wrap)
+    else this.mainEl.appendChild(wrap)
+
+    wrap.querySelector('[data-stream-close]')?.addEventListener('click', () => this.teardownStreamPlayer())
+    const video = wrap.querySelector('video')
+    const hint = wrap.querySelector('[data-stream-hint]') as HTMLElement | null
+    if (!(video instanceof HTMLVideoElement)) return
+
+    if (Hls.isSupported()) {
+      const hls = new Hls({ enableWorker: true })
+      this.hlsPlayer = hls
+      hls.loadSource(m3u8Url)
+      hls.attachMedia(video)
+      hls.on(Hls.Events.ERROR, (_e, data) => {
+        if (data.fatal && hint) {
+          hint.hidden = false
+          hint.textContent = 'Could not play this stream (network or codec error).'
+        }
+      })
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = m3u8Url
+    } else if (hint) {
+      hint.hidden = false
+      hint.textContent = 'HLS playback is not supported in this browser.'
+    }
+    void video.play().catch(() => {
+      /* autoplay may be blocked until gesture — controls remain */
+    })
+  }
+
+  private openSceneSettingsModal(): void {
+    if (!this.isSceneOwner()) return
+    const { pointer, kind } = this.streamTarget()
+    const current = getCustomHlsUrl(pointer, kind) ?? ''
+    this.teardownStreamPlayer()
+    const existing = this.root.querySelector('[data-scene-settings-modal]')
+    existing?.remove()
+    const backdrop = document.createElement('div')
+    backdrop.className = 'scene-watch-settings-modal-backdrop'
+    backdrop.dataset.sceneSettingsModal = ''
+    backdrop.innerHTML = `
+      <div class="scene-watch-settings-modal" role="dialog" aria-modal="true" aria-label="Scene and stream settings">
+        <h3 class="scene-watch-settings-modal-title">Scene &amp; stream settings</h3>
+        <p class="scene-watch-settings-modal-text">
+          Owner-only: set a custom HTTPS HLS (.m3u8) URL for visitors on this landing page (Join live menu).
+        </p>
+        <label class="scene-watch-settings-modal-label" for="scene-custom-hls-input">Custom playback (HLS)</label>
+        <input id="scene-custom-hls-input" class="scene-watch-settings-modal-input" type="url"
+          placeholder="https://…/stream.m3u8" value="${escapeHtml(current)}" autocomplete="off" />
+        <p class="scene-watch-settings-modal-error" data-settings-error hidden></p>
+        <div class="scene-watch-settings-modal-actions">
+          <button type="button" class="scene-watch-dest-btn scene-watch-dest-btn--secondary" data-settings-clear>Clear</button>
+          <button type="button" class="scene-watch-dest-btn scene-watch-dest-btn--secondary" data-settings-close>Close</button>
+          <button type="button" class="scene-watch-dest-btn" data-settings-save>Save</button>
+        </div>
+      </div>
+    `
+    this.root.appendChild(backdrop)
+    const input = backdrop.querySelector('#scene-custom-hls-input') as HTMLInputElement
+    const errEl = backdrop.querySelector('[data-settings-error]') as HTMLElement
+    const close = (): void => backdrop.remove()
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) close()
+    })
+    backdrop.querySelector('[data-settings-close]')?.addEventListener('click', close)
+    backdrop.querySelector('[data-settings-clear]')?.addEventListener('click', () => {
+      setCustomHlsUrl(pointer, kind, '')
+      this.refreshJoinLiveOptions()
+      close()
+    })
+    backdrop.querySelector('[data-settings-save]')?.addEventListener('click', () => {
+      const url = input.value.trim()
+      if (url && !isHttpsM3u8(url)) {
+        errEl.hidden = false
+        errEl.textContent = 'Enter a full HTTPS .m3u8 URL, or clear the field.'
+        return
+      }
+      setCustomHlsUrl(pointer, kind, url)
+      this.refreshJoinLiveOptions()
+      close()
+    })
+  }
+
+  private openGoLiveModal(): void {
+    const wallet = this.sessionWallet()
+    if (!wallet) {
+      this.showStreamNotice('Sign in with a wallet to list a live stream for this place.')
+      return
+    }
+    const { pointer, kind } = this.streamTarget()
+    const existing = this.root.querySelector('[data-go-live-modal]')
+    existing?.remove()
+    const backdrop = document.createElement('div')
+    backdrop.className = 'scene-watch-settings-modal-backdrop'
+    backdrop.dataset.goLiveModal = ''
+    backdrop.innerHTML = `
+      <div class="scene-watch-settings-modal" role="dialog" aria-modal="true" aria-label="I'm live">
+        <h3 class="scene-watch-settings-modal-title">I&apos;m live</h3>
+        <p class="scene-watch-settings-modal-text">
+          List an HTTPS .m3u8 stream for visitors on this place. They pick it from <strong>Join live</strong>.
+        </p>
+        <label class="scene-watch-settings-modal-label" for="go-live-m3u8-input">Stream URL</label>
+        <input id="go-live-m3u8-input" class="scene-watch-settings-modal-input" type="url"
+          placeholder="https://…/stream.m3u8" autocomplete="off" />
+        <p class="scene-watch-settings-modal-error" data-go-live-error hidden></p>
+        <div class="scene-watch-settings-modal-actions">
+          <button type="button" class="scene-watch-dest-btn scene-watch-dest-btn--secondary" data-go-live-remove>Remove mine</button>
+          <button type="button" class="scene-watch-dest-btn scene-watch-dest-btn--secondary" data-go-live-close>Close</button>
+          <button type="button" class="scene-watch-dest-btn" data-go-live-save>Go live</button>
+        </div>
+      </div>
+    `
+    this.root.appendChild(backdrop)
+    const input = backdrop.querySelector('#go-live-m3u8-input') as HTMLInputElement
+    const errEl = backdrop.querySelector('[data-go-live-error]') as HTMLElement
+    const close = (): void => backdrop.remove()
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) close()
+    })
+    backdrop.querySelector('[data-go-live-close]')?.addEventListener('click', close)
+    backdrop.querySelector('[data-go-live-remove]')?.addEventListener('click', () => {
+      for (const opt of this.joinLiveOptions) {
+        if (opt.kind === 'user' && opt.stream.wallet === wallet) {
+          removeUserStream(opt.stream.id)
+        }
+      }
+      this.refreshJoinLiveOptions()
+      close()
+    })
+    backdrop.querySelector('[data-go-live-save]')?.addEventListener('click', () => {
+      try {
+        registerUserM3u8Stream({
+          pointer,
+          kind,
+          wallet,
+          m3u8Url: input.value
+        })
+        this.refreshJoinLiveOptions()
+        close()
+      } catch (e) {
+        errEl.hidden = false
+        errEl.textContent = e instanceof Error ? e.message : 'Could not register stream.'
+      }
+    })
   }
 
   private bindJumpIn(): void {
@@ -490,6 +828,24 @@ export class SceneLandingView {
                         <div class="scene-watch-dest-scene-card-body">
                           <div class="scene-watch-dest-scene-card-head">
                             <h1 class="scene-watch-dest-scene-card-title">${escapeHtml(meta.title)}</h1>
+                            <button
+                              type="button"
+                              class="scene-watch-scene-settings-btn"
+                              data-scene-settings
+                              hidden
+                              aria-label="Open scene stream settings"
+                              title="Scene stream settings"
+                            >
+                              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden>
+                                <path
+                                  d="M10.4 2h3.2l.52 2.27c.47.15.93.34 1.36.56l2.03-1.14 2.26 2.26-1.14 2.03c.22.43.41.89.56 1.36L22 10.4v3.2l-2.27.52a8.13 8.13 0 0 1-.56 1.36l1.14 2.03-2.26 2.26-2.03-1.14c-.43.22-.89.41-1.36.56L13.6 22h-3.2l-.52-2.27a8.13 8.13 0 0 1-1.36-.56l-2.03 1.14-2.26-2.26 1.14-2.03a8.13 8.13 0 0 1-.56-1.36L2 13.6v-3.2l2.27-.52c.15-.47.34-.93.56-1.36L3.69 6.5l2.26-2.26 2.03 1.14c.43-.22.89-.41 1.36-.56L10.4 2Z"
+                                  stroke="currentColor"
+                                  stroke-width="1.6"
+                                  stroke-linejoin="round"
+                                />
+                                <circle cx="12" cy="12" r="3.15" stroke="currentColor" stroke-width="1.6" />
+                              </svg>
+                            </button>
                           </div>
                           <p class="scene-watch-dest-scene-card-kicker">
                             ${kindLabel} · <span>${escapeHtml(meta.pointerLabel)}</span>
@@ -505,6 +861,19 @@ export class SceneLandingView {
                           ${categories ? `<div class="scene-watch-dest-scene-card-badges" aria-label="Categories">${categories}</div>` : ''}
                           <div class="scene-watch-dest-scene-card-actions">
                             <div class="scene-watch-dest-scene-card-cta-row">
+                              <div class="scene-watch-join-live-split" data-join-live-root hidden>
+                                <button
+                                  type="button"
+                                  class="scene-watch-dest-btn scene-watch-dest-btn--secondary scene-watch-dest-btn--watch-live-cta scene-watch-join-live-caret-in-btn"
+                                  data-join-live-toggle
+                                  aria-haspopup="menu"
+                                  aria-expanded="false"
+                                >
+                                  Join live
+                                  <span class="scene-watch-join-live-caret-glyph" aria-hidden>▾</span>
+                                </button>
+                                <div class="scene-watch-join-live-split-menu" data-join-live-menu role="menu" hidden></div>
+                              </div>
                               <button type="button" class="scene-watch-dest-jump-in-bar" data-jump-in>
                                 <span class="scene-watch-dest-jump-in-bar-label">${this.playSessionReady ? 'Jump in' : 'Sign in'}</span>
                                 <span class="scene-watch-dest-jump-in-arrow-box" aria-hidden>
@@ -512,6 +881,14 @@ export class SceneLandingView {
                                     <path d="M5 12h12M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                                   </svg>
                                 </span>
+                              </button>
+                              <button
+                                type="button"
+                                class="scene-watch-dest-btn scene-watch-dest-btn--secondary"
+                                data-go-live
+                                hidden
+                              >
+                                I&apos;m live
                               </button>
                             </div>
                           </div>

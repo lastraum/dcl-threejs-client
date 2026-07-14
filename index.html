@@ -12130,14 +12130,41 @@
         gap: 14px;
         box-sizing: border-box;
       }
+      .scene-watch-dest-scene-card-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
       .scene-watch-dest-scene-card-title {
         margin: 0;
+        flex: 1;
+        min-width: 0;
         font-size: clamp(1.65rem, 3.2vw, 2.35rem);
         font-weight: 800;
         letter-spacing: 0.03em;
         text-transform: uppercase;
         color: #fff;
         line-height: 1.08;
+      }
+      .scene-watch-scene-settings-btn {
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(0, 0, 0, 0.28);
+        color: rgba(244, 244, 245, 0.88);
+        cursor: pointer;
+      }
+      .scene-watch-scene-settings-btn:hover {
+        background: rgba(255, 255, 255, 0.1);
+      }
+      .scene-watch-scene-settings-btn[hidden] {
+        display: none !important;
       }
       .scene-watch-dest-scene-card-kicker {
         margin: 0;
@@ -12213,12 +12240,221 @@
         margin-top: auto;
         padding-top: 16px;
       }
+      .scene-watch-dest-scene-card-cta-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: stretch;
+        gap: 10px;
+      }
+      .scene-watch-dest-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 12px 16px;
+        border-radius: 10px;
+        font-weight: 800;
+        font-size: 0.75rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .scene-watch-dest-btn:hover {
+        background: rgba(255, 255, 255, 0.14);
+      }
+      .scene-watch-dest-btn--secondary {
+        background: rgba(0, 0, 0, 0.28);
+      }
+      .scene-watch-dest-btn[hidden],
+      .scene-watch-join-live-split[hidden] {
+        display: none !important;
+      }
+      .scene-watch-join-live-split {
+        position: relative;
+        display: inline-flex;
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .scene-watch-join-live-caret-in-btn {
+        min-width: 8.5rem;
+      }
+      .scene-watch-join-live-caret-glyph {
+        opacity: 0.75;
+        font-size: 0.7rem;
+      }
+      .scene-watch-join-live-split-menu {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: calc(100% + 6px);
+        z-index: 20;
+        min-width: 14rem;
+        max-height: 240px;
+        overflow: auto;
+        padding: 6px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(12, 10, 22, 0.96);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+      }
+      .scene-watch-join-live-split-menu[hidden] {
+        display: none !important;
+      }
+      .scene-watch-join-live-split-menu-item {
+        display: block;
+        width: 100%;
+        text-align: left;
+        padding: 10px 12px;
+        border: none;
+        border-radius: 8px;
+        background: transparent;
+        color: rgba(244, 244, 245, 0.92);
+        font-size: 0.8rem;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .scene-watch-join-live-split-menu-item:hover {
+        background: rgba(122, 60, 255, 0.28);
+      }
+      .scene-watch-join-live-empty {
+        margin: 0;
+        padding: 10px 12px;
+        font-size: 0.78rem;
+        color: rgba(244, 244, 245, 0.55);
+      }
+      .scene-watch-stream-notice {
+        margin: 8px 0 0;
+        padding: 10px 12px;
+        border-radius: 8px;
+        font-size: 0.8rem;
+        line-height: 1.4;
+        color: rgba(255, 220, 160, 0.95);
+        background: rgba(90, 50, 0, 0.35);
+        border: 1px solid rgba(255, 180, 80, 0.28);
+      }
+      .scene-watch-stream-player {
+        margin-top: 14px;
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: #000;
+      }
+      .scene-watch-stream-player__bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 8px 12px;
+        background: rgba(20, 16, 32, 0.95);
+      }
+      .scene-watch-stream-player__title {
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: rgba(244, 244, 245, 0.88);
+      }
+      .scene-watch-stream-player__close {
+        border: none;
+        background: transparent;
+        color: rgba(244, 244, 245, 0.75);
+        font-size: 0.75rem;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .scene-watch-stream-player__video {
+        display: block;
+        width: 100%;
+        max-height: min(42vh, 360px);
+        background: #000;
+      }
+      .scene-watch-stream-player__hint {
+        margin: 0;
+        padding: 8px 12px;
+        font-size: 0.78rem;
+        color: #fca5a5;
+      }
+      .scene-watch-settings-modal-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 12000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: rgba(0, 0, 0, 0.62);
+        backdrop-filter: blur(4px);
+      }
+      .scene-watch-settings-modal {
+        width: min(440px, 100%);
+        max-height: min(88vh, 640px);
+        overflow: auto;
+        padding: 20px 22px;
+        border-radius: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: linear-gradient(165deg, #1a1528 0%, #0e0b16 100%);
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+        color: #f4f4f5;
+      }
+      .scene-watch-settings-modal-title {
+        margin: 0 0 10px;
+        font-size: 1.05rem;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .scene-watch-settings-modal-text {
+        margin: 0 0 14px;
+        font-size: 0.85rem;
+        line-height: 1.45;
+        color: rgba(244, 244, 245, 0.72);
+      }
+      .scene-watch-settings-modal-label {
+        display: block;
+        margin: 0 0 6px;
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(244, 244, 245, 0.5);
+      }
+      .scene-watch-settings-modal-input {
+        width: 100%;
+        box-sizing: border-box;
+        margin-bottom: 12px;
+        padding: 11px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(0, 0, 0, 0.35);
+        color: #fff;
+        font-size: 0.875rem;
+      }
+      .scene-watch-settings-modal-error {
+        margin: 0 0 10px;
+        font-size: 0.8rem;
+        color: #fca5a5;
+      }
+      .scene-watch-settings-modal-error[hidden] {
+        display: none !important;
+      }
+      .scene-watch-settings-modal-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 8px;
+      }
       .scene-watch-dest-jump-in-bar {
         display: flex;
         align-items: center;
         justify-content: center;
         gap: 12px;
-        width: 100%;
+        flex: 1 1 10rem;
+        min-width: 8rem;
         box-sizing: border-box;
         padding: 14px 20px;
         border-radius: 10px;
@@ -12237,7 +12473,11 @@
       }
       .scene-watch-dest-jump-in-bar[hidden],
       body.scene-landing-jump-in-loading .scene-watch-dest-jump-in-bar,
-      body.scene-landing-jump-in-loading .scene-watch-dest-scene-card-cta-row > .scene-watch-dest-jump-in-bar {
+      body.scene-landing-jump-in-loading .scene-watch-dest-scene-card-cta-row > .scene-watch-dest-jump-in-bar,
+      body.scene-landing-jump-in-loading .scene-watch-join-live-split,
+      body.scene-landing-jump-in-loading [data-go-live],
+      body.scene-landing-jump-in-loading [data-scene-settings],
+      body.scene-landing-jump-in-loading .scene-watch-stream-player {
         display: none !important;
       }
       .scene-watch-dest-jump-in-bar-label {

@@ -408,20 +408,21 @@ void main() {
 
     finalColor = mix(finalColor, uFoamColor, foamMask);
 
-    float alpha = 1.0;
+    // Island: opaque water + cutout shore (not alpha-blend). Soft alpha was drawing
+    // the whole ocean in Three's transparent pass and overdrawing cutout planes (#19).
     if (uIslandMask) {
         float waterSurfaceY = vWorldPosition.y;
         float landLift = vTerrainY - waterSurfaceY;
-        if (landLift > 0.25) discard;
-
-        alpha = 1.0 - smoothstep(-0.1, 0.2, landLift);
+        // Cutout-style edge: discard land + soft shore band; keep foam where we remain.
+        float shoreKeep = 1.0 - smoothstep(-0.08, 0.18, landLift);
+        if (shoreKeep < 0.5) discard;
 
         float shoreMeet = 1.0 - smoothstep(0.0, 1.4, abs(vTerrainY - waterSurfaceY));
         float foamBand = shoreMeet * (0.55 + 0.45 * foamMask);
         finalColor = mix(finalColor, vec3(0.95, 0.97, 0.96), foamBand * 0.5);
     }
 
-    fragColor = vec4(finalColor, alpha);
+    fragColor = vec4(finalColor, 1.0);
 }
 `
 

@@ -182,13 +182,22 @@ export class FftOceanWater {
         uShoreDampWidthM: { value: ISLAND_BEACH_HEIGHT_CONSTANTS.shoreDampWidthM }
       },
       glslVersion: THREE.GLSL3,
-      transparent: mode === 'island',
-      depthWrite: mode !== 'island'
+      /**
+       * Island used to be transparent + depthWrite:false for soft shore alpha.
+       * That put the whole ocean in the transparent pass and let it overdraw
+       * opaque/alpha-cutout scene planes in front of the water (#19).
+       * Keep water in the opaque queue with depth write; shore fades via discard
+       * in the fragment shader (cutout-style edge).
+       */
+      transparent: false,
+      depthTest: true,
+      depthWrite: true
     })
 
     const mesh = new THREE.Mesh(geometry, material)
     mesh.name = mode === 'island' ? 'island-water:fft-ocean' : 'open-ocean:fft-ocean'
     mesh.frustumCulled = false
+    // After terrain/opaques (order 0) so water loses the depth test to nearer cutouts.
     mesh.renderOrder = 1
 
     const instance = new FftOceanWater(

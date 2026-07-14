@@ -31,6 +31,11 @@ import Hls from 'hls.js'
 export type SceneLandingViewOptions = SocialShellChromeHandlers & {
   route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
   login: LoginResult
+  /**
+   * Live session from AppController — preferred over a stale constructor copy so the
+   * owner settings gear re-evaluates after wallet resume / profile sign-in.
+   */
+  getLogin?: () => LoginResult
   /** When false, CTA shows "Sign in" and must complete Guest/wallet before Jump in. */
   playSessionReady?: boolean
   onJumpIn: () => void
@@ -57,6 +62,7 @@ export class SceneLandingView {
   private readonly route: SceneLandingViewOptions['route']
   private readonly onJumpIn: () => void
   private readonly onNavigate: (tab: SocialShellTab) => void
+  private readonly getLoginLive: (() => LoginResult) | null
   private readonly topNav: SocialShellTopNav
   private readonly mainEl: HTMLElement
   private readonly eventModal: EventModal
@@ -90,12 +96,13 @@ export class SceneLandingView {
     this.route = opts.route
     this.onJumpIn = opts.onJumpIn
     this.onNavigate = opts.onNavigate
+    this.getLoginLive = opts.getLogin ?? null
     this.playSessionReady = opts.playSessionReady === true
-    this.login = opts.login
+    this.login = opts.getLogin?.() ?? opts.login
 
     this.topNav = new SocialShellTopNav({
       activeTab: null,
-      login: opts.login,
+      login: this.login,
       onNavigate: opts.onNavigate,
       onLoginChange: opts.onLoginChange,
       onSignOut: opts.onSignOut,
@@ -147,11 +154,23 @@ export class SceneLandingView {
     this.refreshStreamChrome()
   }
 
+  /** Pull latest session from AppController (avoids stale guest copy after resume/sign-in). */
+  syncLoginFromHost(): void {
+    if (!this.getLoginLive) {
+      this.refreshStreamChrome()
+      return
+    }
+    const live = this.getLoginLive()
+    this.login = live
+    this.topNav.setLogin(live)
+    this.refreshStreamChrome()
+  }
+
   /** Update Jump in / Sign in CTA after auth panel or profile login. */
   setPlaySessionReady(ready: boolean): void {
     this.playSessionReady = ready
     this.syncJumpInLabel()
-    this.refreshStreamChrome()
+    this.syncLoginFromHost()
   }
 
   dispose(): void {
@@ -351,8 +370,8 @@ export class SceneLandingView {
       }
       this.bindCrowdBadge()
       this.bindStreamChrome()
-      // Login may have completed while meta was loading — re-apply owner gear / I'm live.
-      this.refreshStreamChrome()
+      // Meta + host session may both have arrived while we were loading.
+      this.syncLoginFromHost()
       void this.hydrateOwnerAvatar()
       void this.loadRelatedEvents()
     } catch {
@@ -366,9 +385,21 @@ export class SceneLandingView {
     return sceneStreamTargetFromRoute(this.route)
   }
 
+  private currentLogin(): LoginResult {
+    if (this.getLoginLive) {
+      try {
+        return this.getLoginLive()
+      } catch {
+        /* fall through */
+      }
+    }
+    return this.login
+  }
+
   private sessionWallet(): string | null {
-    if (this.login.kind !== 'wallet') return null
-    const a = this.login.address.trim().toLowerCase()
+    const login = this.currentLogin()
+    if (login.kind !== 'wallet') return null
+    const a = login.address.trim().toLowerCase()
     return /^0x[a-f0-9]{40}$/.test(a) ? a : null
   }
 
@@ -400,6 +431,14 @@ export class SceneLandingView {
    * Safe to call before layout exists or before meta loads (no-ops missing nodes).
    */
   private refreshStreamChrome(): void {
+    // Keep cached login aligned with host session before any membership test.
+    if (this.getLoginLive) {
+      try {
+        this.login = this.getLoginLive()
+      } catch {
+        /* keep previous */
+      }
+    }
     this.syncOwnerSettingsVisibility()
     this.syncGoLiveVisibility()
     if (!this.meta) return
@@ -441,20 +480,28 @@ export class SceneLandingView {
     root.hidden = this.joinLiveOptions.length === 0
   }
 
+  private setControlVisible(el: HTMLElement | null, show: boolean): void {
+    if (!el) return
+    if (show) {
+      el.hidden = false
+      el.removeAttribute('hidden')
+      el.setAttribute('aria-hidden', 'false')
+    } else {
+      el.hidden = true
+      el.setAttribute('hidden', '')
+      el.setAttribute('aria-hidden', 'true')
+    }
+  }
+
   private syncOwnerSettingsVisibility(): void {
     const btn = this.root.querySelector('[data-scene-settings]') as HTMLButtonElement | null
-    if (!btn) return
-    const show = this.isSceneOwner()
-    btn.hidden = !show
-    btn.setAttribute('aria-hidden', show ? 'false' : 'true')
+    this.setControlVisible(btn, this.isSceneOwner())
   }
 
   private syncGoLiveVisibility(): void {
     const btn = this.root.querySelector('[data-go-live]') as HTMLButtonElement | null
-    if (!btn) return
     // Wallet users can list an HLS stream for this place (companion “I'm live”).
-    const show = this.sessionWallet() != null
-    btn.hidden = !show
+    this.setControlVisible(btn, this.sessionWallet() != null)
   }
 
   private renderJoinLiveMenu(): void {

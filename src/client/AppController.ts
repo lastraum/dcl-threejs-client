@@ -671,6 +671,7 @@ export class AppController {
     this.sceneLandingView = new SceneLandingView({
       route: target,
       login: this.login,
+      getLogin: () => this.login ?? { kind: 'guest' },
       playSessionReady: this.playSessionReady,
       onJumpIn: () => void this.jumpInToScene(target),
       onNavigate: (tab) => this.navigateSocialShell(tab),
@@ -685,6 +686,8 @@ export class AppController {
     })
     this.sceneLandingView.mount(this.container)
     this.ensureSocialChatShell()
+    // Chat shell may re-apply wallet identity — re-sync owner gear with live session.
+    this.sceneLandingView.syncLoginFromHost()
     void this.refreshMonitoredScene(target)
     if (opts.sceneBan) {
       this.sceneBanActive = true
@@ -701,8 +704,11 @@ export class AppController {
   private async connectSceneLandingChat(
     target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
   ): Promise<void> {
+    if (this.login) this.socialChat?.applyLogin(this.login)
     const connected = await this.socialChat?.connectForRoute(target)
     if (connected) this.socialChatDock?.openSceneChatThread()
+    // After wallet chat is up, force owner gear re-check (stale guest copy was hiding it).
+    this.sceneLandingView?.syncLoginFromHost()
   }
 
   private ensureSocialChatShell(): void {

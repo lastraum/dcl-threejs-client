@@ -36,31 +36,13 @@ type TweenRuntime = {
   lastWrittenState?: number
   /** Last progress written to TweenState (dedupe encodeDirty). */
   lastWrittenProgress?: number
-  /**
-   * performance.now() deadline: pin textureMove end UV (row pause between discrete steps).
-   * Matches NeonScreen pauseDuration/scrollDuration (= 0.5) via duration * ratio.
-   * New TextureMove signatures are deferred until this time.
-   */
-  textureHoldUntil?: number
-  /** DCL-space end UV frozen during textureHoldUntil. */
-  textureHoldUv?: Vec2
-  textureHoldMovementType?: number
   /** Verbose — last TweenState.state written (0 active / 1 completed / 2 paused). */
   lastLoggedState?: number
   /** Verbose — last progress milestone logged (0, 0.25, 0.5, 0.75, 1). */
   lastProgressMilestone?: number
-  /** Marquee debug — last hold phase logged. */
-  lastHoldLogPhase?: 'holding' | 'expired' | 'armed'
 }
 
 const TWEEN_STATE_LABEL = ['active', 'completed', 'paused'] as const
-
-/**
- * Genesis NeonScreen: pauseDuration=0.5s, scrollDuration=1s → pause/scroll = 0.5.
- * After a textureMove of `duration` ms finishes, pin end UV for duration*ratio ms before
- * the next row may start — even if the scene worker clock races ahead.
- */
-const TEXTURE_MOVE_PAUSE_OVER_SCROLL = 0.5
 
 const _v3a = new THREE.Vector3()
 const _qA = new THREE.Quaternion()
@@ -157,7 +139,7 @@ function applyEasing(fn: number, t: number): number {
   return easing(Math.min(1, Math.max(0, t)))
 }
 
-/** Stable float key — CRDT float noise must not restart TextureMove (kills 0.5s pause). */
+/** Stable float key — CRDT float noise must not thrash TextureMove signatures. */
 function r4(n: number | undefined | null): number | null {
   if (n == null || !Number.isFinite(n)) return null
   return Math.round(n * 1e4) / 1e4
@@ -415,7 +397,7 @@ export class TweenBridge {
       level?: 'info' | 'warn' | 'success'
       throttleMs?: number
       entity?: Entity
-      /** Distinct key so START/HOLD/COMPLETE don't share one throttle bucket. */
+      /** Distinct key so START/COMPLETE don't share one throttle bucket. */
       event?: string
       /** Allow one boot-safe line before meshes exist (unused for hot path). */
       force?: boolean
@@ -478,7 +460,6 @@ export class TweenBridge {
     this.motionFocusView = view
     const { Tween } = this.ecs
     const active = new Set<Entity>()
-    const now = performance.now()
 
     for (const [entity] of view.getEntitiesWith(Tween)) {
       active.add(entity)
@@ -487,26 +468,6 @@ export class TweenBridge {
       const signature = tweenSignature(tween)
       const prev = this.runtime.get(entity)
       if (!prev || prev.signature !== signature) {
-        // Row pause: keep pinning previous end UV until hold expires, even if the scene
-        // already createOrReplace'd the next TextureMove (worker clock can race).
-        if (
-          prev &&
-          prev.textureHoldUntil != null &&
-          now < prev.textureHoldUntil &&
-          tween.mode?.$case === 'textureMove' &&
-          prev.textureHoldUv
-        ) {
-          if (prev.lastHoldLogPhase !== 'holding') {
-            prev.lastHoldLogPhase = 'holding'
-            this.logMarquee(
-              `HOLD defer next · ${((prev.textureHoldUntil - now) / 1000).toFixed(2)}s left · ` +
-                `heldUv=(${prev.textureHoldUv.x.toFixed(3)},${prev.textureHoldUv.y.toFixed(3)}) · ` +
-                `incoming ${this.formatTextureMove(tween)}`,
-              { entity, level: 'warn', event: 'hold-defer', throttleMs: 50 }
-            )
-          }
-          continue
-        }
         const node = this.store.getNode(entity)
         const keptTargets =
           prev?.textureTargets && node && textureTargetsLive(node, prev.textureTargets)
@@ -514,7 +475,6 @@ export class TweenBridge {
             : node && isTextureMode(tween.mode)
               ? collectTextureTargets(node)
               : undefined
-        const wasHolding = prev?.textureHoldUntil != null
         this.runtime.set(entity, {
           signature,
           completed: false,
@@ -525,18 +485,14 @@ export class TweenBridge {
           completedDirtySent: false,
           lastWrittenState: undefined,
           lastWrittenProgress: undefined,
-          textureHoldUntil: undefined,
-          textureHoldUv: undefined,
-          textureHoldMovementType: undefined,
           lastLoggedState: undefined,
-          lastProgressMilestone: undefined,
-          lastHoldLogPhase: undefined
+          lastProgressMilestone: undefined
         })
         this.logTween(
           `Tween reset — entity ${entity} · ${tweenModeLabel(tween)} · duration ${tween.duration}ms · playing ${tween.playing !== false}`,
           { entity }
         )
-        // Plaza row steps only after mesh maps exist (never during hydration targets=0).
+        // Discrete textureMove row steps only after mesh maps exist (never during hydration targets=0).
         if (
           tween.mode?.$case === 'textureMove' &&
           isPlazaMarqueeTextureMove(tween) &&
@@ -551,7 +507,7 @@ export class TweenBridge {
             })
           }
           this.logMarquee(
-            `START ${wasHolding ? '(after hold) ' : ''}${this.formatTextureMove(tween)} · targets=${keptTargets!.length}`,
+            `START ${this.formatTextureMove(tween)} · targets=${keptTargets!.length}`,
             { entity, level: 'success', event: 'start', throttleMs: 200 }
           )
         }
@@ -560,9 +516,6 @@ export class TweenBridge {
 
     for (const entity of this.runtime.keys()) {
       if (!active.has(entity)) {
-        const rt = this.runtime.get(entity)
-        // Keep runtime through row-pause so end UV stays pinned if Tween briefly drops.
-        if (rt?.textureHoldUntil != null && now < rt.textureHoldUntil) continue
         this.runtime.delete(entity)
         this.store.setTween(entity, false)
         this.logTween(`Tween removed — entity ${entity}`, { entity })
@@ -574,19 +527,10 @@ export class TweenBridge {
     this.motionFocusView = view
     this.transformMotionEntities.clear()
     const { Tween, TweenState, Transform, AvatarAttach } = this.ecs
-    const now = performance.now()
 
-    // Include entities still in row-pause (next Tween may already be on the component).
-    const entities = new Set<Entity>()
-    for (const [entity] of view.getEntitiesWith(Tween)) entities.add(entity)
-    for (const [entity, rt] of this.runtime) {
-      if (rt.textureHoldUntil != null && now < rt.textureHoldUntil) entities.add(entity)
-    }
-
-    for (const entity of entities) {
+    for (const [entity] of view.getEntitiesWith(Tween)) {
       const runtime = this.runtime.get(entity)
-      const hasTween = Tween.has(entity)
-      const tween = hasTween ? Tween.get(entity) : undefined
+      const tween = Tween.get(entity)
 
       if (AvatarAttach.has(entity)) {
         this.logTween(`Tween skip — entity ${entity} has AvatarAttach`, { entity, throttleMs: 2000 })
@@ -595,71 +539,12 @@ export class TweenBridge {
       const node = this.store.getNode(entity)
       // Never log no-node during attach storms (Genesis: thousands of tweens).
 
-      // Force-pin end UV for NeonScreen-style row pause (and while scene is between steps).
-      const holdingRow =
-        runtime != null &&
-        runtime.textureHoldUntil != null &&
-        now < runtime.textureHoldUntil &&
-        runtime.textureHoldUv != null
-
-      if (holdingRow && runtime) {
-        if (node) {
-          let targets = runtime.textureTargets
-          if (!targets?.length || !textureTargetsLive(node, targets)) {
-            targets = collectTextureTargets(node)
-            runtime.textureTargets = targets
-          }
-          if (targets.length) {
-            applyTextureUvToTargets(
-              targets,
-              runtime.textureHoldUv!,
-              runtime.textureHoldMovementType,
-              node
-            )
-          } else {
-            this.logMarquee(`HOLD no texture targets on node`, { entity, level: 'warn', throttleMs: 1000 })
-          }
-        } else {
-          this.logMarquee(`HOLD no EntityStore node`, { entity, level: 'warn', throttleMs: 1000 })
-        }
-        if (hasTween) {
-          TweenState.createOrReplace(entity, { state: 1, currentTime: 1 })
-          if (!runtime.completedDirtySent) {
-            runtime.completedDirtySent = true
-            runtime.lastWrittenState = 1
-            runtime.lastWrittenProgress = 1
-            this.encodeDirty.add(entity)
-          }
-        }
-        continue
-      }
-
-      // Hold expired — allow next TextureMove on the following sync.
-      if (runtime?.textureHoldUntil != null && now >= runtime.textureHoldUntil) {
-        const held = runtime.textureHoldUv
-        this.logMarquee(
-          `HOLD expired · was uv=(${held?.x.toFixed(3) ?? '?'},${held?.y.toFixed(3) ?? '?'}) · opening next`,
-          { entity, level: 'success', event: 'hold-end', throttleMs: 50 }
-        )
-        runtime.textureHoldUntil = undefined
-        runtime.textureHoldUv = undefined
-        runtime.textureHoldMovementType = undefined
-        runtime.signature = ''
-        runtime.completed = false
-        runtime.progress = 0
-        runtime.completedDirtySent = false
-        runtime.lastHoldLogPhase = 'expired'
-        continue
-      }
-
-      if (!tween || !hasTween) continue
-
       const playing = tween.playing !== false
       const continuous = isContinuousMode(tween.mode)
       const textureMode = isTextureMode(tween.mode)
       const durationSec = Math.max(tween.duration / 1000, 0)
 
-      // Completed finite tween: pin end UV until row-pause hold (texture) or next signature.
+      // Completed finite tween: pin end until scene installs the next Tween (pause is scene-side).
       if (runtime?.completed) {
         if (node && textureMode) {
           this.applyTextureTween(node, tween, runtime, 0, 1, true)
@@ -670,15 +555,14 @@ export class TweenBridge {
           runtime.lastWrittenState = 1
           runtime.lastWrittenProgress = 1
           this.encodeDirty.add(entity)
-          this.logMarquee(
-            `COMPLETED (no hold armed) · ${this.formatTextureMove(tween)} · ` +
-              `holdUntil=${runtime.textureHoldUntil ?? 'none'} holdUv=${
-                runtime.textureHoldUv
-                  ? `(${runtime.textureHoldUv.x},${runtime.textureHoldUv.y})`
-                  : 'none'
-              }`,
-            { entity, level: 'warn' }
-          )
+          if (textureMode && isPlazaMarqueeTextureMove(tween)) {
+            this.logMarquee(`COMPLETED · ${this.formatTextureMove(tween)}`, {
+              entity,
+              level: 'success',
+              event: 'complete',
+              throttleMs: 50
+            })
+          }
         }
         continue
       }
@@ -743,28 +627,6 @@ export class TweenBridge {
       const completed = reachedEnd && !runtime?.completed
       if (runtime && reachedEnd) {
         runtime.completed = true
-        // Discrete textureMove row finished → pin end for pauseDuration (= scroll * ratio).
-        if (tween.mode?.$case === 'textureMove' && tween.mode.textureMove?.end) {
-          const end = tween.mode.textureMove.end
-          runtime.textureHoldUv = { x: end.x, y: end.y }
-          runtime.textureHoldMovementType = tween.mode.textureMove.movementType ?? 0
-          const holdMs = Math.max(0, (tween.duration || 0) * TEXTURE_MOVE_PAUSE_OVER_SCROLL)
-          runtime.textureHoldUntil = now + holdMs
-          runtime.lastHoldLogPhase = 'armed'
-          if (isPlazaMarqueeTextureMove(tween)) {
-            this.logMarquee(
-              `COMPLETE → HOLD ${holdMs.toFixed(0)}ms · end=(${end.x.toFixed(3)},${end.y.toFixed(3)}) · ` +
-                `dur=${tween.duration}ms ratio=${TEXTURE_MOVE_PAUSE_OVER_SCROLL} · ` +
-                this.formatTextureMove(tween),
-              { entity, level: 'success', event: 'complete', throttleMs: 50 }
-            )
-          }
-        } else if (textureMode && isPlazaMarqueeTextureMove(tween)) {
-          this.logMarquee(
-            `COMPLETE but no end UV · mode=${tween.mode?.$case} · cannot arm hold`,
-            { entity, level: 'warn' }
-          )
-        }
       }
 
       const state = !playing && !reachedEnd ? 2 : reachedEnd ? 1 : 0
@@ -792,16 +654,18 @@ export class TweenBridge {
       }
     }
 
-    if (this.marqueeVerbose && now - this.marqueeSummaryAt > 5000) {
-      this.marqueeSummaryAt = now
-      this.logMarqueeSummary(now)
+    if (this.marqueeVerbose) {
+      const now = performance.now()
+      if (now - this.marqueeSummaryAt > 5000) {
+        this.marqueeSummaryAt = now
+        this.logMarqueeSummary()
+      }
     }
   }
 
-  private logMarqueeSummary(now: number): void {
+  private logMarqueeSummary(): void {
     const { Tween } = this.ecs
     let plaza = 0
-    let holding = 0
     let scrolling = 0
     let completed = 0
     let withTargets = 0
@@ -811,14 +675,7 @@ export class TweenBridge {
       if (!tw || !isPlazaMarqueeTextureMove(tw)) continue
       plaza++
       if ((rt.textureTargets?.length ?? 0) > 0) withTargets++
-      if (rt.textureHoldUntil != null && now < rt.textureHoldUntil) {
-        holding++
-        if (samples.length < 2) {
-          samples.push(
-            `e${entity}:HOLD ${((rt.textureHoldUntil - now) / 1000).toFixed(2)}s y=${rt.textureHoldUv?.y?.toFixed(2)}`
-          )
-        }
-      } else if (rt.completed) {
+      if (rt.completed) {
         completed++
       } else {
         scrolling++
@@ -831,10 +688,10 @@ export class TweenBridge {
         }
       }
     }
-    // Skip empty early-boot summaries (hydration — no plaza meshes yet).
+    // Skip empty early-boot summaries (hydration — no meshes yet).
     if (plaza === 0) return
     this.logMarquee(
-      `summary · plaza=${plaza} meshes=${withTargets} scroll=${scrolling} hold=${holding} done=${completed}` +
+      `summary · textureMove=${plaza} meshes=${withTargets} scroll=${scrolling} done=${completed}` +
         (samples.length ? ` · ${samples.join(' | ')}` : ''),
       { level: withTargets === 0 ? 'warn' : 'info', event: 'summary', throttleMs: 4000 }
     )

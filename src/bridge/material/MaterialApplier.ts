@@ -645,8 +645,8 @@ export class MaterialApplier {
   }
 
   /**
-   * Apply TextureMove-held ST first, else authored, else previous map.
-   * Clones start at (0,0) — authored offset must not wipe the marquee 0.5s row pause.
+   * Apply TextureMove ST first (persisted on mesh userData), else authored, else previous map.
+   * Clones start at (0,0) — authored offset must not wipe live TextureMove offset mid-scroll.
    */
   private applyUvTransform(
     tex: THREE.Texture,

@@ -2576,8 +2576,8 @@ export class SceneScriptSystem {
 
   /**
    * Push renderer-owned `TweenState` to the worker (throttled, lightweight message).
-   * Ambient marquees need this for tweenCompleted → 0.5s pause → next row; play-mode cold
-   * CRDT is fire-and-forget and too sparse. Uses encodeTweenStateOnly (no Transform churn).
+   * Ambient textureMove needs this for tweenCompleted → scene pauseDuration → next row;
+   * play-mode cold CRDT is fire-and-forget and too sparse. Uses encodeTweenStateOnly.
    */
   private deliverTweenStateToWorker(): void {
     if (!this.worker || !this.running || !this.tweenBridge?.hasEncodeDirty()) return

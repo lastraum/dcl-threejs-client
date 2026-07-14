@@ -24,9 +24,12 @@ function buildPayload(login: LoginResult | null): LoginAnalyticsPayload {
   return { kind: 'guest', at, path, version: APP_VERSION }
 }
 
-/** Fire-and-forget login event — guest or wallet address + timestamp. */
+/**
+ * Fire-and-forget login event — guest or wallet address + timestamp.
+ * Opt-in only: set VITE_ANALYTICS_ENABLED=true (avoids localhost 404 spam).
+ */
 export function recordLoginEvent(login: LoginResult | null): void {
-  if (import.meta.env.VITE_ANALYTICS_ENABLED === 'false') return
+  if (import.meta.env.VITE_ANALYTICS_ENABLED !== 'true') return
   if (typeof window === 'undefined') return
 
   const payload = buildPayload(login)

@@ -408,47 +408,54 @@ export class MaterialApplier {
 
     this.applyScalarsToMesh(mesh, pb)
     const m = mesh.material as THREE.MeshBasicMaterial | THREE.MeshPhysicalMaterial
-    // MeshRenderer planes use TextureLoader-style UVs (flipY on). GLTF meshes use
-    // glTF UV space (flipY off) — TextureLoader default flipped LED marquees/garbled text.
-    const flipY = mesh.userData.primitiveMeshKey != null
+    // MeshRenderer planes: flipY on (TextureLoader). Marquee re-basis planes keep flipY off
+    // so TextureMove Y + atlas row order match Explorer.
+    const geo = mesh.geometry as THREE.BufferGeometry | undefined
+    const marqueeAtlas = !!geo?.userData?.dclTextAlongYBasis
+    const flipY = mesh.userData.primitiveMeshKey != null && !marqueeAtlas
 
     let texturesOk = true
     let alphaTex: THREE.Texture | null = null
     const mainUnion = coerceTextureUnion(inner.texture)
     if (mainUnion) {
+      const prev = m.map
       const mainTex = await this.loadUnionTexture(mainUnion, { flipY })
       m.map = mainTex
       if (!mainTex) texturesOk = false
-      else this.applyUvTransform(mainTex, getTextureDef(mainUnion))
+      else this.applyUvTransform(mainTex, getTextureDef(mainUnion), prev, mesh)
     }
     const alphaUnion = coerceTextureUnion(inner.alphaTexture)
     if (alphaUnion) {
+      const prev = m.alphaMap
       alphaTex = await this.loadUnionTexture(alphaUnion, { flipY })
       m.alphaMap = alphaTex
       if (!alphaTex) texturesOk = false
-      else this.applyUvTransform(alphaTex, getTextureDef(alphaUnion))
+      else this.applyUvTransform(alphaTex, getTextureDef(alphaUnion), prev, mesh)
     }
 
     if (m instanceof THREE.MeshPhysicalMaterial && isPbr) {
       const pbr = inner as PbrMaterial
       const emissiveUnion = coerceTextureUnion(pbr.emissiveTexture)
       if (emissiveUnion) {
+        const prev = m.emissiveMap
         let emissiveTex = await this.loadUnionTexture(emissiveUnion, { flipY })
         if (!emissiveTex && m.map && textureUnionSameSrc(emissiveUnion, mainUnion)) {
           emissiveTex = m.map
         }
         m.emissiveMap = emissiveTex
         if (!emissiveTex) texturesOk = false
-        else this.applyUvTransform(emissiveTex, getTextureDef(emissiveUnion))
+        else if (emissiveTex !== m.map)
+          this.applyUvTransform(emissiveTex, getTextureDef(emissiveUnion), prev, mesh)
       }
       const bumpUnion = coerceTextureUnion(pbr.bumpTexture)
       if (bumpUnion) {
+        const prev = m.normalMap
         const bumpTex = await this.loadUnionTexture(bumpUnion, { normalMap: true, flipY })
         m.normalMap = bumpTex
         if (!bumpTex) texturesOk = false
         else {
           bumpTex.colorSpace = THREE.LinearSRGBColorSpace
-          this.applyUvTransform(bumpTex, getTextureDef(bumpUnion))
+          this.applyUvTransform(bumpTex, getTextureDef(bumpUnion), prev, mesh)
         }
       }
       // Re-apply after maps land — emissiveIntensity drives flame brightness when albedoColor is absent.
@@ -475,6 +482,8 @@ export class MaterialApplier {
 
     mesh.castShadow = inner.castShadows === true
     mesh.receiveShadow = true
+    // Marquees face inward (FrontSide). Never DoubleSide — back face is mirrored and
+    // was the “split + mirrored” LED look from inside the plaza.
     m.side = mesh.userData.primitiveDoubleSided === true ? THREE.DoubleSide : THREE.FrontSide
     m.needsUpdate = true
     return texturesOk && meshHasTextureMaps(mesh, pb)
@@ -635,12 +644,35 @@ export class MaterialApplier {
     return false
   }
 
-  private applyUvTransform(tex: THREE.Texture, def?: TextureDef): void {
-    if (!def) return
-    const tiling = def.tiling ?? { x: 1, y: 1 }
-    const offset = def.offset ?? { x: 0, y: 0 }
-    tex.repeat.set(tiling.x ?? 1, tiling.y ?? 1)
-    tex.offset.set(offset.x ?? 0, offset.y ?? 0)
+  /**
+   * Apply TextureMove-held ST first, else authored, else previous map.
+   * Clones start at (0,0) — authored offset must not wipe the marquee 0.5s row pause.
+   */
+  private applyUvTransform(
+    tex: THREE.Texture,
+    def?: TextureDef,
+    previous?: THREE.Texture | null,
+    mesh?: THREE.Mesh
+  ): void {
+    const held = mesh?.userData?.dclTextureMoveST as
+      | { tiling?: boolean; x: number; y: number }
+      | undefined
+
+    if (held?.tiling) {
+      tex.repeat.set(held.x, held.y)
+    } else if (def?.tiling) {
+      tex.repeat.set(def.tiling.x ?? 1, def.tiling.y ?? 1)
+    } else if (previous && previous !== tex) {
+      tex.repeat.copy(previous.repeat)
+    }
+
+    if (held && !held.tiling) {
+      tex.offset.set(held.x, held.y)
+    } else if (def?.offset) {
+      tex.offset.set(def.offset.x ?? 0, def.offset.y ?? 0)
+    } else if (previous && previous !== tex) {
+      tex.offset.copy(previous.offset)
+    }
   }
 }
 

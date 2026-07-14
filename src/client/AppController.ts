@@ -34,7 +34,7 @@ import { hydrateEmoteWheelSlots } from '../avatar/profileEmotes'
 import { InputAction } from '../input/pointerConstants'
 import { MobileGameHud } from './ui/MobileGameHud'
 import { disposeSessionAssetCache, getSessionAssetCache, prefetchSceneManifestAssets } from '../rendering/AssetCache'
-import { DEFAULT_TIMEOUT_MS, FAST_TIMEOUT_MS, type SceneHydrationStats } from '../rendering/sceneHydration'
+import type { SceneHydrationStats } from '../rendering/sceneHydration'
 import { resolveSceneLoadWarm } from '../rendering/sceneLoadWarm'
 import { formatSceneBanMessage } from './formatSceneBanMessage'
 import { formatSceneLoadError, type SceneLoadErrorMessage } from './formatSceneLoadError'
@@ -1078,14 +1078,15 @@ export class AppController {
       const warmScene = await resolveSceneLoadWarm(getSessionAssetCache(), sceneConfig)
       const useFastBoot = opts.fastAssets ?? warmScene
       if (useFastBoot && !opts.fastAssets) {
-        console.info('[client] warm scene cache — 90s hydration timeout')
+        console.info('[client] warm scene cache — wait until assets attached (no hard timeout)')
       } else if (!opts.fastAssets) {
-        console.info('[client] cold scene load — 180s hydration timeout')
+        console.info('[client] cold scene load — wait until assets attached (no hard timeout)')
       }
-      const hydrationTimeoutMs = useFastBoot ? FAST_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
-      opts.onHydrationStart?.(hydrationTimeoutMs)
+      // No hydration ceiling — UI timer is count-up only (timeoutMs=0).
+      opts.onHydrationStart?.(0)
       const hydrationResult = await world.waitForSceneAssets(sceneConfig, opts.onProgress, {
-        timeoutMs: useFastBoot ? FAST_TIMEOUT_MS : undefined
+        // Never force-ready mid-attach (Genesis cold often exceeds 3+ minutes).
+        timeoutMs: undefined
       })
       if (hydrationResult) {
         hydrationTimedOut = hydrationResult.timedOut

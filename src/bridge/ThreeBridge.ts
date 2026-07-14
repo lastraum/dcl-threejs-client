@@ -3,14 +3,12 @@ import type { Entity } from '@dcl/ecs'
 import type { ProjectionView } from './ProjectionView'
 import {
   buildPrimitiveGeometry,
-  DCL_TEXT_ALONG_Y_BASIS,
   primitiveDoubleSided,
   hasAnimatedPlaneUvs,
   primitiveKind,
   primitiveMeshKey,
   updatePlaneGeometryUvs
 } from './primitiveShapes'
-import { applyDclLocalTransform } from './dclTransform'
 import { MaterialApplier, type PbMaterial } from './material/MaterialApplier'
 import type { AssetCache } from '../rendering/AssetCache'
 import { prefetchSceneManifestAssets } from '../rendering/AssetCache'
@@ -1239,9 +1237,10 @@ export class ThreeBridge {
         primitive.geometry.dispose()
         obj.remove(primitive)
       }
+      const geo = buildPrimitiveGeometry(spec)
       const doubleSided = primitiveDoubleSided(spec)
       primitive = new THREE.Mesh(
-        buildPrimitiveGeometry(spec),
+        geo,
         new THREE.MeshStandardMaterial({
           color: 0xffffff,
           side: doubleSided ? THREE.DoubleSide : THREE.FrontSide
@@ -1254,7 +1253,6 @@ export class ThreeBridge {
       primitive.receiveShadow = true
       primitive.userData.entity = entity
       obj.add(primitive)
-      this.reapplyTransformIfTextAlongYBasis(entity, obj, primitive)
       this.notifyMeshComponent(entity, MeshRenderer.componentId)
     }
 
@@ -1697,9 +1695,10 @@ export class ThreeBridge {
           ;(primitive as THREE.Mesh).geometry.dispose()
           obj.remove(primitive)
         }
+        const geo = buildPrimitiveGeometry(spec)
         const doubleSided = primitiveDoubleSided(spec)
         primitive = new THREE.Mesh(
-          buildPrimitiveGeometry(spec),
+          geo,
           new THREE.MeshStandardMaterial({
             color: 0xffffff,
             side: doubleSided ? THREE.DoubleSide : THREE.FrontSide
@@ -1711,7 +1710,6 @@ export class ThreeBridge {
         primitive.castShadow = false
         primitive.receiveShadow = true
         obj.add(primitive)
-        this.reapplyTransformIfTextAlongYBasis(entity, obj, primitive)
         this.notifyMeshComponent(entity, MeshRenderer.componentId)
       }
 
@@ -1723,19 +1721,6 @@ export class ThreeBridge {
         }
       }
     }
-  }
-
-  /** Marquee atlas planes need scale.x/y swapped once the re-based mesh exists. */
-  private reapplyTransformIfTextAlongYBasis(
-    entity: Entity,
-    obj: THREE.Group,
-    primitive: THREE.Mesh
-  ): void {
-    const g = primitive.geometry as THREE.BufferGeometry
-    if (!g.userData?.[DCL_TEXT_ALONG_Y_BASIS]) return
-    const { Transform } = this.ecs
-    if (!Transform.has(entity)) return
-    applyDclLocalTransform(obj, Transform.get(entity))
   }
 
 }

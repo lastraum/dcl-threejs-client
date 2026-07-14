@@ -37,9 +37,12 @@ const DCL_PLANE_NORTH_CORNER_TO_THREE = [2, 3, 1, 0]
 const DCL_PLANE_SOUTH_CORNER_TO_THREE = [3, 2, 0, 1]
 
 /** Bump when plane topology/UV layout changes — busts primitiveMeshKey mesh cache. */
-const PLANE_GEOMETRY_REVISION = 'v5'
+const PLANE_GEOMETRY_REVISION = 'v17'
 
-/** userData key: plane re-based so atlas U (text) runs along local +X. */
+/**
+ * userData: marquee atlas plane. MaterialApplier: flipY=false, FrontSide only.
+ * Faces inward (normal −Z) so plaza view is the front face — not a mirrored DoubleSide back.
+ */
 export const DCL_TEXT_ALONG_Y_BASIS = 'dclTextAlongYBasis'
 
 export type PrimitiveMeshSpec = {
@@ -158,86 +161,13 @@ export function buildDclPlaneGeometry(width = 1, height = 1): THREE.BufferGeomet
 }
 
 /**
- * True when atlas U (text) runs along plane local Y (BL→TL), not local X (BL→BR).
- * Genesis Plaza LED marquees author UVs this way while entity local Y is world-up, so
- * without a basis fix text is sideways and TextureMove Y crawls horizontally.
+ * True when atlas U (text) runs along plane local Y (BL→BR varies V more than U).
+ * Genesis Plaza LED marquees author this while local Y is world-up.
  */
 function planeUvsMapTextAlongLocalY(uvs: readonly number[]): boolean {
   const du = Math.abs((uvs[2] ?? 0) - (uvs[0] ?? 0))
   const dv = Math.abs((uvs[3] ?? 0) - (uvs[1] ?? 0))
   return dv > du + 1e-5
-}
-
-/** (x,y)→(y,-x): local +Y (atlas U / text) becomes local +X (horizontal on upright planes). */
-function applyTextAlongYPlaneBasis(geometry: THREE.BufferGeometry): void {
-  const pos = geometry.getAttribute('position')
-  if (!(pos instanceof THREE.BufferAttribute)) return
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i)
-    const y = pos.getY(i)
-    pos.setXY(i, y, -x)
-  }
-  pos.needsUpdate = true
-  geometry.computeBoundingBox()
-  geometry.computeBoundingSphere()
-  geometry.userData[DCL_TEXT_ALONG_Y_BASIS] = true
-}
-
-function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
-  const perSide = uvs.length >= 16 ? 8 : uvs.length >= 8 ? 8 : 0
-  if (!perSide) return buildPlaneGeometryWithUvs(DEFAULT_DCL_PLANE_UVS)
-
-  const north = uvs.slice(0, 8)
-  const south = uvs.length >= 16 ? uvs.slice(8, 16) : mirrorSouthPlaneUvs(north)
-
-  const positions = new Float32Array([
-    -0.5, 0.5, 0,
-    0.5, 0.5, 0,
-    -0.5, -0.5, 0,
-    0.5, -0.5, 0,
-    -0.5, 0.5, 0,
-    0.5, 0.5, 0,
-    -0.5, -0.5, 0,
-    0.5, -0.5, 0
-  ])
-  const normals = new Float32Array([
-    0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1,
-    0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1
-  ])
-  const uvAttr = new THREE.BufferAttribute(new Float32Array(16), 2)
-  applyFaceUvs(uvAttr, 0, DCL_PLANE_NORTH_CORNER_TO_THREE, north)
-  applyFaceUvs(uvAttr, 1, DCL_PLANE_SOUTH_CORNER_TO_THREE, south)
-
-  const geometry = new THREE.BufferGeometry()
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
-  geometry.setAttribute('uv', uvAttr)
-  // North (+Z): CCW from +Z. South (-Z): opposite winding so both sides render with FrontSide.
-  geometry.setIndex([0, 2, 1, 2, 3, 1, 4, 5, 6, 5, 7, 6])
-
-  // Custom atlas UVs with text along local Y (plaza marquees) → re-basis so text is horizontal.
-  // Default full-quad UVs (video, etc.) keep the standard XY plane.
-  if (planeUvsMapTextAlongLocalY(north)) {
-    applyTextAlongYPlaneBasis(geometry)
-  }
-
-  return geometry
-}
-
-/** Update an existing double-sided plane geometry in place (sprite UV animation). */
-export function updatePlaneGeometryUvs(geometry: THREE.BufferGeometry, uvs: number[]): boolean {
-  const perSide = uvs.length >= 16 ? 8 : uvs.length >= 8 ? 8 : 0
-  if (!perSide) return false
-
-  const attr = geometry.getAttribute('uv')
-  if (!(attr instanceof THREE.BufferAttribute) || attr.count < 8) return false
-
-  const north = uvs.slice(0, 8)
-  const south = uvs.length >= 16 ? uvs.slice(8, 16) : mirrorSouthPlaneUvs(north)
-  applyFaceUvs(attr, 0, DCL_PLANE_NORTH_CORNER_TO_THREE, north)
-  applyFaceUvs(attr, 1, DCL_PLANE_SOUTH_CORNER_TO_THREE, south)
-  attr.needsUpdate = true
-  return true
 }
 
 /**
@@ -253,10 +183,103 @@ function mirrorSouthPlaneUvs(north: readonly number[]): number[] {
   const trV = north[5] ?? 0
   const tlU = north[6] ?? 0
   const tlV = north[7] ?? 0
-  return [
-    1 - brU, brV,
-    1 - blU, blV,
-    1 - tlU, tlV,
-    1 - trU, trV
-  ]
+  return [1 - brU, brV, 1 - blU, blV, 1 - tlU, tlV, 1 - trU, trV]
+}
+
+/**
+ * Marquee / text-along-Y plane.
+ *
+ * Scene north UVs (BL,BR,TR,TL): U (text) along local Y, V along local X.
+ * We rewrite to standard: U along X, V along Y.
+ *
+ * Plaza panels mount with local +Z *outward*. Camera is inside the plaza, so it sees the
+ * **back** of a +Z plane. DoubleSide then shows a mirrored back face → “split + mirrored”.
+ *
+ * Fix: face **inward** (normal −Z, winding for that front) + FrontSide only + U flip so
+ * text still reads left→right when viewed from the plaza.
+ *
+ * PlaneGeometry verts: 0=TL (−X,+Y) 1=TR (+X,+Y) 2=BL (−X,−Y) 3=BR (+X,−Y).
+ */
+function buildMarqueePlaneGeometry(north: readonly number[]): THREE.BufferGeometry {
+  const u0 = north[0] ?? 0 // text start
+  const vA = north[1] ?? 0
+  const vB = north[3] ?? 0
+  const u1 = north[6] ?? 0 // text end
+  const vTop = Math.min(vA, vB)
+  const vBot = Math.max(vA, vB)
+
+  const geometry = new THREE.PlaneGeometry(1, 1)
+  const normals = geometry.getAttribute('normal')
+  const uv = geometry.getAttribute('uv')
+  if (!(normals instanceof THREE.BufferAttribute) || !(uv instanceof THREE.BufferAttribute)) {
+    return geometry
+  }
+
+  // Inward front face (toward plaza / camera).
+  for (let i = 0; i < normals.count; i++) normals.setXYZ(i, 0, 0, -1)
+  normals.needsUpdate = true
+  // CCW when viewed from −Z (front).
+  geometry.setIndex([0, 1, 2, 1, 3, 2])
+
+  // From −Z, local +X is screen-left → text start (u0) on +X (TR/BR).
+  uv.setXY(0, u1, vTop) // TL −X
+  uv.setXY(1, u0, vTop) // TR +X
+  uv.setXY(2, u1, vBot) // BL −X
+  uv.setXY(3, u0, vBot) // BR +X
+  uv.needsUpdate = true
+
+  geometry.userData[DCL_TEXT_ALONG_Y_BASIS] = true
+  return geometry
+}
+
+function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
+  const perSide = uvs.length >= 16 ? 8 : uvs.length >= 8 ? 8 : 0
+  if (!perSide) return buildPlaneGeometryWithUvs(DEFAULT_DCL_PLANE_UVS)
+
+  const north = uvs.slice(0, 8)
+  if (planeUvsMapTextAlongLocalY(north)) {
+    return buildMarqueePlaneGeometry(north)
+  }
+
+  const south = uvs.length >= 16 ? uvs.slice(8, 16) : mirrorSouthPlaneUvs(north)
+  const positions = new Float32Array([
+    -0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0,
+    -0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0
+  ])
+  const normals = new Float32Array([
+    0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1
+  ])
+  const uvAttr = new THREE.BufferAttribute(new Float32Array(16), 2)
+  applyFaceUvs(uvAttr, 0, DCL_PLANE_NORTH_CORNER_TO_THREE, north)
+  applyFaceUvs(uvAttr, 1, DCL_PLANE_SOUTH_CORNER_TO_THREE, south)
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
+  geometry.setAttribute('uv', uvAttr)
+  geometry.setIndex([0, 2, 1, 2, 3, 1, 4, 5, 6, 5, 7, 6])
+  return geometry
+}
+
+/**
+ * In-place UV update for sprite planes only.
+ * Marquee always returns false → force full mesh rebuild.
+ */
+export function updatePlaneGeometryUvs(geometry: THREE.BufferGeometry, uvs: number[]): boolean {
+  const perSide = uvs.length >= 16 ? 8 : uvs.length >= 8 ? 8 : 0
+  if (!perSide) return false
+
+  const north = uvs.slice(0, 8)
+  if (planeUvsMapTextAlongLocalY(north) || geometry.userData[DCL_TEXT_ALONG_Y_BASIS]) {
+    return false
+  }
+
+  const attr = geometry.getAttribute('uv')
+  if (!(attr instanceof THREE.BufferAttribute) || attr.count < 8) return false
+
+  const south = uvs.length >= 16 ? uvs.slice(8, 16) : mirrorSouthPlaneUvs(north)
+  applyFaceUvs(attr, 0, DCL_PLANE_NORTH_CORNER_TO_THREE, north)
+  applyFaceUvs(attr, 1, DCL_PLANE_SOUTH_CORNER_TO_THREE, south)
+  attr.needsUpdate = true
+  return true
 }

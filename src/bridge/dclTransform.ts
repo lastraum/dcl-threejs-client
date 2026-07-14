@@ -113,28 +113,13 @@ export function threeYawToDclYaw(yaw: number): number {
   return -yaw
 }
 
-/** True when a MeshRenderer plane was re-based so atlas text runs along local +X. */
-function entityHasTextAlongYPlaneBasis(obj: THREE.Object3D): boolean {
-  let found = false
-  obj.traverse((child) => {
-    if (found) return
-    const g = (child as THREE.Mesh).geometry as THREE.BufferGeometry | undefined
-    if (g?.userData?.dclTextAlongYBasis) found = true
-  })
-  return found
-}
-
 /** Apply ECS local transform → Three.js display space. */
 export function applyDclLocalTransform(obj: THREE.Object3D, t: DclTransformValues): void {
   dclToThreePos(t.position.x, t.position.y, t.position.z, obj.position)
   dclToThreeQuat(t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w, obj.quaternion)
-  // Marquee planes map atlas U (text) along local Y; we re-basis mesh so text is on +X.
-  // Swap scale so authored text-length (scale.y) still spans the board horizontally.
-  if (entityHasTextAlongYPlaneBasis(obj)) {
-    obj.scale.set(t.scale.y, t.scale.x, t.scale.z)
-  } else {
-    obj.scale.set(t.scale.x, t.scale.y, t.scale.z)
-  }
+  // Keep authored scale (do not swap for marquee re-basis — panels are spaced by scale.x
+  // along the curve; swapping made them overlap and double-draw LED rows).
+  obj.scale.set(t.scale.x, t.scale.y, t.scale.z)
 }
 
 export function resolveTransformParent(

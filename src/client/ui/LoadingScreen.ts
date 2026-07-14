@@ -162,10 +162,13 @@ export class LoadingScreen {
     this.hydrationDetailEl.textContent = 'Preparing…'
   }
 
-  /** Asset hydration hard timeout — warning styling only; clock keeps running. */
+  /**
+   * Optional warning threshold for the loading timer (0 = count-up only, no red timeout state).
+   * Hydration no longer hard-fails on a clock — this is cosmetic.
+   */
   setHydrationTimeoutMs(timeoutMs: number): void {
     if (this.disposed) return
-    this.hydrationTimeoutMs = timeoutMs
+    this.hydrationTimeoutMs = timeoutMs > 0 ? timeoutMs : 0
   }
 
   setHydrationStats(stats: SceneHydrationStats): void {

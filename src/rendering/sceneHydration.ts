@@ -24,6 +24,10 @@ export type SceneHydrationStats = {
 }
 
 export type WaitForSceneAssetsOptions = {
+  /**
+   * Optional hard ceiling. Prefer **omit / Infinity** — Genesis cold loads often exceed 3 minutes;
+   * cutting off early leaves 1000+ GLTFs pending and feels broken.
+   */
   timeoutMs?: number
   stableMs?: number
   onPrimeRender?: () => void
@@ -36,8 +40,10 @@ export type WaitForSceneAssetsResult = {
   elapsedMs: number
 }
 
-const DEFAULT_TIMEOUT_MS = 180_000
-const FAST_TIMEOUT_MS = 90_000
+/** @deprecated Prefer no timeout — kept for callers that still pass an explicit budget. */
+const DEFAULT_TIMEOUT_MS = Number.POSITIVE_INFINITY
+/** @deprecated Prefer no timeout. */
+const FAST_TIMEOUT_MS = Number.POSITIVE_INFINITY
 const STABLE_MS = 400
 const STABLE_WARM_MS = 150
 /** Scene scripts keep spawning entities after boot — wait for the count to settle. */
@@ -162,7 +168,11 @@ function computeAssetProgress(
   return ASSET_PROGRESS_START + ASSET_PROGRESS_RANGE * combined
 }
 
-/** Pump ECS → Three.js sync until GLBs/textures settle or timeout. Call before `world.start()`. */
+/**
+ * Pump ECS → Three.js sync until GLBs/textures settle.
+ * By default **no hard timeout** — waits until attach-complete (Genesis cold may take several minutes).
+ * Pass `timeoutMs` only for explicit bailout testing.
+ */
 export async function waitForSceneAssets(
   scene: ResolvedScene,
   sceneScript: SceneScriptSystem,
@@ -172,7 +182,11 @@ export async function waitForSceneAssets(
 ): Promise<WaitForSceneAssetsResult | void> {
   if (!scene.mainEntry || !scene.entityId) return
 
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const timeoutMs =
+    options.timeoutMs !== undefined && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+      ? options.timeoutMs
+      : Number.POSITIVE_INFINITY
+  const hasHardTimeout = Number.isFinite(timeoutMs)
   const stableMs = options.stableMs ?? STABLE_MS
   const started = performance.now()
   let stableSince = 0
@@ -205,7 +219,8 @@ export async function waitForSceneAssets(
   onProgress?.('Downloading scene models…')
   const cacheAtStart = assets.getLoadStats().gltfCached
   if (!bytesWarm && !warmScene) {
-    const wait = await assets.waitForPrefetchBytes(90_000)
+    // Wait for content-map bytes — no short ceiling; progress continues via attach loop.
+    const wait = await assets.waitForPrefetchBytes(Number.POSITIVE_INFINITY)
     console.info(
       `[Hydration] content-map GLB bytes ready — remainingInflight=${wait.remaining} waited=${(wait.waitedMs / 1000).toFixed(1)}s gltfCached=${cacheAtStart} (no bulk parse)`
     )
@@ -233,7 +248,7 @@ export async function waitForSceneAssets(
     const finish = (timedOut: boolean, reason?: string) => {
       if (finished) return
       finished = true
-      window.clearTimeout(hardTimeout)
+      if (hardTimeout !== undefined) window.clearTimeout(hardTimeout)
       sceneScript.setAssetHydrationMode(false)
       sceneScript.extendSoftHydration(SOFT_HYDRATION_MS)
       if (!timedOut) markSceneHydrated(scene)
@@ -255,20 +270,24 @@ export async function waitForSceneAssets(
       finish(true, reason)
     }
 
-    const hardTimeout = window.setTimeout(() => {
-      forceTimeout('Hard timeout')
-    }, timeoutMs)
+    // Optional explicit bailout only — default is wait-until-attached (no ceiling).
+    const hardTimeout = hasHardTimeout
+      ? window.setTimeout(() => {
+          forceTimeout('Hard timeout')
+        }, timeoutMs)
+      : undefined
 
     const tick = async () => {
       if (finished) return
       try {
-        if (performance.now() - started >= timeoutMs) {
+        if (hasHardTimeout && performance.now() - started >= timeoutMs) {
           forceTimeout('Timeout')
           return
         }
 
         await yieldToUi()
-        if (finished || performance.now() - started >= timeoutMs) {
+        if (finished) return
+        if (hasHardTimeout && performance.now() - started >= timeoutMs) {
           forceTimeout('Timeout')
           return
         }
@@ -336,7 +355,7 @@ export async function waitForSceneAssets(
           )
         }
 
-        if (performance.now() - started >= timeoutMs) {
+        if (hasHardTimeout && performance.now() - started >= timeoutMs) {
           forceTimeout('Timeout')
           return
         }

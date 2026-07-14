@@ -416,15 +416,32 @@ export function preemptSceneEngineTick(): void {
   tickStartedAt = 0
 }
 
-/** One engine.update flush — used after MOVE CAMERA flight onUpdate while ticks are paused. */
+/**
+ * One engine.update flush — used after MOVE CAMERA flight onUpdate while ticks are paused,
+ * and after TweenState inject (dt=0) so tweenCompleted can fire without advancing wall clocks.
+ *
+ * dt=0 must NOT bump lastExecutedAt — otherwise ambient tween-state-deliver starved NeonScreen
+ * pauseDuration/scrollDuration (marquee pause disappeared).
+ */
 export async function runSceneEngineUpdateNow(engineDt?: number): Promise<void> {
   const eng = engine
   if (!eng || !bootSealed || !config) return
   const dt = engineDt ?? resolveDt()
-  await runSerializedEngineUpdate(async () => {
-    await eng.update(dt)
-  })
-  lastExecutedAt = performance.now()
+  try {
+    await runSerializedEngineUpdate(async () => {
+      await eng.update(dt)
+    })
+  } catch (err) {
+    // Scene systems can throw after system-loop catch if update itself rejects.
+    config.log(
+      `[sceneWorker] engine.update(${dt}) failed (continuing): ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    )
+  }
+  if (dt > 0) {
+    lastExecutedAt = performance.now()
+  }
   config.onAfterEngineTick?.()
 }
 
@@ -475,15 +492,22 @@ export async function runSceneEngineBootTick(eng: IEngine): Promise<void> {
   }
 }
 
+/**
+ * After inbound LWW/append inject — request a real-dt engine tick only when systems need
+ * time to advance (raycast/video/trigger/pointer).
+ *
+ * TweenState inject must NOT request a real-dt tick: NeonScreen (and similar) use wall-clock
+ * elapsed in addSystem; extra ticks from ambient tween-state-deliver compressed pauseDuration
+ * to near zero. Tween paths use runSceneEngineUpdateNow(0) instead.
+ */
 export function sceneEngineTickAfterInboundInject(counts: RendererInboundInjectCounts): void {
-  const needsSystems =
+  const needsTimedSystems =
     counts.raycastPuts > 0 ||
     counts.videoPlayerPuts > 0 ||
     counts.triggerAppends > 0 ||
     counts.pointerAppends > 0 ||
-    counts.videoAppends > 0 ||
-    counts.tweenPuts > 0
-  if (needsSystems) requestSceneEngineTick()
+    counts.videoAppends > 0
+  if (needsTimedSystems) requestSceneEngineTick()
 }
 
 function countWorkerUiMount(eng: IEngine): number {
@@ -508,7 +532,7 @@ async function flushReactEcsForUiSnapshot(
     await runSerializedEngineUpdate(async () => {
       await eng.update(0)
     })
-    lastExecutedAt = performance.now()
+    // Do not bump lastExecutedAt on dt=0 — preserves wall-clock for NeonScreen etc.
     const mount = countWorkerUiMount(eng)
     const fp = computeWorkerUiFingerprint(eng)
     log(
@@ -533,7 +557,6 @@ async function runPointerNonUiPhase(eng: IEngine): Promise<void> {
   await runSerializedEngineUpdate(async () => {
     await eng.update(0)
   })
-  lastExecutedAt = performance.now()
   config?.onAfterEngineTick?.()
 }
 
@@ -569,8 +592,8 @@ export async function runSceneEnginePointerTick(
         await eng.update(0)
       })
     }
-    lastExecutedAt = performance.now()
     // After DOWN — MOVE CAMERA freeze / STOP clear may already be applied.
+    // dt=0 updates must not advance lastExecutedAt (marquee NeonScreen wall-clock).
     cfg.onAfterEngineTick?.()
     if (injectOnlyUiClick) {
       cfg.log('[sceneWorker] pointer tick — skipping exports.onUpdate (inject-only UI click)')
@@ -583,7 +606,6 @@ export async function runSceneEnginePointerTick(
         await eng.update(0)
       })
       // After UP — republish player-frame if STOP/clear landed on this edge.
-      lastExecutedAt = performance.now()
       cfg.onAfterEngineTick?.()
     }
     if (injectOnlyUiClick) {

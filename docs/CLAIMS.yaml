@@ -5,10 +5,24 @@
 # Dev panel Community tab renders this as a single workflow table.
 
 schema_version: 2
-updated: 2026-07-13
+updated: 2026-07-14
 source: github
 base_branch: dev-latest
 workflow:
+  - stage: merged
+    integration_ref: pr:23
+    title: base-avatars parity — eyes tab + body-shape switching
+    owner: awedjob
+    pr: 23
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/23
+    updated: 2026-07-14
+  - stage: merged
+    integration_ref: pr:24
+    title: avatar color customization — eyes/hair/skin picker + iris tinting
+    owner: awedjob
+    pr: 24
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/24
+    updated: 2026-07-14
   - stage: merged
     integration_ref: pr:22
     title: "default wearable backfill + face texture (PR #20 + review)"

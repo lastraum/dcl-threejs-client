@@ -234,11 +234,22 @@ export function setSceneEngineLastExecutedAt(ms: number): void {
   lastExecutedAt = ms
 }
 
+/**
+ * Wall-clock dt for engine.update (seconds).
+ *
+ * Do NOT floor above real elapsed: a min floor invents scene time on back-to-back ticks
+ * (tickQueued re-entry, inbound inject + play-frame). NeonScreen (and similar) do
+ * `elapsed += dt` for pauseDuration/scrollDuration — invented dt compresses the 0.5s
+ * row pause to near zero so marquees scroll without holding.
+ */
 function resolveDt(): number {
-  const cfg = config!
-  const elapsed = lastExecutedAt > 0 ? (performance.now() - lastExecutedAt) / 1000 : 0.1
-  const floor = cfg.isHydration() ? cfg.hydrationIntervalMs / 1000 : 1 / 120
-  return Math.min(Math.max(elapsed, floor), 0.1)
+  if (lastExecutedAt <= 0) {
+    // First tick only — use the configured interval as a sane starter, not a 100ms jump.
+    return Math.min(0.1, Math.max(1 / 120, resolveIntervalMs() / 1000))
+  }
+  const elapsed = (performance.now() - lastExecutedAt) / 1000
+  if (elapsed <= 0) return 0
+  return Math.min(elapsed, 0.1)
 }
 
 function resolveIntervalMs(): number {
@@ -405,7 +416,15 @@ export function forceRecoverStuckSceneEngineTick(reason: string): void {
   const requeue = tickQueued
   tickQueued = false
   if (requeue) {
-    queueMicrotask(() => requestSceneEngineTick())
+    // Only re-fire when the play/hydration interval has elapsed — immediate re-entry
+    // with a dt floor used to invent NeonScreen wall-clock (row pause disappeared).
+    queueMicrotask(() => {
+      if (sceneEngineTickDue(performance.now())) {
+        requestSceneEngineTick()
+      } else {
+        tickQueued = true
+      }
+    })
   }
 }
 
@@ -455,17 +474,24 @@ export function requestSceneEngineTick(): void {
     tickQueued = true
     return
   }
+  const dt = resolveDt()
+  // No wall time since last real tick — skip. Queued thrash must not invent scene time.
+  if (dt <= 0 && lastExecutedAt > 0) {
+    return
+  }
   const epoch = tickEpoch
   tickInFlight = true
   tickStartedAt = performance.now()
-  const dt = resolveDt()
   void executeTickWork(dt).finally(() => {
     if (epoch !== tickEpoch) return
     tickInFlight = false
     tickStartedAt = 0
     if (tickQueued && config && !config.pointerBlocksTick()) {
-      tickQueued = false
-      requestSceneEngineTick()
+      // Keep tickQueued if interval not due yet — drainQueued / play-frame will fire later.
+      if (sceneEngineTickDue(performance.now())) {
+        tickQueued = false
+        requestSceneEngineTick()
+      }
     }
   })
 }
@@ -473,6 +499,7 @@ export function requestSceneEngineTick(): void {
 export function drainQueuedSceneEngineTick(): void {
   if (!tickQueued || tickInFlight || !config) return
   if (config.pointerBlocksTick()) return
+  if (!sceneEngineTickDue(performance.now())) return
   tickQueued = false
   requestSceneEngineTick()
 }

@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-14 (**scene stream watch + backpack colors** on `dev-latest`; **v0.7.2** on `main`)  
-> **Current phase:** Post-**v0.7.2** integration — companion landing stream keys / Join Live, 2D backpack parity (base wearables + colors + emotes).  
+> **Last updated:** 2026-07-14 (**cast room-match fix** on `dev-latest` — ready for **v0.8.0** release)  
+> **Current phase:** Cut **v0.8.0** from `dev-latest` → `main` (landing Cast/stream keys, backpack colors, media/env fixes).  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
 > **Product next:** Phase 4 `/goto` · Watch Lite polish (I'm live CTA deferred) · remaining backpack parity gaps (below).  
@@ -26,7 +26,7 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **2D shell nav + pages** | 🟢 | **Explore · Communities · Events** tabs on all non-play surfaces; `/communities`, `/events`, `/map`, full-screen `/profile` |
 | **2D social chat dock** | 🟡 **partial** | Floating dock on explorer/landing — thread list, scene chat, community thumbnails; **3D in-world chat** unchanged |
 | **Scene landing hub** | 🟢 | Hero, crowd, owner, description, events banner; companion-style **Jump in** progress bar (sidebar/HUD deferred until handoff) |
-| **Landing stream keys + Join Live** | 🟢 | Owner gear → OBS RTMP keys; live detect via scene LiveKit; cast stage (pill, FS, hard media stop); **I'm live** CTA deferred |
+| **Landing stream keys + Join Live** | 🟢 | Owner gear → OBS RTMP keys; scene LiveKit live detect (lowercase world realm = stream-key room); cast stage; go-live after landing open; **I'm live** CTA deferred |
 | **Community thumbnails** | 🟢 | `communityDisplayImageUrl` + proxy passthrough; detail-fetch fallback on image 404 |
 | **Dev panel in-app suggestions** | 🟢 | `</>` → **💡 Suggest** — form in panel; auto-attaches DCL name + route; files GitHub issues labeled `suggestion` via Cloudflare Worker (prod) or vite proxy (local dev) |
 | **VirtualCamera bind reliability** | 🟢 | Scene-agnostic MainCamera→VC hydrate; locked shots use worker world pose; follow is f(player)+local; live Transform exclusive while bound |
@@ -47,22 +47,26 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 
 ## 🎉 Milestone — Scene stream watch → `dev-latest` (2026-07-14)
 
-**Status: merged `lastraum` → `dev-latest`** — companion-parity stream keys + Join Live cast stage on scene landing.
+**Status: merged `lastraum` → `dev-latest` (`3b2f40f`)** — companion-parity stream keys + Join Live; cast room identity fixed for release.
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
 | **Owner stream settings gear** | 🟢 | Wallet ∈ `ownerAddresses` (Places + NAME NFT); live `getLogin` after sign-in |
 | **Stream keys (OBS)** | 🟢 | Gatekeeper `scene-stream-access` RTMP/key mint; click-to-copy; not Cast 2.0 watcher-token |
-| **Live detect** | 🟢 | Scene LiveKit remote video pubs; Join Live once room ready |
+| **Live detect** | 🟢 | Scene LiveKit remote video pubs; continuous poll after landing open |
+| **World realm room match** | 🟢 | Gatekeeper realm always lowercased (companion) — fixes OBS in wrong room vs `RickRoll.dcl.eth` about casing (`e798eb0`) |
+| **Join Live CTA** | 🟢 | Shown only when cast video is actually live (not mere room ready) |
 | **Join Live cast stage** | 🟢 | Full-viewport player, scene info pill, mute/volume, fullscreen, X exits FS then closes |
 | **Video attach stability** | 🟢 | Same-SID no remount; hard pause/mute on close (`clearCastVideoHost`) |
 | **Jump In gate** | 🟢 | Hidden until LiveKit up / scene.json blocks chat / guest terminal |
 | **I'm live CTA** | ⬜ | Intentionally removed for now (HLS / cast listing UI deferred) |
-| **Plaza marquee / TextureMove** | 🟡 | UV + wall-clock `engine.update` dt fixes on `lastraum`; NeonScreen `pauseDuration` still flaky |
+| **Plaza marquee / TextureMove** | 🟡 | UV + wall-clock `engine.update` dt fixes; NeonScreen `pauseDuration` still flaky |
 
-**QA focus:** Own a world → gear → Get stream access → OBS → go live → visitor **Join Live** → video + audio → fullscreen → Esc stays in watch → X stops media → landing restored.
+**Also on this slice (post-v0.7.2):** backpack base eyes/body + avatar colors (#23/#24); VideoPlayer continuous play / HLS abort storm; plane L–R under DCL X reflection; FFT ocean cutouts (#19) + outdoor light intensity (#21).
 
-**Branch:** `lastraum` → `dev-latest`.
+**QA (owner-confirmed):** RickRoll landing → stream keys → OBS go live (incl. after landing open) → **Join Live** detects remote video.
+
+**Branch:** `lastraum` → `dev-latest` → **`main` as v0.8.0**.
 
 ---
 

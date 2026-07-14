@@ -488,6 +488,11 @@ export class CommsService {
       `Gatekeeper access check · realm=${realmName} parcel=${parcel} scene=${sceneId.slice(0, 12)}… world=${isWorld}`,
       { level: 'info' }
     )
+    if (isWorld) {
+      console.log(
+        `[cast] gatekeeper realm=${realmName} sceneId=${sceneId.slice(0, 24)}… parcel=${parcel} (must match stream-key mint)`
+      )
+    }
 
     const access = await checkGatekeeperSceneAccess(this.identity, {
       sceneId,

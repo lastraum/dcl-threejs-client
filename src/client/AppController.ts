@@ -814,8 +814,9 @@ export class AppController {
     const isWorld = scene.source.kind === 'world'
     const pointer = normalizePointer(scene.commsPointer)
     const parcel = isWorld ? '0,0' : isParcelPointer(pointer) ? pointer : scene.baseParcel
+    // Must match buildCommsTarget / scene-stream-access realm (lowercase world id).
     const realmName = isWorld
-      ? (target.kind === 'world' ? target.worldName.trim().toLowerCase() : pointer)
+      ? pointer.toLowerCase()
       : scene.realm.realmName?.trim() || 'main'
 
     console.log(

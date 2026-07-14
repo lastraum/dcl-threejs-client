@@ -23,8 +23,10 @@ export async function resolveStreamAccessContext(
   }
   const isGuest = opts?.isGuest === true
 
-  if (target.kind === 'world') {
-    const realmName = target.pointer.trim().toLowerCase()
+  if (target.kind === 'world' || scene.source.kind === 'world') {
+    // Same realm string as get-scene-adapter (commsPointer is already lowercased for worlds).
+    // Do not use about.realmName mixed case (RickRoll.dcl.eth) — that mints a different LiveKit room.
+    const realmName = (scene.commsPointer || target.pointer).trim().toLowerCase()
     return {
       sceneId,
       parcel: '0,0',

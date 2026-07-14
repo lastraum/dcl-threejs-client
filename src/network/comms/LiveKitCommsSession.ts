@@ -437,6 +437,11 @@ export class LiveKitCommsSession {
         `LiveKit connected (${this.transport}) · room=${room.name} · remotes=${room.remoteParticipants.size} · remoteVideo=${remoteVideo}`,
         { level: 'success', alsoConsole: true }
       )
+      if (this.transport === TransportType.SceneRoom || String(room.name).includes('scene-room')) {
+        console.log(
+          `[cast] scene LiveKit room=${room.name} remotes=${room.remoteParticipants.size} remoteVideo=${remoteVideo}`
+        )
+      }
 
       for (const participant of room.remoteParticipants.values()) {
         onParticipantConnected(participant)

@@ -30,14 +30,21 @@ const DEFAULT_DCL_PLANE_UVS = [
   1, 0, 0, 0, 0, 1, 1, 1
 ]
 
-/** North face: BL, BR, TR, TL → spatial vertex index. */
-const DCL_PLANE_NORTH_CORNER_TO_THREE = [2, 3, 1, 0]
+/**
+ * Spatial verts: 0=TL(−X,+Y) 1=TR(+X,+Y) 2=BL(−X,−Y) 3=BR(+X,−Y).
+ *
+ * DCL docs map BL,BR,TR,TL → [2,3,1,0], but the client reflects DCL +X → Three −X
+ * (`dclToThreePos`). Without a compensating U swap, plane textures read L-R mirrored
+ * vs Unity Explorer. Maps below are the docs order with L-R swapped.
+ */
+/** North face: BL, BR, TR, TL → verts (L-R compensated). */
+const DCL_PLANE_NORTH_CORNER_TO_THREE = [3, 2, 0, 1]
 
-/** South face: BR, BL, TL, TR → spatial vertex index (docs order, not north mirrored). */
-const DCL_PLANE_SOUTH_CORNER_TO_THREE = [3, 2, 0, 1]
+/** South face: BR, BL, TL, TR → verts (L-R compensated). */
+const DCL_PLANE_SOUTH_CORNER_TO_THREE = [2, 3, 1, 0]
 
 /** Bump when plane topology/UV layout changes — busts primitiveMeshKey mesh cache. */
-const PLANE_GEOMETRY_REVISION = 'v18'
+const PLANE_GEOMETRY_REVISION = 'v19'
 
 /**
  * userData: marquee atlas plane. MaterialApplier: flipY=false, FrontSide only.

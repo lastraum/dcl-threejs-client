@@ -27,7 +27,14 @@ import {
   type RealmBounds
 } from './movementCompressed'
 import { parseLiveKitConnectionString } from './livekitAdapter'
-import { collectActiveVideoStreamsFromRoom, type ActiveVideoStream } from './livekitVideoStreams'
+import {
+  collectActiveVideoStreamsFromRoom,
+  forceSubscribeRemoteVideo,
+  reattachFirstRemoteVideoToHost,
+  roomHasRemoteVideo,
+  snapshotRemoteVideoPresence,
+  type ActiveVideoStream
+} from './livekitVideoStreams'
 import { TransportType, type PeerLifecycleHandlers } from './Transport'
 
 const PROFILE_EVERY_N_BROADCASTS = 30
@@ -109,6 +116,15 @@ export class LiveKitCommsSession {
     return this.connected && this.room?.state === ConnectionState.Connected
   }
 
+  /** LiveKit room instance (null if disconnected). */
+  getRoom(): Room | null {
+    return this.room
+  }
+
+  getRoomName(): string {
+    return this.room?.name?.trim() || ''
+  }
+
   getRemotePeerAddresses(): string[] {
     if (!this.room) return []
     const out: string[] = []
@@ -121,6 +137,79 @@ export class LiveKitCommsSession {
 
   getActiveVideoStreams(): ActiveVideoStream[] {
     return collectActiveVideoStreamsFromRoom(this.room)
+  }
+
+  /** True when any remote participant publishes video (Cast / OBS ingress live). */
+  hasRemoteVideoLive(): boolean {
+    return roomHasRemoteVideo(this.room)
+  }
+
+  getRemoteVideoPresenceSnapshot() {
+    return snapshotRemoteVideoPresence(this.room)
+  }
+
+  /**
+   * Notify when remote video presence flips (Cast start/stop).
+   * Force-subscribes remote video (companion) and polls — RTMP ingress can lag join.
+   */
+  watchRemoteVideoLive(onChange: (live: boolean) => void): () => void {
+    const room = this.room
+    if (!room || !this.isConnected()) {
+      onChange(false)
+      return () => {}
+    }
+
+    let last: boolean | null = null
+    let logTicks = 0
+
+    const emit = (reason: string): void => {
+      forceSubscribeRemoteVideo(room)
+      const snap = snapshotRemoteVideoPresence(room)
+      logTicks += 1
+      // First few ticks + any change: log so landing Cast debug is visible in console.
+      if (logTicks <= 6 || snap.live !== last) {
+        // Category must NOT be `comms` — ClientDebugLog silences that category entirely.
+        const msg =
+          `Cast presence (${this.transport}/${reason}): live=${snap.live} remotes=${snap.remoteParticipants} videoPubs=${snap.remoteVideoPubs}` +
+          (snap.details.length ? ` · ${snap.details.slice(0, 6).join(' | ')}` : '')
+        clientDebugLog.log('cast', msg, {
+          level: snap.live ? 'success' : 'info',
+          alsoConsole: true
+        })
+        console.log(`[cast] ${msg}`)
+      }
+      if (snap.live === last) return
+      last = snap.live
+      onChange(snap.live)
+    }
+
+    const onTrackEvent = (): void => emit('track')
+    const onPeerEvent = (): void => emit('peer')
+
+    room.on(RoomEvent.TrackSubscribed, onTrackEvent)
+    room.on(RoomEvent.TrackUnsubscribed, onTrackEvent)
+    room.on(RoomEvent.TrackPublished, onTrackEvent)
+    room.on(RoomEvent.TrackUnpublished, onTrackEvent)
+    room.on(RoomEvent.ParticipantConnected, onPeerEvent)
+    room.on(RoomEvent.ParticipantDisconnected, onPeerEvent)
+    room.on(RoomEvent.Connected, onPeerEvent)
+    room.on(RoomEvent.Disconnected, onPeerEvent)
+
+    emit('start')
+    // Ingress often appears 1–5s after OBS “live”; poll aggressively at first.
+    const poll = window.setInterval(() => emit('poll'), 1500)
+
+    return () => {
+      window.clearInterval(poll)
+      room.off(RoomEvent.TrackSubscribed, onTrackEvent)
+      room.off(RoomEvent.TrackUnsubscribed, onTrackEvent)
+      room.off(RoomEvent.TrackPublished, onTrackEvent)
+      room.off(RoomEvent.TrackUnpublished, onTrackEvent)
+      room.off(RoomEvent.ParticipantConnected, onPeerEvent)
+      room.off(RoomEvent.ParticipantDisconnected, onPeerEvent)
+      room.off(RoomEvent.Connected, onPeerEvent)
+      room.off(RoomEvent.Disconnected, onPeerEvent)
+    }
   }
 
   /**
@@ -143,6 +232,7 @@ export class LiveKitCommsSession {
     }
 
     const attachBest = (): void => {
+      forceSubscribeRemoteVideo(room)
       const next = pickCurrentVideoTrack(room)
       if (next === attached) return
       detach()
@@ -174,6 +264,63 @@ export class LiveKitCommsSession {
       room.off(RoomEvent.ParticipantConnected, onTrackChange)
       room.off(RoomEvent.ParticipantDisconnected, onTrackChange)
       detach()
+    }
+  }
+
+  /**
+   * Companion-style Cast attach: force-sub remote A/V, pick best video, mount into host.
+   * Retries on track events until disposed.
+   */
+  bindRemoteVideoToHost(
+    host: HTMLElement,
+    onUpdate?: (attached: boolean) => void,
+    opts?: { muted?: boolean; volume?: number }
+  ): () => void {
+    const room = this.room
+    if (!room) {
+      onUpdate?.(false)
+      return () => {}
+    }
+
+    // Unlock remote audio after user gesture (Join live click).
+    void room.startAudio().catch(() => {})
+
+    let lastOk = false
+    const attach = (): void => {
+      forceSubscribeRemoteVideo(room)
+      const ok = reattachFirstRemoteVideoToHost(room, host, {
+        muted: opts?.muted,
+        volume: opts?.volume,
+        controls: false
+      })
+      if (ok !== lastOk) {
+        lastOk = ok
+        onUpdate?.(ok)
+      } else if (ok) {
+        onUpdate?.(true)
+      }
+    }
+
+    const onChange = (): void => attach()
+    room.on(RoomEvent.TrackSubscribed, onChange)
+    room.on(RoomEvent.TrackUnsubscribed, onChange)
+    room.on(RoomEvent.TrackPublished, onChange)
+    room.on(RoomEvent.TrackUnpublished, onChange)
+    room.on(RoomEvent.ParticipantConnected, onChange)
+    room.on(RoomEvent.ParticipantDisconnected, onChange)
+
+    attach()
+    const poll = window.setInterval(attach, 1500)
+
+    return () => {
+      window.clearInterval(poll)
+      room.off(RoomEvent.TrackSubscribed, onChange)
+      room.off(RoomEvent.TrackUnsubscribed, onChange)
+      room.off(RoomEvent.TrackPublished, onChange)
+      room.off(RoomEvent.TrackUnpublished, onChange)
+      room.off(RoomEvent.ParticipantConnected, onChange)
+      room.off(RoomEvent.ParticipantDisconnected, onChange)
+      host.replaceChildren()
     }
   }
 
@@ -245,8 +392,23 @@ export class LiveKitCommsSession {
       })
     }
 
+    // Companion scene-watch: force-subscribe remote A/V so Cast/OBS tracks are visible for LIVE detection.
+    const forceSubscribeRemoteMedia = (
+      publication: RemoteTrackPublication,
+      participant: Participant
+    ): void => {
+      if (participant.isLocal) return
+      if (publication.kind !== Track.Kind.Video && publication.kind !== Track.Kind.Audio) return
+      try {
+        publication.setSubscribed(true)
+      } catch {
+        /* ignore */
+      }
+    }
+    room.on(RoomEvent.TrackPublished, forceSubscribeRemoteMedia)
+
     try {
-      await room.connect(url, token)
+      await room.connect(url, token, { autoSubscribe: true })
       this.connected = true
       if (this.lambdasUrl) {
         void room.localParticipant.setMetadata(JSON.stringify({ lambdasEndpoint: this.lambdasUrl }))
@@ -263,11 +425,16 @@ export class LiveKitCommsSession {
           this.disconnect()
           return false
         }
+        // Subscribe any publications already present at join (Cast may already be live).
+        for (const publication of participant.trackPublications.values()) {
+          forceSubscribeRemoteMedia(publication as RemoteTrackPublication, participant)
+        }
       }
 
+      const remoteVideo = roomHasRemoteVideo(room)
       clientDebugLog.log(
         'network',
-        `LiveKit connected (${this.transport}) · room=${room.name} · remotes=${room.remoteParticipants.size}`,
+        `LiveKit connected (${this.transport}) · room=${room.name} · remotes=${room.remoteParticipants.size} · remoteVideo=${remoteVideo}`,
         { level: 'success', alsoConsole: true }
       )
 

@@ -93,6 +93,11 @@ export class AppController {
   private socialChat: SocialChatController | null = null
   private socialChatDock: SocialChatDock | null = null
   private socialMobileNotifications: SocialMobileNotifications | null = null
+  /** Unsubscribe scene-room Cast presence poller for the open landing. */
+  private castLiveUnsub: (() => void) | null = null
+  /** Dedicated Cast 2.0 watcher LiveKit room (separate from scene chat). */
+  private castWatchRoom: import('../network/comms/CastLiveKitRoom').CastLiveKitRoom | null = null
+  private castProbeTimer = 0
   private appMode: AppMode = 'explorer'
   private monitoredScene: ResolvedScene | null = null
   private sceneBanMonitor: SceneBanMonitor | null = null
@@ -632,6 +637,14 @@ export class AppController {
   }
 
   private teardownLanding(): void {
+    this.castLiveUnsub?.()
+    this.castLiveUnsub = null
+    if (this.castProbeTimer) {
+      window.clearInterval(this.castProbeTimer)
+      this.castProbeTimer = 0
+    }
+    this.castWatchRoom?.disconnect()
+    this.castWatchRoom = null
     this.sceneLandingView?.dispose()
     this.sceneLandingView = null
   }
@@ -668,6 +681,8 @@ export class AppController {
     if (hudEl) hudEl.hidden = true
     this.hidePlayChrome()
 
+    this.castLiveUnsub?.()
+    this.castLiveUnsub = null
     this.sceneLandingView = new SceneLandingView({
       route: target,
       login: this.login,
@@ -682,6 +697,7 @@ export class AppController {
         }
       },
       onOpenUserProfile: (address) => this.socialChat?.openProfileForAddress(address),
+      startCastWatch: (host, onUpdate, castOpts) => this.startLandingCastWatch(target, host, onUpdate, castOpts),
       ...this.socialShellLoginHandlers()
     })
     this.sceneLandingView.mount(this.container)
@@ -704,11 +720,171 @@ export class AppController {
   private async connectSceneLandingChat(
     target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
   ): Promise<void> {
+    // Jump in stays hidden until LiveKit is up or scene.json blocks browser chat.
+    this.sceneLandingView?.setJumpInUnlocked(false)
+
     if (this.login) this.socialChat?.applyLogin(this.login)
     const connected = await this.socialChat?.connectForRoute(target)
     if (connected) this.socialChatDock?.openSceneChatThread()
     // After wallet chat is up, force owner gear re-check (stale guest copy was hiding it).
     this.sceneLandingView?.syncLoginFromHost()
+
+    const status = this.socialChat?.getStatus()
+    const lkReady = this.socialChat?.isLiveKitConnected() === true
+    const chatBlockedByScene = status?.kind === 'browser_chat_disabled'
+    const guestSession = status?.kind === 'guest' || this.login?.kind === 'guest'
+    // Unlock Jump in: LiveKit ready, or scene.json blocks chat, or guest (no LiveKit expected).
+    // Also unlock on terminal failures so users are not stuck without a CTA.
+    const jumpInReady =
+      lkReady ||
+      chatBlockedByScene ||
+      guestSession ||
+      status?.kind === 'failed' ||
+      status?.kind === 'duplicate_wallet' ||
+      status?.kind === 'scene_ban'
+    this.sceneLandingView?.setJumpInUnlocked(jumpInReady)
+
+    // Scene LiveKit = chat + scene-stream-access RTMP (OBS stream keys) video.
+    // Not DCL Cast 2.0 (/cast/watcher-token) — that is a separate product.
+    this.castLiveUnsub?.()
+    this.castLiveUnsub = null
+    if (this.castProbeTimer) {
+      window.clearInterval(this.castProbeTimer)
+      this.castProbeTimer = 0
+    }
+
+    if (connected && this.socialChat) {
+      this.sceneLandingView?.setCastRoomReady(true)
+      console.log(
+        `[cast] landing chat connected=${connected} liveKit=${lkReady} jumpIn=${jumpInReady} status=${status?.kind ?? 'none'}`
+      )
+      this.castLiveUnsub = this.socialChat.watchRemoteVideoLive((live) => {
+        console.log(`[cast] scene-room video live=${live}`)
+        this.sceneLandingView?.setCastLive(live)
+      })
+      this.sceneLandingView?.setCastLive(this.socialChat.hasRemoteVideoLive())
+      for (const ms of [800, 2000, 5000, 10000]) {
+        window.setTimeout(() => {
+          if (!this.sceneLandingView || !this.socialChat) return
+          if (this.socialChat.isLiveKitConnected()) {
+            this.sceneLandingView.setJumpInUnlocked(true)
+            this.sceneLandingView.setCastRoomReady(true)
+          }
+          this.sceneLandingView.setCastLive(this.socialChat.hasRemoteVideoLive())
+        }, ms)
+      }
+    } else {
+      console.log(
+        `[cast] landing chat connected=${connected} jumpIn=${jumpInReady} status=${status?.kind ?? 'none'}`
+      )
+      if (chatBlockedByScene || guestSession || jumpInReady) {
+        this.sceneLandingView?.setCastRoomReady(true)
+      }
+    }
+  }
+
+  /**
+   * Watch OBS stream-key video (scene-stream-access RTMP → scene LiveKit room).
+   * Fresh get-scene-adapter join so we attach to the same room as in-world livekit-video://current-stream.
+   */
+  private async startLandingCastWatch(
+    target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>,
+    host: HTMLElement,
+    onUpdate?: (attached: boolean) => void,
+    opts?: { muted?: boolean; volume?: number }
+  ): Promise<() => void> {
+    if (this.login?.kind !== 'wallet') {
+      throw new Error('Sign in with a wallet to watch stream-key video.')
+    }
+
+    const { resolveSceneFromRoute } = await import('../dcl/content/resolveScene')
+    const { getSceneAdapter } = await import('../network/gatekeeper/GatekeeperClient')
+    const { CastLiveKitRoom } = await import('../network/comms/CastLiveKitRoom')
+    const { parseLiveKitConnectionString } = await import('../network/comms/livekitAdapter')
+    const { isParcelPointer, normalizePointer } = await import('../network/catalyst/pointer')
+
+    const scene = await resolveSceneFromRoute(target)
+    const sceneId = scene.entityId?.trim()
+    if (!sceneId) {
+      throw new Error('Could not resolve scene deployment id for this place.')
+    }
+
+    const isWorld = scene.source.kind === 'world'
+    const pointer = normalizePointer(scene.commsPointer)
+    const parcel = isWorld ? '0,0' : isParcelPointer(pointer) ? pointer : scene.baseParcel
+    const realmName = isWorld
+      ? (target.kind === 'world' ? target.worldName.trim().toLowerCase() : pointer)
+      : scene.realm.realmName?.trim() || 'main'
+
+    console.log(
+      `[cast] stream-key watch: sceneId=${sceneId.slice(0, 18)}… parcel=${parcel} realm=${realmName} isWorld=${isWorld}`
+    )
+
+    // Prefer existing scene-room session first (already joined for chat).
+    if (this.socialChat?.isLiveKitConnected()) {
+      const unbindExisting = this.socialChat.bindRemoteCastVideoToHost(host, onUpdate, opts)
+      // Give existing room a moment; if video attaches, keep it.
+      await new Promise((r) => setTimeout(r, 600))
+      if (host.querySelector('video')) {
+        console.log('[cast] stream-key video attached via existing scene LiveKit session')
+        return unbindExisting
+      }
+      unbindExisting()
+      console.log('[cast] existing scene room has no video yet — fresh adapter join')
+    }
+
+    const adapterResult = await getSceneAdapter(this.login.identity, {
+      sceneId,
+      parcel,
+      realmName,
+      isWorld
+    })
+    if (!adapterResult.ok) {
+      throw new Error(
+        `Could not join scene LiveKit for stream keys: ${adapterResult.error} (HTTP ${adapterResult.status})`
+      )
+    }
+
+    let url: string
+    let token: string
+    try {
+      ;({ url, token } = parseLiveKitConnectionString(adapterResult.adapter))
+    } catch {
+      throw new Error('Gatekeeper returned an invalid LiveKit adapter for this scene.')
+    }
+
+    this.castWatchRoom?.disconnect()
+    const room = new CastLiveKitRoom()
+    this.castWatchRoom = room
+    const ok = await room.connect(url, token)
+    if (!ok) {
+      this.castWatchRoom = null
+      throw new Error('Could not connect to scene LiveKit room for stream-key video.')
+    }
+
+    const lkRoom = room.getRoom()
+    console.log(
+      `[cast] stream-key room=${lkRoom?.name ?? '?'} remotes=${lkRoom?.remoteParticipants.size ?? 0}`
+    )
+    if (lkRoom) {
+      for (const p of lkRoom.remoteParticipants.values()) {
+        const pubs = [...p.trackPublications.values()].map(
+          (pub) => `${pub.kind}/${pub.source}/${pub.isSubscribed ? 'sub' : 'unsub'}`
+        )
+        console.log(`[cast] remote ${p.identity?.slice(0, 12)}… pubs=[${pubs.join(', ') || 'none'}]`)
+      }
+    }
+
+    const unbind = room.bindVideoToHost(host, (attached) => {
+      if (attached) this.sceneLandingView?.setCastLive(true)
+      onUpdate?.(attached)
+    }, opts)
+
+    return () => {
+      unbind()
+      room.disconnect()
+      if (this.castWatchRoom === room) this.castWatchRoom = null
+    }
   }
 
   private ensureSocialChatShell(): void {

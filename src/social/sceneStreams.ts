@@ -24,6 +24,8 @@ export type UserSceneStream = {
 export type JoinLiveOption =
   | { id: string; label: string; kind: 'user'; stream: UserSceneStream }
   | { id: 'custom-hls'; label: string; kind: 'custom'; m3u8Url: string }
+  /** LiveKit remote video present in the scene room (Cast / OBS ingress). */
+  | { id: 'cast-livekit'; label: string; kind: 'cast-live' }
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -147,6 +149,21 @@ function randomId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}_${Date.now().toString(36)}`
 }
 
+function removeWalletListingsForPointer(
+  rows: unknown[],
+  wallet: string,
+  pointer: string,
+  kind: SceneStreamKind
+): unknown[] {
+  return rows.filter((row) => {
+    const s = parseUserStreamRow(row)
+    if (!s) return true
+    if (s.wallet !== wallet) return true
+    if (s.kind !== kind) return true
+    return normalizePointer(s.pointer, s.kind) !== normalizePointer(pointer, kind)
+  })
+}
+
 export function registerUserM3u8Stream(input: {
   pointer: string
   kind: SceneStreamKind
@@ -163,14 +180,7 @@ export function registerUserM3u8Stream(input: {
   const kind = input.kind
   const raw = readJson<unknown[]>(KEY_SCENE_USER_STREAMS, [])
   const rows = Array.isArray(raw) ? [...raw] : []
-  // One active listing per wallet+pointer
-  const filtered = rows.filter((row) => {
-    const s = parseUserStreamRow(row)
-    if (!s) return true
-    if (s.wallet !== wallet) return true
-    if (s.kind !== kind) return true
-    return normalizePointer(s.pointer, s.kind) !== normalizePointer(pointer, kind)
-  })
+  const filtered = removeWalletListingsForPointer(rows, wallet, pointer, kind)
   const stream: UserSceneStream = {
     id: randomId('ustream'),
     wallet,
@@ -198,6 +208,82 @@ export function registerUserM3u8Stream(input: {
   })
   writeJson(KEY_SCENE_USER_STREAMS, filtered)
   return stream
+}
+
+/**
+ * “I’m live” Cast listing — points visitors at another world/parcel LiveKit (jump-in),
+ * same as companion bare realm / parcel go-live (not m3u8).
+ */
+export function registerUserCastStream(input: {
+  pointer: string
+  kind: SceneStreamKind
+  wallet: string
+  displayName?: string
+  castPointer: string
+}): UserSceneStream {
+  const castPointer = input.castPointer.trim()
+  if (!castPointer) {
+    throw new Error('Enter a world name (e.g. myworld.dcl.eth) or base parcel (0,0)')
+  }
+  if (/^https?:\/\//i.test(castPointer) && /\.m3u8(\?|#|$)/i.test(castPointer)) {
+    throw new Error('Use an .m3u8 URL with the HLS path, or a world/parcel for Cast')
+  }
+  const wallet = input.wallet.trim().toLowerCase()
+  const pointer = input.pointer.trim()
+  const kind = input.kind
+  const raw = readJson<unknown[]>(KEY_SCENE_USER_STREAMS, [])
+  const rows = Array.isArray(raw) ? [...raw] : []
+  const filtered = removeWalletListingsForPointer(rows, wallet, pointer, kind)
+  const stream: UserSceneStream = {
+    id: randomId('ustream'),
+    wallet,
+    displayName:
+      input.displayName?.trim() || `${wallet.slice(0, 6)}…${wallet.slice(-4)}`,
+    source: 'cast',
+    m3u8Url: null,
+    castPointer,
+    kind,
+    pointer,
+    updatedAtMs: Date.now()
+  }
+  filtered.unshift({
+    id: stream.id,
+    wallet,
+    walletAddress: wallet,
+    displayName: stream.displayName,
+    source: 'cast',
+    m3u8Url: null,
+    castPointer,
+    kind,
+    pointer,
+    updatedAtMs: stream.updatedAtMs,
+    updatedAt: new Date(stream.updatedAtMs).toISOString()
+  })
+  writeJson(KEY_SCENE_USER_STREAMS, filtered)
+  return stream
+}
+
+/** True if input looks like HLS; false for cast world/parcel. */
+export function isGoLiveM3u8Input(raw: string): boolean {
+  const t = raw.trim()
+  return /^https:\/\//i.test(t) && /\.m3u8(\?|#|$)/i.test(t)
+}
+
+export function isGoLiveCastPointerInput(raw: string): boolean {
+  const t = raw.trim()
+  if (!t || isGoLiveM3u8Input(t)) return false
+  if (/^-?\d{1,3},-?\d{1,3}$/.test(t.replace(/\s*,\s*/g, ','))) return true
+  // world name / realm label
+  if (/^[a-z0-9][a-z0-9.-]*$/i.test(t) && !/^https?:/i.test(t)) return true
+  try {
+    if (/^https?:\/\//i.test(t)) {
+      const u = new URL(t)
+      return Boolean(u.searchParams.get('realm') || u.pathname.replace(/^\//, '').length)
+    }
+  } catch {
+    /* */
+  }
+  return false
 }
 
 export function removeUserStream(streamId: string): void {
@@ -234,15 +320,7 @@ export function listJoinLiveOptions(pointer: string, kind: SceneStreamKind): Joi
       })
     }
   }
-  const custom = getCustomHlsUrl(pointer, kind)
-  if (custom) {
-    options.push({
-      id: 'custom-hls',
-      label: 'Owner saved m3u8',
-      kind: 'custom',
-      m3u8Url: custom
-    })
-  }
+  // Owner “custom HLS” overrides are not client-owned — video/HLS comes from scene deploy / I’m-live listings.
   return options
 }
 

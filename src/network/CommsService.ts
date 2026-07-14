@@ -24,6 +24,7 @@ import { ArchipelagoClient } from './comms/ArchipelagoClient'
 import { CommsInboundQueue } from './comms/CommsInboundQueue'
 import { CommsTopicService } from './comms/CommsTopicService'
 import { LiveKitCommsSession } from './comms/LiveKitCommsSession'
+import { clearCastVideoHost, reattachFirstRemoteVideoToHost } from './comms/livekitVideoStreams'
 import {
   parseCommsSceneOrigin,
   realmBoundsFromParcels,
@@ -543,9 +544,50 @@ export class CommsService {
         clientDebugLog.log('comms', `world-participants fetch failed: ${msg}`, { level: 'warn' })
       }
 
-      clientDebugLog.log('comms', 'Transport: LiveKit world room · RFC4 Movement + chat', {
-        level: 'success'
-      })
+      // Cast / OBS / livekit-video://current-stream publish into the **scene** LiveKit room
+      // (gatekeeper get-scene-adapter), not the world signed-login room. Companion scene-watch
+      // connects this room to count remote video and show Join live.
+      if (!sceneAdapter) {
+        clientDebugLog.log(
+          'comms',
+          `Gatekeeper scene adapter for world Cast · realm=${realmName} scene=${sceneId.slice(0, 12)}…`,
+          { level: 'info' }
+        )
+        const adapterResult = await getSceneAdapter(this.identity, {
+          sceneId,
+          parcel,
+          realmName,
+          isWorld: true
+        })
+        if (adapterResult.ok) sceneAdapter = adapterResult.adapter
+        else {
+          clientDebugLog.log(
+            'comms',
+            `World scene-room adapter unavailable (Cast detect limited): ${adapterResult.error}`,
+            { level: 'warn' }
+          )
+        }
+      }
+      if (sceneAdapter) {
+        this.realm.commsAdapter = sceneAdapter
+        const sceneOk = await this.sceneLiveKit.connect(sceneAdapter)
+        this.realm.isConnectedSceneRoom = sceneOk
+        if (sceneOk) {
+          clientDebugLog.log(
+            'comms',
+            'Transport: LiveKit world + scene rooms · chat on world, Cast/video on scene',
+            { level: 'success' }
+          )
+        } else {
+          clientDebugLog.log('comms', 'World scene LiveKit failed — chat still on world room', {
+            level: 'warn'
+          })
+        }
+      } else {
+        clientDebugLog.log('comms', 'Transport: LiveKit world room only · RFC4 Movement + chat', {
+          level: 'success'
+        })
+      }
       return { ok: true }
     }
 
@@ -789,17 +831,189 @@ export class CommsService {
     return { streams }
   }
 
+  /** Prefer scene room, then world, then island LiveKit sessions. */
+  private preferredLiveKitSession() {
+    if (this.sceneLiveKit.isConnected()) return this.sceneLiveKit
+    if (this.worldLiveKit.isConnected()) return this.worldLiveKit
+    if (this.islandLiveKit.isConnected()) return this.islandLiveKit
+    return null
+  }
+
+  private connectedLiveKitSessions() {
+    return [this.sceneLiveKit, this.worldLiveKit, this.islandLiveKit].filter((s) => s.isConnected())
+  }
+
   /** Bind `livekit-video://current-stream` to a scene VideoPlayer HTML element. */
   bindLiveKitVideoSource(video: HTMLVideoElement, onUpdate?: () => void): () => void {
-    const session = this.sceneLiveKit.isConnected()
-      ? this.sceneLiveKit
-      : this.worldLiveKit.isConnected()
-        ? this.worldLiveKit
-        : this.islandLiveKit.isConnected()
-          ? this.islandLiveKit
-          : null
+    // Cast/OBS lives on the scene room for worlds — prefer it for attach.
+    const session = this.preferredLiveKitSession()
     if (!session) return () => {}
     return session.bindCurrentVideoStream(video, onUpdate)
+  }
+
+  /**
+   * Companion Cast attach into a host element.
+   * Polls **all** connected rooms (scene + world) — Cast is on the scene room for worlds;
+   * binding only the first empty room used to show a permanent black screen.
+   */
+  bindRemoteCastVideoToHost(
+    host: HTMLElement,
+    onUpdate?: (attached: boolean) => void,
+    opts?: { muted?: boolean; volume?: number }
+  ): () => void {
+    const sessions = this.connectedLiveKitSessions()
+    if (sessions.length === 0) {
+      onUpdate?.(false)
+      console.log('[cast] bindRemoteCastVideoToHost: no LiveKit sessions')
+      return () => {}
+    }
+
+    for (const s of sessions) {
+      const room = s.getRoom()
+      if (room) void room.startAudio().catch(() => {})
+    }
+
+    let lastOk = false
+    let ticks = 0
+    const tryAll = (force = false): void => {
+      // Already showing video — only refresh audio props on same track (no remount).
+      if (lastOk && !force && host.querySelector('video') && host.dataset.castTrackSid) {
+        reattachFirstRemoteVideoToHost(sessions[0]?.getRoom() ?? null, host, {
+          muted: opts?.muted,
+          volume: opts?.volume,
+          controls: false
+        })
+        // Still try preferred rooms so SID can update if publisher switches
+        const orderedKeep = [...sessions].sort((a, b) => {
+          const aScene = a.getRoomName().includes('scene-room') ? 0 : 1
+          const bScene = b.getRoomName().includes('scene-room') ? 0 : 1
+          return aScene - bScene
+        })
+        for (const s of orderedKeep) {
+          const room = s.getRoom()
+          if (!room) continue
+          if (
+            reattachFirstRemoteVideoToHost(room, host, {
+              muted: opts?.muted,
+              volume: opts?.volume,
+              controls: false
+            })
+          ) {
+            return
+          }
+        }
+        return
+      }
+
+      ticks += 1
+      const ordered = [...sessions].sort((a, b) => {
+        const aScene = a.getRoomName().includes('scene-room') ? 0 : 1
+        const bScene = b.getRoomName().includes('scene-room') ? 0 : 1
+        if (aScene !== bScene) return aScene - bScene
+        const aLive = a.hasRemoteVideoLive() ? 0 : 1
+        const bLive = b.hasRemoteVideoLive() ? 0 : 1
+        return aLive - bLive
+      })
+
+      let attached = false
+      const diag: string[] = []
+      for (const s of ordered) {
+        const room = s.getRoom()
+        if (!room) continue
+        const snap = s.getRemoteVideoPresenceSnapshot()
+        diag.push(
+          `${s.getRoomName().slice(0, 40) || '?'} remotes=${snap.remoteParticipants} video=${snap.remoteVideoPubs}`
+        )
+        if (
+          reattachFirstRemoteVideoToHost(room, host, {
+            muted: opts?.muted,
+            volume: opts?.volume,
+            controls: false
+          })
+        ) {
+          attached = true
+          break
+        }
+      }
+
+      if (ticks <= 6 || attached !== lastOk) {
+        console.log(`[cast] attach tick=${ticks} ok=${attached} · ${diag.join(' | ') || 'no rooms'}`)
+      }
+      if (attached !== lastOk) {
+        lastOk = attached
+        onUpdate?.(attached)
+      }
+    }
+
+    const eventUnsubs: Array<() => void> = []
+    for (const s of sessions) {
+      eventUnsubs.push(s.watchRemoteVideoLive(() => tryAll(true)))
+    }
+
+    tryAll(true)
+    // Poll only while not attached (late RTMP publisher).
+    const poll = window.setInterval(() => {
+      if (!lastOk) tryAll(false)
+    }, 2000)
+
+    return () => {
+      window.clearInterval(poll)
+      for (const u of eventUnsubs) u()
+      clearCastVideoHost(host)
+    }
+  }
+
+  /** Any LiveKit room connected (world and/or scene). */
+  isLiveKitConnected(): boolean {
+    return this.connectedLiveKitSessions().length > 0
+  }
+
+  /** Cast/OBS live: remote (or non-camera local) video on any connected room. */
+  hasRemoteVideoLive(): boolean {
+    return this.connectedLiveKitSessions().some((s) => s.hasRemoteVideoLive())
+  }
+
+  /**
+   * Subscribe to Cast/OBS live presence on **all** connected rooms (OR).
+   * Worlds join both world (chat) + scene (Cast) rooms — only watching one misses tracks.
+   */
+  watchRemoteVideoLive(onChange: (live: boolean) => void): () => void {
+    const sessions = this.connectedLiveKitSessions()
+    if (sessions.length === 0) {
+      onChange(false)
+      return () => {}
+    }
+
+    const liveBySession = new Map<number, boolean>()
+    const unsubs: Array<() => void> = []
+
+    const emit = (): void => {
+      let any = false
+      for (const v of liveBySession.values()) {
+        if (v) {
+          any = true
+          break
+        }
+      }
+      onChange(any)
+    }
+
+    sessions.forEach((session, i) => {
+      liveBySession.set(i, false)
+      unsubs.push(
+        session.watchRemoteVideoLive((live) => {
+          liveBySession.set(i, live)
+          emit()
+        })
+      )
+    })
+
+    // Initial OR (each watch also emits start; this covers empty maps).
+    emit()
+
+    return () => {
+      for (const u of unsubs) u()
+    }
   }
 
   disconnect(): void {

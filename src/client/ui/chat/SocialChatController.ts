@@ -71,6 +71,38 @@ export class SocialChatController {
     return this.session.getLambdasUrl().replace(/\/lambdas$/, '')
   }
 
+  /** Active scene-room LiveKit Cast/OBS video presence. */
+  hasRemoteVideoLive(): boolean {
+    return this.comms.hasRemoteVideoLive()
+  }
+
+  /** True when world/scene LiveKit is up (Join live can be offered). */
+  isLiveKitConnected(): boolean {
+    return this.comms.isLiveKitConnected()
+  }
+
+  /**
+   * Watch for remote LiveKit video (Cast). Returns unsubscribe.
+   * Only works while connected to a scene room (wallet chat path).
+   */
+  watchRemoteVideoLive(onChange: (live: boolean) => void): () => void {
+    return this.comms.watchRemoteVideoLive(onChange)
+  }
+
+  /** Bind landing/player element to current Cast video track. */
+  bindLiveKitVideoSource(video: HTMLVideoElement, onUpdate?: () => void): () => void {
+    return this.comms.bindLiveKitVideoSource(video, onUpdate)
+  }
+
+  /** Companion-style Cast: attach best remote video into a host div. */
+  bindRemoteCastVideoToHost(
+    host: HTMLElement,
+    onUpdate?: (attached: boolean) => void,
+    opts?: { muted?: boolean; volume?: number }
+  ): () => void {
+    return this.comms.bindRemoteCastVideoToHost(host, onUpdate, opts)
+  }
+
   applyLogin(login: LoginResult | null): void {
     this.login = login
     this.session.applyLogin(login)

@@ -39,10 +39,10 @@ export async function getSceneAdapter(
   gatekeeperUrl = GATEKEEPER_URL
 ): Promise<GetSceneAdapterResult> {
   const url = `${gatekeeperUrl.replace(/\/$/, '')}/get-scene-adapter`
-  const requestBody = {
-    realmName: params.realmName,
-    sceneId: params.sceneId
-  }
+  /**
+   * Companion uses empty body `{}` + metadata { signer, sceneId, parcel, realmName }.
+   * Nested world realm metadata is for `/scene-stream-access` only.
+   */
   const metadata = {
     signer: 'decentraland-kernel-scene',
     sceneId: params.sceneId,
@@ -59,7 +59,7 @@ export async function getSceneAdapter(
         Accept: 'application/json',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify({}),
       identity,
       metadata
     })

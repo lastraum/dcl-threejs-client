@@ -14,17 +14,14 @@ import {
   type SceneLandingMeta
 } from '../../../social/sceneLanding'
 import {
-  getCustomHlsUrl,
   isHttpsM3u8,
   listJoinLiveOptions,
-  registerUserM3u8Stream,
-  removeUserStream,
   sceneStreamTargetFromRoute,
-  setCustomHlsUrl,
   type JoinLiveOption
 } from '../../../social/sceneStreams'
 import { EventModal } from '../events/EventModal'
 import { SocialShellTopNav, type SocialShellChromeHandlers, type SocialShellTab } from '../explore/SocialShellTopNav'
+import { SceneStreamSettingsModal } from './SceneStreamSettingsModal'
 import { SceneUsersModal } from './SceneUsersModal'
 import Hls from 'hls.js'
 
@@ -43,6 +40,15 @@ export type SceneLandingViewOptions = SocialShellChromeHandlers & {
   onEventJumpIn?: (target: RouteTarget, event: DclEvent) => void
   onEventViewScene?: (target: RouteTarget, event: DclEvent) => void
   onOpenUserProfile?: (address: string) => void
+  /**
+   * Companion-style Cast 2.0: connect watcher room + attach video into host.
+   * Returns cleanup. Required for “Join live → Cast”.
+   */
+  startCastWatch?: (
+    host: HTMLElement,
+    onUpdate?: (attached: boolean) => void,
+    opts?: { muted?: boolean; volume?: number }
+  ) => Promise<() => void>
 }
 
 function escapeHtml(value: string): string {
@@ -83,7 +89,23 @@ export class SceneLandingView {
   private progressStatusEl: HTMLElement | null = null
   private pendingBan: SceneLoadErrorMessage | null = null
   private hlsPlayer: Hls | null = null
+  private liveKitVideoCleanup: (() => void) | null = null
   private streamDocClickBound = false
+  private settingsModal: SceneStreamSettingsModal | null = null
+  /** Remote LiveKit video present (Cast/OBS) — from social chat scene room. */
+  private castLive = false
+  /** Scene/world LiveKit connected — show Join live even before video pubs appear. */
+  private castRoomReady = false
+  /** Companion streamPlaybackStarted — destination card swaps to full cast stage. */
+  private streamWatchActive = false
+  private castMuted = false
+  private castVolume = 1
+  /**
+   * Jump in / Sign in hidden until LiveKit connects or scene.json disables browser chat
+   * (or guest / terminal connect failure so the user is not stuck).
+   */
+  private jumpInUnlocked = false
+  private readonly startCastWatch: SceneLandingViewOptions['startCastWatch']
   private readonly onDocClick = (ev: MouseEvent): void => {
     if (!this.joinLiveMenuOpen) return
     const t = ev.target
@@ -97,6 +119,7 @@ export class SceneLandingView {
     this.onJumpIn = opts.onJumpIn
     this.onNavigate = opts.onNavigate
     this.getLoginLive = opts.getLogin ?? null
+    this.startCastWatch = opts.startCastWatch
     this.playSessionReady = opts.playSessionReady === true
     this.login = opts.getLogin?.() ?? opts.login
 
@@ -170,18 +193,65 @@ export class SceneLandingView {
   setPlaySessionReady(ready: boolean): void {
     this.playSessionReady = ready
     this.syncJumpInLabel()
+    this.syncJumpInVisibility()
     this.syncLoginFromHost()
+  }
+
+  /**
+   * Unlock Jump in / Sign in after landing LiveKit is up, or scene.json blocks chat,
+   * or connect finished as guest / non-recoverable without trapping the user.
+   */
+  setJumpInUnlocked(unlocked: boolean): void {
+    this.jumpInUnlocked = unlocked
+    this.syncJumpInVisibility()
+  }
+
+  /**
+   * Cast/OBS live flag from LiveKit remote video tracks (wallet scene-room connection).
+   * Updates LIVE badge + Join live menu.
+   */
+  setCastLive(live: boolean): void {
+    if (this.castLive === live) {
+      // Still refresh chrome — layout may have remounted while state was already true.
+      this.syncLiveBadge()
+      this.refreshJoinLiveOptions()
+      return
+    }
+    this.castLive = live
+    if (live) this.castRoomReady = true
+    this.syncLiveBadge()
+    this.refreshJoinLiveOptions()
+    if (!live && this.liveKitVideoCleanup) {
+      this.teardownStreamPlayer()
+    }
+  }
+
+  /** LiveKit room connected (pipeline ready) — offer Join live even if video pubs lag OBS. */
+  setCastRoomReady(ready: boolean): void {
+    if (this.castRoomReady === ready) {
+      this.refreshJoinLiveOptions()
+      return
+    }
+    this.castRoomReady = ready
+    this.refreshJoinLiveOptions()
   }
 
   dispose(): void {
     this.disposed = true
+    this.exitStreamWatchMode()
     this.teardownStreamPlayer()
+    this.settingsModal?.dispose()
+    this.settingsModal = null
     this.stopProgressAnimation()
     if (this.streamDocClickBound) {
       document.removeEventListener('click', this.onDocClick, true)
       this.streamDocClickBound = false
     }
-    document.body.classList.remove('scene-landing-route', 'scene-landing-jump-in-loading')
+    document.body.classList.remove(
+      'scene-landing-route',
+      'scene-landing-jump-in-loading',
+      'scene-landing-stream-watch'
+    )
     this.eventModal.dispose()
     this.sceneUsersModal.dispose()
     this.topNav.dispose()
@@ -422,12 +492,114 @@ export class SceneLandingView {
   private refreshJoinLiveOptions(): void {
     const { pointer, kind } = this.streamTarget()
     this.joinLiveOptions = listJoinLiveOptions(pointer, kind)
+    // Companion: offer Join live once Cast pipeline is ready; emphasize when video is actually live.
+    if (this.castLive || this.castRoomReady) {
+      this.joinLiveOptions = [
+        {
+          id: 'cast-livekit',
+          label: this.castLive ? 'LIVE · Cast' : 'Join live (Cast)',
+          kind: 'cast-live'
+        },
+        ...this.joinLiveOptions
+      ]
+    }
     this.renderJoinLiveMenu()
     this.syncJoinLiveVisibility()
+    this.syncLiveBadge()
+  }
+
+  private syncLiveBadge(): void {
+    const visual = this.root.querySelector('.scene-watch-dest-scene-card-visual')
+    if (visual) {
+      let host = visual.querySelector('.scene-watch-dest-scene-card-visual-badges') as HTMLElement | null
+      let badge = host?.querySelector('[data-cast-live-badge]') as HTMLElement | null
+      if (this.castLive) {
+        if (!host) {
+          host = document.createElement('div')
+          host.className = 'scene-watch-dest-scene-card-visual-badges'
+          visual.appendChild(host)
+        }
+        if (!badge) {
+          badge = document.createElement('span')
+          badge.className = 'scene-watch-cast-live-badge'
+          badge.dataset.castLiveBadge = ''
+          badge.setAttribute('role', 'status')
+          badge.textContent = 'LIVE'
+          host.prepend(badge)
+        }
+        badge.hidden = false
+      } else if (badge) {
+        badge.remove()
+        if (host && host.childElementCount === 0) host.remove()
+      }
+    }
+
+    // Watch-mode scene pill Live badge
+    const pillLive = this.root.querySelector(
+      '[data-cast-stage] .scene-watch-dest-scene-pill-live'
+    ) as HTMLElement | null
+    const pillTitleRow = this.root.querySelector(
+      '[data-cast-stage] .scene-watch-dest-scene-pill-title-row'
+    )
+    if (this.castLive) {
+      if (!pillLive && pillTitleRow) {
+        const el = document.createElement('span')
+        el.className = 'scene-watch-dest-scene-pill-live'
+        el.setAttribute('aria-label', 'Live now')
+        el.textContent = 'Live'
+        const title = pillTitleRow.querySelector('.scene-watch-dest-scene-pill-title')
+        if (title?.nextSibling) pillTitleRow.insertBefore(el, title.nextSibling)
+        else pillTitleRow.appendChild(el)
+      } else if (pillLive) {
+        pillLive.hidden = false
+      }
+    } else if (pillLive) {
+      pillLive.remove()
+    }
+  }
+
+  /** Companion scene-watch-dest-scene-pill above the cast video card. */
+  private buildStreamWatchPillHtml(): string {
+    const meta = this.meta
+    const title = meta?.title?.trim() || 'Scene'
+    const kindLabel = meta?.kind === 'world' ? 'World' : meta?.kind === 'parcel' ? 'Parcel' : 'Place'
+    const pointer = meta?.pointerLabel?.trim() || ''
+    const userCount = meta?.userCount ?? 0
+    const inWorldLabel = meta?.kind === 'world' ? 'in-world' : 'here'
+    const live =
+      this.castLive
+        ? `<span class="scene-watch-dest-scene-pill-live" aria-label="Live now">Live</span>`
+        : ''
+    const crowd =
+      userCount > 0
+        ? `<button type="button" class="scene-watch-dest-scene-pill-in-world" data-scene-crowd aria-label="${userCount} ${userCount === 1 ? 'user' : 'users'} ${inWorldLabel} — view list">${userCount} ${inWorldLabel}</button>`
+        : ''
+    const media = meta?.imageUrl
+      ? `<img src="${escapeHtml(meta.imageUrl)}" alt="" loading="lazy" decoding="async" />`
+      : `<div class="scene-watch-dest-scene-pill-media-fallback" aria-hidden></div>`
+    return `
+      <article class="scene-watch-dest-scene-pill" data-stream-watch-pill aria-label="Scene info">
+        <div class="scene-watch-dest-scene-pill-inner">
+          <div class="scene-watch-dest-scene-pill-media" aria-hidden>
+            ${media}
+          </div>
+          <div class="scene-watch-dest-scene-pill-copy">
+            <div class="scene-watch-dest-scene-pill-title-row">
+              <h2 class="scene-watch-dest-scene-pill-title">${escapeHtml(title)}</h2>
+              ${live}
+              ${crowd}
+            </div>
+            <p class="scene-watch-dest-scene-pill-kicker">
+              ${escapeHtml(kindLabel)}${pointer ? ` · <span>${escapeHtml(pointer)}</span>` : ''}
+            </p>
+          </div>
+        </div>
+      </article>
+    `
   }
 
   /**
-   * Apply Join live / I'm live / owner settings visibility from current login + meta.
+   * Apply Join live / owner settings visibility from current login + meta.
    * Safe to call before layout exists or before meta loads (no-ops missing nodes).
    */
   private refreshStreamChrome(): void {
@@ -440,7 +612,6 @@ export class SceneLandingView {
       }
     }
     this.syncOwnerSettingsVisibility()
-    this.syncGoLiveVisibility()
     if (!this.meta) return
     this.refreshJoinLiveOptions()
   }
@@ -452,32 +623,49 @@ export class SceneLandingView {
     }
     this.root.querySelector('[data-join-live-toggle]')?.addEventListener('click', (e) => {
       e.stopPropagation()
-      this.setJoinLiveMenuOpen(!this.joinLiveMenuOpen)
+      this.onJoinLiveToggleClick()
     })
     this.root.querySelector('[data-scene-settings]')?.addEventListener('click', () => {
       this.openSceneSettingsModal()
     })
-    this.root.querySelector('[data-go-live]')?.addEventListener('click', () => {
-      this.openGoLiveModal()
-    })
     this.syncOwnerSettingsVisibility()
-    this.syncGoLiveVisibility()
     this.renderJoinLiveMenu()
     this.syncJoinLiveVisibility()
+  }
+
+  /** One stream → play immediately; several → open dropdown. */
+  private onJoinLiveToggleClick(): void {
+    if (this.joinLiveOptions.length === 0) return
+    if (this.joinLiveOptions.length === 1) {
+      this.setJoinLiveMenuOpen(false)
+      void this.startJoinLive(this.joinLiveOptions[0]!.id)
+      return
+    }
+    this.setJoinLiveMenuOpen(!this.joinLiveMenuOpen)
   }
 
   private setJoinLiveMenuOpen(open: boolean): void {
     this.joinLiveMenuOpen = open
     const menu = this.root.querySelector('[data-join-live-menu]') as HTMLElement | null
     const btn = this.root.querySelector('[data-join-live-toggle]') as HTMLButtonElement | null
-    if (menu) menu.hidden = !open
-    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false')
+    const root = this.root.querySelector('[data-join-live-root]') as HTMLElement | null
+    if (menu) {
+      if (open && this.joinLiveOptions.length > 1) {
+        menu.hidden = false
+        menu.removeAttribute('hidden')
+      } else {
+        menu.hidden = true
+        menu.setAttribute('hidden', '')
+      }
+    }
+    if (btn) btn.setAttribute('aria-expanded', open && this.joinLiveOptions.length > 1 ? 'true' : 'false')
+    root?.classList.toggle('scene-watch-join-live-split--open', open && this.joinLiveOptions.length > 1)
   }
 
   private syncJoinLiveVisibility(): void {
     const root = this.root.querySelector('[data-join-live-root]') as HTMLElement | null
-    if (!root) return
-    root.hidden = this.joinLiveOptions.length === 0
+    // Use same force-show path as owner gear (removeAttribute) — `hidden` prop alone can stick in some layouts.
+    this.setControlVisible(root, this.joinLiveOptions.length > 0)
   }
 
   private setControlVisible(el: HTMLElement | null, show: boolean): void {
@@ -498,32 +686,65 @@ export class SceneLandingView {
     this.setControlVisible(btn, this.isSceneOwner())
   }
 
-  private syncGoLiveVisibility(): void {
-    const btn = this.root.querySelector('[data-go-live]') as HTMLButtonElement | null
-    // Wallet users can list an HLS stream for this place (companion “I'm live”).
-    this.setControlVisible(btn, this.sessionWallet() != null)
-  }
-
   private renderJoinLiveMenu(): void {
-    const menu = this.root.querySelector('[data-join-live-menu]')
+    const menu = this.root.querySelector('[data-join-live-menu]') as HTMLElement | null
+    const btn = this.root.querySelector('[data-join-live-toggle]') as HTMLButtonElement | null
+    const caret = this.root.querySelector('[data-join-live-caret]') as HTMLElement | null
+    const multi = this.joinLiveOptions.length > 1
+    const sole = this.joinLiveOptions.length === 1 ? this.joinLiveOptions[0] : null
+
+    if (btn) {
+      const labelEl = btn.querySelector('[data-join-live-label]')
+      const labelText = sole
+        ? sole.kind === 'cast-live'
+          ? this.castLive
+            ? 'LIVE · CAST'
+            : 'JOIN LIVE'
+          : sole.label.replace(/^Live:\s*/i, '').toUpperCase().slice(0, 18)
+        : multi
+          ? 'JOIN LIVE'
+          : 'JOIN LIVE'
+      if (labelEl) labelEl.textContent = labelText
+      else {
+        // Fallback if template missing label span
+        const caretHtml = caret?.outerHTML ?? ''
+        btn.innerHTML = `<span data-join-live-label>${escapeHtml(labelText)}</span>${multi ? caretHtml || '<span class="scene-watch-join-live-caret-glyph" data-join-live-caret aria-hidden>▾</span>' : ''}`
+      }
+      btn.classList.toggle('scene-watch-join-live-caret-in-btn--single', !multi)
+      btn.setAttribute('aria-haspopup', multi ? 'menu' : 'false')
+      btn.title = sole
+        ? sole.kind === 'cast-live'
+          ? 'Watch Cast / LiveKit stream'
+          : sole.label
+        : 'Choose a live stream'
+    }
+    if (caret) caret.hidden = !multi
+
     if (!menu) return
-    if (this.joinLiveOptions.length === 0) {
-      menu.innerHTML =
-        '<p class="scene-watch-join-live-empty">No live streams listed for this place yet.</p>'
+    // Keep menu closed unless multi-select and user opened it
+    if (!multi || !this.joinLiveMenuOpen) {
+      menu.hidden = true
+      menu.setAttribute('hidden', '')
+      menu.innerHTML = ''
       return
     }
+    menu.hidden = false
+    menu.removeAttribute('hidden')
     menu.innerHTML = this.joinLiveOptions
       .map((opt) => {
         const cast =
           opt.kind === 'user' && opt.stream.source === 'cast'
             ? ' data-cast="1"'
-            : ''
+            : opt.kind === 'cast-live'
+              ? ' data-cast="1"'
+              : ''
         return `<button type="button" role="menuitem" class="scene-watch-join-live-split-menu-item" data-join-live-id="${escapeHtml(opt.id)}"${cast}>${escapeHtml(opt.label)}</button>`
       })
       .join('')
-    menu.querySelectorAll<HTMLButtonElement>('[data-join-live-id]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = btn.dataset.joinLiveId
+    menu.querySelectorAll<HTMLButtonElement>('[data-join-live-id]').forEach((item) => {
+      item.addEventListener('click', (e) => {
+        e.stopPropagation()
+        const id = item.dataset.joinLiveId
         if (!id) return
         this.setJoinLiveMenuOpen(false)
         void this.startJoinLive(id)
@@ -534,9 +755,17 @@ export class SceneLandingView {
   private async startJoinLive(optionId: string): Promise<void> {
     const opt = this.joinLiveOptions.find((o) => o.id === optionId)
     if (!opt) return
+    if (opt.kind === 'cast-live') {
+      this.openLiveKitCastPlayer(opt.label)
+      return
+    }
     if (opt.kind === 'user' && opt.stream.source === 'cast') {
+      if (this.castLive) {
+        this.openLiveKitCastPlayer(`Live: ${opt.stream.displayName}`)
+        return
+      }
       this.showStreamNotice(
-        `Cast listing “${opt.stream.displayName}” uses LiveKit in-world video. Jump in to watch Cast, or open a saved HLS stream.`
+        `Cast listing “${opt.stream.displayName}” — no LiveKit video yet. Wait for the stream, or Jump in to the world.`
       )
       return
     }
@@ -565,35 +794,320 @@ export class SceneLandingView {
     window.setTimeout(() => el.remove(), 6000)
   }
 
+  private stopCastMediaElements(root: ParentNode | null = this.root): void {
+    root?.querySelectorAll('video, audio').forEach((node) => {
+      const media = node as HTMLMediaElement
+      try {
+        media.pause()
+        media.muted = true
+        media.volume = 0
+        media.removeAttribute('src')
+        media.srcObject = null
+        media.load()
+      } catch {
+        /* ignore */
+      }
+    })
+  }
+
   private teardownStreamPlayer(): void {
+    // Stop playback before unmount so audio cannot keep running after leave.
+    this.stopCastMediaElements(this.root.querySelector('[data-cast-stage]'))
+    this.stopCastMediaElements(this.root.querySelector('[data-stream-player]'))
     if (this.hlsPlayer) {
       this.hlsPlayer.destroy()
       this.hlsPlayer = null
     }
+    this.liveKitVideoCleanup?.()
+    this.liveKitVideoCleanup = null
     this.root.querySelector('[data-stream-player]')?.remove()
+    this.root.querySelector('[data-cast-stage]')?.remove()
+  }
+
+  /** Full leave of video mode (stop media). Close-button uses handleCastCloseClick instead. */
+  private exitStreamWatchMode(): void {
+    this.forceExitStreamWatchMode()
+  }
+
+  private isCastFullscreen(): boolean {
+    const doc = document as Document & { webkitFullscreenElement?: Element | null }
+    const active = document.fullscreenElement ?? doc.webkitFullscreenElement ?? null
+    if (!active) return false
+    const card = this.root.querySelector('.scene-watch-cast-stage__card')
+    return Boolean(card && (active === card || card.contains(active) || active.contains(card)))
+  }
+
+  private async exitCastFullscreenOnly(): Promise<void> {
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element | null
+      webkitExitFullscreen?: () => Promise<void>
+    }
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen()
+      else if (doc.webkitFullscreenElement) await doc.webkitExitFullscreen?.()
+    } catch (e) {
+      console.warn('[cast] exit fullscreen failed', e)
+    }
+    this.syncCastFullscreenButton()
+  }
+
+  private syncCastFullscreenButton(): void {
+    const fsBtn = this.root.querySelector('[data-cast-fs]') as HTMLButtonElement | null
+    const closeBtn = this.root.querySelector('[data-cast-close]') as HTMLButtonElement | null
+    const isFs = this.isCastFullscreen()
+    if (fsBtn) {
+      fsBtn.setAttribute('aria-label', isFs ? 'Exit fullscreen' : 'Fullscreen')
+      fsBtn.title = isFs ? 'Exit fullscreen' : 'Fullscreen'
+    }
+    // While fullscreen, X exits FS only (stays in video mode). Outside FS, X stops watch.
+    if (closeBtn) {
+      closeBtn.setAttribute(
+        'aria-label',
+        isFs ? 'Exit fullscreen' : 'Close video'
+      )
+      closeBtn.title = isFs ? 'Exit fullscreen' : 'Close video'
+    }
+  }
+
+  private readonly onCastFullscreenChange = (): void => {
+    if (!this.streamWatchActive) return
+    this.syncCastFullscreenButton()
+  }
+
+  /**
+   * Companion streamPlaybackStarted layout: replace destination card chrome with Cast stage.
+   * Scene info pill sits above the video card (companion scene-watch-dest-scene-pill).
+   */
+  private enterStreamWatchMode(title: string): HTMLElement | null {
+    this.teardownStreamPlayer()
+    this.streamWatchActive = true
+    document.body.classList.add('scene-landing-stream-watch')
+    this.root.classList.add('scene-landing-view--stream-watch')
+    document.removeEventListener('fullscreenchange', this.onCastFullscreenChange)
+    document.removeEventListener('webkitfullscreenchange', this.onCastFullscreenChange as EventListener)
+    document.addEventListener('fullscreenchange', this.onCastFullscreenChange)
+    document.addEventListener('webkitfullscreenchange', this.onCastFullscreenChange as EventListener)
+
+    const dest = this.root.querySelector('[data-dest-chrome]') as HTMLElement | null
+    if (dest) dest.hidden = true
+
+    const shell = this.root.querySelector('.scene-watch-dest-v2-shell') ?? this.mainEl
+    const stage = document.createElement('div')
+    stage.className = 'scene-watch-cast-stage'
+    stage.dataset.castStage = ''
+    stage.innerHTML = `
+      ${this.buildStreamWatchPillHtml()}
+      <div class="scene-watch-cast-stage__card">
+        <div class="scene-watch-cast-stage__toolbar">
+          <div class="scene-watch-cast-stage__toolbar-left">
+            <button type="button" class="scene-watch-cast-stage__icon-btn" data-cast-mute aria-label="Mute" title="Mute">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden>
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+              </svg>
+            </button>
+            <label class="scene-watch-cast-stage__vol">
+              <span>Vol</span>
+              <input type="range" min="0" max="100" value="100" data-cast-volume aria-label="Volume" />
+            </label>
+            <span class="scene-watch-cast-stage__title">${escapeHtml(title)}</span>
+          </div>
+          <div class="scene-watch-cast-stage__toolbar-right">
+            <button type="button" class="scene-watch-cast-stage__icon-btn" data-cast-fs aria-label="Fullscreen" title="Fullscreen">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden>
+                <path d="M8 3H5a2 2 0 0 0-2 2v3"/>
+                <path d="M21 8V5a2 2 0 0 0-2-2h-3"/>
+                <path d="M3 16v3a2 2 0 0 0 2 2h3"/>
+                <path d="M16 21h3a2 2 0 0 0 2-2v-3"/>
+              </svg>
+            </button>
+            <button type="button" class="scene-watch-cast-stage__icon-btn scene-watch-cast-stage__close" data-cast-close aria-label="Close video" title="Close video">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden>
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="scene-watch-cast-stage__player" data-cast-video-host>
+          <div class="scene-watch-cast-stage__waiting" data-cast-waiting>Connecting to Cast…</div>
+        </div>
+        <p class="scene-watch-cast-stage__hint" data-cast-hint hidden></p>
+      </div>
+    `
+    shell.appendChild(stage)
+
+    const pill = stage.querySelector('[data-stream-watch-pill]') as HTMLElement | null
+    if (pill && this.meta?.imageUrl) {
+      const url = this.meta.imageUrl
+      pill.style.backgroundImage =
+        `linear-gradient(90deg, rgba(12, 8, 20, 0.92) 0%, rgba(12, 8, 20, 0.78) 55%, rgba(12, 8, 20, 0.55) 100%), url(${JSON.stringify(url)})`
+    }
+    pill?.querySelector('[data-scene-crowd]')?.addEventListener('click', () => {
+      if (!this.meta || this.meta.userCount <= 0) return
+      this.sceneUsersModal.open(this.route, this.meta.title, this.meta.userCount)
+    })
+
+    const card = stage.querySelector('.scene-watch-cast-stage__card') as HTMLElement
+    stage.querySelector('[data-cast-close]')?.addEventListener('click', () => {
+      // Fullscreen: leave FS only → stay in video mode.
+      // Inline video: leave watch mode and hard-stop media.
+      void this.handleCastCloseClick()
+    })
+    stage.querySelector('[data-cast-fs]')?.addEventListener('click', () => {
+      void this.toggleCastFullscreen(card)
+    })
+    stage.querySelector('[data-cast-mute]')?.addEventListener('click', () => {
+      this.castMuted = !this.castMuted
+      this.applyCastAudioToHost()
+      const btn = stage.querySelector('[data-cast-mute]') as HTMLButtonElement
+      btn.setAttribute('aria-label', this.castMuted ? 'Unmute' : 'Mute')
+      btn.title = this.castMuted ? 'Unmute' : 'Mute'
+    })
+    stage.querySelector('[data-cast-volume]')?.addEventListener('input', (e) => {
+      const t = e.target as HTMLInputElement
+      this.castVolume = Math.min(1, Math.max(0, Number(t.value) / 100))
+      if (this.castVolume > 0) this.castMuted = false
+      this.applyCastAudioToHost()
+    })
+
+    this.syncCastFullscreenButton()
+    return stage.querySelector('[data-cast-video-host]') as HTMLElement
+  }
+
+  private async handleCastCloseClick(): Promise<void> {
+    if (this.isCastFullscreen()) {
+      await this.exitCastFullscreenOnly()
+      return
+    }
+    this.forceExitStreamWatchMode()
+  }
+
+  /** Leave watch mode and stop video/audio (used by close when not fullscreen). */
+  private forceExitStreamWatchMode(): void {
+    this.streamWatchActive = false
+    document.body.classList.remove('scene-landing-stream-watch')
+    this.root.classList.remove('scene-landing-view--stream-watch')
+    document.removeEventListener('fullscreenchange', this.onCastFullscreenChange)
+    document.removeEventListener('webkitfullscreenchange', this.onCastFullscreenChange as EventListener)
+    // Drop FS if still active so we don't leave a bare fullscreen shell.
+    if (this.isCastFullscreen()) {
+      void this.exitCastFullscreenOnly()
+    }
+    this.teardownStreamPlayer()
+    const dest = this.root.querySelector('[data-dest-chrome]') as HTMLElement | null
+    if (dest) dest.hidden = false
+  }
+
+  private async toggleCastFullscreen(card: HTMLElement): Promise<void> {
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element | null
+      webkitExitFullscreen?: () => Promise<void>
+    }
+    const el = card as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> }
+    const active = document.fullscreenElement ?? doc.webkitFullscreenElement
+    try {
+      if (active) {
+        if (document.exitFullscreen) await document.exitFullscreen()
+        else await doc.webkitExitFullscreen?.()
+      } else if (el.requestFullscreen) {
+        await el.requestFullscreen()
+      } else {
+        await el.webkitRequestFullscreen?.()
+      }
+    } catch (e) {
+      console.warn('[cast] fullscreen failed', e)
+    }
+    this.syncCastFullscreenButton()
+  }
+
+  private applyCastAudioToHost(): void {
+    const host = this.root.querySelector('[data-cast-video-host]')
+    host?.querySelectorAll('video').forEach((v) => {
+      v.muted = this.castMuted
+      v.volume = this.castMuted ? 0 : this.castVolume
+    })
+  }
+
+  private openLiveKitCastPlayer(title: string): void {
+    if (!this.startCastWatch) {
+      this.showStreamNotice('Cast watch is not available on this session.')
+      return
+    }
+    const host = this.enterStreamWatchMode(title)
+    if (!host) return
+    const waiting = this.root.querySelector('[data-cast-waiting]') as HTMLElement | null
+    const hint = this.root.querySelector('[data-cast-hint]') as HTMLElement | null
+    if (waiting) {
+      waiting.hidden = false
+      waiting.textContent = 'Joining scene LiveKit (stream keys)…'
+    }
+
+    void this.startCastWatch(
+      host,
+      (attached) => {
+        if (waiting) waiting.hidden = attached
+        if (attached) {
+          if (hint) hint.hidden = true
+          this.applyCastAudioToHost()
+          this.setCastLive(true)
+        }
+      },
+      { muted: this.castMuted, volume: this.castVolume }
+    ).then((cleanup) => {
+      if (this.disposed || !this.streamWatchActive) {
+        cleanup()
+        return
+      }
+      this.liveKitVideoCleanup = cleanup
+    }).catch((e) => {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (waiting) waiting.hidden = true
+      if (hint) {
+        hint.hidden = false
+        hint.textContent = msg
+      }
+      console.warn('[cast] startCastWatch failed', msg)
+    })
+
+    let waitTicks = 0
+    const waitTimer = window.setInterval(() => {
+      if (this.disposed || !this.streamWatchActive) {
+        window.clearInterval(waitTimer)
+        return
+      }
+      if (host.querySelector('video')) {
+        window.clearInterval(waitTimer)
+        if (waiting) waiting.hidden = true
+        if (hint) hint.hidden = true
+        return
+      }
+      waitTicks += 1
+      if (waiting) {
+        waiting.textContent =
+          waitTicks < 4
+            ? 'Waiting for OBS video in scene room…'
+            : 'No remote publisher yet — re-mint stream key & restart OBS'
+      }
+      if (waitTicks >= 5 && hint) {
+        hint.hidden = false
+        hint.textContent =
+          'Stream keys go to the scene LiveKit room (not Cast 2.0). If console shows remotes=0, OBS is not in this room — Get stream access again on this world, paste into OBS, go live, then Join live.'
+      }
+    }, 1500)
   }
 
   private openStreamPlayer(m3u8Url: string, title: string): void {
-    this.teardownStreamPlayer()
-    const wrap = document.createElement('div')
-    wrap.className = 'scene-watch-stream-player'
-    wrap.dataset.streamPlayer = ''
-    wrap.innerHTML = `
-      <div class="scene-watch-stream-player__bar">
-        <span class="scene-watch-stream-player__title">${escapeHtml(title)}</span>
-        <button type="button" class="scene-watch-stream-player__close" data-stream-close aria-label="Close stream">Close</button>
-      </div>
-      <video class="scene-watch-stream-player__video" controls playsinline autoplay></video>
-      <p class="scene-watch-stream-player__hint" data-stream-hint hidden></p>
-    `
-    const card = this.root.querySelector('.scene-watch-dest-scene-card')
-    if (card) card.appendChild(wrap)
-    else this.mainEl.appendChild(wrap)
-
-    wrap.querySelector('[data-stream-close]')?.addEventListener('click', () => this.teardownStreamPlayer())
-    const video = wrap.querySelector('video')
-    const hint = wrap.querySelector('[data-stream-hint]') as HTMLElement | null
-    if (!(video instanceof HTMLVideoElement)) return
+    const host = this.enterStreamWatchMode(title)
+    if (!host) return
+    const waiting = this.root.querySelector('[data-cast-waiting]') as HTMLElement | null
+    const hint = this.root.querySelector('[data-cast-hint]') as HTMLElement | null
+    const video = document.createElement('video')
+    video.className = 'scene-watch-cast-stage__video'
+    video.controls = true
+    video.playsInline = true
+    video.autoplay = true
+    host.replaceChildren(video)
+    if (waiting) waiting.hidden = true
 
     if (Hls.isSupported()) {
       const hls = new Hls({ enableWorker: true })
@@ -612,131 +1126,40 @@ export class SceneLandingView {
       hint.hidden = false
       hint.textContent = 'HLS playback is not supported in this browser.'
     }
-    void video.play().catch(() => {
-      /* autoplay may be blocked until gesture — controls remain */
-    })
+    void video.play().catch(() => {})
   }
 
   private openSceneSettingsModal(): void {
     if (!this.isSceneOwner()) return
-    const { pointer, kind } = this.streamTarget()
-    const current = getCustomHlsUrl(pointer, kind) ?? ''
-    this.teardownStreamPlayer()
-    const existing = this.root.querySelector('[data-scene-settings-modal]')
-    existing?.remove()
-    const backdrop = document.createElement('div')
-    backdrop.className = 'scene-watch-settings-modal-backdrop'
-    backdrop.dataset.sceneSettingsModal = ''
-    backdrop.innerHTML = `
-      <div class="scene-watch-settings-modal" role="dialog" aria-modal="true" aria-label="Scene and stream settings">
-        <h3 class="scene-watch-settings-modal-title">Scene &amp; stream settings</h3>
-        <p class="scene-watch-settings-modal-text">
-          Owner-only: set a custom HTTPS HLS (.m3u8) URL for visitors on this landing page (Join live menu).
-        </p>
-        <label class="scene-watch-settings-modal-label" for="scene-custom-hls-input">Custom playback (HLS)</label>
-        <input id="scene-custom-hls-input" class="scene-watch-settings-modal-input" type="url"
-          placeholder="https://…/stream.m3u8" value="${escapeHtml(current)}" autocomplete="off" />
-        <p class="scene-watch-settings-modal-error" data-settings-error hidden></p>
-        <div class="scene-watch-settings-modal-actions">
-          <button type="button" class="scene-watch-dest-btn scene-watch-dest-btn--secondary" data-settings-clear>Clear</button>
-          <button type="button" class="scene-watch-dest-btn scene-watch-dest-btn--secondary" data-settings-close>Close</button>
-          <button type="button" class="scene-watch-dest-btn" data-settings-save>Save</button>
-        </div>
-      </div>
-    `
-    this.root.appendChild(backdrop)
-    const input = backdrop.querySelector('#scene-custom-hls-input') as HTMLInputElement
-    const errEl = backdrop.querySelector('[data-settings-error]') as HTMLElement
-    const close = (): void => backdrop.remove()
-    backdrop.addEventListener('click', (e) => {
-      if (e.target === backdrop) close()
-    })
-    backdrop.querySelector('[data-settings-close]')?.addEventListener('click', close)
-    backdrop.querySelector('[data-settings-clear]')?.addEventListener('click', () => {
-      setCustomHlsUrl(pointer, kind, '')
-      this.refreshJoinLiveOptions()
-      close()
-    })
-    backdrop.querySelector('[data-settings-save]')?.addEventListener('click', () => {
-      const url = input.value.trim()
-      if (url && !isHttpsM3u8(url)) {
-        errEl.hidden = false
-        errEl.textContent = 'Enter a full HTTPS .m3u8 URL, or clear the field.'
-        return
-      }
-      setCustomHlsUrl(pointer, kind, url)
-      this.refreshJoinLiveOptions()
-      close()
-    })
-  }
-
-  private openGoLiveModal(): void {
-    const wallet = this.sessionWallet()
-    if (!wallet) {
-      this.showStreamNotice('Sign in with a wallet to list a live stream for this place.')
+    const login = this.currentLogin()
+    if (login.kind !== 'wallet') {
+      this.showStreamNotice('Sign in with a wallet to manage stream settings.')
       return
     }
+    const wallet = this.sessionWallet()
+    if (!wallet) return
+    this.teardownStreamPlayer()
+    this.settingsModal?.dispose()
     const { pointer, kind } = this.streamTarget()
-    const existing = this.root.querySelector('[data-go-live-modal]')
-    existing?.remove()
-    const backdrop = document.createElement('div')
-    backdrop.className = 'scene-watch-settings-modal-backdrop'
-    backdrop.dataset.goLiveModal = ''
-    backdrop.innerHTML = `
-      <div class="scene-watch-settings-modal" role="dialog" aria-modal="true" aria-label="I'm live">
-        <h3 class="scene-watch-settings-modal-title">I&apos;m live</h3>
-        <p class="scene-watch-settings-modal-text">
-          List an HTTPS .m3u8 stream for visitors on this place. They pick it from <strong>Join live</strong>.
-        </p>
-        <label class="scene-watch-settings-modal-label" for="go-live-m3u8-input">Stream URL</label>
-        <input id="go-live-m3u8-input" class="scene-watch-settings-modal-input" type="url"
-          placeholder="https://…/stream.m3u8" autocomplete="off" />
-        <p class="scene-watch-settings-modal-error" data-go-live-error hidden></p>
-        <div class="scene-watch-settings-modal-actions">
-          <button type="button" class="scene-watch-dest-btn scene-watch-dest-btn--secondary" data-go-live-remove>Remove mine</button>
-          <button type="button" class="scene-watch-dest-btn scene-watch-dest-btn--secondary" data-go-live-close>Close</button>
-          <button type="button" class="scene-watch-dest-btn" data-go-live-save>Go live</button>
-        </div>
-      </div>
-    `
-    this.root.appendChild(backdrop)
-    const input = backdrop.querySelector('#go-live-m3u8-input') as HTMLInputElement
-    const errEl = backdrop.querySelector('[data-go-live-error]') as HTMLElement
-    const close = (): void => backdrop.remove()
-    backdrop.addEventListener('click', (e) => {
-      if (e.target === backdrop) close()
-    })
-    backdrop.querySelector('[data-go-live-close]')?.addEventListener('click', close)
-    backdrop.querySelector('[data-go-live-remove]')?.addEventListener('click', () => {
-      for (const opt of this.joinLiveOptions) {
-        if (opt.kind === 'user' && opt.stream.wallet === wallet) {
-          removeUserStream(opt.stream.id)
-        }
-      }
-      this.refreshJoinLiveOptions()
-      close()
-    })
-    backdrop.querySelector('[data-go-live-save]')?.addEventListener('click', () => {
-      try {
-        registerUserM3u8Stream({
-          pointer,
-          kind,
-          wallet,
-          m3u8Url: input.value
-        })
-        this.refreshJoinLiveOptions()
-        close()
-      } catch (e) {
-        errEl.hidden = false
-        errEl.textContent = e instanceof Error ? e.message : 'Could not register stream.'
+    this.settingsModal = new SceneStreamSettingsModal({
+      route: this.route,
+      pointer,
+      kind,
+      wallet,
+      identity: login.identity,
+      onChanged: () => this.refreshStreamChrome(),
+      onClose: () => {
+        this.settingsModal = null
       }
     })
+    this.settingsModal.mount(this.root)
   }
 
   private bindJumpIn(): void {
     this.syncJumpInLabel()
+    this.syncJumpInVisibility()
     this.root.querySelector('[data-jump-in]')?.addEventListener('click', () => {
-      if (this.jumpInLoading) return
+      if (this.jumpInLoading || !this.jumpInUnlocked) return
       this.onJumpIn()
     })
   }
@@ -751,6 +1174,11 @@ export class SceneLandingView {
         ? 'Enter the scene'
         : 'Sign in with wallet or continue as guest to enter'
     }
+  }
+
+  private syncJumpInVisibility(): void {
+    const btn = this.root.querySelector('[data-jump-in]') as HTMLButtonElement | null
+    this.setControlVisible(btn, this.jumpInUnlocked)
   }
 
   private bindCrowdBadge(): void {
@@ -860,6 +1288,9 @@ export class SceneLandingView {
     const kindLabel = meta.kind === 'world' ? 'World' : 'Parcel'
     const creatorLabel = meta.kind === 'world' ? 'World owner' : 'Creator'
     const inWorldLabel = meta.kind === 'world' ? 'in world' : 'here'
+    const liveBadge = this.castLive
+      ? `<span class="scene-watch-cast-live-badge" data-cast-live-badge role="status">LIVE</span>`
+      : ''
     const crowdBadge =
       meta.userCount > 0
         ? `<button type="button" class="scene-watch-dest-scene-card-in-world" data-scene-crowd aria-label="${meta.userCount} people ${inWorldLabel} — view list">${meta.userCount} ${inWorldLabel}</button>`
@@ -886,6 +1317,7 @@ export class SceneLandingView {
                 <div class="scene-watch-dest-v2-center-track">
                   <div class="scene-watch-dest-v2-shell">
                     <div class="scene-watch-dest-v2-main">
+                      <div data-dest-chrome>
                       <article class="scene-watch-dest-scene-card">
                         <div class="scene-watch-dest-scene-card-visual">
                           ${
@@ -894,8 +1326,8 @@ export class SceneLandingView {
                               : '<div class="scene-watch-dest-scene-card-visual-fallback" aria-hidden></div>'
                           }
                           ${
-                            crowdBadge
-                              ? `<div class="scene-watch-dest-scene-card-visual-badges">${crowdBadge}</div>`
+                            liveBadge || crowdBadge
+                              ? `<div class="scene-watch-dest-scene-card-visual-badges">${liveBadge}${crowdBadge}</div>`
                               : ''
                           }
                         </div>
@@ -935,34 +1367,27 @@ export class SceneLandingView {
                           ${categories ? `<div class="scene-watch-dest-scene-card-badges" aria-label="Categories">${categories}</div>` : ''}
                           <div class="scene-watch-dest-scene-card-actions">
                             <div class="scene-watch-dest-scene-card-cta-row">
-                              <div class="scene-watch-join-live-split" data-join-live-root hidden>
+                              <div class="scene-watch-join-live-split" data-join-live-root ${this.castLive || this.castRoomReady || this.joinLiveOptions.length > 0 ? '' : 'hidden'}>
                                 <button
                                   type="button"
-                                  class="scene-watch-dest-btn scene-watch-dest-btn--secondary scene-watch-dest-btn--watch-live-cta scene-watch-join-live-caret-in-btn"
+                                  class="scene-watch-dest-btn scene-watch-dest-btn--secondary scene-watch-dest-btn--watch-live-cta scene-watch-join-live-caret-in-btn scene-watch-join-live-caret-in-btn--single"
                                   data-join-live-toggle
-                                  aria-haspopup="menu"
+                                  aria-haspopup="false"
                                   aria-expanded="false"
+                                  title="Watch Cast / live stream"
                                 >
-                                  Join live
-                                  <span class="scene-watch-join-live-caret-glyph" aria-hidden>▾</span>
+                                  <span data-join-live-label>JOIN LIVE</span>
+                                  <span class="scene-watch-join-live-caret-glyph" data-join-live-caret aria-hidden hidden>▾</span>
                                 </button>
                                 <div class="scene-watch-join-live-split-menu" data-join-live-menu role="menu" hidden></div>
                               </div>
-                              <button type="button" class="scene-watch-dest-jump-in-bar" data-jump-in>
+                              <button type="button" class="scene-watch-dest-jump-in-bar" data-jump-in ${this.jumpInUnlocked ? '' : 'hidden'} aria-busy="${this.jumpInUnlocked ? 'false' : 'true'}">
                                 <span class="scene-watch-dest-jump-in-bar-label">${this.playSessionReady ? 'Jump in' : 'Sign in'}</span>
                                 <span class="scene-watch-dest-jump-in-arrow-box" aria-hidden>
                                   <svg class="scene-watch-dest-jump-in-arrow-svg" viewBox="0 0 24 24" width="14" height="14" fill="none">
                                     <path d="M5 12h12M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                                   </svg>
                                 </span>
-                              </button>
-                              <button
-                                type="button"
-                                class="scene-watch-dest-btn scene-watch-dest-btn--secondary"
-                                data-go-live
-                                hidden
-                              >
-                                I&apos;m live
                               </button>
                             </div>
                           </div>
@@ -976,6 +1401,7 @@ export class SceneLandingView {
                       >
                         ${this.renderEventsBannerInner([], true)}
                       </article>
+                      </div>
                     </div>
                   </div>
                 </div>

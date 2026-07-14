@@ -17,11 +17,11 @@ jobs:
       # Always update CLAIMS on the integration branch. PR heads (esp. forks) may not
       # exist on this repo after merge/close — committing there fails with
       # "fatal: invalid reference: <pr-branch>".
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: dev-latest
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
           cache: npm

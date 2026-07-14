@@ -12,15 +12,20 @@ import {
 } from './dclEvents'
 import {
   fetchDclGenesisPlaceAtPosition,
+  fetchDclPlacesWorlds,
   fetchDclWorldsWithNameFallback,
   formatOwnerShort,
   placeOwnerAddress,
   resolveParcelBasePosition,
+  worldNameSearchCandidates,
   type DclPlacesWorld
 } from './dclPlaces'
 import { fetchPublicSceneTitle } from './sceneDisplayTitle'
 
 const WORLDS = 'https://worlds-content-server.decentraland.org'
+const CATALYST_LAMBDAS =
+  (import.meta.env.VITE_CATALYST_LAMBDAS_URL as string | undefined)?.trim().replace(/\/$/, '') ||
+  'https://peer.decentraland.org/lambdas'
 
 export type SceneLandingMeta = {
   title: string
@@ -34,6 +39,43 @@ export type SceneLandingMeta = {
   ownerAddresses: string[]
   ownerDisplayName: string
   categories: string[]
+}
+
+/** ENS label for a world pointer: `rickroll.dcl.eth` → `rickroll`. */
+export function worldNameLabelFromPointer(worldName: string): string {
+  const n = worldName.trim().toLowerCase()
+  if (n.endsWith('.dcl.eth')) return n.slice(0, -'.dcl.eth'.length)
+  return n
+}
+
+/**
+ * True when `wallet` owns the DCL NAME NFT for this world (authoritative for world-name owners).
+ * Places `owner` is usually the same, but name ownership is what “I own this world name” means.
+ */
+export async function walletOwnsWorldName(
+  walletAddress: string,
+  worldName: string
+): Promise<boolean> {
+  const wallet = walletAddress.trim().toLowerCase()
+  if (!/^0x[a-f0-9]{40}$/.test(wallet)) return false
+  const label = worldNameLabelFromPointer(worldName)
+  if (!label) return false
+  try {
+    const res = await fetch(`${CATALYST_LAMBDAS}/users/${encodeURIComponent(wallet)}/names`, {
+      headers: { Accept: 'application/json' }
+    })
+    if (!res.ok) return false
+    const body = (await res.json()) as { elements?: unknown }
+    const elements = Array.isArray(body.elements) ? body.elements : []
+    for (const row of elements) {
+      if (!row || typeof row !== 'object') continue
+      const name = (row as { name?: unknown }).name
+      if (typeof name === 'string' && name.trim().toLowerCase() === label) return true
+    }
+    return false
+  } catch {
+    return false
+  }
 }
 
 function collectOwnerAddresses(
@@ -204,15 +246,35 @@ export async function fetchSceneLandingMeta(
     }
   }
 
-  const worlds = await fetchDclWorldsWithNameFallback({
-    search: route.worldName,
-    limit: 8,
-    orderBy: 'most_active'
-  }).catch(() => [] as DclPlacesWorld[])
+  // Prefer exact `names=` match so Places owner wallet is reliable for world-name owners.
+  const nameCandidates = worldNameSearchCandidates(route.worldName)
+  const [byName, bySearch] = await Promise.all([
+    nameCandidates.length
+      ? fetchDclPlacesWorlds({
+          names: nameCandidates,
+          limit: 8,
+          orderBy: 'most_active'
+        }).catch(() => [] as DclPlacesWorld[])
+      : Promise.resolve([] as DclPlacesWorld[]),
+    fetchDclWorldsWithNameFallback({
+      search: route.worldName,
+      limit: 8,
+      orderBy: 'most_active'
+    }).catch(() => [] as DclPlacesWorld[])
+  ])
+  const worlds = [...byName]
+  for (const w of bySearch) {
+    if (!worlds.some((x) => x.id === w.id || x.worldName.toLowerCase() === w.worldName.toLowerCase())) {
+      worlds.push(w)
+    }
+  }
 
   const needle = route.worldName.toLowerCase()
+  const needleShort = worldNameLabelFromPointer(route.worldName)
   const world =
     worlds.find((w) => w.worldName.toLowerCase() === needle) ??
+    worlds.find((w) => w.worldName.toLowerCase() === `${needleShort}.dcl.eth`) ??
+    worlds.find((w) => w.worldName.toLowerCase() === needleShort) ??
     worlds.find((w) => w.id.toLowerCase() === needle) ??
     worlds[0]
 

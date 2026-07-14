@@ -124,7 +124,8 @@ void main() {
   float sunNdl = clamp(dot(n, normalize(uSunDir)), 0.0, 1.0);
   float moonNdl = clamp(dot(n, normalize(uMoonDir)), 0.0, 1.0);
   float direct = sunNdl * uSunWeight + moonNdl * uMoonWeight;
-  vec3 lit = albedo * (uAmbient + vec3(0.55) * direct);
+  // Ambient is fully outdoor-driven (no midday floor) — celestials-off / night go dark (#21).
+  vec3 lit = albedo * (uAmbient + vec3(0.72) * direct);
   gl_FragColor = vec4(lit, 1.0);
 }
 `
@@ -167,7 +168,7 @@ export class IslandShoreMaterial {
       depthWrite: true,
       side: THREE.FrontSide
     })
-    this.material.customProgramCacheKey = () => 'island-shore-proc-v4'
+    this.material.customProgramCacheKey = () => 'island-shore-proc-v5'
   }
 
   /** @param centerThree Island centre in Three.js world space (matches shore mesh vertices). */
@@ -191,11 +192,16 @@ export class IslandShoreMaterial {
     ;(this.uniforms.uMoonDir!.value as THREE.Vector3).copy(lighting.moonDir)
 
     const sunStr = THREE.MathUtils.clamp(lighting.sunLight.length() / 2.0, 0, 1)
-    const moonStr = THREE.MathUtils.clamp(lighting.moonLight.length() / 0.5, 0, 1)
-    this.uniforms.uSunWeight!.value = 0.55 * sunStr
-    this.uniforms.uMoonWeight!.value = 0.38 * moonStr
+    const moonStr = THREE.MathUtils.clamp(lighting.moonLight.length() / 0.45, 0, 1)
+    this.uniforms.uSunWeight!.value = 0.9 * sunStr
+    this.uniforms.uMoonWeight!.value = 0.55 * moonStr
 
+    // No permanent midday ambient floor — that kept beaches half-lit at midnight and
+    // full-bright with disableSun/disableMoon while avatars went black (#21).
+    // Night hemi is still strong for MeshStandard avatars; bias shore ambient by key light.
+    const key = Math.max(sunStr, moonStr)
+    const ambScale = THREE.MathUtils.lerp(0.12, 1.0, THREE.MathUtils.smoothstep(0.02, 0.55, key))
     const ambient = this.uniforms.uAmbient!.value as THREE.Vector3
-    ambient.copy(ISLAND_SHORE_BASE_AMBIENT).lerp(lighting.ambient, (1 - sunStr) * 0.7)
+    ambient.copy(lighting.ambient).multiplyScalar(ambScale)
   }
 }

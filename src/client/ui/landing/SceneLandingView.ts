@@ -139,6 +139,7 @@ export class SceneLandingView {
   setLogin(login: LoginResult): void {
     this.login = login
     this.topNav.setLogin(login)
+    // Re-evaluate owner gear / I'm live after sign-in (layout may already be mounted).
     this.refreshStreamChrome()
   }
 
@@ -146,6 +147,8 @@ export class SceneLandingView {
   setPlaySessionReady(ready: boolean): void {
     this.playSessionReady = ready
     this.syncJumpInLabel()
+    // Auth panel often completes with setPlaySessionReady; re-check owner chrome too.
+    this.refreshStreamChrome()
   }
 
   dispose(): void {
@@ -345,6 +348,8 @@ export class SceneLandingView {
       }
       this.bindCrowdBadge()
       this.bindStreamChrome()
+      // Login may have completed while meta was loading — re-apply owner gear / I'm live.
+      this.refreshStreamChrome()
       void this.hydrateOwnerAvatar()
       void this.loadRelatedEvents()
     } catch {
@@ -360,13 +365,19 @@ export class SceneLandingView {
 
   private sessionWallet(): string | null {
     if (this.login.kind !== 'wallet') return null
-    return this.login.address.trim().toLowerCase()
+    const a = this.login.address.trim().toLowerCase()
+    return /^0x[a-f0-9]{40}$/.test(a) ? a : null
   }
 
   private isSceneOwner(): boolean {
     const wallet = this.sessionWallet()
-    const owner = this.meta?.ownerAddress?.trim().toLowerCase()
-    return Boolean(wallet && owner && wallet === owner)
+    if (!wallet || !this.meta) return false
+    const owners = this.meta.ownerAddresses?.length
+      ? this.meta.ownerAddresses
+      : this.meta.ownerAddress
+        ? [this.meta.ownerAddress]
+        : []
+    return owners.some((o) => o.trim().toLowerCase() === wallet)
   }
 
   private refreshJoinLiveOptions(): void {
@@ -376,10 +387,14 @@ export class SceneLandingView {
     this.syncJoinLiveVisibility()
   }
 
+  /**
+   * Apply Join live / I'm live / owner settings visibility from current login + meta.
+   * Safe to call before layout exists or before meta loads (no-ops missing nodes).
+   */
   private refreshStreamChrome(): void {
-    if (!this.meta) return
     this.syncOwnerSettingsVisibility()
     this.syncGoLiveVisibility()
+    if (!this.meta) return
     this.refreshJoinLiveOptions()
   }
 
@@ -419,15 +434,19 @@ export class SceneLandingView {
   }
 
   private syncOwnerSettingsVisibility(): void {
-    const btn = this.root.querySelector('[data-scene-settings]') as HTMLElement | null
-    if (btn) btn.hidden = !this.isSceneOwner()
+    const btn = this.root.querySelector('[data-scene-settings]') as HTMLButtonElement | null
+    if (!btn) return
+    const show = this.isSceneOwner()
+    btn.hidden = !show
+    btn.setAttribute('aria-hidden', show ? 'false' : 'true')
   }
 
   private syncGoLiveVisibility(): void {
-    const btn = this.root.querySelector('[data-go-live]') as HTMLElement | null
+    const btn = this.root.querySelector('[data-go-live]') as HTMLButtonElement | null
     if (!btn) return
     // Wallet users can list an HLS stream for this place (companion “I'm live”).
-    btn.hidden = this.sessionWallet() == null
+    const show = this.sessionWallet() != null
+    btn.hidden = !show
   }
 
   private renderJoinLiveMenu(): void {

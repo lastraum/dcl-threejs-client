@@ -280,7 +280,9 @@ export class AppController {
         recordLoginEvent(login)
         this.socialMobileNotifications?.setLogin(login)
         this.applyLoginToSocialShellViews(login)
+        // setLogin already refreshes owner gear; keep Jump-in CTA in sync for guests→wallet.
         this.sceneLandingView?.setPlaySessionReady(true)
+        this.sceneLandingView?.setLogin(login)
         if (login.kind === 'wallet') {
           if (
             this.appMode === 'landing' &&
@@ -1335,6 +1337,7 @@ export class AppController {
     }
     this.applyLoginToSocialShellViews(this.login)
     this.sceneLandingView?.setPlaySessionReady(false)
+    this.sceneLandingView?.setLogin(this.login)
     this.socialChat?.signOut()
     this.teardownSocialChatShell(true)
   }

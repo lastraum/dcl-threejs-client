@@ -30,8 +30,24 @@ export type SceneLandingMeta = {
   kind: 'parcel' | 'world'
   userCount: number
   ownerAddress: string | null
+  /** All known owner wallets (Places owner + creator, lowercased) for settings-gear checks. */
+  ownerAddresses: string[]
   ownerDisplayName: string
   categories: string[]
+}
+
+function collectOwnerAddresses(
+  ...candidates: Array<string | null | undefined>
+): { primary: string | null; all: string[] } {
+  const all: string[] = []
+  const seen = new Set<string>()
+  for (const raw of candidates) {
+    const a = raw?.trim().toLowerCase()
+    if (!a || !/^0x[a-f0-9]{40}$/.test(a) || seen.has(a)) continue
+    seen.add(a)
+    all.push(a)
+  }
+  return { primary: all[0] ?? null, all }
 }
 
 async function ownerDisplayName(address: string | null, fallback: string): Promise<string> {
@@ -166,9 +182,11 @@ export async function fetchSceneLandingMeta(
       fetchDclGenesisPlaceAtPosition(route.x, route.y).catch(() => null)
     ])
 
-    const owner = place ? placeOwnerAddress(place) : null
+    const owners = place
+      ? collectOwnerAddresses(place.creatorAddress, place.owner, placeOwnerAddress(place))
+      : collectOwnerAddresses(null)
     const fallbackOwner = parcel?.sceneName ?? place?.title ?? parcel?.parcelLabel ?? 'Creator'
-    const ownerDisplay = await ownerDisplayName(owner, fallbackOwner)
+    const ownerDisplay = await ownerDisplayName(owners.primary, fallbackOwner)
 
     const title = await fetchPublicSceneTitle(route)
 
@@ -179,7 +197,8 @@ export async function fetchSceneLandingMeta(
       pointerLabel: `${route.x}, ${route.y}`,
       kind: 'parcel',
       userCount: place?.userCount ?? 0,
-      ownerAddress: owner,
+      ownerAddress: owners.primary,
+      ownerAddresses: owners.all,
       ownerDisplayName: ownerDisplay,
       categories: place?.categories ?? []
     }
@@ -197,9 +216,11 @@ export async function fetchSceneLandingMeta(
     worlds.find((w) => w.id.toLowerCase() === needle) ??
     worlds[0]
 
-  const owner = world ? placeOwnerAddress(world) : null
+  const owners = world
+    ? collectOwnerAddresses(world.creatorAddress, world.owner, placeOwnerAddress(world))
+    : collectOwnerAddresses(null)
   const shortName = route.worldName.replace(/\.dcl\.eth$/i, '').trim() || route.worldName
-  const ownerDisplay = await ownerDisplayName(owner, shortName)
+  const ownerDisplay = await ownerDisplayName(owners.primary, shortName)
   const description = await resolveWorldDescription(route.worldName)
   const title = await fetchPublicSceneTitle(route)
 
@@ -210,7 +231,8 @@ export async function fetchSceneLandingMeta(
     pointerLabel: route.worldName,
     kind: 'world',
     userCount: world?.userCount ?? 0,
-    ownerAddress: owner,
+    ownerAddress: owners.primary,
+    ownerAddresses: owners.all,
     ownerDisplayName: ownerDisplay,
     categories: []
   }

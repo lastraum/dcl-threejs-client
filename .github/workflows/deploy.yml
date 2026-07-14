@@ -2,8 +2,14 @@ name: Deploy to DigitalOcean
 
 on:
   push:
+    branches:
+      - dev-latest
     tags:
       - 'v*'
+    # Bot CLAIMS / docs-only commits should not redeploy the droplet.
+    paths-ignore:
+      - 'docs/CLAIMS.yaml'
+      - 'docs/**/*.md'
   workflow_dispatch:
 
 concurrency:
@@ -14,11 +20,11 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
 
       - run: npm ci
@@ -53,9 +59,19 @@ jobs:
             echo "::error::DEPLOY_SSH_KEY must be a full PEM/OpenSSH private key (include BEGIN/END lines)"
             exit 1
           fi
+          # Sanity: key parses and agent can list fingerprints (does not print key material).
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+          if ! ssh-keygen -y -f /tmp/deploy_key >/dev/null 2>&1; then
+            echo "::error::DEPLOY_SSH_KEY is not a valid OpenSSH/PEM private key (ssh-keygen rejected it)"
+            rm -f /tmp/deploy_key
+            exit 1
+          fi
+          echo "Deploy key fingerprint: $(ssh-keygen -lf /tmp/deploy_key | awk '{print $2}')"
+          rm -f /tmp/deploy_key
 
       - name: Start SSH agent
-        uses: webfactory/ssh-agent@v0.9.0
+        uses: webfactory/ssh-agent@v0.10.0
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
@@ -74,6 +90,7 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           ssh -o BatchMode=yes -o ConnectTimeout=20 -o PreferredAuthentications=publickey \
+            -o IdentitiesOnly=yes \
             "${DEPLOY_USER}@${DEPLOY_HOST}" "echo deploy-ssh-ok"
 
       - name: Rsync dist to droplet
@@ -83,5 +100,5 @@ jobs:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
           rsync -avzr --delete \
-            -e "ssh -o BatchMode=yes -o ConnectTimeout=120" \
+            -e "ssh -o BatchMode=yes -o ConnectTimeout=120 -o IdentitiesOnly=yes" \
             dist/ "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"

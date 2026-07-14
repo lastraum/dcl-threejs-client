@@ -160,3 +160,13 @@ class SunEnvironmentSettingsStore {
 }
 
 export const sunEnvironmentSettings = new SunEnvironmentSettingsStore()
+
+/** True when state matches factory defaults (Reset lighting). */
+export function isDefaultSunEnvironmentSettings(state: SunEnvironmentSettingsState): boolean {
+  return (
+    state.sceneSunLight === DEFAULTS.sceneSunLight &&
+    state.exposure === DEFAULTS.exposure &&
+    state.sceneMoonLight === DEFAULTS.sceneMoonLight &&
+    state.moonExposure === DEFAULTS.moonExposure
+  )
+}

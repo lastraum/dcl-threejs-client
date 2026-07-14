@@ -156,11 +156,27 @@ function resolvedFromEntity(
     else textures.unshift(displaySky.trim())
   }
 
+  // Official skyboxConfig: fixedTime only. Client lighting lives on `environment`.
+  const finiteSlider = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) ? v : undefined
+  const envCfg =
+    metadata.environment && typeof metadata.environment === 'object'
+      ? metadata.environment
+      : undefined
+  const environmentLighting = {
+    sunLight: finiteSlider(envCfg?.sunLight),
+    exposure: finiteSlider(envCfg?.exposure),
+    moonLight: finiteSlider(envCfg?.moonLight),
+    moonExposure: finiteSlider(envCfg?.moonExposure)
+  }
+  const hasEnvironmentLighting = Object.values(environmentLighting).some((v) => v !== undefined)
+
   const skybox =
-    typeof skyboxConfig?.fixedTime === 'number' || textures.length
+    typeof skyboxConfig?.fixedTime === 'number' || textures.length || hasEnvironmentLighting
       ? {
           fixedTime: skyboxConfig?.fixedTime,
-          textures: textures.length ? textures : undefined
+          textures: textures.length ? textures : undefined,
+          ...environmentLighting
         }
       : undefined
 

@@ -50,6 +50,25 @@ export function wearablesForProfileDeploy(profile: AvatarProfile): string[] {
   })
 }
 
+/**
+ * Dirty-key for Catalyst profile deploy. Covers every field written by
+ * `buildProfileDeployPayload` that the backpack can edit:
+ * bodyShape, skin/hair/eyes colors, equipped wearables, and emote slots.
+ * bodyShape URNs are omitted from the wearables segment (they live in bodyShape).
+ */
+export function profileDeployFingerprint(profile: AvatarProfile): string {
+  const wearables = wearablesForProfileDeploy(profile)
+    .map((u) => u.toLowerCase())
+    .sort()
+    .join('|')
+  const emotes = (profile.emotes ?? [])
+    .map((e) => `${e.slot}:${e.urn.toLowerCase()}`)
+    .sort()
+    .join('|')
+  const colors = `${profile.skin}:${profile.hair}:${profile.eyes}`.toLowerCase()
+  return `${profile.bodyShape}::${colors}::${wearables}||${emotes}`
+}
+
 function isOffChainWearable(urn: string): boolean {
   const n = normalizeUrn(urn)
   return (

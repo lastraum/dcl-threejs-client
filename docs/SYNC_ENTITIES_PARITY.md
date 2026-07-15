@@ -103,8 +103,8 @@ Client must re-wrap inbound chunks for the worker as:
 - [x] This document  
 - [x] Correct inbound message-type unwrap  
 - [x] `?syncdebug` logs: sendBinary direction, type histogram, bytes, peer targets  
-- [ ] Minimal local scene (`dev/sync-entities-scene`) — `syncEntity` + moving box (see §7)  
-- [ ] Two-client manual run notes
+- [x] Minimal scene scaffold (`~/Desktop/dcl scenes/sync-entities-scene`) — TweenSequence + restart  
+- [ ] Two-client manual run (deploy to a world + `?syncdebug`)
 
 ### P1 — Transport completeness
 
@@ -153,22 +153,25 @@ Silent by default (category not spammy when flag off).
 
 ## 7. Minimal conformance scene
 
-Scaffold: [`dev/sync-entities-scene/`](../dev/sync-entities-scene/)
+**Outside the client repo** (deploy to a World — no in-client local multipath):
+
+`~/Desktop/dcl scenes/sync-entities-scene/`
 
 ```bash
-cd dev/sync-entities-scene
-npm i
-npm run build
-# serve bin/ + scene.json as a local world, or deploy to a test world
+cd ~/Desktop/dcl\ scenes/sync-entities-scene
+npm i && npm run build
+npx sdk-commands deploy --target-content yourname.dcl.eth
+# client: http://localhost:5173/yourname.dcl.eth?syncdebug  (two tabs/peers)
 ```
 
 Scene behavior:
 
-1. `main()` → `syncEntity(box, [Transform.componentId], 1)` (shared enum id)  
-2. Local player can nudge box; peers should see motion  
-3. UI label shows `isStateSyncronized()`  
+1. `main()` → bouncing box via `Tween` + `TweenSequence` (`loop: TL_RESTART`)  
+2. `syncEntity(box, [Transform, Tween, TweenSequence], 1)` (shared enum id)  
+3. Click restarts the tween sequence (peers should restart after CRDT)  
+4. UI label shows `isStateSyncronized()`  
 
-Success for P0 host: with two clients in the same world, `?syncdebug` shows CRDT traffic and types are not all forced to `1`.
+Success for P0 host: with two clients in the same world, `?syncdebug` shows CRDT traffic and types are not all forced to `1`; box bounce / restart is visible on both.
 
 ---
 

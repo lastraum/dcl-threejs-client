@@ -73,6 +73,16 @@ let lastCooperativeReactEcsAt = 0
 let cooperativeReactEcsSkippedThisTick = false
 
 /**
+ * After pointer phase-4 UI open, skip this many cooperative react-ecs reconciles so
+ * open menus are not immediately collapsed by residual systems / poll edges.
+ */
+let cooperativeReactEcsHoldTicks = 0
+
+export function holdCooperativeReactEcs(ticks: number): void {
+  cooperativeReactEcsHoldTicks = Math.max(cooperativeReactEcsHoldTicks, ticks)
+}
+
+/**
  * Play-mode react-ecs gate.
  *
  * - Pointer inject / flush: always reconcile (open menus, stabilize fingerprint).
@@ -87,6 +97,10 @@ export function shouldDeferCooperativeReactEcs(): boolean {
   if (isPointerInteractiveTickActive()) return false
   if (shouldSuppressPointerSessionReactEcs()) return true
   if (cooperativeSchedulerTickDepth > 0) {
+    if (cooperativeReactEcsHoldTicks > 0) {
+      cooperativeReactEcsHoldTicks--
+      return true
+    }
     const now = performance.now()
     if (now - lastCooperativeReactEcsAt < COOPERATIVE_REACT_ECS_MIN_MS) return true
   }

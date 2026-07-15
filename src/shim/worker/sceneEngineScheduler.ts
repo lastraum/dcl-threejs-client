@@ -13,6 +13,7 @@ import {
   getLastPlannedUiDirtyEntities,
   leaveCooperativeSchedulerTick,
   notePlayModePointerUiEgress,
+  holdCooperativeReactEcs,
   planSceneUiCrdtEmit,
   resetPlayModePointerUiEgress,
   seedWorkerUiFingerprint,
@@ -121,6 +122,8 @@ let engineUpdateRelease: (() => void) | null = null
 let engineUpdateInFlight = false
 /** True only during intentional Ui CRDT transport emit — rpcCrdt must not attach uiEntities otherwise. */
 let attachUiMountSnapshot = false
+/** Last pointer phase-4 mount size — play-mode cooperative must not post a shrink below this. */
+let lastPointerUiMountSize = 0
 export function shouldAttachUiMountSnapshot(): boolean {
   return attachUiMountSnapshot
 }
@@ -176,6 +179,7 @@ export function resetSceneEngineScheduler(): void {
   bootSealed = false
   diagCount = 0
   tickEpoch = 0
+  lastPointerUiMountSize = 0
   resetPlayModePointerUiEgress()
 }
 
@@ -335,12 +339,29 @@ export function sceneEngineTickDue(now: number): boolean {
  * When worker UI fingerprint changes, push a structured mount snapshot to main.
  * Full mount id list is always authoritative; row payload is dirty-only when the
  * change set is small (avoids 500–800 row posts + full yoga thrash for 1–2 entity flips).
+ *
+ * Play mode: refuse cooperative mount shrink below the last pointer phase-4 size.
+ * RickRoll CAM tab opens on PET_DOWN then cooperative ticks were posting mount 23→4 and
+ * collapsing the home modal without a second user click.
  */
 async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
   const cfg = config!
   if (cfg.pointerBlocksTick()) return
   if (!planSceneUiCrdtEmit(eng, cfg.log)) return
   const mountEntityIds = collectWorkerUiMountEntityIds(eng)
+  if (
+    !cfg.isHydration() &&
+    lastPointerUiMountSize > 0 &&
+    mountEntityIds.length < lastPointerUiMountSize
+  ) {
+    cfg.log(
+      `[sceneWorker] ui dirty skip shrink — cooperative ${mountEntityIds.length} < pointer floor ${lastPointerUiMountSize}`
+    )
+    // Accept current worker fingerprint so we do not re-enter every tick; main keeps
+    // the larger pointer mount until the next pointer phase-4 (open or intentional close).
+    commitSceneUiCrdtBaseline(eng)
+    return
+  }
   const partial = shouldUsePartialUiMountSnapshot(mountEntityIds.length)
   const dirtyOnly = partial
     ? new Set(getLastPlannedUiDirtyEntities().map((e) => e as number))
@@ -402,6 +423,9 @@ function runPointerUiPhase4Egress(eng: IEngine): void {
   const mountEntities = new Set(snapshot.filter((r) => r.componentId === 1050).map((r) => r.entity))
   if (!cfg.isHydration()) {
     notePlayModePointerUiEgress(mountEntities.size)
+    lastPointerUiMountSize = mountEntities.size
+    // Hold a few cooperative reconciles so open menus are not immediately torn down.
+    holdCooperativeReactEcs(3)
   }
   cfg.log(
     `[sceneWorker] pointer ui snapshot — mount=${mountEntities.size} rows=${snapshot.length} ` +
@@ -685,6 +709,8 @@ export async function runSceneEnginePointerTick(
   beginPointerPlayerFrameBatch()
   setPointerInteractiveTickActive(true)
   setPointerInteractivePhase('inject')
+  const mountBeforeDown = injectOnlyUiClick ? countWorkerUiMount(eng) : 0
+  let openedOnDown = false
   try {
     if (splitPointerInject) {
       cfg.log(`[sceneWorker] pointer ui click — entity=${splitPointerInject.entity}`)
@@ -701,6 +727,12 @@ export async function runSceneEnginePointerTick(
         cfg.log('[sceneWorker] pointer ui flush — post-DOWN react-ecs (before UP)')
         await flushReactEcsForUiSnapshot(eng, cfg.log, true)
         setPointerInteractivePhase('inject')
+        const mountAfterDown = countWorkerUiMount(eng)
+        openedOnDown = mountAfterDown > mountBeforeDown
+        cfg.log(
+          `[sceneWorker] pointer post-DOWN mount ${mountBeforeDown}→${mountAfterDown}` +
+            `${openedOnDown ? ' (opened on DOWN — UP→PlayerEntity only)' : ''}`
+        )
       }
     } else {
       await runSerializedEngineUpdate(async () => {
@@ -720,7 +752,14 @@ export async function runSceneEnginePointerTick(
     }
     if (splitPointerInject) {
       await runSerializedEngineUpdate(async () => {
-        injectPointerClickUpOnEngine(eng, splitPointerInject)
+        // Camera-operator CAM tab: onMouseDown toggles homeModalOpen and keeps the tab mounted.
+        // UP on the same entity can re-enter pointer systems / scrim after recycle — clear
+        // isPressed via PlayerEntity only when the open already happened on DOWN.
+        injectPointerClickUpOnEngine(
+          eng,
+          splitPointerInject,
+          openedOnDown ? { playerOnly: true } : undefined
+        )
         await eng.update(0)
       })
       // After UP — republish player-frame if STOP/clear landed on this edge.

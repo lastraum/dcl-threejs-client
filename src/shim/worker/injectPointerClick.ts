@@ -28,12 +28,26 @@ function pointerUpTargets(body: InjectPointerClickBody): number[] {
   return list.length ? list : [body.entity]
 }
 
+export type InjectPointerClickUpOptions = {
+  /**
+   * When true, only write PET_UP on PlayerEntity.
+   * Use after a UI open already happened on PET_DOWN (onMouseDown toggle) so UP cannot
+   * land on the same launcher / a recycled scrim entity and re-fire pointer handlers.
+   */
+  playerOnly?: boolean
+}
+
 /**
  * After PET_DOWN open, react-ecs may recycle the launcher id into a modal child.
  * Prefer UP targets that still have UiTransform; otherwise PlayerEntity so isPressed clears
  * without firing getClick on a recycled modal node.
  */
-function resolveUpInjectTargets(engine: IEngine, body: InjectPointerClickBody): number[] {
+function resolveUpInjectTargets(
+  engine: IEngine,
+  body: InjectPointerClickBody,
+  opts?: InjectPointerClickUpOptions
+): number[] {
+  if (opts?.playerOnly) return [engine.PlayerEntity as number]
   const requested = pointerUpTargets(body)
   preregisterRendererInjectedComponents(engine)
   const UiTransform = resolveWorkerUiTransform(engine)
@@ -61,7 +75,11 @@ export function injectPointerClickDownOnEngine(engine: IEngine, body: InjectPoin
 }
 
 /** PET_UP only — after post-DOWN react-ecs flush for inject-only UI clicks. */
-export function injectPointerClickUpOnEngine(engine: IEngine, body: InjectPointerClickBody): void {
+export function injectPointerClickUpOnEngine(
+  engine: IEngine,
+  body: InjectPointerClickBody,
+  opts?: InjectPointerClickUpOptions
+): void {
   preregisterRendererInjectedComponents(engine)
   const PointerEventsResult = generated.PointerEventsResult(engine)
   const hit = buildPointerHit(body)
@@ -73,7 +91,8 @@ export function injectPointerClickUpOnEngine(engine: IEngine, body: InjectPointe
     hit,
     analog: undefined
   }
-  for (const entity of resolveUpInjectTargets(engine, body)) {
+  const targets = resolveUpInjectTargets(engine, body, opts)
+  for (const entity of targets) {
     PointerEventsResult.addValue(entity as Entity, up)
   }
 }

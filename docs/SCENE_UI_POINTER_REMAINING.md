@@ -1,7 +1,7 @@
 # Scene UI pointer — remaining work (RickRoll / camera-operator)
 
 **Branch:** `lastraum`  
-**Status:** Z-ordered pick refactor landed (2026-07-07) — retest CREATOR MODE on RickRoll.  
+**Status:** sceneUi inject PET_UP always → PlayerEntity (2026-07-15) — retest CREATOR MODE.  
 **Scene bundle:** do not modify `camera-operator/scene` — client-only fixes.
 
 ## Goal
@@ -94,13 +94,30 @@ Card may not receive `scene-ui-node--interactive` if `PointerEvents` row missing
 
 **Verify:** `[scene-ui] interactiveDom` count vs entities with `PointerEvents` in snapshot when modal open.
 
-## Suggested next steps (when resuming)
+## Fix applied (2026-07-15)
 
-1. Add `?sceneuidebug` pick trace at click point (candidates, direct-handler check, chosen entity) — **client only**
-2. Log worker inject payload entity list on `inject-pointer-click`
-3. Confirm CREATOR card entity id at runtime (not assumed from one session's 574)
-4. Compare Explorer pointer tick ordering for UI clicks (single entity vs bubble)
-5. If pick is correct but mount still 4: inspect worker react-ecs mount timing relative to phase 4
+**Scene UI inject clicks (`sceneUi: true` on inject payload):**
+
+1. PET_UP always targets `PlayerEntity` (not only when mount grew).
+2. Inject-only UI path (post-DOWN flush, skip `onUpdate`, fingerprint flush) is gated on
+   `body.sceneUi` — not on “any split inject” — so 3D mesh clicks keep entity UP + getClick.
+
+CREATOR MODE sets `homeModalOpen=false` + `creatorScenePresetsOpen=true` on DOWN — mount often
+**shrinks**. Old heuristic `openedOnDown = mountAfter > mountBefore` was false, so UP reused the
+click entity id after react-ecs recycle → scrim/close handlers re-fired → phase-4 mount=4.
+
+Worker logs to expect on CREATOR click:
+
+- `pointer ui click — entity=N sceneUi=1`
+- `post-DOWN mount A→B (sceneUi — UP always → PlayerEntity)`
+- `pointer UP → PlayerEntity only (sceneUi inject; down was eN)`
+- `pointer ui snapshot — mount=…` (presets size, not launcher-only ~4)
+
+## Suggested retest
+
+1. RickRoll CAM → open home modal → CREATOR MODE — presets overlay must stay open
+2. Confirm worker logs above; `?sceneuidebug` pick should target the CREATOR card handler
+3. If still broken: phase-4 mount still ~4 → pick/handler path; if presets paint then collapse → cooperative shrink
 
 ## Key files (this workstream)
 

@@ -18,4 +18,10 @@ export type InjectPointerClickBody = {
   hitNormal: { x: number; y: number; z: number }
   hitDistance: number
   meshName?: string
+  /**
+   * Scene DOM UI click (react-ecs). Worker uses this for inject-only UI path:
+   * post-DOWN flush, skip onUpdate, PET_UP → PlayerEntity only.
+   * Must not be set for 3D mesh clicks (getClick needs UP on the hit entity).
+   */
+  sceneUi?: boolean
 }

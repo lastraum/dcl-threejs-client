@@ -31,8 +31,8 @@ function pointerUpTargets(body: InjectPointerClickBody): number[] {
 export type InjectPointerClickUpOptions = {
   /**
    * When true, only write PET_UP on PlayerEntity.
-   * Use after a UI open already happened on PET_DOWN (onMouseDown toggle) so UP cannot
-   * land on the same launcher / a recycled scrim entity and re-fire pointer handlers.
+   * Scene UI inject-only clicks: onMouseDown already ran on DOWN; UP must not land on a
+   * recycled id (scrim/close) after react-ecs remounts. 3D mesh clicks must not use this.
    */
   playerOnly?: boolean
 }

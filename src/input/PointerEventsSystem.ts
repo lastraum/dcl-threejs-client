@@ -1245,7 +1245,11 @@ export class PointerEventsSystem {
           hitPosition: { x: dclPoint.x, y: dclPoint.y, z: dclPoint.z },
           hitNormal: { x: dclNormal.x, y: dclNormal.y, z: dclNormal.z },
           hitDistance: hit.distance,
-          meshName: hit.meshName
+          meshName: hit.meshName,
+          // Authoritative at click time — after worker DOWN, UiTransform may recycle.
+          sceneUi:
+            hit.isSceneUi === true ||
+            (this.deps?.ecs.UiTransform.has(targetEntity) ?? false)
         }
       }
     }

@@ -705,15 +705,18 @@ export async function runSceneEnginePointerTick(
   splitPointerInject?: InjectPointerClickBody | null
 ): Promise<void> {
   const cfg = config!
-  const injectOnlyUiClick = !!splitPointerInject
+  // Only scene DOM UI — 3D mesh injects must keep entity UP + onUpdate for getClick.
+  const injectOnlyUiClick = !!splitPointerInject?.sceneUi
   beginPointerPlayerFrameBatch()
   setPointerInteractiveTickActive(true)
   setPointerInteractivePhase('inject')
   const mountBeforeDown = injectOnlyUiClick ? countWorkerUiMount(eng) : 0
-  let openedOnDown = false
   try {
     if (splitPointerInject) {
-      cfg.log(`[sceneWorker] pointer ui click — entity=${splitPointerInject.entity}`)
+      cfg.log(
+        `[sceneWorker] pointer ${injectOnlyUiClick ? 'ui' : 'mesh'} click — entity=${splitPointerInject.entity}` +
+          (injectOnlyUiClick ? ' sceneUi=1' : '')
+      )
       await runSerializedEngineUpdate(async () => {
         injectPointerClickDownOnEngine(eng, splitPointerInject)
         await eng.update(0)
@@ -721,17 +724,16 @@ export async function runSceneEnginePointerTick(
       // Reconcile freeze latch after onMouseDown (handles unpatched SDK IM writes + STOP).
       reconcileLocomotionLatchAfterInjectDown(eng)
       cfg.log(`[sceneWorker] pointer DOWN done — ${describeWorkerInputModifier(eng)}`)
-      // Stabilize open UI before UP — entity ids from main may already be recycled.
+      // Stabilize UI before UP — react-ecs may open/close overlays and recycle entity ids.
       if (injectOnlyUiClick) {
         setPointerInteractivePhase('flush')
         cfg.log('[sceneWorker] pointer ui flush — post-DOWN react-ecs (before UP)')
         await flushReactEcsForUiSnapshot(eng, cfg.log, true)
         setPointerInteractivePhase('inject')
         const mountAfterDown = countWorkerUiMount(eng)
-        openedOnDown = mountAfterDown > mountBeforeDown
         cfg.log(
           `[sceneWorker] pointer post-DOWN mount ${mountBeforeDown}→${mountAfterDown}` +
-            `${openedOnDown ? ' (opened on DOWN — UP→PlayerEntity only)' : ''}`
+            ' (sceneUi — UP always → PlayerEntity)'
         )
       }
     } else {
@@ -752,14 +754,16 @@ export async function runSceneEnginePointerTick(
     }
     if (splitPointerInject) {
       await runSerializedEngineUpdate(async () => {
-        // Camera-operator CAM tab: onMouseDown toggles homeModalOpen and keeps the tab mounted.
-        // UP on the same entity can re-enter pointer systems / scrim after recycle — clear
-        // isPressed via PlayerEntity only when the open already happened on DOWN.
-        injectPointerClickUpOnEngine(
-          eng,
-          splitPointerInject,
-          openedOnDown ? { playerOnly: true } : undefined
-        )
+        // Scene UI: react-ecs onMouseDown already ran. PET_UP on the same id after recycle
+        // re-fires scrim/close (CREATOR closes home → mount shrinks → UP hits recycled id).
+        // Always clear isPressed via PlayerEntity for sceneUi injects only.
+        const upOpts = injectOnlyUiClick ? { playerOnly: true } : undefined
+        injectPointerClickUpOnEngine(eng, splitPointerInject, upOpts)
+        if (injectOnlyUiClick) {
+          cfg.log(
+            `[sceneWorker] pointer UP → PlayerEntity only (sceneUi inject; down was e${splitPointerInject.entity})`
+          )
+        }
         await eng.update(0)
       })
       // After UP — republish player-frame if STOP/clear landed on this edge.

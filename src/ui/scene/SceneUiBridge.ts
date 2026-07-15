@@ -141,11 +141,19 @@ export class SceneUiBridge {
 
   /** Show/hide `#scene-ui-root` — only enable in 3D play mode, not 2D landing/explorer. */
   setVisible(visible: boolean): void {
+    const wasVisible = this.domVisible
     this.domVisible = visible
     this.root.hidden = !visible
-    if (visible && this.lastView) {
-      this.paint(this.lastView)
+    if (!visible) return
+    // Mount/commit often ran while hidden — drop paint skip keys so first reveal always paints.
+    if (!wasVisible) {
+      this.lastPaintLayoutKey = ''
+      this.lastPaintVisualKey = ''
+      this.lastEntityVisualKeys.clear()
+      this.paintCount = 0
+      this.firstPaintLogged = false
     }
+    if (this.lastView) this.paint(this.lastView)
   }
 
   isVisible(): boolean {
@@ -337,7 +345,20 @@ export class SceneUiBridge {
   paint(view: ProjectionView): void {
     this.mirrorEcs = view.components
     this.lastView = view
-    if (!this.domVisible) return
+    if (!this.domVisible) {
+      // Mount still commits while hidden; revealPlayChrome → setVisible(true) repaints.
+      if (
+        this.workerUiEntitiesKnown &&
+        (this.workerUiEntities?.size ?? 0) > 0 &&
+        typeof location !== 'undefined' &&
+        location.search.includes('sceneuidebug')
+      ) {
+        console.log(
+          `[scene-ui] paint deferred — play chrome not revealed yet (mount=${this.workerUiEntities!.size})`
+        )
+      }
+      return
+    }
     const ecs = view.components
 
     const interactable = readInteractableArea(this.getCanvas())

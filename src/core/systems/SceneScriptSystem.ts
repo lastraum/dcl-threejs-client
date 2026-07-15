@@ -203,6 +203,11 @@ export class SceneScriptSystem {
   private tweenBridge: TweenBridge | null = null
   private particleBridge: ParticleSystemBridge | null = null
   private sceneUiBridge: SceneUiBridge | null = null
+  /**
+   * Desired `#scene-ui-root` visibility from AppController play chrome.
+   * Survives `prepare()` recreating the bridge (constructor always starts hidden).
+   */
+  private sceneUiDesiredVisible = false
   private sceneUiResizeObserver: ResizeObserver | null = null
   private unbindSceneUiWindowResize: (() => void) | null = null
   private avatarAttachBridge: AvatarAttachBridge | null = null
@@ -307,6 +312,7 @@ export class SceneScriptSystem {
 
   /** Gate `#scene-ui-root` — hidden during 2D landing / hydration until play chrome reveals. */
   setSceneUiVisible(visible: boolean): void {
+    this.sceneUiDesiredVisible = visible
     this.sceneUiBridge?.setVisible(visible)
   }
 
@@ -375,6 +381,8 @@ export class SceneScriptSystem {
     )
     this.sceneUiBridge?.dispose()
     this.sceneUiBridge = new SceneUiBridge(scene, () => this.host?.renderer.domElement ?? null)
+    // Bridge constructor starts hidden — re-apply play-chrome desire (teleport / re-prepare).
+    this.sceneUiBridge.setVisible(this.sceneUiDesiredVisible)
     if (this.pendingVirtualCanvas) {
       this.sceneUiBridge.setVirtualSize(
         this.pendingVirtualCanvas.width,
@@ -3788,6 +3796,7 @@ export class SceneScriptSystem {
     this.unbindSceneUiViewportSync()
     this.sceneUiBridge?.dispose()
     this.sceneUiBridge = null
+    this.sceneUiDesiredVisible = false
     this.pendingVirtualCanvas = null
     this.pendingUiEntities = undefined
     this.pendingInboundAfterUiMount = []

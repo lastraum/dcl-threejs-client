@@ -143,43 +143,33 @@ vec3 rotateY(vec3 dir, float angle) {
 }
 
 /**
- * Explorer midday clouds are soft white / cool gray — NOT the raw HDR gradient hue
- * (which goes green/magenta at some day keys and was painting the sky green).
+ * Neutral white/cool-gray body (avoids green HDR gradient keys) but bright enough
+ * to read as real puffs over blue sky — not washed milk.
  */
 vec3 cloudBaseColor(vec3 hdr, float layerScale, float coolBias) {
   float peak = max(max(hdr.r, hdr.g), hdr.b);
-  // Intensity from HDR ramp; hue forced near-neutral white.
-  float intensity = max(peak, 0.85) * layerScale;
-  // Soft white body + slight cool gray (not green-blue).
-  vec3 body = vec3(0.98, 0.99, 1.0);
-  vec3 cool = vec3(0.86, 0.90, 0.98);
-  vec3 hue = mix(body, cool, clamp(coolBias, 0.0, 1.0));
-  // Tiny bit of gradient hue only so sunrise/sunset can warm slightly.
-  vec3 rawHue = hdr / max(peak, 1e-4);
-  float rawLuma = dot(rawHue, vec3(0.299, 0.587, 0.114));
-  vec3 desat = mix(vec3(rawLuma), rawHue, 0.08);
-  hue = mix(hue, desat, 0.12);
+  // HDR peak drives punch; floor keeps midday clouds solid white.
+  float intensity = max(peak * 0.95, 1.15) * layerScale;
+  vec3 body = vec3(1.0, 1.0, 1.02);
+  vec3 cool = vec3(0.9, 0.93, 1.0);
+  vec3 hue = mix(body, cool, clamp(coolBias, 0.0, 1.0) * 0.55);
   return hue * intensity;
 }
 
-// Gentle sun lighting — enough volume without harsh dark rims.
 vec3 lightCloud(vec3 tint, float highlights, vec3 dir, vec3 sunDir, float mapLum) {
   vec3 d = normalize(dir);
   vec3 s = normalize(sunDir);
-  float sunUp = smoothstep(-0.02, 0.15, s.y);
-  float sunSide = sunUp * smoothstep(-0.2, 0.5, dot(d, s));
-  float shadowSide = sunUp * smoothstep(-0.2, 0.5, -dot(d, s));
-  float structure = mix(0.88, 1.08, clamp(mapLum, 0.0, 1.0));
-  float lit = mix(0.9, 1.18, sunSide * highlights * 0.55);
-  lit *= mix(1.0, 0.82, shadowSide * 0.35);
+  float sunUp = smoothstep(-0.02, 0.12, s.y);
+  float sunSide = sunUp * smoothstep(-0.12, 0.5, dot(d, s));
+  float shadowSide = sunUp * smoothstep(-0.12, 0.5, -dot(d, s));
+  float structure = mix(0.9, 1.15, clamp(mapLum, 0.0, 1.0));
+  float lit = mix(0.92, 1.32, sunSide * (0.5 + highlights * 0.5));
+  lit *= mix(1.0, 0.78, shadowSide * 0.4);
   lit *= structure;
+  lit *= 0.9 + highlights * 0.35;
   return tint * lit;
 }
 
-/**
- * Soft puffy mask — wide smoothstep + mip bias so edges feather like Explorer
- * (not razor cutouts against the blue).
- */
 void sampleCloudLayer(
   vec3 dir,
   samplerCube map,
@@ -195,25 +185,20 @@ void sampleCloudLayer(
   if (dir.y < yMin || uCloudOpacity < 0.001) return;
 
   vec3 sampleDir = rotateY(normalize(dir), angle);
-  // Slight positive lod softens silhouette (Explorer puffs have soft AA edges).
-  vec4 tex = textureCube(map, sampleDir, 0.75);
+  // Mild mip blur — soft edges without dissolving puffs into haze.
+  vec4 tex = textureCube(map, sampleDir, 0.25);
   mapLum = max(max(tex.r, tex.g), max(tex.b, tex.a));
   float n = tex.a > 0.02 ? tex.a : mapLum;
 
-  float thr = clamp(1.0 - uCloudDensity, 0.15, 0.8);
-  // Wide falloff = soft edges (tight falloff caused jagged outlines).
-  float falloff = 0.52;
+  float thr = clamp(1.0 - uCloudDensity, 0.12, 0.8);
+  // Middle falloff: soft AA, still solid cores (0.28 jagged / 0.52 washed).
+  float falloff = 0.4;
   mask = smoothstep(thr, thr + falloff, n);
-  mask = pow(max(mask, 0.0), 0.9);
-  mask *= smoothstep(yMin, yMin + 0.18, dir.y);
-  mask *= 1.0 - smoothstep(yMax - 0.16, yMax, dir.y);
+  mask *= smoothstep(yMin, yMin + 0.14, dir.y);
+  mask *= 1.0 - smoothstep(yMax - 0.12, yMax, dir.y);
   mask *= opacity * uCloudOpacity;
 }
 
-/**
- * Soft alpha over sky. No screen-blend cores (those made hard white rims).
- * layerScale / coolBias differentiate horizon/far/near/top without green cast.
- */
 vec3 blendCloudLayer(
   vec3 sky,
   vec3 dir,
@@ -237,20 +222,23 @@ vec3 blendCloudLayer(
     uSunDirection,
     mapLum
   );
-  // Cap so we stay soft white, not neon.
-  cloud = min(cloud, vec3(1.85));
-  // Soft coverage — feather mask a bit more at the rim of each puff.
-  float cover = smoothstep(0.0, 0.85, mask);
-  return mix(sky, cloud, cover);
+  cloud = min(cloud, vec3(2.4));
+
+  // Full mask coverage (no extra smoothstep that washed opacity out).
+  float cover = clamp(mask, 0.0, 1.0);
+  vec3 lerped = mix(sky, cloud, cover);
+  // Subtle screen only in bright cores — white pop without hard rims.
+  float core = smoothstep(0.45, 0.92, mapLum) * cover;
+  vec3 screen = vec3(1.0) - (vec3(1.0) - sky) * (vec3(1.0) - min(cloud, vec3(1.0)));
+  return mix(lerped, max(lerped, screen), core * 0.28);
 }
 
 void main() {
   vec3 dir = normalize(vDirection);
   vec3 sky = sampleGradient(dir, uZenitColor, uHorizonColor, uNadirColor);
 
-  // Light horizon atmosphere only (no green pull).
-  float haze = pow(max(1.0 - abs(dir.y), 0.0), 2.4) * 0.12;
-  sky = mix(sky, mix(uHorizonColor, uZenitColor, 0.35), haze * 0.4);
+  float haze = pow(max(1.0 - abs(dir.y), 0.0), 2.4) * 0.1;
+  sky = mix(sky, mix(uHorizonColor, uZenitColor, 0.4), haze * 0.35);
 
   float night = 1.0 - smoothstep(-0.08, 0.12, uSunDirection.y);
   sky += starField(dir, uStarsMap, night);
@@ -258,12 +246,12 @@ void main() {
   sky += moonDisc(dir, uMoonDirection, uMoonMap, uMoonMask);
 
   float cloudAngle = uTime * uCloudsRotationSpeed;
-  // Back → front. Scales stay modest; coolBias is blue-gray only (desaturated).
+  // Restored original-ish opacities for body; neutral tints only.
   // opacity, yMin, yMax, tintScale, coolBias
-  sky = blendCloudLayer(sky, dir, uHorizonCloudsCube, cloudAngle * 0.5, 0.55, 0.02, 0.45, 0.78, 0.35);
-  sky = blendCloudLayer(sky, dir, uFarCloudsCube, cloudAngle, 0.7, 0.04, 0.95, 0.95, 0.22);
-  sky = blendCloudLayer(sky, dir, uNearCloudsCube, cloudAngle * 2.0, 0.88, 0.06, 1.0, 1.12, 0.08);
-  sky = blendCloudLayer(sky, dir, uTopCloudsCube, cloudAngle * 1.5, 0.5, 0.3, 1.0, 1.0, 0.1);
+  sky = blendCloudLayer(sky, dir, uHorizonCloudsCube, cloudAngle * 0.5, 0.8, 0.02, 0.42, 0.9, 0.28);
+  sky = blendCloudLayer(sky, dir, uFarCloudsCube, cloudAngle, 0.65, 0.05, 0.95, 1.05, 0.18);
+  sky = blendCloudLayer(sky, dir, uNearCloudsCube, cloudAngle * 2.0, 0.85, 0.08, 1.0, 1.25, 0.05);
+  sky = blendCloudLayer(sky, dir, uTopCloudsCube, cloudAngle * 1.5, 0.55, 0.32, 1.0, 1.1, 0.08);
 
   float rim = pow(max(1.0 - abs(dir.y), 0.0), 3.0) * 0.25;
   sky += uRimColor * rim;
@@ -326,9 +314,9 @@ export class DclGenesisSky {
       uSunDiscCutoff: { value: FIXED_SUN_DISC_CUTOFF },
       uSunDiscCoreGain: { value: FIXED_SUN_DISC_CORE_GAIN },
       uSunDiscGlowGain: { value: FIXED_SUN_DISC_GLOW_GAIN },
-      uCloudHighlights: { value: 0.85 },
-      // Mid density + wide falloff in shader → soft Explorer-like puffs (not hard cutouts).
-      uCloudDensity: { value: 0.55 },
+      uCloudHighlights: { value: 0.9 },
+      // Closer to pre-pass density so puffs fill in; falloff in shader stays soft.
+      uCloudDensity: { value: 0.58 },
       uCloudOpacity: { value: 1 },
       uCloudsRotationSpeed: { value: 0.01 },
       uTime: { value: 0 },

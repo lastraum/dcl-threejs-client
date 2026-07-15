@@ -1,4 +1,5 @@
 import { encodeCommsBinaryMessage } from './commsBinaryWire'
+import { logSyncDrain, logSyncInbound, unwrapCraftedCommsMessage } from './syncDebug'
 
 /** SDK7 BinaryMessageBus message types (@dcl/sdk/network/binary-message-bus). */
 export const CommsWireMessageType = {
@@ -7,11 +8,35 @@ export const CommsWireMessageType = {
   RES_CRDT_STATE: 3
 } as const
 
-/** Buffers inbound scene-room payloads until the next sendBinary response. */
+/**
+ * Buffers inbound scene-room payloads until the next sendBinary response.
+ *
+ * LiveKit carries SDK `craftCommsMessage` bytes: `[messageType:u8][payload…]`.
+ * Worker BinaryMessageBus expects `encodeCommsBinaryMessage` envelopes:
+ * `[senderLen][sender][messageType][payload…]`.
+ */
 export class CommsInboundQueue {
   private readonly pending: Uint8Array[] = []
 
-  pushSceneBinary(sender: string, payload: Uint8Array, messageType = CommsWireMessageType.CRDT): void {
+  /**
+   * @param craftedPayload — RFC4 scene-binary body = SDK craftCommsMessage
+   *   (`[type][payload]`). Message type is taken from the first byte (not forced CRDT).
+   */
+  pushSceneBinary(sender: string, craftedPayload: Uint8Array): void {
+    const unwrapped = unwrapCraftedCommsMessage(craftedPayload)
+    if (!unwrapped) return
+    const { messageType, payload } = unwrapped
+    logSyncInbound({
+      sender,
+      messageType,
+      payloadBytes: payload.byteLength
+    })
+    this.pending.push(encodeCommsBinaryMessage(sender, messageType, payload))
+  }
+
+  /** @deprecated Prefer pushSceneBinary — type must come from craftCommsMessage. */
+  pushSceneBinaryTyped(sender: string, payload: Uint8Array, messageType: number): void {
+    logSyncInbound({ sender, messageType, payloadBytes: payload.byteLength })
     this.pending.push(encodeCommsBinaryMessage(sender, messageType, payload))
   }
 
@@ -19,6 +44,9 @@ export class CommsInboundQueue {
     if (!this.pending.length) return []
     const out = this.pending.slice()
     this.pending.length = 0
+    let totalBytes = 0
+    for (const m of out) totalBytes += m.byteLength
+    logSyncDrain({ count: out.length, totalBytes })
     return out
   }
 

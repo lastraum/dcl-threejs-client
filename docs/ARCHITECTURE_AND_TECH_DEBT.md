@@ -41,6 +41,7 @@ SceneInputRelay (WASD)              inputSystem.isPressed
 | `PLAYER_FRAME_PROGRESS.md` | MOVE CAMERA QA handoff | Active |
 | `SCENE_UI_POINTER_REMAINING.md` | Creator modal pick issues | Older; z-order pick landed |
 | `worker-input-architecture.mdc` | Hard rules for pointer/UI CRDT | **Authoritative for input** — keep updated |
+| `SYNC_ENTITIES_PARITY.md` | Platform multiplayer ECS (`syncEntity`) | Active P0 — host transport, not Flagtag-driven |
 
 ---
 

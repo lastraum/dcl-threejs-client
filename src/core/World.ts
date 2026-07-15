@@ -43,6 +43,7 @@ import { resetFoliageWindRegistry, updateFoliageWind } from '../dcl/landscape/fo
 import { SessionIdentity } from '../network/SessionIdentity'
 import { RemoteAvatarManager } from '../network/RemoteAvatarManager'
 import { CommsService } from '../network/CommsService'
+import { logSyncOutbound } from '../network/comms/syncDebug'
 import { blacklistFromMetadata } from '../network/sceneAccess/sceneAccessCommon'
 import { buildEmoteWheelSlots, resolveSceneEmoteFromSrc } from '../avatar/profileEmotes'
 import { SocialService } from '../social/SocialService'
@@ -2295,13 +2296,18 @@ export class World {
 
   private async handleSendBinary(body: SendBinaryRequest) {
     const peerChunks =
-      body.peerData?.flatMap((entry) => entry.data.map((chunk) => ({ chunk, addresses: entry.address }))) ?? []
+      body.peerData?.flatMap((entry) =>
+        entry.data.map((chunk) => ({ chunk, addresses: entry.address ?? [] }))
+      ) ?? []
     const broadcast = body.data ?? []
     const sent: Uint8Array[] = []
 
     if (broadcast.length === 0 && peerChunks.length === 0) {
       return { data: await this.comms.sendBinary([]) }
     }
+
+    // SyncEntities host instrumentation (?syncdebug) — platform parity P0.
+    logSyncOutbound({ broadcast, directed: peerChunks })
 
     if (broadcast.length) {
       sent.push(...(await this.comms.sendBinary(broadcast)))

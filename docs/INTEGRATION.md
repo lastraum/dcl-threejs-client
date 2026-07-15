@@ -109,7 +109,8 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 
 | Component | ID | Status | Notes |
 | --------- | -- | ------ | ----- |
-| NetworkEntity / NetworkParent | — | 🟡 | Projection decode + parent strip |
+| NetworkEntity / NetworkParent | — | 🟡 | Projection decode + parent strip · see [SYNC_ENTITIES_PARITY.md](./SYNC_ENTITIES_PARITY.md) |
+| SyncComponents / `syncEntity` | — | 🟡 | Scene SDK owns API; host P0 wire unwrap + `?syncdebug` · [SYNC_ENTITIES_PARITY.md](./SYNC_ENTITIES_PARITY.md) |
 | SkyboxTime | 1210 | 🟢 | Scene fixed → session custom → Auto; ECS/json lock snaps on cold bind |
 | UiTransform … UiDropdown | 1050+ | ⬜ | In-scene UI (HUD is separate) |
 | ParticleSystem | 1217 | 🟢 | `ParticleSystemBridge` — GPU billboard sprites |

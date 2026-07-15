@@ -21,6 +21,7 @@ import {
 import { AdapterManager } from './comms/AdapterManager'
 import { ArchipelagoClient } from './comms/ArchipelagoClient'
 import { CommsInboundQueue } from './comms/CommsInboundQueue'
+import { logSyncDirectedIgnored } from './comms/syncDebug'
 import { CommsTopicService } from './comms/CommsTopicService'
 import { LiveKitCommsSession } from './comms/LiveKitCommsSession'
 import { clearCastVideoHost, reattachFirstRemoteVideoToHost } from './comms/livekitVideoStreams'
@@ -881,7 +882,9 @@ export class CommsService {
   }
 
   async sendBinary(data: Uint8Array[], addresses: string[] = []): Promise<Uint8Array[]> {
-    void addresses
+    // P1: LiveKit publish is still room-broadcast; directed peer RES_CRDT_STATE needs
+    // destinationIdentities. Log when scenes request directed delivery (?syncdebug).
+    if (addresses.length) logSyncDirectedIgnored(addresses)
     if (this.transport !== 'livekit' || !this.sceneId) {
       if (!this.rfc5.isConnected()) return this.inboundQueue.drain()
       for (const chunk of data) this.rfc5.send(chunk, false)

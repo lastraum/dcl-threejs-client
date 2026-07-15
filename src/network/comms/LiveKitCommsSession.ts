@@ -74,6 +74,8 @@ export class LiveKitCommsSession {
   private broadcastCount = 0
   private outboundDebugLogs = 0
   private connected = false
+  /** Bumped on every disconnect / new connect so stale in-flight joins abort cleanly. */
+  private connectGeneration = 0
 
   constructor(
     private readonly transport: TransportType,
@@ -325,7 +327,9 @@ export class LiveKitCommsSession {
   }
 
   async connect(adapter: string): Promise<boolean> {
-    this.disconnect()
+    const gen = ++this.connectGeneration
+    // Tear down previous room without invalidating *this* generation.
+    this.teardownRoom()
 
     let url: string
     let token: string
@@ -336,6 +340,8 @@ export class LiveKitCommsSession {
       clientDebugLog.log('comms', `Invalid LiveKit adapter: ${msg}`, { level: 'error' })
       return false
     }
+
+    if (gen !== this.connectGeneration) return false
 
     const room = new Room({ adaptiveStream: false, dynacast: false })
     this.room = room
@@ -409,6 +415,15 @@ export class LiveKitCommsSession {
 
     try {
       await room.connect(url, token, { autoSubscribe: true })
+      // Superseded by a newer connect/disconnect while awaiting join.
+      if (gen !== this.connectGeneration || this.room !== room) {
+        try {
+          room.disconnect()
+        } catch {
+          /* ignore */
+        }
+        return false
+      }
       this.connected = true
       if (this.lambdasUrl) {
         void room.localParticipant.setMetadata(JSON.stringify({ lambdasEndpoint: this.lambdasUrl }))
@@ -451,8 +466,13 @@ export class LiveKitCommsSession {
       return true
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      clientDebugLog.log('comms', `LiveKit connect failed (${this.transport}): ${msg}`, { level: 'error' })
-      this.disconnect()
+      // Don't log aborts from a newer connect superseding this one.
+      if (gen === this.connectGeneration) {
+        clientDebugLog.log('comms', `LiveKit connect failed (${this.transport}): ${msg}`, {
+          level: 'error'
+        })
+        this.teardownRoom()
+      }
       return false
     }
   }
@@ -668,16 +688,26 @@ export class LiveKitCommsSession {
   }
 
   disconnect(): void {
+    this.connectGeneration++
     if (this.connected) {
       clientDebugLog.log('comms', `Disconnecting LiveKit (${this.transport})`, { level: 'warn' })
     }
+    this.teardownRoom()
+  }
+
+  private teardownRoom(): void {
     this.connected = false
     this.pendingTransform = null
     this.lastSentTransform = null
     this.broadcastCount = 0
     this.outboundDebugLogs = 0
-    this.room?.disconnect()
+    const room = this.room
     this.room = null
+    try {
+      room?.disconnect()
+    } catch {
+      /* ignore */
+    }
     if (this.registerGlobalSession) {
       setLiveKitSession(null)
     }

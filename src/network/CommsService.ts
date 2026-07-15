@@ -126,6 +126,9 @@ export class CommsService {
   private emoteIncrementalId = 0
   private readonly peerTransports = new Map<string, Set<TransportType>>()
   private realm: CommsRealmInfo
+  /** Serialize scene-room joins so cast retry + route switch cannot abort each other. */
+  private sceneRoomConnectChain: Promise<unknown> = Promise.resolve()
+  private sceneRoomConnectInFlight = false
 
   constructor(initialRealm?: Partial<CommsRealmInfo>) {
     this.realm = {
@@ -407,6 +410,24 @@ export class CommsService {
   }
 
   async connectSceneRoom(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
+    const run = this.sceneRoomConnectChain.then(() => this.connectSceneRoomExclusive(target))
+    this.sceneRoomConnectChain = run.then(
+      () => undefined,
+      () => undefined
+    )
+    return run
+  }
+
+  private async connectSceneRoomExclusive(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
+    this.sceneRoomConnectInFlight = true
+    try {
+      return await this.connectSceneRoomImpl(target)
+    } finally {
+      this.sceneRoomConnectInFlight = false
+    }
+  }
+
+  private async connectSceneRoomImpl(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
     this.sceneTarget = target
     this.sceneId = target.sceneId.trim()
     this.realm.room = normalizePointer(target.pointer)
@@ -441,20 +462,28 @@ export class CommsService {
 
     const realmName = gatekeeperRealmNameForComms(target)
 
-    try {
-      const alreadyInScene = await isWalletListedInScene(target.pointer, realmName, this.localAddress)
-      if (alreadyInScene) {
-        releaseWalletSessionLock(this.localAddress)
-        clientDebugLog.log(
-          'comms',
-          `Blocked second client — ${this.localAddress.slice(0, 8)}… already in scene`,
-          { level: 'error' }
+    // Same-tab rejoin (scene switch / chat channel reselect): gatekeeper still lists us for a
+    // few seconds after leave — do not treat self as a second client.
+    if (!this.walletSessionLockHeld) {
+      try {
+        const alreadyInScene = await isWalletListedInScene(
+          target.pointer,
+          realmName,
+          this.localAddress
         )
-        return { ok: false, reason: 'duplicate_wallet' }
+        if (alreadyInScene) {
+          releaseWalletSessionLock(this.localAddress)
+          clientDebugLog.log(
+            'comms',
+            `Blocked second client — ${this.localAddress.slice(0, 8)}… already in scene`,
+            { level: 'error' }
+          )
+          return { ok: false, reason: 'duplicate_wallet' }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        clientDebugLog.log('comms', `scene-participants preflight failed: ${msg}`, { level: 'warn' })
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      clientDebugLog.log('comms', `scene-participants preflight failed: ${msg}`, { level: 'warn' })
     }
 
     this.walletSessionLockHeld = true
@@ -976,9 +1005,9 @@ export class CommsService {
     }
 
     tryAll(true)
-    // Poll only while not attached (late RTMP publisher).
+    // Poll for late RTMP publishers and stream-end (force recheck while attached).
     const poll = window.setInterval(() => {
-      if (!lastOk) tryAll(false)
+      tryAll(true)
     }, 2000)
 
     return () => {
@@ -1080,6 +1109,8 @@ export class CommsService {
    */
   async ensureSceneRoomForCastDetection(): Promise<boolean> {
     if (this.sceneLiveKit.isConnected()) return false
+    // Never race cast retry against a scene-room switch / chat rejoin.
+    if (this.sceneRoomConnectInFlight) return false
     if (!this.identity || !this.localAddress) return false
     const target = this.sceneTarget
     if (!target) return false
@@ -1284,6 +1315,13 @@ export class CommsService {
   private disconnectSceneTransports(): void {
     this.sceneLiveKit.disconnect()
     this.rfc5.disconnect()
+    // Always drop world room too — otherwise switching world→parcel (or world→world)
+    // leaves the previous world's LiveKit peers/chat path half-alive (see dual room polls).
+    if (this.worldLiveKit.isConnected() || this.worldConnected) {
+      this.worldLiveKit.disconnect()
+      this.worldConnected = false
+      this.clearPeerTransport(TransportType.World)
+    }
     this.transport = 'none'
     this.realm.isConnectedSceneRoom = false
     this.pendingTransform = null
@@ -1320,8 +1358,8 @@ export class CommsService {
 
   /** Worlds use the world LiveKit room for Explorer chat; scene room is Cast/video. */
   private isWorldComms(): boolean {
+    // Prefer explicit scene target — never infer "world" solely from a stale world LiveKit.
     if (this.sceneTarget?.isWorld != null) return this.sceneTarget.isWorld
-    if (this.worldConnected) return true
     const pointer = this.sceneTarget?.pointer
     if (pointer) return !isParcelPointer(normalizePointer(pointer))
     return false

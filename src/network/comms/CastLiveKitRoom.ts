@@ -90,11 +90,12 @@ export class CastLiveKitRoom {
     room.on(RoomEvent.TrackUnpublished, onEv)
     room.on(RoomEvent.ParticipantConnected, onEv)
     room.on(RoomEvent.ParticipantDisconnected, onEv)
+    room.on(RoomEvent.Disconnected, onEv)
 
     attach('start')
-    // Slow poll only to catch late RTMP publishers — reattach skips same SID.
+    // Poll for late RTMP publishers and stream-end (clears host + onUpdate(false)).
     const poll = window.setInterval(() => {
-      if (!last) attach('poll')
+      attach(last ? 'poll-live' : 'poll')
     }, 2000)
     this.hostUnsub = () => {
       window.clearInterval(poll)

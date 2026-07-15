@@ -254,11 +254,31 @@ export class SocialChatDock {
     this.syncContentAlign()
   }
 
-  /** Suppress toast banners while the user is actively reading a chat thread. */
-  isChatNotificationSuppressed(): boolean {
+  /**
+   * Suppress toast banners only for the channel the user is actively reading.
+   * Other scene tabs (and explore with thread closed) still get banners + badges.
+   */
+  isChatNotificationSuppressed(incomingChannelKey?: string): boolean {
     if (!this.visible || !this.threadOpen) return false
-    if (this.isMobileLayout()) return this.mobilePanelOpen
-    return true
+    // Mobile: only suppress while the sheet is open (FAB alone should still toast).
+    if (this.isMobileLayout() && !this.mobilePanelOpen) return false
+    if (!incomingChannelKey) return true
+    const current = this.social().getChannel()
+    if (current.kind === 'scene') return incomingChannelKey === `scene:${current.sceneKey}`
+    if (current.kind === 'community') {
+      return incomingChannelKey === `community:${current.communityId.toLowerCase()}`
+    }
+    return incomingChannelKey === 'messages'
+  }
+
+  /** Leave the open thread (channel list / pills). Used when navigating off a scene landing. */
+  collapseToChannelList(): void {
+    if (!this.visible) return
+    this.threadOpen = false
+    this.listExpanded = this.isMobileLayout() ? true : this.listExpanded
+    if (this.isMobileLayout()) this.mobilePanelOpen = false
+    this.syncLayout()
+    this.renderAll()
   }
 
   /** Notifications bell — open chat panel (mobile sheet or desktop expanded list). */
@@ -398,7 +418,8 @@ export class SocialChatDock {
     for (const scene of social.getSceneTabs()) {
       const channel = { kind: 'scene' as const, sceneKey: scene.key, label: scene.label }
       const active = current.kind === 'scene' && current.sceneKey === scene.key
-      if (!active) total += social.getUnreadCount(channel)
+      // Count unread even for the selected channel unless the thread is open and being read.
+      if (!(active && this.threadOpen)) total += social.getUnreadCount(channel)
     }
 
     for (const community of social.getCommunities()) {
@@ -408,7 +429,7 @@ export class SocialChatDock {
         displayName: community.name
       }
       const active = current.kind === 'community' && current.communityId === community.id
-      if (!active) total += social.getUnreadCount(channel)
+      if (!(active && this.threadOpen)) total += social.getUnreadCount(channel)
     }
 
     return total
@@ -555,18 +576,28 @@ export class SocialChatDock {
     this.pillsScrollEl.innerHTML = ''
     this.pillsScrollEl.classList.toggle('social-chat-dock__list-scroll', this.useExpandedChannelList())
 
+    const landingKey = social.getConnectedSceneKey()?.trim().toLowerCase() ?? null
     for (const scene of social.getSceneTabs()) {
       const channel = { kind: 'scene' as const, sceneKey: scene.key, label: scene.label }
       const active = current.kind === 'scene' && current.sceneKey === scene.key
       const viewingChannel = active && this.threadOpen
+      const live = social.isLiveSceneChannel(channel)
+      const isLandingScene = landingKey != null && scene.key.trim().toLowerCase() === landingKey
       this.pillsScrollEl.appendChild(
         this.createChannelEntry({
           channel,
           title: scene.label,
-          subtitle: scene.browserChatEnabled ? 'Scene chat' : 'Chat disabled',
+          subtitle: !scene.browserChatEnabled
+            ? 'Chat disabled'
+            : live
+              ? 'Live · Scene chat'
+              : 'Connecting…',
           iconSvg: SCENE_CHAT_RAIL_ICON,
           active,
-          unreadCount: viewingChannel ? 0 : social.getUnreadCount(channel)
+          unreadCount: viewingChannel ? 0 : social.getUnreadCount(channel),
+          // Desktop: no × on the scene page we're on. Other multi-room tabs stay closable.
+          // Mobile keeps swipe/× for background rooms only (same rule).
+          closable: !isLandingScene
         })
       )
     }
@@ -603,7 +634,8 @@ export class SocialChatDock {
     active: boolean
     disabled?: boolean
     unreadCount?: number
-  }): HTMLButtonElement {
+    closable?: boolean
+  }): HTMLElement {
     if (this.useExpandedChannelList()) return this.createListRow(options)
     return this.createPillButton(options)
   }
@@ -611,6 +643,26 @@ export class SocialChatDock {
   private openChannel(channel: ChatChannelChoice): void {
     this.social().selectChannel(channel)
     this.threadOpen = true
+    this.syncLayout()
+    this.renderAll()
+    // Multi-room: join this scene's LiveKit without leaving other open rooms.
+    if (channel.kind === 'scene') {
+      void this.controller.ensureSceneChannelLive(channel.sceneKey).then((ok) => {
+        if (!this.visible) return
+        if (ok) this.renderAll()
+      })
+    }
+  }
+
+  private closeSceneChannel(sceneKey: string, ev?: Event): void {
+    ev?.stopPropagation()
+    ev?.preventDefault()
+    const social = this.social()
+    const closed = this.controller.closeSceneChannel(sceneKey)
+    if (!closed) return
+    if (this.threadOpen && social.getChannel().kind === 'messages') {
+      this.threadOpen = false
+    }
     this.syncLayout()
     this.renderAll()
   }
@@ -693,7 +745,11 @@ export class SocialChatDock {
     active: boolean
     disabled?: boolean
     unreadCount?: number
-  }): HTMLButtonElement {
+    closable?: boolean
+  }): HTMLElement {
+    const wrap = document.createElement('div')
+    wrap.className = `social-chat-dock__list-row-wrap${options.closable ? ' is-closable' : ''}`
+
     const btn = document.createElement('button')
     btn.type = 'button'
     btn.className = `social-chat-dock__list-row${options.active ? ' is-active' : ''}`
@@ -739,7 +795,71 @@ export class SocialChatDock {
       btn.addEventListener('click', () => this.openChannel(options.channel))
     }
 
-    return btn
+    wrap.appendChild(btn)
+
+    if (options.closable && options.channel.kind === 'scene') {
+      const sceneKey = options.channel.sceneKey
+      const close = document.createElement('button')
+      close.type = 'button'
+      close.className = 'social-chat-dock__list-close'
+      close.setAttribute('aria-label', `Close ${options.title}`)
+      close.textContent = '×'
+      close.addEventListener('click', (ev) => this.closeSceneChannel(sceneKey, ev))
+      wrap.appendChild(close)
+      this.wireListRowSwipe(wrap, sceneKey)
+    }
+
+    return wrap
+  }
+
+  /** Mobile: swipe left to reveal dismiss; desktop uses the ×. */
+  private wireListRowSwipe(wrap: HTMLElement, sceneKey: string): void {
+    let startX = 0
+    let dx = 0
+    let tracking = false
+    const row = wrap.querySelector('.social-chat-dock__list-row') as HTMLElement | null
+    if (!row) return
+
+    const reset = (): void => {
+      tracking = false
+      dx = 0
+      row.style.transition = 'transform 0.18s ease'
+      row.style.transform = ''
+      wrap.classList.remove('is-swiped')
+    }
+
+    row.addEventListener(
+      'touchstart',
+      (ev) => {
+        if (ev.touches.length !== 1) return
+        tracking = true
+        startX = ev.touches[0]!.clientX
+        dx = 0
+        row.style.transition = 'none'
+      },
+      { passive: true }
+    )
+    row.addEventListener(
+      'touchmove',
+      (ev) => {
+        if (!tracking || ev.touches.length !== 1) return
+        dx = ev.touches[0]!.clientX - startX
+        // Swipe left only
+        const x = Math.min(0, Math.max(-72, dx))
+        row.style.transform = `translateX(${x}px)`
+        wrap.classList.toggle('is-swiped', x < -24)
+      },
+      { passive: true }
+    )
+    row.addEventListener('touchend', () => {
+      if (!tracking) return
+      if (dx < -48) {
+        this.closeSceneChannel(sceneKey)
+        return
+      }
+      reset()
+    })
+    row.addEventListener('touchcancel', reset)
   }
 
   private appendUnreadBadge(container: HTMLElement, count: number): void {
@@ -884,10 +1004,10 @@ export class SocialChatDock {
   }
 
   private async submitMessage(): Promise<void> {
-    const channel = this.social().getChannel()
+    const social = this.social()
+    const channel = social.getChannel()
     const status = this.controller.getStatus()
-    if (channel.kind === 'scene' && status.kind !== 'connected') return
-    if (channel.kind === 'community' && (status.kind === 'guest' || !this.social().isReady())) return
+    if (channel.kind === 'community' && (status.kind === 'guest' || !social.isReady())) return
 
     const text = this.inputEl.value.trim().slice(0, CHAT_MAX_LENGTH)
     if (!text) return
@@ -900,7 +1020,15 @@ export class SocialChatDock {
       return
     }
 
-    const sent = await this.social().sendMessage(text)
+    // Ensure multi-room join for this tab, then publish (never drops other rooms).
+    if (channel.kind === 'scene' && !social.isLiveSceneChannel(channel)) {
+      const ok = await this.controller.ensureSceneChannelLive(channel.sceneKey)
+      if (!ok || !this.visible) return
+    }
+
+    if (channel.kind === 'scene' && status.kind === 'guest') return
+
+    const sent = await social.sendMessage(text)
     if (sent) {
       this.inputEl.value = ''
       this.updateComposerUi()
@@ -913,22 +1041,39 @@ export class SocialChatDock {
     const social = this.social()
     const channel = social.getChannel()
     const socialReady = social.isReady()
-    const sceneChatAllowed =
-      channel.kind !== 'scene' || (social.isSceneBrowserChatEnabled() && status.kind === 'connected')
+    const liveScene = channel.kind === 'scene' && social.isLiveSceneChannel(channel)
+    const connectingScene =
+      channel.kind === 'scene' &&
+      !liveScene &&
+      social.isSceneBrowserChatEnabled() &&
+      status.kind !== 'guest' &&
+      status.kind !== 'scene_ban'
     const canChat =
       channel.kind === 'community'
         ? socialReady && status.kind !== 'guest'
         : channel.kind === 'scene'
-          ? sceneChatAllowed
+          ? liveScene && social.isSceneBrowserChatEnabled() && status.kind !== 'guest'
           : false
-    this.inputEl.disabled = !canChat || this.imageSending
-    this.composerEl.classList.toggle('social-chat-dock__composer--disabled', !canChat)
+    this.inputEl.disabled = !canChat || this.imageSending || status.kind === 'connecting' || connectingScene
+    this.composerEl.classList.toggle(
+      'social-chat-dock__composer--disabled',
+      !canChat || status.kind === 'connecting' || connectingScene
+    )
+
+    // Remove legacy rejoin CTA if present.
+    const rejoinBtn = this.composerEl.querySelector<HTMLButtonElement>('.social-chat-dock__rejoin')
+    if (rejoinBtn) {
+      rejoinBtn.hidden = true
+      rejoinBtn.onclick = null
+    }
 
     if (!this.imageSending) {
       if (channel.kind === 'scene' && status.kind === 'scene_ban') {
         this.inputEl.placeholder = status.title
       } else if (channel.kind === 'scene' && !social.isSceneBrowserChatEnabled()) {
         this.inputEl.placeholder = 'Browser chat is disabled for this scene'
+      } else if (channel.kind === 'scene' && (status.kind === 'connecting' || connectingScene)) {
+        this.inputEl.placeholder = 'Connecting…'
       } else if (channel.kind === 'scene') {
         this.inputEl.placeholder = 'Press Enter to chat — drop an image'
       } else {

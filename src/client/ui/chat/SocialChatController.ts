@@ -2,6 +2,7 @@ import type { LoginResult } from '../../../auth/AuthClient'
 import { identityFromAvatarProfile } from '../../../avatar/displayName'
 import { fetchProfileFaceUrl } from '../../../avatar/peerApi'
 import type { RouteTarget } from '../../../dcl/content/route'
+import { parseRouteTarget } from '../../../dcl/content/route'
 import { resolveSceneFromRoute } from '../../../dcl/content/resolveScene'
 import { fetchPublicSceneTitle } from '../../../social/sceneDisplayTitle'
 import type { ResolvedScene } from '../../../dcl/content/types'
@@ -9,6 +10,8 @@ import { clientDebugLog } from '../../debug/ClientDebugLog'
 import { CommsService, type SceneCommsTarget } from '../../../network/CommsService'
 import { blacklistFromMetadata } from '../../../network/sceneAccess/sceneAccessCommon'
 import { SessionIdentity } from '../../../network/SessionIdentity'
+import { SceneChatRoomPool } from '../../../social/SceneChatRoomPool'
+import { resolveSceneChatAdapter } from '../../../social/resolveSceneChatAdapter'
 import { SocialService } from '../../../social/SocialService'
 import type { SceneLoadErrorMessage } from '../../formatSceneLoadError'
 import { UserProfileModal } from '../profile/UserProfileModal'
@@ -47,22 +50,39 @@ function buildCommsTarget(scene: ResolvedScene): SceneCommsTarget {
   }
 }
 
-/** Owns 2D-shell comms + social state — separate from in-world World chat. */
+function normalizeSceneKey(pointer: string): string {
+  return pointer.trim().toLowerCase()
+}
+
+/**
+ * Owns 2D-shell multi-room chat + landing cast/video.
+ * Chat rooms stay joined in SceneChatRoomPool when navigating; CommsService is only the
+ * current landing room (cast + presence handoff) — never steals background pool rooms.
+ */
 export class SocialChatController {
   private readonly comms = new CommsService()
   private social = new SocialService()
   private readonly session = new SessionIdentity()
+  private readonly chatPool = new SceneChatRoomPool({
+    onChat: (msg) => {
+      this.social.ingestRemoteSceneChat(msg)
+    }
+  })
   private profileModal: UserProfileModal | null = null
   private login: LoginResult | null = null
   private status: SocialChatStatus = { kind: 'idle' }
+  /** Primary CommsService landing pointer (cast / handoff). */
   private connectedPointer: string | null = null
-  private connecting = false
   private disposed = false
   private shellInitPromise: Promise<void> | null = null
+  /** Single-flight primary connect (landing). */
+  private connectPromise: Promise<boolean> | null = null
+  private connectPromiseKey: string | null = null
   private readonly onStatusChange?: () => void
 
   constructor(opts: SocialChatControllerOptions = {}) {
     this.onStatusChange = opts.onStatusChange
+    this.wireSocialTransport()
   }
 
   getSocial(): SocialService {
@@ -114,13 +134,16 @@ export class SocialChatController {
     this.session.applyLogin(login)
     if (login && (login.kind === 'wallet' || login.kind === 'guest')) {
       this.comms.setIdentity(login.address, login.identity)
+      this.chatPool.setIdentity(login.address, login.identity)
       if (this.status.kind === 'guest') this.setStatus({ kind: 'idle' })
       void this.ensureShellInit()
       return
     }
+    this.chatPool.leaveAll()
     this.comms.disconnect()
     this.connectedPointer = null
     this.comms.setIdentity(undefined, null)
+    this.chatPool.setIdentity(undefined, null)
     this.profileModal?.hide()
     this.setStatus({ kind: 'guest' })
   }
@@ -128,13 +151,16 @@ export class SocialChatController {
   /** Wallet sign-out from 2D shell — tear down comms, social state, and profile UI. */
   signOut(): void {
     if (this.disposed) return
+    this.chatPool.leaveAll()
     this.comms.disconnect()
     this.connectedPointer = null
     this.comms.setIdentity(undefined, null)
+    this.chatPool.setIdentity(undefined, null)
     this.profileModal?.dispose()
     this.profileModal = null
     this.social.dispose()
     this.social = new SocialService()
+    this.wireSocialTransport()
     this.login = null
     this.session.applyLogin(null)
     this.setStatus({ kind: 'guest' })
@@ -154,11 +180,86 @@ export class SocialChatController {
     await this.shellInitPromise
   }
 
+  /**
+   * Join (or keep) LiveKit chat for a scene tab without dropping other multi-room joins.
+   * Does not switch the primary CommsService landing room.
+   */
+  async ensureSceneChannelLive(sceneKey: string): Promise<boolean> {
+    if (this.disposed) return false
+    const key = normalizeSceneKey(sceneKey)
+    const tab = this.social.getSceneTabs().find((row) => normalizeSceneKey(row.key) === key)
+    if (!tab) return false
+    if (tab.browserChatEnabled === false) return false
+
+    // Already live via primary landing room or pool.
+    if (
+      this.connectedPointer &&
+      normalizeSceneKey(this.connectedPointer) === key &&
+      this.comms.isLiveKitConnected()
+    ) {
+      this.syncLiveKeys()
+      return true
+    }
+    if (this.chatPool.isJoined(key)) {
+      this.syncLiveKeys()
+      return true
+    }
+
+    return this.joinPoolForTab(tab.key)
+  }
+
+  /** Leave LiveKit for a tab and remove it from the channel list. */
+  closeSceneChannel(sceneKey: string): boolean {
+    if (this.disposed) return false
+    const key = normalizeSceneKey(sceneKey)
+    this.chatPool.leave(key)
+    if (this.connectedPointer && normalizeSceneKey(this.connectedPointer) === key) {
+      // Keep cast/landing optional: user closed chat — drop primary room too so identity frees.
+      this.comms.disconnect()
+      this.connectedPointer = null
+      if (this.status.kind === 'connected' || this.status.kind === 'browser_chat_disabled') {
+        this.setStatus({ kind: 'idle' })
+      }
+    }
+    const closed = this.social.closeSceneTab(sceneKey)
+    this.syncLiveKeys()
+    return closed
+  }
+
+  private routeConnectKey(route: RouteTarget): string {
+    if (route.kind === 'world') return route.worldName.trim().toLowerCase()
+    if (route.kind === 'coords') return `${route.x},${route.y}`
+    return ''
+  }
+
   async connectForRoute(route: RouteTarget): Promise<boolean> {
     if (this.disposed) return false
     if (route.kind !== 'coords' && route.kind !== 'world') return false
-    if (this.connecting) return false
 
+    const key = this.routeConnectKey(route)
+    // Same target already connecting — await that join (don't no-op false).
+    if (this.connectPromise && this.connectPromiseKey === key) {
+      return this.connectPromise
+    }
+    // Different target in flight — wait, then start this one.
+    if (this.connectPromise) {
+      await this.connectPromise.catch(() => false)
+    }
+    if (this.disposed) return false
+
+    this.connectPromiseKey = key
+    this.connectPromise = this.connectForRouteExclusive(route).finally(() => {
+      if (this.connectPromiseKey === key) {
+        this.connectPromise = null
+        this.connectPromiseKey = null
+      }
+    })
+    return this.connectPromise
+  }
+
+  private async connectForRouteExclusive(
+    route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
+  ): Promise<boolean> {
     if (!this.login || (this.login.kind !== 'wallet' && this.login.kind !== 'guest')) {
       this.setStatus({ kind: 'guest' })
       return false
@@ -167,7 +268,6 @@ export class SocialChatController {
     await this.ensureShellInit()
     if (this.disposed) return false
 
-    this.connecting = true
     this.setStatus({ kind: 'connecting' })
     try {
       const scene = await resolveSceneFromRoute(route)
@@ -180,16 +280,23 @@ export class SocialChatController {
         pointer: scene.commsPointer,
         browserChatEnabled: scene.browserChatEnabled
       }
+      const newKey = scene.commsPointer
+      const prevKey = this.connectedPointer
 
+      // Already primary-connected to this landing.
       if (
-        this.connectedPointer === scene.commsPointer &&
-        this.social.getSceneTabs().some((tab) => tab.key === scene.commsPointer)
+        prevKey === newKey &&
+        this.comms.isLiveKitConnected() &&
+        this.social.getSceneTabs().some((tab) => tab.key === newKey)
       ) {
         await this.social.attachSceneComms({
           comms: scene.browserChatEnabled ? this.comms : null,
           sceneTab,
           contentUrl: scene.realm.contentUrl
         })
+        // Drop pool room for this key if any (primary owns it).
+        if (this.chatPool.isJoined(newKey)) this.chatPool.leave(newKey)
+        this.syncLiveKeys()
         this.setStatus(
           scene.browserChatEnabled
             ? { kind: 'connected', sceneLabel }
@@ -198,30 +305,50 @@ export class SocialChatController {
         return true
       }
 
+      // Prefetch previous landing adapter so we can re-join it on the pool after primary leaves.
+      const migrateAdapterPromise =
+        prevKey && normalizeSceneKey(prevKey) !== normalizeSceneKey(newKey)
+          ? this.resolveAdapterForSceneKey(prevKey)
+          : Promise.resolve(null)
+
       if (!scene.browserChatEnabled) {
         this.comms.disconnect()
+        this.connectedPointer = null
+        await this.joinPoolAfterPrimaryLeft(prevKey, newKey, await migrateAdapterPromise)
         await this.social.attachSceneComms({
           comms: null,
           sceneTab,
           contentUrl: scene.realm.contentUrl
         })
         this.connectedPointer = scene.commsPointer
+        this.syncLiveKeys()
         this.setStatus({ kind: 'browser_chat_disabled', sceneLabel })
         clientDebugLog.log('social', '2D shell scene chat disabled by scene.json', { level: 'info' })
         return true
       }
 
+      // Avoid double-identity on the same LiveKit room: pool must leave before primary joins.
+      if (this.chatPool.isJoined(newKey)) {
+        this.chatPool.leave(newKey)
+      }
+
       this.session.setCatalystEndpoints(scene.realm.contentUrl, scene.realm.lambdasUrl)
       this.comms.setIdentity(this.login.address, this.login.identity)
+      this.chatPool.setIdentity(this.login.address, this.login.identity)
       this.comms.applyRealmAbout(scene.realm, scene.commsPointer)
       if (!this.session.getProfile()) {
         await this.session.connect()
       }
       this.comms.setCommsProfile(this.session.getCommsProfileEntity())
       this.comms.setLambdasUrl(scene.realm.lambdasUrl)
+      this.chatPool.setLambdasUrl(scene.realm.lambdasUrl)
 
+      // connectSceneRoom disconnects previous primary — migrate that room into the pool after.
       const connectResult = await this.comms.connectSceneRoom(buildCommsTarget(scene))
+      const migrate = await migrateAdapterPromise
       if (!connectResult.ok) {
+        this.connectedPointer = null
+        await this.joinPoolAfterPrimaryLeft(prevKey, newKey, migrate)
         if (connectResult.reason === 'duplicate_wallet') {
           this.setStatus({ kind: 'duplicate_wallet' })
         } else if (connectResult.reason === 'no_identity') {
@@ -234,6 +361,7 @@ export class SocialChatController {
         } else {
           this.setStatus({ kind: 'failed', message: 'Could not join scene chat' })
         }
+        this.syncLiveKeys()
         return false
       }
 
@@ -244,17 +372,28 @@ export class SocialChatController {
       })
 
       this.connectedPointer = scene.commsPointer
+
+      // Keep previous landing chat live in the multi-room pool (dcl-companion style).
+      await this.joinPoolAfterPrimaryLeft(prevKey, newKey, migrate)
+
+      this.syncLiveKeys()
       this.setStatus({ kind: 'connected', sceneLabel })
       void this.hydrateLocalProfile()
-      clientDebugLog.log('social', '2D shell scene chat connected', { level: 'success' })
+      clientDebugLog.log(
+        'social',
+        `2D shell multi-room · primary=${scene.commsPointer} · pool=[${this.chatPool.getJoinedKeys().join(', ')}]`,
+        { level: 'success', alsoConsole: true }
+      )
       return true
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      clientDebugLog.log('social', `2D shell chat connect failed: ${msg}`, { level: 'error' })
+      clientDebugLog.log('social', `2D shell chat connect failed: ${msg}`, {
+        level: 'error',
+        alsoConsole: true
+      })
       this.setStatus({ kind: 'failed', message: msg })
+      this.syncLiveKeys()
       return false
-    } finally {
-      this.connecting = false
     }
   }
 
@@ -274,6 +413,8 @@ export class SocialChatController {
   /** Mid-session or pre-connect ban — tear down comms and block scene chat. */
   applySceneBan(message: SceneLoadErrorMessage): void {
     if (this.disposed) return
+    const key = this.connectedPointer
+    if (key) this.chatPool.leave(key)
     this.comms.disconnect()
     this.connectedPointer = null
     const sceneTab = this.social.getSceneTabs()[0]
@@ -284,22 +425,35 @@ export class SocialChatController {
         contentUrl: this.getContentUrl()
       })
     }
+    this.syncLiveKeys()
     this.setStatus({ kind: 'scene_ban', title: message.title, detail: message.detail })
   }
 
-  /** Disconnect 2D-shell comms so World can join the same room (landing → play handoff). */
+  /** Disconnect 2D-shell primary comms so World can join the same room (landing → play handoff). */
   releaseCommsForWorldHandoff(): void {
     if (this.disposed) return
-    this.comms.disconnect()
-    this.connectedPointer = null
-    if (this.status.kind === 'connected' || this.status.kind === 'browser_chat_disabled') {
-      this.setStatus({ kind: 'connecting' })
-    }
+    const prev = this.connectedPointer
+    void (async () => {
+      // Resolve adapter while still connected, then leave primary, then pool-join (no identity clash).
+      const migrate =
+        prev && this.social.getSceneTabs().some((t) => normalizeSceneKey(t.key) === normalizeSceneKey(prev))
+          ? await this.resolveAdapterForSceneKey(prev)
+          : null
+      if (this.disposed) return
+      this.comms.disconnect()
+      this.connectedPointer = null
+      await this.joinPoolAfterPrimaryLeft(prev, null, migrate)
+      this.syncLiveKeys()
+      if (this.status.kind === 'connected' || this.status.kind === 'browser_chat_disabled') {
+        this.setStatus({ kind: 'connecting' })
+      }
+    })()
   }
 
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.chatPool.leaveAll()
     this.social.dispose()
     this.comms.dispose()
     this.profileModal?.dispose()
@@ -308,11 +462,157 @@ export class SocialChatController {
     this.setStatus({ kind: 'idle' })
   }
 
+  private wireSocialTransport(): void {
+    this.social.setSceneChatTransport({
+      send: (sceneKey, text) => this.sendSceneChat(sceneKey, text),
+      sendMedia: (sceneKey, envelopes) => this.sendSceneChatMedia(sceneKey, envelopes)
+    })
+  }
+
+  private async sendSceneChat(sceneKey: string, text: string): Promise<boolean> {
+    const key = normalizeSceneKey(sceneKey)
+    if (this.chatPool.isJoined(key)) {
+      return this.chatPool.sendChat(key, text)
+    }
+    if (
+      this.connectedPointer &&
+      normalizeSceneKey(this.connectedPointer) === key &&
+      this.comms.isLiveKitConnected()
+    ) {
+      return this.comms.sendSceneChat(text)
+    }
+    console.warn(`[chat] send skip — no live room for ${sceneKey}`)
+    return false
+  }
+
+  private async sendSceneChatMedia(sceneKey: string, envelopes: Uint8Array[]): Promise<boolean> {
+    const key = normalizeSceneKey(sceneKey)
+    if (this.chatPool.isJoined(key)) {
+      return this.chatPool.sendChatMedia(key, envelopes)
+    }
+    if (
+      this.connectedPointer &&
+      normalizeSceneKey(this.connectedPointer) === key &&
+      this.comms.isLiveKitConnected()
+    ) {
+      return this.comms.sendSceneChatMedia(envelopes)
+    }
+    return false
+  }
+
+  private syncLiveKeys(): void {
+    const keys = new Set<string>(this.chatPool.getJoinedKeys())
+    if (this.connectedPointer && this.comms.isLiveKitConnected()) {
+      keys.add(this.connectedPointer)
+    }
+    // Also keep browser-disabled landing marked non-live (not added).
+    this.social.syncLiveSceneKeys(keys)
+  }
+
+  private async joinPoolForTab(sceneKey: string): Promise<boolean> {
+    if (this.disposed) return false
+    if (!this.login || (this.login.kind !== 'wallet' && this.login.kind !== 'guest')) return false
+
+    const resolved = await this.resolveAdapterForSceneKey(sceneKey)
+    if (!resolved) return false
+
+    // Never pool-join the primary room (same LiveKit identity would conflict).
+    if (
+      this.connectedPointer &&
+      normalizeSceneKey(this.connectedPointer) === normalizeSceneKey(sceneKey) &&
+      this.comms.isLiveKitConnected()
+    ) {
+      this.syncLiveKeys()
+      return true
+    }
+
+    this.chatPool.setIdentity(this.login.address, this.login.identity)
+    const ok = await this.chatPool.join({
+      sceneKey,
+      label: resolved.label,
+      adapter: resolved.adapter,
+      isWorldChat: resolved.isWorldChat
+    })
+    this.syncLiveKeys()
+    return ok
+  }
+
+  private async resolveAdapterForSceneKey(
+    sceneKey: string
+  ): Promise<{ adapter: string; isWorldChat: boolean; label: string } | null> {
+    if (!this.login || (this.login.kind !== 'wallet' && this.login.kind !== 'guest')) return null
+    const tab = this.social.getSceneTabs().find((t) => normalizeSceneKey(t.key) === normalizeSceneKey(sceneKey))
+    const pointer = tab?.pointer ?? sceneKey
+    const route = parseRouteTarget(pointer)
+    if (route.kind !== 'coords' && route.kind !== 'world') return null
+    try {
+      const scene = await resolveSceneFromRoute(route)
+      if (this.disposed) return null
+      const result = await resolveSceneChatAdapter(scene, this.login.identity)
+      if (!result.ok) {
+        clientDebugLog.log('social', `Multi-room adapter failed · ${sceneKey}: ${result.reason}`, {
+          level: 'warn',
+          alsoConsole: true
+        })
+        return null
+      }
+      return {
+        adapter: result.adapter,
+        isWorldChat: result.isWorldChat,
+        label: tab?.label ?? scene.title ?? sceneKey
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      clientDebugLog.log('social', `Multi-room resolve failed · ${sceneKey}: ${msg}`, {
+        level: 'warn',
+        alsoConsole: true
+      })
+      return null
+    }
+  }
+
+  /**
+   * After primary CommsService has left `prevKey`, re-join that room on the multi-room pool
+   * so background tabs stay live (same pattern as dcl-companion multi-text-chats).
+   */
+  private async joinPoolAfterPrimaryLeft(
+    prevKey: string | null,
+    nextKey: string | null,
+    resolved: { adapter: string; isWorldChat: boolean; label: string } | null
+  ): Promise<void> {
+    if (!prevKey || !resolved) return
+    if (nextKey && normalizeSceneKey(prevKey) === normalizeSceneKey(nextKey)) return
+    if (this.disposed) return
+    const stillOpen = this.social
+      .getSceneTabs()
+      .some((t) => normalizeSceneKey(t.key) === normalizeSceneKey(prevKey))
+    if (!stillOpen) return
+    if (this.chatPool.isJoined(prevKey)) return
+    if (this.login && (this.login.kind === 'wallet' || this.login.kind === 'guest')) {
+      this.chatPool.setIdentity(this.login.address, this.login.identity)
+    }
+    const ok = await this.chatPool.join({
+      sceneKey: prevKey,
+      label: resolved.label,
+      adapter: resolved.adapter,
+      isWorldChat: resolved.isWorldChat
+    })
+    if (ok) {
+      clientDebugLog.log(
+        'social',
+        `Multi-room keep-alive · ${resolved.label} (${prevKey}) · pool=${this.chatPool.getJoinedKeys().length}`,
+        { level: 'success', alsoConsole: true }
+      )
+    }
+  }
+
   private async runShellInit(): Promise<void> {
     if (!this.login || (this.login.kind !== 'wallet' && this.login.kind !== 'guest')) return
     await this.session.connect()
     const login = this.login
     const isGuest = login.kind === 'guest'
+    this.chatPool.setIdentity(login.address, login.identity)
+    this.chatPool.setLambdasUrl(this.session.getLambdasUrl())
     await this.social.initShell({
       address: login.address,
       identity: login.identity,
@@ -320,6 +620,7 @@ export class SocialChatController {
       isGuest,
       displayName: login.kind === 'guest' ? login.displayName : undefined
     })
+    this.wireSocialTransport()
     void this.hydrateLocalProfile()
     this.onStatusChange?.()
   }

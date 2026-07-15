@@ -1,4 +1,4 @@
-import type { LoginResult } from '../auth/AuthClient'
+import { loginHasCommsIdentity, type LoginResult } from '../auth/AuthClient'
 import { clearStoredIdentity } from '../auth/identityStore'
 import {
   applyRouteToHistory,
@@ -457,6 +457,8 @@ export class AppController {
     })
     this.explorerView.mount(this.container)
     this.ensureSocialChatShell()
+    // Leave scene-thread "reading" mode so inbound scene chat can toast + badge.
+    this.collapseSocialChatThread()
   }
 
   private async showMapPage(
@@ -501,6 +503,7 @@ export class AppController {
     })
     this.mapPageView.mount(this.container)
     this.ensureSocialChatShell()
+    this.collapseSocialChatThread()
   }
 
   private async showEventsPage(
@@ -542,6 +545,7 @@ export class AppController {
     })
     this.eventsPageView.mount(this.container)
     this.ensureSocialChatShell()
+    this.collapseSocialChatThread()
   }
 
   private async showCommunitiesPage(
@@ -577,6 +581,7 @@ export class AppController {
     })
     this.communitiesPageView.mount(this.container)
     this.ensureSocialChatShell()
+    this.collapseSocialChatThread()
   }
 
   private async showProfilePage(
@@ -613,6 +618,7 @@ export class AppController {
     })
     this.profilePageView.mount(this.container)
     this.ensureSocialChatShell()
+    this.collapseSocialChatThread()
   }
 
   private teardownExplorer(): void {
@@ -792,6 +798,7 @@ export class AppController {
   /**
    * Watch OBS stream-key video (scene-stream-access RTMP → scene LiveKit room).
    * Fresh get-scene-adapter join so we attach to the same room as in-world livekit-video://current-stream.
+   * Wallet **or guest** identity can watch (signed gatekeeper + LiveKit).
    */
   private async startLandingCastWatch(
     target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>,
@@ -799,9 +806,25 @@ export class AppController {
     onUpdate?: (attached: boolean) => void,
     opts?: { muted?: boolean; volume?: number }
   ): Promise<() => void> {
-    if (this.login?.kind !== 'wallet') {
-      throw new Error('Sign in with a wallet to watch stream-key video.')
+    if (!loginHasCommsIdentity(this.login)) {
+      // Edge case: no session yet — mint browser guest so Cast works without a wallet.
+      try {
+        const guest = await ensureGuestSession()
+        this.login = guest
+        this.playSessionReady = true
+        this.applyLoginToSocialShellViews(guest)
+        this.sceneLandingView?.setPlaySessionReady(true)
+        this.sceneLandingView?.setLogin(guest)
+        this.ensureSocialChatShell()
+        this.socialChat?.applyLogin(guest)
+      } catch {
+        /* fall through */
+      }
     }
+    if (!loginHasCommsIdentity(this.login)) {
+      throw new Error('Could not start a guest session to watch the live stream. Try signing in.')
+    }
+    const identity = this.login.identity
 
     const { resolveSceneFromRoute } = await import('../dcl/content/resolveScene')
     const { getSceneAdapter } = await import('../network/gatekeeper/GatekeeperClient')
@@ -824,7 +847,7 @@ export class AppController {
       : scene.realm.realmName?.trim() || 'main'
 
     console.log(
-      `[cast] stream-key watch: sceneId=${sceneId.slice(0, 18)}… parcel=${parcel} realm=${realmName} isWorld=${isWorld}`
+      `[cast] stream-key watch: sceneId=${sceneId.slice(0, 18)}… parcel=${parcel} realm=${realmName} isWorld=${isWorld} as=${this.login.kind}`
     )
 
     // Prefer existing scene-room session first (already joined for chat).
@@ -840,7 +863,7 @@ export class AppController {
       console.log('[cast] existing scene room has no video yet — fresh adapter join')
     }
 
-    const adapterResult = await getSceneAdapter(this.login.identity, {
+    const adapterResult = await getSceneAdapter(identity, {
       sceneId,
       parcel,
       realmName,
@@ -933,10 +956,15 @@ export class AppController {
         this.socialChatDock?.openFromNotification()
       },
       onOpenUserProfile: (address) => this.socialChat?.openProfileForAddress(address),
-      isChatNotificationSuppressed: () =>
-        this.socialChatDock?.isChatNotificationSuppressed() ?? false
+      isChatNotificationSuppressed: (channelKey) =>
+        this.socialChatDock?.isChatNotificationSuppressed(channelKey) ?? false
     })
     this.socialMobileNotifications.mount()
+  }
+
+  /** Off a scene landing → stop treating the dock as "reading" so scene chat can toast. */
+  private collapseSocialChatThread(): void {
+    this.socialChatDock?.collapseToChannelList()
   }
 
   private teardownSocialChatShell(disposeComms = false): void {

@@ -207,20 +207,33 @@ export class SceneLandingView {
   /**
    * Cast/OBS live flag from LiveKit remote video tracks (wallet scene-room connection).
    * Updates LIVE badge + Join live menu.
+   * When the stream ends while watching, leave video mode and restore scene details.
    */
   setCastLive(live: boolean): void {
     if (this.castLive === live) {
       // Still refresh chrome — layout may have remounted while state was already true.
       this.syncLiveBadge()
       this.refreshJoinLiveOptions()
+      // Stream ended while still in watch UI (castLive already false but stage open).
+      if (!live && this.streamWatchActive) {
+        this.returnToSceneDetailsAfterStreamEnd()
+      }
       return
     }
     this.castLive = live
     this.syncLiveBadge()
     this.refreshJoinLiveOptions()
-    if (!live && this.liveKitVideoCleanup) {
-      this.teardownStreamPlayer()
+    if (!live && this.streamWatchActive) {
+      this.returnToSceneDetailsAfterStreamEnd()
     }
+  }
+
+  /** Stream ended — leave blank cast stage, show landing scene card again. */
+  private returnToSceneDetailsAfterStreamEnd(): void {
+    if (this.disposed) return
+    console.log('[cast] stream ended — returning to scene details')
+    this.forceExitStreamWatchMode()
+    this.showStreamNotice('Live stream ended.')
   }
 
   /**
@@ -897,11 +910,8 @@ export class SceneLandingView {
       <div class="scene-watch-cast-stage__card">
         <div class="scene-watch-cast-stage__toolbar">
           <div class="scene-watch-cast-stage__toolbar-left">
-            <button type="button" class="scene-watch-cast-stage__icon-btn" data-cast-mute aria-label="Mute" title="Mute">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden>
-                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-                <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
-              </svg>
+            <button type="button" class="scene-watch-cast-stage__icon-btn" data-cast-mute aria-label="Mute" title="Mute" aria-pressed="false">
+              <span data-cast-mute-icon aria-hidden></span>
             </button>
             <label class="scene-watch-cast-stage__vol">
               <span>Vol</span>
@@ -954,21 +964,57 @@ export class SceneLandingView {
       void this.toggleCastFullscreen(card)
     })
     stage.querySelector('[data-cast-mute]')?.addEventListener('click', () => {
-      this.castMuted = !this.castMuted
-      this.applyCastAudioToHost()
-      const btn = stage.querySelector('[data-cast-mute]') as HTMLButtonElement
-      btn.setAttribute('aria-label', this.castMuted ? 'Unmute' : 'Mute')
-      btn.title = this.castMuted ? 'Unmute' : 'Mute'
+      this.toggleCastMute()
     })
     stage.querySelector('[data-cast-volume]')?.addEventListener('input', (e) => {
       const t = e.target as HTMLInputElement
       this.castVolume = Math.min(1, Math.max(0, Number(t.value) / 100))
       if (this.castVolume > 0) this.castMuted = false
+      else this.castMuted = true
       this.applyCastAudioToHost()
+      this.syncCastMuteUi()
     })
 
+    this.syncCastMuteUi()
     this.syncCastFullscreenButton()
     return stage.querySelector('[data-cast-video-host]') as HTMLElement
+  }
+
+  /** Volume / speaker button — toggle mute on the cast video (mobile + desktop). */
+  private toggleCastMute(): void {
+    this.castMuted = !this.castMuted
+    if (!this.castMuted && this.castVolume <= 0) this.castVolume = 1
+    this.applyCastAudioToHost()
+    this.syncCastMuteUi()
+  }
+
+  private syncCastMuteUi(): void {
+    const stage = this.root.querySelector('[data-cast-stage]')
+    if (!stage) return
+    const btn = stage.querySelector('[data-cast-mute]') as HTMLButtonElement | null
+    const icon = stage.querySelector('[data-cast-mute-icon]') as HTMLElement | null
+    const slider = stage.querySelector('[data-cast-volume]') as HTMLInputElement | null
+    if (btn) {
+      btn.setAttribute('aria-label', this.castMuted ? 'Unmute' : 'Mute')
+      btn.title = this.castMuted ? 'Unmute' : 'Mute'
+      btn.setAttribute('aria-pressed', this.castMuted ? 'true' : 'false')
+      btn.classList.toggle('is-muted', this.castMuted)
+    }
+    if (icon) {
+      icon.innerHTML = this.castMuted
+        ? `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+            <line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>
+          </svg>`
+        : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+          </svg>`
+    }
+    if (slider) {
+      slider.value = String(Math.round((this.castMuted ? 0 : this.castVolume) * 100))
+    }
   }
 
   private async handleCastCloseClick(): Promise<void> {
@@ -1019,9 +1065,14 @@ export class SceneLandingView {
 
   private applyCastAudioToHost(): void {
     const host = this.root.querySelector('[data-cast-video-host]')
-    host?.querySelectorAll('video').forEach((v) => {
-      v.muted = this.castMuted
-      v.volume = this.castMuted ? 0 : this.castVolume
+    host?.querySelectorAll('video, audio').forEach((node) => {
+      const media = node as HTMLMediaElement
+      media.muted = this.castMuted
+      media.volume = this.castMuted ? 0 : this.castVolume
+      // User gesture (mute button) unlocks audio after autoplay-muted start.
+      if (!this.castMuted && media.paused) {
+        void media.play().catch(() => {})
+      }
     })
   }
 
@@ -1039,14 +1090,39 @@ export class SceneLandingView {
       waiting.textContent = 'Joining scene LiveKit (stream keys)…'
     }
 
+    /** True after we successfully showed video once — detach → end stream, not pre-join noise. */
+    let hadVideo = false
+    let endGuardTimer = 0
+
     void this.startCastWatch(
       host,
       (attached) => {
-        if (waiting) waiting.hidden = attached
+        if (!this.streamWatchActive || this.disposed) return
         if (attached) {
+          hadVideo = true
+          if (endGuardTimer) {
+            window.clearTimeout(endGuardTimer)
+            endGuardTimer = 0
+          }
+          if (waiting) waiting.hidden = true
           if (hint) hint.hidden = true
+          // Re-apply UI mute after LiveKit attach (initial attach may use snapshot opts).
           this.applyCastAudioToHost()
+          this.syncCastMuteUi()
           this.setCastLive(true)
+          return
+        }
+        if (waiting) waiting.hidden = false
+        // Lost video after it was live — debounce brief track swaps, then back to details.
+        if (hadVideo && this.streamWatchActive) {
+          if (endGuardTimer) window.clearTimeout(endGuardTimer)
+          endGuardTimer = window.setTimeout(() => {
+            endGuardTimer = 0
+            if (this.disposed || !this.streamWatchActive || !hadVideo) return
+            if (host.querySelector('video')) return
+            // setCastLive(false) restores scene details when streamWatchActive.
+            this.setCastLive(false)
+          }, 1200)
         }
       },
       { muted: this.castMuted, volume: this.castVolume }
@@ -1055,7 +1131,13 @@ export class SceneLandingView {
         cleanup()
         return
       }
-      this.liveKitVideoCleanup = cleanup
+      this.liveKitVideoCleanup = () => {
+        if (endGuardTimer) {
+          window.clearTimeout(endGuardTimer)
+          endGuardTimer = 0
+        }
+        cleanup()
+      }
     }).catch((e) => {
       const msg = e instanceof Error ? e.message : String(e)
       if (waiting) waiting.hidden = true
@@ -1074,6 +1156,7 @@ export class SceneLandingView {
       }
       if (host.querySelector('video')) {
         window.clearInterval(waitTimer)
+        hadVideo = true
         if (waiting) waiting.hidden = true
         if (hint) hint.hidden = true
         return
@@ -1100,11 +1183,14 @@ export class SceneLandingView {
     const hint = this.root.querySelector('[data-cast-hint]') as HTMLElement | null
     const video = document.createElement('video')
     video.className = 'scene-watch-cast-stage__video'
-    video.controls = true
+    video.controls = false
     video.playsInline = true
     video.autoplay = true
+    video.muted = this.castMuted
+    video.volume = this.castMuted ? 0 : this.castVolume
     host.replaceChildren(video)
     if (waiting) waiting.hidden = true
+    this.syncCastMuteUi()
 
     if (Hls.isSupported()) {
       const hls = new Hls({ enableWorker: true })
@@ -1124,6 +1210,7 @@ export class SceneLandingView {
       hint.textContent = 'HLS playback is not supported in this browser.'
     }
     void video.play().catch(() => {})
+    this.applyCastAudioToHost()
   }
 
   private openSceneSettingsModal(): void {

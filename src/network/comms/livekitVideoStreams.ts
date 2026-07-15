@@ -188,9 +188,21 @@ export function reattachFirstRemoteVideoToHost(
   host: HTMLElement,
   opts?: { muted?: boolean; volume?: number; controls?: boolean }
 ): boolean {
-  if (!room || room.state !== ConnectionState.Connected) return false
+  if (!room || room.state !== ConnectionState.Connected) {
+    // Room dropped while watching — clear stale <video> so UI can exit cast stage.
+    if (host.querySelector('video') || host.dataset.castTrackSid) {
+      clearCastVideoHost(host)
+    }
+    return false
+  }
   const pick = pickBestRemoteVideoTrack(room)
-  if (!pick) return false
+  if (!pick) {
+    // Publisher stopped / unpublished — remove blank player so landing can return to details.
+    if (host.querySelector('video') || host.dataset.castTrackSid) {
+      clearCastVideoHost(host)
+    }
+    return false
+  }
 
   const nextSid =
     pick.publication.trackSid?.trim() ||
@@ -199,11 +211,9 @@ export function reattachFirstRemoteVideoToHost(
   const existing = host.querySelector('video')
   const currentSid = host.dataset.castTrackSid ?? ''
 
-  // Same track already mounted — only refresh audio props (no detach/replace = no flicker).
+  // Same track already mounted — do not remount (no flicker) and do **not** stomp
+  // mute/volume (UI mute toggle owns those after first attach).
   if (existing instanceof HTMLVideoElement && currentSid === nextSid && existing.isConnected) {
-    const muted = opts?.muted === true
-    existing.muted = muted
-    existing.volume = muted ? 0 : Math.min(1, Math.max(0, opts?.volume ?? 1))
     if (existing.paused) void existing.play().catch(() => {})
     return true
   }

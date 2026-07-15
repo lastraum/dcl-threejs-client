@@ -55,10 +55,15 @@ type SocialSceneAttachOptions = {
 
 let lineCounter = 0
 
-function channelKey(channel: ChatChannelChoice): string {
+export function socialChannelKey(channel: ChatChannelChoice): string {
   if (channel.kind === 'scene') return `scene:${channel.sceneKey}`
   if (channel.kind === 'community') return `community:${channel.communityId.toLowerCase()}`
   return 'messages'
+}
+
+/** @deprecated use socialChannelKey */
+function channelKey(channel: ChatChannelChoice): string {
+  return socialChannelKey(channel)
 }
 
 function formatTime(unixSec: number): string {
@@ -74,8 +79,20 @@ export class SocialService {
   private localFaceUrl: string | null = null
   private localNameColor = '#b8ff66'
   private sceneTabs: SceneChatTab[] = []
-  /** Live comms room — incoming scene chat routes here. */
+  /**
+   * Landing/current scene (CommsService primary room for cast + handoff).
+   * Background multi-room chat may also be live via `liveSceneKeys`.
+   */
   private connectedSceneKey: string | null = null
+  /** Scene keys with an active LiveKit chat room (primary and/or multi-room pool). */
+  private readonly liveSceneKeys = new Set<string>()
+  /** Optional multi-room send — when set, scene chat publishes per sceneKey. */
+  private sceneChatSend:
+    | ((sceneKey: string, text: string) => Promise<boolean>)
+    | null = null
+  private sceneChatMediaSend:
+    | ((sceneKey: string, envelopes: Uint8Array[]) => Promise<boolean>)
+    | null = null
   private communities: CommunityListRow[] = []
   private channel: ChatChannelChoice = { kind: 'messages' }
   private readonly messages = new Map<string, ChatLine[]>()
@@ -96,6 +113,38 @@ export class SocialService {
   private readonly mediaAssembler = new DcmInboundAssembler()
   private readonly mediaObjectUrls = new Set<string>()
 
+  /** Wire multi-room publish (pool / controller). Falls back to primary CommsService. */
+  setSceneChatTransport(options: {
+    send?: ((sceneKey: string, text: string) => Promise<boolean>) | null
+    sendMedia?: ((sceneKey: string, envelopes: Uint8Array[]) => Promise<boolean>) | null
+  }): void {
+    this.sceneChatSend = options.send ?? null
+    this.sceneChatMediaSend = options.sendMedia ?? null
+  }
+
+  /** Mark a scene chat room live or offline (multi-room pool + primary). */
+  setSceneChatLive(sceneKey: string, live: boolean): void {
+    const key = sceneKey.trim()
+    if (!key) return
+    if (live) this.liveSceneKeys.add(key)
+    else this.liveSceneKeys.delete(key)
+    this.notifyChannelChange()
+  }
+
+  /** Replace the full live set (e.g. after connect / leave). */
+  syncLiveSceneKeys(keys: Iterable<string>): void {
+    this.liveSceneKeys.clear()
+    for (const k of keys) {
+      const key = k.trim()
+      if (key) this.liveSceneKeys.add(key)
+    }
+    this.notifyChannelChange()
+  }
+
+  getLiveSceneKeys(): string[] {
+    return [...this.liveSceneKeys]
+  }
+
   /** 2D shell bootstrap — communities + profile without scene comms. */
   async initShell(options: SocialShellInitOptions): Promise<void> {
     this.authIdentity = options.identity
@@ -103,6 +152,7 @@ export class SocialService {
     this.displayName = options.displayName?.trim() || 'You'
     this.sceneTabs = []
     this.connectedSceneKey = null
+    this.liveSceneKeys.clear()
     this.comms = null
     this.channel = { kind: 'messages' }
     this.peerProfiles.setPeerUrl(options.contentUrl ?? 'https://peer.decentraland.org')
@@ -127,17 +177,25 @@ export class SocialService {
     if (options.comms && options.sceneTab.browserChatEnabled) {
       this.wireCommsHandlers()
     }
-    if (this.channel.kind === 'messages') {
-      this.channel = {
-        kind: 'scene',
-        sceneKey: options.sceneTab.key,
-        label: options.sceneTab.label
-      }
+    // Always focus the live room so UI + inbound lines share the same channel key.
+    // Prior scene tabs keep their message history in `messages` for later open.
+    this.channel = {
+      kind: 'scene',
+      sceneKey: options.sceneTab.key,
+      label: options.sceneTab.label
+    }
+    if (this.channelThreadOpen) {
+      this.unreadCounts.delete(channelKey(this.channel))
     }
     if (!this.ready) {
       this.ready = true
     }
     this.notifyChannelChange()
+  }
+
+  /** Messages for a specific channel (scene tab history after switching rooms). */
+  getMessagesForChannel(channel: ChatChannelChoice): ChatLine[] {
+    return [...(this.messages.get(channelKey(channel)) ?? [])]
   }
 
   async init(options: SocialInitOptions): Promise<void> {
@@ -226,6 +284,87 @@ export class SocialService {
 
   getMessages(): ChatLine[] {
     return [...(this.messages.get(channelKey(this.channel)) ?? [])]
+  }
+
+  /** True when this scene channel has a live LiveKit chat room (primary or multi-room). */
+  isLiveSceneChannel(channel: ChatChannelChoice): boolean {
+    if (channel.kind !== 'scene') return false
+    return this.liveSceneKeys.has(channel.sceneKey)
+  }
+
+  getConnectedSceneKey(): string | null {
+    return this.connectedSceneKey
+  }
+
+  /** Human label for notification banners / UI from a `socialChannelKey`. */
+  labelForChannelKey(key: string): string {
+    if (key.startsWith('scene:')) {
+      const sceneKey = key.slice('scene:'.length)
+      const tab = this.findSceneTab(sceneKey)
+      return tab?.label?.trim() || sceneKey
+    }
+    if (key.startsWith('community:')) {
+      const id = key.slice('community:'.length)
+      const row = this.communities.find((c) => c.id.toLowerCase() === id)
+      return row?.name?.trim() || 'Community'
+    }
+    if (key === 'messages') return 'Direct messages'
+    return 'Chat'
+  }
+
+  /**
+   * Dismiss a scene chat tab (history + leave LiveKit via controller).
+   * Any open multi-room tab can be closed, including the landing room.
+   */
+  closeSceneTab(sceneKey: string): boolean {
+    const idx = this.sceneTabs.findIndex((t) => t.key === sceneKey)
+    if (idx < 0) return false
+    this.sceneTabs.splice(idx, 1)
+    this.liveSceneKeys.delete(sceneKey)
+    if (this.connectedSceneKey === sceneKey) this.connectedSceneKey = null
+    const key = `scene:${sceneKey}`
+    this.messages.delete(key)
+    this.unreadCounts.delete(key)
+    if (this.channel.kind === 'scene' && this.channel.sceneKey === sceneKey) {
+      const nextLive =
+        [...this.liveSceneKeys]
+          .map((k) => this.findSceneTab(k))
+          .find((t): t is SceneChatTab => Boolean(t)) ?? null
+      if (nextLive) {
+        this.channel = { kind: 'scene', sceneKey: nextLive.key, label: nextLive.label }
+      } else if (this.sceneTabs[0]) {
+        const t = this.sceneTabs[0]
+        this.channel = { kind: 'scene', sceneKey: t.key, label: t.label }
+      } else {
+        this.channel = { kind: 'messages' }
+      }
+    }
+    this.notifyChannelChange()
+    return true
+  }
+
+  /** Inbound chat from multi-room pool (sceneKey is the joined room). */
+  ingestRemoteSceneChat(payload: {
+    sceneKey: string
+    senderAddress: string
+    text: string
+    time: number
+  }): void {
+    if (isSceneChatEmoteWireText(payload.text)) return
+    if (this.isDuplicateChat(payload.senderAddress, payload.text, payload.time)) return
+    const tab = this.findSceneTab(payload.sceneKey)
+    const channel: ChatChannelChoice = {
+      kind: 'scene',
+      sceneKey: payload.sceneKey,
+      label: tab?.label ?? payload.sceneKey
+    }
+    void this.ensurePeerProfile(payload.senderAddress)
+    this.appendLine(channelKey(channel), {
+      id: `in-${++lineCounter}`,
+      text: payload.text,
+      time: payload.time,
+      senderAddress: payload.senderAddress
+    })
   }
 
   onChat(listener: (event: SocialChatEvent) => void): () => void {
@@ -446,13 +585,19 @@ export class SocialService {
   }
 
   async sendImageFile(file: File): Promise<boolean> {
-    if (!this.comms || this.channel.kind !== 'scene') return false
+    if (this.channel.kind !== 'scene') return false
+    if (!this.isLiveSceneChannel(this.channel)) return false
 
     const prepared = await prepareChatImageFile(file)
     const messageId = createDcmMessageId()
     const time = Date.now() / 1000
     const envelopes = encodeDcmImageEnvelopes(prepared, messageId, time)
-    const sent = await this.comms.sendSceneChatMedia(envelopes)
+    const sceneKey = this.channel.sceneKey
+    const sent = this.sceneChatMediaSend
+      ? await this.sceneChatMediaSend(sceneKey, envelopes)
+      : this.comms
+        ? await this.comms.sendSceneChatMedia(envelopes)
+        : false
     if (!sent) return false
 
     const objectUrl = this.registerMediaObjectUrl(
@@ -480,7 +625,7 @@ export class SocialService {
 
   async sendMessage(text: string): Promise<boolean> {
     const trimmed = text.trim().slice(0, CHAT_MAX_LENGTH)
-    if (!trimmed || !this.comms) return false
+    if (!trimmed) return false
 
     if (this.channel.kind === 'messages') return false
     if (this.channel.kind === 'community') {
@@ -495,7 +640,17 @@ export class SocialService {
       return true
     }
 
-    const sent = await this.comms.sendSceneChat(trimmed)
+    if (!this.isLiveSceneChannel(this.channel)) {
+      console.warn('[chat] sendMessage failed — scene room not live', this.channel.sceneKey)
+      return false
+    }
+
+    const sceneKey = this.channel.sceneKey
+    const sent = this.sceneChatSend
+      ? await this.sceneChatSend(sceneKey, trimmed)
+      : this.comms
+        ? await this.comms.sendSceneChat(trimmed)
+        : false
     if (!sent) {
       console.warn('[chat] sendMessage failed — LiveKit publish returned false')
       return false
@@ -513,8 +668,9 @@ export class SocialService {
 
   private wireCommsHandlers(): void {
     if (!this.comms) return
+    // Primary CommsService room only — multi-room pool uses ingestRemoteSceneChat.
     this.comms.setChatHandler((payload) => {
-      const sceneChannel = this.sceneChannelChoice()
+      const sceneChannel = this.primarySceneChannelChoice()
       if (!sceneChannel) return
       if (isSceneChatEmoteWireText(payload.text)) return
       if (this.isDuplicateChat(payload.senderAddress, payload.text, payload.time)) return
@@ -528,7 +684,7 @@ export class SocialService {
     })
 
     this.comms.setChatMediaHandler((payload) => {
-      const sceneChannel = this.sceneChannelChoice()
+      const sceneChannel = this.primarySceneChannelChoice()
       if (!sceneChannel) return
       const decoded = this.mediaAssembler.ingest(payload.senderAddress, payload.data)
       if (!decoded) return
@@ -551,7 +707,7 @@ export class SocialService {
     })
   }
 
-  private sceneChannelChoice(): ChatChannelChoice | null {
+  private primarySceneChannelChoice(): ChatChannelChoice | null {
     if (!this.connectedSceneKey) return null
     const tab = this.findSceneTab(this.connectedSceneKey)
     if (!tab) return null
@@ -572,6 +728,7 @@ export class SocialService {
     } else {
       this.sceneTabs.unshift(tab)
     }
+    // Landing pointer for primary CommsService routing (cast / handoff).
     this.connectedSceneKey = tab.key
   }
 
@@ -593,6 +750,8 @@ export class SocialService {
     for (const url of this.mediaObjectUrls) URL.revokeObjectURL(url)
     this.mediaObjectUrls.clear()
     this.comms = null
+    this.sceneChatSend = null
+    this.sceneChatMediaSend = null
     this.listeners.clear()
     this.channelListeners.clear()
     this.messages.clear()
@@ -600,6 +759,7 @@ export class SocialService {
     this.channelThreadOpen = false
     this.sceneTabs = []
     this.connectedSceneKey = null
+    this.liveSceneKeys.clear()
     this.peerProfiles.clear()
     this.authIdentity = null
     this.friendshipSnapshot = null

@@ -8123,9 +8123,10 @@
       }
       .chat-panel__text {
         font-size: 12px;
-        line-height: 1.4;
+        line-height: 1.45;
         white-space: pre-wrap;
         word-break: break-word;
+        color: rgba(255, 255, 255, 0.94);
       }
       .chat-panel__media {
         margin-top: 2px;
@@ -8160,10 +8161,32 @@
       .chat-panel__link:hover {
         color: #7bc0ff;
       }
-      .chat-panel__bubble.is-mentioned {
-        background: rgba(100, 40, 160, 0.42);
-        border: 1px solid #cc66ff;
-        box-shadow: 0 0 10px rgba(180, 80, 255, 0.45);
+      /* @-mention of local user: highlight message body only (not sender name / time). */
+      .chat-panel__text.is-mentioned,
+      .social-chat-dock .chat-panel__text.is-mentioned {
+        color: #fff;
+        background: rgba(140, 40, 200, 0.55);
+        border: 1.5px solid #e070ff;
+        border-radius: 8px;
+        padding: 4px 8px;
+        box-shadow: 0 0 10px rgba(220, 100, 255, 0.4);
+      }
+      /* Inline @token chip inside the body. */
+      .chat-panel__mention-self {
+        display: inline-block;
+        max-width: 100%;
+        padding: 0 5px;
+        margin: 0 1px;
+        border-radius: 5px;
+        background: rgba(90, 20, 140, 0.9);
+        border: 1px solid #f0a0ff;
+        color: #fff !important;
+        font-weight: 700;
+        font-size: inherit;
+        line-height: 1.35;
+        white-space: normal;
+        word-break: break-word;
+        vertical-align: baseline;
       }
       .chat-panel__time {
         margin-top: 4px;

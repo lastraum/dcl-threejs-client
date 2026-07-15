@@ -15,8 +15,8 @@ import type { OutdoorLightingSnapshot } from './OutdoorLighting'
 import { OCEAN_FRAG, OCEAN_VERT } from './fftOcean/shaders'
 
 const FOAM_TEXTURE_URL = '/textures/foam/foam.webp'
-/** 15 Hz sim — 30 Hz × 17 passes was a large fixed main-thread tax during character select / menus. */
-const GPGPU_INTERVAL = 1 / 15
+/** Default sim rate when settings omit simulationHz (matches FFTOCEAN-tuned client cost). */
+const DEFAULT_GPGPU_HZ = 15
 
 export type FftOceanPerfSnapshot = {
   backend: 'fft-ocean'
@@ -49,8 +49,9 @@ function loadFoamTexture(): Promise<THREE.Texture> {
 }
 
 /**
- * GPGPU FFT ocean (FFTOCEAN port) — clipmap mesh + Phillips spectrum simulation.
- * Default ocean on `water` / `island` environments; `?fftOcean=0` falls back to Water.js.
+ * GPGPU FFT ocean — port of https://github.com/gioeledallapozza/FFTOCEAN
+ * (clipmap + Phillips spectrum GPGPU). Tuned for DCL island/open biomes.
+ * `?fftOcean=0` or `environment.water.fft: false` falls back to Water.js.
  */
 export class FftOceanWater {
   readonly group = new THREE.Group()
@@ -62,6 +63,8 @@ export class FftOceanWater {
   private readonly renderer: THREE.WebGLRenderer
   private elapsed = 0
   private gpgpuTimer = 0
+  private readonly gpgpuInterval: number
+  private readonly baseSpecularIntensity: number
   private readonly baseVertexSpacing: number
   private readonly islandMask: boolean
 
@@ -81,13 +84,16 @@ export class FftOceanWater {
     this.material = material
     this.gpgpu = gpgpu
     this.renderer = renderer
+    const simHz = settings.simulationHz > 0 ? settings.simulationHz : DEFAULT_GPGPU_HZ
+    this.gpgpuInterval = 1 / simHz
+    this.baseSpecularIntensity = settings.specularIntensity
     this.perf = {
       backend: 'fft-ocean',
       variant: mode,
       meshResolution: settings.meshResolution,
       fftResolution: settings.fftResolution,
       gpgpuPasses: gpgpu.passesPerUpdate(),
-      gpgpuHz: 30
+      gpgpuHz: simHz
     }
     this.group.add(mesh)
   }
@@ -110,24 +116,22 @@ export class FftOceanWater {
     const foam = await loadFoamTexture()
 
     const patchSize = 250
-    const amplitude = 0.01
-    const windSpeed = 15
-    const windDirection = new THREE.Vector2(0.4, 0.8).normalize()
-    const displacementScale = 1.0
-    const choppyScale = 1.5
-    const clipLevels = 5
     const baseVertexSpacing = patchSize / settings.meshResolution
 
     const gpgpu = new OceanGPGPU({
       resolution: settings.fftResolution,
       patchSize,
-      amplitude,
-      windSpeed,
-      windDirection
+      amplitude: settings.amplitude,
+      windSpeed: settings.windSpeed,
+      windDirection: settings.windDirection.clone()
     })
     gpgpu.bakeInitialSpectrum(renderer)
 
-    const geometry = new ClipmapGeometry(settings.meshResolution, clipLevels, baseVertexSpacing)
+    const geometry = new ClipmapGeometry(
+      settings.meshResolution,
+      settings.clipLevels,
+      baseVertexSpacing
+    )
     const material = new THREE.ShaderMaterial({
       vertexShader: OCEAN_VERT,
       fragmentShader: OCEAN_FRAG,
@@ -140,11 +144,11 @@ export class FftOceanWater {
         uViewerPos: { value: new THREE.Vector2() },
         uResolution: { value: settings.meshResolution },
         uBaseVertexSpacing: { value: baseVertexSpacing },
-        uScale: { value: displacementScale },
-        uChoppyScale: { value: choppyScale },
+        uScale: { value: settings.displacementScale },
+        uChoppyScale: { value: settings.choppyScale },
         uNormalScale: { value: 1.0 },
-        uWaterDeep: { value: new THREE.Color('#52b9e5') },
-        uWaterShallow: { value: new THREE.Color('#59cdff') },
+        uWaterDeep: { value: new THREE.Color(settings.waterDeep) },
+        uWaterShallow: { value: new THREE.Color(settings.waterShallow) },
         uColorMinHeight: { value: -4.5 },
         uColorMaxHeight: { value: 1.5 },
         uSunPosition: { value: new THREE.Vector3(-200, 150, -500) },
@@ -156,7 +160,7 @@ export class FftOceanWater {
         uSpecularPower: { value: 250 },
         uSpecularMin: { value: 0.9 },
         uSpecularMax: { value: 0.99 },
-        uSpecularIntensity: { value: 4.7 },
+        uSpecularIntensity: { value: settings.specularIntensity },
         uFresnelSmoothness: { value: 0.5 },
         uUseEnvMap: { value: false },
         uEnvMap: { value: null },
@@ -170,12 +174,12 @@ export class FftOceanWater {
         uSssWrap: { value: 0.38 },
         uFoamColor: { value: new THREE.Color('#ffffff') },
         uFoamTexture: { value: foam },
-        uFoamThreshold: { value: 0.4 },
-        uFoamScale: { value: 7.0 },
+        uFoamThreshold: { value: settings.foamThreshold },
+        uFoamScale: { value: settings.foamScale },
         uFoamSpeed: { value: new THREE.Vector2(0.2, 0.2) },
         uFoamDistortion: { value: 1.4 },
         uFoamEdgeSoftness: { value: 0.8 },
-        uFoamPower: { value: 0.5 },
+        uFoamPower: { value: settings.foamPower },
         uIslandMask: { value: mode === 'island' },
         uIslandCenterXZ: { value: new THREE.Vector2(centerThree.x, centerThree.z) },
         uFlatRadiusM: { value: layout?.flatRadiusM ?? 0 },
@@ -225,7 +229,7 @@ export class FftOceanWater {
     material.uniforms.uDisplacementZ.value = initial.displacementZ
 
     console.info(
-      `[ocean] FFTOCEAN active (${mode}) — mesh=${settings.meshResolution} fft=${settings.fftResolution} gpgpuPasses=${gpgpu.passesPerUpdate()}/frame @30Hz`
+      `[ocean] FFTOCEAN active (${mode}) — mesh=${settings.meshResolution} fft=${settings.fftResolution} choppy=${settings.choppyScale} gpgpuPasses=${gpgpu.passesPerUpdate()}/frame @${instance.perf.gpgpuHz}Hz`
     )
 
     return instance
@@ -266,8 +270,11 @@ export class FftOceanWater {
     ;(u.uSkyHorizon.value as THREE.Color).copy(lighting.skyHorizon).multiplyScalar(skyScale)
     ;(u.uSkyZenith.value as THREE.Color).copy(lighting.skyZenith).multiplyScalar(skyScale)
 
-    // Specular tracks actual light power, not a day/night constant.
-    u.uSpecularIntensity.value = THREE.MathUtils.clamp(active.length() * 2.4, 0, 5.5)
+    // Specular tracks light power, scaled from scene/default base intensity.
+    const lit = THREE.MathUtils.clamp(active.length() * 2.4, 0, 5.5)
+    const base = this.baseSpecularIntensity
+    // Map base 4.7 → full lit curve; other bases scale proportionally.
+    u.uSpecularIntensity.value = THREE.MathUtils.clamp((lit * base) / 4.7, 0, 8)
   }
 
   update(delta: number, camera: THREE.Camera): void {
@@ -290,7 +297,7 @@ export class FftOceanWater {
     }
 
     this.gpgpuTimer += delta
-    if (this.gpgpuTimer >= GPGPU_INTERVAL) {
+    if (this.gpgpuTimer >= this.gpgpuInterval) {
       const { displacementY, displacementX, displacementZ } = this.gpgpu.update(
         this.renderer,
         this.elapsed
@@ -298,7 +305,7 @@ export class FftOceanWater {
       u.uDisplacementY.value = displacementY
       u.uDisplacementX.value = displacementX
       u.uDisplacementZ.value = displacementZ
-      this.gpgpuTimer %= GPGPU_INTERVAL
+      this.gpgpuTimer %= this.gpgpuInterval
     }
   }
 

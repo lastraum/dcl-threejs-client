@@ -23,8 +23,9 @@ export function appendLinkifiedText(
   const navLinkClass = options.navLinkClass ?? linkClass
   const matches = findChatLinks(text)
 
+  // Always append — never assign `textContent` (that clears prior mention chips / siblings).
   if (!matches.length) {
-    container.textContent = text
+    if (text) container.appendChild(document.createTextNode(text))
     return
   }
 

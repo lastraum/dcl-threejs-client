@@ -1,5 +1,9 @@
 import { SocialService } from '../../../social/SocialService'
-import { textChatMentionsSelf } from '../../../social/chatMentionDetection'
+import {
+  appendChatTextWithSelfMentions,
+  selfMentionTokens,
+  textChatMentionsSelf
+} from '../../../social/chatMentionDetection'
 import {
   CHAT_MAX_LENGTH,
   applyMentionToDraft,
@@ -9,7 +13,6 @@ import {
   parseActiveMention,
   type MentionCandidate
 } from '../../../social/chatMentions'
-import { appendLinkifiedText } from '../../../social/linkifyText'
 import type { RouteTarget } from '../../../dcl/content/route'
 import { parseGotoCommand } from '../../../dcl/content/route'
 import { SCENE_CHAT_RAIL_ICON } from '../shell/icons'
@@ -533,13 +536,15 @@ export class ChatPanel {
     avatar.className = 'chat-panel__avatar'
 
     const bubble = document.createElement('div')
-    bubble.className = `chat-panel__bubble${mentionsSelf ? ' is-mentioned' : ''}${isChatImageLine(line) ? ' is-image' : ''}`
+    bubble.className = `chat-panel__bubble${isChatImageLine(line) ? ' is-image' : ''}`
 
     const name = document.createElement('div')
     name.className = 'chat-panel__sender'
 
     const body = document.createElement('div')
-    body.className = isChatImageLine(line) ? 'chat-panel__media' : 'chat-panel__text'
+    body.className = isChatImageLine(line)
+      ? 'chat-panel__media'
+      : `chat-panel__text${mentionsSelf ? ' is-mentioned' : ''}`
 
     if (isChatImageLine(line)) {
       const img = document.createElement('img')
@@ -551,12 +556,19 @@ export class ChatPanel {
       if (line.width > 0) img.width = Math.min(line.width, 280)
       body.appendChild(img)
     } else {
-      appendLinkifiedText(body, line.text, {
-        onNavigate: (target) => {
-          if (document.pointerLockElement) document.exitPointerLock()
-          void this.onGoto?.(target)
-        }
-      })
+      const selfTargets = selfMentionTokens(localAddress, local.displayName)
+      appendChatTextWithSelfMentions(
+        body,
+        line.text,
+        selfTargets,
+        {
+          onNavigate: (target) => {
+            if (document.pointerLockElement) document.exitPointerLock()
+            void this.onGoto?.(target)
+          }
+        },
+        localAddress
+      )
     }
 
     const time = document.createElement('div')

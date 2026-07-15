@@ -42,6 +42,46 @@ export type SceneEnvironmentKind =
   | 'forest'
 
 /**
+ * `scene.json` → `environment.water` — ThreejsClient FFT ocean (FFTOCEAN port).
+ * Ignored by Unity/Godot Explorer. See docs/THIRD_PARTY.md.
+ */
+export type SceneWaterConfig = {
+  /** When false, no client water mesh (same as `?water=0`). Default true for island/water biomes. */
+  enabled?: boolean
+  /** When false, use Water.js fallback instead of GPGPU FFT. Default true when WebGL2. */
+  fft?: boolean
+  /** FFT spectrum grid (power of 2, 32–512). Default 128. */
+  fftResolution?: number
+  /** Clipmap mesh resolution. Default 256. */
+  meshResolution?: number
+  /** Phillips spectrum amplitude (wave energy). Default 0.01. */
+  amplitude?: number
+  /** Wind speed for spectrum. Default 15. */
+  windSpeed?: number
+  /**
+   * Wind direction: degrees from +X toward +Z, or `{ "x", "z" }` vector.
+   * Default `{ "x": 0.4, "z": 0.8 }`.
+   */
+  windDirection?: number | { x?: number; y?: number; z?: number }
+  /** Vertical wave height scale. Default 1. */
+  displacementScale?: number
+  /** Horizontal chop / peaking. Default 2 (upstream FFTOCEAN). */
+  choppyScale?: number
+  /** Clipmap LOD rings. Default 5. */
+  clipLevels?: number
+  /** Simulation updates per second. Default 15. */
+  simulationHz?: number
+  /** Deep water hex color. */
+  waterDeep?: string
+  /** Shallow / crest hex color. */
+  waterShallow?: string
+  foamThreshold?: number
+  foamScale?: number
+  foamPower?: number
+  specularIntensity?: number
+}
+
+/**
  * `scene.json` → `environment` object — **ThreejsClient-only** landscape + celestial defaults.
  * Not part of official DCL SDK / Unity Explorer metadata (they ignore unknown fields).
  * Official time pin remains `skyboxConfig.fixedTime` only.
@@ -67,6 +107,11 @@ export type SceneEnvironmentConfig = {
   moonLight?: number
   /** ACES exposure multiplier during night (0–100). */
   moonExposure?: number
+  /**
+   * FFT ocean / Water.js knobs for `island` and `water` biomes.
+   * @see https://github.com/gioeledallapozza/FFTOCEAN
+   */
+  water?: SceneWaterConfig
 }
 
 export type SceneSkyLighting = {

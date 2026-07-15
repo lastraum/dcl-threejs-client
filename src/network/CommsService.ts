@@ -713,18 +713,33 @@ export class CommsService {
     this.archipelago.queuePosition(x, y, z)
   }
 
-  /** Scene-room wallets for @-mentions — gatekeeper seed list + LiveKit remotes. */
+  /**
+   * Wallets for @-mentions + chat people list.
+   * Gatekeeper seed + LiveKit remotes on **scene and world** rooms
+   * (worlds put chat/people on World transport; parcels use SceneRoom).
+   */
   getSceneChatMentionAddresses(): string[] {
-    const self = this.localAddress
+    const self = this.localAddress?.toLowerCase() ?? null
     const addresses = new Set<string>()
+
+    const acceptTransport = (sources: Set<TransportType>): boolean =>
+      sources.has(TransportType.SceneRoom) || sources.has(TransportType.World)
+
     for (const [address, sources] of this.peerTransports) {
-      if (!sources.has(TransportType.SceneRoom)) continue
-      if (self && address === self) continue
-      addresses.add(address)
+      if (!acceptTransport(sources)) continue
+      const key = address.toLowerCase()
+      if (self && key === self) continue
+      addresses.add(key)
     }
     for (const address of this.sceneLiveKit.getRemotePeerAddresses()) {
-      if (self && address === self) continue
-      addresses.add(address)
+      const key = address.toLowerCase()
+      if (self && key === self) continue
+      addresses.add(key)
+    }
+    for (const address of this.worldLiveKit.getRemotePeerAddresses()) {
+      const key = address.toLowerCase()
+      if (self && key === self) continue
+      addresses.add(key)
     }
     return [...addresses].sort((a, b) => a.localeCompare(b))
   }

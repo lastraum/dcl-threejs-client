@@ -287,12 +287,15 @@ export class SocialService {
   }
 
   getMentionCandidates(): MentionCandidate[] {
-    const self = this.localAddress
+    const self = this.localAddress?.toLowerCase() ?? null
     const addrs = new Set<string>()
+    // Live scene/world roster (same source as people list — includes gatekeeper seed)
     for (const addr of this.comms?.getSceneChatMentionAddresses() ?? []) {
-      if (self && addr === self) continue
-      if (isEvmAddress(addr)) addrs.add(addr.toLowerCase())
+      const low = addr.toLowerCase()
+      if (self && low === self) continue
+      if (isEvmAddress(low)) addrs.add(low)
     }
+    // Anyone who already chatted (covers late joiners / roster lag)
     for (const line of this.getMessages()) {
       if (line.self || !line.senderAddress) continue
       const low = line.senderAddress.toLowerCase()
@@ -300,12 +303,15 @@ export class SocialService {
       if (isEvmAddress(low)) addrs.add(low)
     }
     return [...addrs]
-      .sort((a, b) => a.localeCompare(b))
-      .slice(0, 32)
       .map((address) => {
         const peer = this.getPeerDisplay(address)
+        void this.peerProfiles.ensurePeer(address)
         return { address, displayName: peer.displayName, faceUrl: peer.faceUrl }
       })
+      .sort((a, b) =>
+        a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' })
+      )
+      .slice(0, 32)
   }
 
   /**

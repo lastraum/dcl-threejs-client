@@ -27,7 +27,8 @@ import { OpenOceanWater } from '../environment/OpenOceanWater'
 import { OceanRing } from '../environment/OceanRing'
 import {
   isClientWaterDisabled,
-  readFftOceanOverride
+  resolveFftOceanSettings,
+  type FftOceanSettings
 } from '../environment/fftOcean/readFftOceanOverride'
 import type { OceanPerfInfo } from '../client/ui/RenderStats'
 import type { OutdoorLightingSnapshot } from '../environment/OutdoorLighting'
@@ -339,16 +340,20 @@ export class World {
     }
 
     this.clearOcean()
-    if (!skipClientLandscape && landscapeProfile.showWater && isClientWaterDisabled()) {
-      console.info('[ocean] disabled (?water=0 / ?noWater=1) — no water mesh or GPGPU')
+    const fftSettings = resolveFftOceanSettings(scene.metadata)
+    // waterEnabled folds scene.json + URL (?water=0 / noWater / disableWater)
+    const waterDisabled = !fftSettings.waterEnabled || isClientWaterDisabled()
+    if (!skipClientLandscape && landscapeProfile.showWater && waterDisabled) {
+      console.info(
+        '[ocean] disabled (?water=0 / scene environment.water.enabled=false) — no water mesh or GPGPU'
+      )
     } else if (!skipClientLandscape && landscapeProfile.showWater) {
-      const fftSettings = readFftOceanOverride()
       const useFftOcean = fftSettings.enabled && this.host.renderer.capabilities.isWebGL2
       if (fftSettings.enabled && !useFftOcean) {
         console.warn('[ocean] FFTOCEAN requires WebGL2 — using Water.js')
       }
       console.info(
-        `[ocean] env=${landscapeProfile.kind} openOcean=${openOcean} fftOcean=${useFftOcean}`
+        `[ocean] env=${landscapeProfile.kind} openOcean=${openOcean} fftOcean=${useFftOcean} fft=${fftSettings.fftResolution} amp=${fftSettings.amplitude}`
       )
       this.ocean = openOcean
         ? useFftOcean
@@ -2127,7 +2132,7 @@ export class World {
   private async createFftOcean(
     scene: ResolvedScene,
     mode: 'open' | 'island',
-    fftSettings: ReturnType<typeof readFftOceanOverride>,
+    fftSettings: FftOceanSettings,
     shoreWidthParcels?: number
   ): Promise<SceneWater> {
     try {

@@ -142,61 +142,35 @@ vec3 rotateY(vec3 dir, float angle) {
   return vec3(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
 }
 
-/**
- * Neutral white/cool-gray body (avoids green HDR gradient keys) but bright enough
- * to read as real puffs over blue sky — not washed milk.
- */
-vec3 cloudBaseColor(vec3 hdr, float layerScale, float coolBias) {
+// DCL clouds gradient is HDR (keys >1 at midday). Keep hue, put brightness in intensity.
+vec3 cloudTintColor(vec3 hdr, float highlights, vec3 dir, vec3 sunDir) {
   float peak = max(max(hdr.r, hdr.g), hdr.b);
-  // HDR peak drives punch; floor keeps midday clouds solid white.
-  float intensity = max(peak * 0.95, 1.15) * layerScale;
-  vec3 body = vec3(1.0, 1.0, 1.02);
-  vec3 cool = vec3(0.9, 0.93, 1.0);
-  vec3 hue = mix(body, cool, clamp(coolBias, 0.0, 1.0) * 0.55);
+  vec3 hue = hdr / max(peak, 1e-4);
+  float intensity = peak * (0.82 + highlights * 0.55);
+  float sunSide = sunDir.y > 0.05
+    ? smoothstep(-0.05, 0.45, dot(normalize(dir), normalize(sunDir)))
+    : 0.0;
+  intensity *= mix(0.88, 1.28, sunSide * highlights);
   return hue * intensity;
 }
 
-vec3 lightCloud(vec3 tint, float highlights, vec3 dir, vec3 sunDir, float mapLum) {
-  vec3 d = normalize(dir);
-  vec3 s = normalize(sunDir);
-  float sunUp = smoothstep(-0.02, 0.12, s.y);
-  float sunSide = sunUp * smoothstep(-0.12, 0.5, dot(d, s));
-  float shadowSide = sunUp * smoothstep(-0.12, 0.5, -dot(d, s));
-  float structure = mix(0.9, 1.15, clamp(mapLum, 0.0, 1.0));
-  float lit = mix(0.92, 1.32, sunSide * (0.5 + highlights * 0.5));
-  lit *= mix(1.0, 0.78, shadowSide * 0.4);
-  lit *= structure;
-  lit *= 0.9 + highlights * 0.35;
-  return tint * lit;
-}
-
-void sampleCloudLayer(
+float cloudLayerMask(
   vec3 dir,
   samplerCube map,
   float angle,
   float opacity,
   float yMin,
-  float yMax,
-  out float mask,
-  out float mapLum
+  float yMax
 ) {
-  mask = 0.0;
-  mapLum = 0.0;
-  if (dir.y < yMin || uCloudOpacity < 0.001) return;
-
+  if (dir.y < yMin) return 0.0;
   vec3 sampleDir = rotateY(normalize(dir), angle);
-  // Mild mip blur — soft edges without dissolving puffs into haze.
-  vec4 tex = textureCube(map, sampleDir, 0.25);
-  mapLum = max(max(tex.r, tex.g), max(tex.b, tex.a));
-  float n = tex.a > 0.02 ? tex.a : mapLum;
-
-  float thr = clamp(1.0 - uCloudDensity, 0.12, 0.8);
-  // Middle falloff: soft AA, still solid cores (0.28 jagged / 0.52 washed).
-  float falloff = 0.4;
-  mask = smoothstep(thr, thr + falloff, n);
-  mask *= smoothstep(yMin, yMin + 0.14, dir.y);
-  mask *= 1.0 - smoothstep(yMax - 0.12, yMax, dir.y);
-  mask *= opacity * uCloudOpacity;
+  float n = textureCube(map, sampleDir, -1.0).r;
+  float density = 1.0 - uCloudDensity;
+  float falloff = 0.62;
+  float mask = smoothstep(density, density + falloff, n);
+  mask *= smoothstep(yMin, yMin + 0.15, dir.y);
+  mask *= 1.0 - smoothstep(yMax - 0.1, yMax, dir.y);
+  return mask * opacity * uCloudOpacity;
 }
 
 vec3 blendCloudLayer(
@@ -206,39 +180,20 @@ vec3 blendCloudLayer(
   float angle,
   float opacity,
   float yMin,
-  float yMax,
-  float layerTintScale,
-  float coolBias
+  float yMax
 ) {
-  float mask;
-  float mapLum;
-  sampleCloudLayer(dir, map, angle, opacity, yMin, yMax, mask, mapLum);
+  float mask = cloudLayerMask(dir, map, angle, opacity, yMin, yMax);
   if (mask <= 0.001) return sky;
-
-  vec3 cloud = lightCloud(
-    cloudBaseColor(uCloudsColor, layerTintScale, coolBias),
-    uCloudHighlights,
-    dir,
-    uSunDirection,
-    mapLum
-  );
-  cloud = min(cloud, vec3(2.4));
-
-  // Full mask coverage (no extra smoothstep that washed opacity out).
-  float cover = clamp(mask, 0.0, 1.0);
-  vec3 lerped = mix(sky, cloud, cover);
-  // Subtle screen only in bright cores — white pop without hard rims.
-  float core = smoothstep(0.45, 0.92, mapLum) * cover;
-  vec3 screen = vec3(1.0) - (vec3(1.0) - sky) * (vec3(1.0) - min(cloud, vec3(1.0)));
-  return mix(lerped, max(lerped, screen), core * 0.28);
+  vec3 cloud = cloudTintColor(uCloudsColor, uCloudHighlights, dir, uSunDirection);
+  // Screen-style brighten — lerp toward gray tint; DCL puffs read white over blue sky
+  vec3 layer = min(cloud, vec3(2.5));
+  vec3 screen = vec3(1.0) - (vec3(1.0) - sky) * (vec3(1.0) - min(layer, vec3(1.0)));
+  return mix(sky, max(screen, layer), mask);
 }
 
 void main() {
   vec3 dir = normalize(vDirection);
   vec3 sky = sampleGradient(dir, uZenitColor, uHorizonColor, uNadirColor);
-
-  float haze = pow(max(1.0 - abs(dir.y), 0.0), 2.4) * 0.1;
-  sky = mix(sky, mix(uHorizonColor, uZenitColor, 0.4), haze * 0.35);
 
   float night = 1.0 - smoothstep(-0.08, 0.12, uSunDirection.y);
   sky += starField(dir, uStarsMap, night);
@@ -246,12 +201,10 @@ void main() {
   sky += moonDisc(dir, uMoonDirection, uMoonMap, uMoonMask);
 
   float cloudAngle = uTime * uCloudsRotationSpeed;
-  // Restored original-ish opacities for body; neutral tints only.
-  // opacity, yMin, yMax, tintScale, coolBias
-  sky = blendCloudLayer(sky, dir, uHorizonCloudsCube, cloudAngle * 0.5, 0.8, 0.02, 0.42, 0.9, 0.28);
-  sky = blendCloudLayer(sky, dir, uFarCloudsCube, cloudAngle, 0.65, 0.05, 0.95, 1.05, 0.18);
-  sky = blendCloudLayer(sky, dir, uNearCloudsCube, cloudAngle * 2.0, 0.85, 0.08, 1.0, 1.25, 0.05);
-  sky = blendCloudLayer(sky, dir, uTopCloudsCube, cloudAngle * 1.5, 0.55, 0.32, 1.0, 1.1, 0.08);
+  sky = blendCloudLayer(sky, dir, uHorizonCloudsCube, cloudAngle * 0.5, 0.85, 0.02, 0.42);
+  sky = blendCloudLayer(sky, dir, uFarCloudsCube, cloudAngle, 0.55, 0.05, 0.95);
+  sky = blendCloudLayer(sky, dir, uNearCloudsCube, cloudAngle * 2.0, 0.75, 0.08, 1.0);
+  sky = blendCloudLayer(sky, dir, uTopCloudsCube, cloudAngle * 1.5, 0.45, 0.35, 1.0);
 
   float rim = pow(max(1.0 - abs(dir.y), 0.0), 3.0) * 0.25;
   sky += uRimColor * rim;
@@ -314,9 +267,8 @@ export class DclGenesisSky {
       uSunDiscCutoff: { value: FIXED_SUN_DISC_CUTOFF },
       uSunDiscCoreGain: { value: FIXED_SUN_DISC_CORE_GAIN },
       uSunDiscGlowGain: { value: FIXED_SUN_DISC_GLOW_GAIN },
-      uCloudHighlights: { value: 0.9 },
-      // Closer to pre-pass density so puffs fill in; falloff in shader stays soft.
-      uCloudDensity: { value: 0.58 },
+      uCloudHighlights: { value: 0.8 },
+      uCloudDensity: { value: 0.52 },
       uCloudOpacity: { value: 1 },
       uCloudsRotationSpeed: { value: 0.01 },
       uTime: { value: 0 },

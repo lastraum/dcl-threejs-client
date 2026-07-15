@@ -756,15 +756,16 @@ export class World {
     this.sceneScript.preparePointerRaycast()
     this.sceneScript.refreshPointerTargets()
     this.sceneScript.bindPointerEvents(
-      () => this.player!.getWorldPosition(),
-      () => this.player!.isPointerBlocked(),
+      () => this.player?.getWorldPosition() ?? null,
+      () => this.player?.isPointerBlocked() ?? true,
       () => this.physics,
       {
-        isRelayBlocked: () => this.player!.isSceneRelayBlocked(),
-        isLocomotionBlocked: () => this.player!.isLocomotionBlocked(),
-        clearPlayerMoveKeys: () => this.player!.clearMoveKeys()
+        isRelayBlocked: () => this.player?.isSceneRelayBlocked() ?? true,
+        isLocomotionBlocked: () => this.player?.isLocomotionBlocked() ?? true,
+        clearPlayerMoveKeys: () => this.player?.clearMoveKeys()
       },
-      (mode) => this.player!.setForcedCameraMode(mode)
+      // Optional: dispose tears down scene after/with player — CameraModeArea clear must not throw.
+      (mode) => this.player?.setForcedCameraMode(mode)
     )
     // Plaza-scale from entity count when GLTF collider extract is sparse (Genesis ~18 colliders).
     const hydration = this.sceneScript.getHydrationStats()
@@ -2259,6 +2260,10 @@ export class World {
     this.unsubEnvironmentDebug = null
     this.host.stop()
 
+    // Scene systems first — CameraModeArea / pointer dispose still call into player.
+    this.sceneScript.gltfColliders?.setLandscapeRoot(null)
+    this.sceneScript.dispose()
+
     this.player?.dispose()
     this.player = null
     this.remoteAvatars?.dispose()
@@ -2272,9 +2277,7 @@ export class World {
     resetFoliageWindRegistry()
     this.landscape.state.landscapeRoot?.removeFromParent()
     this.landscape.state.landscapeRoot = null
-    this.sceneScript.gltfColliders?.setLandscapeRoot(null)
 
-    this.sceneScript.dispose()
     this.physics.dispose()
 
     this.vrmPeerSync.detach()

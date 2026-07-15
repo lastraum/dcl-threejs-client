@@ -1,12 +1,32 @@
 /**
  * LiveKit scene chat — RFC4 Chat packet encode/decode.
- * Unity Explorer expects unix `Chat.timestamp` + `protocol_version` on the Packet (Bevy RFC4).
- * dcl-companion historically used session-elapsed + trailing protocol suffix; we still decode both.
+ *
+ * Godot Explorer `send_chat` uses OLE Automation dates for `Chat.timestamp`
+ * (`unix_seconds / 86400 + 25569`) — not unix seconds. Unix values look like
+ * invalid OLE days and Explorer drops the message (publish still "succeeds").
+ *
+ * @see https://github.com/decentraland/godot-explorer/blob/main/lib/src/comms/communication_manager.rs
+ *      `ole_timestamp_now` / `send_chat`
  */
 import { Packet } from '@dcl/protocol/out-ts/decentraland/kernel/comms/rfc4/comms.gen'
 import { RFC4_PROTOCOL_VERSION } from '../network/comms/dclRfc4Comms'
 
 const COMPANION_RFC4_PACKET_PROTOCOL_VERSION = 100
+
+/** Days from 1899-12-30 to 1970-01-01 (Excel / OLE Automation epoch). */
+const OLE_UNIX_EPOCH_DAYS = 25569
+
+/** Session-relative values are well below OLE dates (~46k) and unix (~1e9). */
+const SESSION_ELAPSED_MAX_SEC = 604_800
+
+/** OLE Automation date (Godot Explorer chat timestamp). */
+export function oleTimestampNow(): number {
+  return Date.now() / 1000 / 86400 + OLE_UNIX_EPOCH_DAYS
+}
+
+export function oleTimestampToUnixSeconds(ole: number): number {
+  return (ole - OLE_UNIX_EPOCH_DAYS) * 86400
+}
 
 function encodeVarint32(n: number): Uint8Array {
   const out: number[] = []
@@ -30,9 +50,15 @@ function appendCompanionRfc4ProtocolVersion(encodedPacket: Uint8Array): Uint8Arr
   return out
 }
 
-/** Outbound chat — unix seconds (Explorer/Unity RFC4). */
-export function encodeRfc4ChatPacket(text: string, timestampUnixSec: number): Uint8Array {
-  const ts = Number.isFinite(timestampUnixSec) && timestampUnixSec > 0 ? timestampUnixSec : Date.now() / 1000
+/**
+ * Outbound chat for Explorer interop.
+ * @param timestamp — OLE date (default `oleTimestampNow()`). Pass session-elapsed only for legacy tests.
+ */
+export function encodeRfc4ChatPacket(text: string, timestamp?: number): Uint8Array {
+  const ts =
+    timestamp != null && Number.isFinite(timestamp) && timestamp > 0
+      ? timestamp
+      : oleTimestampNow()
   return Packet.encode({
     protocolVersion: RFC4_PROTOCOL_VERSION,
     message: {
@@ -45,8 +71,11 @@ export function encodeRfc4ChatPacket(text: string, timestampUnixSec: number): Ui
   }).finish()
 }
 
-/** Legacy companion encode — session elapsed + trailing protocol field (decode-only peers). */
-export function encodeRfc4ChatPacketCompanion(text: string, sessionElapsedSeconds: number): Uint8Array {
+/** Legacy companion encode — session elapsed + trailing protocol field. */
+export function encodeRfc4ChatPacketCompanion(
+  text: string,
+  sessionElapsedSeconds: number
+): Uint8Array {
   const inner = Packet.encode({
     protocolVersion: 0,
     message: {
@@ -60,14 +89,19 @@ export function encodeRfc4ChatPacketCompanion(text: string, sessionElapsedSecond
   return appendCompanionRfc4ProtocolVersion(inner)
 }
 
-/** Session-relative values are well below unix epoch seconds (~1e9). */
-const SESSION_ELAPSED_MAX_SEC = 604_800
-
-/** Interpret inbound `Chat.timestamp` (session elapsed, unix sec, or unix ms). */
+/**
+ * Interpret inbound `Chat.timestamp` → unix seconds for UI.
+ * Handles OLE (Godot), unix sec/ms, and session-elapsed (companion).
+ */
 export function rfc4ChatTimestampToDisplaySeconds(ts: number): number {
   if (!Number.isFinite(ts) || ts <= 0) return Date.now() / 1000
+  // Unix milliseconds
   if (ts > 1e11) return ts / 1000
+  // Unix seconds
   if (ts >= 1_000_000_000) return ts
+  // OLE Automation (~20k–100k for years 1950–2100)
+  if (ts >= 20_000 && ts < 100_000) return oleTimestampToUnixSeconds(ts)
+  // Session elapsed (companion / movement-style clocks)
   if (ts < SESSION_ELAPSED_MAX_SEC) return Date.now() / 1000
   return Date.now() / 1000
 }

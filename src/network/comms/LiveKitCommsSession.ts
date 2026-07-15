@@ -17,7 +17,7 @@ import {
   encodeRfc4ProfileVersionPacket,
   movementBlendTier
 } from './dclRfc4Comms'
-import { encodeRfc4ChatPacket } from '../../social/dclRfc4Chat'
+import { encodeRfc4ChatPacket, oleTimestampNow } from '../../social/dclRfc4Chat'
 import { DCM_SCENE_ID } from '../../social/dcmChatMedia'
 import { encodeRfc4SceneBinaryPacket } from './Rfc4Router'
 import {
@@ -610,16 +610,17 @@ export class LiveKitCommsSession {
       console.warn(`[chat] publishChat blocked — canPublishData=false transport=${this.transport}`)
       return false
     }
-    const unixSec = Date.now() / 1000
-    const packet = encodeRfc4ChatPacket(trimmed, unixSec)
+    // Godot Explorer requires OLE Automation dates (not unix seconds).
+    const oleTs = oleTimestampNow()
+    const packet = encodeRfc4ChatPacket(trimmed, oleTs)
     try {
       await this.room.localParticipant.publishData(packet, { reliable: true })
       console.log(
-        `[chat] RFC4 out → ${this.transport} room=${this.room.name} len=${packet.byteLength}`
+        `[chat] RFC4 out → ${this.transport} room=${this.room.name} len=${packet.byteLength} oleTs=${oleTs.toFixed(5)}`
       )
       clientDebugLog.log(
         'comms',
-        `RFC4 Chat out → ${this.transport} len=${packet.byteLength} unix=${unixSec.toFixed(0)}`,
+        `RFC4 Chat out → ${this.transport} len=${packet.byteLength} ole=${oleTs.toFixed(3)}`,
         { throttleMs: 0, throttleKey: `chat-out:${this.transport}` }
       )
       return true

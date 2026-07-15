@@ -124,10 +124,22 @@ export type SceneFeatureToggle = 'enabled' | 'disabled' | 'hideUi'
 export type SceneFeatureToggles = {
   voiceChat?: SceneFeatureToggle
   portableExperiences?: SceneFeatureToggle
+  /** Web/companion browser chat — not full Explorer featureToggles set. */
   browserChat?: SceneFeatureToggle
+  /**
+   * Overhead name tags — ThreejsClient reads this; deploy via scene.json to verify
+   * Catalyst/entity metadata carries unknown featureToggles keys.
+   */
+  nameTags?: SceneFeatureToggle
 }
 
 export type SceneBrowserChatConfig = {
+  enabled?: boolean
+  disabled?: boolean
+}
+
+/** Top-level alias for `featureToggles.nameTags`. */
+export type SceneNameTagsConfig = {
   enabled?: boolean
   disabled?: boolean
 }
@@ -162,6 +174,12 @@ export type SceneMetadata = {
   featureToggles?: SceneFeatureToggles
   /** `featureToggles.browserChat` alias — `"disabled"` or `{ "enabled": false }`. */
   browserChat?: SceneFeatureToggle | SceneBrowserChatConfig
+  /**
+   * Top-level alias for `featureToggles.nameTags`.
+   * Prefer `featureToggles.nameTags` when testing deploy round-trip.
+   * URL: `?nameTags=disabled`.
+   */
+  nameTags?: SceneFeatureToggle | SceneNameTagsConfig
 }
 
 export type SkyboxConfig = {
@@ -209,6 +227,8 @@ export type ResolvedScene = {
   commsPointer: string
   /** scene.json `featureToggles.browserChat` (+ `?browserChat=` URL override). */
   browserChatEnabled: boolean
+  /** scene.json `featureToggles.nameTags` / top-level `nameTags` (+ `?nameTags=`). Default true. */
+  nameTagsVisible: boolean
   realm: RealmEndpoints
 }
 
@@ -230,6 +250,7 @@ export const BLANK_SCENE_TEMPLATE: ResolvedScene = {
   mainEntry: null,
   commsPointer: '0,0',
   browserChatEnabled: true,
+  nameTagsVisible: true,
   realm: {
     realmName: 'main',
     networkId: 1,

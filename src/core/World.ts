@@ -9,6 +9,7 @@ import {
   resolveEngineTickIntervalMs
 } from '../client/detectPerformanceTier'
 import { SceneHost } from '../rendering/SceneHost'
+import { setSceneNameTagsVisible } from '../client/ui/nameTagVisibility'
 
 import { GLTF_COLLIDER_ENTITY_BASE } from '../collision/GltfColliderExtractor'
 import { PhysXWorld } from '../physics/PhysXWorld'
@@ -296,6 +297,13 @@ export class World {
       })
     }
     this.assets.setScene(scene)
+    // scene.json / ?nameTags= — gate overhead labels for local, remote, AvatarShape NPCs.
+    setSceneNameTagsVisible(scene.nameTagsVisible !== false)
+    if (scene.nameTagsVisible === false) {
+      clientDebugLog.log('client', 'Name tags hidden (scene.json or ?nameTags=)', {
+        alsoConsole: true
+      })
+    }
     prefetchSceneManifestAssets(this.assets, scene)
     this.comms.setIdentity(this.session.getAddress(), this.session.getAuthIdentity())
     this.comms.applyRealmAbout(scene.realm, scene.commsPointer)

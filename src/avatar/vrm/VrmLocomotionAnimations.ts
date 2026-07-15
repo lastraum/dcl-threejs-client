@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { VRM } from '@pixiv/three-vrm'
 import type { AvatarLocomotionState } from '../AvatarAnimations'
+import { DoubleJumpTwirl } from '../doubleJumpTwirl'
 import { DCL_LOCOMOTION_DEFAULTS } from '../../player/locomotion'
 import { loadRetargetedClip } from './mixamoRetarget'
 import { VRM_LOCOMOTION } from './vrmLocomotionPaths'
@@ -9,15 +10,16 @@ import { vrmLocomotionTimeScale } from './vrmLocomotionSpeed'
 /**
  * Mixamo forward locomotion only — avatar yaw follows travel direction (PlayerSystem),
  * same pattern as DCL walk.glb / run.glb on composed avatars.
+ * Double jump: Explorer-style clockwise Y twirl (shared with DCL), not Mixamo flip.
  */
 export class VrmLocomotionAnimations {
   private mixer: THREE.AnimationMixer | null = null
+  private spinRoot: THREE.Object3D | null = null
   private idleAction: THREE.AnimationAction | null = null
   private walkAction: THREE.AnimationAction | null = null
   private jogAction: THREE.AnimationAction | null = null
   private jumpAction: THREE.AnimationAction | null = null
   private fallAction: THREE.AnimationAction | null = null
-  private flipAction: THREE.AnimationAction | null = null
   private profileEmoteAction: THREE.AnimationAction | null = null
   private profileEmoteActive = false
   private profileEmoteLoop = false
@@ -25,7 +27,8 @@ export class VrmLocomotionAnimations {
   private jogBlend = 0
   private jumpBlend = 0
   private fallBlend = 0
-  private flipPlaying = false
+  private doubleJumpPlaying = false
+  private readonly twirl = new DoubleJumpTwirl()
   private wasGrounded = true
   private bindGeneration = 0
   private speedSmooth = 0
@@ -34,13 +37,12 @@ export class VrmLocomotionAnimations {
     this.dispose()
     const generation = ++this.bindGeneration
 
-    const [idle, walk, jog, jump, fall, flip] = await Promise.all([
+    const [idle, walk, jog, jump, fall] = await Promise.all([
       loadRetargetedClip(VRM_LOCOMOTION.idle, vrm),
       loadRetargetedClip(VRM_LOCOMOTION.walkFwd, vrm),
       loadRetargetedClip(VRM_LOCOMOTION.jogFwd, vrm),
       loadRetargetedClip(VRM_LOCOMOTION.jump, vrm).catch(() => null),
-      loadRetargetedClip(VRM_LOCOMOTION.fall, vrm).catch(() => null),
-      loadRetargetedClip(VRM_LOCOMOTION.flip, vrm).catch(() => null)
+      loadRetargetedClip(VRM_LOCOMOTION.fall, vrm).catch(() => null)
     ])
 
     if (generation !== this.bindGeneration) return
@@ -53,6 +55,7 @@ export class VrmLocomotionAnimations {
       `[vrm] locomotion clips ready — idle=${idle.tracks.length} tracks, walk=${walk.tracks.length}, jog=${jog.tracks.length}`
     )
 
+    this.spinRoot = animRoot
     this.mixer = new THREE.AnimationMixer(animRoot)
     this.mixer.addEventListener('finished', this.onMixerFinished)
 
@@ -77,12 +80,6 @@ export class VrmLocomotionAnimations {
       this.fallAction = this.mixer.clipAction(fall)
       this.fallAction.setLoop(THREE.LoopRepeat, Infinity)
       this.fallAction.play()
-    }
-    if (flip) {
-      this.flipAction = this.mixer.clipAction(flip)
-      this.flipAction.setLoop(THREE.LoopOnce, 1)
-      this.flipAction.clampWhenFinished = true
-      this.flipAction.play()
     }
 
     this.mixer.update(0)
@@ -120,31 +117,42 @@ export class VrmLocomotionAnimations {
     if (!this.mixer || !this.idleAction) return
 
     if (this.profileEmoteActive && this.profileEmoteAction) {
+      this.twirl.reset()
+      this.doubleJumpPlaying = false
       this.idleAction.setEffectiveWeight(0)
       this.walkAction?.setEffectiveWeight(0)
       this.jogAction?.setEffectiveWeight(0)
       this.jumpAction?.setEffectiveWeight(0)
       this.fallAction?.setEffectiveWeight(0)
-      this.flipAction?.setEffectiveWeight(0)
       this.profileEmoteAction.setEffectiveWeight(1)
       this.mixer.update(delta)
       return
     }
 
-    if (state.doubleJumpTriggered && this.flipAction) {
-      this.flipPlaying = true
-      this.flipAction.reset()
-      this.flipAction.setEffectiveWeight(1)
-      this.flipAction.play()
+    if (state.doubleJumpTriggered) {
+      this.doubleJumpPlaying = true
+      this.twirl.start(this.spinRoot)
+      if (this.jumpAction) {
+        this.jumpAction.reset()
+        this.jumpAction.setEffectiveWeight(1)
+        this.jumpAction.play()
+      }
     }
 
-    if (this.flipPlaying) {
+    if (state.grounded && this.twirl.active) {
+      this.twirl.reset()
+      this.doubleJumpPlaying = false
+    }
+
+    const twirling = this.twirl.update(delta)
+    if (!twirling && this.doubleJumpPlaying) this.doubleJumpPlaying = false
+
+    if (this.doubleJumpPlaying || twirling) {
       this.idleAction.setEffectiveWeight(0)
       this.walkAction?.setEffectiveWeight(0)
       this.jogAction?.setEffectiveWeight(0)
-      this.jumpAction?.setEffectiveWeight(0)
       this.fallAction?.setEffectiveWeight(0)
-      this.flipAction?.setEffectiveWeight(1)
+      this.jumpAction?.setEffectiveWeight(1)
       this.mixer.update(delta)
       return
     }
@@ -226,38 +234,34 @@ export class VrmLocomotionAnimations {
 
     this.jumpAction?.setEffectiveWeight(this.jumpBlend)
     this.fallAction?.setEffectiveWeight(this.fallBlend)
-    this.flipAction?.setEffectiveWeight(0)
 
     this.mixer.update(delta)
   }
 
   dispose(): void {
     this.bindGeneration++
+    this.twirl.reset()
     this.stopProfileEmote()
     if (this.mixer) {
       this.mixer.removeEventListener('finished', this.onMixerFinished)
       this.mixer.stopAllAction()
     }
     this.mixer = null
+    this.spinRoot = null
     this.idleAction = null
     this.walkAction = null
     this.jogAction = null
     this.jumpAction = null
     this.fallAction = null
-    this.flipAction = null
     this.walkBlend = 0
     this.jogBlend = 0
     this.jumpBlend = 0
     this.fallBlend = 0
-    this.flipPlaying = false
+    this.doubleJumpPlaying = false
     this.speedSmooth = 0
   }
 
   private onMixerFinished = (event: THREE.Event & { action: THREE.AnimationAction }): void => {
-    if (event.action === this.flipAction) {
-      this.flipPlaying = false
-      this.flipAction?.stop()
-    }
     if (event.action === this.profileEmoteAction && !this.profileEmoteLoop) {
       this.stopProfileEmote()
     }

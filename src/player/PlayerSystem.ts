@@ -5,6 +5,7 @@ import type { MirrorComponents } from '../bridge/mirrorComponents'
 import { SDK_RESERVED } from '../bridge/reservedEntities'
 import { ReservedEntitiesSync, type EntityPose } from '../bridge/ReservedEntitiesSync'
 import { NameTag } from '../client/ui/NameTag'
+import { areSceneNameTagsVisible } from '../client/ui/nameTagVisibility'
 import { cameraCollisionDebug } from '../debug/CameraCollisionDebug'
 import type { PhysXWorld } from '../physics/PhysXWorld'
 import type { SceneHost } from '../rendering/SceneHost'
@@ -226,7 +227,7 @@ export class PlayerSystem {
       console.warn('Avatar load failed — continuing with invisible capsule', err)
     }
 
-    if (this.avatar && this.playerIdentity) {
+    if (this.avatar && this.playerIdentity && areSceneNameTagsVisible()) {
       this.nameTag = NameTag.attach(this.avatar.nameTagAnchor, this.playerIdentity.displayName, {
         textColor: this.playerIdentity.nameColor,
         claimed: this.playerIdentity.hasClaimedName
@@ -414,6 +415,7 @@ export class PlayerSystem {
 
   /** Scene chat line shown inside the overhead name-tag pill. */
   showNameTagChat(text: string): void {
+    if (!areSceneNameTagsVisible()) return
     this.nameTag?.showChat(text)
   }
 
@@ -914,13 +916,17 @@ export class PlayerSystem {
   private syncCamera(snap: boolean, delta = 0.016): void {
     if (this.virtualCamera?.apply(delta)) {
       this.avatar?.setBodyVisible(true)
-      if (this.nameTag) this.nameTag.object.visible = true
+      if (this.nameTag) {
+        this.nameTag.object.visible = areSceneNameTagsVisible()
+      }
       return
     }
 
     const fpv = this.isFirstPerson()
     this.avatar?.setBodyVisible(!fpv)
-    if (this.nameTag) this.nameTag.object.visible = !fpv
+    if (this.nameTag) {
+      this.nameTag.object.visible = areSceneNameTagsVisible() && !fpv
+    }
 
     if (fpv) {
       _pivot.copy(this.root.position)
@@ -974,7 +980,19 @@ export class PlayerSystem {
   }
 
   private syncNameTag(): void {
-    if (!this.nameTag || !this.playerIdentity) return
+    if (!this.playerIdentity) return
+    if (!areSceneNameTagsVisible()) {
+      this.nameTag?.dispose()
+      this.nameTag = null
+      return
+    }
+    if (!this.nameTag) {
+      if (!this.avatar) return
+      this.nameTag = NameTag.attach(this.avatar.nameTagAnchor, this.playerIdentity.displayName, {
+        textColor: this.playerIdentity.nameColor,
+        claimed: this.playerIdentity.hasClaimedName
+      })
+    }
 
     const { AvatarShape } = this.readComponents ?? {}
     const mirrorName =

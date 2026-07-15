@@ -4,6 +4,7 @@ import { pickSceneSpawn } from './pickSceneSpawn'
 import { BLANK_SCENE_TEMPLATE } from './types'
 import { layoutFromSceneMetadata } from './sceneLayout'
 import { resolveBrowserChatEnabled } from './resolveBrowserChat'
+import { resolveNameTagsVisible } from './resolveNameTags'
 import { resolveSceneEnvironment } from '../landscape/resolveLandscapeEnvironment'
 import { catalystContentAssetUrl, catalystRootFromContentUrl, fetchSceneEntityByPointer } from '../../network/catalyst/CatalystClient'
 import { fetchCatalystRealmAbout, fetchWorldRealmAbout } from '../../network/catalyst/realmAbout'
@@ -199,6 +200,7 @@ function resolvedFromEntity(
     skybox,
     commsPointer: opts.commsPointer,
     browserChatEnabled: resolveBrowserChatEnabled(metadata),
+    nameTagsVisible: resolveNameTagsVisible(metadata),
     realm: opts.realm
   }
 }
@@ -257,7 +259,8 @@ export async function resolveSceneFromRoute(target: RouteTarget): Promise<Resolv
       metadata,
       landscapeEnvironment: resolvedEnv.landscapeEnvironment,
       skyLighting: resolvedEnv.skyLighting,
-      browserChatEnabled: resolveBrowserChatEnabled(metadata)
+      browserChatEnabled: resolveBrowserChatEnabled(metadata),
+      nameTagsVisible: resolveNameTagsVisible(metadata)
     }
   }
 

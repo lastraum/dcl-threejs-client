@@ -366,7 +366,10 @@ export class AvatarAnimations {
     if (this.runAction) {
       if (state.locomotionMode === 'run') {
         const ref = Math.max(DCL_LOCOMOTION_DEFAULTS.runSpeed, 0.001)
-        this.runAction.setEffectiveTimeScale(Math.max(1.05, (state.horizontalSpeed / ref) * 1.1))
+        // 1.5× base run cadence so foot cycles match faster perceived travel.
+        this.runAction.setEffectiveTimeScale(
+          Math.max(1.575, (state.horizontalSpeed / ref) * 1.65)
+        )
       } else if (state.locomotionMode === 'jog') {
         const ref = Math.max(DCL_LOCOMOTION_DEFAULTS.jogSpeed, 0.001)
         // Explorer jog (blend tier 2) uses run.glb slowed — not walk.glb sped up.

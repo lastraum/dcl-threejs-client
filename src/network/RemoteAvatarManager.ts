@@ -149,6 +149,8 @@ export class RemoteAvatarManager {
   private readonly peerReloadSeq = new Map<string, number>()
   private entityStore: EntityStore | null = null
   private localAddress: string | null = null
+  private readonly cameraWorldPos = new THREE.Vector3()
+  private hasCameraPos = false
   constructor(scene: THREE.Scene) {
     this.scene = scene
     this.root.name = 'remote-avatars'
@@ -197,6 +199,8 @@ export class RemoteAvatarManager {
   }
 
   setCameraPosition(position: THREE.Vector3): void {
+    this.cameraWorldPos.copy(position)
+    this.hasCameraPos = true
     this.loadQueue.setCameraPosition(position)
   }
 
@@ -659,6 +663,9 @@ export class RemoteAvatarManager {
   update(delta: number): void {
     const alpha = 1 - Math.exp(-8 * delta)
     const speedAlpha = 1 - Math.exp(-10 * delta)
+    // Soft budget: full VRM/ODK anim only for near peers. Far peers still lerp pose.
+    // Prevents N remotes × VRM update from hitching sync on sparse water scenes.
+    const NEAR_ANIM_M2 = 48 * 48
 
     for (const [key, record] of this.peers.entries()) {
       if (record.hasPosition) {
@@ -674,53 +681,63 @@ export class RemoteAvatarManager {
       record.pivot.rotation.y = record.currentYaw + AVATAR_YAW_OFFSET
 
       record.smoothedSpeed += (record.horizontalSpeed - record.smoothedSpeed) * speedAlpha
-      const speed = record.smoothedSpeed
-      const emoteActive =
-        record.renderMode === 'vrm'
-          ? (record.vrmLocomotion?.isProfileEmoteActive() ?? false)
-          : record.renderMode === 'odk'
-            ? (record.odkLocomotion?.isProfileEmoteActive() ?? false)
-            : (record.animations?.isProfileEmoteActive() ?? false)
-      const locomotionMode = inferRemoteLocomotionMode(speed)
-      const targetLocomotionSpeed =
-        !emoteActive && speed > 0.08 ? remoteTargetLocomotionSpeed(locomotionMode) : 0
-      const grounded = record.remoteGrounded && record.verticalVelocity > -8
-      const jumping = record.remoteJumping && record.jumpCount <= 1
-      const doubleJumping = record.jumpCount >= 2 && !grounded
 
-      const locomotionState = {
-        horizontalSpeed: emoteActive ? 0 : speed,
-        targetLocomotionSpeed,
-        grounded,
-        nearGround: grounded,
-        verticalVelocity: record.verticalVelocity,
-        locomotionMode,
-        jumping,
-        doubleJumping,
-        doubleJumpTriggered: record.doubleJumpTriggered,
-        falling: !grounded && !jumping && !doubleJumping && record.verticalVelocity < -1.5
+      let nearForAnim = true
+      if (this.hasCameraPos && record.hasPosition) {
+        const dx = record.root.position.x - this.cameraWorldPos.x
+        const dz = record.root.position.z - this.cameraWorldPos.z
+        nearForAnim = dx * dx + dz * dz <= NEAR_ANIM_M2
       }
-      if (record.renderMode === 'vrm') {
-        record.vrmLocomotion?.update(delta, locomotionState)
-        record.vrmAvatar?.update(delta)
-      } else if (record.renderMode === 'odk') {
-        record.odkLocomotion?.update(delta, locomotionState)
-        record.odkAvatar?.update(delta)
-      } else {
-        record.animations?.update(delta, locomotionState)
-      }
-      const stillEmoting =
-        record.renderMode === 'vrm'
-          ? record.vrmLocomotion?.isProfileEmoteActive()
-          : record.renderMode === 'odk'
-            ? record.odkLocomotion?.isProfileEmoteActive()
-            : record.animations?.isProfileEmoteActive()
-      if (record.activeEmoteUrn && !stillEmoting) {
-        record.activeEmoteUrn = null
-      }
-      if (record.deferredProfileReload && !stillEmoting) {
-        record.deferredProfileReload = false
-        void this.reloadPeerAvatar(key, record)
+
+      if (nearForAnim) {
+        const speed = record.smoothedSpeed
+        const emoteActive =
+          record.renderMode === 'vrm'
+            ? (record.vrmLocomotion?.isProfileEmoteActive() ?? false)
+            : record.renderMode === 'odk'
+              ? (record.odkLocomotion?.isProfileEmoteActive() ?? false)
+              : (record.animations?.isProfileEmoteActive() ?? false)
+        const locomotionMode = inferRemoteLocomotionMode(speed)
+        const targetLocomotionSpeed =
+          !emoteActive && speed > 0.08 ? remoteTargetLocomotionSpeed(locomotionMode) : 0
+        const grounded = record.remoteGrounded && record.verticalVelocity > -8
+        const jumping = record.remoteJumping && record.jumpCount <= 1
+        const doubleJumping = record.jumpCount >= 2 && !grounded
+
+        const locomotionState = {
+          horizontalSpeed: emoteActive ? 0 : speed,
+          targetLocomotionSpeed,
+          grounded,
+          nearGround: grounded,
+          verticalVelocity: record.verticalVelocity,
+          locomotionMode,
+          jumping,
+          doubleJumping,
+          doubleJumpTriggered: record.doubleJumpTriggered,
+          falling: !grounded && !jumping && !doubleJumping && record.verticalVelocity < -1.5
+        }
+        if (record.renderMode === 'vrm') {
+          record.vrmLocomotion?.update(delta, locomotionState)
+          record.vrmAvatar?.update(delta)
+        } else if (record.renderMode === 'odk') {
+          record.odkLocomotion?.update(delta, locomotionState)
+          record.odkAvatar?.update(delta)
+        } else {
+          record.animations?.update(delta, locomotionState)
+        }
+        const stillEmoting =
+          record.renderMode === 'vrm'
+            ? record.vrmLocomotion?.isProfileEmoteActive()
+            : record.renderMode === 'odk'
+              ? record.odkLocomotion?.isProfileEmoteActive()
+              : record.animations?.isProfileEmoteActive()
+        if (record.activeEmoteUrn && !stillEmoting) {
+          record.activeEmoteUrn = null
+        }
+        if (record.deferredProfileReload && !stillEmoting) {
+          record.deferredProfileReload = false
+          void this.reloadPeerAvatar(key, record)
+        }
       }
       record.doubleJumpTriggered = false
 
@@ -729,7 +746,6 @@ export class RemoteAvatarManager {
         updateNameTagAnchor(record.nameTagAnchor, nameTagTarget)
       }
     }
-
   }
 
   dispose(): void {

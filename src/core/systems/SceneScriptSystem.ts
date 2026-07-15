@@ -225,6 +225,8 @@ export class SceneScriptSystem {
   private clientPoseProvider: (() => { player: EntityPose; camera: EntityPose }) | null = null
   private getSpatialAudioPlayerRoot: (() => THREE.Object3D | null) | null = null
   private bindLiveKitVideo: LiveKitVideoBinder | null = null
+  /** Cast/OBS remote video presence in the scene LiveKit room. */
+  private isLiveKitRemoteLive: () => boolean = () => false
   private movePlayerHandler: MovePlayerHandler | null = null
   private triggerEmoteHandler: TriggerEmoteHandler | null = null
   private triggerSceneEmoteHandler: TriggerSceneEmoteHandler | null = null
@@ -420,7 +422,8 @@ export class SceneScriptSystem {
       () => this.getSpatialAudioAnchors(),
       () => this.bindLiveKitVideo,
       this.recordRendererAppend,
-      this.recordRendererLww
+      this.recordRendererLww,
+      () => this.isLiveKitRemoteLive()
     )
     this.videoPlayerBridge.onLwwFlush = () => this.flushRendererLwwToWorker()
     this.bridge.setVideoPlayerBridge(this.videoPlayerBridge)
@@ -1018,6 +1021,11 @@ export class SceneScriptSystem {
   /** LiveKit scene cast binder for `livekit-video://current-stream` VideoPlayer.src. */
   setLiveKitVideoBinder(binder: LiveKitVideoBinder | null): void {
     this.bindLiveKitVideo = binder
+  }
+
+  /** True while Cast/OBS publishes remote video — VideoPlayer prefers live feed over default VOD. */
+  setLiveKitRemoteLiveCheck(check: (() => boolean) | null): void {
+    this.isLiveKitRemoteLive = check ?? (() => false)
   }
 
   private getSpatialAudioAnchors(): SpatialAudioAnchors | null {

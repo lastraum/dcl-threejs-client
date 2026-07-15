@@ -15,7 +15,6 @@ import {
 import { fetchSceneParticipants, getSceneAdapter } from './gatekeeper/GatekeeperClient'
 import {
   acquireWalletSessionLock,
-  isWalletListedInScene,
   refreshWalletSessionLock,
   releaseWalletSessionLock
 } from './walletSessionGuard'
@@ -129,6 +128,9 @@ export class CommsService {
   /** Serialize scene-room joins so cast retry + route switch cannot abort each other. */
   private sceneRoomConnectChain: Promise<unknown> = Promise.resolve()
   private sceneRoomConnectInFlight = false
+  /** Throttle RFC4 ProfileRequest per peer — version heartbeats used to flood lossy DC. */
+  private readonly profileRequestAt = new Map<string, number>()
+  private static readonly PROFILE_REQUEST_COOLDOWN_MS = 5_000
 
   constructor(initialRealm?: Partial<CommsRealmInfo>) {
     this.realm = {
@@ -171,9 +173,9 @@ export class CommsService {
       },
       onProfileRequest: (address) => {
         if (address !== this.localAddress) return
-        this.sceneLiveKit.sendProfileAnnouncement('profile-request')
-        this.worldLiveKit.sendProfileAnnouncement('profile-request')
-        this.islandLiveKit.sendProfileAnnouncement('profile-request')
+        // Reply only on the primary avatar/chat room — not every transport (spam + disconnect races).
+        const primary = this.primaryAvatarSession()
+        if (primary) primary.sendProfileAnnouncement('profile-request')
       },
       onPeerProfileVersion: (address, profileVersion) => {
         if (address === this.localAddress) return
@@ -246,6 +248,51 @@ export class CommsService {
 
   setHandlers(handlers: CommsPeerHandlers | null): void {
     this.handlers = handlers
+  }
+
+  /**
+   * After landing → play handoff: re-fire onPeerJoin for everyone already in the room
+   * so RemoteAvatarManager learns about peers without a reconnect.
+   */
+  notifyHandlersOfCurrentPeers(): void {
+    if (!this.handlers) return
+    for (const address of this.peerTransports.keys()) {
+      this.handlers.onPeerJoin(address)
+    }
+  }
+
+  /** Any LiveKit room still up (used to decide handoff vs fresh connect). */
+  hasLiveKitSession(): boolean {
+    return this.isLiveKitConnected()
+  }
+
+  /**
+   * After jump-in: drop LiveKit transports not needed for this place.
+   * Worlds use world + scene rooms; parcels use scene (+ island only if archipelago).
+   */
+  pruneUnusedLiveKitForTarget(target: { isWorld: boolean }): void {
+    if (target.isWorld) {
+      if (this.islandLiveKit.isConnected() || this.islandConnected) {
+        this.islandLiveKit.disconnect()
+        this.islandConnected = false
+        this.clearPeerTransport(TransportType.Island)
+        clientDebugLog.log('comms', 'Pruned island LiveKit (world play — not used)', {
+          level: 'info',
+          alsoConsole: true
+        })
+      }
+      return
+    }
+    // Parcel: world room is unused once in scene-primary mode.
+    if (this.worldLiveKit.isConnected() || this.worldConnected) {
+      this.worldLiveKit.disconnect()
+      this.worldConnected = false
+      this.clearPeerTransport(TransportType.World)
+      clientDebugLog.log('comms', 'Pruned world LiveKit (parcel play — not used)', {
+        level: 'info',
+        alsoConsole: true
+      })
+    }
   }
 
   setSceneBinaryHandler(handler: SceneBinaryHandler | null): void {
@@ -427,7 +474,11 @@ export class CommsService {
     }
   }
 
-  private async connectSceneRoomImpl(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
+  /**
+   * Update scene origin/bounds/target without touching LiveKit sockets.
+   * Used after landing → play handoff so movement encoding matches the World scene.
+   */
+  bindSceneTarget(target: SceneCommsTarget): void {
     this.sceneTarget = target
     this.sceneId = target.sceneId.trim()
     this.realm.room = normalizePointer(target.pointer)
@@ -440,13 +491,24 @@ export class CommsService {
       x: (Number.parseInt(bxStr?.trim() ?? '0', 10) || 0) * 16,
       z: (Number.parseInt(bzStr?.trim() ?? '0', 10) || 0) * 16
     }
+    this.router.setRealmBounds(this.realmBounds)
+    this.router.setSceneOrigin(target.baseParcel)
+    this.syncRealmBoundsToSessions()
+    this.realm = {
+      ...this.realm,
+      realmName: gatekeeperRealmNameForComms(target),
+      baseUrl: target.contentUrl,
+      isPreview: false,
+      isConnectedSceneRoom: this.isLiveKitConnected()
+    }
+  }
+
+  private async connectSceneRoomImpl(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
+    this.bindSceneTarget(target)
     clientDebugLog.log(
       'comms',
       `Scene origin: baseParcel=${target.baseParcel} → world offset (${this.sceneOriginMeters.x}, ${this.sceneOriginMeters.z})m | bounds=(${this.realmBounds?.minX},${this.realmBounds?.minY})→(${this.realmBounds?.maxX},${this.realmBounds?.maxY})`
     )
-    this.router.setRealmBounds(this.realmBounds)
-    this.router.setSceneOrigin(target.baseParcel)
-    this.syncRealmBoundsToSessions()
 
     if (!this.localAddress || !this.identity) {
       clientDebugLog.log('comms', 'Wallet login required for production comms', { level: 'warn' })
@@ -462,30 +524,11 @@ export class CommsService {
 
     const realmName = gatekeeperRealmNameForComms(target)
 
-    // Same-tab rejoin (scene switch / chat channel reselect): gatekeeper still lists us for a
-    // few seconds after leave — do not treat self as a second client.
-    if (!this.walletSessionLockHeld) {
-      try {
-        const alreadyInScene = await isWalletListedInScene(
-          target.pointer,
-          realmName,
-          this.localAddress
-        )
-        if (alreadyInScene) {
-          releaseWalletSessionLock(this.localAddress)
-          clientDebugLog.log(
-            'comms',
-            `Blocked second client — ${this.localAddress.slice(0, 8)}… already in scene`,
-            { level: 'error' }
-          )
-          return { ok: false, reason: 'duplicate_wallet' }
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        clientDebugLog.log('comms', `scene-participants preflight failed: ${msg}`, { level: 'warn' })
-      }
-    }
-
+    // This tab now owns the wallet session lock. Do **not** block on gatekeeper
+    // scene-participants: landing → play handoff leaves a stale roster entry for
+    // several seconds (same wallet). Another browser/tab is already blocked by
+    // acquireWalletSessionLock + LiveKit single-identity. Checking roster here
+    // caused permanent remotePeers:0 after Jump In from scene landing.
     this.walletSessionLockHeld = true
     const isWorld = target.isWorld ?? !isParcelPointer(normalizePointer(target.pointer))
 
@@ -701,11 +744,22 @@ export class CommsService {
     if (!this.localAddress || !this.identity) return false
 
     if (isLiveKitAdapter(trimmed)) {
-      this.disconnectSceneTransports()
+      // Scene-room only. Never call disconnectSceneTransports() here — that also drops the
+      // **world** LiveKit room and wipes remote avatars/movement on Worlds.
+      this.sceneLiveKit.disconnect()
+      this.rfc5.disconnect()
+      this.realm.isConnectedSceneRoom = false
+      this.clearPeerTransport(TransportType.SceneRoom)
       this.realm.commsAdapter = trimmed
       const connected = await this.sceneLiveKit.connect(trimmed)
-      this.transport = connected ? 'livekit' : 'none'
-      this.realm.isConnectedSceneRoom = connected
+      if (connected) {
+        this.transport = 'livekit'
+        this.realm.isConnectedSceneRoom = true
+      } else if (this.worldLiveKit.isConnected() || this.worldConnected) {
+        this.transport = 'livekit'
+      } else {
+        this.transport = 'none'
+      }
       return connected
     }
 
@@ -885,24 +939,16 @@ export class CommsService {
     return { streams }
   }
 
-  /** Prefer scene room, then world, then island LiveKit sessions. */
-  private preferredLiveKitSession() {
-    if (this.sceneLiveKit.isConnected()) return this.sceneLiveKit
-    if (this.worldLiveKit.isConnected()) return this.worldLiveKit
-    if (this.islandLiveKit.isConnected()) return this.islandLiveKit
-    return null
-  }
-
   private connectedLiveKitSessions() {
     return [this.sceneLiveKit, this.worldLiveKit, this.islandLiveKit].filter((s) => s.isConnected())
   }
 
   /** Bind `livekit-video://current-stream` to a scene VideoPlayer HTML element. */
   bindLiveKitVideoSource(video: HTMLVideoElement, onUpdate?: () => void): () => void {
-    // Cast/OBS lives on the scene room for worlds — prefer it for attach.
-    const session = this.preferredLiveKitSession()
-    if (!session) return () => {}
-    return session.bindCurrentVideoStream(video, onUpdate)
+    // Cast/OBS is on the **scene** room only. Never bind to the world room — force-subscribe
+    // + attach there stressed the peer-connection used for movement/avatars.
+    if (!this.sceneLiveKit.isConnected()) return () => {}
+    return this.sceneLiveKit.bindCurrentVideoStream(video, onUpdate)
   }
 
   /**
@@ -1285,20 +1331,34 @@ export class CommsService {
     const key = address.toLowerCase()
     if (!key || key === this.localAddress) return
 
+    const now = performance.now()
+    const last = this.profileRequestAt.get(key) ?? 0
+    if (now - last < CommsService.PROFILE_REQUEST_COOLDOWN_MS) return
+    this.profileRequestAt.set(key, now)
+
     const packet = encodeRfc4ProfileRequestPacket(key, profileVersion)
-    let sent = false
-    for (const session of [this.sceneLiveKit, this.worldLiveKit, this.islandLiveKit]) {
-      if (!session.isConnected()) continue
-      void session.publishData(packet)
-      sent = true
+    // One room only — dual world+scene publishes doubled traffic and hit disconnecting rooms.
+    const session = this.primaryAvatarSession()
+    if (!session) return
+    void session.publishData(packet)
+    clientDebugLog.log(
+      'comms',
+      `RFC4 ProfileRequest → ${key.slice(0, 8)}… v${profileVersion}`,
+      { throttleMs: 1500, throttleKey: `profile-req:${key}` }
+    )
+  }
+
+  /** Room used for movement/profiles/chat — world for Worlds, else scene. */
+  private primaryAvatarSession(): LiveKitCommsSession | null {
+    if (this.isWorldComms()) {
+      if (this.worldLiveKit.isConnected()) return this.worldLiveKit
+      if (this.sceneLiveKit.isConnected()) return this.sceneLiveKit
+      return null
     }
-    if (sent) {
-      clientDebugLog.log(
-        'comms',
-        `RFC4 ProfileRequest → ${key.slice(0, 8)}… v${profileVersion}`,
-        { throttleMs: 1500, throttleKey: `profile-req:${key}` }
-      )
-    }
+    if (this.sceneLiveKit.isConnected()) return this.sceneLiveKit
+    if (this.worldLiveKit.isConnected()) return this.worldLiveKit
+    if (this.islandLiveKit.isConnected()) return this.islandLiveKit
+    return null
   }
 
   private trackPeerLeave(address: string, transport: TransportType): void {
@@ -1308,6 +1368,7 @@ export class CommsService {
     sources.delete(transport)
     if (sources.size === 0) {
       this.peerTransports.delete(key)
+      this.profileRequestAt.delete(key)
       this.handlers?.onPeerLeave(key)
     }
   }

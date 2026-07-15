@@ -761,12 +761,23 @@ export class ChatPanel {
         }
         return
       }
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' || e.code === 'NumpadEnter') {
         e.preventDefault()
         const pick = this.mentionPopupRows[this.mentionHighlight]
         if (pick) this.commitMentionPick(pick)
         return
       }
+    }
+    // Explicit send — do not rely only on form submit (can be swallowed by other handlers).
+    if (
+      (e.key === 'Enter' || e.code === 'Enter' || e.code === 'NumpadEnter') &&
+      !e.shiftKey &&
+      !e.repeat &&
+      !e.isComposing
+    ) {
+      e.preventDefault()
+      e.stopPropagation()
+      void this.submitMessage()
     }
   }
 

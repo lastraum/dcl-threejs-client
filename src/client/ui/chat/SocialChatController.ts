@@ -60,7 +60,8 @@ function normalizeSceneKey(pointer: string): string {
  * current landing room (cast + presence handoff) — never steals background pool rooms.
  */
 export class SocialChatController {
-  private readonly comms = new CommsService()
+  /** Primary landing LiveKit — transferred to World on Jump In (no disconnect). */
+  private comms: CommsService = new CommsService()
   private social = new SocialService()
   private readonly session = new SessionIdentity()
   private readonly chatPool = new SceneChatRoomPool({
@@ -429,25 +430,74 @@ export class SocialChatController {
     this.setStatus({ kind: 'scene_ban', title: message.title, detail: message.detail })
   }
 
-  /** Disconnect 2D-shell primary comms so World can join the same room (landing → play handoff). */
-  releaseCommsForWorldHandoff(): void {
-    if (this.disposed) return
-    const prev = this.connectedPointer
-    void (async () => {
-      // Resolve adapter while still connected, then leave primary, then pool-join (no identity clash).
-      const migrate =
-        prev && this.social.getSceneTabs().some((t) => normalizeSceneKey(t.key) === normalizeSceneKey(prev))
-          ? await this.resolveAdapterForSceneKey(prev)
-          : null
-      if (this.disposed) return
+  /**
+   * Landing → play for `targetPointer`:
+   * - Tear down every multi-room LiveKit that is **not** the jump target
+   * - If primary is already that scene, transfer it (no disconnect)
+   * - If primary is a different scene, disconnect it so World can join clean
+   */
+  detachCommsForWorldHandoff(targetPointer: string): CommsService | null {
+    if (this.disposed) return null
+
+    const target = normalizeSceneKey(targetPointer)
+    // Drop background chat rooms for every other place.
+    this.chatPool.leaveExcept(target)
+    // Primary must not also sit in the pool under the same identity.
+    if (this.chatPool.isJoined(target)) {
+      this.chatPool.leave(target)
+    }
+
+    const primary = this.connectedPointer ? normalizeSceneKey(this.connectedPointer) : null
+    const primaryLive = this.comms.isLiveKitConnected()
+
+    // Wrong scene still connected — must not hand off foreign rooms.
+    if (primaryLive && primary && primary !== target) {
+      clientDebugLog.log(
+        'social',
+        `Jump-in target ${target} ≠ primary ${primary} — disconnecting foreign LiveKit`,
+        { level: 'warn', alsoConsole: true }
+      )
       this.comms.disconnect()
       this.connectedPointer = null
-      await this.joinPoolAfterPrimaryLeft(prev, null, migrate)
       this.syncLiveKeys()
       if (this.status.kind === 'connected' || this.status.kind === 'browser_chat_disabled') {
         this.setStatus({ kind: 'connecting' })
       }
-    })()
+      return null
+    }
+
+    if (!primaryLive) {
+      this.connectedPointer = null
+      this.syncLiveKeys()
+      clientDebugLog.log('social', 'No live primary comms to transfer — World will connect', {
+        level: 'info',
+        alsoConsole: true
+      })
+      return null
+    }
+
+    // Clear shell chat handlers; World installs avatar/movement handlers on the same service.
+    this.comms.setChatHandler(null)
+    this.comms.setChatMediaHandler(null)
+    this.comms.setHandlers(null)
+
+    const transferred = this.comms
+    this.comms = new CommsService()
+    if (this.login && (this.login.kind === 'wallet' || this.login.kind === 'guest')) {
+      this.comms.setIdentity(this.login.address, this.login.identity)
+      this.chatPool.setIdentity(this.login.address, this.login.identity)
+    }
+    this.connectedPointer = null
+    this.syncLiveKeys()
+    if (this.status.kind === 'connected' || this.status.kind === 'browser_chat_disabled') {
+      this.setStatus({ kind: 'connecting' })
+    }
+    clientDebugLog.log(
+      'social',
+      `Transferred LiveKit for ${target} to World (no disconnect) · pool cleared of others`,
+      { level: 'success', alsoConsole: true }
+    )
+    return transferred
   }
 
   dispose(): void {

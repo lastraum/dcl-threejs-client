@@ -178,4 +178,13 @@ export class SceneChatRoomPool {
   leaveAll(): void {
     for (const key of [...this.rooms.keys()]) this.leave(key)
   }
+
+  /** Disconnect every pool room except the jump-in target (if joined). */
+  leaveExcept(keepSceneKey: string | null | undefined): void {
+    const keep = keepSceneKey ? normalizeKey(keepSceneKey) : null
+    for (const key of [...this.rooms.keys()]) {
+      if (keep && key === keep) continue
+      this.leave(key)
+    }
+  }
 }

@@ -54,9 +54,11 @@ export class OpenOceanWater {
     const span = OPEN_OCEAN_HALF_EXTENT_M * 2
     const geometry = new THREE.PlaneGeometry(span, span)
 
+    // Tiny RT + disabled mirror pass. Stock Water.js re-renders the *entire scene* every
+    // frame into textureWidth×textureHeight — that alone caps empty ocean scenes ~60–80fps.
     const water = new Water(geometry, {
-      textureWidth: 512,
-      textureHeight: 512,
+      textureWidth: 4,
+      textureHeight: 4,
       waterNormals,
       sunDirection: sunDir,
       sunColor: 0xffffff,
@@ -69,6 +71,20 @@ export class OpenOceanWater {
     water.name = 'open-ocean:three-water'
     water.frustumCulled = false
     water.renderOrder = 1
+
+    // Kill the free full-scene reflection render (onBeforeRender in three/examples Water.js).
+    // Keep a flat sky-tinted sampler so the shader still looks like open water, not black.
+    const mat = water.material as THREE.ShaderMaterial
+    const flatMirror = new THREE.WebGLRenderTarget(4, 4, {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      depthBuffer: false
+    })
+    mat.uniforms.mirrorSampler.value = flatMirror.texture
+    water.onBeforeRender = () => {
+      /* no mirror re-render */
+    }
+    water.userData.openOceanFlatMirror = flatMirror
 
     const instance = new OpenOceanWater(water, span)
     dclToThreePos(centerDcl.x, ISLAND_WATER_SURFACE_Y, centerDcl.z, instance.group.position)
@@ -94,6 +110,8 @@ export class OpenOceanWater {
   }
 
   dispose(): void {
+    const flat = this.water.userData.openOceanFlatMirror as THREE.WebGLRenderTarget | undefined
+    flat?.dispose()
     this.water.geometry.dispose()
     this.water.material.dispose()
     this.group.removeFromParent()

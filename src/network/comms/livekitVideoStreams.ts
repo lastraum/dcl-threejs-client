@@ -121,61 +121,116 @@ export function roomHasRemoteVideo(room: Room | null): boolean {
 
 /** Force-subscribe every remote video publication (companion scene-watch parity). */
 export function forceSubscribeRemoteVideo(room: Room | null): number {
-  if (!room) return 0
+  if (!room || room.state !== ConnectionState.Connected) return 0
   let n = 0
   for (const participant of room.remoteParticipants.values()) {
     if (participant.isLocal) continue
     for (const publication of participant.trackPublications.values()) {
       if (!isVideoKind(publication.kind)) continue
+      const rp = publication as RemoteTrackPublication
+      if (rp.isSubscribed && rp.track) {
+        n += 1
+        continue
+      }
       n += 1
       try {
-        ;(publication as RemoteTrackPublication).setSubscribed(true)
+        rp.setSubscribed(true)
       } catch {
-        /* ignore */
+        /* ignore — room may be tearing down */
       }
     }
   }
   return n
 }
 
-function videoSourceTier(source: Track.Source): number {
+/** Unity `PRESENTATION_BOT_IDENTITY_PREFIX` — DCL Cast slide/presentation publisher. */
+export const PRESENTATION_BOT_IDENTITY_PREFIX = 'presentation-bot:'
+
+export function isPresentationBotIdentity(identity: string | undefined | null): boolean {
+  return (identity ?? '').toLowerCase().startsWith(PRESENTATION_BOT_IDENTITY_PREFIX)
+}
+
+/**
+ * Priority for scene `livekit-video://current-stream` (Unity LivekitPlayer.BestInitialVideoKey):
+ * presentation bot → screen share → camera → other/ingress (unknown).
+ */
+function videoSourceTier(source: Track.Source, identity: string): number {
+  if (isPresentationBotIdentity(identity)) return -1
   if (source === Track.Source.ScreenShare) return 0
   if (source === Track.Source.Camera) return 1
-  return 2 // unknown / ingress-style
+  return 2 // unknown / RTMP ingress-style
 }
 
 type RemoteVideoPick = {
   track: Track
   publication: RemoteTrackPublication
+  identity: string
 }
 
-/** Companion `pickBestRemoteVideoPublication` — screen share > camera > other, prefer larger. */
+function trackPublicationArea(track: Track): number {
+  try {
+    const ms = (track as unknown as { mediaStreamTrack?: MediaStreamTrack }).mediaStreamTrack
+    const s = ms?.getSettings?.()
+    return Math.max(0, s?.width ?? 0) * Math.max(0, s?.height ?? 0)
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * Unity `BestInitialVideoKey` / companion pick — remote video only (no local webcam fallback).
+ * Force-subscribes pubs; accepts any video source (screen, camera, OBS ingress/unknown).
+ * Owner leave does **not** clear VideoPlayer — only when no remote video remains does attach go black.
+ */
 export function pickBestRemoteVideoTrack(room: Room | null): RemoteVideoPick | null {
   if (!room || room.state !== ConnectionState.Connected) return null
   forceSubscribeRemoteVideo(room)
-  type Scored = RemoteVideoPick & { tier: number; area: number }
+  type Scored = RemoteVideoPick & { tier: number; area: number; muted: boolean }
   const rows: Scored[] = []
   for (const p of room.remoteParticipants.values()) {
     if (p.isLocal) continue
+    const identity = p.identity?.trim() || ''
     for (const pub of p.trackPublications.values()) {
       if (!isVideoKind(pub.kind)) continue
       const rp = pub as RemoteTrackPublication
+      // Prefer subscribed track; still force-sub so late RTMP ingress can appear on next poll.
+      if (!rp.isSubscribed) {
+        try {
+          rp.setSubscribed(true)
+        } catch {
+          /* ignore */
+        }
+      }
       const t = rp.track
       if (!t || !isVideoKind(t.kind)) continue
-      let area = 0
-      try {
-        const ms = (t as unknown as { mediaStreamTrack?: MediaStreamTrack }).mediaStreamTrack
-        const s = ms?.getSettings?.()
-        area = Math.max(0, s?.width ?? 0) * Math.max(0, s?.height ?? 0)
-      } catch {
-        area = 0
-      }
-      rows.push({ track: t, publication: rp, tier: videoSourceTier(pub.source), area })
+      // Unity skips muted (paused) screen share so camera/ingress can take over.
+      const muted = rp.isMuted === true
+      if (pub.source === Track.Source.ScreenShare && muted) continue
+      rows.push({
+        track: t,
+        publication: rp,
+        identity,
+        tier: videoSourceTier(pub.source, identity),
+        area: trackPublicationArea(t),
+        muted
+      })
     }
   }
   if (rows.length === 0) return null
-  rows.sort((a, b) => (a.tier !== b.tier ? a.tier - b.tier : b.area - a.area))
+  rows.sort((a, b) => {
+    if (a.tier !== b.tier) return a.tier - b.tier
+    if (a.muted !== b.muted) return a.muted ? 1 : -1
+    return b.area - a.area
+  })
   return rows[0]!
+}
+
+/**
+ * Scene VideoPlayer `livekit-video://current-stream` track — same priority as Unity explorer.
+ * Returns the LiveKit Track to attach (or null while waiting for OBS/Cast publishers).
+ */
+export function pickCurrentStreamVideoTrack(room: Room | null): Track | null {
+  return pickBestRemoteVideoTrack(room)?.track ?? null
 }
 
 /**

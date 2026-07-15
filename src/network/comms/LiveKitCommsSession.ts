@@ -1,6 +1,5 @@
 import {
   ConnectionState,
-  RemoteTrack,
   Room,
   RoomEvent,
   Track,
@@ -30,6 +29,7 @@ import { parseLiveKitConnectionString } from './livekitAdapter'
 import {
   collectActiveVideoStreamsFromRoom,
   forceSubscribeRemoteVideo,
+  pickCurrentStreamVideoTrack,
   reattachFirstRemoteVideoToHost,
   roomHasRemoteVideo,
   snapshotRemoteVideoPresence,
@@ -215,35 +215,67 @@ export class LiveKitCommsSession {
   }
 
   /**
-   * Attach the scene's active LiveKit video (screen share, then camera) to a VideoPlayer element.
-   * Rebinds when tracks subscribe/unsubscribe.
+   * Attach scene `livekit-video://current-stream` to a VideoPlayer element.
+   * Unity parity: presentation-bot → screen share → any remote video (Cast/OBS); poll for late ingress.
+   * Admin Activate only sets VideoPlayer.src via MessageBus — owner leaving the scene does not
+   * clear that state; media ends only when no remote publisher remains in the LiveKit room.
    */
   bindCurrentVideoStream(video: HTMLVideoElement, onUpdate?: () => void): () => void {
     const room = this.room
     if (!room) return () => {}
 
-    let attached: RemoteTrack | null = null
+    let attached: Track | null = null
+    let attachedSid = ''
+    let disposed = false
 
     const detach = (): void => {
       if (attached) {
-        attached.detach(video)
+        try {
+          attached.detach(video)
+        } catch {
+          /* ignore */
+        }
         attached = null
+        attachedSid = ''
       }
-      video.srcObject = null
-      video.removeAttribute('src')
+      // Do not null srcObject here — LiveKit owns the MediaStream; clearing it during
+      // teardown races with PC close and surfaces UnexpectedConnectionState spam.
+    }
+
+    const trackSid = (t: Track | null): string => {
+      if (!t) return ''
+      const sid = typeof t.sid === 'string' ? t.sid.trim() : ''
+      return sid
     }
 
     const attachBest = (): void => {
+      if (disposed || !this.room || this.room !== room) return
+      if (room.state !== ConnectionState.Connected) return
       forceSubscribeRemoteVideo(room)
-      const next = pickCurrentVideoTrack(room)
-      if (next === attached) return
+      const next = pickCurrentStreamVideoTrack(room)
+      const nextSid = trackSid(next)
+      if (next && nextSid && nextSid === attachedSid && attached) {
+        if (video.paused) void video.play().catch(() => {})
+        return
+      }
+      if (next === attached) {
+        if (next && video.paused) void video.play().catch(() => {})
+        return
+      }
       detach()
       if (!next) {
         onUpdate?.()
         return
       }
-      next.attach(video)
+      try {
+        next.attach(video)
+      } catch {
+        onUpdate?.()
+        return
+      }
       attached = next
+      attachedSid = nextSid
+      void video.play().catch(() => {})
       onUpdate?.()
     }
 
@@ -255,16 +287,24 @@ export class LiveKitCommsSession {
     room.on(RoomEvent.TrackUnpublished, onTrackChange)
     room.on(RoomEvent.ParticipantConnected, onTrackChange)
     room.on(RoomEvent.ParticipantDisconnected, onTrackChange)
+    room.on(RoomEvent.TrackMuted, onTrackChange)
+    room.on(RoomEvent.TrackUnmuted, onTrackChange)
 
     attachBest()
+    // RTMP ingress / Cast speakers can appear after Activate; poll lightly while connected.
+    const poll = window.setInterval(attachBest, 2000)
 
     return () => {
+      disposed = true
+      window.clearInterval(poll)
       room.off(RoomEvent.TrackSubscribed, onTrackChange)
       room.off(RoomEvent.TrackUnsubscribed, onTrackChange)
       room.off(RoomEvent.TrackPublished, onTrackChange)
       room.off(RoomEvent.TrackUnpublished, onTrackChange)
       room.off(RoomEvent.ParticipantConnected, onTrackChange)
       room.off(RoomEvent.ParticipantDisconnected, onTrackChange)
+      room.off(RoomEvent.TrackMuted, onTrackChange)
+      room.off(RoomEvent.TrackUnmuted, onTrackChange)
       detach()
     }
   }
@@ -541,7 +581,7 @@ export class LiveKitCommsSession {
       locomotion
     )
 
-    void this.room.localParticipant.publishData(movementPacket, { reliable: false })
+    void this.safePublishData(movementPacket, false)
 
     this.broadcastCount++
     this.lastSentTransform = { x, y, z, yaw }
@@ -573,16 +613,13 @@ export class LiveKitCommsSession {
     if (!this.room || this.room.state !== ConnectionState.Connected || !this.commsProfile) return
 
     const { version, serializedProfile, baseUrl } = this.commsProfile
-    const participant = this.room.localParticipant
     const sendFullProfile = reason !== 'heartbeat' || this.broadcastCount <= 1
 
     if (sendFullProfile) {
-      void participant.publishData(encodeRfc4ProfileResponsePacket(serializedProfile, baseUrl), {
-        reliable: true
-      })
+      void this.safePublishData(encodeRfc4ProfileResponsePacket(serializedProfile, baseUrl), true)
     }
 
-    void participant.publishData(encodeRfc4ProfileVersionPacket(version), { reliable: false })
+    void this.safePublishData(encodeRfc4ProfileVersionPacket(version), false)
     clientDebugLog.log(
       'comms',
       `RFC4 Profile v${version} sent (${this.transport}/${reason})`,
@@ -595,7 +632,8 @@ export class LiveKitCommsSession {
     try {
       for (const envelope of envelopes) {
         const packet = encodeRfc4SceneBinaryPacket(DCM_SCENE_ID, envelope)
-        await this.room.localParticipant.publishData(packet, { reliable: true })
+        const ok = await this.safePublishData(packet, true)
+        if (!ok) return false
       }
       clientDebugLog.log(
         'comms',
@@ -633,58 +671,67 @@ export class LiveKitCommsSession {
     // Godot Explorer requires OLE Automation dates (not unix seconds).
     const oleTs = oleTimestampNow()
     const packet = encodeRfc4ChatPacket(trimmed, oleTs)
-    try {
-      await this.room.localParticipant.publishData(packet, { reliable: true })
-      console.log(
-        `[chat] RFC4 out → ${this.transport} room=${this.room.name} len=${packet.byteLength} oleTs=${oleTs.toFixed(5)}`
-      )
-      clientDebugLog.log(
-        'comms',
-        `RFC4 Chat out → ${this.transport} len=${packet.byteLength} ole=${oleTs.toFixed(3)}`,
-        { throttleMs: 0, throttleKey: `chat-out:${this.transport}` }
-      )
-      return true
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.error(`[chat] RFC4 publish failed (${this.transport}): ${msg}`)
-      clientDebugLog.log('comms', `RFC4 Chat publish failed (${this.transport}): ${msg}`, { level: 'error' })
+    const ok = await this.safePublishData(packet, true)
+    if (!ok) {
+      console.error(`[chat] RFC4 publish failed (${this.transport}): room not ready`)
       return false
     }
+    console.log(
+      `[chat] RFC4 out → ${this.transport} room=${this.room?.name ?? '?'} len=${packet.byteLength} oleTs=${oleTs.toFixed(5)}`
+    )
+    clientDebugLog.log(
+      'comms',
+      `RFC4 Chat out → ${this.transport} len=${packet.byteLength} ole=${oleTs.toFixed(3)}`,
+      { throttleMs: 0, throttleKey: `chat-out:${this.transport}` }
+    )
+    return true
   }
 
   async publishPlayerEmote(urn: string, incrementalId: number): Promise<boolean> {
     if (!this.room || this.room.state !== ConnectionState.Connected) return false
     const sessionElapsedSec = Math.max(0.001, (performance.now() - this.sessionStartedAt) / 1000)
     const packet = encodeRfc4PlayerEmotePacket(urn, incrementalId, sessionElapsedSec)
-    try {
-      await this.room.localParticipant.publishData(packet, { reliable: true })
-      clientDebugLog.log(
-        'comms',
-        `RFC4 PlayerEmote out → ${this.transport} ${urn.split(':').pop()} #${incrementalId}`,
-        { throttleMs: 0, throttleKey: `emote-out:${this.transport}` }
-      )
-      return true
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      clientDebugLog.log('comms', `RFC4 PlayerEmote publish failed (${this.transport}): ${msg}`, { level: 'error' })
-      return false
-    }
+    const ok = await this.safePublishData(packet, true)
+    if (!ok) return false
+    clientDebugLog.log(
+      'comms',
+      `RFC4 PlayerEmote out → ${this.transport} ${urn.split(':').pop()} #${incrementalId}`,
+      { throttleMs: 0, throttleKey: `emote-out:${this.transport}` }
+    )
+    return true
   }
 
   async publishData(packet: Uint8Array): Promise<void> {
-    if (!this.room || this.room.state !== ConnectionState.Connected) return
-    await this.room.localParticipant.publishData(packet, { reliable: false })
+    await this.safePublishData(packet, false)
   }
 
   /** Reliable SCTP — required for large DAV VRM chunk streams (lossy drops under burst). */
   async publishReliableData(packet: Uint8Array): Promise<void> {
-    if (!this.room || this.room.state !== ConnectionState.Connected) return
-    await this.room.localParticipant.publishData(packet, { reliable: true })
+    await this.safePublishData(packet, true)
   }
 
   async publishTopicData(topic: string, packet: Uint8Array, reliable = true): Promise<void> {
     if (!this.room || this.room.state !== ConnectionState.Connected) return
-    await this.room.localParticipant.publishData(packet, { reliable, topic })
+    try {
+      await this.room.localParticipant.publishData(packet, { reliable, topic })
+    } catch {
+      /* room tore down mid-publish — ignore PC manager closed */
+    }
+  }
+
+  /**
+   * publishData that never rejects. LiveKit throws UnexpectedConnectionState when the
+   * room disconnects between isConnected() and the async publish (handoff / leave).
+   */
+  private async safePublishData(packet: Uint8Array, reliable: boolean): Promise<boolean> {
+    const room = this.room
+    if (!room || room.state !== ConnectionState.Connected || !this.connected) return false
+    try {
+      await room.localParticipant.publishData(packet, { reliable })
+      return true
+    } catch {
+      return false
+    }
   }
 
   disconnect(): void {
@@ -714,45 +761,4 @@ export class LiveKitCommsSession {
   }
 }
 
-function publicationVideoTrack(publication: RemoteTrackPublication): RemoteTrack | null {
-  if (publication.kind !== Track.Kind.Video || !publication.isSubscribed || !publication.track) {
-    return null
-  }
-  return publication.track as RemoteTrack
-}
 
-function pickFromParticipant(participant: Participant): {
-  screenShare: RemoteTrack | null
-  camera: RemoteTrack | null
-} {
-  let screenShare: RemoteTrack | null = null
-  let camera: RemoteTrack | null = null
-  for (const publication of participant.trackPublications.values()) {
-    const track = publicationVideoTrack(publication as RemoteTrackPublication)
-    if (!track) continue
-    if (publication.source === Track.Source.ScreenShare) {
-      screenShare = track
-    } else if (publication.source === Track.Source.Camera && !camera) {
-      camera = track
-    }
-  }
-  return { screenShare, camera }
-}
-
-/** Prefer remote screen share, then remote camera, then local screen share. */
-function pickCurrentVideoTrack(room: Room): RemoteTrack | null {
-  let remoteScreen: RemoteTrack | null = null
-  let remoteCamera: RemoteTrack | null = null
-
-  for (const participant of room.remoteParticipants.values()) {
-    const picked = pickFromParticipant(participant)
-    if (picked.screenShare) remoteScreen = picked.screenShare
-    if (!remoteCamera && picked.camera) remoteCamera = picked.camera
-  }
-
-  if (remoteScreen) return remoteScreen
-  if (remoteCamera) return remoteCamera
-
-  const local = pickFromParticipant(room.localParticipant)
-  return local.screenShare ?? local.camera
-}

@@ -17,6 +17,7 @@ import {
   type ProfileIdentity
 } from '../avatar/displayName'
 import { NameTag, type NameTagStyle } from '../client/ui/NameTag'
+import { areSceneNameTagsVisible } from '../client/ui/nameTagVisibility'
 import type { AssetCache } from '../rendering/AssetCache'
 import type { AvatarSkeletonTarget } from '../avatar/AvatarAttachTargets'
 import type { MirrorComponents } from './mirrorComponents'
@@ -44,7 +45,7 @@ function applyIdentity(tag: NameTag, identity: ProfileIdentity): void {
 
 function syncNameTag(entry: AvatarEntry, identity: ProfileIdentity): void {
   entry.identity = identity
-  if (!identityShowsNameTag(identity)) {
+  if (!areSceneNameTagsVisible() || !identityShowsNameTag(identity)) {
     entry.nameTag?.dispose()
     entry.nameTag = null
     return

@@ -26,6 +26,7 @@ import type { AvatarSkeletonTarget } from '../avatar/AvatarAttachTargets'
 import { avatarEntityFromAddress, type EntityStore } from '../bridge/EntityStore'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { NameTag } from '../client/ui/NameTag'
+import { areSceneNameTagsVisible } from '../client/ui/nameTagVisibility'
 import { resolveProfileEmote, loadResolvedProfileEmote } from '../avatar/profileEmotes'
 import type { AssetCache } from '../rendering/AssetCache'
 import { createRemoteAvatarPlaceholder } from '../avatar/remotePlaceholder'
@@ -228,6 +229,7 @@ export class RemoteAvatarManager {
 
   /** Scene chat line shown inside the peer's overhead name-tag pill. */
   showPeerNameTagChat(address: string, text: string): void {
+    if (!areSceneNameTagsVisible()) return
     const record = this.peers.get(address.toLowerCase())
     record?.nameTag?.showChat(text)
   }
@@ -789,6 +791,11 @@ export class RemoteAvatarManager {
   }
 
   private ensureNameTag(record: RemotePeerRecord, loading: boolean): void {
+    if (!areSceneNameTagsVisible()) {
+      record.nameTag?.dispose()
+      record.nameTag = null
+      return
+    }
     if (!record.nameTag) {
       record.nameTag = NameTag.attach(record.nameTagAnchor, record.identity.displayName, {
         textColor: record.identity.nameColor,

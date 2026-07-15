@@ -1328,21 +1328,21 @@ export class CommsService {
   }
 
   /**
-   * LiveKit rooms that carry chat.
-   * Worlds: **world first** (Explorer peer chat), then scene for dual-room peers.
-   * Parcels: scene first.
+   * LiveKit rooms for **chat / DCM media / emotes** — primary room only.
+   * Dual-publish (world + scene) makes Explorer show every message twice because
+   * peers join both rooms on worlds (world = chat, scene = Cast).
+   * Worlds → world room; parcels → scene room (fallback world/island).
    */
   private liveKitChatSessions(): LiveKitCommsSession[] {
-    const sessions: LiveKitCommsSession[] = []
     if (this.isWorldComms()) {
-      if (this.worldConnected && this.worldLiveKit.isConnected()) sessions.push(this.worldLiveKit)
-      if (this.sceneLiveKit.isConnected()) sessions.push(this.sceneLiveKit)
-    } else {
-      if (this.sceneLiveKit.isConnected()) sessions.push(this.sceneLiveKit)
-      if (this.worldConnected && this.worldLiveKit.isConnected()) sessions.push(this.worldLiveKit)
-      if (this.islandConnected && this.islandLiveKit.isConnected()) sessions.push(this.islandLiveKit)
+      if (this.worldConnected && this.worldLiveKit.isConnected()) return [this.worldLiveKit]
+      if (this.sceneLiveKit.isConnected()) return [this.sceneLiveKit]
+      return []
     }
-    return sessions
+    if (this.sceneLiveKit.isConnected()) return [this.sceneLiveKit]
+    if (this.worldConnected && this.worldLiveKit.isConnected()) return [this.worldLiveKit]
+    if (this.islandConnected && this.islandLiveKit.isConnected()) return [this.islandLiveKit]
+    return []
   }
 
   /** Primary LiveKit session for RFC4 scene binary (scene room, else world room). */

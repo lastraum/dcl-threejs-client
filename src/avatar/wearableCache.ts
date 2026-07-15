@@ -14,8 +14,8 @@ export function prepareWearableCacheRoot(root: THREE.Object3D): void {
   pruneWearableDisplayMeshes(root, { extentCheck: false })
   root.traverse((obj) => {
     if (obj instanceof THREE.Mesh) {
-      obj.castShadow = false
-      obj.receiveShadow = false
+      obj.castShadow = true
+      obj.receiveShadow = true
     }
     if (obj instanceof THREE.SkinnedMesh) {
       repairSkinnedMesh(obj)

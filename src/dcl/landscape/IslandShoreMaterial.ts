@@ -5,76 +5,45 @@ import type { IslandShoreLayout } from './islandLandscapeKeys'
 /** Island / ring ocean surface Y (DCL metres) — beach heightfield slopes to this level. */
 export const ISLAND_WATER_SURFACE_Y = -1.35
 
-/** Original procedural beach fill — kept at midday so sand stays warm, not blown out. */
-const ISLAND_SHORE_BASE_AMBIENT = new THREE.Vector3(0.48, 0.5, 0.52)
-
 /** Genesis Games `TERRAIN_BIOME_COLORS.sand`, brightened for island beach readability. */
 export const ISLAND_BEACH_SAND_COLOR = 0xecd898
 
-const VERT = /* glsl */ `
-varying vec3 vWorldPos;
-varying vec3 vWorldNormal;
-varying float vRadialDist;
-
-uniform vec2 uIslandCenterXZ;
-uniform float uFlatRadius;
-uniform float uOuterRadius;
-
-void main() {
-  vec4 worldPos = modelMatrix * vec4(position, 1.0);
-  vWorldPos = worldPos.xyz;
-  vWorldNormal = normalize(mat3(modelMatrix) * normal);
-  vec2 delta = vWorldPos.xz - uIslandCenterXZ;
-  vRadialDist = length(delta);
-  gl_Position = projectionMatrix * viewMatrix * worldPos;
-}
-`
-
-const FRAG = /* glsl */ `
-precision mediump float;
-
-varying vec3 vWorldPos;
-varying vec3 vWorldNormal;
-varying float vRadialDist;
+/** Procedural beach helpers injected into MeshStandard (receives directional sun/moon shadows). */
+const SHORE_GLSL_HELPERS = /* glsl */ `
+varying vec3 vIslandWorldPos;
+varying float vIslandRadialDist;
 
 uniform vec3 uBiomeSand;
-uniform vec3 uSunDir;
-uniform vec3 uMoonDir;
-uniform float uSunWeight;
-uniform float uMoonWeight;
-uniform vec3 uAmbient;
 uniform float uTerrainWorldMinY;
 uniform float uTerrainWorldMaxY;
 uniform float uWaterLevelWorld;
 uniform float uSandAboveWater;
 uniform float uSandBandM;
-uniform float uWaterTintMix;
 uniform float uWaterBandMeters;
-uniform vec3 uWaterTint;
 uniform vec2 uIslandCenterXZ;
 uniform float uFlatRadius;
 uniform float uOuterRadius;
 
-float hash21(vec2 p) {
+float islandHash21(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
 
-float valueNoise(vec2 p) {
+float islandValueNoise(vec2 p) {
   vec2 i = floor(p);
   vec2 f = fract(p);
   f = f * f * (3.0 - 2.0 * f);
-  float a = hash21(i);
-  float b = hash21(i + vec2(1.0, 0.0));
-  float c = hash21(i + vec2(0.0, 1.0));
-  float d = hash21(i + vec2(1.0, 1.0));
+  float a = islandHash21(i);
+  float b = islandHash21(i + vec2(1.0, 0.0));
+  float c = islandHash21(i + vec2(0.0, 1.0));
+  float d = islandHash21(i + vec2(1.0, 1.0));
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-float fbm(vec2 p) {
+float islandFbm(vec2 p) {
   float v = 0.0;
   float a = 0.5;
   for (int i = 0; i < 3; i++) {
-    v += a * valueNoise(p);
+    v += a * islandValueNoise(p);
     p *= 2.03;
     a *= 0.5;
   }
@@ -86,7 +55,7 @@ vec3 islandBeachAlbedo(vec3 worldPos, vec3 worldNorm) {
   vec3 up = vec3(0.0, 1.0, 0.0);
   float slope = 1.0 - clamp(dot(normalize(worldNorm), up), 0.0, 1.0);
 
-  float grain = fbm(worldPos.xz * 0.14) * 0.1 + fbm(worldPos.xz * 0.42 + 2.1) * 0.05;
+  float grain = islandFbm(worldPos.xz * 0.14) * 0.1 + islandFbm(worldPos.xz * 0.42 + 2.1) * 0.05;
   vec3 sand = mix(uBiomeSand * 0.96, uBiomeSand * 1.14, grain);
 
   float span = max(1e-2, uTerrainWorldMaxY - uTerrainWorldMinY);
@@ -104,71 +73,86 @@ vec3 islandBeachAlbedo(vec3 worldPos, vec3 worldNorm) {
   vec3 wetSand = sand * 0.82 + vec3(0.06, 0.05, 0.03);
   sand = mix(sand, wetSand, shoreWet * 0.35);
 
-  float beachT = smoothstep(uFlatRadius, uOuterRadius, vRadialDist);
+  float beachT = smoothstep(uFlatRadius, uOuterRadius, vIslandRadialDist);
   sand = mix(sand, sand * 0.88 + vec3(0.05, 0.04, 0.02), beachT * 0.35);
+
+  float shore = uOuterRadius - vIslandRadialDist;
+  float foamStreak = smoothstep(0.0, 2.5, shore) * smoothstep(5.0, 0.5, shore);
+  foamStreak *= 0.35 + 0.65 * islandFbm(worldPos.xz * 0.35 + vec2(4.1, 1.7));
+  sand = mix(sand, vec3(0.93, 0.94, 0.9), foamStreak * 0.45);
 
   return sand;
 }
-
-void main() {
-  if (vRadialDist > uOuterRadius + 0.25) discard;
-
-  vec3 n = normalize(vWorldNormal);
-  vec3 albedo = islandBeachAlbedo(vWorldPos, n);
-
-  float shore = uOuterRadius - vRadialDist;
-  float foamStreak = smoothstep(0.0, 2.5, shore) * smoothstep(5.0, 0.5, shore);
-  foamStreak *= 0.35 + 0.65 * fbm(vWorldPos.xz * 0.35 + vec2(4.1, 1.7));
-  albedo = mix(albedo, vec3(0.93, 0.94, 0.9), foamStreak * 0.45);
-
-  float sunNdl = clamp(dot(n, normalize(uSunDir)), 0.0, 1.0);
-  float moonNdl = clamp(dot(n, normalize(uMoonDir)), 0.0, 1.0);
-  float direct = sunNdl * uSunWeight + moonNdl * uMoonWeight;
-  // Ambient is fully outdoor-driven (no midday floor) — celestials-off / night go dark (#21).
-  vec3 lit = albedo * (uAmbient + vec3(0.72) * direct);
-  gl_FragColor = vec4(lit, 1.0);
-}
 `
 
-function hexToVec3(hex: number): THREE.Vector3 {
-  const c = new THREE.Color(hex)
-  return new THREE.Vector3(c.r, c.g, c.b)
+function hexToColor(hex: number): THREE.Color {
+  return new THREE.Color(hex)
 }
 
+/**
+ * Circular island beach — MeshStandard so sun/moon soft shadows land on the sand
+ * (custom ShaderMaterial previously set receiveShadow but never sampled the shadow map).
+ */
 export class IslandShoreMaterial {
-  readonly material: THREE.ShaderMaterial
+  readonly material: THREE.MeshStandardMaterial
   private readonly uniforms: Record<string, THREE.IUniform>
 
   constructor() {
+    const sand = hexToColor(ISLAND_BEACH_SAND_COLOR)
     this.uniforms = {
-      uBiomeSand: { value: hexToVec3(ISLAND_BEACH_SAND_COLOR) },
-      uSunDir: { value: new THREE.Vector3(0.35, 0.85, 0.25).normalize() },
-      uMoonDir: { value: new THREE.Vector3(-0.35, 0.45, -0.25).normalize() },
-      uSunWeight: { value: 1.0 },
-      uMoonWeight: { value: 0.0 },
-      uAmbient: { value: ISLAND_SHORE_BASE_AMBIENT.clone() },
+      uBiomeSand: { value: new THREE.Vector3(sand.r, sand.g, sand.b) },
       uTerrainWorldMinY: { value: -0.5 },
       uTerrainWorldMaxY: { value: 0.5 },
       uWaterLevelWorld: { value: ISLAND_WATER_SURFACE_Y },
       uSandAboveWater: { value: 0.8 },
       uSandBandM: { value: 1.5 },
-      uWaterTintMix: { value: 0.2 },
       uWaterBandMeters: { value: 1.25 },
-      uWaterTint: { value: new THREE.Vector3(0.45, 0.4, 0.32) },
       uIslandCenterXZ: { value: new THREE.Vector2() },
       uFlatRadius: { value: 16 },
       uOuterRadius: { value: 48 }
     }
 
-    this.material = new THREE.ShaderMaterial({
-      uniforms: this.uniforms,
-      vertexShader: VERT,
-      fragmentShader: FRAG,
-      transparent: false,
-      depthWrite: true,
-      side: THREE.FrontSide
+    this.material = new THREE.MeshStandardMaterial({
+      color: sand,
+      roughness: 0.94,
+      metalness: 0.02,
+      envMapIntensity: 0.35
     })
-    this.material.customProgramCacheKey = () => 'island-shore-proc-v5'
+    this.material.customProgramCacheKey = () => 'island-shore-std-shadow-v1'
+    this.material.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, this.uniforms)
+
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          /* glsl */ `#include <common>
+varying vec3 vIslandWorldPos;
+varying float vIslandRadialDist;
+uniform vec2 uIslandCenterXZ;
+`
+        )
+        .replace(
+          '#include <worldpos_vertex>',
+          /* glsl */ `#include <worldpos_vertex>
+vIslandWorldPos = (modelMatrix * vec4( transformed, 1.0 )).xyz;
+vIslandRadialDist = length( vIslandWorldPos.xz - uIslandCenterXZ );
+`
+        )
+
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>\n${SHORE_GLSL_HELPERS}`)
+        .replace(
+          '#include <normal_fragment_maps>',
+          /* glsl */ `#include <normal_fragment_maps>
+if ( vIslandRadialDist > uOuterRadius + 0.25 ) discard;
+{
+  // View-space normal → world for beach slope/grain (after normal maps).
+  vec3 nWorld = inverseTransformDirection( normal, viewMatrix );
+  diffuseColor.rgb = islandBeachAlbedo( vIslandWorldPos, nWorld );
+}
+`
+        )
+    }
   }
 
   /** @param centerThree Island centre in Three.js world space (matches shore mesh vertices). */
@@ -176,6 +160,7 @@ export class IslandShoreMaterial {
     this.uniforms.uIslandCenterXZ!.value.set(centerThree.x, centerThree.z)
     this.uniforms.uFlatRadius!.value = layout.flatRadiusM
     this.uniforms.uOuterRadius!.value = layout.outerRadiusM
+    this.material.needsUpdate = true
   }
 
   updateHeightRange(minY: number, maxY: number): void {
@@ -187,21 +172,19 @@ export class IslandShoreMaterial {
     this.uniforms.uWaterLevelWorld!.value = y
   }
 
+  /**
+   * Scene DirectionalLight + hemi already light MeshStandard shore.
+   * Keep hook for World sync; slight emissive tracks ambient so night/off stays coherent.
+   */
   applyOutdoorLighting(lighting: OutdoorLightingSnapshot): void {
-    ;(this.uniforms.uSunDir!.value as THREE.Vector3).copy(lighting.sunDir)
-    ;(this.uniforms.uMoonDir!.value as THREE.Vector3).copy(lighting.moonDir)
-
-    const sunStr = THREE.MathUtils.clamp(lighting.sunLight.length() / 2.0, 0, 1)
-    const moonStr = THREE.MathUtils.clamp(lighting.moonLight.length() / 0.45, 0, 1)
-    this.uniforms.uSunWeight!.value = 0.9 * sunStr
-    this.uniforms.uMoonWeight!.value = 0.55 * moonStr
-
-    // No permanent midday ambient floor — that kept beaches half-lit at midnight and
-    // full-bright with disableSun/disableMoon while avatars went black (#21).
-    // Night hemi is still strong for MeshStandard avatars; bias shore ambient by key light.
-    const key = Math.max(sunStr, moonStr)
-    const ambScale = THREE.MathUtils.lerp(0.12, 1.0, THREE.MathUtils.smoothstep(0.02, 0.55, key))
-    const ambient = this.uniforms.uAmbient!.value as THREE.Vector3
-    ambient.copy(lighting.ambient).multiplyScalar(ambScale)
+    const key = Math.max(lighting.sunLight.length() / 2.0, lighting.moonLight.length() / 0.45)
+    const amb = THREE.MathUtils.clamp(key, 0, 1)
+    // Tiny fill so sand doesn’t go pure black under hard shadow at dusk
+    this.material.emissive.setRGB(
+      lighting.ambient.x * 0.08 * amb,
+      lighting.ambient.y * 0.08 * amb,
+      lighting.ambient.z * 0.08 * amb
+    )
+    this.material.emissiveIntensity = 1
   }
 }

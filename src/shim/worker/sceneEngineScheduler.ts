@@ -45,14 +45,16 @@ import {
  *
  * Pointer interactive tick (only play-mode Ui CRDT egress) — same pipeline for every scene:
  *   1. inject PET_DOWN → engine.update(0) — handlers + systems
- *   2. inject PET_UP → engine.update(0) — no exports.onUpdate on inject path
- *   3. react-ecs flush until UI fingerprint stable (two identical passes)
- *   4. phase-4 structured mount snapshot egress (sole UI egress)
- *   5. engine.update(0) — react-ecs off (pointer session open); non-Ui CRDT deferred
+ *   2. inject-only: react-ecs flush until fingerprint stable (open menu before UP)
+ *   3. inject PET_UP → engine.update(0) — UP targets filtered to still-mounted UiTransform
+ *   4. react-ecs flush until fingerprint stable
+ *   5. phase-4 structured mount snapshot egress (sole UI egress)
+ *   6. engine.update(0) — react-ecs off; non-Ui CRDT deferred
  *
  * inject-only UI clicks skip exports.onUpdate mid-batch — SDK onUpdate runs pollEvents which
  * must not interleave before phase-4 / non-Ui egress (undoes MainCamera binds, UI flags, etc.).
  * Skipped onUpdate is not replayed in the deliver chain; cooperative schedule runs it next interval.
+ * Post-DOWN flush + alive UP targets prevent PET_UP on recycled entity ids (modal flash/collapse).
  */
 
 export type SceneEngineSchedulerConfig = {
@@ -647,20 +649,31 @@ async function flushReactEcsForUiSnapshot(
 }
 
 /**
- * Post phase-4 — one suppressed react-ecs update so handler/system non-Ui writes egress in-batch.
- * Runs while pointer unfreeze window is still open so STOP clear is not re-latched.
+ * Post phase-4 — non-Ui system/CRDT only. react-ecs stays off so a second reconcile cannot
+ * collapse a modal that phase-4 just snapshotted (architecture: phase 5 react-ecs off).
+ * Locomotion unfreeze window still open via pointer session depth.
  */
 async function runPointerNonUiPhase(eng: IEngine): Promise<void> {
   setPointerInteractivePhase('non-ui')
-  await runSerializedEngineUpdate(async () => {
-    await eng.update(0)
-  })
+  // Drop interactive flag so shouldDeferCooperativeReactEcs suppresses @dcl/react-ecs.
+  setPointerInteractiveTickActive(false)
+  try {
+    await runSerializedEngineUpdate(async () => {
+      await eng.update(0)
+    })
+  } finally {
+    setPointerInteractiveTickActive(true)
+  }
   config?.onAfterEngineTick?.()
 }
 
 /**
  * Pointer interactive tick — DOWN/UP inject immediately before each engine.update(0).
  * Separate from cooperative ticks; one Ui mount snapshot at the end.
+ *
+ * Inject-only UI path flushes react-ecs after DOWN before UP so open menus finish mounting
+ * before PET_UP. Otherwise react-ecs recycles the launcher entity id into a modal child and
+ * UP lands on the wrong handler (open → flash → collapse, RickRoll cam UI).
  */
 export async function runSceneEnginePointerTick(
   eng: IEngine,
@@ -682,6 +695,13 @@ export async function runSceneEnginePointerTick(
       // Reconcile freeze latch after onMouseDown (handles unpatched SDK IM writes + STOP).
       reconcileLocomotionLatchAfterInjectDown(eng)
       cfg.log(`[sceneWorker] pointer DOWN done — ${describeWorkerInputModifier(eng)}`)
+      // Stabilize open UI before UP — entity ids from main may already be recycled.
+      if (injectOnlyUiClick) {
+        setPointerInteractivePhase('flush')
+        cfg.log('[sceneWorker] pointer ui flush — post-DOWN react-ecs (before UP)')
+        await flushReactEcsForUiSnapshot(eng, cfg.log, true)
+        setPointerInteractivePhase('inject')
+      }
     } else {
       await runSerializedEngineUpdate(async () => {
         await eng.update(0)
@@ -708,7 +728,7 @@ export async function runSceneEnginePointerTick(
     }
     if (injectOnlyUiClick) {
       setPointerInteractivePhase('flush')
-      cfg.log('[sceneWorker] pointer ui flush — react-ecs reconcile passes (inject-only fingerprint)')
+      cfg.log('[sceneWorker] pointer ui flush — post-UP react-ecs fingerprint')
     }
     await flushReactEcsForUiSnapshot(eng, cfg.log, injectOnlyUiClick)
     // After STOP force-unfreeze, react-ecs may still paint "STOP MOVE CAMERA" — fix label before snapshot.

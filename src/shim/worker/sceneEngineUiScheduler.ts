@@ -75,13 +75,15 @@ let cooperativeReactEcsSkippedThisTick = false
 /**
  * Play-mode react-ecs gate.
  *
- * - Pointer interactive tick: always reconcile.
+ * - Pointer inject / flush: always reconcile (open menus, stabilize fingerprint).
+ * - Pointer non-ui phase: suppress (phase-4 snapshot already taken; re-reconcile collapses UI).
  * - Pointer session (non-interactive): suppress (pointer batch owns UI).
  * - Cooperative: at most every COOPERATIVE_REACT_ECS_MIN_MS (systems still run).
  *
  * Do NOT gate on freeze latch or inject-only pollEvents DEFER.
  */
 export function shouldDeferCooperativeReactEcs(): boolean {
+  // isPointerInteractiveTickActive is false during non-ui phase — fall through to session suppress.
   if (isPointerInteractiveTickActive()) return false
   if (shouldSuppressPointerSessionReactEcs()) return true
   if (cooperativeSchedulerTickDepth > 0) {

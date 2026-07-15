@@ -18,7 +18,11 @@ import { DebugPanel } from './ui/DebugPanel'
 import { DevProgressPanel } from './ui/DevProgressPanel'
 import { LoadingScreen, POST_SPAWN_SETTLE_FAST_MS, POST_SPAWN_SETTLE_MS } from './ui/LoadingScreen'
 import { WorldLocationCard } from './ui/WorldLocationCard'
-import { hasResumedWalletSession, resolveInitialLogin } from './auth/resolveInitialLogin'
+import {
+  ensureGuestSession,
+  hasResumedWalletSession,
+  resolveInitialLogin
+} from './auth/resolveInitialLogin'
 import { ExplorerAuthPanel } from './ui/explore/ExplorerAuthPanel'
 
 import { ChatPanel } from './ui/chat/ChatPanel'
@@ -125,9 +129,9 @@ export class AppController {
     this.wireSceneBanDebug()
 
     const postLoginRoute = resolveRouteTarget()
-    this.login = resolveInitialLogin()
-    // Wallet resume → ready for Jump In. Silent guest needs explicit "Continue as Guest".
-    this.playSessionReady = hasResumedWalletSession()
+    this.login = await resolveInitialLogin()
+    // Wallet resume or stable guest both get AuthIdentity — Jump In / LiveKit ready.
+    this.playSessionReady = hasResumedWalletSession() || this.login.kind === 'guest'
     recordLoginEvent(this.login)
 
     if (postLoginRoute.kind === 'blank') {
@@ -288,7 +292,7 @@ export class AppController {
         // setLogin already refreshes owner gear; keep Jump-in CTA in sync for guests→wallet.
         this.sceneLandingView?.setPlaySessionReady(true)
         this.sceneLandingView?.setLogin(login)
-        if (login.kind === 'wallet') {
+        if (login.kind === 'wallet' || login.kind === 'guest') {
           if (
             this.appMode === 'landing' &&
             this.currentRoute &&
@@ -686,7 +690,7 @@ export class AppController {
     this.sceneLandingView = new SceneLandingView({
       route: target,
       login: this.login,
-      getLogin: () => this.login ?? { kind: 'guest' },
+      getLogin: () => this.login!,
       playSessionReady: this.playSessionReady,
       onJumpIn: () => void this.jumpInToScene(target),
       onNavigate: (tab) => this.navigateSocialShell(tab),
@@ -917,7 +921,7 @@ export class AppController {
   private ensureSocialMobileNotifications(): void {
     if (this.socialMobileNotifications) return
     this.socialMobileNotifications = new SocialMobileNotifications({
-      login: this.login ?? { kind: 'guest' },
+      login: this.login!,
       getSocial: () => this.socialChat?.getSocial() ?? null,
       onEnsureSocial: async () => {
         this.ensureSocialChatShell()
@@ -949,8 +953,8 @@ export class AppController {
   }
 
   /**
-   * Gate 3D entry: wallet resume or explicit Guest / MetaMask.
-   * Silent auto-guest on bootstrap is for 2D shell only.
+   * Gate 3D entry: wallet or stable guest with AuthIdentity.
+   * Guest is auto-minted on bootstrap; panel still used if session missing.
    */
   private ensurePlaySession(): Promise<boolean> {
     if (this.playSessionReady && this.login) return Promise.resolve(true)
@@ -959,16 +963,19 @@ export class AppController {
       this.jumpInAuthPanel?.dispose()
       this.jumpInAuthPanel = new ExplorerAuthPanel({
         onComplete: (result) => {
-          this.login = result
-          this.playSessionReady = true
-          recordLoginEvent(result)
-          this.applyLoginToSocialShellViews(result)
-          this.sceneLandingView?.setPlaySessionReady(true)
-          this.socialChat?.applyLogin(result)
-          this.socialMobileNotifications?.setLogin(result)
-          this.jumpInAuthPanel?.dispose()
-          this.jumpInAuthPanel = null
-          resolve(true)
+          void (async () => {
+            const login = result.kind === 'guest' ? await ensureGuestSession() : result
+            this.login = login
+            this.playSessionReady = true
+            recordLoginEvent(login)
+            this.applyLoginToSocialShellViews(login)
+            this.sceneLandingView?.setPlaySessionReady(true)
+            this.socialChat?.applyLogin(login)
+            this.socialMobileNotifications?.setLogin(login)
+            this.jumpInAuthPanel?.dispose()
+            this.jumpInAuthPanel = null
+            resolve(true)
+          })()
         },
         onClose: () => {
           this.jumpInAuthPanel?.dispose()
@@ -1507,24 +1514,26 @@ export class AppController {
     if (this.container) this.container.innerHTML = ''
   }
 
-  /** Sign out from any 2D shell surface — close chat UI and disconnect all comms. */
-  private signOutFrom2dShell(): void {
+  /** Sign out wallet → fall back to stable browser guest (same machine keeps guest key). */
+  private async signOutFrom2dShell(): Promise<void> {
     clearStoredIdentity()
-    this.login = { kind: 'guest' }
-    this.playSessionReady = false
+    this.socialChat?.signOut()
+    this.teardownSocialChatShell(true)
     this.shellSession = null
-    // Drop shell-created settings (backpack) when not in play — session is gone.
     if (!this.world) {
       this.settingsOverlay?.dispose()
       this.settingsOverlay = null
     } else {
       this.settingsOverlay?.hide()
     }
+    const guest = await ensureGuestSession()
+    this.login = guest
+    this.playSessionReady = true
     this.applyLoginToSocialShellViews(this.login)
-    this.sceneLandingView?.setPlaySessionReady(false)
+    this.sceneLandingView?.setPlaySessionReady(true)
     this.sceneLandingView?.setLogin(this.login)
-    this.socialChat?.signOut()
-    this.teardownSocialChatShell(true)
+    this.ensureSocialChatShell()
+    this.socialChat?.applyLogin(guest)
   }
 
   private applyLoginToSocialShellViews(login: LoginResult): void {

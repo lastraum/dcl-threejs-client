@@ -252,7 +252,10 @@ export class World {
     })
   }
 
+  private loginIsGuest = false
+
   applyLogin(choice: LoginResult | null): void {
+    this.loginIsGuest = choice?.kind === 'guest'
     this.session.applyLogin(choice)
     this.comms.setIdentity(this.session.getAddress(), this.session.getAuthIdentity())
     this.vrmPeerSync.setLocalAddress(this.session.getAddress() ?? null)
@@ -614,7 +617,7 @@ export class World {
       await this.social.init({
         address,
         identity,
-        isGuest: false,
+        isGuest: this.loginIsGuest,
         sceneTab: {
           key: scene.commsPointer,
           label: scene.title || scene.commsPointer,
@@ -628,7 +631,7 @@ export class World {
         void fetchProfileFaceUrl(address, scene.realm.lambdasUrl).then((faceUrl) => {
           this.social.setLocalProfile(
             address,
-            profile.displayName ?? 'You',
+            profile.displayName ?? (this.loginIsGuest ? 'Guest' : 'You'),
             faceUrl,
             profile.nameColor ?? undefined
           )

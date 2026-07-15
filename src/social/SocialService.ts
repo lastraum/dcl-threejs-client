@@ -42,6 +42,9 @@ type SocialShellInitOptions = {
   address: string
   identity: AuthIdentity
   contentUrl?: string
+  /** Local guest wallet — skip friendships / communities signed APIs. */
+  isGuest?: boolean
+  displayName?: string
 }
 
 type SocialSceneAttachOptions = {
@@ -97,14 +100,21 @@ export class SocialService {
   async initShell(options: SocialShellInitOptions): Promise<void> {
     this.authIdentity = options.identity
     this.localAddress = options.address.toLowerCase()
-    this.displayName = 'You'
+    this.displayName = options.displayName?.trim() || 'You'
     this.sceneTabs = []
     this.connectedSceneKey = null
     this.comms = null
     this.channel = { kind: 'messages' }
     this.peerProfiles.setPeerUrl(options.contentUrl ?? 'https://peer.decentraland.org')
-    await this.loadMemberCommunities(options.identity)
-    void this.ensureFriendshipSnapshot()
+    // Guests can use LiveKit scene chat; skip social APIs that need a real DCL account.
+    if (!options.isGuest) {
+      await this.loadMemberCommunities(options.identity)
+      void this.ensureFriendshipSnapshot()
+    } else {
+      this.communities = []
+      this.friendshipSnapshot = null
+      this.friendshipRelationByAddress.clear()
+    }
     this.ready = true
     this.notifyChannelChange()
   }

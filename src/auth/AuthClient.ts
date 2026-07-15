@@ -14,8 +14,26 @@ import { loginWithAuthDapp } from './authDappLogin'
 import type { AuthDappLoginMethod } from './constants'
 
 export type LoginResult =
-  | { kind: 'guest' }
+  | { kind: 'guest'; address: string; identity: AuthIdentity; displayName: string }
   | { kind: 'wallet'; address: string; identity: AuthIdentity }
+
+/** Guest or wallet with a usable AuthChain (LiveKit / signed fetch). */
+export function loginHasCommsIdentity(
+  login: LoginResult | null | undefined
+): login is LoginResult & { address: string; identity: AuthIdentity } {
+  return (
+    !!login &&
+    (login.kind === 'wallet' || login.kind === 'guest') &&
+    typeof login.address === 'string' &&
+    !!login.identity
+  )
+}
+
+export function isWalletLogin(
+  login: LoginResult | null | undefined
+): login is Extract<LoginResult, { kind: 'wallet' }> {
+  return login?.kind === 'wallet'
+}
 
 export type StatusCallback = (msg: string) => void
 
@@ -88,7 +106,7 @@ export async function loginWithMetaMask(onStatus?: StatusCallback): Promise<Logi
   return { kind: 'wallet', address, identity }
 }
 
-/** Resume cached wallet identity from localStorage, or null if none / guest. */
+/** Resume cached **real wallet** identity from localStorage, or null (use ensureGuestLogin). */
 export function resumeStoredLogin(): LoginResult | null {
   const stored = readStoredIdentity()
   if (!stored) return null

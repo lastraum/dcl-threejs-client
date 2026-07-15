@@ -1,5 +1,6 @@
 import type { AuthDappLoginMethod, AuthProgress, LoginResult } from '../../../auth/AuthClient'
 import { loginWithMetaMask, loginWithProvider } from '../../../auth/AuthClient'
+import { ensureGuestSession } from '../../auth/resolveInitialLogin'
 import {
   ICON_APPLE,
   ICON_DISCORD,
@@ -107,8 +108,17 @@ export class ExplorerAuthPanel {
     this.moreToggle.addEventListener('click', () => this.toggleMore())
     this.root.querySelector('[data-guest]')!.addEventListener('click', () => {
       if (this.busy) return
-      this.opts.onComplete({ kind: 'guest' })
-      this.close()
+      this.setBusy(true)
+      void ensureGuestSession()
+        .then((login) => {
+          this.opts.onComplete(login)
+          this.close()
+        })
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err)
+          this.setStatus(msg)
+        })
+        .finally(() => this.setBusy(false))
     })
   }
 

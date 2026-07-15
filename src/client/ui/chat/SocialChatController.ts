@@ -112,7 +112,7 @@ export class SocialChatController {
   applyLogin(login: LoginResult | null): void {
     this.login = login
     this.session.applyLogin(login)
-    if (login?.kind === 'wallet') {
+    if (login && (login.kind === 'wallet' || login.kind === 'guest')) {
       this.comms.setIdentity(login.address, login.identity)
       if (this.status.kind === 'guest') this.setStatus({ kind: 'idle' })
       void this.ensureShellInit()
@@ -135,14 +135,14 @@ export class SocialChatController {
     this.profileModal = null
     this.social.dispose()
     this.social = new SocialService()
-    this.login = { kind: 'guest' }
-    this.session.applyLogin(this.login)
+    this.login = null
+    this.session.applyLogin(null)
     this.setStatus({ kind: 'guest' })
   }
 
   async ensureShellInit(): Promise<void> {
     if (this.disposed) return
-    if (!this.login || this.login.kind !== 'wallet') return
+    if (!this.login || (this.login.kind !== 'wallet' && this.login.kind !== 'guest')) return
     if (this.social.isReady()) return
     if (this.shellInitPromise) {
       await this.shellInitPromise
@@ -159,7 +159,7 @@ export class SocialChatController {
     if (route.kind !== 'coords' && route.kind !== 'world') return false
     if (this.connecting) return false
 
-    if (!this.login || this.login.kind !== 'wallet') {
+    if (!this.login || (this.login.kind !== 'wallet' && this.login.kind !== 'guest')) {
       this.setStatus({ kind: 'guest' })
       return false
     }
@@ -260,7 +260,10 @@ export class SocialChatController {
 
   openProfileForAddress(address: string): void {
     const modal = this.ensureProfileModal()
-    const local = this.login?.kind === 'wallet' ? this.login.address.toLowerCase() : null
+    const local =
+      this.login?.kind === 'wallet' || this.login?.kind === 'guest'
+        ? this.login.address.toLowerCase()
+        : null
     if (local && address.toLowerCase() === local) {
       void modal.show({ kind: 'local' })
       return
@@ -306,12 +309,16 @@ export class SocialChatController {
   }
 
   private async runShellInit(): Promise<void> {
-    if (!this.login || this.login.kind !== 'wallet') return
+    if (!this.login || (this.login.kind !== 'wallet' && this.login.kind !== 'guest')) return
     await this.session.connect()
+    const login = this.login
+    const isGuest = login.kind === 'guest'
     await this.social.initShell({
-      address: this.login.address,
-      identity: this.login.identity,
-      contentUrl: this.getContentUrl()
+      address: login.address,
+      identity: login.identity,
+      contentUrl: this.getContentUrl(),
+      isGuest,
+      displayName: login.kind === 'guest' ? login.displayName : undefined
     })
     void this.hydrateLocalProfile()
     this.onStatusChange?.()
@@ -330,15 +337,24 @@ export class SocialChatController {
 
   private async hydrateLocalProfile(): Promise<void> {
     if (this.disposed) return
-    if (!this.login || this.login.kind !== 'wallet') return
+    if (!this.login || (this.login.kind !== 'wallet' && this.login.kind !== 'guest')) return
     const address = this.login.address
+    const guestName = this.login.kind === 'guest' ? this.login.displayName : undefined
     const profile = this.session.getProfile()
     if (profile) {
       const identity = identityFromAvatarProfile(profile, address)
       const faceUrl = await fetchProfileFaceUrl(address, this.session.getLambdasUrl())
       if (this.disposed) return
-      this.social.setLocalProfile(address, identity.displayName, faceUrl, identity.nameColor)
+      this.social.setLocalProfile(
+        address,
+        guestName || identity.displayName,
+        faceUrl,
+        identity.nameColor
+      )
       return
+    }
+    if (guestName) {
+      this.social.setLocalProfile(address, guestName, null, '#ffffff')
     }
     const faceUrl = await fetchProfileFaceUrl(address, this.session.getLambdasUrl())
     if (this.disposed) return

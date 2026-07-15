@@ -447,7 +447,8 @@ export class World {
       this.sceneScript.setLiveKitVideoBinder((video, onUpdate) =>
         this.comms.bindLiveKitVideoSource(video, onUpdate)
       )
-      this.sceneScript.setLiveKitRemoteLiveCheck(() => this.comms.hasRemoteVideoLive())
+      // Scene LiveKit video (stream-key and/or Cast) — not world-room voice cams.
+      this.sceneScript.setLiveKitRemoteLiveCheck(() => this.comms.hasSceneLiveKitVideoLive())
       this.remoteAvatars?.setEntityStore(this.sceneScript.getEntityStore())
       dclToThreeVec(
         new THREE.Vector3(scene.spawn.x, scene.spawn.y, scene.spawn.z),

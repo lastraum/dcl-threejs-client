@@ -15,11 +15,7 @@ import { applyDclLocalTransform, type DclTransformValues } from '../bridge/dclTr
 import { resolveSceneMediaUrl } from '../bridge/material/resolveTexture'
 import { unwrapMisroutedMediaUrl } from '../rendering/textureProxy'
 import type { ResolvedScene } from '../dcl/content/types'
-import {
-  isLiveKitCurrentStreamSrc,
-  isLiveKitVideoSrc,
-  LIVEKIT_CURRENT_STREAM_SRC
-} from './livekitVideoSource'
+import { isLiveKitCurrentStreamSrc, isLiveKitVideoSrc } from './livekitVideoSource'
 import { mediaElementGain, spatialAudioGain } from '../rendering/SoundSettings'
 import { ThrottledVideoTexture } from './ThrottledVideoTexture'
 import { getSharedLiveKitVideoStream } from './SharedLiveKitVideoStream'
@@ -112,7 +108,8 @@ export class WebVideoPlayer {
 
   constructor(
     private readonly scene: ResolvedScene,
-    private readonly bindLiveKitVideo: LiveKitVideoBinder | null = null
+    /** Resolve LiveKit binder at load time (may appear after early VideoPlayer create). */
+    private readonly resolveLiveKitBinder: () => LiveKitVideoBinder | null = () => null
   ) {
     this.video = document.createElement('video')
     this.video.crossOrigin = 'anonymous'
@@ -345,7 +342,7 @@ export class WebVideoPlayer {
     options?: {
       fromEcsSync?: boolean
       fromUserToggle?: boolean
-      /** Cast/OBS remote video currently published in the scene LiveKit room. */
+      /** Scene LiveKit has remote video (stream-key ingress and/or Cast speakers). */
       liveKitRemoteLive?: boolean
     }
   ): void {
@@ -371,10 +368,17 @@ export class WebVideoPlayer {
     }
 
     let src = spec.src.trim()
-    // Hold LiveKit once activated — refuse late admin defaultURL/HLS while Cast/OBS is still live.
-    // (Do not force non-livekit players onto LiveKit; that thrashed scene-room subscriptions.)
-    if (this.liveKitSource && remoteLive && src && !isLiveKitVideoSrc(src)) {
-      src = this.loadedSrc || LIVEKIT_CURRENT_STREAM_SRC
+    // Authority is ECS VideoPlayer.src (composite + scene/Admin MessageBus; later SyncComponents).
+    // Only soft-hold: if we already decoded livekit-video:// and a late CRDT defaultURL races
+    // in while the scene LiveKit room still has a live pub, keep LiveKit until ECS settles.
+    if (
+      this.liveKitSource &&
+      remoteLive &&
+      src &&
+      !isLiveKitVideoSrc(src) &&
+      isLiveKitCurrentStreamSrc(this.loadedSrc)
+    ) {
+      src = this.loadedSrc
     }
 
     if (src && src !== this.loadedSrc) {
@@ -386,14 +390,11 @@ export class WebVideoPlayer {
         if (url) void this.loadSource(url)
         else this.setState(VS_ERROR)
       }
-    } else if (
-      isLiveKitCurrentStreamSrc(src) &&
-      this.loadedSrc === src &&
-      !this.usesSharedLiveKit &&
-      this.bindLiveKitVideo
-    ) {
-      // Binder arrived after first attempt, or a stale HLS load tore us down.
-      void this.loadLiveKitSource(src)
+    } else if (isLiveKitCurrentStreamSrc(src) && this.resolveLiveKitBinder()) {
+      // Retry when binder/scene room appeared after first attempt, or shared bind was torn down.
+      if (!this.usesSharedLiveKit || !this.sharedLiveKitUnsubscribe) {
+        void this.loadLiveKitSource(src)
+      }
     } else if (!src) {
       this.setState(VS_ERROR)
     }
@@ -608,7 +609,8 @@ export class WebVideoPlayer {
 
   private async loadLiveKitSource(src: string): Promise<void> {
     const gen = ++this.sourceGeneration
-    if (!this.bindLiveKitVideo) {
+    const binder = this.resolveLiveKitBinder()
+    if (!binder) {
       // Allow applySpec to retry once the scene LiveKit binder is ready.
       this.loadedSrc = ''
       this.liveKitSource = false
@@ -636,7 +638,7 @@ export class WebVideoPlayer {
       if (this.wantsPlaying && !this.isPlaybackBlocked()) void this.tryPlayShared(video)
     }
 
-    this.sharedLiveKitUnsubscribe = shared.subscribe(this.bindLiveKitVideo, onTrackUpdate)
+    this.sharedLiveKitUnsubscribe = shared.subscribe(binder, onTrackUpdate)
     this.liveKitCleanup = () => {
       this.sharedLiveKitUnsubscribe?.()
       this.sharedLiveKitUnsubscribe = null

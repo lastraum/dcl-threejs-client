@@ -225,7 +225,7 @@ export class SceneScriptSystem {
   private clientPoseProvider: (() => { player: EntityPose; camera: EntityPose }) | null = null
   private getSpatialAudioPlayerRoot: (() => THREE.Object3D | null) | null = null
   private bindLiveKitVideo: LiveKitVideoBinder | null = null
-  /** Cast/OBS remote video presence in the scene LiveKit room. */
+  /** Scene LiveKit remote video (stream-key ingress and/or Cast). */
   private isLiveKitRemoteLive: () => boolean = () => false
   private movePlayerHandler: MovePlayerHandler | null = null
   private triggerEmoteHandler: TriggerEmoteHandler | null = null
@@ -1018,12 +1018,12 @@ export class SceneScriptSystem {
     this.getSpatialAudioPlayerRoot = getter
   }
 
-  /** LiveKit scene cast binder for `livekit-video://current-stream` VideoPlayer.src. */
+  /** Binder for `livekit-video://current-stream` (stream-key + Cast share this src). */
   setLiveKitVideoBinder(binder: LiveKitVideoBinder | null): void {
     this.bindLiveKitVideo = binder
   }
 
-  /** True while Cast/OBS publishes remote video — VideoPlayer prefers live feed over default VOD. */
+  /** Scene LiveKit has remote video — screens prefer current-stream over admin defaultURL. */
   setLiveKitRemoteLiveCheck(check: (() => boolean) | null): void {
     this.isLiveKitRemoteLive = check ?? (() => false)
   }

@@ -12,8 +12,6 @@ import { resolveSpatialAudioAttach, type SpatialAudioAnchors } from './spatialAu
 import { soundSettings } from '../rendering/SoundSettings'
 import { skipSceneVideoPlayers } from '../client/devFlags'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
-
-
 type DecoderEntry = {
   player: WebVideoPlayer
   lastSpecKey: string
@@ -46,8 +44,9 @@ export class VideoPlayerBridge {
     private readonly recordAppend?: (componentId: number, entity: Entity, value: unknown) => void,
     private readonly recordLww?: (componentId: number, entity: Entity, value: unknown) => void,
     /**
-     * True while Cast/OBS publishes remote video in the **scene** LiveKit room.
-     * Used only to hold an already-activated livekit src (never hijacks all VideoPlayers).
+     * Scene LiveKit has remote video (stream-key / Cast). Used only to **hold** an already
+     * activated `livekit-video://` src against late CRDT defaultURL — not to override
+     * main.composite / MessageBus / future SyncComponents VideoPlayer state.
      */
     private readonly getRemoteVideoLive: () => boolean = () => false
   ) {
@@ -153,9 +152,8 @@ export class VideoPlayerBridge {
         entry.player.applySpatialDistances(spatialMin, spatialMax)
       }
 
-      // Do NOT rewrite every VideoPlayer to livekit when remote is live — that thrashed
-      // decoders/subscriptions and contributed to scene-room disconnects (no remote avatars).
-      // Race protection lives in WebVideoPlayer (generation + refuse LiveKit→VOD while live).
+      // Source of truth: ECS VideoPlayer (main.composite spawn + scene/Admin mutations;
+      // later SyncComponents). Client only decodes whatever `spec.src` says.
       if (this.applySpec(entity, spec, fromUserToggle, remoteLive)) {
         userToggleConsumed = true
       }
@@ -237,7 +235,8 @@ export class VideoPlayerBridge {
 
   private ensureDecoder(entity: Entity): void {
     if (this.decoders.has(entity)) return
-    const player = new WebVideoPlayer(this.scene, this.getLiveKitBinder())
+    // Live getter — binder/scene room may appear after the first VideoPlayer entity is seen.
+    const player = new WebVideoPlayer(this.scene, () => this.getLiveKitBinder())
     player.setAudioListener(this.listener)
     player.setUserGestureUnlocked(this.userGestureUnlocked)
     player.onFrameReady = () => this.onTextureReady?.(entity)
@@ -292,7 +291,7 @@ export class VideoPlayerBridge {
     const entry = this.decoders.get(entity)
     if (!entry) return false
     const ecsPlaying = spec.playing !== false
-    // Include live flag so we re-apply when Cast starts/stops without ECS src change.
+    // Include live flag so we re-apply when stream-key/Cast starts/stops without ECS src change.
     const specKey = `${liveKitRemoteLive ? '1' : '0'}:${JSON.stringify(spec)}`
     const bridgePlayingChanged =
       entry.lastAppliedPlaying !== undefined && ecsPlaying !== entry.lastAppliedPlaying

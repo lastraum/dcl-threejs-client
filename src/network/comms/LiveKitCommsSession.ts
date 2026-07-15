@@ -216,9 +216,9 @@ export class LiveKitCommsSession {
 
   /**
    * Attach scene `livekit-video://current-stream` to a VideoPlayer element.
-   * Unity parity: presentation-bot → screen share → any remote video (Cast/OBS); poll for late ingress.
-   * Admin Activate only sets VideoPlayer.src via MessageBus — owner leaving the scene does not
-   * clear that state; media ends only when no remote publisher remains in the LiveKit room.
+   * Unity parity: presentation-bot → screen share → any remote video (stream-key ingress / Cast).
+   * Admin Activate sets VideoPlayer.src to this URL (MessageBus); m3u8/static use normal https src.
+   * Media ends when no remote publisher remains — not when the activating admin leaves.
    */
   bindCurrentVideoStream(video: HTMLVideoElement, onUpdate?: () => void): () => void {
     const room = this.room

@@ -943,12 +943,45 @@ export class CommsService {
     return [this.sceneLiveKit, this.worldLiveKit, this.islandLiveKit].filter((s) => s.isConnected())
   }
 
-  /** Bind `livekit-video://current-stream` to a scene VideoPlayer HTML element. */
+  /**
+   * True when the **scene** LiveKit room has remote video pubs.
+   * Covers DCL stream-key RTMP ingress and DCL Cast speakers (not world-room voice cams).
+   * Separate from VideoPlayer m3u8 / static https sources.
+   */
+  hasSceneLiveKitVideoLive(): boolean {
+    return this.sceneLiveKit.isConnected() && this.sceneLiveKit.hasRemoteVideoLive()
+  }
+
+  /** @deprecated use hasSceneLiveKitVideoLive — name was confusing (LiveKit ≠ Cast-only). */
+  hasSceneCastVideoLive(): boolean {
+    return this.hasSceneLiveKitVideoLive()
+  }
+
+  /**
+   * Bind `livekit-video://current-stream` to a scene VideoPlayer element.
+   * Stream-key ingress and Cast both publish on the **scene** room only.
+   * Retries until that room is connected (early hydration used to no-op forever).
+   */
   bindLiveKitVideoSource(video: HTMLVideoElement, onUpdate?: () => void): () => void {
-    // Cast/OBS is on the **scene** room only. Never bind to the world room — force-subscribe
-    // + attach there stressed the peer-connection used for movement/avatars.
-    if (!this.sceneLiveKit.isConnected()) return () => {}
-    return this.sceneLiveKit.bindCurrentVideoStream(video, onUpdate)
+    let disposed = false
+    let innerCleanup: (() => void) | null = null
+
+    const tryBind = (): void => {
+      if (disposed || innerCleanup) return
+      if (!this.sceneLiveKit.isConnected()) return
+      innerCleanup = this.sceneLiveKit.bindCurrentVideoStream(video, onUpdate)
+      console.log('[livekit-video] current-stream bound to scene room')
+    }
+
+    tryBind()
+    const poll = window.setInterval(tryBind, 750)
+
+    return () => {
+      disposed = true
+      window.clearInterval(poll)
+      innerCleanup?.()
+      innerCleanup = null
+    }
   }
 
   /**

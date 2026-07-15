@@ -264,7 +264,9 @@ export class SocialProfileMenu {
         <div class="social-profile-menu__name">${escapeHtml(name)}</div>
         <div class="social-profile-menu__sub">Guest on this device · ${escapeHtml(walletShort(address))}</div>
       </div>
-      <p class="social-profile-menu__hint">Stable guest wallet for chat &amp; LiveKit. Connect a wallet to claim wearables &amp; ownership tools.</p>
+      <p class="social-profile-menu__hint">
+        Stable guest wallet for chat &amp; LiveKit. Connect a wallet to claim wearables &amp; ownership tools.
+      </p>
       <div class="social-profile-menu__actions">
         <button type="button" class="social-profile-menu__item" data-login-method="metamask">
           <span class="social-profile-menu__item-icon" aria-hidden="true">${ICON_METAMASK}</span>

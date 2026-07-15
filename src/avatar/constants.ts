@@ -17,7 +17,10 @@ export const AVATAR_EMOTE_IDLE = '/avatar/emotes/idle.glb'
 export const AVATAR_EMOTE_WALK = '/avatar/emotes/walk.glb'
 export const AVATAR_EMOTE_RUN = '/avatar/emotes/run.glb'
 export const AVATAR_EMOTE_JUMP = '/avatar/emotes/jump.glb'
-/** Explorer Double_Jump twirl — bundle when available; loader falls back to jump.glb. */
+/**
+ * Optional dedicated Double_Jump clip. When missing, AvatarAnimations uses a
+ * hard-coded full-body Y twirl (Explorer parity) instead of replaying jump.glb.
+ */
 export const AVATAR_EMOTE_DOUBLE_JUMP = '/avatar/emotes/double_jump.glb'
 
 export const BODY_SHAPE_URN: Record<BodyShape, string> = {

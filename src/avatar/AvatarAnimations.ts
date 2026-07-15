@@ -23,6 +23,7 @@ import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import type { LocomotionMode } from '../player/locomotion'
 import { DCL_LOCOMOTION_DEFAULTS } from '../player/locomotion'
 import { loadLocomotionEmoteGltf, type LocomotionEmoteSlug } from './profileEmotes'
+import { DoubleJumpTwirl } from './doubleJumpTwirl'
 import type { BodyShape } from './types'
 
 export type AvatarLocomotionState = {
@@ -35,7 +36,7 @@ export type AvatarLocomotionState = {
   locomotionMode: LocomotionMode
   jumping: boolean
   doubleJumping: boolean
-  /** One frame — air-jump impulse applied (twirl + spin puff). */
+  /** One frame — air-jump impulse applied (procedural twirl + spin puff). */
   doubleJumpTriggered?: boolean
   falling: boolean
   /** Planar move axis in avatar-local space (+X right, -Z forward) for VRM directional locomotion. */
@@ -59,12 +60,15 @@ export class AvatarAnimations {
   private runAction: THREE.AnimationAction | null = null
   private jumpAction: THREE.AnimationAction | null = null
   private doubleJumpAction: THREE.AnimationAction | null = null
+  /** True when double_jump.glb (or Catalyst clip) loaded — not jump.glb fallback. */
+  private hasDedicatedDoubleJumpClip = false
   private profileAction: THREE.AnimationAction | null = null
   private propAction: THREE.AnimationAction | null = null
   private profileActive = false
   private profileEmoteLoop = false
   private activeProfileEmoteKey: string | null = null
   private doubleJumpPlaying = false
+  private readonly twirl = new DoubleJumpTwirl()
   private walkBlend = 0
   private runBlend = 0
   private jumpBlend = 0
@@ -100,11 +104,15 @@ export class AvatarAnimations {
     const cache = options?.assetCache
     const peerUrl = options?.peerUrl
 
-    const loadSlug = async (slug: LocomotionEmoteSlug): Promise<THREE.AnimationClip | null> => {
+    /** Load clip; for double_jump do **not** fall back to jump (that looked like a normal jump). */
+    const loadSlug = async (
+      slug: LocomotionEmoteSlug,
+      opts?: { allowJumpFallback?: boolean }
+    ): Promise<THREE.AnimationClip | null> => {
       if (cache && peerUrl) {
         const gltf = await loadLocomotionEmoteGltf(slug, bodyShape, peerUrl, cache)
         if (gltf?.animations[0]) return gltf.animations[0]
-        if (slug === 'double_jump') {
+        if (slug === 'double_jump' && opts?.allowJumpFallback) {
           const jumpGltf = await loadLocomotionEmoteGltf('jump', bodyShape, peerUrl, cache)
           return jumpGltf?.animations[0] ?? null
         }
@@ -125,7 +133,7 @@ export class AvatarAnimations {
         const gltf = await loader.loadAsync(path)
         if (gltf.animations[0]) return gltf.animations[0]
       } catch {
-        if (slug === 'double_jump') {
+        if (slug === 'double_jump' && opts?.allowJumpFallback) {
           try {
             const loader = new GLTFLoader()
             const gltf = await loader.loadAsync(AVATAR_EMOTE_JUMP)
@@ -143,7 +151,8 @@ export class AvatarAnimations {
       loadSlug('walk'),
       loadSlug('run'),
       loadSlug('jump'),
-      loadSlug('double_jump')
+      // Dedicated clip only — missing file → procedural twirl (Explorer hard-coded keyframe).
+      loadSlug('double_jump', { allowJumpFallback: false })
     ])
 
     if (generation !== this.bindGeneration || !this.mixer) return
@@ -156,18 +165,18 @@ export class AvatarAnimations {
     this.walkAction = this.playLoop(walkClip ?? undefined, animationRoot, bodyShape, 0)
     this.runAction = this.playLoop(runClip ?? undefined, animationRoot, bodyShape, 0)
     this.jumpAction = this.playLoop(jumpClip ?? undefined, animationRoot, bodyShape, 0)
-    this.doubleJumpAction = this.playOneShot(
-      doubleJumpClip ?? jumpClip ?? undefined,
-      animationRoot,
-      bodyShape
-    )
+    this.hasDedicatedDoubleJumpClip = Boolean(doubleJumpClip)
+    this.doubleJumpAction = doubleJumpClip
+      ? this.playOneShot(doubleJumpClip, animationRoot, bodyShape)
+      : null
 
     if (!this.walkAction || !this.runAction || !this.jumpAction) {
       console.warn('[avatar] locomotion bind:', {
         walk: !!this.walkAction,
         run: !!this.runAction,
         jump: !!this.jumpAction,
-        doubleJump: !!this.doubleJumpAction,
+        doubleJumpClip: this.hasDedicatedDoubleJumpClip,
+        doubleJumpProcedural: !this.hasDedicatedDoubleJumpClip,
         idle: !!this.idleAction
       })
     }
@@ -176,11 +185,22 @@ export class AvatarAnimations {
   }
 
   triggerDoubleJump(): void {
-    if (!this.doubleJumpAction || this.profileActive) return
+    if (this.profileActive || !this.avatarRoot) return
     this.doubleJumpPlaying = true
-    this.doubleJumpAction.reset()
-    this.doubleJumpAction.setEffectiveWeight(1)
-    this.doubleJumpAction.play()
+    if (this.hasDedicatedDoubleJumpClip && this.doubleJumpAction) {
+      // Bundled/Catalyst Double_Jump clip — play as oneshot only (no extra spin).
+      this.doubleJumpAction.reset()
+      this.doubleJumpAction.setEffectiveWeight(1)
+      this.doubleJumpAction.play()
+    } else {
+      // Explorer parity: hard-coded clockwise Y twirl + jump pose.
+      this.twirl.start(this.avatarRoot)
+      if (this.jumpAction) {
+        this.jumpAction.reset()
+        this.jumpAction.setEffectiveWeight(1)
+        this.jumpAction.play()
+      }
+    }
     this.locomotionVfx?.triggerAirJumpPuff()
   }
 
@@ -299,18 +319,35 @@ export class AvatarAnimations {
     }
 
     if (this.profileActive) {
+      this.twirl.reset()
       this.applyProfileEmoteWeights()
       this.mixer.update(delta)
       this.propMixer?.update(delta)
       return
     }
 
-    if (this.doubleJumpPlaying) {
+    // Landed mid-spin — finish yaw cleanly.
+    if (state.grounded && this.twirl.active) {
+      this.twirl.reset()
+      this.doubleJumpPlaying = false
+    }
+
+    const twirling = this.twirl.update(delta)
+    if (twirling === false && this.doubleJumpPlaying && !this.hasDedicatedDoubleJumpClip) {
+      this.doubleJumpPlaying = false
+    }
+    if (this.doubleJumpPlaying || twirling) {
       this.idleAction?.setEffectiveWeight(0)
       this.walkAction?.setEffectiveWeight(0)
       this.runAction?.setEffectiveWeight(0)
-      this.jumpAction?.setEffectiveWeight(0)
-      this.doubleJumpAction?.setEffectiveWeight(1)
+      if (this.hasDedicatedDoubleJumpClip && this.doubleJumpAction) {
+        this.jumpAction?.setEffectiveWeight(0)
+        this.doubleJumpAction.setEffectiveWeight(1)
+      } else {
+        // Procedural twirl + jump pose (no fake double_jump = jump.glb oneshot).
+        this.doubleJumpAction?.setEffectiveWeight(0)
+        this.jumpAction?.setEffectiveWeight(1)
+      }
       this.mixer.update(delta)
       return
     }
@@ -392,6 +429,7 @@ export class AvatarAnimations {
 
   dispose(): void {
     this.bindGeneration++
+    this.twirl.reset()
     if (this.mixer) {
       this.mixer.removeEventListener('finished', this.onMixerFinished)
       this.mixer.stopAllAction()
@@ -407,6 +445,7 @@ export class AvatarAnimations {
     this.runAction = null
     this.jumpAction = null
     this.doubleJumpAction = null
+    this.hasDedicatedDoubleJumpClip = false
     this.activeProfileEmoteKey = null
     this.doubleJumpPlaying = false
     this.walkBlend = 0

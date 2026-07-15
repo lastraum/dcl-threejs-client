@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { AvatarLocomotionState } from '../AvatarAnimations'
+import { DoubleJumpTwirl } from '../doubleJumpTwirl'
 import { DCL_LOCOMOTION_DEFAULTS } from '../../player/locomotion'
 import { buildOdkRestCorrection } from './odkRetarget'
 import { loadMmlUeClipForOdk } from './odkMmlAnimLoader'
@@ -10,6 +11,7 @@ import { updateOdkSkinnedMeshes } from './odkSkeleton'
 
 /**
  * UE5 Manny locomotion from MML worlds — native bone tracks, no Mixamo retarget.
+ * Double jump: same clockwise Y twirl as DCL/VRM (not MML flip clip).
  */
 export class OdkLocomotionAnimations {
   private mixer: THREE.AnimationMixer | null = null
@@ -19,7 +21,6 @@ export class OdkLocomotionAnimations {
   private runAction: THREE.AnimationAction | null = null
   private jumpAction: THREE.AnimationAction | null = null
   private fallAction: THREE.AnimationAction | null = null
-  private flipAction: THREE.AnimationAction | null = null
   private profileEmoteAction: THREE.AnimationAction | null = null
   private profileEmoteActive = false
   private profileEmoteLoop = false
@@ -28,7 +29,8 @@ export class OdkLocomotionAnimations {
   private runBlend = 0
   private jumpBlend = 0
   private fallBlend = 0
-  private flipPlaying = false
+  private doubleJumpPlaying = false
+  private readonly twirl = new DoubleJumpTwirl()
   private wasGrounded = true
   private bindGeneration = 0
   private speedSmooth = 0
@@ -39,12 +41,11 @@ export class OdkLocomotionAnimations {
     this.dispose()
     const generation = ++this.bindGeneration
 
-    const [idle, jog, run, air, flip] = await Promise.all([
+    const [idle, jog, run, air] = await Promise.all([
       loadMmlUeClipForOdk(ODK_MML_LOCOMOTION.idle, avatarRoot, 'idle'),
       loadMmlUeClipForOdk(ODK_MML_LOCOMOTION.jog, avatarRoot, 'jog'),
       loadMmlUeClipForOdk(ODK_MML_LOCOMOTION.run, avatarRoot, 'run'),
-      loadMmlUeClipForOdk(ODK_MML_LOCOMOTION.air, avatarRoot, 'air').catch(() => null),
-      loadMmlUeClipForOdk(ODK_MML_LOCOMOTION.doubleJump, avatarRoot, 'flip').catch(() => null)
+      loadMmlUeClipForOdk(ODK_MML_LOCOMOTION.air, avatarRoot, 'air').catch(() => null)
     ])
 
     if (generation !== this.bindGeneration) return
@@ -96,12 +97,6 @@ export class OdkLocomotionAnimations {
       this.fallAction.setLoop(THREE.LoopRepeat, Infinity)
       this.fallAction.play()
     }
-    if (flip) {
-      this.flipAction = this.mixer.clipAction(flip)
-      this.flipAction.setLoop(THREE.LoopOnce, 1)
-      this.flipAction.clampWhenFinished = true
-      this.flipAction.play()
-    }
 
     this.mixer.update(0)
     updateOdkSkinnedMeshes(avatarRoot)
@@ -143,34 +138,47 @@ export class OdkLocomotionAnimations {
     if (!this.mixer || !this.idleAction) return
 
     if (this.profileEmoteActive && this.profileEmoteAction) {
+      this.twirl.reset()
+      this.doubleJumpPlaying = false
       this.idleAction.setEffectiveWeight(0)
       this.walkAction?.setEffectiveWeight(0)
       this.jogAction?.setEffectiveWeight(0)
       this.runAction?.setEffectiveWeight(0)
       this.jumpAction?.setEffectiveWeight(0)
       this.fallAction?.setEffectiveWeight(0)
-      this.flipAction?.setEffectiveWeight(0)
       this.profileEmoteAction.setEffectiveWeight(1)
       this.mixer.update(delta)
+      if (this.avatarRoot) updateOdkSkinnedMeshes(this.avatarRoot)
       return
     }
 
-    if (state.doubleJumpTriggered && this.flipAction) {
-      this.flipPlaying = true
-      this.flipAction.reset()
-      this.flipAction.setEffectiveWeight(1)
-      this.flipAction.play()
+    if (state.doubleJumpTriggered) {
+      this.doubleJumpPlaying = true
+      this.twirl.start(this.avatarRoot)
+      if (this.jumpAction) {
+        this.jumpAction.reset()
+        this.jumpAction.setEffectiveWeight(1)
+        this.jumpAction.play()
+      }
     }
 
-    if (this.flipPlaying) {
+    if (state.grounded && this.twirl.active) {
+      this.twirl.reset()
+      this.doubleJumpPlaying = false
+    }
+
+    const twirling = this.twirl.update(delta)
+    if (!twirling && this.doubleJumpPlaying) this.doubleJumpPlaying = false
+
+    if (this.doubleJumpPlaying || twirling) {
       this.idleAction.setEffectiveWeight(0)
       this.walkAction?.setEffectiveWeight(0)
       this.jogAction?.setEffectiveWeight(0)
       this.runAction?.setEffectiveWeight(0)
-      this.jumpAction?.setEffectiveWeight(0)
       this.fallAction?.setEffectiveWeight(0)
-      this.flipAction?.setEffectiveWeight(1)
+      this.jumpAction?.setEffectiveWeight(1)
       this.mixer.update(delta)
+      if (this.avatarRoot) updateOdkSkinnedMeshes(this.avatarRoot)
       return
     }
 
@@ -251,7 +259,6 @@ export class OdkLocomotionAnimations {
 
     this.jumpAction?.setEffectiveWeight(this.jumpBlend)
     this.fallAction?.setEffectiveWeight(this.fallBlend)
-    this.flipAction?.setEffectiveWeight(0)
 
     this.mixer.update(delta)
     if (this.avatarRoot) updateOdkSkinnedMeshes(this.avatarRoot)
@@ -259,6 +266,7 @@ export class OdkLocomotionAnimations {
 
   dispose(): void {
     this.bindGeneration++
+    this.twirl.reset()
     this.stopProfileEmote()
     if (this.mixer) {
       this.mixer.removeEventListener('finished', this.onMixerFinished)
@@ -271,23 +279,18 @@ export class OdkLocomotionAnimations {
     this.runAction = null
     this.jumpAction = null
     this.fallAction = null
-    this.flipAction = null
     this.walkBlend = 0
     this.jogBlend = 0
     this.runBlend = 0
     this.jumpBlend = 0
     this.fallBlend = 0
-    this.flipPlaying = false
+    this.doubleJumpPlaying = false
     this.speedSmooth = 0
     this.restCorrection = null
     this.avatarRoot = null
   }
 
   private onMixerFinished = (event: THREE.Event & { action: THREE.AnimationAction }): void => {
-    if (event.action === this.flipAction) {
-      this.flipPlaying = false
-      this.flipAction?.stop()
-    }
     if (event.action === this.profileEmoteAction && !this.profileEmoteLoop) {
       this.stopProfileEmote()
     }

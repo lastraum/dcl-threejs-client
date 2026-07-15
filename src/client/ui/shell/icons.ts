@@ -95,8 +95,33 @@ export const SIDEBAR_ICONS = {
 
 export type SidebarIconId = keyof typeof SIDEBAR_ICONS
 
-/** DCL scene/world chat rail icon (companion-style pin). */
-export const SCENE_CHAT_RAIL_ICON = `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-  <path d="M12 2.5c-1.4 4.2-4.5 6.2-4.5 10a4.5 4.5 0 1 0 9 0c0-3.8-3.1-5.8-4.5-10z" fill="#FF2D55"/>
-  <path d="M12 2.5v10l4-2.3C14.8 7.8 12.8 5.5 12 2.5z" fill="#FFBC5B"/>
+/**
+ * Same mark as `public/favicon.svg` (browser tab icon) — used in 2D/3D chat rails
+ * and world location. Gradient ids scoped for multi-instance pages.
+ */
+export const SCENE_CHAT_RAIL_ICON = `<svg viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+  <defs>
+    <linearGradient id="dclChatWorld" x1="85.355%" y1="14.645%" x2="14.645%" y2="85.355%">
+      <stop stop-color="#FF2D55" offset="0%"/>
+      <stop stop-color="#FFBC5B" offset="100%"/>
+    </linearGradient>
+    <linearGradient id="dclChatPyr" x1="49.966%" y1="0%" x2="49.966%" y2="100%">
+      <stop stop-color="#A524B3" offset="0%"/>
+      <stop stop-color="#FF2D55" offset="100%"/>
+    </linearGradient>
+  </defs>
+  <circle fill="url(#dclChatWorld)" cx="18" cy="18" r="18"/>
+  <g transform="translate(1.44 11.7)">
+    <polygon fill="url(#dclChatPyr)" points="11.313 0 11.313 13.5 22.563 13.5"/>
+    <polygon fill="#FFFFFF" points="0.063 13.5 11.313 13.5 11.313 0"/>
+  </g>
+  <path d="M7.2 32.4C10.206 34.659 13.95 36 18 36s7.794-1.341 10.8-3.6H7.2z" fill="#FF2D55"/>
+  <path d="M3.6 28.8c1.026 1.359 2.241 2.574 3.6 3.6h21.6c1.359-1.026 2.574-2.241 3.6-3.6H3.6z" fill="#FC9965"/>
+  <path d="M24.147 25.2H1.503c.558 1.287 1.269 2.493 2.097 3.6h20.556v-3.6z" fill="#FFBC5B"/>
+  <g transform="translate(15.84 18.9)">
+    <polygon fill="url(#dclChatPyr)" points="8.307 0 8.307 9.9 16.56 9.9"/>
+    <polygon fill="#FFFFFF" points="0.063 9.9 8.307 9.9 8.307 0"/>
+  </g>
+  <circle fill="#FFC95B" cx="24.147" cy="11.7" r="4.5"/>
+  <circle fill="#FFC95B" cx="12.753" cy="6.75" r="2.25"/>
 </svg>`

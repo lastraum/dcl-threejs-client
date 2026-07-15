@@ -143,6 +143,7 @@ DOM overlay — not in-scene `UiTransform`.
 | Settings overlay: Events, Map, Backpack, Places, Gallery | 🟢 |
 | Backpack wearables equip + Catalyst profile deploy | 🟡 | Inventory/equip/preview/deploy 🟢 · emotes tab / outfits / marketplace ⬜ · mobile sheets 🟢 |
 | Profile pills + right-click profile menu (+ copy wallet) | 🟢 |
+| Overhead name tags (hide via `featureToggles.nameTags` / `?nameTags=`) | 🟢 |
 | Preferences panel (P / ⚙): Graphics preset/shadows/lights/res/FPS + lighting | 🟢 |
 | Preferences → Sounds volume sliders | 🟢 |
 | Preferences: Controls, Chat tabs | 🟡 stub |
@@ -160,6 +161,7 @@ DOM overlay — not in-scene `UiTransform`.
 | **2D multi-room scene chat** (`SceneChatRoomPool`) | 🟢 | Open tabs stay joined across navigate (companion multi-text-chats) |
 | **Landing cast / stream keys** (Join Live, guest OK) | 🟢 | Gatekeeper adapter; mute; stream-end restores details |
 | Remote avatars + load queue | 🟢 |
+| Double-jump clockwise Y twirl (DCL / VRM / ODK) | 🟢 | Shared `DoubleJumpTwirl`; optional `double_jump.glb` |
 | SignedFetch, Catalyst content, wallet + guest session | 🟢 |
 | ECS NetworkEntity scene sync | 🟡 stub |
 | Community text / PM router | ⬜ local echo only |

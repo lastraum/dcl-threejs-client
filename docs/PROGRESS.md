@@ -2,12 +2,30 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-14 (**multi-room chat + cast UX** → `dev-latest`)  
+> **Last updated:** 2026-07-15 (**nameTags + double-jump twirl** → `dev-latest`)  
 > **Current phase:** Post-**v0.8.0** — backpack gaps, graphics P3/P4, voice, Phase 4 `/goto`.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
 > **Product next:** Phase 4 `/goto` in 3D · community text / DMs · voice UI · remaining backpack parity.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
+
+---
+
+## 🎉 Milestone — Name tags toggle + double-jump twirl → `dev-latest` (2026-07-15)
+
+**Status: merged `lastraum` → `dev-latest`** — scene.json name-tag hide + Explorer-style clockwise double-jump for all avatar rigs.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **`featureToggles.nameTags`** | 🟢 | `"disabled"` hides local + remote + AvatarShape overhead labels; top-level `nameTags` alias |
+| **URL QA override** | 🟢 | `?nameTags=0` / `disabled` / `1` / `enabled` (wins over scene.json) |
+| **Double-jump twirl (DCL)** | 🟢 | Hard-coded full-body **clockwise** Y spin (~0.68s) + jump pose when no `double_jump.glb` (no more jump.glb fallback oneshot) |
+| **Double-jump twirl (VRM / ODK)** | 🟢 | Same shared `DoubleJumpTwirl` — replaces Mixamo/MML flip clips for air-jump |
+| **Optional clip** | 🟢 | If `/avatar/emotes/double_jump.glb` is bundled, DCL plays that oneshot instead of procedural twirl |
+
+**QA:** Deploy `featureToggles.nameTags: "disabled"` · open without URL override · confirm no pills. Double-jump DCL + custom VRM/ODK — clockwise spin.
+
+**Branch:** `lastraum` → `dev-latest` (`2208209` merge · `c883d6f` nameTags · `a851d0c` twirl).
 
 ---
 
@@ -84,6 +102,7 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Multi-provider auth (DCL auth-dapp)** | 🟢 | Google / Discord / Apple / X / WalletConnect / MetaMask via Explorer auth-dapp + verification code; profile menu + Jump In |
 | **2D backpack equip + Catalyst deploy** | 🟡 **partial** | Wearables + **emotes** + **base eyes/body shape** + **eye/hair/skin colors**; deploy on save; outfits/marketplace still open |
 | **Custom VRM / OSA library** | 🟢 | Device library + open-source avatars tab (client-only; beyond Unity Explorer) |
+| **scene.json nameTags hide** | 🟢 | `featureToggles.nameTags` + `?nameTags=` — ThreejsClient overhead label gate |
 | **Dev texture proxy host fix** | 🟢 | `/api/texture` routes to encoded host (not hard-coded arweave) — PR #10 |
 
 **Try it:** `http://localhost:5173/` → browse places → **Visit** → scene landing → **Jump in** for 3D. Or `/communities` / `/events` from top nav. Terrain editor: **`/editor`**. Suggestions: dev panel → **💡 Suggest**. Stream: owner gear → stream keys → OBS → **Join Live**.
@@ -1348,7 +1367,7 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 | Task | Status |
 |------|--------|
 | Run emote (Shift sprint) | ✅ DCL `run.glb` at run speed |
-| Jump + double jump emotes | ✅ First jump `jump.glb` loop · second jump one-shot twirl (1.35×) + spin puff |
+| Jump + double jump emotes | ✅ First jump `jump.glb` loop · second jump shared clockwise Y twirl (DCL/VRM/ODK) + spin puff; optional `double_jump.glb` |
 | Locomotion VFX puffs | ✅ `AvatarLocomotionVfx` — foot dust (walk/jog/run cadence) + air-jump burst |
 | Air-jump delay | ✅ 0.2s hold before second impulse (Explorer `AirJumpDelay`) |
 | DCL speed defaults | ✅ walk 1.5 · jog 8 · run 10 m/s — `AvatarLocomotionSettings` from scene |

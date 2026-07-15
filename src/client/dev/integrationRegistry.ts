@@ -77,6 +77,13 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
     notes: 'Stream keys + remote video; guest watch; mute toggle; stream-end → scene details; mobile LIVE above Jump in'
   },
   { id: 'ui:profile-pill', name: 'Profile / name pills + menu', status: 'render', category: 'client-ui', notes: 'Hover, badges row, right-click profile modal' },
+  {
+    id: 'ui:name-tags',
+    name: 'Overhead name tags',
+    status: 'render',
+    category: 'client-ui',
+    notes: 'CSS2D pills; hide via scene.json featureToggles.nameTags or ?nameTags=disabled'
+  },
   { id: 'ui:emote-wheel', name: 'Emote wheel (B)', status: 'render', category: 'client-ui', notes: 'Profile + bundled emotes' },
   { id: 'ui:location-card', name: 'Location card', status: 'render', category: 'client-ui', notes: 'Top-left pill — scene name + Genesis parcel coords (all scenes)' },
   { id: 'ui:debug-panel', name: 'Debug panel (Help)', status: 'render', category: 'client-ui', notes: 'Position HUD, collider toggles, render quality' },
@@ -114,6 +121,13 @@ export const NETWORKING_INTEGRATION: IntegrationEntry[] = [
     notes: 'SceneChatRoomPool + resolveSceneChatAdapter — companion multi-text-chats; primary room for cast'
   },
   { id: 'net:remote-avatars', name: 'Remote avatar load + lerp', status: 'render', category: 'networking', notes: 'RemoteAvatarManager + load queue' },
+  {
+    id: 'net:double-jump-twirl',
+    name: 'Double-jump twirl (DCL/VRM/ODK)',
+    status: 'render',
+    category: 'networking',
+    notes: 'Shared DoubleJumpTwirl clockwise Y spin + jump pose; optional double_jump.glb for DCL'
+  },
   { id: 'net:scene-binary', name: 'RFC4 Scene binary packets', status: 'render', category: 'networking', notes: 'comms topic → scene script' },
   { id: 'net:archipelago', name: 'Archipelago adapter', status: 'stub', category: 'networking', notes: 'Scaffold; LiveKit primary path' },
   { id: 'net:voice-tracks', name: 'Voice tracks (WebRTC)', status: 'none', category: 'networking', notes: 'LiveKit connected; no spatial voice UI' },

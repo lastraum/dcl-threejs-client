@@ -2,8 +2,8 @@
 
 > Integrates [dcl-companion `threejs-client-ux-spec.md`](../../dcl-companion/docs/threejs-client-ux-spec.md) into this repo.
 
-**Status:** **Merged into `dev-latest`** — Phases 1–2.5 ✅ · Phase 3 partial (2D chat dock) · deploy at **decentraland.social** / **dev.decentraland.social**  
-**Source branch:** `decentraland-social-merge`
+**Status:** **Merged into `dev-latest`** — Phases 1–2.5 ✅ · Phase 3 Watch Lite + multi-room chat ✅ · Phase 4 `/goto` open · deploy at **decentraland.social** / **dev.decentraland.social**  
+**Source branch:** `decentraland-social-merge` (+ later `lastraum` multi-room / cast polish)  
 **Reference:** `dcl-companion/web-app-social/` (browser-only mode)
 
 ---
@@ -106,18 +106,23 @@ type SceneContext = { segment: string; mode: AppMode }
 
 ---
 
-### Phase 3 — Watch Lite on landing 🟡 partial
+### Phase 3 — Watch Lite on landing ✅
 
 **Goal:** Voice + text chat on landing without WebGL (mobile-first).
 
-**Shipped (partial):** `SocialChatDock` + `SocialChatController` on 2D surfaces; scene title parity; landing Jump-in loading handoff; 2D sign-out. **Remaining:** gatekeeper client, LiveKit room on landing, HLS embed.
+**Shipped:**
 
-| Task | Files |
-|------|-------|
-| Gatekeeper client (port from companion) | `src/social/gatekeeper.ts` or shared pkg |
-| LiveKit room per scene on landing | extend `LiveKitCommsSession` |
-| RFC4 chat on landing | `dclRfc4Chat.ts` reuse |
-| HLS stream embed (if scene has deploy video) | `sceneDeployHls` parity |
+| Task | Status | Files / notes |
+|------|--------|----------------|
+| Gatekeeper scene adapter | ✅ | `GatekeeperClient` + `resolveSceneChatAdapter` |
+| LiveKit chat on landing | ✅ | `SocialChatController` + primary `CommsService` |
+| Multi-room keep-alive | ✅ | `SceneChatRoomPool` — companion multi-text-chats; tabs stay live across navigate |
+| RFC4 chat on landing | ✅ | `dclRfc4Chat.ts` + OLE timestamps for Explorer interop |
+| Stream keys + Join Live cast | ✅ | OBS RTMP; guest or wallet watch; mute; stream-end → details |
+| Channel notifications | ✅ | Mobile banners + unread per channel |
+| 2D sign-out / guest session | ✅ | Stable browser guest wallet + Catalyst profile |
+| HLS / “I'm live” listings | ⬜ | Deferred product CTA |
+| Spatial voice UI | ⬜ | LiveKit connected; no mic HUD yet |
 
 **Server:** Direct Signed Fetch to comms-gatekeeper (CORS `*` in prod).
 
@@ -176,13 +181,14 @@ type SceneContext = { segment: string; mode: AppMode }
 [x] GET /communities               → CommunitiesPageView
 [x] Deny reserved first segments   → route.ts denylist
 [x] 2D shell nav                   → SocialShellTopNav on all non-play views
+[x] Watch Lite chat/cast on landing → multi-room pool + Join Live (guest OK)
 [ ] Global AuthProvider above router
 [x] Jump in button                 → mode=play, mount Three.js
 [x] Leave button                   → mode=landing, unmount Three.js
 [ ] 3D chat /goto handler          → teleport in play mode only
 [x] Explorer links                 → /<segment> landing
 [ ] history.replaceState on /goto
-[ ] SPA fallback for /<segment>
+[x] SPA fallback for /<segment>    → vite/nginx deploy
 ```
 
 ---

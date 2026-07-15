@@ -2,12 +2,41 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-14 (**v0.8.0** shipped on `main`)  
-> **Current phase:** Post-**v0.8.0** — Watch Lite polish, backpack gaps, graphics P3/P4.  
+> **Last updated:** 2026-07-14 (**multi-room chat + cast UX** → `dev-latest`)  
+> **Current phase:** Post-**v0.8.0** — backpack gaps, graphics P3/P4, voice, Phase 4 `/goto`.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
-> **Product next:** Phase 4 `/goto` · Watch Lite polish (I'm live CTA deferred) · remaining backpack parity gaps (below).  
+> **Product next:** Phase 4 `/goto` in 3D · community text / DMs · voice UI · remaining backpack parity.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
+
+---
+
+## 🎉 Milestone — Multi-room chat + cast polish → `dev-latest` (2026-07-14)
+
+**Status: merged `lastraum` → `dev-latest`** — companion-style multi-room LiveKit chat, guest cast watch, landing UX. Closes the main Watch Lite / 2D chat dock parity gaps from [SOCIAL_MERGE_PLAN.md](./SOCIAL_MERGE_PLAN.md) Phase 3.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Multi-room LiveKit chat** | 🟢 | `SceneChatRoomPool` — open scene tabs stay joined when navigating (dcl-companion multi-text-chats pattern); no single-room “history only — rejoin” dead-end |
+| **Adapter resolve without thrash** | 🟢 | `resolveSceneChatAdapter` — world signed-login / parcel gatekeeper; primary CommsService for landing cast, pool for background rooms |
+| **Channel-aware notifications** | 🟢 | Mobile banners label scene/community; suppress only when that thread is open; guest toasts work |
+| **Close tabs** | 🟢 | × / swipe leaves that LiveKit room; **current landing scene tab has no ×** (stay connected until navigate away) |
+| **2D @-mentions** | 🟢 | Purple highlight for self-mentions; live peer list includes world transport + chat history |
+| **Guest cast watch** | 🟢 | Wallet **or guest** identity + gatekeeper → stream-key video (mobile + desktop) |
+| **Mobile LIVE · CAST CTA** | 🟢 | Stacked full-width above Jump in (≤960px) |
+| **Cast mute toggle** | 🟢 | Speaker button toggles mute; LiveKit reattach no longer stomps volume |
+| **Stream end → details** | 🟢 | Publisher gone clears host + restores scene landing card (not blank stage) |
+| **Island / wearable shadows** | 🟢 | Island shore MeshStandard receives shadows; wearables cast |
+| **scene.json water** | 🟢 | `environment.water` FFT ocean knobs ([THIRD_PARTY.md](./THIRD_PARTY.md)) |
+| **Stable browser guest** | 🟢 | Guest wallet + Catalyst profile for chat/cast without MetaMask |
+
+**Resolved gaps (was 🟡 / open):** single-room chat drop on scene switch · history-only rejoin UX · wallet-only stream-key watch · blank cast stage after OBS stop · landing chat “partial” without multi-room.
+
+**Still open:** I'm live CTA (HLS listings) · community text / PM router · spatial voice UI · Phase 4 `/goto` in 3D play · backpack outfits/marketplace.
+
+**QA focus:** Scene A chat → navigate B → A still live + notifications · guest Join Live cast · mute/unmute · stop OBS → return to landing card · mobile LIVE above Jump in.
+
+**Branch:** `lastraum` → `dev-latest` (`0e3d3bb` merge).
 
 ---
 
@@ -40,9 +69,9 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Local scenes (browser)** | 🟢 | **Link Scenes folder** — pick `~/Documents/DCL-Scenes` (Documents/Downloads/Desktop); Rescan + drag-drop |
 | **Companion 2D social shell** | 🟢 | `/` = Explorer (no WebGL) · `/<segment>` = scene landing · Jump in = only 3D entry · Leave returns to landing |
 | **2D shell nav + pages** | 🟢 | **Explore · Communities · Events** tabs on all non-play surfaces; `/communities`, `/events`, `/map`, full-screen `/profile` |
-| **2D social chat dock** | 🟡 **partial** | Floating dock on explorer/landing — thread list, scene chat, community thumbnails; **3D in-world chat** unchanged |
+| **2D social chat dock** | 🟢 | Multi-room LiveKit (`SceneChatRoomPool`); channel list + thread; mobile FAB/sheet; channel notifications; community thumbs; **3D in-world chat** unchanged |
 | **Scene landing hub** | 🟢 | Hero, crowd, owner, description, events banner; companion-style **Jump in** progress bar (sidebar/HUD deferred until handoff) |
-| **Landing stream keys + Join Live** | 🟢 | Owner gear → OBS RTMP keys; scene LiveKit live detect (lowercase world realm = stream-key room); cast stage; go-live after landing open; **I'm live** CTA deferred |
+| **Landing stream keys + Join Live** | 🟢 | Owner gear → OBS RTMP keys; live detect; cast stage (guest OK); mute toggle; stream-end → details; mobile LIVE stacked above Jump in; **I'm live** CTA deferred |
 | **Community thumbnails** | 🟢 | `communityDisplayImageUrl` + proxy passthrough; detail-fetch fallback on image 404 |
 | **Dev panel in-app suggestions** | 🟢 | `</>` → **💡 Suggest** — form in panel; auto-attaches DCL name + route; files GitHub issues labeled `suggestion` via Cloudflare Worker (prod) or vite proxy (local dev) |
 | **VirtualCamera bind reliability** | 🟢 | Scene-agnostic MainCamera→VC hydrate; locked shots use worker world pose; follow is f(player)+local; live Transform exclusive while bound |
@@ -72,8 +101,9 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Live detect** | 🟢 | Scene LiveKit remote video pubs; continuous poll after landing open |
 | **World realm room match** | 🟢 | Gatekeeper realm always lowercased (companion) — fixes OBS in wrong room vs `RickRoll.dcl.eth` about casing (`e798eb0`) |
 | **Join Live CTA** | 🟢 | Shown only when cast video is actually live (not mere room ready) |
-| **Join Live cast stage** | 🟢 | Full-viewport player, scene info pill, mute/volume, fullscreen, X exits FS then closes |
-| **Video attach stability** | 🟢 | Same-SID no remount; hard pause/mute on close (`clearCastVideoHost`) |
+| **Join Live cast stage** | 🟢 | Full-viewport player, scene info pill, mute toggle + volume, fullscreen, X exits FS then closes; **stream end returns to scene details** |
+| **Video attach stability** | 🟢 | Same-SID no remount; hard pause/mute on close; clear host when publisher leaves |
+| **Guest cast watch** | 🟢 | Guest or wallet signed gatekeeper join (post multi-room milestone) |
 | **Jump In gate** | 🟢 | Hidden until LiveKit up / scene.json blocks chat / guest terminal |
 | **I'm live CTA** | ⬜ | Intentionally removed for now (HLS / cast listing UI deferred) |
 | **Plaza marquee / TextureMove** | 🟡 | UV + wall-clock `engine.update` dt fixes; NeonScreen `pauseDuration` still flaky |
@@ -185,7 +215,7 @@ These are **known incomplete** vs full Explorer / product polish — not blocker
 | **Facial feature inventory polish** | Eyes/eyebrows/mouth work via profile; backpack category UX may lag Explorer |
 | **AvatarModifierArea / AvatarBase ECS** | Still ⬜ in integration matrix |
 | **Graphics P3/P4** | Distance culls + bloom/HDR stubs (unchanged) |
-| **2D social chat** | Still 🟡 partial (thread dock vs full companion parity) |
+| **2D social chat** | 🟢 multi-room LiveKit + notifications (2026-07-14) — community text / DMs still open |
 
 **QA focus:** Sign in with Google or MetaMask → open Backpack → equip base hair + wearable → close settings → confirm deploy → reload profile hair/clothes. Mobile: Inventory search/filter → detail → equip; Equipped unequip.
 
@@ -478,7 +508,7 @@ Genesis spawn walk · VC character-select/follow · `threejs.dcl.eth` materials 
 | **Phase 1 — Explorer at `/`** | 🟢 | Cold `/` shows `ExplorerView` + `PlacesView`; no scene load; inline wallet/guest auth; card **Visit** → `/<segment>` landing |
 | **Phase 2 — Scene landing** | 🟢 | `SceneLandingView` info hub; `AppMode` landing ↔ play; **Jump in** / **Leave** on same URL; events banner + `EventModal` |
 | **Phase 2.5 — Shell nav** | 🟢 | `SocialShellTopNav` on explorer, landing, events, communities, map, profile; `/communities` browse grid + `CommunityModal` |
-| **Phase 3 — 2D chat dock** | 🟡 **partial** | `SocialChatDock` + `SocialChatController` on 2D surfaces; scene title from deployed `display.title` (`sceneDisplayTitle.ts`) |
+| **Phase 3 — 2D chat dock** | 🟢 (later) | Multi-room pool + Watch Lite cast shipped 2026-07-14; original merge was partial dock only |
 | **Profile page** | 🟢 | Full-screen `ProfilePageView` — wearables, communities, social shell parity |
 | **Map page** | 🟢 | `MapPageView` — Genesis map outside in-world settings overlay |
 | **Jump-in loading UX** | 🟢 | Companion-style top progress bar + status on landing; `ClientShell` hidden until world handoff; comms preserved across Jump in |
@@ -488,7 +518,7 @@ Genesis spawn walk · VC character-select/follow · `threejs.dcl.eth` materials 
 **Commits:** `33bf03d` · `3a7232d` · `f6bf4d8` · `b1a8a38` · `c53af86`  
 **Branch:** `decentraland-social-merge` → merged `dev-latest` (fast-forward, no conflicts)
 
-**Not in this merge:** Phase 3 Watch Lite (landing LiveKit/voice), Phase 4 `/goto` teleport in 3D play mode, `lastraum` branch (deferred — ~20-commit divergence, `AppController.ts` + `wearableThumb.ts` conflicts).
+**Not in this merge (at the time):** Phase 3 Watch Lite full LiveKit, Phase 4 `/goto`. **Later:** multi-room + cast → `dev-latest` 2026-07-14; `/goto` + voice still open.
 
 **QA:** `/` no WebGL · Visit → landing not play · Jump in loads 3D with deferred sidebar · Leave → landing · Explore/Communities/Events tabs · chat dock sign-out · community thumb 404 fallback · landing title matches in-world chat.
 
@@ -1249,13 +1279,14 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 | Task | Status |
 |------|--------|
 | **Companion 2D shell (Phases 1–2.5)** | ✅ Explorer `/`, scene landing, shell nav, communities/events/map/profile pages — `decentraland-social-merge` → `dev-latest` (`c53af86`) |
-| **2D social chat dock** | 🟡 **partial** — `SocialChatDock` on explorer/landing; in-world `ChatPanel` unchanged |
+| **2D social chat dock (multi-room)** | ✅ `SocialChatDock` + `SceneChatRoomPool` — many LiveKit rooms stay joined; channel notifications; close background tabs; in-world `ChatPanel` unchanged |
 | **Scene landing Jump in UX** | ✅ Progress bar + `ClientShell` defer/hide; comms handoff on world load |
 | **2D sign-out** | ✅ `signOutFrom2dShell` — disconnect comms, dispose dock, reset social |
 | **Community thumbnails** | ✅ `communityDisplayImageUrl` + proxy + 404 detail enrichment |
 | **Scene display title parity** | ✅ Deployed `display.title` before Places API — landing + chat agree |
 | Splash login screen | ❌ Removed — explorer auth sheet + session resume (companion UX) |
 | `@dcl/crypto` AuthIdentity + localStorage | ✅ `AuthClient` + `identityStore` |
+| Stable browser guest wallet | ✅ `guestIdentity` + Catalyst profile for chat/cast |
 | `SessionIdentity` — Catalyst profile connect | ✅ post-login profile fetch |
 | `CommsService` + RFC4 room client | ✅ `setCommunicationsAdapter` worker bridge |
 | Bevy-shaped comms plugin + Scene routing | ✅ archipelago path scaffold |
@@ -1265,18 +1296,18 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 | **Peer visibility — two clients same scene** | ✅ confirmed working |
 | Scene chat UI + RFC4 encode/decode | ✅ ChatPanel + LiveKit reliable chat publish |
 | Chat UX (140 char, links, @mentions, `/goto` styling) | ✅ `chatMentions.ts`, `linkifyText.ts`, `chatNavigationLinks.ts` — nav links teleport in-client |
-| **Scene chat outbound (LiveKit)** | ✅ dcl-companion wire + fan-out scene/world/island |
-| **Scene chat timestamps in Unity Explorer** | ✅ RFC4 unix encode (`protocol_version` 100) — inbound still accepts legacy session-elapsed (`4089a2c`); cross-check Explorer on next release |
+| **Scene chat outbound (LiveKit)** | ✅ dcl-companion wire + multi-room pool for 2D; 3D fan-out scene/world |
+| **Scene chat timestamps in Unity Explorer** | ✅ OLE Automation outbound + unix encode; inbound accepts legacy |
 | Scene-mode rail transparency | ✅ rail hidden in scene mode until hover/pin |
 | Member communities rail (Signed Social API) | ✅ `fetchMemberCommunitiesSigned` |
 | Session identity expiry in localStorage | ✅ `identityStore` + resume / re-auth via explorer sheet |
 | Avatar spawn after social/comms load | ✅ `initCapsule` → comms → social → `loadAvatar` |
+| **Watch Lite on landing (Phase 3)** | ✅ Gatekeeper + LiveKit chat/cast without WebGL; guest cast; multi-room keep-alive |
 | Profile on join + remote avatar parity | ⬜ |
-| Community text (PM router / LiveKit pool) | ⬜ stub — local echo only |
+| Community text (PM router) | ⬜ stub — local echo only |
 | Voice / presence (LiveKit / realm adapter) | ⬜ |
-| Gatekeeper / signed-login (realm-dependent) | ⬜ |
 | Direct messages channel | ⬜ placeholder in rail |
-| **Watch Lite on landing (Phase 3)** | ⬜ gatekeeper + LiveKit room without WebGL |
+| **I'm live CTA / HLS listings** | ⬜ deferred |
 | **`/goto` in 3D play mode (Phase 4)** | ⬜ teleport in-place; no SPA route change |
 
 ---

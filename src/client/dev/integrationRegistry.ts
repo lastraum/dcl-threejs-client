@@ -61,7 +61,21 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
     notes: 'In-play teleports / non-landing 3D entry; landing Jump in uses SceneLandingView progress'
   },
   { id: 'ui:sidebar-shell', name: 'Sidebar shell + responsive layout', status: 'render', category: 'client-ui', notes: 'ClientUiLayout CSS tokens' },
-  { id: 'ui:chat-panel', name: 'Scene chat panel', status: 'render', category: 'client-ui', notes: 'LiveKit RFC4, unread badge, people count → inline roster, nav links → teleport, DCM v1 inline images' },
+  { id: 'ui:chat-panel', name: 'Scene chat panel (3D)', status: 'render', category: 'client-ui', notes: 'LiveKit RFC4, unread badge, people count → inline roster, nav links → teleport, DCM v1 inline images' },
+  {
+    id: 'ui:social-chat-dock',
+    name: '2D social chat dock (multi-room)',
+    status: 'render',
+    category: 'client-ui',
+    notes: 'SceneChatRoomPool keeps open scene LiveKit rooms; channel notifications; landing tab not closable; guest OK'
+  },
+  {
+    id: 'ui:landing-cast',
+    name: 'Landing Join Live / cast stage',
+    status: 'render',
+    category: 'client-ui',
+    notes: 'Stream keys + remote video; guest watch; mute toggle; stream-end → scene details; mobile LIVE above Jump in'
+  },
   { id: 'ui:profile-pill', name: 'Profile / name pills + menu', status: 'render', category: 'client-ui', notes: 'Hover, badges row, right-click profile modal' },
   { id: 'ui:emote-wheel', name: 'Emote wheel (B)', status: 'render', category: 'client-ui', notes: 'Profile + bundled emotes' },
   { id: 'ui:location-card', name: 'Location card', status: 'render', category: 'client-ui', notes: 'Top-left pill — scene name + Genesis parcel coords (all scenes)' },
@@ -92,6 +106,13 @@ export const NETWORKING_INTEGRATION: IntegrationEntry[] = [
   { id: 'net:livekit-scene', name: 'LiveKit scene room', status: 'render', category: 'networking' },
   { id: 'net:livekit-world', name: 'LiveKit world room', status: 'render', category: 'networking' },
   { id: 'net:livekit-island', name: 'LiveKit island / archipelago', status: 'render', category: 'networking' },
+  {
+    id: 'net:multi-room-chat-pool',
+    name: 'Multi-room LiveKit chat pool',
+    status: 'render',
+    category: 'networking',
+    notes: 'SceneChatRoomPool + resolveSceneChatAdapter — companion multi-text-chats; primary room for cast'
+  },
   { id: 'net:remote-avatars', name: 'Remote avatar load + lerp', status: 'render', category: 'networking', notes: 'RemoteAvatarManager + load queue' },
   { id: 'net:scene-binary', name: 'RFC4 Scene binary packets', status: 'render', category: 'networking', notes: 'comms topic → scene script' },
   { id: 'net:archipelago', name: 'Archipelago adapter', status: 'stub', category: 'networking', notes: 'Scaffold; LiveKit primary path' },
@@ -131,7 +152,13 @@ export const PERFORMANCE_INTEGRATION: IntegrationEntry[] = [
 export const ENVIRONMENT_INTEGRATION: IntegrationEntry[] = [
   { id: 'env:genesis-sky', name: 'GenesisSky procedural dome', status: 'render', category: 'environment', notes: 'DclGenesisSky shader + cross cubemap clouds' },
   { id: 'env:landscape-parcels', name: 'Landscape parcel tiles', status: 'render', category: 'environment', notes: 'LandscapeSystem + TerrainModel' },
-  { id: 'env:fft-ocean', name: 'FFT ocean water', status: 'render', category: 'environment', notes: 'FftOceanWater, island/open ocean rings' },
+  {
+    id: 'env:fft-ocean',
+    name: 'FFT ocean water',
+    status: 'render',
+    category: 'environment',
+    notes: 'FftOceanWater; scene.json environment.water; island/open ocean rings — see docs/THIRD_PARTY.md'
+  },
   { id: 'env:perlin-scatter', name: 'Perlin scatter foliage', status: 'render', category: 'environment', notes: 'EzTreeGrassField + foliage wind' }
 ]
 

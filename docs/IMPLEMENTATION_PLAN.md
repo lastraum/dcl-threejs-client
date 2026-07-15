@@ -2,7 +2,7 @@
 
 > Browser-native Decentraland client: load deployed Worlds/scenes, shim SDK7 runtime, mirror ECS → Three.js, expand to open world.
 
-**Status:** Explorer **layout parity ✅** on RickRoll-style worlds; Phase 5 **social comms** next (see [`PROGRESS.md`](./PROGRESS.md))  
+**Status:** Explorer **layout parity ✅** on RickRoll-style worlds; Phase 5 **social** multi-room chat + Watch Lite cast ✅ — voice / 3D `/goto` next (see [`PROGRESS.md`](./PROGRESS.md))  
 **ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md) — all SDK7 components by phase  
 **Note:** Legacy phase roadmap — active backlog is [TASKS.yaml](./TASKS.yaml) + [PROGRESS.md](./PROGRESS.md).
 

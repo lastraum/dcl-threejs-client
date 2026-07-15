@@ -116,7 +116,7 @@ Expect WASD: gizmo moves; worker may log `scene-input-snapshot` with `?sceneinpu
 |------|--------|
 | Scene UI (UiTransform stack) | Partial — works for many panels; Creator modal edge cases remain |
 | UiStack multi-worker (wearables) | Planned Phase 5 |
-| Social 2D shell | Mostly shipped on `dev-latest`; branch divergence with `lastraum` |
+| Social 2D shell | ✅ multi-room chat + Watch Lite cast on `dev-latest` (2026-07-14); remaining: voice, DMs, `/goto` |
 | Open-world multi-scene | Later |
 | GltfContainerLoadingState, NftShape, AvatarModifierArea | Not started |
 
@@ -126,7 +126,7 @@ Expect WASD: gizmo moves; worker may log `scene-input-snapshot` with `?sceneinpu
 |------|--------|
 | Docs disagree (architecture rule vs flight pump comments) | Keep `worker-input-architecture.mdc` as SSOT; update when code changes |
 | INTEGRATION.md Ui* ⬜ | Update when scene UI is declared partial/render |
-| Dual branch (`lastraum` vs `dev-latest`) | Merge plan after MOVE CAMERA green |
+| Dual branch (`lastraum` vs `dev-latest`) | Merged multi-room/cast slice 2026-07-14; keep `lastraum` for ongoing product work |
 | Defensive dual paths (legacy pointer stash, dual CRDT) | Prefer one path; delete dead code when QA-green |
 
 ---

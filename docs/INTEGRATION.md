@@ -157,9 +157,12 @@ DOM overlay — not in-scene `UiTransform`.
 | ------- | ------ |
 | RFC4 movement, profile, emote, scene chat + DCM chat media | 🟢 |
 | LiveKit scene/world/island rooms | 🟢 |
+| **2D multi-room scene chat** (`SceneChatRoomPool`) | 🟢 | Open tabs stay joined across navigate (companion multi-text-chats) |
+| **Landing cast / stream keys** (Join Live, guest OK) | 🟢 | Gatekeeper adapter; mute; stream-end restores details |
 | Remote avatars + load queue | 🟢 |
-| SignedFetch, Catalyst content, wallet session | 🟢 |
+| SignedFetch, Catalyst content, wallet + guest session | 🟢 |
 | ECS NetworkEntity scene sync | 🟡 stub |
+| Community text / PM router | ⬜ local echo only |
 | Spatial voice UI | ⬜ |
 
 ---
@@ -176,6 +179,7 @@ DOM overlay — not in-scene `UiTransform`.
 | Sun/moon azimuth parity vs Explorer (negate-X celestial) | 🟢 |
 | Trilight ambient (sky + equator + ground) | 🟢 |
 | Soft directional sun shadows | 🟢 |
+| Island shore receives shadows; wearables cast | 🟢 |
 | Skybox time authority (scene / session / auto) | 🟢 |
 | Low-end scene worker timing + adaptive abort backoff | 🟢 |
 | Boot/hydration: main.crdt seed, composite preload, unified GLB | 🟢 |

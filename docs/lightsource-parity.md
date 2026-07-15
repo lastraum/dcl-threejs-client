@@ -47,7 +47,7 @@ Hardcoded Genesis sun/moon/hemi tuned to work **with** ECS LightSources (not rep
 - Moon fill: **`moonLightIntensity()`** × `MOON_BRIGHTNESS` **1.15** × user moon slider; cool tint; light follows camera focus at night
 - **Moon disc:** billboarded `SkyboxMoon.png` on night celestial arc; Unity `_Moon_Mask_Size` ~**0.16** overnight (was broken sky-sphere UV → invisible)
 - **Trilight ambient (Unity `UpdateIndirectLight`):** HemisphereLight sky+ground + **AmbientLight equator**
-- Soft **directional sun/moon shadows**: tiered ortho extent (36–60 m) + PCF radius (2.5–5); landscape receives contact shadows; skydome disc visual-only
+- Soft **directional sun/moon shadows**: tiered ortho extent (36–60 m) + PCF radius (2.5–5); landscape receives contact shadows (island shore is **MeshStandard** so it samples the shadow map; wearables cast); skydome disc visual-only
 - **User tuning:** defaults **52 / 70 / 52 / 50**; **Reset lighting** button
 - **Azimuth parity ([#15](https://github.com/lastraum/dcl-threejs-client/pull/15))** · skybox authority scene → session → auto
 

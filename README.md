@@ -100,10 +100,15 @@ Production build: `npm run build` → static SPA in `dist/`. Preview: `npm run p
 | [docs/PR_CHECKLIST.md](docs/PR_CHECKLIST.md) | Required checks before opening a PR |
 | [docs/PROGRESS.md](docs/PROGRESS.md) | Milestone log (live in dev panel from public repo) |
 | [docs/REPO_MANAGEMENT.md](docs/REPO_MANAGEMENT.md) | Public repo migration and branch strategy |
+| [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md) | Third-party ports (e.g. FFTOCEAN water) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to claim tasks and submit PRs |
 | [LICENSE](LICENSE) | Non-commercial license (all branches) |
 
 Deploy: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Dev overlay: `</>` sidebar → Community claims + parity gaps + `PROGRESS.md` from GitHub `dev-latest`.
+
+## Credits
+
+- **FFT ocean / waves** — GPGPU Phillips-spectrum water ported from [gioeledallapozza/FFTOCEAN](https://github.com/gioeledallapozza/FFTOCEAN). Scene knobs: `scene.json` → `environment.water` (ThreejsClient-only). Details: [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md).
 
 ## License
 

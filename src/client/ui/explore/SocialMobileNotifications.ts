@@ -10,8 +10,11 @@ export type SocialMobileNotificationsOptions = {
   onEnsureSocial?: () => Promise<void>
   onOpenChat?: () => void
   onOpenUserProfile?: (address: string) => void
-  /** Skip chat banners while the user is actively reading a thread in the open mobile sheet. */
-  isChatNotificationSuppressed?: () => boolean
+  /**
+   * Skip chat banners while the user is actively reading that channel's thread.
+   * `channelKey` is the SocialService key for the incoming message (`scene:…`).
+   */
+  isChatNotificationSuppressed?: (channelKey: string) => boolean
 }
 
 const DESKTOP_MQ = '(min-width: 768px)'
@@ -102,16 +105,16 @@ export class SocialMobileNotifications {
     return this.desktopMq.matches
   }
 
-  private isWallet(): boolean {
-    return this.login.kind === 'wallet'
+  private isSignedIn(): boolean {
+    return this.login.kind === 'wallet' || this.login.kind === 'guest'
   }
 
   private canShow(): boolean {
-    return this.isWallet() && notificationPrefs.isEnabled()
+    return this.isSignedIn() && notificationPrefs.isEnabled()
   }
 
   private async seedBaseline(): Promise<void> {
-    if (!this.isWallet()) {
+    if (!this.isSignedIn()) {
       this.unbindSocialListeners()
       return
     }
@@ -119,15 +122,20 @@ export class SocialMobileNotifications {
     this.bindSocialListeners()
     const social = this.getSocial()
     if (!social) return
-    await social.refreshFriendshipSnapshot()
-    this.knownIncoming = new Set(social.getIncomingFriendAddresses())
+    // Friend requests only for real wallets; guests still get chat banners.
+    if (this.login.kind === 'wallet') {
+      await social.refreshFriendshipSnapshot()
+      this.knownIncoming = new Set(social.getIncomingFriendAddresses())
+    } else {
+      this.knownIncoming = new Set()
+    }
     this.baselineReady = true
   }
 
   private bindSocialListeners(): void {
     this.unbindSocialListeners()
     const social = this.getSocial()
-    if (!social || !this.isWallet()) return
+    if (!social || !this.isSignedIn()) return
 
     const onChange = (): void => {
       void this.handleSocialChange()
@@ -151,12 +159,13 @@ export class SocialMobileNotifications {
   private handleChatEvent(event: SocialChatEvent): void {
     if (!this.baselineReady || !this.canShow()) return
     if (event.line.self) return
-    if (this.isChatNotificationSuppressed?.()) return
-    void this.pushMessageBanner(event.line)
+    if (this.isChatNotificationSuppressed?.(event.channelKey)) return
+    void this.pushMessageBanner(event)
   }
 
   private async handleSocialChange(): Promise<void> {
     if (!this.baselineReady || !this.canShow()) return
+    if (this.login.kind !== 'wallet') return
     const social = this.getSocial()
     if (!social) return
 
@@ -227,17 +236,26 @@ export class SocialMobileNotifications {
     return { address: '', displayName: senderLabel || 'Someone', faceUrl: null }
   }
 
-  private async pushMessageBanner(line: SocialChatEvent['line']): Promise<void> {
+  private async pushMessageBanner(event: SocialChatEvent): Promise<void> {
     if (!this.canShow()) return
+    const line = event.line
+    const social = this.getSocial()
 
-    const { displayName, faceUrl } = await this.resolveMessageSender(line, this.getSocial())
+    const { displayName, faceUrl } = await this.resolveMessageSender(line, social)
     if (!this.canShow()) return
 
     let preview = 'Sent a message'
     if (isChatImageLine(line)) preview = 'Sent an image'
     else if (isChatTextLine(line)) preview = line.text.trim() || preview
-
     if (preview.length > 72) preview = `${preview.slice(0, 69)}…`
+
+    const channelLabel = social?.labelForChannelKey(event.channelKey) ?? 'Chat'
+    const channelKind = event.channelKey.startsWith('community:')
+      ? 'Community'
+      : event.channelKey === 'messages'
+        ? 'Private'
+        : 'Scene'
+    const channelLine = `${channelKind} · ${channelLabel}`
 
     const initial = displayName.trim().charAt(0).toUpperCase() || '?'
     const avatar = faceUrl
@@ -247,12 +265,15 @@ export class SocialMobileNotifications {
     const banner = document.createElement('button')
     banner.type = 'button'
     banner.className = 'social-mobile-notif'
-    banner.setAttribute('aria-label', `Message from ${displayName}`)
+    banner.setAttribute(
+      'aria-label',
+      `Message from ${displayName} in ${channelLabel}: ${preview}`
+    )
     banner.innerHTML = `
       <div class="social-mobile-notif__card">
         <div class="social-mobile-notif__header">
           <span class="social-mobile-notif__app-icon" aria-hidden="true">D</span>
-          <span class="social-mobile-notif__app-name">DECENTRALAND</span>
+          <span class="social-mobile-notif__app-name">${escapeHtml(channelLine)}</span>
           <span class="social-mobile-notif__time">now</span>
         </div>
         <div class="social-mobile-notif__body">

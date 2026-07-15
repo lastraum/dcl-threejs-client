@@ -27,16 +27,19 @@ export class SessionIdentity {
   }
 
   applyLogin(choice: LoginResult | null): void {
-    if (!choice || choice.kind === 'guest') {
+    if (!choice) {
       this.address = undefined
       this.identity = null
       this.profile = null
       this.commsProfile = null
       return
     }
+    // Wallet or stable guest both carry address + AuthIdentity for LiveKit / Catalyst.
     this.address = choice.address.toLowerCase()
     this.identity = choice.identity
     persistProfileAddress(this.address)
+    this.profile = null
+    this.commsProfile = null
   }
 
   /** Wallet from login; else optional ?profile= / localStorage preview (guest-only). */

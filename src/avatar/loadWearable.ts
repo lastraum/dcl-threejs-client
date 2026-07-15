@@ -416,8 +416,9 @@ export function sanitizeWearableRoot(root: THREE.Object3D): void {
   pruneWearableDisplayMeshes(root)
   root.traverse((obj) => {
     if (obj instanceof THREE.Mesh) {
-      obj.castShadow = false
-      obj.receiveShadow = false
+      // Cast contact shadows onto landscape / scene floors (worlds island beach included).
+      obj.castShadow = true
+      obj.receiveShadow = true
     }
     if (obj instanceof THREE.SkinnedMesh) {
       repairSkinnedMesh(obj)

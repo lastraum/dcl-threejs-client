@@ -21,6 +21,15 @@ function buildPayload(login: LoginResult | null): LoginAnalyticsPayload {
       version: APP_VERSION
     }
   }
+  if (login?.kind === 'guest') {
+    return {
+      kind: 'guest',
+      address: login.address.toLowerCase(),
+      at,
+      path,
+      version: APP_VERSION
+    }
+  }
   return { kind: 'guest', at, path, version: APP_VERSION }
 }
 

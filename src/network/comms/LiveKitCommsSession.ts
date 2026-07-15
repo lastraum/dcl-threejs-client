@@ -17,7 +17,7 @@ import {
   encodeRfc4ProfileVersionPacket,
   movementBlendTier
 } from './dclRfc4Comms'
-import { encodeRfc4ChatPacket } from '../../social/dclRfc4Chat'
+import { encodeRfc4ChatPacket, oleTimestampNow } from '../../social/dclRfc4Chat'
 import { DCM_SCENE_ID } from '../../social/dcmChatMedia'
 import { encodeRfc4SceneBinaryPacket } from './Rfc4Router'
 import {
@@ -74,6 +74,8 @@ export class LiveKitCommsSession {
   private broadcastCount = 0
   private outboundDebugLogs = 0
   private connected = false
+  /** Bumped on every disconnect / new connect so stale in-flight joins abort cleanly. */
+  private connectGeneration = 0
 
   constructor(
     private readonly transport: TransportType,
@@ -325,7 +327,9 @@ export class LiveKitCommsSession {
   }
 
   async connect(adapter: string): Promise<boolean> {
-    this.disconnect()
+    const gen = ++this.connectGeneration
+    // Tear down previous room without invalidating *this* generation.
+    this.teardownRoom()
 
     let url: string
     let token: string
@@ -336,6 +340,8 @@ export class LiveKitCommsSession {
       clientDebugLog.log('comms', `Invalid LiveKit adapter: ${msg}`, { level: 'error' })
       return false
     }
+
+    if (gen !== this.connectGeneration) return false
 
     const room = new Room({ adaptiveStream: false, dynacast: false })
     this.room = room
@@ -409,6 +415,15 @@ export class LiveKitCommsSession {
 
     try {
       await room.connect(url, token, { autoSubscribe: true })
+      // Superseded by a newer connect/disconnect while awaiting join.
+      if (gen !== this.connectGeneration || this.room !== room) {
+        try {
+          room.disconnect()
+        } catch {
+          /* ignore */
+        }
+        return false
+      }
       this.connected = true
       if (this.lambdasUrl) {
         void room.localParticipant.setMetadata(JSON.stringify({ lambdasEndpoint: this.lambdasUrl }))
@@ -451,8 +466,13 @@ export class LiveKitCommsSession {
       return true
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      clientDebugLog.log('comms', `LiveKit connect failed (${this.transport}): ${msg}`, { level: 'error' })
-      this.disconnect()
+      // Don't log aborts from a newer connect superseding this one.
+      if (gen === this.connectGeneration) {
+        clientDebugLog.log('comms', `LiveKit connect failed (${this.transport}): ${msg}`, {
+          level: 'error'
+        })
+        this.teardownRoom()
+      }
       return false
     }
   }
@@ -593,21 +613,40 @@ export class LiveKitCommsSession {
   }
 
   async publishChat(text: string): Promise<boolean> {
-    if (!this.room || this.room.state !== ConnectionState.Connected) return false
+    if (!this.room || this.room.state !== ConnectionState.Connected) {
+      console.warn(`[chat] publishChat skip transport=${this.transport} room=${this.room?.state ?? 'null'}`)
+      return false
+    }
     const trimmed = text.trim()
     if (!trimmed) return false
-    const unixSec = Date.now() / 1000
-    const packet = encodeRfc4ChatPacket(trimmed, unixSec)
+    // Can this participant publish data? (token grant)
+    const lp = this.room.localParticipant
+    const canData =
+      typeof (lp as { permissions?: { canPublishData?: boolean } }).permissions?.canPublishData ===
+      'boolean'
+        ? (lp as { permissions: { canPublishData: boolean } }).permissions.canPublishData
+        : true
+    if (!canData) {
+      console.warn(`[chat] publishChat blocked — canPublishData=false transport=${this.transport}`)
+      return false
+    }
+    // Godot Explorer requires OLE Automation dates (not unix seconds).
+    const oleTs = oleTimestampNow()
+    const packet = encodeRfc4ChatPacket(trimmed, oleTs)
     try {
       await this.room.localParticipant.publishData(packet, { reliable: true })
+      console.log(
+        `[chat] RFC4 out → ${this.transport} room=${this.room.name} len=${packet.byteLength} oleTs=${oleTs.toFixed(5)}`
+      )
       clientDebugLog.log(
         'comms',
-        `RFC4 Chat out → ${this.transport} len=${packet.byteLength} unix=${unixSec.toFixed(0)}`,
+        `RFC4 Chat out → ${this.transport} len=${packet.byteLength} ole=${oleTs.toFixed(3)}`,
         { throttleMs: 0, throttleKey: `chat-out:${this.transport}` }
       )
       return true
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[chat] RFC4 publish failed (${this.transport}): ${msg}`)
       clientDebugLog.log('comms', `RFC4 Chat publish failed (${this.transport}): ${msg}`, { level: 'error' })
       return false
     }
@@ -649,16 +688,26 @@ export class LiveKitCommsSession {
   }
 
   disconnect(): void {
+    this.connectGeneration++
     if (this.connected) {
       clientDebugLog.log('comms', `Disconnecting LiveKit (${this.transport})`, { level: 'warn' })
     }
+    this.teardownRoom()
+  }
+
+  private teardownRoom(): void {
     this.connected = false
     this.pendingTransform = null
     this.lastSentTransform = null
     this.broadcastCount = 0
     this.outboundDebugLogs = 0
-    this.room?.disconnect()
+    const room = this.room
     this.room = null
+    try {
+      room?.disconnect()
+    } catch {
+      /* ignore */
+    }
     if (this.registerGlobalSession) {
       setLiveKitSession(null)
     }

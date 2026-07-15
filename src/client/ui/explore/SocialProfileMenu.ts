@@ -1,5 +1,6 @@
 import type { AuthDappLoginMethod, AuthProgress, LoginResult } from '../../../auth/AuthClient'
 import { loginWithMetaMask, loginWithProvider } from '../../../auth/AuthClient'
+import { ensureGuestSession } from '../../auth/resolveInitialLogin'
 import { identityFromAvatarProfile } from '../../../avatar/displayName'
 import { fetchProfileCached, fetchProfileFaceUrl } from '../../../avatar/peerApi'
 import { notificationPrefs } from '../../../social/notificationPrefs'
@@ -133,6 +134,14 @@ export class SocialProfileMenu {
     return this.login.kind === 'wallet'
   }
 
+  private isGuestAccount(): boolean {
+    return this.login.kind === 'guest'
+  }
+
+  private hasSession(): boolean {
+    return this.login.kind === 'wallet' || this.login.kind === 'guest'
+  }
+
   private toggle(): void {
     if (this.open) this.close()
     else this.openMenu()
@@ -175,24 +184,32 @@ export class SocialProfileMenu {
   }
 
   private refreshAvatar(): void {
-    const signedIn = this.isWallet()
-    this.profileBtn.classList.toggle('social-profile-menu__avatar-btn--signed-out', !signedIn)
-
-    if (!signedIn) {
+    if (!this.hasSession()) {
+      this.profileBtn.classList.add('social-profile-menu__avatar-btn--signed-out')
       this.displayName = null
       this.avatarSlot.innerHTML = `<span class="social-profile-menu__guest-icon">${ICON_GUEST_HEAD}</span>`
       this.profileBtn.setAttribute('aria-label', 'Account and sign in')
       return
     }
 
-    if (this.login.kind !== 'wallet') return
+    this.profileBtn.classList.toggle(
+      'social-profile-menu__avatar-btn--signed-out',
+      this.isGuestAccount()
+    )
+
     const address = this.login.address
     const letter = address.slice(2, 3).toUpperCase()
     this.avatarSlot.innerHTML = `<span class="social-profile-menu__avatar-fallback" data-fallback>${escapeHtml(letter)}</span>`
-    this.profileBtn.setAttribute('aria-label', 'Account and settings')
+
+    if (this.login.kind === 'guest') {
+      this.displayName = this.login.displayName
+      this.profileBtn.setAttribute('aria-label', `Guest account — ${this.displayName}`)
+    } else {
+      this.profileBtn.setAttribute('aria-label', 'Account and settings')
+    }
 
     void fetchProfileFaceUrl(address).then((url) => {
-      if (!url || this.login.kind !== 'wallet' || this.login.address !== address) return
+      if (!url || this.login.address !== address) return
       this.avatarSlot.innerHTML = `<img class="social-profile-menu__avatar-img" src="${escapeHtml(url)}" alt="" width="44" height="44" decoding="async" />`
       const img = this.avatarSlot.querySelector('img')
       img?.addEventListener(
@@ -205,12 +222,19 @@ export class SocialProfileMenu {
     })
 
     void fetchProfileCached(address).then((profile) => {
-      if (!profile || this.login.kind !== 'wallet' || this.login.address !== address) return
-      this.displayName = identityFromAvatarProfile(profile, address).displayName
+      if (!profile || this.login.address !== address) return
+      if (this.login.kind === 'guest') {
+        this.displayName =
+          this.login.displayName || identityFromAvatarProfile(profile, address).displayName
+      } else {
+        this.displayName = identityFromAvatarProfile(profile, address).displayName
+      }
       if (this.open) this.renderMenu()
       this.profileBtn.setAttribute(
         'aria-label',
-        `Account and settings — ${this.displayName}`
+        this.isGuestAccount()
+          ? `Guest account — ${this.displayName}`
+          : `Account and settings — ${this.displayName}`
       )
     })
   }
@@ -221,8 +245,77 @@ export class SocialProfileMenu {
       this.wireSignedInMenu()
       return
     }
+    if (this.isGuestAccount()) {
+      this.menuBody.innerHTML = this.renderGuestMenu()
+      this.wireGuestMenu()
+      return
+    }
     this.menuBody.innerHTML = this.renderSignInMenu()
     this.wireSignInMenu()
+  }
+
+  private renderGuestMenu(): string {
+    const address = this.login.kind === 'guest' ? this.login.address : ''
+    const name =
+      this.displayName ||
+      (this.login.kind === 'guest' ? this.login.displayName : 'Guest')
+    const profileUrl = address
+      ? `https://peer.decentraland.org/lambdas/profiles/${encodeURIComponent(address)}`
+      : ''
+    return `
+      <div class="social-profile-menu__identity">
+        <div class="social-profile-menu__name">${escapeHtml(name)}</div>
+        <div class="social-profile-menu__sub">Guest on this device</div>
+        <button type="button" class="social-profile-menu__wallet-copy social-profile-menu__guest-addr" data-copy-guest-wallet data-wallet="${escapeHtml(address)}" title="Click to copy full address">
+          <code class="social-profile-menu__wallet-code">${escapeHtml(address)}</code>
+          <span class="social-profile-menu__wallet-copy-hint" data-copy-hint>Copy</span>
+        </button>
+        ${
+          profileUrl
+            ? `<a class="social-profile-menu__catalyst-link" href="${escapeHtml(profileUrl)}" target="_blank" rel="noopener noreferrer">View on Catalyst ↗</a>`
+            : ''
+        }
+      </div>
+      <p class="social-profile-menu__hint">
+        Stable guest wallet for chat &amp; LiveKit. Connect a wallet to claim wearables &amp; ownership tools.
+      </p>
+      <div class="social-profile-menu__actions">
+        <button type="button" class="social-profile-menu__item" data-login-method="metamask">
+          <span class="social-profile-menu__item-icon" aria-hidden="true">${ICON_METAMASK}</span>
+          <span>Connect MetaMask</span>
+        </button>
+        <button type="button" class="social-profile-menu__item" data-login-method="google">
+          <span class="social-profile-menu__item-icon" aria-hidden="true">${ICON_GOOGLE}</span>
+          <span>Connect Google</span>
+        </button>
+      </div>
+    `
+  }
+
+  private wireGuestMenu(): void {
+    for (const btn of this.menuBody.querySelectorAll<HTMLButtonElement>('[data-login-method]')) {
+      btn.addEventListener('click', () => {
+        const method = btn.dataset.loginMethod as AuthDappLoginMethod | undefined
+        if (method) void this.runLoginMethod(method)
+      })
+    }
+    this.menuBody.querySelector('[data-copy-guest-wallet]')?.addEventListener('click', async (ev) => {
+      const btn = ev.currentTarget as HTMLButtonElement
+      const value = btn.dataset.wallet?.trim()
+      if (!value) return
+      const hint = btn.querySelector('[data-copy-hint]') as HTMLElement | null
+      try {
+        await navigator.clipboard.writeText(value)
+        btn.classList.add('is-copied')
+        if (hint) hint.textContent = 'Copied!'
+        window.setTimeout(() => {
+          btn.classList.remove('is-copied')
+          if (hint) hint.textContent = 'Copy'
+        }, 1400)
+      } catch {
+        if (hint) hint.textContent = 'Failed'
+      }
+    })
   }
 
   private renderSignInMenu(): string {
@@ -322,9 +415,16 @@ export class SocialProfileMenu {
     }
     this.menuBody.querySelector('[data-guest]')?.addEventListener('click', () => {
       if (this.busy) return
-      this.onLoginChange?.({ kind: 'guest' })
-      this.setLogin({ kind: 'guest' })
-      this.close()
+      this.busy = true
+      void ensureGuestSession()
+        .then((login) => {
+          this.onLoginChange?.(login)
+          this.setLogin(login)
+          this.close()
+        })
+        .finally(() => {
+          this.busy = false
+        })
     })
   }
 

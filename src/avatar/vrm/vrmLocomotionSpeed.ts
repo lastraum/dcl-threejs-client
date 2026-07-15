@@ -9,13 +9,14 @@ import { DCL_LOCOMOTION_DEFAULTS } from '../../player/locomotion'
 export const VRM_MODE_TIME_SCALE_AT_REF: Record<LocomotionMode, number> = {
   walk: 1.0,
   jog: 1.6,
-  run: 1.85
+  // 1.5× prior run cadence (1.85 → 2.775) for faster foot cycles while sprinting.
+  run: 2.775
 }
 
 const MODE_MIN_TIME_SCALE: Record<LocomotionMode, number> = {
   walk: 0.35,
   jog: 0.78,
-  run: 1.05
+  run: 1.575
 }
 
 const MODE_REF_SPEED: Record<LocomotionMode, number> = {

@@ -126,6 +126,9 @@ export class CommsService {
   private emoteIncrementalId = 0
   private readonly peerTransports = new Map<string, Set<TransportType>>()
   private realm: CommsRealmInfo
+  /** Serialize scene-room joins so cast retry + route switch cannot abort each other. */
+  private sceneRoomConnectChain: Promise<unknown> = Promise.resolve()
+  private sceneRoomConnectInFlight = false
 
   constructor(initialRealm?: Partial<CommsRealmInfo>) {
     this.realm = {
@@ -192,18 +195,15 @@ export class CommsService {
         this.sceneBinaryHandler?.(sender, data)
       },
       onPeerChat: (address, text, time, transport) => {
-        if (transport === TransportType.World && this.sceneLiveKit.isConnected()) return
-        if (transport === TransportType.Island) return
+        if (!this.shouldAcceptChatTransport(transport)) return
         this.chatHandler?.({ senderAddress: address, text, time })
       },
       onPeerChatMedia: (address, data, transport) => {
-        if (transport === TransportType.World && this.sceneLiveKit.isConnected()) return
-        if (transport === TransportType.Island) return
+        if (!this.shouldAcceptChatTransport(transport)) return
         this.chatMediaHandler?.({ senderAddress: address, data })
       },
       onPeerAvatarVrm: (address, data, transport) => {
-        if (transport === TransportType.World && this.sceneLiveKit.isConnected()) return
-        if (transport === TransportType.Island) return
+        if (!this.shouldAcceptChatTransport(transport)) return
         this.avatarVrmHandler?.(address, data)
       }
     })
@@ -298,13 +298,21 @@ export class CommsService {
   async sendSceneChat(text: string): Promise<boolean> {
     const sessions = this.liveKitChatSessions()
     if (!sessions.length) {
+      console.warn('[chat] send skipped — no LiveKit session connected')
       clientDebugLog.log('comms', 'Chat send skipped — no LiveKit session connected', { level: 'warn' })
       return false
     }
     let sent = false
+    const rooms: string[] = []
     for (const session of sessions) {
-      if (await session.publishChat(text)) sent = true
+      if (await session.publishChat(text)) {
+        sent = true
+        rooms.push((session.getRoomName() || 'room').slice(0, 48))
+      }
     }
+    console.log(
+      `[chat] publish ${sent ? 'ok' : 'FAIL'} rooms=${sessions.length} delivered=[${rooms.join(', ') || 'none'}] text=${text.slice(0, 40)}`
+    )
     return sent
   }
 
@@ -402,6 +410,24 @@ export class CommsService {
   }
 
   async connectSceneRoom(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
+    const run = this.sceneRoomConnectChain.then(() => this.connectSceneRoomExclusive(target))
+    this.sceneRoomConnectChain = run.then(
+      () => undefined,
+      () => undefined
+    )
+    return run
+  }
+
+  private async connectSceneRoomExclusive(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
+    this.sceneRoomConnectInFlight = true
+    try {
+      return await this.connectSceneRoomImpl(target)
+    } finally {
+      this.sceneRoomConnectInFlight = false
+    }
+  }
+
+  private async connectSceneRoomImpl(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
     this.sceneTarget = target
     this.sceneId = target.sceneId.trim()
     this.realm.room = normalizePointer(target.pointer)
@@ -436,20 +462,28 @@ export class CommsService {
 
     const realmName = gatekeeperRealmNameForComms(target)
 
-    try {
-      const alreadyInScene = await isWalletListedInScene(target.pointer, realmName, this.localAddress)
-      if (alreadyInScene) {
-        releaseWalletSessionLock(this.localAddress)
-        clientDebugLog.log(
-          'comms',
-          `Blocked second client — ${this.localAddress.slice(0, 8)}… already in scene`,
-          { level: 'error' }
+    // Same-tab rejoin (scene switch / chat channel reselect): gatekeeper still lists us for a
+    // few seconds after leave — do not treat self as a second client.
+    if (!this.walletSessionLockHeld) {
+      try {
+        const alreadyInScene = await isWalletListedInScene(
+          target.pointer,
+          realmName,
+          this.localAddress
         )
-        return { ok: false, reason: 'duplicate_wallet' }
+        if (alreadyInScene) {
+          releaseWalletSessionLock(this.localAddress)
+          clientDebugLog.log(
+            'comms',
+            `Blocked second client — ${this.localAddress.slice(0, 8)}… already in scene`,
+            { level: 'error' }
+          )
+          return { ok: false, reason: 'duplicate_wallet' }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        clientDebugLog.log('comms', `scene-participants preflight failed: ${msg}`, { level: 'warn' })
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      clientDebugLog.log('comms', `scene-participants preflight failed: ${msg}`, { level: 'warn' })
     }
 
     this.walletSessionLockHeld = true
@@ -708,18 +742,33 @@ export class CommsService {
     this.archipelago.queuePosition(x, y, z)
   }
 
-  /** Scene-room wallets for @-mentions — gatekeeper seed list + LiveKit remotes. */
+  /**
+   * Wallets for @-mentions + chat people list.
+   * Gatekeeper seed + LiveKit remotes on **scene and world** rooms
+   * (worlds put chat/people on World transport; parcels use SceneRoom).
+   */
   getSceneChatMentionAddresses(): string[] {
-    const self = this.localAddress
+    const self = this.localAddress?.toLowerCase() ?? null
     const addresses = new Set<string>()
+
+    const acceptTransport = (sources: Set<TransportType>): boolean =>
+      sources.has(TransportType.SceneRoom) || sources.has(TransportType.World)
+
     for (const [address, sources] of this.peerTransports) {
-      if (!sources.has(TransportType.SceneRoom)) continue
-      if (self && address === self) continue
-      addresses.add(address)
+      if (!acceptTransport(sources)) continue
+      const key = address.toLowerCase()
+      if (self && key === self) continue
+      addresses.add(key)
     }
     for (const address of this.sceneLiveKit.getRemotePeerAddresses()) {
-      if (self && address === self) continue
-      addresses.add(address)
+      const key = address.toLowerCase()
+      if (self && key === self) continue
+      addresses.add(key)
+    }
+    for (const address of this.worldLiveKit.getRemotePeerAddresses()) {
+      const key = address.toLowerCase()
+      if (self && key === self) continue
+      addresses.add(key)
     }
     return [...addresses].sort((a, b) => a.localeCompare(b))
   }
@@ -956,9 +1005,9 @@ export class CommsService {
     }
 
     tryAll(true)
-    // Poll only while not attached (late RTMP publisher).
+    // Poll for late RTMP publishers and stream-end (force recheck while attached).
     const poll = window.setInterval(() => {
-      if (!lastOk) tryAll(false)
+      tryAll(true)
     }, 2000)
 
     return () => {
@@ -1060,6 +1109,8 @@ export class CommsService {
    */
   async ensureSceneRoomForCastDetection(): Promise<boolean> {
     if (this.sceneLiveKit.isConnected()) return false
+    // Never race cast retry against a scene-room switch / chat rejoin.
+    if (this.sceneRoomConnectInFlight) return false
     if (!this.identity || !this.localAddress) return false
     const target = this.sceneTarget
     if (!target) return false
@@ -1264,6 +1315,13 @@ export class CommsService {
   private disconnectSceneTransports(): void {
     this.sceneLiveKit.disconnect()
     this.rfc5.disconnect()
+    // Always drop world room too — otherwise switching world→parcel (or world→world)
+    // leaves the previous world's LiveKit peers/chat path half-alive (see dual room polls).
+    if (this.worldLiveKit.isConnected() || this.worldConnected) {
+      this.worldLiveKit.disconnect()
+      this.worldConnected = false
+      this.clearPeerTransport(TransportType.World)
+    }
     this.transport = 'none'
     this.realm.isConnectedSceneRoom = false
     this.pendingTransform = null
@@ -1298,13 +1356,46 @@ export class CommsService {
     }
   }
 
-  /** LiveKit rooms that carry scene chat (ADR-204: island + scene/world). */
+  /** Worlds use the world LiveKit room for Explorer chat; scene room is Cast/video. */
+  private isWorldComms(): boolean {
+    // Prefer explicit scene target — never infer "world" solely from a stale world LiveKit.
+    if (this.sceneTarget?.isWorld != null) return this.sceneTarget.isWorld
+    const pointer = this.sceneTarget?.pointer
+    if (pointer) return !isParcelPointer(normalizePointer(pointer))
+    return false
+  }
+
+  /**
+   * Inbound chat de-dupe when both world + scene rooms are joined.
+   * Worlds: Explorer chat is on **world** room (scene is Cast).
+   * Parcels: prefer **scene** room.
+   */
+  private shouldAcceptChatTransport(transport: TransportType): boolean {
+    if (transport === TransportType.Island) return false
+    if (this.isWorldComms()) {
+      if (transport === TransportType.SceneRoom) return false
+      return transport === TransportType.World
+    }
+    if (transport === TransportType.World && this.sceneLiveKit.isConnected()) return false
+    return true
+  }
+
+  /**
+   * LiveKit rooms for **chat / DCM media / emotes** — primary room only.
+   * Dual-publish (world + scene) makes Explorer show every message twice because
+   * peers join both rooms on worlds (world = chat, scene = Cast).
+   * Worlds → world room; parcels → scene room (fallback world/island).
+   */
   private liveKitChatSessions(): LiveKitCommsSession[] {
-    const sessions: LiveKitCommsSession[] = []
-    if (this.sceneLiveKit.isConnected()) sessions.push(this.sceneLiveKit)
-    if (this.worldConnected && this.worldLiveKit.isConnected()) sessions.push(this.worldLiveKit)
-    if (this.islandConnected && this.islandLiveKit.isConnected()) sessions.push(this.islandLiveKit)
-    return sessions
+    if (this.isWorldComms()) {
+      if (this.worldConnected && this.worldLiveKit.isConnected()) return [this.worldLiveKit]
+      if (this.sceneLiveKit.isConnected()) return [this.sceneLiveKit]
+      return []
+    }
+    if (this.sceneLiveKit.isConnected()) return [this.sceneLiveKit]
+    if (this.worldConnected && this.worldLiveKit.isConnected()) return [this.worldLiveKit]
+    if (this.islandConnected && this.islandLiveKit.isConnected()) return [this.islandLiveKit]
+    return []
   }
 
   /** Primary LiveKit session for RFC4 scene binary (scene room, else world room). */

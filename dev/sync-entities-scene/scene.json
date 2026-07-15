@@ -1,0 +1,31 @@
+{
+  "ecs7": true,
+  "runtimeVersion": "7",
+  "display": {
+    "title": "SyncEntities Conformance",
+    "description": "Minimal two-peer syncEntity Transform test for ThreejsClient platform parity",
+    "navmapThumbnail": "images/scene-thumbnail.png",
+    "favicon": "favicon_asset"
+  },
+  "owner": "",
+  "contact": {
+    "name": "ThreejsClient",
+    "email": ""
+  },
+  "main": "bin/index.js",
+  "tags": ["sync", "conformance"],
+  "scene": {
+    "parcels": ["0,0"],
+    "base": "0,0"
+  },
+  "spawnPoints": [
+    {
+      "name": "spawn1",
+      "default": true,
+      "position": { "x": [4, 12], "y": [0, 0], "z": [4, 12] },
+      "cameraTarget": { "x": 8, "y": 1, "z": 8 }
+    }
+  ],
+  "requiredPermissions": [],
+  "featureToggles": {}
+}

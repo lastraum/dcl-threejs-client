@@ -1269,7 +1269,22 @@ export class AppController {
     const loadPromise = (async () => {
       await world.loadScene(sceneConfig, opts.onProgress)
       if (opts.handoffShellComms) {
-        this.socialChat?.releaseCommsForWorldHandoff()
+        // Stop landing cast UI watchers only — do NOT disconnect the jump-target LiveKit.
+        this.castLiveUnsub?.()
+        this.castLiveUnsub = null
+        if (this.castProbeTimer) {
+          window.clearInterval(this.castProbeTimer)
+          this.castProbeTimer = 0
+        }
+        // Separate Cast 2.0 watcher room (not primary world/scene) — always drop.
+        this.castWatchRoom?.disconnect()
+        this.castWatchRoom = null
+        // Tear down pool LiveKits for every other place; transfer only jump-target rooms.
+        const jumpKey = sceneConfig.commsPointer
+        const transferred = this.socialChat?.detachCommsForWorldHandoff(jumpKey) ?? null
+        if (transferred) {
+          world.adoptComms(transferred, { isWorld: sceneConfig.source.kind === 'world' })
+        }
       }
       const earlyCommsPromise = world.connectSceneCommsEarly(sceneConfig, opts.onProgress)
 

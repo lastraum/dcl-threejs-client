@@ -254,6 +254,8 @@ export class SceneHost {
     let windowFrames = 0
     let windowSlow = 0
     let lastAsyncMs = 0
+    /** Don't console.warn every second at 40fps — DevTools logging itself tanks FPS. */
+    let lastFpsWarnMs = 0
     this.lastFrameTime = 0
 
     this.renderer.setAnimationLoop(() => {
@@ -320,11 +322,15 @@ export class SceneHost {
       windowAsyncMs += lastAsyncMs
       windowFrames++
       if (totalMs > 33) windowSlow++
-      // Rollup every ~1s — always-on so 1fps is diagnosable without ?perfdebug.
+      // Rollup every ~1s. Only warn on real pain (<28fps or many slow frames), and at most
+      // every 5s — logging at 40fps with DevTools open was a self-inflicted hitch loop.
       if (performance.now() - windowStart >= 1000) {
         const n = Math.max(1, windowFrames)
         const fps = (windowFrames * 1000) / Math.max(1, performance.now() - windowStart)
-        if (fps < 45 || windowSlow > n * 0.2) {
+        const now = performance.now()
+        const painful = fps < 28 || windowSlow > n * 0.25
+        if (painful && now - lastFpsWarnMs > 5000) {
+          lastFpsWarnMs = now
           console.warn(
             `[fps] ${fps.toFixed(0)}fps over ${windowFrames}f — ` +
               `sync=${(windowSyncMs / n).toFixed(1)}ms render=${(windowRenderMs / n).toFixed(1)}ms ` +

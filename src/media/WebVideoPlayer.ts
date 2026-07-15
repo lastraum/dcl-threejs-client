@@ -15,7 +15,11 @@ import { applyDclLocalTransform, type DclTransformValues } from '../bridge/dclTr
 import { resolveSceneMediaUrl } from '../bridge/material/resolveTexture'
 import { unwrapMisroutedMediaUrl } from '../rendering/textureProxy'
 import type { ResolvedScene } from '../dcl/content/types'
-import { isLiveKitCurrentStreamSrc, isLiveKitVideoSrc } from './livekitVideoSource'
+import {
+  isLiveKitCurrentStreamSrc,
+  isLiveKitVideoSrc,
+  LIVEKIT_CURRENT_STREAM_SRC
+} from './livekitVideoSource'
 import { mediaElementGain, spatialAudioGain } from '../rendering/SoundSettings'
 import { ThrottledVideoTexture } from './ThrottledVideoTexture'
 import { getSharedLiveKitVideoStream } from './SharedLiveKitVideoStream'
@@ -77,6 +81,8 @@ export class WebVideoPlayer {
   private budgetPaused = false
   private wantsPlaying = true
   private playGeneration = 0
+  /** Invalidates in-flight HLS/import loads so admin default VOD cannot clobber LiveKit. */
+  private sourceGeneration = 0
   /** Prevents stacked play() calls from aborting each other every frame. */
   private playInFlight = false
   private hasHadRenderableFrame = false
@@ -336,11 +342,17 @@ export class WebVideoPlayer {
 
   applySpec(
     spec: PBVideoPlayer,
-    options?: { fromEcsSync?: boolean; fromUserToggle?: boolean }
+    options?: {
+      fromEcsSync?: boolean
+      fromUserToggle?: boolean
+      /** Cast/OBS remote video currently published in the scene LiveKit room. */
+      liveKitRemoteLive?: boolean
+    }
   ): void {
     const ecsPlaying = spec.playing !== false
     const ecsPlayingChanged =
       this.lastEcsPlaying !== undefined && ecsPlaying !== this.lastEcsPlaying
+    const remoteLive = options?.liveKitRemoteLive === true
 
     if (
       !this.liveKitSource &&
@@ -358,7 +370,13 @@ export class WebVideoPlayer {
       return
     }
 
-    const src = spec.src.trim()
+    let src = spec.src.trim()
+    // Hold LiveKit once activated — refuse late admin defaultURL/HLS while Cast/OBS is still live.
+    // (Do not force non-livekit players onto LiveKit; that thrashed scene-room subscriptions.)
+    if (this.liveKitSource && remoteLive && src && !isLiveKitVideoSrc(src)) {
+      src = this.loadedSrc || LIVEKIT_CURRENT_STREAM_SRC
+    }
+
     if (src && src !== this.loadedSrc) {
       if (isLiveKitVideoSrc(src)) {
         if (isLiveKitCurrentStreamSrc(src)) void this.loadLiveKitSource(src)
@@ -368,6 +386,14 @@ export class WebVideoPlayer {
         if (url) void this.loadSource(url)
         else this.setState(VS_ERROR)
       }
+    } else if (
+      isLiveKitCurrentStreamSrc(src) &&
+      this.loadedSrc === src &&
+      !this.usesSharedLiveKit &&
+      this.bindLiveKitVideo
+    ) {
+      // Binder arrived after first attempt, or a stale HLS load tore us down.
+      void this.loadLiveKitSource(src)
     } else if (!src) {
       this.setState(VS_ERROR)
     }
@@ -453,11 +479,12 @@ export class WebVideoPlayer {
   }
 
   dispose(): void {
+    this.sourceGeneration++
     this.clearMediaSource()
     this.disposeSpatialSound()
     this.throttledTexture?.dispose()
     this.throttledTexture = null
-    if (!this.usesSharedLiveKit) this.video.remove()
+    this.video.remove()
   }
 
   wouldEcsPlayingChange(ecsPlaying: boolean): boolean {
@@ -580,12 +607,18 @@ export class WebVideoPlayer {
   }
 
   private async loadLiveKitSource(src: string): Promise<void> {
+    const gen = ++this.sourceGeneration
     if (!this.bindLiveKitVideo) {
+      // Allow applySpec to retry once the scene LiveKit binder is ready.
+      this.loadedSrc = ''
+      this.liveKitSource = false
+      this.usesSharedLiveKit = false
       this.setState(VS_ERROR)
       return
     }
 
     this.clearMediaSource()
+    if (gen !== this.sourceGeneration) return
     this.loadedSrc = src
     this.liveKitSource = true
     this.usesSharedLiveKit = true
@@ -594,6 +627,7 @@ export class WebVideoPlayer {
 
     const shared = getSharedLiveKitVideoStream()
     const onTrackUpdate = (): void => {
+      if (gen !== this.sourceGeneration) return
       const video = shared.video
       if (video.videoWidth > 0 || video.readyState >= HTMLMediaElement.HAVE_METADATA) {
         if (this.state !== VS_ERROR) this.setState(VS_READY)
@@ -607,15 +641,22 @@ export class WebVideoPlayer {
       this.sharedLiveKitUnsubscribe?.()
       this.sharedLiveKitUnsubscribe = null
     }
+    if (gen !== this.sourceGeneration) {
+      this.liveKitCleanup()
+      this.liveKitCleanup = null
+      return
+    }
     onTrackUpdate()
   }
 
   private async loadSource(url: string): Promise<void> {
+    const gen = ++this.sourceGeneration
     const mediaUrl = unwrapMisroutedMediaUrl(url)
     if (mediaUrl !== url) {
       console.warn('[WebVideoPlayer] unwrapped texture-proxy media URL', url, '→', mediaUrl)
     }
     this.clearMediaSource()
+    if (gen !== this.sourceGeneration) return
     this.loadedSrc = mediaUrl
     this.hasHadRenderableFrame = false
     this.hasStartedPlayback = false
@@ -626,6 +667,7 @@ export class WebVideoPlayer {
     if (isHlsUrl(mediaUrl)) {
       try {
         const mod = await import('hls.js')
+        if (gen !== this.sourceGeneration) return
         const Hls = mod.default as HlsConstructor
         if (Hls.isSupported()) {
           // Vimeo external playlists: fMP4 + separate audio groups. Vite worker URLs
@@ -642,6 +684,7 @@ export class WebVideoPlayer {
           const errorEvent = Hls.Events?.ERROR ?? 'hlsError'
           let mediaErrorRecoveries = 0
           hls.on?.(errorEvent, (_event, data) => {
+            if (gen !== this.sourceGeneration) return
             if (!data.fatal) return
             if (data.type === 'mediaError' && mediaErrorRecoveries < 3) {
               mediaErrorRecoveries += 1
@@ -667,6 +710,7 @@ export class WebVideoPlayer {
           })
           // Auto-start once levels/audio groups are ready (Vimeo multi-audio).
           hls.on?.('hlsManifestParsed', () => {
+            if (gen !== this.sourceGeneration) return
             if (this.wantsPlaying && !this.isPlaybackBlocked()) void this.tryPlay()
           })
           hls.attachMedia(this.video)
@@ -676,9 +720,11 @@ export class WebVideoPlayer {
           return
         }
       } catch (err) {
+        if (gen !== this.sourceGeneration) return
         console.warn('[WebVideoPlayer] HLS.js init failed', err, mediaUrl)
       }
 
+      if (gen !== this.sourceGeneration) return
       if (safariNativeHls(this.video)) {
         this.video.src = mediaUrl
         this.video.load()
@@ -691,6 +737,7 @@ export class WebVideoPlayer {
       return
     }
 
+    if (gen !== this.sourceGeneration) return
     this.video.src = mediaUrl
     this.video.load()
     this.ensureLocalTexture().start()

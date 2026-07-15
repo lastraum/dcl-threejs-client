@@ -13,6 +13,7 @@ import { soundSettings } from '../rendering/SoundSettings'
 import { skipSceneVideoPlayers } from '../client/devFlags'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 
+
 type DecoderEntry = {
   player: WebVideoPlayer
   lastSpecKey: string
@@ -43,7 +44,12 @@ export class VideoPlayerBridge {
     private readonly getSpatialAnchors: () => SpatialAudioAnchors | null,
     private readonly getLiveKitBinder: () => LiveKitVideoBinder | null,
     private readonly recordAppend?: (componentId: number, entity: Entity, value: unknown) => void,
-    private readonly recordLww?: (componentId: number, entity: Entity, value: unknown) => void
+    private readonly recordLww?: (componentId: number, entity: Entity, value: unknown) => void,
+    /**
+     * True while Cast/OBS publishes remote video in the **scene** LiveKit room.
+     * Used only to hold an already-activated livekit src (never hijacks all VideoPlayers).
+     */
+    private readonly getRemoteVideoLive: () => boolean = () => false
   ) {
     this.unsubscribeSoundSettings = soundSettings.subscribe(() => {
       for (const entry of this.decoders.values()) entry.player.refreshVolume()
@@ -100,6 +106,7 @@ export class VideoPlayerBridge {
     const active = new Set<Entity>()
     const fromUserToggle = this.pendingUserVideoToggle
     let userToggleConsumed = false
+    const remoteLive = this.getRemoteVideoLive()
 
     for (const [entity, spec] of view.getEntitiesWith(VideoPlayer)) {
       active.add(entity)
@@ -146,7 +153,10 @@ export class VideoPlayerBridge {
         entry.player.applySpatialDistances(spatialMin, spatialMax)
       }
 
-      if (this.applySpec(entity, spec, fromUserToggle)) {
+      // Do NOT rewrite every VideoPlayer to livekit when remote is live — that thrashed
+      // decoders/subscriptions and contributed to scene-room disconnects (no remote avatars).
+      // Race protection lives in WebVideoPlayer (generation + refuse LiveKit→VOD while live).
+      if (this.applySpec(entity, spec, fromUserToggle, remoteLive)) {
         userToggleConsumed = true
       }
     }
@@ -265,7 +275,10 @@ export class VideoPlayerBridge {
       position: entry.player.getCurrentOffset()
     }
     VideoPlayer.createOrReplace(entity, next)
-    entry.player.applySpec(next, { fromEcsSync: true })
+    entry.player.applySpec(next, {
+      fromEcsSync: true,
+      liveKitRemoteLive: this.getRemoteVideoLive()
+    })
     this.recordLww?.(VideoPlayer.componentId, entity, next)
     this.onLwwFlush?.()
   }
@@ -273,12 +286,14 @@ export class VideoPlayerBridge {
   private applySpec(
     entity: Entity,
     spec: PBVideoPlayer,
-    fromUserToggle = false
+    fromUserToggle = false,
+    liveKitRemoteLive = false
   ): boolean {
     const entry = this.decoders.get(entity)
     if (!entry) return false
     const ecsPlaying = spec.playing !== false
-    const specKey = JSON.stringify(spec)
+    // Include live flag so we re-apply when Cast starts/stops without ECS src change.
+    const specKey = `${liveKitRemoteLive ? '1' : '0'}:${JSON.stringify(spec)}`
     const bridgePlayingChanged =
       entry.lastAppliedPlaying !== undefined && ecsPlaying !== entry.lastAppliedPlaying
     const playerPlayingChanged = entry.player.wouldEcsPlayingChange(ecsPlaying)
@@ -287,7 +302,7 @@ export class VideoPlayerBridge {
     if (entry.lastSpecKey === specKey && !playingChanged && !needsEndedReplay) return false
     entry.lastSpecKey = specKey
     entry.lastAppliedPlaying = ecsPlaying
-    entry.player.applySpec(spec, { fromUserToggle })
+    entry.player.applySpec(spec, { fromUserToggle, liveKitRemoteLive })
     this.onTextureReady?.(entity)
     return fromUserToggle && (playingChanged || entry.player.isHoldingAtEnd())
   }

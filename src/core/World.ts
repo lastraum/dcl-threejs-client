@@ -107,7 +107,8 @@ export class World {
   readonly sceneScript = new SceneScriptSystem()
   readonly physics = new PhysXWorld()
   readonly session = new SessionIdentity()
-  readonly comms = new CommsService()
+  /** May be replaced by landing handoff (`adoptComms`) — keep LiveKit without reconnect. */
+  comms: CommsService = new CommsService()
   readonly social = new SocialService()
   readonly host: SceneHost
   readonly environment: EnvironmentSystem
@@ -188,6 +189,39 @@ export class World {
 
     this.unsubEnvironmentDebug = environmentDebug.subscribe(() => this.applyEnvironmentDebugVisibility())
 
+    this.wireCommsHandlers()
+  }
+
+  /**
+   * Landing → play: take the shell's live CommsService (already in world+scene rooms).
+   * Does **not** disconnect LiveKit — only rewires peer handlers onto this World.
+   */
+  adoptComms(shellComms: CommsService, opts?: { isWorld?: boolean }): void {
+    if (this.comms === shellComms) {
+      this.sceneCommsConnected = shellComms.isLiveKitConnected()
+      if (opts?.isWorld != null) this.comms.pruneUnusedLiveKitForTarget({ isWorld: opts.isWorld })
+      return
+    }
+    this.vrmPeerSync.detach()
+    const unused = this.comms
+    this.comms = shellComms
+    // Fresh World service never joined — safe to dispose without killing LiveKit.
+    unused.dispose()
+
+    this.wireCommsHandlers()
+    this.sceneCommsConnected = this.comms.isLiveKitConnected()
+    if (opts?.isWorld != null) this.comms.pruneUnusedLiveKitForTarget({ isWorld: opts.isWorld })
+    // Peers already in the room never re-fire join — push them into RemoteAvatarManager.
+    this.comms.notifyHandlersOfCurrentPeers()
+    const counts = this.comms.getLivePeerCounts()
+    clientDebugLog.log(
+      'network',
+      `Adopted landing LiveKit · live=${this.sceneCommsConnected} worldPeers=${counts.world} scenePeers=${counts.scene} island=${counts.island}`,
+      { level: 'success', alsoConsole: true }
+    )
+  }
+
+  private wireCommsHandlers(): void {
     this.vrmPeerSync.attach(this.comms, {
       onPeerVrmChanged: (address, contentHash, format) => {
         if (skipRemoteAvatars()) return
@@ -199,50 +233,51 @@ export class World {
       }
     })
 
-    this.remoteAvatars && this.comms.setHandlers({
-      onPeerJoin: (address) => {
-        if (skipRemoteAvatars()) return
-        if (address === this.session.getAddress()?.toLowerCase()) return
-        this.remoteAvatars?.upsertPeer(address)
-        if (this.remoteAvatars) {
-          this.vrmPeerSync.syncPeerToRemoteAvatars(address, this.remoteAvatars)
-        }
-        void this.vrmPeerSync.onPeerJoined(address)
-        void this.social.ensurePeerProfile(address)
-        this.social.onRemotePeerJoined(address)
-      },
-      onPeerLeave: (address) => {
-        if (skipRemoteAvatars()) return
-        this.vrmPeerSync.onPeerLeave(address)
-        this.remoteAvatars?.removePeer(address)
-      },
-      onPeerTransform: (address, payload) => {
-        if (skipRemoteAvatars()) return
-        this.remoteAvatars?.updatePeerTransform(
-          address,
-          new THREE.Vector3(payload.x, payload.y, payload.z),
-          payload.yaw,
-          payload.vx !== undefined
-            ? new THREE.Vector3(payload.vx, payload.vy ?? 0, payload.vz ?? 0)
-            : undefined,
-          {
-            isGrounded: payload.isGrounded,
-            isJumping: payload.isJumping,
-            jumpCount: payload.jumpCount
+    this.remoteAvatars &&
+      this.comms.setHandlers({
+        onPeerJoin: (address) => {
+          if (skipRemoteAvatars()) return
+          if (address === this.session.getAddress()?.toLowerCase()) return
+          this.remoteAvatars?.upsertPeer(address)
+          if (this.remoteAvatars) {
+            this.vrmPeerSync.syncPeerToRemoteAvatars(address, this.remoteAvatars)
           }
-        )
-      },
-      onPeerProfile: (address, serializedProfile) => {
-        if (skipRemoteAvatars()) return
-        seedCommsPeerProfile(address, serializedProfile)
-        this.remoteAvatars?.applyPeerProfile(address, serializedProfile)
-        this.social.rememberPeerProfile(address, serializedProfile)
-      },
-      onPeerEmote: (address, urn, incrementalId) => {
-        if (skipRemoteAvatars()) return
-        this.remoteAvatars?.playPeerEmote(address, urn, incrementalId)
-      }
-    })
+          void this.vrmPeerSync.onPeerJoined(address)
+          void this.social.ensurePeerProfile(address)
+          this.social.onRemotePeerJoined(address)
+        },
+        onPeerLeave: (address) => {
+          if (skipRemoteAvatars()) return
+          this.vrmPeerSync.onPeerLeave(address)
+          this.remoteAvatars?.removePeer(address)
+        },
+        onPeerTransform: (address, payload) => {
+          if (skipRemoteAvatars()) return
+          this.remoteAvatars?.updatePeerTransform(
+            address,
+            new THREE.Vector3(payload.x, payload.y, payload.z),
+            payload.yaw,
+            payload.vx !== undefined
+              ? new THREE.Vector3(payload.vx, payload.vy ?? 0, payload.vz ?? 0)
+              : undefined,
+            {
+              isGrounded: payload.isGrounded,
+              isJumping: payload.isJumping,
+              jumpCount: payload.jumpCount
+            }
+          )
+        },
+        onPeerProfile: (address, serializedProfile) => {
+          if (skipRemoteAvatars()) return
+          seedCommsPeerProfile(address, serializedProfile)
+          this.remoteAvatars?.applyPeerProfile(address, serializedProfile)
+          this.social.rememberPeerProfile(address, serializedProfile)
+        },
+        onPeerEmote: (address, urn, incrementalId) => {
+          if (skipRemoteAvatars()) return
+          this.remoteAvatars?.playPeerEmote(address, urn, incrementalId)
+        }
+      })
 
     this.comms.setSceneBinaryHandler((sender, data) => {
       this.sceneScript.deliverCommsBinary(sender, data)
@@ -412,6 +447,7 @@ export class World {
       this.sceneScript.setLiveKitVideoBinder((video, onUpdate) =>
         this.comms.bindLiveKitVideoSource(video, onUpdate)
       )
+      this.sceneScript.setLiveKitRemoteLiveCheck(() => this.comms.hasRemoteVideoLive())
       this.remoteAvatars?.setEntityStore(this.sceneScript.getEntityStore())
       dclToThreeVec(
         new THREE.Vector3(scene.spawn.x, scene.spawn.y, scene.spawn.z),
@@ -531,22 +567,42 @@ export class World {
   /**
    * Connect scene comms during the loading screen so remote peers arrive while assets hydrate.
    * Receive-only until `start()` — idempotent; safe to call before `spawnLocalPlayer`.
+   * If landing already transferred a live session via `adoptComms`, skips reconnect.
    */
   async connectSceneCommsEarly(scene: ResolvedScene, onProgress?: (msg: string) => void): Promise<void> {
-    if (!this.playerMode || this.sceneCommsConnected) return
+    if (!this.playerMode) return
 
     const address = this.session.getAddress()
     const identity = this.session.getAuthIdentity()
     if (!address || !identity) return
 
-    onProgress?.(
-      scene.source.kind === 'world' ? 'Joining world comms…' : 'Joining scene comms room…'
-    )
     this.comms.setIdentity(address, identity)
     this.comms.setCommsProfile(this.session.getCommsProfileEntity())
     this.comms.setLambdasUrl(scene.realm.lambdasUrl)
     this.remoteAvatars?.setLocalAddress(address)
     this.vrmPeerSync.setLocalAddress(address)
+
+    // Landing handoff: already in the rooms — do not disconnect/reconnect.
+    if (this.sceneCommsConnected || this.comms.isLiveKitConnected()) {
+      this.sceneCommsConnected = true
+      const target = this.buildCommsTarget(scene)
+      this.comms.bindSceneTarget(target)
+      this.comms.applyRealmAbout(scene.realm, scene.commsPointer)
+      this.comms.pruneUnusedLiveKitForTarget({ isWorld: target.isWorld === true })
+      this.comms.seedArchipelagoSceneLocal(scene.spawn.x, scene.spawn.y, scene.spawn.z)
+      this.comms.notifyHandlersOfCurrentPeers()
+      clientDebugLog.log('network', 'Early scene comms — reusing live landing session (no reconnect)', {
+        level: 'success',
+        alsoConsole: true
+      })
+      onProgress?.('Receiving peer updates…')
+      await this.vrmPeerSync.onSceneConnected()
+      return
+    }
+
+    onProgress?.(
+      scene.source.kind === 'world' ? 'Joining world comms…' : 'Joining scene comms room…'
+    )
     const connectResult = await this.comms.connectSceneRoom(this.buildCommsTarget(scene))
     if (connectResult.ok) {
       this.sceneCommsConnected = true

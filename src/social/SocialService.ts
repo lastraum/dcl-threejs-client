@@ -174,8 +174,11 @@ export class SocialService {
     this.comms = options.comms
     this.upsertSceneTab(options.sceneTab)
     this.peerProfiles.setPeerUrl(options.contentUrl)
-    if (options.comms && options.sceneTab.browserChatEnabled) {
+    if (options.comms && options.sceneTab.browserChatEnabled !== false) {
       this.wireCommsHandlers()
+      this.liveSceneKeys.add(options.sceneTab.key)
+    } else if (!options.comms) {
+      this.liveSceneKeys.delete(options.sceneTab.key)
     }
     // Always focus the live room so UI + inbound lines share the same channel key.
     // Prior scene tabs keep their message history in `messages` for later open.
@@ -210,6 +213,11 @@ export class SocialService {
     this.channel = { kind: 'scene', sceneKey: options.sceneTab.key, label: options.sceneTab.label }
     this.peerProfiles.setPeerUrl(options.contentUrl)
     this.wireCommsHandlers()
+    // World.spawnLocalPlayer uses init() — without this, isLiveSceneChannel is always false
+    // and Enter/submit silently fails with "scene room not live".
+    if (options.comms && options.sceneTab.browserChatEnabled !== false) {
+      this.liveSceneKeys.add(options.sceneTab.key)
+    }
 
     if (!options.isGuest && options.identity) {
       await this.loadMemberCommunities(options.identity)

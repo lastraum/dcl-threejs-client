@@ -37,8 +37,8 @@ export const WORKER_AUTHORITATIVE_COMPONENT_IDS = new Set([
  */
 export const WORKER_SCENE_UI_COMPONENT_IDS = new Set([
   1050, // UiTransform
-  1052, // UiBackground
-  1053, // UiText
+  1052, // UiText
+  1053, // UiBackground
   1093, // UiInput
   1094 // UiDropdown
 ])
@@ -122,14 +122,24 @@ function nextLamport(entity: Entity, componentId: number): number {
   return ts
 }
 
+/**
+ * Snapshot values must be plain data for main-thread projection (no wire deserialize).
+ * Prefer JSON — `structuredClone` on some ECS/protobuf-shaped objects drops fields
+ * (empty UiText / missing colors → blank labels in the DOM painter).
+ */
 function toPlainComponentValue(value: unknown): unknown {
   if (value == null || typeof value !== 'object') return value
+  try {
+    return JSON.parse(JSON.stringify(value))
+  } catch {
+    /* fall through */
+  }
   try {
     if (typeof structuredClone === 'function') return structuredClone(value)
   } catch {
     /* fall through */
   }
-  return JSON.parse(JSON.stringify(value))
+  return value
 }
 
 /** Prefer bundled scene wire bytes — main @dcl/ecs deserialize matches when timestamps are cleared. */
@@ -160,10 +170,10 @@ function bumpEncodeStat(stats: WorkerSceneUiEncodeStats, componentId: number): v
       stats.uiTransform++
       break
     case 1052:
-      stats.uiBackground++
+      stats.uiText++
       break
     case 1053:
-      stats.uiText++
+      stats.uiBackground++
       break
     case 1093:
       stats.uiInput++
@@ -631,13 +641,19 @@ export function collectWorkerUiMountSnapshot(
 ): WorkerUiMountSnapshotRow[] {
   preregisterRendererInjectedComponents(engine)
   const UiTransform = resolveWorkerUiTransform(engine)
+  const UiBackground = resolveWorkerUiBackground(engine)
+  const UiText = resolveWorkerUiText(engine)
+  const UiInput = resolveWorkerUiInput(engine)
+  const UiDropdown = resolveWorkerUiDropdown(engine)
+  const PointerEvents = resolveWorkerPointerEvents(engine)
+  // Always tag rows with the resolved component's real id (never hardcoded swaps).
   const pairs: Array<{ read: BundledUiRead; componentId: number }> = [
-    { read: UiTransform as unknown as BundledUiRead, componentId: 1050 },
-    { read: resolveWorkerUiBackground(engine) as BundledUiRead, componentId: 1052 },
-    { read: resolveWorkerUiText(engine) as BundledUiRead, componentId: 1053 },
-    { read: resolveWorkerUiInput(engine) as BundledUiRead, componentId: 1093 },
-    { read: resolveWorkerUiDropdown(engine) as BundledUiRead, componentId: 1094 },
-    { read: resolveWorkerPointerEvents(engine) as BundledUiRead, componentId: 1062 }
+    { read: UiTransform as unknown as BundledUiRead, componentId: UiTransform.componentId },
+    { read: UiText as unknown as BundledUiRead, componentId: UiText.componentId },
+    { read: UiBackground as unknown as BundledUiRead, componentId: UiBackground.componentId },
+    { read: UiInput as unknown as BundledUiRead, componentId: UiInput.componentId },
+    { read: UiDropdown as unknown as BundledUiRead, componentId: UiDropdown.componentId },
+    { read: PointerEvents as unknown as BundledUiRead, componentId: PointerEvents.componentId }
   ]
   const rows: WorkerUiMountSnapshotRow[] = []
   const pushEntity = (id: Entity) => {

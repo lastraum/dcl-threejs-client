@@ -24,8 +24,8 @@ export interface ProjectionNetworkDefs {
  */
 export const WORKER_OWNED_UI_COMPONENT_IDS = new Set([
   1050, // UiTransform
-  1052, // UiBackground
-  1053, // UiText
+  1052, // UiText
+  1053, // UiBackground
   1093, // UiInput
   1094, // UiDropdown
   1062 // PointerEvents (UI mount snapshot rows only)

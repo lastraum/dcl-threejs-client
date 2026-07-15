@@ -405,10 +405,10 @@ function runPointerUiPhase4Egress(eng: IEngine): void {
         uiTransform++
         break
       case 1052:
-        uiBackground++
+        uiText++
         break
       case 1053:
-        uiText++
+        uiBackground++
         break
       case 1093:
         uiInput++

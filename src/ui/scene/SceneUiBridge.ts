@@ -421,16 +421,37 @@ export class SceneUiBridge {
 
     this.paintCount++
     const mountSize = this.workerUiEntities?.size ?? 0
-    if (!this.firstPaintLogged) {
-      this.firstPaintLogged = true
-      console.info(
-        `[scene-ui] first paint — mount=${mountSize} canvas=${records.length} virtual=${this.virtual.width}×${this.virtual.height}`
-      )
-    } else if (this.paintCount <= 12) {
-      console.info(`[scene-ui] repaint #${this.paintCount} — mount=${mountSize} canvas=${records.length}`)
-    } else if (mountSize !== this.lastLoggedPaintMount) {
+    if (this.paintCount <= 12 || mountSize !== this.lastLoggedPaintMount) {
+      let withText = 0
+      let withBg = 0
+      let textSample = ''
+      for (const r of records) {
+        const t = textOf(r.entity)
+        if (t?.value?.trim()) {
+          withText++
+          if (!textSample) textSample = t.value.trim().slice(0, 40)
+        }
+        if (backgroundOf(r.entity)) withBg++
+      }
+      if (!this.firstPaintLogged) {
+        this.firstPaintLogged = true
+        console.info(
+          `[scene-ui] first paint — mount=${mountSize} canvas=${records.length} text=${withText} bg=${withBg}` +
+            ` virtual=${this.virtual.width}×${this.virtual.height}` +
+            (textSample ? ` sample="${textSample}"` : '')
+        )
+      } else if (this.paintCount <= 12) {
+        console.info(
+          `[scene-ui] repaint #${this.paintCount} — mount=${mountSize} canvas=${records.length}` +
+            ` text=${withText} bg=${withBg}` +
+            (textSample ? ` sample="${textSample}"` : '')
+        )
+      } else {
+        console.info(
+          `[scene-ui] repaint mount change — mount=${mountSize} canvas=${records.length} text=${withText} bg=${withBg}`
+        )
+      }
       this.lastLoggedPaintMount = mountSize
-      console.info(`[scene-ui] repaint mount change — mount=${mountSize} canvas=${records.length}`)
       if (isSceneUiDebugEnabled() && mountSize >= 10) {
         const peIds = [...this.mountSnapshotPointerEvents.keys()]
           .sort((a, b) => (a as number) - (b as number))
@@ -894,11 +915,21 @@ export class SceneUiBridge {
     _viewport: ReturnType<typeof computeUiViewport>
   ): void {
     const insets = interactableInsetsVirtual(this.virtual, interactable)
+    // interactableArea is a rect in virtual px (left/top/right/bottom edges), not chrome insets.
+    // UiScaleSystem + react-ecs read this for label sizing / interactable regions.
+    const sx = this.virtual.width / Math.max(1, window.innerWidth)
+    const sy = this.virtual.height / Math.max(1, window.innerHeight)
+    const area = {
+      left: Math.round(interactable.left * sx),
+      top: Math.round(interactable.top * sy),
+      right: Math.round((interactable.left + interactable.width) * sx),
+      bottom: Math.round((interactable.top + interactable.height) * sy)
+    }
     const info: PBUiCanvasInformation = {
       devicePixelRatio: window.devicePixelRatio || 1,
       width: this.virtual.width,
       height: this.virtual.height,
-      interactableArea: insets,
+      interactableArea: area,
       screenInsetArea: insets
     }
     const key = JSON.stringify(info)

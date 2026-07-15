@@ -1,10 +1,17 @@
 import type { Entity, IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 
-/** Core component ids — bundled scene engines often omit `component.name` on componentsIter(). */
+/**
+ * Core component ids — must match `@dcl/ecs` `component-names.gen.js` / registry.
+ * Bundled scene engines often omit `component.name` on componentsIter(); id is reliable.
+ *
+ *   UiTransform  1050
+ *   UiText       1052
+ *   UiBackground 1053
+ */
 const UI_TRANSFORM_ID = 1050
-const UI_BACKGROUND_ID = 1052
-const UI_TEXT_ID = 1053
+const UI_TEXT_ID = 1052
+const UI_BACKGROUND_ID = 1053
 const UI_INPUT_ID = 1093
 const UI_DROPDOWN_ID = 1094
 const POINTER_EVENTS_ID = 1062

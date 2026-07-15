@@ -438,12 +438,20 @@ export class PointerEventsSystem {
     }
 
     e.stopPropagation()
-    const targetEntity = this.resolvePointerResultEntity(hit.entity, button)
+    // pickUiHit already resolved the react-ecs handler (smallest PE under point).
+    // Do not re-walk ancestors — that can re-target a fullscreen scrim.
+    const targetEntity = hit.isSceneUi
+      ? hit.entity
+      : this.resolvePointerResultEntity(hit.entity, button)
     this.uiPointerButtons.add(button)
     this.downEntityByButton.set(button, targetEntity)
     this.pendingPointerDown.set(button, hit)
     if (button === InputAction.IA_POINTER) {
-      clientDebugLog.log('pointer', `ui down → entity ${targetEntity}`, { alsoConsole: true })
+      clientDebugLog.log(
+        'pointer',
+        `ui down → entity ${targetEntity}${hit.isSceneUi ? ' (sceneUi)' : ''}`,
+        { alsoConsole: true }
+      )
     }
   }
 
@@ -562,7 +570,11 @@ export class PointerEventsSystem {
     if (!activeHit) activeHit = this.pickProximityTarget(button)
     if (!activeHit) return
 
-    const targetEntity = this.resolvePointerResultEntity(activeHit.entity, button)
+    // Scene UI pick already resolved the onMouseDown leaf — do not re-walk ancestors
+    // (can re-target fullscreen scrim and close modals instead of CREATOR/USE cards).
+    const targetEntity = activeHit.isSceneUi
+      ? activeHit.entity
+      : this.resolvePointerResultEntity(activeHit.entity, button)
     if (
       this.deps.isSceneUiFieldEntity?.(targetEntity) ||
       this.deps.isSceneUiFieldEntity?.(activeHit.entity)
@@ -1246,9 +1258,10 @@ export class PointerEventsSystem {
           hitNormal: { x: dclNormal.x, y: dclNormal.y, z: dclNormal.z },
           hitDistance: hit.distance,
           meshName: hit.meshName,
-          // Authoritative at click time — after worker DOWN, UiTransform may recycle.
+          // DOM UI: worker routes PET_UP to PlayerEntity only (onMouseDown already ran).
           sceneUi:
             hit.isSceneUi === true ||
+            downEntities.some((id) => this.deps?.ecs.UiTransform.has(id as Entity)) ||
             (this.deps?.ecs.UiTransform.has(targetEntity) ?? false)
         }
       }

@@ -17,11 +17,14 @@ Main posts freely. Worker owns ordering via `sceneWorkerInputSession` (snapshots
 
 ## Ui CRDT egress boundary (hard rule)
 
-Scene UI bytes (`UiTransform`, `UiBackground`, `UiText`, `UiInput`, `UiDropdown`, `PointerEvents`) may leave the worker **only** during pointer interactive tick phase 4 (`shouldAttachUiMountSnapshot`).
+Scene UI **CRDT wire** bytes (`UiTransform`, `UiBackground`, `UiText`, `UiInput`, `UiDropdown`, `PointerEvents`) must not leave the worker on cooperative `rpcCrdt` (phases 1–3 / play cold CRDT). `stripSceneUiCrdtBytes` strips them.
 
-- `stripSceneUiCrdtBytes` strips all Ui* PUT/DELETE from every other `rpcCrdt` call (cooperative `engine.update`, phases 1–3).
-- Play-mode cooperative ticks do **not** call `emitSceneUiCrdtIfDirty` — hydration/boot only.
-- Pointer phase 4 uses `collectWorkerUiMountSnapshot` (structured component values) — not CRDT wire or bundled `engine.update(0)` transport.
+Structured mount snapshots (`collectWorkerUiMountSnapshot` → `postUiMountSnapshot` / pointer phase-4) are the only UI transport:
+
+- **Pointer phase 4** — after every inject click (open/close menus).
+- **Cooperative dirty** — when worker UI fingerprint changes (hydration splash + play-mode async updates: QR texture mint, remote preset lists, timers). Not CRDT wire.
+
+Never emit Ui* CRDT mid pointer phases 1–3.
 
 ## Pointer egress buffers
 

@@ -121,20 +121,40 @@ function applyEdge(
   else if (v !== 0) node.setPosition(edge, v)
 }
 
-function applyTextMinSize(node: YogaNode, text: PBUiText | null | undefined): void {
+/** True when UiTransform gives Yoga a concrete horizontal size (points or %). */
+function hasExplicitWidth(t: PBUiTransform | null | undefined): boolean {
+  if (!t) return false
+  const u = t.widthUnit ?? YGUnit.UNDEFINED
+  if (u === YGUnit.PERCENT) return true
+  if (u === YGUnit.POINT && (t.width ?? 0) > 0) return true
+  return false
+}
+
+function applyTextMinSize(
+  node: YogaNode,
+  text: PBUiText | null | undefined,
+  transform?: PBUiTransform | null
+): void {
   if (!text?.value?.trim()) return
   // TW_NO_WRAP = 1; default / TW_WRAP = 0 / unset → wrap (SDK default TW_WRAP).
   const noWrap = text.textWrap === 1
   const measured = measureUiText(text, 1)
+  if (measured.height > 0) node.setMinHeight(measured.height)
+  if (measured.width <= 0) return
+
   if (noWrap) {
     // Single line: intrinsic width is the unwrapped run.
-    if (measured.width > 0) node.setMinWidth(measured.width)
-    if (measured.height > 0) node.setMinHeight(measured.height)
+    node.setMinWidth(measured.width)
     return
   }
-  // Wrapping text must shrink to the parent width — minWidth = full unwrapped measure
-  // forces overflow (Planetangzaar character description, etc.).
-  if (measured.height > 0) node.setMinHeight(measured.height)
+
+  // Wrap + explicit width (e.g. width: '100%'): let the node shrink to the parent.
+  // minWidth = full unwrapped measure overflows long paragraphs (Planetangzaar, etc.).
+  if (hasExplicitWidth(transform)) return
+
+  // Wrap + auto/undefined width under alignItems:center (RickRoll CREATOR cards, modal titles):
+  // without minWidth Yoga collapses the leaf to 0×h — borders paint, labels stay blank.
+  node.setMinWidth(measured.width)
 }
 
 function applyInputMinSize(node: YogaNode, input: PBUiInput | null | undefined): void {
@@ -251,8 +271,9 @@ export function layoutUiTree(
     const yoga = Yoga.Node.create()
     allYoga.push(yoga)
     yogaOf.set(entity, yoga)
-    applyUiTransform(yoga, transformOf.get(entity)!)
-    if (textOf) applyTextMinSize(yoga, textOf(entity))
+    const transform = transformOf.get(entity)!
+    applyUiTransform(yoga, transform)
+    if (textOf) applyTextMinSize(yoga, textOf(entity), transform)
     if (inputOf) applyInputMinSize(yoga, inputOf(entity))
     const childEntities = childrenOf.get(entity) ?? []
     const children = childEntities.map((c) => build(c))

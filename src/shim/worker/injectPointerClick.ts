@@ -28,26 +28,20 @@ function pointerUpTargets(body: InjectPointerClickBody): number[] {
   return list.length ? list : [body.entity]
 }
 
-export type InjectPointerClickUpOptions = {
-  /**
-   * When true, only write PET_UP on PlayerEntity.
-   * Scene UI inject-only clicks: onMouseDown already ran on DOWN; UP must not land on a
-   * recycled id (scrim/close) after react-ecs remounts. 3D mesh clicks must not use this.
-   */
-  playerOnly?: boolean
-}
-
 /**
- * After PET_DOWN open, react-ecs may recycle the launcher id into a modal child.
- * Prefer UP targets that still have UiTransform; otherwise PlayerEntity so isPressed clears
- * without firing getClick on a recycled modal node.
+ * Resolve PET_UP inject targets after any post-DOWN remount.
+ *
+ * Scene DOM UI (`body.sceneUi`): react-ecs `onMouseDown` already ran on PET_DOWN.
+ * Remount recycles entity ids — UiTransform.has(id) is true for a *new* node that
+ * reused the id (scrim/close). PET_UP on that id re-fires the wrong handler.
+ * Clear isPressed via PlayerEntity only (identity of click type, not mount size).
+ *
+ * Mesh / getClick: keep requested targets that still have UiTransform; else PlayerEntity.
  */
-function resolveUpInjectTargets(
-  engine: IEngine,
-  body: InjectPointerClickBody,
-  opts?: InjectPointerClickUpOptions
-): number[] {
-  if (opts?.playerOnly) return [engine.PlayerEntity as number]
+function resolveUpInjectTargets(engine: IEngine, body: InjectPointerClickBody): number[] {
+  if (body.sceneUi) {
+    return [engine.PlayerEntity as number]
+  }
   const requested = pointerUpTargets(body)
   preregisterRendererInjectedComponents(engine)
   const UiTransform = resolveWorkerUiTransform(engine)
@@ -74,12 +68,8 @@ export function injectPointerClickDownOnEngine(engine: IEngine, body: InjectPoin
   }
 }
 
-/** PET_UP only — after post-DOWN react-ecs flush for inject-only UI clicks. */
-export function injectPointerClickUpOnEngine(
-  engine: IEngine,
-  body: InjectPointerClickBody,
-  opts?: InjectPointerClickUpOptions
-): void {
+/** PET_UP only — targets resolved after any post-DOWN remount. */
+export function injectPointerClickUpOnEngine(engine: IEngine, body: InjectPointerClickBody): void {
   preregisterRendererInjectedComponents(engine)
   const PointerEventsResult = generated.PointerEventsResult(engine)
   const hit = buildPointerHit(body)
@@ -91,7 +81,7 @@ export function injectPointerClickUpOnEngine(
     hit,
     analog: undefined
   }
-  const targets = resolveUpInjectTargets(engine, body, opts)
+  const targets = resolveUpInjectTargets(engine, body)
   for (const entity of targets) {
     PointerEventsResult.addValue(entity as Entity, up)
   }

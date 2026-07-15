@@ -183,6 +183,24 @@ export class CrdtEncoder {
     return this.recordedAppends.length
   }
 
+  /**
+   * Drop pending grow-only appends for a component (e.g. PointerEventsResult=1063).
+   * inject-pointer-click is authoritative on the worker — main PE Result appends must not
+   * flush later via grow-only delivery (different timestamp clock re-fires onMouseDown and
+   * toggles CAM closed while main still paints the open modal).
+   */
+  discardRecordedAppends(componentId: number): number {
+    const before = this.recordedAppends.length
+    if (!before) return 0
+    let w = 0
+    for (let r = 0; r < this.recordedAppends.length; r++) {
+      if (this.recordedAppends[r]!.componentId === componentId) continue
+      this.recordedAppends[w++] = this.recordedAppends[r]!
+    }
+    this.recordedAppends.length = w
+    return before - w
+  }
+
   /** Dynamic LWW PUTs queued since the last `encode()` / `encodeLwwPutsOnly()`. */
   get pendingLwwPutCount(): number {
     return this.recordedLwwPuts.length

@@ -214,6 +214,7 @@ export function applyYogaLayoutBox(
   el.style.setProperty('width', `${w}px`, 'important')
   el.style.setProperty('height', `${h}px`, 'important')
   el.style.setProperty('transform', `translate(${x}px, ${y}px)`, 'important')
+  // Containing block for absolute content root + child entity shells.
   el.style.display = 'block'
   el.style.boxSizing = 'border-box'
   // Default visible so non-clipping panels don't trap absolute children; clip when radius/overflow require it.
@@ -226,6 +227,8 @@ export function applyYogaLayoutBox(
   el.style.minHeight = ''
   el.style.maxWidth = ''
   el.style.maxHeight = ''
+  // Positioning context for .scene-ui-node__content (absolute fill) and nested shells.
+  el.style.isolation = 'isolate'
 }
 
 const TEXT_ALIGN_MODES = {
@@ -317,6 +320,7 @@ export function applyUiTextStyles(label: HTMLElement, text: PBUiText, scale: UiS
   const c = text.color ?? { r: 1, g: 1, b: 1, a: 1 }
   const safeColor = (c.a ?? 1) < 0.05 ? { r: 1, g: 1, b: 1, a: 1 } : c
   const color = color4Css(safeColor)
+  // fontSize from worker is already virtual-canvas px (react-ecs may pre-scale); map with viewport uniform.
   const fontPx = Math.max(1, (text.fontSize ?? 10) * scale.uniform)
   label.style.color = color
   label.style.webkitTextFillColor = color
@@ -326,12 +330,13 @@ export function applyUiTextStyles(label: HTMLElement, text: PBUiText, scale: UiS
   // SDK default is TW_WRAP (0). Only TW_NO_WRAP (1) is single-line.
   const singleLine = text.textWrap === 1
   // Fill the UiTransform box and honor TextAlignMode (default TAM_MIDDLE_CENTER).
-  // Prior wrap path used display:block + height:auto → always top-aligned.
+  // Content root is absolute-filled to the shell — 100% height is valid there.
   label.style.width = '100%'
   label.style.height = '100%'
   label.style.maxWidth = '100%'
   label.style.minWidth = '0'
-  label.style.minHeight = '0'
+  // Never collapse below one line (auto-height Labels without explicit UiTransform height).
+  label.style.minHeight = `${fontPx}px`
   label.style.flex = '1 1 auto'
   label.style.alignSelf = 'stretch'
   label.style.margin = '0'
@@ -345,7 +350,7 @@ export function applyUiTextStyles(label: HTMLElement, text: PBUiText, scale: UiS
   label.style.wordBreak = singleLine ? 'normal' : 'break-word'
   label.style.overflowWrap = singleLine ? 'normal' : 'anywhere'
   label.style.whiteSpace = singleLine ? 'nowrap' : 'pre-wrap'
-  label.style.overflow = singleLine ? 'hidden' : 'hidden'
+  label.style.overflow = 'hidden'
   label.style.lineHeight = singleLine ? `${fontPx}px` : '1.25'
   label.style.pointerEvents = 'none'
   label.style.position = 'relative'

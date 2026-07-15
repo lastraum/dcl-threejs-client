@@ -1321,6 +1321,12 @@ export class SceneScriptSystem {
           msg.message
         )
       if (noisy) return
+      // Pointer-tick diagnostics must always reach the browser console (shared throttleKey
+      // was dropping post-DOWN mount/text lines needed for CREATOR MODE debugging).
+      if (/\[sceneWorker\] pointer/.test(msg.message)) {
+        console.info(msg.message.replace(/^\[(?:log|info|warn|error|debug)\]\s*/, ''))
+        return
+      }
       clientDebugLog.log('scene', msg.message, {
         alsoConsole: true,
         throttleMs: 50,
@@ -2797,11 +2803,22 @@ export class SceneScriptSystem {
       this.syncPointerInput(this.crdtTick, { processPendingDown: true, processPendingUp: true })
       this.crdtTick++
 
-      // inject-pointer-click is authoritative on the worker — skip main-encoded pointer appends
-      // (stale low timestamps would poison getClick even after inject remaps).
+      // inject-pointer-click is authoritative on the worker — skip main-encoded pointer appends.
+      // Must also discard recorded PointerEventsResult (1063): inject-only used to leave them
+      // queued, then flushRendererGrowOnlyAppends re-delivered them after deliver-done with
+      // *main* timestamps > worker previousFrameMax → EventSystem re-fired CAM toggle and
+      // closed home on the worker while main still painted mount=23 (ghost CREATOR clicks).
       const directInject = this.pointerEvents.hasPendingInjectPayload()
       if (directInject) {
         this.pointerResponseStash.length = 0
+        const dropped = this.encoder.discardRecordedAppends(
+          this.readComponents.PointerEventsResult.componentId
+        )
+        if (dropped > 0) {
+          console.info(
+            `[pointer] inject-only — discarded ${dropped} main PointerEventsResult append(s) (worker inject is authoritative)`
+          )
+        }
       } else {
         const pendingAppends = this.encoder.pendingAppendCount
         const appendBytes = this.encoder.encodeAppendsOnly()
@@ -2846,9 +2863,15 @@ export class SceneScriptSystem {
     const pointerChunks = this.pointerResponseStash.filter((c) => c.byteLength > 0)
     const injectOnly = pointerChunks.length === 0
     if (inject) {
-      this.logPointer(
-        `posting inject-pointer-click entity=${inject.entity} button=${inject.button} ts=${inject.downTimestamp}/${inject.upTimestamp}${injectOnly ? ' (inject-only)' : ''}`
-      )
+      const injectLine =
+        `posting inject-pointer-click entity=${inject.entity} button=${inject.button} ` +
+        `ts=${inject.downTimestamp}/${inject.upTimestamp}` +
+        `${injectOnly ? ' (inject-only)' : ''}` +
+        ` sceneUi=${inject.sceneUi ? 1 : 0}` +
+        ` down=[${(inject.downEntities ?? inject.entities).join(',')}]`
+      this.logPointer(injectLine)
+      // Always visible — POINTER_VERBOSE may hide logPointer.
+      console.info(`[pointer] ${injectLine}`)
       this.worker.postMessage({
         type: 'inject-pointer-click',
         body: inject,

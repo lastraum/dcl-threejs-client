@@ -105,6 +105,21 @@ function ensureContentRoot(shell: HTMLElement): HTMLElement {
     content.className = 'scene-ui-node__content'
     shell.appendChild(content)
   }
+  // Fill the yoga shell so UiText height:100% / flex center resolve against a real box.
+  // Without this, Label entities without explicit height (CREATOR MODE, titles, ✕) collapse:
+  // content height:auto + child height:100% → 0px painted text while borders/bg still show.
+  content.style.position = 'absolute'
+  content.style.left = '0'
+  content.style.top = '0'
+  content.style.right = '0'
+  content.style.bottom = '0'
+  content.style.width = '100%'
+  content.style.height = '100%'
+  content.style.boxSizing = 'border-box'
+  content.style.margin = '0'
+  // Shell owns interactivity; child entity shells are siblings and stack above content.
+  content.style.pointerEvents = 'none'
+  content.style.zIndex = '0'
   return content
 }
 

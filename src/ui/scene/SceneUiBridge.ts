@@ -37,6 +37,7 @@ import {
 } from './uiDomPick'
 import {
   findUiPointerHandlerEntity,
+  hasUiPointerDownOrUp,
   hasUiPointerEvent,
   isUiEntityBlocking,
   type UiPointerEventsLookup
@@ -175,9 +176,15 @@ export class SceneUiBridge {
 
   private pointerEventsLookup: UiPointerEventsLookup = (entity) => {
     const ecs = this.mirrorEcs
+    // Prefer phase-4 snapshot (may be ahead of projection fold), then live projection.
+    // Empty snapshot rows fall through — do not mask PE that only exists on the projection.
     if (this.isAuthoritativeUiEntity(entity)) {
-      const fromSnapshot = this.mountSnapshotPointerEvents.get(entity)
-      if (fromSnapshot) return fromSnapshot as ReturnType<UiPointerEventsLookup>
+      const fromSnapshot = this.mountSnapshotPointerEvents.get(entity) as
+        | { pointerEvents?: unknown[] }
+        | undefined
+      if (fromSnapshot?.pointerEvents?.length) {
+        return fromSnapshot as ReturnType<UiPointerEventsLookup>
+      }
     }
     return ecs?.PointerEvents.getOrNull(entity) ?? null
   }
@@ -424,42 +431,43 @@ export class SceneUiBridge {
     if (this.paintCount <= 12 || mountSize !== this.lastLoggedPaintMount) {
       let withText = 0
       let withBg = 0
-      let textSample = ''
+      const textSamples: string[] = []
       for (const r of records) {
         const t = textOf(r.entity)
         if (t?.value?.trim()) {
           withText++
-          if (!textSample) textSample = t.value.trim().slice(0, 40)
+          if (textSamples.length < 8) {
+            textSamples.push(`e${r.entity as number}:"${t.value.trim().slice(0, 28)}"`)
+          }
         }
         if (backgroundOf(r.entity)) withBg++
       }
+      const sampleStr = textSamples.length ? ` samples=[${textSamples.join(', ')}]` : ''
+      // PE targets available for pick (snapshot ∪ projection) — diagnose CREATOR vs scrim.
+      const peIds: number[] = []
+      for (const r of records) {
+        const id = r.entity as number
+        if (hasUiPointerDownOrUp(this.pointerEventsLookup(r.entity))) peIds.push(id)
+      }
+      peIds.sort((a, b) => a - b)
+      const peStr = peIds.length ? ` pe=[${peIds.map((e) => `e${e}`).join(',')}]` : ' pe=[]'
       if (!this.firstPaintLogged) {
         this.firstPaintLogged = true
         console.info(
           `[scene-ui] first paint — mount=${mountSize} canvas=${records.length} text=${withText} bg=${withBg}` +
-            ` virtual=${this.virtual.width}×${this.virtual.height}` +
-            (textSample ? ` sample="${textSample}"` : '')
+            ` virtual=${this.virtual.width}×${this.virtual.height}${sampleStr}${peStr}`
         )
       } else if (this.paintCount <= 12) {
         console.info(
           `[scene-ui] repaint #${this.paintCount} — mount=${mountSize} canvas=${records.length}` +
-            ` text=${withText} bg=${withBg}` +
-            (textSample ? ` sample="${textSample}"` : '')
+            ` text=${withText} bg=${withBg}${sampleStr}${peStr}`
         )
       } else {
         console.info(
-          `[scene-ui] repaint mount change — mount=${mountSize} canvas=${records.length} text=${withText} bg=${withBg}`
+          `[scene-ui] repaint mount change — mount=${mountSize} canvas=${records.length} text=${withText} bg=${withBg}${peStr}`
         )
       }
       this.lastLoggedPaintMount = mountSize
-      if (isSceneUiDebugEnabled() && mountSize >= 10) {
-        const peIds = [...this.mountSnapshotPointerEvents.keys()]
-          .sort((a, b) => (a as number) - (b as number))
-          .map((e) => `e${e}`)
-        console.log(
-          `[scene-ui] mount snapshot PointerEvents (${peIds.length}): ${peIds.join(', ') || '(none)'}`
-        )
-      }
     }
 
     let layoutBoxes = this.layoutCache.get(layoutKey)
@@ -674,25 +682,23 @@ export class SceneUiBridge {
     const ecs = this.mirrorEcs
     if (!ecs) return null
 
+    // Stack order (deepest / smallest first) — first blocking layer wins; no scrim fall-through.
     const candidates = this.collectTopClusterPickCandidates(clientX, clientY, eventTarget)
-    let best: { entity: Entity; blocking: boolean } | null = null
-    let bestArea = Number.POSITIVE_INFINITY
-
     for (const entity of candidates) {
       if (this.input.isFieldEntity(entity)) return { entity, blocking: true }
-      if (!isUiEntityBlocking(ecs, entity, this.pointerEventsLookup)) continue
-      const area = this.candidatePickArea(entity)
-      if (area < bestArea) {
-        bestArea = area
-        best = { entity, blocking: true }
+      if (isUiEntityBlocking(ecs, entity, this.pointerEventsLookup)) {
+        return { entity, blocking: true }
       }
     }
-    return best
+    return null
   }
 
   /**
    * Resolve the react-ecs onMouseDown handler for a click.
-   * Smallest leaf region wins — label → card beats fullscreen modal scrim.
+   *
+   * Prefer the PE handler with the **smallest screen region** under the point
+   * (CREATOR card ≪ fullscreen scrim). Ancestor walk from each leaf so labels
+   * resolve to the card. Fullscreen scrim only wins when no smaller PE is under the cursor.
    */
   private resolveUiHandlerAtPoint(
     clientX: number,
@@ -705,8 +711,8 @@ export class SceneUiBridge {
     if (!ecs || !view) return null
 
     const candidates = this.collectTopClusterPickCandidates(clientX, clientY, eventTarget)
-    const debugPick = isSceneUiDebugEnabled() && state === PointerEventType.PET_DOWN
-    if (debugPick) {
+    const logPick = isSceneUiDebugEnabled() && state === PointerEventType.PET_DOWN
+    if (logPick) {
       const regions = this.hitMap.hitTestRegionCandidates(clientX, clientY)
       console.log(
         `[scene-ui] pick @(${clientX},${clientY}) regions=${regions.length} candidates=${candidates.length} mount=${this.workerUiEntities?.size ?? 0}`
@@ -721,14 +727,15 @@ export class SceneUiBridge {
           this.pointerEventsLookup
         )
         const area = region.width * region.height
+        const blocking = isUiEntityBlocking(ecs, region.entity, this.pointerEventsLookup)
         console.log(
-          `[scene-ui]   region e${region.entity} depth=${region.depth} z=${region.zIndex} ${Math.round(region.width)}×${Math.round(region.height)} area=${Math.round(area)} handler=${handler ?? '—'}`
+          `[scene-ui]   region e${region.entity} depth=${region.depth} z=${region.zIndex} ${Math.round(region.width)}×${Math.round(region.height)} area=${Math.round(area)} handler=${handler ?? '—'} block=${blocking ? 1 : 0}`
         )
       }
     }
 
     let bestHandler: Entity | null = null
-    let bestHandlerArea = Number.POSITIVE_INFINITY
+    let bestArea = Number.POSITIVE_INFINITY
     let blockingEntity: Entity | null = null
     let blockingArea = Number.POSITIVE_INFINITY
 
@@ -737,7 +744,6 @@ export class SceneUiBridge {
       // input is an ancestor candidate when clicking LOAD/DEL pills in the presets table).
       if (this.input.isFieldEntity(entity)) continue
 
-      const area = this.candidatePickArea(entity)
       const handler = findUiPointerHandlerEntity(
         ecs,
         view,
@@ -747,39 +753,48 @@ export class SceneUiBridge {
         this.pointerEventsLookup
       )
       if (handler !== null) {
-        if (area < bestHandlerArea) {
-          bestHandlerArea = area
+        // Rank by the HANDLER's region (card), not the leaf (label) — so a leaf that
+        // incorrectly walks to the scrim loses to a real card handler under the same point.
+        let area = this.candidatePickArea(handler)
+        if (!Number.isFinite(area)) area = this.candidatePickArea(entity)
+        if (area < bestArea) {
+          bestArea = area
           bestHandler = handler
         }
         continue
       }
 
-      if (isUiEntityBlocking(ecs, entity, this.pointerEventsLookup) && area < blockingArea) {
-        blockingArea = area
-        blockingEntity = entity
+      if (isUiEntityBlocking(ecs, entity, this.pointerEventsLookup)) {
+        const area = this.candidatePickArea(entity)
+        if (area < blockingArea) {
+          blockingArea = area
+          blockingEntity = entity
+        }
       }
     }
 
     if (bestHandler !== null) {
-      if (debugPick) {
+      // Always log PE pick for UI clicks — CREATOR vs scrim diagnosis.
+      if (state === PointerEventType.PET_DOWN) {
         const fromSnapshot = this.mountSnapshotPointerEvents.has(bestHandler)
         const parent = ecs.UiTransform.getOrNull(bestHandler)?.parent ?? 0
-        console.log(
-          `[scene-ui] pick → handler e${bestHandler} parent=e${parent} leafArea=${Math.round(bestHandlerArea)} snapshotPe=${fromSnapshot} (${clientX},${clientY})`
+        console.info(
+          `[scene-ui] pick → handler e${bestHandler} parent=e${parent} area=${Math.round(bestArea)}` +
+            ` snapshotPe=${fromSnapshot} candidates=${candidates.length} (${clientX},${clientY})`
         )
       }
       return bestHandler
     }
 
     if (blockingEntity !== null) {
-      if (debugPick) {
+      if (logPick) {
         console.log(
           `[scene-ui] pick → blocked e${blockingEntity} area=${Math.round(blockingArea)} (${clientX},${clientY})`
         )
       }
       return null
     }
-    if (debugPick) {
+    if (logPick) {
       console.warn(`[scene-ui] pick → no target (${clientX},${clientY})`)
     }
     return null

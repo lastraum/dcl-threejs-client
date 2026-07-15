@@ -17,34 +17,63 @@ import { normalizePointerFilterMode, PointerFilterMode } from './yogaEnums'
 function buttonMatches(entryButton: number | undefined, pressed: InputActionValue): boolean {
   const btn = entryButton ?? InputAction.IA_ANY
   if (btn === InputAction.IA_ANY) return true
-  return btn === pressed
+  return Number(btn) === Number(pressed)
+}
+
+/** Snapshot/JSON PE may arrive as array-like objects — always normalize to an array. */
+export function normalizePointerEventsList(
+  spec: { pointerEvents?: unknown } | null | undefined
+): PBPointerEvents_Entry[] {
+  if (!spec) return []
+  const raw = spec.pointerEvents
+  if (Array.isArray(raw)) return raw as PBPointerEvents_Entry[]
+  if (raw && typeof raw === 'object') return Object.values(raw) as PBPointerEvents_Entry[]
+  return []
+}
+
+function entryEventType(entry: PBPointerEvents_Entry): number {
+  return Number((entry as { eventType?: number }).eventType)
+}
+
+function entryButton(entry: PBPointerEvents_Entry): number | undefined {
+  const info = entry.eventInfo as { button?: number } | undefined
+  if (info?.button === undefined || info?.button === null) return undefined
+  return Number(info.button)
+}
+
+function entryInteractionType(entry: PBPointerEvents_Entry): number {
+  const v = (entry as { interactionType?: number }).interactionType
+  return v === undefined || v === null ? InteractionType.CURSOR : Number(v)
 }
 
 export function hasUiPointerEvent(
-  spec: { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> } | null | undefined,
+  spec: { pointerEvents?: unknown } | null | undefined,
   eventType: PointerEventTypeValue,
   button: InputActionValue
 ): boolean {
-  if (!spec) return false
-  return spec.pointerEvents.some(
+  const list = normalizePointerEventsList(spec)
+  if (!list.length) return false
+  return list.some(
     (entry) =>
-      entry.eventType === eventType &&
-      buttonMatches(entry.eventInfo?.button, button) &&
-      (entry.interactionType ?? InteractionType.CURSOR) === InteractionType.CURSOR
+      entryEventType(entry) === Number(eventType) &&
+      buttonMatches(entryButton(entry), button) &&
+      entryInteractionType(entry) === InteractionType.CURSOR
   )
 }
 
 /** react-ecs onPointerDown / onPointerUp — cursor PET_DOWN or PET_UP (not hover-only). */
 export function hasUiPointerDownOrUp(
-  spec: { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> } | null | undefined
+  spec: { pointerEvents?: unknown } | null | undefined
 ): boolean {
-  if (!spec?.pointerEvents.length) return false
-  return spec.pointerEvents.some(
-    (entry) =>
-      (entry.eventType === PointerEventType.PET_DOWN ||
-        entry.eventType === PointerEventType.PET_UP) &&
-      (entry.interactionType ?? InteractionType.CURSOR) === InteractionType.CURSOR
-  )
+  const list = normalizePointerEventsList(spec)
+  if (!list.length) return false
+  return list.some((entry) => {
+    const t = entryEventType(entry)
+    return (
+      (t === PointerEventType.PET_DOWN || t === PointerEventType.PET_UP) &&
+      entryInteractionType(entry) === InteractionType.CURSOR
+    )
+  })
 }
 
 /**

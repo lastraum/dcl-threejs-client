@@ -259,10 +259,22 @@ export class SocialProfileMenu {
     const name =
       this.displayName ||
       (this.login.kind === 'guest' ? this.login.displayName : 'Guest')
+    const profileUrl = address
+      ? `https://peer.decentraland.org/lambdas/profiles/${encodeURIComponent(address)}`
+      : ''
     return `
       <div class="social-profile-menu__identity">
         <div class="social-profile-menu__name">${escapeHtml(name)}</div>
-        <div class="social-profile-menu__sub">Guest on this device · ${escapeHtml(walletShort(address))}</div>
+        <div class="social-profile-menu__sub">Guest on this device</div>
+        <button type="button" class="social-profile-menu__wallet-copy social-profile-menu__guest-addr" data-copy-guest-wallet data-wallet="${escapeHtml(address)}" title="Click to copy full address">
+          <code class="social-profile-menu__wallet-code">${escapeHtml(address)}</code>
+          <span class="social-profile-menu__wallet-copy-hint" data-copy-hint>Copy</span>
+        </button>
+        ${
+          profileUrl
+            ? `<a class="social-profile-menu__catalyst-link" href="${escapeHtml(profileUrl)}" target="_blank" rel="noopener noreferrer">View on Catalyst ↗</a>`
+            : ''
+        }
       </div>
       <p class="social-profile-menu__hint">
         Stable guest wallet for chat &amp; LiveKit. Connect a wallet to claim wearables &amp; ownership tools.
@@ -287,6 +299,23 @@ export class SocialProfileMenu {
         if (method) void this.runLoginMethod(method)
       })
     }
+    this.menuBody.querySelector('[data-copy-guest-wallet]')?.addEventListener('click', async (ev) => {
+      const btn = ev.currentTarget as HTMLButtonElement
+      const value = btn.dataset.wallet?.trim()
+      if (!value) return
+      const hint = btn.querySelector('[data-copy-hint]') as HTMLElement | null
+      try {
+        await navigator.clipboard.writeText(value)
+        btn.classList.add('is-copied')
+        if (hint) hint.textContent = 'Copied!'
+        window.setTimeout(() => {
+          btn.classList.remove('is-copied')
+          if (hint) hint.textContent = 'Copy'
+        }, 1400)
+      } catch {
+        if (hint) hint.textContent = 'Failed'
+      }
+    })
   }
 
   private renderSignInMenu(): string {

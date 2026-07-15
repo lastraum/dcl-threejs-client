@@ -593,13 +593,30 @@ export class LiveKitCommsSession {
   }
 
   async publishChat(text: string): Promise<boolean> {
-    if (!this.room || this.room.state !== ConnectionState.Connected) return false
+    if (!this.room || this.room.state !== ConnectionState.Connected) {
+      console.warn(`[chat] publishChat skip transport=${this.transport} room=${this.room?.state ?? 'null'}`)
+      return false
+    }
     const trimmed = text.trim()
     if (!trimmed) return false
+    // Can this participant publish data? (token grant)
+    const lp = this.room.localParticipant
+    const canData =
+      typeof (lp as { permissions?: { canPublishData?: boolean } }).permissions?.canPublishData ===
+      'boolean'
+        ? (lp as { permissions: { canPublishData: boolean } }).permissions.canPublishData
+        : true
+    if (!canData) {
+      console.warn(`[chat] publishChat blocked — canPublishData=false transport=${this.transport}`)
+      return false
+    }
     const unixSec = Date.now() / 1000
     const packet = encodeRfc4ChatPacket(trimmed, unixSec)
     try {
       await this.room.localParticipant.publishData(packet, { reliable: true })
+      console.log(
+        `[chat] RFC4 out → ${this.transport} room=${this.room.name} len=${packet.byteLength}`
+      )
       clientDebugLog.log(
         'comms',
         `RFC4 Chat out → ${this.transport} len=${packet.byteLength} unix=${unixSec.toFixed(0)}`,
@@ -608,6 +625,7 @@ export class LiveKitCommsSession {
       return true
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[chat] RFC4 publish failed (${this.transport}): ${msg}`)
       clientDebugLog.log('comms', `RFC4 Chat publish failed (${this.transport}): ${msg}`, { level: 'error' })
       return false
     }

@@ -490,7 +490,10 @@ export class SocialService {
     }
 
     const sent = await this.comms.sendSceneChat(trimmed)
-    if (!sent) return false
+    if (!sent) {
+      console.warn('[chat] sendMessage failed — LiveKit publish returned false')
+      return false
+    }
 
     this.appendLine(channelKey(this.channel), {
       id: `local-${++lineCounter}`,

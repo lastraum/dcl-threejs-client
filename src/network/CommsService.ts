@@ -192,18 +192,15 @@ export class CommsService {
         this.sceneBinaryHandler?.(sender, data)
       },
       onPeerChat: (address, text, time, transport) => {
-        if (transport === TransportType.World && this.sceneLiveKit.isConnected()) return
-        if (transport === TransportType.Island) return
+        if (!this.shouldAcceptChatTransport(transport)) return
         this.chatHandler?.({ senderAddress: address, text, time })
       },
       onPeerChatMedia: (address, data, transport) => {
-        if (transport === TransportType.World && this.sceneLiveKit.isConnected()) return
-        if (transport === TransportType.Island) return
+        if (!this.shouldAcceptChatTransport(transport)) return
         this.chatMediaHandler?.({ senderAddress: address, data })
       },
       onPeerAvatarVrm: (address, data, transport) => {
-        if (transport === TransportType.World && this.sceneLiveKit.isConnected()) return
-        if (transport === TransportType.Island) return
+        if (!this.shouldAcceptChatTransport(transport)) return
         this.avatarVrmHandler?.(address, data)
       }
     })
@@ -298,13 +295,21 @@ export class CommsService {
   async sendSceneChat(text: string): Promise<boolean> {
     const sessions = this.liveKitChatSessions()
     if (!sessions.length) {
+      console.warn('[chat] send skipped — no LiveKit session connected')
       clientDebugLog.log('comms', 'Chat send skipped — no LiveKit session connected', { level: 'warn' })
       return false
     }
     let sent = false
+    const rooms: string[] = []
     for (const session of sessions) {
-      if (await session.publishChat(text)) sent = true
+      if (await session.publishChat(text)) {
+        sent = true
+        rooms.push((session.getRoomName() || 'room').slice(0, 48))
+      }
     }
+    console.log(
+      `[chat] publish ${sent ? 'ok' : 'FAIL'} rooms=${sessions.length} delivered=[${rooms.join(', ') || 'none'}] text=${text.slice(0, 40)}`
+    )
     return sent
   }
 
@@ -1298,12 +1303,45 @@ export class CommsService {
     }
   }
 
-  /** LiveKit rooms that carry scene chat (ADR-204: island + scene/world). */
+  /** Worlds use the world LiveKit room for Explorer chat; scene room is Cast/video. */
+  private isWorldComms(): boolean {
+    if (this.sceneTarget?.isWorld != null) return this.sceneTarget.isWorld
+    if (this.worldConnected) return true
+    const pointer = this.sceneTarget?.pointer
+    if (pointer) return !isParcelPointer(normalizePointer(pointer))
+    return false
+  }
+
+  /**
+   * Inbound chat de-dupe when both world + scene rooms are joined.
+   * Worlds: Explorer chat is on **world** room (scene is Cast).
+   * Parcels: prefer **scene** room.
+   */
+  private shouldAcceptChatTransport(transport: TransportType): boolean {
+    if (transport === TransportType.Island) return false
+    if (this.isWorldComms()) {
+      if (transport === TransportType.SceneRoom) return false
+      return transport === TransportType.World
+    }
+    if (transport === TransportType.World && this.sceneLiveKit.isConnected()) return false
+    return true
+  }
+
+  /**
+   * LiveKit rooms that carry chat.
+   * Worlds: **world first** (Explorer peer chat), then scene for dual-room peers.
+   * Parcels: scene first.
+   */
   private liveKitChatSessions(): LiveKitCommsSession[] {
     const sessions: LiveKitCommsSession[] = []
-    if (this.sceneLiveKit.isConnected()) sessions.push(this.sceneLiveKit)
-    if (this.worldConnected && this.worldLiveKit.isConnected()) sessions.push(this.worldLiveKit)
-    if (this.islandConnected && this.islandLiveKit.isConnected()) sessions.push(this.islandLiveKit)
+    if (this.isWorldComms()) {
+      if (this.worldConnected && this.worldLiveKit.isConnected()) sessions.push(this.worldLiveKit)
+      if (this.sceneLiveKit.isConnected()) sessions.push(this.sceneLiveKit)
+    } else {
+      if (this.sceneLiveKit.isConnected()) sessions.push(this.sceneLiveKit)
+      if (this.worldConnected && this.worldLiveKit.isConnected()) sessions.push(this.worldLiveKit)
+      if (this.islandConnected && this.islandLiveKit.isConnected()) sessions.push(this.islandLiveKit)
+    }
     return sessions
   }
 

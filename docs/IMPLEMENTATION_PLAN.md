@@ -2,7 +2,7 @@
 
 > Browser-native Decentraland client: load deployed Worlds/scenes, shim SDK7 runtime, mirror ECS → Three.js, expand to open world.
 
-**Status:** Explorer **layout parity ✅**; multi-room chat + cast ✅; **nearby voice + Explorer interop ✅** — spatial voice / 3D `/goto` next (see [`PROGRESS.md`](./PROGRESS.md))  
+**Status:** Explorer **layout parity ✅**; multi-room chat + cast ✅; **nearby voice + Explorer interop ✅**; **circular Genesis minimap ✅** — spatial voice / 3D `/goto` next (see [`PROGRESS.md`](./PROGRESS.md))  
 **ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md)  
 **Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) for current work.
 

@@ -63,9 +63,11 @@ Run through this on a **production build** (`npm run build && npm run preview` o
 
 ### UI chrome
 
-- [ ] Minimap → opens Map tab; pan/zoom; parcel click → popup + **Jump In**
+- [ ] **Circular minimap** (parcels) — under location pill, same width; satellite basemap; player dot at center
+- [ ] Minimap **click** → in-world Map panel (settings) centered on player; pan/zoom; parcel click → popup + **Jump In**
 - [ ] **World mode:** minimap hidden; world card shows name + coords + **Jump back to Genesis City** → `0,0`
-- [ ] Map peer markers (face256 circles) when archipelago API reachable
+- [ ] Full `/map` route — social shell + GENESIS PLAZA / MY LOCATION HUD; peer markers when archipelago API reachable
+- [ ] Scene landing — card fits viewport; map thumbnail not taller than card; gap above Upcoming events
 - [ ] Events tab — Weekly/Calendar views, live events from `events.decentraland.org`
 - [ ] Settings, Backpack, skybox day/night slider
 - [ ] Orbit: left-drag orbits; right-click / Esc toggles pointer lock
@@ -340,7 +342,8 @@ Keep previous `dist/` artifact or CDN deployment ID. Static SPA rollback = redep
 ## Three.js DCL Client — browser beta
 
 **Works:** Worlds/scenes via URL, wallet login, multiplayer presence + chat + **nearby voice**
-(browser ↔ Explorer), profile avatars, emote props, LightSource culling, Genesis map, events calendar.
+(browser ↔ Explorer), **circular Genesis minimap** (parcel HUD), profile avatars, emote props,
+LightSource culling, Genesis map, events calendar.
 
 **Known limitations:** No 3D spatial voice falloff yet; proximity pointer events; some Creator UI polish;
 Explorer chat date quirk; guest via explorer auth sheet or `?guest` / `?skipLogin`.

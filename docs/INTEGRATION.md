@@ -140,8 +140,9 @@ DOM overlay — not in-scene `UiTransform`.
 | Explorer auth sheet + session resume; loading + hydration timer | 🟢 |
 | Multi-provider auth (Google/Discord/Apple/X/WC/MetaMask via auth-dapp) | 🟢 |
 | Sidebar, chat (+ DCM v1 inline images), emote wheel, location pill | 🟢 |
+| **Circular Genesis minimap** (parcel play HUD) | 🟢 | Satellite basemap circle under pill; click → in-world Map (embedded); worlds hide minimap |
 | Debug panel, dev progress panel (`</>`) | 🟢 |
-| Settings overlay: Events, Map, Backpack, Places, Gallery | 🟢 |
+| Settings overlay: Events, Map, Backpack, Places, Gallery | 🟢 | Map tab embedded when opened from minimap / shell (no page HUD chrome) |
 | Backpack wearables equip + Catalyst profile deploy | 🟡 | Inventory/equip/preview/deploy 🟢 · emotes tab / outfits / marketplace ⬜ · mobile sheets 🟢 |
 | Profile pills + right-click profile menu (+ copy wallet) | 🟢 |
 | Overhead name tags (hide via `featureToggles.nameTags` / `?nameTags=`) | 🟢 |

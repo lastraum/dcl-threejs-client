@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-16 (**nearby voice Explorer interop** on `dev-latest`)  
-> **Current phase:** Post-**v0.9.0** — nearby voice shipped (browser ↔ Explorer); spatial next.  
+> **Last updated:** 2026-07-16 (**circular minimap** on `dev-latest`)  
+> **Current phase:** Post-**v0.9.0** — nearby voice + circular Genesis minimap shipped; spatial voice next.  
 > **Voice next:** spatial PositionalAudio on remote avatars.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
@@ -13,6 +13,40 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — Circular Genesis minimap → `dev-latest` (2026-07-16)
+
+**Status: on `dev-latest`** (`7536715`) — parcel play HUD shows a circular satellite minimap under the location pill.
+
+### What's new
+
+- **Circular minimap** — same lod-0/3 Genesis basemap as the full map panel, hard white ring, player at center  
+- **Under the location pill** — pill width matches the circle; no overlap  
+- **Click opens in-world Map** — settings Map tab (stays in play; no 2D `/map` social shell) centered on you  
+- **Parcels only** — worlds keep the location pill only (no city basemap)  
+- **Landing card** — scene thumbnail constrained to viewport; gap above Upcoming events  
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Minimap basemap** | 🟢 | `mapTileUrl` / `visibleTiles` — Unity-parity lod-0/3 |
+| **Hard circle + white ring** | 🟢 | Canvas clip + stroke |
+| **Layout under pill** | 🟢 | `placeBelow` + ResizeObserver; matching 224/192 width |
+| **Open map panel** | 🟢 | Settings overlay Map · `embedded` (no GENESIS PLAZA HUD) |
+| **Center on player** | 🟢 | `initialCenter` from live parcel |
+| **World scenes** | 🟢 | Minimap hidden; pill only |
+| **Landing card height** | 🟢 | Fixed card height; absolute-fill thumbnail |
+
+**QA:**  
+- Jump into a Genesis parcel → pill + circle aligned · green player dot · click → Map panel on your parcel.  
+- World scene → no minimap.  
+- Mobile → both hidden (existing chrome rules).  
+- Scene landing → card fits viewport; space above Upcoming events.
+
+**Not in this slice:** compass/heading arrow · peer dots on minimap · soft alpha fade (hard ring by design).
+
+**Tip commit:** `7536715` on `dev-latest` / `lastraum`.
 
 ---
 
@@ -653,7 +687,7 @@ Genesis spawn walk · VC character-select/follow · `threejs.dcl.eth` materials 
 | **Hydrate spam / hitch flicker** | 🟢 | Follow graph key is **structure-only** (not moving parent pose); live lane rejects cold Transform while held |
 | **WASD with VC active** | 🟢 | Move relative to lens; right = forward × world up (matches freecam) |
 | **Player-frame hot path** | 🟢 | `InputModifier` + `MainCamera` only; pose on `vc-pose-live` |
-| **Client HUD stack** | 🟢 | Sidebar / minimap / chat above scene ECS UI (`--z-client-hud` > `--z-scene-ui`) |
+| **Client HUD stack** | 🟢 | Sidebar / location pill + circular minimap / chat above scene ECS UI (`--z-client-hud` > `--z-scene-ui`) |
 | **Splash removal** | 🟢 | No full-screen splash; session resume + explorer auth sheet |
 
 **Docs:** [ARCHITECTURE.md](./ARCHITECTURE.md) · [ARCHITECTURE.md](./ARCHITECTURE.md) · [ARCHITECTURE.md](./ARCHITECTURE.md)
@@ -799,7 +833,7 @@ Genesis spawn walk · VC character-select/follow · `threejs.dcl.eth` materials 
 | **Environments** | 🟢 | Landscape parcels, **FFT ocean**, Perlin scatter foliage, outdoor lighting (`50c6021`) |
 | **Boot / hydration** | 🟢 | `main.crdt` seed, unified GLB pipeline, composite preload, fast onStart CRDT path, warm-scene load restore |
 | **Profile & pills** | 🟢 | User/remote pill hover, badges row, right-click profile menu, shared profile modal |
-| **Settings shell** | 🟢 | Events calendar, Places, Gallery restored; location pill (replaces minimap); fatal load errors |
+| **Settings shell** | 🟢 | Events calendar, Places, Gallery restored; location pill + circular minimap (parcels); fatal load errors |
 | **Scene stability** | 🟢 | React-heavy deploy engine capture; emote camera orbit while scene-locked |
 
 **Merged:** `lastraum` → `dev-latest` (2026-06-22, tip `43aad5c`)
@@ -896,7 +930,7 @@ Genesis spawn walk · VC character-select/follow · `threejs.dcl.eth` materials 
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
-| **Location pill** | 🟢 | Top-left scene name + parcel coords (replaces minimap) |
+| **Location pill** | 🟢 | Top-left scene name + parcel coords; pairs with circular minimap on parcels |
 | **Profile pills** | 🟢 | Hover state, badges row, right-click → profile menu |
 | **User pill menu** | 🟢 | Shared profile modal; overlay visibility fixes |
 | **Settings → Events** | 🟢 | DCL Events API weekly/calendar — full-height layout |

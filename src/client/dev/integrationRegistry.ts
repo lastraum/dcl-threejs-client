@@ -85,11 +85,18 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
     notes: 'CSS2D pills; hide via scene.json featureToggles.nameTags or ?nameTags=disabled'
   },
   { id: 'ui:emote-wheel', name: 'Emote wheel (B)', status: 'render', category: 'client-ui', notes: 'Profile + bundled emotes' },
-  { id: 'ui:location-card', name: 'Location card', status: 'render', category: 'client-ui', notes: 'Top-left pill — scene name + Genesis parcel coords (all scenes)' },
+  { id: 'ui:location-card', name: 'Location card', status: 'render', category: 'client-ui', notes: 'Top-left pill — scene name + Genesis parcel coords; width matches minimap when present' },
+  {
+    id: 'ui:minimap',
+    name: 'Circular Genesis minimap',
+    status: 'render',
+    category: 'client-ui',
+    notes: 'Parcel HUD: lod-0/3 satellite circle under pill; click → embedded Map panel centered on player; worlds hide'
+  },
   { id: 'ui:debug-panel', name: 'Debug panel (Help)', status: 'render', category: 'client-ui', notes: 'Position HUD, collider toggles, render quality' },
   { id: 'ui:dev-progress', name: 'Dev progress panel (</>)', status: 'render', category: 'client-ui', notes: 'Community claims + parity gaps + PROGRESS.md from GitHub' },
   { id: 'ui:settings-events', name: 'Settings → Events (X)', status: 'render', category: 'client-ui', notes: 'DCL Events API, weekly/calendar' },
-  { id: 'ui:settings-map', name: 'Settings → Map (M)', status: 'render', category: 'client-ui', notes: 'Genesis tiles, peers, Jump In' },
+  { id: 'ui:settings-map', name: 'Settings → Map (M)', status: 'render', category: 'client-ui', notes: 'Genesis tiles, peers, Jump In; embedded mode hides page HUD when opened from minimap/shell' },
   { id: 'ui:settings-backpack', name: 'Settings → Backpack (I)', status: 'render', category: 'client-ui', notes: 'Avatar preview, equipped wearables' },
   { id: 'ui:preferences-panel', name: 'Preferences panel (P / ⚙)', status: 'render', category: 'client-ui', notes: 'Right rail; world input passes through' },
   { id: 'ui:preferences-graphics', name: 'Preferences → Graphics', status: 'partial', category: 'client-ui', notes: 'Preset L/M/H/Custom, shadows, lights, res scale, FPS, MSAA, FOV, lighting live; VSync hidden; Resolution/Fullscreen stub; bloom/HDR/distance stubs' },

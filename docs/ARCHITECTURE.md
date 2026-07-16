@@ -92,6 +92,7 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 |------|--------|
 | Scene UI | Partial — Creator modal / hit-map polish |
 | Social | Multi-room + cast ✅; nearby voice + Explorer interop ✅ (spatial 3D next); DMs · in-world `/goto` open |
+| Play HUD | Location pill + circular Genesis minimap (parcels) ✅; worlds pill-only |
 | Backpack | Wearables/emotes/colors ✅; outfits + marketplace open |
 | Graphics P3/P4 | Distance culls + bloom/HDR stubs |
 | NftShape, AvatarModifierArea, GltfContainerLoadingState | Not started |
@@ -100,7 +101,6 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 
 | Debt | Action |
 |------|--------|
-| Dead `.minimap` CSS in `index.html` | Safe delete (location pill replaced it) |
 | Dual defensive CRDT/pointer paths | Prefer one path when QA-green |
 
 ---

@@ -1316,7 +1316,14 @@ export class CommsService {
         : 'Island LiveKit connect failed (archipelago)',
       { level: connected ? 'success' : 'error', alsoConsole: true }
     )
+    // Nearby voice must re-bind when island joins (Explorer peers often live here).
+    if (connected) {
+      this.onLiveKitRoomsChanged?.()
+    }
   }
+
+  /** Optional hook — World sets this so voice rebinds when island/scene rooms change. */
+  onLiveKitRoomsChanged: (() => void) | null = null
 
   private async connectLiveKitLabel(
     adapter: string,
@@ -1447,24 +1454,31 @@ export class CommsService {
    * Returns only rooms in Connected state (never a stale disconnected instance).
    */
   getPrimaryLiveKitRoom(): Room | null {
-    const pick = (session: LiveKitCommsSession | null): Room | null => {
-      if (!session) return null
+    const rooms = this.getAllLiveKitRooms()
+    return rooms[0] ?? null
+  }
+
+  /**
+   * Every connected LiveKit room (scene + island + world).
+   * Nearby voice publishes/subscribes on **all** of these — Genesis peers often use island.
+   */
+  getAllLiveKitRooms(): Room[] {
+    const out: Room[] = []
+    const seen = new Set<Room>()
+    const order = [
+      this.primaryAvatarSession(),
+      this.sceneLiveKit,
+      this.islandLiveKit,
+      this.worldLiveKit
+    ]
+    for (const session of order) {
+      if (!session) continue
       const room = session.getRoom()
-      if (!room || room.state !== ConnectionState.Connected) return null
-      return room
+      if (!room || room.state !== ConnectionState.Connected || seen.has(room)) continue
+      seen.add(room)
+      out.push(room)
     }
-    const primary = pick(this.primaryAvatarSession())
-    if (primary) return primary
-    for (const session of this.connectedLiveKitSessions()) {
-      const room = pick(session)
-      if (room) return room
-    }
-    // Fallback: ignore session flags, trust Room.state (guards flag drift).
-    for (const session of [this.sceneLiveKit, this.worldLiveKit, this.islandLiveKit]) {
-      const room = pick(session)
-      if (room) return room
-    }
-    return null
+    return out
   }
 
   /** Debug: which LiveKit rooms are up (for voice diagnostics). */

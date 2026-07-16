@@ -1,5 +1,6 @@
 import { AppController } from './AppController'
 import { installSkinnedMeshSafetyPatch } from '../rendering/skinnedMeshInstance'
+import { maybeShowWhatsNewToast } from './whatsNew/WhatsNewToast'
 
 const hud = document.getElementById('hud')!
 
@@ -17,4 +18,6 @@ export async function bootstrap(): Promise<void> {
 
   const app = new AppController()
   await app.start(container)
+  // After first shell paint — version toast (localStorage write off while testing).
+  maybeShowWhatsNewToast()
 }

@@ -11648,6 +11648,200 @@
 
       /* Transient toast notifications (no nav trigger) */
 
+      /* Client version / What's new toast */
+      .whats-new-host {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: calc(var(--z-client-system, 210) + 5);
+        pointer-events: none;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding:
+          0
+          max(12px, env(safe-area-inset-right, 0px))
+          calc(16px + env(safe-area-inset-bottom, 0px))
+          max(12px, env(safe-area-inset-left, 0px));
+      }
+      .whats-new-toast {
+        width: min(420px, 100%);
+        pointer-events: auto;
+        transform: translateY(120%);
+        opacity: 0;
+        transition:
+          transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+          opacity 0.28s ease;
+      }
+      .whats-new-toast--visible {
+        transform: translateY(0);
+        opacity: 1;
+      }
+      .whats-new-toast__inner {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 14px 16px;
+        border-radius: 16px;
+        background: rgba(16, 18, 26, 0.94);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(16px) saturate(1.3);
+        -webkit-backdrop-filter: blur(16px) saturate(1.3);
+      }
+      .whats-new-toast__kicker {
+        display: block;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.5);
+        margin-bottom: 4px;
+      }
+      .whats-new-toast__title {
+        display: block;
+        font-size: 14px;
+        font-weight: 650;
+        color: #fff;
+        line-height: 1.35;
+      }
+      .whats-new-toast__actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .whats-new-toast__btn {
+        margin: 0;
+        padding: 8px 14px;
+        border-radius: 999px;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 650;
+        cursor: pointer;
+        border: 1px solid transparent;
+      }
+      .whats-new-toast__btn--primary {
+        background: linear-gradient(135deg, #ff2d55, #ff6b35);
+        color: #fff;
+        border-color: transparent;
+      }
+      .whats-new-toast__btn--ghost {
+        background: transparent;
+        color: rgba(255, 255, 255, 0.78);
+        border-color: rgba(255, 255, 255, 0.16);
+      }
+      .whats-new-toast__btn:hover {
+        filter: brightness(1.06);
+      }
+      .whats-new-sheet {
+        position: fixed;
+        inset: 0;
+        z-index: calc(var(--z-client-system, 210) + 6);
+        pointer-events: auto;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+      }
+      .whats-new-sheet[hidden] {
+        display: none !important;
+      }
+      .whats-new-sheet__backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.55);
+      }
+      .whats-new-sheet__panel {
+        position: relative;
+        width: min(440px, 100%);
+        max-height: min(72vh, 560px);
+        margin: 0 12px calc(12px + env(safe-area-inset-bottom, 0px));
+        padding: 18px 18px 16px;
+        border-radius: 18px 18px 14px 14px;
+        background: #14161f;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        overflow: hidden;
+      }
+      .whats-new-sheet__header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .whats-new-sheet__kicker {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.48);
+        margin: 0 0 4px;
+      }
+      .whats-new-sheet__title {
+        margin: 0;
+        font-size: 17px;
+        font-weight: 700;
+        color: #fff;
+        line-height: 1.3;
+      }
+      .whats-new-sheet__close {
+        flex-shrink: 0;
+        width: 36px;
+        height: 36px;
+        border: none;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        font-size: 22px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      .whats-new-sheet__list {
+        margin: 0;
+        padding: 0 0 0 1.15em;
+        overflow: auto;
+        flex: 1;
+        color: rgba(255, 255, 255, 0.88);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      .whats-new-sheet__list li {
+        margin-bottom: 8px;
+      }
+      .whats-new-sheet__footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .whats-new-sheet__link {
+        font-size: 12px;
+        font-weight: 600;
+        color: rgba(255, 138, 101, 0.95);
+        text-decoration: none;
+      }
+      .whats-new-sheet__link:hover {
+        text-decoration: underline;
+      }
+      .whats-new-sheet__dev {
+        margin: 0;
+        font-size: 10px;
+        color: rgba(255, 200, 80, 0.75);
+      }
+      @media (min-width: 720px) {
+        .whats-new-sheet {
+          align-items: center;
+        }
+        .whats-new-sheet__panel {
+          margin-bottom: 0;
+          border-radius: 18px;
+        }
+      }
+
       /* Mobile iPhone-style notification banners */
       .social-mobile-notif-host {
         position: fixed;

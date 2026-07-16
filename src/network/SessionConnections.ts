@@ -23,8 +23,18 @@ export async function disconnectLiveKit(): Promise<void> {
   }
 }
 
-/** Tear down comms, voice, and world runtime (leave play / switch scenes). */
-export async function disconnectAll(world: World | null): Promise<void> {
-  await disconnectLiveKit()
+/**
+ * Tear down comms, voice, and world runtime (leave play / switch scenes).
+ * @param keepLiveKit — when true, do **not** kill the global LiveKit session.
+ *   Used for landing → play handoff: SocialChatController still owns the live room
+ *   until `adoptComms` transfers it to World.
+ */
+export async function disconnectAll(
+  world: World | null,
+  opts?: { keepLiveKit?: boolean }
+): Promise<void> {
+  if (!opts?.keepLiveKit) {
+    await disconnectLiveKit()
+  }
   world?.dispose()
 }

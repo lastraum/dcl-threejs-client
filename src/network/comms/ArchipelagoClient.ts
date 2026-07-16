@@ -21,10 +21,16 @@ export class ArchipelagoClient {
   private identity: AuthIdentity | null = null
   private address: string | null = null
   private pendingPosition: Position | null = null
+  /** Last known position — keep-alive heartbeats so island assignment is not one-shot. */
+  private lastPosition: Position | null = null
+  private lastPosLogAt = 0
   private onIslandChanged: ((event: IslandChangedEvent) => void) | null = null
   private retries = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private wsUrl = ''
+  private welcomed = false
+  private islandId: string | null = null
 
   setIslandHandler(handler: ((event: IslandChangedEvent) => void) | null): void {
     this.onIslandChanged = handler
@@ -34,11 +40,31 @@ export class ArchipelagoClient {
     return this.socket?.readyState === WebSocket.OPEN
   }
 
+  isWelcomed(): boolean {
+    return this.welcomed && this.isConnected()
+  }
+
+  getIslandId(): string | null {
+    return this.islandId
+  }
+
+  describe(): string {
+    const ws =
+      this.socket?.readyState === WebSocket.OPEN
+        ? 'open'
+        : this.socket?.readyState === WebSocket.CONNECTING
+          ? 'connecting'
+          : 'closed'
+    return `ws=${ws} welcomed=${this.welcomed} island=${this.islandId ?? 'none'} url=${this.wsUrl.slice(0, 48) || '-'}`
+  }
+
   connect(wsTarget: string, address: string, identity: AuthIdentity): void {
     this.disconnect()
     this.identity = identity
     this.address = address.toLowerCase()
     this.retries = 0
+    this.welcomed = false
+    this.islandId = null
 
     let url = wsTarget.trim()
     if (url.startsWith('archipelago:')) url = url.slice('archipelago:'.length)
@@ -47,12 +73,34 @@ export class ArchipelagoClient {
     }
     this.wsUrl = url
 
-    clientDebugLog.log('comms', `Archipelago connecting · ${url}`, { level: 'info' })
+    // Always console — ClientDebugLog silences category `comms`.
+    console.log('[archipelago] connecting', url)
+    clientDebugLog.log('network', `Archipelago connecting · ${url}`, {
+      level: 'info',
+      alsoConsole: true
+    })
     this.openSocket(url)
   }
 
+  /**
+   * @param x,y,z — **DCL genesis meters** (+X east, +Y up, +Z north).
+   * Callers pass `sceneLocalToGenesis(player.getPosition())` — getPosition is already
+   * DCL scene-local via threeToDclVec. Do **not** flip Z here (that mirrored us to the
+   * opposite side of the map → empty island, remotes=0, Explorer never co-clustered).
+   */
   queuePosition(x: number, y: number, z: number): void {
-    this.pendingPosition = { x, y, z: -z }
+    const pos: Position = { x, y, z }
+    this.pendingPosition = pos
+    this.lastPosition = pos
+    // Log occasionally so island co-location is debuggable.
+    if (!this.lastPosLogAt || performance.now() - this.lastPosLogAt > 5000) {
+      this.lastPosLogAt = performance.now()
+      console.log(
+        '[archipelago] heartbeat genesis',
+        `x=${x.toFixed(1)} y=${y.toFixed(1)} z=${z.toFixed(1)}`,
+        `island=${this.islandId ?? 'none'}`
+      )
+    }
     this.flushHeartbeat()
   }
 
@@ -61,9 +109,12 @@ export class ArchipelagoClient {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    this.stopHeartbeatLoop()
     this.socket?.close()
     this.socket = null
     this.pendingPosition = null
+    this.welcomed = false
+    this.islandId = null
   }
 
   private openSocket(url: string): void {
@@ -72,7 +123,11 @@ export class ArchipelagoClient {
     socket.binaryType = 'arraybuffer'
 
     socket.onopen = () => {
-      clientDebugLog.log('comms', 'Archipelago WS open · sending challenge', { level: 'success' })
+      console.log('[archipelago] WS open · challenge')
+      clientDebugLog.log('network', 'Archipelago WS open · sending challenge', {
+        level: 'success',
+        alsoConsole: true
+      })
       this.sendClientPacket({
         message: {
           $case: 'challengeRequest',
@@ -86,16 +141,40 @@ export class ArchipelagoClient {
     }
 
     socket.onerror = () => {
-      clientDebugLog.log('comms', 'Archipelago WS error', { level: 'error' })
+      console.warn('[archipelago] WS error')
+      clientDebugLog.log('network', 'Archipelago WS error', { level: 'error', alsoConsole: true })
     }
 
     socket.onclose = () => {
-      clientDebugLog.log('comms', 'Archipelago WS closed', { level: 'warn' })
+      console.warn('[archipelago] WS closed · retries=', this.retries)
+      clientDebugLog.log('network', 'Archipelago WS closed', { level: 'warn', alsoConsole: true })
       this.socket = null
-      if (this.retries < 3 && this.wsUrl && this.identity && this.address) {
+      this.welcomed = false
+      this.stopHeartbeatLoop()
+      if (this.retries < 5 && this.wsUrl && this.identity && this.address) {
         this.retries++
         this.reconnectTimer = setTimeout(() => this.openSocket(this.wsUrl), 1500 * this.retries)
       }
+    }
+  }
+
+  private startHeartbeatLoop(): void {
+    this.stopHeartbeatLoop()
+    // Island assignment + keep-alive — one seed during load is not enough if the first
+    // heartbeat is lost before welcome or assignment.
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.isConnected() || !this.welcomed) return
+      if (this.lastPosition) {
+        this.pendingPosition = { ...this.lastPosition }
+        this.flushHeartbeat()
+      }
+    }, 2000)
+  }
+
+  private stopHeartbeatLoop(): void {
+    if (this.heartbeatTimer != null) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
     }
   }
 
@@ -127,7 +206,11 @@ export class ArchipelagoClient {
       case 'challengeResponse': {
         const challenge = message.challengeResponse.challengeToSign
         if (!challenge.startsWith('dcl-')) {
-          clientDebugLog.log('comms', 'Archipelago invalid challenge', { level: 'error' })
+          console.error('[archipelago] invalid challenge')
+          clientDebugLog.log('network', 'Archipelago invalid challenge', {
+            level: 'error',
+            alsoConsole: true
+          })
           this.disconnect()
           return
         }
@@ -143,14 +226,24 @@ export class ArchipelagoClient {
         break
       }
       case 'welcome':
+        this.welcomed = true
+        this.retries = 0
+        console.log('[archipelago] welcome peer=', message.welcome.peerId)
         clientDebugLog.log('network', `Archipelago welcome · peer=${message.welcome.peerId}`, {
           level: 'success',
           alsoConsole: true
         })
+        // Prefer last known position if pending was cleared.
+        if (!this.pendingPosition && this.lastPosition) {
+          this.pendingPosition = { ...this.lastPosition }
+        }
         this.flushHeartbeat()
+        this.startHeartbeatLoop()
         break
       case 'islandChanged': {
         const change = message.islandChanged
+        this.islandId = change.islandId
+        console.log('[archipelago] island →', change.islandId, change.connStr.slice(0, 56))
         clientDebugLog.log(
           'network',
           `Archipelago island → ${change.islandId} · conn=${change.connStr.slice(0, 48)}…`,

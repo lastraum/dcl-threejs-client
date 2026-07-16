@@ -227,9 +227,9 @@ export class World {
   }
 
   /**
-   * Bind voice rooms (ADR-204):
+   * Bind voice rooms:
    * - Worlds → world LiveKit only
-   * - Parcels → scene LiveKit only (island = movement, not voice)
+   * - Parcels → island + scene (Explorer nearby needs island; archipelago Z must be correct)
    * Does **not** unlock audio — call `unlockVoiceInPlay()` after spawn.
    */
   syncVoiceRoom(): void {
@@ -237,18 +237,37 @@ export class World {
       this.voice.refreshRooms()
       console.log('[voice]', 'rooms changed', this.comms.describeLiveKitRooms())
       this.voice.dumpStatus('rooms-changed', true)
+      this.logAllRoomsAudio('rooms-changed')
     }
     this.voice.bindRoomsProvider(() => this.comms.getVoiceLiveKitRooms())
     this.voice.bindStatusProvider(() => this.comms.describeLiveKitRooms())
+    this.voice.bindInventoryProvider(() => this.comms.describeAllRoomsAudioInventory())
     this.voice.refreshRooms()
     console.log('[voice]', 'syncVoiceRoom', this.comms.describeLiveKitRooms())
     this.voice.dumpStatus('sync')
   }
 
-  /** Unlock nearby voice after the local player has spawned into the scene/world. */
+  /** Unlock nearby voice only when play chrome is ready (not during loading). */
   unlockVoiceInPlay(): void {
+    // Archipelago still used for movement/nearby peers — not for voice (ADR-204 = scene room).
+    const pos = this.player?.getPosition()
+    if (pos) this.comms.seedArchipelagoSceneLocal(pos.x, pos.y, pos.z)
+    void this.comms.ensureArchipelagoConnected()
+    // Explorer maps voice bars via LiveKit name + profile packets — refresh after handoff.
+    const dn = this.session.getProfile()?.displayName ?? null
+    this.comms.setCommsProfile(this.session.getCommsProfileEntity())
+    this.comms.applyLocalDisplayName(dn)
+    this.comms.announceProfile('connect')
     this.syncVoiceRoom()
     this.voice.setInPlay(true)
+    this.logAllRoomsAudio('in-play')
+    console.log('[voice] unlocked · displayName=', dn ?? '(none)', '·', this.comms.describeLiveKitRooms())
+  }
+
+  /** Log scene/world/island remote track inventory (find mic on wrong room). */
+  logAllRoomsAudio(reason: string): void {
+    const inv = this.comms.describeAllRoomsAudioInventory()
+    console.log(`[voice] all-rooms inventory (${reason}):\n${inv}`)
   }
 
   /** Drive 3 green voice bars on local + remote name tags. */
@@ -636,9 +655,17 @@ export class World {
       this.comms.bindSceneTarget(target)
       this.comms.applyRealmAbout(scene.realm, scene.commsPointer)
       this.comms.pruneUnusedLiveKitForTarget({ isWorld: target.isWorld === true })
+      // Landing may have scene LiveKit without archipelago island — force realm path.
+      if (target.isWorld !== true) {
+        await this.comms.ensureArchipelagoConnected()
+      }
       this.comms.seedArchipelagoSceneLocal(scene.spawn.x, scene.spawn.y, scene.spawn.z)
       this.comms.notifyHandlersOfCurrentPeers()
       this.syncVoiceRoom()
+      console.log(
+        '[comms] REUSE landing LiveKit (no reconnect) ·',
+        this.comms.describeLiveKitRooms()
+      )
       clientDebugLog.log('network', 'Early scene comms — reusing live landing session (no reconnect)', {
         level: 'success',
         alsoConsole: true
@@ -648,6 +675,9 @@ export class World {
       return
     }
 
+    console.warn(
+      '[comms] NO live session to reuse — full connectSceneRoom (new LiveKit participant)'
+    )
     onProgress?.(
       scene.source.kind === 'world' ? 'Joining world comms…' : 'Joining scene comms room…'
     )
@@ -822,8 +852,7 @@ export class World {
       // Optional: dispose tears down scene after/with player — CameraModeArea clear must not throw.
       (mode) => this.player?.setForcedCameraMode(mode)
     )
-    // Player is in the scene — unlock nearby voice (was muted during landing/load).
-    this.unlockVoiceInPlay()
+    // Voice stays muted here — AppController unlocks after load UI / chrome is ready.
     // Plaza-scale from entity count when GLTF collider extract is sparse (Genesis ~18 colliders).
     const hydration = this.sceneScript.getHydrationStats()
     const plazaScale =

@@ -482,6 +482,7 @@ export class SocialChatController {
     this.comms.setHandlers(null)
 
     const transferred = this.comms
+    // Shell gets a blank CommsService — must NOT dispose `transferred` (World owns it now).
     this.comms = new CommsService()
     if (this.login && (this.login.kind === 'wallet' || this.login.kind === 'guest')) {
       this.comms.setIdentity(this.login.address, this.login.identity)
@@ -492,6 +493,12 @@ export class SocialChatController {
     if (this.status.kind === 'connected' || this.status.kind === 'browser_chat_disabled') {
       this.setStatus({ kind: 'connecting' })
     }
+    console.log(
+      '[comms] Transferred LiveKit for',
+      target,
+      'to World (no disconnect) ·',
+      transferred.describeLiveKitRooms()
+    )
     clientDebugLog.log(
       'social',
       `Transferred LiveKit for ${target} to World (no disconnect) · pool cleared of others`,

@@ -1194,7 +1194,10 @@ export class AppController {
     this.currentRoute = route
     this.lastSceneDevQueryKey = readSceneDevQueryKey()
 
-    await this.teardownScene()
+    // Landing → Jump In: keep shell LiveKit alive so handoff can transfer the same room.
+    // disconnectLiveKit() was killing the landing scene room (global session registry),
+    // forcing a reconnect with a new participant id — voice/presence looked "different".
+    await this.teardownScene({ keepLiveKit: opts.handoffShellComms === true })
 
     opts.onProgress?.('Resolving destination…')
     let sceneConfig = await resolveSceneFromRoute(route)
@@ -1312,7 +1315,16 @@ export class AppController {
         const jumpKey = sceneConfig.commsPointer
         const transferred = this.socialChat?.detachCommsForWorldHandoff(jumpKey) ?? null
         if (transferred) {
+          console.log(
+            '[comms] handoff OK · transferring landing LiveKit to World ·',
+            transferred.describeLiveKitRooms()
+          )
           world.adoptComms(transferred, { isWorld: sceneConfig.source.kind === 'world' })
+        } else {
+          console.warn(
+            '[comms] handoff FAILED · World will reconnect LiveKit (new participant id) · jumpKey=',
+            jumpKey
+          )
         }
       }
       const earlyCommsPromise = world.connectSceneCommsEarly(sceneConfig, opts.onProgress)
@@ -1365,6 +1377,8 @@ export class AppController {
 
       // Comms may finish while CRDT catches up — authoritative cook runs in spawnLocalPlayer after final sync.
       await earlyCommsPromise
+      // Keep nearby voice muted for the whole load (landing + hydrate + spawn).
+      world.voice.setInPlay(false)
       await world.spawnLocalPlayer(sceneConfig, opts.onProgress)
 
       world.start()
@@ -1405,6 +1419,8 @@ export class AppController {
     if (this.settingsOverlay) this.shell.attachSettingsOverlay(this.settingsOverlay)
     if (this.preferencesPanel) this.shell.attachPreferencesPanel(this.preferencesPanel)
     this.bindNearbyVoice(world)
+    // Only now — player is in-world and chrome is about to show (not during loading).
+    world.unlockVoiceInPlay()
     opts.onProgress?.('Almost ready…')
     if (!opts.deferPlayChromeReveal) {
       this.revealPlayChrome()
@@ -1594,7 +1610,7 @@ export class AppController {
     })
   }
 
-  private async teardownScene(): Promise<void> {
+  private async teardownScene(opts?: { keepLiveKit?: boolean }): Promise<void> {
     this.unsubVoiceUi?.()
     this.unsubVoiceUi = null
     this.unsubVoiceSpeaking?.()
@@ -1612,7 +1628,7 @@ export class AppController {
     this.worldLocationCard = null
     this.chatPanel?.hide()
     this.hidePlayChrome()
-    await disconnectAll(this.world)
+    await disconnectAll(this.world, { keepLiveKit: opts?.keepLiveKit === true })
     this.world = null
     if (this.container) this.container.innerHTML = ''
   }

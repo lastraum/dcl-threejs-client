@@ -254,6 +254,21 @@ export class CommsService {
     }
   }
 
+  /** Apply display name to all connected LiveKit rooms (Explorer voice-bar identity). */
+  applyLocalDisplayName(displayName: string | null | undefined): void {
+    const dn = displayName?.trim() || null
+    for (const session of [this.islandLiveKit, this.sceneLiveKit, this.worldLiveKit]) {
+      if (session.isConnected()) session.applyLocalIdentityToRoom(dn)
+    }
+  }
+
+  /** Re-broadcast profile version on all connected rooms (after handoff). */
+  announceProfile(reason: 'connect' | 'heartbeat' | 'profile-request' = 'connect'): void {
+    for (const session of [this.islandLiveKit, this.sceneLiveKit, this.worldLiveKit]) {
+      if (session.isConnected()) session.sendProfileAnnouncement(reason)
+    }
+  }
+
   setLambdasUrl(url: string): void {
     for (const session of [this.islandLiveKit, this.sceneLiveKit, this.worldLiveKit]) {
       session.setLambdasUrl(url)
@@ -803,10 +818,19 @@ export class CommsService {
     }
   }
 
-  /** Seed archipelago with spawn so island assignment does not wait for first post-start frame. */
+  /**
+   * Seed archipelago with spawn so island assignment does not wait for first post-start frame.
+   * @param x,y,z — DCL scene-local meters from PlayerSystem.getPosition() (+Z north).
+   */
   seedArchipelagoSceneLocal(x: number, y: number, z: number): void {
     if (this.sceneOrigin) {
       const g = sceneLocalToGenesis(x, y, z, this.sceneOrigin)
+      console.log(
+        '[archipelago] seed genesis from scene-local',
+        `local=(${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)})`,
+        `genesis=(${g.x.toFixed(1)},${g.y.toFixed(1)},${g.z.toFixed(1)})`,
+        `origin=${this.sceneOrigin.baseParcelX},${this.sceneOrigin.baseParcelY}`
+      )
       this.archipelago.queuePosition(g.x, g.y, g.z)
       return
     }
@@ -1319,8 +1343,7 @@ export class CommsService {
         : 'Island LiveKit connect failed (archipelago)',
       { level: connected ? 'success' : 'error', alsoConsole: true }
     )
-    // Island = movement / nearby chat (ADR-204). Voice stays on scene/world — still
-    // notify so any multi-room consumers re-scan, but getVoiceLiveKitRooms ignores island.
+    // Island is movement + (for parcels) nearby voice alongside scene room.
     if (connected) this.notifyLiveKitRoomsChanged()
   }
 
@@ -1470,19 +1493,13 @@ export class CommsService {
   }
 
   /**
-   * LiveKit rooms used for nearby voice (ADR-204).
+   * LiveKit rooms used for nearby voice.
    *
-   * | channel    | island | scene-room |
-   * |------------|--------|------------|
-   * | Voice      |        | ✅          |
-   * | Cast       |        | ✅          |
-   * | Positions  | ✅     | ✅          |
-   * | Nearby chat| ✅     | ✅          |
-   *
-   * - **Worlds:** world LiveKit only (world signed-login room = chat + voice;
-   *   gatekeeper scene room on worlds is Cast/video, not nearby voice).
-   * - **Parcels:** **scene room only** — Explorer publishes mic there so scene
-   *   owners can moderate. Island is movement/nearby-chat, not voice.
+   * - **Worlds:** world room only (scene room is Cast/video).
+   * - **Parcels:** **island + scene** when both are up.
+   *   ADR-204 documents scene-room voice; production Explorer nearby voice still
+   *   depends on archipelago island co-location (user A/B: scene-only broke bars,
+   *   dual + correct genesis Z works). Archipelago position must stay correct.
    */
   getVoiceLiveKitRooms(): Room[] {
     const pick = (session: LiveKitCommsSession | null): Room | null => {
@@ -1501,9 +1518,36 @@ export class CommsService {
       return out
     }
 
-    // Parcel / Genesis: scene gatekeeper room only (ADR-204).
+    // Island first (Explorer nearby cluster), then scene (gatekeeper / ADR-204).
+    add(pick(this.islandLiveKit))
     add(pick(this.sceneLiveKit))
     return out
+  }
+
+  /** Ensure Genesis archipelago control plane is up (island LiveKit follows assignment). */
+  async ensureArchipelagoConnected(): Promise<void> {
+    if (this.isWorldComms()) return
+    const desc = this.archipelago.describe()
+    console.log('[archipelago] ensure', desc, 'islandLiveKit=', this.islandConnected)
+    if (this.archipelago.isWelcomed() && this.islandConnected) return
+    if (this.archipelago.isConnected() && this.archipelago.isWelcomed()) {
+      // Connected but no island yet — keep heartbeats; seed will re-queue position.
+      return
+    }
+    const ok = await this.connectRealmComms()
+    console.log('[archipelago] ensure connectRealmComms ok=', ok, this.archipelago.describe())
+    clientDebugLog.log(
+      'network',
+      ok
+        ? `ensureArchipelagoConnected · started · ${this.archipelago.describe()}`
+        : 'ensureArchipelagoConnected · failed (no adapter?)',
+      { level: ok ? 'info' : 'warn', alsoConsole: true }
+    )
+  }
+
+  /** Archipelago WS status for voice diagnostics. */
+  describeArchipelago(): string {
+    return this.archipelago.describe()
   }
 
   /** Debug: which LiveKit rooms are up (for voice diagnostics). */
@@ -1523,7 +1567,42 @@ export class CommsService {
       .map((r) => (r.name || '?').slice(0, 28))
       .join('+')
     parts.push(`voice=[${voice || 'none'}]`)
+    parts.push(`archipelago={${this.archipelago.describe()}}`)
     return parts.join(' ')
+  }
+
+  /**
+   * Multi-line dump of remote audio pubs on **all** LiveKit rooms (scene/world/island).
+   * Used to debug “voice on world but silent on parcel scene” — e.g. mic on island only.
+   */
+  describeAllRoomsAudioInventory(): string {
+    const lines: string[] = []
+    for (const [label, s] of [
+      ['scene', this.sceneLiveKit],
+      ['world', this.worldLiveKit],
+      ['island', this.islandLiveKit]
+    ] as const) {
+      const room = s.getRoom()
+      if (!room || !s.isConnected()) {
+        lines.push(`${label}: offline`)
+        continue
+      }
+      const n = room.remoteParticipants.size
+      if (n === 0) {
+        lines.push(`${label}: ${room.name?.slice(0, 36) ?? '?'} remotes=0`)
+        continue
+      }
+      for (const p of room.remoteParticipants.values()) {
+        const pubs = [...p.trackPublications.values()].map(
+          (pub) =>
+            `${pub.kind}/${pub.source}/sub=${pub.isSubscribed}/muted=${pub.isMuted}/hasTrack=${!!pub.track}`
+        )
+        lines.push(
+          `${label}: peer=${(p.identity ?? '').slice(0, 12)} pubs=[${pubs.join(' | ') || 'none'}]`
+        )
+      }
+    }
+    return lines.join('\n')
   }
 
   private trackPeerLeave(address: string, transport: TransportType): void {

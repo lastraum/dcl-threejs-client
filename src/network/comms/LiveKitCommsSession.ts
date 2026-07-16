@@ -100,6 +100,38 @@ export class LiveKitCommsSession {
 
   setCommsProfile(profile: CommsProfileEntity | null): void {
     this.commsProfile = profile
+    // Re-apply name/metadata if already connected (handoff / late profile load).
+    if (this.isConnected()) this.applyLocalIdentityToRoom()
+  }
+
+  /**
+   * Push display name + lambdas into LiveKit participant so Explorer can map wallet → avatar
+   * for voice bars / name tags. serializedProfile is a flat LambdaAvatarEntry JSON (not {avatars:[]}).
+   */
+  applyLocalIdentityToRoom(displayNameOverride?: string | null): void {
+    const room = this.room
+    if (!room || room.state !== ConnectionState.Connected) return
+    const meta: Record<string, unknown> = {}
+    if (this.lambdasUrl) meta.lambdasEndpoint = this.lambdasUrl
+    let dn = displayNameOverride?.trim() || ''
+    if (!dn && this.commsProfile?.serializedProfile) {
+      try {
+        const entry = JSON.parse(this.commsProfile.serializedProfile) as {
+          name?: string
+          unclaimedName?: string
+        }
+        dn = entry.name?.trim() || entry.unclaimedName?.trim() || ''
+      } catch {
+        /* ignore */
+      }
+    }
+    if (dn) {
+      meta.displayName = dn
+      void room.localParticipant.setName(dn)
+    }
+    if (Object.keys(meta).length > 0) {
+      void room.localParticipant.setMetadata(JSON.stringify(meta))
+    }
   }
 
   setLambdasUrl(url: string): void {
@@ -431,27 +463,32 @@ export class LiveKitCommsSession {
     room.on(RoomEvent.Disconnected, onDisconnected)
 
     if (this.registerGlobalSession) {
+      // Only the *connected* scene/world room owns the global session. Empty World
+      // CommsService dispose must not clear a live landing room via setLiveKitSession(null).
       setLiveKitSession({
         disconnect: async () => {
+          // Identity check: ignore if this session already tore down / was replaced.
+          if (this.room !== room) return
           room.disconnect()
         }
       })
     }
 
-    // Companion scene-watch: force-subscribe remote A/V so Cast/OBS tracks are visible for LIVE detection.
-    const forceSubscribeRemoteMedia = (
+    // Cast/OBS LIVE detection only needs **video**. Do not force-subscribe mic audio here —
+    // VoiceChatService owns nearby voice attach/mute (and must stay silent until in-play).
+    const forceSubscribeRemoteVideo = (
       publication: RemoteTrackPublication,
       participant: Participant
     ): void => {
       if (participant.isLocal) return
-      if (publication.kind !== Track.Kind.Video && publication.kind !== Track.Kind.Audio) return
+      if (publication.kind !== Track.Kind.Video) return
       try {
         publication.setSubscribed(true)
       } catch {
         /* ignore */
       }
     }
-    room.on(RoomEvent.TrackPublished, forceSubscribeRemoteMedia)
+    room.on(RoomEvent.TrackPublished, forceSubscribeRemoteVideo)
 
     try {
       await room.connect(url, token, { autoSubscribe: true })
@@ -465,9 +502,7 @@ export class LiveKitCommsSession {
         return false
       }
       this.connected = true
-      if (this.lambdasUrl) {
-        void room.localParticipant.setMetadata(JSON.stringify({ lambdasEndpoint: this.lambdasUrl }))
-      }
+      this.applyLocalIdentityToRoom()
 
       for (const participant of room.remoteParticipants.values()) {
         const remoteAddress = participant.identity?.trim().toLowerCase()
@@ -480,9 +515,9 @@ export class LiveKitCommsSession {
           this.disconnect()
           return false
         }
-        // Subscribe any publications already present at join (Cast may already be live).
+        // Subscribe video already present at join (Cast may already be live).
         for (const publication of participant.trackPublications.values()) {
-          forceSubscribeRemoteMedia(publication as RemoteTrackPublication, participant)
+          forceSubscribeRemoteVideo(publication as RemoteTrackPublication, participant)
         }
       }
 
@@ -801,7 +836,9 @@ export class LiveKitCommsSession {
     } catch {
       /* ignore */
     }
-    if (this.registerGlobalSession) {
+    // Only clear global registry if *this* session owned a live room.
+    // Avoids empty World CommsService dispose wiping a transferred landing session.
+    if (this.registerGlobalSession && room) {
       setLiveKitSession(null)
     }
   }

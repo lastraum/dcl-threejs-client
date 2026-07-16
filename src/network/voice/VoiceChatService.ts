@@ -3,11 +3,11 @@ import {
   Room,
   RoomEvent,
   Track,
+  type LocalTrackPublication,
   type Participant,
   type RemoteParticipant,
   type RemoteTrack,
-  type RemoteTrackPublication,
-  type LocalTrackPublication
+  type RemoteTrackPublication
 } from 'livekit-client'
 import { isTextInputFocused } from '../../client/ui/textInputFocus'
 import {
@@ -49,17 +49,19 @@ type BoundRoom = {
 }
 
 /**
- * Nearby voice (ADR-204).
+ * Nearby voice.
  *
  * Room set from CommsService.getVoiceLiveKitRooms():
  * - Worlds → world LiveKit only
- * - Parcels → scene LiveKit only (not island — island is movement/nearby-chat)
+ * - Parcels → island + scene (Explorer nearby voice needs island co-location;
+ *   scene alone fails A/B despite ADR-204 scene-only table)
  *
- * Audio stays muted until `setInPlay(true)` after the player is in the scene.
+ * Audio stays muted until `setInPlay(true)` after play chrome is ready.
  */
 export class VoiceChatService {
   private roomsProvider: RoomsProvider = () => []
   private statusProvider: StatusProvider = () => ''
+  private inventoryProvider: StatusProvider = () => ''
   private bound = new Map<string, BoundRoom>()
   private hearing = true
   /** Unlocks hear/speak after spawn — false during landing/loading. */
@@ -121,7 +123,12 @@ export class VoiceChatService {
     this.syncBackgroundMute()
     // Peers often publish mic after first scan — keep listening + dump diagnostics.
     this.rescanTimer = setInterval(() => {
+      // Never bind/play while loading — but still allow status dumps if rooms exist.
       this.refreshRooms()
+      if (!this.inPlay) {
+        this.dumpStatus('rescan-loading', true)
+        return
+      }
       if (this.liveRooms().length === 0) {
         this.dumpStatus('rescan-empty', true)
         return
@@ -139,9 +146,11 @@ export class VoiceChatService {
     this.inPlay = false
     void this.setSpeaking(false)
     this.pttHeld = false
+    void this.teardownLocalMic('dispose')
     this.unbindAll()
     this.roomsProvider = () => []
     this.statusProvider = () => ''
+    this.inventoryProvider = () => ''
     this.audioHost?.remove()
     this.audioHost = null
     window.removeEventListener('keydown', this.onKeyDown, true)
@@ -197,6 +206,11 @@ export class VoiceChatService {
     this.statusProvider = provider
   }
 
+  /** Optional: multi-line scene/world/island remote track inventory. */
+  bindInventoryProvider(provider: StatusProvider): void {
+    this.inventoryProvider = provider
+  }
+
   /**
    * Unlock nearby voice after the local player has spawned into the scene/world.
    * Until then: no remote playback, no mic, no name-tag bars (rooms may still bind for logs).
@@ -242,18 +256,24 @@ export class VoiceChatService {
     voiceLog(`  livekit: ${roomsDesc}`)
     if (rooms.length === 0) {
       voiceLog('  voice rooms: none — getVoiceLiveKitRooms empty (wrong room type or not connected)', 'warn')
-      return
+    } else {
+      for (const room of rooms) {
+        const lp = room.localParticipant
+        const perms = lp.permissions
+        voiceLog(
+          `  VOICE room=${shortName(room.name)} state=${room.state} remotes=${room.remoteParticipants.size} ` +
+            `canPublish=${String(perms?.canPublish)} canSubscribe=${String(perms?.canSubscribe)} ` +
+            `canPublishData=${String(perms?.canPublishData)} id=${(lp.identity ?? '').slice(0, 14)} ` +
+            `localMic=${hasLocalMic(room)} activeSpeakers=${room.activeSpeakers.length}`
+        )
+        this.dumpRemoteAudioInventory(room, `voice/${reason}`)
+      }
     }
-    for (const room of rooms) {
-      const lp = room.localParticipant
-      const perms = lp.permissions
-      voiceLog(
-        `  room=${shortName(room.name)} state=${room.state} remotes=${room.remoteParticipants.size} ` +
-          `canPublish=${String(perms?.canPublish)} canSubscribe=${String(perms?.canSubscribe)} ` +
-          `canPublishData=${String(perms?.canPublishData)} id=${(lp.identity ?? '').slice(0, 14)} ` +
-          `localMic=${hasLocalMic(room)} activeSpeakers=${room.activeSpeakers.length}`
-      )
-      this.dumpRemoteAudioInventory(room, reason)
+    const inv = this.inventoryProvider()
+    if (inv) {
+      for (const line of inv.split('\n')) {
+        if (line.trim()) voiceLog(`  all · ${line}`)
+      }
     }
   }
 
@@ -448,7 +468,6 @@ export class VoiceChatService {
   private async ensureMicPublished(want: boolean): Promise<void> {
     this.micSyncDepth += 1
     try {
-      // Rebind rooms without re-entering reconcileMicPublish (see refreshRooms guard).
       this.refreshRooms()
       const rooms = this.liveRooms()
       if (rooms.length === 0) {
@@ -457,47 +476,56 @@ export class VoiceChatService {
           this.error = 'Not connected to voice room'
           this.notify()
         }
+        if (!want) await this.teardownLocalMic('no-room')
         return
       }
       if (this.publishInFlight) await this.publishInFlight
       const run = (async () => {
         let anyLive = false
         let lastError: string | null = null
-        // Usually one room (scene or world). If multiple are bound, publish on first canPublish.
-        const publishTarget = want
-          ? rooms.find((r) => r.localParticipant.permissions?.canPublish !== false) ?? null
-          : null
+        const deviceId = soundSettings.get().microphoneDeviceId
+        const captureOpts = deviceId ? { deviceId } : undefined
 
+        // Worlds: one room. Parcels: island + scene (publish each independently).
         for (const room of rooms) {
-          const isTarget = publishTarget != null && room === publishTarget
-          const shouldPub = want && isTarget
+          const perms = room.localParticipant.permissions
+          const sources = (perms as { canPublishSources?: unknown[] } | undefined)?.canPublishSources
+          voiceLog(
+            `mic want=${want} room=${shortName(room.name)} remotes=${room.remoteParticipants.size} ` +
+              `canPublish=${String(perms?.canPublish)} sources=${Array.isArray(sources) ? sources.join('|') || '[]' : String(sources)} ` +
+              `id=${(room.localParticipant.identity ?? '').slice(0, 14)} name=${(room.localParticipant.name ?? '').slice(0, 20)}`
+          )
           try {
-            const perms = room.localParticipant.permissions
-            voiceLog(
-              `mic want=${want} pub=${shouldPub} room=${shortName(room.name)} canPublish=${String(perms?.canPublish)} id=${(room.localParticipant.identity ?? '').slice(0, 12)}`
-            )
-            if (shouldPub && perms?.canPublish === false) {
-              lastError = `canPublish=false on ${shortName(room.name)}`
-              voiceLog(lastError, 'error')
-              continue
-            }
-            if (shouldPub) {
-              const deviceId = soundSettings.get().microphoneDeviceId
-              const opts = deviceId ? { deviceId } : undefined
-              const pub = await room.localParticipant.setMicrophoneEnabled(true, opts, {
-                source: Track.Source.Microphone,
-                name: 'microphone',
-                dtx: true,
-                red: true
-              })
-              const live = !!pub?.track || hasLocalMic(room)
+            if (want) {
+              if (perms?.canPublish === false) {
+                lastError = `canPublish=false on ${shortName(room.name)}`
+                voiceLog(lastError, 'error')
+                continue
+              }
+              const pub = await room.localParticipant.setMicrophoneEnabled(true, captureOpts)
+              if (pub?.isMuted) await pub.unmute()
+              const track = pub?.track
+              if (track?.isMuted) await track.unmute()
+              const mst = track?.mediaStreamTrack
+              if (mst && !mst.enabled) mst.enabled = true
+              const live = !!track && !!mst && mst.readyState === 'live' && mst.enabled
               if (live) anyLive = true
               voiceLog(
-                `Mic published · ${shortName(room.name)} live=${live} sid=${pub?.trackSid?.slice(0, 10) ?? 'n/a'}`
+                `Mic published · ${shortName(room.name)} live=${live} sid=${pub?.trackSid?.slice(0, 12) ?? 'n/a'} ` +
+                  `muted=${String(pub?.isMuted)} remotes=${room.remoteParticipants.size} ` +
+                  `localName=${(room.localParticipant.name ?? '').slice(0, 20)}`
               )
-            } else if (hasLocalMic(room)) {
+              for (const p of room.remoteParticipants.values()) {
+                voiceLog(
+                  `  peer-in-room ${(p.identity ?? '').slice(0, 12)} audioPubs=${[...p.audioTrackPublications.values()].length} ` +
+                    `name=${(p.name ?? '').slice(0, 16)}`
+                )
+              }
+            } else {
               await room.localParticipant.setMicrophoneEnabled(false)
-              voiceLog(`Mic unpublished · ${shortName(room.name)}`)
+              voiceLog(
+                `Mic unpublished · ${shortName(room.name)} pubsLeft=${room.localParticipant.audioTrackPublications.size}`
+              )
             }
           } catch (err) {
             lastError = err instanceof Error ? err.message : String(err)
@@ -505,15 +533,15 @@ export class VoiceChatService {
           }
         }
 
-        if (want && !anyLive && rooms.length > 0) {
-          lastError =
-            lastError ??
-            `No publishable voice room among ${rooms.map((r) => shortName(r.name)).join('+')}`
-          voiceLog(lastError, 'error')
+        if (!want) {
+          this.micLive = false
+          this.error = null
+        } else {
+          this.micLive = anyLive
+          this.error = anyLive
+            ? null
+            : lastError ?? `No publishable voice room among ${rooms.map((r) => shortName(r.name)).join('+')}`
         }
-
-        this.micLive = want ? anyLive : false
-        this.error = want && !anyLive ? lastError : null
         this.bumpLocalSpeakingHint()
         this.notify()
       })()
@@ -522,6 +550,17 @@ export class VoiceChatService {
       if (this.publishInFlight === run) this.publishInFlight = null
     } finally {
       this.micSyncDepth = Math.max(0, this.micSyncDepth - 1)
+    }
+  }
+
+  private async teardownLocalMic(reason: string): Promise<void> {
+    voiceLog(`teardownLocalMic (${reason})`)
+    for (const room of this.liveRooms()) {
+      try {
+        await room.localParticipant.setMicrophoneEnabled(false)
+      } catch {
+        /* ignore */
+      }
     }
   }
 

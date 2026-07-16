@@ -26,7 +26,7 @@ A **browser-native Decentraland SDK7 Explorer** — Three.js renderer, Web Worke
 
 ### Find and claim work
 
-1. **Dev panel** — `</>` sidebar → **Community** tab: parity gaps (`ecs:Raycast`, `ui:voice-ui`, …) + who is already working on what
+1. **Dev panel** — `</>` sidebar → **Community** tab: parity gaps (`ecs:Raycast`, spatial voice, …) + who is already working on what
 2. **Shipped history** — **Shipped** tab (`PROGRESS.md`) and **Full status** tab (complete matrix)
 3. **Claim** — file a [**Task claim** issue](https://github.com/lastraum/dcl-threejs-client/issues/new?template=task.yml) with an integration ref; add **`in-progress`** label → syncs to dev panel
 
@@ -68,7 +68,7 @@ Draft PRs early if scope is uncertain.
 
 ### Good first areas
 
-Pick a **Community tab** gap with a clear test scene — e.g. `ecs:TriggerArea`, `ecs:Raycast`, `ecs:AudioSource`, `ui:voice-ui`. Avoid shim/worker paths unless you have read [docs/AGENTS.md](docs/AGENTS.md) and coordinated on CRDT boundaries.
+Pick a **Community tab** gap with a clear test scene — e.g. `ecs:TriggerArea`, `ecs:Raycast`, `ecs:AudioSource`, spatial voice. Avoid shim/worker paths unless you have read [docs/AGENTS.md](docs/AGENTS.md) and coordinated on CRDT boundaries.
 
 ### Public docs
 

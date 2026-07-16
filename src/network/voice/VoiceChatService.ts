@@ -68,6 +68,8 @@ export class VoiceChatService {
   private speakingLevels = new Map<string, number>()
   private unsubSound: (() => void) | null = null
   private publishInFlight: Promise<void> | null = null
+  /** Prevents ensureMicPublished ↔ refreshRooms re-entry (stack overflow). */
+  private micSyncDepth = 0
   private audioHost: HTMLDivElement | null = null
   private rescanTimer: ReturnType<typeof setInterval> | null = null
 
@@ -211,7 +213,8 @@ export class VoiceChatService {
       this.clearAllRemotes()
       this.micLive = false
       this.setSpeakingLevels(new Map())
-    } else if (this.shouldPublishMic()) {
+    } else if (this.shouldPublishMic() && this.micSyncDepth === 0) {
+      // Only from outside ensureMicPublished — never recurse refreshRooms ↔ mic publish.
       void this.reconcileMicPublish()
     }
     this.notify()
@@ -331,77 +334,83 @@ export class VoiceChatService {
   }
 
   private async ensureMicPublished(want: boolean): Promise<void> {
-    this.refreshRooms()
-    const rooms = this.liveRooms()
-    if (rooms.length === 0) {
-      this.micLive = false
-      if (want) {
-        this.error = 'Not connected to voice room'
-        this.notify()
-      }
-      return
-    }
-    if (this.publishInFlight) await this.publishInFlight
-    const run = (async () => {
-      let anyLive = false
-      let lastError: string | null = null
-      // Usually one room (scene or world). If multiple are bound, publish on first canPublish.
-      const publishTarget = want
-        ? rooms.find((r) => r.localParticipant.permissions?.canPublish !== false) ?? null
-        : null
-
-      for (const room of rooms) {
-        const isTarget = publishTarget != null && room === publishTarget
-        const shouldPub = want && isTarget
-        try {
-          const perms = room.localParticipant.permissions
-          voiceLog(
-            `mic want=${want} pub=${shouldPub} room=${shortName(room.name)} canPublish=${String(perms?.canPublish)} id=${(room.localParticipant.identity ?? '').slice(0, 12)}`
-          )
-          if (shouldPub && perms?.canPublish === false) {
-            lastError = `canPublish=false on ${shortName(room.name)}`
-            voiceLog(lastError, 'error')
-            continue
-          }
-          if (shouldPub) {
-            const deviceId = soundSettings.get().microphoneDeviceId
-            const opts = deviceId ? { deviceId } : undefined
-            const pub = await room.localParticipant.setMicrophoneEnabled(true, opts, {
-              source: Track.Source.Microphone,
-              name: 'microphone',
-              dtx: true,
-              red: true
-            })
-            const live = !!pub?.track || hasLocalMic(room)
-            if (live) anyLive = true
-            voiceLog(
-              `Mic published · ${shortName(room.name)} live=${live} sid=${pub?.trackSid?.slice(0, 10) ?? 'n/a'}`
-            )
-          } else if (hasLocalMic(room)) {
-            await room.localParticipant.setMicrophoneEnabled(false)
-            voiceLog(`Mic unpublished · ${shortName(room.name)}`)
-          }
-        } catch (err) {
-          lastError = err instanceof Error ? err.message : String(err)
-          voiceLog(`Mic error on ${shortName(room.name)}: ${lastError}`, 'error')
+    this.micSyncDepth += 1
+    try {
+      // Rebind rooms without re-entering reconcileMicPublish (see refreshRooms guard).
+      this.refreshRooms()
+      const rooms = this.liveRooms()
+      if (rooms.length === 0) {
+        this.micLive = false
+        if (want) {
+          this.error = 'Not connected to voice room'
+          this.notify()
         }
+        return
       }
+      if (this.publishInFlight) await this.publishInFlight
+      const run = (async () => {
+        let anyLive = false
+        let lastError: string | null = null
+        // Usually one room (scene or world). If multiple are bound, publish on first canPublish.
+        const publishTarget = want
+          ? rooms.find((r) => r.localParticipant.permissions?.canPublish !== false) ?? null
+          : null
 
-      if (want && !anyLive && rooms.length > 0) {
-        lastError =
-          lastError ??
-          `No publishable voice room among ${rooms.map((r) => shortName(r.name)).join('+')}`
-        voiceLog(lastError, 'error')
-      }
+        for (const room of rooms) {
+          const isTarget = publishTarget != null && room === publishTarget
+          const shouldPub = want && isTarget
+          try {
+            const perms = room.localParticipant.permissions
+            voiceLog(
+              `mic want=${want} pub=${shouldPub} room=${shortName(room.name)} canPublish=${String(perms?.canPublish)} id=${(room.localParticipant.identity ?? '').slice(0, 12)}`
+            )
+            if (shouldPub && perms?.canPublish === false) {
+              lastError = `canPublish=false on ${shortName(room.name)}`
+              voiceLog(lastError, 'error')
+              continue
+            }
+            if (shouldPub) {
+              const deviceId = soundSettings.get().microphoneDeviceId
+              const opts = deviceId ? { deviceId } : undefined
+              const pub = await room.localParticipant.setMicrophoneEnabled(true, opts, {
+                source: Track.Source.Microphone,
+                name: 'microphone',
+                dtx: true,
+                red: true
+              })
+              const live = !!pub?.track || hasLocalMic(room)
+              if (live) anyLive = true
+              voiceLog(
+                `Mic published · ${shortName(room.name)} live=${live} sid=${pub?.trackSid?.slice(0, 10) ?? 'n/a'}`
+              )
+            } else if (hasLocalMic(room)) {
+              await room.localParticipant.setMicrophoneEnabled(false)
+              voiceLog(`Mic unpublished · ${shortName(room.name)}`)
+            }
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : String(err)
+            voiceLog(`Mic error on ${shortName(room.name)}: ${lastError}`, 'error')
+          }
+        }
 
-      this.micLive = want ? anyLive : false
-      this.error = want && !anyLive ? lastError : null
-      this.bumpLocalSpeakingHint()
-      this.notify()
-    })()
-    this.publishInFlight = run
-    await run
-    if (this.publishInFlight === run) this.publishInFlight = null
+        if (want && !anyLive && rooms.length > 0) {
+          lastError =
+            lastError ??
+            `No publishable voice room among ${rooms.map((r) => shortName(r.name)).join('+')}`
+          voiceLog(lastError, 'error')
+        }
+
+        this.micLive = want ? anyLive : false
+        this.error = want && !anyLive ? lastError : null
+        this.bumpLocalSpeakingHint()
+        this.notify()
+      })()
+      this.publishInFlight = run
+      await run
+      if (this.publishInFlight === run) this.publishInFlight = null
+    } finally {
+      this.micSyncDepth = Math.max(0, this.micSyncDepth - 1)
+    }
   }
 
   private onSoundSettings(_state: SoundSettingsState): void {

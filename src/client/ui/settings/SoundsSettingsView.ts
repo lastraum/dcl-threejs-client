@@ -194,8 +194,8 @@ export class SoundsSettingsView {
     select.className = 'gfx-settings__select'
     select.setAttribute('aria-label', 'Voice input mode')
     select.innerHTML = `
-      <option value="open-mic">Hot mic (sidebar toggle · M soft-mute)</option>
-      <option value="push-to-talk">Push to talk (sidebar on · hold V)</option>
+      <option value="open-mic">Speak button = continuous mic</option>
+      <option value="push-to-talk">PTT only (hold T) — Speak still works</option>
     `
     select.value = soundSettings.get().voiceInputMode
     select.addEventListener('change', () => {

@@ -1572,15 +1572,15 @@ export class AppController {
     this.unsubVoiceUi?.()
     this.unsubVoiceUi = null
     world.syncVoiceRoom()
-    this.shell?.setNearbyVoiceHandler(() => world.voice.toggleEnabled())
+    this.shell?.bindNearbyVoice(world.voice)
     this.unsubVoiceUi = world.voice.subscribe((snap) => {
       this.shell?.setNearbyVoiceUi({
-        enabled: snap.enabled,
+        hearing: snap.hearing,
+        speaking: snap.speaking,
         micLive: snap.micLive,
         backgroundMuted: snap.backgroundMuted,
-        userMuted: snap.userMuted,
-        mode: snap.mode,
-        remoteCount: snap.remoteCount
+        remoteCount: snap.remoteCount,
+        roomReady: snap.roomReady
       })
     })
   }
@@ -1588,7 +1588,7 @@ export class AppController {
   private async teardownScene(): Promise<void> {
     this.unsubVoiceUi?.()
     this.unsubVoiceUi = null
-    this.shell?.setNearbyVoiceHandler(null)
+    this.shell?.bindNearbyVoice(null)
     this.world?.setVoluntaryEmoteAllowedHandler(null)
     this.teardownExplorer()
     this.editorApp?.dispose()

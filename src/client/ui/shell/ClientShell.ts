@@ -8,6 +8,8 @@ import { ProfileSidebarButton, createSidebarDivider, SIDEBAR_ICONS } from './Pro
 import type { AvatarProfile } from '../../../avatar/types'
 import { ProfilePopup } from './ProfilePopup'
 import { SkyboxPanel } from './SkyboxPanel'
+import { NearbyVoicePanel } from './NearbyVoicePanel'
+import type { VoiceChatService } from '../../../network/voice/VoiceChatService'
 import type { DebugPanel } from '../DebugPanel'
 import type { DevProgressPanel } from '../DevProgressPanel'
 import { ChatPanel } from '../chat/ChatPanel'
@@ -50,7 +52,7 @@ const BOTTOM_BUTTONS: SidebarButtonConfig[] = [
   {
     id: 'nearby-voice',
     icon: 'nearbyVoice',
-    label: 'Nearby voice / hot mic',
+    label: 'Nearby voice',
     statusDot: 'off'
   },
   { id: 'smart-wearable', icon: 'smartWearable', label: 'Smart wearables' },
@@ -72,6 +74,7 @@ export class ClientShell {
   private readonly profileButton: ProfileSidebarButton
   private readonly profilePopup: ProfilePopup
   private readonly skyboxPanel: SkyboxPanel
+  private readonly nearbyVoicePanel: NearbyVoicePanel
   private readonly emoteWheel: EmoteWheelPanel
   private readonly buttons = new Map<string, SidebarButton>()
   private readonly debugPanel: DebugPanel
@@ -101,7 +104,6 @@ export class ClientShell {
   private readonly mobileLocationCoords: HTMLSpanElement
   private getLocationCoordsLabel: (() => string) | null = null
   private locationCoordsRaf = 0
-  private onNearbyVoiceToggle: (() => void | Promise<void>) | null = null
 
   constructor({ environment, session, debugPanel, devProgressPanel = null, chatPanel = null, settingsOverlay = null, preferencesPanel = null, onEmoteSelected, onSignOut, onExit }: ClientShellOptions) {
     this.session = session
@@ -141,10 +143,12 @@ export class ClientShell {
           this.debugPanel.hide()
           this.devProgressPanel?.hide()
           this.skyboxPanel.hide()
+          this.nearbyVoicePanel.hide()
           this.chatPanel?.hide()
           this.buttons.get('help')?.setActive(false)
           this.buttons.get('dev')?.setActive(false)
           this.buttons.get('skybox')?.setActive(false)
+          this.buttons.get('nearby-voice')?.setActive(false)
           this.buttons.get('chat')?.setActive(false)
         }
       }
@@ -159,6 +163,11 @@ export class ClientShell {
       environment,
       anchor: () => this.buttons.get('skybox')?.element,
       onClose: () => this.buttons.get('skybox')?.setActive(false)
+    })
+
+    this.nearbyVoicePanel = new NearbyVoicePanel({
+      anchor: () => this.buttons.get('nearby-voice')?.element,
+      onClose: () => this.buttons.get('nearby-voice')?.setActive(false)
     })
 
     this.profileButton = new ProfileSidebarButton('Profile', () => this.profilePopup.toggle())
@@ -265,6 +274,7 @@ export class ClientShell {
   hide(): void {
     this.root.hidden = true
     this.setMobileDrawerOpen(false)
+    this.nearbyVoicePanel.hide()
     this.applyMobileLayout()
   }
 
@@ -501,7 +511,19 @@ export class ClientShell {
       return (ev) => {
         ev.stopPropagation()
         this.closeMobileDrawerForOverlay()
-        void this.onNearbyVoiceToggle?.()
+        this.nearbyVoicePanel.toggle()
+        this.buttons.get('nearby-voice')?.setActive(this.nearbyVoicePanel.isVisible())
+        if (this.nearbyVoicePanel.isVisible()) {
+          this.skyboxPanel.hide()
+          this.chatPanel?.hide()
+          this.emoteWheel.hide()
+          this.debugPanel.hide()
+          this.devProgressPanel?.hide()
+          this.buttons.get('skybox')?.setActive(false)
+          this.buttons.get('chat')?.setActive(false)
+          this.buttons.get('help')?.setActive(false)
+          this.buttons.get('dev')?.setActive(false)
+        }
       }
     }
 
@@ -578,57 +600,41 @@ export class ClientShell {
     this.chatPanel?.show()
   }
 
-  setNearbyVoiceHandler(handler: (() => void | Promise<void>) | null): void {
-    this.onNearbyVoiceToggle = handler
+  bindNearbyVoice(voice: VoiceChatService | null): void {
+    this.nearbyVoicePanel.bindVoice(voice)
   }
 
-  /**
-   * Reflect voice service state on the nearby-voice control.
-   * off=gray · online=listening · speaking=mic live · muted=open-mic soft mute / bg mute
-   */
+  /** Sidebar status from voice service. */
   setNearbyVoiceUi(state: {
-    enabled: boolean
+    hearing: boolean
+    speaking: boolean
     micLive: boolean
     backgroundMuted: boolean
-    userMuted: boolean
-    mode: 'push-to-talk' | 'open-mic'
     remoteCount: number
+    roomReady: boolean
   }): void {
     const btn = this.buttons.get('nearby-voice')
     if (!btn) return
-    btn.setActive(state.enabled)
-    if (!state.enabled) {
-      btn.setStatusDot('off')
-      btn.setTitle(
-        state.mode === 'push-to-talk'
-          ? 'Nearby voice — click on, then hold V (PTT mode)'
-          : 'Nearby voice / hot mic — click to talk'
-      )
-      return
+    if (!this.nearbyVoicePanel.isVisible()) {
+      btn.setActive(state.speaking || state.micLive)
     }
     if (state.micLive) {
       btn.setStatusDot('speaking')
-    } else if (state.backgroundMuted || (state.mode === 'open-mic' && state.userMuted)) {
+    } else if (state.backgroundMuted) {
       btn.setStatusDot('muted')
-    } else {
+    } else if (state.hearing && state.roomReady) {
       btn.setStatusDot('online')
+    } else {
+      btn.setStatusDot('off')
     }
     const peers =
-      state.remoteCount > 0 ? ` · ${state.remoteCount} voice peer${state.remoteCount === 1 ? '' : 's'}` : ''
-    if (state.mode === 'push-to-talk') {
-      btn.setTitle(
-        state.micLive
-          ? `Hot mic / PTT — talking (release V)${peers}`
-          : `Nearby voice on — hold V to talk · click off${peers}`
-      )
-    } else {
-      btn.setTitle(
-        state.micLive
-          ? `Hot mic on — click to stop${peers}`
-          : state.userMuted || state.backgroundMuted
-            ? `Hot mic muted — click off or M / unhide tab${peers}`
-            : `Nearby voice on${peers}`
-      )
-    }
+      state.remoteCount > 0 ? ` · ${state.remoteCount} hearing` : ''
+    btn.setTitle(
+      state.micLive
+        ? `Nearby voice — mic live${peers}`
+        : state.hearing
+          ? `Nearby voice — hearing others${peers}`
+          : 'Nearby voice'
+    )
   }
 }

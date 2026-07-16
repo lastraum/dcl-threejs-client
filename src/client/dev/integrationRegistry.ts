@@ -100,7 +100,7 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   { id: 'ui:settings-communities', name: 'Settings → Communities', status: 'none', category: 'client-ui', notes: 'Placeholder tab' },
   { id: 'ui:settings-gallery', name: 'Settings → Gallery', status: 'render', category: 'client-ui', notes: 'Camera Reel API, month grid, Share on X → reels.decentraland.org' },
   { id: 'ui:ecs-scene-ui', name: 'In-scene ECS UI (UiTransform…)', status: 'partial', category: 'client-ui', notes: 'Yoga + DOM overlay — UiInput/UiDropdown writeback, hover, virtual size from setUiRenderer' },
-  { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'partial', category: 'client-ui', notes: 'Nearby-voice sidebar = hot mic (default); optional PTT (V); M soft-mute; mute-in-background; spatial later' }
+  { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'partial', category: 'client-ui', notes: 'Explorer NEARBY VOICE panel: Hear others + Speak + hold T; mute-in-background; spatial later' }
 ]
 
 /** Comms, content, identity — explorer shell (frozen during renderer re-arch). */

@@ -933,6 +933,172 @@
       .client-sidebar__status--off {
         background: rgba(255, 255, 255, 0.25);
       }
+
+      /* Nearby voice popover — Explorer NEARBY VOICE panel */
+      .nearby-voice-panel {
+        position: fixed;
+        z-index: var(--z-client-hud-raised);
+        width: min(260px, var(--client-panel-max-w));
+        padding: 14px 14px 12px;
+        border-radius: 14px;
+        background: rgba(22, 22, 28, 0.97);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        color: #fff;
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+        pointer-events: auto;
+        user-select: none;
+      }
+      .nearby-voice-panel__header {
+        margin: 0 0 14px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        color: rgba(255, 255, 255, 0.92);
+      }
+      .nearby-voice-panel__row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .nearby-voice-panel__label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.9);
+      }
+      .nearby-voice-panel__icon {
+        display: inline-flex;
+        color: rgba(255, 255, 255, 0.75);
+      }
+      .nearby-voice-panel__switch {
+        position: relative;
+        display: inline-flex;
+        cursor: pointer;
+      }
+      .nearby-voice-panel__switch input {
+        position: absolute;
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .nearby-voice-panel__switch-track {
+        position: relative;
+        width: 40px;
+        height: 22px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.18);
+        transition: background 0.15s ease;
+      }
+      .nearby-voice-panel__switch-track::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+        transition: transform 0.15s ease;
+      }
+      .nearby-voice-panel__switch input:checked + .nearby-voice-panel__switch-track {
+        background: #ff2d55;
+      }
+      .nearby-voice-panel__switch input:checked + .nearby-voice-panel__switch-track::after {
+        transform: translateX(18px);
+      }
+      .nearby-voice-panel__volume-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+      .nearby-voice-panel__slider {
+        flex: 1;
+        height: 6px;
+        -webkit-appearance: none;
+        appearance: none;
+        border-radius: 999px;
+        background: linear-gradient(
+          to right,
+          #ff2d55 0%,
+          #ff2d55 var(--pct, 100%),
+          rgba(255, 255, 255, 0.18) var(--pct, 100%),
+          rgba(255, 255, 255, 0.18) 100%
+        );
+        outline: none;
+      }
+      .nearby-voice-panel__slider::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+        cursor: pointer;
+      }
+      .nearby-voice-panel__slider::-moz-range-thumb {
+        width: 16px;
+        height: 16px;
+        border: 0;
+        border-radius: 50%;
+        background: #fff;
+        cursor: pointer;
+      }
+      .nearby-voice-panel__speak {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+        min-height: 42px;
+        margin: 0 0 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.12s ease, border-color 0.12s ease;
+      }
+      .nearby-voice-panel__speak:hover {
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .nearby-voice-panel__speak.is-active,
+      .nearby-voice-panel__speak.is-talking {
+        background: rgba(255, 45, 85, 0.28);
+        border-color: rgba(255, 45, 85, 0.55);
+      }
+      .nearby-voice-panel__speak-icon {
+        display: inline-flex;
+      }
+      .nearby-voice-panel__hint {
+        margin: 0;
+        font-size: 12px;
+        line-height: 1.35;
+        color: rgba(255, 255, 255, 0.55);
+        text-align: center;
+      }
+      .nearby-voice-panel__hint kbd {
+        display: inline-block;
+        padding: 0 5px;
+        border-radius: 4px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(255, 255, 255, 0.08);
+        font-family: inherit;
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.85);
+      }
+      .nearby-voice-panel__error {
+        margin: 8px 0 0;
+        font-size: 11px;
+        color: #f87171;
+        text-align: center;
+      }
       .client-sidebar__badge {
         position: absolute;
         top: 4px;

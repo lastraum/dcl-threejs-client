@@ -1319,7 +1319,8 @@ export class CommsService {
         : 'Island LiveKit connect failed (archipelago)',
       { level: connected ? 'success' : 'error', alsoConsole: true }
     )
-    // Island carries nearby voice + movement for parcels — rebind voice when it comes up.
+    // Island = movement / nearby chat (ADR-204). Voice stays on scene/world — still
+    // notify so any multi-room consumers re-scan, but getVoiceLiveKitRooms ignores island.
     if (connected) this.notifyLiveKitRoomsChanged()
   }
 
@@ -1469,12 +1470,19 @@ export class CommsService {
   }
 
   /**
-   * LiveKit rooms used for nearby voice (subscribe / hear others).
+   * LiveKit rooms used for nearby voice (ADR-204).
    *
-   * - **Worlds:** world room only (chat + voice; scene room is Cast/video).
-   * - **Parcels (Genesis etc.):** island + scene when both are up.
-   *   Explorer peers join both; mic tracks often land on island (nearby) and/or scene.
-   *   First entry is the preferred **publish** room (see VoiceChatService).
+   * | channel    | island | scene-room |
+   * |------------|--------|------------|
+   * | Voice      |        | ✅          |
+   * | Cast       |        | ✅          |
+   * | Positions  | ✅     | ✅          |
+   * | Nearby chat| ✅     | ✅          |
+   *
+   * - **Worlds:** world LiveKit only (world signed-login room = chat + voice;
+   *   gatekeeper scene room on worlds is Cast/video, not nearby voice).
+   * - **Parcels:** **scene room only** — Explorer publishes mic there so scene
+   *   owners can moderate. Island is movement/nearby-chat, not voice.
    */
   getVoiceLiveKitRooms(): Room[] {
     const pick = (session: LiveKitCommsSession | null): Room | null => {
@@ -1490,16 +1498,11 @@ export class CommsService {
 
     if (this.isWorldComms()) {
       add(pick(this.worldLiveKit))
-      // Cast-only scene room — do not use for voice on worlds.
       return out
     }
 
-    // Parcel: island first (archipelago nearby peers — same path Explorer voice uses),
-    // then scene room. Subscribe both so we never miss tracks on either.
-    add(pick(this.islandLiveKit))
+    // Parcel / Genesis: scene gatekeeper room only (ADR-204).
     add(pick(this.sceneLiveKit))
-    // Rare fallback
-    if (out.length === 0) add(pick(this.worldLiveKit))
     return out
   }
 

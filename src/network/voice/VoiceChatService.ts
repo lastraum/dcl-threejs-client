@@ -46,11 +46,11 @@ type BoundRoom = {
 }
 
 /**
- * Nearby voice.
+ * Nearby voice (ADR-204).
  *
- * Room set comes from CommsService.getVoiceLiveKitRooms():
- * - Worlds → world room only (publish + subscribe)
- * - Parcels → island + scene (subscribe both; publish on first canPublish room)
+ * Room set from CommsService.getVoiceLiveKitRooms():
+ * - Worlds → world LiveKit only
+ * - Parcels → scene LiveKit only (not island — island is movement/nearby-chat)
  */
 export class VoiceChatService {
   private roomsProvider: RoomsProvider = () => []
@@ -345,9 +345,7 @@ export class VoiceChatService {
     const run = (async () => {
       let anyLive = false
       let lastError: string | null = null
-      // Prefer first room that allows publish (parcels: island then scene).
-      // Dual getUserMedia on two LiveKit rooms is flaky in browsers — publish primary only.
-      // We still *subscribe* on every bound room so Explorer mics on either path are heard.
+      // Usually one room (scene or world). If multiple are bound, publish on first canPublish.
       const publishTarget = want
         ? rooms.find((r) => r.localParticipant.permissions?.canPublish !== false) ?? null
         : null

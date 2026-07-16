@@ -227,9 +227,9 @@ export class World {
   }
 
   /**
-   * Bind voice rooms:
+   * Bind voice rooms (ADR-204):
    * - Worlds → world LiveKit only
-   * - Parcels → scene + island (when archipelago is up) so Explorer mics are heard
+   * - Parcels → scene LiveKit only (island = movement, not voice)
    */
   syncVoiceRoom(): void {
     this.comms.onLiveKitRoomsChanged = () => {

@@ -2,15 +2,46 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-15 (**instanced props + teleport / UI ticks** → `dev-latest`)  
-> **Current phase:** Post-**v0.8.0** — backpack gaps, graphics P3/P4, voice, Phase 4 `/goto`.  
+> **Last updated:** 2026-07-15 (**What's new + terrain shell** → `dev-latest`)  
+> **Current phase:** Post-**v0.8.0** — candidate **v0.8.1** patch when ready (see release note below).  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
 > **Product next:** Phase 4 `/goto` in 3D · community text / DMs · voice UI · remaining backpack parity.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets
-> (3–6 lines). Version toast will show the latest block when `APP_VERSION` changes.
+> (3–6 lines). Version toast shows the **latest** block when `APP_VERSION` changes.
+> Flip `WHATS_NEW_PERSIST_ACK = true` in `whatsNewStorage.ts` before a public cut so dismiss
+> writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — What's new toast, profile entry & terrain shell → `dev-latest` (2026-07-15)
+
+**Status: on `dev-latest` (`9a319ce` tip)** — product shell UX: version highlights, profile access, terrain editor as a first-class nav destination.
+
+### What's new
+
+- **What's new** toast on update — open highlights anytime from the profile menu  
+- **Terrain** in the top nav (next to Events) — local scene projects with the same site backdrop  
+- Terrain hub shares shell navigation; **no scene chat dock** on the editor page  
+- Pickups/shared props hide correctly; **instanced tweens** spin/bob again  
+- More reliable **teleport / floor land** and scene UI tick resume after remounts  
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Version toast** | 🟢 | Top-of-page toast + sheet; bullets from latest `### What's new` in this file |
+| **Profile → What's new** | 🟢 | Guest + wallet menus; reuses same highlights sheet (manual open does not mark seen) |
+| **localStorage ack** | 🟡 | `WHATS_NEW_PERSIST_ACK = false` while testing — set `true` for release so dismiss persists |
+| **Terrain nav tab** | 🟢 | Shell: Explore · Map · Communities · Events · **Terrain** → `/editor` |
+| **Terrain hub chrome** | 🟢 | Top nav + site-wide DCL bg; chat shell torn down on editor |
+| **Instanced props / teleports** | 🟢 | Prior milestone (below) — still the runtime foundation for this cut |
+
+**QA:** Reload → toast + What's new sheet · profile menu What's new · Terrain tab ↔ Explore · hub no chat dock · open project still fullscreen sculpt.
+
+**Branch tip:** `dev-latest` @ `9a319ce` (toast `57b5500`… editor hub `f5aa1ce` / chat-off `9a319ce`).
+
+**Release candidate notes:** Prefer **v0.8.1** patch (not minor) — user-visible polish + fixes on top of v0.8.0, no API break. Before cut: enable `WHATS_NEW_PERSIST_ACK`, smoke toast once with persist on, then `scripts/release.mjs` from `main` after `dev-latest` → `main`.
 
 ---
 

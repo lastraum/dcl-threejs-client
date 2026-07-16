@@ -2,50 +2,54 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-15 (**What's new + terrain shell** → `dev-latest`)  
-> **Current phase:** Post-**v0.8.0** — candidate **v0.8.1** patch when ready (see release note below).  
+> **Last updated:** 2026-07-15 (**post-v0.8.0 rollup** → `dev-latest`, tip `6b44271+`)  
+> **Current phase:** Post-**v0.8.0** — candidate **v0.8.1** patch (toast persist on; merge to `main` when smoke is green).  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
 > **Product next:** Phase 4 in-world `/goto` (in-place teleport) · community text / DMs · voice UI · remaining backpack parity.  
-> **`/goto` stability:** dispose-order crash fixed on `dev-latest` (`39c10e1`) — not the full Phase 4 feature.  
+> **`/goto` stability:** dispose-order crash fixed (`39c10e1`) — not the full Phase 4 feature.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 >
-> **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets
-> (3–6 lines). Version toast shows the **latest** block when `APP_VERSION` changes.
-> `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion` (`whatsNewStorage.ts`).
+> **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
+> Version toast shows the **latest** block when `APP_VERSION` changes.
+> `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
 
 ---
 
-## 🎉 Milestone — What's new toast, profile entry & terrain shell → `dev-latest` (2026-07-15)
+## 🎉 Milestone — Post-v0.8.0 rollup (v0.8.1 candidate) → `dev-latest` (2026-07-15)
 
-**Status: on `dev-latest` (`9a319ce` tip)** — product shell UX: version highlights, profile access, terrain editor as a first-class nav destination.
+**Status: on `dev-latest`** — big mid-July cut after **v0.8.0**: multi-room chat + live cast, avatar polish, scene UI/live stream reliability, instanced world props, terrain shell, and version highlights. Detail tables live in the section milestones below; this block is the **toast / release notes** surface.
 
 ### What's new
 
-- **What's new** toast on update — open highlights anytime from the profile menu  
-- **Terrain** in the top nav (next to Events) — local scene projects with the same site backdrop  
-- Terrain hub shares shell navigation; **no scene chat dock** on the editor page  
-- **`/goto` no longer crashes** when leaving a scene (CameraModeArea dispose order)  
-- Pickups/shared props hide correctly; **instanced tweens** spin/bob again  
-- More reliable **teleport / floor land** and scene UI tick resume after remounts  
+- **Double-jump twirl** — Explorer-style full-body spin on air-jump (DCL + VRM/ODK); optional `double_jump.glb`  
+- **Live streams & cast** — Join Live as guest or wallet; mute; stream end returns to landing; LiveKit handoff + VideoPlayer stability  
+- **Multi-room chat** — keep scene tabs connected while you navigate; channel notifications; 2D @-mentions  
+- **Name tags** — hide overhead labels via scene.json `featureToggles.nameTags` (or `?nameTags=`)  
+- **Terrain** in top nav — local projects hub with site backdrop + shell nav (no chat dock on editor)  
+- **What's new** — update toast + profile menu highlights anytime  
+- **World props** — pickups hide correctly; instanced coins/props tween again; better teleport / floor land  
+- **`/goto` stability** — leaving a scene no longer crashes (CameraModeArea dispose order)  
 
-| Area | Status | Notes |
-| ---- | ------ | ----- |
-| **Version toast** | 🟢 | Top-of-page toast + sheet; bullets from latest `### What's new` in this file |
-| **Profile → What's new** | 🟢 | Guest + wallet menus; reuses same highlights sheet (manual open does not mark seen) |
-| **localStorage ack** | 🟢 | `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion` |
-| **Terrain nav tab** | 🟢 | Shell: Explore · Map · Communities · Events · **Terrain** → `/editor` |
-| **Terrain hub chrome** | 🟢 | Top nav + site-wide DCL bg; chat shell torn down on editor |
-| **`/goto` dispose crash** | 🟢 | `World.dispose` no longer nulls player before `CameraModeAreaSystem.dispose` (`setForcedCameraMode` on null) — `39c10e1` |
-| **Instanced props / teleports** | 🟢 | Prior milestone (below) — still the runtime foundation for this cut |
+| Theme | Status | Pointer |
+| ----- | ------ | ------- |
+| **Multi-room chat + cast / live video** | 🟢 | Milestone below (2026-07-14) + hot-fix live-stream merge `#25` |
+| **Double-jump twirl + nameTags** | 🟢 | Milestone below (2026-07-15) |
+| **Instanced props, teleports, UI ticks** | 🟢 | Milestone below (2026-07-15) |
+| **Scene UI modals / CAM / inject** | 🟢 | CAM stay-open, modal flash, UiText/UiBackground ids, async paints |
+| **Live stream VideoPlayer / LiveKit** | 🟢 | ECS authority, handoff, bind reliability (`4816b2b`, `e113432`) |
+| **Map satellite basemap** | 🟢 | Unity-parity basemap + close-zoom parcels (`ea336f1`) |
+| **What's new + Terrain shell** | 🟢 | Toast, profile entry, Terrain tab, hub chrome, chat off on editor |
+| **`/goto` dispose crash** | 🟢 | `39c10e1` — not full Phase 4 in-world goto |
+| **Post-round InputModifier freeze** | 🟡 | Client latch fixed; some worlds may still leave walk/jog/run off |
 
-**Still open (product):** Phase 4 **in-world `/goto`** (teleport in place without SPA reload) — separate from the dispose crash fix above.
+**Still open (product):** Phase 4 **in-world `/goto`** · I'm live CTA (HLS) · community PM · spatial voice · backpack outfits/marketplace · graphics P3/P4.
 
-**QA:** Reload → toast + What's new sheet · profile menu What's new · Terrain tab ↔ Explore · hub no chat dock · open project still fullscreen sculpt.
+**QA (release smoke):** double-jump twirl DCL+VRM · Join Live cast guest · multi-room chat A→B · nameTags off · Terrain hub + no chat · toast dismiss stays dismissed · pickup vanish + coin spin · `/goto` leave scene · elevated respawn.
 
-**Branch tip:** `dev-latest` @ `9a319ce` (toast `57b5500`… editor hub `f5aa1ce` / chat-off `9a319ce`).
+**Branch tip:** `dev-latest` (see git log `v0.8.0..HEAD`).
 
-**Release candidate notes:** Prefer **v0.8.1** patch (not minor) — user-visible polish + fixes on top of v0.8.0, no API break. Before cut: enable `WHATS_NEW_PERSIST_ACK`, smoke toast once with persist on, then `scripts/release.mjs` from `main` after `dev-latest` → `main`.
+**Release candidate:** **v0.8.1** patch. Persist ack already **on**. Path: smoke → `dev-latest` → `main` → `node scripts/release.mjs 0.8.1 --push`.
 
 ---
 
@@ -84,6 +88,11 @@
 
 **Status: merged `lastraum` → `dev-latest`** — scene.json name-tag hide + Explorer-style clockwise double-jump for all avatar rigs.
 
+### What's new
+
+- **Double-jump twirl** — full-body clockwise spin on air-jump (DCL body + VRM/ODK)  
+- Hide **name tags** via scene.json `featureToggles.nameTags` (or `?nameTags=` for QA)  
+
 | Area | Status | Notes |
 | ---- | ------ | ----- |
 | **`featureToggles.nameTags`** | 🟢 | `"disabled"` hides local + remote + AvatarShape overhead labels; top-level `nameTags` alias |
@@ -98,9 +107,15 @@
 
 ---
 
-## 🎉 Milestone — Multi-room chat + cast polish → `dev-latest` (2026-07-14)
+## 🎉 Milestone — Multi-room chat + cast / live video → `dev-latest` (2026-07-14)
 
-**Status: merged `lastraum` → `dev-latest`** — companion-style multi-room LiveKit chat, guest cast watch, landing UX. Closes the main Watch Lite / 2D chat dock parity gaps from [SOCIAL_MERGE_PLAN.md](./SOCIAL_MERGE_PLAN.md) Phase 3.
+**Status: merged `lastraum` → `dev-latest`** (+ live-stream hotfixes) — companion-style multi-room LiveKit chat, guest cast watch, landing UX, VideoPlayer/LiveKit reliability. Closes main Watch Lite / 2D chat dock parity gaps from [SOCIAL_MERGE_PLAN.md](./SOCIAL_MERGE_PLAN.md) Phase 3.
+
+### What's new
+
+- **Multi-room scene chat** — stay joined to open tabs while you navigate  
+- **Join Live / cast video** as guest or wallet; mute; clean end-of-stream → landing  
+- **@-mentions** in 2D chat; channel-aware notifications  
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
@@ -113,17 +128,18 @@
 | **Mobile LIVE · CAST CTA** | 🟢 | Stacked full-width above Jump in (≤960px) |
 | **Cast mute toggle** | 🟢 | Speaker button toggles mute; LiveKit reattach no longer stomps volume |
 | **Stream end → details** | 🟢 | Publisher gone clears host + restores scene landing card (not blank stage) |
+| **LiveKit handoff / VideoPlayer** | 🟢 | Scene jump handoff, ECS VideoPlayer authority, reliable bind (`e113432`, `4816b2b`, PR `#25`) |
 | **Island / wearable shadows** | 🟢 | Island shore MeshStandard receives shadows; wearables cast |
 | **scene.json water** | 🟢 | `environment.water` FFT ocean knobs ([THIRD_PARTY.md](./THIRD_PARTY.md)) |
 | **Stable browser guest** | 🟢 | Guest wallet + Catalyst profile for chat/cast without MetaMask |
 
-**Resolved gaps (was 🟡 / open):** single-room chat drop on scene switch · history-only rejoin UX · wallet-only stream-key watch · blank cast stage after OBS stop · landing chat “partial” without multi-room.
+**Resolved gaps (was 🟡 / open):** single-room chat drop on scene switch · history-only rejoin UX · wallet-only stream-key watch · blank cast stage after OBS stop · landing chat “partial” without multi-room · flaky cast video bind.
 
-**Still open:** I'm live CTA (HLS listings) · community text / PM router · spatial voice UI · Phase 4 `/goto` in 3D play · backpack outfits/marketplace.
+**Still open:** I'm live CTA (HLS listings) · community text / PM router · spatial voice UI · Phase 4 in-world `/goto` · backpack outfits/marketplace.
 
-**QA focus:** Scene A chat → navigate B → A still live + notifications · guest Join Live cast · mute/unmute · stop OBS → return to landing card · mobile LIVE above Jump in.
+**QA focus:** Scene A chat → navigate B → A still live + notifications · guest Join Live cast · mute/unmute · stop OBS → return to landing card · mobile LIVE above Jump in · VideoPlayer in-scene streams.
 
-**Branch:** `lastraum` → `dev-latest` (`0e3d3bb` merge).
+**Branch:** `lastraum` → `dev-latest` (`0e3d3bb` merge) + live-stream follow-ups on `dev-latest`.
 
 ---
 

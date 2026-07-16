@@ -82,8 +82,13 @@ const HARD_FLOOR_Y = 0
  * through missing/thin floors into water ~y=48).
  */
 const SPAWN_FEET_CLEARANCE_M = 0.12
-/** Max feet drop during settle (metres). Beyond this, restore to lifted spawn. */
-const SPAWN_SETTLE_MAX_DROP_M = 0.85
+/**
+ * Max feet drop during CCT settle (metres). Keep modest so thin tower floors
+ * are not punched through; sweep probe can look a bit further (see below).
+ */
+const SPAWN_SETTLE_MAX_DROP_M = 1.15
+/** Sweep search under authored feet when CCT settle fails (Flagtag tower gaps). */
+const SPAWN_PROBE_MAX_DROP_M = 2.75
 const SPAWN_SETTLE_DT = 1 / 30
 const SPAWN_SETTLE_GRAVITY = 20
 
@@ -531,14 +536,24 @@ export class PhysXWorld {
    * Nudge the capsule onto a walk surface after statics are registered.
    * Call after `warmStaticScene()` / collider seal.
    *
+   * 1) Short CCT drop (safe for thin floors)
+   * 2) If that fails, downward scene sweep for a walkable hit and snap feet onto it
+   * 3) Else restore to lifted authored Y (caller may hold / re-probe)
+   *
    * @param authoredFeetY — scene.json spawn feet Y (Three/world space, same as spawnPlayer input)
-   * @returns true if CCT reported ground contact within the max-drop window
+   * @returns true if CCT reported ground contact or sweep snapped onto a solid
    */
   settleSpawnOntoFloor(authoredFeetY: number): boolean {
     if (!this.controller) return false
     const liftY = authoredFeetY + SPAWN_FEET_CLEARANCE_M
-    const floorMinY = authoredFeetY - 0.05
+    const floorMinY = authoredFeetY - 0.08
     const dropFloorY = liftY - SPAWN_SETTLE_MAX_DROP_M
+
+    // Always start from clear lift so re-probes are deterministic.
+    this._v1.set(this.position.x, liftY, this.position.z)
+    this.teleport(this._v1)
+    this.invalidateControllerCache()
+    this.warmStaticScene()
 
     // Dedicated vector — movePlayer mutates `_v1` as stepDisp; must not alias.
     const drop = new THREE.Vector3()
@@ -552,21 +567,106 @@ export class PhysXWorld {
       if (grounded) break
     }
 
-    // No solid under spawn (hole / uncooked floor) — stay at tower height, don't freefall to water.
-    if (!grounded || this.position.y < floorMinY) {
-      this._v1.set(this.position.x, liftY, this.position.z)
+    if (grounded && this.position.y >= floorMinY) {
+      this.invalidateControllerCache()
+      return true
+    }
+
+    // CCT missed — try scene query for a walk surface (late pose / thin mesh / filter edge).
+    const probed = this.probeWalkSurfaceFeetY(
+      this.position.x,
+      this.position.z,
+      liftY + 0.4,
+      SPAWN_PROBE_MAX_DROP_M
+    )
+    if (probed != null && probed >= authoredFeetY - SPAWN_PROBE_MAX_DROP_M) {
+      this._v1.set(this.position.x, probed + SPAWN_FEET_CLEARANCE_M, this.position.z)
+      this.teleport(this._v1)
+      this.invalidateControllerCache()
+      // Tiny settle onto the probed surface
+      for (let i = 0; i < 6; i++) {
+        drop.set(0, -SPAWN_SETTLE_GRAVITY * SPAWN_SETTLE_DT, 0)
+        const result = this.movePlayer(drop, SPAWN_SETTLE_DT)
+        if (result.grounded) {
+          this.invalidateControllerCache()
+          clientDebugLog.log(
+            'player',
+            `spawn settle probe snap — feet y=${this.position.y.toFixed(2)} (authored ${authoredFeetY.toFixed(2)})`,
+            { alsoConsole: true, level: 'info' }
+          )
+          return true
+        }
+      }
+      // Snap without CCT ground flag still better than freefall — hold at probed height.
+      this._v1.set(this.position.x, probed + SPAWN_FEET_CLEARANCE_M * 0.5, this.position.z)
       this.teleport(this._v1)
       this.invalidateControllerCache()
       clientDebugLog.log(
         'player',
-        `spawn settle restore — no solid within ${SPAWN_SETTLE_MAX_DROP_M}m of y=${authoredFeetY.toFixed(2)}; held at y=${liftY.toFixed(2)}`,
+        `spawn settle probe hold — surface y=${probed.toFixed(2)} (no CCT ground flag)`,
         { alsoConsole: true, level: 'warn' }
       )
-      return false
+      return true
     }
 
+    // No solid under spawn — stay at tower height; caller holds / re-probes.
+    this._v1.set(this.position.x, liftY, this.position.z)
+    this.teleport(this._v1)
     this.invalidateControllerCache()
-    return true
+    clientDebugLog.log(
+      'player',
+      `spawn settle restore — no solid within ${SPAWN_PROBE_MAX_DROP_M}m of y=${authoredFeetY.toFixed(2)}; held at y=${liftY.toFixed(2)}`,
+      { alsoConsole: true, level: 'warn' }
+    )
+    return false
+  }
+
+  /**
+   * Downward sphere sweep for a walkable hit under (x,z).
+   * Returns world feet Y (hit point Y) or null.
+   */
+  probeWalkSurfaceFeetY(
+    x: number,
+    z: number,
+    fromY: number,
+    maxDrop: number
+  ): number | null {
+    if (!this.scene || maxDrop <= 0.2) return null
+    this.ensureCameraSweepGeometry()
+    if (!this.cameraSweepGeometry) return null
+
+    this._v1.set(x, fromY, z)
+    this._v1.toPxVec3(this.sweepPose.p)
+    this.applySceneQueryFilter(0)
+
+    const down = this._pv2
+    down.x = 0
+    down.y = -1
+    down.z = 0
+
+    const didHit = this.scene.sweep(
+      this.cameraSweepGeometry,
+      this.sweepPose,
+      down,
+      maxDrop,
+      this.sweepResult,
+      PHYSX.PxHitFlagEnum.eDEFAULT,
+      this.queryFilterData
+    )
+    if (!didHit) return null
+
+    const nbHits = this.sweepResult.getNbAnyHits?.() ?? 1
+    let bestY: number | null = null
+    for (let i = 0; i < nbHits; i++) {
+      const hit = this.sweepResult.getAnyHit(i)
+      const ny = hit.normal?.y ?? 0
+      // Walk surface: mostly upward normal
+      if (ny < 0.45) continue
+      const hitY = fromY - hit.distance
+      // Prefer the highest surface still under the probe (top of tower deck)
+      if (bestY === null || hitY > bestY) bestY = hitY
+    }
+    return bestY
   }
 
   hasStaticActor(entity: number): boolean {

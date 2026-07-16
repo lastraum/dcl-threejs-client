@@ -164,10 +164,12 @@ export class PlayerSystem {
   private preForceCamDistance: number | null = null
   /**
    * After spawn when floor settle fails (no solid under feet), keep Y from freefalling
-   * through the map (Flagtag tower → water). Cleared on first ground contact or timeout.
+   * through the map (Flagtag tower → water). Re-probes while held; clears on ground or timeout.
    */
   private spawnHoldFeetY: number | null = null
   private spawnHoldSecLeft = 0
+  private spawnHoldAuthoredFeetY: number | null = null
+  private spawnHoldReprobeAcc = 0
   constructor(
     private readonly host: SceneHost,
     private readonly physics: PhysXWorld
@@ -195,17 +197,21 @@ export class PlayerSystem {
     const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
     this.physics.spawnPlayer(spawnThree)
     this.physics.warmStaticScene()
-    // Lift + short settle only — long freefall punched through Flagtag tower into water.
+    // Lift + capped settle + optional sweep probe — never freefall from tower height.
     const settled = this.physics.settleSpawnOntoFloor(spawnThree.y)
     this.grounded = settled
     this.groundCoyote = settled ? 0.12 : 0
     if (!settled) {
-      // Hold tower height until a surface appears or ~3s — avoids water freefall.
+      // Hold elevated spawn and re-probe while late colliders / poses settle (Flagtag tower).
       this.spawnHoldFeetY = this.physics.positionOut.y
-      this.spawnHoldSecLeft = 3
+      this.spawnHoldAuthoredFeetY = spawnThree.y
+      this.spawnHoldSecLeft = 18
+      this.spawnHoldReprobeAcc = 0
     } else {
       this.spawnHoldFeetY = null
+      this.spawnHoldAuthoredFeetY = null
       this.spawnHoldSecLeft = 0
+      this.spawnHoldReprobeAcc = 0
     }
     this.physics.attachCapsuleDebug(this.root)
     this.enabled = true
@@ -720,13 +726,34 @@ export class PlayerSystem {
 
     if (this.spawnHoldSecLeft > 0) {
       this.spawnHoldSecLeft -= delta
+      this.spawnHoldReprobeAcc += delta
       if (this.grounded) {
         this.spawnHoldFeetY = null
+        this.spawnHoldAuthoredFeetY = null
         this.spawnHoldSecLeft = 0
+        this.spawnHoldReprobeAcc = 0
       } else if (this.spawnHoldFeetY != null) {
         // No gravity freefall through missing tower colliders.
         _velocity.y = 0
-        if (this.physics.positionOut.y < this.spawnHoldFeetY - 0.35) {
+        // Periodic re-settle: colliders / GLTF poses may firm up after first spawn frame.
+        if (this.spawnHoldReprobeAcc >= 0.45 && this.spawnHoldAuthoredFeetY != null) {
+          this.spawnHoldReprobeAcc = 0
+          this.physics.warmStaticScene()
+          if (this.physics.settleSpawnOntoFloor(this.spawnHoldAuthoredFeetY)) {
+            this.grounded = true
+            this.groundCoyote = 0.12
+            this.spawnHoldFeetY = null
+            this.spawnHoldAuthoredFeetY = null
+            this.spawnHoldSecLeft = 0
+            this.root.position.copy(this.physics.positionOut)
+            console.info(
+              `[player] spawn hold re-probe grounded — feet y=${this.physics.positionOut.y.toFixed(2)}`
+            )
+          } else {
+            this.spawnHoldFeetY = this.physics.positionOut.y
+          }
+        }
+        if (this.spawnHoldFeetY != null && this.physics.positionOut.y < this.spawnHoldFeetY - 0.35) {
           _tmpSpawnHold.set(
             this.physics.positionOut.x,
             this.spawnHoldFeetY,
@@ -736,7 +763,19 @@ export class PlayerSystem {
           this.root.position.copy(this.physics.positionOut)
         }
         if (this.spawnHoldSecLeft <= 0) {
-          this.spawnHoldFeetY = null
+          // Elevated spawn still ungrounded — keep soft hold (no freefall to water) until ground.
+          if (this.spawnHoldAuthoredFeetY != null && this.spawnHoldAuthoredFeetY > 8) {
+            this.spawnHoldSecLeft = 8
+            this.spawnHoldReprobeAcc = 0
+            clientDebugLog.log(
+              'player',
+              `spawn hold extended — still no solid under elevated y=${this.spawnHoldAuthoredFeetY.toFixed(1)}`,
+              { alsoConsole: true, level: 'warn', throttleMs: 8000, throttleKey: 'spawn-hold-extend' }
+            )
+          } else {
+            this.spawnHoldFeetY = null
+            this.spawnHoldAuthoredFeetY = null
+          }
         }
       }
     } else if (!this.grounded && !this.airJumpPending) {

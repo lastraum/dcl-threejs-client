@@ -8,9 +8,9 @@ export const WHATS_NEW_SEEN_KEY = 'threejs-client:lastSeenVersion'
 
 /**
  * When false (dev/testing): never write localStorage, always treat as "unseen"
- * so the toast reappears every load. Set true before shipping.
+ * so the toast reappears every load. When true: dismiss writes lastSeenVersion.
  */
-export const WHATS_NEW_PERSIST_ACK = false
+export const WHATS_NEW_PERSIST_ACK = true
 
 export function readLastSeenVersion(): string | null {
   try {

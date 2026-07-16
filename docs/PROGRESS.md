@@ -11,8 +11,7 @@
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets
 > (3–6 lines). Version toast shows the **latest** block when `APP_VERSION` changes.
-> Flip `WHATS_NEW_PERSIST_ACK = true` in `whatsNewStorage.ts` before a public cut so dismiss
-> writes `threejs-client:lastSeenVersion`.
+> `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion` (`whatsNewStorage.ts`).
 
 ---
 
@@ -32,7 +31,7 @@
 | ---- | ------ | ----- |
 | **Version toast** | 🟢 | Top-of-page toast + sheet; bullets from latest `### What's new` in this file |
 | **Profile → What's new** | 🟢 | Guest + wallet menus; reuses same highlights sheet (manual open does not mark seen) |
-| **localStorage ack** | 🟡 | `WHATS_NEW_PERSIST_ACK = false` while testing — set `true` for release so dismiss persists |
+| **localStorage ack** | 🟢 | `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion` |
 | **Terrain nav tab** | 🟢 | Shell: Explore · Map · Communities · Events · **Terrain** → `/editor` |
 | **Terrain hub chrome** | 🟢 | Top nav + site-wide DCL bg; chat shell torn down on editor |
 | **Instanced props / teleports** | 🟢 | Prior milestone (below) — still the runtime foundation for this cut |

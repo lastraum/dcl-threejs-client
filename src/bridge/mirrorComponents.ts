@@ -53,6 +53,8 @@ export type MirrorComponents = {
   UiDropdown: ReturnType<typeof generated.UiDropdown>
   UiDropdownResult: ReturnType<typeof generated.UiDropdownResult>
   UiCanvasInformation: ReturnType<typeof generated.UiCanvasInformation>
+  /** Renderer → worker: LiveKit scene-room connect for SDK `isStateSyncronized` / REQ_CRDT_STATE. */
+  RealmInfo: ReturnType<typeof generated.RealmInfo>
 }
 
 /** Register mirror ECS components so incoming scene CRDT can be applied. */
@@ -106,6 +108,7 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     UiInputResult: generated.UiInputResult(engine),
     UiDropdown: generated.UiDropdown(engine),
     UiDropdownResult: generated.UiDropdownResult(engine),
-    UiCanvasInformation: generated.UiCanvasInformation(engine)
+    UiCanvasInformation: generated.UiCanvasInformation(engine),
+    RealmInfo: generated.RealmInfo(engine)
   }
 }

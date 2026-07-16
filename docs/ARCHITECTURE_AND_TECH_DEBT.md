@@ -41,7 +41,7 @@ SceneInputRelay (WASD)              inputSystem.isPressed
 | `PLAYER_FRAME_PROGRESS.md` | MOVE CAMERA QA handoff | Active |
 | `SCENE_UI_POINTER_REMAINING.md` | Creator modal pick issues | Older; z-order pick landed |
 | `worker-input-architecture.mdc` | Hard rules for pointer/UI CRDT | **Authoritative for input** — keep updated |
-| `SYNC_ENTITIES_PARITY.md` | Platform multiplayer ECS (`syncEntity`) | Active P0 — host transport, not Flagtag-driven |
+| `SYNC_ENTITIES_PARITY.md` | Platform multiplayer ECS (`syncEntity`) | P0–P3 host path; optional P4 auth + soak |
 
 ---
 
@@ -110,6 +110,7 @@ Expect WASD: gizmo moves; worker may log `scene-input-snapshot` with `?sceneinpu
 | Full UI mount touch on growth | Expensive on large menus; dirty-only is default |
 | Third-person camera lerp + foliage | Documented jitter; not MOVE CAMERA |
 | Asset texture 404s (`Floor_Sand01.png.png`) | Content/path bug; wasted loads |
+| **`localStorage` quota — avatar profile cache** | ✅ Prune by age/count + size cap + aggressive shrink on `QuotaExceededError` (`profileStorage.ts`). Avatar still loads if persist fails. |
 
 ### P2 — Product / parity gaps (from INTEGRATION + PROGRESS)
 
@@ -146,11 +147,10 @@ Expect WASD: gizmo moves; worker may log `scene-input-snapshot` with `?sceneinpu
 ## 6. Suggested next engineering order
 
 1. **Finish mesh revamp** (frame law, instancing, mass attach) — [MESH_RUNTIME.md](./MESH_RUNTIME.md).  
-2. **Then: edit-flight InputModifier / VC shim cleanup** (P0 table) — scene-authoritative IM/MC; no clear/freeze inventing in worker.  
+2. **Edit-flight InputModifier / VC shim cleanup** (P0 table) — scene-authoritative IM/MC.  
 3. Retest MOVE / WASD / STOP after that cleanup.  
-4. Sync `player-frame` apply before `PlayerSystem.tick` (one-frame latency) if still needed.  
-5. Update INTEGRATION.md scene UI status; plan `dev-latest` merge.  
-6. Broader performance pass: rAF (main) + worker tick ms on Genesis + RickRoll.
+4. Optional: SyncEntities P4 auth-host adapter; multi-peer soak.  
+5. Update INTEGRATION.md scene UI status; plan `dev-latest` merge.
 
 ---
 

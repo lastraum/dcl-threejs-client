@@ -75,6 +75,17 @@ const CCT_MAX_VERTICAL_STEP_M = 0.4
 const CCT_MAX_SUBSTEPS = 8
 /** Absolute floor — if CCT still reports feet below this, snap up and force grounded. */
 const HARD_FLOOR_Y = 0
+/**
+ * Authored spawn points usually sit ON the walk surface. Creating the CCT with feet
+ * exactly there (or slightly inside a trimesh) embeds the capsule. Lift clear, then
+ * drop a short distance only — never freefall (Flagtag tower: long settle punched
+ * through missing/thin floors into water ~y=48).
+ */
+const SPAWN_FEET_CLEARANCE_M = 0.12
+/** Max feet drop during settle (metres). Beyond this, restore to lifted spawn. */
+const SPAWN_SETTLE_MAX_DROP_M = 0.85
+const SPAWN_SETTLE_DT = 1 / 30
+const SPAWN_SETTLE_GRAVITY = 20
 
 export type ControllerMoveResult = {
   grounded: boolean
@@ -509,9 +520,53 @@ export class PhysXWorld {
       shape.setSimulationFilterData(filterData)
     }
 
-    this.controller.setFootPosition(position.toPxExtVec3())
+    // Start above the walk surface so the CCT is never born inside floor geometry.
+    this._v1.set(position.x, position.y + SPAWN_FEET_CLEARANCE_M, position.z)
+    this.controller.setFootPosition(this._v1.toPxExtVec3())
     this.syncPlayerTransform()
     this.invalidateControllerCache()
+  }
+
+  /**
+   * Nudge the capsule onto a walk surface after statics are registered.
+   * Call after `warmStaticScene()` / collider seal.
+   *
+   * @param authoredFeetY — scene.json spawn feet Y (Three/world space, same as spawnPlayer input)
+   * @returns true if CCT reported ground contact within the max-drop window
+   */
+  settleSpawnOntoFloor(authoredFeetY: number): boolean {
+    if (!this.controller) return false
+    const liftY = authoredFeetY + SPAWN_FEET_CLEARANCE_M
+    const floorMinY = authoredFeetY - 0.05
+    const dropFloorY = liftY - SPAWN_SETTLE_MAX_DROP_M
+
+    // Dedicated vector — movePlayer mutates `_v1` as stepDisp; must not alias.
+    const drop = new THREE.Vector3()
+    let grounded = false
+    const maxSteps = Math.ceil(SPAWN_SETTLE_MAX_DROP_M / (SPAWN_SETTLE_GRAVITY * SPAWN_SETTLE_DT)) + 2
+    for (let i = 0; i < maxSteps; i++) {
+      if (this.position.y <= dropFloorY) break
+      drop.set(0, -SPAWN_SETTLE_GRAVITY * SPAWN_SETTLE_DT, 0)
+      const result = this.movePlayer(drop, SPAWN_SETTLE_DT)
+      grounded = result.grounded
+      if (grounded) break
+    }
+
+    // No solid under spawn (hole / uncooked floor) — stay at tower height, don't freefall to water.
+    if (!grounded || this.position.y < floorMinY) {
+      this._v1.set(this.position.x, liftY, this.position.z)
+      this.teleport(this._v1)
+      this.invalidateControllerCache()
+      clientDebugLog.log(
+        'player',
+        `spawn settle restore — no solid within ${SPAWN_SETTLE_MAX_DROP_M}m of y=${authoredFeetY.toFixed(2)}; held at y=${liftY.toFixed(2)}`,
+        { alsoConsole: true, level: 'warn' }
+      )
+      return false
+    }
+
+    this.invalidateControllerCache()
+    return true
   }
 
   hasStaticActor(entity: number): boolean {

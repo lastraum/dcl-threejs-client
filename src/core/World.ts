@@ -280,9 +280,9 @@ export class World {
         }
       })
 
-    this.comms.setSceneBinaryHandler((sender, data) => {
-      this.sceneScript.deliverCommsBinary(sender, data)
-    })
+    // Inbound scene-binary is delivered only via CommsInboundQueue → sendBinary response.
+    // Do not also postMessage `comms-receive-binary` here: that double-delivered every packet
+    // (and used to force type=CRDT, which broke AUTH_RES / CUSTOM_EVENT handlers).
     this.comms.setTopicMessageHandler((topic, sender, payload) => {
       if (topic !== 'comms') return
       const message = new TextDecoder().decode(payload)
@@ -457,6 +457,7 @@ export class World {
       )
       this.sceneScript.setCollidersCookCallback((entity) => this.onColliderCookRequest(entity))
       this.sceneScript.setCollidersPoseCallback((entities) => this.applyColliderPoseSlides(entities))
+      this.sceneScript.setRealmInfoProvider(() => this.comms.getRealmInfo())
       this.sceneScript.setCommsHandler({
         setCommunicationsAdapter: async (body) => ({
           success: await this.comms.connectAdapter(body.connectionString)
@@ -512,6 +513,7 @@ export class World {
           profile: this.session.getProfile()
         })
       )
+      this.sceneScript.setRealmInfo(this.comms.getRealmInfo())
 
       this.sceneScript.setMovePlayerHandler((request) => this.player!.movePlayerTo(request))
       this.sceneScript.setTriggerEmoteHandler((request) => {
@@ -548,6 +550,7 @@ export class World {
       this.host.focusSpawn(scene)
       this.host.setOrbitEnabled(true)
       this.sceneScript.setPlayerIdentity(buildPlayerMirrorIdentity({}))
+      this.sceneScript.setRealmInfo(this.comms.getRealmInfo())
     }
 
     if (scene.mainEntry && scene.entityId) {
@@ -2295,24 +2298,30 @@ export class World {
   }
 
   private async handleSendBinary(body: SendBinaryRequest) {
-    const peerChunks =
-      body.peerData?.flatMap((entry) =>
-        entry.data.map((chunk) => ({ chunk, addresses: entry.address ?? [] }))
-      ) ?? []
-    const broadcast = body.data ?? []
+    // peerData with empty address[] is still room broadcast (auth-server CUSTOM_EVENT often
+    // uses peerData envelope without targets). Split for accurate ?syncdebug metrics.
+    const directed: Array<{ chunk: Uint8Array; addresses: string[] }> = []
+    const broadcastFromPeers: Uint8Array[] = []
+    for (const entry of body.peerData ?? []) {
+      const addrs = (entry.address ?? []).filter(Boolean)
+      for (const chunk of entry.data ?? []) {
+        if (addrs.length) directed.push({ chunk, addresses: addrs })
+        else broadcastFromPeers.push(chunk)
+      }
+    }
+    const broadcast = [...(body.data ?? []), ...broadcastFromPeers]
     const sent: Uint8Array[] = []
 
-    if (broadcast.length === 0 && peerChunks.length === 0) {
+    if (broadcast.length === 0 && directed.length === 0) {
       return { data: await this.comms.sendBinary([]) }
     }
 
-    // SyncEntities host instrumentation (?syncdebug) — platform parity P0.
-    logSyncOutbound({ broadcast, directed: peerChunks })
+    logSyncOutbound({ broadcast, directed })
 
     if (broadcast.length) {
       sent.push(...(await this.comms.sendBinary(broadcast)))
     }
-    for (const entry of peerChunks) {
+    for (const entry of directed) {
       sent.push(...(await this.comms.sendBinary([entry.chunk], entry.addresses)))
     }
     return { data: sent }

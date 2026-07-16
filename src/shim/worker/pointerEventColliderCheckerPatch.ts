@@ -254,19 +254,25 @@ function wrapAddTransportCalls(code: string, limit: number): string {
 
 export type PatchSceneBundleStepLog = (step: string, ms: number) => void
 
-const REACT_ECS_ADD_RE = /e\.addSystem\(d,1e5,"@dcl\/react-ecs"\)/g
+/**
+ * Bundled `@dcl/react-ecs` registration. Minifier renames the reconcile fn (`d`, `p`, …)
+ * and sometimes the engine local — only the priority + system name are stable.
+ * Asset-pack `initAssetPacks` calls `eS(engine)` again with `n` unset → second reconcile
+ * runs `update(null)` and wipes scene UI (Flagtag lobby mount=0).
+ */
+const REACT_ECS_ADD_RE = /(\w+)\.addSystem\((\w+),1e5,"@dcl\/react-ecs"\)/g
 
 const SET_UI_RENDERER_RE =
   /setUiRenderer\((\w+),(\w+)\)\{(\w+)=\1,(\w+)=\2\}/g
 const ADD_UI_RENDERER_RE =
   /addUiRenderer\((\w+),(\w+),(\w+)\)\{(\w+)\.set\(\1,\{ui:\2,options:\3\}\)\}/g
 
-/** Only the scene react-ecs renderer may register — asset packs call sw() again with n unset. */
+/** Only the first react-ecs reconcile may register — later eS()/sw() calls no-op. */
 function patchReactEcsOnceGuard(code: string): string {
-  if (!code.includes('addSystem(d,1e5,"@dcl/react-ecs")')) return code
+  if (!code.includes('"@dcl/react-ecs"')) return code
   return code.replace(
     REACT_ECS_ADD_RE,
-    'globalThis.__THREEJS_UI_REACT_ECS_ONCE__&&globalThis.__THREEJS_UI_REACT_ECS_ONCE__(d,e)'
+    'globalThis.__THREEJS_UI_REACT_ECS_ONCE__&&globalThis.__THREEJS_UI_REACT_ECS_ONCE__($2,$1)'
   )
 }
 

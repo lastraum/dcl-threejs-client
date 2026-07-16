@@ -109,8 +109,8 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 
 | Component | ID | Status | Notes |
 | --------- | -- | ------ | ----- |
-| NetworkEntity / NetworkParent | — | 🟡 | Projection decode + parent strip · see [SYNC_ENTITIES_PARITY.md](./SYNC_ENTITIES_PARITY.md) |
-| SyncComponents / `syncEntity` | — | 🟡 | Scene SDK owns API; host P0 wire unwrap + `?syncdebug` · [SYNC_ENTITIES_PARITY.md](./SYNC_ENTITIES_PARITY.md) |
+| NetworkEntity / NetworkParent | — | 🟢 | Typed projection + local parent resolve (P3) · [SYNC_ENTITIES_PARITY.md](./SYNC_ENTITIES_PARITY.md) |
+| SyncComponents / `syncEntity` | — | 🟢 | P0–P3 host path · directed LiveKit · size cap · [SYNC_ENTITIES_PARITY.md](./SYNC_ENTITIES_PARITY.md) |
 | SkyboxTime | 1210 | 🟢 | Scene fixed → session custom → Auto; ECS/json lock snaps on cold bind |
 | UiTransform … UiDropdown | 1050+ | ⬜ | In-scene UI (HUD is separate) |
 | ParticleSystem | 1217 | 🟢 | `ParticleSystemBridge` — GPU billboard sprites |
@@ -164,7 +164,7 @@ DOM overlay — not in-scene `UiTransform`.
 | Remote avatars + load queue | 🟢 |
 | Double-jump clockwise Y twirl (DCL / VRM / ODK) | 🟢 | Shared `DoubleJumpTwirl`; optional `double_jump.glb` |
 | SignedFetch, Catalyst content, wallet + guest session | 🟢 |
-| ECS NetworkEntity scene sync | 🟡 stub |
+| ECS NetworkEntity scene sync | 🟢 P0–P3 host path |
 | Community text / PM router | ⬜ local echo only |
 | Spatial voice UI | ⬜ |
 

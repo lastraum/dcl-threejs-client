@@ -8,6 +8,7 @@ import type { ResolvedScene } from '../dcl/content/types'
 import { soundSettings, volumeToGain } from '../rendering/SoundSettings'
 import { getSessionAudioBufferCache } from './AudioBufferCache'
 import { MS_NONE, type MediaStateValue } from './audioConstants'
+import { patchThreeAudioSafeRamps } from './patchThreeAudioSafeRamps'
 import { SceneAudioPlayer } from './SceneAudioPlayer'
 import { findReservedAnchorKind, resolveSpatialAudioAttach, type SpatialAudioAnchors } from './spatialAudioParent'
 
@@ -40,6 +41,7 @@ export class AudioSourceBridge {
     /** Source-capture AudioSource LWW PUTs (playing sync on natural end). */
     private readonly recordLww?: (componentId: number, entity: Entity, value: unknown) => void
   ) {
+    patchThreeAudioSafeRamps()
     this.listener = new THREE.AudioListener()
     camera.add(this.listener)
     this.applyMasterVolume(soundSettings.get().masterVolume)

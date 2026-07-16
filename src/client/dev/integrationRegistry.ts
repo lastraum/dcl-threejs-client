@@ -135,7 +135,13 @@ export const NETWORKING_INTEGRATION: IntegrationEntry[] = [
   { id: 'net:catalyst-content', name: 'Catalyst content resolution', status: 'render', category: 'networking' },
   { id: 'net:wallet-session', name: 'Wallet / Catalyst session', status: 'render', category: 'networking' },
   { id: 'net:realm-comms-adapter', name: 'Realm comms adapter discovery', status: 'render', category: 'networking' },
-  { id: 'net:ecs-network-entity', name: 'ECS NetworkEntity sync (scene)', status: 'stub', category: 'networking', notes: 'Projection decode + parent strip only' }
+  {
+    id: 'net:ecs-network-entity',
+    name: 'ECS NetworkEntity sync (scene)',
+    status: 'render',
+    category: 'networking',
+    notes: 'P0–P3: wire unwrap, directed LiveKit, RealmInfo REQ, typed NE/NP parent resolve'
+  }
 ]
 
 /** Rendering, physics, load — performance-related systems. */

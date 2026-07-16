@@ -701,8 +701,11 @@ export class LiveKitCommsSession {
     return true
   }
 
-  async publishData(packet: Uint8Array): Promise<void> {
-    await this.safePublishData(packet, false)
+  async publishData(
+    packet: Uint8Array,
+    opts?: { destinationIdentities?: string[]; reliable?: boolean }
+  ): Promise<void> {
+    await this.safePublishData(packet, opts?.reliable ?? false, opts?.destinationIdentities)
   }
 
   /** Reliable SCTP — required for large DAV VRM chunk streams (lossy drops under burst). */
@@ -720,14 +723,57 @@ export class LiveKitCommsSession {
   }
 
   /**
+   * Map wallet addresses (SDK peer targets) to LiveKit participant identities present
+   * in the room. DCL gatekeeper tokens use the address as identity (case-insensitive).
+   */
+  resolveDestinationIdentities(addresses: readonly string[]): string[] {
+    const wanted = new Set(
+      addresses.map((a) => a.trim().toLowerCase()).filter((a) => a.length > 0)
+    )
+    if (!wanted.size) return []
+    const room = this.room
+    if (!room || room.state !== ConnectionState.Connected) {
+      return [...wanted]
+    }
+    const resolved: string[] = []
+    const seen = new Set<string>()
+    for (const p of room.remoteParticipants.values()) {
+      const id = p.identity?.trim()
+      if (!id) continue
+      const key = id.toLowerCase()
+      if (!wanted.has(key) || seen.has(key)) continue
+      seen.add(key)
+      // Prefer the identity string LiveKit already has (matches token).
+      resolved.push(id)
+    }
+    // Targets not yet in remoteParticipants — still pass lowercased so late joins can receive
+    // if LiveKit routes by identity string before join is reflected (best-effort).
+    for (const addr of wanted) {
+      if (!seen.has(addr)) resolved.push(addr)
+    }
+    return resolved
+  }
+
+  /**
    * publishData that never rejects. LiveKit throws UnexpectedConnectionState when the
    * room disconnects between isConnected() and the async publish (handoff / leave).
    */
-  private async safePublishData(packet: Uint8Array, reliable: boolean): Promise<boolean> {
+  private async safePublishData(
+    packet: Uint8Array,
+    reliable: boolean,
+    destinationIdentities?: readonly string[]
+  ): Promise<boolean> {
     const room = this.room
     if (!room || room.state !== ConnectionState.Connected || !this.connected) return false
     try {
-      await room.localParticipant.publishData(packet, { reliable })
+      const dest =
+        destinationIdentities && destinationIdentities.length > 0
+          ? [...destinationIdentities]
+          : undefined
+      await room.localParticipant.publishData(packet, {
+        reliable,
+        ...(dest ? { destinationIdentities: dest } : {})
+      })
       return true
     } catch {
       return false

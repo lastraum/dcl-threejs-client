@@ -48,6 +48,7 @@ import type { ResolvedProfileEmote } from '../avatar/profileEmotes'
 import { AVATAR_YAW_OFFSET } from '../avatar/constants'
 import { clientSettings } from '../rendering/ClientSettings'
 import type { ForcedCameraMode } from '../input/CameraModeAreaSystem'
+import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { clearPointerLockAim, setPointerLockAimFromCanvas } from '../input/pointerLockAim'
 
 /** PB CameraType — numeric (isolatedModules cannot import const enum). */
@@ -63,6 +64,7 @@ const _velocity = new THREE.Vector3()
 const _displacement = new THREE.Vector3()
 const _force = new THREE.Vector3()
 const _pivot = new THREE.Vector3()
+const _tmpSpawnHold = new THREE.Vector3()
 const _lookAt = new THREE.Vector3()
 const _offset = new THREE.Vector3()
 const _shoulder = new THREE.Vector3()
@@ -160,6 +162,12 @@ export class PlayerSystem {
   /** CameraModeArea force — null when freecam is player-controlled. */
   private forcedCameraMode: ForcedCameraMode | null = null
   private preForceCamDistance: number | null = null
+  /**
+   * After spawn when floor settle fails (no solid under feet), keep Y from freefalling
+   * through the map (Flagtag tower → water). Cleared on first ground contact or timeout.
+   */
+  private spawnHoldFeetY: number | null = null
+  private spawnHoldSecLeft = 0
   constructor(
     private readonly host: SceneHost,
     private readonly physics: PhysXWorld
@@ -187,8 +195,18 @@ export class PlayerSystem {
     const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
     this.physics.spawnPlayer(spawnThree)
     this.physics.warmStaticScene()
-    this.grounded = false
-    this.groundCoyote = 0
+    // Lift + short settle only — long freefall punched through Flagtag tower into water.
+    const settled = this.physics.settleSpawnOntoFloor(spawnThree.y)
+    this.grounded = settled
+    this.groundCoyote = settled ? 0.12 : 0
+    if (!settled) {
+      // Hold tower height until a surface appears or ~3s — avoids water freefall.
+      this.spawnHoldFeetY = this.physics.positionOut.y
+      this.spawnHoldSecLeft = 3
+    } else {
+      this.spawnHoldFeetY = null
+      this.spawnHoldSecLeft = 0
+    }
     this.physics.attachCapsuleDebug(this.root)
     this.enabled = true
     this.host.setOrbitEnabled(false)
@@ -207,6 +225,11 @@ export class PlayerSystem {
 
     this.root.position.copy(this.physics.positionOut)
     this.syncCamera(true)
+    const feet = this.physics.positionOut
+    console.info(
+      `[player] spawn settled — feet=(${feet.x.toFixed(1)}, ${feet.y.toFixed(2)}, ${feet.z.toFixed(1)})` +
+        ` authoredY=${spawnThree.y.toFixed(2)} grounded=${settled}`
+    )
     onProgress?.('Player ready')
   }
 
@@ -527,6 +550,12 @@ export class PlayerSystem {
     const locomotion = this.getLocomotionConfig()
     const locomotionAllowed = canLocomote(locomotion)
     if (!locomotionAllowed) {
+      // Flagtag lobby freezes walk until UI join — log so "can't move" is diagnosable.
+      clientDebugLog.log(
+        'player',
+        `locomotion blocked — disableAll=${locomotion.disableAll} walk=${locomotion.disableWalk} jog=${locomotion.disableJog} run=${locomotion.disableRun}`,
+        { throttleMs: 3000, throttleKey: 'locomotion-blocked', alsoConsole: true }
+      )
       this.input.clearMovementKeys()
       _velocity.x = 0
       _velocity.z = 0
@@ -689,7 +718,28 @@ export class PlayerSystem {
       }
     }
 
-    if (!this.grounded && !this.airJumpPending) {
+    if (this.spawnHoldSecLeft > 0) {
+      this.spawnHoldSecLeft -= delta
+      if (this.grounded) {
+        this.spawnHoldFeetY = null
+        this.spawnHoldSecLeft = 0
+      } else if (this.spawnHoldFeetY != null) {
+        // No gravity freefall through missing tower colliders.
+        _velocity.y = 0
+        if (this.physics.positionOut.y < this.spawnHoldFeetY - 0.35) {
+          _tmpSpawnHold.set(
+            this.physics.positionOut.x,
+            this.spawnHoldFeetY,
+            this.physics.positionOut.z
+          )
+          this.physics.teleport(_tmpSpawnHold)
+          this.root.position.copy(this.physics.positionOut)
+        }
+        if (this.spawnHoldSecLeft <= 0) {
+          this.spawnHoldFeetY = null
+        }
+      }
+    } else if (!this.grounded && !this.airJumpPending) {
       _velocity.y -= GRAVITY * delta
     }
 

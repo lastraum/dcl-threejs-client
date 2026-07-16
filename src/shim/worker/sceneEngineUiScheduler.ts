@@ -116,10 +116,23 @@ export function didSkipCooperativeReactEcsThisTick(): boolean {
 const systemErrorLastLog = new Map<string, number>()
 const SYSTEM_ERROR_LOG_MS = 5000
 
+function logSystemThrow(system: SystemItem, err: unknown): void {
+  const name = system.name || 'anonymous'
+  const msg = err instanceof Error ? err.message : String(err)
+  const key = `${name}|${msg}`
+  const now = performance.now()
+  const last = systemErrorLastLog.get(key) ?? 0
+  if (now - last < SYSTEM_ERROR_LOG_MS) return
+  systemErrorLastLog.set(key, now)
+  // Flagtag/auth scenes often throw `syncEntity … already in use` after AUTH_RES —
+  // must not abort the rest of the tick (lobby UI / InputModifier live in other systems).
+  console.warn(`[sceneWorker] system "${name}" threw (continuing): ${msg}`)
+}
+
 /**
  * Run one system without aborting the rest of engine.update.
- * Genesis Plaza throws e.g. `[getFrom] Component flower-component for entity #885 not found`
- * from a custom system during TweenState dt=0 ticks — uncaught, not client logic.
+ * Sync throws (plaza flower-component, Flagtag syncEntity enum races) and async
+ * rejections from scene systems that return Promises are both swallowed.
  */
 function safeRunSystem(
   system: SystemItem,
@@ -127,17 +140,12 @@ function safeRunSystem(
   runOne: (s: SystemItem, dt: number) => void
 ): void {
   try {
-    runOne(system, dt)
-  } catch (err) {
-    const name = system.name || 'anonymous'
-    const msg = err instanceof Error ? err.message : String(err)
-    const key = `${name}|${msg}`
-    const now = performance.now()
-    const last = systemErrorLastLog.get(key) ?? 0
-    if (now - last >= SYSTEM_ERROR_LOG_MS) {
-      systemErrorLastLog.set(key, now)
-      console.warn(`[sceneWorker] system "${name}" threw (continuing): ${msg}`)
+    const ret = runOne(system, dt) as unknown
+    if (ret != null && typeof (ret as { then?: unknown }).then === 'function') {
+      void (ret as Promise<unknown>).catch((err) => logSystemThrow(system, err))
     }
+  } catch (err) {
+    logSystemThrow(system, err)
   }
 }
 

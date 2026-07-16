@@ -8,12 +8,25 @@ import type { CrdtMessage } from '@dcl/ecs/dist/serialization/crdt/types'
 import { fixTransformParent } from '@dcl/ecs/dist/serialization/crdt/network/utils'
 import type { MirrorComponents } from './mirrorComponents'
 
+/** Network identity stored on a local entity (`NetworkEntity` / `NetworkParent` value). */
+export type NetworkIdentityValue = {
+  networkId: number
+  entityId: number
+}
+
+/** Minimal schema surface for NetworkEntity / NetworkParent (accepts @dcl/ecs LWW defs). */
+type NetworkSchema = {
+  deserialize: (reader: ReadWriteByteBuffer) => unknown
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  serialize: (value: any, writer: ReadWriteByteBuffer) => void
+}
+
 /** Component defs the projection needs to replicate the engine's network-entity handling. */
 export interface ProjectionNetworkDefs {
-  /** `core-schema::Network-Entity` def (componentId only is used). */
-  networkEntity: { componentId: number }
-  /** `core-schema::Network-Parent` def (componentId only is used). */
-  networkParent: { componentId: number }
+  /** `core-schema::Network-Entity` — typed schema for parent graph resolution (P3). */
+  networkEntity: { componentId: number; schema: NetworkSchema }
+  /** `core-schema::Network-Parent` — typed schema for parent graph resolution (P3). */
+  networkParent: { componentId: number; schema: NetworkSchema }
 }
 
 /**
@@ -129,15 +142,30 @@ export class CrdtProjection {
     this.networkParentId = network?.networkParent?.componentId ?? null
     this.reservedEntities = reservedEntities ?? new Set()
     this.virtualCameraGate = virtualCameraGate ?? null
-    // The engine's CRDT system stores NetworkEntity/NetworkParent (built-in components) so
-    // it can detect network-parented entities on receive. Register them here too — but as
-    // raw passthrough (no typed schema): we only need presence, not the decoded value.
-    for (const id of [this.networkEntityId, this.networkParentId]) {
-      if (id !== null && !this.meta.has(id)) {
-        this.meta.set(id, { id, name: `network::${id}`, growOnly: false, deserialize: () => ({}) })
-        this.components.set(id, new Map())
-        this.timestamps.set(id, new Map())
-      }
+    // Typed NetworkEntity / NetworkParent (P3) — presence + values for parent resolution.
+    if (network?.networkEntity && !this.meta.has(network.networkEntity.componentId)) {
+      const def = network.networkEntity
+      this.meta.set(def.componentId, {
+        id: def.componentId,
+        name: 'core-schema::Network-Entity',
+        growOnly: false,
+        deserialize: (reader) => def.schema.deserialize(reader),
+        serialize: (value, writer) => def.schema.serialize(value, writer)
+      })
+      this.components.set(def.componentId, new Map())
+      this.timestamps.set(def.componentId, new Map())
+    }
+    if (network?.networkParent && !this.meta.has(network.networkParent.componentId)) {
+      const def = network.networkParent
+      this.meta.set(def.componentId, {
+        id: def.componentId,
+        name: 'core-schema::Network-Parent',
+        growOnly: false,
+        deserialize: (reader) => def.schema.deserialize(reader),
+        serialize: (value, writer) => def.schema.serialize(value, writer)
+      })
+      this.components.set(def.componentId, new Map())
+      this.timestamps.set(def.componentId, new Map())
     }
   }
 
@@ -219,13 +247,12 @@ export class CrdtProjection {
     // monotonic per (entity, component). Reject strictly-older messages.
     if (!forceUi && existing !== undefined && timestamp < existing) return
 
-    // Replicate the engine's receive-side `fixTransformParent` (crdt/index.js): a
-    // network-parented entity's incoming Transform has its parent stripped (the wire
-    // parent is in the *sender's* id space and is resolved separately via NetworkParent).
-    // Without this, network-entity Transforms keep a stale parent — the `e2599 value
-    // differs` projection-vs-engine mismatch.
+    // Network-parented Transform: strip sender-local wire parent, then inject the
+    // local entity that owns matching NetworkEntity (renderer hierarchy parity).
     const effectiveData =
-      componentId === this.transformId && this.hasNetworkParent(entity) ? fixTransformParent({ data } as never) : data
+      componentId === this.transformId && this.hasNetworkParent(entity)
+        ? fixTransformParent({ data } as never)
+        : data
 
     let value: unknown
     try {
@@ -234,12 +261,104 @@ export class CrdtProjection {
       return
     }
 
+    if (componentId === this.transformId && this.hasNetworkParent(entity)) {
+      value = this.withResolvedNetworkParent(entity, value)
+    }
+
     // Always commit MainCamera immediately. Deferring until VC Transform+VirtualCamera
     // were on the projection left the lens freecam-bound forever when those rows arrived
     // late / out of order (planet-angzaar select stage). VirtualCameraBridge.isActive()
     // already no-ops until the target VC is fully hydrated.
     this.storeComponentPut(entity, componentId, timestamp, value)
     this.pendingMainCameraBind = null
+
+    // Late NetworkParent / NetworkEntity arrival — rebind child Transform parent.
+    if (
+      (this.networkParentId !== null && componentId === this.networkParentId) ||
+      (this.networkEntityId !== null && componentId === this.networkEntityId)
+    ) {
+      this.rebindNetworkParentedTransforms(entity, componentId)
+    }
+  }
+
+  /** Find local entity carrying NetworkEntity{networkId, entityId}. */
+  findLocalEntityByNetworkIdentity(networkId: number, entityId: number): Entity | null {
+    if (this.networkEntityId === null) return null
+    const map = this.components.get(this.networkEntityId)
+    if (!map) return null
+    for (const [local, raw] of map) {
+      const net = raw as NetworkIdentityValue
+      if (
+        Number(net?.networkId) === Number(networkId) &&
+        Number(net?.entityId) === Number(entityId)
+      ) {
+        return local
+      }
+    }
+    return null
+  }
+
+  /** Local parent entity for a child that has NetworkParent, or null. */
+  resolveNetworkParentLocalEntity(child: Entity): Entity | null {
+    if (this.networkParentId === null) return null
+    const parentNet = this.components.get(this.networkParentId)?.get(child) as
+      | NetworkIdentityValue
+      | undefined
+    if (!parentNet) return null
+    return this.findLocalEntityByNetworkIdentity(parentNet.networkId, parentNet.entityId)
+  }
+
+  private withResolvedNetworkParent(entity: Entity, transformValue: unknown): unknown {
+    const localParent = this.resolveNetworkParentLocalEntity(entity)
+    if (localParent == null) return transformValue
+    const t = transformValue as { parent?: number }
+    return { ...t, parent: localParent }
+  }
+
+  /**
+   * After NetworkParent put on `entity`, rebind its Transform.
+   * After NetworkEntity put, rebind any children whose NetworkParent points at this identity.
+   */
+  private rebindNetworkParentedTransforms(entity: Entity, componentId: number): void {
+    if (this.transformId == null) return
+    const transformMap = this.components.get(this.transformId)
+    if (!transformMap) return
+
+    if (this.networkParentId !== null && componentId === this.networkParentId) {
+      const t = transformMap.get(entity)
+      if (t === undefined) return
+      const next = this.withResolvedNetworkParent(entity, t)
+      if (next !== t) {
+        transformMap.set(entity, next)
+        this.changes.push({ entity, componentId: this.transformId, kind: 'put' })
+      }
+      return
+    }
+
+    if (this.networkEntityId === null || this.networkParentId === null) return
+    if (componentId !== this.networkEntityId) return
+    const identity = this.components.get(this.networkEntityId)?.get(entity) as
+      | NetworkIdentityValue
+      | undefined
+    if (!identity) return
+    const parentMap = this.components.get(this.networkParentId)
+    if (!parentMap) return
+    for (const [child, raw] of parentMap) {
+      const p = raw as NetworkIdentityValue
+      if (
+        Number(p?.networkId) !== Number(identity.networkId) ||
+        Number(p?.entityId) !== Number(identity.entityId)
+      ) {
+        continue
+      }
+      const t = transformMap.get(child)
+      if (t === undefined) continue
+      const next = this.withResolvedNetworkParent(child, t)
+      if (next !== t) {
+        transformMap.set(child, next)
+        this.changes.push({ entity: child, componentId: this.transformId, kind: 'put' })
+      }
+    }
   }
 
   private storeComponentPut(entity: Entity, componentId: number, timestamp: number, value: unknown): void {
@@ -431,8 +550,8 @@ export class CrdtProjection {
    * Player/Camera/Root entities (the encoder owns those — see `CrdtEncoder.serializeReservedSnapshot`).
    *
    * LWW components are emitted as PUTs with their last-applied Lamport timestamp; grow-only
-   * components as a single APPEND of their latest value. Presence-only passthrough defs
-   * (NetworkEntity/NetworkParent) have no schema and are skipped.
+   * components as a single APPEND of their latest value. NetworkEntity/NetworkParent are
+   * included when their schemas are registered (P3 parent graph).
    */
   serializeSnapshot(
     buf: ReadWriteByteBuffer = new ReadWriteByteBuffer(),

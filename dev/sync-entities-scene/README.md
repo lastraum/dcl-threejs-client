@@ -6,6 +6,8 @@ See [docs/SYNC_ENTITIES_PARITY.md](../../docs/SYNC_ENTITIES_PARITY.md).
 
 ## Build
 
+Entry is **`src/index.ts` only** (Creator Hub / `sdk-commands` does not take JSX in `.ts`). UI uses `ReactEcs.createElement`, not JSX.
+
 ```bash
 cd dev/sync-entities-scene
 npm i

@@ -8,7 +8,7 @@
     "deploy": "sdk-commands deploy"
   },
   "devDependencies": {
-    "@dcl/js-runtime": "7.6.5",
+    "@dcl/js-runtime": "7.24.4",
     "@dcl/sdk": "latest"
   },
   "engines": {

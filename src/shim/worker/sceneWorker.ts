@@ -4,7 +4,7 @@ import {
   watchRendererTransportOnmessage
 } from '../system/createSystemStubs'
 import { encodeCommsBinaryMessage } from '../../network/comms/commsBinaryWire'
-import { CommsWireMessageType } from '../../network/comms/CommsInboundQueue'
+import { unwrapCraftedCommsMessage } from '../../network/comms/syncDebug'
 import { createEngineApiEventState, type EngineApiEventState } from '../engine/EngineApiEventState'
 import type {
   ActiveVideoStreamsResponse,
@@ -2546,6 +2546,9 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     return
   }
   workerLog('log', '[sceneWorker] sceneEngine ok after onStart')
+  // Scenes that call setUiRenderer(fn) without virtualWidth/Height never trip the
+  // virtual-canvas hook — seed Explorer-default canvas so react-ecs can paint.
+  seedWorkerUiCanvasInformation(sceneEngine, 1920, 1080)
   try {
     guardVideoPlayerGetMutable(sceneEngine)
   } catch (err) {
@@ -2790,9 +2793,14 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     return
   }
   if (msg.type === 'comms-receive-binary') {
-    pendingInboundBinaries.push(
-      encodeCommsBinaryMessage(msg.sender, CommsWireMessageType.CRDT, msg.data)
-    )
+    // LiveKit body is craftCommsMessage: [messageType:u8][payload…]. Do not force CRDT —
+    // auth-server types 4–9 (AUTH_RES, CUSTOM_EVENT, …) must reach BinaryMessageBus handlers.
+    const unwrapped = unwrapCraftedCommsMessage(msg.data)
+    if (unwrapped) {
+      pendingInboundBinaries.push(
+        encodeCommsBinaryMessage(msg.sender, unwrapped.messageType, unwrapped.payload)
+      )
+    }
     return
   }
   if (msg.type === 'engine-api-enqueue') {

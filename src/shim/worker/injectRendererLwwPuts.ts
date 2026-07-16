@@ -25,6 +25,8 @@ const UI_DROPDOWN_RESULT_ID = 1096
 const CAMERA_MODE_ID = 1072
 /** `core::PointerLock` — renderer reports pointer-lock state on CameraEntity. */
 const POINTER_LOCK_ID = 1074
+/** `core::RealmInfo` — renderer injects scene-room connect for SDK network catch-up. */
+const REALM_INFO_ID = 1106
 
 export type RendererLwwInjectCounts = {
   tweenPuts: number
@@ -35,6 +37,7 @@ export type RendererLwwInjectCounts = {
   uiDropdownResultPuts: number
   cameraModePuts: number
   pointerLockPuts: number
+  realmInfoPuts: number
   reservedTransformPuts: number
 }
 
@@ -54,6 +57,7 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
   const UiDropdownResult = generated.UiDropdownResult(engine)
   const CameraMode = generated.CameraMode(engine)
   const PointerLock = generated.PointerLock(engine)
+  const RealmInfo = generated.RealmInfo(engine)
   let tweenPuts = 0
   let raycastPuts = 0
   let videoPlayerPuts = 0
@@ -62,6 +66,7 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
   let uiDropdownResultPuts = 0
   let cameraModePuts = 0
   let pointerLockPuts = 0
+  let realmInfoPuts = 0
   let reservedTransformPuts = 0
 
   for (const chunk of chunks) {
@@ -114,6 +119,11 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
           const value = PointerLock.schema.deserialize(valueBuf)
           PointerLock.createOrReplace(msg.entityId as Entity, value)
           pointerLockPuts++
+        } else if (msg.componentId === REALM_INFO_ID && msg.entityId === 0) {
+          const valueBuf = new ReadWriteByteBuffer(msg.data)
+          const value = RealmInfo.schema.deserialize(valueBuf)
+          RealmInfo.createOrReplace(msg.entityId as Entity, value)
+          realmInfoPuts++
         }
       }
       msg = readMessage(buf)
@@ -129,6 +139,7 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
     uiDropdownResultPuts,
     cameraModePuts,
     pointerLockPuts,
+    realmInfoPuts,
     reservedTransformPuts
   }
 }

@@ -21,7 +21,19 @@ import {
 import { AdapterManager } from './comms/AdapterManager'
 import { ArchipelagoClient } from './comms/ArchipelagoClient'
 import { CommsInboundQueue } from './comms/CommsInboundQueue'
-import { logSyncDirectedIgnored } from './comms/syncDebug'
+import {
+  isResCrdtStateType,
+  logSyncDirectedFallback,
+  logSyncDirectedPublish,
+  logSyncOversizedSkip,
+  unwrapCraftedCommsMessage
+} from './comms/syncDebug'
+import {
+  isOversizedCraftedChunk,
+  isOversizedPublishPacket,
+  LIVEKIT_MAX_CRAFTED_BYTES,
+  LIVEKIT_MAX_PUBLISH_BYTES
+} from './comms/livekitLimits'
 import { CommsTopicService } from './comms/CommsTopicService'
 import { LiveKitCommsSession } from './comms/LiveKitCommsSession'
 import { clearCastVideoHost, reattachFirstRemoteVideoToHost } from './comms/livekitVideoStreams'
@@ -882,20 +894,52 @@ export class CommsService {
   }
 
   async sendBinary(data: Uint8Array[], addresses: string[] = []): Promise<Uint8Array[]> {
-    // P1: LiveKit publish is still room-broadcast; directed peer RES_CRDT_STATE needs
-    // destinationIdentities. Log when scenes request directed delivery (?syncdebug).
-    if (addresses.length) logSyncDirectedIgnored(addresses)
     if (this.transport !== 'livekit' || !this.sceneId) {
+      // RFC5 has no directed peer targeting — broadcast only (rare fallback path).
+      if (addresses.length) logSyncDirectedFallback(addresses, 'rfc5-broadcast')
       if (!this.rfc5.isConnected()) return this.inboundQueue.drain()
       for (const chunk of data) this.rfc5.send(chunk, false)
       return this.inboundQueue.drain()
     }
 
+    const session = this.activeDataSession()
+    if (!session) return this.inboundQueue.drain()
+
+    // Directed peerData → LiveKit destinationIdentities. Empty addresses = room broadcast.
+    const dest =
+      addresses.length > 0 ? session.resolveDestinationIdentities(addresses) : undefined
+    if (addresses.length) {
+      logSyncDirectedPublish(addresses, dest ?? [])
+    }
+
     for (const chunk of data) {
+      // Parity with @dcl/ecs LIVEKIT_MAX_SIZE — SDK chunks; refuse runaway single blobs.
+      if (isOversizedCraftedChunk(chunk)) {
+        logSyncOversizedSkip({
+          phase: 'crafted',
+          bytes: chunk.byteLength,
+          limit: LIVEKIT_MAX_CRAFTED_BYTES
+        })
+        continue
+      }
       const packet = encodeRfc4SceneBinaryPacket(this.sceneId, chunk)
-      const session = this.activeDataSession()
-      if (!session) return this.inboundQueue.drain()
-      await session.publishData(packet)
+      if (isOversizedPublishPacket(packet)) {
+        logSyncOversizedSkip({
+          phase: 'publish',
+          bytes: packet.byteLength,
+          limit: LIVEKIT_MAX_PUBLISH_BYTES
+        })
+        continue
+      }
+      // RES (serverless type 3 or auth-server type 9) and any directed packet → reliable.
+      const unwrapped = unwrapCraftedCommsMessage(chunk)
+      const reliable =
+        Boolean(dest?.length) ||
+        (unwrapped != null && isResCrdtStateType(unwrapped.messageType))
+      await session.publishData(packet, {
+        reliable,
+        destinationIdentities: dest
+      })
     }
     return this.inboundQueue.drain()
   }
@@ -1422,6 +1466,8 @@ export class CommsService {
     this.transport = 'none'
     this.realm.isConnectedSceneRoom = false
     this.pendingTransform = null
+    // Drop queued scene CRDT so a rejoin does not feed stale REQ/RES into the new worker.
+    this.inboundQueue.clear()
     this.clearPeerTransport(TransportType.SceneRoom)
     this.clearPeerTransport(TransportType.WebsocketRoom)
   }

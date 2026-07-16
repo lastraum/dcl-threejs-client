@@ -1,11 +1,27 @@
 import { encodeCommsBinaryMessage } from './commsBinaryWire'
 import { logSyncDrain, logSyncInbound, unwrapCraftedCommsMessage } from './syncDebug'
 
-/** SDK7 BinaryMessageBus message types (@dcl/sdk/network/binary-message-bus). */
+/**
+ * SDK7 BinaryMessageBus message types.
+ *
+ * **Serverless / default `@dcl/sdk`:** 1–3.
+ * **Authoritative server (`@dcl/sdk@auth-server`, Flagtag-class scenes):** 4–9
+ * (CRDT/REQ/RES renumbered; plus server/authoritative/custom-event channels).
+ * Host is transport-only — forward the type byte as-is; the scene bundle's SDK
+ * registers the handlers for whichever enum it was built with.
+ */
 export const CommsWireMessageType = {
+  // Default SDK (serverless multiplayer)
   CRDT: 1,
   REQ_CRDT_STATE: 2,
-  RES_CRDT_STATE: 3
+  RES_CRDT_STATE: 3,
+  // Auth-server SDK extensions
+  CRDT_SERVER: 4,
+  CRDT_AUTHORITATIVE: 5,
+  CUSTOM_EVENT: 6,
+  AUTH_CRDT: 7,
+  AUTH_REQ_CRDT_STATE: 8,
+  AUTH_RES_CRDT_STATE: 9
 } as const
 
 /**

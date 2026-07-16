@@ -4,9 +4,12 @@ import type { IEngine } from '@dcl/ecs'
 export const REACT_ECS_ONCE_KEY = '__THREEJS_UI_REACT_ECS_ONCE__'
 
 /**
- * Asset-pack init calls `sw(engine)` a second time and registers another @dcl/react-ecs
- * reconcile with `n` never set — it runs `r.update(null)` and wipes scene UI.
- * Only the first registration (scene `cw.setUiRenderer`) may attach to the engine.
+ * Asset-pack init calls `eS(engine)` / `sw(engine)` a second time and registers
+ * another `@dcl/react-ecs` reconcile with the main renderer `n` never set — it runs
+ * `update(null)` and wipes scene UI (Flagtag lobby `mount=0`).
+ * Only the first registration (scene `setUiRenderer`) may attach to the engine.
+ *
+ * Bundle patch must match any minified reconcile name (`d`, `p`, …), not only `d`.
  */
 export function installReactEcsOnceGuard(): void {
   const g = globalThis as Record<string, unknown>

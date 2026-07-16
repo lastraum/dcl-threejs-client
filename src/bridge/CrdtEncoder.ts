@@ -145,7 +145,9 @@ export class CrdtEncoder {
       // Renderer writes pointer screen/hover state to RootEntity (PointerEventsSystem).
       mk(components.PrimaryPointerInfo, reserved.root),
       // Scene UI canvas dimensions for react-ecs / UiCanvasInformation.get(RootEntity).
-      mk(components.UiCanvasInformation, reserved.root)
+      mk(components.UiCanvasInformation, reserved.root),
+      // LiveKit scene-room connect flag — SDK network REQ_CRDT_STATE / isStateSyncronized.
+      mk(components.RealmInfo, reserved.root)
     ]
 
     this.componentIds = new Set(this.reservedTargets.map((t) => t.componentId))

@@ -6,6 +6,7 @@ import { feetDclToPlayerEntityPosition } from '../player/dclPlayerEntity'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ReservedEntities } from './ProjectionView'
 import type { PlayerMirrorIdentity } from './playerMirrorIdentity'
+import type { CommsRealmInfo } from '../network/comms/types'
 
 export type EntityPose = {
   position: THREE.Vector3
@@ -17,6 +18,7 @@ const _euler = new THREE.Euler(0, 0, 0, 'YXZ')
 /** Client-owned SDK7 entities: Root (0), Player (1), Camera (2). */
 export class ReservedEntitiesSync {
   private playerIdentity: PlayerMirrorIdentity | null = null
+  private realmInfo: CommsRealmInfo | null = null
 
   constructor(
     private readonly projection: CrdtProjection,
@@ -27,6 +29,12 @@ export class ReservedEntitiesSync {
   setPlayerIdentity(identity: PlayerMirrorIdentity | null): void {
     this.playerIdentity = identity
     if (identity) this.applyPlayerIdentity()
+  }
+
+  /** Seed / refresh `core::RealmInfo` on RootEntity for SDK `@dcl/sdk/network`. */
+  setRealmInfo(info: CommsRealmInfo | null): void {
+    this.realmInfo = info
+    if (info) this.applyRealmInfo()
   }
 
   /** Seed spawn transforms + MainCamera before scene script hydrates from getState. */
@@ -72,6 +80,7 @@ export class ReservedEntitiesSync {
     this.syncPlayer(player)
     this.syncCamera(camera)
     if (this.playerIdentity) this.applyPlayerIdentity()
+    if (this.realmInfo) this.applyRealmInfo()
   }
 
   private applyPlayerIdentity(): void {
@@ -95,6 +104,21 @@ export class ReservedEntitiesSync {
     this.projection.setRenderer(AvatarEquippedData.componentId, entity, {
       wearableUrns: identity.wearableUrns,
       emoteUrns: identity.emoteUrns
+    })
+  }
+
+  private applyRealmInfo(): void {
+    const info = this.realmInfo
+    if (!info) return
+    const { RealmInfo } = this.components
+    this.projection.setRenderer(RealmInfo.componentId, this.reserved.root, {
+      baseUrl: info.baseUrl,
+      realmName: info.realmName,
+      networkId: info.networkId,
+      commsAdapter: info.commsAdapter,
+      isPreview: info.isPreview,
+      room: info.room,
+      isConnectedSceneRoom: info.isConnectedSceneRoom
     })
   }
 

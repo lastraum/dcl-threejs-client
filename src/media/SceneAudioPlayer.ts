@@ -117,9 +117,11 @@ export class SceneAudioPlayer {
     }
 
     this.sound.setLoop(spec.loop === true)
-    this.lastSpecVolume = spec.volume ?? 1
+    const vol = spec.volume ?? 1
+    this.lastSpecVolume = Number.isFinite(vol) ? vol : 1
     this.applyEffectiveVolume()
-    this.sound.setPlaybackRate(Math.max(spec.pitch ?? 1, 0.01))
+    const pitch = spec.pitch ?? 1
+    this.sound.setPlaybackRate(Math.max(Number.isFinite(pitch) ? pitch : 1, 0.01))
 
     const currentTimeChanged =
       this.lastSpecCurrentTime === undefined ||
@@ -196,7 +198,11 @@ export class SceneAudioPlayer {
   }
 
   private applyEffectiveVolume(): void {
-    const gain = clamp(spatialAudioGain(this.volumeCategory, this.lastSpecVolume), 0, 1)
+    const raw = spatialAudioGain(
+      this.volumeCategory,
+      Number.isFinite(this.lastSpecVolume) ? this.lastSpecVolume : 1
+    )
+    const gain = clamp(Number.isFinite(raw) ? raw : 0, 0, 1)
     this.sound.setVolume(gain)
   }
 

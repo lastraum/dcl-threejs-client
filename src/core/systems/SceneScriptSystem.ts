@@ -63,6 +63,7 @@ import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../
 import type { AssetCache } from '../../rendering/AssetCache'
 import type { SceneHost } from '../../rendering/SceneHost'
 import type { PlayerMirrorIdentity } from '../../bridge/playerMirrorIdentity'
+import type { CommsRealmInfo } from '../../network/comms/types'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import { skipTheatreSceneScript } from '../../client/devFlags'
 import { mirrorSceneBundle } from '../../dev/mirrorSceneBundle'
@@ -1045,6 +1046,29 @@ export class SceneScriptSystem {
     this.reserved.setPlayerIdentity(identity)
   }
 
+  /**
+   * Seed RootEntity `RealmInfo` (incl. `isConnectedSceneRoom`) for SDK network
+   * REQ_CRDT_STATE / `isStateSyncronized`. Call when LiveKit scene room flips.
+   */
+  setRealmInfo(info: CommsRealmInfo | null): void {
+    this.reserved.setRealmInfo(info)
+  }
+
+  /**
+   * Prefer a live provider so `isConnectedSceneRoom` tracks LiveKit without
+   * sprinkling setRealmInfo after every connect. Refreshed each reserved sync.
+   */
+  setRealmInfoProvider(provider: (() => CommsRealmInfo | null) | null): void {
+    this.realmInfoProvider = provider
+  }
+
+  private realmInfoProvider: (() => CommsRealmInfo | null) | null = null
+
+  private refreshRealmInfoFromProvider(): void {
+    if (!this.realmInfoProvider) return
+    this.reserved.setRealmInfo(this.realmInfoProvider())
+  }
+
   /** Sample latest player/camera right before outbound CRDT (avoids stale rotation between sync frames). */
   setClientPoseProvider(provider: (() => { player: EntityPose; camera: EntityPose }) | null): void {
     this.clientPoseProvider = provider
@@ -1054,6 +1078,7 @@ export class SceneScriptSystem {
   seedRendererEntities(player: EntityPose, camera: EntityPose): void {
     this.clientPlayerPose = player
     this.clientCameraPose = camera
+    this.refreshRealmInfoFromProvider()
     this.reserved.prepareRendererRoundTrip(player, camera)
   }
 
@@ -2698,6 +2723,7 @@ export class SceneScriptSystem {
     // Embed poses on play-frame-tick (same message) so PE is current before engine.update —
     // separate renderer-inbound CRDT raced / dirty-skipped and left follow anchors at spawn.
     this.refreshClientPosesFromProvider()
+    this.refreshRealmInfoFromProvider()
     if (this.clientPlayerPose && this.clientCameraPose) {
       this.reserved.prepareRendererRoundTrip(this.clientPlayerPose, this.clientCameraPose)
     }
@@ -3069,6 +3095,7 @@ export class SceneScriptSystem {
   private prepareRendererOutboundState(): void {
     this.projection.flushPendingMainCameraBind()
     this.refreshClientPosesFromProvider()
+    this.refreshRealmInfoFromProvider()
     if (!this.clientPlayerPose || !this.clientCameraPose) return
     this.reserved.prepareRendererRoundTrip(this.clientPlayerPose, this.clientCameraPose)
   }
@@ -3083,6 +3110,7 @@ export class SceneScriptSystem {
   syncClientEntities(player: EntityPose, camera: EntityPose): void {
     this.clientPlayerPose = player
     this.clientCameraPose = camera
+    this.refreshRealmInfoFromProvider()
     this.reserved.prepareRendererRoundTrip(player, camera)
   }
 
@@ -3091,6 +3119,7 @@ export class SceneScriptSystem {
     if (!this.worker || !this.running) return
     this.refreshClientPosesFromProvider()
     if (!this.clientPlayerPose || !this.clientCameraPose) return
+    this.refreshRealmInfoFromProvider()
     this.reserved.prepareRendererRoundTrip(this.clientPlayerPose, this.clientCameraPose)
     const bytes = this.encodeRendererCrdt()
     if (!bytes?.byteLength) return

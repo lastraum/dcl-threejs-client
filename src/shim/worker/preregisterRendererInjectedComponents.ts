@@ -38,7 +38,9 @@ export const RENDERER_PREREGISTER_FACTORIES: readonly RendererComponentFactory[]
   (engine) => generated.PointerLock(engine),
   (engine) => generated.UiCanvasInformation(engine),
   (engine) => generated.UiInputResult(engine),
-  (engine) => generated.UiDropdownResult(engine)
+  (engine) => generated.UiDropdownResult(engine),
+  // SDK network listens for isConnectedSceneRoom on RootEntity
+  (engine) => generated.RealmInfo(engine)
 ]
 
 /**

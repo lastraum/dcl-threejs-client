@@ -25,6 +25,8 @@ export type VoiceChatSnapshot = {
   micLive: boolean
   remoteCount: number
   roomReady: boolean
+  /** False until local player has spawned into the scene/world (loading muted). */
+  inPlay: boolean
   error: string | null
   roomCount: number
 }
@@ -32,6 +34,7 @@ export type VoiceChatSnapshot = {
 type Listener = (state: VoiceChatSnapshot) => void
 type SpeakingListener = (levels: ReadonlyMap<string, number>) => void
 type RoomsProvider = () => Room[]
+type StatusProvider = () => string
 
 type RemoteVoiceEntry = {
   element: HTMLAudioElement
@@ -51,11 +54,16 @@ type BoundRoom = {
  * Room set from CommsService.getVoiceLiveKitRooms():
  * - Worlds → world LiveKit only
  * - Parcels → scene LiveKit only (not island — island is movement/nearby-chat)
+ *
+ * Audio stays muted until `setInPlay(true)` after the player is in the scene.
  */
 export class VoiceChatService {
   private roomsProvider: RoomsProvider = () => []
+  private statusProvider: StatusProvider = () => ''
   private bound = new Map<string, BoundRoom>()
   private hearing = true
+  /** Unlocks hear/speak after spawn — false during landing/loading. */
+  private inPlay = false
   private speaking = false
   private backgroundMuted = false
   private pttHeld = false
@@ -72,6 +80,7 @@ export class VoiceChatService {
   private micSyncDepth = 0
   private audioHost: HTMLDivElement | null = null
   private rescanTimer: ReturnType<typeof setInterval> | null = null
+  private lastDiagAt = 0
 
   private readonly onKeyDown = (ev: KeyboardEvent): void => {
     if (ev.repeat || ev.code !== 'KeyT') return
@@ -79,9 +88,14 @@ export class VoiceChatService {
       voiceLog('T ignored — text field focused')
       return
     }
+    if (!this.inPlay) {
+      voiceLog('T blocked — not in play yet (still loading)', 'warn')
+      return
+    }
     this.refreshRooms()
     if (this.liveRooms().length === 0) {
       voiceLog('T blocked — no voice LiveKit rooms', 'warn')
+      this.dumpStatus('ptt-no-room')
       return
     }
     if (this.speaking) return
@@ -105,12 +119,16 @@ export class VoiceChatService {
     document.addEventListener('visibilitychange', this.onVisibility)
     this.unsubSound = soundSettings.subscribe((s) => this.onSoundSettings(s))
     this.syncBackgroundMute()
-    // Parcel peers often publish mic after we first scan — keep listening.
+    // Peers often publish mic after first scan — keep listening + dump diagnostics.
     this.rescanTimer = setInterval(() => {
-      if (!this.hearing || this.liveRooms().length === 0) return
       this.refreshRooms()
-      this.rescanAllRemoteVoice()
-    }, 4000)
+      if (this.liveRooms().length === 0) {
+        this.dumpStatus('rescan-empty', true)
+        return
+      }
+      if (this.canHear()) this.rescanAllRemoteVoice()
+      this.dumpStatus('rescan', true)
+    }, 5000)
   }
 
   dispose(): void {
@@ -118,10 +136,12 @@ export class VoiceChatService {
       clearInterval(this.rescanTimer)
       this.rescanTimer = null
     }
+    this.inPlay = false
     void this.setSpeaking(false)
     this.pttHeld = false
     this.unbindAll()
     this.roomsProvider = () => []
+    this.statusProvider = () => ''
     this.audioHost?.remove()
     this.audioHost = null
     window.removeEventListener('keydown', this.onKeyDown, true)
@@ -154,13 +174,14 @@ export class VoiceChatService {
     this.refreshRooms()
     const rooms = this.liveRooms()
     return {
-      hearing: this.hearing,
+      hearing: this.hearing && this.inPlay,
       speaking: this.speaking,
-      backgroundMuted: this.backgroundMuted,
+      backgroundMuted: this.backgroundMuted || !this.inPlay,
       pttHeld: this.pttHeld,
       micLive: this.micLive,
       remoteCount: this.remoteCount,
-      roomReady: rooms.length > 0,
+      roomReady: this.inPlay && rooms.length > 0,
+      inPlay: this.inPlay,
       roomCount: rooms.length,
       error: this.error
     }
@@ -169,6 +190,71 @@ export class VoiceChatService {
   bindRoomsProvider(provider: RoomsProvider): void {
     this.roomsProvider = provider
     this.refreshRooms()
+  }
+
+  /** Optional: CommsService.describeLiveKitRooms() for diagnostic dumps. */
+  bindStatusProvider(provider: StatusProvider): void {
+    this.statusProvider = provider
+  }
+
+  /**
+   * Unlock nearby voice after the local player has spawned into the scene/world.
+   * Until then: no remote playback, no mic, no name-tag bars (rooms may still bind for logs).
+   */
+  setInPlay(on: boolean): void {
+    if (this.inPlay === on) return
+    this.inPlay = on
+    voiceLog(on ? 'IN PLAY — voice channel unlocked' : 'OUT OF PLAY — voice muted (loading/leave)')
+    this.refreshRooms()
+    if (!on) {
+      this.pttHeld = false
+      void this.setSpeaking(false)
+      this.clearAllRemotes()
+      this.setSpeakingLevels(new Map())
+      this.micLive = false
+      void this.reconcileMicPublish()
+    } else {
+      if (this.hearing) {
+        for (const room of this.liveRooms()) void this.applyHearingOnRoom(room)
+      }
+      this.dumpStatus('in-play')
+    }
+    this.notify()
+  }
+
+  isInPlay(): boolean {
+    return this.inPlay
+  }
+
+  /** Full diagnostic dump for scene-vs-world voice debugging. */
+  dumpStatus(reason: string, throttle = false): void {
+    const now = performance.now()
+    if (throttle && now - this.lastDiagAt < 4500) return
+    this.lastDiagAt = now
+    this.refreshRooms()
+    const rooms = this.liveRooms()
+    const roomsDesc = this.statusProvider() || '(no status provider)'
+    voiceLog(
+      `status (${reason}) inPlay=${this.inPlay} hearing=${this.hearing} canHear=${this.canHear()} ` +
+        `speak=${this.speaking} ptt=${this.pttHeld} micLive=${this.micLive} ` +
+        `boundRooms=${rooms.length} attachedRemotes=${this.remoteCount} err=${this.error ?? 'none'}`
+    )
+    voiceLog(`  livekit: ${roomsDesc}`)
+    if (rooms.length === 0) {
+      voiceLog('  voice rooms: none — getVoiceLiveKitRooms empty (wrong room type or not connected)', 'warn')
+      return
+    }
+    for (const room of rooms) {
+      const lp = room.localParticipant
+      const perms = lp.permissions
+      voiceLog(
+        `  room=${shortName(room.name)} state=${room.state} remotes=${room.remoteParticipants.size} ` +
+          `canPublish=${String(perms?.canPublish)} canSubscribe=${String(perms?.canSubscribe)} ` +
+          `canPublishData=${String(perms?.canPublishData)} id=${(lp.identity ?? '').slice(0, 14)} ` +
+          `localMic=${hasLocalMic(room)} activeSpeakers=${room.activeSpeakers.length}`
+      )
+      this.dumpRemoteAudioInventory(room, reason)
+    }
   }
 
   bindRoomProvider(provider: () => Room | null): void {
@@ -205,8 +291,11 @@ export class VoiceChatService {
       if (this.bound.has(key)) continue
       this.bound.set(key, { room, handlersBound: false })
       this.bindHandlers(room)
-      voiceLog(`bound ${shortName(room.name)} remotes=${room.remoteParticipants.size}`)
-      if (this.hearing) void this.applyHearingOnRoom(room)
+      voiceLog(
+        `bound ${shortName(room.name)} remotes=${room.remoteParticipants.size} inPlay=${this.inPlay}`
+      )
+      if (this.canHear()) void this.applyHearingOnRoom(room)
+      else this.dumpRemoteAudioInventory(room, 'bind-muted')
     }
 
     if (nextRooms.length === 0) {
@@ -224,7 +313,8 @@ export class VoiceChatService {
     this.refreshRooms()
     if (this.hearing === on) return
     this.hearing = on
-    if (on) {
+    voiceLog(`Hear others ${on ? 'ON' : 'OFF'} inPlay=${this.inPlay}`)
+    if (on && this.inPlay) {
       for (const room of this.liveRooms()) await this.applyHearingOnRoom(room)
     } else {
       this.clearAllRemotes()
@@ -239,6 +329,12 @@ export class VoiceChatService {
   async ensureHearingUnlocked(): Promise<void> {
     this.refreshRooms()
     this.hearing = true
+    this.dumpStatus('panel-open')
+    if (!this.inPlay) {
+      voiceLog('ensureHearingUnlocked — not in play yet (still muted)', 'warn')
+      this.notify()
+      return
+    }
     if (this.liveRooms().length === 0) {
       voiceLog('ensureHearingUnlocked — no rooms', 'warn')
       return
@@ -262,10 +358,18 @@ export class VoiceChatService {
       voiceLog(`Speak already ${on ? 'on' : 'off'}`)
       return
     }
+    if (on && !this.inPlay) {
+      this.error = 'Still loading — voice unlocks when you are in the scene'
+      this.notify()
+      voiceLog('Speak blocked — not in play yet', 'warn')
+      this.dumpStatus('speak-blocked-loading')
+      return
+    }
     if (on && this.liveRooms().length === 0) {
       this.error = 'Not connected to voice room'
       this.notify()
       voiceLog('Speak blocked — no LiveKit rooms', 'warn')
+      this.dumpStatus('speak-blocked-no-room')
       return
     }
     this.speaking = on
@@ -293,6 +397,10 @@ export class VoiceChatService {
   private setPttHeld(held: boolean): void {
     if (this.speaking) return
     if (this.pttHeld === held) return
+    if (held && !this.inPlay) {
+      voiceLog('PTT blocked — not in play yet', 'warn')
+      return
+    }
     this.pttHeld = held
     this.refreshRooms()
     if (held) {
@@ -306,8 +414,12 @@ export class VoiceChatService {
     voiceLog(held ? 'PTT down (hold T)' : 'PTT up')
   }
 
+  private canHear(): boolean {
+    return this.hearing && this.inPlay
+  }
+
   private shouldPublishMic(): boolean {
-    if (this.backgroundMuted || this.liveRooms().length === 0) return false
+    if (!this.inPlay || this.backgroundMuted || this.liveRooms().length === 0) return false
     return this.speaking || this.pttHeld
   }
 
@@ -478,12 +590,12 @@ export class VoiceChatService {
     publication: RemoteTrackPublication,
     participant: RemoteParticipant
   ): void => {
-    if (!this.hearing) return
     if (track.kind !== Track.Kind.Audio) return
     if (publication.source === Track.Source.ScreenShareAudio) return
     voiceLog(
-      `TrackSubscribed audio · peer=${(participant.identity ?? '').slice(0, 12)} src=${publication.source}`
+      `TrackSubscribed audio · peer=${(participant.identity ?? '').slice(0, 12)} src=${publication.source} inPlay=${this.inPlay} hear=${this.hearing}`
     )
+    if (!this.canHear()) return
     this.attachRemote(track, publication, participant)
   }
 
@@ -509,7 +621,7 @@ export class VoiceChatService {
     } catch {
       /* ignore */
     }
-    if (this.hearing) this.ensureRemoteMic(participant)
+    if (this.canHear()) this.ensureRemoteMic(participant)
   }
 
   private readonly onTrackUnpublished = (
@@ -533,7 +645,9 @@ export class VoiceChatService {
 
   private readonly onRoomReconnected = (): void => {
     this.refreshRooms()
-    if (this.hearing) this.rescanAllRemoteVoice()
+    voiceLog('room reconnected')
+    this.dumpStatus('reconnected')
+    if (this.canHear()) this.rescanAllRemoteVoice()
     void this.reconcileMicPublish()
     this.notify()
   }
@@ -555,6 +669,17 @@ export class VoiceChatService {
   }
 
   private readonly onActiveSpeakersChanged = (_speakers: Participant[]): void => {
+    if (!this.inPlay) {
+      // Still log sparingly so we can see speakers arrive during loading.
+      if (_speakers.length > 0) {
+        voiceLog(
+          `activeSpeakers (muted/loading) n=${_speakers.length} ids=${_speakers
+            .map((p) => (p.identity ?? '').slice(0, 10))
+            .join(',')}`
+        )
+      }
+      return
+    }
     // Rebuild from every bound room — single-room events would wipe the other room's speakers.
     const next = new Map<string, number>()
     for (const room of this.liveRooms()) {
@@ -565,7 +690,7 @@ export class VoiceChatService {
         if (level > 0.02 || p.isSpeaking) {
           next.set(id, Math.max(next.get(id) ?? 0, Math.max(level, 0.25)))
         }
-        if (!p.isLocal) {
+        if (!p.isLocal && this.canHear()) {
           try {
             this.ensureRemoteMic(p as RemoteParticipant)
           } catch {
@@ -581,7 +706,10 @@ export class VoiceChatService {
       }
     }
     if (next.size > 0) {
-      voiceLog(`activeSpeakers=${[...next.keys()].map((k) => k.slice(0, 10)).join(',')}`)
+      const rooms = this.liveRooms()
+        .map((r) => shortName(r.name))
+        .join('+')
+      voiceLog(`activeSpeakers=${[...next.keys()].map((k) => k.slice(0, 10)).join(',')} room=${rooms}`)
     }
     this.setSpeakingLevels(next)
   }
@@ -616,7 +744,7 @@ export class VoiceChatService {
   }
 
   private rescanRoom(room: Room): void {
-    if (!this.hearing) return
+    if (!this.canHear()) return
     for (const participant of room.remoteParticipants.values()) {
       this.ensureRemoteMic(participant)
     }
@@ -673,6 +801,7 @@ export class VoiceChatService {
     participant: RemoteParticipant
   ): void {
     if (track.kind !== Track.Kind.Audio) return
+    if (!this.canHear()) return
     const rk = this.findRoomKey(participant)
     const key = remoteKey(rk, participant.identity, publication.trackSid)
     if (this.remotes.has(key)) return
@@ -681,7 +810,7 @@ export class VoiceChatService {
     el.autoplay = true
     el.setAttribute('playsinline', 'true')
     el.muted = false
-    el.volume = this.hearing ? remoteGain() : 0
+    el.volume = remoteGain()
     this.ensureAudioHost().appendChild(el)
     void el.play().catch((err) => {
       voiceLog(`Remote voice play blocked: ${String(err)}`, 'warn')
@@ -719,23 +848,25 @@ export class VoiceChatService {
   }
 
   private applyRemoteVolumes(): void {
-    const g = this.hearing ? remoteGain() : 0
+    const hear = this.canHear()
+    const g = hear ? remoteGain() : 0
     for (const entry of this.remotes.values()) {
       entry.element.volume = g
-      entry.element.muted = !this.hearing || g <= 0
+      entry.element.muted = !hear || g <= 0
     }
   }
 
   private notify(): void {
     const rooms = this.liveRooms()
     const snap: VoiceChatSnapshot = {
-      hearing: this.hearing,
+      hearing: this.hearing && this.inPlay,
       speaking: this.speaking,
-      backgroundMuted: this.backgroundMuted,
+      backgroundMuted: this.backgroundMuted || !this.inPlay,
       pttHeld: this.pttHeld,
       micLive: this.micLive,
       remoteCount: this.remoteCount,
-      roomReady: rooms.length > 0,
+      roomReady: this.inPlay && rooms.length > 0,
+      inPlay: this.inPlay,
       roomCount: rooms.length,
       error: this.error
     }

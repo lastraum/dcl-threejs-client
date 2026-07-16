@@ -230,15 +230,25 @@ export class World {
    * Bind voice rooms (ADR-204):
    * - Worlds → world LiveKit only
    * - Parcels → scene LiveKit only (island = movement, not voice)
+   * Does **not** unlock audio — call `unlockVoiceInPlay()` after spawn.
    */
   syncVoiceRoom(): void {
     this.comms.onLiveKitRoomsChanged = () => {
       this.voice.refreshRooms()
       console.log('[voice]', 'rooms changed', this.comms.describeLiveKitRooms())
+      this.voice.dumpStatus('rooms-changed', true)
     }
     this.voice.bindRoomsProvider(() => this.comms.getVoiceLiveKitRooms())
+    this.voice.bindStatusProvider(() => this.comms.describeLiveKitRooms())
     this.voice.refreshRooms()
     console.log('[voice]', 'syncVoiceRoom', this.comms.describeLiveKitRooms())
+    this.voice.dumpStatus('sync')
+  }
+
+  /** Unlock nearby voice after the local player has spawned into the scene/world. */
+  unlockVoiceInPlay(): void {
+    this.syncVoiceRoom()
+    this.voice.setInPlay(true)
   }
 
   /** Drive 3 green voice bars on local + remote name tags. */
@@ -812,6 +822,8 @@ export class World {
       // Optional: dispose tears down scene after/with player — CameraModeArea clear must not throw.
       (mode) => this.player?.setForcedCameraMode(mode)
     )
+    // Player is in the scene — unlock nearby voice (was muted during landing/load).
+    this.unlockVoiceInPlay()
     // Plaza-scale from entity count when GLTF collider extract is sparse (Genesis ~18 colliders).
     const hydration = this.sceneScript.getHydrationStats()
     const plazaScale =
@@ -2409,6 +2421,7 @@ export class World {
 
     this.vrmPeerSync.detach()
     clearVrmRamCache()
+    this.voice.setInPlay(false)
     this.voice.dispose()
     this.comms.dispose()
     this.social.dispose()

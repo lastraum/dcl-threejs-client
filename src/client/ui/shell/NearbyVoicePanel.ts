@@ -126,7 +126,10 @@ export class NearbyVoicePanel {
     this.hearToggle.checked = snap.hearing
     this.speakBtn.classList.toggle('is-active', snap.speaking || snap.micLive)
     this.speakBtn.classList.toggle('is-talking', snap.micLive)
-    if (!snap.roomReady) {
+    this.speakBtn.disabled = !snap.inPlay
+    if (!snap.inPlay) {
+      this.hintEl.innerHTML = 'Voice muted until you are in the scene…'
+    } else if (!snap.roomReady) {
       this.hintEl.innerHTML = 'Connecting to voice room…'
     } else if (snap.speaking) {
       this.hintEl.innerHTML = snap.micLive

@@ -18,24 +18,18 @@ import {
 } from '../../rendering/SoundSettings'
 
 export type VoiceChatSnapshot = {
-  /** Hear others (subscribe + play remote mics). */
   hearing: boolean
-  /** Speak button — continuous hot mic. */
   speaking: boolean
-  /** Forced off by tab background policy. */
   backgroundMuted: boolean
-  /** Hold T — momentary transmit. */
   pttHeld: boolean
-  /** Local mic is published live. */
   micLive: boolean
-  /** Remote voice tracks currently attached. */
   remoteCount: number
-  /** Connected to a LiveKit room. */
   roomReady: boolean
   error: string | null
 }
 
 type Listener = (state: VoiceChatSnapshot) => void
+type RoomProvider = () => Room | null
 
 type RemoteVoiceEntry = {
   element: HTMLAudioElement
@@ -46,8 +40,12 @@ type RemoteVoiceEntry = {
 /**
  * Nearby voice over primary LiveKit room — Explorer-shaped:
  * Hear others · Speak · Hold [T] to speak momentarily.
+ *
+ * Room is resolved via provider so reconnects (landing → play, island hop)
+ * always publish/subscribe on the live Room instance.
  */
 export class VoiceChatService {
+  private roomProvider: RoomProvider = () => null
   private room: Room | null = null
   private hearing = true
   private speaking = false
@@ -66,7 +64,8 @@ export class VoiceChatService {
   private readonly onKeyDown = (ev: KeyboardEvent): void => {
     if (isTextInputFocused() || isEditableTarget(ev.target)) return
     if (ev.repeat || ev.code !== 'KeyT') return
-    if (!this.room) return
+    this.refreshRoomBinding()
+    if (!this.room || this.room.state !== ConnectionState.Connected) return
     ev.preventDefault()
     this.setPttHeld(true)
   }
@@ -91,7 +90,9 @@ export class VoiceChatService {
   dispose(): void {
     void this.setSpeaking(false)
     this.pttHeld = false
-    this.detachRoom()
+    this.detachRoomHandlers()
+    this.room = null
+    this.roomProvider = () => null
     this.audioHost?.remove()
     this.audioHost = null
     window.removeEventListener('keydown', this.onKeyDown, true)
@@ -111,6 +112,7 @@ export class VoiceChatService {
   }
 
   getSnapshot(): VoiceChatSnapshot {
+    this.refreshRoomBinding()
     return {
       hearing: this.hearing,
       speaking: this.speaking,
@@ -123,25 +125,62 @@ export class VoiceChatService {
     }
   }
 
-  /** Bind / rebind the LiveKit room used for avatar movement (scene or world). */
+  /**
+   * Prefer a provider so reconnects pick up the new Room.
+   * Legacy: attachRoom(room) still works via fixed provider.
+   */
+  bindRoomProvider(provider: RoomProvider): void {
+    this.roomProvider = provider
+    this.refreshRoomBinding()
+  }
+
+  /** @deprecated use bindRoomProvider — kept for call-site clarity */
   attachRoom(room: Room | null): void {
-    if (this.room === room) return
+    this.bindRoomProvider(() => room)
+  }
+
+  /** Re-resolve primary LiveKit room (call after every connect / handoff). */
+  refreshRoomBinding(): void {
+    const next = this.roomProvider()
+    if (next === this.room) return
+
     const keepHearing = this.hearing
     const keepSpeaking = this.speaking
-    void this.setSpeaking(false)
-    this.pttHeld = false
-    this.detachRoom()
-    this.room = room
-    if (room) {
-      this.bindRoomHandlers(room)
+    const wasLive = this.micLive
+
+    this.detachRoomHandlers()
+    this.clearAllRemotes()
+    this.room = next
+    this.micLive = false
+
+    if (next && next.state === ConnectionState.Connected) {
+      this.bindRoomHandlers(next)
       this.hearing = keepHearing
       if (this.hearing) void this.applyHearing(true)
-      if (keepSpeaking) void this.setSpeaking(true)
+      if (keepSpeaking || wasLive) {
+        this.speaking = keepSpeaking
+        void this.reconcileMicPublish()
+      }
+      clientDebugLog.log(
+        'comms',
+        `Voice bound room=${next.name || '?'} remotes=${next.remoteParticipants.size}`,
+        { level: 'info', alsoConsole: true }
+      )
+    } else if (next) {
+      // Connected event may fire shortly — bind handlers and wait.
+      this.bindRoomHandlers(next)
+      next.once(RoomEvent.Connected, () => {
+        if (this.room !== next) return
+        if (this.hearing) void this.applyHearing(true)
+        void this.reconcileMicPublish()
+        this.notify()
+      })
     }
     this.notify()
   }
 
   async setHearing(on: boolean): Promise<void> {
+    this.refreshRoomBinding()
     if (this.hearing === on) return
     this.hearing = on
     await this.applyHearing(on)
@@ -152,12 +191,16 @@ export class VoiceChatService {
     await this.setHearing(!this.hearing)
   }
 
-  /** Speak button — continuous hot mic. */
   async setSpeaking(on: boolean): Promise<void> {
+    this.refreshRoomBinding()
     if (this.speaking === on) return
-    if (on && !this.room) {
+    if (on && (!this.room || this.room.state !== ConnectionState.Connected)) {
       this.error = 'Not connected to voice room'
       this.notify()
+      clientDebugLog.log('comms', 'Speak blocked — LiveKit not connected', {
+        level: 'warn',
+        alsoConsole: true
+      })
       return
     }
     this.speaking = on
@@ -172,7 +215,8 @@ export class VoiceChatService {
     await this.reconcileMicPublish()
     this.notify()
     clientDebugLog.log('comms', on ? 'Nearby Speak on' : 'Nearby Speak off', {
-      level: on ? 'success' : 'info'
+      level: on ? 'success' : 'info',
+      alsoConsole: true
     })
   }
 
@@ -183,6 +227,7 @@ export class VoiceChatService {
   private setPttHeld(held: boolean): void {
     if (this.pttHeld === held) return
     this.pttHeld = held
+    this.refreshRoomBinding()
     if (held && this.room) {
       void this.room.startAudio().catch(() => {})
     }
@@ -191,12 +236,15 @@ export class VoiceChatService {
   }
 
   private shouldPublishMic(): boolean {
-    if (!this.room || this.backgroundMuted) return false
+    if (!this.room || this.room.state !== ConnectionState.Connected || this.backgroundMuted) {
+      return false
+    }
     return this.speaking || this.pttHeld
   }
 
   private async applyHearing(on: boolean): Promise<void> {
-    if (!this.room) {
+    this.refreshRoomBinding()
+    if (!this.room || this.room.state !== ConnectionState.Connected) {
       if (!on) this.clearAllRemotes()
       return
     }
@@ -218,20 +266,46 @@ export class VoiceChatService {
   }
 
   private async ensureMicPublished(want: boolean): Promise<void> {
+    this.refreshRoomBinding()
     const room = this.room
-    if (!room) {
+    if (!room || room.state !== ConnectionState.Connected) {
       this.micLive = false
+      if (want) {
+        this.error = 'Not connected to voice room'
+        this.notify()
+      }
       return
     }
     if (this.publishInFlight) await this.publishInFlight
     const run = (async () => {
       try {
+        // Gatekeeper tokens sometimes set canPublish=false — surface it.
+        const canPublish = room.localParticipant.permissions?.canPublish
+        if (want && canPublish === false) {
+          this.micLive = false
+          this.error = 'LiveKit token cannot publish audio (canPublish=false)'
+          clientDebugLog.log('comms', this.error, { level: 'error', alsoConsole: true })
+          this.notify()
+          return
+        }
+
         if (want) {
           const deviceId = soundSettings.get().microphoneDeviceId
           const opts = deviceId ? { deviceId } : undefined
-          const pub = await room.localParticipant.setMicrophoneEnabled(true, opts)
+          // Explicit mic source so peers (Explorer / us) treat it as voice, not cast.
+          const pub = await room.localParticipant.setMicrophoneEnabled(true, opts, {
+            source: Track.Source.Microphone,
+            name: 'microphone',
+            dtx: true,
+            red: true
+          })
           this.micLive = !!pub?.track || hasLocalMic(room)
           this.error = null
+          clientDebugLog.log(
+            'comms',
+            `Mic published · live=${this.micLive} sid=${pub?.trackSid?.slice(0, 8) ?? 'n/a'} room=${room.name}`,
+            { level: 'success', alsoConsole: true }
+          )
         } else {
           await room.localParticipant.setMicrophoneEnabled(false)
           this.micLive = false
@@ -239,7 +313,10 @@ export class VoiceChatService {
       } catch (err) {
         this.micLive = false
         this.error = err instanceof Error ? err.message : String(err)
-        clientDebugLog.log('comms', `Mic publish failed: ${this.error}`, { level: 'error' })
+        clientDebugLog.log('comms', `Mic publish failed: ${this.error}`, {
+          level: 'error',
+          alsoConsole: true
+        })
       }
       this.notify()
     })()
@@ -273,11 +350,12 @@ export class VoiceChatService {
     room.on(RoomEvent.TrackUnpublished, this.onTrackUnpublished)
     room.on(RoomEvent.ParticipantDisconnected, this.onParticipantDisconnected)
     room.on(RoomEvent.Disconnected, this.onRoomDisconnected)
+    room.on(RoomEvent.Reconnected, this.onRoomReconnected)
     room.on(RoomEvent.LocalTrackPublished, this.onLocalTrackPublished)
     room.on(RoomEvent.LocalTrackUnpublished, this.onLocalTrackUnpublished)
   }
 
-  private detachRoom(): void {
+  private detachRoomHandlers(): void {
     const room = this.room
     if (room && this.roomHandlersBound) {
       room.off(RoomEvent.TrackSubscribed, this.onTrackSubscribed)
@@ -286,13 +364,12 @@ export class VoiceChatService {
       room.off(RoomEvent.TrackUnpublished, this.onTrackUnpublished)
       room.off(RoomEvent.ParticipantDisconnected, this.onParticipantDisconnected)
       room.off(RoomEvent.Disconnected, this.onRoomDisconnected)
+      room.off(RoomEvent.Reconnected, this.onRoomReconnected)
       room.off(RoomEvent.LocalTrackPublished, this.onLocalTrackPublished)
       room.off(RoomEvent.LocalTrackUnpublished, this.onLocalTrackUnpublished)
     }
     this.roomHandlersBound = false
     this.clearAllRemotes()
-    this.room = null
-    this.micLive = false
   }
 
   private readonly onTrackSubscribed = (
@@ -347,6 +424,12 @@ export class VoiceChatService {
     this.notify()
   }
 
+  private readonly onRoomReconnected = (): void => {
+    if (this.hearing) void this.applyHearing(true)
+    void this.reconcileMicPublish()
+    this.notify()
+  }
+
   private readonly onLocalTrackPublished = (pub: LocalTrackPublication): void => {
     if (pub.kind === Track.Kind.Audio && pub.source === Track.Source.Microphone) {
       this.micLive = true
@@ -381,12 +464,12 @@ export class VoiceChatService {
   }
 
   private ensureAudioHost(): HTMLDivElement {
-    if (this.audioHost) return this.audioHost
+    if (this.audioHost?.isConnected) return this.audioHost
     const host = document.createElement('div')
     host.id = 'nearby-voice-audio-host'
     host.setAttribute('aria-hidden', 'true')
     host.style.cssText =
-      'position:fixed;width:0;height:0;overflow:hidden;opacity:0;pointer-events:none;left:0;top:0'
+      'position:fixed;width:1px;height:1px;overflow:hidden;opacity:0.01;pointer-events:none;left:0;top:0'
     document.body.appendChild(host)
     this.audioHost = host
     return host
@@ -408,7 +491,10 @@ export class VoiceChatService {
     el.volume = this.hearing ? remoteGain() : 0
     this.ensureAudioHost().appendChild(el)
     void el.play().catch((err) => {
-      clientDebugLog.log('comms', `Remote voice play blocked: ${String(err)}`, { level: 'warn' })
+      clientDebugLog.log('comms', `Remote voice play blocked: ${String(err)}`, {
+        level: 'warn',
+        alsoConsole: true
+      })
     })
     this.remotes.set(key, {
       element: el,
@@ -419,7 +505,7 @@ export class VoiceChatService {
     clientDebugLog.log(
       'comms',
       `Remote voice attached · peer=${(participant.identity ?? '').slice(0, 10)}… remotes=${this.remoteCount}`,
-      { throttleMs: 2000, throttleKey: 'voice-attach' }
+      { level: 'success', alsoConsole: true }
     )
     this.notify()
   }
@@ -452,7 +538,16 @@ export class VoiceChatService {
   }
 
   private notify(): void {
-    const snap = this.getSnapshot()
+    const snap = {
+      hearing: this.hearing,
+      speaking: this.speaking,
+      backgroundMuted: this.backgroundMuted,
+      pttHeld: this.pttHeld,
+      micLive: this.micLive,
+      remoteCount: this.remoteCount,
+      roomReady: !!this.room && this.room.state === ConnectionState.Connected,
+      error: this.error
+    }
     for (const listener of this.listeners) listener(snap)
   }
 }
@@ -483,7 +578,7 @@ export function isVoicePublication(
   if (publication.kind !== Track.Kind.Audio) return false
   if (publication.source === Track.Source.ScreenShareAudio) return false
   if (publication.source === Track.Source.Microphone) return true
-  // Unknown audio: skip if same participant publishes camera/screenshare (Cast/OBS).
+  // Unknown audio without camera/screenshare video = treat as voice (Explorer interop).
   for (const pub of participant.trackPublications.values()) {
     if (pub.kind !== Track.Kind.Video) continue
     if (pub.source === Track.Source.Camera || pub.source === Track.Source.ScreenShare) return false

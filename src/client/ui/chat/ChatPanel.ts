@@ -536,15 +536,15 @@ export class ChatPanel {
     avatar.className = 'chat-panel__avatar'
 
     const bubble = document.createElement('div')
-    bubble.className = `chat-panel__bubble${isChatImageLine(line) ? ' is-image' : ''}`
+    bubble.className = `chat-panel__bubble${isChatImageLine(line) ? ' is-image' : ''}${
+      mentionsSelf ? ' is-mentioned' : ''
+    }`
 
     const name = document.createElement('div')
     name.className = 'chat-panel__sender'
 
     const body = document.createElement('div')
-    body.className = isChatImageLine(line)
-      ? 'chat-panel__media'
-      : `chat-panel__text${mentionsSelf ? ' is-mentioned' : ''}`
+    body.className = isChatImageLine(line) ? 'chat-panel__media' : 'chat-panel__text'
 
     if (isChatImageLine(line)) {
       const img = document.createElement('img')

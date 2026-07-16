@@ -226,9 +226,10 @@ export class World {
     )
   }
 
-  /** Bind voice service to the current primary LiveKit room (call after connect/handoff). */
+  /** Bind voice service to the live primary LiveKit room (call after every connect/handoff). */
   syncVoiceRoom(): void {
-    this.voice.attachRoom(this.comms.getPrimaryLiveKitRoom())
+    this.voice.bindRoomProvider(() => this.comms.getPrimaryLiveKitRoom())
+    this.voice.refreshRoomBinding()
   }
 
   private wireCommsHandlers(): void {

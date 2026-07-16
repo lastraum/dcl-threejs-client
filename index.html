@@ -8336,6 +8336,13 @@
       .chat-panel__line.is-self .chat-panel__bubble {
         background: rgba(120, 180, 90, 0.18);
       }
+      /* Whole bubble purple when message @-mentions the local user. */
+      .chat-panel__bubble.is-mentioned,
+      .social-chat-dock .chat-panel__bubble.is-mentioned {
+        background: rgba(140, 40, 200, 0.42);
+        border: 1.5px solid rgba(224, 112, 255, 0.75);
+        box-shadow: 0 0 12px rgba(200, 80, 255, 0.28);
+      }
       .chat-panel__sender {
         margin-bottom: 3px;
         font-size: 10px;
@@ -8385,37 +8392,22 @@
       .chat-panel__link:hover {
         color: #7bc0ff;
       }
-      /* @-mention of local user: soft body wash (no border — chip owns the outline). */
-      .chat-panel__text.is-mentioned,
-      .social-chat-dock .chat-panel__text.is-mentioned {
-        color: #fff;
-        background: rgba(140, 40, 200, 0.35);
-        border: none;
-        border-radius: 8px;
-        padding: 4px 8px;
-        box-shadow: none;
-      }
-      /* Inline @token chip — single border only (avoid double ring with body highlight). */
+      /* Inline @token — bold fill only; bubble.is-mentioned owns the outer purple frame. */
       .chat-panel__mention-self {
-        display: inline-block;
-        max-width: 100%;
-        padding: 0 5px;
-        margin: 0 1px;
-        border-radius: 5px;
-        background: rgba(90, 20, 140, 0.95);
-        border: 1.5px solid #e070ff;
+        display: inline;
+        padding: 0 3px;
+        margin: 0;
+        border-radius: 4px;
+        background: rgba(60, 10, 100, 0.55);
+        border: none;
         box-shadow: none;
         color: #fff !important;
         font-weight: 700;
         font-size: inherit;
-        line-height: 1.35;
+        line-height: inherit;
         white-space: normal;
         word-break: break-word;
         vertical-align: baseline;
-      }
-      .chat-panel__text.is-mentioned .chat-panel__mention-self {
-        /* Chip inside mentioned body: fill only, body wash provides context */
-        border-color: rgba(240, 160, 255, 0.85);
       }
       .chat-panel__time {
         margin-top: 4px;

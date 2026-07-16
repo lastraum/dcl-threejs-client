@@ -609,16 +609,20 @@ export class ClientShell {
     hearing: boolean
     speaking: boolean
     micLive: boolean
+    pttHeld?: boolean
     backgroundMuted: boolean
     remoteCount: number
     roomReady: boolean
   }): void {
     const btn = this.buttons.get('nearby-voice')
     if (!btn) return
+    const talking = state.micLive || !!state.pttHeld || state.speaking
     if (!this.nearbyVoicePanel.isVisible()) {
       btn.setActive(state.speaking || state.micLive)
     }
-    if (state.micLive) {
+    // Green border while transmitting (Speak or hold T).
+    btn.setTalking(talking)
+    if (state.micLive || state.pttHeld) {
       btn.setStatusDot('speaking')
     } else if (state.backgroundMuted) {
       btn.setStatusDot('muted')
@@ -630,8 +634,8 @@ export class ClientShell {
     const peers =
       state.remoteCount > 0 ? ` · ${state.remoteCount} hearing` : ''
     btn.setTitle(
-      state.micLive
-        ? `Nearby voice — mic live${peers}`
+      state.micLive || state.pttHeld
+        ? `Nearby voice — talking${peers}`
         : state.hearing
           ? `Nearby voice — hearing others${peers}`
           : 'Nearby voice'

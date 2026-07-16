@@ -1578,6 +1578,7 @@ export class AppController {
         hearing: snap.hearing,
         speaking: snap.speaking,
         micLive: snap.micLive,
+        pttHeld: snap.pttHeld,
         backgroundMuted: snap.backgroundMuted,
         remoteCount: snap.remoteCount,
         roomReady: snap.roomReady

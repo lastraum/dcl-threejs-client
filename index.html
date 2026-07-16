@@ -893,6 +893,15 @@
         background: rgba(255, 255, 255, 0.14);
         color: #fff;
       }
+      /* Nearby voice — green ring while talking (Speak / hold T) */
+      .client-sidebar__btn.is-talking {
+        box-shadow: 0 0 0 2px #57e389, 0 0 12px rgba(87, 227, 137, 0.45);
+        background: rgba(87, 227, 137, 0.16);
+        color: #fff;
+      }
+      .client-sidebar__btn.is-talking .client-sidebar__icon {
+        color: #57e389;
+      }
       .client-sidebar__btn:active {
         transform: scale(0.96);
       }

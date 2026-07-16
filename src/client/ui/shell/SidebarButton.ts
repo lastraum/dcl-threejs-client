@@ -89,9 +89,17 @@ export class SidebarButton {
     return this.active
   }
 
+  /** Live transmit feedback (e.g. hold T / Speak) — green border. */
+  setTalking(on: boolean): void {
+    this.element.classList.toggle('is-talking', on)
+  }
+
   setDisabled(disabled: boolean): void {
     this.element.disabled = disabled
     this.element.classList.toggle('is-disabled', disabled)
-    if (disabled) this.setActive(false)
+    if (disabled) {
+      this.setActive(false)
+      this.setTalking(false)
+    }
   }
 }

@@ -145,9 +145,20 @@ export class VoiceChatService {
     this.notify()
   }
 
-  /** Sidebar / HUD: toggle nearby voice on or off. */
+  /**
+   * Sidebar nearby-voice = **hot mic** toggle (Explorer-style).
+   * Open-mic: click on → publish; click off → unpublish + leave.
+   * PTT mode: click on → listen + ready for V; click off → leave.
+   */
   async toggleEnabled(): Promise<void> {
-    await this.setEnabled(!this.enabled)
+    if (this.enabled) {
+      await this.setEnabled(false)
+      return
+    }
+    // Hot mic path: clear soft-mute so open-mic publishes immediately on click.
+    this.userMuted = false
+    this.pttHeld = false
+    await this.setEnabled(true)
   }
 
   async setEnabled(on: boolean): Promise<void> {
@@ -177,7 +188,13 @@ export class VoiceChatService {
     this.rescanRemoteVoice()
     await this.reconcileMicPublish()
     this.notify()
-    clientDebugLog.log('comms', 'Nearby voice enabled', { level: 'success' })
+    clientDebugLog.log(
+      'comms',
+      soundSettings.get().voiceInputMode === 'open-mic'
+        ? 'Nearby voice hot mic on'
+        : 'Nearby voice on (PTT — hold V)',
+      { level: 'success' }
+    )
   }
 
   /** Open-mic soft mute (M key or UI). */

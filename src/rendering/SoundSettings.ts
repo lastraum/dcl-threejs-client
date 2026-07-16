@@ -35,7 +35,8 @@ const DEFAULTS: SoundSettingsState = {
   avatarEmotesVolume: 100,
   microphoneDeviceId: '',
   muteMicInBackground: true,
-  voiceInputMode: 'push-to-talk'
+  /** Default open-mic — sidebar nearby-voice is the hot-mic toggle. */
+  voiceInputMode: 'open-mic'
 }
 
 type Listener = (state: SoundSettingsState) => void

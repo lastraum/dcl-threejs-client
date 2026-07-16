@@ -22,21 +22,22 @@
 
 ### What's new
 
-- **Nearby voice** sidebar control — join/leave voice channel (click)
-- **Push-to-talk** default — hold **V** while voice is on
-- **Open mic** mode in Preferences → Sounds ( **M** soft-mutes)
+- **Nearby voice sidebar = hot mic** — click on to talk, click off to stop (default open-mic)
+- **PTT optional** — Preferences → Sounds → push-to-talk (hold **V** after enabling)
+- **M** soft-mutes in hot-mic mode without leaving
 - **Mute mic in background** — unpublish when the tab is hidden
 - Mic device picker + Voice Chat volume apply to LiveKit tracks
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
+| **Hot mic (sidebar)** | 🟢 | Default open-mic; button is the transmit toggle |
 | **Mic publish** | 🟢 | `localParticipant.setMicrophoneEnabled` + deviceId |
 | **Remote hear** | 🟢 | Subscribe Microphone (skip cast/screenshare audio) |
-| **PTT (V)** | 🟢 | Phase 1 — not deferred |
+| **PTT (V)** | 🟢 | Optional mode in prefs |
 | **Mute in background** | 🟢 | Phase 1 — `visibilityState === 'hidden'` |
 | **Spatial** | ⬜ | Next — PositionalAudio on remote avatar |
 
-**QA:** two clients same world · join nearby voice · hold V · hear peer · hide tab → mic off · open-mic mode + M mute · volume slider.
+**QA:** two clients same world · click nearby voice (hot mic) · hear peer · click off · hide tab → mic off · switch PTT · hold V · volume slider.
 
 **Not in this slice:** 3D spatialization, talking indicators on name tags, community voice rooms.
 

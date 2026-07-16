@@ -50,7 +50,7 @@ const BOTTOM_BUTTONS: SidebarButtonConfig[] = [
   {
     id: 'nearby-voice',
     icon: 'nearbyVoice',
-    label: 'Nearby voice (click on · hold V to talk)',
+    label: 'Nearby voice / hot mic',
     statusDot: 'off'
   },
   { id: 'smart-wearable', icon: 'smartWearable', label: 'Smart wearables' },
@@ -599,7 +599,11 @@ export class ClientShell {
     btn.setActive(state.enabled)
     if (!state.enabled) {
       btn.setStatusDot('off')
-      btn.setTitle('Nearby voice — click to join · hold V to talk (PTT)')
+      btn.setTitle(
+        state.mode === 'push-to-talk'
+          ? 'Nearby voice — click on, then hold V (PTT mode)'
+          : 'Nearby voice / hot mic — click to talk'
+      )
       return
     }
     if (state.micLive) {
@@ -614,14 +618,16 @@ export class ClientShell {
     if (state.mode === 'push-to-talk') {
       btn.setTitle(
         state.micLive
-          ? `Nearby voice on — talking (release V)${peers}`
-          : `Nearby voice on — hold V to talk${peers}`
+          ? `Hot mic / PTT — talking (release V)${peers}`
+          : `Nearby voice on — hold V to talk · click off${peers}`
       )
     } else {
       btn.setTitle(
-        state.userMuted || state.backgroundMuted
-          ? `Nearby voice on — mic muted${peers}`
-          : `Nearby voice on — open mic${peers}`
+        state.micLive
+          ? `Hot mic on — click to stop${peers}`
+          : state.userMuted || state.backgroundMuted
+            ? `Hot mic muted — click off or M / unhide tab${peers}`
+            : `Nearby voice on${peers}`
       )
     }
   }

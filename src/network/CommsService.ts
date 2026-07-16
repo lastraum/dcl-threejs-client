@@ -1316,13 +1316,11 @@ export class CommsService {
         : 'Island LiveKit connect failed (archipelago)',
       { level: connected ? 'success' : 'error', alsoConsole: true }
     )
-    // Nearby voice must re-bind when island joins (Explorer peers often live here).
-    if (connected) {
-      this.onLiveKitRoomsChanged?.()
-    }
+    // Island is movement/presence only — voice stays on scene/world primary.
+    if (connected) this.onLiveKitRoomsChanged?.()
   }
 
-  /** Optional hook — World sets this so voice rebinds when island/scene rooms change. */
+  /** Optional hook — World rebinds voice when primary scene/world room changes. */
   onLiveKitRoomsChanged: (() => void) | null = null
 
   private async connectLiveKitLabel(
@@ -1450,35 +1448,21 @@ export class CommsService {
   }
 
   /**
-   * LiveKit room for nearby voice — prefer avatar-primary session, else any connected room.
-   * Returns only rooms in Connected state (never a stale disconnected instance).
+   * Primary LiveKit room for nearby voice + chat.
+   * Scene room for parcels, world room for worlds — **not** island/archipelago.
    */
   getPrimaryLiveKitRoom(): Room | null {
-    const rooms = this.getAllLiveKitRooms()
-    return rooms[0] ?? null
-  }
-
-  /**
-   * Every connected LiveKit room (scene + island + world).
-   * Nearby voice publishes/subscribes on **all** of these — Genesis peers often use island.
-   */
-  getAllLiveKitRooms(): Room[] {
-    const out: Room[] = []
-    const seen = new Set<Room>()
-    const order = [
-      this.primaryAvatarSession(),
-      this.sceneLiveKit,
-      this.islandLiveKit,
-      this.worldLiveKit
-    ]
-    for (const session of order) {
-      if (!session) continue
+    const pick = (session: LiveKitCommsSession | null): Room | null => {
+      if (!session?.isConnected()) return null
       const room = session.getRoom()
-      if (!room || room.state !== ConnectionState.Connected || seen.has(room)) continue
-      seen.add(room)
-      out.push(room)
+      if (!room || room.state !== ConnectionState.Connected) return null
+      return room
     }
-    return out
+    // Prefer explicit primary (world for worlds, scene for parcels).
+    const primary = pick(this.primaryAvatarSession())
+    if (primary) return primary
+    // Fallbacks — still never island for voice.
+    return pick(this.sceneLiveKit) ?? pick(this.worldLiveKit)
   }
 
   /** Debug: which LiveKit rooms are up (for voice diagnostics). */

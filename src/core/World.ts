@@ -226,14 +226,14 @@ export class World {
     )
   }
 
-  /** Bind voice to all connected LiveKit rooms (scene + island + world). */
+  /** Bind voice to primary LiveKit room only (scene parcel / world — not island). */
   syncVoiceRoom(): void {
     this.comms.onLiveKitRoomsChanged = () => {
-      this.voice.refreshRooms()
-      console.log('[voice]', 'rooms changed', this.comms.describeLiveKitRooms())
+      this.voice.refreshRoom()
+      console.log('[voice]', 'room changed', this.comms.describeLiveKitRooms())
     }
-    this.voice.bindRoomsProvider(() => this.comms.getAllLiveKitRooms())
-    this.voice.refreshRooms()
+    this.voice.bindRoomProvider(() => this.comms.getPrimaryLiveKitRoom())
+    this.voice.refreshRoom()
     console.log('[voice]', 'syncVoiceRoom', this.comms.describeLiveKitRooms())
   }
 

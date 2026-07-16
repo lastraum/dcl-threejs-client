@@ -133,7 +133,7 @@ export class NearbyVoicePanel {
       this.hintEl.innerHTML = 'Speaking (hold <kbd>T</kbd>)…'
     } else {
       this.hintEl.innerHTML =
-        'Hold <kbd>T</kbd> to talk · or click Speak for hot mic (stays on)'
+        '<b>Speak</b> = hot mic (stays on) · hold <kbd>T</kbd> = momentary'
     }
     if (snap.error) {
       this.errorEl.hidden = false

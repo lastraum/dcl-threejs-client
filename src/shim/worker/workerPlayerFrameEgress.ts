@@ -438,9 +438,18 @@ export function collectPlayerFrameSnapshot(engine: IEngine): PlayerFrameSnapshot
   let inputModifier: unknown = liveModifier
   if (locomotionFreezeLatch && !refuseFreezeWrites) {
     const liveFrozen = liveHas && liveModifier && isLocomotionFrozenValue(liveModifier)
-    if (!liveFrozen && !(intentionalUnfreezeWindow() && !freezeWrittenThisInject)) {
-      inputModifierHas = true
-      inputModifier = locomotionFreezeLatch
+    if (!liveFrozen) {
+      // MOVE CAMERA only: re-apply if cooperative tick wiped freeze mid-flight.
+      // Scene freezes (Flagtag lobby / round reset): if live is cleared, drop latch —
+      // never force-freeze after the scene unlocks (was leaving respawn permanently stuck).
+      if (locomotionFreezeLatchSource === 'pointer-move') {
+        if (!(intentionalUnfreezeWindow() && !freezeWrittenThisInject)) {
+          inputModifierHas = true
+          inputModifier = locomotionFreezeLatch
+        }
+      } else {
+        clearLocomotionFreezeLatchState()
+      }
     }
   }
   if (refuseFreezeWrites) {

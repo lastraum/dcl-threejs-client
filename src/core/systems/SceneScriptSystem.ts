@@ -282,12 +282,19 @@ export class SceneScriptSystem {
   private pointerAwaitingWorkerApply = false
   /** Mount set commit deferred — projection UiTransform lagging worker uiEntities. */
   private projectionLagPendingUi = false
+  /** performance.now when projection lag first became pending (0 = not lagging). */
+  private projectionLagSinceMs = 0
   /** Worker uiEntities held until applyUiFrame can commit mount set + paint atomically. */
   private pendingUiEntities: number[] | undefined
   /** Renderer inbound held while UI mount commit is deferred — must not echo stale state to worker early. */
   private pendingInboundAfterUiMount: Uint8Array[] = []
   /** Pointer deliver done — keep worker ticks paused until mount set commits on main. */
   private pointerHoldTicksUntilMount = false
+  /**
+   * Max wait for UiTransform catch-up before resuming worker ticks anyway.
+   * Flagtag: stuck deferred after round-reset wipe left sceneTicksPaused forever → timer dt=0 + freeze.
+   */
+  private static readonly UI_MOUNT_LAG_FORCE_RESUME_MS = 1200
   /** Pointer flush requested while a prior inject batch awaits pointer-deliver-done. */
   private pointerFlushCoalesceRequested = false
   /** Non-UI pointer egress held until the atomic uiEntities chunk (one batch apply). */
@@ -987,6 +994,20 @@ export class SceneScriptSystem {
 
   setMovePlayerHandler(handler: MovePlayerHandler | null): void {
     this.movePlayerHandler = handler
+  }
+
+  /**
+   * After RestrictedActions.movePlayerTo (Flagtag drown / round reset) — ensure worker
+   * cooperative ticks are not left paused by a prior UI mount lag, so scene systems can
+   * clear InputModifier and advance timers.
+   */
+  nudgePlayAfterSceneTeleport(): void {
+    if (!this.running || !this.worker) return
+    this.pendingUiEntities = undefined
+    this.clearProjectionUiLag()
+    this.forceResumeWorkerSceneTicks('move-player-to')
+    // Drive one play frame immediately so PE pose + systems advance this rAF.
+    this.tickPlayFrame()
   }
 
   setTriggerEmoteHandler(handler: TriggerEmoteHandler | null): void {
@@ -1732,27 +1753,21 @@ export class SceneScriptSystem {
       const pointerUiMountBatch =
         hasUiMountSnapshot ||
         batch.some((i) => i.uiMountSnapshot !== undefined || (i.uiEntities?.length ?? 0) > 0)
-      const clearUiLwwSlots =
-        latestUiEntities !== undefined &&
-        (latestUiEntities.length > 0 || mountChanged) &&
-        (pointerUiMountBatch || mountChanged || hasPayload)
-      if (clearUiLwwSlots) {
-        // Partial dirty snapshots only touch a few entities — clear LWW only for those rows
-        // so we do not thrash the entire 200–350 entity UI tree every hover/timer flip.
+      // Only clear LWW for entities present in the structured snapshot we are about to re-seed.
+      // Never wipe the full mount on bare uiEntities (no rows) — that left projection at 0/N
+      // (mount commit deferred forever → sceneTicksPaused stuck → Flagtag timer + unfreeze die).
+      if (latestUiMountSnapshot?.length) {
         const snapEntities = new Set<Entity>()
-        if (latestUiMountSnapshot?.length) {
-          for (const row of latestUiMountSnapshot) snapEntities.add(row.entity as Entity)
+        for (const row of latestUiMountSnapshot) snapEntities.add(row.entity as Entity)
+        if (snapEntities.size > 0) {
+          this.projection.clearLwwSlotsForEntities(snapEntities, [
+            UiTransform.componentId,
+            UiText.componentId,
+            UiBackground.componentId,
+            UiInput.componentId,
+            UiDropdown.componentId
+          ])
         }
-        const mountSet = new Set(latestUiEntities!.map((e) => e as Entity))
-        const clearSet =
-          snapEntities.size > 0 && snapEntities.size < mountSet.size * 0.5 ? snapEntities : mountSet
-        this.projection.clearLwwSlotsForEntities(clearSet, [
-          UiTransform.componentId,
-          UiText.componentId,
-          UiBackground.componentId,
-          UiInput.componentId,
-          UiDropdown.componentId
-        ])
       }
       if (pointerUiMountBatch) this.projection.beginForceWorkerUiPuts()
       try {
@@ -2089,51 +2104,117 @@ export class SceneScriptSystem {
       const nextSet = new Set(mountUpdate.map((e) => e as Entity))
       if (!bridge.isMountSetReady(this.view, nextSet)) {
         this.pendingUiEntities = mountUpdate
-        this.projectionLagPendingUi = true
-        this.logProjectionLagIfStale(nextSet)
+        this.markProjectionUiLag(nextSet)
+        // Hard-stuck 0/N after wipe: still resume worker so systems (timer dt, InputModifier clear) run.
+        this.maybeForceResumeWorkerTicksOnUiLag(nextSet)
         return
       }
-      const mountChanged = bridge.commitMountSet(nextSet)
-      this.purgeProjectionUiOutsideWorkerMount()
-      bridge.paint(this.view)
-      this.projectionLagPendingUi = false
-      this.projectionLagLoggedAt = 0
-      this.logSceneUiRepaintIfEnabled()
-      if (mountChanged) {
-        this.pointerStructureDirty = true
-        this.flushPointerStructureIfDirty()
-      }
-      if (!this.pointerAwaitingWorkerApply) {
-        this.resumeWorkerSceneTicksAfterMountIfHeld()
-      }
+      this.commitAndPaintUiMount(bridge, nextSet)
       return
     }
 
     if (!bridge.hasCommittedMountSet()) return
     if (!bridge.isMountSetReady(this.view)) {
-      this.projectionLagPendingUi = true
-      this.logProjectionLagIfStale(bridge.getWorkerUiEntities())
+      this.markProjectionUiLag(bridge.getWorkerUiEntities())
+      this.maybeForceResumeWorkerTicksOnUiLag(bridge.getWorkerUiEntities())
       return
     }
+    this.clearProjectionUiLag()
     this.purgeProjectionUiOutsideWorkerMount()
     bridge.paint(this.view)
-    this.projectionLagPendingUi = false
     this.logSceneUiRepaintIfEnabled()
     if (!this.pointerAwaitingWorkerApply) {
       this.resumeWorkerSceneTicksAfterMountIfHeld()
     }
   }
 
+  private commitAndPaintUiMount(
+    bridge: NonNullable<typeof this.sceneUiBridge>,
+    nextSet: Set<Entity>
+  ): void {
+    const mountChanged = bridge.commitMountSet(nextSet)
+    this.purgeProjectionUiOutsideWorkerMount()
+    bridge.paint(this.view)
+    this.clearProjectionUiLag()
+    this.logSceneUiRepaintIfEnabled()
+    if (mountChanged) {
+      this.pointerStructureDirty = true
+      this.flushPointerStructureIfDirty()
+    }
+    if (!this.pointerAwaitingWorkerApply) {
+      this.resumeWorkerSceneTicksAfterMountIfHeld()
+    }
+  }
+
+  private markProjectionUiLag(mountSet: ReadonlySet<Entity> | null | undefined): void {
+    this.projectionLagPendingUi = true
+    if (this.projectionLagSinceMs <= 0) this.projectionLagSinceMs = performance.now()
+    this.logProjectionLagIfStale(mountSet)
+  }
+
+  private clearProjectionUiLag(): void {
+    this.projectionLagPendingUi = false
+    this.projectionLagSinceMs = 0
+    this.projectionLagLoggedAt = 0
+  }
+
+  /**
+   * If mount commit stays deferred (projection wiped / lagging), do not leave sceneTicksPaused.
+   * Worker systems need real dt for Flagtag reset timer; scene must be able to clear InputModifier.
+   */
+  private maybeForceResumeWorkerTicksOnUiLag(mountSet: ReadonlySet<Entity> | null | undefined): void {
+    if (this.projectionLagSinceMs <= 0) return
+    const lagMs = performance.now() - this.projectionLagSinceMs
+    if (lagMs < SceneScriptSystem.UI_MOUNT_LAG_FORCE_RESUME_MS) return
+
+    const ecs = this.view.components
+    let withTransform = 0
+    if (mountSet) {
+      for (const entity of mountSet) {
+        if (ecs.UiTransform.has(entity)) withTransform++
+      }
+    }
+
+    // Prefer paint whatever is ready so timer text can still update; else just unstick ticks.
+    if (this.sceneUiBridge && mountSet && withTransform > 0) {
+      const ready = new Set<Entity>()
+      for (const entity of mountSet) {
+        if (ecs.UiTransform.has(entity)) ready.add(entity)
+      }
+      console.warn(
+        `[scene-ui] force partial mount — ready=${ready.size}/${mountSet.size} after ${Math.round(lagMs)}ms lag`
+      )
+      this.pendingUiEntities = undefined
+      this.commitAndPaintUiMount(this.sceneUiBridge, ready)
+      return
+    }
+
+    console.warn(
+      `[scene-ui] force resume worker ticks — UiTransform ${withTransform}/${mountSet?.size ?? 0} after ${Math.round(lagMs)}ms lag`
+    )
+    this.pendingUiEntities = undefined
+    this.clearProjectionUiLag()
+    this.forceResumeWorkerSceneTicks('ui-mount-lag-timeout')
+  }
+
   /** Resume cooperative ticks once mount set + projection UiTransform are aligned after pointer open. */
   private resumeWorkerSceneTicksAfterMountIfHeld(): void {
     if (!this.pointerHoldTicksUntilMount || !this.worker || !this.running) return
     if (!this.canResumeWorkerSceneTicksAfterPointer()) return
+    this.forceResumeWorkerSceneTicks('mount-ready')
+  }
+
+  private forceResumeWorkerSceneTicks(reason: string): void {
+    if (!this.worker || !this.running) return
     this.pointerHoldTicksUntilMount = false
     if (this.pendingInboundAfterUiMount.length) {
       this.postRendererInboundDeliver(this.pendingInboundAfterUiMount)
       this.pendingInboundAfterUiMount = []
     }
     this.worker.postMessage({ type: 'pause-scene-ticks', paused: false } satisfies MainToWorker)
+    if (reason !== 'mount-ready') {
+      console.info(`[scene-ui] worker ticks resumed — ${reason}`)
+    }
   }
 
   private logSceneUiRepaintIfEnabled(): void {
@@ -3555,8 +3636,14 @@ export class SceneScriptSystem {
   private markTweenColliderPosesDirty(): void {
     if (!this.tweenBridge) return
     this.lastTweenMotionEntities.clear()
+    const moved = this.tweenBridge.consumeTransformMotionEntities()
+    // GPU InstancedMesh stores world matrices outside entity groups — rewrite after tween pose.
+    // Without this, Flagtag coins (and other instanced Tween props) look frozen.
+    if (moved.size && this.bridge) {
+      this.bridge.syncInstancedTransforms(moved)
+    }
     const { MeshCollider, GltfContainer } = this.readComponents
-    for (const entity of this.tweenBridge.consumeTransformMotionEntities()) {
+    for (const entity of moved) {
       this.lastTweenMotionEntities.add(entity)
       if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
         this.colliderPoseDirty.add(entity)
@@ -3864,6 +3951,7 @@ export class SceneScriptSystem {
     this.pointerOutboundDeferBuffer = []
     this.pointerFlushCoalesceRequested = false
     this.projectionLagPendingUi = false
+    this.projectionLagSinceMs = 0
     this.projectionLagLoggedAt = 0
     this.avatarAttachBridge?.dispose()
     this.avatarAttachBridge = null

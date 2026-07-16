@@ -1,5 +1,5 @@
 import type { ResolvedScene } from '../../dcl/content/types'
-import { SCENE_CHAT_RAIL_ICON } from './shell/icons'
+import { sceneChatRailIcon } from './shell/icons'
 
 export type WorldLocationCardOptions = {
   scene: ResolvedScene
@@ -81,7 +81,7 @@ export class WorldLocationCard {
           ? `<div class="world-location-card__body">
         <div class="world-location-card__divider" aria-hidden="true"></div>
         <button type="button" class="world-location-card__jump">
-          <span class="world-location-card__jump-icon" aria-hidden="true">${SCENE_CHAT_RAIL_ICON}</span>
+          <span class="world-location-card__jump-icon" aria-hidden="true">${sceneChatRailIcon()}</span>
           <span class="world-location-card__jump-text">JUMP BACK TO GENESIS CITY</span>
         </button>
       </div>`

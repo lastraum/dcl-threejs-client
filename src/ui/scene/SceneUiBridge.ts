@@ -260,8 +260,9 @@ export class SceneUiBridge {
   }
 
   /**
-   * Every worker mount id must have UiTransform in projection before commit+paint.
-   * applyUiFrame defers the whole frame when this fails — mount set and DOM stay in sync.
+   * Worker mount ids should have UiTransform before commit+paint.
+   * Allow one missing id on large trees (race on last PUT) so Flagtag timer/HUD is not
+   * deferred forever when a single shell entity lacks transform.
    */
   isMountSetReady(view: ProjectionView, mountSet?: ReadonlySet<Entity>): boolean {
     const target = mountSet ?? this.workerUiEntities
@@ -271,7 +272,9 @@ export class SceneUiBridge {
     for (const entity of target) {
       if (ecs.UiTransform.has(entity)) withTransform++
     }
-    const ready = withTransform >= target.size
+    const missing = target.size - withTransform
+    const ready =
+      missing === 0 || (target.size >= 8 && withTransform > 0 && missing <= 1)
     if (
       !ready &&
       typeof location !== 'undefined' &&

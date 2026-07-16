@@ -256,14 +256,14 @@ export class SceneGltfInstancer {
   }
 
   detach(entity: Entity, entityObj?: THREE.Group): void {
-    const hash = this.entityHash.get(entity)
-    if (!hash) return
-    const bucket = this.buckets.get(hash)
-    this.entityHash.delete(entity)
     if (entityObj) {
       delete entityObj.userData.dclInstanced
       delete entityObj.userData[INSTANCE_COLLIDER_SHAPES_KEY]
     }
+    const hash = this.entityHash.get(entity)
+    if (!hash) return
+    const bucket = this.buckets.get(hash)
+    this.entityHash.delete(entity)
     if (!bucket) return
     const index = bucket.entityIndex.get(entity)
     if (index === undefined) return
@@ -385,6 +385,16 @@ export class SceneGltfInstancer {
   }
 
   private writeMatrix(bucket: Bucket, index: number, entityObj: THREE.Group): void {
+    // VisibilityComponent only sets entityObj.visible — InstancedMesh lives outside the
+    // entity group, so zero the slot when hidden (coin pickup, doors, etc.).
+    if (!entityObj.visible) {
+      _instance.makeScale(0, 0, 0)
+      for (const mesh of bucket.meshes) {
+        mesh.setMatrixAt(index, _instance)
+        mesh.instanceMatrix.needsUpdate = true
+      }
+      return
+    }
     entityObj.updateMatrixWorld(true)
     _entityWorld.copy(entityObj.matrixWorld)
     for (let i = 0; i < bucket.meshes.length; i++) {

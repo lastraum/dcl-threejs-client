@@ -515,7 +515,13 @@ export class World {
       )
       this.sceneScript.setRealmInfo(this.comms.getRealmInfo())
 
-      this.sceneScript.setMovePlayerHandler((request) => this.player!.movePlayerTo(request))
+      this.sceneScript.setMovePlayerHandler((request) => {
+        const ok = this.player!.movePlayerTo(request)
+        // Round-reset teleports often land while InputModifier is frozen / ticks held after UI.
+        // Nudge worker play so scene systems can clear freeze and advance reset timers.
+        this.sceneScript.nudgePlayAfterSceneTeleport()
+        return ok
+      })
       this.sceneScript.setTriggerEmoteHandler((request) => {
         const emote = request.predefinedEmote?.trim()
         if (!emote) return false
@@ -719,6 +725,9 @@ export class World {
       this.wireAvatarChatOverhead()
     }
 
+    // Hold avatar + CCT out of the scene until authored colliders solidly under spawn.
+    await this.waitForSpawnFloorReady(scene.spawn, onProgress)
+
     onProgress?.('Loading avatar…')
     this.player.setAssetCache(this.assets, scene.realm.contentUrl)
     await this.player.loadAvatar(onProgress)
@@ -744,6 +753,7 @@ export class World {
     const spawnGltf = this.physics.gltfStaticActorCount
     const gltfStats = this.sceneScript.gltfColliders?.getPhysicsExtractionStats()
     const pos = this.player.getPosition()
+    const worldFeet = this.player.getWorldPosition()
     console.info(
       `[World] player spawn — static=${spawnStatic} gltfRegistered=${spawnGltf} gltfExtracted=${this.lastGltfColliderCount}` +
         (gltfStats
@@ -751,6 +761,9 @@ export class World {
           : '') +
         (pos ? ` feet=(${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})` : '')
     )
+    if (worldFeet) {
+      this.physics.logStaticCollidersNear(worldFeet.x, worldFeet.y, worldFeet.z, 16)
+    }
     this.logBootColliderDiag()
     this.sceneScript.syncClientEntities(this.player.getEntityPose(), this.player.getCameraEntityPose())
     this.physics.invalidateControllerCache()
@@ -1429,6 +1442,88 @@ export class World {
       }
     }
     this.pendingColliderCooks = this.colliderCookQueue.size
+  }
+
+  /**
+   * Gate play until a temporary CCT can stand on authored geometry at scene.json spawn.
+   * No synthetic pad — keeps pose-sliding / cooking until settle succeeds or timeout.
+   */
+  private async waitForSpawnFloorReady(
+    spawn: ResolvedScene['spawn'],
+    onProgress?: (msg: string) => void
+  ): Promise<void> {
+    const feetY = spawn.fromSpawnPoints ? spawn.y : spawn.y <= 0.01 ? 1 : spawn.y
+    const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
+    const elevated = spawnThree.y > 8
+    const maxWaitMs = elevated ? 30_000 : 10_000
+    const started = performance.now()
+    let attempt = 0
+    let lastProgressLog = 0
+
+    onProgress?.('Waiting for floor colliders…')
+    console.info(
+      `[World] spawn floor wait — authored feet three=(${spawnThree.x.toFixed(1)}, ${spawnThree.y.toFixed(2)}, ${spawnThree.z.toFixed(1)}) maxWait=${(maxWaitMs / 1000).toFixed(0)}s`
+    )
+
+    while (performance.now() - started < maxWaitMs) {
+      attempt++
+      await this.sceneScript.yieldForWorkerMessages()
+      this.sceneScript.flushSceneGraphMatrices()
+      this.sceneScript.syncCollisionForce()
+      this.pushAllColliderPosesToPhysX()
+      this.reconcileColliderCookQueue()
+      await this.drainPendingColliderCooksInitialOnly()
+      this.pushAllColliderPosesToPhysX()
+      this.physics.warmStaticScene()
+
+      const probed = this.physics.probeWalkSurfaceFeetY(
+        spawnThree.x,
+        spawnThree.z,
+        spawnThree.y + 1.2,
+        8
+      )
+      const probeOk =
+        probed != null && probed >= spawnThree.y - 2.5 && probed <= spawnThree.y + 4
+
+      // CCT is the real gate — sweep alone can hit thin/wrong shapes.
+      const settled = this.physics.trySettleAtPosition(spawnThree, spawnThree.y)
+      if (settled) {
+        const elapsed = ((performance.now() - started) / 1000).toFixed(1)
+        console.info(
+          `[World] spawn floor ready — CCT grounded after ${elapsed}s (attempts=${attempt}` +
+            (probed != null ? `, probeY=${probed.toFixed(2)}` : '') +
+            ')'
+        )
+        onProgress?.('Floor ready')
+        return
+      }
+
+      const now = performance.now()
+      if (now - lastProgressLog > 2000) {
+        lastProgressLog = now
+        const sec = ((now - started) / 1000).toFixed(0)
+        onProgress?.(
+          probeOk
+            ? `Waiting for floor… ${sec}s (probe hit, CCT settling)`
+            : `Waiting for floor… ${sec}s`
+        )
+        this.physics.logStaticCollidersNear(spawnThree.x, spawnThree.y, spawnThree.z, 16)
+        clientDebugLog.log(
+          'player',
+          `spawn floor wait — t=${sec}s attempt=${attempt} probe=${probed?.toFixed(2) ?? 'none'} cct=miss`,
+          { alsoConsole: true, level: 'info' }
+        )
+      }
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 120))
+    }
+
+    const elapsed = ((performance.now() - started) / 1000).toFixed(1)
+    console.warn(
+      `[World] spawn floor wait timed out after ${elapsed}s (attempts=${attempt}) — spawning anyway (may freefall)`
+    )
+    this.physics.logStaticCollidersNear(spawnThree.x, spawnThree.y, spawnThree.z, 16)
+    onProgress?.('Floor wait timed out — spawning…')
   }
 
   /**

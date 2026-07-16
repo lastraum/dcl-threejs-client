@@ -505,6 +505,23 @@ export class ThreeBridge {
       return !gltfInstanceHasGeometry(mesh)
     }
 
+    // GltfContainer deleted/hidden teardown — clone under entity OR GPU instance marker.
+    // Without this, meshDirty clears pending without ever calling syncMeshSync (ghost coins).
+    if (obj.userData.dclInstanced || obj.userData.gltfSrcKey || obj.userData.animationRig) {
+      return true
+    }
+    {
+      const orphan = obj.getObjectByName(meshKey(entity))
+      if (
+        orphan &&
+        orphan.userData.primitiveKind === undefined &&
+        orphan.userData.primitiveMeshKey === undefined &&
+        !MeshRenderer.has(entity)
+      ) {
+        return true
+      }
+    }
+
     if (TextShape.has(entity) && !obj.getObjectByName(textKey(entity))) return true
 
     if (MeshRenderer.has(entity)) {
@@ -1321,11 +1338,13 @@ export class ThreeBridge {
     this.instancer.dispose()
   }
 
-  private removeEntityVisuals(entity: Entity, obj: THREE.Group): void {
+  /**
+   * Drop GltfContainer visual (SkeletonUtils clone or GPU InstancedMesh slot).
+   * Used on full entity remove and when GltfContainer is deleted while Transform remains
+   * (e.g. coin pickup that keeps the entity but clears the mesh).
+   */
+  private clearGltfVisual(entity: Entity, obj: THREE.Group): boolean {
     const mk = meshKey(entity)
-    const tk = textKey(entity)
-    const lk = lightKey(entity)
-    const pk = particleKey(entity)
     const attachedTris = (obj.userData.dclAttachedTris as number | undefined) ?? 0
     let removedGltf = false
     if (obj.userData.dclInstanced) {
@@ -1334,10 +1353,35 @@ export class ThreeBridge {
       delete obj.userData.dclInstanceTemplateTris
       removedGltf = true
     }
-    for (const name of [mk, tk, pk]) {
+    const meshChild = obj.getObjectByName(mk)
+    if (meshChild && meshChild.userData.primitiveKind === undefined && meshChild.userData.primitiveMeshKey === undefined) {
+      if (obj.userData.gltfSrcKey || meshChild.userData.dclInstanceMarker) removedGltf = true
+      disposeOwnedObject3D(meshChild)
+      obj.remove(meshChild)
+    }
+    if (removedGltf || obj.userData.gltfSrcKey || obj.userData.animationRig || obj.userData.emoteAnchor) {
+      if (removedGltf || obj.userData.gltfSrcKey) {
+        this.attachedSceneGltfCount = Math.max(0, this.attachedSceneGltfCount - 1)
+        this.attachedSceneTris = Math.max(0, this.attachedSceneTris - attachedTris)
+      }
+      delete obj.userData.gltfSrcKey
+      delete obj.userData.dclAttachedTris
+      delete obj.userData.animationRig
+      delete obj.userData.emoteAnchor
+      return true
+    }
+    return removedGltf
+  }
+
+  private removeEntityVisuals(entity: Entity, obj: THREE.Group): void {
+    const mk = meshKey(entity)
+    const tk = textKey(entity)
+    const lk = lightKey(entity)
+    const pk = particleKey(entity)
+    this.clearGltfVisual(entity, obj)
+    for (const name of [tk, pk]) {
       const child = obj.getObjectByName(name)
       if (!child) continue
-      if (name === mk && obj.userData.gltfSrcKey) removedGltf = true
       if (name === tk) disposeTextShapeMesh(child)
       else if (name === pk && (child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh
@@ -1348,11 +1392,11 @@ export class ThreeBridge {
       } else disposeOwnedObject3D(child)
       obj.remove(child)
     }
-    if (removedGltf) {
-      this.attachedSceneGltfCount = Math.max(0, this.attachedSceneGltfCount - 1)
-      this.attachedSceneTris = Math.max(0, this.attachedSceneTris - attachedTris)
-      delete obj.userData.gltfSrcKey
-      delete obj.userData.dclAttachedTris
+    // Primitive MeshRenderer mesh (not glTF) — clearGltfVisual leaves these alone.
+    const primitive = obj.getObjectByName(mk)
+    if (primitive && (primitive.userData.primitiveKind !== undefined || primitive.userData.primitiveMeshKey !== undefined)) {
+      disposeOwnedObject3D(primitive)
+      obj.remove(primitive)
     }
     removeLightSource(obj, lk)
   }
@@ -1455,6 +1499,12 @@ export class ThreeBridge {
   ): boolean {
     // Skinned / Animator need full clone + mixer rebind.
     if (this.ecs.Animator.has(entity)) return false
+    // TextureMove tweens write material UVs — need private mesh materials (not shared instance).
+    // Move/rotate tweens stay instancable; matrices refresh every frame after TweenBridge.
+    if (this.ecs.Tween.has(entity)) {
+      const mode = this.ecs.Tween.get(entity).mode?.$case
+      if (mode === 'textureMove' || mode === 'textureMoveContinuous') return false
+    }
     // PointerEvents / MeshCollider need live meshes in the entity graph (raycast / ECS MeshCollider).
     // GLB `_collider` physics uses template shapes + entity pose (see InstanceColliderShape).
     if (this.ecs.PointerEvents.has(entity)) return false
@@ -1666,12 +1716,8 @@ export class ThreeBridge {
       return
     }
 
-    delete obj.userData.gltfSrcKey
-    const staleGltf = obj.getObjectByName(mk)
-    if (staleGltf && staleGltf.userData.primitiveKind === undefined) {
-      disposeOwnedObject3D(staleGltf)
-      obj.remove(staleGltf)
-    }
+    // GltfContainer removed — drop clone and/or free GPU instance slot (pickup / hide).
+    this.clearGltfVisual(entity, obj)
 
     if (MeshRenderer.has(entity)) {
       const spec = MeshRenderer.get(entity)

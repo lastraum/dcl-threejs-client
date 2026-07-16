@@ -2445,11 +2445,9 @@
       .chat-panel-wrap.is-scene-mode .chat-panel__close {
         background: transparent;
       }
+      /* Rail scroll already hides the scrollbar; keep scene-mode rules aligned. */
       .chat-panel-wrap.is-scene-mode .chat-panel__rail-scroll {
-        scrollbar-color: transparent transparent;
-      }
-      .chat-panel-wrap.is-scene-mode .chat-panel__rail-scroll::-webkit-scrollbar-thumb {
-        background: transparent;
+        scrollbar-width: none;
       }
       .chat-panel-wrap.is-scene-mode:hover .chat-panel__header,
       .chat-panel-wrap.is-chat-pinned .chat-panel__header {
@@ -8331,6 +8329,7 @@
         flex-direction: column;
         flex: 0 0 52px;
         width: 52px;
+        height: 100%;
         min-height: 0;
         max-height: 100%;
         align-self: stretch;
@@ -8342,25 +8341,26 @@
         overflow: hidden;
         transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
       }
+      /* Community / channel icons — fill parent height and scroll; scrollbar invisible. */
       .chat-panel__rail-scroll {
-        flex: 1;
+        flex: 1 1 0;
         min-height: 0;
         overflow-x: hidden;
         overflow-y: auto;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
         padding: 12px 8px;
         display: flex;
         flex-direction: column;
         align-items: center;
         gap: 8px;
-        scrollbar-width: thin;
-        scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
       }
       .chat-panel__rail-scroll::-webkit-scrollbar {
-        width: 4px;
-      }
-      .chat-panel__rail-scroll::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.35);
-        border-radius: 999px;
+        width: 0;
+        height: 0;
+        display: none;
       }
       .chat-panel__rail-btn {
         position: relative;
@@ -8692,9 +8692,12 @@
         pointer-events: none;
         transition: width 0.2s ease, top 0.2s ease;
       }
+      /* Align top to scene chrome; keep bottom pinned so flex children can scroll. */
       .social-chat-dock--scene-aligned {
-        height: auto !important;
         bottom: 0 !important;
+        height: auto !important;
+        max-height: none;
+        /* top is set inline; height fills remaining viewport via top+bottom */
       }
       .social-chat-dock[hidden] {
         display: none !important;
@@ -8729,8 +8732,7 @@
         text-align: center;
       }
       .social-chat-dock__body {
-        flex: 1 1 auto;
-        height: 100%;
+        flex: 1 1 0;
         min-height: 0;
         display: flex;
         flex-direction: column;
@@ -8740,21 +8742,28 @@
         display: none !important;
       }
       .social-chat-dock__pills {
-        flex: 1 1 auto;
-        height: 100%;
+        flex: 1 1 0;
         width: 100%;
         min-height: 0;
         align-self: stretch;
         display: flex;
         flex-direction: column;
+        overflow: hidden;
         background: transparent !important;
         border: none !important;
         box-shadow: none !important;
         border-radius: 0;
       }
+      /* Override chat-panel__rail 52px column — dock owns width (pills vs expanded). */
       .social-chat-dock__pills.chat-panel__rail {
-        flex: 1 1 auto;
+        flex: 1 1 0;
+        width: 100%;
+        height: auto;
         max-width: none;
+        max-height: none;
+        min-height: 0;
+        align-self: stretch;
+        overflow: hidden;
       }
       .social-chat-dock__pills-toolbar {
         flex-shrink: 0;
@@ -8782,12 +8791,30 @@
         align-self: flex-end;
         margin-right: 4px;
       }
+      /*
+       * Channel list (icons or expanded rows) fills remaining dock height and scrolls.
+       * Must not use overflow-x: visible — that cancels overflow-y scrolling in browsers.
+       */
       .social-chat-dock__pills .chat-panel__rail-scroll {
-        flex: 1 1 auto;
+        flex: 1 1 0;
         min-height: 0;
+        max-height: none;
+        height: auto;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
         padding: 4px 8px calc(12px + env(safe-area-inset-bottom, 0px));
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .social-chat-dock__pills .chat-panel__rail-scroll::-webkit-scrollbar {
+        width: 0;
+        height: 0;
+        display: none;
       }
       .social-chat-dock__pills .chat-panel__rail-btn {
+        flex-shrink: 0;
         background: transparent;
         border-color: rgba(255, 255, 255, 0.14);
         overflow: hidden;
@@ -8832,6 +8859,7 @@
       .social-chat-dock__pill-tip-float[hidden] {
         display: none !important;
       }
+      /* Expanded list mode — same scrollport as icon rail; only layout of rows changes. */
       .social-chat-dock__list-scroll {
         align-items: stretch !important;
         gap: 6px !important;
@@ -8842,6 +8870,7 @@
         position: relative;
         display: flex;
         align-items: stretch;
+        flex-shrink: 0;
         width: 100%;
         overflow: hidden;
         border-radius: 12px;
@@ -8930,9 +8959,6 @@
         box-shadow: 0 0 0 2px rgba(18, 8, 30, 0.9);
         z-index: 3;
       }
-      .social-chat-dock__pills .chat-panel__rail-scroll {
-        overflow-x: visible;
-      }
       .social-chat-dock__list-avatar {
         position: relative;
         flex-shrink: 0;
@@ -8940,13 +8966,14 @@
         height: 36px;
         border-radius: 50%;
         border: 2px solid rgba(255, 255, 255, 0.14);
-        overflow: visible;
+        overflow: hidden;
         display: flex;
         align-items: center;
         justify-content: center;
         background: transparent;
         font-size: 12px;
         font-weight: 800;
+        box-sizing: border-box;
       }
       .social-chat-dock__list-avatar img {
         width: 100%;
@@ -8959,6 +8986,7 @@
         align-items: center;
         justify-content: center;
         overflow: hidden;
+        padding: 0;
       }
       .social-chat-dock__list-avatar--svg svg {
         width: 100%;
@@ -8988,8 +9016,7 @@
         white-space: nowrap;
       }
       .social-chat-dock__thread {
-        flex: 1 1 auto;
-        height: 100%;
+        flex: 1 1 0;
         min-height: 0;
         display: flex;
         flex-direction: column;
@@ -9004,21 +9031,42 @@
         .social-chat-dock--thread-open:not(.social-chat-dock--mobile) .social-chat-dock__body {
           flex-direction: row;
           align-items: stretch;
+          /* Cross-axis stretch so channel list keeps full dock height next to thread. */
+          min-height: 0;
         }
-        .social-chat-dock--thread-open:not(.social-chat-dock--mobile) .social-chat-dock__pills {
+        .social-chat-dock--thread-open:not(.social-chat-dock--mobile) .social-chat-dock__pills,
+        .social-chat-dock--thread-open:not(.social-chat-dock--mobile) .social-chat-dock__pills.chat-panel__rail {
           flex: 0 0 var(--social-chat-dock-pills-width);
           width: var(--social-chat-dock-pills-width);
           min-width: var(--social-chat-dock-pills-width);
+          max-width: var(--social-chat-dock-pills-width);
+          /* Fill body height in the row layout — do not shrink with content. */
+          align-self: stretch;
+          height: auto;
+          min-height: 0;
+          max-height: none;
           border-right: 1px solid rgba(255, 255, 255, 0.08);
         }
-        .social-chat-dock--thread-open:not(.social-chat-dock--mobile).social-chat-dock--list-expanded .social-chat-dock__pills {
+        .social-chat-dock--thread-open:not(.social-chat-dock--mobile).social-chat-dock--list-expanded
+          .social-chat-dock__pills,
+        .social-chat-dock--thread-open:not(.social-chat-dock--mobile).social-chat-dock--list-expanded
+          .social-chat-dock__pills.chat-panel__rail {
           flex: 0 0 min(280px, 42%);
           width: min(280px, 42%);
           min-width: min(280px, 42%);
+          max-width: min(280px, 42%);
+        }
+        .social-chat-dock--thread-open:not(.social-chat-dock--mobile) .social-chat-dock__pills .chat-panel__rail-scroll {
+          flex: 1 1 0;
+          min-height: 0;
+          overflow-x: hidden;
+          overflow-y: auto;
         }
         .social-chat-dock--thread-open:not(.social-chat-dock--mobile) .social-chat-dock__thread {
-          flex: 1 1 auto;
+          flex: 1 1 0;
           min-width: 0;
+          min-height: 0;
+          align-self: stretch;
         }
       }
       .social-chat-dock--thread-open .social-chat-dock__status {
@@ -9072,6 +9120,7 @@
         border-bottom: none;
         background: transparent;
       }
+      /* Match list-avatar so scene/community icons look identical list ↔ thread. */
       .social-chat-dock__thread-avatar {
         flex-shrink: 0;
         width: 36px;
@@ -9085,17 +9134,20 @@
         background: transparent;
         font-size: 12px;
         font-weight: 800;
+        box-sizing: border-box;
       }
       .social-chat-dock__thread-avatar img {
         width: 100%;
         height: 100%;
         object-fit: cover;
+        border-radius: 50%;
       }
       .social-chat-dock__thread-avatar--svg {
         display: inline-flex;
         align-items: center;
         justify-content: center;
         overflow: hidden;
+        padding: 0;
       }
       .social-chat-dock__thread-avatar--svg svg {
         width: 100%;

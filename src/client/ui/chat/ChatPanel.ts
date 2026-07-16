@@ -15,7 +15,7 @@ import {
 } from '../../../social/chatMentions'
 import type { RouteTarget } from '../../../dcl/content/route'
 import { parseGotoCommand } from '../../../dcl/content/route'
-import { SCENE_CHAT_RAIL_ICON } from '../shell/icons'
+import { sceneChatRailIcon } from '../shell/icons'
 import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import { isAllowedChatImageFile } from '../../../social/prepareChatImage'
 import { isChatImageLine, type ChatChannelChoice, type ChatLine } from '../../../social/types'
@@ -441,7 +441,7 @@ export class ChatPanel {
         this.createRailButton({
           channel: { kind: 'scene', sceneKey: scene.key, label: scene.label },
           title: scene.label,
-          iconSvg: SCENE_CHAT_RAIL_ICON,
+          iconSvg: sceneChatRailIcon(),
           active: current.kind === 'scene' && current.sceneKey === scene.key
         })
       )

@@ -37,28 +37,30 @@ const _moveTargetFeet = new THREE.Vector3()
 const _moveCurrentFeet = new THREE.Vector3()
 
 /**
- * SDK look-only: `newRelativePosition: PlayerEntity.position` + `avatarTarget`.
- * Worker PlayerEntity often lags the renderer (spawn pose). Genesis watering uses this
- * pattern with `teleportsPlayer: false` — keep the live client feet when the RPC pose is stale.
+ * `RestrictedActions.movePlayerTo.newRelativePosition` is **feet** (docs use y=0 on ground).
+ * Not PlayerEntity chest (+0.88). Look-only RPCs may still send stale PE coords with
+ * `avatarTarget` — keep live client feet when the destination is not a real move.
+ *
+ * @returns resolved **feet** in DCL scene space
  */
-export function resolveMovePlayerToTargetPlayerEntity(
-  targetPlayerEntityDcl: THREE.Vector3,
-  currentPlayerEntityDcl: THREE.Vector3,
+export function resolveMovePlayerToTargetFeetDcl(
+  targetFeetDcl: THREE.Vector3,
+  currentFeetDcl: THREE.Vector3,
   avatarTargetDcl: { x?: number; y?: number; z?: number } | undefined,
   out = new THREE.Vector3()
 ): THREE.Vector3 {
-  out.copy(targetPlayerEntityDcl)
+  out.copy(targetFeetDcl)
   if (!avatarTargetDcl) return out
 
   const avatarX = avatarTargetDcl.x ?? 0
   const avatarZ = avatarTargetDcl.z ?? 0
-  const targetFeet = playerEntityPositionToFeetDcl(targetPlayerEntityDcl, _moveTargetFeet)
-  const currentFeet = playerEntityPositionToFeetDcl(currentPlayerEntityDcl, _moveCurrentFeet)
-  const currentHoriz = Math.hypot(currentFeet.x - avatarX, currentFeet.z - avatarZ)
-  const targetHoriz = Math.hypot(targetFeet.x - avatarX, targetFeet.z - avatarZ)
+  _moveTargetFeet.copy(targetFeetDcl)
+  _moveCurrentFeet.copy(currentFeetDcl)
+  const currentHoriz = Math.hypot(_moveCurrentFeet.x - avatarX, _moveCurrentFeet.z - avatarZ)
+  const targetHoriz = Math.hypot(_moveTargetFeet.x - avatarX, _moveTargetFeet.z - avatarZ)
   const poseHoriz = Math.hypot(
-    targetPlayerEntityDcl.x - currentPlayerEntityDcl.x,
-    targetPlayerEntityDcl.z - currentPlayerEntityDcl.z
+    targetFeetDcl.x - currentFeetDcl.x,
+    targetFeetDcl.z - currentFeetDcl.z
   )
 
   // Sit / teleport — RPC destination is nearer the interact target than the live client.
@@ -66,13 +68,28 @@ export function resolveMovePlayerToTargetPlayerEntity(
 
   // Look-only with stale worker pose — RPC is farther from the target than we already are.
   if (targetHoriz > currentHoriz + 0.5) {
-    out.copy(currentPlayerEntityDcl)
+    out.copy(currentFeetDcl)
     return out
   }
 
   // Large horizontal mismatch while not moving toward the target (walked since last worker sync).
   if (poseHoriz > 1 && targetHoriz >= currentHoriz) {
-    out.copy(currentPlayerEntityDcl)
+    out.copy(currentFeetDcl)
   }
   return out
+}
+
+/**
+ * @deprecated Use `resolveMovePlayerToTargetFeetDcl` — movePlayerTo coords are feet, not PE.
+ */
+export function resolveMovePlayerToTargetPlayerEntity(
+  targetPlayerEntityDcl: THREE.Vector3,
+  currentPlayerEntityDcl: THREE.Vector3,
+  avatarTargetDcl: { x?: number; y?: number; z?: number } | undefined,
+  out = new THREE.Vector3()
+): THREE.Vector3 {
+  const targetFeet = playerEntityPositionToFeetDcl(targetPlayerEntityDcl, _moveTargetFeet)
+  const currentFeet = playerEntityPositionToFeetDcl(currentPlayerEntityDcl, _moveCurrentFeet)
+  const feet = resolveMovePlayerToTargetFeetDcl(targetFeet, currentFeet, avatarTargetDcl)
+  return feetDclToPlayerEntityPosition(feet, out)
 }

@@ -25,12 +25,8 @@ import {
 import type { SceneSpawn } from '../dcl/content/types'
 import type { MovePlayerToRequest } from './movePlayerTo'
 import {
-  dclPlayerEntityPositionsEqual,
-  feetDclToPlayerEntityPosition,
-  feetThreeFromPlayerEntityDcl,
   playerEntityPositionFromThreeFeet,
-  playerEntityPositionToFeetDcl,
-  resolveMovePlayerToTargetPlayerEntity
+  resolveMovePlayerToTargetFeetDcl
 } from './dclPlayerEntity'
 import { clampToWalkBounds, type PlayerWalkBounds } from './SceneBounds'
 import { normalizeAngle } from '../network/comms/movementCompressed'
@@ -155,16 +151,21 @@ export class PlayerSystem {
     /** Constant travel facing when no avatarTarget — movement direction of the path. */
     travelYaw?: number
   } | null = null
-  /** Holds capsule after scene `movePlayerTo` until emote starts or the player moves. */
+  /**
+   * Holds capsule after timed `movePlayerTo` / emote until the player moves.
+   * Instant teleports (Flagtag drown-respawn) do not lock — that blocked walk after unfreeze.
+   */
   private scenePositionLock = false
   private wasProfileEmoteActive = false
+  /** Prior frame locomotion allowed — clear position lock when scene unfreezes. */
+  private wasLocomotionAllowed = true
   private virtualCamera: VirtualCameraBridge | null = null
   /** CameraModeArea force — null when freecam is player-controlled. */
   private forcedCameraMode: ForcedCameraMode | null = null
   private preForceCamDistance: number | null = null
   /**
-   * After spawn when floor settle fails (no solid under feet), keep Y from freefalling
-   * through the map (Flagtag tower → water). Re-probes while held; clears on ground or timeout.
+   * After spawn when settle finds no solid, briefly hold Y and re-probe while late
+   * collider pose slides land. No synthetic pad — pure authored geometry only.
    */
   private spawnHoldFeetY: number | null = null
   private spawnHoldSecLeft = 0
@@ -197,15 +198,15 @@ export class PlayerSystem {
     const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
     this.physics.spawnPlayer(spawnThree)
     this.physics.warmStaticScene()
-    // Lift + capped settle + optional sweep probe — never freefall from tower height.
+    // Lift + capped settle + optional sweep probe onto authored scene colliders only.
     const settled = this.physics.settleSpawnOntoFloor(spawnThree.y)
     this.grounded = settled
     this.groundCoyote = settled ? 0.12 : 0
     if (!settled) {
-      // Hold elevated spawn and re-probe while late colliders / poses settle (Flagtag tower).
+      // World already waited for floor; keep a short re-probe if still mid-air — no pad.
       this.spawnHoldFeetY = this.physics.positionOut.y
       this.spawnHoldAuthoredFeetY = spawnThree.y
-      this.spawnHoldSecLeft = 18
+      this.spawnHoldSecLeft = spawnThree.y > 8 ? 20 : 8
       this.spawnHoldReprobeAcc = 0
     } else {
       this.spawnHoldFeetY = null
@@ -472,32 +473,36 @@ export class PlayerSystem {
     }
   }
 
-  /** DCL `RestrictedActions.movePlayerTo` — position relative to scene origin. */
+  /**
+   * DCL `RestrictedActions.movePlayerTo` — `newRelativePosition` is **feet** (not PE chest).
+   * Docs: Vector3.create(1, 0, 1) stands on y=0. Flagtag drown-respawn uses tower feet Y.
+   */
   movePlayerTo(request: MovePlayerToRequest): boolean {
     if (!this.enabled || !this.walkBounds) return false
 
     const pos = request.newRelativePosition
     if (!pos) return false
 
-    const currentPlayerEntityDcl = this.getPlayerEntityPositionDcl()
-    const targetPlayerEntityDcl = resolveMovePlayerToTargetPlayerEntity(
-      new THREE.Vector3(
-        pos.x ?? currentPlayerEntityDcl.x,
-        pos.y ?? currentPlayerEntityDcl.y,
-        pos.z ?? currentPlayerEntityDcl.z
-      ),
-      currentPlayerEntityDcl,
+    const currentFeetDcl = threeToDclVec(this.root.position)
+    const requestedFeetDcl = new THREE.Vector3(
+      pos.x ?? currentFeetDcl.x,
+      pos.y ?? currentFeetDcl.y,
+      pos.z ?? currentFeetDcl.z
+    )
+    const targetFeetDcl = resolveMovePlayerToTargetFeetDcl(
+      requestedFeetDcl,
+      currentFeetDcl,
       request.avatarTarget
     )
-    const targetFeetDcl = playerEntityPositionToFeetDcl(targetPlayerEntityDcl)
     clampToWalkBounds(targetFeetDcl, this.walkBounds)
-    targetPlayerEntityDcl.copy(feetDclToPlayerEntityPosition(targetFeetDcl))
-    const target = feetThreeFromPlayerEntityDcl(targetPlayerEntityDcl)
-    const reposition = !dclPlayerEntityPositionsEqual(targetPlayerEntityDcl, currentPlayerEntityDcl)
+    const target = dclToThreeVec(targetFeetDcl)
+    const reposition =
+      Math.hypot(target.x - this.root.position.x, target.z - this.root.position.z) > 1e-3 ||
+      Math.abs(target.y - this.root.position.y) > 1e-3
 
     const avatarTarget = request.avatarTarget
     const from = this.root.position.clone()
-    /** Face target from current feet — scene passes PlayerEntity.position + avatarTarget for look-only. */
+    /** Face target from current feet — look-only may pass avatarTarget without a real move. */
     if (avatarTarget) {
       this.applyAvatarLookTarget(from, avatarTarget)
     }
@@ -515,10 +520,12 @@ export class PlayerSystem {
     const duration = request.duration ?? 0
     if (!reposition || duration <= 0) {
       if (reposition) {
-        this.teleportTo(target)
+        this.teleportTo(target, true)
       }
       this.moveTask = null
-      this.scenePositionLock = true
+      // Instant movePlayerTo / look-only / round reset — do NOT lock locomotion.
+      // Only timed walks use scenePositionLock (cleared on arrival or unfreeze).
+      this.scenePositionLock = false
       return true
     }
 
@@ -541,6 +548,7 @@ export class PlayerSystem {
       travelYaw
     }
     _velocity.set(0, 0, 0)
+    // Timed path only — holds keys until arrival (docs: transition can be interrupted by move).
     this.scenePositionLock = true
     return true
   }
@@ -566,7 +574,12 @@ export class PlayerSystem {
       _velocity.x = 0
       _velocity.z = 0
       _force.set(0, 0, 0)
+    } else if (!this.wasLocomotionAllowed) {
+      // Scene just unfroze (Flagtag join) — release movePlayerTo hold so WASD works immediately.
+      this.scenePositionLock = false
+      this.moveTask = null
     }
+    this.wasLocomotionAllowed = locomotionAllowed
     const jumpLocomotionAllowed = canJumpLocomotion(locomotion)
     const doubleJumpLocomotionAllowed = canDoubleJumpLocomotion(locomotion)
 
@@ -594,7 +607,8 @@ export class PlayerSystem {
         this.moveTask.elapsed += delta
         const t = Math.min(1, this.moveTask.elapsed / this.moveTask.duration)
         _pivot.copy(this.moveTask.from).lerp(this.moveTask.to, t)
-        this.teleportTo(_pivot)
+        // No settle mid-lerp — docs: colliders ignored during duration transition.
+        this.teleportTo(_pivot, false)
         if (this.moveTask.avatarTarget) {
           this.applyAvatarLookTarget(_pivot, this.moveTask.avatarTarget)
         } else if (this.moveTask.travelYaw !== undefined) {
@@ -619,14 +633,22 @@ export class PlayerSystem {
         this.syncCamera(false, delta)
         this.input.endFrame()
         if (t >= 1) {
+          const dest = this.moveTask.to
           this.moveTask = null
-          this.scenePositionLock = true
+          this.teleportTo(dest, true)
+          // Timed walk finished — allow free locomotion (scene can re-freeze via InputModifier).
+          this.scenePositionLock = false
         }
         return
       }
     }
 
     if (this.scenePositionLock && !breakSceneHold) {
+      clientDebugLog.log(
+        'player',
+        'scenePositionLock active — WASD/jump to release (timed movePlayerTo only)',
+        { throttleMs: 2500, throttleKey: 'scene-position-lock', alsoConsole: true }
+      )
       this.syncWireYawFromAvatar()
       this.physics.step(delta)
       this.root.position.copy(this.physics.positionOut)
@@ -733,9 +755,8 @@ export class PlayerSystem {
         this.spawnHoldSecLeft = 0
         this.spawnHoldReprobeAcc = 0
       } else if (this.spawnHoldFeetY != null) {
-        // No gravity freefall through missing tower colliders.
-        _velocity.y = 0
-        // Periodic re-settle: colliders / GLTF poses may firm up after first spawn frame.
+        // Soft hold only until authored colliders respond — no synthetic pad.
+        if (_velocity.y < 0) _velocity.y = 0
         if (this.spawnHoldReprobeAcc >= 0.45 && this.spawnHoldAuthoredFeetY != null) {
           this.spawnHoldReprobeAcc = 0
           this.physics.warmStaticScene()
@@ -763,19 +784,8 @@ export class PlayerSystem {
           this.root.position.copy(this.physics.positionOut)
         }
         if (this.spawnHoldSecLeft <= 0) {
-          // Elevated spawn still ungrounded — keep soft hold (no freefall to water) until ground.
-          if (this.spawnHoldAuthoredFeetY != null && this.spawnHoldAuthoredFeetY > 8) {
-            this.spawnHoldSecLeft = 8
-            this.spawnHoldReprobeAcc = 0
-            clientDebugLog.log(
-              'player',
-              `spawn hold extended — still no solid under elevated y=${this.spawnHoldAuthoredFeetY.toFixed(1)}`,
-              { alsoConsole: true, level: 'warn', throttleMs: 8000, throttleKey: 'spawn-hold-extend' }
-            )
-          } else {
-            this.spawnHoldFeetY = null
-            this.spawnHoldAuthoredFeetY = null
-          }
+          this.spawnHoldFeetY = null
+          this.spawnHoldAuthoredFeetY = null
         }
       }
     } else if (!this.grounded && !this.airJumpPending) {
@@ -1100,7 +1110,11 @@ export class PlayerSystem {
     })
   }
 
-  private teleportTo(positionThree: THREE.Vector3): void {
+  /**
+   * @param settle — lift + drop onto authored floor (drown-respawn / tower teleports).
+   *   Mid-duration movePlayerTo lerps pass false; arrival passes true.
+   */
+  private teleportTo(positionThree: THREE.Vector3, settle = true): void {
     if (this.walkBounds) {
       const dclPos = threeToDclVec(positionThree)
       clampToWalkBounds(dclPos, this.walkBounds)
@@ -1108,6 +1122,41 @@ export class PlayerSystem {
     }
     this.physics.teleport(positionThree)
     _velocity.set(0, 0, 0)
+    this.jumped = false
+    this.jumping = false
+    this.airJumped = false
+    this.airJumpPending = false
+
+    if (settle) {
+      this.physics.warmStaticScene()
+      const settled = this.physics.settleSpawnOntoFloor(positionThree.y)
+      this.grounded = settled
+      this.groundCoyote = settled ? 0.12 : 0
+      if (!settled) {
+        this.spawnHoldFeetY = this.physics.positionOut.y
+        this.spawnHoldAuthoredFeetY = positionThree.y
+        this.spawnHoldSecLeft = positionThree.y > 8 ? 15 : 6
+        this.spawnHoldReprobeAcc = 0
+      } else {
+        this.spawnHoldFeetY = null
+        this.spawnHoldAuthoredFeetY = null
+        this.spawnHoldSecLeft = 0
+        this.spawnHoldReprobeAcc = 0
+      }
+      // Round-reset teleports must not leave a prior timed-walk lock armed.
+      this.scenePositionLock = false
+      this.moveTask = null
+      const locomotion = this.getLocomotionConfig()
+      const locOk = canLocomote(locomotion)
+      console.info(
+        `[player] teleport settle — feet y=${this.physics.positionOut.y.toFixed(2)} ` +
+          `targetY=${positionThree.y.toFixed(2)} grounded=${settled} lock=cleared ` +
+          `locomotion=${locOk ? 'allowed' : 'blocked'} ` +
+          `all=${locomotion.disableAll} walk=${locomotion.disableWalk} ` +
+          `jog=${locomotion.disableJog} run=${locomotion.disableRun}`
+      )
+    }
+
     this.root.position.copy(this.physics.positionOut)
   }
 

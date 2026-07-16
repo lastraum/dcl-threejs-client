@@ -87,8 +87,23 @@ const SPAWN_FEET_CLEARANCE_M = 0.12
  * are not punched through; sweep probe can look a bit further (see below).
  */
 const SPAWN_SETTLE_MAX_DROP_M = 1.15
-/** Sweep search under authored feet when CCT settle fails (Flagtag tower gaps). */
-const SPAWN_PROBE_MAX_DROP_M = 2.75
+/**
+ * Sweep search under authored feet when CCT settle fails.
+ * Flagtag tower: deck may sit slightly below spawn or only exist at nearby XZ samples.
+ */
+const SPAWN_PROBE_MAX_DROP_M = 8
+/** XZ offsets for multi-sample floor probe (deck edge / range spawn). */
+const SPAWN_PROBE_XZ_OFFSETS_M: ReadonlyArray<readonly [number, number]> = [
+  [0, 0],
+  [0.65, 0],
+  [-0.65, 0],
+  [0, 0.65],
+  [0, -0.65],
+  [0.9, 0.9],
+  [-0.9, 0.9],
+  [0.9, -0.9],
+  [-0.9, -0.9]
+]
 const SPAWN_SETTLE_DT = 1 / 30
 const SPAWN_SETTLE_GRAVITY = 20
 
@@ -217,6 +232,10 @@ export class PhysXWorld {
   private readonly _worldMatrix = new THREE.Matrix4()
   private readonly _shapeRel = new THREE.Matrix4()
   private readonly _shapeBBox = new THREE.Box3()
+  /** Entity-local bake: world scale only (actor carries translation/rotation). */
+  private readonly _entityScaleMat = new THREE.Matrix4()
+  private readonly _entityLocalBake = new THREE.Matrix4()
+  private readonly _identityQuat = new THREE.Quaternion()
 
 
   constructor() {
@@ -316,6 +335,18 @@ export class PhysXWorld {
   private releasePlayer(): void {
     this.controller?.release()
     this.controller = null
+  }
+
+  /**
+   * Temporary CCT at `position` — settle onto authored floor, then destroy controller.
+   * Used to gate visual avatar spawn until tower decks actually block the capsule.
+   */
+  trySettleAtPosition(position: THREE.Vector3, authoredFeetY: number): boolean {
+    this.spawnPlayer(position)
+    this.warmStaticScene()
+    const settled = this.settleSpawnOntoFloor(authoredFeetY)
+    this.releasePlayer()
+    return settled
   }
 
   /** Wireframe pill matching the local player PhysX capsule. */
@@ -433,13 +464,60 @@ export class PhysXWorld {
     console.info('[PhysXWorld] infinite ground plane ready (y=0 top face)')
   }
 
+  /**
+   * Diagnostic — how many static actors have AABBs near (x,z) and their max top Y.
+   */
+  logStaticCollidersNear(x: number, y: number, z: number, radius = 12): void {
+    let near = 0
+    let withTopNearY = 0
+    let maxTopY = Number.NEGATIVE_INFINITY
+    let minTopY = Number.POSITIVE_INFINITY
+    let sample = ''
+    for (const [entity, actor] of this.staticActors) {
+      if (entity === INFINITE_GROUND_ENTITY) continue
+      if (typeof actor.getWorldBounds !== 'function') continue
+      let bounds: {
+        get_minimum(): { x: number; y: number; z: number }
+        get_maximum(): { x: number; y: number; z: number }
+      }
+      try {
+        bounds = actor.getWorldBounds()
+      } catch {
+        continue
+      }
+      const min = bounds.get_minimum()
+      const max = bounds.get_maximum()
+      if (!min || !max) continue
+      if (max.x < x - radius || min.x > x + radius) continue
+      if (max.z < z - radius || min.z > z + radius) continue
+      near++
+      if (max.y > maxTopY) maxTopY = max.y
+      if (max.y < minTopY) minTopY = max.y
+      if (Math.abs(max.y - y) < 4) withTopNearY++
+      if (!sample) {
+        sample = `ent=${entity} topY=${max.y.toFixed(1)} xz=(${min.x.toFixed(0)}..${max.x.toFixed(0)},${min.z.toFixed(0)}..${max.z.toFixed(0)})`
+      }
+    }
+    clientDebugLog.log(
+      'player',
+      `static colliders near feet r=${radius} — count=${near} topNearAuthored=${withTopNearY}` +
+        (Number.isFinite(maxTopY)
+          ? ` topY=[${minTopY.toFixed(1)}..${maxTopY.toFixed(1)}]`
+          : ' topY=none') +
+        (sample ? ` e.g. ${sample}` : ' (none)'),
+      { alsoConsole: true, level: 'info' }
+    )
+  }
+
   private setupControllerManager(): void {
     this.controllerManager = PHYSX.PxTopLevelFunctions.prototype.CreateControllerManager(this.scene)
     this.controllerFilters = new PHYSX.PxControllerFilters()
     this.controllerFilters.mFilterData = new PHYSX.PxFilterData(Layers.player.group, Layers.player.mask, 0, 0)
-    // Required for CCT move() overlap tests — without eSTATIC, static GLTF/MeshCollider actors are ignored.
+    // eSTATIC/eDYNAMIC — hit scene colliders. ePREFILTER — invoke bilateral layer callback below.
     this.controllerFilters.mFilterFlags = new PHYSX.PxQueryFlags(
-      PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC
+      PHYSX.PxQueryFlagEnum.eSTATIC |
+        PHYSX.PxQueryFlagEnum.eDYNAMIC |
+        PHYSX.PxQueryFlagEnum.ePREFILTER
     )
 
     const cctFilterCallback = new PHYSX.PxControllerFilterCallbackImpl()
@@ -548,9 +626,11 @@ export class PhysXWorld {
     const liftY = authoredFeetY + SPAWN_FEET_CLEARANCE_M
     const floorMinY = authoredFeetY - 0.08
     const dropFloorY = liftY - SPAWN_SETTLE_MAX_DROP_M
+    const feetX = this.position.x
+    const feetZ = this.position.z
 
     // Always start from clear lift so re-probes are deterministic.
-    this._v1.set(this.position.x, liftY, this.position.z)
+    this._v1.set(feetX, liftY, feetZ)
     this.teleport(this._v1)
     this.invalidateControllerCache()
     this.warmStaticScene()
@@ -572,15 +652,15 @@ export class PhysXWorld {
       return true
     }
 
-    // CCT missed — try scene query for a walk surface (late pose / thin mesh / filter edge).
+    // CCT missed — multi-sample scene query (spawn range / deck edge / thin mesh).
     const probed = this.probeWalkSurfaceFeetY(
-      this.position.x,
-      this.position.z,
+      feetX,
+      feetZ,
       liftY + 0.4,
       SPAWN_PROBE_MAX_DROP_M
     )
     if (probed != null && probed >= authoredFeetY - SPAWN_PROBE_MAX_DROP_M) {
-      this._v1.set(this.position.x, probed + SPAWN_FEET_CLEARANCE_M, this.position.z)
+      this._v1.set(feetX, probed + SPAWN_FEET_CLEARANCE_M, feetZ)
       this.teleport(this._v1)
       this.invalidateControllerCache()
       // Tiny settle onto the probed surface
@@ -598,7 +678,7 @@ export class PhysXWorld {
         }
       }
       // Snap without CCT ground flag still better than freefall — hold at probed height.
-      this._v1.set(this.position.x, probed + SPAWN_FEET_CLEARANCE_M * 0.5, this.position.z)
+      this._v1.set(feetX, probed + SPAWN_FEET_CLEARANCE_M * 0.5, feetZ)
       this.teleport(this._v1)
       this.invalidateControllerCache()
       clientDebugLog.log(
@@ -609,8 +689,8 @@ export class PhysXWorld {
       return true
     }
 
-    // No solid under spawn — stay at tower height; caller holds / re-probes.
-    this._v1.set(this.position.x, liftY, this.position.z)
+    // No authored solid under spawn — restore height; no synthetic pad.
+    this._v1.set(feetX, liftY, feetZ)
     this.teleport(this._v1)
     this.invalidateControllerCache()
     clientDebugLog.log(
@@ -622,7 +702,7 @@ export class PhysXWorld {
   }
 
   /**
-   * Downward sphere sweep for a walkable hit under (x,z).
+   * Downward sphere sweep for a walkable hit under (x,z), multi-sample XZ.
    * Returns world feet Y (hit point Y) or null.
    */
   probeWalkSurfaceFeetY(
@@ -634,6 +714,23 @@ export class PhysXWorld {
     if (!this.scene || maxDrop <= 0.2) return null
     this.ensureCameraSweepGeometry()
     if (!this.cameraSweepGeometry) return null
+
+    let bestY: number | null = null
+    for (const [ox, oz] of SPAWN_PROBE_XZ_OFFSETS_M) {
+      const sample = this.probeWalkSurfaceFeetYAt(x + ox, z + oz, fromY, maxDrop)
+      if (sample == null) continue
+      if (bestY === null || sample > bestY) bestY = sample
+    }
+    return bestY
+  }
+
+  private probeWalkSurfaceFeetYAt(
+    x: number,
+    z: number,
+    fromY: number,
+    maxDrop: number
+  ): number | null {
+    if (!this.scene || !this.cameraSweepGeometry) return null
 
     this._v1.set(x, fromY, z)
     this._v1.toPxVec3(this.sweepPose.p)
@@ -663,7 +760,6 @@ export class PhysXWorld {
       // Walk surface: mostly upward normal
       if (ny < 0.45) continue
       const hitY = fromY - hit.distance
-      // Prefer the highest surface still under the probe (top of tower deck)
       if (bestY === null || hitY > bestY) bestY = hitY
     }
     return bestY
@@ -1055,7 +1151,8 @@ export class PhysXWorld {
     if (this.landscapeFp === fp) return
 
     for (const entity of [...this.staticActors.keys()]) {
-      if (entity < 0 && entity !== INFINITE_GROUND_ENTITY) this.removeStatic(entity)
+      if (entity === INFINITE_GROUND_ENTITY) continue
+      if (entity < 0) this.removeStatic(entity)
     }
 
     if (!perimeterWalls) {
@@ -2273,9 +2370,18 @@ export class PhysXWorld {
         if (pxGeometry) worldBaked = true
         worldGeo.dispose()
       } else {
-        // Entity-local bake — scale stays in vertices; Animator slides via relative setLocalPose.
-        const workerKey = entityLocalColliderCookSignature(geometry, shapeDesc.localMatrix, false)
-        entityLocalGeo = bakeTrimeshGeometry(indexed, shapeDesc.localMatrix)
+        // Entity-local bake: actor carries T+R only — MUST bake entity world scale into verts
+        // or scaled floors (common DCL Transform.scale) land at unit size / miss the CCT.
+        // Pure authored geometry: no thickness inflate — only the scene's Transform.scale.
+        desc.matrix.decompose(this._pos, this._quat, this._scale)
+        this._entityScaleMat.makeScale(
+          Number.isFinite(this._scale.x) && Math.abs(this._scale.x) > 1e-8 ? this._scale.x : 1,
+          Number.isFinite(this._scale.y) && Math.abs(this._scale.y) > 1e-8 ? this._scale.y : 1,
+          Number.isFinite(this._scale.z) && Math.abs(this._scale.z) > 1e-8 ? this._scale.z : 1
+        )
+        this._entityLocalBake.copy(this._entityScaleMat).multiply(shapeDesc.localMatrix)
+        const workerKey = entityLocalColliderCookSignature(geometry, this._entityLocalBake, false)
+        entityLocalGeo = bakeTrimeshGeometry(indexed, this._entityLocalBake)
         pxGeometry = cookBakedGeo(entityLocalGeo, geometryCache, workerKey)
 
         if (!pxGeometry && allowWorldFallback) {
@@ -2307,6 +2413,12 @@ export class PhysXWorld {
       shape.setQueryFilterData(filterData)
       shape.setSimulationFilterData(filterData)
 
+      // Geometry already carries local/scale bake — shape pose must be identity (not a stale
+      // transform left over from a prior pose-slide on shapeLocalPoseTransform).
+      this._pos.set(0, 0, 0)
+      this._identityQuat.set(0, 0, 0, 1)
+      this._pos.toPxTransform(this.shapeLocalPoseTransform)
+      this._identityQuat.toPxTransform(this.shapeLocalPoseTransform)
       shape.setLocalPose(this.shapeLocalPoseTransform)
 
       return { shape, worldBaked }

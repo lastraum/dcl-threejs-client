@@ -18,7 +18,7 @@ import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import { isAllowedChatImageFile } from '../../../social/prepareChatImage'
 import { SocialService } from '../../../social/SocialService'
 import { isChatImageLine, type ChatChannelChoice, type ChatLine } from '../../../social/types'
-import { SCENE_CHAT_RAIL_ICON, SIDEBAR_ICONS } from '../shell/icons'
+import { sceneChatRailIcon, SIDEBAR_ICONS } from '../shell/icons'
 import type { SocialChatController, SocialChatStatus } from './SocialChatController'
 
 const SOCIAL_CHAT_MOBILE_MQ = '(max-width: 767px)'
@@ -543,7 +543,7 @@ export class SocialChatDock {
 
     if (channel.kind === 'scene') {
       this.headerAvatarEl.classList.add('social-chat-dock__thread-avatar--svg')
-      this.headerAvatarEl.innerHTML = SCENE_CHAT_RAIL_ICON
+      this.headerAvatarEl.innerHTML = sceneChatRailIcon()
       return
     }
 
@@ -592,7 +592,7 @@ export class SocialChatDock {
             : live
               ? 'Live · Scene chat'
               : 'Connecting…',
-          iconSvg: SCENE_CHAT_RAIL_ICON,
+          iconSvg: sceneChatRailIcon(),
           active,
           unreadCount: viewingChannel ? 0 : social.getUnreadCount(channel),
           // Desktop: no × on the scene page we're on. Other multi-room tabs stay closable.
@@ -1323,6 +1323,7 @@ export class SocialChatDock {
     }
 
     this.root.classList.toggle('social-chat-dock--thread-open', this.threadOpen)
+    // Expanded list only when browsing channels — hide list while a thread is open (mobile + desktop).
     this.root.classList.toggle(
       'social-chat-dock--list-expanded',
       this.useExpandedChannelList() && !this.threadOpen
@@ -1334,8 +1335,9 @@ export class SocialChatDock {
     this.social().setChannelThreadOpen(this.threadOpen)
 
     this.threadEl.hidden = !this.threadOpen
-    this.pillsEl.hidden = this.threadOpen && mobile
-    this.pillsToolbarEl.hidden = mobile
+    // Same as mobile: open a chat → hide channel list until Back.
+    this.pillsEl.hidden = this.threadOpen
+    this.pillsToolbarEl.hidden = mobile || this.threadOpen
     this.expandBtn.hidden = this.threadOpen || mobile
     this.expandBtn.setAttribute('aria-expanded', String(this.listExpanded))
     this.expandBtn.setAttribute(

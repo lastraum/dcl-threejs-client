@@ -1448,21 +1448,45 @@ export class CommsService {
   }
 
   /**
-   * Primary LiveKit room for nearby voice + chat.
-   * Scene room for parcels, world room for worlds — **not** island/archipelago.
+   * Primary LiveKit room (single) — world for Worlds, scene for parcels.
    */
   getPrimaryLiveKitRoom(): Room | null {
+    const rooms = this.getVoiceLiveKitRooms()
+    return rooms[0] ?? null
+  }
+
+  /**
+   * LiveKit rooms used for nearby voice.
+   *
+   * - **Worlds:** world room only (chat + voice; scene room is Cast/video).
+   * - **Parcels (Genesis etc.):** scene room + island room when both are up.
+   *   Peers join both; Explorer voice tracks often appear on one or the other.
+   *   Publishing/subscribing on both fixes “works in worlds, dead in scenes”.
+   */
+  getVoiceLiveKitRooms(): Room[] {
     const pick = (session: LiveKitCommsSession | null): Room | null => {
-      if (!session?.isConnected()) return null
+      if (!session) return null
       const room = session.getRoom()
       if (!room || room.state !== ConnectionState.Connected) return null
       return room
     }
-    // Prefer explicit primary (world for worlds, scene for parcels).
-    const primary = pick(this.primaryAvatarSession())
-    if (primary) return primary
-    // Fallbacks — still never island for voice.
-    return pick(this.sceneLiveKit) ?? pick(this.worldLiveKit)
+    const out: Room[] = []
+    const add = (r: Room | null): void => {
+      if (r && !out.includes(r)) out.push(r)
+    }
+
+    if (this.isWorldComms()) {
+      add(pick(this.worldLiveKit))
+      // Cast-only scene room — do not use for voice on worlds.
+      return out
+    }
+
+    // Parcel path: scene first, then island if archipelago connected.
+    add(pick(this.sceneLiveKit))
+    add(pick(this.islandLiveKit))
+    // Rare fallback
+    if (out.length === 0) add(pick(this.worldLiveKit))
+    return out
   }
 
   /** Debug: which LiveKit rooms are up (for voice diagnostics). */
@@ -1478,6 +1502,10 @@ export class CommsService {
       const name = room?.name?.slice(0, 40) ?? '-'
       parts.push(`${label}:${st}${s.isConnected() ? '*' : ''}(${name})`)
     }
+    const voice = this.getVoiceLiveKitRooms()
+      .map((r) => (r.name || '?').slice(0, 28))
+      .join('+')
+    parts.push(`voice=[${voice || 'none'}]`)
     return parts.join(' ')
   }
 

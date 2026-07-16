@@ -226,14 +226,18 @@ export class World {
     )
   }
 
-  /** Bind voice to primary LiveKit room only (scene parcel / world — not island). */
+  /**
+   * Bind voice rooms:
+   * - Worlds → world LiveKit only
+   * - Parcels → scene + island (when archipelago is up) so Explorer mics are heard
+   */
   syncVoiceRoom(): void {
     this.comms.onLiveKitRoomsChanged = () => {
-      this.voice.refreshRoom()
-      console.log('[voice]', 'room changed', this.comms.describeLiveKitRooms())
+      this.voice.refreshRooms()
+      console.log('[voice]', 'rooms changed', this.comms.describeLiveKitRooms())
     }
-    this.voice.bindRoomProvider(() => this.comms.getPrimaryLiveKitRoom())
-    this.voice.refreshRoom()
+    this.voice.bindRoomsProvider(() => this.comms.getVoiceLiveKitRooms())
+    this.voice.refreshRooms()
     console.log('[voice]', 'syncVoiceRoom', this.comms.describeLiveKitRooms())
   }
 

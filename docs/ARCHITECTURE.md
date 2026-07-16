@@ -91,7 +91,7 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 | Area | Status |
 |------|--------|
 | Scene UI | Partial — Creator modal / hit-map polish |
-| Social | Multi-room + cast ✅; voice · DMs · in-world `/goto` open |
+| Social | Multi-room + cast ✅; nearby voice phase 1 ✅ (spatial next); DMs · in-world `/goto` open |
 | Backpack | Wearables/emotes/colors ✅; outfits + marketplace open |
 | Graphics P3/P4 | Distance culls + bloom/HDR stubs |
 | NftShape, AvatarModifierArea, GltfContainerLoadingState | Not started |
@@ -108,7 +108,7 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 ## Suggested next engineering order
 
 1. Edit-flight IM/VC cleanup → retest MOVE / WASD / STOP.  
-2. Product: in-world `/goto` · voice · community DMs.  
+2. Product: spatial voice · in-world `/goto` · community DMs.  
 3. Mesh frame-law / instancing follow-through.  
 4. Optional: SyncEntities P4 auth-host; graphics P3 distance culls.  
 5. Keep INTEGRATION registry + PROGRESS updated on each ship.

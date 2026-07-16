@@ -1,5 +1,7 @@
 const STORAGE_KEY = 'dcl-sound-settings'
 
+export type VoiceInputMode = 'push-to-talk' | 'open-mic'
+
 export type SoundSettingsState = {
   /** 0–100 — scales AudioListener master gain */
   masterVolume: number
@@ -13,8 +15,13 @@ export type SoundSettingsState = {
   avatarEmotesVolume: number
   /** `deviceId` from `enumerateDevices`; empty = system default */
   microphoneDeviceId: string
-  /** When tab/window hidden, mute local mic (stored; voice path pending) */
+  /** When tab is hidden, force-unpublish local mic */
   muteMicInBackground: boolean
+  /**
+   * push-to-talk: hold V while nearby voice is on.
+   * open-mic: publish whenever nearby voice is on (unless soft-muted).
+   */
+  voiceInputMode: VoiceInputMode
 }
 
 export const VOLUME_MIN = 0
@@ -27,7 +34,8 @@ const DEFAULTS: SoundSettingsState = {
   inWorldMusicSfxVolume: 100,
   avatarEmotesVolume: 100,
   microphoneDeviceId: '',
-  muteMicInBackground: true
+  muteMicInBackground: true,
+  voiceInputMode: 'push-to-talk'
 }
 
 type Listener = (state: SoundSettingsState) => void
@@ -141,6 +149,14 @@ class SoundSettingsStore {
       next.muteMicInBackground = partial.muteMicInBackground
       changed = true
     }
+    if (
+      partial.voiceInputMode !== undefined &&
+      (partial.voiceInputMode === 'push-to-talk' || partial.voiceInputMode === 'open-mic') &&
+      partial.voiceInputMode !== next.voiceInputMode
+    ) {
+      next.voiceInputMode = partial.voiceInputMode
+      changed = true
+    }
 
     if (!changed) return
     this.state = next
@@ -193,6 +209,9 @@ class SoundSettingsStore {
       }
       if (typeof parsed.muteMicInBackground === 'boolean') {
         this.state.muteMicInBackground = parsed.muteMicInBackground
+      }
+      if (parsed.voiceInputMode === 'push-to-talk' || parsed.voiceInputMode === 'open-mic') {
+        this.state.voiceInputMode = parsed.voiceInputMode
       }
     } catch {
       /* corrupt data */

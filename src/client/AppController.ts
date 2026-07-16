@@ -71,6 +71,7 @@ export class AppController {
   private worldLocationCard: WorldLocationCard | null = null
   private chatPanel: ChatPanel | null = null
   private settingsOverlay: SettingsOverlay | null = null
+  private unsubVoiceUi: (() => void) | null = null
   /** Session used by Settings/Backpack when no World is loaded (2D shell). */
   private shellSession: SessionIdentity | null = null
   private preferencesPanel: PreferencesPanel | null = null
@@ -1402,6 +1403,7 @@ export class AppController {
     this.shell.attachChatPanel(this.chatPanel, world.social)
     if (this.settingsOverlay) this.shell.attachSettingsOverlay(this.settingsOverlay)
     if (this.preferencesPanel) this.shell.attachPreferencesPanel(this.preferencesPanel)
+    this.bindNearbyVoice(world)
     opts.onProgress?.('Almost ready…')
     if (!opts.deferPlayChromeReveal) {
       this.revealPlayChrome()
@@ -1566,7 +1568,27 @@ export class AppController {
     }
   }
 
+  private bindNearbyVoice(world: World): void {
+    this.unsubVoiceUi?.()
+    this.unsubVoiceUi = null
+    world.syncVoiceRoom()
+    this.shell?.setNearbyVoiceHandler(() => world.voice.toggleEnabled())
+    this.unsubVoiceUi = world.voice.subscribe((snap) => {
+      this.shell?.setNearbyVoiceUi({
+        enabled: snap.enabled,
+        micLive: snap.micLive,
+        backgroundMuted: snap.backgroundMuted,
+        userMuted: snap.userMuted,
+        mode: snap.mode,
+        remoteCount: snap.remoteCount
+      })
+    })
+  }
+
   private async teardownScene(): Promise<void> {
+    this.unsubVoiceUi?.()
+    this.unsubVoiceUi = null
+    this.shell?.setNearbyVoiceHandler(null)
     this.world?.setVoluntaryEmoteAllowedHandler(null)
     this.teardownExplorer()
     this.editorApp?.dispose()

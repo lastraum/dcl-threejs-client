@@ -150,7 +150,7 @@ DOM overlay — not in-scene `UiTransform`.
 | Preferences: Controls, Chat tabs | 🟡 | Mouse sensitivity live; keybinds pending |
 | Settings: Communities | ⬜ | 2D `/communities` browse exists; in-world tab lag |
 | In-scene ECS UI | 🟡 | Yoga + DOM partial — Creator modal / hit-map polish remain |
-| Voice / mic UI | ⬜ | Needs spatial voice product work |
+| Voice / mic UI | 🟡 | Nearby voice PTT/open-mic + mute-in-bg; spatial next |
 
 ---
 
@@ -167,7 +167,7 @@ DOM overlay — not in-scene `UiTransform`.
 | SignedFetch, Catalyst content, wallet + guest session | 🟢 |
 | ECS NetworkEntity scene sync | 🟢 P0–P3 host path |
 | Community text / PM router | ⬜ local echo only |
-| Spatial voice UI | ⬜ |
+| Spatial voice UI | 🟡 | LiveKit tracks + HUD phase 1; PositionalAudio pending |
 
 ---
 

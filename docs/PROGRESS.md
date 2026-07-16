@@ -2,17 +2,43 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-15 (**v0.9.0** cut from `dev-latest` → `main`)  
-> **Current phase:** Shipped **v0.9.0** — multi-room chat, live cast, double-jump twirl, terrain shell, What's new, world prop fixes.  
+> **Last updated:** 2026-07-16 (**nearby voice phase 1** on `dev-latest`)  
+> **Current phase:** Post-**v0.9.0** — nearby voice (LiveKit mic PTT / open-mic + mute-in-background).  
+> **Voice next:** spatial PositionalAudio on remote avatars.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
-> **Product next:** Phase 4 in-world `/goto` (in-place teleport) · community text / DMs · voice UI · remaining backpack parity.  
-> **`/goto` stability:** dispose-order crash fixed (`39c10e1`) — not the full Phase 4 feature.  
+> **Product next:** Phase 4 in-world `/goto` · community text / DMs · remaining backpack parity.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — Nearby voice phase 1 → `dev-latest` (2026-07-16)
+
+**Status: on `dev-latest`** — LiveKit peer mic over the primary scene/world room.
+
+### What's new
+
+- **Nearby voice** sidebar control — join/leave voice channel (click)
+- **Push-to-talk** default — hold **V** while voice is on
+- **Open mic** mode in Preferences → Sounds ( **M** soft-mutes)
+- **Mute mic in background** — unpublish when the tab is hidden
+- Mic device picker + Voice Chat volume apply to LiveKit tracks
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Mic publish** | 🟢 | `localParticipant.setMicrophoneEnabled` + deviceId |
+| **Remote hear** | 🟢 | Subscribe Microphone (skip cast/screenshare audio) |
+| **PTT (V)** | 🟢 | Phase 1 — not deferred |
+| **Mute in background** | 🟢 | Phase 1 — `visibilityState === 'hidden'` |
+| **Spatial** | ⬜ | Next — PositionalAudio on remote avatar |
+
+**QA:** two clients same world · join nearby voice · hold V · hear peer · hide tab → mic off · open-mic mode + M mute · volume slider.
+
+**Not in this slice:** 3D spatialization, talking indicators on name tags, community voice rooms.
 
 ---
 

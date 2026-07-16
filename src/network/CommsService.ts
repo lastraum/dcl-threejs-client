@@ -1,4 +1,5 @@
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
+import type { Room } from 'livekit-client'
 import { needsCommsPeerProfile, type CommsProfileEntity } from '../avatar/peerApi'
 import { encodeRfc4ProfileRequestPacket } from './comms/dclRfc4Comms'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
@@ -1439,6 +1440,12 @@ export class CommsService {
     if (this.worldLiveKit.isConnected()) return this.worldLiveKit
     if (this.islandLiveKit.isConnected()) return this.islandLiveKit
     return null
+  }
+
+  /** LiveKit room for nearby voice (same transport as movement/chat). */
+  getPrimaryLiveKitRoom(): Room | null {
+    const session = this.primaryAvatarSession()
+    return session?.getRoom() ?? null
   }
 
   private trackPeerLeave(address: string, transport: TransportType): void {

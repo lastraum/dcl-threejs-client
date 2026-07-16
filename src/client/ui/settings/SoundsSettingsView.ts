@@ -24,9 +24,13 @@ type ToggleDef = {
   hooked?: boolean
 }
 
+type ModeDef = {
+  type: 'voice-mode'
+}
+
 type SectionDef = {
   title: string
-  items: Array<SliderDef | ToggleDef | { type: 'mic' }>
+  items: Array<SliderDef | ToggleDef | ModeDef | { type: 'mic' }>
 }
 
 const SECTIONS: SectionDef[] = [
@@ -42,7 +46,11 @@ const SECTIONS: SectionDef[] = [
   },
   {
     title: 'Microphone',
-    items: [{ type: 'mic' }, { type: 'toggle', label: 'Mute Mic in Background', key: 'muteMicInBackground' }]
+    items: [
+      { type: 'mic' },
+      { type: 'voice-mode' },
+      { type: 'toggle', label: 'Mute Mic in Background', key: 'muteMicInBackground', hooked: true }
+    ]
   }
 ]
 
@@ -59,6 +67,7 @@ export class SoundsSettingsView {
   private readonly boundSliders: BoundSlider[] = []
   private micSelect: HTMLSelectElement | null = null
   private muteMicToggle: HTMLInputElement | null = null
+  private voiceModeSelect: HTMLSelectElement | null = null
   private readonly unsubscribeSound?: () => void
   private readonly unsubscribeMics?: () => void
 
@@ -106,6 +115,10 @@ export class SoundsSettingsView {
         grid.appendChild(this.buildMicRow())
         continue
       }
+      if (item.type === 'voice-mode') {
+        grid.appendChild(this.buildVoiceModeRow())
+        continue
+      }
       grid.appendChild(this.buildItem(item))
     }
 
@@ -134,7 +147,7 @@ export class SoundsSettingsView {
 
   private buildMicRow(): HTMLElement {
     const row = document.createElement('div')
-    row.className = 'gfx-settings__row gfx-settings__row--pending'
+    row.className = 'gfx-settings__row'
 
     const label = document.createElement('span')
     label.className = 'gfx-settings__label'
@@ -162,6 +175,44 @@ export class SoundsSettingsView {
     wrap.appendChild(chevron)
     row.appendChild(wrap)
     this.micSelect = select
+    return row
+  }
+
+  private buildVoiceModeRow(): HTMLElement {
+    const row = document.createElement('div')
+    row.className = 'gfx-settings__row'
+
+    const label = document.createElement('span')
+    label.className = 'gfx-settings__label'
+    label.textContent = 'Voice input'
+    row.appendChild(label)
+
+    const wrap = document.createElement('div')
+    wrap.className = 'gfx-settings__dropdown gfx-settings__dropdown--wide'
+
+    const select = document.createElement('select')
+    select.className = 'gfx-settings__select'
+    select.setAttribute('aria-label', 'Voice input mode')
+    select.innerHTML = `
+      <option value="push-to-talk">Push to talk (hold V)</option>
+      <option value="open-mic">Open mic (M to mute)</option>
+    `
+    select.value = soundSettings.get().voiceInputMode
+    select.addEventListener('change', () => {
+      const v = select.value
+      if (v === 'push-to-talk' || v === 'open-mic') {
+        soundSettings.set({ voiceInputMode: v })
+      }
+    })
+
+    const chevron = document.createElement('span')
+    chevron.className = 'gfx-settings__chevron'
+    chevron.innerHTML = `<svg width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+
+    wrap.appendChild(select)
+    wrap.appendChild(chevron)
+    row.appendChild(wrap)
+    this.voiceModeSelect = select
     return row
   }
 
@@ -269,6 +320,7 @@ export class SoundsSettingsView {
     this.syncMicSelection(state.microphoneDeviceId)
 
     if (this.muteMicToggle) this.muteMicToggle.checked = state.muteMicInBackground
+    if (this.voiceModeSelect) this.voiceModeSelect.value = state.voiceInputMode
   }
 
   private syncMicOptions(devices: MicDeviceOption[]): void {

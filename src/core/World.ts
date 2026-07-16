@@ -43,6 +43,7 @@ import { resetFoliageWindRegistry, updateFoliageWind } from '../dcl/landscape/fo
 import { SessionIdentity } from '../network/SessionIdentity'
 import { RemoteAvatarManager } from '../network/RemoteAvatarManager'
 import { CommsService } from '../network/CommsService'
+import { VoiceChatService } from '../network/voice/VoiceChatService'
 import { logSyncOutbound } from '../network/comms/syncDebug'
 import { blacklistFromMetadata } from '../network/sceneAccess/sceneAccessCommon'
 import { buildEmoteWheelSlots, resolveSceneEmoteFromSrc } from '../avatar/profileEmotes'
@@ -110,6 +111,8 @@ export class World {
   readonly session = new SessionIdentity()
   /** May be replaced by landing handoff (`adoptComms`) — keep LiveKit without reconnect. */
   comms: CommsService = new CommsService()
+  /** Nearby voice over primary LiveKit room (PTT / open-mic + mute-in-background). */
+  readonly voice = new VoiceChatService()
   readonly social = new SocialService()
   readonly host: SceneHost
   readonly environment: EnvironmentSystem
@@ -214,12 +217,18 @@ export class World {
     if (opts?.isWorld != null) this.comms.pruneUnusedLiveKitForTarget({ isWorld: opts.isWorld })
     // Peers already in the room never re-fire join — push them into RemoteAvatarManager.
     this.comms.notifyHandlersOfCurrentPeers()
+    this.syncVoiceRoom()
     const counts = this.comms.getLivePeerCounts()
     clientDebugLog.log(
       'network',
       `Adopted landing LiveKit · live=${this.sceneCommsConnected} worldPeers=${counts.world} scenePeers=${counts.scene} island=${counts.island}`,
       { level: 'success', alsoConsole: true }
     )
+  }
+
+  /** Bind voice service to the current primary LiveKit room (call after connect/handoff). */
+  syncVoiceRoom(): void {
+    this.voice.attachRoom(this.comms.getPrimaryLiveKitRoom())
   }
 
   private wireCommsHandlers(): void {
@@ -602,6 +611,7 @@ export class World {
       this.comms.pruneUnusedLiveKitForTarget({ isWorld: target.isWorld === true })
       this.comms.seedArchipelagoSceneLocal(scene.spawn.x, scene.spawn.y, scene.spawn.z)
       this.comms.notifyHandlersOfCurrentPeers()
+      this.syncVoiceRoom()
       clientDebugLog.log('network', 'Early scene comms — reusing live landing session (no reconnect)', {
         level: 'success',
         alsoConsole: true
@@ -619,6 +629,7 @@ export class World {
       this.sceneCommsConnected = true
       // Genesis island routing needs world meters ASAP (not after first render frame).
       this.comms.seedArchipelagoSceneLocal(scene.spawn.x, scene.spawn.y, scene.spawn.z)
+      this.syncVoiceRoom()
       clientDebugLog.log('network', 'Early scene comms connected during hydration', {
         level: 'success',
         alsoConsole: true
@@ -2381,6 +2392,7 @@ export class World {
 
     this.vrmPeerSync.detach()
     clearVrmRamCache()
+    this.voice.dispose()
     this.comms.dispose()
     this.social.dispose()
 

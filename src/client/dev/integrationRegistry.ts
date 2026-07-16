@@ -93,14 +93,14 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   { id: 'ui:settings-backpack', name: 'Settings → Backpack (I)', status: 'render', category: 'client-ui', notes: 'Avatar preview, equipped wearables' },
   { id: 'ui:preferences-panel', name: 'Preferences panel (P / ⚙)', status: 'render', category: 'client-ui', notes: 'Right rail; world input passes through' },
   { id: 'ui:preferences-graphics', name: 'Preferences → Graphics', status: 'partial', category: 'client-ui', notes: 'Preset L/M/H/Custom, shadows, lights, res scale, FPS, MSAA, FOV, lighting live; VSync hidden; Resolution/Fullscreen stub; bloom/HDR/distance stubs' },
-  { id: 'ui:preferences-sounds', name: 'Preferences → Sounds', status: 'render', category: 'client-ui', notes: 'Volume sliders live (master, UI SFX, voice/streams, in-world, emotes); mic picker + mute-in-background pending voice UI' },
+  { id: 'ui:preferences-sounds', name: 'Preferences → Sounds', status: 'render', category: 'client-ui', notes: 'Volume sliders; mic device; PTT vs open-mic; mute-in-background wired to VoiceChatService' },
   { id: 'ui:preferences-controls', name: 'Preferences → Controls', status: 'partial', category: 'client-ui', notes: 'Mouse sensitivity live (10–200%); keybinds still pending' },
   { id: 'ui:preferences-chat', name: 'Preferences → Chat', status: 'none', category: 'client-ui', notes: 'Coming soon placeholder' },
   { id: 'ui:settings-places', name: 'Settings → Places', status: 'render', category: 'client-ui', notes: 'Explore tab — Places + Worlds APIs, category filters, Jump In' },
   { id: 'ui:settings-communities', name: 'Settings → Communities', status: 'none', category: 'client-ui', notes: 'Placeholder tab' },
   { id: 'ui:settings-gallery', name: 'Settings → Gallery', status: 'render', category: 'client-ui', notes: 'Camera Reel API, month grid, Share on X → reels.decentraland.org' },
   { id: 'ui:ecs-scene-ui', name: 'In-scene ECS UI (UiTransform…)', status: 'partial', category: 'client-ui', notes: 'Yoga + DOM overlay — UiInput/UiDropdown writeback, hover, virtual size from setUiRenderer' },
-  { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'none', category: 'client-ui', notes: 'LiveKit audio tracks not exposed in HUD yet' }
+  { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'partial', category: 'client-ui', notes: 'Nearby-voice sidebar + PTT (V) + open-mic (M) + mute-in-background; spatial HUD later' }
 ]
 
 /** Comms, content, identity — explorer shell (frozen during renderer re-arch). */
@@ -130,7 +130,7 @@ export const NETWORKING_INTEGRATION: IntegrationEntry[] = [
   },
   { id: 'net:scene-binary', name: 'RFC4 Scene binary packets', status: 'render', category: 'networking', notes: 'comms topic → scene script' },
   { id: 'net:archipelago', name: 'Archipelago adapter', status: 'stub', category: 'networking', notes: 'Scaffold; LiveKit primary path' },
-  { id: 'net:voice-tracks', name: 'Voice tracks (WebRTC)', status: 'none', category: 'networking', notes: 'LiveKit connected; no spatial voice UI' },
+  { id: 'net:voice-tracks', name: 'Voice tracks (WebRTC)', status: 'partial', category: 'networking', notes: 'LiveKit mic publish/subscribe + volume; spatial PositionalAudio next' },
   { id: 'net:signed-fetch', name: 'SignedFetch (ADR-44)', status: 'render', category: 'networking', notes: 'Worker RPC → main thread' },
   { id: 'net:catalyst-content', name: 'Catalyst content resolution', status: 'render', category: 'networking' },
   { id: 'net:wallet-session', name: 'Wallet / Catalyst session', status: 'render', category: 'networking' },

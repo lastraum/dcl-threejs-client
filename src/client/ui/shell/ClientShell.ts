@@ -47,7 +47,12 @@ const TOP_BUTTONS: TopButtonConfig[] = [
 ]
 
 const BOTTOM_BUTTONS: SidebarButtonConfig[] = [
-  { id: 'nearby-voice', icon: 'nearbyVoice', label: 'Nearby voice chat', statusDot: 'online' },
+  {
+    id: 'nearby-voice',
+    icon: 'nearbyVoice',
+    label: 'Nearby voice (click on · hold V to talk)',
+    statusDot: 'off'
+  },
   { id: 'smart-wearable', icon: 'smartWearable', label: 'Smart wearables' },
   { id: 'skybox', icon: 'skybox', label: 'Skybox overrides' },
   { id: 'camera', icon: 'camera', label: 'Camera mode' },
@@ -96,6 +101,7 @@ export class ClientShell {
   private readonly mobileLocationCoords: HTMLSpanElement
   private getLocationCoordsLabel: (() => string) | null = null
   private locationCoordsRaf = 0
+  private onNearbyVoiceToggle: (() => void | Promise<void>) | null = null
 
   constructor({ environment, session, debugPanel, devProgressPanel = null, chatPanel = null, settingsOverlay = null, preferencesPanel = null, onEmoteSelected, onSignOut, onExit }: ClientShellOptions) {
     this.session = session
@@ -491,6 +497,14 @@ export class ClientShell {
       }
     }
 
+    if (id === 'nearby-voice') {
+      return (ev) => {
+        ev.stopPropagation()
+        this.closeMobileDrawerForOverlay()
+        void this.onNearbyVoiceToggle?.()
+      }
+    }
+
     if (id === 'settings') {
       return (ev) => {
         ev.stopPropagation()
@@ -523,7 +537,6 @@ export class ClientShell {
       marketplace: 'Marketplace',
       help: 'Help',
       dev: 'Dev progress',
-      'nearby-voice': 'Nearby voice chat',
       'smart-wearable': 'Smart wearables',
       camera: 'Camera mode',
       'friend-requests': 'Friend requests',
@@ -563,5 +576,53 @@ export class ClientShell {
 
   openChatPanel(): void {
     this.chatPanel?.show()
+  }
+
+  setNearbyVoiceHandler(handler: (() => void | Promise<void>) | null): void {
+    this.onNearbyVoiceToggle = handler
+  }
+
+  /**
+   * Reflect voice service state on the nearby-voice control.
+   * off=gray · online=listening · speaking=mic live · muted=open-mic soft mute / bg mute
+   */
+  setNearbyVoiceUi(state: {
+    enabled: boolean
+    micLive: boolean
+    backgroundMuted: boolean
+    userMuted: boolean
+    mode: 'push-to-talk' | 'open-mic'
+    remoteCount: number
+  }): void {
+    const btn = this.buttons.get('nearby-voice')
+    if (!btn) return
+    btn.setActive(state.enabled)
+    if (!state.enabled) {
+      btn.setStatusDot('off')
+      btn.setTitle('Nearby voice — click to join · hold V to talk (PTT)')
+      return
+    }
+    if (state.micLive) {
+      btn.setStatusDot('speaking')
+    } else if (state.backgroundMuted || (state.mode === 'open-mic' && state.userMuted)) {
+      btn.setStatusDot('muted')
+    } else {
+      btn.setStatusDot('online')
+    }
+    const peers =
+      state.remoteCount > 0 ? ` · ${state.remoteCount} voice peer${state.remoteCount === 1 ? '' : 's'}` : ''
+    if (state.mode === 'push-to-talk') {
+      btn.setTitle(
+        state.micLive
+          ? `Nearby voice on — talking (release V)${peers}`
+          : `Nearby voice on — hold V to talk${peers}`
+      )
+    } else {
+      btn.setTitle(
+        state.userMuted || state.backgroundMuted
+          ? `Nearby voice on — mic muted${peers}`
+          : `Nearby voice on — open mic${peers}`
+      )
+    }
   }
 }

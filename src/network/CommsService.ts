@@ -684,6 +684,8 @@ export class CommsService {
           level: 'success'
         })
       }
+      // World room is the voice path — rebind even if cast scene room failed.
+      this.notifyLiveKitRoomsChanged()
       return { ok: true }
     }
 
@@ -745,6 +747,7 @@ export class CommsService {
     this.realm.isConnectedSceneRoom = true
 
     this.sceneLiveKit.seedPeers(participants)
+    this.notifyLiveKitRoomsChanged()
 
     clientDebugLog.log('comms', 'Transport: LiveKit scene room · RFC4 Movement + Scene packets', {
       level: 'success'
@@ -1316,12 +1319,21 @@ export class CommsService {
         : 'Island LiveKit connect failed (archipelago)',
       { level: connected ? 'success' : 'error', alsoConsole: true }
     )
-    // Island is movement/presence only — voice stays on scene/world primary.
-    if (connected) this.onLiveKitRoomsChanged?.()
+    // Island carries nearby voice + movement for parcels — rebind voice when it comes up.
+    if (connected) this.notifyLiveKitRoomsChanged()
   }
 
-  /** Optional hook — World rebinds voice when primary scene/world room changes. */
+  /** Optional hook — World rebinds voice when LiveKit rooms change. */
   onLiveKitRoomsChanged: (() => void) | null = null
+
+  /** Notify voice (and any other listeners) that the LiveKit room set changed. */
+  notifyLiveKitRoomsChanged(): void {
+    try {
+      this.onLiveKitRoomsChanged?.()
+    } catch (err) {
+      clientDebugLog.log('comms', `onLiveKitRoomsChanged failed: ${String(err)}`, { level: 'warn' })
+    }
+  }
 
   private async connectLiveKitLabel(
     adapter: string,
@@ -1332,6 +1344,7 @@ export class CommsService {
     const connected = await session.connect(adapter)
     if (label === 'world') this.worldConnected = connected
     if (label === 'island') this.islandConnected = connected
+    if (connected) this.notifyLiveKitRoomsChanged()
     return connected
   }
 
@@ -1456,12 +1469,12 @@ export class CommsService {
   }
 
   /**
-   * LiveKit rooms used for nearby voice.
+   * LiveKit rooms used for nearby voice (subscribe / hear others).
    *
    * - **Worlds:** world room only (chat + voice; scene room is Cast/video).
-   * - **Parcels (Genesis etc.):** scene room + island room when both are up.
-   *   Peers join both; Explorer voice tracks often appear on one or the other.
-   *   Publishing/subscribing on both fixes “works in worlds, dead in scenes”.
+   * - **Parcels (Genesis etc.):** island + scene when both are up.
+   *   Explorer peers join both; mic tracks often land on island (nearby) and/or scene.
+   *   First entry is the preferred **publish** room (see VoiceChatService).
    */
   getVoiceLiveKitRooms(): Room[] {
     const pick = (session: LiveKitCommsSession | null): Room | null => {
@@ -1481,9 +1494,10 @@ export class CommsService {
       return out
     }
 
-    // Parcel path: scene first, then island if archipelago connected.
-    add(pick(this.sceneLiveKit))
+    // Parcel: island first (archipelago nearby peers — same path Explorer voice uses),
+    // then scene room. Subscribe both so we never miss tracks on either.
     add(pick(this.islandLiveKit))
+    add(pick(this.sceneLiveKit))
     // Rare fallback
     if (out.length === 0) add(pick(this.worldLiveKit))
     return out

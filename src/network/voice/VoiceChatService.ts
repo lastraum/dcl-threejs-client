@@ -49,8 +49,8 @@ type BoundRoom = {
  * Nearby voice.
  *
  * Room set comes from CommsService.getVoiceLiveKitRooms():
- * - Worlds → world room only
- * - Parcels → scene + island (when both connected) so Explorer mics are heard
+ * - Worlds → world room only (publish + subscribe)
+ * - Parcels → island + scene (subscribe both; publish on first canPublish room)
  */
 export class VoiceChatService {
   private roomsProvider: RoomsProvider = () => []
@@ -345,18 +345,27 @@ export class VoiceChatService {
     const run = (async () => {
       let anyLive = false
       let lastError: string | null = null
+      // Prefer first room that allows publish (parcels: island then scene).
+      // Dual getUserMedia on two LiveKit rooms is flaky in browsers — publish primary only.
+      // We still *subscribe* on every bound room so Explorer mics on either path are heard.
+      const publishTarget = want
+        ? rooms.find((r) => r.localParticipant.permissions?.canPublish !== false) ?? null
+        : null
+
       for (const room of rooms) {
+        const isTarget = publishTarget != null && room === publishTarget
+        const shouldPub = want && isTarget
         try {
           const perms = room.localParticipant.permissions
           voiceLog(
-            `mic want=${want} room=${shortName(room.name)} canPublish=${String(perms?.canPublish)} id=${(room.localParticipant.identity ?? '').slice(0, 12)}`
+            `mic want=${want} pub=${shouldPub} room=${shortName(room.name)} canPublish=${String(perms?.canPublish)} id=${(room.localParticipant.identity ?? '').slice(0, 12)}`
           )
-          if (want && perms?.canPublish === false) {
+          if (shouldPub && perms?.canPublish === false) {
             lastError = `canPublish=false on ${shortName(room.name)}`
             voiceLog(lastError, 'error')
             continue
           }
-          if (want) {
+          if (shouldPub) {
             const deviceId = soundSettings.get().microphoneDeviceId
             const opts = deviceId ? { deviceId } : undefined
             const pub = await room.localParticipant.setMicrophoneEnabled(true, opts, {
@@ -370,7 +379,7 @@ export class VoiceChatService {
             voiceLog(
               `Mic published · ${shortName(room.name)} live=${live} sid=${pub?.trackSid?.slice(0, 10) ?? 'n/a'}`
             )
-          } else {
+          } else if (hasLocalMic(room)) {
             await room.localParticipant.setMicrophoneEnabled(false)
             voiceLog(`Mic unpublished · ${shortName(room.name)}`)
           }
@@ -379,6 +388,14 @@ export class VoiceChatService {
           voiceLog(`Mic error on ${shortName(room.name)}: ${lastError}`, 'error')
         }
       }
+
+      if (want && !anyLive && rooms.length > 0) {
+        lastError =
+          lastError ??
+          `No publishable voice room among ${rooms.map((r) => shortName(r.name)).join('+')}`
+        voiceLog(lastError, 'error')
+      }
+
       this.micLive = want ? anyLive : false
       this.error = want && !anyLive ? lastError : null
       this.bumpLocalSpeakingHint()
@@ -530,18 +547,23 @@ export class VoiceChatService {
     }
   }
 
-  private readonly onActiveSpeakersChanged = (speakers: Participant[]): void => {
+  private readonly onActiveSpeakersChanged = (_speakers: Participant[]): void => {
+    // Rebuild from every bound room — single-room events would wipe the other room's speakers.
     const next = new Map<string, number>()
-    for (const p of speakers) {
-      const id = p.identity?.trim().toLowerCase()
-      if (!id) continue
-      const level = typeof p.audioLevel === 'number' ? p.audioLevel : p.isSpeaking ? 0.6 : 0
-      if (level > 0.02 || p.isSpeaking) next.set(id, Math.max(level, 0.25))
-      if (!p.isLocal) {
-        try {
-          this.ensureRemoteMic(p as RemoteParticipant)
-        } catch {
-          /* ignore */
+    for (const room of this.liveRooms()) {
+      for (const p of room.activeSpeakers) {
+        const id = p.identity?.trim().toLowerCase()
+        if (!id) continue
+        const level = typeof p.audioLevel === 'number' ? p.audioLevel : p.isSpeaking ? 0.6 : 0
+        if (level > 0.02 || p.isSpeaking) {
+          next.set(id, Math.max(next.get(id) ?? 0, Math.max(level, 0.25)))
+        }
+        if (!p.isLocal) {
+          try {
+            this.ensureRemoteMic(p as RemoteParticipant)
+          } catch {
+            /* ignore */
+          }
         }
       }
     }

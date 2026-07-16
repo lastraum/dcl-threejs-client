@@ -75,14 +75,34 @@ Keep **`redo/threejs-projection-arch`** as the long-running integration branch. 
 | `v0.1.0` | Optional now | `0.1.x` | Tag current `main` as pre-re-arch baseline |
 | **`v0.2.0`** | **Public cut** | `0.2.0` | Re-arch Phase 3 gate complete (e10 merged) |
 | `v0.3.0+` | Feature milestones | bump minor | TriggerArea, voice, parcel routing, etc. |
-| `v1.0.0` | Production-ready | `1.0.0` | DEPLOYMENT checklist fully green |
+| **`v1.0.0`** | **Core play loop production beta** | `1.0.0` | See definition below — **not** full Explorer parity |
+| `v1.x` | Feature minors after 1.0 | `1.x.0` | Spatial voice, in-world `/goto`, DMs, etc. |
+
+### What `v1.0.0` means
+
+**1.0 is a product contract, not “parity complete.”** The whole client remains a **beta** Explorer alternative. Shipping **1.0** means we stand behind the **core play loop** in production:
+
+1. Load world or Genesis parcel (URL / map / landing)  
+2. Jump In → walk, chat, nearby voice (browser ↔ Explorer where applicable)  
+3. Leave → map / explore → jump again  
+4. Wallet + guest session, remote avatars, basic HUD (location pill, circular minimap on parcels)
+
+**Explicitly not required for 1.0** (track in INTEGRATION / PROGRESS as 1.x or open work):
+
+- Full DCL Explorer parity / full DEPLOYMENT matrix green  
+- Spatial (3D falloff) voice · in-world `/goto` · community DMs  
+- Backpack outfits/marketplace · scene UI polish · graphics P3/P4  
+- Every ECS component / API surface
+
+Release notes must say **production beta / core loop** and list known limitations. After 1.0, prefer `1.x` minors over endless `0.x`.
 
 **Mechanics:**
 
 1. Stop auto patch-bump on every `npm run build` before public releases — bump only via intentional `npm version` + git tag.
 2. Reset `0.1.99` dev churn to **`0.2.0`** at public cut (not `0.1.100`).
 3. GitHub Releases from tags: link [DEPLOYMENT.md](./DEPLOYMENT.md) smoke tests, scene URLs (`/rickroll.dcl.eth`, Genesis Plaza).
-4. Dev panel version (`appVersion.ts`) should match git tags.
+4. Dev panel version (`appVersion.ts` ← `package.json`) should match git tags.
+5. Cut from `main` after `dev-latest` → `main`: `node scripts/release.mjs 1.0.0 --push`.
 
 ---
 

@@ -2,17 +2,51 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-16 (**circular minimap** on `dev-latest`)  
-> **Current phase:** Post-**v0.9.0** — nearby voice + circular Genesis minimap shipped; spatial voice next.  
-> **Voice next:** spatial PositionalAudio on remote avatars.  
+> **Last updated:** 2026-07-16 (**v1.0.0** core play loop production beta)  
+> **Current phase:** **v1.0.0** — production beta on the core loop; still not full Explorer parity.  
+> **1.x next:** spatial PositionalAudio · in-world `/goto` · community DMs · backpack outfits.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
-> **Product next:** Phase 4 in-world `/goto` · community text / DMs · remaining backpack parity.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Release — v1.0.0 (2026-07-16)
+
+**Status: `dev-latest` → `main` · tag `v1.0.0`** — first major under a **core play loop production beta** contract (not full DCL parity).
+
+### What 1.0 means
+
+We stand behind the **core loop** in production while the product stays **beta**:
+
+- Load world or Genesis parcel · landing · **Jump In**  
+- Walk · multiplayer presence · scene chat · **nearby voice** (browser ↔ Explorer)  
+- Leave · map / explore · jump again  
+- Location pill + **circular Genesis minimap** (parcels) · wallet + guest  
+
+**Not in 1.0 (1.x / open):** full Explorer parity · spatial 3D voice · in-world `/goto` · community DMs · backpack outfits/marketplace · scene UI polish · graphics P3/P4 · every ECS surface.
+
+Definition also in [REPO_MANAGEMENT.md](./REPO_MANAGEMENT.md) (Release tagging).
+
+### What's new (since v0.9.0)
+
+- **Nearby voice + Explorer interop** — Speak / hold T · worlds + Genesis parcels · mute until in-play · name-tag bars  
+- **Circular Genesis minimap** — satellite basemap under location pill · click opens in-world Map on your parcel  
+- Landing card height / events spacing polish  
+
+### Known limitations (release notes)
+
+- No spatial (distance) voice yet — flat nearby audio  
+- No in-world `/goto` teleport (chat `/goto` stability only)  
+- No community private messages  
+- Scene UI, NftShape, graphics distance/post-FX incomplete  
+- Some DEPLOYMENT matrix items still open (browser spot-check, etc.)
+
+**Changelog:** https://github.com/lastraum/dcl-threejs-client/compare/v0.9.0...v1.0.0
 
 ---
 

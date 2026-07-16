@@ -91,7 +91,7 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 | Area | Status |
 |------|--------|
 | Scene UI | Partial — Creator modal / hit-map polish |
-| Social | Multi-room + cast ✅; nearby voice + Explorer interop ✅ (spatial 3D next); DMs · in-world `/goto` open |
+| Social | Multi-room + cast ✅; nearby voice + Explorer interop ✅; DMs · in-world `/goto` · spatial voice = **1.x** |
 | Play HUD | Location pill + circular Genesis minimap (parcels) ✅; worlds pill-only |
 | Backpack | Wearables/emotes/colors ✅; outfits + marketplace open |
 | Graphics P3/P4 | Distance culls + bloom/HDR stubs |
@@ -105,10 +105,10 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 
 ---
 
-## Suggested next engineering order
+## Suggested next engineering order (post-v1.0)
 
-1. Edit-flight IM/VC cleanup → retest MOVE / WASD / STOP.  
-2. Product: spatial voice (3D) · in-world `/goto` · community DMs.  
+1. Product **1.x**: spatial voice (3D) · in-world `/goto` · community DMs.  
+2. Edit-flight IM/VC cleanup → retest MOVE / WASD / STOP.  
 3. Mesh frame-law / instancing follow-through.  
 4. Optional: SyncEntities P4 auth-host; graphics P3 distance culls.  
 5. Keep INTEGRATION registry + PROGRESS updated on each ship.

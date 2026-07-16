@@ -1,6 +1,7 @@
 # Browser deployment — pre-push checklist & outline
 
-> **Status:** Pre-live blockers cleared (2026-06-13). This doc is the go-live runbook for the static SPA build.
+> **Status:** **v1.0.0** = core play loop production beta (not full Explorer parity) — see [REPO_MANAGEMENT.md](./REPO_MANAGEMENT.md).  
+> This doc is the go-live runbook for the static SPA build.
 
 ---
 
@@ -339,14 +340,18 @@ Keep previous `dist/` artifact or CDN deployment ID. Static SPA rollback = redep
 ## Release notes template
 
 ```markdown
-## Three.js DCL Client — browser beta
+## Three.js DCL Client — v1.0.0 (core play loop production beta)
+
+**Contract:** 1.0 = we stand behind the **core play loop** in production. The product remains a
+**beta** Explorer alternative — not full DCL / Explorer parity. See REPO_MANAGEMENT.md.
 
 **Works:** Worlds/scenes via URL, wallet login, multiplayer presence + chat + **nearby voice**
 (browser ↔ Explorer), **circular Genesis minimap** (parcel HUD), profile avatars, emote props,
 LightSource culling, Genesis map, events calendar.
 
-**Known limitations:** No 3D spatial voice falloff yet; proximity pointer events; some Creator UI polish;
-Explorer chat date quirk; guest via explorer auth sheet or `?guest` / `?skipLogin`.
+**Known limitations:** No 3D spatial voice falloff; no in-world `/goto`; no community DMs;
+proximity pointer events; scene UI polish; graphics P3/P4; guest via explorer auth sheet or
+`?guest` / `?skipLogin`.
 ```
 
 ---

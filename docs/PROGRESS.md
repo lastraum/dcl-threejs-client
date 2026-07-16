@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-15 (**post-v0.8.0 rollup** → `dev-latest`, tip `6b44271+`)  
-> **Current phase:** Post-**v0.8.0** — candidate **v0.8.1** patch (toast persist on; merge to `main` when smoke is green).  
+> **Last updated:** 2026-07-15 (**v0.9.0** cut from `dev-latest` → `main`)  
+> **Current phase:** Shipped **v0.9.0** — multi-room chat, live cast, double-jump twirl, terrain shell, What's new, world prop fixes.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
 > **Product next:** Phase 4 in-world `/goto` (in-place teleport) · community text / DMs · voice UI · remaining backpack parity.  
@@ -16,9 +16,26 @@
 
 ---
 
-## 🎉 Milestone — Post-v0.8.0 rollup (v0.8.1 candidate) → `dev-latest` (2026-07-15)
+## 🎉 Release — v0.9.0 (2026-07-15)
 
-**Status: on `dev-latest`** — big mid-July cut after **v0.8.0**: multi-room chat + live cast, avatar polish, scene UI/live stream reliability, instanced world props, terrain shell, and version highlights. Detail tables live in the section milestones below; this block is the **toast / release notes** surface.
+**Status: cut from `dev-latest` → `main` · tag `v0.9.0`** — mid-July product minor after **v0.8.0**.
+
+| Area | Notes |
+| ---- | ----- |
+| **Multi-room chat + live cast** | Scene tabs stay joined; guest Join Live; mute; stream end → landing; LiveKit/VideoPlayer hardens |
+| **Double-jump twirl + name tags** | Explorer-style air-jump spin (DCL/VRM); `featureToggles.nameTags` |
+| **Terrain shell** | Top nav **Terrain** → `/editor`; hub with site bg + shell nav; no chat dock |
+| **What's new** | Version toast + profile menu; localStorage persist ack on |
+| **World props / teleports** | Instanced hide + tween matrices; floor land; UI tick resume |
+| **`/goto` stability** | Dispose-order crash fixed (not full Phase 4 in-world goto) |
+
+**Changelog:** https://github.com/lastraum/dcl-threejs-client/compare/v0.8.0...v0.9.0
+
+---
+
+## 🎉 Milestone — Post-v0.8.0 rollup → `dev-latest` / **v0.9.0** (2026-07-15)
+
+**Status: released as v0.9.0** — multi-room chat + live cast, avatar polish, scene UI/live stream reliability, instanced world props, terrain shell, and version highlights. Detail tables live in the section milestones below; this block is the **toast / release notes** surface.
 
 ### What's new
 
@@ -49,7 +66,7 @@
 
 **Branch tip:** `dev-latest` (see git log `v0.8.0..HEAD`).
 
-**Release candidate:** **v0.8.1** patch. Persist ack already **on**. Path: smoke → `dev-latest` → `main` → `node scripts/release.mjs 0.8.1 --push`.
+**Released as:** **v0.9.0** (minor). Persist ack **on**. Tag from `main` after merge.
 
 ---
 

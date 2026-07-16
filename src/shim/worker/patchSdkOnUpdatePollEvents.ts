@@ -1,4 +1,4 @@
-import { isWorkerLocomotionFreezeLatched } from './workerPlayerFrameEgress'
+import { isWorkerMoveCameraFlightLatched } from './workerPlayerFrameEgress'
 
 /**
  * SDK default exports.onUpdate ends with pollEvents(sendBatch). After an inject-only UI pointer
@@ -64,7 +64,9 @@ export function patchSdkOnUpdatePollEventsBoundary(code: string): { code: string
 
 export function installSdkPollEventsLatchHook(): void {
   const g = globalThis as Record<string, unknown>
-  g[DEFER_SDK_POLL_EVENTS_LATCH_KEY] = () => isWorkerLocomotionFreezeLatched()
+  // Only MOVE CAMERA — scene freezes (Flagtag lobby) must keep pollEvents running
+  // so join / CUSTOM_EVENT / UI handlers still process.
+  g[DEFER_SDK_POLL_EVENTS_LATCH_KEY] = () => isWorkerMoveCameraFlightLatched()
 }
 
 export function markDeferSdkPollEventsAfterInjectUiClick(): void {
@@ -83,10 +85,10 @@ export function isInjectOnlySdkPollEventsDeferred(): boolean {
 
 /**
  * True while MOVE CAMERA freeze latch is active or after inject-only UI click (one onUpdate).
- * For pollEvents only — do NOT use this to gate react-ecs (menus freeze locomotion and still
- * need react-ecs for timer-driven UI like Planetangzaar showButton / Sync).
+ * Scene lock-all freezes (Flagtag lobby) do NOT defer pollEvents.
+ * Do NOT use this to gate react-ecs.
  */
 export function isSdkPollEventsDeferred(): boolean {
-  if (isWorkerLocomotionFreezeLatched()) return true
+  if (isWorkerMoveCameraFlightLatched()) return true
   return isInjectOnlySdkPollEventsDeferred()
 }

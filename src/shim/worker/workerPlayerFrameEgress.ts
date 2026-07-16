@@ -187,18 +187,42 @@ export function noteWorkerLocomotionFreezeWrite(value: unknown): void {
   if (intentionalUnfreezeWindow()) freezeWrittenThisInject = true
 }
 
-/** @returns true if clear must be blocked */
+/**
+ * @returns true if clear must be blocked
+ *
+ * Latch sources:
+ * - pointer-move (MOVE CAMERA): clear only via STOP inject; sticky refuse re-freeze.
+ * - scene (Flagtag lobby, death freeze, menus): scene may clear anytime — do not
+ *   permanently block createOrReplace(cleared) or Flagtag join stays frozen forever.
+ */
 export function noteWorkerLocomotionClearWrite(): boolean {
+  // Same pointer inject wrote freeze then clear (double-toggle) — keep freeze.
   if (intentionalUnfreezeWindow() && freezeWrittenThisInject) {
     return true
   }
+
+  const clearingMoveLatch =
+    locomotionFreezeLatchSource === 'pointer-move' ||
+    (intentionalUnfreezeWindow() && latchSourceAtInjectStart === 'pointer-move')
+
   if (intentionalUnfreezeWindow()) {
     clearLocomotionFreezeLatchState()
     freezeWrittenThisInject = false
-    refuseFreezeWrites = true
+    // Sticky refuse only after STOP MOVE CAMERA — not after menu/lobby unlock clicks.
+    refuseFreezeWrites = clearingMoveLatch
     return false
   }
-  if (locomotionFreezeLatch) return true
+
+  // Outside pointer inject: only MOVE CAMERA latch is sticky.
+  // Scene freezes (Flagtag disableAll until join) must be clearable by scene systems.
+  if (locomotionFreezeLatchSource === 'pointer-move') {
+    return true
+  }
+
+  if (locomotionFreezeLatch) {
+    clearLocomotionFreezeLatchState()
+    freezeWrittenThisInject = false
+  }
   return false
 }
 
@@ -329,7 +353,7 @@ export function rewriteStopMoveCameraUiLabels(engine: IEngine): number {
 /** Re-apply latched freeze when cooperative ticks wipe IM — unless STOP sticky refuse. */
 export function ensureWorkerLocomotionFreezePersisted(engine: IEngine): void {
   if (refuseFreezeWrites) {
-    // Keep cleared while sticky unfreeze active
+    // Keep cleared while sticky unfreeze active (MOVE CAMERA STOP only).
     preregisterRendererInjectedComponents(engine)
     const InputModifier = generated.InputModifier(engine)
     const player = engine.PlayerEntity as Entity
@@ -340,6 +364,20 @@ export function ensureWorkerLocomotionFreezePersisted(engine: IEngine): void {
     return
   }
   if (!locomotionFreezeLatch) return
+  // Scene latches follow live IM — if the scene cleared freeze, drop latch (do not re-apply).
+  if (locomotionFreezeLatchSource === 'scene') {
+    preregisterRendererInjectedComponents(engine)
+    const InputModifier = generated.InputModifier(engine)
+    const player = engine.PlayerEntity as Entity
+    const live = InputModifier.getOrNull(player)
+    if (!live || isLocomotionClearedValue(live)) {
+      clearLocomotionFreezeLatchState()
+      return
+    }
+    // Still frozen live — refresh latch payload only.
+    setLocomotionFreezeLatch(live, 'scene')
+    return
+  }
   if (intentionalUnfreezeWindow() && !freezeWrittenThisInject) return
   preregisterRendererInjectedComponents(engine)
   const InputModifier = generated.InputModifier(engine)
@@ -350,6 +388,7 @@ export function ensureWorkerLocomotionFreezePersisted(engine: IEngine): void {
     setLocomotionFreezeLatch(live, locomotionFreezeLatchSource ?? 'scene')
     return
   }
+  // MOVE CAMERA only: re-apply latched freeze if cooperative tick wiped it.
   InputModifier.createOrReplace(player, locomotionFreezeLatch as never)
 }
 

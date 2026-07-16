@@ -6,7 +6,7 @@ import { SCENE_ENGINE_CAPTURE_KEY } from './resolveSceneEngine'
 import {
   CLEARED_INPUT_MODIFIER,
   isRefuseFreezeWrites,
-  isWorkerLocomotionFreezeLatched,
+  isWorkerMoveCameraFlightLatched,
   noteWorkerLocomotionClearWrite,
   noteWorkerLocomotionFreezeWrite
 } from './workerPlayerFrameEgress'
@@ -59,12 +59,13 @@ function logBlockedClear(label: string): void {
 }
 
 /**
- * Block accidental / double-toggle IM clear while MOVE CAMERA freeze is latched.
- * STOP clear during inject (without a freeze earlier in the same inject) is allowed.
+ * Block accidental IM clear only for MOVE CAMERA (pointer-move) freeze.
+ * Scene freezes (Flagtag lobby, menus) must remain clearable by the scene.
  */
 export function shouldBlockPlayerLocomotionClear(_engine: IEngine): boolean {
-  // noteWorkerLocomotionClearWrite decides inject double-toggle vs STOP.
-  return isWorkerLocomotionFreezeLatched()
+  // noteWorkerLocomotionClearWrite is the source of truth (called from createOrReplace).
+  // This hook is used by clearPlayerInputModifier — only block MOVE latches.
+  return isWorkerMoveCameraFlightLatched()
 }
 
 function patchInputModifierCreateOrReplace(

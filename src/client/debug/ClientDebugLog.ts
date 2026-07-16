@@ -31,7 +31,9 @@ export class ClientDebugLog {
   private throttleAt = new Map<string, number>()
 
   log(category: string, message: string, options: DebugLogOptions = {}): void {
-    if (SILENCED_CATEGORIES.has(category)) return
+    const silenced = SILENCED_CATEGORIES.has(category)
+    // Silenced categories skip the debug panel buffer, but `alsoConsole: true` still prints.
+    if (silenced && options.alsoConsole !== true) return
 
     const level = options.level ?? 'info'
     const key = options.throttleKey ?? `${category}:${level}`
@@ -43,27 +45,28 @@ export class ClientDebugLog {
       this.throttleAt.set(key, now)
     }
 
-    const entry: DebugLogEntry = {
-      id: this.nextId++,
-      at: now,
-      category,
-      level,
-      message
+    if (!silenced) {
+      const entry: DebugLogEntry = {
+        id: this.nextId++,
+        at: now,
+        category,
+        level,
+        message
+      }
+
+      this.entries.push(entry)
+      if (this.entries.length > MAX_ENTRIES) {
+        this.entries.splice(0, this.entries.length - MAX_ENTRIES)
+      }
+      for (const listener of this.listeners) listener(this.entries)
     }
 
-    this.entries.push(entry)
-    if (this.entries.length > MAX_ENTRIES) {
-      this.entries.splice(0, this.entries.length - MAX_ENTRIES)
-    }
-
-    if (options.alsoConsole !== false) {
+    if (options.alsoConsole === true || (!silenced && options.alsoConsole !== false)) {
       const prefix = `[${category}]`
       if (level === 'warn') console.warn(prefix, message)
       else if (level === 'error') console.error(prefix, message)
       else console.log(prefix, message)
     }
-
-    for (const listener of this.listeners) listener(this.entries)
   }
 
   subscribe(listener: Listener): () => void {

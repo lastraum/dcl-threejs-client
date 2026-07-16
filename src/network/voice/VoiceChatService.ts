@@ -8,7 +8,6 @@ import {
   type RemoteTrackPublication,
   type LocalTrackPublication
 } from 'livekit-client'
-import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import { isTextInputFocused } from '../../client/ui/textInputFocus'
 import {
   soundSettings,
@@ -62,10 +61,19 @@ export class VoiceChatService {
   private audioHost: HTMLDivElement | null = null
 
   private readonly onKeyDown = (ev: KeyboardEvent): void => {
-    if (isTextInputFocused() || isEditableTarget(ev.target)) return
     if (ev.repeat || ev.code !== 'KeyT') return
+    if (isTextInputFocused() || isEditableTarget(ev.target)) {
+      voiceLog('T ignored — text field focused')
+      return
+    }
     this.refreshRoomBinding()
-    if (!this.room || this.room.state !== ConnectionState.Connected) return
+    if (!this.room || this.room.state !== ConnectionState.Connected) {
+      voiceLog(
+        `T blocked — no LiveKit room (bound=${!!this.room} state=${this.room?.state ?? 'null'})`,
+        'warn'
+      )
+      return
+    }
     ev.preventDefault()
     this.setPttHeld(true)
   }
@@ -161,20 +169,20 @@ export class VoiceChatService {
         this.speaking = keepSpeaking
         void this.reconcileMicPublish()
       }
-      clientDebugLog.log(
-        'comms',
-        `Voice bound room=${next.name || '?'} remotes=${next.remoteParticipants.size}`,
-        { level: 'info', alsoConsole: true }
-      )
+      voiceLog(`bound room=${next.name || '?'} remotes=${next.remoteParticipants.size}`)
     } else if (next) {
       // Connected event may fire shortly — bind handlers and wait.
       this.bindRoomHandlers(next)
+      voiceLog(`waiting for room connect · state=${next.state} name=${next.name || '?'}`)
       next.once(RoomEvent.Connected, () => {
         if (this.room !== next) return
+        voiceLog(`room connected · ${next.name || '?'}`)
         if (this.hearing) void this.applyHearing(true)
         void this.reconcileMicPublish()
         this.notify()
       })
+    } else {
+      voiceLog('no LiveKit room from provider', 'warn')
     }
     this.notify()
   }
@@ -193,14 +201,17 @@ export class VoiceChatService {
 
   async setSpeaking(on: boolean): Promise<void> {
     this.refreshRoomBinding()
-    if (this.speaking === on) return
+    if (this.speaking === on) {
+      voiceLog(`Speak already ${on ? 'on' : 'off'}`)
+      return
+    }
     if (on && (!this.room || this.room.state !== ConnectionState.Connected)) {
       this.error = 'Not connected to voice room'
       this.notify()
-      clientDebugLog.log('comms', 'Speak blocked — LiveKit not connected', {
-        level: 'warn',
-        alsoConsole: true
-      })
+      voiceLog(
+        `Speak blocked — LiveKit not connected (state=${this.room?.state ?? 'null'})`,
+        'warn'
+      )
       return
     }
     this.speaking = on
@@ -208,16 +219,13 @@ export class VoiceChatService {
     if (on) {
       try {
         await this.room!.startAudio()
-      } catch {
-        /* autoplay */
+      } catch (err) {
+        voiceLog(`startAudio failed: ${String(err)}`, 'warn')
       }
     }
     await this.reconcileMicPublish()
     this.notify()
-    clientDebugLog.log('comms', on ? 'Nearby Speak on' : 'Nearby Speak off', {
-      level: on ? 'success' : 'info',
-      alsoConsole: true
-    })
+    voiceLog(on ? 'Speak ON' : 'Speak OFF')
   }
 
   async toggleSpeaking(): Promise<void> {
@@ -279,12 +287,15 @@ export class VoiceChatService {
     if (this.publishInFlight) await this.publishInFlight
     const run = (async () => {
       try {
-        // Gatekeeper tokens sometimes set canPublish=false — surface it.
-        const canPublish = room.localParticipant.permissions?.canPublish
+        const perms = room.localParticipant.permissions
+        const canPublish = perms?.canPublish
+        voiceLog(
+          `mic want=${want} canPublish=${String(canPublish)} canPublishData=${String(perms?.canPublishData)} room=${room.name} identity=${room.localParticipant.identity?.slice(0, 12) ?? '?'}`
+        )
         if (want && canPublish === false) {
           this.micLive = false
           this.error = 'LiveKit token cannot publish audio (canPublish=false)'
-          clientDebugLog.log('comms', this.error, { level: 'error', alsoConsole: true })
+          voiceLog(this.error, 'error')
           this.notify()
           return
         }
@@ -301,22 +312,18 @@ export class VoiceChatService {
           })
           this.micLive = !!pub?.track || hasLocalMic(room)
           this.error = null
-          clientDebugLog.log(
-            'comms',
-            `Mic published · live=${this.micLive} sid=${pub?.trackSid?.slice(0, 8) ?? 'n/a'} room=${room.name}`,
-            { level: 'success', alsoConsole: true }
+          voiceLog(
+            `Mic published · live=${this.micLive} muted=${pub?.isMuted} sid=${pub?.trackSid?.slice(0, 10) ?? 'n/a'}`
           )
         } else {
           await room.localParticipant.setMicrophoneEnabled(false)
           this.micLive = false
+          voiceLog('Mic unpublished')
         }
       } catch (err) {
         this.micLive = false
         this.error = err instanceof Error ? err.message : String(err)
-        clientDebugLog.log('comms', `Mic publish failed: ${this.error}`, {
-          level: 'error',
-          alsoConsole: true
-        })
+        voiceLog(`Mic publish failed: ${this.error}`, 'error')
       }
       this.notify()
     })()
@@ -491,10 +498,7 @@ export class VoiceChatService {
     el.volume = this.hearing ? remoteGain() : 0
     this.ensureAudioHost().appendChild(el)
     void el.play().catch((err) => {
-      clientDebugLog.log('comms', `Remote voice play blocked: ${String(err)}`, {
-        level: 'warn',
-        alsoConsole: true
-      })
+      voiceLog(`Remote voice play blocked: ${String(err)}`, 'warn')
     })
     this.remotes.set(key, {
       element: el,
@@ -502,10 +506,8 @@ export class VoiceChatService {
       participantId: participant.identity?.toLowerCase() ?? ''
     })
     this.remoteCount = this.remotes.size
-    clientDebugLog.log(
-      'comms',
-      `Remote voice attached · peer=${(participant.identity ?? '').slice(0, 10)}… remotes=${this.remoteCount}`,
-      { level: 'success', alsoConsole: true }
+    voiceLog(
+      `Remote voice attached · peer=${(participant.identity ?? '').slice(0, 10)}… remotes=${this.remoteCount}`
     )
     this.notify()
   }
@@ -590,4 +592,12 @@ function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
   const tag = target.tagName
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable
+}
+
+/** Always print voice diagnostics (do not use silenced `comms` category alone). */
+function voiceLog(message: string, level: 'log' | 'warn' | 'error' = 'log'): void {
+  const prefix = '[voice]'
+  if (level === 'warn') console.warn(prefix, message)
+  else if (level === 'error') console.error(prefix, message)
+  else console.log(prefix, message)
 }

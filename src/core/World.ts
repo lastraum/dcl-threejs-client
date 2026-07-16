@@ -230,6 +230,7 @@ export class World {
   syncVoiceRoom(): void {
     this.voice.bindRoomProvider(() => this.comms.getPrimaryLiveKitRoom())
     this.voice.refreshRoomBinding()
+    console.log('[voice]', 'syncVoiceRoom', this.comms.describeLiveKitRooms())
   }
 
   private wireCommsHandlers(): void {

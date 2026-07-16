@@ -64,7 +64,14 @@ export class NearbyVoicePanel {
       this.setSliderPct()
     })
     this.speakBtn.addEventListener('click', () => {
-      void this.voice?.toggleSpeaking()
+      if (!this.voice) {
+        console.warn('[voice] Speak clicked but VoiceChatService not bound')
+        this.errorEl.hidden = false
+        this.errorEl.textContent = 'Voice not ready — rejoin the scene'
+        return
+      }
+      console.log('[voice] Speak button clicked')
+      void this.voice.toggleSpeaking()
     })
 
     document.body.appendChild(this.element)

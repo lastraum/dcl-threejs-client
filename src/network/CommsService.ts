@@ -1,5 +1,5 @@
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
-import type { Room } from 'livekit-client'
+import { ConnectionState, type Room } from 'livekit-client'
 import { needsCommsPeerProfile, type CommsProfileEntity } from '../avatar/peerApi'
 import { encodeRfc4ProfileRequestPacket } from './comms/dclRfc4Comms'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
@@ -1442,10 +1442,45 @@ export class CommsService {
     return null
   }
 
-  /** LiveKit room for nearby voice (same transport as movement/chat). */
+  /**
+   * LiveKit room for nearby voice — prefer avatar-primary session, else any connected room.
+   * Returns only rooms in Connected state (never a stale disconnected instance).
+   */
   getPrimaryLiveKitRoom(): Room | null {
-    const session = this.primaryAvatarSession()
-    return session?.getRoom() ?? null
+    const pick = (session: LiveKitCommsSession | null): Room | null => {
+      if (!session) return null
+      const room = session.getRoom()
+      if (!room || room.state !== ConnectionState.Connected) return null
+      return room
+    }
+    const primary = pick(this.primaryAvatarSession())
+    if (primary) return primary
+    for (const session of this.connectedLiveKitSessions()) {
+      const room = pick(session)
+      if (room) return room
+    }
+    // Fallback: ignore session flags, trust Room.state (guards flag drift).
+    for (const session of [this.sceneLiveKit, this.worldLiveKit, this.islandLiveKit]) {
+      const room = pick(session)
+      if (room) return room
+    }
+    return null
+  }
+
+  /** Debug: which LiveKit rooms are up (for voice diagnostics). */
+  describeLiveKitRooms(): string {
+    const parts: string[] = []
+    for (const [label, s] of [
+      ['scene', this.sceneLiveKit],
+      ['world', this.worldLiveKit],
+      ['island', this.islandLiveKit]
+    ] as const) {
+      const room = s.getRoom()
+      const st = room?.state ?? 'none'
+      const name = room?.name?.slice(0, 40) ?? '-'
+      parts.push(`${label}:${st}${s.isConnected() ? '*' : ''}(${name})`)
+    }
+    return parts.join(' ')
   }
 
   private trackPeerLeave(address: string, transport: TransportType): void {

@@ -369,4 +369,4 @@ tasks:
       - Jump in shows progress bar; sidebar deferred until world handoff
       - 2D sign-out disconnects comms and disposes dock
       - Landing title matches in-world chat (deployed display.title)
-    notes: Partial 2026-07-07 — Watch Lite (landing LiveKit/voice) still pending.
+    notes: Shipped 2026-07-14+ multi-room chat + cast; nearby voice + Explorer interop 2026-07-16 (`74e4c56`).

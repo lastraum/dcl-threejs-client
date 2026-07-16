@@ -100,7 +100,7 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   { id: 'ui:settings-communities', name: 'Settings → Communities', status: 'none', category: 'client-ui', notes: 'Placeholder tab' },
   { id: 'ui:settings-gallery', name: 'Settings → Gallery', status: 'render', category: 'client-ui', notes: 'Camera Reel API, month grid, Share on X → reels.decentraland.org' },
   { id: 'ui:ecs-scene-ui', name: 'In-scene ECS UI (UiTransform…)', status: 'partial', category: 'client-ui', notes: 'Yoga + DOM overlay — UiInput/UiDropdown writeback, hover, virtual size from setUiRenderer' },
-  { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'partial', category: 'client-ui', notes: 'Explorer NEARBY VOICE panel: Hear others + Speak + hold T; mute-in-background; spatial later' }
+  { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'render', category: 'client-ui', notes: 'Explorer NEARBY VOICE: Hear others + Speak + hold T; mute-in-bg; name-tag bars; spatial 3D later' }
 ]
 
 /** Comms, content, identity — explorer shell (frozen during renderer re-arch). */
@@ -130,7 +130,7 @@ export const NETWORKING_INTEGRATION: IntegrationEntry[] = [
   },
   { id: 'net:scene-binary', name: 'RFC4 Scene binary packets', status: 'render', category: 'networking', notes: 'comms topic → scene script' },
   { id: 'net:archipelago', name: 'Archipelago adapter', status: 'stub', category: 'networking', notes: 'Scaffold; LiveKit primary path' },
-  { id: 'net:voice-tracks', name: 'Voice tracks (WebRTC)', status: 'partial', category: 'networking', notes: 'LiveKit mic publish/subscribe + volume; spatial PositionalAudio next' },
+  { id: 'net:voice-tracks', name: 'Voice tracks (WebRTC)', status: 'render', category: 'networking', notes: 'LiveKit mic: worlds=world room; parcels=island+scene; archipelago genesis Z; handoff keepLiveKit; spatial next' },
   { id: 'net:signed-fetch', name: 'SignedFetch (ADR-44)', status: 'render', category: 'networking', notes: 'Worker RPC → main thread' },
   { id: 'net:catalyst-content', name: 'Catalyst content resolution', status: 'render', category: 'networking' },
   { id: 'net:wallet-session', name: 'Wallet / Catalyst session', status: 'render', category: 'networking' },

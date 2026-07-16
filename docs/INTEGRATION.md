@@ -150,7 +150,7 @@ DOM overlay — not in-scene `UiTransform`.
 | Preferences: Controls, Chat tabs | 🟡 | Mouse sensitivity live; keybinds pending |
 | Settings: Communities | ⬜ | 2D `/communities` browse exists; in-world tab lag |
 | In-scene ECS UI | 🟡 | Yoga + DOM partial — Creator modal / hit-map polish remain |
-| Voice / mic UI | 🟡 | Nearby voice PTT/open-mic + mute-in-bg; spatial next |
+| Voice / mic UI | 🟢 | Nearby voice panel · Speak / hold T · mute-in-bg · name-tag bars; spatial 3D next |
 
 ---
 
@@ -159,7 +159,8 @@ DOM overlay — not in-scene `UiTransform`.
 | Feature | Status |
 | ------- | ------ |
 | RFC4 movement, profile, emote, scene chat + DCM chat media | 🟢 |
-| LiveKit scene/world/island rooms | 🟢 |
+| LiveKit scene/world/island rooms | 🟢 | Worlds: world room voice; parcels: island+scene voice; archipelago genesis Z correct |
+| **Nearby voice (browser ↔ Explorer)** | 🟢 | PTT/Speak · mute until in-play · landing handoff keepLiveKit · name-tag bars |
 | **2D multi-room scene chat** (`SceneChatRoomPool`) | 🟢 | Open tabs stay joined across navigate (companion multi-text-chats) |
 | **Landing cast / stream keys** (Join Live, guest OK) | 🟢 | Gatekeeper adapter; mute; stream-end restores details |
 | Remote avatars + load queue | 🟢 |
@@ -167,7 +168,7 @@ DOM overlay — not in-scene `UiTransform`.
 | SignedFetch, Catalyst content, wallet + guest session | 🟢 |
 | ECS NetworkEntity scene sync | 🟢 P0–P3 host path |
 | Community text / PM router | ⬜ local echo only |
-| Spatial voice UI | 🟡 | LiveKit tracks + HUD phase 1; PositionalAudio pending |
+| Spatial voice (3D falloff) | ⬜ | LiveKit tracks + HUD done; PositionalAudio pending |
 
 ---
 

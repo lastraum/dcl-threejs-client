@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-16 (**nearby voice phase 1** on `dev-latest`)  
-> **Current phase:** Post-**v0.9.0** — nearby voice (LiveKit mic PTT / open-mic + mute-in-background).  
+> **Last updated:** 2026-07-16 (**nearby voice Explorer interop** on `dev-latest`)  
+> **Current phase:** Post-**v0.9.0** — nearby voice shipped (browser ↔ Explorer); spatial next.  
 > **Voice next:** spatial PositionalAudio on remote avatars.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
@@ -16,30 +16,64 @@
 
 ---
 
-## 🎉 Milestone — Nearby voice phase 1 → `dev-latest` (2026-07-16)
+## 🎉 Milestone — Nearby voice + Explorer interop → `dev-latest` (2026-07-16)
 
-**Status: on `dev-latest`** — LiveKit peer mic over the primary scene/world room.
+**Status: on `dev-latest`** (`74e4c56` and follow-ups) — LiveKit nearby voice works **worlds + Genesis parcels**, including **browser → Explorer**.
 
 ### What's new
 
 - **Nearby voice panel** (Explorer layout) — Hear others · volume · **Speak** · hold **T**
-- **Hear others** default on when room ready; volume slider = Voice Chat pref
-- **Speak** = continuous hot mic; **hold T** = momentary transmit
-- Remote audio attached to DOM host + `startAudio()` (fixes silent playback)
+- **Speak** = hot mic; **hold T** = momentary; green talking border + **3 bars on name tags**
+- **Mute until in play** — no mic/remote audio during landing load
 - **Mute mic in background** when tab hidden
+- **Worlds** — voice on world LiveKit room (browser ↔ Explorer ✅)
+- **Genesis parcels** — voice on **island + scene** rooms; archipelago **genesis Z** fixed so we co-cluster with Explorer
+- **Jump In handoff** — keep landing LiveKit (no kill/reconnect); same participant session into play
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
-| **Panel UI** | 🟢 | Matches Explorer NEARBY VOICE layout |
-| **Mic publish** | 🟢 | Speak + hold T |
-| **Remote hear** | 🟢 | Subscribe + HTMLAudio in body host |
-| **PTT key** | 🟢 | **T** (not V) |
-| **Mute in background** | 🟢 | Tab hidden |
-| **Spatial** | ⬜ | Next — PositionalAudio on remote avatar |
+| **Panel UI** | 🟢 | Explorer NEARBY VOICE layout |
+| **Mic publish** | 🟢 | Speak + hold T · LiveKit display name |
+| **Remote hear** | 🟢 | Subscribe + HTMLAudio host · `startAudio()` |
+| **Worlds ↔ Explorer** | 🟢 | World room only |
+| **Parcels ↔ Explorer** | 🟢 | Island + scene publish/subscribe; correct archipelago position |
+| **Landing → play handoff** | 🟢 | `keepLiveKit` + transfer; no mid-load disconnect |
+| **Name-tag voice bars** | 🟢 | 3 green bars from ActiveSpeakers |
+| **Spatial 3D audio** | ⬜ | Next — PositionalAudio on remote avatar |
 
-**QA:** two clients · open nearby voice · Hear others on · peer Speaks or holds T · hear them · volume slider · hide tab.
+### Implementation notes (comms)
 
-**Not in this slice:** 3D spatialization, talking indicators on name tags, community voice rooms.
+| Path | Voice LiveKit rooms |
+| ---- | ------------------- |
+| **Worlds** | `world` only (scene room = Cast/video) |
+| **Parcels** | `island` + `scene` when both up (Explorer nearby still needs island co-location) |
+
+| Bug | Fix |
+| --- | --- |
+| Empty island / no Explorer bars on parcels | Archipelago heartbeat used **extra Z flip** on already-DCL positions → mirrored map coords |
+| Different LiveKit participant after Jump In | `teardownScene` → `disconnectLiveKit()` killed landing session before handoff |
+| Silent until spawn | `setInPlay(false)` until play chrome; then unlock |
+| Mic stack overflow on PTT | `micSyncDepth` guard on `refreshRooms` ↔ publish |
+
+**QA:**  
+- **World:** two clients or browser + Explorer · Speak / hold T · bars + audio.  
+- **Genesis parcel:** next to Explorer · island remotes ≥ 1 · Speak · Explorer bars + audio.  
+- Jump In from landing: console `handoff OK` / `REUSE landing LiveKit` (no disconnect).  
+- Load: no remote voice until in play.
+
+**Not in this slice:** full 3D spatialization (distance falloff / PositionalAudio), community/private voice rooms.
+
+**Tip commits:** `74e4c56` (interop + archipelago Z + handoff) · earlier phase-1 panel/PTT stack on `dev-latest`.
+
+---
+
+## 🎉 Milestone — Nearby voice phase 1 UI → `dev-latest` (2026-07-16)
+
+**Status: superseded by interop milestone above** — initial panel + PTT wiring; Genesis Explorer parity completed in the following block.
+
+### What's new (phase 1)
+
+- Nearby voice panel · Speak / hold T · remote HTMLAudio · mute-in-background
 
 ---
 
@@ -87,7 +121,7 @@
 | **`/goto` dispose crash** | 🟢 | `39c10e1` — not full Phase 4 in-world goto |
 | **Post-round InputModifier freeze** | 🟡 | Client latch fixed; some worlds may still leave walk/jog/run off |
 
-**Still open (product):** Phase 4 **in-world `/goto`** · I'm live CTA (HLS) · community PM · spatial voice · backpack outfits/marketplace · graphics P3/P4.
+**Still open (product):** Phase 4 **in-world `/goto`** · I'm live CTA (HLS) · community PM · **spatial** voice (3D falloff) · backpack outfits/marketplace · graphics P3/P4.
 
 **QA (release smoke):** double-jump twirl DCL+VRM · Join Live cast guest · multi-room chat A→B · nameTags off · Terrain hub + no chat · toast dismiss stays dismissed · pickup vanish + coin spin · `/goto` leave scene · elevated respawn.
 
@@ -179,7 +213,7 @@
 
 **Resolved gaps (was 🟡 / open):** single-room chat drop on scene switch · history-only rejoin UX · wallet-only stream-key watch · blank cast stage after OBS stop · landing chat “partial” without multi-room · flaky cast video bind.
 
-**Still open:** I'm live CTA (HLS listings) · community text / PM router · spatial voice UI · Phase 4 in-world `/goto` · backpack outfits/marketplace.
+**Still open:** I'm live CTA (HLS listings) · community text / PM router · spatial voice (3D) · Phase 4 in-world `/goto` · backpack outfits/marketplace.
 
 **QA focus:** Scene A chat → navigate B → A still live + notifications · guest Join Live cast · mute/unmute · stop OBS → return to landing card · mobile LIVE above Jump in · VideoPlayer in-scene streams.
 

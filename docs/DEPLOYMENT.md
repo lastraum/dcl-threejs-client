@@ -103,7 +103,7 @@ Code path: `PointerEventsSystem.ts` → mirror `PointerEventsResult` + `PrimaryP
 ### Known gaps (OK for v1 push — document in release notes)
 
 - [ ] Explorer chat timestamps wrong on our outbound messages (wire format)
-- [ ] Voice / LiveKit audio not wired
+- [x] Voice / LiveKit nearby audio (PTT Speak · worlds + Genesis parcels · Explorer interop)
 - [x] `PointerEvents` — hover icons, highlight, full input actions (see [manual test](#pointerevents-manual-test))
 - [ ] Parcel route `/80,-1` catalyst fetch stub
 - [ ] Guest also available from explorer auth sheet; dev URL `?guest` / `?skipLogin` still force guest
@@ -339,11 +339,11 @@ Keep previous `dist/` artifact or CDN deployment ID. Static SPA rollback = redep
 ```markdown
 ## Three.js DCL Client — browser beta
 
-**Works:** Worlds/scenes via URL, wallet login, multiplayer presence + chat, profile avatars,
-emote props, LightSource culling, Genesis map, events calendar.
+**Works:** Worlds/scenes via URL, wallet login, multiplayer presence + chat + **nearby voice**
+(browser ↔ Explorer), profile avatars, emote props, LightSource culling, Genesis map, events calendar.
 
-**Known limitations:** No voice, proximity pointer events, in-world UI (`UiTransform`), Explorer chat date quirk,
-guest available via explorer auth sheet or `?guest` / `?skipLogin`.
+**Known limitations:** No 3D spatial voice falloff yet; proximity pointer events; some Creator UI polish;
+Explorer chat date quirk; guest via explorer auth sheet or `?guest` / `?skipLogin`.
 ```
 
 ---

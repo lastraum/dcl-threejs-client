@@ -84,7 +84,8 @@ export class ProfilePageView {
       onSignOut: opts.onSignOut,
       onOpenSettings: opts.onOpenSettings,
       onOpenBackpack: opts.onOpenBackpack,
-      onOpenProfile: opts.onOpenProfile
+      onOpenProfile: opts.onOpenProfile,
+      onOpenWhatsNew: opts.onOpenWhatsNew
     })
 
     this.scrollEl = document.createElement('main')

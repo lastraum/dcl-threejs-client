@@ -31,7 +31,8 @@ export class EventsPageView {
       onSignOut: opts.onSignOut,
       onOpenSettings: opts.onOpenSettings,
       onOpenBackpack: opts.onOpenBackpack,
-      onOpenProfile: opts.onOpenProfile
+      onOpenProfile: opts.onOpenProfile,
+      onOpenWhatsNew: opts.onOpenWhatsNew
     })
 
     this.eventsView = new EventsView({

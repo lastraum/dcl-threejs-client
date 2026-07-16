@@ -129,7 +129,8 @@ export class SceneLandingView {
       onSignOut: opts.onSignOut,
       onOpenSettings: opts.onOpenSettings,
       onOpenBackpack: opts.onOpenBackpack,
-      onOpenProfile: opts.onOpenProfile
+      onOpenProfile: opts.onOpenProfile,
+      onOpenWhatsNew: opts.onOpenWhatsNew
     })
 
     this.eventModal = new EventModal({

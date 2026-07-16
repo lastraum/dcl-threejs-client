@@ -118,9 +118,9 @@ export class WhatsNewToast {
     this.dispose()
     // Manual open — do not mark version seen (user can re-open anytime).
     this.ackOnClose = false
-    const host = this.ensureHost()
+    // Sheet is position:fixed; append to body so parent toast host layout cannot clip it.
     this.buildSheet(title, bullets, /* showDevNote */ false)
-    host.append(this.sheet!)
+    document.body.appendChild(this.sheet!)
     this.openSheet()
   }
 
@@ -178,6 +178,7 @@ export class WhatsNewToast {
   dispose(): void {
     window.clearTimeout(this.dismissTimer)
     this.dismissTimer = 0
+    this.sheet?.remove()
     this.host?.remove()
     this.host = null
     this.toast = null

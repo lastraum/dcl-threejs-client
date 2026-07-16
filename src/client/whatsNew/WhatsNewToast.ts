@@ -15,50 +15,65 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;')
 }
 
+async function loadWhatsNewContent(): Promise<{ title: string; bullets: string[] }> {
+  let bullets: string[] = []
+  let title = 'Client update'
+  try {
+    const { markdown } = await loadProgressMarkdown()
+    const block: WhatsNewBlock | null = parseLatestWhatsNew(markdown)
+    if (block) {
+      bullets = block.bullets
+      title = block.milestoneTitle || title
+    }
+  } catch {
+    /* fallback bullets */
+  }
+  if (!bullets.length) {
+    bullets = [
+      'Performance and reliability improvements',
+      'See full notes in Dev Progress → Shipped'
+    ]
+  }
+  return { title, bullets }
+}
+
 /**
- * Bottom toast + optional highlights sheet when the client build is new
- * vs last-seen version. During testing PERSIST_ACK is false so the toast
- * always returns and dismiss does not write localStorage.
+ * Version toast (auto) + highlights sheet (toast button or profile menu).
+ * PERSIST_ACK=false while testing — dismiss never writes localStorage.
  */
 export class WhatsNewToast {
   private host: HTMLElement | null = null
   private toast: HTMLElement | null = null
   private sheet: HTMLElement | null = null
   private dismissTimer = 0
-  private block: WhatsNewBlock | null = null
+  /** When true, closing should call markWhatsNewSeen (version-bump flow). */
+  private ackOnClose = false
 
   async maybeShow(): Promise<void> {
     if (!shouldShowWhatsNew()) return
-
-    let bullets: string[] = []
-    let title = 'Client update'
-    try {
-      const { markdown } = await loadProgressMarkdown()
-      this.block = parseLatestWhatsNew(markdown)
-      if (this.block) {
-        bullets = this.block.bullets
-        title = this.block.milestoneTitle || title
-      }
-    } catch {
-      /* still show version toast */
-    }
-
-    if (!bullets.length) {
-      bullets = [
-        'Performance and reliability improvements',
-        'See full notes in Dev Progress → Shipped'
-      ]
-    }
-
-    this.mount(title, bullets)
+    const { title, bullets } = await loadWhatsNewContent()
+    this.mountToast(title, bullets)
   }
 
-  private mount(title: string, bullets: string[]): void {
-    this.dispose()
+  /** Profile menu / always-available entry — opens highlights sheet only. */
+  async openHighlights(): Promise<void> {
+    const { title, bullets } = await loadWhatsNewContent()
+    this.mountSheetOnly(title, bullets)
+  }
 
+  private ensureHost(): HTMLElement {
+    if (this.host?.isConnected) return this.host
     this.host = document.createElement('div')
     this.host.className = 'whats-new-host'
     this.host.setAttribute('data-whats-new-host', '')
+    document.body.appendChild(this.host)
+    return this.host
+  }
+
+  private mountToast(title: string, bullets: string[]): void {
+    this.dispose()
+    this.ackOnClose = true
+    const host = this.ensureHost()
 
     this.toast = document.createElement('div')
     this.toast.className = 'whats-new-toast'
@@ -80,6 +95,36 @@ export class WhatsNewToast {
       </div>
     `
 
+    this.buildSheet(title, bullets, /* showDevNote */ true)
+    host.append(this.toast, this.sheet!)
+
+    this.toast.querySelector('[data-whats-new-details]')?.addEventListener('click', () => {
+      this.openSheet()
+    })
+    this.toast.querySelector('[data-whats-new-dismiss]')?.addEventListener('click', () => {
+      this.ackAndClose()
+    })
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        this.toast?.classList.add('whats-new-toast--visible')
+      })
+    })
+
+    this.dismissTimer = window.setTimeout(() => this.ackAndClose(), 14_000)
+  }
+
+  private mountSheetOnly(title: string, bullets: string[]): void {
+    this.dispose()
+    // Manual open — do not mark version seen (user can re-open anytime).
+    this.ackOnClose = false
+    const host = this.ensureHost()
+    this.buildSheet(title, bullets, /* showDevNote */ false)
+    host.append(this.sheet!)
+    this.openSheet()
+  }
+
+  private buildSheet(title: string, bullets: string[], showDevNote: boolean): void {
     this.sheet = document.createElement('div')
     this.sheet.className = 'whats-new-sheet'
     this.sheet.hidden = true
@@ -107,34 +152,15 @@ export class WhatsNewToast {
           </button>
         </footer>
         ${
-          WHATS_NEW_PERSIST_ACK
-            ? ''
-            : '<p class="whats-new-sheet__dev">Testing mode — dismiss does not save localStorage</p>'
+          showDevNote && !WHATS_NEW_PERSIST_ACK
+            ? '<p class="whats-new-sheet__dev">Testing mode — dismiss does not save localStorage</p>'
+            : ''
         }
       </div>
     `
-
-    this.host.append(this.toast, this.sheet)
-    document.body.appendChild(this.host)
-
-    this.toast.querySelector('[data-whats-new-details]')?.addEventListener('click', () => {
-      this.openSheet()
-    })
-    this.toast.querySelector('[data-whats-new-dismiss]')?.addEventListener('click', () => {
-      this.ackAndClose()
-    })
     this.sheet.querySelectorAll('[data-whats-new-close]').forEach((el) => {
       el.addEventListener('click', () => this.ackAndClose())
     })
-
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        this.toast?.classList.add('whats-new-toast--visible')
-      })
-    })
-
-    // Long dwell while testing; production can shorten later.
-    this.dismissTimer = window.setTimeout(() => this.ackAndClose(), 14_000)
   }
 
   private openSheet(): void {
@@ -145,7 +171,7 @@ export class WhatsNewToast {
   }
 
   private ackAndClose(): void {
-    markWhatsNewSeen(APP_VERSION)
+    if (this.ackOnClose) markWhatsNewSeen(APP_VERSION)
     this.dispose()
   }
 
@@ -159,7 +185,19 @@ export class WhatsNewToast {
   }
 }
 
+let shared: WhatsNewToast | null = null
+
+function sharedWhatsNew(): WhatsNewToast {
+  if (!shared) shared = new WhatsNewToast()
+  return shared
+}
+
 /** Fire-and-forget entry from bootstrap. */
 export function maybeShowWhatsNewToast(): void {
-  void new WhatsNewToast().maybeShow()
+  void sharedWhatsNew().maybeShow()
+}
+
+/** Profile menu — open highlights sheet anytime. */
+export function openWhatsNewFromMenu(): void {
+  void sharedWhatsNew().openHighlights()
 }

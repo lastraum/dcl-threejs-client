@@ -48,6 +48,7 @@ import { SceneBanMonitor } from '../network/sceneAccess/SceneBanMonitor'
 import { SceneAccessDeniedError } from '../network/sceneAccess/SceneAccessDeniedError'
 import { ProfileUiController } from './ui/profile/ProfileUiController'
 import type { AppMode } from './appMode'
+import { openWhatsNewFromMenu } from './whatsNew/WhatsNewToast'
 import { CommunitiesPageView } from './ui/explore/CommunitiesPageView'
 import { EventsPageView } from './ui/explore/EventsPageView'
 import { ExplorerView } from './ui/explore/ExplorerView'
@@ -281,6 +282,7 @@ export class AppController {
     onOpenSettings: () => void
     onOpenBackpack: () => void
     onOpenProfile: () => void
+    onOpenWhatsNew: () => void
   } {
     return {
       onLoginChange: (login) => {
@@ -312,6 +314,7 @@ export class AppController {
         void this.openBackpackFromShell()
       },
       onOpenProfile: () => this.openLocalProfileFromShell(),
+      onOpenWhatsNew: () => openWhatsNewFromMenu(),
       ...this.socialShellSocialHandlers()
     }
   }

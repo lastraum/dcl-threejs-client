@@ -10,6 +10,7 @@ export type SocialShellChromeHandlers = {
   onOpenSettings?: () => void
   onOpenBackpack?: () => void
   onOpenProfile?: () => void
+  onOpenWhatsNew?: () => void
 }
 
 export type SocialShellTopNavOptions = SocialShellChromeHandlers & {
@@ -54,7 +55,8 @@ export class SocialShellTopNav {
       onSignOut: opts.onSignOut,
       onOpenSettings: opts.onOpenSettings,
       onOpenBackpack: opts.onOpenBackpack,
-      onOpenProfile: opts.onOpenProfile
+      onOpenProfile: opts.onOpenProfile,
+      onOpenWhatsNew: opts.onOpenWhatsNew
     })
     accountEl.appendChild(this.profileMenu.wrap)
 

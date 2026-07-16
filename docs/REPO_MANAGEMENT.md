@@ -26,7 +26,7 @@ eb77819 feat(arch): complete Phase 3 — CrdtProjection + CrdtEncoder + Projecti
 
 Diff vs `main`: ~78 files, +7174 / −910 lines. `package.json` is `0.1.99`, `"private": true`. Community scaffolding (`TASKS.yaml`, CONTRIBUTING, AGENTS, PR templates) lives on `redo`, not yet on `main`.
 
-**Backlog:** [TASKS.yaml](./TASKS.yaml) · **Status:** [INTEGRATION.md](./INTEGRATION.md) · **History:** [PROGRESS.md](./PROGRESS.md)
+**Status:** [INTEGRATION.md](./INTEGRATION.md) · **History:** [PROGRESS.md](./PROGRESS.md) · **Architecture:** [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 ---
 
@@ -96,18 +96,19 @@ Keep **`redo/threejs-projection-arch`** as the long-running integration branch. 
 - [ ] Confirm no wallet mnemonics / test private keys (scan clean as of 2026-06-16)
 - [ ] Review `scripts/bundle-base-wearables.mjs` — public Catalyst only ✓
 
-### B. Doc consolidation
+### B. Doc set (keep small)
 
-| Concern | Source of truth | Action |
-|---------|-----------------|--------|
-| Active backlog | `docs/TASKS.yaml` | Keep; trim to 15–30 active items |
-| Shipped history | `docs/PROGRESS.md` | Milestone log; dev panel fetches from public `main` |
-| Integration checklist | `docs/INTEGRATION.md` | ECS + UI + networking + performance (replaces ECS_COMPONENTS + INTEGRATION_STATUS) |
-| Old phase roadmap | `docs/IMPLEMENTATION_PLAN.md` | Legacy reference; superseded by TASKS.yaml + PROGRESS.md |
-| Agent onboarding | `docs/AGENTS.md` | Update GitHub URL + default branch to `main` |
-| Deploy | `docs/DEPLOYMENT.md` | Keep |
+| Doc | Role |
+|-----|------|
+| `PROGRESS.md` | Milestone log; dev panel |
+| `INTEGRATION.md` + registries | Parity checklist |
+| `ARCHITECTURE.md` | Scene I/O + debt |
+| `AGENTS.md` / `CONTRIBUTOR_TESTING.md` / `PR_CHECKLIST.md` | Onboarding + gates |
+| `DEPLOYMENT.md` / `REPO_MANAGEMENT.md` | Ship + ops |
+| `IMPLEMENTATION_PLAN.md` / `TASKS.yaml` | Historical only |
+| `CLAIMS.yaml` | Community claims (tooling) |
 
-**Do not port:** `feat/phase3-complete` scratch doc (`REARCH_SDK7_MAINENTRY_GLBS_STATUS.md`) unless still valuable.
+No feature design docs — ship notes go in PROGRESS; gaps in INTEGRATION.
 
 ### C. Code/config for public community
 
@@ -252,7 +253,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for dev setup and claim rules.
 
 ### Post-e10 before public
 
-1. Update PROGRESS.md + INTEGRATION.md when shipping milestones.
+1. Update PROGRESS.md + INTEGRATION.md (+ architecture debt if needed) when shipping milestones.
 2. Keep IMPLEMENTATION_PLAN.md as legacy reference only.
 3. Rewire `tasksRegistry.ts` + AGENTS.md in public repo.
 4. Tag `v0.2.0`, execute Option B export.
@@ -261,9 +262,11 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for dev setup and claim rules.
 
 ## Related docs
 
-- [TASKS.yaml](./TASKS.yaml) — active backlog
+- [PROGRESS.md](./PROGRESS.md) — milestones
+- [INTEGRATION.md](./INTEGRATION.md) — feature checklist
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — scene I/O + debt
 - [AGENTS.md](./AGENTS.md) — AI/human onboarding
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — claim flow
 - [PR_CHECKLIST.md](./PR_CHECKLIST.md) — merge gates
 - [DEPLOYMENT.md](./DEPLOYMENT.md) — smoke test checklist
-- [INTEGRATION.md](./INTEGRATION.md) — feature checklist
+- [TASKS.yaml](./TASKS.yaml) — re-arch history only

@@ -126,7 +126,7 @@
 
 ## 🎉 Milestone — Multi-room chat + cast / live video → `dev-latest` (2026-07-14)
 
-**Status: merged `lastraum` → `dev-latest`** (+ live-stream hotfixes) — companion-style multi-room LiveKit chat, guest cast watch, landing UX, VideoPlayer/LiveKit reliability. Closes main Watch Lite / 2D chat dock parity gaps from [SOCIAL_MERGE_PLAN.md](./SOCIAL_MERGE_PLAN.md) Phase 3.
+**Status: merged `lastraum` → `dev-latest`** (+ live-stream hotfixes) — companion-style multi-room LiveKit chat, guest cast watch, landing UX, VideoPlayer/LiveKit reliability. Closes main Watch Lite / 2D chat dock parity gaps from social merge plan (removed) Phase 3.
 
 ### What's new
 
@@ -147,7 +147,7 @@
 | **Stream end → details** | 🟢 | Publisher gone clears host + restores scene landing card (not blank stage) |
 | **LiveKit handoff / VideoPlayer** | 🟢 | Scene jump handoff, ECS VideoPlayer authority, reliable bind (`e113432`, `4816b2b`, PR `#25`) |
 | **Island / wearable shadows** | 🟢 | Island shore MeshStandard receives shadows; wearables cast |
-| **scene.json water** | 🟢 | `environment.water` FFT ocean knobs ([THIRD_PARTY.md](./THIRD_PARTY.md)) |
+| **scene.json water** | 🟢 | `environment.water` FFT ocean knobs (FFT ocean scene.json knobs) |
 | **Stable browser guest** | 🟢 | Guest wallet + Catalyst profile for chat/cast without MetaMask |
 
 **Resolved gaps (was 🟡 / open):** single-room chat drop on scene switch · history-only rejoin UX · wallet-only stream-key watch · blank cast stage after OBS stop · landing chat “partial” without multi-room · flaky cast video bind.
@@ -389,7 +389,7 @@ These are **known incomplete** vs full Explorer / product polish — not blocker
 | **Night fill** | 🟢 | Stronger night hemi/equator + moon key so PNG planes read at 23:59 |
 | **Skybox authority** | 🟢 | (already on v0.6.0) scene → session → auto |
 
-**Docs:** [lightsource-parity.md](./lightsource-parity.md) · [INTEGRATION.md](./INTEGRATION.md)
+**Docs:** [INTEGRATION.md](./INTEGRATION.md) · [INTEGRATION.md](./INTEGRATION.md)
 
 **QA:** Reset lighting · noon plane soft not silhouette · look up small sun · 23:59 crescent moon + soft purple fill + shadows · Night/Day scrub.
 
@@ -547,7 +547,7 @@ These are **known incomplete** vs full Explorer / product polish — not blocker
 
 | Gap | Notes |
 | --- | ----- |
-| **MOVE CAMERA** edit-flight residual | Avatar freeze OK; WASD/STOP still shim-debt — [ARCHITECTURE_AND_TECH_DEBT](./ARCHITECTURE_AND_TECH_DEBT.md) |
+| **MOVE CAMERA** edit-flight residual | Avatar freeze OK; WASD/STOP still shim-debt — [ARCHITECTURE.md](./ARCHITECTURE.md) |
 | **Sun intensity / directional shadows** | **Addressed on `dev-latest` post-release** — see [Unity lighting + moon parity](#-milestone--unity-lighting--moon-parity-2026-07-11) |
 | **Watch Lite / `/goto`** | Companion Phase 3–4 still open |
 | **Graphics post-FX stubs** | Bloom/HDR still UI-only; **MSAA** live (P2); VSync hidden; Fullscreen stub; preset/shadows/lights/res/FPS live |
@@ -572,7 +572,7 @@ Genesis spawn walk · VC character-select/follow · `threejs.dcl.eth` materials 
 | **Skybox time authority** | 🟢 | `f112671` — (1) scene.json / ECS `SkyboxTime` (2) session custom TOD in `sessionStorage` (3) Auto 60× cycle; scene lock always syncs and preempts custom |
 | **Night/Day panel** | 🟢 | Auto disabled while scene-locked; custom slider respects authority |
 
-**Docs:** [lightsource-parity.md](./lightsource-parity.md) · [INTEGRATION.md](./INTEGRATION.md)
+**Docs:** [INTEGRATION.md](./INTEGRATION.md) · [INTEGRATION.md](./INTEGRATION.md)
 
 **QA:** `threejs.dcl.eth` — black plate like Unity · pin ~07:30 front-lit plane same side as Explorer · Auto vs custom session survives reload in-tab · no material.version thrash after load.
 
@@ -595,7 +595,7 @@ Genesis spawn walk · VC character-select/follow · `threejs.dcl.eth` materials 
 | **Client HUD stack** | 🟢 | Sidebar / minimap / chat above scene ECS UI (`--z-client-hud` > `--z-scene-ui`) |
 | **Splash removal** | 🟢 | No full-screen splash; session resume + explorer auth sheet |
 
-**Docs:** [PLAYER_FRAME_CHANNEL.md](./PLAYER_FRAME_CHANNEL.md) · [PLAYER_FRAME_PROGRESS.md](./PLAYER_FRAME_PROGRESS.md) · [ARCHITECTURE_AND_TECH_DEBT.md](./ARCHITECTURE_AND_TECH_DEBT.md)
+**Docs:** [ARCHITECTURE.md](./ARCHITECTURE.md) · [ARCHITECTURE.md](./ARCHITECTURE.md) · [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 **QA:** Jump in → character-select or cinematic VC shows stage content (not freecam at spawn) · gameplay follow tracks player under FPS dips · A/D not inverted under VC · HUD above dense scene UI · no hydrate spam in console on follow.
 
@@ -622,7 +622,7 @@ Genesis spawn walk · VC character-select/follow · `threejs.dcl.eth` materials 
 
 ## 🎉 Milestone — Companion social shell merge (2026-07-07)
 
-**Status: shipped on `dev-latest`** (`c53af86`) — `decentraland-social-merge` fast-forward merge (5 commits, 50 files, ~11k LOC). Implements [SOCIAL_MERGE_PLAN.md](./SOCIAL_MERGE_PLAN.md) Phases **1**, **2**, **2.5**, and **partial 3**.
+**Status: shipped on `dev-latest`** (`c53af86`) — `decentraland-social-merge` fast-forward merge (5 commits, 50 files, ~11k LOC). Implements social merge plan (removed) Phases **1**, **2**, **2.5**, and **partial 3**.
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
@@ -1035,7 +1035,7 @@ Goal: see other players in-scene **and** in the social layer (voice/presence) li
 | PhysX debug toggles | Help panel — flat checkboxes for MeshCollider / GLTF / local capsule wireframes |
 | Ground colliders | Per-parcel landscape boxes at y=0 — **no** infinite fallback plane |
 
-### LightSource system ✅ (see [`lightsource-parity.md`](./lightsource-parity.md))
+### LightSource system ✅ (see INTEGRATION / PROGRESS lighting milestones)
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
@@ -1049,7 +1049,7 @@ Goal: see other players in-scene **and** in the social layer (voice/presence) li
 | Blocker | Status | Notes |
 | ------- | ------ | ----- |
 | **Emote GLB props** | ✅ **confirmed** | `SkeletonUtils.clone()` rebinds skinned particle props; Money/Clap/Kiss/Champagne props visible local + remote + AvatarShape |
-| **Sun / skybox** | ✅ **confirmed** | Stronger sun + skydome halo; cloud blend fix (no blue speckle); shadows + tone mapping — see [`lightsource-parity.md`](./lightsource-parity.md) |
+| **Sun / skybox** | ✅ **confirmed** | Stronger sun + skydome halo; cloud blend fix (no blue speckle); shadows + tone mapping — see INTEGRATION / PROGRESS lighting milestones |
 
 ---
 
@@ -1572,7 +1572,7 @@ SDK7 reserved IDs: `RootEntity=0`, `PlayerEntity=1`, `CameraEntity=2`. Scene ent
 - AvatarShape emotes: trigger detection fix + loop until `expressionTriggerId` cleared
 
 **Docs**
-- [`lightsource-parity.md`](./lightsource-parity.md) — implemented vs outstanding Explorer gaps
+- [INTEGRATION.md](./INTEGRATION.md) — implemented vs outstanding Explorer gaps
 
 ---
 
@@ -1785,7 +1785,7 @@ Tracked in `src/shim/system/createSystemStubs.ts`. These are **deliberately stub
 - **Tween:** **`TweenBridge` ✅** — transform + textureMove + **`TweenSequence`** (Genesis blimp orbit) + `pumpMotionBridges` sync-frame fix — see **Tween status** section.
 - **Session assets:** GLB/texture cache survives teleports (`getSessionAssetCache`); sign-out evicts via `disposeSessionAssetCache`. **UnityGLTF null-padded JSON chunks** sanitized in `glbSanitizer.ts`. **Hydration gate** — failed GLB loads no longer cached as empty placeholders; loading screen waits for real mesh geometry + unresolved src count; **elapsed timer** (count-up from 0:00; timeout at 3:00 / 1:30 teleport) shows early ready vs fallback.
 - **Skinned GLTF instances:** `SkeletonUtils.clone` for scene entities + emote props — `skinnedMeshInstance.ts`.
-- **LightSource / sun:** Culling + quality tiers + hybrid sun + ACES + spot shadows + cloud blend ✅ — [`lightsource-parity.md`](./lightsource-parity.md). Remaining: raw candelas, `shadowMaskTexture`, point shadows.
+- **LightSource / sun:** Culling + quality tiers + hybrid sun + ACES + spot shadows + cloud blend ✅ — [INTEGRATION.md](./INTEGRATION.md). Remaining: raw candelas, `shadowMaskTexture`, point shadows.
 - **PhysX grounding:** Local player feet on ground ✅; **GLTF invisible `_collider` trimesh blocking ✅** (plaza-scale props).
 - **GLTF trimesh cooking:** Per-instance uncached cook; failed/degenerate colliders skipped once (no retry spam).
 - **Map / Events UI:** Genesis map + Jump In + peer sidebar ✅; Events Weekly/Calendar ✅; chat unread badge ✅.
@@ -1804,8 +1804,8 @@ Tracked in `src/shim/system/createSystemStubs.ts`. These are **deliberately stub
 
 - `[IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md)` — full phased architecture
 - `[DEPLOYMENT.md](./DEPLOYMENT.md)` — pre-push checklist & browser deployment outline
-- `[lightsource-parity.md](./lightsource-parity.md)` — LightSource / sun / shadow tracker
-- `[WORLD_ENVIRONMENT.md](./WORLD_ENVIRONMENT.md)` — asset hashes, coords, empty-land catalog
+- `[INTEGRATION.md](./INTEGRATION.md)` — LightSource / sun / shadow tracker
+- ``src/environment/`` — asset hashes, coords, empty-land catalog
 
 
 ---

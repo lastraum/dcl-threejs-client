@@ -350,6 +350,6 @@ guest available via explorer auth sheet or `?guest` / `?skipLogin`.
 
 ## Related docs
 
-- [`PROGRESS.md`](./PROGRESS.md) — milestone log & phase status
-- [`lightsource-parity.md`](./lightsource-parity.md) — lighting/shadow outstanding items
-- [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) — architecture & risks
+- [`PROGRESS.md`](./PROGRESS.md) — milestone log
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) — architecture & debt
+- [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) — historical phase plan

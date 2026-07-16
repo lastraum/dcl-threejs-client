@@ -325,7 +325,7 @@ tasks:
       - Visit navigates to scene landing, not direct 3D
       - Jump in enters play mode on same URL; Leave returns to landing
     notes: Shipped 2026-07-07 — decentraland-social-merge → dev-latest (33bf03d…c53af86).
-      See docs/SOCIAL_MERGE_PLAN.md.
+      Social shell shipped; /goto still open (PROGRESS).
   - id: social-shell-phase-2-5
     title: Companion 2D shell nav + communities (Phase 2.5)
     status: done

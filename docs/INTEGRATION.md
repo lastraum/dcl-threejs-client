@@ -109,10 +109,10 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 
 | Component | ID | Status | Notes |
 | --------- | -- | ------ | ----- |
-| NetworkEntity / NetworkParent | — | 🟢 | Typed projection + local parent resolve (P3) · [SYNC_ENTITIES_PARITY.md](./SYNC_ENTITIES_PARITY.md) |
-| SyncComponents / `syncEntity` | — | 🟢 | P0–P3 host path · directed LiveKit · size cap · [SYNC_ENTITIES_PARITY.md](./SYNC_ENTITIES_PARITY.md) |
+| NetworkEntity / NetworkParent | — | 🟢 | Typed projection + local parent resolve (P3) |
+| SyncComponents / `syncEntity` | — | 🟢 | P0–P3 host path · directed LiveKit · size cap |
 | SkyboxTime | 1210 | 🟢 | Scene fixed → session custom → Auto; ECS/json lock snaps on cold bind |
-| UiTransform … UiDropdown | 1050+ | ⬜ | In-scene UI (HUD is separate) |
+| UiTransform … UiDropdown | 1050+ | 🟡 | Yoga + DOM partial — results writeback; polish gaps |
 | ParticleSystem | 1217 | 🟢 | `ParticleSystemBridge` — GPU billboard sprites |
 | NftShape | 1040 | ⬜ | |
 
@@ -147,9 +147,10 @@ DOM overlay — not in-scene `UiTransform`.
 | Overhead name tags (hide via `featureToggles.nameTags` / `?nameTags=`) | 🟢 |
 | Preferences panel (P / ⚙): Graphics preset/shadows/lights/res/FPS + lighting | 🟢 |
 | Preferences → Sounds volume sliders | 🟢 |
-| Preferences: Controls, Chat tabs | 🟡 stub |
-| Settings: Communities | ⬜ |
-| In-scene ECS UI, voice/mic UI | ⬜ |
+| Preferences: Controls, Chat tabs | 🟡 | Mouse sensitivity live; keybinds pending |
+| Settings: Communities | ⬜ | 2D `/communities` browse exists; in-world tab lag |
+| In-scene ECS UI | 🟡 | Yoga + DOM partial — Creator modal / hit-map polish remain |
+| Voice / mic UI | ⬜ | Needs spatial voice product work |
 
 ---
 
@@ -208,7 +209,7 @@ DOM overlay — not in-scene `UiTransform`.
 
 ## Related
 
-- [PROGRESS.md](./PROGRESS.md) — milestone narrative (public: `github.com/lastraum/dcl-threejs-client`)
+- [PROGRESS.md](./PROGRESS.md) — milestone narrative
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — scene I/O + debt
 - [CLAIMS.yaml](./CLAIMS.yaml) — who is working on what
-- [CONTRIBUTOR_TESTING.md](./CONTRIBUTOR_TESTING.md) — deploy your own test world
-- [AGENTS.md](./AGENTS.md) — AI/human onboarding
+- [AGENTS.md](./AGENTS.md) — onboarding

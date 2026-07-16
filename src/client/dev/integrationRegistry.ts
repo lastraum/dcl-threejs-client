@@ -177,7 +177,7 @@ export const ENVIRONMENT_INTEGRATION: IntegrationEntry[] = [
     name: 'FFT ocean water',
     status: 'render',
     category: 'environment',
-    notes: 'FftOceanWater; scene.json environment.water; island/open ocean rings — see docs/THIRD_PARTY.md'
+    notes: 'FftOceanWater; scene.json environment.water; island/open ocean rings'
   },
   { id: 'env:perlin-scatter', name: 'Perlin scatter foliage', status: 'render', category: 'environment', notes: 'EzTreeGrassField + foliage wind' }
 ]

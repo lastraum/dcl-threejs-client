@@ -43,7 +43,7 @@ export type SceneEnvironmentKind =
 
 /**
  * `scene.json` → `environment.water` — ThreejsClient FFT ocean (FFTOCEAN port).
- * Ignored by Unity/Godot Explorer. See docs/THIRD_PARTY.md.
+ * Ignored by Unity/Godot Explorer. ThreejsClient-only scene.json environment.water knobs.
  */
 export type SceneWaterConfig = {
   /** When false, no client water mesh (same as `?water=0`). Default true for island/water biomes. */

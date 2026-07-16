@@ -2,9 +2,9 @@
 
 > Browser-native Decentraland client: load deployed Worlds/scenes, shim SDK7 runtime, mirror ECS → Three.js, expand to open world.
 
-**Status:** Explorer **layout parity ✅** on RickRoll-style worlds; Phase 5 **social** multi-room chat + Watch Lite cast ✅ — voice / 3D `/goto` next (see [`PROGRESS.md`](./PROGRESS.md))  
-**ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md) — all SDK7 components by phase  
-**Note:** Legacy phase roadmap — active backlog is [TASKS.yaml](./TASKS.yaml) + [PROGRESS.md](./PROGRESS.md).
+**Status:** Explorer **layout parity ✅**; social multi-room chat + Watch Lite cast ✅ — voice / 3D `/goto` next (see [`PROGRESS.md`](./PROGRESS.md))  
+**ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md)  
+**Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) for current work.
 
 **Related repos in workspace:** `dcl-companion` (content resolution), `dcl-avatar-hyperfy` (VRM/Three.js), `colyseus-scene` (multiplayer), `blank-scene` (test deploy)
 
@@ -55,7 +55,7 @@ When adding runtime, rendering, physics, comms, or asset-streaming behavior, **m
 
 - **WASM & wire formats** — PhysX integration patterns, RFC4 comms codecs (see `.cursor/rules/comms-architecture.mdc`, `PROGRESS.md`)
 - **Three.js rendering** — reuse optimizations and scene-graph patterns from reference clients (Unity Explorer, Hyperfy, dcl-companion) where they match shipped Explorer behavior
-- **LOD, streaming, camera** — load budgets, distance/visibility culling, and third-person camera collision should target Explorer parity unless a deliberate MVP shortcut is documented here or in `WORLD_ENVIRONMENT.md`
+- **LOD, streaming, camera** — load budgets, distance/visibility culling, and third-person camera collision should target Explorer parity unless a deliberate MVP shortcut is documented
 - **Deferred — third-person jitter:** User-confirmed stutter is **orbital camera lerp + alpha-tested tree foliage** (FPV is smooth). Not sync-frame physics or LOD — revisit camera smoothing / foliage depth later (see `PROGRESS.md`).
 
 Document intentional divergences (e.g. glTF grass scatter vs `GrassIndirectRenderer`) so they can be revisited against the Unity source.
@@ -387,7 +387,7 @@ Bundled scenes ship their own `@dcl/ecs` engine; we mirror CRDT on main via `Eng
 
 The red grass parcel block, cliff edges, scattered bushes, and stylized trees in Explorer are **client-side landscape**, toggled via Creator Hub **"Landscape Terrain Enabled"**. They are **not** part of the scene entity (`bin/scene.js`).
 
-See `**docs/WORLD_ENVIRONMENT.md`** for asset hashes and placement strategy.
+Landscape/ocean/foliage live under `src/environment/` (see INTEGRATION performance rows).
 
 **MVP scope (no sand/water/clouds):**
 

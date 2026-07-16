@@ -2,7 +2,7 @@
 
 Minimal SDK7 scene for **platform** multiplayer ECS parity — not Flagtag-specific.
 
-See [docs/SYNC_ENTITIES_PARITY.md](../../docs/SYNC_ENTITIES_PARITY.md).
+Platform multiplayer ECS (`syncEntity`) — status in docs/INTEGRATION.md.
 
 ## Build
 

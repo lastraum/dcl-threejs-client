@@ -251,7 +251,7 @@ export type SceneWorkerOutbound =
     }
   /**
    * Hot player state — InputModifier + MainCamera without CRDT ack (play mode).
-   * See docs/PLAYER_FRAME_CHANNEL.md.
+   * See docs/ARCHITECTURE.md (player-frame hot path).
    */
   | {
       type: 'player-frame'

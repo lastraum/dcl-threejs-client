@@ -3,7 +3,7 @@ import type { AvatarProfile, WearableDefinition } from './types'
 
 /**
  * localStorage key for resolved peer avatar profile + wearable defs.
- * Prunes by age/count and shrinks on QuotaExceededError (see ARCHITECTURE_AND_TECH_DEBT).
+ * Prunes by age/count and shrinks on QuotaExceededError (see docs/ARCHITECTURE.md).
  */
 const CACHE_KEY = 'dcl-client-avatar-cache'
 /** Soft cap — enough for a busy world without blowing origin quota. */

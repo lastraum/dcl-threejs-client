@@ -4,14 +4,15 @@
 
 ## Reading order
 
-1. **[INTEGRATION.md](./INTEGRATION.md)** — **master parity checklist**: ECS + UI + networking + performance
-2. **`src/client/dev/integrationRegistry.ts`** — machine-readable gap matrix (dev panel source)
-3. **[CLAIMS.yaml](./CLAIMS.yaml)** — who is already working on what (synced from GitHub `in-progress` issues)
-4. **[PROGRESS.md](./PROGRESS.md)** — shipped milestones + narrative history
-5. **[DEPLOYMENT.md](./DEPLOYMENT.md)** — build, preview, go-live checklist
-6. **[PR_CHECKLIST.md](./PR_CHECKLIST.md)** — required checks before opening a PR
+1. **[PROGRESS.md](./PROGRESS.md)** — latest release, what’s next, shipped history  
+2. **[INTEGRATION.md](./INTEGRATION.md)** + **`src/client/dev/integrationRegistry.ts`** — parity matrix  
+3. **[CLAIMS.yaml](./CLAIMS.yaml)** — who is already working on what  
+4. **[ARCHITECTURE.md](./ARCHITECTURE.md)** — scene I/O model + debt  
+5. **[DEPLOYMENT.md](./DEPLOYMENT.md)** — build / preview / go-live  
+6. **[PR_CHECKLIST.md](./PR_CHECKLIST.md)** — required checks before PR  
+7. **[CONTRIBUTOR_TESTING.md](./CONTRIBUTOR_TESTING.md)** — test matrix  
 
-Optional: `CLIENT_UI_LAYOUT.md`, `PLAYER_DESIGN.md`, `AVATAR_DESIGN.md`, `CONTRIBUTOR_TESTING.md`, `TASKS.yaml` (legacy re-arch history only).
+Also: [REPO_MANAGEMENT.md](./REPO_MANAGEMENT.md) (branches/release), [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) (historical phases), [TASKS.yaml](./TASKS.yaml) (re-arch history only).
 
 ## Frozen boundaries — do not refactor casually
 
@@ -52,7 +53,7 @@ Offline: `?docsGithubFetch=0` shows placeholder notices only (not live progress)
 | Area | Entry files |
 | ---- | ----------- |
 | Input | `src/input/PointerEventsSystem.ts`, `pointerConstants.ts` |
-| Avatars | `src/bridge/AvatarAttachBridge.ts`, `AvatarShapeBridge.ts` |
+| Avatars | `src/avatar/`, `src/bridge/AvatarAttachBridge.ts`, `AvatarShapeBridge.ts` |
 | Media | `src/media/VideoPlayerBridge.ts` |
 | Social | `src/social/`, `src/network/comms/` |
 | Content | `src/dcl/content/resolveScene.ts` |

@@ -93,22 +93,25 @@ Production build: `npm run build` → static SPA in `dist/`. Preview: `npm run p
 
 | Doc | Purpose |
 | --- | ------- |
-| [docs/INTEGRATION.md](docs/INTEGRATION.md) | Master checklist — ECS + UI + networking + performance |
-| [docs/CONTRIBUTOR_TESTING.md](docs/CONTRIBUTOR_TESTING.md) | **Deploy your own world** for immediate test iterations |
-| [docs/AGENTS.md](docs/AGENTS.md) | AI/human onboarding — boundaries, reading order |
+| [docs/PROGRESS.md](docs/PROGRESS.md) | Milestone log + what’s next (live in dev panel) |
+| [docs/INTEGRATION.md](docs/INTEGRATION.md) | Parity checklist — ECS + UI + networking + performance |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Scene I/O model + tech debt |
+| [docs/AGENTS.md](docs/AGENTS.md) | AI/human onboarding |
+| [docs/CONTRIBUTOR_TESTING.md](docs/CONTRIBUTOR_TESTING.md) | Deploy your own world for test iterations |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Build, host, smoke |
+| [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) | Historical phase plan |
+| [docs/PR_CHECKLIST.md](docs/PR_CHECKLIST.md) | Required checks before PR |
+| [docs/REPO_MANAGEMENT.md](docs/REPO_MANAGEMENT.md) | Branches, release, community |
+| [docs/TASKS.yaml](docs/TASKS.yaml) | Re-arch history (not a pickup queue) |
 | [docs/CLAIMS.yaml](docs/CLAIMS.yaml) | Community claims (synced from GitHub issues) |
-| [docs/PR_CHECKLIST.md](docs/PR_CHECKLIST.md) | Required checks before opening a PR |
-| [docs/PROGRESS.md](docs/PROGRESS.md) | Milestone log (live in dev panel from public repo) |
-| [docs/REPO_MANAGEMENT.md](docs/REPO_MANAGEMENT.md) | Public repo migration and branch strategy |
-| [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md) | Third-party ports (e.g. FFTOCEAN water) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to claim tasks and submit PRs |
-| [LICENSE](LICENSE) | Non-commercial license (all branches) |
+| [LICENSE](LICENSE) | Non-commercial license |
 
-Deploy: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Dev overlay: `</>` sidebar → Community claims + parity gaps + `PROGRESS.md` from GitHub `dev-latest`.
+Dev overlay: `</>` sidebar → Community claims + parity gaps + `PROGRESS.md` from GitHub `dev-latest`.
 
 ## Credits
 
-- **FFT ocean / waves** — GPGPU Phillips-spectrum water ported from [gioeledallapozza/FFTOCEAN](https://github.com/gioeledallapozza/FFTOCEAN). Scene knobs: `scene.json` → `environment.water` (ThreejsClient-only). Details: [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md).
+- **FFT ocean / waves** — GPGPU Phillips-spectrum water ported from [gioeledallapozza/FFTOCEAN](https://github.com/gioeledallapozza/FFTOCEAN). Scene knobs: `scene.json` → `environment.water` (ThreejsClient-only; ignored by Unity/Godot Explorer).
 
 ## License
 

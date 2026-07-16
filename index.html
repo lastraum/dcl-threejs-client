@@ -8329,6 +8329,13 @@
         min-height: 0;
         overflow-y: auto;
         padding: 10px 12px;
+        scrollbar-width: none !important;
+        -ms-overflow-style: none !important;
+      }
+      .chat-panel__messages::-webkit-scrollbar {
+        width: 0 !important;
+        height: 0 !important;
+        display: none !important;
       }
       .chat-panel__empty {
         padding: 32px 8px;
@@ -8584,13 +8591,14 @@
         flex-direction: column;
         align-items: center;
         gap: 8px;
-        scrollbar-width: none;
-        -ms-overflow-style: none;
+        scrollbar-width: none !important;
+        -ms-overflow-style: none !important;
       }
       .chat-panel__rail-scroll::-webkit-scrollbar {
-        width: 0;
-        height: 0;
-        display: none;
+        width: 0 !important;
+        height: 0 !important;
+        display: none !important;
+        background: transparent !important;
       }
       .chat-panel__rail-btn {
         position: relative;

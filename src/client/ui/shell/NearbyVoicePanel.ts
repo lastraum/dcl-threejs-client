@@ -100,7 +100,10 @@ export class NearbyVoicePanel {
     this.visible = true
     this.element.hidden = false
     this.positionNearAnchor()
-    if (this.voice) this.syncFromVoice(this.voice.getSnapshot())
+    if (this.voice) {
+      void this.voice.ensureHearingUnlocked()
+      this.syncFromVoice(this.voice.getSnapshot())
+    }
   }
 
   hide(): void {

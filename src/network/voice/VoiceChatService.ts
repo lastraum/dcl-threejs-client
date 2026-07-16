@@ -249,7 +249,11 @@ export class VoiceChatService {
     if (this.pttHeld === held) return
     this.pttHeld = held
     this.refreshRoom()
-    if (held && this.room) void this.room.startAudio().catch(() => {})
+    if (held && this.room) {
+      void this.room.startAudio().catch(() => {})
+      // User gesture — also unlock remote hearing.
+      this.rescanRemoteVoice()
+    }
     void this.reconcileMicPublish()
     this.notify()
     voiceLog(held ? 'PTT down (hold T)' : 'PTT up')
@@ -276,11 +280,32 @@ export class VoiceChatService {
       } catch {
         /* autoplay */
       }
+      this.dumpRemoteAudioInventory('applyHearing')
       this.rescanRemoteVoice()
       this.applyRemoteVolumes()
     } else {
       this.clearAllRemotes()
     }
+  }
+
+  /** Unlock audio + rescan peers (call on panel open / user gesture). */
+  async ensureHearingUnlocked(): Promise<void> {
+    this.refreshRoom()
+    if (!this.isRoomLive()) {
+      voiceLog('ensureHearingUnlocked — no room', 'warn')
+      return
+    }
+    this.hearing = true
+    try {
+      await this.room!.startAudio()
+      voiceLog('startAudio ok (user gesture)')
+    } catch (err) {
+      voiceLog(`startAudio failed: ${String(err)}`, 'warn')
+    }
+    this.dumpRemoteAudioInventory('userGesture')
+    this.rescanRemoteVoice()
+    this.applyRemoteVolumes()
+    this.notify()
   }
 
   private async reconcileMicPublish(): Promise<void> {
@@ -404,7 +429,11 @@ export class VoiceChatService {
     participant: RemoteParticipant
   ): void => {
     if (!this.hearing) return
-    if (!isVoicePublication(publication, participant)) return
+    if (track.kind !== Track.Kind.Audio) return
+    if (publication.source === Track.Source.ScreenShareAudio) return
+    voiceLog(
+      `TrackSubscribed audio · peer=${(participant.identity ?? '').slice(0, 12)} src=${publication.source}`
+    )
     this.attachRemote(track, publication, participant)
   }
 
@@ -420,12 +449,17 @@ export class VoiceChatService {
     publication: RemoteTrackPublication,
     participant: RemoteParticipant
   ): void => {
-    if (!isVoicePublication(publication, participant)) return
+    if (publication.kind !== Track.Kind.Audio) return
+    if (publication.source === Track.Source.ScreenShareAudio) return
+    voiceLog(
+      `TrackPublished audio · peer=${(participant.identity ?? '').slice(0, 12)} src=${publication.source}`
+    )
     try {
       if (!publication.isSubscribed) publication.setSubscribed(true)
     } catch {
       /* ignore */
     }
+    if (this.hearing) this.ensureRemoteMic(participant)
   }
 
   private readonly onTrackUnpublished = (
@@ -461,11 +495,22 @@ export class VoiceChatService {
       // audioLevel is 0–1 when LiveKit marks them active
       const level = typeof p.audioLevel === 'number' ? p.audioLevel : p.isSpeaking ? 0.6 : 0
       if (level > 0.02 || p.isSpeaking) next.set(id, Math.max(level, 0.25))
+      // Ensure we are subscribed if they're speaking but we never attached.
+      if (!p.isLocal && p instanceof Object) {
+        try {
+          this.ensureRemoteMic(p as RemoteParticipant)
+        } catch {
+          /* ignore */
+        }
+      }
     }
     // Local PTT/Speak without server active-speaker yet — still show bars.
     if (this.micLive && this.room) {
       const localId = this.room.localParticipant.identity?.trim().toLowerCase()
       if (localId && !next.has(localId)) next.set(localId, 0.55)
+    }
+    if (next.size > 0) {
+      voiceLog(`activeSpeakers=${[...next.keys()].map((k) => k.slice(0, 10)).join(',')}`)
     }
     this.setSpeakingLevels(next)
   }
@@ -511,18 +556,43 @@ export class VoiceChatService {
     const room = this.room
     if (!room || !this.hearing) return
     for (const participant of room.remoteParticipants.values()) {
-      for (const publication of participant.trackPublications.values()) {
-        if (!isVoicePublication(publication, participant)) continue
-        try {
-          if (!publication.isSubscribed) publication.setSubscribed(true)
-        } catch {
-          /* ignore */
-        }
-        const track = publication.track
-        if (track && track.kind === Track.Kind.Audio) {
-          this.attachRemote(track as RemoteTrack, publication, participant)
-        }
+      this.ensureRemoteMic(participant)
+    }
+  }
+
+  /** Force-subscribe + attach any peer audio (except screen-share). */
+  private ensureRemoteMic(participant: RemoteParticipant): void {
+    for (const publication of participant.trackPublications.values()) {
+      if (publication.kind !== Track.Kind.Audio) continue
+      if (publication.source === Track.Source.ScreenShareAudio) continue
+      try {
+        if (!publication.isSubscribed) publication.setSubscribed(true)
+      } catch {
+        /* ignore */
       }
+      const track = publication.track
+      if (track && track.kind === Track.Kind.Audio) {
+        this.attachRemote(track as RemoteTrack, publication, participant)
+      }
+    }
+  }
+
+  private dumpRemoteAudioInventory(reason: string): void {
+    const room = this.room
+    if (!room) return
+    const n = room.remoteParticipants.size
+    if (n === 0) {
+      voiceLog(`audio inventory (${reason}): 0 remotes`)
+      return
+    }
+    for (const p of room.remoteParticipants.values()) {
+      const pubs = [...p.trackPublications.values()].map(
+        (pub) =>
+          `${pub.kind}/${pub.source}/sub=${pub.isSubscribed}/muted=${pub.isMuted}/hasTrack=${!!pub.track}`
+      )
+      voiceLog(
+        `audio inventory (${reason}) peer=${(p.identity ?? '').slice(0, 12)} pubs=[${pubs.join(' | ') || 'none'}]`
+      )
     }
   }
 

@@ -238,6 +238,13 @@ export class RemoteAvatarManager {
     record?.nameTag?.showChat(text)
   }
 
+  /** Nearby-voice bars on remote name tags (address → 0–1 level). */
+  applyVoiceLevels(levels: ReadonlyMap<string, number>): void {
+    for (const [key, record] of this.peers) {
+      record.nameTag?.setVoiceLevel(levels.get(key) ?? 0)
+    }
+  }
+
   /**
    * Screen-space hit on a remote avatar body — used for pointer-lock pill hover.
    * Returns the peer's CSS2D pill element when the cursor is over the projected bounds.

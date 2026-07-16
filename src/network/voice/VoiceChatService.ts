@@ -3,6 +3,7 @@ import {
   Room,
   RoomEvent,
   Track,
+  type Participant,
   type RemoteParticipant,
   type RemoteTrack,
   type RemoteTrackPublication,
@@ -28,6 +29,8 @@ export type VoiceChatSnapshot = {
 }
 
 type Listener = (state: VoiceChatSnapshot) => void
+/** wallet address (lowercase) → LiveKit audioLevel 0–1 while speaking */
+type SpeakingListener = (levels: ReadonlyMap<string, number>) => void
 type RoomProvider = () => Room | null
 
 type RemoteVoiceEntry = {
@@ -53,6 +56,9 @@ export class VoiceChatService {
   private remoteCount = 0
   private readonly remotes = new Map<string, RemoteVoiceEntry>()
   private readonly listeners = new Set<Listener>()
+  private readonly speakingListeners = new Set<SpeakingListener>()
+  /** Active speaker levels by participant identity (wallet). */
+  private speakingLevels = new Map<string, number>()
   private unsubSound: (() => void) | null = null
   private publishInFlight: Promise<void> | null = null
   private audioHost: HTMLDivElement | null = null
@@ -105,6 +111,8 @@ export class VoiceChatService {
     this.unsubSound?.()
     this.unsubSound = null
     this.listeners.clear()
+    this.speakingListeners.clear()
+    this.speakingLevels.clear()
   }
 
   subscribe(listener: Listener): () => void {
@@ -112,6 +120,15 @@ export class VoiceChatService {
     listener(this.getSnapshot())
     return () => {
       this.listeners.delete(listener)
+    }
+  }
+
+  /** Name-tag voice bars — map of peer wallet → audio level. */
+  subscribeSpeaking(listener: SpeakingListener): () => void {
+    this.speakingListeners.add(listener)
+    listener(this.speakingLevels)
+    return () => {
+      this.speakingListeners.delete(listener)
     }
   }
 
@@ -309,15 +326,18 @@ export class VoiceChatService {
           voiceLog(
             `Mic published · live=${this.micLive} muted=${pub?.isMuted} sid=${pub?.trackSid?.slice(0, 10) ?? 'n/a'}`
           )
+          this.bumpLocalSpeakingHint()
         } else {
           await room.localParticipant.setMicrophoneEnabled(false)
           this.micLive = false
           voiceLog('Mic unpublished')
+          this.bumpLocalSpeakingHint()
         }
       } catch (err) {
         this.micLive = false
         this.error = err instanceof Error ? err.message : String(err)
         voiceLog(`Mic publish failed: ${this.error}`, 'error')
+        this.bumpLocalSpeakingHint()
       }
       this.notify()
     })()
@@ -354,6 +374,7 @@ export class VoiceChatService {
     room.on(RoomEvent.Reconnected, this.onRoomReconnected)
     room.on(RoomEvent.LocalTrackPublished, this.onLocalTrackPublished)
     room.on(RoomEvent.LocalTrackUnpublished, this.onLocalTrackUnpublished)
+    room.on(RoomEvent.ActiveSpeakersChanged, this.onActiveSpeakersChanged)
   }
 
   private detachRoom(): void {
@@ -368,11 +389,13 @@ export class VoiceChatService {
       room.off(RoomEvent.Reconnected, this.onRoomReconnected)
       room.off(RoomEvent.LocalTrackPublished, this.onLocalTrackPublished)
       room.off(RoomEvent.LocalTrackUnpublished, this.onLocalTrackUnpublished)
+      room.off(RoomEvent.ActiveSpeakersChanged, this.onActiveSpeakersChanged)
     }
     this.handlersBound = false
     this.clearAllRemotes()
     this.room = null
     this.micLive = false
+    this.setSpeakingLevels(new Map())
   }
 
   private readonly onTrackSubscribed = (
@@ -426,7 +449,41 @@ export class VoiceChatService {
     this.pttHeld = false
     this.room = null
     this.handlersBound = false
+    this.setSpeakingLevels(new Map())
     this.notify()
+  }
+
+  private readonly onActiveSpeakersChanged = (speakers: Participant[]): void => {
+    const next = new Map<string, number>()
+    for (const p of speakers) {
+      const id = p.identity?.trim().toLowerCase()
+      if (!id) continue
+      // audioLevel is 0–1 when LiveKit marks them active
+      const level = typeof p.audioLevel === 'number' ? p.audioLevel : p.isSpeaking ? 0.6 : 0
+      if (level > 0.02 || p.isSpeaking) next.set(id, Math.max(level, 0.25))
+    }
+    // Local PTT/Speak without server active-speaker yet — still show bars.
+    if (this.micLive && this.room) {
+      const localId = this.room.localParticipant.identity?.trim().toLowerCase()
+      if (localId && !next.has(localId)) next.set(localId, 0.55)
+    }
+    this.setSpeakingLevels(next)
+  }
+
+  private setSpeakingLevels(next: Map<string, number>): void {
+    this.speakingLevels = next
+    for (const listener of this.speakingListeners) listener(this.speakingLevels)
+  }
+
+  /** Show local name-tag bars as soon as mic is live (before ActiveSpeakers fires). */
+  private bumpLocalSpeakingHint(): void {
+    if (!this.room) return
+    const localId = this.room.localParticipant.identity?.trim().toLowerCase()
+    if (!localId) return
+    const next = new Map(this.speakingLevels)
+    if (this.micLive) next.set(localId, Math.max(next.get(localId) ?? 0, 0.55))
+    else next.delete(localId)
+    this.setSpeakingLevels(next)
   }
 
   private readonly onRoomReconnected = (): void => {

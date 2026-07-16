@@ -444,6 +444,11 @@ export class PlayerSystem {
   }
 
   /** Scene chat line shown inside the overhead name-tag pill. */
+  /** Nearby-voice bars above local name tag while mic is live. */
+  setNameTagVoiceLevel(level: number): void {
+    this.nameTag?.setVoiceLevel(level)
+  }
+
   showNameTagChat(text: string): void {
     if (!areSceneNameTagsVisible()) return
     this.nameTag?.showChat(text)

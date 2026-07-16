@@ -237,6 +237,13 @@ export class World {
     console.log('[voice]', 'syncVoiceRoom', this.comms.describeLiveKitRooms())
   }
 
+  /** Drive 3 green voice bars on local + remote name tags. */
+  applyVoiceLevelsToNameTags(levels: ReadonlyMap<string, number>): void {
+    const local = this.session.getAddress()?.toLowerCase() ?? ''
+    this.player?.setNameTagVoiceLevel(local ? (levels.get(local) ?? 0) : 0)
+    this.remoteAvatars?.applyVoiceLevels(levels)
+  }
+
   private wireCommsHandlers(): void {
     this.vrmPeerSync.attach(this.comms, {
       onPeerVrmChanged: (address, contentHash, format) => {

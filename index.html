@@ -634,6 +634,7 @@
       }
       .avatar-name-tag {
         --avatar-name-tag-chat-max-w: 200px;
+        --voice-level: 0;
         position: relative;
         display: inline-flex;
         flex-direction: column;
@@ -651,6 +652,54 @@
         pointer-events: none;
         user-select: none;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+      }
+      /* 3 green voice bars above the name (Explorer nearby-voice). */
+      .avatar-name-tag__voice {
+        display: none;
+        position: absolute;
+        left: 50%;
+        bottom: calc(100% + 4px);
+        transform: translateX(-50%);
+        align-items: flex-end;
+        justify-content: center;
+        gap: 2px;
+        height: 14px;
+        padding: 2px 5px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.55);
+        pointer-events: none;
+      }
+      .avatar-name-tag--speaking .avatar-name-tag__voice {
+        display: inline-flex;
+      }
+      .avatar-name-tag__voice-bar {
+        display: block;
+        width: 3px;
+        border-radius: 1px;
+        background: #57e389;
+        min-height: 3px;
+        transform-origin: bottom center;
+      }
+      .avatar-name-tag--speaking .avatar-name-tag__voice-bar:nth-child(1) {
+        height: calc(3px + var(--voice-level) * 7px);
+        animation: avatar-voice-bar 0.45s ease-in-out infinite;
+      }
+      .avatar-name-tag--speaking .avatar-name-tag__voice-bar:nth-child(2) {
+        height: calc(5px + var(--voice-level) * 9px);
+        animation: avatar-voice-bar 0.45s ease-in-out 0.12s infinite;
+      }
+      .avatar-name-tag--speaking .avatar-name-tag__voice-bar:nth-child(3) {
+        height: calc(3px + var(--voice-level) * 7px);
+        animation: avatar-voice-bar 0.45s ease-in-out 0.24s infinite;
+      }
+      @keyframes avatar-voice-bar {
+        0%,
+        100% {
+          transform: scaleY(0.45);
+        }
+        50% {
+          transform: scaleY(1);
+        }
       }
       .avatar-name-tag__loading {
         display: none;

@@ -46,17 +46,30 @@ export class NameTag {
   private readonly badgeEl: HTMLSpanElement | null
   private readonly chatEl: HTMLDivElement
   private readonly loadingEl: HTMLDivElement
+  private readonly voiceEl: HTMLDivElement
 
   private label: string
   private loading = false
   private style: NameTagStyle
   private readonly address: string | null
   private chatHideTimer: ReturnType<typeof setTimeout> | null = null
+  private voiceLevel = 0
 
   constructor(text: string, options: NameTagOptions) {
     const el = document.createElement('div')
     el.className = 'avatar-name-tag'
     this.rootEl = el
+
+    // Explorer-style 3 green voice bars (above the name when speaking).
+    this.voiceEl = document.createElement('div')
+    this.voiceEl.className = 'avatar-name-tag__voice'
+    this.voiceEl.setAttribute('aria-hidden', 'true')
+    for (let i = 0; i < 3; i++) {
+      const bar = document.createElement('span')
+      bar.className = 'avatar-name-tag__voice-bar'
+      this.voiceEl.appendChild(bar)
+    }
+    el.appendChild(this.voiceEl)
 
     const header = document.createElement('div')
     header.className = 'avatar-name-tag__header'
@@ -168,8 +181,24 @@ export class NameTag {
     this.loadingEl.setAttribute('aria-hidden', loading ? 'false' : 'true')
   }
 
+  /**
+   * Nearby-voice activity (0–1). Shows 3 green bars above the name when active.
+   * LiveKit `audioLevel` typically ~0–1 when speaking.
+   */
+  setVoiceLevel(level: number): void {
+    const next = Math.max(0, Math.min(1, level))
+    const was = this.voiceLevel > 0.02
+    const now = next > 0.02
+    this.voiceLevel = next
+    this.rootEl.style.setProperty('--voice-level', next.toFixed(3))
+    if (was === now) return
+    this.rootEl.classList.toggle('avatar-name-tag--speaking', now)
+    this.voiceEl.setAttribute('aria-hidden', now ? 'false' : 'true')
+  }
+
   dispose(): void {
     this.clearChat()
+    this.setVoiceLevel(0)
     this.object.removeFromParent()
   }
 

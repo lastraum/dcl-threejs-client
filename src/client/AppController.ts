@@ -72,6 +72,7 @@ export class AppController {
   private chatPanel: ChatPanel | null = null
   private settingsOverlay: SettingsOverlay | null = null
   private unsubVoiceUi: (() => void) | null = null
+  private unsubVoiceSpeaking: (() => void) | null = null
   /** Session used by Settings/Backpack when no World is loaded (2D shell). */
   private shellSession: SessionIdentity | null = null
   private preferencesPanel: PreferencesPanel | null = null
@@ -1571,6 +1572,8 @@ export class AppController {
   private bindNearbyVoice(world: World): void {
     this.unsubVoiceUi?.()
     this.unsubVoiceUi = null
+    this.unsubVoiceSpeaking?.()
+    this.unsubVoiceSpeaking = null
     world.syncVoiceRoom()
     this.shell?.bindNearbyVoice(world.voice)
     console.log('[voice] panel bound ·', world.comms.describeLiveKitRooms())
@@ -1585,11 +1588,17 @@ export class AppController {
         roomReady: snap.roomReady
       })
     })
+    // 3 green bars over name tags while LiveKit marks speakers active.
+    this.unsubVoiceSpeaking = world.voice.subscribeSpeaking((levels) => {
+      world.applyVoiceLevelsToNameTags(levels)
+    })
   }
 
   private async teardownScene(): Promise<void> {
     this.unsubVoiceUi?.()
     this.unsubVoiceUi = null
+    this.unsubVoiceSpeaking?.()
+    this.unsubVoiceSpeaking = null
     this.shell?.bindNearbyVoice(null)
     this.world?.setVoluntaryEmoteAllowedHandler(null)
     this.teardownExplorer()

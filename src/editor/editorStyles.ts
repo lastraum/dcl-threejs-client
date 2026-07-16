@@ -9,7 +9,13 @@ export function injectEditorStyles(): void {
   width: 100%;
   height: 100%;
   overflow: auto;
-  background: #0a0a0f;
+  /* Same site-wide DCL backdrop as Explore / landing (see index.html :root) */
+  background-color: var(--dcl-bg-deep, #0c0b0f);
+  background-image: var(--dcl-site-bg-image);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
   color: #e2e8f0;
   font-family: system-ui, sans-serif;
 }
@@ -414,7 +420,8 @@ export function injectEditorStyles(): void {
   align-items: center;
   justify-content: center;
   color: #94a3b8;
-  background: #0a1624;
+  background: rgba(12, 11, 15, 0.55);
+  backdrop-filter: blur(2px);
 }
 .editor-sculpt-panel {
   display: flex;

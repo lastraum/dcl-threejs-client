@@ -49,6 +49,9 @@
         --client-chat-max-h: min(580px, calc(100vh - var(--client-safe-top) - var(--client-safe-bottom) - 96px));
         --client-ui-font-sm: clamp(11px, 0.7rem + 0.15vw, 12px);
         --client-ui-font-md: clamp(13px, 0.8rem + 0.2vw, 15px);
+        /* Site-wide DCL jump-site backdrop — shell pages + terrain editor hub */
+        --dcl-bg-deep: #0c0b0f;
+        --dcl-site-bg-image: url('https://cdn.decentraland.org/@dcl/jump-site/1.2.0/assets/background--i0ipWGU.webp');
         /*
          * Stacking (low → high). Client HUD always paints above scene ECS UI.
          * System overlays (loading/modals/debug) stay above HUD.
@@ -8612,9 +8615,8 @@
       body.communities-route #app,
       body.map-route #app,
       body.profile-route #app,
-      body.scene-landing-route #app {
-        --dcl-bg-deep: #0c0b0f;
-        --dcl-site-bg-image: url('https://cdn.decentraland.org/@dcl/jump-site/1.2.0/assets/background--i0ipWGU.webp');
+      body.scene-landing-route #app,
+      body.editor-route #app {
         background-color: var(--dcl-bg-deep);
         background-image: var(--dcl-site-bg-image);
         background-size: cover;

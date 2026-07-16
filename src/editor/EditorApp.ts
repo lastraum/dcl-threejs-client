@@ -12,6 +12,7 @@ export class EditorApp {
 
   async start(container: HTMLElement): Promise<void> {
     injectEditorStyles()
+    document.body.classList.add('editor-route')
     this.container = container
     this.onPopState = () => void this.syncFromUrl()
     window.addEventListener('popstate', this.onPopState)
@@ -25,6 +26,7 @@ export class EditorApp {
     this.hub = null
     if (this.container) this.container.innerHTML = ''
     this.container = null
+    document.body.classList.remove('editor-route')
   }
 
   private async syncFromUrl(): Promise<void> {

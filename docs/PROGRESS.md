@@ -2,38 +2,46 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-15 (**Flagtag client fixes** → `dev-latest`)  
+> **Last updated:** 2026-07-15 (**instanced props + teleport / UI ticks** → `dev-latest`)  
 > **Current phase:** Post-**v0.8.0** — backpack gaps, graphics P3/P4, voice, Phase 4 `/goto`.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
 > **Product next:** Phase 4 `/goto` in 3D · community text / DMs · voice UI · remaining backpack parity.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
+>
+> **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets
+> (3–6 lines). Version toast will show the latest block when `APP_VERSION` changes.
 
 ---
 
-## 🎉 Milestone — Flagtag client: instanced props, spawn, chat UI (2026-07-15)
+## 🎉 Milestone — Instanced props, teleports & scene UI ticks → `dev-latest` (2026-07-15)
 
-**Status: merged `lastraum` → `dev-latest`** — GPU instance lifecycle + Flagtag playability polish. Parked: post-round freeze when scene keeps InputModifier walk/jog/run off (likely Flagtag scene-side).
+**Status: merged `lastraum` → `dev-latest`** — scene-agnostic GPU instance lifecycle, teleport/spawn reliability, UI tick resume, chat dock polish.
+
+### What's new
+
+- Pickups and shared props **disappear correctly** when removed or hidden (no ghost meshes)
+- **Tweened props animate** again when GPU-instanced (spin, bob, slide)
+- Scene UI and timers keep updating after big UI remounts and teleports
+- More reliable **floor land / respawn** after `movePlayerTo` (feet-based, authored colliders)
+- Chat dock: better expand/collapse height, hide list when a thread is open, clearer icons
+
+**Parked:** Some worlds still leave the player frozen after a round reset via scene `InputModifier` — client no longer re-applies a stale freeze after the scene unlocks; remaining freezes need scene (or Explorer-compare) follow-up.
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
-| **Instanced Gltf hide/remove** | 🟢 | Detach GPU slot + clear clone when `GltfContainer` deleted; Visibility zeros instance matrices (coin pickup ghosts gone) |
-| **Instanced transform tweens** | 🟢 | After TweenBridge pose, rewrite InstancedMesh matrices (spinning coins) |
-| **UI mount LWW** | 🟢 | Clear only snapshot entity rows — no full wipe without re-seed (was 0/N deferred + stuck ticks) |
-| **Mount-lag tick resume** | 🟢 | Force-resume worker ticks after ~1.2s lag / on `movePlayerTo` nudge |
-| **Scene freeze latch** | 🟢 | Drop scene IM latch when live cleared — do not re-apply freeze after unlock |
-| **Spawn / teleport** | 🟢 | Pure authored floor settle; `movePlayerTo` feet; teleport settle logs locomotion flags |
+| **Instanced Gltf hide/remove** | 🟢 | Detach GPU slot + clear clone when `GltfContainer` deleted; Visibility zeros instance matrices |
+| **Instanced transform tweens** | 🟢 | After TweenBridge pose, rewrite InstancedMesh matrices every frame |
+| **UI mount LWW** | 🟢 | Clear only snapshot entity rows — no full wipe without re-seed |
+| **Mount-lag tick resume** | 🟢 | Force-resume worker ticks after ~1.2s lag / on `movePlayerTo` |
+| **Scene freeze latch** | 🟢 | Drop scene IM latch when live cleared — do not re-freeze after unlock |
+| **Spawn / teleport** | 🟢 | Pure authored floor settle; `movePlayerTo` feet; locomotion flag logs |
 | **Chat rail** | 🟢 | Dock heights, hide list on thread, unique scene-chat icons |
-| **Post-restart freeze** | 🟡 | Client no longer re-freezes after scene clear; Flagtag may still leave walk/jog/run disabled until its own timer/UI finishes — verify in Explorer |
+| **Post-round freeze** | 🟡 | Client latch fixed; scene may still leave walk/jog/run disabled |
 
-**QA:** Flagtag world — pick coins (disappear) · coins spin · drown/respawn walk · round reset (may still freeze if scene IM stuck) · chat expand/thread.
+**QA:** Collectable pickups vanish · instanced tweens spin · elevated drown/respawn · multi-room chat expand/thread · any world that freezes on round reset (compare Explorer).
 
-**Branch:** `lastraum` → `dev-latest` (`ae78b01` code · `88d1bd6` progress).
-
-**Highlights (toast / release notes):**
-- Coins and instanced props hide and animate correctly  
-- Safer scene UI updates and worker tick resume after teleports  
-- Spawn/teleport feet + floor settle; chat dock polish  
+**Branch:** `lastraum` → `dev-latest` (`ae78b01` code · progress docs).
 
 ---
 

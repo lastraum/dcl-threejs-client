@@ -2,7 +2,7 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-15 (**Flagtag client fixes** on `lastraum` → merge to `dev-latest`)  
+> **Last updated:** 2026-07-15 (**Flagtag client fixes** → `dev-latest`)  
 > **Current phase:** Post-**v0.8.0** — backpack gaps, graphics P3/P4, voice, Phase 4 `/goto`.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
@@ -13,7 +13,7 @@
 
 ## 🎉 Milestone — Flagtag client: instanced props, spawn, chat UI (2026-07-15)
 
-**Status: on `lastraum` (`ae78b01`) — merge → `dev-latest`** — GPU instance lifecycle + Flagtag playability polish. Parked: post-round freeze when scene keeps InputModifier walk/jog/run off (likely Flagtag scene-side).
+**Status: merged `lastraum` → `dev-latest`** — GPU instance lifecycle + Flagtag playability polish. Parked: post-round freeze when scene keeps InputModifier walk/jog/run off (likely Flagtag scene-side).
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
@@ -28,7 +28,7 @@
 
 **QA:** Flagtag world — pick coins (disappear) · coins spin · drown/respawn walk · round reset (may still freeze if scene IM stuck) · chat expand/thread.
 
-**Branch:** `lastraum` @ `ae78b01` → PR into `dev-latest`.
+**Branch:** `lastraum` → `dev-latest` (`ae78b01` code · `88d1bd6` progress).
 
 **Highlights (toast / release notes):**
 - Coins and instanced props hide and animate correctly  

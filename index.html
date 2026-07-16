@@ -8385,25 +8385,26 @@
       .chat-panel__link:hover {
         color: #7bc0ff;
       }
-      /* @-mention of local user: highlight message body only (not sender name / time). */
+      /* @-mention of local user: soft body wash (no border — chip owns the outline). */
       .chat-panel__text.is-mentioned,
       .social-chat-dock .chat-panel__text.is-mentioned {
         color: #fff;
-        background: rgba(140, 40, 200, 0.55);
-        border: 1.5px solid #e070ff;
+        background: rgba(140, 40, 200, 0.35);
+        border: none;
         border-radius: 8px;
         padding: 4px 8px;
-        box-shadow: 0 0 10px rgba(220, 100, 255, 0.4);
+        box-shadow: none;
       }
-      /* Inline @token chip inside the body. */
+      /* Inline @token chip — single border only (avoid double ring with body highlight). */
       .chat-panel__mention-self {
         display: inline-block;
         max-width: 100%;
         padding: 0 5px;
         margin: 0 1px;
         border-radius: 5px;
-        background: rgba(90, 20, 140, 0.9);
-        border: 1px solid #f0a0ff;
+        background: rgba(90, 20, 140, 0.95);
+        border: 1.5px solid #e070ff;
+        box-shadow: none;
         color: #fff !important;
         font-weight: 700;
         font-size: inherit;
@@ -8411,6 +8412,10 @@
         white-space: normal;
         word-break: break-word;
         vertical-align: baseline;
+      }
+      .chat-panel__text.is-mentioned .chat-panel__mention-self {
+        /* Chip inside mentioned body: fill only, body wash provides context */
+        border-color: rgba(240, 160, 255, 0.85);
       }
       .chat-panel__time {
         margin-top: 4px;

@@ -2,7 +2,7 @@ import type { LoginResult } from '../../../auth/AuthClient'
 import type { SocialService } from '../../../social/SocialService'
 import { SocialProfileMenu } from './SocialProfileMenu'
 
-export type SocialShellTab = 'explore' | 'map' | 'communities' | 'events'
+export type SocialShellTab = 'explore' | 'map' | 'communities' | 'events' | 'editor'
 
 export type SocialShellChromeHandlers = {
   onLoginChange?: (login: LoginResult) => void
@@ -23,7 +23,15 @@ export type SocialShellTopNavOptions = SocialShellChromeHandlers & {
   onOpenUserProfile?: (address: string) => void
 }
 
-/** Shared 2D shell nav — Explore · Map · Communities · Events + account chrome. */
+const SHELL_TABS: readonly SocialShellTab[] = [
+  'explore',
+  'map',
+  'communities',
+  'events',
+  'editor'
+]
+
+/** Shared 2D shell nav — Explore · Map · Communities · Events · Terrain + account chrome. */
 export class SocialShellTopNav {
   readonly el: HTMLElement
 
@@ -43,6 +51,7 @@ export class SocialShellTopNav {
         <button type="button" class="social-shell-topnav__link" data-shell-tab="map">Map</button>
         <button type="button" class="social-shell-topnav__link" data-shell-tab="communities">Communities</button>
         <button type="button" class="social-shell-topnav__link" data-shell-tab="events">Events</button>
+        <button type="button" class="social-shell-topnav__link" data-shell-tab="editor" aria-label="Terrain editor">Terrain</button>
       </nav>
       <div class="social-shell-topnav__account" data-account></div>
     `
@@ -62,7 +71,7 @@ export class SocialShellTopNav {
 
     for (const btn of this.el.querySelectorAll<HTMLButtonElement>('[data-shell-tab]')) {
       const tab = btn.dataset.shellTab as SocialShellTab | undefined
-      if (tab === 'explore' || tab === 'map' || tab === 'communities' || tab === 'events') {
+      if (tab && (SHELL_TABS as readonly string[]).includes(tab)) {
         this.tabButtons[tab] = btn
         btn.addEventListener('click', () => opts.onNavigate(tab))
       }

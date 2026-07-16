@@ -252,6 +252,7 @@ export class AppController {
     if (tab === 'explore') void this.navigateTo({ kind: 'blank' })
     else if (tab === 'map') void this.navigateTo({ kind: 'map' })
     else if (tab === 'communities') void this.navigateTo({ kind: 'communities' })
+    else if (tab === 'editor') void this.navigateTo({ kind: 'editor' })
     else void this.navigateTo({ kind: 'events' })
   }
 

@@ -60,17 +60,6 @@ export class NameTag {
     el.className = 'avatar-name-tag'
     this.rootEl = el
 
-    // Explorer-style 3 green voice bars (above the name when speaking).
-    this.voiceEl = document.createElement('div')
-    this.voiceEl.className = 'avatar-name-tag__voice'
-    this.voiceEl.setAttribute('aria-hidden', 'true')
-    for (let i = 0; i < 3; i++) {
-      const bar = document.createElement('span')
-      bar.className = 'avatar-name-tag__voice-bar'
-      this.voiceEl.appendChild(bar)
-    }
-    el.appendChild(this.voiceEl)
-
     const header = document.createElement('div')
     header.className = 'avatar-name-tag__header'
 
@@ -84,6 +73,17 @@ export class NameTag {
       this.badgeEl.textContent = '✓'
       header.appendChild(this.badgeEl)
     }
+
+    // 3 green voice bars inside the pill, to the right of name / checkmark.
+    this.voiceEl = document.createElement('div')
+    this.voiceEl.className = 'avatar-name-tag__voice'
+    this.voiceEl.setAttribute('aria-hidden', 'true')
+    for (let i = 0; i < 3; i++) {
+      const bar = document.createElement('span')
+      bar.className = 'avatar-name-tag__voice-bar'
+      this.voiceEl.appendChild(bar)
+    }
+    header.appendChild(this.voiceEl)
 
     el.appendChild(header)
 

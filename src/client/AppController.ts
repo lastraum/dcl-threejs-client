@@ -274,13 +274,13 @@ export class AppController {
 
     this.editorApp?.dispose()
     this.editorApp = new EditorApp()
+    // Terrain hub: shell nav only — no scene chat dock / FAB.
+    this.teardownSocialChatShell(false)
     await this.editorApp.start(this.container, {
       login: this.login,
       onNavigate: (tab) => this.navigateSocialShell(tab),
       ...this.socialShellLoginHandlers()
     })
-    this.ensureSocialChatShell()
-    this.collapseSocialChatThread()
   }
 
   private socialShellSocialHandlers(): {

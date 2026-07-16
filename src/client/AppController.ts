@@ -49,7 +49,7 @@ import { SceneBanMonitor } from '../network/sceneAccess/SceneBanMonitor'
 import { SceneAccessDeniedError } from '../network/sceneAccess/SceneAccessDeniedError'
 import { ProfileUiController } from './ui/profile/ProfileUiController'
 import type { AppMode } from './appMode'
-import { openWhatsNewFromMenu } from './whatsNew/WhatsNewToast'
+import { bindWhatsNewShippedOpener, openWhatsNewFromMenu } from './whatsNew/WhatsNewToast'
 import { CommunitiesPageView } from './ui/explore/CommunitiesPageView'
 import { EventsPageView } from './ui/explore/EventsPageView'
 import { ExplorerView } from './ui/explore/ExplorerView'
@@ -124,6 +124,9 @@ export class AppController {
 
     window.addEventListener('popstate', this.onPopState)
     this.wireSceneBanDebug()
+    // Toast + profile "What's new" open the same Dev Progress → Shipped view.
+    this.ensureDevProgressPanel()
+    bindWhatsNewShippedOpener(() => this.openShippedChangelog())
 
     const postLoginRoute = resolveRouteTarget()
     this.login = await resolveInitialLogin()
@@ -1254,11 +1257,7 @@ export class AppController {
       this.debugPanel.setRecookCollidersHandler(() => this.world?.recookPhysicsColliders({ force: true }))
     }
 
-    if (!this.devProgressPanel) {
-      this.devProgressPanel = new DevProgressPanel({
-        getSession: () => this.world?.session ?? null
-      })
-    }
+    this.ensureDevProgressPanel()
 
     if (!this.shell) {
       this.shell = new ClientShell({
@@ -1635,6 +1634,20 @@ export class AppController {
     return { px: parseInt(m[1]!, 10), py: parseInt(m[2]!, 10) }
   }
 
+  private ensureDevProgressPanel(): DevProgressPanel {
+    if (!this.devProgressPanel) {
+      this.devProgressPanel = new DevProgressPanel({
+        getSession: () => this.world?.session ?? this.shellSession ?? null
+      })
+    }
+    return this.devProgressPanel
+  }
+
+  /** What's new toast + profile menu → same panel as </> → Shipped. */
+  private openShippedChangelog(): void {
+    this.ensureDevProgressPanel().showTab('progress')
+  }
+
   private getMapPlayerState(): MapPlayerState | null {
     const world = this.world
     if (!world) return null
@@ -1750,6 +1763,7 @@ export class AppController {
     this.preferencesPanel = null
     this.debugPanel?.dispose()
     this.debugPanel = null
+    bindWhatsNewShippedOpener(null)
     this.devProgressPanel?.dispose()
     this.devProgressPanel = null
     this.mobileHud?.dispose()

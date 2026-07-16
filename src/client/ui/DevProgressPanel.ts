@@ -152,6 +152,12 @@ export class DevProgressPanel {
     this.render()
   }
 
+  /** Open panel on a tab (e.g. What's new → Shipped). */
+  showTab(tab: DevTab): void {
+    this.setTab(tab)
+    this.show()
+  }
+
   hide(): void {
     this.visible = false
     this.root.classList.remove('is-open')

@@ -1,5 +1,5 @@
 import { APP_VERSION } from '../appVersion'
-import { loadProgressMarkdown, progressBrowseUrl } from '../dev/progressRegistry'
+import { loadProgressMarkdown } from '../dev/progressRegistry'
 import { parseLatestWhatsNew, type WhatsNewBlock } from './parseWhatsNew'
 import {
   markWhatsNewSeen,
@@ -31,34 +31,54 @@ async function loadWhatsNewContent(): Promise<{ title: string; bullets: string[]
   if (!bullets.length) {
     bullets = [
       'Performance and reliability improvements',
-      'See full notes in Dev Progress → Shipped'
+      'Open Dev Progress → Shipped for full notes'
     ]
   }
   return { title, bullets }
 }
 
+/** Opens Dev Progress → Shipped (same panel as the </> dev tool). */
+type OpenShippedFn = () => void
+
+let openShippedView: OpenShippedFn | null = null
+
 /**
- * Version toast (auto) + highlights sheet (toast button or profile menu).
+ * Wire the shared Dev Progress panel so toast + profile menu open the Shipped tab
+ * instead of a separate highlights sheet.
+ */
+export function bindWhatsNewShippedOpener(open: OpenShippedFn | null): void {
+  openShippedView = open
+}
+
+function openShippedChangelog(): boolean {
+  if (!openShippedView) return false
+  openShippedView()
+  return true
+}
+
+/**
+ * Version toast (auto) + entry points that open Dev Progress → Shipped.
  * PERSIST_ACK=false while testing — dismiss never writes localStorage.
  */
 export class WhatsNewToast {
   private host: HTMLElement | null = null
   private toast: HTMLElement | null = null
-  private sheet: HTMLElement | null = null
   private dismissTimer = 0
   /** When true, closing should call markWhatsNewSeen (version-bump flow). */
   private ackOnClose = false
 
   async maybeShow(): Promise<void> {
     if (!shouldShowWhatsNew()) return
-    const { title, bullets } = await loadWhatsNewContent()
-    this.mountToast(title, bullets)
+    const { title } = await loadWhatsNewContent()
+    this.mountToast(title)
   }
 
-  /** Profile menu / always-available entry — opens highlights sheet only. */
-  async openHighlights(): Promise<void> {
-    const { title, bullets } = await loadWhatsNewContent()
-    this.mountSheetOnly(title, bullets)
+  /** Profile menu / settings — same Shipped view as Dev Progress. */
+  openHighlights(): void {
+    this.ackOnClose = false
+    if (openShippedChangelog()) return
+    // Fallback: panel not wired yet (should not happen after AppController.start).
+    console.warn('[whats-new] Dev Progress panel not ready — open </> → Shipped')
   }
 
   private ensureHost(): HTMLElement {
@@ -70,7 +90,7 @@ export class WhatsNewToast {
     return this.host
   }
 
-  private mountToast(title: string, bullets: string[]): void {
+  private mountToast(title: string): void {
     this.dispose()
     this.ackOnClose = true
     const host = this.ensureHost()
@@ -93,13 +113,21 @@ export class WhatsNewToast {
           </button>
         </div>
       </div>
+      ${
+        !WHATS_NEW_PERSIST_ACK
+          ? '<p class="whats-new-toast__dev-hint">Testing mode — dismiss does not save localStorage</p>'
+          : ''
+      }
     `
 
-    this.buildSheet(title, bullets, /* showDevNote */ true)
-    host.append(this.toast, this.sheet!)
+    host.appendChild(this.toast)
 
     this.toast.querySelector('[data-whats-new-details]')?.addEventListener('click', () => {
-      this.openSheet()
+      window.clearTimeout(this.dismissTimer)
+      this.dismissTimer = 0
+      // Same view as Dev Progress → Shipped.
+      openShippedChangelog()
+      this.ackAndClose()
     })
     this.toast.querySelector('[data-whats-new-dismiss]')?.addEventListener('click', () => {
       this.ackAndClose()
@@ -114,62 +142,6 @@ export class WhatsNewToast {
     this.dismissTimer = window.setTimeout(() => this.ackAndClose(), 14_000)
   }
 
-  private mountSheetOnly(title: string, bullets: string[]): void {
-    this.dispose()
-    // Manual open — do not mark version seen (user can re-open anytime).
-    this.ackOnClose = false
-    // Sheet is position:fixed; append to body so parent toast host layout cannot clip it.
-    this.buildSheet(title, bullets, /* showDevNote */ false)
-    document.body.appendChild(this.sheet!)
-    this.openSheet()
-  }
-
-  private buildSheet(title: string, bullets: string[], showDevNote: boolean): void {
-    this.sheet = document.createElement('div')
-    this.sheet.className = 'whats-new-sheet'
-    this.sheet.hidden = true
-    this.sheet.setAttribute('role', 'dialog')
-    this.sheet.setAttribute('aria-modal', 'true')
-    this.sheet.setAttribute('aria-label', "What's new")
-    const list = bullets.map((b) => `<li>${escapeHtml(b)}</li>`).join('')
-    this.sheet.innerHTML = `
-      <div class="whats-new-sheet__backdrop" data-whats-new-close></div>
-      <div class="whats-new-sheet__panel">
-        <header class="whats-new-sheet__header">
-          <div>
-            <p class="whats-new-sheet__kicker">v${escapeHtml(APP_VERSION)}</p>
-            <h2 class="whats-new-sheet__title">${escapeHtml(title)}</h2>
-          </div>
-          <button type="button" class="whats-new-sheet__close" data-whats-new-close aria-label="Close">&times;</button>
-        </header>
-        <ul class="whats-new-sheet__list">${list}</ul>
-        <footer class="whats-new-sheet__footer">
-          <a class="whats-new-sheet__link" href="${escapeHtml(progressBrowseUrl())}" target="_blank" rel="noopener">
-            Full progress log
-          </a>
-          <button type="button" class="whats-new-toast__btn whats-new-toast__btn--primary" data-whats-new-close>
-            Got it
-          </button>
-        </footer>
-        ${
-          showDevNote && !WHATS_NEW_PERSIST_ACK
-            ? '<p class="whats-new-sheet__dev">Testing mode — dismiss does not save localStorage</p>'
-            : ''
-        }
-      </div>
-    `
-    this.sheet.querySelectorAll('[data-whats-new-close]').forEach((el) => {
-      el.addEventListener('click', () => this.ackAndClose())
-    })
-  }
-
-  private openSheet(): void {
-    window.clearTimeout(this.dismissTimer)
-    this.dismissTimer = 0
-    if (this.sheet) this.sheet.hidden = false
-    this.toast?.classList.remove('whats-new-toast--visible')
-  }
-
   private ackAndClose(): void {
     if (this.ackOnClose) markWhatsNewSeen(APP_VERSION)
     this.dispose()
@@ -178,11 +150,9 @@ export class WhatsNewToast {
   dispose(): void {
     window.clearTimeout(this.dismissTimer)
     this.dismissTimer = 0
-    this.sheet?.remove()
     this.host?.remove()
     this.host = null
     this.toast = null
-    this.sheet = null
   }
 }
 
@@ -198,7 +168,7 @@ export function maybeShowWhatsNewToast(): void {
   void sharedWhatsNew().maybeShow()
 }
 
-/** Profile menu — open highlights sheet anytime. */
+/** Profile menu — open Dev Progress → Shipped anytime. */
 export function openWhatsNewFromMenu(): void {
-  void sharedWhatsNew().openHighlights()
+  sharedWhatsNew().openHighlights()
 }

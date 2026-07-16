@@ -10,7 +10,7 @@ export type WorldLocationCardOptions = {
 
 /** Top-left HUD location pill — scene/world name + live coordinates. */
 export class WorldLocationCard {
-  private readonly root: HTMLDivElement
+  readonly root: HTMLDivElement
   private readonly titleEl: HTMLElement
   private readonly coordsEl: HTMLElement
   private readonly expandBtn: HTMLButtonElement | null

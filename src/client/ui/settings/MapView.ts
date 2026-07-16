@@ -42,6 +42,13 @@ export type MapPlayerState = {
 export type MapViewOptions = {
   getPlayerState: () => MapPlayerState | null
   onJumpIn?: (px: number, py: number) => void
+  /** Prefer this parcel when mounting (e.g. minimap open after scene teardown). */
+  initialCenter?: { px: number; py: number } | null
+  /**
+   * When true (settings overlay / in-world panel), hide the map page HUD
+   * (status, Genesis Plaza / My Location) — that chrome belongs on the full /map route only.
+   */
+  embedded?: boolean
 }
 
 const INITIAL_VIEW: MapViewState = {
@@ -95,14 +102,15 @@ export class MapView {
   private readonly playerSearchInput: HTMLInputElement
   private readonly genesisMeta: HTMLParagraphElement
   private readonly worldsMeta: HTMLParagraphElement
-  private readonly statusEl: HTMLSpanElement
-  private readonly countEl: HTMLSpanElement
+  private readonly statusEl: HTMLSpanElement | null
+  private readonly countEl: HTMLSpanElement | null
   private readonly genesisEmpty: HTMLParagraphElement
   private readonly worldsEmpty: HTMLParagraphElement
   private readonly peersError: HTMLParagraphElement
   private readonly worldsError: HTMLParagraphElement
   private readonly getPlayerState: () => MapPlayerState | null
   private readonly onJumpIn?: (px: number, py: number) => void
+  private readonly initialCenter: { px: number; py: number } | null
 
   private view: MapViewState = { ...INITIAL_VIEW }
   private viewSize = { w: 0, h: 0 }
@@ -152,21 +160,18 @@ export class MapView {
   private readonly sidebarBackdrop: HTMLDivElement
   private readonly sidebarCloseBtn: HTMLButtonElement
 
-  constructor({ getPlayerState, onJumpIn }: MapViewOptions) {
+  constructor({ getPlayerState, onJumpIn, initialCenter = null, embedded = false }: MapViewOptions) {
     this.getPlayerState = getPlayerState
     this.onJumpIn = onJumpIn
+    this.initialCenter = initialCenter ?? null
 
     this.root = document.createElement('div')
     this.root.className = 'map-view dcl-map-page'
+    if (embedded) this.root.classList.add('map-view--embedded')
 
-    this.root.innerHTML = `
-      <div class="dcl-map__viewport" tabindex="0" aria-label="Genesis City map">
-        <div class="dcl-map__tiles" aria-hidden="true"></div>
-        <div class="dcl-map__parcel-tiles" aria-hidden="true"></div>
-        <div class="dcl-map__highlights" aria-hidden="true"></div>
-        <div class="dcl-map__markers" aria-hidden="true"></div>
-      </div>
-
+    const hudMarkup = embedded
+      ? ''
+      : `
       <header class="dcl-map__hud dcl-map__hud--top">
         <div class="dcl-map__hud-controls">
           <span class="dcl-map__status" role="status"></span>
@@ -175,7 +180,16 @@ export class MapView {
           <button type="button" class="dcl-map__btn" data-center-player>My location</button>
           <button type="button" class="dcl-map__btn" data-retry-peers hidden>Retry</button>
         </div>
-      </header>
+      </header>`
+
+    this.root.innerHTML = `
+      <div class="dcl-map__viewport" tabindex="0" aria-label="Genesis City map">
+        <div class="dcl-map__tiles" aria-hidden="true"></div>
+        <div class="dcl-map__parcel-tiles" aria-hidden="true"></div>
+        <div class="dcl-map__highlights" aria-hidden="true"></div>
+        <div class="dcl-map__markers" aria-hidden="true"></div>
+      </div>
+      ${hudMarkup}
 
       <button type="button" class="dcl-map__sidebar-toggle" data-sidebar-toggle aria-label="Open activity panel" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -235,8 +249,8 @@ export class MapView {
     this.playerSearchInput = this.root.querySelector('.dcl-map__search-input')!
     this.genesisMeta = this.root.querySelector('[data-genesis-meta]')!
     this.worldsMeta = this.root.querySelector('[data-worlds-meta]')!
-    this.statusEl = this.root.querySelector('.dcl-map__status')!
-    this.countEl = this.root.querySelector('.dcl-map__count')!
+    this.statusEl = this.root.querySelector('.dcl-map__status')
+    this.countEl = this.root.querySelector('.dcl-map__count')
     this.genesisEmpty = this.root.querySelector('[data-genesis-empty]')!
     this.worldsEmpty = this.root.querySelector('[data-worlds-empty]')!
     this.peersError = this.root.querySelector('[data-peers-error]')!
@@ -261,9 +275,9 @@ export class MapView {
     this.mobileQuery.addEventListener('change', this.onMobileLayoutChange)
     this.syncMobileSidebarLayout()
 
-    this.root.querySelector('[data-center-plaza]')!.addEventListener('click', () => this.centerOnParcel(0, 0))
-    this.root.querySelector('[data-center-player]')!.addEventListener('click', () => this.centerOnPlayer())
-    this.root.querySelector('[data-retry-peers]')!.addEventListener('click', () => void this.peersPoller.refresh())
+    this.root.querySelector('[data-center-plaza]')?.addEventListener('click', () => this.centerOnParcel(0, 0))
+    this.root.querySelector('[data-center-player]')?.addEventListener('click', () => this.centerOnPlayer())
+    this.root.querySelector('[data-retry-peers]')?.addEventListener('click', () => void this.peersPoller.refresh())
     this.playerSearchInput.addEventListener('input', () => {
       this.playerSearch = this.playerSearchInput.value
       this.renderSidebar()
@@ -289,7 +303,11 @@ export class MapView {
     this.resizeObserver = new ResizeObserver(() => this.measureViewport())
     this.resizeObserver.observe(this.viewport)
     this.measureViewport()
-    this.centerOnPlayer()
+    if (this.initialCenter) {
+      this.centerOnParcel(this.initialCenter.px, this.initialCenter.py)
+    } else {
+      this.centerOnPlayer()
+    }
 
     this.unsubscribePeers = this.peersPoller.subscribe((state) => {
       this.connection = state.connection
@@ -496,9 +514,13 @@ export class MapView {
   }
 
   private renderHud(): void {
-    this.statusEl.textContent = connectionLabel(this.connection)
-    this.statusEl.className = `dcl-map__status dcl-map__status--${this.connection}`
-    this.countEl.textContent = `${this.players.length} in Genesis · ${this.worldsData.totalUsers} in Worlds`
+    if (this.statusEl) {
+      this.statusEl.textContent = connectionLabel(this.connection)
+      this.statusEl.className = `dcl-map__status dcl-map__status--${this.connection}`
+    }
+    if (this.countEl) {
+      this.countEl.textContent = `${this.players.length} in Genesis · ${this.worldsData.totalUsers} in Worlds`
+    }
 
     const retryBtn = this.root.querySelector<HTMLButtonElement>('[data-retry-peers]')
     if (retryBtn) retryBtn.hidden = this.connection !== 'error'

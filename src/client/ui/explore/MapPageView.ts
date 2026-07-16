@@ -7,6 +7,8 @@ export type MapPageViewOptions = SocialShellChromeHandlers & {
   onNavigate: (tab: SocialShellTab) => void
   onParcelVisit: (px: number, py: number) => void
   getPlayerState?: () => MapPlayerState | null
+  /** Center map on this parcel at mount (minimap / leave-play handoff). */
+  initialCenter?: { px: number; py: number } | null
 }
 
 /** Full-page Genesis City Live map at `/map` — map.lastslice.co parity. */
@@ -34,7 +36,8 @@ export class MapPageView {
 
     this.mapView = new MapView({
       getPlayerState: opts.getPlayerState ?? (() => null),
-      onJumpIn: opts.onParcelVisit
+      onJumpIn: opts.onParcelVisit,
+      initialCenter: opts.initialCenter ?? null
     })
 
     const mainEl = document.createElement('main')

@@ -493,9 +493,16 @@ export class SettingsOverlay {
       })
       this.contentArea.appendChild(this.backpackView.root)
     } else if (this.activeTab === 'map' && this.getMapPlayerState) {
+      // In-world / settings panel — no Explore/Map social shell or Genesis Plaza HUD.
+      const player = this.getMapPlayerState()
+      const m = player?.parcelKey ? /^(-?\d+),(-?\d+)$/.exec(player.parcelKey.trim()) : null
       this.mapView = new MapView({
         getPlayerState: this.getMapPlayerState,
-        onJumpIn: this.onMapJumpIn
+        onJumpIn: this.onMapJumpIn,
+        embedded: true,
+        initialCenter: m
+          ? { px: parseInt(m[1]!, 10), py: parseInt(m[2]!, 10) }
+          : null
       })
       this.contentArea.appendChild(this.mapView.root)
       this.mapView.mount()

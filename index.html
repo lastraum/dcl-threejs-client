@@ -422,15 +422,18 @@
       }
       .minimap {
         position: fixed;
-        top: var(--client-safe-top);
+        /* Fallback until placeBelow() runs against the live pill rect. */
+        top: calc(var(--client-safe-top) + 80px);
         left: var(--client-safe-left);
-        z-index: var(--z-client-hud);
+        /* Below the location pill so a late layout never covers the title. */
+        z-index: calc(var(--z-client-hud) - 1);
         width: min(224px, calc(100vw - var(--client-safe-left) - var(--client-safe-right)));
         height: min(224px, calc(100vw - var(--client-safe-left) - var(--client-safe-right)));
         max-width: 224px;
         max-height: 224px;
         border-radius: 50%;
         overflow: hidden;
+        background: transparent;
         box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
         pointer-events: none;
         user-select: none;
@@ -445,17 +448,8 @@
       }
       .minimap canvas {
         display: block;
-        border-radius: 50%;
-      }
-      .minimap-scene,
-      .minimap-overlay {
-        position: absolute;
-        inset: 0;
         width: 100%;
         height: 100%;
-      }
-      .minimap-overlay {
-        pointer-events: none;
       }
       .world-location-card.is-parcel-pill .world-location-card__header {
         grid-template-columns: 1fr;
@@ -474,6 +468,25 @@
       }
       .world-location-card.is-parcel-pill .world-location-card__body {
         display: none;
+      }
+      /* Match circular minimap diameter so the pill doesn't stick out past the circle. */
+      .world-location-card.is-above-minimap {
+        width: min(224px, calc(100vw - var(--client-safe-left) - var(--client-safe-right)));
+        max-width: 224px;
+        box-sizing: border-box;
+      }
+      .world-location-card.is-above-minimap .world-location-card__title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .world-location-card.is-above-minimap .world-location-card__coords {
+        min-width: 0;
+      }
+      .world-location-card.is-above-minimap .world-location-card__coords-text {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .world-location-card {
         position: fixed;
@@ -1179,6 +1192,10 @@
           height: min(192px, calc(100vw - var(--client-safe-left) - var(--client-safe-right)));
           max-width: 192px;
           max-height: 192px;
+        }
+        .world-location-card.is-above-minimap {
+          width: min(192px, calc(100vw - var(--client-safe-left) - var(--client-safe-right)));
+          max-width: 192px;
         }
       }
       @media (max-width: 767px) {
@@ -12752,9 +12769,9 @@
         min-width: 0;
         display: flex;
         flex-direction: column;
-        gap: 18px;
-        padding-top: clamp(16px, 3vw, 28px);
-        padding-bottom: 28px;
+        gap: 22px;
+        padding-top: clamp(10px, 2vw, 20px);
+        padding-bottom: 16px;
         box-sizing: border-box;
       }
       .scene-watch-dest-scene-card {
@@ -12766,24 +12783,33 @@
         border: 1px solid rgba(255, 255, 255, 0.12);
         background: var(--scene-dest-mock-surface);
         backdrop-filter: blur(14px);
-        min-height: min(58vh, 720px);
+        /* Fixed viewport-relative height so large map thumbnails cannot grow past vh. */
+        height: min(52dvh, 560px);
+        min-height: min(320px, 42dvh);
+        max-height: min(calc(100dvh - var(--social-shell-header-height) - 96px), 640px);
       }
       .scene-watch-dest-scene-card-visual {
         position: relative;
-        min-height: min(54vh, 680px);
+        min-height: 0;
+        height: 100%;
+        overflow: hidden;
         background: linear-gradient(145deg, #2d1b4e 0%, #12081f 100%);
       }
       .scene-watch-dest-scene-card-visual img {
+        position: absolute;
+        inset: 0;
         width: 100%;
         height: 100%;
-        min-height: min(54vh, 680px);
+        min-height: 0;
         object-fit: cover;
         display: block;
       }
       .scene-watch-dest-scene-card-visual-fallback {
+        position: absolute;
+        inset: 0;
         width: 100%;
         height: 100%;
-        min-height: min(54vh, 680px);
+        min-height: 0;
         background: linear-gradient(135deg, rgba(122, 60, 255, 0.35) 0%, #12081f 100%);
       }
       .scene-watch-cast-live-badge {
@@ -13012,11 +13038,14 @@
         white-space: nowrap;
       }
       .scene-watch-dest-scene-card-body {
-        padding: clamp(22px, 2.5vw, 32px);
+        padding: clamp(18px, 2.2vw, 28px);
         display: flex;
         flex-direction: column;
-        gap: 14px;
+        gap: 12px;
         box-sizing: border-box;
+        min-height: 0;
+        height: 100%;
+        overflow: auto;
       }
       .scene-watch-dest-scene-card-head {
         display: flex;
@@ -14041,6 +14070,7 @@
       }
       .scene-watch-dest-events-banner {
         position: relative;
+        margin-top: 6px;
         border-radius: 20px;
         border: 1px solid rgba(255, 255, 255, 0.12);
         overflow: hidden;
@@ -14164,12 +14194,23 @@
         }
         .scene-watch-dest-scene-card {
           grid-template-columns: 1fr;
+          height: auto;
           min-height: unset;
+          max-height: none;
         }
-        .scene-watch-dest-scene-card-visual,
+        .scene-watch-dest-scene-card-visual {
+          position: relative;
+          height: min(36dvh, 280px);
+          min-height: 200px;
+          max-height: 320px;
+        }
         .scene-watch-dest-scene-card-visual img,
         .scene-watch-dest-scene-card-visual-fallback {
-          min-height: 220px;
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          min-height: 0;
         }
         /* LIVE · CAST stacked above JUMP IN (full-width column). */
         .scene-watch-dest-scene-card-cta-row {

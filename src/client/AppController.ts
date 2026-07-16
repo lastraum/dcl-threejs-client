@@ -17,6 +17,7 @@ import { clientDebugLog } from './debug/ClientDebugLog'
 import { DebugPanel } from './ui/DebugPanel'
 import { DevProgressPanel } from './ui/DevProgressPanel'
 import { LoadingScreen, POST_SPAWN_SETTLE_FAST_MS, POST_SPAWN_SETTLE_MS } from './ui/LoadingScreen'
+import { Minimap } from './ui/Minimap'
 import { WorldLocationCard } from './ui/WorldLocationCard'
 import {
   ensureGuestSession,
@@ -69,6 +70,10 @@ export class AppController {
   private debugPanel: DebugPanel | null = null
   private devProgressPanel: DevProgressPanel | null = null
   private worldLocationCard: WorldLocationCard | null = null
+  private minimap: Minimap | null = null
+  private minimapLayoutObserver: ResizeObserver | null = null
+  /** Parcel to center the full map on after leave-play (minimap click). */
+  private mapFocusParcel: { px: number; py: number } | null = null
   private chatPanel: ChatPanel | null = null
   private settingsOverlay: SettingsOverlay | null = null
   private unsubVoiceUi: (() => void) | null = null
@@ -498,6 +503,13 @@ export class AppController {
   private async showMapPage(
     opts: { fromHistory?: boolean; replace?: boolean } = {}
   ): Promise<void> {
+    // Capture focus before scene teardown clears live player state.
+    let initialCenter = this.mapFocusParcel
+    this.mapFocusParcel = null
+    if (!initialCenter && this.appMode === 'play') {
+      initialCenter = this.parcelFromPlayerState(this.getMapPlayerState())
+    }
+
     if (this.appMode === 'play') {
       await this.teardownScene()
     }
@@ -533,6 +545,7 @@ export class AppController {
         })
       },
       getPlayerState: () => this.getMapPlayerState(),
+      initialCenter,
       ...this.socialShellLoginHandlers()
     })
     this.mapPageView.mount(this.container)
@@ -1331,6 +1344,8 @@ export class AppController {
 
       this.worldLocationCard?.dispose()
       this.worldLocationCard = null
+      this.minimap?.dispose()
+      this.minimap = null
 
       this.worldLocationCard = new WorldLocationCard({
         scene: sceneConfig,
@@ -1349,8 +1364,28 @@ export class AppController {
               }
             : undefined
       })
+      // Genesis satellite minimap — parcel scenes only (worlds have no city basemap).
+      if (sceneConfig.source.kind !== 'world') {
+        this.minimap = new Minimap({
+          getPlayerState: () => this.getMapPlayerState(),
+          onClick: () => {
+            // Stay in play — open the in-world map panel (not the 2D /map social shell).
+            if (document.pointerLockElement) document.exitPointerLock()
+            const overlay = this.settingsOverlay ?? this.createSettingsOverlay(
+              this.world!.session,
+              sceneConfig
+            )
+            this.settingsOverlay = overlay
+            this.shell?.attachSettingsOverlay(overlay)
+            overlay.show('map')
+          }
+        })
+        this.worldLocationCard.root.classList.add('is-above-minimap')
+        this.bindMinimapBelowLocationCard()
+      }
       if (opts.deferPlayChromeReveal) {
         this.worldLocationCard.setVisible(false)
+        this.minimap?.setVisible(false)
       }
 
       const warmScene = await resolveSceneLoadWarm(getSessionAssetCache(), sceneConfig)
@@ -1546,6 +1581,7 @@ export class AppController {
   private hidePlayChrome(): void {
     this.shell?.hide()
     this.worldLocationCard?.setVisible(false)
+    this.minimap?.setVisible(false)
     this.mobileHud?.setShellVisible(false)
     this.world?.setSceneUiVisible(false)
   }
@@ -1553,8 +1589,33 @@ export class AppController {
   private revealPlayChrome(): void {
     this.shell?.show()
     this.worldLocationCard?.setVisible(true)
+    this.minimap?.setVisible(true)
     this.mobileHud?.setShellVisible(true)
     this.world?.setSceneUiVisible(true)
+    // Pill may have been hidden at mount (height 0) — place circle under it now.
+    this.layoutMinimapBelowPill()
+    requestAnimationFrame(() => this.layoutMinimapBelowPill())
+  }
+
+  /** Keep circular minimap flush under the location pill (no overlap). */
+  private layoutMinimapBelowPill(): void {
+    if (!this.minimap || !this.worldLocationCard) return
+    this.minimap.placeBelow(this.worldLocationCard.root, 8)
+  }
+
+  private bindMinimapBelowLocationCard(): void {
+    this.minimapLayoutObserver?.disconnect()
+    this.minimapLayoutObserver = null
+    if (!this.minimap || !this.worldLocationCard) return
+    this.layoutMinimapBelowPill()
+    requestAnimationFrame(() => this.layoutMinimapBelowPill())
+    this.minimapLayoutObserver = new ResizeObserver(() => this.layoutMinimapBelowPill())
+    this.minimapLayoutObserver.observe(this.worldLocationCard.root)
+  }
+
+  private unbindMinimapLayout(): void {
+    this.minimapLayoutObserver?.disconnect()
+    this.minimapLayoutObserver = null
   }
 
   private getLocationCoordsLabel(): string {
@@ -1563,6 +1624,15 @@ export class AppController {
     const pos = this.world?.getPlayerPosition()
     if (pos) return `${Math.floor(pos.x)}, ${Math.floor(pos.z)}`
     return '—'
+  }
+
+  private parcelFromPlayerState(
+    state: MapPlayerState | null
+  ): { px: number; py: number } | null {
+    if (!state?.parcelKey) return null
+    const m = /^(-?\d+),(-?\d+)$/.exec(state.parcelKey.trim())
+    if (!m) return null
+    return { px: parseInt(m[1]!, 10), py: parseInt(m[2]!, 10) }
   }
 
   private getMapPlayerState(): MapPlayerState | null {
@@ -1624,8 +1694,11 @@ export class AppController {
     this.profileUi = null
     this.mobileHud?.dispose()
     this.mobileHud = null
+    this.unbindMinimapLayout()
     this.worldLocationCard?.dispose()
     this.worldLocationCard = null
+    this.minimap?.dispose()
+    this.minimap = null
     this.chatPanel?.hide()
     this.hidePlayChrome()
     await disconnectAll(this.world, { keepLiveKit: opts?.keepLiveKit === true })

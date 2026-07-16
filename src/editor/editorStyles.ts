@@ -5,10 +5,13 @@ export function injectEditorStyles(): void {
   const style = document.createElement('style')
   style.id = STYLE_ID
   style.textContent = `
-.editor-hub, .editor-workspace {
-  width: 100%;
-  height: 100%;
-  overflow: auto;
+.editor-hub-page {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   /* Same site-wide DCL backdrop as Explore / landing (see index.html :root) */
   background-color: var(--dcl-bg-deep, #0c0b0f);
   background-image: var(--dcl-site-bg-image);
@@ -18,6 +21,30 @@ export function injectEditorStyles(): void {
   background-attachment: fixed;
   color: #e2e8f0;
   font-family: system-ui, sans-serif;
+}
+.editor-hub-page .editor-hub {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow: auto;
+  background: transparent;
+}
+.editor-hub, .editor-workspace {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background-color: var(--dcl-bg-deep, #0c0b0f);
+  background-image: var(--dcl-site-bg-image);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+  color: #e2e8f0;
+  font-family: system-ui, sans-serif;
+}
+.editor-hub-page .editor-hub {
+  background: transparent;
+  background-image: none;
 }
 .editor-hub-header {
   padding: 32px 40px 16px;

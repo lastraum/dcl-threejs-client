@@ -1,3 +1,9 @@
+import type { LoginResult } from '../../auth/AuthClient'
+import {
+  SocialShellTopNav,
+  type SocialShellChromeHandlers,
+  type SocialShellTab
+} from '../../client/ui/explore/SocialShellTopNav'
 import { RECOMMENDED_SCENES_FOLDER } from '../localProjects/creatorHubPaths'
 import {
   addProjectFromDroppedHandle,
@@ -12,24 +18,53 @@ import {
   type LocalProjectRecord
 } from '../localProjects/projectStore'
 
+export type EditorHubShell = SocialShellChromeHandlers & {
+  login: LoginResult
+  onNavigate: (tab: SocialShellTab) => void
+}
+
 export type EditorHubPageCallbacks = {
   onOpenProject: (projectId: string) => void
+  shell?: EditorHubShell | null
 }
 
 export class EditorHubPage {
+  private readonly page: HTMLDivElement
   private root: HTMLDivElement
   private grid: HTMLDivElement
   private errorEl: HTMLDivElement
   private statusEl: HTMLDivElement
   private helpEl: HTMLParagraphElement
+  private topNav: SocialShellTopNav | null = null
 
   constructor(
     container: HTMLElement,
     private callbacks: EditorHubPageCallbacks
   ) {
+    this.page = document.createElement('div')
+    this.page.className = 'editor-hub-page'
+    container.appendChild(this.page)
+
+    const shell = callbacks.shell
+    if (shell) {
+      this.topNav = new SocialShellTopNav({
+        activeTab: 'editor',
+        login: shell.login,
+        onNavigate: shell.onNavigate,
+        onLoginChange: shell.onLoginChange,
+        onSignOut: shell.onSignOut,
+        onOpenSettings: shell.onOpenSettings,
+        onOpenBackpack: shell.onOpenBackpack,
+        onOpenProfile: shell.onOpenProfile,
+        onOpenWhatsNew: shell.onOpenWhatsNew
+      })
+      this.page.appendChild(this.topNav.el)
+      this.topNav.mount()
+    }
+
     this.root = document.createElement('div')
     this.root.className = 'editor-hub'
-    container.appendChild(this.root)
+    this.page.appendChild(this.root)
 
     const header = document.createElement('header')
     header.className = 'editor-hub-header'
@@ -67,8 +102,14 @@ export class EditorHubPage {
     void this.bootstrap()
   }
 
+  setLogin(login: LoginResult): void {
+    this.topNav?.setLogin(login)
+  }
+
   dispose(): void {
-    this.root.remove()
+    this.topNav?.dispose()
+    this.topNav = null
+    this.page.remove()
   }
 
   private bindFolderDrop(): void {

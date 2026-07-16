@@ -1,7 +1,14 @@
+import type { LoginResult } from '../auth/AuthClient'
 import { editorUrlForProject, readEditorProjectIdFromUrl } from '../dcl/content/route'
+import type { SocialShellChromeHandlers, SocialShellTab } from '../client/ui/explore/SocialShellTopNav'
 import { EditorHubPage } from './ui/EditorHubPage'
 import { TerrainEditorWorkspace } from './TerrainEditorWorkspace'
 import { injectEditorStyles } from './editorStyles'
+
+export type EditorAppShellOptions = SocialShellChromeHandlers & {
+  login: LoginResult
+  onNavigate: (tab: SocialShellTab) => void
+}
 
 /** `/editor` shell — hub page or terrain workspace on the same route. */
 export class EditorApp {
@@ -9,14 +16,21 @@ export class EditorApp {
   private hub: EditorHubPage | null = null
   private workspace: TerrainEditorWorkspace | null = null
   private onPopState: (() => void) | null = null
+  private shell: EditorAppShellOptions | null = null
 
-  async start(container: HTMLElement): Promise<void> {
+  async start(container: HTMLElement, shell?: EditorAppShellOptions | null): Promise<void> {
     injectEditorStyles()
     document.body.classList.add('editor-route')
     this.container = container
+    this.shell = shell ?? null
     this.onPopState = () => void this.syncFromUrl()
     window.addEventListener('popstate', this.onPopState)
     await this.syncFromUrl()
+  }
+
+  setLogin(login: LoginResult): void {
+    if (this.shell) this.shell = { ...this.shell, login }
+    this.hub?.setLogin(login)
   }
 
   dispose(): void {
@@ -26,6 +40,7 @@ export class EditorApp {
     this.hub = null
     if (this.container) this.container.innerHTML = ''
     this.container = null
+    this.shell = null
     document.body.classList.remove('editor-route')
   }
 
@@ -58,7 +73,8 @@ export class EditorApp {
     if (!this.hub) {
       if (this.container) this.container.innerHTML = ''
       this.hub = new EditorHubPage(this.container, {
-        onOpenProject: (id) => this.openProject(id)
+        onOpenProject: (id) => this.openProject(id),
+        shell: this.shell
       })
     } else {
       await this.hub.refresh()

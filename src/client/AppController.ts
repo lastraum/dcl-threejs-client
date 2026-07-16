@@ -115,17 +115,6 @@ export class AppController {
     this.running = true
     this.container = container
 
-    const initialRoute = resolveRouteTarget()
-    if (initialRoute.kind === 'editor') {
-      const hudEl = document.getElementById('hud')
-      if (hudEl) hudEl.hidden = true
-      this.currentRoute = initialRoute
-      this.editorApp = new EditorApp()
-      window.addEventListener('popstate', this.onPopState)
-      await this.editorApp.start(container)
-      return
-    }
-
     window.addEventListener('popstate', this.onPopState)
     this.wireSceneBanDebug()
 
@@ -134,6 +123,15 @@ export class AppController {
     // Wallet resume or stable guest both get AuthIdentity — Jump In / LiveKit ready.
     this.playSessionReady = hasResumedWalletSession() || this.login.kind === 'guest'
     recordLoginEvent(this.login)
+
+    if (postLoginRoute.kind === 'editor') {
+      const hudEl = document.getElementById('hud')
+      if (hudEl) hudEl.hidden = true
+      this.currentRoute = postLoginRoute
+      this.appMode = 'explorer'
+      await this.startEditorApp({ replace: true })
+      return
+    }
 
     if (postLoginRoute.kind === 'blank') {
       await this.showExplorer({ replace: true })
@@ -157,11 +155,6 @@ export class AppController {
 
     if (postLoginRoute.kind === 'profile') {
       await this.showProfilePage({ replace: true })
-      return
-    }
-
-    if (postLoginRoute.kind === 'editor') {
-      await this.jumpInToScene(postLoginRoute, { replace: true })
       return
     }
 
@@ -256,6 +249,40 @@ export class AppController {
     else void this.navigateTo({ kind: 'events' })
   }
 
+  private async startEditorApp(
+    opts: { fromHistory?: boolean; replace?: boolean } = {}
+  ): Promise<void> {
+    if (!opts.fromHistory) {
+      applyRouteToHistory({ kind: 'editor' }, opts.replace ?? false)
+    }
+    this.currentRoute = { kind: 'editor' }
+    this.appMode = 'explorer'
+    this.clearSceneBanWatch()
+
+    await this.teardownScene()
+    this.teardownLanding()
+    this.teardownMapPage()
+    this.teardownEventsPage()
+    this.teardownCommunitiesPage()
+    this.teardownProfilePage()
+    this.teardownExplorer()
+
+    if (!this.container || !this.login) return
+
+    const hudEl = document.getElementById('hud')
+    if (hudEl) hudEl.hidden = true
+
+    this.editorApp?.dispose()
+    this.editorApp = new EditorApp()
+    await this.editorApp.start(this.container, {
+      login: this.login,
+      onNavigate: (tab) => this.navigateSocialShell(tab),
+      ...this.socialShellLoginHandlers()
+    })
+    this.ensureSocialChatShell()
+    this.collapseSocialChatThread()
+  }
+
   private socialShellSocialHandlers(): {
     getSocial: () => ReturnType<SocialChatController['getSocial']> | null
     onEnsureSocial: () => Promise<void>
@@ -292,6 +319,7 @@ export class AppController {
         recordLoginEvent(login)
         this.socialMobileNotifications?.setLogin(login)
         this.applyLoginToSocialShellViews(login)
+        this.editorApp?.setLogin(login)
         // setLogin already refreshes owner gear; keep Jump-in CTA in sync for guests→wallet.
         this.sceneLandingView?.setPlaySessionReady(true)
         this.sceneLandingView?.setLogin(login)
@@ -1144,15 +1172,10 @@ export class AppController {
     } = {}
   ): Promise<boolean> {
     if (route.kind === 'editor') {
-      if (!opts.fromHistory) {
-        applyRouteToHistory(route, opts.replace ?? false)
-      }
-      this.currentRoute = route
-      await this.teardownScene()
-      this.editorApp?.dispose()
-      this.editorApp = new EditorApp()
-      if (!this.container) throw new Error('App container missing')
-      await this.editorApp.start(this.container)
+      await this.startEditorApp({
+        fromHistory: opts.fromHistory,
+        replace: opts.replace
+      })
       return false
     }
 

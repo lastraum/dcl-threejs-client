@@ -1,16 +1,21 @@
 import {
-  GENESIS_MAX_ZOOM,
   GENESIS_TILE_BASE_URL,
-  GENESIS_TILE_PAD,
   MAP_TILE_FETCH_ZOOM,
+  SATELLITE_GRID_SIZE,
+  SATELLITE_MAX_PARCEL_Y,
+  SATELLITE_MIN_PARCEL_X,
+  SATELLITE_PARCELS_PER_CHUNK,
   TILE_DISPLAY_PX
 } from './genesisMapTiles'
 
 export const VIEWPORT_FETCH_ZOOM = MAP_TILE_FETCH_ZOOM
 export const VIEWPORT_MIN_ZOOM = 4
-export const VIEWPORT_MAX_ZOOM = 6
+/** Extra steps for close-zoom parcel map.png layer (Unity ParcelAtlas). */
+export const VIEWPORT_MAX_ZOOM = 8
 export const VIEWPORT_DEFAULT_ZOOM = 5
-export const VIEWPORT_DEFAULT_CENTER_TILE = { x: 7.625, y: 7.625 }
+
+/** Plaza (0,0) sits near tile (3.8, 3.8) of the 8×8 satellite grid. */
+export const VIEWPORT_DEFAULT_CENTER_TILE = { x: 3.825, y: 3.825 }
 
 export type MapViewState = {
   zoom: number
@@ -24,62 +29,51 @@ export type ScreenRect = { left: number; top: number; size: number }
 
 export type VisibleTile = ScreenRect & { tx: number; ty: number }
 
-function zoomScale(z: number): number {
-  return Math.pow(2, GENESIS_MAX_ZOOM - z)
+const CHUNK = SATELLITE_PARCELS_PER_CHUNK
+
+/** Display-only scale between zoom steps (remote tiles always lod-0/3). */
+function displayZoomScale(z: number): number {
+  return Math.pow(2, z - VIEWPORT_FETCH_ZOOM)
 }
 
 export function tileDisplayPx(z: number): number {
-  return TILE_DISPLAY_PX * Math.pow(2, z - VIEWPORT_FETCH_ZOOM)
+  return TILE_DISPLAY_PX * displayZoomScale(z)
 }
 
-export function tileGridSize(z: number): number {
-  const level = GENESIS_MAX_ZOOM - z
-  return Math.floor((61 - 1) / Math.pow(2, level)) + 1
+/** Satellite grid is always 8×8 at the fetch level. */
+export function tileGridSize(_z?: number): number {
+  return SATELLITE_GRID_SIZE
 }
 
-function clampTile(tx: number, ty: number, z: number): { tx: number; ty: number } | null {
-  const size = tileGridSize(z)
-  if (tx < 0 || ty < 0 || tx >= size || ty >= size) return null
+function clampTile(tx: number, ty: number): { tx: number; ty: number } | null {
+  if (tx < 0 || ty < 0 || tx >= SATELLITE_GRID_SIZE || ty >= SATELLITE_GRID_SIZE) return null
   return { tx, ty }
 }
 
-export function mapTileUrl(z: number, tx: number, ty: number): string {
-  return `${GENESIS_TILE_BASE_URL}/${z}/${tx},${ty}.jpg`
+/**
+ * Unity SatelliteChunkController URL:
+ *   …/maps/lod-0/3/{tx}%2C{ty}.jpg
+ * Zoom arg ignored — basemap is a single LOD (CSS zoom scales tiles).
+ */
+export function mapTileUrl(_z: number, tx: number, ty: number): string {
+  return `${GENESIS_TILE_BASE_URL}/${tx},${ty}.jpg`
 }
 
-function parcelToTileCenterZ6(px: number, py: number): { x: number; y: number } {
-  const tx = GENESIS_TILE_PAD + Math.floor(px / 5)
-  const ty = GENESIS_TILE_PAD - Math.floor(py / 5)
-  const leftParcelX = (tx - GENESIS_TILE_PAD) * 5 - 2
-  const topParcelY = (GENESIS_TILE_PAD - ty) * 5 + 2
-  return {
-    x: tx + (px - leftParcelX + 0.5) / 5,
-    y: ty + (topParcelY - py + 0.5) / 5
-  }
-}
-
-function tileCenterToParcelZ6(cx: number, cy: number): { x: number; y: number } {
-  const tx = Math.floor(cx)
-  const ty = Math.floor(cy)
-  const localX = cx - tx
-  const localY = cy - ty
-  const leftParcelX = (tx - GENESIS_TILE_PAD) * 5 - 2
-  const topParcelY = (GENESIS_TILE_PAD - ty) * 5 + 2
-  return {
-    x: leftParcelX + Math.floor(localX * 5),
-    y: topParcelY - Math.floor(localY * 5)
-  }
-}
-
+/** Parcel → continuous tile coords (chunk index + fraction inside chunk). */
 function parcelToTileCenter(px: number, py: number): { x: number; y: number } {
-  const z6 = parcelToTileCenterZ6(px, py)
-  const scale = zoomScale(VIEWPORT_FETCH_ZOOM)
-  return { x: z6.x / scale, y: z6.y / scale }
+  const x = (px - SATELLITE_MIN_PARCEL_X + 0.5) / CHUNK
+  const y = (SATELLITE_MAX_PARCEL_Y - py + 0.5) / CHUNK
+  return { x, y }
 }
 
 function tileCenterToParcel(cx: number, cy: number): { x: number; y: number } {
-  const scale = zoomScale(VIEWPORT_FETCH_ZOOM)
-  return tileCenterToParcelZ6(cx * scale, cy * scale)
+  // Invert parcelToTileCenter: x = (px - MIN + 0.5)/CHUNK, y = (MAX - py + 0.5)/CHUNK
+  const pxExact = SATELLITE_MIN_PARCEL_X - 0.5 + cx * CHUNK
+  const pyExact = SATELLITE_MAX_PARCEL_Y + 0.5 - cy * CHUNK
+  return {
+    x: Math.floor(pxExact),
+    y: Math.floor(pyExact)
+  }
 }
 
 /** Map viewport click position → Genesis parcel indices. */
@@ -119,13 +113,11 @@ export function parcelScreenRect(
   view: MapViewState
 ): ScreenRect | null {
   const tilePx = tileDisplayPx(view.zoom)
-  const fetchScale = zoomScale(VIEWPORT_FETCH_ZOOM)
-  const span = 0.2 / fetchScale
-  const z6 = parcelToTileCenterZ6(px, py)
-  const centerX = z6.x / fetchScale
-  const centerY = z6.y / fetchScale
-  const topLeftX = centerX - span / 2
-  const topLeftY = centerY - span / 2
+  /** One parcel as a fraction of a 40-parcel satellite chunk. */
+  const span = 1 / CHUNK
+  const center = parcelToTileCenter(px, py)
+  const topLeftX = center.x - span / 2
+  const topLeftY = center.y - span / 2
   const viewCenterPxX = view.centerTileX * tilePx + view.panX
   const viewCenterPxY = view.centerTileY * tilePx + view.panY
   const left = viewW / 2 + topLeftX * tilePx - viewCenterPxX
@@ -148,8 +140,8 @@ export function playerMarkerRect(
   if (!parcelKey) return null
   const m = /^(-?\d+),(-?\d+)$/.exec(parcelKey.trim())
   if (!m) return null
-  const px = parseInt(m[1], 10)
-  const py = parseInt(m[2], 10)
+  const px = parseInt(m[1]!, 10)
+  const py = parseInt(m[2]!, 10)
   const base = parcelScreenRect(px, py, viewW, viewH, view)
   if (!base) return null
 
@@ -182,7 +174,7 @@ export function visibleTiles(viewW: number, viewH: number, view: MapViewState): 
   const out: VisibleTile[] = []
   for (let tx = minTx; tx <= maxTx; tx++) {
     for (let ty = minTy; ty <= maxTy; ty++) {
-      if (!clampTile(tx, ty, VIEWPORT_FETCH_ZOOM)) continue
+      if (!clampTile(tx, ty)) continue
       out.push({
         tx,
         ty,
@@ -195,7 +187,10 @@ export function visibleTiles(viewW: number, viewH: number, view: MapViewState): 
   return out
 }
 
-export function genesisMetersToParcel(genesisX: number, genesisZ: number): { px: number; py: number; parcelKey: string } {
+export function genesisMetersToParcel(
+  genesisX: number,
+  genesisZ: number
+): { px: number; py: number; parcelKey: string } {
   const px = Math.floor(genesisX / PARCEL_SIZE_M)
   const py = Math.floor(genesisZ / PARCEL_SIZE_M)
   return { px, py, parcelKey: `${px},${py}` }

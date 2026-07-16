@@ -14,6 +14,7 @@ import {
   visibleTiles,
   type MapViewState
 } from '../../../map/genesisMapViewport'
+import { shouldShowParcelLayer, visibleParcelChunks } from '../../../map/parcelMapTiles'
 import { fetchParcelInfo } from '../../../map/parcelInfo'
 import {
   normalizeWallet,
@@ -86,6 +87,7 @@ export class MapView {
   readonly root: HTMLElement
   private readonly viewport: HTMLDivElement
   private readonly tilesLayer: HTMLDivElement
+  private readonly parcelLayer: HTMLDivElement
   private readonly highlightsLayer: HTMLDivElement
   private readonly markersLayer: HTMLDivElement
   private readonly playerList: HTMLOListElement
@@ -111,6 +113,7 @@ export class MapView {
   private nowMs = Date.now()
   private resizeObserver: ResizeObserver | null = null
   private tileNodes = new Map<string, HTMLImageElement>()
+  private parcelTileNodes = new Map<string, HTMLImageElement>()
   private markerNodes = new Map<string, HTMLButtonElement>()
   private profileCache = new Map<string, PlayerProfile>()
   private profileFetchGen = 0
@@ -159,6 +162,7 @@ export class MapView {
     this.root.innerHTML = `
       <div class="dcl-map__viewport" tabindex="0" aria-label="Genesis City map">
         <div class="dcl-map__tiles" aria-hidden="true"></div>
+        <div class="dcl-map__parcel-tiles" aria-hidden="true"></div>
         <div class="dcl-map__highlights" aria-hidden="true"></div>
         <div class="dcl-map__markers" aria-hidden="true"></div>
       </div>
@@ -213,7 +217,7 @@ export class MapView {
         </section>
 
         <footer class="dcl-map__sidebar-foot">
-          <span>Drag to pan · click parcel · scroll to zoom</span>
+          <span>Drag to pan · click parcel · scroll to zoom (close zoom = live parcels)</span>
         </footer>
       </aside>
 
@@ -223,6 +227,7 @@ export class MapView {
 
     this.viewport = this.root.querySelector('.dcl-map__viewport')!
     this.tilesLayer = this.root.querySelector('.dcl-map__tiles')!
+    this.parcelLayer = this.root.querySelector('.dcl-map__parcel-tiles')!
     this.highlightsLayer = this.root.querySelector('.dcl-map__highlights')!
     this.markersLayer = this.root.querySelector('.dcl-map__markers')!
     this.playerList = this.root.querySelector('.dcl-map__player-list')!
@@ -602,6 +607,65 @@ export class MapView {
     this.renderFrame()
   }
 
+  /**
+   * Unity ParcelAtlas layer — live map.png over satellite when zoomed in.
+   * Clears when zoomed out so only satellite remains.
+   */
+  private renderParcelDetailLayer(w: number, h: number): void {
+    if (!shouldShowParcelLayer(this.view.zoom)) {
+      if (this.parcelTileNodes.size) {
+        for (const img of this.parcelTileNodes.values()) img.remove()
+        this.parcelTileNodes.clear()
+      }
+      this.parcelLayer.style.display = 'none'
+      this.tilesLayer.style.opacity = '1'
+      return
+    }
+
+    this.parcelLayer.style.display = ''
+    // Soften satellite under the sharper parcel colors
+    this.tilesLayer.style.opacity = '0.35'
+
+    const chunks = visibleParcelChunks(w, h, this.view)
+    const seen = new Set<string>()
+    for (const chunk of chunks) {
+      const key = `${chunk.originX},${chunk.originY}`
+      seen.add(key)
+      let img = this.parcelTileNodes.get(key)
+      if (!img) {
+        const tileImg = document.createElement('img')
+        tileImg.alt = ''
+        tileImg.draggable = false
+        tileImg.decoding = 'async'
+        tileImg.loading = 'lazy'
+        tileImg.className = 'dcl-map__parcel-tile'
+        tileImg.style.visibility = 'hidden'
+        tileImg.addEventListener('error', () => {
+          tileImg.style.visibility = 'hidden'
+        })
+        tileImg.addEventListener('load', () => {
+          tileImg.style.visibility = ''
+        })
+        tileImg.src = chunk.url
+        this.parcelLayer.appendChild(tileImg)
+        this.parcelTileNodes.set(key, tileImg)
+        img = tileImg
+      }
+      img.style.left = `${chunk.left}px`
+      img.style.top = `${chunk.top}px`
+      img.style.width = `${chunk.size}px`
+      img.style.height = `${chunk.size}px`
+      if (img.complete && img.naturalWidth > 0) img.style.visibility = ''
+    }
+
+    for (const [key, img] of this.parcelTileNodes) {
+      if (!seen.has(key)) {
+        img.remove()
+        this.parcelTileNodes.delete(key)
+      }
+    }
+  }
+
   private renderFrame(): void {
     if (!this.active) return
     const { w, h } = this.viewSize
@@ -644,6 +708,8 @@ export class MapView {
         this.tileNodes.delete(key)
       }
     }
+
+    this.renderParcelDetailLayer(w, h)
 
     this.highlightsLayer.innerHTML = ''
     if (this.highlightParcel) {

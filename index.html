@@ -3803,22 +3803,35 @@
         cursor: grabbing;
       }
       .map-view .dcl-map__tiles,
+      .map-view .dcl-map__parcel-tiles,
       .map-view .dcl-map__highlights,
       .map-view .dcl-map__markers {
         position: absolute;
         inset: 0;
       }
       .map-view .dcl-map__tiles,
+      .map-view .dcl-map__parcel-tiles,
       .map-view .dcl-map__highlights {
         pointer-events: none;
       }
-      .map-view .dcl-map__tiles img {
+      .map-view .dcl-map__tiles {
+        z-index: 0;
+        transition: opacity 0.15s ease;
+      }
+      .map-view .dcl-map__parcel-tiles {
+        z-index: 1;
+      }
+      .map-view .dcl-map__tiles img,
+      .map-view .dcl-map__parcel-tiles img {
         position: absolute;
         display: block;
-        object-fit: cover;
+        object-fit: fill;
         pointer-events: none;
         -webkit-user-drag: none;
         user-select: none;
+      }
+      .map-view .dcl-map__parcel-tiles img {
+        image-rendering: auto;
       }
       .map-view .dcl-map__parcel-highlight {
         position: absolute;

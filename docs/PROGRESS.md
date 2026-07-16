@@ -2,12 +2,38 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-15 (**nameTags + double-jump twirl** → `dev-latest`)  
+> **Last updated:** 2026-07-15 (**Flagtag client fixes** on `lastraum` → merge to `dev-latest`)  
 > **Current phase:** Post-**v0.8.0** — backpack gaps, graphics P3/P4, voice, Phase 4 `/goto`.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
 > **Product next:** Phase 4 `/goto` in 3D · community text / DMs · voice UI · remaining backpack parity.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
+
+---
+
+## 🎉 Milestone — Flagtag client: instanced props, spawn, chat UI (2026-07-15)
+
+**Status: on `lastraum` (`ae78b01`) — merge → `dev-latest`** — GPU instance lifecycle + Flagtag playability polish. Parked: post-round freeze when scene keeps InputModifier walk/jog/run off (likely Flagtag scene-side).
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Instanced Gltf hide/remove** | 🟢 | Detach GPU slot + clear clone when `GltfContainer` deleted; Visibility zeros instance matrices (coin pickup ghosts gone) |
+| **Instanced transform tweens** | 🟢 | After TweenBridge pose, rewrite InstancedMesh matrices (spinning coins) |
+| **UI mount LWW** | 🟢 | Clear only snapshot entity rows — no full wipe without re-seed (was 0/N deferred + stuck ticks) |
+| **Mount-lag tick resume** | 🟢 | Force-resume worker ticks after ~1.2s lag / on `movePlayerTo` nudge |
+| **Scene freeze latch** | 🟢 | Drop scene IM latch when live cleared — do not re-apply freeze after unlock |
+| **Spawn / teleport** | 🟢 | Pure authored floor settle; `movePlayerTo` feet; teleport settle logs locomotion flags |
+| **Chat rail** | 🟢 | Dock heights, hide list on thread, unique scene-chat icons |
+| **Post-restart freeze** | 🟡 | Client no longer re-freezes after scene clear; Flagtag may still leave walk/jog/run disabled until its own timer/UI finishes — verify in Explorer |
+
+**QA:** Flagtag world — pick coins (disappear) · coins spin · drown/respawn walk · round reset (may still freeze if scene IM stuck) · chat expand/thread.
+
+**Branch:** `lastraum` @ `ae78b01` → PR into `dev-latest`.
+
+**Highlights (toast / release notes):**
+- Coins and instanced props hide and animate correctly  
+- Safer scene UI updates and worker tick resume after teleports  
+- Spawn/teleport feet + floor settle; chat dock polish  
 
 ---
 

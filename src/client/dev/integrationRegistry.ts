@@ -121,7 +121,14 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
       'Browse + modal; announce/start-voice owner|mod|admin; voice join/end-all; community chat opens SocialChatDock; ADR-208 group text'
   },
   { id: 'ui:settings-gallery', name: 'Settings → Gallery', status: 'render', category: 'client-ui', notes: 'Camera Reel API, month grid, Share on X → reels.decentraland.org' },
-  { id: 'ui:ecs-scene-ui', name: 'In-scene ECS UI (UiTransform…)', status: 'partial', category: 'client-ui', notes: 'Yoga + DOM overlay — UiInput/UiDropdown writeback, hover, virtual size from setUiRenderer' },
+  {
+    id: 'ui:ecs-scene-ui',
+    name: 'In-scene ECS UI (UiTransform…)',
+    status: 'partial',
+    category: 'client-ui',
+    notes:
+      'Yoga + DOM · hit-map from layoutBoxes+layoutToScreen · UiInput/UiDropdown writeback · nine-slice/uvs/text-measure polish remain'
+  },
   { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'render', category: 'client-ui', notes: 'Explorer NEARBY VOICE: Hear others + Speak + hold T; mute-in-bg; name-tag bars; 3D PositionalAudio falloff' }
 ]
 

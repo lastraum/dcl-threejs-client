@@ -8,6 +8,7 @@ import type { ResolvedScene } from '../../dcl/content/types'
 import { normalizePointerFilterMode, PointerFilterMode, YGOverflow } from './yogaEnums'
 import { isUiEntityVisible } from './uiVisibility'
 import type { UiViewport, VirtualCanvasSize, ScreenUiRect } from './virtualCanvas'
+import { layoutToScreen } from './virtualCanvas'
 import {
   applyUiBackgroundStyles,
   BackgroundTextureMode,
@@ -61,8 +62,38 @@ export type SceneUiDrawInput = {
   mountedEntities: ReadonlySet<Entity>
   /** Full worker UiTransform mount set — superset of mountedEntities for pool purge. */
   authoritativeEntities: ReadonlySet<Entity>
-  /** Yoga layout boxes — sole geometry authority; DOM hits use getBoundingClientRect(). */
+  /** Yoga layout boxes — sole geometry authority for paint + hit-map (canvas-absolute). */
   layoutBoxes: ReadonlyMap<Entity, LayoutBox>
+}
+
+/** Yoga canvas-absolute box → client-space hit region (same mapping as DOM paint). */
+function pushLayoutHitRegion(
+  regions: UiScreenRegion[],
+  entity: Entity,
+  transform: PBUiTransform,
+  layoutBox: LayoutBox,
+  input: Pick<SceneUiDrawInput, 'interactable' | 'viewport'>,
+  depth: number
+): void {
+  if (layoutBox.width <= 0.5 || layoutBox.height <= 0.5) return
+  const screen = layoutToScreen(
+    input.interactable,
+    input.viewport,
+    layoutBox.left,
+    layoutBox.top,
+    layoutBox.width,
+    layoutBox.height
+  )
+  if (screen.width <= 0.5 || screen.height <= 0.5) return
+  regions.push({
+    entity,
+    left: screen.left,
+    top: screen.top,
+    width: screen.width,
+    height: screen.height,
+    zIndex: transform.zIndex ?? 0,
+    depth
+  })
 }
 
 function isSceneUiNodeInteractive(
@@ -283,7 +314,7 @@ export class SceneUiDomRenderer {
   }
 
   /**
-   * Layout-stable paint: re-style only dirty entities, then rebuild hit regions from DOM rects.
+   * Layout-stable paint: re-style only dirty entities, then rebuild hit regions from Yoga boxes.
    * Returns false if a dirty entity has no node yet (caller must full render).
    */
   patchEntities(dirty: readonly Entity[], input: SceneUiDrawInput): boolean {
@@ -307,27 +338,17 @@ export class SceneUiDomRenderer {
     return true
   }
 
-  /** Hit-map refresh without re-styling — uses live DOM boxes after a style patch. */
+  /**
+   * Hit-map from Yoga layout boxes (canvas-absolute) + viewport mapping.
+   * Single authority with paint geometry — avoids getBoundingClientRect drift vs nested transforms.
+   */
   private collectHitRegionsFromForest(input: SceneUiDrawInput, regions: UiScreenRegion[]): void {
     const walk = (entity: Entity, depth: number): void => {
       if (!input.mountedEntities.has(entity)) return
       const transform = input.transformOf(entity)
       if (transform && isUiEntityVisible(entity, input.transformOf)) {
-        const shell = this.nodes.get(entity)
-        if (shell?.isConnected) {
-          const rect = shell.getBoundingClientRect()
-          if (rect.width > 0.5 && rect.height > 0.5) {
-            regions.push({
-              entity,
-              left: rect.left,
-              top: rect.top,
-              width: rect.width,
-              height: rect.height,
-              zIndex: transform.zIndex ?? 0,
-              depth
-            })
-          }
-        }
+        const layoutBox = input.layoutBoxes.get(entity)
+        if (layoutBox) pushLayoutHitRegion(regions, entity, transform, layoutBox, input, depth)
       }
       for (const child of input.forest.get(entity) ?? []) walk(child, depth + 1)
     }
@@ -554,18 +575,8 @@ export class SceneUiDomRenderer {
     // Yoga screen-mapped geometry on shell — nested nodes use parent-relative coords.
     applyYogaLayoutBox(shell, layoutBox, scale, coords, clipShell)
 
-    const rect = shell.getBoundingClientRect()
-    if (rect.width > 0.5 && rect.height > 0.5) {
-      regions.push({
-        entity,
-        left: rect.left,
-        top: rect.top,
-        width: rect.width,
-        height: rect.height,
-        zIndex: transform.zIndex ?? 0,
-        depth
-      })
-    }
+    // Hit map uses canvas-absolute Yoga + layoutToScreen (not DOM rects after nested translate).
+    pushLayoutHitRegion(regions, entity, transform, layoutBox, input, depth)
 
     const children = input.forest.get(entity) ?? []
     for (const child of children) {

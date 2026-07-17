@@ -73,7 +73,7 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 | Pointer session vs keyboard | ✅ Flight keys apply immediately |
 | pollEvents defer while frozen | Keep; re-evaluate if UI stalls |
 | Async play-frame vs rAF | Apply pending player-frame at start of locomotion tick |
-| Ui mount vs DOM hit-map drift | Single authority: mount snapshot + yoga |
+| Ui mount vs DOM hit-map drift | ✅ Hit regions from Yoga layoutBoxes + layoutToScreen (not getBoundingClientRect) |
 | Edit-flight IM / VC residual | Retest MOVE/WASD/STOP; strip invent-policy |
 
 ### P1 — Performance

@@ -12,8 +12,9 @@ export type UiScreenRegion = {
 }
 
 /**
- * DOM screen regions from the last paint — pointer pick ranking + debug (`?sceneuidebug`).
- * `SceneUiBridge` walks candidates deepest / smallest area first; `uiDomPick` is fallback pre-paint.
+ * Screen regions from Yoga layout → viewport mapping (last paint).
+ * Pointer pick ranking + debug (`?sceneuidebug`). DOM pick is pre-paint fallback only.
+ * `SceneUiBridge` walks candidates deepest / smallest area first.
  */
 export class SceneUiHitMap {
   private regions: UiScreenRegion[] = []

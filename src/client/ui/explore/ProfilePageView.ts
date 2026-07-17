@@ -21,6 +21,7 @@ export type ProfilePageViewOptions = SocialShellChromeHandlers & {
   login: LoginResult
   catalystUrl: string
   onNavigate: (tab: SocialShellTab) => void
+  onOpenCommunityChat?: (community: { id: string; name: string }) => void
 }
 
 type ProfileTabId = 'overview' | 'assets' | 'communities' | 'places' | 'photos' | 'referrals'
@@ -70,7 +71,12 @@ export class ProfilePageView {
     this.login = opts.login
     this.catalystUrl = opts.catalystUrl
     this.communityModal = new CommunityModal({
-      getAuthIdentity: () => (this.login.kind === 'wallet' ? this.login.identity : null)
+      getAuthIdentity: () => (this.login.kind === 'wallet' ? this.login.identity : null),
+      getUserAddress: () =>
+        this.login.kind === 'wallet' || this.login.kind === 'guest' ? this.login.address : null,
+      onOpenChat: (community) => {
+        opts.onOpenCommunityChat?.({ id: community.id, name: community.name })
+      }
     })
 
     this.root = document.createElement('div')

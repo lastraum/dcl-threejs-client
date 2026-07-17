@@ -10,11 +10,13 @@ import {
   fetchMemberCommunitiesSigned,
   joinCommunitySigned
 } from '../../../social/socialApi'
-import type { CommunityListRow } from '../../../social/types'
+import type { CommunityDetail, CommunityListRow } from '../../../social/types'
 
 export type CommunitiesBrowseViewOptions = {
   getAuthIdentity?: () => AuthIdentity | null
   getUserAddress?: () => string | null
+  /** Open community text channel (dock / in-world chat). */
+  onOpenChat?: (community: CommunityDetail) => void
 }
 
 const SEARCH_DEBOUNCE_MS = 280
@@ -82,7 +84,8 @@ export class CommunitiesBrowseView {
     this.getAuthIdentity = opts.getAuthIdentity
     this.communityModal = new CommunityModal({
       getAuthIdentity: opts.getAuthIdentity,
-      getUserAddress: opts.getUserAddress
+      getUserAddress: opts.getUserAddress,
+      onOpenChat: opts.onOpenChat
     })
 
     this.root = document.createElement('div')
@@ -317,7 +320,11 @@ export class CommunitiesBrowseView {
   }
 
   /** Open community modal by id (HUD toast / deep link). */
-  openCommunityById(id: string, fallbackName = 'Community'): void {
+  openCommunityById(
+    id: string,
+    fallbackName = 'Community',
+    opts: { autoJoinVoice?: boolean } = {}
+  ): void {
     const key = id.trim()
     if (!key) return
     const row =
@@ -326,21 +333,24 @@ export class CommunitiesBrowseView {
       [...this.communitiesById.values()].find((c) => c.id.toLowerCase() === key.toLowerCase()) ??
       [...this.mineById.values()].find((c) => c.id.toLowerCase() === key.toLowerCase())
     if (row) {
-      this.openCommunity(row.id)
+      this.openCommunity(row.id, opts)
       return
     }
-    this.communityModal.open({
-      id: key,
-      name: fallbackName
-    })
+    this.communityModal.open(
+      {
+        id: key,
+        name: fallbackName
+      },
+      opts
+    )
   }
 
-  private openCommunity(id: string): void {
+  private openCommunity(id: string, opts: { autoJoinVoice?: boolean } = {}): void {
     const row = this.communitiesById.get(id) ?? this.mineById.get(id)
     if (!row) return
     this.selectedMineId = id
     this.syncSidebarSelection()
-    this.communityModal.open(row)
+    this.communityModal.open(row, opts)
   }
 
   private syncSidebarSelection(): void {

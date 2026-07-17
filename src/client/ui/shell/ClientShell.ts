@@ -600,6 +600,10 @@ export class ClientShell {
     this.chatPanel?.show()
   }
 
+  openCommunityChat(communityId: string, displayName: string): void {
+    this.chatPanel?.openCommunityChannel(communityId, displayName)
+  }
+
   bindNearbyVoice(voice: VoiceChatService | null): void {
     this.nearbyVoicePanel.bindVoice(voice)
   }

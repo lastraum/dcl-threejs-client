@@ -457,8 +457,22 @@ export class AppController {
       onClose: () => {},
       onVrmEquipChange: () => {
         void this.world?.reloadLocalAvatar()
+      },
+      onOpenCommunityChat: (community) => {
+        this.openCommunityChatChannel(community.id, community.name)
       }
     })
+  }
+
+  /** Community modal 💬 → in-world ChatPanel or 2D SocialChatDock. */
+  private openCommunityChatChannel(communityId: string, displayName: string): void {
+    this.settingsOverlay?.hide()
+    if (this.world && this.chatPanel) {
+      this.shell?.openCommunityChat(communityId, displayName)
+      return
+    }
+    this.ensureSocialChatShell()
+    this.socialChatDock?.openCommunityChat(communityId, displayName)
   }
 
   private openLocalProfileFromShell(): void {
@@ -664,6 +678,9 @@ export class AppController {
       login: this.login,
       catalystUrl: this.sceneContentUrl,
       onNavigate: (tab) => this.navigateSocialShell(tab),
+      onOpenCommunityChat: (community) => {
+        this.openCommunityChatChannel(community.id, community.name)
+      },
       ...this.socialShellLoginHandlers()
     })
     this.profilePageView.mount(this.container)
@@ -1010,8 +1027,8 @@ export class AppController {
         this.socialChatDock?.openFromNotification()
       },
       onOpenUserProfile: (address) => this.socialChat?.openProfileForAddress(address),
-      onOpenCommunity: (communityId) => {
-        void this.openCommunityFromNotification(communityId)
+      onOpenCommunity: (communityId, kind) => {
+        void this.openCommunityFromNotification(communityId, kind)
       },
       isChatNotificationSuppressed: (channelKey) =>
         this.socialChatDock?.isChatNotificationSuppressed(channelKey) ?? false
@@ -1019,18 +1036,21 @@ export class AppController {
     this.socialMobileNotifications.mount()
   }
 
-  /** HUD community toast click → Settings → Communities → modal. */
-  private async openCommunityFromNotification(communityId: string): Promise<void> {
+  /** HUD community toast click → Settings → Communities → modal (+ join voice when live). */
+  private async openCommunityFromNotification(
+    communityId: string,
+    kind: 'announcement' | 'voice' = 'announcement'
+  ): Promise<void> {
     const id = communityId.trim()
     if (!id) return
     try {
       const overlay = await this.ensureSettingsOverlay()
+      const fromShell = this.socialChat?.getSocial()?.getCommunities() ?? []
+      const fromWorld = this.world?.social?.getCommunities() ?? []
       const name =
-        this.socialChat
-          ?.getSocial()
-          ?.getCommunities()
-          .find((c) => c.id.toLowerCase() === id.toLowerCase())?.name ?? 'Community'
-      overlay.openCommunity(id, name)
+        [...fromShell, ...fromWorld].find((c) => c.id.toLowerCase() === id.toLowerCase())?.name ??
+        'Community'
+      overlay.openCommunity(id, name, { autoJoinVoice: kind === 'voice' })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       clientDebugLog.log('client', `Community toast open failed: ${msg}`, { level: 'warn' })

@@ -16,13 +16,19 @@ import {
   type CommunityMemberRow,
   type CommunityPost
 } from '../../../social/socialApi'
+import { endCommunityVoiceChatViaSocialRpc } from '../../../social/socialServiceV2'
 import type { CommunityDetail, CommunityListRow } from '../../../social/types'
 
 export type CommunityModalOptions = {
   getAuthIdentity?: () => AuthIdentity | null
   getUserAddress?: () => string | null
-  /** Open community text channel in chat dock (optional). */
+  /** Open community text channel in chat dock / panel. */
   onOpenChat?: (community: CommunityDetail) => void
+}
+
+export type CommunityModalOpenOptions = {
+  /** After open, auto-join voice when a stream is live. */
+  autoJoinVoice?: boolean
 }
 
 type TabId = 'announcements' | 'members' | 'places' | 'photos'
@@ -144,7 +150,7 @@ export class CommunityModal {
     document.body.appendChild(this.root)
   }
 
-  open(preview: CommunityListRow): void {
+  open(preview: CommunityListRow, opts: CommunityModalOpenOptions = {}): void {
     if (this.disposed) return
     const gen = ++this.openGen
     this.tab = 'announcements'
@@ -158,7 +164,7 @@ export class CommunityModal {
     document.addEventListener('keydown', this.onKeyDown)
     document.body.classList.add('community-modal-open')
     this.root.querySelector<HTMLButtonElement>('.community-modal-close')?.focus()
-    void this.hydrate(preview, gen)
+    void this.hydrate(preview, gen, opts)
   }
 
   close(): void {
@@ -183,7 +189,11 @@ export class CommunityModal {
     this.renderActiveTab()
   }
 
-  private async hydrate(preview: CommunityListRow, gen: number): Promise<void> {
+  private async hydrate(
+    preview: CommunityListRow,
+    gen: number,
+    opts: CommunityModalOpenOptions = {}
+  ): Promise<void> {
     const identity = this.getAuthIdentity?.() ?? null
     let detail: CommunityDetail | null = null
     let detailError: string | null = null
@@ -200,6 +210,11 @@ export class CommunityModal {
     this.current = mergePreviewAndDetail(preview, detail)
     this.paint({ loading: false, detailError })
     void this.loadTabData(gen)
+
+    // Voice toast / live CTA — join even if detail flag is slightly stale.
+    if (opts.autoJoinVoice) {
+      void this.joinCommunityVoice({ ...this.current, voiceChatActive: true })
+    }
   }
 
   private async loadTabData(gen: number): Promise<void> {
@@ -249,11 +264,18 @@ export class CommunityModal {
       void navigator.clipboard?.writeText(communityShareUrl(merged.id))
     })
     this.root.querySelector('[data-community-chat]')?.addEventListener('click', () => {
-      if (this.onOpenChat && this.current) this.onOpenChat(this.current)
-      else void navigator.clipboard?.writeText(communityShareUrl(merged.id))
+      if (this.onOpenChat && this.current) {
+        this.onOpenChat(this.current)
+        this.close()
+      } else {
+        void navigator.clipboard?.writeText(communityShareUrl(merged.id))
+      }
     })
     this.root.querySelector('[data-community-voice]')?.addEventListener('click', () => {
       void this.toggleCommunityVoice(merged)
+    })
+    this.root.querySelector('[data-community-voice-end]')?.addEventListener('click', () => {
+      void this.endCommunityVoiceForEveryone(merged)
     })
     for (const tabBtn of this.root.querySelectorAll<HTMLElement>('[data-tab]')) {
       tabBtn.addEventListener('click', () => {
@@ -346,6 +368,36 @@ export class CommunityModal {
     this.renderActiveTab()
   }
 
+  /** Public: join live voice (toast click / auto-join). */
+  async joinCommunityVoice(merged: CommunityDetail): Promise<void> {
+    const live = { ...merged, voiceChatActive: true }
+    await this.toggleCommunityVoice(live)
+  }
+
+  private async endCommunityVoiceForEveryone(merged: CommunityDetail): Promise<void> {
+    const identity = this.getAuthIdentity?.() ?? null
+    if (!identity || !this.canStartVoice(merged)) return
+    const endBtn = this.root.querySelector<HTMLButtonElement>('[data-community-voice-end]')
+    if (endBtn) {
+      endBtn.disabled = true
+      endBtn.textContent = 'ENDING…'
+    }
+    const result = await endCommunityVoiceChatViaSocialRpc(identity, merged.id)
+    const voice = getCommunityVoiceSession()
+    if (voice.isActive() && voice.getCommunityId() === merged.id) {
+      await voice.leave()
+    }
+    if (this.current?.id === merged.id) {
+      this.current = { ...this.current, voiceChatActive: false }
+      this.paint({ loading: false })
+    }
+    if (!result.ok && endBtn) {
+      endBtn.disabled = false
+      endBtn.textContent = 'End failed'
+      endBtn.title = result.error
+    }
+  }
+
   private async toggleCommunityVoice(merged: CommunityDetail): Promise<void> {
     const btn = this.root.querySelector<HTMLButtonElement>('[data-community-voice]')
     const voice = getCommunityVoiceSession()
@@ -365,6 +417,7 @@ export class CommunityModal {
         btn.innerHTML = voiceBtnHtml(false, this.current.voiceChatActive === true, canStart)
         btn.classList.remove('is-live')
       }
+      this.paint({ loading: false })
       return
     }
 
@@ -396,8 +449,10 @@ export class CommunityModal {
     if (btn && this.current?.id === merged.id) {
       btn.disabled = false
       if (result.ok) {
+        if (this.current) this.current = { ...this.current, voiceChatActive: true }
         btn.innerHTML = voiceBtnHtml(true, true, canStart)
         btn.classList.add('is-live')
+        this.paint({ loading: false })
       } else {
         btn.textContent =
           result.error.includes('401') ||
@@ -616,6 +671,16 @@ export class CommunityModal {
                   }"
                 >${voiceBtnHtml(inVoice, voiceLive, canStart)}</button>`
                     : `<p class="community-modal-voice-hint">No active stream. Owners and moderators can start one.</p>`
+                }
+                ${
+                  canStart && (inVoice || voiceLive)
+                    ? `<button
+                  type="button"
+                  class="community-modal-voice-end"
+                  data-community-voice-end
+                  title="End voice for all participants (moderator)"
+                >END FOR EVERYONE</button>`
+                    : ''
                 }
               </section>
               <section class="community-modal-rail-card community-modal-rail-card--events">

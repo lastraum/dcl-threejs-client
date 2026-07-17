@@ -321,6 +321,32 @@ export class SocialChatDock {
     this.renderAll()
   }
 
+  /** Community modal 💬 / toast — select community channel and open thread. */
+  openCommunityChat(communityId: string, displayName: string): void {
+    const id = communityId.trim()
+    if (!id) return
+    if (!this.visible) this.show()
+
+    const name =
+      displayName.trim() ||
+      this.controller
+        .getSocial()
+        .getCommunities()
+        .find((c) => c.id.toLowerCase() === id.toLowerCase())?.name ||
+      'Community'
+
+    this.controller.getSocial().selectChannel({
+      kind: 'community',
+      communityId: id,
+      displayName: name
+    })
+    this.listExpanded = true
+    this.threadOpen = true
+    if (this.isMobileLayout()) this.openMobilePanel()
+    this.syncLayout()
+    this.renderAll()
+  }
+
   dispose(): void {
     this.hide()
     this.mobileMq.removeEventListener('change', this.onMobileMqChange)

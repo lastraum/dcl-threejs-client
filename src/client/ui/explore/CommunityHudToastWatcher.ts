@@ -5,13 +5,18 @@ import {
   fetchCommunityPosts,
   fetchMemberCommunitiesSigned
 } from '../../../social/socialApi'
+import {
+  CommunityVoiceChatStatus,
+  consumeCommunityVoiceChatUpdates
+} from '../../../social/socialServiceV2'
 import type { CommunityListRow } from '../../../social/types'
 import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 
 /** Companion: poll member community posts ~90s (no Social realtime post stream). */
 const ANNOUNCEMENT_POLL_MS = 90_000
-/** Active voice list poll — companion uses Social WS; we poll as a client-side fallback. */
-const VOICE_POLL_MS = 25_000
+/** REST fallback if Social WS stream is unavailable. */
+const VOICE_POLL_MS = 45_000
+const VOICE_STREAM_RETRY_MS = 4_000
 const INTER_COMMUNITY_DELAY_MS = 80
 const MAX_SEEN_POST_IDS = 120
 const VOICE_TOAST_DEDUPE_MS = 45_000
@@ -32,11 +37,9 @@ export type CommunityVoiceToast = {
 export type CommunityHudToastWatcherOptions = {
   getAuthIdentity: () => AuthIdentity | null
   getUserAddress: () => string | null
-  /** Prefer SocialService membership list when ready. */
   getMemberCommunities?: () => CommunityListRow[]
   onAnnouncement: (toast: CommunityAnnouncementToast) => void
   onVoiceStarted: (toast: CommunityVoiceToast) => void
-  /** When true, skip toast (e.g. user already viewing that community modal). */
   isSuppressed?: (communityId: string, kind: 'announcement' | 'voice') => boolean
 }
 
@@ -53,9 +56,8 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * Client HUD toasts for community announcements + newly live voice streams.
- * Parity with dcl-companion:
- * - announcements: poll GET /v1/communities/{id}/posts (seed first, then toast)
- * - voice: poll GET /v1/community-voice-chats/active (seed first; toast new ids)
+ * - announcements: poll posts (seed first)
+ * - voice: Social v2 SubscribeToCommunityVoiceChatUpdates (instant) + REST poll fallback
  */
 export class CommunityHudToastWatcher {
   private readonly getAuthIdentity: CommunityHudToastWatcherOptions['getAuthIdentity']
@@ -67,9 +69,11 @@ export class CommunityHudToastWatcher {
 
   private disposed = false
   private announceTimer = 0
-  private voiceTimer = 0
+  private voicePollTimer = 0
   private announceBusy = false
-  private voiceBusy = false
+  private voicePollBusy = false
+  private voiceStreamAbort: AbortController | null = null
+  private voiceStreamLoop = 0
 
   private readonly seenPostsByCommunity = new Map<string, Set<string>>()
   private readonly bootstrappedPosts = new Set<string>()
@@ -77,6 +81,8 @@ export class CommunityHudToastWatcher {
   private voiceBootstrapped = false
   private readonly lastVoiceToastAt = new Map<string, number>()
   private memberCache: CommunityListRow[] = []
+  /** Prefer WS stream; use REST poll only as seed/fallback. */
+  private voiceStreamHealthy = false
 
   constructor(opts: CommunityHudToastWatcherOptions) {
     this.getAuthIdentity = opts.getAuthIdentity
@@ -91,9 +97,10 @@ export class CommunityHudToastWatcher {
     this.stopTimers()
     if (!this.getAuthIdentity()) return
     void this.pollAnnouncements()
-    void this.pollVoice()
+    void this.seedVoiceFromRest()
     this.announceTimer = window.setInterval(() => void this.pollAnnouncements(), ANNOUNCEMENT_POLL_MS)
-    this.voiceTimer = window.setInterval(() => void this.pollVoice(), VOICE_POLL_MS)
+    this.voicePollTimer = window.setInterval(() => void this.pollVoiceFallback(), VOICE_POLL_MS)
+    this.startVoiceStreamLoop()
   }
 
   stop(): void {
@@ -108,9 +115,12 @@ export class CommunityHudToastWatcher {
 
   private stopTimers(): void {
     if (this.announceTimer) window.clearInterval(this.announceTimer)
-    if (this.voiceTimer) window.clearInterval(this.voiceTimer)
+    if (this.voicePollTimer) window.clearInterval(this.voicePollTimer)
     this.announceTimer = 0
-    this.voiceTimer = 0
+    this.voicePollTimer = 0
+    this.voiceStreamAbort?.abort()
+    this.voiceStreamAbort = null
+    this.voiceStreamLoop++
   }
 
   private resetState(): void {
@@ -118,6 +128,7 @@ export class CommunityHudToastWatcher {
     this.bootstrappedPosts.clear()
     this.knownActiveVoice.clear()
     this.voiceBootstrapped = false
+    this.voiceStreamHealthy = false
     this.lastVoiceToastAt.clear()
     this.memberCache = []
   }
@@ -201,12 +212,111 @@ export class CommunityHudToastWatcher {
     }
   }
 
-  private async pollVoice(): Promise<void> {
-    if (this.disposed || this.voiceBusy) return
+  private startVoiceStreamLoop(): void {
+    const loopId = ++this.voiceStreamLoop
+    this.voiceStreamAbort?.abort()
+    const ac = new AbortController()
+    this.voiceStreamAbort = ac
+
+    void (async () => {
+      while (!this.disposed && loopId === this.voiceStreamLoop && !ac.signal.aborted) {
+        const identity = this.getAuthIdentity()
+        if (!identity) {
+          await sleep(VOICE_STREAM_RETRY_MS)
+          continue
+        }
+        try {
+          await consumeCommunityVoiceChatUpdates(
+            identity,
+            (update) => {
+              void this.handleVoiceStreamUpdate(update)
+            },
+            ac.signal
+          )
+          this.voiceStreamHealthy = false
+        } catch {
+          this.voiceStreamHealthy = false
+          if (this.disposed || ac.signal.aborted || loopId !== this.voiceStreamLoop) return
+          await sleep(VOICE_STREAM_RETRY_MS)
+        }
+      }
+    })()
+  }
+
+  private async handleVoiceStreamUpdate(update: {
+    communityId?: string
+    communityName?: string
+    status?: CommunityVoiceChatStatus
+    isMember?: boolean
+  }): Promise<void> {
+    this.voiceStreamHealthy = true
+    const id = String(update.communityId ?? '').trim()
+    const idKey = id.toLowerCase()
+    if (!id || update.isMember === false) return
+
+    if (update.status === CommunityVoiceChatStatus.COMMUNITY_VOICE_CHAT_ENDED) {
+      this.knownActiveVoice.delete(idKey)
+      return
+    }
+
+    if (update.status !== CommunityVoiceChatStatus.COMMUNITY_VOICE_CHAT_STARTED) return
+
+    // First events after connect may include already-live rooms — seed without toasting
+    // until REST seed finished once.
+    if (!this.voiceBootstrapped) {
+      this.knownActiveVoice.add(idKey)
+      return
+    }
+
+    if (this.knownActiveVoice.has(idKey)) return
+    this.knownActiveVoice.add(idKey)
+
+    const session = getCommunityVoiceSession()
+    const connectedId = session.isActive()
+      ? session.getCommunityId()?.trim().toLowerCase() ?? ''
+      : ''
+    if (connectedId && connectedId === idKey) return
+    if (this.isSuppressed?.(id, 'voice')) return
+
+    const now = Date.now()
+    const prev = this.lastVoiceToastAt.get(idKey) ?? 0
+    if (now - prev < VOICE_TOAST_DEDUPE_MS) return
+    this.lastVoiceToastAt.set(idKey, now)
+
+    const members = this.getMemberCommunities?.() ?? this.memberCache
+    const row = members.find((c) => c.id.trim().toLowerCase() === idKey)
+    const displayName =
+      String(update.communityName ?? '').trim() || row?.name?.trim() || 'Community'
+
+    this.onVoiceStarted({
+      communityId: id,
+      communityDisplayName: displayName,
+      imageUrl: row ? communityDisplayImageUrl(id, row.thumbnails) : null
+    })
+  }
+
+  private async seedVoiceFromRest(): Promise<void> {
+    const identity = this.getAuthIdentity()
+    if (!identity) return
+    try {
+      const active = await fetchActiveCommunityVoiceChats(identity)
+      for (const c of active) {
+        const k = c.communityId.trim().toLowerCase()
+        if (k) this.knownActiveVoice.add(k)
+      }
+      this.voiceBootstrapped = true
+    } catch {
+      this.voiceBootstrapped = true
+    }
+  }
+
+  /** Fallback when WS is down — same REST poll as before. */
+  private async pollVoiceFallback(): Promise<void> {
+    if (this.disposed || this.voicePollBusy || this.voiceStreamHealthy) return
     const identity = this.getAuthIdentity()
     if (!identity) return
 
-    this.voiceBusy = true
+    this.voicePollBusy = true
     try {
       const active = await fetchActiveCommunityVoiceChats(identity)
       if (this.disposed) return
@@ -222,10 +332,7 @@ export class CommunityHudToastWatcher {
       }
 
       const members = await this.resolveMembers(identity)
-      const nameById = new Map(
-        members.map((c) => [c.id.trim().toLowerCase(), c] as const)
-      )
-
+      const nameById = new Map(members.map((c) => [c.id.trim().toLowerCase(), c] as const))
       const session = getCommunityVoiceSession()
       const connectedId = session.isActive()
         ? session.getCommunityId()?.trim().toLowerCase() ?? ''
@@ -235,10 +342,7 @@ export class CommunityHudToastWatcher {
         const id = chat.communityId.trim()
         const idKey = id.toLowerCase()
         if (!idKey || this.knownActiveVoice.has(idKey)) continue
-
-        // Newly appeared while we were already tracking others.
         this.knownActiveVoice.add(idKey)
-
         if (connectedId && connectedId === idKey) continue
         if (this.isSuppressed?.(id, 'voice')) continue
 
@@ -248,27 +352,20 @@ export class CommunityHudToastWatcher {
         this.lastVoiceToastAt.set(idKey, now)
 
         const row = nameById.get(idKey)
-        const displayName =
-          chat.communityName?.trim() ||
-          row?.name?.trim() ||
-          'Community'
-        const imageUrl =
-          chat.communityImage?.trim() ||
-          (row ? communityDisplayImageUrl(id, row.thumbnails) : null)
-
         this.onVoiceStarted({
           communityId: id,
-          communityDisplayName: displayName,
-          imageUrl
+          communityDisplayName: chat.communityName?.trim() || row?.name?.trim() || 'Community',
+          imageUrl:
+            chat.communityImage?.trim() ||
+            (row ? communityDisplayImageUrl(id, row.thumbnails) : null)
         })
       }
 
-      // Drop ids no longer active so a later restart can toast again after bootstrap window.
       for (const id of [...this.knownActiveVoice]) {
         if (!nextIds.has(id)) this.knownActiveVoice.delete(id)
       }
     } finally {
-      this.voiceBusy = false
+      this.voicePollBusy = false
     }
   }
 }

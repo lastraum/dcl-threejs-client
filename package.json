@@ -19,8 +19,10 @@
   "dependencies": {
     "@dcl/crypto": "^3.6.0",
     "@dcl/ecs": "^7.24.1",
-    "@dcl/sdk": "^7.22.4",
     "@dcl/protocol": "1.0.0-27222196396.commit-748bafb",
+    "@dcl/rpc": "^1.1.2",
+    "@dcl/sdk": "^7.22.4",
+    "@dcl/social-rpc-client": "^2.0.0",
     "@metamask/sdk": "^0.34.0",
     "@pixiv/three-vrm": "^3.5.4",
     "@protobufjs/utf8": "^1.1.1",

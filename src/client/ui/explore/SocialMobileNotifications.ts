@@ -19,7 +19,7 @@ export type SocialMobileNotificationsOptions = {
   onOpenChat?: () => void
   onOpenUserProfile?: (address: string) => void
   /** Open community detail (announcement / voice toast click). */
-  onOpenCommunity?: (communityId: string) => void
+  onOpenCommunity?: (communityId: string, kind: 'announcement' | 'voice') => void
   /**
    * Skip chat banners while the user is actively reading that channel's thread.
    * `channelKey` is the SocialService key for the incoming message (`scene:…`).
@@ -212,7 +212,7 @@ export class SocialMobileNotifications {
     `
     banner.addEventListener('click', () => {
       this.dismissBanner(banner)
-      this.onOpenCommunity?.(toast.communityId)
+      this.onOpenCommunity?.(toast.communityId, 'announcement')
     })
     this.showBanner(banner, `c-ann:${toast.communityId}:${Date.now()}`, COMMUNITY_AUTO_DISMISS_MS)
   }
@@ -251,7 +251,7 @@ export class SocialMobileNotifications {
     `
     banner.addEventListener('click', () => {
       this.dismissBanner(banner)
-      this.onOpenCommunity?.(toast.communityId)
+      this.onOpenCommunity?.(toast.communityId, 'voice')
     })
     this.showBanner(banner, `c-voice:${toast.communityId}:${Date.now()}`, COMMUNITY_AUTO_DISMISS_MS)
   }

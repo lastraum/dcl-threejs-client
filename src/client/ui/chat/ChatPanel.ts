@@ -150,6 +150,23 @@ export class ChatPanel {
     this.onVisibilityChange = handler
   }
 
+  /** Open panel on a community text channel (from community modal 💬). */
+  openCommunityChannel(communityId: string, displayName: string): void {
+    const id = communityId.trim()
+    if (!id) return
+    const name =
+      displayName.trim() ||
+      this.social.getCommunities().find((c) => c.id.toLowerCase() === id.toLowerCase())?.name ||
+      'Community'
+    this.social.selectChannel({
+      kind: 'community',
+      communityId: id,
+      displayName: name
+    })
+    this.show()
+    this.renderAll()
+  }
+
   show(): void {
     this.ensureMounted()
     this.visible = true

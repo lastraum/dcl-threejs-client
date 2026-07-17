@@ -49,6 +49,8 @@ export type SettingsOverlayOptions = {
   onOpen?: () => void
   onClose?: () => void
   onVrmEquipChange?: () => void | Promise<void>
+  /** Community modal 💬 → chat dock / in-world panel. */
+  onOpenCommunityChat?: (community: { id: string; name: string }) => void
 }
 
 export class SettingsOverlay {
@@ -79,6 +81,7 @@ export class SettingsOverlay {
   private onOpen?: () => void
   private onClose?: () => void
   private onVrmEquipChange?: () => void | Promise<void>
+  private onOpenCommunityChat?: SettingsOverlayOptions['onOpenCommunityChat']
 
   constructor(opts: SettingsOverlayOptions) {
     this.session = opts.session
@@ -93,6 +96,7 @@ export class SettingsOverlay {
     this.onOpen = opts.onOpen
     this.onClose = opts.onClose
     this.onVrmEquipChange = opts.onVrmEquipChange
+    this.onOpenCommunityChat = opts.onOpenCommunityChat
 
     this.root = document.createElement('div')
     this.root.className = 'settings-overlay'
@@ -186,11 +190,15 @@ export class SettingsOverlay {
   }
 
   /** Open communities tab and a specific community modal (HUD toasts). */
-  openCommunity(communityId: string, displayName?: string): void {
+  openCommunity(
+    communityId: string,
+    displayName?: string,
+    opts: { autoJoinVoice?: boolean } = {}
+  ): void {
     this.show('communities')
     // Browse view mounts in switchTab — open on next frame.
     requestAnimationFrame(() => {
-      this.communitiesView?.openCommunityById(communityId, displayName ?? 'Community')
+      this.communitiesView?.openCommunityById(communityId, displayName ?? 'Community', opts)
     })
   }
 
@@ -496,7 +504,10 @@ export class SettingsOverlay {
     } else if (this.activeTab === 'communities') {
       this.communitiesView = new CommunitiesBrowseView({
         getAuthIdentity: () => this.session.getAuthIdentity(),
-        getUserAddress: () => this.session.getAddress() ?? null
+        getUserAddress: () => this.session.getAddress() ?? null,
+        onOpenChat: (community) => {
+          this.onOpenCommunityChat?.({ id: community.id, name: community.name })
+        }
       })
       this.communitiesView.root.classList.add('communities-browse-view--embedded')
       this.contentArea.appendChild(this.communitiesView.root)

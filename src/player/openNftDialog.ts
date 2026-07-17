@@ -12,8 +12,11 @@ export type OpenNftDialogResponse = {
 const OVERLAY_ID = 'threejs-nft-dialog-overlay'
 
 /**
- * DCL `RestrictedActions.openNftDialog` — in-page sheet with name/description/owner + OpenSea link.
- * Must be invoked from a scene pointer event (scene responsibility).
+ * SDK `RestrictedActions.openNftDialog({ urn })` — same API as Explorer.
+ *
+ * Explorer shows a built-in modal (name, owner, description, last sale, OpenSea button).
+ * We mirror that with an HTML overlay (not in-scene ECS UI) so pointer-driven scene
+ * code can open NFT details without a custom UI stack.
  */
 export async function openNftDialog(request: OpenNftDialogRequest): Promise<boolean> {
   const urn = request.urn?.trim()
@@ -26,6 +29,7 @@ export async function openNftDialog(request: OpenNftDialogRequest): Promise<bool
   overlay.id = OVERLAY_ID
   overlay.setAttribute('role', 'dialog')
   overlay.setAttribute('aria-modal', 'true')
+  overlay.setAttribute('aria-label', 'NFT details')
   overlay.style.cssText = [
     'position:fixed',
     'inset:0',
@@ -33,21 +37,21 @@ export async function openNftDialog(request: OpenNftDialogRequest): Promise<bool
     'display:flex',
     'align-items:center',
     'justify-content:center',
-    'background:rgba(0,0,0,0.55)',
+    'background:rgba(0,0,0,0.62)',
     'padding:24px',
-    'font-family:system-ui,-apple-system,sans-serif'
+    'font-family:Inter,system-ui,-apple-system,sans-serif'
   ].join(';')
 
   const card = document.createElement('div')
   card.style.cssText = [
-    'max-width:420px',
+    'max-width:440px',
     'width:100%',
-    'background:#1a1a22',
+    'background:linear-gradient(165deg,#1c1c28 0%,#12121a 100%)',
     'color:#f2f2f5',
-    'border-radius:14px',
-    'box-shadow:0 16px 48px rgba(0,0,0,0.45)',
+    'border-radius:16px',
+    'box-shadow:0 20px 56px rgba(0,0,0,0.55)',
     'overflow:hidden',
-    'border:1px solid rgba(255,255,255,0.08)'
+    'border:1px solid rgba(255,255,255,0.1)'
   ].join(';')
 
   const body = document.createElement('div')
@@ -68,7 +72,8 @@ export async function openNftDialog(request: OpenNftDialogRequest): Promise<bool
     'font-size:28px',
     'line-height:1',
     'cursor:pointer',
-    'opacity:0.75'
+    'opacity:0.75',
+    'z-index:2'
   ].join(';')
 
   const wrap = document.createElement('div')
@@ -86,7 +91,6 @@ export async function openNftDialog(request: OpenNftDialogRequest): Promise<bool
   })
   closeBtn.addEventListener('click', () => closeNftDialog())
   document.addEventListener('keydown', onKey)
-  overlay.dataset.keyHandler = '1'
   ;(overlay as unknown as { _onKey?: (e: KeyboardEvent) => void })._onKey = onKey
 
   document.body.appendChild(overlay)
@@ -104,19 +108,23 @@ export async function openNftDialog(request: OpenNftDialogRequest): Promise<bool
     return false
   }
 
-  const imgHtml = info.imageUrl
-    ? `<img src="${escapeAttr(info.imageUrl)}" alt="" style="width:100%;max-height:280px;object-fit:contain;background:#0e0e14;display:block" referrerpolicy="no-referrer" />`
+  // Prefer proxied image for dialog so GIF/PNG from CDN still paints.
+  const imgSrc = info.imageUrl
+  const imgHtml = imgSrc
+    ? `<div style="background:#0a0a10;border-radius:10px;overflow:hidden;min-height:160px;display:flex;align-items:center;justify-content:center">
+        <img src="${escapeAttr(imgSrc)}" alt="" style="width:100%;max-height:300px;object-fit:contain;display:block" referrerpolicy="no-referrer" />
+      </div>`
     : ''
 
   body.innerHTML = `
     ${imgHtml}
-    <div style="font-weight:650;font-size:17px;line-height:1.3">${escapeHtml(info.name)}</div>
+    <div style="font-weight:650;font-size:18px;line-height:1.3">${escapeHtml(info.name)}</div>
     ${info.owner ? `<div style="font-size:12px;opacity:0.65">Owner ${escapeHtml(shortAddr(info.owner))}</div>` : ''}
     ${info.description ? `<div style="font-size:13px;opacity:0.85;line-height:1.45;max-height:120px;overflow:auto">${escapeHtml(info.description)}</div>` : ''}
     <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
       <a data-opensea href="${escapeAttr(info.openseaUrl || openseaAssetPageUrl(info.parsed))}" target="_blank" rel="noopener noreferrer"
-        style="flex:1;text-align:center;padding:10px 14px;border-radius:8px;background:#2081e2;color:#fff;text-decoration:none;font-weight:600;font-size:14px">View on OpenSea</a>
-      <button type="button" data-close style="padding:10px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#fff;cursor:pointer">Close</button>
+        style="flex:1;text-align:center;padding:11px 14px;border-radius:10px;background:#2081e2;color:#fff;text-decoration:none;font-weight:600;font-size:14px">View on OpenSea</a>
+      <button type="button" data-close style="padding:11px 14px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#fff;cursor:pointer">Close</button>
     </div>
   `
   body.querySelector('[data-close]')?.addEventListener('click', () => closeNftDialog())

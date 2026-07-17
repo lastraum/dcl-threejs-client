@@ -120,7 +120,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | UiTransform … UiDropdown | 1050+ | 🟡 | Yoga + DOM partial — results writeback; polish gaps |
 | ParticleSystem | 1217 | 🟢 | `ParticleSystemBridge` — GPU billboard sprites |
 | MapPin | 1097 | 🟢 | Mirror + `MapPinStore` list (deprecated upstream; still honored) |
-| NftShape | 1040 | 🟢 | `NftShapeBridge` — OpenSea DCL proxy image + procedural frames; `openNftDialog` sheet |
+| NftShape | 1040 | 🟢 | `NftShapeBridge` — OpenSea proxy image + **Explorer FBX frames** (`/nft-frames/*.fbx`); animated GIF; `openNftDialog` HTML modal (RestrictedActions) |
 | GltfNodeModifiers | 1099 | ⬜ | Per-node material/visibility overrides on GLTF |
 | AssetLoad | 1213 | 🟢 | Preload scene paths into caches (`AssetLoadBridge`) — GLB parse + texture + audio |
 | AssetLoadLoadingState | 1214 | 🔵 | Grow-only LOADING/FINISHED/NOT_FOUND/ERROR per asset → encoder |

@@ -3964,6 +3964,7 @@ export class SceneScriptSystem {
     this.audioStreamBridge?.sync(this.view)
     this.assetLoadBridge?.sync(this.view)
     this.nftShapeBridge?.sync(this.view)
+    this.nftShapeBridge?.update()
     this.avatarShapes?.update(delta)
     this.animatorBridge?.update(delta)
     this.particleBridge?.update(delta)

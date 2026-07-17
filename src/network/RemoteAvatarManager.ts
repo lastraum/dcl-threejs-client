@@ -29,6 +29,7 @@ import { NameTag } from '../client/ui/NameTag'
 import { areSceneNameTagsVisible } from '../client/ui/nameTagVisibility'
 import { resolveProfileEmote, loadResolvedProfileEmote } from '../avatar/profileEmotes'
 import type { AssetCache } from '../rendering/AssetCache'
+import { yieldToNextFrame } from '../rendering/mainThreadYield'
 import { createRemoteAvatarPlaceholder } from '../avatar/remotePlaceholder'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import { VrmAvatar } from '../avatar/vrm/VrmAvatar'
@@ -985,6 +986,8 @@ export class RemoteAvatarManager {
       }
 
       const composed = await composeAvatarFromProfile(profile, this.contentUrl || undefined, this.assetCache)
+      // Let a frame paint after the (time-sliced) compose before scene-graph attach + anim bind.
+      await yieldToNextFrame()
       stabilizeSkinnedMeshes(composed)
 
       if (!this.peers.has(key)) {
@@ -1002,6 +1005,12 @@ export class RemoteAvatarManager {
       this.clearLoadingPresentation(record)
 
       record.pivot.add(record.model)
+      applyAvatarPivotOffset(record.pivot, record.model)
+      this.finalizeNameTag(record)
+
+      // Bind locomotion/emote clips on the next frame so first GPU upload isn't stacked with bind.
+      await yieldToNextFrame()
+      if (!this.peers.has(key) || record.model !== composed) return
 
       record.animations = new AvatarAnimations()
       try {
@@ -1011,14 +1020,11 @@ export class RemoteAvatarManager {
           assetCache: this.assetCache
         })
         record.animations.setVfxScene(this.scene)
-        applyAvatarPivotOffset(record.pivot, record.model)
       } catch (err) {
         console.warn(`[network] remote emotes failed for ${address}`, err)
         record.animations.dispose()
         record.animations = null
       }
-
-      this.finalizeNameTag(record)
 
       const { x, y, z } = record.targetPosition
       clientDebugLog.log(
@@ -1059,6 +1065,12 @@ export class RemoteAvatarManager {
         return
       }
 
+      await yieldToNextFrame()
+      if (!this.peers.has(key)) {
+        odkAvatar.dispose()
+        return
+      }
+
       record.odkAvatar = odkAvatar
       record.model = odkAvatar.root
       record.renderMode = 'odk'
@@ -1068,6 +1080,10 @@ export class RemoteAvatarManager {
       this.clearLoadingPresentation(record)
       record.pivot.add(odkAvatar.root)
       applyOdkPivotOffset(record.pivot, odkAvatar.root)
+      this.finalizeNameTag(record)
+
+      await yieldToNextFrame()
+      if (!this.peers.has(key) || record.model !== odkAvatar.root) return
 
       record.odkLocomotion = new OdkLocomotionAnimations()
       try {
@@ -1082,8 +1098,6 @@ export class RemoteAvatarManager {
         record.odkLocomotion.dispose()
         record.odkLocomotion = null
       }
-
-      this.finalizeNameTag(record)
 
       odkNetInfo('remote ODK avatar mounted', {
         peer: shortAddr(record.address),
@@ -1132,6 +1146,12 @@ export class RemoteAvatarManager {
         return
       }
 
+      await yieldToNextFrame()
+      if (!this.peers.has(key)) {
+        vrmAvatar.dispose()
+        return
+      }
+
       vrmAvatar.vrm.humanoid.autoUpdateHumanBones = false
       record.vrmAvatar = vrmAvatar
       record.model = vrmAvatar.root
@@ -1141,6 +1161,10 @@ export class RemoteAvatarManager {
 
       this.clearLoadingPresentation(record)
       record.pivot.add(vrmAvatar.root)
+      this.finalizeNameTag(record)
+
+      await yieldToNextFrame()
+      if (!this.peers.has(key) || record.model !== vrmAvatar.root) return
 
       record.vrmLocomotion = new VrmLocomotionAnimations()
       try {
@@ -1154,8 +1178,6 @@ export class RemoteAvatarManager {
         record.vrmLocomotion = null
         applyVrmPivotOffset(record.pivot, vrmAvatar.vrm, vrmAvatar.root)
       }
-
-      this.finalizeNameTag(record)
 
       clientDebugLog.log(
         'network',

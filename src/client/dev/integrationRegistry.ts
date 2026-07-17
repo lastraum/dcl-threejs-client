@@ -149,7 +149,14 @@ export const NETWORKING_INTEGRATION: IntegrationEntry[] = [
     category: 'networking',
     notes: 'SceneChatRoomPool + resolveSceneChatAdapter — companion multi-text-chats; primary room for cast'
   },
-  { id: 'net:remote-avatars', name: 'Remote avatar load + lerp', status: 'render', category: 'networking', notes: 'RemoteAvatarManager + load queue' },
+  {
+    id: 'net:remote-avatars',
+    name: 'Remote avatar load + lerp',
+    status: 'render',
+    category: 'networking',
+    notes:
+      'RemoteAvatarManager + distance queue; compose/attach time-sliced (yieldToNextFrame per wearable + bind); still main-thread GLB parse'
+  },
   {
     id: 'net:double-jump-twirl',
     name: 'Double-jump twirl (DCL/VRM/ODK)',

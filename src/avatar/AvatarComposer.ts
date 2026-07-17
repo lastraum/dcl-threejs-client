@@ -19,6 +19,7 @@ import { applyWearableEmissives } from './materials'
 import { buildComposeConfig } from './resolveProfile'
 import { resolveAvatarProfile } from './peerApi'
 import { isModelWearable } from './slots'
+import { yieldToNextFrame } from '../rendering/mainThreadYield'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import type { AvatarComposeConfig, AvatarProfile, BodyShape } from './types'
 
@@ -111,8 +112,13 @@ async function composeFromConfig(
       })
     )
 
+    let mergeIndex = 0
     for (const entry of loadedLayers) {
       if (!entry) continue
+      // One wearable merge per frame — keeps peer compose from stacking multi-ms CPU on rAF.
+      if (mergeIndex > 0) await yieldToNextFrame()
+      mergeIndex++
+
       const mergeOpts = {
         category: entry.wearable.data.category,
         wearableId: entry.wearable.id,
@@ -157,8 +163,10 @@ async function composeFromConfig(
     popWearableMappings()
   }
 
+  await yieldToNextFrame()
   applyBodyShapeVisibility(bodyRoot, config.wearables)
   await applyFacialFeatures(bodyRoot, config, cache)
+  await yieldToNextFrame()
   applyWearableEmissives(avatar)
   stabilizeSkinnedMeshes(avatar)
   return avatar

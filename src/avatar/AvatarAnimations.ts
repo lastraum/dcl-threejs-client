@@ -39,6 +39,8 @@ export type AvatarLocomotionState = {
   /** One frame — air-jump impulse applied (procedural twirl + spin puff). */
   doubleJumpTriggered?: boolean
   falling: boolean
+  /** Hold-Space glider open (Explorer) — jump pose held while airborne. */
+  gliding?: boolean
   /** Planar move axis in avatar-local space (+X right, -Z forward) for VRM directional locomotion. */
   moveAxisX?: number
   moveAxisZ?: number
@@ -368,7 +370,8 @@ export class AvatarAnimations {
         vy > -3)
 
     if (!locomotionGrounded) {
-      if (state.jumping) {
+      // Glider / air: hold jump pose (Explorer glider uses aerial pose while Space held).
+      if (state.gliding || state.jumping || state.falling || state.doubleJumping) {
         targetJump = 1
       }
     } else if (state.horizontalSpeed > 0.05) {

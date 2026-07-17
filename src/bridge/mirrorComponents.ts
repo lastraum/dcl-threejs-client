@@ -94,6 +94,10 @@ export type MirrorComponents = {
   NftShape: ReturnType<typeof generated.NftShape>
   /** Override materials / castShadows on GltfContainer nodes (video screens, etc.). */
   GltfNodeModifiers: ReturnType<typeof generated.GltfNodeModifiers>
+  /** Continuous force summary on PlayerEntity (scene Physics.applyForceToPlayer). */
+  PhysicsCombinedForce: ReturnType<typeof generated.PhysicsCombinedForce>
+  /** One-shot impulse summary on PlayerEntity (Physics.applyImpulseToPlayer / knockback). */
+  PhysicsCombinedImpulse: ReturnType<typeof generated.PhysicsCombinedImpulse>
 }
 
 /** Register mirror ECS components so incoming scene CRDT can be applied. */
@@ -158,6 +162,8 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     AssetLoad: generated.AssetLoad(engine),
     AssetLoadLoadingState: generated.AssetLoadLoadingState(engine),
     NftShape: generated.NftShape(engine),
-    GltfNodeModifiers: generated.GltfNodeModifiers(engine)
+    GltfNodeModifiers: generated.GltfNodeModifiers(engine),
+    PhysicsCombinedForce: generated.PhysicsCombinedForce(engine),
+    PhysicsCombinedImpulse: generated.PhysicsCombinedImpulse(engine)
   }
 }

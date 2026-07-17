@@ -10,7 +10,11 @@ export const DCL_LOCOMOTION_DEFAULTS = {
   jumpHeight: 1,
   runJumpHeight: 1.5,
   doubleJumpHeight: 2,
-  hardLandingCooldown: 0.75
+  hardLandingCooldown: 0.75,
+  /** Horizontal speed while holding jump in air (glider). */
+  glidingSpeed: 6,
+  /** Max descent while gliding (m/s). Does not cap upward force lift. */
+  glidingFallingSpeed: 1
 } as const
 
 export type LocomotionMode = 'walk' | 'jog' | 'run'
@@ -22,6 +26,9 @@ export type LocomotionConfig = {
   jumpHeight: number
   runJumpHeight: number
   doubleJumpHeight: number
+  hardLandingCooldown: number
+  glidingSpeed: number
+  glidingFallingSpeed: number
   disableAll: boolean
   disableWalk: boolean
   disableJog: boolean
@@ -96,10 +103,18 @@ export function canVoluntaryEmote(config: LocomotionConfig): boolean {
   return !config.disableAll && !config.disableEmote
 }
 
-/** Reserved for glide locomotion when implemented. */
+/** Hold-jump glider while airborne (Explorer). */
 export function canGlide(config: LocomotionConfig): boolean {
-  return !config.disableAll && !config.disableGliding
+  return (
+    !config.disableAll &&
+    !config.disableGliding &&
+    config.glidingSpeed > 0 &&
+    config.glidingFallingSpeed >= 0
+  )
 }
+
+/** Continuous scene forces are stronger while the glider is open (DCL docs: 1.5×). */
+export const GLIDING_FORCE_MULTIPLIER = 1.5
 
 function applyInputModifier(config: LocomotionConfig, std: {
   disableAll?: boolean
@@ -141,6 +156,14 @@ export function readLocomotionFromComponents(components: MirrorComponents, playe
     if (s.runSpeed !== undefined) config.runSpeed = Math.max(0, s.runSpeed)
     if (s.jumpHeight !== undefined) config.jumpHeight = Math.max(0, s.jumpHeight)
     if (s.runJumpHeight !== undefined) config.runJumpHeight = Math.max(0, s.runJumpHeight)
+    if (s.doubleJumpHeight !== undefined) config.doubleJumpHeight = Math.max(0, s.doubleJumpHeight)
+    if (s.hardLandingCooldown !== undefined) {
+      config.hardLandingCooldown = Math.max(0, s.hardLandingCooldown)
+    }
+    if (s.glidingSpeed !== undefined) config.glidingSpeed = Math.max(0, s.glidingSpeed)
+    if (s.glidingFallingSpeed !== undefined) {
+      config.glidingFallingSpeed = Math.max(0, s.glidingFallingSpeed)
+    }
   }
 
   if (components.InputModifier.has(player)) {

@@ -190,6 +190,7 @@ export class OdkLocomotionAnimations {
         !state.jumping &&
         !state.doubleJumping &&
         !state.falling &&
+        !state.gliding &&
         vy > -3)
 
     const targetSpeed = state.targetLocomotionSpeed ?? 0
@@ -209,7 +210,9 @@ export class OdkLocomotionAnimations {
     let targetFall = 0
 
     if (!locomotionGrounded) {
-      if (state.jumping || state.doubleJumping) {
+      if (state.gliding) {
+        targetFall = 1
+      } else if (state.jumping || state.doubleJumping) {
         targetJump = 1
       } else if (state.falling || vy < -1.5) {
         targetFall = 1

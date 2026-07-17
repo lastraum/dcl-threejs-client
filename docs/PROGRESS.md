@@ -4,7 +4,7 @@
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-07-17  
 > **Current phase:** **v1.0.0** — production beta on the core loop; still not full Explorer parity.  
-> **Shipped (1.x):** spatial nearby voice · Settings Communities · 1:1 DMs + community group text (ADR-208) · community voice join CTA · **2D social chat FAB** · community HUD toasts / mod gates · RestrictedActions teleport/changeRealm/copy · elevated-spawn floor settle · **scene UI hit-map + nine-slice** · **Dead Surge combat / VC / PE attach** · **P4 emissive bloom / HDR**.  
+> **Shipped (1.x):** spatial nearby voice · Settings Communities · 1:1 DMs + community group text (ADR-208) · community voice join CTA · **2D social chat FAB** · community HUD toasts / mod gates · RestrictedActions teleport/changeRealm/copy · elevated-spawn floor settle · **scene UI hit-map + nine-slice** · **Dead Surge combat / VC / PE attach** · **P4 emissive bloom / HDR** · **PhysicsCombined force/impulse + hold-Space glider**.  
 > **1.x next:** backpack outfits · scene UI text-measure · community voice Bearer parity · create-community / invites.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
@@ -13,6 +13,33 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+
+## 🎉 Milestone — PhysicsCombined + hold-Space glider → `lastraum` (2026-07-17)
+
+**Status: on `lastraum`** — scene `Physics.applyForceToPlayer` / `applyImpulseToPlayer` drive the local capsule; Explorer-style glider on hold-jump.
+
+### What's new
+
+- **PhysicsCombinedForce** — continuous world-space force on `PlayerEntity` each tick (wind / currents)
+- **PhysicsCombinedImpulse** — one-shot Δv per `eventId` (launch pads / knockback)
+- **Glider** — hold Space while airborne (vy≤0): cap fall at `glidingFallingSpeed`, steer at `glidingSpeed`
+- **Glide + force** — continuous forces × **1.5** while gliding; upward lift not capped (DCL docs)
+- **Locomotion settings** — read `doubleJumpHeight`, `glidingSpeed`, `glidingFallingSpeed`, `hardLandingCooldown` from ECS
+- **InputModifier** — `disableGliding` honored via `canGlide`
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Force (1216)** | 🟢 | Mirror CRDT + `PlayerSystem.applyScenePhysicsCombined` |
+| **Impulse (1215)** | 🟢 | eventId dedupe; DCL→Three X-reflect |
+| **Hold-Space glider** | 🟢 | After apex; jump pose held |
+| **Glider anim clip** | 🟡 | Jump pose while gliding (no dedicated glide.glb yet) |
+
+**QA:** Scene wind zone enter/exit · launch pad impulse · double-jump then hold Space for slow fall · force lifts glider · `disableGliding` blocks open.
+
+**Tip commit:** see `lastraum` tip.
 
 ---
 

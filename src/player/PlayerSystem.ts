@@ -11,10 +11,12 @@ import type { PhysXWorld } from '../physics/PhysXWorld'
 import type { SceneHost } from '../rendering/SceneHost'
 import {
   canDoubleJumpLocomotion,
+  canGlide,
   canJumpLocomotion,
   canLocomote,
   canVoluntaryEmote,
   defaultLocomotionConfig,
+  GLIDING_FORCE_MULTIPLIER,
   jumpHeightForMode,
   readLocomotionFromComponents,
   resolveLocomotionMode,
@@ -60,6 +62,8 @@ const _moveDir = new THREE.Vector3()
 const _velocity = new THREE.Vector3()
 const _displacement = new THREE.Vector3()
 const _force = new THREE.Vector3()
+const _sceneForce = new THREE.Vector3()
+const _sceneImpulse = new THREE.Vector3()
 const _pivot = new THREE.Vector3()
 const _tmpSpawnHold = new THREE.Vector3()
 const _lookAt = new THREE.Vector3()
@@ -133,6 +137,10 @@ export class PlayerSystem {
   private airJumpPending = false
   private airJumpDelayLeft = 0
   private doubleJumpTriggered = false
+  /** Explorer glider — hold Space while airborne (vy≤0), leave on land or release. */
+  private gliding = false
+  /** Last PhysicsCombinedImpulse.eventId applied (once per CRDT event). */
+  private lastImpulseEventId = 0
   private jumpCount = 0
   private locomotionMode: LocomotionMode = 'jog'
   private readComponents: MirrorComponents | null = null
@@ -714,6 +722,7 @@ export class PlayerSystem {
     this.wasLocomotionAllowed = locomotionAllowed
     const jumpLocomotionAllowed = canJumpLocomotion(locomotion)
     const doubleJumpLocomotionAllowed = canDoubleJumpLocomotion(locomotion)
+    const glideAllowed = canGlide(locomotion)
 
     const emoteActive = this.avatar?.isProfileEmoteActive() ?? false
     if (this.wasProfileEmoteActive && !emoteActive) {
@@ -855,6 +864,7 @@ export class PlayerSystem {
       this.airJumpPending = false
       this.airJumpDelayLeft = 0
       this.jumpCount = 0
+      this.gliding = false
     }
 
     this.doubleJumpTriggered = false
@@ -868,7 +878,7 @@ export class PlayerSystem {
     }
 
     this.locomotionMode = resolveLocomotionMode(this.input.keys, locomotion)
-    const moveSpeed = speedForMode(this.locomotionMode, locomotion)
+    let moveSpeed = speedForMode(this.locomotionMode, locomotion)
     if (moving && (locomotion.disableJog || locomotion.disableRun || locomotion.disableWalk)) {
       const now = performance.now()
       if (now - lastLocomotionDiagMs > 2500) {
@@ -946,15 +956,38 @@ export class PlayerSystem {
           this.spawnHoldAuthoredFeetY = null
         }
       }
-    } else if (!this.grounded && !this.airJumpPending) {
+    } else if (!this.grounded && !this.airJumpPending && !this.gliding) {
       _velocity.y -= GRAVITY * delta
+    } else if (this.gliding && !this.grounded) {
+      // Glider still feels gravity but is hard-capped on descent (Explorer glidingFallingSpeed).
+      _velocity.y -= GRAVITY * delta * 0.35
     }
 
     if (this.jumping && !this.grounded && _velocity.y <= 0) {
       this.jumping = false
     }
 
-    const accel = this.grounded ? GROUND_ACCEL : AIR_ACCEL
+    // Hold Space while airborne after apex → open glider (Explorer).
+    if (
+      this.grounded ||
+      !this.input?.keys.space ||
+      !glideAllowed ||
+      this.airJumpPending
+    ) {
+      if (this.grounded || !this.input?.keys.space) this.gliding = false
+    } else if (!this.grounded && this.input.keys.space && _velocity.y <= 0.35) {
+      this.gliding = true
+    }
+
+    if (this.gliding) {
+      moveSpeed = locomotion.glidingSpeed
+      // Cap fall only — continuous upward forces can still lift (docs).
+      if (_velocity.y < -locomotion.glidingFallingSpeed) {
+        _velocity.y = -locomotion.glidingFallingSpeed
+      }
+    }
+
+    const accel = this.grounded ? GROUND_ACCEL : this.gliding ? AIR_ACCEL * 0.85 : AIR_ACCEL
     const steerAlpha = 1 - Math.exp(-accel * delta)
 
     if (moving) {
@@ -973,16 +1006,21 @@ export class PlayerSystem {
       _velocity.z *= drag
     }
 
+    // Scene Physics.applyImpulseToPlayer / applyForceToPlayer (PlayerEntity CRDT summary).
+    this.applyScenePhysicsCombined(delta, this.gliding)
+
     if (onGround && !this.jumping && this.input.spacePressed && jumpLocomotionAllowed) {
       _velocity.y = Math.sqrt(2 * GRAVITY * jumpHeightForMode(this.locomotionMode, locomotion))
       this.jumped = true
       this.jumpCount = 1
+      this.gliding = false
     } else if (
       !this.grounded &&
       !this.airJumped &&
       !this.airJumpPending &&
       this.input.spacePressed &&
-      doubleJumpLocomotionAllowed
+      doubleJumpLocomotionAllowed &&
+      !this.gliding
     ) {
       this.airJumpPending = true
       this.airJumpDelayLeft = AIR_JUMP_DELAY
@@ -997,6 +1035,7 @@ export class PlayerSystem {
         this.airJumpPending = false
         this.jumpCount = 2
         this.doubleJumpTriggered = true
+        this.gliding = false
       }
     }
 
@@ -1088,10 +1127,17 @@ export class PlayerSystem {
       nearGround: this.nearGround,
       verticalVelocity: _velocity.y,
       locomotionMode: this.locomotionMode,
-      jumping: this.jumping && !this.airJumped,
-      doubleJumping: this.airJumped && !this.grounded,
+      jumping: this.jumping && !this.airJumped && !this.gliding,
+      doubleJumping: this.airJumped && !this.grounded && !this.gliding,
       doubleJumpTriggered: this.doubleJumpTriggered,
-      falling: !this.grounded && !this.jumping && !this.jumped && !this.airJumped && _velocity.y < -1.5,
+      falling:
+        !this.grounded &&
+        !this.gliding &&
+        !this.jumping &&
+        !this.jumped &&
+        !this.airJumped &&
+        _velocity.y < -1.5,
+      gliding: this.gliding && !this.grounded,
       moveAxisX,
       moveAxisZ
     })
@@ -1099,6 +1145,43 @@ export class PlayerSystem {
     this.syncPointerLockAim()
     this.syncCameraModeAndPointerLockEcs()
     this.input.endFrame()
+  }
+
+  /**
+   * Scene-authored PhysicsCombinedForce (continuous) + PhysicsCombinedImpulse (eventId one-shot).
+   * Vectors are DCL scene space → Three display. While gliding, continuous force × 1.5 (Explorer).
+   */
+  private applyScenePhysicsCombined(delta: number, gliding: boolean): void {
+    const ecs = this.readComponents
+    if (!ecs) return
+    const pe = SDK_RESERVED.player
+
+    if (ecs.PhysicsCombinedImpulse.has(pe)) {
+      const imp = ecs.PhysicsCombinedImpulse.get(pe)
+      const eventId = imp.eventId ?? 0
+      const v = imp.vector
+      if (eventId !== 0 && eventId !== this.lastImpulseEventId && v) {
+        this.lastImpulseEventId = eventId
+        // Impulse as Δv (kinematic CCT — mass baked into scene magnitudes).
+        dclToThreeVec(_sceneImpulse.set(v.x ?? 0, v.y ?? 0, v.z ?? 0), _sceneImpulse)
+        _velocity.add(_sceneImpulse)
+        // Impulse exits glide so launch pads feel snappy.
+        if (_sceneImpulse.y > 0.5) this.gliding = false
+      }
+    }
+
+    if (ecs.PhysicsCombinedForce.has(pe)) {
+      const force = ecs.PhysicsCombinedForce.get(pe)
+      const v = force.vector
+      if (v) {
+        // Continuous force as acceleration (m=1).
+        const mult = gliding ? GLIDING_FORCE_MULTIPLIER : 1
+        dclToThreeVec(_sceneForce.set(v.x ?? 0, v.y ?? 0, v.z ?? 0), _sceneForce)
+        _velocity.x += _sceneForce.x * mult * delta
+        _velocity.y += _sceneForce.y * mult * delta
+        _velocity.z += _sceneForce.z * mult * delta
+      }
+    }
   }
 
   /**
@@ -1331,6 +1414,8 @@ export class PlayerSystem {
     this.jumping = false
     this.airJumped = false
     this.airJumpPending = false
+    this.gliding = false
+    // Keep lastImpulseEventId — scene may re-send same id after respawn; only new events apply.
 
     if (settle) {
       this.physics.warmStaticScene()

@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-17 (Dead Surge combat/VC/PE · P4 emissive bloom/HDR · swept hits · motion-promoted coins · large-bundle boot)
+> **Last updated:** 2026-07-17 (PhysicsCombined force/impulse · hold-Space glider · P4 bloom · Dead Surge combat)
 
 ---
 
@@ -66,8 +66,8 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | --------- | -- | ------ | ----- |
 | MeshCollider | 1019 | 🟢 | PhysX static + GLTF trimesh |
 | AvatarLocomotionSettings | 1211 | 🟢 | Read for jump tuning |
-| PhysicsCombinedForce | 1216 | ⬜ | Apply force to physics bodies |
-| PhysicsCombinedImpulse | 1215 | ⬜ | Apply impulse to physics bodies |
+| PhysicsCombinedForce | 1216 | 🟢 | Continuous force on PlayerEntity → velocity (1.5× while gliding) |
+| PhysicsCombinedImpulse | 1215 | 🟢 | One-shot Δv on PlayerEntity via eventId (launch pads / knockback) |
 | InputModifier | 1078 | 🟢 | Read path |
 | PointerLock | 1074 | 🔵 | Renderer writes CameraEntity; right-click (or Tab) toggles lock; lock movement = orbit look |
 | PointerEvents | 1062 | 🟢 | Raycast + hover hints + CRDT |
@@ -132,7 +132,6 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 
 | Status | Components |
 | ------ | ---------- |
-| ⬜ | PhysicsCombinedForce · PhysicsCombinedImpulse |
 | 🟡 | UiTransform · UiText · UiBackground · UiInput · UiDropdown |
 
 ### ~system modules (worker shim)

@@ -127,33 +127,12 @@ export class VirtualCameraBridge {
     const bindChanged = this.activeEntity !== virtualEntity
 
     if (bindChanged) {
-      // Honor VirtualCamera.defaultTransition (time/speed) — Explorer always eases into the shot.
-      // Video-screen focus (Fixed View Camera, time:1) was snapping when freecam was >12m away.
-      // Only snap when no transition is authored (duration 0) or duration is insanely long AND
-      // the cut is huge (character-select stage cuts that parked the lens in empty space for seconds).
-      const jumpM = camera.position.distanceTo(target.position)
-      const spec = this.ecs.VirtualCamera.get(virtualEntity) as PBVirtualCamera
-      const duration = resolveTransitionDuration(
-        spec.defaultTransition,
-        camera.position,
-        target.position
-      )
-      const epicStageCut = duration > 2.5 && jumpM > 24
-      if (duration <= 0 || epicStageCut) {
-        this.transition = null
+      // SDK parity: only VirtualCamera.defaultTransition drives motion (time / speed).
+      // No distance heuristics — missing or zero-duration transition = instant cut.
+      this.beginTransition(camera, virtualEntity, target)
+      if (!this.transition) {
         camera.position.copy(target.position)
         camera.quaternion.copy(target.rotation)
-        if (epicStageCut) {
-          console.info(
-            `[vc-lens] bind snap vc=e${virtualEntity} jump=${jumpM.toFixed(1)}m duration=${duration.toFixed(2)}s → lens=(${target.position.x.toFixed(1)},${target.position.y.toFixed(1)},${target.position.z.toFixed(1)})`
-          )
-        }
-      } else {
-        this.beginTransition(camera, virtualEntity, target)
-        if (!this.transition) {
-          camera.position.copy(target.position)
-          camera.quaternion.copy(target.rotation)
-        }
       }
       this.activeEntity = virtualEntity
       if (vcDebugVerbose()) {

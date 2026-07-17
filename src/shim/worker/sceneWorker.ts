@@ -70,7 +70,10 @@ import {
   clearInjectOnlySdkPollEventsDeferred,
   markDeferSdkPollEventsAfterInjectUiClick
 } from './patchSdkOnUpdatePollEvents'
-import { installVirtualCameraBindGuard } from './virtualCameraBindGuard'
+import {
+  ensureMainCameraOnCameraEntity,
+  installVirtualCameraBindGuard
+} from './virtualCameraBindGuard'
 import { installAvatarAttachCreateGuard } from './patchAvatarAttachCreate'
 import type { Entity } from '@dcl/ecs'
 import * as extended from '@dcl/ecs/dist/components'
@@ -274,12 +277,32 @@ let sceneUiOutboundLogCount = 0
 const SCENE_UI_OUTBOUND_LOG_LIMIT = 12
 let debugTweenDeliver = false
 let debugMessageArrival = false
+/**
+ * SDK7 entry-points register `main` as an Infinity-priority system so it runs on the first
+ * `engine.update` *after* transport `receiveMessages` applies onStart CRDT (main.crdt Names,
+ * Transforms, …). Calling main before that tick is what made LobbyWorldPanel throw
+ * `Scene entity not found: trigger_room_1` while the Name PUTs were still queued.
+ */
+function engineHasSdkStartupSystem(eng: {
+  getSystems?: () => readonly { priority: number; name?: string }[]
+}): boolean {
+  const systems = typeof eng.getSystems === 'function' ? eng.getSystems() : []
+  for (const system of systems) {
+    if (system.priority === Number.POSITIVE_INFINITY) return true
+    if (system.name === '_INTERNAL_startup_system') return true
+  }
+  return false
+}
+
 async function invokeSceneMainBootstrap(
-  exports: import('../system/createSystemStubs').SceneBundleExports
+  exports: import('../system/createSystemStubs').SceneBundleExports,
+  options?: { skipMain?: boolean }
 ): Promise<void> {
   if (!sceneEngine) return
   const initScripts = exports._initializeScripts ?? exports.initializeScripts
-  if (typeof initScripts === 'function') {
+  // SDK Infinity startup system already calls _initializeScripts before main — skip when
+  // boot tick owned bootstrap to avoid double script/UI registration.
+  if (!options?.skipMain && typeof initScripts === 'function') {
     try {
       await Promise.resolve(initScripts(sceneEngine))
       workerLog('log', '[sceneWorker] initializeScripts complete')
@@ -289,6 +312,13 @@ async function invokeSceneMainBootstrap(
         `[sceneWorker] initializeScripts failed — ${err instanceof Error ? err.message : String(err)}`
       )
     }
+  }
+  if (options?.skipMain) {
+    workerLog(
+      'log',
+      `[sceneWorker] scene main() owned by SDK startup system — UiTransform=${collectWorkerUiEntityIds().length}`
+    )
+    return
   }
   if (typeof exports.main !== 'function') return
   try {
@@ -903,6 +933,22 @@ function postVcPoseLive(entity: Entity, tr: {
   } satisfies SceneWorkerOutbound)
 }
 
+/**
+ * Scenes often gate PE parenting on Transform.has(PlayerEntity). Seed a shell so
+ * mid-session equip (weapons, attach props) gets parent=PE instead of a world-space orphan.
+ */
+function ensurePlayerEntityTransform(engine: import('@dcl/ecs').IEngine): void {
+  const Transform = extended.Transform(engine)
+  const pe = engine.PlayerEntity as Entity
+  if (Transform.has(pe)) return
+  Transform.createOrReplace(pe, {
+    position: { x: 0, y: 0, z: 0 },
+    rotation: { x: 0, y: 0, z: 0, w: 1 },
+    scale: { x: 1, y: 1, z: 1 },
+    parent: engine.RootEntity
+  })
+}
+
 /** Same-tick PlayerEntity / CameraEntity for scene systems (CameraFollowSystem, etc.). */
 function applyPlayFrameReservedPoses(
   player?: {
@@ -931,6 +977,8 @@ function applyPlayFrameReservedPoses(
       parent: sceneEngine!.RootEntity
     })
   }
+  // Always host PE Transform before scene systems parent weapons to PlayerEntity.
+  ensurePlayerEntityTransform(sceneEngine)
   if (player) write(sceneEngine.PlayerEntity as Entity, player)
   if (camera) write(sceneEngine.CameraEntity as Entity, camera)
 }
@@ -2602,6 +2650,7 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     installPointerEventColliderChecker(sceneEngine)
     workerLog('log', '[sceneWorker] pointerEventColliderChecker installed (post-onStart)')
     installVirtualCameraBindGuard(sceneEngine)
+    ensureMainCameraOnCameraEntity(sceneEngine)
     installInputModifierLocomotionGuard(sceneEngine)
     installAvatarAttachCreateGuard(sceneEngine)
     workerLog(
@@ -2623,7 +2672,6 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     allowGetters: true,
     allowGraphSearch: true
   })
-  await invokeSceneMainBootstrap(exports)
   if (!hasWorkerReactEcsSync(sceneEngine)) {
     workerLog(
       'warn',
@@ -2631,12 +2679,19 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     )
   }
   bindSceneEngineScheduler(sceneEngine)
+  // Explorer order: onStart only queues crdtGetState via transport.onmessage.
+  // First engine.update receives those messages (Name/Transform/…) then runs systems.
+  // SDK entry-points schedule main() as Infinity priority so it sees main.crdt entities.
+  const sdkStartupOwnsMain = engineHasSdkStartupSystem(
+    sceneEngine as { getSystems?: () => readonly { priority: number; name?: string }[] }
+  )
   try {
     await runSceneEngineBootTick(sceneEngine)
     const postUpdateUi = collectWorkerUiEntityIds().length
     workerLog(
       'log',
-      `[sceneWorker] post-onStart boot tick — UiTransform=${postUpdateUi} composite CRDT flushed`
+      `[sceneWorker] post-onStart boot tick — UiTransform=${postUpdateUi} composite CRDT flushed` +
+        (sdkStartupOwnsMain ? ' (SDK startup main ran this tick)' : '')
     )
   } catch (err) {
     workerLog(
@@ -2644,6 +2699,11 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
       `[sceneWorker] post-onStart boot tick failed — ${err instanceof Error ? err.message : String(err)}`
     )
   }
+  await invokeSceneMainBootstrap(exports, { skipMain: sdkStartupOwnsMain })
+  // Scene main() often creates VC entities; ensure CameraEntity hosts MainCamera so systems that
+  // gate on MainCamera.has(CameraEntity) can assign virtualCameraEntity on first tick.
+  ensureMainCameraOnCameraEntity(sceneEngine)
+  ensurePlayerEntityTransform(sceneEngine)
 
   if (exports.onUpdate) {
     try {

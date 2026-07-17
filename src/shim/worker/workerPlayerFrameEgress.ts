@@ -457,11 +457,20 @@ export function collectPlayerFrameSnapshot(engine: IEngine): PlayerFrameSnapshot
     inputModifier = CLEARED_INPUT_MODIFIER
   }
 
+  // Host shell so MainCamera.has(CameraEntity) is true for scene iso/top systems.
+  if (!MainCamera.has(camera)) {
+    MainCamera.createOrReplace(camera, {})
+  }
   const mainCamera = MainCamera.getOrNull(camera) ?? {}
   const key = stableSnapshotKey(inputModifierHas, inputModifier, mainCamera)
   if (key === lastSnapshotKey) return null
   lastSnapshotKey = key
   frameSeq++
+  const vc =
+    (mainCamera as { virtualCameraEntity?: number | null } | null)?.virtualCameraEntity ?? null
+  if (vc !== null && vc !== undefined) {
+    workerLog(`[vc-lens] player-frame egress MainCamera → e${vc}`)
+  }
   return {
     frameId: frameSeq,
     inputModifierHas,

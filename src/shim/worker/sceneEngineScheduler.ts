@@ -141,6 +141,11 @@ type WallClockWrappedEngine = IEngine & { __threejsWallClockWrapped?: boolean }
  * Intercept every engine.update — SDK onUpdate, pointer ticks, cooperative, flight.
  * Positive dt is clamped to wall-clock debt and committed to the scene-time ledger so
  * NeonScreen pauseDuration cannot be compressed by double ticks or unpatched paths.
+ *
+ * Do NOT substep nativeUpdate: each call runs every scene system + network transport.
+ * Multi-stepping (even 2–3×) multiplies worker cost and starves TriggerArea / UI on large
+ * scenes. Projectile tunneling is a discrete-sample scene concern, not solved by replaying
+ * the full ECS loop.
  */
 function wrapEngineUpdateWithWallClock(eng: IEngine): void {
   const wrapped = eng as WallClockWrappedEngine
@@ -278,19 +283,27 @@ function wallClockDebtSec(now = performance.now()): number {
  * Positive dt for engine.update (seconds), hard-capped by wall-clock debt.
  * dt=0 callers (TweenState inject, pointer UI) must pass 0 explicitly and not call this.
  */
+/**
+ * Cap a single engine.update dt (seconds). Explorer-class systems often run near 30–60 Hz;
+ * allowing 100 ms jumps makes fast projectiles teleport (miss discrete hit spheres) and
+ * look faster than wall clock after a hitch. Debt remains and is spent over following ticks
+ * — not multi-update substeps (those re-run all systems and starve TriggerArea/UI).
+ */
+const MAX_ENGINE_DT_SEC = 1 / 30
+
 function resolveDt(): number {
   const now = performance.now()
   if (wallClockOriginMs <= 0) {
     // Seed origin one starter interval in the past so the first tick has real debt
     // (origin=now would yield debt=0 forever until a later frame).
-    const starter = Math.min(0.1, Math.max(1 / 120, resolveIntervalMs() / 1000))
+    const starter = Math.min(MAX_ENGINE_DT_SEC, Math.max(1 / 120, resolveIntervalMs() / 1000))
     wallClockOriginMs = now - starter * 1000
     sceneTimeSec = 0
     return starter
   }
   const debt = wallClockDebtSec(now)
   if (debt <= 1e-6) return 0
-  return Math.min(debt, 0.1)
+  return Math.min(debt, MAX_ENGINE_DT_SEC)
 }
 
 /** Clamp an explicit dt (e.g. flight pump) so it cannot race NeonScreen past wall clock. */
@@ -299,11 +312,11 @@ function clampDtToWallClock(requested: number): number {
   if (wallClockOriginMs <= 0) {
     // Seed ledger, then clamp request to the first-tick debt.
     const starter = resolveDt()
-    return Math.min(requested, starter, 0.1)
+    return Math.min(requested, starter, MAX_ENGINE_DT_SEC)
   }
   const debt = wallClockDebtSec()
   if (debt <= 1e-6) return 0
-  return Math.min(requested, debt, 0.1)
+  return Math.min(requested, debt, MAX_ENGINE_DT_SEC)
 }
 
 /** Commit scene time after a successful eng.update with dt>0. */

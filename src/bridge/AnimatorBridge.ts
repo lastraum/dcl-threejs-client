@@ -107,6 +107,12 @@ export class AnimatorBridge {
   private readonly loggedSkips = new Set<string>()
   /** GLBs probed with no ECS Animator and zero embedded clips — skip re-probing each sync. */
   private readonly staticGltfNoClips = new Set<Entity>()
+  /**
+   * Animator CRDT PUTs since last sync — re-apply even when state signature is unchanged.
+   * Scenes re-fire one-shots by getMutable + shouldReset=true; LWW payload may be identical
+   * to the previous put so signature skip would never restart muzzle/gun clips.
+   */
+  private readonly dirtyReplay = new Set<Entity>()
   private motionFocusView: ProjectionView | null = null
   /** GLTF collider child meshes moved by skinning / clips this frame. */
   private readonly shapeMotionEntities = new Set<Entity>()
@@ -129,6 +135,14 @@ export class AnimatorBridge {
   /** After mixer.update — detect per-shape collider tread motion (GltfColliderExtractor probe). */
   setShapeMotionProbe(probe: ((entity: Entity) => boolean) | null): void {
     this.shapeMotionProbe = probe
+  }
+
+  /**
+   * Animator CRDT put / getMutable re-fire — must re-apply clip even if state signature matches.
+   * Call from projection fold when Animator.componentId changes.
+   */
+  markDirty(entity: Entity): void {
+    this.dirtyReplay.add(entity)
   }
 
   getActiveEntities(): Entity[] {
@@ -296,7 +310,11 @@ export class AnimatorBridge {
       active.add(entity)
 
       const stateSignature = animatorStateSignature(states, usingDefaultAutoPlay)
-      if (!rebinding && bound.lastAppliedSignature === stateSignature) {
+      const forceReplay = this.dirtyReplay.has(entity)
+      this.dirtyReplay.delete(entity)
+      // Signature skip is correct for idle holds — but identical shouldReset re-fires
+      // (muzzle flash / gun shot) arrive as CRDT dirties with the same state payload.
+      if (!rebinding && !forceReplay && bound.lastAppliedSignature === stateSignature) {
         continue
       }
 
@@ -320,7 +338,9 @@ export class AnimatorBridge {
         action.setEffectiveTimeScale(state.speed ?? 1)
         action.setLoop(state.loop !== false ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)
         if (state.playing !== false) {
-          if (state.shouldReset) action.reset()
+          // Explorer: shouldReset restarts one-shots; forceReplay also restarts when scene
+          // re-dirties Animator with the same shouldReset=true payload.
+          if (state.shouldReset || forceReplay) action.reset()
           action.play()
           playingClips.push(clipName)
         }

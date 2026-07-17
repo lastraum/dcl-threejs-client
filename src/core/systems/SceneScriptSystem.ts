@@ -947,6 +947,11 @@ export class SceneScriptSystem {
         (Animator.has(entity) || AvatarShape.has(entity) || GltfContainer.has(entity)))
     ) {
       this.bridgeDirty = true
+      // One-shot clips re-fire via getMutable + shouldReset with often-identical state;
+      // mark entity so AnimatorBridge restarts even when the state signature is unchanged.
+      if (componentId === Animator.componentId) {
+        this.animatorBridge?.markDirty(entity)
+      }
     }
   }
 
@@ -3922,11 +3927,19 @@ export class SceneScriptSystem {
     const tweenRefresh = (this.tweenBridge?.getActiveTweenEntities() ?? []).filter(
       (entity) => !AvatarAttach.has(entity)
     )
-    applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh)
-    this.bridge.syncInstancedTransforms(transformDiff.keys())
+    const transformEntities = [...transformDiff.keys()]
+    applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh, {
+      skipTransformApply: (entity) => AvatarAttach.has(entity),
+      onReservedParent: (entity, parent, view) => {
+        this.bridge?.noteReservedParentedEntity(entity, parent, view)
+      }
+    })
+    // GPU InstancedMesh stores world/instance matrices outside entity groups — rewrite after pose.
+    // Sustained motion (death coins, projectiles) promotes to private clones inside this call.
+    this.bridge.syncInstancedTransforms(transformEntities)
     this.lastSyncFrameTransformEntities.clear()
     const { MeshCollider, GltfContainer } = this.readComponents
-    for (const entity of transformDiff.keys()) {
+    for (const entity of transformEntities) {
       this.lastSyncFrameTransformEntities.add(entity)
       if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
         this.colliderPoseDirty.add(entity)
@@ -3934,7 +3947,7 @@ export class SceneScriptSystem {
       this.markDescendantColliderPosesDirty(entity)
     }
 
-    for (const entity of transformDiff.keys()) {
+    for (const entity of transformEntities) {
       const pending = this.pendingDiff.get(entity)
       if (!pending) continue
       pending.delete(Transform.componentId)

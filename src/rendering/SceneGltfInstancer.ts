@@ -409,12 +409,18 @@ export class SceneGltfInstancer {
       }
       return
     }
+    // Force TRS → matrix (do not assume matrixAutoUpdate ran this frame).
+    entityObj.updateMatrix()
     entityObj.updateMatrixWorld(true)
     _entityWorld.copy(entityObj.matrixWorld)
     for (let i = 0; i < bucket.meshes.length; i++) {
       const leaf = bucket.leaves[i]!
       const mesh = bucket.meshes[i]!
-      _instance.multiplyMatrices(_entityWorld, leaf.localMatrix)
+      // InstancedMesh multiplies instanceMatrix by its own matrixWorld — write
+      // instance-local matrices (identity host → same as world * leaf).
+      mesh.updateMatrixWorld(true)
+      _instance.copy(mesh.matrixWorld).invert()
+      _instance.multiply(_entityWorld).multiply(leaf.localMatrix)
       mesh.setMatrixAt(index, _instance)
       mesh.instanceMatrix.needsUpdate = true
       mesh.computeBoundingSphere()

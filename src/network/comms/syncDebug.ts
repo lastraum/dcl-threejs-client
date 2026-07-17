@@ -86,6 +86,20 @@ export function isReqCrdtStateType(type: number): boolean {
 }
 
 /**
+ * LiveKit publish reliability for craftCommsMessage types.
+ * Auth-server combat / lobby events use CUSTOM_EVENT — lossy DC drops shot/hit
+ * sequences and leaves networked damage stuck with no HP updates.
+ * REQ/RES stay reliable so state sync and room-ready complete.
+ */
+export function isReliableCommsWireType(type: number): boolean {
+  return (
+    isResCrdtStateType(type) ||
+    isReqCrdtStateType(type) ||
+    type === CommsWireMessageType.CUSTOM_EVENT
+  )
+}
+
+/**
  * SDK craftCommsMessage layout: [messageType:u8][payload…].
  * Returns null if buffer is empty.
  */

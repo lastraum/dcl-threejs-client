@@ -4,6 +4,7 @@ import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { patchClearPlayerInputModifierBoundary } from './patchClearPlayerInputModifier'
 import { patchEngineSystemLoopPartition } from './patchEngineSystemLoop'
 import { patchInputModifierSdkSpread } from './patchInputModifierSdkSpread'
+import { patchProjectileSweptHits } from './patchProjectileSweptHits'
 import { patchSdkOnUpdatePollEventsBoundary } from './patchSdkOnUpdatePollEvents'
 import { patchPhotoMuralOptionalChain } from './photoMuralPatch'
 import { patchTheatreSkip } from './theatreSkipPatch'
@@ -470,6 +471,17 @@ export function patchSceneBundle(code: string, onStep?: PatchSceneBundleStepLog)
   out = runStep('photo mural optional-chain', () => {
     const r = patchPhotoMuralOptionalChain(out)
     if (r.applied) onStep?.(`photo mural optional-chain (${r.replacements})`, 0)
+    return r.code
+  })
+
+  out = runStep('projectile swept hits', () => {
+    const r = patchProjectileSweptHits(out)
+    if (r.applied) {
+      onStep?.(
+        `projectile swept hits (hits=${r.replacements} origins=${r.originSnapshots})`,
+        0
+      )
+    }
     return r.code
   })
 

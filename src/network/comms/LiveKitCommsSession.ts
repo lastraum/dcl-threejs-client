@@ -787,6 +787,16 @@ export class LiveKitCommsSession {
     }
   }
 
+  /** True when a remote participant identity is currently in the room (case-insensitive). */
+  hasRemoteIdentity(identity: string): boolean {
+    const key = identity.trim().toLowerCase()
+    if (!key || !this.room || this.room.state !== ConnectionState.Connected) return false
+    for (const p of this.room.remoteParticipants.values()) {
+      if (p.identity?.trim().toLowerCase() === key) return true
+    }
+    return false
+  }
+
   /**
    * Map wallet addresses (SDK peer targets) to LiveKit participant identities present
    * in the room. DCL gatekeeper tokens use the address as identity (case-insensitive).

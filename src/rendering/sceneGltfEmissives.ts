@@ -1,5 +1,9 @@
 import * as THREE from 'three'
 
+/**
+ * Legacy name hints for plaza LED strips that ship without KHR_materials_emissive_strength.
+ * Prefer property-based detection below; do not add scene/VFX name lists here.
+ */
 const NEON_MATERIAL_NAME =
   /^light(?:led)?(?:visible)?$|light[_-]?led|emissive|glow|neon|_led$|light[_-]?strip/i
 const BAKED_EMISSIVE_NAME = /bake|baked|lightmap|wallmodule|floor/i
@@ -29,6 +33,10 @@ function isPbrMeshMaterial(mat: THREE.Material): mat is PbrMeshMaterial {
   )
 }
 
+function emissiveLuma(mat: PbrMeshMaterial): number {
+  return mat.emissive.r + mat.emissive.g + mat.emissive.b
+}
+
 /** Baked lighting often uses emissiveTexture + low factor — not neon strips. */
 function isBakedEmissiveMaterial(mat: PbrMeshMaterial): boolean {
   const name = mat.name.toLowerCase()
@@ -37,8 +45,7 @@ function isBakedEmissiveMaterial(mat: PbrMeshMaterial): boolean {
   const intensity = mat.emissiveIntensity ?? 1
   if (!mat.emissiveMap || intensity > 1) return false
 
-  const emissiveLuma = mat.emissive.r + mat.emissive.g + mat.emissive.b
-  if (emissiveLuma > 1.5) return false
+  if (emissiveLuma(mat) > 1.5) return false
   if (NEON_MATERIAL_NAME.test(name)) return false
 
   return true
@@ -52,14 +59,27 @@ function isGlowSpriteMaterial(mat: PbrMeshMaterial): boolean {
   return mat.map === mat.emissiveMap
 }
 
+/**
+ * glTF mesh that self-illuminates from authored emissiveFactor without relying on diffuse.
+ * Property-based: no albedo/emissive maps + non-trivial emissiveFactor (e.g. GunVFX ShootVFX).
+ * Scene code does not need node modifiers — the GLB carries the emissive.
+ */
+function isUntexturedEmissiveMaterial(mat: PbrMeshMaterial): boolean {
+  if (mat.map || mat.emissiveMap) return false
+  return emissiveLuma(mat) > 0.05
+}
+
 function isNeonEmissiveMaterial(mat: PbrMeshMaterial): boolean {
   if (isBakedEmissiveMaterial(mat)) return false
 
   const intensity = mat.emissiveIntensity ?? 1
   const name = mat.name.toLowerCase()
-  const emissiveLuma = mat.emissive.r + mat.emissive.g + mat.emissive.b
+  const luma = emissiveLuma(mat)
 
-  if (NEON_MATERIAL_NAME.test(name) && (emissiveLuma > 0.12 || intensity > 1)) return true
+  // Authored untextured emissive (glTF emissiveFactor only) — Explorer shows as glow.
+  if (isUntexturedEmissiveMaterial(mat)) return true
+
+  if (NEON_MATERIAL_NAME.test(name) && (luma > 0.12 || intensity > 1)) return true
 
   // KHR_materials_emissive_strength on albedo-textured meshes — not neon strips.
   if (mat.map && intensity > 1 && !isGlowSpriteMaterial(mat)) return false
@@ -67,11 +87,24 @@ function isNeonEmissiveMaterial(mat: PbrMeshMaterial): boolean {
   return isGlowSpriteMaterial(mat)
 }
 
-/** Fallback intensity when glTF omits KHR_materials_emissive_strength on named neon mats. */
+/**
+ * Fallback intensity when glTF omits KHR_materials_emissive_strength.
+ * Explorer/Unity use bloom + different tonemap — without bloom, untextured
+ * emissiveFactor (e.g. GunVFX ShootVFX 0.75) needs a higher intensity scalar
+ * to read as a muzzle flash rather than matte gray (avatar path uses ~12).
+ */
 function fallbackNeonIntensity(mat: PbrMeshMaterial): number {
   const name = mat.name.toLowerCase()
   if (/light.*visible|lightled/i.test(name)) return 40
   if (NEON_MATERIAL_NAME.test(name)) return 8
+  // Untextured emissiveFactor-only (muzzle / VFX cylinders) — boost for no-bloom clients.
+  if (isUntexturedEmissiveMaterial(mat)) {
+    const luma = emissiveLuma(mat)
+    // Mid-range factors (0.3–1) → punchy flash; already-bright HDR factors stay moderate.
+    if (luma >= 1.5) return 6
+    if (luma >= 0.4) return 12
+    return 8
+  }
   return 1
 }
 
@@ -104,6 +137,22 @@ function resolveNeonEmissive(mat: PbrMeshMaterial): { color: THREE.Color; intens
   return { color, intensity }
 }
 
+/**
+ * Soft energy glow without full-scene bloom (Explorer uses bloom post).
+ * Additive + no depth write so untextured VFX (muzzle flash) read as light,
+ * not a solid bright mesh.
+ */
+function applyUntexturedGlowBlend(mat: THREE.MeshStandardMaterial): void {
+  mat.blending = THREE.AdditiveBlending
+  mat.transparent = true
+  mat.depthWrite = false
+  mat.toneMapped = false
+  // Keep near-opaque so morph silhouettes stay readable; additive still softens stack-up.
+  if (mat.opacity >= 0.99) mat.opacity = 0.92
+  mat.needsUpdate = true
+  ;(mat.userData as Record<string, unknown>).dclUntexturedGlowBlend = true
+}
+
 function applyNeonEmissive(mat: PbrMeshMaterial): { color: THREE.Color; intensity: number } {
   const { color, intensity } = resolveNeonEmissive(mat)
   const emissiveOnly = !mat.map || mat.map === mat.emissiveMap
@@ -120,7 +169,44 @@ function applyNeonEmissive(mat: PbrMeshMaterial): { color: THREE.Color; intensit
   return { color, intensity }
 }
 
-function createNeonMaterial(mat: PbrMeshMaterial): THREE.MeshStandardMaterial {
+/**
+ * Untextured emissive VFX → additive MeshBasicMaterial.
+ * MeshStandard still does diffuse/specular lighting, so high emissiveIntensity only looks
+ * "brighter plastic"; Basic + Additive is the classic muzzle/laser energy look without bloom.
+ */
+function createUntexturedGlowMaterial(mat: PbrMeshMaterial): THREE.MeshBasicMaterial {
+  const { color, intensity } = resolveNeonEmissive(mat)
+  // Fold intensity into color for Basic (no emissiveIntensity channel).
+  const peak = Math.max(color.r, color.g, color.b, 0.0001)
+  const scale = Math.min(intensity, 16)
+  const glow = new THREE.MeshBasicMaterial({
+    name: mat.name,
+    color: new THREE.Color(
+      (color.r / peak) * scale,
+      (color.g / peak) * scale,
+      (color.b / peak) * scale
+    ),
+    toneMapped: false,
+    transparent: true,
+    opacity: 0.9,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: mat.side,
+    vertexColors: mat.vertexColors,
+    fog: false
+  })
+  ;(glow.userData as Record<string, unknown>).dclSceneNeonTuned = true
+  ;(glow.userData as Record<string, unknown>).dclUntexturedGlowBlend = true
+  mat.dispose()
+  return glow
+}
+
+function createNeonMaterial(mat: PbrMeshMaterial): THREE.Material {
+  // Map-less emissiveFactor materials (GunVFX ShootVFX) — additive basic glow.
+  if (isUntexturedEmissiveMaterial(mat)) {
+    return createUntexturedGlowMaterial(mat)
+  }
+
   const { color, intensity } = resolveNeonEmissive(mat)
 
   const neon = new THREE.MeshStandardMaterial({
@@ -143,31 +229,70 @@ function createNeonMaterial(mat: PbrMeshMaterial): THREE.MeshStandardMaterial {
   return neon
 }
 
+function retuneUntexturedGlow(mat: THREE.Material): THREE.Material {
+  if (mat instanceof THREE.MeshBasicMaterial) {
+    if ((mat.userData as Record<string, unknown>).dclUntexturedGlowBlend) {
+      // Already additive basic — ensure blend flags stuck after share/clone.
+      mat.blending = THREE.AdditiveBlending
+      mat.transparent = true
+      mat.depthWrite = false
+      mat.toneMapped = false
+      mat.fog = false
+      mat.needsUpdate = true
+      return mat
+    }
+  }
+  if (isPbrMeshMaterial(mat) && isUntexturedEmissiveMaterial(mat) && !mat.map && !mat.emissiveMap) {
+    return createUntexturedGlowMaterial(mat)
+  }
+  return mat
+}
+
 function tuneNeonMaterial(mat: PbrMeshMaterial): THREE.Material {
-  if ((mat.userData as Record<string, unknown>).dclSceneNeonTuned) return mat
+  const ud = mat.userData as Record<string, unknown>
+  // Re-tune session-cached materials that only got a brightness bump (still solid mesh).
+  if (ud.dclSceneNeonTuned) {
+    if (ud.dclUntexturedGlowBlend) return mat
+    if (!mat.map && !mat.emissiveMap && isUntexturedEmissiveMaterial(mat)) {
+      return createUntexturedGlowMaterial(mat)
+    }
+    return mat
+  }
 
   if (!mat.emissiveMap) {
     if (mat.map) {
       const { color, intensity } = resolveNeonEmissive(mat)
       mat.emissive.copy(color)
       mat.emissiveIntensity = intensity
-      mat.toneMapped = intensity > 1.5
-      ;(mat.userData as Record<string, unknown>).dclSceneNeonTuned = true
+      mat.toneMapped = intensity <= 1.5
+      ud.dclSceneNeonTuned = true
       return mat
     }
     return createNeonMaterial(mat)
   }
 
   applyNeonEmissive(mat)
+  // High-intensity emissive sprites (shared map) also read better additive.
+  if (isGlowSpriteMaterial(mat)) {
+    applyUntexturedGlowBlend(mat)
+  }
   return mat
 }
 
-/** Targeted neon parity for baked scene GLBs — does not boost baked emissive lightmaps. */
+/**
+ * Apply DCL emissive parity to materials on a loaded GLB.
+ * Driven by glTF material properties (emissiveFactor, maps, KHR strength) — not scene-specific names.
+ * ECS Material / GltfNodeModifiers go through MaterialApplier separately.
+ */
 export function applySceneGltfEmissives(root: THREE.Object3D): void {
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return
 
     const replaceMaterial = (mat: THREE.Material): THREE.Material => {
+      // MeshBasic from a prior untextured-glow pass — keep blend flags healthy.
+      if (mat instanceof THREE.MeshBasicMaterial) {
+        return retuneUntexturedGlow(mat)
+      }
       if (!isPbrMeshMaterial(mat)) return mat
       if (!isNeonEmissiveMaterial(mat)) return mat
       return tuneNeonMaterial(mat)

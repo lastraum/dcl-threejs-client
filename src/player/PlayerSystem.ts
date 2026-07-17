@@ -25,6 +25,7 @@ import {
 import type { SceneSpawn } from '../dcl/content/types'
 import type { MovePlayerToRequest } from './movePlayerTo'
 import {
+  DCL_PLAYER_ENTITY_Y_OFFSET,
   playerEntityPositionFromThreeFeet,
   resolveMovePlayerToTargetFeetDcl
 } from './dclPlayerEntity'
@@ -137,6 +138,12 @@ export class PlayerSystem {
   private readComponents: MirrorComponents | null = null
   private groundNormal = new THREE.Vector3(0, 1, 0)
   private readonly root = new THREE.Object3D()
+  /**
+   * Explorer `engine.PlayerEntity` attach point — chest height + PE yaw.
+   * Scene entities with `Transform.parent = PlayerEntity` parent here so local offsets
+   * match DCL (feet capsule alone leaves PE children at the wrong height/orientation).
+   */
+  private readonly playerEntityAttach = new THREE.Object3D()
   private avatar: LocalAvatar | null = null
   private nameTag: NameTag | null = null
   private playerIdentity: ProfileIdentity | null = null
@@ -187,8 +194,20 @@ export class PlayerSystem {
     private readonly physics: PhysXWorld
   ) {
     this.root.name = 'player'
+    this.playerEntityAttach.name = 'playerEntityAttach'
+    this.playerEntityAttach.position.set(0, DCL_PLAYER_ENTITY_Y_OFFSET, 0)
+    this.root.add(this.playerEntityAttach)
     this.avatar = new LocalAvatar(this.root)
     this.host.scene.add(this.root)
+  }
+
+  /** Keep PE attach root at chest height with the same yaw scenes read from PlayerEntity. */
+  private syncPlayerEntityAttach(): void {
+    this.playerEntityAttach.position.set(0, DCL_PLAYER_ENTITY_Y_OFFSET, 0)
+    // Match getEntityPose() PE rotation: Three yaw quat (before threeToDclQuat).
+    this.playerEntityAttach.quaternion.copy(
+      ReservedEntitiesSync.playerRotationFromYaw(this.getNetworkYaw())
+    )
   }
 
   /**
@@ -205,6 +224,7 @@ export class PlayerSystem {
       rotation: camera.rotation.clone()
     }
     this.root.position.copy(feetThree)
+    this.syncPlayerEntityAttach()
   }
 
   clearStagedSpawnPoses(): void {
@@ -232,6 +252,7 @@ export class PlayerSystem {
     this.walkBounds = walkBounds
     this.input = new PlayerInput(this.host.renderer.domElement)
     this.input.setLocomotionBlocked(() => !canLocomote(this.getLocomotionConfig()))
+    this.input.setLookBlocked(() => this.isSceneVirtualCameraDriving())
     const feetY = spawn.fromSpawnPoints
       ? spawn.y
       : spawn.y <= 0.01
@@ -281,6 +302,7 @@ export class PlayerSystem {
     }
 
     this.root.position.copy(this.physics.positionOut)
+    this.syncPlayerEntityAttach()
     this.syncCamera(true)
     this.clearStagedSpawnPoses()
     const feet = this.physics.positionOut
@@ -408,8 +430,16 @@ export class PlayerSystem {
     }
   }
 
-  /** Capsule root — spatial audio parented to PlayerEntity attaches here. */
+  /**
+   * PlayerEntity attach root (chest + PE yaw) — spatial audio + Transform.parent=PlayerEntity.
+   * Not the feet capsule; Explorer PE children are relative to chest pose.
+   */
   getPlayerRoot(): THREE.Object3D {
+    return this.playerEntityAttach
+  }
+
+  /** Capsule feet root (physics / world position). */
+  getPlayerFeetRoot(): THREE.Object3D {
     return this.root
   }
 
@@ -417,6 +447,7 @@ export class PlayerSystem {
   /** Apply PhysX foot position to the avatar root (after prewarm / teleport snap). */
   syncFromPhysics(): void {
     this.root.position.copy(this.physics.positionOut)
+    this.syncPlayerEntityAttach()
     this.syncCamera(true)
   }
 
@@ -777,7 +808,7 @@ export class PlayerSystem {
     _moveDir.set(0, 0, 0)
     // Bound VirtualCamera owns the lens — WASD from camera world basis (matrix columns).
     // Using quaternion alone after X-reflect lookAt can leave A/D feeling yaw-mirrored.
-    if (this.virtualCamera?.isActive()) {
+    if (this.isSceneVirtualCameraDriving()) {
       this.host.camera.updateMatrixWorld(true)
       const e = this.host.camera.matrixWorld.elements
       // +X column → right; -Z column → look / forward
@@ -1037,6 +1068,7 @@ export class PlayerSystem {
         _velocity.z = 0
       }
     }
+    this.syncPlayerEntityAttach()
     this.syncNameTag()
     this.avatar?.setYaw(this.playerYaw)
     let moveAxisX = 0
@@ -1105,6 +1137,21 @@ export class PlayerSystem {
     })
   }
 
+  /** Scene owns the lens — no freecam orbit/zoom/look (including hydrate lag before isActive). */
+  private isSceneVirtualCameraDriving(): boolean {
+    return (
+      this.virtualCamera?.isActive() === true || this.virtualCamera?.isMainCameraVcBound() === true
+    )
+  }
+
+  private releaseFreecamLookForVirtualCamera(): void {
+    if (!this.input) return
+    this.input.stopOrbitIfActive()
+    if (this.input.pointer.locked) {
+      document.exitPointerLock()
+    }
+  }
+
   /**
    * Player main-camera orbit / zoom when MainCamera is not VC-bound.
    * InputModifier freezes avatar locomotion only — does not gate player look or scene key relay.
@@ -1112,7 +1159,10 @@ export class PlayerSystem {
    */
   private applyCameraInputFromPointer(): void {
     if (!this.input) return
-    if (this.virtualCamera?.isActive()) return
+    if (this.isSceneVirtualCameraDriving()) {
+      this.releaseFreecamLookForVirtualCamera()
+      return
+    }
 
     if (this.input.looking) {
       const look = POINTER_LOOK_SPEED * clientSettings.getMouseSensitivityScale()
@@ -1147,10 +1197,25 @@ export class PlayerSystem {
       if (_forward.lengthSq() > 1e-8) {
         _forward.normalize()
         this.camYaw = Math.atan2(-_forward.x, -_forward.z)
-        // freecam camPitch is boom elevation (positive = above); look-down has negative forward.y
-        const lookPitch = Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1))
-        this.camPitch = clamp(-lookPitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
+        // freecam camPitch is boom elevation (positive = above); look-down has negative forward.y.
+        // Never seed a looking-up VC into negative boom (under-floor freecam on unbind).
+        if (_forward.y <= 0.15) {
+          const lookPitch = Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1))
+          this.camPitch = clamp(-lookPitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
+        } else {
+          this.camPitch = CAM_PITCH_DEFAULT
+        }
       }
+      this.avatar?.setBodyVisible(!this.modifierHidden)
+      if (this.nameTag) {
+        this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
+      }
+      return
+    }
+    // MainCamera still points at a VC but bridge inactive (missing Transform this frame) —
+    // hold last lens pose; do not let freecam/orbit steal the shot.
+    if (this.virtualCamera?.isMainCameraVcBound()) {
+      this.wasVirtualCameraActive = true
       this.avatar?.setBodyVisible(!this.modifierHidden)
       if (this.nameTag) {
         this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
@@ -1298,6 +1363,7 @@ export class PlayerSystem {
     }
 
     this.root.position.copy(this.physics.positionOut)
+    this.syncPlayerEntityAttach()
   }
 
   /** Avatar body yaw (Three.js space) + wire yaw for CRDT / RFC4 — not camera orbit. */

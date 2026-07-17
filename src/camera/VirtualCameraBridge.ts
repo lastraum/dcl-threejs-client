@@ -35,6 +35,7 @@ const _lookMat = new THREE.Matrix4()
 const _lookRight = new THREE.Vector3()
 const _lookUp = new THREE.Vector3()
 const _camZ = new THREE.Vector3()
+const _entityDisplayQuat = new THREE.Quaternion()
 const _worldUp = new THREE.Vector3(0, 1, 0)
 const _gizmoWorld = new THREE.Vector3()
 const _gizmoWorldQuat = new THREE.Quaternion()
@@ -91,6 +92,14 @@ export class VirtualCameraBridge {
   }
 
   /**
+   * MainCamera has a virtualCameraEntity — freecam orbit/look must not run even if the
+   * bridge cannot yet resolve Transform/VirtualCamera (one-frame hydrate lag).
+   */
+  isMainCameraVcBound(): boolean {
+    return this.readMainCameraVcEntity() !== null
+  }
+
+  /**
    * Log lens vs VC entity pose — opt-in only (`?vcdebug`).
    * Never call from player-frame / per-tick paths without the flag; unthrottled
    * console.warn + DevTools stacks tank FPS to ~1.
@@ -112,7 +121,7 @@ export class VirtualCameraBridge {
     this.parityFramesAfterBind = 120
   }
 
-  /** Write lens pose — lookAtPoint uses PerspectiveCamera.lookAt (authoritative Three path). */
+  /** Write lens pose — lookAtPoint uses PerspectiveCamera.lookAt (roll-free Three path). */
   private applyLensPose(
     camera: THREE.Camera,
     position: THREE.Vector3,
@@ -120,8 +129,8 @@ export class VirtualCameraBridge {
     lookAtPoint?: THREE.Vector3
   ): void {
     camera.position.copy(position)
+    camera.up.copy(_worldUp)
     if (lookAtPoint) {
-      camera.up.copy(_worldUp)
       camera.lookAt(lookAtPoint)
     } else {
       camera.quaternion.copy(rotation)
@@ -425,8 +434,9 @@ export class VirtualCameraBridge {
     const parent = local.parent as number | undefined
     const { RootEntity, PlayerEntity, CameraEntity } = this.view
 
-    // Classic third-person: parent === lookAt === cameraParent. Always f(PE)+local on main —
-    // never fall back to lagging cameraParent CRDT (FPS hitch → flicker to stale map).
+    // Classic CameraFollow third-person: parent === lookAtEntity === cameraParent (not reserved).
+    // Parent is driven toward the player by the scene; use live PE + local offset so the lens
+    // does not hitch on lagging cameraParent CRDT (Planet Angzaar / gameplay follow).
     const isPeFollowShape =
       lookAt !== undefined &&
       lookAt !== null &&
@@ -446,6 +456,7 @@ export class VirtualCameraBridge {
       const wy = player.position.y + local.position.y
       const wz = player.position.z + local.position.z
       dclToThreePos(wx, wy, wz, _targetPos)
+      // Aim at the follow parent (lookAtEntity) — usually PE/cameraParent at the player.
       dclToThreePos(player.position.x, player.position.y, player.position.z, _lookAtPoint)
       if (cameraLookAtQuat(_targetPos, _lookAtPoint, _targetQuat)) {
         if (vcDebugVerbose()) {
@@ -465,16 +476,18 @@ export class VirtualCameraBridge {
       }
     }
 
+    // Scene-authored hierarchy: world pose from Transform parent chain (VC may be a child of
+    // a lookAt/follow entity that tracks the player — Angzaar-style — or a root-level shot).
     if (
       !resolveEntityWorldPose(virtualEntity, this.worldDeps(), {
         position: _targetPos,
-        rotation: _targetQuat
+        rotation: _entityDisplayQuat
       })
     ) {
       return null
     }
 
-    // Explicit lookAtEntity — aim with camera.lookAt every frame.
+    // VirtualCamera.lookAtEntity — aim at that entity's world position every frame.
     if (
       lookAt !== undefined &&
       lookAt !== null &&
@@ -488,21 +501,20 @@ export class VirtualCameraBridge {
       }
     }
 
-    // Iso / top / cinematic: no lookAtEntity — aim at local player (body, not chest-only).
-    // Entity euler → camera quat under X-reflect flips yaw; camera.lookAt is the source of truth.
-    {
-      const player = this.playerPose()
-      // PE is chest (+0.88); aim slightly lower for natural iso framing.
-      dclToThreePos(player.position.x, player.position.y - 0.4, player.position.z, _lookAtPoint)
-      const dist = _targetPos.distanceTo(_lookAtPoint)
-      if (dist > 0.5 && dist < 200 && cameraLookAtQuat(_targetPos, _lookAtPoint, _targetQuat)) {
-        return { position: _targetPos, rotation: _targetQuat, lookAtPoint: _lookAtPoint }
-      }
+    // No lookAtEntity: scene drives aim via Transform rotation (entity +Z = look, DCL/Unity).
+    // Map to Three by aiming along display-space +Z (avoids euler→camera-quat pitch flips).
+    _lookDir.set(0, 0, 1).applyQuaternion(_entityDisplayQuat)
+    if (_lookDir.lengthSq() < 1e-12) {
+      entityDisplayQuatToThreeCameraQuat(_entityDisplayQuat, _targetQuat)
+      return { position: _targetPos, rotation: _targetQuat }
     }
-
-    // Distant stage lock — entity world rotation as camera facing.
-    entityDisplayQuatToThreeCameraQuat(_targetQuat, _targetQuat)
-    return { position: _targetPos, rotation: _targetQuat }
+    _lookDir.normalize()
+    _lookAtPoint.copy(_targetPos).addScaledVector(_lookDir, 8)
+    if (!cameraLookAtQuat(_targetPos, _lookAtPoint, _targetQuat)) {
+      entityDisplayQuatToThreeCameraQuat(_entityDisplayQuat, _targetQuat)
+      return { position: _targetPos, rotation: _targetQuat }
+    }
+    return { position: _targetPos, rotation: _targetQuat, lookAtPoint: _lookAtPoint }
   }
 
   private beginTransition(camera: THREE.Camera, virtualEntity: Entity, target: TargetPose): void {
@@ -544,28 +556,32 @@ export class VirtualCameraBridge {
 
 /**
  * Build camera quaternion: local -Z aims at target, world +Y up (roll-free).
- * Uses explicit basis — more reliable than Matrix4.lookAt + setFromRotationMatrix alone.
+ * Matches THREE.Matrix4.lookAt / PerspectiveCamera.lookAt basis exactly:
+ *   z = eye - target  (camera looks down -Z ⇒ +Z points toward eye from target)
+ *   x = up × z
+ *   y = z × x
  */
 function cameraLookAtQuat(
   eye: THREE.Vector3,
   target: THREE.Vector3,
   out: THREE.Quaternion
 ): boolean {
-  _lookDir.subVectors(target, eye)
-  if (_lookDir.lengthSq() < 1e-12) return false
-  _lookDir.normalize()
-  // right = up × look  (Three right-handed; camera +X)
-  _lookRight.crossVectors(_worldUp, _lookDir)
+  // +Z = from target toward eye (= -lookDir)
+  _camZ.subVectors(eye, target)
+  if (_camZ.lengthSq() < 1e-12) return false
+  _camZ.normalize()
+  // +X = up × z
+  _lookRight.crossVectors(_worldUp, _camZ)
   if (_lookRight.lengthSq() < 1e-12) {
-    // look parallel to up — pick arbitrary horizontal right
-    _lookRight.set(1, 0, 0)
-  } else {
-    _lookRight.normalize()
+    // look parallel to up — nudge like Three.Matrix4.lookAt
+    if (Math.abs(_worldUp.z) === 1) _camZ.x += 1e-4
+    else _camZ.z += 1e-4
+    _camZ.normalize()
+    _lookRight.crossVectors(_worldUp, _camZ)
   }
-  // true up = look × right
-  _lookUp.crossVectors(_lookDir, _lookRight)
-  // Camera +Z = -look (camera looks down -Z)
-  _camZ.copy(_lookDir).negate()
+  _lookRight.normalize()
+  // +Y = z × x
+  _lookUp.crossVectors(_camZ, _lookRight)
   _lookMat.makeBasis(_lookRight, _lookUp, _camZ)
   out.setFromRotationMatrix(_lookMat)
   return true

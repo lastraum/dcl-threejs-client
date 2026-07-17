@@ -24,6 +24,8 @@ export class PlayerInput {
   private readonly activePointers = new Map<number, { x: number; y: number }>()
   private lastPinchSpan = 0
   private isLocomotionBlocked: () => boolean = () => false
+  /** Scene VirtualCamera owns MainCamera — block freecam orbit / pointer-lock look. */
+  private isLookBlocked: () => boolean = () => false
   private readonly reticle: PointerLockReticle
 
   constructor(private readonly canvas: HTMLElement) {
@@ -78,6 +80,7 @@ export class PlayerInput {
   }
 
   get looking(): boolean {
+    if (this.isLookBlocked()) return false
     return this.pointer.locked || this.orbiting
   }
 
@@ -100,6 +103,16 @@ export class PlayerInput {
   /** Main projection InputModifier — block avatar WASD/jump when scene disables locomotion. */
   setLocomotionBlocked(fn: () => boolean): void {
     this.isLocomotionBlocked = fn
+  }
+
+  /** Block freecam orbit + pointer-lock look while a scene VirtualCamera drives MainCamera. */
+  setLookBlocked(fn: () => boolean): void {
+    this.isLookBlocked = fn
+  }
+
+  /** Cancel in-progress LMB orbit (call when VC binds mid-drag). */
+  stopOrbitIfActive(): void {
+    if (this.orbiting) this.stopOrbit()
   }
 
   /**
@@ -143,7 +156,7 @@ export class PlayerInput {
 
     if (e.code === 'Tab') {
       e.preventDefault()
-      this.togglePointerLock()
+      if (!this.isLookBlocked()) this.togglePointerLock()
     }
     if (e.code === 'Escape' && this.pointer.locked) {
       document.exitPointerLock()
@@ -251,6 +264,7 @@ export class PlayerInput {
       this.notifyUserGesture()
       // Left-click drag orbit only when unlocked. In pointer lock, movement alone orbits.
       if (this.pointer.locked) return
+      if (this.isLookBlocked()) return
       this.orbiting = true
       this.orbitPointerId = e.pointerId
       this.lastPointerX = e.clientX
@@ -266,6 +280,8 @@ export class PlayerInput {
       e.preventDefault()
       this.notifyUserGesture()
       // Right-click toggles pointer lock (look without holding a button).
+      // Scene VC owns the lens — do not enter freecam look.
+      if (this.isLookBlocked()) return
       this.togglePointerLock()
       return
     }

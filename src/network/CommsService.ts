@@ -21,14 +21,17 @@ import {
 } from './walletSessionGuard'
 import { AdapterManager } from './comms/AdapterManager'
 import { ArchipelagoClient } from './comms/ArchipelagoClient'
-import { CommsInboundQueue } from './comms/CommsInboundQueue'
+import { CommsInboundQueue, CommsWireMessageType } from './comms/CommsInboundQueue'
 import {
-  isResCrdtStateType,
+  isReliableCommsWireType,
   logSyncDirectedFallback,
   logSyncDirectedPublish,
   logSyncOversizedSkip,
   unwrapCraftedCommsMessage
 } from './comms/syncDebug'
+
+/** Auth-server SDK peer id — only this identity handles client CUSTOM_EVENT on server. */
+const AUTH_SERVER_PEER_IDENTITY = 'authoritative-server'
 import {
   isOversizedCraftedChunk,
   isOversizedPublishPacket,
@@ -933,8 +936,9 @@ export class CommsService {
     const session = this.activeDataSession()
     if (!session) return this.inboundQueue.drain()
 
-    // Directed peerData → LiveKit destinationIdentities. Empty addresses = room broadcast.
-    const dest =
+    // Directed peerData → LiveKit destinationIdentities. Empty addresses = room broadcast
+    // (unless CUSTOM_EVENT can be pinned to the authoritative-server peer below).
+    let dest =
       addresses.length > 0 ? session.resolveDestinationIdentities(addresses) : undefined
     if (addresses.length) {
       logSyncDirectedPublish(addresses, dest ?? [])
@@ -959,14 +963,27 @@ export class CommsService {
         })
         continue
       }
-      // RES (serverless type 3 or auth-server type 9) and any directed packet → reliable.
       const unwrapped = unwrapCraftedCommsMessage(chunk)
+      // Auth-server scenes: client CUSTOM_EVENT is only handled by the server peer.
+      // Prefer directed reliable publish so shot/hit/lobby requests are not lossy-broadcast.
+      let chunkDest = dest
+      if (
+        (!chunkDest || chunkDest.length === 0) &&
+        unwrapped?.messageType === CommsWireMessageType.CUSTOM_EVENT
+      ) {
+        const authDest = session.resolveDestinationIdentities([AUTH_SERVER_PEER_IDENTITY])
+        if (authDest.length > 0 && session.hasRemoteIdentity(AUTH_SERVER_PEER_IDENTITY)) {
+          chunkDest = authDest
+        }
+      }
+      // Directed packets always reliable. RES/REQ + CUSTOM_EVENT need reliable DC —
+      // lossy broadcast drops combat/lobby event sequences under load.
       const reliable =
-        Boolean(dest?.length) ||
-        (unwrapped != null && isResCrdtStateType(unwrapped.messageType))
+        Boolean(chunkDest?.length) ||
+        (unwrapped != null && isReliableCommsWireType(unwrapped.messageType))
       await session.publishData(packet, {
         reliable,
-        destinationIdentities: dest
+        destinationIdentities: chunkDest
       })
     }
     return this.inboundQueue.drain()

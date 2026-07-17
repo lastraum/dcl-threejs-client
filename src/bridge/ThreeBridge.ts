@@ -33,6 +33,7 @@ import { applySceneDiff, type ApplySceneDiffOptions } from './entityStoreApply'
 import { applyDclLocalTransform, resolveTransformParent, type DclTransformValues } from './dclTransform'
 import { disposeOwnedObject3D } from '../rendering/sharedAsset'
 import { enableSceneGltfVertexColors } from '../rendering/LandscapeAssetSanitizer'
+import { applySceneGltfEmissives } from '../rendering/sceneGltfEmissives'
 import { cloneGltfInstance } from '../rendering/skinnedMeshInstance'
 import { SceneGltfInstancer, templateIsInstancable } from '../rendering/SceneGltfInstancer'
 import {
@@ -222,9 +223,48 @@ export class ThreeBridge {
     this.instancer = new SceneGltfInstancer(() => this.store.root)
   }
 
+  /**
+   * Transform CRDT / Tween motion hits per instanced entity — sustained motion promotes
+   * to a private clone so hierarchy TRS drives the mesh (death coins bob/spin, projectiles).
+   * Static multi-instance tiles only get 1–2 puts and stay on GPU InstancedMesh.
+   */
+  private readonly instanceMotionHits = new Map<Entity, number>()
+  private static readonly INSTANCE_MOTION_PROMOTE_HITS = 3
+
   /** After Transform apply — refresh GPU instance matrices for instanced GltfContainers. */
   syncInstancedTransforms(entities: Iterable<Entity>): void {
-    this.instancer.updateEntities(entities, this.store.nodes)
+    const toUpdate: Entity[] = []
+    for (const entity of entities) {
+      if (!this.instancer.has(entity)) {
+        this.instanceMotionHits.delete(entity)
+        continue
+      }
+      const hits = (this.instanceMotionHits.get(entity) ?? 0) + 1
+      this.instanceMotionHits.set(entity, hits)
+      // Script-animated props (Transform.getMutable every tick / continuous Tween) —
+      // private clone follows the entity group without relying on per-frame instance rewrites.
+      if (hits >= ThreeBridge.INSTANCE_MOTION_PROMOTE_HITS) {
+        const obj = this.store.nodes.get(entity)
+        if (obj) this.promoteInstancedForMotion(entity, obj)
+        continue
+      }
+      toUpdate.push(entity)
+    }
+    if (toUpdate.length) this.instancer.updateEntities(toUpdate, this.store.nodes)
+  }
+
+  /**
+   * Drop InstancedMesh slot and re-queue as SkeletonUtils clone — motion-driven props
+   * (collectible bob/spin, flying projectiles) need hierarchy tracking, not static instances.
+   */
+  private promoteInstancedForMotion(entity: Entity, obj: THREE.Group): void {
+    this.instancer.detach(entity, obj)
+    this.instanceMotionHits.delete(entity)
+    delete obj.userData.dclInstanced
+    delete obj.userData.gltfSrcKey
+    delete obj.userData.dclForceIdleAttach
+    obj.userData.dclForceCloneAttach = true
+    this.pendingMeshEntities.add(entity)
   }
 
   /**
@@ -246,16 +286,27 @@ export class ThreeBridge {
   }
 
   /**
-   * Re-parent only the tiny reserved-parent set (usually 0–2 entities).
-   * Cheap: once parented under the player root, Three.js hierarchy follows the player —
-   * we only re-parent if still stuck on sceneRoot (anchors late after first CRDT).
-   * Local pose still comes from normal CRDT applySceneDiff.
+   * Re-parent the reserved-parent set under live player/camera roots.
+   * Always re-apply local pose: gun aim mutates PE-child rotation every frame and
+   * applySceneDiff can lag a tick behind; without this the mesh freezes/detaches.
    */
   syncReservedParentedTransforms(view: ProjectionView): void {
+    this.lastReservedParentView = view
     const anchors = this.reservedTransformAnchors
-    if (!anchors || this.reservedParentedEntities.size === 0) return
+    if (!anchors) return
+
+    // Weapons equip mid-match — catch PE parents that arrived without a CRDT note.
+    this.reservedRescanCounter++
+    if (this.reservedRescanCounter % 45 === 0) {
+      this.collectReservedParented(view)
+    }
+
+    if (this.reservedParentedEntities.size === 0) return
+
     const { Transform } = this.ecs
     const { PlayerEntity, CameraEntity } = view
+    let reparented = 0
+    const needChildFix: Entity[] = []
     for (const entity of this.reservedParentedEntities) {
       if (!Transform.has(entity)) {
         this.reservedParentedEntities.delete(entity)
@@ -267,8 +318,8 @@ export class ThreeBridge {
         this.reservedParentedEntities.delete(entity)
         continue
       }
-      const obj = this.store.nodes.get(entity)
-      if (!obj) continue
+      // Transform-only PE roots (weapon holster) must get a node even before a child GLB lands.
+      const obj = this.store.getOrCreateNode(entity)
       const desired = resolveTransformParent(
         parent,
         view,
@@ -278,17 +329,37 @@ export class ThreeBridge {
       )
       if (obj.parent !== desired) {
         desired.add(obj)
-        if (!this.skipTransformApply?.(entity)) {
-          applyDclLocalTransform(obj, t)
-        }
+        reparented++
+        needChildFix.push(entity)
       }
+      if (!this.skipTransformApply?.(entity)) {
+        applyDclLocalTransform(obj, t)
+      }
+    }
+
+    // Holster children (gun model under gun root) — only after a real PE reparent, not every rescan
+    // (full Transform walk is O(entities) and large scenes already pay enough per frame).
+    if (needChildFix.length > 0) {
+      for (const entity of needChildFix) {
+        this.ensureDirectChildrenParented(entity, view)
+      }
+    }
+
+    if (reparented > 0 && !this.loggedPeWeaponAttach) {
+      this.loggedPeWeaponAttach = true
+      const root = anchors.getPlayerRoot()
+      console.info(
+        `[attach] PE-parented ×${this.reservedParentedEntities.size} → ` +
+          `playerRoot=${root ? root.name || 'root' : 'null'} reparented=${reparented}`
+      )
     }
   }
 
-  /** One-shot when player root becomes available (initCapsule) — fix early CRDT parents. */
-  reparentAllReservedParented(view: ProjectionView): void {
+  private reservedRescanCounter = 0
+
+  /** Scan Transforms for parent = PlayerEntity / CameraEntity. */
+  private collectReservedParented(view: ProjectionView): void {
     const { Transform } = this.ecs
-    this.reservedParentedEntities.clear()
     for (const [entity, t] of view.getEntitiesWith(Transform)) {
       if (entity === view.RootEntity || entity === view.PlayerEntity || entity === view.CameraEntity) {
         continue
@@ -296,6 +367,32 @@ export class ThreeBridge {
       const parent = (t as DclTransformValues).parent as Entity | undefined
       this.noteReservedParentedEntity(entity, parent, view)
     }
+  }
+
+  /**
+   * After a PE holster moves under the player root, re-parent direct Transform children
+   * (weapon mesh entity) so they do not stay on sceneRoot from an earlier orphan apply.
+   */
+  private ensureDirectChildrenParented(parentEntity: Entity, view: ProjectionView): void {
+    const parentNode = this.store.nodes.get(parentEntity)
+    if (!parentNode) return
+    const { Transform } = this.ecs
+    for (const [entity, t] of view.getEntitiesWith(Transform)) {
+      if ((t as DclTransformValues).parent !== parentEntity) continue
+      const obj = this.store.getOrCreateNode(entity)
+      if (obj.parent !== parentNode) {
+        parentNode.add(obj)
+      }
+      if (!this.skipTransformApply?.(entity)) {
+        applyDclLocalTransform(obj, t as DclTransformValues)
+      }
+    }
+  }
+
+  /** One-shot when player root becomes available (initCapsule) — fix early CRDT parents. */
+  reparentAllReservedParented(view: ProjectionView): void {
+    this.reservedParentedEntities.clear()
+    this.collectReservedParented(view)
     this.syncReservedParentedTransforms(view)
   }
 
@@ -523,12 +620,62 @@ export class ThreeBridge {
       this.pendingGltfNodeModEntities.add(entity)
       void this.runGltfNodeModifiersPass()
     }
+    // PE/Camera-parented roots often get Gltf on a child after the first CRDT parent pass —
+    // re-walk reserved parents so the mesh follows the live player/camera root.
+    this.reparentReservedChainAfterMesh(entity)
     try {
       this.onGltfAttached?.(entity)
     } catch (err) {
       console.warn('[ThreeBridge] post-GLB collider sync failed', entity, err)
     }
   }
+
+  /**
+   * After a GLB attaches, ensure PE/Camera-parented ancestors (and this entity) sit under
+   * the live player/camera roots. Without this, PE-child weapons stay on sceneRoot at a
+   * local offset while muzzle math still tracks the player (bullets without a visible gun).
+   */
+  private reparentReservedChainAfterMesh(entity: Entity): void {
+    const view = this.lastReservedParentView
+    if (!view || !this.reservedTransformAnchors) return
+    const { Transform } = this.ecs
+    let walk: Entity | undefined = entity
+    const seen = new Set<Entity>()
+    let peParented = false
+    while (walk !== undefined && !seen.has(walk)) {
+      seen.add(walk)
+      if (!Transform.has(walk)) break
+      const t = Transform.get(walk) as DclTransformValues
+      const parent = t.parent as Entity | undefined
+      this.noteReservedParentedEntity(walk, parent, view)
+      if (parent === view.PlayerEntity || parent === view.CameraEntity) {
+        peParented = true
+        break
+      }
+      if (!parent || parent === view.RootEntity || parent === 0) break
+      walk = parent
+    }
+    this.syncReservedParentedTransforms(view)
+    if (peParented) {
+      // gunModel GLB under gun holster — force child reparent once mesh lands.
+      let holster: Entity | undefined = entity
+      const { Transform } = this.ecs
+      while (holster !== undefined && Transform.has(holster)) {
+        const p = (Transform.get(holster) as DclTransformValues).parent as Entity | undefined
+        if (p === view.PlayerEntity || p === view.CameraEntity) {
+          this.ensureDirectChildrenParented(holster, view)
+          break
+        }
+        if (!p || p === view.RootEntity || p === 0) break
+        holster = p
+      }
+    }
+  }
+
+  private loggedPeWeaponAttach = false
+
+  /** Last view passed to reserved-parent sync (for late GLB reparent). */
+  private lastReservedParentView: ProjectionView | null = null
 
   private notifyMeshComponent(entity: Entity, componentId: number): void {
     if (this.isAnimatedSpriteSlot(entity)) return
@@ -1412,9 +1559,11 @@ export class ThreeBridge {
    */
   private promoteInstancedGltfForModifiers(entity: Entity, obj: THREE.Group): void {
     this.instancer.detach(entity, obj)
+    this.instanceMotionHits.delete(entity)
     delete obj.userData.dclInstanced
     delete obj.userData.gltfSrcKey
     delete obj.userData.dclForceIdleAttach
+    obj.userData.dclForceCloneAttach = true
     this.pendingMeshEntities.add(entity)
     this.pendingGltfNodeModEntities.add(entity)
   }
@@ -1581,6 +1730,7 @@ export class ThreeBridge {
     this.largeAttachQueue.length = 0
     this.largeAttachQueued.clear()
     this.largeAttachDraining = false
+    this.instanceMotionHits.clear()
     this.instancer.dispose()
   }
 
@@ -1595,6 +1745,7 @@ export class ThreeBridge {
     let removedGltf = false
     if (obj.userData.dclInstanced) {
       this.instancer.detach(entity, obj)
+      this.instanceMotionHits.delete(entity)
       delete obj.userData.dclInstanced
       delete obj.userData.dclInstanceTemplateTris
       removedGltf = true
@@ -1614,6 +1765,7 @@ export class ThreeBridge {
       delete obj.userData.dclAttachedTris
       delete obj.userData.animationRig
       delete obj.userData.emoteAnchor
+      // Keep dclForceCloneAttach across GltfContainer re-src so motion-promoted props stay clones.
       return true
     }
     return removedGltf
@@ -1743,6 +1895,9 @@ export class ThreeBridge {
     entity: Entity,
     template: { root: THREE.Group; animations: THREE.AnimationClip[] }
   ): boolean {
+    // Prior motion promote — stay on private clone (collectible bob, projectiles).
+    const existing = this.store.nodes.get(entity)
+    if (existing?.userData.dclForceCloneAttach) return false
     // Skinned / Animator need full clone + mixer rebind.
     if (this.ecs.Animator.has(entity)) return false
     // Embedded clips (incl. morph weights) need a per-entity mesh + AnimationMixer —
@@ -1793,6 +1948,12 @@ export class ThreeBridge {
           return true
         }
         // Fall through to clone if template has no instancable leaves.
+      }
+
+      // Animator / morph VFX (GunVFX muzzle) — re-tune shared template emissives so
+      // session-cached materials pick up intensity boosts without a full cache purge.
+      if (this.ecs.Animator.has(entity) || template.animations.length > 0) {
+        applySceneGltfEmissives(template.root)
       }
 
       const clone = cloneGltfInstance(template.root)

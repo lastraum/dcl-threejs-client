@@ -68,6 +68,25 @@ function wrapMainCameraMutable(engine: IEngine, entity: Entity, mutable: Record<
 }
 
 /**
+ * Dead Surge (and many SDK scenes) gate VC bind with:
+ *   if (!MainCamera.has(CameraEntity)) return
+ *   MainCamera.getMutable(CameraEntity).virtualCameraEntity = vc
+ * Boot getState often never seeds MainCamera on CameraEntity — bind never runs, freecam
+ * keeps orbit, and the client never sees a VirtualCamera lens.
+ */
+export function ensureMainCameraOnCameraEntity(engine: IEngine): void {
+  const MainCamera = generated.MainCamera(engine)
+  if (MainCamera.has(engine.CameraEntity)) return
+  const original = originalCreateOrReplaceByEngine.get(engine)
+  if (original) {
+    original(engine.CameraEntity, {})
+  } else {
+    MainCamera.createOrReplace(engine.CameraEntity, {})
+  }
+  console.log('[vc-lens] worker — seeded MainCamera on CameraEntity (scene has()-guard requires it)')
+}
+
+/**
  * Universal VirtualCamera bind guard — every scene gets ECS-authoritative VC pose
  * before MainCamera.virtualCameraEntity is written (createOrReplace or getMutable).
  * Blocks accidental `{}` clears outside pointer inject sessions (VIEW SHOT snap-back).
@@ -85,6 +104,13 @@ export function installVirtualCameraBindGuard(engine: IEngine): void {
     typeof MainCamera.getMutableOrNull === 'function' ?
       MainCamera.getMutableOrNull.bind(MainCamera)
     : null
+  const originalGetOrCreateMutable =
+    typeof (MainCamera as { getOrCreateMutable?: (e: Entity, v?: unknown) => unknown }).getOrCreateMutable ===
+    'function'
+      ? (MainCamera as { getOrCreateMutable: (e: Entity, v?: unknown) => unknown }).getOrCreateMutable.bind(
+          MainCamera
+        )
+      : null
 
   MainCamera.createOrReplace = ((entity: Entity, value?: unknown) => {
     if (noteMainCameraWrite(engine, entity, value ?? null)) {
@@ -100,14 +126,28 @@ export function installVirtualCameraBindGuard(engine: IEngine): void {
     return originalCreateOrReplace(entity, value as never)
   }) as typeof MainCamera.createOrReplace
 
-  MainCamera.getMutable = (entity: Entity) =>
-    wrapMainCameraMutable(engine, entity, originalGetMutable(entity) as Record<string, unknown>)
+  MainCamera.getMutable = (entity: Entity) => {
+    // CameraEntity: create empty shell so scene has()-guards / getMutable binds succeed.
+    if (entity === engine.CameraEntity && !MainCamera.has(entity)) {
+      originalCreateOrReplace(entity, {})
+    }
+    const mutable =
+      originalGetOrCreateMutable && entity === engine.CameraEntity
+        ? (originalGetOrCreateMutable(entity, {}) as Record<string, unknown>)
+        : (originalGetMutable(entity) as Record<string, unknown>)
+    return wrapMainCameraMutable(engine, entity, mutable)
+  }
 
   if (originalGetMutableOrNull) {
     MainCamera.getMutableOrNull = (entity: Entity) => {
+      if (entity === engine.CameraEntity && !MainCamera.has(entity)) {
+        originalCreateOrReplace(entity, {})
+      }
       const mutable = originalGetMutableOrNull(entity)
       if (!mutable) return null
       return wrapMainCameraMutable(engine, entity, mutable as Record<string, unknown>)
     }
   }
+
+  ensureMainCameraOnCameraEntity(engine)
 }

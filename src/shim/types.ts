@@ -2,6 +2,7 @@ import type { ResolvedScene, ContentFile } from '../dcl/content/types'
 import type { EngineApiEvent } from './engine/engineApiEvents'
 import type { MovePlayerToRequest, MovePlayerToResponse } from '../player/movePlayerTo'
 import type { OpenExternalUrlRequest, OpenExternalUrlResponse } from '../player/openExternalUrl'
+import type { OpenNftDialogRequest, OpenNftDialogResponse } from '../player/openNftDialog'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../player/triggerEmote'
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../player/triggerSceneEmote'
 import type { InjectPointerClickBody } from '../player/injectPointerClick'
@@ -112,6 +113,12 @@ export type SceneWorkerOpenExternalUrl = {
   body: OpenExternalUrlRequest
 }
 
+export type SceneWorkerOpenNftDialog = {
+  type: 'open-nft-dialog'
+  id: number
+  body: OpenNftDialogRequest
+}
+
 export type CommsAdapterRequest = { connectionString: string }
 
 export type SendBinaryRequest = {
@@ -217,6 +224,7 @@ export type SceneWorkerOutbound =
   | SceneWorkerTriggerEmote
   | SceneWorkerTriggerSceneEmote
   | SceneWorkerOpenExternalUrl
+  | SceneWorkerOpenNftDialog
   | SceneWorkerSetCommsAdapter
   | SceneWorkerSendBinary
   | SceneWorkerCommsSend
@@ -269,6 +277,7 @@ export type MainToWorker =
   | { type: 'trigger-emote-response'; id: number; body: TriggerEmoteResponse }
   | { type: 'trigger-scene-emote-response'; id: number; body: TriggerSceneEmoteResponse }
   | { type: 'open-external-url-response'; id: number; body: OpenExternalUrlResponse }
+  | { type: 'open-nft-dialog-response'; id: number; body: OpenNftDialogResponse }
   | { type: 'set-comms-adapter-response'; id: number; body: { success: boolean } }
   | { type: 'comms-send-binary-response'; id: number; body: SendBinaryResponse }
   | { type: 'get-user-data-response'; id: number; body: UserDataResponse }

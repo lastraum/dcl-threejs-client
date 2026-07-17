@@ -193,7 +193,7 @@ export const ENVIRONMENT_INTEGRATION: IntegrationEntry[] = [
 export const SYSTEM_MODULES_INTEGRATION: IntegrationEntry[] = [
   { id: 'sys:engine-api', name: '~system/EngineApi', status: 'render', category: 'system-modules', phase: 1, notes: 'CRDT + sendBatch/subscribe (comms)' },
   { id: 'sys:runtime', name: '~system/Runtime', status: 'render', category: 'system-modules', phase: 1 },
-  { id: 'sys:restricted-actions', name: '~system/RestrictedActions', status: 'partial', category: 'system-modules', phase: 2, notes: 'movePlayerTo, triggerEmote, openExternalUrl ✅' },
+  { id: 'sys:restricted-actions', name: '~system/RestrictedActions', status: 'partial', category: 'system-modules', phase: 2, notes: 'movePlayerTo, triggerEmote, openExternalUrl, openNftDialog ✅' },
   { id: 'sys:comms-controller', name: '~system/CommunicationsController', status: 'render', category: 'system-modules', phase: 5 },
   { id: 'sys:user-identity', name: '~system/UserIdentity', status: 'render', category: 'system-modules', phase: 5 },
   { id: 'sys:comms-api', name: '~system/CommsApi', status: 'partial', category: 'system-modules', phase: 5, notes: 'topics ✅ · getActiveVideoStreams ⬜' },

@@ -29,7 +29,13 @@ export type ApplySceneDiffResult = {
   meshDirty: Entity[]
 }
 
-const MESH_COMPONENT_NAMES = ['GltfContainer', 'MeshRenderer', 'TextShape', 'Material'] as const
+const MESH_COMPONENT_NAMES = [
+  'GltfContainer',
+  'MeshRenderer',
+  'TextShape',
+  'Material',
+  'NftShape'
+] as const
 
 /** Components whose CRDT diff should notify collision / pointer subscribers. */
 const SECONDARY_NOTIFY_NAMES = [

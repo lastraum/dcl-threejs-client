@@ -34,6 +34,7 @@ import { AudioStreamBridge } from '../../media/AudioStreamBridge'
 import type { SpatialAudioAnchors } from '../../media/spatialAudioParent'
 import { VideoPlayerBridge } from '../../media/VideoPlayerBridge'
 import { AssetLoadBridge } from '../../media/AssetLoadBridge'
+import { NftShapeBridge } from '../../bridge/NftShapeBridge'
 import { SceneUiBridge } from '../../ui/scene/SceneUiBridge'
 import type { LiveKitVideoBinder } from '../../media/WebVideoPlayer'
 import { CollisionSystem } from '../../collision/CollisionSystem'
@@ -59,6 +60,7 @@ import type {
 } from '../../shim/types'
 import type { MovePlayerToRequest, MovePlayerToResponse } from '../../player/movePlayerTo'
 import type { OpenExternalUrlRequest, OpenExternalUrlResponse } from '../../player/openExternalUrl'
+import type { OpenNftDialogRequest, OpenNftDialogResponse } from '../../player/openNftDialog'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/triggerEmote'
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../player/triggerSceneEmote'
 import type { AssetCache } from '../../rendering/AssetCache'
@@ -94,6 +96,7 @@ type MovePlayerHandler = (request: MovePlayerToRequest) => boolean
 type TriggerEmoteHandler = (request: TriggerEmoteRequest) => boolean
 type TriggerSceneEmoteHandler = (request: TriggerSceneEmoteRequest) => boolean
 type OpenExternalUrlHandler = (request: OpenExternalUrlRequest) => boolean
+type OpenNftDialogHandler = (request: OpenNftDialogRequest) => boolean | Promise<boolean>
 
 /** Async bridge ECS sync (Animator / AvatarShape load paths) — playback still runs every sync frame. */
 const BRIDGE_ECS_SYNC_RUNTIME = 12
@@ -248,6 +251,8 @@ export class SceneScriptSystem {
   private triggerEmoteHandler: TriggerEmoteHandler | null = null
   private triggerSceneEmoteHandler: TriggerSceneEmoteHandler | null = null
   private openExternalUrlHandler: OpenExternalUrlHandler | null = null
+  private openNftDialogHandler: OpenNftDialogHandler | null = null
+  private nftShapeBridge: NftShapeBridge | null = null
   private commsHandler: CommsRpcHandler | null = null
   /** World — enqueue/drain per-entity PhysX cooks (`entity` = GLB just attached; omit = drain queue). */
   private collidersCookCallback: ((entity?: Entity) => void) | null = null
@@ -479,6 +484,7 @@ export class SceneScriptSystem {
       cache,
       this.recordRendererAppend
     )
+    this.nftShapeBridge = new NftShapeBridge(this.readComponents, cache, () => this.bridge?.getEntityNodes())
     this.collision = new CollisionSystem(host.scene)
     this.gltfColliders = new GltfColliderExtractor(host.scene)
     this.animatorBridge.setShapeMotionProbe((entity) => {
@@ -1047,6 +1053,10 @@ export class SceneScriptSystem {
     this.openExternalUrlHandler = handler
   }
 
+  setOpenNftDialogHandler(handler: OpenNftDialogHandler | null): void {
+    this.openNftDialogHandler = handler
+  }
+
   setAvatarEmoteHandler(handler: AvatarEmoteHandler | null): void {
     this.avatarEmoteBridge?.setPlayerHandler(handler)
   }
@@ -1487,6 +1497,15 @@ export class SceneScriptSystem {
         type: 'open-external-url-response',
         id: msg.id,
         body: { success } satisfies OpenExternalUrlResponse
+      } satisfies MainToWorker)
+      return
+    }
+    if (msg.type === 'open-nft-dialog') {
+      const success = (await this.openNftDialogHandler?.(msg.body)) ?? false
+      this.worker?.postMessage({
+        type: 'open-nft-dialog-response',
+        id: msg.id,
+        body: { success } satisfies OpenNftDialogResponse
       } satisfies MainToWorker)
       return
     }
@@ -3944,6 +3963,7 @@ export class SceneScriptSystem {
     this.audioSourceBridge?.sync(this.view)
     this.audioStreamBridge?.sync(this.view)
     this.assetLoadBridge?.sync(this.view)
+    this.nftShapeBridge?.sync(this.view)
     this.avatarShapes?.update(delta)
     this.animatorBridge?.update(delta)
     this.particleBridge?.update(delta)
@@ -4051,6 +4071,8 @@ export class SceneScriptSystem {
     this.projectionLagPendingUi = false
     this.projectionLagSinceMs = 0
     this.projectionLagLoggedAt = 0
+    this.nftShapeBridge?.dispose()
+    this.nftShapeBridge = null
     this.avatarAttachBridge?.dispose()
     this.avatarAttachBridge = null
     this.videoPlayerBridge = null

@@ -25,6 +25,7 @@ import type {
 } from '../types'
 import type { MovePlayerToRequest, MovePlayerToResponse } from '../../player/movePlayerTo'
 import type { OpenExternalUrlRequest, OpenExternalUrlResponse } from '../../player/openExternalUrl'
+import type { OpenNftDialogRequest, OpenNftDialogResponse } from '../../player/openNftDialog'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/triggerEmote'
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../player/triggerSceneEmote'
 import {
@@ -146,6 +147,7 @@ const pendingMove = new Map<number, (body: MovePlayerToResponse) => void>()
 const pendingTriggerEmote = new Map<number, (body: TriggerEmoteResponse) => void>()
 const pendingTriggerSceneEmote = new Map<number, (body: TriggerSceneEmoteResponse) => void>()
 const pendingOpenExternalUrl = new Map<number, (body: OpenExternalUrlResponse) => void>()
+const pendingOpenNftDialog = new Map<number, (body: OpenNftDialogResponse) => void>()
 const pendingCommsAdapter = new Map<number, (body: { success: boolean }) => void>()
 const pendingSendBinary = new Map<number, (body: SendBinaryResponse) => void>()
 const pendingUserData = new Map<number, (body: UserDataResponse) => void>()
@@ -2325,6 +2327,14 @@ function rpcOpenExternalUrl(body: OpenExternalUrlRequest): Promise<OpenExternalU
   })
 }
 
+function rpcOpenNftDialog(body: OpenNftDialogRequest): Promise<OpenNftDialogResponse> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingOpenNftDialog.set(id, resolve)
+    ctx.postMessage({ type: 'open-nft-dialog', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
 function rpcCommsAdapter(body: CommsAdapterRequest): Promise<{ success: boolean }> {
   const id = ++requestId
   return new Promise((resolve) => {
@@ -2732,6 +2742,11 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     pendingOpenExternalUrl.delete(msg.id)
     return
   }
+  if (msg.type === 'open-nft-dialog-response') {
+    pendingOpenNftDialog.get(msg.id)?.(msg.body)
+    pendingOpenNftDialog.delete(msg.id)
+    return
+  }
   if (msg.type === 'set-comms-adapter-response') {
     pendingCommsAdapter.get(msg.id)?.(msg.body)
     pendingCommsAdapter.delete(msg.id)
@@ -2905,6 +2920,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       triggerEmote: rpcTriggerEmote,
       triggerSceneEmote: rpcTriggerSceneEmote,
       openExternalUrl: rpcOpenExternalUrl,
+      openNftDialog: rpcOpenNftDialog,
       commsSend: rpcCommsSend,
       comms: {
         setCommunicationsAdapter: rpcCommsAdapter,

@@ -539,9 +539,9 @@ These are **known incomplete** vs full Explorer / product polish — not blocker
 | **CameraMode** (1072) | 🔵 | Written on CameraEntity each frame — 1st/3rd from freecam distance (area force overrides) |
 | **CameraModeArea** (1071) | 🟢 | DCL volume from Transform + `area` size; forces FPV/TPV while inside; restores distance on leave |
 
-**Not done:** NftShape · GltfNodeModifiers · PhysicsCombinedForce/Impulse · graphics P3 distances.
+**Not done:** GltfNodeModifiers · PhysicsCombinedForce/Impulse · graphics P3 distances.
 
-**Also shipped (host LWW):** GltfContainerLoadingState (1049) — LOADING→FINISHED/NOT_FOUND/ERROR on attach path.
+**Also shipped:** GltfContainerLoadingState (1049) host LWW · **NftShape (1040)** framed planes + `openNftDialog`.
 
 **QA:** Right-click lock → reticle fixed above center → move mouse orbits without LMB; unlock Esc/Tab/right-click; CameraModeArea FPV zone snaps to first person; leave restores third.
 

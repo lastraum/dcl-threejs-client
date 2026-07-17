@@ -2,6 +2,7 @@ import * as virtualCameraCore from '../../virtual-camera/core'
 import * as virtualCameraScene from '../../virtual-camera/scene'
 import type { MovePlayerToRequest, MovePlayerToResponse } from '../../player/movePlayerTo'
 import type { OpenExternalUrlRequest, OpenExternalUrlResponse } from '../../player/openExternalUrl'
+import type { OpenNftDialogRequest, OpenNftDialogResponse } from '../../player/openNftDialog'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/triggerEmote'
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../player/triggerSceneEmote'
 import type { CommsRpcHandler, SceneWorkerBoot, SignedFetchGetHeadersResponse, SignedFetchRequest, SignedFetchResponse } from '../types'
@@ -14,6 +15,7 @@ type RpcHandler = {
   triggerEmote: (body: TriggerEmoteRequest) => Promise<TriggerEmoteResponse>
   triggerSceneEmote: (body: TriggerSceneEmoteRequest) => Promise<TriggerSceneEmoteResponse>
   openExternalUrl: (body: OpenExternalUrlRequest) => Promise<OpenExternalUrlResponse>
+  openNftDialog: (body: OpenNftDialogRequest) => Promise<OpenNftDialogResponse>
   commsSend: (body: { message: string }) => Promise<Record<string, never>>
   comms: CommsRpcHandler
   signedFetch: (body: SignedFetchRequest) => Promise<SignedFetchResponse>
@@ -113,7 +115,7 @@ export function createSystemStubs(
       triggerEmote: async (body: TriggerEmoteRequest) => rpc.triggerEmote(body),
       triggerSceneEmote: async (body: TriggerSceneEmoteRequest) => rpc.triggerSceneEmote(body),
       openExternalUrl: async (body: OpenExternalUrlRequest) => rpc.openExternalUrl(body),
-      openNftDialog: async () => ({}),
+      openNftDialog: async (body: OpenNftDialogRequest) => rpc.openNftDialog(body),
       setCommunicationsAdapter: async (body: { connectionString: string }) =>
         rpc.comms.setCommunicationsAdapter(body)
     },

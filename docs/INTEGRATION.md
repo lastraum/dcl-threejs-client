@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-16 (GltfContainerLoadingState 🔵 host LWW; AssetLoadLoadingState already 🔵)
+> **Last updated:** 2026-07-16 (NftShape 🟢 + openNftDialog; GltfContainerLoadingState 🔵)
 
 ---
 
@@ -27,14 +27,14 @@
 
 | Area | Tracked | 🟢 Done | 🟡 Partial | ⬜ Not started | 🔵 Client-only |
 | ---- | ------- | ------- | ---------- | -------------- | -------------- |
-| ECS components | 65 | 37 | 5 | 4 | 19 |
+| ECS components | 65 | 38 | 5 | 3 | 19 |
 | Client UI | see `integrationRegistry.ts` | | | | |
 | Networking | see `integrationRegistry.ts` | | | | |
 | Performance | see `integrationRegistry.ts` | | | | |
 | Environment | 4 | 4 | 0 | 0 | — |
 | ~system modules | 9 | 5 | 2 | 2 | — |
 
-*ECS counts from `src/dcl/ecs/registry.ts`. **Without full parity** = ⬜ + 🟡 = **9**. Client-only (🔵) is intentional renderer→scene ownership, not a missing feature — e.g. AssetLoadLoadingState, GltfContainerLoadingState, TweenState, EngineInfo. **Tags** + `getEntitiesByTag()` are 🟢.*
+*ECS counts from `src/dcl/ecs/registry.ts`. **Without full parity** = ⬜ + 🟡 = **8**. Client-only (🔵) is intentional renderer→scene ownership, not a missing feature — e.g. AssetLoadLoadingState, GltfContainerLoadingState, TweenState, EngineInfo. **Tags** + `getEntitiesByTag()` are 🟢.*
 
 ---
 
@@ -120,7 +120,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | UiTransform … UiDropdown | 1050+ | 🟡 | Yoga + DOM partial — results writeback; polish gaps |
 | ParticleSystem | 1217 | 🟢 | `ParticleSystemBridge` — GPU billboard sprites |
 | MapPin | 1097 | 🟢 | Mirror + `MapPinStore` list (deprecated upstream; still honored) |
-| NftShape | 1040 | ⬜ | NFT frame / wearables display mesh |
+| NftShape | 1040 | 🟢 | `NftShapeBridge` — OpenSea DCL proxy image + procedural frames; `openNftDialog` sheet |
 | GltfNodeModifiers | 1099 | ⬜ | Per-node material/visibility overrides on GLTF |
 | AssetLoad | 1213 | 🟢 | Preload scene paths into caches (`AssetLoadBridge`) — GLB parse + texture + audio |
 | AssetLoadLoadingState | 1214 | 🔵 | Grow-only LOADING/FINISHED/NOT_FOUND/ERROR per asset → encoder |
@@ -131,7 +131,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 
 | Status | Components |
 | ------ | ---------- |
-| ⬜ | PhysicsCombinedForce · PhysicsCombinedImpulse · GltfNodeModifiers · NftShape |
+| ⬜ | PhysicsCombinedForce · PhysicsCombinedImpulse · GltfNodeModifiers |
 | 🟡 | UiTransform · UiText · UiBackground · UiInput · UiDropdown |
 
 ### ~system modules (worker shim)
@@ -140,7 +140,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | ------ | ------ | ----- |
 | EngineApi | 🟢 | CRDT + comms sendBatch/subscribe |
 | Runtime | 🟢 | getSceneInformation, getRealm |
-| RestrictedActions | 🟡 | movePlayerTo, emotes, openExternalUrl ✅ |
+| RestrictedActions | 🟡 | movePlayerTo, emotes, openExternalUrl, openNftDialog ✅ |
 | CommunicationsController | 🟢 | sendBinary, comms topic |
 | UserIdentity | 🟢 | getUserData + mirror ECS |
 | SignedFetch | 🟢 | ADR-44 via worker RPC |

@@ -90,6 +90,8 @@ export type MirrorComponents = {
   EngineInfo: ReturnType<typeof generated.EngineInfo>
   AssetLoad: ReturnType<typeof generated.AssetLoad>
   AssetLoadLoadingState: ReturnType<typeof generated.AssetLoadLoadingState>
+  /** Framed NFT picture (scene-authored LWW). */
+  NftShape: ReturnType<typeof generated.NftShape>
 }
 
 /** Register mirror ECS components so incoming scene CRDT can be applied. */
@@ -152,6 +154,7 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     RealmInfo: generated.RealmInfo(engine),
     EngineInfo: generated.EngineInfo(engine),
     AssetLoad: generated.AssetLoad(engine),
-    AssetLoadLoadingState: generated.AssetLoadLoadingState(engine)
+    AssetLoadLoadingState: generated.AssetLoadLoadingState(engine),
+    NftShape: generated.NftShape(engine)
   }
 }

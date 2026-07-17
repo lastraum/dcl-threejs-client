@@ -66,6 +66,7 @@ import { feetDclToPlayerEntityPosition } from '../player/dclPlayerEntity'
 import type { PhysicsColliderDesc } from '../physics/PhysXWorld'
 
 import { openExternalUrl } from '../player/openExternalUrl'
+import { openNftDialog } from '../player/openNftDialog'
 import { ReservedEntitiesSync } from '../bridge/ReservedEntitiesSync'
 import { waitForSceneAssets, type WaitForSceneAssetsOptions } from '../rendering/sceneHydration'
 import { LightManager } from '../rendering/LightManager'
@@ -555,6 +556,7 @@ export class World {
         performGetSignedHeaders(body, this.session.getAuthIdentity())
       )
       this.sceneScript.setOpenExternalUrlHandler((request) => openExternalUrl(request))
+      this.sceneScript.setOpenNftDialogHandler((request) => openNftDialog(request))
     }
 
     this.bindLandscapeColliders(openIslandShore)

@@ -37,9 +37,7 @@ export class SocialChatDock {
   private readonly onGoto?: SocialChatDockOptions['onGoto']
   private readonly onOpenProfile?: SocialChatDockOptions['onOpenProfile']
   private readonly pillsEl: HTMLElement
-  private readonly pillsToolbarEl: HTMLElement
   private readonly pillsScrollEl: HTMLElement
-  private readonly expandBtn: HTMLButtonElement
   private readonly guestCloseBtn: HTMLButtonElement
   private readonly threadEl: HTMLElement
   private readonly statusEl: HTMLElement
@@ -64,7 +62,8 @@ export class SocialChatDock {
   private mounted = false
   private threadOpen = false
   private listExpanded = false
-  private mobilePanelOpen = false
+  /** Desktop + mobile: dock expanded from the bottom-right chat FAB. */
+  private panelOpen = false
   private unsubChat: (() => void) | null = null
   private unsubChannel: (() => void) | null = null
   private unsubProfiles: (() => void) | null = null
@@ -106,19 +105,8 @@ export class SocialChatDock {
     this.pillsEl.className = 'social-chat-dock__pills chat-panel__rail'
     this.pillsEl.setAttribute('aria-label', 'Chat channels')
 
-    this.pillsToolbarEl = document.createElement('div')
-    this.pillsToolbarEl.className = 'social-chat-dock__pills-toolbar'
-    this.expandBtn = document.createElement('button')
-    this.expandBtn.type = 'button'
-    this.expandBtn.className = 'social-chat-dock__expand'
-    this.expandBtn.setAttribute('aria-label', 'Expand chat list')
-    this.expandBtn.setAttribute('aria-expanded', 'false')
-    this.expandBtn.textContent = '‹'
-    this.pillsToolbarEl.appendChild(this.expandBtn)
-
     this.pillsScrollEl = document.createElement('div')
     this.pillsScrollEl.className = 'chat-panel__rail-scroll'
-    this.pillsEl.appendChild(this.pillsToolbarEl)
     this.pillsEl.appendChild(this.pillsScrollEl)
 
     this.threadEl = document.createElement('section')
@@ -169,14 +157,7 @@ export class SocialChatDock {
 
     this.backBtn.addEventListener('click', () => {
       this.threadOpen = false
-      if (this.isMobileLayout()) this.listExpanded = true
-      this.syncLayout()
-      this.renderPills()
-    })
-
-    this.expandBtn.addEventListener('click', () => {
-      this.listExpanded = !this.listExpanded
-      this.hidePillTip()
+      this.listExpanded = true
       this.syncLayout()
       this.renderPills()
     })
@@ -199,22 +180,23 @@ export class SocialChatDock {
     this.mobileBackdrop = document.createElement('div')
     this.mobileBackdrop.className = 'social-chat-dock__mobile-backdrop'
     this.mobileBackdrop.hidden = true
-    this.mobileBackdrop.addEventListener('click', () => this.closeMobilePanel())
+    this.mobileBackdrop.addEventListener('click', () => this.closePanel())
 
     this.mobileFab = document.createElement('button')
     this.mobileFab.type = 'button'
-    this.mobileFab.className = 'social-chat-dock__mobile-fab'
+    this.mobileFab.className = 'social-chat-dock__fab'
     this.mobileFab.setAttribute('aria-label', 'Open chat')
     this.mobileFab.setAttribute('aria-expanded', 'false')
+    this.mobileFab.setAttribute('title', 'Chat')
     this.mobileFab.hidden = true
     this.mobileFab.innerHTML = `
-      <span class="social-chat-dock__mobile-fab-icon" aria-hidden="true">${SIDEBAR_ICONS.chat}</span>
+      <span class="social-chat-dock__fab-icon" aria-hidden="true">${SIDEBAR_ICONS.chat}</span>
     `
     this.mobileFabBadge = document.createElement('span')
-    this.mobileFabBadge.className = 'social-chat-dock__mobile-fab-badge'
+    this.mobileFabBadge.className = 'social-chat-dock__fab-badge'
     this.mobileFabBadge.hidden = true
     this.mobileFab.appendChild(this.mobileFabBadge)
-    this.mobileFab.addEventListener('click', () => this.toggleMobilePanel())
+    this.mobileFab.addEventListener('click', () => this.togglePanel())
 
     this.mobileMq = window.matchMedia(SOCIAL_CHAT_MOBILE_MQ)
     this.mobileMq.addEventListener('change', this.onMobileMqChange)
@@ -224,8 +206,8 @@ export class SocialChatDock {
     this.ensureMounted()
     this.visible = true
     this.threadOpen = false
-    this.mobilePanelOpen = false
-    if (this.isMobileLayout()) this.listExpanded = true
+    this.panelOpen = false
+    this.listExpanded = false
     this.bindSocial()
     this.renderAll()
     this.syncLayout()
@@ -237,7 +219,7 @@ export class SocialChatDock {
     this.visible = false
     this.threadOpen = false
     this.listExpanded = false
-    this.mobilePanelOpen = false
+    this.panelOpen = false
     this.root.hidden = true
     this.mobileFab.hidden = true
     this.mobileBackdrop.hidden = true
@@ -259,9 +241,7 @@ export class SocialChatDock {
    * Other scene tabs (and explore with thread closed) still get banners + badges.
    */
   isChatNotificationSuppressed(incomingChannelKey?: string): boolean {
-    if (!this.visible || !this.threadOpen) return false
-    // Mobile: only suppress while the sheet is open (FAB alone should still toast).
-    if (this.isMobileLayout() && !this.mobilePanelOpen) return false
+    if (!this.visible || !this.threadOpen || !this.panelOpen) return false
     if (!incomingChannelKey) return true
     const current = this.social().getChannel()
     if (current.kind === 'scene') return incomingChannelKey === `scene:${current.sceneKey}`
@@ -274,32 +254,30 @@ export class SocialChatDock {
     return incomingChannelKey === 'messages'
   }
 
-  /** Leave the open thread (channel list / pills). Used when navigating off a scene landing. */
+  /**
+   * Leaving a scene landing — collapse to FAB only.
+   * Keep thread/list selection so reopening the FAB restores the last view.
+   */
   collapseToChannelList(): void {
     if (!this.visible) return
-    this.threadOpen = false
-    this.listExpanded = this.isMobileLayout() ? true : this.listExpanded
-    if (this.isMobileLayout()) this.mobilePanelOpen = false
+    this.panelOpen = false
     this.syncLayout()
     this.renderAll()
   }
 
-  /** Notifications bell — open chat panel (mobile sheet or desktop expanded list). */
+  /** Notifications bell — open chat panel (channel list). */
   openFromNotification(): void {
     if (!this.visible) return
-    if (this.isMobileLayout()) {
-      this.threadOpen = true
-      this.openMobilePanel()
-      this.renderAll()
-      return
-    }
-    this.listExpanded = true
     this.threadOpen = false
-    this.syncLayout()
-    this.renderPills()
+    this.listExpanded = true
+    this.openPanel()
+    this.renderAll()
   }
 
-  /** Scene landing — select scene channel; desktop opens thread, mobile stays on FAB only. */
+  /**
+   * Scene landing — select scene channel.
+   * Desktop opens the thread panel; mobile leaves FAB closed so the sheet is opt-in.
+   */
   openSceneChatThread(): void {
     if (!this.visible) return
     const scene = this.controller.getSocial().getSceneTab()
@@ -311,11 +289,11 @@ export class SocialChatDock {
       label: scene.label
     })
     this.listExpanded = true
+    this.threadOpen = true
     if (this.isMobileLayout()) {
-      this.threadOpen = true
-      this.mobilePanelOpen = false
+      this.panelOpen = false
     } else {
-      this.threadOpen = true
+      this.panelOpen = true
     }
     this.syncLayout()
     this.renderAll()
@@ -342,8 +320,7 @@ export class SocialChatDock {
     })
     this.listExpanded = true
     this.threadOpen = true
-    if (this.isMobileLayout()) this.openMobilePanel()
-    this.syncLayout()
+    this.openPanel()
     this.renderAll()
   }
 
@@ -372,26 +349,25 @@ export class SocialChatDock {
     return this.mobileMq.matches
   }
 
-  private toggleMobilePanel(): void {
-    if (this.mobilePanelOpen) this.closeMobilePanel()
-    else this.openMobilePanel()
+  private togglePanel(): void {
+    if (this.panelOpen) this.closePanel()
+    else this.openPanel()
   }
 
-  private openMobilePanel(): void {
-    if (!this.visible || !this.isMobileLayout()) return
-    this.mobilePanelOpen = true
-    this.threadOpen = false
-    this.listExpanded = true
+  private openPanel(): void {
+    if (!this.visible) return
+    this.panelOpen = true
+    // Restore prior view (thread or list). Only default to expanded list when none selected.
+    if (!this.threadOpen) this.listExpanded = true
     this.hidePillTip()
     this.syncLayout()
-    this.renderPills()
+    this.renderAll()
   }
 
-  private closeMobilePanel(): void {
-    if (!this.mobilePanelOpen) return
-    this.mobilePanelOpen = false
-    this.threadOpen = false
-    this.listExpanded = true
+  private closePanel(): void {
+    if (!this.panelOpen) return
+    // Keep threadOpen / listExpanded so the next FAB open restores this view.
+    this.panelOpen = false
     this.hidePillTip()
     this.syncLayout()
   }
@@ -407,7 +383,7 @@ export class SocialChatDock {
     this.unsubChat = social.onChat(() => {
       this.renderMessages()
       this.renderPills()
-      this.updateMobileFab()
+      this.updateChatFab()
       this.updateComposerUi()
     })
     this.unsubChannel = social.onChannelChange(() => this.renderAll())
@@ -436,7 +412,7 @@ export class SocialChatDock {
     this.renderThreadHeader()
     this.renderMessages()
     this.updateComposerUi()
-    this.updateMobileFab()
+    this.updateChatFab()
   }
 
   private totalUnreadCount(): number {
@@ -474,20 +450,15 @@ export class SocialChatDock {
     return total
   }
 
-  private updateMobileFab(): void {
+  private updateChatFab(): void {
     if (!this.mounted) return
-    const mobile = this.isMobileLayout()
-    this.mobileFab.hidden = !this.visible || !mobile
-    if (!mobile) return
+    this.mobileFab.hidden = !this.visible
+    this.mobileFab.classList.toggle('is-active', this.panelOpen)
+    this.mobileFab.setAttribute('aria-expanded', String(this.panelOpen))
+    this.mobileFab.setAttribute('aria-label', this.panelOpen ? 'Close chat' : 'Open chat')
+    this.mobileFab.setAttribute('title', this.panelOpen ? 'Close chat' : 'Chat')
 
-    this.mobileFab.classList.toggle('is-active', this.mobilePanelOpen)
-    this.mobileFab.setAttribute('aria-expanded', String(this.mobilePanelOpen))
-    this.mobileFab.setAttribute(
-      'aria-label',
-      this.mobilePanelOpen ? 'Close chat' : 'Open chat'
-    )
-
-    const unread = this.mobilePanelOpen ? 0 : this.totalUnreadCount()
+    const unread = this.panelOpen ? 0 : this.totalUnreadCount()
     if (unread > 0) {
       this.mobileFabBadge.hidden = false
       this.mobileFabBadge.textContent = unread > 99 ? '99+' : String(unread)
@@ -497,10 +468,9 @@ export class SocialChatDock {
     }
   }
 
-  /** Desktop: thread or expanded list; mobile: sheet open. Collapsed rail stays clean. */
+  /** FAB-expanded dock (desktop panel or mobile sheet). */
   private isChatPanelOpen(): boolean {
-    if (this.isMobileLayout()) return this.mobilePanelOpen
-    return this.threadOpen || this.listExpanded
+    return this.panelOpen
   }
 
   private renderStatus(status: SocialChatStatus): void {
@@ -543,7 +513,10 @@ export class SocialChatDock {
     }
 
     const guestCentered = status.kind === 'guest' && Boolean(message)
+    const idleEmpty =
+      status.kind === 'idle' && Boolean(message) && this.isChatPanelOpen() && !this.threadOpen
     this.root.classList.toggle('social-chat-dock--guest-prompt', guestCentered)
+    this.root.classList.toggle('social-chat-dock--idle-empty', idleEmpty)
     this.guestCloseBtn.hidden = !guestCentered
 
     if (!message) {
@@ -555,21 +528,14 @@ export class SocialChatDock {
     this.statusEl.hidden = false
     this.statusEl.className = `social-chat-dock__status social-chat-dock__status--${tone}${
       status.kind === 'scene_ban' ? ' social-chat-dock__status--scene-ban' : ''
-    }`
+    }${idleEmpty ? ' social-chat-dock__status--idle-empty' : ''}`
     this.statusEl.textContent = message
   }
 
-  /** Collapse expanded list / thread, or dismiss the mobile chat sheet. */
+  /** Collapse expanded list / thread, or dismiss the chat panel via FAB / guest close. */
   private closeChatPanel(): void {
-    if (this.isMobileLayout()) {
-      this.closeMobilePanel()
-      this.renderStatus(this.controller.getStatus())
-      return
-    }
-    this.threadOpen = false
-    this.listExpanded = false
-    this.syncLayout()
-    this.renderPills()
+    this.closePanel()
+    this.renderStatus(this.controller.getStatus())
   }
 
   private renderThreadHeader(): void {
@@ -620,13 +586,19 @@ export class SocialChatDock {
     this.pillsScrollEl.innerHTML = ''
     this.pillsScrollEl.classList.toggle('social-chat-dock__list-scroll', this.useExpandedChannelList())
 
-    const landingKey = social.getConnectedSceneKey()?.trim().toLowerCase() ?? null
+    // Only hide × while actually on that scene's landing page. Explore / other 2D
+    // pages keep connected multi-room tabs closable.
+    const onSceneLanding = document.body.classList.contains('scene-landing-route')
+    const landingKey = onSceneLanding
+      ? social.getConnectedSceneKey()?.trim().toLowerCase() ?? null
+      : null
     for (const scene of social.getSceneTabs()) {
       const channel = { kind: 'scene' as const, sceneKey: scene.key, label: scene.label }
       const active = current.kind === 'scene' && current.sceneKey === scene.key
       const viewingChannel = active && this.threadOpen
       const live = social.isLiveSceneChannel(channel)
-      const isLandingScene = landingKey != null && scene.key.trim().toLowerCase() === landingKey
+      const isCurrentLandingScene =
+        landingKey != null && scene.key.trim().toLowerCase() === landingKey
       this.pillsScrollEl.appendChild(
         this.createChannelEntry({
           channel,
@@ -639,9 +611,8 @@ export class SocialChatDock {
           iconSvg: sceneChatRailIcon(),
           active,
           unreadCount: viewingChannel ? 0 : social.getUnreadCount(channel),
-          // Desktop: no × on the scene page we're on. Other multi-room tabs stay closable.
-          // Mobile keeps swipe/× for background rooms only (same rule).
-          closable: !isLandingScene
+          // No × only for the scene landing you're viewing. Everywhere else, close is allowed.
+          closable: !isCurrentLandingScene
         })
       )
     }
@@ -708,6 +679,7 @@ export class SocialChatDock {
   private openChannel(channel: ChatChannelChoice): void {
     this.social().selectChannel(channel)
     this.threadOpen = true
+    this.panelOpen = true
     this.syncLayout()
     this.renderAll()
     // Multi-room: join this scene's LiveKit without leaving other open rooms.
@@ -1394,7 +1366,7 @@ export class SocialChatDock {
     return (
       this.isMobileLayout() &&
       this.visible &&
-      !this.mobilePanelOpen &&
+      !this.panelOpen &&
       this.threadOpen
     )
   }
@@ -1414,37 +1386,30 @@ export class SocialChatDock {
       'social-chat-dock--list-expanded',
       this.useExpandedChannelList() && !this.threadOpen
     )
+    this.root.classList.toggle('social-chat-dock--panel-open', this.panelOpen)
     this.root.classList.toggle('social-chat-dock--mobile', mobile)
-    this.root.classList.toggle('social-chat-dock--mobile-open', mobile && this.mobilePanelOpen)
+    this.root.classList.toggle('social-chat-dock--mobile-open', mobile && this.panelOpen)
     this.root.classList.toggle('social-chat-dock--mobile-peek', mobilePeek)
 
-    this.social().setChannelThreadOpen(this.threadOpen)
+    this.social().setChannelThreadOpen(this.threadOpen && this.panelOpen)
 
     this.threadEl.hidden = !this.threadOpen
     // Same as mobile: open a chat → hide channel list until Back.
     this.pillsEl.hidden = this.threadOpen
-    this.pillsToolbarEl.hidden = mobile || this.threadOpen
-    this.expandBtn.hidden = this.threadOpen || mobile
-    this.expandBtn.setAttribute('aria-expanded', String(this.listExpanded))
-    this.expandBtn.setAttribute(
-      'aria-label',
-      this.listExpanded ? 'Collapse chat list' : 'Expand chat list'
-    )
-    this.expandBtn.textContent = this.listExpanded ? '›' : '‹'
 
     if (mobile) {
-      this.root.hidden = !this.visible || (!this.mobilePanelOpen && !mobilePeek)
-      this.mobileBackdrop.hidden = !this.visible || !this.mobilePanelOpen
-      document.body.classList.toggle('social-chat-mobile-open', this.visible && this.mobilePanelOpen)
+      this.root.hidden = !this.visible || (!this.panelOpen && !mobilePeek)
+      this.mobileBackdrop.hidden = !this.visible || !this.panelOpen
+      document.body.classList.toggle('social-chat-mobile-open', this.visible && this.panelOpen)
     } else {
-      this.mobilePanelOpen = false
-      this.root.hidden = !this.visible
+      // Desktop: dock only while expanded from FAB (or scene auto-open).
+      this.root.hidden = !this.visible || !this.panelOpen
       this.mobileBackdrop.hidden = true
       document.body.classList.remove('social-chat-mobile-open')
     }
 
     if (this.listExpanded || this.threadOpen) this.hidePillTip()
-    this.updateMobileFab()
+    this.updateChatFab()
     // Guest "Sign in to chat" visibility depends on panel open state.
     this.renderStatus(this.controller.getStatus())
 
@@ -1520,6 +1485,7 @@ export class SocialChatDock {
     this.root.classList.add('social-chat-dock--scene-aligned')
     this.root.style.top = `${Math.round(rect.top)}px`
     this.root.style.height = ''
-    this.root.style.bottom = '0'
+    // Match CSS: leave clear space for the bottom-right FAB.
+    this.root.style.bottom = ''
   }
 }

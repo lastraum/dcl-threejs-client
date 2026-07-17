@@ -239,11 +239,13 @@ export class ClientShell {
 
     this.mobileChatFab = document.createElement('button')
     this.mobileChatFab.type = 'button'
-    this.mobileChatFab.className = 'mobile-chat-fab'
-    this.mobileChatFab.setAttribute('aria-label', 'Chat')
-    this.mobileChatFab.innerHTML = `<span class="mobile-chat-fab__icon" aria-hidden="true">${SIDEBAR_ICONS.chat}</span>`
+    this.mobileChatFab.className = 'scene-chat-fab'
+    this.mobileChatFab.setAttribute('aria-label', 'Open chat')
+    this.mobileChatFab.setAttribute('aria-expanded', 'false')
+    this.mobileChatFab.setAttribute('title', 'Chat')
+    this.mobileChatFab.innerHTML = `<span class="scene-chat-fab__icon" aria-hidden="true">${SIDEBAR_ICONS.chat}</span>`
     this.mobileChatFabBadge = document.createElement('span')
-    this.mobileChatFabBadge.className = 'mobile-chat-fab__badge'
+    this.mobileChatFabBadge.className = 'scene-chat-fab__badge'
     this.mobileChatFabBadge.hidden = true
     this.mobileChatFab.appendChild(this.mobileChatFabBadge)
     this.mobileChatFab.addEventListener('click', (ev) => {
@@ -330,13 +332,20 @@ export class ClientShell {
 
   private wireChatPanel(panel: ChatPanel): void {
     panel.setOnVisibilityChange((visible) => {
-      this.buttons.get('chat')?.setActive(visible)
-      this.mobileChatFab.classList.toggle('is-active', visible)
+      this.syncChatFabState(visible)
       if (visible) {
         this.unreadChat = 0
         this.updateChatBadge()
       }
     })
+  }
+
+  private syncChatFabState(visible: boolean): void {
+    this.buttons.get('chat')?.setActive(visible)
+    this.mobileChatFab.classList.toggle('is-active', visible)
+    this.mobileChatFab.setAttribute('aria-expanded', visible ? 'true' : 'false')
+    this.mobileChatFab.setAttribute('aria-label', visible ? 'Close chat' : 'Open chat')
+    this.mobileChatFab.setAttribute('title', visible ? 'Close chat' : 'Chat')
   }
 
   private updateChatBadge(): void {
@@ -385,7 +394,8 @@ export class ClientShell {
     this.root.classList.toggle('client-shell--drawer', mobile)
     this.repositionProfileButton(mobile)
     this.mobileProfileFab.hidden = !mobile || this.root.hidden
-    this.mobileChatFab.hidden = !mobile || this.root.hidden
+    // Big bottom-right chat toggle — desktop + mobile (collapsed until expanded).
+    this.mobileChatFab.hidden = this.root.hidden
     if (!mobile) {
       this.setMobileDrawerOpen(false)
       this.mobileLocationPill.hidden = true
@@ -485,8 +495,7 @@ export class ClientShell {
         this.closeMobileDrawerForOverlay()
         if (!this.chatPanel) return
         const open = this.chatPanel.toggle()
-        this.buttons.get('chat')?.setActive(open)
-        this.mobileChatFab.classList.toggle('is-active', open)
+        this.syncChatFabState(open)
         if (open) {
           this.debugPanel.hide()
           this.devProgressPanel?.hide()
@@ -598,6 +607,7 @@ export class ClientShell {
 
   openChatPanel(): void {
     this.chatPanel?.show()
+    this.syncChatFabState(true)
   }
 
   openCommunityChat(communityId: string, displayName: string): void {

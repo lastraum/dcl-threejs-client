@@ -1,8 +1,11 @@
 import * as virtualCameraCore from '../../virtual-camera/core'
 import * as virtualCameraScene from '../../virtual-camera/scene'
+import type { ChangeRealmRequest, ChangeRealmResponse } from '../../player/changeRealm'
+import type { CopyToClipboardRequest, CopyToClipboardResponse } from '../../player/copyToClipboard'
 import type { MovePlayerToRequest, MovePlayerToResponse } from '../../player/movePlayerTo'
 import type { OpenExternalUrlRequest, OpenExternalUrlResponse } from '../../player/openExternalUrl'
 import type { OpenNftDialogRequest, OpenNftDialogResponse } from '../../player/openNftDialog'
+import type { TeleportToRequest, TeleportToResponse } from '../../player/teleportTo'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/triggerEmote'
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../player/triggerSceneEmote'
 import type { CommsRpcHandler, SceneWorkerBoot, SignedFetchGetHeadersResponse, SignedFetchRequest, SignedFetchResponse } from '../types'
@@ -12,6 +15,9 @@ type RpcHandler = {
   crdtSendToRenderer: (data: Uint8Array) => Promise<Uint8Array[]>
   crdtGetState: () => Promise<{ hasEntities: boolean; data: Uint8Array[] }>
   movePlayerTo: (body: MovePlayerToRequest) => Promise<MovePlayerToResponse>
+  teleportTo: (body: TeleportToRequest) => Promise<TeleportToResponse>
+  changeRealm: (body: ChangeRealmRequest) => Promise<ChangeRealmResponse>
+  copyToClipboard: (body: CopyToClipboardRequest) => Promise<CopyToClipboardResponse>
   triggerEmote: (body: TriggerEmoteRequest) => Promise<TriggerEmoteResponse>
   triggerSceneEmote: (body: TriggerSceneEmoteRequest) => Promise<TriggerSceneEmoteResponse>
   openExternalUrl: (body: OpenExternalUrlRequest) => Promise<OpenExternalUrlResponse>
@@ -112,10 +118,13 @@ export function createSystemStubs(
     },
     '~system/RestrictedActions': {
       movePlayerTo: async (body: MovePlayerToRequest) => rpc.movePlayerTo(body),
+      teleportTo: async (body: TeleportToRequest) => rpc.teleportTo(body),
+      changeRealm: async (body: ChangeRealmRequest) => rpc.changeRealm(body),
       triggerEmote: async (body: TriggerEmoteRequest) => rpc.triggerEmote(body),
       triggerSceneEmote: async (body: TriggerSceneEmoteRequest) => rpc.triggerSceneEmote(body),
       openExternalUrl: async (body: OpenExternalUrlRequest) => rpc.openExternalUrl(body),
       openNftDialog: async (body: OpenNftDialogRequest) => rpc.openNftDialog(body),
+      copyToClipboard: async (body: CopyToClipboardRequest) => rpc.copyToClipboard(body),
       setCommunicationsAdapter: async (body: { connectionString: string }) =>
         rpc.comms.setCommunicationsAdapter(body)
     },
@@ -127,7 +136,7 @@ export function createSystemStubs(
       }) => rpc.comms.sendBinary(body)
     },
     '~system/CommsApi': {
-      getActiveVideoStreams: async () => rpc.comms.getActiveVideoStreams(),
+      getActiveVideoStreams: async (_body?: unknown) => rpc.comms.getActiveVideoStreams(),
       subscribeToTopic: async (body: { topic: string }) => rpc.comms.subscribeToTopic(body),
       unsubscribeFromTopic: async (body: { topic: string }) => rpc.comms.unsubscribeFromTopic(body),
       publishData: async (body: { topic: string; data: string }) => rpc.comms.publishData(body),
@@ -145,7 +154,20 @@ export function createSystemStubs(
       getHeaders: async (body: SignedFetchRequest) => rpc.signedFetchGetHeaders(body)
     },
     '~system/UserActionModule': {
-      requestTeleport: async (_body: { destination?: string }) => ({})
+      /** SDK6 — map destination `x,y` / world name onto teleport / changeRealm. */
+      requestTeleport: async (body: { destination?: string }) => {
+        const dest = body.destination?.trim() ?? ''
+        if (!dest) return {}
+        const coord = /^(-?\d+)\s*,\s*(-?\d+)$/.exec(dest)
+        if (coord) {
+          await rpc.teleportTo({
+            worldCoordinates: { x: Number(coord[1]), y: Number(coord[2]) }
+          })
+          return {}
+        }
+        await rpc.changeRealm({ realm: dest })
+        return {}
+      }
     },
     '@lastslice/virtual-camera': virtualCameraCore,
     '@lastslice/virtual-camera/core': virtualCameraCore,

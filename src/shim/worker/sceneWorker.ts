@@ -23,9 +23,12 @@ import type {
   SignedFetchGetHeadersResponse,
   UserDataResponse
 } from '../types'
+import type { ChangeRealmRequest, ChangeRealmResponse } from '../../player/changeRealm'
+import type { CopyToClipboardRequest, CopyToClipboardResponse } from '../../player/copyToClipboard'
 import type { MovePlayerToRequest, MovePlayerToResponse } from '../../player/movePlayerTo'
 import type { OpenExternalUrlRequest, OpenExternalUrlResponse } from '../../player/openExternalUrl'
 import type { OpenNftDialogRequest, OpenNftDialogResponse } from '../../player/openNftDialog'
+import type { TeleportToRequest, TeleportToResponse } from '../../player/teleportTo'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/triggerEmote'
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../player/triggerSceneEmote'
 import {
@@ -144,6 +147,9 @@ let requestId = 0
 const pendingCrdt = new Map<number, (data: Uint8Array[]) => void>()
 const pendingGetState = new Map<number, (state: { hasEntities: boolean; data: Uint8Array[] }) => void>()
 const pendingMove = new Map<number, (body: MovePlayerToResponse) => void>()
+const pendingTeleportTo = new Map<number, (body: TeleportToResponse) => void>()
+const pendingChangeRealm = new Map<number, (body: ChangeRealmResponse) => void>()
+const pendingCopyToClipboard = new Map<number, (body: CopyToClipboardResponse) => void>()
 const pendingTriggerEmote = new Map<number, (body: TriggerEmoteResponse) => void>()
 const pendingTriggerSceneEmote = new Map<number, (body: TriggerSceneEmoteResponse) => void>()
 const pendingOpenExternalUrl = new Map<number, (body: OpenExternalUrlResponse) => void>()
@@ -2296,6 +2302,30 @@ function rpcMovePlayerTo(body: MovePlayerToRequest): Promise<MovePlayerToRespons
   })
 }
 
+function rpcTeleportTo(body: TeleportToRequest): Promise<TeleportToResponse> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingTeleportTo.set(id, resolve)
+    ctx.postMessage({ type: 'teleport-to', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcChangeRealm(body: ChangeRealmRequest): Promise<ChangeRealmResponse> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingChangeRealm.set(id, resolve)
+    ctx.postMessage({ type: 'change-realm', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
+function rpcCopyToClipboard(body: CopyToClipboardRequest): Promise<CopyToClipboardResponse> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingCopyToClipboard.set(id, resolve)
+    ctx.postMessage({ type: 'copy-to-clipboard', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
 function rpcTriggerEmote(body: TriggerEmoteRequest): Promise<TriggerEmoteResponse> {
   const id = ++requestId
   const emote = body.predefinedEmote?.trim()
@@ -2727,6 +2757,21 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     pendingMove.delete(msg.id)
     return
   }
+  if (msg.type === 'teleport-to-response') {
+    pendingTeleportTo.get(msg.id)?.(msg.body)
+    pendingTeleportTo.delete(msg.id)
+    return
+  }
+  if (msg.type === 'change-realm-response') {
+    pendingChangeRealm.get(msg.id)?.(msg.body)
+    pendingChangeRealm.delete(msg.id)
+    return
+  }
+  if (msg.type === 'copy-to-clipboard-response') {
+    pendingCopyToClipboard.get(msg.id)?.(msg.body)
+    pendingCopyToClipboard.delete(msg.id)
+    return
+  }
   if (msg.type === 'trigger-emote-response') {
     pendingTriggerEmote.get(msg.id)?.(msg.body)
     pendingTriggerEmote.delete(msg.id)
@@ -2917,6 +2962,9 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       crdtSendToRenderer: rpcCrdt,
       crdtGetState: rpcGetState,
       movePlayerTo: rpcMovePlayerTo,
+      teleportTo: rpcTeleportTo,
+      changeRealm: rpcChangeRealm,
+      copyToClipboard: rpcCopyToClipboard,
       triggerEmote: rpcTriggerEmote,
       triggerSceneEmote: rpcTriggerSceneEmote,
       openExternalUrl: rpcOpenExternalUrl,

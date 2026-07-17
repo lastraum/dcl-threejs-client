@@ -47,6 +47,9 @@
         --client-panel-max-w: min(420px, calc(100vw - var(--client-safe-left) - var(--client-safe-right)));
         --client-hud-max-w: min(324px, calc(100vw - var(--client-safe-left) - var(--client-safe-right) - 16px));
         --client-chat-max-h: min(580px, calc(100vh - var(--client-safe-top) - var(--client-safe-bottom) - 96px));
+        /* Bottom-right scene chat toggle (panel stacks above this). */
+        --scene-chat-fab-size: 64px;
+        --scene-chat-fab-gap: 12px;
         --client-ui-font-sm: clamp(11px, 0.7rem + 0.15vw, 12px);
         --client-ui-font-md: clamp(13px, 0.8rem + 0.2vw, 15px);
         /* Site-wide DCL jump-site backdrop — shell pages + terrain editor hub */
@@ -1381,7 +1384,10 @@
         .mobile-game-hud {
           position: fixed;
           right: max(12px, env(safe-area-inset-right, 0px));
-          bottom: max(12px, env(safe-area-inset-bottom, 0px));
+          /* Sit above the bottom-right chat FAB so jump/interact stay reachable. */
+          bottom: calc(
+            max(12px, env(safe-area-inset-bottom, 0px)) + var(--scene-chat-fab-size) + var(--scene-chat-fab-gap)
+          );
           z-index: var(--z-client-hud-raised);
           display: flex;
           flex-direction: column;
@@ -1457,51 +1463,8 @@
           image-rendering: pixelated;
           background: #2a2a34;
         }
-        .mobile-chat-fab {
-          position: fixed;
-          left: max(12px, env(safe-area-inset-left, 0px));
-          bottom: max(12px, env(safe-area-inset-bottom, 0px));
-          z-index: var(--z-client-hud-raised);
-          width: 48px;
-          height: 48px;
-          padding: 0;
-          border: 0;
-          border-radius: 14px;
-          background: rgba(28, 20, 16, 0.94);
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          color: rgba(255, 255, 255, 0.92);
-          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-          cursor: pointer;
-          pointer-events: auto;
-        }
-        .mobile-chat-fab.is-active {
-          background: rgba(255, 255, 255, 0.14);
-          color: #fff;
-        }
-        .mobile-chat-fab__icon {
-          display: grid;
-          place-items: center;
-          width: 100%;
-          height: 100%;
-        }
-        .mobile-chat-fab__icon svg {
-          width: 22px;
-          height: 22px;
-        }
-        .mobile-chat-fab__badge {
-          position: absolute;
-          top: 4px;
-          right: 4px;
-          min-width: 14px;
-          height: 14px;
-          padding: 0 3px;
-          border-radius: 999px;
-          background: #ff2d87;
-          color: #fff;
-          font-size: 9px;
-          font-weight: 700;
-          line-height: 14px;
-          text-align: center;
+        .client-mobile {
+          --scene-chat-fab-size: 56px;
         }
         .client-mobile-drawer-backdrop {
           position: fixed;
@@ -1511,18 +1474,21 @@
           pointer-events: auto;
         }
         .client-mobile .chat-panel-wrap {
-          left: calc(max(12px, env(safe-area-inset-left, 0px)) + 48px + 10px);
-          right: var(--client-safe-right);
-          bottom: calc(max(12px, env(safe-area-inset-bottom, 0px)) + 56px);
+          left: max(12px, env(safe-area-inset-left, 0px));
+          right: max(12px, env(safe-area-inset-right, 0px));
+          bottom: calc(
+            max(12px, env(safe-area-inset-bottom, 0px)) + var(--scene-chat-fab-size) + var(--scene-chat-fab-gap)
+          );
           width: auto;
-        }
-        .client-mobile .chat-panel-wrap.is-scene-mode {
-          bottom: calc(max(12px, env(safe-area-inset-bottom, 0px)) + 56px);
+          height: var(--client-chat-max-h);
         }
         .client-mobile .chat-panel {
           width: 100%;
           max-width: none;
           border-radius: 16px;
+        }
+        .client-mobile .chat-panel__rail {
+          border-radius: 0 16px 16px 0;
         }
         .skybox-panel,
         .client-panel {
@@ -2660,11 +2626,74 @@
         }
       }
 
-      /* Chat — compact bottom-left window with channel rail on the right */
+      /* Scene chat FAB — bottom-right expand / collapse */
+      .scene-chat-fab {
+        position: fixed;
+        right: var(--client-safe-right);
+        bottom: var(--client-safe-bottom);
+        z-index: var(--z-client-hud-raised);
+        width: var(--scene-chat-fab-size);
+        height: var(--scene-chat-fab-size);
+        padding: 0;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 20px;
+        background: rgba(28, 20, 16, 0.94);
+        color: rgba(255, 255, 255, 0.95);
+        box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+        cursor: pointer;
+        pointer-events: auto;
+        transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+      }
+      .scene-chat-fab:hover {
+        background: rgba(40, 30, 24, 0.98);
+        border-color: rgba(255, 255, 255, 0.22);
+        transform: translateY(-1px);
+      }
+      .scene-chat-fab:active {
+        transform: translateY(0);
+      }
+      .scene-chat-fab.is-active {
+        background: rgba(255, 68, 153, 0.22);
+        border-color: rgba(255, 100, 170, 0.55);
+        color: #fff;
+        box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 100, 170, 0.2) inset;
+      }
+      .scene-chat-fab__icon {
+        display: grid;
+        place-items: center;
+        width: 100%;
+        height: 100%;
+      }
+      .scene-chat-fab__icon svg {
+        width: 32px;
+        height: 32px;
+      }
+      .scene-chat-fab__badge {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 5px;
+        border-radius: 999px;
+        background: #ff2d87;
+        color: #fff;
+        font-size: 10px;
+        font-weight: 800;
+        line-height: 18px;
+        text-align: center;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+      }
+      .scene-chat-fab[hidden] {
+        display: none !important;
+      }
+
+      /* Chat — expands above the bottom-right FAB, channel rail on the right */
       .chat-panel-wrap {
         position: fixed;
-        left: var(--client-safe-left);
-        bottom: var(--client-safe-bottom);
+        left: auto;
+        right: var(--client-safe-right);
+        bottom: calc(var(--client-safe-bottom) + var(--scene-chat-fab-size) + var(--scene-chat-fab-gap));
         z-index: var(--z-client-hud-raised);
         display: flex;
         flex-direction: row;
@@ -2673,12 +2702,24 @@
         height: var(--client-chat-max-h);
         max-height: var(--client-chat-max-h);
         overflow: hidden;
+        transform-origin: bottom right;
+        animation: scene-chat-expand 0.16s ease-out;
         --chat-panel-bg: rgba(28, 20, 16, 0.94);
         --chat-panel-border: rgba(255, 255, 255, 0.1);
         --chat-panel-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
         --chat-rail-bg: rgba(20, 14, 12, 0.96);
         --chat-rail-border: rgba(255, 255, 255, 0.1);
         --chat-rail-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+      }
+      @keyframes scene-chat-expand {
+        from {
+          opacity: 0;
+          transform: translateY(8px) scale(0.96);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
       }
       .chat-panel-wrap.is-scene-mode {
         --chat-panel-bg: rgba(28, 20, 16, 0);
@@ -9204,19 +9245,32 @@
         --social-shell-header-height: calc(58px + env(safe-area-inset-top, 0px));
         --social-chat-dock-panel-width: clamp(280px, 28vw, 420px);
         --social-chat-dock-pills-width: 72px;
-        --social-chat-dock-width: var(--social-chat-dock-pills-width);
+        /* Collapsed until bottom-right FAB expands the dock. */
+        --social-chat-dock-width: 0px;
         --social-chat-dock-z: var(--z-client-hud);
         --social-shell-overlay-z: var(--z-client-hud);
         --social-profile-modal-z: var(--z-client-overlay);
-        --social-chat-mobile-fab-size: 52px;
-        --social-chat-mobile-fab-inset: max(14px, env(safe-area-inset-bottom, 0px));
-        --social-chat-mobile-fab-stack: calc(
-          var(--social-chat-mobile-fab-inset) + var(--social-chat-mobile-fab-size) + 10px
+        --social-chat-fab-size: 64px;
+        --social-chat-fab-inset: max(16px, env(safe-area-inset-bottom, 0px));
+        --social-chat-fab-right: max(16px, env(safe-area-inset-right, 0px));
+        --social-chat-fab-stack: calc(
+          var(--social-chat-fab-inset) + var(--social-chat-fab-size) + 12px
         );
+        /* Legacy aliases used by mobile sheet spacing. */
+        --social-chat-mobile-fab-size: var(--social-chat-fab-size);
+        --social-chat-mobile-fab-inset: var(--social-chat-fab-inset);
+        --social-chat-mobile-fab-stack: var(--social-chat-fab-stack);
       }
-      body.social-shell-with-chat:has(.social-chat-dock--list-expanded):not(:has(.social-chat-dock--thread-open)),
-      body.social-shell-with-chat:has(.social-chat-dock--thread-open) {
+      body.social-shell-with-chat:has(.social-chat-dock--panel-open.social-chat-dock--list-expanded):not(
+          :has(.social-chat-dock--thread-open)
+        ),
+      body.social-shell-with-chat:has(.social-chat-dock--panel-open.social-chat-dock--thread-open) {
         --social-chat-dock-width: var(--social-chat-dock-panel-width);
+      }
+      body.social-shell-with-chat:has(.social-chat-dock--panel-open):not(
+          :has(.social-chat-dock--list-expanded)
+        ):not(:has(.social-chat-dock--thread-open)) {
+        --social-chat-dock-width: var(--social-chat-dock-pills-width);
       }
       body.social-shell-with-chat .explorer-view__main,
       body.social-shell-with-chat .events-page-view__main,
@@ -9256,8 +9310,10 @@
         position: fixed;
         top: var(--social-shell-header-height);
         right: 0;
-        bottom: 0;
-        height: calc(100vh - var(--social-shell-header-height));
+        /* Leave a clear lane for the bottom-right FAB (list + thread both stop above it). */
+        bottom: var(--social-chat-fab-stack);
+        height: auto;
+        max-height: calc(100vh - var(--social-shell-header-height) - var(--social-chat-fab-stack));
         width: var(--social-chat-dock-width);
         z-index: var(--social-chat-dock-z, 25);
         display: flex;
@@ -9268,16 +9324,81 @@
         color: #fff;
         font-family: inherit;
         pointer-events: none;
-        transition: width 0.2s ease, top 0.2s ease;
+        transition: width 0.2s ease, top 0.2s ease, bottom 0.2s ease;
       }
-      /* Align top to scene chrome; keep bottom pinned so flex children can scroll. */
+      /* Align top to scene chrome; bottom stops above the chat FAB. */
       .social-chat-dock--scene-aligned {
-        bottom: 0 !important;
+        bottom: var(--social-chat-fab-stack) !important;
         height: auto !important;
         max-height: none;
         /* top is set inline; height fills remaining viewport via top+bottom */
       }
       .social-chat-dock[hidden] {
+        display: none !important;
+      }
+      /* 2D social shell — big bottom-right chat expand / collapse */
+      .social-chat-dock__fab {
+        position: fixed;
+        right: var(--social-chat-fab-right);
+        bottom: var(--social-chat-fab-inset);
+        z-index: calc(var(--social-chat-dock-z, 25) + 2);
+        width: var(--social-chat-fab-size);
+        height: var(--social-chat-fab-size);
+        padding: 0;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 20px;
+        background: rgba(18, 10, 30, 0.94);
+        color: rgba(255, 255, 255, 0.95);
+        box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+        cursor: pointer;
+        font-family: inherit;
+        pointer-events: auto;
+        transition: background 0.15s ease, transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+      .social-chat-dock__fab:hover {
+        background: rgba(28, 16, 44, 0.98);
+        border-color: rgba(255, 255, 255, 0.24);
+        transform: translateY(-1px);
+      }
+      .social-chat-dock__fab:active {
+        transform: translateY(0);
+      }
+      .social-chat-dock__fab.is-active {
+        background: rgba(14, 155, 218, 0.28);
+        border-color: rgba(14, 155, 218, 0.55);
+        color: #fff;
+        box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(14, 155, 218, 0.25) inset;
+      }
+      .social-chat-dock__fab[hidden] {
+        display: none !important;
+      }
+      .social-chat-dock__fab-icon {
+        display: grid;
+        place-items: center;
+        width: 100%;
+        height: 100%;
+      }
+      .social-chat-dock__fab-icon svg {
+        width: 32px;
+        height: 32px;
+      }
+      .social-chat-dock__fab-badge {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 5px;
+        border-radius: 999px;
+        background: #ff3b5c;
+        color: #fff;
+        font-size: 10px;
+        font-weight: 800;
+        line-height: 18px;
+        text-align: center;
+        box-shadow: 0 0 0 2px rgba(18, 8, 30, 0.95);
+      }
+      .social-chat-dock__fab-badge[hidden] {
         display: none !important;
       }
       .social-chat-dock__status,
@@ -9343,34 +9464,8 @@
         align-self: stretch;
         overflow: hidden;
       }
-      .social-chat-dock__pills-toolbar {
-        flex-shrink: 0;
-        display: flex;
-        justify-content: center;
-        padding: 8px 6px 4px;
-      }
-      .social-chat-dock__expand {
-        width: 32px;
-        height: 28px;
-        border: none;
-        border-radius: 8px;
-        background: transparent;
-        color: rgba(255, 255, 255, 0.72);
-        font-size: 18px;
-        line-height: 1;
-        cursor: pointer;
-        font-family: inherit;
-      }
-      .social-chat-dock__expand:hover {
-        color: #fff;
-        background: rgba(255, 255, 255, 0.08);
-      }
-      .social-chat-dock--list-expanded .social-chat-dock__expand {
-        align-self: flex-end;
-        margin-right: 4px;
-      }
       /*
-       * Channel list (icons or expanded rows) fills remaining dock height and scrolls.
+       * Channel list fills remaining dock height and scrolls.
        * Must not use overflow-x: visible — that cancels overflow-y scrolling in browsers.
        */
       .social-chat-dock__pills .chat-panel__rail-scroll {
@@ -9382,7 +9477,7 @@
         overflow-y: auto;
         overscroll-behavior: contain;
         -webkit-overflow-scrolling: touch;
-        padding: 4px 8px calc(12px + env(safe-area-inset-bottom, 0px));
+        padding: 10px 8px 12px;
         scrollbar-width: none;
         -ms-overflow-style: none;
       }
@@ -9689,6 +9784,31 @@
       .social-chat-dock--thread-open.social-chat-dock--guest-prompt .social-chat-dock__status {
         display: block;
       }
+      /* Idle empty: "Visit a scene for scene chat" — plain text, centered, ~2× size. */
+      .social-chat-dock--idle-empty {
+        justify-content: center;
+      }
+      .social-chat-dock--idle-empty .social-chat-dock__body {
+        display: none !important;
+      }
+      .social-chat-dock--idle-empty .social-chat-dock__status,
+      .social-chat-dock__status--idle-empty {
+        display: block;
+        flex: 0 0 auto;
+        margin: auto 20px;
+        padding: 0;
+        border: none;
+        border-radius: 0;
+        background: transparent;
+        backdrop-filter: none;
+        box-shadow: none;
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        line-height: 1.35;
+        color: rgba(255, 255, 255, 0.72);
+        text-align: center;
+      }
       .social-chat-dock__thread-header {
         flex-shrink: 0;
         display: flex;
@@ -9776,7 +9896,7 @@
       }
       .social-chat-dock__composer {
         flex-shrink: 0;
-        margin: 0 10px calc(12px + env(safe-area-inset-bottom, 0px));
+        margin: 0 10px 12px;
         padding: 0;
         border-radius: 0;
         background: transparent;
@@ -9842,64 +9962,12 @@
         .social-chat-dock__mobile-backdrop[hidden] {
           display: none !important;
         }
-        .social-chat-dock__mobile-fab {
-          position: fixed;
-          right: max(14px, env(safe-area-inset-right, 0px));
-          left: auto;
-          bottom: max(14px, env(safe-area-inset-bottom, 0px));
-          z-index: calc(var(--social-chat-dock-z, 25) + 1);
-          width: 52px;
-          height: 52px;
-          padding: 0;
-          border: 1px solid rgba(255, 255, 255, 0.16);
-          border-radius: 16px;
-          background: rgba(18, 10, 30, 0.94);
-          color: rgba(255, 255, 255, 0.92);
-          box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
-          cursor: pointer;
-          font-family: inherit;
-          pointer-events: auto;
-          transition: background 0.15s ease, transform 0.15s ease;
+        :root {
+          --social-chat-fab-size: 56px;
         }
-        .social-chat-dock__mobile-fab:hover {
-          background: rgba(28, 16, 44, 0.98);
-        }
-        .social-chat-dock__mobile-fab.is-active {
-          background: rgba(14, 155, 218, 0.28);
-          border-color: rgba(14, 155, 218, 0.55);
-          color: #fff;
-        }
-        .social-chat-dock__mobile-fab[hidden] {
-          display: none !important;
-        }
-        .social-chat-dock__mobile-fab-icon {
-          display: grid;
-          place-items: center;
-          width: 100%;
-          height: 100%;
-        }
-        .social-chat-dock__mobile-fab-icon svg {
-          width: 24px;
-          height: 24px;
-        }
-        .social-chat-dock__mobile-fab-badge {
-          position: absolute;
-          top: 4px;
-          right: 4px;
-          min-width: 16px;
-          height: 16px;
-          padding: 0 4px;
-          border-radius: 999px;
-          background: #ff3b5c;
-          color: #fff;
-          font-size: 9px;
-          font-weight: 800;
-          line-height: 16px;
-          text-align: center;
-          box-shadow: 0 0 0 2px rgba(18, 8, 30, 0.95);
-        }
-        .social-chat-dock__mobile-fab-badge[hidden] {
-          display: none !important;
+        .social-chat-dock__fab-icon svg {
+          width: 26px;
+          height: 26px;
         }
         .social-chat-dock.social-chat-dock--mobile {
           top: auto;
@@ -9928,9 +9996,6 @@
         }
         .social-chat-dock--mobile .social-chat-dock__status {
           margin: 10px 14px 0;
-        }
-        .social-chat-dock--mobile .social-chat-dock__pills-toolbar {
-          display: none;
         }
         .social-chat-dock--mobile.social-chat-dock--list-expanded .social-chat-dock__pills {
           width: 100%;
@@ -14673,13 +14738,15 @@
       body.scene-landing-route #scene-ui-root,
       body.scene-landing-route .mobile-game-hud,
       body.scene-landing-route .mobile-profile-fab,
-      body.scene-landing-route .mobile-chat-fab,
+      body.scene-landing-route .scene-chat-fab,
+      body.scene-landing-route #chat-panel-wrap,
       body.scene-landing-jump-in-loading #client-shell,
       body.scene-landing-jump-in-loading #world-location-card,
       body.scene-landing-jump-in-loading #scene-ui-root,
       body.scene-landing-jump-in-loading .mobile-game-hud,
       body.scene-landing-jump-in-loading .mobile-profile-fab,
-      body.scene-landing-jump-in-loading .mobile-chat-fab {
+      body.scene-landing-jump-in-loading .scene-chat-fab,
+      body.scene-landing-jump-in-loading #chat-panel-wrap {
         display: none !important;
         pointer-events: none !important;
       }

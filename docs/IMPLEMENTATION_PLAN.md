@@ -283,10 +283,10 @@ ThreejsClient/src/
 |--------|--------|
 | `~system/EngineApi` | 🟢 `crdtSendToRenderer`, `crdtGetState`, **`sendBatch` / `subscribe` / `unsubscribe` ✅** (comms queue) |
 | `~system/Runtime` | ✅ `getSceneInformation`, `getRealm` |
-| `~system/RestrictedActions` | 🟡 `movePlayerTo` ✅, `triggerEmote` ✅, **`openExternalUrl` ✅** — **`openNftDialog` ⬜ no-op** |
+| `~system/RestrictedActions` | 🟢 movePlayerTo · teleportTo · changeRealm · emotes · openExternalUrl · openNftDialog · copyToClipboard · setCommunicationsAdapter |
 | `~system/CommunicationsController` | 🟢 `sendBinary` ✅ · **`send` ✅** (topic `comms`) |
 | `~system/UserIdentity` | ✅ `getUserData` RPC (+ mirror ECS for `getPlayer()`) |
-| `~system/CommsApi` | 🟡 topics wired — **`getActiveVideoStreams` ⬜ no-op** |
+| `~system/CommsApi` | 🟢 getActiveVideoStreams · topics · publish/consume |
 | `~system/SignedFetch` | 🟢 `signedFetch` + `getHeaders` via worker RPC → main thread |
 
 ### Steps

@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-16 (NftShape 🟢 + openNftDialog; GltfContainerLoadingState 🔵)
+> **Last updated:** 2026-07-16 (RestrictedActions teleportTo/changeRealm/copyToClipboard; CommsApi getActiveVideoStreams 🟢)
 
 ---
 
@@ -32,7 +32,7 @@
 | Networking | see `integrationRegistry.ts` | | | | |
 | Performance | see `integrationRegistry.ts` | | | | |
 | Environment | 4 | 4 | 0 | 0 | — |
-| ~system modules | 9 | 5 | 2 | 2 | — |
+| ~system modules | 9 | 7 | 0 | 2 | — |
 
 *ECS counts from `src/dcl/ecs/registry.ts`. **Without full parity** = ⬜ + 🟡 = **7**. Client-only (🔵) is intentional renderer→scene ownership, not a missing feature — e.g. AssetLoadLoadingState, GltfContainerLoadingState, TweenState, EngineInfo. **Tags** + `getEntitiesByTag()` are 🟢.*
 
@@ -141,11 +141,11 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | ------ | ------ | ----- |
 | EngineApi | 🟢 | CRDT + comms sendBatch/subscribe |
 | Runtime | 🟢 | getSceneInformation, getRealm |
-| RestrictedActions | 🟡 | movePlayerTo, emotes, openExternalUrl, openNftDialog ✅ |
+| RestrictedActions | 🟢 | movePlayerTo · teleportTo · changeRealm · triggerEmote · triggerSceneEmote · openExternalUrl · openNftDialog · copyToClipboard · setCommunicationsAdapter |
 | CommunicationsController | 🟢 | sendBinary, comms topic |
 | UserIdentity | 🟢 | getUserData + mirror ECS |
 | SignedFetch | 🟢 | ADR-44 via worker RPC |
-| CommsApi | 🟡 | topics ✅ · getActiveVideoStreams ⬜ |
+| CommsApi | 🟢 | getActiveVideoStreams · subscribeToTopic · unsubscribeFromTopic · publishData · consumeMessages |
 | EnvironmentApi / Testing | ⬜ | |
 
 ---

@@ -58,9 +58,12 @@ import type {
   SignedFetchGetHeadersHandler,
   WorkerUiMountSnapshotRow
 } from '../../shim/types'
+import type { ChangeRealmRequest, ChangeRealmResponse } from '../../player/changeRealm'
+import type { CopyToClipboardRequest, CopyToClipboardResponse } from '../../player/copyToClipboard'
 import type { MovePlayerToRequest, MovePlayerToResponse } from '../../player/movePlayerTo'
 import type { OpenExternalUrlRequest, OpenExternalUrlResponse } from '../../player/openExternalUrl'
 import type { OpenNftDialogRequest, OpenNftDialogResponse } from '../../player/openNftDialog'
+import type { TeleportToRequest, TeleportToResponse } from '../../player/teleportTo'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/triggerEmote'
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../player/triggerSceneEmote'
 import type { AssetCache } from '../../rendering/AssetCache'
@@ -93,6 +96,9 @@ import {
   stripWorkerAuthoritativeCrdtBytes
 } from '../../shim/worker/workerSceneUiCrdtOutbound'
 type MovePlayerHandler = (request: MovePlayerToRequest) => boolean
+type TeleportToHandler = (request: TeleportToRequest) => boolean | Promise<boolean>
+type ChangeRealmHandler = (request: ChangeRealmRequest) => boolean | Promise<boolean>
+type CopyToClipboardHandler = (request: CopyToClipboardRequest) => boolean | Promise<boolean>
 type TriggerEmoteHandler = (request: TriggerEmoteRequest) => boolean
 type TriggerSceneEmoteHandler = (request: TriggerSceneEmoteRequest) => boolean
 type OpenExternalUrlHandler = (request: OpenExternalUrlRequest) => boolean
@@ -248,6 +254,9 @@ export class SceneScriptSystem {
   /** Scene LiveKit remote video (stream-key ingress and/or Cast). */
   private isLiveKitRemoteLive: () => boolean = () => false
   private movePlayerHandler: MovePlayerHandler | null = null
+  private teleportToHandler: TeleportToHandler | null = null
+  private changeRealmHandler: ChangeRealmHandler | null = null
+  private copyToClipboardHandler: CopyToClipboardHandler | null = null
   private triggerEmoteHandler: TriggerEmoteHandler | null = null
   private triggerSceneEmoteHandler: TriggerSceneEmoteHandler | null = null
   private openExternalUrlHandler: OpenExternalUrlHandler | null = null
@@ -1027,6 +1036,18 @@ export class SceneScriptSystem {
     this.movePlayerHandler = handler
   }
 
+  setTeleportToHandler(handler: TeleportToHandler | null): void {
+    this.teleportToHandler = handler
+  }
+
+  setChangeRealmHandler(handler: ChangeRealmHandler | null): void {
+    this.changeRealmHandler = handler
+  }
+
+  setCopyToClipboardHandler(handler: CopyToClipboardHandler | null): void {
+    this.copyToClipboardHandler = handler
+  }
+
   /**
    * After RestrictedActions.movePlayerTo (Flagtag drown / round reset) — ensure worker
    * cooperative ticks are not left paused by a prior UI mount lag, so scene systems can
@@ -1467,6 +1488,37 @@ export class SceneScriptSystem {
         type: 'move-player-to-response',
         id: msg.id,
         body: { success } satisfies MovePlayerToResponse
+      } satisfies MainToWorker)
+      return
+    }
+    if (msg.type === 'teleport-to') {
+      const ok = (await this.teleportToHandler?.(msg.body)) ?? false
+      this.worker?.postMessage({
+        type: 'teleport-to-response',
+        id: msg.id,
+        body: {} satisfies TeleportToResponse
+      } satisfies MainToWorker)
+      // Fire-and-forget navigation; response is empty per SDK even if we log failures.
+      if (!ok) {
+        clientDebugLog.log('scene', 'teleportTo failed or unhandled', { level: 'warn' })
+      }
+      return
+    }
+    if (msg.type === 'change-realm') {
+      const success = (await this.changeRealmHandler?.(msg.body)) ?? false
+      this.worker?.postMessage({
+        type: 'change-realm-response',
+        id: msg.id,
+        body: { success } satisfies ChangeRealmResponse
+      } satisfies MainToWorker)
+      return
+    }
+    if (msg.type === 'copy-to-clipboard') {
+      await this.copyToClipboardHandler?.(msg.body)
+      this.worker?.postMessage({
+        type: 'copy-to-clipboard-response',
+        id: msg.id,
+        body: {} satisfies CopyToClipboardResponse
       } satisfies MainToWorker)
       return
     }

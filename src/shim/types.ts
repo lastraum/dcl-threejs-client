@@ -1,8 +1,11 @@
 import type { ResolvedScene, ContentFile } from '../dcl/content/types'
 import type { EngineApiEvent } from './engine/engineApiEvents'
+import type { ChangeRealmRequest, ChangeRealmResponse } from '../player/changeRealm'
+import type { CopyToClipboardRequest, CopyToClipboardResponse } from '../player/copyToClipboard'
 import type { MovePlayerToRequest, MovePlayerToResponse } from '../player/movePlayerTo'
 import type { OpenExternalUrlRequest, OpenExternalUrlResponse } from '../player/openExternalUrl'
 import type { OpenNftDialogRequest, OpenNftDialogResponse } from '../player/openNftDialog'
+import type { TeleportToRequest, TeleportToResponse } from '../player/teleportTo'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../player/triggerEmote'
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../player/triggerSceneEmote'
 import type { InjectPointerClickBody } from '../player/injectPointerClick'
@@ -93,6 +96,24 @@ export type SceneWorkerMovePlayerTo = {
   type: 'move-player-to'
   id: number
   body: MovePlayerToRequest
+}
+
+export type SceneWorkerTeleportTo = {
+  type: 'teleport-to'
+  id: number
+  body: TeleportToRequest
+}
+
+export type SceneWorkerChangeRealm = {
+  type: 'change-realm'
+  id: number
+  body: ChangeRealmRequest
+}
+
+export type SceneWorkerCopyToClipboard = {
+  type: 'copy-to-clipboard'
+  id: number
+  body: CopyToClipboardRequest
 }
 
 export type SceneWorkerTriggerEmote = {
@@ -221,6 +242,9 @@ export type SceneWorkerOutbound =
   | SceneWorkerCrdtRequest
   | SceneWorkerCrdtOutbound
   | SceneWorkerMovePlayerTo
+  | SceneWorkerTeleportTo
+  | SceneWorkerChangeRealm
+  | SceneWorkerCopyToClipboard
   | SceneWorkerTriggerEmote
   | SceneWorkerTriggerSceneEmote
   | SceneWorkerOpenExternalUrl
@@ -274,6 +298,9 @@ export type MainToWorker =
   | { type: 'crdt-response'; id: number; data: Uint8Array[] }
   | { type: 'crdt-get-state-response'; id: number; hasEntities: boolean; data: Uint8Array[] }
   | { type: 'move-player-to-response'; id: number; body: MovePlayerToResponse }
+  | { type: 'teleport-to-response'; id: number; body: TeleportToResponse }
+  | { type: 'change-realm-response'; id: number; body: ChangeRealmResponse }
+  | { type: 'copy-to-clipboard-response'; id: number; body: CopyToClipboardResponse }
   | { type: 'trigger-emote-response'; id: number; body: TriggerEmoteResponse }
   | { type: 'trigger-scene-emote-response'; id: number; body: TriggerSceneEmoteResponse }
   | { type: 'open-external-url-response'; id: number; body: OpenExternalUrlResponse }

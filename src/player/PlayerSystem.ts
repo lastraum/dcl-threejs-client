@@ -173,6 +173,13 @@ export class PlayerSystem {
   private spawnHoldSecLeft = 0
   private spawnHoldAuthoredFeetY: number | null = null
   private spawnHoldReprobeAcc = 0
+  /**
+   * Authored scene.json spawn for PlayerEntity/CameraEntity **before** the CCT exists.
+   * Without this, clientPoseProvider reports origin (y≈0) during script boot/hydration and
+   * Flagtag drown systems false-trigger then movePlayerTo the tower.
+   */
+  private stagedPlayerPose: EntityPose | null = null
+  private stagedCameraPose: EntityPose | null = null
   constructor(
     private readonly host: SceneHost,
     private readonly physics: PhysXWorld
@@ -182,11 +189,42 @@ export class PlayerSystem {
     this.host.scene.add(this.root)
   }
 
+  /**
+   * Publish spawn PE/camera for scene CRDT before the capsule exists.
+   * Place the avatar root at spawn feet so nothing reads origin mid-load.
+   */
+  stageSpawnPoses(player: EntityPose, camera: EntityPose, feetThree: THREE.Vector3): void {
+    this.stagedPlayerPose = {
+      position: player.position.clone(),
+      rotation: player.rotation.clone()
+    }
+    this.stagedCameraPose = {
+      position: camera.position.clone(),
+      rotation: camera.rotation.clone()
+    }
+    this.root.position.copy(feetThree)
+  }
+
+  clearStagedSpawnPoses(): void {
+    this.stagedPlayerPose = null
+    this.stagedCameraPose = null
+  }
+
+  isCapsuleReady(): boolean {
+    return this.enabled
+  }
+
   async initCapsule(
     spawn: SceneSpawn,
     walkBounds: PlayerWalkBounds,
     readComponents: MirrorComponents,
-    onProgress?: (msg: string) => void
+    onProgress?: (msg: string) => void,
+    /**
+     * Feet from successful pre-spawn floor wait (Three space). Prefer this over raw
+     * scene.json Y so elevated towers (Flagtag) land on the deck instead of hovering
+     * at authored spawn + clearance when re-settle misses.
+     */
+    provenFeetThree?: THREE.Vector3 | null
   ): Promise<void> {
     this.readComponents = readComponents
     this.walkBounds = walkBounds
@@ -197,18 +235,26 @@ export class PlayerSystem {
       : spawn.y <= 0.01
         ? DEFAULT_SPAWN_FEET_Y
         : spawn.y
-    const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
+    const authoredThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
+    // Start CCT near proven deck when available, but band-check always uses authored spawn Y
+    // so a bad high probe cannot re-center the accept band upward (Flagtag roof float).
+    const spawnThree =
+      provenFeetThree && Number.isFinite(provenFeetThree.y)
+        ? new THREE.Vector3(authoredThree.x, provenFeetThree.y, authoredThree.z)
+        : authoredThree
+    // Keep root on spawn while CCT creates — never report origin to the scene.
+    this.root.position.copy(spawnThree)
     this.physics.spawnPlayer(spawnThree)
     this.physics.warmStaticScene()
-    // Lift + capped settle + optional sweep probe onto authored scene colliders only.
-    const settled = this.physics.settleSpawnOntoFloor(spawnThree.y)
+    const settleRefY = authoredThree.y
+    const settled = this.physics.settleSpawnOntoFloor(settleRefY)
     this.grounded = settled
     this.groundCoyote = settled ? 0.12 : 0
     if (!settled) {
-      // World already waited for floor; keep a short re-probe if still mid-air — no pad.
+      // Parked near probe or lift — short re-probe only; do not long-float at air Y.
       this.spawnHoldFeetY = this.physics.positionOut.y
-      this.spawnHoldAuthoredFeetY = spawnThree.y
-      this.spawnHoldSecLeft = spawnThree.y > 8 ? 20 : 8
+      this.spawnHoldAuthoredFeetY = settleRefY
+      this.spawnHoldSecLeft = settleRefY > 8 ? 6 : 3
       this.spawnHoldReprobeAcc = 0
     } else {
       this.spawnHoldFeetY = null
@@ -234,10 +280,13 @@ export class PlayerSystem {
 
     this.root.position.copy(this.physics.positionOut)
     this.syncCamera(true)
+    this.clearStagedSpawnPoses()
     const feet = this.physics.positionOut
     console.info(
       `[player] spawn settled — feet=(${feet.x.toFixed(1)}, ${feet.y.toFixed(2)}, ${feet.z.toFixed(1)})` +
-        ` authoredY=${spawnThree.y.toFixed(2)} grounded=${settled}`
+        ` authoredY=${authoredThree.y.toFixed(2)}` +
+        (provenFeetThree ? ` provenY=${provenFeetThree.y.toFixed(2)}` : '') +
+        ` grounded=${settled}`
     )
     onProgress?.('Player ready')
   }
@@ -325,6 +374,7 @@ export class PlayerSystem {
     this.avatar?.dispose()
     this.avatar = null
     this.enabled = false
+    this.clearStagedSpawnPoses()
     this.host.setOrbitEnabled(true)
   }
 
@@ -336,11 +386,20 @@ export class PlayerSystem {
 
   /** SDK7 `Transform.get(PlayerEntity).position` — chest height in scene-relative DCL meters. */
   getPlayerEntityPositionDcl(): THREE.Vector3 {
+    if (!this.enabled && this.stagedPlayerPose) {
+      return this.stagedPlayerPose.position.clone()
+    }
     return playerEntityPositionFromThreeFeet(this.root.position)
   }
 
   /** PlayerEntity pose for CRDT / scene reads — rotation uses immediate wire yaw, not smoothed body turn. */
   getEntityPose(): EntityPose {
+    if (!this.enabled && this.stagedPlayerPose) {
+      return {
+        position: this.stagedPlayerPose.position.clone(),
+        rotation: this.stagedPlayerPose.rotation.clone()
+      }
+    }
     return {
       position: this.getPlayerEntityPositionDcl(),
       rotation: threeToDclQuat(ReservedEntitiesSync.playerRotationFromYaw(this.getNetworkYaw()))
@@ -588,6 +647,12 @@ export class PlayerSystem {
   }
 
   getCameraEntityPose(): EntityPose {
+    if (!this.enabled && this.stagedCameraPose) {
+      return {
+        position: this.stagedCameraPose.position.clone(),
+        rotation: this.stagedCameraPose.rotation.clone()
+      }
+    }
     return ReservedEntitiesSync.cameraPose(this.host.camera)
   }
 
@@ -789,12 +854,14 @@ export class PlayerSystem {
         this.spawnHoldSecLeft = 0
         this.spawnHoldReprobeAcc = 0
       } else if (this.spawnHoldFeetY != null) {
-        // Soft hold only until authored colliders respond — no synthetic pad.
+        // Soft hold until colliders respond — no synthetic pad.
+        // Zero fall velocity so we do not freefall off tower; allow CCT to walk on XZ.
         if (_velocity.y < 0) _velocity.y = 0
-        if (this.spawnHoldReprobeAcc >= 0.45 && this.spawnHoldAuthoredFeetY != null) {
+        if (this.spawnHoldReprobeAcc >= 0.35 && this.spawnHoldAuthoredFeetY != null) {
           this.spawnHoldReprobeAcc = 0
           this.physics.warmStaticScene()
-          if (this.physics.settleSpawnOntoFloor(this.spawnHoldAuthoredFeetY)) {
+          const holdAuthY = this.spawnHoldAuthoredFeetY
+          if (this.physics.settleSpawnOntoFloor(holdAuthY)) {
             this.grounded = true
             this.groundCoyote = 0.12
             this.spawnHoldFeetY = null
@@ -805,10 +872,32 @@ export class PlayerSystem {
               `[player] spawn hold re-probe grounded — feet y=${this.physics.positionOut.y.toFixed(2)}`
             )
           } else {
-            this.spawnHoldFeetY = this.physics.positionOut.y
+            // Never pull hold Y up to lift after a failed settle (causes float + later dive).
+            // Track probe deck when available; keep previous hold otherwise.
+            const px = this.physics.positionOut.x
+            const pz = this.physics.positionOut.z
+            const probed = this.physics.probeWalkSurfaceFeetY(
+              px,
+              pz,
+              holdAuthY + 1.2,
+              8,
+              holdAuthY
+            )
+            if (probed != null) {
+              this.spawnHoldFeetY = probed
+              // If still hovering well above deck, ease down to probe (no hard dive snap).
+              const curY = this.physics.positionOut.y
+              if (curY > probed + 0.85) {
+                const eased = curY - Math.min(curY - probed - 0.1, 1.25)
+                _tmpSpawnHold.set(px, eased, pz)
+                this.physics.teleport(_tmpSpawnHold)
+                this.root.position.copy(this.physics.positionOut)
+              }
+            }
           }
         }
-        if (this.spawnHoldFeetY != null && this.physics.positionOut.y < this.spawnHoldFeetY - 0.35) {
+        // Only block freefall below hold — do not Y-lock when walking on surface.
+        if (this.spawnHoldFeetY != null && this.physics.positionOut.y < this.spawnHoldFeetY - 0.55) {
           _tmpSpawnHold.set(
             this.physics.positionOut.x,
             this.spawnHoldFeetY,
@@ -1169,7 +1258,7 @@ export class PlayerSystem {
       if (!settled) {
         this.spawnHoldFeetY = this.physics.positionOut.y
         this.spawnHoldAuthoredFeetY = positionThree.y
-        this.spawnHoldSecLeft = positionThree.y > 8 ? 15 : 6
+        this.spawnHoldSecLeft = positionThree.y > 8 ? 6 : 3
         this.spawnHoldReprobeAcc = 0
       } else {
         this.spawnHoldFeetY = null

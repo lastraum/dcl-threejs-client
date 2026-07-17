@@ -12,7 +12,7 @@ import { SceneHost } from '../rendering/SceneHost'
 import { setSceneNameTagsVisible } from '../client/ui/nameTagVisibility'
 
 import { GLTF_COLLIDER_ENTITY_BASE } from '../collision/GltfColliderExtractor'
-import { PhysXWorld } from '../physics/PhysXWorld'
+import { isPlausibleSpawnSurfaceY, PhysXWorld } from '../physics/PhysXWorld'
 import { PlayerSystem } from '../player/PlayerSystem'
 import {
   islandCircularWalkBounds,
@@ -66,7 +66,11 @@ import { feetDclToPlayerEntityPosition } from '../player/dclPlayerEntity'
 import type { PhysicsColliderDesc } from '../physics/PhysXWorld'
 
 import { openExternalUrl } from '../player/openExternalUrl'
+import { confirmChangeRealm, parseChangeRealmTarget } from '../player/changeRealm'
+import { copyToClipboard } from '../player/copyToClipboard'
 import { openNftDialog } from '../player/openNftDialog'
+import { parseTeleportParcel } from '../player/teleportTo'
+import type { RouteTarget } from '../dcl/content/route'
 import { ReservedEntitiesSync } from '../bridge/ReservedEntitiesSync'
 import { waitForSceneAssets, type WaitForSceneAssetsOptions } from '../rendering/sceneHydration'
 import { LightManager } from '../rendering/LightManager'
@@ -124,6 +128,10 @@ export class World {
   private readonly vrmPeerSync = new VrmPeerSync()
   private playerMode = !useOrbitMode()
   private editorPreviewMode = false
+  /** AppController — RestrictedActions teleportTo / changeRealm. */
+  private navigateHandler:
+    | ((target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>) => void)
+    | null = null
   private lastGltfColliderCount = 0
   private loggedGltfPhysMismatch = false
   private collidersPhysLastLog = 0
@@ -567,6 +575,25 @@ export class World {
       )
       this.sceneScript.setOpenExternalUrlHandler((request) => openExternalUrl(request))
       this.sceneScript.setOpenNftDialogHandler((request) => openNftDialog(request))
+      this.sceneScript.setCopyToClipboardHandler((request) => copyToClipboard(request))
+      this.sceneScript.setTeleportToHandler((request) => {
+        const parcel = parseTeleportParcel(request)
+        if (!parcel) return false
+        this.navigateHandler?.({
+          kind: 'coords',
+          x: parcel.x,
+          y: parcel.y,
+          segment: `${parcel.x},${parcel.y}`
+        })
+        return true
+      })
+      this.sceneScript.setChangeRealmHandler((request) => {
+        if (!confirmChangeRealm(request)) return false
+        const target = parseChangeRealmTarget(request.realm)
+        if (!target) return false
+        this.navigateHandler?.(target)
+        return true
+      })
     }
 
     this.bindLandscapeColliders(openIslandShore)
@@ -632,6 +659,13 @@ export class World {
     if (scene.mainEntry && scene.entityId) {
       onProgress?.('Compiling scene script…')
       const spawnPoses = this.seedPosesFromSpawn(scene.spawn)
+      // Stage before worker boot so scene onStart / systems never read PE at origin
+      // (Flagtag drown UI false-trigger → movePlayerTo tower).
+      this.player?.stageSpawnPoses(spawnPoses.player, spawnPoses.camera, spawnPoses.feetThree)
+      console.info(
+        `[World] staged PE spawn before script boot — feet three=(${spawnPoses.feetThree.x.toFixed(1)}, ${spawnPoses.feetThree.y.toFixed(2)}, ${spawnPoses.feetThree.z.toFixed(1)})` +
+          ` peY=${spawnPoses.player.position.y.toFixed(2)}`
+      )
       this.sceneScript.seedRendererEntities(spawnPoses.player, spawnPoses.camera)
       this.sceneScript.setBootProgressReporter((msg) => onProgress?.(msg))
       try {
@@ -809,7 +843,7 @@ export class World {
     }
 
     // Hold avatar + CCT out of the scene until authored colliders solidly under spawn.
-    await this.waitForSpawnFloorReady(scene.spawn, onProgress)
+    const provenFeet = await this.waitForSpawnFloorReady(scene.spawn, onProgress)
 
     onProgress?.('Loading avatar…')
     this.player.setAssetCache(this.assets, scene.realm.contentUrl)
@@ -825,7 +859,13 @@ export class World {
     await this.drainPendingColliderCooksInitialOnly()
     this.pushAllColliderPosesToPhysX()
     this.physics.warmStaticScene()
-    await this.player.initCapsule(scene.spawn, walkBounds, this.sceneScript.readComponents, onProgress)
+    await this.player.initCapsule(
+      scene.spawn,
+      walkBounds,
+      this.sceneScript.readComponents,
+      onProgress,
+      provenFeet
+    )
     this.sceneScript.setVirtualCameraPoseProviders(
       () => this.player!.getEntityPose(),
       () => this.player!.getCameraEntityPose()
@@ -907,10 +947,19 @@ export class World {
     })
   }
 
-  private seedPosesFromSpawn(spawn: { x: number; y: number; z: number }) {
-    const feetDcl = new THREE.Vector3(spawn.x, spawn.y, spawn.z)
+  private seedPosesFromSpawn(spawn: {
+    x: number
+    y: number
+    z: number
+    fromSpawnPoints?: boolean
+  }) {
+    // Match initCapsule / waitForSpawnFloorReady feet Y (no-spawn-points floor fallback).
+    const feetY =
+      spawn.fromSpawnPoints === true ? spawn.y : spawn.y <= 0.01 ? 1 : spawn.y
+    const feetDcl = new THREE.Vector3(spawn.x, feetY, spawn.z)
     const playerEntityDcl = feetDclToPlayerEntityPosition(feetDcl)
     const rotation = ReservedEntitiesSync.playerRotationFromYaw(0)
+    const feetThree = dclToThreeVec(feetDcl.clone())
     return {
       player: {
         position: playerEntityDcl,
@@ -919,7 +968,8 @@ export class World {
       camera: {
         position: feetDcl.clone(),
         rotation
-      }
+      },
+      feetThree
     }
   }
 
@@ -1556,11 +1606,12 @@ export class World {
   /**
    * Gate play until a temporary CCT can stand on authored geometry at scene.json spawn.
    * No synthetic pad — keeps pose-sliding / cooking until settle succeeds or timeout.
+   * @returns grounded feet (Three space) for final capsule spawn, or null on timeout.
    */
   private async waitForSpawnFloorReady(
     spawn: ResolvedScene['spawn'],
     onProgress?: (msg: string) => void
-  ): Promise<void> {
+  ): Promise<THREE.Vector3 | null> {
     const feetY = spawn.fromSpawnPoints ? spawn.y : spawn.y <= 0.01 ? 1 : spawn.y
     const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
     const elevated = spawnThree.y > 8
@@ -1568,6 +1619,7 @@ export class World {
     const started = performance.now()
     let attempt = 0
     let lastProgressLog = 0
+    let lastProbeFeet: THREE.Vector3 | null = null
 
     onProgress?.('Waiting for floor colliders…')
     console.info(
@@ -1585,26 +1637,34 @@ export class World {
       this.pushAllColliderPosesToPhysX()
       this.physics.warmStaticScene()
 
+      // Prefer deck near authored Y — never the highest roof/arch hit.
       const probed = this.physics.probeWalkSurfaceFeetY(
         spawnThree.x,
         spawnThree.z,
         spawnThree.y + 1.2,
-        8
+        8,
+        spawnThree.y
       )
-      const probeOk =
-        probed != null && probed >= spawnThree.y - 2.5 && probed <= spawnThree.y + 4
+      const probeOk = probed != null && isPlausibleSpawnSurfaceY(probed, spawnThree.y)
+      if (probeOk && probed != null) {
+        lastProbeFeet = new THREE.Vector3(spawnThree.x, probed, spawnThree.z)
+      }
 
       // CCT is the real gate — sweep alone can hit thin/wrong shapes.
-      const settled = this.physics.trySettleAtPosition(spawnThree, spawnThree.y)
-      if (settled) {
+      const settledFeet = this.physics.trySettleAtPosition(spawnThree, spawnThree.y)
+      if (
+        settledFeet &&
+        isPlausibleSpawnSurfaceY(settledFeet.y, spawnThree.y)
+      ) {
         const elapsed = ((performance.now() - started) / 1000).toFixed(1)
         console.info(
           `[World] spawn floor ready — CCT grounded after ${elapsed}s (attempts=${attempt}` +
+            `, feetY=${settledFeet.y.toFixed(2)}` +
             (probed != null ? `, probeY=${probed.toFixed(2)}` : '') +
             ')'
         )
         onProgress?.('Floor ready')
-        return
+        return settledFeet
       }
 
       const now = performance.now()
@@ -1633,6 +1693,8 @@ export class World {
     )
     this.physics.logStaticCollidersNear(spawnThree.x, spawnThree.y, spawnThree.z, 16)
     onProgress?.('Floor wait timed out — spawning…')
+    // Prefer last walk-surface probe over raw authored air spawn.
+    return lastProbeFeet
   }
 
   /**
@@ -2315,6 +2377,13 @@ export class World {
 
   cancelCameraPointer(): void {
     this.player?.cancelCameraPointer()
+  }
+
+  /** RestrictedActions teleportTo / changeRealm → AppController navigation. */
+  setNavigateHandler(
+    handler: ((target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>) => void) | null
+  ): void {
+    this.navigateHandler = handler
   }
 
   getRemoteAvatarManager(): RemoteAvatarManager | null {

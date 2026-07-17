@@ -83,15 +83,23 @@ const HARD_FLOOR_Y = 0
  */
 const SPAWN_FEET_CLEARANCE_M = 0.12
 /**
- * Max feet drop during CCT settle (metres). Keep modest so thin tower floors
- * are not punched through; sweep probe can look a bit further (see below).
+ * Max feet drop during a single CCT settle pass (metres). Keep modest so thin
+ * tower floors are not punched through; probe-first path lands near the deck.
  */
-const SPAWN_SETTLE_MAX_DROP_M = 1.15
+const SPAWN_SETTLE_MAX_DROP_M = 1.35
+/** Elevated decks only: allow a longer CCT drop when probe misses but floor is below. */
+const SPAWN_SETTLE_ELEVATED_MAX_DROP_M = 3.25
 /**
  * Sweep search under authored feet when CCT settle fails.
  * Flagtag tower: deck may sit slightly below spawn or only exist at nearby XZ samples.
  */
 const SPAWN_PROBE_MAX_DROP_M = 8
+/**
+ * Accept settled feet only within this band of authored spawn Y.
+ * Reject roof/arch false-grounds (Flagtag upper shell) and deep freefall hits.
+ */
+const SPAWN_ACCEPT_ABOVE_AUTHORED_M = 0.55
+const SPAWN_ACCEPT_BELOW_AUTHORED_M = 6.5
 /** XZ offsets for multi-sample floor probe (deck edge / range spawn). */
 const SPAWN_PROBE_XZ_OFFSETS_M: ReadonlyArray<readonly [number, number]> = [
   [0, 0],
@@ -106,6 +114,14 @@ const SPAWN_PROBE_XZ_OFFSETS_M: ReadonlyArray<readonly [number, number]> = [
 ]
 const SPAWN_SETTLE_DT = 1 / 30
 const SPAWN_SETTLE_GRAVITY = 20
+
+/** Shared with World spawn-floor wait so probe/CCT use the same deck band. */
+export function isPlausibleSpawnSurfaceY(surfaceY: number, authoredFeetY: number): boolean {
+  return (
+    surfaceY <= authoredFeetY + SPAWN_ACCEPT_ABOVE_AUTHORED_M &&
+    surfaceY >= authoredFeetY - SPAWN_ACCEPT_BELOW_AUTHORED_M
+  )
+}
 
 export type ControllerMoveResult = {
   grounded: boolean
@@ -340,13 +356,19 @@ export class PhysXWorld {
   /**
    * Temporary CCT at `position` — settle onto authored floor, then destroy controller.
    * Used to gate visual avatar spawn until tower decks actually block the capsule.
+   * @returns grounded feet world position, or null if settle failed.
    */
-  trySettleAtPosition(position: THREE.Vector3, authoredFeetY: number): boolean {
+  trySettleAtPosition(position: THREE.Vector3, authoredFeetY: number): THREE.Vector3 | null {
     this.spawnPlayer(position)
     this.warmStaticScene()
     const settled = this.settleSpawnOntoFloor(authoredFeetY)
+    if (!settled) {
+      this.releasePlayer()
+      return null
+    }
+    const feet = this.positionOut.clone()
     this.releasePlayer()
-    return settled
+    return feet
   }
 
   /** Wireframe pill matching the local player PhysX capsule. */
@@ -614,88 +636,101 @@ export class PhysXWorld {
    * Nudge the capsule onto a walk surface after statics are registered.
    * Call after `warmStaticScene()` / collider seal.
    *
-   * 1) Short CCT drop (safe for thin floors)
-   * 2) If that fails, downward scene sweep for a walkable hit and snap feet onto it
-   * 3) Else restore to lifted authored Y (caller may hold / re-probe)
+   * 1) Scene sweep nearest authored Y (deck — not roof)
+   * 2) Short CCT drop from that surface
+   * 3) Short CCT drop from authored lift
+   * 4) Elevated only: longer CCT drop from lift
    *
-   * @param authoredFeetY — scene.json spawn feet Y (Three/world space, same as spawnPlayer input)
-   * @returns true if CCT reported ground contact or sweep snapped onto a solid
+   * Only returns true on real CCT ground contact inside the authored band.
+   * Never soft-accepts a floating Y (that caused Flagtag hover + dip on move).
+   *
+   * @param authoredFeetY — scene.json spawn feet Y (Three/world space)
+   * @returns true if CCT reported ground contact on a plausible surface
    */
   settleSpawnOntoFloor(authoredFeetY: number): boolean {
     if (!this.controller) return false
     const liftY = authoredFeetY + SPAWN_FEET_CLEARANCE_M
-    const floorMinY = authoredFeetY - 0.08
-    const dropFloorY = liftY - SPAWN_SETTLE_MAX_DROP_M
     const feetX = this.position.x
     const feetZ = this.position.z
-
-    // Always start from clear lift so re-probes are deterministic.
-    this._v1.set(feetX, liftY, feetZ)
-    this.teleport(this._v1)
-    this.invalidateControllerCache()
-    this.warmStaticScene()
-
     // Dedicated vector — movePlayer mutates `_v1` as stepDisp; must not alias.
     const drop = new THREE.Vector3()
-    let grounded = false
-    const maxSteps = Math.ceil(SPAWN_SETTLE_MAX_DROP_M / (SPAWN_SETTLE_GRAVITY * SPAWN_SETTLE_DT)) + 2
-    for (let i = 0; i < maxSteps; i++) {
-      if (this.position.y <= dropFloorY) break
-      drop.set(0, -SPAWN_SETTLE_GRAVITY * SPAWN_SETTLE_DT, 0)
-      const result = this.movePlayer(drop, SPAWN_SETTLE_DT)
-      grounded = result.grounded
-      if (grounded) break
-    }
 
-    if (grounded && this.position.y >= floorMinY) {
+    const tryCctDropFrom = (startY: number, maxDrop: number): boolean => {
+      this._v1.set(feetX, startY, feetZ)
+      this.teleport(this._v1)
       this.invalidateControllerCache()
-      return true
+      this.warmStaticScene()
+      const dropFloorY = startY - maxDrop
+      const maxSteps = Math.ceil(maxDrop / (SPAWN_SETTLE_GRAVITY * SPAWN_SETTLE_DT)) + 2
+      for (let i = 0; i < maxSteps; i++) {
+        if (this.position.y <= dropFloorY) break
+        drop.set(0, -SPAWN_SETTLE_GRAVITY * SPAWN_SETTLE_DT, 0)
+        const result = this.movePlayer(drop, SPAWN_SETTLE_DT)
+        if (!result.grounded) continue
+        if (isPlausibleSpawnSurfaceY(this.position.y, authoredFeetY)) {
+          this.invalidateControllerCache()
+          return true
+        }
+        clientDebugLog.log(
+          'player',
+          `spawn settle reject CCT ground y=${this.position.y.toFixed(2)} (authored ${authoredFeetY.toFixed(2)}) — likely roof/arch`,
+          { alsoConsole: true, level: 'warn' }
+        )
+        return false
+      }
+      return false
     }
 
-    // CCT missed — multi-sample scene query (spawn range / deck edge / thin mesh).
+    // Prefer surface nearest authored Y (deck), not absolute highest hit (roofs).
     const probed = this.probeWalkSurfaceFeetY(
       feetX,
       feetZ,
       liftY + 0.4,
-      SPAWN_PROBE_MAX_DROP_M
+      SPAWN_PROBE_MAX_DROP_M,
+      authoredFeetY
     )
-    if (probed != null && probed >= authoredFeetY - SPAWN_PROBE_MAX_DROP_M) {
-      this._v1.set(feetX, probed + SPAWN_FEET_CLEARANCE_M, feetZ)
-      this.teleport(this._v1)
-      this.invalidateControllerCache()
-      // Tiny settle onto the probed surface
-      for (let i = 0; i < 6; i++) {
-        drop.set(0, -SPAWN_SETTLE_GRAVITY * SPAWN_SETTLE_DT, 0)
-        const result = this.movePlayer(drop, SPAWN_SETTLE_DT)
-        if (result.grounded) {
-          this.invalidateControllerCache()
-          clientDebugLog.log(
-            'player',
-            `spawn settle probe snap — feet y=${this.position.y.toFixed(2)} (authored ${authoredFeetY.toFixed(2)})`,
-            { alsoConsole: true, level: 'info' }
-          )
-          return true
-        }
+
+    if (probed != null && isPlausibleSpawnSurfaceY(probed, authoredFeetY)) {
+      if (tryCctDropFrom(probed + SPAWN_FEET_CLEARANCE_M, SPAWN_SETTLE_MAX_DROP_M)) {
+        clientDebugLog.log(
+          'player',
+          `spawn settle probe+CCT — feet y=${this.position.y.toFixed(2)} (authored ${authoredFeetY.toFixed(2)}, probe ${probed.toFixed(2)})`,
+          { alsoConsole: true, level: 'info' }
+        )
+        return true
       }
-      // Snap without CCT ground flag still better than freefall — hold at probed height.
-      this._v1.set(feetX, probed + SPAWN_FEET_CLEARANCE_M * 0.5, feetZ)
-      this.teleport(this._v1)
-      this.invalidateControllerCache()
+    }
+
+    if (tryCctDropFrom(liftY, SPAWN_SETTLE_MAX_DROP_M)) {
       clientDebugLog.log(
         'player',
-        `spawn settle probe hold — surface y=${probed.toFixed(2)} (no CCT ground flag)`,
-        { alsoConsole: true, level: 'warn' }
+        `spawn settle lift+CCT — feet y=${this.position.y.toFixed(2)} (authored ${authoredFeetY.toFixed(2)})`,
+        { alsoConsole: true, level: 'info' }
       )
       return true
     }
 
-    // No authored solid under spawn — restore height; no synthetic pad.
-    this._v1.set(feetX, liftY, feetZ)
+    if (authoredFeetY > 8 && tryCctDropFrom(liftY, SPAWN_SETTLE_ELEVATED_MAX_DROP_M)) {
+      clientDebugLog.log(
+        'player',
+        `spawn settle elevated drop — feet y=${this.position.y.toFixed(2)} (authored ${authoredFeetY.toFixed(2)})`,
+        { alsoConsole: true, level: 'info' }
+      )
+      return true
+    }
+
+    // Best-effort place near probe for next wait/re-probe — do NOT claim grounded.
+    const restoreY =
+      probed != null && isPlausibleSpawnSurfaceY(probed, authoredFeetY)
+        ? probed + SPAWN_FEET_CLEARANCE_M * 0.5
+        : liftY
+    this._v1.set(feetX, restoreY, feetZ)
     this.teleport(this._v1)
     this.invalidateControllerCache()
     clientDebugLog.log(
       'player',
-      `spawn settle restore — no solid within ${SPAWN_PROBE_MAX_DROP_M}m of y=${authoredFeetY.toFixed(2)}; held at y=${liftY.toFixed(2)}`,
+      `spawn settle pending — no CCT ground near y=${authoredFeetY.toFixed(2)}; parked y=${restoreY.toFixed(2)}` +
+        (probed != null ? ` probe=${probed.toFixed(2)}` : ' probe=none'),
       { alsoConsole: true, level: 'warn' }
     )
     return false
@@ -704,22 +739,36 @@ export class PhysXWorld {
   /**
    * Downward sphere sweep for a walkable hit under (x,z), multi-sample XZ.
    * Returns world feet Y (hit point Y) or null.
+   *
+   * When `preferNearY` is set, pick the hit closest to that Y (Flagtag deck), not the
+   * absolute highest (roofs / arches above the play surface).
    */
   probeWalkSurfaceFeetY(
     x: number,
     z: number,
     fromY: number,
-    maxDrop: number
+    maxDrop: number,
+    preferNearY?: number
   ): number | null {
     if (!this.scene || maxDrop <= 0.2) return null
     this.ensureCameraSweepGeometry()
     if (!this.cameraSweepGeometry) return null
 
     let bestY: number | null = null
+    let bestScore = Number.POSITIVE_INFINITY
     for (const [ox, oz] of SPAWN_PROBE_XZ_OFFSETS_M) {
-      const sample = this.probeWalkSurfaceFeetYAt(x + ox, z + oz, fromY, maxDrop)
+      const sample = this.probeWalkSurfaceFeetYAt(x + ox, z + oz, fromY, maxDrop, preferNearY)
       if (sample == null) continue
-      if (bestY === null || sample > bestY) bestY = sample
+      if (preferNearY != null && Number.isFinite(preferNearY)) {
+        if (!isPlausibleSpawnSurfaceY(sample, preferNearY)) continue
+        const score = Math.abs(sample - preferNearY)
+        if (score < bestScore) {
+          bestScore = score
+          bestY = sample
+        }
+      } else if (bestY === null || sample > bestY) {
+        bestY = sample
+      }
     }
     return bestY
   }
@@ -728,7 +777,8 @@ export class PhysXWorld {
     x: number,
     z: number,
     fromY: number,
-    maxDrop: number
+    maxDrop: number,
+    preferNearY?: number
   ): number | null {
     if (!this.scene || !this.cameraSweepGeometry) return null
 
@@ -754,13 +804,23 @@ export class PhysXWorld {
 
     const nbHits = this.sweepResult.getNbAnyHits?.() ?? 1
     let bestY: number | null = null
+    let bestScore = Number.POSITIVE_INFINITY
     for (let i = 0; i < nbHits; i++) {
       const hit = this.sweepResult.getAnyHit(i)
       const ny = hit.normal?.y ?? 0
       // Walk surface: mostly upward normal
       if (ny < 0.45) continue
       const hitY = fromY - hit.distance
-      if (bestY === null || hitY > bestY) bestY = hitY
+      if (preferNearY != null && Number.isFinite(preferNearY)) {
+        if (!isPlausibleSpawnSurfaceY(hitY, preferNearY)) continue
+        const score = Math.abs(hitY - preferNearY)
+        if (score < bestScore) {
+          bestScore = score
+          bestY = hitY
+        }
+      } else if (bestY === null || hitY > bestY) {
+        bestY = hitY
+      }
     }
     return bestY
   }

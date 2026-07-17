@@ -1276,6 +1276,9 @@ export class AppController {
     const world = new World(this.container)
     this.world = world
     world.applyLogin(this.login)
+    world.setNavigateHandler((target) => {
+      void this.jumpInToScene(target, { fastAssets: true })
+    })
 
     this.profileUi?.dispose()
     this.profileUi = new ProfileUiController({

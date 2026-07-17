@@ -47,9 +47,9 @@
         --client-panel-max-w: min(420px, calc(100vw - var(--client-safe-left) - var(--client-safe-right)));
         --client-hud-max-w: min(324px, calc(100vw - var(--client-safe-left) - var(--client-safe-right) - 16px));
         --client-chat-max-h: min(580px, calc(100vh - var(--client-safe-top) - var(--client-safe-bottom) - 96px));
-        /* Bottom-right scene chat toggle (panel stacks above this). */
-        --scene-chat-fab-size: 64px;
-        --scene-chat-fab-gap: 12px;
+        /* 3D mobile chat FAB only (desktop chat is bottom-left; 2D social uses its own FAB). */
+        --scene-chat-fab-size: 48px;
+        --scene-chat-fab-gap: 10px;
         --client-ui-font-sm: clamp(11px, 0.7rem + 0.15vw, 12px);
         --client-ui-font-md: clamp(13px, 0.8rem + 0.2vw, 15px);
         /* Site-wide DCL jump-site backdrop — shell pages + terrain editor hub */
@@ -1384,10 +1384,7 @@
         .mobile-game-hud {
           position: fixed;
           right: max(12px, env(safe-area-inset-right, 0px));
-          /* Sit above the bottom-right chat FAB so jump/interact stay reachable. */
-          bottom: calc(
-            max(12px, env(safe-area-inset-bottom, 0px)) + var(--scene-chat-fab-size) + var(--scene-chat-fab-gap)
-          );
+          bottom: max(12px, env(safe-area-inset-bottom, 0px));
           z-index: var(--z-client-hud-raised);
           display: flex;
           flex-direction: column;
@@ -1463,9 +1460,6 @@
           image-rendering: pixelated;
           background: #2a2a34;
         }
-        .client-mobile {
-          --scene-chat-fab-size: 56px;
-        }
         .client-mobile-drawer-backdrop {
           position: fixed;
           inset: 0;
@@ -1473,14 +1467,28 @@
           background: rgba(0, 0, 0, 0.45);
           pointer-events: auto;
         }
-        .client-mobile .chat-panel-wrap {
+        /* 3D mobile: bottom-left chat FAB; panel sits to its right. */
+        .client-mobile .scene-chat-fab {
           left: max(12px, env(safe-area-inset-left, 0px));
-          right: max(12px, env(safe-area-inset-right, 0px));
+          right: auto;
+          bottom: max(12px, env(safe-area-inset-bottom, 0px));
+          width: var(--scene-chat-fab-size);
+          height: var(--scene-chat-fab-size);
+          border-radius: 14px;
+        }
+        .client-mobile .scene-chat-fab__icon svg {
+          width: 22px;
+          height: 22px;
+        }
+        .client-mobile .chat-panel-wrap {
+          left: calc(max(12px, env(safe-area-inset-left, 0px)) + var(--scene-chat-fab-size) + var(--scene-chat-fab-gap));
+          right: var(--client-safe-right);
           bottom: calc(
             max(12px, env(safe-area-inset-bottom, 0px)) + var(--scene-chat-fab-size) + var(--scene-chat-fab-gap)
           );
           width: auto;
           height: var(--client-chat-max-h);
+          transform-origin: bottom left;
         }
         .client-mobile .chat-panel {
           width: 100%;
@@ -2626,37 +2634,28 @@
         }
       }
 
-      /* Scene chat FAB — bottom-right expand / collapse */
+      /* 3D mobile chat FAB — bottom-left (hidden on desktop via ClientShell). */
       .scene-chat-fab {
         position: fixed;
-        right: var(--client-safe-right);
-        bottom: var(--client-safe-bottom);
+        left: max(12px, env(safe-area-inset-left, 0px));
+        right: auto;
+        bottom: max(12px, env(safe-area-inset-bottom, 0px));
         z-index: var(--z-client-hud-raised);
         width: var(--scene-chat-fab-size);
         height: var(--scene-chat-fab-size);
         padding: 0;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 20px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 14px;
         background: rgba(28, 20, 16, 0.94);
-        color: rgba(255, 255, 255, 0.95);
-        box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+        color: rgba(255, 255, 255, 0.92);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
         cursor: pointer;
         pointer-events: auto;
-        transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
-      }
-      .scene-chat-fab:hover {
-        background: rgba(40, 30, 24, 0.98);
-        border-color: rgba(255, 255, 255, 0.22);
-        transform: translateY(-1px);
-      }
-      .scene-chat-fab:active {
-        transform: translateY(0);
+        transition: background 0.15s ease, border-color 0.15s ease;
       }
       .scene-chat-fab.is-active {
-        background: rgba(255, 68, 153, 0.22);
-        border-color: rgba(255, 100, 170, 0.55);
+        background: rgba(255, 255, 255, 0.14);
         color: #fff;
-        box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 100, 170, 0.2) inset;
       }
       .scene-chat-fab__icon {
         display: grid;
@@ -2665,35 +2664,34 @@
         height: 100%;
       }
       .scene-chat-fab__icon svg {
-        width: 32px;
-        height: 32px;
+        width: 22px;
+        height: 22px;
       }
       .scene-chat-fab__badge {
         position: absolute;
-        top: 6px;
-        right: 6px;
-        min-width: 18px;
-        height: 18px;
-        padding: 0 5px;
+        top: 4px;
+        right: 4px;
+        min-width: 14px;
+        height: 14px;
+        padding: 0 3px;
         border-radius: 999px;
         background: #ff2d87;
         color: #fff;
-        font-size: 10px;
-        font-weight: 800;
-        line-height: 18px;
+        font-size: 9px;
+        font-weight: 700;
+        line-height: 14px;
         text-align: center;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
       }
       .scene-chat-fab[hidden] {
         display: none !important;
       }
 
-      /* Chat — expands above the bottom-right FAB, channel rail on the right */
+      /* 3D in-world chat — compact bottom-left (sidebar / Enter), rail on the right of panel */
       .chat-panel-wrap {
         position: fixed;
-        left: auto;
-        right: var(--client-safe-right);
-        bottom: calc(var(--client-safe-bottom) + var(--scene-chat-fab-size) + var(--scene-chat-fab-gap));
+        left: var(--client-safe-left);
+        right: auto;
+        bottom: var(--client-safe-bottom);
         z-index: var(--z-client-hud-raised);
         display: flex;
         flex-direction: row;
@@ -2702,24 +2700,12 @@
         height: var(--client-chat-max-h);
         max-height: var(--client-chat-max-h);
         overflow: hidden;
-        transform-origin: bottom right;
-        animation: scene-chat-expand 0.16s ease-out;
         --chat-panel-bg: rgba(28, 20, 16, 0.94);
         --chat-panel-border: rgba(255, 255, 255, 0.1);
         --chat-panel-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
         --chat-rail-bg: rgba(20, 14, 12, 0.96);
         --chat-rail-border: rgba(255, 255, 255, 0.1);
         --chat-rail-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
-      }
-      @keyframes scene-chat-expand {
-        from {
-          opacity: 0;
-          transform: translateY(8px) scale(0.96);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0) scale(1);
-        }
       }
       .chat-panel-wrap.is-scene-mode {
         --chat-panel-bg: rgba(28, 20, 16, 0);

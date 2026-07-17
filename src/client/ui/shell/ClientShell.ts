@@ -237,6 +237,7 @@ export class ClientShell {
       this.setMobileDrawerOpen(!this.mobileDrawerOpen)
     })
 
+    // 3D mobile only — desktop uses left sidebar chat. 2D social shell has its own FAB.
     this.mobileChatFab = document.createElement('button')
     this.mobileChatFab.type = 'button'
     this.mobileChatFab.className = 'scene-chat-fab'
@@ -394,8 +395,8 @@ export class ClientShell {
     this.root.classList.toggle('client-shell--drawer', mobile)
     this.repositionProfileButton(mobile)
     this.mobileProfileFab.hidden = !mobile || this.root.hidden
-    // Big bottom-right chat toggle — desktop + mobile (collapsed until expanded).
-    this.mobileChatFab.hidden = this.root.hidden
+    // Bottom-left chat FAB only on mobile 3D; desktop opens chat from the left rail.
+    this.mobileChatFab.hidden = !mobile || this.root.hidden
     if (!mobile) {
       this.setMobileDrawerOpen(false)
       this.mobileLocationPill.hidden = true

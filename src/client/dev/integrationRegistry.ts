@@ -127,7 +127,7 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
     status: 'partial',
     category: 'client-ui',
     notes:
-      'Yoga + DOM · hit-map from layoutBoxes+layoutToScreen · UiInput/UiDropdown writeback · nine-slice/uvs/text-measure polish remain'
+      'Yoga + DOM · hit-map from layoutBoxes+layoutToScreen · nine-slice border-image (HTTP OK, natural size) · UiInput/UiDropdown writeback · uvs/text-measure polish remain'
   },
   { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'render', category: 'client-ui', notes: 'Explorer NEARBY VOICE: Hear others + Speak + hold T; mute-in-bg; name-tag bars; 3D PositionalAudio falloff' }
 ]

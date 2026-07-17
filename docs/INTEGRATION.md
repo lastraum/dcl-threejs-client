@@ -171,7 +171,7 @@ DOM overlay — not in-scene `UiTransform`.
 | Preferences: Controls, Chat tabs | 🟡 | Mouse sensitivity live; keybinds pending |
 | Settings: Communities | 🟢 | Browse + modal · announce/start-voice **owner/mod/admin** · voice join/end-all · community chat open into dock |
 | Community HUD toasts | 🟢 | Top-center in-world · posts poll + Social WS voice · companion-aligned copy |
-| In-scene ECS UI | 🟡 | Yoga + DOM · hit-map from Yoga layout boxes 🟢 · nine-slice/text-measure polish remain |
+| In-scene ECS UI | 🟡 | Yoga + DOM · hit-map from Yoga 🟢 · UiBackground nine-slice (border-image + natural size) 🟢 · text-measure polish remain |
 | Voice / mic UI | 🟢 | Nearby voice panel · Speak / hold T · mute-in-bg · name-tag bars · **3D PositionalAudio** |
 
 ---

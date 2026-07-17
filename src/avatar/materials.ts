@@ -98,8 +98,15 @@ export function applyWearableEmissives(root: THREE.Object3D): void {
 }
 
 export function tintWearableMaterials(root: THREE.Object3D, skin?: string, hair?: string): void {
+  if (!skin && !hair) return
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return
+    // SkeletonUtils / AssetCache share materials — clone before skin/hair tint.
+    if (Array.isArray(obj.material)) {
+      obj.material = obj.material.map((m) => m.clone())
+    } else {
+      obj.material = obj.material.clone()
+    }
     const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
     for (const mat of materials) {
       if (!isStandardMaterial(mat)) continue

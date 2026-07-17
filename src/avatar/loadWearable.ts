@@ -368,14 +368,26 @@ export function mergeWearableMeshes(
     }
 
     const indexMap = buildBoneIndexMap(obj.skeleton, skeleton)
+    // Always clone — never mutate AssetCache-shared geometry/skin attributes.
     const geometry = obj.geometry.clone()
     if (unitFactor !== 1) scaleGeometryPositions(geometry, unitFactor)
     remapSkinIndices(geometry, indexMap, skeleton.bones.length)
 
     const mesh = new THREE.SkinnedMesh(geometry, cloneMaterials(obj.material))
     mesh.name = obj.name
-    // bindMatrix is mesh-local → bind space; verts already scaled, keep matrix.
-    bindSkinnedMesh(mesh, skeleton, obj.bindMatrix)
+    // bindMatrix: mesh-local → bind space. Uniform vert scale f satisfies
+    // f*(M*v)=M*(f*v), so keep M when baking unitFactor into positions.
+    // Fold non-identity mesh local TRS into bind (new mesh is identity under avatar).
+    const bindMatrix = obj.bindMatrix.clone()
+    obj.updateMatrix()
+    if (
+      Math.abs(obj.position.lengthSq()) > 1e-12 ||
+      Math.abs(obj.quaternion.x) + Math.abs(obj.quaternion.y) + Math.abs(obj.quaternion.z) > 1e-8 ||
+      Math.abs(obj.scale.x - 1) + Math.abs(obj.scale.y - 1) + Math.abs(obj.scale.z - 1) > 1e-6
+    ) {
+      bindMatrix.multiply(obj.matrix)
+    }
+    bindSkinnedMesh(mesh, skeleton, bindMatrix)
     repairSkinnedMesh(mesh)
     target.add(mesh)
     merged++

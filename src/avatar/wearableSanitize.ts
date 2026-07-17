@@ -105,7 +105,10 @@ export function pruneOrphanWearableRoots(wearableRoot: THREE.Object3D): void {
   }
 }
 
-/** Max world scale on Armature* nodes — BaseMale ≈0.01, RTFKT ≈10. */
+/**
+ * Max world scale on the wearable rig — BaseMale Armature ≈0.01, RTFKT ≈10.
+ * Returns 0 when unknown (never invent 1.0 — that vs body 0.01 produced 100× explode).
+ */
 export function getWearableArmatureScale(root: THREE.Object3D): number {
   let maxScale = 0
   root.updateWorldMatrix(true, true)
@@ -114,7 +117,19 @@ export function getWearableArmatureScale(root: THREE.Object3D): number {
     obj.getWorldScale(_worldScale)
     maxScale = Math.max(maxScale, _worldScale.x, _worldScale.y, _worldScale.z)
   })
-  return maxScale > 0 ? maxScale : 1
+  // Many L1/NFT GLBs name the rig root without "Armature" — use skinned-mesh ancestors.
+  if (maxScale <= 0) {
+    root.traverse((obj) => {
+      if (!(obj instanceof THREE.SkinnedMesh)) return
+      let p: THREE.Object3D | null = obj
+      for (let depth = 0; p && depth < 6; depth++, p = p.parent) {
+        p.getWorldScale(_worldScale)
+        maxScale = Math.max(maxScale, _worldScale.x, _worldScale.y, _worldScale.z)
+        if (p === root) break
+      }
+    })
+  }
+  return maxScale > 0 ? maxScale : 0
 }
 
 /** True when wearable rig units differ from body_shape (merge would explode skinning). */
@@ -127,7 +142,7 @@ export function wearableNeedsParallelSkeleton(
 
   const bodyScale = getWearableArmatureScale(bodyRoot)
   const wearScale = getWearableArmatureScale(wearableRoot)
-  if (bodyScale <= 0 || wearScale <= 0) return false
+  if (bodyScale <= 1e-8 || wearScale <= 1e-8) return false
   const ratio = wearScale / bodyScale
   return ratio > 2 || ratio < 0.5
 }
@@ -139,10 +154,11 @@ export function normalizeWearableArmatureToBody(
 ): void {
   const bodyScale = getWearableArmatureScale(bodyRoot)
   const wearScale = getWearableArmatureScale(wearableRoot)
-  if (bodyScale <= 0 || wearScale <= 0) return
+  if (bodyScale <= 1e-8 || wearScale <= 1e-8) return
   const ratio = wearScale / bodyScale
   if (ratio > 2 || ratio < 0.5) {
     const factor = bodyScale / wearScale
+    if (!Number.isFinite(factor) || factor < 0.02 || factor > 50) return
     let applied = false
     wearableRoot.traverse((obj) => {
       if (!/armature/i.test(obj.name)) return
@@ -168,6 +184,8 @@ export function bakeOversizedWearableGeometry(
     const local = localMeshExtent(obj)
     if (local <= trigger) return
     const factor = expected / local
+    // SkeletonUtils.clone shares geometry with AssetCache — never mutate the template.
+    obj.geometry = obj.geometry.clone()
     const pos = obj.geometry.attributes.position as THREE.BufferAttribute | undefined
     if (!pos) return
     for (let i = 0; i < pos.count; i++) {
@@ -336,7 +354,8 @@ export function wearableUnitScaleFactor(
   let factor = 1
   const bodyScale = getWearableArmatureScale(bodyRoot)
   const wearScale = getWearableArmatureScale(wearableRoot)
-  if (bodyScale > 0 && wearScale > 0) {
+  // Both sides must be known. Missing wear scale used to default to 1 vs body 0.01 → 100× explode.
+  if (bodyScale > 1e-8 && wearScale > 1e-8) {
     const ratio = wearScale / bodyScale
     if (ratio > 2 || ratio < 0.5) factor = bodyScale / wearScale
   }
@@ -354,6 +373,8 @@ export function wearableUnitScaleFactor(
       factor = fromMesh
     }
   }
+  // Refuse absurd factors (bad detection) — better slightly wrong size than vertex soup.
+  if (!Number.isFinite(factor) || factor < 0.02 || factor > 50) return 1
   return factor
 }
 

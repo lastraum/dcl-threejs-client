@@ -101,6 +101,12 @@ export class WhatsNewToast {
     this.toast.innerHTML = `
       <div class="whats-new-toast__inner">
         <div class="whats-new-toast__copy">
+          <a
+            class="whats-new-toast__repo"
+            href="https://github.com/lastraum/dcl-threejs-client"
+            target="_blank"
+            rel="noopener noreferrer"
+          >github.com/lastraum/dcl-threejs-client</a>
           <span class="whats-new-toast__kicker">Updated · v${escapeHtml(APP_VERSION)}</span>
           <span class="whats-new-toast__title">${escapeHtml(title)}</span>
         </div>

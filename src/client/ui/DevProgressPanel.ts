@@ -85,7 +85,14 @@ export class DevProgressPanel {
       <header class="dev-progress__header">
         <div class="dev-progress__title-block">
           <h2 class="dev-progress__title">Three.js Client — Dev Progress</h2>
-          <p class="dev-progress__subtitle"></p>
+          <p class="dev-progress__subtitle">
+            <a
+              class="dev-progress__repo-link"
+              href="https://github.com/lastraum/dcl-threejs-client"
+              target="_blank"
+              rel="noopener noreferrer"
+            >github.com/lastraum/dcl-threejs-client</a>
+          </p>
         </div>
         <div class="dev-progress__header-actions">
           <button type="button" class="dev-progress__header-suggest" data-suggest-toggle>💡 Suggest</button>
@@ -111,9 +118,6 @@ export class DevProgressPanel {
     this.tabStatus = this.panel.querySelector('[data-tab="status"]')!
     this.tabProgress = this.panel.querySelector('[data-tab="progress"]')!
     this.footerEl = this.panel.querySelector('.dev-progress__footer')!
-
-    const subtitle = this.panel.querySelector('.dev-progress__subtitle')!
-    subtitle.textContent = 'Community workflow from github.com/lastraum/dcl-threejs-client'
 
     this.metaEl = this.panel.querySelector('.dev-progress__meta')!
     this.metaEl.hidden = true

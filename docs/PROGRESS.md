@@ -4,8 +4,8 @@
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-07-16  
 > **Current phase:** **v1.0.0** — production beta on the core loop; still not full Explorer parity.  
-> **Shipped (1.x):** spatial nearby voice · Settings Communities · 1:1 DMs + community group text (ADR-208) · community voice join CTA · **2D social chat FAB** · community HUD toasts / mod gates · RestrictedActions teleport/changeRealm/copy · elevated-spawn floor settle.  
-> **1.x next:** backpack outfits · scene UI polish · community voice Bearer parity · create-community / invites.  
+> **Shipped (1.x):** spatial nearby voice · Settings Communities · 1:1 DMs + community group text (ADR-208) · community voice join CTA · **2D social chat FAB** · community HUD toasts / mod gates · RestrictedActions teleport/changeRealm/copy · elevated-spawn floor settle · **scene UI hit-map + nine-slice**.  
+> **1.x next:** backpack outfits · scene UI text-measure · community voice Bearer parity · create-community / invites.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
@@ -13,6 +13,26 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — Scene UI hit-map + nine-slice → `lastraum` (2026-07-16)
+
+**Status: on `lastraum`** (`9f384cf`) — in-scene ECS UI pointer regions track Yoga; UiBackground nine-slice works for scene + CDN art.
+
+### What's new
+
+- **Scene UI hit-map** — pointer pick from Yoga `LayoutBox` + viewport mapping (not nested DOM rects)
+- **UiBackground nine-slice** — real `border-image` for authored slices; HTTP/CDN allowed; borders sized from image natural pixels × UI scale
+- **Dev Progress + What's new** — repo link at the top → [github.com/lastraum/dcl-threejs-client](https://github.com/lastraum/dcl-threejs-client)
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Hit regions** | 🟢 | `layoutToScreen` from canvas-absolute Yoga boxes |
+| **Nine-slice** | 🟢 | `uiBackgroundStyle` · slices present · natural size probe |
+| **Text measure polish** | 🟡 | line-height measure vs paint still open |
+
+**Tip commit:** `9f384cf` on `lastraum`.
 
 ---
 

@@ -775,17 +775,19 @@ export class PlayerSystem {
     this.applyCameraInputFromPointer()
 
     _moveDir.set(0, 0, 0)
-    // Bound VirtualCamera owns the lens — WASD follows live camera facing (not freecam yaw).
-    // Right = forward × worldUp so A/D match freecam and Explorer (was inverted when VC active).
+    // Bound VirtualCamera owns the lens — WASD from camera world basis (matrix columns).
+    // Using quaternion alone after X-reflect lookAt can leave A/D feeling yaw-mirrored.
     if (this.virtualCamera?.isActive()) {
-      _forward.set(0, 0, -1).applyQuaternion(this.host.camera.quaternion)
-      _forward.y = 0
+      this.host.camera.updateMatrixWorld(true)
+      const e = this.host.camera.matrixWorld.elements
+      // +X column → right; -Z column → look / forward
+      _right.set(e[0], 0, e[2])
+      _forward.set(-e[8], 0, -e[10])
       if (_forward.lengthSq() < 1e-8) {
         _forward.set(Math.sin(this.camYaw), 0, Math.cos(this.camYaw)).multiplyScalar(-1)
       } else {
         _forward.normalize()
       }
-      _right.crossVectors(_forward, UP)
       if (_right.lengthSq() < 1e-8) {
         _right.set(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw))
       } else {

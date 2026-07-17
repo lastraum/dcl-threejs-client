@@ -26,22 +26,37 @@ import {
 
 const _targetPos = new THREE.Vector3()
 const _targetQuat = new THREE.Quaternion()
+const _lookAtPoint = new THREE.Vector3()
 const _lerpPos = new THREE.Vector3()
 const _lerpQuat = new THREE.Quaternion()
+const _lerpLookAt = new THREE.Vector3()
 const _lookDir = new THREE.Vector3()
 const _lookMat = new THREE.Matrix4()
+const _lookRight = new THREE.Vector3()
+const _lookUp = new THREE.Vector3()
+const _camZ = new THREE.Vector3()
 const _worldUp = new THREE.Vector3(0, 1, 0)
-const _followPos = new THREE.Vector3()
 const _gizmoWorld = new THREE.Vector3()
 const _gizmoWorldQuat = new THREE.Quaternion()
 let lastFollowDiagMs = 0
 let lastApplyDiagMs = 0
+let lastBindYawLogMs = 0
+
+type TargetPose = {
+  position: THREE.Vector3
+  rotation: THREE.Quaternion
+  /** Prefer PerspectiveCamera.lookAt — avoids entity-euler → camera quat yaw flips. */
+  lookAtPoint?: THREE.Vector3
+}
 
 type TransitionState = {
   fromPos: THREE.Vector3
   fromQuat: THREE.Quaternion
   toPos: THREE.Vector3
   toQuat: THREE.Quaternion
+  fromLookAt?: THREE.Vector3
+  toLookAt?: THREE.Vector3
+  useLookAt: boolean
   duration: number
   elapsed: number
 }
@@ -97,6 +112,22 @@ export class VirtualCameraBridge {
     this.parityFramesAfterBind = 120
   }
 
+  /** Write lens pose — lookAtPoint uses PerspectiveCamera.lookAt (authoritative Three path). */
+  private applyLensPose(
+    camera: THREE.Camera,
+    position: THREE.Vector3,
+    rotation: THREE.Quaternion,
+    lookAtPoint?: THREE.Vector3
+  ): void {
+    camera.position.copy(position)
+    if (lookAtPoint) {
+      camera.up.copy(_worldUp)
+      camera.lookAt(lookAtPoint)
+    } else {
+      camera.quaternion.copy(rotation)
+    }
+  }
+
   /** When active, applies virtual camera pose and returns true (skip default orbit camera). */
   apply(delta: number): boolean {
     const resolved = this.resolveActiveVirtualCamera()
@@ -132,17 +163,25 @@ export class VirtualCameraBridge {
 
     if (bindChanged) {
       // SDK parity: only VirtualCamera.defaultTransition drives motion (time / speed).
-      // No distance heuristics — missing or zero-duration transition = instant cut.
       this.beginTransition(camera, virtualEntity, target)
       if (!this.transition) {
-        camera.position.copy(target.position)
-        camera.quaternion.copy(target.rotation)
+        this.applyLensPose(camera, target.position, target.rotation, target.lookAtPoint)
         this.lastAppliedTargetPos.copy(target.position)
         this.hasAppliedTarget = true
       } else {
         this.hasAppliedTarget = false
       }
       this.activeEntity = virtualEntity
+      const now = performance.now()
+      if (now - lastBindYawLogMs > 2000) {
+        lastBindYawLogMs = now
+        const look = target.lookAtPoint
+          ? `lookAt=(${target.lookAtPoint.x.toFixed(1)},${target.lookAtPoint.y.toFixed(1)},${target.lookAtPoint.z.toFixed(1)})`
+          : 'lookAt=entity-quat'
+        console.info(
+          `[vc-lens] bind e${virtualEntity} pos=(${target.position.x.toFixed(1)},${target.position.y.toFixed(1)},${target.position.z.toFixed(1)}) ${look}`
+        )
+      }
       if (vcDebugVerbose()) {
         this.emitParityReport('VIEW SHOT bind', virtualEntity, resolved, true)
         this.parityFramesAfterBind = 120
@@ -150,27 +189,39 @@ export class VirtualCameraBridge {
     }
 
     if (this.transition) {
-      // Follow / lookAt targets keep moving (CameraFollowSystem). Retarget end pose each frame.
+      // Retarget end pose each frame (follow / player moves).
       this.transition.toPos.copy(target.position)
       this.transition.toQuat.copy(target.rotation)
+      if (this.transition.useLookAt && target.lookAtPoint) {
+        if (!this.transition.toLookAt) this.transition.toLookAt = target.lookAtPoint.clone()
+        else this.transition.toLookAt.copy(target.lookAtPoint)
+      }
       this.transition.elapsed += delta
       const u = Math.min(1, this.transition.elapsed / Math.max(this.transition.duration, 1e-6))
-      // Smoothstep — Explorer-style ease in/out (proto has no easing field yet).
       const t = u * u * (3 - 2 * u)
       _lerpPos.copy(this.transition.fromPos).lerp(this.transition.toPos, t)
-      _lerpQuat.copy(this.transition.fromQuat).slerp(this.transition.toQuat, t)
-      camera.position.copy(_lerpPos)
-      camera.quaternion.copy(_lerpQuat)
+      if (this.transition.useLookAt && this.transition.fromLookAt && this.transition.toLookAt) {
+        _lerpLookAt.copy(this.transition.fromLookAt).lerp(this.transition.toLookAt, t)
+        this.applyLensPose(camera, _lerpPos, target.rotation, _lerpLookAt)
+      } else {
+        // Short-path slerp — avoid long-way flip through underground.
+        _lerpQuat.copy(this.transition.fromQuat)
+        if (_lerpQuat.dot(this.transition.toQuat) < 0) {
+          this.transition.toQuat.x *= -1
+          this.transition.toQuat.y *= -1
+          this.transition.toQuat.z *= -1
+          this.transition.toQuat.w *= -1
+        }
+        _lerpQuat.slerp(this.transition.toQuat, t)
+        this.applyLensPose(camera, _lerpPos, _lerpQuat)
+      }
       if (u >= 1) {
         this.transition = null
         this.lastAppliedTargetPos.copy(target.position)
         this.hasAppliedTarget = true
       }
     } else {
-      // World-flat VC (iso/top/cinematic): suppress single-frame CRDT spikes only.
-      // Do NOT hold when the *target* teleports (match start movePlayerTo + iso follow) —
-      // that permanently stuck the lens at the lobby while the avatar was in-arena, and
-      // blocked freecam orbit because isActive() stayed true.
+      // World-flat VC: suppress single-frame CRDT spikes only (not teleports).
       const localTr = this.ecs.Transform.getOrNull(virtualEntity) as { parent?: number } | null
       const parent = localTr?.parent
       const worldFlat =
@@ -184,8 +235,7 @@ export class VirtualCameraBridge {
       if (!bindChanged && worldFlat && jumpM > 25 && !targetMoved) {
         return true
       }
-      camera.position.copy(target.position)
-      camera.quaternion.copy(target.rotation)
+      this.applyLensPose(camera, target.position, target.rotation, target.lookAtPoint)
       this.lastAppliedTargetPos.copy(target.position)
       this.hasAppliedTarget = true
     }
@@ -366,7 +416,7 @@ export class VirtualCameraBridge {
     }
   }
 
-  private computeTargetPose(virtualEntity: Entity): { position: THREE.Vector3; rotation: THREE.Quaternion } | null {
+  private computeTargetPose(virtualEntity: Entity): TargetPose | null {
     const spec = this.ecs.VirtualCamera.get(virtualEntity) as PBVirtualCamera
     const local = this.ecs.Transform.getOrNull(virtualEntity) as DclTransformValues | null
     if (!local) return null
@@ -377,7 +427,6 @@ export class VirtualCameraBridge {
 
     // Classic third-person: parent === lookAt === cameraParent. Always f(PE)+local on main —
     // never fall back to lagging cameraParent CRDT (FPS hitch → flicker to stale map).
-    // Select/cinematic shots use lookAt unset or worldFlattened hydrate (not this shape).
     const isPeFollowShape =
       lookAt !== undefined &&
       lookAt !== null &&
@@ -393,13 +442,12 @@ export class VirtualCameraBridge {
 
     if (isPeFollowShape) {
       const player = this.playerPose()
-      // Anchor at PE (DCL); CameraFollow only moves parent position (identity rot).
       const wx = player.position.x + local.position.x
       const wy = player.position.y + local.position.y
       const wz = player.position.z + local.position.z
       dclToThreePos(wx, wy, wz, _targetPos)
-      dclToThreePos(player.position.x, player.position.y, player.position.z, _followPos)
-      if (cameraLookAtQuat(_targetPos, _followPos, _targetQuat)) {
+      dclToThreePos(player.position.x, player.position.y, player.position.z, _lookAtPoint)
+      if (cameraLookAtQuat(_targetPos, _lookAtPoint, _targetQuat)) {
         if (vcDebugVerbose()) {
           const now = performance.now()
           if (now - lastFollowDiagMs > 2000) {
@@ -413,7 +461,7 @@ export class VirtualCameraBridge {
             )
           }
         }
-        return { position: _targetPos, rotation: _targetQuat }
+        return { position: _targetPos, rotation: _targetQuat, lookAtPoint: _lookAtPoint }
       }
     }
 
@@ -426,7 +474,7 @@ export class VirtualCameraBridge {
       return null
     }
 
-    // lookAtEntity owns full lens orientation (yaw + pitch, world-up roll) — not Z-only.
+    // Explicit lookAtEntity — aim with camera.lookAt every frame.
     if (
       lookAt !== undefined &&
       lookAt !== null &&
@@ -435,32 +483,29 @@ export class VirtualCameraBridge {
     ) {
       const targetWorld = resolveEntityWorldPose(lookAt as Entity, this.worldDeps())
       if (targetWorld && cameraLookAtQuat(_targetPos, targetWorld.position, _targetQuat)) {
-        return { position: _targetPos, rotation: _targetQuat }
+        _lookAtPoint.copy(targetWorld.position)
+        return { position: _targetPos, rotation: _targetQuat, lookAtPoint: _lookAtPoint }
       }
     }
 
-    // Iso / top / cinematic: world-flat shot, no lookAtEntity — aim at local player.
-    // Entity euler → camera quat under X-reflect often flips yaw/pitch (underground look,
-    // mirrored strafe). Stage locks with lookAtEntity already handled above.
+    // Iso / top / cinematic: no lookAtEntity — aim at local player (body, not chest-only).
+    // Entity euler → camera quat under X-reflect flips yaw; camera.lookAt is the source of truth.
     {
       const player = this.playerPose()
-      dclToThreePos(player.position.x, player.position.y, player.position.z, _followPos)
-      const dist = _targetPos.distanceTo(_followPos)
-      if (dist > 0.5 && dist < 120 && cameraLookAtQuat(_targetPos, _followPos, _targetQuat)) {
-        return { position: _targetPos, rotation: _targetQuat }
+      // PE is chest (+0.88); aim slightly lower for natural iso framing.
+      dclToThreePos(player.position.x, player.position.y - 0.4, player.position.z, _lookAtPoint)
+      const dist = _targetPos.distanceTo(_lookAtPoint)
+      if (dist > 0.5 && dist < 200 && cameraLookAtQuat(_targetPos, _lookAtPoint, _targetQuat)) {
+        return { position: _targetPos, rotation: _targetQuat, lookAtPoint: _lookAtPoint }
       }
     }
 
-    // Distant / no player — use entity world rotation as camera facing.
+    // Distant stage lock — entity world rotation as camera facing.
     entityDisplayQuatToThreeCameraQuat(_targetQuat, _targetQuat)
     return { position: _targetPos, rotation: _targetQuat }
   }
 
-  private beginTransition(
-    camera: THREE.Camera,
-    virtualEntity: Entity,
-    target: { position: THREE.Vector3; rotation: THREE.Quaternion }
-  ): void {
+  private beginTransition(camera: THREE.Camera, virtualEntity: Entity, target: TargetPose): void {
     const spec = this.ecs.VirtualCamera.get(virtualEntity) as PBVirtualCamera
     const duration = resolveTransitionDuration(spec.defaultTransition, camera.position, target.position)
     if (duration <= 0) {
@@ -468,25 +513,38 @@ export class VirtualCameraBridge {
       return
     }
 
+    const useLookAt = !!target.lookAtPoint
+    // Seed fromLookAt along current camera -Z so lookAt transitions don't spin.
+    let fromLookAt: THREE.Vector3 | undefined
+    if (useLookAt && target.lookAtPoint) {
+      fromLookAt = new THREE.Vector3(0, 0, -1)
+        .applyQuaternion(camera.quaternion)
+        .multiplyScalar(8)
+        .add(camera.position)
+    }
+
     this.transition = {
       fromPos: camera.position.clone(),
       fromQuat: camera.quaternion.clone(),
       toPos: target.position.clone(),
       toQuat: target.rotation.clone(),
+      fromLookAt,
+      toLookAt: target.lookAtPoint?.clone(),
+      useLookAt,
       duration,
       elapsed: 0
     }
     if (vcDebugVerbose()) {
       console.info(
-        `[vc-lens] bind transition vc=e${virtualEntity} duration=${duration.toFixed(2)}s jump=${camera.position.distanceTo(target.position).toFixed(1)}m`
+        `[vc-lens] bind transition vc=e${virtualEntity} duration=${duration.toFixed(2)}s jump=${camera.position.distanceTo(target.position).toFixed(1)}m lookAt=${useLookAt}`
       )
     }
   }
 }
 
 /**
- * Full-axis camera aim: PerspectiveCamera looks down -Z toward `target`, with world +Y up
- * (yaw + pitch; roll stays upright). Returns false when eye ≈ target (undefined direction).
+ * Build camera quaternion: local -Z aims at target, world +Y up (roll-free).
+ * Uses explicit basis — more reliable than Matrix4.lookAt + setFromRotationMatrix alone.
  */
 function cameraLookAtQuat(
   eye: THREE.Vector3,
@@ -495,8 +553,20 @@ function cameraLookAtQuat(
 ): boolean {
   _lookDir.subVectors(target, eye)
   if (_lookDir.lengthSq() < 1e-12) return false
-  // Camera convention: eye→target with -Z forward (same basis Object3D uses for isCamera).
-  _lookMat.lookAt(eye, target, _worldUp)
+  _lookDir.normalize()
+  // right = up × look  (Three right-handed; camera +X)
+  _lookRight.crossVectors(_worldUp, _lookDir)
+  if (_lookRight.lengthSq() < 1e-12) {
+    // look parallel to up — pick arbitrary horizontal right
+    _lookRight.set(1, 0, 0)
+  } else {
+    _lookRight.normalize()
+  }
+  // true up = look × right
+  _lookUp.crossVectors(_lookDir, _lookRight)
+  // Camera +Z = -look (camera looks down -Z)
+  _camZ.copy(_lookDir).negate()
+  _lookMat.makeBasis(_lookRight, _lookUp, _camZ)
   out.setFromRotationMatrix(_lookMat)
   return true
 }

@@ -160,6 +160,8 @@ export class PlayerSystem {
   /** Prior frame locomotion allowed — clear position lock when scene unfreezes. */
   private wasLocomotionAllowed = true
   private virtualCamera: VirtualCameraBridge | null = null
+  /** Prior frame had an active VirtualCamera — seed freecam yaw/pitch on unbind. */
+  private wasVirtualCameraActive = false
   /** AvatarModifierArea hide (local mesh). */
   private modifierHidden = false
   /** CameraModeArea force — null when freecam is player-controlled. */
@@ -1137,11 +1139,22 @@ export class PlayerSystem {
 
   private syncCamera(snap: boolean, delta = 0.016): void {
     if (this.virtualCamera?.apply(delta)) {
+      this.wasVirtualCameraActive = true
+      // Keep freecam yaw/pitch aligned so unbind + orbit does not snap 180° from stale freecam state.
+      _forward.set(0, 0, -1).applyQuaternion(this.host.camera.quaternion)
+      if (_forward.lengthSq() > 1e-8) {
+        _forward.normalize()
+        this.camYaw = Math.atan2(-_forward.x, -_forward.z)
+        this.camPitch = clamp(Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1)), CAM_PITCH_MIN, CAM_PITCH_MAX)
+      }
       this.avatar?.setBodyVisible(!this.modifierHidden)
       if (this.nameTag) {
         this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
       }
       return
+    }
+    if (this.wasVirtualCameraActive) {
+      this.wasVirtualCameraActive = false
     }
 
     const fpv = this.isFirstPerson()

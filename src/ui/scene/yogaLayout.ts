@@ -13,7 +13,10 @@ import {
   YGOverflow,
   YGPositionType,
   YGUnit,
-  YGWrap
+  YGWrap,
+  normalizeYGAlign,
+  normalizeYGFlexDirection,
+  normalizeYGJustify
 } from './yogaEnums'
 
 export type LayoutBox = {
@@ -165,10 +168,14 @@ function applyInputMinSize(node: YogaNode, input: PBUiInput | null | undefined):
 }
 
 function applyUiTransform(node: YogaNode, t: PBUiTransform): void {
-  node.setFlexDirection(FLEX_DIR[t.flexDirection] ?? Yoga.FLEX_DIRECTION_ROW)
-  node.setJustifyContent(JUSTIFY[t.justifyContent] ?? Yoga.JUSTIFY_FLEX_START)
-  node.setAlignItems(ALIGN[t.alignItems ?? YGAlign.STRETCH] ?? Yoga.ALIGN_STRETCH)
-  node.setAlignSelf(ALIGN[t.alignSelf] ?? Yoga.ALIGN_AUTO)
+  const flexDir = normalizeYGFlexDirection(t.flexDirection)
+  const justify = normalizeYGJustify(t.justifyContent)
+  const alignItems = normalizeYGAlign(t.alignItems, YGAlign.STRETCH)
+  const alignSelf = normalizeYGAlign(t.alignSelf, YGAlign.AUTO)
+  node.setFlexDirection(FLEX_DIR[flexDir] ?? Yoga.FLEX_DIRECTION_ROW)
+  node.setJustifyContent(JUSTIFY[justify] ?? Yoga.JUSTIFY_FLEX_START)
+  node.setAlignItems(ALIGN[alignItems] ?? Yoga.ALIGN_STRETCH)
+  node.setAlignSelf(ALIGN[alignSelf] ?? Yoga.ALIGN_AUTO)
   if (t.alignContent !== undefined) {
     node.setAlignContent(ALIGN[t.alignContent] ?? Yoga.ALIGN_FLEX_START)
   }

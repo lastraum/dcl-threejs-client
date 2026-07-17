@@ -10,7 +10,10 @@ import {
   YGJustify,
   YGOverflow,
   YGUnit,
-  YGWrap
+  YGWrap,
+  normalizeYGAlign,
+  normalizeYGFlexDirection,
+  normalizeYGJustify
 } from './yogaEnums'
 
 /** Virtual-pixel scale (1:1) — prefer `uiScreenScaleFromViewport` when mapping yoga → screen DOM. */
@@ -152,11 +155,16 @@ export function flexContainerCss(t: PBUiTransform): {
   flexWrap: string
   overflow: string
 } {
+  // String enums possible on mount-snapshot / partial paths (progress bar justifyContent: "center").
+  const flexDir = normalizeYGFlexDirection(t.flexDirection)
+  const justify = normalizeYGJustify(t.justifyContent)
+  const alignItems = normalizeYGAlign(t.alignItems, YGAlign.STRETCH)
+  const alignContent = normalizeYGAlign(t.alignContent, YGAlign.FLEX_START)
   return {
-    flexDirection: FLEX_DIR[t.flexDirection] ?? 'row',
-    alignItems: FLEX_ALIGN[t.alignItems ?? YGAlign.STRETCH] ?? 'stretch',
-    alignContent: FLEX_ALIGN[t.alignContent ?? YGAlign.FLEX_START] ?? 'flex-start',
-    justifyContent: FLEX_JUSTIFY[t.justifyContent] ?? 'flex-start',
+    flexDirection: FLEX_DIR[flexDir] ?? 'row',
+    alignItems: FLEX_ALIGN[alignItems] ?? 'stretch',
+    alignContent: FLEX_ALIGN[alignContent] ?? 'flex-start',
+    justifyContent: FLEX_JUSTIFY[justify] ?? 'flex-start',
     flexWrap: FLEX_WRAP[t.flexWrap ?? YGWrap.WRAP] ?? 'wrap',
     overflow: t.overflow === YGOverflow.HIDDEN ? 'hidden' : t.overflow === YGOverflow.SCROLL ? 'auto' : 'visible'
   }

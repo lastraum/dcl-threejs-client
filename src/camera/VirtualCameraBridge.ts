@@ -58,6 +58,9 @@ export class VirtualCameraBridge {
   private transition: TransitionState | null = null
   private debugElapsed = 0
   private parityFramesAfterBind = 0
+  /** Last target we applied — distinguishes teleport (accept) from single-frame CRDT spikes (hold). */
+  private readonly lastAppliedTargetPos = new THREE.Vector3()
+  private hasAppliedTarget = false
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -105,6 +108,7 @@ export class VirtualCameraBridge {
         this.activeEntity = null
         this.transition = null
         this.parityFramesAfterBind = 0
+        this.hasAppliedTarget = false
       }
       return false
     }
@@ -133,6 +137,10 @@ export class VirtualCameraBridge {
       if (!this.transition) {
         camera.position.copy(target.position)
         camera.quaternion.copy(target.rotation)
+        this.lastAppliedTargetPos.copy(target.position)
+        this.hasAppliedTarget = true
+      } else {
+        this.hasAppliedTarget = false
       }
       this.activeEntity = virtualEntity
       if (vcDebugVerbose()) {
@@ -153,10 +161,16 @@ export class VirtualCameraBridge {
       _lerpQuat.copy(this.transition.fromQuat).slerp(this.transition.toQuat, t)
       camera.position.copy(_lerpPos)
       camera.quaternion.copy(_lerpQuat)
-      if (u >= 1) this.transition = null
+      if (u >= 1) {
+        this.transition = null
+        this.lastAppliedTargetPos.copy(target.position)
+        this.hasAppliedTarget = true
+      }
     } else {
-      // Locked/world-flat shots: hold last pose on huge teleports (stale CRDT during FPS hitch).
-      // PE-follow keeps parent≠Root and may legitimately jump on movePlayerTo — do not hold those.
+      // World-flat VC (iso/top/cinematic): suppress single-frame CRDT spikes only.
+      // Do NOT hold when the *target* teleports (match start movePlayerTo + iso follow) —
+      // that permanently stuck the lens at the lobby while the avatar was in-arena, and
+      // blocked freecam orbit because isActive() stayed true.
       const localTr = this.ecs.Transform.getOrNull(virtualEntity) as { parent?: number } | null
       const parent = localTr?.parent
       const worldFlat =
@@ -165,11 +179,15 @@ export class VirtualCameraBridge {
         parent === 0 ||
         parent === (this.view.RootEntity as number)
       const jumpM = camera.position.distanceTo(target.position)
-      if (!bindChanged && worldFlat && jumpM > 25) {
+      const targetMoved =
+        !this.hasAppliedTarget || this.lastAppliedTargetPos.distanceTo(target.position) > 2
+      if (!bindChanged && worldFlat && jumpM > 25 && !targetMoved) {
         return true
       }
       camera.position.copy(target.position)
       camera.quaternion.copy(target.rotation)
+      this.lastAppliedTargetPos.copy(target.position)
+      this.hasAppliedTarget = true
     }
 
     if (vcDebugVerbose()) {

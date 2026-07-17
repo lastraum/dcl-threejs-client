@@ -627,6 +627,17 @@ export class ThreeBridge {
     return this.materials.needsReapply(entity, Material.get(entity) as PbMaterial, visual)
   }
 
+  /**
+   * Whether pending mesh drain should call syncMeshSync.
+   *
+   * Presence-only checks miss LWW field updates (TextShape text, Material params).
+   * Audit (keep in sync when adding mesh components):
+   * - GltfContainer: content hash / geometry readiness
+   * - TextShape: textShapeSignature (text/style) — not just missing mesh child
+   * - MeshRenderer: primitiveMeshKey includes kind + UV fingerprint
+   * - Material: materials.needsReapply (separate pendingMaterial queue)
+   * - NftShape: not drained here (no mesh attach path yet)
+   */
   private entityNeedsMeshWork(
     entity: Entity,
     obj: THREE.Group,

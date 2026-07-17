@@ -88,3 +88,74 @@ export function normalizePointerFilterMode(mode: unknown): number {
   }
   return PointerFilterMode.NONE
 }
+
+/**
+ * react-ecs JSX often keeps string enums (`"center"`, `"row"`) until protobuf encode.
+ * Mount snapshots / partial paths can still carry strings — map them for Yoga + CSS.
+ */
+export function normalizeYGJustify(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    switch (value.toLowerCase()) {
+      case 'flex-start':
+      case 'start':
+        return YGJustify.FLEX_START
+      case 'center':
+        return YGJustify.CENTER
+      case 'flex-end':
+      case 'end':
+        return YGJustify.FLEX_END
+      case 'space-between':
+        return YGJustify.SPACE_BETWEEN
+      case 'space-around':
+        return YGJustify.SPACE_AROUND
+      case 'space-evenly':
+        return YGJustify.SPACE_EVENLY
+    }
+  }
+  return YGJustify.FLEX_START
+}
+
+export function normalizeYGAlign(value: unknown, fallback: number = YGAlign.STRETCH): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    switch (value.toLowerCase()) {
+      case 'auto':
+        return YGAlign.AUTO
+      case 'flex-start':
+      case 'start':
+        return YGAlign.FLEX_START
+      case 'center':
+        return YGAlign.CENTER
+      case 'flex-end':
+      case 'end':
+        return YGAlign.FLEX_END
+      case 'stretch':
+        return YGAlign.STRETCH
+      case 'baseline':
+        return YGAlign.BASELINE
+      case 'space-between':
+        return YGAlign.SPACE_BETWEEN
+      case 'space-around':
+        return YGAlign.SPACE_AROUND
+    }
+  }
+  return fallback
+}
+
+export function normalizeYGFlexDirection(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    switch (value.toLowerCase()) {
+      case 'row':
+        return YGFlexDirection.ROW
+      case 'column':
+        return YGFlexDirection.COLUMN
+      case 'column-reverse':
+        return YGFlexDirection.COLUMN_REVERSE
+      case 'row-reverse':
+        return YGFlexDirection.ROW_REVERSE
+    }
+  }
+  return YGFlexDirection.ROW
+}

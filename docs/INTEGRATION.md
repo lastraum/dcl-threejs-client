@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-17 (PhysicsCombined force/impulse · hold-Space glider · P4 bloom · Dead Surge combat)
+> **Last updated:** 2026-07-17 (Explorer glider prop/remote · PhysicsCombined · wearable unit-scale · backpack→world · P4 bloom)
 
 ---
 
@@ -53,7 +53,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | GltfContainer | 1041 | 🟢 | Budgeted attach + reload on src change |
 | GltfNodeModifiers | 1099 | 🟢 | Full path material/castShadows on GLB nodes; de-instance; restore on remove; videoTexture re-apply |
 | MeshRenderer | 1018 | 🟢 | Primitives + custom UVs |
-| Material | 1017 | 🟢 | PBR/unlit + video textures; empty Creator Hub slots ignored; AUTO cutout only with alphaMap (Unity) |
+| Material | 1017 | 🟢 | PBR/unlit + video; `cast_shadows` default **true** (omit = on); AUTO cutout only with alphaMap |
 | Animator | 1042 | 🟢 | `AnimatorBridge` — LWW identical `shouldReset` re-fires one-shots (muzzle / gun) |
 | Billboard | 1090 | 🟢 | `BillboardBridge` |
 | LightSource | 1079 | 🟢 | Culling + quality tiers |
@@ -65,7 +65,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | Component | ID | Status | Notes |
 | --------- | -- | ------ | ----- |
 | MeshCollider | 1019 | 🟢 | PhysX static + GLTF trimesh |
-| AvatarLocomotionSettings | 1211 | 🟢 | Read for jump tuning |
+| AvatarLocomotionSettings | 1211 | 🟢 | jump / doubleJump / glidingSpeed / glidingFallingSpeed / hardLandingCooldown |
 | PhysicsCombinedForce | 1216 | 🟢 | Continuous force on PlayerEntity → velocity (1.5× while gliding) |
 | PhysicsCombinedImpulse | 1215 | 🟢 | One-shot Δv on PlayerEntity via eventId (launch pads / knockback) |
 | InputModifier | 1078 | 🟢 | Read path |
@@ -162,7 +162,7 @@ DOM overlay — not in-scene `UiTransform`.
 | **Circular Genesis minimap** (parcel play HUD) | 🟢 | Satellite basemap circle under pill; facing triangle; peer dots; click → in-world Map (embedded); worlds hide minimap |
 | Debug panel, dev progress panel (`</>`) | 🟢 |
 | Settings overlay: Events, Map, Backpack, Places, Gallery | 🟢 | Map tab embedded when opened from minimap / shell (no page HUD chrome) |
-| Backpack wearables equip + Catalyst profile deploy | 🟡 | Inventory/equip/preview/deploy 🟢 · emotes tab / outfits / marketplace ⬜ · mobile sheets 🟢 |
+| Backpack wearables equip + Catalyst profile deploy | 🟡 | Inventory/equip/preview/deploy + **in-world reload from session** 🟢 · emotes tab / outfits / marketplace ⬜ · mobile sheets 🟢 |
 | Profile pills + right-click profile menu (+ copy wallet) | 🟢 |
 | Overhead name tags (hide via `featureToggles.nameTags` / `?nameTags=`) | 🟢 |
 | Preferences panel (P / ⚙): Graphics preset/shadows/lights/res/FPS + lighting | 🟢 |
@@ -179,13 +179,13 @@ DOM overlay — not in-scene `UiTransform`.
 
 | Feature | Status |
 | ------- | ------ |
-| RFC4 movement, profile, emote, scene chat + DCM chat media | 🟢 |
+| RFC4 movement, profile, emote, scene chat + DCM chat media | 🟢 | `Movement.glideState` encode/decode for Explorer glider |
 | LiveKit scene/world/island rooms | 🟢 | Worlds: world room voice; parcels: island+scene voice; archipelago genesis Z correct |
 | **Nearby voice (browser ↔ Explorer)** | 🟢 | PTT/Speak · mute until in-play · landing handoff keepLiveKit · name-tag bars |
 | **2D multi-room scene chat** (`SceneChatRoomPool`) | 🟢 | Open tabs stay joined across navigate (companion multi-text-chats); FAB dock UX |
 | **Landing cast / stream keys** (Join Live, guest OK) | 🟢 | Gatekeeper adapter; mute; stream-end restores details |
-| Remote avatars + load queue | 🟢 |
-| Double-jump clockwise Y twirl (DCL / VRM / ODK) | 🟢 | Shared `DoubleJumpTwirl`; optional `double_jump.glb` |
+| Remote avatars + load queue | 🟢 | GliderProp per peer when glideState open/gliding |
+| Double-jump clockwise Y twirl (DCL / VRM / ODK) | 🟢 | Shared `DoubleJumpTwirl`; optional `double_jump.glb`; then hold-Space glide |
 | SignedFetch, Catalyst content, wallet + guest session | 🟢 |
 | ECS NetworkEntity scene sync | 🟢 P0–P3 host path |
 | Community text / PM router | 🟢 | **1:1 DMs** + **community group text** on ADR-208 private-messages LiveKit room (topic `dcl.community.chat:{id}`, fan-out to members) |

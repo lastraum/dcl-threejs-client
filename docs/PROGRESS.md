@@ -4,8 +4,8 @@
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-07-17  
 > **Current phase:** **v1.0.0** — production beta on the core loop; still not full Explorer parity.  
-> **Shipped (1.x):** spatial nearby voice · Settings Communities · 1:1 DMs + community group text (ADR-208) · community voice join CTA · **2D social chat FAB** · community HUD toasts / mod gates · RestrictedActions teleport/changeRealm/copy · elevated-spawn floor settle · **scene UI hit-map + nine-slice** · **Dead Surge combat / VC / PE attach** · **P4 emissive bloom / HDR** · **PhysicsCombined force/impulse + hold-Space glider**.  
-> **1.x next:** backpack outfits · scene UI text-measure · community voice Bearer parity · create-community / invites.  
+> **Shipped (1.x):** spatial nearby voice · Settings Communities · 1:1 DMs + community group text (ADR-208) · community voice join CTA · **2D social chat FAB** · community HUD toasts / mod gates · RestrictedActions teleport/changeRealm/copy · elevated-spawn floor settle · **scene UI hit-map + nine-slice** · **Dead Surge combat / VC / PE attach** · **P4 emissive bloom / HDR** · **PhysicsCombined + Explorer glider (prop/open-close/remote)** · **wearable unit-scale + backpack→world reload**.  
+> **1.x next:** backpack outfits/marketplace · scene UI text-measure · community voice Bearer parity · create-community / invites · graphics P3 distance culls.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
@@ -16,30 +16,33 @@
 
 ---
 
+## 🎉 Milestone — Explorer glider parity + wearable hotfixes → `dev-latest` (2026-07-17)
 
-## 🎉 Milestone — PhysicsCombined + hold-Space glider → `lastraum` (2026-07-17)
-
-**Status: on `lastraum`** — scene `Physics.applyForceToPlayer` / `applyImpulseToPlayer` drive the local capsule; Explorer-style glider on hold-jump.
+**Status: merged to `dev-latest`** (`0aa1173` tip of ship) — full Explorer-style glider (physics + prop mesh + body hold + multiplayer state) plus avatar compose/reload fixes.
 
 ### What's new
 
-- **PhysicsCombinedForce** — continuous world-space force on `PlayerEntity` each tick (wind / currents)
-- **PhysicsCombinedImpulse** — one-shot Δv per `eventId` (launch pads / knockback)
-- **Glider** — hold Space while airborne (vy≤0): cap fall at `glidingFallingSpeed`, steer at `glidingSpeed`
-- **Glide + force** — continuous forces × **1.5** while gliding; upward lift not capped (DCL docs)
-- **Locomotion settings** — read `doubleJumpHeight`, `glidingSpeed`, `glidingFallingSpeed`, `hardLandingCooldown` from ECS
-- **InputModifier** — `disableGliding` honored via `canGlide`
+- **PhysicsCombined** force/impulse on `PlayerEntity` (continuous + `eventId` one-shot; 1.5× force while gliding)
+- **Glider sequence** — jump → double-jump twirl → hold Space (air jumps spent) → glide; W+A diagonals; release closes
+- **GliderProp.glb** — Explorer prop, open/close clips (`gliderClips.json`), rotor spin; offset to hands
+- **Glide_Avatar** — DCL body arms-on-handles (upper-body hold pose; hips stripped for stability)
+- **Remote glide** — RFC4 `Movement.glideState` encode/decode; `RemoteAvatarManager` attaches prop per peer
+- **castShadows default true** — material.proto / MeshRenderer / GltfContainer parity; material `castShadows:false` + Graphics shadows off
+- **Wearables** — unit-scale explode fixed (unknown armature ≠ 1.0); geometry not baked into AssetCache share; skin/hair tint clones mats
+- **Backpack → world** — equip/save reloads in-world mesh from **session** profile (not stale Catalyst lambdas)
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
-| **Force (1216)** | 🟢 | Mirror CRDT + `PlayerSystem.applyScenePhysicsCombined` |
-| **Impulse (1215)** | 🟢 | eventId dedupe; DCL→Three X-reflect |
-| **Hold-Space glider** | 🟢 | After apex; jump pose held |
-| **Glider anim clip** | 🟡 | Jump pose while gliding (no dedicated glide.glb yet) |
+| **Force / Impulse** | 🟢 | 1216 / 1215 on PE |
+| **Local glider prop + open/close** | 🟢 | `GliderProp.ts` + `public/avatar/glider/` |
+| **Body hold pose** | 🟢 | `Glide_Avatar` upper-body clamp |
+| **Remote glider** | 🟢 | RFC4 glideState; remotes no wind trails |
+| **Wind streaks** | ⬜ | Deferred (prefab ParticleSystem / VFX Graph) |
+| **Wearable merge / backpack reload** | 🟢 | session seed + unit-scale clamp |
 
-**QA:** Scene wind zone enter/exit · launch pad impulse · double-jump then hold Space for slow fall · force lifts glider · `disableGliding` blocks open.
+**QA:** deadsurge / wind zones · jump → space again → hold Space glide · W+A NW · second client sees prop · backpack equip → world mesh updates · RTFKT/L1 feet not giant.
 
-**Tip commit:** see `lastraum` tip.
+**Tip commits:** `f04437e` glider · `449fce5` wearable scale · `0aa1173` backpack reload.
 
 ---
 

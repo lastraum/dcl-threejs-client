@@ -35,6 +35,18 @@ export type MapPlayerState = {
   address?: string
   displayName?: string
   faceUrl?: string | null
+  /**
+   * Avatar body facing in DCL yaw radians (not camera orbit).
+   * Minimap triangle tip points this direction (0 = north / +Z).
+   */
+  facingYaw?: number
+}
+
+/** Nearby remote for minimap (Genesis meters). */
+export type MinimapPeerDot = {
+  address: string
+  x: number
+  z: number
 }
 
 export type MapViewOptions = {

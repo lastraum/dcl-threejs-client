@@ -1368,6 +1368,7 @@ export class AppController {
       if (sceneConfig.source.kind !== 'world') {
         this.minimap = new Minimap({
           getPlayerState: () => this.getMapPlayerState(),
+          getPeers: () => this.world?.listMinimapPeers() ?? [],
           onClick: () => {
             // Stay in play — open the in-world map panel (not the 2D /map social shell).
             if (document.pointerLockElement) document.exitPointerLock()
@@ -1665,7 +1666,9 @@ export class AppController {
       parcelKey,
       address: address ?? undefined,
       displayName: profile?.displayName,
-      faceUrl: world.social.getLocalDisplay().faceUrl
+      faceUrl: world.social.getLocalDisplay().faceUrl,
+      // Body facing for minimap triangle (not freecam orbit).
+      facingYaw: world.getPlayerFacingYawDcl() ?? undefined
     }
   }
 

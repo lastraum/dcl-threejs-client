@@ -2,15 +2,18 @@ import {
   VIEWPORT_DEFAULT_ZOOM,
   centerViewOnParcel,
   mapTileUrlForLod,
+  parcelScreenRect,
   satelliteLodForZoom,
   visibleTiles,
   type MapViewState
 } from '../../map/genesisMapViewport'
 import type { SatelliteLodLevel } from '../../map/genesisMapTiles'
-import type { MapPlayerState } from './settings/MapView'
+import type { MapPlayerState, MinimapPeerDot } from './settings/MapView'
 
 export type MinimapOptions = {
   getPlayerState: () => MapPlayerState | null
+  /** Remote peers in Genesis meters (red dots). */
+  getPeers?: () => MinimapPeerDot[]
   onClick?: () => void
   /** CSS px diameter (default 224). */
   size?: number
@@ -23,16 +26,18 @@ const DEFAULT_SIZE = 224
  */
 const MINIMAP_ZOOM = Math.max(VIEWPORT_DEFAULT_ZOOM + 2, 7)
 const BORDER_PX = 2.5
+const PARCEL_M = 16
 
 /**
- * Circular Genesis minimap — multi-LOD satellite (genesis-city parcels pyramid).
- * Player always at center; hard white ring.
+ * Circular Genesis minimap — multi-LOD satellite, green facing triangle for local
+ * player, red dots for other peers in the scene.
  */
 export class Minimap {
   private readonly root: HTMLDivElement
   private readonly canvas: HTMLCanvasElement
   private readonly ctx: CanvasRenderingContext2D
   private readonly getPlayerState: () => MapPlayerState | null
+  private readonly getPeers: () => MinimapPeerDot[]
   private readonly size: number
   private readonly dpr = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio : 1, 2)
   /** key: `${lod}/${tx},${ty}` */
@@ -47,8 +52,9 @@ export class Minimap {
     panY: 0
   }
 
-  constructor({ getPlayerState, onClick, size = DEFAULT_SIZE }: MinimapOptions) {
+  constructor({ getPlayerState, getPeers, onClick, size = DEFAULT_SIZE }: MinimapOptions) {
     this.getPlayerState = getPlayerState
+    this.getPeers = getPeers ?? (() => [])
     this.size = size
 
     this.root = document.createElement('div')
@@ -94,10 +100,6 @@ export class Minimap {
     this.root.hidden = !visible
   }
 
-  /**
-   * Pin the circle just under `anchor` (location pill). Uses viewport bottom so
-   * layout is correct even when --client-safe-top / fonts change after mount.
-   */
   placeBelow(anchor: HTMLElement, gapPx = 8): void {
     if (this.root.hidden || anchor.hidden) return
     const rect = anchor.getBoundingClientRect()
@@ -140,8 +142,6 @@ export class Minimap {
           px,
           py
         )
-        // Sub-parcel pan in level-3 tile space (centerTile is always L3).
-        const PARCEL_M = 16
         const localX = ((Number(player.position.x) % PARCEL_M) + PARCEL_M) % PARCEL_M
         const localZ = ((Number(player.position.z) % PARCEL_M) + PARCEL_M) % PARCEL_M
         const L3_CHUNK = 40
@@ -175,7 +175,6 @@ export class Minimap {
       ctx.drawImage(img, tile.left, tile.top, tile.size, tile.size)
     }
 
-    // Fallback: if denser LOD tiles still loading, briefly show L3 under them.
     if (lod > 3) {
       let anyReady = false
       for (const tile of tiles) {
@@ -195,15 +194,11 @@ export class Minimap {
       }
     }
 
-    ctx.fillStyle = '#57e389'
-    ctx.beginPath()
-    ctx.arc(cx, cy, 5, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.65)'
-    ctx.lineWidth = 1.5
-    ctx.beginPath()
-    ctx.arc(cx, cy, 5, 0, Math.PI * 2)
-    ctx.stroke()
+    // Other players in this scene — red dots (before local marker so we stay on top).
+    this.drawPeerDots(ctx, size)
+
+    // Local player — green triangle, tip = avatar facing (not camera).
+    this.drawPlayerTriangle(ctx, cx, cy, player?.facingYaw ?? 0)
 
     ctx.restore()
 
@@ -212,5 +207,87 @@ export class Minimap {
     ctx.beginPath()
     ctx.arc(cx, cy, radius, 0, Math.PI * 2)
     ctx.stroke()
+  }
+
+  /**
+   * Green chevron / triangle. Tip points avatar body facing.
+   * DCL yaw 0 ≈ north (+Z) → tip toward top of map (negative screen Y).
+   */
+  private drawPlayerTriangle(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    facingYawDcl: number
+  ): void {
+    const r = 7
+    ctx.save()
+    ctx.translate(cx, cy)
+    // Canvas rotate is CW-positive; map north = up. DCL yaw 0 = +Z north → no extra offset.
+    ctx.rotate(-facingYawDcl)
+    ctx.beginPath()
+    ctx.moveTo(0, -r) // tip
+    ctx.lineTo(r * 0.72, r * 0.62)
+    ctx.lineTo(0, r * 0.28)
+    ctx.lineTo(-r * 0.72, r * 0.62)
+    ctx.closePath()
+    ctx.fillStyle = '#57e389'
+    ctx.fill()
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)'
+    ctx.lineWidth = 1.25
+    ctx.stroke()
+    ctx.restore()
+  }
+
+  private drawPeerDots(ctx: CanvasRenderingContext2D, size: number): void {
+    const peers = this.getPeers()
+    if (!peers.length) return
+
+    for (const peer of peers) {
+      const px = Math.floor(peer.x / PARCEL_M)
+      const py = Math.floor(peer.z / PARCEL_M)
+      const parcelKey = `${px},${py}`
+      const pos = { x: peer.x, y: 0, z: peer.z }
+      // Reuse map projection (player-centered view).
+      const rect = peerScreenRect(parcelKey, pos, size, size, this.view)
+      if (!rect) continue
+      // Clip roughly to circle interior
+      const dx = rect.cx - size / 2
+      const dy = rect.cy - size / 2
+      if (dx * dx + dy * dy > (size / 2 - 6) ** 2) continue
+
+      ctx.fillStyle = '#e85d5d'
+      ctx.beginPath()
+      ctx.arc(rect.cx, rect.cy, 3.5, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.arc(rect.cx, rect.cy, 3.5, 0, Math.PI * 2)
+      ctx.stroke()
+    }
+  }
+}
+
+/** Screen center of a peer using the same parcel + sub-parcel math as the map. */
+function peerScreenRect(
+  parcelKey: string,
+  position: { x: number; y: number; z: number },
+  viewW: number,
+  viewH: number,
+  view: MapViewState
+): { cx: number; cy: number } | null {
+  const m = /^(-?\d+),(-?\d+)$/.exec(parcelKey.trim())
+  if (!m) return null
+  const px = parseInt(m[1]!, 10)
+  const py = parseInt(m[2]!, 10)
+  const base = parcelScreenRect(px, py, viewW, viewH, view)
+  if (!base) return null
+  const localX = ((Number(position.x) % PARCEL_M) + PARCEL_M) % PARCEL_M
+  const localZ = ((Number(position.z) % PARCEL_M) + PARCEL_M) % PARCEL_M
+  const fx = localX / PARCEL_M
+  const fy = 1 - localZ / PARCEL_M
+  return {
+    cx: base.left + base.size * fx,
+    cy: base.top + base.size * fy
   }
 }

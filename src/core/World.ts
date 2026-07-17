@@ -2260,6 +2260,35 @@ export class World {
     return this.player.getPlayerYaw()
   }
 
+  /**
+   * Avatar body facing in **DCL yaw** (radians) for minimap / map arrows.
+   * Independent of freecam orbit — tip of the marker should point this way.
+   */
+  getPlayerFacingYawDcl(): number | null {
+    if (!this.playerMode || !this.player) return null
+    return this.player.getNetworkYaw()
+  }
+
+  /**
+   * Remote peers with a known pose, in Genesis City meters (for minimap dots).
+   * Positions are world/genesis space (scene origin applied).
+   */
+  listMinimapPeers(): Array<{ address: string; x: number; z: number }> {
+    if (!this.remoteAvatars) return []
+    const origin = this.comms.getSceneOrigin()
+    const samples: Array<{ id: string; position: { x: number; y: number; z: number } }> = []
+    this.remoteAvatars.collectModifierSamples(samples)
+    const out: Array<{ address: string; x: number; z: number }> = []
+    for (const s of samples) {
+      out.push({
+        address: s.id,
+        x: s.position.x + origin.x,
+        z: s.position.z + origin.z
+      })
+    }
+    return out
+  }
+
   triggerPointerAction(
     action: import('../input/pointerConstants').InputActionValue,
     phase: 'down' | 'up'

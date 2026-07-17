@@ -13,7 +13,7 @@ export type EcsComponentEntry = {
 
 export const DCL_ECS_COMPONENTS: EcsComponentEntry[] = [
   { name: 'Transform', coreId: 1, phase: 1, status: 'render', category: 'core' },
-  { name: 'Name', phase: 1, status: 'none', category: 'core' },
+  { name: 'Name', phase: 1, status: 'render', category: 'core' },
   { name: 'Tags', phase: 1, status: 'render', category: 'core' },
   { name: 'VisibilityComponent', coreId: 1081, phase: 1, status: 'render', category: 'core' },
   { name: 'GltfContainer', coreId: 1041, phase: 1, status: 'render', category: 'render' },
@@ -31,7 +31,7 @@ export const DCL_ECS_COMPONENTS: EcsComponentEntry[] = [
   { name: 'AvatarLocomotionSettings', coreId: 1211, phase: 2, status: 'render', category: 'physics' },
   { name: 'PointerLock', coreId: 1074, phase: 2, status: 'client-only', category: 'input' },
   { name: 'InputModifier', coreId: 1078, phase: 3, status: 'render', category: 'input' },
-  { name: 'MainCamera', coreId: 1075, phase: 2, status: 'client-only', category: 'camera' },
+  { name: 'MainCamera', coreId: 1075, phase: 2, status: 'render', category: 'camera' },
   { name: 'VirtualCamera', coreId: 1076, phase: 3, status: 'render', category: 'camera' },
   { name: 'CameraMode', coreId: 1072, phase: 4, status: 'client-only', category: 'camera' },
   { name: 'CameraModeArea', coreId: 1071, phase: 4, status: 'render', category: 'camera' },
@@ -64,17 +64,17 @@ export const DCL_ECS_COMPONENTS: EcsComponentEntry[] = [
   { name: 'AvatarAttach', coreId: 1073, phase: 4, status: 'render', category: 'avatar' },
   { name: 'AvatarEmoteCommand', coreId: 1088, phase: 4, status: 'render', category: 'avatar' },
   { name: 'AvatarEquippedData', coreId: 1091, phase: 4, status: 'client-only', category: 'avatar' },
-  { name: 'AvatarModifierArea', coreId: 1070, phase: 4, status: 'none', category: 'avatar' },
+  { name: 'AvatarModifierArea', coreId: 1070, phase: 4, status: 'render', category: 'avatar' },
   { name: 'PlayerIdentityData', coreId: 1089, phase: 4, status: 'client-only', category: 'avatar' },
   { name: 'NetworkEntity', phase: 5, status: 'render', category: 'network' },
   { name: 'NetworkParent', phase: 5, status: 'render', category: 'network' },
-  { name: 'SyncComponents', phase: 5, status: 'none', category: 'network' },
+  { name: 'SyncComponents', phase: 5, status: 'render', category: 'network' },
   { name: 'AssetLoad', coreId: 1213, phase: 6, status: 'none', category: 'assets' },
   { name: 'AssetLoadLoadingState', coreId: 1214, phase: 6, status: 'client-only', category: 'assets' },
   { name: 'GltfNodeModifiers', coreId: 1099, phase: 6, status: 'none', category: 'render' },
   { name: 'NftShape', coreId: 1040, phase: 6, status: 'none', category: 'render' },
   { name: 'ParticleSystem', coreId: 1217, phase: 6, status: 'render', category: 'render' },
-  { name: 'MapPin', coreId: 1097, phase: 6, status: 'none', category: 'misc' },
+  { name: 'MapPin', coreId: 1097, phase: 6, status: 'render', category: 'misc' },
   { name: 'EngineInfo', coreId: 1048, phase: 6, status: 'client-only', category: 'misc' },
   { name: 'RealmInfo', coreId: 1106, phase: 6, status: 'client-only', category: 'misc' }
 ]

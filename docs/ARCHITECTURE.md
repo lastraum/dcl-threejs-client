@@ -95,7 +95,7 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 | Play HUD | Location pill + circular Genesis minimap (parcels) ✅; worlds pill-only |
 | Backpack | Wearables/emotes/colors ✅; outfits + marketplace open |
 | Graphics P3/P4 | Distance culls + bloom/HDR stubs |
-| NftShape, AvatarModifierArea, GltfContainerLoadingState | Not started |
+| NftShape, GltfContainerLoadingState, AvatarBase | Not started |
 
 ### P3 — Hygiene
 

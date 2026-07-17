@@ -1240,7 +1240,8 @@ export class AppController {
       getRemoteAvatars: () => world.getRemoteAvatarManager(),
       getCamera: () => world.host.camera,
       onOpenChat: () => this.shell?.openChatPanel(),
-      onPrepareOverlay: () => this.world?.cancelCameraPointer()
+      onPrepareOverlay: () => this.world?.cancelCameraPointer(),
+      isPassportDisabled: (address) => world.sceneScript.isPassportDisabled(address)
     })
 
     if (!this.debugPanel) {

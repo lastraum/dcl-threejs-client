@@ -160,6 +160,8 @@ export class PlayerSystem {
   /** Prior frame locomotion allowed — clear position lock when scene unfreezes. */
   private wasLocomotionAllowed = true
   private virtualCamera: VirtualCameraBridge | null = null
+  /** AvatarModifierArea hide (local mesh). */
+  private modifierHidden = false
   /** CameraModeArea force — null when freecam is player-controlled. */
   private forcedCameraMode: ForcedCameraMode | null = null
   private preForceCamDistance: number | null = null
@@ -445,6 +447,18 @@ export class PlayerSystem {
 
   /** Scene chat line shown inside the overhead name-tag pill. */
   /** Nearby-voice bars above local name tag while mic is live. */
+  /**
+   * AvatarModifierArea AMT_HIDE_AVATARS — hide local body + name tag.
+   * Camera still follows; mesh invisible to self and others (local client).
+   */
+  setModifierHidden(hidden: boolean): void {
+    this.modifierHidden = hidden
+    this.avatar?.setBodyVisible(!hidden && !this.isFirstPerson())
+    if (this.nameTag) {
+      this.nameTag.object.visible = !hidden && areSceneNameTagsVisible() && !this.isFirstPerson()
+    }
+  }
+
   setNameTagVoiceLevel(level: number): void {
     this.nameTag?.setVoiceLevel(level)
   }
@@ -1019,17 +1033,17 @@ export class PlayerSystem {
 
   private syncCamera(snap: boolean, delta = 0.016): void {
     if (this.virtualCamera?.apply(delta)) {
-      this.avatar?.setBodyVisible(true)
+      this.avatar?.setBodyVisible(!this.modifierHidden)
       if (this.nameTag) {
-        this.nameTag.object.visible = areSceneNameTagsVisible()
+        this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
       }
       return
     }
 
     const fpv = this.isFirstPerson()
-    this.avatar?.setBodyVisible(!fpv)
+    this.avatar?.setBodyVisible(!this.modifierHidden && !fpv)
     if (this.nameTag) {
-      this.nameTag.object.visible = areSceneNameTagsVisible() && !fpv
+      this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible() && !fpv
     }
 
     if (fpv) {

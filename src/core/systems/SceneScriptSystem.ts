@@ -73,6 +73,12 @@ import { TriggerAreaSystem } from '../../input/TriggerAreaSystem'
 import { isTriggerAreaVerbose } from '../../input/triggerAreaConfig'
 import { CameraModeAreaSystem } from '../../input/CameraModeAreaSystem'
 import type { ForcedCameraMode } from '../../input/CameraModeAreaSystem'
+import {
+  AvatarModifierAreaSystem,
+  type AvatarModifierEffects,
+  type AvatarSample
+} from '../../input/AvatarModifierAreaSystem'
+import { MapPinStore } from '../../input/MapPinStore'
 import { RaycastSystem } from '../../input/RaycastSystem'
 import { isRaycastVerbose } from '../../input/raycastConfig'
 import type { PhysXWorld } from '../../physics/PhysXWorld'
@@ -187,7 +193,13 @@ export class SceneScriptSystem {
   private clearPlayerMoveKeys: (() => void) | null = null
   triggerAreas: TriggerAreaSystem | null = null
   cameraModeAreas: CameraModeAreaSystem | null = null
+  avatarModifiers: AvatarModifierAreaSystem | null = null
+  mapPins: MapPinStore | null = null
   private setForcedCameraMode: ((mode: ForcedCameraMode | null) => void) | null = null
+  private avatarModifierProviders: {
+    getSamples: () => AvatarSample[]
+    apply: (id: string, effects: AvatarModifierEffects) => void
+  } | null = null
   raycasts: RaycastSystem | null = null
   readonly engineApiEvents = new EngineApiEventBridge()
   private bridge: ThreeBridge | null = null
@@ -468,6 +480,8 @@ export class SceneScriptSystem {
     this.sceneInputRelay = new SceneInputRelay()
     this.triggerAreas = new TriggerAreaSystem()
     this.cameraModeAreas = new CameraModeAreaSystem()
+    this.avatarModifiers = new AvatarModifierAreaSystem()
+    this.mapPins = new MapPinStore()
     this.raycasts = new RaycastSystem()
     this.avatarShapes.setAssetCache(cache, scene.realm.contentUrl)
     this.bridge.setOnGltfAttached((entity) => this.flushIncrementalColliders(entity))
@@ -2368,8 +2382,16 @@ export class SceneScriptSystem {
 
   private foldProjectionChanges(): void {
     const { PlayerEntity, CameraEntity, RootEntity } = this.view
-    const { TriggerArea, CameraModeArea, Transform, Billboard, MainCamera, InputModifier } =
-      this.readComponents
+    const {
+      TriggerArea,
+      CameraModeArea,
+      AvatarModifierArea,
+      MapPin,
+      Transform,
+      Billboard,
+      MainCamera,
+      InputModifier
+    } = this.readComponents
 
     for (const change of this.projection.changes) {
       if (
@@ -2410,8 +2432,12 @@ export class SceneScriptSystem {
       if (
         change.componentId === TriggerArea.componentId ||
         change.componentId === CameraModeArea.componentId ||
+        change.componentId === AvatarModifierArea.componentId ||
+        change.componentId === MapPin.componentId ||
         (change.componentId === Transform.componentId &&
-          (TriggerArea.has(change.entity) || CameraModeArea.has(change.entity)))
+          (TriggerArea.has(change.entity) ||
+            CameraModeArea.has(change.entity) ||
+            AvatarModifierArea.has(change.entity)))
       ) {
         this.triggerStructureDirty = true
       }
@@ -2464,6 +2490,8 @@ export class SceneScriptSystem {
     this.triggerStructureDirty = false
     this.triggerAreas?.invalidateCache()
     this.cameraModeAreas?.invalidateCache()
+    this.avatarModifiers?.invalidateCache()
+    this.mapPins?.invalidate()
   }
 
   setVideoUserGestureUnlocked(unlocked: boolean): void {
@@ -2576,6 +2604,12 @@ export class SceneScriptSystem {
       },
       setForcedCameraMode: (mode) => this.setForcedCameraMode?.(mode)
     })
+    this.avatarModifiers?.bind({
+      ecs: this.readComponents,
+      view: this.view,
+      getWorldTransformDeps: () => this.getWorldTransformDeps()
+    })
+    this.mapPins?.bind(this.readComponents, this.view)
     this.raycasts?.bind({
       ecs: this.readComponents,
       view: this.view,
@@ -2628,6 +2662,30 @@ export class SceneScriptSystem {
     this.flushTriggerStructureIfDirty()
     this.triggerAreas?.sync()
     this.cameraModeAreas?.sync()
+    this.syncAvatarModifiers()
+  }
+
+  /** Wire player/remote samples + apply hide (World binds after spawn). */
+  setAvatarModifierProviders(
+    providers: {
+      getSamples: () => AvatarSample[]
+      apply: (id: string, effects: AvatarModifierEffects) => void
+    } | null
+  ): void {
+    this.avatarModifierProviders = providers
+  }
+
+  isPassportDisabled(address: string): boolean {
+    return this.avatarModifiers?.isPassportDisabled(address) ?? false
+  }
+
+  private syncAvatarModifiers(): void {
+    if (!this.avatarModifiers || !this.avatarModifierProviders) return
+    const samples = this.avatarModifierProviders.getSamples()
+    this.avatarModifiers.sync(samples)
+    for (const sample of samples) {
+      this.avatarModifierProviders.apply(sample.id, this.avatarModifiers.getEffects(sample.id))
+    }
   }
 
   private syncRaycasts(): void {
@@ -3972,6 +4030,11 @@ export class SceneScriptSystem {
     this.triggerAreas = null
     this.cameraModeAreas?.dispose()
     this.cameraModeAreas = null
+    this.avatarModifiers?.dispose()
+    this.avatarModifiers = null
+    this.mapPins?.dispose()
+    this.mapPins = null
+    this.avatarModifierProviders = null
     this.setForcedCameraMode = null
     this.raycasts?.dispose()
     this.raycasts = null

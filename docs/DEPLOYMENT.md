@@ -101,7 +101,8 @@ Code path: `PointerEventsSystem.ts` → mirror `PointerEventsResult` + `PrimaryP
 - [x] No console throw from `PointerEventsSystem` each frame
 - [x] Clicks while UI open do not trigger scene behind panel
 
-**Known gaps:** proximity events (`PET_PROXIMITY_*` — player walks near entity, not cursor), UI entity pointers, **Tags** component (`getEntitiesByTag`).
+**Known gaps:** proximity events (`PET_PROXIMITY_*` — player walks near entity, not cursor), UI entity pointers (scene ECS UI hit polish).  
+**Not gaps:** **Tags** + `engine.getEntitiesByTag()` — 🟢 mirror CRDT (scene worker has full ECS index).
 
 ### Known gaps (OK for v1 push — document in release notes)
 

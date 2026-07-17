@@ -78,7 +78,7 @@ export function applySceneDiff(
   const allowTransformless = options.allowTransformless
   const shouldNotify = (entity: Entity): boolean =>
     notifySecondary && !skipSecondaryNotify?.(entity)
-  const { Transform, VisibilityComponent, LightSource } = components
+  const { Transform, VisibilityComponent, LightSource, Name } = components
   const meshComponentIds = new Set<number>(
     MESH_COMPONENT_NAMES.map((name) => components[name].componentId)
   )
@@ -160,6 +160,12 @@ export function applySceneDiff(
     obj.visible = VisibilityComponent.has(entity)
       ? VisibilityComponent.get(entity).visible !== false
       : true
+
+    // core-schema::Name — debug / tooling label on the Three.js group (Explorer entity name).
+    if (Name.has(entity)) {
+      const n = Name.get(entity).value?.trim()
+      if (n) obj.name = n
+    }
 
     const lk = lightKey(entity)
     if (LightSource.has(entity)) {

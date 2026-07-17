@@ -20,6 +20,8 @@ export type ProfileUiControllerOptions = {
   getCamera?: () => import('three').Camera | null
   onOpenChat?: () => void
   onPrepareOverlay?: () => void
+  /** AvatarModifierArea AMT_DISABLE_PASSPORTS — block profile UI for this peer. */
+  isPassportDisabled?: (address: string) => boolean
 }
 
 /** Central hub for user pill context menus and the shared profile modal. */
@@ -76,10 +78,12 @@ export class ProfileUiController {
       this.openProfile({ kind: 'local' })
       return
     }
+    if (this.options.isPassportDisabled?.(address)) return
     this.openProfile({ kind: 'remote', address: address.toLowerCase() })
   }
 
   openContextMenu(address: string, clientX: number, clientY: number): void {
+    if (this.options.isPassportDisabled?.(address)) return
     this.prepareOverlay()
     const key = address.toLowerCase()
     void this.options.social.ensureFriendshipSnapshot().then(() => {

@@ -1,11 +1,38 @@
 import * as extended from '@dcl/ecs/dist/components'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
-import type { IEngine } from '@dcl/ecs'
+import type { IEngine, LastWriteWinElementSetComponentDefinition } from '@dcl/ecs'
+import { PBMapPin } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/map_pin.gen'
+
+/** MapPin is not re-exported from index.gen (deprecated SDK surface) — define from PB schema. */
+type MapPinComponent = LastWriteWinElementSetComponentDefinition<PBMapPin>
+
+/** Same shape as `@dcl/ecs` MapPinSchema (empty .d.ts on gen file). */
+const MapPinSchema = {
+  COMPONENT_ID: 1097,
+  serialize(value: PBMapPin, builder: { writeBuffer: (buf: Uint8Array, compress: boolean) => void }) {
+    const writer = PBMapPin.encode(value)
+    const finished = writer.finish()
+    builder.writeBuffer(finished.subarray(0, writer.len), false)
+  },
+  deserialize(reader: { buffer: () => Uint8Array; remainingBytes: () => number }) {
+    return PBMapPin.decode(reader.buffer(), reader.remainingBytes())
+  },
+  create() {
+    return PBMapPin.decode(new Uint8Array())
+  },
+  jsonSchema: {
+    type: 'object' as const,
+    properties: {},
+    serializationType: 'protocol-buffer' as const,
+    protocolBuffer: 'PBMapPin'
+  }
+}
 
 /** Renderer-side component defs bound to the mirror engine (not the scene singleton). */
 export type MirrorComponents = {
   Transform: ReturnType<typeof extended.Transform>
   Tags: ReturnType<typeof extended.Tags>
+  Name: ReturnType<typeof extended.Name>
   MeshRenderer: ReturnType<typeof extended.MeshRenderer>
   MeshCollider: ReturnType<typeof extended.MeshCollider>
   Material: ReturnType<typeof extended.Material>
@@ -24,6 +51,8 @@ export type MirrorComponents = {
   InputModifier: ReturnType<typeof generated.InputModifier>
   AvatarShape: ReturnType<typeof generated.AvatarShape>
   AvatarAttach: ReturnType<typeof generated.AvatarAttach>
+  AvatarModifierArea: ReturnType<typeof generated.AvatarModifierArea>
+  MapPin: MapPinComponent
   SkyboxTime: ReturnType<typeof generated.SkyboxTime>
   PlayerIdentityData: ReturnType<typeof generated.PlayerIdentityData>
   AvatarBase: ReturnType<typeof generated.AvatarBase>
@@ -62,6 +91,7 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
   return {
     Transform: extended.Transform(engine),
     Tags: extended.Tags(engine),
+    Name: extended.Name(engine),
     MeshRenderer: extended.MeshRenderer(engine),
     MeshCollider: extended.MeshCollider(engine),
     Material: extended.Material(engine),
@@ -80,6 +110,9 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     InputModifier: generated.InputModifier(engine),
     AvatarShape: generated.AvatarShape(engine),
     AvatarAttach: generated.AvatarAttach(engine),
+    AvatarModifierArea: generated.AvatarModifierArea(engine),
+    // Not on generated index (deprecated / orchestrator PX) — still in component-names + scenes.
+    MapPin: engine.defineComponentFromSchema('core::MapPin', MapPinSchema) as MapPinComponent,
     SkyboxTime: generated.SkyboxTime(engine),
     PlayerIdentityData: generated.PlayerIdentityData(engine),
     AvatarBase: generated.AvatarBase(engine),

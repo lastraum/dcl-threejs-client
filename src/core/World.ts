@@ -852,6 +852,29 @@ export class World {
       // Optional: dispose tears down scene after/with player — CameraModeArea clear must not throw.
       (mode) => this.player?.setForcedCameraMode(mode)
     )
+    this.sceneScript.setAvatarModifierProviders({
+      getSamples: () => {
+        const samples: { id: string; position: { x: number; y: number; z: number } }[] = []
+        const localPos = this.player?.getPosition()
+        if (localPos) {
+          const localId = this.session.getAddress()?.toLowerCase() ?? ''
+          samples.push({
+            id: localId,
+            position: { x: localPos.x, y: localPos.y, z: localPos.z }
+          })
+        }
+        this.remoteAvatars?.collectModifierSamples(samples)
+        return samples
+      },
+      apply: (id, effects) => {
+        const localId = this.session.getAddress()?.toLowerCase() ?? ''
+        if (!id || id === localId) {
+          this.player?.setModifierHidden(effects.hide)
+          return
+        }
+        this.remoteAvatars?.setModifierHidden(id, effects.hide)
+      }
+    })
     // Voice stays muted here — AppController unlocks after load UI / chrome is ready.
     // Plaza-scale from entity count when GLTF collider extract is sparse (Genesis ~18 colliders).
     const hydration = this.sceneScript.getHydrationStats()

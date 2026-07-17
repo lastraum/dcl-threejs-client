@@ -72,6 +72,8 @@ type RemotePeerRecord = {
   bodyShape: BodyShape
   loading: Promise<void> | null
   hasPosition: boolean
+  /** AvatarModifierArea hide — keeps peer but invisible. */
+  modifierHidden: boolean
   pendingProfile: AvatarProfile | null
   lastEmoteId: number
   activeEmoteUrn: string | null
@@ -324,6 +326,33 @@ export class RemoteAvatarManager {
     }
   }
 
+  /** AvatarModifierArea samples — DCL feet positions for remotes with a known pose. */
+  collectModifierSamples(out: { id: string; position: { x: number; y: number; z: number } }[]): void {
+    for (const [key, record] of this.peers) {
+      if (!record.hasPosition) continue
+      const pos = threeToDclVec(record.root.position)
+      out.push({ id: key, position: { x: pos.x, y: pos.y, z: pos.z } })
+    }
+  }
+
+  /**
+   * AvatarModifierArea AMT_HIDE_AVATARS — hide mesh + name tag for this peer.
+   * Does not remove the peer record (still receives movement).
+   */
+  setModifierHidden(address: string, hidden: boolean): void {
+    const record = this.peers.get(address.toLowerCase())
+    if (!record) return
+    record.modifierHidden = hidden
+    if (record.hasPosition && !hidden) {
+      record.root.visible = true
+    } else if (hidden) {
+      record.root.visible = false
+    }
+    if (record.nameTag) {
+      record.nameTag.object.visible = !hidden && areSceneNameTagsVisible()
+    }
+  }
+
   setPeerVrmHash(
     address: string,
     contentHash: string | null,
@@ -494,6 +523,7 @@ export class RemoteAvatarManager {
         bodyShape: 'male',
         loading: null,
         hasPosition: false,
+        modifierHidden: false,
         pendingProfile: null,
         lastEmoteId: 0,
         activeEmoteUrn: null,
@@ -523,7 +553,7 @@ export class RemoteAvatarManager {
       record.hasPosition = true
       record.targetPosition.copy(position)
       record.root.position.copy(position)
-      record.root.visible = true
+      record.root.visible = !record.modifierHidden
       if (!record.model && !record.placeholder) {
         this.attachLoadingPresentation(record)
       }
@@ -655,7 +685,7 @@ export class RemoteAvatarManager {
 
     if (!record.hasPosition) {
       record.root.position.copy(position)
-      record.root.visible = true
+      record.root.visible = !record.modifierHidden
     }
 
     record.hasPosition = true
@@ -834,6 +864,7 @@ export class RemoteAvatarManager {
       })
     }
     record.nameTag.setLoading(loading)
+    record.nameTag.object.visible = !record.modifierHidden && areSceneNameTagsVisible()
   }
 
   private attachLoadingPresentation(record: RemotePeerRecord): void {

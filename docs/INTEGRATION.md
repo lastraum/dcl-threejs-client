@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-12 (CameraMode / CameraModeArea / PointerLock — see PROGRESS.md)
+> **Last updated:** 2026-07-16 (Name · AvatarModifierArea · MapPin 🟢; full Phase 6 rows; Tags not a gap)
 
 ---
 
@@ -25,16 +25,16 @@
 
 ## Summary
 
-| Area | Tracked | 🟢 Done | 🟡 Partial | ⬜ Not started |
-| ---- | ------- | ------- | ---------- | -------------- |
-| ECS components | 65 | ~32 | ~3 | ~30 |
-| Client UI | 22 | 16 | 4 | 2 |
-| Networking | 17 | 14 | 2 | 1 |
-| Performance | 18 | 15 | 2 | 1 |
-| Environment | 4 | 4 | 0 | 0 |
-| ~system modules | 9 | 5 | 2 | 2 |
+| Area | Tracked | 🟢 Done | 🟡 Partial | ⬜ Not started | 🔵 Client-only |
+| ---- | ------- | ------- | ---------- | -------------- | -------------- |
+| ECS components | 65 | 36 | 5 | 7 | 17 |
+| Client UI | see `integrationRegistry.ts` | | | | |
+| Networking | see `integrationRegistry.ts` | | | | |
+| Performance | see `integrationRegistry.ts` | | | | |
+| Environment | 4 | 4 | 0 | 0 | — |
+| ~system modules | 9 | 5 | 2 | 2 | — |
 
-*Exact counts: dev panel or `integrationRegistry.ts`.*
+*ECS counts from `src/dcl/ecs/registry.ts`. **Without full parity** = ⬜ + 🟡 = **12**. Client-only is intentional (renderer → scene), not a missing feature row unless noted. **Tags** + `getEntitiesByTag()` are 🟢 (not a known gap).*
 
 ---
 
@@ -48,6 +48,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | --------- | -- | ------ | ----- |
 | Transform | 1 | 🟢 | EntityStore + `dclTransform.ts` |
 | Tags | — | 🟢 | Mirror CRDT; `getEntitiesByTag()` |
+| Name | — | 🟢 | `core-schema::Name` → Three.js `Group.name` (debug / tooling) |
 | VisibilityComponent | 1081 | 🟢 | `obj.visible` |
 | GltfContainer | 1041 | 🟢 | Budgeted attach + reload on src change |
 | MeshRenderer | 1018 | 🟢 | Primitives + custom UVs |
@@ -64,6 +65,8 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | --------- | -- | ------ | ----- |
 | MeshCollider | 1019 | 🟢 | PhysX static + GLTF trimesh |
 | AvatarLocomotionSettings | 1211 | 🟢 | Read for jump tuning |
+| PhysicsCombinedForce | 1216 | ⬜ | Apply force to physics bodies |
+| PhysicsCombinedImpulse | 1215 | ⬜ | Apply impulse to physics bodies |
 | InputModifier | 1078 | 🟢 | Read path |
 | PointerLock | 1074 | 🔵 | Renderer writes CameraEntity; right-click (or Tab) toggles lock; lock movement = orbit look |
 | PointerEvents | 1062 | 🟢 | Raycast + hover hints + CRDT |
@@ -93,6 +96,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | AudioSource | 1020 | 🟢 | `AudioSourceBridge` — buffer clips; in-world + player-parent emote gain |
 | AudioEvent | 1105 | 🔵 | Grow-only MediaState events → worker |
 | AudioStream | 1021 | 🟢 | `AudioStreamBridge` — HTTP/HLS; voice-chat volume category |
+| AudioAnalysis | 1212 | 🔵 | Spectrum / analysis data for scenes — write path TBD |
 
 ### Avatars (Phase 4)
 
@@ -103,7 +107,8 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | AvatarEmoteCommand | 1088 | 🟢 | Player + NPC emotes |
 | PlayerIdentityData | 1089 | 🔵 | Wallet / display name |
 | AvatarEquippedData | 1091 | 🔵 | Client → scene |
-| AvatarBase / AvatarModifierArea | 1087/1070 | ⬜ | |
+| AvatarBase | 1087 | ⬜ | |
+| AvatarModifierArea | 1070 | 🟢 | Volume hide avatars + disable passports (`AvatarModifierAreaSystem`) |
 
 ### Networking & environment (Phase 5–6)
 
@@ -114,7 +119,20 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | SkyboxTime | 1210 | 🟢 | Scene fixed → session custom → Auto; ECS/json lock snaps on cold bind |
 | UiTransform … UiDropdown | 1050+ | 🟡 | Yoga + DOM partial — results writeback; polish gaps |
 | ParticleSystem | 1217 | 🟢 | `ParticleSystemBridge` — GPU billboard sprites |
-| NftShape | 1040 | ⬜ | |
+| MapPin | 1097 | 🟢 | Mirror + `MapPinStore` list (deprecated upstream; still honored) |
+| NftShape | 1040 | ⬜ | NFT frame / wearables display mesh |
+| GltfNodeModifiers | 1099 | ⬜ | Per-node material/visibility overrides on GLTF |
+| AssetLoad | 1213 | ⬜ | Runtime asset fetch API |
+| AssetLoadLoadingState | 1214 | 🔵 | Load progress writeback for AssetLoad |
+| EngineInfo | 1048 | 🔵 | Frame/tick/version info on RootEntity — partial seed TBD |
+| RealmInfo | 1106 | 🔵 | Renderer writes realm + scene-room connect (`ReservedEntitiesSync`) |
+
+### Gaps still open (ECS only)
+
+| Status | Components |
+| ------ | ---------- |
+| ⬜ | AvatarBase · GltfContainerLoadingState · PhysicsCombinedForce · PhysicsCombinedImpulse · AssetLoad · GltfNodeModifiers · NftShape |
+| 🟡 | UiTransform · UiText · UiBackground · UiInput · UiDropdown |
 
 ### ~system modules (worker shim)
 

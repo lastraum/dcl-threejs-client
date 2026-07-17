@@ -101,26 +101,27 @@ type BackpackViewOptions = {
   onVrmEquipChange?: () => void | Promise<void>
 }
 
+// Ordered in 2-column rail rows: avatar (body/hair), face features, clothing, accessories.
 const CATEGORIES: CategoryDef[] = [
   { id: 'all', label: 'All' },
   { id: 'body_shape', label: 'Body' },
-  { id: 'skin', label: 'Skin' },
   { id: 'hair', label: 'Hair' },
+  { id: 'eyes', label: 'Eyes' },
+  { id: 'eyebrows', label: 'Eyebrows' },
+  { id: 'mouth', label: 'Mouth' },
+  { id: 'facial_hair', label: 'Facial Hair' },
   { id: 'upper_body', label: 'Upper Body' },
   { id: 'lower_body', label: 'Lower Body' },
+  { id: 'hands_wear', label: 'Handwear' },
   { id: 'feet', label: 'Feet' },
-  { id: 'helmet', label: 'Helmet' },
-  { id: 'hat', label: 'Hat' },
-  { id: 'mask', label: 'Mask' },
   { id: 'eyewear', label: 'Eyewear' },
+  { id: 'hat', label: 'Hat' },
   { id: 'earring', label: 'Earring' },
+  { id: 'mask', label: 'Mask' },
   { id: 'tiara', label: 'Tiara' },
   { id: 'top_head', label: 'Top Head' },
-  { id: 'facial_hair', label: 'Facial Hair' },
-  { id: 'eyebrows', label: 'Eyebrows' },
-  { id: 'eyes', label: 'Eyes' },
-  { id: 'mouth', label: 'Mouth' },
-  { id: 'hands_wear', label: 'Handwear' }
+  { id: 'helmet', label: 'Helmet' },
+  { id: 'skin', label: 'Skin' }
 ]
 
 const ITEMS_PER_PAGE = 9

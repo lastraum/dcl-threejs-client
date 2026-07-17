@@ -22,7 +22,7 @@ Also: [REPO_MANAGEMENT.md](./REPO_MANAGEMENT.md) (branches/release), [IMPLEMENTA
 | **CRDT wire format** | Keep PUT/APPEND/DELETE + Lamport LWW; do not replace with custom pub/sub |
 | **No pub/sub event bus** | Events travel as CRDT components or worker RPC only |
 | **Comms outbound chat** | Use `encodeRfc4ChatPacket` in `src/social/dclRfc4Chat.ts` |
-| **2D vs 3D chat** | 2D shell = `SocialChatDock` (FAB); 3D in-play = `ChatPanel` / ClientShell — do not mix UX |
+| **2D vs 3D chat** | **2D** shell = `SocialChatDock` bottom-right FAB expand/collapse. **3D** in-play = `ChatPanel` **bottom-left** (+ sidebar / Enter; mobile-only left FAB). Do not move 3D chat to the right. |
 | **Elevated spawn** | Stage PE before script; `settleSpawnOntoFloor` preferNear authored Y — never accept roof as floor |
 | **DCL transform space** | Logical sim/comms in DCL LH meters; display conversion at render boundary only (`src/bridge/dclTransform.ts`) |
 

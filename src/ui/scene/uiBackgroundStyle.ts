@@ -17,6 +17,62 @@ const DEFAULT_SLICES = { top: 1 / 3, left: 1 / 3, right: 1 / 3, bottom: 1 / 3 }
 const imageNaturalSize = new Map<string, { w: number; h: number }>()
 const imageSizeLoading = new Set<string>()
 
+function clamp01(v: number): number {
+  return Math.min(1, Math.max(0, v))
+}
+
+/**
+ * Explorer multiplies UiBackground.color with the texture (incl. alpha).
+ *
+ * - No `color` → opaque white (react-ecs default).
+ * - Numeric `color.a` (incl. 0) → honor it.
+ * - Color present without `a` → opaque (1). Snapshot path must reinstate omitted `a:0`
+ *   (protobuf/JSON omit-zero) so dormancy colors like blood_frame stay invisible.
+ */
+export function effectiveUiBackgroundAlpha(
+  color: { r?: number; g?: number; b?: number; a?: number } | null | undefined
+): number {
+  if (color == null) return 1
+  if (typeof color.a === 'number' && Number.isFinite(color.a)) return clamp01(color.a)
+  if (Object.prototype.hasOwnProperty.call(color, 'a')) {
+    const raw = (color as { a?: unknown }).a
+    const n = typeof raw === 'number' ? raw : Number(raw)
+    if (Number.isFinite(n)) return clamp01(n)
+  }
+  return 1
+}
+
+/**
+ * Normalize a Color4-like value so `a: 0` survives JSON omit-default / protobuf toJSON.
+ * Call before shipping UiBackground rows to main.
+ */
+export function plainColor4(
+  color: { r?: number; g?: number; b?: number; a?: number } | null | undefined
+): { r: number; g: number; b: number; a: number } | undefined {
+  if (color == null || typeof color !== 'object') return undefined
+  const r = typeof color.r === 'number' && Number.isFinite(color.r) ? color.r : 0
+  const g = typeof color.g === 'number' && Number.isFinite(color.g) ? color.g : 0
+  const b = typeof color.b === 'number' && Number.isFinite(color.b) ? color.b : 0
+  // Prefer own-property / getter value (protobuf Message.a returns default 0 when unset
+  // on wire for intentional Color4.create(1,1,1,0)).
+  let a = 1
+  if (typeof color.a === 'number' && Number.isFinite(color.a)) {
+    a = color.a
+  } else if (Object.prototype.hasOwnProperty.call(color, 'a')) {
+    const n = Number((color as { a?: unknown }).a)
+    if (Number.isFinite(n)) a = n
+  } else {
+    // Getter path (protobufjs Message): reading .a yields 0 when field was default-omitted.
+    try {
+      const got = (color as { a?: unknown }).a
+      if (typeof got === 'number' && Number.isFinite(got)) a = got
+    } catch {
+      /* ignore */
+    }
+  }
+  return { r, g, b, a: clamp01(a) }
+}
+
 function color4Css(
   c: { r?: number; g?: number; b?: number; a?: number } | undefined,
   /** PBUiBackground / Color4 protobuf default when the field is omitted on the wire. */
@@ -29,19 +85,27 @@ function color4Css(
   const r = Math.round(Math.min(1, Math.max(0, c.r ?? defaultRgb[0])) * 255)
   const g = Math.round(Math.min(1, Math.max(0, c.g ?? defaultRgb[1])) * 255)
   const b = Math.round(Math.min(1, Math.max(0, c.b ?? defaultRgb[2])) * 255)
-  const a = Math.min(1, Math.max(0, c.a ?? 1))
+  const a = effectiveUiBackgroundAlpha(c)
   if (a <= 0.01) return 'transparent'
   return `rgba(${r},${g},${b},${a})`
 }
 
-/** True when a UiBackground should paint (color and/or texture). */
+/**
+ * True when a UiBackground should paint (color and/or texture).
+ *
+ * Explorer multiplies `color` with the texture — `color.a === 0` means fully
+ * invisible even when a texture is set. Dead Surge keeps a full-screen
+ * `blood_frame.png` mounted at alpha 0 as a dormant damage vignette; painting
+ * that texture opaque would show a circular "hit" frame under the tutorial.
+ */
 export function hasUiVisualBackground(
   bg: PBUiBackground | null | undefined,
   imageUrl?: string | null
 ): boolean {
   if (!bg) return false
+  if (effectiveUiBackgroundAlpha(bg.color) <= 0.01) return false
   if (imageUrl || hasUiBackgroundTexture(bg)) return true
-  return (bg.color?.a ?? 1) > 0.01
+  return true
 }
 
 /** SDK TextureUnion, react-ecs `{ src }`, and loose CRDT shapes. */
@@ -73,10 +137,6 @@ export function extractUiTextureSrc(texture: unknown): string | null {
 
 export function hasUiBackgroundTexture(bg: PBUiBackground | null | undefined): boolean {
   return extractUiTextureSrc(bg?.texture) !== null
-}
-
-function clamp01(v: number): number {
-  return Math.min(1, Math.max(0, v))
 }
 
 /**
@@ -136,7 +196,12 @@ export function resolveUiBackgroundImageUrl(
 
 function isOpaqueWhite(c: { r?: number; g?: number; b?: number; a?: number } | undefined): boolean {
   if (!c) return true
-  return (c.r ?? 1) >= 0.99 && (c.g ?? 1) >= 0.99 && (c.b ?? 1) >= 0.99 && (c.a ?? 1) >= 0.99
+  return (
+    (c.r ?? 1) >= 0.99 &&
+    (c.g ?? 1) >= 0.99 &&
+    (c.b ?? 1) >= 0.99 &&
+    effectiveUiBackgroundAlpha(c) >= 0.99
+  )
 }
 
 function isOpaqueBlack(c: { r?: number; g?: number; b?: number; a?: number } | undefined): boolean {
@@ -160,19 +225,79 @@ function clearBgImg(el: HTMLElement): void {
   el.querySelector('.scene-ui-node__bg-img')?.remove()
 }
 
-function applyBgImg(el: HTMLElement, imageUrl: string, mode: number): void {
+/**
+ * Parse UiBackground.uvs — 8 floats, bottom-left clockwise (Explorer / SDK7):
+ *   [u0,v0, u1,v1, u2,v2, u3,v3] = BL, TL, TR, BR
+ * Dead Surge atlas: createAtlasUvs → [left,bottom, left,top, right,top, right,bottom].
+ * Returns axis-aligned UV rect, or null when full texture / unusable.
+ */
+export function parseUiBackgroundUvRect(
+  uvs: number[] | null | undefined
+): { u0: number; v0: number; u1: number; v1: number } | null {
+  if (!uvs || uvs.length < 8) return null
+  const nums = uvs.map((n) => Number(n))
+  if (nums.some((n) => !Number.isFinite(n))) return null
+  // Prefer corners BL/TR; also min/max in case winding differs.
+  const us = [nums[0]!, nums[2]!, nums[4]!, nums[6]!]
+  const vs = [nums[1]!, nums[3]!, nums[5]!, nums[7]!]
+  const u0 = Math.min(...us)
+  const u1 = Math.max(...us)
+  const v0 = Math.min(...vs)
+  const v1 = Math.max(...vs)
+  if (u1 - u0 < 1e-5 || v1 - v0 < 1e-5) return null
+  // Full-texture default — treat as no crop (object-fit path).
+  if (u0 <= 1e-5 && v0 <= 1e-5 && u1 >= 1 - 1e-5 && v1 >= 1 - 1e-5) return null
+  return { u0, v0, u1, v1 }
+}
+
+function applyBgImg(
+  el: HTMLElement,
+  imageUrl: string,
+  mode: number,
+  colorAlpha = 1,
+  uvs?: number[] | null
+): void {
   const img = ensureBgImg(el)
   assignUiImageSrc(img, imageUrl)
   if (getComputedStyle(el).position === 'static') el.style.position = 'relative'
   img.style.position = 'absolute'
-  img.style.inset = '0'
-  img.style.width = '100%'
-  img.style.height = '100%'
   img.style.pointerEvents = 'none'
-  img.style.opacity = '1'
-  img.style.objectFit = mode === BackgroundTextureMode.CENTER ? 'contain' : 'fill'
-  img.style.objectPosition = 'center'
+  // Explorer multiplies UiBackground.color with the texture (incl. alpha).
+  img.style.opacity = String(clamp01(colorAlpha))
   img.style.borderRadius = 'inherit'
+  img.style.objectFit = 'fill'
+  img.style.objectPosition = 'center'
+
+  // Atlas UV crop (stretch + uvs) — clip sheet sprite into the element box.
+  // Without this, Dead Surge lobby buttons paint the whole HUD_LOBBY2 atlas
+  // squashed into each small rect ("UI scaled wrong").
+  const rect =
+    mode === BackgroundTextureMode.STRETCH ? parseUiBackgroundUvRect(uvs) : null
+  if (rect) {
+    const { u0, v0, u1, v1 } = rect
+    const uSpan = u1 - u0
+    const vSpan = v1 - v0
+    // GL v=0 bottom; CSS top=0 top → image top edge is at (1 - v1).
+    el.style.overflow = 'hidden'
+    img.style.inset = 'unset'
+    img.style.right = 'auto'
+    img.style.bottom = 'auto'
+    img.style.width = `${(100 / uSpan).toFixed(4)}%`
+    img.style.height = `${(100 / vSpan).toFixed(4)}%`
+    img.style.left = `${((-u0 / uSpan) * 100).toFixed(4)}%`
+    img.style.top = `${((-(1 - v1) / vSpan) * 100).toFixed(4)}%`
+  } else {
+    el.style.overflow = ''
+    img.style.inset = '0'
+    img.style.left = ''
+    img.style.top = ''
+    img.style.right = ''
+    img.style.bottom = ''
+    img.style.width = '100%'
+    img.style.height = '100%'
+    img.style.objectFit = mode === BackgroundTextureMode.CENTER ? 'contain' : 'fill'
+  }
+
   el.style.backgroundImage = ''
   el.style.backgroundSize = ''
   el.style.backgroundPosition = ''
@@ -310,6 +435,8 @@ function applyNineSlice(
   el.style.borderImageWidth = `${topPx}px ${rightPx}px ${bottomPx}px ${leftPx}px`
   el.style.borderImageRepeat = 'stretch'
   el.style.borderImageOutset = '0'
+  // Color alpha multiplies the nine-slice texture (Explorer parity).
+  el.style.opacity = String(effectiveUiBackgroundAlpha(bg.color))
   el.style.backgroundImage = ''
   el.style.backgroundSize = ''
   el.style.backgroundPosition = ''
@@ -362,7 +489,10 @@ export function applyUiBackgroundStyles(
     el.style.backgroundColor = 'transparent'
   }
 
-  applyBgImg(el, imageUrl, mode)
+  // Stretch/center path paints via <img> — apply color.a as Explorer-style multiply.
+  // Clear any leftover nine-slice opacity on this element (alpha lives on the img).
+  el.style.opacity = ''
+  applyBgImg(el, imageUrl, mode, effectiveUiBackgroundAlpha(c), bg?.uvs)
 }
 
 /** Test helper — clear natural-size cache between tests. */

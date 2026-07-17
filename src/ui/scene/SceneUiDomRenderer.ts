@@ -530,9 +530,11 @@ export class SceneUiDomRenderer {
     if (hasBg) {
       if (colorOnlyBg) {
         el.querySelector('.scene-ui-node__bg')?.remove()
+        el.querySelector('.scene-ui-node__bg-img')?.remove()
         applyUiBackgroundStyles(el, bg, null, scale)
       } else if (imageUrl && texMode === BackgroundTextureMode.NINE_SLICES) {
         el.style.backgroundColor = 'transparent'
+        el.querySelector('.scene-ui-node__bg-img')?.remove()
         const bgEl = ensureBgLayer(el)
         bgEl.style.position = 'absolute'
         bgEl.style.inset = '0'
@@ -546,11 +548,18 @@ export class SceneUiDomRenderer {
       } else {
         el.querySelector('.scene-ui-node__bg')?.remove()
         el.style.backgroundColor = 'transparent'
+        // Stretch/center may have left nine-slice opacity on el — reset; alpha lives on img.
+        el.style.opacity = ''
         applyUiBackgroundStyles(el, bg, imageUrl, scale)
       }
     } else {
       el.style.backgroundColor = 'transparent'
+      el.style.borderImage = ''
+      el.style.borderImageSource = ''
+      el.style.opacity = ''
+      el.style.overflow = ''
       el.querySelector('.scene-ui-node__bg')?.remove()
+      el.querySelector('.scene-ui-node__bg-img')?.remove()
     }
 
     if (uiInput) {

@@ -1091,9 +1091,20 @@ export class SceneScriptSystem {
     this.avatarAttachBridge?.setTargets(resolver)
   }
 
-  /** Player capsule root for spatial audio on PlayerEntity — call after initCapsule. */
+  /** Player capsule root for spatial audio + Transform.parent=PlayerEntity — call after initCapsule. */
   setSpatialAudioPlayerRoot(getter: (() => THREE.Object3D | null) | null): void {
     this.getSpatialAudioPlayerRoot = getter
+    // Same root parents ECS entities under engine.PlayerEntity (Dead Surge tutorial arrow).
+    // One-shot reparent when anchors appear (not a full Transform scan every frame).
+    this.bridge?.setReservedTransformAnchors(
+      getter
+        ? {
+            getPlayerRoot: () => this.getSpatialAudioPlayerRoot?.() ?? null,
+            getCamera: () => this.host?.camera ?? null
+          }
+        : null,
+      this.view
+    )
   }
 
   /** Binder for `livekit-video://current-stream` (stream-key + Cast share this src). */
@@ -4093,6 +4104,8 @@ export class SceneScriptSystem {
     this.particleBridge?.update(delta)
     this.avatarAttachBridge?.update(this.view)
     this.flushAvatarAttachTransforms()
+    // PlayerEntity-parented scene meshes (Dead Surge path arrow) — re-parent each frame.
+    this.bridge.syncReservedParentedTransforms(this.view)
     this.tweenBridge?.update(delta, this.view)
     this.markTweenColliderPosesDirty()
     this.billboardBridge?.sync(this.view)

@@ -63,7 +63,12 @@ export function entityUiVisualPaintKey(
   entity: Entity,
   transform: PBUiTransform,
   text: PBUiText | null,
-  bg: { color?: { r?: number; g?: number; b?: number; a?: number }; texture?: unknown } | null,
+  bg: {
+    color?: { r?: number; g?: number; b?: number; a?: number }
+    texture?: unknown
+    uvs?: number[]
+    textureMode?: number | string
+  } | null,
   pointerKey: string
 ): string {
   const o = transform.opacity ?? 1
@@ -79,6 +84,9 @@ export function entityUiVisualPaintKey(
     const c = bg.color
     b = c ? `bg${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 1}` : 'bg'
     if (bg.texture) b += ':tex'
+    if (bg.textureMode != null) b += `:tm${bg.textureMode}`
+    // Atlas sprite rect — lobby buttons share one sheet and differ only by uvs.
+    if (bg.uvs?.length) b += `:uv${bg.uvs.map((n) => Number(n).toFixed(4)).join(',')}`
   }
   return `${entity}|d${d}|o${o}|z${z}|pf${pf}|${t}|${b}|pe${pointerKey}`
 }
@@ -86,7 +94,14 @@ export function entityUiVisualPaintKey(
 export function computeUiVisualPaintKey(
   records: UiEntityRecord[],
   textOf: (e: Entity) => PBUiText | null,
-  backgroundOf: (e: Entity) => { color?: { r?: number; g?: number; b?: number; a?: number }; texture?: unknown } | null,
+  backgroundOf: (
+    e: Entity
+  ) => {
+    color?: { r?: number; g?: number; b?: number; a?: number }
+    texture?: unknown
+    uvs?: number[]
+    textureMode?: number | string
+  } | null,
   pointerKeyOf: (e: Entity) => string
 ): { full: string; byEntity: Map<Entity, string> } {
   const byEntity = new Map<Entity, string>()

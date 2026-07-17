@@ -156,16 +156,19 @@ export function installEngineSystemLoopPartition(): void {
   g[ENGINE_SYSTEM_LOOP_KEY] = (systems: SystemItem[], dt: number, runOne: (s: SystemItem, dt: number) => void) => {
     if (boundWorkerEngine) ensureWorkerLocomotionFreezePersisted(boundWorkerEngine)
     cooperativeReactEcsSkippedThisTick = false
+    // First-wins for react-ecs: scene createReactBasedUiSystem registers before
+    // asset-packs. Last-wins left Dead Surge running only the AP system (ui null
+    // until async admin toolkit setUiRenderer) → permanent mount=0.
     let react: SystemItem | undefined
     let scale: SystemItem | undefined
     for (const system of systems) {
       const name = system.name
       if (name === '@dcl/react-ecs') {
-        react = system
+        if (!react) react = system
         continue
       }
       if (name === '@dcl/react-ecs-ui-scale') {
-        scale = system
+        if (!scale) scale = system
         continue
       }
       safeRunSystem(system, dt, runOne)

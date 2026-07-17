@@ -122,14 +122,29 @@ export function applyDclLocalTransform(obj: THREE.Object3D, t: DclTransformValue
   obj.scale.set(t.scale.x, t.scale.y, t.scale.z)
 }
 
+/** Live Three.js anchors for reserved ECS parents (PlayerEntity / CameraEntity). */
+export type ReservedTransformAnchors = {
+  getPlayerRoot: () => THREE.Object3D | null
+  getCamera: () => THREE.Object3D | null
+}
+
 export function resolveTransformParent(
   parentEntity: Entity | undefined,
-  view: { RootEntity: Entity },
+  view: { RootEntity: Entity; PlayerEntity?: Entity; CameraEntity?: Entity },
   nodes: Map<Entity, THREE.Group>,
-  sceneRoot: THREE.Group
+  sceneRoot: THREE.Group,
+  anchors?: ReservedTransformAnchors | null
 ): THREE.Object3D {
   if (!parentEntity || parentEntity === 0 || parentEntity === view.RootEntity) {
     return sceneRoot
+  }
+  // Reserved entities are not scene store nodes — parent to the live player/camera object.
+  // Dead Surge post-tutorial arrow: Transform.parent = engine.PlayerEntity.
+  if (view.PlayerEntity != null && parentEntity === view.PlayerEntity) {
+    return anchors?.getPlayerRoot() ?? sceneRoot
+  }
+  if (view.CameraEntity != null && parentEntity === view.CameraEntity) {
+    return anchors?.getCamera() ?? sceneRoot
   }
   return nodes.get(parentEntity as Entity) ?? sceneRoot
 }

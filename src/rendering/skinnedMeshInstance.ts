@@ -38,11 +38,38 @@ export function installSkinnedMeshSafetyPatch(): void {
 }
 
 /**
+ * Ensure morphTargetInfluences exists when geometry has morph targets.
+ * Missing array → Three.js setProgram crash: `objectInfluences.length` on undefined
+ * (shared/instanced morph geometry, bad clones).
+ */
+export function ensureMorphTargetInfluences(root: THREE.Object3D): void {
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh
+    if (!mesh.isMesh || !mesh.geometry) return
+    const ma = mesh.geometry.morphAttributes
+    if (!ma) return
+    const targets = ma.position ?? ma.normal ?? ma.color
+    if (!targets?.length) return
+    if (!mesh.morphTargetInfluences || mesh.morphTargetInfluences.length !== targets.length) {
+      mesh.morphTargetInfluences = new Array(targets.length).fill(0)
+    }
+    if (!mesh.morphTargetDictionary) {
+      mesh.morphTargetDictionary = {}
+      for (let i = 0; i < targets.length; i++) {
+        mesh.morphTargetDictionary[`morphTarget${i}`] = i
+      }
+    }
+  })
+}
+
+/**
  * Clone a cached GLTF root for a new scene instance.
  * SkeletonUtils.clone rebinds skinned meshes to cloned bones while sharing geometry/materials.
  */
 export function cloneGltfInstance(root: THREE.Group): THREE.Group {
-  return cloneSkinnedRoot(root) as THREE.Group
+  const clone = cloneSkinnedRoot(root) as THREE.Group
+  ensureMorphTargetInfluences(clone)
+  return clone
 }
 
 /**

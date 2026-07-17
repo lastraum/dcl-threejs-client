@@ -934,7 +934,10 @@ export class SceneUiBridge {
   ): void {
     const insets = interactableInsetsVirtual(this.virtual, interactable)
     // interactableArea is a rect in virtual px (left/top/right/bottom edges), not chrome insets.
-    // UiScaleSystem + react-ecs read this for label sizing / interactable regions.
+    // UiScaleSystem: nextScale = min(width/virtualW, height/virtualH) / devicePixelRatio.
+    // We report canvas size in the same virtual design space as setUiRenderer (not CSS px),
+    // so devicePixelRatio must stay 1 — using window.devicePixelRatio (e.g. 2 on retina)
+    // halves getUiScaleFactor() and shrinks every POINT-unit UiTransform (shop/HUD collapse).
     const sx = this.virtual.width / Math.max(1, window.innerWidth)
     const sy = this.virtual.height / Math.max(1, window.innerHeight)
     const area = {
@@ -944,7 +947,7 @@ export class SceneUiBridge {
       bottom: Math.round((interactable.top + interactable.height) * sy)
     }
     const info: PBUiCanvasInformation = {
-      devicePixelRatio: window.devicePixelRatio || 1,
+      devicePixelRatio: 1,
       width: this.virtual.width,
       height: this.virtual.height,
       interactableArea: area,

@@ -126,16 +126,89 @@ function nextLamport(entity: Entity, componentId: number): number {
  * Snapshot values must be plain data for main-thread projection (no wire deserialize).
  * Prefer JSON — `structuredClone` on some ECS/protobuf-shaped objects drops fields
  * (empty UiText / missing colors → blank labels in the DOM painter).
+ *
+ * Color4.a defaults to 0 on the wire; protobuf/JSON omit-zero drops intentional `a:0`
+ * (Dead Surge blood_frame dormancy). Re-read color channels before stringify and
+ * reinstate them on the plain object so main can hide transparent textures.
  */
+function reinstateColor4Fields(original: unknown, plain: unknown): unknown {
+  if (!plain || typeof plain !== 'object' || !original || typeof original !== 'object') {
+    return plain
+  }
+  const o = original as Record<string, unknown>
+  const p = plain as Record<string, unknown>
+  const reinstateOne = (src: unknown, dst: Record<string, unknown>, key: string) => {
+    const c = src
+    if (c == null || typeof c !== 'object') return
+    const col = c as { r?: number; g?: number; b?: number; a?: number }
+    const r = typeof col.r === 'number' ? col.r : 0
+    const g = typeof col.g === 'number' ? col.g : 0
+    const b = typeof col.b === 'number' ? col.b : 0
+    let a = 1
+    if (typeof col.a === 'number' && Number.isFinite(col.a)) a = col.a
+    else {
+      try {
+        const got = col.a
+        if (typeof got === 'number' && Number.isFinite(got)) a = got
+      } catch {
+        /* ignore */
+      }
+    }
+    dst[key] = { r, g, b, a }
+  }
+  // UiBackground / UiText / common color-bearing UI rows
+  if ('color' in o) {
+    reinstateOne(o.color, p, 'color')
+  }
+  if ('textColor' in o) reinstateOne(o.textColor, p, 'textColor')
+  return plain
+}
+
 function toPlainComponentValue(value: unknown): unknown {
   if (value == null || typeof value !== 'object') return value
+  // Capture color.a (incl. 0) before omit-zero serialization.
+  let colorSnapshot: { r: number; g: number; b: number; a: number } | undefined
   try {
-    return JSON.parse(JSON.stringify(value))
+    const c = (value as { color?: { r?: number; g?: number; b?: number; a?: number } }).color
+    if (c && typeof c === 'object') {
+      const a = typeof c.a === 'number' && Number.isFinite(c.a) ? c.a : Number(c.a)
+      colorSnapshot = {
+        r: typeof c.r === 'number' ? c.r : 0,
+        g: typeof c.g === 'number' ? c.g : 0,
+        b: typeof c.b === 'number' ? c.b : 0,
+        a: Number.isFinite(a) ? a : 1
+      }
+    }
+  } catch {
+    colorSnapshot = undefined
+  }
+  try {
+    const plain = JSON.parse(JSON.stringify(value)) as unknown
+    const withColor = reinstateColor4Fields(value, plain)
+    if (
+      colorSnapshot &&
+      withColor &&
+      typeof withColor === 'object' &&
+      (withColor as { color?: { a?: number } }).color != null
+    ) {
+      const pc = (withColor as { color: { r?: number; g?: number; b?: number; a?: number } }).color
+      // Always write explicit a from pre-JSON snapshot (0 must survive).
+      pc.a = colorSnapshot.a
+      if (typeof pc.r !== 'number') pc.r = colorSnapshot.r
+      if (typeof pc.g !== 'number') pc.g = colorSnapshot.g
+      if (typeof pc.b !== 'number') pc.b = colorSnapshot.b
+    } else if (colorSnapshot && withColor && typeof withColor === 'object') {
+      ;(withColor as { color: typeof colorSnapshot }).color = colorSnapshot
+    }
+    return withColor
   } catch {
     /* fall through */
   }
   try {
-    if (typeof structuredClone === 'function') return structuredClone(value)
+    if (typeof structuredClone === 'function') {
+      const cloned = structuredClone(value)
+      return reinstateColor4Fields(value, cloned)
+    }
   } catch {
     /* fall through */
   }

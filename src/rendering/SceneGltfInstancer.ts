@@ -53,9 +53,16 @@ const _entityWorld = new THREE.Matrix4()
 const _instance = new THREE.Matrix4()
 const _shapeLocal = new THREE.Matrix4()
 
+function geometryHasMorphTargets(geometry: THREE.BufferGeometry | undefined): boolean {
+  if (!geometry?.morphAttributes) return false
+  const ma = geometry.morphAttributes
+  return !!(ma.position?.length || ma.normal?.length || ma.color?.length)
+}
+
 export function templateIsInstancable(root: THREE.Object3D): boolean {
   let hasRenderMesh = false
   let hasSkinned = false
+  let hasMorph = false
   root.traverse((node) => {
     if (!(node as THREE.Mesh).isMesh) return
     if ((node as THREE.SkinnedMesh).isSkinnedMesh) {
@@ -64,10 +71,17 @@ export function templateIsInstancable(root: THREE.Object3D): boolean {
     }
     if (isGltfInvisibleColliderName(node.name)) return
     const mesh = node as THREE.Mesh
+    if (geometryHasMorphTargets(mesh.geometry)) {
+      hasMorph = true
+      return
+    }
     const pos = mesh.geometry?.getAttribute('position')
     if (pos && pos.count >= 3) hasRenderMesh = true
   })
-  return hasRenderMesh && !hasSkinned
+  // Morph targets need per-instance morphTargetInfluences + AnimationMixer (weights tracks).
+  // InstancedMesh shares geometry with morphAttributes but no influences → WebGL crash
+  // (objectInfluences.length on undefined) — Dead Surge arrow.glb / blinking path arrows.
+  return hasRenderMesh && !hasSkinned && !hasMorph
 }
 
 /**

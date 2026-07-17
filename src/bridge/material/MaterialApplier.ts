@@ -226,8 +226,11 @@ function meshHasTextureMaps(mesh: THREE.Mesh, pb: PbMaterial): boolean {
   const inner = materialInner(pb)
   if (!inner) return true
 
-  if (coerceTextureUnion(inner.texture) && !m.map) return false
-  if (coerceTextureUnion(inner.alphaTexture) && !m.alphaMap) return false
+  const mainUnion = coerceTextureUnion(inner.texture)
+  const alphaUnion = coerceTextureUnion(inner.alphaTexture)
+  if (mainUnion && !m.map) return false
+  // Same-src alphaTexture intentionally skips alphaMap (uses map alpha + alphaTest).
+  if (alphaUnion && !m.alphaMap && !textureUnionSameSrc(alphaUnion, mainUnion)) return false
   if (materialCase === 'pbr' && m instanceof THREE.MeshPhysicalMaterial) {
     const pbr = inner as PbrMaterial
     if (coerceTextureUnion(pbr.emissiveTexture) && !m.emissiveMap) return false
@@ -416,6 +419,8 @@ export class MaterialApplier {
 
     let texturesOk = true
     let alphaTex: THREE.Texture | null = null
+    /** Scene set alphaTexture (including same-src as albedo). Drives AUTO cutout. */
+    let hasAlphaTextureSlot = false
     const mainUnion = coerceTextureUnion(inner.texture)
     if (mainUnion) {
       const prev = m.map
@@ -426,11 +431,21 @@ export class MaterialApplier {
     }
     const alphaUnion = coerceTextureUnion(inner.alphaTexture)
     if (alphaUnion) {
-      const prev = m.alphaMap
-      alphaTex = await this.loadUnionTexture(alphaUnion, { flipY })
-      m.alphaMap = alphaTex
-      if (!alphaTex) texturesOk = false
-      else this.applyUvTransform(alphaTex, getTextureDef(alphaUnion), prev, mesh)
+      hasAlphaTextureSlot = true
+      // Three.js alphaMap samples the *green* channel, not PNG alpha. Scenes often set
+      // texture + alphaTexture to the same PNG (backButton/nextButton purple pills).
+      // Using that as alphaMap makes purple (low G) disappear and leaves only white glyphs.
+      // When src matches albedo, skip alphaMap and cut out via map alpha + alphaTest.
+      if (textureUnionSameSrc(alphaUnion, mainUnion) && m.map) {
+        m.alphaMap = null
+        alphaTex = null
+      } else {
+        const prev = m.alphaMap
+        alphaTex = await this.loadUnionTexture(alphaUnion, { flipY })
+        m.alphaMap = alphaTex
+        if (!alphaTex) texturesOk = false
+        else this.applyUvTransform(alphaTex, getTextureDef(alphaUnion), prev, mesh)
+      }
     }
 
     if (m instanceof THREE.MeshPhysicalMaterial && isPbr) {
@@ -467,14 +482,14 @@ export class MaterialApplier {
     const transparencyMode = isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO
     const alpha =
       (isPbr ? (inner as PbrMaterial).albedoColor?.a : (inner as UnlitMaterial).diffuseColor?.a) ?? 1
-    // AUTO cutout only when a dedicated alphaTexture/alphaMap is set — match Unity Explorer.
-    // Do not sample albedo map alpha; PNG-with-alpha albedo stays opaque (black RGB shows).
+    // AUTO cutout when scene provided alphaTexture (dedicated map, or same-src PNG alpha).
+    // Bare albedo PNG without alphaTexture stays opaque (Explorer parity).
     applyTransparency(
       m,
       alpha,
       inner.alphaTest,
       transparencyMode,
-      !!alphaTex || !!m.alphaMap
+      hasAlphaTextureSlot || !!alphaTex || !!m.alphaMap
     )
     if (transparencyMode === MTM_ALPHA_BLEND || transparencyMode === MTM_ALPHA_TEST_AND_ALPHA_BLEND) {
       m.depthWrite = false

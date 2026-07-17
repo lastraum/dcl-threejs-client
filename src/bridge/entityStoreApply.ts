@@ -6,7 +6,8 @@ import type { ProjectionView } from './ProjectionView'
 import {
   applyDclLocalTransform,
   resolveTransformParent,
-  sortEntitiesByTransformDepth
+  sortEntitiesByTransformDepth,
+  type ReservedTransformAnchors
 } from './dclTransform'
 import { syncLightSource, removeLightSource } from './LightSourceSync'
 
@@ -60,6 +61,10 @@ export type ApplySceneDiffOptions = {
    * only treat as removal on delete-only batches.
    */
   allowTransformless?: (entity: Entity) => boolean
+  /** Live player/camera roots for Transform.parent = PlayerEntity / CameraEntity. */
+  reservedAnchors?: ReservedTransformAnchors | null
+  /** Track entities parented to reserved anchors (tiny set for cheap later sync). */
+  onReservedParent?: (entity: Entity, parent: Entity | undefined, view: ProjectionView) => void
 }
 
 function notifyKind(kind: ProjectionChangeKind): 'put' | 'delete' {
@@ -83,6 +88,8 @@ export function applySceneDiff(
   const skipTransformApply = options.skipTransformApply
   const skipSecondaryNotify = options.skipSecondaryNotify
   const allowTransformless = options.allowTransformless
+  const reservedAnchors = options.reservedAnchors ?? null
+  const onReservedParent = options.onReservedParent
   const shouldNotify = (entity: Entity): boolean =>
     notifySecondary && !skipSecondaryNotify?.(entity)
   const { Transform, VisibilityComponent, LightSource, Name } = components
@@ -158,7 +165,15 @@ export function applySceneDiff(
     if (!obj) continue
 
     const t = Transform.get(entity)
-    const desiredParent = resolveTransformParent(t.parent, view, store.nodes, store.root)
+    const parentId = t.parent as Entity | undefined
+    onReservedParent?.(entity, parentId, view)
+    const desiredParent = resolveTransformParent(
+      parentId,
+      view,
+      store.nodes,
+      store.root,
+      reservedAnchors
+    )
     if (obj.parent !== desiredParent) desiredParent.add(obj)
     if (!skipTransformApply?.(entity)) {
       applyDclLocalTransform(obj, t)

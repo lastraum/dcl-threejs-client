@@ -44,6 +44,33 @@ export const WORKER_OWNED_UI_COMPONENT_IDS = new Set([
   1062 // PointerEvents (UI mount snapshot rows only)
 ])
 
+/** UiBackground / UiText — ensure color.a is a concrete number (0 must not become "missing"). */
+function normalizeUiColorFields(componentId: number, value: unknown): unknown {
+  if (componentId !== 1052 && componentId !== 1053) return value
+  if (value == null || typeof value !== 'object') return value
+  const v = value as Record<string, unknown>
+  const color = v.color
+  if (color == null || typeof color !== 'object') return value
+  const c = color as { r?: number; g?: number; b?: number; a?: number }
+  const a =
+    typeof c.a === 'number' && Number.isFinite(c.a)
+      ? c.a
+      : Object.prototype.hasOwnProperty.call(c, 'a')
+        ? Number(c.a)
+        : undefined
+  // Only rewrite when we have a finite a (incl. 0) or need to fill a missing a with 1.
+  const nextA = typeof a === 'number' && Number.isFinite(a) ? a : 1
+  return {
+    ...v,
+    color: {
+      r: typeof c.r === 'number' ? c.r : 0,
+      g: typeof c.g === 'number' ? c.g : 0,
+      b: typeof c.b === 'number' ? c.b : 0,
+      a: nextA
+    }
+  }
+}
+
 /** Commit MainCamera.virtualCameraEntity only once target VC is hydrated on projection. */
 export type VirtualCameraProjectionGate = {
   cameraEntity: Entity
@@ -203,7 +230,10 @@ export class CrdtProjection {
       if (!WORKER_OWNED_UI_COMPONENT_IDS.has(row.componentId)) continue
       if (!this.meta.has(row.componentId)) continue
       this.deletedEntities.delete(row.entity)
-      this.storeComponentPut(row.entity, row.componentId, tsBase + ++seq, row.value)
+      // UiBackground (1053) / UiText (1052): force numeric color.a so transparent
+      // textures (blood_frame a=0) stay hidden after omit-zero serialization.
+      const value = normalizeUiColorFields(row.componentId, row.value)
+      this.storeComponentPut(row.entity, row.componentId, tsBase + ++seq, value)
     }
   }
 

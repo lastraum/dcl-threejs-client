@@ -25,6 +25,7 @@ import type { AudioStreamBridge } from '../media/AudioStreamBridge'
 import type { VideoPlayerBridge } from '../media/VideoPlayerBridge'
 import type { EntityStore } from './EntityStore'
 import { applySceneDiff, type ApplySceneDiffOptions } from './entityStoreApply'
+import { applyDclLocalTransform, resolveTransformParent, type DclTransformValues } from './dclTransform'
 import { disposeOwnedObject3D } from '../rendering/sharedAsset'
 import { enableSceneGltfVertexColors } from '../rendering/LandscapeAssetSanitizer'
 import { cloneGltfInstance } from '../rendering/skinnedMeshInstance'
@@ -180,6 +181,9 @@ export class ThreeBridge {
   private audioSourceBridge: AudioSourceBridge | null = null
   private audioStreamBridge: AudioStreamBridge | null = null
   private skipTransformApply?: (entity: Entity) => boolean
+  /** Live player/camera roots for Transform.parent = PlayerEntity / CameraEntity. */
+  private reservedTransformAnchors: import('./dclTransform').ReservedTransformAnchors | null =
+    null
   /** Dedup idle parse kicks (content-map never bulk-parsed; per-entity only). */
   private readonly loadScheduled = new Set<string>()
   /** Serial large-clone queue — never run multiple multi-second clones back-to-back. */
@@ -218,6 +222,78 @@ export class ThreeBridge {
     this.instancer.updateEntities(entities, this.store.nodes)
   }
 
+  /**
+   * Entities with Transform.parent = PlayerEntity / CameraEntity.
+   * Maintained on CRDT apply — do NOT scan all Transforms every frame.
+   */
+  private readonly reservedParentedEntities = new Set<Entity>()
+
+  /** Note a reserved parent from CRDT apply (or full reconcile). */
+  noteReservedParentedEntity(entity: Entity, parent: Entity | undefined, view: ProjectionView): void {
+    if (
+      parent === view.PlayerEntity ||
+      parent === view.CameraEntity
+    ) {
+      this.reservedParentedEntities.add(entity)
+    } else {
+      this.reservedParentedEntities.delete(entity)
+    }
+  }
+
+  /**
+   * Re-parent only the tiny reserved-parent set (usually 0–2 entities).
+   * Cheap: once parented under the player root, Three.js hierarchy follows the player —
+   * we only re-parent if still stuck on sceneRoot (anchors late after first CRDT).
+   * Local pose still comes from normal CRDT applySceneDiff.
+   */
+  syncReservedParentedTransforms(view: ProjectionView): void {
+    const anchors = this.reservedTransformAnchors
+    if (!anchors || this.reservedParentedEntities.size === 0) return
+    const { Transform } = this.ecs
+    const { PlayerEntity, CameraEntity } = view
+    for (const entity of this.reservedParentedEntities) {
+      if (!Transform.has(entity)) {
+        this.reservedParentedEntities.delete(entity)
+        continue
+      }
+      const t = Transform.get(entity) as DclTransformValues
+      const parent = t.parent as Entity | undefined
+      if (parent !== PlayerEntity && parent !== CameraEntity) {
+        this.reservedParentedEntities.delete(entity)
+        continue
+      }
+      const obj = this.store.nodes.get(entity)
+      if (!obj) continue
+      const desired = resolveTransformParent(
+        parent,
+        view,
+        this.store.nodes,
+        this.store.root,
+        anchors
+      )
+      if (obj.parent !== desired) {
+        desired.add(obj)
+        if (!this.skipTransformApply?.(entity)) {
+          applyDclLocalTransform(obj, t)
+        }
+      }
+    }
+  }
+
+  /** One-shot when player root becomes available (initCapsule) — fix early CRDT parents. */
+  reparentAllReservedParented(view: ProjectionView): void {
+    const { Transform } = this.ecs
+    this.reservedParentedEntities.clear()
+    for (const [entity, t] of view.getEntitiesWith(Transform)) {
+      if (entity === view.RootEntity || entity === view.PlayerEntity || entity === view.CameraEntity) {
+        continue
+      }
+      const parent = (t as DclTransformValues).parent as Entity | undefined
+      this.noteReservedParentedEntity(entity, parent, view)
+    }
+    this.syncReservedParentedTransforms(view)
+  }
+
   /** Full instanced world-matrix rewrite (post-hydration / hierarchy seal). */
   refreshAllInstancedTransforms(): void {
     this.store.root.updateMatrixWorld(true)
@@ -243,10 +319,23 @@ export class ThreeBridge {
   /** Only suspended pool slots skip secondary notifies — not every animated plane in the scene. */
   private skipSpriteSecondaryNotify = (entity: Entity): boolean => this.isAnimatedSpriteSlot(entity)
 
+  setReservedTransformAnchors(
+    anchors: import('./dclTransform').ReservedTransformAnchors | null,
+    view?: ProjectionView
+  ): void {
+    this.reservedTransformAnchors = anchors
+    // Anchors usually appear after first player-parent CRDT — one full pass, not per-frame scan.
+    if (anchors && view) this.reparentAllReservedParented(view)
+  }
+
   private sceneDiffOptions(extra?: Partial<ApplySceneDiffOptions>): ApplySceneDiffOptions {
     return {
       skipTransformApply: this.skipTransformApply,
       skipSecondaryNotify: this.skipSpriteSecondaryNotify,
+      reservedAnchors: this.reservedTransformAnchors,
+      onReservedParent: (entity, parent, view) => {
+        this.noteReservedParentedEntity(entity, parent, view)
+      },
       ...extra
     }
   }
@@ -839,11 +928,14 @@ export class ThreeBridge {
       fullDiff.set(entity, comps)
     }
 
-    const applied = applySceneDiff(this.store, fullDiff, view, this.ecs, [], {
-      notifySecondary: false,
-      skipTransformApply: this.skipTransformApply,
-      skipSecondaryNotify: this.skipSpriteSecondaryNotify
-    })
+    const applied = applySceneDiff(
+      this.store,
+      fullDiff,
+      view,
+      this.ecs,
+      [],
+      this.sceneDiffOptions({ notifySecondary: false })
+    )
 
     // Hydration full-walk: reconcile transforms / orphan nodes only — never re-touch materials.
     const touchMaterials = this.hydrationMode
@@ -1623,13 +1715,16 @@ export class ThreeBridge {
     scheduleNext(pump)
   }
 
-  /** Prefer GPU InstancedMesh for static same-hash GLBs; clone for skinned / Animator. */
+  /** Prefer GPU InstancedMesh for static same-hash GLBs; clone for skinned / Animator / morphs. */
   private canInstanceAttach(
     entity: Entity,
     template: { root: THREE.Group; animations: THREE.AnimationClip[] }
   ): boolean {
     // Skinned / Animator need full clone + mixer rebind.
     if (this.ecs.Animator.has(entity)) return false
+    // Embedded clips (incl. morph weights) need a per-entity mesh + AnimationMixer —
+    // DCL auto-plays the first clip when no ECS Animator (arrow.glb blink).
+    if (template.animations.length > 0) return false
     // TextureMove tweens write material UVs — need private mesh materials (not shared instance).
     // Move/rotate tweens stay instancable; matrices refresh every frame after TweenBridge.
     if (this.ecs.Tween.has(entity)) {

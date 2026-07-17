@@ -82,6 +82,7 @@ import {
 } from './preregisterRendererInjectedComponents'
 import { installSceneWorkerFetchProxy } from './installSceneWorkerFetchProxy'
 import { collectWorkerUiTransformEntityIds } from './resolveBundledUiComponents'
+import { resetReactEcsOnceGuard } from './reactEcsOnce'
 import {
   hasWorkerReactEcsSync,
   resetWorkerUiFingerprint,
@@ -3009,6 +3010,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Yield so priority inject/deliver messages posted during stub setup can run before bundle eval.
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
+    // Allow the next bundle's first createReactBasedUiSystem to register (worker reuse).
+    resetReactEcsOnceGuard()
     installPreregisterRendererComponentsHook()
     ;(globalThis as Record<string, unknown>).__THREEJS_WORKER_LOG__ = (message: string) => {
       workerLog('log', message)

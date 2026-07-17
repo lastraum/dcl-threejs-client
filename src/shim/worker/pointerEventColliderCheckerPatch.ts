@@ -256,36 +256,63 @@ export type PatchSceneBundleStepLog = (step: string, ms: number) => void
 
 /**
  * Bundled `@dcl/react-ecs` registration. Minifier renames the reconcile fn (`d`, `p`, …)
- * and sometimes the engine local — only the priority + system name are stable.
- * Asset-pack `initAssetPacks` calls `eS(engine)` again with `n` unset → second reconcile
- * runs `update(null)` and wipes scene UI (Flagtag lobby mount=0).
+ * and sometimes the engine local — only the system name is stable.
+ * Asset-pack `initAssetPacks` calls `createReactBasedUiSystem` again with ui unset —
+ * second reconcile runs `update(null)` and/or the engine-loop partition kept only the
+ * last `@dcl/react-ecs` (Dead Surge: asset-packs admin toolkit before its async
+ * setUiRenderer → mount=0 forever).
  *
- * Never run `/g` replace over multi-MB sources — Dead Surge (~13MB) hung here for minutes.
- * Locate `"@dcl/react-ecs"` needles and only rewrite the nearby `.addSystem(...)` call.
+ * Never run heavy `/g` regexes over multi-MB sources. Locate `"@dcl/react-ecs"` /
+ * `'@dcl/react-ecs'` (not `-ui-scale`) and rewrite only the nearby `.addSystem(...)`.
+ *
+ * Dead Surge (~13MB) ships pretty-printed react-ecs:
+ *   `engine2.addSystem(ReactBasedUiSystem, 1e5, "@dcl/react-ecs")`
+ * Compact minified planets use `,1e5,"@dcl/react-ecs")` — both must match.
  */
-const REACT_ECS_SYSTEM_NEEDLES = [
-  ',1e5,"@dcl/react-ecs")',
-  ",1e5,'@dcl/react-ecs')",
-  ',100000,"@dcl/react-ecs")',
-  ",100000,'@dcl/react-ecs')"
-] as const
+const REACT_ECS_NAME_MARKERS = ['"@dcl/react-ecs"', "'@dcl/react-ecs'"] as const
 
+/** Compact minified: `setUiRenderer(a,b){n=a,o=b}` */
 const SET_UI_RENDERER_RE =
   /setUiRenderer\((\w+),(\w+)\)\{(\w+)=\1,(\w+)=\2\}/g
+/** Pretty-printed (Dead Surge): `setUiRenderer(ui, options) {\n  uiComponent2 = ui;\n  virtualSize = options;\n}` */
+const SET_UI_RENDERER_PRETTY_RE =
+  /setUiRenderer\((\w+),\s*(\w+)\)\s*\{\s*(\w+)\s*=\s*\1;\s*(\w+)\s*=\s*\2;?\s*\}/g
 const ADD_UI_RENDERER_RE =
   /addUiRenderer\((\w+),(\w+),(\w+)\)\{(\w+)\.set\(\1,\{ui:\2,options:\3\}\)\}/g
 
 /**
+ * Closing `)` indices of `recv.addSystem(fn, …, "@dcl/react-ecs")` — skips ui-scale.
+ */
+function findReactEcsAddSystemCloseParens(code: string): number[] {
+  const ends: number[] = []
+  for (const marker of REACT_ECS_NAME_MARKERS) {
+    let from = 0
+    while (from < code.length) {
+      const at = code.indexOf(marker, from)
+      if (at < 0) break
+      from = at + marker.length
+      // `@dcl/react-ecs-ui-scale` shares the prefix — skip.
+      if (code.startsWith('-ui-scale', from)) continue
+      let j = from
+      while (j < code.length && (code[j] === ' ' || code[j] === '\t' || code[j] === '\n' || code[j] === '\r')) {
+        j++
+      }
+      if (code[j] !== ')') continue
+      ends.push(j)
+    }
+  }
+  return ends
+}
+
+/**
  * From the closing `)` of `addSystem(fn,1e5,"@dcl/react-ecs")`, walk back to the receiver
- * and rebuild: `globalThis.__THREEJS_UI_REACT_ECS_ONCE__&&...(fn, eng)`.
+ * and rebuild with once-guard + fallback so a missing hook still registers.
  */
 function patchOneReactEcsAddSystem(code: string, closeParenIdx: number): string | null {
   // closeParenIdx points at the final `)` of the addSystem call.
-  // Expect: recv.addSystem(fn,1e5,"@dcl/react-ecs")
-  let i = closeParenIdx
+  // Expect: recv.addSystem(fn, 1e5, "@dcl/react-ecs")  (spaces optional)
+  const i = closeParenIdx
   if (code[i] !== ')') return null
-  // Skip back over ,"@dcl/react-ecs" or ,'@dcl/react-ecs'
-  // Find the matching open paren of addSystem(
   let depth = 0
   let openParen = -1
   for (let j = i; j >= 0; j--) {
@@ -300,50 +327,51 @@ function patchOneReactEcsAddSystem(code: string, closeParenIdx: number): string 
     }
   }
   if (openParen < 0) return null
-  // openParen is the `(` after addSystem
-  const before = code.slice(Math.max(0, openParen - 20), openParen)
-  const addSys = before.match(/(\w+)\.addSystem$/)
+  // openParen is the `(` after addSystem — allow whitespace before `(`.
+  const before = code.slice(Math.max(0, openParen - 24), openParen)
+  const addSys = before.match(/(\w+)\.addSystem\s*$/)
   if (!addSys) return null
   const recv = addSys[1]!
   const callStart = openParen - addSys[0].length
-  // Args: (fn,1e5,"@dcl/react-ecs")
+  // Args: (fn, 1e5, "@dcl/react-ecs") or (fn,1e5,"@dcl/react-ecs")
   const args = code.slice(openParen + 1, i)
-  const fnMatch = args.match(/^(\w+)\s*,/)
+  const fnMatch = args.match(/^\s*(\w+)\s*,/)
   if (!fnMatch) return null
   const fn = fnMatch[1]!
-  const replacement = `globalThis.__THREEJS_UI_REACT_ECS_ONCE__&&globalThis.__THREEJS_UI_REACT_ECS_ONCE__(${fn},${recv})`
+  // Fallback keeps registration if the worker hook failed to install (never silent no-op).
+  const replacement =
+    `(globalThis.__THREEJS_UI_REACT_ECS_ONCE__||function(__f,__e){__e.addSystem(__f,1e5,"@dcl/react-ecs")})(${fn},${recv})`
   return code.slice(0, callStart) + replacement + code.slice(i + 1)
 }
 
-/** Only the first react-ecs reconcile may register — later eS()/sw() calls no-op. */
-function patchReactEcsOnceGuard(code: string): string {
-  if (!code.includes('@dcl/react-ecs')) return code
+/**
+ * Only the first react-ecs reconcile may register — later asset-pack createReactBasedUiSystem no-ops.
+ * Returns patched source; `onStep` gets a hit count when provided via patchSceneBundle.
+ */
+function patchReactEcsOnceGuard(code: string): { code: string; patched: number } {
+  if (!code.includes('@dcl/react-ecs')) return { code, patched: 0 }
 
   let out = code
-  // Collect end indices of needle matches, then patch from the end so indices stay valid.
-  const ends: number[] = []
-  for (const needle of REACT_ECS_SYSTEM_NEEDLES) {
-    let from = 0
-    while (from < out.length) {
-      const at = out.indexOf(needle, from)
-      if (at < 0) break
-      // Needle ends with `)` — that is the close paren of addSystem(...).
-      ends.push(at + needle.length - 1)
-      from = at + needle.length
-    }
-  }
-  if (!ends.length) return code
+  const ends = findReactEcsAddSystemCloseParens(out)
+  if (!ends.length) return { code, patched: 0 }
 
   ends.sort((a, b) => b - a)
-  // Dedupe identical end indices
+  let patched = 0
   let last = -1
   for (const end of ends) {
     if (end === last) continue
     last = end
     const next = patchOneReactEcsAddSystem(out, end)
-    if (next) out = next
+    if (next) {
+      out = next
+      patched++
+    }
   }
-  return out
+  return { code: out, patched }
+}
+
+function injectVirtualCanvasReport(optionsArg: string): string {
+  return `try{if(${optionsArg}&&${optionsArg}.virtualWidth>0&&${optionsArg}.virtualHeight>0&&globalThis.__THREEJS_UI_VIRTUAL_CANVAS__)globalThis.__THREEJS_UI_VIRTUAL_CANVAS__(${optionsArg}.virtualWidth,${optionsArg}.virtualHeight)}catch(__err){}`
 }
 
 /** Patch ReactEcsRenderer setUiRenderer/addUiRenderer to report virtual canvas size to main. */
@@ -355,7 +383,13 @@ function patchUiVirtualCanvasHooks(code: string): string {
     out = out.replace(
       SET_UI_RENDERER_RE,
       (_match, entityArg, optionsArg, lhs, rhs) =>
-        `setUiRenderer(${entityArg},${optionsArg}){try{if(${optionsArg}&&${optionsArg}.virtualWidth>0&&${optionsArg}.virtualHeight>0&&globalThis.__THREEJS_UI_VIRTUAL_CANVAS__)globalThis.__THREEJS_UI_VIRTUAL_CANVAS__(${optionsArg}.virtualWidth,${optionsArg}.virtualHeight)}catch(__err){}${lhs}=${entityArg},${rhs}=${optionsArg}}`
+        `setUiRenderer(${entityArg},${optionsArg}){${injectVirtualCanvasReport(optionsArg)}${lhs}=${entityArg},${rhs}=${optionsArg}}`
+    )
+    SET_UI_RENDERER_PRETTY_RE.lastIndex = 0
+    out = out.replace(
+      SET_UI_RENDERER_PRETTY_RE,
+      (_match, entityArg, optionsArg, lhs, rhs) =>
+        `setUiRenderer(${entityArg},${optionsArg}){${injectVirtualCanvasReport(optionsArg)}${lhs}=${entityArg};${rhs}=${optionsArg}}`
     )
   }
   if (out.includes('addUiRenderer')) {
@@ -363,7 +397,7 @@ function patchUiVirtualCanvasHooks(code: string): string {
     out = out.replace(
       ADD_UI_RENDERER_RE,
       (_match, entityArg, uiArg, optionsArg, mapVar) =>
-        `addUiRenderer(${entityArg},${uiArg},${optionsArg}){try{if(${optionsArg}&&${optionsArg}.virtualWidth>0&&${optionsArg}.virtualHeight>0&&globalThis.__THREEJS_UI_VIRTUAL_CANVAS__)globalThis.__THREEJS_UI_VIRTUAL_CANVAS__(${optionsArg}.virtualWidth,${optionsArg}.virtualHeight)}catch(__err){}${mapVar}.set(${entityArg},{ui:${uiArg},options:${optionsArg}})}`
+        `addUiRenderer(${entityArg},${uiArg},${optionsArg}){${injectVirtualCanvasReport(optionsArg)}${mapVar}.set(${entityArg},{ui:${uiArg},options:${optionsArg}})}`
     )
   }
   return out
@@ -393,7 +427,16 @@ export function patchSceneBundle(code: string, onStep?: PatchSceneBundleStepLog)
   })
 
   out = runStep('addTransport capture', () => wrapAddTransportCalls(out, ADD_TRANSPORT_WRAP_LIMIT))
-  out = runStep('react-ecs once guard', () => patchReactEcsOnceGuard(out))
+  out = runStep('react-ecs once guard', () => {
+    const r = patchReactEcsOnceGuard(out)
+    onStep?.(
+      r.patched > 0
+        ? `react-ecs once guard (patched ${r.patched})`
+        : 'react-ecs once guard (missed — no addSystem sites)',
+      0
+    )
+    return r.code
+  })
   out = runStep('ui virtual canvas', () => patchUiVirtualCanvasHooks(out))
 
   out = runStep('engine ui system loop', () => {

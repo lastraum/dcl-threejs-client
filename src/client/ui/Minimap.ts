@@ -219,7 +219,7 @@ export class Minimap {
     cy: number,
     facingYawDcl: number
   ): void {
-    const r = 7
+    const r = 14 // 2× previous (7)
     ctx.save()
     ctx.translate(cx, cy)
     // Canvas rotate is CW-positive; map north = up. DCL yaw 0 = +Z north → no extra offset.
@@ -230,10 +230,10 @@ export class Minimap {
     ctx.lineTo(0, r * 0.28)
     ctx.lineTo(-r * 0.72, r * 0.62)
     ctx.closePath()
-    ctx.fillStyle = '#57e389'
+    ctx.fillStyle = '#ffffff'
     ctx.fill()
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)'
-    ctx.lineWidth = 1.25
+    ctx.strokeStyle = '#000000'
+    ctx.lineWidth = 1.75
     ctx.stroke()
     ctx.restore()
   }

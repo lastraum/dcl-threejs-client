@@ -2,17 +2,50 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-17  
+> **Last updated:** 2026-07-16  
 > **Current phase:** **v1.0.0** — production beta on the core loop; still not full Explorer parity.  
-> **Shipped (1.x):** spatial nearby voice · Settings Communities · 1:1 DMs + community group text (ADR-208) · community voice join CTA.  
-> **1.x next:** backpack outfits · scene UI polish · community voice Bearer parity.  
-> **Note:** in-world `/goto` via 3D chat is wired (full scene reload); product docs previously listed it open.  
+> **Shipped (1.x):** spatial nearby voice · Settings Communities · 1:1 DMs + community group text (ADR-208) · community voice join CTA · **2D social chat FAB** · community HUD toasts / mod gates · RestrictedActions teleport/changeRealm/copy · elevated-spawn floor settle.  
+> **1.x next:** backpack outfits · scene UI polish · community voice Bearer parity · create-community / invites.  
+> **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — 2D chat FAB + social polish + spawn settle → `dev-latest` (2026-07-16)
+
+**Status: on `dev-latest`** (`b5b22e3` and follow-ups) — 2D social shell chat expands from a bottom-right FAB; elevated towers (e.g. Flagtag) ground onto authored deck; RestrictedActions filled out.
+
+### What's new
+
+- **2D chat FAB** — large bottom-right icon expands / collapses the social chat dock (desktop + mobile)
+- **Restore last view** — reopening the FAB returns to the prior thread or channel list (not always the list)
+- **Scene tab × on Explore** — closable multi-room scene chats when not on that scene’s landing page
+- **Idle empty state** — “Visit a scene for scene chat” plain centered text (no chip chrome)
+- **Community HUD** — announce/start-voice mod gates · top-center toasts · community chat open · voice end-for-everyone · instant WS voice toasts
+- **RestrictedActions** — `teleportTo` · `changeRealm` · `copyToClipboard` (plus existing movePlayerTo / emotes / URLs)
+- **Elevated spawn settle** — CCT + probe prefer surface near authored feet Y (deck, not roof); PE staged before script boot (no false drown at origin)
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **SocialChatDock FAB** | 🟢 | `SocialChatDock` + `scene-chat-fab` / dock `__fab`; dock bottom clears FAB |
+| **View restore** | 🟢 | `panelOpen` independent of `threadOpen` |
+| **Closable scene tabs** | 🟢 | × only hidden on current `scene-landing-route` |
+| **Community mod + toasts** | 🟢 | owner/mod/admin · `CommunityHudToastWatcher` · Social WS |
+| **RestrictedActions** | 🟢 | Full set in shim + main handlers |
+| **Spawn floor wait / settle** | 🟢 | `waitForSpawnFloorReady` · `settleSpawnOntoFloor` · plausible Y band · preferNearY probe |
+
+**QA:**  
+- Explore → open FAB → visit scene landing → chat auto/open → back to Explore → × on scene tab · reopen FAB shows last thread.  
+- Empty chat (no scenes/communities) → centered idle text, no border.  
+- Flagtag (or any high spawn) → stand on deck, no hover/dip; no drown UI during load.  
+- Scene script `teleportTo` / `changeRealm` / `copyToClipboard` (when exercised).
+
+**Tip commit:** `b5b22e3` on `dev-latest`.
 
 ---
 

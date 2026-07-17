@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-16 (RestrictedActions teleportTo/changeRealm/copyToClipboard; CommsApi getActiveVideoStreams 🟢)
+> **Last updated:** 2026-07-16 (2D social chat FAB · community HUD toasts · RestrictedActions full · elevated spawn settle · CommsApi 🟢)
 
 ---
 
@@ -158,8 +158,9 @@ DOM overlay — not in-scene `UiTransform`.
 | ------- | ------ |
 | Explorer auth sheet + session resume; loading + hydration timer | 🟢 |
 | Multi-provider auth (Google/Discord/Apple/X/WC/MetaMask via auth-dapp) | 🟢 |
-| Sidebar, chat (+ DCM v1 inline images), emote wheel, location pill | 🟢 |
-| **Circular Genesis minimap** (parcel play HUD) | 🟢 | Satellite basemap circle under pill; click → in-world Map (embedded); worlds hide minimap |
+| Sidebar, 3D chat panel (+ DCM v1 inline images), emote wheel, location pill | 🟢 |
+| **2D social chat dock (FAB)** | 🟢 | Bottom-right expand/collapse · restore last thread/list · multi-room tabs · × on Explore · idle empty centered text |
+| **Circular Genesis minimap** (parcel play HUD) | 🟢 | Satellite basemap circle under pill; facing triangle; peer dots; click → in-world Map (embedded); worlds hide minimap |
 | Debug panel, dev progress panel (`</>`) | 🟢 |
 | Settings overlay: Events, Map, Backpack, Places, Gallery | 🟢 | Map tab embedded when opened from minimap / shell (no page HUD chrome) |
 | Backpack wearables equip + Catalyst profile deploy | 🟡 | Inventory/equip/preview/deploy 🟢 · emotes tab / outfits / marketplace ⬜ · mobile sheets 🟢 |
@@ -168,7 +169,8 @@ DOM overlay — not in-scene `UiTransform`.
 | Preferences panel (P / ⚙): Graphics preset/shadows/lights/res/FPS + lighting | 🟢 |
 | Preferences → Sounds volume sliders | 🟢 |
 | Preferences: Controls, Chat tabs | 🟡 | Mouse sensitivity live; keybinds pending |
-| Settings: Communities | 🟢 | Same browse + modal as `/communities` (O); community voice join CTA |
+| Settings: Communities | 🟢 | Browse + modal · announce/start-voice **owner/mod/admin** · voice join/end-all · community chat open into dock |
+| Community HUD toasts | 🟢 | Top-center in-world · posts poll + Social WS voice · companion-aligned copy |
 | In-scene ECS UI | 🟡 | Yoga + DOM partial — Creator modal / hit-map polish remain |
 | Voice / mic UI | 🟢 | Nearby voice panel · Speak / hold T · mute-in-bg · name-tag bars · **3D PositionalAudio** |
 
@@ -181,15 +183,16 @@ DOM overlay — not in-scene `UiTransform`.
 | RFC4 movement, profile, emote, scene chat + DCM chat media | 🟢 |
 | LiveKit scene/world/island rooms | 🟢 | Worlds: world room voice; parcels: island+scene voice; archipelago genesis Z correct |
 | **Nearby voice (browser ↔ Explorer)** | 🟢 | PTT/Speak · mute until in-play · landing handoff keepLiveKit · name-tag bars |
-| **2D multi-room scene chat** (`SceneChatRoomPool`) | 🟢 | Open tabs stay joined across navigate (companion multi-text-chats) |
+| **2D multi-room scene chat** (`SceneChatRoomPool`) | 🟢 | Open tabs stay joined across navigate (companion multi-text-chats); FAB dock UX |
 | **Landing cast / stream keys** (Join Live, guest OK) | 🟢 | Gatekeeper adapter; mute; stream-end restores details |
 | Remote avatars + load queue | 🟢 |
 | Double-jump clockwise Y twirl (DCL / VRM / ODK) | 🟢 | Shared `DoubleJumpTwirl`; optional `double_jump.glb` |
 | SignedFetch, Catalyst content, wallet + guest session | 🟢 |
 | ECS NetworkEntity scene sync | 🟢 P0–P3 host path |
 | Community text / PM router | 🟢 | **1:1 DMs** + **community group text** on ADR-208 private-messages LiveKit room (topic `dcl.community.chat:{id}`, fan-out to members) |
-| Community voice | 🟡 | Join/leave CTA + LiveKit session; gatekeeper may require service Bearer (signed-fetch best-effort) |
+| Community voice | 🟡 | Join/leave/end-for-everyone · LiveKit session · WS updates + REST fallback; gatekeeper may require service Bearer |
 | Spatial voice (3D falloff) | 🟢 | `PositionalAudio` on remote avatar roots (ref 6 m / max 45 m); one source per peer |
+| Elevated / tower spawn floor | 🟢 | Stage PE spawn before script; wait CCT ground; probe preferNear authored Y; reject roof false-grounds |
 
 ---
 
@@ -215,6 +218,7 @@ DOM overlay — not in-scene `UiTransform`.
 | Sun/hemi intensity match vs Explorer | 🟢 | anim peak 2.72 + trilight; user sliders still override |
 | GLTF hydration budgets, GLB parse pool, AssetCache IDB | 🟢 |
 | PhysX lazy load, collider prewarm, Hyperfy grouped GLTF actors | 🟢 |
+| Spawn settle onto authored floor (elevated decks) | 🟢 | `settleSpawnOntoFloor` + `waitForSpawnFloorReady`; short CCT drop + multi-XZ probe |
 | GLTF InstancedMesh | ⬜ |
 | Shadow pass tuning | 🟢 | soft + soft directional sun |
 

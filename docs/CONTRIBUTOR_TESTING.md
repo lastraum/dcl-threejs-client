@@ -78,6 +78,8 @@ Parcel URLs: `/80,-1` style routes — see [IMPLEMENTATION_PLAN.md](./IMPLEMENTA
 | **Reference scene** | Genesis Plaza **or** `/rickroll.dcl.eth` | Task `test_scenes` in TASKS.yaml |
 | **Your scene** | — | `/yourname.dcl.eth` exercising the task feature |
 | **Multiplayer** | Two tabs, same world, wallet or guest rules | + scene chat / emote if comms task |
+| **2D social chat** | Explore shell logged in | FAB open/close restores thread; leave landing → × on scene tab; empty idle text centered |
+| **Elevated spawn** | Tower scene (e.g. Flagtag) | On deck after load; no drown UI during boot; no long hover |
 | **Nearby voice** | Two tabs: Speak / hold **T**, hear peer | Browser + Explorer on **world** and **Genesis parcel**; Jump In keeps LiveKit (`handoff OK`) |
 
 Document in the PR which URLs you used.

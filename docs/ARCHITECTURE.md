@@ -91,8 +91,9 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 | Area | Status |
 |------|--------|
 | Scene UI | Partial — Creator modal / hit-map polish |
-| Social | Multi-room + cast ✅; nearby voice + Explorer interop ✅; DMs · in-world `/goto` · spatial voice = **1.x** |
+| Social | Multi-room + cast ✅; 2D chat FAB dock ✅; community toasts/mod gates ✅; nearby voice + spatial audio ✅; DMs ✅; community voice Bearer parity · create/invites open |
 | Play HUD | Location pill + circular Genesis minimap (parcels) ✅; worlds pill-only |
+| Spawn / physics | Elevated deck settle + PE stage-before-script ✅; PhysicsCombined* still open |
 | Backpack | Wearables/emotes/colors ✅; outfits + marketplace open |
 | Graphics P3/P4 | Distance culls + bloom/HDR stubs |
 | PhysicsCombined* | Open polish gaps |
@@ -110,10 +111,10 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 
 ## Suggested next engineering order (post-v1.0)
 
-1. Product **1.x**: spatial voice (3D) · in-world `/goto` · community DMs.  
+1. Product **1.x**: backpack outfits · scene UI hit-map · community voice Bearer parity · create-community / invites.  
 2. Edit-flight IM/VC cleanup → retest MOVE / WASD / STOP.  
 3. Mesh frame-law / instancing follow-through.  
-4. Optional: SyncEntities P4 auth-host; graphics P3 distance culls.  
+4. Optional: SyncEntities P4 auth-host; graphics P3 distance culls; EnvironmentApi/Testing only if scenes need them.  
 5. Keep INTEGRATION registry + PROGRESS updated on each ship.
 
 ---

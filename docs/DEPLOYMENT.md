@@ -51,6 +51,7 @@ Run through this on a **production build** (`npm run build && npm run preview` o
 - [ ] Two signed-in clients, same scene — see each other move
 - [ ] Remote avatars load profile (not grey forever)
 - [ ] Scene chat sends and receives (LiveKit reliable path)
+- [ ] 2D social shell: chat FAB expand/collapse restores last view; scene tab × on Explore
 - [ ] Chat 140 char cap; URLs render blue; `@` autocomplete; purple bubble when @-mentioned
 - [ ] Chat sidebar badge increments when panel closed; clears on open
 

@@ -67,7 +67,15 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
     name: '2D social chat dock (multi-room)',
     status: 'render',
     category: 'client-ui',
-    notes: 'SceneChatRoomPool keeps open scene LiveKit rooms; channel notifications; landing tab not closable; guest OK'
+    notes:
+      'Bottom-right FAB expand/collapse; restore last thread/list; SceneChatRoomPool multi-room; × on Explore only (not current landing); idle empty centered text; guest OK'
+  },
+  {
+    id: 'ui:community-hud-toasts',
+    name: 'Community HUD toasts',
+    status: 'render',
+    category: 'client-ui',
+    notes: 'Top-center in-world; posts poll + Social WS voice updates; companion-aligned copy; toast → join voice'
   },
   {
     id: 'ui:landing-cast',
@@ -104,7 +112,14 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   { id: 'ui:preferences-controls', name: 'Preferences → Controls', status: 'partial', category: 'client-ui', notes: 'Mouse sensitivity live (10–200%); keybinds still pending' },
   { id: 'ui:preferences-chat', name: 'Preferences → Chat', status: 'none', category: 'client-ui', notes: 'Coming soon placeholder' },
   { id: 'ui:settings-places', name: 'Settings → Places', status: 'render', category: 'client-ui', notes: 'Explore tab — Places + Worlds APIs, category filters, Jump In' },
-  { id: 'ui:settings-communities', name: 'Settings → Communities', status: 'render', category: 'client-ui', notes: 'Browse + modal (same as /communities); voice join CTA; community text still local-echo' },
+  {
+    id: 'ui:settings-communities',
+    name: 'Settings → Communities',
+    status: 'render',
+    category: 'client-ui',
+    notes:
+      'Browse + modal; announce/start-voice owner|mod|admin; voice join/end-all; community chat opens SocialChatDock; ADR-208 group text'
+  },
   { id: 'ui:settings-gallery', name: 'Settings → Gallery', status: 'render', category: 'client-ui', notes: 'Camera Reel API, month grid, Share on X → reels.decentraland.org' },
   { id: 'ui:ecs-scene-ui', name: 'In-scene ECS UI (UiTransform…)', status: 'partial', category: 'client-ui', notes: 'Yoga + DOM overlay — UiInput/UiDropdown writeback, hover, virtual size from setUiRenderer' },
   { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'render', category: 'client-ui', notes: 'Explorer NEARBY VOICE: Hear others + Speak + hold T; mute-in-bg; name-tag bars; 3D PositionalAudio falloff' }
@@ -167,6 +182,14 @@ export const PERFORMANCE_INTEGRATION: IntegrationEntry[] = [
   { id: 'perf:asset-cache-idb', name: 'AssetCache + IndexedDB bytes', status: 'render', category: 'performance' },
   { id: 'perf:physx-lazy', name: 'Lazy PhysX WASM load', status: 'render', category: 'performance' },
   { id: 'perf:collider-prewarm', name: 'Collision prewarm gate', status: 'render', category: 'performance', notes: 'Colliders ready before world.start()' },
+  {
+    id: 'perf:spawn-floor-settle',
+    name: 'Elevated spawn floor settle',
+    status: 'render',
+    category: 'performance',
+    notes:
+      'waitForSpawnFloorReady + settleSpawnOntoFloor; PE stage before script; preferNearY probe; reject roof false-grounds (Flagtag deck)'
+  },
   { id: 'perf:hyperfy-colliders', name: 'GLTF collider grouped actors', status: 'render', category: 'performance', notes: 'Pose-only sync for movers' },
   { id: 'perf:player-idle-skip', name: 'Idle player physics skip', status: 'render', category: 'performance' },
   { id: 'perf:instancing', name: 'GLTF InstancedMesh path', status: 'none', category: 'performance', notes: 'Phase 6 re-arch' },

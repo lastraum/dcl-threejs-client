@@ -48,6 +48,7 @@ import type { AvatarTransformPayload } from './comms/types'
 import type { LocomotionMode } from '../player/locomotion'
 import { RemoteAvatarLoadQueue } from './RemoteAvatarLoadQueue'
 import type { InteractiveNameTagHit } from '../client/ui/overlayHitTest'
+import { buildPlayerMirrorIdentity } from '../bridge/playerMirrorIdentity'
 
 type RemotePeerRecord = {
   address: string
@@ -153,10 +154,41 @@ export class RemoteAvatarManager {
   private localAddress: string | null = null
   private readonly cameraWorldPos = new THREE.Vector3()
   private hasCameraPos = false
+  /** Host→scene CRDT mirror for remote PlayerIdentityData / AvatarBase / AvatarEquippedData. */
+  private onPeerMirrorIdentity:
+    | ((entity: Entity, identity: ReturnType<typeof buildPlayerMirrorIdentity> | null) => void)
+    | null = null
+
   constructor(scene: THREE.Scene) {
     this.scene = scene
     this.root.name = 'remote-avatars'
     scene.add(this.root)
+  }
+
+  setPeerMirrorIdentityHandler(
+    handler:
+      | ((entity: Entity, identity: ReturnType<typeof buildPlayerMirrorIdentity> | null) => void)
+      | null
+  ): void {
+    this.onPeerMirrorIdentity = handler
+  }
+
+  private pushPeerMirrorIdentity(record: RemotePeerRecord, profile: AvatarProfile | null): void {
+    if (!this.onPeerMirrorIdentity) return
+    if (!profile) {
+      this.onPeerMirrorIdentity(record.entity, null)
+      return
+    }
+    const emoteUrns = (profile.emotes ?? [])
+      .map((e) => e.urn)
+      .filter((u): u is string => typeof u === 'string' && u.trim().length > 0)
+    const identity = buildPlayerMirrorIdentity({
+      address: record.address,
+      profile,
+      displayName: record.identity.displayName
+    })
+    identity.emoteUrns = emoteUrns
+    this.onPeerMirrorIdentity(record.entity, identity)
   }
 
   /** Phase 4.5 — register remote peers in the unified EntityStore (owner `'avatar'`). */
@@ -582,6 +614,7 @@ export class RemoteAvatarManager {
     record.profileSignature = serializedProfile
     record.bodyShape = profile.bodyShape
     record.identity = identityFromAvatarProfile(profile, key)
+    this.pushPeerMirrorIdentity(record, profile)
     if (!record.model && record.hasPosition) {
       this.attachLoadingPresentation(record)
     }
@@ -603,6 +636,7 @@ export class RemoteAvatarManager {
     this.loadQueue.cancel(key)
     this.disposePeerModel(record)
     record.nameTag?.dispose()
+    this.pushPeerMirrorIdentity(record, null)
     if (this.entityStore) {
       this.entityStore.removeAvatar(record.entity)
     } else {

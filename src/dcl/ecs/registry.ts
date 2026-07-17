@@ -60,7 +60,13 @@ export const DCL_ECS_COMPONENTS: EcsComponentEntry[] = [
   { name: 'TweenSequence', coreId: 1104, phase: 3, status: 'render', category: 'motion' },
   { name: 'TweenState', coreId: 1103, phase: 3, status: 'client-only', category: 'motion' },
   { name: 'AvatarShape', coreId: 1080, phase: 4, status: 'render', category: 'avatar' },
-  { name: 'AvatarBase', coreId: 1087, phase: 4, status: 'none', category: 'avatar' },
+  {
+    name: 'AvatarBase',
+    coreId: 1087,
+    phase: 4,
+    status: 'client-only',
+    category: 'avatar'
+  },
   { name: 'AvatarAttach', coreId: 1073, phase: 4, status: 'render', category: 'avatar' },
   { name: 'AvatarEmoteCommand', coreId: 1088, phase: 4, status: 'render', category: 'avatar' },
   { name: 'AvatarEquippedData', coreId: 1091, phase: 4, status: 'client-only', category: 'avatar' },

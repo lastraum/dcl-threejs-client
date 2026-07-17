@@ -3,6 +3,7 @@ import type { CrdtProjection } from './CrdtProjection'
 import type { ReservedEntities } from './ProjectionView'
 import { ReadWriteByteBuffer } from '@dcl/ecs/dist/serialization/ByteBuffer'
 import { PutComponentOperation } from '@dcl/ecs/dist/serialization/crdt/putComponent'
+import { DeleteComponent } from '@dcl/ecs/dist/serialization/crdt/deleteComponent'
 import { AppendValueOperation } from '@dcl/ecs/dist/serialization/crdt/appendValue'
 import { readMessage } from '@dcl/ecs/dist/serialization/crdt/message'
 import { CrdtMessageType } from '@dcl/ecs/dist/serialization/crdt/types'
@@ -99,12 +100,20 @@ export class CrdtEncoder {
   private readonly componentIds: Set<number>
   /** When set, tween encode scans only these entities (from TweenBridge dirty set). */
   private tweenEncodeEntities: ReadonlySet<Entity> | null = null
+  /** Remote player identity components (scan + delete on peer leave). */
+  private readonly playerIdentity: ComponentDef
+  private readonly avatarBase: ComponentDef
+  private readonly avatarEquipped: ComponentDef
+  private readonly pendingDeletes: Array<{ entity: Entity; componentId: number }> = []
 
   constructor(reserved: ReservedEntities, projection: CrdtProjection, components: MirrorComponents) {
     this.reservedEntities = reserved
     this.projection = projection
     this.tweenState = components.TweenState
     this.transform = components.Transform
+    this.playerIdentity = components.PlayerIdentityData
+    this.avatarBase = components.AvatarBase
+    this.avatarEquipped = components.AvatarEquippedData
     const growOnly = [
       components.PointerEventsResult,
       components.TriggerAreaResult,
@@ -156,12 +165,63 @@ export class CrdtEncoder {
     this.componentIds = new Set(this.reservedTargets.map((t) => t.componentId))
     this.componentIds.add(this.tweenState.componentId)
     this.componentIds.add(this.transform.componentId)
+    this.componentIds.add(this.playerIdentity.componentId)
+    this.componentIds.add(this.avatarBase.componentId)
+    this.componentIds.add(this.avatarEquipped.componentId)
     for (const id of this.growOnlyIds) this.componentIds.add(id)
     for (const id of this.lwwCaptureById.keys()) this.componentIds.add(id)
   }
 
+  /**
+   * Queue DELETE_COMPONENT for a host-owned identity slot (remote peer leave).
+   * Call after clearing projection rows so we don't re-emit PUTs.
+   */
+  recordComponentDelete(entity: Entity, componentId: number): void {
+    this.pendingDeletes.push({ entity, componentId })
+    this.lastSerialized.delete(this.key(entity, componentId))
+  }
+
   private key(entity: Entity, componentId: number): string {
     return `${componentId}:${entity}`
+  }
+
+  /** Emit PlayerIdentityData + AvatarBase + AvatarEquippedData for every entity that has PID. */
+  private encodeRemotePlayerIdentities(buf: ReadWriteByteBuffer): boolean {
+    const pidMap = this.projection.componentMap(this.playerIdentity.componentId)
+    if (!pidMap || pidMap.size === 0) return false
+    let wrote = false
+    const defs = [this.playerIdentity, this.avatarBase, this.avatarEquipped]
+    for (const entity of pidMap.keys()) {
+      // Local reserved.player is already covered by reservedTargets (dirty-only twice is fine).
+      for (const def of defs) {
+        if (!this.projection.has(def.componentId, entity)) continue
+        if (
+          this.emitLww(
+            entity,
+            def.componentId,
+            serializeFromProjection(def, this.projection, entity),
+            buf
+          )
+        ) {
+          wrote = true
+        }
+      }
+    }
+    return wrote
+  }
+
+  private encodePendingDeletes(buf: ReadWriteByteBuffer): boolean {
+    if (this.pendingDeletes.length === 0) return false
+    let wrote = false
+    for (const del of this.pendingDeletes) {
+      const key = this.key(del.entity, del.componentId)
+      const ts = (this.lamport.get(key) ?? 0) + 1
+      this.lamport.set(key, ts)
+      DeleteComponent.write(del.entity, del.componentId, ts, buf)
+      wrote = true
+    }
+    this.pendingDeletes.length = 0
+    return wrote
   }
 
   /** Emit one dirty-only LWW PUT for `(entity, componentId)` into `buf`. Returns true if written. */
@@ -288,6 +348,12 @@ export class CrdtEncoder {
         wrote = true
       }
     }
+
+    // Remote (and any non-reserved) host-owned player identity trio on synthetic avatar entities.
+    if (this.encodeRemotePlayerIdentities(buf)) wrote = true
+
+    // Deletes for peers that left (identity components cleared from projection).
+    if (this.encodePendingDeletes(buf)) wrote = true
 
     // Tween path (3c): renderer rewrites TweenState + the interpolated Transform on
     // each tweened scene entity. Entities are dynamic, so scan by TweenState ownership.

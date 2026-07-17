@@ -107,7 +107,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | AvatarEmoteCommand | 1088 | 🟢 | Player + NPC emotes |
 | PlayerIdentityData | 1089 | 🔵 | Wallet / display name |
 | AvatarEquippedData | 1091 | 🔵 | Client → scene |
-| AvatarBase | 1087 | ⬜ | |
+| AvatarBase | 1087 | 🔵 | Host LWW — local PlayerEntity + remote synthetic avatars (name/body/colors); with PlayerIdentityData + AvatarEquippedData |
 | AvatarModifierArea | 1070 | 🟢 | Volume hide avatars + disable passports (`AvatarModifierAreaSystem`) |
 
 ### Networking & environment (Phase 5–6)
@@ -131,7 +131,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 
 | Status | Components |
 | ------ | ---------- |
-| ⬜ | AvatarBase · GltfContainerLoadingState · PhysicsCombinedForce · PhysicsCombinedImpulse · AssetLoad · GltfNodeModifiers · NftShape |
+| ⬜ | GltfContainerLoadingState · PhysicsCombinedForce · PhysicsCombinedImpulse · AssetLoad · GltfNodeModifiers · NftShape |
 | 🟡 | UiTransform · UiText · UiBackground · UiInput · UiDropdown |
 
 ### ~system modules (worker shim)

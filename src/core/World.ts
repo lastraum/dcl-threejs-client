@@ -506,6 +506,9 @@ export class World {
       // Scene LiveKit video (stream-key and/or Cast) — not world-room voice cams.
       this.sceneScript.setLiveKitRemoteLiveCheck(() => this.comms.hasSceneLiveKitVideoLive())
       this.remoteAvatars?.setEntityStore(this.sceneScript.getEntityStore())
+      this.remoteAvatars?.setPeerMirrorIdentityHandler((entity, identity) =>
+        this.sceneScript.setRemotePlayerIdentity(entity, identity)
+      )
       dclToThreeVec(
         new THREE.Vector3(scene.spawn.x, scene.spawn.y, scene.spawn.z),
         this.colliderCookPriority

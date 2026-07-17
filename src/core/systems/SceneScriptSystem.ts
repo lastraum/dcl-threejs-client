@@ -1084,6 +1084,26 @@ export class SceneScriptSystem {
   }
 
   /**
+   * Mirror a remote peer as host-owned PlayerIdentityData + AvatarBase + AvatarEquippedData
+   * on the synthetic avatar entity (same path Unity uses for other players in-scene).
+   */
+  setRemotePlayerIdentity(entity: Entity, identity: PlayerMirrorIdentity | null): void {
+    if (!identity) {
+      const { PlayerIdentityData, AvatarBase, AvatarEquippedData } = this.readComponents
+      for (const id of [
+        PlayerIdentityData.componentId,
+        AvatarBase.componentId,
+        AvatarEquippedData.componentId
+      ]) {
+        this.encoder.recordComponentDelete(entity, id)
+      }
+      this.reserved.clearPlayerIdentityOnEntity(entity)
+      return
+    }
+    this.reserved.applyPlayerIdentityToEntity(entity, identity)
+  }
+
+  /**
    * Seed RootEntity `RealmInfo` (incl. `isConnectedSceneRoom`) for SDK network
    * REQ_CRDT_STATE / `isStateSyncronized`. Call when LiveKit scene room flips.
    */

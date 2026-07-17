@@ -102,12 +102,16 @@ export class ReservedEntitiesSync {
   }
 
   private applyPlayerIdentity(): void {
-    const identity = this.playerIdentity
-    if (!identity) return
+    if (!this.playerIdentity) return
+    this.applyPlayerIdentityToEntity(this.reserved.player, this.playerIdentity)
+  }
 
+  /**
+   * Host-owned player mirror (local reserved PlayerEntity or remote synthetic avatar entity).
+   * Scenes read PlayerIdentityData / AvatarBase / AvatarEquippedData via getEntitiesWith.
+   */
+  applyPlayerIdentityToEntity(entity: Entity, identity: PlayerMirrorIdentity): void {
     const { PlayerIdentityData, AvatarBase, AvatarEquippedData } = this.components
-    const entity = this.reserved.player
-
     this.projection.setRenderer(PlayerIdentityData.componentId, entity, {
       address: identity.address,
       isGuest: identity.isGuest
@@ -123,6 +127,17 @@ export class ReservedEntitiesSync {
       wearableUrns: identity.wearableUrns,
       emoteUrns: identity.emoteUrns
     })
+  }
+
+  /** Drop host-owned identity components when a remote peer leaves. */
+  clearPlayerIdentityOnEntity(entity: Entity): void {
+    const { PlayerIdentityData, AvatarBase, AvatarEquippedData } = this.components
+    const ids = [
+      PlayerIdentityData.componentId,
+      AvatarBase.componentId,
+      AvatarEquippedData.componentId
+    ]
+    this.projection.clearLwwSlotsForEntities(new Set([entity]), ids)
   }
 
   private applyRealmInfo(): void {

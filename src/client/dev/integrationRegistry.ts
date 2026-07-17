@@ -203,6 +203,14 @@ export const PERFORMANCE_INTEGRATION: IntegrationEntry[] = [
   { id: 'perf:glb-parse-pool', name: 'Off-thread GLB parse pool', status: 'render', category: 'performance' },
   { id: 'perf:asset-cache-idb', name: 'AssetCache + IndexedDB bytes', status: 'render', category: 'performance' },
   { id: 'perf:physx-lazy', name: 'Lazy PhysX WASM load', status: 'render', category: 'performance' },
+  {
+    id: 'physics:combined-force-impulse',
+    name: 'PhysicsCombined force/impulse + glider',
+    status: 'render',
+    category: 'performance',
+    notes:
+      'Force/Impulse on PlayerEntity; hold-Space glider; 1.5× force while gliding; AvatarLocomotionSettings gliding* fields'
+  },
   { id: 'perf:collider-prewarm', name: 'Collision prewarm gate', status: 'render', category: 'performance', notes: 'Colliders ready before world.start()' },
   {
     id: 'perf:spawn-floor-settle',

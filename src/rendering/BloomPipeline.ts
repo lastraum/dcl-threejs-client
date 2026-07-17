@@ -6,45 +6,30 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js'
 
 /**
- * Emissive-driven selective bloom.
+ * Emissive-driven selective bloom with depth occlusion.
  *
- * Bloom extract renders **only authored emissive energy**:
- * - Sky / `dclBloomExclude` hidden
- * - Scene lights zeroed (so lit albedo does not bloom)
- * - Non-emissive MeshBasic darkened
- * - PBR materials keep `emissive × emissiveIntensity` (+ emissiveMap); diffuse forced black
+ * Extract pass:
+ * - Sky / `dclBloomExclude` hidden (no sky bloom)
+ * - Lights zeroed (lit albedo does not bloom)
+ * - Non-emissive meshes stay **visible** as opaque black (write depth so occluders
+ *   block emissives — no x-ray through walls/obelisks)
+ * - Emissive PBR: diffuse black, **map left intact** (alpha/cutouts); only emissive
+ *   channel contributes with lights off
  *
- * UnrealBloomPass strength/threshold are mild film scales — how much each surface
- * glows is determined by the GLB emissiveFactor / material intensity, not hard-coded
- * per-scene brightness.
+ * Final: full scene + OutputPass, then additive pure-bloom composite.
  */
 export type BloomPipelineOptions = {
   enabled: boolean
-  /** Prefer HalfFloat color buffer (wider range for bloom). */
   hdr: boolean
-  /**
-   * Film scale on top of material radiance (not a creative “how bright is bloom”).
-   * Final bloom ∝ material emissive × intensity × this scale.
-   */
+  /** Film scale on top of material radiance. */
   strength: number
   radius: number
-  /**
-   * High-pass floor in extract space. With lights off, only emissives are bright;
-   * keep this low so weak authored emissives still contribute.
-   */
   threshold: number
 }
 
-/**
- * Mild film scales — radiance comes from materials.
- * strength multiplies UnrealBloom composite; keep small so emissiveIntensity 1–12 maps reasonably.
- */
 const DEFAULT_STRENGTH = 0.12
 const DEFAULT_RADIUS = 0.28
-/** Low: extract is emissive-only; let material intensity decide contribution. */
 const DEFAULT_THRESHOLD = 0.05
-
-/** Min emissive radiance (luma × intensity) to keep in the extract buffer. */
 const MIN_EMISSIVE_RADIANCE = 0.08
 
 const _black = new THREE.Color(0x000000)
@@ -54,7 +39,6 @@ type LightSave = { light: THREE.Light; intensity: number }
 type StandardSave = {
   mat: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial
   color: THREE.Color
-  map: THREE.Texture | null
   metalness: number
   roughness: number
   envMapIntensity: number
@@ -64,7 +48,6 @@ type MeshMaterialSave = {
   material: THREE.Material | THREE.Material[]
 }
 
-/** UnrealBloomPass keeps pure bloom composite in horizontal mip 0 before additive scene blend. */
 type BloomPassInternal = UnrealBloomPass & {
   renderTargetsHorizontal: THREE.WebGLRenderTarget[]
 }
@@ -87,7 +70,6 @@ export function materialEmissiveRadiance(mat: THREE.Material): number {
     const luma = mat.emissive.r + mat.emissive.g + mat.emissive.b
     const intensity = mat.emissiveIntensity ?? 1
     if (mat.emissiveMap && intensity > 0) {
-      // Map-driven emissive (LED strips / flames) — intensity is the DCL scalar.
       return Math.max(luma * intensity, intensity * 0.35)
     }
     return luma * intensity
@@ -95,11 +77,9 @@ export function materialEmissiveRadiance(mat: THREE.Material): number {
 
   if ((mat as THREE.MeshBasicMaterial).isMeshBasicMaterial) {
     const basic = mat as THREE.MeshBasicMaterial
-    // Additive VFX / neon Basic from sceneGltfEmissives (GunVFX, etc.)
     if (ud.dclUntexturedGlowBlend === true || ud.dclSceneNeonTuned === true) {
       return basic.color.r + basic.color.g + basic.color.b
     }
-    // Unlit pure-color glow (no map, not tone-mapped) — rare VFX path
     if (!basic.map && basic.toneMapped === false) {
       const c = basic.color.r + basic.color.g + basic.color.b
       if (c > 0.4) return c
@@ -128,10 +108,14 @@ export class BloomPipeline {
   private readonly lightSaves: LightSave[] = []
   private readonly standardSaves: StandardSave[] = []
   private readonly meshMaterialSaves: MeshMaterialSave[] = []
-  private readonly blackBasic = new THREE.MeshBasicMaterial({
+  /** Opaque black occluder — writes depth so emissives cannot x-ray through props. */
+  private readonly blackOccluder = new THREE.MeshBasicMaterial({
     color: 0x000000,
     toneMapped: false,
-    depthWrite: true
+    transparent: false,
+    depthTest: true,
+    depthWrite: true,
+    side: THREE.DoubleSide
   })
 
   constructor(
@@ -214,13 +198,9 @@ export class BloomPipeline {
 
   dispose(): void {
     this.disposeComposers()
-    this.blackBasic.dispose()
+    this.blackOccluder.dispose()
   }
 
-  /**
-   * Isolate authored emissive energy in the extract buffer:
-   * lights off + non-emissives black + PBR diffuse black (emissive channel only).
-   */
   private beginBloomExtract(): void {
     this.savedBackground = this.scene.background
     this.scene.background = _black
@@ -238,6 +218,7 @@ export class BloomPipeline {
       }
 
       if (!obj.visible) return
+      // Sky only — keep world geometry for depth occlusion.
       if ((obj.userData as Record<string, unknown>).dclBloomExclude === true) {
         obj.visible = false
         _hidden.push(obj)
@@ -246,59 +227,58 @@ export class BloomPipeline {
 
       if (!(obj as THREE.Mesh).isMesh) return
       const mesh = obj as THREE.Mesh
+      // Skip GPU instanced markers (no real materials under entity).
+      if ((mesh.userData as Record<string, unknown>).dclInstanceMarker) return
+
       const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
       let anyEmissive = false
-      let needsMaterialSwap = false
       const nextMats: THREE.Material[] = []
 
       for (const mat of mats) {
         if (!mat) {
-          nextMats.push(this.blackBasic)
-          needsMaterialSwap = true
+          nextMats.push(this.blackOccluder)
           continue
         }
         const rad = materialEmissiveRadiance(mat)
         if (rad < MIN_EMISSIVE_RADIANCE) {
-          nextMats.push(this.blackBasic)
-          needsMaterialSwap = true
+          nextMats.push(this.blackOccluder)
           continue
         }
         anyEmissive = true
         if (isPbrMaterial(mat)) {
-          this.standardSaves.push({
-            mat,
-            color: mat.color.clone(),
-            map: mat.map,
-            metalness: mat.metalness,
-            roughness: mat.roughness,
-            envMapIntensity: mat.envMapIntensity
-          })
-          // Diffuse off — only emissiveFactor × intensity (+ emissiveMap) reaches the buffer.
-          mat.color.setRGB(0, 0, 0)
-          mat.map = null
-          mat.metalness = 0
-          mat.roughness = 1
-          mat.envMapIntensity = 0
-          mat.needsUpdate = true
+          // Only once per unique material instance (shared across clones).
+          if (!this.standardSaves.some((s) => s.mat === mat)) {
+            this.standardSaves.push({
+              mat,
+              color: mat.color.clone(),
+              metalness: mat.metalness,
+              roughness: mat.roughness,
+              envMapIntensity: mat.envMapIntensity
+            })
+            // Diffuse contribution off; **keep map** so alpha/cutout still works if needed.
+            // With lights at 0, only emissive × intensity reaches the buffer.
+            mat.color.setRGB(0, 0, 0)
+            mat.metalness = 0
+            mat.roughness = 1
+            mat.envMapIntensity = 0
+            mat.needsUpdate = true
+          }
           nextMats.push(mat)
         } else if ((mat as THREE.MeshBasicMaterial).isMeshBasicMaterial) {
-          // Glow Basic already encodes radiance in color — leave as authored.
           nextMats.push(mat)
         } else {
-          nextMats.push(this.blackBasic)
-          needsMaterialSwap = true
+          nextMats.push(this.blackOccluder)
         }
       }
 
+      // Always swap materials for extract so non-emissive slots are black occluders.
+      this.meshMaterialSaves.push({ mesh, material: mesh.material })
       if (!anyEmissive) {
-        mesh.visible = false
-        _hidden.push(mesh)
-        return
-      }
-
-      if (needsMaterialSwap) {
-        this.meshMaterialSaves.push({ mesh, material: mesh.material })
-        mesh.material = Array.isArray(mesh.material) ? nextMats : (nextMats[0] ?? this.blackBasic)
+        mesh.material = Array.isArray(mesh.material)
+          ? mats.map(() => this.blackOccluder)
+          : this.blackOccluder
+      } else {
+        mesh.material = Array.isArray(mesh.material) ? nextMats : (nextMats[0] ?? this.blackOccluder)
       }
     })
   }
@@ -309,7 +289,7 @@ export class BloomPipeline {
     }
     this.lightSaves.length = 0
 
-    // Restore material slots before property restores (same mat instances).
+    // Restore material *slots* first (drop blackOccluder references).
     for (const s of this.meshMaterialSaves) {
       s.mesh.material = s.material
     }
@@ -317,7 +297,6 @@ export class BloomPipeline {
 
     for (const s of this.standardSaves) {
       s.mat.color.copy(s.color)
-      s.mat.map = s.map
       s.mat.metalness = s.metalness
       s.mat.roughness = s.roughness
       s.mat.envMapIntensity = s.envMapIntensity

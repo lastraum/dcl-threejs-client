@@ -259,22 +259,91 @@ export type PatchSceneBundleStepLog = (step: string, ms: number) => void
  * and sometimes the engine local — only the priority + system name are stable.
  * Asset-pack `initAssetPacks` calls `eS(engine)` again with `n` unset → second reconcile
  * runs `update(null)` and wipes scene UI (Flagtag lobby mount=0).
+ *
+ * Never run `/g` replace over multi-MB sources — Dead Surge (~13MB) hung here for minutes.
+ * Locate `"@dcl/react-ecs"` needles and only rewrite the nearby `.addSystem(...)` call.
  */
-const REACT_ECS_ADD_RE = /(\w+)\.addSystem\((\w+),1e5,"@dcl\/react-ecs"\)/g
+const REACT_ECS_SYSTEM_NEEDLES = [
+  ',1e5,"@dcl/react-ecs")',
+  ",1e5,'@dcl/react-ecs')",
+  ',100000,"@dcl/react-ecs")',
+  ",100000,'@dcl/react-ecs')"
+] as const
 
 const SET_UI_RENDERER_RE =
   /setUiRenderer\((\w+),(\w+)\)\{(\w+)=\1,(\w+)=\2\}/g
 const ADD_UI_RENDERER_RE =
   /addUiRenderer\((\w+),(\w+),(\w+)\)\{(\w+)\.set\(\1,\{ui:\2,options:\3\}\)\}/g
 
+/**
+ * From the closing `)` of `addSystem(fn,1e5,"@dcl/react-ecs")`, walk back to the receiver
+ * and rebuild: `globalThis.__THREEJS_UI_REACT_ECS_ONCE__&&...(fn, eng)`.
+ */
+function patchOneReactEcsAddSystem(code: string, closeParenIdx: number): string | null {
+  // closeParenIdx points at the final `)` of the addSystem call.
+  // Expect: recv.addSystem(fn,1e5,"@dcl/react-ecs")
+  let i = closeParenIdx
+  if (code[i] !== ')') return null
+  // Skip back over ,"@dcl/react-ecs" or ,'@dcl/react-ecs'
+  // Find the matching open paren of addSystem(
+  let depth = 0
+  let openParen = -1
+  for (let j = i; j >= 0; j--) {
+    const ch = code[j]!
+    if (ch === ')') depth++
+    else if (ch === '(') {
+      depth--
+      if (depth === 0) {
+        openParen = j
+        break
+      }
+    }
+  }
+  if (openParen < 0) return null
+  // openParen is the `(` after addSystem
+  const before = code.slice(Math.max(0, openParen - 20), openParen)
+  const addSys = before.match(/(\w+)\.addSystem$/)
+  if (!addSys) return null
+  const recv = addSys[1]!
+  const callStart = openParen - addSys[0].length
+  // Args: (fn,1e5,"@dcl/react-ecs")
+  const args = code.slice(openParen + 1, i)
+  const fnMatch = args.match(/^(\w+)\s*,/)
+  if (!fnMatch) return null
+  const fn = fnMatch[1]!
+  const replacement = `globalThis.__THREEJS_UI_REACT_ECS_ONCE__&&globalThis.__THREEJS_UI_REACT_ECS_ONCE__(${fn},${recv})`
+  return code.slice(0, callStart) + replacement + code.slice(i + 1)
+}
+
 /** Only the first react-ecs reconcile may register — later eS()/sw() calls no-op. */
 function patchReactEcsOnceGuard(code: string): string {
-  if (!code.includes('"@dcl/react-ecs"') && !code.includes("'@dcl/react-ecs'")) return code
-  REACT_ECS_ADD_RE.lastIndex = 0
-  return code.replace(
-    REACT_ECS_ADD_RE,
-    'globalThis.__THREEJS_UI_REACT_ECS_ONCE__&&globalThis.__THREEJS_UI_REACT_ECS_ONCE__($2,$1)'
-  )
+  if (!code.includes('@dcl/react-ecs')) return code
+
+  let out = code
+  // Collect end indices of needle matches, then patch from the end so indices stay valid.
+  const ends: number[] = []
+  for (const needle of REACT_ECS_SYSTEM_NEEDLES) {
+    let from = 0
+    while (from < out.length) {
+      const at = out.indexOf(needle, from)
+      if (at < 0) break
+      // Needle ends with `)` — that is the close paren of addSystem(...).
+      ends.push(at + needle.length - 1)
+      from = at + needle.length
+    }
+  }
+  if (!ends.length) return code
+
+  ends.sort((a, b) => b - a)
+  // Dedupe identical end indices
+  let last = -1
+  for (const end of ends) {
+    if (end === last) continue
+    last = end
+    const next = patchOneReactEcsAddSystem(out, end)
+    if (next) out = next
+  }
+  return out
 }
 
 /** Patch ReactEcsRenderer setUiRenderer/addUiRenderer to report virtual canvas size to main. */

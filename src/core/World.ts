@@ -2261,12 +2261,13 @@ export class World {
   }
 
   /**
-   * Avatar body facing in **DCL yaw** (radians) for minimap / map arrows.
-   * Independent of freecam orbit — tip of the marker should point this way.
+   * Minimap triangle rotation (canvas radians, 0 = tip north / up).
+   * Uses **visual body yaw** (same as the avatar mesh), including travel facing while moving —
+   * not freecam orbit and not a separate wire-yaw path that can lag or disagree.
    */
-  getPlayerFacingYawDcl(): number | null {
+  getPlayerMinimapAngle(): number | null {
     if (!this.playerMode || !this.player) return null
-    return this.player.getNetworkYaw()
+    return this.player.getMinimapFacingAngle()
   }
 
   /**

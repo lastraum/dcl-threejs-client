@@ -210,22 +210,21 @@ export class Minimap {
   }
 
   /**
-   * Green chevron / triangle. Tip points avatar body facing.
-   * DCL yaw 0 ≈ north (+Z) → tip toward top of map (negative screen Y).
+   * White triangle — tip points visual avatar facing (incl. while moving).
+   * `mapAngle` is canvas radians from getMinimapFacingAngle (0 = north / up).
    */
   private drawPlayerTriangle(
     ctx: CanvasRenderingContext2D,
     cx: number,
     cy: number,
-    facingYawDcl: number
+    mapAngle: number
   ): void {
     const r = 14 // 2× previous (7)
     ctx.save()
     ctx.translate(cx, cy)
-    // Canvas rotate is CW-positive; map north = up. DCL yaw 0 = +Z north → no extra offset.
-    ctx.rotate(-facingYawDcl)
+    ctx.rotate(mapAngle)
     ctx.beginPath()
-    ctx.moveTo(0, -r) // tip
+    ctx.moveTo(0, -r) // tip (north at mapAngle 0)
     ctx.lineTo(r * 0.72, r * 0.62)
     ctx.lineTo(0, r * 0.28)
     ctx.lineTo(-r * 0.72, r * 0.62)

@@ -1667,8 +1667,8 @@ export class AppController {
       address: address ?? undefined,
       displayName: profile?.displayName,
       faceUrl: world.social.getLocalDisplay().faceUrl,
-      // Body facing for minimap triangle (not freecam orbit).
-      facingYaw: world.getPlayerFacingYawDcl() ?? undefined
+      // Visual body facing → canvas angle (tracks avatar while moving).
+      facingYaw: world.getPlayerMinimapAngle() ?? undefined
     }
   }
 

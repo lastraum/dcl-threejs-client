@@ -477,6 +477,22 @@ export class PlayerSystem {
     return normalizeAngle(threeYawToDclYaw(this.networkYaw))
   }
 
+  /**
+   * Canvas angle for minimap triangle: 0 = tip toward map north (up).
+   * Derived from the **same** `playerYaw` that drives `avatar.setYaw` (incl. move snaps).
+   */
+  getMinimapFacingAngle(): number {
+    // Mesh faces playerYaw + AVATAR_YAW_OFFSET (bind pose is +Z; locomotion uses -Z at 0).
+    const meshYaw = this.playerYaw + AVATAR_YAW_OFFSET
+    // Object3D forward (-Z at yaw 0):
+    const fx = -Math.sin(meshYaw)
+    const fz = -Math.cos(meshYaw)
+    // Three X is reflected vs DCL; map east = +X dcl = -fx, map north = +Z = fz.
+    const east = -fx
+    const north = fz
+    return Math.atan2(east, north)
+  }
+
   /** RFC4 Movement jump / grounded flags for remote locomotion parity. */
   getLocomotionWireState(): {
     isGrounded: boolean

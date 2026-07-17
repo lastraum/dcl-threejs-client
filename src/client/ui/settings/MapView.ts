@@ -36,8 +36,8 @@ export type MapPlayerState = {
   displayName?: string
   faceUrl?: string | null
   /**
-   * Avatar body facing in DCL yaw radians (not camera orbit).
-   * Minimap triangle tip points this direction (0 = north / +Z).
+   * Minimap triangle canvas angle (radians). 0 = tip north (up).
+   * From visual avatar body yaw — updates with movement facing.
    */
   facingYaw?: number
 }

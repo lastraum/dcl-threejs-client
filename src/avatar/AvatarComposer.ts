@@ -125,7 +125,8 @@ async function composeFromConfig(
 
       let merged = false
       if (isFeet) {
-        // Merge on raw rig weights first — pre-scale can hide foot/Hips bind info (RTFKT/L2 shoes).
+        // Raw-first so foot/Hips bind weights stay valid. Unit mismatch (RTFKT Armature×10 /
+        // cm verts) is corrected inside mergeWearableMeshes via wearableUnitScaleFactor.
         pruneWearableDisplayMeshes(entry.layer, { extentCheck: false })
         merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
         if (!merged) {

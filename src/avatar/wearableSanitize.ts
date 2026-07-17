@@ -321,3 +321,51 @@ export function normalizeWearableWorldScale(
     root.scale.z * factor
   )
 }
+
+/**
+ * Unit conversion factor so wearable mesh verts match body_shape bind space.
+ *
+ * Body_shape: Armature ≈ 0.01, feet verts ~0.4m local.
+ * RTFKT / L1 feet: Armature ≈ 10, verts ~300–600 local → explode if merged raw.
+ */
+export function wearableUnitScaleFactor(
+  bodyRoot: THREE.Object3D,
+  wearableRoot: THREE.Object3D,
+  category?: WearableCategory
+): number {
+  let factor = 1
+  const bodyScale = getWearableArmatureScale(bodyRoot)
+  const wearScale = getWearableArmatureScale(wearableRoot)
+  if (bodyScale > 0 && wearScale > 0) {
+    const ratio = wearScale / bodyScale
+    if (ratio > 2 || ratio < 0.5) factor = bodyScale / wearScale
+  }
+
+  const expected = (category && EXPECTED_WEARABLE_EXTENT_M[category]) ?? 2
+  let maxLocal = 0
+  wearableRoot.traverse((obj) => {
+    if (!(obj instanceof THREE.Mesh) || !obj.visible) return
+    maxLocal = Math.max(maxLocal, localMeshExtent(obj))
+  })
+  if (maxLocal > Math.max(expected * 4, 2.5)) {
+    const fromMesh = expected / maxLocal
+    // Prefer mesh extent when armature factor alone still leaves cm-space verts.
+    if (factor === 1 || maxLocal * factor > expected * 2) {
+      factor = fromMesh
+    }
+  }
+  return factor
+}
+
+/** Bake uniform scale into position attributes (merge path unit fix). */
+export function scaleGeometryPositions(geometry: THREE.BufferGeometry, factor: number): void {
+  if (!Number.isFinite(factor) || Math.abs(factor - 1) < 1e-8) return
+  const pos = geometry.attributes.position as THREE.BufferAttribute | undefined
+  if (!pos) return
+  for (let i = 0; i < pos.count; i++) {
+    pos.setXYZ(i, pos.getX(i) * factor, pos.getY(i) * factor, pos.getZ(i) * factor)
+  }
+  pos.needsUpdate = true
+  geometry.computeBoundingBox()
+  geometry.computeBoundingSphere()
+}

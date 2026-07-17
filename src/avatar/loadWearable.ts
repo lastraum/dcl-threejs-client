@@ -15,7 +15,9 @@ import {
   findSkeletonHips,
   normalizeWearableWorldScale,
   prepareWearableForCompose,
-  pruneWearableDisplayMeshes
+  pruneWearableDisplayMeshes,
+  scaleGeometryPositions,
+  wearableUnitScaleFactor
 } from './wearableSanitize'
 import type { BodyShape, WearableCategory, WearableDefinition } from './types'
 
@@ -349,6 +351,12 @@ export function mergeWearableMeshes(
   const threshold = mergeThresholdForCategory(options.category, options.wearableId)
   let merged = 0
 
+  // RTFKT/L1 feet: Armature×10 + cm verts must be baked into body unit space before bind.
+  const unitFactor =
+    options.bodyRoot != null
+      ? wearableUnitScaleFactor(options.bodyRoot, wearableRoot, options.category)
+      : 1
+
   wearableRoot.traverse((obj) => {
     if (!(obj instanceof THREE.SkinnedMesh) || !obj.skeleton || !obj.visible) return
 
@@ -361,10 +369,12 @@ export function mergeWearableMeshes(
 
     const indexMap = buildBoneIndexMap(obj.skeleton, skeleton)
     const geometry = obj.geometry.clone()
+    if (unitFactor !== 1) scaleGeometryPositions(geometry, unitFactor)
     remapSkinIndices(geometry, indexMap, skeleton.bones.length)
 
     const mesh = new THREE.SkinnedMesh(geometry, cloneMaterials(obj.material))
     mesh.name = obj.name
+    // bindMatrix is mesh-local → bind space; verts already scaled, keep matrix.
     bindSkinnedMesh(mesh, skeleton, obj.bindMatrix)
     repairSkinnedMesh(mesh)
     target.add(mesh)

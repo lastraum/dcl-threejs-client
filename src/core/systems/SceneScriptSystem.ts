@@ -495,6 +495,7 @@ export class SceneScriptSystem {
     this.raycasts = new RaycastSystem()
     this.avatarShapes.setAssetCache(cache, scene.realm.contentUrl)
     this.bridge.setOnGltfAttached((entity) => this.flushIncrementalColliders(entity))
+    this.bridge.setRecordLww(this.recordRendererLww)
     this.bindSceneUiViewportSync(host)
     this.prepared = true
   }

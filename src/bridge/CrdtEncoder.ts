@@ -128,7 +128,9 @@ export class CrdtEncoder {
       components.VideoPlayer,
       components.AudioSource,
       components.UiInputResult,
-      components.UiDropdownResult
+      components.UiDropdownResult,
+      // Host LWW — GLB attach progress for scene loading UIs (ADR-215).
+      components.GltfContainerLoadingState
     ]
     this.lwwCaptureById = new Map(lwwCapture.map((d) => [d.componentId, d]))
 

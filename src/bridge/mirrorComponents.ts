@@ -37,6 +37,8 @@ export type MirrorComponents = {
   MeshCollider: ReturnType<typeof extended.MeshCollider>
   Material: ReturnType<typeof extended.Material>
   GltfContainer: ReturnType<typeof generated.GltfContainer>
+  /** Renderer → worker: LWW load state for each GltfContainer entity (ADR-215). */
+  GltfContainerLoadingState: ReturnType<typeof generated.GltfContainerLoadingState>
   VisibilityComponent: ReturnType<typeof generated.VisibilityComponent>
   LightSource: ReturnType<typeof generated.LightSource>
   TextShape: ReturnType<typeof generated.TextShape>
@@ -100,6 +102,7 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     MeshCollider: extended.MeshCollider(engine),
     Material: extended.Material(engine),
     GltfContainer: generated.GltfContainer(engine),
+    GltfContainerLoadingState: generated.GltfContainerLoadingState(engine),
     VisibilityComponent: generated.VisibilityComponent(engine),
     LightSource: generated.LightSource(engine),
     TextShape: generated.TextShape(engine),

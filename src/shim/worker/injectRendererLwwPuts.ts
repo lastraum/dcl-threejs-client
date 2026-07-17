@@ -13,6 +13,8 @@ const RESERVED_ENTITIES = new Set<Entity>([0 as Entity, 1 as Entity, 2 as Entity
 const TWEEN_STATE_ID = 1103
 /** `core::RaycastResult` — renderer raycast hits for worker `raycastSystem` callbacks. */
 const RAYCAST_RESULT_ID = 1068
+/** `core::GltfContainerLoadingState` — renderer reports GLB load progress (ADR-215). */
+const GLTF_CONTAINER_LOADING_STATE_ID = 1049
 /** `core::VideoPlayer` — renderer syncs `playing` on natural end for scene toggle parity. */
 const VIDEO_PLAYER_ID = 1043
 /** `core::UiCanvasInformation` — renderer injects virtual canvas size for scene UI systems. */
@@ -31,6 +33,7 @@ const REALM_INFO_ID = 1106
 export type RendererLwwInjectCounts = {
   tweenPuts: number
   raycastPuts: number
+  gltfLoadingStatePuts: number
   videoPlayerPuts: number
   uiCanvasPuts: number
   uiInputResultPuts: number
@@ -51,6 +54,7 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
   const transformId = Transform.componentId
   const TweenState = generated.TweenState(engine)
   const RaycastResult = generated.RaycastResult(engine)
+  const GltfContainerLoadingState = generated.GltfContainerLoadingState(engine)
   const VideoPlayer = generated.VideoPlayer(engine)
   const UiCanvasInformation = generated.UiCanvasInformation(engine)
   const UiInputResult = generated.UiInputResult(engine)
@@ -60,6 +64,7 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
   const RealmInfo = generated.RealmInfo(engine)
   let tweenPuts = 0
   let raycastPuts = 0
+  let gltfLoadingStatePuts = 0
   let videoPlayerPuts = 0
   let uiCanvasPuts = 0
   let uiInputResultPuts = 0
@@ -89,6 +94,11 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
           const value = RaycastResult.schema.deserialize(valueBuf)
           RaycastResult.createOrReplace(msg.entityId as Entity, value)
           raycastPuts++
+        } else if (msg.componentId === GLTF_CONTAINER_LOADING_STATE_ID) {
+          const valueBuf = new ReadWriteByteBuffer(msg.data)
+          const value = GltfContainerLoadingState.schema.deserialize(valueBuf)
+          GltfContainerLoadingState.createOrReplace(msg.entityId as Entity, value)
+          gltfLoadingStatePuts++
         } else if (msg.componentId === VIDEO_PLAYER_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = VideoPlayer.schema.deserialize(valueBuf)
@@ -133,6 +143,7 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
   return {
     tweenPuts,
     raycastPuts,
+    gltfLoadingStatePuts,
     videoPlayerPuts,
     uiCanvasPuts,
     uiInputResultPuts,

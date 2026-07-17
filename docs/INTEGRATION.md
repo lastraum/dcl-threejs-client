@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-16 (Name · AvatarModifierArea · MapPin 🟢; EngineInfo live write; RealmInfo hardened)
+> **Last updated:** 2026-07-16 (GltfContainerLoadingState 🔵 host LWW; AssetLoadLoadingState already 🔵)
 
 ---
 
@@ -27,14 +27,14 @@
 
 | Area | Tracked | 🟢 Done | 🟡 Partial | ⬜ Not started | 🔵 Client-only |
 | ---- | ------- | ------- | ---------- | -------------- | -------------- |
-| ECS components | 65 | 37 | 5 | 5 | 18 |
+| ECS components | 65 | 37 | 5 | 4 | 19 |
 | Client UI | see `integrationRegistry.ts` | | | | |
 | Networking | see `integrationRegistry.ts` | | | | |
 | Performance | see `integrationRegistry.ts` | | | | |
 | Environment | 4 | 4 | 0 | 0 | — |
 | ~system modules | 9 | 5 | 2 | 2 | — |
 
-*ECS counts from `src/dcl/ecs/registry.ts`. **Without full parity** = ⬜ + 🟡 = **12**. Client-only is intentional (renderer → scene), not a missing feature row unless noted. **Tags** + `getEntitiesByTag()` are 🟢 (not a known gap).*
+*ECS counts from `src/dcl/ecs/registry.ts`. **Without full parity** = ⬜ + 🟡 = **9**. Client-only (🔵) is intentional renderer→scene ownership, not a missing feature — e.g. AssetLoadLoadingState, GltfContainerLoadingState, TweenState, EngineInfo. **Tags** + `getEntitiesByTag()` are 🟢.*
 
 ---
 
@@ -57,7 +57,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | Billboard | 1090 | 🟢 | `BillboardBridge` |
 | LightSource | 1079 | 🟢 | Culling + quality tiers |
 | TextShape | 1030 | 🟢 | Canvas texture planes |
-| GltfContainerLoadingState | 1049 | ⬜ | Optional loading UI |
+| GltfContainerLoadingState | 1049 | 🔵 | Host LWW from `ThreeBridge` attach path — LOADING→FINISHED/NOT_FOUND/ERROR → encoder + worker inject |
 
 ### Physics & input (Phase 2–3)
 
@@ -131,7 +131,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 
 | Status | Components |
 | ------ | ---------- |
-| ⬜ | GltfContainerLoadingState · PhysicsCombinedForce · PhysicsCombinedImpulse · GltfNodeModifiers · NftShape |
+| ⬜ | PhysicsCombinedForce · PhysicsCombinedImpulse · GltfNodeModifiers · NftShape |
 | 🟡 | UiTransform · UiText · UiBackground · UiInput · UiDropdown |
 
 ### ~system modules (worker shim)

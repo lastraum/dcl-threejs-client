@@ -164,6 +164,10 @@ export class ThreeBridge {
   private readonly loggedEmptyGltfSrcs = new Set<string>()
   private readonly loggedGltfAttachFailures = new Set<string>()
   private onGltfAttached: ((entity: Entity) => void) | null = null
+  /** Source-capture sink for host LWW (GltfContainerLoadingState → encoder). */
+  private recordLww: ((componentId: number, entity: Entity, value: unknown) => void) | null = null
+  /** entity → last LoadingState written (dirty-only; avoids CREATE spam). */
+  private readonly gltfLoadingStates = new Map<Entity, number>()
   private videoPlayerBridge: VideoPlayerBridge | null = null
   private audioSourceBridge: AudioSourceBridge | null = null
   private audioStreamBridge: AudioStreamBridge | null = null
@@ -379,12 +383,39 @@ export class ThreeBridge {
     this.onGltfAttached = callback
   }
 
+  /** Host LWW capture (GltfContainerLoadingState → CrdtEncoder.recordLww). */
+  setRecordLww(fn: ((componentId: number, entity: Entity, value: unknown) => void) | null): void {
+    this.recordLww = fn
+  }
+
   /** Skip inbound Transform apply for renderer-owned poses (AvatarAttach). */
   setSkipTransformApply(fn: ((entity: Entity) => boolean) | null): void {
     this.skipTransformApply = fn ?? undefined
   }
 
+  /**
+   * ADR-215 GltfContainerLoadingState — renderer-owned LWW for scene loading UIs.
+   * LoadingState: UNKNOWN=0 LOADING=1 NOT_FOUND=2 FINISHED_WITH_ERROR=3 FINISHED=4
+   */
+  private setGltfLoadingState(entity: Entity, currentState: number): void {
+    if (this.gltfLoadingStates.get(entity) === currentState) return
+    this.gltfLoadingStates.set(entity, currentState)
+    const value = { currentState }
+    const def = this.ecs.GltfContainerLoadingState
+    try {
+      def.createOrReplace(entity, value)
+    } catch {
+      /* component may be absent on early dispose */
+    }
+    this.recordLww?.(def.componentId, entity, value)
+  }
+
+  private clearGltfLoadingState(entity: Entity): void {
+    this.gltfLoadingStates.delete(entity)
+  }
+
   private notifyGltfAttached(entity: Entity): void {
+    this.setGltfLoadingState(entity, 4 /* FINISHED */)
     try {
       this.onGltfAttached?.(entity)
     } catch (err) {
@@ -1570,6 +1601,7 @@ export class ThreeBridge {
           obj.userData.emoteAnchor = true
           obj.add(anchor)
           this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
+          this.setGltfLoadingState(entity, 4 /* FINISHED */)
           return true
         }
         this.emptyGltfHashes.add(hash)
@@ -1578,6 +1610,7 @@ export class ThreeBridge {
           this.loggedEmptyGltfSrcs.add(src)
           console.warn('[ThreeBridge] GLB has no renderable geometry — skipping', src)
         }
+        this.setGltfLoadingState(entity, 3 /* FINISHED_WITH_ERROR */)
         return false
       }
       clone.name = mk
@@ -1600,6 +1633,7 @@ export class ThreeBridge {
         this.loggedGltfAttachFailures.add(src)
         console.warn('[ThreeBridge] GLB attach failed', src, err)
       }
+      this.setGltfLoadingState(entity, 3 /* FINISHED_WITH_ERROR */)
       return false
     }
   }
@@ -1650,7 +1684,10 @@ export class ThreeBridge {
       const srcKey = hash ?? src.trim()
       let mesh = obj.getObjectByName(mk) as THREE.Object3D | undefined
 
-      if (!hash) return
+      if (!hash) {
+        this.setGltfLoadingState(entity, 2 /* NOT_FOUND */)
+        return
+      }
 
       if (!mesh || obj.userData.gltfSrcKey !== srcKey) {
         if (obj.userData.dclInstanced) {
@@ -1665,6 +1702,14 @@ export class ThreeBridge {
         const isLocal = hash.startsWith(GLTF_LOCAL_PREFIX)
         const url = isLocal ? hash.slice(GLTF_LOCAL_PREFIX.length) : this.sceneConfig.assetUrl(hash)
         const cacheKey = this.gltfCacheKey(isLocal ? url : hash)
+
+        if (this.cache.hasGivenUp(cacheKey) || this.emptyGltfHashes.has(hash)) {
+          this.setGltfLoadingState(entity, 3 /* FINISHED_WITH_ERROR */)
+          return
+        }
+
+        // In-flight / re-src — scene can poll LOADING until FINISHED.
+        this.setGltfLoadingState(entity, 1 /* LOADING */)
 
         if (this.gltfBudgetRemaining <= 0) return
 
@@ -1703,6 +1748,9 @@ export class ThreeBridge {
           return
         }
         mesh = obj.getObjectByName(mk) as THREE.Object3D | undefined
+      } else {
+        // Already attached — ensure FINISHED even if we never re-enter attachCachedGltf.
+        this.setGltfLoadingState(entity, 4 /* FINISHED */)
       }
 
       // Never await textures here — queue for tickDeferredMaterials (budgeted, fire-and-forget).
@@ -1717,6 +1765,7 @@ export class ThreeBridge {
     }
 
     // GltfContainer removed — drop clone and/or free GPU instance slot (pickup / hide).
+    this.clearGltfLoadingState(entity)
     this.clearGltfVisual(entity, obj)
 
     if (MeshRenderer.has(entity)) {

@@ -17,7 +17,13 @@ export const DCL_ECS_COMPONENTS: EcsComponentEntry[] = [
   { name: 'Tags', phase: 1, status: 'render', category: 'core' },
   { name: 'VisibilityComponent', coreId: 1081, phase: 1, status: 'render', category: 'core' },
   { name: 'GltfContainer', coreId: 1041, phase: 1, status: 'render', category: 'render' },
-  { name: 'GltfContainerLoadingState', coreId: 1049, phase: '1b', status: 'none', category: 'render' },
+  {
+    name: 'GltfContainerLoadingState',
+    coreId: 1049,
+    phase: '1b',
+    status: 'client-only',
+    category: 'render'
+  },
   { name: 'MeshRenderer', coreId: 1018, phase: 1, status: 'render', category: 'render' },
   { name: 'Material', coreId: 1017, phase: 1, status: 'render', category: 'render' },
   { name: 'Animator', coreId: 1042, phase: '1b', status: 'render', category: 'render' },

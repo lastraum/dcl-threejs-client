@@ -31,6 +31,8 @@ export const RENDERER_PREREGISTER_FACTORIES: readonly RendererComponentFactory[]
   (engine) => generated.AudioEvent(engine),
   (engine) => generated.TweenState(engine),
   (engine) => generated.RaycastResult(engine),
+  // Host LWW — GltfContainer load progress (ADR-215); scene systems poll currentState.
+  (engine) => generated.GltfContainerLoadingState(engine),
   (engine) => generated.VideoPlayer(engine),
   (engine) => generated.AudioSource(engine),
   (engine) => generated.PrimaryPointerInfo(engine),

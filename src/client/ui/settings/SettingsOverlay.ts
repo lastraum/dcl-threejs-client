@@ -3,6 +3,7 @@ import {
   deployAvatarProfile,
   profileDeployFingerprint
 } from '../../../avatar/deployProfile'
+import { CommunitiesBrowseView } from '../explore/CommunitiesBrowseView'
 import { BackpackView } from './BackpackView'
 import { EventsView, type EventsViewOptions } from './EventsView'
 import { MapView, type MapPlayerState } from './MapView'
@@ -59,6 +60,7 @@ export class SettingsOverlay {
   private backpackView: BackpackView | null = null
   private eventsView: EventsView | null = null
   private placesView: PlacesView | null = null
+  private communitiesView: CommunitiesBrowseView | null = null
   private galleryView: GalleryView | null = null
   private mapView: MapView | null = null
   private session: SessionIdentity
@@ -457,6 +459,8 @@ export class SettingsOverlay {
     this.eventsView = null
     this.placesView?.dispose()
     this.placesView = null
+    this.communitiesView?.dispose()
+    this.communitiesView = null
     this.galleryView?.dispose()
     this.galleryView = null
     this.mapView?.dispose()
@@ -480,6 +484,14 @@ export class SettingsOverlay {
       })
       this.contentArea.appendChild(this.placesView.root)
       this.placesView.mount()
+    } else if (this.activeTab === 'communities') {
+      this.communitiesView = new CommunitiesBrowseView({
+        getAuthIdentity: () => this.session.getAuthIdentity(),
+        getUserAddress: () => this.session.getAddress() ?? null
+      })
+      this.communitiesView.root.classList.add('communities-browse-view--embedded')
+      this.contentArea.appendChild(this.communitiesView.root)
+      this.communitiesView.mount()
     } else if (this.activeTab === 'gallery') {
       this.galleryView = new GalleryView({
         getWalletAddress: () => this.session.getAddress(),
@@ -525,6 +537,7 @@ export class SettingsOverlay {
     this.backpackView?.dispose()
     this.eventsView?.dispose()
     this.placesView?.dispose()
+    this.communitiesView?.dispose()
     this.galleryView?.dispose()
     this.mapView?.dispose()
     this.root.remove()

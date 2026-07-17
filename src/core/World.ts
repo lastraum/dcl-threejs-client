@@ -243,9 +243,16 @@ export class World {
     this.voice.bindRoomsProvider(() => this.comms.getVoiceLiveKitRooms())
     this.voice.bindStatusProvider(() => this.comms.describeLiveKitRooms())
     this.voice.bindInventoryProvider(() => this.comms.describeAllRoomsAudioInventory())
+    this.wireVoiceSpatial()
     this.voice.refreshRooms()
     console.log('[voice]', 'syncVoiceRoom', this.comms.describeLiveKitRooms())
     this.voice.dumpStatus('sync')
+  }
+
+  /** PositionalAudio listener + peer avatar roots for 3D voice falloff. */
+  private wireVoiceSpatial(): void {
+    this.voice.setAudioListener(this.sceneScript?.getAudioListener() ?? null)
+    this.voice.setPeerObjectProvider((address) => this.remoteAvatars?.getPeerRoot(address) ?? null)
   }
 
   /** Unlock nearby voice only when play chrome is ready (not during loading). */
@@ -260,6 +267,7 @@ export class World {
     this.comms.applyLocalDisplayName(dn)
     this.comms.announceProfile('connect')
     this.syncVoiceRoom()
+    this.wireVoiceSpatial()
     this.voice.setInPlay(true)
     this.logAllRoomsAudio('in-play')
     console.log('[voice] unlocked · displayName=', dn ?? '(none)', '·', this.comms.describeLiveKitRooms())
@@ -501,6 +509,8 @@ export class World {
     if (scene.mainEntry && scene.entityId) {
       this.resetColliderBootState()
       this.sceneScript.prepare(scene, this.assets, this.host)
+      // Scene audio listener is created in prepare — wire spatial voice now.
+      this.wireVoiceSpatial()
       this.sceneScript.setLiveKitVideoBinder((video, onUpdate) =>
         this.comms.bindLiveKitVideoSource(video, onUpdate)
       )
@@ -1088,6 +1098,8 @@ export class World {
           this.vrmPeerSync.gcStaleFetches()
           this.remoteAvatars?.update(delta)
         }
+        // Spatial voice reparents as peer poses land (cheap map walk).
+        this.voice.tickSpatial()
         this.comms.flushBroadcast()
 
         // Tweens / billboards / GLTF animators — player path runs in syncPlayerMotionFrame first.

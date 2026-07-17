@@ -482,11 +482,10 @@ export class PlayerSystem {
    * Derived from the **same** `playerYaw` that drives `avatar.setYaw` (incl. move snaps).
    */
   getMinimapFacingAngle(): number {
-    // Mesh faces playerYaw + AVATAR_YAW_OFFSET (bind pose is +Z; locomotion uses -Z at 0).
+    // Visual body faces bind +Z after setYaw (playerYaw + AVATAR_YAW_OFFSET) — not Object3D -Z.
     const meshYaw = this.playerYaw + AVATAR_YAW_OFFSET
-    // Object3D forward (-Z at yaw 0):
-    const fx = -Math.sin(meshYaw)
-    const fz = -Math.cos(meshYaw)
+    const fx = Math.sin(meshYaw)
+    const fz = Math.cos(meshYaw)
     // Three X is reflected vs DCL; map east = +X dcl = -fx, map north = +Z = fz.
     const east = -fx
     const north = fz

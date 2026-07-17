@@ -104,6 +104,19 @@ export class ArchipelagoClient {
     this.flushHeartbeat()
   }
 
+  /**
+   * Keep Social Service friend/community ONLINE while on landing/shell.
+   * Explorer greys community avatars when we're missing from archipelago stats.
+   * No-op once a real position has been queued (spawn / walk).
+   */
+  ensurePresenceSeed(): void {
+    if (this.lastPosition) return
+    this.queuePosition(0, 0, 0)
+    if (this.welcomed && this.isConnected()) {
+      this.startHeartbeatLoop()
+    }
+  }
+
   disconnect(): void {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
@@ -236,6 +249,16 @@ export class ArchipelagoClient {
         // Prefer last known position if pending was cleared.
         if (!this.pendingPosition && this.lastPosition) {
           this.pendingPosition = { ...this.lastPosition }
+        }
+        // Social Service friend/community ONLINE comes from archipelago stats + NATS
+        // peer.*.heartbeat — without a position we never enter the online set and
+        // Explorer greys us out in community chat. Seed genesis origin for presence
+        // until real player/spawn heartbeats replace it.
+        if (!this.pendingPosition && !this.lastPosition) {
+          const presenceSeed: Position = { x: 0, y: 0, z: 0 }
+          this.pendingPosition = presenceSeed
+          this.lastPosition = presenceSeed
+          console.log('[archipelago] presence seed genesis (0,0,0) — friend/community online status')
         }
         this.flushHeartbeat()
         this.startHeartbeatLoop()

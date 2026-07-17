@@ -1529,12 +1529,15 @@ export class CommsService {
     if (this.isWorldComms()) return
     const desc = this.archipelago.describe()
     console.log('[archipelago] ensure', desc, 'islandLiveKit=', this.islandConnected)
+    // Friend/community ONLINE in Explorer requires archipelago presence heartbeats.
+    this.archipelago.ensurePresenceSeed()
     if (this.archipelago.isWelcomed() && this.islandConnected) return
     if (this.archipelago.isConnected() && this.archipelago.isWelcomed()) {
       // Connected but no island yet — keep heartbeats; seed will re-queue position.
       return
     }
     const ok = await this.connectRealmComms()
+    this.archipelago.ensurePresenceSeed()
     console.log('[archipelago] ensure connectRealmComms ok=', ok, this.archipelago.describe())
     clientDebugLog.log(
       'network',

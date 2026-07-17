@@ -1,6 +1,8 @@
 export type ChatChannelChoice =
   | { kind: 'scene'; sceneKey: string; label: string }
   | { kind: 'messages' }
+  /** 1:1 DM via ADR-208 private-messages LiveKit room. */
+  | { kind: 'dm'; peerAddress: string; displayName: string }
   | { kind: 'community'; communityId: string; displayName: string }
 
 export type CommunityListRow = {

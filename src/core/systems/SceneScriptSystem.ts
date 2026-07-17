@@ -2558,6 +2558,11 @@ export class SceneScriptSystem {
     this.audioStreamBridge?.setUserGestureUnlocked(unlocked)
   }
 
+  /** Camera-mounted THREE.AudioListener for nearby spatial voice + media. */
+  getAudioListener(): import('three').AudioListener | null {
+    return this.audioSourceBridge?.getListener() ?? null
+  }
+
   getVirtualCameraBridge(): VirtualCameraBridge | null {
     return this.virtualCameraBridge
   }

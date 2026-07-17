@@ -9,13 +9,16 @@ import {
   type RemoteTrack,
   type RemoteTrackPublication
 } from 'livekit-client'
+import * as THREE from 'three'
 import { isTextInputFocused } from '../../client/ui/textInputFocus'
 import {
   soundSettings,
+  spatialAudioGain,
   voiceChatVolumeMultiplier,
   volumeToGain,
   type SoundSettingsState
 } from '../../rendering/SoundSettings'
+import { patchThreeAudioSafeRamps } from '../../media/patchThreeAudioSafeRamps'
 
 export type VoiceChatSnapshot = {
   hearing: boolean
@@ -35,12 +38,24 @@ type Listener = (state: VoiceChatSnapshot) => void
 type SpeakingListener = (levels: ReadonlyMap<string, number>) => void
 type RoomsProvider = () => Room[]
 type StatusProvider = () => string
+/** Remote avatar root (or null while pose not yet known). */
+type PeerObjectProvider = (address: string) => THREE.Object3D | null
+
+/** Voice falloff — tighter than scene music so distant peers fade out. */
+const VOICE_REF_DISTANCE = 6
+const VOICE_ROLLOFF = 1
+const VOICE_MAX_DISTANCE = 45
+/** Mouth-ish height on avatar root (meters). */
+const VOICE_HEAD_Y = 1.55
 
 type RemoteVoiceEntry = {
   element: HTMLAudioElement
   trackSid: string
   participantId: string
   roomKey: string
+  /** WebAudio spatial path; null when listener missing (flat HTML fallback). */
+  positional: THREE.PositionalAudio | null
+  mediaSourceBound: boolean
 }
 
 type BoundRoom = {
@@ -49,19 +64,23 @@ type BoundRoom = {
 }
 
 /**
- * Nearby voice.
+ * Nearby voice with 3D spatial falloff.
  *
  * Room set from CommsService.getVoiceLiveKitRooms():
  * - Worlds → world LiveKit only
  * - Parcels → island + scene (Explorer nearby voice needs island co-location;
  *   scene alone fails A/B despite ADR-204 scene-only table)
  *
+ * Remote tracks → HTMLAudioElement → THREE.PositionalAudio parented to peer avatar.
+ * One spatial source per participant (island+scene dual rooms would otherwise double).
  * Audio stays muted until `setInPlay(true)` after play chrome is ready.
  */
 export class VoiceChatService {
   private roomsProvider: RoomsProvider = () => []
   private statusProvider: StatusProvider = () => ''
   private inventoryProvider: StatusProvider = () => ''
+  private peerObjectProvider: PeerObjectProvider = () => null
+  private audioListener: THREE.AudioListener | null = null
   private bound = new Map<string, BoundRoom>()
   private hearing = true
   /** Unlocks hear/speak after spawn — false during landing/loading. */
@@ -83,6 +102,7 @@ export class VoiceChatService {
   private audioHost: HTMLDivElement | null = null
   private rescanTimer: ReturnType<typeof setInterval> | null = null
   private lastDiagAt = 0
+  private spatialPatched = false
 
   private readonly onKeyDown = (ev: KeyboardEvent): void => {
     if (ev.repeat || ev.code !== 'KeyT') return
@@ -151,6 +171,8 @@ export class VoiceChatService {
     this.roomsProvider = () => []
     this.statusProvider = () => ''
     this.inventoryProvider = () => ''
+    this.peerObjectProvider = () => null
+    this.audioListener = null
     this.audioHost?.remove()
     this.audioHost = null
     window.removeEventListener('keydown', this.onKeyDown, true)
@@ -194,6 +216,38 @@ export class VoiceChatService {
       roomCount: rooms.length,
       error: this.error
     }
+  }
+
+  /** Shared camera AudioListener from scene audio stack (or World fallback). */
+  setAudioListener(listener: THREE.AudioListener | null): void {
+    if (this.audioListener === listener) return
+    this.audioListener = listener
+    if (listener && !this.spatialPatched) {
+      patchThreeAudioSafeRamps()
+      this.spatialPatched = true
+    }
+    // Rebuild spatial graphs when listener becomes available mid-session.
+    if (listener && this.canHear()) {
+      for (const entry of this.remotes.values()) {
+        if (!entry.positional) this.ensureSpatialGraph(entry)
+      }
+      this.reparentAllSpatial()
+      this.applyRemoteVolumes()
+    }
+  }
+
+  /** Remote avatar roots for 3D falloff (address → Object3D with world pose). */
+  setPeerObjectProvider(provider: PeerObjectProvider): void {
+    this.peerObjectProvider = provider
+  }
+
+  /**
+   * Reparent PositionalAudio onto peer roots as transforms arrive.
+   * Call once per frame from World (cheap — map walk only).
+   */
+  tickSpatial(): void {
+    if (!this.canHear() || this.remotes.size === 0) return
+    this.reparentAllSpatial()
   }
 
   bindRoomsProvider(provider: RoomsProvider): void {
@@ -841,6 +895,11 @@ export class VoiceChatService {
   ): void {
     if (track.kind !== Track.Kind.Audio) return
     if (!this.canHear()) return
+    const participantId = (participant.identity ?? '').trim().toLowerCase()
+    if (!participantId) return
+    // Island + scene both carry Explorer voice — keep a single spatial source per peer.
+    if (this.hasRemoteForParticipant(participantId)) return
+
     const rk = this.findRoomKey(participant)
     const key = remoteKey(rk, participant.identity, publication.trackSid)
     if (this.remotes.has(key)) return
@@ -848,29 +907,102 @@ export class VoiceChatService {
     const el = track.attach() as HTMLAudioElement
     el.autoplay = true
     el.setAttribute('playsinline', 'true')
-    el.muted = false
-    el.volume = remoteGain()
     this.ensureAudioHost().appendChild(el)
+
+    const entry: RemoteVoiceEntry = {
+      element: el,
+      trackSid: publication.trackSid,
+      participantId,
+      roomKey: rk,
+      positional: null,
+      mediaSourceBound: false
+    }
+    this.ensureSpatialGraph(entry)
+    this.reparentSpatial(entry)
+    this.applyEntryVolume(entry)
+
     void el.play().catch((err) => {
       voiceLog(`Remote voice play blocked: ${String(err)}`, 'warn')
     })
-    this.remotes.set(key, {
-      element: el,
-      trackSid: publication.trackSid,
-      participantId: participant.identity?.toLowerCase() ?? '',
-      roomKey: rk
-    })
+    void this.resumeListenerContext()
+
+    this.remotes.set(key, entry)
     this.remoteCount = this.remotes.size
     voiceLog(
-      `Remote voice · peer=${(participant.identity ?? '').slice(0, 10)} room=${rk.slice(0, 24)} total=${this.remoteCount}`
+      `Remote voice · peer=${participantId.slice(0, 10)} room=${rk.slice(0, 24)} spatial=${!!entry.positional} total=${this.remoteCount}`
     )
     this.notify()
+  }
+
+  private hasRemoteForParticipant(participantId: string): boolean {
+    for (const entry of this.remotes.values()) {
+      if (entry.participantId === participantId) return true
+    }
+    return false
+  }
+
+  private ensureSpatialGraph(entry: RemoteVoiceEntry): void {
+    if (entry.positional || !this.audioListener) return
+    try {
+      const positional = new THREE.PositionalAudio(this.audioListener)
+      positional.setRefDistance(VOICE_REF_DISTANCE)
+      positional.setRolloffFactor(VOICE_ROLLOFF)
+      positional.setDistanceModel('inverse')
+      positional.setMaxDistance(VOICE_MAX_DISTANCE)
+      // WebAudio owns output — silence element path to avoid double play.
+      entry.element.muted = true
+      entry.element.volume = 0
+      if (!entry.mediaSourceBound) {
+        positional.setMediaElementSource(entry.element)
+        entry.mediaSourceBound = true
+      }
+      entry.positional = positional
+      positional.setVolume(spatialAudioGain('voice', 1))
+    } catch (err) {
+      voiceLog(`PositionalAudio setup failed: ${String(err)}`, 'warn')
+      entry.positional = null
+    }
+  }
+
+  private reparentAllSpatial(): void {
+    for (const entry of this.remotes.values()) this.reparentSpatial(entry)
+  }
+
+  private reparentSpatial(entry: RemoteVoiceEntry): void {
+    if (!entry.positional) return
+    const peer = this.peerObjectProvider(entry.participantId)
+    const target = peer ?? this.audioListener?.parent ?? null
+    if (!target) return
+    if (entry.positional.parent !== target) {
+      target.add(entry.positional)
+    }
+    // Head height when parented to avatar root; flush at listener when pose unknown.
+    if (peer) {
+      entry.positional.position.set(0, VOICE_HEAD_Y, 0)
+    } else {
+      entry.positional.position.set(0, 0, 0)
+    }
+  }
+
+  private async resumeListenerContext(): Promise<void> {
+    const ctx = this.audioListener?.context
+    if (!ctx || ctx.state !== 'suspended') return
+    try {
+      await ctx.resume()
+    } catch {
+      /* user gesture may still be required */
+    }
   }
 
   private detachRemote(key: string): void {
     const entry = this.remotes.get(key)
     if (!entry) return
     try {
+      if (entry.positional) {
+        entry.positional.disconnect()
+        entry.positional.removeFromParent()
+        entry.positional = null
+      }
       entry.element.pause()
       entry.element.srcObject = null
       entry.element.remove()
@@ -887,12 +1019,23 @@ export class VoiceChatService {
   }
 
   private applyRemoteVolumes(): void {
+    for (const entry of this.remotes.values()) this.applyEntryVolume(entry)
+  }
+
+  private applyEntryVolume(entry: RemoteVoiceEntry): void {
     const hear = this.canHear()
-    const g = hear ? remoteGain() : 0
-    for (const entry of this.remotes.values()) {
-      entry.element.volume = g
-      entry.element.muted = !hear || g <= 0
+    if (entry.positional) {
+      // THREE path: category gain here; master on AudioListener.
+      const g = hear ? spatialAudioGain('voice', 1) : 0
+      entry.positional.setVolume(g)
+      entry.element.muted = true
+      entry.element.volume = 0
+      return
     }
+    // Flat HTML fallback when no listener yet.
+    const g = hear ? remoteGain() : 0
+    entry.element.volume = g
+    entry.element.muted = !hear || g <= 0
   }
 
   private notify(): void {

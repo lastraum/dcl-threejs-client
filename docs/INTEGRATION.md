@@ -168,9 +168,9 @@ DOM overlay — not in-scene `UiTransform`.
 | Preferences panel (P / ⚙): Graphics preset/shadows/lights/res/FPS + lighting | 🟢 |
 | Preferences → Sounds volume sliders | 🟢 |
 | Preferences: Controls, Chat tabs | 🟡 | Mouse sensitivity live; keybinds pending |
-| Settings: Communities | ⬜ | 2D `/communities` browse exists; in-world tab lag |
+| Settings: Communities | 🟢 | Same browse + modal as `/communities` (O); community voice join CTA |
 | In-scene ECS UI | 🟡 | Yoga + DOM partial — Creator modal / hit-map polish remain |
-| Voice / mic UI | 🟢 | Nearby voice panel · Speak / hold T · mute-in-bg · name-tag bars; spatial 3D next |
+| Voice / mic UI | 🟢 | Nearby voice panel · Speak / hold T · mute-in-bg · name-tag bars · **3D PositionalAudio** |
 
 ---
 
@@ -187,8 +187,9 @@ DOM overlay — not in-scene `UiTransform`.
 | Double-jump clockwise Y twirl (DCL / VRM / ODK) | 🟢 | Shared `DoubleJumpTwirl`; optional `double_jump.glb` |
 | SignedFetch, Catalyst content, wallet + guest session | 🟢 |
 | ECS NetworkEntity scene sync | 🟢 P0–P3 host path |
-| Community text / PM router | ⬜ local echo only |
-| Spatial voice (3D falloff) | ⬜ | LiveKit tracks + HUD done; PositionalAudio pending |
+| Community text / PM router | 🟢 | **1:1 DMs** + **community group text** on ADR-208 private-messages LiveKit room (topic `dcl.community.chat:{id}`, fan-out to members) |
+| Community voice | 🟡 | Join/leave CTA + LiveKit session; gatekeeper may require service Bearer (signed-fetch best-effort) |
+| Spatial voice (3D falloff) | 🟢 | `PositionalAudio` on remote avatar roots (ref 6 m / max 45 m); one source per peer |
 
 ---
 

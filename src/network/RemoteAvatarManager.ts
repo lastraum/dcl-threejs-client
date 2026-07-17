@@ -358,6 +358,16 @@ export class RemoteAvatarManager {
     }
   }
 
+  /**
+   * Peer scene root for spatial voice (PositionalAudio parent).
+   * Only when we have a real pose — avoids blasting audio at origin.
+   */
+  getPeerRoot(address: string): THREE.Object3D | null {
+    const record = this.peers.get(address.toLowerCase())
+    if (!record || !record.hasPosition) return null
+    return record.root
+  }
+
   /** AvatarModifierArea samples — DCL feet positions for remotes with a known pose. */
   collectModifierSamples(out: { id: string; position: { x: number; y: number; z: number } }[]): void {
     for (const [key, record] of this.peers) {

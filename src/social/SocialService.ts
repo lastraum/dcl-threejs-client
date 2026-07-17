@@ -20,6 +20,7 @@ import {
 } from './dcmChatMedia'
 import { prepareChatImageFile } from './prepareChatImage'
 import { isSceneChatEmoteWireText } from './dclRfc4Chat'
+import { PrivateMessagesService } from './PrivateMessagesService'
 import type { ChatChannelChoice, ChatLine, CommunityListRow, SceneChatTab } from './types'
 
 export { CHAT_MAX_LENGTH }
@@ -27,6 +28,11 @@ export { CHAT_MAX_LENGTH }
 export type SocialChatEvent = {
   channelKey: string
   line: ChatLine
+}
+
+export type DmPeerRow = {
+  address: string
+  displayName: string
 }
 
 type SocialInitOptions = {
@@ -58,6 +64,7 @@ let lineCounter = 0
 export function socialChannelKey(channel: ChatChannelChoice): string {
   if (channel.kind === 'scene') return `scene:${channel.sceneKey}`
   if (channel.kind === 'community') return `community:${channel.communityId.toLowerCase()}`
+  if (channel.kind === 'dm') return `dm:${channel.peerAddress.toLowerCase()}`
   return 'messages'
 }
 
@@ -112,6 +119,9 @@ export class SocialService {
   private channelThreadOpen = false
   private readonly mediaAssembler = new DcmInboundAssembler()
   private readonly mediaObjectUrls = new Set<string>()
+  private readonly privateMessages = new PrivateMessagesService()
+  private unsubPrivateMessages: (() => void) | null = null
+  private unsubCommunityMessages: (() => void) | null = null
 
   /** Wire multi-room publish (pool / controller). Falls back to primary CommsService. */
   setSceneChatTransport(options: {
@@ -160,10 +170,12 @@ export class SocialService {
     if (!options.isGuest) {
       await this.loadMemberCommunities(options.identity)
       void this.ensureFriendshipSnapshot()
+      void this.ensurePrivateMessagesConnected()
     } else {
       this.communities = []
       this.friendshipSnapshot = null
       this.friendshipRelationByAddress.clear()
+      this.teardownPrivateMessages()
     }
     this.ready = true
     this.notifyChannelChange()
@@ -260,6 +272,7 @@ export class SocialService {
   getChannelTitle(): string {
     if (this.channel.kind === 'scene') return this.channel.label
     if (this.channel.kind === 'community') return this.channel.displayName
+    if (this.channel.kind === 'dm') return this.channel.displayName
     return 'Direct messages'
   }
 
@@ -267,14 +280,59 @@ export class SocialService {
     if (this.channel.kind === 'scene') {
       return this.isSceneBrowserChatEnabled() ? 'Scene chat' : 'Chat disabled by creator'
     }
-    if (this.channel.kind === 'community') return 'Community chat'
-    return 'Coming soon'
+    if (this.channel.kind === 'community') {
+      if (this.privateMessages.isConnecting()) return 'Joining…'
+      if (this.privateMessages.getLastError() && !this.privateMessages.isConnected()) {
+        return 'Community chat offline'
+      }
+      return 'Community chat'
+    }
+    if (this.channel.kind === 'dm') {
+      if (this.privateMessages.isConnected()) return 'Private message'
+      if (this.privateMessages.isConnecting()) return 'Joining private chat…'
+      if (this.privateMessages.getLastError()) return 'Private chat offline'
+      return 'Direct message'
+    }
+    return 'Pick a friend to message'
+  }
+
+  /** Friends available for 1:1 DMs (ADR-208). */
+  getDmPeers(): DmPeerRow[] {
+    const out: DmPeerRow[] = []
+    for (const [address, relation] of this.friendshipRelationByAddress) {
+      if (relation !== 'friends') continue
+      if (this.localAddress && address === this.localAddress) continue
+      const profile = this.peerProfiles.get(address)
+      out.push({
+        address,
+        displayName: profile?.displayName?.trim() || `${address.slice(0, 6)}…${address.slice(-4)}`
+      })
+      void this.peerProfiles.ensurePeer(address)
+    }
+    out.sort((a, b) => a.displayName.localeCompare(b.displayName))
+    return out
+  }
+
+  isPrivateMessagesReady(): boolean {
+    return this.privateMessages.isConnected()
+  }
+
+  isPrivateMessagesConnecting(): boolean {
+    return this.privateMessages.isConnecting()
+  }
+
+  getPrivateMessagesError(): string | null {
+    return this.privateMessages.getLastError()
   }
 
   selectChannel(channel: ChatChannelChoice): void {
     this.channel = channel
     this.unreadCounts.delete(channelKey(channel))
     this.notifyChannelChange()
+    // Warm private-messages LiveKit room (shared highway for DMs + community SFU).
+    if (channel.kind === 'community' || channel.kind === 'dm') {
+      void this.ensurePrivateMessagesConnected()
+    }
   }
 
   setChannelThreadOpen(open: boolean): void {
@@ -315,6 +373,11 @@ export class SocialService {
       const id = key.slice('community:'.length)
       const row = this.communities.find((c) => c.id.toLowerCase() === id)
       return row?.name?.trim() || 'Community'
+    }
+    if (key.startsWith('dm:')) {
+      const addr = key.slice('dm:'.length)
+      const profile = this.peerProfiles.get(addr)
+      return profile?.displayName?.trim() || `${addr.slice(0, 6)}…${addr.slice(-4)}`
     }
     if (key === 'messages') return 'Direct messages'
     return 'Chat'
@@ -635,8 +698,21 @@ export class SocialService {
     const trimmed = text.trim().slice(0, CHAT_MAX_LENGTH)
     if (!trimmed) return false
 
-    if (this.channel.kind === 'messages') return false
-    if (this.channel.kind === 'community') {
+    if (this.channel.kind === 'messages') {
+      // Hub only — open a friend DM channel to send.
+      return false
+    }
+
+    if (this.channel.kind === 'dm') {
+      await this.ensurePrivateMessagesConnected()
+      const peer = this.channel.peerAddress.toLowerCase()
+      const sent = await this.privateMessages.sendTo(peer, trimmed)
+      if (!sent) {
+        clientDebugLog.log('social', 'DM send failed — private messages room not ready', {
+          level: 'warn'
+        })
+        return false
+      }
       this.appendLine(channelKey(this.channel), {
         id: `local-${++lineCounter}`,
         text: trimmed,
@@ -644,7 +720,36 @@ export class SocialService {
         self: true,
         senderAddress: this.localAddress ?? undefined
       })
-      clientDebugLog.log('social', 'Community text chat — PM router not wired yet', { level: 'warn' })
+      return true
+    }
+
+    if (this.channel.kind === 'community') {
+      await this.ensurePrivateMessagesConnected()
+      if (!this.privateMessages.isConnected()) {
+        clientDebugLog.log('social', 'Community chat send failed — private-messages room not ready', {
+          level: 'warn',
+          alsoConsole: true
+        })
+        return false
+      }
+      const communityId = this.channel.communityId
+      // Explorer parity: publish to message-router SFU with topic community:{id}.
+      // Always show local line when publish succeeds (SFU does not echo to sender).
+      const sent = await this.privateMessages.sendToCommunity(communityId, trimmed)
+      if (!sent) {
+        clientDebugLog.log('social', 'Community chat send failed — SFU route rejected', {
+          level: 'warn',
+          alsoConsole: true
+        })
+        return false
+      }
+      this.appendLine(channelKey(this.channel), {
+        id: `local-${++lineCounter}`,
+        text: trimmed,
+        time: Date.now() / 1000,
+        self: true,
+        senderAddress: this.localAddress ?? undefined
+      })
       return true
     }
 
@@ -672,6 +777,86 @@ export class SocialService {
       senderAddress: this.localAddress ?? undefined
     })
     return true
+  }
+
+  private async ensurePrivateMessagesConnected(): Promise<void> {
+    if (!this.authIdentity || !this.localAddress) return
+    if (this.privateMessages.isConnected()) return
+    if (!this.unsubPrivateMessages) {
+      this.unsubPrivateMessages = this.privateMessages.subscribe((ev) => {
+        this.ingestPrivateMessage(ev.fromAddress, ev.text, ev.time)
+      })
+    }
+    if (!this.unsubCommunityMessages) {
+      this.unsubCommunityMessages = this.privateMessages.subscribeCommunity((ev) => {
+        this.ingestCommunityMessage(ev.communityId, ev.fromAddress, ev.text, ev.time)
+      })
+    }
+    await this.privateMessages.connect(this.authIdentity, this.localAddress)
+    this.notifyChannelChange()
+  }
+
+  private teardownPrivateMessages(): void {
+    this.unsubPrivateMessages?.()
+    this.unsubPrivateMessages = null
+    this.unsubCommunityMessages?.()
+    this.unsubCommunityMessages = null
+    this.privateMessages.disconnect()
+  }
+
+  private ingestPrivateMessage(fromAddress: string, text: string, time: number): void {
+    const peer = fromAddress.toLowerCase()
+    const key = `dm:${peer}`
+    const profile = this.peerProfiles.get(peer)
+    this.appendLine(key, {
+      id: `remote-${++lineCounter}`,
+      text,
+      time,
+      self: false,
+      senderAddress: peer,
+      senderName: profile?.displayName
+    })
+    // Unread when not actively reading this DM thread.
+    if (!(this.channel.kind === 'dm' && this.channel.peerAddress.toLowerCase() === peer && this.channelThreadOpen)) {
+      const prev = this.unreadCounts.get(key) ?? 0
+      this.unreadCounts.set(key, prev + 1)
+      this.notifyChannelChange()
+    }
+    void this.peerProfiles.ensurePeer(peer)
+  }
+
+  private ingestCommunityMessage(
+    communityId: string,
+    fromAddress: string,
+    text: string,
+    time: number
+  ): void {
+    const id = communityId.toLowerCase()
+    // Only surface messages for communities we belong to (rail membership list).
+    const known = this.communities.some((c) => c.id.toLowerCase() === id)
+    if (!known) return
+
+    const key = `community:${id}`
+    const peer = fromAddress.toLowerCase()
+    const profile = this.peerProfiles.get(peer)
+    this.appendLine(key, {
+      id: `remote-${++lineCounter}`,
+      text,
+      time,
+      self: false,
+      senderAddress: peer,
+      senderName: profile?.displayName
+    })
+    const viewing =
+      this.channel.kind === 'community' &&
+      this.channel.communityId.toLowerCase() === id &&
+      this.channelThreadOpen
+    if (!viewing) {
+      const prev = this.unreadCounts.get(key) ?? 0
+      this.unreadCounts.set(key, prev + 1)
+      this.notifyChannelChange()
+    }
+    void this.peerProfiles.ensurePeer(peer)
   }
 
   private wireCommsHandlers(): void {
@@ -755,6 +940,7 @@ export class SocialService {
   dispose(): void {
     this.comms?.setChatHandler(null)
     this.comms?.setChatMediaHandler(null)
+    this.teardownPrivateMessages()
     for (const url of this.mediaObjectUrls) URL.revokeObjectURL(url)
     this.mediaObjectUrls.clear()
     this.comms = null

@@ -10,7 +10,8 @@ export class ProfileSidebarButton {
     this.element.type = 'button'
     this.element.className = 'client-sidebar__btn client-sidebar__btn--profile'
     this.element.dataset.action = 'profile'
-    this.element.title = label
+    this.element.dataset.tooltip = label
+    this.element.removeAttribute('title')
     this.element.setAttribute('aria-label', label)
 
     this.img = document.createElement('img')

@@ -7,9 +7,16 @@ export type SidebarButtonConfig = {
   id: string
   icon: SidebarIconId
   label: string
+  /** Compact key badge shown as `Label [K]` (Explorer HUD hover tip). */
+  shortcut?: string
   badge?: string
   statusDot?: SidebarStatusDot
   onClick?: (ev: MouseEvent) => void
+}
+
+export function formatSidebarTooltip(label: string, shortcut?: string | null): string {
+  const key = shortcut?.trim()
+  return key ? `${label} [${key}]` : label
 }
 
 export class SidebarButton {
@@ -17,14 +24,15 @@ export class SidebarButton {
   private active = false
   private badgeEl: HTMLSpanElement | null = null
   private statusEl: HTMLSpanElement | null = null
+  private shortcut: string | null = null
 
   constructor(config: SidebarButtonConfig) {
     this.element = document.createElement('button')
     this.element.type = 'button'
     this.element.className = 'client-sidebar__btn'
     this.element.dataset.action = config.id
-    this.element.title = config.label
-    this.element.setAttribute('aria-label', config.label)
+    this.shortcut = config.shortcut?.trim() || null
+    this.setTitle(config.label)
 
     const icon = document.createElement('span')
     icon.className = 'client-sidebar__icon'
@@ -57,8 +65,10 @@ export class SidebarButton {
   }
 
   setTitle(label: string): void {
-    this.element.title = label
-    this.element.setAttribute('aria-label', label)
+    const tip = formatSidebarTooltip(label, this.shortcut)
+    this.element.dataset.tooltip = tip
+    this.element.removeAttribute('title')
+    this.element.setAttribute('aria-label', tip)
   }
 
   setBadge(count: number | null): void {

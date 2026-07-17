@@ -34,7 +34,9 @@ export class CommunitiesPageView {
     })
 
     this.browseView = new CommunitiesBrowseView({
-      getAuthIdentity: () => (this.login.kind === 'wallet' ? this.login.identity : null)
+      getAuthIdentity: () => (this.login.kind === 'wallet' ? this.login.identity : null),
+      getUserAddress: () =>
+        this.login.kind === 'wallet' || this.login.kind === 'guest' ? this.login.address : null
     })
 
     this.root.appendChild(this.topNav.el)

@@ -2,11 +2,12 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-16 (**v1.0.0** core play loop production beta)  
+> **Last updated:** 2026-07-17  
 > **Current phase:** **v1.0.0** — production beta on the core loop; still not full Explorer parity.  
-> **1.x next:** spatial PositionalAudio · in-world `/goto` · community DMs · backpack outfits.  
+> **Shipped (1.x):** spatial nearby voice · Settings Communities · 1:1 DMs + community group text (ADR-208) · community voice join CTA.  
+> **1.x next:** backpack outfits · scene UI polish · community voice Bearer parity.  
+> **Note:** in-world `/goto` via 3D chat is wired (full scene reload); product docs previously listed it open.  
 > **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
-> **ECS next:** NftShape MVP (deferred); MOVE CAMERA residual · scene UI polish.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.

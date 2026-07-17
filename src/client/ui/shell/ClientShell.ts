@@ -37,12 +37,12 @@ type TopButtonConfig = SidebarButtonConfig & { dividerAfter?: boolean }
 const TOP_BUTTONS: TopButtonConfig[] = [
   { id: 'notifications', icon: 'notifications', label: 'Notifications' },
   { id: 'marketplace-credits', icon: 'marketplaceCredits', label: 'Marketplace credits', dividerAfter: true },
-  { id: 'events', icon: 'events', label: 'Events' },
-  { id: 'map', icon: 'map', label: 'Map' },
-  { id: 'communities', icon: 'communities', label: 'Communities' },
-  { id: 'backpack', icon: 'backpack', label: 'Backpack' },
+  { id: 'events', icon: 'events', label: 'Events', shortcut: 'X' },
+  { id: 'map', icon: 'map', label: 'Map', shortcut: 'M' },
+  { id: 'communities', icon: 'communities', label: 'Communities', shortcut: 'O' },
+  { id: 'backpack', icon: 'backpack', label: 'Backpack', shortcut: 'I' },
   { id: 'marketplace', icon: 'marketplace', label: 'Marketplace' },
-  { id: 'pictures', icon: 'pictures', label: 'Pictures' },
+  { id: 'pictures', icon: 'pictures', label: 'Pictures', shortcut: 'K' },
   { id: 'settings', icon: 'settings', label: 'Settings' },
   { id: 'help', icon: 'help', label: 'Help' },
   { id: 'dev', icon: 'dev', label: 'Dev progress' }
@@ -58,7 +58,7 @@ const BOTTOM_BUTTONS: SidebarButtonConfig[] = [
   { id: 'smart-wearable', icon: 'smartWearable', label: 'Smart wearables' },
   { id: 'skybox', icon: 'skybox', label: 'Skybox overrides' },
   { id: 'camera', icon: 'camera', label: 'Camera mode' },
-  { id: 'emotes', icon: 'emotes', label: 'Emotes' },
+  { id: 'emotes', icon: 'emotes', label: 'Emotes', shortcut: 'B' },
   { id: 'friend-requests', icon: 'friendRequests', label: 'Friend requests' },
   { id: 'chat', icon: 'chat', label: 'Chat' }
 ]

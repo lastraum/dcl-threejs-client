@@ -159,6 +159,17 @@ export class LiveKitCommsSession {
     return this.room?.name?.trim() || ''
   }
 
+  /** Raw LiveKit participant identities currently in the room (including SFU bots). */
+  getRemoteParticipantIdentities(): string[] {
+    if (!this.room || this.room.state !== ConnectionState.Connected) return []
+    const out: string[] = []
+    for (const p of this.room.remoteParticipants.values()) {
+      const id = p.identity?.trim()
+      if (id) out.push(id)
+    }
+    return out
+  }
+
   getRemotePeerAddresses(): string[] {
     if (!this.room) return []
     const out: string[] = []
@@ -686,6 +697,19 @@ export class LiveKitCommsSession {
   }
 
   async publishChat(text: string): Promise<boolean> {
+    return this.publishChatTo(text)
+  }
+
+  /**
+   * RFC4 Chat — optional LiveKit destinationIdentities for private messages (ADR-208).
+   * Optional `topic` routes community group text without mixing into 1:1 DMs.
+   * Empty destinations = room broadcast (scene chat).
+   */
+  async publishChatTo(
+    text: string,
+    destinationAddresses?: readonly string[],
+    topic?: string
+  ): Promise<boolean> {
     if (!this.room || this.room.state !== ConnectionState.Connected) {
       console.warn(`[chat] publishChat skip transport=${this.transport} room=${this.room?.state ?? 'null'}`)
       return false
@@ -706,13 +730,19 @@ export class LiveKitCommsSession {
     // Godot Explorer requires OLE Automation dates (not unix seconds).
     const oleTs = oleTimestampNow()
     const packet = encodeRfc4ChatPacket(trimmed, oleTs)
-    const ok = await this.safePublishData(packet, true)
+    const dest =
+      destinationAddresses && destinationAddresses.length > 0
+        ? this.resolveDestinationIdentities(destinationAddresses)
+        : undefined
+    const ok = await this.safePublishData(packet, true, dest, topic)
     if (!ok) {
       console.error(`[chat] RFC4 publish failed (${this.transport}): room not ready`)
       return false
     }
+    const destNote = dest?.length ? ` → ${dest.map((d) => d.slice(0, 10)).join(',')}` : ''
+    const topicNote = topic ? ` topic=${topic}` : ''
     console.log(
-      `[chat] RFC4 out → ${this.transport} room=${this.room?.name ?? '?'} len=${packet.byteLength} oleTs=${oleTs.toFixed(5)}`
+      `[chat] RFC4 out → ${this.transport} room=${this.room?.name ?? '?'}${destNote}${topicNote} len=${packet.byteLength} oleTs=${oleTs.toFixed(5)}`
     )
     clientDebugLog.log(
       'comms',
@@ -796,7 +826,8 @@ export class LiveKitCommsSession {
   private async safePublishData(
     packet: Uint8Array,
     reliable: boolean,
-    destinationIdentities?: readonly string[]
+    destinationIdentities?: readonly string[],
+    topic?: string
   ): Promise<boolean> {
     const room = this.room
     if (!room || room.state !== ConnectionState.Connected || !this.connected) return false
@@ -805,9 +836,11 @@ export class LiveKitCommsSession {
         destinationIdentities && destinationIdentities.length > 0
           ? [...destinationIdentities]
           : undefined
+      const topicTrim = topic?.trim()
       await room.localParticipant.publishData(packet, {
         reliable,
-        ...(dest ? { destinationIdentities: dest } : {})
+        ...(dest ? { destinationIdentities: dest } : {}),
+        ...(topicTrim ? { topic: topicTrim } : {})
       })
       return true
     } catch {

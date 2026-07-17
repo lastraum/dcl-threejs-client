@@ -268,6 +268,9 @@ export class SocialChatDock {
     if (current.kind === 'community') {
       return incomingChannelKey === `community:${current.communityId.toLowerCase()}`
     }
+    if (current.kind === 'dm') {
+      return incomingChannelKey === `dm:${current.peerAddress.toLowerCase()}`
+    }
     return incomingChannelKey === 'messages'
   }
 
@@ -432,6 +435,16 @@ export class SocialChatDock {
       if (!(active && this.threadOpen)) total += social.getUnreadCount(channel)
     }
 
+    for (const peer of social.getDmPeers()) {
+      const channel = {
+        kind: 'dm' as const,
+        peerAddress: peer.address,
+        displayName: peer.displayName
+      }
+      const active = current.kind === 'dm' && current.peerAddress.toLowerCase() === peer.address
+      if (!(active && this.threadOpen)) total += social.getUnreadCount(channel)
+    }
+
     return total
   }
 
@@ -566,6 +579,11 @@ export class SocialChatDock {
       return
     }
 
+    if (channel.kind === 'dm') {
+      this.headerAvatarEl.textContent = channel.displayName.slice(0, 1).toUpperCase() || '✉'
+      return
+    }
+
     this.headerAvatarEl.textContent = '✉'
   }
 
@@ -614,9 +632,30 @@ export class SocialChatDock {
         this.createChannelEntry({
           channel,
           title: community.name,
-          subtitle: 'Community',
+          // Shared live highway — not a per-community room. Don't show "Connecting…" on every row.
+          subtitle: 'Community chat',
           imageUrl: communityDisplayImageUrl(community.id, community.thumbnails),
           fallback: community.name.slice(0, 1).toUpperCase(),
+          active,
+          unreadCount: viewingChannel ? 0 : social.getUnreadCount(channel)
+        })
+      )
+    }
+
+    for (const peer of social.getDmPeers()) {
+      const channel = {
+        kind: 'dm' as const,
+        peerAddress: peer.address,
+        displayName: peer.displayName
+      }
+      const active = current.kind === 'dm' && current.peerAddress.toLowerCase() === peer.address
+      const viewingChannel = active && this.threadOpen
+      this.pillsScrollEl.appendChild(
+        this.createChannelEntry({
+          channel,
+          title: peer.displayName,
+          subtitle: 'Direct message',
+          fallback: peer.displayName.slice(0, 1).toUpperCase() || '?',
           active,
           unreadCount: viewingChannel ? 0 : social.getUnreadCount(channel)
         })
@@ -1007,7 +1046,12 @@ export class SocialChatDock {
     const social = this.social()
     const channel = social.getChannel()
     const status = this.controller.getStatus()
-    if (channel.kind === 'community' && (status.kind === 'guest' || !social.isReady())) return
+    if (
+      (channel.kind === 'community' || channel.kind === 'dm') &&
+      (status.kind === 'guest' || !social.isReady())
+    ) {
+      return
+    }
 
     const text = this.inputEl.value.trim().slice(0, CHAT_MAX_LENGTH)
     if (!text) return
@@ -1050,10 +1094,12 @@ export class SocialChatDock {
       status.kind !== 'scene_ban'
     const canChat =
       channel.kind === 'community'
-        ? socialReady && status.kind !== 'guest'
-        : channel.kind === 'scene'
-          ? liveScene && social.isSceneBrowserChatEnabled() && status.kind !== 'guest'
-          : false
+        ? socialReady && status.kind !== 'guest' && social.isPrivateMessagesReady()
+        : channel.kind === 'dm'
+          ? socialReady && status.kind !== 'guest' && social.isPrivateMessagesReady()
+          : channel.kind === 'scene'
+            ? liveScene && social.isSceneBrowserChatEnabled() && status.kind !== 'guest'
+            : false
     this.inputEl.disabled = !canChat || this.imageSending || status.kind === 'connecting' || connectingScene
     this.composerEl.classList.toggle(
       'social-chat-dock__composer--disabled',
@@ -1076,6 +1122,20 @@ export class SocialChatDock {
         this.inputEl.placeholder = 'Connecting…'
       } else if (channel.kind === 'scene') {
         this.inputEl.placeholder = 'Press Enter to chat — drop an image'
+      } else if (channel.kind === 'dm' && social.isPrivateMessagesConnecting()) {
+        this.inputEl.placeholder = 'Joining private chat…'
+      } else if (channel.kind === 'dm' && social.getPrivateMessagesError()) {
+        this.inputEl.placeholder = 'Private chat offline — try again'
+      } else if (channel.kind === 'dm' && !social.isPrivateMessagesReady()) {
+        this.inputEl.placeholder = 'Private message…'
+      } else if (channel.kind === 'dm') {
+        this.inputEl.placeholder = 'Private message…'
+      } else if (channel.kind === 'community' && social.isPrivateMessagesConnecting()) {
+        this.inputEl.placeholder = 'Joining community chat…'
+      } else if (channel.kind === 'community' && social.getPrivateMessagesError()) {
+        this.inputEl.placeholder = 'Community chat offline — try again'
+      } else if (channel.kind === 'community') {
+        this.inputEl.placeholder = 'Message the community…'
       } else {
         this.inputEl.placeholder = 'Press Enter to chat'
       }

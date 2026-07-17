@@ -75,8 +75,14 @@ export const DCL_ECS_COMPONENTS: EcsComponentEntry[] = [
   { name: 'NetworkEntity', phase: 5, status: 'render', category: 'network' },
   { name: 'NetworkParent', phase: 5, status: 'render', category: 'network' },
   { name: 'SyncComponents', phase: 5, status: 'render', category: 'network' },
-  { name: 'AssetLoad', coreId: 1213, phase: 6, status: 'none', category: 'assets' },
-  { name: 'AssetLoadLoadingState', coreId: 1214, phase: 6, status: 'client-only', category: 'assets' },
+  { name: 'AssetLoad', coreId: 1213, phase: 6, status: 'render', category: 'assets' },
+  {
+    name: 'AssetLoadLoadingState',
+    coreId: 1214,
+    phase: 6,
+    status: 'client-only',
+    category: 'assets'
+  },
   { name: 'GltfNodeModifiers', coreId: 1099, phase: 6, status: 'none', category: 'render' },
   { name: 'NftShape', coreId: 1040, phase: 6, status: 'none', category: 'render' },
   { name: 'ParticleSystem', coreId: 1217, phase: 6, status: 'render', category: 'render' },

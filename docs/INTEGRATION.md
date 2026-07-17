@@ -27,7 +27,7 @@
 
 | Area | Tracked | 🟢 Done | 🟡 Partial | ⬜ Not started | 🔵 Client-only |
 | ---- | ------- | ------- | ---------- | -------------- | -------------- |
-| ECS components | 65 | 36 | 5 | 6 | 18 |
+| ECS components | 65 | 37 | 5 | 5 | 18 |
 | Client UI | see `integrationRegistry.ts` | | | | |
 | Networking | see `integrationRegistry.ts` | | | | |
 | Performance | see `integrationRegistry.ts` | | | | |
@@ -122,8 +122,8 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | MapPin | 1097 | 🟢 | Mirror + `MapPinStore` list (deprecated upstream; still honored) |
 | NftShape | 1040 | ⬜ | NFT frame / wearables display mesh |
 | GltfNodeModifiers | 1099 | ⬜ | Per-node material/visibility overrides on GLTF |
-| AssetLoad | 1213 | ⬜ | Runtime asset fetch API |
-| AssetLoadLoadingState | 1214 | 🔵 | Load progress writeback for AssetLoad |
+| AssetLoad | 1213 | 🟢 | Preload scene paths into caches (`AssetLoadBridge`) — GLB parse + texture + audio |
+| AssetLoadLoadingState | 1214 | 🔵 | Grow-only LOADING/FINISHED/NOT_FOUND/ERROR per asset → encoder |
 | EngineInfo | 1048 | 🔵 | RootEntity — host LWW via encoder (like Unity); `frameNumber` · `tickNumber` · `totalRuntime` (ADR-148); NOT peer-synced |
 | RealmInfo | 1106 | 🔵 | RootEntity — host LWW via encoder; baseUrl/realmName/networkId/commsAdapter/preview/room/`isConnectedSceneRoom`; NOT peer-synced |
 
@@ -131,7 +131,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 
 | Status | Components |
 | ------ | ---------- |
-| ⬜ | GltfContainerLoadingState · PhysicsCombinedForce · PhysicsCombinedImpulse · AssetLoad · GltfNodeModifiers · NftShape |
+| ⬜ | GltfContainerLoadingState · PhysicsCombinedForce · PhysicsCombinedImpulse · GltfNodeModifiers · NftShape |
 | 🟡 | UiTransform · UiText · UiBackground · UiInput · UiDropdown |
 
 ### ~system modules (worker shim)

@@ -118,7 +118,8 @@ export class CrdtEncoder {
       components.PointerEventsResult,
       components.TriggerAreaResult,
       components.VideoEvent,
-      components.AudioEvent
+      components.AudioEvent,
+      components.AssetLoadLoadingState
     ]
     this.growOnlyIds = new Set(growOnly.map((d) => d.componentId))
     this.growOnlyById = new Map(growOnly.map((d) => [d.componentId, d]))

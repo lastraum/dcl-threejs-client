@@ -33,6 +33,7 @@ import { AudioSourceBridge } from '../../media/AudioSourceBridge'
 import { AudioStreamBridge } from '../../media/AudioStreamBridge'
 import type { SpatialAudioAnchors } from '../../media/spatialAudioParent'
 import { VideoPlayerBridge } from '../../media/VideoPlayerBridge'
+import { AssetLoadBridge } from '../../media/AssetLoadBridge'
 import { SceneUiBridge } from '../../ui/scene/SceneUiBridge'
 import type { LiveKitVideoBinder } from '../../media/WebVideoPlayer'
 import { CollisionSystem } from '../../collision/CollisionSystem'
@@ -227,6 +228,7 @@ export class SceneScriptSystem {
   private videoPlayerBridge: VideoPlayerBridge | null = null
   private audioSourceBridge: AudioSourceBridge | null = null
   private audioStreamBridge: AudioStreamBridge | null = null
+  private assetLoadBridge: AssetLoadBridge | null = null
   private host: SceneHost | null = null
   private worker: Worker | null = null
   private running = false
@@ -471,6 +473,12 @@ export class SceneScriptSystem {
       this.recordRendererAppend
     )
     this.bridge.setAudioStreamBridge(this.audioStreamBridge)
+    this.assetLoadBridge = new AssetLoadBridge(
+      this.readComponents,
+      scene,
+      cache,
+      this.recordRendererAppend
+    )
     this.collision = new CollisionSystem(host.scene)
     this.gltfColliders = new GltfColliderExtractor(host.scene)
     this.animatorBridge.setShapeMotionProbe((entity) => {
@@ -1914,6 +1922,7 @@ export class SceneScriptSystem {
         this.videoPlayerBridge?.sync(this.view)
         this.audioSourceBridge?.sync(this.view)
         this.audioStreamBridge?.sync(this.view)
+        this.assetLoadBridge?.sync(this.view)
       }
 
       this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
@@ -3933,6 +3942,7 @@ export class SceneScriptSystem {
     this.videoPlayerBridge?.sync(this.view)
     this.audioSourceBridge?.sync(this.view)
     this.audioStreamBridge?.sync(this.view)
+    this.assetLoadBridge?.sync(this.view)
     this.avatarShapes?.update(delta)
     this.animatorBridge?.update(delta)
     this.particleBridge?.update(delta)
@@ -4047,6 +4057,8 @@ export class SceneScriptSystem {
     this.audioSourceBridge = null
     this.audioStreamBridge?.dispose()
     this.audioStreamBridge = null
+    this.assetLoadBridge?.dispose()
+    this.assetLoadBridge = null
     this.collision?.dispose()
     this.collision = null
     this.gltfColliders?.dispose()

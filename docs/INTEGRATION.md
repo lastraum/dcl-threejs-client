@@ -27,14 +27,14 @@
 
 | Area | Tracked | 🟢 Done | 🟡 Partial | ⬜ Not started | 🔵 Client-only |
 | ---- | ------- | ------- | ---------- | -------------- | -------------- |
-| ECS components | 65 | 38 | 5 | 3 | 19 |
+| ECS components | 65 | 39 | 5 | 2 | 19 |
 | Client UI | see `integrationRegistry.ts` | | | | |
 | Networking | see `integrationRegistry.ts` | | | | |
 | Performance | see `integrationRegistry.ts` | | | | |
 | Environment | 4 | 4 | 0 | 0 | — |
 | ~system modules | 9 | 5 | 2 | 2 | — |
 
-*ECS counts from `src/dcl/ecs/registry.ts`. **Without full parity** = ⬜ + 🟡 = **8**. Client-only (🔵) is intentional renderer→scene ownership, not a missing feature — e.g. AssetLoadLoadingState, GltfContainerLoadingState, TweenState, EngineInfo. **Tags** + `getEntitiesByTag()` are 🟢.*
+*ECS counts from `src/dcl/ecs/registry.ts`. **Without full parity** = ⬜ + 🟡 = **7**. Client-only (🔵) is intentional renderer→scene ownership, not a missing feature — e.g. AssetLoadLoadingState, GltfContainerLoadingState, TweenState, EngineInfo. **Tags** + `getEntitiesByTag()` are 🟢.*
 
 ---
 
@@ -51,6 +51,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | Name | — | 🟢 | `core-schema::Name` → Three.js `Group.name` (debug / tooling) |
 | VisibilityComponent | 1081 | 🟢 | `obj.visible` |
 | GltfContainer | 1041 | 🟢 | Budgeted attach + reload on src change |
+| GltfNodeModifiers | 1099 | 🟢 | Material / castShadows overrides on GLB nodes (Creator Hub video screens) |
 | MeshRenderer | 1018 | 🟢 | Primitives + custom UVs |
 | Material | 1017 | 🟢 | PBR/unlit + video textures; empty Creator Hub slots ignored; AUTO cutout only with alphaMap (Unity) |
 | Animator | 1042 | 🟢 | `AnimatorBridge` |
@@ -121,7 +122,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | ParticleSystem | 1217 | 🟢 | `ParticleSystemBridge` — GPU billboard sprites |
 | MapPin | 1097 | 🟢 | Mirror + `MapPinStore` list (deprecated upstream; still honored) |
 | NftShape | 1040 | 🟢 | `NftShapeBridge` — OpenSea proxy image + **Explorer FBX frames** (`/nft-frames/*.fbx`); animated GIF; `openNftDialog` HTML modal (RestrictedActions) |
-| GltfNodeModifiers | 1099 | ⬜ | Per-node material/visibility overrides on GLTF |
+
 | AssetLoad | 1213 | 🟢 | Preload scene paths into caches (`AssetLoadBridge`) — GLB parse + texture + audio |
 | AssetLoadLoadingState | 1214 | 🔵 | Grow-only LOADING/FINISHED/NOT_FOUND/ERROR per asset → encoder |
 | EngineInfo | 1048 | 🔵 | RootEntity — host LWW via encoder (like Unity); `frameNumber` · `tickNumber` · `totalRuntime` (ADR-148); NOT peer-synced |
@@ -131,7 +132,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 
 | Status | Components |
 | ------ | ---------- |
-| ⬜ | PhysicsCombinedForce · PhysicsCombinedImpulse · GltfNodeModifiers |
+| ⬜ | PhysicsCombinedForce · PhysicsCombinedImpulse |
 | 🟡 | UiTransform · UiText · UiBackground · UiInput · UiDropdown |
 
 ### ~system modules (worker shim)

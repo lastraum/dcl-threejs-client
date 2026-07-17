@@ -92,6 +92,8 @@ export type MirrorComponents = {
   AssetLoadLoadingState: ReturnType<typeof generated.AssetLoadLoadingState>
   /** Framed NFT picture (scene-authored LWW). */
   NftShape: ReturnType<typeof generated.NftShape>
+  /** Override materials / castShadows on GltfContainer nodes (video screens, etc.). */
+  GltfNodeModifiers: ReturnType<typeof generated.GltfNodeModifiers>
 }
 
 /** Register mirror ECS components so incoming scene CRDT can be applied. */
@@ -155,6 +157,7 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     EngineInfo: generated.EngineInfo(engine),
     AssetLoad: generated.AssetLoad(engine),
     AssetLoadLoadingState: generated.AssetLoadLoadingState(engine),
-    NftShape: generated.NftShape(engine)
+    NftShape: generated.NftShape(engine),
+    GltfNodeModifiers: generated.GltfNodeModifiers(engine)
   }
 }

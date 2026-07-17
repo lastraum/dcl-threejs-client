@@ -34,7 +34,8 @@ const MESH_COMPONENT_NAMES = [
   'MeshRenderer',
   'TextShape',
   'Material',
-  'NftShape'
+  'NftShape',
+  'GltfNodeModifiers'
 ] as const
 
 /** Components whose CRDT diff should notify collision / pointer subscribers. */

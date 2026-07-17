@@ -89,7 +89,7 @@ export const DCL_ECS_COMPONENTS: EcsComponentEntry[] = [
     status: 'client-only',
     category: 'assets'
   },
-  { name: 'GltfNodeModifiers', coreId: 1099, phase: 6, status: 'none', category: 'render' },
+  { name: 'GltfNodeModifiers', coreId: 1099, phase: 6, status: 'render', category: 'render' },
   { name: 'NftShape', coreId: 1040, phase: 6, status: 'render', category: 'render' },
   { name: 'ParticleSystem', coreId: 1217, phase: 6, status: 'render', category: 'render' },
   { name: 'MapPin', coreId: 1097, phase: 6, status: 'render', category: 'misc' },

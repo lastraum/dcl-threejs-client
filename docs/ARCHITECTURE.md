@@ -95,7 +95,8 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 | Play HUD | Location pill + circular Genesis minimap (parcels) ✅; worlds pill-only |
 | Backpack | Wearables/emotes/colors ✅; outfits + marketplace open |
 | Graphics P3/P4 | Distance culls + bloom/HDR stubs |
-| GltfNodeModifiers, PhysicsCombined* | Open polish gaps |
+| PhysicsCombined* | Open polish gaps |
+| GltfNodeModifiers | 🟢 video screens / material overrides |
 | NftShape | 🟢 procedural frames + OpenSea proxy |
 | GltfContainerLoadingState, AvatarBase | 🔵 host LWW (done) |
 

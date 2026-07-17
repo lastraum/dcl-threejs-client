@@ -29,6 +29,11 @@ import { disposeOwnedObject3D } from '../rendering/sharedAsset'
 import { enableSceneGltfVertexColors } from '../rendering/LandscapeAssetSanitizer'
 import { cloneGltfInstance } from '../rendering/skinnedMeshInstance'
 import { SceneGltfInstancer, templateIsInstancable } from '../rendering/SceneGltfInstancer'
+import {
+  applyGltfNodeModifiersToEntity,
+  gltfNodeModifiersReferenceVideo
+} from './GltfNodeModifiersSync'
+import type { PBGltfNodeModifiers } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/gltf_node_modifiers.gen'
 
 function materialReferencesVideoPlayer(pb: PbMaterial, videoPlayerEntity: Entity): boolean {
   const materialCase = pb.material?.$case
@@ -155,6 +160,8 @@ export class ThreeBridge {
   private readonly pendingMeshEntities = new Set<Entity>()
   /** Entities with a Material component still needing full texture apply after hydration defer. */
   private readonly pendingMaterialEntities = new Set<Entity>()
+  /** Entities with GltfNodeModifiers pending apply (video screens on GLB meshes). */
+  private readonly pendingGltfNodeModEntities = new Set<Entity>()
   private readonly materials: MaterialApplier
   private hydrationMode = false
   private readonly loggedUnresolvedSrcs = new Set<string>()
@@ -416,6 +423,11 @@ export class ThreeBridge {
 
   private notifyGltfAttached(entity: Entity): void {
     this.setGltfLoadingState(entity, 4 /* FINISHED */)
+    // Video screens (and other overrides) often land before/with GltfContainer — re-apply.
+    if (this.ecs.GltfNodeModifiers.has(entity)) {
+      this.pendingGltfNodeModEntities.add(entity)
+      void this.runGltfNodeModifiersPass()
+    }
     try {
       this.onGltfAttached?.(entity)
     } catch (err) {
@@ -429,15 +441,25 @@ export class ThreeBridge {
   }
 
   private invalidateMaterialsForVideoPlayer(videoPlayerEntity: Entity): void {
-    const { Material } = this.ecs
+    const { Material, GltfNodeModifiers } = this.ecs
     this.store.forEachSceneEntity((entity) => {
-      if (!Material.has(entity)) return
-      const pb = Material.get(entity) as PbMaterial
-      if (!materialReferencesVideoPlayer(pb, videoPlayerEntity)) return
-      this.materials.clearEntity(entity)
-      this.pendingMaterialEntities.add(entity)
+      if (Material.has(entity)) {
+        const pb = Material.get(entity) as PbMaterial
+        if (materialReferencesVideoPlayer(pb, videoPlayerEntity)) {
+          this.materials.clearEntity(entity)
+          this.pendingMaterialEntities.add(entity)
+        }
+      }
+      // Creator Hub video screens put videoTexture on GltfNodeModifiers, not Material.
+      if (GltfNodeModifiers.has(entity)) {
+        const mods = GltfNodeModifiers.get(entity) as PBGltfNodeModifiers
+        if (gltfNodeModifiersReferenceVideo(mods, videoPlayerEntity)) {
+          this.pendingGltfNodeModEntities.add(entity)
+        }
+      }
     })
     void this.runMaterialPass(Material)
+    void this.runGltfNodeModifiersPass()
   }
 
   private hydrationPrimeDone = false
@@ -487,14 +509,18 @@ export class ThreeBridge {
   }
 
   private queueAllMaterialEntities(): void {
-    const { Material } = this.ecs
+    const { Material, GltfNodeModifiers } = this.ecs
     for (const [entity, obj] of this.store.nodes) {
       if (!this.store.isSceneOwned(entity)) continue
-      if (!Material.has(entity)) continue
-      if (!this.entityVisualRoot(entity, obj)) continue
-      const pb = Material.get(entity) as PbMaterial
-      const visual = this.entityVisualRoot(entity, obj)
-      if (visual && this.materials.needsReapply(entity, pb, visual)) this.pendingMaterialEntities.add(entity)
+      if (Material.has(entity)) {
+        if (!this.entityVisualRoot(entity, obj)) continue
+        const pb = Material.get(entity) as PbMaterial
+        const visual = this.entityVisualRoot(entity, obj)
+        if (visual && this.materials.needsReapply(entity, pb, visual)) this.pendingMaterialEntities.add(entity)
+      }
+      if (GltfNodeModifiers.has(entity)) {
+        this.pendingGltfNodeModEntities.add(entity)
+      }
     }
   }
 
@@ -905,6 +931,7 @@ export class ThreeBridge {
         this.removeEntityNode(entity)
       }
     }
+    const { GltfNodeModifiers } = this.ecs
     for (const entity of applied.meshDirty) {
       this.pendingMeshEntities.add(entity)
       this.trackSpritePoolEntity(entity)
@@ -913,6 +940,9 @@ export class ThreeBridge {
         const obj = this.store.nodes.get(entity)
         const visual = obj ? this.entityVisualRoot(entity, obj) : null
         if (visual && this.materials.needsReapply(entity, pb, visual)) this.pendingMaterialEntities.add(entity)
+      }
+      if (GltfNodeModifiers.has(entity)) {
+        this.pendingGltfNodeModEntities.add(entity)
       }
     }
 
@@ -1191,17 +1221,56 @@ export class ThreeBridge {
   /** Retry deferred sprite/material textures without blocking the render loop. */
   tickDeferredMaterials(budgetMs = 6, maxEntities = 2): void {
     if (this.materialTickBusy) return
-    if (!this.pendingMaterialEntities.size) return
+    if (!this.pendingMaterialEntities.size && !this.pendingGltfNodeModEntities.size) return
     // After hydration, apply deferred textures even if the global defer gate is still set.
     const deferTextures = this.shouldDeferTextures() && this.hydrationMode
     if (deferTextures) return
     this.materialTickBusy = true
     // Fire-and-forget — must not be awaited from the async frame path.
-    void this.runMaterialPass(this.ecs.Material, budgetMs, maxEntities, false)
+    void Promise.all([
+      this.runMaterialPass(this.ecs.Material, budgetMs, maxEntities, false),
+      this.runGltfNodeModifiersPass(budgetMs, maxEntities)
+    ])
       .catch((err) => console.warn('[ThreeBridge] deferred material pass failed', err))
       .finally(() => {
         this.materialTickBusy = false
       })
+  }
+
+  /** Queue GltfNodeModifiers apply (called from projection diff / video ready). */
+  queueGltfNodeModifiers(entity: Entity): void {
+    this.pendingGltfNodeModEntities.add(entity)
+  }
+
+  private async runGltfNodeModifiersPass(
+    budgetMs = this.meshPassBudgetMs(),
+    maxEntities = Number.POSITIVE_INFINITY
+  ): Promise<void> {
+    if (!this.pendingGltfNodeModEntities.size) return
+    const { GltfNodeModifiers } = this.ecs
+    const passStart = performance.now()
+    let processed = 0
+    for (const entity of [...this.pendingGltfNodeModEntities]) {
+      if (processed >= maxEntities) break
+      if (performance.now() - passStart >= budgetMs) break
+      if (!GltfNodeModifiers.has(entity)) {
+        this.pendingGltfNodeModEntities.delete(entity)
+        continue
+      }
+      const obj = this.store.nodes.get(entity)
+      if (!obj) continue
+      // Wait until GLB is attached (mesh root or any mesh).
+      let hasMesh = false
+      obj.traverse((c) => {
+        if ((c as THREE.Mesh).isMesh) hasMesh = true
+      })
+      if (!hasMesh) continue
+
+      const mods = GltfNodeModifiers.get(entity) as PBGltfNodeModifiers
+      const ok = await applyGltfNodeModifiersToEntity(obj, mods, this.materials)
+      if (ok) this.pendingGltfNodeModEntities.delete(entity)
+      processed++
+    }
   }
 
   /** Budgeted full material apply for entities queued during hydration defer. */

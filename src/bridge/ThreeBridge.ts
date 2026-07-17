@@ -18,7 +18,12 @@ import { syncGltfInstanceRenderState } from '../collision/gltfRenderMeshes'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionChangeKind } from './CrdtProjection'
 import { removeLightSource } from './LightSourceSync'
-import { buildTextShapeMesh, disposeTextShapeMesh, updateTextShapeMesh } from './TextShapeSync'
+import {
+  buildTextShapeMesh,
+  disposeTextShapeMesh,
+  textShapeSignature,
+  updateTextShapeMesh
+} from './TextShapeSync'
 import type { SceneHydrationStats } from '../rendering/sceneHydration'
 import type { AudioSourceBridge } from '../media/AudioSourceBridge'
 import type { AudioStreamBridge } from '../media/AudioStreamBridge'
@@ -669,7 +674,14 @@ export class ThreeBridge {
       }
     }
 
-    if (TextShape.has(entity) && !obj.getObjectByName(textKey(entity))) return true
+    // TextShape LWW updates (lobby counts, timers) keep the same mesh child — compare signature.
+    if (TextShape.has(entity)) {
+      const textMesh = obj.getObjectByName(textKey(entity)) as THREE.Mesh | undefined
+      if (!textMesh) return true
+      if (textMesh.userData.textShapeSignature !== textShapeSignature(TextShape.get(entity))) {
+        return true
+      }
+    }
 
     if (MeshRenderer.has(entity)) {
       const mk = meshKey(entity)

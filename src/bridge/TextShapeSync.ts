@@ -123,7 +123,8 @@ function canvasSizeForPlane(planeW: number, planeH: number): { canvasW: number; 
   return { canvasW, canvasH }
 }
 
-function textShapeSignature(spec: PBTextShape): string {
+/** Stable key for TextShape LWW — used by mesh attach drain to detect text/style changes. */
+export function textShapeSignature(spec: PBTextShape): string {
   return JSON.stringify({
     text: spec.text,
     fontSize: spec.fontSize,

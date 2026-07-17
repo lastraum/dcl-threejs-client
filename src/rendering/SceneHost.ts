@@ -184,13 +184,18 @@ export class SceneHost {
   private configureBloom(options: RenderQualityOptions): void {
     if (!this.bloom) return
     const pr = this.renderer.getPixelRatio()
+    // Mild tier curve — sky is bloom-excluded; only emissives / hot materials glow.
+    const strength =
+      options.tier === 'ultra' ? 0.28 : options.tier === 'high' ? 0.24 : 0.2
+    const threshold =
+      options.tier === 'ultra' ? 0.86 : options.tier === 'high' ? 0.88 : 0.9
     this.bloom.configure(
       {
         enabled: options.bloomEnabled,
         hdr: options.hdrEnabled,
-        // Tier-soft strength so Low off / Ultra slightly punchier when custom-enabled.
-        strength:
-          options.tier === 'ultra' ? 0.65 : options.tier === 'high' ? 0.58 : 0.52
+        strength,
+        threshold,
+        radius: 0.3
       },
       this.viewportCssW,
       this.viewportCssH,

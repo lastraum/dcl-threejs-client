@@ -294,7 +294,8 @@ export class DclGenesisSky {
     this.mesh = new THREE.Mesh(geometry, this.material)
     this.mesh.frustumCulled = false
     this.mesh.renderOrder = -1000
-
+    // Full-screen bloom must not sample HDR sky/clouds (washes the whole frame).
+    this.mesh.userData.dclBloomExclude = true
   }
 
   async loadTextures(): Promise<void> {

@@ -3,12 +3,17 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
+import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js'
 
 /**
- * Full-screen Unreal-style bloom for Explorer emissive / muzzle parity.
- * Uses HalfFloat when HDR is on so bright untextured VFX aren't clipped before bloom.
+ * Selective Unreal bloom — emissives / VFX glow without nuking sky + clouds.
  *
- * Tone mapping / color space: leave renderer.toneMapping set; OutputPass reads them.
+ * 1. Hide `userData.dclBloomExclude` (Genesis sky dome) + black background
+ * 2. RenderPass → UnrealBloomPass (extract pure bloom mips, not scene+bloom)
+ * 3. Restore sky
+ * 4. Full scene + OutputPass (ACES) to screen
+ * 5. Additive composite pure bloom texture only
+ *
  * SceneHost should not blit MSAA when this pipeline is active.
  */
 export type BloomPipelineOptions = {
@@ -20,13 +25,25 @@ export type BloomPipelineOptions = {
   threshold: number
 }
 
-const DEFAULT_STRENGTH = 0.55
-const DEFAULT_RADIUS = 0.42
-const DEFAULT_THRESHOLD = 0.72
+/** Mild — only near-white / HDR emissives should cross the threshold. */
+const DEFAULT_STRENGTH = 0.22
+const DEFAULT_RADIUS = 0.3
+const DEFAULT_THRESHOLD = 0.9
+
+const _black = new THREE.Color(0x000000)
+const _hidden: THREE.Object3D[] = []
+
+/** UnrealBloomPass keeps pure bloom composite in horizontal mip 0 before additive scene blend. */
+type BloomPassInternal = UnrealBloomPass & {
+  renderTargetsHorizontal: THREE.WebGLRenderTarget[]
+}
 
 export class BloomPipeline {
-  private composer: EffectComposer | null = null
-  private bloomPass: UnrealBloomPass | null = null
+  private bloomComposer: EffectComposer | null = null
+  private finalComposer: EffectComposer | null = null
+  private bloomPass: BloomPassInternal | null = null
+  private compositeQuad: FullScreenQuad | null = null
+  private compositeMaterial: THREE.MeshBasicMaterial | null = null
   private readonly resolution = new THREE.Vector2(1, 1)
   private opts: BloomPipelineOptions = {
     enabled: false,
@@ -35,6 +52,7 @@ export class BloomPipeline {
     radius: DEFAULT_RADIUS,
     threshold: DEFAULT_THRESHOLD
   }
+  private savedBackground: THREE.Scene['background'] = null
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
@@ -43,16 +61,13 @@ export class BloomPipeline {
   ) {}
 
   isActive(): boolean {
-    return this.opts.enabled && this.composer != null
+    return this.opts.enabled && this.bloomComposer != null && this.finalComposer != null
   }
 
   getOptions(): BloomPipelineOptions {
     return { ...this.opts }
   }
 
-  /**
-   * Rebuild or update passes from quality prefs + viewport size (CSS px × pixel ratio).
-   */
   configure(
     options: Partial<BloomPipelineOptions>,
     widthPx: number,
@@ -72,22 +87,23 @@ export class BloomPipeline {
     this.resolution.set(w, h)
 
     const needRebuild =
-      !this.composer ||
+      !this.bloomComposer ||
+      !this.finalComposer ||
       next.enabled !== this.opts.enabled ||
       next.hdr !== this.opts.hdr ||
-      this.composer.writeBuffer.width !== w ||
-      this.composer.writeBuffer.height !== h
+      this.bloomComposer.writeBuffer.width !== w ||
+      this.bloomComposer.writeBuffer.height !== h
 
     this.opts = next
 
     if (!next.enabled) {
-      this.disposeComposer()
+      this.disposeComposers()
       return
     }
 
     if (needRebuild) {
-      this.disposeComposer()
-      this.buildComposer(w, h, next.hdr)
+      this.disposeComposers()
+      this.buildComposers(w, h, next.hdr)
     }
 
     if (this.bloomPass) {
@@ -96,57 +112,143 @@ export class BloomPipeline {
       this.bloomPass.threshold = next.threshold
       this.bloomPass.resolution.set(w, h)
     }
-    this.composer?.setSize(w, h)
-    this.composer?.setPixelRatio(1) // sizes already include pixel ratio
+    this.bloomComposer?.setSize(w, h)
+    this.finalComposer?.setSize(w, h)
+    this.bloomComposer?.setPixelRatio(1)
+    this.finalComposer?.setPixelRatio(1)
   }
 
   render(): void {
-    if (!this.composer || !this.opts.enabled) return
-    this.composer.render()
+    if (!this.bloomComposer || !this.finalComposer || !this.opts.enabled) return
+
+    // Extract bloom from world only (no sky / no clear-color glow)
+    this.beginBloomExtract()
+    this.bloomComposer.render()
+    this.endBloomExtract()
+
+    // Full scene with tone mapping → canvas
+    this.finalComposer.render()
+
+    // Pure bloom halo only (not the dim scene buffer)
+    this.blitPureBloomAdditive()
   }
 
   dispose(): void {
-    this.disposeComposer()
+    this.disposeComposers()
   }
 
-  private buildComposer(w: number, h: number, hdr: boolean): void {
-    const rt = new THREE.WebGLRenderTarget(w, h, {
-      type: hdr ? THREE.HalfFloatType : THREE.UnsignedByteType,
+  private beginBloomExtract(): void {
+    this.savedBackground = this.scene.background
+    this.scene.background = _black
+    _hidden.length = 0
+    this.scene.traverse((obj) => {
+      if (!obj.visible) return
+      if ((obj.userData as Record<string, unknown>).dclBloomExclude === true) {
+        obj.visible = false
+        _hidden.push(obj)
+      }
+    })
+  }
+
+  private endBloomExtract(): void {
+    for (let i = 0; i < _hidden.length; i++) {
+      _hidden[i]!.visible = true
+    }
+    _hidden.length = 0
+    this.scene.background = this.savedBackground
+    this.savedBackground = null
+  }
+
+  private blitPureBloomAdditive(): void {
+    if (!this.bloomPass || !this.compositeQuad || !this.compositeMaterial) return
+
+    // Pure bloom composite (before UnrealBloomPass additive-blends onto the scene buffer).
+    const pure = this.bloomPass.renderTargetsHorizontal?.[0]
+    if (!pure?.texture) return
+
+    this.compositeMaterial.map = pure.texture
+    this.compositeMaterial.needsUpdate = true
+
+    const prevAutoClear = this.renderer.autoClear
+    const prevTarget = this.renderer.getRenderTarget()
+    const prevTone = this.renderer.toneMapping
+    this.renderer.autoClear = false
+    this.renderer.setRenderTarget(null)
+    this.renderer.toneMapping = THREE.NoToneMapping
+    this.compositeQuad.render(this.renderer)
+    this.renderer.toneMapping = prevTone
+    this.renderer.setRenderTarget(prevTarget)
+    this.renderer.autoClear = prevAutoClear
+  }
+
+  private buildComposers(w: number, h: number, hdr: boolean): void {
+    const type = hdr ? THREE.HalfFloatType : THREE.UnsignedByteType
+
+    const bloomRt = new THREE.WebGLRenderTarget(w, h, {
+      type,
       format: THREE.RGBAFormat,
       colorSpace: THREE.LinearSRGBColorSpace,
       depthBuffer: true,
       stencilBuffer: false
     })
-    rt.texture.name = 'bloom-composer'
+    bloomRt.texture.name = 'bloom-extract'
 
-    const composer = new EffectComposer(this.renderer, rt)
-    composer.setSize(w, h)
-    composer.setPixelRatio(1)
+    const bloomComposer = new EffectComposer(this.renderer, bloomRt)
+    bloomComposer.renderToScreen = false
+    bloomComposer.setSize(w, h)
+    bloomComposer.setPixelRatio(1)
 
-    const renderPass = new RenderPass(this.scene, this.camera)
+    bloomComposer.addPass(new RenderPass(this.scene, this.camera))
     const bloomPass = new UnrealBloomPass(
       new THREE.Vector2(w, h),
       this.opts.strength,
       this.opts.radius,
       this.opts.threshold
-    )
-    const outputPass = new OutputPass()
+    ) as BloomPassInternal
+    bloomComposer.addPass(bloomPass)
 
-    composer.addPass(renderPass)
-    composer.addPass(bloomPass)
-    composer.addPass(outputPass)
+    const finalRt = new THREE.WebGLRenderTarget(w, h, {
+      type,
+      format: THREE.RGBAFormat,
+      colorSpace: THREE.LinearSRGBColorSpace,
+      depthBuffer: true,
+      stencilBuffer: false
+    })
+    finalRt.texture.name = 'bloom-final'
 
-    this.composer = composer
+    const finalComposer = new EffectComposer(this.renderer, finalRt)
+    finalComposer.setSize(w, h)
+    finalComposer.setPixelRatio(1)
+    finalComposer.addPass(new RenderPass(this.scene, this.camera))
+    finalComposer.addPass(new OutputPass())
+
+    const compositeMaterial = new THREE.MeshBasicMaterial({
+      map: null,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false
+    })
+    const compositeQuad = new FullScreenQuad(compositeMaterial)
+
+    this.bloomComposer = bloomComposer
+    this.finalComposer = finalComposer
     this.bloomPass = bloomPass
+    this.compositeMaterial = compositeMaterial
+    this.compositeQuad = compositeQuad
   }
 
-  private disposeComposer(): void {
-    if (this.composer) {
-      // EffectComposer dispose frees internal read/write targets.
-      this.composer.dispose()
-    }
-    this.composer = null
+  private disposeComposers(): void {
+    this.bloomComposer?.dispose()
+    this.finalComposer?.dispose()
+    this.compositeMaterial?.dispose()
+    this.compositeQuad?.dispose()
+    this.bloomComposer = null
+    this.finalComposer = null
     this.bloomPass = null
+    this.compositeMaterial = null
+    this.compositeQuad = null
   }
 }
 

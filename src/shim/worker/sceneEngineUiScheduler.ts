@@ -268,7 +268,34 @@ export function computeWorkerUiFingerprint(engine: IEngine): string {
   for (const [entity] of engine.getEntitiesWith(UiTransform)) {
     const t = UiTransform.getOrNull(entity)
     if (!t) continue
-    let line = `${entity}:d${normalizeYGDisplay(t.display)}:o${t.opacity ?? 1}:p${t.parent ?? 0}:pf${normalizePointerFilterMode(t.pointerFilter)}`
+    // Layout geometry must be in the fingerprint — progress/HP bars only change width.
+    // Without it, cooperative UI egress never flushes and the bar never grows on main.
+    const tr = t as {
+      display?: unknown
+      opacity?: number
+      parent?: number
+      pointerFilter?: unknown
+      width?: number
+      height?: number
+      widthUnit?: number
+      heightUnit?: number
+      flexDirection?: unknown
+      justifyContent?: unknown
+      alignItems?: unknown
+      positionType?: number
+      position?: { top?: number; right?: number; bottom?: number; left?: number }
+      margin?: { top?: number; right?: number; bottom?: number; left?: number }
+      padding?: { top?: number; right?: number; bottom?: number; left?: number }
+    }
+    let line =
+      `${entity}:d${normalizeYGDisplay(tr.display)}:o${tr.opacity ?? 1}:p${tr.parent ?? 0}` +
+      `:pf${normalizePointerFilterMode(tr.pointerFilter)}` +
+      `:w${tr.width ?? 0}:${tr.widthUnit ?? 0}:h${tr.height ?? 0}:${tr.heightUnit ?? 0}` +
+      `:fd${tr.flexDirection ?? 0}:j${tr.justifyContent ?? 0}:ai${tr.alignItems ?? 0}` +
+      `:pt${tr.positionType ?? 0}` +
+      `:pos${tr.position?.top ?? ''},${tr.position?.right ?? ''},${tr.position?.bottom ?? ''},${tr.position?.left ?? ''}` +
+      `:m${tr.margin?.top ?? ''},${tr.margin?.right ?? ''},${tr.margin?.bottom ?? ''},${tr.margin?.left ?? ''}` +
+      `:pad${tr.padding?.top ?? ''},${tr.padding?.right ?? ''},${tr.padding?.bottom ?? ''},${tr.padding?.left ?? ''}`
     const bg = UiBackground.getOrNull(entity)
     if (bg) {
       line += `:bg${colorKey(bg.color)}:${extractUiTextureSrc(bg.texture) ?? ''}`

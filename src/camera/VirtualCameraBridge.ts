@@ -439,7 +439,19 @@ export class VirtualCameraBridge {
       }
     }
 
-    // No lookAt (or coincident points) — use entity world rotation as camera facing.
+    // Iso / top / cinematic: world-flat shot, no lookAtEntity — aim at local player.
+    // Entity euler → camera quat under X-reflect often flips yaw/pitch (underground look,
+    // mirrored strafe). Stage locks with lookAtEntity already handled above.
+    {
+      const player = this.playerPose()
+      dclToThreePos(player.position.x, player.position.y, player.position.z, _followPos)
+      const dist = _targetPos.distanceTo(_followPos)
+      if (dist > 0.5 && dist < 120 && cameraLookAtQuat(_targetPos, _followPos, _targetQuat)) {
+        return { position: _targetPos, rotation: _targetQuat }
+      }
+    }
+
+    // Distant / no player — use entity world rotation as camera facing.
     entityDisplayQuatToThreeCameraQuat(_targetQuat, _targetQuat)
     return { position: _targetPos, rotation: _targetQuat }
   }

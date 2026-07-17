@@ -1145,7 +1145,9 @@ export class PlayerSystem {
       if (_forward.lengthSq() > 1e-8) {
         _forward.normalize()
         this.camYaw = Math.atan2(-_forward.x, -_forward.z)
-        this.camPitch = clamp(Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1)), CAM_PITCH_MIN, CAM_PITCH_MAX)
+        // freecam camPitch is boom elevation (positive = above); look-down has negative forward.y
+        const lookPitch = Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1))
+        this.camPitch = clamp(-lookPitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
       }
       this.avatar?.setBodyVisible(!this.modifierHidden)
       if (this.nameTag) {

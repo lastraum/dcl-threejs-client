@@ -95,7 +95,7 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 | Play HUD | Location pill + circular Genesis minimap (parcels) ✅; worlds pill-only |
 | Spawn / physics | Elevated deck settle + PE stage-before-script ✅; PhysicsCombined* still open |
 | Backpack | Wearables/emotes/colors ✅; outfits + marketplace open |
-| Graphics P3/P4 | Distance culls + bloom/HDR stubs |
+| Graphics P3/P4 | P3 distance culls open · P4 bloom/HDR next (`lastraum`); untextured VFX additive glow shipped |
 | PhysicsCombined* | Open polish gaps |
 | GltfNodeModifiers | 🟢 full path + material/shadow overrides; instance promote |
 | NftShape | 🟢 procedural frames + OpenSea proxy |
@@ -111,9 +111,9 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 
 ## Suggested next engineering order (post-v1.0)
 
-1. Product **1.x**: backpack outfits · scene UI hit-map · community voice Bearer parity · create-community / invites.  
-2. Edit-flight IM/VC cleanup → retest MOVE / WASD / STOP.  
-3. Mesh frame-law / instancing follow-through.  
+1. **Graphics P4 bloom/HDR** on `lastraum` (Explorer muzzle/neon parity beyond additive Basic).  
+2. Product **1.x**: backpack outfits · scene UI text-measure · community voice Bearer parity · create-community / invites.  
+3. Mesh frame-law / instancing follow-through (motion promote already covers dynamic props).  
 4. Optional: SyncEntities P4 auth-host; graphics P3 distance culls; EnvironmentApi/Testing only if scenes need them.  
 5. Keep INTEGRATION registry + PROGRESS updated on each ship.
 

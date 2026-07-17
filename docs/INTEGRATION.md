@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-16 (2D social chat FAB · community HUD toasts · RestrictedActions full · elevated spawn settle · CommsApi 🟢)
+> **Last updated:** 2026-07-17 (Dead Surge combat/VC/PE · swept projectile hits · motion-promoted coins · additive muzzle glow · large-bundle boot)
 
 ---
 
@@ -54,7 +54,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | GltfNodeModifiers | 1099 | 🟢 | Full path material/castShadows on GLB nodes; de-instance; restore on remove; videoTexture re-apply |
 | MeshRenderer | 1018 | 🟢 | Primitives + custom UVs |
 | Material | 1017 | 🟢 | PBR/unlit + video textures; empty Creator Hub slots ignored; AUTO cutout only with alphaMap (Unity) |
-| Animator | 1042 | 🟢 | `AnimatorBridge` |
+| Animator | 1042 | 🟢 | `AnimatorBridge` — LWW identical `shouldReset` re-fires one-shots (muzzle / gun) |
 | Billboard | 1090 | 🟢 | `BillboardBridge` |
 | LightSource | 1079 | 🟢 | Culling + quality tiers |
 | TextShape | 1030 | 🟢 | Canvas texture planes |
@@ -81,7 +81,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | Component | ID | Status | Notes |
 | --------- | -- | ------ | ----- |
 | MainCamera | 1075 | 🟢 | Hot `player-frame`; bind target via `vc-bind-hydrate` |
-| VirtualCamera | 1076 | 🟢 | `VirtualCameraBridge` — locked world-flat hydrate; `parent===lookAt` PE-follow; live Transform exclusive while bound |
+| VirtualCamera | 1076 | 🟢 | `VirtualCameraBridge` — world-flat hydrate; PE-follow; freecam orbit lock while MainCamera VC-bound; aim via lookAt (no hard-coded iso offsets) |
 | CameraMode | 1072 | 🔵 | Renderer writes 1st/3rd on CameraEntity from freecam distance |
 | CameraModeArea | 1071 | 🟢 | Volume forces 1st/3rd freecam; cinematic ignored (VC path) |
 
@@ -213,13 +213,18 @@ DOM overlay — not in-scene `UiTransform`.
 | Low-end scene worker timing + adaptive abort backoff | 🟢 |
 | Boot/hydration: main.crdt seed, composite preload, unified GLB | 🟢 |
 | Landscapes, FFT ocean, Perlin scatter foliage | 🟢 |
-| Scene GLTF emissive LEDs (neon mats) | 🟡 partial |
+| Scene GLTF emissive LEDs (neon mats) | 🟢 | Property-based; untextured emissiveFactor → additive MeshBasic glow (muzzle/VFX); full bloom still open |
 | User sun/moon lighting + exposure sliders | 🟢 |
 | Sun/hemi intensity match vs Explorer | 🟢 | anim peak 2.72 + trilight; user sliders still override |
 | GLTF hydration budgets, GLB parse pool, AssetCache IDB | 🟢 |
 | PhysX lazy load, collider prewarm, Hyperfy grouped GLTF actors | 🟢 |
 | Spawn settle onto authored floor (elevated decks) | 🟢 | `settleSpawnOntoFloor` + `waitForSpawnFloorReady`; short CCT drop + multi-XZ probe |
-| GLTF InstancedMesh | ⬜ |
+| GLTF InstancedMesh | 🟡 partial | Static multi-hash path; sustained Transform motion promotes to private clone (coins/projectiles) |
+| Swept projectile hits (bundle rewrite) | 🟢 | `patchProjectileSweptHits` — XZ segment–cylinder + origin snapshot |
+| Large multi-MB scene worker boot | 🟢 | Needle react-ecs / engine-loop patches; main-thread yield |
+| PlayerEntity reserved Transform parent | 🟢 | Chest attach root + reparent (weapons mid-match) |
+| CUSTOM_EVENT reliable + auth pin | 🟢 | LiveKit / CommsService combat events |
+| Full-scene bloom / HDR post | ⬜ | Graphics P4 — next on `lastraum` |
 | Shadow pass tuning | 🟢 | soft + soft directional sun |
 
 ---

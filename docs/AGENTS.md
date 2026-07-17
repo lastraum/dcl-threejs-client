@@ -65,4 +65,4 @@ Offline: `?docsGithubFetch=0` shows placeholder notices only (not live progress)
 - `?pointerverbose` — pointer flush diagnostics
 - `?docsGithubFetch=0` — offline docs snapshots
 
-Prefer real scenes: Genesis Plaza, `rickroll.dcl.eth`, `pizzapizza.dcl.eth`.
+Prefer real scenes: Genesis Plaza, `rickroll.dcl.eth`, `pizzapizza.dcl.eth`, `deadsurge.dcl.eth` (large combat / VC / PE attach).

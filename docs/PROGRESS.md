@@ -2,12 +2,12 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-16  
+> **Last updated:** 2026-07-17  
 > **Current phase:** **v1.0.0** — production beta on the core loop; still not full Explorer parity.  
-> **Shipped (1.x):** spatial nearby voice · Settings Communities · 1:1 DMs + community group text (ADR-208) · community voice join CTA · **2D social chat FAB** · community HUD toasts / mod gates · RestrictedActions teleport/changeRealm/copy · elevated-spawn floor settle · **scene UI hit-map + nine-slice**.  
+> **Shipped (1.x):** spatial nearby voice · Settings Communities · 1:1 DMs + community group text (ADR-208) · community voice join CTA · **2D social chat FAB** · community HUD toasts / mod gates · RestrictedActions teleport/changeRealm/copy · elevated-spawn floor settle · **scene UI hit-map + nine-slice** · **Dead Surge combat / VC / PE attach**.  
 > **1.x next:** backpack outfits · scene UI text-measure · community voice Bearer parity · create-community / invites.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
-> **Graphics next (not started):** **P3 distance culls** · **P4** bloom/HDR.  
+> **Graphics next:** **P4 bloom/HDR** (next on `lastraum`) · **P3** distance culls. Untextured VFX already use additive glow without full-scene bloom.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
@@ -16,9 +16,43 @@
 
 ---
 
+## 🎉 Milestone — Dead Surge combat + VC/PE attach → `dev-latest` (2026-07-17)
+
+**Status: on `dev-latest`** (`6ca5deb`) — large multi-MB worlds (deadsurge.dcl.eth) boot, VirtualCamera combat freecam lock, PlayerEntity weapon attach, projectile hits, death coins, muzzle glow.
+
+### What's new
+
+- **Large-bundle boot** — multi-MB scene worker boot + needle-based react-ecs / engine-loop patches (no hang on Dead Surge-scale `bin/index.js`)
+- **VirtualCamera combat** — freecam orbit lock while MainCamera is VC-bound; world-basis WASD; aim via `camera.lookAt` (no hard-coded iso/lift offsets)
+- **PlayerEntity weapon attach** — reserved PE parent + chest attach root reparent so equip mid-match sticks
+- **Projectile hits** — worker bundle rewrite: XZ segment–cylinder swept hits + origin snapshot (end-point samples no longer tunnel past zombies)
+- **Reliable combat events** — auth-server CUSTOM_EVENT reliable + pin to authoritative-server
+- **Death coins** — Transform bob/spin; GPU instances promote to private clones under sustained motion
+- **Muzzle / untextured VFX** — additive `MeshBasicMaterial` glow for emissiveFactor-only GLBs (GunVFX ShootVFX)
+- **Animator re-fire** — LWW identical `shouldReset` still restarts one-shots (muzzle morph / gun shot)
+- **Scene UI** — hit-map from Yoga boxes · real nine-slice · TextShape fit/repaint · flex enum center progress
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Large-bundle worker** | 🟢 | `patchEngineSystemLoop` · `reactEcsOnce` needle · `mainThreadYield` |
+| **VirtualCamera + PE attach** | 🟢 | `VirtualCameraBridge` · reserved PE anchors · VC orbit lock |
+| **Swept projectile hits** | 🟢 | `patchProjectileSweptHits` + pointerEventColliderChecker patch |
+| **CUSTOM_EVENT reliable** | 🟢 | CommsService / LiveKit · auth pin |
+| **Motion-promoted instances** | 🟢 | 3× Transform churn → SkeletonUtils clone |
+| **Untextured emissive glow** | 🟢 | additive Basic (no full bloom yet) |
+| **Full-scene bloom/HDR** | ⬜ | **next** on `lastraum` (P4) |
+
+**QA:**  
+- `deadsurge.dcl.eth` → boot past LOADING · VC freecam · equip gun on chest · shoot zombies (hits register) · death coins bob/spin · muzzle additive flash.  
+- Flagtag / plaza — static tiles still instanced; no regression on elevated spawn.
+
+**Tip commit:** `6ca5deb` on `dev-latest` / `lastraum`.
+
+---
+
 ## 🎉 Milestone — Scene UI hit-map + nine-slice → `lastraum` (2026-07-16)
 
-**Status: on `lastraum`** (`9f384cf`) — in-scene ECS UI pointer regions track Yoga; UiBackground nine-slice works for scene + CDN art.
+**Status: merged → `dev-latest`** (`9f384cf` … `6ca5deb`) — in-scene ECS UI pointer regions track Yoga; UiBackground nine-slice works for scene + CDN art.
 
 ### What's new
 

@@ -69,11 +69,15 @@ export class LocalAvatar {
 
   async load(options: ComposeOptions = {}): Promise<ProfileIdentity> {
     this.disposeModel()
-    const profile = await resolveAvatarProfile(options.profileId, options.bodyShape)
-    this.identity = identityFromAvatarProfile(profile, options.profileId)
+    // Session/backpack profile wins over Catalyst (deploy can lag minutes on lambdas).
+    const profile =
+      options.profile ??
+      (await resolveAvatarProfile(options.profileId, options.bodyShape))
+    this.identity = identityFromAvatarProfile(profile, options.profileId ?? profile.address)
     this.bodyShape = profile.bodyShape
 
-    const profileAddress = options.profileId ?? profile.address ?? getActiveProfileAddress()
+    const profileAddress =
+      options.profileId ?? profile.address ?? getActiveProfileAddress()
     const equipped = getEquippedCustomAvatar(profileAddress)
     if (equipped) {
       const bytes = await loadVrmLibraryBytes(equipped.contentHash)

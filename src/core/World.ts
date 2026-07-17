@@ -50,7 +50,12 @@ import { buildEmoteWheelSlots, resolveSceneEmoteFromSrc } from '../avatar/profil
 import { SocialService } from '../social/SocialService'
 import { isChatTextLine } from '../social/types'
 import { overheadChatText } from '../social/overheadChatText'
-import { fetchProfileFaceUrl, seedCommsPeerProfile } from '../avatar/peerApi'
+import {
+  clearProfileCaches,
+  fetchProfileFaceUrl,
+  seedCommsPeerProfile,
+  seedLocalProfileCache
+} from '../avatar/peerApi'
 import type { LoginResult } from '../auth/AuthClient'
 import type { SendBinaryRequest } from '../shim/types'
 import {
@@ -2417,10 +2422,17 @@ export class World {
     })
   }
 
-  /** Reload local avatar after custom VRM equip / unequip from backpack. */
+  /** Reload local avatar after backpack equip / profile save (session profile, not stale Catalyst). */
   async reloadLocalAvatar(): Promise<void> {
     if (!this.playerMode || !this.player) return
-    await this.player.reloadAvatar()
+    const profile = this.session.getProfile()
+    const address = this.session.getAddress() ?? profile?.address
+    if (profile && address) {
+      // Prefer session wearables immediately; Catalyst lambdas lag after deploy.
+      clearProfileCaches(address)
+      seedLocalProfileCache(address, profile)
+    }
+    await this.player.reloadAvatar(undefined, profile)
     await this.vrmPeerSync.onLocalEquipChanged(this.session.getAddress())
   }
 

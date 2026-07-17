@@ -331,11 +331,18 @@ export class PlayerSystem {
     this.virtualCamera = bridge
   }
 
-  async loadAvatar(onProgress?: (msg: string) => void): Promise<void> {
+  async loadAvatar(
+    onProgress?: (msg: string) => void,
+    profileOverride?: import('../avatar/types').AvatarProfile | null
+  ): Promise<void> {
     onProgress?.('Loading avatar…')
     const avatarOptions = avatarOptionsFromUrl()
     try {
-      this.playerIdentity = (await this.avatar?.load(avatarOptions)) ?? null
+      this.playerIdentity =
+        (await this.avatar?.load({
+          ...avatarOptions,
+          profile: profileOverride ?? undefined
+        })) ?? null
     } catch (err) {
       console.warn('Avatar load failed — continuing with invisible capsule', err)
     }
@@ -351,11 +358,14 @@ export class PlayerSystem {
     this.syncCamera(true)
   }
 
-  /** Reload avatar after backpack VRM equip / unequip. */
-  async reloadAvatar(onProgress?: (msg: string) => void): Promise<void> {
+  /** Reload avatar after backpack equip / unequip / profile save. */
+  async reloadAvatar(
+    onProgress?: (msg: string) => void,
+    profileOverride?: import('../avatar/types').AvatarProfile | null
+  ): Promise<void> {
     this.nameTag?.dispose()
     this.nameTag = null
-    await this.loadAvatar(onProgress)
+    await this.loadAvatar(onProgress, profileOverride)
   }
 
   setAssetCache(cache: AssetCache, peerUrl?: string): void {
@@ -1007,12 +1017,14 @@ export class PlayerSystem {
       }
     }
 
-    const accel = this.grounded ? GROUND_ACCEL : this.gliding ? AIR_ACCEL * 0.85 : AIR_ACCEL
+    // Glider needs snappy diagonal steer (W+A → NW); slightly damp normal air only.
+    const accel = this.grounded ? GROUND_ACCEL : this.gliding ? AIR_ACCEL * 1.45 : AIR_ACCEL
     const steerAlpha = 1 - Math.exp(-accel * delta)
 
     if (moving) {
       _force.copy(_moveDir).multiplyScalar(moveSpeed)
       _force.y = 0
+      // Camera-relative: W+A already combines into one normalized NW dir — apply fully.
       _velocity.x += (_force.x - _velocity.x) * steerAlpha
       _velocity.z += (_force.z - _velocity.z) * steerAlpha
     } else if (this.grounded) {

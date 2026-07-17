@@ -2158,8 +2158,9 @@ export class BackpackView {
     this.renderWearableDetail(item)
     this.renderMobileInventoryDetail(item)
     if (this.mobileDrawer === 'equipped') this.renderMobileEquippedList()
-    // Preview updates locally; Catalyst deploy happens when the settings panel closes.
+    // Preview + in-world avatar from session profile (Catalyst deploy still on panel close).
     void this.loadAvatarModel()
+    void this.onVrmEquipChange?.()
   }
 
   private escapeHtml(text: string): string {

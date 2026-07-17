@@ -27,6 +27,8 @@ export type ComposeOptions = {
   profileId?: string
   bodyShape?: BodyShape
   assetCache?: AssetCache | null
+  /** Prefer over Catalyst fetch (backpack equip / post-deploy reload). */
+  profile?: AvatarProfile
 }
 
 /** Serializes composes — global wearable texture mappings are not re-entrant. */

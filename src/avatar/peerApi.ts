@@ -296,6 +296,13 @@ export function clearProfileCaches(address?: string): void {
   commsPeerProfiles.delete(key)
 }
 
+/** Seed local session profile so compose doesn't re-fetch stale Catalyst wearables. */
+export function seedLocalProfileCache(address: string, profile: AvatarProfile): void {
+  const key = address.toLowerCase()
+  profileCache.set(key, Promise.resolve({ ...profile, address: key }))
+  resolveProfileWaiters(key, profile)
+}
+
 function resolveProfileWaiters(key: string, profile: AvatarProfile): void {
   const waiters = profileWaiters.get(key)
   if (!waiters) return

@@ -6,6 +6,10 @@ import {
   visibleTiles,
   type MapViewState
 } from '../../map/genesisMapViewport'
+import {
+  shouldShowParcelLayer,
+  visibleParcelChunks
+} from '../../map/parcelMapTiles'
 import type { MapPlayerState } from './settings/MapView'
 
 export type MinimapOptions = {
@@ -16,13 +20,18 @@ export type MinimapOptions = {
 }
 
 const DEFAULT_SIZE = 224
-/** Close enough to read streets; still only a few satellite chunks. */
-const MINIMAP_ZOOM = VIEWPORT_DEFAULT_ZOOM + 1
+/**
+ * Close enough for parcel map.png layer (PARCEL_LAYER_MIN_ZOOM = 6).
+ * Satellite lod-0/3 alone looks soft/blocky when CSS-scaled this tight.
+ */
+const MINIMAP_ZOOM = Math.max(VIEWPORT_DEFAULT_ZOOM + 1, 6)
 const BORDER_PX = 2.5
+/** Soften satellite under sharper parcel map.png (MapView parity). */
+const SATELLITE_UNDER_PARCEL_ALPHA = 0.38
 
 /**
- * Circular Genesis satellite HUD — same lod-0/3 basemap as MapView,
- * hard circular clip + white ring, player always at center.
+ * Circular Genesis minimap HUD — lod-0/3 satellite + close-zoom parcel map.png
+ * (Unity SatelliteAtlas + ParcelAtlas). Hard circular clip, player at center.
  */
 export class Minimap {
   private readonly root: HTMLDivElement
@@ -32,6 +41,8 @@ export class Minimap {
   private readonly size: number
   private readonly dpr = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio : 1, 2)
   private readonly tileCache = new Map<string, HTMLImageElement>()
+  /** api.decentraland.org map.png chunks for close zoom. */
+  private readonly parcelCache = new Map<string, HTMLImageElement>()
   private disposed = false
   private rafId = 0
   private view: MapViewState = {
@@ -105,6 +116,7 @@ export class Minimap {
     this.disposed = true
     cancelAnimationFrame(this.rafId)
     this.tileCache.clear()
+    this.parcelCache.clear()
     this.root.remove()
   }
 
@@ -117,6 +129,16 @@ export class Minimap {
     // No crossOrigin — same CDN as MapView; CORS is not required for drawImage display.
     img.src = mapTileUrl(VIEWPORT_FETCH_ZOOM, tx, ty)
     this.tileCache.set(key, img)
+    return img
+  }
+
+  private ensureParcelChunk(url: string): HTMLImageElement {
+    let img = this.parcelCache.get(url)
+    if (img) return img
+    img = new Image()
+    img.decoding = 'async'
+    img.src = url
+    this.parcelCache.set(url, img)
     return img
   }
 
@@ -153,6 +175,8 @@ export class Minimap {
     }
 
     const tiles = visibleTiles(size, size, this.view)
+    const showParcel = shouldShowParcelLayer(this.view.zoom)
+    const parcelChunks = showParcel ? visibleParcelChunks(size, size, this.view) : []
     const cx = size / 2
     const cy = size / 2
     const radius = size / 2 - BORDER_PX / 2
@@ -166,10 +190,38 @@ export class Minimap {
     ctx.fillStyle = 'rgba(10, 14, 20, 0.92)'
     ctx.fillRect(0, 0, size, size)
 
+    // Satellite underlay (dimmed when parcel detail is available).
+    ctx.globalAlpha = showParcel ? SATELLITE_UNDER_PARCEL_ALPHA : 1
     for (const tile of tiles) {
       const img = this.ensureTile(tile.tx, tile.ty)
       if (!img.complete || img.naturalWidth <= 0) continue
+      // Square source → square dest (satellite chunks are 1:1).
       ctx.drawImage(img, tile.left, tile.top, tile.size, tile.size)
+    }
+    ctx.globalAlpha = 1
+
+    // Close-zoom parcel basemap — Unity ParcelAtlas / MapView layer.
+    // Square map.png chunks (width=height, size=px/parcel) drawn 1:1 to screen rects.
+    for (const chunk of parcelChunks) {
+      const img = this.ensureParcelChunk(chunk.url)
+      if (!img.complete || img.naturalWidth <= 0) continue
+      const sw = img.naturalWidth
+      const sh = img.naturalHeight
+      // Preserve source aspect if API ever returns non-square (should be square).
+      if (sw === sh) {
+        ctx.drawImage(img, chunk.left, chunk.top, chunk.size, chunk.size)
+      } else {
+        const scale = chunk.size / Math.max(sw, sh)
+        const dw = sw * scale
+        const dh = sh * scale
+        ctx.drawImage(
+          img,
+          chunk.left + (chunk.size - dw) / 2,
+          chunk.top + (chunk.size - dh) / 2,
+          dw,
+          dh
+        )
+      }
     }
 
     // Player marker — always dead center of the HUD.

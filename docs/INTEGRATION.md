@@ -224,7 +224,7 @@ DOM overlay — not in-scene `UiTransform`.
 | Large multi-MB scene worker boot | 🟢 | Needle react-ecs / engine-loop patches; main-thread yield |
 | PlayerEntity reserved Transform parent | 🟢 | Chest attach root + reparent (weapons mid-match) |
 | CUSTOM_EVENT reliable + auth pin | 🟢 | LiveKit / CommsService combat events |
-| Full-scene bloom / HDR post | ⬜ | Graphics P4 — next on `lastraum` |
+| Full-scene bloom / HDR post | 🟡 partial | `BloomPipeline` UnrealBloom + HalfFloat HDR; prefs live; selective bloom open |
 | Shadow pass tuning | 🟢 | soft + soft directional sun |
 
 ---

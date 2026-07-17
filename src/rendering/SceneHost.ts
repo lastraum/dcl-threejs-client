@@ -13,6 +13,7 @@ import {
   type MsaaSamples,
   type RenderQualityOptions
 } from './RenderQualitySettings'
+import { BloomPipeline } from './BloomPipeline'
 import { clientSettings } from './ClientSettings'
 
 export class SceneHost {
@@ -40,6 +41,7 @@ export class SceneHost {
   private readonly blitMaterial: THREE.MeshBasicMaterial
   private viewportCssW = 1
   private viewportCssH = 1
+  private bloom: BloomPipeline | null = null
 
   constructor(container: HTMLElement) {
     // Canvas AA off — sample count is controlled via multisample render target (runtime prefs).
@@ -76,6 +78,7 @@ export class SceneHost {
     this.nameTags = new NameTagRenderer(container)
     this.renderStats = new RenderStats()
     this.renderStats.attachRenderer(this.renderer, this.scene)
+    this.bloom = new BloomPipeline(this.renderer, this.scene, this.camera)
 
     // Quality apply resizes the viewport — camera + nameTags must already exist.
     this.applyRendererQuality(renderQuality.getOptions())
@@ -109,6 +112,7 @@ export class SceneHost {
     }
     this.renderer.setSize(width, height, false)
     this.ensureMsaaTargetSize()
+    this.configureBloom(renderQuality.getOptions())
     this.nameTags?.setSize(width, height)
     this.onViewportResize?.(width, height)
   }
@@ -149,7 +153,7 @@ export class SceneHost {
     return () => this.frameListeners.delete(listener)
   }
 
-  /** ACES tone mapping + exposure, shadows, resolution scale, FPS cap, MSAA. */
+  /** ACES tone mapping + exposure, shadows, resolution scale, FPS cap, MSAA, bloom. */
   private applyRendererQuality(options: RenderQualityOptions): void {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
@@ -166,11 +170,32 @@ export class SceneHost {
       this.frameIntervalMs = 0
     }
 
+    // Bloom uses EffectComposer (no MSAA samples on that path).
     const maxSamples = this.renderer.capabilities.maxSamples ?? 0
-    this.msaaSamples = clampMsaaSamples(options.msaaSamples, maxSamples)
+    this.msaaSamples = options.bloomEnabled
+      ? 0
+      : clampMsaaSamples(options.msaaSamples, maxSamples)
     this.rebuildMsaaTarget()
-    // Re-apply size so backing store matches new pixel ratio / MSAA buffer.
+    // Re-apply size so backing store matches new pixel ratio / MSAA / bloom buffers.
     this.applyViewportSize()
+    this.configureBloom(options)
+  }
+
+  private configureBloom(options: RenderQualityOptions): void {
+    if (!this.bloom) return
+    const pr = this.renderer.getPixelRatio()
+    this.bloom.configure(
+      {
+        enabled: options.bloomEnabled,
+        hdr: options.hdrEnabled,
+        // Tier-soft strength so Low off / Ultra slightly punchier when custom-enabled.
+        strength:
+          options.tier === 'ultra' ? 0.65 : options.tier === 'high' ? 0.58 : 0.52
+      },
+      this.viewportCssW,
+      this.viewportCssH,
+      pr
+    )
   }
 
   private rebuildMsaaTarget(): void {
@@ -211,6 +236,13 @@ export class SceneHost {
   }
 
   private renderMainPass(): void {
+    // Bloom path: RenderPass → UnrealBloom → OutputPass (reads renderer tone mapping).
+    if (this.bloom?.isActive()) {
+      this.renderer.setRenderTarget(null)
+      this.bloom.render()
+      return
+    }
+
     if (this.msaaTarget && this.msaaSamples > 0) {
       this.renderer.setRenderTarget(this.msaaTarget)
       this.renderer.clear(true, true, true)
@@ -300,7 +332,9 @@ export class SceneHost {
           'children:',
           this.scene.children.length,
           'msaa:',
-          this.msaaSamples
+          this.msaaSamples,
+          'bloom:',
+          this.bloom?.isActive() ? 'on' : 'off'
         )
       }
 
@@ -358,6 +392,8 @@ export class SceneHost {
     this.viewportElement = null
     this.onViewportResize = null
     this.stop()
+    this.bloom?.dispose()
+    this.bloom = null
     this.msaaTarget?.dispose()
     this.msaaTarget = null
     this.blitMaterial.dispose()

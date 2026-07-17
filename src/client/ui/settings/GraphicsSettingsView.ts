@@ -170,8 +170,18 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
             if (samples !== null) renderQuality.setMsaaSamples(samples)
           }
         },
-        { type: 'toggle', label: 'HDR', defaultOn: true, stub: true },
-        { type: 'toggle', label: 'Bloom', defaultOn: true, stub: true },
+        {
+          type: 'toggle',
+          label: 'HDR',
+          defaultOn: rq.hdrEnabled,
+          onChange: (on) => renderQuality.setHdrEnabled(on)
+        },
+        {
+          type: 'toggle',
+          label: 'Bloom',
+          defaultOn: rq.bloomEnabled,
+          onChange: (on) => renderQuality.setBloomEnabled(on)
+        },
         { type: 'toggle', label: 'Avatar Outline', defaultOn: false, stub: true }
       ]
     },
@@ -359,6 +369,12 @@ export class GraphicsSettingsView {
             break
           case 'MSAA':
             if (control.kind === 'dropdown') control.select.value = msaaLabel(opts.msaaSamples)
+            break
+          case 'HDR':
+            if (control.kind === 'toggle') control.input.checked = opts.hdrEnabled
+            break
+          case 'Bloom':
+            if (control.kind === 'toggle') control.input.checked = opts.bloomEnabled
             break
           case 'Enable Scene Lights':
             if (control.kind === 'toggle') control.input.checked = opts.sceneLightsEnabled

@@ -95,7 +95,7 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 | Play HUD | Location pill + circular Genesis minimap (parcels) ✅; worlds pill-only |
 | Spawn / physics | Elevated deck settle + PE stage-before-script ✅; PhysicsCombined* still open |
 | Backpack | Wearables/emotes/colors ✅; outfits + marketplace open |
-| Graphics P3/P4 | P3 distance culls open · P4 bloom/HDR next (`lastraum`); untextured VFX additive glow shipped |
+| Graphics P3/P4 | P4 bloom/HDR on `lastraum` (`BloomPipeline` + prefs) · P3 distance culls open · untextured VFX additive glow |
 | PhysicsCombined* | Open polish gaps |
 | GltfNodeModifiers | 🟢 full path + material/shadow overrides; instance promote |
 | NftShape | 🟢 procedural frames + OpenSea proxy |

@@ -23,13 +23,20 @@ export type RenderQualityOptions = {
   /** Percent of devicePixelRatio (50–200). */
   resolutionScale: number
   fpsLimit: FpsLimitOption
-  /** MSAA samples for the main color buffer (0/2/4/8). */
+  /** MSAA samples for the main color buffer (0/2/4/8). Skipped when bloom is on. */
   msaaSamples: MsaaSamples
   /**
    * Prefer display-aligned pacing when FPS is Max.
    * Browsers still composite with the display; Off does not enable free-run tearing.
    */
   vsync: boolean
+  /** UnrealBloomPass full-screen glow (muzzle / neon / sky highlights). */
+  bloomEnabled: boolean
+  /**
+   * HalfFloat composer color buffer — keeps bright emissives above 1.0 for bloom.
+   * Off = 8-bit path (cheaper, more clip).
+   */
+  hdrEnabled: boolean
 }
 
 /** Max ECS LightSource lights active at once (nearest to view) — preset defaults. */
@@ -82,7 +89,9 @@ const PRESET_BUNDLES: Record<PresetId, Omit<RenderQualityOptions, 'preset'>> = {
     resolutionScale: 75,
     fpsLimit: 30,
     msaaSamples: 0,
-    vsync: true
+    vsync: true,
+    bloomEnabled: false,
+    hdrEnabled: false
   },
   medium: {
     tier: RenderQualityTier.Medium,
@@ -92,7 +101,9 @@ const PRESET_BUNDLES: Record<PresetId, Omit<RenderQualityOptions, 'preset'>> = {
     resolutionScale: 100,
     fpsLimit: 60,
     msaaSamples: 4,
-    vsync: true
+    vsync: true,
+    bloomEnabled: true,
+    hdrEnabled: true
   },
   high: {
     tier: RenderQualityTier.High,
@@ -102,7 +113,9 @@ const PRESET_BUNDLES: Record<PresetId, Omit<RenderQualityOptions, 'preset'>> = {
     resolutionScale: 100,
     fpsLimit: 60,
     msaaSamples: 4,
-    vsync: true
+    vsync: true,
+    bloomEnabled: true,
+    hdrEnabled: true
   },
   ultra: {
     tier: RenderQualityTier.Ultra,
@@ -112,7 +125,9 @@ const PRESET_BUNDLES: Record<PresetId, Omit<RenderQualityOptions, 'preset'>> = {
     resolutionScale: 125,
     fpsLimit: 0,
     msaaSamples: 8,
-    vsync: true
+    vsync: true,
+    bloomEnabled: true,
+    hdrEnabled: true
   }
 }
 
@@ -256,6 +271,14 @@ class RenderQualityStore {
     return this.options.vsync
   }
 
+  getBloomEnabled(): boolean {
+    return this.options.bloomEnabled
+  }
+
+  getHdrEnabled(): boolean {
+    return this.options.hdrEnabled
+  }
+
   /** Apply a named preset bundle (not custom). */
   applyPreset(preset: PresetId): void {
     const bundle = PRESET_BUNDLES[preset]
@@ -294,6 +317,14 @@ class RenderQualityStore {
     this.patch({ vsync })
   }
 
+  setBloomEnabled(bloomEnabled: boolean): void {
+    this.patch({ bloomEnabled })
+  }
+
+  setHdrEnabled(hdrEnabled: boolean): void {
+    this.patch({ hdrEnabled })
+  }
+
   setOptions(partial: Partial<RenderQualityOptions>): void {
     if (partial.preset && partial.preset !== 'custom' && isPreset(partial.preset)) {
       this.applyPreset(partial.preset)
@@ -325,6 +356,8 @@ class RenderQualityStore {
     if (!isTier(next.tier)) next.tier = this.options.tier
     if (!isMsaaSamples(next.msaaSamples)) next.msaaSamples = this.options.msaaSamples
     if (typeof next.vsync !== 'boolean') next.vsync = this.options.vsync
+    if (typeof next.bloomEnabled !== 'boolean') next.bloomEnabled = this.options.bloomEnabled
+    if (typeof next.hdrEnabled !== 'boolean') next.hdrEnabled = this.options.hdrEnabled
 
     if (partial.preset === undefined || partial.preset === 'custom') {
       next.preset = this.inferPreset(next)
@@ -345,7 +378,9 @@ class RenderQualityStore {
         state.resolutionScale === b.resolutionScale &&
         state.fpsLimit === b.fpsLimit &&
         state.msaaSamples === b.msaaSamples &&
-        state.vsync === b.vsync
+        state.vsync === b.vsync &&
+        state.bloomEnabled === b.bloomEnabled &&
+        state.hdrEnabled === b.hdrEnabled
       ) {
         return id
       }
@@ -363,7 +398,9 @@ class RenderQualityStore {
       a.resolutionScale === b.resolutionScale &&
       a.fpsLimit === b.fpsLimit &&
       a.msaaSamples === b.msaaSamples &&
-      a.vsync === b.vsync
+      a.vsync === b.vsync &&
+      a.bloomEnabled === b.bloomEnabled &&
+      a.hdrEnabled === b.hdrEnabled
     )
   }
 
@@ -404,6 +441,8 @@ class RenderQualityStore {
       const msaa = normalizeMsaa(parsed.msaaSamples)
       if (msaa !== null) next.msaaSamples = msaa
       if (typeof parsed.vsync === 'boolean') next.vsync = parsed.vsync
+      if (typeof parsed.bloomEnabled === 'boolean') next.bloomEnabled = parsed.bloomEnabled
+      if (typeof parsed.hdrEnabled === 'boolean') next.hdrEnabled = parsed.hdrEnabled
 
       if (isPreset(parsed.preset)) {
         next.preset = parsed.preset === 'custom' ? this.inferPreset(next) : parsed.preset
@@ -415,6 +454,12 @@ class RenderQualityStore {
             // Merge newer fields that old saves lack
             if (msaa === null) next.msaaSamples = PRESET_BUNDLES[next.preset].msaaSamples
             if (typeof parsed.vsync !== 'boolean') next.vsync = PRESET_BUNDLES[next.preset].vsync
+            if (typeof parsed.bloomEnabled !== 'boolean') {
+              next.bloomEnabled = PRESET_BUNDLES[next.preset].bloomEnabled
+            }
+            if (typeof parsed.hdrEnabled !== 'boolean') {
+              next.hdrEnabled = PRESET_BUNDLES[next.preset].hdrEnabled
+            }
           }
         }
       } else if (isTier(parsed.tier)) {
@@ -424,6 +469,12 @@ class RenderQualityStore {
         } else {
           if (msaa === null) next.msaaSamples = PRESET_BUNDLES[parsed.tier].msaaSamples
           if (typeof parsed.vsync !== 'boolean') next.vsync = PRESET_BUNDLES[parsed.tier].vsync
+          if (typeof parsed.bloomEnabled !== 'boolean') {
+            next.bloomEnabled = PRESET_BUNDLES[parsed.tier].bloomEnabled
+          }
+          if (typeof parsed.hdrEnabled !== 'boolean') {
+            next.hdrEnabled = PRESET_BUNDLES[parsed.tier].hdrEnabled
+          }
         }
       }
 

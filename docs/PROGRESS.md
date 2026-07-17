@@ -7,7 +7,7 @@
 > **Shipped (1.x):** spatial nearby voice · Settings Communities · 1:1 DMs + community group text (ADR-208) · community voice join CTA · **2D social chat FAB** · community HUD toasts / mod gates · RestrictedActions teleport/changeRealm/copy · elevated-spawn floor settle · **scene UI hit-map + nine-slice** · **Dead Surge combat / VC / PE attach**.  
 > **1.x next:** backpack outfits · scene UI text-measure · community voice Bearer parity · create-community / invites.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
-> **Graphics next:** **P4 bloom/HDR** (next on `lastraum`) · **P3** distance culls. Untextured VFX already use additive glow without full-scene bloom.  
+> **Graphics next:** **P4 bloom/HDR** shipping on `lastraum` (UnrealBloomPass + prefs) · **P3** distance culls. Untextured VFX also use additive MeshBasic glow.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
@@ -40,13 +40,35 @@
 | **CUSTOM_EVENT reliable** | 🟢 | CommsService / LiveKit · auth pin |
 | **Motion-promoted instances** | 🟢 | 3× Transform churn → SkeletonUtils clone |
 | **Untextured emissive glow** | 🟢 | additive Basic (no full bloom yet) |
-| **Full-scene bloom/HDR** | ⬜ | **next** on `lastraum` (P4) |
+| **Full-scene bloom/HDR** | 🟡 | `BloomPipeline` on `lastraum` — UnrealBloomPass + HDR HalfFloat + Graphics prefs |
 
 **QA:**  
 - `deadsurge.dcl.eth` → boot past LOADING · VC freecam · equip gun on chest · shoot zombies (hits register) · death coins bob/spin · muzzle additive flash.  
 - Flagtag / plaza — static tiles still instanced; no regression on elevated spawn.
 
 **Tip commit:** `6ca5deb` on `dev-latest` / `lastraum`.
+
+---
+
+## 🎉 Milestone — Graphics P4 bloom / HDR (in progress) → `lastraum` (2026-07-17)
+
+**Status: on `lastraum`** — full-screen Unreal-style bloom with live Preferences toggles.
+
+### What's new
+
+- **Bloom** — `EffectComposer` · `RenderPass` · `UnrealBloomPass` · `OutputPass` (ACES from renderer)
+- **HDR buffer** — HalfFloat composer RT so bright emissives/muzzle aren’t clipped before bloom
+- **Preferences → Graphics** — Bloom + HDR toggles live (no longer stubs); Medium/High/Ultra presets default on
+- **MSAA** — skipped while bloom is active (composer path); restored when bloom off
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **BloomPipeline** | 🟢 | `src/rendering/BloomPipeline.ts` + `SceneHost` |
+| **Prefs UI** | 🟢 | `GraphicsSettingsView` Bloom / HDR |
+| **Selective bloom** | ⬜ | full-frame only for now |
+| **Distance culls (P3)** | ⬜ | still open |
+
+**QA:** Preferences → Bloom on · shoot Dead Surge muzzle · neon LEDs should soft-halo. Toggle off → solid additive mesh only.
 
 ---
 

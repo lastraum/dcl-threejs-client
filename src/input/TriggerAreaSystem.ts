@@ -113,11 +113,22 @@ export class TriggerAreaSystem {
       }
       const area = spec as PBTriggerArea
       const mesh = area.mesh === TRIGGER_MESH_SPHERE ? TRIGGER_MESH_SPHERE : 0
+      // setBox() omits collisionMask; some CRDT paths materialize 0 — treat as default CL_PLAYER.
+      const rawMask = area.collisionMask
+      const collisionMask =
+        rawMask == null || rawMask === 0 ? DEFAULT_TRIGGER_MASK : rawMask
       this.volumes.push({
         entity,
         mesh,
-        collisionMask: area.collisionMask ?? DEFAULT_TRIGGER_MASK
+        collisionMask
       })
+    }
+    if (this.volumes.length > 0) {
+      clientDebugLog.log(
+        'input',
+        `TriggerArea cache — ${this.volumes.length} volume(s)`,
+        { level: 'info', alsoConsole: true, throttleMs: 5000 }
+      )
     }
   }
 

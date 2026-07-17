@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
+import { DCL_PLAYER_ENTITY_Y_OFFSET } from '../player/dclPlayerEntity'
 import {
   resolveEntityWorldMatrix,
   type EntityWorldTransformDeps
@@ -8,8 +9,12 @@ import {
 /** Matches `TriggerAreaMeshType.TAMT_SPHERE`. */
 export const TRIGGER_MESH_SPHERE = 1
 
-/** Vertical probe offsets (m) from player Transform origin (feet) — torso catches ground-level boxes. */
-export const PLAYER_PROBE_HEIGHTS_DCL = [0, 0.55, 1.1] as const
+/**
+ * Vertical probe offsets (m) from **feet** (not PlayerEntity chest).
+ * Dead Surge join pads are unit boxes with scale.y=1 centered at y≈0 → world Y ∈ [-0.5, 0.5].
+ * PlayerEntity is chest (+0.88); probing from PE misses those volumes entirely.
+ */
+export const PLAYER_PROBE_HEIGHTS_DCL = [0, 0.35, 0.7, 1.1] as const
 
 const _inv = new THREE.Matrix4()
 const _local = new THREE.Vector3()
@@ -68,7 +73,10 @@ export function composeTriggerWorldMatrix(
   return resolveEntityWorldMatrix(entity, deps, { space: 'three', out }) !== null
 }
 
-/** True when any vertical probe at the player's DCL Transform origin is inside the volume. */
+/**
+ * True when any vertical probe along the avatar body is inside the volume.
+ * `playerTransform` is SDK `Transform.get(PlayerEntity)` (chest, +0.88m); probes use feet.
+ */
 export function isPlayerInsideTriggerDcl(
   playerTransform: {
     position: { x: number; y: number; z: number }
@@ -79,8 +87,11 @@ export function isPlayerInsideTriggerDcl(
   mesh: number,
   probeHeights: readonly number[] = PLAYER_PROBE_HEIGHTS_DCL
 ): boolean {
+  const feetY = playerTransform.position.y - DCL_PLAYER_ENTITY_Y_OFFSET
+  const x = playerTransform.position.x
+  const z = playerTransform.position.z
   for (const h of probeHeights) {
-    _pos.set(playerTransform.position.x, playerTransform.position.y + h, playerTransform.position.z)
+    _pos.set(x, feetY + h, z)
     if (isPointInsideTriggerMatrix(_pos, worldMatrix, mesh)) return true
   }
   return false

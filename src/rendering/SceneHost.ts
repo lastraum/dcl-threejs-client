@@ -184,18 +184,17 @@ export class SceneHost {
   private configureBloom(options: RenderQualityOptions): void {
     if (!this.bloom) return
     const pr = this.renderer.getPixelRatio()
-    // Mild tier curve — sky is bloom-excluded; only emissives / hot materials glow.
+    // Film scale only — surface glow amount comes from glTF emissiveFactor × intensity.
+    // Extract pass blacks out non-emissives and zeros lights (see BloomPipeline).
     const strength =
-      options.tier === 'ultra' ? 0.28 : options.tier === 'high' ? 0.24 : 0.2
-    const threshold =
-      options.tier === 'ultra' ? 0.86 : options.tier === 'high' ? 0.88 : 0.9
+      options.tier === 'ultra' ? 0.16 : options.tier === 'high' ? 0.14 : 0.12
     this.bloom.configure(
       {
         enabled: options.bloomEnabled,
         hdr: options.hdrEnabled,
         strength,
-        threshold,
-        radius: 0.3
+        threshold: 0.05,
+        radius: 0.28
       },
       this.viewportCssW,
       this.viewportCssH,

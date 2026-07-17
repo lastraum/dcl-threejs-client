@@ -51,7 +51,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | Name | — | 🟢 | `core-schema::Name` → Three.js `Group.name` (debug / tooling) |
 | VisibilityComponent | 1081 | 🟢 | `obj.visible` |
 | GltfContainer | 1041 | 🟢 | Budgeted attach + reload on src change |
-| GltfNodeModifiers | 1099 | 🟢 | Material / castShadows overrides on GLB nodes (Creator Hub video screens) |
+| GltfNodeModifiers | 1099 | 🟢 | Full path material/castShadows on GLB nodes; de-instance; restore on remove; videoTexture re-apply |
 | MeshRenderer | 1018 | 🟢 | Primitives + custom UVs |
 | Material | 1017 | 🟢 | PBR/unlit + video textures; empty Creator Hub slots ignored; AUTO cutout only with alphaMap (Unity) |
 | Animator | 1042 | 🟢 | `AnimatorBridge` |

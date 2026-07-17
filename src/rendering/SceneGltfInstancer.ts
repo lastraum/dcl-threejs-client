@@ -15,8 +15,8 @@ import type { PhysicsColliderShapeDesc } from '../physics/PhysXWorld'
  * once from the template (entity-local matrices) and stored on the entity so PhysX can place a
  * unique actor per instance without cloning the full GLB.
  *
- * GltfNodeModifiers (future): promote instance → private clone on first modifier write
- * so edits never mutate sibling instances.
+ * GltfNodeModifiers: ThreeBridge.promoteInstancedGltfForModifiers detaches + re-clones
+ * so material/shadow overrides never mutate sibling instances.
  */
 
 export type InstancerMeshLeaf = {

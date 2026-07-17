@@ -96,7 +96,7 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 | Backpack | Wearables/emotes/colors ✅; outfits + marketplace open |
 | Graphics P3/P4 | Distance culls + bloom/HDR stubs |
 | PhysicsCombined* | Open polish gaps |
-| GltfNodeModifiers | 🟢 video screens / material overrides |
+| GltfNodeModifiers | 🟢 full path + material/shadow overrides; instance promote |
 | NftShape | 🟢 procedural frames + OpenSea proxy |
 | GltfContainerLoadingState, AvatarBase | 🔵 host LWW (done) |
 

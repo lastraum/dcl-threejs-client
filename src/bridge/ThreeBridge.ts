@@ -31,7 +31,8 @@ import { cloneGltfInstance } from '../rendering/skinnedMeshInstance'
 import { SceneGltfInstancer, templateIsInstancable } from '../rendering/SceneGltfInstancer'
 import {
   applyGltfNodeModifiersToEntity,
-  gltfNodeModifiersReferenceVideo
+  gltfNodeModifiersReferenceVideo,
+  restoreGltfNodeModifierOriginals
 } from './GltfNodeModifiersSync'
 import type { PBGltfNodeModifiers } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/gltf_node_modifiers.gen'
 
@@ -1253,12 +1254,23 @@ export class ThreeBridge {
     for (const entity of [...this.pendingGltfNodeModEntities]) {
       if (processed >= maxEntities) break
       if (performance.now() - passStart >= budgetMs) break
+
+      const obj = this.store.nodes.get(entity)
       if (!GltfNodeModifiers.has(entity)) {
+        // Component removed — restore GLB materials if we overrode them.
+        if (obj) restoreGltfNodeModifierOriginals(obj)
         this.pendingGltfNodeModEntities.delete(entity)
         continue
       }
-      const obj = this.store.nodes.get(entity)
       if (!obj) continue
+
+      // Promote GPU instance → private clone so material overrides never touch siblings.
+      if (obj.userData.dclInstanced) {
+        this.promoteInstancedGltfForModifiers(entity, obj)
+        // Re-attach path will re-queue via notifyGltfAttached.
+        continue
+      }
+
       // Wait until GLB is attached (mesh root or any mesh).
       let hasMesh = false
       obj.traverse((c) => {
@@ -1267,10 +1279,29 @@ export class ThreeBridge {
       if (!hasMesh) continue
 
       const mods = GltfNodeModifiers.get(entity) as PBGltfNodeModifiers
-      const ok = await applyGltfNodeModifiersToEntity(obj, mods, this.materials)
+      const ok = await applyGltfNodeModifiersToEntity(obj, mods, this.materials, {
+        entity,
+        logPathMiss: !obj.userData.dclGltfNodeModPathMissLogged
+      })
+      if (!ok && !obj.userData.dclGltfNodeModPathMissLogged) {
+        obj.userData.dclGltfNodeModPathMissLogged = true
+      }
       if (ok) this.pendingGltfNodeModEntities.delete(entity)
       processed++
     }
+  }
+
+  /**
+   * Drop InstancedMesh slot and re-queue mesh attach as a private SkeletonUtils clone.
+   * GltfNodeModifiers require per-entity materials (shared instance leaves are GPU-shared).
+   */
+  private promoteInstancedGltfForModifiers(entity: Entity, obj: THREE.Group): void {
+    this.instancer.detach(entity, obj)
+    delete obj.userData.dclInstanced
+    delete obj.userData.gltfSrcKey
+    delete obj.userData.dclForceIdleAttach
+    this.pendingMeshEntities.add(entity)
+    this.pendingGltfNodeModEntities.add(entity)
   }
 
   /** Budgeted full material apply for entities queued during hydration defer. */
@@ -1609,6 +1640,8 @@ export class ThreeBridge {
     // GLB `_collider` physics uses template shapes + entity pose (see InstanceColliderShape).
     if (this.ecs.PointerEvents.has(entity)) return false
     if (this.ecs.MeshCollider.has(entity)) return false
+    // Material / shadow overrides must not share InstancedMesh materials with siblings.
+    if (this.ecs.GltfNodeModifiers.has(entity)) return false
     return templateIsInstancable(template.root)
   }
 

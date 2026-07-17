@@ -573,7 +573,8 @@ export class MaterialApplier {
       tex.minFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
       tex.magFilter = def.filterMode === TFM_POINT ? THREE.NearestFilter : THREE.LinearFilter
       tex.colorSpace = options?.normalMap ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace
-      configureSceneVideoTexture(tex)
+      // MeshRenderer planes pass flipY=true; glTF / GltfNodeModifiers leave default false.
+      configureSceneVideoTexture(tex, options?.flipY ?? false)
       return tex
     }
     if (union?.tex?.$case !== 'texture') return null

@@ -57,7 +57,8 @@ export class ThrottledVideoTexture {
     this.texture.generateMipmaps = false
     this.texture.minFilter = THREE.LinearFilter
     this.texture.magFilter = THREE.LinearFilter
-    configureSceneVideoTexture(this.texture)
+    // glTF video screens (default path) — flipY false; MeshRenderer reconfigures on apply.
+    configureSceneVideoTexture(this.texture, false)
   }
 
   start(): void {

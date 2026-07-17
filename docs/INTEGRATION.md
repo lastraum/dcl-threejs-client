@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-16 (Name · AvatarModifierArea · MapPin 🟢; full Phase 6 rows; Tags not a gap)
+> **Last updated:** 2026-07-16 (Name · AvatarModifierArea · MapPin 🟢; EngineInfo live write; RealmInfo hardened)
 
 ---
 
@@ -124,8 +124,8 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | GltfNodeModifiers | 1099 | ⬜ | Per-node material/visibility overrides on GLTF |
 | AssetLoad | 1213 | ⬜ | Runtime asset fetch API |
 | AssetLoadLoadingState | 1214 | 🔵 | Load progress writeback for AssetLoad |
-| EngineInfo | 1048 | 🔵 | Frame/tick/version info on RootEntity — partial seed TBD |
-| RealmInfo | 1106 | 🔵 | Renderer writes realm + scene-room connect (`ReservedEntitiesSync`) |
+| EngineInfo | 1048 | 🔵 | RootEntity each CRDT round-trip — `frameNumber` · `tickNumber` · `totalRuntime` (ADR-148) |
+| RealmInfo | 1106 | 🔵 | RootEntity — baseUrl/realmName/networkId/commsAdapter/preview/room/`isConnectedSceneRoom` |
 
 ### Gaps still open (ECS only)
 

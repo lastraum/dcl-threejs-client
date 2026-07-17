@@ -19,6 +19,10 @@ const _euler = new THREE.Euler(0, 0, 0, 'YXZ')
 export class ReservedEntitiesSync {
   private playerIdentity: PlayerMirrorIdentity | null = null
   private realmInfo: CommsRealmInfo | null = null
+  /** Wall-clock when scene reserved entities were first initialized. */
+  private sceneStartMs = 0
+  private frameNumber = 0
+  private tickNumber = 0
 
   constructor(
     private readonly projection: CrdtProjection,
@@ -37,8 +41,20 @@ export class ReservedEntitiesSync {
     if (info) this.applyRealmInfo()
   }
 
+  /**
+   * ADR-148 EngineInfo — written on RootEntity each renderer round-trip.
+   * `tickNumber` should match the scene CRDT tick; `frameNumber` is renderer frames.
+   */
+  setEngineCounters(frameNumber: number, tickNumber: number): void {
+    this.frameNumber = Math.max(0, frameNumber | 0)
+    this.tickNumber = Math.max(0, tickNumber | 0)
+  }
+
   /** Seed spawn transforms + MainCamera before scene script hydrates from getState. */
   initialize(spawn: { x: number; y: number; z: number }): void {
+    this.sceneStartMs = performance.now()
+    this.frameNumber = 0
+    this.tickNumber = 0
     const { Transform, MainCamera } = this.components
     const identity = {
       position: { x: 0, y: 0, z: 0 },
@@ -47,6 +63,7 @@ export class ReservedEntitiesSync {
       parent: this.reserved.root
     }
     this.projection.setRenderer(Transform.componentId, this.reserved.root, identity)
+    this.applyEngineInfo()
 
     const feetDcl = dclToThreeVec(new THREE.Vector3(spawn.x, spawn.y, spawn.z))
     const playerEntityDcl = feetDclToPlayerEntityPosition(feetDcl)
@@ -81,6 +98,7 @@ export class ReservedEntitiesSync {
     this.syncCamera(camera)
     if (this.playerIdentity) this.applyPlayerIdentity()
     if (this.realmInfo) this.applyRealmInfo()
+    this.applyEngineInfo()
   }
 
   private applyPlayerIdentity(): void {
@@ -112,13 +130,25 @@ export class ReservedEntitiesSync {
     if (!info) return
     const { RealmInfo } = this.components
     this.projection.setRenderer(RealmInfo.componentId, this.reserved.root, {
-      baseUrl: info.baseUrl,
-      realmName: info.realmName,
-      networkId: info.networkId,
-      commsAdapter: info.commsAdapter,
-      isPreview: info.isPreview,
+      baseUrl: info.baseUrl || info.domain || '',
+      realmName: info.realmName || '',
+      networkId: Number.isFinite(info.networkId) ? info.networkId : 1,
+      commsAdapter: info.commsAdapter || '',
+      isPreview: info.isPreview === true,
       room: info.room,
-      isConnectedSceneRoom: info.isConnectedSceneRoom
+      isConnectedSceneRoom: info.isConnectedSceneRoom === true
+    })
+  }
+
+  private applyEngineInfo(): void {
+    const { EngineInfo } = this.components
+    const start = this.sceneStartMs || performance.now()
+    if (!this.sceneStartMs) this.sceneStartMs = start
+    const totalRuntime = Math.max(0, (performance.now() - this.sceneStartMs) / 1000)
+    this.projection.setRenderer(EngineInfo.componentId, this.reserved.root, {
+      frameNumber: this.frameNumber,
+      totalRuntime,
+      tickNumber: this.tickNumber
     })
   }
 

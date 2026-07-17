@@ -232,6 +232,8 @@ export class SceneScriptSystem {
   private running = false
   private prepared = false
   private crdtTick = 0
+  /** Renderer frame counter for EngineInfo (ADR-148). */
+  private engineFrame = 0
   private clientPlayerPose: EntityPose | null = null
   private clientCameraPose: EntityPose | null = null
   /** Live player/camera poses sampled immediately before CRDT encode (rotation must not lag). */
@@ -1109,12 +1111,19 @@ export class SceneScriptSystem {
     this.clientPoseProvider = provider
   }
 
+  /** EngineInfo + poses + RealmInfo before a renderer→worker CRDT deliver. */
+  private prepareReservedRoundTrip(player: EntityPose, camera: EntityPose): void {
+    this.engineFrame++
+    this.reserved.setEngineCounters(this.engineFrame, this.crdtTick)
+    this.reserved.prepareRendererRoundTrip(player, camera)
+  }
+
   /** Push player/camera into the mirror before the worker calls crdtGetState at boot. */
   seedRendererEntities(player: EntityPose, camera: EntityPose): void {
     this.clientPlayerPose = player
     this.clientCameraPose = camera
     this.refreshRealmInfoFromProvider()
-    this.reserved.prepareRendererRoundTrip(player, camera)
+    this.prepareReservedRoundTrip(player, camera)
   }
 
   setCommsHandler(handler: CommsRpcHandler | null): void {
@@ -2864,7 +2873,7 @@ export class SceneScriptSystem {
     this.refreshClientPosesFromProvider()
     this.refreshRealmInfoFromProvider()
     if (this.clientPlayerPose && this.clientCameraPose) {
-      this.reserved.prepareRendererRoundTrip(this.clientPlayerPose, this.clientCameraPose)
+      this.prepareReservedRoundTrip(this.clientPlayerPose, this.clientCameraPose)
     }
     const player = this.clientPlayerPose
     const camera = this.clientCameraPose
@@ -3236,7 +3245,7 @@ export class SceneScriptSystem {
     this.refreshClientPosesFromProvider()
     this.refreshRealmInfoFromProvider()
     if (!this.clientPlayerPose || !this.clientCameraPose) return
-    this.reserved.prepareRendererRoundTrip(this.clientPlayerPose, this.clientCameraPose)
+    this.prepareReservedRoundTrip(this.clientPlayerPose, this.clientCameraPose)
   }
 
   private refreshClientPosesFromProvider(): void {
@@ -3250,7 +3259,7 @@ export class SceneScriptSystem {
     this.clientPlayerPose = player
     this.clientCameraPose = camera
     this.refreshRealmInfoFromProvider()
-    this.reserved.prepareRendererRoundTrip(player, camera)
+    this.prepareReservedRoundTrip(player, camera)
   }
 
   /** After movePlayerTo — sync worker PlayerEntity before the scene reads it again. */
@@ -3259,7 +3268,7 @@ export class SceneScriptSystem {
     this.refreshClientPosesFromProvider()
     if (!this.clientPlayerPose || !this.clientCameraPose) return
     this.refreshRealmInfoFromProvider()
-    this.reserved.prepareRendererRoundTrip(this.clientPlayerPose, this.clientCameraPose)
+    this.prepareReservedRoundTrip(this.clientPlayerPose, this.clientCameraPose)
     const bytes = this.encodeRendererCrdt()
     if (!bytes?.byteLength) return
     const copy = bytes.slice()

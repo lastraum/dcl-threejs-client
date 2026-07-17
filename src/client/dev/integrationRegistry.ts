@@ -107,7 +107,7 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   { id: 'ui:settings-map', name: 'Settings → Map (M)', status: 'render', category: 'client-ui', notes: 'Genesis tiles, peers, Jump In; embedded mode hides page HUD when opened from minimap/shell' },
   { id: 'ui:settings-backpack', name: 'Settings → Backpack (I)', status: 'render', category: 'client-ui', notes: 'Avatar preview, equipped wearables' },
   { id: 'ui:preferences-panel', name: 'Preferences panel (P / ⚙)', status: 'render', category: 'client-ui', notes: 'Right rail; world input passes through' },
-  { id: 'ui:preferences-graphics', name: 'Preferences → Graphics', status: 'partial', category: 'client-ui', notes: 'Preset L/M/H/Custom, shadows, lights, res scale, FPS, MSAA, FOV, lighting, Bloom + HDR live; VSync hidden; Resolution/Fullscreen stub; distance stubs' },
+  { id: 'ui:preferences-graphics', name: 'Preferences → Graphics', status: 'partial', category: 'client-ui', notes: 'Preset L/M/H/Custom, shadows, lights, res scale, FPS, MSAA, FOV, lighting, Bloom + HDR live (P4); VSync hidden; Resolution/Fullscreen stub; P3 distance stubs' },
   { id: 'ui:preferences-sounds', name: 'Preferences → Sounds', status: 'render', category: 'client-ui', notes: 'Volume sliders; mic device; PTT vs open-mic; mute-in-background wired to VoiceChatService' },
   { id: 'ui:preferences-controls', name: 'Preferences → Controls', status: 'partial', category: 'client-ui', notes: 'Mouse sensitivity live (10–200%); keybinds still pending' },
   { id: 'ui:preferences-chat', name: 'Preferences → Chat', status: 'none', category: 'client-ui', notes: 'Coming soon placeholder' },
@@ -189,7 +189,15 @@ export const PERFORMANCE_INTEGRATION: IntegrationEntry[] = [
   { id: 'perf:genesis-clouds', name: 'Genesis skybox cloud lighting', status: 'render', category: 'performance', notes: 'Camera-centered dome rays + HDR cloud tint; low-tier worker timing' },
   { id: 'perf:low-end-scene-worker', name: 'Low-end scene worker timing', status: 'render', category: 'performance', notes: 'Tier detection, adaptive abort backoff, single-flight onUpdate' },
   { id: 'perf:boot-hydration', name: 'Boot + hydration pipeline', status: 'render', category: 'performance', notes: 'main.crdt seed, composite preload, unified GLB bytes/parse pool' },
-  { id: 'perf:scene-emissives', name: 'Scene GLTF emissive LEDs', status: 'render', category: 'performance', notes: 'Property-based neon; untextured → additive MeshBasic; full-scene UnrealBloom (P4) on lastraum' },
+  { id: 'perf:scene-emissives', name: 'Scene GLTF emissive LEDs', status: 'render', category: 'performance', notes: 'Property-based neon; untextured → additive MeshBasic; pairs with P4 bloom' },
+  {
+    id: 'perf:bloom-hdr',
+    name: 'P4 bloom / HDR post-process',
+    status: 'render',
+    category: 'performance',
+    notes:
+      'BloomPipeline: emissive-only extract, depth occluders, sky exclude, HalfFloat HDR, UnrealBloom + OutputPass; Graphics prefs; MSAA concurrent open'
+  },
   { id: 'perf:user-lighting', name: 'User sun/moon + exposure sliders', status: 'render', category: 'performance', notes: 'SunEnvironmentSettings localStorage' },
   { id: 'perf:gltf-hydration-budget', name: 'GLTF hydration budgets', status: 'render', category: 'performance' },
   { id: 'perf:glb-parse-pool', name: 'Off-thread GLB parse pool', status: 'render', category: 'performance' },

@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-17 (Dead Surge combat/VC/PE · swept projectile hits · motion-promoted coins · additive muzzle glow · large-bundle boot)
+> **Last updated:** 2026-07-17 (Dead Surge combat/VC/PE · P4 emissive bloom/HDR · swept hits · motion-promoted coins · large-bundle boot)
 
 ---
 
@@ -213,7 +213,7 @@ DOM overlay — not in-scene `UiTransform`.
 | Low-end scene worker timing + adaptive abort backoff | 🟢 |
 | Boot/hydration: main.crdt seed, composite preload, unified GLB | 🟢 |
 | Landscapes, FFT ocean, Perlin scatter foliage | 🟢 |
-| Scene GLTF emissive LEDs (neon mats) | 🟢 | Property-based; untextured emissiveFactor → additive MeshBasic glow (muzzle/VFX); full bloom still open |
+| Scene GLTF emissive LEDs (neon mats) | 🟢 | Property-based; untextured → additive MeshBasic; P4 bloom from emissive×intensity |
 | User sun/moon lighting + exposure sliders | 🟢 |
 | Sun/hemi intensity match vs Explorer | 🟢 | anim peak 2.72 + trilight; user sliders still override |
 | GLTF hydration budgets, GLB parse pool, AssetCache IDB | 🟢 |
@@ -224,7 +224,7 @@ DOM overlay — not in-scene `UiTransform`.
 | Large multi-MB scene worker boot | 🟢 | Needle react-ecs / engine-loop patches; main-thread yield |
 | PlayerEntity reserved Transform parent | 🟢 | Chest attach root + reparent (weapons mid-match) |
 | CUSTOM_EVENT reliable + auth pin | 🟢 | LiveKit / CommsService combat events |
-| Full-scene bloom / HDR post | 🟡 partial | `BloomPipeline` UnrealBloom + HalfFloat HDR; prefs live; selective bloom open |
+| Full-scene bloom / HDR post | 🟢 | Emissive-only extract · depth occluders · sky excluded · HalfFloat HDR · Graphics prefs; MSAA+bloom concurrent open |
 | Shadow pass tuning | 🟢 | soft + soft directional sun |
 
 ---

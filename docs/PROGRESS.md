@@ -4,10 +4,10 @@
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-07-17  
 > **Current phase:** **v1.0.0** — production beta on the core loop; still not full Explorer parity.  
-> **Shipped (1.x):** spatial nearby voice · Settings Communities · 1:1 DMs + community group text (ADR-208) · community voice join CTA · **2D social chat FAB** · community HUD toasts / mod gates · RestrictedActions teleport/changeRealm/copy · elevated-spawn floor settle · **scene UI hit-map + nine-slice** · **Dead Surge combat / VC / PE attach**.  
+> **Shipped (1.x):** spatial nearby voice · Settings Communities · 1:1 DMs + community group text (ADR-208) · community voice join CTA · **2D social chat FAB** · community HUD toasts / mod gates · RestrictedActions teleport/changeRealm/copy · elevated-spawn floor settle · **scene UI hit-map + nine-slice** · **Dead Surge combat / VC / PE attach** · **P4 emissive bloom / HDR**.  
 > **1.x next:** backpack outfits · scene UI text-measure · community voice Bearer parity · create-community / invites.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
-> **Graphics next:** **P4 bloom/HDR** shipping on `lastraum` (UnrealBloomPass + prefs) · **P3** distance culls. Untextured VFX also use additive MeshBasic glow.  
+> **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
@@ -16,9 +16,39 @@
 
 ---
 
+## 🎉 Milestone — Graphics P4 emissive bloom / HDR → `dev-latest` (2026-07-17)
+
+**Status: on `dev-latest`** (`aeda9fa`) — Explorer-style soft glow for authored emissives without washing sky or x-raying through props.
+
+### What's new
+
+- **Emissive-driven bloom** — extract only glTF `emissiveFactor` × `emissiveIntensity` (+ emissiveMap / additive VFX Basic); lights zeroed so lit albedo does not bloom
+- **Depth occlusion** — non-emissive meshes stay as black occluders during extract (no NEW GAME through obelisks)
+- **Sky excluded** — Genesis dome `dclBloomExclude` (clouds do not bloom)
+- **HDR buffer** — HalfFloat composer RT for bright muzzle / neon without clipping
+- **Pipeline** — extract → full scene + ACES `OutputPass` → additive pure-bloom composite (`BloomPipeline` + `UnrealBloomPass`)
+- **Preferences → Graphics** — Bloom + HDR toggles live; Medium/High/Ultra default on, Low off
+- **Material-safe extract** — never nulls maps (blood splat alpha intact)
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **BloomPipeline** | 🟢 | `src/rendering/BloomPipeline.ts` · material radiance · depth occluders |
+| **HDR + prefs** | 🟢 | HalfFloat · `GraphicsSettingsView` Bloom/HDR |
+| **Untextured VFX base** | 🟢 | additive MeshBasic (GunVFX) + bloom halo |
+| **Distance culls (P3)** | ⬜ | still open |
+| **MSAA + bloom together** | ⬜ | MSAA skipped while bloom active |
+
+**QA:**  
+- Preferences → Bloom on · Dead Surge muzzle + neon signs soft-halo · sky clean · signs occluded by solid props · blood splats transparent.  
+- Bloom off → no post glow (additive Basic still self-lit).
+
+**Tip commit:** `aeda9fa` on `dev-latest` / `lastraum`.
+
+---
+
 ## 🎉 Milestone — Dead Surge combat + VC/PE attach → `dev-latest` (2026-07-17)
 
-**Status: on `dev-latest`** (`6ca5deb`) — large multi-MB worlds (deadsurge.dcl.eth) boot, VirtualCamera combat freecam lock, PlayerEntity weapon attach, projectile hits, death coins, muzzle glow.
+**Status: on `dev-latest`** (`6ca5deb` … `aeda9fa`) — large multi-MB worlds (deadsurge.dcl.eth) boot, VirtualCamera combat freecam lock, PlayerEntity weapon attach, projectile hits, death coins, muzzle + bloom.
 
 ### What's new
 
@@ -39,36 +69,14 @@
 | **Swept projectile hits** | 🟢 | `patchProjectileSweptHits` + pointerEventColliderChecker patch |
 | **CUSTOM_EVENT reliable** | 🟢 | CommsService / LiveKit · auth pin |
 | **Motion-promoted instances** | 🟢 | 3× Transform churn → SkeletonUtils clone |
-| **Untextured emissive glow** | 🟢 | additive Basic (no full bloom yet) |
-| **Full-scene bloom/HDR** | 🟡 | `BloomPipeline` on `lastraum` — UnrealBloomPass + HDR HalfFloat + Graphics prefs |
+| **Untextured emissive glow** | 🟢 | additive Basic + P4 bloom halo |
+| **Full-scene bloom/HDR** | 🟢 | emissive extract · depth occlude · prefs (see milestone above) |
 
 **QA:**  
-- `deadsurge.dcl.eth` → boot past LOADING · VC freecam · equip gun on chest · shoot zombies (hits register) · death coins bob/spin · muzzle additive flash.  
+- `deadsurge.dcl.eth` → boot past LOADING · VC freecam · equip gun on chest · shoot zombies (hits register) · death coins bob/spin · muzzle flash + soft bloom.  
 - Flagtag / plaza — static tiles still instanced; no regression on elevated spawn.
 
-**Tip commit:** `6ca5deb` on `dev-latest` / `lastraum`.
-
----
-
-## 🎉 Milestone — Graphics P4 bloom / HDR (in progress) → `lastraum` (2026-07-17)
-
-**Status: on `lastraum`** — full-screen Unreal-style bloom with live Preferences toggles.
-
-### What's new
-
-- **Bloom** — `EffectComposer` · `RenderPass` · `UnrealBloomPass` · `OutputPass` (ACES from renderer)
-- **HDR buffer** — HalfFloat composer RT so bright emissives/muzzle aren’t clipped before bloom
-- **Preferences → Graphics** — Bloom + HDR toggles live (no longer stubs); Medium/High/Ultra presets default on
-- **MSAA** — skipped while bloom is active (composer path); restored when bloom off
-
-| Area | Status | Notes |
-| ---- | ------ | ----- |
-| **BloomPipeline** | 🟢 | `src/rendering/BloomPipeline.ts` + `SceneHost` |
-| **Prefs UI** | 🟢 | `GraphicsSettingsView` Bloom / HDR |
-| **Selective bloom** | ⬜ | full-frame only for now |
-| **Distance culls (P3)** | ⬜ | still open |
-
-**QA:** Preferences → Bloom on · shoot Dead Surge muzzle · neon LEDs should soft-halo. Toggle off → solid additive mesh only.
+**Tip commit:** `6ca5deb` combat · `aeda9fa` bloom — both on `dev-latest` / `lastraum`.
 
 ---
 

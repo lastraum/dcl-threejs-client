@@ -91,7 +91,7 @@ Keep **`redo/threejs-projection-arch`** as the long-running integration branch. 
 
 - Full DCL Explorer parity / full DEPLOYMENT matrix green  
 - Spatial (3D falloff) voice · in-world `/goto` · community DMs  
-- Backpack outfits/marketplace · scene UI polish · graphics P3/P4  
+- Backpack outfits/marketplace · scene UI polish · graphics P3 distance culls (P4 bloom/HDR shipped)  
 - Every ECS component / API surface
 
 Release notes must say **production beta / core loop** and list known limitations. After 1.0, prefer `1.x` minors over endless `0.x`.

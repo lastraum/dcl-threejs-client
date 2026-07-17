@@ -321,7 +321,8 @@ export class SceneGltfInstancer {
       const mesh = new THREE.InstancedMesh(leaf.geometry, leaf.material, capacity)
       mesh.name = `inst:${i}`
       mesh.count = 0
-      mesh.castShadow = false
+      // GltfContainer default cast (material / GltfNodeModifiers can opt out per mesh)
+      mesh.castShadow = true
       mesh.receiveShadow = true
       mesh.frustumCulled = true
       // Zero all slots initially

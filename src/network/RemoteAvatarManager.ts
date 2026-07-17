@@ -50,6 +50,7 @@ import type { LocomotionMode } from '../player/locomotion'
 import { RemoteAvatarLoadQueue } from './RemoteAvatarLoadQueue'
 import type { InteractiveNameTagHit } from '../client/ui/overlayHitTest'
 import { buildPlayerMirrorIdentity } from '../bridge/playerMirrorIdentity'
+import { GliderProp, GlideStateWire, glideStateWantsOpen } from '../avatar/GliderProp'
 
 type RemotePeerRecord = {
   address: string
@@ -95,6 +96,9 @@ type RemotePeerRecord = {
   prevJumpCount: number
   doubleJumpTriggered: boolean
   verticalVelocity: number
+  /** RFC4 Movement.glideState */
+  glideState: number
+  glider: GliderProp
 }
 
 function blankProfile(address: string): AvatarProfile {
@@ -391,6 +395,7 @@ export class RemoteAvatarManager {
     } else if (hidden) {
       record.root.visible = false
     }
+    record.glider.setBodyVisible(!hidden)
     if (record.nameTag) {
       record.nameTag.object.visible = !hidden && areSceneNameTagsVisible()
     }
@@ -585,9 +590,12 @@ export class RemoteAvatarManager {
         jumpCount: 0,
         prevJumpCount: 0,
         doubleJumpTriggered: false,
-        verticalVelocity: 0
+        verticalVelocity: 0,
+        glideState: GlideStateWire.PROP_CLOSED,
+        glider: new GliderProp()
       }
       this.peers.set(key, record)
+      void record.glider.attach(record.pivot)
       odkNetInfo('remote peer record created', { peer: shortAddr(key) })
     }
 
@@ -645,6 +653,7 @@ export class RemoteAvatarManager {
     const record = this.peers.get(key)
     if (!record) return
     this.loadQueue.cancel(key)
+    record.glider.dispose()
     this.disposePeerModel(record)
     record.nameTag?.dispose()
     this.pushPeerMirrorIdentity(record, null)
@@ -662,7 +671,7 @@ export class RemoteAvatarManager {
     positionDcl: THREE.Vector3,
     yawDcl: number,
     velocity?: THREE.Vector3,
-    locomotion?: Pick<AvatarTransformPayload, 'isGrounded' | 'isJumping' | 'jumpCount'>
+    locomotion?: Pick<AvatarTransformPayload, 'isGrounded' | 'isJumping' | 'jumpCount' | 'glideState'>
   ): void {
     const key = address.toLowerCase()
     if (this.isLocalPeer(key)) return
@@ -717,6 +726,10 @@ export class RemoteAvatarManager {
         if (record.jumpCount >= 2 && record.prevJumpCount < 2) {
           record.doubleJumpTriggered = true
         }
+      }
+      if (locomotion.glideState !== undefined) {
+        record.glideState = locomotion.glideState
+        record.glider.setGlideState(locomotion.glideState)
       }
     } else if (velocity && velocity.y > 6 && prevVy <= 3 && !record.remoteGrounded) {
       record.doubleJumpTriggered = true
@@ -783,8 +796,12 @@ export class RemoteAvatarManager {
         const targetLocomotionSpeed =
           !emoteActive && speed > 0.08 ? remoteTargetLocomotionSpeed(locomotionMode) : 0
         const grounded = record.remoteGrounded && record.verticalVelocity > -8
-        const jumping = record.remoteJumping && record.jumpCount <= 1
-        const doubleJumping = record.jumpCount >= 2 && !grounded
+        const remoteGliding =
+          !grounded &&
+          (glideStateWantsOpen(record.glideState) ||
+            record.glideState === GlideStateWire.CLOSING_PROP)
+        const jumping = record.remoteJumping && record.jumpCount <= 1 && !remoteGliding
+        const doubleJumping = record.jumpCount >= 2 && !grounded && !remoteGliding
 
         const locomotionState = {
           horizontalSpeed: emoteActive ? 0 : speed,
@@ -796,7 +813,13 @@ export class RemoteAvatarManager {
           jumping,
           doubleJumping,
           doubleJumpTriggered: record.doubleJumpTriggered,
-          falling: !grounded && !jumping && !doubleJumping && record.verticalVelocity < -1.5
+          falling:
+            !grounded &&
+            !jumping &&
+            !doubleJumping &&
+            !remoteGliding &&
+            record.verticalVelocity < -1.5,
+          gliding: remoteGliding
         }
         if (record.renderMode === 'vrm') {
           record.vrmLocomotion?.update(delta, locomotionState)
@@ -821,6 +844,8 @@ export class RemoteAvatarManager {
           void this.reloadPeerAvatar(key, record)
         }
       }
+      // Prop open/close + rotors — always (cheap; not gated by near-anim budget).
+      record.glider.update(delta)
       record.doubleJumpTriggered = false
 
       const nameTagTarget = record.model ?? record.placeholder
@@ -1256,6 +1281,7 @@ export class RemoteAvatarManager {
 
   private disposePeerModel(record: RemotePeerRecord): void {
     record.pivot.position.set(0, 0, 0)
+    // GliderProp is a pivot child — survives body swaps; disposed only on removePeer.
     record.animations?.dispose()
     record.animations = null
     record.vrmLocomotion?.dispose()

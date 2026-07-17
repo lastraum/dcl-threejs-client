@@ -22,6 +22,8 @@ export const AVATAR_EMOTE_JUMP = '/avatar/emotes/jump.glb'
  * hard-coded full-body Y twirl (Explorer parity) instead of replaying jump.glb.
  */
 export const AVATAR_EMOTE_DOUBLE_JUMP = '/avatar/emotes/double_jump.glb'
+/** Explorer-style glider body — Avatar_ arms-on-handles (`Glide_Avatar` in glide.glb). */
+export const AVATAR_EMOTE_GLIDE = '/avatar/glider/glide.glb'
 
 export const BODY_SHAPE_URN: Record<BodyShape, string> = {
   male: 'urn:decentraland:off-chain:base-avatars:BaseMale',

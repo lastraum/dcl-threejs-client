@@ -185,7 +185,8 @@ export class CommsService {
           vz: velocity?.z,
           isGrounded: locomotion?.isGrounded,
           isJumping: locomotion?.isJumping,
-          jumpCount: locomotion?.jumpCount
+          jumpCount: locomotion?.jumpCount,
+          glideState: locomotion?.glideState
         })
       },
       onProfileRequest: (address) => {
@@ -882,6 +883,7 @@ export class CommsService {
       isJumping?: boolean
       jumpCount?: number
       isFalling?: boolean
+      glideState?: number
     }
   ): void {
     if (this.transport === 'livekit') {

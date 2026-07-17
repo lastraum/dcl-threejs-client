@@ -75,8 +75,9 @@ export class PlayerInput {
   }
 
   setJumpHeld(down: boolean): void {
+    // Edge only — holding must not re-fire spacePressed every frame (glide vs double-jump).
+    if (down && !this.keys.space) this.spacePressed = true
     this.keys.space = down
-    if (down) this.spacePressed = true
   }
 
   get looking(): boolean {

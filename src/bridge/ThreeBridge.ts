@@ -122,9 +122,13 @@ function particleKey(entity: Entity): string {
   return `__particles_${entity}`
 }
 
-function enableMeshReceiveShadow(root: THREE.Object3D): void {
+/** GltfContainer / MeshRenderer default: cast + receive (Unity MeshRenderer + material.proto cast_shadows=true). */
+function enableMeshShadows(root: THREE.Object3D): void {
   root.traverse((child) => {
-    if ((child as THREE.Mesh).isMesh) (child as THREE.Mesh).receiveShadow = true
+    if (!(child as THREE.Mesh).isMesh) return
+    const mesh = child as THREE.Mesh
+    mesh.castShadow = true
+    mesh.receiveShadow = true
   })
 }
 
@@ -1661,7 +1665,8 @@ export class ThreeBridge {
       primitive.name = mk
       primitive.userData.primitiveMeshKey = key
       primitive.userData.primitiveDoubleSided = doubleSided
-      primitive.castShadow = false
+      // Unity MeshRenderer / material.proto cast_shadows default true
+      primitive.castShadow = true
       primitive.receiveShadow = true
       primitive.userData.entity = entity
       obj.add(primitive)
@@ -2000,7 +2005,7 @@ export class ThreeBridge {
         obj.userData.emoteAnchor = true
       } else {
         syncGltfInstanceRenderState(clone)
-        enableMeshReceiveShadow(clone)
+        enableMeshShadows(clone)
       }
       obj.add(clone)
       this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
@@ -2183,7 +2188,8 @@ export class ThreeBridge {
         primitive.name = mk
         primitive.userData.primitiveMeshKey = key
         primitive.userData.primitiveDoubleSided = doubleSided
-        primitive.castShadow = false
+        // Unity MeshRenderer / material.proto cast_shadows default true
+        primitive.castShadow = true
         primitive.receiveShadow = true
         obj.add(primitive)
         this.notifyMeshComponent(entity, MeshRenderer.componentId)

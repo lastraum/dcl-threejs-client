@@ -36,7 +36,12 @@ export type Rfc4RouterHandlers = {
     yaw: number,
     transport: TransportType,
     velocity?: { x: number; y: number; z: number },
-    locomotion?: { isGrounded?: boolean; isJumping?: boolean; jumpCount?: number }
+    locomotion?: {
+      isGrounded?: boolean
+      isJumping?: boolean
+      jumpCount?: number
+      glideState?: number
+    }
   ) => void
   onProfileRequest: (address: string, profileVersion: number) => void
   onPeerProfileVersion?: (address: string, profileVersion: number) => void
@@ -99,7 +104,8 @@ export class Rfc4Router {
       }, {
         isGrounded: rfc4.isGrounded,
         isJumping: rfc4.isJumping,
-        jumpCount: rfc4.jumpCount
+        jumpCount: rfc4.jumpCount,
+        glideState: rfc4.glideState
       })
       return
     }
@@ -196,7 +202,12 @@ export class Rfc4Router {
     yaw: number,
     transport: TransportType,
     velocity?: { x: number; y: number; z: number },
-    locomotion?: { isGrounded?: boolean; isJumping?: boolean; jumpCount?: number }
+    locomotion?: {
+      isGrounded?: boolean
+      isJumping?: boolean
+      jumpCount?: number
+      glideState?: number
+    }
   ): void {
     this.handlers?.onPeerTransform(address, x, y, z, yaw, transport, velocity, locomotion)
   }

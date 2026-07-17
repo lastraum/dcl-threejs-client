@@ -11,6 +11,8 @@ export type AvatarTransformPayload = {
   isGrounded?: boolean
   isJumping?: boolean
   jumpCount?: number
+  /** RFC4 Movement_GlideState (0 closed … 3 closing). */
+  glideState?: number
 }
 
 export type CommsRealmInfo = {

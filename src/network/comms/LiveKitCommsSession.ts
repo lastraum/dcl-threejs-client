@@ -66,6 +66,7 @@ export class LiveKitCommsSession {
       isJumping?: boolean
       jumpCount?: number
       isFalling?: boolean
+      glideState?: number
     }
   } | null = null
   private lastSentTransform: { x: number; y: number; z: number; yaw: number } | null = null
@@ -585,6 +586,7 @@ export class LiveKitCommsSession {
       isJumping?: boolean
       jumpCount?: number
       isFalling?: boolean
+      glideState?: number
     }
   ): void {
     if (!this.isConnected()) return

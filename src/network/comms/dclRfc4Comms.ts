@@ -49,6 +49,8 @@ export function encodeRfc4MovementPacket(
     isJumping?: boolean
     jumpCount?: number
     isFalling?: boolean
+    /** RFC4 Movement_GlideState */
+    glideState?: number
   }
 ): Uint8Array {
   const codecBounds = expandRealmBounds(bounds ?? null)
@@ -83,6 +85,7 @@ export function encodeRfc4MovementPacket(
   const isJumping = locomotion?.isJumping ?? false
   const jumpCount = locomotion?.jumpCount ?? 0
   const isFalling = locomotion?.isFalling ?? false
+  const glideState = locomotion?.glideState ?? 0
 
   return Packet.encode({
     protocolVersion: RFC4_PROTOCOL_VERSION,
@@ -105,7 +108,7 @@ export function encodeRfc4MovementPacket(
         isLongFall: false,
         isFalling,
         isStunned: false,
-        glideState: 0,
+        glideState,
         rotationY: wire.rotationYDeg,
         isInstant: false,
         isEmoting,
@@ -273,6 +276,7 @@ export type DecodedRfc4Transform =
       isGrounded?: boolean
       isJumping?: boolean
       jumpCount?: number
+      glideState?: number
     }
   | { kind: 'unknown' }
 
@@ -360,7 +364,8 @@ export function tryDecodeRfc4TransformPacket(
         vz: genesis.velocity?.z,
         isGrounded: m.isGrounded,
         isJumping: m.isJumping,
-        jumpCount: m.jumpCount
+        jumpCount: m.jumpCount,
+        glideState: m.glideState
       }
     }
   } catch {

@@ -495,7 +495,9 @@ export class MaterialApplier {
       m.depthWrite = false
     }
 
-    mesh.castShadow = inner.castShadows === true
+    // material.proto: cast_shadows default = true (omit / undefined → cast on).
+    // Scene authors set castShadows: false to opt out; graphics shadowQuality:off kills all.
+    mesh.castShadow = inner.castShadows !== false
     mesh.receiveShadow = true
     // Marquees face inward (FrontSide). Never DoubleSide — back face is mirrored and
     // was the “split + mirrored” LED look from inside the plaza.

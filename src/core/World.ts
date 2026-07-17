@@ -336,7 +336,8 @@ export class World {
             {
               isGrounded: payload.isGrounded,
               isJumping: payload.isJumping,
-              jumpCount: payload.jumpCount
+              jumpCount: payload.jumpCount,
+              glideState: payload.glideState
             }
           )
         },

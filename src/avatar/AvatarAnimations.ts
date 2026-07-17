@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import {
   AVATAR_EMOTE_DOUBLE_JUMP,
+  AVATAR_EMOTE_GLIDE,
   AVATAR_EMOTE_IDLE,
   AVATAR_EMOTE_JUMP,
   AVATAR_EMOTE_RUN,
@@ -39,7 +40,7 @@ export type AvatarLocomotionState = {
   /** One frame — air-jump impulse applied (procedural twirl + spin puff). */
   doubleJumpTriggered?: boolean
   falling: boolean
-  /** Hold-Space glider open (Explorer) — jump pose held while airborne. */
+  /** Hold-Space glider open (Explorer) — Glide_Avatar arms-hold pose. */
   gliding?: boolean
   /** Planar move axis in avatar-local space (+X right, -Z forward) for VRM directional locomotion. */
   moveAxisX?: number
@@ -62,6 +63,8 @@ export class AvatarAnimations {
   private runAction: THREE.AnimationAction | null = null
   private jumpAction: THREE.AnimationAction | null = null
   private doubleJumpAction: THREE.AnimationAction | null = null
+  /** Glide_Avatar — arms on glider handles (from glide.glb). */
+  private glideAction: THREE.AnimationAction | null = null
   /** True when double_jump.glb (or Catalyst clip) loaded — not jump.glb fallback. */
   private hasDedicatedDoubleJumpClip = false
   private profileAction: THREE.AnimationAction | null = null
@@ -74,6 +77,7 @@ export class AvatarAnimations {
   private walkBlend = 0
   private runBlend = 0
   private jumpBlend = 0
+  private glideBlend = 0
   private bindGeneration = 0
 
   setVfxScene(scene: THREE.Scene | null): void {
@@ -148,13 +152,14 @@ export class AvatarAnimations {
       return null
     }
 
-    const [idleClip, walkClip, runClip, jumpClip, doubleJumpClip] = await Promise.all([
+    const [idleClip, walkClip, runClip, jumpClip, doubleJumpClip, glideClip] = await Promise.all([
       loadSlug('idle'),
       loadSlug('walk'),
       loadSlug('run'),
       loadSlug('jump'),
       // Dedicated clip only — missing file → procedural twirl (Explorer hard-coded keyframe).
-      loadSlug('double_jump', { allowJumpFallback: false })
+      loadSlug('double_jump', { allowJumpFallback: false }),
+      loadGlideAvatarClip()
     ])
 
     if (generation !== this.bindGeneration || !this.mixer) return
@@ -171,6 +176,10 @@ export class AvatarAnimations {
     this.doubleJumpAction = doubleJumpClip
       ? this.playOneShot(doubleJumpClip, animationRoot, bodyShape)
       : null
+    // Hold pose (short clip) — clamp last frame while gliding.
+    this.glideAction = glideClip
+      ? this.playHold(glideClip, animationRoot, bodyShape)
+      : null
 
     if (!this.walkAction || !this.runAction || !this.jumpAction) {
       console.warn('[avatar] locomotion bind:', {
@@ -179,8 +188,11 @@ export class AvatarAnimations {
         jump: !!this.jumpAction,
         doubleJumpClip: this.hasDedicatedDoubleJumpClip,
         doubleJumpProcedural: !this.hasDedicatedDoubleJumpClip,
+        glide: !!this.glideAction,
         idle: !!this.idleAction
       })
+    } else if (!this.glideAction) {
+      console.warn('[avatar] Glide_Avatar missing — glider uses frozen jump pose')
     }
 
     this.mixer?.update(0)
@@ -316,7 +328,7 @@ export class AvatarAnimations {
   update(delta: number, state: AvatarLocomotionState): void {
     if (!this.mixer) return
 
-    if (state.doubleJumpTriggered) {
+    if (state.doubleJumpTriggered && !state.gliding) {
       this.triggerDoubleJump()
     }
 
@@ -328,17 +340,18 @@ export class AvatarAnimations {
       return
     }
 
-    // Landed mid-spin — finish yaw cleanly.
-    if (state.grounded && this.twirl.active) {
+    // Landed or gliding — stop double-jump oneshot / twirl so it cannot loop in air.
+    if ((state.grounded || state.gliding) && (this.twirl.active || this.doubleJumpPlaying)) {
       this.twirl.reset()
       this.doubleJumpPlaying = false
+      this.doubleJumpAction?.stop()
     }
 
     const twirling = this.twirl.update(delta)
     if (twirling === false && this.doubleJumpPlaying && !this.hasDedicatedDoubleJumpClip) {
       this.doubleJumpPlaying = false
     }
-    if (this.doubleJumpPlaying || twirling) {
+    if (!state.gliding && (this.doubleJumpPlaying || twirling)) {
       this.idleAction?.setEffectiveWeight(0)
       this.walkAction?.setEffectiveWeight(0)
       this.runAction?.setEffectiveWeight(0)
@@ -358,20 +371,29 @@ export class AvatarAnimations {
     let targetWalk = 0
     let targetRun = 0
     let targetJump = 0
+    let targetGlide = 0
 
     const vy = state.verticalVelocity ?? 0
+    // Glide owns the upper body — never treat WASD glide as grounded locomotion.
     const locomotionGrounded =
-      state.grounded ||
-      state.nearGround === true ||
-      (state.horizontalSpeed > 0.12 &&
-        !state.jumping &&
-        !state.doubleJumping &&
-        !state.falling &&
-        vy > -3)
+      !state.gliding &&
+      (state.grounded ||
+        state.nearGround === true ||
+        (state.horizontalSpeed > 0.12 &&
+          !state.jumping &&
+          !state.doubleJumping &&
+          !state.falling &&
+          vy > -3))
 
-    if (!locomotionGrounded) {
-      // Glider / air: hold jump pose (Explorer glider uses aerial pose while Space held).
-      if (state.gliding || state.jumping || state.falling || state.doubleJumping) {
+    if (state.gliding) {
+      // Priority: full glide pose. Walk/run must not keep arm tracks (drops arms on WASD).
+      if (this.glideAction) {
+        targetGlide = 1
+      } else {
+        targetJump = 1
+      }
+    } else if (!locomotionGrounded) {
+      if (state.jumping || state.falling || state.doubleJumping) {
         targetJump = 1
       }
     } else if (state.horizontalSpeed > 0.05) {
@@ -386,24 +408,44 @@ export class AvatarAnimations {
       }
     }
 
-    this.walkBlend += (targetWalk - this.walkBlend) * k
-    this.runBlend += (targetRun - this.runBlend) * k
-    this.jumpBlend += (targetJump - this.jumpBlend) * k
+    if (state.gliding) {
+      // Snap loco blends off so residual walk/run weight cannot pull arms down.
+      this.walkBlend = 0
+      this.runBlend = 0
+      this.jumpBlend = targetJump
+      this.glideBlend += (targetGlide - this.glideBlend) * Math.min(1, k * 2)
+    } else {
+      this.walkBlend += (targetWalk - this.walkBlend) * k
+      this.runBlend += (targetRun - this.runBlend) * k
+      this.jumpBlend += (targetJump - this.jumpBlend) * k
+      this.glideBlend += (targetGlide - this.glideBlend) * k
+    }
 
+    const airBlend = Math.max(this.jumpBlend, this.glideBlend)
     const locomotion = Math.max(this.walkBlend, this.runBlend)
-    const idleWeight = Math.max(0, 1 - locomotion - this.jumpBlend)
+    const idleWeight = Math.max(0, 1 - locomotion - airBlend)
 
-    this.idleAction?.setEffectiveWeight(idleWeight)
-    this.walkAction?.setEffectiveWeight(this.walkBlend)
-    this.runAction?.setEffectiveWeight(this.runBlend)
-    this.jumpAction?.setEffectiveWeight(this.jumpBlend)
-    this.doubleJumpAction?.setEffectiveWeight(0)
+    if (state.gliding && this.glideAction) {
+      this.idleAction?.setEffectiveWeight(0)
+      this.walkAction?.setEffectiveWeight(0)
+      this.runAction?.setEffectiveWeight(0)
+      this.jumpAction?.setEffectiveWeight(0)
+      this.glideAction.setEffectiveWeight(1)
+      this.doubleJumpAction?.setEffectiveWeight(0)
+    } else {
+      this.idleAction?.setEffectiveWeight(idleWeight)
+      this.walkAction?.setEffectiveWeight(this.walkBlend)
+      this.runAction?.setEffectiveWeight(this.runBlend)
+      this.jumpAction?.setEffectiveWeight(this.jumpBlend)
+      this.glideAction?.setEffectiveWeight(this.glideBlend)
+      this.doubleJumpAction?.setEffectiveWeight(0)
+    }
 
-    if (this.walkAction && state.locomotionMode === 'walk') {
+    if (this.walkAction && state.locomotionMode === 'walk' && !state.gliding) {
       const ref = Math.max(DCL_LOCOMOTION_DEFAULTS.walkSpeed, 0.001)
       this.walkAction.setEffectiveTimeScale(Math.max(0.35, state.horizontalSpeed / ref))
     }
-    if (this.runAction) {
+    if (this.runAction && !state.gliding) {
       if (state.locomotionMode === 'run') {
         const ref = Math.max(DCL_LOCOMOTION_DEFAULTS.runSpeed, 0.001)
         // 1.5× base run cadence so foot cycles match faster perceived travel.
@@ -416,8 +458,23 @@ export class AvatarAnimations {
         this.runAction.setEffectiveTimeScale(Math.max(0.78, (state.horizontalSpeed / ref) * 0.88))
       }
     }
-    if (this.jumpAction && state.jumping) {
+    if (this.jumpAction) {
+      this.jumpAction.paused = false
       this.jumpAction.setEffectiveTimeScale(1)
+    }
+    if (this.glideAction && state.gliding) {
+      if (!this.glideAction.isRunning()) {
+        this.glideAction.reset()
+        this.glideAction.play()
+      }
+      // Static hold — freeze at end of clip.
+      const dur = this.glideAction.getClip().duration
+      if (this.glideAction.time >= dur - 1e-4) {
+        this.glideAction.time = dur
+        this.glideAction.paused = true
+      }
+    } else if (this.glideAction) {
+      this.glideAction.paused = false
     }
 
     this.locomotionVfx?.update(delta, {
@@ -448,12 +505,14 @@ export class AvatarAnimations {
     this.runAction = null
     this.jumpAction = null
     this.doubleJumpAction = null
+    this.glideAction = null
     this.hasDedicatedDoubleJumpClip = false
     this.activeProfileEmoteKey = null
     this.doubleJumpPlaying = false
     this.walkBlend = 0
     this.runBlend = 0
     this.jumpBlend = 0
+    this.glideBlend = 0
   }
 
   private onMixerFinished = (event: THREE.Event & { action: THREE.AnimationAction }): void => {
@@ -514,6 +573,7 @@ export class AvatarAnimations {
     this.runAction?.setEffectiveWeight(0)
     this.jumpAction?.setEffectiveWeight(0)
     this.doubleJumpAction?.setEffectiveWeight(0)
+    this.glideAction?.setEffectiveWeight(0)
     this.profileAction?.setEffectiveWeight(hasAvatarTrack ? 1 : 0)
     this.propAction?.setEffectiveWeight(hasPropTrack ? 1 : 0)
   }
@@ -524,11 +584,14 @@ export class AvatarAnimations {
     this.runAction?.setEffectiveWeight(0)
     this.jumpAction?.setEffectiveWeight(0)
     this.doubleJumpAction?.setEffectiveWeight(0)
+    this.glideAction?.setEffectiveWeight(0)
+    this.glideBlend = 0
     this.idleAction?.play()
     this.walkAction?.play()
     this.runAction?.play()
     this.jumpAction?.play()
     this.doubleJumpAction?.play()
+    this.glideAction?.play()
     this.mixer?.update(0)
   }
 
@@ -562,5 +625,54 @@ export class AvatarAnimations {
     action.setEffectiveWeight(0)
     action.setEffectiveTimeScale(1.35)
     return action
+  }
+
+  /**
+   * Glide_Avatar hold pose — upper-body rotations only, frozen last frame.
+   * Full clip jitters: Hips.rotation sways ~180° and positions are export-scale garbage.
+   */
+  private playHold(
+    clip: THREE.AnimationClip | undefined,
+    avatarRoot: THREE.Object3D,
+    bodyShape: BodyShape
+  ): THREE.AnimationAction | null {
+    const remapped = getRemappedLocomotionClip(clip, avatarRoot, bodyShape)
+    if (!remapped || !this.mixer) return null
+
+    const keepBone = /Shoulder|Arm|ForeArm|Hand|Spine|Neck|Head/i
+    const dropBone = /Hips|UpLeg|Leg|Foot|Toe/i
+    const tracks: THREE.KeyframeTrack[] = []
+    for (const track of remapped.tracks) {
+      if (!/\.quaternion$/.test(track.name)) continue
+      if (dropBone.test(track.name) || !keepBone.test(track.name)) continue
+      // Collapse to a single static key (last frame) — no interpolation sway.
+      const v = track.values
+      const stride = track.getValueSize()
+      if (v.length < stride) continue
+      const last = Array.from(v.slice(v.length - stride))
+      tracks.push(new THREE.QuaternionKeyframeTrack(track.name, [0], last))
+    }
+    if (tracks.length === 0) return null
+
+    const hold = new THREE.AnimationClip(`${remapped.name}_hold`, 0.01, tracks)
+    const action = this.mixer.clipAction(hold)
+    action.setLoop(THREE.LoopOnce, 1)
+    action.clampWhenFinished = true
+    action.enabled = true
+    action.setEffectiveWeight(0)
+    action.play()
+    return action
+  }
+}
+
+/** Load `Glide_Avatar` from bundled glide.glb (Explorer arms-on-handles body). */
+async function loadGlideAvatarClip(): Promise<THREE.AnimationClip | null> {
+  try {
+    const loader = new GLTFLoader()
+    const gltf = await loader.loadAsync(AVATAR_EMOTE_GLIDE)
+    const named = gltf.animations.find((c) => /glide[_\s-]?avatar/i.test(c.name))
+    return named ?? gltf.animations[0] ?? null
+  } catch {
+    return null
   }
 }

@@ -209,7 +209,7 @@ export const PERFORMANCE_INTEGRATION: IntegrationEntry[] = [
     status: 'render',
     category: 'performance',
     notes:
-      'Force/Impulse on PlayerEntity; hold-Space glider; 1.5× force while gliding; AvatarLocomotionSettings gliding* fields'
+      'Force/Impulse on PE; glider open/close + remote RFC4 glideState; 1.5× force while gliding'
   },
   { id: 'perf:collider-prewarm', name: 'Collision prewarm gate', status: 'render', category: 'performance', notes: 'Colliders ready before world.start()' },
   {

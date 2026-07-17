@@ -4,6 +4,7 @@ import { composeAvatarFromProfile } from './AvatarComposer'
 import { disposeWearableInstance } from './loadWearable'
 import { AVATAR_YAW_OFFSET, PEER_URL, PROFILE_STORAGE_KEY } from './constants'
 import { applyAvatarPivotOffset } from './feetAlign'
+import { GliderProp } from './GliderProp'
 import {
   avatarShapeDisplayName,
   defaultProfileIdentity,
@@ -51,6 +52,8 @@ export class LocalAvatar {
   private vfxScene: THREE.Scene | null = null
   private activeEmoteUrn: string | null = null
   private emotePlaySeq = 0
+  /** Explorer GliderProp.glb — show while hold-Space gliding. */
+  private readonly glider = new GliderProp()
 
   constructor(parent: THREE.Object3D) {
     this.pivot.name = 'avatar-pivot'
@@ -124,6 +127,7 @@ export class LocalAvatar {
           }
 
           updateNameTagAnchor(this.nameTagAnchor, this.model)
+          this.ensureGlider()
           return this.identity
         } catch (err) {
           console.warn('[avatar] custom avatar load failed — falling back to DCL compose', err)
@@ -157,6 +161,7 @@ export class LocalAvatar {
     }
 
     updateNameTagAnchor(this.nameTagAnchor, this.model)
+    this.ensureGlider()
     return this.identity
   }
 
@@ -186,6 +191,8 @@ export class LocalAvatar {
 
   setBodyVisible(visible: boolean): void {
     if (this.model) this.model.visible = visible
+    // Glider is pivot child (not under model) — hide with body (FPV / modifier hide).
+    this.glider.setBodyVisible(visible)
   }
 
   async playEmote(emoteId: string, options: PlayEmoteOptions = {}): Promise<ResolvedProfileEmote | null> {
@@ -296,6 +303,8 @@ export class LocalAvatar {
     } else {
       this.animations?.update(delta, state)
     }
+    this.glider.setOpen(!!state.gliding)
+    this.glider.update(delta)
     updateNameTagAnchor(this.nameTagAnchor, this.model)
   }
 
@@ -304,7 +313,13 @@ export class LocalAvatar {
     this.animations?.setVfxScene(scene)
   }
 
+  /** RFC4 Movement.glideState for multiplayer (open/close phase). */
+  getGlideStateWire(): number {
+    return this.glider.getGlideStateWire()
+  }
+
   dispose(): void {
+    this.glider.dispose()
     this.disposeModel()
     this.nameTagAnchor.removeFromParent()
     this.pivot.removeFromParent()
@@ -312,6 +327,7 @@ export class LocalAvatar {
 
   private disposeModel(): void {
     this.pivot.position.set(0, 0, 0)
+    this.glider.detach()
     this.animations?.dispose()
     this.animations = null
     if (this.vrmAvatar) {
@@ -339,6 +355,11 @@ export class LocalAvatar {
     this.pivot.remove(this.model)
     this.model = null
     this.renderMode = 'dcl'
+  }
+
+  /** Load Explorer glider mesh onto the current avatar pivot (after model attach). */
+  private ensureGlider(): void {
+    void this.glider.attach(this.pivot)
   }
 }
 

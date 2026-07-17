@@ -137,7 +137,7 @@ export class PlayerSystem {
   private airJumpPending = false
   private airJumpDelayLeft = 0
   private doubleJumpTriggered = false
-  /** Explorer glider — hold Space while airborne (vy≤0), leave on land or release. */
+  /** Explorer glider — hold Space while airborne after air jumps are spent. */
   private gliding = false
   /** Last PhysicsCombinedImpulse.eventId applied (once per CRDT event). */
   private lastImpulseEventId = 0
@@ -592,18 +592,30 @@ export class PlayerSystem {
     return Math.atan2(east, north)
   }
 
-  /** RFC4 Movement jump / grounded flags for remote locomotion parity. */
+  /** RFC4 Movement jump / grounded / glide flags for remote locomotion parity. */
   getLocomotionWireState(): {
     isGrounded: boolean
     isJumping: boolean
     jumpCount: number
     isFalling: boolean
+    glideState: number
   } {
+    // Prefer visual prop phase (open/close); fall back to physics gliding bit.
+    const glideState =
+      this.avatar?.getGlideStateWire() ??
+      (this.gliding && !this.grounded ? 2 /* GLIDING */ : 0)
     return {
       isGrounded: this.grounded,
       isJumping: this.jumping || this.jumped || this.airJumpPending,
       jumpCount: this.jumpCount,
-      isFalling: !this.grounded && !this.jumping && !this.jumped && !this.airJumped && _velocity.y < -1.5
+      isFalling:
+        !this.grounded &&
+        !this.gliding &&
+        !this.jumping &&
+        !this.jumped &&
+        !this.airJumped &&
+        _velocity.y < -1.5,
+      glideState
     }
   }
 
@@ -857,9 +869,10 @@ export class PlayerSystem {
 
     this.groundNormal.copy(UP)
 
-    const onGround = this.grounded || this.groundCoyote > 0
-
-    if (onGround) {
+    // Coyote counts as “can jump from floor” so first Space always registers.
+    // Only true grounded resets air/glide — coyote must not cancel mid-glide.
+    const canGroundJump = this.grounded || this.groundCoyote > 0
+    if (this.grounded) {
       this.airJumped = false
       this.airJumpPending = false
       this.airJumpDelayLeft = 0
@@ -967,7 +980,9 @@ export class PlayerSystem {
       this.jumping = false
     }
 
-    // Hold Space while airborne after apex → open glider (Explorer).
+    // Explorer: jump → air jump (twirl) → hold Space while falling to glide
+    // (glide only after air jumps are spent — JumpCount > MaxAirJumpCount).
+    const airJumpsExhausted = this.airJumped || !doubleJumpLocomotionAllowed
     if (
       this.grounded ||
       !this.input?.keys.space ||
@@ -975,7 +990,12 @@ export class PlayerSystem {
       this.airJumpPending
     ) {
       if (this.grounded || !this.input?.keys.space) this.gliding = false
-    } else if (!this.grounded && this.input.keys.space && _velocity.y <= 0.35) {
+    } else if (
+      !this.grounded &&
+      this.input.keys.space &&
+      _velocity.y <= 0.35 &&
+      airJumpsExhausted
+    ) {
       this.gliding = true
     }
 
@@ -1009,19 +1029,21 @@ export class PlayerSystem {
     // Scene Physics.applyImpulseToPlayer / applyForceToPlayer (PlayerEntity CRDT summary).
     this.applyScenePhysicsCombined(delta, this.gliding)
 
-    if (onGround && !this.jumping && this.input.spacePressed && jumpLocomotionAllowed) {
+    // Ground jump — floor or coyote (so first Space is never dropped).
+    if (canGroundJump && !this.jumping && this.input.spacePressed && jumpLocomotionAllowed) {
       _velocity.y = Math.sqrt(2 * GRAVITY * jumpHeightForMode(this.locomotionMode, locomotion))
       this.jumped = true
       this.jumpCount = 1
       this.gliding = false
     } else if (
-      !this.grounded &&
+      !canGroundJump &&
       !this.airJumped &&
       !this.airJumpPending &&
       this.input.spacePressed &&
       doubleJumpLocomotionAllowed &&
       !this.gliding
     ) {
+      // Second Space in air → double-jump twirl (before glide).
       this.airJumpPending = true
       this.airJumpDelayLeft = AIR_JUMP_DELAY
     }

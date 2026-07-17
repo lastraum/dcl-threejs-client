@@ -238,6 +238,19 @@ export class VrmLocomotionAnimations {
 
     this.jumpAction?.setEffectiveWeight(this.jumpBlend)
     this.fallAction?.setEffectiveWeight(this.fallBlend)
+    // Glide: freeze aerial pose so looped jump/fall clips do not cycle mid-glide.
+    if (this.jumpAction) {
+      this.jumpAction.paused = !!state.gliding && this.jumpBlend > 0.5
+    }
+    if (this.fallAction) {
+      if (state.gliding && this.fallBlend > 0.5) {
+        this.fallAction.paused = true
+        const dur = this.fallAction.getClip().duration
+        if (dur > 0) this.fallAction.time = Math.min(dur * 0.35, dur)
+      } else {
+        this.fallAction.paused = false
+      }
+    }
 
     this.mixer.update(delta)
   }

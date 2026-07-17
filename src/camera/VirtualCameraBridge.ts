@@ -127,16 +127,27 @@ export class VirtualCameraBridge {
     const bindChanged = this.activeEntity !== virtualEntity
 
     if (bindChanged) {
-      // Long cinematic transitions from freecam@spawn → select stage leave the lens in empty space
-      // for seconds; snap when the jump is large (stage cut), honor short transitions otherwise.
+      // Honor VirtualCamera.defaultTransition (time/speed) — Explorer always eases into the shot.
+      // Video-screen focus (Fixed View Camera, time:1) was snapping when freecam was >12m away.
+      // Only snap when no transition is authored (duration 0) or duration is insanely long AND
+      // the cut is huge (character-select stage cuts that parked the lens in empty space for seconds).
       const jumpM = camera.position.distanceTo(target.position)
-      if (jumpM > 12) {
+      const spec = this.ecs.VirtualCamera.get(virtualEntity) as PBVirtualCamera
+      const duration = resolveTransitionDuration(
+        spec.defaultTransition,
+        camera.position,
+        target.position
+      )
+      const epicStageCut = duration > 2.5 && jumpM > 24
+      if (duration <= 0 || epicStageCut) {
         this.transition = null
         camera.position.copy(target.position)
         camera.quaternion.copy(target.rotation)
-        console.info(
-          `[vc-lens] bind snap vc=e${virtualEntity} jump=${jumpM.toFixed(1)}m → lens=(${target.position.x.toFixed(1)},${target.position.y.toFixed(1)},${target.position.z.toFixed(1)})`
-        )
+        if (epicStageCut) {
+          console.info(
+            `[vc-lens] bind snap vc=e${virtualEntity} jump=${jumpM.toFixed(1)}m duration=${duration.toFixed(2)}s → lens=(${target.position.x.toFixed(1)},${target.position.y.toFixed(1)},${target.position.z.toFixed(1)})`
+          )
+        }
       } else {
         this.beginTransition(camera, virtualEntity, target)
         if (!this.transition) {
@@ -156,12 +167,14 @@ export class VirtualCameraBridge {
       this.transition.toPos.copy(target.position)
       this.transition.toQuat.copy(target.rotation)
       this.transition.elapsed += delta
-      const t = Math.min(1, this.transition.elapsed / Math.max(this.transition.duration, 1e-6))
+      const u = Math.min(1, this.transition.elapsed / Math.max(this.transition.duration, 1e-6))
+      // Smoothstep — Explorer-style ease in/out (proto has no easing field yet).
+      const t = u * u * (3 - 2 * u)
       _lerpPos.copy(this.transition.fromPos).lerp(this.transition.toPos, t)
       _lerpQuat.copy(this.transition.fromQuat).slerp(this.transition.toQuat, t)
       camera.position.copy(_lerpPos)
       camera.quaternion.copy(_lerpQuat)
-      if (t >= 1) this.transition = null
+      if (u >= 1) this.transition = null
     } else {
       // Locked/world-flat shots: hold last pose on huge teleports (stale CRDT during FPS hitch).
       // PE-follow keeps parent≠Root and may legitimately jump on movePlayerTo — do not hold those.
@@ -453,6 +466,11 @@ export class VirtualCameraBridge {
       toQuat: target.rotation.clone(),
       duration,
       elapsed: 0
+    }
+    if (vcDebugVerbose()) {
+      console.info(
+        `[vc-lens] bind transition vc=e${virtualEntity} duration=${duration.toFixed(2)}s jump=${camera.position.distanceTo(target.position).toFixed(1)}m`
+      )
     }
   }
 }

@@ -44,9 +44,14 @@ export type SceneWorkerBoot = {
   > & {
     worldName?: string
     scriptUrl: string
+    /**
+     * UTF-8 script bytes — preferred for multi-MB worlds (transferable; zero-copy to worker).
+     * Prefer over `scriptBlobUrl` / `scriptCode` so the worker does not re-fetch or re-clone.
+     */
+    scriptBytes?: Uint8Array
     /** Blob URL for main-thread-fetched script — avoids cloning multi-MB source in postMessage. */
     scriptBlobUrl?: string
-    /** Inline script (fallback only — prefer `scriptBlobUrl`). */
+    /** Inline script (fallback only — prefer `scriptBytes` / `scriptBlobUrl`). */
     scriptCode?: string
     /** Renderer CRDT snapshot for sync bundle eval (avoids get-state deadlock in worker). */
     bootCrdtSnapshot?: { hasEntities: boolean; data: Uint8Array[] }
@@ -89,6 +94,13 @@ export type SceneWorkerReady = {
 }
 /** Bundle eval finished — main may start asset hydration while onStart runs. */
 export type SceneWorkerEvalDone = { type: 'eval-done' }
+/** Heartbeat while patching/compiling multi-MB bundles — main extends boot timeout. */
+export type SceneWorkerCompileProgress = {
+  type: 'compile-progress'
+  phase: string
+  elapsedMs: number
+  scriptKb?: number
+}
 export type SceneWorkerError = { type: 'error'; message: string }
 export type SceneWorkerLog = { type: 'log'; message: string }
 
@@ -237,6 +249,7 @@ export type PlayerFrameBoundVc = {
 export type SceneWorkerOutbound =
   | SceneWorkerReady
   | SceneWorkerEvalDone
+  | SceneWorkerCompileProgress
   | SceneWorkerError
   | SceneWorkerLog
   | SceneWorkerCrdtRequest

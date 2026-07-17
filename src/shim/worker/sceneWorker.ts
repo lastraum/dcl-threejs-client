@@ -2935,7 +2935,13 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
 
     let code: string
     const scriptSource = msg.scene.scriptBlobUrl ?? msg.scene.scriptUrl
-    if (msg.scene.scriptCode) {
+    if (msg.scene.scriptBytes && msg.scene.scriptBytes.byteLength > 0) {
+      code = new TextDecoder('utf-8').decode(msg.scene.scriptBytes)
+      workerLog(
+        'log',
+        `[sceneWorker] using transferred script bytes (${(code.length / 1024).toFixed(0)} KB)`
+      )
+    } else if (msg.scene.scriptCode) {
       code = msg.scene.scriptCode
       workerLog(
         'log',
@@ -2951,6 +2957,20 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       code = await res.text()
       workerLog('log', `[sceneWorker] script fetched (${(code.length / 1024).toFixed(0)} KB)`)
     }
+
+    const scriptKb = Math.round(code.length / 1024)
+    const bootPhaseStarted = performance.now()
+    const reportCompileProgress = (phase: string): void => {
+      const elapsedMs = performance.now() - bootPhaseStarted
+      ctx.postMessage({
+        type: 'compile-progress',
+        phase,
+        elapsedMs,
+        scriptKb
+      } satisfies SceneWorkerOutbound)
+      workerLog('log', `[sceneWorker] ${phase} (${(elapsedMs / 1000).toFixed(1)}s, ${scriptKb} KB)`)
+    }
+    reportCompileProgress('script ready — starting patch')
 
     engineApiEvents = createEngineApiEventState({
       onSubscribe: (eventId) => ctx.postMessage({ type: 'engine-api-subscribe', eventId } satisfies SceneWorkerOutbound),
@@ -3000,23 +3020,28 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     const evalStarted = performance.now()
     const evalKb = (code.length / 1024).toFixed(0)
     const patchStarted = performance.now()
-    workerLog('log', `[sceneWorker] patching scene bundle (${evalKb} KB)…`)
+    reportCompileProgress(`patching scene bundle (${evalKb} KB)`)
     const logPatchStep = (step: string, ms: number) => {
       workerLog('log', `[sceneWorker] patch — ${step} ${ms.toFixed(0)}ms`)
+      // Heartbeat on long multi-MB scans so main does not hit the boot timeout.
+      if (ms > 2_000 || scriptKb > 4_000) {
+        reportCompileProgress(`patch — ${step}`)
+      }
     }
+    // One primary patch pass — do not pre-build checker strip (doubles work on 10MB+ worlds).
     const compositePatched = patchSceneBundle(code, logPatchStep)
-    const checkerPatched = patchSceneBundleWithCheckerStrip(code, logPatchStep)
     workerLog(
       'log',
       `[sceneWorker] bundle patch ready (${((performance.now() - patchStarted) / 1000).toFixed(2)}s)`
     )
-    workerLog('log', `[sceneWorker] compiling scene bundle…`)
+    reportCompileProgress('compiling scene bundle (new Function)')
     sceneEvalInProgress = true
     let exports: ReturnType<typeof evaluateSceneBundle>
     const compileBundle = (source: string, label: string): ReturnType<typeof evaluateSceneBundle> | null => {
       try {
+        reportCompileProgress(label)
         const result = evaluateSceneBundle(source, requireMap)
-        workerLog('log', `[sceneWorker] ${label}`)
+        workerLog('log', `[sceneWorker] ${label} — ok`)
         return result
       } catch (err) {
         workerLog(
@@ -3027,10 +3052,17 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       }
     }
     try {
-      const compiled =
-        compileBundle(compositePatched, 'compiled capture-patched bundle') ??
-        compileBundle(code, 'compiled original bundle') ??
-        compileBundle(checkerPatched, 'compiled checker-patched bundle')
+      // Prefer patched; only fall back on failure (avoids 2–3× full compile of multi-MB deadsurg-scale bundles).
+      let compiled = compileBundle(compositePatched, 'compiled capture-patched bundle')
+      if (!compiled) {
+        reportCompileProgress('compile fallback — original bundle')
+        compiled = compileBundle(code, 'compiled original bundle')
+      }
+      if (!compiled) {
+        reportCompileProgress('compile fallback — checker-stripped patch')
+        const checkerPatched = patchSceneBundleWithCheckerStrip(code, logPatchStep)
+        compiled = compileBundle(checkerPatched, 'compiled checker-patched bundle')
+      }
       if (!compiled) {
         throw new Error('Scene bundle compile failed (original and patched sources are invalid)')
       }
@@ -3038,6 +3070,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     } finally {
       sceneEvalInProgress = false
     }
+    reportCompileProgress('bundle evaluated — posting eval-done')
     const timings = (exports as { __evalTimings?: { patchMs: number; compileMs: number; executeMs: number } })
       .__evalTimings
     workerLog(

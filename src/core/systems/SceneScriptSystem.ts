@@ -1229,27 +1229,37 @@ export class SceneScriptSystem {
     const scriptStarted = performance.now()
     this.bootProgressReporter?.('Fetching scene script…')
     console.info('[scene] loading scene script and boot files…')
-    const [, preloadedFiles, bootSnapshot] = await Promise.all([
+    const [fetchedScript, preloadedFiles, bootSnapshot] = await Promise.all([
       fetch(scriptUrl).then(async (res) => {
         if (!res.ok) throw new Error(`Scene script fetch failed (${res.status}): ${scriptUrl}`)
-        const code = await res.text()
-        mirrorSceneBundle({
-          entityId: scene.entityId ?? scene.commsPointer,
-          commsPointer: scene.commsPointer,
-          title: scene.title,
-          hash: mainFile.hash,
-          scriptUrl,
-          code
-        })
+        const buf = new Uint8Array(await res.arrayBuffer())
+        const codeForMirror =
+          typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8').decode(buf) : ''
+        if (codeForMirror) {
+          mirrorSceneBundle({
+            entityId: scene.entityId ?? scene.commsPointer,
+            commsPointer: scene.commsPointer,
+            title: scene.title,
+            hash: mainFile.hash,
+            scriptUrl,
+            code: codeForMirror
+          })
+        }
+        // Keep blob as fallback for older worker paths / hard refresh debugging.
         this.revokeScriptBlobUrl()
-        this.scriptBlobUrl = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }))
-        console.info(
-          `[scene] scene script ready (${(code.length / 1024).toFixed(0)} KB, ${((performance.now() - scriptStarted) / 1000).toFixed(1)}s)`
+        this.scriptBlobUrl = URL.createObjectURL(
+          new Blob([buf as BlobPart], { type: 'application/javascript' })
         )
+        const scriptCharLength = codeForMirror.length || buf.byteLength
+        console.info(
+          `[scene] scene script ready (${(scriptCharLength / 1024).toFixed(0)} KB, ${((performance.now() - scriptStarted) / 1000).toFixed(1)}s)`
+        )
+        return { buf, scriptCharLength }
       }),
       this.preloadSceneBootFiles(scene),
       this.seedProjectionFromMainCrdt(scene).then(() => this.buildBootCrdtSnapshot())
     ])
+    const scriptCharLength = fetchedScript.scriptCharLength
 
     this.worker = new Worker(new URL('../../shim/worker/sceneWorkerEntry.ts', import.meta.url), {
       type: 'module'
@@ -1266,6 +1276,18 @@ export class SceneScriptSystem {
         transfer.push(buffer as ArrayBuffer)
       }
       preloadedPayload[key] = { hash: file.hash, content }
+    }
+    // Prefer transferable UTF-8 bytes — multi-MB worlds (Dead Surge ~13MB) must not re-fetch via blob.
+    let scriptBytesPayload: Uint8Array | undefined
+    if (fetchedScript.buf.byteLength > 0) {
+      // Copy into a standalone buffer so transfer does not detach shared views.
+      const payload = fetchedScript.buf.slice()
+      scriptBytesPayload = payload
+      const ab = payload.buffer
+      if (!transferredBuffers.has(ab)) {
+        transferredBuffers.add(ab)
+        transfer.push(ab as ArrayBuffer)
+      }
     }
     const bootCrdtData = bootSnapshot.data.map((chunk) => chunk.slice())
 
@@ -1288,6 +1310,7 @@ export class SceneScriptSystem {
         mainEntry: scene.mainEntry,
         worldName: scene.source.kind === 'world' ? scene.source.worldName : undefined,
         scriptUrl,
+        scriptBytes: scriptBytesPayload,
         scriptBlobUrl: this.scriptBlobUrl ?? undefined,
         bootCrdtSnapshot: {
           hasEntities: bootSnapshot.hasEntities,
@@ -1299,31 +1322,62 @@ export class SceneScriptSystem {
       }
     }
 
-    const BOOT_TIMEOUT_MS = 120_000
+    // Large worlds (10MB+) need minutes for patch + new Function; scale with size.
+    // Floor 3 min, ~25ms/KB of source, cap 10 min.
+    const sizeKb = Math.max(1, scriptCharLength / 1024)
+    const BOOT_TIMEOUT_MS = Math.min(600_000, Math.max(180_000, Math.ceil(sizeKb * 25) + 60_000))
+    console.info(
+      `[scene] worker boot timeout budget ${(BOOT_TIMEOUT_MS / 1000).toFixed(0)}s for ${sizeKb.toFixed(0)} KB script`
+    )
     this.bootCrdtSendSerial = Promise.resolve()
     this.bootPhaseActive = true
     await new Promise<void>((resolve, reject) => {
       if (!this.worker) return reject(new Error('Worker missing'))
 
       let settled = false
+      const compileStartedAt = performance.now()
+      let bootDeadline = compileStartedAt + BOOT_TIMEOUT_MS
+      let bootTimer = 0
+
+      const armBootTimer = (): void => {
+        if (bootTimer) clearTimeout(bootTimer)
+        const remaining = Math.max(1_000, bootDeadline - performance.now())
+        bootTimer = window.setTimeout(() => {
+          if (settled) return
+          if (performance.now() < bootDeadline) {
+            armBootTimer()
+            return
+          }
+          finish(() =>
+            reject(
+              new Error(
+                `Scene worker bundle compile timed out (${(BOOT_TIMEOUT_MS / 1000).toFixed(0)}s budget) — check console for [sceneWorker] compile / onStart logs; hard-refresh if the worker bundle is stale`
+              )
+            )
+          )
+        }, remaining)
+      }
+
       const finish = (fn: () => void) => {
         if (settled) return
         settled = true
-        clearTimeout(bootTimer)
+        if (bootTimer) clearTimeout(bootTimer)
         this.clearCompileProgressTimer()
         this.revokeScriptBlobUrl()
         fn()
       }
 
-      const bootTimer = window.setTimeout(() => {
-        finish(() =>
-          reject(
-            new Error(
-              'Scene worker bundle compile timed out (120s) — check console for [sceneWorker] compile / onStart logs; hard-refresh if the worker bundle is stale'
-            )
-          )
-        )
-      }, BOOT_TIMEOUT_MS)
+      const noteCompileProgress = (phase: string, elapsedMs?: number, scriptKb?: number): void => {
+        // Extend deadline while the worker is actively patching/compiling.
+        bootDeadline = Math.max(bootDeadline, performance.now() + 90_000)
+        armBootTimer()
+        const sec = ((elapsedMs ?? performance.now() - compileStartedAt) / 1000).toFixed(0)
+        const size = scriptKb != null ? ` · ${scriptKb} KB` : ''
+        this.bootProgressReporter?.(`Compiling scene… ${phase} (${sec}s${size})`)
+        console.info(`[scene] compile-progress — ${phase} @ ${sec}s${size}`)
+      }
+
+      armBootTimer()
 
       this.engineApiEvents.bind((events) => {
         this.worker?.postMessage({ type: 'engine-api-enqueue', events } satisfies MainToWorker)
@@ -1351,6 +1405,10 @@ export class SceneScriptSystem {
           this.respondCrdtGetState(msg.id)
           return
         }
+        if (msg?.type === 'compile-progress') {
+          noteCompileProgress(msg.phase, msg.elapsedMs, msg.scriptKb)
+          return
+        }
         if (msg?.type === 'eval-done') {
           clientDebugLog.log('scene', 'Scene bundle compiled — hydrating while onStart runs', {
             level: 'success',
@@ -1372,13 +1430,21 @@ export class SceneScriptSystem {
             })
           return
         }
+        // Always surface [sceneWorker] boot lines during compile (do not throttle).
+        if (msg?.type === 'log' && /\[sceneWorker\]/.test(msg.message)) {
+          console.info(msg.message.replace(/^\[(?:log|info|warn|error|debug)\]\s*/, ''))
+          if (/patching|compiling|evaluated|script ready|transferred script|compile fallback/i.test(msg.message)) {
+            noteCompileProgress(msg.message.replace(/^\[sceneWorker\]\s*/i, '').slice(0, 72))
+          }
+          return
+        }
         void this.handleWorkerMessage(msg, () => finish(resolve), (err) => finish(() => reject(err)))
       }
       this.worker.onerror = (err) => finish(() => reject(err instanceof ErrorEvent ? err : new Error('Scene worker error')))
 
       this.startCompileProgressTimer()
-      this.bootProgressReporter?.('Compiling scene script… (0s)')
-      // Yield so the loading screen can paint before the (still non-trivial) boot postMessage clone.
+      this.bootProgressReporter?.(`Compiling scene script… (0s, ${sizeKb.toFixed(0)} KB)`)
+      // Yield so the loading screen can paint before the (still non-trivial) boot postMessage.
       requestAnimationFrame(() => {
         try {
           this.worker?.postMessage(boot, transfer)

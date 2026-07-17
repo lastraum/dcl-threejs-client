@@ -12,8 +12,12 @@ import {
   type ScreenRect
 } from './genesisMapViewport'
 
-/** Show API parcel imagery at this display zoom and above. */
-export const PARCEL_LAYER_MIN_ZOOM = 6
+/**
+ * Former map.png overlay threshold. Disabled: multi-LOD satellite (lod-0/4–6)
+ * is sharper and the API layer only dimmed the basemap (opacity 0.35 + dark tiles).
+ * Set below VIEWPORT_MAX_ZOOM again if we re-enable ParcelAtlas.
+ */
+export const PARCEL_LAYER_MIN_ZOOM = 99
 
 /** Parcels per side of one map.png chunk (web-friendly; Unity uses ~51). */
 export const PARCEL_CHUNK_PARCELS = 20

@@ -13,7 +13,6 @@ import {
   visibleTiles,
   type MapViewState
 } from '../../../map/genesisMapViewport'
-import { shouldShowParcelLayer, visibleParcelChunks } from '../../../map/parcelMapTiles'
 import { fetchParcelInfo } from '../../../map/parcelInfo'
 import {
   normalizeWallet,
@@ -629,62 +628,17 @@ export class MapView {
   }
 
   /**
-   * Unity ParcelAtlas layer — live map.png over satellite when zoomed in.
-   * Clears when zoomed out so only satellite remains.
+   * Former Unity ParcelAtlas (map.png) overlay — disabled.
+   * Multi-LOD satellite is enough; the API layer dimmed tiles (opacity 0.35) without
+   * improving resolution. Keeps layer cleared so opacity stays full.
    */
-  private renderParcelDetailLayer(w: number, h: number): void {
-    if (!shouldShowParcelLayer(this.view.zoom)) {
-      if (this.parcelTileNodes.size) {
-        for (const img of this.parcelTileNodes.values()) img.remove()
-        this.parcelTileNodes.clear()
-      }
-      this.parcelLayer.style.display = 'none'
-      this.tilesLayer.style.opacity = '1'
-      return
+  private renderParcelDetailLayer(_w: number, _h: number): void {
+    if (this.parcelTileNodes.size) {
+      for (const img of this.parcelTileNodes.values()) img.remove()
+      this.parcelTileNodes.clear()
     }
-
-    this.parcelLayer.style.display = ''
-    // Soften satellite under the sharper parcel colors
-    this.tilesLayer.style.opacity = '0.35'
-
-    const chunks = visibleParcelChunks(w, h, this.view)
-    const seen = new Set<string>()
-    for (const chunk of chunks) {
-      const key = `${chunk.originX},${chunk.originY}`
-      seen.add(key)
-      let img = this.parcelTileNodes.get(key)
-      if (!img) {
-        const tileImg = document.createElement('img')
-        tileImg.alt = ''
-        tileImg.draggable = false
-        tileImg.decoding = 'async'
-        tileImg.loading = 'lazy'
-        tileImg.className = 'dcl-map__parcel-tile'
-        tileImg.style.visibility = 'hidden'
-        tileImg.addEventListener('error', () => {
-          tileImg.style.visibility = 'hidden'
-        })
-        tileImg.addEventListener('load', () => {
-          tileImg.style.visibility = ''
-        })
-        tileImg.src = chunk.url
-        this.parcelLayer.appendChild(tileImg)
-        this.parcelTileNodes.set(key, tileImg)
-        img = tileImg
-      }
-      img.style.left = `${chunk.left}px`
-      img.style.top = `${chunk.top}px`
-      img.style.width = `${chunk.size}px`
-      img.style.height = `${chunk.size}px`
-      if (img.complete && img.naturalWidth > 0) img.style.visibility = ''
-    }
-
-    for (const [key, img] of this.parcelTileNodes) {
-      if (!seen.has(key)) {
-        img.remove()
-        this.parcelTileNodes.delete(key)
-      }
-    }
+    this.parcelLayer.style.display = 'none'
+    this.tilesLayer.style.opacity = '1'
   }
 
   private renderFrame(): void {

@@ -316,6 +316,25 @@ export class CommunitiesBrowseView {
     `
   }
 
+  /** Open community modal by id (HUD toast / deep link). */
+  openCommunityById(id: string, fallbackName = 'Community'): void {
+    const key = id.trim()
+    if (!key) return
+    const row =
+      this.communitiesById.get(key) ??
+      this.mineById.get(key) ??
+      [...this.communitiesById.values()].find((c) => c.id.toLowerCase() === key.toLowerCase()) ??
+      [...this.mineById.values()].find((c) => c.id.toLowerCase() === key.toLowerCase())
+    if (row) {
+      this.openCommunity(row.id)
+      return
+    }
+    this.communityModal.open({
+      id: key,
+      name: fallbackName
+    })
+  }
+
   private openCommunity(id: string): void {
     const row = this.communitiesById.get(id) ?? this.mineById.get(id)
     if (!row) return

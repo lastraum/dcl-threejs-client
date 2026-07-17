@@ -1,15 +1,25 @@
+import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import type { LoginResult } from '../../../auth/AuthClient'
 import { notificationPrefs } from '../../../social/notificationPrefs'
 import { resolveNotificationPeer } from '../../../social/resolveNotificationPeer'
 import type { SocialChatEvent, SocialService } from '../../../social/SocialService'
 import { isChatImageLine, isChatTextLine } from '../../../social/types'
+import {
+  CommunityHudToastWatcher,
+  type CommunityAnnouncementToast,
+  type CommunityVoiceToast
+} from './CommunityHudToastWatcher'
 
 export type SocialMobileNotificationsOptions = {
   login: LoginResult
   getSocial: () => SocialService | null
+  getAuthIdentity?: () => AuthIdentity | null
+  getUserAddress?: () => string | null
   onEnsureSocial?: () => Promise<void>
   onOpenChat?: () => void
   onOpenUserProfile?: (address: string) => void
+  /** Open community detail (announcement / voice toast click). */
+  onOpenCommunity?: (communityId: string) => void
   /**
    * Skip chat banners while the user is actively reading that channel's thread.
    * `channelKey` is the SocialService key for the incoming message (`scene:…`).
@@ -19,6 +29,7 @@ export type SocialMobileNotificationsOptions = {
 
 const DESKTOP_MQ = '(min-width: 768px)'
 const AUTO_DISMISS_MS = 5000
+const COMMUNITY_AUTO_DISMISS_MS = 7000
 const MAX_VISIBLE = 3
 
 type PendingBanner = {
@@ -41,9 +52,12 @@ export class SocialMobileNotifications {
 
   private login: LoginResult
   private readonly getSocial: SocialMobileNotificationsOptions['getSocial']
+  private readonly getAuthIdentity?: SocialMobileNotificationsOptions['getAuthIdentity']
+  private readonly getUserAddress?: SocialMobileNotificationsOptions['getUserAddress']
   private readonly onEnsureSocial?: SocialMobileNotificationsOptions['onEnsureSocial']
   private readonly onOpenChat?: SocialMobileNotificationsOptions['onOpenChat']
   private readonly onOpenUserProfile?: SocialMobileNotificationsOptions['onOpenUserProfile']
+  private readonly onOpenCommunity?: SocialMobileNotificationsOptions['onOpenCommunity']
   private readonly isChatNotificationSuppressed?: SocialMobileNotificationsOptions['isChatNotificationSuppressed']
 
   private readonly desktopMq = window.matchMedia(DESKTOP_MQ)
@@ -55,6 +69,7 @@ export class SocialMobileNotifications {
   private unsubFriendship: (() => void) | null = null
   private unsubChat: (() => void) | null = null
   private unsubPrefs: (() => void) | null = null
+  private communityWatcher: CommunityHudToastWatcher | null = null
 
   private baselineReady = false
   private knownIncoming = new Set<string>()
@@ -63,9 +78,12 @@ export class SocialMobileNotifications {
   constructor(opts: SocialMobileNotificationsOptions) {
     this.login = opts.login
     this.getSocial = opts.getSocial
+    this.getAuthIdentity = opts.getAuthIdentity
+    this.getUserAddress = opts.getUserAddress
     this.onEnsureSocial = opts.onEnsureSocial
     this.onOpenChat = opts.onOpenChat
     this.onOpenUserProfile = opts.onOpenUserProfile
+    this.onOpenCommunity = opts.onOpenCommunity
     this.isChatNotificationSuppressed = opts.isChatNotificationSuppressed
 
     this.host = document.createElement('div')
@@ -79,7 +97,12 @@ export class SocialMobileNotifications {
     this.host.classList.toggle('social-mobile-notif-host--desktop', this.isDesktop())
     this.desktopMq.addEventListener('change', this.onDesktopMqChange)
     this.unsubPrefs = notificationPrefs.subscribe((state) => {
-      if (!state.enabled) this.clearAll()
+      if (!state.enabled) {
+        this.clearAll()
+        this.communityWatcher?.stop()
+      } else {
+        this.syncCommunityWatcher()
+      }
     })
     void this.seedBaseline()
   }
@@ -89,6 +112,7 @@ export class SocialMobileNotifications {
     this.baselineReady = false
     this.knownIncoming.clear()
     this.clearAll()
+    this.communityWatcher?.stop()
     void this.seedBaseline()
   }
 
@@ -97,6 +121,8 @@ export class SocialMobileNotifications {
     this.unsubPrefs?.()
     this.unsubPrefs = null
     this.unbindSocialListeners()
+    this.communityWatcher?.dispose()
+    this.communityWatcher = null
     this.clearAll()
     this.host.remove()
   }
@@ -116,12 +142,16 @@ export class SocialMobileNotifications {
   private async seedBaseline(): Promise<void> {
     if (!this.isSignedIn()) {
       this.unbindSocialListeners()
+      this.communityWatcher?.stop()
       return
     }
     await this.onEnsureSocial?.()
     this.bindSocialListeners()
     const social = this.getSocial()
-    if (!social) return
+    if (!social) {
+      this.syncCommunityWatcher()
+      return
+    }
     // Friend requests only for real wallets; guests still get chat banners.
     if (this.login.kind === 'wallet') {
       await social.refreshFriendshipSnapshot()
@@ -130,6 +160,100 @@ export class SocialMobileNotifications {
       this.knownIncoming = new Set()
     }
     this.baselineReady = true
+    this.syncCommunityWatcher()
+  }
+
+  private syncCommunityWatcher(): void {
+    if (this.login.kind !== 'wallet' || !notificationPrefs.isEnabled()) {
+      this.communityWatcher?.stop()
+      return
+    }
+    if (!this.communityWatcher) {
+      this.communityWatcher = new CommunityHudToastWatcher({
+        getAuthIdentity: () => this.getAuthIdentity?.() ?? null,
+        getUserAddress: () => this.getUserAddress?.() ?? null,
+        getMemberCommunities: () => this.getSocial()?.getCommunities() ?? [],
+        onAnnouncement: (t) => this.pushCommunityAnnouncementBanner(t),
+        onVoiceStarted: (t) => this.pushCommunityVoiceBanner(t)
+      })
+    }
+    this.communityWatcher.start()
+  }
+
+  private pushCommunityAnnouncementBanner(toast: CommunityAnnouncementToast): void {
+    if (!this.canShow()) return
+    const title = toast.communityDisplayName
+    const sub = toast.text || 'New announcement'
+    const face = toast.imageUrl
+      ? `<img class="social-mobile-notif__avatar-img" src="${escapeHtml(toast.imageUrl)}" alt="" width="40" height="40" loading="lazy" />`
+      : `<span class="social-mobile-notif__avatar-fallback" aria-hidden="true">${escapeHtml(
+          title.charAt(0).toUpperCase() || 'C'
+        )}</span>`
+
+    const banner = document.createElement('button')
+    banner.type = 'button'
+    banner.className = 'social-mobile-notif'
+    banner.setAttribute('aria-label', `Announcement in ${title}: ${sub}`)
+    banner.innerHTML = `
+      <div class="social-mobile-notif__card">
+        <div class="social-mobile-notif__header">
+          <span class="social-mobile-notif__app-icon" aria-hidden="true">D</span>
+          <span class="social-mobile-notif__app-name">COMMUNITY · ANNOUNCEMENT</span>
+          <span class="social-mobile-notif__time">now</span>
+        </div>
+        <div class="social-mobile-notif__body">
+          <span class="social-mobile-notif__avatar">${face}</span>
+          <span class="social-mobile-notif__text">
+            <span class="social-mobile-notif__title">${escapeHtml(title)}</span>
+            <span class="social-mobile-notif__sub">${escapeHtml(sub)}</span>
+          </span>
+        </div>
+      </div>
+    `
+    banner.addEventListener('click', () => {
+      this.dismissBanner(banner)
+      this.onOpenCommunity?.(toast.communityId)
+    })
+    this.showBanner(banner, `c-ann:${toast.communityId}:${Date.now()}`, COMMUNITY_AUTO_DISMISS_MS)
+  }
+
+  private pushCommunityVoiceBanner(toast: CommunityVoiceToast): void {
+    if (!this.canShow()) return
+    const title = toast.communityDisplayName
+    const face = toast.imageUrl
+      ? `<img class="social-mobile-notif__avatar-img" src="${escapeHtml(toast.imageUrl)}" alt="" width="40" height="40" loading="lazy" />`
+      : `<span class="social-mobile-notif__avatar-fallback" aria-hidden="true">${escapeHtml(
+          title.charAt(0).toUpperCase() || 'C'
+        )}</span>`
+
+    const banner = document.createElement('button')
+    banner.type = 'button'
+    banner.className = 'social-mobile-notif'
+    banner.setAttribute(
+      'aria-label',
+      `${title} · Voice. Live now — open Communities to listen or join.`
+    )
+    banner.innerHTML = `
+      <div class="social-mobile-notif__card">
+        <div class="social-mobile-notif__header">
+          <span class="social-mobile-notif__app-icon" aria-hidden="true">D</span>
+          <span class="social-mobile-notif__app-name">COMMUNITY · VOICE</span>
+          <span class="social-mobile-notif__time">now</span>
+        </div>
+        <div class="social-mobile-notif__body">
+          <span class="social-mobile-notif__avatar">${face}</span>
+          <span class="social-mobile-notif__text">
+            <span class="social-mobile-notif__title">${escapeHtml(title)} · Voice</span>
+            <span class="social-mobile-notif__sub">Live now — open Communities to listen or join.</span>
+          </span>
+        </div>
+      </div>
+    `
+    banner.addEventListener('click', () => {
+      this.dismissBanner(banner)
+      this.onOpenCommunity?.(toast.communityId)
+    })
+    this.showBanner(banner, `c-voice:${toast.communityId}:${Date.now()}`, COMMUNITY_AUTO_DISMISS_MS)
   }
 
   private bindSocialListeners(): void {
@@ -294,7 +418,7 @@ export class SocialMobileNotifications {
     this.showBanner(banner, `msg:${line.id}`)
   }
 
-  private showBanner(el: HTMLElement, id: string): void {
+  private showBanner(el: HTMLElement, id: string, dismissMs = AUTO_DISMISS_MS): void {
     while (this.banners.length >= MAX_VISIBLE) {
       const oldest = this.banners.shift()
       if (oldest) this.dismissBanner(oldest.el, oldest)
@@ -311,7 +435,7 @@ export class SocialMobileNotifications {
 
     const dismissTimer = window.setTimeout(() => {
       this.dismissBanner(el)
-    }, AUTO_DISMISS_MS)
+    }, dismissMs)
 
     this.banners.push({ id, el, dismissTimer })
   }

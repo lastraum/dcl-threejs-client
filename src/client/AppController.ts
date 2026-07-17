@@ -996,6 +996,10 @@ export class AppController {
     this.socialMobileNotifications = new SocialMobileNotifications({
       login: this.login!,
       getSocial: () => this.socialChat?.getSocial() ?? null,
+      getAuthIdentity: () =>
+        this.login?.kind === 'wallet' ? this.login.identity : null,
+      getUserAddress: () =>
+        this.login?.kind === 'wallet' ? this.login.address : null,
       onEnsureSocial: async () => {
         this.ensureSocialChatShell()
         this.socialChat?.applyLogin(this.login)
@@ -1006,10 +1010,31 @@ export class AppController {
         this.socialChatDock?.openFromNotification()
       },
       onOpenUserProfile: (address) => this.socialChat?.openProfileForAddress(address),
+      onOpenCommunity: (communityId) => {
+        void this.openCommunityFromNotification(communityId)
+      },
       isChatNotificationSuppressed: (channelKey) =>
         this.socialChatDock?.isChatNotificationSuppressed(channelKey) ?? false
     })
     this.socialMobileNotifications.mount()
+  }
+
+  /** HUD community toast click → Settings → Communities → modal. */
+  private async openCommunityFromNotification(communityId: string): Promise<void> {
+    const id = communityId.trim()
+    if (!id) return
+    try {
+      const overlay = await this.ensureSettingsOverlay()
+      const name =
+        this.socialChat
+          ?.getSocial()
+          ?.getCommunities()
+          .find((c) => c.id.toLowerCase() === id.toLowerCase())?.name ?? 'Community'
+      overlay.openCommunity(id, name)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      clientDebugLog.log('client', `Community toast open failed: ${msg}`, { level: 'warn' })
+    }
   }
 
   /** Off a scene landing → stop treating the dock as "reading" so scene chat can toast. */
@@ -1580,6 +1605,7 @@ export class AppController {
   }
 
   private hidePlayChrome(): void {
+    document.body.classList.remove('client-in-world')
     this.shell?.hide()
     this.worldLocationCard?.setVisible(false)
     this.minimap?.setVisible(false)
@@ -1588,6 +1614,7 @@ export class AppController {
   }
 
   private revealPlayChrome(): void {
+    document.body.classList.add('client-in-world')
     this.shell?.show()
     this.worldLocationCard?.setVisible(true)
     this.minimap?.setVisible(true)

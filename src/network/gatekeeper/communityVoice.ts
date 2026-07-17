@@ -12,6 +12,8 @@ export type ActiveCommunityVoiceChat = {
   communityId: string
   participantCount: number
   moderatorCount: number
+  communityName?: string
+  communityImage?: string
 }
 
 /**
@@ -155,7 +157,19 @@ export async function fetchActiveCommunityVoiceChats(
           ? r.moderatorCount
           : typeof r.moderator_count === 'number'
             ? r.moderator_count
-            : 0
+            : 0,
+      communityName:
+        typeof r.communityName === 'string'
+          ? r.communityName
+          : typeof r.community_name === 'string'
+            ? r.community_name
+            : undefined,
+      communityImage:
+        typeof r.communityImage === 'string'
+          ? r.communityImage
+          : typeof r.community_image === 'string'
+            ? r.community_image
+            : undefined
     })
   }
   return out

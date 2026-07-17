@@ -1,4 +1,8 @@
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
+import {
+  canManageCommunityVoice,
+  canPostCommunityAnnouncements
+} from '../../../social/communityPermissions'
 import { getCommunityVoiceSession } from '../../../social/CommunityVoiceSession'
 import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import {
@@ -81,14 +85,12 @@ function mergePreviewAndDetail(preview: CommunityListRow, detail: CommunityDetai
   }
 }
 
-function canModerate(role: string | undefined): boolean {
-  const r = (role ?? '').toLowerCase()
-  return r === 'owner' || r === 'moderator'
-}
-
 /**
  * Explorer-style community detail modal:
  * header · tabs (announcements / members / places / photos) · voice + events rail.
+ *
+ * Announcement composer + "Start voice stream" only for owner/moderator/admin
+ * (dcl-companion parity). Members can still join an already-live voice stream.
  */
 export class CommunityModal {
   readonly root: HTMLElement
@@ -105,6 +107,24 @@ export class CommunityModal {
   private members: CommunityMemberRow[] = []
   private placeIds: string[] = []
   private tabLoading = false
+
+  private sessionAddress(): string | null {
+    return this.getUserAddress?.()?.trim().toLowerCase() || null
+  }
+
+  private canPostAnnouncements(community: CommunityDetail | null = this.current): boolean {
+    if (!community || !this.getAuthIdentity?.()) return false
+    return canPostCommunityAnnouncements(
+      community.role,
+      this.sessionAddress(),
+      community.ownerAddress
+    )
+  }
+
+  private canStartVoice(community: CommunityDetail | null = this.current): boolean {
+    if (!community || !this.getAuthIdentity?.()) return false
+    return canManageCommunityVoice(community.role, this.sessionAddress(), community.ownerAddress)
+  }
 
   constructor(opts: CommunityModalOptions = {}) {
     this.getAuthIdentity = opts.getAuthIdentity
@@ -281,14 +301,27 @@ export class CommunityModal {
     const input = this.root.querySelector<HTMLTextAreaElement>('[data-post-input]')
     const status = this.root.querySelector<HTMLElement>('[data-post-status]')
     if (!community || !identity || !input) return
+    if (!this.canPostAnnouncements(community)) {
+      if (status) status.textContent = 'Only owners, moderators, and admins can post announcements.'
+      return
+    }
     const text = input.value.trim()
     if (!text) return
+    if (text.length > 1000) {
+      if (status) status.textContent = 'Announcement must be 1000 characters or fewer.'
+      return
+    }
     if (status) status.textContent = 'Posting…'
     const result = await createCommunityPostSigned(identity, community.id, text)
     if (!result.ok) {
-      if (status) status.textContent = result.error.includes('401') || result.error.includes('permission')
-        ? 'Only owners/moderators can post announcements.'
-        : result.error
+      if (status)
+        status.textContent =
+          result.error.includes('401') ||
+          result.error.includes('403') ||
+          result.error.includes('permission') ||
+          result.error.includes('Forbidden')
+            ? 'Only owners, moderators, and admins can post announcements.'
+            : result.error
       return
     }
     input.value = ''
@@ -317,17 +350,19 @@ export class CommunityModal {
     const btn = this.root.querySelector<HTMLButtonElement>('[data-community-voice]')
     const voice = getCommunityVoiceSession()
     const identity = this.getAuthIdentity?.() ?? null
-    const address = this.getUserAddress?.()?.trim().toLowerCase() ?? null
+    const address = this.sessionAddress()
+    const voiceLive = merged.voiceChatActive === true
+    const canStart = this.canStartVoice(merged)
 
     if (voice.isActive() && voice.getCommunityId() === merged.id) {
       if (btn) {
         btn.disabled = true
-        btn.textContent = 'ENDING…'
+        btn.textContent = 'LEAVING…'
       }
       await voice.leave()
       if (btn && this.current?.id === merged.id) {
         btn.disabled = false
-        btn.innerHTML = voiceBtnHtml(false, merged.voiceChatActive === true)
+        btn.innerHTML = voiceBtnHtml(false, this.current.voiceChatActive === true, canStart)
         btn.classList.remove('is-live')
       }
       return
@@ -338,11 +373,20 @@ export class CommunityModal {
       return
     }
 
+    // Create is mod-only; join is open when a stream is already live.
+    const action = voiceLive ? 'join' : 'create'
+    if (action === 'create' && !canStart) {
+      if (btn) {
+        btn.textContent = 'Mods only'
+        btn.title = 'Only owners, moderators, and admins can start a voice stream.'
+      }
+      return
+    }
+
     if (btn) {
       btn.disabled = true
-      btn.textContent = 'STARTING…'
+      btn.textContent = action === 'join' ? 'JOINING…' : 'STARTING…'
     }
-    const action = merged.voiceChatActive ? 'join' : 'create'
     const result = await voice.join({
       identity,
       communityId: merged.id,
@@ -352,21 +396,24 @@ export class CommunityModal {
     if (btn && this.current?.id === merged.id) {
       btn.disabled = false
       if (result.ok) {
-        btn.innerHTML = voiceBtnHtml(true, true)
+        btn.innerHTML = voiceBtnHtml(true, true, canStart)
         btn.classList.add('is-live')
       } else {
-        btn.textContent = result.error.includes('401') || result.error.includes('Unauthorized')
-          ? 'Voice unavailable'
-          : 'Voice failed'
+        btn.textContent =
+          result.error.includes('401') ||
+          result.error.includes('403') ||
+          result.error.includes('Unauthorized') ||
+          result.error.includes('Forbidden')
+            ? 'Voice unavailable'
+            : 'Voice failed'
         btn.title = result.error
       }
     }
   }
 
   private renderAnnouncements(): string {
-    const canPost = canModerate(this.current?.role)
-    const identity = this.getAuthIdentity?.()
-    const composer = identity
+    // Companion: create-post control is omitted unless owner/moderator (or owner wallet).
+    const composer = this.canPostAnnouncements()
       ? `
       <form class="community-modal-composer" data-post-form>
         <textarea
@@ -375,16 +422,13 @@ export class CommunityModal {
           rows="3"
           maxlength="1000"
           placeholder="Any Announcement to share with your Community?"
-          ${canPost ? '' : 'disabled'}
         ></textarea>
         <div class="community-modal-composer-bar">
-          <span class="community-modal-post-status" data-post-status>${
-            canPost ? '' : 'Only owners and moderators can post announcements.'
-          }</span>
-          <button type="submit" class="community-modal-post-btn" ${canPost ? '' : 'disabled'}>POST</button>
+          <span class="community-modal-post-status" data-post-status></span>
+          <button type="submit" class="community-modal-post-btn">POST</button>
         </div>
       </form>`
-      : `<p class="community-modal-tab-status">Sign in to post announcements.</p>`
+      : ''
 
     if (this.posts.length === 0) {
       return `${composer}<p class="community-modal-tab-status">No announcements yet.</p>`
@@ -483,7 +527,12 @@ export class CommunityModal {
     const members = formatMemberCount(merged.memberCount)
     const voice = getCommunityVoiceSession()
     const inVoice = voice.isActive() && voice.getCommunityId() === merged.id
-    const canVoice = Boolean(this.getAuthIdentity?.())
+    const signedIn = Boolean(this.getAuthIdentity?.())
+    const canStart = this.canStartVoice(merged)
+    const voiceLive = merged.voiceChatActive === true
+    // Start = mods only; Join / Leave available to signed-in users when live/connected.
+    const showVoiceCta = inVoice || voiceLive || canStart
+    const voiceCtaEnabled = signedIn && (inVoice || voiceLive || canStart)
     const desc = (merged.description || '').trim()
     const statusHint = opts.loading
       ? `<p class="community-modal-status-hint">Loading details…</p>`
@@ -551,12 +600,23 @@ export class CommunityModal {
             <aside class="community-modal-rail">
               <section class="community-modal-rail-card">
                 <h3 class="community-modal-rail-title">Voice Stream</h3>
-                <button
+                ${
+                  showVoiceCta
+                    ? `<button
                   type="button"
                   class="community-modal-voice-cta${inVoice ? ' is-live' : ''}"
                   data-community-voice
-                  ${canVoice ? '' : 'disabled'}
-                >${voiceBtnHtml(inVoice, merged.voiceChatActive === true)}</button>
+                  ${voiceCtaEnabled ? '' : 'disabled'}
+                  title="${
+                    inVoice
+                      ? 'Leave this voice stream'
+                      : voiceLive
+                        ? 'Join the live voice stream'
+                        : 'Start a voice stream for members (owners and moderators)'
+                  }"
+                >${voiceBtnHtml(inVoice, voiceLive, canStart)}</button>`
+                    : `<p class="community-modal-voice-hint">No active stream. Owners and moderators can start one.</p>`
+                }
               </section>
               <section class="community-modal-rail-card community-modal-rail-card--events">
                 <div class="community-modal-rail-title-row">
@@ -576,8 +636,9 @@ export class CommunityModal {
   }
 }
 
-function voiceBtnHtml(inVoice: boolean, active: boolean): string {
+function voiceBtnHtml(inVoice: boolean, active: boolean, canStart: boolean): string {
   if (inVoice) return '● LEAVE VOICE STREAM'
   if (active) return '◉ JOIN VOICE STREAM'
-  return '◉ START VOICE STREAM'
+  if (canStart) return '◉ START VOICE STREAM'
+  return '◉ VOICE STREAM'
 }

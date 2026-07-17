@@ -8217,6 +8217,12 @@
         opacity: 0.55;
         cursor: not-allowed;
       }
+      .community-modal-voice-hint {
+        margin: 0;
+        font-size: 0.78rem;
+        line-height: 1.35;
+        color: rgba(255, 255, 255, 0.48);
+      }
       .community-modal-events-empty {
         text-align: center;
         padding: 28px 10px;
@@ -12800,6 +12806,7 @@
         white-space: nowrap;
       }
       @media (min-width: 768px) {
+        /* 2D social shell — top-right stack */
         .social-mobile-notif-host--desktop {
           top: calc(var(--social-shell-header-height) + 8px);
           left: auto;
@@ -12836,6 +12843,35 @@
         .social-mobile-notif-host--desktop .social-mobile-notif__sub {
           font-size: 10px;
         }
+      }
+
+      /*
+       * 3D world HUD — toasts drop from top center (Explorer-style),
+       * overriding 2D shell top-right desktop placement.
+       */
+      body.client-in-world .social-mobile-notif-host,
+      body.client-in-world .social-mobile-notif-host--desktop {
+        top: max(14px, env(safe-area-inset-top, 0px));
+        left: 50%;
+        right: auto;
+        width: min(420px, calc(100vw - 32px));
+        max-width: min(420px, calc(100vw - 32px));
+        min-width: 0;
+        padding: 0;
+        align-items: stretch;
+        transform: translateX(-50%);
+        z-index: calc(var(--z-client-hud-raised, 111) + 4);
+      }
+      body.client-in-world .social-mobile-notif-host .social-mobile-notif,
+      body.client-in-world .social-mobile-notif-host--desktop .social-mobile-notif {
+        width: 100%;
+        transform: translateY(calc(-100% - 20px));
+        opacity: 0;
+      }
+      body.client-in-world .social-mobile-notif-host .social-mobile-notif--visible,
+      body.client-in-world .social-mobile-notif-host--desktop .social-mobile-notif--visible {
+        transform: translateY(0);
+        opacity: 1;
       }
 
       /* Profile avatar + dropdown (companion ExploreProfileMenu) */

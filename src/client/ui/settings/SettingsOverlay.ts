@@ -185,6 +185,15 @@ export class SettingsOverlay {
     this.onOpen?.()
   }
 
+  /** Open communities tab and a specific community modal (HUD toasts). */
+  openCommunity(communityId: string, displayName?: string): void {
+    this.show('communities')
+    // Browse view mounts in switchTab — open on next frame.
+    requestAnimationFrame(() => {
+      this.communitiesView?.openCommunityById(communityId, displayName ?? 'Community')
+    })
+  }
+
   hide(): void {
     void this.hideAndSaveProfile()
   }

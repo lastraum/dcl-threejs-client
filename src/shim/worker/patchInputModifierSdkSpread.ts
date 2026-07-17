@@ -35,23 +35,32 @@ function wrapSdkDefineBody(engineVar: string): string {
 
 /** Patch bundled scene code before eval — both @dcl/ecs extended and @dcl/sdk re-exports. */
 export function patchInputModifierSdkSpread(code: string): { code: string; applied: boolean } {
+  // Fast reject on multi-MB bundles that do not define these symbols.
+  if (
+    !code.includes('defineInputModifierComponent') &&
+    !code.includes('InputModifier3')
+  ) {
+    return { code, applied: false }
+  }
   let applied = false
   let out = code
-  if (ECS_EXTENDED_RE.test(out)) {
+  // Prefer includes + single replace — avoid .test() advancing lastIndex on /g-less patterns
+  // that still thrash on huge sources.
+  if (code.includes('defineInputModifierComponent(') && ECS_EXTENDED_RE.test(out)) {
     ECS_EXTENDED_RE.lastIndex = 0
     out = out.replace(ECS_EXTENDED_RE, () => {
       applied = true
       return wrapDefineBody('engine2', 'InputModifierHelper')
     })
   }
-  if (SDK_CJS_RE.test(out)) {
+  if (code.includes('defineInputModifierComponent2') && SDK_CJS_RE.test(out)) {
     SDK_CJS_RE.lastIndex = 0
     out = out.replace(SDK_CJS_RE, () => {
       applied = true
       return wrapSdkDefineBody('engine2')
     })
   }
-  if (INPUT_MODIFIER3_ASSIGN_RE.test(out)) {
+  if (code.includes('InputModifier3') && INPUT_MODIFIER3_ASSIGN_RE.test(out)) {
     INPUT_MODIFIER3_ASSIGN_RE.lastIndex = 0
     out = out.replace(
       INPUT_MODIFIER3_ASSIGN_RE,

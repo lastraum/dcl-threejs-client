@@ -269,7 +269,8 @@ const ADD_UI_RENDERER_RE =
 
 /** Only the first react-ecs reconcile may register — later eS()/sw() calls no-op. */
 function patchReactEcsOnceGuard(code: string): string {
-  if (!code.includes('"@dcl/react-ecs"')) return code
+  if (!code.includes('"@dcl/react-ecs"') && !code.includes("'@dcl/react-ecs'")) return code
+  REACT_ECS_ADD_RE.lastIndex = 0
   return code.replace(
     REACT_ECS_ADD_RE,
     'globalThis.__THREEJS_UI_REACT_ECS_ONCE__&&globalThis.__THREEJS_UI_REACT_ECS_ONCE__($2,$1)'
@@ -278,73 +279,88 @@ function patchReactEcsOnceGuard(code: string): string {
 
 /** Patch ReactEcsRenderer setUiRenderer/addUiRenderer to report virtual canvas size to main. */
 function patchUiVirtualCanvasHooks(code: string): string {
+  if (!code.includes('setUiRenderer') && !code.includes('addUiRenderer')) return code
   let out = code
-  out = out.replace(
-    SET_UI_RENDERER_RE,
-    (_match, entityArg, optionsArg, lhs, rhs) =>
-      `setUiRenderer(${entityArg},${optionsArg}){try{if(${optionsArg}&&${optionsArg}.virtualWidth>0&&${optionsArg}.virtualHeight>0&&globalThis.__THREEJS_UI_VIRTUAL_CANVAS__)globalThis.__THREEJS_UI_VIRTUAL_CANVAS__(${optionsArg}.virtualWidth,${optionsArg}.virtualHeight)}catch(__err){}${lhs}=${entityArg},${rhs}=${optionsArg}}`
-  )
-  out = out.replace(
-    ADD_UI_RENDERER_RE,
-    (_match, entityArg, uiArg, optionsArg, mapVar) =>
-      `addUiRenderer(${entityArg},${uiArg},${optionsArg}){try{if(${optionsArg}&&${optionsArg}.virtualWidth>0&&${optionsArg}.virtualHeight>0&&globalThis.__THREEJS_UI_VIRTUAL_CANVAS__)globalThis.__THREEJS_UI_VIRTUAL_CANVAS__(${optionsArg}.virtualWidth,${optionsArg}.virtualHeight)}catch(__err){}${mapVar}.set(${entityArg},{ui:${uiArg},options:${optionsArg}})}`
-  )
+  if (code.includes('setUiRenderer')) {
+    SET_UI_RENDERER_RE.lastIndex = 0
+    out = out.replace(
+      SET_UI_RENDERER_RE,
+      (_match, entityArg, optionsArg, lhs, rhs) =>
+        `setUiRenderer(${entityArg},${optionsArg}){try{if(${optionsArg}&&${optionsArg}.virtualWidth>0&&${optionsArg}.virtualHeight>0&&globalThis.__THREEJS_UI_VIRTUAL_CANVAS__)globalThis.__THREEJS_UI_VIRTUAL_CANVAS__(${optionsArg}.virtualWidth,${optionsArg}.virtualHeight)}catch(__err){}${lhs}=${entityArg},${rhs}=${optionsArg}}`
+    )
+  }
+  if (out.includes('addUiRenderer')) {
+    ADD_UI_RENDERER_RE.lastIndex = 0
+    out = out.replace(
+      ADD_UI_RENDERER_RE,
+      (_match, entityArg, uiArg, optionsArg, mapVar) =>
+        `addUiRenderer(${entityArg},${uiArg},${optionsArg}){try{if(${optionsArg}&&${optionsArg}.virtualWidth>0&&${optionsArg}.virtualHeight>0&&globalThis.__THREEJS_UI_VIRTUAL_CANVAS__)globalThis.__THREEJS_UI_VIRTUAL_CANVAS__(${optionsArg}.virtualWidth,${optionsArg}.virtualHeight)}catch(__err){}${mapVar}.set(${entityArg},{ui:${uiArg},options:${optionsArg}})}`
+    )
+  }
   return out
 }
 
 /** Default bundle patch — composite alias + safe engine capture (no checker strip). */
 export function patchSceneBundle(code: string, onStep?: PatchSceneBundleStepLog): string {
-  let stepAt = performance.now()
-  let out = patchCompositeSrcAlias(code)
-  onStep?.('composite alias', performance.now() - stepAt)
-  stepAt = performance.now()
-  const theatre = patchTheatreSkip(out)
-  out = theatre.code
-  if (theatre.applied.length) {
-    onStep?.(`theatre skip hooks (${theatre.applied.join(',')})`, performance.now() - stepAt)
-  } else if (theatre.missed.length) {
-    onStep?.(`theatre skip missed (${theatre.missed.join(',')})`, performance.now() - stepAt)
+  const runStep = (label: string, fn: () => string): string => {
+    // Negative ms = "step starting" — worker can heartbeat before long work.
+    onStep?.(`begin ${label}`, -1)
+    const stepAt = performance.now()
+    const out = fn()
+    onStep?.(label, performance.now() - stepAt)
+    return out
   }
-  stepAt = performance.now()
-  out = wrapAddTransportCalls(out, ADD_TRANSPORT_WRAP_LIMIT)
-  onStep?.('addTransport capture', performance.now() - stepAt)
-  stepAt = performance.now()
-  out = patchReactEcsOnceGuard(out)
-  onStep?.('react-ecs once guard', performance.now() - stepAt)
-  stepAt = performance.now()
-  out = patchUiVirtualCanvasHooks(out)
-  onStep?.('ui virtual canvas', performance.now() - stepAt)
-  stepAt = performance.now()
-  const beforeEngineLoop = out
-  out = patchEngineSystemLoopPartition(out)
-  onStep?.(
-    out !== beforeEngineLoop ? 'engine ui system loop (applied)' : 'engine ui system loop (missed)',
-    performance.now() - stepAt
-  )
-  stepAt = performance.now()
-  const inputModifierSdk = patchInputModifierSdkSpread(out)
-  out = inputModifierSdk.code
-  if (inputModifierSdk.applied) {
-    onStep?.('input modifier sdk guard hook', performance.now() - stepAt)
-  }
-  stepAt = performance.now()
-  const clearPlayerIm = patchClearPlayerInputModifierBoundary(out)
-  out = clearPlayerIm.code
-  if (clearPlayerIm.applied) {
-    onStep?.('clearPlayerInputModifier guard hook', performance.now() - stepAt)
-  }
-  stepAt = performance.now()
-  const pollEventsBoundary = patchSdkOnUpdatePollEventsBoundary(out)
-  out = pollEventsBoundary.code
-  if (pollEventsBoundary.applied) {
-    onStep?.('sdk onUpdate pollEvents boundary', performance.now() - stepAt)
-  }
-  stepAt = performance.now()
-  const photoMural = patchPhotoMuralOptionalChain(out)
-  out = photoMural.code
-  if (photoMural.applied) {
-    onStep?.(`photo mural optional-chain (${photoMural.replacements})`, performance.now() - stepAt)
-  }
+
+  let out = runStep('composite alias', () => patchCompositeSrcAlias(code))
+
+  out = runStep('theatre skip hooks', () => {
+    const theatre = patchTheatreSkip(out)
+    if (theatre.applied.length) {
+      onStep?.(`theatre skip hooks (${theatre.applied.join(',')})`, 0)
+    } else if (theatre.missed.length) {
+      onStep?.(`theatre skip missed (${theatre.missed.join(',')})`, 0)
+    }
+    return theatre.code
+  })
+
+  out = runStep('addTransport capture', () => wrapAddTransportCalls(out, ADD_TRANSPORT_WRAP_LIMIT))
+  out = runStep('react-ecs once guard', () => patchReactEcsOnceGuard(out))
+  out = runStep('ui virtual canvas', () => patchUiVirtualCanvasHooks(out))
+
+  out = runStep('engine ui system loop', () => {
+    const before = out
+    const next = patchEngineSystemLoopPartition(out)
+    onStep?.(
+      next !== before ? 'engine ui system loop (applied)' : 'engine ui system loop (missed)',
+      0
+    )
+    return next
+  })
+
+  out = runStep('input modifier sdk guard', () => {
+    const r = patchInputModifierSdkSpread(out)
+    if (r.applied) onStep?.('input modifier sdk guard hook', 0)
+    return r.code
+  })
+
+  out = runStep('clearPlayerInputModifier guard', () => {
+    const r = patchClearPlayerInputModifierBoundary(out)
+    if (r.applied) onStep?.('clearPlayerInputModifier guard hook', 0)
+    return r.code
+  })
+
+  out = runStep('sdk onUpdate pollEvents boundary', () => {
+    const r = patchSdkOnUpdatePollEventsBoundary(out)
+    if (r.applied) onStep?.('sdk onUpdate pollEvents boundary', 0)
+    return r.code
+  })
+
+  out = runStep('photo mural optional-chain', () => {
+    const r = patchPhotoMuralOptionalChain(out)
+    if (r.applied) onStep?.(`photo mural optional-chain (${r.replacements})`, 0)
+    return r.code
+  })
+
   return out
 }
 

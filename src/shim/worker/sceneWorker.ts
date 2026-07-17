@@ -3022,11 +3022,14 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     const patchStarted = performance.now()
     reportCompileProgress(`patching scene bundle (${evalKb} KB)`)
     const logPatchStep = (step: string, ms: number) => {
-      workerLog('log', `[sceneWorker] patch — ${step} ${ms.toFixed(0)}ms`)
-      // Heartbeat on long multi-MB scans so main does not hit the boot timeout.
-      if (ms > 2_000 || scriptKb > 4_000) {
-        reportCompileProgress(`patch — ${step}`)
+      if (ms < 0) {
+        // Step starting — critical for multi-MB bundles so we know which patch hung.
+        workerLog('log', `[sceneWorker] patch — starting ${step}`)
+        reportCompileProgress(`starting ${step}`)
+        return
       }
+      workerLog('log', `[sceneWorker] patch — ${step} ${ms.toFixed(0)}ms`)
+      reportCompileProgress(`done ${step}`)
     }
     // One primary patch pass — do not pre-build checker strip (doubles work on 10MB+ worlds).
     const compositePatched = patchSceneBundle(code, logPatchStep)
@@ -3034,8 +3037,14 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       'log',
       `[sceneWorker] bundle patch ready (${((performance.now() - patchStarted) / 1000).toFixed(2)}s)`
     )
-    reportCompileProgress('compiling scene bundle (new Function)')
+    // Yield so main can paint progress and process heartbeats before the long new Function.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    reportCompileProgress('compiling scene bundle (new Function) — may take minutes for multi-MB scripts')
     sceneEvalInProgress = true
+    // Heartbeat while compile runs — new Function is sync so we only tick around it.
+    const compileHeartbeat = setInterval(() => {
+      reportCompileProgress('still compiling new Function…')
+    }, 5_000)
     let exports: ReturnType<typeof evaluateSceneBundle>
     const compileBundle = (source: string, label: string): ReturnType<typeof evaluateSceneBundle> | null => {
       try {
@@ -3068,6 +3077,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       }
       exports = compiled
     } finally {
+      clearInterval(compileHeartbeat)
       sceneEvalInProgress = false
     }
     reportCompileProgress('bundle evaluated — posting eval-done')

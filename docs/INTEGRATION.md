@@ -27,7 +27,7 @@
 
 | Area | Tracked | 🟢 Done | 🟡 Partial | ⬜ Not started | 🔵 Client-only |
 | ---- | ------- | ------- | ---------- | -------------- | -------------- |
-| ECS components | 65 | 36 | 5 | 7 | 17 |
+| ECS components | 65 | 36 | 5 | 6 | 18 |
 | Client UI | see `integrationRegistry.ts` | | | | |
 | Networking | see `integrationRegistry.ts` | | | | |
 | Performance | see `integrationRegistry.ts` | | | | |

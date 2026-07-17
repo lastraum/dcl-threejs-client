@@ -934,6 +934,7 @@ export class RemoteAvatarManager {
       record.identity = identityFromAvatarProfile(profile, address)
       record.bodyShape = profile.bodyShape
       record.pendingProfile = profile
+      this.pushPeerMirrorIdentity(record, profile)
 
       if (!record.model && !record.placeholder) {
         this.attachLoadingPresentation(record)

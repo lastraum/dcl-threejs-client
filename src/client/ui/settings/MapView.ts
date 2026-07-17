@@ -3,7 +3,6 @@ import { fetchCatalystProfiles, getCachedProfile } from '../../../map/catalystPr
 import {
   VIEWPORT_DEFAULT_CENTER_TILE,
   VIEWPORT_DEFAULT_ZOOM,
-  VIEWPORT_FETCH_ZOOM,
   VIEWPORT_MAX_ZOOM,
   VIEWPORT_MIN_ZOOM,
   centerViewOnParcel,
@@ -231,7 +230,7 @@ export class MapView {
         </section>
 
         <footer class="dcl-map__sidebar-foot">
-          <span>Drag to pan · click parcel · scroll to zoom (close zoom = live parcels)</span>
+          <span>Drag to pan · click parcel · scroll to zoom (closer = sharper satellite LODs)</span>
         </footer>
       </aside>
 
@@ -697,7 +696,7 @@ export class MapView {
     const seen = new Set<string>()
 
     for (const tile of tiles) {
-      const key = `${tile.tx},${tile.ty}`
+      const key = `${tile.lod}/${tile.tx},${tile.ty}`
       seen.add(key)
       let img = this.tileNodes.get(key)
       if (!img) {
@@ -712,7 +711,8 @@ export class MapView {
         tileImg.addEventListener('load', () => {
           tileImg.style.visibility = ''
         })
-        tileImg.src = mapTileUrl(VIEWPORT_FETCH_ZOOM, tile.tx, tile.ty)
+        // Multi-LOD satellite: denser lod-0/{4,5,6} when zoomed in.
+        tileImg.src = mapTileUrl(this.view.zoom, tile.tx, tile.ty)
         this.tilesLayer.appendChild(tileImg)
         this.tileNodes.set(key, tileImg)
         img = tileImg

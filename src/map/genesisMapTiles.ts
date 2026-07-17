@@ -1,55 +1,99 @@
 /**
- * Genesis City basemap tiles — Unity Explorer SatelliteAtlas parity.
+ * Genesis City basemap tiles — multi-LOD satellite pyramid.
  *
- * Unity (`SatelliteChunkController`) loads:
- *   genesis-city/parcels@new-client-images / maps/lod-0/3/{x},{y}.jpg
- * (8×8 grid, 40 parcels per chunk). That tree is updated monthly; the older
- * genesis.city `map/latest` pyramid stalled ~Jan 2025.
+ * Source (Unity Explorer / genesis-city):
+ *   media.githubusercontent.com/.../genesis-city/parcels/new-client-images/maps/lod-0/{level}/{x},{y}.jpg
  *
- * Override base with `VITE_GENESIS_TILE_BASE_URL` if self-hosting.
+ * Each tile is 512×512. Higher `level` = denser grid = more px per parcel (sharper when zoomed in).
+ *
+ * | level | grid   | parcels/chunk | ~px/parcel |
+ * | ----- | ------ | ------------- | ---------- |
+ * | 3     | 8×8    | 40            | 12.8       |
+ * | 4     | 16×16  | 20            | 25.6       |
+ * | 5     | 32×32  | 10            | 51.2       |
+ * | 6     | 64×64  | 5             | 102.4      |
+ *
+ * Override root with `VITE_GENESIS_TILE_BASE_URL` (…/maps/lod-0 or legacy …/lod-0/3).
  */
 
-/** Grid size at lod-0/3 (Unity GRID_SIZE). */
-export const SATELLITE_GRID_SIZE = 8
+/** Satellite LOD levels present under maps/lod-0/{level}/ */
+export type SatelliteLodLevel = 3 | 4 | 5 | 6
 
-/** Parcels covered by one satellite chunk (Unity PARCELS_INSIDE_CHUNK). */
+/** World coverage shared by all LODs (level-3 Unity constants). */
+export const SATELLITE_MIN_PARCEL_X = -153
+export const SATELLITE_MAX_PARCEL_Y = 152
+/** 8 chunks × 40 parcels (level 3). */
+export const SATELLITE_WORLD_SPAN_PARCELS = 320
+
+/** Level-3 grid (legacy default). */
+export const SATELLITE_GRID_SIZE = 8
+/** Level-3 parcels per chunk (legacy default). */
 export const SATELLITE_PARCELS_PER_CHUNK = 40
 
-/**
- * SW-most parcel X of coverage. Unity: WorldMin (-150) − 3 border parcels
- * on the satellite image outside the city.
- */
-export const SATELLITE_MIN_PARCEL_X = -153
+const LOD_GRID: Record<SatelliteLodLevel, number> = {
+  3: 8,
+  4: 16,
+  5: 32,
+  6: 64
+}
+
+/** Normalize env base to `…/maps/lod-0` (strip trailing /3 if present). */
+function normalizeLodRoot(raw: string): string {
+  return raw
+    .replace(/\/+$/, '')
+    .replace(/\/[1-6]$/, '')
+}
 
 /**
- * North-most parcel Y of coverage (top edge of chunk row 0).
- * Chunk (0,0) center ≈ (-133, 132) with half-size 20 → top Y = 152.
+ * Root for lod-0 pyramid (no level suffix).
+ * Legacy env values ending in `/3` are still accepted.
  */
-export const SATELLITE_MAX_PARCEL_Y = 152
-
-/**
- * Zoomed satellite JPG base (no trailing slash). Path ends at lod level;
- * tiles are `{tx},{ty}.jpg` under this base.
- */
-export const GENESIS_TILE_BASE_URL = (
+export const GENESIS_TILE_LOD_ROOT = normalizeLodRoot(
   import.meta.env.VITE_GENESIS_TILE_BASE_URL?.trim() ||
-  'https://media.githubusercontent.com/media/genesis-city/parcels/new-client-images/maps/lod-0/3'
-).replace(/\/+$/, '')
+    'https://media.githubusercontent.com/media/genesis-city/parcels/new-client-images/maps/lod-0'
+)
 
-/** @deprecated Old genesis.city pad — kept for any external importers; unused by viewport. */
+/** @deprecated Prefer GENESIS_TILE_LOD_ROOT + level; kept for importers. */
+export const GENESIS_TILE_BASE_URL = `${GENESIS_TILE_LOD_ROOT}/3`
+
+/** @deprecated Old genesis.city pad — unused by viewport. */
 export const GENESIS_TILE_PAD = 30
 
-/** Display zoom ladder (not a remote pyramid). */
+/** Display zoom ladder (not a remote pyramid by itself). */
 export const GENESIS_MAX_ZOOM = 6
 
 /**
- * Fetch level label for API compat — all tiles come from lod-0/3.
- * Display zoom still scales tile CSS size from this baseline.
+ * Baseline display zoom where one level-3 tile is {@link TILE_DISPLAY_PX} wide.
+ * Higher display zoom CSS-scales tiles; we also pick denser LODs for real detail.
  */
 export const MAP_TILE_FETCH_ZOOM = 4
 
 /**
- * On-screen size of one 40-parcel satellite chunk at {@link MAP_TILE_FETCH_ZOOM}.
- * ~8px per parcel (was 8px with old z4 5-parcel tiles).
+ * On-screen size of one **level-3** 40-parcel chunk at {@link MAP_TILE_FETCH_ZOOM}.
+ * Other LODs scale tile CSS size by parcelsPerChunk ratio so 1 parcel = same screen size.
  */
 export const TILE_DISPLAY_PX = 320
+
+export function satelliteGridSize(lod: SatelliteLodLevel): number {
+  return LOD_GRID[lod]
+}
+
+export function satelliteParcelsPerChunk(lod: SatelliteLodLevel): number {
+  return SATELLITE_WORLD_SPAN_PARCELS / LOD_GRID[lod]
+}
+
+/**
+ * Pick denser satellite LOD as the user zooms in.
+ * Display zoom 4–5 → L3; 6 → L4; 7 → L5; 8+ → L6.
+ */
+export function satelliteLodForZoom(zoom: number): SatelliteLodLevel {
+  if (zoom >= 8) return 6
+  if (zoom >= 7) return 5
+  if (zoom >= 6) return 4
+  return 3
+}
+
+/** URL for one satellite chunk at a pyramid level. */
+export function satelliteTileUrl(lod: SatelliteLodLevel, tx: number, ty: number): string {
+  return `${GENESIS_TILE_LOD_ROOT}/${lod}/${tx},${ty}.jpg`
+}

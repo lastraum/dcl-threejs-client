@@ -147,7 +147,10 @@ export class CrdtEncoder {
       // Scene UI canvas dimensions for react-ecs / UiCanvasInformation.get(RootEntity).
       mk(components.UiCanvasInformation, reserved.root),
       // LiveKit scene-room connect flag — SDK network REQ_CRDT_STATE / isStateSyncronized.
-      mk(components.RealmInfo, reserved.root)
+      mk(components.RealmInfo, reserved.root),
+      // ADR-148 host-owned lifecycle counters — Unity writes each physics/scene tick to RootEntity.
+      // NOT multiplayer-synced (SDK NOT_SYNC_COMPONENTS); host → this scene only.
+      mk(components.EngineInfo, reserved.root)
     ]
 
     this.componentIds = new Set(this.reservedTargets.map((t) => t.componentId))

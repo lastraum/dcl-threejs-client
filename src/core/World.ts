@@ -1819,39 +1819,6 @@ export class World {
     this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
   }
 
-  /** Boot seal — slide entity-local actors near spawn without scanning the full plaza. */
-  private pushNearPlayerColliderPosesToPhysX(maxHoriz = 72): void {
-    if (!this.playerMode) return
-    const entities = this.collectNearPlayerColliderEcsEntities(maxHoriz)
-    if (!entities.length) return
-    this.sceneScript.refreshColliderDescPoses(entities)
-    const descs = this.sceneScript.getPhysicsColliderDescsForEntities(entities).filter(
-      (desc) => !this.physics.isWorldBakedStatic(desc.entity)
-    )
-    if (!descs.length) return
-    const updated = this.physics.applyStaticColliderPoseUpdates(descs)
-    if (updated > 0) this.physics.refreshStaticColliderQueries()
-    this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
-  }
-
-  private collectNearPlayerColliderEcsEntities(maxHoriz: number): Entity[] {
-    const feet = this.player?.getWorldPosition()
-    if (!feet) return []
-    const maxHorizSq = maxHoriz * maxHoriz
-    const out = new Set<Entity>()
-    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
-      const dx = desc.matrix.elements[12]! - feet.x
-      const dz = desc.matrix.elements[14]! - feet.z
-      if (dx * dx + dz * dz > maxHorizSq) continue
-      if (desc.entity >= GLTF_COLLIDER_ENTITY_BASE) {
-        out.add((desc.entity - GLTF_COLLIDER_ENTITY_BASE) as Entity)
-      } else {
-        out.add(desc.entity as Entity)
-      }
-    }
-    return [...out]
-  }
-
   /**
    * Animator GLTF colliders must be entity-local — world-baked boot cooks freeze animated treads.
    */
@@ -2128,9 +2095,22 @@ export class World {
   /**
    * Force a full collider re-extract + PhysX cook (Help panel — Recook colliders).
    * Clears fingerprint skip and failed-cook blacklist when `force` is true.
+   *
+   * Must re-enqueue every extracted descriptor: post-boot `reconcileColliderCookQueue`
+   * only validates the existing queue, so clear→reconcile left the queue empty and
+   * the async drain was a no-op (manual recook appeared to do nothing).
    */
-  recookPhysicsColliders(options?: { force?: boolean; quiet?: boolean }): void {
-    if (!this.playerMode || !this.player) return
+  recookPhysicsColliders(options?: { force?: boolean; quiet?: boolean }): Promise<void> {
+    if (!this.playerMode || !this.player) {
+      if (!options?.quiet) {
+        clientDebugLog.log('collision', 'Recook skipped — not in play mode / no player', {
+          level: 'warn',
+          alsoConsole: true
+        })
+      }
+      return Promise.resolve()
+    }
+
     if (options?.force !== false) {
       this.lastPhysicsBatchFp = ''
       this.physics.clearFailedCookCaches()
@@ -2138,28 +2118,67 @@ export class World {
       this.colliderCookQueue.clear()
       this.sceneScript.invalidateGltfColliderSyncCache()
     }
+
     this.sceneScript.flushSceneGraphMatrices()
+    this.sceneScript.refreshAllInstancedTransforms()
     this.sceneScript.syncCollisionForce()
-    this.reconcileColliderCookQueue()
-    void (async () => {
-      while (this.colliderCookQueue.size > 0) {
-        await this.drainColliderCookQueue({ loading: true })
-      }
-    })()
-    this.pushNearPlayerColliderPosesToPhysX(120)
-    this.physics.recookWorldBakedPoseDrift(this.sceneScript.getAllPhysicsColliderDescs(), {
-      forceAll: true
-    })
-    this.physics.warmStaticScene()
+
+    // Full re-enqueue (do not rely on post-boot reconcile — it only prunes the live queue).
+    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      this.colliderCookQueue.add(desc.entity)
+    }
+    this.pendingColliderCooks = this.colliderCookQueue.size
+    const queued = this.colliderCookQueue.size
+
     if (!options?.quiet) {
-      const mesh = this.sceneScript.collision?.getPhysicsColliders().length ?? 0
-      const gltf = this.sceneScript.gltfColliders?.getPhysicsColliders().length ?? 0
       clientDebugLog.log(
         'collision',
-        `Colliders recooked — static=${this.physics.staticColliderCount} mesh=${mesh} gltf=${gltf}`,
-        { level: 'success', alsoConsole: true }
+        `Manual recook — cooking ${queued} collider(s)…`,
+        { level: 'info', alsoConsole: true }
       )
     }
+
+    return (async () => {
+      // Serialize with the normal drain so we don't race budgeted cooks.
+      while (this.colliderCookDrainInFlight) {
+        await new Promise<void>((r) => setTimeout(r, 16))
+      }
+      this.colliderCookDrainInFlight = true
+      try {
+        let passes = 0
+        const maxPasses = Math.max(64, Math.ceil(queued / 8) + 8)
+        while (this.colliderCookQueue.size > 0 && passes < maxPasses) {
+          await this.drainColliderCookQueue({ loading: true })
+          passes++
+          // Yield so rAF / player input keep running during plaza-scale recooks.
+          await new Promise<void>((r) => requestAnimationFrame(() => r()))
+        }
+        if (this.colliderCookQueue.size > 0) {
+          console.warn(
+            `[World] manual recook incomplete — ${this.colliderCookQueue.size} still pending after ${passes} passes`
+          )
+        }
+        this.pushAllColliderPosesToPhysX()
+        this.physics.warmStaticScene()
+      } finally {
+        this.colliderCookDrainInFlight = false
+        this.pendingColliderCooks = this.colliderCookQueue.size
+      }
+
+      if (!options?.quiet) {
+        const mesh = this.sceneScript.collision?.getPhysicsColliders().length ?? 0
+        const gltf = this.sceneScript.gltfColliders?.getPhysicsColliders().length ?? 0
+        clientDebugLog.log(
+          'collision',
+          `Colliders recooked — static=${this.physics.staticColliderCount} gltfActors=${this.physics.gltfStaticActorCount} ` +
+            `extracted mesh=${mesh} gltf=${gltf} pending=${this.colliderCookQueue.size}`,
+          {
+            level: this.physics.staticColliderCount > 0 ? 'success' : 'warn',
+            alsoConsole: true
+          }
+        )
+      }
+    })()
   }
 
   private logCollidersPhysDebug(): void {

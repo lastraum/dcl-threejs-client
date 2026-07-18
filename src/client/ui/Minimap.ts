@@ -21,6 +21,7 @@ export type MinimapOptions = {
   host?: HTMLElement
 }
 
+/** Match location-map-stack CSS --location-map-size (pill width). */
 const DEFAULT_SIZE = 224
 /**
  * Close zoom so we pick denser satellite LODs (L4+).

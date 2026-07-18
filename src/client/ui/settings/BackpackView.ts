@@ -1360,7 +1360,11 @@ export class BackpackView {
           (isSelected ? ' is-selected' : '') +
           (equipped ? ' is-equipped' : '')
         card.style.setProperty('--wearable-rarity-bg', wearableRarityBackground(rarity))
-        card.innerHTML = `<img class="backpack-view__item-img" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" />`
+        card.innerHTML = `<img class="backpack-view__item-img" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" />${
+          item.amount > 1
+            ? `<span class="backpack-view__item-amount" title="${item.amount} in wallet">&times;${item.amount}</span>`
+            : ''
+        }`
         card.addEventListener('click', () => {
           this.selectItem(item)
           this.renderGrid()
@@ -2026,6 +2030,7 @@ export class BackpackView {
         <h3 class="backpack-view__detail-name">${this.escapeHtml(item.name)}</h3>
         <span class="backpack-view__detail-category">${this.escapeHtml(category)}</span>
         <span class="backpack-view__detail-rarity" style="color:${color}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
+        ${item.amount > 1 ? `<span class="backpack-view__detail-owned">&times;${item.amount} in wallet</span>` : ''}
         ${hiddenPill}
         <div class="backpack-view__wearable-actions">
           <button type="button" class="backpack-view__wearable-equip-btn" data-action="toggle-equip" ${canEquip ? '' : 'disabled'}${!fitsShape && !equipped ? ' title="Not available for your body shape"' : ''}>

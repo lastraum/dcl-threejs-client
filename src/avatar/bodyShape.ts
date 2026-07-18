@@ -38,6 +38,8 @@ export type BodyShapeVisibilityOptions = {
    * category only if it is in the set (or skin) — so a failed feet attach keeps base feet.
    */
   attachedCategories?: ReadonlySet<WearableCategory>
+  /** Categories the user force-renders despite hides (ADR-239) — keep their base shell. */
+  forceRender?: readonly string[]
 }
 
 /** Hide body_shape basemesh parts when wearables cover them — ported from Forge `body.ts`. */
@@ -48,8 +50,20 @@ export function applyBodyShapeVisibility(
 ): void {
   const hasSkin = wearables.some((w) => w.data.category === 'skin')
   const attached = options.attachedCategories
+  const force = new Set(options.forceRender ?? [])
+  // A category hidden by ANOTHER wearable's hides/replaces hides the base shell even
+  // though nothing attached in that slot (e.g. Skeleton Legs hides:["feet"] with no
+  // feet equipped). The attach gate below only protects the equipped-but-failed case.
+  const hiddenByOthers = (cat: WearableCategory) =>
+    !force.has(cat) &&
+    wearables.some(
+      (w) =>
+        w.data.category !== cat &&
+        ((w.data.hides?.includes(cat) ?? false) || (w.data.replaces?.includes(cat) ?? false))
+    )
   const covered = (cat: WearableCategory) =>
     hasSkin ||
+    hiddenByOthers(cat) ||
     (attached ? attached.has(cat) || attached.has('skin') : isHiddenCategory(wearables, cat))
 
   const hideUpper = covered('upper_body')

@@ -175,7 +175,10 @@ async function composeFromConfig(
   }
 
   await yieldToNextFrame()
-  applyBodyShapeVisibility(bodyRoot, config.wearables, { attachedCategories })
+  applyBodyShapeVisibility(bodyRoot, config.wearables, {
+    attachedCategories,
+    forceRender: config.forceRender
+  })
   await applyFacialFeatures(bodyRoot, config, cache)
   await yieldToNextFrame()
   applyWearableEmissives(avatar)

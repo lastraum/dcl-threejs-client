@@ -33,7 +33,7 @@ const BORDER_PX = 2
 const PARCEL_M = 16
 
 /**
- * Circular Genesis minimap — multi-LOD satellite, green facing triangle for local
+ * Circular Genesis minimap — multi-LOD satellite, red facing triangle for local
  * player, red dots for other peers in the scene.
  */
 export class Minimap {
@@ -227,7 +227,7 @@ export class Minimap {
     // Other players in this scene — red dots (before local marker so we stay on top).
     this.drawPeerDots(ctx, size)
 
-    // Local player — green triangle, tip = avatar facing (not camera).
+    // Local player — red triangle + white outline, tip = avatar facing (not camera).
     this.drawPlayerTriangle(ctx, cx, cy, player?.facingYaw ?? 0)
 
     ctx.restore()
@@ -242,7 +242,7 @@ export class Minimap {
   }
 
   /**
-   * White triangle — tip points visual avatar facing (incl. while moving).
+   * Red triangle + white outline — tip points visual avatar facing (incl. while moving).
    * `mapAngle` is canvas radians from getMinimapFacingAngle (0 = north / up).
    */
   private drawPlayerTriangle(
@@ -261,10 +261,11 @@ export class Minimap {
     ctx.lineTo(0, r * 0.28)
     ctx.lineTo(-r * 0.72, r * 0.62)
     ctx.closePath()
-    ctx.fillStyle = '#ffffff'
+    ctx.fillStyle = '#e85d5d'
     ctx.fill()
-    ctx.strokeStyle = '#000000'
-    ctx.lineWidth = 1.75
+    ctx.strokeStyle = '#ffffff'
+    ctx.lineWidth = 2
+    ctx.lineJoin = 'round'
     ctx.stroke()
     ctx.restore()
   }
@@ -290,8 +291,8 @@ export class Minimap {
       ctx.beginPath()
       ctx.arc(rect.cx, rect.cy, 3.5, 0, Math.PI * 2)
       ctx.fill()
-      ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)'
-      ctx.lineWidth = 1
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = 1.25
       ctx.beginPath()
       ctx.arc(rect.cx, rect.cy, 3.5, 0, Math.PI * 2)
       ctx.stroke()

@@ -164,7 +164,8 @@ DOM overlay — not in-scene `UiTransform`.
 | Settings overlay: Events, Map, Backpack, Places, Gallery | 🟢 | Map tab embedded when opened from minimap / shell (no page HUD chrome) |
 | Backpack wearables equip + Catalyst profile deploy | 🟡 | Inventory/equip/preview/deploy + **in-world reload from session** 🟢 · emotes tab / outfits / marketplace ⬜ · mobile sheets 🟢 |
 | Profile pills + right-click profile menu (+ copy wallet) | 🟢 |
-| Overhead name tags (hide via `featureToggles.nameTags` / `?nameTags=`) | 🟢 |
+| Overhead name tags (`featureToggles.nameTags` / `?nameTags=` lock; **N** = local + remotes + AvatarShapes) | 🟢 |
+| Hide all UI (**U**) | 🟢 | Client chrome + scene UI + overlays |
 | Preferences panel (P / ⚙): Graphics preset/shadows/lights/res/FPS + lighting | 🟢 |
 | Preferences → Sounds volume sliders | 🟢 |
 | Preferences: Controls, Chat tabs | 🟡 | Mouse sensitivity live; keybinds pending |

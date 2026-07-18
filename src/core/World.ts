@@ -468,10 +468,10 @@ export class World {
       })
     }
     this.assets.setScene(scene)
-    // scene.json / ?nameTags= — gate overhead labels for local, remote, AvatarShape NPCs.
+    // scene.json / ?nameTags= — policy lock (like skybox fixedTime). User N only when allowed.
     setSceneNameTagsVisible(scene.nameTagsVisible !== false)
     if (scene.nameTagsVisible === false) {
-      clientDebugLog.log('client', 'Name tags hidden (scene.json or ?nameTags=)', {
+      clientDebugLog.log('client', 'Name tags locked off (scene.json or ?nameTags=)', {
         alsoConsole: true
       })
     }
@@ -2443,6 +2443,15 @@ export class World {
     this.sceneScript.setSceneUiVisible(visible)
   }
 
+  /**
+   * Explorer [N] — apply name-tag preference to local player, remotes, and AvatarShape NPCs.
+   */
+  applyNameTagsVisibility(): void {
+    this.player?.applyNameTagsVisibility()
+    this.remoteAvatars?.applyNameTagsVisibility()
+    this.sceneScript.applyAvatarShapeNameTagsVisibility()
+  }
+
   getPlayerPosition(): THREE.Vector3 | null {
     if (!this.playerMode || !this.player) return null
     return this.player.getPosition()
@@ -2602,7 +2611,10 @@ export class World {
     // peers rebuild our remote avatar (they ignore repeats of the old version).
     this.comms.setCommsProfile(this.session.getCommsProfileEntity())
     this.comms.announceProfile('connect')
-    await this.vrmPeerSync.onLocalEquipChanged(this.session.getAddress())
+    // Equip key + announce identity — session wallet wins over stale ?profile=.
+    await this.vrmPeerSync.onLocalEquipChanged(address)
+    // Re-assert third-person body after mesh swap (FPV hide must not stick across equip).
+    this.player.forceRefreshBodyVisibility()
   }
 
   getEmoteWheelSlots() {
@@ -2625,6 +2637,7 @@ export class World {
       const address = event.line.senderAddress?.toLowerCase()
       if (!address) return
       if (!isChatTextLine(event.line)) return
+      // Message body only — name is already on the overhead pill header.
       const text = overheadChatText(event.line.text)
       if (!text) return
       this.showAvatarOverheadChat(address, text)

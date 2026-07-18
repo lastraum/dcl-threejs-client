@@ -68,6 +68,8 @@
         --z-client-overlay: 200;
         --z-client-system: 210;
         --z-client-debug: 230;
+        /* Fullscreen lightbox / media expand — above chat, settings, community modals */
+        --z-top-modal: 10000;
       }
       @supports (height: 100dvh) {
         :root {
@@ -9012,8 +9014,85 @@
         object-fit: contain;
         background: rgba(0, 0, 0, 0.2);
       }
+      .chat-panel__image--expandable {
+        cursor: zoom-in;
+      }
+      .chat-panel__image--expandable:hover {
+        outline: 1px solid rgba(255, 255, 255, 0.28);
+        outline-offset: 1px;
+      }
       .chat-panel__bubble.is-image {
         padding: 6px 8px;
+      }
+      /* Near-fullscreen chat image expand — top of stack (above chat corner UI) */
+      .chat-image-lightbox {
+        position: fixed;
+        inset: 0;
+        z-index: var(--z-top-modal);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: clamp(12px, 3vw, 36px);
+        box-sizing: border-box;
+        background: rgba(4, 6, 12, 0.88);
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        isolation: isolate;
+      }
+      .chat-image-lightbox[hidden] {
+        display: none !important;
+      }
+      /* Keep chat / shell from painting over the lightbox (stacking-context edge cases) */
+      body.chat-image-lightbox-open .chat-panel-wrap,
+      body.chat-image-lightbox-open #client-shell,
+      body.chat-image-lightbox-open .mobile-profile-fab,
+      body.chat-image-lightbox-open .scene-chat-fab,
+      body.chat-image-lightbox-open .mobile-game-hud,
+      body.chat-image-lightbox-open .social-chat-dock,
+      body.chat-image-lightbox-open .social-mobile-notif-host,
+      body.chat-image-lightbox-open .social-mobile-notif-host--desktop {
+        z-index: 0 !important;
+        pointer-events: none !important;
+      }
+      .chat-image-lightbox__stage {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: min(96vw, 1400px);
+        height: min(92vh, 92dvh);
+        max-width: 100%;
+        max-height: 100%;
+      }
+      .chat-image-lightbox__img {
+        display: block;
+        max-width: 100%;
+        max-height: 100%;
+        width: auto;
+        height: auto;
+        object-fit: contain;
+        border-radius: 10px;
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+        background: rgba(0, 0, 0, 0.25);
+        user-select: none;
+      }
+      .chat-image-lightbox__close {
+        position: absolute;
+        top: max(12px, env(safe-area-inset-top, 0px));
+        right: max(12px, env(safe-area-inset-right, 0px));
+        z-index: 1;
+        width: 44px;
+        height: 44px;
+        border: none;
+        border-radius: 999px;
+        background: rgba(20, 22, 30, 0.85);
+        color: #fff;
+        font-size: 28px;
+        line-height: 1;
+        cursor: pointer;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+      }
+      .chat-image-lightbox__close:hover {
+        background: rgba(40, 44, 56, 0.95);
       }
       .chat-panel__composer--drop {
         outline: 2px dashed rgba(120, 200, 255, 0.75);
@@ -14969,6 +15048,28 @@
       body.scene-landing-jump-in-loading .mobile-profile-fab,
       body.scene-landing-jump-in-loading .scene-chat-fab,
       body.scene-landing-jump-in-loading #chat-panel-wrap {
+        display: none !important;
+        pointer-events: none !important;
+      }
+      /* Explorer [U] — hide ALL UI (client chrome + scene UI + flyouts) */
+      body.client-hud-hidden #client-shell,
+      body.client-hud-hidden #world-location-card,
+      body.client-hud-hidden #location-map-stack,
+      body.client-hud-hidden #minimap,
+      body.client-hud-hidden #scene-ui-root,
+      body.client-hud-hidden .mobile-game-hud,
+      body.client-hud-hidden .mobile-profile-fab,
+      body.client-hud-hidden .scene-chat-fab,
+      body.client-hud-hidden .mobile-scene-location-pill,
+      body.client-hud-hidden .client-mobile-drawer-backdrop,
+      body.client-hud-hidden .chat-panel-wrap,
+      body.client-hud-hidden .skybox-panel,
+      body.client-hud-hidden .nearby-voice-panel,
+      body.client-hud-hidden .emote-wheel-overlay,
+      body.client-hud-hidden .debug-panel,
+      body.client-hud-hidden .dev-progress,
+      body.client-hud-hidden .settings-overlay,
+      body.client-hud-hidden .preferences-panel {
         display: none !important;
         pointer-events: none !important;
       }

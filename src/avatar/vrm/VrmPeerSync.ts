@@ -132,6 +132,8 @@ export class VrmPeerSync {
   }
 
   async onLocalEquipChanged(address?: string | null): Promise<void> {
+    // Always re-announce after backpack equip so peers remount even if hash unchanged.
+    this.publishedHash = undefined
     await this.refreshLocalEquipped(address)
   }
 

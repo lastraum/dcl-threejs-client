@@ -30,10 +30,29 @@ function measureHeight(scene: THREE.Object3D): number {
 }
 
 function prepScene(root: THREE.Group): void {
+  // Same as VRM: skinned meshes + bad export opacity must not cull/blank after attach.
+  root.visible = true
   root.traverse((obj) => {
-    if (obj instanceof THREE.Mesh) {
-      obj.castShadow = true
-      obj.receiveShadow = true
+    obj.visible = true
+    if (!(obj instanceof THREE.Mesh)) return
+    obj.castShadow = true
+    obj.receiveShadow = true
+    obj.frustumCulled = false
+    if (obj instanceof THREE.SkinnedMesh) {
+      obj.skeleton?.update()
+      obj.geometry?.computeBoundingSphere()
+      obj.geometry?.computeBoundingBox()
+    }
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
+    for (const mat of materials) {
+      if (!mat) continue
+      mat.visible = true
+      mat.side = THREE.DoubleSide
+      if ('transparent' in mat && (mat as THREE.Material & { opacity?: number }).opacity === 0) {
+        ;(mat as THREE.Material & { opacity: number }).opacity = 1
+        mat.transparent = false
+      }
+      mat.needsUpdate = true
     }
   })
 }

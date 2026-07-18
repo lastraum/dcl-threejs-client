@@ -34,7 +34,7 @@ import { createRemoteAvatarPlaceholder } from '../avatar/remotePlaceholder'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import { VrmAvatar } from '../avatar/vrm/VrmAvatar'
 import { VrmLocomotionAnimations } from '../avatar/vrm/VrmLocomotionAnimations'
-import { disposeVrmRoot } from '../avatar/vrm/VrmLoader'
+import { disposeVrmRoot, prepareCustomAvatarScene } from '../avatar/vrm/VrmLoader'
 import { applyVrmPivotOffset } from '../avatar/vrm/vrmFeetAlign'
 import { retargetGltfClipToVrm } from '../avatar/vrm/mixamoRetarget'
 import { getVrmRamBytes, getVrmRamFormat } from '../avatar/vrm/vrmRamCache'
@@ -896,6 +896,11 @@ export class RemoteAvatarManager {
       record.glider.update(delta)
       record.doubleJumpTriggered = false
 
+      if (record.nameTag) {
+        record.nameTag.object.visible =
+          !record.modifierHidden && areSceneNameTagsVisible()
+      }
+
       const nameTagTarget = record.model ?? record.placeholder
       if (nameTagTarget) {
         updateNameTagAnchor(record.nameTagAnchor, nameTagTarget)
@@ -983,6 +988,19 @@ export class RemoteAvatarManager {
     }
     record.nameTag.setLoading(loading)
     record.nameTag.object.visible = !record.modifierHidden && areSceneNameTagsVisible()
+  }
+
+  /** Force-refresh all remote peer overhead labels (Explorer [N]). */
+  applyNameTagsVisibility(): void {
+    for (const record of this.peers.values()) {
+      if (!areSceneNameTagsVisible()) {
+        record.nameTag?.dispose()
+        record.nameTag = null
+        continue
+      }
+      const loading = !!record.placeholder && !record.model
+      this.ensureNameTag(record, loading)
+    }
   }
 
   private attachLoadingPresentation(record: RemotePeerRecord): void {
@@ -1152,7 +1170,9 @@ export class RemoteAvatarManager {
 
       this.clearLoadingPresentation(record)
       record.pivot.add(odkAvatar.root)
+      prepareCustomAvatarScene(odkAvatar.root)
       applyOdkPivotOffset(record.pivot, odkAvatar.root)
+      prepareCustomAvatarScene(odkAvatar.root)
       this.finalizeNameTag(record)
 
       await yieldToNextFrame()
@@ -1161,6 +1181,7 @@ export class RemoteAvatarManager {
       record.odkLocomotion = new OdkLocomotionAnimations()
       try {
         await record.odkLocomotion.bind(odkAvatar.root)
+        prepareCustomAvatarScene(odkAvatar.root)
         odkNetInfo('remote ODK locomotion active', {
           peer: shortAddr(record.address),
           name: record.identity.displayName,
@@ -1234,6 +1255,7 @@ export class RemoteAvatarManager {
 
       this.clearLoadingPresentation(record)
       record.pivot.add(vrmAvatar.root)
+      prepareCustomAvatarScene(vrmAvatar.root)
       this.finalizeNameTag(record)
 
       await yieldToNextFrame()
@@ -1245,12 +1267,16 @@ export class RemoteAvatarManager {
         applyVrmPivotOffset(record.pivot, vrmAvatar.vrm, vrmAvatar.root, {
           measureActivePose: true
         })
+        prepareCustomAvatarScene(vrmAvatar.root)
       } catch (err) {
         console.warn(`[network] remote VRM locomotion failed for ${record.address}`, err)
         record.vrmLocomotion.dispose()
         record.vrmLocomotion = null
         applyVrmPivotOffset(record.pivot, vrmAvatar.vrm, vrmAvatar.root)
+        prepareCustomAvatarScene(vrmAvatar.root)
       }
+      record.model.visible = true
+      record.pivot.visible = true
 
       clientDebugLog.log(
         'network',

@@ -4,9 +4,22 @@ import { PARCEL_SIZE } from '../content/types'
 import { catalystAssetUrl, PROP_Y_SINK } from './Data/EmptyLandCatalog'
 import type { LandscapeEnvironmentProfile } from './EnvironmentCatalog'
 import { biasedPaddingPosition, distributedParcelPositions } from './parcelDistribution'
+import { perlin01 } from './perlin2d'
 import { parcelKeyFromDclScene, randomParcelLocalXZ } from './Utils/SceneSpace'
 import { applyFoliageWindToObject } from './foliageWind'
 import { hashParcelCoords, mulberry32, pickInt } from './Utils/SeededRandom'
+
+/** Optional density / perlin overrides from scene.json environment.desert / .mountains */
+export type DecorateDensityOpts = {
+  rockDensity?: number
+  treeDensity?: number
+  bushDensity?: number
+  backdropDensity?: number
+  /** Desert rock perlin frequency (parcel units). */
+  perlinScale?: number
+  /** Desert: only place rocks when perlin ≥ threshold. */
+  perlinThreshold?: number
+}
 
 export type ParcelLandscapeRole = 'scene' | 'padding'
 
@@ -75,7 +88,8 @@ async function placeProp(
   const clone = await cache.clone(catalystAssetUrl(hash), hash, { landscape: true })
   clone.rotation.y = rotY
   if (scale !== 1) clone.scale.setScalar(scale)
-  clone.position.set(lx, 0, lz)
+  // Parent is at dclToThree(SW); local X must be reflected so world = dclToThree(sw+local).
+  clone.position.set(-lx, 0, lz)
   alignBaseToGround(clone)
   clone.position.y += PROP_Y_SINK[hash] ?? 0
   applyFoliageWindToObject(clone)
@@ -107,6 +121,12 @@ export type DecorateParcelContext = {
  * Procedural empty-land props on padding parcels (world scenes only).
  * Unity Explorer: `TreeData` + `RenderGroundSystem` / `GrassIndirectRenderer`.
  */
+function scaleRange(range: CountRange, mul: number): CountRange {
+  const m = Number.isFinite(mul) ? Math.max(0, Math.min(2, mul)) : 1
+  if (m === 1) return range
+  return [Math.round(range[0] * m), Math.max(0, Math.round(range[1] * m))] as const
+}
+
 export async function decorateParcel(
   cache: AssetCache,
   parcelX: number,
@@ -115,15 +135,27 @@ export async function decorateParcel(
   root: THREE.Group,
   worldScene: boolean,
   profile: LandscapeEnvironmentProfile,
-  ctx?: DecorateParcelContext
+  ctx?: DecorateParcelContext,
+  density?: DecorateDensityOpts
 ): Promise<void> {
   if (role === 'scene' || profile.decoration === 'none' || profile.decoration === 'perlin-instanced') {
     return
   }
-  if (profile.decoration === 'sparse' && !worldScene) return
+  // Sparse was world-only historically; desert padding rocks should also show on
+  // local / editor / coords so environment.kind=desert looks the same everywhere.
+  if (profile.decoration === 'sparse' && !worldScene && profile.kind !== 'desert') return
 
   const rng = mulberry32(hashParcelCoords(parcelX, parcelY))
-  const counts = countsForProfile(profile)
+  const baseCounts = countsForProfile(profile)
+  const counts: DecorationCounts = {
+    trees: scaleRange(baseCounts.trees, density?.treeDensity ?? 1),
+    bushes: scaleRange(baseCounts.bushes, density?.bushDensity ?? 1),
+    rocks: scaleRange(baseCounts.rocks, density?.rockDensity ?? 1),
+    grass: baseCounts.grass,
+    backdrop: baseCounts.backdrop
+      ? scaleRange(baseCounts.backdrop, density?.backdropDensity ?? 1)
+      : undefined
+  }
   const islandBeach = profile.kind === 'island'
   const denseForest = profile.kind === 'forest'
   const centerPx = ctx?.sceneCenterPx ?? parcelX
@@ -177,7 +209,18 @@ export async function decorateParcel(
     await placeProp(cache, pickHash(rng, profile.bushes), root, pos.x, pos.z, rng() * Math.PI * 2, scale)
   }
 
-  const rockCount = profile.rocks.length ? pickInt(rng, counts.rocks[0], counts.rocks[1]) : 0
+  let rockCount = profile.rocks.length ? pickInt(rng, counts.rocks[0], counts.rocks[1]) : 0
+  // Desert: perlin gate — sparse dunes of rocks rather than uniform packing.
+  if (desertPadding && density?.perlinScale != null && density?.perlinThreshold != null) {
+    const p = perlin01(
+      parcelX * density.perlinScale,
+      parcelY * density.perlinScale,
+      hashParcelCoords(parcelX, parcelY, 91)
+    )
+    if (p < density.perlinThreshold) {
+      rockCount = Math.min(rockCount, Math.floor(rockCount * (p / Math.max(0.01, density.perlinThreshold))))
+    }
+  }
   const rockPositions: { x: number; z: number }[] = []
   if (desertPadding) {
     for (let i = 0; i < rockCount; i++) {
@@ -188,6 +231,14 @@ export async function decorateParcel(
   }
   for (const pos of rockPositions) {
     if (landsOnSceneParcel(pos.x, pos.z)) continue
+    if (desertPadding && density?.perlinScale != null && density?.perlinThreshold != null) {
+      const lp = perlin01(
+        (parcelX + pos.x * 0.1) * density.perlinScale,
+        (parcelY + pos.z * 0.1) * density.perlinScale,
+        17
+      )
+      if (lp < density.perlinThreshold) continue
+    }
     const scale = desertPadding ? 0.45 + rng() * 0.35 : 0.7 + rng() * 0.6
     await placeProp(cache, pickHash(rng, profile.rocks), root, pos.x, pos.z, rng() * Math.PI * 2, scale)
   }

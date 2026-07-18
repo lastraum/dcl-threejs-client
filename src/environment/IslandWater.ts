@@ -48,7 +48,8 @@ export class IslandWater {
   static async create(
     sceneParcels: string[],
     baseParcel: string,
-    shoreWidthParcels: number
+    shoreWidthParcels: number,
+    options?: { waterColor?: number; distortionScale?: number }
   ): Promise<IslandWater> {
     const base = parseParcelKey(baseParcel)
     const layout = islandShoreLayout(sceneParcels, shoreWidthParcels, base)
@@ -65,8 +66,8 @@ export class IslandWater {
       waterNormals,
       sunDirection: sunDir,
       sunColor: 0xffffff,
-      waterColor: 0x000a14,
-      distortionScale: 3.7,
+      waterColor: options?.waterColor ?? 0x000a14,
+      distortionScale: options?.distortionScale ?? 3.7,
       fog: false
     })
 

@@ -39,6 +39,9 @@ import {
   resolveSceneEnvironment
 } from '../dcl/landscape/resolveLandscapeEnvironment'
 import type { EzTreeGrassFieldHandle } from '../dcl/landscape/EzTreeGrassField'
+import { buildAuthorTerrainGrassField } from '../dcl/landscape/AuthorTerrainGrassField'
+import { sceneHasAuthorTerrain } from '../dcl/content/sceneAuthorTerrain'
+import { readEnvironmentWindShader } from '../dcl/landscape/readEnvironmentWindShader'
 import { resetFoliageWindRegistry, updateFoliageWind } from '../dcl/landscape/foliageWind'
 import { SessionIdentity } from '../network/SessionIdentity'
 import { RemoteAvatarManager } from '../network/RemoteAvatarManager'
@@ -173,6 +176,7 @@ export class World {
   private playerWalkBounds: PlayerWalkBounds | null = null
   private ezTreeGrass: EzTreeGrassFieldHandle | null = null
   private ezTreeGrassElapsed = 0
+  private desertAtmosphere: import('../environment/DesertAtmosphere').DesertAtmosphere | null = null
   private foliageWindElapsed = 0
   private unsubEnvironmentDebug: (() => void) | null = null
   private lastVoluntaryEmoteAllowed = true
@@ -494,23 +498,63 @@ export class World {
       landscapeProfile.kind === 'island' || landscapeProfile.circularShore === true
     const openOcean = landscapeProfile.openOcean === true
 
-    const skipClientLandscape = scene.source.kind === 'local'
+    // Local projects used to skip landscape; honor environment.kind so desert/island/etc.
+    // match the same buildParcelLandscape path as worlds/coords (editor + play parity).
+    const skipClientLandscape =
+      scene.source.kind === 'local' && landscapeProfile.kind === 'none'
     const terrain = createTerrainModel(
       scene.parcels,
       landscapeProfile.borderPadding,
       landscapeProfile.circularShore === true
     )
 
+    this.ezTreeGrass?.dispose()
+    this.ezTreeGrass = null
+    this.ezTreeGrassElapsed = 0
+    this.desertAtmosphere = null
+    this.foliageWindElapsed = 0
+    this.host.scene.fog = null
+
     if (!skipClientLandscape) {
       await this.landscape.initialize(scene, this.assets, onProgress)
-      this.ezTreeGrass?.dispose()
       this.ezTreeGrass =
         (this.landscape.state.landscapeRoot?.userData.ezTreeGrass as EzTreeGrassFieldHandle | undefined) ??
         null
-      this.ezTreeGrassElapsed = 0
-      this.foliageWindElapsed = 0
+      this.desertAtmosphere =
+        (this.landscape.state.landscapeRoot?.userData.desertAtmosphere as
+          | import('../environment/DesertAtmosphere').DesertAtmosphere
+          | undefined) ?? null
       if (this.landscape.state.landscapeRoot) {
         this.host.scene.add(this.landscape.state.landscapeRoot)
+      }
+      // Mountains atmospheric haze (exp2 fog).
+      if (landscapeProfile.kind === 'mountains') {
+        const env =
+          scene.metadata?.environment &&
+          typeof scene.metadata.environment === 'object' &&
+          !Array.isArray(scene.metadata.environment)
+            ? (scene.metadata.environment as import('../dcl/content/types').SceneEnvironmentConfig)
+            : undefined
+        const { resolveMountainsSettings } = await import('../environment/mountainsDefaults')
+        const m = resolveMountainsSettings(env?.mountains)
+        if (m.haze > 0.0001) {
+          const THREE = await import('three')
+          this.host.scene.fog = new THREE.FogExp2(m.hazeColor, m.haze)
+        }
+      } else if (landscapeProfile.kind === 'desert' && this.desertAtmosphere) {
+        this.desertAtmosphere.applyToScene(this.host.scene)
+      }
+    } else if (sceneHasAuthorTerrain(scene)) {
+      // Local projects skip empty-land tiles, but still need paint-driven grass on editor terrain.
+      onProgress?.('Planting author-terrain grass…')
+      try {
+        this.ezTreeGrass = await buildAuthorTerrainGrassField(scene, {
+          windShader: readEnvironmentWindShader(scene.metadata),
+          onProgress
+        })
+        if (this.ezTreeGrass) this.host.scene.add(this.ezTreeGrass.group)
+      } catch (err) {
+        console.warn('[windShader] author-terrain grass failed', err)
       }
     }
 
@@ -1147,6 +1191,7 @@ export class World {
             this.ezTreeGrassElapsed += delta
             this.ezTreeGrass.update(this.ezTreeGrassElapsed, this.host.camera.position)
           }
+          this.desertAtmosphere?.update(delta)
           this.foliageWindElapsed += delta
           updateFoliageWind(this.foliageWindElapsed)
         }
@@ -2666,7 +2711,13 @@ export class World {
     scene: ResolvedScene,
     shoreWidthParcels: number
   ): Promise<SceneWater> {
-    const ocean = await IslandWater.create(scene.parcels, scene.baseParcel, shoreWidthParcels)
+    const fft = resolveFftOceanSettings(scene.metadata)
+    const waterColor = new THREE.Color(fft.waterDeep).getHex()
+    const ocean = await IslandWater.create(scene.parcels, scene.baseParcel, shoreWidthParcels, {
+      waterColor,
+      // Milder distortion when FFT is off so Water.js still reads as a calm shore.
+      distortionScale: fft.enabled ? 3.7 : 2.6
+    })
     return {
       group: ocean.group,
       update: (delta, camera) => ocean.update(delta, camera),
@@ -2713,9 +2764,11 @@ export class World {
 
     this.ezTreeGrass?.dispose()
     this.ezTreeGrass = null
+    this.desertAtmosphere = null
     resetFoliageWindRegistry()
     this.landscape.state.landscapeRoot?.removeFromParent()
     this.landscape.state.landscapeRoot = null
+    this.host.scene.fog = null
 
     this.physics.dispose()
 

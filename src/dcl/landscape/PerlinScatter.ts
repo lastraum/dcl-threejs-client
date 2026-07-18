@@ -86,6 +86,71 @@ export async function buildPerlinInstancedScatter(
   return root
 }
 
+/**
+ * Desert outer rock field — forest-style infinite expanse beyond scene+padding.
+ * Uses environment.desert perlin + rockDensity so dunes of rocks reach the horizon.
+ */
+export async function buildDesertOuterRockScatter(
+  cache: AssetCache,
+  profile: LandscapeEnvironmentProfile,
+  ctx: OuterScatterContext,
+  sceneSeed: number,
+  opts?: {
+    rockDensity?: number
+    perlinScale?: number
+    perlinThreshold?: number
+    onProgress?: (msg: string) => void
+  }
+): Promise<THREE.Group> {
+  const root = new THREE.Group()
+  root.name = 'landscape:desert-outer-rocks'
+
+  const rockHash = profile.rocks[0]
+  if (!rockHash) return root
+
+  const densityMul = Math.max(0, Math.min(2, opts?.rockDensity ?? 1))
+  if (densityMul <= 0.01) return root
+
+  // World-space scale: perlinScale is ~0.05–2 (UI); map to spatial frequency.
+  const pScale = Math.max(0.02, (opts?.perlinScale ?? 0.55) * 0.08)
+  const threshold = Math.max(0, Math.min(1, opts?.perlinThreshold ?? 0.42))
+  // Denser cells when density is high (forest outer uses 10m).
+  const cell = densityMul >= 1.4 ? 8 : densityMul >= 0.8 ? 10 : 14
+
+  const rocks: ScatterInstance[] = []
+  for (let z = ctx.minZ; z < ctx.maxZ; z += cell) {
+    for (let x = ctx.minX; x < ctx.maxX; x += cell) {
+      // Skip scene + padding ring — those use parcel decoration.
+      if (isInsideLandscape(x, z, ctx)) continue
+
+      const density = perlin01(x * pScale, z * pScale, sceneSeed)
+      const detail = perlin01(x * pScale * 2.6, z * pScale * 2.6, sceneSeed + 19)
+      // Threshold gate + density multiplier chance.
+      if (density < threshold) continue
+      if (detail < 0.28 / Math.max(0.35, densityMul)) continue
+
+      const rng = mulberry32(hashParcelCoords(Math.floor(x), Math.floor(z), sceneSeed + 7))
+      // Thin out further when densityMul < 1
+      if (rng() > Math.min(1, 0.35 + densityMul * 0.45)) continue
+
+      rocks.push({
+        x: x + rng() * cell,
+        z: z + rng() * cell,
+        rotY: rng() * Math.PI * 2,
+        scale: 0.55 + rng() * 0.55 * densityMul
+      })
+    }
+  }
+
+  opts?.onProgress?.(`Desert outer rocks: ${rocks.length}`)
+
+  if (rocks.length) {
+    const g = await buildInstancedScatter(cache, rockHash, rocks, 'scatter:desert-outer-rocks', ctx.base)
+    if (g) root.add(g)
+  }
+  return root
+}
+
 /** Sparse desert props on padding parcels — per-parcel instanced batches. */
 export async function buildSparseScatter(
   cache: AssetCache,

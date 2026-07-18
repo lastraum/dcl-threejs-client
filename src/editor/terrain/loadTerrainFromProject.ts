@@ -93,6 +93,9 @@ async function importLegacyTerrainFiles(
 
 export type TerrainProjectLoad = {
   exportSettings?: TerrainExportSettings
+  /** ez-tree blade density mask from draft (optional). */
+  grass?: Uint8Array
+  grassRgb?: Uint8Array
 }
 
 export async function loadTerrainFromProject(
@@ -107,7 +110,11 @@ export async function loadTerrainFromProject(
     terrain.setSplat(draft.splat)
     terrain.setLava(draft.lava)
     terrain.setProceduralShading(draft.proceduralShading)
-    return { exportSettings: draft.exportSettings }
+    return {
+      exportSettings: draft.exportSettings,
+      grass: draft.grass,
+      grassRgb: draft.grassRgb
+    }
   }
 
   await importLegacyTerrainFiles(projectId, root, terrain)

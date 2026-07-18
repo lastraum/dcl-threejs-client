@@ -7,9 +7,14 @@ export const ARENA_TERRAIN_HEIGHT_OFFSET = 0
 export const ARENA_WATER_SURFACE_Y = 5
 
 export type TerrainBrushMode = 'raise' | 'lower' | 'smooth' | 'flatten' | 'towater'
-export type TerrainPaintLayer = 'height' | 'splat'
+/** height = sculpt · splat = surface material · grass = plant ez-tree blade GLBs */
+export type TerrainPaintLayer = 'height' | 'splat' | 'grass'
 export type TerrainSplatChannel = 0 | 1 | 2 | 3 | 4
 
+/**
+ * Splat albedo channels for the heightmap surface (Paint tab).
+ * Channel 0 “Grass” = green material color — separate from the Grass tab (ez-tree blade GLBs).
+ */
 export const TERRAIN_SPLAT_CHANNEL_LABELS = ['Grass', 'Dirt', 'Rock', 'Sand', 'Lava'] as const
 
 export const TERRAIN_BIOME_COLORS = {
@@ -39,10 +44,15 @@ export interface TerrainSculptSettings {
   brushStrength: number
   splatChannel: TerrainSplatChannel
   splatErase: boolean
+  /** Active Ez Grass plant color (0xRRGGBB) — written into grass-color.png per cell. */
+  grassColor: number
 }
 
 export const TERRAIN_BRUSH_RADIUS_MIN_M = 1
 export const TERRAIN_BRUSH_RADIUS_MAX_M = 50
+
+/** Default ez-tree blade plant color (matches landscape grass tint). */
+export const DEFAULT_EZ_GRASS_COLOR = 0xd44831
 
 export const DEFAULT_TERRAIN_SCULPT_SETTINGS: TerrainSculptSettings = {
   paintLayer: 'height',
@@ -50,7 +60,8 @@ export const DEFAULT_TERRAIN_SCULPT_SETTINGS: TerrainSculptSettings = {
   brushSizeM: 8,
   brushStrength: 0.55,
   splatChannel: 0,
-  splatErase: false
+  splatErase: false,
+  grassColor: DEFAULT_EZ_GRASS_COLOR
 }
 
 export interface TerrainProceduralShading {
@@ -108,7 +119,33 @@ export const TERRAIN_HEIGHTMAP_FILE = `${TERRAIN_ASSET_DIR}/heightmap.png`
 export const TERRAIN_HEIGHTS_BIN_FILE = `${TERRAIN_ASSET_DIR}/heightmap.heights.bin`
 export const TERRAIN_SPLAT_FILE = `${TERRAIN_ASSET_DIR}/splat.png`
 export const TERRAIN_LAVA_FILE = `${TERRAIN_ASSET_DIR}/lava.png`
+/** Density map for ez-tree grass blade GLBs (R channel 0–255). Not albedo splat. */
+export const TERRAIN_GRASS_FILE = `${TERRAIN_ASSET_DIR}/grass.png`
+/** Per-cell plant RGB for multi-tint ez-tree blades (RGB PNG). */
+export const TERRAIN_GRASS_COLOR_FILE = `${TERRAIN_ASSET_DIR}/grass-color.png`
+/**
+ * ThreejsClient-only grass field manifest (Unity/Godot Explorer ignore).
+ * Points at density/color/height sidecars; client rebuilds InstancedMesh from them.
+ */
+export const TERRAIN_GRASS_MANIFEST_FILE = `${TERRAIN_ASSET_DIR}/grass.json`
 export const TERRAIN_GLB_FILE = `${TERRAIN_ASSET_DIR}/terrain.glb`
+
+/** Manifest schema version — bump when sidecar layout changes. */
+export const TERRAIN_GRASS_MANIFEST_VERSION = 1 as const
+
+export type TerrainGrassManifest = {
+  /** Always ThreejsClient — not SDK7 entities. */
+  client: 'threejsclient'
+  version: typeof TERRAIN_GRASS_MANIFEST_VERSION
+  format: 'density+rgb+heights'
+  resolution: number
+  files: {
+    density: string
+    color: string
+    heights: string
+  }
+  note: string
+}
 
 /** Baked albedo resolution embedded in terrain.glb (sculpt grid stays 1024²). */
 export const TERRAIN_ALBEDO_EXPORT_RESOLUTION = 512

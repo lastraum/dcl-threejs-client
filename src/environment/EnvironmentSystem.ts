@@ -1,6 +1,12 @@
 import * as THREE from 'three'
-import type { ResolvedScene, SceneEnvironmentKind, SkyboxConfig } from '../dcl/content/types'
+import type {
+  ResolvedScene,
+  SceneEnvironmentConfig,
+  SceneEnvironmentKind,
+  SkyboxConfig
+} from '../dcl/content/types'
 import { landscapeEnvironmentProfile } from '../dcl/landscape/EnvironmentCatalog'
+import { SpaceSkyField } from './SpaceSkyField'
 import type { MirrorComponents } from '../bridge/mirrorComponents'
 import type { ProjectionView } from '../bridge/ProjectionView'
 import type { SceneHost } from '../rendering/SceneHost'
@@ -126,6 +132,8 @@ export class EnvironmentSystem {
   /** Help panel — hide genesis dome and use void sky while keeping custom skybox textures. */
   private landscapeVisualSuppressed = false
   private readonly outdoorLighting = createOutdoorLightingSnapshot()
+  /** Space biome starfield / void plate (when kind === space). */
+  private spaceSky: SpaceSkyField | null = null
 
   constructor(
     private readonly host: SceneHost,
@@ -190,13 +198,25 @@ export class EnvironmentSystem {
     if (!this.customCube && !this.customBackground && !hideSkyDome) {
       await this.genesisSky.loadTextures()
     } else if (landscapeProfile.spaceSky) {
-      this.host.scene.background = new THREE.Color(0x020208)
       this.genesisSky.mesh.visible = false
+      this.mountSpaceSky(scene)
     } else if (landscapeProfile.voidSky) {
       this.host.scene.background = new THREE.Color(VOID_SKY_BACKGROUND)
       this.genesisSky.mesh.visible = false
     }
     this.applyTime(this.displayTime, 0)
+  }
+
+  private mountSpaceSky(scene: ResolvedScene): void {
+    this.spaceSky?.dispose()
+    this.spaceSky = null
+    const env = scene.metadata?.environment
+    const spaceCfg =
+      env && typeof env === 'object' && !Array.isArray(env)
+        ? (env as SceneEnvironmentConfig).space
+        : undefined
+    this.spaceSky = SpaceSkyField.create(spaceCfg)
+    this.spaceSky.mount(this.host.scene)
   }
 
   /** Runtime debug — suppress genesis sky dome (landscape/ocean hidden separately in World). */
@@ -231,6 +251,9 @@ export class EnvironmentSystem {
     }
 
     this.applyTime(this.displayTime, delta)
+    if (this.spaceSky) {
+      this.spaceSky.update(delta, this.host.camera)
+    }
   }
 
   /** Player panel (fields touched this scene) > scene.json `environment` > player store defaults. */
@@ -253,6 +276,8 @@ export class EnvironmentSystem {
     this.sceneLighting = {}
     this.userAdjustedLighting.clear()
     this.lastUserLighting = null
+    this.spaceSky?.dispose()
+    this.spaceSky = null
     this.genesisSky.dispose()
     this.genesisSky.mesh.removeFromParent()
     this.hemi.removeFromParent()
@@ -546,11 +571,13 @@ export class EnvironmentSystem {
         (day ? sunExposureMultiplier(lighting.exposure) : moonExposureMultiplier(lighting.moonExposure))
 
     if (spaceSky) {
-      if (!(this.host.scene.background instanceof THREE.Color)) {
-        this.host.scene.background = new THREE.Color(0x020208)
-      }
-      if (skylightOff) {
+      // SpaceSkyField owns background + fog; only force black when skylight fully off.
+      if (skylightOff && this.host.scene.background instanceof THREE.Color) {
         ;(this.host.scene.background as THREE.Color).setHex(0x000000)
+      } else if (this.spaceSky) {
+        // Keep plate from SpaceSkyField; no-op each frame is fine.
+      } else if (!(this.host.scene.background instanceof THREE.Color)) {
+        this.host.scene.background = new THREE.Color(0x020208)
       }
     } else if (voidSky) {
       if (!(this.host.scene.background instanceof THREE.Color)) {

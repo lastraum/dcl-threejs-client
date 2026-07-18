@@ -30,6 +30,42 @@ function glslSmoothstep(edge0: number, edge1: number, x: number): number {
   return THREE.MathUtils.smoothstep(x, edge0, edge1)
 }
 
+/** Copy a rectangular float grid region (skips work when src === dst). */
+function copyFloatRegion(
+  dst: Float32Array,
+  src: Float32Array,
+  resolution: number,
+  minIx: number,
+  maxIx: number,
+  minIz: number,
+  maxIz: number
+): void {
+  if (dst === src) return
+  for (let iz = minIz; iz <= maxIz; iz++) {
+    const row = iz * resolution
+    dst.set(src.subarray(row + minIx, row + maxIx + 1), row + minIx)
+  }
+}
+
+/** Copy a rectangular byte grid region with channel stride (skips when src === dst). */
+function copyU8Region(
+  dst: Uint8Array,
+  src: Uint8Array,
+  resolution: number,
+  channels: number,
+  minIx: number,
+  maxIx: number,
+  minIz: number,
+  maxIz: number
+): void {
+  if (dst === src) return
+  for (let iz = minIz; iz <= maxIz; iz++) {
+    const start = (iz * resolution + minIx) * channels
+    const end = (iz * resolution + maxIx + 1) * channels
+    dst.set(src.subarray(start, end), start)
+  }
+}
+
 function heightBandWeight(value: number, fromY: number, toY: number, blendM: number): number {
   const lo = Math.min(fromY, toY)
   const hi = Math.max(fromY, toY)
@@ -164,12 +200,9 @@ export class EditorTerrainSystem {
   beginSculptStroke(sharpPreview = true): void {
     this.strokeOpen = true
     this.sharpStrokePreview = sharpPreview
-    if (sharpPreview) {
-      this.setMeshSegments(TERRAIN_SHARP_PREVIEW_SEGMENTS)
-    }
-    if (this.mesh) {
-      this.updateVertexColors()
-      this.mesh.geometry.computeVertexNormals()
+    // Positions-only during stroke — skip normals/colors until endSculptStroke.
+    if (sharpPreview && this.activeSegments !== TERRAIN_SHARP_PREVIEW_SEGMENTS) {
+      this.setMeshSegments(TERRAIN_SHARP_PREVIEW_SEGMENTS, { skipNormals: true, skipColors: true })
     }
   }
 
@@ -180,17 +213,16 @@ export class EditorTerrainSystem {
       this.setMeshSegments(this.previewSegments)
     } else {
       this.rebuildPreviewPositions()
+      this.finalizePreviewMesh()
     }
-    this.finalizePreviewMesh()
   }
 
   beginPaintStroke(): void {
     this.strokeOpen = true
     this.sharpStrokePreview = false
+    // Paint only needs colors in the dab region; avoid full-mesh color rebuild at stroke start.
     if (this.activeSegments !== TERRAIN_SHARP_PREVIEW_SEGMENTS) {
-      this.setMeshSegments(TERRAIN_SHARP_PREVIEW_SEGMENTS)
-    } else {
-      this.updateVertexColors()
+      this.setMeshSegments(TERRAIN_SHARP_PREVIEW_SEGMENTS, { skipNormals: true })
     }
   }
 
@@ -227,14 +259,14 @@ export class EditorTerrainSystem {
 
   applySculptHeightBuffer(heights: Float32Array, resolution: number): void {
     if (resolution !== this.resolution || heights.length !== this.heights.length) return
-    this.heights.set(heights)
+    if (heights !== this.heights) this.heights.set(heights)
     this.rebuildPreviewPositions()
     if (!this.strokeOpen) {
       this.finalizePreviewMesh()
     }
   }
 
-  /** Fast dab preview — positions only, no normals/colors until stroke ends. */
+  /** Fast dab preview — dirty-rect height copy + positions only (no normals until stroke ends). */
   applySculptHeightDab(
     heights: Float32Array,
     resolution: number,
@@ -243,22 +275,22 @@ export class EditorTerrainSystem {
     radiusCells: number
   ): void {
     if (resolution !== this.resolution || heights.length !== this.heights.length) return
-    this.heights.set(heights)
     const margin = 2
     const minIx = Math.max(0, centerIx - Math.ceil(radiusCells) - margin)
     const maxIx = Math.min(resolution - 1, centerIx + Math.ceil(radiusCells) + margin)
     const minIz = Math.max(0, centerIz - Math.ceil(radiusCells) - margin)
     const maxIz = Math.min(resolution - 1, centerIz + Math.ceil(radiusCells) + margin)
+    copyFloatRegion(this.heights, heights, resolution, minIx, maxIx, minIz, maxIz)
     this.updatePreviewRegion(minIx, maxIx, minIz, maxIz)
   }
 
   applySplatBuffer(splat: Uint8Array, w: number, h: number): void {
     if (w !== this.resolution || h !== this.resolution) return
-    this.splat.set(splat)
+    if (splat !== this.splat) this.splat.set(splat)
     this.updateVertexColors()
   }
 
-  /** Live splat preview — bilinear vertex colors in the dab region only. */
+  /** Live splat preview — dirty-rect buffer copy + vertex colors in the dab region only. */
   applySplatDab(
     splat: Uint8Array,
     lava: Uint8Array,
@@ -269,24 +301,128 @@ export class EditorTerrainSystem {
     radiusCells: number
   ): void {
     if (w !== this.resolution || h !== this.resolution) return
-    this.splat.set(splat)
-    this.lava.set(lava)
     const margin = 2
     const minIx = Math.max(0, centerIx - Math.ceil(radiusCells) - margin)
     const maxIx = Math.min(this.resolution - 1, centerIx + Math.ceil(radiusCells) + margin)
     const minIz = Math.max(0, centerIz - Math.ceil(radiusCells) - margin)
     const maxIz = Math.min(this.resolution - 1, centerIz + Math.ceil(radiusCells) + margin)
+    copyU8Region(this.splat, splat, this.resolution, 4, minIx, maxIx, minIz, maxIz)
+    copyU8Region(this.lava, lava, this.resolution, 1, minIx, maxIx, minIz, maxIz)
     this.updateVertexColorRegion(minIx, maxIx, minIz, maxIz)
   }
 
   applyLavaBuffer(lava: Uint8Array, w: number, h: number): void {
     if (w !== this.resolution || h !== this.resolution) return
-    this.lava.set(lava)
+    if (lava !== this.lava) this.lava.set(lava)
     this.updateVertexColors()
   }
 
   getBuffers(): { heights: Float32Array; splat: Uint8Array; lava: Uint8Array } {
     return { heights: this.heights, splat: this.splat, lava: this.lava }
+  }
+
+  /**
+   * Heightfield raycast in Three space — avoids dense mesh triangle tests while sculpting.
+   * Ray is converted to DCL XZ (Y shared), then stepped over the footprint.
+   */
+  raycastHeightfield(
+    rayOrigin: THREE.Vector3,
+    rayDir: THREE.Vector3,
+    out = new THREE.Vector3()
+  ): THREE.Vector3 | null {
+    // Three ↔ DCL: X is mirrored.
+    const ox = -rayOrigin.x
+    const oy = rayOrigin.y
+    const oz = rayOrigin.z
+    const dx = -rayDir.x
+    const dy = rayDir.y
+    const dz = rayDir.z
+    const dirLen = Math.hypot(dx, dy, dz)
+    if (dirLen < 1e-8) return null
+    const inv = 1 / dirLen
+    const ndx = dx * inv
+    const ndy = dy * inv
+    const ndz = dz * inv
+
+    const minX = this.originX
+    const maxX = this.originX + this.widthM
+    const minZ = this.originZ
+    const maxZ = this.originZ + this.depthM
+
+    // XZ AABB hit range along the ray.
+    let tMin = 0
+    let tMax = 4000
+    if (Math.abs(ndx) > 1e-8) {
+      const t1 = (minX - ox) / ndx
+      const t2 = (maxX - ox) / ndx
+      tMin = Math.max(tMin, Math.min(t1, t2))
+      tMax = Math.min(tMax, Math.max(t1, t2))
+    } else if (ox < minX || ox > maxX) {
+      return null
+    }
+    if (Math.abs(ndz) > 1e-8) {
+      const t1 = (minZ - oz) / ndz
+      const t2 = (maxZ - oz) / ndz
+      tMin = Math.max(tMin, Math.min(t1, t2))
+      tMax = Math.min(tMax, Math.max(t1, t2))
+    } else if (oz < minZ || oz > maxZ) {
+      return null
+    }
+    if (tMax < tMin || tMax < 0) return null
+    tMin = Math.max(0, tMin)
+
+    const cellM = Math.min(this.widthM, this.depthM) / Math.max(this.resolution - 1, 1)
+    const step = Math.max(0.35, cellM * 0.85)
+    let prevT = tMin
+    let prevAbove: boolean | null = null
+    let hitT: number | null = null
+
+    for (let t = tMin; t <= tMax; t += step) {
+      const wx = ox + ndx * t
+      const wy = oy + ndy * t
+      const wz = oz + ndz * t
+      const u = (wx - this.originX) / this.widthM
+      const v = (wz - this.originZ) / this.depthM
+      if (u < 0 || u > 1 || v < 0 || v > 1) {
+        prevT = t
+        continue
+      }
+      const terrainY = sampleBilinearWorldY(this.heights, this.resolution, u, v)
+      const above = wy >= terrainY
+      if (prevAbove === true && !above) {
+        // Binary refine between prevT and t.
+        let lo = prevT
+        let hi = t
+        for (let i = 0; i < 8; i++) {
+          const mid = (lo + hi) * 0.5
+          const mx = ox + ndx * mid
+          const my = oy + ndy * mid
+          const mz = oz + ndz * mid
+          const mu = (mx - this.originX) / this.widthM
+          const mv = (mz - this.originZ) / this.depthM
+          const ty = sampleBilinearWorldY(this.heights, this.resolution, mu, mv)
+          if (my >= ty) lo = mid
+          else hi = mid
+        }
+        hitT = (lo + hi) * 0.5
+        break
+      }
+      // Ray starts under / on surface — take first sample.
+      if (prevAbove === null && !above) {
+        hitT = t
+        break
+      }
+      prevAbove = above
+      prevT = t
+    }
+
+    if (hitT == null) return null
+    const hx = ox + ndx * hitT
+    const hz = oz + ndz * hitT
+    const hu = Math.max(0, Math.min(1, (hx - this.originX) / this.widthM))
+    const hv = Math.max(0, Math.min(1, (hz - this.originZ) / this.depthM))
+    const hy = sampleBilinearWorldY(this.heights, this.resolution, hu, hv)
+    return out.set(-hx, hy, hz)
   }
 
   setHeights(heights: Float32Array): void {
@@ -333,15 +469,18 @@ export class EditorTerrainSystem {
     return geo
   }
 
-  private setMeshSegments(segs: number): void {
+  private setMeshSegments(
+    segs: number,
+    opts?: { skipNormals?: boolean; skipColors?: boolean }
+  ): void {
     if (!this.mesh || this.activeSegments === segs) return
     this.activeSegments = segs
     const oldGeo = this.mesh.geometry
     this.mesh.geometry = this.createTerrainGeometry(segs)
     oldGeo.dispose()
     this.rebuildPreviewPositions()
-    this.updateVertexColors()
-    this.mesh.geometry.computeVertexNormals()
+    if (!opts?.skipColors) this.updateVertexColors()
+    if (!opts?.skipNormals) this.mesh.geometry.computeVertexNormals()
   }
 
   /** Heightmap U for a preview mesh column — DCL X rises with column after `mesh.scale.x = -1`. */

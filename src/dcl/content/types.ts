@@ -82,6 +82,103 @@ export type SceneWaterConfig = {
 }
 
 /**
+ * Space biome look — ThreejsClient-only (`environment.space`).
+ * Applied when `environment.kind === "space"`.
+ */
+export type SceneSpaceConfig = {
+  /** Deep void / sky background hex. Default `#020208`. */
+  skyColor?: string
+  /** Nebula tint mixed into sky + soft ambient. Default `#1a0a3a`. */
+  nebulaColor?: string
+  /** Starfield density 0–1. Default 0.65. */
+  starDensity?: number
+  /** Star brightness 0–2. Default 1. */
+  starBrightness?: number
+  /** When false, no star points (solid void only). Default true. */
+  stars?: boolean
+  /** Soft distance fog density 0–0.05. Default 0.008. */
+  fogDensity?: number
+  /** Fill / hemi ambient intensity 0–2. Default 0.35. */
+  ambient?: number
+  /** Cool rim directional color hex. Default `#6ecbff`. */
+  rimColor?: string
+  /** Rim light intensity 0–3. Default 0.85. */
+  rimIntensity?: number
+  /** Twinkle speed for starfield 0–4. Default 1. */
+  twinkle?: number
+}
+
+/**
+ * Desert biome look — sand plate, rock scatter, dust / tumbleweeds.
+ * Applied when `environment.kind === "desert"`. ThreejsClient-only.
+ */
+export type SceneDesertConfig = {
+  /** Procedural gold sand disc color. Default `#d4a858`. */
+  sandColor?: string
+  /** Rock prop density multiplier 0–2. Default 1. */
+  rockDensity?: number
+  /** Perlin frequency for rock placement (higher = smaller patches). Default 0.55. */
+  perlinScale?: number
+  /** Keep rocks only where perlin ≥ threshold (0–1). Default 0.42. */
+  perlinThreshold?: number
+  /** Soft sand haze fog density 0–0.04. Default 0.006. */
+  haze?: number
+  /** Dust-storm particle field. Default false. */
+  dustStorm?: boolean
+  /** Dust particle intensity 0–1 when dustStorm. Default 0.55. */
+  dustIntensity?: number
+  /** Lightweight rolling tumbleweed spheres. Default false. */
+  tumbleweeds?: boolean
+  /** Tumbleweed count 0–80. Default 12. */
+  tumbleweedCount?: number
+  /**
+   * When true, dust storm + tumbleweeds also spawn across your scene parcels
+   * (not only the outer infinite dunes). Default true.
+   */
+  acrossParcels?: boolean
+  /** Procedural dune field on the outer gold plane. Default true. */
+  dunes?: boolean
+  /** Crest height in metres. Default 1.1. */
+  duneHeight?: number
+  /** Ridge spacing across wind (short axis), metres. Default 22. */
+  duneWidth?: number
+  /** Ridge stretch along wind (long axis), metres. Default 70. */
+  duneLength?: number
+  /** Wind / ridge direction in degrees (0 = +X / east). Default 25. */
+  duneWindDeg?: number
+  /** Fine ripple amount 0–1. Default 0.35. */
+  duneRipple?: number
+}
+
+/**
+ * Land biome look — ground tint for infinite / padding grass tiles.
+ * Applied when `environment.kind === "land"`. ThreejsClient-only.
+ */
+export type SceneLandConfig = {
+  /** Tint color for land ground GLBs / infinite tiles. Default `#c43c2c` (red grass). */
+  groundColor?: string
+}
+
+/**
+ * Mountains biome look — prop density + atmospheric haze.
+ * Applied when `environment.kind === "mountains"`. ThreejsClient-only.
+ */
+export type SceneMountainsConfig = {
+  /** Rock density multiplier 0–2. Default 1. */
+  rockDensity?: number
+  /** Tree density multiplier 0–2. Default 1. */
+  treeDensity?: number
+  /** Mountain backdrop prop density 0–2. Default 1. */
+  backdropDensity?: number
+  /** Atmospheric haze fog 0–0.04. Default 0.01. */
+  haze?: number
+  /** Haze tint hex. Default `#9bb0c4`. */
+  hazeColor?: string
+  /** Cool blue peak-snow accent on ambient (visual only). Default true. */
+  peakSnow?: boolean
+}
+
+/**
  * `scene.json` → `environment` object — **ThreejsClient-only** landscape + celestial defaults.
  * Not part of official DCL SDK / Unity Explorer metadata (they ignore unknown fields).
  * Official time pin remains `skyboxConfig.fixedTime` only.
@@ -112,6 +209,23 @@ export type SceneEnvironmentConfig = {
    * @see https://github.com/gioeledallapozza/FFTOCEAN
    */
   water?: SceneWaterConfig
+  /**
+   * Space biome atmosphere (sky, stars, rim, fog) when `kind === "space"`.
+   * ThreejsClient-only — Unity/Godot Explorer ignore this field.
+   */
+  space?: SceneSpaceConfig
+  /** Desert sand / rocks / dust when `kind === "desert"`. ThreejsClient-only. */
+  desert?: SceneDesertConfig
+  /** Land ground tint when `kind === "land"`. ThreejsClient-only. */
+  land?: SceneLandConfig
+  /** Mountains prop density / haze when `kind === "mountains"`. ThreejsClient-only. */
+  mountains?: SceneMountainsConfig
+  /**
+   * Custom ez-tree grass wind vertex shader (ThreejsClient-only).
+   * Default **on** for land/forest grass. Set `false` to disable, or use `?windShader=0`.
+   * Unity/Godot Explorer ignore this field.
+   */
+  windShader?: boolean
 }
 
 export type SceneSkyLighting = {

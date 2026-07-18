@@ -4,10 +4,21 @@ import { getSessionAssetCache } from '../../rendering/AssetCache'
 import { deleteGlbBytes, normalizeGlbCacheKey } from '../../rendering/glbByteCache'
 import { exportTerrainGlb } from './exportTerrainGlb'
 import { mergeTerrainIntoComposite } from '../composite/terrainComposite'
-import { TERRAIN_GLB_FILE, type TerrainExportSettings } from './terrainSculptConstants'
+import {
+  TERRAIN_GLB_FILE,
+  TERRAIN_GRASS_COLOR_FILE,
+  TERRAIN_GRASS_FILE,
+  TERRAIN_GRASS_MANIFEST_FILE,
+  TERRAIN_HEIGHTS_BIN_FILE,
+  TERRAIN_SPLAT_FILE,
+  type TerrainExportSettings
+} from './terrainSculptConstants'
 import type { EditorTerrainSystem } from './EditorTerrainSystem'
 import { saveTerrainDraft } from './terrainEditorStore'
 import { refreshTerrainFootprintFromProject } from './refreshTerrainFootprint'
+import { encodeHeightsBin } from './heightmapHeightsBin'
+import { imageDataToPngBlob } from './heightmapCodec'
+import { grassManifestJson } from './grassManifest'
 
 const COMPOSITE_PATH = 'assets/scene/main.composite'
 
@@ -17,21 +28,36 @@ export type TerrainSaveResult = {
   paths: string[]
 }
 
-/** Writes deployable assets only (terrain.glb + main.composite). Sculpt buffers → IndexedDB. */
+/**
+ * Writes terrain.glb + composite (DCL-visible ground) and ThreejsClient-only grass sidecars
+ * (density/color/heights + grass.json). No per-blade SDK entities.
+ */
 export async function saveTerrainToProject(
   projectId: string,
   root: ProjectRoot,
   terrain: EditorTerrainSystem,
-  exportSettings: TerrainExportSettings
+  exportSettings: TerrainExportSettings,
+  grassMask?: Uint8Array,
+  grassRgb?: Uint8Array
 ): Promise<TerrainSaveResult> {
   const { heights, splat, lava } = terrain.getBuffers()
   const resolution = terrain.resolution
+  const grass =
+    grassMask && grassMask.length === resolution * resolution
+      ? grassMask
+      : new Uint8Array(resolution * resolution)
+  const grassColors =
+    grassRgb && grassRgb.length === resolution * resolution * 3
+      ? grassRgb
+      : new Uint8Array(resolution * resolution * 3)
 
   await saveTerrainDraft(projectId, {
     resolution,
     heights,
     splat,
     lava,
+    grass,
+    grassRgb: grassColors,
     proceduralShading: terrain.getProceduralShading(),
     exportSettings
   })
@@ -44,6 +70,51 @@ export async function saveTerrainToProject(
   const glb = await exportTerrainGlb(terrain, exportSettings.exportSegmentsPerParcel)
   await writeFileBytes(root, TERRAIN_GLB_FILE, glb)
   paths.push(TERRAIN_GLB_FILE)
+
+  // --- ThreejsClient-only grass field (InstancedMesh from masks; not DCL entities) ---
+  const heightsBin = new Uint8Array(encodeHeightsBin(heights, resolution))
+  await writeFileBytes(root, TERRAIN_HEIGHTS_BIN_FILE, heightsBin)
+  paths.push(TERRAIN_HEIGHTS_BIN_FILE)
+
+  const grassImg = new ImageData(resolution, resolution)
+  for (let i = 0; i < grass.length; i++) {
+    const v = grass[i]!
+    const o = i * 4
+    grassImg.data[o] = v
+    grassImg.data[o + 1] = v
+    grassImg.data[o + 2] = v
+    grassImg.data[o + 3] = 255
+  }
+  const grassBlob = await imageDataToPngBlob(grassImg)
+  const grassBytes = new Uint8Array(await grassBlob.arrayBuffer())
+  await writeFileBytes(root, TERRAIN_GRASS_FILE, grassBytes)
+  paths.push(TERRAIN_GRASS_FILE)
+
+  const colorImg = new ImageData(resolution, resolution)
+  for (let i = 0; i < resolution * resolution; i++) {
+    const o = i * 4
+    const c = i * 3
+    colorImg.data[o] = grassColors[c]!
+    colorImg.data[o + 1] = grassColors[c + 1]!
+    colorImg.data[o + 2] = grassColors[c + 2]!
+    colorImg.data[o + 3] = 255
+  }
+  const colorBlob = await imageDataToPngBlob(colorImg)
+  const colorBytes = new Uint8Array(await colorBlob.arrayBuffer())
+  await writeFileBytes(root, TERRAIN_GRASS_COLOR_FILE, colorBytes)
+  paths.push(TERRAIN_GRASS_COLOR_FILE)
+
+  const manifestText = grassManifestJson(resolution)
+  await writeFileBytes(root, TERRAIN_GRASS_MANIFEST_FILE, new TextEncoder().encode(manifestText))
+  paths.push(TERRAIN_GRASS_MANIFEST_FILE)
+
+  // Albedo splat for editor / optional tooling (not required for blades).
+  const splatImg = new ImageData(resolution, resolution)
+  splatImg.data.set(splat)
+  const splatBlob = await imageDataToPngBlob(splatImg)
+  const splatBytes = new Uint8Array(await splatBlob.arrayBuffer())
+  await writeFileBytes(root, TERRAIN_SPLAT_FILE, splatBytes)
+  paths.push(TERRAIN_SPLAT_FILE)
 
   for (const key of [TERRAIN_GLB_FILE, `local://${TERRAIN_GLB_FILE}`]) {
     const cacheKey = normalizeGlbCacheKey(key)
@@ -73,10 +144,10 @@ export async function saveTerrainToProject(
   return {
     ok: true,
     message:
-      `Saved deploy files: terrain.glb (${glbMb} MB, ${meshNote}, visible CL_PHYSICS, baked albedo) + main.composite @ (${compositePos.x}, ${compositePos.y}, ${compositePos.z}) base=${terrain.footprint.baseParcel}. ` +
-      `Unity Explorer ignores vertex paint — colors are baked into the GLB texture. Disable Creator Hub “Landscape Terrain Enabled” so default grass does not cover your mesh. ` +
-      `Editor sculpt data stored in this browser (IndexedDB) for project ${projectId}. ` +
-      `dcl deploy will not include heightmap/splat sidecars.`,
+      `Saved: terrain.glb (${glbMb} MB, ${meshNote}) + main.composite @ (${compositePos.x}, ${compositePos.y}, ${compositePos.z}). ` +
+      `ThreejsClient Ez Grass: grass.json + grass.png + grass-color.png + heightmap.heights.bin (InstancedMesh — not SDK entities). ` +
+      `Explorer only sees terrain.glb (baked albedo); grass sidecars are ignored there. ` +
+      `IndexedDB draft kept for project ${projectId}.`,
     paths
   }
 }

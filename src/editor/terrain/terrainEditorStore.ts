@@ -18,6 +18,10 @@ export type TerrainEditorDraft = {
   heights: Float32Array
   splat: Uint8Array
   lava: Uint8Array
+  /** ez-tree blade density (optional on old drafts). */
+  grass: Uint8Array
+  /** Packed RGB plant colors (res²×3). */
+  grassRgb: Uint8Array
   proceduralShading: TerrainProceduralShading
   exportSettings: TerrainExportSettings
   updatedAt: number
@@ -28,6 +32,8 @@ type TerrainEditorDraftRecord = {
   heightsBin: ArrayBuffer
   splat: Uint8Array
   lava: Uint8Array
+  grass?: Uint8Array
+  grassRgb?: Uint8Array
   proceduralShading?: TerrainProceduralShading
   exportSettings?: TerrainExportSettings
   updatedAt: number
@@ -114,15 +120,26 @@ export async function saveTerrainDraft(
     heights: Float32Array
     splat: Uint8Array
     lava: Uint8Array
+    grass?: Uint8Array
+    grassRgb?: Uint8Array
     proceduralShading?: TerrainProceduralShading
     exportSettings?: TerrainExportSettings
   }
 ): Promise<void> {
+  const n = data.resolution * data.resolution
+  const grass =
+    data.grass && data.grass.length === n ? new Uint8Array(data.grass) : new Uint8Array(n)
+  const grassRgb =
+    data.grassRgb && data.grassRgb.length === n * 3
+      ? new Uint8Array(data.grassRgb)
+      : new Uint8Array(n * 3)
   const record: TerrainEditorDraftRecord = {
     resolution: data.resolution,
     heightsBin: encodeHeightsBin(data.heights, data.resolution),
     splat: new Uint8Array(data.splat),
     lava: new Uint8Array(data.lava),
+    grass,
+    grassRgb,
     proceduralShading: normalizeProceduralShading(data.proceduralShading),
     exportSettings: normalizeExportSettings(data.exportSettings),
     updatedAt: Date.now()
@@ -150,12 +167,21 @@ export async function loadTerrainDraft(
   if (!record || record.resolution !== expectedResolution) return null
   const decoded = decodeHeightsBin(record.heightsBin, expectedResolution)
   if (!decoded) return null
+  const n = record.resolution * record.resolution
+  const grass =
+    record.grass && record.grass.length === n ? new Uint8Array(record.grass) : new Uint8Array(n)
+  const grassRgb =
+    record.grassRgb && record.grassRgb.length === n * 3
+      ? new Uint8Array(record.grassRgb)
+      : new Uint8Array(n * 3)
   return {
     projectId,
     resolution: record.resolution,
     heights: decoded.heights,
     splat: new Uint8Array(record.splat),
     lava: new Uint8Array(record.lava),
+    grass,
+    grassRgb,
     proceduralShading: normalizeProceduralShading(record.proceduralShading),
     exportSettings: normalizeExportSettings(record.exportSettings),
     updatedAt: record.updatedAt

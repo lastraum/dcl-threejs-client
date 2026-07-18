@@ -271,6 +271,9 @@ export class SettingsOverlay {
       ...profile,
       wearables: [...bodyShapeUrns, ...result.wearables]
     })
+    // Refresh the comms profile from the deployed entry so the world layer can
+    // announce the bumped version — peers otherwise keep our stale avatar.
+    this.session.applyDeployedProfileEntry(result.entry)
     this.profileBaselineKey = this.wearablesFingerprint()
     this.backpackView?.markProfileBaselineSynced()
     this.backpackView?.refreshAfterProfileSave()

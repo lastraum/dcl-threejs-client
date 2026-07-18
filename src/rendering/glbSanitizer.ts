@@ -32,12 +32,38 @@ export function validateGlbBuffer(buffer: ArrayBuffer): boolean {
   return offset === totalLength
 }
 
+/**
+ * JSON glTF detection — 2021-era Builder wearables ship `.gltf` (JSON with embedded
+ * data-URI buffers) instead of `.glb`. Requires the glTF-mandatory `"asset"` key so
+ * Catalyst JSON error bodies still get rejected.
+ */
+export function isJsonGltfBuffer(buffer: ArrayBuffer): boolean {
+  if (buffer.byteLength < 20) return false
+  const bytes = new Uint8Array(buffer)
+  let i = 0
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) i = 3
+  while (
+    i < bytes.length &&
+    (bytes[i] === 0x20 || bytes[i] === 0x09 || bytes[i] === 0x0a || bytes[i] === 0x0d)
+  ) {
+    i++
+  }
+  if (bytes[i] !== 0x7b) return false
+  try {
+    return new TextDecoder().decode(buffer).includes('"asset"')
+  } catch {
+    return false
+  }
+}
+
 /** Sanitize JSON padding then verify GLB magic + chunk table (ignores Content-Type). */
 export function prepareGlbBytes(buffer: ArrayBuffer): ArrayBuffer | null {
   if (!buffer?.byteLength) return null
   const sanitized = sanitizeGlbJsonPadding(buffer)
-  if (!isGlbBuffer(sanitized) || !validateGlbBuffer(sanitized)) return null
-  return sanitized
+  if (isGlbBuffer(sanitized) && validateGlbBuffer(sanitized)) return sanitized
+  // GLTFLoader.parse accepts JSON glTF text directly — pass it through untouched.
+  if (isJsonGltfBuffer(buffer)) return buffer
+  return null
 }
 
 function padChunkData(data: Uint8Array, chunkType: number): Uint8Array {

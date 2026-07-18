@@ -53,13 +53,18 @@ export function applyPbrColors(
 }
 
 /**
- * DCL sprite flames (Genesis firepit): same texture on map + emissiveMap, metallic 0,
- * roughness 1, emissiveIntensity ~6 — glow is emissive-only; diffuse lighting washes them out.
+ * High-intensity emissive sprites (firepit flames, neon cutouts): black albedo so only
+ * emissiveMap × intensity lights the surface; map alpha drives ALPHA_BLEND cutouts.
+ *
+ * Only apply once emissiveMap is bound — black with no maps is an invisible plane
+ * (sprite pool can re-touch scalars before textures land).
  */
 export function configureEmissiveRendering(
   material: THREE.MeshPhysicalMaterial,
   emissiveIntensity?: number,
-  hasEmissiveMap?: boolean
+  hasEmissiveMap?: boolean,
+  /** MTM_ALPHA_BLEND = 2 / MTM_ALPHA_TEST_AND_ALPHA_BLEND = 3 */
+  transparencyMode?: number
 ): void {
   const intensity = emissiveIntensity ?? 1
   const glowSprite = !!hasEmissiveMap && intensity >= 1.5
@@ -69,10 +74,23 @@ export function configureEmissiveRendering(
     material.roughness = 1
     material.envMapIntensity = 0
     material.toneMapped = false
+    if (material.emissive.r + material.emissive.g + material.emissive.b < 1e-4) {
+      material.emissive.setRGB(1, 1, 1)
+    }
+    // Scene author intensity (fire ~6). Slight bump so HDR tone-map still reads hot.
+    material.emissiveIntensity = Math.max(intensity, intensity * 1.15)
+    if (transparencyMode === 2 || transparencyMode === 3) {
+      material.transparent = true
+      material.depthWrite = false
+    }
+    material.blending = THREE.NormalBlending
     applyDirectIntensity(material, 0)
     return
   }
   material.toneMapped = intensity <= 1.5
+  if (material.blending !== THREE.NormalBlending) {
+    material.blending = THREE.NormalBlending
+  }
 }
 
 export function applyPbrScalars(

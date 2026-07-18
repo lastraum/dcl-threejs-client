@@ -44,7 +44,7 @@ const DCL_PLANE_NORTH_CORNER_TO_THREE = [3, 2, 0, 1]
 const DCL_PLANE_SOUTH_CORNER_TO_THREE = [2, 3, 1, 0]
 
 /** Bump when plane topology/UV layout changes — busts primitiveMeshKey mesh cache. */
-const PLANE_GEOMETRY_REVISION = 'v19'
+const PLANE_GEOMETRY_REVISION = 'v20'
 
 /**
  * userData: marquee atlas plane. MaterialApplier: flipY=false, FrontSide only.
@@ -168,17 +168,33 @@ export function buildDclPlaneGeometry(width = 1, height = 1): THREE.BufferGeomet
 }
 
 /**
+ * Docs north packing is BL, BR, TR, TL (first edge horizontal in UV).
+ * Flipbook sprites (Genesis firepit, etc.) often emit BL, TL, TR, BR (first edge
+ * vertical). Without reordering, corner maps scramble atlas frames and marquee
+ * detection false-positives (rewrites fire as inward text planes).
+ */
+function normalizeNorthPlaneUvs(uvs: readonly number[]): number[] {
+  if (uvs.length < 8) return Array.from(uvs)
+  const du01 = Math.abs((uvs[2] ?? 0) - (uvs[0] ?? 0))
+  const dv01 = Math.abs((uvs[3] ?? 0) - (uvs[1] ?? 0))
+  if (dv01 <= du01 + 1e-5) {
+    return [uvs[0]!, uvs[1]!, uvs[2]!, uvs[3]!, uvs[4]!, uvs[5]!, uvs[6]!, uvs[7]!]
+  }
+  // BL,TL,TR,BR → BL,BR,TR,TL
+  return [uvs[0]!, uvs[1]!, uvs[6]!, uvs[7]!, uvs[4]!, uvs[5]!, uvs[2]!, uvs[3]!]
+}
+
+/**
  * True when atlas U (text) runs along plane local Y (plaza LED marquees).
- * Require a full axis swap: bottom edge (BL→BR / local +X) is mostly V, and
- * left edge (BL→TL / local +Y) is mostly U. A single-edge V-heavy check false-
- * positives normal/cutout images and rewrites them as inward marquee planes
- * (mirrored / wrong basis).
+ * UVs must already be docs-ordered (BL,BR,TR,TL). Require a full axis swap:
+ * bottom edge (BL→BR / local +X) is mostly V, and left edge (BL→TL / local +Y)
+ * is mostly U.
  */
 function planeUvsMapTextAlongLocalY(uvs: readonly number[]): boolean {
   // BL→BR (local +X)
   const duX = Math.abs((uvs[2] ?? 0) - (uvs[0] ?? 0))
   const dvX = Math.abs((uvs[3] ?? 0) - (uvs[1] ?? 0))
-  // BL→TL (local +Y) — north packing BL,BR,TR,TL so TL is indices 6,7
+  // BL→TL (local +Y) — docs packing TL is indices 6,7
   const duY = Math.abs((uvs[6] ?? 0) - (uvs[0] ?? 0))
   const dvY = Math.abs((uvs[7] ?? 0) - (uvs[1] ?? 0))
   return dvX > duX + 1e-5 && duY > dvY + 1e-5
@@ -251,12 +267,18 @@ function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
   const perSide = uvs.length >= 16 ? 8 : uvs.length >= 8 ? 8 : 0
   if (!perSide) return buildPlaneGeometryWithUvs(DEFAULT_DCL_PLANE_UVS)
 
-  const north = uvs.slice(0, 8)
+  const north = normalizeNorthPlaneUvs(uvs.slice(0, 8))
   if (planeUvsMapTextAlongLocalY(north)) {
     return buildMarqueePlaneGeometry(north)
   }
 
-  const south = uvs.length >= 16 ? uvs.slice(8, 16) : mirrorSouthPlaneUvs(north)
+  // Flipbook sprites usually send 8 UVs (north only); south is mirrored.
+  // When 16 are authored, normalize the second face the same way then pack as south.
+  const south =
+    uvs.length >= 16
+      ? northStyleToSouthPacking(normalizeNorthPlaneUvs(uvs.slice(8, 16)))
+      : mirrorSouthPlaneUvs(north)
+
   const positions = new Float32Array([
     -0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0,
     -0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0
@@ -276,6 +298,20 @@ function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
   return geometry
 }
 
+/** Docs north BL,BR,TR,TL → south BR,BL,TL,TR (same corners, south winding). */
+function northStyleToSouthPacking(north: readonly number[]): number[] {
+  return [
+    north[2]!,
+    north[3]!,
+    north[0]!,
+    north[1]!,
+    north[6]!,
+    north[7]!,
+    north[4]!,
+    north[5]!
+  ]
+}
+
 /**
  * In-place UV update for sprite planes only.
  * Marquee always returns false → force full mesh rebuild.
@@ -284,7 +320,7 @@ export function updatePlaneGeometryUvs(geometry: THREE.BufferGeometry, uvs: numb
   const perSide = uvs.length >= 16 ? 8 : uvs.length >= 8 ? 8 : 0
   if (!perSide) return false
 
-  const north = uvs.slice(0, 8)
+  const north = normalizeNorthPlaneUvs(uvs.slice(0, 8))
   if (planeUvsMapTextAlongLocalY(north) || geometry.userData[DCL_TEXT_ALONG_Y_BASIS]) {
     return false
   }
@@ -292,7 +328,10 @@ export function updatePlaneGeometryUvs(geometry: THREE.BufferGeometry, uvs: numb
   const attr = geometry.getAttribute('uv')
   if (!(attr instanceof THREE.BufferAttribute) || attr.count < 8) return false
 
-  const south = uvs.length >= 16 ? uvs.slice(8, 16) : mirrorSouthPlaneUvs(north)
+  const south =
+    uvs.length >= 16
+      ? northStyleToSouthPacking(normalizeNorthPlaneUvs(uvs.slice(8, 16)))
+      : mirrorSouthPlaneUvs(north)
   applyFaceUvs(attr, 0, DCL_PLANE_NORTH_CORNER_TO_THREE, north)
   applyFaceUvs(attr, 1, DCL_PLANE_SOUTH_CORNER_TO_THREE, south)
   attr.needsUpdate = true

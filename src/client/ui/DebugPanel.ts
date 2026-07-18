@@ -30,7 +30,7 @@ export type DebugPanelOptions = {
   onVisibilityChange?: (visible: boolean) => void
   getPlayerPosition?: () => DebugPanelPosition | null
   getSceneOrigin?: () => DebugPanelSceneOrigin
-  onRecookColliders?: () => void
+  onRecookColliders?: () => void | Promise<void>
 }
 
 /** Top-right debug overlay — toggled from the Help sidebar button. */
@@ -62,7 +62,7 @@ export class DebugPanel {
   private unsubscribeLogs: (() => void) | null = null
   private unsubscribePhysxDebug: (() => void) | null = null
   private unsubscribeEnvironmentDebug: (() => void) | null = null
-  private onRecookColliders: (() => void) | null = null
+  private onRecookColliders: (() => void | Promise<void>) | null = null
   private readonly onDocumentClick = (ev: MouseEvent) => {
     if (this.ignoreOutsideClick) {
       this.ignoreOutsideClick = false
@@ -224,7 +224,7 @@ export class DebugPanel {
     host.replaceChildren(renderStats.dom)
   }
 
-  setRecookCollidersHandler(handler: (() => void) | null): void {
+  setRecookCollidersHandler(handler: (() => void | Promise<void>) | null): void {
     this.onRecookColliders = handler
   }
 
@@ -389,15 +389,26 @@ export class DebugPanel {
         clientDebugLog.log('collision', 'Recook unavailable — scene not ready', { level: 'warn', alsoConsole: true })
         return
       }
-      this.onRecookColliders()
+      if (this.physxRecookBtn.disabled) return
+      this.physxRecookBtn.disabled = true
+      this.physxRecookBtn.textContent = 'Recooking…'
       clientDebugLog.log('collision', 'Manual collider recook started (Debug → Force recook all colliders)', {
-        level: 'success',
+        level: 'info',
         alsoConsole: true
       })
-      this.physxRecookBtn.textContent = 'Recooking…'
-      window.setTimeout(() => {
-        this.physxRecookBtn.textContent = 'Recook colliders'
-      }, 1200)
+      void Promise.resolve(this.onRecookColliders())
+        .catch((err) => {
+          console.warn('[DebugPanel] collider recook failed', err)
+          clientDebugLog.log(
+            'collision',
+            `Recook failed — ${err instanceof Error ? err.message : String(err)}`,
+            { level: 'warn', alsoConsole: true }
+          )
+        })
+        .finally(() => {
+          this.physxRecookBtn.disabled = false
+          this.physxRecookBtn.textContent = 'Force recook all colliders'
+        })
     })
 
     this.unsubscribePhysxDebug = physxColliderDebug.subscribe(syncFromStore)

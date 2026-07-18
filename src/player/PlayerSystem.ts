@@ -681,7 +681,11 @@ export class PlayerSystem {
 
     if (!reposition || duration <= 0) {
       if (reposition) {
-        this.teleportTo(target, true)
+        // Seat/interact snaps always pass avatarTarget (facing). Floor settle is for spawn/tower
+        // only — SPAWN_ACCEPT_BELOW_AUTHORED_M (~6.5m) drops sit feet to plaza and CCT can
+        // slide XZ off the bench (Explorer parks feet at authored coords).
+        // Drown/tower respawns typically omit avatarTarget → still settle onto the deck.
+        this.teleportTo(target, !avatarTarget)
       }
       // Face/look from the **final** seat pose — not pre-teleport feet (sit rotation was wrong).
       const lookFrom = this.root.position
@@ -698,6 +702,7 @@ export class PlayerSystem {
           this.playerYaw = this.camYaw
         }
       }
+      this.avatar?.setYaw(this.playerYaw)
       this.moveTask = null
       // Instant movePlayerTo / look-only / round reset — do NOT lock locomotion.
       // Only timed walks use scenePositionLock (cleared on arrival or unfreeze).
@@ -771,9 +776,34 @@ export class PlayerSystem {
         }
       }
       this.input.clearMovementKeys()
-      _velocity.x = 0
-      _velocity.z = 0
+      _velocity.set(0, 0, 0)
       _force.set(0, 0, 0)
+      // Hold capsule at seat/authored feet — gravity+CCT while InputModifier freezes walk
+      // slides the player off benches between sit teleport and emote.
+      this.physics.teleport(this.root.position)
+      this.root.position.copy(this.physics.positionOut)
+      this.grounded = true
+      this.groundCoyote = 0.12
+      this.syncWireYawFromAvatar()
+      this.syncPlayerEntityAttach()
+      this.syncNameTag()
+      this.avatar?.setYaw(this.playerYaw)
+      this.avatar?.update(delta, {
+        horizontalSpeed: 0,
+        grounded: true,
+        nearGround: true,
+        verticalVelocity: 0,
+        locomotionMode: this.locomotionMode,
+        jumping: false,
+        doubleJumping: false,
+        doubleJumpTriggered: false,
+        falling: false
+      })
+      this.applyCameraInputFromPointer()
+      this.syncCamera(false, delta)
+      this.input.endFrame()
+      this.wasLocomotionAllowed = false
+      return
     } else if (!this.wasLocomotionAllowed) {
       // Scene just unfroze (Flagtag join) — release movePlayerTo hold so WASD works immediately.
       this.scenePositionLock = false
@@ -1472,7 +1502,8 @@ export class PlayerSystem {
 
   /**
    * @param settle — lift + drop onto authored floor (drown-respawn / tower teleports).
-   *   Mid-duration movePlayerTo lerps pass false; arrival passes true.
+   *   Mid-duration movePlayerTo lerps pass false; seat snaps pass false (trust authored).
+   *   Timed-walk arrival passes true.
    */
   private teleportTo(positionThree: THREE.Vector3, settle = true): void {
     if (this.walkBounds) {
@@ -1517,6 +1548,14 @@ export class PlayerSystem {
           `all=${locomotion.disableAll} walk=${locomotion.disableWalk} ` +
           `jog=${locomotion.disableJog} run=${locomotion.disableRun}`
       )
+    } else {
+      // Authored seat / mid-lerp — treat as grounded so sit emote doesn't freefall off the bench.
+      this.grounded = true
+      this.groundCoyote = 0.12
+      this.spawnHoldFeetY = null
+      this.spawnHoldAuthoredFeetY = null
+      this.spawnHoldSecLeft = 0
+      this.spawnHoldReprobeAcc = 0
     }
 
     this.root.position.copy(this.physics.positionOut)

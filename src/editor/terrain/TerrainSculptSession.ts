@@ -11,6 +11,7 @@ import {
 } from './terrainSculptConstants'
 import type { EditorTerrainSystem } from './EditorTerrainSystem'
 import {
+  applyGrassBrush,
   applyHeightBrush,
   applyLavaBrush,
   applySplatBrush,
@@ -23,11 +24,24 @@ import type { ProjectRoot } from '../localScene/projectRoot'
 import { saveTerrainToProject } from './saveTerrainToProject'
 import { saveTerrainDraft } from './terrainEditorStore'
 
+export type TerrainSculptSessionHooks = {
+  /** After height stroke ends (or undo/redo height). */
+  onHeightCommitted?: () => void
+  /** After splat/lava stroke ends (or undo/redo paint). */
+  onPaintCommitted?: () => void
+  /** After ez-tree grass blade density stroke (or undo/redo). */
+  onGrassCommitted?: () => void
+}
+
 export class TerrainSculptSession {
   readonly resolution = SCULPT_RESOLUTION
-  private heights = new Float32Array(SCULPT_RESOLUTION * SCULPT_RESOLUTION)
-  private splat = new Uint8Array(SCULPT_RESOLUTION * SCULPT_RESOLUTION * 4)
-  private lava = new Uint8Array(SCULPT_RESOLUTION * SCULPT_RESOLUTION)
+  private heights: Float32Array = new Float32Array(SCULPT_RESOLUTION * SCULPT_RESOLUTION)
+  private splat: Uint8Array = new Uint8Array(SCULPT_RESOLUTION * SCULPT_RESOLUTION * 4)
+  private lava: Uint8Array = new Uint8Array(SCULPT_RESOLUTION * SCULPT_RESOLUTION)
+  /** ez-tree blade density 0–255 per cell (not albedo splat). */
+  private grass: Uint8Array = new Uint8Array(SCULPT_RESOLUTION * SCULPT_RESOLUTION)
+  /** Packed RGB plant colors (res²×3), 0 when empty. */
+  private grassRgb: Uint8Array = new Uint8Array(SCULPT_RESOLUTION * SCULPT_RESOLUTION * 3)
   private settings: TerrainSculptSettings = { ...DEFAULT_TERRAIN_SCULPT_SETTINGS }
   private exportSettings: TerrainExportSettings = { ...DEFAULT_TERRAIN_EXPORT_SETTINGS }
   private readonly undoStack = new TerrainSculptUndoStack()
@@ -44,6 +58,7 @@ export class TerrainSculptSession {
   private strokePending = false
   private pendingCamera: THREE.Camera | null = null
   private hoveredSurfaceProbe: { heightM: number; slope: number } | null = null
+  private strokeLayer: TerrainSculptSettings['paintLayer'] | null = null
 
   constructor(
     private readonly projectId: string,
@@ -52,7 +67,8 @@ export class TerrainSculptSession {
     private readonly arenaWidthM: number,
     private readonly arenaDepthM: number,
     private readonly arenaOriginX: number,
-    private readonly arenaOriginZ: number
+    private readonly arenaOriginZ: number,
+    private readonly hooks: TerrainSculptSessionHooks = {}
   ) {}
 
   getSettings(): TerrainSculptSettings {
@@ -120,14 +136,33 @@ export class TerrainSculptSession {
   }
 
   async initialize(): Promise<void> {
-    const fromTerrain = this.terrain.copyActiveHeightGrid(this.resolution)
-    if (fromTerrain) {
-      this.heights = new Float32Array(fromTerrain)
-    }
-    const buffers = this.terrain.getBuffers()
-    this.splat = new Uint8Array(buffers.splat)
-    this.lava = new Uint8Array(buffers.lava)
+    // Share live buffers with the terrain system so dabs avoid full 1024² copies.
+    this.bindSharedBuffers()
     this.pushPreview()
+  }
+
+  /** Re-bind to terrain-owned height/splat/lava; grass stays session-owned. */
+  private bindSharedBuffers(): void {
+    const buffers = this.terrain.getBuffers()
+    this.heights = buffers.heights
+    this.splat = buffers.splat
+    this.lava = buffers.lava
+  }
+
+  getGrassMask(): Uint8Array {
+    return this.grass
+  }
+
+  getGrassRgb(): Uint8Array {
+    return this.grassRgb
+  }
+
+  setGrassMask(grass: Uint8Array, grassRgb?: Uint8Array): void {
+    if (grass.length !== this.grass.length) return
+    this.grass = new Uint8Array(grass)
+    if (grassRgb && grassRgb.length === this.grassRgb.length) {
+      this.grassRgb = new Uint8Array(grassRgb)
+    }
   }
 
   setActive(active: boolean): void {
@@ -150,27 +185,56 @@ export class TerrainSculptSession {
   }
 
   undo(): void {
-    const snap = this.undoStack.undo({ heights: this.heights, splat: this.splat, lava: this.lava })
+    const snap = this.undoStack.undo({
+      heights: this.heights,
+      splat: this.splat,
+      lava: this.lava,
+      grass: this.grass,
+      grassRgb: this.grassRgb
+    })
     if (!snap) return
-    this.heights = new Float32Array(snap.heights)
-    this.splat = new Uint8Array(snap.splat)
-    this.lava = new Uint8Array(snap.lava)
-    this.pushPreview()
+    this.terrain.applySculptHeightBuffer(snap.heights, this.resolution)
+    this.terrain.applySplatBuffer(snap.splat, this.resolution, this.resolution)
+    this.terrain.applyLavaBuffer(snap.lava, this.resolution, this.resolution)
+    this.bindSharedBuffers()
+    this.grass = new Uint8Array(snap.grass)
+    this.grassRgb = new Uint8Array(snap.grassRgb)
     this.persistDraft()
+    this.hooks.onHeightCommitted?.()
+    this.hooks.onPaintCommitted?.()
+    this.hooks.onGrassCommitted?.()
   }
 
   redo(): void {
-    const snap = this.undoStack.redo({ heights: this.heights, splat: this.splat, lava: this.lava })
+    const snap = this.undoStack.redo({
+      heights: this.heights,
+      splat: this.splat,
+      lava: this.lava,
+      grass: this.grass,
+      grassRgb: this.grassRgb
+    })
     if (!snap) return
-    this.heights = new Float32Array(snap.heights)
-    this.splat = new Uint8Array(snap.splat)
-    this.lava = new Uint8Array(snap.lava)
-    this.pushPreview()
+    this.terrain.applySculptHeightBuffer(snap.heights, this.resolution)
+    this.terrain.applySplatBuffer(snap.splat, this.resolution, this.resolution)
+    this.terrain.applyLavaBuffer(snap.lava, this.resolution, this.resolution)
+    this.bindSharedBuffers()
+    this.grass = new Uint8Array(snap.grass)
+    this.grassRgb = new Uint8Array(snap.grassRgb)
     this.persistDraft()
+    this.hooks.onHeightCommitted?.()
+    this.hooks.onPaintCommitted?.()
+    this.hooks.onGrassCommitted?.()
   }
 
   async saveToProject(root: ProjectRoot): Promise<{ ok: boolean; message: string }> {
-    const res = await saveTerrainToProject(this.projectId, root, this.terrain, this.getExportSettings())
+    const res = await saveTerrainToProject(
+      this.projectId,
+      root,
+      this.terrain,
+      this.getExportSettings(),
+      this.grass,
+      this.grassRgb
+    )
     return { ok: res.ok, message: res.message }
   }
 
@@ -181,6 +245,8 @@ export class TerrainSculptSession {
       heights: this.heights,
       splat: this.splat,
       lava: this.lava,
+      grass: this.grass,
+      grassRgb: this.grassRgb,
       proceduralShading: this.terrain.getProceduralShading(),
       exportSettings: this.getExportSettings()
     })
@@ -208,13 +274,14 @@ export class TerrainSculptSession {
     this.updateMouse(event, canvas)
     this.updateBrushRing(camera)
     this.strokeOpen = true
+    this.strokeLayer = this.settings.paintLayer
     if (this.settings.paintLayer === 'height') {
       const sharp = this.settings.brushMode !== 'smooth'
       this.terrain.beginSculptStroke(sharp)
     } else if (this.settings.paintLayer === 'splat') {
       this.terrain.beginPaintStroke()
     }
-    this.undoStack.pushSnapshot(this.heights, this.splat, this.lava)
+    this.undoStack.pushSnapshot(this.heights, this.splat, this.lava, this.grass, this.grassRgb)
     if (this.settings.brushMode === 'flatten' && this.settings.paintLayer === 'height') {
       this.flattenTargetY = this.sampleHeightAtPointer(camera) ?? this.flattenTargetY
     }
@@ -252,12 +319,18 @@ export class TerrainSculptSession {
     }
     this.strokePending = false
     this.pendingCamera = null
-    if (this.strokeOpen && this.settings.paintLayer === 'height') {
+    const layer = this.strokeLayer
+    if (this.strokeOpen && layer === 'height') {
       this.terrain.endSculptStroke()
-    } else if (this.strokeOpen && this.settings.paintLayer === 'splat') {
+      this.hooks.onHeightCommitted?.()
+    } else if (this.strokeOpen && layer === 'splat') {
       this.terrain.endPaintStroke(this.splat, this.lava)
+      this.hooks.onPaintCommitted?.()
+    } else if (this.strokeOpen && layer === 'grass') {
+      this.hooks.onGrassCommitted?.()
     }
     this.strokeOpen = false
+    this.strokeLayer = null
     this.persistDraft()
   }
 
@@ -282,9 +355,8 @@ export class TerrainSculptSession {
 
   private raycastWorldPoint(camera: THREE.Camera): THREE.Vector3 | null {
     this.raycaster.setFromCamera(this.mouse, camera)
-    const mesh = this.terrain.getTerrainMeshForRaycast()
-    const hits = this.raycaster.intersectObject(mesh, false)
-    return hits[0]?.point ?? null
+    // Heightfield step raycast — much cheaper than dense preview mesh triangles.
+    return this.terrain.raycastHeightfield(this.raycaster.ray.origin, this.raycaster.ray.direction)
   }
 
   private dclPointFromRaycast(p: THREE.Vector3): { x: number; z: number } {
@@ -369,6 +441,30 @@ export class TerrainSculptSession {
       return
     }
 
+    if (this.settings.paintLayer === 'grass') {
+      const hex = this.settings.grassColor & 0xffffff
+      applyGrassBrush(
+        this.grass,
+        this.grassRgb,
+        this.resolution,
+        fx,
+        fz,
+        this.arenaWidthM,
+        this.arenaDepthM,
+        this.settings.brushSizeM,
+        this.settings.brushStrength,
+        this.settings.splatErase,
+        {
+          r: (hex >> 16) & 0xff,
+          g: (hex >> 8) & 0xff,
+          b: hex & 0xff
+        }
+      )
+      // Live blade preview while stroking (debounced by RAF scheduleStroke).
+      this.hooks.onGrassCommitted?.()
+      return
+    }
+
     const isSmooth = this.settings.brushMode === 'smooth'
     applyHeightBrush(
       this.heights,
@@ -401,6 +497,7 @@ export class TerrainSculptSession {
     this.terrain.applySculptHeightBuffer(this.heights, this.resolution)
     this.terrain.applySplatBuffer(this.splat, this.resolution, this.resolution)
     this.terrain.applyLavaBuffer(this.lava, this.resolution, this.resolution)
+    this.bindSharedBuffers()
   }
 
   private brushRadiusM(): number {
@@ -408,6 +505,9 @@ export class TerrainSculptSession {
   }
 
   private brushRingColor(): number {
+    if (this.settings.paintLayer === 'grass') {
+      return this.settings.splatErase ? 0xaa4422 : this.settings.grassColor & 0xffffff
+    }
     if (this.settings.paintLayer === 'splat') {
       switch (this.settings.splatChannel) {
         case 0:

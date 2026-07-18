@@ -39,6 +39,9 @@ import {
   resolveSceneEnvironment
 } from '../dcl/landscape/resolveLandscapeEnvironment'
 import type { EzTreeGrassFieldHandle } from '../dcl/landscape/EzTreeGrassField'
+import { buildAuthorTerrainGrassField } from '../dcl/landscape/AuthorTerrainGrassField'
+import { sceneHasAuthorTerrain } from '../dcl/content/sceneAuthorTerrain'
+import { readEnvironmentWindShader } from '../dcl/landscape/readEnvironmentWindShader'
 import { resetFoliageWindRegistry, updateFoliageWind } from '../dcl/landscape/foliageWind'
 import { SessionIdentity } from '../network/SessionIdentity'
 import { RemoteAvatarManager } from '../network/RemoteAvatarManager'
@@ -173,6 +176,7 @@ export class World {
   private playerWalkBounds: PlayerWalkBounds | null = null
   private ezTreeGrass: EzTreeGrassFieldHandle | null = null
   private ezTreeGrassElapsed = 0
+  private desertAtmosphere: import('../environment/DesertAtmosphere').DesertAtmosphere | null = null
   private foliageWindElapsed = 0
   private unsubEnvironmentDebug: (() => void) | null = null
   private lastVoluntaryEmoteAllowed = true
@@ -494,23 +498,63 @@ export class World {
       landscapeProfile.kind === 'island' || landscapeProfile.circularShore === true
     const openOcean = landscapeProfile.openOcean === true
 
-    const skipClientLandscape = scene.source.kind === 'local'
+    // Local projects used to skip landscape; honor environment.kind so desert/island/etc.
+    // match the same buildParcelLandscape path as worlds/coords (editor + play parity).
+    const skipClientLandscape =
+      scene.source.kind === 'local' && landscapeProfile.kind === 'none'
     const terrain = createTerrainModel(
       scene.parcels,
       landscapeProfile.borderPadding,
       landscapeProfile.circularShore === true
     )
 
+    this.ezTreeGrass?.dispose()
+    this.ezTreeGrass = null
+    this.ezTreeGrassElapsed = 0
+    this.desertAtmosphere = null
+    this.foliageWindElapsed = 0
+    this.host.scene.fog = null
+
     if (!skipClientLandscape) {
       await this.landscape.initialize(scene, this.assets, onProgress)
-      this.ezTreeGrass?.dispose()
       this.ezTreeGrass =
         (this.landscape.state.landscapeRoot?.userData.ezTreeGrass as EzTreeGrassFieldHandle | undefined) ??
         null
-      this.ezTreeGrassElapsed = 0
-      this.foliageWindElapsed = 0
+      this.desertAtmosphere =
+        (this.landscape.state.landscapeRoot?.userData.desertAtmosphere as
+          | import('../environment/DesertAtmosphere').DesertAtmosphere
+          | undefined) ?? null
       if (this.landscape.state.landscapeRoot) {
         this.host.scene.add(this.landscape.state.landscapeRoot)
+      }
+      // Mountains atmospheric haze (exp2 fog).
+      if (landscapeProfile.kind === 'mountains') {
+        const env =
+          scene.metadata?.environment &&
+          typeof scene.metadata.environment === 'object' &&
+          !Array.isArray(scene.metadata.environment)
+            ? (scene.metadata.environment as import('../dcl/content/types').SceneEnvironmentConfig)
+            : undefined
+        const { resolveMountainsSettings } = await import('../environment/mountainsDefaults')
+        const m = resolveMountainsSettings(env?.mountains)
+        if (m.haze > 0.0001) {
+          const THREE = await import('three')
+          this.host.scene.fog = new THREE.FogExp2(m.hazeColor, m.haze)
+        }
+      } else if (landscapeProfile.kind === 'desert' && this.desertAtmosphere) {
+        this.desertAtmosphere.applyToScene(this.host.scene)
+      }
+    } else if (sceneHasAuthorTerrain(scene)) {
+      // Local projects skip empty-land tiles, but still need paint-driven grass on editor terrain.
+      onProgress?.('Planting author-terrain grass…')
+      try {
+        this.ezTreeGrass = await buildAuthorTerrainGrassField(scene, {
+          windShader: readEnvironmentWindShader(scene.metadata),
+          onProgress
+        })
+        if (this.ezTreeGrass) this.host.scene.add(this.ezTreeGrass.group)
+      } catch (err) {
+        console.warn('[windShader] author-terrain grass failed', err)
       }
     }
 
@@ -1147,6 +1191,7 @@ export class World {
             this.ezTreeGrassElapsed += delta
             this.ezTreeGrass.update(this.ezTreeGrassElapsed, this.host.camera.position)
           }
+          this.desertAtmosphere?.update(delta)
           this.foliageWindElapsed += delta
           updateFoliageWind(this.foliageWindElapsed)
         }
@@ -1819,39 +1864,6 @@ export class World {
     this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
   }
 
-  /** Boot seal — slide entity-local actors near spawn without scanning the full plaza. */
-  private pushNearPlayerColliderPosesToPhysX(maxHoriz = 72): void {
-    if (!this.playerMode) return
-    const entities = this.collectNearPlayerColliderEcsEntities(maxHoriz)
-    if (!entities.length) return
-    this.sceneScript.refreshColliderDescPoses(entities)
-    const descs = this.sceneScript.getPhysicsColliderDescsForEntities(entities).filter(
-      (desc) => !this.physics.isWorldBakedStatic(desc.entity)
-    )
-    if (!descs.length) return
-    const updated = this.physics.applyStaticColliderPoseUpdates(descs)
-    if (updated > 0) this.physics.refreshStaticColliderQueries()
-    this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
-  }
-
-  private collectNearPlayerColliderEcsEntities(maxHoriz: number): Entity[] {
-    const feet = this.player?.getWorldPosition()
-    if (!feet) return []
-    const maxHorizSq = maxHoriz * maxHoriz
-    const out = new Set<Entity>()
-    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
-      const dx = desc.matrix.elements[12]! - feet.x
-      const dz = desc.matrix.elements[14]! - feet.z
-      if (dx * dx + dz * dz > maxHorizSq) continue
-      if (desc.entity >= GLTF_COLLIDER_ENTITY_BASE) {
-        out.add((desc.entity - GLTF_COLLIDER_ENTITY_BASE) as Entity)
-      } else {
-        out.add(desc.entity as Entity)
-      }
-    }
-    return [...out]
-  }
-
   /**
    * Animator GLTF colliders must be entity-local — world-baked boot cooks freeze animated treads.
    */
@@ -2128,9 +2140,22 @@ export class World {
   /**
    * Force a full collider re-extract + PhysX cook (Help panel — Recook colliders).
    * Clears fingerprint skip and failed-cook blacklist when `force` is true.
+   *
+   * Must re-enqueue every extracted descriptor: post-boot `reconcileColliderCookQueue`
+   * only validates the existing queue, so clear→reconcile left the queue empty and
+   * the async drain was a no-op (manual recook appeared to do nothing).
    */
-  recookPhysicsColliders(options?: { force?: boolean; quiet?: boolean }): void {
-    if (!this.playerMode || !this.player) return
+  recookPhysicsColliders(options?: { force?: boolean; quiet?: boolean }): Promise<void> {
+    if (!this.playerMode || !this.player) {
+      if (!options?.quiet) {
+        clientDebugLog.log('collision', 'Recook skipped — not in play mode / no player', {
+          level: 'warn',
+          alsoConsole: true
+        })
+      }
+      return Promise.resolve()
+    }
+
     if (options?.force !== false) {
       this.lastPhysicsBatchFp = ''
       this.physics.clearFailedCookCaches()
@@ -2138,28 +2163,67 @@ export class World {
       this.colliderCookQueue.clear()
       this.sceneScript.invalidateGltfColliderSyncCache()
     }
+
     this.sceneScript.flushSceneGraphMatrices()
+    this.sceneScript.refreshAllInstancedTransforms()
     this.sceneScript.syncCollisionForce()
-    this.reconcileColliderCookQueue()
-    void (async () => {
-      while (this.colliderCookQueue.size > 0) {
-        await this.drainColliderCookQueue({ loading: true })
-      }
-    })()
-    this.pushNearPlayerColliderPosesToPhysX(120)
-    this.physics.recookWorldBakedPoseDrift(this.sceneScript.getAllPhysicsColliderDescs(), {
-      forceAll: true
-    })
-    this.physics.warmStaticScene()
+
+    // Full re-enqueue (do not rely on post-boot reconcile — it only prunes the live queue).
+    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      this.colliderCookQueue.add(desc.entity)
+    }
+    this.pendingColliderCooks = this.colliderCookQueue.size
+    const queued = this.colliderCookQueue.size
+
     if (!options?.quiet) {
-      const mesh = this.sceneScript.collision?.getPhysicsColliders().length ?? 0
-      const gltf = this.sceneScript.gltfColliders?.getPhysicsColliders().length ?? 0
       clientDebugLog.log(
         'collision',
-        `Colliders recooked — static=${this.physics.staticColliderCount} mesh=${mesh} gltf=${gltf}`,
-        { level: 'success', alsoConsole: true }
+        `Manual recook — cooking ${queued} collider(s)…`,
+        { level: 'info', alsoConsole: true }
       )
     }
+
+    return (async () => {
+      // Serialize with the normal drain so we don't race budgeted cooks.
+      while (this.colliderCookDrainInFlight) {
+        await new Promise<void>((r) => setTimeout(r, 16))
+      }
+      this.colliderCookDrainInFlight = true
+      try {
+        let passes = 0
+        const maxPasses = Math.max(64, Math.ceil(queued / 8) + 8)
+        while (this.colliderCookQueue.size > 0 && passes < maxPasses) {
+          await this.drainColliderCookQueue({ loading: true })
+          passes++
+          // Yield so rAF / player input keep running during plaza-scale recooks.
+          await new Promise<void>((r) => requestAnimationFrame(() => r()))
+        }
+        if (this.colliderCookQueue.size > 0) {
+          console.warn(
+            `[World] manual recook incomplete — ${this.colliderCookQueue.size} still pending after ${passes} passes`
+          )
+        }
+        this.pushAllColliderPosesToPhysX()
+        this.physics.warmStaticScene()
+      } finally {
+        this.colliderCookDrainInFlight = false
+        this.pendingColliderCooks = this.colliderCookQueue.size
+      }
+
+      if (!options?.quiet) {
+        const mesh = this.sceneScript.collision?.getPhysicsColliders().length ?? 0
+        const gltf = this.sceneScript.gltfColliders?.getPhysicsColliders().length ?? 0
+        clientDebugLog.log(
+          'collision',
+          `Colliders recooked — static=${this.physics.staticColliderCount} gltfActors=${this.physics.gltfStaticActorCount} ` +
+            `extracted mesh=${mesh} gltf=${gltf} pending=${this.colliderCookQueue.size}`,
+          {
+            level: this.physics.staticColliderCount > 0 ? 'success' : 'warn',
+            alsoConsole: true
+          }
+        )
+      }
+    })()
   }
 
   private logCollidersPhysDebug(): void {
@@ -2652,7 +2716,13 @@ export class World {
     scene: ResolvedScene,
     shoreWidthParcels: number
   ): Promise<SceneWater> {
-    const ocean = await IslandWater.create(scene.parcels, scene.baseParcel, shoreWidthParcels)
+    const fft = resolveFftOceanSettings(scene.metadata)
+    const waterColor = new THREE.Color(fft.waterDeep).getHex()
+    const ocean = await IslandWater.create(scene.parcels, scene.baseParcel, shoreWidthParcels, {
+      waterColor,
+      // Milder distortion when FFT is off so Water.js still reads as a calm shore.
+      distortionScale: fft.enabled ? 3.7 : 2.6
+    })
     return {
       group: ocean.group,
       update: (delta, camera) => ocean.update(delta, camera),
@@ -2699,9 +2769,11 @@ export class World {
 
     this.ezTreeGrass?.dispose()
     this.ezTreeGrass = null
+    this.desertAtmosphere = null
     resetFoliageWindRegistry()
     this.landscape.state.landscapeRoot?.removeFromParent()
     this.landscape.state.landscapeRoot = null
+    this.host.scene.fog = null
 
     this.physics.dispose()
 

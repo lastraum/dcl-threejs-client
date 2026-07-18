@@ -429,7 +429,8 @@
        * Circle sits ON TOP with a single canvas ring only.
        */
       .location-map-stack {
-        --location-map-size: min(204px, calc(100vw - var(--client-safe-left) - var(--client-safe-right) - 20px));
+        /* Circle diameter = full pill/stack width (not a smaller inset). */
+        --location-map-size: min(224px, calc(100vw - var(--client-safe-left) - var(--client-safe-right) - 20px));
         --location-map-header-h: 54px;
         --location-map-glass-h: calc(var(--location-map-header-h) + var(--location-map-size) * 0.5);
         --location-map-ease: cubic-bezier(0.4, 0, 0.2, 1);
@@ -442,8 +443,8 @@
         display: flex;
         flex-direction: column;
         align-items: stretch;
-        width: min(224px, calc(100vw - var(--client-safe-left) - var(--client-safe-right)));
-        max-width: 224px;
+        width: var(--location-map-size);
+        max-width: var(--location-map-size);
         box-sizing: border-box;
         background: transparent;
         border: 0;

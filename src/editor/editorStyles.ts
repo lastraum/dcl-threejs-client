@@ -221,19 +221,134 @@ export function injectEditorStyles(): void {
   display: flex;
   min-height: 0;
 }
-.editor-workspace-panel {
-  width: 300px;
-  flex-shrink: 0;
-  overflow-y: auto;
-  border-right: 1px solid #1f2937;
-  padding: 12px;
-  background: #0f172a;
-}
 .editor-workspace-canvas {
   flex: 1;
   min-width: 0;
   position: relative;
   overflow: hidden;
+}
+.editor-float-ui {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+}
+.editor-float-ui .editor-viewport-dock,
+.editor-float-ui .editor-float-flyout,
+.editor-float-ui .editor-float-status {
+  pointer-events: auto;
+}
+/*
+ * Second icon rail: sits to the RIGHT of the main vertical dock (not on top of it).
+ * left/top set in JS from main dock bounds so it never overlaps.
+ */
+.editor-viewport-dock--sub {
+  left: 74px; /* fallback before first measure */
+  z-index: 19;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease,
+    visibility 0.15s ease,
+    left 0.12s ease;
+}
+.editor-viewport-dock--sub-hidden {
+  opacity: 0;
+  pointer-events: none !important;
+  transform: translateY(-50%) translateX(-6px);
+  visibility: hidden;
+}
+/* Flyout left measured in JS past the secondary rail; fallback clears main+sub docks */
+.editor-float-ui--settings-open .editor-float-flyout {
+  left: 160px;
+}
+/* Biome rail is taller; tips on sub-dock should not cover the flyout */
+.editor-viewport-dock--sub .editor-viewport-dock-btn::after,
+.editor-viewport-dock--sub .editor-viewport-dock-btn::before {
+  /* tips still to the right, but flyout sits further out so they clear */
+  z-index: 21;
+}
+/* Main dock hover tips would cover the sub-rail — hide them while settings is open */
+.editor-float-ui--settings-open .editor-viewport-dock:not(.editor-viewport-dock--sub)
+  .editor-viewport-dock-btn:hover::after,
+.editor-float-ui--settings-open .editor-viewport-dock:not(.editor-viewport-dock--sub)
+  .editor-viewport-dock-btn:hover::before {
+  opacity: 0;
+  pointer-events: none;
+}
+.editor-float-flyout {
+  position: absolute;
+  left: 68px;
+  top: 50%;
+  z-index: 16;
+  width: min(300px, calc(100% - 88px));
+  max-height: min(78vh, 720px);
+  overflow-y: auto;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(12, 18, 22, 0.92);
+  border: 1px solid rgba(110, 231, 183, 0.28);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transform: translateY(-50%) translateX(0);
+  opacity: 1;
+  transition:
+    opacity 0.16s ease,
+    transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1),
+    left 0.16s ease;
+}
+.editor-float-flyout--hidden {
+  opacity: 0;
+  pointer-events: none !important;
+  transform: translateY(-50%) translateX(-8px);
+  visibility: hidden;
+}
+.editor-float-flyout-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.editor-float-flyout-close {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: transparent;
+  color: #e2e8f0;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.editor-float-flyout-close:hover {
+  border-color: #f87171;
+  color: #fca5a5;
+}
+.editor-float-brush {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+}
+.editor-float-status {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 16;
+  max-width: min(520px, 90%);
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: rgba(12, 18, 22, 0.82);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  color: #94a3b8;
+  font-size: 12px;
+  text-align: center;
+  pointer-events: none;
 }
 .editor-viewport-compass {
   position: absolute;
@@ -467,10 +582,237 @@ export function injectEditorStyles(): void {
   color: #64748b;
   line-height: 1.4;
 }
+.editor-sculpt-hint--compact {
+  font-size: 10px;
+  opacity: 0.9;
+}
+.editor-env-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(20, 40, 50, 0.45);
+  border: 1px solid rgba(110, 180, 231, 0.2);
+}
+.editor-env-water {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.15);
+}
+.editor-env-water--inactive {
+  opacity: 0.55;
+}
+.editor-env-water--hidden {
+  display: none !important;
+}
+.editor-env-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #cbd5e1;
+}
+.editor-env-field-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6ee7b7;
+}
+.editor-env-select {
+  width: 100%;
+  background: #0f172a;
+  color: #e2e8f0;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.editor-viewport-dock {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 6px;
+  border-radius: 16px;
+  background: rgba(12, 18, 22, 0.82);
+  border: 1px solid rgba(110, 231, 183, 0.28);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+}
+.editor-viewport-dock-sep {
+  width: 22px;
+  height: 1px;
+  margin: 4px 0;
+  background: rgba(148, 163, 184, 0.28);
+}
+.editor-viewport-dock-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.editor-viewport-dock-group--hidden {
+  display: none !important;
+}
+.editor-space-panel,
+.editor-desert-panel,
+.editor-land-panel,
+.editor-mountains-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 10px;
+}
+.editor-space-panel {
+  background: rgba(8, 12, 28, 0.55);
+  border: 1px solid rgba(110, 140, 255, 0.22);
+}
+.editor-desert-panel {
+  background: rgba(40, 28, 12, 0.55);
+  border: 1px solid rgba(212, 168, 88, 0.28);
+}
+.editor-land-panel {
+  background: rgba(28, 40, 18, 0.55);
+  border: 1px solid rgba(90, 158, 74, 0.28);
+}
+.editor-mountains-panel {
+  background: rgba(18, 28, 36, 0.55);
+  border: 1px solid rgba(155, 176, 196, 0.28);
+}
+.editor-space-panel.editor-sculpt-tools--hidden,
+.editor-desert-panel.editor-sculpt-tools--hidden,
+.editor-land-panel.editor-sculpt-tools--hidden,
+.editor-mountains-panel.editor-sculpt-tools--hidden {
+  display: none !important;
+}
+.editor-viewport-dock-btn {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: rgba(30, 41, 59, 0.55);
+  color: #e2e8f0;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    transform 0.12s ease,
+    box-shadow 0.12s ease;
+}
+.editor-viewport-dock-icon {
+  pointer-events: none;
+  user-select: none;
+  text-align: center;
+  font-size: 18px;
+  line-height: 1;
+}
+/* Instant custom tip to the right — no native title delay */
+.editor-viewport-dock-btn::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%) translateX(-4px);
+  white-space: nowrap;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid rgba(110, 231, 183, 0.35);
+  color: #e2e8f0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.1s ease,
+    transform 0.12s ease;
+  z-index: 30;
+}
+.editor-viewport-dock-btn::before {
+  content: '';
+  position: absolute;
+  left: calc(100% + 4px);
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin-top: -4px;
+  background: rgba(15, 23, 42, 0.96);
+  border-left: 1px solid rgba(110, 231, 183, 0.35);
+  border-bottom: 1px solid rgba(110, 231, 183, 0.35);
+  transform: rotate(45deg);
+  opacity: 0;
+  transition: opacity 0.1s ease;
+  z-index: 30;
+}
+.editor-viewport-dock-btn:hover {
+  border-color: rgba(110, 231, 183, 0.45);
+  background: rgba(15, 60, 48, 0.75);
+  transform: scale(1.06);
+}
+.editor-viewport-dock-btn:hover::after,
+.editor-viewport-dock-btn:hover::before {
+  opacity: 1;
+}
+.editor-viewport-dock-btn:hover::after {
+  transform: translateY(-50%) translateX(0);
+}
+.editor-viewport-dock-btn:active {
+  transform: scale(0.96);
+}
+.editor-viewport-dock-btn--active {
+  background: #065f46;
+  border-color: #10b981;
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35);
+}
+.editor-viewport-dock-btn--on {
+  background: rgba(14, 116, 144, 0.55);
+  border-color: rgba(34, 211, 238, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.25);
+}
+.editor-viewport-dock-btn--active:hover,
+.editor-viewport-dock-btn--on:hover {
+  filter: brightness(1.08);
+}
+.editor-workspace-canvas {
+  position: relative;
+}
 .editor-sculpt-tabs, .editor-sculpt-row {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+.editor-sculpt-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 6px 0 4px;
+  background: linear-gradient(180deg, rgba(12, 18, 14, 0.96) 70%, rgba(12, 18, 14, 0));
+}
+.editor-sculpt-tabs .editor-sculpt-tab {
+  flex: 1 1 auto;
+  min-width: 4.5rem;
+  font-weight: 600;
 }
 .editor-sculpt-tools--hidden {
   display: none !important;

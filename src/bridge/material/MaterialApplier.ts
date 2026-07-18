@@ -384,7 +384,13 @@ export class MaterialApplier {
       if (emissiveUnion && m.map && textureUnionSameSrc(emissiveUnion, mainUnion)) {
         m.emissiveMap = m.map
       }
-      configureEmissiveRendering(m, pbr.emissiveIntensity, !!m.emissiveMap)
+      // Only glow once maps exist — black+no maps = invisible fire planes.
+      configureEmissiveRendering(
+        m,
+        pbr.emissiveIntensity,
+        !!m.emissiveMap,
+        pbr.transparencyMode
+      )
     } else {
       const diffuse = (inner as UnlitMaterial).diffuseColor
       if (diffuse) {
@@ -394,12 +400,15 @@ export class MaterialApplier {
 
     const alpha =
       (isPbr ? (inner as PbrMaterial).albedoColor?.a : (inner as UnlitMaterial).diffuseColor?.a) ?? 1
+    // Dedicated alphaMap only — do not treat albedo map as AUTO cutout (Unity parity).
+    const hasAlphaMap =
+      !!(m as THREE.MeshPhysicalMaterial).alphaMap || !!(m as THREE.MeshBasicMaterial).alphaMap
     applyTransparency(
       m,
       alpha,
       inner.alphaTest,
       isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO,
-      false
+      hasAlphaMap
     )
     m.needsUpdate = true
   }
@@ -454,14 +463,19 @@ export class MaterialApplier {
       const emissiveUnion = coerceTextureUnion(pbr.emissiveTexture)
       if (emissiveUnion) {
         const prev = m.emissiveMap
-        let emissiveTex = await this.loadUnionTexture(emissiveUnion, { flipY })
-        if (!emissiveTex && m.map && textureUnionSameSrc(emissiveUnion, mainUnion)) {
-          emissiveTex = m.map
+        // Same-src as albedo (Genesis firepit): share map so UV frames + alpha stay in lockstep.
+        if (m.map && textureUnionSameSrc(emissiveUnion, mainUnion)) {
+          m.emissiveMap = m.map
+        } else {
+          let emissiveTex = await this.loadUnionTexture(emissiveUnion, { flipY })
+          if (!emissiveTex && m.map && textureUnionSameSrc(emissiveUnion, mainUnion)) {
+            emissiveTex = m.map
+          }
+          m.emissiveMap = emissiveTex
+          if (!emissiveTex) texturesOk = false
+          else if (emissiveTex !== m.map)
+            this.applyUvTransform(emissiveTex, getTextureDef(emissiveUnion), prev, mesh)
         }
-        m.emissiveMap = emissiveTex
-        if (!emissiveTex) texturesOk = false
-        else if (emissiveTex !== m.map)
-          this.applyUvTransform(emissiveTex, getTextureDef(emissiveUnion), prev, mesh)
       }
       const bumpUnion = coerceTextureUnion(pbr.bumpTexture)
       if (bumpUnion) {
@@ -477,7 +491,12 @@ export class MaterialApplier {
       // Re-apply after maps land — emissiveIntensity drives flame brightness when albedoColor is absent.
       applyPbrColors(m, pbr)
       applyPbrScalars(m, pbr)
-      configureEmissiveRendering(m, pbr.emissiveIntensity, !!m.emissiveMap)
+      configureEmissiveRendering(
+        m,
+        pbr.emissiveIntensity,
+        !!m.emissiveMap,
+        pbr.transparencyMode
+      )
     }
 
     const transparencyMode = isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO
@@ -503,8 +522,20 @@ export class MaterialApplier {
     const tierCasts = q === 'high' || q === 'ultra'
     mesh.castShadow = tierCasts && inner.castShadows !== false
     mesh.receiveShadow = true
-    // Marquees face inward (FrontSide). Never DoubleSide — back face is mirrored and
-    // was the “split + mirrored” LED look from inside the plaza.
+    // Marquees face inward (FrontSide). Dual-face DCL plane geometry already has both
+    // normals — FrontSide shows both. DoubleSide only when author marks primitiveDoubleSided.
+    // Glow sprites: keep alpha blend, no depth write (re-assert after applyTransparency).
+    const glowSprite =
+      m instanceof THREE.MeshPhysicalMaterial &&
+      (transparencyMode === MTM_ALPHA_BLEND || transparencyMode === MTM_ALPHA_TEST_AND_ALPHA_BLEND) &&
+      (m.emissiveIntensity ?? 1) >= 1.5 &&
+      !!m.emissiveMap
+    if (glowSprite) {
+      m.transparent = true
+      m.depthWrite = false
+      m.blending = THREE.NormalBlending
+      m.toneMapped = false
+    }
     m.side = mesh.userData.primitiveDoubleSided === true ? THREE.DoubleSide : THREE.FrontSide
     m.needsUpdate = true
     return texturesOk && meshHasTextureMaps(mesh, pb)

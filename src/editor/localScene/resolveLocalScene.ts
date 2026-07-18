@@ -1,7 +1,14 @@
-import type { ContentFile, ResolvedScene, SceneMetadata } from '../../dcl/content/types'
+import type {
+  ContentFile,
+  ResolvedScene,
+  SceneEnvironmentConfig,
+  SceneEnvironmentKind,
+  SceneMetadata
+} from '../../dcl/content/types'
 import { pickSceneSpawn } from '../../dcl/content/pickSceneSpawn'
 import { layoutFromSceneMetadata } from '../../dcl/content/sceneLayout'
 import { BLANK_SCENE_TEMPLATE } from '../../dcl/content/types'
+import { isSceneEnvironmentKind } from '../terrain/sceneEnvironmentIO'
 import { walkProjectFiles, readFileText, readFileBytes } from './localFileSystem'
 import type { ProjectRoot } from './projectRoot'
 import { projectRootLabel } from './projectRoot'
@@ -34,6 +41,8 @@ function isSceneAssetPath(path: string): boolean {
     lower.endsWith('.js') ||
     lower.endsWith('.composite') ||
     lower.endsWith('.crdt') ||
+    lower.endsWith('.bin') ||
+    lower.endsWith('.json') ||
     lower === 'scene.json'
   )
 }
@@ -47,6 +56,8 @@ function mimeForAssetPath(path: string): string {
   if (lower.endsWith('.wav')) return 'audio/wav'
   if (lower.endsWith('.glb')) return 'model/gltf-binary'
   if (lower.endsWith('.gltf')) return 'model/gltf+json'
+  if (lower.endsWith('.bin')) return 'application/octet-stream'
+  if (lower.endsWith('.json')) return 'application/json'
   return 'application/octet-stream'
 }
 
@@ -103,15 +114,32 @@ export async function resolveLocalScene(projectId: string, root: ProjectRoot): P
     return urlByFile.get(file) ?? hash
   }
 
+  // Honor scene.json environment.kind (desert / island / space / …) — same as deployed client.
+  let envObj: SceneEnvironmentConfig = { kind: 'none' }
+  if (typeof metadata.environment === 'string') {
+    const k = metadata.environment.trim().toLowerCase()
+    envObj = { kind: isSceneEnvironmentKind(k) ? (k as SceneEnvironmentKind) : 'none' }
+  } else if (metadata.environment && typeof metadata.environment === 'object') {
+    envObj = { ...metadata.environment }
+    if (!envObj.kind || !isSceneEnvironmentKind(String(envObj.kind))) envObj.kind = 'none'
+  }
+  const landscapeKind = (envObj.kind ?? 'none') as SceneEnvironmentKind
+
   const scene: ResolvedScene = {
     ...BLANK_SCENE_TEMPLATE,
     title,
     parcels,
     baseParcel,
     spawn: resolveLocalSpawn(metadata),
-    metadata: { ...metadata, environment: 'none' },
-    landscapeEnvironment: 'none',
-    skyLighting: { disableSun: false, disableMoon: false },
+    metadata: {
+      ...metadata,
+      environment: envObj
+    },
+    landscapeEnvironment: landscapeKind,
+    skyLighting: {
+      disableSun: envObj.disableSun === true,
+      disableMoon: envObj.disableMoon === true
+    },
     content,
     contentsBaseUrl: 'local://project',
     assetUrl,

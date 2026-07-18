@@ -313,6 +313,62 @@ export function applyLavaBrush(
   softenLavaRegion(lava, resolution, softenMinIx, softenMaxIx, softenMinIz, softenMaxIz)
 }
 
+/**
+ * Density + optional RGB color for ez-tree grass blade GLBs.
+ * `grass` = density 0–255; `grassRgb` = packed RGB (length res²×3).
+ * Not albedo splat.
+ */
+export function applyGrassBrush(
+  grass: Uint8Array,
+  grassRgb: Uint8Array,
+  resolution: number,
+  centerFx: number,
+  centerFz: number,
+  arenaWidthM: number,
+  arenaDepthM: number,
+  sizeM: number,
+  strength: number,
+  erase: boolean,
+  colorRgb: { r: number; g: number; b: number }
+): void {
+  const brushRadiusCells = computeBrushRadiusCells(sizeM, arenaWidthM, arenaDepthM, resolution)
+  const minIx = Math.max(0, Math.floor(centerFx - brushRadiusCells))
+  const maxIx = Math.min(resolution - 1, Math.ceil(centerFx + brushRadiusCells))
+  const minIz = Math.max(0, Math.floor(centerFz - brushRadiusCells))
+  const maxIz = Math.min(resolution - 1, Math.ceil(centerFz + brushRadiusCells))
+  const densityTarget = erase ? 0 : 255
+
+  for (let iz = minIz; iz <= maxIz; iz++) {
+    for (let ix = minIx; ix <= maxIx; ix++) {
+      const dist = Math.hypot(ix + 0.5 - centerFx, iz + 0.5 - centerFz)
+      if (dist > brushRadiusCells * 1.12) continue
+      const t = Math.min(1, paintBrushFalloff(dist, brushRadiusCells) * strength * 1.15)
+      const idx = iz * resolution + ix
+      grass[idx] = Math.round(lerp(grass[idx]!, densityTarget, t))
+
+      const c = idx * 3
+      if (erase) {
+        if (grass[idx]! < 8) {
+          grassRgb[c] = 0
+          grassRgb[c + 1] = 0
+          grassRgb[c + 2] = 0
+        }
+      } else {
+        // Blend toward brush color so overlapping patches mix.
+        grassRgb[c] = Math.round(lerp(grassRgb[c]!, colorRgb.r, t))
+        grassRgb[c + 1] = Math.round(lerp(grassRgb[c + 1]!, colorRgb.g, t))
+        grassRgb[c + 2] = Math.round(lerp(grassRgb[c + 2]!, colorRgb.b, t))
+      }
+    }
+  }
+
+  const softenMinIx = Math.max(0, minIx - PAINT_SOFTEN_RADIUS)
+  const softenMaxIx = Math.min(resolution - 1, maxIx + PAINT_SOFTEN_RADIUS)
+  const softenMinIz = Math.max(0, minIz - PAINT_SOFTEN_RADIUS)
+  const softenMaxIz = Math.min(resolution - 1, maxIz + PAINT_SOFTEN_RADIUS)
+  softenLavaRegion(grass, resolution, softenMinIx, softenMaxIx, softenMinIz, softenMaxIz)
+}
+
 export function applySplatBrush(
   rgba: Uint8Array,
   resolution: number,

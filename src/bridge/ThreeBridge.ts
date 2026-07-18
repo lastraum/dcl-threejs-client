@@ -1623,6 +1623,8 @@ export class ThreeBridge {
     this.store.suspendSceneEntity(entity)
     this.pendingMeshEntities.delete(entity)
     this.pendingMaterialEntities.delete(entity)
+    // Drop applied fingerprint — revive rebuilds a bare plane; stale fp would skip texture re-apply.
+    this.materials.clearEntity(entity)
     const obj = this.store.getNode(entity)
     if (!obj) return
     this.removeEntityVisuals(entity, obj)
@@ -1644,6 +1646,7 @@ export class ThreeBridge {
     const key = primitiveMeshKey(spec)
     const planeUvs = spec.mesh?.$case === 'plane' ? spec.mesh.plane?.uvs : undefined
     let primitive = obj.getObjectByName(mk) as THREE.Mesh | undefined
+    let rebuilt = false
 
     if (
       primitive?.isMesh &&
@@ -1655,6 +1658,9 @@ export class ThreeBridge {
     } else if (!primitive?.isMesh || primitive.userData.primitiveMeshKey !== key) {
       if (primitive) {
         primitive.geometry.dispose()
+        const oldMat = primitive.material
+        if (Array.isArray(oldMat)) oldMat.forEach((m) => m.dispose())
+        else oldMat?.dispose()
         obj.remove(primitive)
       }
       const geo = buildPrimitiveGeometry(spec)
@@ -1675,11 +1681,14 @@ export class ThreeBridge {
       primitive.userData.entity = entity
       obj.add(primitive)
       this.notifyMeshComponent(entity, MeshRenderer.componentId)
+      rebuilt = true
+      // New mesh has no maps — force texture pass even if Material LWW fingerprint matches.
+      this.materials.clearEntity(entity)
     }
 
     if (!touchMaterials || !Material.has(entity) || !primitive?.isMesh) return
     const pb = Material.get(entity) as PbMaterial
-    if (this.materials.needsReapply(entity, pb, primitive)) {
+    if (rebuilt || this.materials.needsReapply(entity, pb, primitive)) {
       this.materials.applyScalarsToObject3D(primitive, entity, pb)
       this.pendingMaterialEntities.add(entity)
     }
@@ -2166,6 +2175,7 @@ export class ThreeBridge {
       const meshKind = primitiveKind(spec)
       const planeUvs = spec.mesh?.$case === 'plane' ? spec.mesh.plane?.uvs : undefined
 
+      let rebuilt = false
       if (
         primitive &&
         (primitive as THREE.Mesh).isMesh &&
@@ -2178,6 +2188,9 @@ export class ThreeBridge {
       } else if (!primitive || !(primitive as THREE.Mesh).isMesh || primitive.userData.primitiveMeshKey !== key) {
         if (primitive) {
           ;(primitive as THREE.Mesh).geometry.dispose()
+          const oldMat = (primitive as THREE.Mesh).material
+          if (Array.isArray(oldMat)) oldMat.forEach((m) => m.dispose())
+          else oldMat?.dispose()
           obj.remove(primitive)
         }
         const geo = buildPrimitiveGeometry(spec)
@@ -2197,11 +2210,13 @@ export class ThreeBridge {
         primitive.receiveShadow = true
         obj.add(primitive)
         this.notifyMeshComponent(entity, MeshRenderer.componentId)
+        rebuilt = true
+        this.materials.clearEntity(entity)
       }
 
       if (touchMaterials && Material.has(entity)) {
         const pb = Material.get(entity) as PbMaterial
-        if (this.materials.needsReapply(entity, pb, primitive)) {
+        if (rebuilt || this.materials.needsReapply(entity, pb, primitive)) {
           this.pendingMaterialEntities.add(entity)
           this.materials.applyScalarsToObject3D(primitive, entity, pb)
         }

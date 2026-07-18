@@ -16,19 +16,21 @@ export function parcelWorldOrigin(parcel: ParcelCoord, base: ParcelCoord): {
 
 /**
  * Empty-land `ground.glb` mesh is centered on the origin (±8 m).
- * Shift so the parcel SW corner stays at the parent origin, matching SDK7 coords.
+ * Parent parcel root is at dclToThree(SW) = (-swX, swZ). Local offset must also
+ * respect the X reflection so mesh center lands on dclToThree(parcel center):
+ *   three = (-(swX+8), swZ+8)  ⇒  local = (-8, y, +8)
  * Y is nudged slightly below y=0 so scene floors at zero do not z-fight the padding ground.
  */
 export const EMPTY_LAND_GROUND_OFFSET = {
-  x: PARCEL_SIZE / 2,
+  x: -PARCEL_SIZE / 2,
   y: -0.01,
   z: PARCEL_SIZE / 2
 } as const
 
 /**
  * Terrain GLB child offset under an ECS entity whose root uses `dclToThree` on Transform.
- * Landscape ground uses +X local offset from a negated-SW root; ECS props use negated world X.
- * Mirror parcel mesh X (and scale.x = -1) so terrain aligns with composite entities.
+ * Export meshes use DCL-local +8 center (mesh scale.x = -1), independent of landscape
+ * EMPTY_LAND_GROUND_OFFSET (which is three-local after parent dclToThree).
  */
 export function terrainGlbParcelMeshOffset(
   parcelSwX: number,
@@ -36,8 +38,9 @@ export function terrainGlbParcelMeshOffset(
   footprintOriginX: number,
   footprintOriginZ: number
 ): { x: number; y: number; z: number } {
-  const localX = parcelSwX - footprintOriginX + EMPTY_LAND_GROUND_OFFSET.x
-  const localZ = parcelSwZ - footprintOriginZ + EMPTY_LAND_GROUND_OFFSET.z
+  const half = PARCEL_SIZE / 2
+  const localX = parcelSwX - footprintOriginX + half
+  const localZ = parcelSwZ - footprintOriginZ + half
   return { x: -localX, y: 0, z: localZ }
 }
 
@@ -49,21 +52,16 @@ export function parcelKeyFromDclScene(dclX: number, dclZ: number, base: ParcelCo
 }
 
 /**
- * Three.js position for landscape props — mirrors parcelRoot(dclToThree(sw)) + local offset,
- * not raw dclToThree on the absolute point (which would shift props onto scene parcels).
+ * Three.js position for landscape props / infinite ground — same X reflection as
+ * `dclToThreePos` (threeX = −dclX). Matches editor terrain (`scale.x = -1` on DCL mesh)
+ * and composite entities so land/forest no longer sit 1 parcel off on X.
  */
 export function dclSceneToLandscapeThree(
   dclX: number,
   dclZ: number,
-  base: ParcelCoord
+  _base?: ParcelCoord
 ): { x: number; z: number } {
-  const px = base.x + Math.floor(dclX / PARCEL_SIZE)
-  const py = base.y + Math.floor(dclZ / PARCEL_SIZE)
-  const swX = (px - base.x) * PARCEL_SIZE
-  const swZ = (py - base.y) * PARCEL_SIZE
-  const localX = dclX - swX
-  const localZ = dclZ - swZ
-  return { x: -swX + localX, z: swZ + localZ }
+  return { x: -dclX, z: dclZ }
 }
 
 /** Random prop position inside a parcel in SDK7 scene space (0–16 on X/Z). */

@@ -2534,6 +2534,10 @@ export class World {
     }
     // Session profile is authoritative right after a local deploy.
     await this.player.reloadAvatar(undefined, profile ?? undefined)
+    // Re-announce with the deploy-bumped version + fresh serialized profile so
+    // peers rebuild our remote avatar (they ignore repeats of the old version).
+    this.comms.setCommsProfile(this.session.getCommsProfileEntity())
+    this.comms.announceProfile('connect')
     await this.vrmPeerSync.onLocalEquipChanged(this.session.getAddress())
   }
 

@@ -27,7 +27,10 @@ export type ComposeOptions = {
   profileId?: string
   bodyShape?: BodyShape
   assetCache?: AssetCache | null
-  /** Prefer over Catalyst fetch (backpack equip / post-deploy reload). */
+  /**
+   * Authoritative profile to compose from, skipping the lambdas fetch.
+   * Used after backpack equip / local Catalyst deploy (lambdas can lag).
+   */
   profile?: AvatarProfile
 }
 

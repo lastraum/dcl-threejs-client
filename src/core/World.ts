@@ -2532,7 +2532,8 @@ export class World {
       clearProfileCaches(address)
       seedLocalProfileCache(address, profile)
     }
-    await this.player.reloadAvatar(undefined, profile)
+    // Session profile is authoritative right after a local deploy.
+    await this.player.reloadAvatar(undefined, profile ?? undefined)
     await this.vrmPeerSync.onLocalEquipChanged(this.session.getAddress())
   }
 

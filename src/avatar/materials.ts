@@ -90,7 +90,11 @@ export function applyWearableEmissives(root: THREE.Object3D): void {
       const hasEmissiveMap = !!mat.emissiveMap
       const emissiveLuma = mat.emissive.r + mat.emissive.g + mat.emissive.b
 
-      if (!isEmNamed && !hasEmissiveMap && emissiveLuma <= 0.05) continue
+      // Plain materials with a faint emissiveFactor are authored sheen, not neon —
+      // the boost peak-normalizes to full glow (×EMISSIVE_INTENSITY, untone-mapped),
+      // which blew subtle factors out to solid white (e.g. GalaxyBoots at 0.07 peak).
+      // Only boost unnamed/map-less materials when the factor is genuinely strong.
+      if (!isEmNamed && !hasEmissiveMap && emissiveLuma <= 0.45) continue
 
       boostEmissiveColor(mat, isEmNamed)
     }

@@ -3,9 +3,9 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-07-17  
-> **Current phase:** **v1.0.0** — production beta on the core loop; still not full Explorer parity.  
-> **Shipped (1.x):** spatial nearby voice · Settings Communities · 1:1 DMs + community group text (ADR-208) · community voice join CTA · **2D social chat FAB** · community HUD toasts / mod gates · RestrictedActions teleport/changeRealm/copy · elevated-spawn floor settle · **scene UI hit-map + nine-slice** · **Dead Surge combat / VC / PE attach** · **P4 emissive bloom / HDR** · **PhysicsCombined + Explorer glider (prop/open-close/remote)** · **wearable unit-scale + backpack→world reload**.  
-> **1.x next:** backpack outfits/marketplace · scene UI text-measure · community voice Bearer parity · create-community / invites · graphics P3 distance culls.  
+> **Current phase:** **v1.1.0** — production beta + multiplayer/social reliability; still not full Explorer parity.  
+> **Shipped (1.x):** **3D chat handoff** · **nearby voice unlock** · **parcel archipelago seed** · **location minimap stack** · communities voice/chat + HUD toasts · 2D chat FAB · P4 bloom/HDR · Explorer glider · wearable unit-scale + backpack→world · Dead Surge combat/VC · RestrictedActions HUD confirms · SDK6 fail-fast.  
+> **1.x next:** backpack outfits/marketplace · scene UI text-measure · community voice Bearer parity · create-community / invites · graphics P3 distance culls · spatial voice restore.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
@@ -13,6 +13,38 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — v1.1.0 production beta (multiplayer + play loop) (2026-07-17)
+
+**Status: release cut** — `dev-latest` → `main` · tag `v1.1.0` · tip includes `7a56512` Genesis play-loop batch + prior 1.x milestones on `dev-latest`.
+
+### What's new
+
+- **3D chat works after Jump In** (landing → world handoff fixed)
+- **Nearby voice you can actually hear** (autoplay unlock)
+- **Island chat/peers match your parcel** (archipelago seed)
+- **Explorer-style location minimap** (collapse/expand)
+- **Communities** chat/voice + HUD toasts
+- **Bloom / HDR** for authored emissives
+- **Glider** (hold Space after double-jump)
+- **Backpack equip updates the in-world avatar**
+- **SDK6 parcels error clearly** instead of hanging
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **3D chat handoff** | 🟢 | Shell dispose no longer clears World `chatHandler` |
+| **HTML nearby voice** | 🟢 | Gesture unlock + play retry; spatial deferred |
+| **Archipelago seed** | 🟢 | Bound parcel genesis, not `(0,0,0)` |
+| **Location map stack** | 🟢 | Glass + caret; single canvas ring |
+| **HUD RestrictedActions** | 🟢 | `changeRealm` / `openExternalUrl` confirm modal |
+| **SDK6 gate** | 🟢 | Fail-fast UI for classic Builder scenes |
+| **Glider / bloom / communities** | 🟢 | Prior milestones on `dev-latest` |
+
+**QA:** Genesis Jump In chat + voice · Angzaar hard refresh island · minimap caret · backpack equip · SDK7 world · SDK6 error path · glider hold-Space · bloom on Dead Surge.
+
+**Tip commit:** `7a56512` on `dev-latest`.
 
 ---
 

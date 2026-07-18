@@ -20,6 +20,9 @@ export type BackpackWearableItem = WearableDisplayCard & {
   isBase?: boolean
   /** Body-shape URNs with a representation; undefined = fits all shapes. */
   bodyShapes?: string[]
+  /** Categories this wearable hides/replaces when equipped (ADR-239). */
+  hides?: string[]
+  replaces?: string[]
 }
 
 type OwnedEntry = OwnedWearableEntry
@@ -29,7 +32,7 @@ type WearableApiHit = {
   name?: string
   rarity?: string | null
   thumbnail?: string
-  data?: { category?: string }
+  data?: { category?: string; hides?: string[]; replaces?: string[] }
 }
 
 type BaseCatalogHit = WearableApiHit & {
@@ -44,10 +47,14 @@ const METADATA_CONCURRENCY = 14
 
 const BASE_COLLECTION_ID = 'urn:decentraland:off-chain:base-avatars'
 
+const INVENTORY_PAGE_SIZE = 100
+const INVENTORY_MAX_PAGES = 50
+
 /**
  * Catalyst lambdas — full wallet inventory with tokenIds.
- * Prefer `/users/{addr}/wearables` (includes individualData). Fall back to
- * `wearables-by-owner` which often only returns asset URNs without tokens.
+ * Prefer `/users/{addr}/wearables` (includes individualData; PAGINATED — walk
+ * every page or wallets with >100 wearables silently lose inventory). Fall back
+ * to `wearables-by-owner` which often only returns asset URNs without tokens.
  */
 export async function fetchOwnedWearableUrns(
   address: string,
@@ -58,20 +65,28 @@ export async function fetchOwnedWearableUrns(
 
   // Primary: has individualData[].id / tokenId (required for profile deploy).
   try {
-    const res = await fetch(`${base}/users/${addr}/wearables`)
-    if (res.ok) {
+    const rows: OwnedWearableApiRow[] = []
+    for (let pageNum = 1; pageNum <= INVENTORY_MAX_PAGES; pageNum++) {
+      const res = await fetch(
+        `${base}/users/${addr}/wearables?pageSize=${INVENTORY_PAGE_SIZE}&pageNum=${pageNum}`
+      )
+      if (!res.ok) break
       const raw = (await res.json()) as
         | OwnedWearableApiRow[]
-        | { elements?: OwnedWearableApiRow[]; error?: string }
-      const rows = Array.isArray(raw)
-        ? raw
-        : Array.isArray(raw.elements)
-          ? raw.elements
-          : null
-      if (rows) {
-        const expanded = expandOwnedWearableRows(rows).filter((e) => e.urn?.trim())
-        if (expanded.length) return expanded
+        | { elements?: OwnedWearableApiRow[]; totalAmount?: number; error?: string }
+      if (Array.isArray(raw)) {
+        // Legacy unpaginated shape — the response is already the full list.
+        rows.push(...raw)
+        break
       }
+      if (!Array.isArray(raw.elements)) break
+      rows.push(...raw.elements)
+      const total = typeof raw.totalAmount === 'number' ? raw.totalAmount : rows.length
+      if (raw.elements.length < INVENTORY_PAGE_SIZE || rows.length >= total) break
+    }
+    if (rows.length) {
+      const expanded = expandOwnedWearableRows(rows).filter((e) => e.urn?.trim())
+      if (expanded.length) return expanded
     }
   } catch {
     /* fall through */
@@ -179,6 +194,22 @@ function guessCategoryFromUrn(urn: string): WearableCategory | 'unknown' {
   return 'unknown'
 }
 
+function itemFromApiHit(hit: WearableApiHit, urn: string, assetUrn: string): BackpackWearableItem {
+  const rarity = (hit.rarity?.trim().toLowerCase() || guessWearableRarity(assetUrn)).toLowerCase()
+  const categoryRaw = hit.data?.category?.trim().toLowerCase()
+  const category = (categoryRaw as WearableCategory | undefined) ?? guessCategoryFromUrn(assetUrn)
+  return {
+    urn,
+    name: hit.name?.trim() || wearableShortLabel(assetUrn),
+    rarity,
+    thumbnailUrl: hit.thumbnail?.trim() || wearableThumbnailUrl(assetUrn),
+    category,
+    amount: 1,
+    hides: hit.data?.hides,
+    replaces: hit.data?.replaces
+  }
+}
+
 async function fetchWearableMetadata(
   urn: string,
   lambdasUrl: string
@@ -192,20 +223,39 @@ async function fetchWearableMetadata(
     const raw = (await res.json()) as { wearables?: WearableApiHit[] }
     const hit = raw.wearables?.[0]
     if (!hit) return null
-    const rarity = (hit.rarity?.trim().toLowerCase() || guessWearableRarity(assetUrn)).toLowerCase()
-    const categoryRaw = hit.data?.category?.trim().toLowerCase()
-    const category = (categoryRaw as WearableCategory | undefined) ?? guessCategoryFromUrn(assetUrn)
-    return {
-      urn,
-      name: hit.name?.trim() || wearableShortLabel(assetUrn),
-      rarity,
-      thumbnailUrl: hit.thumbnail?.trim() || wearableThumbnailUrl(assetUrn),
-      category,
-      amount: 1
-    }
+    return itemFromApiHit(hit, urn, assetUrn)
   } catch {
     return null
   }
+}
+
+const METADATA_BATCH_SIZE = 30
+
+/**
+ * Batch metadata lookup — `/collections/wearables` accepts repeated wearableId
+ * params. One request per ~30 asset URNs instead of one per item; a paginated
+ * inventory of hundreds was rate-limiting the per-item pattern into blank cards.
+ * Returns hits keyed by lowercase asset URN.
+ */
+async function fetchWearableMetadataBatch(
+  assetUrns: string[],
+  lambdasUrl: string
+): Promise<Map<string, WearableApiHit>> {
+  const base = lambdasUrl.replace(/\/$/, '')
+  const out = new Map<string, WearableApiHit>()
+  const qs = assetUrns.map((u) => `wearableId=${encodeURIComponent(u)}`).join('&')
+  try {
+    const res = await fetch(`${base}/collections/wearables?${qs}`)
+    if (!res.ok) return out
+    const raw = (await res.json()) as { wearables?: WearableApiHit[] }
+    for (const hit of raw.wearables ?? []) {
+      const id = hit.id?.trim().toLowerCase()
+      if (id) out.set(id, hit)
+    }
+  } catch {
+    /* partial results — missing urns fall back below */
+  }
+  return out
 }
 
 async function mapPool<T, R>(
@@ -240,14 +290,36 @@ export async function loadBackpackWearables(
     deduped.set(urn, (deduped.get(urn) ?? 0) + (entry.amount ?? 1))
   }
 
-  const urns = [...deduped.keys()]
+  // Collapse duplicate tokens of the same asset into ONE card: first token's complete
+  // urn stays as the equip target, amount counts every copy in the wallet.
+  // (Original casing kept for requests — v1/off-chain URNs are case-sensitive.)
+  const grouped = new Map<string, { urn: string; assetUrn: string; amount: number }>()
+  for (const [urn, amount] of deduped) {
+    const assetUrn = assetUrnFromCompleteUrn(urn)
+    const key = assetUrn.toLowerCase()
+    const group = grouped.get(key)
+    if (group) group.amount += amount
+    else grouped.set(key, { urn, assetUrn, amount })
+  }
+  const groups = [...grouped.values()]
+  const batches: string[][] = []
+  for (let i = 0; i < groups.length; i += METADATA_BATCH_SIZE) {
+    batches.push(groups.slice(i, i + METADATA_BATCH_SIZE).map((g) => g.assetUrn))
+  }
+
+  const metaByAsset = new Map<string, WearableApiHit>()
   let loaded = 0
-  const enriched = await mapPool(urns, METADATA_CONCURRENCY, async (urn) => {
-    const meta = await fetchWearableMetadata(urn, lambdasUrl)
-    loaded++
-    onProgress?.(loaded, urns.length)
-    const item = meta ?? fallbackItem(urn, deduped.get(urn) ?? 1)
-    item.amount = deduped.get(urn) ?? 1
+  await mapPool(batches, 4, async (batch) => {
+    const hits = await fetchWearableMetadataBatch(batch, lambdasUrl)
+    for (const [id, hit] of hits) metaByAsset.set(id, hit)
+    loaded += batch.length
+    onProgress?.(Math.min(loaded, groups.length), groups.length)
+  })
+
+  const enriched = groups.map(({ urn, assetUrn, amount }) => {
+    const hit = metaByAsset.get(assetUrn.toLowerCase())
+    const item = hit ? itemFromApiHit(hit, urn, assetUrn) : fallbackItem(urn, amount)
+    item.amount = amount
     return item
   })
 

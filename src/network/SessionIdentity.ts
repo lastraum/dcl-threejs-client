@@ -1,6 +1,12 @@
 import { getActiveProfileAddress } from '../avatar/LocalAvatar'
 import { PEER_URL } from '../avatar/constants'
-import { fetchCommsProfileEntityCached, fetchProfileCached, type CommsProfileEntity } from '../avatar/peerApi'
+import {
+  avatarEntryToCommsEntity,
+  fetchCommsProfileEntityCached,
+  fetchProfileCached,
+  type CommsProfileEntity,
+  type LambdaAvatarEntry
+} from '../avatar/peerApi'
 import type { AvatarProfile } from '../avatar/types'
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import type { LoginResult } from '../auth/AuthClient'
@@ -64,6 +70,12 @@ export class SessionIdentity {
 
   getCommsProfileEntity(): CommsProfileEntity | null {
     return this.commsProfile
+  }
+
+  /** Rebuild the comms profile from a just-deployed entry (version already bumped) so
+   *  peers hear the new version instead of the stale connect-time snapshot. */
+  applyDeployedProfileEntry(entry: LambdaAvatarEntry): void {
+    this.commsProfile = avatarEntryToCommsEntity(entry, this.contentUrl)
   }
 
   getLambdasUrl(): string {

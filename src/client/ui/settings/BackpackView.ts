@@ -5,6 +5,7 @@ import { AvatarAnimations } from '../../../avatar/AvatarAnimations'
 import { composeAvatarFromProfile } from '../../../avatar/AvatarComposer'
 import { disposeWearableInstance } from '../../../avatar/loadWearable'
 import type { AvatarProfile, WearableCategory } from '../../../avatar/types'
+import { computeHiddenBy } from '../../../avatar/slots'
 import { VrmAvatar } from '../../../avatar/vrm/VrmAvatar'
 import { disposeVrmRoot } from '../../../avatar/vrm/VrmLoader'
 import { OdkAvatar } from '../../../avatar/odk/OdkAvatar'
@@ -101,6 +102,9 @@ type BackpackViewOptions = {
   onVrmEquipChange?: () => void | Promise<void>
 }
 
+const EYE_OFF_SVG = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4l16 16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.6 6.3A9.6 9.6 0 0 1 12 6.2c4.2 0 7.6 2.9 9.3 5.8-.6 1-1.4 2-2.4 2.9M14.1 14a3 3 0 0 1-4.2-4.2M6.4 7.6C4.7 8.8 3.5 10.5 2.7 12c1.7 2.9 5.1 5.8 9.3 5.8 1 0 2-.2 2.9-.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+const EYE_ON_SVG = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2.7 12C4.4 9.1 7.8 6.2 12 6.2s7.6 2.9 9.3 5.8c-1.7 2.9-5.1 5.8-9.3 5.8S4.4 14.9 2.7 12z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.6" fill="currentColor"/></svg>`
+
 // Ordered in 2-column rail rows: avatar (body/hair), face features, clothing, accessories.
 const CATEGORIES: CategoryDef[] = [
   { id: 'all', label: 'All' },
@@ -141,6 +145,8 @@ export class BackpackView {
   private selectedItem: string | null = null
   private wearableItems: BackpackWearableItem[] = []
   private equippedByCategory = new Map<WearableCategory, BackpackWearableItem>()
+  /** Hidden category → the equipped category that hides it (ADR-239, pre-forceRender). */
+  private hiddenByCategory = new Map<WearableCategory, WearableCategory>()
   private wearablesLoading = false
   private wearablesError: string | null = null
   private wearablesLoadGen = 0
@@ -1132,9 +1138,61 @@ export class BackpackView {
     if (this.isSameWearableUrn(item.urn, this.selectedItem)) {
       preview.classList.add('is-selected')
     }
+
+    const hiddenBy = this.hiddenByCategory.get(cat.id)
+    if (hiddenBy) {
+      const forced = this.isForceRendered(cat.id)
+      preview.classList.add(
+        forced ? 'backpack-view__cat-preview--forced' : 'backpack-view__cat-preview--hidden'
+      )
+      const hiderLabel = this.categoryLabel(hiddenBy)
+      const title = forced
+        ? `Hidden by ${hiderLabel} — shown by override. Click to re-hide.`
+        : `Hidden by ${hiderLabel}. Click to show anyway.`
+      const badge = document.createElement('button')
+      badge.type = 'button'
+      badge.className = 'backpack-view__cat-hidden-badge' + (forced ? ' is-on' : '')
+      badge.title = title
+      badge.setAttribute('aria-label', title)
+      badge.innerHTML = forced ? EYE_ON_SVG : EYE_OFF_SVG
+      badge.addEventListener('click', (e) => {
+        e.stopPropagation()
+        this.toggleForceRender(cat.id as WearableCategory)
+      })
+      preview.appendChild(badge)
+    }
+  }
+
+  private isForceRendered(category: WearableCategory): boolean {
+    return (this.session.getProfile()?.forceRender ?? []).includes(category)
+  }
+
+  /** Add/remove a category in profile.forceRender — renders a hidden wearable anyway. */
+  private toggleForceRender(category: WearableCategory): void {
+    const profile = this.session.getProfile()
+    if (!profile) return
+    const current = profile.forceRender ?? []
+    const forceRender = current.includes(category)
+      ? current.filter((c) => c !== category)
+      : [...current, category]
+    this.session.setProfile({ ...profile, forceRender })
+    this.updateCategoryEquipped()
+    const selected = this.selectedItem
+      ? this.wearableItems.find((i) => this.isSameWearableUrn(i.urn, this.selectedItem))
+      : null
+    if (selected) this.renderWearableDetail(selected)
+    // Preview updates locally; Catalyst deploy happens when the settings panel closes.
+    void this.loadAvatarModel()
   }
 
   private updateCategoryEquipped(): void {
+    this.hiddenByCategory = computeHiddenBy(
+      Array.from(this.equippedByCategory.entries()).map(([category, item]) => ({
+        category,
+        hides: item.hides,
+        replaces: item.replaces
+      }))
+    )
     const container = this.root.querySelector('.backpack-view__categories')
     if (container) {
       for (const cat of CATEGORIES) {
@@ -1302,7 +1360,11 @@ export class BackpackView {
           (isSelected ? ' is-selected' : '') +
           (equipped ? ' is-equipped' : '')
         card.style.setProperty('--wearable-rarity-bg', wearableRarityBackground(rarity))
-        card.innerHTML = `<img class="backpack-view__item-img" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" />`
+        card.innerHTML = `<img class="backpack-view__item-img" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" />${
+          item.amount > 1
+            ? `<span class="backpack-view__item-amount" title="${item.amount} in wallet">&times;${item.amount}</span>`
+            : ''
+        }`
         card.addEventListener('click', () => {
           this.selectItem(item)
           this.renderGrid()
@@ -1953,6 +2015,13 @@ export class BackpackView {
     const equipLabel = isBodyShape ? (equipped ? 'Worn' : 'Wear') : equipped ? 'Unequip' : 'Equip'
     const category = this.categoryLabel(item.category)
 
+    const hiddenBy =
+      equipped && item.category !== 'unknown' ? this.hiddenByCategory.get(item.category) : undefined
+    const forced = hiddenBy ? this.isForceRendered(item.category as WearableCategory) : false
+    const hiddenPill = hiddenBy
+      ? `<span class="backpack-view__detail-hidden${forced ? ' backpack-view__detail-hidden--forced' : ''}">Hidden by ${this.escapeHtml(this.categoryLabel(hiddenBy))}${forced ? ' — shown by override' : ''}</span>`
+      : ''
+
     detailEl.innerHTML = `
       <div class="backpack-view__detail-card">
         <div class="backpack-view__detail-thumb" style="background:${wearableRarityBackground(rarity)}">
@@ -1961,6 +2030,8 @@ export class BackpackView {
         <h3 class="backpack-view__detail-name">${this.escapeHtml(item.name)}</h3>
         <span class="backpack-view__detail-category">${this.escapeHtml(category)}</span>
         <span class="backpack-view__detail-rarity" style="color:${color}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
+        ${item.amount > 1 ? `<span class="backpack-view__detail-owned">&times;${item.amount} in wallet</span>` : ''}
+        ${hiddenPill}
         <div class="backpack-view__wearable-actions">
           <button type="button" class="backpack-view__wearable-equip-btn" data-action="toggle-equip" ${canEquip ? '' : 'disabled'}${!fitsShape && !equipped ? ' title="Not available for your body shape"' : ''}>
             ${equipLabel}

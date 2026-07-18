@@ -22,6 +22,8 @@ export type DeployProfileResult = {
   contentUrl: string
   /** Item URNs that were actually deployed (with real tokenIds). */
   wearables: string[]
+  /** The avatars[0] entry we deployed (version already bumped) — comms announce source. */
+  entry: LambdaAvatarEntry
 }
 
 function hexToColor01(hex: string): { r: number; g: number; b: number } {
@@ -66,7 +68,11 @@ export function profileDeployFingerprint(profile: AvatarProfile): string {
     .sort()
     .join('|')
   const colors = `${profile.skin}:${profile.hair}:${profile.eyes}`.toLowerCase()
-  return `${profile.bodyShape}::${colors}::${wearables}||${emotes}`
+  const forceRender = (profile.forceRender ?? [])
+    .map((c) => c.toLowerCase())
+    .sort()
+    .join('|')
+  return `${profile.bodyShape}::${colors}::${wearables}||${emotes}||${forceRender}`
 }
 
 function isOffChainWearable(urn: string): boolean {
@@ -432,5 +438,5 @@ export async function deployAvatarProfile(opts: {
   }
 
   clearProfileCaches(address)
-  return { entityId, contentUrl, wearables }
+  return { entityId, contentUrl, wearables, entry: metadata.avatars[0] as LambdaAvatarEntry }
 }

@@ -534,6 +534,26 @@ export class CommsService {
       isPreview: false,
       isConnectedSceneRoom: this.isLiveKitConnected()
     }
+    // Island assignment must track the landing parcel — not a leftover (0,0,0) friends seed.
+    this.seedArchipelagoPresenceFromScene('bind-target')
+  }
+
+  /**
+   * Genesis meters for archipelago seed: base parcel center (8,0,8 scene-local).
+   * Avoids clustering every 2D landing onto Genesis Plaza's island.
+   */
+  private presenceSeedGenesisMeters(): { x: number; y: number; z: number } | null {
+    if (!this.sceneOrigin) return null
+    return sceneLocalToGenesis(8, 0, 8, this.sceneOrigin)
+  }
+
+  /** Force archipelago heartbeat at the bound scene (overwrites 0,0,0 shell seed). */
+  seedArchipelagoPresenceFromScene(reason = 'scene'): void {
+    if (this.isWorldComms()) return
+    const seed = this.presenceSeedGenesisMeters()
+    if (!seed) return
+    this.archipelago.ensurePresenceSeed(seed)
+    void reason
   }
 
   private async connectSceneRoomImpl(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
@@ -637,6 +657,8 @@ export class CommsService {
     }
 
     await this.connectRealmComms(target.contentUrl)
+    // After archipelago is up, pin island to this parcel (not shell's (0,0,0) seed).
+    this.seedArchipelagoPresenceFromScene(isWorld ? 'world-room' : 'scene-room')
 
     if (isWorld) {
       clientDebugLog.log('comms', `Joining world comms · pointer=${target.pointer}`, { level: 'info' })
@@ -1548,15 +1570,20 @@ export class CommsService {
     if (this.isWorldComms()) return
     const desc = this.archipelago.describe()
     console.log('[archipelago] ensure', desc, 'islandLiveKit=', this.islandConnected)
-    // Friend/community ONLINE in Explorer requires archipelago presence heartbeats.
-    this.archipelago.ensurePresenceSeed()
-    if (this.archipelago.isWelcomed() && this.islandConnected) return
+    // Prefer bound scene parcel; only (0,0,0) if no scene target yet (shell friends online).
+    const seed = this.presenceSeedGenesisMeters()
+    this.archipelago.ensurePresenceSeed(seed ?? undefined)
+    if (this.archipelago.isWelcomed() && this.islandConnected) {
+      // Re-assert parcel seed so we leave a wrong island after navigation.
+      if (seed) this.archipelago.ensurePresenceSeed(seed)
+      return
+    }
     if (this.archipelago.isConnected() && this.archipelago.isWelcomed()) {
-      // Connected but no island yet — keep heartbeats; seed will re-queue position.
+      if (seed) this.archipelago.ensurePresenceSeed(seed)
       return
     }
     const ok = await this.connectRealmComms()
-    this.archipelago.ensurePresenceSeed()
+    this.archipelago.ensurePresenceSeed(seed ?? this.presenceSeedGenesisMeters() ?? undefined)
     console.log('[archipelago] ensure connectRealmComms ok=', ok, this.archipelago.describe())
     clientDebugLog.log(
       'network',
@@ -1700,13 +1727,20 @@ export class CommsService {
    * Parcels: prefer **scene** room.
    */
   private shouldAcceptChatTransport(transport: TransportType): boolean {
-    if (transport === TransportType.Island) return false
     if (this.isWorldComms()) {
+      // Worlds: world room is primary; skip scene Cast room to avoid double chat.
       if (transport === TransportType.SceneRoom) return false
-      return transport === TransportType.World
+      return transport === TransportType.World || transport === TransportType.Island
     }
+    // Parcels: Explorer peers may publish chat on scene OR island. Accept both;
+    // SocialService.isDuplicateChat drops double-delivery. (Rejecting island hid all
+    // Explorer chat when peers only published on the island room.)
     if (transport === TransportType.World && this.sceneLiveKit.isConnected()) return false
-    return true
+    return (
+      transport === TransportType.SceneRoom ||
+      transport === TransportType.Island ||
+      transport === TransportType.World
+    )
   }
 
   /**

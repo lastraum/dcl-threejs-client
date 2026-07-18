@@ -6,21 +6,25 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js'
 
 /**
- * Emissive-driven selective bloom with depth occlusion.
+ * Bloom post-process — two modes:
  *
- * Extract pass:
- * - Sky / `dclBloomExclude` hidden (no sky bloom)
- * - Lights zeroed (lit albedo does not bloom)
- * - Non-emissive meshes stay **visible** as opaque black (write depth so occluders
- *   block emissives — no x-ray through walls/obelisks)
- * - Emissive PBR: diffuse black, **map left intact** (alpha/cutouts); only emissive
- *   channel contributes with lights off
+ * **fast** (1× geometry): beauty RenderPass → UnrealBloomPass → OutputPass.
+ *   Classic three.js path. Bright pixels (emissives + lit highlights) glow.
+ *   No material swap, no second full-scene draw.
  *
- * Final: full scene + OutputPass, then additive pure-bloom composite.
+ * **selective** (2× geometry): emissive-only extract (half-res) + beauty + additive
+ *   composite. Extract blacks non-emissives for depth occlusion so neon does not
+ *   x-ray through walls. More correct for muzzle/LED, much more expensive.
+ *
+ * Extract resolution is half of the beauty buffer (pixel area ÷4) — blur does not
+ * need full-res and this is the main selective-path GPU win.
  */
+export type BloomMode = 'fast' | 'selective'
+
 export type BloomPipelineOptions = {
   enabled: boolean
   hdr: boolean
+  mode: BloomMode
   /** Film scale on top of material radiance. */
   strength: number
   radius: number
@@ -30,7 +34,11 @@ export type BloomPipelineOptions = {
 const DEFAULT_STRENGTH = 0.12
 const DEFAULT_RADIUS = 0.28
 const DEFAULT_THRESHOLD = 0.05
+/** Fast mode: ignore mid-tone albedo so the single pass does not wash the whole plaza. */
+const FAST_THRESHOLD = 0.55
 const MIN_EMISSIVE_RADIANCE = 0.08
+/** Selective extract / bloom mips at this fraction of beauty resolution. */
+const EXTRACT_SCALE = 0.5
 
 const _black = new THREE.Color(0x000000)
 const _hidden: THREE.Object3D[] = []
@@ -66,6 +74,11 @@ export function materialEmissiveRadiance(mat: THREE.Material): number {
   const ud = mat.userData as Record<string, unknown>
   if (ud.dclBloomExclude === true) return 0
 
+  // Cached at material load / apply — avoids re-scanning maps every extract frame.
+  if (typeof ud.dclBloomRadiance === 'number') {
+    return ud.dclBloomRadiance as number
+  }
+
   if (isPbrMaterial(mat)) {
     const luma = mat.emissive.r + mat.emissive.g + mat.emissive.b
     const intensity = mat.emissiveIntensity ?? 1
@@ -90,16 +103,28 @@ export function materialEmissiveRadiance(mat: THREE.Material): number {
   return 0
 }
 
+/** Stamp radiance cache after emissive tuning (call from material load paths). */
+export function cacheMaterialBloomRadiance(mat: THREE.Material): void {
+  const ud = mat.userData as Record<string, unknown>
+  // Clear first so materialEmissiveRadiance recomputes from authored channels.
+  delete ud.dclBloomRadiance
+  ud.dclBloomRadiance = materialEmissiveRadiance(mat)
+}
+
 export class BloomPipeline {
   private bloomComposer: EffectComposer | null = null
   private finalComposer: EffectComposer | null = null
   private bloomPass: BloomPassInternal | null = null
   private compositeQuad: FullScreenQuad | null = null
   private compositeMaterial: THREE.MeshBasicMaterial | null = null
+  /** Fast path: single composer (beauty + bloom + output). */
+  private fastComposer: EffectComposer | null = null
+  private fastBloomPass: UnrealBloomPass | null = null
   private readonly resolution = new THREE.Vector2(1, 1)
   private opts: BloomPipelineOptions = {
     enabled: false,
     hdr: true,
+    mode: 'fast',
     strength: DEFAULT_STRENGTH,
     radius: DEFAULT_RADIUS,
     threshold: DEFAULT_THRESHOLD
@@ -125,11 +150,17 @@ export class BloomPipeline {
   ) {}
 
   isActive(): boolean {
-    return this.opts.enabled && this.bloomComposer != null && this.finalComposer != null
+    if (!this.opts.enabled) return false
+    if (this.opts.mode === 'fast') return this.fastComposer != null
+    return this.bloomComposer != null && this.finalComposer != null
   }
 
   getOptions(): BloomPipelineOptions {
     return { ...this.opts }
+  }
+
+  getMode(): BloomMode {
+    return this.opts.mode
   }
 
   configure(
@@ -141,6 +172,7 @@ export class BloomPipeline {
     const next: BloomPipelineOptions = {
       enabled: options.enabled ?? this.opts.enabled,
       hdr: options.hdr ?? this.opts.hdr,
+      mode: options.mode ?? this.opts.mode,
       strength: options.strength ?? this.opts.strength,
       radius: options.radius ?? this.opts.radius,
       threshold: options.threshold ?? this.opts.threshold
@@ -151,12 +183,10 @@ export class BloomPipeline {
     this.resolution.set(w, h)
 
     const needRebuild =
-      !this.bloomComposer ||
-      !this.finalComposer ||
       next.enabled !== this.opts.enabled ||
       next.hdr !== this.opts.hdr ||
-      this.bloomComposer.writeBuffer.width !== w ||
-      this.bloomComposer.writeBuffer.height !== h
+      next.mode !== this.opts.mode ||
+      this.resolutionChanged(w, h, next.mode)
 
     this.opts = next
 
@@ -167,23 +197,79 @@ export class BloomPipeline {
 
     if (needRebuild) {
       this.disposeComposers()
-      this.buildComposers(w, h, next.hdr)
+      if (next.mode === 'fast') {
+        this.buildFastComposer(w, h, next.hdr)
+      } else {
+        this.buildSelectiveComposers(w, h, next.hdr)
+      }
     }
 
-    if (this.bloomPass) {
-      this.bloomPass.strength = next.strength
-      this.bloomPass.radius = next.radius
-      this.bloomPass.threshold = next.threshold
-      this.bloomPass.resolution.set(w, h)
+    this.applyPassParams(w, h)
+  }
+
+  render(): void {
+    if (!this.opts.enabled) return
+    if (this.opts.mode === 'fast') {
+      this.renderFast()
+      return
     }
-    this.bloomComposer?.setSize(w, h)
+    this.renderSelective()
+  }
+
+  dispose(): void {
+    this.disposeComposers()
+    this.blackOccluder.dispose()
+  }
+
+  private resolutionChanged(w: number, h: number, mode: BloomMode): boolean {
+    if (mode === 'fast') {
+      return !this.fastComposer || this.fastComposer.writeBuffer.width !== w || this.fastComposer.writeBuffer.height !== h
+    }
+    const ew = Math.max(1, Math.floor(w * EXTRACT_SCALE))
+    const eh = Math.max(1, Math.floor(h * EXTRACT_SCALE))
+    return (
+      !this.bloomComposer ||
+      !this.finalComposer ||
+      this.bloomComposer.writeBuffer.width !== ew ||
+      this.bloomComposer.writeBuffer.height !== eh ||
+      this.finalComposer.writeBuffer.width !== w ||
+      this.finalComposer.writeBuffer.height !== h
+    )
+  }
+
+  private applyPassParams(w: number, h: number): void {
+    if (this.fastBloomPass) {
+      this.fastBloomPass.strength = this.opts.strength
+      this.fastBloomPass.radius = this.opts.radius
+      this.fastBloomPass.threshold = Math.max(this.opts.threshold, FAST_THRESHOLD)
+      this.fastBloomPass.resolution.set(w, h)
+    }
+    this.fastComposer?.setSize(w, h)
+    this.fastComposer?.setPixelRatio(1)
+
+    const ew = Math.max(1, Math.floor(w * EXTRACT_SCALE))
+    const eh = Math.max(1, Math.floor(h * EXTRACT_SCALE))
+    if (this.bloomPass) {
+      this.bloomPass.strength = this.opts.strength
+      this.bloomPass.radius = this.opts.radius
+      this.bloomPass.threshold = this.opts.threshold
+      this.bloomPass.resolution.set(ew, eh)
+    }
+    this.bloomComposer?.setSize(ew, eh)
     this.finalComposer?.setSize(w, h)
     this.bloomComposer?.setPixelRatio(1)
     this.finalComposer?.setPixelRatio(1)
   }
 
-  render(): void {
-    if (!this.bloomComposer || !this.finalComposer || !this.opts.enabled) return
+  /** 1× geometry — beauty buffer feeds UnrealBloom luminance extract. */
+  private renderFast(): void {
+    if (!this.fastComposer) return
+    this.fastComposer.render()
+  }
+
+  /** 2× geometry — half-res emissive extract + full-res beauty + additive pure bloom. */
+  private renderSelective(): void {
+    if (!this.bloomComposer || !this.finalComposer) return
 
     this.beginBloomExtract()
     try {
@@ -194,11 +280,6 @@ export class BloomPipeline {
 
     this.finalComposer.render()
     this.blitPureBloomAdditive()
-  }
-
-  dispose(): void {
-    this.disposeComposers()
-    this.blackOccluder.dispose()
   }
 
   private beginBloomExtract(): void {
@@ -334,26 +415,57 @@ export class BloomPipeline {
     this.renderer.autoClear = prevAutoClear
   }
 
-  private buildComposers(w: number, h: number, hdr: boolean): void {
+  private buildFastComposer(w: number, h: number, hdr: boolean): void {
     const type = hdr ? THREE.HalfFloatType : THREE.UnsignedByteType
-
-    const bloomRt = new THREE.WebGLRenderTarget(w, h, {
+    const rt = new THREE.WebGLRenderTarget(w, h, {
       type,
       format: THREE.RGBAFormat,
       colorSpace: THREE.LinearSRGBColorSpace,
       depthBuffer: true,
       stencilBuffer: false
     })
-    bloomRt.texture.name = 'bloom-extract'
+    rt.texture.name = 'bloom-fast'
+
+    const composer = new EffectComposer(this.renderer, rt)
+    composer.setSize(w, h)
+    composer.setPixelRatio(1)
+    composer.addPass(new RenderPass(this.scene, this.camera))
+
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(w, h),
+      this.opts.strength,
+      this.opts.radius,
+      Math.max(this.opts.threshold, FAST_THRESHOLD)
+    )
+    composer.addPass(bloomPass)
+    composer.addPass(new OutputPass())
+
+    this.fastComposer = composer
+    this.fastBloomPass = bloomPass
+  }
+
+  private buildSelectiveComposers(w: number, h: number, hdr: boolean): void {
+    const type = hdr ? THREE.HalfFloatType : THREE.UnsignedByteType
+    const ew = Math.max(1, Math.floor(w * EXTRACT_SCALE))
+    const eh = Math.max(1, Math.floor(h * EXTRACT_SCALE))
+
+    const bloomRt = new THREE.WebGLRenderTarget(ew, eh, {
+      type,
+      format: THREE.RGBAFormat,
+      colorSpace: THREE.LinearSRGBColorSpace,
+      depthBuffer: true,
+      stencilBuffer: false
+    })
+    bloomRt.texture.name = 'bloom-extract-half'
 
     const bloomComposer = new EffectComposer(this.renderer, bloomRt)
     bloomComposer.renderToScreen = false
-    bloomComposer.setSize(w, h)
+    bloomComposer.setSize(ew, eh)
     bloomComposer.setPixelRatio(1)
 
     bloomComposer.addPass(new RenderPass(this.scene, this.camera))
     const bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(w, h),
+      new THREE.Vector2(ew, eh),
       this.opts.strength,
       this.opts.radius,
       this.opts.threshold
@@ -395,10 +507,13 @@ export class BloomPipeline {
   private disposeComposers(): void {
     this.bloomComposer?.dispose()
     this.finalComposer?.dispose()
+    this.fastComposer?.dispose()
     this.compositeMaterial?.dispose()
     this.compositeQuad?.dispose()
     this.bloomComposer = null
     this.finalComposer = null
+    this.fastComposer = null
+    this.fastBloomPass = null
     this.bloomPass = null
     this.compositeMaterial = null
     this.compositeQuad = null
@@ -408,5 +523,7 @@ export class BloomPipeline {
 export const BLOOM_DEFAULTS = {
   strength: DEFAULT_STRENGTH,
   radius: DEFAULT_RADIUS,
-  threshold: DEFAULT_THRESHOLD
+  threshold: DEFAULT_THRESHOLD,
+  extractScale: EXTRACT_SCALE,
+  fastThreshold: FAST_THRESHOLD
 } as const

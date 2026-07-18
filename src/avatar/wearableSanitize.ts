@@ -158,7 +158,8 @@ export function normalizeWearableArmatureToBody(
   const ratio = wearScale / bodyScale
   if (ratio > 2 || ratio < 0.5) {
     const factor = bodyScale / wearScale
-    if (!Number.isFinite(factor) || factor < 0.02 || factor > 50) return
+    // Body 0.01 / RTFKT 10 → 0.001 — must apply, not reject as "absurd".
+    if (!Number.isFinite(factor) || factor < 1e-4 || factor > 100) return
     let applied = false
     wearableRoot.traverse((obj) => {
       if (!/armature/i.test(obj.name)) return
@@ -178,7 +179,9 @@ export function bakeOversizedWearableGeometry(
   category?: WearableCategory
 ): void {
   const expected = (category && EXPECTED_WEARABLE_EXTENT_M[category]) ?? 2
-  const trigger = Math.max(expected * 4, 2.5)
+  // Feet use a tight trigger so L1 shoes (vampire_feet etc.) bake before merge.
+  const trigger =
+    category === 'feet' ? Math.max(expected * 1.5, 0.8) : Math.max(expected * 4, 2.5)
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return
     const local = localMeshExtent(obj)
@@ -322,7 +325,9 @@ export function normalizeWearableWorldScale(
   category?: WearableCategory
 ): void {
   const expected = (category && EXPECTED_WEARABLE_EXTENT_M[category]) ?? 2
-  const trigger = Math.max(expected * 4, 2.5)
+  // Feet: shrink when clearly larger than a shoe (not only when >4× expected).
+  const trigger =
+    category === 'feet' ? Math.max(expected * 1.6, 0.9) : Math.max(expected * 4, 2.5)
 
   root.updateWorldMatrix(true, true)
   const box = new THREE.Box3().setFromObject(root)
@@ -332,12 +337,39 @@ export function normalizeWearableWorldScale(
   if (extent <= trigger) return
 
   const factor = expected / extent
-  root.getWorldScale(_worldScale)
+  // Only shrink — never enlarge via this path.
+  if (!Number.isFinite(factor) || factor <= 0 || factor >= 1) return
   root.scale.set(
     root.scale.x * factor,
     root.scale.y * factor,
     root.scale.z * factor
   )
+}
+
+/**
+ * After parenting under body bones (Hips etc.), hierarchy scale can double-shrink
+ * or re-inflate the wearable. Fit world extent to the slot target (grow or shrink).
+ */
+export function fitWearableWorldExtent(
+  root: THREE.Object3D,
+  category?: WearableCategory
+): void {
+  const expected = (category && EXPECTED_WEARABLE_EXTENT_M[category]) ?? 2
+  const maxOk =
+    category === 'feet' ? Math.max(expected * 1.6, 0.9) : Math.max(expected * 4, 2.5)
+  const minOk = expected * 0.25
+
+  root.updateWorldMatrix(true, true)
+  const box = new THREE.Box3().setFromObject(root)
+  if (box.isEmpty()) return
+
+  const extent = box.getSize(_boundsSize).length()
+  if (extent < 1e-8) return
+  if (extent >= minOk && extent <= maxOk) return
+
+  const factor = expected / extent
+  if (!Number.isFinite(factor) || factor < 1e-4 || factor > 100) return
+  root.scale.multiplyScalar(factor)
 }
 
 /**
@@ -361,20 +393,25 @@ export function wearableUnitScaleFactor(
   }
 
   const expected = (category && EXPECTED_WEARABLE_EXTENT_M[category]) ?? 2
+  // Feet: ~0.55m. L1 halloween vampire_feet often merge with unitFactor=1 then explode.
+  // Use a tight trigger (1.5× expected) so we bake before bind, not after soup.
+  const meshTrigger =
+    category === 'feet' ? Math.max(expected * 1.5, 0.8) : Math.max(expected * 4, 2.5)
   let maxLocal = 0
   wearableRoot.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh) || !obj.visible) return
     maxLocal = Math.max(maxLocal, localMeshExtent(obj))
   })
-  if (maxLocal > Math.max(expected * 4, 2.5)) {
+  if (maxLocal > meshTrigger) {
     const fromMesh = expected / maxLocal
     // Prefer mesh extent when armature factor alone still leaves cm-space verts.
-    if (factor === 1 || maxLocal * factor > expected * 2) {
+    if (factor === 1 || maxLocal * factor > expected * 1.5) {
       factor = fromMesh
     }
   }
-  // Refuse absurd factors (bad detection) — better slightly wrong size than vertex soup.
-  if (!Number.isFinite(factor) || factor < 0.02 || factor > 50) return 1
+  // Body Armature ≈0.01 vs RTFKT ≈10 → factor ≈0.001. Reject only true garbage.
+  // (Old floor of 0.02 forced factor=1 and left shoes giant / pruned invisible.)
+  if (!Number.isFinite(factor) || factor < 1e-4 || factor > 100) return 1
   return factor
 }
 

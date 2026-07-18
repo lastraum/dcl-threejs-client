@@ -57,6 +57,11 @@ const ENABLE_ATTACH_STALL_BAILOUT = false
 const ZERO_GLTF_FALLBACK_MS = 12_000
 /** Fast path when projection never gets GltfContainer and manifest downloads are idle. */
 const ZERO_GLTF_FAST_MS = 1_500
+/**
+ * Empty projection (0 entities) after this — finish anyway so SDK6/no-CRDT scenes
+ * don't sit forever on "Finishing scene load…" (~78%). Prefer fail-fast SDK6 detect.
+ */
+const EMPTY_PROJECTION_MS = 5_000
 const ENTITY_STABLE_FAST_MS = 300
 /** Periodic status log while attach count is unchanged (composite may still be publishing GltfContainer). */
 const HYDRATION_STATUS_LOG_MS = 5_000
@@ -111,12 +116,13 @@ function isGltfAttachComplete(
   const attachPending = Math.max(0, stats.gltfPending - stats.gltfAbandoned)
   if (peakGltfEntities <= 0) {
     if (elapsedMs < zeroGltfFallbackMs(stats, manifestGlbCount)) return false
-    return (
-      stats.entityCount > 0 &&
-      attachPending === 0 &&
-      stats.gltfInflight === 0 &&
-      stats.textureInflight === 0
-    )
+    if (attachPending !== 0 || stats.gltfInflight !== 0 || stats.textureInflight !== 0) {
+      return false
+    }
+    // Normal: scene spawned entities without mesh GLTFs yet (or pure empty ECS).
+    if (stats.entityCount > 0) return true
+    // No CRDT entities at all — empty parcel script / unsupported runtime. Don't hang the bar.
+    return elapsedMs >= Math.max(zeroGltfFallbackMs(stats, manifestGlbCount), EMPTY_PROJECTION_MS)
   }
   return attachPending === 0 && stats.gltfInflight === 0 && stats.textureInflight === 0
 }

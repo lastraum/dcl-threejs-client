@@ -71,6 +71,8 @@ export class AppController {
   private devProgressPanel: DevProgressPanel | null = null
   private worldLocationCard: WorldLocationCard | null = null
   private minimap: Minimap | null = null
+  /** Shared translucent frame: location pill + circular minimap (Explorer-style). */
+  private locationMapStack: HTMLDivElement | null = null
   private minimapLayoutObserver: ResizeObserver | null = null
   /** Parcel to center the full map on after leave-play (minimap click). */
   private mapFocusParcel: { px: number; py: number } | null = null
@@ -1279,6 +1281,26 @@ export class AppController {
     world.setNavigateHandler((target) => {
       void this.jumpInToScene(target, { fastAssets: true })
     })
+    // Community-style toast when plaza has many remotes still composing.
+    this.ensureSocialMobileNotifications()
+    world.setRemoteAvatarProgressHandler((p) => {
+      const notif = this.socialMobileNotifications
+      if (!notif) return
+      const TOAST_ID = 'remote-avatar-load'
+      // Force 3D HUD placement (top-center) — not 2D shell top-right.
+      notif.host.classList.add('social-mobile-notif-host--in-world-center')
+      if (p.total > 5 && p.pending > 0) {
+        notif.pushSystemToast({
+          id: TOAST_ID,
+          appName: 'DECENTRALAND · AVATARS',
+          title: `Loading remote avatars ${p.loaded}/${p.total}`,
+          sub: 'Please wait…',
+          dismissMs: 0
+        })
+      } else {
+        notif.dismissSystemToast(TOAST_ID)
+      }
+    })
 
     this.profileUi?.dispose()
     this.profileUi = new ProfileUiController({
@@ -1381,6 +1403,8 @@ export class AppController {
             transferred.describeLiveKitRooms()
           )
           world.adoptComms(transferred, { isWorld: sceneConfig.source.kind === 'world' })
+          // Immediate 3D chat wire — shell cleared chatHandler on transfer.
+          world.bootstrapSocialChat(sceneConfig)
         } else {
           console.warn(
             '[comms] handoff FAILED · World will reconnect LiveKit (new participant id) · jumpKey=',
@@ -1390,10 +1414,23 @@ export class AppController {
       }
       const earlyCommsPromise = world.connectSceneCommsEarly(sceneConfig, opts.onProgress)
 
+      this.unbindMinimapLayout()
       this.worldLocationCard?.dispose()
       this.worldLocationCard = null
       this.minimap?.dispose()
       this.minimap = null
+      this.locationMapStack?.remove()
+      this.locationMapStack = null
+
+      // Genesis satellite minimap — parcel scenes only (worlds have no city basemap).
+      const useMinimapStack = sceneConfig.source.kind !== 'world'
+      if (useMinimapStack) {
+        this.locationMapStack = document.createElement('div')
+        this.locationMapStack.id = 'location-map-stack'
+        this.locationMapStack.className = 'location-map-stack'
+        this.locationMapStack.setAttribute('aria-label', 'Location and minimap')
+        document.body.appendChild(this.locationMapStack)
+      }
 
       this.worldLocationCard = new WorldLocationCard({
         scene: sceneConfig,
@@ -1410,11 +1447,20 @@ export class AppController {
                   segment: '0,0'
                 })
               }
-            : undefined
+            : undefined,
+        mapToggle: this.locationMapStack
+          ? {
+              host: this.locationMapStack,
+              onCollapsedChange: (collapsed) => {
+                // Keep canvas idle cost low when the circle is hidden.
+                this.minimap?.setVisible(!collapsed)
+              }
+            }
+          : undefined
       })
-      // Genesis satellite minimap — parcel scenes only (worlds have no city basemap).
-      if (sceneConfig.source.kind !== 'world') {
+      if (useMinimapStack && this.locationMapStack) {
         this.minimap = new Minimap({
+          host: this.locationMapStack,
           getPlayerState: () => this.getMapPlayerState(),
           getPeers: () => this.world?.listMinimapPeers() ?? [],
           onClick: () => {
@@ -1429,8 +1475,6 @@ export class AppController {
             overlay.show('map')
           }
         })
-        this.worldLocationCard.root.classList.add('is-above-minimap')
-        this.bindMinimapBelowLocationCard()
       }
       if (opts.deferPlayChromeReveal) {
         this.worldLocationCard.setVisible(false)
@@ -1494,6 +1538,8 @@ export class AppController {
     this.shell.setOnViewLocalProfile(() => this.profileUi?.openProfile({ kind: 'local' }))
 
     this.chatPanel?.dispose()
+    // Re-assert 3D chat handlers after any shell teardown race (handoff → dispose).
+    world.social.rewireComms(world.comms)
     this.chatPanel = new ChatPanel({
       social: world.social,
       onGoto: (target) => void this.jumpInToScene(target, { fastAssets: true }),
@@ -1632,6 +1678,7 @@ export class AppController {
     this.shell?.hide()
     this.worldLocationCard?.setVisible(false)
     this.minimap?.setVisible(false)
+    if (this.locationMapStack) this.locationMapStack.hidden = true
     this.mobileHud?.setShellVisible(false)
     this.world?.setSceneUiVisible(false)
   }
@@ -1640,28 +1687,13 @@ export class AppController {
     document.body.classList.add('client-in-world')
     this.shell?.show()
     this.worldLocationCard?.setVisible(true)
-    this.minimap?.setVisible(true)
+    if (this.locationMapStack) this.locationMapStack.hidden = false
+    // Respect chevron collapse — don't re-show a user-hidden circle.
+    if (!this.worldLocationCard?.isMapCollapsed()) {
+      this.minimap?.setVisible(true)
+    }
     this.mobileHud?.setShellVisible(true)
     this.world?.setSceneUiVisible(true)
-    // Pill may have been hidden at mount (height 0) — place circle under it now.
-    this.layoutMinimapBelowPill()
-    requestAnimationFrame(() => this.layoutMinimapBelowPill())
-  }
-
-  /** Keep circular minimap flush under the location pill (no overlap). */
-  private layoutMinimapBelowPill(): void {
-    if (!this.minimap || !this.worldLocationCard) return
-    this.minimap.placeBelow(this.worldLocationCard.root, 8)
-  }
-
-  private bindMinimapBelowLocationCard(): void {
-    this.minimapLayoutObserver?.disconnect()
-    this.minimapLayoutObserver = null
-    if (!this.minimap || !this.worldLocationCard) return
-    this.layoutMinimapBelowPill()
-    requestAnimationFrame(() => this.layoutMinimapBelowPill())
-    this.minimapLayoutObserver = new ResizeObserver(() => this.layoutMinimapBelowPill())
-    this.minimapLayoutObserver.observe(this.worldLocationCard.root)
   }
 
   private unbindMinimapLayout(): void {
@@ -1766,6 +1798,8 @@ export class AppController {
     this.worldLocationCard = null
     this.minimap?.dispose()
     this.minimap = null
+    this.locationMapStack?.remove()
+    this.locationMapStack = null
     this.chatPanel?.hide()
     this.hidePlayChrome()
     await disconnectAll(this.world, { keepLiveKit: opts?.keepLiveKit === true })

@@ -90,6 +90,15 @@ export function canLocomote(config: LocomotionConfig): boolean {
   return !config.disableWalk || !config.disableJog || !config.disableRun
 }
 
+/**
+ * Sit/stool style freeze (walk+jog+run off) — not Flagtag disableAll lobby lock.
+ * Used for WASD escape when scene leaves the player frozen without a sit emote.
+ */
+export function isModeOnlyLocomotionFreeze(config: LocomotionConfig): boolean {
+  if (config.disableAll) return false
+  return !!(config.disableWalk || config.disableJog || config.disableRun)
+}
+
 export function canJumpLocomotion(config: LocomotionConfig): boolean {
   return !config.disableAll && !config.disableJump && config.jumpHeight > 0
 }

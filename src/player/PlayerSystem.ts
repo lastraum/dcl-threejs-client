@@ -17,6 +17,7 @@ import {
   canVoluntaryEmote,
   defaultLocomotionConfig,
   GLIDING_FORCE_MULTIPLIER,
+  isModeOnlyLocomotionFreeze,
   jumpHeightForMode,
   readLocomotionFromComponents,
   resolveLocomotionMode,
@@ -174,6 +175,12 @@ export class PlayerSystem {
   private wasProfileEmoteActive = false
   /** Prior frame locomotion allowed — clear position lock when scene unfreezes. */
   private wasLocomotionAllowed = true
+  /**
+   * When sit/stool freezes walk without playing emote, WASD/Space asks main→worker to clear IM.
+   * Not used for disableAll (Flagtag lobby).
+   */
+  private modeFreezeEscapeHandler: (() => void) | null = null
+  private lastModeFreezeEscapeAt = 0
   private virtualCamera: VirtualCameraBridge | null = null
   /** Prior frame had an active VirtualCamera — seed freecam yaw/pitch on unbind. */
   private wasVirtualCameraActive = false
@@ -379,6 +386,11 @@ export class PlayerSystem {
   getLocomotionConfig(): LocomotionConfig {
     if (!this.readComponents) return defaultLocomotionConfig()
     return readLocomotionFromComponents(this.readComponents, SDK_RESERVED.player)
+  }
+
+  /** Main/World — clear stuck sit mode-freeze when player presses WASD/Space. */
+  setModeFreezeEscapeHandler(handler: (() => void) | null): void {
+    this.modeFreezeEscapeHandler = handler
   }
 
   canPlayVoluntaryEmote(): boolean {
@@ -658,25 +670,26 @@ export class PlayerSystem {
 
     const avatarTarget = request.avatarTarget
     const from = this.root.position.clone()
-    /** Face target from current feet — look-only may pass avatarTarget without a real move. */
-    if (avatarTarget) {
-      this.applyAvatarLookTarget(from, avatarTarget)
-    }
-    if (request.cameraTarget) {
-      this.applyCameraLookTarget(from, request.cameraTarget)
-    }
-    if (this.isFirstPerson()) {
-      if (request.avatarTarget) {
-        this.camYaw = this.playerYaw
-      } else if (request.cameraTarget) {
-        this.playerYaw = this.camYaw
-      }
-    }
-
     const duration = request.duration ?? 0
+
     if (!reposition || duration <= 0) {
       if (reposition) {
         this.teleportTo(target, true)
+      }
+      // Face/look from the **final** seat pose — not pre-teleport feet (sit rotation was wrong).
+      const lookFrom = this.root.position
+      if (avatarTarget) {
+        this.applyAvatarLookTarget(lookFrom, avatarTarget)
+      }
+      if (request.cameraTarget) {
+        this.applyCameraLookTarget(lookFrom, request.cameraTarget)
+      }
+      if (this.isFirstPerson()) {
+        if (request.avatarTarget) {
+          this.camYaw = this.playerYaw
+        } else if (request.cameraTarget) {
+          this.playerYaw = this.camYaw
+        }
       }
       this.moveTask = null
       // Instant movePlayerTo / look-only / round reset — do NOT lock locomotion.
@@ -732,6 +745,24 @@ export class PlayerSystem {
         `locomotion blocked — disableAll=${locomotion.disableAll} walk=${locomotion.disableWalk} jog=${locomotion.disableJog} run=${locomotion.disableRun}`,
         { throttleMs: 3000, throttleKey: 'locomotion-blocked', alsoConsole: true }
       )
+      // Sit/stool mode-freeze (not disableAll): WASD/Space escapes when scene forgot to unfreeze
+      // (handler crashed before triggerSceneEmote — remotes can still sit via Explorer emotes).
+      const wantEscape =
+        isModeOnlyLocomotionFreeze(locomotion) &&
+        (this.input.keys.w ||
+          this.input.keys.a ||
+          this.input.keys.s ||
+          this.input.keys.d ||
+          this.input.spacePressed)
+      if (wantEscape && this.modeFreezeEscapeHandler) {
+        const now = performance.now()
+        if (now - this.lastModeFreezeEscapeAt > 350) {
+          this.lastModeFreezeEscapeAt = now
+          this.modeFreezeEscapeHandler()
+          this.scenePositionLock = false
+          this.avatar?.stopEmote()
+        }
+      }
       this.input.clearMovementKeys()
       _velocity.x = 0
       _velocity.z = 0

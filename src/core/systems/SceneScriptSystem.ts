@@ -101,7 +101,7 @@ type ChangeRealmHandler = (request: ChangeRealmRequest) => boolean | Promise<boo
 type CopyToClipboardHandler = (request: CopyToClipboardRequest) => boolean | Promise<boolean>
 type TriggerEmoteHandler = (request: TriggerEmoteRequest) => boolean
 type TriggerSceneEmoteHandler = (request: TriggerSceneEmoteRequest) => boolean
-type OpenExternalUrlHandler = (request: OpenExternalUrlRequest) => boolean
+type OpenExternalUrlHandler = (request: OpenExternalUrlRequest) => boolean | Promise<boolean>
 type OpenNftDialogHandler = (request: OpenNftDialogRequest) => boolean | Promise<boolean>
 
 /** Async bridge ECS sync (Animator / AvatarShape load paths) — playback still runs every sync frame. */
@@ -1067,6 +1067,15 @@ export class SceneScriptSystem {
     this.tickPlayFrame()
   }
 
+  /** Clear stuck sit/stool mode-freeze on the worker (WASD escape). */
+  requestForceLocomotionClear(reason = 'wasd-escape'): void {
+    if (!this.running || !this.worker) return
+    this.worker.postMessage({
+      type: 'force-locomotion-clear',
+      reason
+    } satisfies MainToWorker)
+  }
+
   setTriggerEmoteHandler(handler: TriggerEmoteHandler | null): void {
     this.triggerEmoteHandler = handler
   }
@@ -1626,7 +1635,7 @@ export class SceneScriptSystem {
       return
     }
     if (msg.type === 'open-external-url') {
-      const success = this.openExternalUrlHandler?.(msg.body) ?? false
+      const success = (await this.openExternalUrlHandler?.(msg.body)) ?? false
       this.worker?.postMessage({
         type: 'open-external-url-response',
         id: msg.id,
@@ -4005,9 +4014,15 @@ export class SceneScriptSystem {
     }
 
     let structureTouched = false
-    const structureEntities = [...this.colliderStructureDirty]
+    // Cap structure extracts per frame — full plaza hydrates ~1k GltfContainers; draining
+    // them all in one async tick was ~100ms+ and jammed rAF (see [fps] collision=108).
+    const STRUCTURE_BUDGET = 48
+    const structureEntities: Entity[] = []
     if (this.colliderStructureDirty.size) {
-      const pendingStructure = new Set<Entity>()
+      const allDirty = [...this.colliderStructureDirty]
+      structureEntities.push(...allDirty.slice(0, STRUCTURE_BUDGET))
+      const deferred = allDirty.slice(STRUCTURE_BUDGET)
+      const pendingStructure = new Set<Entity>(deferred)
       for (const entity of structureEntities) {
         this.collision.syncColliderEntity(entity, view, ecs, nodes)
         if (ecs.GltfContainer.has(entity)) {

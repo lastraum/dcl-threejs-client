@@ -17,6 +17,8 @@ export type MinimapOptions = {
   onClick?: () => void
   /** CSS px diameter (default 224). */
   size?: number
+  /** Mount into location-map stack (Explorer-style panel) instead of document.body. */
+  host?: HTMLElement
 }
 
 const DEFAULT_SIZE = 224
@@ -25,7 +27,8 @@ const DEFAULT_SIZE = 224
  * Real detail comes from lod-0/{4,5,6} tiles — not CSS upscale of L3.
  */
 const MINIMAP_ZOOM = Math.max(VIEWPORT_DEFAULT_ZOOM + 2, 7)
-const BORDER_PX = 2.5
+/** Single white ring drawn on canvas (not CSS — avoids double border with HUD glass). */
+const BORDER_PX = 2
 const PARCEL_M = 16
 
 /**
@@ -52,21 +55,30 @@ export class Minimap {
     panY: 0
   }
 
-  constructor({ getPlayerState, getPeers, onClick, size = DEFAULT_SIZE }: MinimapOptions) {
+  constructor({
+    getPlayerState,
+    getPeers,
+    onClick,
+    size = DEFAULT_SIZE,
+    host
+  }: MinimapOptions) {
     this.getPlayerState = getPlayerState
     this.getPeers = getPeers ?? (() => [])
     this.size = size
 
     this.root = document.createElement('div')
     this.root.id = 'minimap'
-    this.root.className = 'minimap'
+    this.root.className = host ? 'minimap minimap--in-stack' : 'minimap'
     this.root.innerHTML = `<canvas width="${size}" height="${size}" aria-label="Genesis City minimap"></canvas>`
 
     this.canvas = this.root.querySelector('canvas')!
     this.canvas.width = Math.round(size * this.dpr)
     this.canvas.height = Math.round(size * this.dpr)
-    this.canvas.style.width = `${size}px`
-    this.canvas.style.height = `${size}px`
+    // Fill the stack slot (CSS size) so the circle matches glass width — no side “frame”.
+    this.canvas.style.width = '100%'
+    this.canvas.style.height = '100%'
+    this.canvas.style.display = 'block'
+    this.canvas.style.borderRadius = '50%'
 
     const ctx = this.canvas.getContext('2d')
     if (!ctx) throw new Error('Minimap 2D context unavailable')
@@ -86,7 +98,15 @@ export class Minimap {
       })
     }
 
-    document.body.appendChild(this.root)
+    // Stack host wraps circle in a slide tray; otherwise fixed-position on body.
+    if (host) {
+      const tray = document.createElement('div')
+      tray.className = 'location-map-stack__map'
+      tray.appendChild(this.root)
+      host.appendChild(tray)
+    } else {
+      document.body.appendChild(this.root)
+    }
 
     const tick = (): void => {
       if (this.disposed) return
@@ -97,10 +117,14 @@ export class Minimap {
   }
 
   setVisible(visible: boolean): void {
+    // Stack visibility is owned by the location-map-stack host.
+    if (this.root.closest('.location-map-stack')) return
     this.root.hidden = !visible
   }
 
+  /** @deprecated Stack layout owns placement — no-op when mounted in location-map-stack. */
   placeBelow(anchor: HTMLElement, gapPx = 8): void {
+    if (this.root.closest('.location-map-stack')) return
     if (this.root.hidden || anchor.hidden) return
     const rect = anchor.getBoundingClientRect()
     if (rect.height < 1) return
@@ -111,7 +135,12 @@ export class Minimap {
     this.disposed = true
     cancelAnimationFrame(this.rafId)
     this.tileCache.clear()
-    this.root.remove()
+    const tray = this.root.parentElement
+    if (tray?.classList.contains('location-map-stack__map')) {
+      tray.remove()
+    } else {
+      this.root.remove()
+    }
   }
 
   private ensureTile(lod: SatelliteLodLevel, tx: number, ty: number): HTMLImageElement {
@@ -202,8 +231,10 @@ export class Minimap {
 
     ctx.restore()
 
-    ctx.strokeStyle = '#ffffff'
+    // One ring only (on the bitmap). CSS must not add another border.
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)'
     ctx.lineWidth = BORDER_PX
+    ctx.lineJoin = 'round'
     ctx.beginPath()
     ctx.arc(cx, cy, radius, 0, Math.PI * 2)
     ctx.stroke()

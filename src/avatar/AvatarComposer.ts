@@ -21,7 +21,7 @@ import { resolveAvatarProfile } from './peerApi'
 import { isModelWearable } from './slots'
 import { yieldToNextFrame } from '../rendering/mainThreadYield'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
-import type { AvatarComposeConfig, AvatarProfile, BodyShape } from './types'
+import type { AvatarComposeConfig, AvatarProfile, BodyShape, WearableCategory } from './types'
 
 export type ComposeOptions = {
   profileId?: string
@@ -76,6 +76,8 @@ async function composeFromConfig(
 
   const mergedMappings = buildMappingsForWearables(config.wearables, config.bodyShape)
   pushWearableMappings(mergedMappings)
+  /** Categories with a live mesh after merge/fallback — basemesh hide only when present. */
+  const attachedCategories = new Set<WearableCategory>()
   let bodyRoot: THREE.Object3D
   try {
     bodyRoot = await loadWearableSceneCached(
@@ -121,12 +123,13 @@ async function composeFromConfig(
       if (mergeIndex > 0) await yieldToNextFrame()
       mergeIndex++
 
+      const category = entry.wearable.data.category
       const mergeOpts = {
-        category: entry.wearable.data.category,
+        category,
         wearableId: entry.wearable.id,
         bodyRoot
       }
-      const isFeet = entry.wearable.data.category === 'feet'
+      const isFeet = category === 'feet'
       if (isFeet) {
         console.info(`[avatar] composing feet — ${entry.wearable.id}`)
       }
@@ -138,11 +141,11 @@ async function composeFromConfig(
         pruneWearableDisplayMeshes(entry.layer, { extentCheck: false })
         merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
         if (!merged) {
-          prepareWearableForCompose(entry.layer, bodyRoot, entry.wearable.data.category)
+          prepareWearableForCompose(entry.layer, bodyRoot, category)
           merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
         }
       } else {
-        prepareWearableForCompose(entry.layer, bodyRoot, entry.wearable.data.category)
+        prepareWearableForCompose(entry.layer, bodyRoot, category)
         merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
       }
 
@@ -153,11 +156,14 @@ async function composeFromConfig(
         }
         if (!attached) {
           console.warn(
-            `[avatar] skipping wearable ${entry.wearable.id} (${entry.wearable.data.category}) — no merge and no safe fallback geometry`
+            `[avatar] skipping wearable ${entry.wearable.id} (${category}) — no merge and no safe fallback geometry`
           )
           disposeWearableInstance(entry.layer)
+        } else {
+          attachedCategories.add(category)
         }
       } else {
+        attachedCategories.add(category)
         disposeWearableInstance(entry.layer)
       }
     }
@@ -166,7 +172,7 @@ async function composeFromConfig(
   }
 
   await yieldToNextFrame()
-  applyBodyShapeVisibility(bodyRoot, config.wearables)
+  applyBodyShapeVisibility(bodyRoot, config.wearables, { attachedCategories })
   await applyFacialFeatures(bodyRoot, config, cache)
   await yieldToNextFrame()
   applyWearableEmissives(avatar)

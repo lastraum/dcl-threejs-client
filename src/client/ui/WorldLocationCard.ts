@@ -6,7 +6,23 @@ export type WorldLocationCardOptions = {
   title: string
   getCoordsLabel: () => string
   onJumpToGenesis?: () => void
+  /**
+   * Parcel minimap stack: left chevron slides the circular map open/closed.
+   * When provided, the card is mounted into the stack host (not body).
+   */
+  mapToggle?: {
+    host: HTMLElement
+    /** Called when the user toggles the map. */
+    onCollapsedChange?: (collapsed: boolean) => void
+    /** Start with map hidden (default false = map open). */
+    initiallyCollapsed?: boolean
+  }
 }
+
+const EXPAND_SVG = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <path d="M8 14l4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8 10l4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`
 
 /** Top-left HUD location pill — scene/world name + live coordinates. */
 export class WorldLocationCard {
@@ -17,22 +33,32 @@ export class WorldLocationCard {
   private collapsed = false
   private disposed = false
   private readonly getCoordsLabel: () => string
+  private readonly mapToggle: WorldLocationCardOptions['mapToggle']
+  private readonly showJump: boolean
+  private readonly onMapCollapsedChange: ((collapsed: boolean) => void) | null
 
-  constructor({ scene, title, getCoordsLabel, onJumpToGenesis }: WorldLocationCardOptions) {
+  constructor({
+    scene,
+    title,
+    getCoordsLabel,
+    onJumpToGenesis,
+    mapToggle
+  }: WorldLocationCardOptions) {
     this.getCoordsLabel = getCoordsLabel
-    const showJump = scene.source.kind === 'world' && !!onJumpToGenesis
+    this.mapToggle = mapToggle
+    this.onMapCollapsedChange = mapToggle?.onCollapsedChange ?? null
+    this.showJump = scene.source.kind === 'world' && !!onJumpToGenesis
+    const showExpand = this.showJump || !!mapToggle
 
     this.root = document.createElement('div')
     this.root.id = 'world-location-card'
     this.root.className = 'world-location-card'
-    if (!showJump) this.root.classList.add('is-parcel-pill')
+    if (!this.showJump) this.root.classList.add('is-parcel-pill')
+    if (mapToggle) this.root.classList.add('is-above-minimap')
 
-    const expandMarkup = showJump
-      ? `<button type="button" class="world-location-card__expand" aria-label="Collapse location card" aria-expanded="true">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M8 14l4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M8 10l4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
+    const expandMarkup = showExpand
+      ? `<button type="button" class="world-location-card__expand" aria-label="Collapse" aria-expanded="true">
+          ${EXPAND_SVG}
         </button>`
       : ''
 
@@ -58,7 +84,7 @@ export class WorldLocationCard {
           </p>
         </div>
         ${
-          showJump
+          this.showJump
             ? `<div class="world-location-card__actions">
           <button type="button" class="world-location-card__icon-btn" aria-label="Favorite world" disabled>
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -77,7 +103,7 @@ export class WorldLocationCard {
         }
       </div>
       ${
-        showJump
+        this.showJump
           ? `<div class="world-location-card__body">
         <div class="world-location-card__divider" aria-hidden="true"></div>
         <button type="button" class="world-location-card__jump">
@@ -95,13 +121,23 @@ export class WorldLocationCard {
 
     this.titleEl.textContent = title
 
-    if (showJump && this.expandBtn) {
-      this.expandBtn.addEventListener('click', () => this.setCollapsed(!this.collapsed))
+    if (showExpand && this.expandBtn) {
+      this.expandBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation()
+        this.setCollapsed(!this.collapsed)
+      })
+    }
+    if (this.showJump) {
       const jumpBtn = this.root.querySelector('.world-location-card__jump') as HTMLButtonElement
       jumpBtn.addEventListener('click', () => onJumpToGenesis!())
     }
 
-    document.body.appendChild(this.root)
+    const mountHost = mapToggle?.host ?? document.body
+    mountHost.appendChild(this.root)
+
+    if (mapToggle?.initiallyCollapsed) {
+      this.setCollapsed(true)
+    }
 
     const tick = (): void => {
       if (this.disposed) return
@@ -114,12 +150,34 @@ export class WorldLocationCard {
   private setCollapsed(next: boolean): void {
     this.collapsed = next
     this.root.classList.toggle('is-collapsed', next)
-    if (!this.expandBtn) return
-    this.expandBtn.setAttribute('aria-expanded', next ? 'false' : 'true')
-    this.expandBtn.setAttribute('aria-label', next ? 'Expand location card' : 'Collapse location card')
+    // Map stack: collapse class lives on the shared host so the circle slides away.
+    if (this.mapToggle?.host) {
+      this.mapToggle.host.classList.toggle('is-map-collapsed', next)
+    }
+    if (this.expandBtn) {
+      this.expandBtn.setAttribute('aria-expanded', next ? 'false' : 'true')
+      if (this.mapToggle) {
+        this.expandBtn.setAttribute('aria-label', next ? 'Show map' : 'Hide map')
+      } else {
+        this.expandBtn.setAttribute(
+          'aria-label',
+          next ? 'Expand location card' : 'Collapse location card'
+        )
+      }
+    }
+    this.onMapCollapsedChange?.(next)
+  }
+
+  isMapCollapsed(): boolean {
+    return this.collapsed
   }
 
   setVisible(visible: boolean): void {
+    // When stacked, host owns visibility so the translucent frame toggles together.
+    if (this.mapToggle?.host) {
+      this.mapToggle.host.hidden = !visible
+      return
+    }
     this.root.hidden = !visible
   }
 

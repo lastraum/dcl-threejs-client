@@ -859,12 +859,39 @@ export class SocialService {
     void this.peerProfiles.ensurePeer(peer)
   }
 
+  /**
+   * Re-bind chat/media handlers after LiveKit handoff (landing → World).
+   * Handoff clears shell handlers; without this, 3D ChatPanel stays silent while 2D
+   * still had pool/landing handlers.
+   */
+  rewireComms(comms: CommsService | null): void {
+    this.comms = comms
+    if (comms) this.wireCommsHandlers()
+  }
+
+  /**
+   * Landing → play handoff: drop the shell's CommsService **reference** without
+   * calling setChatHandler(null). World now owns that service and will rewire chat;
+   * dispose() must not wipe World's handlers later.
+   */
+  releaseCommsOwnership(): void {
+    this.comms = null
+    this.sceneChatSend = null
+    this.sceneChatMediaSend = null
+  }
+
   private wireCommsHandlers(): void {
     if (!this.comms) return
     // Primary CommsService room only — multi-room pool uses ingestRemoteSceneChat.
     this.comms.setChatHandler((payload) => {
       const sceneChannel = this.primarySceneChannelChoice()
-      if (!sceneChannel) return
+      if (!sceneChannel) {
+        console.warn(
+          '[chat] inbound dropped — no scene channel (connectedSceneKey missing). text=',
+          payload.text.slice(0, 40)
+        )
+        return
+      }
       if (isSceneChatEmoteWireText(payload.text)) return
       if (this.isDuplicateChat(payload.senderAddress, payload.text, payload.time)) return
       void this.ensurePeerProfile(payload.senderAddress)
@@ -874,6 +901,9 @@ export class SocialService {
         time: payload.time,
         senderAddress: payload.senderAddress
       })
+      console.log(
+        `[chat] 3d inbound ← ${payload.senderAddress.slice(0, 10)}… ${payload.text.slice(0, 48)}`
+      )
     })
 
     this.comms.setChatMediaHandler((payload) => {
@@ -901,10 +931,20 @@ export class SocialService {
   }
 
   private primarySceneChannelChoice(): ChatChannelChoice | null {
-    if (!this.connectedSceneKey) return null
-    const tab = this.findSceneTab(this.connectedSceneKey)
-    if (!tab) return null
-    return { kind: 'scene', sceneKey: tab.key, label: tab.label }
+    if (this.channel.kind === 'scene') {
+      return {
+        kind: 'scene',
+        sceneKey: this.channel.sceneKey,
+        label: this.channel.label
+      }
+    }
+    if (this.connectedSceneKey) {
+      const tab = this.findSceneTab(this.connectedSceneKey)
+      if (tab) return { kind: 'scene', sceneKey: tab.key, label: tab.label }
+    }
+    const tab = this.sceneTabs[0]
+    if (tab) return { kind: 'scene', sceneKey: tab.key, label: tab.label }
+    return null
   }
 
   private findSceneTab(key: string): SceneChatTab | undefined {
@@ -938,8 +978,12 @@ export class SocialService {
   }
 
   dispose(): void {
-    this.comms?.setChatHandler(null)
-    this.comms?.setChatMediaHandler(null)
+    // Only clear handlers when we still own the service. After handoff, shell
+    // social.releaseCommsOwnership() leaves this.comms null so World's rewire survives.
+    if (this.comms) {
+      this.comms.setChatHandler(null)
+      this.comms.setChatMediaHandler(null)
+    }
     this.teardownPrivateMessages()
     for (const url of this.mediaObjectUrls) URL.revokeObjectURL(url)
     this.mediaObjectUrls.clear()

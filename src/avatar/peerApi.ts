@@ -262,6 +262,12 @@ export async function fetchWearablesByUrns(urns: string[], peerUrl = PEER_URL): 
 const profileCache = new Map<string, Promise<AvatarProfile | null>>()
 const commsProfileCache = new Map<string, Promise<CommsProfileEntity | null>>()
 const profileLambdaEntryCache = new Map<string, Promise<LambdaAvatarEntry | null>>()
+/**
+ * Addresses that returned 404 from a catalyst — do not fan out to peer-ec1/ec2/etc.
+ * Plaza islands had dozens of guests without profiles; each was 3–5 sequential 404s.
+ */
+const missingProfileUntil = new Map<string, number>()
+const MISSING_PROFILE_TTL_MS = 5 * 60_000
 
 /** Wait for RFC4 profile broadcast before lambda fallback during remote avatar load. */
 export const PROFILE_COMMS_WAIT_MS = 2_500
@@ -287,6 +293,7 @@ export function clearProfileCaches(address?: string): void {
     profileLambdaEntryCache.clear()
     commsProfileCache.clear()
     commsPeerProfiles.clear()
+    missingProfileUntil.clear()
     return
   }
   const key = address.toLowerCase()
@@ -294,6 +301,22 @@ export function clearProfileCaches(address?: string): void {
   profileLambdaEntryCache.delete(key)
   commsProfileCache.delete(key)
   commsPeerProfiles.delete(key)
+  missingProfileUntil.delete(key)
+}
+
+function markProfileMissing(address: string): void {
+  missingProfileUntil.set(address.toLowerCase(), performance.now() + MISSING_PROFILE_TTL_MS)
+}
+
+function isProfileKnownMissing(address: string): boolean {
+  const key = address.toLowerCase()
+  const until = missingProfileUntil.get(key)
+  if (until === undefined) return false
+  if (performance.now() >= until) {
+    missingProfileUntil.delete(key)
+    return false
+  }
+  return true
 }
 
 /** Seed local session profile so compose doesn't re-fetch stale Catalyst wearables. */
@@ -323,6 +346,7 @@ export function seedCommsPeerProfile(
   if (!profile) return null
 
   const key = address.toLowerCase()
+  missingProfileUntil.delete(key)
   const existing = commsPeerProfiles.get(key)
   if (existing && existing.serialized === serializedProfile) {
     if (version > existing.version) existing.version = version
@@ -436,8 +460,12 @@ export async function resolveRemotePeerProfile(
   const commsHit = commsPeerProfiles.get(key)
   if (commsHit) return commsHit.profile
 
+  // Still wait briefly for RFC4 — live peers often broadcast before lambda has a row.
   const broadcast = await waitForCommsPeerProfile(key, timeoutMs)
   if (broadcast) return broadcast
+
+  // Skip lambda fan-out for wallets we already know have no Catalyst profile.
+  if (isProfileKnownMissing(key)) return null
 
   return fetchProfileCached(key, lambdasUrl || undefined)
 }
@@ -494,17 +522,28 @@ function profileCatalystCandidates(primary?: string): string[] {
   return out
 }
 
+type LambdaFetchResult =
+  | { kind: 'hit'; entry: LambdaAvatarEntry }
+  | { kind: 'missing' }
+  | { kind: 'error' }
+
 async function fetchLambdaAvatarEntryFromPeer(
   address: string,
   lambdasUrl: string
-): Promise<LambdaAvatarEntry | null> {
-  const res = await fetch(profileRequestUrl(lambdasUrl, address))
-  if (res.status === 404) return null
-  if (!res.ok) return null
+): Promise<LambdaFetchResult> {
+  try {
+    const res = await fetch(profileRequestUrl(lambdasUrl, address))
+    // Definitive: no profile on this catalyst (and almost always none anywhere).
+    if (res.status === 404) return { kind: 'missing' }
+    if (!res.ok) return { kind: 'error' }
 
-  const data = (await res.json()) as ProfileResponse
-  const entry = data.avatars?.[0]
-  return entry?.avatar ? entry : null
+    const data = (await res.json()) as ProfileResponse
+    const entry = data.avatars?.[0]
+    if (!entry?.avatar) return { kind: 'missing' }
+    return { kind: 'hit', entry }
+  } catch {
+    return { kind: 'error' }
+  }
 }
 
 async function fetchLambdaAvatarEntry(
@@ -515,10 +554,24 @@ async function fetchLambdaAvatarEntry(
 
   const address = profileId.toLowerCase()
   if (!/^0x[a-f0-9]{40}$/.test(address)) return null
+  if (isProfileKnownMissing(address)) return null
 
-  for (const peer of profileCatalystCandidates(lambdasUrl)) {
-    const entry = await fetchLambdaAvatarEntryFromPeer(address, peer)
-    if (entry) return entry
+  // Prefer the session peer first. On 404 stop — multi-peer fan-out was 3–5× console
+  // noise and latency for guests without profiles (common on plaza islands).
+  // Only chain peers on network/5xx errors (catalyst down), not on missing.
+  const peers = profileCatalystCandidates(lambdasUrl)
+  for (let i = 0; i < peers.length; i++) {
+    const peer = peers[i]!
+    const result = await fetchLambdaAvatarEntryFromPeer(address, peer)
+    if (result.kind === 'hit') {
+      missingProfileUntil.delete(address)
+      return result.entry
+    }
+    if (result.kind === 'missing') {
+      markProfileMissing(address)
+      return null
+    }
+    // error → try next peer
   }
 
   return null

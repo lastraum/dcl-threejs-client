@@ -457,9 +457,10 @@ export class LiveKitCommsSession {
     ) => {
       const address = participant?.identity?.trim().toLowerCase()
       if (!address || address === this.localAddress || participant?.isLocal) return
+      // Explorer may tag chat/emote data with a LiveKit topic. Always run the RFC4 packet
+      // path (chat/profile/emote). Topic queue is additive for SDK topic consumers.
       if (topic) {
         this.topicHandler?.(topic, address, payload)
-        return
       }
       this.packetHandler?.(this.transport, address, payload)
     }

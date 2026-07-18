@@ -13,6 +13,7 @@ import { normalizeBoneName, resolveBoneName } from './emoteBoneMap'
 import {
   findAttachBoneForCategory,
   findSkeletonHips,
+  fitWearableWorldExtent,
   normalizeWearableWorldScale,
   prepareWearableForCompose,
   pruneWearableDisplayMeshes,
@@ -368,26 +369,33 @@ export function mergeWearableMeshes(
     }
 
     const indexMap = buildBoneIndexMap(obj.skeleton, skeleton)
+    // Bad name maps dump most verts onto bone 0 (Hips) → "ball of bones" on remotes.
+    if (usedBones.size > 0) {
+      let toZero = 0
+      for (const bi of usedBones) {
+        const dst = bi < indexMap.length ? indexMap[bi] : 0
+        if (dst === 0) toZero++
+      }
+      if (toZero / usedBones.size > 0.55 && usedBones.size >= 3) {
+        return
+      }
+    }
     // Always clone — never mutate AssetCache-shared geometry/skin attributes.
     const geometry = obj.geometry.clone()
-    if (unitFactor !== 1) scaleGeometryPositions(geometry, unitFactor)
+    // Unit bake only for clearly mismatched feet/cm exports — wrong factor on clothing = soup.
+    const applyUnit =
+      unitFactor !== 1 &&
+      (options.category === 'feet' || unitFactor < 0.5 || unitFactor > 2)
+    if (applyUnit) scaleGeometryPositions(geometry, unitFactor)
     remapSkinIndices(geometry, indexMap, skeleton.bones.length)
 
     const mesh = new THREE.SkinnedMesh(geometry, cloneMaterials(obj.material))
     mesh.name = obj.name
     // bindMatrix: mesh-local → bind space. Uniform vert scale f satisfies
     // f*(M*v)=M*(f*v), so keep M when baking unitFactor into positions.
-    // Fold non-identity mesh local TRS into bind (new mesh is identity under avatar).
-    const bindMatrix = obj.bindMatrix.clone()
-    obj.updateMatrix()
-    if (
-      Math.abs(obj.position.lengthSq()) > 1e-12 ||
-      Math.abs(obj.quaternion.x) + Math.abs(obj.quaternion.y) + Math.abs(obj.quaternion.z) > 1e-8 ||
-      Math.abs(obj.scale.x - 1) + Math.abs(obj.scale.y - 1) + Math.abs(obj.scale.z - 1) > 1e-6
-    ) {
-      bindMatrix.multiply(obj.matrix)
-    }
-    bindSkinnedMesh(mesh, skeleton, bindMatrix)
+    // Do NOT multiply mesh.matrix here — folding local TRS after unit bake caused
+    // L1/RTFKT shoes to land huge and ~180° flipped vs body bind space.
+    bindSkinnedMesh(mesh, skeleton, obj.bindMatrix.clone())
     repairSkinnedMesh(mesh)
     target.add(mesh)
     merged++
@@ -416,7 +424,12 @@ export function attachWearableFallback(
     })
     pruneWearableDisplayMeshes(wearableRoot)
   }
+  // World extent pass — L1 shoe GLBs often still oversized after armature normalize alone.
   normalizeWearableWorldScale(wearableRoot, options.category)
+  if (options.category === 'feet') {
+    // Second pass after matrix settle (Hips parent not attached yet — root space only).
+    normalizeWearableWorldScale(wearableRoot, options.category)
+  }
 
   const visibleMeshes = pruneWearableDisplayMeshes(wearableRoot)
   if (visibleMeshes === 0) return false
@@ -424,10 +437,16 @@ export function attachWearableFallback(
   const attachBone = findAttachBoneForCategory(skeleton, options.category) ?? findSkeletonHips(skeleton)
   wearableRoot.position.set(0, 0, 0)
   wearableRoot.rotation.set(0, 0, 0)
+  // Identity rotation — own skeleton already faces bind-pose forward; do not invent Y-180.
   if (attachBone) {
     attachBone.add(wearableRoot)
   } else {
     target.add(wearableRoot)
+  }
+
+  // After parenting under body bones, hierarchy can double-shrink or re-inflate.
+  if (options.category === 'feet') {
+    fitWearableWorldExtent(wearableRoot, options.category)
   }
 
   return true

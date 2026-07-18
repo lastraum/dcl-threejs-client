@@ -1043,7 +1043,22 @@ export class PhysXWorld {
               console.warn('[PhysXWorld] multi-shape pose update failed:', desc.entity, err)
             }
           }
-          // World-baked pose drift — keep the live actor until cook budget allows atomic swap below.
+          // World-baked: remove→recook is a mid-scene hole (floors vanish). Keep live actor
+          // unless boot/force explicitly demands recook.
+          if (actor && worldBaked && !options?.forceRecookOnPoseChange) {
+            pendingCooks++
+            continue
+          }
+        } else if (
+          prevGeomFp &&
+          this.staticActors.has(desc.entity) &&
+          !options?.forceRecookOnPoseChange &&
+          !bootStyleCook
+        ) {
+          // Runtime re-extract often tweaks geom fingerprints while mesh is still solid.
+          // Prefer stale solid over remove→cook hole mid-walk.
+          pendingCooks++
+          continue
         }
 
         if (prevGeomFp && prevGeomFp !== geomFp) {
@@ -1061,15 +1076,16 @@ export class PhysXWorld {
         }
 
         try {
-          this.removeStatic(desc.entity)
-          if (
-            !this.addMultiShapeStatic(desc, {
+          // Keep live actor until cook succeeds — remove→add holes floors mid-hitch.
+          const ok = this.replaceStaticWithCook(desc.entity, () =>
+            this.addMultiShapeStatic(desc, {
               geometryCache: !bootStyleCook,
               persistCook,
               preferPersistedCook,
               skipWorkerStream
             })
-          ) {
+          )
+          if (!ok) {
             this.failedCookFp.add(geomFp)
             continue
           }
@@ -1110,7 +1126,14 @@ export class PhysXWorld {
             console.warn('[PhysXWorld] primitive pose update failed:', desc.entity, err)
           }
         }
-        // World-baked / missing actor — recook below; keep existing actor until cook budget allows swap.
+        if (
+          hasActor &&
+          this.actorWorldBaked.get(desc.entity) &&
+          !options?.forceRecookOnPoseChange
+        ) {
+          pendingCooks++
+          continue
+        }
       }
 
       const prevFp = geomFp
@@ -1129,8 +1152,10 @@ export class PhysXWorld {
       }
 
       try {
-        this.removeStatic(desc.entity)
-        if (!this.addStatic(desc, persistCook, preferPersistedCook, skipWorkerStream)) {
+        const ok = this.replaceStaticWithCook(desc.entity, () =>
+          this.addStatic(desc, persistCook, preferPersistedCook, skipWorkerStream)
+        )
+        if (!ok) {
           this.failedCookFp.add(desc.fingerprint)
           continue
         }
@@ -2713,6 +2738,71 @@ export class PhysXWorld {
         }
       }
     }
+  }
+
+  /**
+   * Recook without a floor hole: leave the old actor in the PhysX scene until the new
+   * cook registers successfully. On failure, restore maps and keep the previous collider.
+   */
+  private replaceStaticWithCook(entity: number, cook: () => boolean): boolean {
+    const prevActor = this.staticActors.get(entity)
+    const prevPmesh = this.pmeshHandles.get(entity)
+    const prevFp = this.staticFp.get(entity)
+    const prevPoseFp = this.staticPoseFp.get(entity)
+    const prevWorldBaked = this.actorWorldBaked.get(entity)
+    const prevBaseline = this.shapeBaselineLocal.get(entity)
+
+    if (prevActor) {
+      // Detach from maps so cook can own the entity key — actor stays in the scene.
+      this.unregisterStaticActor(entity)
+      this.staticActors.delete(entity)
+      this.pmeshHandles.delete(entity)
+      this.staticFp.delete(entity)
+      this.staticPoseFp.delete(entity)
+      this.actorWorldBaked.delete(entity)
+      this.shapeBaselineLocal.delete(entity)
+    }
+
+    let ok = false
+    try {
+      ok = cook()
+    } catch (err) {
+      console.warn('[PhysXWorld] replaceStaticWithCook failed:', entity, err)
+      ok = false
+    }
+
+    if (ok) {
+      if (prevActor) {
+        try {
+          if (this.scene) this.scene.removeActor(prevActor)
+          if (typeof prevActor.release === 'function') prevActor.release()
+        } catch (err) {
+          console.warn('[PhysXWorld] release previous static actor failed:', entity, err)
+        }
+      }
+      if (prevPmesh) {
+        for (const pmesh of prevPmesh) {
+          try {
+            pmesh.release()
+          } catch {
+            // ignore
+          }
+        }
+      }
+      return true
+    }
+
+    // Cook failed — restore previous actor if we had one.
+    if (prevActor) {
+      this.staticActors.set(entity, prevActor)
+      this.registerStaticActor(entity, prevActor)
+      if (prevPmesh) this.pmeshHandles.set(entity, prevPmesh)
+      if (prevFp !== undefined) this.staticFp.set(entity, prevFp)
+      if (prevPoseFp !== undefined) this.staticPoseFp.set(entity, prevPoseFp)
+      if (prevWorldBaked !== undefined) this.actorWorldBaked.set(entity, prevWorldBaked)
+      if (prevBaseline) this.shapeBaselineLocal.set(entity, prevBaseline)
+    }
+    return false
   }
 
   /** Tier B — sync PhysX trigger actors for SDK TriggerArea volumes. */

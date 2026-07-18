@@ -35,8 +35,35 @@ function findMainEntry(content: ContentFile[], metadata: SceneMetadata): string 
   return (
     content.find((f) => f.file === 'bin/scene.js')?.file ??
     content.find((f) => f.file === 'bin/index.js')?.file ??
+    content.find((f) => f.file === 'bin/game.js')?.file ??
     null
   )
+}
+
+/**
+ * ThreejsClient only runs SDK7 ECS scenes. Classic Builder SDK6 (`dcl.addEntity` /
+ * `bin/game.js`, no runtimeVersion 7) never publishes CRDT → hydration stuck ~78%.
+ */
+export function assertSdk7CompatibleScene(
+  metadata: SceneMetadata,
+  mainEntry: string | null,
+  label: string
+): void {
+  const rv = metadata.runtimeVersion
+  const rvStr = rv === undefined || rv === null ? '' : String(rv).trim()
+  if (rvStr === '7' || rvStr.startsWith('7.')) return
+  if (rvStr === '6' || rvStr.startsWith('6.')) {
+    throw new Error(
+      `SDK6_UNSUPPORTED: "${label}" is an SDK6 scene (runtimeVersion ${rvStr}). This client only runs SDK7 scenes.`
+    )
+  }
+  const main = (mainEntry ?? metadata.main ?? '').trim().toLowerCase()
+  // Builder SDK6 default entry; SDK7 deploys use bin/index.js (+ runtimeVersion 7).
+  if (main === 'bin/game.js' || main.endsWith('/game.js') || main === 'game.js') {
+    throw new Error(
+      `SDK6_UNSUPPORTED: "${label}" looks like a classic SDK6/Builder scene (${main || 'bin/game.js'}). This client only runs SDK7 scenes.`
+    )
+  }
 }
 
 function resolveSceneAssetRef(
@@ -182,9 +209,12 @@ function resolvedFromEntity(
       : undefined
 
   const resolvedEnv = resolveSceneEnvironment(metadata, opts.source)
+  const mainEntry = findMainEntry(content, metadata)
+  const title = display?.title ?? opts.title
+  assertSdk7CompatibleScene(metadata, mainEntry, title)
 
   return {
-    title: display?.title ?? opts.title,
+    title,
     parcels,
     baseParcel: base,
     spawn: pickSceneSpawn(metadata),
@@ -196,7 +226,7 @@ function resolvedFromEntity(
     assetUrl: opts.assetUrl,
     source: opts.source,
     entityId,
-    mainEntry: findMainEntry(content, metadata),
+    mainEntry,
     skybox,
     commsPointer: opts.commsPointer,
     browserChatEnabled: resolveBrowserChatEnabled(metadata),

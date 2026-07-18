@@ -42,6 +42,15 @@ export class SceneHost {
   private viewportCssW = 1
   private viewportCssH = 1
   private bloom: BloomPipeline | null = null
+  /** Cached visible mesh count for bloom mode pick (refreshed every ~2s). */
+  private bloomMeshCount = 0
+  private bloomMeshCountAt = 0
+  private bloomModeLogged = ''
+  /**
+   * Below this → selective bloom (2× geo, half-res extract, emissive occlusion).
+   * At/above → fast bloom (1× geo, luminance threshold). Plaza is always fast.
+   */
+  private static readonly BLOOM_SELECTIVE_MESH_CAP = 900
 
   constructor(container: HTMLElement) {
     // Canvas AA off — sample count is controlled via multisample render target (runtime prefs).
@@ -185,13 +194,16 @@ export class SceneHost {
     if (!this.bloom) return
     const pr = this.renderer.getPixelRatio()
     // Film scale only — surface glow amount comes from glTF emissiveFactor × intensity.
-    // Extract pass blacks out non-emissives and zeros lights (see BloomPipeline).
     const strength =
       options.tier === 'ultra' ? 0.16 : options.tier === 'high' ? 0.14 : 0.12
+    // Prefer selective on high/ultra when the scene is small enough; always fast on plaza-scale.
+    // Mode is re-evaluated each frame in renderMainPass via pickBloomMode().
+    const mode = this.pickBloomMode(options)
     this.bloom.configure(
       {
         enabled: options.bloomEnabled,
         hdr: options.hdrEnabled,
+        mode,
         strength,
         threshold: 0.05,
         radius: 0.28
@@ -200,6 +212,17 @@ export class SceneHost {
       this.viewportCssH,
       pr
     )
+  }
+
+  /**
+   * selective = emissive isolation + depth occlusion (2× scene).
+   * fast = 1× beauty + UnrealBloom luminance (plaza / large worlds).
+   */
+  private pickBloomMode(options: RenderQualityOptions): 'fast' | 'selective' {
+    const meshes = this.sceneMeshCountForBloom()
+    const smallEnough = meshes > 0 && meshes <= SceneHost.BLOOM_SELECTIVE_MESH_CAP
+    const tierWantsSelective = options.tier === 'high' || options.tier === 'ultra'
+    return smallEnough && tierWantsSelective ? 'selective' : 'fast'
   }
 
   private rebuildMsaaTarget(): void {
@@ -239,14 +262,22 @@ export class SceneHost {
     this.rebuildMsaaTarget()
   }
 
-  private renderMainPass(): void {
-    // Bloom path: RenderPass → UnrealBloom → OutputPass (reads renderer tone mapping).
-    if (this.bloom?.isActive()) {
-      this.renderer.setRenderTarget(null)
-      this.bloom.render()
-      return
+  /** Visible mesh inventory for bloom gate — full walk only every 2s. */
+  private sceneMeshCountForBloom(): number {
+    const now = performance.now()
+    if (now - this.bloomMeshCountAt < 2000 && this.bloomMeshCountAt > 0) {
+      return this.bloomMeshCount
     }
+    this.bloomMeshCountAt = now
+    let n = 0
+    this.scene.traverseVisible((obj) => {
+      if ((obj as THREE.Mesh).isMesh) n++
+    })
+    this.bloomMeshCount = n
+    return n
+  }
 
+  private renderForwardPass(): void {
     if (this.msaaTarget && this.msaaSamples > 0) {
       this.renderer.setRenderTarget(this.msaaTarget)
       this.renderer.clear(true, true, true)
@@ -264,6 +295,31 @@ export class SceneHost {
       this.renderer.setRenderTarget(null)
       this.renderer.render(this.scene, this.camera)
     }
+  }
+
+  private renderMainPass(): void {
+    if (!this.bloom?.isActive() || !renderQuality.getBloomEnabled()) {
+      this.renderForwardPass()
+      return
+    }
+
+    // Hot-swap mode when mesh inventory crosses the selective cap (plaza hydrate).
+    const mode = this.pickBloomMode(renderQuality.getOptions())
+    if (this.bloom.getMode() !== mode) {
+      this.configureBloom(renderQuality.getOptions())
+      if (this.bloomModeLogged !== mode) {
+        this.bloomModeLogged = mode
+        console.info(
+          `[SceneHost] bloom mode=${mode} meshes≈${this.bloomMeshCount}` +
+            (mode === 'fast'
+              ? ' (1× scene + luminance threshold)'
+              : ' (2× scene, half-res emissive extract)')
+        )
+      }
+    }
+
+    this.renderer.setRenderTarget(null)
+    this.bloom.render()
   }
 
   /** Draw one frame without starting the animation loop (used after asset hydration). */

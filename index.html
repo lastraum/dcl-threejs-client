@@ -423,12 +423,84 @@
       .debug-panel__log-line--success .debug-panel__log-cat {
         color: rgba(134, 239, 172, 1);
       }
+      /*
+       * Location + minimap:
+       * Glass plate under the title + top half of the map (no stroke — stroke = double border).
+       * Circle sits ON TOP with a single canvas ring only.
+       */
+      .location-map-stack {
+        --location-map-size: min(204px, calc(100vw - var(--client-safe-left) - var(--client-safe-right) - 20px));
+        --location-map-header-h: 54px;
+        --location-map-glass-h: calc(var(--location-map-header-h) + var(--location-map-size) * 0.5);
+        --location-map-ease: cubic-bezier(0.4, 0, 0.2, 1);
+        --location-map-dur: 0.34s;
+        --location-map-glass: rgba(12, 12, 14, 0.82);
+        position: fixed;
+        top: var(--client-safe-top);
+        left: var(--client-safe-left);
+        z-index: var(--z-client-hud);
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        width: min(224px, calc(100vw - var(--client-safe-left) - var(--client-safe-right)));
+        max-width: 224px;
+        box-sizing: border-box;
+        background: transparent;
+        border: 0;
+        box-shadow: none;
+        overflow: visible;
+        pointer-events: auto;
+        user-select: none;
+      }
+      /* Glass only — soft shadow, no stroke (stroke + map ring = double frame). */
+      .location-map-stack::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 0;
+        height: var(--location-map-glass-h);
+        border-radius: 16px;
+        background: var(--location-map-glass);
+        border: 0;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        pointer-events: none;
+        z-index: 0;
+        transition: height var(--location-map-dur) var(--location-map-ease);
+      }
+      .location-map-stack.is-map-collapsed::before {
+        height: var(--location-map-header-h);
+        /* Collapsed pill needs a subtle edge so it still reads as a card. */
+        box-shadow:
+          0 0 0 1px rgba(255, 255, 255, 0.1),
+          0 10px 28px rgba(0, 0, 0, 0.45);
+      }
+      .location-map-stack > * {
+        position: relative;
+        z-index: 1;
+      }
+      .location-map-stack__map {
+        display: flex;
+        justify-content: center;
+        align-items: flex-start;
+        box-sizing: border-box;
+        width: 100%;
+        max-height: var(--location-map-size);
+        /* No horizontal padding — circle width matches glass so side frames don’t show. */
+        padding: 0;
+        overflow: hidden;
+        transition: max-height var(--location-map-dur) var(--location-map-ease);
+      }
+      .location-map-stack.is-map-collapsed .location-map-stack__map {
+        max-height: 0;
+        pointer-events: none;
+      }
       .minimap {
         position: fixed;
-        /* Fallback until placeBelow() runs against the live pill rect. */
         top: calc(var(--client-safe-top) + 80px);
         left: var(--client-safe-left);
-        /* Below the location pill so a late layout never covers the title. */
         z-index: calc(var(--z-client-hud) - 1);
         width: min(224px, calc(100vw - var(--client-safe-left) - var(--client-safe-right)));
         height: min(224px, calc(100vw - var(--client-safe-left) - var(--client-safe-right)));
@@ -436,10 +508,30 @@
         max-height: 224px;
         border-radius: 50%;
         overflow: hidden;
-        background: transparent;
+        background: #1a1a22;
+        border: 0;
+        outline: none;
         box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
         pointer-events: none;
         user-select: none;
+        box-sizing: border-box;
+      }
+      /* Full-width circle on glass; ring is drawn once on the canvas. */
+      .minimap.minimap--in-stack {
+        position: relative;
+        top: auto;
+        left: auto;
+        z-index: 2;
+        width: var(--location-map-size);
+        height: var(--location-map-size);
+        max-width: var(--location-map-size);
+        max-height: var(--location-map-size);
+        margin: 0 auto;
+        flex-shrink: 0;
+        border: 0 !important;
+        outline: none;
+        background: transparent;
+        box-shadow: none;
       }
       .minimap.is-clickable {
         pointer-events: auto;
@@ -460,6 +552,12 @@
         gap: 0;
         padding: 7px 12px 6px;
       }
+      /* Parcel + minimap stack: chevron | title/coords */
+      .location-map-stack .world-location-card.is-parcel-pill .world-location-card__header {
+        grid-template-columns: auto 1fr;
+        gap: 4px;
+        padding: 8px 10px 6px 6px;
+      }
       .world-location-card.is-parcel-pill .world-location-card__title {
         font-size: 14px;
         line-height: 1.2;
@@ -474,8 +572,8 @@
       }
       /* Match circular minimap diameter so the pill doesn't stick out past the circle. */
       .world-location-card.is-above-minimap {
-        width: min(224px, calc(100vw - var(--client-safe-left) - var(--client-safe-right)));
-        max-width: 224px;
+        width: 100%;
+        max-width: none;
         box-sizing: border-box;
       }
       .world-location-card.is-above-minimap .world-location-card__title {
@@ -508,6 +606,21 @@
         user-select: none;
         overflow: hidden;
       }
+      /* Inside stack: title sits on the shared glass (::before); no second chrome. */
+      .location-map-stack .world-location-card {
+        position: relative;
+        top: auto;
+        left: auto;
+        z-index: 1;
+        width: 100%;
+        max-width: none;
+        border-radius: 0;
+        background: transparent;
+        border: 0;
+        box-shadow: none;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+      }
       .world-location-card__header {
         display: grid;
         grid-template-columns: auto 1fr auto;
@@ -528,6 +641,7 @@
         background: transparent;
         color: rgba(255, 255, 255, 0.72);
         cursor: pointer;
+        transition: color 0.12s ease, background 0.12s ease, transform 0.2s ease;
       }
       .world-location-card__expand:hover {
         background: rgba(255, 255, 255, 0.06);
@@ -536,8 +650,10 @@
       .world-location-card__expand svg {
         width: 18px;
         height: 18px;
+        transition: transform 0.22s ease;
       }
-      .world-location-card.is-collapsed .world-location-card__expand svg {
+      .world-location-card.is-collapsed .world-location-card__expand svg,
+      .location-map-stack.is-map-collapsed .world-location-card__expand svg {
         transform: rotate(180deg);
       }
       .world-location-card__info {
@@ -1226,9 +1342,20 @@
           max-width: 192px;
           max-height: 192px;
         }
-        .world-location-card.is-above-minimap {
+        .location-map-stack {
+          --location-map-size: min(176px, calc(100vw - var(--client-safe-left) - var(--client-safe-right) - 20px));
           width: min(192px, calc(100vw - var(--client-safe-left) - var(--client-safe-right)));
           max-width: 192px;
+        }
+        .minimap.minimap--in-stack {
+          width: var(--location-map-size);
+          height: var(--location-map-size);
+          max-width: var(--location-map-size);
+          max-height: var(--location-map-size);
+        }
+        .world-location-card.is-above-minimap {
+          width: 100%;
+          max-width: none;
         }
       }
       @media (max-width: 767px) {
@@ -1239,7 +1366,8 @@
           --client-chat-max-h: min(420px, calc(100vh - var(--client-safe-top) - var(--client-safe-bottom) - 120px));
         }
         .client-mobile .minimap,
-        .client-mobile .world-location-card {
+        .client-mobile .world-location-card,
+        .client-mobile .location-map-stack {
           display: none !important;
         }
         .client-mobile .client-shell {
@@ -12946,7 +13074,8 @@
        * overriding 2D shell top-right desktop placement.
        */
       body.client-in-world .social-mobile-notif-host,
-      body.client-in-world .social-mobile-notif-host--desktop {
+      body.client-in-world .social-mobile-notif-host--desktop,
+      .social-mobile-notif-host--in-world-center {
         top: max(14px, env(safe-area-inset-top, 0px));
         left: 50%;
         right: auto;
@@ -12959,13 +13088,15 @@
         z-index: calc(var(--z-client-hud-raised, 111) + 4);
       }
       body.client-in-world .social-mobile-notif-host .social-mobile-notif,
-      body.client-in-world .social-mobile-notif-host--desktop .social-mobile-notif {
+      body.client-in-world .social-mobile-notif-host--desktop .social-mobile-notif,
+      .social-mobile-notif-host--in-world-center .social-mobile-notif {
         width: 100%;
         transform: translateY(calc(-100% - 20px));
         opacity: 0;
       }
       body.client-in-world .social-mobile-notif-host .social-mobile-notif--visible,
-      body.client-in-world .social-mobile-notif-host--desktop .social-mobile-notif--visible {
+      body.client-in-world .social-mobile-notif-host--desktop .social-mobile-notif--visible,
+      .social-mobile-notif-host--in-world-center .social-mobile-notif--visible {
         transform: translateY(0);
         opacity: 1;
       }
@@ -14744,6 +14875,8 @@
       /* 3D play chrome must not appear on 2D landing or during landing → play load */
       body.scene-landing-route #client-shell,
       body.scene-landing-route #world-location-card,
+      body.scene-landing-route #location-map-stack,
+      body.scene-landing-route #minimap,
       body.scene-landing-route #scene-ui-root,
       body.scene-landing-route .mobile-game-hud,
       body.scene-landing-route .mobile-profile-fab,
@@ -14751,6 +14884,8 @@
       body.scene-landing-route #chat-panel-wrap,
       body.scene-landing-jump-in-loading #client-shell,
       body.scene-landing-jump-in-loading #world-location-card,
+      body.scene-landing-jump-in-loading #location-map-stack,
+      body.scene-landing-jump-in-loading #minimap,
       body.scene-landing-jump-in-loading #scene-ui-root,
       body.scene-landing-jump-in-loading .mobile-game-hud,
       body.scene-landing-jump-in-loading .mobile-profile-fab,

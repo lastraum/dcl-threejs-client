@@ -29,6 +29,8 @@ export class RemoteAvatarLoadQueue {
   private cacheWarm = false
   private plazaScale = false
   private sceneGltfInflight = 0
+  /** Local player loading an emote GLB — don't start new remote composes until done. */
+  private localEmoteBusy = false
   private cacheWarmExitTimer: ReturnType<typeof setTimeout> | null = null
 
   setCameraPosition(position: THREE.Vector3): void {
@@ -67,6 +69,15 @@ export class RemoteAvatarLoadQueue {
     this.pump()
   }
 
+  /**
+   * While the local player loads/binds a scene emote GLB, hold new remote composes
+   * (in-flight composes finish). Does not hide or drop peers — only defers starts.
+   */
+  setLocalEmoteLoadBusy(busy: boolean): void {
+    this.localEmoteBusy = busy
+    if (!busy) this.pump()
+  }
+
   /** Queue a peer avatar load. Replaces any pending entry for the same address. */
   enqueue(address: string, peerPosition: THREE.Vector3, run: () => Promise<void>, force = false): void {
     const key = address.toLowerCase()
@@ -88,6 +99,15 @@ export class RemoteAvatarLoadQueue {
 
   cancel(address: string): void {
     this.waiting.delete(address.toLowerCase())
+  }
+
+  /** In-flight + waiting compose jobs (for loading toast). */
+  getPendingComposeCount(): number {
+    return this.waiting.size + this.active.size
+  }
+
+  getActiveComposeCount(): number {
+    return this.active.size
   }
 
   private maxConcurrent(): number {
@@ -116,6 +136,7 @@ export class RemoteAvatarLoadQueue {
 
   private pump(): void {
     if (this.scenePressureBlocks()) return
+    if (this.localEmoteBusy) return
 
     while (this.running < this.maxConcurrent() && this.waiting.size > 0) {
       const deferSq = RemoteAvatarLoadQueue.DEFER_DISTANCE ** 2

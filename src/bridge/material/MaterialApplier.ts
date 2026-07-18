@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import type { ResolvedScene } from '../../dcl/content/types'
 import type { AssetCache } from '../../rendering/AssetCache'
 import { isSharedAssetResource } from '../../rendering/sharedAsset'
+import { renderQuality } from '../../rendering/RenderQualitySettings'
 import { resolveSceneTextureUrl } from './resolveTexture'
 import { applyPbrColors, applyPbrScalars, configureEmissiveRendering } from './pbrApply'
 import { configureSceneVideoTexture } from '../../media/videoTextureOrientation'
@@ -495,9 +496,12 @@ export class MaterialApplier {
       m.depthWrite = false
     }
 
-    // material.proto: cast_shadows default = true (omit / undefined → cast on).
-    // Scene authors set castShadows: false to opt out; graphics shadowQuality:off kills all.
-    mesh.castShadow = inner.castShadows !== false
+    // material.proto default cast_shadows=true floods the sun shadow map in Genesis Plaza
+    // (hundreds of MeshRenderer boards). Only cast on high/ultra; always receive.
+    // Authors still set castShadows: false to force off at any tier.
+    const q = renderQuality.getShadowQuality()
+    const tierCasts = q === 'high' || q === 'ultra'
+    mesh.castShadow = tierCasts && inner.castShadows !== false
     mesh.receiveShadow = true
     // Marquees face inward (FrontSide). Never DoubleSide — back face is mirrored and
     // was the “split + mirrored” LED look from inside the plaza.

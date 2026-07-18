@@ -25,6 +25,18 @@ export function formatSceneLoadError(raw: string): SceneLoadErrorMessage {
     }
   }
 
+  if (/SDK6_UNSUPPORTED/i.test(trimmed)) {
+    const name = trimmed.match(/"([^"]+)"/)?.[1]
+    const who = name ? `"${name}" is` : 'This location is'
+    return {
+      title: 'SDK6 scene not supported',
+      detail:
+        `${who} a classic SDK6 / Builder scene. ` +
+        'This client only runs SDK7 scenes (runtimeVersion 7). ' +
+        'Try Genesis Plaza (0,0), another SDK7 parcel, or a world such as /lastslice.dcl.eth.'
+    }
+  }
+
   return {
     title: "Couldn't load this location",
     detail: trimmed || 'Something went wrong while loading. Try another destination.'

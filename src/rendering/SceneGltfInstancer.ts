@@ -321,8 +321,10 @@ export class SceneGltfInstancer {
       const mesh = new THREE.InstancedMesh(leaf.geometry, leaf.material, capacity)
       mesh.name = `inst:${i}`
       mesh.count = 0
-      // GltfContainer default cast (material / GltfNodeModifiers can opt out per mesh)
-      mesh.castShadow = true
+      // Never cast from GPU InstancedMesh — N× leaf geometry into the sun/spot shadow
+      // maps tanks Genesis Plaza (~5–10fps). Receive only; Material / GltfNodeModifiers
+      // on private clones still control cast. Matches landscape gltfInstancing.
+      mesh.castShadow = false
       mesh.receiveShadow = true
       mesh.frustumCulled = true
       // Zero all slots initially

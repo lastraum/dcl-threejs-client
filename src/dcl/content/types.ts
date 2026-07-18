@@ -164,6 +164,11 @@ export type SceneMetadata = {
   scene?: SceneLayout
   spawnPoints?: SpawnPoint[]
   main?: string
+  /**
+   * Deployed scene runtime. SDK7 scenes set `"7"`; classic Builder SDK6 often omits this
+   * and ships `bin/game.js` with the legacy `dcl.*` API.
+   */
+  runtimeVersion?: string | number
   /** Official: fixed time of day only. */
   skyboxConfig?: SceneSkyboxConfigMetadata
   /**

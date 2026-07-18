@@ -350,6 +350,8 @@ export type MainToWorker =
   | { type: 'renderer-inbound-deliver'; data: Uint8Array[] }
   | { type: 'crdt-outbound-ack'; id: number }
   | { type: 'inject-pointer-click'; body: InjectPointerClickBody; injectOnly?: boolean }
+  /** Main: player pressed WASD/Space while mode-only sit freeze stuck — clear worker IM. */
+  | { type: 'force-locomotion-clear'; reason?: string }
   | { type: 'pump-scene-engine-tick' }
   /** Main: MainCamera bound but VC Transform/VirtualCamera still missing — one-shot hydrate pull. */
   | { type: 'request-vc-bind-hydrate' }

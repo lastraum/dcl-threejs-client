@@ -476,12 +476,15 @@ export class SocialChatController {
       return null
     }
 
-    // Clear shell chat handlers; World installs avatar/movement handlers on the same service.
+    // Clear shell chat handlers; World installs avatar/movement + chat on the same service.
     this.comms.setChatHandler(null)
     this.comms.setChatMediaHandler(null)
     this.comms.setHandlers(null)
 
     const transferred = this.comms
+    // Shell SocialService still pointed at `transferred` — release without clearing
+    // handlers again (World is about to rewire; shell dispose must not wipe them later).
+    this.social.releaseCommsOwnership()
     // Shell gets a blank CommsService — must NOT dispose `transferred` (World owns it now).
     this.comms = new CommsService()
     if (this.login && (this.login.kind === 'wallet' || this.login.kind === 'guest')) {

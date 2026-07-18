@@ -1,6 +1,7 @@
 import type { IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { guardVideoPlayerGetMutable } from './guardVideoPlayerGetMutable'
+import { guardGltfContainerGetMutable } from './guardGltfContainerGetMutable'
 import {
   installClearPlayerInputModifierBlockHook,
   installInputModifierLocomotionGuard,
@@ -58,6 +59,7 @@ export function preregisterRendererInjectedComponents(engine: IEngine): void {
     register(engine)
   }
   guardVideoPlayerGetMutable(engine)
+  guardGltfContainerGetMutable(engine)
   installVirtualCameraBindGuard(engine)
   installInputModifierLocomotionGuard(engine)
 }

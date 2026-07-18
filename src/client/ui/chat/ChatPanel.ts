@@ -49,6 +49,8 @@ export class ChatPanel {
   private readonly onGoto?: ChatPanelOptions['onGoto']
   private readonly onOpenProfile?: ChatPanelOptions['onOpenProfile']
   private onVisibilityChange: ((visible: boolean) => void) | null = null
+  /** Fired when open+pinned vs closed/scene-mode changes (HUD unread badge). */
+  private onReadingChange: ((reading: boolean) => void) | null = null
   private visible = false
   private bodyMode: ChatBodyMode = 'messages'
   private unsubChat: (() => void) | null = null
@@ -150,6 +152,18 @@ export class ChatPanel {
     this.onVisibilityChange = handler
   }
 
+  setOnReadingChange(handler: ((reading: boolean) => void) | null): void {
+    this.onReadingChange = handler
+  }
+
+  /**
+   * True when the panel is open and focused (not faded scene-mode).
+   * Scene-mode still mounts the panel but should count as "chat closed" for unread badges.
+   */
+  isActivelyReading(): boolean {
+    return this.visible && !this.root.classList.contains('is-scene-mode')
+  }
+
   /** Open panel on a community text channel (from community modal 💬). */
   openCommunityChannel(communityId: string, displayName: string): void {
     const id = communityId.trim()
@@ -176,11 +190,14 @@ export class ChatPanel {
     this.unsubChat?.()
     this.unsubChannel?.()
     this.unsubProfiles?.()
+    // Always re-render when a line lands (even if panel was empty/stale channel).
     this.unsubChat = this.social.onChat(() => {
       if (this.bodyMode === 'messages') this.renderMessages()
       this.updateComposerUi()
       this.updateUsersButton()
     })
+    // Pull history for the active scene channel in case lines arrived before show().
+    if (this.bodyMode === 'messages') this.renderMessages()
     this.unsubChannel = this.social.onChannelChange(() => {
       if (this.social.getChannel().kind !== 'scene' && this.bodyMode === 'users') {
         this.bodyMode = 'messages'
@@ -194,7 +211,9 @@ export class ChatPanel {
       this.updateUsersButton()
     })
     this.startPresencePoll()
+    this.social.setChannelThreadOpen(true)
     this.onVisibilityChange?.(true)
+    this.onReadingChange?.(true)
     window.setTimeout(() => {
       if (this.bodyMode === 'messages') this.focusComposer()
     }, 0)
@@ -212,7 +231,9 @@ export class ChatPanel {
     this.unsubChat = null
     this.unsubChannel = null
     this.unsubProfiles = null
+    this.social.setChannelThreadOpen(false)
     this.onVisibilityChange?.(false)
+    this.onReadingChange?.(false)
   }
 
   toggle(): boolean {
@@ -257,32 +278,49 @@ export class ChatPanel {
   /** Pin chat chrome and focus the message field (exits pointer lock). */
   private focusComposer(): void {
     if (document.pointerLockElement) document.exitPointerLock()
+    const wasReading = this.isActivelyReading()
     this.root.classList.remove('is-scene-mode')
     this.root.classList.add('is-chat-pinned')
     this.inputEl.focus({ preventScroll: true })
+    if (!wasReading && this.visible) {
+      this.social.setChannelThreadOpen(true)
+      this.onReadingChange?.(true)
+    }
   }
 
   private isModalUiOpen(): boolean {
     return (
       document.querySelector('.settings-overlay.is-open') !== null ||
-      document.querySelector('.emote-wheel-overlay.is-open') !== null
+      document.querySelector('.emote-wheel-overlay.is-open') !== null ||
+      document.getElementById('threejs-hud-confirm-overlay') !== null ||
+      document.getElementById('threejs-nft-dialog-overlay') !== null
     )
   }
 
   private onScenePointerDown = (): void => {
     if (!this.visible) return
+    const wasReading = this.isActivelyReading()
     this.root.classList.add('is-scene-mode')
     this.root.classList.remove('is-chat-pinned')
     // Release composer focus so WASD is not gated by isTextInputFocused after clicking the world
     // (or returning from another browser tab with chat still focused).
     if (document.activeElement === this.inputEl) this.inputEl.blur()
+    if (wasReading) {
+      this.social.setChannelThreadOpen(false)
+      this.onReadingChange?.(false)
+    }
   }
 
   private onChatPointerDown = (e: MouseEvent): void => {
     if (!this.visible) return
     e.stopPropagation()
+    const wasReading = this.isActivelyReading()
     this.root.classList.remove('is-scene-mode')
     this.root.classList.add('is-chat-pinned')
+    if (!wasReading) {
+      this.social.setChannelThreadOpen(true)
+      this.onReadingChange?.(true)
+    }
   }
 
   private resetBackgroundMode(): void {

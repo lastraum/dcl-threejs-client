@@ -39,7 +39,7 @@ export type RenderQualityOptions = {
   hdrEnabled: boolean
 }
 
-/** Max ECS LightSource lights active at once (nearest to view) — preset defaults. */
+/** Max ECS LightSource lights active at once (nearest to avatar) — preset defaults. */
 export const LIGHT_LIMITS: Record<RenderQualityTier, number> = {
   [RenderQualityTier.Low]: 4,
   [RenderQualityTier.Medium]: 6,
@@ -100,10 +100,13 @@ const PRESET_BUNDLES: Record<PresetId, Omit<RenderQualityOptions, 'preset'>> = {
     maxSceneLights: LIGHT_LIMITS[RenderQualityTier.Medium],
     resolutionScale: 100,
     fpsLimit: 60,
-    msaaSamples: 4,
+    // 4× MSAA on plaza-scale (1.5M+ tris) was a silent FPS tax; high keeps 4.
+    msaaSamples: 0,
     vsync: true,
-    bloomEnabled: true,
-    hdrEnabled: true
+    // Off by default — selective bloom full-scene material swap kills Genesis.
+    // High/ultra keep bloom for neon/muzzle; auto-skipped when mesh count is huge.
+    bloomEnabled: false,
+    hdrEnabled: false
   },
   high: {
     tier: RenderQualityTier.High,

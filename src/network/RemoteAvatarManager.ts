@@ -228,6 +228,43 @@ export class RemoteAvatarManager {
     return count
   }
 
+  /** Peers that still need a full avatar compose (placeholder / loading). */
+  get pendingComposePeerCount(): number {
+    let count = 0
+    for (const record of this.peers.values()) {
+      if (!record.model || record.loading) count++
+    }
+    return count
+  }
+
+  /** Total remote peers tracked (any state). */
+  get peerCount(): number {
+    return this.peers.size
+  }
+
+  /**
+   * Snapshot for HUD toast: how many remotes still need compose vs total present.
+   * `queuePending` is load-queue depth (active + waiting).
+   */
+  getComposeProgress(): {
+    total: number
+    loaded: number
+    pending: number
+    queuePending: number
+  } {
+    const total = this.peers.size
+    let loaded = 0
+    for (const record of this.peers.values()) {
+      if (record.model && !record.loading) loaded++
+    }
+    return {
+      total,
+      loaded,
+      pending: Math.max(0, total - loaded),
+      queuePending: this.loadQueue.getPendingComposeCount()
+    }
+  }
+
   setCatalystEndpoints(contentUrl: string, lambdasUrl: string): void {
     this.contentUrl = contentUrl.replace(/\/$/, '')
     this.lambdasUrl = lambdasUrl.replace(/\/$/, '')
@@ -260,6 +297,11 @@ export class RemoteAvatarManager {
 
   setSceneAssetPressure(gltfInflight: number, textureInflight = 0): void {
     this.loadQueue.setSceneAssetPressure(gltfInflight, textureInflight)
+  }
+
+  /** Pause starting new remote composes while local emote GLB is loading (no visibility cap). */
+  setLocalEmoteLoadBusy(busy: boolean): void {
+    this.loadQueue.setLocalEmoteLoadBusy(busy)
   }
 
   getAttachSkeleton(address: string): AvatarSkeletonTarget | null {
@@ -786,12 +828,18 @@ export class RemoteAvatarManager {
 
       if (nearForAnim) {
         const speed = record.smoothedSpeed
-        const emoteActive =
+        let emoteActive =
           record.renderMode === 'vrm'
             ? (record.vrmLocomotion?.isProfileEmoteActive() ?? false)
             : record.renderMode === 'odk'
               ? (record.odkLocomotion?.isProfileEmoteActive() ?? false)
               : (record.animations?.isProfileEmoteActive() ?? false)
+        // Local player cancels emotes on WASD; remotes must cancel when wire speed shows walk/run
+        // or they keep sit loops while sliding (mauhetti-style glitch after hitch).
+        if (emoteActive && speed > 0.45) {
+          this.stopPeerProfileEmote(record)
+          emoteActive = false
+        }
         const locomotionMode = inferRemoteLocomotionMode(speed)
         const targetLocomotionSpeed =
           !emoteActive && speed > 0.08 ? remoteTargetLocomotionSpeed(locomotionMode) : 0
@@ -1224,6 +1272,17 @@ export class RemoteAvatarManager {
     }
   }
 
+  private stopPeerProfileEmote(record: RemotePeerRecord): void {
+    if (record.renderMode === 'vrm') {
+      record.vrmLocomotion?.stopProfileEmote()
+    } else if (record.renderMode === 'odk') {
+      record.odkLocomotion?.stopProfileEmote()
+    } else {
+      record.animations?.stopProfileEmote()
+    }
+    record.activeEmoteUrn = null
+  }
+
   private async applyPeerEmote(record: RemotePeerRecord, emoteRef: string): Promise<void> {
     if (!record.model) return
 
@@ -1245,6 +1304,11 @@ export class RemoteAvatarManager {
     try {
       const cached = this.assetCache ? await loadResolvedProfileEmote(this.assetCache, resolved) : null
       if (!cached?.animations.length) return
+
+      // Peer may have started walking while the emote GLB was loading.
+      if (record.smoothedSpeed > 0.45 || record.horizontalSpeed > 0.45) {
+        return
+      }
 
       if (record.renderMode === 'vrm' && record.vrmAvatar && record.vrmLocomotion) {
         const clip = retargetGltfClipToVrm(cached.animations[0]!, cached.root, record.vrmAvatar.vrm)

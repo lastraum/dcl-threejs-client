@@ -287,8 +287,9 @@ export class ClientShell {
     this.unreadChat = 0
     this.updateChatBadge()
     this.wireChatPanel(panel)
+    // Badge when chat is closed OR faded scene-mode (still "mounted" but not reading).
     this.unsubChatUnread = social.onChat((event) => {
-      if (this.chatPanel?.isVisible()) return
+      if (this.chatPanel?.isActivelyReading()) return
       if (social.isOwnLine(event.line)) return
       this.unreadChat++
       this.updateChatBadge()
@@ -334,7 +335,9 @@ export class ClientShell {
   private wireChatPanel(panel: ChatPanel): void {
     panel.setOnVisibilityChange((visible) => {
       this.syncChatFabState(visible)
-      if (visible) {
+    })
+    panel.setOnReadingChange((reading) => {
+      if (reading) {
         this.unreadChat = 0
         this.updateChatBadge()
       }

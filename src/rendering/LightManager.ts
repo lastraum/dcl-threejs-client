@@ -16,7 +16,8 @@ type Candidate = {
 /** Distance + quality-tier culling for ECS LightSource lights (does not create lights). */
 export class LightManager {
   private readonly scene: THREE.Scene
-  private readonly viewPos = new THREE.Vector3()
+  /** Avatar (or fallback camera) focus used for nearest-N + distance cull. */
+  private readonly focusPos = new THREE.Vector3()
   private readonly worldPos = new THREE.Vector3()
   private readonly cullDistSq = LIGHT_CULL_DISTANCE_M * LIGHT_CULL_DISTANCE_M
   private activeNearbyCount = 0
@@ -30,9 +31,12 @@ export class LightManager {
     return this.activeNearbyCount
   }
 
-  /** Re-evaluate which managed lights are visible and may cast shadows. */
-  update(viewPosition: THREE.Vector3): void {
-    this.viewPos.copy(viewPosition)
+  /**
+   * Re-evaluate which managed lights are visible and may cast shadows.
+   * @param focusPosition Avatar world position (prefer feet/root) — not the camera.
+   */
+  update(focusPosition: THREE.Vector3): void {
+    this.focusPos.copy(focusPosition)
     const maxLights = renderQuality.getMaxActiveLights()
     const shadowsOn = renderQuality.shadowsEnabled()
     const candidates: Candidate[] = []
@@ -50,7 +54,7 @@ export class LightManager {
       }
 
       obj.getWorldPosition(this.worldPos)
-      const distSq = this.viewPos.distanceToSquared(this.worldPos)
+      const distSq = this.focusPos.distanceToSquared(this.worldPos)
       if (distSq > this.cullDistSq) {
         obj.visible = false
         obj.castShadow = false

@@ -122,12 +122,16 @@ function particleKey(entity: Entity): string {
   return `__particles_${entity}`
 }
 
-/** GltfContainer / MeshRenderer default: cast + receive (Unity MeshRenderer + material.proto cast_shadows=true). */
+/**
+ * Scene GltfContainer default: receive only.
+ * Mass-enabling castShadow on every plaza leaf re-draws the full scene into the sun
+ * (+ spot) shadow map each frame and collapses FPS (~5–10 in Genesis). Authors still
+ * control cast via Material.castShadows / GltfNodeModifiers; avatars keep their own cast.
+ */
 function enableMeshShadows(root: THREE.Object3D): void {
   root.traverse((child) => {
     if (!(child as THREE.Mesh).isMesh) return
     const mesh = child as THREE.Mesh
-    mesh.castShadow = true
     mesh.receiveShadow = true
   })
 }
@@ -1665,8 +1669,8 @@ export class ThreeBridge {
       primitive.name = mk
       primitive.userData.primitiveMeshKey = key
       primitive.userData.primitiveDoubleSided = doubleSided
-      // Unity MeshRenderer / material.proto cast_shadows default true
-      primitive.castShadow = true
+      // Receive only by default — MaterialApplier sets cast from Material.castShadows.
+      primitive.castShadow = false
       primitive.receiveShadow = true
       primitive.userData.entity = entity
       obj.add(primitive)
@@ -2188,8 +2192,8 @@ export class ThreeBridge {
         primitive.name = mk
         primitive.userData.primitiveMeshKey = key
         primitive.userData.primitiveDoubleSided = doubleSided
-        // Unity MeshRenderer / material.proto cast_shadows default true
-        primitive.castShadow = true
+        // Receive only by default — MaterialApplier sets cast from Material.castShadows.
+        primitive.castShadow = false
         primitive.receiveShadow = true
         obj.add(primitive)
         this.notifyMeshComponent(entity, MeshRenderer.componentId)

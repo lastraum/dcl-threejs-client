@@ -106,12 +106,23 @@ export class ArchipelagoClient {
 
   /**
    * Keep Social Service friend/community ONLINE while on landing/shell.
-   * Explorer greys community avatars when we're missing from archipelago stats.
-   * No-op once a real position has been queued (spawn / walk).
+   * Prefer genesis meters for the **current landing parcel** — never leave a stale
+   * (0,0,0) seed after the user navigates to another parcel (wrong island + chat).
+   *
+   * @param genesis — DCL genesis meters. When provided, always updates (overwrites 0,0,0).
+   *                  When omitted and no position yet, falls back to (0,0,0) friends-only seed.
    */
-  ensurePresenceSeed(): void {
-    if (this.lastPosition) return
-    this.queuePosition(0, 0, 0)
+  ensurePresenceSeed(genesis?: { x: number; y: number; z: number }): void {
+    if (genesis) {
+      this.queuePosition(genesis.x, genesis.y, genesis.z)
+      console.log(
+        '[archipelago] presence seed from scene',
+        `genesis=(${genesis.x.toFixed(1)},${genesis.y.toFixed(1)},${genesis.z.toFixed(1)})`
+      )
+    } else if (!this.lastPosition) {
+      this.queuePosition(0, 0, 0)
+      console.log('[archipelago] presence seed genesis (0,0,0) — no scene origin yet (friends online only)')
+    }
     if (this.welcomed && this.isConnected()) {
       this.startHeartbeatLoop()
     }
@@ -126,6 +137,7 @@ export class ArchipelagoClient {
     this.socket?.close()
     this.socket = null
     this.pendingPosition = null
+    this.lastPosition = null
     this.welcomed = false
     this.islandId = null
   }

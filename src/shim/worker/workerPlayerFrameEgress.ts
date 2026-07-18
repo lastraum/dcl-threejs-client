@@ -82,6 +82,13 @@ function isLocomotionClearedValue(value: unknown): boolean {
   return !std.disableWalk && !std.disableJog && !std.disableRun
 }
 
+/** Sit/stool style: walk+jog+run off, not full lock-all (Flagtag lobby uses disableAll). */
+function isModeOnlyLocomotionFreeze(value: unknown): boolean {
+  const std = readStandardMode(value)
+  if (!std || std.disableAll) return false
+  return !!(std.disableWalk || std.disableJog || std.disableRun)
+}
+
 function intentionalUnfreezeWindow(): boolean {
   return isPointerInteractiveTickActive() && shouldAllowLocomotionClearDuringPointerTick()
 }
@@ -180,11 +187,16 @@ export function noteWorkerLocomotionFreezeWrite(value: unknown): void {
     return
   }
   refuseFreezeWrites = false
-  // Pointer inject that writes freeze is MOVE CAMERA (or equivalent flight) capture.
-  // Outside inject, scene systems (menu lock-all) establish a scene latch.
-  const source: LocomotionFreezeLatchSource = intentionalUnfreezeWindow() ? 'pointer-move' : 'scene'
+  // During pointer inject:
+  // - disableAll / full lock → MOVE CAMERA (or menu) flight path
+  // - mode-only (walk/jog/run) → scene sit/stool content, NOT MOVE CAMERA
+  // Outside inject → always scene.
+  let source: LocomotionFreezeLatchSource = 'scene'
+  if (intentionalUnfreezeWindow()) {
+    freezeWrittenThisInject = true
+    source = isModeOnlyLocomotionFreeze(value) ? 'scene' : 'pointer-move'
+  }
   setLocomotionFreezeLatch(value, source)
-  if (intentionalUnfreezeWindow()) freezeWrittenThisInject = true
 }
 
 /**
@@ -236,11 +248,10 @@ export function clearWorkerLocomotionFreezeLatch(): void {
 /**
  * After pointer DOWN + engine.update(0): reconcile latch from live IM.
  *
- * MOVE CAMERA is only when this inject *wrote* freeze (freezeWrittenThisInject).
- * Live freeze with no write this inject is pre-existing menu/scene lock-all —
- * never treat that as MOVE (would arm shim flight + steal STOP semantics).
- *
- * STOP force-unfreeze only for pointer-move latches.
+ * - Mode-only freeze (walk/jog/run) from sit/stool → scene latch; second click toggles OFF.
+ * - disableAll / full freeze written this inject → MOVE CAMERA latch.
+ * - Live freeze with no write this inject → menu/scene lock (or getMutable freeze).
+ * - disableAll menu freezes never force-clear on random clicks.
  */
 export function reconcileLocomotionLatchAfterInjectDown(engine: IEngine): void {
   if (!intentionalUnfreezeWindow()) return
@@ -250,10 +261,20 @@ export function reconcileLocomotionLatchAfterInjectDown(engine: IEngine): void {
   const live = InputModifier.getOrNull(player)
   const liveFrozen = !!(live && isLocomotionFrozenValue(live))
   const moveLatchAtStart = latchSourceAtInjectStart === 'pointer-move'
+  const sceneLatchAtStart =
+    latchSourceAtInjectStart === 'scene' ||
+    (hadLatchAtInjectStart && locomotionFreezeLatchSource === 'scene')
 
   if (liveFrozen) {
-    // Handler wrote freeze this inject → true MOVE CAMERA capture.
+    // Handler wrote freeze this inject.
     if (freezeWrittenThisInject) {
+      // Sit/stool: mode-only freeze from scene content — never treat as MOVE CAMERA.
+      if (isModeOnlyLocomotionFreeze(live)) {
+        refuseFreezeWrites = false
+        setLocomotionFreezeLatch(live, 'scene')
+        workerLog('[input-modifier] latch — scene mode-freeze (sit/stool) after inject DOWN')
+        return
+      }
       refuseFreezeWrites = false
       setLocomotionFreezeLatch(live, 'pointer-move')
       if (!hadLatchAtInjectStart || !moveLatchAtStart) {
@@ -270,7 +291,7 @@ export function reconcileLocomotionLatchAfterInjectDown(engine: IEngine): void {
       return
     }
 
-    // No freeze write this inject — live freeze is menu/scene lock-all.
+    // No freeze write this inject — live freeze is menu/scene lock-all / getMutable freeze.
     if (!hadLatchAtInjectStart) {
       setLocomotionFreezeLatch(live, 'scene')
       return
@@ -280,7 +301,14 @@ export function reconcileLocomotionLatchAfterInjectDown(engine: IEngine): void {
       forceUnfreeze(engine, 'STOP inject while MOVE latched (live still frozen)')
       return
     }
-    // Menu freeze — keep latch; do not unlock on Sync / other UI.
+    // Second click while already scene-mode-frozen (sit/stool): toggle OFF.
+    // Scene systems often throw mid-handler (e.g. missing GltfContainer) and leave freeze
+    // without playing the sit emote — player must not be stuck forever.
+    if (sceneLatchAtStart && isModeOnlyLocomotionFreeze(live)) {
+      forceUnfreeze(engine, 'STOP inject while scene mode-freeze latched (sit/stool toggle)')
+      return
+    }
+    // disableAll / menu lock-all — keep latch; do not unlock on Sync / other UI.
     setLocomotionFreezeLatch(live, locomotionFreezeLatchSource ?? 'scene')
     return
   }
@@ -327,6 +355,21 @@ function forceUnfreeze(engine: IEngine, reason: string): void {
   } catch {
     /* optional */
   }
+}
+
+/**
+ * Main-thread escape (WASD / Space) while sit/stool mode-freeze stuck without emote.
+ * Does not clear disableAll menu freezes (Flagtag lobby).
+ */
+export function forceUnfreezeModeOnlyFromMain(engine: IEngine, reason: string): boolean {
+  preregisterRendererInjectedComponents(engine)
+  const InputModifier = generated.InputModifier(engine)
+  const player = engine.PlayerEntity as Entity
+  const live = InputModifier.getOrNull(player)
+  if (!live || !isLocomotionFrozenValue(live)) return false
+  if (!isModeOnlyLocomotionFreeze(live)) return false
+  forceUnfreeze(engine, reason)
+  return true
 }
 
 /** Rewrite STOP MOVE CAMERA → MOVE CAMERA so phase-4 UI snapshot matches player release. */

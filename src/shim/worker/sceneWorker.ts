@@ -66,6 +66,7 @@ import {
 import { resolveSceneEngine } from './resolveSceneEngine'
 import { guardVideoPlayerGetMutable } from './guardVideoPlayerGetMutable'
 import { installInputModifierLocomotionGuard } from './inputModifierLocomotionGuard'
+import { forceUnfreezeModeOnlyFromMain } from './workerPlayerFrameEgress'
 import {
   clearInjectOnlySdkPollEventsDeferred,
   markDeferSdkPollEventsAfterInjectUiClick
@@ -2753,6 +2754,18 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
 }
 
 async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
+  if (msg.type === 'force-locomotion-clear') {
+    if (sceneEngine) {
+      const ok = forceUnfreezeModeOnlyFromMain(
+        sceneEngine,
+        msg.reason ?? 'main WASD/Space mode-freeze escape'
+      )
+      if (ok) {
+        workerLog('log', `[sceneWorker] force-locomotion-clear — ${msg.reason ?? 'escape'}`)
+      }
+    }
+    return
+  }
   if (msg.type === 'scene-play-ready') {
     playReadyPerformanceTier = msg.performanceTier
     playFrameTickMainDriven = true

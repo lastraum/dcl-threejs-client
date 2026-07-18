@@ -20,6 +20,7 @@ import { remapClipToAvatar } from './emoteBoneMap'
 import { findBodyShapeRoot } from './loadWearable'
 import { getRemappedLocomotionClip } from './locomotionClipCache'
 import type { AssetCache, CachedGltf } from '../rendering/AssetCache'
+import { yieldToNextFrame } from '../rendering/mainThreadYield'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import type { LocomotionMode } from '../player/locomotion'
 import { DCL_LOCOMOTION_DEFAULTS } from '../player/locomotion'
@@ -218,8 +219,117 @@ export class AvatarAnimations {
     this.locomotionVfx?.triggerAirJumpPuff()
   }
 
-  /** Profile emote from full GLB — avatar retarget + prop meshes (wearable-preview parity). */
+  /** Remapped avatar clips by emote key — second play skips track retarget. */
+  private readonly remappedProfileClips = new Map<string, THREE.AnimationClip>()
+
+  /**
+   * Profile emote from full GLB — avatar retarget + prop meshes.
+   * Prefer {@link playProfileEmoteFromGltfAsync} on the play path (yields between heavy steps).
+   */
   playProfileEmoteFromGltf(gltf: CachedGltf, loop = false, emoteKey?: string): boolean {
+    // Sync path for backpack preview — still used; cold play should use async.
+    return this.applyProfileEmoteFromGltf(gltf, loop, emoteKey)
+  }
+
+  /**
+   * Same as playProfileEmoteFromGltf but yields between split / prop clone / retarget so
+   * first-time watering-can / sit does not hard-freeze the rAF loop.
+   */
+  async playProfileEmoteFromGltfAsync(
+    gltf: CachedGltf,
+    loop = false,
+    emoteKey?: string,
+    isCancelled?: () => boolean
+  ): Promise<boolean> {
+    if (!this.mixer || !this.avatarRoot || !this.attachParent) return false
+
+    const key = emoteKey ?? gltf.animations.map((clip) => clip.name).join('|')
+    if (this.profileActive && this.activeProfileEmoteKey === key && this.profileEmoteLoop === loop) {
+      return true
+    }
+
+    this.teardownProfileEmotePlayback()
+    this.profileEmoteLoop = loop
+    if (isCancelled?.()) return false
+
+    await yieldToNextFrame()
+    if (isCancelled?.() || !this.mixer || !this.avatarRoot || !this.attachParent) return false
+
+    const { avatarClip, propClip, propTrackTargets } = splitEmoteClips(gltf, this.avatarRoot)
+    const needsPropScene = !!propClip || emoteNeedsPropScene(gltf, propTrackTargets)
+    if (!avatarClip && !needsPropScene) {
+      console.warn(
+        `[avatar] emote has no playable avatar or prop tracks (${gltf.animations.map((a) => a.name).join(', ')})`
+      )
+      this.finishProfileEmoteStop()
+      return false
+    }
+
+    await yieldToNextFrame()
+    if (isCancelled?.() || !this.mixer || !this.avatarRoot || !this.attachParent) return false
+
+    if (needsPropScene) {
+      // SkeletonUtils clone of prop armatures is the main first-play hitch for watering/sit.
+      this.propRoot = cloneEmotePropRoots(gltf.root)
+      await yieldToNextFrame()
+      if (isCancelled?.() || !this.mixer || !this.avatarRoot || !this.attachParent) {
+        this.teardownProfileEmotePlayback()
+        return false
+      }
+      bindEmoteParticleMeshes(this.propRoot)
+      prepareEmotePropRoot(this.propRoot, propTrackTargets)
+      stabilizeSkinnedMeshes(this.propRoot)
+      this.attachParent.add(this.propRoot)
+      this.propMixer = new THREE.AnimationMixer(this.propRoot)
+      this.propMixer.addEventListener('finished', this.onProfileFinished)
+      if (propClip) {
+        this.propAction = this.propMixer.clipAction(propClip)
+        this.propAction.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1)
+        this.propAction.clampWhenFinished = !loop
+        this.propAction.reset()
+        this.propAction.enabled = true
+        this.propAction.setEffectiveWeight(1)
+        this.propAction.play()
+      }
+    }
+
+    await yieldToNextFrame()
+    if (isCancelled?.() || !this.mixer || !this.avatarRoot) {
+      this.teardownProfileEmotePlayback()
+      return false
+    }
+
+    if (avatarClip) {
+      let remapped = this.remappedProfileClips.get(key)
+      if (!remapped) {
+        remapped = remapClipToAvatar(avatarClip, findBodyShapeRoot(this.avatarRoot)) ?? undefined
+        if (remapped) this.remappedProfileClips.set(key, remapped)
+      }
+      if (remapped) {
+        this.profileAction = this.mixer.clipAction(remapped)
+        this.profileAction.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1)
+        this.profileAction.clampWhenFinished = !loop
+        this.profileAction.reset()
+        this.profileAction.enabled = true
+        this.profileAction.setEffectiveWeight(1)
+        this.profileAction.play()
+      }
+    }
+
+    if (!this.profileAction && !this.propAction) {
+      this.finishProfileEmoteStop()
+      return false
+    }
+
+    this.activeProfileEmoteKey = key
+    this.profileActive = true
+    this.applyProfileEmoteWeights()
+    this.mixer.update(0)
+    this.propMixer?.update(0)
+    return true
+  }
+
+  private applyProfileEmoteFromGltf(gltf: CachedGltf, loop: boolean, emoteKey?: string): boolean {
     if (!this.mixer || !this.avatarRoot || !this.attachParent) return false
 
     const key = emoteKey ?? gltf.animations.map((clip) => clip.name).join('|')
@@ -232,7 +342,9 @@ export class AvatarAnimations {
     const { avatarClip, propClip, propTrackTargets } = splitEmoteClips(gltf, this.avatarRoot)
     const needsPropScene = !!propClip || emoteNeedsPropScene(gltf, propTrackTargets)
     if (!avatarClip && !needsPropScene) {
-      console.warn(`[avatar] emote has no playable avatar or prop tracks (${gltf.animations.map((a) => a.name).join(', ')})`)
+      console.warn(
+        `[avatar] emote has no playable avatar or prop tracks (${gltf.animations.map((a) => a.name).join(', ')})`
+      )
       this.finishProfileEmoteStop()
       return false
     }
@@ -257,7 +369,11 @@ export class AvatarAnimations {
     }
 
     if (avatarClip) {
-      const remapped = remapClipToAvatar(avatarClip, findBodyShapeRoot(this.avatarRoot))
+      let remapped = this.remappedProfileClips.get(key)
+      if (!remapped) {
+        remapped = remapClipToAvatar(avatarClip, findBodyShapeRoot(this.avatarRoot)) ?? undefined
+        if (remapped) this.remappedProfileClips.set(key, remapped)
+      }
       if (remapped) {
         this.profileAction = this.mixer.clipAction(remapped)
         this.profileAction.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1)

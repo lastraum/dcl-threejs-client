@@ -133,6 +133,12 @@ export class World {
   private readonly vrmPeerSync = new VrmPeerSync()
   private playerMode = !useOrbitMode()
   private editorPreviewMode = false
+  /** AppController HUD — remote avatar compose progress toast. */
+  private remoteAvatarProgressHandler:
+    | ((progress: { total: number; loaded: number; pending: number }) => void)
+    | null = null
+  private lastRemoteProgressKey = ''
+  private remoteProgressReportAt = 0
   /** AppController — RestrictedActions teleportTo / changeRealm. */
   private navigateHandler:
     | ((target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>) => void)
@@ -218,6 +224,8 @@ export class World {
     if (this.comms === shellComms) {
       this.sceneCommsConnected = shellComms.isLiveKitConnected()
       if (opts?.isWorld != null) this.comms.pruneUnusedLiveKitForTarget({ isWorld: opts.isWorld })
+      // Handoff cleared chat handlers — re-bind 3D SocialService immediately.
+      this.social.rewireComms(this.comms)
       return
     }
     this.vrmPeerSync.detach()
@@ -227,6 +235,8 @@ export class World {
     unused.dispose()
 
     this.wireCommsHandlers()
+    // Shell cleared setChatHandler(null) on transfer — bind 3D chat NOW (not after long spawn).
+    this.social.rewireComms(this.comms)
     this.sceneCommsConnected = this.comms.isLiveKitConnected()
     if (opts?.isWorld != null) this.comms.pruneUnusedLiveKitForTarget({ isWorld: opts.isWorld })
     // Peers already in the room never re-fire join — push them into RemoteAvatarManager.
@@ -238,6 +248,28 @@ export class World {
       `Adopted landing LiveKit · live=${this.sceneCommsConnected} worldPeers=${counts.world} scenePeers=${counts.scene} island=${counts.island}`,
       { level: 'success', alsoConsole: true }
     )
+  }
+
+  /**
+   * Wire 3D scene chat as soon as we know the scene pointer (before spawn).
+   * Without this, handoff leaves chatHandler null for the whole hydration window and
+   * ChatPanel (world.social) never sees lines that 2D landing already showed.
+   */
+  bootstrapSocialChat(scene: ResolvedScene): void {
+    const address = this.session.getAddress()
+    const identity = this.session.getAuthIdentity()
+    if (!address || !identity) return
+    void this.social.attachSceneComms({
+      comms: this.comms,
+      sceneTab: {
+        key: scene.commsPointer,
+        label: scene.title || scene.commsPointer,
+        pointer: scene.commsPointer,
+        browserChatEnabled: scene.browserChatEnabled
+      },
+      contentUrl: scene.realm.contentUrl
+    })
+    console.log('[chat] 3d social bootstrapped ·', scene.commsPointer)
   }
 
   /**
@@ -282,8 +314,29 @@ export class World {
     this.syncVoiceRoom()
     this.wireVoiceSpatial()
     this.voice.setInPlay(true)
+    // Browser autoplay: unlock immediately; also re-arm on first canvas pointer (below).
+    void this.voice.unlockRemotePlayback('in-play')
+    this.armVoiceUnlockOnUserGesture()
     this.logAllRoomsAudio('in-play')
     console.log('[voice] unlocked · displayName=', dn ?? '(none)', '·', this.comms.describeLiveKitRooms())
+  }
+
+  /**
+   * Keep re-trying LiveKit startAudio + element.play() on user gestures until remotes
+   * actually play. A one-shot unlock often runs before tracks attach (autoplay then
+   * fails later outside the gesture turn → silent voice with activeSpeakers still on).
+   */
+  private voiceGestureUnlockBound = false
+  private armVoiceUnlockOnUserGesture(): void {
+    if (this.voiceGestureUnlockBound) return
+    this.voiceGestureUnlockBound = true
+    const onGesture = (): void => {
+      if (!this.voice.isInPlay()) return
+      if (!this.voice.needsPlaybackUnlock() && this.voice.getSnapshot().remoteCount > 0) return
+      void this.voice.unlockRemotePlayback('user-gesture')
+    }
+    window.addEventListener('pointerdown', onGesture, true)
+    window.addEventListener('keydown', onGesture, true)
   }
 
   /** Log scene/world/island remote track inventory (find mic on wrong room). */
@@ -593,8 +646,8 @@ export class World {
         })
         return true
       })
-      this.sceneScript.setChangeRealmHandler((request) => {
-        if (!confirmChangeRealm(request)) return false
+      this.sceneScript.setChangeRealmHandler(async (request) => {
+        if (!(await confirmChangeRealm(request))) return false
         const target = parseChangeRealmTarget(request.realm)
         if (!target) return false
         this.navigateHandler?.(target)
@@ -624,6 +677,9 @@ export class World {
         // Nudge worker play so scene systems can clear freeze and advance reset timers.
         this.sceneScript.nudgePlayAfterSceneTeleport()
         return ok
+      })
+      this.player.setModeFreezeEscapeHandler(() => {
+        this.sceneScript.requestForceLocomotionClear('wasd-mode-freeze-escape')
       })
       this.sceneScript.setTriggerEmoteHandler((request) => {
         const emote = request.predefinedEmote?.trim()
@@ -717,6 +773,8 @@ export class World {
       this.comms.seedArchipelagoSceneLocal(scene.spawn.x, scene.spawn.y, scene.spawn.z)
       this.comms.notifyHandlersOfCurrentPeers()
       this.syncVoiceRoom()
+      // Re-bind 3D chat after handoff cleared shell handlers (before spawn).
+      this.bootstrapSocialChat(scene)
       console.log(
         '[comms] REUSE landing LiveKit (no reconnect) ·',
         this.comms.describeLiveKitRooms()
@@ -1053,7 +1111,8 @@ export class World {
   primeRender(): void {
     this.ocean?.update(0, this.host.camera)
     updateFoliageWind(this.foliageWindElapsed)
-    this.lightManager.update(this.host.camera.position)
+    // Cull ECS lights by avatar (not camera) so freecam/orbit doesn't re-pick distant lights.
+    this.lightManager.update(this.player?.getWorldPosition() ?? this.host.camera.position)
     this.environment.update(0, this.sceneScript.view, this.sceneScript.readComponents)
     this.syncOutdoorLighting()
     this.player?.snapCamera()
@@ -1091,7 +1150,7 @@ export class World {
           this.foliageWindElapsed += delta
           updateFoliageWind(this.foliageWindElapsed)
         }
-        this.lightManager.update(this.host.camera.position)
+        this.lightManager.update(this.player?.getWorldPosition() ?? this.host.camera.position)
         if (!skipRemoteAvatars()) {
           this.remoteAvatars?.setCameraPosition(this.host.camera.position)
         }
@@ -1153,6 +1212,7 @@ export class World {
         if (!skipRemoteAvatars()) {
           this.vrmPeerSync.gcStaleFetches()
           this.remoteAvatars?.update(delta)
+          this.reportRemoteAvatarProgress()
         }
         // Spatial voice reparents as peer poses land (cheap map walk).
         this.voice.tickSpatial()
@@ -1552,14 +1612,9 @@ export class World {
         this.physics.isWorldBakedStatic(desc.entity) ||
         this.physics.needsWorldBakedPoseRecook(desc)
       ) {
-        const upgraded = this.physics.syncStaticColliders([desc], {
-          cookBudget: 1,
-          freezeRemoval: true,
-          forceRecookOnPoseChange: true,
-          geometryCache: true
-        })
-        if (upgraded.geometryChanged) this.scheduleStaticGeometryWarm()
-        else this.colliderCookQueue.add(desc.entity)
+        // Do not force-recook here — syncStaticColliders remove→add leaves a hole mid-walk.
+        // Queue for budgeted drain; world-baked pose drift keeps the live actor until boot force.
+        this.colliderCookQueue.add(desc.entity)
         continue
       }
       if (!this.physics.hasStaticActor(desc.entity)) {
@@ -1997,6 +2052,7 @@ export class World {
       if (loadingPass || !this.physics.hasStaticActor(physId)) {
         this.sceneScript.flushSceneGraphMatrices()
         this.sceneScript.refreshColliderBeforeCook(physId)
+        // Boot / first cook only — runtime path with a live actor never pre-invalidates here.
         this.physics.invalidateStaticCollider(physId)
       } else {
         this.sceneScript.refreshColliderPose(physId)
@@ -2396,6 +2452,27 @@ export class World {
     return this.remoteAvatars
   }
 
+  /** HUD toast while many remotes compose (community-style banner). */
+  setRemoteAvatarProgressHandler(
+    handler: ((progress: { total: number; loaded: number; pending: number }) => void) | null
+  ): void {
+    this.remoteAvatarProgressHandler = handler
+    this.lastRemoteProgressKey = ''
+  }
+
+  private reportRemoteAvatarProgress(): void {
+    if (!this.remoteAvatarProgressHandler || !this.remoteAvatars) return
+    const now = performance.now()
+    // Throttle UI updates — compose finishes are bursty.
+    if (now - this.remoteProgressReportAt < 250) return
+    this.remoteProgressReportAt = now
+    const p = this.remoteAvatars.getComposeProgress()
+    const key = `${p.total}:${p.loaded}:${p.pending}`
+    if (key === this.lastRemoteProgressKey) return
+    this.lastRemoteProgressKey = key
+    this.remoteAvatarProgressHandler(p)
+  }
+
   canPlayVoluntaryEmote(): boolean {
     return this.player?.canPlayVoluntaryEmote() ?? true
   }
@@ -2409,17 +2486,40 @@ export class World {
     }
   }
 
+  /** Debounce scene double-fires (watering plant / sit often RPC twice same frame). */
+  private lastSceneEmoteKey = ''
+  private lastSceneEmoteAt = 0
+  private static readonly SCENE_EMOTE_DEBOUNCE_MS = 450
+
   playLocalEmote(
     emoteRef: string,
     options?: { loop?: boolean; broadcast?: boolean; /** Scene triggerEmote / AvatarEmoteCommand — bypass disableEmote. */ sceneTriggered?: boolean }
   ): void {
     if (!this.playerMode || !this.player) return
     if (!options?.sceneTriggered && !this.player.canPlayVoluntaryEmote()) return
-    void this.player.playEmote(emoteRef, { loop: options?.loop }).then((resolved) => {
-      if (resolved && options?.broadcast !== false) {
-        void this.comms.broadcastEmote(resolved.urn)
+
+    const key = emoteRef.trim().toLowerCase()
+    if (options?.sceneTriggered && key) {
+      const now = performance.now()
+      if (key === this.lastSceneEmoteKey && now - this.lastSceneEmoteAt < World.SCENE_EMOTE_DEBOUNCE_MS) {
+        return
       }
-    })
+      this.lastSceneEmoteKey = key
+      this.lastSceneEmoteAt = now
+    }
+
+    // Pause remote avatar composes while we load/bind the emote GLB (main-thread heavy).
+    this.remoteAvatars?.setLocalEmoteLoadBusy(true)
+    void this.player
+      .playEmote(emoteRef, { loop: options?.loop })
+      .then((resolved) => {
+        if (resolved && options?.broadcast !== false) {
+          void this.comms.broadcastEmote(resolved.urn)
+        }
+      })
+      .finally(() => {
+        this.remoteAvatars?.setLocalEmoteLoadBusy(false)
+      })
   }
 
   /** Reload local avatar after backpack equip / profile save (session profile, not stale Catalyst). */

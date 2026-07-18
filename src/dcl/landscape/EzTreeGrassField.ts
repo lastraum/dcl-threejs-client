@@ -311,7 +311,8 @@ export async function buildEzTreeGrassField(
   const grassMesh = new THREE.InstancedMesh(sourceMesh.geometry, grassMaterial, instances.length)
   grassMesh.name = 'landscape:ez-tree-grass'
   grassMesh.receiveShadow = true
-  grassMesh.castShadow = true
+  // Instanced grass must not cast — thousands of blades into the shadow map.
+  grassMesh.castShadow = false
   grassMesh.count = instances.length
 
   const dummy = new THREE.Object3D()

@@ -418,6 +418,63 @@ export class SocialMobileNotifications {
     this.showBanner(banner, `msg:${line.id}`)
   }
 
+  /**
+   * In-world system toast (same card as community announcements).
+   * Use a stable `id` to replace an existing banner (e.g. remote avatar progress).
+   */
+  pushSystemToast(opts: {
+    id: string
+    title: string
+    sub: string
+    appName?: string
+    /** 0 = stay until replaced/dismissed (progress toasts). */
+    dismissMs?: number
+  }): void {
+    const existing = this.banners.find((b) => b.id === opts.id)
+    if (existing) {
+      clearTimeout(existing.dismissTimer)
+      const titleEl = existing.el.querySelector('.social-mobile-notif__title')
+      const subEl = existing.el.querySelector('.social-mobile-notif__sub')
+      if (titleEl) titleEl.textContent = opts.title
+      if (subEl) subEl.textContent = opts.sub
+      const dismissMs = opts.dismissMs ?? AUTO_DISMISS_MS
+      if (dismissMs > 0) {
+        existing.dismissTimer = window.setTimeout(() => this.dismissBanner(existing.el), dismissMs)
+      } else {
+        existing.dismissTimer = 0
+      }
+      return
+    }
+
+    const banner = document.createElement('button')
+    banner.type = 'button'
+    banner.className = 'social-mobile-notif'
+    banner.innerHTML = `
+      <div class="social-mobile-notif__card">
+        <div class="social-mobile-notif__header">
+          <span class="social-mobile-notif__app-icon" aria-hidden="true">D</span>
+          <span class="social-mobile-notif__app-name">${escapeHtml(opts.appName ?? 'DECENTRALAND')}</span>
+          <span class="social-mobile-notif__time">now</span>
+        </div>
+        <div class="social-mobile-notif__body">
+          <span class="social-mobile-notif__avatar"><span class="social-mobile-notif__avatar-fallback" aria-hidden="true">👤</span></span>
+          <span class="social-mobile-notif__text">
+            <span class="social-mobile-notif__title">${escapeHtml(opts.title)}</span>
+            <span class="social-mobile-notif__sub">${escapeHtml(opts.sub)}</span>
+          </span>
+        </div>
+      </div>
+    `
+    banner.addEventListener('click', () => this.dismissBanner(banner))
+    this.showBanner(banner, opts.id, opts.dismissMs ?? AUTO_DISMISS_MS)
+  }
+
+  /** Remove a system toast by id (e.g. when remote avatar load finishes). */
+  dismissSystemToast(id: string): void {
+    const existing = this.banners.find((b) => b.id === id)
+    if (existing) this.dismissBanner(existing.el)
+  }
+
   private showBanner(el: HTMLElement, id: string, dismissMs = AUTO_DISMISS_MS): void {
     while (this.banners.length >= MAX_VISIBLE) {
       const oldest = this.banners.shift()
@@ -433,9 +490,12 @@ export class SocialMobileNotifications {
       })
     })
 
-    const dismissTimer = window.setTimeout(() => {
-      this.dismissBanner(el)
-    }, dismissMs)
+    let dismissTimer = 0
+    if (dismissMs > 0) {
+      dismissTimer = window.setTimeout(() => {
+        this.dismissBanner(el)
+      }, dismissMs)
+    }
 
     this.banners.push({ id, el, dismissTimer })
   }

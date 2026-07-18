@@ -15,6 +15,7 @@ import { updateNameTagAnchor } from './headAnchor'
 import { resolveAvatarProfile } from './peerApi'
 import { resolveProfileEmote, loadResolvedProfileEmote, isSceneEmoteUrn, type ResolvedProfileEmote } from './profileEmotes'
 import type { AssetCache } from '../rendering/AssetCache'
+import { yieldToNextFrame } from '../rendering/mainThreadYield'
 import type { ComposeOptions } from './AvatarComposer'
 import type { BodyShape } from './types'
 import { VrmAvatar } from './vrm/VrmAvatar'
@@ -222,6 +223,10 @@ export class LocalAvatar {
     }
 
     try {
+      // Yield so a frame paints before/after cold emote GLB fetch/parse (sit / watering freezes).
+      await yieldToNextFrame()
+      if (seq !== this.emotePlaySeq) return null
+
       const cached = this.assetCache
         ? await loadResolvedProfileEmote(this.assetCache, resolved)
         : null
@@ -230,6 +235,9 @@ export class LocalAvatar {
         console.warn(`[avatar] emote has no animation clip: ${resolved.url}`)
         return null
       }
+
+      await yieldToNextFrame()
+      if (seq !== this.emotePlaySeq) return null
 
       const loop = options.loop ?? resolved.loop
       const emoteKey = resolved.urn.trim().toLowerCase()
@@ -263,7 +271,15 @@ export class LocalAvatar {
       }
 
       if (!this.animations) return null
-      if (this.animations.playProfileEmoteFromGltf(cached, loop, emoteKey)) {
+      // Async bind: prop SkeletonUtils clone + retarget yields between steps (watering/sit).
+      const ok = await this.animations.playProfileEmoteFromGltfAsync(
+        cached,
+        loop,
+        emoteKey,
+        () => seq !== this.emotePlaySeq
+      )
+      if (seq !== this.emotePlaySeq) return null
+      if (ok) {
         this.activeEmoteUrn = emoteKey
         return resolved
       }

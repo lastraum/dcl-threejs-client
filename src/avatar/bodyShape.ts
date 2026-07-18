@@ -32,12 +32,29 @@ function isHandsHidden(wearables: WearableDefinition[]): boolean {
   })
 }
 
+export type BodyShapeVisibilityOptions = {
+  /**
+   * Categories that actually attached a mesh this compose. When set, hide basemesh for a
+   * category only if it is in the set (or skin) — so a failed feet attach keeps base feet.
+   */
+  attachedCategories?: ReadonlySet<WearableCategory>
+}
+
 /** Hide body_shape basemesh parts when wearables cover them — ported from Forge `body.ts`. */
-export function applyBodyShapeVisibility(bodyRoot: THREE.Object3D, wearables: WearableDefinition[]): void {
+export function applyBodyShapeVisibility(
+  bodyRoot: THREE.Object3D,
+  wearables: WearableDefinition[],
+  options: BodyShapeVisibilityOptions = {}
+): void {
   const hasSkin = wearables.some((w) => w.data.category === 'skin')
-  const hideUpper = hasSkin || isHiddenCategory(wearables, 'upper_body')
-  const hideLower = hasSkin || isHiddenCategory(wearables, 'lower_body')
-  const hideFeet = hasSkin || isHiddenCategory(wearables, 'feet')
+  const attached = options.attachedCategories
+  const covered = (cat: WearableCategory) =>
+    hasSkin ||
+    (attached ? attached.has(cat) || attached.has('skin') : isHiddenCategory(wearables, cat))
+
+  const hideUpper = covered('upper_body')
+  const hideLower = covered('lower_body')
+  const hideFeet = covered('feet')
   const hideHead = hasSkin || isHiddenCategory(wearables, 'head')
   const hideHands = isHandsHidden(wearables)
 

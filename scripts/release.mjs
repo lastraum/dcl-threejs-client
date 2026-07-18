@@ -53,9 +53,10 @@ if (branch !== 'main') {
   process.exit(1)
 }
 
-const dirty = runSilent('git status --porcelain')
+// Ignore untracked local junk (tmp/, editor dumps) — only tracked diffs block a cut.
+const dirty = runSilent('git status --porcelain -uno')
 if (dirty) {
-  console.error('Working tree is not clean. Commit or stash changes first.')
+  console.error('Working tree has tracked changes. Commit or stash first.')
   process.exit(1)
 }
 

@@ -277,8 +277,25 @@ export class ClientShell {
   hide(): void {
     this.root.hidden = true
     this.setMobileDrawerOpen(false)
-    this.nearbyVoicePanel.hide()
+    this.dismissFloatingPanels()
     this.applyMobileLayout()
+  }
+
+  /** Close flyouts (chat, skybox, voice, emote, help) — used when hiding client HUD (U). */
+  dismissFloatingPanels(): void {
+    this.skyboxPanel.hide()
+    this.buttons.get('skybox')?.setActive(false)
+    this.nearbyVoicePanel.hide()
+    this.buttons.get('nearby-voice')?.setActive(false)
+    this.emoteWheel.hide()
+    this.buttons.get('emotes')?.setActive(false)
+    this.profilePopup.hide()
+    this.debugPanel.hide()
+    this.buttons.get('help')?.setActive(false)
+    this.devProgressPanel?.hide()
+    this.buttons.get('dev')?.setActive(false)
+    this.chatPanel?.hide()
+    this.buttons.get('chat')?.setActive(false)
   }
 
   attachChatPanel(panel: ChatPanel, social: SocialService): void {

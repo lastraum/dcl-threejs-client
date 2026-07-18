@@ -13,6 +13,8 @@ import { readSceneDevQueryKey } from '../environment/fftOcean/readFftOceanOverri
 import { disconnectAll } from '../network/SessionConnections'
 import { SessionIdentity } from '../network/SessionIdentity'
 import { ClientShell } from './ui/shell/ClientShell'
+import { isTextInputFocused } from './ui/textInputFocus'
+import { isNameTagsSceneLocked, toggleUserNameTagsVisible } from './ui/nameTagVisibility'
 import { clientDebugLog } from './debug/ClientDebugLog'
 import { DebugPanel } from './ui/DebugPanel'
 import { DevProgressPanel } from './ui/DevProgressPanel'
@@ -118,6 +120,11 @@ export class AppController {
   private sceneBanActive = false
   private handlingSceneBan = false
   private sceneBanDebugUnsub: (() => void) | null = null
+  /**
+   * Explorer U — client chrome (sidebar, minimap, chat, mobile HUD).
+   * Independent of scene UI; reset when leaving play.
+   */
+  private clientHudVisible = true
 
   async start(container: HTMLElement): Promise<void> {
     if (this.running) return
@@ -125,6 +132,7 @@ export class AppController {
     this.container = container
 
     window.addEventListener('popstate', this.onPopState)
+    window.addEventListener('keydown', this.onPlayChromeHotkey, true)
     this.wireSceneBanDebug()
     // Toast + profile "What's new" open the same Dev Progress → Shipped view.
     this.ensureDevProgressPanel()
@@ -1675,6 +1683,7 @@ export class AppController {
 
   private hidePlayChrome(): void {
     document.body.classList.remove('client-in-world')
+    this.resetClientHudVisible()
     this.shell?.hide()
     this.worldLocationCard?.setVisible(false)
     this.minimap?.setVisible(false)
@@ -1685,6 +1694,9 @@ export class AppController {
 
   private revealPlayChrome(): void {
     document.body.classList.add('client-in-world')
+    // Fresh enter always shows chrome (U hide is session-in-play only).
+    this.clientHudVisible = true
+    document.body.classList.remove('client-hud-hidden')
     this.shell?.show()
     this.worldLocationCard?.setVisible(true)
     if (this.locationMapStack) this.locationMapStack.hidden = false
@@ -1694,6 +1706,88 @@ export class AppController {
     }
     this.mobileHud?.setShellVisible(true)
     this.world?.setSceneUiVisible(true)
+  }
+
+  private resetClientHudVisible(): void {
+    this.clientHudVisible = true
+    document.body.classList.remove('client-hud-hidden')
+  }
+
+  /**
+   * Explorer shortcuts while in 3D play:
+   * - U — show/hide all UI (client chrome + scene UI)
+   * - N — show/hide all name tags (local, remotes, AvatarShapes)
+   */
+  private readonly onPlayChromeHotkey = (e: KeyboardEvent): void => {
+    if (!this.running) return
+    if (!document.body.classList.contains('client-in-world')) return
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+    if (isTextInputFocused()) return
+
+    if (e.code === 'KeyU') {
+      e.preventDefault()
+      e.stopPropagation()
+      this.toggleClientHud()
+      return
+    }
+    if (e.code === 'KeyN') {
+      e.preventDefault()
+      e.stopPropagation()
+      this.toggleNameTagsHotkey()
+    }
+  }
+
+  /** Explorer [U] — toggle ALL UI: client chrome + scene UI + open overlays. */
+  private toggleClientHud(): void {
+    this.clientHudVisible = !this.clientHudVisible
+    document.body.classList.toggle('client-hud-hidden', !this.clientHudVisible)
+
+    if (!this.clientHudVisible) {
+      this.shell?.hide()
+      this.chatPanel?.hide()
+      this.worldLocationCard?.setVisible(false)
+      this.minimap?.setVisible(false)
+      if (this.locationMapStack) this.locationMapStack.hidden = true
+      this.mobileHud?.setShellVisible(false)
+      this.settingsOverlay?.hide()
+      this.preferencesPanel?.hide()
+      this.world?.setSceneUiVisible(false)
+      return
+    }
+
+    if (!document.body.classList.contains('client-in-world')) return
+    this.shell?.show()
+    this.worldLocationCard?.setVisible(true)
+    if (this.locationMapStack) this.locationMapStack.hidden = false
+    if (!this.worldLocationCard?.isMapCollapsed()) {
+      this.minimap?.setVisible(true)
+    }
+    this.mobileHud?.setShellVisible(true)
+    this.world?.setSceneUiVisible(true)
+  }
+
+  /**
+   * Explorer [N] — toggle every overhead name tag: local, remotes, AvatarShape NPCs.
+   * Scene policy (featureToggles.nameTags / ?nameTags=) locks like skybox fixedTime.
+   */
+  private toggleNameTagsHotkey(): void {
+    if (isNameTagsSceneLocked()) {
+      clientDebugLog.log('client', 'Name tags locked by scene.json / ?nameTags= — N ignored', {
+        alsoConsole: true,
+        throttleMs: 4_000
+      })
+      return
+    }
+    const visible = toggleUserNameTagsVisible()
+    if (visible === null) return
+    this.world?.applyNameTagsVisibility()
+    clientDebugLog.log(
+      'client',
+      visible
+        ? 'Name tags shown (N) — local + remotes + AvatarShapes'
+        : 'Name tags hidden (N) — local + remotes + AvatarShapes',
+      { alsoConsole: false, throttleMs: 500 }
+    )
   }
 
   private unbindMinimapLayout(): void {

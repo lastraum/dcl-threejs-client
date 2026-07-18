@@ -20,6 +20,7 @@ import { SocialService } from '../../../social/SocialService'
 import { isChatImageLine, type ChatChannelChoice, type ChatLine } from '../../../social/types'
 import { sceneChatRailIcon, SIDEBAR_ICONS } from '../shell/icons'
 import type { SocialChatController, SocialChatStatus } from './SocialChatController'
+import { wireChatImageExpand } from './chatImageLightbox'
 
 const SOCIAL_CHAT_MOBILE_MQ = '(max-width: 767px)'
 
@@ -973,6 +974,7 @@ export class SocialChatDock {
       img.loading = 'lazy'
       img.decoding = 'async'
       if (line.width > 0) img.width = Math.min(line.width, 280)
+      wireChatImageExpand(img, line.objectUrl)
       body.appendChild(img)
     } else {
       const selfTargets = selfMentionTokens(localAddress, local.displayName)

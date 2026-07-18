@@ -55,9 +55,10 @@ function syncNameTag(entry: AvatarEntry, identity: ProfileIdentity): void {
       textColor: identity.nameColor,
       claimed: identity.hasClaimedName
     })
-    return
+  } else {
+    applyIdentity(entry.nameTag, identity)
   }
-  applyIdentity(entry.nameTag, identity)
+  entry.nameTag.object.visible = true
 }
 
 function playAvatarShapeEmote(entry: AvatarEntry, emoteRef: string, loop: boolean): void {
@@ -264,8 +265,28 @@ export class AvatarShapeBridge {
   }
 
   update(delta: number): void {
+    const tagsOn = areSceneNameTagsVisible()
     for (const entry of this.avatars.values()) {
       entry.avatar.update(delta)
+      // N-key + scene policy — keep AvatarShape NPC tags in lockstep every frame.
+      if (!tagsOn || !identityShowsNameTag(entry.identity)) {
+        if (entry.nameTag) {
+          entry.nameTag.object.visible = false
+        }
+        continue
+      }
+      if (!entry.nameTag) {
+        syncNameTag(entry, entry.identity)
+      } else {
+        entry.nameTag.object.visible = true
+      }
+    }
+  }
+
+  /** Force-refresh all AvatarShape overhead labels (Explorer [N]). */
+  applyNameTagsVisibility(): void {
+    for (const entry of this.avatars.values()) {
+      syncNameTag(entry, entry.identity)
     }
   }
 

@@ -9,6 +9,9 @@
  *
  * URL (wins for local QA):
  *   ?nameTags=disabled | ?nameTags=0 | ?nameTags=enabled | ?nameTags=1
+ *
+ * Runtime: when policy allows tags, player can still toggle with N (session).
+ * When policy disables tags, N cannot re-enable (like skybox fixedTime lock).
  */
 import type { SceneFeatureToggle, SceneMetadata } from './types'
 

@@ -120,6 +120,13 @@ export class NameTag {
   }
 
   static attach(parent: THREE.Object3D, text: string, options: NameTagOptions): NameTag {
+    // Drop any leftover CSS2D pills on this anchor (reload / N-toggle races).
+    for (const child of [...parent.children]) {
+      if (child instanceof CSS2DObject) {
+        child.removeFromParent()
+        child.element?.remove()
+      }
+    }
     const tag = new NameTag(text, options)
     parent.add(tag.object)
     return tag
@@ -146,9 +153,12 @@ export class NameTag {
     this.applyStyle()
   }
 
-  /** Show chat inside the pill (under the name) for a short duration. */
+  /**
+   * Show chat under the name for a short duration.
+   * Message body only — never re-print the display name (header already has it).
+   */
   showChat(text: string, durationMs = NAME_TAG_CHAT_DISPLAY_MS): void {
-    const trimmed = text.trim()
+    const trimmed = stripDuplicateNameFromChat(text, this.label)
     if (!trimmed) {
       this.clearChat()
       return
@@ -200,6 +210,8 @@ export class NameTag {
     this.clearChat()
     this.setVoiceLevel(0)
     this.object.removeFromParent()
+    // CSS2DRenderer keeps the node in its overlay layer until removed explicitly.
+    this.rootEl.remove()
   }
 
   private wireInteraction(): void {
@@ -223,4 +235,28 @@ export class NameTag {
   private applyStyle(): void {
     this.textEl.style.color = this.style.textColor
   }
+}
+
+/**
+ * Overhead pill already shows the display name in the header.
+ * Strip a leading name line / "Name:" prefix so chat doesn't print the name twice.
+ */
+export function stripDuplicateNameFromChat(text: string, displayName: string): string {
+  let trimmed = text.trim()
+  if (!trimmed) return ''
+  const name = displayName.trim()
+  if (!name) return trimmed
+
+  // "Lastraum\n@Guest-fudge …"
+  const lines = trimmed.split(/\r?\n/)
+  if (lines.length > 1 && lines[0]!.trim().toLowerCase() === name.toLowerCase()) {
+    trimmed = lines.slice(1).join('\n').trim()
+  }
+
+  // "Lastraum: message" / "Lastraum - message"
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const prefix = new RegExp(`^${escaped}\\s*[:\\-]\\s+`, 'i')
+  trimmed = trimmed.replace(prefix, '').trim()
+
+  return trimmed
 }

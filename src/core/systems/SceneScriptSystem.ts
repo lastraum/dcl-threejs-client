@@ -356,6 +356,11 @@ export class SceneScriptSystem {
     this.sceneUiBridge?.setVisible(visible)
   }
 
+  /** Explorer [N] — refresh AvatarShape NPC overhead name tags. */
+  applyAvatarShapeNameTagsVisibility(): void {
+    this.avatarShapes?.applyNameTagsVisibility()
+  }
+
   /** Loading-screen progress while the worker compiles the scene bundle (main thread is free). */
   setBootProgressReporter(fn: ((msg: string) => void) | null): void {
     this.bootProgressReporter = fn

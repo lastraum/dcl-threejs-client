@@ -90,7 +90,15 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
     name: 'Overhead name tags',
     status: 'render',
     category: 'client-ui',
-    notes: 'CSS2D pills; hide via scene.json featureToggles.nameTags or ?nameTags=disabled'
+    notes:
+      'CSS2D pills — local + remotes + AvatarShapes; N toggles all; scene.json featureToggles.nameTags / ?nameTags= locks off'
+  },
+  {
+    id: 'ui:hide-hud-u',
+    name: 'Hide all UI (U)',
+    status: 'render',
+    category: 'client-ui',
+    notes: 'Explorer U — client chrome + scene UI + overlays'
   },
   { id: 'ui:emote-wheel', name: 'Emote wheel (B)', status: 'render', category: 'client-ui', notes: 'Profile + bundled emotes' },
   { id: 'ui:location-card', name: 'Location card', status: 'render', category: 'client-ui', notes: 'Top-left pill — scene name + Genesis parcel coords; width matches minimap when present' },

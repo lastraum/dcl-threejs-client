@@ -20,18 +20,45 @@ function getLoader(): GLTFLoader {
   return sharedLoader
 }
 
+/**
+ * Skinned VRM/ODK meshes often cull incorrectly after mixer/pivot (bind-pose
+ * bounding spheres). Force double-sided + no frustum cull so equip is not blank.
+ */
+export function prepareCustomAvatarScene(scene: THREE.Object3D): void {
+  scene.visible = true
+  scene.traverse((obj) => {
+    obj.visible = true
+    if (!(obj instanceof THREE.Mesh)) return
+    obj.castShadow = true
+    obj.receiveShadow = true
+    obj.frustumCulled = false
+    if (obj instanceof THREE.SkinnedMesh) {
+      obj.skeleton?.update()
+      obj.geometry?.computeBoundingSphere()
+      obj.geometry?.computeBoundingBox()
+    }
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
+    for (const mat of materials) {
+      if (!mat) continue
+      mat.visible = true
+      mat.side = THREE.DoubleSide
+      // MToon / standard — avoid fully transparent leftover flags from export tools.
+      if ('transparent' in mat && (mat as THREE.Material & { opacity?: number }).opacity === 0) {
+        ;(mat as THREE.Material & { opacity: number }).opacity = 1
+        mat.transparent = false
+      }
+      mat.needsUpdate = true
+    }
+  })
+}
+
 function cleanupVrmScene(scene: THREE.Object3D): void {
   for (const node of [...scene.children]) {
     if (node.type === 'VRMExpression' || node.name === 'VRMHumanoidRig' || node.name === 'secondary') {
       node.removeFromParent()
     }
   }
-  scene.traverse((obj) => {
-    if (obj instanceof THREE.Mesh) {
-      obj.castShadow = true
-      obj.receiveShadow = true
-    }
-  })
+  prepareCustomAvatarScene(scene)
 }
 
 function measureHeight(scene: THREE.Object3D): number {

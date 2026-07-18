@@ -19,6 +19,7 @@ import { sceneChatRailIcon } from '../shell/icons'
 import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import { isAllowedChatImageFile } from '../../../social/prepareChatImage'
 import { isChatImageLine, type ChatChannelChoice, type ChatLine } from '../../../social/types'
+import { wireChatImageExpand } from './chatImageLightbox'
 
 export type ChatPanelOptions = {
   social: SocialService
@@ -609,6 +610,7 @@ export class ChatPanel {
       img.loading = 'lazy'
       img.decoding = 'async'
       if (line.width > 0) img.width = Math.min(line.width, 280)
+      wireChatImageExpand(img, line.objectUrl)
       body.appendChild(img)
     } else {
       const selfTargets = selfMentionTokens(localAddress, local.displayName)

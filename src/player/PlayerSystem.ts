@@ -373,6 +373,27 @@ export class PlayerSystem {
     this.nameTag?.dispose()
     this.nameTag = null
     await this.loadAvatar(onProgress, profileOverride)
+    this.forceRefreshBodyVisibility()
+  }
+
+  /**
+   * After mesh swap (custom VRM equip), re-apply FPV / modifier visibility so the
+   * new model is not left invisible if a prior hide stuck on the old root.
+   */
+  forceRefreshBodyVisibility(): void {
+    if (!this.avatar) return
+    const fpv = this.isFirstPerson()
+    this.avatar.setBodyVisible(!this.modifierHidden && !fpv)
+    this.syncNameTag()
+  }
+
+  /** Force-refresh local overhead label (Explorer [N] — with remotes + AvatarShapes). */
+  applyNameTagsVisibility(): void {
+    this.syncNameTag()
+    if (this.nameTag) {
+      this.nameTag.object.visible =
+        !this.modifierHidden && areSceneNameTagsVisible() && !this.isFirstPerson()
+    }
   }
 
   setAssetCache(cache: AssetCache, peerUrl?: string): void {

@@ -22,8 +22,9 @@ import { VrmAvatar } from './vrm/VrmAvatar'
 import { VrmLocomotionAnimations } from './vrm/VrmLocomotionAnimations'
 import { retargetGltfClipToVrm } from './vrm/mixamoRetarget'
 import { applyVrmPivotOffset } from './vrm/vrmFeetAlign'
-import { getEquippedCustomAvatar } from './vrm/vrmEquipStorage'
+import { getEquippedCustomAvatar, type EquippedCustomAvatar } from './vrm/vrmEquipStorage'
 import { getVrmLibraryEntry, loadVrmLibraryBytes } from './vrm/VrmLibrary'
+import { prepareCustomAvatarScene } from './vrm/VrmLoader'
 import { OdkAvatar } from './odk/OdkAvatar'
 import { OdkLocomotionAnimations } from './odk/OdkLocomotionAnimations'
 import { applyOdkRestCorrection, retargetGltfClipToOdk } from './odk/odkRetarget'
@@ -77,9 +78,12 @@ export class LocalAvatar {
     this.identity = identityFromAvatarProfile(profile, options.profileId ?? profile.address)
     this.bodyShape = profile.bodyShape
 
-    const profileAddress =
-      options.profileId ?? profile.address ?? getActiveProfileAddress()
-    const equipped = getEquippedCustomAvatar(profileAddress)
+    // Equip prefs are keyed by wallet — try session/profile/storage keys (mismatch → DCL fallback).
+    const equipped = resolveEquippedCustomAvatar(
+      options.profileId,
+      profile.address,
+      getActiveProfileAddress()
+    )
     if (equipped) {
       const bytes = await loadVrmLibraryBytes(equipped.contentHash)
       if (bytes) {
@@ -91,7 +95,9 @@ export class LocalAvatar {
             this.renderMode = 'odk'
             this.model = this.odkAvatar.root
             this.pivot.add(this.model)
+            prepareCustomAvatarScene(this.model)
             applyOdkPivotOffset(this.pivot, this.model)
+            prepareCustomAvatarScene(this.model)
 
             const odkBindPoseOnly =
               typeof window !== 'undefined' &&
@@ -115,6 +121,7 @@ export class LocalAvatar {
             this.model = this.vrmAvatar.root
             this.pivot.add(this.model)
             this.vrmAvatar.vrm.humanoid.autoUpdateHumanBones = false
+            prepareCustomAvatarScene(this.model)
 
             this.vrmLocomotion = new VrmLocomotionAnimations()
             try {
@@ -122,15 +129,19 @@ export class LocalAvatar {
               applyVrmPivotOffset(this.pivot, this.vrmAvatar.vrm, this.model, {
                 measureActivePose: true
               })
+              prepareCustomAvatarScene(this.model)
               console.info('[avatar] custom VRM equipped — locomotion active')
             } catch (err) {
               console.warn('[avatar] VRM locomotion bind failed — bind pose only', err)
               this.vrmLocomotion.dispose()
               this.vrmLocomotion = null
               applyVrmPivotOffset(this.pivot, this.vrmAvatar.vrm, this.model)
+              prepareCustomAvatarScene(this.model)
             }
           }
 
+          this.model.visible = true
+          this.pivot.visible = true
           updateNameTagAnchor(this.nameTagAnchor, this.model)
           this.ensureGlider()
           return this.identity
@@ -141,6 +152,11 @@ export class LocalAvatar {
           this.odkAvatar?.dispose()
           this.odkAvatar = null
         }
+      } else {
+        console.warn(
+          '[avatar] equipped custom avatar hash has no library bytes — falling back to DCL',
+          equipped.contentHash.slice(0, 12)
+        )
       }
     }
 
@@ -381,6 +397,20 @@ export class LocalAvatar {
   private ensureGlider(): void {
     void this.glider.attach(this.pivot)
   }
+}
+
+function resolveEquippedCustomAvatar(
+  ...addresses: Array<string | null | undefined>
+): EquippedCustomAvatar | null {
+  const seen = new Set<string>()
+  for (const raw of addresses) {
+    const key = raw?.trim().toLowerCase()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    const equipped = getEquippedCustomAvatar(key)
+    if (equipped) return equipped
+  }
+  return null
 }
 
 function normalizeProfileAddress(value: string): string | undefined {

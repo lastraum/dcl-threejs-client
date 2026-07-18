@@ -66,7 +66,11 @@ export function profileDeployFingerprint(profile: AvatarProfile): string {
     .sort()
     .join('|')
   const colors = `${profile.skin}:${profile.hair}:${profile.eyes}`.toLowerCase()
-  return `${profile.bodyShape}::${colors}::${wearables}||${emotes}`
+  const forceRender = (profile.forceRender ?? [])
+    .map((c) => c.toLowerCase())
+    .sort()
+    .join('|')
+  return `${profile.bodyShape}::${colors}::${wearables}||${emotes}||${forceRender}`
 }
 
 function isOffChainWearable(urn: string): boolean {

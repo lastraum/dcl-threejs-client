@@ -2280,7 +2280,9 @@ export class World {
   /** Reload local avatar after custom VRM equip / unequip from backpack. */
   async reloadLocalAvatar(): Promise<void> {
     if (!this.playerMode || !this.player) return
-    await this.player.reloadAvatar()
+    // Session profile is authoritative right after a local deploy — the lambdas can
+    // lag propagation and would rebuild the avatar without the just-equipped items.
+    await this.player.reloadAvatar(undefined, this.session.getProfile() ?? undefined)
     await this.vrmPeerSync.onLocalEquipChanged(this.session.getAddress())
   }
 

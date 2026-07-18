@@ -26,6 +26,13 @@ export type ComposeOptions = {
   profileId?: string
   bodyShape?: BodyShape
   assetCache?: AssetCache | null
+  /**
+   * Authoritative profile to compose from, skipping the lambdas fetch. Used right
+   * after a local Catalyst deploy — the lambdas can lag propagation, so refetching
+   * rebuilds the avatar from the PRE-deploy profile (newly equipped items vanish
+   * in-world until a manual reload).
+   */
+  profile?: AvatarProfile
 }
 
 /** Serializes composes — global wearable texture mappings are not re-entrant. */

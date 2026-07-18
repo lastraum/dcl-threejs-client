@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { avatarOptionsFromUrl, LocalAvatar, mirrorAvatarNameOverride, type PlayEmoteOptions } from '../avatar/LocalAvatar'
 import type { ProfileIdentity } from '../avatar/displayName'
+import type { AvatarProfile } from '../avatar/types'
 import type { MirrorComponents } from '../bridge/mirrorComponents'
 import { SDK_RESERVED } from '../bridge/reservedEntities'
 import { ReservedEntitiesSync, type EntityPose } from '../bridge/ReservedEntitiesSync'
@@ -248,11 +249,23 @@ export class PlayerSystem {
     this.virtualCamera = bridge
   }
 
-  async loadAvatar(onProgress?: (msg: string) => void): Promise<void> {
+  async loadAvatar(
+    onProgress?: (msg: string) => void,
+    profileOverride?: AvatarProfile
+  ): Promise<void> {
     onProgress?.('Loading avatar…')
     const avatarOptions = avatarOptionsFromUrl()
+    // Only trust the override when it belongs to the profile being rendered —
+    // a ?profile= URL override must still fetch that other profile.
+    const overrideApplies =
+      !!profileOverride &&
+      (!avatarOptions.profileId ||
+        avatarOptions.profileId.toLowerCase() === (profileOverride.address ?? '').toLowerCase())
     try {
-      this.playerIdentity = (await this.avatar?.load(avatarOptions)) ?? null
+      this.playerIdentity =
+        (await this.avatar?.load(
+          overrideApplies ? { ...avatarOptions, profile: profileOverride } : avatarOptions
+        )) ?? null
     } catch (err) {
       console.warn('Avatar load failed — continuing with invisible capsule', err)
     }
@@ -268,11 +281,15 @@ export class PlayerSystem {
     this.syncCamera(true)
   }
 
-  /** Reload avatar after backpack VRM equip / unequip. */
-  async reloadAvatar(onProgress?: (msg: string) => void): Promise<void> {
+  /** Reload avatar after backpack equip / VRM change. Pass the session profile so a
+   *  just-deployed outfit renders even before the Catalyst lambdas propagate it. */
+  async reloadAvatar(
+    onProgress?: (msg: string) => void,
+    profileOverride?: AvatarProfile
+  ): Promise<void> {
     this.nameTag?.dispose()
     this.nameTag = null
-    await this.loadAvatar(onProgress)
+    await this.loadAvatar(onProgress, profileOverride)
   }
 
   setAssetCache(cache: AssetCache, peerUrl?: string): void {

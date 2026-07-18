@@ -66,7 +66,8 @@ export class LocalAvatar {
 
   async load(options: ComposeOptions = {}): Promise<ProfileIdentity> {
     this.disposeModel()
-    const profile = await resolveAvatarProfile(options.profileId, options.bodyShape)
+    const profile =
+      options.profile ?? (await resolveAvatarProfile(options.profileId, options.bodyShape))
     this.identity = identityFromAvatarProfile(profile, options.profileId)
     this.bodyShape = profile.bodyShape
 

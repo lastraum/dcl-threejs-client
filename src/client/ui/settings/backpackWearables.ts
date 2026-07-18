@@ -20,6 +20,9 @@ export type BackpackWearableItem = WearableDisplayCard & {
   isBase?: boolean
   /** Body-shape URNs with a representation; undefined = fits all shapes. */
   bodyShapes?: string[]
+  /** Categories this wearable hides/replaces when equipped (ADR-239). */
+  hides?: string[]
+  replaces?: string[]
 }
 
 type OwnedEntry = OwnedWearableEntry
@@ -29,7 +32,7 @@ type WearableApiHit = {
   name?: string
   rarity?: string | null
   thumbnail?: string
-  data?: { category?: string }
+  data?: { category?: string; hides?: string[]; replaces?: string[] }
 }
 
 type BaseCatalogHit = WearableApiHit & {
@@ -201,7 +204,9 @@ async function fetchWearableMetadata(
       rarity,
       thumbnailUrl: hit.thumbnail?.trim() || wearableThumbnailUrl(assetUrn),
       category,
-      amount: 1
+      amount: 1,
+      hides: hit.data?.hides,
+      replaces: hit.data?.replaces
     }
   } catch {
     return null

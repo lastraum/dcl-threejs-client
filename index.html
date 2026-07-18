@@ -5583,6 +5583,57 @@
         display: block;
         padding: 6px;
       }
+      .backpack-view__cat-preview--hidden .backpack-view__cat-equipped {
+        opacity: 0.35;
+        filter: grayscale(0.6);
+      }
+      .backpack-view__cat-preview--hidden,
+      .backpack-view__cat-preview--forced {
+        position: relative;
+      }
+      .backpack-view__cat-hidden-badge {
+        position: absolute;
+        right: 2px;
+        bottom: 2px;
+        width: 17px;
+        height: 17px;
+        border: none;
+        border-radius: 50%;
+        background: rgba(10, 4, 20, 0.72);
+        color: #fff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        cursor: pointer;
+        z-index: 1;
+      }
+      .backpack-view__cat-hidden-badge:hover {
+        background: rgba(10, 4, 20, 0.95);
+      }
+      .backpack-view__cat-hidden-badge.is-on {
+        background: #ff2d55;
+      }
+      .backpack-view__cat-hidden-badge svg {
+        width: 11px;
+        height: 11px;
+        display: block;
+      }
+      .backpack-view__detail-hidden {
+        display: inline-block;
+        margin-top: 4px;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        background: rgba(255, 45, 85, 0.18);
+        color: #ff8fa3;
+      }
+      .backpack-view__detail-hidden--forced {
+        background: rgba(87, 227, 137, 0.16);
+        color: #7fe3a1;
+      }
       .backpack-view__cat-all-label {
         display: grid;
         place-items: center;

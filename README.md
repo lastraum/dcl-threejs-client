@@ -109,6 +109,19 @@ Production build: `npm run build` → static SPA in `dist/`. Preview: `npm run p
 
 Dev overlay: `</>` sidebar → Community claims + parity gaps + `PROGRESS.md` from GitHub `dev-latest`.
 
+## Terrain editor & landscape biomes
+
+Open **`/editor`** (or top nav **Terrain**) for the in-browser sculpt workspace:
+
+- Height / splat / Ez Grass brushes, floating dock + flyouts  
+- **Biomes** via icon rail → writes `scene.json` `environment.kind`  
+- **Desert** — dunes, outer rocks, dust/tumbleweeds (`environment.desert`)  
+- **Land** — solid color plane under the scene (`environment.land.groundColor`)  
+- **Island / water** — FFTOCEAN knobs (`environment.water`)  
+- Editor preview uses the **same** `buildParcelLandscape` path as play  
+
+See [docs/PROGRESS.md](docs/PROGRESS.md) for the latest milestone notes.
+
 ## Credits
 
 - **FFT ocean / waves** — GPGPU Phillips-spectrum water ported from [gioeledallapozza/FFTOCEAN](https://github.com/gioeledallapozza/FFTOCEAN). Scene knobs: `scene.json` → `environment.water` (ThreejsClient-only; ignored by Unity/Godot Explorer).

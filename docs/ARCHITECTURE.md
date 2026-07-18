@@ -29,7 +29,9 @@ SceneInputRelay (WASD)              inputSystem.isPressed
 
 **Parity target:** Unity Foundation Explorer behavior for scene I/O — not identical internal architecture.
 
-**Transforms:** Logical sim/comms stay in DCL left-handed meters. Display conversion only at the render boundary (`src/bridge/dclTransform.ts`).
+**Transforms:** Logical sim/comms stay in DCL left-handed meters. Display conversion only at the render boundary (`src/bridge/dclTransform.ts`). Landscape infinite ground / scatter use the same X reflection (`dclSceneToLandscapeThree` → threeX = −dclX) so author terrain and biome floors align.
+
+**Landscape / terrain editor:** Play client builds empty-land + decoration via `buildParcelLandscape` from `scene.json` → `environment.kind` (+ optional `water` / `desert` / `land` / `space` objects). The `/editor` terrain workspace rebuilds that same path for live biome preview (not a separate fake floor).
 
 ---
 

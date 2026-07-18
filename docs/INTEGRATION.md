@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-17 (Explorer glider prop/remote · PhysicsCombined · wearable unit-scale · backpack→world · P4 bloom)
+> **Last updated:** 2026-07-18 (terrain biomes · land/desert landscape · backpack hides + inventory · peer profile announce)
 
 ---
 

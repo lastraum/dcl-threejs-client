@@ -2,7 +2,7 @@
 
 > Browser-native Decentraland client: load deployed Worlds/scenes, shim SDK7 runtime, mirror ECS → Three.js, expand to open world.
 
-**Status:** **v1.0.0** core play loop production beta ✅ (still not full Explorer parity). Multi-room chat + cast · nearby voice · **P4 bloom/HDR** · **PhysicsCombined + Explorer glider** · backpack equip→world. **1.x next:** outfits/marketplace · scene UI text-measure · community voice Bearer (see [`PROGRESS.md`](./PROGRESS.md))  
+**Status:** **v1.1.x** production beta ✅ (still not full Explorer parity). Multi-room chat + cast · nearby voice · **P4 bloom/HDR** · **glider** · backpack equip→world + **hides/forceRender** · **terrain editor biomes** (`scene.json` environment.kind). **1.x next:** outfits/marketplace · scene UI text-measure · community voice Bearer (see [`PROGRESS.md`](./PROGRESS.md))  
 **ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md)  
 **Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) for current work.
 
@@ -387,9 +387,11 @@ Bundled scenes ship their own `@dcl/ecs` engine; we mirror CRDT on main via `Eng
 
 The red grass parcel block, cliff edges, scattered bushes, and stylized trees in Explorer are **client-side landscape**, toggled via Creator Hub **"Landscape Terrain Enabled"**. They are **not** part of the scene entity (`bin/scene.js`).
 
-Landscape/ocean/foliage live under `src/environment/` (see INTEGRATION performance rows).
+**Current (2026-07-18):** `buildParcelLandscape` is driven by `scene.json` → `environment.kind` (+ optional `water` / `desert` / `land` / `space`). Land uses a solid color plane; desert uses a horizon plane + Perlin dunes + outer rocks; island/water use FFTOCEAN. The terrain editor (`/editor`) rebuilds the same landscape path for live preview. Entry: `RenderGroundSystem.ts`, `LandColorGround.ts`, `DesertGoldGround.ts`, `sceneEnvironmentIO.ts`.
 
-**MVP scope (no sand/water/clouds):**
+Landscape/ocean/foliage also live under `src/environment/` (see INTEGRATION performance rows).
+
+**Historical MVP scope (early phases):**
 
 - `ground.glb` per **scene parcel + 1-parcel padding ring** around the footprint
 - Procedural tree/bush placement from `@dcl/asset-packs` "empty land" category

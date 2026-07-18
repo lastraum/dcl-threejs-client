@@ -2,9 +2,9 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-17  
-> **Current phase:** **v1.1.0** — production beta + multiplayer/social reliability; still not full Explorer parity.  
-> **Shipped (1.x):** **3D chat handoff** · **nearby voice unlock** · **parcel archipelago seed** · **location minimap stack** · communities voice/chat + HUD toasts · 2D chat FAB · P4 bloom/HDR · Explorer glider · wearable unit-scale + backpack→world · Dead Surge combat/VC · RestrictedActions HUD confirms · SDK6 fail-fast.  
+> **Last updated:** 2026-07-18  
+> **Current phase:** **v1.1.x** — production beta + multiplayer/social reliability; still not full Explorer parity.  
+> **Shipped (1.x):** **terrain editor biomes** (desert dunes / land plane / FFTOCEAN) · **backpack hides + large-wallet inventory** · 3D chat handoff · nearby voice unlock · parcel archipelago seed · location minimap · communities · P4 bloom/HDR · Explorer glider · backpack→world · Dead Surge combat/VC · RestrictedActions · SDK6 fail-fast.  
 > **1.x next:** backpack outfits/marketplace · scene UI text-measure · community voice Bearer parity · create-community / invites · graphics P3 distance culls · spatial voice restore.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
@@ -13,6 +13,62 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — Terrain editor biomes + landscape parity → `dev-latest` (2026-07-18)
+
+**Status: merged `lastraum` → `dev-latest`** (`85d7256`) — floating terrain UI, `scene.json` environment.kind biomes, and client-identical landscape preview in the editor.
+
+### What's new
+
+- **Floating terrain dock** — sculpt / paint / Ez Grass / biome / ocean icons; secondary rails for shading + biome picker (no side panel)
+- **Biome rail** — none · genesis · island · water · land · forest · desert · space (mountains icon hidden for now)
+- **Desert** — horizon sand plane, Perlin **dunes** (height / width / length / wind / ripple), outer rocks, dust storm + tumbleweeds (`environment.desert`)
+- **Land** — single solid-color ground plane under the scene at y≈−0.01 (`environment.land.groundColor`) — no red-grass GLB tint
+- **FFTOCEAN / space sky** — dallapozza knobs + reset; space atmosphere (stars, rim, fog) in editor + play
+- **Editor = play landscape** — `buildParcelLandscape` for biome preview; local scenes honor `environment.kind`
+- **Landscape X alignment** — infinite ground / scatter match author terrain (`dclToThree` X reflection)
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **TerrainSculptPanel float UI** | 🟢 | Dock + flyouts · `editorStyles.ts` |
+| **sceneEnvironmentIO** | 🟢 | kind / water / space / desert / land / mountains merge to `scene.json` |
+| **Desert dunes + atmosphere** | 🟢 | `DesertGoldGround` · `DesertAtmosphere` · outer rock scatter |
+| **Land color plane** | 🟢 | `LandColorGround.ts` · pure material color |
+| **Client landscape in editor** | 🟢 | `TerrainEditorWorkspace.rebuildClientLandscapePreview` |
+| **Space sky** | 🟢 | `SpaceSkyField` · `EnvironmentSystem` |
+| **Mountains dock icon** | ⬜ | Panel code kept; icon hidden |
+
+**QA:** `/editor` · switch 🏜/🌾/🚀 · dune height · land color picker matches floor · desert rocks to horizon · FFTOCEAN on island · play local scene with `environment.kind: "desert"`.
+
+**Tip commit:** `85d7256` on `dev-latest`.
+
+---
+
+## 🎉 Milestone — Backpack wearable hides + avatar pipeline fixes → `dev-latest` (2026-07-18)
+
+**Status: landed on `dev-latest`** (`c23209e`, from PR [#27](https://github.com/lastraum/dcl-threejs-client/pull/27)) — ADR-239 hide UI, large-wallet inventory reliability, and multiplayer profile announce after deploy.
+
+### What's new
+
+- **Hidden-by badges** — dimmed equipped slots with eye-slash + “Hidden by X”; click toggles `forceRender` override (saves on deploy)
+- **Large inventories** — paginated wearables fetch · batched metadata · duplicate tokens collapse to ×N cards
+- **JSON glTF wearables** — 2021 Builder `.gltf` assets render (not only binary GLB)
+- **Emissive sheen** — stop washing faint authored emissives to full neon
+- **Post-deploy avatar** — session profile rebuild (with existing seed cache) + **peer re-announce** so other clients see outfit swaps live
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **computeHiddenBy / forceRender UI** | 🟢 | `slots.ts` · `BackpackView` · deploy fingerprint |
+| **Pagination + batch + dupe collapse** | 🟢 | `backpackWearables.ts` |
+| **JSON glTF path** | 🟢 | `glbSanitizer.ts` |
+| **Emissive threshold** | 🟢 | `materials.ts` |
+| **Session profile + peer announce** | 🟢 | merged with prior `0aa1173` seed cache |
+
+**QA:** Metafox Shade + helmet hide/override · wallet with 100+ items · Builder glTF wearable · equip hat → second client updates · faint-emissive boots keep albedo.
+
+**Tip commit:** `c23209e` on `dev-latest` (PR #27 closed after rebased merge).
 
 ---
 
@@ -491,7 +547,8 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 
 | Improvement | Status | Why it matters |
 | ----------- | ------ | -------------- |
-| **In-browser terrain editor** (`/editor`) | 🟢 | Sculpt height + splat; height-band biomes (water/sand/grass/rock); avatar scale mannequins (1–256/parcel); fly camera + viewport HUD |
+| **In-browser terrain editor** (`/editor`) | 🟢 | Floating dock UI; sculpt / splat / Ez Grass; shading rails; fly camera + viewport HUD |
+| **scene.json landscape biomes** | 🟢 | `environment.kind` + desert dunes / land color plane / space sky / FFTOCEAN — editor preview uses same `buildParcelLandscape` as play |
 | **Deploy-sized terrain export** | 🟢 | Per-parcel meshes (small scenes) or **merged footprint mesh** (\>512 parcels); configurable density (default **64 segs**); 5×5 ~**4–5 MB** |
 | **Visible-mesh physics** | 🟢 | `CL_PHYSICS` on `terrain_mesh_*` only — no duplicate `_collider` layer (matches genesis-games DCL pattern) |
 | **Non-square footprints** | 🟢 | L-shaped / sparse parcel layouts export one plane per parcel, not a full bounding-box fill |
@@ -509,9 +566,9 @@ Features that **go past Unity Explorer parity** — new workflows, smaller deplo
 | **Unity outdoor lighting parity** | 🟢 | Trilight ambient, soft sun/moon shadows, anim intensity, soft PBR; crescent moon + night fill |
 | **Graphics prefs (P0–P2)** | 🟢 | Preset L/M/H/Custom · shadows · lights · res scale · FPS · **MSAA**; Resolution/Fullscreen/VSync hidden or stub |
 | **Graphics P3 distances** | ⬜ | **Not started** — Scene Distance / Landscape Distance / Shadows Distance still gray stubs (no cull backend) |
-| **Graphics P4 post-FX** | ⬜ | Bloom / HDR / avatar outline still stubs |
+| **Graphics P4 post-FX** | 🟢 **partial** | Bloom / HDR **shipped** (selective emissive); avatar outline still open |
 | **Multi-provider auth (DCL auth-dapp)** | 🟢 | Google / Discord / Apple / X / WalletConnect / MetaMask via Explorer auth-dapp + verification code; profile menu + Jump In |
-| **2D backpack equip + Catalyst deploy** | 🟡 **partial** | Wearables + **emotes** + **base eyes/body shape** + **eye/hair/skin colors**; deploy on save; outfits/marketplace still open |
+| **2D backpack equip + Catalyst deploy** | 🟡 **partial** | Wearables + emotes + base eyes/body + colors + **hide badges / forceRender** + large-wallet pagination; deploy + peer announce; outfits/marketplace still open |
 | **Custom VRM / OSA library** | 🟢 | Device library + open-source avatars tab (client-only; beyond Unity Explorer) |
 | **scene.json nameTags hide** | 🟢 | `featureToggles.nameTags` + `?nameTags=` — ThreejsClient overhead label gate |
 | **Dev texture proxy host fix** | 🟢 | `/api/texture` routes to encoded host (not hard-coded arweave) — PR #10 |

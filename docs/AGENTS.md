@@ -56,8 +56,11 @@ Offline: `?docsGithubFetch=0` shows placeholder notices only (not live progress)
 | ---- | ----------- |
 | Input | `src/input/PointerEventsSystem.ts`, `pointerConstants.ts` |
 | Avatars | `src/avatar/`, `src/bridge/AvatarAttachBridge.ts`, `AvatarShapeBridge.ts` |
+| Backpack | `src/client/ui/settings/BackpackView.ts`, `backpackWearables.ts`, `src/avatar/slots.ts` |
 | Media | `src/media/VideoPlayerBridge.ts` |
 | Social | `src/social/`, `src/network/comms/` |
+| Terrain editor | `src/editor/TerrainEditorWorkspace.ts`, `src/editor/ui/TerrainSculptPanel.ts`, `sceneEnvironmentIO.ts` |
+| Landscape biomes | `src/dcl/landscape/Systems/RenderGroundSystem.ts`, `DesertGoldGround.ts`, `LandColorGround.ts`, `src/environment/*Defaults.ts` |
 | Content | `src/dcl/content/resolveScene.ts` |
 
 ## Debug flags

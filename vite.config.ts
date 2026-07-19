@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { patchYogaNbindSource } from './src/shim/vite/yogaNbindFix'
 import { createSuggestionProxyMiddleware } from './scripts/suggestion-dispatch-proxy.mjs'
 import { createTextureProxyMiddleware } from './scripts/texture-dispatch-proxy.mjs'
+import { createAnalyticsProxyMiddleware } from './scripts/analytics-dispatch-proxy.mjs'
 import { sceneBundleMirrorPlugin } from './vite-plugins/sceneBundleMirror'
 
 const ARCHIPELAGO_PEERS = 'https://archipelago-ea-stats.decentraland.org/peers'
@@ -17,6 +18,16 @@ export default defineConfig({
       enforce: 'pre',
       configureServer(server) {
         server.middlewares.use(createSuggestionProxyMiddleware())
+      }
+    },
+    {
+      name: 'analytics-dispatch-proxy',
+      enforce: 'pre',
+      configureServer(server) {
+        server.middlewares.use(createAnalyticsProxyMiddleware())
+      },
+      configurePreviewServer(server) {
+        server.middlewares.use(createAnalyticsProxyMiddleware())
       }
     },
     {

@@ -104,12 +104,18 @@ async function composeFromConfig(
     const loadedLayers = await Promise.all(
       modelWearables.map(async (wearable) => {
         try {
+          // Facial hair takes its own D3JS color when set; every other wearable's
+          // hair-named materials keep the profile hair color.
+          const hairTint =
+            wearable.data.category === 'facial_hair'
+              ? config.facialHair ?? config.hair
+              : config.hair
           const layer = await loadWearableSceneCached(
             cache,
             wearable,
             config.bodyShape,
             config.skin,
-            config.hair,
+            hairTint,
             true
           )
           return { wearable, layer }

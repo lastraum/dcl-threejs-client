@@ -8,6 +8,7 @@ import { catalystPeerBaseUrl } from '../map/mapConfig'
 import { applyBundledWearableUrls, preloadBundledWearableManifests, tryBundledWearableDefinition } from './bundledWearables'
 import { catalystPointerForWearableUrn } from './wearablePointers'
 import { shortenAddress } from './displayName'
+import { getExtendedAvatarColors, normalizeExtendedColorHex } from './extendedColors'
 import type { AvatarProfile, BodyShape, WearableDefinition } from './types'
 
 /** Removed from Catalyst — optional slots, no warn spam. */
@@ -49,6 +50,8 @@ export type LambdaAvatarEntry = {
     skin: { color: { r: number; g: number; b: number } }
     hair: { color: { r: number; g: number; b: number } }
     eyes: { color: { r: number; g: number; b: number } }
+    /** D3JS extension keys (never deployed to Catalyst) — other clients ignore them. */
+    d3js?: { browsColor?: string; facialHairColor?: string }
   }
 }
 
@@ -106,11 +109,21 @@ function avatarEntryToProfile(entry: LambdaAvatarEntry, address: string): Avatar
   const bodyShapeRaw = avatar.bodyShape ?? avatar.body_shape
   const { bodyShape, wearables } = normalizeProfileWearables(bodyShapeRaw, avatar.wearables)
 
+  // D3JS-only colors: the local store wins (it is only ever populated for the local
+  // user), then `d3js` extension keys from remote D3JS peers, then unset → hair.
+  const local = getExtendedAvatarColors(address)
+  const browsColor =
+    local.brows ?? normalizeExtendedColorHex(avatar.d3js?.browsColor) ?? undefined
+  const facialHairColor =
+    local.facialHair ?? normalizeExtendedColorHex(avatar.d3js?.facialHairColor) ?? undefined
+
   return {
     bodyShape,
     skin: rgbToHex(avatar.skin.color),
     hair: rgbToHex(avatar.hair.color),
     eyes: rgbToHex(avatar.eyes.color),
+    browsColor,
+    facialHairColor,
     wearables,
     forceRender: avatar.forceRender ?? [],
     emotes: normalizeProfileEmoteSlots(avatar.emotes ?? []),

@@ -1,5 +1,6 @@
 import type { AuthDappLoginMethod, AuthProgress, LoginResult } from '../../../auth/AuthClient'
 import { loginWithMetaMask, loginWithProvider, openAuthWindow } from '../../../auth/AuthClient'
+import { getGuestPrivateKeyHex } from '../../../auth/guestIdentity'
 import { ensureGuestSession } from '../../auth/resolveInitialLogin'
 import { identityFromAvatarProfile } from '../../../avatar/displayName'
 import { fetchProfileCached, fetchProfileFaceUrl } from '../../../avatar/peerApi'
@@ -268,6 +269,7 @@ export class SocialProfileMenu {
     const profileUrl = address
       ? `https://peer.decentraland.org/lambdas/profiles/${encodeURIComponent(address)}`
       : ''
+    const hasKey = Boolean(getGuestPrivateKeyHex())
     return `
       <div class="social-profile-menu__identity">
         <div class="social-profile-menu__name">${escapeHtml(name)}</div>
@@ -277,13 +279,32 @@ export class SocialProfileMenu {
           <span class="social-profile-menu__wallet-copy-hint" data-copy-hint>Copy</span>
         </button>
         ${
+          hasKey
+            ? `<div class="social-profile-menu__guest-key" data-guest-key-block>
+          <button type="button" class="social-profile-menu__guest-key-toggle" data-reveal-guest-key aria-expanded="false">
+            Reveal guest private key
+          </button>
+          <div class="social-profile-menu__guest-key-panel" data-guest-key-panel hidden>
+            <code class="social-profile-menu__guest-key-value" data-guest-key-value></code>
+            <button type="button" class="social-profile-menu__guest-key-copy" data-copy-guest-key>
+              Copy private key
+            </button>
+          </div>
+        </div>`
+            : ''
+        }
+        ${
           profileUrl
             ? `<a class="social-profile-menu__catalyst-link" href="${escapeHtml(profileUrl)}" target="_blank" rel="noopener noreferrer">View on Catalyst ↗</a>`
             : ''
         }
       </div>
+      <div class="social-profile-menu__guest-warning" role="note">
+        <strong>Browser-only guest wallet.</strong>
+        This key lives only on this device and origin. Clearing site data, private mode, or another browser creates a <em>new</em> guest — wearables or tokens sent here cannot be recovered without this private key. Do not send valuables unless you have exported and stored the key.
+      </div>
       <p class="social-profile-menu__hint">
-        Stable guest wallet for chat &amp; LiveKit. Sign in to claim wearables &amp; ownership tools — same accounts as Explorer.
+        Stable guest for chat &amp; LiveKit. Sign in to claim wearables &amp; ownership tools — same accounts as Explorer.
       </p>
       <div class="social-profile-menu__items">
         <button type="button" class="social-profile-menu__item" data-open-whats-new>
@@ -344,6 +365,56 @@ export class SocialProfileMenu {
         }, 1400)
       } catch {
         if (hint) hint.textContent = 'Failed'
+      }
+    })
+
+    const revealBtn = this.menuBody.querySelector<HTMLButtonElement>('[data-reveal-guest-key]')
+    const panel = this.menuBody.querySelector<HTMLElement>('[data-guest-key-panel]')
+    const keyValue = this.menuBody.querySelector<HTMLElement>('[data-guest-key-value]')
+    const copyKeyBtn = this.menuBody.querySelector<HTMLButtonElement>('[data-copy-guest-key]')
+
+    revealBtn?.addEventListener('click', (ev) => {
+      ev.preventDefault()
+      ev.stopPropagation()
+      if (!panel || !keyValue || !revealBtn) return
+      const open = panel.hidden
+      if (open) {
+        const pk = getGuestPrivateKeyHex()
+        if (!pk) {
+          keyValue.textContent = 'Key not available on this device.'
+          panel.hidden = false
+          revealBtn.textContent = 'Hide guest private key'
+          revealBtn.setAttribute('aria-expanded', 'true')
+          return
+        }
+        keyValue.textContent = pk
+        panel.hidden = false
+        revealBtn.textContent = 'Hide guest private key'
+        revealBtn.setAttribute('aria-expanded', 'true')
+      } else {
+        keyValue.textContent = ''
+        panel.hidden = true
+        revealBtn.textContent = 'Reveal guest private key'
+        revealBtn.setAttribute('aria-expanded', 'false')
+      }
+    })
+
+    copyKeyBtn?.addEventListener('click', async (ev) => {
+      ev.preventDefault()
+      ev.stopPropagation()
+      const pk = getGuestPrivateKeyHex()
+      if (!pk || !copyKeyBtn) return
+      try {
+        await navigator.clipboard.writeText(pk)
+        const prev = copyKeyBtn.textContent
+        copyKeyBtn.textContent = 'Copied!'
+        copyKeyBtn.classList.add('is-copied')
+        window.setTimeout(() => {
+          copyKeyBtn.textContent = prev || 'Copy private key'
+          copyKeyBtn.classList.remove('is-copied')
+        }, 1400)
+      } catch {
+        copyKeyBtn.textContent = 'Copy failed'
       }
     })
   }

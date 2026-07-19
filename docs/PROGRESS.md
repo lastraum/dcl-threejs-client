@@ -3,8 +3,8 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-07-18  
-> **Current phase:** **v1.1.x** — production beta + multiplayer/social reliability; still not full Explorer parity.  
-> **Shipped (1.x):** **In-World Camera + Camera Reel gallery** · U/N UI + chat image lightbox · **terrain editor biomes** · **backpack hides + large-wallet inventory** · 3D chat handoff · nearby voice · minimap · communities · P4 bloom/HDR · glider · backpack→world · SDK6 fail-fast.  
+> **Current phase:** **v1.2.0** — production beta + multiplayer/social reliability; still not full Explorer parity.  
+> **Shipped (1.x):** **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · U/N UI · terrain editor biomes · backpack forceRender · 3D chat handoff · nearby voice · minimap · communities · P4 bloom/HDR · glider · SDK6 fail-fast.  
 > **1.x next:** backpack outfits/marketplace · scene UI text-measure · community voice Bearer parity · create-community / invites · graphics P3 distance culls · gallery multi-page (100+ photos).  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
@@ -13,6 +13,33 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — v1.2.0 release (Camera Reel · biomes · backpack hides) (2026-07-18)
+
+**Status: release cut** — `dev-latest` → `main` · tag `v1.2.0`.
+
+### What's new
+
+- **In-World Camera (C)** — fly lens, Space shutter, review rail, **Save to Decentraland gallery**
+- **Gallery (K)** — photo previews, public/private, copy reels link, hover ⋮ menu, delete
+- **Hide UI (U)** · **name tags (N)** · chat image lightbox
+- **Terrain editor biomes** — desert dunes, land plane, space sky (`scene.json` environment)
+- **Backpack hides** — “Hidden by” badges, forceRender override, large-wallet inventory
+- **Avatar pipeline** — glTF wearables, emissive polish, peer refresh after equip
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Camera Reel save/list** | 🟢 | Signed Camera Reel API · wallet required |
+| **Photo fly mode** | 🟢 | Dedicated lens · FOV scroll · pointer-lock look |
+| **Terrain biomes** | 🟢 | Editor + play `environment.kind` parity |
+| **Backpack forceRender / inventory** | 🟢 | ADR-239 hides · pagination · peer announce |
+| **Gallery pagination** | ⬜ | API max 100/page |
+
+**QA (release smoke):** C → Space → Save → K gallery · ⋮ public/link/delete · U/N · backpack hide/equip · `/editor` desert or land · second client sees outfit · Genesis load.
+
+**Tip:** `v1.2.0` on `main`.
 
 ---
 

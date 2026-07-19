@@ -2,7 +2,7 @@
 
 > Browser-native Decentraland client: load deployed Worlds/scenes, shim SDK7 runtime, mirror ECS → Three.js, expand to open world.
 
-**Status:** **v1.1.x** production beta ✅ (still not full Explorer parity). Multi-room chat + cast · nearby voice · **P4 bloom/HDR** · **glider** · backpack equip→world + **hides/forceRender** · **In-World Camera + Camera Reel gallery** · **terrain editor biomes** (`scene.json` environment.kind). **1.x next:** outfits/marketplace · scene UI text-measure · community voice Bearer (see [`PROGRESS.md`](./PROGRESS.md))  
+**Status:** **v1.2.0** production beta ✅ (still not full Explorer parity). Multi-room chat + cast · nearby voice · **P4 bloom/HDR** · **glider** · backpack equip→world + **hides/forceRender** · **In-World Camera + Camera Reel gallery** · **terrain editor biomes** (`scene.json` environment.kind). **1.x next:** outfits/marketplace · scene UI text-measure · community voice Bearer (see [`PROGRESS.md`](./PROGRESS.md))  
 **ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md)  
 **Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) for current work.
 

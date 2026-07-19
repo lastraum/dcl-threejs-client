@@ -3,16 +3,45 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-07-19  
-> **Current phase:** **v1.3.0** — production beta + scene physics/UI parity; still not full Explorer parity.  
-> **Shipped (1.x):** **v1.3.0 plaza/poker PE · TextShape UV · UiBackground tint · chat translate** · **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · multi-room chat · nearby voice · P4 bloom · glider.  
-> **1.x next:** backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page · graphics P3 distance culls.  
+> **Current phase:** **v1.3.x** — production beta + place analytics; still not full Explorer parity.  
+> **Shipped (1.x):** **public place analytics (landing stats)** · **v1.3.0 plaza/poker PE · TextShape UV · UiBackground tint · chat translate** · **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · multi-room chat · nearby voice · P4 bloom · glider.  
+> **1.x next:** backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page · graphics P3 distance culls · analytics charts polish.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
-> **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
+> **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) · **Place analytics:** [CREATOR_ANALYTICS.md](./CREATOR_ANALYTICS.md)
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — Public place analytics (landing stats) → `dev-latest` (2026-07-19)
+
+**Status: merged `lastraum` → `dev-latest`** — opt-in presence analytics (no Privy MAU), public stats on scene landing, Node/JSONL ingest + optional Supabase mirror.
+
+### What's new
+
+- **Landing bar-chart control** — next to owner settings gear; **anyone** can open place stats (not creator-only)
+- **Metrics** — landing views, uniques, jump-ins, jump-in rate, median time on landing + in world, multi-visit, 7d dual bars (landings / jump-ins) with hover counts
+- **Client emit** — `VITE_ANALYTICS_ENABLED=true` (off by default for local); fire-and-forget events never block play
+- **Dwell** — landing page time (`landing_leave`) and in-world session time (`scene_leave` + heartbeats)
+- **Backend** — `POST /api/analytics/events`, `GET /api/analytics/places/:placeKey/summary`; Vite dev middleware; prod PM2 + nginx → `:8787`
+- **Optional Supabase** — service-role mirror of `place_events` (browser never holds secrets)
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Landing stats UI** | 🟢 | `ScenePlaceStatsModal` · public aggregates only |
+| **Event pipeline** | 🟢 | `src/analytics/*` · login / landing / jump-in / goto / dwell |
+| **Ingest + summary** | 🟢 | JSONL source of truth · `scripts/analytics-core.mjs` |
+| **Supabase mirror** | 🟡 | Optional env · schema `server/sql/place_events.sql` |
+| **Prod deploy** | 🟡 | PM2 ecosystem + nginx `/api/analytics/` · build with flag |
+
+**QA:** enable flag → open world landing → chart icon → counts move on revisit; uniques stick per browser; jump-in raises enters; local flag off does not POST.
+
+**Design / ops:** [docs/CREATOR_ANALYTICS.md](./CREATOR_ANALYTICS.md) · flat FTP: `analytics.mjs` + `analytics-core.mjs` + `ecosystem.config.cjs`.
+
+**Tip:** Forge/Privy not on the visit path — reserved for later game-logic lane.
 
 ---
 

@@ -1,0 +1,20 @@
+[Unit]
+Description=ThreejsClient place analytics API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/dcl-threejs-client
+Environment=ANALYTICS_PORT=8787
+Environment=ANALYTICS_EVENTS_PATH=/var/lib/dcl-analytics/place-events.jsonl
+# Optional Supabase mirror:
+# Environment=SUPABASE_URL=https://xxxx.supabase.co
+# Environment=SUPABASE_SERVICE_ROLE_KEY=...
+ExecStart=/usr/bin/node server/analytics.mjs
+Restart=on-failure
+RestartSec=3
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target

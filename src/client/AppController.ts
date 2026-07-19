@@ -63,6 +63,19 @@ import { SceneLandingView } from './ui/landing/SceneLandingView'
 import type { DclEvent } from '../social/dclEvents'
 import { enrichResolvedScenePublicTitle } from '../social/sceneDisplayTitle'
 import { recordLoginEvent } from '../analytics/recordLogin'
+import {
+  startDwellTracking,
+  startLandingDwell,
+  stopDwellTracking,
+  stopLandingDwell
+} from '../analytics/dwell'
+import { placeFieldsFromRoute } from '../analytics/placeKey'
+import {
+  beginPlaySession,
+  setAnalyticsLogin,
+  track,
+  type AnalyticsSource
+} from '../analytics/track'
 
 /** Owns world lifecycle — explorer / landing / play, navigation, and sign-out. */
 export class AppController {
@@ -142,6 +155,7 @@ export class AppController {
     this.login = await resolveInitialLogin()
     // Wallet resume or stable guest both get AuthIdentity — Jump In / LiveKit ready.
     this.playSessionReady = hasResumedWalletSession() || this.login.kind === 'guest'
+    setAnalyticsLogin(this.login)
     recordLoginEvent(this.login)
 
     if (postLoginRoute.kind === 'editor') {
@@ -187,11 +201,46 @@ export class AppController {
     void this.navigateTo(resolveRouteTarget(), { fromHistory: true })
   }
 
+  private analyticsSourceForNav(opts: {
+    fromHistory?: boolean
+    source?: AnalyticsSource
+  }): AnalyticsSource {
+    if (opts.source) return opts.source
+    if (opts.fromHistory) return 'history'
+    return 'unknown'
+  }
+
+  private trackNavigate(
+    from: RouteTarget | null,
+    to: RouteTarget,
+    method: string,
+    source?: AnalyticsSource
+  ): void {
+    const fromFields = placeFieldsFromRoute(from)
+    const toFields = placeFieldsFromRoute(to)
+    if (!toFields && !fromFields) return
+    const isGoto = method === 'goto'
+    track(isGoto ? 'goto' : 'navigate', {
+      place: toFields,
+      route: to,
+      source: source ?? (isGoto ? 'goto' : 'unknown'),
+      from_place_key: fromFields?.place_key ?? null,
+      to_place_key: toFields?.place_key ?? null,
+      props: { method }
+    })
+  }
+
   private async navigateTo(
     target: RouteTarget,
-    opts: { fromHistory?: boolean; replace?: boolean } = {}
+    opts: { fromHistory?: boolean; replace?: boolean; source?: AnalyticsSource } = {}
   ): Promise<void> {
     if (this.navigating) return
+
+    const from = this.currentRoute
+    const source = this.analyticsSourceForNav(opts)
+    if (from && !routeEquals(from, target)) {
+      this.trackNavigate(from, target, opts.fromHistory ? 'history' : 'ui', source)
+    }
 
     if (target.kind === 'blank') {
       this.navigating = true
@@ -496,6 +545,8 @@ export class AppController {
   private async showExplorer(
     opts: { fromHistory?: boolean; replace?: boolean } = {}
   ): Promise<void> {
+    if (this.appMode === 'play') stopDwellTracking('shell')
+    if (this.appMode === 'landing') stopLandingDwell('shell')
     if (!opts.fromHistory) {
       applyRouteToHistory({ kind: 'blank' }, opts.replace ?? false)
     }
@@ -536,6 +587,7 @@ export class AppController {
     if (!initialCenter && this.appMode === 'play') {
       initialCenter = this.parcelFromPlayerState(this.getMapPlayerState())
     }
+    if (this.appMode === 'play') stopDwellTracking('shell')
 
     if (this.appMode === 'play') {
       await this.teardownScene()
@@ -584,6 +636,7 @@ export class AppController {
     opts: { fromHistory?: boolean; replace?: boolean } = {}
   ): Promise<void> {
     if (this.appMode === 'play') {
+      stopDwellTracking('shell')
       await this.teardownScene()
     }
 
@@ -626,6 +679,7 @@ export class AppController {
     opts: { fromHistory?: boolean; replace?: boolean } = {}
   ): Promise<void> {
     if (this.appMode === 'play') {
+      stopDwellTracking('shell')
       await this.teardownScene()
     }
 
@@ -662,6 +716,7 @@ export class AppController {
     opts: { fromHistory?: boolean; replace?: boolean } = {}
   ): Promise<void> {
     if (this.appMode === 'play') {
+      stopDwellTracking('shell')
       await this.teardownScene()
     }
 
@@ -724,6 +779,8 @@ export class AppController {
   }
 
   private teardownLanding(): void {
+    // End 2D landing dwell (no-op if already stopped e.g. jump_in).
+    stopLandingDwell('navigate')
     this.castLiveUnsub?.()
     this.castLiveUnsub = null
     if (this.castProbeTimer) {
@@ -743,9 +800,15 @@ export class AppController {
 
   private async showSceneLanding(
     target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>,
-    opts: { fromHistory?: boolean; replace?: boolean; sceneBan?: SceneLoadErrorMessage } = {}
+    opts: {
+      fromHistory?: boolean
+      replace?: boolean
+      sceneBan?: SceneLoadErrorMessage
+      source?: AnalyticsSource
+    } = {}
   ): Promise<void> {
     if (this.appMode === 'play') {
+      stopDwellTracking('landing')
       await this.teardownScene()
     }
 
@@ -754,6 +817,15 @@ export class AppController {
     }
     this.currentRoute = target
     this.appMode = 'landing'
+
+    track('landing_view', {
+      route: target,
+      source: opts.fromHistory ? 'history' : opts.source ?? 'direct',
+      props: {
+        from_history: !!opts.fromHistory,
+        had_ban: !!opts.sceneBan
+      }
+    })
 
     this.teardownExplorer()
     this.teardownLanding()
@@ -791,6 +863,7 @@ export class AppController {
     this.ensureSocialChatShell()
     // Chat shell may re-apply wallet identity — re-sync owner gear with live session.
     this.sceneLandingView.syncLoginFromHost()
+    startLandingDwell(target)
     void this.refreshMonitoredScene(target)
     if (opts.sceneBan) {
       this.sceneBanActive = true
@@ -1123,14 +1196,30 @@ export class AppController {
 
   private async jumpInToScene(
     target: RouteTarget,
-    opts: { fromHistory?: boolean; replace?: boolean; fastAssets?: boolean } = {}
+    opts: {
+      fromHistory?: boolean
+      replace?: boolean
+      fastAssets?: boolean
+      entry?: 'landing_cta' | 'event_card' | 'deep_link' | 'map' | 'other' | 'teleport'
+      source?: AnalyticsSource
+    } = {}
   ): Promise<void> {
     if (target.kind !== 'coords' && target.kind !== 'world' && target.kind !== 'editor') return
 
     // Editor / already-in-play teleports skip re-auth; first entry from 2D needs session.
     if (target.kind !== 'editor' && this.appMode !== 'play') {
+      const neededAuth = !this.playSessionReady
+      if (neededAuth) {
+        track('auth_gate_show', { route: target, props: { reason: 'need_session' } })
+      }
       const ok = await this.ensurePlaySession()
       if (!ok) return
+      if (neededAuth && this.playSessionReady) {
+        track('auth_gate_complete', {
+          route: target,
+          props: { login_kind: this.login?.kind === 'wallet' ? 'wallet' : 'guest' }
+        })
+      }
     }
 
     const devQueryKey = readSceneDevQueryKey()
@@ -1149,6 +1238,36 @@ export class AppController {
       this.sceneLandingView !== null &&
       this.currentRoute !== null &&
       routeEquals(this.currentRoute, target)
+
+    const fromPlay = this.appMode === 'play'
+    if (fromPlay) {
+      stopDwellTracking('navigate')
+    }
+    // End 2D landing time when Jump In / teleport starts (before load).
+    if (fromSceneLanding || this.appMode === 'landing') {
+      stopLandingDwell('jump_in')
+    }
+
+    const entry =
+      opts.entry ??
+      (fromSceneLanding ? 'landing_cta' : fromPlay ? 'teleport' : 'other')
+    const playId = beginPlaySession()
+    const loadStarted = Date.now()
+
+    track('jump_in_click', {
+      route: target,
+      source: opts.source,
+      play_session_id: playId,
+      props: { entry }
+    })
+    track('scene_load_start', {
+      route: target,
+      play_session_id: playId,
+      props: {
+        fast_assets: !!(opts.fastAssets ?? fromPlay),
+        from_mode: this.appMode
+      }
+    })
 
     if (!fromSceneLanding) {
       this.teardownSocialChatShell(true)
@@ -1193,6 +1312,12 @@ export class AppController {
         onHydrationFinish: (result) => loading?.noteHydrationComplete(result)
       })
       this.appMode = 'play'
+      track('scene_enter', {
+        route: target,
+        play_session_id: playId,
+        props: { load_ms: Date.now() - loadStarted }
+      })
+      startDwellTracking(target)
       if (fromSceneLanding) {
         await this.sceneLandingView?.completeJumpInLoading()
         this.teardownLanding()
@@ -1204,6 +1329,17 @@ export class AppController {
     } catch (err) {
       if (err instanceof SceneAccessDeniedError) {
         const ui = formatSceneBanMessage(err)
+        track('scene_ban', {
+          route: target,
+          play_session_id: playId,
+          props: { source: err.source }
+        })
+        track('scene_load_fail', {
+          route: target,
+          play_session_id: playId,
+          props: { error_code: 'scene_ban', message: ui.title }
+        })
+        stopDwellTracking('error')
         if (fromSceneLanding) {
           this.sceneLandingView?.showSceneBan(ui)
         } else {
@@ -1213,6 +1349,12 @@ export class AppController {
       } else {
         const msg = err instanceof Error ? err.message : String(err)
         const ui = formatSceneLoadError(msg)
+        track('scene_load_fail', {
+          route: target,
+          play_session_id: playId,
+          props: { error_code: 'load_error', message: ui.title.slice(0, 120) }
+        })
+        stopDwellTracking('error')
         if (fromSceneLanding) {
           this.sceneLandingView?.showJumpInError(ui.title, ui.detail)
         } else {
@@ -1287,7 +1429,11 @@ export class AppController {
     this.world = world
     world.applyLogin(this.login)
     world.setNavigateHandler((target) => {
-      void this.jumpInToScene(target, { fastAssets: true })
+      const from = this.currentRoute
+      if (from && (target.kind === 'coords' || target.kind === 'world')) {
+        this.trackNavigate(from, target, 'goto', 'goto')
+      }
+      void this.jumpInToScene(target, { fastAssets: true, entry: 'teleport', source: 'goto' })
     })
     // Community-style toast when plaza has many remotes still composing.
     this.ensureSocialMobileNotifications()
@@ -1907,6 +2053,9 @@ export class AppController {
   }
 
   private async teardownScene(opts?: { keepLiveKit?: boolean }): Promise<void> {
+    // Dwell is ended explicitly (leave play / teleport / error / pagehide) — not here.
+    // teardownScene runs mid jump-in load and would kill a fresh play_session_id.
+    void opts
     this.unsubVoiceUi?.()
     this.unsubVoiceUi = null
     this.unsubVoiceSpeaking?.()

@@ -281,7 +281,7 @@ export class SocialProfileMenu {
         }
       </div>
       <p class="social-profile-menu__hint">
-        Stable guest wallet for chat &amp; LiveKit. Connect a wallet to claim wearables &amp; ownership tools.
+        Stable guest wallet for chat &amp; LiveKit. Sign in to claim wearables &amp; ownership tools — same accounts as Explorer.
       </p>
       <div class="social-profile-menu__items">
         <button type="button" class="social-profile-menu__item" data-open-whats-new>
@@ -289,21 +289,36 @@ export class SocialProfileMenu {
           <span>What's new</span>
         </button>
       </div>
-      <div class="social-profile-menu__actions">
-        <button type="button" class="social-profile-menu__item" data-login-method="metamask">
-          <span class="social-profile-menu__item-icon" aria-hidden="true">${ICON_METAMASK}</span>
-          <span>Connect MetaMask</span>
+      <div class="social-profile-menu__actions social-profile-menu__actions--signin">
+        <p class="social-profile-menu__status" data-signin-status hidden></p>
+        <div class="explorer-auth-verify social-profile-menu__verify" data-verify hidden>
+          <p class="explorer-auth-verify__label">Verify Sign In</p>
+          <p class="explorer-auth-verify__hint">Does this number match the one in the login tab?</p>
+          <p class="explorer-auth-verify__code" data-verify-code aria-live="polite">—</p>
+          <p class="explorer-auth-verify__wait">Waiting for confirmation…</p>
+        </div>
+        <button type="button" class="social-profile-menu__wallet-btn" data-login-method="google">
+          <span class="social-profile-menu__wallet-btn-icon" aria-hidden="true">${ICON_GOOGLE}</span>
+          <span>Continue with Google</span>
         </button>
-        <button type="button" class="social-profile-menu__item" data-login-method="google">
-          <span class="social-profile-menu__item-icon" aria-hidden="true">${ICON_GOOGLE}</span>
-          <span>Connect Google</span>
+        <button type="button" class="social-profile-menu__wallet-btn social-profile-menu__wallet-btn--secondary" data-login-method="metamask">
+          <span class="social-profile-menu__wallet-btn-icon" aria-hidden="true">${ICON_METAMASK}</span>
+          <span>Continue with MetaMask</span>
         </button>
+        <p class="social-profile-menu__or">or continue with</p>
+        <div class="social-profile-menu__provider-row" role="group" aria-label="More sign-in options">
+          <button type="button" class="social-profile-menu__provider-btn" data-login-method="discord" title="Discord" aria-label="Discord">${ICON_DISCORD}</button>
+          <button type="button" class="social-profile-menu__provider-btn" data-login-method="apple" title="Apple" aria-label="Apple">${ICON_APPLE}</button>
+          <button type="button" class="social-profile-menu__provider-btn" data-login-method="x" title="X" aria-label="X">${ICON_X}</button>
+          <button type="button" class="social-profile-menu__provider-btn" data-login-method="wallet-connect" title="WalletConnect" aria-label="WalletConnect">${ICON_WALLET_CONNECT}</button>
+        </div>
       </div>
     `
   }
 
   private wireGuestMenu(): void {
     this.wireWhatsNewItem()
+    // Full provider set (same as signed-out sign-in sheet).
     for (const btn of this.menuBody.querySelectorAll<HTMLButtonElement>('[data-login-method]')) {
       btn.addEventListener('click', () => {
         const method = btn.dataset.loginMethod as AuthDappLoginMethod | undefined

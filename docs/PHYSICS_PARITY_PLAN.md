@@ -1,10 +1,10 @@
 # Physics parity plan — Unity Explorer vs ThreejsClient
 
-**Status:** **P0+P1+P2 implemented** on `lastraum` · P3 manual QA open  
-**Branch context:** `lastraum`  
-**Last updated:** 2026-07-18  
+**Status:** **P0+P1+P2 on `dev-latest`** · impulse = Explorer-raw Δv · force keeps arcade scale · P3 manual QA open  
+**Branch context:** `dev-latest` (merged from `lastraum` 2026-07-19)  
+**Last updated:** 2026-07-19  
 
-Related code today: [`src/player/PlayerSystem.ts`](../src/player/PlayerSystem.ts) (`applyScenePhysicsCombined`), [`src/player/locomotion.ts`](../src/player/locomotion.ts) (`GLIDING_FORCE_MULTIPLIER`), PhysX CCT in [`src/physics/PhysXWorld.ts`](../src/physics/PhysXWorld.ts).
+Related code: [`src/player/externalPhysics.ts`](../src/player/externalPhysics.ts), [`src/player/PlayerSystem.ts`](../src/player/PlayerSystem.ts) (`applyScenePhysicsCombined`), [`src/player/locomotion.ts`](../src/player/locomotion.ts) (`GLIDING_FORCE_MULTIPLIER`), PhysX CCT in [`src/physics/PhysXWorld.ts`](../src/physics/PhysXWorld.ts).
 
 Official scene API: [Player Physics](https://docs.decentraland.org/creator/scenes-sdk7/interactivity/player-physics).
 
@@ -127,7 +127,7 @@ Three velocity channels stay separate.
 | Velocity split | `_velocity` (walk+g+jump) + `_externalVelocity` | Move / Gravity / External |
 | External drag | Env 0.5 + ground friction 4; max 50 | Same |
 | Grounded external Y | Cleared | Cleared |
-| Gravity constant | Jump **20**; external F/J × `20/9.8` (P1 A) | **9.8** |
+| Gravity constant | Jump **20**; continuous F × `20/9.8`; **impulse raw** (Explorer J as Δv) | **9.8** |
 | Multi-scene forces | Single PE (this client) — documented | Sum per World if IsCurrent |
 | Stale impulse on re-enter | Reset latch on init/teleport/dispose + eventId 0 / missing | Clear dirty on re-activate |
 | Mass | 1 | CharacterMass 1 |
@@ -158,9 +158,10 @@ Options:
 5. ✅ **External drag/clamp** only on external: env 0.5, ground friction 4, max 50; grounded clear external Y.  
 6. ✅ Keep: eventId once, glide ×1.5 on force only, DCL→Three vectors, strong upward impulse exits glide.
 
-### P1 — Calibration ✅
+### P1 — Calibration ✅ (impulse refined 2026-07-19)
 
-7. ✅ **Option A:** keep jump `GRAVITY = 20`; scale scene F/J by `EXTERNAL_SCENE_SCALE = 20/9.8` (`externalPhysics.ts`).  
+7. ✅ Keep jump `GRAVITY = 20`; **force** × `EXTERNAL_SCENE_SCALE = 20/9.8` so pads balance arcade g.  
+7b. ✅ **Impulse not scaled** — plaza/scene J stays Explorer Δv (`scaleImpulseForClient` = 1/mass only). Over-boost when both F and J used the g-ratio.  
 8. ✅ Continuous upward force ungrounds + no Y-strip when external/lift active (P0).
 
 ### P2 — Edge cases ✅
@@ -197,10 +198,11 @@ Options:
 - mass = 1  
 - Unity external drag numbers  
 - effective-g for force Y (base = client arcade 20)  
-- **P1 A:** `EXTERNAL_SCENE_SCALE = 20/9.8` on F and J  
+- **Force:** `EXTERNAL_SCENE_SCALE = 20/9.8`  
+- **Impulse:** raw scene J (Explorer)  
 - jump height still `sqrt(2 * 20 * h)`  
 
-Next: **P3** pad/wind scene smoke vs Explorer, then tweak scale if needed.  
+Next: **P3** pad/wind scene smoke vs Explorer (plaza bounce height QA), then tweak force scale only if needed.  
 
 ---
 

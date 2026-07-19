@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-18 (terrain biomes · land/desert landscape · backpack hides + inventory · peer profile announce)
+> **Last updated:** 2026-07-19 (PE force/impulse · TextShape/plane UV · UiBackground color×texture · plaza banners · chat translate · quiet logs)
 
 ---
 
@@ -51,13 +51,13 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | Name | — | 🟢 | `core-schema::Name` → Three.js `Group.name` (debug / tooling) |
 | VisibilityComponent | 1081 | 🟢 | `obj.visible` |
 | GltfContainer | 1041 | 🟢 | Budgeted attach + reload on src change |
-| GltfNodeModifiers | 1099 | 🟢 | Full path material/castShadows on GLB nodes; de-instance; restore on remove; videoTexture re-apply |
-| MeshRenderer | 1018 | 🟢 | Primitives + custom UVs |
+| GltfNodeModifiers | 1099 | 🟢 | Scene-graph path (Group→meshes); de-instance; restore on remove; videoTexture re-apply; static map U flip when GLB UVs L–R mirrored |
+| MeshRenderer | 1018 | 🟢 | Primitives + custom UVs · docs-order dual-face planes (v21) · marquee re-basis separate |
 | Material | 1017 | 🟢 | PBR/unlit + video; `cast_shadows` default **true** (omit = on); AUTO cutout only with alphaMap |
 | Animator | 1042 | 🟢 | `AnimatorBridge` — LWW identical `shouldReset` re-fires one-shots (muzzle / gun) |
 | Billboard | 1090 | 🟢 | `BillboardBridge` |
 | LightSource | 1079 | 🟢 | Culling + quality tiers |
-| TextShape | 1030 | 🟢 | Canvas texture planes |
+| TextShape | 1030 | 🟢 | Canvas planes · docs-order UVs · FrontSide · `scale.x<0` map U flip (Poker boards) |
 | GltfContainerLoadingState | 1049 | 🔵 | Host LWW from `ThreeBridge` attach path — LOADING→FINISHED/NOT_FOUND/ERROR → encoder + worker inject |
 
 ### Physics & input (Phase 2–3)
@@ -66,15 +66,15 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | --------- | -- | ------ | ----- |
 | MeshCollider | 1019 | 🟢 | PhysX static + GLTF trimesh |
 | AvatarLocomotionSettings | 1211 | 🟢 | jump / doubleJump / glidingSpeed / glidingFallingSpeed / hardLandingCooldown |
-| PhysicsCombinedForce | 1216 | 🟢 | PE force → external XZ + effective-g Y; 1.5× while gliding (`externalPhysics.ts`) |
-| PhysicsCombinedImpulse | 1215 | 🟢 | One-shot Δv on external channel via eventId; unground + cancel fall |
+| PhysicsCombinedForce | 1216 | 🟢 | PE force → external XZ + effective-g Y; ×`20/9.8` arcade scale; 1.5× while gliding (`externalPhysics.ts`) |
+| PhysicsCombinedImpulse | 1215 | 🟢 | Explorer-raw Δv (no g-scale); eventId **or** LWW Lamport for plaza eventId=0; unground + cancel fall |
 | InputModifier | 1078 | 🟢 | Read path |
 | PointerLock | 1074 | 🔵 | Renderer writes CameraEntity; right-click (or Tab) toggles lock; lock movement = orbit look |
 | PointerEvents | 1062 | 🟢 | Raycast + hover hints + CRDT |
 | PointerEventsResult | 1063 | 🔵 | Grow-only to worker |
 | PrimaryPointerInfo | 1209 | 🔵 | Cursor ray on RootEntity |
 | Raycast | 1067 | 🟢 | `RaycastSystem` + grow-only `RaycastResult` |
-| TriggerArea | 1060 | 🟢 | Volume enter/exit — `TriggerAreaSystem` + grow-only `TriggerAreaResult` |
+| TriggerArea | 1060 | 🟢 | Volume enter/exit — CCT+PE · parent-first world matrix · immediate append flush for impulse pads |
 
 ### Camera (Phase 2–3)
 
@@ -172,10 +172,10 @@ DOM overlay — not in-scene `UiTransform`.
 | Chat image lightbox | 🟢 | Inline DCM images → top-z modal |
 | Preferences panel (P / ⚙): Graphics preset/shadows/lights/res/FPS + lighting | 🟢 |
 | Preferences → Sounds volume sliders | 🟢 |
-| Preferences: Controls, Chat tabs | 🟡 | Mouse sensitivity live; keybinds pending |
+| Preferences: Controls, Chat tabs | 🟡 | Mouse sensitivity live; chat translate prefs 🟢 · keybinds pending |
 | Settings: Communities | 🟢 | Browse + modal · announce/start-voice **owner/mod/admin** · voice join/end-all · community chat open into dock |
 | Community HUD toasts | 🟢 | Top-center in-world · posts poll + Social WS voice · companion-aligned copy |
-| In-scene ECS UI | 🟡 | Yoga + DOM · hit-map from Yoga 🟢 · UiBackground nine-slice (border-image + natural size) 🟢 · text-measure polish remain |
+| In-scene ECS UI | 🟡 | Yoga + DOM · hit-map 🟢 · UiBackground nine-slice + **Color4×texture multiply** 🟢 · instant solid tint · text-measure polish remain |
 | Voice / mic UI | 🟢 | Nearby voice panel · Speak / hold T · mute-in-bg · name-tag bars · **3D PositionalAudio** |
 
 ---

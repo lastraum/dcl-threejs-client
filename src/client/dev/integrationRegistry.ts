@@ -246,7 +246,7 @@ export const PERFORMANCE_INTEGRATION: IntegrationEntry[] = [
     status: 'render',
     category: 'performance',
     notes:
-      'Force/Impulse on PE; glider open/close + remote RFC4 glideState; 1.5× force while gliding'
+      'externalPhysics: force ×20/9.8 + effective-g Y; impulse Explorer-raw Δv; Lamport for eventId=0; glider 1.5× force; drag/clamp'
   },
   { id: 'perf:collider-prewarm', name: 'Collision prewarm gate', status: 'render', category: 'performance', notes: 'Colliders ready before world.start()' },
   {

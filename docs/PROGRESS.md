@@ -2,10 +2,10 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-18  
-> **Current phase:** **v1.2.0** — production beta + multiplayer/social reliability; still not full Explorer parity.  
-> **Shipped (1.x):** **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · U/N UI · terrain editor biomes · backpack forceRender · 3D chat handoff · nearby voice · minimap · communities · P4 bloom/HDR · glider · SDK6 fail-fast.  
-> **1.x next:** backpack outfits/marketplace · scene UI text-measure · community voice Bearer parity · create-community / invites · graphics P3 distance culls · gallery multi-page (100+ photos).  
+> **Last updated:** 2026-07-19  
+> **Current phase:** **v1.3.0 candidate on `dev-latest`** — scene physics/UI parity + chat translate; still not full Explorer parity.  
+> **Shipped (1.x):** **v1.2.0 Camera Reel + biomes + backpack hides** · **plaza/poker PE + UI tint (→ `dev-latest`)** · In-World Camera · U/N · terrain biomes · backpack forceRender · multi-room chat · nearby voice · P4 bloom · glider.  
+> **1.x next / release gate:** smoke QA (plaza bounce · Poker welcome · Dead Surge labels) · then `dev-latest` → `main` cut **v1.3.0** · backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
@@ -13,6 +13,37 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — Plaza / Poker parity · PE physics · scene UI tint · chat translate → `dev-latest` (2026-07-19)
+
+**Status: merged `lastraum` → `dev-latest`** (fast-forward `8aa5830`) — Genesis Plaza playability, Explorer-style PE force/impulse, TextShape/plane UV parity, UiBackground color×texture, optional chat translation, quieter default logging.
+
+### What's new
+
+- **Genesis Plaza bounce parasols** — TriggerArea enter → PE impulse `(0,25,0)`; Explorer-raw Δv (no arcade g-scale on impulse); continuous force still arcade-scaled for jump feel
+- **Store / event banners** — GltfNodeModifiers Group→mesh path resolve; event poster CORS/webp MIME; spatial audio on player
+- **Planes & TextShape** — docs-order UVs (Dead Surge BACK/NEXT + leaderboards); TextShape FrontSide; **Poker Night** `scale.x=-1` map U flip so casual boards read L→R
+- **Scene UI colors** — UiBackground multiplies Color4 × texture (white nine-slice × dark/green); instant solid tint (no white flash)
+- **Chat** — channel menu prefs + optional auto/manual translation UI
+- **Debug** — browser console **off by default**; Help → Debug checkbox mirrors logs; throttle CRDT/video spam; avatar feet logs only with `?avatarverbose`
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **PE force + impulse channel** | 🟢 | `externalPhysics.ts` · force × `20/9.8` · impulse raw · drag/clamp · land latch reset |
+| **TriggerArea CCT** | 🟢 | Parent-first world matrix · PE gates · immediate append flush |
+| **GltfNodeModifiers banners** | 🟢 | Named Group path + mesh leaves · static map U flip when UV L–R mirrored |
+| **TextShape / plane UV** | 🟢 | Docs corner maps · FrontSide · scale.x mirror compensation |
+| **UiBackground color×texture** | 🟢 | Canvas multiply + solid first paint · nine-slice |
+| **Chat translation** | 🟡 | Settings + per-line controls · provider path; production provider keys TBD |
+| **Console log gate** | 🟢 | `ClientDebugLog` mirror default off |
+
+**QA (1.3.0 smoke):** Genesis plaza bounce height vs Explorer · store banners load · event board poster · Dead Surge BACK/NEXT · Poker Night welcome dark + green buttons · Poker leaderboard L→R · chat translate optional · Help console checkbox off by default.
+
+**Tip commits:** `afaf367` / `7ecd8a9` / `8aa5830` on `dev-latest`.
+
+**Release note:** Candidate for **v1.3.0** after smoke QA — not cut yet (`package.json` remains `1.2.0` until `main` release).
 
 ---
 

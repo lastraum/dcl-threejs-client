@@ -210,7 +210,9 @@ export class ExplorerAuthPanel {
     if (this.busy) return
     this.setBusy(true)
     this.setVerifyCode(null)
-    this.setStatus('Connecting…')
+    this.setStatus(
+      method === 'metamask' ? 'Connecting to MetaMask…' : 'Opening Decentraland login…'
+    )
     try {
       // Local MetaMask when extension/SDK available — skip auth dapp hop.
       const result =
@@ -218,7 +220,7 @@ export class ExplorerAuthPanel {
           ? await loginWithMetaMask((msg) => this.setStatus(msg)).catch(async (err) => {
               // Fall back to auth dapp if local MetaMask fails (e.g. not installed).
               const msg = err instanceof Error ? err.message : String(err)
-              if (/not found|install/i.test(msg)) {
+              if (/not found|install|rejected|denied/i.test(msg)) {
                 this.setStatus('Opening Decentraland login…')
                 return loginWithProvider('metamask', this.onAuthProgress)
               }
@@ -233,6 +235,7 @@ export class ExplorerAuthPanel {
       // Keep verification code if shown — transient errors / tab false-positives.
       const msg = err instanceof Error ? err.message : String(err)
       this.setStatus(msg, true)
+    } finally {
       this.setBusy(false)
     }
   }

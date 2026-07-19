@@ -196,14 +196,17 @@ export async function loginWithAuthDapp(
     emitProgress(onStatus, message, verificationCode)
 
   try {
+    // MUST open on the same user gesture tick (before any await) or browsers block it.
+    progress('Opening Decentraland login…')
+    authTab = openAuthTab('about:blank')
+    if (!authTab) {
+      throw new Error('Tab blocked — allow popups/tabs for this site and try again')
+    }
+
     progress('Preparing secure login…')
     const ephemeral = createUnsafeIdentity()
     const expiration = new Date(Date.now() + IDENTITY_TTL_MS)
     const ephemeralMessage = Authenticator.getEphemeralMessage(ephemeral.address, expiration)
-
-    progress('Opening Decentraland login…')
-    // Open blank tab on the user gesture first (avoids blockers after await).
-    authTab = openAuthTab('about:blank')
 
     const created = await createSignRequest(ephemeralMessage)
     const loginUrl = buildAuthLoginUrl(created.requestId, loginMethod)

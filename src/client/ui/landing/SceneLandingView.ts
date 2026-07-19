@@ -24,6 +24,7 @@ import { SocialShellTopNav, type SocialShellChromeHandlers, type SocialShellTab 
 import { SceneStreamSettingsModal } from './SceneStreamSettingsModal'
 import { SceneUsersModal } from './SceneUsersModal'
 import { ScenePlaceStatsModal } from './ScenePlaceStatsModal'
+import { isAnalyticsEnabled } from '../../../analytics/track'
 import Hls from 'hls.js'
 
 export type SceneLandingViewOptions = SocialShellChromeHandlers & {
@@ -1434,7 +1435,9 @@ export class SceneLandingView {
                           <div class="scene-watch-dest-scene-card-head">
                             <h1 class="scene-watch-dest-scene-card-title">${escapeHtml(meta.title)}</h1>
                             <div class="scene-watch-dest-scene-card-head-actions">
-                              <button
+                              ${
+                                isAnalyticsEnabled()
+                                  ? `<button
                                 type="button"
                                 class="scene-watch-scene-stats-btn"
                                 data-scene-stats
@@ -1450,7 +1453,9 @@ export class SceneLandingView {
                                     stroke-linejoin="round"
                                   />
                                 </svg>
-                              </button>
+                              </button>`
+                                  : ''
+                              }
                               <button
                                 type="button"
                                 class="scene-watch-scene-settings-btn"

@@ -58,8 +58,13 @@ let wallet: string | undefined
 let playSessionId: string | null = null
 let playSessionStartedAt = 0
 
-function analyticsEnabled(): boolean {
+/** True only when `VITE_ANALYTICS_ENABLED=true` was set at build time. */
+export function isAnalyticsEnabled(): boolean {
   return import.meta.env.VITE_ANALYTICS_ENABLED === 'true'
+}
+
+function analyticsEnabled(): boolean {
+  return isAnalyticsEnabled()
 }
 
 function uaClass(): 'desktop' | 'mobile' | 'unknown' {

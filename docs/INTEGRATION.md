@@ -84,6 +84,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | VirtualCamera | 1076 | 🟢 | `VirtualCameraBridge` — world-flat hydrate; PE-follow; freecam orbit lock while MainCamera VC-bound; aim via lookAt (no hard-coded iso offsets) |
 | CameraMode | 1072 | 🔵 | Renderer writes 1st/3rd on CameraEntity from freecam distance |
 | CameraModeArea | 1071 | 🟢 | Volume forces 1st/3rd freecam; cinematic ignored (VC path) |
+| **In-World Camera (client)** | — | 🟢 | `PhotoCameraController` owns `SceneHost.camera` while active; blocked when scene VirtualCamera is bound |
 
 ### Media & motion (Phase 3)
 
@@ -162,10 +163,13 @@ DOM overlay — not in-scene `UiTransform`.
 | **Circular Genesis minimap** (parcel play HUD) | 🟢 | Satellite basemap circle under pill; facing triangle; peer dots; click → in-world Map (embedded); worlds hide minimap |
 | Debug panel, dev progress panel (`</>`) | 🟢 |
 | Settings overlay: Events, Map, Backpack, Places, Gallery | 🟢 | Map tab embedded when opened from minimap / shell (no page HUD chrome) |
+| **In-World Camera (C)** | 🟢 | Dedicated photo fly mode (not orbit freecam) · Space shutter · FOV scroll · pointer-lock look · review 3/4·1/4 · Save → Camera Reel |
+| **Settings → Gallery (K)** | 🟢 | Camera Reel list/detail · public/delete/link · thumb ⋮ menu · signed fetch |
 | Backpack wearables equip + Catalyst profile deploy | 🟡 | Inventory/equip/preview/deploy + **in-world reload from session** 🟢 · emotes tab / outfits / marketplace ⬜ · mobile sheets 🟢 |
 | Profile pills + right-click profile menu (+ copy wallet) | 🟢 |
 | Overhead name tags (`featureToggles.nameTags` / `?nameTags=` lock; **N** = local + remotes + AvatarShapes) | 🟢 |
 | Hide all UI (**U**) | 🟢 | Client chrome + scene UI + overlays |
+| Chat image lightbox | 🟢 | Inline DCM images → top-z modal |
 | Preferences panel (P / ⚙): Graphics preset/shadows/lights/res/FPS + lighting | 🟢 |
 | Preferences → Sounds volume sliders | 🟢 |
 | Preferences: Controls, Chat tabs | 🟡 | Mouse sensitivity live; keybinds pending |

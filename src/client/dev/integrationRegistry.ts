@@ -106,7 +106,7 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
     status: 'render',
     category: 'client-ui',
     notes:
-      'Dedicated photo fly camera (not orbit freecam); shutter 1920×1080 + frustum people metadata; local download'
+      'Dedicated photo fly camera (not orbit freecam); Space shutter 1920×1080 + frustum people; review rail; Save → signed Camera Reel upload'
   },
   { id: 'ui:emote-wheel', name: 'Emote wheel (B)', status: 'render', category: 'client-ui', notes: 'Profile + bundled emotes' },
   { id: 'ui:location-card', name: 'Location card', status: 'render', category: 'client-ui', notes: 'Top-left pill — scene name + Genesis parcel coords; width matches minimap when present' },
@@ -136,7 +136,14 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
     notes:
       'Browse + modal; announce/start-voice owner|mod|admin; voice join/end-all; community chat opens SocialChatDock; ADR-208 group text'
   },
-  { id: 'ui:settings-gallery', name: 'Settings → Gallery', status: 'render', category: 'client-ui', notes: 'Camera Reel API, month grid, Share on X → reels.decentraland.org' },
+  {
+    id: 'ui:settings-gallery',
+    name: 'Settings → Gallery (K)',
+    status: 'render',
+    category: 'client-ui',
+    notes:
+      'Camera Reel list/detail (3/4·1/4); public toggle; delete; copy reels link; thumb ⋮ menu; signed fetch'
+  },
   {
     id: 'ui:ecs-scene-ui',
     name: 'In-scene ECS UI (UiTransform…)',

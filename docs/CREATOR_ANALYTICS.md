@@ -3,9 +3,9 @@
 > **Status:** Phase 1–2 shipped on `lastraum` / `dev-latest` (JSONL + optional Supabase mirror, public landing stats modal).  
 > **Scope:** explorer **presence / place engagement** (landing, jump-in, `/goto`, dwell, uniques).  
 > **Out of scope:** Forge quests/rewards/items, Privy MAU identity for every visitor, spatial heatmaps v1.  
-> **Enable client emit:** `VITE_ANALYTICS_ENABLED=true` only on **production** builds (`decentraland.social`).  
-> **Local + staging (`dev.decentraland.social`):** leave the flag **unset/false** — no emit, no stats button, no nginx analytics proxy.  
-> **Dev API (local only):** Vite middleware serves `/api/analytics/*` when you opt in.  
+> **Prod client build:** `npm run build:prod` (sets `VITE_ANALYTICS_ENABLED=true`) → deploy to `decentraland.social`.  
+> **Local + staging:** `npm run build` (forces analytics **off**) → `dev.decentraland.social` / local.  
+> **Dev API (local only):** Vite middleware serves `/api/analytics/*` if you set the flag for a manual opt-in test.  
 > **Prod API:** PM2 (`server/ecosystem.config.cjs`) + nginx `/api/analytics/` → `:8787`.
 
 **Product decision:** stats for a place are **public**. Anyone on the **scene landing page** can open a stats panel — not owner/creator only. Creators benefit the same as visitors; social proof is intentional.

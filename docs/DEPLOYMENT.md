@@ -9,7 +9,7 @@
 
 | Item | Value |
 |------|-------|
-| **Build** | `npm run build` → `dist/` static SPA |
+| **Build** | `npm run build` → staging/local SPA (analytics off) · `npm run build:prod` → production SPA (analytics on) |
 | **Runtime** | Any static host + SPA fallback (nginx, Cloudflare Pages, S3+CloudFront, etc.) |
 | **Auth** | Non-blocking session resume; explorer auth sheet for wallet/guest (dev: `?guest` / `?skipLogin`) |
 | **Realm** | Default catalyst `https://peer-ec2.decentraland.org` (override via env) |

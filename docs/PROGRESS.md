@@ -24,7 +24,7 @@
 
 - **Landing bar-chart control** — next to owner settings gear; **anyone** can open place stats (not creator-only)
 - **Metrics** — landing views, uniques, jump-ins, jump-in rate, median time on landing + in world, multi-visit, 7d dual bars (landings / jump-ins) with hover counts
-- **Client emit** — `VITE_ANALYTICS_ENABLED=true` (off by default for local); fire-and-forget events never block play
+- **Client emit** — `npm run build:prod` enables analytics; plain `npm run build` keeps it off (staging/local)
 - **Dwell** — landing page time (`landing_leave`) and in-world session time (`scene_leave` + heartbeats)
 - **Backend** — `POST /api/analytics/events`, `GET /api/analytics/places/:placeKey/summary`; Vite dev middleware; prod PM2 + nginx → `:8787`
 - **Optional Supabase** — service-role mirror of `place_events` (browser never holds secrets)

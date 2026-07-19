@@ -28,6 +28,8 @@ export type ClientShellOptions = {
   settingsOverlay?: SettingsOverlay | null
   preferencesPanel?: PreferencesPanel | null
   onEmoteSelected?: (emoteId: string) => void
+  /** Explorer In-World Camera (photo mode) — C / sidebar camera. */
+  onTogglePhotoCamera?: () => void
   onSignOut: () => void | Promise<void>
   onExit: () => void | Promise<void>
 }
@@ -57,7 +59,7 @@ const BOTTOM_BUTTONS: SidebarButtonConfig[] = [
   },
   { id: 'smart-wearable', icon: 'smartWearable', label: 'Smart wearables' },
   { id: 'skybox', icon: 'skybox', label: 'Skybox overrides' },
-  { id: 'camera', icon: 'camera', label: 'Camera mode' },
+  { id: 'camera', icon: 'camera', label: 'Camera mode', shortcut: 'C' },
   { id: 'emotes', icon: 'emotes', label: 'Emotes', shortcut: 'B' },
   { id: 'friend-requests', icon: 'friendRequests', label: 'Friend requests' },
   { id: 'chat', icon: 'chat', label: 'Chat' }
@@ -84,6 +86,7 @@ export class ClientShell {
   private preferencesPanel: PreferencesPanel | null
   private session: SessionIdentity
   private onEmoteSelected: ((emoteId: string) => void) | null = null
+  private onTogglePhotoCamera: (() => void) | null = null
   private emoteWheelEnabled = true
   private unreadChat = 0
   private unsubChatUnread: (() => void) | null = null
@@ -105,9 +108,22 @@ export class ClientShell {
   private getLocationCoordsLabel: (() => string) | null = null
   private locationCoordsRaf = 0
 
-  constructor({ environment, session, debugPanel, devProgressPanel = null, chatPanel = null, settingsOverlay = null, preferencesPanel = null, onEmoteSelected, onSignOut, onExit }: ClientShellOptions) {
+  constructor({
+    environment,
+    session,
+    debugPanel,
+    devProgressPanel = null,
+    chatPanel = null,
+    settingsOverlay = null,
+    preferencesPanel = null,
+    onEmoteSelected,
+    onTogglePhotoCamera,
+    onSignOut,
+    onExit
+  }: ClientShellOptions) {
     this.session = session
     this.onEmoteSelected = onEmoteSelected ?? null
+    this.onTogglePhotoCamera = onTogglePhotoCamera ?? null
     this.root = document.createElement('aside')
     this.root.id = 'client-shell'
     this.root.className = 'client-shell'
@@ -328,6 +344,10 @@ export class ClientShell {
 
   setEmoteHandler(handler: ((emoteId: string) => void) | null): void {
     this.onEmoteSelected = handler
+  }
+
+  setPhotoCameraHandler(handler: (() => void) | null): void {
+    this.onTogglePhotoCamera = handler
   }
 
   setEmoteWheelProfile(profile: AvatarProfile | null | undefined): void {
@@ -566,6 +586,14 @@ export class ClientShell {
       }
     }
 
+    if (id === 'camera') {
+      return (ev) => {
+        ev.stopPropagation()
+        this.closeMobileDrawerForOverlay()
+        this.onTogglePhotoCamera?.()
+      }
+    }
+
     const overlayTabs: Record<string, SettingsTab> = {
       events: 'events',
       map: 'map',
@@ -590,7 +618,6 @@ export class ClientShell {
       help: 'Help',
       dev: 'Dev progress',
       'smart-wearable': 'Smart wearables',
-      camera: 'Camera mode',
       'friend-requests': 'Friend requests',
       chat: 'Chat'
     }

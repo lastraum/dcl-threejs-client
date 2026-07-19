@@ -70,6 +70,10 @@ export class SessionIdentity {
     return this.lambdasUrl
   }
 
+  getContentUrl(): string {
+    return this.contentUrl
+  }
+
   /** Fetch Catalyst profile for the active wallet. */
   async connect(onProgress?: (msg: string) => void): Promise<AvatarProfile | null> {
     this.address = this.resolveActiveAddress()

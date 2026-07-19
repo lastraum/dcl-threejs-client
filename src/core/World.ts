@@ -98,6 +98,8 @@ import { skipRemoteAvatars } from '../client/devFlags'
 import { initMainThreadPerfFromUrl, recordMainThreadPerf } from '../debug/MainThreadPerf'
 import { VrmPeerSync } from '../avatar/vrm/VrmPeerSync'
 import { clearVrmRamCache } from '../avatar/vrm/vrmRamCache'
+import { PhotoCameraController } from '../photo/PhotoCameraController'
+import type { PhotoPersonSample } from '../photo/photoMetadata'
 
 import { physxColliderDebug } from '../debug/PhysxColliderDebug'
 import { environmentDebug } from '../debug/EnvironmentDebug'
@@ -134,6 +136,11 @@ export class World {
   private player: PlayerSystem | null = null
   private remoteAvatars: RemoteAvatarManager | null = null
   private readonly vrmPeerSync = new VrmPeerSync()
+  /** Explorer In-World Camera (photo fly mode) — dedicated lens, not orbit freecam. */
+  private photoCamera: PhotoCameraController | null = null
+  private photoChromeHandler: ((visible: boolean) => void) | null = null
+  /** Last loaded scene — photo metadata place name. */
+  private photoSceneTitle = 'Scene'
   private playerMode = !useOrbitMode()
   private editorPreviewMode = false
   /** AppController HUD — remote avatar compose progress toast. */
@@ -461,6 +468,11 @@ export class World {
   }
 
   async loadScene(scene: ResolvedScene, onProgress?: (msg: string) => void): Promise<void> {
+    this.photoSceneTitle =
+      scene.metadata?.display?.title?.trim() ||
+      (scene.source.kind === 'world' ? scene.source.worldName : null) ||
+      scene.baseParcel ||
+      'Scene'
     if (skipRemoteAvatars()) {
       clientDebugLog.log('network', 'Remote avatars disabled (?noremote)', {
         alsoConsole: true,
@@ -1211,6 +1223,9 @@ export class World {
           const platformMs = performance.now() - platformT0
           const playerT0 = performance.now()
           this.player.update(delta)
+          if (this.photoCamera?.isActive()) {
+            this.photoCamera.update(delta)
+          }
           const playerMs = performance.now() - playerT0
           recordMainThreadPerf({ platformMotionMs: platformMs, playerUpdateMs: playerMs, colliderApplyMs: 0 })
           const emoteAllowed = this.player.canPlayVoluntaryEmote()
@@ -2452,6 +2467,113 @@ export class World {
     this.sceneScript.applyAvatarShapeNameTagsVisibility()
   }
 
+  /** AppController — hide/show play chrome while photo mode is active. */
+  setPhotoChromeHandler(handler: ((visible: boolean) => void) | null): void {
+    this.photoChromeHandler = handler
+  }
+
+  isPhotoCameraActive(): boolean {
+    return this.photoCamera?.isActive() === true
+  }
+
+  /** Toggle Explorer In-World Camera (C / sidebar). */
+  togglePhotoCamera(): void {
+    if (!this.playerMode || !this.player) return
+    // Scene VirtualCamera owns the lens — don't fight it.
+    if (this.sceneScript.getVirtualCameraBridge()?.isActive()) {
+      clientDebugLog.log('client', 'Photo camera blocked — scene VirtualCamera is active', {
+        alsoConsole: true,
+        throttleMs: 2000
+      })
+      return
+    }
+    this.ensurePhotoCamera()
+    this.photoCamera?.toggle()
+  }
+
+  enterPhotoCamera(): void {
+    if (!this.playerMode || !this.player) return
+    if (this.sceneScript.getVirtualCameraBridge()?.isActive()) return
+    this.ensurePhotoCamera()
+    this.photoCamera?.enter()
+  }
+
+  exitPhotoCamera(): void {
+    this.photoCamera?.exit()
+  }
+
+  private ensurePhotoCamera(): void {
+    if (this.photoCamera || !this.player) return
+    this.photoCamera = new PhotoCameraController({
+      host: this.host,
+      getPlayerFeet: () => this.player!.getWorldPosition(),
+      getPeopleSamples: () => this.collectPhotoPeopleSamples(),
+      getSelfIdentity: () => {
+        const profile = this.session.getProfile()
+        const address = (this.session.getAddress() ?? profile?.address ?? '').toLowerCase()
+        return {
+          name: profile?.displayName?.trim() || (address ? shortenAddress(address) : 'You'),
+          address,
+          isGuest: !profile?.fromWallet
+        }
+      },
+      getSceneMeta: () => this.getPhotoSceneMeta(),
+      getAuthIdentity: () => this.session.getAuthIdentity(),
+      peerUrl: this.session.getContentUrl() || undefined,
+      setWorldChromeVisible: (visible) => {
+        this.player?.setPhotoModeActive(!visible)
+        this.photoChromeHandler?.(visible)
+      }
+    })
+  }
+
+  private getPhotoSceneMeta(): {
+    sceneName: string
+    realm: string
+    parcelX: number
+    parcelY: number
+  } {
+    const pos = this.player?.getPosition()
+    const origin = this.comms.getSceneOrigin()
+    const worldX = (pos?.x ?? 0) + (origin?.x ?? 0)
+    const worldZ = (pos?.z ?? 0) + (origin?.z ?? 0)
+    const parcelX = Math.floor(worldX / 16)
+    const parcelY = Math.floor(worldZ / 16)
+    return {
+      sceneName: this.photoSceneTitle || `Parcel ${parcelX},${parcelY}`,
+      realm: typeof window !== 'undefined' ? window.location.hostname : 'local',
+      parcelX,
+      parcelY
+    }
+  }
+
+  private collectPhotoPeopleSamples(): PhotoPersonSample[] {
+    const samples: PhotoPersonSample[] = []
+    if (this.player) {
+      const feet = this.player.getWorldPosition()
+      const profile = this.session.getProfile()
+      const address = (this.session.getAddress() ?? profile?.address ?? 'local').toLowerCase()
+      samples.push({
+        address,
+        displayName: profile?.displayName?.trim() || shortenAddress(address),
+        isGuest: !profile?.fromWallet,
+        isEmoting: this.player.isProfileEmoteActive(),
+        hasClaimedName: !!profile?.hasClaimedName,
+        nameColor: profile?.nameColor,
+        faceUrl: null,
+        wearables: profile?.wearables ? [...profile.wearables] : [],
+        worldPosition: feet.clone(),
+        radius: 1.0
+      })
+    }
+    if (!skipRemoteAvatars() && this.remoteAvatars) {
+      for (const p of this.remoteAvatars.collectPhotoPeopleSamples()) {
+        samples.push(p)
+      }
+    }
+    return samples
+  }
+
   getPlayerPosition(): THREE.Vector3 | null {
     if (!this.playerMode || !this.player) return null
     return this.player.getPosition()
@@ -2761,6 +2883,9 @@ export class World {
     this.unsubAvatarChat = null
     this.unsubEnvironmentDebug?.()
     this.unsubEnvironmentDebug = null
+    this.photoCamera?.dispose()
+    this.photoCamera = null
+    this.photoChromeHandler = null
     this.host.stop()
 
     // Scene systems first — CameraModeArea / pointer dispose still call into player.

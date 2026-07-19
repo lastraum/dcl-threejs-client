@@ -100,6 +100,14 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
     category: 'client-ui',
     notes: 'Explorer U — client chrome + scene UI + overlays'
   },
+  {
+    id: 'ui:photo-camera',
+    name: 'In-World Camera (C)',
+    status: 'render',
+    category: 'client-ui',
+    notes:
+      'Dedicated photo fly camera (not orbit freecam); shutter 1920×1080 + frustum people metadata; local download'
+  },
   { id: 'ui:emote-wheel', name: 'Emote wheel (B)', status: 'render', category: 'client-ui', notes: 'Profile + bundled emotes' },
   { id: 'ui:location-card', name: 'Location card', status: 'render', category: 'client-ui', notes: 'Top-left pill — scene name + Genesis parcel coords; width matches minimap when present' },
   {

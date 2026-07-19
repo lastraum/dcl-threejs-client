@@ -162,3 +162,16 @@ export function clearGuestWallet(): void {
   if (typeof window === 'undefined') return
   localStorage.removeItem(GUEST_WALLET_STORAGE_KEY)
 }
+
+/**
+ * Root private key for the stable guest wallet (hex, with 0x).
+ * Only available in this browser; null if no guest record.
+ */
+export function getGuestPrivateKeyHex(): string | null {
+  const rec = readGuestRecord()
+  const root = rec ? rootFromRecord(rec) : null
+  if (!root?.privateKey) return null
+  const hex = root.privateKey.replace(/^0x/i, '').toLowerCase()
+  if (!/^[a-f0-9]{64}$/.test(hex)) return null
+  return `0x${hex}`
+}

@@ -24,13 +24,14 @@ const ALLOWED_EVENTS = new Set([
   'login',
   'logout',
   'landing_view',
-  'landing_heartbeat',
+  'landing_heartbeat', // legacy alias
   'landing_leave',
   'jump_in_click',
   'scene_load_start',
   'scene_load_fail',
   'scene_enter',
-  'heartbeat',
+  'heartbeat', // legacy alias
+  'active_pulse',
   'scene_leave',
   'goto',
   'navigate',
@@ -43,6 +44,112 @@ const ALLOWED_EVENTS = new Set([
   'landing_chat_ready',
   'landing_cast_live'
 ])
+
+// --- Anti-spam (in-memory; resets on process restart) -------------------------
+const LANDING_VIEW_COOLDOWN_MS = 30_000
+const SCENE_ENTER_COOLDOWN_MS = 60_000
+const JUMP_IN_COOLDOWN_MS = 15_000
+const IP_WINDOW_MS = 60_000
+const IP_MAX_REQUESTS = 60
+const VISITOR_WINDOW_MS = 60 * 60 * 1000
+const VISITOR_MAX_EVENTS = 400
+const SOFT_DWELL_CAP_MS = 45 * 60 * 1000
+const MIN_DWELL_MS = 3_000
+
+/** @type {Map<string, number>} */
+const landingViewCooldown = new Map()
+/** @type {Map<string, number>} */
+const sceneEnterCooldown = new Map()
+/** @type {Map<string, number>} */
+const jumpInCooldown = new Map()
+/** @type {Map<string, { count: number, start: number }>} */
+const ipWindows = new Map()
+/** @type {Map<string, { count: number, start: number }>} */
+const visitorWindows = new Map()
+
+function pruneMap(map, maxAgeMs) {
+  const now = Date.now()
+  if (map.size < 5000) return
+  for (const [k, v] of map) {
+    const t = typeof v === 'number' ? v : v?.start
+    if (typeof t === 'number' && now - t > maxAgeMs) map.delete(k)
+  }
+}
+
+function clientIp(req) {
+  const xff = req?.headers?.['x-forwarded-for']
+  if (typeof xff === 'string' && xff.trim()) return xff.split(',')[0].trim().slice(0, 64)
+  return (req?.socket?.remoteAddress || 'unknown').slice(0, 64)
+}
+
+function rateWindowAllow(map, key, windowMs, maxCount) {
+  const now = Date.now()
+  const cur = map.get(key)
+  if (!cur || now - cur.start > windowMs) {
+    map.set(key, { count: 1, start: now })
+    return true
+  }
+  if (cur.count >= maxCount) return false
+  cur.count += 1
+  return true
+}
+
+function cooldownAllow(map, key, cooldownMs) {
+  const now = Date.now()
+  const prev = map.get(key)
+  if (prev && now - prev < cooldownMs) return false
+  map.set(key, now)
+  return true
+}
+
+/**
+ * Drop spammy events; keep valid ones.
+ * @param {object[]} normalized
+ * @param {{ ip?: string }} [ctx]
+ */
+function filterAntiSpam(normalized, ctx = {}) {
+  const ip = ctx.ip || 'unknown'
+  pruneMap(landingViewCooldown, LANDING_VIEW_COOLDOWN_MS * 4)
+  pruneMap(sceneEnterCooldown, SCENE_ENTER_COOLDOWN_MS * 4)
+  pruneMap(jumpInCooldown, JUMP_IN_COOLDOWN_MS * 4)
+  pruneMap(ipWindows, IP_WINDOW_MS * 2)
+  pruneMap(visitorWindows, VISITOR_WINDOW_MS * 2)
+
+  if (!rateWindowAllow(ipWindows, ip, IP_WINDOW_MS, IP_MAX_REQUESTS)) {
+    return { accepted: [], rejected: normalized.length, reason: 'ip_rate' }
+  }
+
+  const out = []
+  for (const e of normalized) {
+    const vid = e.visitor_id || 'anon'
+    if (!rateWindowAllow(visitorWindows, vid, VISITOR_WINDOW_MS, VISITOR_MAX_EVENTS)) {
+      continue
+    }
+    const place = e.place_key || '_'
+    const vp = `${vid}|${place}`
+
+    if (e.event === 'landing_view') {
+      if (!cooldownAllow(landingViewCooldown, vp, LANDING_VIEW_COOLDOWN_MS)) continue
+    } else if (e.event === 'scene_enter') {
+      if (!cooldownAllow(sceneEnterCooldown, vp, SCENE_ENTER_COOLDOWN_MS)) continue
+    } else if (e.event === 'jump_in_click') {
+      if (!cooldownAllow(jumpInCooldown, vp, JUMP_IN_COOLDOWN_MS)) continue
+    }
+
+    // Soft-cap dwell on leave events at ingest for storage consistency
+    if ((e.event === 'landing_leave' || e.event === 'scene_leave') && e.props) {
+      const d = Number(e.props.dwell_ms)
+      if (Number.isFinite(d)) {
+        e.props = {
+          ...e.props,
+          dwell_ms: Math.min(Math.max(0, d), SOFT_DWELL_CAP_MS)
+        }
+      }
+    }
+    out.push(e)
+  }
+  return { accepted: out, rejected: normalized.length - out.length, reason: null }
+}
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -125,21 +232,39 @@ export function normalizeEvent(raw) {
   return row
 }
 
-export async function appendEvents(events) {
+/**
+ * @param {unknown} events
+ * @param {{ ip?: string }} [ctx]
+ */
+export async function appendEvents(events, ctx = {}) {
   const list = Array.isArray(events) ? events : [events]
   const normalized = []
   for (const raw of list.slice(0, 20)) {
     const n = normalizeEvent(raw)
     if (n) normalized.push(n)
   }
-  if (normalized.length === 0) return { accepted: 0 }
+  if (normalized.length === 0) return { accepted: 0, rejected: 0 }
+
+  const filtered = filterAntiSpam(normalized, ctx)
+  if (filtered.accepted.length === 0) {
+    return {
+      accepted: 0,
+      rejected: filtered.rejected || normalized.length,
+      reason: filtered.reason || 'cooldown'
+    }
+  }
 
   const logPath = ensureEventsFile()
-  const lines = normalized.map((e) => JSON.stringify(e)).join('\n') + '\n'
+  const lines = filtered.accepted.map((e) => JSON.stringify(e)).join('\n') + '\n'
   await fs.promises.appendFile(logPath, lines, 'utf8')
 
-  const supabase = await pushToSupabase(normalized)
-  return { accepted: normalized.length, supabase }
+  const supabase = await pushToSupabase(filtered.accepted)
+  return {
+    accepted: filtered.accepted.length,
+    rejected: filtered.rejected,
+    reason: filtered.reason,
+    supabase
+  }
 }
 
 async function pushToSupabase(rows) {
@@ -275,15 +400,18 @@ export function computePlaceSummary(placeKey, window = '7d') {
       if (day) ensureDay(day).scene_enters++
     } else if (e.event === 'scene_leave') {
       const dwell = Number(e.props?.dwell_ms)
-      if (e.play_session_id && Number.isFinite(dwell) && dwell >= 0) {
-        dwellByPlaySession.set(e.play_session_id, Math.min(dwell, 6 * 60 * 60 * 1000))
+      if (e.play_session_id && Number.isFinite(dwell) && dwell >= MIN_DWELL_MS) {
+        dwellByPlaySession.set(
+          e.play_session_id,
+          Math.min(dwell, SOFT_DWELL_CAP_MS)
+        )
       }
     } else if (e.event === 'landing_leave') {
       const dwell = Number(e.props?.dwell_ms)
       const lid =
         typeof e.props?.landing_session_id === 'string' ? e.props.landing_session_id : null
-      if (lid && Number.isFinite(dwell) && dwell >= 0) {
-        dwellByLandingSession.set(lid, Math.min(dwell, 6 * 60 * 60 * 1000))
+      if (lid && Number.isFinite(dwell) && dwell >= MIN_DWELL_MS) {
+        dwellByLandingSession.set(lid, Math.min(dwell, SOFT_DWELL_CAP_MS))
       }
     } else if (e.event === 'goto' || e.event === 'navigate') {
       if (e.from_place_key === placeKey && e.to_place_key && e.to_place_key !== placeKey) {
@@ -421,12 +549,27 @@ export async function handleAnalyticsRequest(req, res, opts = {}) {
       return true
     }
     const events = Array.isArray(body) ? body : body.events
-    const result = await appendEvents(events)
+    const ip = clientIp(req)
+    const result = await appendEvents(events, { ip })
     if (result.accepted === 0) {
-      send(400, { error: 'no_valid_events' })
+      if (result.reason === 'ip_rate') {
+        send(429, { error: 'rate_limited', reason: 'ip_rate' })
+        return true
+      }
+      // Soft-refresh / cooldowns: not an error — client should not retry.
+      send(202, {
+        ok: true,
+        accepted: 0,
+        rejected: result.rejected || 0,
+        reason: result.reason || 'cooldown'
+      })
       return true
     }
-    send(202, { ok: true, accepted: result.accepted })
+    send(202, {
+      ok: true,
+      accepted: result.accepted,
+      rejected: result.rejected || 0
+    })
     return true
   }
 

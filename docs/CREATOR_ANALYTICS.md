@@ -65,8 +65,19 @@ Do **not** double-write the same landing/jump-in events into Forge.
 
 - Fire-and-forget client emits (`keepalive` on unload).
 - Analytics failures must not affect load, play, or navigation.
-- Opt-in via env flag (same spirit as `VITE_ANALYTICS_ENABLED` today).
+- Opt-in via env flag (`npm run build:prod` only).
 - Stats panel load is lazy (only when user opens the chart icon).
+
+### Engagement + anti-spam (shipped)
+
+| Guard | Behavior |
+|-------|----------|
+| **Engaged time** | Dwell accumulates only while tab **visible** and input within **90s** |
+| **Active pulses** | `active_pulse` every 45s while engaged (max 40/session); no pulse when idle/hidden |
+| **Soft refresh** | `landing_view` ignored for same visitor+place within **30s** (client + server) |
+| **Enter cooldown** | `scene_enter` / `jump_in_click` cooldowns (60s / 15s server) |
+| **Rate limits** | Per IP ~60 req/min; per visitor ~400 events/hour |
+| **Dwell caps** | Soft **45 min** for medians; ignore dwell &lt; **3s**; hard 6h ceiling |
 
 ### Guest-first identity (write path)
 

@@ -2,7 +2,7 @@
 
 > Browser-native Decentraland client: load deployed Worlds/scenes, shim SDK7 runtime, mirror ECS → Three.js, expand to open world.
 
-**Status:** **v1.3.0 candidate on `dev-latest`** (still not full Explorer parity). **v1.2.0** shipped. New: PE force/impulse channel · plaza TriggerArea pads · TextShape/plane UV parity · UiBackground color×texture · chat translate · quiet debug console. **1.x next / release gate:** smoke QA then `main` cut · outfits/marketplace · scene UI text-measure · community voice Bearer (see [`PROGRESS.md`](./PROGRESS.md))  
+**Status:** **v1.3.0** production beta ✅ (still not full Explorer parity). PE force/impulse · plaza TriggerArea pads · TextShape/plane UV parity · UiBackground color×texture · chat translate · quiet debug console. **1.x next:** outfits/marketplace · scene UI text-measure · community voice Bearer (see [`PROGRESS.md`](./PROGRESS.md))  
 **ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md)  
 **Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) for current work.
 

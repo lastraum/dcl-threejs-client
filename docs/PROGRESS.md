@@ -3,9 +3,9 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-07-19  
-> **Current phase:** **v1.3.0 candidate on `dev-latest`** — scene physics/UI parity + chat translate; still not full Explorer parity.  
-> **Shipped (1.x):** **v1.2.0 Camera Reel + biomes + backpack hides** · **plaza/poker PE + UI tint (→ `dev-latest`)** · In-World Camera · U/N · terrain biomes · backpack forceRender · multi-room chat · nearby voice · P4 bloom · glider.  
-> **1.x next / release gate:** smoke QA (plaza bounce · Poker welcome · Dead Surge labels) · then `dev-latest` → `main` cut **v1.3.0** · backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page.  
+> **Current phase:** **v1.3.0** — production beta + scene physics/UI parity; still not full Explorer parity.  
+> **Shipped (1.x):** **v1.3.0 plaza/poker PE · TextShape UV · UiBackground tint · chat translate** · **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · multi-room chat · nearby voice · P4 bloom · glider.  
+> **1.x next:** backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page · graphics P3 distance culls.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
@@ -13,6 +13,33 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — v1.3.0 release (Plaza / Poker parity · PE physics · UI tint · chat translate) (2026-07-19)
+
+**Status: release cut** — `dev-latest` → `main` · tag `v1.3.0`.
+
+### What's new
+
+- **Genesis Plaza bounce parasols** — TriggerArea → PE impulse; Explorer-raw Δv
+- **Store / event banners** — GltfNodeModifiers paths · poster CORS/webp · player spatial audio
+- **Planes & TextShape** — docs-order UVs · Poker Night `scale.x=-1` boards read L→R
+- **Scene UI colors** — Color4 × texture (dark/green panels, not white flash)
+- **Chat translate** — optional auto/manual translation + channel prefs
+- **Quiet console** — browser logs off by default; Help → Debug to enable
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **PE force + impulse** | 🟢 | force arcade scale · impulse Explorer-raw |
+| **TriggerArea pads** | 🟢 | CCT + parent-first world matrix |
+| **TextShape / plane UV** | 🟢 | Dead Surge + Poker leaderboards |
+| **UiBackground multiply** | 🟢 | Poker welcome / tinted buttons |
+| **Chat translation** | 🟡 | UI shipped · provider keys env-dependent |
+
+**QA (release smoke):** plaza bounce · banners · Dead Surge BACK/NEXT · Poker welcome dark · Poker leaderboard · Help console default off ✅
+
+**Tip:** `v1.3.0` on `main`.
 
 ---
 

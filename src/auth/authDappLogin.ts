@@ -119,6 +119,19 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
+function writeAuthPlaceholder(w: Window, htmlBody: string): void {
+  try {
+    w.document.open()
+    w.document.write(
+      `<!doctype html><html><head><meta charset="utf-8"/><title>Signing in…</title></head>
+      <body style="font:15px system-ui;padding:24px;background:#1a0f28;color:#fff;line-height:1.45">${htmlBody}</body></html>`
+    )
+    w.document.close()
+  } catch {
+    /* cross-origin / already navigated */
+  }
+}
+
 /**
  * Open (or focus) the auth window. Call only from a direct user gesture
  * (click handler) — before any await — or browsers will block it.
@@ -131,47 +144,72 @@ export function openAuthWindow(url = 'about:blank'): Window | null {
     /* ignore */
   }
   if (w) {
-    try {
-      // Show something immediately so a failed navigate is not a silent blank tab.
-      w.document.open()
-      w.document.write(
-        `<!doctype html><title>Signing in…</title><body style="font:15px system-ui;padding:24px;background:#1a0f28;color:#fff">
-          Opening Decentraland login…</body>`
-      )
-      w.document.close()
-    } catch {
-      /* cross-origin / already navigated */
-    }
+    writeAuthPlaceholder(w, 'Opening Decentraland login…')
   }
   return w
 }
 
-/** Navigate a window opened earlier on the user gesture (safe after await). */
-function navigateAuthWindow(authTab: Window | null, loginUrl: string): Window | null {
-  // Named window reuse is allowed after await if the window was opened with a gesture.
-  const reused = window.open(loginUrl, AUTH_WINDOW_NAME)
-  if (reused) {
-    try {
-      reused.focus()
-    } catch {
-      /* ignore */
-    }
-    return reused
-  }
-  if (authTab) {
+/**
+ * Navigate a window opened on the user gesture.
+ * Prefer location.assign/replace on that Window — after await, window.open(url, name)
+ * often returns a handle WITHOUT navigating (leaves our placeholder stuck).
+ */
+function navigateAuthWindow(authTab: Window | null, loginUrl: string): boolean {
+  if (authTab && !authTab.closed) {
     try {
       authTab.location.replace(loginUrl)
-      return authTab
-    } catch {
       try {
-        authTab.location.href = loginUrl
-        return authTab
+        authTab.focus()
       } catch {
-        /* fall through */
+        /* ignore */
       }
+      return true
+    } catch {
+      /* try href */
+    }
+    try {
+      authTab.location.href = loginUrl
+      return true
+    } catch {
+      /* fall through to named open / link */
     }
   }
-  return null
+
+  // Secondary: named window (may no-op after await in some browsers)
+  try {
+    const reused = window.open(loginUrl, AUTH_WINDOW_NAME)
+    if (reused) {
+      try {
+        reused.focus()
+      } catch {
+        /* ignore */
+      }
+      // If we still hold authTab, force location as well.
+      if (authTab && !authTab.closed) {
+        try {
+          authTab.location.href = loginUrl
+        } catch {
+          /* ignore */
+        }
+      }
+      return true
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // Last resort: clickable link inside the pre-opened tab (user must click once).
+  if (authTab && !authTab.closed) {
+    writeAuthPlaceholder(
+      authTab,
+      `<p>Could not auto-redirect.</p>
+       <p><a href="${loginUrl.replace(/"/g, '&quot;')}" style="color:#7dd3fc;font-weight:700;font-size:1.05rem">
+         Continue to Decentraland login →
+       </a></p>`
+    )
+    return true
+  }
+  return false
 }
 
 function extractSignature(result: unknown): string {
@@ -231,39 +269,44 @@ export async function loginWithAuthDapp(
     }
 
     progress('Preparing secure login…')
+    if (authTab && !authTab.closed) {
+      writeAuthPlaceholder(authTab, 'Contacting Decentraland auth…')
+    }
+
     const ephemeral = createUnsafeIdentity()
     const expiration = new Date(Date.now() + IDENTITY_TTL_MS)
     const ephemeralMessage = Authenticator.getEphemeralMessage(ephemeral.address, expiration)
 
-    const created = await createSignRequest(ephemeralMessage)
+    let created: CreateRequestResponse
+    try {
+      created = await createSignRequest(ephemeralMessage)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (authTab && !authTab.closed) {
+        writeAuthPlaceholder(
+          authTab,
+          `<p>Auth request failed.</p><p style="opacity:.8">${msg.replace(/</g, '&lt;')}</p>
+           <p>Close this tab and try again.</p>`
+        )
+      }
+      throw err
+    }
+
     const loginUrl = buildAuthLoginUrl(created.requestId, loginMethod)
     const code = created.code
 
+    progress('Loading Decentraland login…', code)
+    if (authTab && !authTab.closed) {
+      writeAuthPlaceholder(authTab, 'Redirecting to Decentraland login…')
+    }
+
     const navigated = navigateAuthWindow(authTab, loginUrl)
     if (!navigated) {
-      // Last resort: show clickable link in the blank tab if we still have document access.
-      try {
-        if (authTab && !authTab.closed) {
-          authTab.document.open()
-          authTab.document.write(
-            `<!doctype html><title>Sign in</title><body style="font:15px system-ui;padding:24px;background:#1a0f28;color:#fff">
-              <p>Popup navigation was blocked.</p>
-              <p><a href="${loginUrl}" style="color:#7dd3fc;font-weight:700">Click here to open Decentraland login</a></p>
-            </body>`
-          )
-          authTab.document.close()
-          closeTabOnExit = false
-        } else {
-          throw new Error('blocked')
-        }
-      } catch {
-        throw new Error(
-          'Could not open login tab. Allow popups for this site, then try again.'
-        )
-      }
-    } else {
-      authTab = navigated
+      throw new Error(
+        'Could not open login tab. Allow popups for this site, then try again.'
+      )
     }
+    closeTabOnExit = false
 
     progress(
       'Does this number match the one in the login tab? Tap Yes there when it does.',

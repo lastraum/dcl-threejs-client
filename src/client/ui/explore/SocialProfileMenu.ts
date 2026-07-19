@@ -1,5 +1,5 @@
 import type { AuthDappLoginMethod, AuthProgress, LoginResult } from '../../../auth/AuthClient'
-import { loginWithMetaMask, loginWithProvider } from '../../../auth/AuthClient'
+import { loginWithMetaMask, loginWithProvider, openAuthWindow } from '../../../auth/AuthClient'
 import { ensureGuestSession } from '../../auth/resolveInitialLogin'
 import { identityFromAvatarProfile } from '../../../avatar/displayName'
 import { fetchProfileCached, fetchProfileFaceUrl } from '../../../avatar/peerApi'
@@ -322,9 +322,11 @@ export class SocialProfileMenu {
     this.wireWhatsNewItem()
     // Full provider set (same as signed-out sign-in sheet).
     for (const btn of this.menuBody.querySelectorAll<HTMLButtonElement>('[data-login-method]')) {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault()
+        ev.stopPropagation()
         const method = btn.dataset.loginMethod as AuthDappLoginMethod | undefined
-        if (method) void this.runLoginMethod(method)
+        if (method) this.runLoginMethod(method)
       })
     }
     this.menuBody.querySelector('[data-copy-guest-wallet]')?.addEventListener('click', async (ev) => {
@@ -440,9 +442,11 @@ export class SocialProfileMenu {
 
   private wireSignInMenu(): void {
     for (const btn of this.menuBody.querySelectorAll<HTMLButtonElement>('[data-login-method]')) {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault()
+        ev.stopPropagation()
         const method = btn.dataset.loginMethod as AuthDappLoginMethod | undefined
-        if (method) void this.runLoginMethod(method)
+        if (method) this.runLoginMethod(method)
       })
     }
     this.menuBody.querySelector('[data-guest]')?.addEventListener('click', () => {
@@ -553,14 +557,43 @@ export class SocialProfileMenu {
     }
   }
 
-  private async runLoginMethod(method: AuthDappLoginMethod): Promise<void> {
+  /**
+   * Must stay synchronous until window.open — browsers only allow popups on a direct gesture.
+   * Do not mark this `async`; open the auth tab first, then continue in a promise.
+   */
+  private runLoginMethod(method: AuthDappLoginMethod): void {
     if (this.busy) return
     this.busy = true
     this.setVerifyCode(null)
-    this.setSignInStatus(
-      method === 'metamask' ? 'Connecting to MetaMask…' : 'Opening Decentraland login…'
-    )
     this.setLoginButtonsDisabled(true)
+
+    // Open auth window NOW (same call stack as the click). MetaMask uses extension; still open
+    // a placeholder only for auth-dapp methods so await cannot lose the gesture.
+    const useAuthDapp = method !== 'metamask'
+    let authWindow: Window | null = null
+    if (useAuthDapp) {
+      this.setSignInStatus('Opening Decentraland login…')
+      authWindow = openAuthWindow('about:blank')
+      if (!authWindow) {
+        this.busy = false
+        this.setLoginButtonsDisabled(false)
+        this.setSignInStatus(
+          'Tab blocked — allow popups for this site, then try again.',
+          true
+        )
+        return
+      }
+    } else {
+      this.setSignInStatus('Connecting to MetaMask…')
+    }
+
+    void this.finishLoginMethod(method, authWindow)
+  }
+
+  private async finishLoginMethod(
+    method: AuthDappLoginMethod,
+    authWindow: Window | null
+  ): Promise<void> {
     try {
       const result =
         method === 'metamask'
@@ -568,17 +601,20 @@ export class SocialProfileMenu {
               const msg = err instanceof Error ? err.message : String(err)
               if (/not found|install|rejected|denied/i.test(msg)) {
                 this.setSignInStatus('Opening Decentraland login…')
-                return loginWithProvider('metamask', this.onAuthProgress)
+                const w = authWindow && !authWindow.closed ? authWindow : openAuthWindow('about:blank')
+                if (!w) {
+                  throw new Error('Tab blocked — allow popups for this site and try again')
+                }
+                return loginWithProvider('metamask', this.onAuthProgress, { authWindow: w })
               }
               throw err
             })
-          : await loginWithProvider(method, this.onAuthProgress)
+          : await loginWithProvider(method, this.onAuthProgress, { authWindow })
       this.setVerifyCode(null)
       this.onLoginChange?.(result)
       this.setLogin(result)
       this.close()
     } catch (err) {
-      // Keep verification code if shown — user may still confirm in the auth tab.
       const msg = err instanceof Error ? err.message : String(err)
       this.setSignInStatus(msg, true)
     } finally {

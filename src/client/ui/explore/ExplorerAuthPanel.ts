@@ -1,5 +1,5 @@
 import type { AuthDappLoginMethod, AuthProgress, LoginResult } from '../../../auth/AuthClient'
-import { loginWithMetaMask, loginWithProvider } from '../../../auth/AuthClient'
+import { loginWithMetaMask, loginWithProvider, openAuthWindow } from '../../../auth/AuthClient'
 import { ensureGuestSession } from '../../auth/resolveInitialLogin'
 import {
   ICON_APPLE,
@@ -163,7 +163,11 @@ export class ExplorerAuthPanel {
       btn.title = def.label
       btn.setAttribute('aria-label', def.label)
     }
-    btn.addEventListener('click', () => void this.runMethod(def.method))
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault()
+      ev.stopPropagation()
+      this.runMethod(def.method)
+    })
     return btn
   }
 
@@ -206,33 +210,54 @@ export class ExplorerAuthPanel {
     }
   }
 
-  private async runMethod(method: AuthDappLoginMethod): Promise<void> {
+  private runMethod(method: AuthDappLoginMethod): void {
     if (this.busy) return
     this.setBusy(true)
     this.setVerifyCode(null)
-    this.setStatus(
-      method === 'metamask' ? 'Connecting to MetaMask…' : 'Opening Decentraland login…'
-    )
+
+    const useAuthDapp = method !== 'metamask'
+    let authWindow: Window | null = null
+    if (useAuthDapp) {
+      this.setStatus('Opening Decentraland login…')
+      // Synchronous with click — required for browsers to allow the tab.
+      authWindow = openAuthWindow('about:blank')
+      if (!authWindow) {
+        this.setBusy(false)
+        this.setStatus('Tab blocked — allow popups for this site, then try again.', true)
+        return
+      }
+    } else {
+      this.setStatus('Connecting to MetaMask…')
+    }
+
+    void this.finishMethod(method, authWindow)
+  }
+
+  private async finishMethod(
+    method: AuthDappLoginMethod,
+    authWindow: Window | null
+  ): Promise<void> {
     try {
-      // Local MetaMask when extension/SDK available — skip auth dapp hop.
       const result =
         method === 'metamask'
           ? await loginWithMetaMask((msg) => this.setStatus(msg)).catch(async (err) => {
-              // Fall back to auth dapp if local MetaMask fails (e.g. not installed).
               const msg = err instanceof Error ? err.message : String(err)
               if (/not found|install|rejected|denied/i.test(msg)) {
                 this.setStatus('Opening Decentraland login…')
-                return loginWithProvider('metamask', this.onAuthProgress)
+                const w = authWindow && !authWindow.closed ? authWindow : openAuthWindow('about:blank')
+                if (!w) {
+                  throw new Error('Tab blocked — allow popups for this site and try again')
+                }
+                return loginWithProvider('metamask', this.onAuthProgress, { authWindow: w })
               }
               throw err
             })
-          : await loginWithProvider(method, this.onAuthProgress)
+          : await loginWithProvider(method, this.onAuthProgress, { authWindow })
 
       this.setVerifyCode(null)
       this.opts.onComplete(result)
       this.close()
     } catch (err) {
-      // Keep verification code if shown — transient errors / tab false-positives.
       const msg = err instanceof Error ? err.message : String(err)
       this.setStatus(msg, true)
     } finally {

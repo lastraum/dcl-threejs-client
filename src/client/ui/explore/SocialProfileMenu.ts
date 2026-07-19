@@ -233,7 +233,9 @@ export class SocialProfileMenu {
       } else {
         this.displayName = identityFromAvatarProfile(profile, address).displayName
       }
-      if (this.open) this.renderMenu()
+      // Never rebuild the menu while a login is in flight — that wiped status UI and
+      // left `busy` true so further clicks silently no-op'd.
+      if (this.open && !this.busy) this.renderMenu()
       this.profileBtn.setAttribute(
         'aria-label',
         this.isGuestAccount()
@@ -545,20 +547,26 @@ export class SocialProfileMenu {
     if (p.verificationCode !== undefined) this.setVerifyCode(p.verificationCode)
   }
 
+  private setLoginButtonsDisabled(disabled: boolean): void {
+    for (const btn of this.menuBody.querySelectorAll<HTMLButtonElement>('[data-login-method], [data-guest]')) {
+      btn.disabled = disabled
+    }
+  }
+
   private async runLoginMethod(method: AuthDappLoginMethod): Promise<void> {
     if (this.busy) return
     this.busy = true
     this.setVerifyCode(null)
-    this.setSignInStatus('Connecting…')
-    for (const btn of this.menuBody.querySelectorAll('button')) {
-      ;(btn as HTMLButtonElement).disabled = true
-    }
+    this.setSignInStatus(
+      method === 'metamask' ? 'Connecting to MetaMask…' : 'Opening Decentraland login…'
+    )
+    this.setLoginButtonsDisabled(true)
     try {
       const result =
         method === 'metamask'
           ? await loginWithMetaMask((msg) => this.setSignInStatus(msg)).catch(async (err) => {
               const msg = err instanceof Error ? err.message : String(err)
-              if (/not found|install/i.test(msg)) {
+              if (/not found|install|rejected|denied/i.test(msg)) {
                 this.setSignInStatus('Opening Decentraland login…')
                 return loginWithProvider('metamask', this.onAuthProgress)
               }
@@ -566,19 +574,16 @@ export class SocialProfileMenu {
             })
           : await loginWithProvider(method, this.onAuthProgress)
       this.setVerifyCode(null)
-      this.busy = false
       this.onLoginChange?.(result)
       this.setLogin(result)
       this.close()
     } catch (err) {
-      // Keep verification code visible if we already have one — user may still
-      // need it, or retry after a transient error.
+      // Keep verification code if shown — user may still confirm in the auth tab.
       const msg = err instanceof Error ? err.message : String(err)
       this.setSignInStatus(msg, true)
-      for (const btn of this.menuBody.querySelectorAll('button')) {
-        ;(btn as HTMLButtonElement).disabled = false
-      }
+    } finally {
       this.busy = false
+      this.setLoginButtonsDisabled(false)
     }
   }
 }

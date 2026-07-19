@@ -818,6 +818,7 @@ export class AppController {
     this.currentRoute = target
     this.appMode = 'landing'
 
+    // Soft-refresh within 30s for same place: track() returns false — no extra landing_view.
     track('landing_view', {
       route: target,
       source: opts.fromHistory ? 'history' : opts.source ?? 'direct',
@@ -828,6 +829,7 @@ export class AppController {
     })
 
     this.teardownExplorer()
+    // Ends prior landing engaged-session (if any) before remount.
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()

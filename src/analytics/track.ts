@@ -1,8 +1,14 @@
 import type { LoginResult } from '../auth/AuthClient'
 import { APP_VERSION } from '../client/appVersion'
+import { createEngagedClock, type EngagedClock, wireAnalyticsActivity } from './engagement'
 import { getSessionId, getVisitorId, newEventId, newPlaySessionId } from './ids'
 import { placeFieldsFromRoute, type PlaceFields } from './placeKey'
 import type { RouteTarget } from '../dcl/content/route'
+
+/** Soft-refresh: ignore repeat landing_view for same place within this window. */
+const LANDING_VIEW_COOLDOWN_MS = 30_000
+/** Soft-refresh: ignore repeat scene_enter for same place (client-side assist). */
+const SCENE_ENTER_COOLDOWN_MS = 60_000
 
 export type AnalyticsSource =
   | 'direct'
@@ -56,7 +62,12 @@ let flushTimer: ReturnType<typeof setTimeout> | 0 = 0
 let loginKind: LoginKind = 'guest'
 let wallet: string | undefined
 let playSessionId: string | null = null
-let playSessionStartedAt = 0
+let playEngagedClock: EngagedClock | null = null
+
+let lastLandingViewKey = ''
+let lastLandingViewAt = 0
+let lastSceneEnterKey = ''
+let lastSceneEnterAt = 0
 
 /** True only when `VITE_ANALYTICS_ENABLED=true` was set at build time. */
 export function isAnalyticsEnabled(): boolean {
@@ -103,35 +114,78 @@ export function getPlaySessionId(): string | null {
 }
 
 export function beginPlaySession(): string {
+  wireAnalyticsActivity()
   playSessionId = newPlaySessionId()
-  playSessionStartedAt = Date.now()
+  playEngagedClock = createEngagedClock()
+  playEngagedClock.reset()
   return playSessionId
 }
 
 export function endPlaySession(): { play_session_id: string | null; dwell_ms: number } {
   const id = playSessionId
-  const dwell_ms = playSessionStartedAt > 0 ? Math.max(0, Date.now() - playSessionStartedAt) : 0
+  const dwell_ms = playEngagedClock ? playEngagedClock.tick() : 0
   playSessionId = null
-  playSessionStartedAt = 0
+  playEngagedClock = null
   return { play_session_id: id, dwell_ms }
 }
 
+/** Advance play engaged clock; returns engaged ms so far. */
+export function tickPlayEngaged(): number {
+  if (!playEngagedClock) return 0
+  return playEngagedClock.tick()
+}
+
+export function playSessionEngagedMs(): number {
+  if (!playEngagedClock) return 0
+  return playEngagedClock.peek()
+}
+
+/** @deprecated use playSessionEngagedMs — wall-clock no longer used */
 export function playSessionDwellMs(): number {
-  if (!playSessionId || playSessionStartedAt <= 0) return 0
-  return Math.max(0, Date.now() - playSessionStartedAt)
+  return playSessionEngagedMs()
+}
+
+export function resetPlayEngagedClock(): void {
+  playEngagedClock?.reset()
 }
 
 /**
  * Fire-and-forget place analytics event. No-ops unless VITE_ANALYTICS_ENABLED=true.
  * Never throws; never blocks play.
+ * @returns false if skipped (disabled, soft-refresh cooldown, invalid)
  */
-export function track(event: string, extra: TrackProps = {}): void {
-  if (!analyticsEnabled()) return
-  if (typeof window === 'undefined') return
-  if (!event || event.length > 64) return
+export function track(event: string, extra: TrackProps = {}): boolean {
+  if (!analyticsEnabled()) return false
+  if (typeof window === 'undefined') return false
+  if (!event || event.length > 64) return false
 
   try {
     const place = extra.place ?? placeFieldsFromRoute(extra.route ?? null)
+
+    // Soft-refresh cooldowns (client assist — server enforces too).
+    if (event === 'landing_view' && place?.place_key) {
+      const now = Date.now()
+      if (
+        place.place_key === lastLandingViewKey &&
+        now - lastLandingViewAt < LANDING_VIEW_COOLDOWN_MS
+      ) {
+        return false
+      }
+      lastLandingViewKey = place.place_key
+      lastLandingViewAt = now
+    }
+    if (event === 'scene_enter' && place?.place_key) {
+      const now = Date.now()
+      if (
+        place.place_key === lastSceneEnterKey &&
+        now - lastSceneEnterAt < SCENE_ENTER_COOLDOWN_MS
+      ) {
+        return false
+      }
+      lastSceneEnterKey = place.place_key
+      lastSceneEnterAt = now
+    }
+
     const row: OutboundEvent = {
       event_id: newEventId(),
       event,
@@ -160,8 +214,9 @@ export function track(event: string, extra: TrackProps = {}): void {
 
     queue.push(row)
     scheduleFlush()
+    return true
   } catch {
-    /* analytics must never surface */
+    return false
   }
 }
 

@@ -151,7 +151,10 @@ export class PlayerSystem {
   private doubleJumpTriggered = false
   /** Explorer glider — hold Space while airborne after air jumps are spent. */
   private gliding = false
-  /** Last PhysicsCombinedImpulse.eventId applied (once per CRDT event). */
+  /**
+   * Last PhysicsCombinedImpulse.eventId applied (once per CRDT event).
+   * Reset on scene/player re-init and when PE impulse is cleared (stale re-enter).
+   */
   private lastImpulseEventId = 0
   private jumpCount = 0
   private locomotionMode: LocomotionMode = 'jog'
@@ -278,6 +281,7 @@ export class PlayerSystem {
   ): Promise<void> {
     this.readComponents = readComponents
     this.walkBounds = walkBounds
+    this.resetExternalPhysicsState()
     this.input = new PlayerInput(this.host.renderer.domElement)
     this.input.setLocomotionBlocked(
       () => this.photoModeActive || !canLocomote(this.getLocomotionConfig())
@@ -465,6 +469,7 @@ export class PlayerSystem {
   }
 
   dispose(): void {
+    this.resetExternalPhysicsState()
     this.input?.dispose()
     this.input = null
     this.nameTag?.dispose()
@@ -1349,6 +1354,12 @@ export class PlayerSystem {
     this.input.endFrame()
   }
 
+  /** Clear external channel + impulse latch (scene load, dispose, teleport). */
+  private resetExternalPhysicsState(): void {
+    _externalVelocity.set(0, 0, 0)
+    this.lastImpulseEventId = 0
+  }
+
   /**
    * Continuous PE force → acceleration Y (Three), for effective gravity this frame.
    * XZ are integrated in applyScenePhysicsCombined.
@@ -1367,31 +1378,42 @@ export class PlayerSystem {
   /**
    * Scene-authored PhysicsCombinedForce + PhysicsCombinedImpulse (PlayerEntity CRDT).
    * Explorer: ExternalVelocity gets force XZ + impulse; force Y is effective-g only.
+   *
+   * Frame order (P2): gravity already applied → impulse (cancel fall) → force XZ
+   * → jump (caller) → damp external → move. Matches Unity “impulse before final move”.
    */
   private applyScenePhysicsCombined(delta: number, gliding: boolean): void {
     const ecs = this.readComponents
     if (!ecs) return
     const pe = SDK_RESERVED.player
 
-    // Impulse first when same-frame as force: cancel fall before continuous integrate.
-    if (ecs.PhysicsCombinedImpulse.has(pe)) {
+    // P2 stale impulse: if component gone or eventId cleared, re-arm for next pad.
+    if (!ecs.PhysicsCombinedImpulse.has(pe)) {
+      this.lastImpulseEventId = 0
+    } else {
       const imp = ecs.PhysicsCombinedImpulse.get(pe)
       const eventId = imp.eventId ?? 0
       const v = imp.vector
-      if (eventId !== 0 && eventId !== this.lastImpulseEventId && v) {
+      if (eventId === 0) {
+        this.lastImpulseEventId = 0
+      } else if (eventId !== this.lastImpulseEventId && v) {
         this.lastImpulseEventId = eventId
+        // World impulse before scale — check raw Y for unground / glide exit.
         dclToThreeVec(_sceneImpulse.set(v.x ?? 0, v.y ?? 0, v.z ?? 0), _sceneImpulse)
+        const rawUp = _sceneImpulse.y
         applyImpulse(_externalVelocity, _sceneImpulse)
-        if (_sceneImpulse.y > 0) {
+        if (rawUp > 0) {
           // Explorer: unground + zero falling gravity velocity so pads beat freefall.
           this.grounded = false
           this.groundCoyote = 0
           if (_velocity.y < 0) _velocity.y = 0
-          if (_sceneImpulse.y > 0.5) this.gliding = false
+          if (rawUp > 0.5) this.gliding = false
         }
       }
     }
 
+    // Single-scene PE (this client): only current worker PlayerEntity force slot.
+    // Multi-scene World sum is N/A until multi-worker force writers exist (P2.10).
     if (ecs.PhysicsCombinedForce.has(pe)) {
       const force = ecs.PhysicsCombinedForce.get(pe)
       const v = force.vector
@@ -1635,13 +1657,13 @@ export class PlayerSystem {
     }
     this.physics.teleport(positionThree)
     _velocity.set(0, 0, 0)
-    _externalVelocity.set(0, 0, 0)
+    // Clear external + re-arm impulse latch (new scene / respawn must not ignore pads).
+    this.resetExternalPhysicsState()
     this.jumped = false
     this.jumping = false
     this.airJumped = false
     this.airJumpPending = false
     this.gliding = false
-    // Keep lastImpulseEventId — scene may re-send same id after respawn; only new events apply.
 
     if (settle) {
       this.physics.warmStaticScene()

@@ -1,6 +1,6 @@
 # Physics parity plan — Unity Explorer vs ThreejsClient
 
-**Status:** **P0 implemented** on `lastraum` · P1 calibration + P3 Explorer pad QA open  
+**Status:** **P0+P1+P2 implemented** on `lastraum` · P3 manual QA open  
 **Branch context:** `lastraum`  
 **Last updated:** 2026-07-18  
 
@@ -127,9 +127,9 @@ Three velocity channels stay separate.
 | Velocity split | `_velocity` (walk+g+jump) + `_externalVelocity` | Move / Gravity / External |
 | External drag | Env 0.5 + ground friction 4; max 50 | Same |
 | Grounded external Y | Cleared | Cleared |
-| Gravity constant | **20** (arcade jump) — P1 may scale force | **9.8** |
-| Multi-scene forces | Current worker PE only | Sum per World if IsCurrent |
-| Stale impulse on re-enter | Not handled (P2) | Clear dirty on re-activate |
+| Gravity constant | Jump **20**; external F/J × `20/9.8` (P1 A) | **9.8** |
+| Multi-scene forces | Single PE (this client) — documented | Sum per World if IsCurrent |
+| Stale impulse on re-enter | Reset latch on init/teleport/dispose + eventId 0 / missing | Clear dirty on re-activate |
 | Mass | 1 | CharacterMass 1 |
 
 `eventId` delivery matches protocol (Unity C# also uses dirty wrappers on the same component).
@@ -158,26 +158,28 @@ Options:
 5. ✅ **External drag/clamp** only on external: env 0.5, ground friction 4, max 50; grounded clear external Y.  
 6. ✅ Keep: eventId once, glide ×1.5 on force only, DCL→Three vectors, strong upward impulse exits glide.
 
-### P1 — Calibration
+### P1 — Calibration ✅
 
-7. Decide g vs force scale (A or B); constants next to `GRAVITY` / `GLIDING_FORCE_MULTIPLIER`.  
-8. Continuous upward force must break grounded (no Y-strip eating lift).
+7. ✅ **Option A:** keep jump `GRAVITY = 20`; scale scene F/J by `EXTERNAL_SCENE_SCALE = 20/9.8` (`externalPhysics.ts`).  
+8. ✅ Continuous upward force ungrounds + no Y-strip when external/lift active (P0).
 
-### P2 — Edge cases
+### P2 — Edge cases ✅
 
-9. Stale impulse when leaving/re-entering a scene.  
-10. Multi-scene PE if multiple force writers ever exist.  
-11. Order vs jump same frame: impulse after gravity cancel, before final move.
+9. ✅ Stale impulse: `resetExternalPhysicsState` on initCapsule / dispose / teleport; re-arm when component missing or `eventId === 0`.  
+10. ✅ Multi-scene PE: N/A for single-worker client — only current PE; noted in code.  
+11. ✅ Order: gravity → impulse (fall cancel) → force XZ → jump → damp external → move.
 
-### P3 — Verify
+### P3 — Verify (manual)
 
-12. Manual checklist vs Explorer:  
-    - Launch pad impulse `(0, 50, 0)`  
-    - Wind tunnel continuous force X  
-    - Glide + wind → 1.5×  
-    - Updraft while gliding lifts  
-    - Grounded continuous up force lifts off  
-    - Knockback / repulsion (scene helpers; PE sum already)
+12. Manual checklist vs Explorer (smoke when ready):  
+    - [ ] Launch pad impulse `(0, 50, 0)`  
+    - [ ] Wind tunnel continuous force X  
+    - [ ] Glide + wind → 1.5×  
+    - [ ] Updraft while gliding lifts  
+    - [ ] Grounded continuous up force lifts off  
+    - [ ] Knockback / repulsion (scene helpers; PE sum already)  
+    - [ ] Leave scene / re-enter pad — impulse still fires (stale latch)  
+    - [ ] Teleport / drown respawn — no stuck external velocity
 
 ### Likely files
 
@@ -190,16 +192,15 @@ Options:
 
 ---
 
-## Recommendation
-
-Implement **P0 fully** first (channel split + force Y via effective g + impulse fall cancel + external drag). Then calibrate g/force scale with a pad/wind scene.
-
-Default implementation choices when starting:
+## Recommendation (shipped defaults)
 
 - mass = 1  
 - Unity external drag numbers  
-- effective-g for force Y  
-- no global `GRAVITY` change until P1 A/B decision  
+- effective-g for force Y (base = client arcade 20)  
+- **P1 A:** `EXTERNAL_SCENE_SCALE = 20/9.8` on F and J  
+- jump height still `sqrt(2 * 20 * h)`  
+
+Next: **P3** pad/wind scene smoke vs Explorer, then tweak scale if needed.  
 
 ---
 

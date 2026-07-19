@@ -10,6 +10,21 @@ import { GLIDING_FORCE_MULTIPLIER } from './locomotion'
 /** Unity CharacterControllerSettings.CharacterMass (default 1). */
 export const CHARACTER_MASS = 1
 
+/** Unity gravity magnitude used when scenes author force/impulse (m/s²). */
+export const EXPLORER_GRAVITY_MAG = 9.8
+
+/**
+ * Client arcade jump gravity (PlayerSystem GRAVITY). Kept for jump height curves.
+ * Continuous force Y uses this as |g| in effective-g so pads match jump feel.
+ */
+export const CLIENT_ARCADE_GRAVITY = 20
+
+/**
+ * Scale scene-authored F/J so Explorer magnitudes feel similar under arcade g.
+ * Option A: keep jump g=20, scale external F/J by g_client / g_explorer.
+ */
+export const EXTERNAL_SCENE_SCALE = CLIENT_ARCADE_GRAVITY / EXPLORER_GRAVITY_MAG
+
 /** Unity ExternalEnvDrag — always applied to external velocity. */
 export const EXTERNAL_ENV_DRAG = 0.5
 
@@ -20,20 +35,28 @@ export const EXTERNAL_GROUND_FRICTION = 4
 export const MAX_EXTERNAL_VELOCITY = 50
 
 /**
- * Continuous force → acceleration (m=1). Glide multiplies force only (not impulse).
+ * Continuous force → acceleration (m=1).
+ * Applies EXTERNAL_SCENE_SCALE then glide mult (force only).
  */
 export function forceToAcceleration(
   forceWorld: THREE.Vector3,
   gliding: boolean,
   out: THREE.Vector3
 ): THREE.Vector3 {
-  const mult = gliding ? GLIDING_FORCE_MULTIPLIER : 1
+  const mult = (gliding ? GLIDING_FORCE_MULTIPLIER : 1) * EXTERNAL_SCENE_SCALE
   return out.copy(forceWorld).multiplyScalar(mult / CHARACTER_MASS)
 }
 
 /**
+ * Impulse world vector → Δv contribution (includes scene scale for g parity).
+ */
+export function scaleImpulseForClient(impulseWorld: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+  return out.copy(impulseWorld).multiplyScalar(EXTERNAL_SCENE_SCALE / CHARACTER_MASS)
+}
+
+/**
  * Effective gravity magnitude for this frame (arcade GRAVITY base, Explorer-style).
- * `accelY` is continuous force a.y (after glide mult / mass).
+ * `accelY` is continuous force a.y (after glide mult / mass / scene scale).
  * Returns value to use as downward accel (positive = down).
  */
 export function effectiveGravityDown(baseGravity: number, accelY: number): number {
@@ -59,15 +82,17 @@ export function integrateForceXZ(
 }
 
 /**
- * Impulse Δv = J/m into external channel. Caller ungrounds / cancels fall when J.y > 0.
+ * Apply scaled impulse Δv into external channel.
+ * Caller ungrounds / cancels fall when impulse Y > 0 (pre-scale world Y).
  */
 export function applyImpulse(
   externalVelocity: THREE.Vector3,
   impulseWorld: THREE.Vector3
 ): void {
-  externalVelocity.x += impulseWorld.x / CHARACTER_MASS
-  externalVelocity.y += impulseWorld.y / CHARACTER_MASS
-  externalVelocity.z += impulseWorld.z / CHARACTER_MASS
+  scaleImpulseForClient(impulseWorld, impulseWorld)
+  externalVelocity.x += impulseWorld.x
+  externalVelocity.y += impulseWorld.y
+  externalVelocity.z += impulseWorld.z
 }
 
 /**

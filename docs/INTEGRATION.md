@@ -66,8 +66,8 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | --------- | -- | ------ | ----- |
 | MeshCollider | 1019 | 🟢 | PhysX static + GLTF trimesh |
 | AvatarLocomotionSettings | 1211 | 🟢 | jump / doubleJump / glidingSpeed / glidingFallingSpeed / hardLandingCooldown |
-| PhysicsCombinedForce | 1216 | 🟢 | Continuous force on PlayerEntity → velocity (1.5× while gliding) |
-| PhysicsCombinedImpulse | 1215 | 🟢 | One-shot Δv on PlayerEntity via eventId (launch pads / knockback) |
+| PhysicsCombinedForce | 1216 | 🟢 | PE force → external XZ + effective-g Y; 1.5× while gliding (`externalPhysics.ts`) |
+| PhysicsCombinedImpulse | 1215 | 🟢 | One-shot Δv on external channel via eventId; unground + cancel fall |
 | InputModifier | 1078 | 🟢 | Read path |
 | PointerLock | 1074 | 🔵 | Renderer writes CameraEntity; right-click (or Tab) toggles lock; lock movement = orbit look |
 | PointerEvents | 1062 | 🟢 | Raycast + hover hints + CRDT |

@@ -1,6 +1,6 @@
 # Physics parity plan — Unity Explorer vs ThreejsClient
 
-**Status:** Review complete · implementation **not started** (P0+ pending approval)  
+**Status:** **P0 implemented** on `lastraum` · P1 calibration + P3 Explorer pad QA open  
 **Branch context:** `lastraum`  
 **Last updated:** 2026-07-18  
 
@@ -116,22 +116,21 @@ Three velocity channels stay separate.
 
 ## ThreejsClient today
 
-[`PlayerSystem.applyScenePhysicsCombined`](../src/player/PlayerSystem.ts):
+[`PlayerSystem`](../src/player/PlayerSystem.ts) + [`externalPhysics.ts`](../src/player/externalPhysics.ts):
 
-| Behavior | Ours | Unity |
-|----------|------|-------|
-| Impulse | `eventId` once → `_velocity += J` | `ExternalVelocity += J/m` (m=1) |
-| Force | `_velocity += F * mult * dt` all axes | XZ → ExternalVelocity; Y → effective g |
-| Glide force ×1.5 | Yes | Yes |
-| Velocity split | One buffer (walk + g + external) | Move / Gravity / External |
-| Impulse vs fall | No cancel of falling `v.y` | Zero negative gravity velocity |
-| Continuous lift off ground | Often blocked (grounded strips Y) | Unground when net accel ≥ g |
-| External drag | Shares walk stop/air drag | Env 0.5 + ground friction 4 |
-| Max external speed | None | 50 m/s |
-| Gravity constant | **20** (arcade jump) | **9.8** |
+| Behavior | Ours (after P0) | Unity |
+|----------|-----------------|-------|
+| Impulse | `eventId` once → `_externalVelocity += J/m`; unground + zero fall `v.y` | Same |
+| Force XZ | `_externalVelocity.xz += (F/m)*mult*dt` | Same |
+| Force Y | Effective g: `g' = GRAVITY - a_y`; unground if `g' ≤ 0` | Same model, g≈9.8 |
+| Glide force ×1.5 | Force only | Force only |
+| Velocity split | `_velocity` (walk+g+jump) + `_externalVelocity` | Move / Gravity / External |
+| External drag | Env 0.5 + ground friction 4; max 50 | Same |
+| Grounded external Y | Cleared | Cleared |
+| Gravity constant | **20** (arcade jump) — P1 may scale force | **9.8** |
 | Multi-scene forces | Current worker PE only | Sum per World if IsCurrent |
-| Stale impulse on re-enter | Not handled | Clear dirty on re-activate |
-| Mass | Implicit 1 | CharacterMass 1 |
+| Stale impulse on re-enter | Not handled (P2) | Clear dirty on re-activate |
+| Mass | 1 | CharacterMass 1 |
 
 `eventId` delivery matches protocol (Unity C# also uses dirty wrappers on the same component).
 
@@ -148,16 +147,16 @@ Options:
 
 ## Implementation plan
 
-### P0 — Correctness (do first)
+### P0 — Correctness (do first) ✅
 
-1. Split **`_externalVelocity`** from locomotion `_velocity`.  
-2. **Impulse:** `external += J/m`; if `J.y > 0` → unground + clear negative vertical fall.  
-3. **Force:**  
+1. ✅ Split **`_externalVelocity`** from locomotion `_velocity`.  
+2. ✅ **Impulse:** `external += J/m`; if `J.y > 0` → unground + clear negative vertical fall.  
+3. ✅ **Force:**  
    - XZ → `external.xz += (F/m)*mult*dt`  
-   - Y → effective gravity / unground when net upward (not `v.y += F.y*dt` on shared buffer).  
-4. **Displacement:** `move(locomotion + gravity + external) * dt` into existing CCT `movePlayer`.  
-5. **External drag/clamp** only on external: env 0.5, ground friction 4, max 50; grounded clear external Y.  
-6. Keep: eventId once, glide ×1.5 on force only, DCL→Three vectors, strong upward impulse exits glide.
+   - Y → effective gravity / unground when net upward.  
+4. ✅ **Displacement:** `(velocity + external) * dt` into CCT `movePlayer`.  
+5. ✅ **External drag/clamp** only on external: env 0.5, ground friction 4, max 50; grounded clear external Y.  
+6. ✅ Keep: eventId once, glide ×1.5 on force only, DCL→Three vectors, strong upward impulse exits glide.
 
 ### P1 — Calibration
 

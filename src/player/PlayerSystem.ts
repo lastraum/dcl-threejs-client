@@ -17,7 +17,6 @@ import {
   canLocomote,
   canVoluntaryEmote,
   defaultLocomotionConfig,
-  GLIDING_FORCE_MULTIPLIER,
   isModeOnlyLocomotionFreeze,
   jumpHeightForMode,
   readLocomotionFromComponents,
@@ -26,6 +25,14 @@ import {
   type LocomotionConfig,
   type LocomotionMode
 } from './locomotion'
+import {
+  applyImpulse,
+  dampAndClampExternal,
+  effectiveGravityDown,
+  forceToAcceleration,
+  integrateForceXZ,
+  shouldUngroundFromForce
+} from './externalPhysics'
 import type { SceneSpawn } from '../dcl/content/types'
 import type { MovePlayerToRequest } from './movePlayerTo'
 import {
@@ -62,10 +69,13 @@ let lastLocomotionDiagMs = 0
 const _right = new THREE.Vector3()
 const _moveDir = new THREE.Vector3()
 const _velocity = new THREE.Vector3()
+/** Explorer ExternalVelocity — force XZ + impulses; not walk/jump buffer. */
+const _externalVelocity = new THREE.Vector3()
 const _displacement = new THREE.Vector3()
 const _force = new THREE.Vector3()
 const _sceneForce = new THREE.Vector3()
 const _sceneImpulse = new THREE.Vector3()
+const _forceAccel = new THREE.Vector3()
 const _pivot = new THREE.Vector3()
 const _tmpSpawnHold = new THREE.Vector3()
 const _lookAt = new THREE.Vector3()
@@ -772,6 +782,7 @@ export class PlayerSystem {
       travelYaw
     }
     _velocity.set(0, 0, 0)
+    _externalVelocity.set(0, 0, 0)
     // Timed path only — holds keys until arrival (docs: transition can be interrupted by move).
     this.scenePositionLock = true
     return true
@@ -820,6 +831,7 @@ export class PlayerSystem {
       }
       this.input.clearMovementKeys()
       _velocity.set(0, 0, 0)
+      _externalVelocity.set(0, 0, 0)
       _force.set(0, 0, 0)
       // Hold capsule at seat/authored feet — gravity+CCT while InputModifier freezes walk
       // slides the player off benches between sit teleport and emote.
@@ -1114,11 +1126,6 @@ export class PlayerSystem {
           this.spawnHoldAuthoredFeetY = null
         }
       }
-    } else if (!this.grounded && !this.airJumpPending && !this.gliding) {
-      _velocity.y -= GRAVITY * delta
-    } else if (this.gliding && !this.grounded) {
-      // Glider still feels gravity but is hard-capped on descent (Explorer glidingFallingSpeed).
-      _velocity.y -= GRAVITY * delta * 0.35
     }
 
     if (this.jumping && !this.grounded && _velocity.y <= 0) {
@@ -1152,6 +1159,25 @@ export class PlayerSystem {
       }
     }
 
+    // Gravity after glide state is known so force Y uses 1.5× when gliding.
+    // Skip during spawn hold (handled above).
+    if (this.spawnHoldSecLeft <= 0) {
+      // Continuous PE force Y → effective gravity (Unity ApplyExternalForce / ApplyGravity).
+      // XZ force + impulses live on _externalVelocity (see applyScenePhysicsCombined).
+      const forceAy = this.sampleSceneForceAccelY(this.gliding)
+      if (shouldUngroundFromForce(GRAVITY, forceAy)) {
+        this.grounded = false
+        this.groundCoyote = 0
+      }
+      const gDown = effectiveGravityDown(GRAVITY, forceAy)
+      if (!this.grounded && !this.airJumpPending && !this.gliding) {
+        _velocity.y -= gDown * delta
+      } else if (this.gliding && !this.grounded) {
+        // Glider still feels gravity but is hard-capped on descent (Explorer glidingFallingSpeed).
+        _velocity.y -= gDown * delta * 0.35
+      }
+    }
+
     // Glider needs snappy diagonal steer (W+A → NW); slightly damp normal air only.
     const accel = this.grounded ? GROUND_ACCEL : this.gliding ? AIR_ACCEL * 1.45 : AIR_ACCEL
     const steerAlpha = 1 - Math.exp(-accel * delta)
@@ -1174,6 +1200,7 @@ export class PlayerSystem {
     }
 
     // Scene Physics.applyImpulseToPlayer / applyForceToPlayer (PlayerEntity CRDT summary).
+    // After walk/gravity so impulse same-frame can cancel fall; before jump so pads win.
     this.applyScenePhysicsCombined(delta, this.gliding)
 
     // Ground jump — floor or coyote (so first Space is never dropped).
@@ -1208,15 +1235,19 @@ export class PlayerSystem {
       }
     }
 
-    _displacement.copy(_velocity).multiplyScalar(delta)
+    // Explorer: MoveVelocity + GravityVelocity + ExternalVelocity (we fold move+g into _velocity).
+    dampAndClampExternal(_externalVelocity, this.grounded, delta)
+    _displacement.copy(_velocity).add(_externalVelocity).multiplyScalar(delta)
     // Horizontal-only when actually grounded — coyote must keep vertical displacement so gravity
     // can pull the capsule onto stair treads (stripping Y during coyote caused lip stalls).
+    // Do not strip Y when external lift/impulse is upward.
     if (
       this.grounded &&
       !this.jumping &&
       !this.jumped &&
       !this.airJumpPending &&
-      _velocity.y <= 0
+      _velocity.y <= 0 &&
+      _externalVelocity.y <= 1e-4
     ) {
       _displacement.y = 0
     }
@@ -1233,6 +1264,8 @@ export class PlayerSystem {
     if (this.grounded) {
       this.groundCoyote = GROUND_COYOTE_SECONDS
       if (!this.jumping) _velocity.y = 0
+      // Explorer: grounded clears external Y (drag already damped XZ).
+      _externalVelocity.y = 0
       if (!this.groundedLastFrame) {
         // Air land — refresh CCT obstacle cache so elevated GLTF treads block immediately.
         this.physics.warmStaticScene()
@@ -1317,25 +1350,45 @@ export class PlayerSystem {
   }
 
   /**
-   * Scene-authored PhysicsCombinedForce (continuous) + PhysicsCombinedImpulse (eventId one-shot).
-   * Vectors are DCL scene space → Three display. While gliding, continuous force × 1.5 (Explorer).
+   * Continuous PE force → acceleration Y (Three), for effective gravity this frame.
+   * XZ are integrated in applyScenePhysicsCombined.
+   */
+  private sampleSceneForceAccelY(gliding: boolean): number {
+    const ecs = this.readComponents
+    if (!ecs?.PhysicsCombinedForce.has(SDK_RESERVED.player)) return 0
+    const force = ecs.PhysicsCombinedForce.get(SDK_RESERVED.player)
+    const v = force.vector
+    if (!v) return 0
+    dclToThreeVec(_sceneForce.set(v.x ?? 0, v.y ?? 0, v.z ?? 0), _sceneForce)
+    forceToAcceleration(_sceneForce, gliding, _forceAccel)
+    return _forceAccel.y
+  }
+
+  /**
+   * Scene-authored PhysicsCombinedForce + PhysicsCombinedImpulse (PlayerEntity CRDT).
+   * Explorer: ExternalVelocity gets force XZ + impulse; force Y is effective-g only.
    */
   private applyScenePhysicsCombined(delta: number, gliding: boolean): void {
     const ecs = this.readComponents
     if (!ecs) return
     const pe = SDK_RESERVED.player
 
+    // Impulse first when same-frame as force: cancel fall before continuous integrate.
     if (ecs.PhysicsCombinedImpulse.has(pe)) {
       const imp = ecs.PhysicsCombinedImpulse.get(pe)
       const eventId = imp.eventId ?? 0
       const v = imp.vector
       if (eventId !== 0 && eventId !== this.lastImpulseEventId && v) {
         this.lastImpulseEventId = eventId
-        // Impulse as Δv (kinematic CCT — mass baked into scene magnitudes).
         dclToThreeVec(_sceneImpulse.set(v.x ?? 0, v.y ?? 0, v.z ?? 0), _sceneImpulse)
-        _velocity.add(_sceneImpulse)
-        // Impulse exits glide so launch pads feel snappy.
-        if (_sceneImpulse.y > 0.5) this.gliding = false
+        applyImpulse(_externalVelocity, _sceneImpulse)
+        if (_sceneImpulse.y > 0) {
+          // Explorer: unground + zero falling gravity velocity so pads beat freefall.
+          this.grounded = false
+          this.groundCoyote = 0
+          if (_velocity.y < 0) _velocity.y = 0
+          if (_sceneImpulse.y > 0.5) this.gliding = false
+        }
       }
     }
 
@@ -1343,12 +1396,14 @@ export class PlayerSystem {
       const force = ecs.PhysicsCombinedForce.get(pe)
       const v = force.vector
       if (v) {
-        // Continuous force as acceleration (m=1).
-        const mult = gliding ? GLIDING_FORCE_MULTIPLIER : 1
         dclToThreeVec(_sceneForce.set(v.x ?? 0, v.y ?? 0, v.z ?? 0), _sceneForce)
-        _velocity.x += _sceneForce.x * mult * delta
-        _velocity.y += _sceneForce.y * mult * delta
-        _velocity.z += _sceneForce.z * mult * delta
+        forceToAcceleration(_sceneForce, gliding, _forceAccel)
+        integrateForceXZ(_externalVelocity, _forceAccel, delta)
+        // Force Y already handled via sampleSceneForceAccelY → effective gravity.
+        if (shouldUngroundFromForce(GRAVITY, _forceAccel.y)) {
+          this.grounded = false
+          this.groundCoyote = 0
+        }
       }
     }
   }
@@ -1580,6 +1635,7 @@ export class PlayerSystem {
     }
     this.physics.teleport(positionThree)
     _velocity.set(0, 0, 0)
+    _externalVelocity.set(0, 0, 0)
     this.jumped = false
     this.jumping = false
     this.airJumped = false

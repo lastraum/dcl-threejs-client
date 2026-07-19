@@ -518,7 +518,8 @@ export class SettingsOverlay {
     } else if (this.activeTab === 'gallery') {
       this.galleryView = new GalleryView({
         getWalletAddress: () => this.session.getAddress(),
-        getAuthIdentity: () => this.session.getAuthIdentity()
+        getAuthIdentity: () => this.session.getAuthIdentity(),
+        peerUrl: this.session.getContentUrl() || undefined
       })
       this.contentArea.appendChild(this.galleryView.root)
       this.galleryView.mount()

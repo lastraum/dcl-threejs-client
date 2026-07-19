@@ -415,6 +415,61 @@ export class RemoteAvatarManager {
     return record.root
   }
 
+  /**
+   * Photo-mode metadata samples — remotes with a pose (world-space feet/root).
+   * Frustum tests happen in photoMetadata.peopleInPhotoFrustum.
+   */
+  collectPhotoPeopleSamples(): Array<{
+    address: string
+    displayName: string
+    isGuest: boolean
+    isEmoting: boolean
+    hasClaimedName: boolean
+    nameColor?: string
+    faceUrl?: string | null
+    wearables: string[]
+    worldPosition: THREE.Vector3
+    radius: number
+  }> {
+    const out: Array<{
+      address: string
+      displayName: string
+      isGuest: boolean
+      isEmoting: boolean
+      hasClaimedName: boolean
+      nameColor?: string
+      faceUrl?: string | null
+      wearables: string[]
+      worldPosition: THREE.Vector3
+      radius: number
+    }> = []
+    for (const [key, record] of this.peers) {
+      if (!record.hasPosition || record.modifierHidden) continue
+      const pos = new THREE.Vector3()
+      record.root.getWorldPosition(pos)
+      const emoting =
+        record.renderMode === 'vrm'
+          ? !!record.vrmLocomotion?.isProfileEmoteActive()
+          : record.renderMode === 'odk'
+            ? !!record.odkLocomotion?.isProfileEmoteActive()
+            : !!record.animations?.isProfileEmoteActive()
+      const profile = record.pendingProfile
+      out.push({
+        address: key,
+        displayName: record.identity.displayName,
+        isGuest: !record.identity.hasClaimedName && !profile?.fromWallet,
+        isEmoting: emoting || !!record.activeEmoteUrn,
+        hasClaimedName: !!record.identity.hasClaimedName,
+        nameColor: record.identity.nameColor ?? profile?.nameColor,
+        faceUrl: null,
+        wearables: profile?.wearables ? [...profile.wearables] : [],
+        worldPosition: pos,
+        radius: 1.0
+      })
+    }
+    return out
+  }
+
   /** AvatarModifierArea samples — DCL feet positions for remotes with a known pose. */
   collectModifierSamples(out: { id: string; position: { x: number; y: number; z: number } }[]): void {
     for (const [key, record] of this.peers) {

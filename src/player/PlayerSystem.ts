@@ -190,6 +190,8 @@ export class PlayerSystem {
   /** CameraModeArea force — null when freecam is player-controlled. */
   private forcedCameraMode: ForcedCameraMode | null = null
   private preForceCamDistance: number | null = null
+  /** Explorer In-World Camera (photo mode) — dedicated lens owns host.camera. */
+  private photoModeActive = false
   /**
    * After spawn when settle finds no solid, briefly hold Y and re-probe while late
    * collider pose slides land. No synthetic pad — pure authored geometry only.
@@ -267,8 +269,12 @@ export class PlayerSystem {
     this.readComponents = readComponents
     this.walkBounds = walkBounds
     this.input = new PlayerInput(this.host.renderer.domElement)
-    this.input.setLocomotionBlocked(() => !canLocomote(this.getLocomotionConfig()))
-    this.input.setLookBlocked(() => this.isSceneVirtualCameraDriving())
+    this.input.setLocomotionBlocked(
+      () => this.photoModeActive || !canLocomote(this.getLocomotionConfig())
+    )
+    this.input.setLookBlocked(
+      () => this.photoModeActive || this.isSceneVirtualCameraDriving()
+    )
     const feetY = spawn.fromSpawnPoints
       ? spawn.y
       : spawn.y <= 0.01
@@ -525,6 +531,22 @@ export class PlayerSystem {
 
   isPointerLocked(): boolean {
     return this.input?.pointer.locked ?? false
+  }
+
+  /**
+   * Explorer In-World Camera mode — blocks avatar locomotion + orbit freecam.
+   * World drives host.camera via PhotoCameraController while active.
+   */
+  setPhotoModeActive(active: boolean): void {
+    this.photoModeActive = active
+    if (active) {
+      this.input?.stopOrbitIfActive()
+      if (this.input?.pointer.locked) document.exitPointerLock()
+    }
+  }
+
+  isPhotoModeActive(): boolean {
+    return this.photoModeActive
   }
 
   /**
@@ -919,6 +941,30 @@ export class PlayerSystem {
       })
       this.applyCameraInputFromPointer()
       this.syncCamera(false, delta)
+      this.input.endFrame()
+      return
+    }
+
+    // Photo mode: freeze locomotion input; dedicated PhotoCameraController owns the lens.
+    if (this.photoModeActive) {
+      this.physics.step(delta)
+      this.root.position.copy(this.physics.positionOut)
+      this.syncNameTag()
+      this.avatar?.setYaw(this.playerYaw)
+      this.avatar?.update(delta, {
+        horizontalSpeed: 0,
+        grounded: this.grounded,
+        nearGround: this.nearGround,
+        verticalVelocity: 0,
+        locomotionMode: this.locomotionMode,
+        jumping: false,
+        doubleJumping: false,
+        doubleJumpTriggered: false,
+        falling: false,
+        gliding: false,
+        moveAxisX: 0,
+        moveAxisZ: 0
+      })
       this.input.endFrame()
       return
     }

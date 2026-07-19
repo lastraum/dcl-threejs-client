@@ -55,8 +55,30 @@ export function guessWearableRarity(urn: string): string {
   return 'common'
 }
 
+/** Body shape URNs only (legacy filter for general equipped lists). */
 export function filterEquippedWearables(wearables: string[]): string[] {
-  return wearables.filter((u) => !u.includes('basemale') && !u.includes('basefemale'))
+  return wearables.filter((u) => {
+    const low = u.toLowerCase()
+    return !low.includes('basemale') && !low.includes('basefemale')
+  })
+}
+
+/**
+ * True for free default wardrobe: body shape + off-chain base-avatars
+ * (hair, eyes, default clothes, etc.). Photo review hides these.
+ */
+export function isDefaultBaseWearableUrn(urn: string): boolean {
+  const u = urn.trim().toLowerCase()
+  if (!u) return true
+  if (u.includes('basemale') || u.includes('basefemale')) return true
+  if (u.includes('off-chain:base-avatars') || u.includes(':base-avatars:')) return true
+  if (u.startsWith('dcl://base-avatars/')) return true
+  return false
+}
+
+/** Collection / NFT wearables only — no default base avatar pieces. */
+export function filterNonDefaultWearables(wearables: string[]): string[] {
+  return wearables.filter((u) => !isDefaultBaseWearableUrn(u))
 }
 
 export type WearableDisplayCard = {

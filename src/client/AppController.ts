@@ -1345,16 +1345,40 @@ export class AppController {
         debugPanel: this.debugPanel,
         devProgressPanel: this.devProgressPanel,
         onEmoteSelected: (emoteId) => world.playLocalEmote(emoteId, { loop: false }),
+        onTogglePhotoCamera: () => world.togglePhotoCamera(),
         onSignOut: () => this.signOut(),
         onExit: () => this.leavePlayMode()
       })
     } else {
       this.shell.updateWorldBindings(world.session, world.environment)
       this.shell.setEmoteHandler((emoteId) => world.playLocalEmote(emoteId, { loop: false }))
+      this.shell.setPhotoCameraHandler(() => world.togglePhotoCamera())
     }
     if (opts.deferPlayChromeReveal) {
       this.hidePlayChrome()
     }
+
+    world.setPhotoChromeHandler((visible) => {
+      if (visible) {
+        // Leaving photo mode — restore play chrome (respect prior U-hide by re-revealing fully).
+        if (document.body.classList.contains('client-in-world')) {
+          this.revealPlayChrome()
+          this.clientHudVisible = true
+          document.body.classList.remove('client-hud-hidden')
+        }
+      } else {
+        // Entering photo mode — hide all client + scene UI (camera HUD is separate).
+        this.shell?.hide()
+        this.chatPanel?.hide()
+        this.worldLocationCard?.setVisible(false)
+        this.minimap?.setVisible(false)
+        if (this.locationMapStack) this.locationMapStack.hidden = true
+        this.mobileHud?.setShellVisible(false)
+        this.settingsOverlay?.hide()
+        this.preferencesPanel?.hide()
+        this.world?.setSceneUiVisible(false)
+      }
+    })
 
     if (!this.settingsOverlay) {
       this.settingsOverlay = this.createSettingsOverlay(world.session, sceneConfig)
@@ -1734,6 +1758,15 @@ export class AppController {
       e.preventDefault()
       e.stopPropagation()
       this.toggleNameTagsHotkey()
+      return
+    }
+    if (e.code === 'KeyC') {
+      // When already in photo mode, PhotoCameraController owns Esc/C to exit.
+      if (this.world?.isPhotoCameraActive()) return
+      // Explorer In-World Camera (photo fly mode) — not orbit freecam.
+      e.preventDefault()
+      e.stopPropagation()
+      this.world?.togglePhotoCamera()
     }
   }
 

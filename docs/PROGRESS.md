@@ -4,8 +4,8 @@
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-07-18  
 > **Current phase:** **v1.1.x** — production beta + multiplayer/social reliability; still not full Explorer parity.  
-> **Shipped (1.x):** **terrain editor biomes** (desert dunes / land plane / FFTOCEAN) · **backpack hides + large-wallet inventory** · 3D chat handoff · nearby voice unlock · parcel archipelago seed · location minimap · communities · P4 bloom/HDR · Explorer glider · backpack→world · Dead Surge combat/VC · RestrictedActions · SDK6 fail-fast.  
-> **1.x next:** backpack outfits/marketplace · scene UI text-measure · community voice Bearer parity · create-community / invites · graphics P3 distance culls · spatial voice restore.  
+> **Shipped (1.x):** **In-World Camera + Camera Reel gallery** · U/N UI + chat image lightbox · **terrain editor biomes** · **backpack hides + large-wallet inventory** · 3D chat handoff · nearby voice · minimap · communities · P4 bloom/HDR · glider · backpack→world · SDK6 fail-fast.  
+> **1.x next:** backpack outfits/marketplace · scene UI text-measure · community voice Bearer parity · create-community / invites · graphics P3 distance culls · gallery multi-page (100+ photos).  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml)
@@ -13,6 +13,33 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — In-World Camera + Camera Reel gallery → `dev-latest` (2026-07-18)
+
+**Status: merged `lastraum` → `dev-latest`** — Explorer-style photo fly mode, post-capture review, signed gallery upload, Settings Gallery parity.
+
+### What's new
+
+- **In-World Camera (C)** — dedicated fly lens (not orbit freecam); pointer-lock look + hidden cursor; WASD/R·F height; scroll FOV
+- **Space shutter** — 1920×1080 crop + people-in-frame metadata (frustum)
+- **Review rail (3/4 · 1/4)** — place, people accordion (non-default wearables + BUY), Scrap / Share / Download / **Save to Camera Reel**
+- **Gallery (K)** — month grid, larger thumbs, hover ⋮ menu (public / copy link / share X / download / delete), detail same 3/4·1/4 layout
+- **U / N chrome** (prior on branch) — hide all UI; name tags local+remote+AvatarShape; chat image lightbox
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Photo fly camera** | 🟢 | `PhotoCameraController` · blocks locomotion/freecam; VC-blocked when scene owns lens |
+| **Capture + metadata** | 🟢 | Frame crop · frustum people · placeId via Places API |
+| **Save → Camera Reel** | 🟢 | Signed `POST /api/images` · wallet required · no auto-download on Save |
+| **Gallery list/detail** | 🟢 | Compact list + metadata detail · public toggle · delete · reels link |
+| **Thumb ⋮ menu** | 🟢 | Public / Share X / Copy Link / Download / Delete |
+| **Gallery pagination** | ⬜ | API max 100/page — multi-page later |
+
+**QA:** C → FOV scroll → Space → Save (wallet) → K Gallery sees photo · ⋮ public/link/delete · detail rail people · Esc/scrap · C exit.
+
+**Tip commits:** `a3f010a` / `8e5497b` on `lastraum` (photo + gallery + docs).
 
 ---
 

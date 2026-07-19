@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "VITE_ANALYTICS_ENABLED=false tsc && VITE_ANALYTICS_ENABLED=false vite build",
     "build:prod": "VITE_ANALYTICS_ENABLED=true tsc && VITE_ANALYTICS_ENABLED=true vite build",
+    "build:staging": "VITE_ANALYTICS_ENABLED=false tsc && VITE_ANALYTICS_ENABLED=false vite build",
     "preview": "vite preview",
     "bundle:wearables": "node scripts/bundle-base-wearables.mjs",
     "test:trigger": "node scripts/test-trigger-area-math.mjs",

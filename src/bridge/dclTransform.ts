@@ -128,14 +128,44 @@ export type ReservedTransformAnchors = {
   getCamera: () => THREE.Object3D | null
 }
 
+export type TransformParentView = {
+  RootEntity: Entity
+  PlayerEntity?: Entity
+  CameraEntity?: Entity
+}
+
+/** True when `parent` is scene root / unset (not a scene-entity Group). */
+export function isSceneRootParent(
+  parentEntity: Entity | undefined | null,
+  view: TransformParentView
+): boolean {
+  return (
+    parentEntity === undefined ||
+    parentEntity === null ||
+    parentEntity === 0 ||
+    parentEntity === view.RootEntity
+  )
+}
+
+/**
+ * Resolve Three.js parent for an ECS Transform.parent.
+ *
+ * Contract: for a non-root scene parent that already has a store node, that node is returned.
+ * Callers must run {@link expandTransformAncestors} + create ancestor nodes **before** this
+ * so a missing parent node is not silently replaced with sceneRoot (which parks *local*
+ * coords at world origin — plaza bounce TriggerAreas ~50m wrong).
+ *
+ * sceneRoot is only used for: root/0, reserved PE/camera without anchors, or a parent id
+ * that truly has no Transform on the ECS yet (forward reference).
+ */
 export function resolveTransformParent(
   parentEntity: Entity | undefined,
-  view: { RootEntity: Entity; PlayerEntity?: Entity; CameraEntity?: Entity },
+  view: TransformParentView,
   nodes: Map<Entity, THREE.Group>,
   sceneRoot: THREE.Group,
   anchors?: ReservedTransformAnchors | null
 ): THREE.Object3D {
-  if (!parentEntity || parentEntity === 0 || parentEntity === view.RootEntity) {
+  if (isSceneRootParent(parentEntity, view)) {
     return sceneRoot
   }
   // Reserved entities are not scene store nodes — parent to the live player/camera object.
@@ -146,7 +176,36 @@ export function resolveTransformParent(
   if (view.CameraEntity != null && parentEntity === view.CameraEntity) {
     return anchors?.getCamera() ?? sceneRoot
   }
-  return nodes.get(parentEntity as Entity) ?? sceneRoot
+  const parentNode = nodes.get(parentEntity as Entity)
+  if (parentNode) return parentNode
+  // Parent id is set but no node — caller should have expanded/created ancestors first.
+  // Fall back only for true forward refs (parent Transform not on ECS yet).
+  return sceneRoot
+}
+
+/**
+ * Add every ECS Transform ancestor of `entities` into the set (in-place).
+ * Partial CRDT batches that only contain children still apply parents first.
+ */
+export function expandTransformAncestors(
+  entities: Set<Entity>,
+  Transform: MirrorComponents['Transform'],
+  view: TransformParentView
+): void {
+  const queue = [...entities]
+  while (queue.length > 0) {
+    const entity = queue.pop()!
+    const t = Transform.getOrNull(entity)
+    if (!t) continue
+    const parent = t.parent as Entity | undefined
+    if (isSceneRootParent(parent, view)) continue
+    if (view.PlayerEntity != null && parent === view.PlayerEntity) continue
+    if (view.CameraEntity != null && parent === view.CameraEntity) continue
+    if (!Transform.has(parent as Entity)) continue
+    if (entities.has(parent as Entity)) continue
+    entities.add(parent as Entity)
+    queue.push(parent as Entity)
+  }
 }
 
 /** Depth in Transform hierarchy — parents always get lower depth than children. */

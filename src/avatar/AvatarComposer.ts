@@ -21,6 +21,7 @@ import { resolveAvatarProfile } from './peerApi'
 import { isModelWearable } from './slots'
 import { yieldToNextFrame } from '../rendering/mainThreadYield'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
+import { isAvatarVerbose } from '../client/debug/ClientDebugLog'
 import type { AvatarComposeConfig, AvatarProfile, BodyShape, WearableCategory } from './types'
 
 export type ComposeOptions = {
@@ -133,7 +134,7 @@ async function composeFromConfig(
         bodyRoot
       }
       const isFeet = category === 'feet'
-      if (isFeet) {
+      if (isFeet && isAvatarVerbose()) {
         console.info(`[avatar] composing feet — ${entry.wearable.id}`)
       }
 
@@ -154,7 +155,7 @@ async function composeFromConfig(
 
       if (!merged) {
         const attached = attachWearableFallback(entry.layer, skeleton, avatar, mergeOpts)
-        if (attached && isFeet) {
+        if (attached && isFeet && isAvatarVerbose()) {
           console.info(`[avatar] feet fallback attach — ${entry.wearable.id}`)
         }
         if (!attached) {

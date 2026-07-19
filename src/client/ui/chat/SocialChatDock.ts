@@ -16,11 +16,17 @@ import {
 } from '../../../social/chatMentions'
 import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import { isAllowedChatImageFile } from '../../../social/prepareChatImage'
-import { SocialService } from '../../../social/SocialService'
+import { SocialService, socialChannelKey } from '../../../social/SocialService'
+import {
+  chatTranslationService,
+  chatTranslationSettings
+} from '../../../social/translation'
 import { isChatImageLine, type ChatChannelChoice, type ChatLine } from '../../../social/types'
 import { sceneChatRailIcon, SIDEBAR_ICONS } from '../shell/icons'
 import type { SocialChatController, SocialChatStatus } from './SocialChatController'
 import { wireChatImageExpand } from './chatImageLightbox'
+import { ChatChannelMenu } from './ChatChannelMenu'
+import { appendTranslateControls } from './chatTranslateUi'
 
 const SOCIAL_CHAT_MOBILE_MQ = '(max-width: 767px)'
 
@@ -68,6 +74,11 @@ export class SocialChatDock {
   private unsubChat: (() => void) | null = null
   private unsubChannel: (() => void) | null = null
   private unsubProfiles: (() => void) | null = null
+  private unsubTranslate: (() => void) | null = null
+  private unsubTranslateSettings: (() => void) | null = null
+  private autoIndicatorEl: HTMLElement | null = null
+  private moreBtn: HTMLButtonElement | null = null
+  private channelMenu: ChatChannelMenu | null = null
   private inputCaret = 0
   private mentionHighlight = 0
   private mentionPopupRows: MentionCandidate[] = []
@@ -118,7 +129,16 @@ export class SocialChatDock {
         <span class="social-chat-dock__thread-avatar" aria-hidden="true"></span>
         <div class="social-chat-dock__thread-head-text">
           <div class="social-chat-dock__thread-title"></div>
+          <div class="chat-panel__auto-indicator social-chat-dock__auto-indicator" hidden>
+            <svg class="chat-panel__auto-ind-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden><path d="M4 5h7M7.5 5v1a8 8 0 0 0 8 8h.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M5 19h14M13 9l3.5 10M20.5 19 17 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="chat-panel__auto-indicator-text">Auto-Translate On</span>
+          </div>
           <div class="social-chat-dock__thread-subtitle"></div>
+        </div>
+        <div class="chat-panel__header-actions social-chat-dock__header-actions">
+          <button type="button" class="chat-panel__more-btn social-chat-dock__more-btn" aria-label="More channel options" aria-haspopup="menu" title="More">
+            <svg class="chat-panel__more-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>
+          </button>
         </div>
       </header>
       <div class="social-chat-dock__messages" role="log" aria-live="polite"></div>
@@ -149,8 +169,28 @@ export class SocialChatDock {
     this.headerAvatarEl = this.threadEl.querySelector('.social-chat-dock__thread-avatar')!
     this.headerTitle = this.threadEl.querySelector('.social-chat-dock__thread-title')!
     this.headerSubtitle = this.threadEl.querySelector('.social-chat-dock__thread-subtitle')!
+    this.autoIndicatorEl = this.threadEl.querySelector('.social-chat-dock__auto-indicator')
+    this.moreBtn = this.threadEl.querySelector('.social-chat-dock__more-btn')
     this.messagesEl = this.threadEl.querySelector('.social-chat-dock__messages')!
     this.composerEl = this.threadEl.querySelector('.social-chat-dock__composer')!
+
+    this.channelMenu = new ChatChannelMenu({
+      getChannelKey: () => socialChannelKey(this.social().getChannel()),
+      onAutoTranslateChange: (enabled) => {
+        if (enabled) this.social().backfillAutoTranslate()
+        this.syncAutoTranslateIndicator()
+        if (this.threadOpen) this.renderMessages()
+      },
+      onDeleteHistory: () => {
+        this.social().clearChannelHistory()
+        this.renderMessages()
+        this.renderPills()
+      }
+    })
+    this.moreBtn?.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (this.moreBtn) this.channelMenu?.toggle(this.moreBtn)
+    })
     this.mentionDockEl = this.threadEl.querySelector('.chat-panel__mention-dock')!
     this.mentionListEl = this.threadEl.querySelector('.chat-panel__mention-list')!
     this.inputEl = this.threadEl.querySelector('.social-chat-dock__input')!
@@ -224,6 +264,7 @@ export class SocialChatDock {
     this.root.hidden = true
     this.mobileFab.hidden = true
     this.mobileBackdrop.hidden = true
+    this.channelMenu?.hide()
     this.hidePillTip()
     this.unbindSocial()
     this.unbindContentAlign()
@@ -327,6 +368,8 @@ export class SocialChatDock {
 
   dispose(): void {
     this.hide()
+    this.channelMenu?.dispose()
+    this.channelMenu = null
     this.mobileMq.removeEventListener('change', this.onMobileMqChange)
     if (this.mounted) {
       this.root.remove()
@@ -392,15 +435,26 @@ export class SocialChatDock {
       this.renderMessages()
       this.updateComposerUi()
     })
+    this.unsubTranslate = chatTranslationService.onUpdate(() => {
+      if (this.threadOpen) this.renderMessages()
+    })
+    this.unsubTranslateSettings = chatTranslationSettings.subscribe(() => {
+      this.syncAutoTranslateIndicator()
+      if (this.threadOpen) this.renderMessages()
+    })
   }
 
   private unbindSocial(): void {
     this.unsubChat?.()
     this.unsubChannel?.()
     this.unsubProfiles?.()
+    this.unsubTranslate?.()
+    this.unsubTranslateSettings?.()
     this.unsubChat = null
     this.unsubChannel = null
     this.unsubProfiles = null
+    this.unsubTranslate = null
+    this.unsubTranslateSettings = null
   }
 
   private social(): SocialService {
@@ -543,7 +597,10 @@ export class SocialChatDock {
     const social = this.social()
     const channel = social.getChannel()
     this.headerTitle.textContent = social.getChannelTitle()
-    this.headerSubtitle.textContent = social.getChannelSubtitle()
+    const subtitle = social.getChannelSubtitle()
+    this.headerSubtitle.textContent = subtitle
+    this.headerSubtitle.hidden = !subtitle.trim()
+    this.syncAutoTranslateIndicator()
     this.headerAvatarEl.className = 'social-chat-dock__thread-avatar'
     this.headerAvatarEl.innerHTML = ''
 
@@ -912,7 +969,10 @@ export class SocialChatDock {
   private renderMessages(): void {
     const social = this.social()
     const lines = social.getMessages()
-    this.messagesEl.innerHTML = ''
+    const el = this.messagesEl
+    const stickBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+    const prevTop = el.scrollTop
+    el.innerHTML = ''
 
     if (
       social.getChannel().kind === 'scene' &&
@@ -922,7 +982,7 @@ export class SocialChatDock {
       empty.className = 'chat-panel__empty'
       empty.textContent =
         'The creator has disabled browser chat for this scene. Jump in to explore — in-world chat may still be available.'
-      this.messagesEl.appendChild(empty)
+      el.appendChild(empty)
       return
     }
 
@@ -930,20 +990,30 @@ export class SocialChatDock {
       const empty = document.createElement('div')
       empty.className = 'chat-panel__empty'
       empty.textContent = 'No messages yet — say hello!'
-      this.messagesEl.appendChild(empty)
+      el.appendChild(empty)
       return
     }
 
     for (const line of lines) {
-      this.messagesEl.appendChild(this.renderLine(line))
+      el.appendChild(this.renderLine(line))
     }
-    this.messagesEl.scrollTop = this.messagesEl.scrollHeight
+    el.scrollTop = stickBottom ? el.scrollHeight : prevTop
+  }
+
+  private syncAutoTranslateIndicator(): void {
+    if (!this.autoIndicatorEl) return
+    const on = chatTranslationSettings.getAutoTranslate(socialChannelKey(this.social().getChannel()))
+    this.autoIndicatorEl.hidden = !on
   }
 
   private renderLine(line: ChatLine): HTMLElement {
     const social = this.social()
     const local = social.getLocalDisplay()
     const localAddress = social.getLocalAddress()
+    const channelKey = socialChannelKey(social.getChannel())
+    const displayText = isChatImageLine(line)
+      ? ''
+      : chatTranslationService.displayText(line.id, line.text)
     const mentionsSelf =
       !isChatImageLine(line) &&
       !line.self &&
@@ -951,6 +1021,7 @@ export class SocialChatDock {
 
     const row = document.createElement('div')
     row.className = `chat-panel__line${line.self ? ' is-self' : ''}${isChatImageLine(line) ? ' is-image' : ''}`
+    row.dataset.messageId = line.id
 
     const avatar = document.createElement('div')
     avatar.className = 'chat-panel__avatar'
@@ -980,7 +1051,7 @@ export class SocialChatDock {
       const selfTargets = selfMentionTokens(localAddress, local.displayName)
       appendChatTextWithSelfMentions(
         body,
-        line.text,
+        displayText,
         selfTargets,
         { onNavigate: (target) => void this.onGoto?.(target) },
         localAddress
@@ -1013,6 +1084,14 @@ export class SocialChatDock {
     bubble.appendChild(name)
     bubble.appendChild(body)
     bubble.appendChild(time)
+    if (!isChatImageLine(line)) {
+      appendTranslateControls({
+        bubble,
+        line,
+        channelKey,
+        isSelf: Boolean(line.self)
+      })
+    }
 
     if (line.self) {
       row.appendChild(bubble)

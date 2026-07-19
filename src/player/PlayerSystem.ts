@@ -156,6 +156,13 @@ export class PlayerSystem {
    * Reset on scene/player re-init and when PE impulse is cleared (stale re-enter).
    */
   private lastImpulseEventId = 0
+  /**
+   * Last applied LWW Lamport for PE impulse — required for Genesis Plaza parasols which
+   * write `eventId: 0` on every bounce (SDK helper uses incrementing eventId ≥ 1).
+   */
+  private lastImpulseLamport = 0
+  /** Optional: CRDT Lamport for PhysicsCombinedImpulse on PlayerEntity. */
+  private getImpulseLamport: (() => number) | null = null
   private jumpCount = 0
   private locomotionMode: LocomotionMode = 'jog'
   private readComponents: MirrorComponents | null = null
@@ -1241,18 +1248,27 @@ export class PlayerSystem {
     }
 
     // Explorer: MoveVelocity + GravityVelocity + ExternalVelocity (we fold move+g into _velocity).
+    // Continuous PE force Y re-sampled here for lift stick (pad still pushing after impulse).
+    const forceAyMove = this.sampleSceneForceAccelY(this.gliding)
+    const forceLifting = shouldUngroundFromForce(GRAVITY, forceAyMove)
+    if (forceLifting) {
+      this.grounded = false
+      this.groundCoyote = 0
+    }
+
     dampAndClampExternal(_externalVelocity, this.grounded, delta)
     _displacement.copy(_velocity).add(_externalVelocity).multiplyScalar(delta)
     // Horizontal-only when actually grounded — coyote must keep vertical displacement so gravity
     // can pull the capsule onto stair treads (stripping Y during coyote caused lip stalls).
-    // Do not strip Y when external lift/impulse is upward.
+    // Do not strip Y when external lift/impulse or continuous pad force is upward.
     if (
       this.grounded &&
       !this.jumping &&
       !this.jumped &&
       !this.airJumpPending &&
       _velocity.y <= 0 &&
-      _externalVelocity.y <= 1e-4
+      _externalVelocity.y <= 1e-4 &&
+      !forceLifting
     ) {
       _displacement.y = 0
     }
@@ -1266,11 +1282,27 @@ export class PlayerSystem {
 
     const moveResult = this.physics.movePlayer(_displacement, delta)
     this.grounded = moveResult.grounded
-    if (this.grounded) {
+    // Pad / impulse still launching — do not re-stick on the trampoline surface mid-boost.
+    // Threshold is intentional: residual drag after a pad (extY decays slowly) must NOT keep
+    // grounded=false forever or jump/fall locomotion anim sticks after landing.
+    const forceAyLift = this.sampleSceneForceAccelY(this.gliding)
+    const netVy = _velocity.y + _externalVelocity.y
+    const stillLifting =
+      shouldUngroundFromForce(GRAVITY, forceAyLift) ||
+      (_externalVelocity.y > 2.5 && netVy > 1.0)
+    if (this.grounded && stillLifting) {
+      this.grounded = false
+      this.groundCoyote = 0
+    } else if (this.grounded) {
       this.groundCoyote = GROUND_COYOTE_SECONDS
       if (!this.jumping) _velocity.y = 0
       // Explorer: grounded clears external Y (drag already damped XZ).
       _externalVelocity.y = 0
+      // Land — clear voluntary jump state so bounce pads don't leave jump emote on idle.
+      this.jumping = false
+      this.jumped = false
+      this.airJumpPending = false
+      this.airJumpDelayLeft = 0
       if (!this.groundedLastFrame) {
         // Air land — refresh CCT obstacle cache so elevated GLTF treads block immediately.
         this.physics.warmStaticScene()
@@ -1327,13 +1359,16 @@ export class PlayerSystem {
       moveAxisZ = -_moveDir.x * sin + _moveDir.z * cos
     }
 
+    // Include external channel so pad/bounce air poses match real vertical motion (not just jump buffer).
+    const animVy = _velocity.y + _externalVelocity.y
     this.avatar?.update(delta, {
       horizontalSpeed: moving || horizontalSpeed > 0.2 ? horizontalSpeed : 0,
       targetLocomotionSpeed: moving ? moveSpeed : 0,
       grounded: this.grounded,
       nearGround: this.nearGround,
-      verticalVelocity: _velocity.y,
+      verticalVelocity: animVy,
       locomotionMode: this.locomotionMode,
+      // Space jump only — PE impulse / bounce pads use falling/air, not jump emote.
       jumping: this.jumping && !this.airJumped && !this.gliding,
       doubleJumping: this.airJumped && !this.grounded && !this.gliding,
       doubleJumpTriggered: this.doubleJumpTriggered,
@@ -1343,7 +1378,7 @@ export class PlayerSystem {
         !this.jumping &&
         !this.jumped &&
         !this.airJumped &&
-        _velocity.y < -1.5,
+        animVy < -1.5,
       gliding: this.gliding && !this.grounded,
       moveAxisX,
       moveAxisZ
@@ -1354,10 +1389,19 @@ export class PlayerSystem {
     this.input.endFrame()
   }
 
+  /**
+   * Wire PE impulse Lamport reader so eventId=0 scene writes (Genesis Plaza bounce parasols)
+   * re-fire on each CRDT put, not only when eventId increments.
+   */
+  setImpulseLamportProvider(provider: (() => number) | null): void {
+    this.getImpulseLamport = provider
+  }
+
   /** Clear external channel + impulse latch (scene load, dispose, teleport). */
   private resetExternalPhysicsState(): void {
     _externalVelocity.set(0, 0, 0)
     this.lastImpulseEventId = 0
+    this.lastImpulseLamport = 0
   }
 
   /**
@@ -1387,27 +1431,44 @@ export class PlayerSystem {
     if (!ecs) return
     const pe = SDK_RESERVED.player
 
-    // P2 stale impulse: if component gone or eventId cleared, re-arm for next pad.
+    // P2 stale impulse: if component gone, re-arm for next pad.
     if (!ecs.PhysicsCombinedImpulse.has(pe)) {
       this.lastImpulseEventId = 0
+      this.lastImpulseLamport = 0
     } else {
       const imp = ecs.PhysicsCombinedImpulse.get(pe)
       const eventId = imp.eventId ?? 0
       const v = imp.vector
-      if (eventId === 0) {
-        this.lastImpulseEventId = 0
-      } else if (eventId !== this.lastImpulseEventId && v) {
+      const lamport = this.getImpulseLamport?.() ?? 0
+      // Plaza bounce_parasol writes { eventId: 0, vector: (0,25,0) } every enter — only LWW
+      // Lamport advances. Without a Lamport provider, fall back to non-zero eventId edges.
+      const isNewPut =
+        lamport > 0
+          ? lamport !== this.lastImpulseLamport
+          : eventId !== 0 && eventId !== this.lastImpulseEventId
+      if (isNewPut && v) {
+        this.lastImpulseLamport = lamport
         this.lastImpulseEventId = eventId
-        // World impulse before scale — check raw Y for unground / glide exit.
-        dclToThreeVec(_sceneImpulse.set(v.x ?? 0, v.y ?? 0, v.z ?? 0), _sceneImpulse)
-        const rawUp = _sceneImpulse.y
-        applyImpulse(_externalVelocity, _sceneImpulse)
-        if (rawUp > 0) {
-          // Explorer: unground + zero falling gravity velocity so pads beat freefall.
-          this.grounded = false
-          this.groundCoyote = 0
-          if (_velocity.y < 0) _velocity.y = 0
-          if (rawUp > 0.5) this.gliding = false
+        const mag = Math.hypot(v.x ?? 0, v.y ?? 0, v.z ?? 0)
+        if (mag > 1e-6) {
+          // World impulse before scale — check raw Y for unground / glide exit.
+          dclToThreeVec(_sceneImpulse.set(v.x ?? 0, v.y ?? 0, v.z ?? 0), _sceneImpulse)
+          const rawUp = _sceneImpulse.y
+          applyImpulse(_externalVelocity, _sceneImpulse)
+          if (rawUp > 0) {
+            // Explorer: unground + zero falling gravity velocity so pads beat freefall.
+            this.grounded = false
+            this.groundCoyote = 0
+            if (_velocity.y < 0) _velocity.y = 0
+            if (rawUp > 0.5) this.gliding = false
+          }
+          clientDebugLog.log(
+            'player',
+            `PE impulse applied eventId=${eventId} lamport=${lamport} ` +
+              `raw=(${(v.x ?? 0).toFixed(1)},${(v.y ?? 0).toFixed(1)},${(v.z ?? 0).toFixed(1)}) ` +
+              `extY=${_externalVelocity.y.toFixed(1)}`,
+            { level: 'info', alsoConsole: true, throttleMs: 200, throttleKey: 'pe-impulse' }
+          )
         }
       }
     }
@@ -1425,6 +1486,14 @@ export class PlayerSystem {
         if (shouldUngroundFromForce(GRAVITY, _forceAccel.y)) {
           this.grounded = false
           this.groundCoyote = 0
+        }
+        if (Math.abs(v.y ?? 0) > 0.01 || Math.hypot(v.x ?? 0, v.z ?? 0) > 0.01) {
+          clientDebugLog.log(
+            'player',
+            `PE force raw=(${(v.x ?? 0).toFixed(1)},${(v.y ?? 0).toFixed(1)},${(v.z ?? 0).toFixed(1)}) ` +
+              `aY=${_forceAccel.y.toFixed(1)} lift=${shouldUngroundFromForce(GRAVITY, _forceAccel.y)}`,
+            { level: 'info', alsoConsole: true, throttleMs: 800, throttleKey: 'pe-force' }
+          )
         }
       }
     }

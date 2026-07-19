@@ -159,12 +159,17 @@ export class DebugPanel {
       </div>
       <div class="debug-panel__logs">
         <div class="debug-panel__logs-header">
-          <span class="debug-panel__logs-title">Network log</span>
+          <span class="debug-panel__logs-title">Client log</span>
           <div class="debug-panel__logs-actions">
             <button type="button" class="debug-panel__logs-btn debug-panel__logs-copy">Copy</button>
             <button type="button" class="debug-panel__logs-btn debug-panel__logs-clear">Clear</button>
           </div>
         </div>
+        <label class="debug-panel__check" style="margin:6px 0 4px">
+          <input type="checkbox" data-console-mirror />
+          <span>Browser console logs (default off)</span>
+        </label>
+        <div class="debug-panel__render-quality-hint">When off, logs stay in this panel only — no DevTools spam / FPS tax.</div>
         <div class="debug-panel__logs-body" role="log" aria-live="polite"></div>
       </div>
       <div class="debug-panel__stats"></div>
@@ -190,6 +195,14 @@ export class DebugPanel {
     this.logsBody = this.root.querySelector('.debug-panel__logs-body') as HTMLDivElement
     const statsHost = this.root.querySelector('.debug-panel__stats') as HTMLDivElement
     statsHost.appendChild(renderStats.dom)
+
+    const consoleMirrorToggle = this.root.querySelector(
+      '[data-console-mirror]'
+    ) as HTMLInputElement
+    consoleMirrorToggle.checked = clientDebugLog.isConsoleMirror()
+    consoleMirrorToggle.addEventListener('change', () => {
+      clientDebugLog.setConsoleMirror(consoleMirrorToggle.checked)
+    })
 
     const clearBtn = this.root.querySelector('.debug-panel__logs-clear') as HTMLButtonElement
     clearBtn.addEventListener('click', () => {

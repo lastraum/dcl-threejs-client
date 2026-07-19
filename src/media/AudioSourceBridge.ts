@@ -35,6 +35,7 @@ export class AudioSourceBridge {
     private readonly view: ProjectionView,
     private readonly getEntityNodes: () => Map<Entity, THREE.Group>,
     private readonly getSpatialAnchors: () => SpatialAudioAnchors | null,
+    /** Fallback until player capsule exists — reparented via {@link attachListenerTo}. */
     camera: THREE.Camera,
     /** Source-capture each AudioEvent append for the outbound CrdtEncoder. */
     private readonly recordAppend?: (componentId: number, entity: Entity, value: unknown) => void,
@@ -43,6 +44,7 @@ export class AudioSourceBridge {
   ) {
     patchThreeAudioSafeRamps()
     this.listener = new THREE.AudioListener()
+    // Start on camera; World reparents to player chest after initCapsule (Explorer ears).
     camera.add(this.listener)
     this.applyMasterVolume(soundSettings.get().masterVolume)
     this.unsubscribeSoundSettings = soundSettings.subscribe((state) => {
@@ -56,6 +58,16 @@ export class AudioSourceBridge {
 
   getListener(): THREE.AudioListener {
     return this.listener
+  }
+
+  /**
+   * Parent the WebAudio listener to the local avatar (chest / PE attach), not freecam.
+   * Matches LightSource / Transform.parent=PlayerEntity spatial roots.
+   */
+  attachListenerTo(host: THREE.Object3D | null): void {
+    if (!host || this.listener.parent === host) return
+    this.listener.parent?.remove(this.listener)
+    host.add(this.listener)
   }
 
   setUserGestureUnlocked(unlocked: boolean): void {

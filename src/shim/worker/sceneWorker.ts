@@ -79,6 +79,9 @@ import { installAvatarAttachCreateGuard } from './patchAvatarAttachCreate'
 import type { Entity } from '@dcl/ecs'
 import * as extended from '@dcl/ecs/dist/components'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
+import { ReadWriteByteBuffer } from '@dcl/ecs/dist/serialization/ByteBuffer'
+import { readMessage } from '@dcl/ecs/dist/serialization/crdt/message'
+import { CrdtMessageType } from '@dcl/ecs/dist/serialization/crdt/types'
 import {
   installPreregisterRendererComponentsHook,
   installUiVirtualCanvasHook,
@@ -867,6 +870,30 @@ function postPlayModeColdCrdtFireAndForget(data: Uint8Array): void {
   ctx.postMessage({ type: 'crdt-outbound', data } satisfies SceneWorkerOutbound, [data.buffer])
 }
 
+/** core::PhysicsCombinedImpulse / Force — pad/bounce must not wait cold-frame batching. */
+const PHYSICS_COMBINED_COMPONENT_IDS = new Set([1215, 1216])
+
+function crdtChunkHasPhysicsCombined(data: Uint8Array): boolean {
+  if (!data.byteLength) return false
+  try {
+    const buf = new ReadWriteByteBuffer(data)
+    let msg = readMessage(buf)
+    while (msg) {
+      if (
+        (msg.type === CrdtMessageType.PUT_COMPONENT ||
+          msg.type === CrdtMessageType.PUT_COMPONENT_NETWORK) &&
+        PHYSICS_COMBINED_COMPONENT_IDS.has(msg.componentId)
+      ) {
+        return true
+      }
+      msg = readMessage(buf)
+    }
+  } catch {
+    return false
+  }
+  return false
+}
+
 /** Phase 3 — coalesced cold CRDT + VC hydrate + player-frame after pollEvents (play mode). */
 function completePlayFrameColdEgress(): void {
   if (sceneOnUpdatePaused) return
@@ -1620,11 +1647,21 @@ function deliverRendererAppendInbound(chunks: Uint8Array[]): void {
   if (!sceneEngine || !sceneOnStartComplete) return
   const counts = applyRendererInboundChunks(chunks)
   if (counts.triggerAppends === 0 && counts.videoAppends === 0) return
-  workerVerboseLog(
-    debugPointerDeliver,
+  workerLog(
     'log',
     `[sceneWorker] renderer-append-deliver — trigger=${counts.triggerAppends} videoEvent=${counts.videoAppends}`
   )
+  // TriggerArea enter must run TriggerAreaResultSystem same-message.
+  // requestSceneEngineTick() often no-ops when wall-clock debt is 0 (just after a play-frame
+  // tick) — Plaza bounce_parasol then never sees ENTER → never writes PhysicsCombinedImpulse.
+  // dt=0 runs systems without inventing NeonScreen wall time; flush cold CRDT so impulse
+  // reaches main before the next player.update (eventId:0 + vector 0,25,0).
+  if (counts.triggerAppends > 0) {
+    void runSceneEngineUpdateNow(0).then(() => {
+      completePlayFrameColdEgress()
+    })
+    return
+  }
   sceneEngineTickAfterInboundInject(counts)
 }
 
@@ -2286,7 +2323,13 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
       return Promise.resolve([])
     }
     // Phase 3 — play mode cold CRDT batched per unified frame (no ack).
+    // Physics force/impulse must not wait for the next cooperative tick — pad/bounce
+    // enter→impulse is written mid-frame and main reads it on the following player.update.
     if (!sceneOnUpdatePaused) {
+      if (crdtChunkHasPhysicsCombined(copy)) {
+        postPlayModeColdCrdtFireAndForget(copy)
+        return Promise.resolve([])
+      }
       bufferPlayModeColdCrdt(copy)
       return Promise.resolve([])
     }

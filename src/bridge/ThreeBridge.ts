@@ -19,6 +19,7 @@ import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionChangeKind } from './CrdtProjection'
 import { removeLightSource } from './LightSourceSync'
 import {
+  applyTextShapeFacingMirror,
   buildTextShapeMesh,
   disposeTextShapeMesh,
   textShapeSignature,
@@ -235,6 +236,7 @@ export class ThreeBridge {
    * Transform CRDT / Tween motion hits per instanced entity — sustained motion promotes
    * to a private clone so hierarchy TRS drives the mesh (death coins bob/spin, projectiles).
    * Static multi-instance tiles only get 1–2 puts and stay on GPU InstancedMesh.
+   * Scale / moveRotateScale / textureMove promote immediately (plaza bounce squash).
    */
   private readonly instanceMotionHits = new Map<Entity, number>()
   private static readonly INSTANCE_MOTION_PROMOTE_HITS = 3
@@ -246,6 +248,15 @@ export class ThreeBridge {
       if (!this.instancer.has(entity)) {
         this.instanceMotionHits.delete(entity)
         continue
+      }
+      // Active scale squash (bounce parasol) — clone now so elastic scale is visible this frame.
+      if (this.ecs.Tween.has(entity)) {
+        const mode = this.ecs.Tween.get(entity).mode?.$case
+        if (mode === 'scale' || mode === 'moveRotateScale' || mode === 'textureMove' || mode === 'textureMoveContinuous') {
+          const obj = this.store.nodes.get(entity)
+          if (obj) this.promoteInstancedForMotion(entity, obj)
+          continue
+        }
       }
       const hits = (this.instanceMotionHits.get(entity) ?? 0) + 1
       this.instanceMotionHits.set(entity, hits)
@@ -428,6 +439,10 @@ export class ThreeBridge {
 
   /** Only suspended pool slots skip secondary notifies — not every animated plane in the scene. */
   private skipSpriteSecondaryNotify = (entity: Entity): boolean => this.isAnimatedSpriteSlot(entity)
+
+  getReservedTransformAnchors(): import('./dclTransform').ReservedTransformAnchors | null {
+    return this.reservedTransformAnchors
+  }
 
   setReservedTransformAnchors(
     anchors: import('./dclTransform').ReservedTransformAnchors | null,
@@ -1921,11 +1936,18 @@ export class ThreeBridge {
     // Embedded clips (incl. morph weights) need a per-entity mesh + AnimationMixer —
     // DCL auto-plays the first clip when no ECS Animator (arrow.glb blink).
     if (template.animations.length > 0) return false
-    // TextureMove tweens write material UVs — need private mesh materials (not shared instance).
-    // Move/rotate tweens stay instancable; matrices refresh every frame after TweenBridge.
+    // TextureMove writes material UVs; scale squash (plaza bounce parasols) needs hierarchy
+    // TRS on a private clone — GPU instance slots lag / hide short 800ms elastic scales.
     if (this.ecs.Tween.has(entity)) {
       const mode = this.ecs.Tween.get(entity).mode?.$case
-      if (mode === 'textureMove' || mode === 'textureMoveContinuous') return false
+      if (
+        mode === 'textureMove' ||
+        mode === 'textureMoveContinuous' ||
+        mode === 'scale' ||
+        mode === 'moveRotateScale'
+      ) {
+        return false
+      }
     }
     // PointerEvents / MeshCollider need live meshes in the entity graph (raycast / ECS MeshCollider).
     // GLB `_collider` physics uses template shapes + entity pose (see InstanceColliderShape).
@@ -2038,6 +2060,32 @@ export class ThreeBridge {
   }
 
   /**
+   * Product of Transform.scale.x up the parent chain. Odd negatives (Poker Night boards use −1)
+   * mirror TextShape canvas vs docs-order UVs — caller flips map U to compensate.
+   */
+  private textShapeWorldMirrorX(entity: Entity): boolean {
+    const { Transform } = this.ecs
+    let sx = 1
+    let walk: Entity | undefined = entity
+    for (let i = 0; i < 32 && walk !== undefined; i++) {
+      if (!Transform.has(walk)) break
+      const t = Transform.get(walk) as DclTransformValues
+      sx *= t.scale?.x ?? 1
+      const parent = t.parent as Entity | undefined
+      if (
+        parent === undefined ||
+        parent === null ||
+        (parent as number) === 0 ||
+        parent === walk
+      ) {
+        break
+      }
+      walk = parent
+    }
+    return sx < 0
+  }
+
+  /**
    * Synchronous mesh attach for the async frame — never awaits GLB parse or texture load.
    * Cold GLBs: kick background parse, return. Cached: SkeletonUtils clone + queue materials.
    */
@@ -2068,6 +2116,8 @@ export class ThreeBridge {
         updateTextShapeMesh(textMesh, spec)
         this.notifyMeshComponent(entity, TextShape.componentId)
       }
+      // Poker Night casual board uses scale.x=-1 so Unity text faces the wall; compensate map U.
+      applyTextShapeFacingMirror(textMesh, this.textShapeWorldMirrorX(entity))
       return
     }
 

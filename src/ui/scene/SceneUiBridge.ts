@@ -23,6 +23,7 @@ import {
   readInteractableArea,
   type VirtualCanvasSize
 } from './virtualCanvas'
+import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import { SceneUiHitMap, type UiScreenRegion } from './uiHitMap'
 import {
   disposeSceneUiDebug,
@@ -456,18 +457,22 @@ export class SceneUiBridge {
       const peStr = peIds.length ? ` pe=[${peIds.map((e) => `e${e}`).join(',')}]` : ' pe=[]'
       if (!this.firstPaintLogged) {
         this.firstPaintLogged = true
-        console.info(
-          `[scene-ui] first paint — mount=${mountSize} canvas=${records.length} text=${withText} bg=${withBg}` +
+        clientDebugLog.log(
+          'scene-ui',
+          `first paint — mount=${mountSize} canvas=${records.length} text=${withText} bg=${withBg}` +
             ` virtual=${this.virtual.width}×${this.virtual.height}${sampleStr}${peStr}`
         )
       } else if (this.paintCount <= 12) {
-        console.info(
-          `[scene-ui] repaint #${this.paintCount} — mount=${mountSize} canvas=${records.length}` +
+        clientDebugLog.log(
+          'scene-ui',
+          `repaint #${this.paintCount} — mount=${mountSize} canvas=${records.length}` +
             ` text=${withText} bg=${withBg}${sampleStr}${peStr}`
         )
       } else {
-        console.info(
-          `[scene-ui] repaint mount change — mount=${mountSize} canvas=${records.length} text=${withText} bg=${withBg}${peStr}`
+        clientDebugLog.log(
+          'scene-ui',
+          `repaint mount change — mount=${mountSize} canvas=${records.length} text=${withText} bg=${withBg}${peStr}`,
+          { throttleMs: 2000, throttleKey: 'scene-ui-repaint-mount' }
         )
       }
       this.lastLoggedPaintMount = mountSize

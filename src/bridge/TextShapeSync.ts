@@ -53,11 +53,13 @@ export function buildTextShapeMesh(spec: PBTextShape): THREE.Mesh {
   texture.generateMipmaps = false
   texture.colorSpace = THREE.SRGBColorSpace
 
+  // FrontSide: geometry is already north+south; DoubleSide re-draws backs → ghosts.
+  // Docs-order UVs (same as MeshRenderer planes) so canvas text reads L→R.
   const geometry = buildDclPlaneGeometry(planeW, planeH)
   const material = new THREE.MeshBasicMaterial({
     map: texture,
     transparent: true,
-    side: THREE.DoubleSide,
+    side: THREE.FrontSide,
     depthWrite: false
   })
 
@@ -97,10 +99,37 @@ export function updateTextShapeMesh(mesh: THREE.Mesh, spec: PBTextShape): void {
   const ctx = canvas.getContext('2d')!
   paintTextShape(ctx, spec, canvasW, canvasH, planeW, planeH)
   if (map) map.needsUpdate = true
+  // Keep FrontSide if material was created under the DoubleSide regression.
+  mat.side = THREE.FrontSide
   mat.needsUpdate = true
 
   mesh.geometry.dispose()
   mesh.geometry = buildDclPlaneGeometry(planeW, planeH)
+
+  // Preserve scale.x < 0 compensation after map/geometry rebuild (Poker Night boards).
+  if (mesh.userData.dclTextShapeMirrorX) {
+    applyTextShapeFacingMirror(mesh, true)
+  }
+}
+
+/**
+ * Scenes often set Transform.scale.x = −1 on TextShape so text faces a wall in Unity.
+ * That mirrors the canvas in Three (docs-order UVs already read L→R at scale +1).
+ * Flip map U when the entity (or parent chain) has negative X scale product.
+ */
+export function applyTextShapeFacingMirror(mesh: THREE.Mesh, mirrorX: boolean): void {
+  const mat = mesh.material as THREE.MeshBasicMaterial
+  const map = mat.map
+  if (!map) return
+  if (mirrorX) {
+    map.repeat.x = -1
+    map.offset.x = 1
+  } else {
+    map.repeat.x = 1
+    map.offset.x = 0
+  }
+  map.needsUpdate = true
+  mesh.userData.dclTextShapeMirrorX = mirrorX
 }
 
 export function disposeTextShapeMesh(mesh: THREE.Object3D): void {

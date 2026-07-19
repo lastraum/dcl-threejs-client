@@ -76,7 +76,6 @@ import { mirrorSceneBundle } from '../../dev/mirrorSceneBundle'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
 import { SceneInputRelay } from '../../input/SceneInputRelay'
 import { TriggerAreaSystem } from '../../input/TriggerAreaSystem'
-import { isTriggerAreaVerbose } from '../../input/triggerAreaConfig'
 import { CameraModeAreaSystem } from '../../input/CameraModeAreaSystem'
 import type { ForcedCameraMode } from '../../input/CameraModeAreaSystem'
 import {
@@ -936,9 +935,10 @@ export class SceneScriptSystem {
       this.pointerStructureDirty = true
     }
 
+    // Only TriggerArea structure / pose — do NOT dirty on every GltfContainer put
+    // (plaza attach floods rebuilds and drowns diagnostics).
     if (
       componentId === TriggerArea.componentId ||
-      componentId === GltfContainer.componentId ||
       (componentId === Transform.componentId && TriggerArea.has(entity))
     ) {
       this.triggerStructureDirty = true
@@ -1124,6 +1124,9 @@ export class SceneScriptSystem {
         : null,
       this.view
     )
+    // PositionalAudio listener ears → avatar chest (not freecam). Same anchor as PE lights.
+    const playerRoot = getter?.() ?? null
+    this.audioSourceBridge?.attachListenerTo(playerRoot ?? this.host?.camera ?? null)
   }
 
   /** Binder for `livekit-video://current-stream` (stream-key + Cast share this src). */
@@ -1258,7 +1261,7 @@ export class SceneScriptSystem {
     const scriptUrl = scene.assetUrl(mainFile.hash)
     const scriptStarted = performance.now()
     this.bootProgressReporter?.('Fetching scene script…')
-    console.info('[scene] loading scene script and boot files…')
+    clientDebugLog.log('scene', 'loading scene script and boot files…')
     const [fetchedScript, preloadedFiles, bootSnapshot] = await Promise.all([
       fetch(scriptUrl).then(async (res) => {
         if (!res.ok) throw new Error(`Scene script fetch failed (${res.status}): ${scriptUrl}`)
@@ -1281,8 +1284,9 @@ export class SceneScriptSystem {
           new Blob([buf as BlobPart], { type: 'application/javascript' })
         )
         const scriptCharLength = codeForMirror.length || buf.byteLength
-        console.info(
-          `[scene] scene script ready (${(scriptCharLength / 1024).toFixed(0)} KB, ${((performance.now() - scriptStarted) / 1000).toFixed(1)}s)`
+        clientDebugLog.log(
+          'scene',
+          `scene script ready (${(scriptCharLength / 1024).toFixed(0)} KB, ${((performance.now() - scriptStarted) / 1000).toFixed(1)}s)`
         )
         return { buf, scriptCharLength }
       }),
@@ -1356,8 +1360,9 @@ export class SceneScriptSystem {
     // Floor 3 min, ~25ms/KB of source, cap 10 min.
     const sizeKb = Math.max(1, scriptCharLength / 1024)
     const BOOT_TIMEOUT_MS = Math.min(600_000, Math.max(180_000, Math.ceil(sizeKb * 25) + 60_000))
-    console.info(
-      `[scene] worker boot timeout budget ${(BOOT_TIMEOUT_MS / 1000).toFixed(0)}s for ${sizeKb.toFixed(0)} KB script`
+    clientDebugLog.log(
+      'scene',
+      `worker boot timeout budget ${(BOOT_TIMEOUT_MS / 1000).toFixed(0)}s for ${sizeKb.toFixed(0)} KB script`
     )
     this.bootCrdtSendSerial = Promise.resolve()
     this.bootPhaseActive = true
@@ -1404,7 +1409,10 @@ export class SceneScriptSystem {
         const sec = ((elapsedMs ?? performance.now() - compileStartedAt) / 1000).toFixed(0)
         const size = scriptKb != null ? ` · ${scriptKb} KB` : ''
         this.bootProgressReporter?.(`Compiling scene… ${phase} (${sec}s${size})`)
-        console.info(`[scene] compile-progress — ${phase} @ ${sec}s${size}`)
+        clientDebugLog.log('scene', `compile-progress — ${phase} @ ${sec}s${size}`, {
+          throttleMs: 2000,
+          throttleKey: 'compile-progress'
+        })
       }
 
       armBootTimer()
@@ -1460,9 +1468,10 @@ export class SceneScriptSystem {
             })
           return
         }
-        // Always surface [sceneWorker] boot lines during compile (do not throttle).
+        // Boot progress for loading UI; browser console only if Help → console mirror is on.
         if (msg?.type === 'log' && /\[sceneWorker\]/.test(msg.message)) {
-          console.info(msg.message.replace(/^\[(?:log|info|warn|error|debug)\]\s*/, ''))
+          const line = msg.message.replace(/^\[(?:log|info|warn|error|debug)\]\s*/, '')
+          clientDebugLog.log('scene', line, { throttleMs: 80, throttleKey: 'scene-worker-boot' })
           if (/patching|compiling|evaluated|script ready|transferred script|compile fallback/i.test(msg.message)) {
             noteCompileProgress(msg.message.replace(/^\[sceneWorker\]\s*/i, '').slice(0, 72))
           }
@@ -1539,22 +1548,23 @@ export class SceneScriptSystem {
       return
     }
     if (msg.type === 'log') {
-      // Scene can emit thousands of unique log lines after connect; never mirror every one
-      // to console (main-thread freeze). Keep a throttled sample in the debug panel.
+      // Scene can emit thousands of unique log lines after connect.
+      // Help panel only by default — browser console when Help → “Browser console logs”.
       const noisy =
         /\[DEBUG:POINTER\]|npc:staticData|Animations received|NPC added|equipment:attachments/i.test(
           msg.message
         )
       if (noisy) return
-      // Pointer-tick diagnostics must always reach the browser console (shared throttleKey
-      // was dropping post-DOWN mount/text lines needed for CREATOR MODE debugging).
-      if (/\[sceneWorker\] pointer/.test(msg.message)) {
-        console.info(msg.message.replace(/^\[(?:log|info|warn|error|debug)\]\s*/, ''))
+      // High-rate video/trigger append spam — panel only, hard throttle.
+      if (/renderer-append-deliver/i.test(msg.message)) {
+        clientDebugLog.log('scene', msg.message.replace(/^\[(?:log|info|warn|error|debug)\]\s*/, ''), {
+          throttleMs: 2000,
+          throttleKey: 'renderer-append-deliver'
+        })
         return
       }
-      clientDebugLog.log('scene', msg.message, {
-        alsoConsole: true,
-        throttleMs: 50,
+      clientDebugLog.log('scene', msg.message.replace(/^\[(?:log|info|warn|error|debug)\]\s*/, ''), {
+        throttleMs: 100,
         throttleKey: 'scene-worker-log'
       })
       return
@@ -2066,12 +2076,14 @@ export class SceneScriptSystem {
               if (this.view.components.UiBackground.has(id)) projectionUiBackground++
             }
           }
-          console.info(
-            `[scene-ui] crdt batch — bytes=${batch.reduce((n, item) => n + (item.data?.byteLength ?? 0), 0)} ` +
+          clientDebugLog.log(
+            'scene-ui',
+            `crdt batch — bytes=${batch.reduce((n, item) => n + (item.data?.byteLength ?? 0), 0)} ` +
               `snapshotRows=${latestUiMountSnapshot?.length ?? 0} touchesUi=${batchTouchesUi} mountChanged=${mountChanged} ` +
               `deletes=${projectionDeletes.length} snapshotUiTransform=${snapshotUiTransform} ` +
               `snapshotUiText=${snapshotUiText} snapshotUiBackground=${snapshotUiBackground} ` +
-              `projection=${projectionUiTransform}/${mountSize} text=${projectionUiText} bg=${projectionUiBackground}`
+              `projection=${projectionUiTransform}/${mountSize} text=${projectionUiText} bg=${projectionUiBackground}`,
+            { throttleMs: 1500, throttleKey: 'scene-ui-crdt-batch' }
           )
         }
         // Never defer DOM paint during pointer delivery when this batch touched UI (modal open/close).
@@ -2175,8 +2187,9 @@ export class SceneScriptSystem {
       this.projection.applyIncoming(bytes)
       this.foldProjectionChanges()
       const entities = this.projection.sceneEntityCount(this.reservedEntities())
-      console.info(
-        `[scene] main.crdt seeded projection (${(bytes.byteLength / 1024).toFixed(0)} KB, ${entities} entities)`
+      clientDebugLog.log(
+        'scene',
+        `main.crdt seeded projection (${(bytes.byteLength / 1024).toFixed(0)} KB, ${entities} entities)`
       )
     } catch (err) {
       console.warn(
@@ -2215,7 +2228,7 @@ export class SceneScriptSystem {
     const keys = Object.keys(out)
     if (keys.length) {
       const kb = keys.reduce((sum, key) => sum + out[key]!.content.byteLength, 0) / 1024
-      console.info(`[scene] preloaded ${keys.length} boot file(s) (${kb.toFixed(0)} KB)`)
+      clientDebugLog.log('scene', `preloaded ${keys.length} boot file(s) (${kb.toFixed(0)} KB)`)
     }
     return out
   }
@@ -2433,7 +2446,7 @@ export class SceneScriptSystem {
     }
     this.worker.postMessage({ type: 'pause-scene-ticks', paused: false } satisfies MainToWorker)
     if (reason !== 'mount-ready') {
-      console.info(`[scene-ui] worker ticks resumed — ${reason}`)
+      clientDebugLog.log('scene-ui', `worker ticks resumed — ${reason}`)
     }
   }
 
@@ -2441,7 +2454,7 @@ export class SceneScriptSystem {
     if (!SCENE_UI_LOG) return
     this.sceneUiRepaintLogCount++
     if (this.sceneUiRepaintLogCount > 8 && this.sceneUiRepaintLogCount % 25 !== 0) return
-    console.info(`[scene-ui] repaint #${this.sceneUiRepaintLogCount}`)
+    clientDebugLog.log('scene-ui', `repaint #${this.sceneUiRepaintLogCount}`)
   }
 
   /** Per-frame relay hook — edge injects only (see SceneInputRelay.sync). */
@@ -2493,8 +2506,9 @@ export class SceneScriptSystem {
       const vcEnt = mainCam?.virtualCameraEntity
       const hasTr = vcEnt != null && Transform.has(vcEnt as never)
       const hasVc = vcEnt != null && VirtualCamera.has(vcEnt as never)
-      console.info(
-        `[vc-lens] player-frame MainCamera → ${vcKey}` +
+      clientDebugLog.log(
+        'vc-lens',
+        `player-frame MainCamera → ${vcKey}` +
           (vcUnbound ? '' : ` transform=${hasTr} virtualCamera=${hasVc}`)
       )
       if (!vcUnbound && (!hasTr || !hasVc)) {
@@ -2536,8 +2550,9 @@ export class SceneScriptSystem {
     if (graphKey !== this.lastVcBindHydrateLogKey) {
       this.lastVcBindHydrateLogKey = graphKey
       const lookAt = (bound.virtualCamera as { lookAtEntity?: number } | null)?.lookAtEntity
-      console.info(
-        `[vc-lens] vc-bind-hydrate e${bound.entity} anchors=${bound.anchors.length} ` +
+      clientDebugLog.log(
+        'vc-lens',
+        `vc-bind-hydrate e${bound.entity} anchors=${bound.anchors.length} ` +
           `flat=${bound.worldFlattened === true} parent=${bound.transform.parent ?? '∅'} lookAt=${lookAt ?? '∅'} ` +
           `pos=(${bound.transform.position.x.toFixed(1)},${bound.transform.position.y.toFixed(1)},${bound.transform.position.z.toFixed(1)})`
       )
@@ -2645,6 +2660,7 @@ export class SceneScriptSystem {
             CameraModeArea.has(change.entity) ||
             AvatarModifierArea.has(change.entity)))
       ) {
+        // TriggerArea / area components only — not every GltfContainer in the CRDT stream.
         this.triggerStructureDirty = true
       }
 
@@ -2728,6 +2744,17 @@ export class SceneScriptSystem {
       playerPose: () => this.virtualCameraPlayerPose?.() ?? this.clientPlayerPose ?? emptyEntityPose(),
       cameraPose: () => this.virtualCameraCameraPose?.() ?? this.clientCameraPose ?? emptyEntityPose()
     }
+  }
+
+  /**
+   * LWW Lamport for PE PhysicsCombinedImpulse — used to apply eventId:0 scene writes
+   * (Genesis Plaza bounce parasols) once per CRDT put.
+   */
+  getPhysicsImpulseLamport(): number {
+    return this.projection.getLamport(
+      this.readComponents.PhysicsCombinedImpulse.componentId,
+      SDK_RESERVED.player
+    )
   }
 
   /** Bind pointer raycast after player spawn — needs collision + camera + player pose. */
@@ -2865,7 +2892,7 @@ export class SceneScriptSystem {
     clientDebugLog.log(
       'pointer',
       `input bound — ${pointerEntities} PointerEvents · ${triggerEntities} TriggerArea · ${raycastEntities} Raycast`,
-      { level: 'success' }
+      { level: 'success', alsoConsole: true }
     )
   }
 
@@ -2905,8 +2932,11 @@ export class SceneScriptSystem {
 
   private lastGrowOnlyFlushAt = 0
   private lastRaycastFlushAt = 0
-  /** Min interval between grow-only worker delivers (TriggerAreaResult, VideoEvent). */
-  private static readonly GROW_ONLY_FLUSH_MIN_MS = 100
+  /**
+   * Min interval between grow-only worker delivers (TriggerAreaResult, VideoEvent).
+   * Keep short in play — trampoline/pad enter→impulse must not wait a full 100ms tick.
+   */
+  private static readonly GROW_ONLY_FLUSH_MIN_MS = 16
   private static readonly RAYCAST_FLUSH_MIN_MS = 100
   /** While GLTFs stream in, avoid pointer-crdt-deliver storms (each can run worker onUpdate). */
   private static readonly HYDRATION_CRDT_FLUSH_MIN_MS = 500
@@ -2923,18 +2953,26 @@ export class SceneScriptSystem {
   /**
    * Per-frame TriggerArea detection + push grow-only results to the worker.
    * CRDT round-trips alone are too sparse when the scene worker is idle.
+   * Immediate flush when new enter/exit appends land so pad impulses fire this frame.
    */
   updateTriggerAreas(): void {
     if (!this.running || !this.triggerAreas) return
+    const appendsBefore = this.encoder.pendingAppendCount
     this.syncTriggerAreas()
+    const appendsAfter = this.encoder.pendingAppendCount
+    if (appendsAfter > appendsBefore) {
+      // New TriggerAreaResult — bypass throttle so Physics.apply* runs next worker tick.
+      this.lastGrowOnlyFlushAt = 0
+    }
     this.flushRendererGrowOnlyAppends()
   }
 
-  private canDeliverRendererCrdtToWorker(): boolean {
+  private canDeliverRendererCrdtToWorker(options?: { allowDuringHydration?: boolean }): boolean {
     if (!this.worker || !this.running) return false
     if (this.pointerAwaitingWorkerApply || this.pointerFlushInFlight) return false
-    // Genesis hydration — defer worker onUpdate until assets settle (see sceneWorker abort logs).
-    if (this.bridge?.isAssetHydrationMode()) return false
+    // Genesis hydration — defer ambient CRDT until assets settle.
+    // TriggerArea enter/impulse must still deliver (bounce parasols, join pads).
+    if (!options?.allowDuringHydration && this.bridge?.isAssetHydrationMode()) return false
     return true
   }
 
@@ -2944,7 +2982,8 @@ export class SceneScriptSystem {
 
   /** Push source-captured grow-only appends (TriggerAreaResult, VideoEvent) to the worker. */
   private flushRendererGrowOnlyAppends(): void {
-    if (!this.canDeliverRendererCrdtToWorker()) return
+    // TriggerAreaResult must ship during plaza hydration — pad enter cannot wait for GLTF settle.
+    if (!this.canDeliverRendererCrdtToWorker({ allowDuringHydration: true })) return
     if (this.encoder.pendingAppendCount === 0) return
     const now = performance.now()
     if (now - this.lastGrowOnlyFlushAt < this.rendererCrdtFlushMinMs(SceneScriptSystem.GROW_ONLY_FLUSH_MIN_MS)) {
@@ -3038,21 +3077,38 @@ export class SceneScriptSystem {
     )
   }
 
-  /** Deliver source-captured grow-only appends (TriggerAreaResult, etc.) to the worker. */
+  /**
+   * Deliver grow-only appends (TriggerAreaResult, VideoEvent) to the worker.
+   * Prefaces with current PE/camera Transform so scene handlers that read
+   * `Transform.get(PlayerEntity)` (Genesis Plaza bounce parasols: PE.y / distance checks)
+   * see the same pose used for enter detection — not a stale play-frame-tick PE.
+   */
   private deliverRendererAppendsToWorker(): void {
     if (!this.worker || !this.running) return
     const pending = this.encoder.pendingAppendCount
+    if (pending === 0) return
+
+    this.refreshClientPosesFromProvider()
+    if (this.clientPlayerPose && this.clientCameraPose) {
+      this.prepareReservedRoundTrip(this.clientPlayerPose, this.clientCameraPose)
+    }
+    const reservedBytes = this.encoder.serializeReservedSnapshot().toBinary()
     const appendBytes = this.encoder.encodeAppendsOnly()
     if (!appendBytes?.byteLength) return
-    const copy = appendBytes.slice()
+
+    const chunks: Uint8Array[] = []
+    if (reservedBytes.byteLength > 0) chunks.push(reservedBytes.slice())
+    chunks.push(appendBytes.slice())
+    const transfer = chunks.map((c) => c.buffer)
+
     clientDebugLog.log(
       'input',
-      `Grow-only CRDT deliver — ${pending} append(s), ${copy.byteLength} bytes`,
-      { level: 'info', alsoConsole: isTriggerAreaVerbose() }
+      `Grow-only CRDT deliver — ${pending} append(s) + PE pose (${chunks.length} chunk(s)), ${appendBytes.byteLength}B`,
+      { level: 'info', throttleMs: 2000, throttleKey: 'grow-only-deliver' }
     )
     this.worker.postMessage(
-      { type: 'renderer-append-deliver', data: [copy] } satisfies MainToWorker,
-      [copy.buffer]
+      { type: 'renderer-append-deliver', data: chunks } satisfies MainToWorker,
+      transfer
     )
   }
 
@@ -3191,8 +3247,9 @@ export class SceneScriptSystem {
           this.readComponents.PointerEventsResult.componentId
         )
         if (dropped > 0) {
-          console.info(
-            `[pointer] inject-only — discarded ${dropped} main PointerEventsResult append(s) (worker inject is authoritative)`
+          clientDebugLog.log(
+            'pointer',
+            `inject-only — discarded ${dropped} main PointerEventsResult append(s) (worker inject is authoritative)`
           )
         }
       } else {
@@ -3246,8 +3303,6 @@ export class SceneScriptSystem {
         ` sceneUi=${inject.sceneUi ? 1 : 0}` +
         ` down=[${(inject.downEntities ?? inject.entities).join(',')}]`
       this.logPointer(injectLine)
-      // Always visible — POINTER_VERBOSE may hide logPointer.
-      console.info(`[pointer] ${injectLine}`)
       this.worker.postMessage({
         type: 'inject-pointer-click',
         body: inject,
@@ -3851,8 +3906,7 @@ export class SceneScriptSystem {
     }
     lines.push(`Near totals — tween:${nearTween} animator:${nearAnim} gltf-collider:${nearGltf}`)
     const message = lines.join('\n')
-    clientDebugLog.log('motion', message, { level: 'info', alsoConsole: true })
-    console.info('[motion]', message)
+    clientDebugLog.log('motion', message, { level: 'info' })
   }
 
   logPlatformMotionTick(
@@ -4110,8 +4164,7 @@ export class SceneScriptSystem {
     const seq = TweenSequence.has(entity) ? 'yes' : 'no'
     const node = nodes?.has(entity) ? 'yes' : 'no'
     const line = `entity ${entity} · ${src} · parent ${parent} · node ${node} · tween ${tween} · animator [${anim}] · TweenSequence ${seq}`
-    clientDebugLog.log('motion', line, { alsoConsole: true })
-    console.info('[motion]', line)
+    clientDebugLog.log('motion', line)
   }
 
   private maybeDumpMotionFocus(): void {

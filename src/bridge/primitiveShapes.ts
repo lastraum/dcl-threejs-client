@@ -33,18 +33,25 @@ const DEFAULT_DCL_PLANE_UVS = [
 /**
  * Spatial verts: 0=TL(−X,+Y) 1=TR(+X,+Y) 2=BL(−X,−Y) 3=BR(+X,−Y).
  *
- * DCL docs map BL,BR,TR,TL → [2,3,1,0], but the client reflects DCL +X → Three −X
- * (`dclToThreePos`). Without a compensating U swap, plane textures read L-R mirrored
- * vs Unity Explorer. Maps below are the docs order with L-R swapped.
+ * DCL docs map BL,BR,TR,TL → [2,3,1,0] (north) and BR,BL,TL,TR → [3,2,0,1] (south).
+ *
+ * A prior L-R corner swap (v19) tried to compensate for `dclToThree` X reflection so
+ * MeshRenderer textures would match Explorer. It inverted every player-facing plane with
+ * readable content: TextShape canvas labels, and MeshRenderer button/label PNGs
+ * (e.g. Dead Surge BACK/NEXT pills showed as KCAB/TXEN). Entity transforms already go
+ * through `dclToThreePos`/`dclToThreeQuat`; UVs stay in docs order so authored textures
+ * and client-rasterized glyphs share one reading direction.
+ *
+ * Marquee atlas planes (`buildMarqueePlaneGeometry`) keep their own inward-face U flip.
  */
-/** North face: BL, BR, TR, TL → verts (L-R compensated). */
-const DCL_PLANE_NORTH_CORNER_TO_THREE = [3, 2, 0, 1]
+/** North face: BL, BR, TR, TL → spatial verts (DCL docs order). */
+const DCL_PLANE_NORTH_CORNER_TO_THREE = [2, 3, 1, 0]
 
-/** South face: BR, BL, TL, TR → verts (L-R compensated). */
-const DCL_PLANE_SOUTH_CORNER_TO_THREE = [2, 3, 1, 0]
+/** South face: BR, BL, TL, TR → spatial verts (DCL docs order). */
+const DCL_PLANE_SOUTH_CORNER_TO_THREE = [3, 2, 0, 1]
 
 /** Bump when plane topology/UV layout changes — busts primitiveMeshKey mesh cache. */
-const PLANE_GEOMETRY_REVISION = 'v20'
+const PLANE_GEOMETRY_REVISION = 'v21'
 
 /**
  * userData: marquee atlas plane. MaterialApplier: flipY=false, FrontSide only.
@@ -158,13 +165,21 @@ function applyBoxUvs(geometry: THREE.BufferGeometry, uvs: number[]): void {
   attr.needsUpdate = true
 }
 
-/** DCL double-sided plane (north +Z, south -Z) scaled to world units. */
+/**
+ * DCL double-sided plane (north +Z, south -Z) scaled to world units.
+ * Shared by MeshRenderer planes, TextShape canvas, NFT frames, etc. — docs UV order.
+ */
 export function buildDclPlaneGeometry(width = 1, height = 1): THREE.BufferGeometry {
   const geometry = buildPlaneGeometryWithUvs(DEFAULT_DCL_PLANE_UVS)
   if (width !== 1 || height !== 1) {
     geometry.scale(width, height, 1)
   }
   return geometry
+}
+
+/** @deprecated Use {@link buildDclPlaneGeometry} — same docs-order dual-face plane. */
+export function buildTextShapePlaneGeometry(width = 1, height = 1): THREE.BufferGeometry {
+  return buildDclPlaneGeometry(width, height)
 }
 
 /**

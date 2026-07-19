@@ -10,22 +10,139 @@ import {
 export const TRIGGER_MESH_SPHERE = 1
 
 /**
- * Vertical probe offsets (m) from **feet** (not PlayerEntity chest).
- * Dead Surge join pads are unit boxes with scale.y=1 centered at y≈0 → world Y ∈ [-0.5, 0.5].
- * PlayerEntity is chest (+0.88); probing from PE misses those volumes entirely.
+ * Vertical probe offsets (m) from **capsule feet** (CCT foot position), not PE chest.
+ * Covers full ~1.6m capsule so canopy spheres (Plaza parasols at +2.8) still hit
+ * when feet sit on the mesh and PE lag / offset would miss a single sample.
+ * Dead Surge join pads: unit box scale.y=1 centered y≈0 → world Y ∈ [-0.5, 0.5].
  */
-export const PLAYER_PROBE_HEIGHTS_DCL = [0, 0.35, 0.7, 1.1] as const
+export const PLAYER_PROBE_HEIGHTS_DCL = [0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.55] as const
+
+/** Matches PhysXWorld CCT defaults — one avatar capsule, not a second body. */
+export const PLAYER_CCT_RADIUS = 0.3
+export const PLAYER_CCT_HEIGHT = 1.6
 
 const _inv = new THREE.Matrix4()
 const _local = new THREE.Vector3()
 const _pos = new THREE.Vector3()
+const _segA = new THREE.Vector3()
+const _segB = new THREE.Vector3()
+const _scale = new THREE.Vector3()
+const _quat = new THREE.Quaternion()
 
 /** Unit box/sphere in entity local space (DCL default trigger primitives). */
 export function isPointInsideTriggerLocal(local: THREE.Vector3, mesh: number): boolean {
   if (mesh === TRIGGER_MESH_SPHERE) {
-    return local.lengthSq() <= 0.25
+    // Unit sphere diameter 1 (radius 0.5) — same as MeshCollider sphere / Transform.scale.
+    return local.lengthSq() <= 0.25 + 1e-6
   }
-  return Math.abs(local.x) <= 0.5 && Math.abs(local.y) <= 0.5 && Math.abs(local.z) <= 0.5
+  return Math.abs(local.x) <= 0.5 + 1e-6 && Math.abs(local.y) <= 0.5 + 1e-6 && Math.abs(local.z) <= 0.5 + 1e-6
+}
+
+/** Squared distance from point P to segment AB. */
+function distSqPointSegment(
+  px: number,
+  py: number,
+  pz: number,
+  ax: number,
+  ay: number,
+  az: number,
+  bx: number,
+  by: number,
+  bz: number
+): number {
+  const abx = bx - ax
+  const aby = by - ay
+  const abz = bz - az
+  const apx = px - ax
+  const apy = py - ay
+  const apz = pz - az
+  const abLenSq = abx * abx + aby * aby + abz * abz
+  let t = abLenSq > 1e-12 ? (apx * abx + apy * aby + apz * abz) / abLenSq : 0
+  t = Math.max(0, Math.min(1, t))
+  const qx = ax + abx * t - px
+  const qy = ay + aby * t - py
+  const qz = az + abz * t - pz
+  return qx * qx + qy * qy + qz * qz
+}
+
+/**
+ * Y-up capsule (CCT) vs unit TriggerArea volume under `worldMatrix` (DCL or Three — same space as feet).
+ * Capsule: feet at bottom, total height includes hemispherical caps (PhysX CCT convention).
+ * This is **one** player capsule (analytic) — not a second PhysX actor.
+ */
+export function capsuleOverlapsTriggerMatrix(
+  feet: { x: number; y: number; z: number },
+  worldMatrix: THREE.Matrix4,
+  mesh: number,
+  radius: number = PLAYER_CCT_RADIUS,
+  totalHeight: number = PLAYER_CCT_HEIGHT
+): boolean {
+  const r = Math.max(radius, 1e-4)
+  const h = Math.max(totalHeight, r * 2 + 1e-4)
+  // Segment between hemisphere centers.
+  _segA.set(feet.x, feet.y + r, feet.z)
+  _segB.set(feet.x, feet.y + h - r, feet.z)
+
+  _inv.copy(worldMatrix).invert()
+  _segA.applyMatrix4(_inv)
+  _segB.applyMatrix4(_inv)
+
+  // World capsule radius → local under non-uniform scale (conservative: min scale → larger local r).
+  worldMatrix.decompose(_pos, _quat, _scale)
+  const minS = Math.min(Math.abs(_scale.x), Math.abs(_scale.y), Math.abs(_scale.z))
+  const localR = r / Math.max(minS, 1e-6)
+
+  if (mesh === TRIGGER_MESH_SPHERE) {
+    // Unit sphere radius 0.5 at local origin.
+    const d2 = distSqPointSegment(0, 0, 0, _segA.x, _segA.y, _segA.z, _segB.x, _segB.y, _segB.z)
+    const sumR = 0.5 + localR
+    return d2 <= sumR * sumR + 1e-6
+  }
+
+  // Unit AABB [-0.5,0.5]^3 expanded by localR (segment vs Minkowski sum of box + sphere).
+  const min = -0.5 - localR
+  const max = 0.5 + localR
+  return segmentIntersectsAabb(_segA, _segB, min, max)
+}
+
+/** Segment AB vs axis-aligned box [min,max]^3. */
+function segmentIntersectsAabb(
+  a: THREE.Vector3,
+  b: THREE.Vector3,
+  min: number,
+  max: number
+): boolean {
+  if (pointInAabb(a, min, max) || pointInAabb(b, min, max)) return true
+
+  let t0 = 0
+  let t1 = 1
+  const axes: [number, number][] = [
+    [a.x, b.x - a.x],
+    [a.y, b.y - a.y],
+    [a.z, b.z - a.z]
+  ]
+  for (const [start, delta] of axes) {
+    if (Math.abs(delta) < 1e-12) {
+      if (start < min || start > max) return false
+      continue
+    }
+    const inv = 1 / delta
+    let tNear = (min - start) * inv
+    let tFar = (max - start) * inv
+    if (tNear > tFar) {
+      const tmp = tNear
+      tNear = tFar
+      tFar = tmp
+    }
+    t0 = Math.max(t0, tNear)
+    t1 = Math.min(t1, tFar)
+    if (t0 > t1) return false
+  }
+  return true
+}
+
+function pointInAabb(p: THREE.Vector3, min: number, max: number): boolean {
+  return p.x >= min && p.x <= max && p.y >= min && p.y <= max && p.z >= min && p.z <= max
 }
 
 /** World-space point vs trigger volume — inverse-transform into entity-local unit primitive. */
@@ -74,8 +191,10 @@ export function composeTriggerWorldMatrix(
 }
 
 /**
- * True when any vertical probe along the avatar body is inside the volume.
- * `playerTransform` is SDK `Transform.get(PlayerEntity)` (chest, +0.88m); probes use feet.
+ * Explorer parity: **player CCT capsule** vs trigger volume (not a single bone/point).
+ *
+ * Prefer `feetDcl` from the CCT foot position. Falls back to PE chest − 0.88.
+ * `playerTransform` is only used for PE fallback + result payloads.
  */
 export function isPlayerInsideTriggerDcl(
   playerTransform: {
@@ -85,13 +204,23 @@ export function isPlayerInsideTriggerDcl(
   },
   worldMatrix: THREE.Matrix4,
   mesh: number,
-  probeHeights: readonly number[] = PLAYER_PROBE_HEIGHTS_DCL
+  _probeHeights: readonly number[] = PLAYER_PROBE_HEIGHTS_DCL,
+  feetDcl?: { x: number; y: number; z: number } | null,
+  capsuleRadius: number = PLAYER_CCT_RADIUS,
+  capsuleHeight: number = PLAYER_CCT_HEIGHT
 ): boolean {
-  const feetY = playerTransform.position.y - DCL_PLAYER_ENTITY_Y_OFFSET
-  const x = playerTransform.position.x
-  const z = playerTransform.position.z
-  for (const h of probeHeights) {
-    _pos.set(x, feetY + h, z)
+  const pe = playerTransform.position
+  const feet = feetDcl ?? {
+    x: pe.x,
+    y: pe.y - DCL_PLAYER_ENTITY_Y_OFFSET,
+    z: pe.z
+  }
+  if (capsuleOverlapsTriggerMatrix(feet, worldMatrix, mesh, capsuleRadius, capsuleHeight)) {
+    return true
+  }
+  // Legacy dense probes if capsule test fails near degenerate matrices (scale ~0).
+  for (const h of PLAYER_PROBE_HEIGHTS_DCL) {
+    _pos.set(feet.x, feet.y + h, feet.z)
     if (isPointInsideTriggerMatrix(_pos, worldMatrix, mesh)) return true
   }
   return false

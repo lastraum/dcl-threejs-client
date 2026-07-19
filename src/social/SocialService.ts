@@ -21,7 +21,14 @@ import {
 import { prepareChatImageFile } from './prepareChatImage'
 import { isSceneChatEmoteWireText } from './dclRfc4Chat'
 import { PrivateMessagesService } from './PrivateMessagesService'
-import type { ChatChannelChoice, ChatLine, CommunityListRow, SceneChatTab } from './types'
+import {
+  isChatImageLine,
+  type ChatChannelChoice,
+  type ChatLine,
+  type CommunityListRow,
+  type SceneChatTab
+} from './types'
+import { chatTranslationService } from './translation'
 
 export { CHAT_MAX_LENGTH }
 
@@ -352,6 +359,18 @@ export class SocialService {
     return [...(this.messages.get(channelKey(this.channel)) ?? [])]
   }
 
+  /** Clear local history for a channel (or the active one). Frees translation memory for those lines. */
+  clearChannelHistory(channel: ChatChannelChoice = this.channel): void {
+    const key = channelKey(channel)
+    const lines = this.messages.get(key) ?? []
+    for (const line of lines) {
+      chatTranslationService.clearMessage(line.id)
+    }
+    this.messages.set(key, [])
+    this.unreadCounts.delete(key)
+    this.notifyChannelChange()
+  }
+
   /** True when this scene channel has a live LiveKit chat room (primary or multi-room). */
   isLiveSceneChannel(channel: ChatChannelChoice): boolean {
     if (channel.kind !== 'scene') return false
@@ -436,6 +455,25 @@ export class SocialService {
       time: payload.time,
       senderAddress: payload.senderAddress
     })
+  }
+
+  /**
+   * Re-run auto-translate policy for existing remote text lines in a channel
+   * (e.g. after the user enables auto-translate mid-conversation).
+   */
+  backfillAutoTranslate(channel: ChatChannelChoice = this.channel): void {
+    const key = channelKey(channel)
+    const lines = this.messages.get(key) ?? []
+    for (const line of lines) {
+      if (isChatImageLine(line) || line.self) continue
+      chatTranslationService.processIncoming({
+        messageId: line.id,
+        text: line.text,
+        channelKey: key,
+        isSelf: false,
+        isImage: false
+      })
+    }
   }
 
   onChat(listener: (event: SocialChatEvent) => void): () => void {
@@ -1024,7 +1062,11 @@ export class SocialService {
   private appendLine(key: string, line: ChatLine): void {
     const bucket = this.messages.get(key) ?? []
     bucket.push(line)
-    if (bucket.length > 200) bucket.splice(0, bucket.length - 200)
+    if (bucket.length > 200) {
+      for (const dropped of bucket.splice(0, bucket.length - 200)) {
+        chatTranslationService.clearMessage(dropped.id)
+      }
+    }
     this.messages.set(key, bucket)
     const isIncoming = !line.self
     const isActiveChannel = key === channelKey(this.channel)
@@ -1034,6 +1076,17 @@ export class SocialService {
       this.notifyChannelChange()
     }
     for (const listener of this.listeners) listener({ channelKey: key, line })
+
+    // Unity Explorer ChatHistoryService → ProcessIncomingMessage (remote text only).
+    if (!isChatImageLine(line) && !line.self) {
+      chatTranslationService.processIncoming({
+        messageId: line.id,
+        text: line.text,
+        channelKey: key,
+        isSelf: false,
+        isImage: false
+      })
+    }
   }
 
   private notifyChannelChange(): void {

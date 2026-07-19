@@ -18,8 +18,15 @@ import { parseGotoCommand } from '../../../dcl/content/route'
 import { sceneChatRailIcon } from '../shell/icons'
 import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import { isAllowedChatImageFile } from '../../../social/prepareChatImage'
+import { socialChannelKey } from '../../../social/SocialService'
+import {
+  chatTranslationService,
+  chatTranslationSettings
+} from '../../../social/translation'
 import { isChatImageLine, type ChatChannelChoice, type ChatLine } from '../../../social/types'
 import { wireChatImageExpand } from './chatImageLightbox'
+import { ChatChannelMenu } from './ChatChannelMenu'
+import { appendTranslateControls } from './chatTranslateUi'
 
 export type ChatPanelOptions = {
   social: SocialService
@@ -30,7 +37,11 @@ export type ChatPanelOptions = {
 
 type ChatBodyMode = 'messages' | 'users'
 
-const USERS_ICON = `<svg class="chat-panel__users-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden><circle cx="9" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 17c0-2.2 2-4 4.5-4s4.5 1.8 4.5 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="16.5" cy="9" r="2" stroke="currentColor" stroke-width="1.3"/><path d="M13.5 17c.4-1.6 1.7-2.8 3.3-2.8 1 0 1.9.4 2.5 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`
+const USERS_ICON = `<svg class="chat-panel__users-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden><circle cx="9" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 17c0-2.2 2-4 4.5-4s4.5 1.8 4.5 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="16.5" cy="9" r="2" stroke="currentColor" stroke-width="1.3"/><path d="M13.5 17c.4-1.6 1.7-2.8 3.3-2.8 1 0 1.9.4 2.5 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`
+
+const MORE_ICON = `<svg class="chat-panel__more-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>`
+
+const AUTO_INDICATOR_ICON = `<svg class="chat-panel__auto-ind-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden><path d="M4 5h7M7.5 5v1a8 8 0 0 0 8 8h.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M5 19h14M13 9l3.5 10M20.5 19 17 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`
 
 /** Compact bottom-left chat window with a vertical channel rail on the right. */
 export class ChatPanel {
@@ -40,13 +51,16 @@ export class ChatPanel {
   private readonly railScrollEl: HTMLElement
   private readonly headerTitle: HTMLElement
   private readonly headerSubtitle: HTMLElement
+  private readonly autoIndicatorEl: HTMLElement
   private readonly usersBtn: HTMLButtonElement
+  private readonly moreBtn: HTMLButtonElement
   private readonly messagesEl: HTMLElement
   private readonly composerEl: HTMLElement
   private readonly mentionDockEl: HTMLElement
   private readonly mentionListEl: HTMLUListElement
   private readonly inputEl: HTMLInputElement
   private readonly social: SocialService
+  private readonly channelMenu: ChatChannelMenu
   private readonly onGoto?: ChatPanelOptions['onGoto']
   private readonly onOpenProfile?: ChatPanelOptions['onOpenProfile']
   private onVisibilityChange: ((visible: boolean) => void) | null = null
@@ -57,6 +71,8 @@ export class ChatPanel {
   private unsubChat: (() => void) | null = null
   private unsubChannel: (() => void) | null = null
   private unsubProfiles: (() => void) | null = null
+  private unsubTranslate: (() => void) | null = null
+  private unsubTranslateSettings: (() => void) | null = null
   private presenceTimer: number | null = null
   private mounted = false
   private readonly sceneCanvas: HTMLElement | null
@@ -85,12 +101,14 @@ export class ChatPanel {
       <header class="chat-panel__header">
         <div class="chat-panel__header-text">
           <div class="chat-panel__title"></div>
-          <div class="chat-panel__subtitle-row">
-            <div class="chat-panel__subtitle"></div>
-            <button type="button" class="chat-panel__users-btn" hidden aria-pressed="false"></button>
-          </div>
+          <div class="chat-panel__auto-indicator" hidden>${AUTO_INDICATOR_ICON}<span class="chat-panel__auto-indicator-text">Auto-Translate On</span></div>
+          <div class="chat-panel__subtitle"></div>
         </div>
-        <button type="button" class="chat-panel__close" aria-label="Close chat">×</button>
+        <div class="chat-panel__header-actions">
+          <button type="button" class="chat-panel__users-btn" hidden aria-pressed="false" title="People in scene"></button>
+          <button type="button" class="chat-panel__more-btn" aria-label="More channel options" aria-haspopup="menu" title="More">${MORE_ICON}</button>
+          <button type="button" class="chat-panel__close" aria-label="Close chat">×</button>
+        </div>
       </header>
       <div class="chat-panel__messages" role="log" aria-live="polite"></div>
       <form class="chat-panel__composer">
@@ -115,12 +133,28 @@ export class ChatPanel {
 
     this.headerTitle = this.panelEl.querySelector('.chat-panel__title')!
     this.headerSubtitle = this.panelEl.querySelector('.chat-panel__subtitle')!
+    this.autoIndicatorEl = this.panelEl.querySelector('.chat-panel__auto-indicator')!
     this.usersBtn = this.panelEl.querySelector('.chat-panel__users-btn')!
+    this.moreBtn = this.panelEl.querySelector('.chat-panel__more-btn')!
     this.messagesEl = this.panelEl.querySelector('.chat-panel__messages')!
     this.composerEl = this.panelEl.querySelector('.chat-panel__composer')!
     this.mentionDockEl = this.panelEl.querySelector('.chat-panel__mention-dock')!
     this.mentionListEl = this.panelEl.querySelector('.chat-panel__mention-list')!
     this.inputEl = this.panelEl.querySelector('.chat-panel__input')!
+
+    this.channelMenu = new ChatChannelMenu({
+      getChannelKey: () => socialChannelKey(this.social.getChannel()),
+      onAutoTranslateChange: (enabled) => {
+        if (enabled) this.social.backfillAutoTranslate()
+        this.syncAutoTranslateIndicator()
+        if (this.bodyMode === 'messages') this.renderMessages()
+      },
+      onDeleteHistory: () => {
+        this.social.clearChannelHistory()
+        this.bodyMode = 'messages'
+        this.renderAll()
+      }
+    })
 
     this.inputEl.addEventListener('input', this.onInputChange)
     this.inputEl.addEventListener('select', this.onInputSelect)
@@ -129,6 +163,10 @@ export class ChatPanel {
 
     this.panelEl.querySelector('.chat-panel__close')?.addEventListener('click', () => this.hide())
     this.usersBtn.addEventListener('click', () => this.toggleUsersView())
+    this.moreBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.channelMenu.toggle(this.moreBtn)
+    })
     this.panelEl.querySelector('.chat-panel__composer')?.addEventListener('submit', (ev) => {
       ev.preventDefault()
       void this.submitMessage()
@@ -191,6 +229,8 @@ export class ChatPanel {
     this.unsubChat?.()
     this.unsubChannel?.()
     this.unsubProfiles?.()
+    this.unsubTranslate?.()
+    this.unsubTranslateSettings?.()
     // Always re-render when a line lands (even if panel was empty/stale channel).
     this.unsubChat = this.social.onChat(() => {
       if (this.bodyMode === 'messages') this.renderMessages()
@@ -211,6 +251,14 @@ export class ChatPanel {
       this.updateComposerUi()
       this.updateUsersButton()
     })
+    this.unsubTranslate = chatTranslationService.onUpdate(() => {
+      if (this.visible && this.bodyMode === 'messages') this.renderMessages()
+    })
+    this.unsubTranslateSettings = chatTranslationSettings.subscribe(() => {
+      this.syncAutoTranslateIndicator()
+      if (this.visible && this.bodyMode === 'messages') this.renderMessages()
+    })
+    this.syncAutoTranslateIndicator()
     this.startPresencePoll()
     this.social.setChannelThreadOpen(true)
     this.onVisibilityChange?.(true)
@@ -224,14 +272,19 @@ export class ChatPanel {
     this.visible = false
     this.root.hidden = true
     this.inputEl.blur()
+    this.channelMenu.hide()
     this.resetBackgroundMode()
     this.stopPresencePoll()
     this.unsubChat?.()
     this.unsubChannel?.()
     this.unsubProfiles?.()
+    this.unsubTranslate?.()
+    this.unsubTranslateSettings?.()
     this.unsubChat = null
     this.unsubChannel = null
     this.unsubProfiles = null
+    this.unsubTranslate = null
+    this.unsubTranslateSettings = null
     this.social.setChannelThreadOpen(false)
     this.onVisibilityChange?.(false)
     this.onReadingChange?.(false)
@@ -254,6 +307,7 @@ export class ChatPanel {
     window.removeEventListener('keydown', this.onGlobalKeyDown, true)
     this.sceneCanvas?.removeEventListener('mousedown', this.onScenePointerDown)
     this.hide()
+    this.channelMenu.dispose()
     if (this.mounted) this.root.remove()
     this.mounted = false
   }
@@ -362,8 +416,12 @@ export class ChatPanel {
 
   private renderAll(): void {
     this.headerTitle.textContent = this.social.getChannelTitle()
-    this.headerSubtitle.textContent =
+    const subtitle =
       this.bodyMode === 'users' ? 'People in scene' : this.social.getChannelSubtitle()
+    this.headerSubtitle.textContent = subtitle
+    // Hide empty subtitle so auto-indicator sits cleanly under the title.
+    this.headerSubtitle.hidden = !subtitle.trim()
+    this.syncAutoTranslateIndicator()
     this.updateUsersButton()
     this.renderRail()
     if (this.bodyMode === 'users') this.renderUsersList()
@@ -413,10 +471,6 @@ export class ChatPanel {
       return
     }
     const count = Math.max(1, this.social.getScenePresenceCount() || 1)
-    const label =
-      this.bodyMode === 'users'
-        ? 'Back to chat'
-        : `${count} ${count === 1 ? 'person' : 'people'}`
     this.usersBtn.hidden = false
     this.usersBtn.classList.toggle('is-active', this.bodyMode === 'users')
     this.usersBtn.setAttribute('aria-pressed', this.bodyMode === 'users' ? 'true' : 'false')
@@ -424,10 +478,15 @@ export class ChatPanel {
       'aria-label',
       this.bodyMode === 'users' ? 'Back to chat messages' : `View ${count} people in this scene`
     )
-    this.usersBtn.innerHTML =
-      this.bodyMode === 'users'
-        ? `<span class="chat-panel__users-label">${label}</span>`
-        : `${USERS_ICON}<span class="chat-panel__users-label">${label}</span>`
+    this.usersBtn.title =
+      this.bodyMode === 'users' ? 'Back to chat' : `${count} ${count === 1 ? 'person' : 'people'}`
+    // Explorer-style: icon + count only (right side of header).
+    this.usersBtn.innerHTML = `${USERS_ICON}<span class="chat-panel__users-label">${count}</span>`
+  }
+
+  private syncAutoTranslateIndicator(): void {
+    const on = chatTranslationSettings.getAutoTranslate(socialChannelKey(this.social.getChannel()))
+    this.autoIndicatorEl.hidden = !on
   }
 
   private renderUsersList(): void {
@@ -558,28 +617,35 @@ export class ChatPanel {
   private renderMessages(): void {
     if (this.bodyMode !== 'messages') return
     const lines = this.social.getMessages()
-    this.messagesEl.innerHTML = ''
-    this.messagesEl.classList.remove('chat-panel__messages--users')
-    this.messagesEl.setAttribute('role', 'log')
-    this.messagesEl.setAttribute('aria-live', 'polite')
+    const el = this.messagesEl
+    const stickBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+    const prevTop = el.scrollTop
+    el.innerHTML = ''
+    el.classList.remove('chat-panel__messages--users')
+    el.setAttribute('role', 'log')
+    el.setAttribute('aria-live', 'polite')
 
     if (!lines.length) {
       const empty = document.createElement('div')
       empty.className = 'chat-panel__empty'
       empty.textContent = 'No messages yet — say hello!'
-      this.messagesEl.appendChild(empty)
+      el.appendChild(empty)
       return
     }
 
     for (const line of lines) {
-      this.messagesEl.appendChild(this.renderLine(line))
+      el.appendChild(this.renderLine(line))
     }
-    this.messagesEl.scrollTop = this.messagesEl.scrollHeight
+    el.scrollTop = stickBottom ? el.scrollHeight : prevTop
   }
 
   private renderLine(line: ChatLine): HTMLElement {
     const local = this.social.getLocalDisplay()
     const localAddress = this.social.getLocalAddress()
+    const channelKey = socialChannelKey(this.social.getChannel())
+    const displayText = isChatImageLine(line)
+      ? ''
+      : chatTranslationService.displayText(line.id, line.text)
     const mentionsSelf =
       !isChatImageLine(line) &&
       !line.self &&
@@ -587,6 +653,7 @@ export class ChatPanel {
 
     const row = document.createElement('div')
     row.className = `chat-panel__line${line.self ? ' is-self' : ''}${isChatImageLine(line) ? ' is-image' : ''}`
+    row.dataset.messageId = line.id
 
     const avatar = document.createElement('div')
     avatar.className = 'chat-panel__avatar'
@@ -616,7 +683,7 @@ export class ChatPanel {
       const selfTargets = selfMentionTokens(localAddress, local.displayName)
       appendChatTextWithSelfMentions(
         body,
-        line.text,
+        displayText,
         selfTargets,
         {
           onNavigate: (target) => {
@@ -654,6 +721,14 @@ export class ChatPanel {
     bubble.appendChild(name)
     bubble.appendChild(body)
     bubble.appendChild(time)
+    if (!isChatImageLine(line)) {
+      appendTranslateControls({
+        bubble,
+        line,
+        channelKey,
+        isSelf: Boolean(line.self)
+      })
+    }
 
     if (line.self) {
       row.appendChild(bubble)

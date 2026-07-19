@@ -5,6 +5,8 @@ import type { ProjectionChangeKind } from './CrdtProjection'
 import type { ProjectionView } from './ProjectionView'
 import {
   applyDclLocalTransform,
+  expandTransformAncestors,
+  isSceneRootParent,
   resolveTransformParent,
   sortEntitiesByTransformDepth,
   type ReservedTransformAnchors
@@ -72,9 +74,42 @@ function notifyKind(kind: ProjectionChangeKind): 'put' | 'delete' {
 }
 
 /**
+ * Attach `entity` under its ECS Transform.parent and write local TRS.
+ * Ancestors must already exist in `store.nodes` (see expandTransformAncestors + depth sort).
+ */
+function applyEntityLocalTransform(
+  store: EntityStore,
+  entity: Entity,
+  view: ProjectionView,
+  Transform: MirrorComponents['Transform'],
+  reservedAnchors: ReservedTransformAnchors | null,
+  skipLocal: boolean
+): void {
+  const obj = store.getOrCreateNode(entity)
+  const t = Transform.get(entity)
+  const parentId = t.parent as Entity | undefined
+  const desiredParent = resolveTransformParent(
+    parentId,
+    view,
+    store.nodes,
+    store.root,
+    reservedAnchors
+  )
+  if (obj.parent !== desiredParent) desiredParent.add(obj)
+  if (!skipLocal) {
+    applyDclLocalTransform(obj, t)
+  }
+}
+
+/**
  * Phase 4 — apply renderer-driving CRDT diff directly on EntityStore nodes.
  * Transform, VisibilityComponent, and LightSource mutate `THREE.Group` in place.
  * Mesh/collider/pointer diffs emit store notifications for secondary systems.
+ *
+ * Transform hierarchy is authoritative ECS → scene graph:
+ * 1. Expand partial batches with all Transform ancestors (parent before child).
+ * 2. Depth-sort and apply parent + local TRS (same path for meshes, lights, TriggerAreas).
+ * 3. Re-link any existing store children whose parent was in this batch.
  */
 export function applySceneDiff(
   store: EntityStore,
@@ -159,25 +194,34 @@ export function applySceneDiff(
     diffEntities.add(entity)
   }
 
+  // Partial CRDT: child-only puts must still create/update parents first so
+  // resolveTransformParent finds the parent Group (not sceneRoot + local coords).
+  expandTransformAncestors(upsertSet, Transform, view)
+  for (const entity of upsertSet) {
+    if (isReserved(entity, view)) continue
+    if (!Transform.has(entity)) continue
+    store.getOrCreateNode(entity)
+  }
+
   const sorted = sortEntitiesByTransformDepth([...upsertSet], Transform)
   for (const entity of sorted) {
-    const obj = store.getNode(entity)
-    if (!obj) continue
+    if (isReserved(entity, view)) continue
+    if (!Transform.has(entity)) continue
 
     const t = Transform.get(entity)
     const parentId = t.parent as Entity | undefined
     onReservedParent?.(entity, parentId, view)
-    const desiredParent = resolveTransformParent(
-      parentId,
+    applyEntityLocalTransform(
+      store,
+      entity,
       view,
-      store.nodes,
-      store.root,
-      reservedAnchors
+      Transform,
+      reservedAnchors,
+      skipTransformApply?.(entity) === true
     )
-    if (obj.parent !== desiredParent) desiredParent.add(obj)
-    if (!skipTransformApply?.(entity)) {
-      applyDclLocalTransform(obj, t)
-    }
+
+    const obj = store.getNode(entity)
+    if (!obj) continue
 
     obj.visible = VisibilityComponent.has(entity)
       ? VisibilityComponent.get(entity).visible !== false
@@ -199,6 +243,28 @@ export function applySceneDiff(
     // Tween refresh entities — notify Transform so collider pose dirty propagates on-change.
     if (shouldNotify(entity) && diffEntities.has(entity)) {
       store.notifyComponentChange(entity, Transform.componentId, 'put')
+    }
+  }
+
+  // Parent pose/structure changed: re-link every existing child whose ECS parent is in this batch.
+  // Children not in the batch keep their local TRS; only the Three parent pointer is fixed.
+  if (upsertSet.size > 0) {
+    for (const [entity, obj] of store.nodes) {
+      if (isReserved(entity, view)) continue
+      if (!Transform.has(entity)) continue
+      if (skipTransformApply?.(entity)) continue
+      const t = Transform.get(entity)
+      const parentId = t.parent as Entity | undefined
+      if (isSceneRootParent(parentId, view)) continue
+      if (!upsertSet.has(parentId as Entity)) continue
+      const desiredParent = resolveTransformParent(
+        parentId,
+        view,
+        store.nodes,
+        store.root,
+        reservedAnchors
+      )
+      if (obj.parent !== desiredParent) desiredParent.add(obj)
     }
   }
 

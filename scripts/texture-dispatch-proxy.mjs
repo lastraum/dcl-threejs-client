@@ -33,7 +33,18 @@ export function createTextureProxyMiddleware() {
         return
       }
       res.statusCode = 200
-      const contentType = upstream.headers.get('content-type')
+      let contentType = upstream.headers.get('content-type')
+      // Event posters often arrive as application/octet-stream — fix MIME from path so Image() loads.
+      if (
+        !contentType ||
+        /octet-stream|application\/binary/i.test(contentType)
+      ) {
+        const leaf = (target.split('?')[0] ?? '').toLowerCase()
+        if (leaf.endsWith('.webp')) contentType = 'image/webp'
+        else if (leaf.endsWith('.png')) contentType = 'image/png'
+        else if (leaf.endsWith('.jpg') || leaf.endsWith('.jpeg')) contentType = 'image/jpeg'
+        else if (leaf.endsWith('.gif')) contentType = 'image/gif'
+      }
       if (contentType) res.setHeader('Content-Type', contentType)
       const buffer = Buffer.from(await upstream.arrayBuffer())
       res.end(buffer)

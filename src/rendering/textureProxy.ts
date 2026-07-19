@@ -19,13 +19,19 @@ export function isCorsSafeTextureUrl(url: string): boolean {
   if (url.startsWith(TEXTURE_PROXY_PREFIX)) return true
   if (!/^https?:/i.test(url)) return true
   if (typeof window !== 'undefined' && url.startsWith(window.location.origin)) return true
-  // Peer / content / events / marketplace CDNs (Genesis Plaza event cards, posters).
-  if (/\.decentraland\.(org|zone|today)\//i.test(url)) return true
-  if (/^https?:\/\/decentraland\.(org|zone)\//i.test(url)) return true
+  // Hosts that send ACAO for WebGL Image uploads (verify before adding — marketing-files does NOT).
+  // Peer content / profiles.
+  if (/peer[^/]*\.decentraland\.(org|zone|today)\//i.test(url)) return true
+  if (/peer-ec\d*\.decentraland\./i.test(url)) return true
+  // Content CDN for scene assets.
+  if (/^https?:\/\/[^/]*content\.decentraland\./i.test(url)) return true
   if (/gstatic\.com\//i.test(url)) return true
   // Arweave gateways send ACAO:* — direct fetch/Image works after redirect.
   if (/\.arweave\.net\//i.test(url)) return true
   if (/^https?:\/\/arweave\.net\//i.test(url)) return true
+  // GitHub raw / user content (plaza banner sheet images).
+  if (/raw\.githubusercontent\.com\//i.test(url)) return true
+  if (/user-images\.githubusercontent\.com\//i.test(url)) return true
   // RickRoll CameraOperator QR images — server sends ACAO:*.
   if (/\.lastslice\.co\//i.test(url)) return true
   // Planet Angzaar cutscene / stream thumbnails.
@@ -34,7 +40,31 @@ export function isCorsSafeTextureUrl(url: string): boolean {
   if (/images\.unsplash\.com\//i.test(url)) return true
   if (/res\.cloudinary\.com\//i.test(url)) return true
   if (/imgur\.com\//i.test(url) || /i\.imgur\.com\//i.test(url)) return true
+  // Genesis Plaza event posters (events API CDN — ACAO:*).
+  if (/events-assets[^/]*\.decentraland\.org\//i.test(url)) return true
+  if (/^https?:\/\/events\.decentraland\.org\//i.test(url)) return true
+  // Everything else (incl. marketing-files.decentraland.org) → /api/texture proxy.
   return false
+}
+
+/** Guess image MIME from URL path when servers send application/octet-stream (event posters). */
+export function guessImageMimeFromUrl(url: string): string | null {
+  const path = url.split('?')[0]?.split('#')[0]?.toLowerCase() ?? ''
+  if (path.endsWith('.webp')) return 'image/webp'
+  if (path.endsWith('.png')) return 'image/png'
+  if (path.endsWith('.jpg') || path.endsWith('.jpeg')) return 'image/jpeg'
+  if (path.endsWith('.gif')) return 'image/gif'
+  if (path.endsWith('.avif')) return 'image/avif'
+  if (path.endsWith('.bmp')) return 'image/bmp'
+  // Proxy path embeds the remote path — sniff leaf after last slash.
+  if (url.startsWith(TEXTURE_PROXY_PREFIX)) {
+    const leaf = path.split('/').pop() ?? ''
+    if (leaf.endsWith('.webp')) return 'image/webp'
+    if (leaf.endsWith('.png')) return 'image/png'
+    if (leaf.endsWith('.jpg') || leaf.endsWith('.jpeg')) return 'image/jpeg'
+    if (leaf.endsWith('.gif')) return 'image/gif'
+  }
+  return null
 }
 
 /** Rewrite external **image** URLs to the dev/prod same-origin proxy path. */
@@ -68,5 +98,9 @@ export function unwrapMisroutedMediaUrl(url: string): string {
 
 /** Image loads that should use fetch (redirect follow) instead of raw Image src. */
 export function preferFetchTextureLoad(url: string): boolean {
-  return url.startsWith(TEXTURE_PROXY_PREFIX) || /\.arweave\.net\//i.test(url) || /^https?:\/\/arweave\.net\//i.test(url)
+  if (url.startsWith(TEXTURE_PROXY_PREFIX)) return true
+  if (/\.arweave\.net\//i.test(url) || /^https?:\/\/arweave\.net\//i.test(url)) return true
+  // Event posters are often .webp with Content-Type: application/octet-stream — fetch + typed blob.
+  if (/\.webp(\?|#|$)/i.test(url)) return true
+  return false
 }

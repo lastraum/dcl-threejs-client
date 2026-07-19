@@ -20,6 +20,7 @@ import {
   TAET_EXIT
 } from './triggerAreaEmit'
 import {
+  composeTriggerWorldMatrix,
   composeTriggerWorldMatrixDcl,
   isPlayerInsideTriggerDcl,
   TRIGGER_MESH_SPHERE
@@ -49,15 +50,15 @@ const DEFAULT_TRIGGER_MASK = ColliderLayer.CL_PLAYER
  * Renderer-side TriggerArea enter/exit detection — appends grow-only TriggerAreaResult
  * for the scene worker `triggerAreaEventsSystem` (onTriggerEnter / onTriggerExit).
  *
- * Tier A (default): analytic point-in-volume via Three.js matrixWorld.
- * Tier B (`?triggerPhysx`): PhysX trigger actors + player capsule overlap query.
- * Parity (`?triggerParity`): run both backends, log set mismatches (math remains authoritative).
+ * Default (**math**): analytic **player CCT capsule** vs box/sphere volumes (Explorer overlap —
+ * one capsule, the same dimensions as the character controller; no second body).
+ * Optional (`?triggerPhysx`): PhysX `scene.overlap` with a query geometry matching the CCT
+ * (CCT actor shapes are simulation-only and cannot be used as scene-query volumes).
  */
 export class TriggerAreaSystem {
   private deps: TriggerDeps | null = null
   private volumes: TriggerVolume[] = []
   private cacheDirty = true
-  private physxVolumesDirty = true
   /** trigger entity → whether local player is inside (active backend state). */
   private readonly insideLocalPlayer = new Set<Entity>()
   private timestamp = 1
@@ -69,6 +70,8 @@ export class TriggerAreaSystem {
   private readonly _insidePhysx = new Set<Entity>()
   private backendLogged = false
   private lastVerboseProbeAt = 0
+  private lastFeetDiagAt = 0
+  private readonly _feetDcl = { x: 0, y: 0, z: 0 }
 
   bind(deps: TriggerDeps): void {
     this.deps = deps
@@ -77,9 +80,15 @@ export class TriggerAreaSystem {
       this.backendLogged = true
       const label =
         this.backend === 'physx'
-          ? `physx${this.parityMode ? ' + parity' : ''}`
-          : `math${this.parityMode ? ' + parity' : ''}`
-      clientDebugLog.log('input', `TriggerArea backend: ${label}`, { level: 'info' })
+          ? `physx-query${this.parityMode ? ' + parity' : ''}`
+          : `cct-capsule${this.parityMode ? ' + parity' : ''}`
+      console.info(
+        `[input] TriggerArea backend: ${label} (Explorer = avatar/CCT volume overlap, one capsule)`
+      )
+      clientDebugLog.log('input', `TriggerArea backend: ${label}`, {
+        level: 'info',
+        alsoConsole: true
+      })
     }
   }
 
@@ -94,13 +103,11 @@ export class TriggerAreaSystem {
 
   invalidateCache(): void {
     this.cacheDirty = true
-    this.physxVolumesDirty = true
   }
 
   private rebuildCacheIfNeeded(): void {
     if (!this.cacheDirty || !this.deps) return
     this.cacheDirty = false
-    this.physxVolumesDirty = true
     this.volumes.length = 0
     const { ecs, view } = this.deps
     for (const [entity, spec] of view.getEntitiesWith(ecs.TriggerArea)) {
@@ -123,39 +130,70 @@ export class TriggerAreaSystem {
         collisionMask
       })
     }
-    if (this.volumes.length > 0) {
-      clientDebugLog.log(
-        'input',
-        `TriggerArea cache — ${this.volumes.length} volume(s)`,
-        { level: 'info', alsoConsole: true, throttleMs: 5000 }
-      )
-    }
+    const msg =
+      `TriggerArea cache — ${this.volumes.length} volume(s)` +
+      (this.volumes.length
+        ? ` mesh=${this.volumes.filter((v) => v.mesh === TRIGGER_MESH_SPHERE).length}sphere/` +
+          `${this.volumes.filter((v) => v.mesh !== TRIGGER_MESH_SPHERE).length}box`
+        : '')
+    console.info(`[input] ${msg}`)
+    clientDebugLog.log('input', msg, { level: 'info', alsoConsole: true, throttleMs: 5000 })
   }
 
+  /**
+   * Keep PhysX trigger actors aligned with live poses (Three display space — same as CCT).
+   * Prefer CRDT world matrix (space: three); fall back to scene-graph node.
+   * Re-run every frame so parent motion / late Transform puts cannot leave stale volumes.
+   */
   private syncPhysxVolumesIfNeeded(nodes: Map<Entity, THREE.Group>): PhysXWorld | null {
     const physics = this.deps?.getPhysics?.() ?? null
-    if (!physics || (!this.physxVolumesDirty && this.backend !== 'physx' && !this.parityMode)) {
-      return physics
-    }
-    if (!this.physxVolumesDirty) return physics
+    if (!physics) return null
+    if (this.backend !== 'physx' && !this.parityMode) return physics
 
-    this.physxVolumesDirty = false
+    const worldDeps = this.deps?.getWorldTransformDeps() ?? null
     const descs: TriggerVolumeDesc[] = []
     for (const vol of this.volumes) {
       if ((vol.collisionMask & LOCAL_PLAYER_LAYERS) === 0) continue
-      const node = nodes.get(vol.entity)
-      if (!node) continue
-      node.updateWorldMatrix(true, false)
+
+      let matrix: THREE.Matrix4 | null = null
+      if (worldDeps && composeTriggerWorldMatrix(vol.entity, worldDeps, this._worldMatrix)) {
+        matrix = this._worldMatrix
+      } else {
+        const node = nodes.get(vol.entity)
+        if (!node) continue
+        node.updateWorldMatrix(true, false)
+        matrix = this._worldMatrix.copy(node.matrixWorld)
+      }
+
       descs.push({
         entity: vol.entity,
         mesh: vol.mesh,
-        matrix: this._worldMatrix.copy(node.matrixWorld)
+        matrix: matrix.clone()
       })
     }
     physics.syncTriggerVolumes(descs)
     return physics
   }
 
+  /**
+   * CCT feet in DCL scene space — authoritative for volume tests.
+   * PE Transform is chest (+0.88); physics root is capsule feet (Three display → DCL).
+   */
+  private sampleFeetDcl(): { x: number; y: number; z: number } | null {
+    const feetThree = this.deps?.getPlayerWorldPosition() ?? null
+    if (!feetThree || !Number.isFinite(feetThree.x)) return null
+    // Display → DCL: negate X (same as threeToDclPos).
+    this._feetDcl.x = -feetThree.x
+    this._feetDcl.y = feetThree.y
+    this._feetDcl.z = feetThree.z
+    return this._feetDcl
+  }
+
+  /**
+   * Overlap test — same world pose as every other entity:
+   * ECS Transform parent chain in DCL space ({@link composeTriggerWorldMatrixDcl}) × CCT feet.
+   * Hierarchy correctness lives in applySceneDiff (ancestor expansion), not here.
+   */
   private collectMathInside(
     playerTransform: {
       position: { x: number; y: number; z: number }
@@ -167,18 +205,76 @@ export class TriggerAreaSystem {
   ): void {
     if (!this.deps) return
     const worldDeps = this.deps.getWorldTransformDeps()
-    if (!worldDeps) return
+    if (!worldDeps) {
+      if (this.verbose) {
+        clientDebugLog.log('input', 'TriggerArea math skipped — world transform deps null', {
+          level: 'warn',
+          alsoConsole: true
+        })
+      }
+      return
+    }
+    const feetDcl = this.sampleFeetDcl()
     out.clear()
     for (const vol of this.volumes) {
       if ((vol.collisionMask & LOCAL_PLAYER_LAYERS) === 0) continue
       if (!composeTriggerWorldMatrixDcl(vol.entity, worldDeps, this._worldMatrix)) {
         continue
       }
-      if (isPlayerInsideTriggerDcl(playerTransform, this._worldMatrix, vol.mesh)) {
+      if (isPlayerInsideTriggerDcl(playerTransform, this._worldMatrix, vol.mesh, undefined, feetDcl)) {
         out.add(vol.entity)
       }
     }
-    this.logVerboseProbe(playerTransform, nodes, out)
+    this.logVerboseProbe(playerTransform, nodes, out, feetDcl)
+  }
+
+  /** Throttled: PE / CCT feet vs nearest volume (ECS world matrix). */
+  private logFeetDiag(
+    playerTransform: { position: { x: number; y: number; z: number } },
+    feetDcl: { x: number; y: number; z: number } | null,
+    insideCount: number
+  ): void {
+    const now = performance.now()
+    if (now - this.lastFeetDiagAt < 2_500) return
+    this.lastFeetDiagAt = now
+    const pe = playerTransform.position
+    const fx = feetDcl?.x ?? pe.x
+    const fy = feetDcl?.y ?? pe.y - 0.88
+    const fz = feetDcl?.z ?? pe.z
+    let nearest = 'none'
+    let nearestD = Number.POSITIVE_INFINITY
+    let skippedMatrix = 0
+    let nearHits = 0
+    const worldDeps = this.deps?.getWorldTransformDeps()
+    if (worldDeps) {
+      for (const vol of this.volumes) {
+        if (!composeTriggerWorldMatrixDcl(vol.entity, worldDeps, this._worldMatrix)) {
+          skippedMatrix++
+          continue
+        }
+        const e = this._worldMatrix.elements
+        const cx = e[12]!
+        const cy = e[13]!
+        const cz = e[14]!
+        const d = Math.hypot(fx - cx, fy - cy, fz - cz)
+        const t = this.deps?.ecs.Transform.getOrNull(vol.entity)
+        const parent = t?.parent ?? 0
+        if (d < nearestD) {
+          nearestD = d
+          nearest =
+            `e${vol.entity} d=${d.toFixed(1)} @(${cx.toFixed(0)},${cy.toFixed(1)},${cz.toFixed(0)}) ` +
+            `mesh=${vol.mesh} parent=${parent}`
+        }
+        if (d < 12) nearHits++
+      }
+    }
+    const msg =
+      `TriggerArea cct — pe=(${pe.x.toFixed(1)},${pe.y.toFixed(2)},${pe.z.toFixed(1)}) ` +
+      `feet=(${fx.toFixed(1)},${fy.toFixed(2)},${fz.toFixed(1)}) ` +
+      `vols=${this.volumes.length} inside=${insideCount} skipMat=${skippedMatrix} ` +
+      `near12m=${nearHits} nearest=${nearest}`
+    console.info(`[input] ${msg}`)
+    clientDebugLog.log('input', msg, { level: 'info', alsoConsole: true })
   }
 
   private logVerboseProbe(
@@ -186,7 +282,8 @@ export class TriggerAreaSystem {
       position: { x: number; y: number; z: number }
     },
     nodes: Map<Entity, THREE.Group>,
-    inside: Set<Entity>
+    inside: Set<Entity>,
+    feetDcl: { x: number; y: number; z: number } | null
   ): void {
     if (!this.verbose || !this.deps) return
     const worldDeps = this.deps.getWorldTransformDeps()
@@ -196,6 +293,7 @@ export class TriggerAreaSystem {
     this.lastVerboseProbeAt = now
     const { ecs } = this.deps
     const p = playerTransform.position
+    const f = feetDcl
     const parts: string[] = []
     for (const vol of this.volumes) {
       const t = ecs.Transform.getOrNull(vol.entity)
@@ -203,14 +301,15 @@ export class TriggerAreaSystem {
       const hasNode = nodes.has(vol.entity)
       const hasMatrix = composeTriggerWorldMatrixDcl(vol.entity, worldDeps, this._worldMatrix)
       parts.push(
-        `e${vol.entity} mask=${vol.collisionMask} ` +
+        `e${vol.entity} mask=${vol.collisionMask} mesh=${vol.mesh} ` +
           `@${pos ? `${pos.x.toFixed(1)},${pos.y.toFixed(1)},${pos.z.toFixed(1)}` : 'no-t'} ` +
           `node=${hasNode} matrix=${hasMatrix} inside=${inside.has(vol.entity)}`
       )
     }
     clientDebugLog.log(
       'input',
-      `TriggerArea probe — player ${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)} · ${parts.join(' · ')}`,
+      `TriggerArea probe — pe ${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)} ` +
+        `feet ${f ? `${f.x.toFixed(1)},${f.y.toFixed(1)},${f.z.toFixed(1)}` : 'n/a'} · ${parts.join(' · ')}`,
       { level: 'info', alsoConsole: true }
     )
   }
@@ -275,36 +374,37 @@ export class TriggerAreaSystem {
     const { ecs, view } = this.deps
     const playerTransform = ecs.Transform.getOrNull(view.PlayerEntity)
     if (!playerTransform) {
-      if (this.verbose) {
-        clientDebugLog.log('input', 'TriggerArea sync — PlayerEntity Transform missing', {
-          level: 'warn',
-          alsoConsole: true
-        })
-      }
+      clientDebugLog.log('input', 'TriggerArea sync — PlayerEntity Transform missing', {
+        level: 'warn',
+        alsoConsole: true,
+        throttleMs: 3_000,
+        throttleKey: 'trigger-no-pe'
+      })
       return
     }
 
     const nodes = this.deps.getEntityNodes()
-    const usePhysx = this.backend === 'physx' || this.parityMode
-    const physics = usePhysx ? this.syncPhysxVolumesIfNeeded(nodes) : null
-
+    // Always analytic CCT capsule (one body) — Explorer overlap semantics.
     this.collectMathInside(playerTransform, nodes, this._insideMath)
 
     let activeInside = this._insideMath
-    if (this.backend === 'physx') {
+    if (this.backend === 'physx' || this.parityMode) {
+      const physics = this.syncPhysxVolumesIfNeeded(nodes)
       if (physics?.playerController) {
         this.collectPhysxInside(physics, this._insidePhysx)
-        activeInside = this._insidePhysx
-      } else {
-        activeInside = this._insideMath
+        if (this.backend === 'physx') {
+          // Union: either path counts as inside (robust if query filter flakes).
+          for (const e of this._insideMath) this._insidePhysx.add(e)
+          activeInside = this._insidePhysx
+        }
+        if (this.parityMode) {
+          this.logParityMismatch(this._insideMath, this._insidePhysx)
+        }
       }
     }
 
-    if (this.parityMode && physics?.playerController) {
-      this.collectPhysxInside(physics, this._insidePhysx)
-      this.logParityMismatch(this._insideMath, this._insidePhysx)
-    }
-
+    const feetDcl = this.sampleFeetDcl()
+    this.logFeetDiag(playerTransform, feetDcl, activeInside.size)
     this.applyTransitions(activeInside)
   }
 
@@ -329,13 +429,18 @@ export class TriggerAreaSystem {
       this.timestamp++
     )
     appendTriggerAreaResult(this.deps.ecs, triggerEntity, result, this.deps.recordAppend)
-    if (this.verbose) {
-      const label = eventType === TAET_ENTER ? 'enter' : 'exit'
-      clientDebugLog.log(
-        'input',
-        `TriggerArea ${label} — entity ${triggerEntity} player ${playerEntity}`,
-        { level: 'info', alsoConsole: true }
-      )
-    }
+    const label = eventType === TAET_ENTER ? 'enter' : 'exit'
+    const areaPos = areaTransform?.position
+    // Always console — pad/trampoline debugging; enter/exit are infrequent.
+    clientDebugLog.log(
+      'input',
+      `TriggerArea ${label} — entity ${triggerEntity}` +
+        (areaPos
+          ? ` @(${areaPos.x.toFixed(1)},${areaPos.y.toFixed(1)},${areaPos.z.toFixed(1)})`
+          : '') +
+        ` player=${playerEntity}` +
+        ` pe=(${playerTransform.position.x.toFixed(1)},${playerTransform.position.y.toFixed(1)},${playerTransform.position.z.toFixed(1)})`,
+      { level: 'info', alsoConsole: true }
+    )
   }
 }

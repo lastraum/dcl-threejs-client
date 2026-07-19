@@ -551,6 +551,11 @@ export class CrdtProjection {
     return this.getEffective(componentId, entity) !== undefined
   }
 
+  /** Last applied LWW Lamport timestamp for (component, entity), or 0 if never put. */
+  getLamport(componentId: number, entity: Entity): number {
+    return this.timestamps.get(componentId)?.get(entity) ?? 0
+  }
+
   /** Commit a deferred MainCamera bind before encode / virtual-camera reads. */
   flushPendingMainCameraBind(): void {
     this.flushPendingMainCameraBindInternal()

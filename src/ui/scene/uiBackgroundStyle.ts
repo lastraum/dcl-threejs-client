@@ -17,8 +17,22 @@ const DEFAULT_SLICES = { top: 1 / 3, left: 1 / 3, right: 1 / 3, bottom: 1 / 3 }
 const imageNaturalSize = new Map<string, { w: number; h: number }>()
 const imageSizeLoading = new Set<string>()
 
+/**
+ * Explorer multiplies UiBackground.color × texture (RGB + A).
+ * Poker Night welcome uses white `rounded-rect-white.png` nine-slice + dark/green tints —
+ * without this, CSS border-image paints raw white and the panel stays white.
+ */
+const multipliedImageUrl = new Map<string, string>()
+const multipliedImageLoading = new Set<string>()
+
 function clamp01(v: number): number {
   return Math.min(1, Math.max(0, v))
+}
+
+function notifyUiImageReady(): void {
+  if (typeof document !== 'undefined') {
+    document.dispatchEvent(new CustomEvent('scene-ui-image-loaded'))
+  }
 }
 
 /**
@@ -209,6 +223,114 @@ function isOpaqueBlack(c: { r?: number; g?: number; b?: number; a?: number } | u
   return (c.r ?? 0) <= 0.01 && (c.g ?? 0) <= 0.01 && (c.b ?? 0) <= 0.01 && (c.a ?? 1) > 0.5
 }
 
+function colorMultiplyKey(
+  imageUrl: string,
+  c: { r?: number; g?: number; b?: number; a?: number }
+): string {
+  const r = Math.round(clamp01(c.r ?? 1) * 1000)
+  const g = Math.round(clamp01(c.g ?? 1) * 1000)
+  const b = Math.round(clamp01(c.b ?? 1) * 1000)
+  const a = Math.round(effectiveUiBackgroundAlpha(c) * 1000)
+  return `${imageUrl}|${r},${g},${b},${a}`
+}
+
+/** True when color is not opaque white — texture must be multiplied (Explorer parity). */
+function needsTextureColorMultiply(
+  c: { r?: number; g?: number; b?: number; a?: number } | null | undefined
+): boolean {
+  if (!c) return false
+  if (isOpaqueWhite(c)) return false
+  return true
+}
+
+/**
+ * Return a blob URL of `imageUrl` with per-texel color multiply, or null while baking.
+ * Fires `scene-ui-image-loaded` when a bake completes so the DOM can repaint.
+ */
+function resolveColorMultipliedImageUrl(
+  imageUrl: string,
+  c: { r?: number; g?: number; b?: number; a?: number }
+): string | null {
+  const key = colorMultiplyKey(imageUrl, c)
+  const hit = multipliedImageUrl.get(key)
+  if (hit) return hit
+  if (multipliedImageLoading.has(key)) return null
+  multipliedImageLoading.add(key)
+
+  const mr = clamp01(c.r ?? 1)
+  const mg = clamp01(c.g ?? 1)
+  const mb = clamp01(c.b ?? 1)
+  const ma = effectiveUiBackgroundAlpha(c)
+
+  const bake = (img: HTMLImageElement) => {
+    try {
+      const w = img.naturalWidth || img.width
+      const h = img.naturalHeight || img.height
+      if (w < 1 || h < 1) throw new Error('empty image')
+      const canvas = document.createElement('canvas')
+      canvas.width = w
+      canvas.height = h
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      if (!ctx) throw new Error('no 2d')
+      ctx.drawImage(img, 0, 0)
+      const imageData = ctx.getImageData(0, 0, w, h)
+      const d = imageData.data
+      for (let i = 0; i < d.length; i += 4) {
+        d[i] = Math.round((d[i] ?? 0) * mr)
+        d[i + 1] = Math.round((d[i + 1] ?? 0) * mg)
+        d[i + 2] = Math.round((d[i + 2] ?? 0) * mb)
+        d[i + 3] = Math.round((d[i + 3] ?? 0) * ma)
+      }
+      ctx.putImageData(imageData, 0, 0)
+      canvas.toBlob(
+        (blob) => {
+          multipliedImageLoading.delete(key)
+          if (!blob) {
+            notifyUiImageReady()
+            return
+          }
+          const url = URL.createObjectURL(blob)
+          multipliedImageUrl.set(key, url)
+          notifyUiImageReady()
+        },
+        'image/png'
+      )
+    } catch {
+      multipliedImageLoading.delete(key)
+      notifyUiImageReady()
+    }
+  }
+
+  const img = new Image()
+  img.decoding = 'async'
+  img.crossOrigin = 'anonymous'
+  img.onload = () => bake(img)
+  img.onerror = () => {
+    void fetch(imageUrl)
+      .then((res) => (res.ok ? res.blob() : Promise.reject()))
+      .then((blob) => {
+        const blobUrl = URL.createObjectURL(blob)
+        const retry = new Image()
+        retry.onload = () => {
+          bake(retry)
+          URL.revokeObjectURL(blobUrl)
+        }
+        retry.onerror = () => {
+          URL.revokeObjectURL(blobUrl)
+          multipliedImageLoading.delete(key)
+          notifyUiImageReady()
+        }
+        retry.src = blobUrl
+      })
+      .catch(() => {
+        multipliedImageLoading.delete(key)
+        notifyUiImageReady()
+      })
+  }
+  img.src = imageUrl
+  return null
+}
+
 function ensureBgImg(el: HTMLElement): HTMLImageElement {
   let img = el.querySelector('.scene-ui-node__bg-img') as HTMLImageElement | null
   if (!img) {
@@ -365,10 +487,42 @@ function probeImageNaturalSize(imageUrl: string): { w: number; h: number } | nul
   return null
 }
 
+/** Instant solid fill (Explorer color×white-sheet) with slice-based corner radius. */
+function applySolidColorPanel(
+  el: HTMLElement,
+  tint: string,
+  topF: number,
+  rightF: number,
+  bottomF: number,
+  leftF: number
+): void {
+  el.style.borderImage = ''
+  el.style.borderImageSource = ''
+  el.style.borderImageSlice = ''
+  el.style.borderImageWidth = ''
+  el.style.borderImageRepeat = ''
+  el.style.borderImageOutset = ''
+  el.style.borderWidth = ''
+  el.style.borderStyle = ''
+  el.style.borderColor = ''
+  el.style.backgroundImage = ''
+  el.style.backgroundSize = ''
+  el.style.backgroundPosition = ''
+  el.style.backgroundRepeat = ''
+  el.style.backgroundColor = tint === 'transparent' ? 'transparent' : tint
+  el.style.opacity = '1'
+  // Approximate 0.2 nine-slice corners (Poker rounded-rect-white).
+  const r = Math.round(Math.max(topF, rightF, bottomF, leftF) * 48)
+  el.style.borderRadius = `${Math.max(8, r)}px`
+}
+
 /**
  * CSS border-image nine-slice.
  * textureSlices are 0–1 fractions of the source image (Explorer / SDK7).
  * Border widths on the element use source-pixel borders × UI uniform scale once size is known.
+ *
+ * Explorer multiplies UiBackground.color × texture. White panel sheets + dark tints
+ * (Poker welcome `#050510FE`) need a pre-multiplied source or the panel stays white.
  */
 function applyNineSlice(
   el: HTMLElement,
@@ -383,8 +537,23 @@ function applyNineSlice(
   const bottomF = clamp01(slices.bottom ?? DEFAULT_SLICES.bottom)
   const leftF = clamp01(slices.left ?? DEFAULT_SLICES.left)
 
-  const safeUrl = imageUrl.replace(/"/g, '%22')
   const tint = color4Css(bg.color)
+  const multiply = needsTextureColorMultiply(bg.color)
+  // Explorer multiplies white nine-slice sheets × Color4 (Poker welcome #050510, green buttons).
+  // Never paint the raw white texture — that flashes white/purple for ~1s. Solid tint is
+  // instant and correct for opaque tints; upgrade to pre-multiplied nine-slice only when
+  // the bake is already cached (same session).
+  let paintUrl = imageUrl
+  if (multiply && bg.color) {
+    const baked = resolveColorMultipliedImageUrl(imageUrl, bg.color)
+    if (!baked) {
+      applySolidColorPanel(el, tint, topF, rightF, bottomF, leftF)
+      return
+    }
+    paintUrl = baked
+  }
+
+  const safeUrl = paintUrl.replace(/"/g, '%22')
   const natural = probeImageNaturalSize(imageUrl)
   const u = Math.max(0.2, scale.uniform)
 
@@ -435,14 +604,15 @@ function applyNineSlice(
   el.style.borderImageWidth = `${topPx}px ${rightPx}px ${bottomPx}px ${leftPx}px`
   el.style.borderImageRepeat = 'stretch'
   el.style.borderImageOutset = '0'
-  // Color alpha multiplies the nine-slice texture (Explorer parity).
-  el.style.opacity = String(effectiveUiBackgroundAlpha(bg.color))
+  // RGB+A already in premultiplied texture; avoid double-applying alpha.
+  el.style.opacity = multiply ? '1' : String(effectiveUiBackgroundAlpha(bg.color))
   el.style.backgroundImage = ''
   el.style.backgroundSize = ''
   el.style.backgroundPosition = ''
   el.style.backgroundRepeat = ''
-  el.style.backgroundColor = tint === 'transparent' || isOpaqueWhite(bg.color) ? 'transparent' : tint
+  el.style.backgroundColor = 'transparent'
   el.style.backgroundBlendMode = ''
+  el.style.borderRadius = ''
 }
 
 /** Apply PBUiBackground color + texture to a DOM node. */
@@ -489,14 +659,40 @@ export function applyUiBackgroundStyles(
     el.style.backgroundColor = 'transparent'
   }
 
-  // Stretch/center path paints via <img> — apply color.a as Explorer-style multiply.
+  // Stretch/center: Explorer multiplies full Color4 × texture (not alpha alone).
+  let paintUrl = imageUrl
+  let imgAlpha = effectiveUiBackgroundAlpha(c)
+  if (c && needsTextureColorMultiply(c)) {
+    const baked = resolveColorMultipliedImageUrl(imageUrl, c)
+    if (!baked) {
+      // Instant solid tint — never flash raw white texture while bake runs.
+      clearBgImg(el)
+      el.style.backgroundImage = ''
+      el.style.backgroundColor = tint === 'transparent' ? 'transparent' : tint
+      el.style.opacity = '1'
+      el.style.borderRadius = el.style.borderRadius || '10px'
+      return
+    }
+    paintUrl = baked
+    imgAlpha = 1
+  }
+
   // Clear any leftover nine-slice opacity on this element (alpha lives on the img).
   el.style.opacity = ''
-  applyBgImg(el, imageUrl, mode, effectiveUiBackgroundAlpha(c), bg?.uvs)
+  applyBgImg(el, paintUrl, mode, imgAlpha, bg?.uvs)
 }
 
 /** Test helper — clear natural-size cache between tests. */
 export function clearUiBackgroundImageSizeCache(): void {
   imageNaturalSize.clear()
   imageSizeLoading.clear()
+  for (const url of multipliedImageUrl.values()) {
+    try {
+      URL.revokeObjectURL(url)
+    } catch {
+      /* ignore */
+    }
+  }
+  multipliedImageUrl.clear()
+  multipliedImageLoading.clear()
 }

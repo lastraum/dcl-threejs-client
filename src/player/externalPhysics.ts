@@ -20,8 +20,8 @@ export const EXPLORER_GRAVITY_MAG = 9.8
 export const CLIENT_ARCADE_GRAVITY = 20
 
 /**
- * Scale scene-authored F/J so Explorer magnitudes feel similar under arcade g.
- * Option A: keep jump g=20, scale external F/J by g_client / g_explorer.
+ * Continuous force only: scale so F balances arcade jump g the way Explorer’s F balances g≈9.8.
+ * Impulse is **not** scaled — Explorer applies scene J as Δv (m=1) with no g-ratio boost.
  */
 export const EXTERNAL_SCENE_SCALE = CLIENT_ARCADE_GRAVITY / EXPLORER_GRAVITY_MAG
 
@@ -48,10 +48,11 @@ export function forceToAcceleration(
 }
 
 /**
- * Impulse world vector → Δv contribution (includes scene scale for g parity).
+ * Impulse world vector → Δv (Explorer CharacterMass=1).
+ * No EXTERNAL_SCENE_SCALE — plaza (0,25,0) stays Δv=25, same as DCL client.
  */
 export function scaleImpulseForClient(impulseWorld: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
-  return out.copy(impulseWorld).multiplyScalar(EXTERNAL_SCENE_SCALE / CHARACTER_MASS)
+  return out.copy(impulseWorld).multiplyScalar(1 / CHARACTER_MASS)
 }
 
 /**

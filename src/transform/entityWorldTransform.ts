@@ -109,8 +109,9 @@ export function resolveEntityWorldMatrix(
       return null
     }
 
-    composeLocalTransformMatrix(t, _local, space)
-
+    // Parent world matrix first — shared _local scratch is reused by composeLocalTransformMatrix.
+    // Composing local *before* recurse overwrote child local with the parent's (plaza bounce
+    // spheres under Zi: world collapsed to ~origin while root-parented volumes stayed correct).
     let parentMat: THREE.Matrix4 | null = null
     const parent = t.parent
     if (!parent || parent === RootEntity || parent === 0) {
@@ -120,6 +121,7 @@ export function resolveEntityWorldMatrix(
     }
     if (!parentMat) return null
 
+    composeLocalTransformMatrix(t, _local, space)
     const world = new THREE.Matrix4().multiplyMatrices(parentMat, _local)
     cache.set(e, world)
     return world

@@ -72,6 +72,8 @@ const GROUND_BOX_HALF_EXTENT = 5000
 const GROUND_BOX_HALF_HEIGHT = 2.5
 /** Max vertical displacement per CCT substep — avoids tunneling when FPS tanks. */
 const CCT_MAX_VERTICAL_STEP_M = 0.4
+/** Max horizontal displacement per CCT substep — thin plaza walls at low FPS. */
+const CCT_MAX_HORIZONTAL_STEP_M = 0.35
 const CCT_MAX_SUBSTEPS = 8
 /** Absolute floor — if CCT still reports feet below this, snap up and force grounded. */
 const HARD_FLOOR_Y = 0
@@ -547,17 +549,37 @@ export class PhysXWorld {
     this.controllerFilters.mCCTFilterCallback = cctFilterCallback
 
     // CCT move() uses scene queries — must return eBLOCK or the capsule passes through static trimesh.
+    // PhysX preFilter signature: (const PxFilterData& filterData, const PxShape* shape, …)
+    // — first arg is PxFilterData, not PxQueryFilterData (word0/word1 live at the pointer root).
+    const envMask =
+      Layers.environment.group | Layers.prop.group | Layers.gltfCollider.group
     const filterCallback = new PHYSX.PxQueryFilterCallbackImpl()
-    filterCallback.simplePreFilter = (queryFilterPtr: number, shapePtr: number) => {
-      // PhysX passes PxQueryFilterData — filter bits live in `.data`, not at the pointer root.
-      const queryFilter = PHYSX.wrapPointer(queryFilterPtr, PHYSX.PxQueryFilterData)
-      const filterData = queryFilter.data
-      const shape = PHYSX.wrapPointer(shapePtr, PHYSX.PxShape)
-      const shapeFilterData = shape.getQueryFilterData()
-      if (filterData.word0 & shapeFilterData.word1 && shapeFilterData.word0 & filterData.word1) {
+    filterCallback.simplePreFilter = (
+      filterDataPtr: number,
+      shapePtr: number,
+      _actorPtr?: number,
+      _queryFlags?: number
+    ) => {
+      try {
+        const filterData = PHYSX.wrapPointer(filterDataPtr, PHYSX.PxFilterData)
+        const shape = PHYSX.wrapPointer(shapePtr, PHYSX.PxShape)
+        const shapeFilterData = shape.getQueryFilterData()
+        const q0 = filterData.word0 >>> 0
+        const q1 = filterData.word1 >>> 0
+        const s0 = shapeFilterData.word0 >>> 0
+        const s1 = shapeFilterData.word1 >>> 0
+        if ((q0 & s1) !== 0 && (s0 & q1) !== 0) {
+          return PHYSX.PxQueryHitType.eBLOCK
+        }
+        // Wrap/layout failure (all-zero query words) — still block solid scene layers so
+        // plaza walls never become ghost geometry. Triggers stay out of envMask.
+        if (q0 === 0 && q1 === 0 && (s0 & envMask) !== 0) {
+          return PHYSX.PxQueryHitType.eBLOCK
+        }
+        return PHYSX.PxQueryHitType.eNONE
+      } catch {
         return PHYSX.PxQueryHitType.eBLOCK
       }
-      return PHYSX.PxQueryHitType.eNONE
     }
     filterCallback.simplePostFilter = () => PHYSX.PxQueryHitType.eBLOCK
     this.controllerFilters.mFilterCallback = filterCallback
@@ -923,6 +945,8 @@ export class PhysXWorld {
   /**
    * Runtime pose slide — moves existing actors without remove/recook gaps.
    * Returns how many actors were repositioned.
+   * Entities that cannot slide safely are invalidated so the cook queue can recook them
+   * (shape-count mismatch / corrupt pose must not leave ghost walk-through solids).
    */
   applyStaticColliderPoseUpdates(
     descs: PhysicsColliderDesc[],
@@ -942,16 +966,17 @@ export class PhysXWorld {
         const actor = this.staticActors.get(desc.entity)
         if (!actor || this.actorWorldBaked.get(desc.entity)) continue
         if (!this.isPoseSlideSafe(actor, desc)) {
-          if (forceAll) this.invalidateStaticCollider(desc.entity)
+          // Leave live actor (no mid-walk hole). poseFp stays stale → isColliderSynced false
+          // → cook queue recooks via replaceStaticWithCook.
           continue
         }
         try {
-          this.updateMultiShapeActorPose(actor, desc)
+          if (!this.updateMultiShapeActorPose(actor, desc)) continue
           this.staticPoseFp.set(desc.entity, poseFp)
           updated++
         } catch (err) {
           console.warn('[PhysXWorld] multi-shape pose slide failed:', desc.entity, err)
-          this.invalidateStaticCollider(desc.entity)
+          // Keep prior actor; requeue via unsynced pose fingerprint.
         }
         continue
       }
@@ -986,7 +1011,14 @@ export class PhysXWorld {
       const poseFp = multiShapePoseFingerprint(desc)
       if (this.staticFp.get(desc.entity) !== geomFp) return false
       const actor = this.staticActors.get(desc.entity)
-      return !!actor && this.staticPoseFp.get(desc.entity) === poseFp
+      if (!actor || this.staticPoseFp.get(desc.entity) !== poseFp) return false
+      // Shape-count mismatch = partial cook; must not report synced (pose slides unsafe).
+      try {
+        if (actor.getNbShapes() !== desc.shapes.length) return false
+      } catch {
+        return false
+      }
+      return true
     }
 
     const poseFp = matrixFingerprint(desc.matrix)
@@ -1031,21 +1063,34 @@ export class PhysXWorld {
 
         if (prevGeomFp === geomFp) {
           const actor = this.staticActors.get(desc.entity)
-          if (actor && this.staticPoseFp.get(desc.entity) === poseFp) continue
+          // Partial cook (shape count mismatch) — must recook; pose slide is unsafe.
+          const shapeCountOk =
+            !!actor &&
+            !!desc.shapes &&
+            (() => {
+              try {
+                return actor.getNbShapes() === desc.shapes!.length
+              } catch {
+                return false
+              }
+            })()
+          if (actor && shapeCountOk && this.staticPoseFp.get(desc.entity) === poseFp) continue
           const worldBaked = !!(actor && this.actorWorldBaked.get(desc.entity))
-          if (actor && !options?.forceRecookOnPoseChange && !worldBaked) {
+          if (actor && shapeCountOk && !options?.forceRecookOnPoseChange && !worldBaked) {
             try {
-              this.updateMultiShapeActorPose(actor, desc)
-              this.staticPoseFp.set(desc.entity, poseFp)
-              geometryChanged = true
-              continue
+              if (this.updateMultiShapeActorPose(actor, desc)) {
+                this.staticPoseFp.set(desc.entity, poseFp)
+                geometryChanged = true
+                continue
+              }
+              // Unsafe slide — fall through to recook.
             } catch (err) {
               console.warn('[PhysXWorld] multi-shape pose update failed:', desc.entity, err)
             }
           }
           // World-baked: remove→recook is a mid-scene hole (floors vanish). Keep live actor
-          // unless boot/force explicitly demands recook.
-          if (actor && worldBaked && !options?.forceRecookOnPoseChange) {
+          // unless boot/force explicitly demands recook — except partial cooks which never block.
+          if (actor && worldBaked && shapeCountOk && !options?.forceRecookOnPoseChange) {
             pendingCooks++
             continue
           }
@@ -1338,11 +1383,16 @@ export class PhysXWorld {
     this.pendingCctGroundY = Number.NEGATIVE_INFINITY
     this.pendingCctGroundContact = null
 
-    // Substep large vertical moves so low-FPS genesis loads cannot tunnel the thick ground box.
+    // Substep large moves so low-FPS genesis loads cannot tunnel ground or thin plaza walls.
     const absY = Math.abs(displacement.y)
+    const absH = Math.hypot(displacement.x, displacement.z)
     const substeps = Math.min(
       CCT_MAX_SUBSTEPS,
-      Math.max(1, Math.ceil(absY / CCT_MAX_VERTICAL_STEP_M))
+      Math.max(
+        1,
+        Math.ceil(absY / CCT_MAX_VERTICAL_STEP_M),
+        Math.ceil(absH / CCT_MAX_HORIZONTAL_STEP_M)
+      )
     )
     const inv = 1 / substeps
     const stepDisp = this._v1.copy(displacement).multiplyScalar(inv)
@@ -2566,18 +2616,21 @@ export class PhysXWorld {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  /** Slide actor root + per-shape relative poses — geometry baked at cook baseline. */
-  private updateMultiShapeActorPose(actor: any, desc: PhysicsColliderDesc): void {
+  /**
+   * Slide actor root + per-shape relative poses — geometry baked at cook baseline.
+   * @returns false when the actor cannot be slid safely (caller must recook).
+   */
+  private updateMultiShapeActorPose(actor: any, desc: PhysicsColliderDesc): boolean {
     const shapes = desc.shapes
-    if (!shapes?.length) return
-    if (!this.isPoseSlideSafe(actor, desc)) return
+    if (!shapes?.length) return false
+    if (!this.isPoseSlideSafe(actor, desc)) return false
 
     desc.matrix.decompose(this._pos, this._quat, this._scale)
     this._pos.toPxTransform(this.actorPoseTransform)
     this._quat.toPxTransform(this.actorPoseTransform)
     actor.setGlobalPose(this.actorPoseTransform)
 
-    if (this.actorWorldBaked.get(desc.entity)) return
+    if (this.actorWorldBaked.get(desc.entity)) return true
 
     const baselines = this.shapeBaselineLocal.get(desc.entity)
     const nbShapes = actor.getNbShapes()
@@ -2592,9 +2645,16 @@ export class PhysXWorld {
         this._shapeRel.premultiply(current)
         this.setPxShapeLocalPose(pxShape, this._shapeRel)
       } else {
-        this.setPxShapeLocalPose(pxShape, current)
+        // Entity-local cooks bake localMatrix into verts — shape pose stays identity.
+        // Never re-apply raw localMatrix (double-transform → ghost solids).
+        this._pos.set(0, 0, 0)
+        this._identityQuat.set(0, 0, 0, 1)
+        this._pos.toPxTransform(this.shapeLocalPoseTransform)
+        this._identityQuat.toPxTransform(this.shapeLocalPoseTransform)
+        pxShape.setLocalPose(this.shapeLocalPoseTransform)
       }
     }
+    return true
   }
 
   private addStatic(
@@ -2828,8 +2888,11 @@ export class PhysXWorld {
   }
 
   /**
-   * Tier B — broadphase overlap of local player capsule against trigger actors.
-   * Returns trigger entity ids currently overlapping the player capsule.
+   * Optional PhysX path: scene.overlap with a **query geometry** matching the player CCT.
+   *
+   * Not a second character. The CCT actor shapes are **simulation-only** (no eSCENE_QUERY_SHAPE)
+   * so camera sweeps do not self-hit the player — they cannot be the overlap query volume.
+   * We reuse the same radius/height as a disposable query capsule at the CCT foot pose.
    */
   queryTriggerVolumesOverlappingPlayer(out: Set<number>): Set<number> {
     out.clear()
@@ -2842,11 +2905,19 @@ export class PhysXWorld {
     const centerY = foot.y + this.capsuleRadius + halfHeight
     this._pos.set(foot.x, centerY, foot.z)
     this._pos.toPxTransform(this.overlapPose)
-    // PxCapsuleGeometry is X-aligned — rotate to Y-up (Hyperfy PlayerLocal pattern).
+    // PxCapsuleGeometry is X-aligned — rotate to Y-up (same CCT orientation).
     this._quat.setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2)
     this._quat.toPxTransform(this.overlapPose)
 
     this.applySceneQueryFilter(TRIGGER_QUERY_MASK)
+    // Must include statics — trigger volumes are rigid statics.
+    try {
+      this.queryFilterData.flags = new PHYSX.PxQueryFlags(
+        PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC
+      )
+    } catch {
+      // older bindings may not expose flags setter the same way
+    }
     const didHit = this.scene.overlap(
       this.playerCapsuleOverlapGeometry,
       this.overlapPose,
@@ -2864,20 +2935,33 @@ export class PhysXWorld {
     return out
   }
 
+  getPlayerCapsuleRadius(): number {
+    return this.capsuleRadius
+  }
+
+  getPlayerCapsuleHeight(): number {
+    return this.capsuleHeight
+  }
+
   private addTriggerVolume(desc: TriggerVolumeDesc): boolean {
     if (!this.physics || !this.scene) return false
 
     desc.matrix.decompose(this._pos, this._quat, this._scale)
     const meshSphere = desc.mesh === 1
+    const sx = Math.abs(this._scale.x)
+    const sy = Math.abs(this._scale.y)
+    const sz = Math.abs(this._scale.z)
     let geometry
     if (meshSphere) {
-      const r = 0.5 * Math.max(Math.abs(this._scale.x), Math.abs(this._scale.y), Math.abs(this._scale.z))
-      geometry = new PHYSX.PxSphereGeometry(r)
+      // PhysX has no ellipsoid: isotropic sphere that contains the DCL unit-sphere × scale
+      // (max axis). Slightly larger than true math ellipsoid — no false negatives.
+      const r = 0.5 * Math.max(sx, sy, sz)
+      geometry = new PHYSX.PxSphereGeometry(Math.max(r, 1e-4))
     } else {
       geometry = new PHYSX.PxBoxGeometry(
-        0.5 * Math.abs(this._scale.x),
-        0.5 * Math.abs(this._scale.y),
-        0.5 * Math.abs(this._scale.z)
+        Math.max(0.5 * sx, 1e-4),
+        Math.max(0.5 * sy, 1e-4),
+        Math.max(0.5 * sz, 1e-4)
       )
     }
 

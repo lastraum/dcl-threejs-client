@@ -26,7 +26,7 @@ import { clearLocomotionClipCache } from '../avatar/locomotionClipCache'
 import { disposeSessionAudioBufferCache } from '../media/AudioBufferCache'
 import { collectManifestAssets } from './manifestAssets'
 import { isSceneBytesWarm } from './sceneLoadWarm'
-import { preferFetchTextureLoad, proxiedTextureUrl } from './textureProxy'
+import { guessImageMimeFromUrl, preferFetchTextureLoad, proxiedTextureUrl } from './textureProxy'
 
 const LANDSCAPE_CACHE_SUFFIX = '#landscape'
 
@@ -568,8 +568,18 @@ export class AssetCache {
   private async loadTextureViaFetch(url: string): Promise<THREE.Texture> {
     const res = await fetch(url, { redirect: 'follow', credentials: 'omit' })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const blob = await res.blob()
-    if (!blob.size) throw new Error('empty texture response')
+    const raw = await res.blob()
+    if (!raw.size) throw new Error('empty texture response')
+    // Event CDN often serves webp/png as application/octet-stream — Image() needs a real image MIME.
+    const headerType = (res.headers.get('content-type') ?? raw.type ?? '').split(';')[0]!.trim()
+    const generic =
+      !headerType ||
+      headerType === 'application/octet-stream' ||
+      headerType === 'binary/octet-stream' ||
+      headerType === 'application/binary'
+    const mime = generic ? guessImageMimeFromUrl(url) : null
+    const blob =
+      mime && raw.type !== mime ? new Blob([raw], { type: mime }) : raw
     const objectUrl = URL.createObjectURL(blob)
     try {
       return await this.textureLoader.loadAsync(objectUrl)

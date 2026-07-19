@@ -460,7 +460,11 @@ export class CrdtEncoder {
     for (const target of this.reservedTargets) {
       if (!target.has(target.entity)) continue
       const data = target.serialize(target.entity)
-      const ts = (this.lamport.get(this.key(target.entity, target.componentId)) ?? 0) + 1
+      const k = this.key(target.entity, target.componentId)
+      // Bump encoder lamport so each PE/camera snapshot is strictly newer on the worker
+      // (plaza bounce gates read Transform.get(PlayerEntity) on enter).
+      const ts = (this.lamport.get(k) ?? 0) + 1
+      this.lamport.set(k, ts)
       PutComponentOperation.write(target.entity, ts, target.componentId, data, buf)
     }
     return buf

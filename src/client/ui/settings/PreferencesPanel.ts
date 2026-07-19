@@ -1,4 +1,5 @@
 import { playUiClick } from '../UiSfx'
+import { ChatSettingsView } from './ChatSettingsView'
 import { ControlsSettingsView } from './ControlsSettingsView'
 import { GraphicsSettingsView } from './GraphicsSettingsView'
 import { SoundsSettingsView } from './SoundsSettingsView'
@@ -48,6 +49,7 @@ export class PreferencesPanel {
   private graphicsSettingsView: GraphicsSettingsView | null = null
   private soundsSettingsView: SoundsSettingsView | null = null
   private controlsSettingsView: ControlsSettingsView | null = null
+  private chatSettingsView: ChatSettingsView | null = null
   private activeTab: PreferencesTab = 'graphics'
   private visible = false
   private readonly onVisibilityChange?: (visible: boolean) => void
@@ -178,6 +180,8 @@ export class PreferencesPanel {
     this.soundsSettingsView = null
     this.controlsSettingsView?.dispose()
     this.controlsSettingsView = null
+    this.chatSettingsView?.dispose()
+    this.chatSettingsView = null
 
     if (this.activeTab === 'graphics') {
       this.graphicsSettingsView = new GraphicsSettingsView()
@@ -197,10 +201,9 @@ export class PreferencesPanel {
       return
     }
 
-    const placeholder = document.createElement('div')
-    placeholder.className = 'preferences-panel__placeholder'
-    placeholder.textContent = `${this.activeTab.toUpperCase()} — Coming soon`
-    this.contentArea.appendChild(placeholder)
+    // chat (and any future tab)
+    this.chatSettingsView = new ChatSettingsView()
+    this.contentArea.appendChild(this.chatSettingsView.root)
   }
 
   dispose(): void {
@@ -208,6 +211,7 @@ export class PreferencesPanel {
     this.graphicsSettingsView?.dispose()
     this.soundsSettingsView?.dispose()
     this.controlsSettingsView?.dispose()
+    this.chatSettingsView?.dispose()
     this.root.remove()
   }
 }

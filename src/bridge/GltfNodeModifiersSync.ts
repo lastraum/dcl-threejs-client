@@ -8,12 +8,16 @@ const ORIG_CAST_KEY = 'dclGltfNodeModOriginalCastShadow'
 const APPLIED_SIG_KEY = 'dclGltfNodeModAppliedSig'
 
 /**
- * Resolve GLTF meshes under an entity for GltfNodeModifiers.path (SDK / Explorer parity).
+ * Resolve GLTF meshes under an entity for GltfNodeModifiers.path.
  *
- * - `""` → all Mesh / SkinnedMesh nodes under the GLB visual root (global modifier)
- * - `"MeshName"` → match node name or mesh name (leaf)
- * - `"Parent/Child/Mesh"` → hierarchy path from visual root (Babylon-style)
- * - Leading `/` stripped; matching is case-sensitive first, then case-insensitive fallback
+ * Scene-graph path resolution (same idea as Unity Transform.Find / glTF node paths):
+ * - `""` → every Mesh under the visual root
+ * - `"NodeName"` → every Object3D named NodeName under the visual root; take all
+ *   Mesh descendants (covers Group targets like plaza `StoreBanners_LeftHorizontal`
+ *   whose Mesh leaves are `Plane.059`)
+ * - `"Parent/Child"` → walk named children from the visual root, then take Mesh descendants
+ *
+ * Case-sensitive first; if nothing matches, one case-insensitive retry.
  */
 export function resolveGltfModifierMeshes(
   entityRoot: THREE.Object3D,
@@ -21,44 +25,18 @@ export function resolveGltfModifierMeshes(
 ): THREE.Mesh[] {
   const trimmed = normalizeModifierPath(path)
   const visual = gltfVisualRoot(entityRoot)
-  const out: THREE.Mesh[] = []
 
   if (!trimmed) {
-    visual.traverse((obj) => {
-      if (isRenderMesh(obj)) out.push(obj as THREE.Mesh)
-    })
-    return out
+    return collectDescendantMeshes(visual)
   }
 
-  const candidates = collectMeshesWithPaths(visual)
-  // Exact path / leaf
-  for (const c of candidates) {
-    if (c.path === trimmed || c.leaf === trimmed || c.name === trimmed) {
-      out.push(c.mesh)
-    }
-  }
-  if (out.length) return out
+  const segments = trimmed.split('/').filter(Boolean)
+  const nodes = findNodesByPath(visual, segments, false)
+  if (nodes.length) return collectMeshesUnderNodes(nodes)
 
-  // Case-insensitive fallback (Creator Hub / mixed export casing)
-  const lower = trimmed.toLowerCase()
-  for (const c of candidates) {
-    if (
-      c.path.toLowerCase() === lower ||
-      c.leaf.toLowerCase() === lower ||
-      c.name.toLowerCase() === lower
-    ) {
-      out.push(c.mesh)
-    }
-  }
-  if (out.length) return out
-
-  // Path ends with leaf, or path is a suffix of hierarchy
-  for (const c of candidates) {
-    if (c.path.endsWith('/' + trimmed) || c.path.toLowerCase().endsWith('/' + lower)) {
-      out.push(c.mesh)
-    }
-  }
-  return out
+  // Single case-insensitive pass for export casing drift (Creator Hub).
+  const ciNodes = findNodesByPath(visual, segments, true)
+  return collectMeshesUnderNodes(ciNodes)
 }
 
 export function gltfNodeModifiersReferenceVideo(
@@ -134,7 +112,8 @@ export async function applyGltfNodeModifiersToEntity(
         mesh.userData.primitiveDoubleSided = true
       }
 
-      const ok = await materials.applyToMesh(mesh, pb)
+      // gltfNodeModifier: static maps may need U flip on LH-mirrored GLB UVs (event boards).
+      const ok = await materials.applyToMesh(mesh, pb, { gltfNodeModifier: true })
       if (!ok) allOk = false
     }
   }
@@ -167,8 +146,21 @@ export function restoreGltfNodeModifierOriginals(entityRoot: THREE.Object3D): vo
   delete entityRoot.userData[APPLIED_SIG_KEY]
 }
 
+/** Debug: named hierarchy paths for every mesh under the visual root. */
 export function listValidMeshPaths(entityRoot: THREE.Object3D): string[] {
-  return collectMeshesWithPaths(gltfVisualRoot(entityRoot)).map((c) => c.path || c.name)
+  const visual = gltfVisualRoot(entityRoot)
+  const paths: string[] = []
+  visual.traverse((obj) => {
+    if (!isRenderMesh(obj)) return
+    const hierarchy: string[] = []
+    let cur: THREE.Object3D | null = obj
+    while (cur && cur !== visual) {
+      if (cur.name) hierarchy.unshift(cur.name)
+      cur = cur.parent
+    }
+    paths.push(hierarchy.join('/') || obj.name || '(unnamed)')
+  })
+  return paths
 }
 
 // ── internals ──────────────────────────────────────────────────────────────
@@ -188,22 +180,72 @@ function isRenderMesh(obj: THREE.Object3D): obj is THREE.Mesh {
   return (obj as THREE.Mesh).isMesh === true
 }
 
-type MeshPath = { mesh: THREE.Mesh; name: string; leaf: string; path: string }
+function namesEqual(a: string, b: string, ignoreCase: boolean): boolean {
+  return ignoreCase ? a.toLowerCase() === b.toLowerCase() : a === b
+}
 
-function collectMeshesWithPaths(visual: THREE.Object3D): MeshPath[] {
-  const out: MeshPath[] = []
+/**
+ * Walk the scene graph by successive child names.
+ * One segment: any descendant named that segment (not only direct children).
+ * Multiple segments: direct-child walk from each match of the first segment.
+ */
+function findNodesByPath(
+  visual: THREE.Object3D,
+  segments: string[],
+  ignoreCase: boolean
+): THREE.Object3D[] {
+  if (segments.length === 0) return [visual]
+
+  const [head, ...rest] = segments
+  if (!head) return []
+
+  // First segment: search the whole subtree (modifier paths name Groups anywhere under root).
+  const heads: THREE.Object3D[] = []
   visual.traverse((obj) => {
-    if (!isRenderMesh(obj)) return
-    const hierarchy: string[] = []
-    let cur: THREE.Object3D | null = obj
-    while (cur && cur !== visual) {
-      if (cur.name) hierarchy.unshift(cur.name)
-      cur = cur.parent
-    }
-    const path = hierarchy.join('/')
-    const leaf = hierarchy[hierarchy.length - 1] ?? obj.name
-    out.push({ mesh: obj, name: obj.name, leaf, path })
+    if (obj === visual) return
+    if (obj.name && namesEqual(obj.name, head, ignoreCase)) heads.push(obj)
   })
+  if (heads.length === 0) return []
+
+  if (rest.length === 0) return heads
+
+  // Remaining segments: direct-child name walk (hierarchy path).
+  const results: THREE.Object3D[] = []
+  for (const start of heads) {
+    let cursors: THREE.Object3D[] = [start]
+    for (const seg of rest) {
+      const next: THREE.Object3D[] = []
+      for (const cur of cursors) {
+        for (const child of cur.children) {
+          if (child.name && namesEqual(child.name, seg, ignoreCase)) next.push(child)
+        }
+      }
+      cursors = next
+      if (!cursors.length) break
+    }
+    results.push(...cursors)
+  }
+  return results
+}
+
+function collectDescendantMeshes(root: THREE.Object3D): THREE.Mesh[] {
+  const out: THREE.Mesh[] = []
+  root.traverse((obj) => {
+    if (isRenderMesh(obj)) out.push(obj)
+  })
+  return out
+}
+
+function collectMeshesUnderNodes(nodes: THREE.Object3D[]): THREE.Mesh[] {
+  const seen = new Set<THREE.Mesh>()
+  const out: THREE.Mesh[] = []
+  for (const node of nodes) {
+    node.traverse((obj) => {
+      if (!isRenderMesh(obj) || seen.has(obj)) return
+      seen.add(obj)
+      out.push(obj)
+    })
+  }
   return out
 }
 

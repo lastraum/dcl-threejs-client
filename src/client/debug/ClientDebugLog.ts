@@ -13,6 +13,11 @@ export type DebugLogOptions = {
   /** Collapse repeated lines in UI + console (default key = category). */
   throttleMs?: number
   throttleKey?: string
+  /**
+   * Legacy flag — ignored for console output.
+   * Browser console is controlled only by {@link ClientDebugLog.setConsoleMirror}
+   * (Help → Debug checkbox, default off).
+   */
   alsoConsole?: boolean
 }
 
@@ -20,8 +25,18 @@ type Listener = (entries: readonly DebugLogEntry[]) => void
 
 const MAX_ENTRIES = 250
 
-/** Categories silenced to reduce console + listener churn (re-enable when profiling). */
+/** Categories silenced to reduce panel + listener churn (re-enable when profiling). */
 const SILENCED_CATEGORIES = new Set(['comms'])
+
+const CONSOLE_MIRROR_KEY = 'dcl.debug.consoleMirror'
+
+function readConsoleMirrorPref(): boolean {
+  try {
+    return localStorage.getItem(CONSOLE_MIRROR_KEY) === '1'
+  } catch {
+    return false
+  }
+}
 
 /** In-memory client log — rendered in the Help debug panel. */
 export class ClientDebugLog {
@@ -29,11 +44,27 @@ export class ClientDebugLog {
   private nextId = 1
   private listeners = new Set<Listener>()
   private throttleAt = new Map<string, number>()
+  /** When false (default), never print to browser console — Help panel only. */
+  private consoleMirror = readConsoleMirrorPref()
+
+  /** Help → Debug “Browser console logs”. Default off. */
+  setConsoleMirror(enabled: boolean): void {
+    this.consoleMirror = !!enabled
+    try {
+      if (enabled) localStorage.setItem(CONSOLE_MIRROR_KEY, '1')
+      else localStorage.removeItem(CONSOLE_MIRROR_KEY)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  isConsoleMirror(): boolean {
+    return this.consoleMirror
+  }
 
   log(category: string, message: string, options: DebugLogOptions = {}): void {
     const silenced = SILENCED_CATEGORIES.has(category)
-    // Silenced categories skip the debug panel buffer, but `alsoConsole: true` still prints.
-    if (silenced && options.alsoConsole !== true) return
+    if (silenced) return
 
     const level = options.level ?? 'info'
     const key = options.throttleKey ?? `${category}:${level}`
@@ -45,28 +76,37 @@ export class ClientDebugLog {
       this.throttleAt.set(key, now)
     }
 
-    if (!silenced) {
-      const entry: DebugLogEntry = {
-        id: this.nextId++,
-        at: now,
-        category,
-        level,
-        message
-      }
-
-      this.entries.push(entry)
-      if (this.entries.length > MAX_ENTRIES) {
-        this.entries.splice(0, this.entries.length - MAX_ENTRIES)
-      }
-      for (const listener of this.listeners) listener(this.entries)
+    const entry: DebugLogEntry = {
+      id: this.nextId++,
+      at: now,
+      category,
+      level,
+      message
     }
 
-    if (options.alsoConsole === true || (!silenced && options.alsoConsole !== false)) {
+    this.entries.push(entry)
+    if (this.entries.length > MAX_ENTRIES) {
+      this.entries.splice(0, this.entries.length - MAX_ENTRIES)
+    }
+    for (const listener of this.listeners) listener(this.entries)
+
+    if (this.consoleMirror) {
       const prefix = `[${category}]`
       if (level === 'warn') console.warn(prefix, message)
       else if (level === 'error') console.error(prefix, message)
       else console.log(prefix, message)
     }
+  }
+
+  /**
+   * Optional browser-console line (boot/noise). No-ops unless console mirror is on.
+   * Prefer {@link log} so lines also land in the Help panel.
+   */
+  consoleOnly(level: 'log' | 'info' | 'warn' | 'error', ...args: unknown[]): void {
+    if (!this.consoleMirror) return
+    if (level === 'warn') console.warn(...args)
+    else if (level === 'error') console.error(...args)
+    else console.info(...args)
   }
 
   subscribe(listener: Listener): () => void {
@@ -107,4 +147,15 @@ export function formatDebugTime(at: number): string {
     minute: '2-digit',
     second: '2-digit'
   })
+}
+
+/** Avatar compose spam — only when `?avatarverbose` or localStorage.avatarverbose=1. */
+export function isAvatarVerbose(): boolean {
+  try {
+    if (typeof window === 'undefined') return false
+    if (new URLSearchParams(window.location.search).has('avatarverbose')) return true
+    return localStorage.getItem('avatarverbose') === '1'
+  } catch {
+    return false
+  }
 }

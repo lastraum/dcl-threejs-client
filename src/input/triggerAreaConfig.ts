@@ -1,4 +1,4 @@
-/** TriggerArea detection backend — Tier A default; Tier B opt-in via URL. */
+/** TriggerArea detection backend — Explorer-parity CCT capsule overlap by default. */
 
 export type TriggerAreaBackend = 'math' | 'physx'
 
@@ -11,7 +11,12 @@ function readSearchParams(): URLSearchParams | null {
   }
 }
 
-/** `?triggerPhysx` or `?triggerArea=physx` — PhysX trigger actors + capsule overlap. */
+/**
+ * Default: **math** = analytic **player CCT capsule** vs trigger volume (one capsule — Explorer overlap).
+ * Optional: `?triggerPhysx` / `?triggerArea=physx` — PhysX scene.overlap with a **query geometry**
+ * matching the CCT (not a second character actor; CCT shapes are simulation-only so they cannot
+ * be the query volume themselves).
+ */
 export function resolveTriggerAreaBackend(): TriggerAreaBackend {
   const params = readSearchParams()
   if (!params) return 'math'
@@ -27,7 +32,10 @@ export function isTriggerAreaParityMode(): boolean {
   return params?.has('triggerParity') ?? false
 }
 
-/** `?triggerverbose` — log enter/exit on the client debug panel. */
+/**
+ * `?triggerverbose` — extra probe spam (per-volume inside/outside every 3s).
+ * Enter/exit always log to the browser console (platform default).
+ */
 export function isTriggerAreaVerbose(): boolean {
   const params = readSearchParams()
   return params?.has('triggerverbose') ?? false

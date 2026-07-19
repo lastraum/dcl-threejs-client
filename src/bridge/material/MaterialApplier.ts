@@ -413,7 +413,11 @@ export class MaterialApplier {
     m.needsUpdate = true
   }
 
-  async applyToMesh(mesh: THREE.Mesh, pb: PbMaterial): Promise<boolean> {
+  async applyToMesh(
+    mesh: THREE.Mesh,
+    pb: PbMaterial,
+    options?: { gltfNodeModifier?: boolean }
+  ): Promise<boolean> {
     const materialCase = pb.material?.$case
     const isPbr = materialCase === 'pbr'
     const inner = materialInner(pb)
@@ -426,6 +430,10 @@ export class MaterialApplier {
     const geo = mesh.geometry as THREE.BufferGeometry | undefined
     const marqueeAtlas = !!geo?.userData?.dclTextAlongYBasis
     const flipY = mesh.userData.primitiveMeshKey != null && !marqueeAtlas
+    // Genesis Plaza event_card_thumbnail etc.: GLB UVs map spatial −X → U=1 (LH-authored).
+    // Three RH view reads L–R mirrored; flip static maps only (not video / MeshRenderer).
+    const flipMapU =
+      !!options?.gltfNodeModifier && !marqueeAtlas && meshUvMapsUMirroredOnX(mesh)
 
     let texturesOk = true
     let alphaTex: THREE.Texture | null = null
@@ -437,7 +445,10 @@ export class MaterialApplier {
       const mainTex = await this.loadUnionTexture(mainUnion, { flipY })
       m.map = mainTex
       if (!mainTex) texturesOk = false
-      else this.applyUvTransform(mainTex, getTextureDef(mainUnion), prev, mesh)
+      else {
+        this.applyUvTransform(mainTex, getTextureDef(mainUnion), prev, mesh)
+        if (flipMapU && mainUnion.tex?.$case === 'texture') flipTextureU(mainTex)
+      }
     }
     const alphaUnion = coerceTextureUnion(inner.alphaTexture)
     if (alphaUnion) {
@@ -454,7 +465,10 @@ export class MaterialApplier {
         alphaTex = await this.loadUnionTexture(alphaUnion, { flipY })
         m.alphaMap = alphaTex
         if (!alphaTex) texturesOk = false
-        else this.applyUvTransform(alphaTex, getTextureDef(alphaUnion), prev, mesh)
+        else {
+          this.applyUvTransform(alphaTex, getTextureDef(alphaUnion), prev, mesh)
+          if (flipMapU && alphaUnion.tex?.$case === 'texture') flipTextureU(alphaTex)
+        }
       }
     }
 
@@ -473,8 +487,10 @@ export class MaterialApplier {
           }
           m.emissiveMap = emissiveTex
           if (!emissiveTex) texturesOk = false
-          else if (emissiveTex !== m.map)
+          else if (emissiveTex !== m.map) {
             this.applyUvTransform(emissiveTex, getTextureDef(emissiveUnion), prev, mesh)
+            if (flipMapU && emissiveUnion.tex?.$case === 'texture') flipTextureU(emissiveTex)
+          }
         }
       }
       const bumpUnion = coerceTextureUnion(pbr.bumpTexture)
@@ -486,6 +502,7 @@ export class MaterialApplier {
         else {
           bumpTex.colorSpace = THREE.LinearSRGBColorSpace
           this.applyUvTransform(bumpTex, getTextureDef(bumpUnion), prev, mesh)
+          if (flipMapU && bumpUnion.tex?.$case === 'texture') flipTextureU(bumpTex)
         }
       }
       // Re-apply after maps land — emissiveIntensity drives flame brightness when albedoColor is absent.
@@ -732,6 +749,42 @@ export class MaterialApplier {
 function getTextureDef(union?: TextureUnion): TextureDef | undefined {
   const coerced = coerceTextureUnion(union)
   return coerced?.tex?.$case === 'texture' ? coerced.tex.texture : undefined
+}
+
+/**
+ * True when mesh UVs map spatial −X → higher U than +X (L–R mirrored vs reading order).
+ * Plaza `event_card_thumbnail.glb` is authored this way for Unity LH; Three RH needs a map U flip.
+ */
+function meshUvMapsUMirroredOnX(mesh: THREE.Mesh): boolean {
+  const pos = mesh.geometry?.getAttribute('position')
+  const uv = mesh.geometry?.getAttribute('uv')
+  if (!pos || !uv || pos.count < 2 || uv.count < 2) return false
+  let minX = Infinity
+  let maxX = -Infinity
+  let uAtMin = 0
+  let uAtMax = 0
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i)
+    if (x < minX) {
+      minX = x
+      uAtMin = uv.getX(i)
+    }
+    if (x > maxX) {
+      maxX = x
+      uAtMax = uv.getX(i)
+    }
+  }
+  if (!(maxX - minX > 1e-5)) return false
+  return uAtMin > uAtMax + 1e-5
+}
+
+/** Flip texture U after authored offset/tiling: sample' = 1 − sample. */
+function flipTextureU(tex: THREE.Texture): void {
+  const rep = tex.repeat.x
+  const off = tex.offset.x
+  tex.repeat.x = -rep
+  tex.offset.x = 1 - off
+  tex.needsUpdate = true
 }
 
 function textureUnionSameSrc(a?: TextureUnion, b?: TextureUnion): boolean {

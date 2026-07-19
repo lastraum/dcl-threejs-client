@@ -53,6 +53,8 @@ import { buildEmoteWheelSlots, resolveSceneEmoteFromSrc } from '../avatar/profil
 import { SocialService } from '../social/SocialService'
 import { isChatTextLine } from '../social/types'
 import { overheadChatText } from '../social/overheadChatText'
+import { chatTranslationService } from '../social/translation'
+import { NAME_TAG_CHAT_DISPLAY_MS } from '../client/ui/NameTag'
 import {
   clearProfileCaches,
   fetchProfileFaceUrl,
@@ -180,6 +182,15 @@ export class World {
   /** True after boot cook + pose push — gates world-baked pose-ack shortcuts at runtime. */
   private spawnColliderSealComplete = false
   private unsubAvatarChat: (() => void) | null = null
+  private unsubAvatarChatTranslate: (() => void) | null = null
+  /**
+   * Last overhead chat per peer — used to swap in a translation when it arrives
+   * before the bubble expires (Unity Explorer auto-translate bubbles).
+   */
+  private readonly overheadChatActive = new Map<
+    string,
+    { messageId: string; originalText: string; shownAt: number }
+  >()
   private playerWalkBounds: PlayerWalkBounds | null = null
   private ezTreeGrass: EzTreeGrassFieldHandle | null = null
   private ezTreeGrassElapsed = 0
@@ -986,6 +997,8 @@ export class World {
       onProgress,
       provenFeet
     )
+    // Genesis Plaza bounce parasols write PhysicsCombinedImpulse with eventId:0 — need LWW Lamport.
+    this.player.setImpulseLamportProvider(() => this.sceneScript.getPhysicsImpulseLamport())
     this.sceneScript.setVirtualCameraPoseProviders(
       () => this.player!.getEntityPose(),
       () => this.player!.getCameraEntityPose()
@@ -1217,7 +1230,7 @@ export class World {
         }
 
         if (this.playerMode && this.player) {
-          this.sceneScript.tickPlayFrame()
+          // Motion first — PE pose + TriggerArea enter must beat worker onUpdate.
           const platformT0 = performance.now()
           this.syncPlayerMotionFrame(delta, startFrame)
           const platformMs = performance.now() - platformT0
@@ -1234,6 +1247,10 @@ export class World {
             this.onVoluntaryEmoteAllowedChange?.(emoteAllowed)
           }
           this.sceneScript.syncClientEntities(this.player.getEntityPose(), this.player.getCameraEntityPose())
+          // Detect enter/exit with post-move CCT feet, then flush PE+TriggerAreaResult to worker.
+          this.sceneScript.updateTriggerAreas()
+          // Worker onUpdate with current PE (bounce parasols read Transform.get(PlayerEntity)).
+          this.sceneScript.tickPlayFrame()
 
           const pos = this.player.getPosition()
           const yaw = this.player.getNetworkYaw()
@@ -1284,7 +1301,6 @@ export class World {
         }
         if (this.playerMode && this.player) {
           this.sceneScript.preparePointerRaycast()
-          this.sceneScript.updateTriggerAreas()
           this.sceneScript.updateRaycasts()
           this.sceneScript.updatePointerEvents(startFrame)
           this.sceneScript.syncSceneInputRelay(startFrame)
@@ -1685,6 +1701,13 @@ export class World {
     }
     const updated = this.physics.applyStaticColliderPoseUpdates(slideDescs)
     if (updated > 0) this.physics.refreshStaticColliderQueries()
+    // Unsafe slides invalidate actors — requeue so initialOnly / burst drain can recook.
+    for (const desc of slideDescs) {
+      if (!this.physics.hasStaticActor(desc.entity) || !this.physics.isColliderSynced(desc)) {
+        this.colliderCookQueue.add(desc.entity)
+      }
+    }
+    this.pendingColliderCooks = this.colliderCookQueue.size
   }
 
   /** Coalesce zero-dt PhysX sim warms to once per frame — geometry registration only. */
@@ -1710,7 +1733,11 @@ export class World {
     if (updated > 0) this.physics.warmStaticScene()
     this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
     if (this.collidersLoadingComplete && !this.spawnColliderSealComplete) {
-      console.info(`[World] pushAllColliderPoses — updated=${updated}/${descs.length}`)
+      const unsynced = this.colliderCookQueue.size
+      console.info(
+        `[World] pushAllColliderPoses — updated=${updated}/${descs.length}` +
+          (unsynced > 0 ? ` unsyncedQueued=${unsynced}` : '')
+      )
     }
   }
 
@@ -2038,7 +2065,7 @@ export class World {
   private async drainColliderCookQueue(options?: {
     hydration?: boolean
     loading?: boolean
-    /** Post-load: register never-cooked actors only — pose slides handle existing entity-local drift. */
+    /** Post-load: register never-cooked / unsynced actors — pose slides handle pure entity-local drift. */
     initialOnly?: boolean
   }): Promise<void> {
     const burstActive = performance.now() < this.runtimeColliderBurstUntil
@@ -2068,21 +2095,26 @@ export class World {
         this.colliderCookQueue.delete(physId)
         continue
       }
-      if (!loadingPass && options?.initialOnly && this.physics.hasStaticActor(physId)) {
+      // initialOnly / runtime-recook-off used to skip ANY live actor — that dropped
+      // partial cooks and unsafe-slide invalidations forever (plaza walk-through).
+      // Only skip when the actor is truly synced; otherwise recook.
+      const hasActor = this.physics.hasStaticActor(physId)
+      const needsRecook = !this.physics.isColliderSynced(desc)
+      if (
+        !loadingPass &&
+        hasActor &&
+        !needsRecook &&
+        (options?.initialOnly || !this.allowsRuntimeColliderRecook())
+      ) {
         this.colliderCookQueue.delete(physId)
         continue
       }
-      if (!loadingPass && !this.allowsRuntimeColliderRecook() && this.physics.hasStaticActor(physId)) {
-        this.colliderCookQueue.delete(physId)
-        continue
-      }
-      if (loadingPass || !this.physics.hasStaticActor(physId)) {
-        this.sceneScript.flushSceneGraphMatrices()
-        this.sceneScript.refreshColliderBeforeCook(physId)
-        // Boot / first cook only — runtime path with a live actor never pre-invalidates here.
+      this.sceneScript.flushSceneGraphMatrices()
+      this.sceneScript.refreshColliderBeforeCook(physId)
+      // Do not pre-invalidate when an actor is live — replaceStaticWithCook keeps the
+      // previous solid until the new cook succeeds (avoids mid-walk floor holes).
+      if (loadingPass || !hasActor) {
         this.physics.invalidateStaticCollider(physId)
-      } else {
-        this.sceneScript.refreshColliderPose(physId)
       }
       const fresh = this.sceneScript.getPhysicsColliderDesc(physId)
       if (!fresh) continue
@@ -2106,7 +2138,8 @@ export class World {
       const result = this.physics.syncStaticColliders(toCook, {
         cookBudget: toCook.length,
         freezeRemoval: true,
-        forceRecookOnPoseChange: loadingPass,
+        // Recook when queued — including partial cooks / failed slides after boot.
+        forceRecookOnPoseChange: loadingPass || options?.initialOnly === true,
         geometryCache: true
       })
       for (const desc of toCook) {
@@ -2754,15 +2787,45 @@ export class World {
 
   private wireAvatarChatOverhead(): void {
     this.unsubAvatarChat?.()
+    this.unsubAvatarChatTranslate?.()
+
     this.unsubAvatarChat = this.social.onChat((event) => {
       if (!event.channelKey.startsWith('scene:')) return
       const address = event.line.senderAddress?.toLowerCase()
       if (!address) return
       if (!isChatTextLine(event.line)) return
-      // Message body only — name is already on the overhead pill header.
-      const text = overheadChatText(event.line.text)
+      // Prefer live translation when already ready (cache hit / fast auto-translate).
+      const display = chatTranslationService.displayText(event.line.id, event.line.text)
+      const text = overheadChatText(display)
       if (!text) return
+      this.overheadChatActive.set(address, {
+        messageId: event.line.id,
+        originalText: event.line.text,
+        shownAt: performance.now()
+      })
       this.showAvatarOverheadChat(address, text)
+    })
+
+    // When a translation finishes, refresh the bubble if it's still the active line.
+    this.unsubAvatarChatTranslate = chatTranslationService.onUpdate((evt) => {
+      const t = evt.translation
+      if (t.state !== 'success' || t.showingOriginal || !t.translatedText) return
+      for (const [address, active] of this.overheadChatActive) {
+        if (active.messageId !== evt.messageId) continue
+        if (performance.now() - active.shownAt > NAME_TAG_CHAT_DISPLAY_MS) {
+          this.overheadChatActive.delete(address)
+          continue
+        }
+        const text = overheadChatText(t.translatedText)
+        if (!text) continue
+        // Reset the 10s timer so the translated line is readable.
+        this.showAvatarOverheadChat(address, text)
+        this.overheadChatActive.set(address, {
+          messageId: active.messageId,
+          originalText: active.originalText,
+          shownAt: performance.now()
+        })
+      }
     })
   }
 
@@ -2886,6 +2949,9 @@ export class World {
     this.lastVoluntaryEmoteAllowed = true
     this.unsubAvatarChat?.()
     this.unsubAvatarChat = null
+    this.unsubAvatarChatTranslate?.()
+    this.unsubAvatarChatTranslate = null
+    this.overheadChatActive.clear()
     this.unsubEnvironmentDebug?.()
     this.unsubEnvironmentDebug = null
     this.photoCamera?.dispose()

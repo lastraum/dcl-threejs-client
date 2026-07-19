@@ -63,6 +63,14 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   { id: 'ui:sidebar-shell', name: 'Sidebar shell + responsive layout', status: 'render', category: 'client-ui', notes: 'ClientUiLayout CSS tokens' },
   { id: 'ui:chat-panel', name: 'Scene chat panel (3D)', status: 'render', category: 'client-ui', notes: 'LiveKit RFC4, unread badge, people count → inline roster, nav links → teleport, DCM v1 inline images' },
   {
+    id: 'ui:chat-translate',
+    name: 'Chat auto / inline translate',
+    status: 'render',
+    category: 'client-ui',
+    notes:
+      'DCL autotranslate-server; per-channel A 文 auto-toggle; hover Translate/See original; message processor protects tags/links/emoji/@mentions/slash cmds; overhead bubbles swap to translation; Preferences → Chat language'
+  },
+  {
     id: 'ui:social-chat-dock',
     name: '2D social chat dock (multi-room)',
     status: 'render',
@@ -126,7 +134,13 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   { id: 'ui:preferences-graphics', name: 'Preferences → Graphics', status: 'partial', category: 'client-ui', notes: 'Preset L/M/H/Custom, shadows, lights, res scale, FPS, MSAA, FOV, lighting, Bloom + HDR live (P4); VSync hidden; Resolution/Fullscreen stub; P3 distance stubs' },
   { id: 'ui:preferences-sounds', name: 'Preferences → Sounds', status: 'render', category: 'client-ui', notes: 'Volume sliders; mic device; PTT vs open-mic; mute-in-background wired to VoiceChatService' },
   { id: 'ui:preferences-controls', name: 'Preferences → Controls', status: 'partial', category: 'client-ui', notes: 'Mouse sensitivity live (10–200%); keybinds still pending' },
-  { id: 'ui:preferences-chat', name: 'Preferences → Chat', status: 'none', category: 'client-ui', notes: 'Coming soon placeholder' },
+  {
+    id: 'ui:preferences-chat',
+    name: 'Preferences → Chat',
+    status: 'render',
+    category: 'client-ui',
+    notes: 'Preferred translate language (10 locales); per-channel auto-translate via chat header A 文'
+  },
   { id: 'ui:settings-places', name: 'Settings → Places', status: 'render', category: 'client-ui', notes: 'Explore tab — Places + Worlds APIs, category filters, Jump In' },
   {
     id: 'ui:settings-communities',

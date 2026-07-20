@@ -9,21 +9,21 @@ updated: 2026-07-20
 source: github
 base_branch: dev-latest
 workflow:
-  - stage: pending_review
+  - stage: merged
     integration_ref: pr:29
     title: D3JS-exclusive brow + facial hair colors
     owner: awedjob
     pr: 29
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/29
-    updated: 2026-07-19
-  - stage: pending_review
+    updated: 2026-07-20
+  - stage: merged
     integration_ref: pr:28
     title: skeleton-named display meshes pruned invisible + hides-driven base shell
       hiding
     owner: awedjob
     pr: 28
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/28
-    updated: 2026-07-18
+    updated: 2026-07-20
   - stage: merged
     integration_ref: pr:26
     title: hand-drawn category icon set

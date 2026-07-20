@@ -36,18 +36,34 @@ function pointerUpTargets(body: InjectPointerClickBody): number[] {
  * reused the id (scrim/close). PET_UP on that id re-fires the wrong handler.
  * Clear isPressed via PlayerEntity only (identity of click type, not mount size).
  *
- * Mesh / getClick: keep requested targets that still have UiTransform; else PlayerEntity.
+ * World mesh / asset-pack Triggers (`onPointerDown` / getClick): PET_UP must land on the
+ * same entity as PET_DOWN. Filtering to UiTransform only sent UP to PlayerEntity and broke
+ * wall links / open_link (VoxBoards 142,-146 Instagram/Discord/X, marketplace boards).
+ *
+ * Non-sceneUi with UiTransform (3D-ish UI): keep only targets that still have UiTransform.
  */
 function resolveUpInjectTargets(engine: IEngine, body: InjectPointerClickBody): number[] {
   if (body.sceneUi) {
     return [engine.PlayerEntity as number]
   }
   const requested = pointerUpTargets(body)
+  if (!requested.length) return [engine.PlayerEntity as number]
+
   preregisterRendererInjectedComponents(engine)
   const UiTransform = resolveWorkerUiTransform(engine)
-  const alive = requested.filter((id) => UiTransform.has(id as Entity))
-  if (alive.length) return alive
-  return [engine.PlayerEntity as number]
+  const PointerEvents = generated.PointerEvents(engine)
+
+  const worldAlive = requested.filter(
+    (id) => PointerEvents.has(id as Entity) && !UiTransform.has(id as Entity)
+  )
+  if (worldAlive.length) return worldAlive
+
+  const uiAlive = requested.filter((id) => UiTransform.has(id as Entity))
+  if (uiAlive.length) return uiAlive
+
+  // Prefer original mesh targets when PE was cleared mid-click; avoid PlayerEntity so
+  // getClick still matches the entity the scene registered onPointerDown against.
+  return requested
 }
 
 /** PET_DOWN only — must run before the first pointer-tick `engine.update(0)`. */

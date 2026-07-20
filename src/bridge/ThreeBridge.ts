@@ -705,6 +705,21 @@ export class ThreeBridge {
     this.store.notifyComponentChange(entity, componentId, 'put')
   }
 
+  /**
+   * Asset-pack Triggers register `PointerEvents` after GltfContainer attach. GPU
+   * InstancedMesh slots have no private `__mesh_*` for pointer raycasts — promote to a
+   * private clone so `PointerEventsSystem.collectPointerTargets` can hit the entity.
+   * Same path as GltfNodeModifiers promote.
+   */
+  ensurePointerMeshClone(entity: Entity): boolean {
+    if (this.isAnimatedSpriteSlot(entity)) return false
+    const obj = this.store.nodes.get(entity)
+    if (!obj?.userData.dclInstanced) return false
+    if (!this.ecs.PointerEvents.has(entity) && !this.ecs.MeshCollider.has(entity)) return false
+    this.promoteInstancedGltfForModifiers(entity, obj)
+    return true
+  }
+
   private invalidateMaterialsForVideoPlayer(videoPlayerEntity: Entity): void {
     const { Material, GltfNodeModifiers } = this.ecs
     this.store.forEachSceneEntity((entity) => {

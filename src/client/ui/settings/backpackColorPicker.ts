@@ -1,16 +1,19 @@
 import type { WearableCategory } from '../../../avatar/types'
 
-/** Avatar body colors the backpack can tint. */
-export type ColorChannel = 'eyes' | 'hair' | 'skin'
+/** Avatar body colors the backpack can tint. `brows`/`facial_hair` are D3JS-only. */
+export type ColorChannel = 'eyes' | 'hair' | 'skin' | 'brows' | 'facial_hair'
 
 /**
- * Which body color a category's detail panel edits. Mirrors the desktop client:
- * EYES → eye color, HAIR → hair color, BODY SHAPE → skin color.
+ * Which body color a category's detail panel edits. Mirrors the desktop client
+ * (EYES → eye color, HAIR → hair color, BODY SHAPE → skin color) plus the
+ * D3JS-exclusive brows / facial hair channels.
  */
 export function tintChannelForCategory(category: WearableCategory | 'unknown'): ColorChannel | null {
   if (category === 'eyes') return 'eyes'
   if (category === 'hair') return 'hair'
   if (category === 'body_shape') return 'skin'
+  if (category === 'eyebrows') return 'brows'
+  if (category === 'facial_hair') return 'facial_hair'
   return null
 }
 
@@ -19,6 +22,19 @@ export function tintChannelForCategory(category: WearableCategory | 'unknown'): 
  * Skin tones intentionally have no names — labeling them risks culturally loaded
  * descriptors — so they fall back to the hex value.
  */
+const HAIR_PRESETS: Array<{ hex: string; name?: string }> = [
+  { hex: '090909', name: 'Black' },
+  { hex: '2c1e14', name: 'Dark Brown' },
+  { hex: '4a3121', name: 'Brown' },
+  { hex: '5a4032', name: 'Chestnut' },
+  { hex: '7a3a23', name: 'Auburn' },
+  { hex: 'b8551f', name: 'Ginger' },
+  { hex: 'c19a6b', name: 'Dark Blonde' },
+  { hex: 'e0c39a', name: 'Blonde' },
+  { hex: 'b7b7b7', name: 'Gray' },
+  { hex: 'ede1c8', name: 'Platinum' }
+]
+
 export const COLOR_PRESETS: Record<ColorChannel, Array<{ hex: string; name?: string }>> = {
   skin: [
     { hex: 'ffe4c6' },
@@ -32,18 +48,9 @@ export const COLOR_PRESETS: Record<ColorChannel, Array<{ hex: string; name?: str
     { hex: '38211a' },
     { hex: '26140d' }
   ],
-  hair: [
-    { hex: '090909', name: 'Black' },
-    { hex: '2c1e14', name: 'Dark Brown' },
-    { hex: '4a3121', name: 'Brown' },
-    { hex: '5a4032', name: 'Chestnut' },
-    { hex: '7a3a23', name: 'Auburn' },
-    { hex: 'b8551f', name: 'Ginger' },
-    { hex: 'c19a6b', name: 'Dark Blonde' },
-    { hex: 'e0c39a', name: 'Blonde' },
-    { hex: 'b7b7b7', name: 'Gray' },
-    { hex: 'ede1c8', name: 'Platinum' }
-  ],
+  hair: HAIR_PRESETS,
+  brows: HAIR_PRESETS,
+  facial_hair: HAIR_PRESETS,
   eyes: [
     { hex: '2a1e14', name: 'Dark Brown' },
     { hex: '5c3a1e', name: 'Brown' },

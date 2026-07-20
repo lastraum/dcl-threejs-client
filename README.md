@@ -99,6 +99,7 @@ Production build: `npm run build` → static SPA in `dist/`. Preview: `npm run p
 | [docs/AGENTS.md](docs/AGENTS.md) | AI/human onboarding |
 | [docs/CONTRIBUTOR_TESTING.md](docs/CONTRIBUTOR_TESTING.md) | Deploy your own world for test iterations |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Build, host, smoke |
+| [docs/CREATOR_ANALYTICS.md](docs/CREATOR_ANALYTICS.md) | Public place analytics (landing stats, ingest, Supabase) |
 | [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) | Historical phase plan |
 | [docs/PR_CHECKLIST.md](docs/PR_CHECKLIST.md) | Required checks before PR |
 | [docs/REPO_MANAGEMENT.md](docs/REPO_MANAGEMENT.md) | Branches, release, community |

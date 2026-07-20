@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "VITE_ANALYTICS_ENABLED=false tsc && VITE_ANALYTICS_ENABLED=false vite build",
+    "build:prod": "VITE_ANALYTICS_ENABLED=true tsc && VITE_ANALYTICS_ENABLED=true vite build",
     "preview": "vite preview",
     "bundle:wearables": "node scripts/bundle-base-wearables.mjs",
     "test:trigger": "node scripts/test-trigger-area-math.mjs",
@@ -14,6 +15,7 @@
     "bump": "npm version patch --no-git-tag-version",
     "release": "node scripts/release.mjs",
     "analytics:server": "node server/analytics.mjs",
+    "analytics:smoke": "node scripts/analytics-smoke.mjs",
     "suggestions:server": "node server/suggestion-api.mjs"
   },
   "dependencies": {

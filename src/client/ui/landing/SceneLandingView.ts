@@ -23,6 +23,8 @@ import { EventModal } from '../events/EventModal'
 import { SocialShellTopNav, type SocialShellChromeHandlers, type SocialShellTab } from '../explore/SocialShellTopNav'
 import { SceneStreamSettingsModal } from './SceneStreamSettingsModal'
 import { SceneUsersModal } from './SceneUsersModal'
+import { ScenePlaceStatsModal } from './ScenePlaceStatsModal'
+import { isAnalyticsEnabled } from '../../../analytics/track'
 import Hls from 'hls.js'
 
 export type SceneLandingViewOptions = SocialShellChromeHandlers & {
@@ -73,6 +75,7 @@ export class SceneLandingView {
   private readonly mainEl: HTMLElement
   private readonly eventModal: EventModal
   private readonly sceneUsersModal: SceneUsersModal
+  private readonly placeStatsModal: ScenePlaceStatsModal
   private meta: SceneLandingMeta | null = null
   private relatedEvents: DclEvent[] = []
   private disposed = false
@@ -141,6 +144,7 @@ export class SceneLandingView {
     this.sceneUsersModal = new SceneUsersModal({
       onOpenProfile: opts.onOpenUserProfile
     })
+    this.placeStatsModal = new ScenePlaceStatsModal()
 
     this.root = document.createElement('div')
     this.root.className = 'scene-landing-view'
@@ -166,6 +170,7 @@ export class SceneLandingView {
     this.topNav.mount()
     this.eventModal.mount()
     this.sceneUsersModal.mount()
+    this.placeStatsModal.mount()
     void this.load()
   }
 
@@ -263,6 +268,7 @@ export class SceneLandingView {
     )
     this.eventModal.dispose()
     this.sceneUsersModal.dispose()
+    this.placeStatsModal.dispose()
     this.topNav.dispose()
     this.root.remove()
   }
@@ -638,9 +644,18 @@ export class SceneLandingView {
     this.root.querySelector('[data-scene-settings]')?.addEventListener('click', () => {
       this.openSceneSettingsModal()
     })
+    this.root.querySelector('[data-scene-stats]')?.addEventListener('click', () => {
+      this.openPlaceStatsModal()
+    })
     this.syncOwnerSettingsVisibility()
     this.renderJoinLiveMenu()
     this.syncJoinLiveVisibility()
+  }
+
+  private openPlaceStatsModal(): void {
+    const title = this.meta?.title?.trim() || 'This place'
+    const pointer = this.meta?.pointerLabel?.trim() || ''
+    this.placeStatsModal.open(this.route, title, pointer)
   }
 
   /** One stream → play immediately; several → open dropdown. */
@@ -1419,24 +1434,47 @@ export class SceneLandingView {
                         <div class="scene-watch-dest-scene-card-body">
                           <div class="scene-watch-dest-scene-card-head">
                             <h1 class="scene-watch-dest-scene-card-title">${escapeHtml(meta.title)}</h1>
-                            <button
-                              type="button"
-                              class="scene-watch-scene-settings-btn"
-                              data-scene-settings
-                              hidden
-                              aria-label="Open scene stream settings"
-                              title="Scene stream settings"
-                            >
-                              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden>
-                                <path
-                                  d="M10.4 2h3.2l.52 2.27c.47.15.93.34 1.36.56l2.03-1.14 2.26 2.26-1.14 2.03c.22.43.41.89.56 1.36L22 10.4v3.2l-2.27.52a8.13 8.13 0 0 1-.56 1.36l1.14 2.03-2.26 2.26-2.03-1.14c-.43.22-.89.41-1.36.56L13.6 22h-3.2l-.52-2.27a8.13 8.13 0 0 1-1.36-.56l-2.03 1.14-2.26-2.26 1.14-2.03a8.13 8.13 0 0 1-.56-1.36L2 13.6v-3.2l2.27-.52c.15-.47.34-.93.56-1.36L3.69 6.5l2.26-2.26 2.03 1.14c.43-.22.89-.41 1.36-.56L10.4 2Z"
-                                  stroke="currentColor"
-                                  stroke-width="1.6"
-                                  stroke-linejoin="round"
-                                />
-                                <circle cx="12" cy="12" r="3.15" stroke="currentColor" stroke-width="1.6" />
-                              </svg>
-                            </button>
+                            <div class="scene-watch-dest-scene-card-head-actions">
+                              ${
+                                isAnalyticsEnabled()
+                                  ? `<button
+                                type="button"
+                                class="scene-watch-scene-stats-btn"
+                                data-scene-stats
+                                aria-label="View place stats"
+                                title="Place stats"
+                              >
+                                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden>
+                                  <path
+                                    d="M5 19V10M12 19V5M19 19v-8"
+                                    stroke="currentColor"
+                                    stroke-width="1.8"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                  />
+                                </svg>
+                              </button>`
+                                  : ''
+                              }
+                              <button
+                                type="button"
+                                class="scene-watch-scene-settings-btn"
+                                data-scene-settings
+                                hidden
+                                aria-label="Open scene stream settings"
+                                title="Scene stream settings"
+                              >
+                                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden>
+                                  <path
+                                    d="M10.4 2h3.2l.52 2.27c.47.15.93.34 1.36.56l2.03-1.14 2.26 2.26-1.14 2.03c.22.43.41.89.56 1.36L22 10.4v3.2l-2.27.52a8.13 8.13 0 0 1-.56 1.36l1.14 2.03-2.26 2.26-2.03-1.14c-.43.22-.89.41-1.36.56L13.6 22h-3.2l-.52-2.27a8.13 8.13 0 0 1-1.36-.56l-2.03 1.14-2.26-2.26 1.14-2.03a8.13 8.13 0 0 1-.56-1.36L2 13.6v-3.2l2.27-.52c.15-.47.34-.93.56-1.36L3.69 6.5l2.26-2.26 2.03 1.14c.43-.22.89-.41 1.36-.56L10.4 2Z"
+                                    stroke="currentColor"
+                                    stroke-width="1.6"
+                                    stroke-linejoin="round"
+                                  />
+                                  <circle cx="12" cy="12" r="3.15" stroke="currentColor" stroke-width="1.6" />
+                                </svg>
+                              </button>
+                            </div>
                           </div>
                           <p class="scene-watch-dest-scene-card-kicker">
                             ${kindLabel} · <span>${escapeHtml(meta.pointerLabel)}</span>

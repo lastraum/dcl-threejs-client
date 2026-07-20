@@ -5,10 +5,11 @@ import {
   resolveDclAssetUrl
 } from '../../rendering/DclTextureResolver'
 import { proxiedTextureUrl, unwrapMisroutedMediaUrl } from '../../rendering/textureProxy'
+import { safeDecodeURIComponent } from '../../util/safeDecodeURIComponent'
 
 function leafName(path: string): string {
   const clean = path.split('?')[0]!.split('#')[0]!
-  return decodeURIComponent(clean.split('/').pop() ?? clean)
+  return safeDecodeURIComponent(clean.split('/').pop() ?? clean)
 }
 
 function resolveSceneAssetUrl(

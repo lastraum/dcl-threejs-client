@@ -536,6 +536,8 @@ export class SettingsOverlay {
         getPlayerState: this.getMapPlayerState,
         onJumpIn: this.onMapJumpIn,
         embedded: true,
+        // Live feet follow — initialCenter alone used to freeze the marker.
+        followPlayer: true,
         initialCenter: m
           ? { px: parseInt(m[1]!, 10), py: parseInt(m[2]!, 10) }
           : null

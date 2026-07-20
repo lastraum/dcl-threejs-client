@@ -26,6 +26,9 @@ type PollOutcome = {
 
 const POLL_MS = 1500
 
+/** Named window so we can navigate it after await without a second popup. */
+export const AUTH_WINDOW_NAME = 'dcl-threejs-auth'
+
 function authApiBase(): string {
   return AUTH_API_URL.replace(/\/+$/, '')
 }
@@ -37,24 +40,11 @@ function authSiteBase(): string {
 /**
  * Build official auth dapp URL.
  *
- * After the user approves the request, auth-site chooses between:
- * - Explorer flow (`skipSetup`): auto-opens the desktop app via `decentraland://`
- * - Web flow: "Sign in complete — close this window" only
- *
- * `skipSetup` is true when targetConfig says so, OR when the
- * ONBOARDING_TO_EXPLORER flag is on and there is no "explicit" redirect
- * (internal `/auth/requests/…` alone counts as non-explicit). That matches
- * Explorer, but opens the DCL client for our poll-only web client.
- *
- * Passing `redirectTo=/` on the request URL is treated as an explicit
- * non-auth redirect, so skipSetup stays false and success does not deep-link.
- * We still land on the request page (path is `/auth/requests/{id}`) and poll
- * auth-api from this app for the signature.
+ * `redirectTo=/` keeps web flow (no Explorer deep-link). We poll auth-api for the signature.
  */
 export function buildAuthLoginUrl(requestId: string, loginMethod: AuthDappLoginMethod): string {
   const requestQuery = new URLSearchParams({
     targetConfigId: 'default',
-    // Sentinel for auth-site useSkipSetup / hasExplicitRedirect — do not remove.
     redirectTo: '/'
   })
   const redirectPath = `/auth/requests/${requestId}?${requestQuery.toString()}`
@@ -129,17 +119,97 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
-/** Prefer a full browser tab (not a sized popup window). */
-function openAuthTab(url: string): Window | null {
-  // No windowFeatures → browsers open a normal tab. Avoid noopener so we can
-  // set location after create-request and detect tab close while polling.
-  const w = window.open(url, '_blank')
+function writeAuthPlaceholder(w: Window, htmlBody: string): void {
+  try {
+    w.document.open()
+    w.document.write(
+      `<!doctype html><html><head><meta charset="utf-8"/><title>Signing in…</title></head>
+      <body style="font:15px system-ui;padding:24px;background:#1a0f28;color:#fff;line-height:1.45">${htmlBody}</body></html>`
+    )
+    w.document.close()
+  } catch {
+    /* cross-origin / already navigated */
+  }
+}
+
+/**
+ * Open (or focus) the auth window. Call only from a direct user gesture
+ * (click handler) — before any await — or browsers will block it.
+ */
+export function openAuthWindow(url = 'about:blank'): Window | null {
+  const w = window.open(url, AUTH_WINDOW_NAME)
   try {
     w?.focus()
   } catch {
     /* ignore */
   }
+  if (w) {
+    writeAuthPlaceholder(w, 'Opening Decentraland login…')
+  }
   return w
+}
+
+/**
+ * Navigate a window opened on the user gesture.
+ * Prefer location.assign/replace on that Window — after await, window.open(url, name)
+ * often returns a handle WITHOUT navigating (leaves our placeholder stuck).
+ */
+function navigateAuthWindow(authTab: Window | null, loginUrl: string): boolean {
+  if (authTab && !authTab.closed) {
+    try {
+      authTab.location.replace(loginUrl)
+      try {
+        authTab.focus()
+      } catch {
+        /* ignore */
+      }
+      return true
+    } catch {
+      /* try href */
+    }
+    try {
+      authTab.location.href = loginUrl
+      return true
+    } catch {
+      /* fall through to named open / link */
+    }
+  }
+
+  // Secondary: named window (may no-op after await in some browsers)
+  try {
+    const reused = window.open(loginUrl, AUTH_WINDOW_NAME)
+    if (reused) {
+      try {
+        reused.focus()
+      } catch {
+        /* ignore */
+      }
+      // If we still hold authTab, force location as well.
+      if (authTab && !authTab.closed) {
+        try {
+          authTab.location.href = loginUrl
+        } catch {
+          /* ignore */
+        }
+      }
+      return true
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // Last resort: clickable link inside the pre-opened tab (user must click once).
+  if (authTab && !authTab.closed) {
+    writeAuthPlaceholder(
+      authTab,
+      `<p>Could not auto-redirect.</p>
+       <p><a href="${loginUrl.replace(/"/g, '&quot;')}" style="color:#7dd3fc;font-weight:700;font-size:1.05rem">
+         Continue to Decentraland login →
+       </a></p>`
+    )
+    return true
+  }
+  return false
 }
 
 function extractSignature(result: unknown): string {
@@ -152,11 +222,6 @@ function extractSignature(result: unknown): string {
   throw new Error('Auth dapp returned an unexpected signature payload')
 }
 
-/**
- * Emit auth UI progress. Only include `verificationCode` when the caller
- * passes it — intermediate status lines must not wipe a code already shown.
- * Pass `null` explicitly to clear the code (e.g. after success).
- */
 function emitProgress(
   onStatus: StatusCallback | AuthProgressCallback | undefined,
   message: string,
@@ -167,69 +232,87 @@ function emitProgress(
   if (verificationCode !== undefined) {
     progress.verificationCode = verificationCode
   }
-  // Always pass AuthProgress — UI handlers accept this shape; string-only
-  // handlers (MetaMask) are not used on this path.
   ;(onStatus as AuthProgressCallback)(progress)
+}
+
+export type LoginWithAuthDappOptions = {
+  /**
+   * Window opened with `openAuthWindow()` in the click handler (same user gesture).
+   * Required for reliable tab open; without it we try openAuthWindow here (may be blocked).
+   */
+  authWindow?: Window | null
 }
 
 /**
  * Sign-in via Decentraland auth dapp (Google / Discord / Apple / X / WalletConnect / …).
- *
- * 1. Create ephemeral identity + login message
- * 2. POST auth-api `/requests` (`dcl_personal_sign`) → verification `code` (0–99)
- * 3. Open `decentraland.org/auth/login?loginMethod=…&redirectTo=/auth/requests/{id}`
- * 4. Poll GET `/requests/{id}` until signature + sender (204 = still pending)
- * 5. Build DCL AuthChain identity (same as wallet MetaMask path)
- *
- * Note: do not abort when `authTab.closed` is true — auth.dapp COOP often
- * detaches the opener so `closed` is a false positive while the tab is open.
- * Wait on auth-api until the user confirms or the request expires.
  */
 export async function loginWithAuthDapp(
   loginMethod: AuthDappLoginMethod,
-  onStatus?: StatusCallback | AuthProgressCallback
+  onStatus?: StatusCallback | AuthProgressCallback,
+  options?: LoginWithAuthDappOptions
 ): Promise<LoginResult> {
-  let authTab: Window | null = null
+  let authTab: Window | null = options?.authWindow ?? null
   let codePulse: number | null = null
+  let closeTabOnExit = true
 
   const progress = (message: string, verificationCode?: number | null) =>
     emitProgress(onStatus, message, verificationCode)
 
   try {
-    progress('Preparing secure login…')
-    const ephemeral = createUnsafeIdentity()
-    const expiration = new Date(Date.now() + IDENTITY_TTL_MS)
-    const ephemeralMessage = Authenticator.getEphemeralMessage(ephemeral.address, expiration)
-
-    progress('Opening Decentraland login…')
-    // Open blank tab on the user gesture first (avoids blockers after await).
-    authTab = openAuthTab('about:blank')
-
-    const created = await createSignRequest(ephemeralMessage)
-    const loginUrl = buildAuthLoginUrl(created.requestId, loginMethod)
-    const code = created.code
-
-    if (authTab && !authTab.closed) {
-      try {
-        // about:blank may block location writes in some browsers — reopen if needed.
-        authTab.location.href = loginUrl
-      } catch {
-        authTab = openAuthTab(loginUrl)
-      }
-    } else {
-      authTab = openAuthTab(loginUrl)
+    // Prefer pre-opened window from the click handler.
+    if (!authTab || authTab.closed) {
+      progress('Opening Decentraland login…')
+      authTab = openAuthWindow('about:blank')
     }
     if (!authTab) {
       throw new Error('Tab blocked — allow popups/tabs for this site and try again')
     }
 
-    // Same verification number the auth tab displays (Explorer parity).
+    progress('Preparing secure login…')
+    if (authTab && !authTab.closed) {
+      writeAuthPlaceholder(authTab, 'Contacting Decentraland auth…')
+    }
+
+    const ephemeral = createUnsafeIdentity()
+    const expiration = new Date(Date.now() + IDENTITY_TTL_MS)
+    const ephemeralMessage = Authenticator.getEphemeralMessage(ephemeral.address, expiration)
+
+    let created: CreateRequestResponse
+    try {
+      created = await createSignRequest(ephemeralMessage)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (authTab && !authTab.closed) {
+        writeAuthPlaceholder(
+          authTab,
+          `<p>Auth request failed.</p><p style="opacity:.8">${msg.replace(/</g, '&lt;')}</p>
+           <p>Close this tab and try again.</p>`
+        )
+      }
+      throw err
+    }
+
+    const loginUrl = buildAuthLoginUrl(created.requestId, loginMethod)
+    const code = created.code
+
+    progress('Loading Decentraland login…', code)
+    if (authTab && !authTab.closed) {
+      writeAuthPlaceholder(authTab, 'Redirecting to Decentraland login…')
+    }
+
+    const navigated = navigateAuthWindow(authTab, loginUrl)
+    if (!navigated) {
+      throw new Error(
+        'Could not open login tab. Allow popups for this site, then try again.'
+      )
+    }
+    closeTabOnExit = false
+
     progress(
       'Does this number match the one in the login tab? Tap Yes there when it does.',
       code
     )
 
-    // Re-emit code while waiting so the modal stays in sync if it re-renders.
     codePulse = window.setInterval(() => {
       progress('Waiting for confirmation in the login tab…', code)
     }, 2000)
@@ -272,11 +355,14 @@ export async function loginWithAuthDapp(
     return { kind: 'wallet', address: sender, identity }
   } finally {
     if (codePulse != null) window.clearInterval(codePulse)
-    // Best-effort close — COOP may make this a no-op; leave tab if we can't.
-    try {
-      if (authTab && !authTab.closed) authTab.close()
-    } catch {
-      /* ignore */
+    // Only close if we still control a loading/error blank — leave auth.dapp open for the user.
+    if (closeTabOnExit) {
+      try {
+        // Do not force-close: auth-site COOP often makes close a no-op or wrong.
+        // Closing a successful login tab is optional; leave open so user sees "done".
+      } catch {
+        /* ignore */
+      }
     }
   }
 }

@@ -14549,6 +14549,92 @@
         line-height: 1.35;
         color: rgba(255, 255, 255, 0.88);
       }
+      .social-profile-menu__guest-key {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin: 0 0 8px;
+      }
+      .social-profile-menu__guest-key-toggle {
+        align-self: flex-start;
+        margin: 0;
+        padding: 0;
+        border: none;
+        background: none;
+        color: rgba(125, 211, 252, 0.95);
+        font: inherit;
+        font-size: 0.78rem;
+        font-weight: 700;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        cursor: pointer;
+      }
+      .social-profile-menu__guest-key-toggle:hover {
+        color: #fff;
+      }
+      .social-profile-menu__guest-key-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px;
+        border-radius: 10px;
+        border: 1px solid rgba(251, 191, 36, 0.35);
+        background: rgba(0, 0, 0, 0.35);
+      }
+      .social-profile-menu__guest-key-panel[hidden] {
+        display: none !important;
+      }
+      .social-profile-menu__guest-key-value {
+        display: block;
+        margin: 0;
+        padding: 0;
+        font-size: 0.68rem;
+        font-weight: 600;
+        line-height: 1.35;
+        word-break: break-all;
+        color: rgba(254, 243, 199, 0.95);
+        user-select: all;
+      }
+      .social-profile-menu__guest-key-copy {
+        align-self: flex-start;
+        margin: 0;
+        padding: 6px 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(72, 36, 120, 0.9);
+        color: #fff;
+        font: inherit;
+        font-size: 0.75rem;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .social-profile-menu__guest-key-copy:hover,
+      .social-profile-menu__guest-key-copy.is-copied {
+        background: rgba(100, 52, 160, 0.95);
+      }
+      .social-profile-menu__guest-warning {
+        margin: 0 16px 12px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(251, 191, 36, 0.4);
+        background: rgba(120, 53, 15, 0.35);
+        color: rgba(254, 243, 199, 0.95);
+        font-size: 0.72rem;
+        font-weight: 600;
+        line-height: 1.4;
+      }
+      .social-profile-menu__guest-warning strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 0.76rem;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+        color: #fde68a;
+      }
+      .social-profile-menu__guest-warning em {
+        font-style: italic;
+        color: #fff;
+      }
       .social-profile-menu__catalyst-link {
         display: inline-block;
         margin: 0 0 2px;

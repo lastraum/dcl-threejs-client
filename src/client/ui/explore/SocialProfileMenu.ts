@@ -1,5 +1,6 @@
 import type { AuthDappLoginMethod, AuthProgress, LoginResult } from '../../../auth/AuthClient'
-import { loginWithMetaMask, loginWithProvider } from '../../../auth/AuthClient'
+import { loginWithMetaMask, loginWithProvider, openAuthWindow } from '../../../auth/AuthClient'
+import { getGuestPrivateKeyHex } from '../../../auth/guestIdentity'
 import { ensureGuestSession } from '../../auth/resolveInitialLogin'
 import { identityFromAvatarProfile } from '../../../avatar/displayName'
 import { fetchProfileCached, fetchProfileFaceUrl } from '../../../avatar/peerApi'
@@ -233,7 +234,9 @@ export class SocialProfileMenu {
       } else {
         this.displayName = identityFromAvatarProfile(profile, address).displayName
       }
-      if (this.open) this.renderMenu()
+      // Never rebuild the menu while a login is in flight — that wiped status UI and
+      // left `busy` true so further clicks silently no-op'd.
+      if (this.open && !this.busy) this.renderMenu()
       this.profileBtn.setAttribute(
         'aria-label',
         this.isGuestAccount()
@@ -266,6 +269,7 @@ export class SocialProfileMenu {
     const profileUrl = address
       ? `https://peer.decentraland.org/lambdas/profiles/${encodeURIComponent(address)}`
       : ''
+    const hasKey = Boolean(getGuestPrivateKeyHex())
     return `
       <div class="social-profile-menu__identity">
         <div class="social-profile-menu__name">${escapeHtml(name)}</div>
@@ -275,13 +279,32 @@ export class SocialProfileMenu {
           <span class="social-profile-menu__wallet-copy-hint" data-copy-hint>Copy</span>
         </button>
         ${
+          hasKey
+            ? `<div class="social-profile-menu__guest-key" data-guest-key-block>
+          <button type="button" class="social-profile-menu__guest-key-toggle" data-reveal-guest-key aria-expanded="false">
+            Reveal guest private key
+          </button>
+          <div class="social-profile-menu__guest-key-panel" data-guest-key-panel hidden>
+            <code class="social-profile-menu__guest-key-value" data-guest-key-value></code>
+            <button type="button" class="social-profile-menu__guest-key-copy" data-copy-guest-key>
+              Copy private key
+            </button>
+          </div>
+        </div>`
+            : ''
+        }
+        ${
           profileUrl
             ? `<a class="social-profile-menu__catalyst-link" href="${escapeHtml(profileUrl)}" target="_blank" rel="noopener noreferrer">View on Catalyst ↗</a>`
             : ''
         }
       </div>
+      <div class="social-profile-menu__guest-warning" role="note">
+        <strong>Browser-only guest wallet.</strong>
+        This key lives only on this device and origin. Clearing site data, private mode, or another browser creates a <em>new</em> guest — wearables or tokens sent here cannot be recovered without this private key. Do not send valuables unless you have exported and stored the key.
+      </div>
       <p class="social-profile-menu__hint">
-        Stable guest wallet for chat &amp; LiveKit. Connect a wallet to claim wearables &amp; ownership tools.
+        Stable guest for chat &amp; LiveKit. Sign in to claim wearables &amp; ownership tools — same accounts as Explorer.
       </p>
       <div class="social-profile-menu__items">
         <button type="button" class="social-profile-menu__item" data-open-whats-new>
@@ -289,25 +312,42 @@ export class SocialProfileMenu {
           <span>What's new</span>
         </button>
       </div>
-      <div class="social-profile-menu__actions">
-        <button type="button" class="social-profile-menu__item" data-login-method="metamask">
-          <span class="social-profile-menu__item-icon" aria-hidden="true">${ICON_METAMASK}</span>
-          <span>Connect MetaMask</span>
+      <div class="social-profile-menu__actions social-profile-menu__actions--signin">
+        <p class="social-profile-menu__status" data-signin-status hidden></p>
+        <div class="explorer-auth-verify social-profile-menu__verify" data-verify hidden>
+          <p class="explorer-auth-verify__label">Verify Sign In</p>
+          <p class="explorer-auth-verify__hint">Does this number match the one in the login tab?</p>
+          <p class="explorer-auth-verify__code" data-verify-code aria-live="polite">—</p>
+          <p class="explorer-auth-verify__wait">Waiting for confirmation…</p>
+        </div>
+        <button type="button" class="social-profile-menu__wallet-btn" data-login-method="google">
+          <span class="social-profile-menu__wallet-btn-icon" aria-hidden="true">${ICON_GOOGLE}</span>
+          <span>Continue with Google</span>
         </button>
-        <button type="button" class="social-profile-menu__item" data-login-method="google">
-          <span class="social-profile-menu__item-icon" aria-hidden="true">${ICON_GOOGLE}</span>
-          <span>Connect Google</span>
+        <button type="button" class="social-profile-menu__wallet-btn social-profile-menu__wallet-btn--secondary" data-login-method="metamask">
+          <span class="social-profile-menu__wallet-btn-icon" aria-hidden="true">${ICON_METAMASK}</span>
+          <span>Continue with MetaMask</span>
         </button>
+        <p class="social-profile-menu__or">or continue with</p>
+        <div class="social-profile-menu__provider-row" role="group" aria-label="More sign-in options">
+          <button type="button" class="social-profile-menu__provider-btn" data-login-method="discord" title="Discord" aria-label="Discord">${ICON_DISCORD}</button>
+          <button type="button" class="social-profile-menu__provider-btn" data-login-method="apple" title="Apple" aria-label="Apple">${ICON_APPLE}</button>
+          <button type="button" class="social-profile-menu__provider-btn" data-login-method="x" title="X" aria-label="X">${ICON_X}</button>
+          <button type="button" class="social-profile-menu__provider-btn" data-login-method="wallet-connect" title="WalletConnect" aria-label="WalletConnect">${ICON_WALLET_CONNECT}</button>
+        </div>
       </div>
     `
   }
 
   private wireGuestMenu(): void {
     this.wireWhatsNewItem()
+    // Full provider set (same as signed-out sign-in sheet).
     for (const btn of this.menuBody.querySelectorAll<HTMLButtonElement>('[data-login-method]')) {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault()
+        ev.stopPropagation()
         const method = btn.dataset.loginMethod as AuthDappLoginMethod | undefined
-        if (method) void this.runLoginMethod(method)
+        if (method) this.runLoginMethod(method)
       })
     }
     this.menuBody.querySelector('[data-copy-guest-wallet]')?.addEventListener('click', async (ev) => {
@@ -325,6 +365,56 @@ export class SocialProfileMenu {
         }, 1400)
       } catch {
         if (hint) hint.textContent = 'Failed'
+      }
+    })
+
+    const revealBtn = this.menuBody.querySelector<HTMLButtonElement>('[data-reveal-guest-key]')
+    const panel = this.menuBody.querySelector<HTMLElement>('[data-guest-key-panel]')
+    const keyValue = this.menuBody.querySelector<HTMLElement>('[data-guest-key-value]')
+    const copyKeyBtn = this.menuBody.querySelector<HTMLButtonElement>('[data-copy-guest-key]')
+
+    revealBtn?.addEventListener('click', (ev) => {
+      ev.preventDefault()
+      ev.stopPropagation()
+      if (!panel || !keyValue || !revealBtn) return
+      const open = panel.hidden
+      if (open) {
+        const pk = getGuestPrivateKeyHex()
+        if (!pk) {
+          keyValue.textContent = 'Key not available on this device.'
+          panel.hidden = false
+          revealBtn.textContent = 'Hide guest private key'
+          revealBtn.setAttribute('aria-expanded', 'true')
+          return
+        }
+        keyValue.textContent = pk
+        panel.hidden = false
+        revealBtn.textContent = 'Hide guest private key'
+        revealBtn.setAttribute('aria-expanded', 'true')
+      } else {
+        keyValue.textContent = ''
+        panel.hidden = true
+        revealBtn.textContent = 'Reveal guest private key'
+        revealBtn.setAttribute('aria-expanded', 'false')
+      }
+    })
+
+    copyKeyBtn?.addEventListener('click', async (ev) => {
+      ev.preventDefault()
+      ev.stopPropagation()
+      const pk = getGuestPrivateKeyHex()
+      if (!pk || !copyKeyBtn) return
+      try {
+        await navigator.clipboard.writeText(pk)
+        const prev = copyKeyBtn.textContent
+        copyKeyBtn.textContent = 'Copied!'
+        copyKeyBtn.classList.add('is-copied')
+        window.setTimeout(() => {
+          copyKeyBtn.textContent = prev || 'Copy private key'
+          copyKeyBtn.classList.remove('is-copied')
+        }, 1400)
+      } catch {
+        copyKeyBtn.textContent = 'Copy failed'
       }
     })
   }
@@ -423,9 +513,11 @@ export class SocialProfileMenu {
 
   private wireSignInMenu(): void {
     for (const btn of this.menuBody.querySelectorAll<HTMLButtonElement>('[data-login-method]')) {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault()
+        ev.stopPropagation()
         const method = btn.dataset.loginMethod as AuthDappLoginMethod | undefined
-        if (method) void this.runLoginMethod(method)
+        if (method) this.runLoginMethod(method)
       })
     }
     this.menuBody.querySelector('[data-guest]')?.addEventListener('click', () => {
@@ -530,40 +622,75 @@ export class SocialProfileMenu {
     if (p.verificationCode !== undefined) this.setVerifyCode(p.verificationCode)
   }
 
-  private async runLoginMethod(method: AuthDappLoginMethod): Promise<void> {
+  private setLoginButtonsDisabled(disabled: boolean): void {
+    for (const btn of this.menuBody.querySelectorAll<HTMLButtonElement>('[data-login-method], [data-guest]')) {
+      btn.disabled = disabled
+    }
+  }
+
+  /**
+   * Must stay synchronous until window.open — browsers only allow popups on a direct gesture.
+   * Do not mark this `async`; open the auth tab first, then continue in a promise.
+   */
+  private runLoginMethod(method: AuthDappLoginMethod): void {
     if (this.busy) return
     this.busy = true
     this.setVerifyCode(null)
-    this.setSignInStatus('Connecting…')
-    for (const btn of this.menuBody.querySelectorAll('button')) {
-      ;(btn as HTMLButtonElement).disabled = true
+    this.setLoginButtonsDisabled(true)
+
+    // Open auth window NOW (same call stack as the click). MetaMask uses extension; still open
+    // a placeholder only for auth-dapp methods so await cannot lose the gesture.
+    const useAuthDapp = method !== 'metamask'
+    let authWindow: Window | null = null
+    if (useAuthDapp) {
+      this.setSignInStatus('Opening Decentraland login…')
+      authWindow = openAuthWindow('about:blank')
+      if (!authWindow) {
+        this.busy = false
+        this.setLoginButtonsDisabled(false)
+        this.setSignInStatus(
+          'Tab blocked — allow popups for this site, then try again.',
+          true
+        )
+        return
+      }
+    } else {
+      this.setSignInStatus('Connecting to MetaMask…')
     }
+
+    void this.finishLoginMethod(method, authWindow)
+  }
+
+  private async finishLoginMethod(
+    method: AuthDappLoginMethod,
+    authWindow: Window | null
+  ): Promise<void> {
     try {
       const result =
         method === 'metamask'
           ? await loginWithMetaMask((msg) => this.setSignInStatus(msg)).catch(async (err) => {
               const msg = err instanceof Error ? err.message : String(err)
-              if (/not found|install/i.test(msg)) {
+              if (/not found|install|rejected|denied/i.test(msg)) {
                 this.setSignInStatus('Opening Decentraland login…')
-                return loginWithProvider('metamask', this.onAuthProgress)
+                const w = authWindow && !authWindow.closed ? authWindow : openAuthWindow('about:blank')
+                if (!w) {
+                  throw new Error('Tab blocked — allow popups for this site and try again')
+                }
+                return loginWithProvider('metamask', this.onAuthProgress, { authWindow: w })
               }
               throw err
             })
-          : await loginWithProvider(method, this.onAuthProgress)
+          : await loginWithProvider(method, this.onAuthProgress, { authWindow })
       this.setVerifyCode(null)
-      this.busy = false
       this.onLoginChange?.(result)
       this.setLogin(result)
       this.close()
     } catch (err) {
-      // Keep verification code visible if we already have one — user may still
-      // need it, or retry after a transient error.
       const msg = err instanceof Error ? err.message : String(err)
       this.setSignInStatus(msg, true)
-      for (const btn of this.menuBody.querySelectorAll('button')) {
-        ;(btn as HTMLButtonElement).disabled = false
-      }
+    } finally {
       this.busy = false
+      this.setLoginButtonsDisabled(false)
     }
   }
 }

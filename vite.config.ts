@@ -83,6 +83,12 @@ export default defineConfig({
         target: PLACES_API,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/places/, '')
+      },
+      // Same-origin auth-api proxy (matches nginx /api/dcl-auth-api/)
+      '/api/dcl-auth-api': {
+        target: 'https://auth-api.decentraland.org',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/dcl-auth-api/, '')
       }
     }
   },

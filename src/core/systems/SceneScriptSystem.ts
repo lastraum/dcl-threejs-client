@@ -15,7 +15,11 @@ import { CrdtEncoder } from '../../bridge/CrdtEncoder'
 import { ReservedEntitiesSync, type EntityPose } from '../../bridge/ReservedEntitiesSync'
 import { ThreeBridge } from '../../bridge/ThreeBridge'
 import { applySceneDiff } from '../../bridge/entityStoreApply'
-import type { DclTransformValues } from '../../bridge/dclTransform'
+import {
+  expandTransformAncestors,
+  sortEntitiesByTransformDepth,
+  type DclTransformValues
+} from '../../bridge/dclTransform'
 import { AvatarShapeBridge } from '../../bridge/AvatarShapeBridge'
 import { AvatarEmoteCommandBridge, type AvatarEmoteHandler } from '../../bridge/AvatarEmoteCommandBridge'
 import { BillboardBridge } from '../../bridge/BillboardBridge'
@@ -1033,6 +1037,59 @@ export class SceneScriptSystem {
     for (const [entity] of this.view.getEntitiesWith(Transform)) {
       this.linkTransformEntity(entity, Transform.get(entity).parent as Entity)
     }
+  }
+
+  /**
+   * AOI first-frame: re-resolve NetworkParent → Transform.parent after late NetworkEntity puts.
+   * Returns how many transforms changed parent.
+   */
+  rebindAllNetworkParents(): number {
+    const n = this.projection.rebindAllNetworkParents()
+    if (n > 0) this.rebuildTransformChildrenIndex()
+    return n
+  }
+
+  /** Children with NetworkParent whose parent NetworkEntity is not on the projection yet. */
+  countUnresolvedNetworkParents(): number {
+    return this.projection.countUnresolvedNetworkParents()
+  }
+
+  /** Local parent entity for NetworkParent, or null. */
+  resolveNetworkParentLocalEntity(child: Entity): Entity | null {
+    return this.projection.resolveNetworkParentLocalEntity(child)
+  }
+
+  /**
+   * Rebuild full Transform hierarchy on EntityStore (depth-sorted) after NetworkParent rebinds.
+   * Used by AOI first-frame so matrixWorld matches the ECS parent graph.
+   */
+  forceRelinkEntityStoreHierarchy(): number {
+    if (!this.entityStore) return 0
+    this.rebindAllNetworkParents()
+    const { Transform } = this.readComponents
+    const entities = new Set<Entity>()
+    for (const [entity] of this.view.getEntitiesWith(Transform)) {
+      if (
+        entity === this.view.RootEntity ||
+        entity === this.view.PlayerEntity ||
+        entity === this.view.CameraEntity
+      ) {
+        continue
+      }
+      entities.add(entity)
+    }
+    expandTransformAncestors(entities, Transform, this.view)
+    const ordered = sortEntitiesByTransformDepth([...entities], Transform)
+    const diff = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    for (const entity of ordered) {
+      diff.set(entity, new Map([[Transform.componentId, 'put']]))
+    }
+    applySceneDiff(this.entityStore, diff, this.view, this.readComponents, [], {
+      notifySecondary: false,
+      skipSecondaryNotify: () => true
+    })
+    this.entityStore.root.updateMatrixWorld(true)
+    return ordered.length
   }
 
   private rebuildColliderRootEntities(): void {

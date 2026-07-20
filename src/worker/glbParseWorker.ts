@@ -5,6 +5,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
+import { safeDecodeURIComponent } from '../util/safeDecodeURIComponent'
 // Worker path is experimental — THREE graphs are not structured-cloneable (see gltfWorkerTransfer.ts).
 
 type ParseRequest = {
@@ -29,7 +30,7 @@ const ctx = self as unknown as DedicatedWorkerGlobalScope
 function leafName(url: string): string {
   const clean = url.split('?')[0]!.split('#')[0]!
   const parts = clean.split('/')
-  return decodeURIComponent(parts[parts.length - 1] ?? clean)
+  return safeDecodeURIComponent(parts[parts.length - 1] ?? clean)
 }
 
 function mappingKeyVariants(key: string): string[] {
@@ -37,10 +38,10 @@ function mappingKeyVariants(key: string): string[] {
   const variants = new Set<string>([
     key,
     leaf,
-    decodeURIComponent(key),
+    safeDecodeURIComponent(key),
     key.toLowerCase(),
     leaf.toLowerCase(),
-    decodeURIComponent(key).toLowerCase()
+    safeDecodeURIComponent(key).toLowerCase()
   ])
   if (leaf.endsWith('.png.png')) {
     const single = leaf.slice(0, -4)

@@ -18,8 +18,18 @@ export const VIEWPORT_MIN_ZOOM = 4
 export const VIEWPORT_MAX_ZOOM = 8
 export const VIEWPORT_DEFAULT_ZOOM = 5
 
-/** Plaza (0,0) in **level-3** continuous tile space (~3.825, 3.825). */
-export const VIEWPORT_DEFAULT_CENTER_TILE = { x: 3.825, y: 3.825 }
+/**
+ * Satellite atlas ↔ Genesis parcel X calibration.
+ * Click on Angzaar SW (−9,−91) was reporting −11 with +1; use −1 so popup matches world.
+ * (reportX ≈ rawX − SHIFT → more negative SHIFT raises reported X.)
+ */
+export const MAP_PARCEL_X_SHIFT = -1
+
+/** Plaza (0,0) parcel center in **level-3** continuous tile space (includes X shift). */
+export const VIEWPORT_DEFAULT_CENTER_TILE = {
+  x: (0 + MAP_PARCEL_X_SHIFT - SATELLITE_MIN_PARCEL_X + 0.5) / 40,
+  y: (SATELLITE_MAX_PARCEL_Y - 0 + 0.5) / 40
+}
 
 export type MapViewState = {
   zoom: number
@@ -76,14 +86,14 @@ export function mapTileUrlForLod(lod: SatelliteLodLevel, tx: number, ty: number)
 /** Level-3 continuous tile coords from parcel. */
 function parcelToL3TileCenter(px: number, py: number): { x: number; y: number } {
   const chunk = satelliteParcelsPerChunk(3)
-  const x = (px - SATELLITE_MIN_PARCEL_X + 0.5) / chunk
+  const x = (px + MAP_PARCEL_X_SHIFT - SATELLITE_MIN_PARCEL_X + 0.5) / chunk
   const y = (SATELLITE_MAX_PARCEL_Y - py + 0.5) / chunk
   return { x, y }
 }
 
 function l3TileCenterToParcel(cx: number, cy: number): { x: number; y: number } {
   const chunk = satelliteParcelsPerChunk(3)
-  const pxExact = SATELLITE_MIN_PARCEL_X - 0.5 + cx * chunk
+  const pxExact = SATELLITE_MIN_PARCEL_X - 0.5 + cx * chunk - MAP_PARCEL_X_SHIFT
   const pyExact = SATELLITE_MAX_PARCEL_Y + 0.5 - cy * chunk
   return {
     x: Math.floor(pxExact),
@@ -142,6 +152,33 @@ export function centerViewOnParcel(view: MapViewState, px: number, py: number): 
   }
 }
 
+const PARCEL_SIZE_M = 16
+
+/**
+ * Center on continuous Genesis City meters (player feet).
+ * Matches `centerViewOnParcel` + sub-parcel offset (same projection as Unity lod-0).
+ */
+export function centerViewOnGenesisMeters(
+  view: MapViewState,
+  genesisX: number,
+  genesisZ: number
+): MapViewState {
+  const chunk = satelliteParcelsPerChunk(3)
+  // Continuous parcel indices (SW of parcel N is N.0; center is N.5).
+  const pxf = genesisX / PARCEL_SIZE_M
+  const pyf = genesisZ / PARCEL_SIZE_M
+  // Inverse of parcelToL3TileCenter + fractional offset (+ MAP_PARCEL_X_SHIFT):
+  //   integer center: (p + SHIFT - MIN + 0.5) / chunk  and  (MAX - p + 0.5) / chunk
+  //   → (pxf + SHIFT - MIN) / chunk  and  (MAX + 1 - pyf) / chunk
+  return {
+    ...view,
+    centerTileX: (pxf + MAP_PARCEL_X_SHIFT - SATELLITE_MIN_PARCEL_X) / chunk,
+    centerTileY: (SATELLITE_MAX_PARCEL_Y + 1 - pyf) / chunk,
+    panX: 0,
+    panY: 0
+  }
+}
+
 export function parcelScreenRect(
   px: number,
   py: number,
@@ -170,8 +207,6 @@ export function parcelScreenRect(
   if (left + size < 0 || top + size < 0 || left > viewW || top > viewH) return null
   return { left, top, size }
 }
-
-const PARCEL_SIZE_M = 16
 
 export function playerMarkerRect(
   parcelKey: string | null,

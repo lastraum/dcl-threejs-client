@@ -19,6 +19,10 @@ import {
   sceneWorldBounds,
   type PlayerWalkBounds
 } from '../player/SceneBounds'
+import { genesisCityWalkBounds } from '../player/genesisCityBounds'
+import { AoiVisualLayer } from '../dcl/aoi/AoiVisualLayer'
+import { ScenePromoteController } from '../dcl/aoi/ScenePromoteController'
+import { renderQuality } from '../rendering/RenderQualitySettings'
 import { LandscapeSystem } from './systems/LandscapeSystem'
 import { SceneScriptSystem } from './systems/SceneScriptSystem'
 import { EnvironmentSystem } from '../environment/EnvironmentSystem'
@@ -192,6 +196,29 @@ export class World {
     { messageId: string; originalText: string; shownAt: number }
   >()
   private playerWalkBounds: PlayerWalkBounds | null = null
+  /** Phase A2 — coords AOI blank ground + composite secondary visuals. */
+  private readonly aoiVisual = new AoiVisualLayer()
+  /**
+   * Multi-scene Phase B — stand-on-parcel promotes that scene to primary
+   * (full scripts). Wired to navigateHandler after load.
+   */
+  private promoteNavigate:
+    | ((target: Extract<RouteTarget, { kind: 'coords' }>, reason: string) => void)
+    | null = null
+  private promoteSoftRoute: ((x: number, y: number) => void) | null = null
+  private promotePrefetch: ((x: number, y: number) => void) | null = null
+  private readonly scenePromote = new ScenePromoteController({
+    onPromote: (target, reason) => {
+      console.info(`[World] promote primary → ${target.x},${target.y} (${reason})`)
+      if (this.promoteNavigate) this.promoteNavigate(target, reason)
+      else this.navigateHandler?.(target)
+    },
+    onSoftRoute: (x, y) => this.promoteSoftRoute?.(x, y),
+    // Inner radius: warm scripts/manifests. Outer Scene Distance = composite GLBs (AoiVisualLayer).
+    onPrefetch: (x, y) => this.promotePrefetch?.(x, y),
+    dwellMs: 320,
+    cooldownMs: 2_000
+  })
   private ezTreeGrass: EzTreeGrassFieldHandle | null = null
   private ezTreeGrassElapsed = 0
   private desertAtmosphere: import('../environment/DesertAtmosphere').DesertAtmosphere | null = null
@@ -633,12 +660,34 @@ export class World {
 
     onProgress?.('Initialising physics…')
     await this.physics.init()
+    // Coords + Scene Distance > 0: open Genesis walk (infinite ground plane) — no parcel walls.
+    const openCityWalk =
+      scene.source.kind === 'coords' && renderQuality.getSceneLoadRadiusM() > 0
     this.physics.syncLandscapeGround(terrain.landscapeParcelKeys, scene.baseParcel, scene.parcels, {
-      perimeterWalls: !openIslandShore && !openOcean
+      perimeterWalls: !openIslandShore && !openOcean && !openCityWalk
     })
     this.playerWalkBounds = openIslandShore
       ? islandCircularWalkBounds(scene.parcels, scene.baseParcel, landscapeProfile.borderPadding)
-      : { mode: 'rect', bounds: sceneWorldBounds(scene.parcels, scene.baseParcel) }
+      : openCityWalk
+        ? genesisCityWalkBounds(scene.baseParcel)
+        : { mode: 'rect', bounds: sceneWorldBounds(scene.parcels, scene.baseParcel) }
+
+    this.aoiVisual.bind({
+      scene,
+      cache: this.assets,
+      hostScene: this.host.scene,
+      syncRoadColliders: (descs) => {
+        const result = this.physics.syncAoiRoadColliders(descs)
+        if (result.geometryChanged) this.physics.warmStaticScene()
+      },
+      clearRoadColliders: () => this.physics.clearAoiRoadColliders()
+    })
+    this.scenePromote.bind(scene)
+    if (openCityWalk) {
+      console.info(
+        `[aoi] Genesis walk — outer composites=${renderQuality.getSceneLoadRadiusM()}m · inner script-warm via promote · base=${scene.baseParcel}`
+      )
+    }
 
     if (scene.mainEntry && scene.entityId) {
       this.resetColliderBootState()
@@ -1253,6 +1302,10 @@ export class World {
           this.sceneScript.tickPlayFrame()
 
           const pos = this.player.getPosition()
+          // AOI secondaries / blank ground — scene-local DCL feet (throttled inside layer).
+          this.aoiVisual.update(pos.x, pos.z)
+          // Multi-scene: dwell on foreign parcel → promote that scene to primary.
+          this.scenePromote.tick(pos.x, pos.z)
           const yaw = this.player.getNetworkYaw()
           const isEmoting = this.player.isProfileEmoteActive()
           const locomotion = this.player.getLocomotionWireState()
@@ -2625,6 +2678,20 @@ export class World {
   }
 
   /**
+   * Multi-scene seamless promote — place feet at Genesis City meters after a
+   * primary swap (new base parcel origin). Instant, no settle drop.
+   */
+  restoreGenesisFeet(genesis: { x: number; y: number; z: number }): boolean {
+    if (!this.playerMode || !this.player) return false
+    const origin = this.comms.getSceneOrigin()
+    const localX = genesis.x - origin.x
+    const localZ = genesis.z - origin.z
+    return this.player.movePlayerTo({
+      newRelativePosition: { x: localX, y: genesis.y, z: localZ }
+    })
+  }
+
+  /**
    * Minimap triangle rotation (canvas radians, 0 = tip north / up).
    * Uses **visual body yaw** (same as the avatar mesh), including travel facing while moving —
    * not freecam orbit and not a separate wire-yaw path that can lag or disagree.
@@ -2674,6 +2741,20 @@ export class World {
     handler: ((target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>) => void) | null
   ): void {
     this.navigateHandler = handler
+  }
+
+  /**
+   * Multi-scene seamless promote (no full loading screen) + optional AOI prefetch.
+   * Prefer over navigateHandler for stand-on-parcel primary swaps.
+   */
+  setPromoteHandlers(opts: {
+    onPromote: ((target: Extract<RouteTarget, { kind: 'coords' }>, reason: string) => void) | null
+    onSoftRoute?: ((x: number, y: number) => void) | null
+    onPrefetch?: ((x: number, y: number) => void) | null
+  }): void {
+    this.promoteNavigate = opts.onPromote
+    this.promoteSoftRoute = opts.onSoftRoute ?? null
+    this.promotePrefetch = opts.onPrefetch ?? null
   }
 
   getRemoteAvatarManager(): RemoteAvatarManager | null {
@@ -2971,6 +3052,8 @@ export class World {
     this.clearOcean()
     this.environment.dispose()
 
+    this.aoiVisual.dispose()
+    this.scenePromote.unbind()
     this.ezTreeGrass?.dispose()
     this.ezTreeGrass = null
     this.desertAtmosphere = null

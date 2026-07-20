@@ -5,6 +5,8 @@
  * Parsing + shared GPU resources stay in AssetCache; colliders clone geometry per
  * instance before PhysX cook (`GltfColliderExtractor.ensureIndexedGeometry`).
  */
+import { safeDecodeURIComponent } from '../util/safeDecodeURIComponent'
+
 const DB_NAME = 'dcl-client-glb-cache'
 const DB_VERSION = 1
 const STORE = 'glbs'
@@ -20,7 +22,7 @@ export function normalizeGlbCacheKey(keyOrHashOrUrl: string): string {
   const trimmed = keyOrHashOrUrl.trim()
   if (!trimmed) return trimmed
   const fromUrl = trimmed.match(CONTENT_HASH_IN_URL_RE)?.[1]
-  if (fromUrl) return decodeURIComponent(fromUrl)
+  if (fromUrl) return safeDecodeURIComponent(fromUrl)
   if (CONTENT_HASH_RE.test(trimmed)) return trimmed
   return trimmed.split('?')[0]!.split('#')[0]!
 }

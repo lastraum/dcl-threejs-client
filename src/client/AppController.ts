@@ -4,6 +4,7 @@ import {
   applyRouteToHistory,
   resolveRouteTarget,
   routeEquals,
+  routePathForTarget,
   type RouteTarget
 } from '../dcl/content/route'
 import { resolveSceneFromRoute, summarizeSceneContent } from '../dcl/content/resolveScene'
@@ -91,6 +92,11 @@ export class AppController {
   private minimapLayoutObserver: ResizeObserver | null = null
   /** Parcel to center the full map on after leave-play (minimap click). */
   private mapFocusParcel: { px: number; py: number } | null = null
+  /**
+   * Last live map pose while World was up — full /map tears down the scene, so
+   * getMapPlayerState() would go null without this.
+   */
+  private lastMapPlayerState: MapPlayerState | null = null
   private chatPanel: ChatPanel | null = null
   private settingsOverlay: SettingsOverlay | null = null
   private unsubVoiceUi: (() => void) | null = null
@@ -477,12 +483,10 @@ export class AppController {
       getMapPlayerState: () => this.getMapPlayerState(),
       onMapJumpIn: (px, py) => {
         this.settingsOverlay?.hide()
-        void this.navigateTo({
-          kind: 'coords',
-          x: px,
-          y: py,
-          segment: `${px},${py}`
-        })
+        void this.jumpInToScene(
+          { kind: 'coords', x: px, y: py, segment: `${px},${py}` },
+          { entry: 'map', source: 'map' }
+        )
       },
       onEventJumpIn: (target, _event: DclEvent) => {
         this.settingsOverlay?.hide()
@@ -616,12 +620,11 @@ export class AppController {
       login: this.login,
       onNavigate: (tab) => this.navigateSocialShell(tab),
       onParcelVisit: (px, py) => {
-        void this.showSceneLanding({
-          kind: 'coords',
-          x: px,
-          y: py,
-          segment: `${px},${py}`
-        })
+        // Direct jump with full LoadingScreen (not landing-only CTA progress).
+        void this.jumpInToScene(
+          { kind: 'coords', x: px, y: py, segment: `${px},${py}` },
+          { entry: 'map', source: 'map' }
+        )
       },
       getPlayerState: () => this.getMapPlayerState(),
       initialCenter,
@@ -1202,6 +1205,11 @@ export class AppController {
       fromHistory?: boolean
       replace?: boolean
       fastAssets?: boolean
+      /**
+       * Multi-scene stand-on-parcel promote: no full loading screen, keep HUD,
+       * restore Genesis feet after spawn.
+       */
+      seamless?: boolean
       entry?: 'landing_cta' | 'event_card' | 'deep_link' | 'map' | 'other' | 'teleport'
       source?: AnalyticsSource
     } = {}
@@ -1225,7 +1233,10 @@ export class AppController {
     }
 
     const devQueryKey = readSceneDevQueryKey()
+    // Soft URL updates track feet parcel without loading — do NOT treat that as
+    // "already on this primary". Seamless promote must always run the load.
     if (
+      !opts.seamless &&
       this.appMode === 'play' &&
       this.currentRoute &&
       routeEquals(this.currentRoute, target) &&
@@ -1242,7 +1253,23 @@ export class AppController {
       routeEquals(this.currentRoute, target)
 
     const fromPlay = this.appMode === 'play'
-    if (fromPlay) {
+    const seamless = !!(opts.seamless && fromPlay && target.kind === 'coords')
+
+    // Preserve Genesis feet across primary swap (seamless multi-scene promote).
+    let savedGenesis: { x: number; y: number; z: number } | null = null
+    if (seamless && this.world) {
+      const pos = this.world.getPlayerPosition()
+      const origin = this.world.comms.getSceneOrigin()
+      if (pos) {
+        savedGenesis = {
+          x: pos.x + origin.x,
+          y: pos.y,
+          z: pos.z + origin.z
+        }
+      }
+    }
+
+    if (fromPlay && !seamless) {
       stopDwellTracking('navigate')
     }
     // End 2D landing time when Jump In / teleport starts (before load).
@@ -1260,47 +1287,57 @@ export class AppController {
       route: target,
       source: opts.source,
       play_session_id: playId,
-      props: { entry }
+      props: { entry, seamless }
     })
     track('scene_load_start', {
       route: target,
       play_session_id: playId,
       props: {
         fast_assets: !!(opts.fastAssets ?? fromPlay),
-        from_mode: this.appMode
+        from_mode: this.appMode,
+        seamless
       }
     })
 
-    if (!fromSceneLanding) {
+    if (!fromSceneLanding && !seamless) {
       this.teardownSocialChatShell(true)
     }
 
     this.navigating = true
     let loading: LoadingScreen | null = null
-    if (fromSceneLanding) {
+    // Seamless promote (in-world multi-scene): no loading chrome.
+    // Everything else (landing Jump In, map Jump In, teleports) shows a loading affordance.
+    if (seamless) {
+      console.info('[promote] seamless primary swap — no loading screen')
+    } else if (fromSceneLanding) {
       this.hidePlayChrome()
       this.sceneLandingView!.preserveDuringWorldLoad()
       this.sceneLandingView!.beginJumpInLoading()
     } else {
       loading = new LoadingScreen(
         this.appMode === 'play' ? 'Teleporting…' : 'Preparing your experience…',
-        { fast: this.appMode === 'play' }
+        { fast: this.appMode === 'play' || opts.entry === 'map' }
       )
       loading.mount()
       loading.startLoadingTimer()
     }
 
     try {
-      if (!fromSceneLanding) {
+      if (!fromSceneLanding && !seamless) {
         this.teardownLanding()
       }
-      this.teardownExplorer()
-      this.teardownMapPage()
+      if (!seamless) {
+        this.teardownExplorer()
+        this.teardownMapPage()
+      }
       const hydrationTimedOut = await this.loadRoute(target, {
         ...opts,
+        replace: opts.replace ?? seamless,
         fastAssets: opts.fastAssets ?? this.appMode === 'play',
         handoffShellComms: fromSceneLanding,
         deferPlayChromeReveal: fromSceneLanding,
+        seamless,
+        restoreGenesisFeet: savedGenesis,
         onProgress: (msg, fraction, stats) => {
           if (fromSceneLanding) {
             this.sceneLandingView?.updateJumpInProgress(fraction, msg)
@@ -1317,7 +1354,7 @@ export class AppController {
       track('scene_enter', {
         route: target,
         play_session_id: playId,
-        props: { load_ms: Date.now() - loadStarted }
+        props: { load_ms: Date.now() - loadStarted, seamless }
       })
       startDwellTracking(target)
       if (fromSceneLanding) {
@@ -1325,8 +1362,11 @@ export class AppController {
         this.teardownLanding()
         this.teardownSocialChatShell(true)
         this.revealPlayChrome()
+      } else if (loading) {
+        await loading.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
       } else {
-        await loading!.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
+        // Seamless promote — chrome already visible.
+        this.revealPlayChrome()
       }
     } catch (err) {
       if (err instanceof SceneAccessDeniedError) {
@@ -1344,8 +1384,13 @@ export class AppController {
         stopDwellTracking('error')
         if (fromSceneLanding) {
           this.sceneLandingView?.showSceneBan(ui)
+        } else if (loading) {
+          loading.showFatalError(ui.title, ui.detail)
         } else {
-          loading?.showFatalError(ui.title, ui.detail)
+          clientDebugLog.log('client', `Seamless promote denied: ${ui.title}`, {
+            level: 'warn',
+            alsoConsole: true
+          })
         }
         clientDebugLog.log('client', `Scene access denied: ${err.source}`, { level: 'warn' })
       } else {
@@ -1359,8 +1404,13 @@ export class AppController {
         stopDwellTracking('error')
         if (fromSceneLanding) {
           this.sceneLandingView?.showJumpInError(ui.title, ui.detail)
+        } else if (loading) {
+          loading.showFatalError(ui.title, ui.detail)
         } else {
-          loading?.showFatalError(ui.title, ui.detail)
+          clientDebugLog.log('client', `Seamless promote failed: ${msg}`, {
+            level: 'error',
+            alsoConsole: true
+          })
         }
         clientDebugLog.log('client', `Failed to load scene: ${msg}`, { level: 'error' })
       }
@@ -1383,6 +1433,9 @@ export class AppController {
       fastAssets?: boolean
       handoffShellComms?: boolean
       deferPlayChromeReveal?: boolean
+      /** Multi-scene promote — skip long post-spawn settle, restore feet. */
+      seamless?: boolean
+      restoreGenesisFeet?: { x: number; y: number; z: number } | null
       onProgress?: (msg: string, fraction?: number, stats?: SceneHydrationStats) => void
       onHydrationStart?: (timeoutMs: number) => void
       onHydrationFinish?: (result: { timedOut: boolean; elapsedMs: number }) => void
@@ -1432,10 +1485,38 @@ export class AppController {
     world.applyLogin(this.login)
     world.setNavigateHandler((target) => {
       const from = this.currentRoute
+      // RestrictedActions teleport / goto (full loading UX when not seamless).
       if (from && (target.kind === 'coords' || target.kind === 'world')) {
         this.trackNavigate(from, target, 'goto', 'goto')
       }
-      void this.jumpInToScene(target, { fastAssets: true, entry: 'teleport', source: 'goto' })
+      void this.jumpInToScene(target, {
+        fastAssets: true,
+        entry: 'teleport',
+        source: 'goto'
+      })
+    })
+    // Stand-on-parcel multi-scene promote — no full loading screen.
+    world.setPromoteHandlers({
+      onPromote: (target, reason) => {
+        const from = this.currentRoute
+        if (from) this.trackNavigate(from, target, 'navigate', 'goto')
+        this.softUpdatePlayRoute(target)
+        console.info(`[promote] seamless jump ${target.x},${target.y} (${reason})`)
+        void this.jumpInToScene(target, {
+          fastAssets: true,
+          seamless: true,
+          replace: true,
+          entry: 'teleport',
+          source: 'goto'
+        })
+      },
+      // Feet parcel only — replaceState, never reload (fixes empty-land thrash + URL lag).
+      onSoftRoute: (x, y) => {
+        this.softUpdatePlayRoute({ kind: 'coords', x, y, segment: `${x},${y}` })
+      },
+      onPrefetch: (x, y) => {
+        void this.prefetchPromoteTarget(x, y)
+      }
     })
     // Community-style toast when plaza has many remotes still composing.
     this.ensureSocialMobileNotifications()
@@ -1689,9 +1770,21 @@ export class AppController {
       world.voice.setInPlay(false)
       await world.spawnLocalPlayer(sceneConfig, opts.onProgress)
 
+      // Seamless multi-scene: put feet back where the player was walking (Genesis meters).
+      if (opts.restoreGenesisFeet) {
+        const ok = world.restoreGenesisFeet(opts.restoreGenesisFeet)
+        console.info(
+          `[promote] restore genesis feet (${opts.restoreGenesisFeet.x.toFixed(1)}, ${opts.restoreGenesisFeet.y.toFixed(1)}, ${opts.restoreGenesisFeet.z.toFixed(1)}) ok=${ok}`
+        )
+      }
+
       world.start()
 
-      const settleMs = useFastBoot ? POST_SPAWN_SETTLE_FAST_MS : POST_SPAWN_SETTLE_MS
+      const settleMs = opts.seamless
+        ? 0
+        : useFastBoot
+          ? POST_SPAWN_SETTLE_FAST_MS
+          : POST_SPAWN_SETTLE_MS
       if (settleMs > 0) {
         opts.onProgress?.('Settling world…', 0.985)
         await new Promise<void>((resolve) => window.setTimeout(resolve, settleMs))
@@ -2007,18 +2100,69 @@ export class AppController {
     this.ensureDevProgressPanel().showTab('progress')
   }
 
+  /**
+   * SPA address bar only — `history.replaceState`, no navigation, no reload.
+   *
+   * IMPORTANT: does **not** set `currentRoute`. That field is the **loaded primary**
+   * scene. Soft feet tracking used to overwrite it, so promote to Angzaar at -9,-91
+   * hit routeEquals and skipped the load (stuck on empty primary forever).
+   */
+  private softUpdatePlayRoute(
+    target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
+  ): void {
+    if (this.navigating) return
+    const nextPath = routePathForTarget(target)
+    if (window.location.pathname === nextPath) return
+    // Compare decoded paths too (`/-9%2C-91` vs `/-9,-91`)
+    try {
+      if (decodeURIComponent(window.location.pathname) === decodeURIComponent(nextPath)) return
+    } catch {
+      /* ignore */
+    }
+    applyRouteToHistory(target, true)
+  }
+
+  /**
+   * Inner script-warm radius — prefetch real scene manifests/scripts so stand-on
+   * promote is fast. Outer Scene Distance still owns composite GLB visuals only.
+   * (Script-built estates like Angzaar have no main.composite — warm is the only
+   * pre-promote load path for their GLBs.)
+   */
+  private async prefetchPromoteTarget(x: number, y: number): Promise<void> {
+    try {
+      const target = { kind: 'coords' as const, x, y, segment: `${x},${y}` }
+      const scene = await resolveSceneFromRoute(target)
+      // Don't waste prefetch on empty synthetic 1×1 or scenes without content.
+      if (!scene.entityId || !scene.mainEntry) {
+        console.info(
+          `[promote] script-warm skip ${x},${y} — ${!scene.entityId ? 'no entity' : 'no main'} (“${scene.title}”)`
+        )
+        return
+      }
+      const glbCount = scene.content.filter((f) => /\.glb$/i.test(f.file)).length
+      console.info(
+        `[promote] script-warm “${scene.title}” @ ${x},${y} entity=${scene.entityId.slice(0, 12)}… glbs=${glbCount} main=${scene.mainEntry}`
+      )
+      prefetchSceneManifestAssets(getSessionAssetCache(), scene)
+    } catch (err) {
+      console.warn(`[promote] script-warm failed ${x},${y}`, err)
+    }
+  }
+
   private getMapPlayerState(): MapPlayerState | null {
     const world = this.world
-    if (!world) return null
+    if (!world) return this.lastMapPlayerState
     const pos = world.getPlayerPosition()
-    if (!pos) return null
+    if (!pos) return this.lastMapPlayerState
     const origin = world.comms.getSceneOrigin()
+    // Genesis City meters = scene-local DCL feet + base parcel origin (×16).
     const genesisX = pos.x + origin.x
     const genesisZ = pos.z + origin.z
+    // Prefer continuous genesis → parcel (same path soft URL / promote use).
     const { parcelKey } = genesisMetersToParcel(genesisX, genesisZ)
     const profile = world.session.getProfile()
     const address = world.session.getAddress()
-    return {
+    const state: MapPlayerState = {
       position: { x: genesisX, y: pos.y, z: genesisZ },
       parcelKey,
       address: address ?? undefined,
@@ -2027,6 +2171,8 @@ export class AppController {
       // Visual body facing → canvas angle (tracks avatar while moving).
       facingYaw: world.getPlayerMinimapAngle() ?? undefined
     }
+    this.lastMapPlayerState = state
+    return state
   }
 
   private bindNearbyVoice(world: World): void {

@@ -114,7 +114,6 @@ export class EnvironmentSystem {
   /** True while scene.json or ECS locks time (beats session custom + auto). */
   private sceneLocked = false
   private cycleMode = true
-  private freezeClouds = false
   /** Session custom TOD when not scene-locked; persisted in sessionStorage. */
   private uiOverrideTime: number | null = null
   private lastSkyboxKey = ''
@@ -327,7 +326,6 @@ export class EnvironmentSystem {
       saveSessionSkyboxPreference({ mode: 'auto' })
       if (!this.sceneLocked) {
         this.cycleMode = true
-        this.freezeClouds = false
         this.targetTime = this.displayTime
         this.transitionProgress = 1
       }
@@ -338,7 +336,6 @@ export class EnvironmentSystem {
     this.uiOverrideTime = t
     saveSessionSkyboxPreference({ mode: 'custom', seconds: t })
     this.cycleMode = false
-    this.freezeClouds = true
     if (!this.sceneLocked) {
       this.displayTime = t
       this.targetTime = t
@@ -352,7 +349,6 @@ export class EnvironmentSystem {
       saveSessionSkyboxPreference({ mode: 'auto' })
       if (!this.sceneLocked) {
         this.cycleMode = true
-        this.freezeClouds = false
         this.targetTime = this.displayTime
         this.transitionProgress = 1
       }
@@ -378,7 +374,6 @@ export class EnvironmentSystem {
     if (this.sceneJsonFixedTime !== null) {
       this.sceneLocked = true
       this.cycleMode = false
-      this.freezeClouds = true
       this.displayTime = this.sceneJsonFixedTime
       this.targetTime = this.sceneJsonFixedTime
       return
@@ -387,14 +382,12 @@ export class EnvironmentSystem {
     this.sceneLocked = false
     if (this.uiOverrideTime !== null) {
       this.cycleMode = false
-      this.freezeClouds = true
       this.displayTime = this.uiOverrideTime
       this.targetTime = this.uiOverrideTime
       return
     }
 
     this.cycleMode = true
-    this.freezeClouds = false
     this.displayTime = MIDDAY_SECONDS
     this.targetTime = MIDDAY_SECONDS
   }
@@ -403,14 +396,12 @@ export class EnvironmentSystem {
     this.sceneLocked = false
     if (this.uiOverrideTime !== null) {
       this.cycleMode = false
-      this.freezeClouds = true
       this.displayTime = this.uiOverrideTime
       this.targetTime = this.uiOverrideTime
       this.transitionProgress = 1
       return
     }
     this.cycleMode = true
-    this.freezeClouds = false
   }
 
   private syncSkyboxTime(view: ProjectionView, { SkyboxTime }: MirrorComponents): void {
@@ -431,7 +422,6 @@ export class EnvironmentSystem {
       const backward = (transitionMode ?? TM.TM_FORWARD) === TM.TM_BACKWARD
       this.sceneLocked = true
       this.cycleMode = false
-      this.freezeClouds = true
 
       // Cold bind: snap (avoid 4s dark→bright on load). Live scene changes: smooth transition.
       if (!this.ecsSkyboxEverApplied) {
@@ -448,7 +438,6 @@ export class EnvironmentSystem {
     if (this.sceneJsonFixedTime !== null) {
       this.sceneLocked = true
       this.cycleMode = false
-      this.freezeClouds = true
       this.displayTime = this.sceneJsonFixedTime
       this.targetTime = this.sceneJsonFixedTime
       this.transitionProgress = 1
@@ -496,7 +485,8 @@ export class EnvironmentSystem {
 
     if (useGenesis) {
       this.genesisSky.mesh.position.copy(this.host.camera.position)
-      this.genesisSky.update(seconds, _celestial, delta, this.freezeClouds)
+      // Fixed TOD freezes the *sun clock*, not cloud drift — always scroll clouds.
+      this.genesisSky.update(seconds, _celestial, delta, false)
       if (this.disableSun) {
         this.genesisSky.uniforms.uSunRadiance.value = 0
       }

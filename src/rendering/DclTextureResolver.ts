@@ -1,6 +1,7 @@
 import { catalystAssetUrl } from '../dcl/landscape/Data/EmptyLandCatalog'
 import type { ContentFile } from '../dcl/content/types'
 import { BUNDLED_EMOTE_FILES_MAP } from '../avatar/profileEmotes'
+import { safeDecodeURIComponent } from '../util/safeDecodeURIComponent'
 import { isStreamingMediaUrl, proxiedTextureUrl } from './textureProxy'
 
 /**
@@ -21,12 +22,12 @@ export function sharedTextureHashes(): string[] {
 function leafName(url: string): string {
   const clean = url.split('?')[0]!.split('#')[0]!
   const parts = clean.split('/')
-  return decodeURIComponent(parts[parts.length - 1] ?? clean)
+  return safeDecodeURIComponent(parts[parts.length - 1] ?? clean)
 }
 
 /** Case-insensitive manifest key — glTF embeds `Foo_Normal.png`, DCL stores `foo_normal.png`. */
 function normalizeContentKey(key: string): string {
-  return decodeURIComponent(key).toLowerCase()
+  return safeDecodeURIComponent(key).toLowerCase()
 }
 
 const sharedTexturesByLowerKey = new Map(
@@ -152,7 +153,7 @@ function resolveFromEmoteManifest(url: string, leaf: string): string | null {
   const hash =
     emoteContentByKey.get(url) ??
     emoteContentByKey.get(leaf) ??
-    emoteContentByKey.get(decodeURIComponent(url)) ??
+    emoteContentByKey.get(safeDecodeURIComponent(url)) ??
     emoteContentByKey.get(normalizeContentKey(url)) ??
     emoteContentByKey.get(normalizeContentKey(leaf))
   return hash ? emoteAssetUrl(hash) : null
@@ -165,7 +166,7 @@ function resolveFromSceneManifest(url: string, leaf: string): string | null {
   const hash =
     sceneContentByKey.get(url) ??
     sceneContentByKey.get(leaf) ??
-    sceneContentByKey.get(decodeURIComponent(url)) ??
+    sceneContentByKey.get(safeDecodeURIComponent(url)) ??
     sceneContentByKey.get(normalizeContentKey(url)) ??
     sceneContentByKey.get(normalLeaf) ??
     sceneContentByKey.get(stripBlenderSuffix(normalLeaf) ?? '')
@@ -190,7 +191,7 @@ export function wearableMappingKeyVariants(key: string): string[] {
   const variants = new Set<string>([
     key,
     leaf,
-    decodeURIComponent(key),
+    safeDecodeURIComponent(key),
     normalizeContentKey(key),
     normalizeContentKey(leaf)
   ])

@@ -167,9 +167,9 @@ export class DebugPanel {
         </div>
         <label class="debug-panel__check" style="margin:6px 0 4px">
           <input type="checkbox" data-console-mirror />
-          <span>Browser console logs (default off)</span>
+          <span>Browser console logs (on in local dev)</span>
         </label>
-        <div class="debug-panel__render-quality-hint">When off, logs stay in this panel only — no DevTools spam / FPS tax.</div>
+        <div class="debug-panel__render-quality-hint">Local vite: on by default. Prod: off unless checked. When off, logs stay in this panel only.</div>
         <div class="debug-panel__logs-body" role="log" aria-live="polite"></div>
       </div>
       <div class="debug-panel__stats"></div>

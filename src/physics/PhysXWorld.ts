@@ -1363,6 +1363,48 @@ export class PhysXWorld {
     this.invalidateControllerCache()
   }
 
+  /**
+   * Genesis AOI road furniture colliders — real FBX `*_collider` meshes (not boxes).
+   * Uses multi-shape + geometryCache so each prop type cooks once; instances share.
+   * Entity ids should be in ROAD_AOI_COLLIDER_ENTITY_BASE range (positive).
+   */
+  private aoiRoadEntityIds = new Set<number>()
+
+  syncAoiRoadColliders(descs: PhysicsColliderDesc[]): { geometryChanged: boolean; pendingCooks: number } {
+    const next = new Set(descs.map((d) => d.entity))
+    for (const entity of this.aoiRoadEntityIds) {
+      if (!next.has(entity)) {
+        try {
+          this.removeStatic(entity)
+        } catch (err) {
+          console.warn('[PhysXWorld] aoi road collider remove failed', entity, err)
+        }
+      }
+    }
+    this.aoiRoadEntityIds = next
+
+    // geometryCache + shared fingerprints: each prop type cooks once; instances reuse.
+    const result = this.syncStaticColliders(descs, {
+      freezeRemoval: true,
+      geometryCache: true,
+      cookBudget: descs.length
+    })
+    if (result.geometryChanged) this.invalidateControllerCache()
+    return result
+  }
+
+  clearAoiRoadColliders(): void {
+    for (const entity of this.aoiRoadEntityIds) {
+      try {
+        this.removeStatic(entity)
+      } catch {
+        /* ignore */
+      }
+    }
+    this.aoiRoadEntityIds.clear()
+    this.invalidateControllerCache()
+  }
+
   /** PhysX scene step — call after `movePlayer`. */
   step(delta: number): void {
     if (!this.scene) return

@@ -286,6 +286,12 @@ export class SceneScriptSystem {
 
   private pointerStructureDirty = false
   private triggerStructureDirty = false
+  /**
+   * Raw `main.crdt` bytes — must go to the worker intact. Projection seed drops unknown
+   * component ids (no meta), which strips asset-pack Triggers/Actions and left wall
+   * on_click entities without runtime PointerEvents (VoxBoards 142,-146).
+   */
+  private mainCrdtRawBytes: Uint8Array | null = null
   private bridgeDirty = true
   private bridgeSyncTick = 0
   private bridgeSyncEvery = BRIDGE_ECS_SYNC_RUNTIME
@@ -933,6 +939,14 @@ export class SceneScriptSystem {
       componentId === MeshCollider.componentId
     ) {
       this.pointerStructureDirty = true
+    }
+
+    // Late PE (asset-pack on_click) after GPU instance attach — private mesh for raycast.
+    if (
+      change.kind === 'put' &&
+      (componentId === PointerEvents.componentId || componentId === MeshCollider.componentId)
+    ) {
+      this.bridge?.ensurePointerMeshClone(entity)
     }
 
     // Only TriggerArea structure / pose — do NOT dirty on every GltfContainer put
@@ -2175,6 +2189,11 @@ export class SceneScriptSystem {
    * Deployed scenes ship static ECS state in `main.crdt`. Seed the renderer projection
    * before the worker's onStart crdt-get-state — otherwise hasEntities stays false, composite
    * is missing, and hydration never receives GltfContainer (0/0 forever).
+   *
+   * Keep a raw copy for worker boot: projection only materializes components with registered
+   * schemas (core Transform/Gltf/PE/…). Asset-pack Triggers/Actions are hashed custom ids and
+   * would be dropped — worker would get hasEntities without Triggers and skip composite, so
+   * on_click never registers PointerEvents (wall links show no hover).
    */
   private async seedProjectionFromMainCrdt(scene: ResolvedScene): Promise<void> {
     const entry = scene.content.find((file) => file.file === 'main.crdt')
@@ -2184,12 +2203,17 @@ export class SceneScriptSystem {
       if (!res.ok) return
       const bytes = new Uint8Array(await res.arrayBuffer())
       if (!bytes.byteLength) return
+      this.mainCrdtRawBytes = bytes.slice()
       this.projection.applyIncoming(bytes)
       this.foldProjectionChanges()
       const entities = this.projection.sceneEntityCount(this.reservedEntities())
       clientDebugLog.log(
         'scene',
         `main.crdt seeded projection (${(bytes.byteLength / 1024).toFixed(0)} KB, ${entities} entities)`
+      )
+      console.info(
+        '[scene]',
+        `main.crdt raw kept for worker boot (${(bytes.byteLength / 1024).toFixed(0)} KB) — includes asset-pack Triggers`
       )
     } catch (err) {
       console.warn(
@@ -2239,11 +2263,26 @@ export class SceneScriptSystem {
     return this.buildBootstrapSnapshot()
   }
 
-  /** e9: projection + encoder boot snapshot (replaces mirror.getState on the wire). */
+  /**
+   * e9: boot snapshot for worker onStart `crdtGetState`.
+   *
+   * Prefer raw `main.crdt` so custom components (asset-packs::Triggers/Actions) reach the
+   * scene engine after the bundle registers them. Projection-only serialize drops unknown
+   * componentIds (`putComponent` no meta → return), which produced hasEntities without
+   * Triggers and skipped composite — no runtime on_click PointerEvents for wall links.
+   */
   private buildBootstrapSnapshot(): { hasEntities: boolean; data: Uint8Array[] } {
     const reserved = this.reservedEntities()
-    const projBuf = this.projection.serializeSnapshot(undefined, reserved).toBinary()
     const reservedBuf = this.encoder.serializeReservedSnapshot().toBinary()
+    if (this.mainCrdtRawBytes?.byteLength) {
+      const data = [this.mainCrdtRawBytes.slice(), reservedBuf].filter((chunk) => chunk.byteLength > 0)
+      console.info(
+        '[scene]',
+        `boot CRDT snapshot — raw main.crdt ${(this.mainCrdtRawBytes.byteLength / 1024).toFixed(0)} KB (asset-pack Triggers preserved)`
+      )
+      return { hasEntities: true, data }
+    }
+    const projBuf = this.projection.serializeSnapshot(undefined, reserved).toBinary()
     const data = [projBuf, reservedBuf].filter((chunk) => chunk.byteLength > 0)
     return {
       hasEntities: this.projection.sceneEntityCount(reserved) > 0,
@@ -2889,11 +2928,11 @@ export class SceneScriptSystem {
       }
       raycastEntities++
     }
-    clientDebugLog.log(
-      'pointer',
-      `input bound — ${pointerEntities} PointerEvents · ${triggerEntities} TriggerArea · ${raycastEntities} Raycast`,
-      { level: 'success', alsoConsole: true }
-    )
+    const bindMsg =
+      `input bound — ${pointerEntities} PointerEvents · ${triggerEntities} TriggerArea · ${raycastEntities} Raycast`
+    clientDebugLog.log('pointer', bindMsg, { level: 'success', alsoConsole: true })
+    // Always visible — alsoConsole is ignored unless Help→Debug console mirror is on.
+    console.info('[pointer]', bindMsg)
   }
 
   private syncTriggerAreas(): void {
@@ -4264,6 +4303,7 @@ export class SceneScriptSystem {
     resetBlimpPivotCache()
     this.motionFocusDumped = false
     this.motionFocusDumpTicks = 0
+    this.mainCrdtRawBytes = null
     this.avatarShapes?.dispose()
     this.bridge?.dispose()
     this.bridge = null

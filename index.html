@@ -5195,16 +5195,26 @@
         gap: 10px;
         margin-left: auto;
       }
-      .backpack-view__filter-btn {
-        padding: 6px 12px;
+      .backpack-view__sort {
+        padding: 6px 26px 6px 12px;
         border: 1px solid rgba(255, 255, 255, 0.15);
         border-radius: 8px;
-        background: rgba(255, 255, 255, 0.06);
+        background:
+          rgba(255, 255, 255, 0.06)
+          url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'%3E%3Cpath fill='rgba(255,255,255,0.7)' d='M1 1l4 4 4-4'/%3E%3C/svg%3E")
+          no-repeat right 9px center;
         color: rgba(255, 255, 255, 0.85);
         font-size: 11px;
         font-weight: 700;
         letter-spacing: 0.04em;
         cursor: pointer;
+        appearance: none;
+        -webkit-appearance: none;
+        font-family: inherit;
+      }
+      .backpack-view__sort option {
+        background: #1a0e2c;
+        color: #fff;
       }
       .backpack-view__search {
         width: 180px;
@@ -5274,7 +5284,7 @@
         .backpack-view__toolbar {
           margin-left: auto;
         }
-        .backpack-view__toolbar--wearables .backpack-view__filter-btn {
+        .backpack-view__toolbar--wearables .backpack-view__sort {
           display: none;
         }
         .backpack-view__search {

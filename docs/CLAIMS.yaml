@@ -9,6 +9,20 @@ updated: 2026-07-21
 source: github
 base_branch: dev-latest
 workflow:
+  - stage: pending_review
+    integration_ref: pr:38
+    title: official toon shading for avatars
+    owner: awedjob
+    pr: 38
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/38
+    updated: 2026-07-21
+  - stage: merged
+    integration_ref: pr:39
+    title: parallel-skeleton fallback + facial-hair tint order
+    owner: lastraum
+    pr: 39
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/39
+    updated: 2026-07-21
   - stage: merged
     integration_ref: pr:34
     title: official DCL rarity colors + sort by rarity

@@ -640,6 +640,19 @@ export function applyUiBackgroundStyles(
   imageUrl: string | null,
   scale?: UiScreenScale
 ): void {
+  const c = bg?.color
+  const tint = color4Css(c)
+  const rawSrc = extractUiTextureSrc(bg?.texture)
+  const mode = imageUrl
+    ? normalizeBackgroundTextureMode(bg?.textureMode, rawSrc, bg?.textureSlices)
+    : -1
+  // Skip full style thrash when paint re-visits stable PE HUD panels every tick.
+  // Clearing borderImage / swapping solid→texture every frame is the PX UI flash.
+  const uvsKey = bg?.uvs?.length ? bg.uvs.map((n) => Number(n).toFixed(4)).join(',') : ''
+  const sig = `${imageUrl ?? ''}|${mode}|${tint}|${uvsKey}`
+  if (el.dataset.dclUiBgSig === sig) return
+  el.dataset.dclUiBgSig = sig
+
   el.style.borderImage = ''
   el.style.borderImageSource = ''
   el.style.borderImageSlice = ''
@@ -648,8 +661,6 @@ export function applyUiBackgroundStyles(
   el.style.borderImageOutset = ''
   el.style.backgroundBlendMode = ''
 
-  const c = bg?.color
-  const tint = color4Css(c)
   if (!imageUrl) {
     clearBgImg(el)
     el.style.backgroundImage = ''
@@ -664,8 +675,6 @@ export function applyUiBackgroundStyles(
     return
   }
 
-  const rawSrc = extractUiTextureSrc(bg?.texture)
-  const mode = normalizeBackgroundTextureMode(bg?.textureMode, rawSrc, bg?.textureSlices)
   const screenScale = scale ?? { scaleX: 1, scaleY: 1, uniform: 1 }
 
   if (mode === BackgroundTextureMode.NINE_SLICES) {

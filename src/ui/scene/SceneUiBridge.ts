@@ -170,11 +170,13 @@ export class SceneUiBridge {
     // thrash full Yoga rebuilds (that caused PE HUD flicker: first paint spam).
     if (!wasVisible) {
       this.invalidatePaintCache()
+      if (this.lastView) this.paint(this.lastView)
     }
-    if (this.lastView) this.paint(this.lastView)
+    // Already visible: leave paint to mount snapshots / dirty frames — do not re-paint
+    // on every setUiVisible(true) from PE policy ticks.
   }
 
-  /** Force Yoga+DOM rebuild + interactive hit regions (PE enable / late mount). */
+  /** Force Yoga+DOM rebuild + interactive hit regions (rare: late mount / debug). */
   forceRepaint(): void {
     if (!this.domVisible) return
     this.invalidatePaintCache()
@@ -182,35 +184,25 @@ export class SceneUiBridge {
   }
 
   /**
-   * After sceneUi inject-pointer-click: free the pointer from a fullscreen PE catcher.
+   * After sceneUi inject-pointer-click: free the pointer from a **fullscreen** catcher only.
    * CBD Plaza welcome fades Color4.a over several frames; if worker ticks lag the shell
-   * stays pointer-events:auto and blocks WASD/look. Only full-viewport PE targets are
-   * force-dismissed (menus / CREATOR cards keep their click targets).
+   * stays pointer-events:auto and blocks WASD/look.
+   *
+   * Must NOT touch non-fullscreen PE HUD buttons (Neurolink, menus, CREATOR cards):
+   * stripping interactive / pointer-events then re-painting causes visible flash on every
+   * click — the PX UI flashing regression.
    */
   forceDismissAfterSceneUiClick(entity: Entity): void {
     if (this.forceDismissedEntities.has(entity)) {
       this.applyForceDismissDom(entity)
       return
     }
-    const region = this.hitMap.regionFor(entity)
-    const shell = this.dom.getNode(entity)
-    const domRect = shell?.getBoundingClientRect()
     const vw = Math.max(1, window.innerWidth)
     const vh = Math.max(1, window.innerHeight)
-    const w = region?.width ?? domRect?.width ?? 0
-    const h = region?.height ?? domRect?.height ?? 0
-    const isFullscreen = w >= vw * 0.72 && h >= vh * 0.72
-    if (!isFullscreen) {
-      // Non-fullscreen: still drop PE capture on this node so mid-fade shells
-      // do not re-steal the next pointer frame while worker updates opacity.
-      if (shell?.classList.contains('scene-ui-node--interactive')) {
-        shell.classList.remove('scene-ui-node--interactive')
-        shell.style.pointerEvents = 'none'
-      }
-      return
-    }
-
+    // Only true full-viewport shells (welcome scrim). Empty if click was on a HUD button.
     const targets = this.collectFullscreenDismissTargets(entity, vw, vh)
+    if (!targets.length) return
+
     for (const id of targets) {
       this.forceDismissedEntities.add(id)
       this.applyForceDismissDom(id)
@@ -232,7 +224,11 @@ export class SceneUiBridge {
     )
   }
 
-  /** Clicked PE + fullscreen PE ancestors (nested welcome scrim / image + catcher). */
+  /**
+   * Clicked PE + fullscreen PE ancestors (nested welcome scrim / image + catcher).
+   * Returns only entities that actually cover ≥72% of the viewport — never falls back
+   * to the clicked entity when it is a small HUD control.
+   */
   private collectFullscreenDismissTargets(entity: Entity, vw: number, vh: number): Entity[] {
     const out: Entity[] = []
     const seen = new Set<number>()
@@ -251,7 +247,7 @@ export class SceneUiBridge {
     pushIfFullscreen(entity)
     const ecs = this.mirrorEcs
     const view = this.lastView
-    if (!ecs || !view) return out.length ? out : [entity]
+    if (!ecs || !view) return out
     let current: Entity | null = entity
     const root = view.RootEntity
     for (let i = 0; i < 12 && current; i++) {
@@ -263,7 +259,7 @@ export class SceneUiBridge {
       }
       current = parent
     }
-    return out.length ? out : [entity]
+    return out
   }
 
   private applyForceDismissDom(entity: Entity): void {

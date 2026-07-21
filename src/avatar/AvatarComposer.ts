@@ -7,22 +7,42 @@ import {
   attachWearableFallback,
   findSkeleton,
   loadWearableSceneCached,
+  mergeThreshold,
   mergeWearableMeshes,
   prepareWearableForCompose,
+  probeWearableMergeQuality,
   pruneWearableDisplayMeshes,
   sanitizeWearableRoot,
   disposeWearableInstance,
   buildMappingsForWearables
 } from './loadWearable'
 import { pushWearableMappings, popWearableMappings } from '../rendering/DclTextureResolver'
-import { applyWearableEmissives } from './materials'
+import { applyAvatarToonShading, applyWearableEmissives } from './materials'
 import { buildComposeConfig } from './resolveProfile'
 import { resolveAvatarProfile } from './peerApi'
 import { isModelWearable } from './slots'
 import { yieldToNextFrame } from '../rendering/mainThreadYield'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import { isAvatarVerbose } from '../client/debug/ClientDebugLog'
-import type { AvatarComposeConfig, AvatarProfile, BodyShape, WearableCategory } from './types'
+import type {
+  AvatarComposeConfig,
+  AvatarProfile,
+  BodyShape,
+  WearableCategory
+} from './types'
+
+/**
+ * Hair-material tint for a wearable slot.
+ * `facial_hair` prefers the D3JS-only color (localStorage / `avatar.d3js.facialHairColor`),
+ * then falls back to the Catalyst profile hair color when unset.
+ */
+function hairTintForWearable(
+  category: WearableCategory,
+  config: Pick<AvatarComposeConfig, 'hair' | 'facialHair'>
+): string | undefined {
+  if (category === 'facial_hair') return config.facialHair ?? config.hair
+  return config.hair
+}
 
 export type ComposeOptions = {
   profileId?: string
@@ -104,12 +124,8 @@ async function composeFromConfig(
     const loadedLayers = await Promise.all(
       modelWearables.map(async (wearable) => {
         try {
-          // Facial hair takes its own D3JS color when set; every other wearable's
-          // hair-named materials keep the profile hair color.
-          const hairTint =
-            wearable.data.category === 'facial_hair'
-              ? config.facialHair ?? config.hair
-              : config.hair
+          // Facial hair: D3JS localStorage / extension color first, else profile hair.
+          const hairTint = hairTintForWearable(wearable.data.category, config)
           const layer = await loadWearableSceneCached(
             cache,
             wearable,
@@ -144,25 +160,36 @@ async function composeFromConfig(
         console.info(`[avatar] composing feet — ${entry.wearable.id}`)
       }
 
+      // Probe bone quality on the pristine layer. Low quality → skip prepare/merge and go
+      // straight to parallel-skeleton fallback (avoids mutating authored transforms).
+      const quality = probeWearableMergeQuality(entry.layer, skeleton, mergeOpts)
+      const threshold = mergeThreshold(mergeOpts)
+      const tryMerge = quality >= threshold || isFeet
+
       let merged = false
-      if (isFeet) {
-        // Raw-first so foot/Hips bind weights stay valid. Unit mismatch (RTFKT Armature×10 /
-        // cm verts) is corrected inside mergeWearableMeshes via wearableUnitScaleFactor.
-        pruneWearableDisplayMeshes(entry.layer, { extentCheck: false })
-        merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
-        if (!merged) {
+      if (tryMerge) {
+        if (isFeet) {
+          // Raw-first so foot/Hips bind weights stay valid. Unit mismatch (RTFKT Armature×10 /
+          // cm verts) is corrected inside mergeWearableMeshes via wearableUnitScaleFactor.
+          pruneWearableDisplayMeshes(entry.layer, { extentCheck: false })
+          merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
+          if (!merged) {
+            prepareWearableForCompose(entry.layer, bodyRoot, category)
+            merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
+          }
+        } else {
           prepareWearableForCompose(entry.layer, bodyRoot, category)
           merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
         }
-      } else {
-        prepareWearableForCompose(entry.layer, bodyRoot, category)
-        merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
       }
 
       if (!merged) {
+        // Parallel skeleton: keep own rig, drive matched bones from the body each frame.
         const attached = attachWearableFallback(entry.layer, skeleton, avatar, mergeOpts)
-        if (attached && isFeet && isAvatarVerbose()) {
-          console.info(`[avatar] feet fallback attach — ${entry.wearable.id}`)
+        if (attached && isAvatarVerbose()) {
+          console.info(
+            `[avatar] ${category} parallel-skeleton attach (quality=${quality.toFixed(2)}) — ${entry.wearable.id}`
+          )
         }
         if (!attached) {
           console.warn(
@@ -189,6 +216,9 @@ async function composeFromConfig(
   await applyFacialFeatures(bodyRoot, config, cache)
   await yieldToNextFrame()
   applyWearableEmissives(avatar)
+  // After emissives — toon banding skips the matte clamp on boosted materials.
+  // Opt-in via Preferences → Graphics → Toon shaders (default off).
+  applyAvatarToonShading(avatar)
   stabilizeSkinnedMeshes(avatar)
   return avatar
 }

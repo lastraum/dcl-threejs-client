@@ -2556,13 +2556,9 @@ export class SceneScriptSystem {
   ): void {
     const mountChanged = bridge.commitMountSet(nextSet)
     this.purgeProjectionUiOutsideWorkerMount()
-    // Mount set changes (incl. first PE HUD) must rebuild interactive classes/hit map.
-    // Stale paint skip-keys left PE buttons non-interactive until HUD UI toggle.
-    if (mountChanged) {
-      bridge.forceRepaint()
-    } else {
-      bridge.paint(this.view)
-    }
+    // commitMountSet already clears layout/visual keys when the set changes — paint() is
+    // enough. forceRepaint() zeroed paintCount and thrashed the whole PE HUD (flash).
+    bridge.paint(this.view)
     this.clearProjectionUiLag()
     this.logSceneUiRepaintIfEnabled()
     if (mountChanged) {
@@ -3600,9 +3596,10 @@ export class SceneScriptSystem {
         body: inject,
         injectOnly
       } satisfies MainToWorker)
-      // Welcome splash / click-to-fade: free pointer immediately so mid-fade PE catcher
-      // cannot block WASD/look while worker Color4.a systems catch up.
-      if (inject.sceneUi) {
+      // Welcome splash / click-to-fade: free pointer from fullscreen primary-scene scrims.
+      // Never run on PE HUD root — Neurolink / smart-wearable buttons are not welcome
+      // catchers, and force-dismiss + paint thrash caused PX UI flashing.
+      if (inject.sceneUi && this.uiRootId !== 'pe-ui-root') {
         this.sceneUiBridge?.forceDismissAfterSceneUiClick(inject.entity as never)
       }
     } else {

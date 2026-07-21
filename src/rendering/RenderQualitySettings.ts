@@ -38,6 +38,11 @@ export type RenderQualityOptions = {
    */
   hdrEnabled: boolean
   /**
+   * Official DCL avatar toon banding (posterize + matte clamp). Off by default —
+   * independent of graphics presets so users can opt in without Custom.
+   */
+  avatarToonEnabled: boolean
+  /**
    * Outer AOI radius (meters) for secondary **visual** loads (main.composite GLBs,
    * roads, empty layer). 0 = primary only. Independent of graphics presets.
    * Script warming uses a separate fixed inner radius (see SCENE_SCRIPT_WARM_RADIUS_M).
@@ -92,8 +97,8 @@ export const TONE_MAPPING_EXPOSURE: Record<RenderQualityTier, number> = {
 
 type PresetId = Exclude<GraphicsPreset, 'custom'>
 
-/** Graphics preset fields — AOI radius is user-owned, not preset-bundled. */
-type PresetBundle = Omit<RenderQualityOptions, 'preset' | 'sceneLoadRadiusM'>
+/** Graphics preset fields — AOI radius + toon are user-owned, not preset-bundled. */
+type PresetBundle = Omit<RenderQualityOptions, 'preset' | 'sceneLoadRadiusM' | 'avatarToonEnabled'>
 
 const PRESET_BUNDLES: Record<PresetId, PresetBundle> = {
   low: {
@@ -152,6 +157,8 @@ const PRESET_BUNDLES: Record<PresetId, PresetBundle> = {
 const DEFAULT_OPTIONS: RenderQualityOptions = {
   preset: 'medium',
   ...PRESET_BUNDLES.medium,
+  // Explicit — not flipped by named presets.
+  avatarToonEnabled: false,
   sceneLoadRadiusM: SCENE_LOAD_RADIUS_DEFAULT_M
 }
 
@@ -305,6 +312,10 @@ class RenderQualityStore {
     return this.options.hdrEnabled
   }
 
+  getAvatarToonEnabled(): boolean {
+    return this.options.avatarToonEnabled
+  }
+
   getSceneLoadRadiusM(): number {
     return this.options.sceneLoadRadiusM
   }
@@ -314,12 +325,13 @@ class RenderQualityStore {
     this.patch({ sceneLoadRadiusM: clampSceneLoadRadiusM(sceneLoadRadiusM) })
   }
 
-  /** Apply a named preset bundle (not custom). Preserves sceneLoadRadiusM. */
+  /** Apply a named preset bundle (not custom). Preserves toon + AOI radius. */
   applyPreset(preset: PresetId): void {
     const bundle = PRESET_BUNDLES[preset]
     this.commit({
       preset,
       ...bundle,
+      avatarToonEnabled: this.options.avatarToonEnabled,
       sceneLoadRadiusM: this.options.sceneLoadRadiusM
     })
   }
@@ -364,6 +376,10 @@ class RenderQualityStore {
     this.patch({ hdrEnabled })
   }
 
+  setAvatarToonEnabled(avatarToonEnabled: boolean): void {
+    this.patch({ avatarToonEnabled })
+  }
+
   setOptions(partial: Partial<RenderQualityOptions>): void {
     if (partial.preset && partial.preset !== 'custom' && isPreset(partial.preset)) {
       this.applyPreset(partial.preset)
@@ -398,6 +414,7 @@ class RenderQualityStore {
     if (typeof next.vsync !== 'boolean') next.vsync = this.options.vsync
     if (typeof next.bloomEnabled !== 'boolean') next.bloomEnabled = this.options.bloomEnabled
     if (typeof next.hdrEnabled !== 'boolean') next.hdrEnabled = this.options.hdrEnabled
+    if (typeof next.avatarToonEnabled !== 'boolean') next.avatarToonEnabled = this.options.avatarToonEnabled
 
     if (partial.preset === undefined || partial.preset === 'custom') {
       next.preset = this.inferPreset(next)
@@ -421,6 +438,7 @@ class RenderQualityStore {
         state.vsync === b.vsync &&
         state.bloomEnabled === b.bloomEnabled &&
         state.hdrEnabled === b.hdrEnabled
+        // avatarToonEnabled intentionally excluded — opt-in aesthetic, not a preset field
       ) {
         return id
       }
@@ -441,6 +459,7 @@ class RenderQualityStore {
       a.vsync === b.vsync &&
       a.bloomEnabled === b.bloomEnabled &&
       a.hdrEnabled === b.hdrEnabled &&
+      a.avatarToonEnabled === b.avatarToonEnabled &&
       a.sceneLoadRadiusM === b.sceneLoadRadiusM
     )
   }
@@ -484,6 +503,7 @@ class RenderQualityStore {
       if (typeof parsed.vsync === 'boolean') next.vsync = parsed.vsync
       if (typeof parsed.bloomEnabled === 'boolean') next.bloomEnabled = parsed.bloomEnabled
       if (typeof parsed.hdrEnabled === 'boolean') next.hdrEnabled = parsed.hdrEnabled
+      if (typeof parsed.avatarToonEnabled === 'boolean') next.avatarToonEnabled = parsed.avatarToonEnabled
       if (typeof parsed.sceneLoadRadiusM === 'number') {
         next.sceneLoadRadiusM = clampSceneLoadRadiusM(parsed.sceneLoadRadiusM)
       }

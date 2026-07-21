@@ -290,21 +290,9 @@ export class PortableExperienceManager {
       // UI: user pref AND scene policy. (PE start already revealed UI for first mount paint.)
       const uiOn = slot.uiEnabled && this.pePolicy.uiAllowed
       worker.setUiVisible(uiOn)
-      if (uiOn) {
-        // One delayed force after onStart UI settles — avoid multi-timeout thrash (HUD flicker).
-        const forcePeUi = (): void => {
-          if (this.disposed || !this.workers.has(id)) return
-          const w = this.workers.get(id)
-          if (!w?.isRunning) return
-          w.setUiVisible(true)
-          w.system.forceSceneUiRepaint()
-        }
-        if (typeof window !== 'undefined') {
-          window.setTimeout(forcePeUi, 120)
-        } else {
-          queueMicrotask(forcePeUi)
-        }
-      }
+      // Do not schedule forceSceneUiRepaint — full cache wipe re-paints every PE node and
+      // re-clears background/border-image (visible HUD flash). setUiVisible + normal
+      // mount snapshots already paint when UI arrives from the worker.
       this.workers.set(id, worker)
       slot.status = 'running'
       slot.wantEnabled = true
@@ -362,7 +350,7 @@ export class PortableExperienceManager {
     if (worker) {
       const uiOn = enabled && this.pePolicy.uiAllowed && slot.status === 'running'
       worker.setUiVisible(uiOn)
-      if (uiOn) worker.system.forceSceneUiRepaint()
+      // No forceSceneUiRepaint — same flash risk as enable path.
     }
     this.emit()
   }

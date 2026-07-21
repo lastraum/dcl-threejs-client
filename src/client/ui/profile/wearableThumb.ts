@@ -89,28 +89,28 @@ export type WearableDisplayCard = {
 }
 
 export const WEARABLE_RARITY_COLORS: Record<string, string> = {
-  legendary: '#ff8723',
-  epic: '#a335ee',
-  rare: '#00b4d8',
-  uncommon: '#57e389',
-  common: '#9aa3b2',
-  base: '#9aa3b2',
-  unique: '#ffd700',
-  exotic: '#ff2d6f',
-  mythic: '#ff6ad5'
+  legendary: '#A14BF3',
+  epic: '#438FFF',
+  rare: '#34CE76',
+  uncommon: '#FF8362',
+  common: '#73D3D3',
+  base: '#73D3D3',
+  unique: '#FEA217',
+  exotic: '#9B2222',
+  mythic: '#FF4BED'
 }
 
 /** Solid cell fills — matches DCL rarity swatches (no gradients). */
 export const WEARABLE_RARITY_BACKGROUNDS: Record<string, string> = {
-  legendary: '#ff8723',
-  epic: '#a335ee',
-  rare: '#00b4d8',
-  uncommon: '#57e389',
-  common: '#6b7280',
-  base: '#6b7280',
-  unique: '#ffd700',
-  exotic: '#ff2d6f',
-  mythic: '#ff6ad5'
+  legendary: '#A14BF3',
+  epic: '#438FFF',
+  rare: '#34CE76',
+  uncommon: '#FF8362',
+  common: '#73D3D3',
+  base: '#73D3D3',
+  unique: '#FEA217',
+  exotic: '#9B2222',
+  mythic: '#FF4BED'
 }
 
 export function wearableRarityLabel(rarity: string): string {

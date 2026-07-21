@@ -600,7 +600,12 @@ export class SceneUiDomRenderer {
       const span = el.querySelector('.scene-ui-node__text') as HTMLElement | null
       const label = span ?? document.createElement('div')
       label.className = 'scene-ui-node__text'
-      label.innerHTML = sanitizeUiTextHtml(text.value)
+      // Avoid innerHTML thrash on stable labels when PE repaints every dirty tick.
+      const html = sanitizeUiTextHtml(text.value)
+      if (label.dataset.dclUiText !== html) {
+        label.dataset.dclUiText = html
+        label.innerHTML = html
+      }
       applyUiTextStyles(label, text, scale)
       if (!span) el.appendChild(label)
       el.querySelector('.scene-ui-node__input')?.remove()

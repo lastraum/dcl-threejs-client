@@ -41,8 +41,9 @@ function findMainEntry(content: ContentFile[], metadata: SceneMetadata): string 
 }
 
 /**
- * ThreejsClient only runs SDK7 ECS scenes. Classic Builder SDK6 (`dcl.addEntity` /
- * `bin/game.js`, no runtimeVersion 7) never publishes CRDT → hydration stuck ~78%.
+ * ThreejsClient only runs SDK7 ECS scenes as scripted primaries. Classic Builder SDK6
+ * (`dcl.addEntity` / `bin/game.js`) never publishes CRDT — reject only when we would
+ * try to execute them as runnable scenes (not open roads / empty-land placeholders).
  */
 export function assertSdk7CompatibleScene(
   metadata: SceneMetadata,
@@ -63,6 +64,102 @@ export function assertSdk7CompatibleScene(
     throw new Error(
       `SDK6_UNSUPPORTED: "${label}" looks like a classic SDK6/Builder scene (${main || 'bin/game.js'}). This client only runs SDK7 scenes.`
     )
+  }
+}
+
+const FALLBACK_GENESIS_REALM: RealmEndpoints = {
+  realmName: 'main',
+  networkId: 1,
+  contentUrl: 'https://peer.decentraland.org',
+  lambdasUrl: 'https://peer.decentraland.org/lambdas'
+}
+
+/**
+ * Classic foundation open-road / non-runnable SDK6 tile — cannot execute as primary,
+ * but Jump In must still succeed. Primary becomes a synthetic empty scene; roads are
+ * drawn via Explorer catalog FBX (see primaryVacantFill / AOI), not game.js.
+ */
+export function isOpenRoadOrNonRunnableSdk6Entity(entity: Record<string, unknown>): boolean {
+  const meta =
+    entity.metadata && typeof entity.metadata === 'object'
+      ? (entity.metadata as Record<string, unknown>)
+      : {}
+  const display =
+    meta.display && typeof meta.display === 'object'
+      ? (meta.display as Record<string, unknown>)
+      : {}
+  const title = typeof display.title === 'string' ? display.title : ''
+  const main = typeof meta.main === 'string' ? meta.main.trim().toLowerCase() : ''
+  const rv = meta.runtimeVersion
+  const rvStr = rv === undefined || rv === null ? '' : String(rv).trim()
+
+  if (rvStr === '7' || rvStr.startsWith('7.')) return false
+  if (rvStr === '6' || rvStr.startsWith('6.')) return true
+  if (/^Road at /i.test(title)) return true
+
+  if (main === 'game.js' || main.endsWith('/game.js') || main === 'bin/game.js') {
+    const content = Array.isArray(entity.content) ? entity.content : []
+    const hasRoadGlb = content.some((row) => {
+      if (!row || typeof row !== 'object') return false
+      const file =
+        typeof (row as { file?: string }).file === 'string' ? (row as { file: string }).file : ''
+      const base = file.split('/').pop() ?? file
+      return /^(OpenRoad_|OpenFork_|Road_|DeadEnd_|Fork_|Corner_|EmptyFork_)/i.test(base)
+    })
+    if (hasRoadGlb || /road|openroad|openfork|tram/i.test(title)) return true
+    // Classic Builder SDK6 without runtimeVersion 7 (empty land, interactive-text, etc.)
+    return true
+  }
+  return false
+}
+
+/**
+ * Synthetic 1×1 genesis primary — empty land or non-runnable SDK6 (roads).
+ * No scripts / CRDT; ground + Explorer roads come from client vacant fill.
+ */
+async function resolveEmptyCoordsScene(
+  x: number,
+  y: number,
+  opts?: { title?: string; reason?: string }
+): Promise<ResolvedScene> {
+  const pointer = `${x},${y}`
+  let realm: RealmEndpoints = FALLBACK_GENESIS_REALM
+  try {
+    const about = await fetchCatalystRealmAbout()
+    realm = realmFromAbout(about)
+  } catch (err) {
+    console.warn('[resolve] empty parcel — realm about failed, using peer.decentraland.org', err)
+  }
+  const contentUrl = catalystRootFromContentUrl(realm.contentUrl)
+  const title = opts?.title?.trim() || 'Empty land'
+  const metadata: SceneMetadata = {
+    display: { title },
+    scene: { parcels: [pointer], base: pointer },
+    // genesis sky; client vacant fill places empty-land GLB or Explorer roads
+    environment: 'genesis'
+  }
+  const resolvedEnv = resolveSceneEnvironment(metadata, { kind: 'coords', x, y })
+  console.info(
+    `[resolve] synthetic primary ${pointer} — “${title}”${opts?.reason ? ` (${opts.reason})` : ''}`
+  )
+  return {
+    title,
+    parcels: [pointer],
+    baseParcel: pointer,
+    spawn: { x: 8, y: 0, z: 8, fromSpawnPoints: false },
+    metadata,
+    landscapeEnvironment: resolvedEnv.landscapeEnvironment,
+    skyLighting: resolvedEnv.skyLighting,
+    content: [],
+    contentsBaseUrl: contentUrl,
+    assetUrl: (hash) => catalystContentAssetUrl(realm.contentUrl, hash),
+    source: { kind: 'coords', x, y },
+    entityId: null,
+    mainEntry: null,
+    commsPointer: pointer,
+    browserChatEnabled: resolveBrowserChatEnabled(metadata),
+    nameTagsVisible: resolveNameTagsVisible(metadata),
+    realm
   }
 }
 
@@ -296,20 +393,28 @@ export async function resolveSceneFromRoute(target: RouteTarget): Promise<Resolv
 
   if (target.kind === 'coords') {
     const result = await fetchParcelEntity(target.x, target.y)
-    if (!result) {
-      throw new Error(
-        `No deployed scene at parcel ${target.x},${target.y}. Try a parcel with a scene or use a world (e.g. /lastslice.dcl.eth).`
-      )
-    }
     const pointer = `${target.x},${target.y}`
-    return resolvedFromEntity(result.entity, {
-      title: pointer,
-      commsPointer: pointer,
-      realm: result.realm,
-      source: { kind: 'coords', x: target.x, y: target.y },
-      contentsBaseUrl: catalystRootFromContentUrl(result.realm.contentUrl),
-      assetUrl: (hash) => catalystContentAssetUrl(result.realm.contentUrl, hash)
-    })
+    if (result) {
+      // Open roads / classic SDK6 — enter as synthetic empty primary; client draws roads/ground.
+      if (isOpenRoadOrNonRunnableSdk6Entity(result.entity)) {
+        const meta = (result.entity.metadata ?? {}) as SceneMetadata
+        const roadTitle = meta.display?.title?.trim()
+        return resolveEmptyCoordsScene(target.x, target.y, {
+          title: roadTitle || `Open road ${pointer}`,
+          reason: 'open-road/SDK6 — not runnable as primary'
+        })
+      }
+      return resolvedFromEntity(result.entity, {
+        title: pointer,
+        commsPointer: pointer,
+        realm: result.realm,
+        source: { kind: 'coords', x: target.x, y: target.y },
+        contentsBaseUrl: catalystRootFromContentUrl(result.realm.contentUrl),
+        assetUrl: (hash) => catalystContentAssetUrl(result.realm.contentUrl, hash)
+      })
+    }
+    // True empty parcel — synthetic 1×1 so walk + empty-land GLB can run.
+    return resolveEmptyCoordsScene(target.x, target.y)
   }
 
   const tried: string[] = []

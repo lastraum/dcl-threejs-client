@@ -21,6 +21,10 @@ import {
 } from '../player/SceneBounds'
 import { LandscapeSystem } from './systems/LandscapeSystem'
 import { SceneScriptSystem } from './systems/SceneScriptSystem'
+import {
+  attachPrimaryVacantFill,
+  disposePrimaryVacantFill
+} from '../dcl/aoi/primaryVacantFill'
 import { EnvironmentSystem } from '../environment/EnvironmentSystem'
 import { FftOceanWater } from '../environment/FftOceanWater'
 import { IslandWater } from '../environment/IslandWater'
@@ -192,6 +196,8 @@ export class World {
     { messageId: string; originalText: string; shownAt: number }
   >()
   private playerWalkBounds: PlayerWalkBounds | null = null
+  /** Empty land ground / Explorer roads when primary has no SDK7 script. */
+  private primaryVacantRoot: THREE.Group | null = null
   private ezTreeGrass: EzTreeGrassFieldHandle | null = null
   private ezTreeGrassElapsed = 0
   private desertAtmosphere: import('../environment/DesertAtmosphere').DesertAtmosphere | null = null
@@ -628,6 +634,22 @@ export class World {
       this.host.renderStats.setOceanPerf(null)
     }
     this.syncOutdoorLighting()
+
+    // Synthetic empty / open-road primary — empty-land GLB or Explorer road FBX (not SDK6 game.js).
+    disposePrimaryVacantFill(this.primaryVacantRoot)
+    this.primaryVacantRoot = null
+    if (scene.source.kind === 'coords' && !scene.mainEntry?.trim() && !scene.entityId?.trim()) {
+      try {
+        this.primaryVacantRoot = await attachPrimaryVacantFill(
+          scene,
+          this.assets,
+          this.host.scene,
+          onProgress
+        )
+      } catch (err) {
+        console.warn('[World] primary vacant fill failed', err)
+      }
+    }
 
     initMainThreadPerfFromUrl()
 
@@ -2977,6 +2999,8 @@ export class World {
     resetFoliageWindRegistry()
     this.landscape.state.landscapeRoot?.removeFromParent()
     this.landscape.state.landscapeRoot = null
+    disposePrimaryVacantFill(this.primaryVacantRoot)
+    this.primaryVacantRoot = null
     this.host.scene.fog = null
 
     this.physics.dispose()

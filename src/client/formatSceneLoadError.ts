@@ -6,13 +6,15 @@ export type SceneLoadErrorMessage = {
 /** User-facing copy for scene / world resolution failures (console keeps the raw Error). */
 export function formatSceneLoadError(raw: string): SceneLoadErrorMessage {
   const trimmed = raw.trim()
+  // Empty parcels resolve as synthetic primaries now — keep a soft message if an older
+  // client/error string still surfaces.
   const emptyParcel = trimmed.match(/No deployed scene at parcel\s+(-?\d+)\s*,\s*(-?\d+)/i)
   if (emptyParcel) {
     const x = emptyParcel[1]!
     const y = emptyParcel[2]!
     return {
-      title: 'No scene at this parcel',
-      detail: `Nothing is deployed at ${x},${y}. Pick a parcel with a scene on the map, try Genesis Plaza (0,0), or open a world (for example /lastslice.dcl.eth).`
+      title: 'Empty land',
+      detail: `No deployed scene at ${x},${y}. You should still be able to walk empty land / roads — try reloading, or open Genesis Plaza (0,0) or a world (e.g. /lastslice.dcl.eth).`
     }
   }
 
@@ -31,9 +33,8 @@ export function formatSceneLoadError(raw: string): SceneLoadErrorMessage {
     return {
       title: 'SDK6 scene not supported',
       detail:
-        `${who} a classic SDK6 / Builder scene. ` +
-        'This client only runs SDK7 scenes (runtimeVersion 7). ' +
-        'Try Genesis Plaza (0,0), another SDK7 parcel, or a world such as /lastslice.dcl.eth.'
+        `${who} a classic SDK6 / Builder scene that could not be opened as empty land or roads. ` +
+        'Genesis open roads and empty parcels should load as walkable land; try another SDK7 parcel or a world such as /lastslice.dcl.eth.'
     }
   }
 

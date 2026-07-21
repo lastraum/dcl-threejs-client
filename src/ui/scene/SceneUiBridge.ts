@@ -170,11 +170,13 @@ export class SceneUiBridge {
     // thrash full Yoga rebuilds (that caused PE HUD flicker: first paint spam).
     if (!wasVisible) {
       this.invalidatePaintCache()
+      if (this.lastView) this.paint(this.lastView)
     }
-    if (this.lastView) this.paint(this.lastView)
+    // Already visible: leave paint to mount snapshots / dirty frames — do not re-paint
+    // on every setUiVisible(true) from PE policy ticks.
   }
 
-  /** Force Yoga+DOM rebuild + interactive hit regions (PE enable / late mount). */
+  /** Force Yoga+DOM rebuild + interactive hit regions (rare: late mount / debug). */
   forceRepaint(): void {
     if (!this.domVisible) return
     this.invalidatePaintCache()

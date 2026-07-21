@@ -9,6 +9,13 @@ updated: 2026-07-21
 source: github
 base_branch: dev-latest
 workflow:
+  - stage: pending_review
+    integration_ref: pr:41
+    title: Genesis multi-scene AOI, Explorer roads, empty land
+    owner: lastraum
+    pr: 41
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/41
+    updated: 2026-07-21
   - stage: merged
     integration_ref: pr:40
     title: opt-in toon shading via Graphics settings

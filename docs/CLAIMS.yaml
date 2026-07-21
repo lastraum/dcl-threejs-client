@@ -16,6 +16,13 @@ workflow:
     pr: 38
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/38
     updated: 2026-07-21
+  - stage: pending_review
+    integration_ref: pr:40
+    title: opt-in toon shading via Graphics settings
+    owner: lastraum
+    pr: 40
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/40
+    updated: 2026-07-21
   - stage: merged
     integration_ref: pr:39
     title: parallel-skeleton fallback + facial-hair tint order

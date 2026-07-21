@@ -23,6 +23,7 @@ import {
   isHttpsM3u8,
   listJoinLiveOptions,
   sceneStreamTargetFromRoute,
+  sortJoinLiveOptions,
   type JoinLiveOption
 } from '../../../social/sceneStreams'
 import { EventModal } from '../events/EventModal'
@@ -91,6 +92,8 @@ export class SceneLandingView {
   private joinLiveOptions: JoinLiveOption[] = []
   /** VideoPlayers scraped from main.composite (custom m3u8/mp4, not LiveKit). */
   private sceneVideos: SceneCompositeVideo[] = []
+  /** Composite has livekit-video:// screens — always offer LiveKit cast first. */
+  private sceneHasLiveKitScreen = false
   private joinLiveMenuOpen = false
   private targetProgress = 0
   private displayedProgress = 0
@@ -455,13 +458,14 @@ export class SceneLandingView {
 
     try {
       // Meta + composite VideoPlayers in parallel (composite is independent of Places API).
-      const [meta, sceneVideos] = await Promise.all([
+      const [meta, compositeScan] = await Promise.all([
         fetchSceneLandingMeta(this.route),
         fetchSceneCompositeVideos(this.route)
       ])
       if (this.disposed) return
       this.meta = meta
-      this.sceneVideos = sceneVideos
+      this.sceneVideos = compositeScan.videos
+      this.sceneHasLiveKitScreen = compositeScan.hasLiveKitScreen
       // Seed options before first paint so JOIN LIVE is visible without a flash.
       this.refreshJoinLiveOptions()
       loadingEl.remove()
@@ -537,9 +541,10 @@ export class SceneLandingView {
       playing: v.playing,
       entityId: v.entityId
     }))
-    // Order: LiveKit cast (if live) → composite scene screens → user listings.
+    // Priority: LiveKit → m3u8 (custom/user/scene HLS) → progressive mp4.
+    // Always offer LiveKit first when cast watch is wired (plaza must not sole-option looping VOD).
     this.joinLiveOptions = []
-    if (this.castLive) {
+    if (typeof this.startCastWatch === 'function') {
       this.joinLiveOptions.push({
         id: 'cast-livekit',
         label: 'LIVE · Cast',
@@ -547,14 +552,15 @@ export class SceneLandingView {
       })
     }
     this.joinLiveOptions.push(...sceneOpts, ...userOpts)
+    this.joinLiveOptions = sortJoinLiveOptions(this.joinLiveOptions)
     this.renderJoinLiveMenu()
     this.syncJoinLiveVisibility()
     this.syncLiveBadge()
   }
 
-  /** True when composite has a playing HLS screen or LiveKit has remote video. */
+  /** LIVE badge: remote video, LiveKit screens in composite, or playing HLS. */
   private showLiveBadge(): boolean {
-    if (this.castLive) return true
+    if (this.castLive || this.sceneHasLiveKitScreen) return true
     return this.sceneVideos.some((v) => v.isHls && v.playing)
   }
 
@@ -820,22 +826,13 @@ export class SceneLandingView {
     const opt = this.joinLiveOptions.find((o) => o.id === optionId)
     if (!opt) return
     if (opt.kind === 'cast-live') {
-      if (!this.castLive) {
-        this.showStreamNotice('No live stream right now — wait for OBS / stream keys to go live.')
-        this.refreshJoinLiveOptions()
-        return
-      }
+      // Always join scene LiveKit — castLive presence can lag RTMP/OBS by seconds.
+      // openLiveKitCastPlayer waits/attaches; do not hard-block with a false "no live" notice.
       this.openLiveKitCastPlayer(opt.label)
       return
     }
     if (opt.kind === 'user' && opt.stream.source === 'cast') {
-      if (this.castLive) {
-        this.openLiveKitCastPlayer(`Live: ${opt.stream.displayName}`)
-        return
-      }
-      this.showStreamNotice(
-        `Cast listing “${opt.stream.displayName}” — no LiveKit video yet. Wait for the stream, or Jump in to the world.`
-      )
+      this.openLiveKitCastPlayer(`Live: ${opt.stream.displayName}`)
       return
     }
     if (opt.kind === 'scene-video') {
@@ -1232,16 +1229,21 @@ export class SceneLandingView {
         return
       }
       waitTicks += 1
+      // Stay patient — LiveKit ingress / subscribe often needs several seconds.
       if (waiting) {
-        waiting.textContent =
-          waitTicks < 4
-            ? 'Waiting for OBS video in scene room…'
-            : 'No remote publisher yet — re-mint stream key & restart OBS'
+        if (waitTicks <= 3) {
+          waiting.textContent = 'Joining scene LiveKit…'
+        } else if (waitTicks <= 8) {
+          waiting.textContent = 'Waiting for live video in the scene room…'
+        } else {
+          waiting.textContent = 'Still waiting for a video publisher…'
+        }
       }
-      if (waitTicks >= 5 && hint) {
+      // Soft hint only after a long wait (not a hard "OBS is wrong" after ~7s).
+      if (waitTicks >= 12 && hint) {
         hint.hidden = false
         hint.textContent =
-          'Stream keys go to the scene LiveKit room (not Cast 2.0). If console shows remotes=0, OBS is not in this room — Get stream access again on this world, paste into OBS, go live, then Join live.'
+          'Connected to the scene LiveKit room but no video track yet. Live screens use this room (stream keys / Cast). Keep this open a moment, or Jump in to watch in-world.'
       }
     }, 1500)
   }

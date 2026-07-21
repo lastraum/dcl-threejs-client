@@ -1206,6 +1206,29 @@ export class CommsService {
   }
 
   /**
+   * One-line (or multi-line) inventory of every connected LiveKit room + video pubs.
+   * Always console.info so landing cast debug works without Help→Debug mirror.
+   */
+  logCastVideoInventory(reason: string): void {
+    const sessions = this.connectedLiveKitSessions()
+    if (sessions.length === 0) {
+      console.info(`[cast] inventory (${reason}): no LiveKit rooms connected`)
+      return
+    }
+    for (const s of sessions) {
+      const room = s.getRoom()
+      const snap = s.getRemoteVideoPresenceSnapshot()
+      const name = s.getRoomName() || room?.name || '?'
+      const state = room?.state ?? 'none'
+      console.info(
+        `[cast] inventory (${reason}): room=${name} state=${state} remotes=${snap.remoteParticipants} ` +
+          `videoPubs=${snap.remoteVideoPubs} live=${snap.live ? 1 : 0}` +
+          (snap.details.length ? ` · ${snap.details.slice(0, 8).join(' | ')}` : '')
+      )
+    }
+  }
+
+  /**
    * Subscribe to Cast/OBS live presence on **all** connected rooms (OR).
    *
    * Dynamically rebinds when rooms connect later (world first, scene Cast room lag)

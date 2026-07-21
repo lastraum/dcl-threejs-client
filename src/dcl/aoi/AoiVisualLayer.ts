@@ -270,9 +270,13 @@ export class AoiVisualLayer {
       }
     }
 
-    // --- Empty layer: vacant parcels only (no road / secondary / full scene) ---
+    // --- Empty layer: vacant + secondary floors (never on primary scene parcels) ---
+    // Landscape genesis skips ground under the *primary* footprint (no z-fight with plaza
+    // custom floors). Neighbor vacant parcels still need EMPTY_LAND ground.glb + scatter;
+    // secondary footprints get a blank floor under composite / first-frame visuals.
     const vacantKeys: string[] = []
     for (const key of pointers) {
+      // Primary scene parcels (Plaza etc.) — never empty-land tile (z-fights authored floor).
       if (this.primaryParcelSet.has(key) && !this.primaryIsEmpty) continue
       if (secondaryFootprint.has(key)) continue
       // Explorer road catalog — never paint empty-land over streets
@@ -286,6 +290,7 @@ export class AoiVisualLayer {
     }
 
     // Blank floor under secondary footprints in AOI (no wrong-origin GLB dumps).
+    // Never includes primary parcels (see secondaryFootprint filter above).
     const secondaryFloorTiles = [...secondaryFootprint].map((key) => {
       const sw = parcelSwSceneLocal(key, base)
       return { x: sw.x, z: sw.z }
@@ -369,7 +374,8 @@ export class AoiVisualLayer {
       return aParcels - bParcels
     })
 
-    const toLoad = ranked.filter((c) => !this.loadedCompositeIds.has(c.id)).slice(0, 6)
+    // Cap concurrent new composite loads per refresh (keep already-loaded; grow ring over walks).
+    const toLoad = ranked.filter((c) => !this.loadedCompositeIds.has(c.id)).slice(0, 12)
     for (const ent of toLoad) {
       const comp = findCompositeFile(ent.content)
       if (!comp) continue
@@ -408,7 +414,11 @@ export class AoiVisualLayer {
       let ffVis = 0
       for (const g of this.firstFrameGroups.values()) if (g.visible) ffVis++
       console.info(
-        `[aoi] refresh parcels=${pointers.length} vacant=${vacantKeys.length} footprint=${secondaryFootprint.size} roads=${this.loadedRoadIds.size} composites=${this.loadedCompositeIds.size} firstFrame=${ffVis}/${this.firstFrameGroups.size} radius=${radiusM}m`
+        `[aoi] refresh parcels=${pointers.length} vacant=${vacantKeys.length} ` +
+          `secondaryFloor=${secondaryFloorTiles.length} footprint=${secondaryFootprint.size} ` +
+          `roads=${this.loadedRoadIds.size} composites=${this.loadedCompositeIds.size} ` +
+          `firstFrame=${ffVis}/${this.firstFrameGroups.size} radius=${radiusM}m ` +
+          `primaryParcels=${this.primaryParcelSet.size} skipPrimaryEmptyLand=${!this.primaryIsEmpty}`
       )
     }
   }

@@ -75,31 +75,47 @@ export function isPlayableLandingMediaUrl(url: string): boolean {
   return /\.(mp4|webm|mov|ogg|m4v)(\?|#|$)/i.test(u)
 }
 
+export type SceneCompositeVideoScan = {
+  /** Browser-playable https VideoPlayers (m3u8 / mp4) — not LiveKit. */
+  videos: SceneCompositeVideo[]
+  /** True when any VideoPlayer uses livekit-video:// (plaza live screens). */
+  hasLiveKitScreen: boolean
+}
+
 /**
  * Pure parse — extract playable HTTP(S) VideoPlayers from composite JSON.
- * Skips livekit-video:// (handled by Cast / LiveKit path).
+ * Counts livekit-video:// screens separately (landing LiveKit cast path).
  */
 export function extractCompositeVideos(
   compositeJson: unknown,
   scene: Pick<ResolvedScene, 'content' | 'assetUrl'>
-): SceneCompositeVideo[] {
+): SceneCompositeVideoScan {
   const root = unwrap(compositeJson)
-  if (!root || typeof root !== 'object') return []
+  if (!root || typeof root !== 'object') {
+    return { videos: [], hasLiveKitScreen: false }
+  }
 
   const composite = root as { components?: unknown }
   const videoData = componentData(composite, 'core::VideoPlayer')
-  if (Object.keys(videoData).length === 0) return []
+  if (Object.keys(videoData).length === 0) {
+    return { videos: [], hasLiveKitScreen: false }
+  }
 
   const nameData = componentData(composite, 'core-schema::Name')
   const out: SceneCompositeVideo[] = []
   const seenUrls = new Set<string>()
+  let hasLiveKitScreen = false
 
   for (const [entKey, raw] of Object.entries(videoData)) {
     const entityId = Number(entKey)
     if (!Number.isFinite(entityId)) continue
     const spec = unwrap(raw) as { src?: string; playing?: boolean } | null
     const src = typeof spec?.src === 'string' ? spec.src.trim() : ''
-    if (!src || isLiveKitVideoSrc(src)) continue
+    if (!src) continue
+    if (isLiveKitVideoSrc(src)) {
+      hasLiveKitScreen = true
+      continue
+    }
 
     const mediaUrl = resolveCompositeMediaUrl(src, scene)
     if (!mediaUrl || !isPlayableLandingMediaUrl(mediaUrl)) continue
@@ -124,9 +140,14 @@ export function extractCompositeVideos(
     })
   }
 
-  // Prefer screens authored as playing (live/default on).
-  out.sort((a, b) => Number(b.playing) - Number(a.playing) || a.entityId - b.entityId)
-  return out
+  // Prefer screens authored as playing (live/default on); HLS before mp4 within group.
+  out.sort(
+    (a, b) =>
+      Number(b.playing) - Number(a.playing) ||
+      Number(b.isHls) - Number(a.isHls) ||
+      a.entityId - b.entityId
+  )
+  return { videos: out, hasLiveKitScreen }
 }
 
 export function sceneCompositeVideoLabel(video: SceneCompositeVideo): string {
@@ -136,21 +157,22 @@ export function sceneCompositeVideoLabel(video: SceneCompositeVideo): string {
 }
 
 /**
- * Resolve scene deploy → fetch main.composite → playable VideoPlayer list.
- * Safe for landing: no worker, no LiveKit.
+ * Resolve scene deploy → fetch main.composite → playable VideoPlayer list + LiveKit flags.
+ * Safe for landing: no worker, no LiveKit connection.
  */
 export async function fetchSceneCompositeVideos(
   route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
-): Promise<SceneCompositeVideo[]> {
+): Promise<SceneCompositeVideoScan> {
+  const empty: SceneCompositeVideoScan = { videos: [], hasLiveKitScreen: false }
   try {
     const scene = await resolveSceneFromRoute(route)
     const entry = findCompositeEntry(scene.content)
-    if (!entry?.hash) return []
+    if (!entry?.hash) return empty
 
     const res = await fetch(scene.assetUrl(entry.hash), {
       headers: { Accept: 'application/json' }
     })
-    if (!res.ok) return []
+    if (!res.ok) return empty
 
     const json: unknown = await res.json()
     return extractCompositeVideos(json, scene)
@@ -159,6 +181,6 @@ export async function fetchSceneCompositeVideos(
       '[landing] composite VideoPlayer fetch failed',
       err instanceof Error ? err.message : err
     )
-    return []
+    return empty
   }
 }

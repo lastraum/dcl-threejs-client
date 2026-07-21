@@ -49,11 +49,12 @@ export async function buildParcelLandscape(
   const windShader = readEnvironmentWindShader(scene.metadata)
   let ezTreeGrass: EzTreeGrassFieldHandle | null = null
 
-  // none = void authoring (no floor). genesis = sky + default base floor on **scene parcels only**.
+  // none = void authoring. genesis = sky only — **never** empty-land ground.glb under
+  // city scenes (z-fights plaza / custom floors). Physics uses y=0 infinite plane.
   if (profile.kind === 'none' || profile.kind === 'genesis') {
     onProgress?.(
       profile.kind === 'genesis'
-        ? 'Landscape: genesis (default floor on scene parcels)'
+        ? 'Landscape: genesis (sky only — no empty-land floor tiles)'
         : 'Landscape: none (blank scene)'
     )
     if (authorTerrain) {
@@ -63,30 +64,6 @@ export async function buildParcelLandscape(
         landscape.add(ezTreeGrass.group)
         landscape.userData.ezTreeGrass = ezTreeGrass
         landscape.userData.windShader = windShader
-      }
-    }
-    // Genesis City: Explorer still draws the default empty-land floor under scene parcels
-    // (FloorBase / red grass pack). Skip only when the scene authored its own terrain mesh.
-    if (profile.kind === 'genesis' && !authorTerrain) {
-      const base = parseParcelKey(scene.baseParcel)
-      const groundHash = profile.sceneGround
-      onProgress?.(`Default floor GLB on ${scene.parcels.length} scene parcel(s)…`)
-      for (const key of scene.parcels) {
-        const parcel = parseParcelKey(key)
-        const parcelRoot = new THREE.Group()
-        parcelRoot.name = `parcel:${key}:scene`
-        const origin = parcelWorldOrigin(parcel, base)
-        dclToThreePos(origin.x, origin.y, origin.z, parcelRoot.position)
-        const ground = await cache.clone(catalystAssetUrl(groundHash), groundHash, {
-          landscape: true
-        })
-        ground.position.set(
-          EMPTY_LAND_GROUND_OFFSET.x,
-          EMPTY_LAND_GROUND_OFFSET.y,
-          EMPTY_LAND_GROUND_OFFSET.z
-        )
-        parcelRoot.add(ground)
-        landscape.add(parcelRoot)
       }
     }
     return landscape

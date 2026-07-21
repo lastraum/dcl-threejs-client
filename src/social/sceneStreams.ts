@@ -24,7 +24,7 @@ export type UserSceneStream = {
 export type JoinLiveOption =
   | { id: string; label: string; kind: 'user'; stream: UserSceneStream }
   | { id: 'custom-hls'; label: string; kind: 'custom'; m3u8Url: string }
-  /** LiveKit remote video present in the scene room (Cast / OBS ingress). */
+  /** LiveKit remote video in the scene room (Cast / OBS ingress / stream keys). */
   | { id: 'cast-livekit'; label: string; kind: 'cast-live' }
   /**
    * Scene VideoPlayer from main.composite (custom m3u8/mp4 — not LiveKit).
@@ -39,6 +39,29 @@ export type JoinLiveOption =
       playing: boolean
       entityId: number
     }
+
+/**
+ * Landing watch priority (lowest rank first):
+ * 0 LiveKit cast · 1 custom/scene/user m3u8 · 2 progressive mp4
+ */
+export function joinLiveOptionPriority(opt: JoinLiveOption): number {
+  if (opt.kind === 'cast-live') return 0
+  if (opt.kind === 'user' && opt.stream.source === 'cast') return 0
+  if (opt.kind === 'custom') return 1
+  if (opt.kind === 'user' && opt.stream.source === 'm3u8') return 1
+  if (opt.kind === 'scene-video' && opt.isHls) return 1
+  if (opt.kind === 'scene-video') return 2
+  return 3
+}
+
+/** Sort in place: LiveKit → m3u8 → mp4. */
+export function sortJoinLiveOptions(options: JoinLiveOption[]): JoinLiveOption[] {
+  return options.sort((a, b) => {
+    const d = joinLiveOptionPriority(a) - joinLiveOptionPriority(b)
+    if (d !== 0) return d
+    return a.label.localeCompare(b.label)
+  })
+}
 
 function readJson<T>(key: string, fallback: T): T {
   try {

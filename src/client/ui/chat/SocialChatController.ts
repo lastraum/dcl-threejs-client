@@ -103,6 +103,11 @@ export class SocialChatController {
     return this.comms.hasRemoteVideoLive()
   }
 
+  /** Console inventory of LiveKit rooms + video pubs (landing cast debug). */
+  logCastVideoInventory(reason: string): void {
+    this.comms.logCastVideoInventory(reason)
+  }
+
   /** True when world/scene LiveKit is up (Join live can be offered). */
   isLiveKitConnected(): boolean {
     return this.comms.isLiveKitConnected()

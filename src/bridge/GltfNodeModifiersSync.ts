@@ -17,7 +17,10 @@ const APPLIED_SIG_KEY = 'dclGltfNodeModAppliedSig'
  *   whose Mesh leaves are `Plane.059`)
  * - `"Parent/Child"` → walk named children from the visual root, then take Mesh descendants
  *
- * Case-sensitive first; if nothing matches, one case-insensitive retry.
+ * Fallbacks when authored path drifts from GLB export:
+ * - case-insensitive name match
+ * - Blender-style leaf rename: `Building_03_Window.001` ↔ `Building_03_Window001`
+ * - last-segment-only match when full hierarchy path fails
  */
 export function resolveGltfModifierMeshes(
   entityRoot: THREE.Object3D,
@@ -34,9 +37,24 @@ export function resolveGltfModifierMeshes(
   const nodes = findNodesByPath(visual, segments, false)
   if (nodes.length) return collectMeshesUnderNodes(nodes)
 
-  // Single case-insensitive pass for export casing drift (Creator Hub).
+  // Case-insensitive pass for export casing drift (Creator Hub).
   const ciNodes = findNodesByPath(visual, segments, true)
-  return collectMeshesUnderNodes(ciNodes)
+  if (ciNodes.length) return collectMeshesUnderNodes(ciNodes)
+
+  // Blender often renames leaves: "Foo.001" in ECS vs "Foo001" / "Parent/Foo001" in GLB.
+  const fuzzyNodes = findNodesByPathFuzzy(visual, segments)
+  if (fuzzyNodes.length) return collectMeshesUnderNodes(fuzzyNodes)
+
+  // Last segment only (full path from composite often omits intermediate export roots).
+  const leaf = segments[segments.length - 1]
+  if (leaf && segments.length > 1) {
+    const leafNodes = findNodesByPath(visual, [leaf], true)
+    if (leafNodes.length) return collectMeshesUnderNodes(leafNodes)
+    const leafFuzzy = findNodesByPathFuzzy(visual, [leaf])
+    if (leafFuzzy.length) return collectMeshesUnderNodes(leafFuzzy)
+  }
+
+  return []
 }
 
 export function gltfNodeModifiersReferenceVideo(
@@ -188,6 +206,25 @@ function namesEqual(a: string, b: string, ignoreCase: boolean): boolean {
 }
 
 /**
+ * Normalize Blender / glTF export name drift:
+ * - strip dots before numeric suffixes: Window.001 → Window001
+ * - collapse non-alnum so minor separators don't break match
+ */
+function normalizeNodeNameKey(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/\.(\d+)$/g, '$1')
+    .replace(/[^a-z0-9]+/g, '')
+}
+
+function namesFuzzyEqual(a: string, b: string): boolean {
+  if (!a || !b) return false
+  if (namesEqual(a, b, true)) return true
+  return normalizeNodeNameKey(a) === normalizeNodeNameKey(b)
+}
+
+/**
  * Walk the scene graph by successive child names.
  * One segment: any descendant named that segment (not only direct children).
  * Multiple segments: direct-child walk from each match of the first segment.
@@ -221,6 +258,59 @@ function findNodesByPath(
       for (const cur of cursors) {
         for (const child of cur.children) {
           if (child.name && namesEqual(child.name, seg, ignoreCase)) next.push(child)
+        }
+      }
+      cursors = next
+      if (!cursors.length) break
+    }
+    results.push(...cursors)
+  }
+  return results
+}
+
+/**
+ * Same walk as findNodesByPath but with Blender-style name fuzzy equality.
+ * Also allows non-direct descendants for intermediate segments when direct children fail
+ * (export roots like Building_03003 wrapping Building_03_Window001).
+ */
+function findNodesByPathFuzzy(visual: THREE.Object3D, segments: string[]): THREE.Object3D[] {
+  if (segments.length === 0) return [visual]
+  const [head, ...rest] = segments
+  if (!head) return []
+
+  const heads: THREE.Object3D[] = []
+  visual.traverse((obj) => {
+    if (obj === visual) return
+    if (obj.name && namesFuzzyEqual(obj.name, head)) heads.push(obj)
+  })
+  // No head match — try last segment only as leaf name anywhere in the tree.
+  if (heads.length === 0 && rest.length > 0) {
+    const leaf = rest[rest.length - 1]!
+    visual.traverse((obj) => {
+      if (obj === visual) return
+      if (obj.name && namesFuzzyEqual(obj.name, leaf)) heads.push(obj)
+    })
+    return heads
+  }
+  if (heads.length === 0) return []
+  if (rest.length === 0) return heads
+
+  const results: THREE.Object3D[] = []
+  for (const start of heads) {
+    let cursors: THREE.Object3D[] = [start]
+    for (const seg of rest) {
+      const next: THREE.Object3D[] = []
+      for (const cur of cursors) {
+        // Direct children first.
+        for (const child of cur.children) {
+          if (child.name && namesFuzzyEqual(child.name, seg)) next.push(child)
+        }
+        // Then any descendant (export inserts intermediate groups).
+        if (!next.length) {
+          cur.traverse((obj) => {
+            if (obj === cur) return
+            if (obj.name && namesFuzzyEqual(obj.name, seg)) next.push(obj)
+          })
         }
       }
       cursors = next

@@ -447,7 +447,8 @@ export class AppController {
     if (this.login?.kind !== 'wallet') return
     try {
       const overlay = await this.ensureSettingsOverlay()
-      overlay.show('backpack')
+      // 2D site already has Explore/Events/etc. in the shell — backpack only, no left tab rail.
+      overlay.show('backpack', { hideSidebar: true })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       clientDebugLog.log('client', `Backpack open failed: ${msg}`, { level: 'error' })
@@ -1011,17 +1012,49 @@ export class AppController {
       ? pointer.toLowerCase()
       : scene.realm.realmName?.trim() || 'main'
 
-    // Prefer existing scene-room session first (already joined for chat).
+    /**
+     * Prefer the landing scene-room LiveKit already joined for chat.
+     * Do **not** abandon after a short timeout — RTMP/OBS ingress often appears
+     * 1–5s after join; the old 600ms check caused remotes=0 false negatives and
+     * a second empty room connect with a misleading "re-mint stream key" hint.
+     */
+    console.info(
+      `[cast] landing watch start · sceneId=${sceneId.slice(0, 16)}… parcel=${parcel} realm=${realmName} world=${isWorld ? 1 : 0} ` +
+        `chatLk=${this.socialChat?.isLiveKitConnected() ? 1 : 0} live=${this.socialChat?.hasRemoteVideoLive() ? 1 : 0}`
+    )
+
+    if (this.socialChat && !this.socialChat.isLiveKitConnected()) {
+      // User may hit Join Live before connectForRoute finishes.
+      await this.socialChat.connectForRoute(target).catch(() => false)
+    }
     if (this.socialChat?.isLiveKitConnected()) {
-      const unbindExisting = this.socialChat.bindRemoteCastVideoToHost(host, onUpdate, opts)
-      // Give existing room a moment; if video attaches, keep it.
-      await new Promise((r) => setTimeout(r, 600))
-      if (host.querySelector('video')) {
-        return unbindExisting
+      this.socialChat.logCastVideoInventory('landing-watch-existing')
+      const unbind = this.socialChat.bindRemoteCastVideoToHost(host, (attached) => {
+        if (attached) {
+          console.info('[cast] video attached (existing room)')
+          this.sceneLandingView?.setCastLive(true)
+        }
+        onUpdate?.(attached)
+      }, opts)
+      // Periodic inventory while waiting (cleared on unbind).
+      const inv = window.setInterval(() => {
+        if (!host.isConnected) {
+          window.clearInterval(inv)
+          return
+        }
+        if (host.querySelector('video')) {
+          window.clearInterval(inv)
+          return
+        }
+        this.socialChat?.logCastVideoInventory('landing-watch-poll')
+      }, 2500)
+      return () => {
+        window.clearInterval(inv)
+        unbind()
       }
-      unbindExisting()
     }
 
+    // Chat not connected (guest lag / chat disabled) — dedicated scene-room join for stream keys.
     const adapterResult = await getSceneAdapter(identity, {
       sceneId,
       parcel,
@@ -1050,13 +1083,32 @@ export class AppController {
       this.castWatchRoom = null
       throw new Error('Could not connect to scene LiveKit room for stream-key video.')
     }
+    console.info(
+      `[cast] landing watch via dedicated scene adapter · scene=${sceneId.slice(0, 12)}… realm=${realmName} parcel=${parcel}`
+    )
 
     const unbind = room.bindVideoToHost(host, (attached) => {
-      if (attached) this.sceneLandingView?.setCastLive(true)
+      if (attached) {
+        console.info('[cast] video attached (dedicated room)')
+        this.sceneLandingView?.setCastLive(true)
+      }
       onUpdate?.(attached)
     }, opts)
 
+    const inv = window.setInterval(() => {
+      if (!host.isConnected || host.querySelector('video')) {
+        window.clearInterval(inv)
+        return
+      }
+      const r = room.getRoom()
+      const remotes = r?.remoteParticipants.size ?? 0
+      console.info(
+        `[cast] inventory (dedicated-poll): room=${r?.name ?? '?'} state=${r?.state ?? 'none'} remotes=${remotes}`
+      )
+    }, 2500)
+
     return () => {
+      window.clearInterval(inv)
       unbind()
       room.disconnect()
       if (this.castWatchRoom === room) this.castWatchRoom = null

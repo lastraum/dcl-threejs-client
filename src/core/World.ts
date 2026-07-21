@@ -415,6 +415,8 @@ export class World {
   logAllRoomsAudio(reason: string): void {
     const inv = this.comms.describeAllRoomsAudioInventory()
     console.log(`[voice] all-rooms inventory (${reason}):\n${inv}`)
+    // Same moment: dump LiveKit *video* pubs (stream keys / Cast) — audio inventory never lists them.
+    this.comms.logCastVideoInventory(`world-${reason}`)
   }
 
   /** Drive 3 green voice bars on local + remote name tags. */

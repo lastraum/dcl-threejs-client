@@ -76,6 +76,11 @@ export class SettingsOverlay {
   private worldName?: string | null
   private visible = false
   private closing = false
+  /**
+   * 2D shell backpack: hide Events/Places/Map/… tab rail (already available in top nav).
+   * Cleared when opening the full in-world settings overlay.
+   */
+  private hideSidebar = false
   /** Wearables fingerprint when the overlay opened (or last successful save). */
   private profileBaselineKey = ''
   private onOpen?: () => void
@@ -179,8 +184,10 @@ export class SettingsOverlay {
     return false
   }
 
-  show(tab: SettingsTab = 'backpack'): void {
+  show(tab: SettingsTab = 'backpack', opts?: { hideSidebar?: boolean }): void {
     this.visible = true
+    this.hideSidebar = opts?.hideSidebar === true
+    this.root.classList.toggle('settings-overlay--no-sidebar', this.hideSidebar)
     this.root.removeAttribute('hidden')
     requestAnimationFrame(() => this.root.classList.add('is-open'))
     this.profileBaselineKey = this.wearablesFingerprint()
@@ -254,7 +261,8 @@ export class SettingsOverlay {
       }
 
       this.visible = false
-      this.root.classList.remove('is-open')
+      this.hideSidebar = false
+      this.root.classList.remove('is-open', 'settings-overlay--no-sidebar')
       setTimeout(() => {
         if (!this.visible) this.root.setAttribute('hidden', '')
       }, 300)

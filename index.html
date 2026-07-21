@@ -3772,6 +3772,13 @@
         border-right: 1px solid rgba(255, 255, 255, 0.06);
         overflow-y: auto;
       }
+      /* 2D shell backpack: hide Events / Places / Map / … rail (top nav covers those). */
+      .settings-overlay--no-sidebar .settings-overlay__tabs {
+        display: none !important;
+      }
+      .settings-overlay--no-sidebar .settings-overlay__content {
+        width: 100%;
+      }
       .settings-overlay__tab {
         display: flex;
         align-items: center;
@@ -16152,7 +16159,9 @@
       .scene-watch-join-live-split-menu {
         position: absolute;
         left: 0;
-        top: calc(100% + 6px);
+        /* Open upward so the menu sits above JOIN LIVE (not under Jump in). */
+        top: auto;
+        bottom: calc(100% + 6px);
         z-index: 50;
         min-width: max(100%, 12rem);
         width: max-content;

@@ -25,8 +25,8 @@ export type SocialShellTopNavOptions = SocialShellChromeHandlers & {
   onOpenUserProfile?: (address: string) => void
 }
 
-/** DCL "A" app mark for the resting state of the 3D-section dot. */
-const DCL_DOT_MARK = `<svg viewBox="0 0 44 44" width="22" height="22" aria-hidden="true"><circle cx="22" cy="22" r="22" fill="#FF2D55"/><path fill="#fff" d="M10 28l6-14h2.2l3.4 8.2L25 14h2.1l6 14h-2.4l-1.2-3H13.6l-1.2 3H10zm5.8-5.2h6.8L19.8 17l-4 5.8z"/></svg>`
+/** Simplified Decentraland mark (two pyramids + two suns) for the 3D-section dot. */
+const DCL_DOT_MARK = `<svg viewBox="0 0 44 44" width="22" height="22" aria-hidden="true"><circle cx="22" cy="22" r="22" fill="#FF2D55"/><circle cx="13.6" cy="11.4" r="2.5" fill="none" stroke="#fff" stroke-width="1.8"/><circle cx="28.2" cy="14.2" r="4.7" fill="none" stroke="#fff" stroke-width="1.8"/><polygon points="15.6,14.6 7,30 22.6,30" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/><polygon points="29.4,21 21,30 38,30" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/></svg>`
 
 const SHELL_TABS: readonly SocialShellTab[] = [
   'explore',

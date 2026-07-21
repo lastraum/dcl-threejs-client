@@ -10,6 +10,13 @@ source: github
 base_branch: dev-latest
 workflow:
   - stage: merged
+    integration_ref: pr:43
+    title: stop PE HUD flash from paint thrash
+    owner: lastraum
+    pr: 43
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/43
+    updated: 2026-07-21
+  - stage: merged
     integration_ref: pr:42
     title: stop PE HUD flash on every click
     owner: lastraum
@@ -143,10 +150,3 @@ workflow:
     pr: 11
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/11
     updated: 2026-07-10
-  - stage: merged
-    integration_ref: pr:10
-    title: route /api/texture to the encoded host instead of arweave.net
-    owner: awedjob
-    pr: 10
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/10
-    updated: 2026-07-09

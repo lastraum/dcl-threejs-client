@@ -5,6 +5,7 @@ import { BLANK_SCENE_TEMPLATE } from './types'
 import { layoutFromSceneMetadata } from './sceneLayout'
 import { resolveBrowserChatEnabled } from './resolveBrowserChat'
 import { resolveNameTagsVisible } from './resolveNameTags'
+import { resolvePortableExperiencesPolicy } from '../multiScene/resolvePortableExperiences'
 import { resolveSceneEnvironment } from '../landscape/resolveLandscapeEnvironment'
 import { catalystContentAssetUrl, catalystRootFromContentUrl, fetchSceneEntityByPointer } from '../../network/catalyst/CatalystClient'
 import { fetchCatalystRealmAbout, fetchWorldRealmAbout } from '../../network/catalyst/realmAbout'
@@ -157,6 +158,103 @@ async function fetchParcelEntity(x: number, y: number): Promise<{
   }
 }
 
+const FALLBACK_GENESIS_REALM: RealmEndpoints = {
+  realmName: 'main',
+  networkId: 1,
+  contentUrl: 'https://peer.decentraland.org',
+  lambdasUrl: 'https://peer.decentraland.org/lambdas'
+}
+
+/**
+ * Classic foundation open-road / SDK6 tile — cannot run as primary, but should not
+ * hard-fail Jump In. AOI road layer still draws the GLB; primary is synthetic empty.
+ */
+export function isOpenRoadOrNonRunnableSdk6Entity(entity: Record<string, unknown>): boolean {
+  const meta =
+    entity.metadata && typeof entity.metadata === 'object'
+      ? (entity.metadata as Record<string, unknown>)
+      : {}
+  const display =
+    meta.display && typeof meta.display === 'object'
+      ? (meta.display as Record<string, unknown>)
+      : {}
+  const title = typeof display.title === 'string' ? display.title : ''
+  const main = typeof meta.main === 'string' ? meta.main.trim().toLowerCase() : ''
+  const rv = meta.runtimeVersion
+  const rvStr = rv === undefined || rv === null ? '' : String(rv).trim()
+
+  if (rvStr === '7' || rvStr.startsWith('7.')) return false
+  if (rvStr === '6' || rvStr.startsWith('6.')) return true
+  if (/^Road at /i.test(title)) return true
+
+  if (main === 'game.js' || main.endsWith('/game.js') || main === 'bin/game.js') {
+    const content = Array.isArray(entity.content) ? entity.content : []
+    const hasRoadGlb = content.some((row) => {
+      if (!row || typeof row !== 'object') return false
+      const file =
+        typeof (row as { file?: string }).file === 'string' ? (row as { file: string }).file : ''
+      const base = file.split('/').pop() ?? file
+      return /^(OpenRoad_|OpenFork_|Road_|DeadEnd_|Fork_|Corner_|EmptyFork_)/i.test(base)
+    })
+    if (hasRoadGlb || /road|openroad|openfork|tram/i.test(title)) return true
+    // Classic Builder SDK6 without runtimeVersion 7
+    return true
+  }
+  return false
+}
+
+/**
+ * Synthetic 1×1 genesis primary — empty land or non-runnable SDK6 (roads).
+ * AOI still supplies road GLBs / blank floor. Never throws.
+ */
+async function resolveEmptyCoordsScene(
+  x: number,
+  y: number,
+  opts?: { title?: string; reason?: string }
+): Promise<ResolvedScene> {
+  const pointer = `${x},${y}`
+  let realm: RealmEndpoints = FALLBACK_GENESIS_REALM
+  try {
+    const about = await fetchCatalystRealmAbout()
+    realm = realmFromAbout(about)
+  } catch (err) {
+    console.warn('[resolve] empty parcel — realm about failed, using peer.decentraland.org', err)
+  }
+  const contentUrl = catalystRootFromContentUrl(realm.contentUrl)
+  // Live feet coords live on the location card / URL — don't bake base into the title.
+  const title = opts?.title?.trim() || 'Empty land'
+  const metadata: SceneMetadata = {
+    display: { title },
+    scene: { parcels: [pointer], base: pointer },
+    // genesis sky; ground + trees / roads come from AoiVisualLayer
+    environment: 'genesis'
+  }
+  const resolvedEnv = resolveSceneEnvironment(metadata, { kind: 'coords', x, y })
+  console.info(
+    `[resolve] synthetic primary ${pointer} — “${title}”${opts?.reason ? ` (${opts.reason})` : ''}`
+  )
+  return {
+    title,
+    parcels: [pointer],
+    baseParcel: pointer,
+    spawn: { x: 8, y: 0, z: 8, fromSpawnPoints: false },
+    metadata,
+    landscapeEnvironment: resolvedEnv.landscapeEnvironment,
+    skyLighting: resolvedEnv.skyLighting,
+    content: [],
+    contentsBaseUrl: contentUrl,
+    assetUrl: (hash) => catalystContentAssetUrl(realm.contentUrl, hash),
+    source: { kind: 'coords', x, y },
+    entityId: null,
+    mainEntry: null,
+    commsPointer: pointer,
+    browserChatEnabled: resolveBrowserChatEnabled(metadata),
+    nameTagsVisible: resolveNameTagsVisible(metadata),
+    portableExperiencesPolicy: resolvePortableExperiencesPolicy(metadata),
+    realm
+  }
+}
+
 function resolvedFromEntity(
   entity: Record<string, unknown>,
   opts: {
@@ -231,6 +329,7 @@ function resolvedFromEntity(
     commsPointer: opts.commsPointer,
     browserChatEnabled: resolveBrowserChatEnabled(metadata),
     nameTagsVisible: resolveNameTagsVisible(metadata),
+    portableExperiencesPolicy: resolvePortableExperiencesPolicy(metadata),
     realm: opts.realm
   }
 }
@@ -290,26 +389,35 @@ export async function resolveSceneFromRoute(target: RouteTarget): Promise<Resolv
       landscapeEnvironment: resolvedEnv.landscapeEnvironment,
       skyLighting: resolvedEnv.skyLighting,
       browserChatEnabled: resolveBrowserChatEnabled(metadata),
-      nameTagsVisible: resolveNameTagsVisible(metadata)
+      nameTagsVisible: resolveNameTagsVisible(metadata),
+      portableExperiencesPolicy: resolvePortableExperiencesPolicy(metadata)
     }
   }
 
   if (target.kind === 'coords') {
     const result = await fetchParcelEntity(target.x, target.y)
-    if (!result) {
-      throw new Error(
-        `No deployed scene at parcel ${target.x},${target.y}. Try a parcel with a scene or use a world (e.g. /lastslice.dcl.eth).`
-      )
-    }
     const pointer = `${target.x},${target.y}`
-    return resolvedFromEntity(result.entity, {
-      title: pointer,
-      commsPointer: pointer,
-      realm: result.realm,
-      source: { kind: 'coords', x: target.x, y: target.y },
-      contentsBaseUrl: catalystRootFromContentUrl(result.realm.contentUrl),
-      assetUrl: (hash) => catalystContentAssetUrl(result.realm.contentUrl, hash)
-    })
+    if (result) {
+      // Open roads / classic SDK6 — enter as synthetic empty primary; AOI draws road GLBs.
+      if (isOpenRoadOrNonRunnableSdk6Entity(result.entity)) {
+        const meta = (result.entity.metadata ?? {}) as SceneMetadata
+        const roadTitle = meta.display?.title?.trim()
+        return resolveEmptyCoordsScene(target.x, target.y, {
+          title: roadTitle || `Open road ${pointer}`,
+          reason: 'open-road/SDK6 — not runnable as primary'
+        })
+      }
+      return resolvedFromEntity(result.entity, {
+        title: pointer,
+        commsPointer: pointer,
+        realm: result.realm,
+        source: { kind: 'coords', x: target.x, y: target.y },
+        contentsBaseUrl: catalystRootFromContentUrl(result.realm.contentUrl),
+        assetUrl: (hash) => catalystContentAssetUrl(result.realm.contentUrl, hash)
+      })
+    }
+    // True empty parcel — synthetic 1×1 so AOI blank + scatter + open walk can run.
+    return resolveEmptyCoordsScene(target.x, target.y)
   }
 
   const tried: string[] = []

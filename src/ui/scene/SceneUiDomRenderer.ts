@@ -12,6 +12,7 @@ import { layoutToScreen } from './virtualCanvas'
 import {
   applyUiBackgroundStyles,
   BackgroundTextureMode,
+  effectiveUiBackgroundAlpha,
   extractUiTextureSrc,
   hasUiBackgroundTexture,
   hasUiVisualBackground,
@@ -102,8 +103,21 @@ function isSceneUiNodeInteractive(
   transform: PBUiTransform,
   inputOf: (e: Entity) => PBUiInput | null,
   dropdownOf: (e: Entity) => PBUiDropdown | null,
-  pointerEventsOf?: UiPointerEventsLookup
+  pointerEventsOf?: UiPointerEventsLookup,
+  background?: PBUiBackground | null
 ): boolean {
+  // Nearly-invisible shells still steal world clicks if PE stays registered (welcome fade).
+  if ((transform.opacity ?? 1) < 0.05) return false
+  // CBD Plaza welcome fades UiBackground.color.a (not UiTransform.opacity). Without this,
+  // a full-screen PE catcher stays pointer-events:auto after the image is gone.
+  if (
+    background &&
+    effectiveUiBackgroundAlpha(background.color) < 0.05 &&
+    !inputOf(entity) &&
+    !dropdownOf(entity)
+  ) {
+    return false
+  }
   const spec = pointerEventsOf?.(entity) ?? ecs.PointerEvents.getOrNull(entity)
   return (
     normalizePointerFilterMode(transform.pointerFilter) === PointerFilterMode.BLOCK ||
@@ -269,6 +283,21 @@ export class SceneUiDomRenderer {
 
   countInteractiveDomNodes(): number {
     return this.host.querySelectorAll('.scene-ui-node.scene-ui-node--interactive').length
+  }
+
+  getNode(entity: Entity): HTMLElement | null {
+    return this.nodes.get(entity) ?? null
+  }
+
+  /**
+   * Immediate client-side dismiss — free pointer while worker fade/unmount lags.
+   * Full-screen PE shells (welcome splash) stay mounted mid-fade with PE still on.
+   */
+  forceDismissEntity(entity: Entity): void {
+    const shell = this.nodes.get(entity)
+    if (!shell) return
+    this.applyHiddenDomState(shell)
+    shell.style.opacity = '0'
   }
 
   getFieldDom(entity: Entity): HTMLInputElement | HTMLSelectElement | null {
@@ -496,7 +525,8 @@ export class SceneUiDomRenderer {
       transform,
       input.inputOf,
       input.dropdownOf,
-      input.pointerEventsOf
+      input.pointerEventsOf,
+      bg
     )
 
     const compactControl =
@@ -798,11 +828,17 @@ export class SceneUiDomRenderer {
   }
 }
 
-export function ensureSceneUiRoot(): HTMLElement {
-  let root = document.getElementById('scene-ui-root')
+/**
+ * Scene ECS UI overlay host.
+ * - `scene-ui-root` — primary parcel scene UI
+ * - `pe-ui-root` — portable experience / smart wearable UI (separate so PE
+ *   clicks and paint never fight primary, and primary setVisible can't hide PE)
+ */
+export function ensureSceneUiRoot(rootId = 'scene-ui-root'): HTMLElement {
+  let root = document.getElementById(rootId)
   if (!root) {
     root = document.createElement('div')
-    root.id = 'scene-ui-root'
+    root.id = rootId
     document.body.appendChild(root)
   }
   return root

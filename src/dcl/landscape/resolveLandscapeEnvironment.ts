@@ -128,7 +128,7 @@ export type ResolvedSceneEnvironment = {
 function defaultLandscapeEnvironmentForSource(source: SceneSource): LandscapeEnvironmentKind {
   if (source.kind === 'world') return 'island'
   // Local authoring keeps void/blank; Genesis City parcels get skybox + quiet ground.
-  if (source.kind === 'local' || source.kind === 'blank') return 'none'
+  if (source.kind === 'local' || source.kind === 'blank' || source.kind === 'portable') return 'none'
   return 'genesis'
 }
 

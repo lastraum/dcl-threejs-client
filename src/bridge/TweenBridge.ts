@@ -847,19 +847,42 @@ export class TweenBridge {
         break
       }
       case 'rotateContinuous': {
+        // Explorer/SDK contract (Neurolink rotors, camera-operator orbit, kart spin):
+        // - `direction` = small euler-hint quaternion encoding the spin axis
+        //   (e.g. fromEulerDegrees(0, ±1, 0) → parent-space +Y)
+        // - `speed` = degrees per second (scene comments: DRONE_ROTOR_SPIN_SPEED_DEG_PER_S)
+        // Parent-space multiply (delta * current): rotor planes are often Rx(90) so local-Y
+        // tumble is wrong; parent +Y is the fan axis for horizontal discs.
         const { direction, speed } = tween.mode.rotateContinuous
-        if (direction && playing) {
-          _qA.set(direction.x, direction.y, direction.z, direction.w).normalize()
-          _v3a.set(_qA.x, _qA.y, _qA.z)
-          if (_v3a.lengthSq() < 1e-8) _v3a.set(0, 1, 0)
-          _v3a.normalize()
-          _qB.setFromAxisAngle(_v3a, speed * delta)
+        if (direction && playing && Number.isFinite(speed) && speed !== 0) {
+          const qx = direction.x ?? 0
+          const qy = direction.y ?? 0
+          const qz = direction.z ?? 0
+          const qw = direction.w ?? 1
+          _qA.set(qx, qy, qz, qw)
+          if (_qA.lengthSq() < 1e-12) {
+            _v3a.set(0, 1, 0)
+          } else {
+            _qA.normalize()
+            const wClamped = Math.min(1, Math.max(-1, _qA.w))
+            const sinHalf = Math.sqrt(Math.max(0, 1 - wClamped * wClamped))
+            if (sinHalf < 1e-6) {
+              _v3a.set(0, 1, 0)
+            } else {
+              _v3a.set(_qA.x / sinHalf, _qA.y / sinHalf, _qA.z / sinHalf)
+            }
+            if (_v3a.lengthSq() < 1e-8) _v3a.set(0, 1, 0)
+            else _v3a.normalize()
+          }
+          // speed is degrees/sec (Explorer + all production scene authors).
+          _qB.setFromAxisAngle(_v3a, THREE.MathUtils.degToRad(speed) * delta)
           _qA.set(
             _scratchTransform.rotation.x,
             _scratchTransform.rotation.y,
             _scratchTransform.rotation.z,
             _scratchTransform.rotation.w
           )
+          // Parent-space: delta * current (not current * delta / local).
           _qOut.copy(_qB).multiply(_qA)
           _scratchTransform.rotation = { x: _qOut.x, y: _qOut.y, z: _qOut.z, w: _qOut.w }
           applied = true

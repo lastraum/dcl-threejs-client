@@ -77,9 +77,20 @@ let cooperativeReactEcsSkippedThisTick = false
  * open menus are not immediately collapsed by residual systems / poll edges.
  */
 let cooperativeReactEcsHoldTicks = 0
+/** Wall-clock hold — PE pump never enters cooperativeSchedulerTickDepth so ticks alone never expire. */
+let cooperativeReactEcsHoldUntilMs = 0
 
 export function holdCooperativeReactEcs(ticks: number): void {
   cooperativeReactEcsHoldTicks = Math.max(cooperativeReactEcsHoldTicks, ticks)
+  // ~16ms/tick; keep menu open long enough for main to paint phase-4 snapshot.
+  const holdMs = Math.max(0, ticks) * 16
+  cooperativeReactEcsHoldUntilMs = Math.max(cooperativeReactEcsHoldUntilMs, performance.now() + holdMs)
+}
+
+/** True while post-click hold is suppressing cooperative/PE eng.update UI reconcile. */
+export function isCooperativeReactEcsHeld(): boolean {
+  if (cooperativeReactEcsHoldTicks > 0) return true
+  return performance.now() < cooperativeReactEcsHoldUntilMs
 }
 
 /**
@@ -96,6 +107,9 @@ export function shouldDeferCooperativeReactEcs(): boolean {
   // isPointerInteractiveTickActive is false during non-ui phase — fall through to session suppress.
   if (isPointerInteractiveTickActive()) return false
   if (shouldSuppressPointerSessionReactEcs()) return true
+  // Wall-clock hold after PE/sceneUi phase-4 — suppress even when not in cooperative depth
+  // (PE vehicle pump uses runSceneEngineUpdateNow without enterCooperativeSchedulerTick).
+  if (performance.now() < cooperativeReactEcsHoldUntilMs) return true
   if (cooperativeSchedulerTickDepth > 0) {
     if (cooperativeReactEcsHoldTicks > 0) {
       cooperativeReactEcsHoldTicks--

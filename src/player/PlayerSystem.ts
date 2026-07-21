@@ -41,6 +41,7 @@ import {
   resolveMovePlayerToTargetFeetDcl
 } from './dclPlayerEntity'
 import { clampToWalkBounds, type PlayerWalkBounds } from './SceneBounds'
+import { formatWalkBounds, isPhysicsDiagVerbose, physLog } from '../physics/physicsDiag'
 import { normalizeAngle } from '../network/comms/movementCompressed'
 import {
   dclToThreeVec,
@@ -197,11 +198,29 @@ export class PlayerSystem {
   /** Prior frame locomotion allowed — clear position lock when scene unfreezes. */
   private wasLocomotionAllowed = true
   /**
+   * Feet position to pin while InputModifier.disableAll is active (SpaceRunner map load /
+   * fall-reset). Re-running PhysX teleport and accepting positionOut lets CCT slide off
+   * spawn while map colliders rebuild → bounce at world edge, never at start.
+   */
+  private disableAllHoldFeet: THREE.Vector3 | null = null
+  /**
+   * Last long movePlayerTo feet (Three space). Death→map rebuild freezes, settles on a
+   * temporary freeze pad, then unfreezes as the pad is deleted and map colliders are still
+   * cooking — re-seat here on unfreeze so we land on spawn, not freefall / edge bounce.
+   */
+  private lastLongTeleportFeet: THREE.Vector3 | null = null
+  private lastLongTeleportAt = 0
+  /**
    * When sit/stool freezes walk without playing emote, WASD/Space asks main→worker to clear IM.
    * Not used for disableAll (Flagtag lobby).
    */
   private modeFreezeEscapeHandler: (() => void) | null = null
   private lastModeFreezeEscapeAt = 0
+  /** DevTools console (not Help panel) — prod mirror may be off. */
+  private lastLocomotionBlockedConsoleAt = 0
+  private lastWalkClampLogAt = 0
+  private lastFreezeHoldLogAt = 0
+  private lastPhysProbeAt = 0
   private virtualCamera: VirtualCameraBridge | null = null
   /** Prior frame had an active VirtualCamera — seed freecam yaw/pitch on unbind. */
   private wasVirtualCameraActive = false
@@ -289,6 +308,11 @@ export class PlayerSystem {
     this.readComponents = readComponents
     this.walkBounds = walkBounds
     this.resetExternalPhysicsState()
+    physLog(
+      'walk-bounds-init',
+      `walkBounds ${formatWalkBounds(walkBounds)} · infiniteGround=y0 (void fall ends on sea-level box, not map height)`,
+      0
+    )
     this.input = new PlayerInput(this.host.renderer.domElement)
     this.input.setLocomotionBlocked(
       () => this.photoModeActive || !canLocomote(this.getLocomotionConfig())
@@ -746,11 +770,40 @@ export class PlayerSystem {
 
     if (!reposition || duration <= 0) {
       if (reposition) {
-        // Seat/interact snaps always pass avatarTarget (facing). Floor settle is for spawn/tower
-        // only — SPAWN_ACCEPT_BELOW_AUTHORED_M (~6.5m) drops sit feet to plaza and CCT can
-        // slide XZ off the bench (Explorer parks feet at authored coords).
-        // Drown/tower respawns typically omit avatarTarget → still settle onto the deck.
-        this.teleportTo(target, !avatarTarget)
+        // Seat snaps: short move + avatarTarget → trust authored feet (no settle).
+        // Fall-reset / map respawn: long jump even with avatarTarget → settle onto floor.
+        // SpaceRunner always passes avatarTarget; without this heuristic respawns never settle
+        // and CCT drifts while map colliders rebuild.
+        const horiz = Math.hypot(target.x - from.x, target.z - from.z)
+        const vert = Math.abs(target.y - from.y)
+        const longRespawn = horiz > 2.5 || vert > 2
+        const settle = longRespawn || !avatarTarget
+        const reqDcl = requestedFeetDcl
+        const tgtDcl = threeToDclVec(target)
+        console.info(
+          `[player] movePlayerTo · dcl=(${reqDcl.x.toFixed(1)},${reqDcl.y.toFixed(2)},${reqDcl.z.toFixed(1)}) ` +
+            `→ three=(${target.x.toFixed(1)},${target.y.toFixed(2)},${target.z.toFixed(1)}) ` +
+            `tgtDcl=(${tgtDcl.x.toFixed(1)},${tgtDcl.y.toFixed(2)},${tgtDcl.z.toFixed(1)}) ` +
+            `long=${longRespawn} settle=${settle} ` +
+            `fromThree=(${from.x.toFixed(1)},${from.y.toFixed(2)},${from.z.toFixed(1)})`
+        )
+        this.teleportTo(target, settle, longRespawn)
+        if (longRespawn) {
+          this.lastLongTeleportFeet = target.clone()
+          this.lastLongTeleportAt = performance.now()
+        }
+        // Pin feet for disableAll load freezes (map reload after fall).
+        // Prefer authored target — settle may rest on a temporary freeze pad that is deleted
+        // when load-gate clears (SpaceRunner la() MeshCollider).
+        if (!canLocomote(this.getLocomotionConfig())) {
+          this.disableAllHoldFeet = (longRespawn ? target : this.root.position).clone()
+          const f = this.disableAllHoldFeet
+          physLog(
+            'freeze-hold-set',
+            `disableAll hold set after movePlayerTo · feet three=(${f.x.toFixed(1)},${f.y.toFixed(2)},${f.z.toFixed(1)}) settle=${settle} long=${longRespawn}`,
+            0
+          )
+        }
       }
       // Face/look from the **final** seat pose — not pre-teleport feet (sit rotation was wrong).
       const lookFrom = this.root.position
@@ -817,12 +870,20 @@ export class PlayerSystem {
     const locomotion = this.getLocomotionConfig()
     const locomotionAllowed = canLocomote(locomotion)
     if (!locomotionAllowed) {
-      // Flagtag lobby freezes walk until UI join — log so "can't move" is diagnosable.
-      clientDebugLog.log(
-        'player',
-        `locomotion blocked — disableAll=${locomotion.disableAll} walk=${locomotion.disableWalk} jog=${locomotion.disableJog} run=${locomotion.disableRun}`,
-        { throttleMs: 3000, throttleKey: 'locomotion-blocked', alsoConsole: true }
-      )
+      // Flagtag / SpaceRunner freezes walk — log so "can't move" is diagnosable in DevTools
+      // even when Help console-mirror is off (prod default).
+      const blockedMsg =
+        `locomotion blocked — disableAll=${locomotion.disableAll} walk=${locomotion.disableWalk} jog=${locomotion.disableJog} run=${locomotion.disableRun}`
+      clientDebugLog.log('player', blockedMsg, {
+        throttleMs: 3000,
+        throttleKey: 'locomotion-blocked',
+        alsoConsole: true
+      })
+      const nowBlocked = performance.now()
+      if (nowBlocked - this.lastLocomotionBlockedConsoleAt > 3000) {
+        this.lastLocomotionBlockedConsoleAt = nowBlocked
+        console.warn(`[player] ${blockedMsg}`)
+      }
       // Sit/stool mode-freeze (not disableAll): WASD/Space escapes when scene forgot to unfreeze
       // (handler crashed before triggerSceneEmote — remotes can still sit via Explorer emotes).
       const wantEscape =
@@ -845,10 +906,30 @@ export class PlayerSystem {
       _velocity.set(0, 0, 0)
       _externalVelocity.set(0, 0, 0)
       _force.set(0, 0, 0)
-      // Hold capsule at seat/authored feet — gravity+CCT while InputModifier freezes walk
-      // slides the player off benches between sit teleport and emote.
-      this.physics.teleport(this.root.position)
-      this.root.position.copy(this.physics.positionOut)
+      // Pin authored feet for the whole freeze. Do NOT accept physics.positionOut after
+      // teleport — while map colliders rebuild, CCT can shove the capsule to the walk
+      // bound edge (SpaceRunner fall-reset bounce at x≈96 instead of spawn).
+      if (!this.disableAllHoldFeet) {
+        this.disableAllHoldFeet = this.root.position.clone()
+        const f = this.disableAllHoldFeet
+        physLog(
+          'freeze-hold-arm',
+          `disableAll hold armed · feet three=(${f.x.toFixed(1)},${f.y.toFixed(2)},${f.z.toFixed(1)}) ` +
+            `(scene freeze pad may also exist under spawn until scene xo())`,
+          0
+        )
+      } else if (isPhysicsDiagVerbose() || performance.now() - this.lastFreezeHoldLogAt > 2000) {
+        this.lastFreezeHoldLogAt = performance.now()
+        const f = this.disableAllHoldFeet
+        physLog(
+          'freeze-hold-pin',
+          `disableAll pinned · feet=(${f.x.toFixed(1)},${f.y.toFixed(2)},${f.z.toFixed(1)})`,
+          2000
+        )
+      }
+      this.root.position.copy(this.disableAllHoldFeet)
+      this.physics.teleport(this.disableAllHoldFeet)
+      this.root.position.copy(this.disableAllHoldFeet)
       this.grounded = true
       this.groundCoyote = 0.12
       this.syncWireYawFromAvatar()
@@ -872,9 +953,35 @@ export class PlayerSystem {
       this.wasLocomotionAllowed = false
       return
     } else if (!this.wasLocomotionAllowed) {
-      // Scene just unfroze (Flagtag join) — release movePlayerTo hold so WASD works immediately.
+      // Scene just unfroze (Flagtag join / map load FINISHED) — release freeze pin, but
+      // re-seat long respawns: freeze pad under spawn is often deleted the same frame,
+      // and map GLTF colliders may still be cooking → freefall / wrong XZ without re-teleport.
+      const pin =
+        this.disableAllHoldFeet?.clone() ??
+        (this.lastLongTeleportFeet && performance.now() - this.lastLongTeleportAt < 12_000
+          ? this.lastLongTeleportFeet.clone()
+          : null)
+      if (this.disableAllHoldFeet) {
+        const f = this.disableAllHoldFeet
+        physLog(
+          'freeze-hold-clear',
+          `disableAll hold cleared · lastPin=(${f.x.toFixed(1)},${f.y.toFixed(2)},${f.z.toFixed(1)})`,
+          0
+        )
+      }
       this.scenePositionLock = false
       this.moveTask = null
+      this.disableAllHoldFeet = null
+      if (pin) {
+        const longRecent =
+          !!this.lastLongTeleportFeet && performance.now() - this.lastLongTeleportAt < 12_000
+        physLog(
+          'freeze-hold-reseat',
+          `unfreeze re-seat · feet three=(${pin.x.toFixed(1)},${pin.y.toFixed(2)},${pin.z.toFixed(1)}) longRecent=${longRecent}`,
+          0
+        )
+        this.teleportTo(pin, true, longRecent)
+      }
     }
     this.wasLocomotionAllowed = locomotionAllowed
     const jumpLocomotionAllowed = canJumpLocomotion(locomotion)
@@ -1339,12 +1446,48 @@ export class PlayerSystem {
     this.root.position.copy(this.physics.positionOut)
     if (this.walkBounds) {
       const dclPos = threeToDclVec(this.root.position)
+      const beforeX = dclPos.x
+      const beforeZ = dclPos.z
       if (clampToWalkBounds(dclPos, this.walkBounds)) {
+        const now = performance.now()
+        if (now - this.lastWalkClampLogAt > 600) {
+          this.lastWalkClampLogAt = now
+          physLog(
+            'walk-clamp',
+            `WALK BOUNDS clamp · feet dcl (${beforeX.toFixed(1)},${dclPos.y.toFixed(1)},${beforeZ.toFixed(1)})` +
+              ` → (${dclPos.x.toFixed(1)},${dclPos.y.toFixed(1)},${dclPos.z.toFixed(1)}) · ` +
+              formatWalkBounds(this.walkBounds) +
+              ` · (soft invisible wall — not scene mesh)`,
+            600
+          )
+          if (now - this.lastPhysProbeAt > 1500) {
+            this.lastPhysProbeAt = now
+            const three = this.root.position
+            this.physics.logStaticCollidersNear(three.x, three.y, three.z, 14, 'walk-clamp-probe')
+          }
+        }
         this.physics.teleport(dclToThreeVec(dclPos))
         this.root.position.copy(this.physics.positionOut)
         _velocity.x = 0
         _velocity.z = 0
       }
+    }
+    // Wanted horizontal move but barely moved while grounded → likely wall / thick collider.
+    if (
+      moving &&
+      this.grounded &&
+      horizontalSpeed < 0.35 &&
+      performance.now() - this.lastPhysProbeAt > 1200
+    ) {
+      this.lastPhysProbeAt = performance.now()
+      const p = this.root.position
+      physLog(
+        'stuck-move',
+        `wanted move but nearly still · grounded feet three=(${p.x.toFixed(1)},${p.y.toFixed(2)},${p.z.toFixed(1)}) ` +
+          `speed=${horizontalSpeed.toFixed(2)} · probing statics`,
+        1200
+      )
+      this.physics.logStaticCollidersNear(p.x, p.y, p.z, 12, 'stuck-move-probe')
     }
     this.syncPlayerEntityAttach()
     this.syncNameTag()
@@ -1397,9 +1540,23 @@ export class PlayerSystem {
     this.getImpulseLamport = provider
   }
 
-  /** Clear external channel + impulse latch (scene load, dispose, teleport). */
-  private resetExternalPhysicsState(): void {
+  /**
+   * Clear external velocity channel.
+   * @param consumeCurrentImpulse — when true (teleport / long respawn), mark the PE impulse
+   *   currently on PlayerEntity as already applied. Resetting latches to 0 re-fires the last
+   *   bounce pad (SpaceRunner death→spawn then `extY=59` sky launch).
+   */
+  private resetExternalPhysicsState(consumeCurrentImpulse = false): void {
     _externalVelocity.set(0, 0, 0)
+    if (consumeCurrentImpulse) {
+      const ecs = this.readComponents
+      if (ecs?.PhysicsCombinedImpulse.has(SDK_RESERVED.player)) {
+        const imp = ecs.PhysicsCombinedImpulse.get(SDK_RESERVED.player)
+        this.lastImpulseEventId = imp.eventId ?? 0
+        this.lastImpulseLamport = this.getImpulseLamport?.() ?? 0
+        return
+      }
+    }
     this.lastImpulseEventId = 0
     this.lastImpulseLamport = 0
   }
@@ -1431,10 +1588,21 @@ export class PlayerSystem {
     if (!ecs) return
     const pe = SDK_RESERVED.player
 
+    // Soft-hold / freeze pin: never apply bounce impulses (stale pad or re-enter during map rebuild).
+    const holdBlocked =
+      this.disableAllHoldFeet != null ||
+      (this.spawnHoldSecLeft > 0 && this.spawnHoldAuthoredFeetY != null)
+
     // P2 stale impulse: if component gone, re-arm for next pad.
     if (!ecs.PhysicsCombinedImpulse.has(pe)) {
       this.lastImpulseEventId = 0
       this.lastImpulseLamport = 0
+    } else if (holdBlocked) {
+      // Keep latch in sync with live component so unfreeze doesn't treat it as a new put.
+      const imp = ecs.PhysicsCombinedImpulse.get(pe)
+      this.lastImpulseEventId = imp.eventId ?? 0
+      this.lastImpulseLamport = this.getImpulseLamport?.() ?? this.lastImpulseLamport
+      _externalVelocity.set(0, 0, 0)
     } else {
       const imp = ecs.PhysicsCombinedImpulse.get(pe)
       const eventId = imp.eventId ?? 0
@@ -1717,8 +1885,10 @@ export class PlayerSystem {
    * @param settle — lift + drop onto authored floor (drown-respawn / tower teleports).
    *   Mid-duration movePlayerTo lerps pass false; seat snaps pass false (trust authored).
    *   Timed-walk arrival passes true.
+   * @param longRespawn — elevated map restart: keep soft spawn hold even if CCT "grounds"
+   *   on a temporary freeze pad that the scene deletes when load-gate clears.
    */
-  private teleportTo(positionThree: THREE.Vector3, settle = true): void {
+  private teleportTo(positionThree: THREE.Vector3, settle = true, longRespawn = false): void {
     if (this.walkBounds) {
       const dclPos = threeToDclVec(positionThree)
       clampToWalkBounds(dclPos, this.walkBounds)
@@ -1726,8 +1896,9 @@ export class PlayerSystem {
     }
     this.physics.teleport(positionThree)
     _velocity.set(0, 0, 0)
-    // Clear external + re-arm impulse latch (new scene / respawn must not ignore pads).
-    this.resetExternalPhysicsState()
+    // Zero external Δv and mark any PE impulse already on the player as consumed.
+    // Re-arming to 0 re-applies the last bounce (death→spawn + extY≈59 sky launch).
+    this.resetExternalPhysicsState(true)
     this.jumped = false
     this.jumping = false
     this.airJumped = false
@@ -1739,10 +1910,14 @@ export class PlayerSystem {
       const settled = this.physics.settleSpawnOntoFloor(positionThree.y)
       this.grounded = settled
       this.groundCoyote = settled ? 0.12 : 0
-      if (!settled) {
+      // Elevated long respawns: always soft-hold. Settle often hits SpaceRunner's temporary
+      // freeze-pad MeshCollider; that pad is removed on load-gate clear and leaves a hole
+      // until map1.glb cooks — without hold the capsule freefalls (looks like wrong teleport).
+      const elevatedLong = longRespawn && positionThree.y > 8
+      if (!settled || elevatedLong) {
         this.spawnHoldFeetY = this.physics.positionOut.y
         this.spawnHoldAuthoredFeetY = positionThree.y
-        this.spawnHoldSecLeft = positionThree.y > 8 ? 6 : 3
+        this.spawnHoldSecLeft = Math.max(this.spawnHoldSecLeft, elevatedLong ? 8 : positionThree.y > 8 ? 6 : 3)
         this.spawnHoldReprobeAcc = 0
       } else {
         this.spawnHoldFeetY = null
@@ -1755,10 +1930,13 @@ export class PlayerSystem {
       this.moveTask = null
       const locomotion = this.getLocomotionConfig()
       const locOk = canLocomote(locomotion)
+      const out = this.physics.positionOut
+      const outDcl = threeToDclVec(out)
       console.info(
-        `[player] teleport settle — feet y=${this.physics.positionOut.y.toFixed(2)} ` +
-          `targetY=${positionThree.y.toFixed(2)} grounded=${settled} lock=cleared ` +
-          `locomotion=${locOk ? 'allowed' : 'blocked'} ` +
+        `[player] teleport settle — three=(${out.x.toFixed(1)},${out.y.toFixed(2)},${out.z.toFixed(1)}) ` +
+          `dcl=(${outDcl.x.toFixed(1)},${outDcl.y.toFixed(2)},${outDcl.z.toFixed(1)}) ` +
+          `targetY=${positionThree.y.toFixed(2)} grounded=${settled} softHold=${!settled || elevatedLong} ` +
+          `lock=cleared locomotion=${locOk ? 'allowed' : 'blocked'} ` +
           `all=${locomotion.disableAll} walk=${locomotion.disableWalk} ` +
           `jog=${locomotion.disableJog} run=${locomotion.disableRun}`
       )

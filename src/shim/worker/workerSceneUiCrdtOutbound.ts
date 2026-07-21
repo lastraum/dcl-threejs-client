@@ -485,6 +485,17 @@ function encodeLiveInputModifierPut(engine: IEngine): Uint8Array | null {
   return out.toBinary()
 }
 
+/** Scene `InputModifier.deleteFrom(PlayerEntity)` — must reach main (load-freeze release, Flagtag join). */
+function encodeLiveInputModifierDelete(engine: IEngine): Uint8Array {
+  preregisterRendererInjectedComponents(engine)
+  const InputModifier = generated.InputModifier(engine)
+  const entity = engine.PlayerEntity as Entity
+  const out = new ReadWriteByteBuffer()
+  const ts = nextLamport(entity, INPUT_MODIFIER_COMPONENT_ID)
+  DeleteComponent.write(entity, InputModifier.componentId, ts, out)
+  return out.toBinary()
+}
+
 /**
  * Append live MainCamera + InputModifier snapshots — pointer flush when deferred non-Ui queue is empty.
  */
@@ -520,6 +531,11 @@ export function reconcileMainCameraCrdtEgress(engine: IEngine, data: Uint8Array)
 /**
  * InputModifier egress — scene-applied avatar locomotion/emote lock on PlayerEntity (not VC).
  * Strip stale wire ops and append a live engine snapshot so main projection matches worker state.
+ *
+ * Platform contract: PUT when the scene has InputModifier; DELETE when the scene removed it
+ * (`deleteFrom` / clearPlayerInputModifier). Previously a clear returned early without emitting
+ * DELETE (and after stripping any natural DELETE from the wire) so main stayed frozen forever
+ * after load-gates like GltfContainerLoadingState FINISHED → deleteFrom.
  */
 export function reconcileInputModifierCrdtEgress(engine: IEngine, data: Uint8Array): Uint8Array {
   const liveKey = inputModifierEgressKey(engine)
@@ -533,14 +549,17 @@ export function reconcileInputModifierCrdtEgress(engine: IEngine, data: Uint8Arr
     shouldBlockPlayerLocomotionClear(engine)
   if (!needsLiveSnapshot) return copy
 
-  const liveInputModifier = encodeLiveInputModifierPut(engine)
-  if (!liveInputModifier?.byteLength) return copy
+  preregisterRendererInjectedComponents(engine)
+  const InputModifier = generated.InputModifier(engine)
+  const hasLive = InputModifier.has(engine.PlayerEntity as Entity)
+  const liveOp = hasLive ? encodeLiveInputModifierPut(engine) : encodeLiveInputModifierDelete(engine)
+  if (!liveOp?.byteLength) return copy
   lastInputModifierEgressKey = liveKey
 
-  if (!copy.byteLength) return liveInputModifier
-  const merged = new Uint8Array(copy.byteLength + liveInputModifier.byteLength)
+  if (!copy.byteLength) return liveOp
+  const merged = new Uint8Array(copy.byteLength + liveOp.byteLength)
   merged.set(copy, 0)
-  merged.set(liveInputModifier, copy.byteLength)
+  merged.set(liveOp, copy.byteLength)
   return merged
 }
 

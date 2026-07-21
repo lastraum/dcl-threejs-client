@@ -172,6 +172,11 @@ export class WorldLocationCard {
     return this.collapsed
   }
 
+  /** Update scene/world title (e.g. after seamless promote or soft context). */
+  setTitle(title: string): void {
+    this.titleEl.textContent = title
+  }
+
   setVisible(visible: boolean): void {
     // When stacked, host owns visibility so the translucent frame toggles together.
     if (this.mapToggle?.host) {

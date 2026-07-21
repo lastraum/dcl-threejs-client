@@ -9,6 +9,7 @@ import { applyBundledWearableUrls, preloadBundledWearableManifests, tryBundledWe
 import { catalystPointerForWearableUrn } from './wearablePointers'
 import { shortenAddress } from './displayName'
 import { getExtendedAvatarColors, normalizeExtendedColorHex } from './extendedColors'
+import { safeDecodeURIComponent } from '../util/safeDecodeURIComponent'
 import type { AvatarProfile, BodyShape, WearableDefinition } from './types'
 
 /** Removed from Catalyst — optional slots, no warn spam. */
@@ -176,7 +177,7 @@ type RawRepresentation = {
 function contentFileLeaf(file: string): string {
   const clean = file.split('?')[0]!.split('#')[0]!
   const parts = clean.split('/')
-  return decodeURIComponent(parts[parts.length - 1] ?? clean)
+  return safeDecodeURIComponent(parts[parts.length - 1] ?? clean)
 }
 
 function entityToWearable(entity: CatalystEntity, peerUrl: string): WearableDefinition | null {

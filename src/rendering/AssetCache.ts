@@ -26,7 +26,12 @@ import { clearLocomotionClipCache } from '../avatar/locomotionClipCache'
 import { disposeSessionAudioBufferCache } from '../media/AudioBufferCache'
 import { collectManifestAssets } from './manifestAssets'
 import { isSceneBytesWarm } from './sceneLoadWarm'
-import { guessImageMimeFromUrl, preferFetchTextureLoad, proxiedTextureUrl } from './textureProxy'
+import {
+  guessImageMimeFromBytes,
+  guessImageMimeFromUrl,
+  preferFetchTextureLoad,
+  proxiedTextureUrl
+} from './textureProxy'
 
 const LANDSCAPE_CACHE_SUFFIX = '#landscape'
 
@@ -561,32 +566,73 @@ export class AssetCache {
     if (preferFetchTextureLoad(url)) {
       return this.loadTextureViaFetch(url)
     }
-    return this.textureLoader.loadAsync(url)
+    try {
+      return await this.textureLoader.loadAsync(url)
+    } catch (err) {
+      // Peer content can flip between image/* and octet-stream+nosniff; retry via fetch.
+      try {
+        return await this.loadTextureViaFetch(url)
+      } catch {
+        throw err
+      }
+    }
   }
 
-  /** fetch + blob — follows Arweave 302 redirects; works through same-origin proxy. */
+  /**
+   * fetch + decode — follows redirects; works through same-origin proxy.
+   * Peer content serves PNG as application/octet-stream + nosniff: Image(src=url)
+   * refuses those. We fetch bytes, re-type the Blob, then decode.
+   *
+   * Prefer HTMLImageElement so `Texture.flipY` works (MeshRenderer vs GLTF).
+   * Three.js: flipY has **no effect** on ImageBitmap — that left Jump Zone board
+   * textures upside-down after the ImageBitmap path landed. Delayed blob: revoke
+   * avoids the prior blank-texture race without needing ImageBitmap.
+   */
   private async loadTextureViaFetch(url: string): Promise<THREE.Texture> {
     const res = await fetch(url, { redirect: 'follow', credentials: 'omit' })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const raw = await res.blob()
-    if (!raw.size) throw new Error('empty texture response')
-    // Event CDN often serves webp/png as application/octet-stream — Image() needs a real image MIME.
-    const headerType = (res.headers.get('content-type') ?? raw.type ?? '').split(';')[0]!.trim()
+    const buffer = await res.arrayBuffer()
+    if (!buffer.byteLength) throw new Error('empty texture response')
+    const headerType = (res.headers.get('content-type') ?? '').split(';')[0]!.trim()
     const generic =
       !headerType ||
       headerType === 'application/octet-stream' ||
       headerType === 'binary/octet-stream' ||
-      headerType === 'application/binary'
-    const mime = generic ? guessImageMimeFromUrl(url) : null
-    const blob =
-      mime && raw.type !== mime ? new Blob([raw], { type: mime }) : raw
-    const objectUrl = URL.createObjectURL(blob)
-    try {
-      return await this.textureLoader.loadAsync(objectUrl)
-    } finally {
-      URL.revokeObjectURL(objectUrl)
-    }
+      headerType === 'application/binary' ||
+      !headerType.startsWith('image/')
+    const mime =
+      (generic ? guessImageMimeFromUrl(url) : null) ??
+      (generic ? guessImageMimeFromBytes(buffer) : null) ??
+      (headerType.startsWith('image/') ? headerType : null) ??
+      'image/png'
+    const blob = new Blob([buffer], { type: mime })
+
+    // HTMLImageElement — flipY honored by WebGL upload (ImageBitmap ignores it).
+    const image = await loadImageFromBlob(blob)
+    const tex = new THREE.Texture(image)
+    tex.colorSpace = THREE.SRGBColorSpace
+    tex.needsUpdate = true
+    tex.flipY = true
+    return tex
   }
+}
+
+/** Fallback when createImageBitmap is missing/fails — keep blob URL until onload. */
+function loadImageFromBlob(blob: Blob): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(blob)
+    const img = new Image()
+    img.onload = () => {
+      // Delay revoke so the decoder / GPU can finish sampling (Safari).
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
+      resolve(img)
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl)
+      reject(new Error('image decode failed'))
+    }
+    img.src = objectUrl
+  })
 }
 
 function disposeCachedRoot(root: THREE.Object3D): void {

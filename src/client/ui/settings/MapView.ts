@@ -5,6 +5,7 @@ import {
   VIEWPORT_DEFAULT_ZOOM,
   VIEWPORT_MAX_ZOOM,
   VIEWPORT_MIN_ZOOM,
+  centerViewOnGenesisMeters,
   centerViewOnParcel,
   mapTileUrl,
   parcelScreenRect,
@@ -52,8 +53,13 @@ export type MinimapPeerDot = {
 export type MapViewOptions = {
   getPlayerState: () => MapPlayerState | null
   onJumpIn?: (px: number, py: number) => void
-  /** Prefer this parcel when mounting (e.g. minimap open after scene teardown). */
+  /** Seed center (parcel). Live follow still tracks feet unless followPlayer is false. */
   initialCenter?: { px: number; py: number } | null
+  /**
+   * Keep re-centering on local player Genesis feet (default true).
+   * Set false for deep-links / leave-play focus parcels that should stay put.
+   */
+  followPlayer?: boolean
   /**
    * When true (settings overlay / in-world panel), hide the map page HUD
    * (status, Genesis Plaza / My Location) — that chrome belongs on the full /map route only.
@@ -164,16 +170,28 @@ export class MapView {
   private highlightParcel: { px: number; py: number } | null = null
   private parcelFetchGen = 0
   private parcelPopup: MapParcelPopup | null = null
+  /** Keep viewport centered on local player until the user pans the map. */
+  private followPlayer = true
   private readonly mobileQuery = window.matchMedia(MOBILE_MAP_QUERY)
   private readonly onMobileLayoutChange = (): void => this.syncMobileSidebarLayout()
   private readonly sidebarToggleBtn: HTMLButtonElement
   private readonly sidebarBackdrop: HTMLDivElement
   private readonly sidebarCloseBtn: HTMLButtonElement
 
-  constructor({ getPlayerState, onJumpIn, initialCenter = null, embedded = false }: MapViewOptions) {
+  constructor({
+    getPlayerState,
+    onJumpIn,
+    initialCenter = null,
+    followPlayer,
+    embedded = false
+  }: MapViewOptions) {
     this.getPlayerState = getPlayerState
     this.onJumpIn = onJumpIn
     this.initialCenter = initialCenter ?? null
+    // Default: keep following feet. Only pin the camera when caller opts out
+    // (e.g. leave-play focus parcel / deep-link). initialCenter alone must not
+    // freeze the marker — that made expanded map look "stuck".
+    this.followPlayer = followPlayer ?? true
 
     this.root = document.createElement('div')
     this.root.className = 'map-view dcl-map-page'
@@ -313,7 +331,9 @@ export class MapView {
     this.resizeObserver = new ResizeObserver(() => this.measureViewport())
     this.resizeObserver.observe(this.viewport)
     this.measureViewport()
-    if (this.initialCenter) {
+    if (this.followPlayer) {
+      this.centerOnPlayer()
+    } else if (this.initialCenter) {
       this.centerOnParcel(this.initialCenter.px, this.initialCenter.py)
     } else {
       this.centerOnPlayer()
@@ -411,13 +431,27 @@ export class MapView {
   centerOnPlayer(): void {
     const player = this.getPlayerState()
     if (!player) return
-    const m = /^(-?\d+),(-?\d+)$/.exec(player.parcelKey.trim())
-    if (!m) return
-    this.view = centerViewOnParcel(this.view, parseInt(m[1], 10), parseInt(m[2], 10))
+    this.followPlayer = true
+    if (
+      player.position &&
+      Number.isFinite(player.position.x) &&
+      Number.isFinite(player.position.z)
+    ) {
+      this.view = centerViewOnGenesisMeters(
+        this.view,
+        Number(player.position.x),
+        Number(player.position.z)
+      )
+    } else {
+      const m = /^(-?\d+),(-?\d+)$/.exec(player.parcelKey.trim())
+      if (!m) return
+      this.view = centerViewOnParcel(this.view, parseInt(m[1]!, 10), parseInt(m[2]!, 10))
+    }
     this.renderFrame()
   }
 
   private centerOnParcel(px: number, py: number): void {
+    this.followPlayer = false
     this.view = centerViewOnParcel(this.view, px, py)
     this.renderFrame()
   }
@@ -466,19 +500,22 @@ export class MapView {
 
   private allPlayerRows(): LivePeer[] {
     const local = this.getPlayerState()
-    const rows = [...this.players]
-    if (local?.address) {
-      const addr = normalizeWallet(local.address)
-      if (!rows.some((p) => normalizeWallet(p.address) === addr)) {
-        const m = /^(-?\d+),(-?\d+)$/.exec(local.parcelKey.trim())
-        if (m) {
-          rows.unshift({
-            address: addr,
-            parcel: [parseInt(m[1], 10), parseInt(m[2], 10)],
-            position: local.position,
-            lastPing: 0
-          })
+    // Always prefer live local pose — catalyst/archipelago peer rows lag and freeze the marker.
+    let rows = [...this.players]
+    if (local?.parcelKey) {
+      const m = /^(-?\d+),(-?\d+)$/.exec(local.parcelKey.trim())
+      if (m) {
+        const addr = local.address?.trim()
+          ? normalizeWallet(local.address)
+          : '__local_player__'
+        const live: LivePeer = {
+          address: addr,
+          parcel: [parseInt(m[1]!, 10), parseInt(m[2]!, 10)],
+          position: local.position,
+          lastPing: 0
         }
+        rows = rows.filter((p) => normalizeWallet(p.address) !== addr)
+        rows.unshift(live)
       }
     }
     return rows.sort((a, b) => {
@@ -635,6 +672,7 @@ export class MapView {
   private centerOnPeer(peer: LivePeer): void {
     const indices = parcelIndicesFromPeer(peer)
     if (!indices) return
+    this.followPlayer = false
     this.view = centerViewOnParcel(this.view, indices.px, indices.py)
     this.renderFrame()
   }
@@ -657,6 +695,31 @@ export class MapView {
     if (!this.active) return
     const { w, h } = this.viewSize
     if (w <= 0 || h <= 0) return
+
+    // Live follow — re-center on Genesis feet while walking (until user pans).
+    if (this.followPlayer) {
+      const player = this.getPlayerState()
+      if (
+        player?.position &&
+        Number.isFinite(player.position.x) &&
+        Number.isFinite(player.position.z)
+      ) {
+        this.view = centerViewOnGenesisMeters(
+          this.view,
+          Number(player.position.x),
+          Number(player.position.z)
+        )
+      } else if (player?.parcelKey) {
+        const m = /^(-?\d+),(-?\d+)$/.exec(player.parcelKey.trim())
+        if (m) {
+          this.view = centerViewOnParcel(
+            this.view,
+            parseInt(m[1]!, 10),
+            parseInt(m[2]!, 10)
+          )
+        }
+      }
+    }
 
     const tiles = visibleTiles(w, h, this.view)
     const seen = new Set<string>()
@@ -784,6 +847,7 @@ export class MapView {
     const dy = ev.clientY - drag.startY
     if (!drag.moved && Math.hypot(dx, dy) >= DRAG_THRESHOLD_PX) {
       drag.moved = true
+      this.followPlayer = false
       this.viewport.classList.add('is-dragging')
     }
     if (!drag.moved) return

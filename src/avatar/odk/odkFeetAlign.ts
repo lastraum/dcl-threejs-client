@@ -59,9 +59,39 @@ export function measureOdkFeetY(avatarRoot: THREE.Object3D): number | null {
   return mergeFootContactY(boneY, soleY)
 }
 
+function measureOdkFootStance(avatarRoot: THREE.Object3D): {
+  feetY: number
+  centerX: number
+  centerZ: number
+} | null {
+  const samples: THREE.Vector3[] = []
+  for (const boneName of ['foot_l', 'foot_r', 'ball_l', 'ball_r']) {
+    const bone = getOdkBone(avatarRoot, boneName)
+    if (!bone) continue
+    bone.getWorldPosition(_world)
+    avatarRoot.worldToLocal(_world)
+    samples.push(_world.clone())
+  }
+  if (samples.length === 0) return null
+  let sx = 0
+  let sz = 0
+  let lowest = samples[0]!.y
+  for (const p of samples) {
+    sx += p.x
+    sz += p.z
+    if (p.y < lowest) lowest = p.y
+  }
+  return { feetY: lowest, centerX: sx / samples.length, centerZ: sz / samples.length }
+}
+
 export function applyOdkPivotOffset(pivot: THREE.Object3D, model: THREE.Object3D): void {
+  // Offset on model, not pivot — same as VRM/DCL (pivot is pure yaw for setYaw).
   pivot.position.set(0, 0, 0)
   model.position.set(0, 0, 0)
+  const stance = measureOdkFootStance(model)
   const feetY = measureOdkFeetY(model)
-  pivot.position.y = feetY !== null ? -feetY : 0
+  const y = feetY !== null ? -feetY : stance ? -stance.feetY : 0
+  const cx = stance?.centerX ?? 0
+  const cz = stance?.centerZ ?? 0
+  model.position.set(-cx, y, -cz)
 }

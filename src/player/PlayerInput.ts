@@ -347,7 +347,10 @@ export class PlayerInput {
     return (
       document.querySelector('.settings-overlay.is-open') !== null ||
       document.querySelector('.preferences-panel.is-open') !== null ||
-      document.querySelector('.explorer-auth-panel:not([hidden])') !== null
+      document.querySelector('.explorer-auth-panel:not([hidden])') !== null ||
+      // RestrictedActions openExternalUrl / openNftDialog — block re-lock while faded dialog is up
+      document.getElementById('threejs-hud-confirm-overlay') !== null ||
+      document.getElementById('threejs-nft-dialog-overlay') !== null
     )
   }
 

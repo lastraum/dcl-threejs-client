@@ -5,6 +5,7 @@ import type { ContentFile } from '../dcl/content/types'
 import type { AvatarProfile, BodyShape } from './types'
 import { fetchEntityContentById } from '../network/catalyst/CatalystClient'
 import { getActiveSceneManifest } from '../rendering/DclTextureResolver'
+import { safeDecodeURIComponent } from '../util/safeDecodeURIComponent'
 
 type CatalystContent = { file: string; hash: string }
 
@@ -173,7 +174,7 @@ export function parseSceneEmoteUrn(ref: string): ParsedSceneEmoteUrn | null {
 }
 
 function normalizeSceneContentPath(path: string): string {
-  return decodeURIComponent(path.trim().replace(/^\.\//, '').replace(/\\/g, '/')).toLowerCase()
+  return safeDecodeURIComponent(path.trim().replace(/^\.\//, '').replace(/\\/g, '/')).toLowerCase()
 }
 
 /** Map `triggerSceneEmote({ src })` file path → scene-emote URN for local playback. */

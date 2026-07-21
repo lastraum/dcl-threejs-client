@@ -15,7 +15,7 @@ import {
   buildMappingsForWearables
 } from './loadWearable'
 import { pushWearableMappings, popWearableMappings } from '../rendering/DclTextureResolver'
-import { applyWearableEmissives } from './materials'
+import { applyAvatarToonShading, applyWearableEmissives } from './materials'
 import { buildComposeConfig } from './resolveProfile'
 import { resolveAvatarProfile } from './peerApi'
 import { isModelWearable } from './slots'
@@ -214,6 +214,8 @@ async function composeFromConfig(
   await applyFacialFeatures(bodyRoot, config, cache)
   await yieldToNextFrame()
   applyWearableEmissives(avatar)
+  // After emissives — toon banding skips the matte clamp on boosted materials.
+  applyAvatarToonShading(avatar)
   stabilizeSkinnedMeshes(avatar)
   return avatar
 }

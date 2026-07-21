@@ -149,6 +149,17 @@ export function formatDebugTime(at: number): string {
   })
 }
 
+/** Disable avatar toon banding (A/B against PBR look) — `?avatarnotoon` or localStorage.avatarnotoon=1. */
+export function isAvatarToonDisabled(): boolean {
+  try {
+    if (typeof window === 'undefined') return false
+    if (new URLSearchParams(window.location.search).has('avatarnotoon')) return true
+    return localStorage.getItem('avatarnotoon') === '1'
+  } catch {
+    return false
+  }
+}
+
 /** Freeze avatars in bind pose (no locomotion/idle) — `?avatarbindpose` or localStorage.avatarbindpose=1. */
 export function isAvatarBindPoseDebug(): boolean {
   try {

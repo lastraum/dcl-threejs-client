@@ -17,7 +17,7 @@ import {
   splitEmoteClips
 } from './emotePlayback'
 import { remapClipToAvatar } from './emoteBoneMap'
-import { findBodyShapeRoot } from './loadWearable'
+import { findBodyShapeRoot, syncParallelWearableSkeletons } from './loadWearable'
 import { getRemappedLocomotionClip } from './locomotionClipCache'
 import type { AssetCache, CachedGltf } from '../rendering/AssetCache'
 import { yieldToNextFrame } from '../rendering/mainThreadYield'
@@ -196,7 +196,7 @@ export class AvatarAnimations {
       console.warn('[avatar] Glide_Avatar missing — glider uses frozen jump pose')
     }
 
-    this.mixer?.update(0)
+    this.advancePose(0)
   }
 
   triggerDoubleJump(): void {
@@ -324,8 +324,7 @@ export class AvatarAnimations {
     this.activeProfileEmoteKey = key
     this.profileActive = true
     this.applyProfileEmoteWeights()
-    this.mixer.update(0)
-    this.propMixer?.update(0)
+    this.advancePose(0)
     return true
   }
 
@@ -393,8 +392,7 @@ export class AvatarAnimations {
     this.activeProfileEmoteKey = key
     this.profileActive = true
     this.applyProfileEmoteWeights()
-    this.mixer.update(0)
-    this.propMixer?.update(0)
+    this.advancePose(0)
     return true
   }
 
@@ -428,7 +426,7 @@ export class AvatarAnimations {
     this.activeProfileEmoteKey = key
     this.profileActive = true
     this.applyProfileEmoteWeights()
-    this.mixer.update(0)
+    this.advancePose(0)
     return true
   }
 
@@ -441,6 +439,13 @@ export class AvatarAnimations {
     return this.profileActive
   }
 
+  /** Apply mixer, then drive any parallel-skeleton wearables from the body pose. */
+  private advancePose(delta: number): void {
+    this.mixer?.update(delta)
+    this.propMixer?.update(delta)
+    if (this.avatarRoot) syncParallelWearableSkeletons(this.avatarRoot)
+  }
+
   update(delta: number, state: AvatarLocomotionState): void {
     if (!this.mixer) return
 
@@ -451,8 +456,7 @@ export class AvatarAnimations {
     if (this.profileActive) {
       this.twirl.reset()
       this.applyProfileEmoteWeights()
-      this.mixer.update(delta)
-      this.propMixer?.update(delta)
+      this.advancePose(delta)
       return
     }
 
@@ -479,7 +483,7 @@ export class AvatarAnimations {
         this.doubleJumpAction?.setEffectiveWeight(0)
         this.jumpAction?.setEffectiveWeight(1)
       }
-      this.mixer.update(delta)
+      this.advancePose(delta)
       return
     }
 
@@ -600,7 +604,7 @@ export class AvatarAnimations {
       nearGround: state.nearGround
     })
 
-    this.mixer.update(delta)
+    this.advancePose(delta)
   }
 
   dispose(): void {

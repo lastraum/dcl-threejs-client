@@ -1,7 +1,68 @@
 import * as THREE from 'three'
+import { renderQuality } from '../rendering/RenderQualitySettings'
 import { EMISSIVE_FACTOR_BOOST, EMISSIVE_INTENSITY } from './constants'
 
 const EMISSIVE_NAME = /^em\.|emissive|glow|neon|em_/
+
+/**
+ * Official DCL avatar toon banding, ported from wearable-preview
+ * (src/lib/babylon/toon/new-pbr.hlsl): posterize the FINAL composed color into 4 bands.
+ * t = (N·ray + 1)/2; thresholds 0.90/0.20 → multipliers 1.2 / 1.0 / 0.8.
+ * The ×0.8 floor keeps garment interiors from reading as black voids under PBR.
+ */
+const TOON_BAND_CHUNK = /* glsl */ `
+  {
+    float toonT = ( dot( normal, normalize( vViewPosition ) ) + 1.0 ) * 0.5;
+    float toonBand = toonT > 0.9 ? 1.2 : ( toonT > 0.2 ? 1.0 : 0.8 );
+    // Lift the lit result toward flat albedo, then band — official shading is nearly
+    // unlit; pure outgoingLight kept too much three.js light contrast.
+    outgoingLight = mix( outgoingLight, diffuseColor.rgb, 0.6 ) * toonBand;
+  }
+`
+
+/**
+ * Whether avatar toon is active for this session.
+ * Preferences default off; URL `?avatartoon` forces on, `?avatarnotoon` forces off (A/B).
+ */
+export function isAvatarToonEnabled(): boolean {
+  try {
+    if (typeof window !== 'undefined') {
+      const q = new URLSearchParams(window.location.search)
+      if (q.has('avatarnotoon')) return false
+      if (q.has('avatartoon')) return true
+    }
+  } catch {
+    /* ignore */
+  }
+  return renderQuality.getAvatarToonEnabled()
+}
+
+/** Match the official matte/toon avatar look — banded color, no specular response. */
+export function applyAvatarToonShading(root: THREE.Object3D): void {
+  if (!isAvatarToonEnabled()) return
+  root.traverse((obj) => {
+    if (!(obj instanceof THREE.Mesh)) return
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
+    for (const mat of materials) {
+      if (!isStandardMaterial(mat)) continue
+      const userData = mat.userData as Record<string, unknown>
+      if (userData.dclToon) continue
+      userData.dclToon = true
+      if (!userData.dclEmissiveBoosted) {
+        mat.metalness = 0
+        mat.roughness = Math.max(mat.roughness, 0.9)
+        mat.envMapIntensity = 0
+      }
+      mat.onBeforeCompile = (shader) => {
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <opaque_fragment>',
+          `${TOON_BAND_CHUNK}\n#include <opaque_fragment>`
+        )
+      }
+      mat.needsUpdate = true
+    }
+  })
+}
 
 function isStandardMaterial(mat: THREE.Material): mat is THREE.MeshStandardMaterial {
   return 'isMeshStandardMaterial' in mat && (mat as THREE.MeshStandardMaterial).isMeshStandardMaterial

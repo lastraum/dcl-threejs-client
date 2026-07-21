@@ -11,13 +11,14 @@ import { prepareAvatarMaterials, tintWearableMaterials } from './materials'
 import { wearableGlbCacheKey } from './wearableCache'
 import { normalizeBoneName, resolveBoneName } from './emoteBoneMap'
 import {
-  findAttachBoneForCategory,
-  findSkeletonHips,
-  fitWearableWorldExtent,
+  bakeOversizedWearableGeometry,
+  normalizeWearableArmatureToBody,
   normalizeWearableWorldScale,
-  prepareWearableForCompose,
+  pruneOrphanWearableRoots,
   pruneWearableDisplayMeshes,
   scaleGeometryPositions,
+  wearableHasCmScaleDisplayMesh,
+  wearableNeedsArmatureNormalize,
   wearableUnitScaleFactor
 } from './wearableSanitize'
 import type { BodyShape, WearableCategory, WearableDefinition } from './types'
@@ -37,6 +38,16 @@ export type MergeWearableOptions = {
   wearableId?: string
   /** body_shape root — needed to normalize mismatched armature scales on fallback attach. */
   bodyRoot?: THREE.Object3D
+}
+
+/** userData key on parallel-skeleton wearable roots (see attachWearableFallback). */
+export const PARALLEL_WEARABLE_USERDATA = 'dclParallelWearable'
+
+type ParallelBonePair = { body: THREE.Bone; wearable: THREE.Bone }
+
+type ParallelWearableState = {
+  pairs: ParallelBonePair[]
+  skeletons: THREE.Skeleton[]
 }
 
 export function createGltfLoader(mappings: Record<string, string>): GLTFLoader {
@@ -339,6 +350,32 @@ function bindSkinnedMesh(
 }
 
 /**
+ * Max bone-map quality across visible skinned meshes (0..1).
+ * Used to skip prepare/merge when a wearable clearly cannot rebind to the body skeleton.
+ */
+export function probeWearableMergeQuality(
+  wearableRoot: THREE.Object3D,
+  bodySkeleton: THREE.Skeleton,
+  options: MergeWearableOptions = {}
+): number {
+  let best = 0
+  wearableRoot.traverse((obj) => {
+    if (!(obj instanceof THREE.SkinnedMesh) || !obj.skeleton || !obj.visible) return
+    const usedBones = collectUsedBoneIndices(obj)
+    let quality = boneMapQuality(obj.skeleton, bodySkeleton, usedBones)
+    if (options.category === 'feet' && !feetMergeEligible(obj.skeleton, bodySkeleton, usedBones)) {
+      quality = 0
+    }
+    if (quality > best) best = quality
+  })
+  return best
+}
+
+export function mergeThreshold(options: MergeWearableOptions = {}): number {
+  return mergeThresholdForCategory(options.category, options.wearableId)
+}
+
+/**
  * Attach wearable skinned meshes to the body skeleton (Forge pattern).
  * Remaps bone indices by name so L1 / Mixamo profile wearables work.
  * Returns false when nothing could be merged — caller should add the full GLB instead.
@@ -404,9 +441,74 @@ export function mergeWearableMeshes(
   return merged > 0
 }
 
+function collectWearableSkeletons(root: THREE.Object3D): THREE.Skeleton[] {
+  const seen = new Set<THREE.Skeleton>()
+  const out: THREE.Skeleton[] = []
+  root.traverse((obj) => {
+    if (!(obj instanceof THREE.SkinnedMesh) || !obj.skeleton || !obj.visible) return
+    if (seen.has(obj.skeleton)) return
+    seen.add(obj.skeleton)
+    out.push(obj.skeleton)
+  })
+  return out
+}
+
 /**
- * When bone merge fails, parent the wearable under a category-appropriate avatar bone.
- * L1 exports often keep their own armature — scale is normalized before attach.
+ * Map wearable bones → body bones by name (explorer parallel-rig style).
+ * Unmapped wearable bones are left at authored bind pose.
+ */
+function buildParallelBonePairs(
+  wearableSkeleton: THREE.Skeleton,
+  bodySkeleton: THREE.Skeleton
+): ParallelBonePair[] {
+  const bodyNames = skeletonBoneSet(bodySkeleton)
+  const bodyByName = new Map<string, THREE.Bone>()
+  for (const bone of bodySkeleton.bones) {
+    bodyByName.set(normalizeBoneName(bone.name), bone)
+  }
+  const pairs: ParallelBonePair[] = []
+  for (const wearBone of wearableSkeleton.bones) {
+    const resolved = resolveBoneName(wearBone.name, bodyNames)
+    if (!resolved) continue
+    const bodyBone = bodyByName.get(resolved)
+    if (!bodyBone || bodyBone === wearBone) continue
+    pairs.push({ body: bodyBone, wearable: wearBone })
+  }
+  return pairs
+}
+
+function applyParallelBonePairs(pairs: ParallelBonePair[]): void {
+  for (const { body, wearable } of pairs) {
+    // Local TRS copy: standard DCL wearables share the Avatar_* hierarchy, so matching
+    // bones animate with the body. Wearable bone scale is left alone (unit differences).
+    wearable.position.copy(body.position)
+    wearable.quaternion.copy(body.quaternion)
+  }
+}
+
+/**
+ * Drive parallel wearable skeletons after body animation has been applied.
+ * Safe no-op when no fallback roots are present.
+ */
+export function syncParallelWearableSkeletons(avatarRoot: THREE.Object3D): void {
+  avatarRoot.traverse((obj) => {
+    const state = obj.userData[PARALLEL_WEARABLE_USERDATA] as ParallelWearableState | undefined
+    if (!state?.pairs?.length) return
+    applyParallelBonePairs(state.pairs)
+    for (const sk of state.skeletons) sk.update()
+  })
+}
+
+/**
+ * When bone merge fails, keep the wearable on its **own skeleton** (parallel rig).
+ *
+ * Matches explorer degradation for broken/mismatched bone names:
+ * - Parent under the avatar root (never under a body bone — that double-applies scale/pose).
+ * - Each frame, copy local pose from body bones that match by name.
+ * - Unmapped bones stay at the authored bind pose (hats stay on head, etc.).
+ *
+ * Avoids the old bone-parent + bake-to-Hips patchwork that mis-placed accessories and
+ * fought armature scale (~0.01 body bones collapsing fallback meshes).
  */
 export function attachWearableFallback(
   wearableRoot: THREE.Object3D,
@@ -416,38 +518,55 @@ export function attachWearableFallback(
 ): boolean {
   if (isL1WearableUrn(options.wearableId) && options.category !== 'feet') return false
 
-  if (options.bodyRoot) {
-    prepareWearableForCompose(wearableRoot, options.bodyRoot, options.category)
-  } else {
-    wearableRoot.traverse((obj) => {
-      if (obj instanceof THREE.Mesh) obj.visible = true
-    })
-    pruneWearableDisplayMeshes(wearableRoot)
-  }
-  // World extent pass — L1 shoe GLBs often still oversized after armature normalize alone.
-  normalizeWearableWorldScale(wearableRoot, options.category)
-  if (options.category === 'feet') {
-    // Second pass after matrix settle (Hips parent not attached yet — root space only).
-    normalizeWearableWorldScale(wearableRoot, options.category)
-  }
+  // Soft prep only — preserve authored placement. Do NOT parent under body bones and do
+  // NOT run the full prepareWearableForCompose path (that is for merge unit-baking).
+  wearableRoot.traverse((obj) => {
+    if (obj instanceof THREE.Mesh) obj.visible = true
+  })
+  pruneOrphanWearableRoots(wearableRoot)
 
-  const visibleMeshes = pruneWearableDisplayMeshes(wearableRoot)
+  if (options.bodyRoot) {
+    if (wearableNeedsArmatureNormalize(options.bodyRoot, wearableRoot)) {
+      normalizeWearableArmatureToBody(wearableRoot, options.bodyRoot)
+    }
+    if (wearableHasCmScaleDisplayMesh(wearableRoot)) {
+      bakeOversizedWearableGeometry(wearableRoot, options.category)
+    }
+  }
+  // Shrink only when clearly oversized for the slot — never invent placement.
+  normalizeWearableWorldScale(wearableRoot, options.category)
+
+  const visibleMeshes = pruneWearableDisplayMeshes(wearableRoot, { extentCheck: true })
   if (visibleMeshes === 0) return false
 
-  const attachBone = findAttachBoneForCategory(skeleton, options.category) ?? findSkeletonHips(skeleton)
-  wearableRoot.position.set(0, 0, 0)
-  wearableRoot.rotation.set(0, 0, 0)
-  // Identity rotation — own skeleton already faces bind-pose forward; do not invent Y-180.
-  if (attachBone) {
-    attachBone.add(wearableRoot)
-  } else {
-    target.add(wearableRoot)
+  // Plain meshes with no skeleton still render at authored pose under the avatar root.
+  const skeletons = collectWearableSkeletons(wearableRoot)
+  const pairs: ParallelBonePair[] = []
+  for (const wearSkel of skeletons) {
+    pairs.push(...buildParallelBonePairs(wearSkel, skeleton))
   }
 
-  // After parenting under body bones, hierarchy can double-shrink or re-inflate.
-  if (options.category === 'feet') {
-    fitWearableWorldExtent(wearableRoot, options.category)
+  wearableRoot.position.set(0, 0, 0)
+  wearableRoot.rotation.set(0, 0, 0)
+  // Keep scale from normalize passes above; identity only when never adjusted.
+  target.add(wearableRoot)
+
+  const state: ParallelWearableState = { pairs, skeletons }
+  wearableRoot.userData[PARALLEL_WEARABLE_USERDATA] = state
+
+  // Initial pose so the first rendered frame is not a pre-animation bind mismatch.
+  if (pairs.length) {
+    applyParallelBonePairs(pairs)
+    for (const sk of skeletons) sk.update()
   }
+
+  wearableRoot.traverse((obj) => {
+    if (obj instanceof THREE.SkinnedMesh) repairSkinnedMesh(obj)
+    if (obj instanceof THREE.Mesh) {
+      obj.castShadow = true
+      obj.receiveShadow = true
+    }
+  })
 
   return true
 }

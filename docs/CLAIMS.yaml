@@ -9,7 +9,7 @@ updated: 2026-07-21
 source: github
 base_branch: dev-latest
 workflow:
-  - stage: pending_review
+  - stage: merged
     integration_ref: pr:41
     title: Genesis multi-scene AOI, Explorer roads, empty land
     owner: lastraum
@@ -149,11 +149,4 @@ workflow:
     owner: lastraum
     pr: 5
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/5
-    updated: 2026-06-17
-  - stage: merged
-    integration_ref: pr:4
-    title: proactive TweenState delivery for tweenCompleted parity
-    owner: lastraum
-    pr: 4
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/4
     updated: 2026-06-17

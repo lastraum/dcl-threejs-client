@@ -186,6 +186,18 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
       ]
     },
     {
+      title: 'Toon shaders',
+      items: [
+        {
+          type: 'toggle',
+          label: 'Avatar toon shading',
+          defaultOn: rq.avatarToonEnabled,
+          onChange: (on) => renderQuality.setAvatarToonEnabled(on)
+        }
+        // Room for future knobs: band thresholds, albedo mix, matte clamp, etc.
+      ]
+    },
+    {
       title: 'Landscape and Foliage',
       items: [
         { type: 'slider', label: 'Scene Distance', min: 0, max: 200, defaultValue: 100, stub: true },
@@ -375,6 +387,9 @@ export class GraphicsSettingsView {
             break
           case 'Bloom':
             if (control.kind === 'toggle') control.input.checked = opts.bloomEnabled
+            break
+          case 'Avatar toon shading':
+            if (control.kind === 'toggle') control.input.checked = opts.avatarToonEnabled
             break
           case 'Enable Scene Lights':
             if (control.kind === 'toggle') control.input.checked = opts.sceneLightsEnabled

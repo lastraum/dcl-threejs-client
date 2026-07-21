@@ -37,6 +37,11 @@ export type RenderQualityOptions = {
    * Off = 8-bit path (cheaper, more clip).
    */
   hdrEnabled: boolean
+  /**
+   * Official DCL avatar toon banding (posterize + matte clamp). Off by default —
+   * independent of graphics presets so users can opt in without Custom.
+   */
+  avatarToonEnabled: boolean
 }
 
 /** Max ECS LightSource lights active at once (nearest to avatar) — preset defaults. */
@@ -91,7 +96,8 @@ const PRESET_BUNDLES: Record<PresetId, Omit<RenderQualityOptions, 'preset'>> = {
     msaaSamples: 0,
     vsync: true,
     bloomEnabled: false,
-    hdrEnabled: false
+    hdrEnabled: false,
+    avatarToonEnabled: false
   },
   medium: {
     tier: RenderQualityTier.Medium,
@@ -106,7 +112,8 @@ const PRESET_BUNDLES: Record<PresetId, Omit<RenderQualityOptions, 'preset'>> = {
     // Off by default — selective bloom full-scene material swap kills Genesis.
     // High/ultra keep bloom for neon/muzzle; auto-skipped when mesh count is huge.
     bloomEnabled: false,
-    hdrEnabled: false
+    hdrEnabled: false,
+    avatarToonEnabled: false
   },
   high: {
     tier: RenderQualityTier.High,
@@ -118,7 +125,8 @@ const PRESET_BUNDLES: Record<PresetId, Omit<RenderQualityOptions, 'preset'>> = {
     msaaSamples: 4,
     vsync: true,
     bloomEnabled: true,
-    hdrEnabled: true
+    hdrEnabled: true,
+    avatarToonEnabled: false
   },
   ultra: {
     tier: RenderQualityTier.Ultra,
@@ -130,13 +138,16 @@ const PRESET_BUNDLES: Record<PresetId, Omit<RenderQualityOptions, 'preset'>> = {
     msaaSamples: 8,
     vsync: true,
     bloomEnabled: true,
-    hdrEnabled: true
+    hdrEnabled: true,
+    avatarToonEnabled: false
   }
 }
 
 const DEFAULT_OPTIONS: RenderQualityOptions = {
   preset: 'medium',
-  ...PRESET_BUNDLES.medium
+  ...PRESET_BUNDLES.medium,
+  // Explicit — toon is opt-in and not flipped by named presets.
+  avatarToonEnabled: false
 }
 
 type Listener = (options: RenderQualityOptions) => void
@@ -282,10 +293,15 @@ class RenderQualityStore {
     return this.options.hdrEnabled
   }
 
-  /** Apply a named preset bundle (not custom). */
+  getAvatarToonEnabled(): boolean {
+    return this.options.avatarToonEnabled
+  }
+
+  /** Apply a named preset bundle (not custom). Keeps avatar toon preference. */
   applyPreset(preset: PresetId): void {
     const bundle = PRESET_BUNDLES[preset]
-    this.commit({ preset, ...bundle })
+    const avatarToonEnabled = this.options.avatarToonEnabled
+    this.commit({ preset, ...bundle, avatarToonEnabled })
   }
 
   setTier(tier: RenderQualityTier): void {
@@ -328,6 +344,10 @@ class RenderQualityStore {
     this.patch({ hdrEnabled })
   }
 
+  setAvatarToonEnabled(avatarToonEnabled: boolean): void {
+    this.patch({ avatarToonEnabled })
+  }
+
   setOptions(partial: Partial<RenderQualityOptions>): void {
     if (partial.preset && partial.preset !== 'custom' && isPreset(partial.preset)) {
       this.applyPreset(partial.preset)
@@ -361,6 +381,7 @@ class RenderQualityStore {
     if (typeof next.vsync !== 'boolean') next.vsync = this.options.vsync
     if (typeof next.bloomEnabled !== 'boolean') next.bloomEnabled = this.options.bloomEnabled
     if (typeof next.hdrEnabled !== 'boolean') next.hdrEnabled = this.options.hdrEnabled
+    if (typeof next.avatarToonEnabled !== 'boolean') next.avatarToonEnabled = this.options.avatarToonEnabled
 
     if (partial.preset === undefined || partial.preset === 'custom') {
       next.preset = this.inferPreset(next)
@@ -384,6 +405,7 @@ class RenderQualityStore {
         state.vsync === b.vsync &&
         state.bloomEnabled === b.bloomEnabled &&
         state.hdrEnabled === b.hdrEnabled
+        // avatarToonEnabled intentionally excluded — opt-in aesthetic, not a preset field
       ) {
         return id
       }
@@ -403,7 +425,8 @@ class RenderQualityStore {
       a.msaaSamples === b.msaaSamples &&
       a.vsync === b.vsync &&
       a.bloomEnabled === b.bloomEnabled &&
-      a.hdrEnabled === b.hdrEnabled
+      a.hdrEnabled === b.hdrEnabled &&
+      a.avatarToonEnabled === b.avatarToonEnabled
     )
   }
 
@@ -446,6 +469,7 @@ class RenderQualityStore {
       if (typeof parsed.vsync === 'boolean') next.vsync = parsed.vsync
       if (typeof parsed.bloomEnabled === 'boolean') next.bloomEnabled = parsed.bloomEnabled
       if (typeof parsed.hdrEnabled === 'boolean') next.hdrEnabled = parsed.hdrEnabled
+      if (typeof parsed.avatarToonEnabled === 'boolean') next.avatarToonEnabled = parsed.avatarToonEnabled
 
       if (isPreset(parsed.preset)) {
         next.preset = parsed.preset === 'custom' ? this.inferPreset(next) : parsed.preset

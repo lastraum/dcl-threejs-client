@@ -89,28 +89,53 @@ export type WearableDisplayCard = {
 }
 
 export const WEARABLE_RARITY_COLORS: Record<string, string> = {
-  legendary: '#ff8723',
-  epic: '#a335ee',
-  rare: '#00b4d8',
-  uncommon: '#57e389',
-  common: '#9aa3b2',
-  base: '#9aa3b2',
-  unique: '#ffd700',
-  exotic: '#ff2d6f',
-  mythic: '#ff6ad5'
+  legendary: '#A14BF3',
+  epic: '#438FFF',
+  rare: '#34CE76',
+  uncommon: '#FF8362',
+  common: '#73D3D3',
+  base: '#73D3D3',
+  unique: '#FEA217',
+  exotic: '#9B2222',
+  mythic: '#FF4BED'
 }
 
 /** Solid cell fills — matches DCL rarity swatches (no gradients). */
 export const WEARABLE_RARITY_BACKGROUNDS: Record<string, string> = {
-  legendary: '#ff8723',
-  epic: '#a335ee',
-  rare: '#00b4d8',
-  uncommon: '#57e389',
-  common: '#6b7280',
-  base: '#6b7280',
-  unique: '#ffd700',
-  exotic: '#ff2d6f',
-  mythic: '#ff6ad5'
+  legendary: '#A14BF3',
+  epic: '#438FFF',
+  rare: '#34CE76',
+  uncommon: '#FF8362',
+  common: '#73D3D3',
+  base: '#73D3D3',
+  unique: '#FEA217',
+  exotic: '#9B2222',
+  mythic: '#FF4BED'
+}
+
+/** Rarest-first ordering by DCL max supply (unique 1 → common 100k; free base items last). */
+export const WEARABLE_RARITY_RANK: Record<string, number> = {
+  unique: 0,
+  mythic: 1,
+  exotic: 2,
+  legendary: 3,
+  epic: 4,
+  rare: 5,
+  uncommon: 6,
+  common: 7,
+  base: 8
+}
+
+/** Sorted copy, rarest first; ties fall back to name A–Z. Unknown rarities sort last. */
+export function sortWearablesByRarity<T extends { name: string; rarity: string }>(
+  items: readonly T[]
+): T[] {
+  return [...items].sort((a, b) => {
+    const ra = WEARABLE_RARITY_RANK[a.rarity.trim().toLowerCase()] ?? 99
+    const rb = WEARABLE_RARITY_RANK[b.rarity.trim().toLowerCase()] ?? 99
+    if (ra !== rb) return ra - rb
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+  })
 }
 
 export function wearableRarityLabel(rarity: string): string {

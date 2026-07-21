@@ -10,6 +10,13 @@ source: github
 base_branch: dev-latest
 workflow:
   - stage: merged
+    integration_ref: pr:42
+    title: stop PE HUD flash on every click
+    owner: lastraum
+    pr: 42
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/42
+    updated: 2026-07-21
+  - stage: merged
     integration_ref: pr:41
     title: Genesis multi-scene AOI, Explorer roads, empty land
     owner: lastraum
@@ -143,10 +150,3 @@ workflow:
     pr: 10
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/10
     updated: 2026-07-09
-  - stage: merged
-    integration_ref: pr:5
-    title: "perf(tween): stop Genesis hot-loop + silence worker deliver logs"
-    owner: lastraum
-    pr: 5
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/5
-    updated: 2026-06-17

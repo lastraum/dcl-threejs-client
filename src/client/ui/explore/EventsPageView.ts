@@ -31,6 +31,7 @@ export class EventsPageView {
       onSignOut: opts.onSignOut,
       onOpenSettings: opts.onOpenSettings,
       onOpenBackpack: opts.onOpenBackpack,
+      onEnter3D: opts.onEnter3D,
       onOpenProfile: opts.onOpenProfile,
       onOpenWhatsNew: opts.onOpenWhatsNew
     })

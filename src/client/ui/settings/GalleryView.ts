@@ -56,7 +56,6 @@ export class GalleryView {
   private readonly storageBar: HTMLElement
   private readonly sectionsEl: HTMLElement
   private readonly statusEl: HTMLElement
-  private readonly refreshBtn: HTMLButtonElement
   private readonly detailHost: HTMLElement
 
   private readonly getWalletAddress?: () => string | null | undefined
@@ -64,6 +63,11 @@ export class GalleryView {
   private readonly peerUrl: string
 
   private images: DclGalleryImage[] = []
+  private searchQuery = ''
+  private searchTimer = 0
+  /** image id → lowercased metadata blob for search; built lazily on first query. */
+  private readonly metaBlobs = new Map<string, string>()
+  private metaIndexRunning = false
   private currentImages = 0
   private maxImages = 500
   private selectedId: string | null = null
@@ -92,8 +96,8 @@ export class GalleryView {
         <header class="gallery-view__header">
           <div class="gallery-view__header-left">
             <h2 class="gallery-view__title">Gallery</h2>
-            <button type="button" class="gallery-view__refresh" data-refresh title="Refresh">Refresh</button>
           </div>
+          <input type="search" class="gallery-view__search" data-search placeholder="Search photos" aria-label="Search photos by people, place, or metadata" autocomplete="off" spellcheck="false" />
           <div class="gallery-view__storage">
             <span class="gallery-view__storage-label" data-storage-label>Storage</span>
             <div class="gallery-view__storage-track" aria-hidden="true">
@@ -115,10 +119,19 @@ export class GalleryView {
     this.storageBar = this.root.querySelector('[data-storage-bar]')!
     this.sectionsEl = this.root.querySelector('[data-sections]')!
     this.statusEl = this.root.querySelector('[data-status]')!
-    this.refreshBtn = this.root.querySelector('[data-refresh]')!
     this.detailHost = this.root.querySelector('[data-detail-host]')!
 
-    this.refreshBtn.addEventListener('click', () => void this.loadGallery())
+    const search = this.root.querySelector('[data-search]') as HTMLInputElement | null
+    search?.addEventListener('input', () => {
+      window.clearTimeout(this.searchTimer)
+      this.searchTimer = window.setTimeout(() => {
+        this.searchQuery = search.value
+        if (this.searchQuery.trim()) this.ensureMetaIndex()
+        this.renderSearchStatus(null, null)
+        this.renderSections()
+      }, 200)
+    })
+
     this.sectionsEl.addEventListener('click', (ev) => void this.handleSectionClick(ev))
     this.sectionsEl.addEventListener('change', (ev) => void this.handleSectionChange(ev))
     this.detailHost.addEventListener('click', (ev) => void this.handleDetailClick(ev))
@@ -140,6 +153,7 @@ export class GalleryView {
     document.removeEventListener('pointerdown', this.onDocPointerDown, true)
     document.removeEventListener('keydown', this.onDocKeyDown, true)
     if (this.statusTimer) window.clearTimeout(this.statusTimer)
+    window.clearTimeout(this.searchTimer)
     this.root.remove()
   }
 
@@ -157,7 +171,37 @@ export class GalleryView {
   private onDocKeyDown = (ev: KeyboardEvent): void => {
     if (ev.code === 'Escape' && this.menuOpenId) {
       this.closeMenu()
+      return
     }
+    // Detail carousel: Esc back to grid (overlay stays open), arrows step photos.
+    if (this.detailShell.hidden) return
+    const el = document.activeElement
+    const typing =
+      el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ||
+      (el instanceof HTMLElement && el.isContentEditable)
+    if (ev.code === 'Escape') {
+      ev.preventDefault()
+      ev.stopPropagation()
+      this.closeDetail()
+      return
+    }
+    if (typing) return
+    if (ev.code === 'ArrowLeft' || ev.code === 'ArrowRight') {
+      const target = this.adjacentImage(ev.code === 'ArrowRight' ? 1 : -1)
+      if (target) {
+        ev.preventDefault()
+        void this.openDetail(target)
+      }
+    }
+  }
+
+  /** Neighbor of the open photo within the current (search-filtered) order. */
+  private adjacentImage(step: 1 | -1): DclGalleryImage | null {
+    if (!this.selectedId) return null
+    const order = this.visibleImages()
+    const idx = order.findIndex((img) => img.id === this.selectedId)
+    if (idx === -1) return null
+    return order[idx + step] ?? null
   }
 
   private closeMenu(): void {
@@ -186,7 +230,6 @@ export class GalleryView {
 
     this.loading = true
     this.error = null
-    this.refreshBtn.disabled = true
     this.setListStatus('Loading gallery…', 'loading')
     this.renderSections()
 
@@ -213,7 +256,6 @@ export class GalleryView {
       this.renderSections()
     } finally {
       this.loading = false
-      this.refreshBtn.disabled = false
     }
   }
 
@@ -223,6 +265,76 @@ export class GalleryView {
     this.storageLabel.textContent = `Storage ${count}/${max} photos`
     const pct = max > 0 ? Math.min(100, (count / max) * 100) : 0
     this.storageBar.style.width = `${pct}%`
+  }
+
+  /**
+   * Images matching the top-bar search. Matches against the full Camera Reel
+   * metadata blob (taker, wallets, visible people, place name, coords, realm)
+   * once indexed; unindexed images fall back to their date string.
+   */
+  private visibleImages(): DclGalleryImage[] {
+    const q = this.searchQuery.trim().toLowerCase()
+    if (!q) return this.images
+    return this.images.filter((img) => {
+      const blob = this.metaBlobs.get(img.id)
+      if (blob !== undefined) return blob.includes(q)
+      return (
+        img.dateTime.toLowerCase().includes(q) ||
+        formatGalleryDateTime(img.dateTime, 'short').toLowerCase().includes(q)
+      )
+    })
+  }
+
+  /** Lazily fetch per-image metadata for search (concurrency-limited, cached). */
+  private ensureMetaIndex(): void {
+    if (this.metaIndexRunning) return
+    const pending = this.images.filter((img) => !this.metaBlobs.has(img.id))
+    if (!pending.length) return
+    this.metaIndexRunning = true
+    const total = this.images.length
+    let done = total - pending.length
+    const worker = async (): Promise<void> => {
+      while (pending.length && !this.disposed) {
+        const img = pending.shift()!
+        try {
+          const detail = await fetchGalleryImageDetail(img.id)
+          this.metaBlobs.set(
+            img.id,
+            `${JSON.stringify(detail.metadata)} ${formatGalleryDateTime(img.dateTime, 'short')}`.toLowerCase()
+          )
+        } catch {
+          this.metaBlobs.set(img.id, img.dateTime.toLowerCase())
+        }
+        done++
+        // Progressive refresh while a search is active.
+        if (this.searchQuery.trim() && (done % 15 === 0 || !pending.length)) {
+          this.renderSearchStatus(done, total)
+          this.renderSections()
+        }
+      }
+    }
+    void Promise.all(Array.from({ length: 6 }, worker)).finally(() => {
+      this.metaIndexRunning = false
+      if (!this.disposed && this.searchQuery.trim()) {
+        this.renderSearchStatus(null, null)
+        this.renderSections()
+      }
+    })
+  }
+
+  private renderSearchStatus(done: number | null, total: number | null): void {
+    const q = this.searchQuery.trim()
+    if (!q) {
+      this.setListStatus(
+        this.images.length === 0
+          ? null
+          : `${this.images.length} photo${this.images.length === 1 ? '' : 's'}`
+      )
+      return
+    }
+    const matches = this.visibleImages().length
+    const indexing = done !== null && total !== null && done < total ? ` · indexing ${done}/${total}` : ''
+    this.setListStatus(`${matches} of ${this.images.length} photos match${indexing}`)
   }
 
   private renderSections(): void {
@@ -251,7 +363,16 @@ export class GalleryView {
       return
     }
 
-    const sections = groupGalleryByMonth(this.images)
+    const visible = this.visibleImages()
+    if (visible.length === 0) {
+      this.sectionsEl.innerHTML = `<div class="gallery-view__empty">
+        <p class="gallery-view__empty-title">No matching photos</p>
+        <p class="gallery-view__empty-body">Search covers people, wallets, place names, and photo metadata.</p>
+      </div>`
+      return
+    }
+
+    const sections = groupGalleryByMonth(visible)
     this.sectionsEl.innerHTML = sections
       .map(
         (section) => `
@@ -508,7 +629,8 @@ export class GalleryView {
       <div class="gallery-detail">
         <div class="gallery-detail__layout photo-review__layout">
           <div class="gallery-detail__preview photo-review__preview">
-            <button type="button" class="gallery-detail__back" data-action="back">← Gallery</button>
+            <button type="button" class="gallery-detail__nav gallery-detail__nav--prev" data-action="prev" aria-label="Previous photo" ${this.adjacentImage(-1) ? '' : 'disabled'}>&lsaquo;</button>
+            <button type="button" class="gallery-detail__nav gallery-detail__nav--next" data-action="next" aria-label="Next photo" ${this.adjacentImage(1) ? '' : 'disabled'}>&rsaquo;</button>
             <img
               class="gallery-detail__image photo-review__image"
               src="${escapeAttr(imgSrc)}"
@@ -681,6 +803,11 @@ export class GalleryView {
 
     if (action === 'back') {
       this.closeDetail()
+      return
+    }
+    if (action === 'prev' || action === 'next') {
+      const target = this.adjacentImage(action === 'next' ? 1 : -1)
+      if (target) void this.openDetail(target)
       return
     }
     if (action === 'toggle-person') {

@@ -49,13 +49,11 @@ function escapeHtml(value: string): string {
 
 const OVERLAY_SHELL = `
   <header class="places-view__header">
-    <h2 class="places-view__title">Explore</h2>
     <div class="places-view__header-actions">
       <select class="places-view__sort" data-sort aria-label="Sort list">
         <option value="most_users">Most users</option>
         <option value="name_az">A–Z</option>
       </select>
-      <button type="button" class="places-view__btn places-view__btn--ghost" data-refresh>Refresh</button>
     </div>
   </header>
   <nav class="places-view__subtabs" data-subtabs role="tablist" aria-label="Places sections">
@@ -281,8 +279,7 @@ export class PlacesView {
   private buildCategoryPills(): void {
     this.catBar.innerHTML = PLACES_SCENE_CATEGORIES.map(
       (c) => `
-        <button type="button" class="places-view__cat-pill${c.id === 'all' ? ' is-active' : ''}" data-cat="${escapeHtml(c.id)}" aria-pressed="${c.id === 'all'}">
-          <span class="places-view__cat-swatch" style="background:${c.swatch}" aria-hidden></span>
+        <button type="button" class="places-view__cat-pill${c.id === 'all' ? ' is-active' : ''}" data-cat="${escapeHtml(c.id)}" aria-pressed="${c.id === 'all'}" style="--cat-color:${c.swatch}">
           <span class="places-view__cat-label">${escapeHtml(c.label)}</span>
         </button>
       `
@@ -601,6 +598,24 @@ export class PlacesView {
     return this.onOpenScene ? 'Visit' : 'Jump In'
   }
 
+  /** Up to three category chips in the pill colors; "+N" for the rest. Worlds carry no categories. */
+  private categoryPillsHtml(item: DclExploreItem): string {
+    if (item.kind !== 'scene') return ''
+    const cats = item.place.categories.flatMap((slug) => {
+      const def = PLACES_SCENE_CATEGORIES.find((c) => c.slug === slug)
+      return def ? [def] : []
+    })
+    if (!cats.length) return ''
+    const shown = cats.slice(0, 3)
+    const extra = cats.length - shown.length
+    return `<span class="places-view__card-cats" aria-label="Categories">${shown
+      .map(
+        (c) =>
+          `<span class="places-view__card-cat" style="--cat-color:${c.swatch}">${escapeHtml(c.label)}</span>`
+      )
+      .join('')}${extra > 0 ? `<span class="places-view__card-cat places-view__card-cat--more">+${extra}</span>` : ''}</span>`
+  }
+
   private renderVisitButton(jumpKind: string, jumpId: string): string {
     const label = this.visitActionLabel()
     return `
@@ -785,7 +800,10 @@ export class PlacesView {
           </div>
           <div class="places-view__card-footer">
             <span class="places-view__card-location" title="${escapeHtml(location)}">${escapeHtml(location)}</span>
-            <button type="button" class="places-view__jump" data-jump-route data-jump-kind="${jumpKind}" data-jump-id="${escapeHtml(jumpId)}">${actionLabel}</button>
+            <span class="places-view__card-footer-right">
+              ${this.categoryPillsHtml(item)}
+              <button type="button" class="places-view__jump" data-jump-route data-jump-kind="${jumpKind}" data-jump-id="${escapeHtml(jumpId)}">${actionLabel}</button>
+            </span>
           </div>
         </div>
       </article>

@@ -11,6 +11,8 @@ export type SocialShellChromeHandlers = {
   onOpenBackpack?: () => void
   onOpenProfile?: () => void
   onOpenWhatsNew?: () => void
+  /** Enter the 3D overlay (the top-left "3D" dot). */
+  onEnter3D?: () => void
 }
 
 export type SocialShellTopNavOptions = SocialShellChromeHandlers & {
@@ -22,6 +24,9 @@ export type SocialShellTopNavOptions = SocialShellChromeHandlers & {
   onOpenChat?: () => void
   onOpenUserProfile?: (address: string) => void
 }
+
+/** DCL "A" app mark for the resting state of the 3D-section dot. */
+const DCL_DOT_MARK = `<svg viewBox="0 0 44 44" width="22" height="22" aria-hidden="true"><circle cx="22" cy="22" r="22" fill="#FF2D55"/><path fill="#fff" d="M10 28l6-14h2.2l3.4 8.2L25 14h2.1l6 14h-2.4l-1.2-3H13.6l-1.2 3H10zm5.8-5.2h6.8L19.8 17l-4 5.8z"/></svg>`
 
 const SHELL_TABS: readonly SocialShellTab[] = [
   'explore',
@@ -46,6 +51,10 @@ export class SocialShellTopNav {
     this.el.className = 'social-shell-topnav'
     this.el.setAttribute('aria-label', 'Decentraland')
     this.el.innerHTML = `
+      <button type="button" class="social-shell-topnav__section-dot" data-enter-3d title="Go to the 3D client" aria-label="Go to the 3D client">
+        <span class="social-shell-topnav__section-dot-mark" aria-hidden="true">${DCL_DOT_MARK}</span>
+        <span class="social-shell-topnav__section-dot-3d" aria-hidden="true">3D</span>
+      </button>
       <nav class="social-shell-topnav__nav" aria-label="Main">
         <button type="button" class="social-shell-topnav__link" data-shell-tab="explore">Explore</button>
         <button type="button" class="social-shell-topnav__link" data-shell-tab="map">Map</button>
@@ -76,6 +85,8 @@ export class SocialShellTopNav {
         btn.addEventListener('click', () => opts.onNavigate(tab))
       }
     }
+
+    this.el.querySelector('[data-enter-3d]')?.addEventListener('click', () => opts.onEnter3D?.())
 
     this.applyActiveTab()
   }

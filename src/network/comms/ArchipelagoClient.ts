@@ -23,7 +23,6 @@ export class ArchipelagoClient {
   private pendingPosition: Position | null = null
   /** Last known position — keep-alive heartbeats so island assignment is not one-shot. */
   private lastPosition: Position | null = null
-  private lastPosLogAt = 0
   private onIslandChanged: ((event: IslandChangedEvent) => void) | null = null
   private retries = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -73,11 +72,10 @@ export class ArchipelagoClient {
     }
     this.wsUrl = url
 
-    // Always console — ClientDebugLog silences category `comms`.
-    console.log('[archipelago] connecting', url)
     clientDebugLog.log('network', `Archipelago connecting · ${url}`, {
       level: 'info',
-      alsoConsole: true
+      throttleMs: 5000,
+      throttleKey: 'archipelago-connecting'
     })
     this.openSocket(url)
   }
@@ -92,15 +90,6 @@ export class ArchipelagoClient {
     const pos: Position = { x, y, z }
     this.pendingPosition = pos
     this.lastPosition = pos
-    // Log occasionally so island co-location is debuggable.
-    if (!this.lastPosLogAt || performance.now() - this.lastPosLogAt > 5000) {
-      this.lastPosLogAt = performance.now()
-      console.log(
-        '[archipelago] heartbeat genesis',
-        `x=${x.toFixed(1)} y=${y.toFixed(1)} z=${z.toFixed(1)}`,
-        `island=${this.islandId ?? 'none'}`
-      )
-    }
     this.flushHeartbeat()
   }
 
@@ -115,13 +104,8 @@ export class ArchipelagoClient {
   ensurePresenceSeed(genesis?: { x: number; y: number; z: number }): void {
     if (genesis) {
       this.queuePosition(genesis.x, genesis.y, genesis.z)
-      console.log(
-        '[archipelago] presence seed from scene',
-        `genesis=(${genesis.x.toFixed(1)},${genesis.y.toFixed(1)},${genesis.z.toFixed(1)})`
-      )
     } else if (!this.lastPosition) {
       this.queuePosition(0, 0, 0)
-      console.log('[archipelago] presence seed genesis (0,0,0) — no scene origin yet (friends online only)')
     }
     if (this.welcomed && this.isConnected()) {
       this.startHeartbeatLoop()
@@ -148,10 +132,10 @@ export class ArchipelagoClient {
     socket.binaryType = 'arraybuffer'
 
     socket.onopen = () => {
-      console.log('[archipelago] WS open · challenge')
       clientDebugLog.log('network', 'Archipelago WS open · sending challenge', {
         level: 'success',
-        alsoConsole: true
+        throttleMs: 5000,
+        throttleKey: 'archipelago-ws-open'
       })
       this.sendClientPacket({
         message: {
@@ -166,12 +150,20 @@ export class ArchipelagoClient {
     }
 
     socket.onerror = () => {
-      console.warn('[archipelago] WS error')
+      clientDebugLog.log('network', 'Archipelago WS error', {
+        level: 'warn',
+        throttleMs: 5000,
+        throttleKey: 'archipelago-ws-error'
+      })
       clientDebugLog.log('network', 'Archipelago WS error', { level: 'error', alsoConsole: true })
     }
 
     socket.onclose = () => {
-      console.warn('[archipelago] WS closed · retries=', this.retries)
+      clientDebugLog.log('network', `Archipelago WS closed · retries=${this.retries}`, {
+        level: 'warn',
+        throttleMs: 5000,
+        throttleKey: 'archipelago-ws-closed'
+      })
       clientDebugLog.log('network', 'Archipelago WS closed', { level: 'warn', alsoConsole: true })
       this.socket = null
       this.welcomed = false
@@ -231,11 +223,7 @@ export class ArchipelagoClient {
       case 'challengeResponse': {
         const challenge = message.challengeResponse.challengeToSign
         if (!challenge.startsWith('dcl-')) {
-          console.error('[archipelago] invalid challenge')
-          clientDebugLog.log('network', 'Archipelago invalid challenge', {
-            level: 'error',
-            alsoConsole: true
-          })
+          clientDebugLog.log('network', 'Archipelago invalid challenge', { level: 'error' })
           this.disconnect()
           return
         }
@@ -253,10 +241,8 @@ export class ArchipelagoClient {
       case 'welcome':
         this.welcomed = true
         this.retries = 0
-        console.log('[archipelago] welcome peer=', message.welcome.peerId)
         clientDebugLog.log('network', `Archipelago welcome · peer=${message.welcome.peerId}`, {
-          level: 'success',
-          alsoConsole: true
+          level: 'success'
         })
         // Prefer last known position if pending was cleared.
         if (!this.pendingPosition && this.lastPosition) {
@@ -270,7 +256,6 @@ export class ArchipelagoClient {
           const presenceSeed: Position = { x: 0, y: 0, z: 0 }
           this.pendingPosition = presenceSeed
           this.lastPosition = presenceSeed
-          console.log('[archipelago] presence seed genesis (0,0,0) — friend/community online status')
         }
         this.flushHeartbeat()
         this.startHeartbeatLoop()
@@ -278,11 +263,10 @@ export class ArchipelagoClient {
       case 'islandChanged': {
         const change = message.islandChanged
         this.islandId = change.islandId
-        console.log('[archipelago] island →', change.islandId, change.connStr.slice(0, 56))
         clientDebugLog.log(
           'network',
           `Archipelago island → ${change.islandId} · conn=${change.connStr.slice(0, 48)}…`,
-          { level: 'success', alsoConsole: true }
+          { level: 'success' }
         )
         this.onIslandChanged?.({
           islandId: change.islandId,

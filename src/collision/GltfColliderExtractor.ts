@@ -71,6 +71,8 @@ export class GltfColliderExtractor {
   /** When false, open island beach uses the infinite ground plane only (no parcel GLB _collider boxes). */
   private landscapePhysicsEnabled = true
   private physicsBatchFingerprint = ''
+  /** Fired when a GltfContainer extract is dropped — PhysX must removeStatic (freezeRemoval skips orphans). */
+  private onRemoved: ((entity: Entity) => void) | null = null
 
   private static emptyFingerprint = '__empty__'
 
@@ -82,7 +84,12 @@ export class GltfColliderExtractor {
     this.unsubscribeDebug = physxColliderDebug.subscribe(() => this.syncDebugVisibility())
   }
 
+  setOnRemoved(callback: ((entity: Entity) => void) | null): void {
+    this.onRemoved = callback
+  }
+
   dispose(): void {
+    this.onRemoved = null
     this.unsubscribeDebug()
     this.landscapeRoot = null
     for (const mesh of this.debugMeshes.values()) {
@@ -516,6 +523,7 @@ export class GltfColliderExtractor {
     this.lastColliderMeshWorldFp.delete(entity)
     this.walkSurfaceSnapshotPos.delete(entity)
     this.frameWalkSurfaceDelta.delete(entity)
+    this.onRemoved?.(entity)
     return true
   }
 

@@ -51,7 +51,12 @@ function buildNodeNameMap(root: THREE.Object3D): Map<string, THREE.Object3D> {
   return byName
 }
 
-/** Rebind cached GLTF clip tracks from source UUIDs → cloned instance nodes. */
+/**
+ * Rebind cached GLTF clip tracks from source UUIDs → cloned instance nodes.
+ * Clips stay in mesh-local space from GLTFLoader (already RH). Entity-root DCL→Three
+ * conversion is only on ECS Transform via applyDclLocalTransform — do not re-reflect tracks
+ * (that flipped continuous spins / skinned props).
+ */
 function retargetAnimationClip(
   clip: THREE.AnimationClip,
   root: THREE.Object3D,
@@ -70,10 +75,10 @@ function retargetAnimationClip(
     if (!target) {
       continue
     }
-    const rebound = track.clone()
+    const named = track.clone()
     const dot = track.name.indexOf('.')
-    rebound.name = dot >= 0 ? `${target.uuid}${track.name.slice(dot)}` : track.name
-    tracks.push(rebound)
+    named.name = dot >= 0 ? `${target.uuid}${track.name.slice(dot)}` : track.name
+    tracks.push(named)
   }
   return new THREE.AnimationClip(clip.name, clip.duration, tracks, clip.blendMode)
 }

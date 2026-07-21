@@ -125,10 +125,10 @@ export class LocalAvatar {
 
             this.vrmLocomotion = new VrmLocomotionAnimations()
             try {
+              // Feet align from bind pose only — never measureActivePose after retarget:
+              // idle hip tracks would skew soles. Offset is on model (not yaw pivot).
+              applyVrmPivotOffset(this.pivot, this.vrmAvatar.vrm, this.model)
               await this.vrmLocomotion.bind(this.vrmAvatar.vrm, this.vrmAvatar.root)
-              applyVrmPivotOffset(this.pivot, this.vrmAvatar.vrm, this.model, {
-                measureActivePose: true
-              })
               prepareCustomAvatarScene(this.model)
               console.info('[avatar] custom VRM equipped — locomotion active')
             } catch (err) {

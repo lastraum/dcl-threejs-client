@@ -585,6 +585,29 @@ export class CrdtProjection {
     map.set(entity, value)
   }
 
+  /**
+   * Renderer/player-frame owned delete — clears projection map (not the unused ECS engine).
+   * Store-component facades must call this from deleteFrom; otherwise createOrReplace writes
+   * the projection while deleteFrom only touched the prototype engine (SpaceRunner stayed
+   * frozen after load-gate clear: imHas=false but afterHas=true).
+   */
+  deleteRenderer(componentId: number, entity: Entity): void {
+    const map = this.components.get(componentId)
+    if (!map) return
+    if (this.isMainCameraOnCameraEntity(entity, componentId)) {
+      this.pendingMainCameraBind = null
+    }
+    this.clearPendingMainCameraBindForEntity(entity)
+    const tsMap = this.timestamps.get(componentId)
+    if (tsMap) {
+      // Bump LWW so a stale lower-TS freeze PUT cannot resurrect the component.
+      tsMap.set(entity, (tsMap.get(entity) ?? 0) + 1)
+    }
+    if (map.delete(entity)) {
+      this.changes.push({ entity, componentId, kind: 'delete' })
+    }
+  }
+
   /** Renderer-owned grow-only append. Stores the latest value (parity with inbound APPEND handling). */
   appendRenderer(componentId: number, entity: Entity, value: unknown): void {
     if (this.deletedEntities.has(entity)) return

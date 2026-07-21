@@ -63,7 +63,11 @@ export function measureAvatarStance(avatarRoot: THREE.Object3D): AvatarStance | 
   return null
 }
 
-/** Shift avatar pivot so soles meet the PhysX capsule base (y = 0 on player root). */
+/**
+ * Shift the *model* under the yaw pivot so soles sit on the PhysX capsule base
+ * (player root y = 0). Offset must not live on the pivot — setYaw rotates the pivot,
+ * which would turn local XZ into world "behind" offset.
+ */
 export function applyAvatarPivotOffset(pivot: THREE.Object3D, model?: THREE.Object3D | null): void {
   pivot.position.set(0, 0, 0)
   const avatar =
@@ -72,9 +76,11 @@ export function applyAvatarPivotOffset(pivot: THREE.Object3D, model?: THREE.Obje
     pivot.children[0] ??
     null
 
-  if (avatar) avatar.position.set(0, 0, 0)
-  const feetY = avatar ? measureAvatarFeetY(avatar) : null
-  pivot.position.y = feetY !== null ? -feetY : 0
+  if (!avatar) return
+  avatar.position.set(0, 0, 0)
+  const stance = measureAvatarStance(avatar)
+  if (!stance) return
+  avatar.position.set(-stance.centerX, -stance.feetY, -stance.centerZ)
 }
 
 /** @deprecated Use applyAvatarPivotOffset on the avatar pivot instead. */

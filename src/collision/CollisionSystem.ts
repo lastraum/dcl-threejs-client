@@ -41,6 +41,8 @@ export class CollisionSystem {
   private physicsBatchFingerprint = ''
   private readonly raycaster = new THREE.Raycaster()
   private readonly unsubscribeDebug: () => void
+  /** Fired when a MeshCollider extract is dropped — PhysX must removeStatic (freezeRemoval skips orphans). */
+  private onRemoved: ((entity: Entity) => void) | null = null
 
   constructor(parent: THREE.Scene) {
     this.root.name = 'scene-colliders'
@@ -48,7 +50,12 @@ export class CollisionSystem {
     this.unsubscribeDebug = physxColliderDebug.subscribe(() => this.refreshDebugVisibility())
   }
 
+  setOnRemoved(callback: ((entity: Entity) => void) | null): void {
+    this.onRemoved = callback
+  }
+
   dispose(): void {
+    this.onRemoved = null
     this.unsubscribeDebug()
   }
 
@@ -153,6 +160,7 @@ export class CollisionSystem {
     this.root.remove(record.root)
     this.colliders.delete(entity)
     this.poseFingerprints.delete(entity)
+    this.onRemoved?.(entity)
     return true
   }
 

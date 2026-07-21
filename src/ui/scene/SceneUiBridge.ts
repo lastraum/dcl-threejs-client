@@ -34,8 +34,11 @@ import {
 import {
   collectSceneUiEntitiesFromDom,
   entityFromSceneUiDomTarget,
+  isForeignUiRootOnTop,
+  setPeUiAuthoritativeEntityCheck,
   setSceneUiAuthoritativeEntityCheck
 } from './uiDomPick'
+import './uiPointerGate'
 import {
   findUiPointerHandlerEntity,
   hasUiPointerDownOrUp,
@@ -52,6 +55,7 @@ import {
 } from './uiLayoutCache'
 import { layoutUiTree, type LayoutBox } from './yogaLayout'
 import { onSceneUiImageLoaded } from './uiImageLoad'
+import { effectiveUiBackgroundAlpha } from './uiBackgroundStyle'
 
 const _camPos = new THREE.Vector3()
 const POINTER_EVENTS_COMPONENT_ID = 1062
@@ -98,11 +102,21 @@ export class SceneUiBridge {
   /** Last pointer position — re-evaluate cursor after Sync/modal DOM swaps. */
   private lastPointerClientX = 0
   private lastPointerClientY = 0
+  /**
+   * Fullscreen PE entities force-hidden after sceneUi inject (welcome splash click-to-fade).
+   * Worker fade may lag; paint must not re-enable PE until unmount.
+   */
+  private readonly forceDismissedEntities = new Set<Entity>()
+  private readonly forceDismissPurgeTimers = new Map<Entity, number>()
 
-  constructor(scene: ResolvedScene | null = null, getCanvas: () => HTMLElement | null = () => null) {
+  constructor(
+    scene: ResolvedScene | null = null,
+    getCanvas: () => HTMLElement | null = () => null,
+    opts?: { rootId?: string }
+  ) {
     this.scene = scene
     this.getCanvas = getCanvas
-    this.root = ensureSceneUiRoot()
+    this.root = ensureSceneUiRoot(opts?.rootId ?? 'scene-ui-root')
     this.setVisible(false)
     this.dom = new SceneUiDomRenderer(this.root, {
       onInputChange: (entity, value) => {
@@ -126,7 +140,12 @@ export class SceneUiBridge {
       isAuthoritativeUiEntity: (entity) => this.isAuthoritativeUiEntity(entity)
     })
     this.input.bind()
-    setSceneUiAuthoritativeEntityCheck((entity) => this.isAuthoritativeUiEntity(entity))
+    const isPeRoot = (opts?.rootId ?? 'scene-ui-root') === 'pe-ui-root'
+    if (isPeRoot) {
+      setPeUiAuthoritativeEntityCheck((entity) => this.isAuthoritativeUiEntity(entity))
+    } else {
+      setSceneUiAuthoritativeEntityCheck((entity) => this.isAuthoritativeUiEntity(entity))
+    }
     this.unbindImageLoaded = onSceneUiImageLoaded(() => this.scheduleImageRepaint())
   }
 
@@ -141,21 +160,140 @@ export class SceneUiBridge {
     }, 80)
   }
 
-  /** Show/hide `#scene-ui-root` — only enable in 3D play mode, not 2D landing/explorer. */
+  /** Show/hide scene ECS UI overlay — primary `#scene-ui-root` or PE `#pe-ui-root`. */
   setVisible(visible: boolean): void {
     const wasVisible = this.domVisible
     this.domVisible = visible
     this.root.hidden = !visible
     if (!visible) return
-    // Mount/commit often ran while hidden — drop paint skip keys so first reveal always paints.
+    // Invalidate on false→true only — re-calling setVisible(true) while shown must not
+    // thrash full Yoga rebuilds (that caused PE HUD flicker: first paint spam).
     if (!wasVisible) {
-      this.lastPaintLayoutKey = ''
-      this.lastPaintVisualKey = ''
-      this.lastEntityVisualKeys.clear()
-      this.paintCount = 0
-      this.firstPaintLogged = false
+      this.invalidatePaintCache()
     }
     if (this.lastView) this.paint(this.lastView)
+  }
+
+  /** Force Yoga+DOM rebuild + interactive hit regions (PE enable / late mount). */
+  forceRepaint(): void {
+    if (!this.domVisible) return
+    this.invalidatePaintCache()
+    if (this.lastView) this.paint(this.lastView)
+  }
+
+  /**
+   * After sceneUi inject-pointer-click: free the pointer from a fullscreen PE catcher.
+   * CBD Plaza welcome fades Color4.a over several frames; if worker ticks lag the shell
+   * stays pointer-events:auto and blocks WASD/look. Only full-viewport PE targets are
+   * force-dismissed (menus / CREATOR cards keep their click targets).
+   */
+  forceDismissAfterSceneUiClick(entity: Entity): void {
+    if (this.forceDismissedEntities.has(entity)) {
+      this.applyForceDismissDom(entity)
+      return
+    }
+    const region = this.hitMap.regionFor(entity)
+    const shell = this.dom.getNode(entity)
+    const domRect = shell?.getBoundingClientRect()
+    const vw = Math.max(1, window.innerWidth)
+    const vh = Math.max(1, window.innerHeight)
+    const w = region?.width ?? domRect?.width ?? 0
+    const h = region?.height ?? domRect?.height ?? 0
+    const isFullscreen = w >= vw * 0.72 && h >= vh * 0.72
+    if (!isFullscreen) {
+      // Non-fullscreen: still drop PE capture on this node so mid-fade shells
+      // do not re-steal the next pointer frame while worker updates opacity.
+      if (shell?.classList.contains('scene-ui-node--interactive')) {
+        shell.classList.remove('scene-ui-node--interactive')
+        shell.style.pointerEvents = 'none'
+      }
+      return
+    }
+
+    const targets = this.collectFullscreenDismissTargets(entity, vw, vh)
+    for (const id of targets) {
+      this.forceDismissedEntities.add(id)
+      this.applyForceDismissDom(id)
+      const prev = this.forceDismissPurgeTimers.get(id)
+      if (prev != null) window.clearTimeout(prev)
+      const captured = id
+      const timer = window.setTimeout(() => {
+        this.forceDismissPurgeTimers.delete(captured)
+        if (!this.forceDismissedEntities.has(captured)) return
+        // Worker never unmounted — hard purge ghost DOM so it cannot reappear.
+        this.dom.forceDismissEntity(captured)
+        this.hitMap.removeEntity(captured)
+        console.info(`[scene-ui] force-dismiss purge e${captured as number} (worker lag)`)
+      }, 1400)
+      this.forceDismissPurgeTimers.set(id, timer)
+    }
+    console.info(
+      `[scene-ui] force-dismiss fullscreen after sceneUi click — [${targets.map((e) => `e${e as number}`).join(',')}]`
+    )
+  }
+
+  /** Clicked PE + fullscreen PE ancestors (nested welcome scrim / image + catcher). */
+  private collectFullscreenDismissTargets(entity: Entity, vw: number, vh: number): Entity[] {
+    const out: Entity[] = []
+    const seen = new Set<number>()
+    const pushIfFullscreen = (id: Entity): void => {
+      const n = id as number
+      if (seen.has(n)) return
+      const region = this.hitMap.regionFor(id)
+      const shell = this.dom.getNode(id)
+      const rect = shell?.getBoundingClientRect()
+      const w = region?.width ?? rect?.width ?? 0
+      const h = region?.height ?? rect?.height ?? 0
+      if (w < vw * 0.72 || h < vh * 0.72) return
+      seen.add(n)
+      out.push(id)
+    }
+    pushIfFullscreen(entity)
+    const ecs = this.mirrorEcs
+    const view = this.lastView
+    if (!ecs || !view) return out.length ? out : [entity]
+    let current: Entity | null = entity
+    const root = view.RootEntity
+    for (let i = 0; i < 12 && current; i++) {
+      const t = ecs.UiTransform.getOrNull(current)
+      const parent = (t?.parent ?? 0) as Entity
+      if (!parent || parent === root || parent === 0) break
+      if (isUiEntityBlocking(ecs, parent, this.pointerEventsLookup)) {
+        pushIfFullscreen(parent)
+      }
+      current = parent
+    }
+    return out.length ? out : [entity]
+  }
+
+  private applyForceDismissDom(entity: Entity): void {
+    this.dom.forceDismissEntity(entity)
+    this.hitMap.removeEntity(entity)
+    this.refreshHoverCursor()
+  }
+
+  private clearForceDismiss(entity: Entity): void {
+    this.forceDismissedEntities.delete(entity)
+    const t = this.forceDismissPurgeTimers.get(entity)
+    if (t != null) {
+      window.clearTimeout(t)
+      this.forceDismissPurgeTimers.delete(entity)
+    }
+  }
+
+  private reapplyForceDismissedAfterPaint(): void {
+    if (!this.forceDismissedEntities.size) return
+    for (const entity of this.forceDismissedEntities) {
+      this.applyForceDismissDom(entity)
+    }
+  }
+
+  private invalidatePaintCache(): void {
+    this.lastPaintLayoutKey = ''
+    this.lastPaintVisualKey = ''
+    this.lastEntityVisualKeys.clear()
+    this.paintCount = 0
+    this.firstPaintLogged = false
   }
 
   isVisible(): boolean {
@@ -233,6 +371,9 @@ export class SceneUiBridge {
       this.dom.releaseAll()
       this.hitMap.clear()
       this.lastMountedUiEntities.clear()
+      for (const t of this.forceDismissPurgeTimers.values()) window.clearTimeout(t)
+      this.forceDismissPurgeTimers.clear()
+      this.forceDismissedEntities.clear()
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
@@ -336,6 +477,9 @@ export class SceneUiBridge {
 
   dispose(): void {
     setSceneUiAuthoritativeEntityCheck(null)
+    for (const t of this.forceDismissPurgeTimers.values()) window.clearTimeout(t)
+    this.forceDismissPurgeTimers.clear()
+    this.forceDismissedEntities.clear()
     this.input.dispose()
     this.dom.dispose()
     this.hitMap.clear()
@@ -568,6 +712,8 @@ export class SceneUiBridge {
       virtual: this.virtual
     })
     reportInputModifierState(ecs, view.PlayerEntity)
+    // Paint can re-enable PE on a force-dismissed splash — re-hide until worker unmounts.
+    this.reapplyForceDismissedAfterPaint()
     // Sync / modal unmount often leaves browser cursor stuck on pointer (node removed mid-hover).
     this.refreshHoverCursor()
   }
@@ -604,6 +750,8 @@ export class SceneUiBridge {
     this.lastPointerClientX = clientX
     this.lastPointerClientY = clientY
     if (!this.domVisible) return null
+    // PX dialog above primary (or reverse): do not claim hover / block with our hit-map.
+    if (isForeignUiRootOnTop(this.root.id, clientX, clientY)) return null
     const ecs = this.mirrorEcs
     const view = this.lastView
     if (!ecs || !view) return null
@@ -693,8 +841,14 @@ export class SceneUiBridge {
     // Stack order (deepest / smallest first) — first blocking layer wins; no scrim fall-through.
     const candidates = this.collectTopClusterPickCandidates(clientX, clientY, eventTarget)
     for (const entity of candidates) {
+      if (this.forceDismissedEntities.has(entity)) continue
       if (this.input.isFieldEntity(entity)) return { entity, blocking: true }
       if (isUiEntityBlocking(ecs, entity, this.pointerEventsLookup)) {
+        // Near-transparent UiBackground PE shells must not block (welcome fade).
+        const bg = ecs.UiBackground.getOrNull(entity) as PBUiBackground | null
+        if (bg && effectiveUiBackgroundAlpha(bg.color) < 0.05) continue
+        const t = ecs.UiTransform.getOrNull(entity)
+        if (t && (t.opacity ?? 1) < 0.05) continue
         return { entity, blocking: true }
       }
     }
@@ -751,6 +905,7 @@ export class SceneUiBridge {
       // Skip field rows — SceneUiInputController owns them; do not abort the whole pick (search
       // input is an ancestor candidate when clicking LOAD/DEL pills in the presets table).
       if (this.input.isFieldEntity(entity)) continue
+      if (this.forceDismissedEntities.has(entity)) continue
 
       const handler = findUiPointerHandlerEntity(
         ecs,
@@ -761,6 +916,7 @@ export class SceneUiBridge {
         this.pointerEventsLookup
       )
       if (handler !== null) {
+        if (this.forceDismissedEntities.has(handler)) continue
         // Rank by the HANDLER's region (card), not the leaf (label) — so a leaf that
         // incorrectly walks to the scrim loses to a real card handler under the same point.
         let area = this.candidatePickArea(handler)
@@ -773,6 +929,10 @@ export class SceneUiBridge {
       }
 
       if (isUiEntityBlocking(ecs, entity, this.pointerEventsLookup)) {
+        const bg = ecs.UiBackground.getOrNull(entity) as PBUiBackground | null
+        if (bg && effectiveUiBackgroundAlpha(bg.color) < 0.05) continue
+        const tr = ecs.UiTransform.getOrNull(entity)
+        if (tr && (tr.opacity ?? 1) < 0.05) continue
         const area = this.candidatePickArea(entity)
         if (area < blockingArea) {
           blockingArea = area
@@ -824,6 +984,9 @@ export class SceneUiBridge {
     this.lastPointerClientX = clientX
     this.lastPointerClientY = clientY
     if (!this.domVisible) return null
+    // Primary hit-map still covers the full screen under a PX enable/close popup.
+    // Only the topmost interactive root (`#pe-ui-root` vs `#scene-ui-root`) may inject.
+    if (isForeignUiRootOnTop(this.root.id, clientX, clientY, eventTarget)) return null
     this.mirrorEcs = ecs
     this.lastView = view
     const handlerEntity = this.resolveUiHandlerAtPoint(clientX, clientY, state, eventTarget)
@@ -910,6 +1073,7 @@ export class SceneUiBridge {
     for (const entity of removed) {
       this.input.releaseEntity(entity)
       this.lastMountedUiEntities.delete(entity)
+      this.clearForceDismiss(entity)
     }
   }
 

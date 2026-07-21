@@ -30,11 +30,19 @@ export function resolvePointerClientCoords(clientX: number, clientY: number): { 
   return { x: clientX, y: clientY }
 }
 
-/** True when the event target is an interactive client overlay (name pill, profile UI). */
+/** True when the event target is an interactive client overlay (name pill, profile UI, HUD dialogs). */
 export function isClientOverlayTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false
   return !!target.closest(
-    `${INTERACTIVE_NAME_TAG_SELECTOR}, .user-context-menu, .user-context-menu-backdrop, .user-profile-modal, .user-profile-modal-backdrop`
+    [
+      INTERACTIVE_NAME_TAG_SELECTOR,
+      '.user-context-menu',
+      '.user-context-menu-backdrop',
+      '.user-profile-modal',
+      '.user-profile-modal-backdrop',
+      '#threejs-hud-confirm-overlay',
+      '#threejs-nft-dialog-overlay'
+    ].join(', ')
   )
 }
 

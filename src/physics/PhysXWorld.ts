@@ -489,14 +489,22 @@ export class PhysXWorld {
   }
 
   /**
-   * Diagnostic — how many static actors have AABBs near (x,z) and their max top Y.
+   * Diagnostic — static actors near feet: floors vs tall walls, infinite ground note.
+   * Always mirrors to DevTools (`[phys]`) so invisible walls are diagnosable.
    */
-  logStaticCollidersNear(x: number, y: number, z: number, radius = 12): void {
-    let near = 0
-    let withTopNearY = 0
-    let maxTopY = Number.NEGATIVE_INFINITY
-    let minTopY = Number.POSITIVE_INFINITY
-    let sample = ''
+  logStaticCollidersNear(x: number, y: number, z: number, radius = 12, label = 'probe'): void {
+    type Hit = {
+      entity: number
+      minX: number
+      maxX: number
+      minY: number
+      maxY: number
+      minZ: number
+      maxZ: number
+      kind: 'floor' | 'wall' | 'slab' | 'other'
+    }
+    const hits: Hit[] = []
+    let hasInfiniteGround = this.staticActors.has(INFINITE_GROUND_ENTITY)
     for (const [entity, actor] of this.staticActors) {
       if (entity === INFINITE_GROUND_ENTITY) continue
       if (typeof actor.getWorldBounds !== 'function') continue
@@ -514,23 +522,50 @@ export class PhysXWorld {
       if (!min || !max) continue
       if (max.x < x - radius || min.x > x + radius) continue
       if (max.z < z - radius || min.z > z + radius) continue
-      near++
-      if (max.y > maxTopY) maxTopY = max.y
-      if (max.y < minTopY) minTopY = max.y
-      if (Math.abs(max.y - y) < 4) withTopNearY++
-      if (!sample) {
-        sample = `ent=${entity} topY=${max.y.toFixed(1)} xz=(${min.x.toFixed(0)}..${max.x.toFixed(0)},${min.z.toFixed(0)}..${max.z.toFixed(0)})`
-      }
+      const h = max.y - min.y
+      const w = Math.max(max.x - min.x, max.z - min.z)
+      // Feet band: collider spans player mid-height → wall-like; flat top near feet → floor.
+      const spansFeetY = min.y < y + 1.2 && max.y > y + 0.2
+      const topNearFeet = Math.abs(max.y - y) < 2.5
+      let kind: Hit['kind'] = 'other'
+      if (spansFeetY && h > 2.5 && h > w * 0.35) kind = 'wall'
+      else if (topNearFeet && h < 3) kind = 'floor'
+      else if (topNearFeet) kind = 'slab'
+      hits.push({
+        entity: entity as number,
+        minX: min.x,
+        maxX: max.x,
+        minY: min.y,
+        maxY: max.y,
+        minZ: min.z,
+        maxZ: max.z,
+        kind
+      })
     }
-    clientDebugLog.log(
-      'player',
-      `static colliders near feet r=${radius} — count=${near} topNearAuthored=${withTopNearY}` +
-        (Number.isFinite(maxTopY)
-          ? ` topY=[${minTopY.toFixed(1)}..${maxTopY.toFixed(1)}]`
-          : ' topY=none') +
-        (sample ? ` e.g. ${sample}` : ' (none)'),
-      { alsoConsole: true, level: 'info' }
-    )
+    hits.sort((a, b) => {
+      const order = { wall: 0, floor: 1, slab: 2, other: 3 }
+      return order[a.kind] - order[b.kind]
+    })
+    const walls = hits.filter((h) => h.kind === 'wall').length
+    const floors = hits.filter((h) => h.kind === 'floor' || h.kind === 'slab').length
+    /** Decode GLTF_COLLIDER_ENTITY_BASE (20_000_000) + ecs entity for readable logs. */
+    const fmtEnt = (e: number) =>
+      e >= 20_000_000 ? `gltf:e${e - 20_000_000}` : e === INFINITE_GROUND_ENTITY ? 'ground' : `e${e}`
+    const samples = hits
+      .slice(0, 6)
+      .map(
+        (h) =>
+          `${h.kind}:${fmtEnt(h.entity)} y=[${h.minY.toFixed(1)}..${h.maxY.toFixed(1)}] ` +
+          `xz=(${h.minX.toFixed(0)}..${h.maxX.toFixed(0)},${h.minZ.toFixed(0)}..${h.maxZ.toFixed(0)})`
+      )
+      .join(' · ')
+    const msg =
+      `${label} feet=(${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)}) r=${radius} ` +
+      `static=${hits.length} walls≈${walls} floors≈${floors}` +
+      (hasInfiniteGround ? ' groundPlane=y0' : ' groundPlane=MISSING') +
+      (samples ? ` · ${samples}` : ' · (no nearby statics)')
+    console.info(`[phys] ${msg}`)
+    clientDebugLog.log('player', msg, { alsoConsole: false, level: 'info' })
   }
 
   private setupControllerManager(): void {
@@ -2434,6 +2469,12 @@ export class PhysXWorld {
         shapes.map((shape) => shape.localMatrix.clone())
       )
     }
+    if (attached < shapes.length) {
+      console.warn(
+        `[PhysXWorld] multi-shape cook partial — entity=${desc.entity} attached=${attached}/${shapes.length} ` +
+          `(triangle-only; failed shapes dropped — check cook logs). fp=${desc.fingerprint.slice(0, 80)}`
+      )
+    }
     return true
   }
 
@@ -2445,7 +2486,10 @@ export class PhysXWorld {
     skipWorkerStream = false
   ): PxMeshHandle | null {
     if (!isTrimeshGeometryCookable(bakedGeo)) return null
-    let handle = geometryToPxMesh(this.cookingParams, bakedGeo, false, {
+    // Triangle mesh only — never convex fallback. Convex hulls turn hollow DCL wall /
+    // dome `_collider` shells into solid volumes (player hits "invisible wall" mid-map).
+    // Explorer cooks triangle meshes for GltfContainer physics; matching that is required.
+    const handle = geometryToPxMesh(this.cookingParams, bakedGeo, false, {
       cache: true,
       physics: this.physics,
       persistCook,
@@ -2453,16 +2497,6 @@ export class PhysXWorld {
       skipWorkerStream,
       workerStorageKey
     })
-    if (!handle?.value) {
-      handle = geometryToPxMesh(this.cookingParams, bakedGeo, true, {
-        cache: true,
-        physics: this.physics,
-        persistCook,
-        preferPersistedCook,
-        skipWorkerStream,
-        workerStorageKey
-      })
-    }
     return handle?.value ? handle : null
   }
 
@@ -2507,17 +2541,7 @@ export class PhysXWorld {
         : geometryToPxMesh(this.cookingParams, bakedGeo, false, cookOpts)
       let pxGeometry: unknown = null
 
-      if (!pmeshHandle?.value && !cache) {
-        const convexHandle = geometryToPxMesh(this.cookingParams, bakedGeo, true, cookOpts)
-        if (convexHandle?.value) {
-          const meshScale = unitPxMeshScale()
-          pxGeometry = new PHYSX.PxConvexMeshGeometry(convexHandle.value, meshScale)
-          PHYSX.destroy(meshScale)
-          handles.push(convexHandle)
-          return pxGeometry
-        }
-      }
-
+      // No convex fallback here either — hollow scene walls must stay triangle meshes.
       if (!pmeshHandle?.value) return null
 
       if (!pxGeometry) {
@@ -2730,25 +2754,14 @@ export class PhysXWorld {
           skipWorkerStream,
           workerStorageKey: workerKey
         }
+        // Triangle mesh only (no convex fallback — hollow walls must stay shells).
         pmeshHandle = geometryToPxMesh(this.cookingParams, bakedGeo, false, cookOpts)
-        if (!pmeshHandle?.value) {
-          pmeshHandle = geometryToPxMesh(this.cookingParams, bakedGeo, true, {
-            ...cookOpts,
-            workerStorageKey: bootColliderCookSignature(desc.geometry, desc, undefined, true)
-          })
-          if (pmeshHandle?.value) {
-            const meshScale = unitPxMeshScale()
-            geometry = new PHYSX.PxConvexMeshGeometry(pmeshHandle.value, meshScale)
-            PHYSX.destroy(meshScale)
-            this.pmeshHandles.set(desc.entity, [pmeshHandle])
-          }
-        }
         bakedGeo.dispose()
         if (!pmeshHandle?.value) {
           this.logCookFailedOnce(desc.fingerprint, '[PhysXWorld] trimesh cook failed:')
           return false
         }
-        if (!geometry) {
+        {
           const meshFlags = new PHYSX.PxMeshGeometryFlags(PHYSX.PxMeshGeometryFlagEnum.eDOUBLE_SIDED)
           const meshScale = unitPxMeshScale()
           geometry = new PHYSX.PxTriangleMeshGeometry(pmeshHandle.value, meshScale, meshFlags)

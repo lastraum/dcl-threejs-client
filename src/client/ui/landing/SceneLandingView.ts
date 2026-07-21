@@ -14,6 +14,12 @@ import {
   type SceneLandingMeta
 } from '../../../social/sceneLanding'
 import {
+  fetchSceneCompositeVideos,
+  isPlayableLandingMediaUrl,
+  sceneCompositeVideoLabel,
+  type SceneCompositeVideo
+} from '../../../social/sceneCompositeVideos'
+import {
   isHttpsM3u8,
   listJoinLiveOptions,
   sceneStreamTargetFromRoute,
@@ -83,6 +89,8 @@ export class SceneLandingView {
   private playSessionReady = false
   private login: LoginResult
   private joinLiveOptions: JoinLiveOption[] = []
+  /** VideoPlayers scraped from main.composite (custom m3u8/mp4, not LiveKit). */
+  private sceneVideos: SceneCompositeVideo[] = []
   private joinLiveMenuOpen = false
   private targetProgress = 0
   private displayedProgress = 0
@@ -99,6 +107,12 @@ export class SceneLandingView {
   private castLive = false
   /** Companion streamPlaybackStarted — destination card swaps to full cast stage. */
   private streamWatchActive = false
+  /**
+   * What the cast stage is playing.
+   * - `http` = composite/user m3u8·mp4 (must ignore LiveKit castLive=false)
+   * - `cast` = LiveKit remote video (end watch only when cast actually drops)
+   */
+  private streamWatchKind: 'none' | 'cast' | 'http' = 'none'
   private castMuted = false
   private castVolume = 1
   /**
@@ -213,23 +227,23 @@ export class SceneLandingView {
   /**
    * Cast/OBS live flag from LiveKit remote video tracks (wallet scene-room connection).
    * Updates LIVE badge + Join live menu.
-   * When the stream ends while watching, leave video mode and restore scene details.
+   * Only tears down the watch stage for LiveKit cast sessions that lose video —
+   * composite HLS / user m3u8 must not be killed by castLive=false polls.
    */
   setCastLive(live: boolean): void {
-    if (this.castLive === live) {
+    const wasLive = this.castLive
+    if (wasLive === live) {
       // Still refresh chrome — layout may have remounted while state was already true.
       this.syncLiveBadge()
       this.refreshJoinLiveOptions()
-      // Stream ended while still in watch UI (castLive already false but stage open).
-      if (!live && this.streamWatchActive) {
-        this.returnToSceneDetailsAfterStreamEnd()
-      }
       return
     }
     this.castLive = live
     this.syncLiveBadge()
     this.refreshJoinLiveOptions()
-    if (!live && this.streamWatchActive) {
+    // true → false while watching LiveKit cast: stream ended.
+    // Never apply to `http` scene-video watches (CBD Plaza custom m3u8, etc.).
+    if (!live && wasLive && this.streamWatchActive && this.streamWatchKind === 'cast') {
       this.returnToSceneDetailsAfterStreamEnd()
     }
   }
@@ -237,7 +251,6 @@ export class SceneLandingView {
   /** Stream ended — leave blank cast stage, show landing scene card again. */
   private returnToSceneDetailsAfterStreamEnd(): void {
     if (this.disposed) return
-    console.log('[cast] stream ended — returning to scene details')
     this.forceExitStreamWatchMode()
     this.showStreamNotice('Live stream ended.')
   }
@@ -441,8 +454,16 @@ export class SceneLandingView {
     loadingEl.hidden = false
 
     try {
-      this.meta = await fetchSceneLandingMeta(this.route)
+      // Meta + composite VideoPlayers in parallel (composite is independent of Places API).
+      const [meta, sceneVideos] = await Promise.all([
+        fetchSceneLandingMeta(this.route),
+        fetchSceneCompositeVideos(this.route)
+      ])
       if (this.disposed) return
+      this.meta = meta
+      this.sceneVideos = sceneVideos
+      // Seed options before first paint so JOIN LIVE is visible without a flash.
+      this.refreshJoinLiveOptions()
       loadingEl.remove()
       this.mainEl.innerHTML = this.renderLayout(this.meta)
       this.refreshJoinLiveOptions()
@@ -506,30 +527,44 @@ export class SceneLandingView {
 
   private refreshJoinLiveOptions(): void {
     const { pointer, kind } = this.streamTarget()
-    this.joinLiveOptions = listJoinLiveOptions(pointer, kind)
-    // Only offer scene LiveKit cast when remote video is actually published (OBS / ingress).
-    // LiveKit chat connect alone must not show Join live — scene VideoPlayer is unrelated.
+    const userOpts = listJoinLiveOptions(pointer, kind)
+    const sceneOpts: JoinLiveOption[] = this.sceneVideos.map((v) => ({
+      id: `scene-video:${v.entityId}`,
+      label: sceneCompositeVideoLabel(v),
+      kind: 'scene-video' as const,
+      mediaUrl: v.mediaUrl,
+      isHls: v.isHls,
+      playing: v.playing,
+      entityId: v.entityId
+    }))
+    // Order: LiveKit cast (if live) → composite scene screens → user listings.
+    this.joinLiveOptions = []
     if (this.castLive) {
-      this.joinLiveOptions = [
-        {
-          id: 'cast-livekit',
-          label: 'LIVE · Cast',
-          kind: 'cast-live'
-        },
-        ...this.joinLiveOptions
-      ]
+      this.joinLiveOptions.push({
+        id: 'cast-livekit',
+        label: 'LIVE · Cast',
+        kind: 'cast-live'
+      })
     }
+    this.joinLiveOptions.push(...sceneOpts, ...userOpts)
     this.renderJoinLiveMenu()
     this.syncJoinLiveVisibility()
     this.syncLiveBadge()
   }
 
+  /** True when composite has a playing HLS screen or LiveKit has remote video. */
+  private showLiveBadge(): boolean {
+    if (this.castLive) return true
+    return this.sceneVideos.some((v) => v.isHls && v.playing)
+  }
+
   private syncLiveBadge(): void {
+    const live = this.showLiveBadge()
     const visual = this.root.querySelector('.scene-watch-dest-scene-card-visual')
     if (visual) {
       let host = visual.querySelector('.scene-watch-dest-scene-card-visual-badges') as HTMLElement | null
       let badge = host?.querySelector('[data-cast-live-badge]') as HTMLElement | null
-      if (this.castLive) {
+      if (live) {
         if (!host) {
           host = document.createElement('div')
           host.className = 'scene-watch-dest-scene-card-visual-badges'
@@ -557,7 +592,7 @@ export class SceneLandingView {
     const pillTitleRow = this.root.querySelector(
       '[data-cast-stage] .scene-watch-dest-scene-pill-title-row'
     )
-    if (this.castLive) {
+    if (live) {
       if (!pillLive && pillTitleRow) {
         const el = document.createElement('span')
         el.className = 'scene-watch-dest-scene-pill-live'
@@ -583,7 +618,7 @@ export class SceneLandingView {
     const userCount = meta?.userCount ?? 0
     const inWorldLabel = meta?.kind === 'world' ? 'in-world' : 'here'
     const live =
-      this.castLive
+      this.showLiveBadge()
         ? `<span class="scene-watch-dest-scene-pill-live" aria-label="Live now">Live</span>`
         : ''
     const crowd =
@@ -723,7 +758,11 @@ export class SceneLandingView {
       const labelText = sole
         ? sole.kind === 'cast-live'
           ? 'LIVE · CAST'
-          : sole.label.replace(/^Live:\s*/i, '').toUpperCase().slice(0, 18)
+          : sole.kind === 'scene-video'
+            ? sole.isHls
+              ? 'JOIN LIVE'
+              : 'WATCH'
+            : sole.label.replace(/^Live:\s*/i, '').toUpperCase().slice(0, 18)
         : 'JOIN LIVE'
       if (labelEl) labelEl.textContent = labelText
       else {
@@ -736,7 +775,11 @@ export class SceneLandingView {
       btn.title = sole
         ? sole.kind === 'cast-live'
           ? 'Watch Cast / LiveKit stream'
-          : sole.label
+          : sole.kind === 'scene-video'
+            ? sole.isHls
+              ? 'Watch scene HLS stream'
+              : 'Watch scene video'
+            : sole.label
         : 'Choose a live stream'
     }
     if (caret) caret.hidden = !multi
@@ -793,6 +836,14 @@ export class SceneLandingView {
       this.showStreamNotice(
         `Cast listing “${opt.stream.displayName}” — no LiveKit video yet. Wait for the stream, or Jump in to the world.`
       )
+      return
+    }
+    if (opt.kind === 'scene-video') {
+      if (!isPlayableLandingMediaUrl(opt.mediaUrl)) {
+        this.showStreamNotice('Scene video URL is not playable in the browser.')
+        return
+      }
+      this.openStreamPlayer(opt.mediaUrl, opt.label)
       return
     }
     const url =
@@ -903,10 +954,12 @@ export class SceneLandingView {
   /**
    * Companion streamPlaybackStarted layout: replace destination card chrome with Cast stage.
    * Scene info pill sits above the video card (companion scene-watch-dest-scene-pill).
+   * @param kind `http` = m3u8/mp4 player; `cast` = LiveKit remote video
    */
-  private enterStreamWatchMode(title: string): HTMLElement | null {
+  private enterStreamWatchMode(title: string, kind: 'cast' | 'http'): HTMLElement | null {
     this.teardownStreamPlayer()
     this.streamWatchActive = true
+    this.streamWatchKind = kind
     document.body.classList.add('scene-landing-stream-watch')
     this.root.classList.add('scene-landing-view--stream-watch')
     document.removeEventListener('fullscreenchange', this.onCastFullscreenChange)
@@ -1044,6 +1097,7 @@ export class SceneLandingView {
   /** Leave watch mode and stop video/audio (used by close when not fullscreen). */
   private forceExitStreamWatchMode(): void {
     this.streamWatchActive = false
+    this.streamWatchKind = 'none'
     document.body.classList.remove('scene-landing-stream-watch')
     this.root.classList.remove('scene-landing-view--stream-watch')
     document.removeEventListener('fullscreenchange', this.onCastFullscreenChange)
@@ -1097,7 +1151,7 @@ export class SceneLandingView {
       this.showStreamNotice('Cast watch is not available on this session.')
       return
     }
-    const host = this.enterStreamWatchMode(title)
+    const host = this.enterStreamWatchMode(title, 'cast')
     if (!host) return
     const waiting = this.root.querySelector('[data-cast-waiting]') as HTMLElement | null
     const hint = this.root.querySelector('[data-cast-hint]') as HTMLElement | null
@@ -1192,8 +1246,8 @@ export class SceneLandingView {
     }, 1500)
   }
 
-  private openStreamPlayer(m3u8Url: string, title: string): void {
-    const host = this.enterStreamWatchMode(title)
+  private openStreamPlayer(mediaUrl: string, title: string): void {
+    const host = this.enterStreamWatchMode(title, 'http')
     if (!host) return
     const waiting = this.root.querySelector('[data-cast-waiting]') as HTMLElement | null
     const hint = this.root.querySelector('[data-cast-hint]') as HTMLElement | null
@@ -1208,10 +1262,11 @@ export class SceneLandingView {
     if (waiting) waiting.hidden = true
     this.syncCastMuteUi()
 
-    if (Hls.isSupported()) {
+    const isHls = isHttpsM3u8(mediaUrl)
+    if (isHls && Hls.isSupported()) {
       const hls = new Hls({ enableWorker: true })
       this.hlsPlayer = hls
-      hls.loadSource(m3u8Url)
+      hls.loadSource(mediaUrl)
       hls.attachMedia(video)
       hls.on(Hls.Events.ERROR, (_e, data) => {
         if (data.fatal && hint) {
@@ -1219,11 +1274,26 @@ export class SceneLandingView {
           hint.textContent = 'Could not play this stream (network or codec error).'
         }
       })
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = m3u8Url
-    } else if (hint) {
-      hint.hidden = false
-      hint.textContent = 'HLS playback is not supported in this browser.'
+    } else if (isHls && video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = mediaUrl
+    } else if (isHls) {
+      if (hint) {
+        hint.hidden = false
+        hint.textContent = 'HLS playback is not supported in this browser.'
+      }
+    } else {
+      // Progressive scene media (mp4/webm) from composite VideoPlayer.src
+      video.src = mediaUrl
+      video.addEventListener(
+        'error',
+        () => {
+          if (hint) {
+            hint.hidden = false
+            hint.textContent = 'Could not play this scene video (network or codec error).'
+          }
+        },
+        { once: true }
+      )
     }
     void video.play().catch(() => {})
     this.applyCastAudioToHost()
@@ -1388,7 +1458,7 @@ export class SceneLandingView {
     const kindLabel = meta.kind === 'world' ? 'World' : 'Parcel'
     const creatorLabel = meta.kind === 'world' ? 'World owner' : 'Creator'
     const inWorldLabel = meta.kind === 'world' ? 'in world' : 'here'
-    const liveBadge = this.castLive
+    const liveBadge = this.showLiveBadge()
       ? `<span class="scene-watch-cast-live-badge" data-cast-live-badge role="status">LIVE</span>`
       : ''
     const crowdBadge =
@@ -1490,7 +1560,7 @@ export class SceneLandingView {
                           ${categories ? `<div class="scene-watch-dest-scene-card-badges" aria-label="Categories">${categories}</div>` : ''}
                           <div class="scene-watch-dest-scene-card-actions">
                             <div class="scene-watch-dest-scene-card-cta-row">
-                              <div class="scene-watch-join-live-split" data-join-live-root ${this.castLive || this.joinLiveOptions.length > 0 ? '' : 'hidden'}>
+                              <div class="scene-watch-join-live-split" data-join-live-root ${this.joinLiveOptions.length > 0 ? '' : 'hidden'}>
                                 <button
                                   type="button"
                                   class="scene-watch-dest-btn scene-watch-dest-btn--secondary scene-watch-dest-btn--watch-live-cta scene-watch-join-live-caret-in-btn scene-watch-join-live-caret-in-btn--single"

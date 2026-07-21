@@ -5,6 +5,7 @@ import { BLANK_SCENE_TEMPLATE } from './types'
 import { layoutFromSceneMetadata } from './sceneLayout'
 import { resolveBrowserChatEnabled } from './resolveBrowserChat'
 import { resolveNameTagsVisible } from './resolveNameTags'
+import { resolvePortableExperiencesPolicy } from '../multiScene/resolvePortableExperiences'
 import { resolveSceneEnvironment } from '../landscape/resolveLandscapeEnvironment'
 import { catalystContentAssetUrl, catalystRootFromContentUrl, fetchSceneEntityByPointer } from '../../network/catalyst/CatalystClient'
 import { fetchCatalystRealmAbout, fetchWorldRealmAbout } from '../../network/catalyst/realmAbout'
@@ -249,6 +250,7 @@ async function resolveEmptyCoordsScene(
     commsPointer: pointer,
     browserChatEnabled: resolveBrowserChatEnabled(metadata),
     nameTagsVisible: resolveNameTagsVisible(metadata),
+    portableExperiencesPolicy: resolvePortableExperiencesPolicy(metadata),
     realm
   }
 }
@@ -327,6 +329,7 @@ function resolvedFromEntity(
     commsPointer: opts.commsPointer,
     browserChatEnabled: resolveBrowserChatEnabled(metadata),
     nameTagsVisible: resolveNameTagsVisible(metadata),
+    portableExperiencesPolicy: resolvePortableExperiencesPolicy(metadata),
     realm: opts.realm
   }
 }
@@ -386,7 +389,8 @@ export async function resolveSceneFromRoute(target: RouteTarget): Promise<Resolv
       landscapeEnvironment: resolvedEnv.landscapeEnvironment,
       skyLighting: resolvedEnv.skyLighting,
       browserChatEnabled: resolveBrowserChatEnabled(metadata),
-      nameTagsVisible: resolveNameTagsVisible(metadata)
+      nameTagsVisible: resolveNameTagsVisible(metadata),
+      portableExperiencesPolicy: resolvePortableExperiencesPolicy(metadata)
     }
   }
 

@@ -342,6 +342,12 @@ export type MainToWorker =
       plazaScale?: boolean
       /** Override engine tick interval (ms) — from `?scenetick=` on main. */
       engineTickIntervalMs?: number
+      /**
+       * Portable experience / smart wearable worker.
+       * Skips SpaceRunner-style load-gate InputModifier force-clear (PE drone freezes are intentional
+       * and survive GLB FINISHED; force-clear was wiping freeze + breaking WASD flight).
+       */
+      portableExperience?: boolean
     }
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
   | { type: 'tween-state-deliver'; data: Uint8Array[] }

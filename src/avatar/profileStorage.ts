@@ -5,7 +5,10 @@ import type { AvatarProfile, WearableDefinition } from './types'
  * localStorage key for resolved peer avatar profile + wearable defs.
  * Prunes by age/count and shrinks on QuotaExceededError (see docs/ARCHITECTURE.md).
  */
-const CACHE_KEY = 'dcl-client-avatar-cache'
+// v2: entries written before the clothing-backfill removal contain default jeans/shirts
+// the profile never equipped — key bump invalidates them.
+const CACHE_KEY = 'dcl-client-avatar-cache-v2'
+const LEGACY_CACHE_KEYS = ['dcl-client-avatar-cache']
 /** Soft cap — enough for a busy world without blowing origin quota. */
 const MAX_ENTRIES = 24
 /** ~2.5MB JSON ceiling for the whole store (wearable defs are fat). */
@@ -66,6 +69,7 @@ export function pruneAvatarCacheStore(
 function readStore(): CacheStore {
   if (typeof window === 'undefined') return {}
   try {
+    for (const key of LEGACY_CACHE_KEYS) localStorage.removeItem(key)
     const raw = localStorage.getItem(CACHE_KEY)
     if (!raw) return {}
     const parsed = JSON.parse(raw) as CacheStore

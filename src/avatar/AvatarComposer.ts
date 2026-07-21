@@ -82,6 +82,8 @@ async function composeFromConfig(
   pushWearableMappings(mergedMappings)
   /** Categories with a live mesh after merge/fallback — basemesh hide only when present. */
   const attachedCategories = new Set<WearableCategory>()
+  /** Subset attached via rigid fallback — their slot's basemesh stays visible. */
+  const fallbackCategories = new Set<WearableCategory>()
   let bodyRoot: THREE.Object3D
   try {
     bodyRoot = await loadWearableSceneCached(
@@ -137,7 +139,13 @@ async function composeFromConfig(
       const mergeOpts = {
         category,
         wearableId: entry.wearable.id,
-        bodyRoot
+        bodyRoot,
+        // replaces has hide semantics for base parts — fallback anchoring/skin logic
+        // treats both alike.
+        hides: [
+          ...(entry.wearable.data.hides ?? []),
+          ...(entry.wearable.data.replaces ?? [])
+        ]
       }
       const isFeet = category === 'feet'
       if (isFeet && isAvatarVerbose()) {
@@ -160,17 +168,33 @@ async function composeFromConfig(
       }
 
       if (!merged) {
-        const attached = attachWearableFallback(entry.layer, skeleton, avatar, mergeOpts)
-        if (attached && isFeet && isAvatarVerbose()) {
-          console.info(`[avatar] feet fallback attach — ${entry.wearable.id}`)
+        // Fallback renders the AUTHORED rest pose — the merge attempt's prepare pass
+        // mutated this layer's transforms, so bake from a pristine clone instead.
+        disposeWearableInstance(entry.layer)
+        const pristine = await loadWearableSceneCached(
+          cache,
+          entry.wearable,
+          config.bodyShape,
+          config.skin,
+          config.hair,
+          true
+        )
+        const attached = attachWearableFallback(pristine, skeleton, avatar, mergeOpts)
+        if (attached && isAvatarVerbose()) {
+          console.info(`[avatar] ${category} fallback attach (authored pose) — ${entry.wearable.id}`)
         }
         if (!attached) {
           console.warn(
             `[avatar] skipping wearable ${entry.wearable.id} (${category}) — no merge and no safe fallback geometry`
           )
-          disposeWearableInstance(entry.layer)
+          disposeWearableInstance(pristine)
         } else {
           attachedCategories.add(category)
+          // Overlay-style fallback (no hides/replaces) keeps the base part visible and
+          // animated under it. Replacement-style (hides/replaces something) hides its
+          // own slot too — its kept skin meshes ARE the body there, rigid like the
+          // official parallel-rig rendering of broken exports.
+          if (!mergeOpts.hides.length) fallbackCategories.add(category)
         }
       } else {
         attachedCategories.add(category)
@@ -184,6 +208,7 @@ async function composeFromConfig(
   await yieldToNextFrame()
   applyBodyShapeVisibility(bodyRoot, config.wearables, {
     attachedCategories,
+    fallbackCategories,
     forceRender: config.forceRender
   })
   await applyFacialFeatures(bodyRoot, config, cache)

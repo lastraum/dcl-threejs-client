@@ -73,6 +73,20 @@ export const DEFAULT_WEARABLE_CATEGORIES: WearableCategory[] = [
   'feet'
 ]
 
+/**
+ * Categories to backfill when a profile omits them — face/hair only (profiles store just
+ * colors for defaults; missing these renders bald / blank-faced). Clothing is NOT
+ * backfilled: an empty upper/lower/feet slot means the base-body underwear shows,
+ * matching the official explorer. Guest profile creation still uses the full
+ * DEFAULT_WEARABLE_CATEGORIES to equip a starting outfit explicitly.
+ */
+export const BACKFILL_WEARABLE_CATEGORIES: WearableCategory[] = [
+  'eyebrows',
+  'mouth',
+  'eyes',
+  'hair'
+]
+
 export function normalizeUrn(urn: string): string {
   return urn.replace(/^dcl:\/\/base-avatars\//, 'urn:decentraland:off-chain:base-avatars:').toLowerCase()
 }

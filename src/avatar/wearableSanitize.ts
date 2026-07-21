@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { normalizeBoneName, resolveBoneName } from './emoteBoneMap'
+import { isAvatarVerbose } from '../client/debug/ClientDebugLog'
 import type { WearableCategory } from './types'
 
 const _boundsSize = new THREE.Vector3()
@@ -371,8 +372,119 @@ export function fitWearableWorldExtent(
   if (extent >= minOk && extent <= maxOk) return
 
   const factor = expected / extent
-  if (!Number.isFinite(factor) || factor < 1e-4 || factor > 100) return
+  // Allow up to 1e4: an armature normalized to the body's ~0.01 scale leaves a
+  // fallback wearable needing a >100× rescue (a 100-cap left it a speck at the hip).
+  if (!Number.isFinite(factor) || factor < 1e-4 || factor > 1e4) return
   root.scale.multiplyScalar(factor)
+}
+
+/**
+ * Vertical body region per slot on the DCL avatar (≈1.75m tall, feet at y=0).
+ * Compose-time skeleton measurement is unreliable (Avatar_ rig bind matrices collapse
+ * Box3/boneTransform sampling), so fallback placement uses these fixed regions.
+ */
+const SLOT_REGION_Y: Partial<Record<WearableCategory, { min: number; max: number }>> = {
+  feet: { min: 0, max: 0.2 },
+  // lower_body max pairs with fallback keeping the base lbody VISIBLE (it must stay
+  // animated): the base waist fills everything above the waistband, so fallback fabric
+  // sits at 0.95 — on the narrower thigh/hip zone where it clears the (wider) body.
+  // Raising it to ~1.05 put fabric over the widest hips and the body swallowed it.
+  lower_body: { min: 0.05, max: 0.95 },
+  upper_body: { min: 0.85, max: 1.5 },
+  hands_wear: { min: 0.7, max: 1.1 },
+  helmet: { min: 1.35, max: 1.8 },
+  hat: { min: 1.55, max: 1.8 },
+  top_head: { min: 1.6, max: 1.85 },
+  mask: { min: 1.4, max: 1.7 },
+  eyewear: { min: 1.5, max: 1.65 },
+  earring: { min: 1.45, max: 1.6 },
+  tiara: { min: 1.6, max: 1.8 },
+  hair: { min: 1.4, max: 1.85 },
+  facial_hair: { min: 1.35, max: 1.55 }
+}
+
+/**
+ * Position a fallback wearable (attached to the avatar root, static meshes) against the
+ * slot region it covers — its own slot plus every slot it hides, so a lower_body with a
+ * built-in torso that hides upper_body anchors neck-down instead of into the legs.
+ * Clothing aligns to the region's top edge, feet to the sole, everything else centers.
+ */
+/** Combined vertical region a fallback wearable should occupy: its slot ∪ everything it hides. */
+export function fallbackSlotRegion(
+  category?: WearableCategory,
+  hides?: string[]
+): { min: number; max: number } | null {
+  const regions: Array<{ min: number; max: number }> = []
+  const addRegion = (cat?: string) => {
+    const region = cat ? SLOT_REGION_Y[cat as WearableCategory] : undefined
+    if (region) regions.push(region)
+  }
+  addRegion(category)
+  for (const hidden of hides ?? []) addRegion(hidden)
+  if (!regions.length) return null
+  return {
+    min: Math.min(...regions.map((r) => r.min)),
+    max: Math.max(...regions.map((r) => r.max))
+  }
+}
+
+export function alignFallbackWearableToSlot(
+  wearableRoot: THREE.Object3D,
+  category?: WearableCategory,
+  hides?: string[]
+): void {
+  const region = fallbackSlotRegion(category, hides)
+  if (!region) return
+  const regionMin = region.min
+  const regionMax = region.max
+
+  wearableRoot.updateWorldMatrix(true, true)
+  let box = new THREE.Box3().setFromObject(wearableRoot)
+  if (box.isEmpty()) return
+
+  // Z-up exports lie flat (depth ≫ height — never legitimate for a wearable);
+  // stand them up before anchoring. Width > height is NOT corrected: T-posed
+  // upper-body items are naturally wider than tall.
+  const size = box.getSize(new THREE.Vector3())
+  let uprighted = false
+  if (size.z > size.y * 1.4 && size.z >= size.x) {
+    wearableRoot.rotateX(-Math.PI / 2)
+    wearableRoot.updateWorldMatrix(true, true)
+    box = new THREE.Box3().setFromObject(wearableRoot)
+    uprighted = true
+  }
+
+  const center = box.getCenter(new THREE.Vector3())
+  // Center on the avatar axis; vertical anchor depends on the slot.
+  const delta = new THREE.Vector3(-center.x, 0, -center.z)
+  if (category === 'feet') {
+    delta.y = regionMin - box.min.y
+  } else if (category === 'upper_body' || category === 'lower_body' || category === 'hands_wear') {
+    delta.y = regionMax - box.max.y
+  } else {
+    delta.y = (regionMin + regionMax) / 2 - center.y
+  }
+
+  const parent = wearableRoot.parent
+  if (parent) {
+    // World-space delta → parent-local delta (linear part of the inverse only).
+    const inv = parent.matrixWorld.clone().invert()
+    const origin = new THREE.Vector3().applyMatrix4(inv)
+    const moved = delta.clone().applyMatrix4(inv).sub(origin)
+    wearableRoot.position.add(moved)
+  } else {
+    wearableRoot.position.add(delta)
+  }
+
+  if (isAvatarVerbose()) {
+    const fmt = (b: THREE.Box3) =>
+      `[${b.min.x.toFixed(2)},${b.min.y.toFixed(2)},${b.min.z.toFixed(2)}..${b.max.x.toFixed(2)},${b.max.y.toFixed(2)},${b.max.z.toFixed(2)}]`
+    const post = new THREE.Box3().setFromObject(wearableRoot)
+    console.info(
+      `[avatar] fallback align ${category}: region=[${regionMin.toFixed(2)}..${regionMax.toFixed(2)}] ` +
+        `${uprighted ? 'UPRIGHTED ' : ''}wear=${fmt(box)} delta=(${delta.x.toFixed(2)},${delta.y.toFixed(2)},${delta.z.toFixed(2)}) post=${fmt(post)}`
+    )
+  }
 }
 
 /**

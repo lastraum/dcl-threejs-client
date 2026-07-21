@@ -10,12 +10,11 @@ import { contentMappings, getMainFileUrl } from './peerApi'
 import { prepareAvatarMaterials, tintWearableMaterials } from './materials'
 import { wearableGlbCacheKey } from './wearableCache'
 import { normalizeBoneName, resolveBoneName } from './emoteBoneMap'
+import { isAvatarVerbose } from '../client/debug/ClientDebugLog'
 import {
-  findAttachBoneForCategory,
+  alignFallbackWearableToSlot,
   findSkeletonHips,
   fitWearableWorldExtent,
-  normalizeWearableWorldScale,
-  prepareWearableForCompose,
   pruneWearableDisplayMeshes,
   scaleGeometryPositions,
   wearableUnitScaleFactor
@@ -37,6 +36,8 @@ export type MergeWearableOptions = {
   wearableId?: string
   /** body_shape root — needed to normalize mismatched armature scales on fallback attach. */
   bodyRoot?: THREE.Object3D
+  /** Wearable's hides list — fallback attach anchors against every body region it covers. */
+  hides?: string[]
 }
 
 export function createGltfLoader(mappings: Record<string, string>): GLTFLoader {
@@ -351,20 +352,33 @@ export function mergeWearableMeshes(
 ): boolean {
   const threshold = mergeThresholdForCategory(options.category, options.wearableId)
   let merged = 0
+  const verbose = isAvatarVerbose()
+  const vlog = (msg: string) => {
+    if (verbose) console.info(`[avatar] merge ${options.category ?? '?'} ${options.wearableId ?? ''} — ${msg}`)
+  }
 
   // RTFKT/L1 feet: Armature×10 + cm verts must be baked into body unit space before bind.
   const unitFactor =
     options.bodyRoot != null
       ? wearableUnitScaleFactor(options.bodyRoot, wearableRoot, options.category)
       : 1
+  vlog(`unitFactor=${unitFactor.toFixed(5)} threshold=${threshold}`)
 
   wearableRoot.traverse((obj) => {
-    if (!(obj instanceof THREE.SkinnedMesh) || !obj.skeleton || !obj.visible) return
+    if (!(obj instanceof THREE.SkinnedMesh) || !obj.skeleton) return
+    if (!obj.visible) {
+      vlog(`mesh "${obj.name}" skipped: pruned (visible=false)`)
+      return
+    }
 
     const usedBones = collectUsedBoneIndices(obj)
     const quality = boneMapQuality(obj.skeleton, skeleton, usedBones)
-    if (quality < threshold) return
+    if (quality < threshold) {
+      vlog(`mesh "${obj.name}" skipped: bone quality ${quality.toFixed(2)} < ${threshold}`)
+      return
+    }
     if (options.category === 'feet' && !feetMergeEligible(obj.skeleton, skeleton, usedBones)) {
+      vlog(`mesh "${obj.name}" skipped: feet merge not eligible`)
       return
     }
 
@@ -377,6 +391,9 @@ export function mergeWearableMeshes(
         if (dst === 0) toZero++
       }
       if (toZero / usedBones.size > 0.55 && usedBones.size >= 3) {
+        vlog(
+          `mesh "${obj.name}" skipped: ${toZero}/${usedBones.size} used bones map to bone 0 (bad name map)`
+        )
         return
       }
     }
@@ -387,7 +404,6 @@ export function mergeWearableMeshes(
       unitFactor !== 1 &&
       (options.category === 'feet' || unitFactor < 0.5 || unitFactor > 2)
     if (applyUnit) scaleGeometryPositions(geometry, unitFactor)
-    remapSkinIndices(geometry, indexMap, skeleton.bones.length)
 
     const mesh = new THREE.SkinnedMesh(geometry, cloneMaterials(obj.material))
     mesh.name = obj.name
@@ -395,18 +411,193 @@ export function mergeWearableMeshes(
     // f*(M*v)=M*(f*v), so keep M when baking unitFactor into positions.
     // Do NOT multiply mesh.matrix here — folding local TRS after unit bake caused
     // L1/RTFKT shoes to land huge and ~180° flipped vs body bind space.
+    // Bind to the body skeleton with body boneInverses — verts render at their authored
+    // ABSOLUTE bind positions. NOTE (tried twice, July 19+20): pairing the wearable's own
+    // boneInverses with mapped body bones breaks the spring-bone→Head remap (base hair
+    // collapses to a flat cap) and did not fix authored-offset accessories (AFK sign);
+    // do not retry that variant.
+    remapSkinIndices(geometry, indexMap, skeleton.bones.length)
     bindSkinnedMesh(mesh, skeleton, obj.bindMatrix.clone())
     repairSkinnedMesh(mesh)
     target.add(mesh)
     merged++
+    if (verbose) {
+      geometry.computeBoundingBox()
+      const size = geometry.boundingBox?.getSize(new THREE.Vector3())
+      vlog(
+        `mesh "${obj.name}" MERGED — quality=${quality.toFixed(2)} applyUnit=${applyUnit} ` +
+          `geomExtent=${size ? size.length().toFixed(3) : '?'} bindScale=${obj.bindMatrix
+            .getMaxScaleOnAxis()
+            .toFixed(4)}`
+      )
+    }
   })
 
+  vlog(`done — merged=${merged}`)
   return merged > 0
 }
 
 /**
- * When bone merge fails, parent the wearable under a category-appropriate avatar bone.
- * L1 exports often keep their own armature — scale is normalized before attach.
+ * Bake skinned meshes to static geometry at their current rest pose.
+ * Fallback-only: an unmergeable rig (bone quality ~0) can never follow body animation,
+ * and skinned rendering ignores node transforms — verts follow the wearable's own bones,
+ * so extent normalization and bone parenting measured via Box3 act on the wrong thing.
+ * A static bake makes what we measure equal what the GPU draws.
+ */
+function freezeSkinnedForFallback(root: THREE.Object3D): void {
+  root.updateWorldMatrix(true, true)
+  const skinned: THREE.SkinnedMesh[] = []
+  let plainMeshes = 0
+  root.traverse((obj) => {
+    if (obj instanceof THREE.SkinnedMesh) skinned.push(obj)
+    else if (obj instanceof THREE.Mesh) plainMeshes++
+  })
+  if (isAvatarVerbose()) {
+    const first = skinned[0]
+    const boneScale = first ? first.skeleton.bones[0]?.getWorldScale(new THREE.Vector3()) : null
+    let bakeInfo = ''
+    if (first?.geometry.attributes.skinIndex) {
+      // Bake bbox two ways: three's applyBoneTransform vs the raw matrix formula.
+      // Divergence live ⇒ SkinnedMesh is patched; both collapsing ⇒ boneInverses wrong.
+      const pos = first.geometry.attributes.position as THREE.BufferAttribute
+      const si = first.geometry.attributes.skinIndex as THREE.BufferAttribute
+      const sw = first.geometry.attributes.skinWeight as THREE.BufferAttribute
+      const a = new THREE.Box3()
+      const b = new THREE.Box3()
+      const v = new THREE.Vector3()
+      const vb = new THREE.Vector3()
+      const acc = new THREE.Vector3()
+      const m4 = new THREE.Matrix4()
+      const step = Math.max(1, Math.floor(pos.count / 60))
+      for (let i = 0; i < pos.count; i += step) {
+        v.fromBufferAttribute(pos, i)
+        first.applyBoneTransform(i, v)
+        a.expandByPoint(v.applyMatrix4(first.matrixWorld))
+        // manual: Σ w · boneWorld · boneInverse · bindMatrix · v
+        vb.fromBufferAttribute(pos, i).applyMatrix4(first.bindMatrix)
+        acc.set(0, 0, 0)
+        for (let j = 0; j < 4; j++) {
+          const w = sw.getComponent(i, j)
+          if (!w) continue
+          const bi = si.getComponent(i, j)
+          const bone = first.skeleton.bones[bi]
+          if (!bone) continue
+          m4.multiplyMatrices(bone.matrixWorld, first.skeleton.boneInverses[bi])
+          acc.addScaledVector(new THREE.Vector3().copy(vb).applyMatrix4(m4), w)
+        }
+        b.expandByPoint(acc)
+      }
+      const inv0 = first.skeleton.boneInverses[0]
+      bakeInfo =
+        ` abtY=[${a.min.y.toFixed(2)}..${a.max.y.toFixed(2)}]` +
+        ` manY=[${b.min.y.toFixed(2)}..${b.max.y.toFixed(2)}]` +
+        ` inv0Scale=${inv0 ? inv0.getMaxScaleOnAxis().toExponential(2) : '?'}`
+    }
+    console.info(
+      `[avatar] freeze diag: skinned=${skinned.length} plain=${plainMeshes}` +
+        (first
+          ? ` bones=${first.skeleton.bones.length} bone0="${first.skeleton.bones[0]?.name}" ` +
+            `bone0Scale=${boneScale ? boneScale.x.toExponential(2) : '?'} ` +
+            `skinIndex=${!!first.geometry.attributes.skinIndex} bindScale=${first.bindMatrix.getMaxScaleOnAxis().toExponential(2)}${bakeInfo}`
+          : '')
+    )
+  }
+  const v = new THREE.Vector3()
+  for (const sm of skinned) {
+    sm.skeleton.update()
+    const geometry = sm.geometry.clone()
+    const pos = geometry.attributes.position as THREE.BufferAttribute
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i)
+      sm.applyBoneTransform(i, v)
+      pos.setXYZ(i, v.x, v.y, v.z)
+    }
+    pos.needsUpdate = true
+    geometry.deleteAttribute('skinIndex')
+    geometry.deleteAttribute('skinWeight')
+    geometry.computeBoundingBox()
+    geometry.computeBoundingSphere()
+
+    const mesh = new THREE.Mesh(geometry, sm.material)
+    mesh.name = sm.name
+    mesh.position.copy(sm.position)
+    mesh.quaternion.copy(sm.quaternion)
+    mesh.scale.copy(sm.scale)
+    mesh.castShadow = sm.castShadow
+    mesh.receiveShadow = sm.receiveShadow
+    mesh.visible = sm.visible
+    sm.parent?.add(mesh)
+    sm.removeFromParent()
+  }
+}
+
+/**
+ * Convert placed fallback meshes into Hips-rigid SkinnedMeshes. Verts are baked in
+ * avatar space at bind pose; binding with an identity bindMatrix and full Hips weight
+ * reproduces them exactly at bind pose AND makes them ride the hips during locomotion
+ * (static attaches drifted off the body as soon as the idle posed the skeleton).
+ */
+/** Mesh whose materials are all AvatarSkin — the wearable's copy of body skin. */
+function isWearableSkinMesh(mesh: THREE.Mesh): boolean {
+  const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+  return materials.length > 0 && materials.every((mat) => /avatarskin/i.test(mat.name ?? ''))
+}
+
+function rigidSkinFallbackToHips(
+  wearableRoot: THREE.Object3D,
+  skeleton: THREE.Skeleton,
+  target: THREE.Object3D,
+  dropSkinMeshes: boolean
+): boolean {
+  const hips = findSkeletonHips(skeleton)
+  const hipsIndex = hips ? skeleton.bones.indexOf(hips) : -1
+  if (hipsIndex < 0 || hipsIndex > 65535) return false
+
+  wearableRoot.updateWorldMatrix(true, true)
+  const sources: THREE.Mesh[] = []
+  wearableRoot.traverse((obj) => {
+    if (obj instanceof THREE.Mesh && obj.visible && !(obj instanceof THREE.SkinnedMesh)) {
+      // When the base part stays visible (wearable hides/replaces nothing), the
+      // wearable's own AvatarSkin copies would double the animated base skin with a
+      // rigid one — drop them. When it DOES hide/replace, its skin is the replacement.
+      if (dropSkinMeshes && isWearableSkinMesh(obj)) return
+      sources.push(obj)
+    }
+  })
+  if (!sources.length) return false
+
+  for (const src of sources) {
+    const geometry = src.geometry.clone()
+    geometry.applyMatrix4(src.matrixWorld)
+    const count = (geometry.attributes.position as THREE.BufferAttribute).count
+    const skinIndex = new Uint16Array(count * 4)
+    const skinWeight = new Float32Array(count * 4)
+    for (let i = 0; i < count; i++) {
+      skinIndex[i * 4] = hipsIndex
+      skinWeight[i * 4] = 1
+    }
+    geometry.setAttribute('skinIndex', new THREE.BufferAttribute(skinIndex, 4))
+    geometry.setAttribute('skinWeight', new THREE.BufferAttribute(skinWeight, 4))
+
+    const mesh = new THREE.SkinnedMesh(geometry, src.material)
+    mesh.name = src.name
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    bindSkinnedMesh(mesh, skeleton, new THREE.Matrix4())
+    target.add(mesh)
+  }
+  return true
+}
+
+/**
+ * When bone merge fails, render the wearable at its AUTHORED rest pose, rigid-skinned
+ * to Hips. Creators export wearables already placed on the body (verified: all five
+ * broken-rig test items measure upright & on-body raw — Hey Shorty fabric y 0.85–1.05,
+ * Duckie ring 0.75–1.30, authored widths wider than the base body). Every placement
+ * heuristic this path used to have (slot regions, uprighting, inflation, extent
+ * normalization) existed only to reconstruct what zeroing the authored transforms had
+ * destroyed. IMPORTANT: the caller must pass a PRISTINE layer — prepareWearableForCompose
+ * mutates transforms and must never run before this.
  */
 export function attachWearableFallback(
   wearableRoot: THREE.Object3D,
@@ -415,41 +606,50 @@ export function attachWearableFallback(
   options: MergeWearableOptions = {}
 ): boolean {
   if (isL1WearableUrn(options.wearableId) && options.category !== 'feet') return false
-
-  if (options.bodyRoot) {
-    prepareWearableForCompose(wearableRoot, options.bodyRoot, options.category)
-  } else {
-    wearableRoot.traverse((obj) => {
-      if (obj instanceof THREE.Mesh) obj.visible = true
-    })
-    pruneWearableDisplayMeshes(wearableRoot)
-  }
-  // World extent pass — L1 shoe GLBs often still oversized after armature normalize alone.
-  normalizeWearableWorldScale(wearableRoot, options.category)
-  if (options.category === 'feet') {
-    // Second pass after matrix settle (Hips parent not attached yet — root space only).
-    normalizeWearableWorldScale(wearableRoot, options.category)
+  const verbose = isAvatarVerbose()
+  const gate = (msg: string) => {
+    if (verbose) console.info(`[avatar] fallback gate ${options.wearableId ?? '?'} — ${msg}`)
   }
 
-  const visibleMeshes = pruneWearableDisplayMeshes(wearableRoot)
-  if (visibleMeshes === 0) return false
-
-  const attachBone = findAttachBoneForCategory(skeleton, options.category) ?? findSkeletonHips(skeleton)
-  wearableRoot.position.set(0, 0, 0)
-  wearableRoot.rotation.set(0, 0, 0)
-  // Identity rotation — own skeleton already faces bind-pose forward; do not invent Y-180.
-  if (attachBone) {
-    attachBone.add(wearableRoot)
-  } else {
-    target.add(wearableRoot)
+  // Bake the authored rest pose (own skeleton, untouched node transforms).
+  freezeSkinnedForFallback(wearableRoot)
+  const visibleMeshes = pruneWearableDisplayMeshes(wearableRoot, { extentCheck: false })
+  if (visibleMeshes === 0) {
+    gate('REJECT: no visible meshes after freeze+prune')
+    return false
   }
 
-  // After parenting under body bones, hierarchy can double-shrink or re-inflate.
-  if (options.category === 'feet') {
+  // Sanity: authored bounds must be avatar-plausible. Exports that are genuinely not
+  // in body space (cm-scale rigs etc.) are skipped rather than guessed at — merge with
+  // unit-baking is the path that understands those.
+  wearableRoot.updateWorldMatrix(true, true)
+  const box = new THREE.Box3().setFromObject(wearableRoot)
+  if (box.isEmpty()) {
+    gate('REJECT: empty box')
+    return false
+  }
+  const size = box.getSize(new THREE.Vector3())
+  const extent = Math.max(size.x, size.y, size.z)
+  gate(
+    `meshes=${visibleMeshes} box y=[${box.min.y.toFixed(2)}..${box.max.y.toFixed(2)}] ` +
+      `x=[${box.min.x.toFixed(2)}..${box.max.x.toFixed(2)}] extent=${extent.toFixed(2)}`
+  )
+  const plausible =
+    extent <= 3.5 && extent >= 0.05 && box.min.y >= -0.5 && box.max.y <= 2.5
+  if (!plausible) {
+    // Best-effort rescue instead of invisibility: the live client's authored-pose bake
+    // collapses for some rigs (open mystery — see docs/avatar-fallback-wearable-compose.md
+    // "SESSION OUTCOME"); scale-fit to the slot extent and place at the slot region so
+    // the wearable at least shows up roughly where it belongs.
+    gate('implausible bake — heuristic rescue (fit + slot align)')
     fitWearableWorldExtent(wearableRoot, options.category)
+    alignFallbackWearableToSlot(wearableRoot, options.category, options.hides)
   }
 
-  return true
+  const replacesNothing = !options.hides?.length
+  const ok = rigidSkinFallbackToHips(wearableRoot, skeleton, target, replacesNothing)
+  if (!ok) gate('REJECT: rigid skin produced no meshes (all dropped as skin copies?)')
+  return ok
 }
 
 export function sanitizeWearableRoot(root: THREE.Object3D): void {

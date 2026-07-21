@@ -149,6 +149,17 @@ export function formatDebugTime(at: number): string {
   })
 }
 
+/** Freeze avatars in bind pose (no locomotion/idle) — `?avatarbindpose` or localStorage.avatarbindpose=1. */
+export function isAvatarBindPoseDebug(): boolean {
+  try {
+    if (typeof window === 'undefined') return false
+    if (new URLSearchParams(window.location.search).has('avatarbindpose')) return true
+    return localStorage.getItem('avatarbindpose') === '1'
+  } catch {
+    return false
+  }
+}
+
 /** Avatar compose spam — only when `?avatarverbose` or localStorage.avatarverbose=1. */
 export function isAvatarVerbose(): boolean {
   try {

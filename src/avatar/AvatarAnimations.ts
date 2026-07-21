@@ -9,6 +9,7 @@ import {
   AVATAR_EMOTE_WALK
 } from './constants'
 import { AvatarLocomotionVfx } from './AvatarLocomotionVfx'
+import { isAvatarBindPoseDebug } from '../client/debug/ClientDebugLog'
 import {
   emoteNeedsPropScene,
   bindEmoteParticleMeshes,
@@ -167,6 +168,12 @@ export class AvatarAnimations {
 
     if (!idleClip) {
       throw new Error('locomotion idle emote unavailable')
+    }
+
+    // Debug: hold the loaded bind pose — isolates pose-driven misalignment from compose bugs.
+    if (isAvatarBindPoseDebug()) {
+      console.info('[avatar] bind-pose debug — locomotion clips NOT played')
+      return
     }
 
     this.idleAction = this.playLoop(idleClip, animationRoot, bodyShape, 1)

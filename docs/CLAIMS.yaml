@@ -9,14 +9,7 @@ updated: 2026-07-21
 source: github
 base_branch: dev-latest
 workflow:
-  - stage: pending_review
-    integration_ref: pr:38
-    title: official toon shading for avatars
-    owner: awedjob
-    pr: 38
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/38
-    updated: 2026-07-21
-  - stage: pending_review
+  - stage: merged
     integration_ref: pr:40
     title: opt-in toon shading via Graphics settings
     owner: lastraum
@@ -156,11 +149,4 @@ workflow:
     owner: lastraum
     pr: 4
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/4
-    updated: 2026-06-17
-  - stage: merged
-    integration_ref: ecs:TriggerArea
-    title: TriggerArea Tier A — volume enter/exit and scene callbacks
-    owner: lastraum
-    pr: 2
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/2
     updated: 2026-06-17

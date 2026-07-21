@@ -86,6 +86,7 @@ import {
 import { getSessionAssetCache } from '../../../rendering/AssetCache'
 import {
   guessWearableRarity,
+  sortWearablesByRarity,
   wearableRarityBackground,
   wearableRarityLabel,
   WEARABLE_RARITY_COLORS
@@ -153,6 +154,7 @@ export class BackpackView {
   private wearablesLoadGen = 0
   private equippedLoadGen = 0
   private searchQuery = ''
+  private sortMode: 'name' | 'rarity' = 'name'
   private previewZoom = PREVIEW_ZOOM_DEFAULT
   private orbitYaw = 0
   private dragPointerId: number | null = null
@@ -223,7 +225,10 @@ export class BackpackView {
           </button>
         </div>
         <div class="backpack-view__toolbar backpack-view__toolbar--wearables">
-          <button class="backpack-view__filter-btn">⚙ FILTER &amp; SORT</button>
+          <select class="backpack-view__sort" data-sort-select aria-label="Sort items">
+            <option value="name" selected>Sort: A–Z</option>
+            <option value="rarity">Sort: Rarest first</option>
+          </select>
           <input class="backpack-view__search" type="text" placeholder="Search item" />
         </div>
         <input type="file" accept=".vrm,.mml,model/vrm" class="backpack-view__vrm-file-input" hidden />
@@ -320,6 +325,10 @@ export class BackpackView {
                     `<option value="${c.id}"${c.id === 'all' ? ' selected' : ''}>${c.label}</option>`
                 ).join('')}
               </select>
+              <select class="backpack-view__mobile-inv-filter" data-mobile-inv-sort aria-label="Sort items">
+                <option value="name" selected>A–Z</option>
+                <option value="rarity">Rarest</option>
+              </select>
             </div>
             <div class="backpack-view__mobile-inv-grid backpack-view__grid" data-mobile-inv-grid></div>
             <div class="backpack-view__mobile-inv-pagination backpack-view__pagination" data-mobile-inv-pagination></div>
@@ -390,6 +399,10 @@ export class BackpackView {
       this.hideMobileInventoryDetail()
       this.updateCategoryEquipped()
     })
+    const sort = this.root.querySelector('[data-mobile-inv-sort]') as HTMLSelectElement | null
+    sort?.addEventListener('change', () => {
+      this.setSortMode(sort.value === 'rarity' ? 'rarity' : 'name')
+    })
   }
 
   private setMobileInvHeader(mode: 'list' | 'detail', title = 'Inventory'): void {
@@ -423,8 +436,10 @@ export class BackpackView {
   private syncMobileInventoryToolbar(): void {
     const search = this.root.querySelector('[data-mobile-inv-search]') as HTMLInputElement | null
     const filter = this.root.querySelector('[data-mobile-inv-filter]') as HTMLSelectElement | null
+    const sort = this.root.querySelector('[data-mobile-inv-sort]') as HTMLSelectElement | null
     if (search) search.value = this.searchQuery
     if (filter) filter.value = this.selectedCategory
+    if (sort) sort.value = this.sortMode
   }
 
   private openMobileDrawer(id: 'equipped' | 'inventory'): void {
@@ -575,6 +590,30 @@ export class BackpackView {
       if (this.activeSubTab === 'wearables') this.renderGrid()
       if (this.activeSubTab === 'emotes') this.renderEmoteGrid()
     })
+    const sort = this.root.querySelector('[data-sort-select]') as HTMLSelectElement | null
+    sort?.addEventListener('change', () => {
+      this.setSortMode(sort.value === 'rarity' ? 'rarity' : 'name')
+    })
+  }
+
+  /** Grid ordering for wearables + emotes; both desktop and mobile controls funnel here. */
+  private setSortMode(mode: 'name' | 'rarity'): void {
+    if (mode === this.sortMode) return
+    this.sortMode = mode
+    this.currentPage = 1
+    this.emotePage = 1
+    for (const sel of this.root.querySelectorAll<HTMLSelectElement>(
+      '[data-sort-select], [data-mobile-inv-sort]'
+    )) {
+      sel.value = mode
+    }
+    if (this.activeSubTab === 'wearables') this.renderGrid()
+    if (this.activeSubTab === 'emotes') this.renderEmoteGrid()
+  }
+
+  /** Apply the active sort to an already-filtered item list (name order is load order). */
+  private sortItems<T extends { name: string; rarity: string }>(items: T[]): T[] {
+    return this.sortMode === 'rarity' ? sortWearablesByRarity(items) : items
   }
 
   updateSession(session: SessionIdentity): void {
@@ -838,7 +877,7 @@ export class BackpackView {
       return
     }
 
-    const catalog = filterBackpackEmotes(this.emoteItems, this.searchQuery)
+    const catalog = this.sortItems(filterBackpackEmotes(this.emoteItems, this.searchQuery))
     if (!catalog.length) {
       gridEl.innerHTML = `<p class="backpack-view__grid-status${
         this.emotesError ? ' backpack-view__grid-status--error' : ''
@@ -1083,14 +1122,14 @@ export class BackpackView {
     }
 
     this.selectedCategory = cat
-    let items = filterBackpackWearables(this.wearableItems, cat, this.searchQuery)
+    let items = this.sortItems(filterBackpackWearables(this.wearableItems, cat, this.searchQuery))
     let index = items.findIndex((i) => this.isSameWearableUrn(i.urn, equipped.urn))
 
     if (index < 0) {
       const invItem = this.wearableItems.find((i) => this.isSameWearableUrn(i.urn, equipped.urn))
       if (invItem && invItem.category !== cat) {
         invItem.category = cat
-        items = filterBackpackWearables(this.wearableItems, cat, this.searchQuery)
+        items = this.sortItems(filterBackpackWearables(this.wearableItems, cat, this.searchQuery))
         index = items.findIndex((i) => this.isSameWearableUrn(i.urn, equipped.urn))
       }
     }
@@ -1334,7 +1373,9 @@ export class BackpackView {
       return
     }
 
-    const items = filterBackpackWearables(this.wearableItems, this.selectedCategory, this.searchQuery)
+    const items = this.sortItems(
+      filterBackpackWearables(this.wearableItems, this.selectedCategory, this.searchQuery)
+    )
     const totalPages = Math.max(1, Math.ceil(items.length / ITEMS_PER_PAGE))
     const page = Math.min(this.currentPage, totalPages)
     this.currentPage = page

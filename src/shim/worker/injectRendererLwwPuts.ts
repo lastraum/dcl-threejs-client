@@ -34,6 +34,8 @@ export type RendererLwwInjectCounts = {
   tweenPuts: number
   raycastPuts: number
   gltfLoadingStatePuts: number
+  /** FINISHED / FINISHED_WITH_ERROR / NOT_FOUND — SpaceRunner load-freeze release signal. */
+  gltfLoadingStateTerminalPuts: number
   videoPlayerPuts: number
   uiCanvasPuts: number
   uiInputResultPuts: number
@@ -42,6 +44,12 @@ export type RendererLwwInjectCounts = {
   pointerLockPuts: number
   realmInfoPuts: number
   reservedTransformPuts: number
+}
+
+/** LoadingState: UNKNOWN=0 LOADING=1 NOT_FOUND=2 FINISHED_WITH_ERROR=3 FINISHED=4 */
+function isTerminalGltfLoadingState(currentState: unknown): boolean {
+  const s = typeof currentState === 'number' ? currentState : Number(currentState)
+  return s === 2 || s === 3 || s === 4
 }
 
 /**
@@ -65,6 +73,7 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
   let tweenPuts = 0
   let raycastPuts = 0
   let gltfLoadingStatePuts = 0
+  let gltfLoadingStateTerminalPuts = 0
   let videoPlayerPuts = 0
   let uiCanvasPuts = 0
   let uiInputResultPuts = 0
@@ -99,6 +108,10 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
           const value = GltfContainerLoadingState.schema.deserialize(valueBuf)
           GltfContainerLoadingState.createOrReplace(msg.entityId as Entity, value)
           gltfLoadingStatePuts++
+          const currentState = (value as { currentState?: number } | null)?.currentState
+          if (isTerminalGltfLoadingState(currentState)) {
+            gltfLoadingStateTerminalPuts++
+          }
         } else if (msg.componentId === VIDEO_PLAYER_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = VideoPlayer.schema.deserialize(valueBuf)
@@ -144,6 +157,7 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
     tweenPuts,
     raycastPuts,
     gltfLoadingStatePuts,
+    gltfLoadingStateTerminalPuts,
     videoPlayerPuts,
     uiCanvasPuts,
     uiInputResultPuts,

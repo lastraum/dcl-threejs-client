@@ -26,6 +26,19 @@ export type JoinLiveOption =
   | { id: 'custom-hls'; label: string; kind: 'custom'; m3u8Url: string }
   /** LiveKit remote video present in the scene room (Cast / OBS ingress). */
   | { id: 'cast-livekit'; label: string; kind: 'cast-live' }
+  /**
+   * Scene VideoPlayer from main.composite (custom m3u8/mp4 — not LiveKit).
+   * id: `scene-video:${entityId}`
+   */
+  | {
+      id: string
+      label: string
+      kind: 'scene-video'
+      mediaUrl: string
+      isHls: boolean
+      playing: boolean
+      entityId: number
+    }
 
 function readJson<T>(key: string, fallback: T): T {
   try {

@@ -79,7 +79,8 @@ export class Rfc4Router {
 
     const rfc4 = tryDecodeRfc4TransformPacket(data, this.realmBounds, this.sceneOrigin)
     if (rfc4.kind === 'transform') {
-      if (this.firstPeerLogCount < 5) {
+      // One-time sample only — continuous pos logs drown the console in busy rooms.
+      if (this.firstPeerLogCount < 3) {
         this.firstPeerLogCount++
         const origin = this.sceneOrigin
         const rawNote =
@@ -91,12 +92,6 @@ export class Rfc4Router {
           `RFC4 FIRST ← ${transport} ${address.slice(0, 8)}… [${rfc4.source}] scene=(${rfc4.x.toFixed(1)},${rfc4.y.toFixed(1)},${rfc4.z.toFixed(1)})${rawNote}`
         )
       }
-
-      clientDebugLog.log(
-        'comms',
-        `RFC4 in ← ${transport} ${address.slice(0, 8)}… [${rfc4.source}] x=${rfc4.x.toFixed(1)} y=${rfc4.y.toFixed(1)} z=${rfc4.z.toFixed(1)} yaw=${((rfc4.yaw * 180) / Math.PI).toFixed(0)}°`,
-        { throttleMs: 1000, throttleKey: `pos-in:${transport}:${address}` }
-      )
       this.emitTransform(address, rfc4.x, rfc4.y, rfc4.z, rfc4.yaw, transport, {
         x: rfc4.vx ?? 0,
         y: rfc4.vy ?? 0,
@@ -115,13 +110,7 @@ export class Rfc4Router {
       clientDebugLog.log(
         'comms',
         `RFC4 MovementCompressed dropped (no realm bounds) from ${address.slice(0, 8)}…`,
-        { throttleMs: 3000, throttleKey: `mc-no-bounds:${address}` }
-      )
-    } else if (packetKind !== 'unknown' && packetKind !== 'movement' && packetKind !== 'position') {
-      clientDebugLog.log(
-        'comms',
-        `RFC4 in ← ${transport} ${address.slice(0, 8)}… ${packetKind}`,
-        { throttleMs: 2000, throttleKey: `pkt-in:${packetKind}:${address}` }
+        { throttleMs: 5000, throttleKey: `mc-no-bounds:${address}` }
       )
     }
 
@@ -139,11 +128,6 @@ export class Rfc4Router {
 
     const playerEmote = tryDecodeRfc4PlayerEmote(data)
     if (playerEmote) {
-      clientDebugLog.log(
-        'comms',
-        `RFC4 PlayerEmote ← ${transport} ${address.slice(0, 8)}… ${playerEmote.urn.split(':').pop()}`,
-        { throttleMs: 500, throttleKey: `emote-in:${address}` }
-      )
       this.handlers.onPeerEmote?.(address, playerEmote.urn, playerEmote.incrementalId)
       return
     }
@@ -154,11 +138,6 @@ export class Rfc4Router {
       if (chatEmote) {
         const ref = chatEmote.emoteRef.trim()
         const urn = ref.toLowerCase().startsWith('urn:') ? ref.toLowerCase() : baseEmoteUrn(ref)
-        clientDebugLog.log(
-          'comms',
-          `RFC4 ChatEmote ← ${transport} ${address.slice(0, 8)}… ${urn.split(':').pop()}`,
-          { throttleMs: 500, throttleKey: `chat-emote-in:${address}` }
-        )
         this.handlers.onPeerEmote?.(address, urn, chatEmote.incrementalId)
         return
       }

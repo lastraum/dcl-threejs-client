@@ -197,6 +197,21 @@ function materialInner(pb: PbMaterial): PbrMaterial | UnlitMaterial | undefined 
   return undefined
 }
 
+/**
+ * SDK7 `Material.castShadows` → Three `mesh.castShadow` (not a Three material flag).
+ * Proto default is true; authors set false to force off. MeshRenderer has no cast field.
+ * Quality gate: only high/ultra cast (Genesis MeshRenderer flood); false always wins.
+ */
+export function applyMaterialCastShadows(
+  mesh: THREE.Mesh,
+  castShadows: boolean | undefined
+): void {
+  const q = renderQuality.getShadowQuality()
+  const tierCasts = q === 'high' || q === 'ultra'
+  mesh.castShadow = tierCasts && castShadows !== false
+  mesh.receiveShadow = true
+}
+
 function materialTextureSlots(pb: PbMaterial): TextureUnion[] {
   const materialCase = pb.material?.$case
   const inner = materialInner(pb)
@@ -410,6 +425,8 @@ export class MaterialApplier {
       isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO,
       hasAlphaMap
     )
+    // Scalar-only path is terminal for color materials — honor castShadows here too.
+    applyMaterialCastShadows(mesh, inner.castShadows)
     m.needsUpdate = true
   }
 
@@ -532,13 +549,8 @@ export class MaterialApplier {
       m.depthWrite = false
     }
 
-    // material.proto default cast_shadows=true floods the sun shadow map in Genesis Plaza
-    // (hundreds of MeshRenderer boards). Only cast on high/ultra; always receive.
-    // Authors still set castShadows: false to force off at any tier.
-    const q = renderQuality.getShadowQuality()
-    const tierCasts = q === 'high' || q === 'ultra'
-    mesh.castShadow = tierCasts && inner.castShadows !== false
-    mesh.receiveShadow = true
+    // Material.castShadows → mesh.castShadow (see applyMaterialCastShadows).
+    applyMaterialCastShadows(mesh, inner.castShadows)
     // Marquees face inward (FrontSide). Dual-face DCL plane geometry already has both
     // normals — FrontSide shows both. DoubleSide only when author marks primitiveDoubleSided.
     // Glow sprites: keep alpha blend, no depth write (re-assert after applyTransparency).

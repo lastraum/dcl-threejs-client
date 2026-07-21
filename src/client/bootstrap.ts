@@ -1,3 +1,4 @@
+import { setLogLevel, LogLevel } from 'livekit-client'
 import { AppController } from './AppController'
 import { installSkinnedMeshSafetyPatch } from '../rendering/skinnedMeshInstance'
 import { maybeShowWhatsNewToast } from './whatsNew/WhatsNewToast'
@@ -7,6 +8,9 @@ const hud = document.getElementById('hud')!
 if (navigator.storage?.persist) {
   navigator.storage.persist().catch(() => {})
 }
+
+// LiveKit SDK defaults to verbose connection/state spam in DevTools.
+setLogLevel(LogLevel.warn)
 
 export async function bootstrap(): Promise<void> {
   installSkinnedMeshSafetyPatch()

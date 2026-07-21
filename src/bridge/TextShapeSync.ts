@@ -19,32 +19,61 @@ const TAM = {
 /**
  * DCL TextShape is world-space text (Unity TMP-like).
  *
- * - `width` / `height` — plane size in meters (default 1×1)
- * - `fontSize` — roughly proportional to glyph height in meters × 10
- *   (leaderboard rows use ~1.2–1.6; lobby title uses ~8.3 on a taller plane)
- * - `textColor` defaults to white (Explorer); black-on-black boards are unreadable otherwise
- *
- * Previous `fontSize * 4` on a fixed 512×256 canvas left 1.x sizes at ~8px → invisible.
+ * - fontSize N → N/10 m glyph height.
+ * - Non-wrap (Jump Zone rows etc.): plane is **content-sized** (auth width/height are max
+ *   bounds only — scenes often set width:12–20 as slack, not the visual box). textAlign is a
+ *   **pivot** on the entity Transform (DCL local):
+ *     left → left edge on origin; center → center; right → right edge.
+ *   Mesh local X is written with DCL→Three flip (−meshX) so pivot matches entity positions
+ *   that already go through dclToThreePos (without the flip, left looked like right / columns
+ *   sat too far toward −board-X).
+ * - Wrap / fontAutoSize: full auth box, glyphs paint with textAlign inside.
  */
 
-/** Canvas pixels per world-meter of plane edge (capped for GPU). */
 const PIXELS_PER_METER = 160
-const CANVAS_MIN = 128
+const CANVAS_MIN = 4
 const CANVAS_MAX = 2048
-
-/** fontSize N → ~N/10 meters glyph height at transform scale 1 (Explorer-ish). */
+const PLANE_MIN = 0.02
 const FONT_SIZE_TO_METERS = 0.1
 
+type Align = {
+  textAlign: CanvasTextAlign
+  h: 'left' | 'center' | 'right'
+  v: 'top' | 'middle' | 'bottom'
+}
+
+type TextLayout = {
+  planeW: number
+  planeH: number
+  canvasW: number
+  canvasH: number
+  fontPx: number
+  lines: string[]
+  lineHeight: number
+  family: string
+  align: Align
+  padL: number
+  padT: number
+  innerW: number
+  innerH: number
+  /** DCL-local mesh offset (pivot). Applied as Three (−meshX, meshY, 0). */
+  meshX: number
+  meshY: number
+}
+
+/** Entity TRS uses dclToThreePos (X negated); child mesh offsets must match. */
+function applyTextShapeMeshOffset(mesh: THREE.Mesh, layout: TextLayout): void {
+  mesh.position.set(-layout.meshX, layout.meshY, 0)
+}
+
 export function buildTextShapeMesh(spec: PBTextShape): THREE.Mesh {
-  const planeW = Math.max(0.01, spec.width ?? 1)
-  const planeH = Math.max(0.01, spec.height ?? 1)
-  const { canvasW, canvasH } = canvasSizeForPlane(planeW, planeH)
+  const layout = layoutTextShape(spec)
 
   const canvas = document.createElement('canvas')
-  canvas.width = canvasW
-  canvas.height = canvasH
+  canvas.width = layout.canvasW
+  canvas.height = layout.canvasH
   const ctx = canvas.getContext('2d')!
-  paintTextShape(ctx, spec, canvasW, canvasH, planeW, planeH)
+  paintLaidOutText(ctx, spec, layout)
 
   const texture = new THREE.CanvasTexture(canvas)
   texture.needsUpdate = true
@@ -53,9 +82,7 @@ export function buildTextShapeMesh(spec: PBTextShape): THREE.Mesh {
   texture.generateMipmaps = false
   texture.colorSpace = THREE.SRGBColorSpace
 
-  // FrontSide: geometry is already north+south; DoubleSide re-draws backs → ghosts.
-  // Docs-order UVs (same as MeshRenderer planes) so canvas text reads L→R.
-  const geometry = buildDclPlaneGeometry(planeW, planeH)
+  const geometry = buildDclPlaneGeometry(layout.planeW, layout.planeH)
   const material = new THREE.MeshBasicMaterial({
     map: texture,
     transparent: true,
@@ -64,6 +91,7 @@ export function buildTextShapeMesh(spec: PBTextShape): THREE.Mesh {
   })
 
   const mesh = new THREE.Mesh(geometry, material)
+  applyTextShapeMeshOffset(mesh, layout)
   mesh.userData.textShapeSignature = textShapeSignature(spec)
   mesh.userData.textShapeCanvas = canvas
   return mesh
@@ -74,18 +102,16 @@ export function updateTextShapeMesh(mesh: THREE.Mesh, spec: PBTextShape): void {
   if (mesh.userData.textShapeSignature === sig) return
   mesh.userData.textShapeSignature = sig
 
-  const planeW = Math.max(0.01, spec.width ?? 1)
-  const planeH = Math.max(0.01, spec.height ?? 1)
-  const { canvasW, canvasH } = canvasSizeForPlane(planeW, planeH)
+  const layout = layoutTextShape(spec)
 
   const mat = mesh.material as THREE.MeshBasicMaterial
   let map = mat.map as THREE.CanvasTexture | null
   let canvas = (mesh.userData.textShapeCanvas as HTMLCanvasElement | undefined) ?? null
 
-  if (!canvas || canvas.width !== canvasW || canvas.height !== canvasH) {
+  if (!canvas || canvas.width !== layout.canvasW || canvas.height !== layout.canvasH) {
     canvas = document.createElement('canvas')
-    canvas.width = canvasW
-    canvas.height = canvasH
+    canvas.width = layout.canvasW
+    canvas.height = layout.canvasH
     mesh.userData.textShapeCanvas = canvas
     map?.dispose()
     map = new THREE.CanvasTexture(canvas)
@@ -97,16 +123,15 @@ export function updateTextShapeMesh(mesh: THREE.Mesh, spec: PBTextShape): void {
   }
 
   const ctx = canvas.getContext('2d')!
-  paintTextShape(ctx, spec, canvasW, canvasH, planeW, planeH)
+  paintLaidOutText(ctx, spec, layout)
   if (map) map.needsUpdate = true
-  // Keep FrontSide if material was created under the DoubleSide regression.
   mat.side = THREE.FrontSide
   mat.needsUpdate = true
 
   mesh.geometry.dispose()
-  mesh.geometry = buildDclPlaneGeometry(planeW, planeH)
+  mesh.geometry = buildDclPlaneGeometry(layout.planeW, layout.planeH)
+  applyTextShapeMeshOffset(mesh, layout)
 
-  // Preserve scale.x < 0 compensation after map/geometry rebuild (Poker Night boards).
   if (mesh.userData.dclTextShapeMirrorX) {
     applyTextShapeFacingMirror(mesh, true)
   }
@@ -114,7 +139,6 @@ export function updateTextShapeMesh(mesh: THREE.Mesh, spec: PBTextShape): void {
 
 /**
  * Scenes often set Transform.scale.x = −1 on TextShape so text faces a wall in Unity.
- * That mirrors the canvas in Three (docs-order UVs already read L→R at scale +1).
  * Flip map U when the entity (or parent chain) has negative X scale product.
  */
 export function applyTextShapeFacingMirror(mesh: THREE.Mesh, mirrorX: boolean): void {
@@ -146,144 +170,136 @@ function disposeMat(m: THREE.Material): void {
   m.dispose()
 }
 
-function canvasSizeForPlane(planeW: number, planeH: number): { canvasW: number; canvasH: number } {
-  const canvasW = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(planeW * PIXELS_PER_METER)))
-  const canvasH = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(planeH * PIXELS_PER_METER)))
-  return { canvasW, canvasH }
-}
-
-/** Stable key for TextShape LWW — used by mesh attach drain to detect text/style changes. */
-export function textShapeSignature(spec: PBTextShape): string {
-  return JSON.stringify({
-    text: spec.text,
-    fontSize: spec.fontSize,
-    fontAutoSize: spec.fontAutoSize,
-    textAlign: spec.textAlign,
-    width: spec.width,
-    height: spec.height,
-    textColor: spec.textColor,
-    outlineWidth: spec.outlineWidth,
-    outlineColor: spec.outlineColor,
-    shadowBlur: spec.shadowBlur,
-    shadowOffsetX: spec.shadowOffsetX,
-    shadowOffsetY: spec.shadowOffsetY,
-    shadowColor: spec.shadowColor,
-    textWrapping: spec.textWrapping,
-    lineSpacing: spec.lineSpacing,
-    lineCount: spec.lineCount,
-    paddingTop: spec.paddingTop,
-    paddingRight: spec.paddingRight,
-    paddingBottom: spec.paddingBottom,
-    paddingLeft: spec.paddingLeft,
-    font: spec.font
-  })
-}
-
-/** Strip DCL / TextMeshPro-style tags so canvas text matches Explorer (no raw `<color=…>`). */
-function stripTextShapeMarkup(text: string): string {
-  return text
-    .replace(/<\/?(?:b|i|u)>/gi, '')
-    .replace(/<\/?color(?:=[^>]*)?>/gi, '')
-    .replace(/<\/?size(?:=[^>]*)?>/gi, '')
-    .replace(/<\/?space(?:=[^>]*)?>/gi, '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/?[a-zA-Z][^>]*>/g, '')
-}
-
 /**
- * Explorer default text color is white. Protobuf omit / empty objects must not
- * paint black-on-black (leaderboard on #111111 board).
+ * Layout text at authored fontSize (world meters = fontSize * 0.1).
+ * Non-wrap: content-sized plane + textAlign as entity pivot.
+ * Wrap: full auth plane, align painted inside.
  */
-function resolveTextFill(spec: PBTextShape): { color: THREE.Color; alpha: number } {
-  const c = spec.textColor
-  if (!c) return { color: new THREE.Color(0xffffff), alpha: 1 }
-  const r = c.r
-  const g = c.g
-  const b = c.b
-  // Fully missing channels after omit-zero → treat as white default
-  if (r === undefined && g === undefined && b === undefined) {
-    return { color: new THREE.Color(0xffffff), alpha: color4Alpha(c, 1) }
-  }
-  return {
-    color: color4ToThree(c, 0xffffff),
-    alpha: color4Alpha(c, 1)
-  }
-}
-
-function fontFamilyForSpec(spec: PBTextShape): string {
-  // Font enum: 0 sans, 1 serif, 2 mono
-  const f = spec.font
-  if (f === 1) return 'Georgia, "Times New Roman", serif'
-  if (f === 2) return 'ui-monospace, "Cascadia Code", Menlo, monospace'
-  return 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif'
-}
-
-function alignFromSpec(spec: PBTextShape): {
-  textAlign: CanvasTextAlign
-  textBaseline: CanvasTextBaseline
-  h: 'left' | 'center' | 'right'
-  v: 'top' | 'middle' | 'bottom'
-} {
-  const a = spec.textAlign ?? TAM.MIDDLE_CENTER
-  switch (a) {
-    case TAM.TOP_LEFT:
-      return { textAlign: 'left', textBaseline: 'top', h: 'left', v: 'top' }
-    case TAM.TOP_CENTER:
-      return { textAlign: 'center', textBaseline: 'top', h: 'center', v: 'top' }
-    case TAM.TOP_RIGHT:
-      return { textAlign: 'right', textBaseline: 'top', h: 'right', v: 'top' }
-    case TAM.MIDDLE_LEFT:
-      return { textAlign: 'left', textBaseline: 'middle', h: 'left', v: 'middle' }
-    case TAM.MIDDLE_RIGHT:
-      return { textAlign: 'right', textBaseline: 'middle', h: 'right', v: 'middle' }
-    case TAM.BOTTOM_LEFT:
-      return { textAlign: 'left', textBaseline: 'bottom', h: 'left', v: 'bottom' }
-    case TAM.BOTTOM_CENTER:
-      return { textAlign: 'center', textBaseline: 'bottom', h: 'center', v: 'bottom' }
-    case TAM.BOTTOM_RIGHT:
-      return { textAlign: 'right', textBaseline: 'bottom', h: 'right', v: 'bottom' }
-    case TAM.MIDDLE_CENTER:
-    default:
-      return { textAlign: 'center', textBaseline: 'middle', h: 'center', v: 'middle' }
-  }
-}
-
-function paintTextShape(
-  ctx: CanvasRenderingContext2D,
-  spec: PBTextShape,
-  w: number,
-  h: number,
-  _planeW: number,
-  planeH: number
-): void {
-  ctx.clearRect(0, 0, w, h)
-  ctx.imageSmoothingEnabled = true
-
-  // Padding is in plane-relative units (0–1-ish of width/height in scene authoring).
-  const padL = Math.max(0, (spec.paddingLeft ?? 0) * w * 0.5)
-  const padR = Math.max(0, (spec.paddingRight ?? 0) * w * 0.5)
-  const padT = Math.max(0, (spec.paddingTop ?? 0) * h * 0.5)
-  const padB = Math.max(0, (spec.paddingBottom ?? 0) * h * 0.5)
-  const innerW = Math.max(1, w - padL - padR)
-  const innerH = Math.max(1, h - padT - padB)
-
-  const fontSizeSpec = spec.fontSize ?? 10
-  // World glyph height (m) → canvas px via plane mapping
-  const glyphMeters = Math.max(0.02, fontSizeSpec * FONT_SIZE_TO_METERS)
-  let fontPx = glyphMeters * (h / Math.max(0.01, planeH))
-
-  if (spec.fontAutoSize) {
-    // Fit a single line to ~70% of inner height (and width check below)
-    fontPx = Math.min(fontPx, innerH * 0.7)
-  }
-
-  fontPx = Math.max(10, Math.min(fontPx, innerH * 0.95))
-
+function layoutTextShape(spec: PBTextShape): TextLayout {
+  const authW = Math.max(PLANE_MIN, spec.width ?? 1)
+  const authH = Math.max(PLANE_MIN, spec.height ?? 1)
+  const wrap = spec.textWrapping === true
   const family = fontFamilyForSpec(spec)
   const align = alignFromSpec(spec)
+  const plain = stripTextShapeMarkup(spec.text ?? '')
+
+  const boxW = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(authW * PIXELS_PER_METER)))
+  const boxH = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(authH * PIXELS_PER_METER)))
+
+  const padL0 = Math.max(0, (spec.paddingLeft ?? 0) * boxW * 0.5)
+  const padR0 = Math.max(0, (spec.paddingRight ?? 0) * boxW * 0.5)
+  const padT0 = Math.max(0, (spec.paddingTop ?? 0) * boxH * 0.5)
+  const padB0 = Math.max(0, (spec.paddingBottom ?? 0) * boxH * 0.5)
+  const innerW0 = Math.max(1, boxW - padL0 - padR0)
+  const innerH0 = Math.max(1, boxH - padT0 - padB0)
+
+  // fontSize N → N/10 m → N * 16 px at PIXELS_PER_METER
+  const fontSizeSpec = spec.fontSize ?? 10
+  let fontPx = Math.max(4, fontSizeSpec * FONT_SIZE_TO_METERS * PIXELS_PER_METER)
+
+  const mcanvas = document.createElement('canvas')
+  mcanvas.width = 4
+  mcanvas.height = 4
+  const mctx = mcanvas.getContext('2d')!
+
+  if (spec.fontAutoSize === true) {
+    fontPx = Math.min(fontPx, innerH0 * 0.85)
+    for (let guard = 0; guard < 24; guard++) {
+      mctx.font = `600 ${fontPx}px ${family}`
+      const trial = wrapLines(mctx, plain, wrap ? innerW0 : 1e9, wrap)
+      const widest = Math.max(0, ...trial.map((ln) => mctx.measureText(ln).width))
+      const lh = fontPx * (1.15 + (spec.lineSpacing ?? 0) * 0.1)
+      const blockH = Math.max(lh, trial.length * lh)
+      if (widest <= innerW0 * 0.98 && blockH <= innerH0 * 1.02) break
+      fontPx *= 0.9
+      if (fontPx < 4) break
+    }
+  }
+
+  mctx.font = `600 ${fontPx}px ${family}`
+  let lines = wrapLines(mctx, plain, wrap ? innerW0 : 1e9, wrap)
+  if (spec.lineCount != null && spec.lineCount > 0 && lines.length > spec.lineCount) {
+    lines = lines.slice(0, spec.lineCount)
+  }
+
+  const lineHeight = fontPx * (1.15 + (spec.lineSpacing ?? 0) * 0.1)
+  const blockH = Math.max(lineHeight, lines.length * lineHeight)
+  const widest = Math.max(fontPx * 0.5, ...lines.map((ln) => mctx.measureText(ln || ' ').width))
+
+  let canvasW: number
+  let canvasH: number
+  let planeW: number
+  let planeH: number
+  let meshX = 0
+  let meshY = 0
+
+  if (wrap) {
+    // Full authored box — multi-line wrap + align inside (mesh stays centered).
+    canvasW = boxW
+    canvasH = boxH
+    planeW = authW
+    planeH = authH
+    meshX = 0
+    meshY = 0
+  } else {
+    // Content-sized plane. Auth width/height are caps only (Jump Zone uses width:12–20).
+    const padX = Math.max(padL0 + padR0, fontPx * 0.2)
+    const padY = Math.max(padT0 + padB0, fontPx * 0.2)
+    const contentWpx = Math.min(boxW, Math.max(CANVAS_MIN, Math.ceil(widest + padX)))
+    const contentHpx = Math.min(boxH, Math.max(CANVAS_MIN, Math.ceil(blockH + padY)))
+    canvasW = contentWpx
+    canvasH = contentHpx
+    planeW = Math.max(PLANE_MIN, contentWpx / PIXELS_PER_METER)
+    planeH = Math.max(PLANE_MIN, contentHpx / PIXELS_PER_METER)
+
+    // textAlign = pivot on entity origin (not placement inside a huge auth box).
+    // Plane geometry is centered on mesh local 0 — shift so the align edge hits origin.
+    if (align.h === 'left') meshX = planeW * 0.5
+    else if (align.h === 'right') meshX = -planeW * 0.5
+    else meshX = 0
+
+    if (align.v === 'top') meshY = -planeH * 0.5
+    else if (align.v === 'bottom') meshY = planeH * 0.5
+    else meshY = 0
+  }
+
+  const padL = Math.max(0, (spec.paddingLeft ?? 0) * canvasW * 0.5)
+  const padR = Math.max(0, (spec.paddingRight ?? 0) * canvasW * 0.5)
+  const padT = Math.max(0, (spec.paddingTop ?? 0) * canvasH * 0.5)
+  const padB = Math.max(0, (spec.paddingBottom ?? 0) * canvasH * 0.5)
+
+  return {
+    planeW,
+    planeH,
+    canvasW,
+    canvasH,
+    fontPx,
+    lines,
+    lineHeight,
+    family,
+    align,
+    padL,
+    padT,
+    innerW: Math.max(1, canvasW - padL - padR),
+    innerH: Math.max(1, canvasH - padT - padB),
+    meshX,
+    meshY
+  }
+}
+
+function paintLaidOutText(
+  ctx: CanvasRenderingContext2D,
+  spec: PBTextShape,
+  layout: TextLayout
+): void {
+  const { canvasW: w, canvasH: h, fontPx, lines, lineHeight, family, align, padL, padT, innerW, innerH } =
+    layout
+
+  ctx.clearRect(0, 0, w, h)
+  ctx.imageSmoothingEnabled = true
   ctx.font = `600 ${fontPx}px ${family}`
   ctx.textAlign = align.textAlign
-  ctx.textBaseline = align.textBaseline
+  ctx.textBaseline = 'middle'
 
   const { color: fill, alpha } = resolveTextFill(spec)
   const outline = color3ToThree(spec.outlineColor, 0x000000)
@@ -292,53 +308,20 @@ function paintTextShape(
   const shadowBlur = spec.shadowBlur ?? 0
   const shadowX = spec.shadowOffsetX ?? 0
   const shadowY = spec.shadowOffsetY ?? 0
+  const strokePx = outlineWidth > 0 ? Math.max(1, outlineWidth * fontPx * 0.35) : 0
 
-  let plain = stripTextShapeMarkup(spec.text ?? '')
-  if (spec.lineCount != null && spec.lineCount > 0) {
-    // Soft cap: keep first N lines after wrap
-  }
-
-  // Shrink-to-fit: fontAutoSize always; without it still shrink when non-wrapping
-  // text overflows the plane (lobby title: width 6, fontSize 8.3 → was clipped to
-  // "layers Joined: 0/" missing P and 5). Explorer TMP fits the rect.
-  const shouldFitWidth = spec.fontAutoSize === true || spec.textWrapping !== true
-  if (shouldFitWidth) {
-    for (let guard = 0; guard < 24; guard++) {
-      ctx.font = `600 ${fontPx}px ${family}`
-      const lines = wrapLines(ctx, plain, innerW, spec.textWrapping === true)
-      const widest = Math.max(0, ...lines.map((ln) => ctx.measureText(ln).width))
-      const lineHeight = fontPx * (1.15 + (spec.lineSpacing ?? 0) * 0.1)
-      const blockH = lines.length * lineHeight
-      const widthOk = widest <= innerW * 0.98
-      const heightOk = !spec.fontAutoSize || blockH <= innerH * 1.02
-      if (widthOk && heightOk) break
-      fontPx *= 0.9
-      if (fontPx < 8) break
-    }
-  }
-
-  ctx.font = `600 ${fontPx}px ${family}`
-  let lines = wrapLines(ctx, plain, innerW, spec.textWrapping === true)
-  if (spec.lineCount != null && spec.lineCount > 0 && lines.length > spec.lineCount) {
-    lines = lines.slice(0, spec.lineCount)
-  }
-
-  const lineHeight = fontPx * (1.15 + (spec.lineSpacing ?? 0) * 0.1)
   const blockH = lines.length * lineHeight
-
   let startY: number
   if (align.v === 'top') startY = padT + lineHeight * 0.5
   else if (align.v === 'bottom') startY = padT + innerH - blockH + lineHeight * 0.5
   else startY = padT + innerH / 2 - blockH / 2 + lineHeight / 2
 
+  // Content-sized planes: glyphs fill the canvas — still honor h align for multi-line.
   const xFor = (): number => {
     if (align.h === 'left') return padL
     if (align.h === 'right') return padL + innerW
     return padL + innerW / 2
   }
-
-  // Outline width: DCL uses ~0–1 relative; scale to canvas stroke
-  const strokePx = outlineWidth > 0 ? Math.max(1, outlineWidth * fontPx * 0.35) : 0
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!
@@ -367,6 +350,91 @@ function paintTextShape(
     ctx.shadowColor = 'transparent'
     ctx.fillStyle = `rgba(${Math.round(fill.r * 255)},${Math.round(fill.g * 255)},${Math.round(fill.b * 255)},${alpha})`
     ctx.fillText(line, x, y)
+  }
+}
+
+export function textShapeSignature(spec: PBTextShape): string {
+  return JSON.stringify({
+    text: spec.text,
+    fontSize: spec.fontSize,
+    fontAutoSize: spec.fontAutoSize,
+    textAlign: spec.textAlign,
+    width: spec.width,
+    height: spec.height,
+    textColor: spec.textColor,
+    outlineWidth: spec.outlineWidth,
+    outlineColor: spec.outlineColor,
+    shadowBlur: spec.shadowBlur,
+    shadowOffsetX: spec.shadowOffsetX,
+    shadowOffsetY: spec.shadowOffsetY,
+    shadowColor: spec.shadowColor,
+    textWrapping: spec.textWrapping,
+    lineSpacing: spec.lineSpacing,
+    lineCount: spec.lineCount,
+    paddingTop: spec.paddingTop,
+    paddingRight: spec.paddingRight,
+    paddingBottom: spec.paddingBottom,
+    paddingLeft: spec.paddingLeft,
+    font: spec.font
+  })
+}
+
+function stripTextShapeMarkup(text: string): string {
+  return text
+    .replace(/<\/?(?:b|i|u)>/gi, '')
+    .replace(/<\/?color(?:=[^>]*)?>/gi, '')
+    .replace(/<\/?size(?:=[^>]*)?>/gi, '')
+    .replace(/<\/?space(?:=[^>]*)?>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?[a-zA-Z][^>]*>/g, '')
+}
+
+function resolveTextFill(spec: PBTextShape): { color: THREE.Color; alpha: number } {
+  const c = spec.textColor
+  if (!c) return { color: new THREE.Color(0xffffff), alpha: 1 }
+  const r = c.r
+  const g = c.g
+  const b = c.b
+  if (r === undefined && g === undefined && b === undefined) {
+    return { color: new THREE.Color(0xffffff), alpha: color4Alpha(c, 1) }
+  }
+  return {
+    color: color4ToThree(c, 0xffffff),
+    alpha: color4Alpha(c, 1)
+  }
+}
+
+function fontFamilyForSpec(spec: PBTextShape): string {
+  const f = spec.font
+  if (f === 1) return 'Georgia, "Times New Roman", serif'
+  if (f === 2) return 'ui-monospace, "Cascadia Code", Menlo, monospace'
+  return 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif'
+}
+
+function alignFromSpec(spec: PBTextShape): Align {
+  // Default middle-left — leaderboards / labels; explicit textAlign still wins.
+  const a = spec.textAlign ?? TAM.MIDDLE_LEFT
+  switch (a) {
+    case TAM.TOP_LEFT:
+      return { textAlign: 'left', h: 'left', v: 'top' }
+    case TAM.TOP_CENTER:
+      return { textAlign: 'center', h: 'center', v: 'top' }
+    case TAM.TOP_RIGHT:
+      return { textAlign: 'right', h: 'right', v: 'top' }
+    case TAM.MIDDLE_LEFT:
+      return { textAlign: 'left', h: 'left', v: 'middle' }
+    case TAM.MIDDLE_RIGHT:
+      return { textAlign: 'right', h: 'right', v: 'middle' }
+    case TAM.BOTTOM_LEFT:
+      return { textAlign: 'left', h: 'left', v: 'bottom' }
+    case TAM.BOTTOM_CENTER:
+      return { textAlign: 'center', h: 'center', v: 'bottom' }
+    case TAM.BOTTOM_RIGHT:
+      return { textAlign: 'right', h: 'right', v: 'bottom' }
+    case TAM.MIDDLE_CENTER:
+      return { textAlign: 'center', h: 'center', v: 'middle' }
+    default:
+      return { textAlign: 'left', h: 'left', v: 'middle' }
   }
 }
 

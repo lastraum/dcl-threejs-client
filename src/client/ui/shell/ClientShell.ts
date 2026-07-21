@@ -9,6 +9,8 @@ import type { AvatarProfile } from '../../../avatar/types'
 import { ProfilePopup } from './ProfilePopup'
 import { SkyboxPanel } from './SkyboxPanel'
 import { NearbyVoicePanel } from './NearbyVoicePanel'
+import { PortableExperiencePanel } from './PortableExperiencePanel'
+import type { PortableExperienceManager } from '../../../dcl/multiScene/PortableExperienceManager'
 import type { VoiceChatService } from '../../../network/voice/VoiceChatService'
 import type { DebugPanel } from '../DebugPanel'
 import type { DevProgressPanel } from '../DevProgressPanel'
@@ -77,6 +79,7 @@ export class ClientShell {
   private readonly profilePopup: ProfilePopup
   private readonly skyboxPanel: SkyboxPanel
   private readonly nearbyVoicePanel: NearbyVoicePanel
+  private readonly pePanel: PortableExperiencePanel
   private readonly emoteWheel: EmoteWheelPanel
   private readonly buttons = new Map<string, SidebarButton>()
   private readonly debugPanel: DebugPanel
@@ -160,11 +163,13 @@ export class ClientShell {
           this.devProgressPanel?.hide()
           this.skyboxPanel.hide()
           this.nearbyVoicePanel.hide()
+          this.pePanel.hide()
           this.chatPanel?.hide()
           this.buttons.get('help')?.setActive(false)
           this.buttons.get('dev')?.setActive(false)
           this.buttons.get('skybox')?.setActive(false)
           this.buttons.get('nearby-voice')?.setActive(false)
+          this.buttons.get('smart-wearable')?.setActive(false)
           this.buttons.get('chat')?.setActive(false)
         }
       }
@@ -184,6 +189,11 @@ export class ClientShell {
     this.nearbyVoicePanel = new NearbyVoicePanel({
       anchor: () => this.buttons.get('nearby-voice')?.element,
       onClose: () => this.buttons.get('nearby-voice')?.setActive(false)
+    })
+
+    this.pePanel = new PortableExperiencePanel({
+      anchor: () => this.buttons.get('smart-wearable')?.element,
+      onClose: () => this.buttons.get('smart-wearable')?.setActive(false)
     })
 
     this.profileButton = new ProfileSidebarButton('Profile', () => this.profilePopup.toggle())
@@ -471,8 +481,12 @@ export class ClientShell {
     this.mobileQuery.removeEventListener('change', this.onMobileQueryChange)
     this.unsubChatUnread?.()
     this.unsubChatUnread = null
+    this.unsubPe?.()
+    this.unsubPe = null
     this.profilePopup.dispose()
     this.skyboxPanel.hide()
+    this.nearbyVoicePanel.hide()
+    this.pePanel.dispose()
     this.emoteWheel.dispose()
     this.devProgressPanel?.hide()
     this.chatPanel?.dispose()
@@ -565,11 +579,35 @@ export class ClientShell {
         this.buttons.get('nearby-voice')?.setActive(this.nearbyVoicePanel.isVisible())
         if (this.nearbyVoicePanel.isVisible()) {
           this.skyboxPanel.hide()
+          this.pePanel.hide()
           this.chatPanel?.hide()
           this.emoteWheel.hide()
           this.debugPanel.hide()
           this.devProgressPanel?.hide()
           this.buttons.get('skybox')?.setActive(false)
+          this.buttons.get('smart-wearable')?.setActive(false)
+          this.buttons.get('chat')?.setActive(false)
+          this.buttons.get('help')?.setActive(false)
+          this.buttons.get('dev')?.setActive(false)
+        }
+      }
+    }
+
+    if (id === 'smart-wearable') {
+      return (ev) => {
+        ev.stopPropagation()
+        this.closeMobileDrawerForOverlay()
+        this.pePanel.toggle()
+        this.buttons.get('smart-wearable')?.setActive(this.pePanel.isVisible())
+        if (this.pePanel.isVisible()) {
+          this.skyboxPanel.hide()
+          this.nearbyVoicePanel.hide()
+          this.chatPanel?.hide()
+          this.emoteWheel.hide()
+          this.debugPanel.hide()
+          this.devProgressPanel?.hide()
+          this.buttons.get('skybox')?.setActive(false)
+          this.buttons.get('nearby-voice')?.setActive(false)
           this.buttons.get('chat')?.setActive(false)
           this.buttons.get('help')?.setActive(false)
           this.buttons.get('dev')?.setActive(false)
@@ -617,7 +655,6 @@ export class ClientShell {
       marketplace: 'Marketplace',
       help: 'Help',
       dev: 'Dev progress',
-      'smart-wearable': 'Smart wearables',
       'friend-requests': 'Friend requests',
       chat: 'Chat'
     }
@@ -664,6 +701,28 @@ export class ClientShell {
 
   bindNearbyVoice(voice: VoiceChatService | null): void {
     this.nearbyVoicePanel.bindVoice(voice)
+  }
+
+  private unsubPe: (() => void) | null = null
+
+  bindPortableExperiences(manager: PortableExperienceManager | null): void {
+    this.unsubPe?.()
+    this.unsubPe = null
+    this.pePanel.bindManager(manager)
+    const btn = this.buttons.get('smart-wearable')
+    if (!manager) {
+      btn?.setBadge(null)
+      this.pePanel.hide()
+      return
+    }
+    this.unsubPe = manager.subscribe((slots) => {
+      const n = slots.filter((s) => s.status === 'running').length
+      const available = slots.length
+      btn?.setBadge(n > 0 ? n : available > 0 ? available : null)
+      if (!this.pePanel.isVisible()) {
+        btn?.setActive(n > 0)
+      }
+    })
   }
 
   /** Sidebar status from voice service. */

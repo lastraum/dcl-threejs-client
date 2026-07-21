@@ -1318,10 +1318,9 @@ export class RemoteAvatarManager {
 
       record.vrmLocomotion = new VrmLocomotionAnimations()
       try {
+        // Bind-pose feet align before retargeted clips (same as LocalAvatar).
+        applyVrmPivotOffset(record.pivot, vrmAvatar.vrm, vrmAvatar.root)
         await record.vrmLocomotion.bind(vrmAvatar.vrm, vrmAvatar.root)
-        applyVrmPivotOffset(record.pivot, vrmAvatar.vrm, vrmAvatar.root, {
-          measureActivePose: true
-        })
         prepareCustomAvatarScene(vrmAvatar.root)
       } catch (err) {
         console.warn(`[network] remote VRM locomotion failed for ${record.address}`, err)

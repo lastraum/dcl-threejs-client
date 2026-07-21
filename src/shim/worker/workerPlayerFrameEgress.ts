@@ -202,39 +202,46 @@ export function noteWorkerLocomotionFreezeWrite(value: unknown): void {
 /**
  * @returns true if clear must be blocked
  *
- * Latch sources:
- * - pointer-move (MOVE CAMERA): clear only via STOP inject; sticky refuse re-freeze.
- * - scene (Flagtag lobby, death freeze, menus): scene may clear anytime — do not
- *   permanently block createOrReplace(cleared) or Flagtag join stays frozen forever.
+ * Scene owns InputModifier clears. Never permanently block deleteFrom / createOrReplace(clear):
+ * SpaceRunner `la()` freezes on map/portal load then `xo()` deleteFrom after
+ * GltfContainerLoadingState FINISHED — that often runs outside (or same-tick as) the
+ * portal pointer inject. Blocking clears when the freeze was mis-tagged `pointer-move`
+ * left players teleported to map spawn but permanently frozen (xo clears the watch entity
+ * even when deleteFrom was refused, so the 20s timeout never retried).
+ *
+ * MOVE CAMERA stickiness:
+ * - STOP inject: allow clear + refuseFreezeWrites so editFlight cannot re-freeze.
+ * - Cooperative wipe without intentional clear: ensureWorkerLocomotionFreezePersisted
+ *   re-applies while the latch is still held.
+ * - Intentional scene clear always drops the latch (scene wins).
  */
 export function noteWorkerLocomotionClearWrite(): boolean {
-  // Same pointer inject wrote freeze then clear (double-toggle) — keep freeze.
-  if (intentionalUnfreezeWindow() && freezeWrittenThisInject) {
-    return true
-  }
-
-  const clearingMoveLatch =
-    locomotionFreezeLatchSource === 'pointer-move' ||
-    (intentionalUnfreezeWindow() && latchSourceAtInjectStart === 'pointer-move')
-
-  if (intentionalUnfreezeWindow()) {
+  // Sticky unfreeze after STOP — always allow further clears.
+  if (refuseFreezeWrites) {
     clearLocomotionFreezeLatchState()
     freezeWrittenThisInject = false
-    // Sticky refuse only after STOP MOVE CAMERA — not after menu/lobby unlock clicks.
-    refuseFreezeWrites = clearingMoveLatch
     return false
   }
 
-  // Outside pointer inject: only MOVE CAMERA latch is sticky.
-  // Scene freezes (Flagtag disableAll until join) must be clearable by scene systems.
-  if (locomotionFreezeLatchSource === 'pointer-move') {
-    return true
-  }
-
-  if (locomotionFreezeLatch) {
+  if (intentionalUnfreezeWindow()) {
+    // True STOP MOVE CAMERA: had a move latch, and this inject did not write a new freeze
+    // (freeze-then-clear same click is load-gate unlock, not STOP).
+    const stopMoveCamera =
+      !freezeWrittenThisInject &&
+      (locomotionFreezeLatchSource === 'pointer-move' ||
+        latchSourceAtInjectStart === 'pointer-move')
     clearLocomotionFreezeLatchState()
     freezeWrittenThisInject = false
+    if (stopMoveCamera) {
+      refuseFreezeWrites = true
+    }
+    return false
   }
+
+  // Outside pointer inject: always allow. Load freezes (map GLB after portal click) and
+  // menu unlocks must clear even if the freeze was latched during the click inject.
+  clearLocomotionFreezeLatchState()
+  freezeWrittenThisInject = false
   return false
 }
 
@@ -370,6 +377,98 @@ export function forceUnfreezeModeOnlyFromMain(engine: IEngine, reason: string): 
   if (!isModeOnlyLocomotionFreeze(live)) return false
   forceUnfreeze(engine, reason)
   return true
+}
+
+/**
+ * After host reports terminal GltfContainerLoadingState and scene systems have ticked:
+ * if PlayerEntity is still disableAll-frozen, release it.
+ *
+ * Scenes (SpaceRunner la/xo) gate disableAll on LoadingState FINISHED then deleteFrom.
+ * When the scene system misses the inject (component timing / minified IM spread) the player
+ * stays locked after map portal even though the GLB is attached. Mode-only freezes (sit) and
+ * non-disableAll locks are left alone.
+ *
+ * Always leaves worker IM cleared (deleteFrom) and invalidates player-frame dedupe so main
+ * can receive has=false. Callers must force-post player-frame after this returns true.
+ */
+export function forceClearDisableAllAfterLoadGate(engine: IEngine, reason: string): boolean {
+  preregisterRendererInjectedComponents(engine)
+  const InputModifier = generated.InputModifier(engine)
+  const player = engine.PlayerEntity as Entity
+  const live = InputModifier.getOrNull(player)
+  const wasFrozen = !!(live && isLocomotionFrozenValue(live) && readStandardMode(live)?.disableAll)
+  // Even if already clear on worker, still invalidate egress so main can catch up
+  // (desync: worker cleared, main still disableAll from stale player-frame/CRDT).
+  clearLocomotionFreezeLatchState()
+  freezeWrittenThisInject = false
+  refuseFreezeWrites = false
+  lastSnapshotKey = ''
+
+  if (wasFrozen) {
+    // deleteFrom first (SpaceRunner xo contract). Bypass is not available; guard always allows.
+    try {
+      InputModifier.deleteFrom(player)
+    } catch {
+      /* fall through */
+    }
+    // Belt: cleared PUT if delete left a frozen value.
+    if (InputModifier.has(player)) {
+      const still = InputModifier.getOrNull(player)
+      if (still && isLocomotionFrozenValue(still)) {
+        InputModifier.createOrReplace(player, CLEARED_INPUT_MODIFIER as never)
+      } else if (still && isLocomotionFrozenValue(still) === false) {
+        // has clear value — still delete so main gets has=false not "cleared mode"
+        try {
+          InputModifier.deleteFrom(player)
+        } catch {
+          /* keep cleared put */
+        }
+      }
+    }
+    // Absolute final: no component on player.
+    if (InputModifier.has(player) && isLocomotionFrozenValue(InputModifier.getOrNull(player))) {
+      InputModifier.createOrReplace(player, CLEARED_INPUT_MODIFIER as never)
+    }
+  }
+
+  const after = InputModifier.getOrNull(player)
+  const stillFrozen = !!(after && isLocomotionFrozenValue(after))
+  workerLog(
+    `[input-modifier] load-gate clear disableAll — ${reason} wasFrozen=${wasFrozen} stillFrozen=${stillFrozen} has=${InputModifier.has(player)}`
+  )
+  // true = worker had (or still needs) a load freeze release — caller must force-post player-frame.
+  return wasFrozen || stillFrozen
+}
+
+/**
+ * Force player-frame with InputModifier cleared (has=false). Bypasses dedupe / latch re-apply.
+ * Used after load-gate clear so main cannot stay frozen while worker is already free.
+ */
+export function takeForcedPlayerFrameClearSnapshot(engine: IEngine): PlayerFrameSnapshot {
+  preregisterRendererInjectedComponents(engine)
+  const InputModifier = generated.InputModifier(engine)
+  const MainCamera = generated.MainCamera(engine)
+  const player = engine.PlayerEntity as Entity
+  const camera = engine.CameraEntity as Entity
+  clearLocomotionFreezeLatchState()
+  freezeWrittenThisInject = false
+  refuseFreezeWrites = false
+  try {
+    if (InputModifier.has(player)) InputModifier.deleteFrom(player)
+  } catch {
+    InputModifier.createOrReplace(player, CLEARED_INPUT_MODIFIER as never)
+  }
+  if (!MainCamera.has(camera)) {
+    MainCamera.createOrReplace(camera, {})
+  }
+  const mainCamera = MainCamera.getOrNull(camera) ?? {}
+  lastSnapshotKey = ''
+  frameSeq++
+  return {
+    frameId: frameSeq,
+    inputModifierHas: false,
+    mainCamera: cloneJson(mainCamera)
+  }
 }
 
 /** Rewrite STOP MOVE CAMERA → MOVE CAMERA so phase-4 UI snapshot matches player release. */
@@ -538,6 +637,7 @@ export function describeWorkerInputModifier(engine: IEngine): string {
   const std = readStandardMode(live)
   return (
     `imHas=${has} frozen=${isLocomotionFrozenValue(live)} latched=${locomotionFreezeLatch !== null} ` +
+    `latchSrc=${locomotionFreezeLatchSource ?? 'none'} ` +
     `disableAll=${!!std?.disableAll} walk=${!!std?.disableWalk} jog=${!!std?.disableJog} run=${!!std?.disableRun} ` +
     `freezeThisInject=${freezeWrittenThisInject} hadLatch=${hadLatchAtInjectStart} refuseFreeze=${refuseFreezeWrites}`
   )

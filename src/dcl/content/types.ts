@@ -5,6 +5,8 @@ export type SceneSource =
   | { kind: 'world'; worldName: string; entityId: string }
   | { kind: 'coords'; x: number; y: number }
   | { kind: 'local'; projectId: string }
+  /** Smart wearable / portable experience scene (not parcel-bound). */
+  | { kind: 'portable'; urn: string }
 
 export type SceneLayout = {
   parcels: string[]
@@ -291,6 +293,11 @@ export type SceneMetadata = {
    */
   environment?: SceneEnvironmentKind | SceneEnvironmentConfig
   featureToggles?: SceneFeatureToggles
+  /**
+   * Portable experience / smart wearable permissions (scene.json root).
+   * Not enforced on parcel scenes — consent UI + future PE capability gates.
+   */
+  requiredPermissions?: string[]
   /** `featureToggles.browserChat` alias — `"disabled"` or `{ "enabled": false }`. */
   browserChat?: SceneFeatureToggle | SceneBrowserChatConfig
   /**
@@ -348,6 +355,15 @@ export type ResolvedScene = {
   browserChatEnabled: boolean
   /** scene.json `featureToggles.nameTags` / top-level `nameTags` (+ `?nameTags=`). Default true. */
   nameTagsVisible: boolean
+  /**
+   * scene.json `featureToggles.portableExperiences` (+ URL override).
+   * Controls whether equipped PE / smart wearables may run in this primary scene.
+   */
+  portableExperiencesPolicy?: {
+    allowed: boolean
+    uiAllowed: boolean
+    raw: 'enabled' | 'disabled' | 'hideUi' | 'default'
+  }
   realm: RealmEndpoints
 }
 

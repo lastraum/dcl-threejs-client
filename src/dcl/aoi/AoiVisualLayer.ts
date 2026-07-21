@@ -53,6 +53,20 @@ export type AoiVisualLayerContext = {
   /** Sync AOI road furniture colliders (real FBX hulls) into PhysX. */
   syncRoadColliders?: (descs: PhysicsColliderDesc[]) => void
   clearRoadColliders?: () => void
+  /**
+   * Inner-ring secondary candidates for live workers (MultiSceneRuntime).
+   * Called after each AOI refresh; does not start workers itself.
+   */
+  onSecondaryCandidates?: (
+    candidates: Array<{
+      entityId: string
+      title: string
+      base: string
+      resolveX: number
+      resolveY: number
+      distM: number
+    }>
+  ) => void
 }
 
 /**
@@ -60,11 +74,11 @@ export type AoiVisualLayerContext = {
  * - Empty layer: instanced blank ground + trees/bushes on vacant parcels
  * - Genesis roads via **Explorer catalog + OriginalAssets FBX** (tile + street
  *   furniture), not runtime SDK6 game.js
- * - Neighbor main.composite GLBs (render-only, no colliders / anim / PE)
+ * - Neighbor main.composite GLBs (render-only, no colliders / anim) — **tertiary**
  *
- * Inner radius (SCENE_SCRIPT_WARM_RADIUS_M): script-built neighbors without
- * composite get an isolated first-frame worker sample → dumb visual secondaries
- * (Explorer-style “first frame GLBs”), not long-running secondary scripts.
+ * Inner radius (SCENE_SCRIPT_WARM_RADIUS_M):
+ * - First-frame samples → static visual secondaries (tertiary when no live worker)
+ * - Live secondary workers (optional) hide first-frame / composite for same entityId
  */
 export class AoiVisualLayer {
   private root = new THREE.Group()
@@ -92,6 +106,8 @@ export class AoiVisualLayer {
   /** True when primary has no entity — empty-land fill includes primary parcels. */
   private primaryIsEmpty = false
   private readonly firstFrameSampler = new SecondaryFirstFrameSampler()
+  /** Live secondary workers — hide tertiary FF/composite for these entity ids. */
+  private readonly liveSecondaryIds = new Set<string>()
 
   constructor() {
     this.root.name = 'aoi-visual-layer'
@@ -103,6 +119,25 @@ export class AoiVisualLayer {
     this.root.add(this.firstFrameRoot)
   }
 
+  /**
+   * Live secondary workers own these entity ids — hide tertiary first-frame
+   * and composite meshes so we don't double-draw.
+   */
+  setLiveSecondaryIds(ids: ReadonlySet<string>): void {
+    this.liveSecondaryIds.clear()
+    for (const id of ids) this.liveSecondaryIds.add(id)
+    // Hide static bakes under live workers — first-frame + composite (avoid dual rotators).
+    for (const [id, group] of this.firstFrameGroups) {
+      if (this.liveSecondaryIds.has(id)) group.visible = false
+    }
+    for (const child of this.compositeRoot.children) {
+      const name = child.name
+      if (!name.startsWith('aoi-secondary:')) continue
+      const id = name.slice('aoi-secondary:'.length)
+      if (this.liveSecondaryIds.has(id)) child.visible = false
+    }
+  }
+
   /** Call after primary scene is known — coords only. */
   bind(ctx: AoiVisualLayerContext): void {
     this.unbind()
@@ -111,6 +146,7 @@ export class AoiVisualLayer {
     this.enabled = ctx.scene.source.kind === 'coords'
     this.primaryIsEmpty = !ctx.scene.entityId?.trim() && !ctx.scene.mainEntry?.trim()
     this.primaryParcelSet.clear()
+    this.liveSecondaryIds.clear()
     for (const p of ctx.scene.parcels) this.primaryParcelSet.add(p)
     this.loadedCompositeIds.clear()
     this.loadedRoadIds.clear()
@@ -169,7 +205,7 @@ export class AoiVisualLayer {
       if (this.lastRadius !== 0) {
         this.clearBlank()
         this.clearScatter()
-        this.compositeRoot.clear()
+            this.compositeRoot.clear()
         this.clearRoads()
         this.clearFirstFrameGroups()
         this.loadedCompositeIds.clear()
@@ -353,6 +389,8 @@ export class AoiVisualLayer {
         }
         if (this.loadedCompositeIds.has(ent.id)) continue
         group.name = `aoi-secondary:${ent.id}`
+        // Hide if a live secondary worker owns this entity (avoid double-draw).
+        group.visible = !this.liveSecondaryIds.has(ent.id)
         this.compositeRoot.add(group)
         this.loadedCompositeIds.add(ent.id)
         console.info(
@@ -412,6 +450,34 @@ export class AoiVisualLayer {
       return (a.parcels.length || a.pointers.length) - (b.parcels.length || b.pointers.length)
     })
 
+    // Feed multi-scene live secondary manager (nearest first, full inner ring list).
+    const liveCandidates: Array<{
+      entityId: string
+      title: string
+      base: string
+      resolveX: number
+      resolveY: number
+      distM: number
+    }> = []
+    for (const ent of ranked) {
+      const dist = minEntDist(ent, dclX, dclZ, primaryBase)
+      if (dist > SCENE_SCRIPT_WARM_RADIUS_M) continue
+      try {
+        const baseCoord = parseParcelKey(ent.base)
+        liveCandidates.push({
+          entityId: ent.id,
+          title: ent.title || ent.base,
+          base: ent.base,
+          resolveX: baseCoord.x,
+          resolveY: baseCoord.y,
+          distM: dist
+        })
+      } catch {
+        /* skip */
+      }
+    }
+    this.ctx?.onSecondaryCandidates?.(liveCandidates)
+
     const wantFf = new Set<string>()
     let visibleSlots = 0
     const now = performance.now()
@@ -419,6 +485,8 @@ export class AoiVisualLayer {
     for (const ent of ranked) {
       const dist = minEntDist(ent, dclX, dclZ, primaryBase)
       if (dist > SCENE_SCRIPT_WARM_RADIUS_M) continue
+      // Live secondary worker owns this scene — no static first-frame.
+      if (this.liveSecondaryIds.has(ent.id)) continue
       if (visibleSlots >= FF_MAX_VISIBLE) break
       wantFf.add(ent.id)
       visibleSlots++
@@ -428,7 +496,7 @@ export class AoiVisualLayer {
       const cached = this.firstFrameGroups.get(ent.id)
       if (cached) {
         if (cached.userData.ffHierarchyVer === FF_HIERARCHY_VERSION) {
-          cached.visible = true
+          cached.visible = !this.liveSecondaryIds.has(ent.id)
           continue
         }
         // Stale hierarchy bake — drop and re-sample.
@@ -467,8 +535,9 @@ export class AoiVisualLayer {
             disposeObject3D(prev)
           }
           group.name = `aoi-secondary-ff:${entityId}`
-          // Show for now; next refresh toggles hide if we've left the inner ring.
-          group.visible = true
+          // Race: live secondary may have started while this sample was in flight.
+          // Never show a static first-frame over a live worker (dual prize portal / rotators).
+          group.visible = !this.liveSecondaryIds.has(entityId)
           this.firstFrameRoot.add(group)
           this.firstFrameGroups.set(entityId, group)
           this.firstFrameLastUse.set(entityId, performance.now())
@@ -480,7 +549,7 @@ export class AoiVisualLayer {
 
     // LOD hide — do **not** dispose or forget sampler (no full re-sample on re-enter).
     for (const [id, group] of this.firstFrameGroups) {
-      if (wantFf.has(id)) {
+      if (wantFf.has(id) && !this.liveSecondaryIds.has(id)) {
         group.visible = true
       } else {
         group.visible = false

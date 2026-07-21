@@ -112,11 +112,25 @@ function filterAndPrepClip(clip: THREE.AnimationClip, glbScene: THREE.Object3D, 
   clip.optimize()
 }
 
+/**
+ * Hip height in **avatar-local** meters for Mixamo position-track scale.
+ *
+ * Must NOT use world-space hips.y: once the VRM is parented under the player CCT
+ * (often y≈50 on elevated spawns), world Y pollutes the retarget scaler (~50×) and
+ * locomotion hips tracks launch the mesh high above / behind the capsule.
+ */
 export function extractRootToHipsMeters(vrm: VRM): number {
   const hips = vrm.humanoid.getRawBoneNode(VRMHumanBoneName.Hips)
   if (!hips) return 1
   vrm.scene.updateWorldMatrix(true, true)
-  return hips.getWorldPosition(new THREE.Vector3()).y
+  const hipLocal = new THREE.Vector3()
+  hips.getWorldPosition(hipLocal)
+  vrm.scene.worldToLocal(hipLocal)
+  const h = Math.abs(hipLocal.y)
+  // Adult humanoid hip height is roughly 0.7–1.2m; keep a loose clamp for stylized rigs.
+  if (h >= 0.35 && h <= 2.5) return h
+  console.warn('[vrm] rootToHips out of range — using 1m fallback', { hipLocalY: hipLocal.y, h })
+  return 1
 }
 
 export function retargetClipToVrm(

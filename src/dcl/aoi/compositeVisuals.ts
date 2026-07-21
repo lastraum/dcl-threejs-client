@@ -24,7 +24,10 @@ function num(v: unknown, fallback = 0): number {
  * Parse Creator Hub / main.composite for GltfContainer + Transform only.
  * Skips Animator, MeshCollider, PointerEvents, etc.
  */
-export function extractCompositeGltfPlacements(compositeJson: unknown): Array<{
+export function extractCompositeGltfPlacements(
+  compositeJson: unknown,
+  opts?: { skipGroundGlbs?: boolean }
+): Array<{
   src: string
   position: { x: number; y: number; z: number }
   rotation: { x: number; y: number; z: number; w: number }
@@ -56,10 +59,13 @@ export function extractCompositeGltfPlacements(compositeJson: unknown): Array<{
     scale: { x: number; y: number; z: number }
   }> = []
 
+  const skipGround = opts?.skipGroundGlbs === true
   for (const [entKey, rawGltf] of Object.entries(gltfData)) {
     const gltf = unwrap(rawGltf) as { src?: string } | null
     const src = typeof gltf?.src === 'string' ? gltf.src.trim() : ''
     if (!src) continue
+    // Only when scene.json opts in — never strip default scene.glb by default.
+    if (skipGround && isAoiSecondaryGroundSrc(src)) continue
 
     const rawTf = transformData?.[entKey]
     const tf = (unwrap(rawTf) ?? {}) as {
@@ -92,6 +98,85 @@ export function extractCompositeGltfPlacements(compositeJson: unknown): Array<{
     })
   }
   return out
+}
+
+/**
+ * Ground / floor GLBs that may be skipped under AOI secondary footprints when
+ * the scene opts in (blank empty-land tiles already cover the parcel).
+ *
+ * Never matches Creator Hub default `scene.glb` — that is authored content.
+ * Callers must only skip when scene.json explicitly allows (see
+ * {@link shouldSkipAoiSecondaryGroundGlbs}).
+ */
+export function isAoiSecondaryGroundSrc(src: string): boolean {
+  const base = (src.split('/').pop() ?? src).trim().toLowerCase()
+  const file = base.replace(/\.(glb|gltf)$/i, '')
+  if (!file) return false
+  // Never strip the Creator Hub default scene model.
+  if (file === 'scene') return false
+  // Exact empty-land / builder floor packs only (not props named *playground* etc.)
+  if (
+    file === 'floor' ||
+    file === 'floors' ||
+    file === 'ground' ||
+    file === 'groundtile' ||
+    file === 'ground_tile' ||
+    file === 'groundplane' ||
+    file === 'ground_plane' ||
+    file === 'floorbase' ||
+    file === 'floor_base' ||
+    file === 'base_floor' ||
+    file === 'basefloor' ||
+    file === 'empty' ||
+    file === 'empty_parcel' ||
+    file === 'emptyparcel'
+  ) {
+    return true
+  }
+  if (
+    file.startsWith('floorbase') ||
+    file.startsWith('floor_base') ||
+    file.startsWith('floor_tile') ||
+    file.startsWith('floortile') ||
+    file.includes('floorbase') ||
+    file.includes('empty_parcel') ||
+    file.includes('emptyland') ||
+    file.includes('empty_land')
+  ) {
+    return true
+  }
+  if (/^(floor|ground)([_\-.]|$)/i.test(file)) return true
+  if (/[_\-.](floor|ground)([_\-.]|$)/i.test(file) && !/play|under|above|roof/i.test(file)) {
+    return true
+  }
+  return false
+}
+
+/**
+ * Opt-in: only strip empty floor GLBs from AOI secondaries when scene.json asks.
+ * Default is keep all GLBs (including default scene.glb / floors).
+ *
+ * scene.json:
+ *   "featureToggles": { "aoiSkipGroundGlbs": "enabled" }
+ *   // or top-level
+ *   "aoiSkipGroundGlbs": true
+ */
+export function shouldSkipAoiSecondaryGroundGlbs(metadata?: {
+  featureToggles?: Record<string, unknown>
+  aoiSkipGroundGlbs?: unknown
+} | null): boolean {
+  if (!metadata) return false
+  const top = metadata.aoiSkipGroundGlbs
+  if (top === true || top === 'enabled' || top === 'true') return true
+  if (top === false || top === 'disabled' || top === 'false') return false
+  const toggle = metadata.featureToggles?.aoiSkipGroundGlbs
+  if (typeof toggle === 'string') {
+    const t = toggle.trim().toLowerCase()
+    if (t === 'enabled' || t === 'true' || t === '1') return true
+    if (t === 'disabled' || t === 'false' || t === '0') return false
+  }
+  if (toggle === true) return true
+  return false
 }
 
 export function resolveContentUrl(
@@ -157,6 +242,8 @@ export async function buildPlacementVisualGroup(opts: {
   primaryBase: string
   maxGltfs?: number
   groupName?: string
+  /** Only when scene.json sets aoiSkipGroundGlbs — default keep all GLBs. */
+  skipGroundGlbs?: boolean
 }): Promise<THREE.Group> {
   const group = new THREE.Group()
   group.name = opts.groupName ?? 'aoi-placement-visuals'
@@ -167,12 +254,14 @@ export async function buildPlacementVisualGroup(opts: {
 
   const max = opts.maxGltfs ?? 80
   const slice = opts.placements.slice(0, max)
+  const skipGround = opts.skipGroundGlbs === true
 
   const quat = new THREE.Quaternion()
   const pos = new THREE.Vector3()
 
   await Promise.all(
     slice.map(async (place) => {
+      if (skipGround && isAoiSecondaryGroundSrc(place.src)) return
       const resolved = resolveContentUrl(place.src, opts.content, opts.contentBaseUrl)
       if (!resolved) return
       try {

@@ -12,7 +12,12 @@ import type { EntityPose } from '../../bridge/ReservedEntitiesSync'
 import { SceneScriptSystem } from '../../core/systems/SceneScriptSystem'
 import type { ResolvedScene } from '../content/types'
 import { resolveSceneFromRoute } from '../content/resolveScene'
-import { neighborOriginOffset, resolveContentUrl } from './compositeVisuals'
+import {
+  isAoiSecondaryGroundSrc,
+  neighborOriginOffset,
+  resolveContentUrl,
+  shouldSkipAoiSecondaryGroundGlbs
+} from './compositeVisuals'
 
 /**
  * Caps (not “only one scene total”):
@@ -24,9 +29,11 @@ export const FF_MAX_CONCURRENT_SAMPLES = 1
 export const FF_MAX_ACTIVE_SECONDARIES = 3
 /**
  * Hierarchy bake version — bump when bake logic changes so stale AOI groups re-sample.
- * v5: pure Transform.parent Three hierarchy (primary EntityStore path); no NetworkParent dependence.
+ * v5: pure Transform.parent Three hierarchy (primary EntityStore path).
+ * v6: skip scene ground/floor GLBs (AOI blank tiles cover footprint).
+ * v7: keep all GLBs by default (incl. scene.glb); ground skip only if scene.json opts in.
  */
-export const FF_HIERARCHY_VERSION = 5
+export const FF_HIERARCHY_VERSION = 7
 /** Angzaar-scale estates need a high attach budget for nested props. */
 const MAX_GLTFS = 400
 const TIMEOUT_MS = 35_000
@@ -254,7 +261,10 @@ export class SecondaryFirstFrameSampler {
         neighborBase,
         primaryBase: req.primaryBase,
         maxGltfs: MAX_GLTFS,
-        groupName: `aoi-secondary-ff:${req.entityId}`
+        groupName: `aoi-secondary-ff:${req.entityId}`,
+        skipGroundGlbs: shouldSkipAoiSecondaryGroundGlbs(
+          scene.metadata as { featureToggles?: Record<string, unknown>; aoiSkipGroundGlbs?: unknown } | undefined
+        )
       })
 
       console.info(
@@ -368,9 +378,12 @@ async function buildHierarchicalFirstFrameGroup(opts: {
   primaryBase: string
   maxGltfs: number
   groupName: string
+  /** From scene.json — default false keeps scene.glb / floors. */
+  skipGroundGlbs?: boolean
 }): Promise<THREE.Group> {
   const { GltfContainer, Transform } = opts.system.readComponents
   const view = opts.system.view
+  const skipGround = opts.skipGroundGlbs === true
 
   const wrap = new THREE.Group()
   wrap.name = opts.groupName
@@ -466,11 +479,17 @@ async function buildHierarchicalFirstFrameGroup(opts: {
   }
 
   const candidates: Array<{ entity: Entity; src: string; depth: number }> = []
+  let skippedGround = 0
   for (const [entity] of view.getEntitiesWith(GltfContainer, Transform)) {
     if (isReserved(entity, view)) continue
     if (!nodes.has(entity)) continue
     const src = GltfContainer.get(entity).src?.trim()
     if (!src) continue
+    // Only when scene.json opts in (aoiSkipGroundGlbs) — never strip scene.glb by default.
+    if (skipGround && isAoiSecondaryGroundSrc(src)) {
+      skippedGround++
+      continue
+    }
     candidates.push({ entity, src, depth: depthOf(entity) })
   }
   candidates.sort((a, b) => a.depth - b.depth || (a.entity as number) - (b.entity as number))
@@ -507,6 +526,10 @@ async function buildHierarchicalFirstFrameGroup(opts: {
   wrap.userData.ffOrphans = orphans
   wrap.userData.ffMaxDepth = maxDepth
   wrap.userData.ffParentedNodes = [...parents.values()].filter((p) => p != null).length
+  wrap.userData.ffSkippedGround = skippedGround
+  if (skippedGround > 0) {
+    console.info(`[aoi-ff] skipped ${skippedGround} ground/floor GLB(s) (client blank tiles cover footprint)`)
+  }
   return wrap
 }
 

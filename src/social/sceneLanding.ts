@@ -1,7 +1,7 @@
 import { identityFromAvatarProfile } from '../avatar/displayName'
 import { fetchProfileCached } from '../avatar/peerApi'
 import type { RouteTarget } from '../dcl/content/route'
-import { fetchParcelInfo } from '../map/parcelInfo'
+import { fetchParcelInfo, isAtlasMapTileUrl } from '../map/parcelInfo'
 import {
   dedupeEventsById,
   eventJumpRoute,
@@ -255,10 +255,19 @@ export async function fetchSceneLandingMeta(
 
     const title = await fetchPublicSceneTitle(route)
 
+    // Explorer card uses Places `image` (scene art / PlazaPic). Prefer that over the
+    // atlas map tile parcel.imageUrl falls back to when scene-thumbnail.png is absent.
+    const parcelImg = parcel?.imageUrl?.trim() || null
+    const placeImg = place?.image?.trim() || null
+    const imageUrl =
+      placeImg ??
+      (parcelImg && !isAtlasMapTileUrl(parcelImg) ? parcelImg : null) ??
+      parcelImg
+
     return {
       title,
       description: parcel?.description?.trim() ?? '',
-      imageUrl: parcel?.imageUrl ?? place?.image ?? null,
+      imageUrl,
       pointerLabel: `${route.x}, ${route.y}`,
       kind: 'parcel',
       userCount: place?.userCount ?? 0,

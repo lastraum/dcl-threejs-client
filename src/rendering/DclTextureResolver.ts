@@ -5,18 +5,29 @@ import { safeDecodeURIComponent } from '../util/safeDecodeURIComponent'
 import { isStreamingMediaUrl, proxiedTextureUrl } from './textureProxy'
 
 /**
- * Shared external textures referenced by DCL glTFs (from @dcl/asset-packs / creator-hub).
- * glTF embeds bare filenames; Catalyst stores them by IPFS hash.
+ * Shared external textures referenced by DCL glTFs (from @dcl/asset-packs / builder).
+ * Values are either a catalyst content hash or a full https URL (builder S3 packs).
+ * glTF embeds bare filenames; we rewrite them here.
  */
 export const DCL_SHARED_TEXTURES: Record<string, string> = {
   'FanstasyPack_TX.png': 'bafkreigovfdxo4z4daxwoejgywgqvht5ueoopglgmzsjnmv7kcjjqle2cm',
   'file1.png': 'bafkreiao3j5vpvbwnod5nak5e736ldkngmmymeypxih45febzoes3k6rhi',
   'PiratesPack_TX.png': 'bafkreibtlcu5xu4u7qloyhi6s36e722qu7y7ths2xaspwqgqynpnl5aukq',
-  'PiratesPack_TX.png.png': 'bafkreibtlcu5xu4u7qloyhi6s36e722qu7y7ths2xaspwqgqynpnl5aukq'
+  'PiratesPack_TX.png.png': 'bafkreibtlcu5xu4u7qloyhi6s36e722qu7y7ths2xaspwqgqynpnl5aukq',
+  // Builder Sci-Fi pack — lives on builder S3, not the peer content CDN
+  'SciFiPack_TX.png':
+    'https://builder-assetpacks-prd-bf9fae6.s3.amazonaws.com/contents/QmbQt5kjT5u8Y6TzGXiHwyqMn1FxF7UMEXoxt8opTsciby',
+  'SciFiPack_TX.png.png':
+    'https://builder-assetpacks-prd-bf9fae6.s3.amazonaws.com/contents/QmbQt5kjT5u8Y6TzGXiHwyqMn1FxF7UMEXoxt8opTsciby'
 }
 
 export function sharedTextureHashes(): string[] {
-  return [...new Set(Object.values(DCL_SHARED_TEXTURES))]
+  // Only catalyst hashes — full https pack URLs are not catalyst contents.
+  return [
+    ...new Set(
+      Object.values(DCL_SHARED_TEXTURES).filter((v) => !/^https?:\/\//i.test(v) && /^(bafy|bafkre|Qm)/i.test(v))
+    )
+  ]
 }
 
 function leafName(url: string): string {
@@ -181,8 +192,17 @@ function resolveFromSceneManifest(url: string, leaf: string): string | null {
   return null
 }
 
+/** Shared pack entry as catalyst hash or absolute URL. */
 function resolveSharedTexture(leaf: string): string | null {
   return DCL_SHARED_TEXTURES[leaf] ?? sharedTexturesByLowerKey.get(normalizeContentKey(leaf)) ?? null
+}
+
+/** Resolve shared pack leaf → fetchable URL (hash → catalyst, or passthrough https). */
+function sharedTextureUrl(leaf: string): string | null {
+  const entry = resolveSharedTexture(leaf)
+  if (!entry) return null
+  if (/^https?:\/\//i.test(entry)) return entry
+  return catalystAssetUrl(entry)
 }
 
 /** DCL wearables often mismatch GLTF URIs (`Foo.png`) vs manifest keys (`Foo.png.png`). */
@@ -230,7 +250,7 @@ function resolveKnownAssetUrl(url: string, leaf: string): string | null {
     resolveFromSceneManifest(url, leaf) ??
     resolveFromWearableMappings(url, leaf) ??
     resolveFromEmoteManifest(url, leaf) ??
-    (resolveSharedTexture(leaf) ? catalystAssetUrl(resolveSharedTexture(leaf)!) : null)
+    sharedTextureUrl(leaf)
   )
 }
 
@@ -254,8 +274,8 @@ export function resolveDclAssetUrl(url: string): string {
   const emoteHit = resolveFromEmoteManifest(url, leaf)
   if (emoteHit) return emoteHit
 
-  const shared = resolveSharedTexture(leaf)
-  if (shared) return catalystAssetUrl(shared)
+  const sharedUrl = sharedTextureUrl(leaf)
+  if (sharedUrl) return sharedUrl
 
   // Already a catalyst hash URL
   if (/\/content\/contents\/(bafy|bafkre|Qm)[a-z0-9]+$/i.test(url.split('?')[0] ?? url)) return url
@@ -267,7 +287,7 @@ export function resolveDclAssetUrl(url: string): string {
     const retry =
       resolveFromSceneManifest(concat[2], texLeaf) ??
       resolveFromEmoteManifest(concat[2], texLeaf) ??
-      (resolveSharedTexture(texLeaf) ? catalystAssetUrl(resolveSharedTexture(texLeaf)!) : null)
+      sharedTextureUrl(texLeaf)
     if (retry) return retry
   }
 
@@ -276,7 +296,7 @@ export function resolveDclAssetUrl(url: string): string {
     const retry =
       resolveFromWearableMappings(url, leaf) ??
       resolveFromSceneManifest(url, leaf) ??
-      (resolveSharedTexture(leaf) ? catalystAssetUrl(resolveSharedTexture(leaf)!) : null)
+      sharedTextureUrl(leaf)
     if (retry) return retry
   }
 
@@ -309,8 +329,8 @@ export function buildParseUrlMappings(): Record<string, string> {
     }
   }
 
-  for (const [file, hash] of Object.entries(DCL_SHARED_TEXTURES)) {
-    const url = catalystAssetUrl(hash)
+  for (const [file, entry] of Object.entries(DCL_SHARED_TEXTURES)) {
+    const url = /^https?:\/\//i.test(entry) ? entry : catalystAssetUrl(entry)
     for (const variant of wearableMappingKeyVariants(file)) mappings[variant] = url
   }
 

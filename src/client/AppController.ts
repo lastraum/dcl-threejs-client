@@ -10,6 +10,8 @@ import {
 import { resolveSceneFromRoute, summarizeSceneContent } from '../dcl/content/resolveScene'
 import { EditorApp } from '../editor/EditorApp'
 import { World } from '../core/World'
+import { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
+import { PortableExperienceManager } from '../dcl/multiScene/PortableExperienceManager'
 import { readSceneDevQueryKey } from '../environment/fftOcean/readFftOceanOverride'
 import { disconnectAll } from '../network/SessionConnections'
 import { SessionIdentity } from '../network/SessionIdentity'
@@ -62,7 +64,10 @@ import type { SocialShellTab } from './ui/explore/SocialShellTopNav'
 import { SocialMobileNotifications } from './ui/explore/SocialMobileNotifications'
 import { SceneLandingView } from './ui/landing/SceneLandingView'
 import type { DclEvent } from '../social/dclEvents'
-import { enrichResolvedScenePublicTitle } from '../social/sceneDisplayTitle'
+import {
+  enrichResolvedScenePublicTitle,
+  fetchPublicSceneTitle
+} from '../social/sceneDisplayTitle'
 import { recordLoginEvent } from '../analytics/recordLogin'
 import {
   startDwellTracking,
@@ -83,6 +88,14 @@ export class AppController {
   private container: HTMLElement | null = null
   private world: World | null = null
   private shell: ClientShell | null = null
+  /**
+   * Session-scoped PE manager — survives World rebuild on /goto so enabled PEs
+   * restore without re-prompt (workers rebind to the new host).
+   */
+  private readonly peManager = new PortableExperienceManager()
+  private readonly multiSceneRuntime = new MultiSceneRuntime({
+    peManager: this.peManager
+  })
   private debugPanel: DebugPanel | null = null
   private devProgressPanel: DevProgressPanel | null = null
   private worldLocationCard: WorldLocationCard | null = null
@@ -90,6 +103,12 @@ export class AppController {
   /** Shared translucent frame: location pill + circular minimap (Explorer-style). */
   private locationMapStack: HTMLDivElement | null = null
   private minimapLayoutObserver: ResizeObserver | null = null
+  /** Parcel key → resolved display title (soft-route HUD). */
+  private readonly locationTitleCache = new Map<string, string>()
+  /** Race guard for async title fetches while walking. */
+  private locationTitleGen = 0
+  /** Last parcel key applied to the location pill title. */
+  private lastLocationTitleKey = ''
   /** Parcel to center the full map on after leave-play (minimap click). */
   private mapFocusParcel: { px: number; py: number } | null = null
   /**
@@ -920,12 +939,8 @@ export class AppController {
 
     if (connected && this.socialChat) {
       this.sceneLandingView?.setCastRoomReady(true)
-      console.log(
-        `[cast] landing chat connected=${connected} liveKit=${lkReady} jumpIn=${jumpInReady} status=${status?.kind ?? 'none'}`
-      )
       // Continuous presence: room may connect late, and OBS may go live after landing opens.
       this.castLiveUnsub = this.socialChat.watchRemoteVideoLive((live) => {
-        console.log(`[cast] scene-room video live=${live}`)
         this.sceneLandingView?.setCastLive(live)
       })
       this.sceneLandingView?.setCastLive(this.socialChat.hasRemoteVideoLive())
@@ -940,13 +955,8 @@ export class AppController {
           this.sceneLandingView.setCastLive(this.socialChat.hasRemoteVideoLive())
         }, ms)
       }
-    } else {
-      console.log(
-        `[cast] landing chat connected=${connected} jumpIn=${jumpInReady} status=${status?.kind ?? 'none'}`
-      )
-      if (chatBlockedByScene || guestSession || jumpInReady) {
-        this.sceneLandingView?.setCastRoomReady(true)
-      }
+    } else if (chatBlockedByScene || guestSession || jumpInReady) {
+      this.sceneLandingView?.setCastRoomReady(true)
     }
   }
 
@@ -1001,21 +1011,15 @@ export class AppController {
       ? pointer.toLowerCase()
       : scene.realm.realmName?.trim() || 'main'
 
-    console.log(
-      `[cast] stream-key watch: sceneId=${sceneId.slice(0, 18)}… parcel=${parcel} realm=${realmName} isWorld=${isWorld} as=${this.login.kind}`
-    )
-
     // Prefer existing scene-room session first (already joined for chat).
     if (this.socialChat?.isLiveKitConnected()) {
       const unbindExisting = this.socialChat.bindRemoteCastVideoToHost(host, onUpdate, opts)
       // Give existing room a moment; if video attaches, keep it.
       await new Promise((r) => setTimeout(r, 600))
       if (host.querySelector('video')) {
-        console.log('[cast] stream-key video attached via existing scene LiveKit session')
         return unbindExisting
       }
       unbindExisting()
-      console.log('[cast] existing scene room has no video yet — fresh adapter join')
     }
 
     const adapterResult = await getSceneAdapter(identity, {
@@ -1045,19 +1049,6 @@ export class AppController {
     if (!ok) {
       this.castWatchRoom = null
       throw new Error('Could not connect to scene LiveKit room for stream-key video.')
-    }
-
-    const lkRoom = room.getRoom()
-    console.log(
-      `[cast] stream-key room=${lkRoom?.name ?? '?'} remotes=${lkRoom?.remoteParticipants.size ?? 0}`
-    )
-    if (lkRoom) {
-      for (const p of lkRoom.remoteParticipants.values()) {
-        const pubs = [...p.trackPublications.values()].map(
-          (pub) => `${pub.kind}/${pub.source}/${pub.isSubscribed ? 'sub' : 'unsub'}`
-        )
-        console.log(`[cast] remote ${p.identity?.slice(0, 12)}… pubs=[${pubs.join(', ') || 'none'}]`)
-      }
     }
 
     const unbind = room.bindVideoToHost(host, (attached) => {
@@ -1495,24 +1486,19 @@ export class AppController {
         source: 'goto'
       })
     })
-    // Stand-on-parcel multi-scene promote — no full loading screen.
+    // Stand-on-parcel multi-scene promote — prefer live secondary handoff (no World rebuild).
     world.setPromoteHandlers({
       onPromote: (target, reason) => {
         const from = this.currentRoute
         if (from) this.trackNavigate(from, target, 'navigate', 'goto')
         this.softUpdatePlayRoute(target)
-        console.info(`[promote] seamless jump ${target.x},${target.y} (${reason})`)
-        void this.jumpInToScene(target, {
-          fastAssets: true,
-          seamless: true,
-          replace: true,
-          entry: 'teleport',
-          source: 'goto'
-        })
+        void this.refreshLocationTitleForParcel(target.x, target.y)
+        void this.promotePrimary(target, reason)
       },
       // Feet parcel only — replaceState, never reload (fixes empty-land thrash + URL lag).
       onSoftRoute: (x, y) => {
         this.softUpdatePlayRoute({ kind: 'coords', x, y, segment: `${x},${y}` })
+        void this.refreshLocationTitleForParcel(x, y)
       },
       onPrefetch: (x, y) => {
         void this.prefetchPromoteTarget(x, y)
@@ -1693,9 +1679,11 @@ export class AppController {
         document.body.appendChild(this.locationMapStack)
       }
 
+      const initialTitle = sceneDisplayTitle(sceneConfig)
+      this.seedLocationTitleCache(sceneConfig, initialTitle)
       this.worldLocationCard = new WorldLocationCard({
         scene: sceneConfig,
-        title: sceneDisplayTitle(sceneConfig),
+        title: initialTitle,
         getCoordsLabel: () => this.getLocationCoordsLabel(),
         onJumpToGenesis:
           sceneConfig.source.kind === 'world'
@@ -1719,6 +1707,10 @@ export class AppController {
             }
           : undefined
       })
+      this.lastLocationTitleKey =
+        sceneConfig.source.kind === 'coords'
+          ? sceneConfig.baseParcel
+          : sceneConfig.commsPointer
       if (useMinimapStack && this.locationMapStack) {
         this.minimap = new Minimap({
           host: this.locationMapStack,
@@ -1780,6 +1772,10 @@ export class AppController {
 
       world.start()
 
+      // Multi-scene: bind PE + live secondaries (PE prefs survive this attach).
+      world.attachMultiScene(this.multiSceneRuntime)
+      this.shell?.bindPortableExperiences(this.peManager)
+
       const settleMs = opts.seamless
         ? 0
         : useFastBoot
@@ -1804,6 +1800,9 @@ export class AppController {
       void hydrateEmoteWheelSlots(profile, peerUrl).then((slots) => {
         this.shell?.setEmoteWheelSlots(slots)
       })
+
+      // Discover smart-wearable PEs; consent popup once in-scene (never auto-start).
+      void this.bootstrapPortableExperiences(world, sceneConfig)
     })()
 
     await loadPromise
@@ -2122,6 +2121,66 @@ export class AppController {
     applyRouteToHistory(target, true)
   }
 
+  /** Push scene/world name into desktop location card + mobile pill. */
+  private applyLocationTitle(title: string, parcelKey?: string): void {
+    const t = title.trim() || 'Scene'
+    this.worldLocationCard?.setTitle(t)
+    this.shell?.setSceneLocation(t, () => this.getLocationCoordsLabel())
+    if (parcelKey) this.lastLocationTitleKey = parcelKey
+  }
+
+  private seedLocationTitleCache(scene: ResolvedScene, title: string): void {
+    const t = title.trim() || 'Scene'
+    for (const p of scene.parcels) {
+      if (p) this.locationTitleCache.set(p, t)
+    }
+    if (scene.baseParcel) this.locationTitleCache.set(scene.baseParcel, t)
+  }
+
+  /**
+   * Soft-route / promote: keep the minimap top bar name on the parcel under feet
+   * (was frozen at jump-in primary title — e.g. "Farcaster" after walking to empty land).
+   */
+  private async refreshLocationTitleForParcel(x: number, y: number): Promise<void> {
+    const key = `${x},${y}`
+    if (key === this.lastLocationTitleKey && this.locationTitleCache.has(key)) return
+
+    const primary = this.world?.getLoadedPrimaryScene()
+    if (primary?.source.kind === 'coords' && primary.parcels.includes(key)) {
+      const title = sceneDisplayTitle(primary)
+      this.seedLocationTitleCache(primary, title)
+      this.applyLocationTitle(title, key)
+      return
+    }
+
+    const cached = this.locationTitleCache.get(key)
+    if (cached) {
+      this.applyLocationTitle(cached, key)
+      return
+    }
+
+    // Leave primary footprint — don't keep the old scene name while resolving.
+    const provisional = `Parcel ${x},${y}`
+    this.applyLocationTitle(provisional, key)
+
+    const gen = ++this.locationTitleGen
+    try {
+      const title = await fetchPublicSceneTitle(
+        { kind: 'coords', x, y, segment: key },
+        null
+      )
+      const resolved = title.trim() || provisional
+      if (this.locationTitleCache.size > 256) this.locationTitleCache.clear()
+      this.locationTitleCache.set(key, resolved)
+      // Only paint if feet are still here (stale fetches still warm the cache).
+      if (gen === this.locationTitleGen && this.lastLocationTitleKey === key) {
+        this.applyLocationTitle(resolved, key)
+      }
+    } catch {
+      this.locationTitleCache.set(key, provisional)
+    }
+  }
+
   /**
    * Inner script-warm radius — prefetch real scene manifests/scripts so stand-on
    * promote is fast. Outer Scene Distance still owns composite GLB visuals only.
@@ -2200,6 +2259,78 @@ export class AppController {
     })
   }
 
+  /**
+   * Promote stand-on parcel to primary:
+   * 1) in-world handoff (live secondary or force-boot) + demote old primary for resume
+   * 2) else seamless jumpIn (full World rebuild — last resort; no demote across rebuild)
+   */
+  private async promotePrimary(
+    target: Extract<RouteTarget, { kind: 'coords' }>,
+    reason: string
+  ): Promise<void> {
+    const world = this.world
+    if (world) {
+      try {
+        const handed = await world.tryPromoteInWorld(target)
+        if (handed) {
+          console.info(
+            `[promote] in-world handoff+demote ${target.x},${target.y} (${reason})`
+          )
+          this.currentRoute = target
+          // PE already attached; keep HUD PE panel bound.
+          this.shell?.bindPortableExperiences(this.peManager)
+          const next = world.getLoadedPrimaryScene()
+          if (next) {
+            const title = sceneDisplayTitle(next)
+            this.seedLocationTitleCache(next, title)
+            this.applyLocationTitle(title, `${target.x},${target.y}`)
+          }
+          return
+        }
+      } catch (err) {
+        console.warn('[promote] in-world handoff failed — falling back to seamless jump', err)
+      }
+    }
+    console.info(`[promote] seamless jump ${target.x},${target.y} (${reason})`)
+    await this.jumpInToScene(target, {
+      fastAssets: true,
+      seamless: true,
+      replace: true,
+      entry: 'teleport',
+      source: 'goto'
+    })
+  }
+
+  /**
+   * Detect equipped smart wearables → PE candidates; restore enabled; consent if new.
+   * Profile wearables can lag spawn slightly — retry a few times before giving up.
+   */
+  private async bootstrapPortableExperiences(world: World, scene: ResolvedScene): Promise<void> {
+    try {
+      const peerUrl = scene.realm.contentUrl || this.sceneContentUrl
+      let profile = world.session.getProfile()
+      let wearables = profile?.wearables ?? []
+      // session.connect may finish just after spawn on cold loads
+      for (let i = 0; i < 12 && wearables.length === 0; i++) {
+        await new Promise<void>((r) => window.setTimeout(r, 250))
+        if (this.world !== world) return
+        profile = world.session.getProfile()
+        wearables = profile?.wearables ?? []
+      }
+      const bodyShape = profile?.bodyShape === 'female' ? 'female' : 'male'
+      console.info(
+        `[pe] bootstrap wearables=${wearables.length} body=${bodyShape} peer=${peerUrl}`
+      )
+      await this.peManager.discoverFromWearables(wearables, peerUrl, { bodyShape })
+      // Give the frame loop a beat so HUD is up, then consent (no auto-start).
+      await new Promise<void>((r) => window.setTimeout(r, 600))
+      if (this.world !== world) return
+      await this.peManager.maybeShowConsentPrompt()
+    } catch (err) {
+      console.warn('[pe] bootstrap failed', err)
+    }
+  }
+
   private async teardownScene(opts?: { keepLiveKit?: boolean }): Promise<void> {
     // Dwell is ended explicitly (leave play / teleport / error / pagehide) — not here.
     // teardownScene runs mid jump-in load and would kill a fresh play_session_id.
@@ -2209,6 +2340,7 @@ export class AppController {
     this.unsubVoiceSpeaking?.()
     this.unsubVoiceSpeaking = null
     this.shell?.bindNearbyVoice(null)
+    this.shell?.bindPortableExperiences(null)
     this.world?.setVoluntaryEmoteAllowedHandler(null)
     this.teardownExplorer()
     this.editorApp?.dispose()

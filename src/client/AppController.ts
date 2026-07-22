@@ -516,6 +516,15 @@ export class AppController {
           { entry: 'map', source: 'map' }
         )
       },
+      onMapJumpInWorld: (worldName) => {
+        this.settingsOverlay?.hide()
+        const name = worldName.trim()
+        if (!name) return
+        void this.jumpInToScene(
+          { kind: 'world', worldName: name, segment: name },
+          { entry: 'map', source: 'map' }
+        )
+      },
       onEventJumpIn: (target, _event: DclEvent) => {
         this.settingsOverlay?.hide()
         void this.jumpInToScene(target, { fastAssets: true })
@@ -655,6 +664,14 @@ export class AppController {
         // Direct jump with full LoadingScreen (not landing-only CTA progress).
         void this.jumpInToScene(
           { kind: 'coords', x: px, y: py, segment: `${px},${py}` },
+          { entry: 'map', source: 'map' }
+        )
+      },
+      onWorldVisit: (worldName) => {
+        const name = worldName.trim()
+        if (!name) return
+        void this.jumpInToScene(
+          { kind: 'world', worldName: name, segment: name },
           { entry: 'map', source: 'map' }
         )
       },

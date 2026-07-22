@@ -28,7 +28,17 @@ import type {
   WorldsLiveData
 } from '../../../map/types'
 import { WorldsLiveDataPoller } from '../../../map/worldsLiveData'
+import {
+  fetchWorldMapDetail,
+  loadWorldMapCatalog,
+  type WorldMapEntry
+} from '../../../map/worldsCatalog'
+import { WorldsGridView } from '../../../map/WorldsGridView'
+import { WorldsSpaceView } from '../../../map/WorldsSpaceView'
 import { MapParcelPopup } from './MapParcelPopup'
+import { MapWorldPopup } from './MapWorldPopup'
+
+type MapCanvasMode = 'genesis' | 'worlds' | 'worlds-grid'
 
 export type MapPlayerState = {
   position: { x: number; y: number; z: number }
@@ -53,6 +63,8 @@ export type MinimapPeerDot = {
 export type MapViewOptions = {
   getPlayerState: () => MapPlayerState | null
   onJumpIn?: (px: number, py: number) => void
+  /** Jump into a Decentraland World by name (e.g. `flagtag.dcl.eth`). */
+  onJumpInWorld?: (worldName: string) => void
   /** Seed center (parcel). Live follow still tracks feet unless followPlayer is false. */
   initialCenter?: { px: number; py: number } | null
   /**
@@ -126,6 +138,7 @@ export class MapView {
   private readonly worldsError: HTMLParagraphElement
   private readonly getPlayerState: () => MapPlayerState | null
   private readonly onJumpIn?: (px: number, py: number) => void
+  private readonly onJumpInWorld?: (worldName: string) => void
   private readonly initialCenter: { px: number; py: number } | null
 
   private view: MapViewState = { ...INITIAL_VIEW }
@@ -170,6 +183,8 @@ export class MapView {
   private highlightParcel: { px: number; py: number } | null = null
   private parcelFetchGen = 0
   private parcelPopup: MapParcelPopup | null = null
+  private worldPopup: MapWorldPopup | null = null
+  private worldPopupGen = 0
   /** Keep viewport centered on local player until the user pans the map. */
   private followPlayer = true
   private readonly mobileQuery = window.matchMedia(MOBILE_MAP_QUERY)
@@ -177,16 +192,23 @@ export class MapView {
   private readonly sidebarToggleBtn: HTMLButtonElement
   private readonly sidebarBackdrop: HTMLDivElement
   private readonly sidebarCloseBtn: HTMLButtonElement
+  private readonly worldsSpace: WorldsSpaceView
+  private readonly worldsGrid: WorldsGridView
+  private mapMode: MapCanvasMode = 'genesis'
+  private worldsCatalog: WorldMapEntry[] = []
+  private worldsCatalogGen = 0
 
   constructor({
     getPlayerState,
     onJumpIn,
+    onJumpInWorld,
     initialCenter = null,
     followPlayer,
     embedded = false
   }: MapViewOptions) {
     this.getPlayerState = getPlayerState
     this.onJumpIn = onJumpIn
+    this.onJumpInWorld = onJumpInWorld
     this.initialCenter = initialCenter ?? null
     // Default: keep following feet. Only pin the camera when caller opts out
     // (e.g. leave-play focus parcel / deep-link). initialCenter alone must not
@@ -198,13 +220,20 @@ export class MapView {
     if (embedded) this.root.classList.add('map-view--embedded')
 
     const hudMarkup = embedded
-      ? ''
+      ? `
+      <header class="dcl-map__hud dcl-map__hud--top dcl-map__hud--embedded-modes">
+        <div class="dcl-map__hud-controls">
+          <button type="button" class="dcl-map__btn is-active" data-map-mode="genesis">Genesis</button>
+          <button type="button" class="dcl-map__btn" data-map-mode="worlds-grid">Worlds map</button>
+        </div>
+      </header>`
       : `
       <header class="dcl-map__hud dcl-map__hud--top">
         <div class="dcl-map__hud-controls">
           <span class="dcl-map__status" role="status"></span>
           <span class="dcl-map__count"></span>
-          <button type="button" class="dcl-map__btn" data-center-plaza>Genesis Plaza</button>
+          <button type="button" class="dcl-map__btn is-active" data-map-mode="genesis" data-center-plaza>Genesis Plaza</button>
+          <button type="button" class="dcl-map__btn" data-map-mode="worlds-grid">Worlds map</button>
           <button type="button" class="dcl-map__btn" data-center-player>My location</button>
           <button type="button" class="dcl-map__btn" data-retry-peers hidden>Retry</button>
         </div>
@@ -303,8 +332,25 @@ export class MapView {
     this.mobileQuery.addEventListener('change', this.onMobileLayoutChange)
     this.syncMobileSidebarLayout()
 
-    this.root.querySelector('[data-center-plaza]')?.addEventListener('click', () => this.centerOnParcel(0, 0))
-    this.root.querySelector('[data-center-player]')?.addEventListener('click', () => this.centerOnPlayer())
+    this.root.querySelector('[data-center-plaza]')?.addEventListener('click', () => {
+      this.setMapMode('genesis')
+      this.centerOnParcel(0, 0)
+    })
+    this.root.querySelector('[data-center-player]')?.addEventListener('click', () => {
+      this.setMapMode('genesis')
+      this.centerOnPlayer()
+    })
+    this.root.querySelectorAll<HTMLButtonElement>('[data-map-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const raw = btn.dataset.mapMode
+        const mode: MapCanvasMode =
+          raw === 'worlds' ? 'worlds' : raw === 'worlds-grid' ? 'worlds-grid' : 'genesis'
+        this.setMapMode(mode)
+        if (mode === 'genesis' && btn.hasAttribute('data-center-plaza')) {
+          this.centerOnParcel(0, 0)
+        }
+      })
+    })
     this.root.querySelector('[data-retry-peers]')?.addEventListener('click', () => void this.peersPoller.refresh())
     this.playerSearchInput.addEventListener('input', () => {
       this.playerSearch = this.playerSearchInput.value
@@ -314,12 +360,33 @@ export class MapView {
     this.viewport.addEventListener('pointerdown', this.onPointerDown)
     this.viewport.addEventListener('wheel', this.onWheel, { passive: false })
 
+    this.worldsSpace = new WorldsSpaceView({
+      onSelectWorld: (worldName) => {
+        void this.openWorldPopup(worldName)
+      }
+    })
+    this.worldsGrid = new WorldsGridView({
+      onSelectWorld: (worldName) => {
+        void this.openWorldPopup(worldName)
+      }
+    })
+    this.viewport.appendChild(this.worldsSpace.root)
+    this.viewport.appendChild(this.worldsGrid.root)
+
     this.parcelPopup = new MapParcelPopup({
       mountEl: this.root,
       onClose: () => this.closeParcelPopup(),
       onJumpIn: (px, py) => {
         this.closeParcelPopup()
         this.onJumpIn?.(px, py)
+      }
+    })
+    this.worldPopup = new MapWorldPopup({
+      mountEl: this.root,
+      onClose: () => this.closeWorldPopup(),
+      onJumpIn: (worldName) => {
+        this.closeWorldPopup()
+        this.onJumpInWorld?.(worldName)
       }
     })
   }
@@ -356,6 +423,9 @@ export class MapView {
       this.worldsUpdatedAtMs = state.updatedAtMs
       this.renderHud()
       this.renderSidebar()
+      if (this.mapMode === 'worlds' || this.mapMode === 'worlds-grid') {
+        void this.refreshWorldsCatalog()
+      }
     })
 
     this.peersPoller.start()
@@ -423,9 +493,91 @@ export class MapView {
     this.viewport.removeEventListener('wheel', this.onWheel)
     this.tileNodes.clear()
     this.markerNodes.clear()
+    this.worldsSpace.dispose()
+    this.worldsGrid.dispose()
     this.parcelPopup?.dispose()
     this.parcelPopup = null
+    this.worldPopup?.dispose()
+    this.worldPopup = null
     this.root.remove()
+  }
+
+  private isWorldsMode(mode: MapCanvasMode = this.mapMode): boolean {
+    return mode === 'worlds' || mode === 'worlds-grid'
+  }
+
+  private setMapMode(mode: MapCanvasMode): void {
+    if (this.mapMode === mode) {
+      this.syncModeChrome()
+      if (this.isWorldsMode(mode) && !this.worldsCatalog.length) void this.refreshWorldsCatalog()
+      return
+    }
+    this.mapMode = mode
+    this.syncModeChrome()
+    const w = this.viewSize.w || this.viewport.clientWidth
+    const h = this.viewSize.h || this.viewport.clientHeight
+
+    if (mode === 'worlds') {
+      this.closeParcelPopup()
+      this.closeWorldPopup()
+      this.endDragSession()
+      this.worldsGrid.setActive(false)
+      this.worldsSpace.setActive(true)
+      this.worldsSpace.resize(w, h)
+      void this.refreshWorldsCatalog()
+    } else if (mode === 'worlds-grid') {
+      this.closeParcelPopup()
+      this.closeWorldPopup()
+      this.endDragSession()
+      this.worldsSpace.setActive(false)
+      this.worldsGrid.setActive(true)
+      this.worldsGrid.resize(w, h)
+      void this.refreshWorldsCatalog()
+    } else {
+      this.closeWorldPopup()
+      this.worldsSpace.setActive(false)
+      this.worldsGrid.setActive(false)
+      this.renderFrame()
+    }
+  }
+
+  private syncModeChrome(): void {
+    const mode = this.mapMode
+    const offGenesis = this.isWorldsMode(mode)
+    this.root.classList.toggle('is-worlds-mode', mode === 'worlds')
+    this.root.classList.toggle('is-worlds-grid-mode', mode === 'worlds-grid')
+    this.viewport.setAttribute(
+      'aria-label',
+      mode === 'worlds'
+        ? 'Worlds space map'
+        : mode === 'worlds-grid'
+          ? 'Worlds map grid'
+          : 'Genesis City map'
+    )
+    this.root.querySelectorAll<HTMLButtonElement>('[data-map-mode]').forEach((btn) => {
+      btn.classList.toggle('is-active', btn.dataset.mapMode === mode)
+    })
+    // Genesis layer interactions only in city mode.
+    this.tilesLayer.hidden = offGenesis
+    this.parcelLayer.hidden = offGenesis
+    this.highlightsLayer.hidden = offGenesis
+    this.markersLayer.hidden = offGenesis
+  }
+
+  private async refreshWorldsCatalog(): Promise<void> {
+    if (this.disposed || !this.isWorldsMode()) return
+    const gen = ++this.worldsCatalogGen
+    try {
+      // Grid = explorer-style full atlas; space keeps a denser cloud of top entries.
+      const limit = this.mapMode === 'worlds-grid' ? 400 : 48
+      const catalog = await loadWorldMapCatalog(this.worldsData, limit)
+      if (gen !== this.worldsCatalogGen || this.disposed) return
+      this.worldsCatalog = catalog
+      this.worldsSpace.setWorlds(catalog)
+      this.worldsGrid.setWorlds(catalog)
+    } catch (err) {
+      console.warn('[map] worlds catalog load failed', err)
+    }
   }
 
   centerOnPlayer(): void {
@@ -459,9 +611,15 @@ export class MapView {
   private measureViewport(): void {
     const w = this.viewport.clientWidth
     const h = this.viewport.clientHeight
-    if (w === this.viewSize.w && h === this.viewSize.h) return
+    if (w === this.viewSize.w && h === this.viewSize.h) {
+      if (this.mapMode === 'worlds') this.worldsSpace.resize(w || 960, h || 640)
+      if (this.mapMode === 'worlds-grid') this.worldsGrid.resize(w || 960, h || 640)
+      return
+    }
     this.viewSize = { w: w || 960, h: h || 640 }
-    this.renderFrame()
+    this.worldsSpace.resize(this.viewSize.w, this.viewSize.h)
+    this.worldsGrid.resize(this.viewSize.w, this.viewSize.h)
+    if (this.mapMode === 'genesis') this.renderFrame()
   }
 
   private startRenderLoop(): void {
@@ -692,7 +850,7 @@ export class MapView {
   }
 
   private renderFrame(): void {
-    if (!this.active) return
+    if (!this.active || this.mapMode !== 'genesis') return
     const { w, h } = this.viewSize
     if (w <= 0 || h <= 0) return
 
@@ -824,6 +982,7 @@ export class MapView {
   }
 
   private onPointerDown = (ev: PointerEvent): void => {
+    if (this.mapMode !== 'genesis') return
     if (ev.button !== 0) return
     ev.preventDefault()
     this.dragRef = {
@@ -877,6 +1036,7 @@ export class MapView {
 
     const fetchId = ++this.parcelFetchGen
     this.highlightParcel = { px: hit.px, py: hit.py }
+    this.closeWorldPopup()
     this.parcelPopup?.showLoading()
     this.renderFrame()
 
@@ -911,7 +1071,41 @@ export class MapView {
     this.renderFrame()
   }
 
+  private closeWorldPopup(): void {
+    this.worldPopupGen += 1
+    this.worldPopup?.hide()
+  }
+
+  private async openWorldPopup(worldName: string): Promise<void> {
+    if (!worldName.trim() || this.disposed) return
+    this.closeParcelPopup()
+    const gen = ++this.worldPopupGen
+    const key = worldName.toLowerCase()
+    const cached = this.worldsCatalog.find((w) => w.worldName.toLowerCase() === key)
+    // Show what we have immediately, then enrich from Places if description is missing.
+    if (cached) this.worldPopup?.showWorld(cached)
+    else {
+      this.worldPopup?.showWorld({
+        worldName,
+        users: 0,
+        imageUrl: null,
+        title: null
+      })
+    }
+    if (cached?.description) return
+    try {
+      const detail = await fetchWorldMapDetail(worldName)
+      if (gen !== this.worldPopupGen || this.disposed || !detail) return
+      // Prefer live user count from catalog when present.
+      const users = cached?.users ?? detail.users
+      this.worldPopup?.showWorld({ ...detail, users })
+    } catch {
+      /* keep catalog snapshot */
+    }
+  }
+
   private onWheel = (ev: WheelEvent): void => {
+    if (this.mapMode !== 'genesis') return
     ev.preventDefault()
     this.view = {
       ...this.view,

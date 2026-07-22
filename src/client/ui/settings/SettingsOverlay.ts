@@ -59,6 +59,7 @@ export type SettingsOverlayOptions = {
   session: SessionIdentity
   getMapPlayerState?: () => MapPlayerState | null
   onMapJumpIn?: (px: number, py: number) => void
+  onMapJumpInWorld?: (worldName: string) => void
   onEventJumpIn?: EventsViewOptions['onJumpIn']
   onEventViewScene?: EventsViewOptions['onViewScene']
   onPlaceJumpIn?: PlacesViewOptions['onJumpIn']
@@ -89,6 +90,7 @@ export class SettingsOverlay {
   private session: SessionIdentity
   private getMapPlayerState?: () => MapPlayerState | null
   private onMapJumpIn?: (px: number, py: number) => void
+  private onMapJumpInWorld?: (worldName: string) => void
   private onEventJumpIn?: EventsViewOptions['onJumpIn']
   private onEventViewScene?: EventsViewOptions['onViewScene']
   private onPlaceJumpIn?: PlacesViewOptions['onJumpIn']
@@ -109,6 +111,7 @@ export class SettingsOverlay {
     this.session = opts.session
     this.getMapPlayerState = opts.getMapPlayerState
     this.onMapJumpIn = opts.onMapJumpIn
+    this.onMapJumpInWorld = opts.onMapJumpInWorld
     this.onEventJumpIn = opts.onEventJumpIn
     this.onEventViewScene = opts.onEventViewScene
     this.onPlaceJumpIn = opts.onPlaceJumpIn
@@ -627,6 +630,7 @@ export class SettingsOverlay {
       this.mapView = new MapView({
         getPlayerState: this.getMapPlayerState,
         onJumpIn: this.onMapJumpIn,
+        onJumpInWorld: this.onMapJumpInWorld,
         embedded: true,
         // Live feet follow — initialCenter alone used to freeze the marker.
         followPlayer: true,

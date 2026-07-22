@@ -5389,6 +5389,188 @@
         border-color: rgba(71, 140, 224, 0.55);
         color: #fff;
       }
+      .map-view .dcl-map__btn.is-active {
+        border-color: rgba(255, 45, 85, 0.65);
+        background: rgba(255, 45, 85, 0.18);
+        color: #fff;
+      }
+      /* Worlds 3D space layer (inside viewport) */
+      .map-view .dcl-map__worlds-space {
+        position: absolute;
+        inset: 0;
+        z-index: 4;
+        overflow: hidden;
+        background: radial-gradient(ellipse at 50% 40%, #1a1035 0%, #05030c 70%);
+      }
+      .map-view .dcl-map__worlds-space[hidden] {
+        display: none !important;
+      }
+      .map-view .dcl-map__worlds-canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+      }
+      .map-view .dcl-map__worlds-pins {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        pointer-events: none;
+        overflow: hidden;
+      }
+      .map-view .dcl-map__worlds-pin {
+        position: absolute;
+        left: 0;
+        top: 0;
+        pointer-events: auto;
+        max-width: 160px;
+        padding: 4px 10px;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        border-radius: 999px;
+        background: rgba(10, 8, 20, 0.88);
+        color: #fff;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        line-height: 1.2;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+        cursor: pointer;
+        will-change: transform;
+      }
+      .map-view .dcl-map__worlds-pin:hover {
+        border-color: rgba(255, 45, 85, 0.65);
+        background: rgba(30, 12, 28, 0.95);
+      }
+      .map-view .dcl-map__worlds-pin.is-focused {
+        border-color: rgba(255, 45, 85, 0.85);
+        background: rgba(255, 45, 85, 0.28);
+        box-shadow: 0 0 0 1px rgba(255, 45, 85, 0.35), 0 6px 20px rgba(0, 0, 0, 0.5);
+        z-index: 3;
+      }
+      .map-view .dcl-map__worlds-pin::after {
+        content: '';
+        position: absolute;
+        left: 50%;
+        bottom: -5px;
+        width: 8px;
+        height: 8px;
+        margin-left: -4px;
+        border-radius: 50%;
+        background: #ff2d55;
+        box-shadow: 0 0 0 2px rgba(255, 45, 85, 0.35);
+      }
+      .map-view.is-worlds-mode .dcl-map__tiles,
+      .map-view.is-worlds-mode .dcl-map__parcel-tiles,
+      .map-view.is-worlds-mode .dcl-map__highlights,
+      .map-view.is-worlds-mode .dcl-map__markers,
+      .map-view.is-worlds-grid-mode .dcl-map__tiles,
+      .map-view.is-worlds-grid-mode .dcl-map__parcel-tiles,
+      .map-view.is-worlds-grid-mode .dcl-map__highlights,
+      .map-view.is-worlds-grid-mode .dcl-map__markers {
+        visibility: hidden;
+        pointer-events: none;
+      }
+      /* Worlds map — same card grid as Explorer Places (worlds only) */
+      .map-view .dcl-map__worlds-grid.places-view.places-view--explorer {
+        position: absolute;
+        inset: 0;
+        z-index: 4;
+        display: flex;
+        flex-direction: column;
+        /* Beat .places-view--explorer { height:auto; overflow:visible } */
+        height: 100% !important;
+        min-height: 0 !important;
+        max-height: none !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        overflow: hidden !important;
+        background:
+          radial-gradient(ellipse at 50% 0%, rgba(40, 20, 70, 0.45) 0%, transparent 50%),
+          linear-gradient(180deg, #120a22 0%, #0a0614 100%);
+        pointer-events: auto;
+        /* Viewport uses touch-action:none for genesis pan — re-enable scroll here */
+        touch-action: pan-y;
+        cursor: default;
+        user-select: auto;
+        -webkit-user-select: auto;
+      }
+      .map-view .dcl-map__worlds-grid[hidden] {
+        display: none !important;
+      }
+      /* Clear HUD band + room to scroll; this node is the ONLY scrollport */
+      .map-view .dcl-map__worlds-grid-scroll {
+        flex: 1 1 auto !important;
+        min-height: 0 !important;
+        height: auto !important;
+        max-height: none !important;
+        overflow-x: hidden !important;
+        overflow-y: auto !important;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+        /* Top padding clears absolute HUD pills (~52–64px) */
+        padding: calc(14px + 3.5rem) clamp(14px, 2vw, 22px) 40px !important;
+        box-sizing: border-box;
+        width: 100%;
+        touch-action: pan-y;
+      }
+      .map-view .dcl-map__worlds-grid .places-view__grid,
+      .map-view .dcl-map__worlds-grid-list {
+        display: grid;
+        width: 100%;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 16px;
+        align-content: start;
+      }
+      @media (max-width: 1100px) {
+        .map-view .dcl-map__worlds-grid .places-view__grid,
+        .map-view .dcl-map__worlds-grid-list {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      @media (max-width: 640px) {
+        .map-view .dcl-map__worlds-grid .places-view__grid,
+        .map-view .dcl-map__worlds-grid-list {
+          grid-template-columns: 1fr;
+        }
+      }
+      .map-view .dcl-map__worlds-grid .places-view__card {
+        background: rgba(0, 0, 0, 0.22);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        cursor: pointer;
+      }
+      .map-view .dcl-map__worlds-grid .places-view__card.is-focused {
+        border-color: rgba(255, 45, 85, 0.75);
+        box-shadow: 0 0 0 1px rgba(255, 45, 85, 0.35);
+      }
+      .map-view .dcl-map__worlds-grid .places-view__card-placeholder {
+        display: grid;
+        place-items: center;
+        background: linear-gradient(145deg, #3a2a68, #1a1030);
+      }
+      .map-view .dcl-map__worlds-grid-letter {
+        font-size: 2rem;
+        font-weight: 800;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .map-view .dcl-map__worlds-grid-empty {
+        margin: 48px 16px;
+        text-align: center;
+        color: rgba(255, 255, 255, 0.5);
+        font-size: 14px;
+      }
+      /* Don’t let genesis pan/zoom steal wheel/touch in grid mode */
+      .map-view.is-worlds-grid-mode .dcl-map__viewport {
+        touch-action: pan-y;
+        cursor: default;
+        overflow: hidden;
+      }
+      .map-view .dcl-map__hud--embedded-modes {
+        right: 0;
+      }
       .map-view .dcl-map__sidebar {
         position: absolute;
         top: 0;
@@ -5683,6 +5865,35 @@
       }
       .map-view .dcl-map__parcel-popup-error {
         color: #b42318;
+      }
+      .map-view .dcl-map__parcel-popup-meta {
+        margin: 0 0 0.5rem;
+        font-size: 0.8rem;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+        color: #6b7280;
+      }
+      .map-view .dcl-map__world-popup-urn {
+        margin: -0.15rem 0 0.5rem;
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: #6b7280;
+        word-break: break-all;
+      }
+      .map-view .dcl-map__world-popup-fallback {
+        display: grid;
+        place-items: center;
+        background: linear-gradient(145deg, #5a3a9a, #1a1030);
+        color: rgba(255, 255, 255, 0.75);
+        font-size: 3rem;
+        font-weight: 800;
+      }
+      .map-view .dcl-map__world-popup-jump {
+        background: #ff2d55;
+      }
+      .map-view .dcl-map__world-popup-jump:hover {
+        background: #e6264b;
       }
       @media (max-width: 1023px) {
         .map-view.dcl-map-page {

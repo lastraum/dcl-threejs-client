@@ -502,7 +502,11 @@ export class EventsView {
             this.fillFaceSlot(s, url)
           }
         })
-        .catch(() => this.facePending.delete(addr))
+        .catch(() => {
+          // Negative-cache failures so renderAll() does not re-hammer lambdas.
+          this.faceCache.set(addr, null)
+          this.facePending.delete(addr)
+        })
     }
   }
 

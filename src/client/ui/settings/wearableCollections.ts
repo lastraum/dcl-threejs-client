@@ -117,11 +117,11 @@ export async function resolveCreatorNames(
       /* leave batch unresolved — falls back to short addresses below */
     }
   }
+  // Do not cache short-address fallbacks — a transient /profiles failure must not
+  // freeze "0x1234…abcd" for the rest of the page session.
   for (const addr of missing) {
     if (out.has(addr)) continue
-    const fallback = shortAddress(addr)
-    creatorNameCache.set(addr, fallback)
-    out.set(addr, fallback)
+    out.set(addr, shortAddress(addr))
   }
   return out
 }

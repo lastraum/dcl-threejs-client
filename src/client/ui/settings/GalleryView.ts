@@ -56,6 +56,7 @@ export class GalleryView {
   private readonly storageBar: HTMLElement
   private readonly sectionsEl: HTMLElement
   private readonly statusEl: HTMLElement
+  private readonly refreshBtn: HTMLButtonElement
   private readonly detailHost: HTMLElement
 
   private readonly getWalletAddress?: () => string | null | undefined
@@ -98,6 +99,7 @@ export class GalleryView {
             <h2 class="gallery-view__title">Gallery</h2>
           </div>
           <input type="search" class="gallery-view__search" data-search placeholder="Search photos" aria-label="Search photos by people, place, or metadata" autocomplete="off" spellcheck="false" />
+          <button type="button" class="gallery-view__refresh" data-refresh title="Refresh gallery">Refresh</button>
           <div class="gallery-view__storage">
             <span class="gallery-view__storage-label" data-storage-label>Storage</span>
             <div class="gallery-view__storage-track" aria-hidden="true">
@@ -119,6 +121,7 @@ export class GalleryView {
     this.storageBar = this.root.querySelector('[data-storage-bar]')!
     this.sectionsEl = this.root.querySelector('[data-sections]')!
     this.statusEl = this.root.querySelector('[data-status]')!
+    this.refreshBtn = this.root.querySelector('[data-refresh]')!
     this.detailHost = this.root.querySelector('[data-detail-host]')!
 
     const search = this.root.querySelector('[data-search]') as HTMLInputElement | null
@@ -131,6 +134,7 @@ export class GalleryView {
         this.renderSections()
       }, 200)
     })
+    this.refreshBtn.addEventListener('click', () => void this.loadGallery())
 
     this.sectionsEl.addEventListener('click', (ev) => void this.handleSectionClick(ev))
     this.sectionsEl.addEventListener('change', (ev) => void this.handleSectionChange(ev))
@@ -230,6 +234,7 @@ export class GalleryView {
 
     this.loading = true
     this.error = null
+    this.refreshBtn.disabled = true
     this.setListStatus('Loading gallery…', 'loading')
     this.renderSections()
 
@@ -256,6 +261,7 @@ export class GalleryView {
       this.renderSections()
     } finally {
       this.loading = false
+      this.refreshBtn.disabled = false
     }
   }
 

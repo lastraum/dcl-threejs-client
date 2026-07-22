@@ -41,11 +41,14 @@ export class SocialShellTopNav {
   readonly el: HTMLElement
 
   private readonly profileMenu: SocialProfileMenu
+  private readonly enter3dBtn: HTMLButtonElement
   private readonly tabButtons: Partial<Record<SocialShellTab, HTMLButtonElement>> = {}
   private activeTab: SocialShellTab | null
+  private login: LoginResult
 
   constructor(opts: SocialShellTopNavOptions) {
     this.activeTab = opts.activeTab
+    this.login = opts.login
 
     this.el = document.createElement('header')
     this.el.className = 'social-shell-topnav'
@@ -66,6 +69,7 @@ export class SocialShellTopNav {
     `
 
     const accountEl = this.el.querySelector('[data-account]') as HTMLElement
+    this.enter3dBtn = this.el.querySelector('[data-enter-3d]') as HTMLButtonElement
 
     this.profileMenu = new SocialProfileMenu({
       login: opts.login,
@@ -86,8 +90,12 @@ export class SocialShellTopNav {
       }
     }
 
-    this.el.querySelector('[data-enter-3d]')?.addEventListener('click', () => opts.onEnter3D?.())
+    this.enter3dBtn.addEventListener('click', () => {
+      if (this.login.kind !== 'wallet') return
+      opts.onEnter3D?.()
+    })
 
+    this.applyEnter3dVisibility()
     this.applyActiveTab()
   }
 
@@ -96,7 +104,19 @@ export class SocialShellTopNav {
   }
 
   setLogin(login: LoginResult): void {
+    this.login = login
     this.profileMenu.setLogin(login)
+    this.applyEnter3dVisibility()
+  }
+
+  /** 3D overlay open is wallet-only — hide the control for guests / signed-out. */
+  private applyEnter3dVisibility(): void {
+    const canEnter = this.login.kind === 'wallet'
+    this.enter3dBtn.hidden = !canEnter
+    this.enter3dBtn.disabled = !canEnter
+    this.enter3dBtn.setAttribute('aria-hidden', canEnter ? 'false' : 'true')
+    if (!canEnter) this.enter3dBtn.tabIndex = -1
+    else this.enter3dBtn.removeAttribute('tabindex')
   }
 
   setActiveTab(tab: SocialShellTab | null): void {

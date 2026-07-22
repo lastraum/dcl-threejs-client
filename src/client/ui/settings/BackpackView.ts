@@ -39,6 +39,7 @@ import {
   getEquippedCustomAvatar,
   setEquippedCustomAvatar
 } from '../../../avatar/vrm/vrmEquipStorage'
+import { setExtendedAvatarColor } from '../../../avatar/extendedColors'
 import { backpackCategoryIcon } from './backpackCategoryIcons'
 import {
   createColorPicker,
@@ -2400,12 +2401,40 @@ export class BackpackView {
   }
 
   private avatarColorValue(profile: AvatarProfile, channel: ColorChannel): string {
-    return channel === 'eyes' ? profile.eyes : channel === 'hair' ? profile.hair : profile.skin
+    switch (channel) {
+      case 'eyes':
+        return profile.eyes
+      case 'hair':
+        return profile.hair
+      case 'brows':
+        return profile.browsColor ?? profile.hair
+      case 'facial_hair':
+        return profile.facialHairColor ?? profile.hair
+      default:
+        return profile.skin
+    }
   }
 
   private async setAvatarColor(channel: ColorChannel, hex: string): Promise<void> {
     const profile = this.session.getProfile()
     if (!profile) return
+
+    // Brows / facial hair are D3JS-exclusive: persisted to localStorage (not Catalyst)
+    // and applied in-world immediately — the comms announce carries them as extension keys.
+    if (channel === 'brows' || channel === 'facial_hair') {
+      const address = this.session.getAddress() ?? profile.address
+      if (!address) return
+      setExtendedAvatarColor(address, channel === 'brows' ? 'brows' : 'facialHair', hex)
+      this.session.setProfile(
+        channel === 'brows'
+          ? { ...profile, browsColor: hex }
+          : { ...profile, facialHairColor: hex }
+      )
+      void this.loadAvatarModel()
+      void this.onVrmEquipChange?.()
+      return
+    }
+
     const next: AvatarProfile =
       channel === 'eyes'
         ? { ...profile, eyes: hex }

@@ -40,7 +40,8 @@ const TABS: TabDef[] = [
   { id: 'backpack', label: 'BACKPACK', shortcut: 'I', icon: backpackCategoryIcon('all') },
   { id: 'gallery', label: 'GALLERY', shortcut: 'K', icon: `<svg viewBox="0 0 24 24" fill="none"><rect x="4" y="6" width="16" height="12" rx="1.5" stroke="currentColor" stroke-width="1.5"/><circle cx="9" cy="10.5" r="1.5" fill="currentColor"/><path d="m6 16 4-3 3 2.5 2-1.5 3 3" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>` },
   // Experimental: the full 2D Explore experience surfaced inside the 3D overlay.
-  { id: 'explore', label: 'EXPLORE', shortcut: 'E', icon: BINOCULARS_ICON }
+  // No keyboard shortcut — KeyE is IA_PRIMARY (in-world interact) and must stay free.
+  { id: 'explore', label: 'EXPLORE', shortcut: '', icon: BINOCULARS_ICON }
 ]
 
 /** Simplified Decentraland mark (two pyramids + two suns); overlay-header fallback. */
@@ -51,8 +52,7 @@ const SHORTCUT_KEY_MAP: Record<string, SettingsTab> = {
   KeyO: 'communities',
   KeyM: 'map',
   KeyI: 'backpack',
-  KeyK: 'gallery',
-  KeyE: 'explore'
+  KeyK: 'gallery'
 }
 
 export type SettingsOverlayOptions = {
@@ -171,8 +171,8 @@ export class SettingsOverlay {
       btn.className = 'settings-overlay__tab'
       btn.dataset.tab = tab.id
       btn.setAttribute('role', 'tab')
-      btn.title = `${tab.label} [${tab.shortcut}]`
-      btn.setAttribute('aria-label', `${tab.label} (${tab.shortcut})`)
+      btn.title = tab.shortcut ? `${tab.label} [${tab.shortcut}]` : tab.label
+      btn.setAttribute('aria-label', tab.shortcut ? `${tab.label} (${tab.shortcut})` : tab.label)
       btn.innerHTML = `<span class="settings-overlay__tab-icon">${tab.icon}</span>`
       btn.addEventListener('click', () => this.switchTab(tab.id))
       this.tabBar.appendChild(btn)
@@ -597,9 +597,11 @@ export class SettingsOverlay {
         peerUrl: this.session.getContentUrl() || undefined
       })
       this.contentArea.appendChild(this.galleryView.root)
-      // Merged top bar: metadata search right.
+      // Merged top bar: metadata search + refresh right.
       const gallerySearch = this.galleryView.root.querySelector('[data-search]')
+      const galleryRefresh = this.galleryView.root.querySelector('[data-refresh]')
       if (gallerySearch) this.headerSlotEl().appendChild(gallerySearch)
+      if (galleryRefresh) this.headerSlotEl().appendChild(galleryRefresh)
       this.galleryView.mount()
     } else if (this.activeTab === 'backpack') {
       this.backpackView = new BackpackView(this.session, {

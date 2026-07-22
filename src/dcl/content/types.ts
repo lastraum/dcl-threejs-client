@@ -329,13 +329,18 @@ export type SkyboxConfig = {
   moonExposure?: number
 }
 
-/** Catalyst / worlds realm endpoints from `/about`. */
+/** Catalyst / worlds realm endpoints from `/about` (+ worlds `/status` for LiveKit). */
 export type RealmEndpoints = {
   realmName: string
   networkId: number
   contentUrl: string
   lambdasUrl: string
   commsAdapterHint?: string
+  /**
+   * When false, world server has no LiveKit/comms adapter — solo play, no scene chat.
+   * Default true for parcels / Genesis.
+   */
+  commsEnabled?: boolean
 }
 
 export type ResolvedScene = {

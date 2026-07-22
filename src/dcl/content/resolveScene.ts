@@ -100,7 +100,8 @@ function realmFromAbout(about: Awaited<ReturnType<typeof fetchWorldRealmAbout>>)
     networkId: about.networkId,
     contentUrl: catalystRootFromContentUrl(about.contentUrl),
     lambdasUrl: about.lambdasUrl,
-    commsAdapterHint: about.commsAdapterHint
+    commsAdapterHint: about.commsAdapterHint,
+    commsEnabled: about.commsEnabled
   }
 }
 
@@ -172,7 +173,8 @@ const FALLBACK_GENESIS_REALM: RealmEndpoints = {
   realmName: 'main',
   networkId: 1,
   contentUrl: 'https://peer.decentraland.org',
-  lambdasUrl: 'https://peer.decentraland.org/lambdas'
+  lambdasUrl: 'https://peer.decentraland.org/lambdas',
+  commsEnabled: true
 }
 
 /**

@@ -69,6 +69,8 @@ export type SceneCommsFailureReason =
   | 'scene_ban'
   | 'gatekeeper'
   | 'livekit'
+  /** World /about (or /status) has no LiveKit adapter — solo play is fine. */
+  | 'comms_disabled'
 
 export type SceneCommsConnectResult = { ok: true } | { ok: false; reason: SceneCommsFailureReason }
 
@@ -83,6 +85,13 @@ export type SceneCommsTarget = {
   sceneTitle?: string
   /** Catalyst `metadata.policy.blacklist` — checked again before comms connect. */
   metadataBlacklist?: string[]
+  /**
+   * From world `/about` (+ `/status`). When false, skip LiveKit/gatekeeper join —
+   * content loads solo without chat/peers.
+   */
+  commsEnabled?: boolean
+  /** Realm about adapter hint (signed-login / livekit / archipelago). */
+  commsAdapterHint?: string
 }
 
 export type CommsPeerHandlers = {
@@ -568,6 +577,19 @@ export class CommsService {
       return { ok: false, reason: 'no_identity' }
     }
 
+    const isWorld = target.isWorld ?? !isParcelPointer(normalizePointer(target.pointer))
+    const adapterHint =
+      target.commsAdapterHint?.trim() || this.realmCommsHint || this.realm.commsAdapter || ''
+    // World server owner can omit LiveKit — still load scene content solo (no chat/peers).
+    if (isWorld && (target.commsEnabled === false || !adapterHint)) {
+      clientDebugLog.log(
+        'comms',
+        `World comms disabled by server (no LiveKit adapter) · ${target.pointer} — solo play, chat unavailable`,
+        { level: 'warn', alsoConsole: true }
+      )
+      return { ok: false, reason: 'comms_disabled' }
+    }
+
     if (!acquireWalletSessionLock(this.localAddress)) {
       clientDebugLog.log('comms', 'Blocked second client — wallet already active in another tab', {
         level: 'error'
@@ -583,7 +605,6 @@ export class CommsService {
     // acquireWalletSessionLock + LiveKit single-identity. Checking roster here
     // caused permanent remotePeers:0 after Jump In from scene landing.
     this.walletSessionLockHeld = true
-    const isWorld = target.isWorld ?? !isParcelPointer(normalizePointer(target.pointer))
 
     let sceneId = this.sceneId
     if (!sceneId) {

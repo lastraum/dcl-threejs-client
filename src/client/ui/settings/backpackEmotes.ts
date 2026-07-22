@@ -23,6 +23,11 @@ export type BackpackEmoteItem = {
   amount: number
   /** Free base catalog vs wallet-owned vs only on profile wheel. */
   source: 'base' | 'owned' | 'equipped'
+  /** Marketplace collection display name (annotated async — see wearableCollections). */
+  collectionName?: string
+  /** Collection creator wallet (lowercase) + resolved profile name. */
+  creatorAddress?: string
+  creatorName?: string
 }
 
 const METADATA_CONCURRENCY = 12
@@ -258,7 +263,9 @@ export function filterBackpackEmotes(items: BackpackEmoteItem[], search = ''): B
     (i) =>
       i.name.toLowerCase().includes(q) ||
       i.urn.toLowerCase().includes(q) ||
-      i.rarity.toLowerCase().includes(q)
+      i.rarity.toLowerCase().includes(q) ||
+      (i.collectionName?.toLowerCase().includes(q) ?? false) ||
+      (i.creatorName?.toLowerCase().includes(q) ?? false)
   )
 }
 

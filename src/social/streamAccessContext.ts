@@ -27,12 +27,16 @@ export async function resolveStreamAccessContext(
     // Same realm string as get-scene-adapter (commsPointer is already lowercased for worlds).
     // Do not use about.realmName mixed case (RickRoll.dcl.eth) — that mints a different LiveKit room.
     const realmName = (scene.commsPointer || target.pointer).trim().toLowerCase()
+    const customServer =
+      (route.kind === 'world' ? route.customServer : undefined) ||
+      (scene.source.kind === 'world' ? scene.source.customServer : undefined)
     return {
       sceneId,
       parcel: '0,0',
       realmName,
       isWorld: true,
       isGuest,
+      worldsContentHost: customServer ?? null,
       pointer: realmName,
       kind: 'world'
     }

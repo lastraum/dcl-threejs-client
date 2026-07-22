@@ -35,7 +35,7 @@ import { ChatPanel } from './ui/chat/ChatPanel'
 import { SocialChatController } from './ui/chat/SocialChatController'
 import { SocialChatDock } from './ui/chat/SocialChatDock'
 import { PreferencesPanel } from './ui/settings/PreferencesPanel'
-import { SettingsOverlay } from './ui/settings/SettingsOverlay'
+import { SettingsOverlay, type SettingsTab } from './ui/settings/SettingsOverlay'
 import type { MapPlayerState } from './ui/settings/MapView'
 import { genesisMetersToParcel } from '../map/genesisMapViewport'
 import type { ResolvedScene } from '../dcl/content/types'
@@ -405,6 +405,7 @@ export class AppController {
     onOpenBackpack: () => void
     onOpenProfile: () => void
     onOpenWhatsNew: () => void
+    onEnter3D: () => void
   } {
     return {
       onLoginChange: (login) => {
@@ -436,6 +437,9 @@ export class AppController {
       onOpenBackpack: () => {
         void this.openBackpackFromShell()
       },
+      onEnter3D: () => {
+        void this.openOverlayFromShell('explore')
+      },
       onOpenProfile: () => this.openLocalProfileFromShell(),
       onOpenWhatsNew: () => openWhatsNewFromMenu(),
       ...this.socialShellSocialHandlers()
@@ -444,14 +448,21 @@ export class AppController {
 
   /** Open backpack from 2D profile menu — SettingsOverlay is play-only unless we create it here. */
   private async openBackpackFromShell(): Promise<void> {
+    return this.openOverlayFromShell('backpack')
+  }
+
+  /** Open the 3D overlay (any tab) from the 2D shell; play-only unless created here. */
+  private async openOverlayFromShell(tab: SettingsTab): Promise<void> {
     if (this.login?.kind !== 'wallet') return
     try {
       const overlay = await this.ensureSettingsOverlay()
-      // 2D site already has Explore/Events/etc. in the shell — backpack only, no left tab rail.
-      overlay.show('backpack', { hideSidebar: true })
+      // 2D shell already has Explore/Events/etc. — backpack from shell hides the left rail.
+      // 3D section-dot opens explore (or other tabs) with full overlay chrome.
+      if (tab === 'backpack') overlay.show('backpack', { hideSidebar: true })
+      else overlay.show(tab)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      clientDebugLog.log('client', `Backpack open failed: ${msg}`, { level: 'error' })
+      clientDebugLog.log('client', `Overlay open failed: ${msg}`, { level: 'error' })
     }
   }
 
@@ -543,6 +554,10 @@ export class AppController {
       },
       onOpenCommunityChat: (community) => {
         this.openCommunityChatChannel(community.id, community.name)
+      },
+      onExitTo2D: () => {
+        this.settingsOverlay?.hide()
+        void this.navigateTo({ kind: 'blank' })
       }
     })
   }

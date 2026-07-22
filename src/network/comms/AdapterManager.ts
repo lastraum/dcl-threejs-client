@@ -1,6 +1,6 @@
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
-import { isLiveKitAdapter } from './livekitAdapter'
+import { isLiveKitAdapter, isUnusableLiveKitAdapter } from './livekitAdapter'
 import { parseCommsAdapter } from './types'
 import { fetchWorldCommsAdapter } from '../worlds/WorldCommsClient'
 
@@ -74,9 +74,26 @@ export class AdapterManager {
         clientDebugLog.log('comms', `Signed-login failed: ${result.error}`, { level: 'warn' })
         return false
       }
+      // Self-hosted servers often mint tokens for placeholder hosts (livekit.host).
+      if (isUnusableLiveKitAdapter(result.adapter)) {
+        clientDebugLog.log(
+          'comms',
+          `Signed-login returned unusable LiveKit host — solo play without multiplayer`,
+          { level: 'warn', alsoConsole: true }
+        )
+        return false
+      }
       return this.connect(result.adapter, liveKitLabel)
     }
     if (parsed.kind === 'livekit') {
+      if (isUnusableLiveKitAdapter(parsed.adapter)) {
+        clientDebugLog.log(
+          'comms',
+          `LiveKit adapter host is unusable (placeholder / invalid) — skipping connect`,
+          { level: 'warn', alsoConsole: true }
+        )
+        return false
+      }
       return this.connectors.connectLiveKit(parsed.adapter, liveKitLabel)
     }
     if (parsed.kind === 'ws-room') {

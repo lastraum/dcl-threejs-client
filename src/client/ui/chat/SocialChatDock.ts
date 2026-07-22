@@ -1221,7 +1221,10 @@ export class SocialChatDock {
     }
 
     const value = this.inputEl.value
-    this.inputEl.classList.toggle('chat-panel__input--goto', /^\/goto/i.test(value))
+    this.inputEl.classList.toggle(
+      'chat-panel__input--goto',
+      /^\/(?:goto|changerealm|change-realm|realm)\b/i.test(value)
+    )
     this.composerEl.classList.toggle('chat-panel__composer--mention', Boolean(this.activeMention()))
 
     const am = this.activeMention()

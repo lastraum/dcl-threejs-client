@@ -1,7 +1,14 @@
 import type { ContentFile } from '../../dcl/content/types'
 import { isParcelPointer, normalizePointer } from './pointer'
 
-const WORLDS = 'https://worlds-content-server.decentraland.org'
+import {
+  entityIdFromScenesUrn,
+  isOfficialWorldsServer,
+  worldsAboutUrl,
+  worldsContentBase
+} from '../worlds/worldsServerConfig'
+
+const WORLDS = worldsContentBase()
 
 function parseEntityContent(raw: unknown): ContentFile[] {
   if (!Array.isArray(raw)) return []
@@ -16,12 +23,6 @@ function parseEntityContent(raw: unknown): ContentFile[] {
   return out
 }
 const ASSET_BUNDLE_REGISTRY = 'https://asset-bundle-registry.decentraland.org'
-
-function entityIdFromUrn(urn: string): string | null {
-  const prefix = 'urn:decentraland:entity:'
-  if (!urn.startsWith(prefix)) return null
-  return urn.slice(prefix.length).split(/[?&#]/)[0]?.trim() || null
-}
 
 /** Strip trailing `/content` — `/about` returns `https://peer-ec1.decentraland.org/content/`. */
 export function catalystRootFromContentUrl(contentUrl: string): string {
@@ -95,47 +96,59 @@ export async function resolveSceneIdForPointer(
   return result?.id ?? null
 }
 
-/** World deployment CID — asset bundle registry first, worlds `/about` fallback. */
-export async function resolveWorldSceneId(worldName: string): Promise<string | null> {
+/**
+ * World deployment CID.
+ * Official servers: asset-bundle-registry first, then `/about`.
+ * Custom servers: `/about` only (no registry entry).
+ */
+export async function resolveWorldSceneId(
+  worldName: string,
+  customServer?: string | null
+): Promise<string | null> {
   const pointer = normalizePointer(worldName)
-  try {
-    const res = await fetch(
-      `${ASSET_BUNDLE_REGISTRY}/entities/active?world_name=${encodeURIComponent(pointer)}`,
-      {
-        method: 'POST',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pointers: ['0,0'] })
+  const server = worldsContentBase(customServer)
+
+  if (isOfficialWorldsServer(server)) {
+    try {
+      const res = await fetch(
+        `${ASSET_BUNDLE_REGISTRY}/entities/active?world_name=${encodeURIComponent(pointer)}`,
+        {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pointers: ['0,0'] })
+        }
+      )
+      if (res.ok) {
+        const data = (await res.json()) as unknown
+        if (Array.isArray(data) && data.length > 0) {
+          const id = (data[0] as { id?: string })?.id
+          if (typeof id === 'string' && id.length > 0) return id
+        }
       }
-    )
-    if (res.ok) {
-      const data = (await res.json()) as unknown
-      if (Array.isArray(data) && data.length > 0) {
-        const id = (data[0] as { id?: string })?.id
-        if (typeof id === 'string' && id.length > 0) return id
-      }
+    } catch {
+      /* fallback */
     }
-  } catch {
-    /* fallback */
   }
 
-  const aboutRes = await fetch(`${WORLDS}/world/${encodeURIComponent(pointer)}/about`, {
+  const aboutRes = await fetch(worldsAboutUrl(server, pointer), {
     headers: { Accept: 'application/json' }
   })
   if (!aboutRes.ok) return null
   const about = (await aboutRes.json()) as { configurations?: { scenesUrn?: string[] } }
   const urn = about.configurations?.scenesUrn?.[0]
-  return typeof urn === 'string' ? entityIdFromUrn(urn) : null
+  return typeof urn === 'string' ? entityIdFromScenesUrn(urn) : null
 }
 
 export async function resolveCommsSceneId(
   pointer: string,
   contentUrl: string,
-  entityIdHint?: string | null
+  entityIdHint?: string | null,
+  customServer?: string | null
 ): Promise<string | null> {
   if (entityIdHint?.trim()) return entityIdHint.trim()
   const normalized = normalizePointer(pointer)
   if (isParcelPointer(normalized)) {
     return resolveSceneIdForPointer(contentUrl, normalized)
   }
-  return resolveWorldSceneId(normalized)
+  return resolveWorldSceneId(normalized, customServer)
 }

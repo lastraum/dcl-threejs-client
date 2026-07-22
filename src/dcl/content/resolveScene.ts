@@ -9,14 +9,12 @@ import { resolvePortableExperiencesPolicy } from '../multiScene/resolvePortableE
 import { resolveSceneEnvironment } from '../landscape/resolveLandscapeEnvironment'
 import { catalystContentAssetUrl, catalystRootFromContentUrl, fetchSceneEntityByPointer } from '../../network/catalyst/CatalystClient'
 import { fetchCatalystRealmAbout, fetchWorldRealmAbout } from '../../network/catalyst/realmAbout'
-
-const WORLDS = 'https://worlds-content-server.decentraland.org'
-
-function entityIdFromUrn(urn: string): string | null {
-  const prefix = 'urn:decentraland:entity:'
-  if (!urn.startsWith(prefix)) return null
-  return urn.slice(prefix.length).split(/[?&#]/)[0]?.trim() || null
-}
+import {
+  contentBaseFromScenesUrn,
+  entityIdFromScenesUrn,
+  worldsAboutUrl,
+  worldsContentBase
+} from '../../network/worlds/worldsServerConfig'
 
 function parseContent(raw: unknown): ContentFile[] {
   if (!Array.isArray(raw)) return []
@@ -102,19 +100,26 @@ function realmFromAbout(about: Awaited<ReturnType<typeof fetchWorldRealmAbout>>)
     networkId: about.networkId,
     contentUrl: catalystRootFromContentUrl(about.contentUrl),
     lambdasUrl: about.lambdasUrl,
-    commsAdapterHint: about.commsAdapterHint
+    commsAdapterHint: about.commsAdapterHint,
+    commsEnabled: about.commsEnabled
   }
 }
 
-async function fetchWorldEntity(worldName: string): Promise<{
+async function fetchWorldEntity(
+  worldName: string,
+  customServer?: string | null
+): Promise<{
   entity: Record<string, unknown>
   skybox?: { textures?: string[] }
   realm: RealmEndpoints
+  contentServerBase: string
+  contentsRoot: string
 } | null> {
-  const about = await fetchWorldRealmAbout(worldName).catch(() => null)
+  const contentServerBase = worldsContentBase(customServer)
+  const about = await fetchWorldRealmAbout(worldName, contentServerBase).catch(() => null)
   if (!about) return null
 
-  const aboutRes = await fetch(`${WORLDS}/world/${encodeURIComponent(worldName)}/about`, {
+  const aboutRes = await fetch(worldsAboutUrl(contentServerBase, worldName), {
     headers: { Accept: 'application/json' }
   })
   if (!aboutRes.ok) return null
@@ -125,10 +130,14 @@ async function fetchWorldEntity(worldName: string): Promise<{
   const urn = aboutJson.configurations?.scenesUrn?.[0]
   if (typeof urn !== 'string') return null
 
-  const entityId = entityIdFromUrn(urn)
+  const entityId = entityIdFromScenesUrn(urn)
   if (!entityId) return null
 
-  const entityRes = await fetch(`${WORLDS}/contents/${encodeURIComponent(entityId)}`, {
+  // Prefer baseUrl on scenesUrn when present (official about often embeds it).
+  const urnContentsRoot = contentBaseFromScenesUrn(urn)
+  const contentsRoot = urnContentsRoot ?? `${contentServerBase}/contents`
+
+  const entityRes = await fetch(`${contentsRoot.replace(/\/+$/, '')}/${encodeURIComponent(entityId)}`, {
     headers: { Accept: 'application/json' }
   })
   if (!entityRes.ok) return null
@@ -137,7 +146,9 @@ async function fetchWorldEntity(worldName: string): Promise<{
   return {
     entity: { ...entity, id: entityId },
     skybox: aboutJson.configurations?.skybox,
-    realm: realmFromAbout(about)
+    realm: realmFromAbout(about),
+    contentServerBase,
+    contentsRoot: contentsRoot.replace(/\/+$/, '')
   }
 }
 
@@ -162,7 +173,8 @@ const FALLBACK_GENESIS_REALM: RealmEndpoints = {
   realmName: 'main',
   networkId: 1,
   contentUrl: 'https://peer.decentraland.org',
-  lambdasUrl: 'https://peer.decentraland.org/lambdas'
+  lambdasUrl: 'https://peer.decentraland.org/lambdas',
+  commsEnabled: true
 }
 
 /**
@@ -350,13 +362,70 @@ export async function fetchDeployedSceneDisplayTitle(
     return result ? displayTitleFromEntity(result.entity) : null
   }
 
+  const customServer = target.customServer
   for (const pointer of worldPointersForTarget(target)) {
-    const result = await fetchWorldEntity(pointer)
+    const result = await fetchWorldEntity(pointer, customServer)
     if (!result) continue
     const title = displayTitleFromEntity(result.entity)
     if (title) return title
   }
   return null
+}
+
+export type WorldDeployDisplayMeta = {
+  title: string | null
+  description: string
+  imageUrl: string | null
+  contentServerBase: string
+}
+
+/**
+ * Title / description / thumbnail from the worlds content server entity
+ * (not Places API). Used for custom-realm landing so we never show DCL catalog data.
+ */
+export async function fetchWorldDeployDisplayMeta(
+  worldName: string,
+  customServer?: string | null
+): Promise<WorldDeployDisplayMeta | null> {
+  const result = await fetchWorldEntity(worldName, customServer)
+  if (!result) return null
+  const metadata = (result.entity.metadata ?? {}) as Record<string, unknown>
+  const display =
+    metadata.display && typeof metadata.display === 'object'
+      ? (metadata.display as Record<string, unknown>)
+      : {}
+  const title = displayTitleFromEntity(result.entity)
+  const description =
+    (typeof display.description === 'string' && display.description.trim()) ||
+    (typeof metadata.description === 'string' && metadata.description.trim()) ||
+    ''
+
+  let imageUrl: string | null = null
+  const thumb = typeof display.navmapThumbnail === 'string' ? display.navmapThumbnail.trim() : ''
+  if (thumb) {
+    if (/^https?:\/\//i.test(thumb)) {
+      imageUrl = thumb
+    } else {
+      const content = Array.isArray(result.entity.content) ? result.entity.content : []
+      for (const row of content) {
+        if (!row || typeof row !== 'object') continue
+        const file = typeof (row as { file?: string }).file === 'string' ? (row as { file: string }).file : ''
+        const hash = typeof (row as { hash?: string }).hash === 'string' ? (row as { hash: string }).hash : ''
+        if (!file || !hash) continue
+        if (file === thumb || file.endsWith(`/${thumb}`) || file.endsWith(thumb)) {
+          imageUrl = `${result.contentsRoot}/${encodeURIComponent(hash)}`
+          break
+        }
+      }
+    }
+  }
+
+  return {
+    title,
+    description,
+    imageUrl,
+    contentServerBase: result.contentServerBase
+  }
 }
 
 export async function resolveSceneFromRoute(target: RouteTarget): Promise<ResolvedScene> {
@@ -421,26 +490,34 @@ export async function resolveSceneFromRoute(target: RouteTarget): Promise<Resolv
   }
 
   const tried: string[] = []
+  const customServer = target.customServer
   for (const pointer of worldPointersForTarget(target)) {
     tried.push(pointer)
-    const result = await fetchWorldEntity(pointer)
+    const result = await fetchWorldEntity(pointer, customServer)
     if (!result) continue
 
     const entityId = typeof result.entity.id === 'string' ? result.entity.id : null
     if (!entityId) continue
 
+    const contentsRoot = result.contentsRoot
     return resolvedFromEntity(result.entity, {
       title: pointer,
       commsPointer: pointer.toLowerCase(),
       realm: result.realm,
-      source: { kind: 'world', worldName: pointer, entityId },
-      contentsBaseUrl: WORLDS,
-      assetUrl: (hash) => `${WORLDS}/contents/${encodeURIComponent(hash)}`,
+      source: {
+        kind: 'world',
+        worldName: pointer,
+        entityId,
+        ...(customServer ? { customServer: result.contentServerBase } : {})
+      },
+      contentsBaseUrl: result.contentServerBase,
+      assetUrl: (hash) => `${contentsRoot}/${encodeURIComponent(hash)}`,
       aboutSkybox: result.skybox
     })
   }
 
-  throw new Error(`World not found (${tried.join(' → ')}). Check the name on worlds-content-server.`)
+  const serverLabel = customServer ? worldsContentBase(customServer) : 'worlds-content-server'
+  throw new Error(`World not found (${tried.join(' → ')}). Check the name on ${serverLabel}.`)
 }
 
 /** @deprecated Prefer `resolveSceneFromRoute(resolveRouteTarget())`. */

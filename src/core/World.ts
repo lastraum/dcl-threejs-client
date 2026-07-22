@@ -331,13 +331,14 @@ export class World {
     const address = this.session.getAddress()
     const identity = this.session.getAuthIdentity()
     if (!address || !identity) return
+    const chatOk = scene.browserChatEnabled && scene.realm.commsEnabled !== false
     void this.social.attachSceneComms({
       comms: this.comms,
       sceneTab: {
         key: scene.commsPointer,
         label: scene.title || scene.commsPointer,
         pointer: scene.commsPointer,
-        browserChatEnabled: scene.browserChatEnabled
+        browserChatEnabled: chatOk
       },
       contentUrl: scene.realm.contentUrl
     })
@@ -526,7 +527,10 @@ export class World {
       parcels: scene.parcels,
       isWorld,
       sceneTitle: scene.title,
-      metadataBlacklist: blacklistFromMetadata(scene.metadata)
+      metadataBlacklist: blacklistFromMetadata(scene.metadata),
+      // Worlds: optional LiveKit — false when /about has no adapter (content-only server).
+      commsEnabled: scene.realm.commsEnabled,
+      commsAdapterHint: scene.realm.commsAdapterHint
     }
   }
 
@@ -953,6 +957,11 @@ export class World {
       await this.vrmPeerSync.onSceneConnected()
       return
     }
+    if (connectResult.reason === 'comms_disabled') {
+      // Content-only or broken LiveKit — play solo without chat/peers.
+      onProgress?.('Multiplayer unavailable — continuing solo')
+      return
+    }
     if (connectResult.reason === 'duplicate_wallet') {
       onProgress?.('This wallet is already connected in another session — close the other client first')
       return
@@ -961,7 +970,11 @@ export class World {
       onProgress?.('Access denied — you cannot join comms in this place')
       return
     }
-    onProgress?.('Comms connection failed — check console')
+    if (connectResult.reason === 'livekit') {
+      onProgress?.('Multiplayer unavailable — continuing solo')
+      return
+    }
+    onProgress?.('Comms connection failed — continuing without multiplayer')
   }
 
   /**
@@ -1009,17 +1022,24 @@ export class World {
         }
         if (connectResult.ok) {
           onProgress?.('Connected to DCL comms')
+        } else if (
+          connectResult.reason === 'comms_disabled' ||
+          connectResult.reason === 'livekit'
+        ) {
+          onProgress?.('Multiplayer unavailable — continuing solo')
         } else if (connectResult.reason === 'duplicate_wallet') {
           onProgress?.('This wallet is already connected in another session — close the other client first')
         } else if (connectResult.reason === 'scene_ban') {
           onProgress?.('Access denied — you cannot join comms in this place')
         } else {
-          onProgress?.('Comms connection failed — check console')
+          onProgress?.('Comms connection failed — continuing without multiplayer')
         }
       }
 
       onProgress?.('Loading social services…')
       const profile = this.session.getProfile()
+      // No LiveKit on this world → disable scene chat tab even if scene.json allows browserChat.
+      const chatOk = scene.browserChatEnabled && scene.realm.commsEnabled !== false
       await this.social.init({
         address,
         identity,
@@ -1028,7 +1048,7 @@ export class World {
           key: scene.commsPointer,
           label: scene.title || scene.commsPointer,
           pointer: scene.commsPointer,
-          browserChatEnabled: scene.browserChatEnabled
+          browserChatEnabled: chatOk
         },
         comms: this.comms,
         contentUrl: scene.realm.contentUrl

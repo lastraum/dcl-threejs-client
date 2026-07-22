@@ -3742,8 +3742,163 @@
         display: flex;
         align-items: center;
         gap: 8px;
-        flex: 1;
+        flex: 0 0 auto;
         min-width: 0;
+      }
+      /* Red dot always shows the active rail tab's icon. */
+      /* Section toggle: red dot showing the active tab icon; hover reveals a "2D"
+         puck in the 2D-shell colour that jumps to the 2D Explore site. */
+      .settings-overlay__logo {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        border: none;
+        border-radius: 50%;
+        background: #ff2d55;
+        color: #fff;
+        flex-shrink: 0;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .settings-overlay__logo svg {
+        width: 14px;
+        height: 14px;
+        display: block;
+      }
+      .settings-overlay__logo-icon {
+        display: inline-flex;
+      }
+      .settings-overlay__logo-2d {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+      }
+      .settings-overlay__logo:hover,
+      .settings-overlay__logo:focus-visible {
+        background: #670693;
+        outline: none;
+      }
+      .settings-overlay__logo:hover .settings-overlay__logo-icon,
+      .settings-overlay__logo:focus-visible .settings-overlay__logo-icon {
+        display: none;
+      }
+      .settings-overlay__logo:hover .settings-overlay__logo-2d,
+      .settings-overlay__logo:focus-visible .settings-overlay__logo-2d {
+        display: flex;
+      }
+      /* Experimental 3D Explore tab — full-page places browser in its own scroller. */
+      .settings-overlay__explore-scroll {
+        flex: 1 1 auto;
+        min-height: 0;
+        width: 100%;
+        overflow-y: auto;
+        overflow-x: hidden;
+      }
+      .settings-overlay__title-count {
+        font-size: 11px;
+        font-weight: 700;
+        color: rgba(255, 255, 255, 0.55);
+        white-space: nowrap;
+      }
+      /* View-owned controls relocated into the top bar (cleared per tab switch). */
+      .settings-overlay__header-slot {
+        flex: 1 1 auto;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+        margin-left: 8px;
+      }
+      .settings-overlay__header-slot .places-view__subtabs {
+        flex-shrink: 1;
+      }
+      .settings-overlay__header-slot .places-view__subtab {
+        flex: 0 0 auto;
+        padding: 5px 14px;
+        border-radius: 999px;
+        font-size: 10px;
+      }
+      .settings-overlay__header-slot .places-view__sort {
+        margin-left: auto;
+      }
+      .settings-overlay__header-slot .communities-browse-view__create {
+        width: auto;
+        padding: 6px 14px;
+        border-radius: 999px;
+        font-size: 0.66rem;
+      }
+      .settings-overlay__header-slot .communities-browse-view__invites {
+        width: auto;
+        padding: 6px 10px;
+        gap: 6px;
+        font-size: 0.74rem;
+      }
+      .settings-overlay__header-slot .communities-browse-view__search-wrap {
+        margin-left: auto;
+        flex: 0 1 220px;
+      }
+      .settings-overlay__header-slot .communities-browse-view__search {
+        padding: 7px 12px 7px 32px;
+        font-size: 12px;
+      }
+      /* One search style across every tab's top bar — matches the backpack search. */
+      .settings-overlay__header-slot .events-view__search,
+      .settings-overlay__header-slot .gallery-view__search,
+      .settings-overlay__header-slot .places-view__search,
+      .settings-overlay__header-slot .dcl-map__search-input,
+      .settings-overlay__header-slot .communities-browse-view__search {
+        width: 180px;
+        padding: 6px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.25);
+        color: #fff;
+        font-size: 12px;
+        font-family: inherit;
+        outline: none;
+        box-sizing: border-box;
+        flex: 0 0 auto;
+      }
+      .settings-overlay__header-slot .events-view__search::placeholder,
+      .settings-overlay__header-slot .gallery-view__search::placeholder,
+      .settings-overlay__header-slot .places-view__search::placeholder,
+      .settings-overlay__header-slot .dcl-map__search-input::placeholder,
+      .settings-overlay__header-slot .communities-browse-view__search::placeholder {
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .settings-overlay__header-slot .events-view__search,
+      .settings-overlay__header-slot .gallery-view__search,
+      .settings-overlay__header-slot .dcl-map__search {
+        margin-left: auto;
+      }
+      .settings-overlay__header-slot .dcl-map__search-label {
+        display: none;
+      }
+      .settings-overlay__header-slot .communities-browse-view__search-wrap {
+        flex: 0 0 auto;
+        min-width: 0;
+      }
+      /* Titles duplicated by the top bar are dropped inside the overlay. */
+      .settings-overlay .events-view__title,
+      .settings-overlay .gallery-view__title,
+      .settings-overlay .communities-browse-view__main-head {
+        display: none;
+      }
+      /* Relocated events controls lose the .events-view--calendar ancestor —
+         re-scope the week-nav hide through the overlay content's mode class. */
+      .settings-overlay:has(.events-view--calendar)
+        .settings-overlay__header-slot
+        .events-view__week-nav {
+        display: none;
       }
       .settings-overlay__title {
         font-size: 12px;
@@ -4084,6 +4239,13 @@
         .settings-overlay__header {
           padding: 8px 10px 8px 12px;
           min-height: 44px;
+        }
+        .settings-overlay__header-slot {
+          overflow-x: auto;
+          scrollbar-width: none;
+        }
+        .settings-overlay__header-slot::-webkit-scrollbar {
+          display: none;
         }
         .settings-overlay__title {
           font-size: 11px;
@@ -5159,41 +5321,50 @@
       .backpack-view__mobile-drawer {
         display: none;
       }
+      /* Lives inside the overlay top-bar slot (relocated by SettingsOverlay). */
       .backpack-view__sub-header {
+        flex: 1 1 auto;
         display: flex;
         align-items: center;
-        gap: 16px;
-        padding: 10px 24px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-        flex-shrink: 0;
-      }
-      .backpack-view__title {
-        margin: 0;
-        font-size: 22px;
-        font-weight: 800;
-        letter-spacing: -0.01em;
+        gap: 12px;
+        min-width: 0;
       }
       .backpack-view__sub-tabs {
         display: flex;
         gap: 4px;
       }
+      .backpack-view__sub-tab-ico {
+        display: inline-flex;
+        flex-shrink: 0;
+      }
+      .backpack-view__sub-tab-ico svg {
+        width: 15px;
+        height: 15px;
+        display: block;
+      }
+      /* Same compact pill treatment as the Places top-bar sub-tabs. */
       .backpack-view__sub-tab {
         display: flex;
         align-items: center;
         gap: 6px;
-        padding: 6px 14px;
-        border: none;
+        flex: 0 0 auto;
+        padding: 5px 14px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.08);
-        color: rgba(255, 255, 255, 0.75);
-        font-size: 11px;
+        background: rgba(255, 255, 255, 0.04);
+        color: rgba(255, 255, 255, 0.65);
+        font-size: 10px;
         font-weight: 700;
         letter-spacing: 0.06em;
         cursor: pointer;
-        transition: background 0.15s, color 0.15s;
+        transition: background 0.15s, color 0.15s, border-color 0.15s;
+      }
+      .backpack-view__sub-tab:hover {
+        color: rgba(255, 255, 255, 0.88);
       }
       .backpack-view__sub-tab.is-active {
-        background: #ff2d55;
+        background: rgba(255, 45, 85, 0.2);
+        border-color: rgba(255, 45, 85, 0.45);
         color: #fff;
       }
       .backpack-view__toolbar {
@@ -5222,6 +5393,12 @@
       .backpack-view__sort option {
         background: #1a0e2c;
         color: #fff;
+      }
+      .backpack-view__group-filter {
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .backpack-view__search {
         width: 180px;
@@ -5265,23 +5442,10 @@
           height: 100%;
           min-height: 0;
         }
+        /* Sub-header rides the top-bar slot; keep it one scrollable row. */
         .backpack-view__sub-header {
-          flex-wrap: wrap;
+          flex-wrap: nowrap;
           gap: 8px;
-          padding: 8px 12px;
-        }
-        .backpack-view__title {
-          font-size: 16px;
-        }
-        .backpack-view__sub-tabs {
-          flex: 1 1 100%;
-          order: 3;
-          overflow-x: auto;
-          -webkit-overflow-scrolling: touch;
-          scrollbar-width: none;
-        }
-        .backpack-view__sub-tabs::-webkit-scrollbar {
-          display: none;
         }
         .backpack-view__sub-tab {
           flex-shrink: 0;
@@ -6457,6 +6621,45 @@
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.08em;
+      }
+      .backpack-view__detail-collection {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.62);
+        word-break: break-word;
+      }
+      /* Creator pfp — hidden until the lambdas snapshot resolves. */
+      .backpack-view__creator-face {
+        display: none;
+      }
+      .backpack-view__creator-face.is-loaded {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        overflow: hidden;
+        vertical-align: -3px;
+        margin-right: 5px;
+      }
+      .backpack-view__creator-face img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .backpack-view__detail-desc {
+        margin: 0;
+        max-width: 380px;
+        font-size: 13px;
+        line-height: 1.5;
+        color: rgba(255, 255, 255, 0.72);
+        word-break: break-word;
+      }
+      .backpack-view__detail-hides {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.5);
       }
       .backpack-view__detail-urn {
         margin: 8px 0 0;
@@ -7793,6 +7996,10 @@
         border-radius: 50%;
         object-fit: cover;
         flex-shrink: 0;
+      }
+      .events-view__event-card-avatar--fallback {
+        display: inline-block;
+        background: rgba(255, 255, 255, 0.12);
       }
       .events-view__event-card-organizer-name {
         font-size: 10px;
@@ -10852,22 +11059,37 @@
       .gallery-view .photo-review__rail {
         min-height: 0;
       }
-      .gallery-detail__back {
+      /* Carousel arrows, vertically centered over the photo. */
+      .gallery-detail__nav {
         position: absolute;
-        top: 12px;
-        left: 12px;
+        top: 50%;
+        transform: translateY(-50%);
         z-index: 2;
-        padding: 8px 12px;
+        width: 40px;
+        height: 40px;
         border: 1px solid rgba(255, 255, 255, 0.16);
-        border-radius: 999px;
+        border-radius: 50%;
         background: rgba(12, 14, 20, 0.78);
         color: #fff;
-        font-size: 12px;
-        font-weight: 700;
+        font-size: 24px;
+        line-height: 1;
+        display: grid;
+        place-items: center;
+        padding: 0 0 3px;
         cursor: pointer;
       }
-      .gallery-detail__back:hover {
+      .gallery-detail__nav--prev {
+        left: 12px;
+      }
+      .gallery-detail__nav--next {
+        right: 12px;
+      }
+      .gallery-detail__nav:hover:not(:disabled) {
         background: rgba(30, 34, 44, 0.9);
+      }
+      .gallery-detail__nav:disabled {
+        opacity: 0.35;
+        cursor: default;
       }
       .gallery-detail__image.is-broken {
         opacity: 0.4;
@@ -12816,16 +13038,16 @@
       .places-view__cat-bar::-webkit-scrollbar {
         display: none;
       }
+      /* Category color lives on the pill itself (template pill size/shape). */
       .places-view__cat-pill {
         display: inline-flex;
         align-items: center;
-        gap: 6px;
         flex-shrink: 0;
-        padding: 6px 12px 6px 8px;
+        padding: 5px 14px;
         border-radius: 999px;
-        border: 1px solid var(--pv-border);
-        background: rgba(255, 255, 255, 0.04);
-        color: rgba(255, 255, 255, 0.75);
+        border: 1px solid color-mix(in srgb, var(--cat-color, #9b8cd9) 50%, transparent);
+        background: color-mix(in srgb, var(--cat-color, #9b8cd9) 22%, transparent);
+        color: rgba(255, 255, 255, 0.85);
         font-size: 10px;
         font-weight: 700;
         letter-spacing: 0.06em;
@@ -12833,20 +13055,13 @@
         transition: background 0.15s, border-color 0.15s, color 0.15s;
       }
       .places-view__cat-pill:hover {
-        color: rgba(255, 255, 255, 0.92);
-      }
-      .places-view__cat-pill.is-active {
-        background: rgba(255, 255, 255, 0.12);
-        border-color: rgba(255, 255, 255, 0.28);
+        background: color-mix(in srgb, var(--cat-color, #9b8cd9) 38%, transparent);
         color: #fff;
       }
-      .places-view__cat-swatch {
-        width: 22px;
-        height: 22px;
-        border-radius: 50%;
-        display: grid;
-        place-items: center;
-        flex-shrink: 0;
+      .places-view__cat-pill.is-active {
+        background: var(--cat-color, #9b8cd9);
+        border-color: var(--cat-color, #9b8cd9);
+        color: #14092a;
       }
       .places-view__status {
         margin: 0;
@@ -13021,6 +13236,35 @@
         gap: 8px;
         margin-top: auto;
         padding-top: 6px;
+      }
+      .places-view__card-footer-right {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+      .places-view__card-cats {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        min-width: 0;
+        overflow: hidden;
+      }
+      .places-view__card-cat {
+        padding: 3px 9px;
+        border-radius: 999px;
+        font-size: 8px;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        white-space: nowrap;
+        background: color-mix(in srgb, var(--cat-color, #9b8cd9) 26%, transparent);
+        border: 1px solid color-mix(in srgb, var(--cat-color, #9b8cd9) 55%, transparent);
+        color: rgba(255, 255, 255, 0.9);
+      }
+      .places-view__card-cat--more {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.2);
+        color: rgba(255, 255, 255, 0.7);
       }
       .places-view__card-location {
         font-size: 10px;
@@ -14247,6 +14491,53 @@
         background: #670693;
         border-bottom: 1px solid rgba(255, 255, 255, 0.12);
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+      }
+      /* Section toggle: red DCL dot; hover reveals a "3D" puck in the 3D-overlay
+         colour that opens the 3D client. Mirror of the overlay's "2D" dot. */
+      .social-shell-topnav__section-dot {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        padding: 0;
+        border: none;
+        border-radius: 50%;
+        background: transparent;
+        color: #fff;
+        flex-shrink: 0;
+        cursor: pointer;
+        margin-right: 4px;
+      }
+      .social-shell-topnav__section-dot-mark {
+        display: inline-flex;
+        width: 30px;
+        height: 30px;
+      }
+      .social-shell-topnav__section-dot-mark svg {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      .social-shell-topnav__section-dot-3d {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        background: #2d1b4e;
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .social-shell-topnav__section-dot:hover .social-shell-topnav__section-dot-mark,
+      .social-shell-topnav__section-dot:focus-visible .social-shell-topnav__section-dot-mark {
+        visibility: hidden;
+      }
+      .social-shell-topnav__section-dot:hover .social-shell-topnav__section-dot-3d,
+      .social-shell-topnav__section-dot:focus-visible .social-shell-topnav__section-dot-3d {
+        display: flex;
       }
       .social-shell-topnav__nav,
       .scene-landing-view__nav {

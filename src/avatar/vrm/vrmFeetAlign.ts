@@ -2,7 +2,6 @@ import * as THREE from 'three'
 import { VRMHumanBoneName, type VRM } from '@pixiv/three-vrm'
 
 const _world = new THREE.Vector3()
-const _local = new THREE.Vector3()
 const _box = new THREE.Box3()
 
 const VRM_FOOT_BONE = /foot|toe/i
@@ -25,31 +24,68 @@ const VRM_FOOT_BONE_NAMES = [
   VRMHumanBoneName.RightToes
 ] as const
 
+type VrmFootStance = {
+  feetY: number
+  /** Midpoint of left/right feet in avatar-root local XZ — CCT is at pivot origin. */
+  centerX: number
+  centerZ: number
+}
+
 /** Raw rig bones — locomotion animates these while autoUpdateHumanBones is false. */
 function measureVrmFootBoneY(vrm: VRM, avatarRoot: THREE.Object3D): number | null {
-  let lowest: number | null = null
+  return measureVrmFootStance(vrm, avatarRoot)?.feetY ?? null
+}
+
+/**
+ * Foot stance in avatar-root local space (Y = lowest sole contact, XZ = feet midpoint).
+ * Custom VRMs often ship with hips/mesh offset from origin — without XZ centering the
+ * body orbits the PhysX CCT and walks look off-axis.
+ */
+function measureVrmFootStance(vrm: VRM, avatarRoot: THREE.Object3D): VrmFootStance | null {
+  const samples: THREE.Vector3[] = []
 
   for (const boneName of VRM_FOOT_BONE_NAMES) {
     const bone = vrm.humanoid.getRawBoneNode(boneName)
     if (!bone) continue
     bone.getWorldPosition(_world)
     avatarRoot.worldToLocal(_world)
-    _local.copy(_world)
-    if (lowest === null || _local.y < lowest) lowest = _local.y
+    samples.push(_world.clone())
   }
 
-  if (lowest !== null) return lowest
+  if (samples.length === 0) {
+    avatarRoot.traverse((obj) => {
+      if (!(obj instanceof THREE.Bone)) return
+      const name = obj.name.replace(/\.\d+$/, '')
+      if (!VRM_FOOT_BONE.test(name)) return
+      obj.getWorldPosition(_world)
+      avatarRoot.worldToLocal(_world)
+      samples.push(_world.clone())
+    })
+  }
 
-  avatarRoot.traverse((obj) => {
-    if (!(obj instanceof THREE.Bone)) return
-    const name = obj.name.replace(/\.\d+$/, '')
-    if (!VRM_FOOT_BONE.test(name)) return
-    obj.getWorldPosition(_world)
-    avatarRoot.worldToLocal(_world)
-    if (lowest === null || _world.y < lowest) lowest = _world.y
-  })
+  if (samples.length === 0) {
+    const hips = vrm.humanoid.getRawBoneNode(VRMHumanBoneName.Hips)
+    if (hips) {
+      hips.getWorldPosition(_world)
+      avatarRoot.worldToLocal(_world)
+      return { feetY: _world.y, centerX: _world.x, centerZ: _world.z }
+    }
+    return null
+  }
 
-  return lowest
+  let sx = 0
+  let sz = 0
+  let lowest = samples[0]!.y
+  for (const p of samples) {
+    sx += p.x
+    sz += p.z
+    if (p.y < lowest) lowest = p.y
+  }
+  return {
+    feetY: lowest,
+    centerX: sx / samples.length,
+    centerZ: sz / samples.length
+  }
 }
 
 /** World AABB floor — catches posed mesh when bone aliases are missing. */
@@ -125,6 +161,9 @@ export function applyVrmPivotOffset(
   model: THREE.Object3D,
   options?: VrmPivotOptions
 ): void {
+  // Offset goes on the *model* (child of yaw pivot), not the pivot.
+  // Pivot only rotates (setYaw). If XZ/Y offset lives on the pivot, rotation turns
+  // "behind" into world offset and the body sits above/behind the CCT.
   pivot.position.set(0, 0, 0)
   model.position.set(0, 0, 0)
   if (options?.measureActivePose) {
@@ -136,20 +175,30 @@ export function applyVrmPivotOffset(
     prepareVrmForFeetMeasure(vrm, model)
   }
 
-  const boneY = measureVrmFootBoneY(vrm, model)
+  const stance = measureVrmFootStance(vrm, model)
+  const boneY = stance?.feetY ?? null
   const boundsY = measureVrmWorldAabbMinY(model)
   let feetY = measureVrmFeetY(vrm, model)
   if (feetY !== null && Math.abs(feetY) > MAX_PIVOT_OFFSET) {
     console.warn('[vrm] feet pivot out of range — falling back to foot bones', { feetY, boneY, boundsY })
     feetY = boneY ?? boundsY
   }
-  const pivotY = feetY !== null ? -feetY : 0
-  pivot.position.y = pivotY
+  let centerX = stance?.centerX ?? 0
+  let centerZ = stance?.centerZ ?? 0
+  if (Math.hypot(centerX, centerZ) > MAX_PIVOT_OFFSET) {
+    console.warn('[vrm] feet XZ pivot out of range — using origin', { centerX, centerZ })
+    centerX = 0
+    centerZ = 0
+  }
+  const modelY = feetY !== null ? -feetY : 0
+  model.position.set(-centerX, modelY, -centerZ)
   console.info('[vrm] feet pivot applied', {
     measureActivePose: !!options?.measureActivePose,
     boneY,
     boundsY,
     feetY,
-    pivotY
+    centerX,
+    centerZ,
+    modelY
   })
 }

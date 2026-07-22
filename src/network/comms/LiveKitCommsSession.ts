@@ -206,27 +206,20 @@ export class LiveKitCommsSession {
     }
 
     let last: boolean | null = null
-    let logTicks = 0
 
     const emit = (reason: string): void => {
       forceSubscribeRemoteVideo(room)
       const snap = snapshotRemoteVideoPresence(room)
-      logTicks += 1
-      // First few ticks + any change: log so landing Cast debug is visible in console.
-      if (logTicks <= 6 || snap.live !== last) {
-        // Category must NOT be `comms` — ClientDebugLog silences that category entirely.
-        const msg =
-          `Cast presence (${this.transport}/${reason}): live=${snap.live} remotes=${snap.remoteParticipants} videoPubs=${snap.remoteVideoPubs}` +
-          (snap.details.length ? ` · ${snap.details.slice(0, 6).join(' | ')}` : '')
-        clientDebugLog.log('cast', msg, {
-          level: snap.live ? 'success' : 'info',
-          alsoConsole: true
-        })
-        console.log(`[cast] ${msg}`)
+      // Log only on live-state changes (not every poll tick).
+      if (snap.live !== last) {
+        clientDebugLog.log(
+          'cast',
+          `Cast presence (${this.transport}/${reason}): live=${snap.live} remotes=${snap.remoteParticipants} videoPubs=${snap.remoteVideoPubs}`,
+          { level: snap.live ? 'success' : 'info' }
+        )
+        last = snap.live
+        onChange(snap.live)
       }
-      if (snap.live === last) return
-      last = snap.live
-      onChange(snap.live)
     }
 
     const onTrackEvent = (): void => emit('track')
@@ -434,18 +427,13 @@ export class LiveKitCommsSession {
     const onParticipantConnected = (participant: Participant) => {
       const address = participant.identity?.trim().toLowerCase()
       if (!address || address === this.localAddress) return
-      clientDebugLog.log('comms', `Peer joined (${this.transport}): ${address.slice(0, 10)}…`, {
-        level: 'success'
-      })
+      // No per-peer console lines — busy rooms (50+) flood DevTools.
       this.peerHandlers?.onPeerJoin(address, this.transport)
     }
 
     const onParticipantDisconnected = (participant: Participant) => {
       const address = participant.identity?.trim().toLowerCase()
       if (!address || address === this.localAddress) return
-      clientDebugLog.log('comms', `Peer left (${this.transport}): ${address.slice(0, 10)}…`, {
-        level: 'warn'
-      })
       this.peerHandlers?.onPeerLeave(address, this.transport)
     }
 
@@ -538,13 +526,8 @@ export class LiveKitCommsSession {
       clientDebugLog.log(
         'network',
         `LiveKit connected (${this.transport}) · room=${room.name} · remotes=${room.remoteParticipants.size} · remoteVideo=${remoteVideo}`,
-        { level: 'success', alsoConsole: true }
+        { level: 'success' }
       )
-      if (this.transport === TransportType.SceneRoom || String(room.name).includes('scene-room')) {
-        console.log(
-          `[cast] scene LiveKit room=${room.name} remotes=${room.remoteParticipants.size} remoteVideo=${remoteVideo}`
-        )
-      }
 
       for (const participant of room.remoteParticipants.values()) {
         onParticipantConnected(participant)
@@ -759,14 +742,7 @@ export class LiveKitCommsSession {
     if (!this.room || this.room.state !== ConnectionState.Connected) return false
     const sessionElapsedSec = Math.max(0.001, (performance.now() - this.sessionStartedAt) / 1000)
     const packet = encodeRfc4PlayerEmotePacket(urn, incrementalId, sessionElapsedSec)
-    const ok = await this.safePublishData(packet, true)
-    if (!ok) return false
-    clientDebugLog.log(
-      'comms',
-      `RFC4 PlayerEmote out → ${this.transport} ${urn.split(':').pop()} #${incrementalId}`,
-      { throttleMs: 0, throttleKey: `emote-out:${this.transport}` }
-    )
-    return true
+    return this.safePublishData(packet, true)
   }
 
   async publishData(

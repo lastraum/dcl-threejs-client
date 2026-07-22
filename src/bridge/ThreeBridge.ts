@@ -43,6 +43,8 @@ import {
   restoreGltfNodeModifierOriginals
 } from './GltfNodeModifiersSync'
 import type { PBGltfNodeModifiers } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/gltf_node_modifiers.gen'
+import { clientDebugLog } from '../client/debug/ClientDebugLog'
+import { gltfLoadingStateLabel, isGltfLoadingStateVerbose } from './gltfLoadingStateConfig'
 
 function materialReferencesVideoPlayer(pb: PbMaterial, videoPlayerEntity: Entity): boolean {
   const materialCase = pb.material?.$case
@@ -618,6 +620,9 @@ export class ThreeBridge {
   /**
    * ADR-215 GltfContainerLoadingState — renderer-owned LWW for scene loading UIs.
    * LoadingState: UNKNOWN=0 LOADING=1 NOT_FOUND=2 FINISHED_WITH_ERROR=3 FINISHED=4
+   *
+   * Must reach the scene worker (encoder recordLww → pointer-crdt / inbound deliver).
+   * Scenes like SpaceRunner freeze InputModifier until FINISHED/ERROR/NOT_FOUND (or 20s).
    */
   private setGltfLoadingState(entity: Entity, currentState: number): void {
     if (this.gltfLoadingStates.get(entity) === currentState) return
@@ -629,7 +634,20 @@ export class ThreeBridge {
     } catch {
       /* component may be absent on early dispose */
     }
+    const hasSink = !!this.recordLww
     this.recordLww?.(def.componentId, entity, value)
+    if (isGltfLoadingStateVerbose() || currentState === 4 || currentState === 3 || currentState === 2) {
+      const src =
+        this.ecs.GltfContainer.has(entity) ? this.ecs.GltfContainer.get(entity).src : '(no GltfContainer)'
+      const msg = `host LWW e${entity as number} → ${gltfLoadingStateLabel(currentState)} sink=${hasSink ? 'ok' : 'MISSING'} ${src}`
+      if (isGltfLoadingStateVerbose()) {
+        clientDebugLog.log('gltf-load', msg, { alsoConsole: true, throttleMs: 0 })
+      }
+      // Always surface terminal states in DevTools (prod mirror may be off).
+      if (currentState === 4 || currentState === 3 || currentState === 2) {
+        console.info(`[gltf-load] ${msg}`)
+      }
+    }
   }
 
   private clearGltfLoadingState(entity: Entity): void {
@@ -1520,7 +1538,7 @@ export class ThreeBridge {
   private materialTickBusy = false
 
   /** Retry deferred sprite/material textures without blocking the render loop. */
-  tickDeferredMaterials(budgetMs = 6, maxEntities = 2): void {
+  tickDeferredMaterials(budgetMs = 12, maxEntities = 8): void {
     if (this.materialTickBusy) return
     if (!this.pendingMaterialEntities.size && !this.pendingGltfNodeModEntities.size) return
     // After hydration, apply deferred textures even if the global defer gate is still set.
@@ -1528,6 +1546,7 @@ export class ThreeBridge {
     if (deferTextures) return
     this.materialTickBusy = true
     // Fire-and-forget — must not be awaited from the async frame path.
+    // Higher budget so board PNGs (Jump Zone logo / prize) land quickly after spawn.
     void Promise.all([
       this.runMaterialPass(this.ecs.Material, budgetMs, maxEntities, false),
       this.runGltfNodeModifiersPass(budgetMs, maxEntities)

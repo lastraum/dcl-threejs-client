@@ -14,6 +14,8 @@ export type SceneStreamAccessParams = {
   realmName: string
   isWorld: boolean
   isGuest: boolean
+  /** Custom worlds content host (hostname or origin) for cast realm metadata. */
+  worldsContentHost?: string | null
 }
 
 export type SceneStreamCredentials = {
@@ -36,6 +38,10 @@ export type SceneStreamAccessResult =
 export function kernelSceneStreamMetadata(params: SceneStreamAccessParams): Record<string, unknown> {
   if (params.isWorld) {
     const serverName = params.realmName
+    // Official worlds host by default; custom content servers pass their host via realmName path.
+    const worldsHost =
+      params.worldsContentHost?.replace(/^https?:\/\//i, '').replace(/\/+$/, '') ||
+      'worlds-content-server.decentraland.org'
     return {
       sceneId: params.sceneId,
       parcel: params.parcel,
@@ -43,7 +49,7 @@ export function kernelSceneStreamMetadata(params: SceneStreamAccessParams): Reco
       network: 'mainnet',
       isGuest: params.isGuest,
       realm: {
-        hostname: `worlds-content-server.decentraland.org/world/${serverName}`,
+        hostname: `${worldsHost}/world/${serverName}`,
         protocol: 'v3',
         serverName
       },

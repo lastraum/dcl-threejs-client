@@ -1,5 +1,6 @@
 import { getActiveProfileAddress } from '../avatar/LocalAvatar'
 import { PEER_URL } from '../avatar/constants'
+import { applyExtendedColorsToSerializedProfile } from '../avatar/extendedColors'
 import {
   avatarEntryToCommsEntity,
   fetchCommsProfileEntityCached,
@@ -69,7 +70,16 @@ export class SessionIdentity {
   }
 
   getCommsProfileEntity(): CommsProfileEntity | null {
-    return this.commsProfile
+    if (!this.commsProfile) return null
+    // Inject D3JS extension keys (brows / facial hair colors) at read time so every
+    // announce carries the current localStorage values without a Catalyst deploy.
+    return {
+      ...this.commsProfile,
+      serializedProfile: applyExtendedColorsToSerializedProfile(
+        this.commsProfile.serializedProfile,
+        this.address
+      )
+    }
   }
 
   /** Rebuild the comms profile from a just-deployed entry (version already bumped) so

@@ -335,13 +335,70 @@ export class CrdtProjection {
       | NetworkIdentityValue
       | undefined
     if (!parentNet) return null
-    return this.findLocalEntityByNetworkIdentity(parentNet.networkId, parentNet.entityId)
+    const byIdentity = this.findLocalEntityByNetworkIdentity(
+      parentNet.networkId,
+      parentNet.entityId
+    )
+    if (byIdentity != null) return byIdentity
+    // Single-scene / non-synced: NetworkParent.entityId is often the local parent
+    // entity number even when the parent has no NetworkEntity row yet (Angzaar).
+    const guess = Number(parentNet.entityId) as Entity
+    if (
+      guess &&
+      guess !== child &&
+      this.transformId != null &&
+      (this.components.get(this.transformId)?.has(guess) ?? false)
+    ) {
+      return guess
+    }
+    return null
+  }
+
+  /**
+   * Force-resolve every NetworkParent → Transform.parent (late NetworkEntity arrivals).
+   * Used by AOI first-frame sampling so plaza hierarchies aren't sampled half-bound.
+   * @returns number of Transforms whose parent field changed
+   */
+  rebindAllNetworkParents(): number {
+    if (this.networkParentId === null || this.transformId === null) return 0
+    const parentMap = this.components.get(this.networkParentId)
+    const transformMap = this.components.get(this.transformId)
+    if (!parentMap || !transformMap) return 0
+    let n = 0
+    for (const [child] of parentMap) {
+      const t = transformMap.get(child)
+      if (t === undefined) continue
+      const next = this.withResolvedNetworkParent(child, t)
+      if (next !== t) {
+        transformMap.set(child, next)
+        // Queue diff so EntityStore / first-frame re-link parents (not just the map).
+        this.changes.push({ entity: child, componentId: this.transformId, kind: 'put' })
+        n++
+      }
+    }
+    return n
+  }
+
+  /**
+   * Children with NetworkParent whose local parent entity is still missing
+   * (NetworkEntity for parent not on the projection yet).
+   */
+  countUnresolvedNetworkParents(): number {
+    if (this.networkParentId === null) return 0
+    const parentMap = this.components.get(this.networkParentId)
+    if (!parentMap) return 0
+    let n = 0
+    for (const [child] of parentMap) {
+      if (this.resolveNetworkParentLocalEntity(child) == null) n++
+    }
+    return n
   }
 
   private withResolvedNetworkParent(entity: Entity, transformValue: unknown): unknown {
     const localParent = this.resolveNetworkParentLocalEntity(entity)
     if (localParent == null) return transformValue
     const t = transformValue as { parent?: number }
+    if (Number(t.parent) === Number(localParent)) return transformValue
     return { ...t, parent: localParent }
   }
 
@@ -526,6 +583,29 @@ export class CrdtProjection {
     const tsMap = this.timestamps.get(componentId)!
     tsMap.set(entity, (tsMap.get(entity) ?? 0) + 1)
     map.set(entity, value)
+  }
+
+  /**
+   * Renderer/player-frame owned delete — clears projection map (not the unused ECS engine).
+   * Store-component facades must call this from deleteFrom; otherwise createOrReplace writes
+   * the projection while deleteFrom only touched the prototype engine (SpaceRunner stayed
+   * frozen after load-gate clear: imHas=false but afterHas=true).
+   */
+  deleteRenderer(componentId: number, entity: Entity): void {
+    const map = this.components.get(componentId)
+    if (!map) return
+    if (this.isMainCameraOnCameraEntity(entity, componentId)) {
+      this.pendingMainCameraBind = null
+    }
+    this.clearPendingMainCameraBindForEntity(entity)
+    const tsMap = this.timestamps.get(componentId)
+    if (tsMap) {
+      // Bump LWW so a stale lower-TS freeze PUT cannot resurrect the component.
+      tsMap.set(entity, (tsMap.get(entity) ?? 0) + 1)
+    }
+    if (map.delete(entity)) {
+      this.changes.push({ entity, componentId, kind: 'delete' })
+    }
   }
 
   /** Renderer-owned grow-only append. Stores the latest value (parity with inbound APPEND handling). */

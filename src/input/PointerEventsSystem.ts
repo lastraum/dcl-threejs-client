@@ -27,6 +27,11 @@ import {
   resolveUiPointerResultEntity
 } from '../ui/scene/uiPointer'
 import { isPointerOverSceneUi, isSceneUiDomTarget } from '../ui/scene/sceneUiOverlay'
+import {
+  isForeignUiPointerOwner,
+  isUiOverlayPointerEvent,
+  uiPointerOwnerOf
+} from '../ui/scene/uiPointerGate'
 import { isTextInputFocused } from '../client/ui/textInputFocus'
 import { POINTER_LOCK_AIM_NDC_Y, pointerLockAim } from './pointerLockAim'
 import { isSceneUiFieldDom, isSceneUiTypingFocus } from '../ui/scene/sceneUiTyping'
@@ -71,6 +76,11 @@ type PointerDeps = {
   isSceneUiTypingActive?: () => boolean
   /** Interactive scene UI at coords — blocks 3D raycast when over the DOM overlay. */
   pickUiRegionHit?: (clientX: number, clientY: number) => PointerHit | null
+  /**
+   * Host root this system paints (`scene-ui-root` | `pe-ui-root`).
+   * Required so primary does not inject under a PX dialog (dual window listeners).
+   */
+  uiRootId?: string
 }
 
 const _ray = new THREE.Ray()
@@ -310,6 +320,9 @@ export class PointerEventsSystem {
     if (isPointerOverSceneUi(this.screenX, this.screenY)) {
       const uiRegionHit = this.deps.pickUiRegionHit?.(this.screenX, this.screenY)
       if (uiRegionHit) return uiRegionHit
+      // Interactive UI under cursor belongs to another root (e.g. PX above primary).
+      // Never fall through to world mesh PointerEvents — that is click-through.
+      return null
     }
 
     if (!this.pointerEntitySet.size) return null
@@ -357,7 +370,8 @@ export class PointerEventsSystem {
     this.screenX = e.clientX
     this.screenY = e.clientY
     this.pointerDirty = true
-    if (isPointerOverSceneUi(e.clientX, e.clientY)) {
+    // PX / scene UI overlay above canvas — never raycast world through a dialog.
+    if (isUiOverlayPointerEvent(e) || isPointerOverSceneUi(e.clientX, e.clientY)) {
       e.stopPropagation()
       return
     }
@@ -417,10 +431,25 @@ export class PointerEventsSystem {
 
   private onWindowUiPointerDown = (e: PointerEvent): void => {
     if (!this.deps?.pickUiHit) return
+    const ownRoot = this.deps.uiRootId
+
+    // PX enable/close (or any PX UI) — primary must not inject scene UI under the dialog.
+    // Gate tags the event before either system runs (capture order).
+    if (ownRoot && isForeignUiPointerOwner(ownRoot, e)) {
+      return
+    }
+
     // Left-drag orbit — never hijack canvas clicks without an interactive scene-ui node.
-    if (!isPointerOverSceneUi(e.clientX, e.clientY)) return
+    const overUi =
+      isUiOverlayPointerEvent(e) ||
+      isPointerOverSceneUi(e.clientX, e.clientY) ||
+      isSceneUiDomTarget(e.target)
+    if (!overUi) return
+
     if (this.deps.consumeSceneUiFieldPointer?.(e.clientX, e.clientY, e.target)) {
-      if (!(e.target instanceof Element) || !isSceneUiFieldDom(e.target)) e.stopPropagation()
+      if (!(e.target instanceof Element) || !isSceneUiFieldDom(e.target)) {
+        e.stopPropagation()
+      }
       return
     }
     if (this.isTypingTarget() || this.deps.isSceneUiTypingActive?.()) return
@@ -429,16 +458,21 @@ export class PointerEventsSystem {
     const hit = this.deps.pickUiHit(e.clientX, e.clientY, e.target)
     const button = mouseButtonToInputAction(e.button)
     if (!hit) {
-      if (isSceneUiDomTarget(e.target)) e.stopPropagation()
+      // Overlay owns the point but this root has no handler — do not fall through to world.
+      // Do not stopImmediate: the owning root's system still needs this event.
+      if (overUi) e.stopPropagation()
       return
     }
     if (!this.canQueuePointerDown(button, hit)) {
-      if (isSceneUiDomTarget(e.target)) e.stopPropagation()
+      if (isSceneUiDomTarget(e.target) || overUi) e.stopPropagation()
       return
     }
 
+    // This root owns the click — claim exclusively so the other PES (primary vs PX)
+    // cannot also queue an inject on the same window listener.
     e.stopPropagation()
-    // pickUiHit already resolved the react-ecs handler (smallest PE under point).
+    e.stopImmediatePropagation()
+    // pickUiHit already resolved the react-ecs handler (smallest PointerEvents under point).
     // Do not re-walk ancestors — that can re-target a fullscreen scrim.
     const targetEntity = hit.isSceneUi
       ? hit.entity
@@ -447,9 +481,10 @@ export class PointerEventsSystem {
     this.downEntityByButton.set(button, targetEntity)
     this.pendingPointerDown.set(button, hit)
     if (button === InputAction.IA_POINTER) {
+      const owner = uiPointerOwnerOf(e) ?? ownRoot ?? '?'
       clientDebugLog.log(
         'pointer',
-        `ui down → entity ${targetEntity}${hit.isSceneUi ? ' (sceneUi)' : ''}`,
+        `ui down → entity ${targetEntity}${hit.isSceneUi ? ' (sceneUi)' : ''} root=${owner}`,
         { alsoConsole: true }
       )
     }
@@ -457,6 +492,13 @@ export class PointerEventsSystem {
 
   private onWindowUiPointerUp = (e: PointerEvent): void => {
     if (!this.deps) return
+    const ownRoot = this.deps.uiRootId
+    // Foreign root owned the gesture — never flush a scene inject from under a PX dialog.
+    if (ownRoot && isForeignUiPointerOwner(ownRoot, e) && !this.uiPointerButtons.has(
+      mouseButtonToInputAction(e.button)
+    )) {
+      return
+    }
     const button = mouseButtonToInputAction(e.button)
     if (!this.uiPointerButtons.has(button)) return
     if (!this.downEntityByButton.has(button)) {
@@ -465,6 +507,8 @@ export class PointerEventsSystem {
     }
     this.pendingPointerUp.add(button)
     this.uiPointerButtons.delete(button)
+    e.stopPropagation()
+    e.stopImmediatePropagation()
     this.deps.flushPointerCrdt?.()
   }
 

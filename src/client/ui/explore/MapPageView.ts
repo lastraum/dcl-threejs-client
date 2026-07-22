@@ -6,6 +6,7 @@ export type MapPageViewOptions = SocialShellChromeHandlers & {
   login: LoginResult
   onNavigate: (tab: SocialShellTab) => void
   onParcelVisit: (px: number, py: number) => void
+  onWorldVisit?: (worldName: string) => void
   getPlayerState?: () => MapPlayerState | null
   /** Center map on this parcel at mount (minimap / leave-play handoff). */
   initialCenter?: { px: number; py: number } | null
@@ -30,6 +31,7 @@ export class MapPageView {
       onSignOut: opts.onSignOut,
       onOpenSettings: opts.onOpenSettings,
       onOpenBackpack: opts.onOpenBackpack,
+      onEnter3D: opts.onEnter3D,
       onOpenProfile: opts.onOpenProfile,
       onOpenWhatsNew: opts.onOpenWhatsNew
     })
@@ -37,6 +39,7 @@ export class MapPageView {
     this.mapView = new MapView({
       getPlayerState: opts.getPlayerState ?? (() => null),
       onJumpIn: opts.onParcelVisit,
+      onJumpInWorld: opts.onWorldVisit,
       initialCenter: opts.initialCenter ?? null
     })
 

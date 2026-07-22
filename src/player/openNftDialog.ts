@@ -24,6 +24,11 @@ export async function openNftDialog(request: OpenNftDialogRequest): Promise<bool
   if (!parseNftUrn(urn)) return false
 
   closeNftDialog()
+  try {
+    if (document.pointerLockElement) document.exitPointerLock()
+  } catch {
+    /* ignore */
+  }
 
   const overlay = document.createElement('div')
   overlay.id = OVERLAY_ID
@@ -39,7 +44,9 @@ export async function openNftDialog(request: OpenNftDialogRequest): Promise<bool
     'justify-content:center',
     'background:rgba(0,0,0,0.62)',
     'padding:24px',
-    'font-family:Inter,system-ui,-apple-system,sans-serif'
+    'font-family:Inter,system-ui,-apple-system,sans-serif',
+    'pointer-events:auto',
+    'cursor:default'
   ].join(';')
 
   const card = document.createElement('div')

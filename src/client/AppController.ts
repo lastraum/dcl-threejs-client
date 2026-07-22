@@ -4,11 +4,14 @@ import {
   applyRouteToHistory,
   resolveRouteTarget,
   routeEquals,
+  routePathForTarget,
   type RouteTarget
 } from '../dcl/content/route'
 import { resolveSceneFromRoute, summarizeSceneContent } from '../dcl/content/resolveScene'
 import { EditorApp } from '../editor/EditorApp'
 import { World } from '../core/World'
+import { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
+import { PortableExperienceManager } from '../dcl/multiScene/PortableExperienceManager'
 import { readSceneDevQueryKey } from '../environment/fftOcean/readFftOceanOverride'
 import { disconnectAll } from '../network/SessionConnections'
 import { SessionIdentity } from '../network/SessionIdentity'
@@ -32,7 +35,7 @@ import { ChatPanel } from './ui/chat/ChatPanel'
 import { SocialChatController } from './ui/chat/SocialChatController'
 import { SocialChatDock } from './ui/chat/SocialChatDock'
 import { PreferencesPanel } from './ui/settings/PreferencesPanel'
-import { SettingsOverlay } from './ui/settings/SettingsOverlay'
+import { SettingsOverlay, type SettingsTab } from './ui/settings/SettingsOverlay'
 import type { MapPlayerState } from './ui/settings/MapView'
 import { genesisMetersToParcel } from '../map/genesisMapViewport'
 import type { ResolvedScene } from '../dcl/content/types'
@@ -61,7 +64,10 @@ import type { SocialShellTab } from './ui/explore/SocialShellTopNav'
 import { SocialMobileNotifications } from './ui/explore/SocialMobileNotifications'
 import { SceneLandingView } from './ui/landing/SceneLandingView'
 import type { DclEvent } from '../social/dclEvents'
-import { enrichResolvedScenePublicTitle } from '../social/sceneDisplayTitle'
+import {
+  enrichResolvedScenePublicTitle,
+  fetchPublicSceneTitle
+} from '../social/sceneDisplayTitle'
 import { recordLoginEvent } from '../analytics/recordLogin'
 import {
   startDwellTracking,
@@ -82,6 +88,14 @@ export class AppController {
   private container: HTMLElement | null = null
   private world: World | null = null
   private shell: ClientShell | null = null
+  /**
+   * Session-scoped PE manager — survives World rebuild on /goto so enabled PEs
+   * restore without re-prompt (workers rebind to the new host).
+   */
+  private readonly peManager = new PortableExperienceManager()
+  private readonly multiSceneRuntime = new MultiSceneRuntime({
+    peManager: this.peManager
+  })
   private debugPanel: DebugPanel | null = null
   private devProgressPanel: DevProgressPanel | null = null
   private worldLocationCard: WorldLocationCard | null = null
@@ -89,8 +103,19 @@ export class AppController {
   /** Shared translucent frame: location pill + circular minimap (Explorer-style). */
   private locationMapStack: HTMLDivElement | null = null
   private minimapLayoutObserver: ResizeObserver | null = null
+  /** Parcel key → resolved display title (soft-route HUD). */
+  private readonly locationTitleCache = new Map<string, string>()
+  /** Race guard for async title fetches while walking. */
+  private locationTitleGen = 0
+  /** Last parcel key applied to the location pill title. */
+  private lastLocationTitleKey = ''
   /** Parcel to center the full map on after leave-play (minimap click). */
   private mapFocusParcel: { px: number; py: number } | null = null
+  /**
+   * Last live map pose while World was up — full /map tears down the scene, so
+   * getMapPlayerState() would go null without this.
+   */
+  private lastMapPlayerState: MapPlayerState | null = null
   private chatPanel: ChatPanel | null = null
   private settingsOverlay: SettingsOverlay | null = null
   private unsubVoiceUi: (() => void) | null = null
@@ -380,6 +405,7 @@ export class AppController {
     onOpenBackpack: () => void
     onOpenProfile: () => void
     onOpenWhatsNew: () => void
+    onEnter3D: () => void
   } {
     return {
       onLoginChange: (login) => {
@@ -411,6 +437,9 @@ export class AppController {
       onOpenBackpack: () => {
         void this.openBackpackFromShell()
       },
+      onEnter3D: () => {
+        void this.openOverlayFromShell('explore')
+      },
       onOpenProfile: () => this.openLocalProfileFromShell(),
       onOpenWhatsNew: () => openWhatsNewFromMenu(),
       ...this.socialShellSocialHandlers()
@@ -419,13 +448,18 @@ export class AppController {
 
   /** Open backpack from 2D profile menu — SettingsOverlay is play-only unless we create it here. */
   private async openBackpackFromShell(): Promise<void> {
+    return this.openOverlayFromShell('backpack')
+  }
+
+  /** Open the 3D overlay (any tab) from the 2D shell; play-only unless created here. */
+  private async openOverlayFromShell(tab: SettingsTab): Promise<void> {
     if (this.login?.kind !== 'wallet') return
     try {
       const overlay = await this.ensureSettingsOverlay()
-      overlay.show('backpack')
+      overlay.show(tab)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      clientDebugLog.log('client', `Backpack open failed: ${msg}`, { level: 'error' })
+      clientDebugLog.log('client', `Overlay open failed: ${msg}`, { level: 'error' })
     }
   }
 
@@ -477,12 +511,19 @@ export class AppController {
       getMapPlayerState: () => this.getMapPlayerState(),
       onMapJumpIn: (px, py) => {
         this.settingsOverlay?.hide()
-        void this.navigateTo({
-          kind: 'coords',
-          x: px,
-          y: py,
-          segment: `${px},${py}`
-        })
+        void this.jumpInToScene(
+          { kind: 'coords', x: px, y: py, segment: `${px},${py}` },
+          { entry: 'map', source: 'map' }
+        )
+      },
+      onMapJumpInWorld: (worldName) => {
+        this.settingsOverlay?.hide()
+        const name = worldName.trim()
+        if (!name) return
+        void this.jumpInToScene(
+          { kind: 'world', worldName: name, segment: name },
+          { entry: 'map', source: 'map' }
+        )
       },
       onEventJumpIn: (target, _event: DclEvent) => {
         this.settingsOverlay?.hide()
@@ -519,6 +560,10 @@ export class AppController {
       },
       onOpenCommunityChat: (community) => {
         this.openCommunityChatChannel(community.id, community.name)
+      },
+      onExitTo2D: () => {
+        this.settingsOverlay?.hide()
+        void this.navigateTo({ kind: 'blank' })
       }
     })
   }
@@ -616,12 +661,19 @@ export class AppController {
       login: this.login,
       onNavigate: (tab) => this.navigateSocialShell(tab),
       onParcelVisit: (px, py) => {
-        void this.showSceneLanding({
-          kind: 'coords',
-          x: px,
-          y: py,
-          segment: `${px},${py}`
-        })
+        // Direct jump with full LoadingScreen (not landing-only CTA progress).
+        void this.jumpInToScene(
+          { kind: 'coords', x: px, y: py, segment: `${px},${py}` },
+          { entry: 'map', source: 'map' }
+        )
+      },
+      onWorldVisit: (worldName) => {
+        const name = worldName.trim()
+        if (!name) return
+        void this.jumpInToScene(
+          { kind: 'world', worldName: name, segment: name },
+          { entry: 'map', source: 'map' }
+        )
       },
       getPlayerState: () => this.getMapPlayerState(),
       initialCenter,
@@ -917,12 +969,8 @@ export class AppController {
 
     if (connected && this.socialChat) {
       this.sceneLandingView?.setCastRoomReady(true)
-      console.log(
-        `[cast] landing chat connected=${connected} liveKit=${lkReady} jumpIn=${jumpInReady} status=${status?.kind ?? 'none'}`
-      )
       // Continuous presence: room may connect late, and OBS may go live after landing opens.
       this.castLiveUnsub = this.socialChat.watchRemoteVideoLive((live) => {
-        console.log(`[cast] scene-room video live=${live}`)
         this.sceneLandingView?.setCastLive(live)
       })
       this.sceneLandingView?.setCastLive(this.socialChat.hasRemoteVideoLive())
@@ -937,13 +985,8 @@ export class AppController {
           this.sceneLandingView.setCastLive(this.socialChat.hasRemoteVideoLive())
         }, ms)
       }
-    } else {
-      console.log(
-        `[cast] landing chat connected=${connected} jumpIn=${jumpInReady} status=${status?.kind ?? 'none'}`
-      )
-      if (chatBlockedByScene || guestSession || jumpInReady) {
-        this.sceneLandingView?.setCastRoomReady(true)
-      }
+    } else if (chatBlockedByScene || guestSession || jumpInReady) {
+      this.sceneLandingView?.setCastRoomReady(true)
     }
   }
 
@@ -998,21 +1041,15 @@ export class AppController {
       ? pointer.toLowerCase()
       : scene.realm.realmName?.trim() || 'main'
 
-    console.log(
-      `[cast] stream-key watch: sceneId=${sceneId.slice(0, 18)}… parcel=${parcel} realm=${realmName} isWorld=${isWorld} as=${this.login.kind}`
-    )
-
     // Prefer existing scene-room session first (already joined for chat).
     if (this.socialChat?.isLiveKitConnected()) {
       const unbindExisting = this.socialChat.bindRemoteCastVideoToHost(host, onUpdate, opts)
       // Give existing room a moment; if video attaches, keep it.
       await new Promise((r) => setTimeout(r, 600))
       if (host.querySelector('video')) {
-        console.log('[cast] stream-key video attached via existing scene LiveKit session')
         return unbindExisting
       }
       unbindExisting()
-      console.log('[cast] existing scene room has no video yet — fresh adapter join')
     }
 
     const adapterResult = await getSceneAdapter(identity, {
@@ -1042,19 +1079,6 @@ export class AppController {
     if (!ok) {
       this.castWatchRoom = null
       throw new Error('Could not connect to scene LiveKit room for stream-key video.')
-    }
-
-    const lkRoom = room.getRoom()
-    console.log(
-      `[cast] stream-key room=${lkRoom?.name ?? '?'} remotes=${lkRoom?.remoteParticipants.size ?? 0}`
-    )
-    if (lkRoom) {
-      for (const p of lkRoom.remoteParticipants.values()) {
-        const pubs = [...p.trackPublications.values()].map(
-          (pub) => `${pub.kind}/${pub.source}/${pub.isSubscribed ? 'sub' : 'unsub'}`
-        )
-        console.log(`[cast] remote ${p.identity?.slice(0, 12)}… pubs=[${pubs.join(', ') || 'none'}]`)
-      }
     }
 
     const unbind = room.bindVideoToHost(host, (attached) => {
@@ -1202,6 +1226,11 @@ export class AppController {
       fromHistory?: boolean
       replace?: boolean
       fastAssets?: boolean
+      /**
+       * Multi-scene stand-on-parcel promote: no full loading screen, keep HUD,
+       * restore Genesis feet after spawn.
+       */
+      seamless?: boolean
       entry?: 'landing_cta' | 'event_card' | 'deep_link' | 'map' | 'other' | 'teleport'
       source?: AnalyticsSource
     } = {}
@@ -1225,7 +1254,10 @@ export class AppController {
     }
 
     const devQueryKey = readSceneDevQueryKey()
+    // Soft URL updates track feet parcel without loading — do NOT treat that as
+    // "already on this primary". Seamless promote must always run the load.
     if (
+      !opts.seamless &&
       this.appMode === 'play' &&
       this.currentRoute &&
       routeEquals(this.currentRoute, target) &&
@@ -1242,7 +1274,23 @@ export class AppController {
       routeEquals(this.currentRoute, target)
 
     const fromPlay = this.appMode === 'play'
-    if (fromPlay) {
+    const seamless = !!(opts.seamless && fromPlay && target.kind === 'coords')
+
+    // Preserve Genesis feet across primary swap (seamless multi-scene promote).
+    let savedGenesis: { x: number; y: number; z: number } | null = null
+    if (seamless && this.world) {
+      const pos = this.world.getPlayerPosition()
+      const origin = this.world.comms.getSceneOrigin()
+      if (pos) {
+        savedGenesis = {
+          x: pos.x + origin.x,
+          y: pos.y,
+          z: pos.z + origin.z
+        }
+      }
+    }
+
+    if (fromPlay && !seamless) {
       stopDwellTracking('navigate')
     }
     // End 2D landing time when Jump In / teleport starts (before load).
@@ -1260,47 +1308,57 @@ export class AppController {
       route: target,
       source: opts.source,
       play_session_id: playId,
-      props: { entry }
+      props: { entry, seamless }
     })
     track('scene_load_start', {
       route: target,
       play_session_id: playId,
       props: {
         fast_assets: !!(opts.fastAssets ?? fromPlay),
-        from_mode: this.appMode
+        from_mode: this.appMode,
+        seamless
       }
     })
 
-    if (!fromSceneLanding) {
+    if (!fromSceneLanding && !seamless) {
       this.teardownSocialChatShell(true)
     }
 
     this.navigating = true
     let loading: LoadingScreen | null = null
-    if (fromSceneLanding) {
+    // Seamless promote (in-world multi-scene): no loading chrome.
+    // Everything else (landing Jump In, map Jump In, teleports) shows a loading affordance.
+    if (seamless) {
+      console.info('[promote] seamless primary swap — no loading screen')
+    } else if (fromSceneLanding) {
       this.hidePlayChrome()
       this.sceneLandingView!.preserveDuringWorldLoad()
       this.sceneLandingView!.beginJumpInLoading()
     } else {
       loading = new LoadingScreen(
         this.appMode === 'play' ? 'Teleporting…' : 'Preparing your experience…',
-        { fast: this.appMode === 'play' }
+        { fast: this.appMode === 'play' || opts.entry === 'map' }
       )
       loading.mount()
       loading.startLoadingTimer()
     }
 
     try {
-      if (!fromSceneLanding) {
+      if (!fromSceneLanding && !seamless) {
         this.teardownLanding()
       }
-      this.teardownExplorer()
-      this.teardownMapPage()
+      if (!seamless) {
+        this.teardownExplorer()
+        this.teardownMapPage()
+      }
       const hydrationTimedOut = await this.loadRoute(target, {
         ...opts,
+        replace: opts.replace ?? seamless,
         fastAssets: opts.fastAssets ?? this.appMode === 'play',
         handoffShellComms: fromSceneLanding,
         deferPlayChromeReveal: fromSceneLanding,
+        seamless,
+        restoreGenesisFeet: savedGenesis,
         onProgress: (msg, fraction, stats) => {
           if (fromSceneLanding) {
             this.sceneLandingView?.updateJumpInProgress(fraction, msg)
@@ -1317,7 +1375,7 @@ export class AppController {
       track('scene_enter', {
         route: target,
         play_session_id: playId,
-        props: { load_ms: Date.now() - loadStarted }
+        props: { load_ms: Date.now() - loadStarted, seamless }
       })
       startDwellTracking(target)
       if (fromSceneLanding) {
@@ -1325,8 +1383,11 @@ export class AppController {
         this.teardownLanding()
         this.teardownSocialChatShell(true)
         this.revealPlayChrome()
+      } else if (loading) {
+        await loading.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
       } else {
-        await loading!.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
+        // Seamless promote — chrome already visible.
+        this.revealPlayChrome()
       }
     } catch (err) {
       if (err instanceof SceneAccessDeniedError) {
@@ -1344,8 +1405,13 @@ export class AppController {
         stopDwellTracking('error')
         if (fromSceneLanding) {
           this.sceneLandingView?.showSceneBan(ui)
+        } else if (loading) {
+          loading.showFatalError(ui.title, ui.detail)
         } else {
-          loading?.showFatalError(ui.title, ui.detail)
+          clientDebugLog.log('client', `Seamless promote denied: ${ui.title}`, {
+            level: 'warn',
+            alsoConsole: true
+          })
         }
         clientDebugLog.log('client', `Scene access denied: ${err.source}`, { level: 'warn' })
       } else {
@@ -1359,8 +1425,13 @@ export class AppController {
         stopDwellTracking('error')
         if (fromSceneLanding) {
           this.sceneLandingView?.showJumpInError(ui.title, ui.detail)
+        } else if (loading) {
+          loading.showFatalError(ui.title, ui.detail)
         } else {
-          loading?.showFatalError(ui.title, ui.detail)
+          clientDebugLog.log('client', `Seamless promote failed: ${msg}`, {
+            level: 'error',
+            alsoConsole: true
+          })
         }
         clientDebugLog.log('client', `Failed to load scene: ${msg}`, { level: 'error' })
       }
@@ -1383,6 +1454,9 @@ export class AppController {
       fastAssets?: boolean
       handoffShellComms?: boolean
       deferPlayChromeReveal?: boolean
+      /** Multi-scene promote — skip long post-spawn settle, restore feet. */
+      seamless?: boolean
+      restoreGenesisFeet?: { x: number; y: number; z: number } | null
       onProgress?: (msg: string, fraction?: number, stats?: SceneHydrationStats) => void
       onHydrationStart?: (timeoutMs: number) => void
       onHydrationFinish?: (result: { timedOut: boolean; elapsedMs: number }) => void
@@ -1432,10 +1506,33 @@ export class AppController {
     world.applyLogin(this.login)
     world.setNavigateHandler((target) => {
       const from = this.currentRoute
+      // RestrictedActions teleport / goto (full loading UX when not seamless).
       if (from && (target.kind === 'coords' || target.kind === 'world')) {
         this.trackNavigate(from, target, 'goto', 'goto')
       }
-      void this.jumpInToScene(target, { fastAssets: true, entry: 'teleport', source: 'goto' })
+      void this.jumpInToScene(target, {
+        fastAssets: true,
+        entry: 'teleport',
+        source: 'goto'
+      })
+    })
+    // Stand-on-parcel multi-scene promote — prefer live secondary handoff (no World rebuild).
+    world.setPromoteHandlers({
+      onPromote: (target, reason) => {
+        const from = this.currentRoute
+        if (from) this.trackNavigate(from, target, 'navigate', 'goto')
+        this.softUpdatePlayRoute(target)
+        void this.refreshLocationTitleForParcel(target.x, target.y)
+        void this.promotePrimary(target, reason)
+      },
+      // Feet parcel only — replaceState, never reload (fixes empty-land thrash + URL lag).
+      onSoftRoute: (x, y) => {
+        this.softUpdatePlayRoute({ kind: 'coords', x, y, segment: `${x},${y}` })
+        void this.refreshLocationTitleForParcel(x, y)
+      },
+      onPrefetch: (x, y) => {
+        void this.prefetchPromoteTarget(x, y)
+      }
     })
     // Community-style toast when plaza has many remotes still composing.
     this.ensureSocialMobileNotifications()
@@ -1612,9 +1709,11 @@ export class AppController {
         document.body.appendChild(this.locationMapStack)
       }
 
+      const initialTitle = sceneDisplayTitle(sceneConfig)
+      this.seedLocationTitleCache(sceneConfig, initialTitle)
       this.worldLocationCard = new WorldLocationCard({
         scene: sceneConfig,
-        title: sceneDisplayTitle(sceneConfig),
+        title: initialTitle,
         getCoordsLabel: () => this.getLocationCoordsLabel(),
         onJumpToGenesis:
           sceneConfig.source.kind === 'world'
@@ -1638,6 +1737,10 @@ export class AppController {
             }
           : undefined
       })
+      this.lastLocationTitleKey =
+        sceneConfig.source.kind === 'coords'
+          ? sceneConfig.baseParcel
+          : sceneConfig.commsPointer
       if (useMinimapStack && this.locationMapStack) {
         this.minimap = new Minimap({
           host: this.locationMapStack,
@@ -1689,9 +1792,25 @@ export class AppController {
       world.voice.setInPlay(false)
       await world.spawnLocalPlayer(sceneConfig, opts.onProgress)
 
+      // Seamless multi-scene: put feet back where the player was walking (Genesis meters).
+      if (opts.restoreGenesisFeet) {
+        const ok = world.restoreGenesisFeet(opts.restoreGenesisFeet)
+        console.info(
+          `[promote] restore genesis feet (${opts.restoreGenesisFeet.x.toFixed(1)}, ${opts.restoreGenesisFeet.y.toFixed(1)}, ${opts.restoreGenesisFeet.z.toFixed(1)}) ok=${ok}`
+        )
+      }
+
       world.start()
 
-      const settleMs = useFastBoot ? POST_SPAWN_SETTLE_FAST_MS : POST_SPAWN_SETTLE_MS
+      // Multi-scene: bind PE + live secondaries (PE prefs survive this attach).
+      world.attachMultiScene(this.multiSceneRuntime)
+      this.shell?.bindPortableExperiences(this.peManager)
+
+      const settleMs = opts.seamless
+        ? 0
+        : useFastBoot
+          ? POST_SPAWN_SETTLE_FAST_MS
+          : POST_SPAWN_SETTLE_MS
       if (settleMs > 0) {
         opts.onProgress?.('Settling world…', 0.985)
         await new Promise<void>((resolve) => window.setTimeout(resolve, settleMs))
@@ -1711,6 +1830,9 @@ export class AppController {
       void hydrateEmoteWheelSlots(profile, peerUrl).then((slots) => {
         this.shell?.setEmoteWheelSlots(slots)
       })
+
+      // Discover smart-wearable PEs; consent popup once in-scene (never auto-start).
+      void this.bootstrapPortableExperiences(world, sceneConfig)
     })()
 
     await loadPromise
@@ -2007,18 +2129,129 @@ export class AppController {
     this.ensureDevProgressPanel().showTab('progress')
   }
 
+  /**
+   * SPA address bar only — `history.replaceState`, no navigation, no reload.
+   *
+   * IMPORTANT: does **not** set `currentRoute`. That field is the **loaded primary**
+   * scene. Soft feet tracking used to overwrite it, so promote to Angzaar at -9,-91
+   * hit routeEquals and skipped the load (stuck on empty primary forever).
+   */
+  private softUpdatePlayRoute(
+    target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
+  ): void {
+    if (this.navigating) return
+    const nextPath = routePathForTarget(target)
+    if (window.location.pathname === nextPath) return
+    // Compare decoded paths too (`/-9%2C-91` vs `/-9,-91`)
+    try {
+      if (decodeURIComponent(window.location.pathname) === decodeURIComponent(nextPath)) return
+    } catch {
+      /* ignore */
+    }
+    applyRouteToHistory(target, true)
+  }
+
+  /** Push scene/world name into desktop location card + mobile pill. */
+  private applyLocationTitle(title: string, parcelKey?: string): void {
+    const t = title.trim() || 'Scene'
+    this.worldLocationCard?.setTitle(t)
+    this.shell?.setSceneLocation(t, () => this.getLocationCoordsLabel())
+    if (parcelKey) this.lastLocationTitleKey = parcelKey
+  }
+
+  private seedLocationTitleCache(scene: ResolvedScene, title: string): void {
+    const t = title.trim() || 'Scene'
+    for (const p of scene.parcels) {
+      if (p) this.locationTitleCache.set(p, t)
+    }
+    if (scene.baseParcel) this.locationTitleCache.set(scene.baseParcel, t)
+  }
+
+  /**
+   * Soft-route / promote: keep the minimap top bar name on the parcel under feet
+   * (was frozen at jump-in primary title — e.g. "Farcaster" after walking to empty land).
+   */
+  private async refreshLocationTitleForParcel(x: number, y: number): Promise<void> {
+    const key = `${x},${y}`
+    if (key === this.lastLocationTitleKey && this.locationTitleCache.has(key)) return
+
+    const primary = this.world?.getLoadedPrimaryScene()
+    if (primary?.source.kind === 'coords' && primary.parcels.includes(key)) {
+      const title = sceneDisplayTitle(primary)
+      this.seedLocationTitleCache(primary, title)
+      this.applyLocationTitle(title, key)
+      return
+    }
+
+    const cached = this.locationTitleCache.get(key)
+    if (cached) {
+      this.applyLocationTitle(cached, key)
+      return
+    }
+
+    // Leave primary footprint — don't keep the old scene name while resolving.
+    const provisional = `Parcel ${x},${y}`
+    this.applyLocationTitle(provisional, key)
+
+    const gen = ++this.locationTitleGen
+    try {
+      const title = await fetchPublicSceneTitle(
+        { kind: 'coords', x, y, segment: key },
+        null
+      )
+      const resolved = title.trim() || provisional
+      if (this.locationTitleCache.size > 256) this.locationTitleCache.clear()
+      this.locationTitleCache.set(key, resolved)
+      // Only paint if feet are still here (stale fetches still warm the cache).
+      if (gen === this.locationTitleGen && this.lastLocationTitleKey === key) {
+        this.applyLocationTitle(resolved, key)
+      }
+    } catch {
+      this.locationTitleCache.set(key, provisional)
+    }
+  }
+
+  /**
+   * Inner script-warm radius — prefetch real scene manifests/scripts so stand-on
+   * promote is fast. Outer Scene Distance still owns composite GLB visuals only.
+   * (Script-built estates like Angzaar have no main.composite — warm is the only
+   * pre-promote load path for their GLBs.)
+   */
+  private async prefetchPromoteTarget(x: number, y: number): Promise<void> {
+    try {
+      const target = { kind: 'coords' as const, x, y, segment: `${x},${y}` }
+      const scene = await resolveSceneFromRoute(target)
+      // Don't waste prefetch on empty synthetic 1×1 or scenes without content.
+      if (!scene.entityId || !scene.mainEntry) {
+        console.info(
+          `[promote] script-warm skip ${x},${y} — ${!scene.entityId ? 'no entity' : 'no main'} (“${scene.title}”)`
+        )
+        return
+      }
+      const glbCount = scene.content.filter((f) => /\.glb$/i.test(f.file)).length
+      console.info(
+        `[promote] script-warm “${scene.title}” @ ${x},${y} entity=${scene.entityId.slice(0, 12)}… glbs=${glbCount} main=${scene.mainEntry}`
+      )
+      prefetchSceneManifestAssets(getSessionAssetCache(), scene)
+    } catch (err) {
+      console.warn(`[promote] script-warm failed ${x},${y}`, err)
+    }
+  }
+
   private getMapPlayerState(): MapPlayerState | null {
     const world = this.world
-    if (!world) return null
+    if (!world) return this.lastMapPlayerState
     const pos = world.getPlayerPosition()
-    if (!pos) return null
+    if (!pos) return this.lastMapPlayerState
     const origin = world.comms.getSceneOrigin()
+    // Genesis City meters = scene-local DCL feet + base parcel origin (×16).
     const genesisX = pos.x + origin.x
     const genesisZ = pos.z + origin.z
+    // Prefer continuous genesis → parcel (same path soft URL / promote use).
     const { parcelKey } = genesisMetersToParcel(genesisX, genesisZ)
     const profile = world.session.getProfile()
     const address = world.session.getAddress()
-    return {
+    const state: MapPlayerState = {
       position: { x: genesisX, y: pos.y, z: genesisZ },
       parcelKey,
       address: address ?? undefined,
@@ -2027,6 +2260,8 @@ export class AppController {
       // Visual body facing → canvas angle (tracks avatar while moving).
       facingYaw: world.getPlayerMinimapAngle() ?? undefined
     }
+    this.lastMapPlayerState = state
+    return state
   }
 
   private bindNearbyVoice(world: World): void {
@@ -2054,6 +2289,78 @@ export class AppController {
     })
   }
 
+  /**
+   * Promote stand-on parcel to primary:
+   * 1) in-world handoff (live secondary or force-boot) + demote old primary for resume
+   * 2) else seamless jumpIn (full World rebuild — last resort; no demote across rebuild)
+   */
+  private async promotePrimary(
+    target: Extract<RouteTarget, { kind: 'coords' }>,
+    reason: string
+  ): Promise<void> {
+    const world = this.world
+    if (world) {
+      try {
+        const handed = await world.tryPromoteInWorld(target)
+        if (handed) {
+          console.info(
+            `[promote] in-world handoff+demote ${target.x},${target.y} (${reason})`
+          )
+          this.currentRoute = target
+          // PE already attached; keep HUD PE panel bound.
+          this.shell?.bindPortableExperiences(this.peManager)
+          const next = world.getLoadedPrimaryScene()
+          if (next) {
+            const title = sceneDisplayTitle(next)
+            this.seedLocationTitleCache(next, title)
+            this.applyLocationTitle(title, `${target.x},${target.y}`)
+          }
+          return
+        }
+      } catch (err) {
+        console.warn('[promote] in-world handoff failed — falling back to seamless jump', err)
+      }
+    }
+    console.info(`[promote] seamless jump ${target.x},${target.y} (${reason})`)
+    await this.jumpInToScene(target, {
+      fastAssets: true,
+      seamless: true,
+      replace: true,
+      entry: 'teleport',
+      source: 'goto'
+    })
+  }
+
+  /**
+   * Detect equipped smart wearables → PE candidates; restore enabled; consent if new.
+   * Profile wearables can lag spawn slightly — retry a few times before giving up.
+   */
+  private async bootstrapPortableExperiences(world: World, scene: ResolvedScene): Promise<void> {
+    try {
+      const peerUrl = scene.realm.contentUrl || this.sceneContentUrl
+      let profile = world.session.getProfile()
+      let wearables = profile?.wearables ?? []
+      // session.connect may finish just after spawn on cold loads
+      for (let i = 0; i < 12 && wearables.length === 0; i++) {
+        await new Promise<void>((r) => window.setTimeout(r, 250))
+        if (this.world !== world) return
+        profile = world.session.getProfile()
+        wearables = profile?.wearables ?? []
+      }
+      const bodyShape = profile?.bodyShape === 'female' ? 'female' : 'male'
+      console.info(
+        `[pe] bootstrap wearables=${wearables.length} body=${bodyShape} peer=${peerUrl}`
+      )
+      await this.peManager.discoverFromWearables(wearables, peerUrl, { bodyShape })
+      // Give the frame loop a beat so HUD is up, then consent (no auto-start).
+      await new Promise<void>((r) => window.setTimeout(r, 600))
+      if (this.world !== world) return
+      await this.peManager.maybeShowConsentPrompt()
+    } catch (err) {
+      console.warn('[pe] bootstrap failed', err)
+    }
+  }
+
   private async teardownScene(opts?: { keepLiveKit?: boolean }): Promise<void> {
     // Dwell is ended explicitly (leave play / teleport / error / pagehide) — not here.
     // teardownScene runs mid jump-in load and would kill a fresh play_session_id.
@@ -2063,6 +2370,7 @@ export class AppController {
     this.unsubVoiceSpeaking?.()
     this.unsubVoiceSpeaking = null
     this.shell?.bindNearbyVoice(null)
+    this.shell?.bindPortableExperiences(null)
     this.world?.setVoluntaryEmoteAllowedHandler(null)
     this.teardownExplorer()
     this.editorApp?.dispose()

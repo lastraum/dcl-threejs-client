@@ -83,6 +83,8 @@ export async function buildComposeConfig(
           skin: profile.skin,
           hair: profile.hair,
           eyes: profile.eyes,
+          brows: profile.browsColor,
+          facialHair: profile.facialHairColor,
           wearables: Array.from(slots.values()),
           forceRender: profile.forceRender
         }
@@ -128,6 +130,8 @@ export async function buildComposeConfig(
     skin: profile.skin,
     hair: profile.hair,
     eyes: profile.eyes,
+    brows: profile.browsColor,
+    facialHair: profile.facialHairColor,
     wearables: Array.from(slots.values()),
     forceRender: profile.forceRender
   }

@@ -23,6 +23,12 @@ export class SceneUiHitMap {
     this.regions = regions
   }
 
+  /** Drop a single entity (force-dismiss after click-to-fade splash). */
+  removeEntity(entity: Entity): void {
+    if (!this.regions.length) return
+    this.regions = this.regions.filter((r) => r.entity !== entity)
+  }
+
   clear(): void {
     this.regions = []
   }

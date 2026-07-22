@@ -1,6 +1,7 @@
 import {
+  VIEWPORT_DEFAULT_CENTER_TILE,
   VIEWPORT_DEFAULT_ZOOM,
-  centerViewOnParcel,
+  centerViewOnGenesisMeters,
   mapTileUrlForLod,
   parcelScreenRect,
   satelliteLodForZoom,
@@ -50,8 +51,8 @@ export class Minimap {
   private rafId = 0
   private view: MapViewState = {
     zoom: MINIMAP_ZOOM,
-    centerTileX: 3.825,
-    centerTileY: 3.825,
+    centerTileX: VIEWPORT_DEFAULT_CENTER_TILE.x,
+    centerTileY: VIEWPORT_DEFAULT_CENTER_TILE.y,
     panX: 0,
     panY: 0
   }
@@ -162,27 +163,13 @@ export class Minimap {
     ctx.clearRect(0, 0, size, size)
 
     const player = this.getPlayerState()
-    if (player?.parcelKey) {
-      const m = /^(-?\d+),(-?\d+)$/.exec(player.parcelKey.trim())
-      if (m) {
-        const px = parseInt(m[1]!, 10)
-        const py = parseInt(m[2]!, 10)
-        this.view = centerViewOnParcel(
-          { ...this.view, zoom: MINIMAP_ZOOM, panX: 0, panY: 0 },
-          px,
-          py
-        )
-        const localX = ((Number(player.position.x) % PARCEL_M) + PARCEL_M) % PARCEL_M
-        const localZ = ((Number(player.position.z) % PARCEL_M) + PARCEL_M) % PARCEL_M
-        const L3_CHUNK = 40
-        const fx = localX / PARCEL_M - 0.5
-        const fy = 0.5 - localZ / PARCEL_M
-        this.view = {
-          ...this.view,
-          centerTileX: this.view.centerTileX + fx / L3_CHUNK,
-          centerTileY: this.view.centerTileY + fy / L3_CHUNK
-        }
-      }
+    // Always re-center from live Genesis feet (not integer parcel only).
+    if (player?.position && Number.isFinite(player.position.x) && Number.isFinite(player.position.z)) {
+      this.view = centerViewOnGenesisMeters(
+        { ...this.view, zoom: MINIMAP_ZOOM, panX: 0, panY: 0 },
+        Number(player.position.x),
+        Number(player.position.z)
+      )
     }
 
     const tiles = visibleTiles(size, size, this.view)

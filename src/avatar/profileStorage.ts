@@ -27,6 +27,8 @@ export function profileWearableFingerprint(profile: AvatarProfile): string {
     skin: profile.skin,
     hair: profile.hair,
     eyes: profile.eyes,
+    brows: profile.browsColor,
+    facialHair: profile.facialHairColor,
     wearables: profile.wearables.map(normalizeUrn).sort(),
     forceRender: [...profile.forceRender].map(normalizeUrn).sort()
   })

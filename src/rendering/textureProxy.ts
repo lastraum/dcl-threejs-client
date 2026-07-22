@@ -67,6 +67,38 @@ export function guessImageMimeFromUrl(url: string): string | null {
   return null
 }
 
+/**
+ * Magic-byte MIME for content CDN hashes (no file extension) served as
+ * `application/octet-stream` + `X-Content-Type-Options: nosniff`.
+ * Image() rejects those; fetch + typed blob is required (Jump Zone logos, etc.).
+ */
+export function guessImageMimeFromBytes(bytes: ArrayBuffer | Uint8Array): string | null {
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+  if (u8.length < 12) return null
+  // PNG
+  if (u8[0] === 0x89 && u8[1] === 0x50 && u8[2] === 0x4e && u8[3] === 0x47) return 'image/png'
+  // JPEG
+  if (u8[0] === 0xff && u8[1] === 0xd8 && u8[2] === 0xff) return 'image/jpeg'
+  // GIF
+  if (u8[0] === 0x47 && u8[1] === 0x49 && u8[2] === 0x46 && u8[3] === 0x38) return 'image/gif'
+  // WebP: RIFF....WEBP
+  if (
+    u8[0] === 0x52 &&
+    u8[1] === 0x49 &&
+    u8[2] === 0x46 &&
+    u8[3] === 0x46 &&
+    u8[8] === 0x57 &&
+    u8[9] === 0x45 &&
+    u8[10] === 0x42 &&
+    u8[11] === 0x50
+  ) {
+    return 'image/webp'
+  }
+  // BMP
+  if (u8[0] === 0x42 && u8[1] === 0x4d) return 'image/bmp'
+  return null
+}
+
 /** Rewrite external **image** URLs to the dev/prod same-origin proxy path. */
 export function proxiedTextureUrl(url: string): string {
   if (!url || isCorsSafeTextureUrl(url) || isStreamingMediaUrl(url)) return url
@@ -102,5 +134,11 @@ export function preferFetchTextureLoad(url: string): boolean {
   if (/\.arweave\.net\//i.test(url) || /^https?:\/\/arweave\.net\//i.test(url)) return true
   // Event posters are often .webp with Content-Type: application/octet-stream — fetch + typed blob.
   if (/\.webp(\?|#|$)/i.test(url)) return true
+  // Scene content CDN: `/content/contents/<cid>` (no extension) + octet-stream + nosniff.
+  // TextureLoader/Image() refuses; fetch + magic-byte MIME is required (Jump Zone board art).
+  if (/\/content\/contents\//i.test(url)) return true
+  if (/\/contents\/(bafy|bafkre|Qm)/i.test(url)) return true
+  // Any decentraland content host (peer-ec1, etc.) may serve PNG as octet-stream.
+  if (/decentraland\.(org|zone|today)\/.*\/contents\//i.test(url)) return true
   return false
 }

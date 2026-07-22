@@ -100,21 +100,24 @@ export async function applyGltfNodeModifiersToEntity(
     for (const mesh of targets) {
       cacheOriginalAppearance(mesh)
 
+      if (mod.material) {
+        const pb = mod.material as PbMaterial
+
+        // Video screens: visible from either side (Creator Hub plane GLBs).
+        if (materialHasVideoTexture(pb)) {
+          mesh.userData.primitiveDoubleSided = true
+        }
+
+        // gltfNodeModifier: static maps may need U flip on LH-mirrored GLB UVs (event boards).
+        // Material apply also sets mesh.castShadow from Material.castShadows — path override below wins.
+        const ok = await materials.applyToMesh(mesh, pb, { gltfNodeModifier: true })
+        if (!ok) allOk = false
+      }
+
+      // Explicit GltfNodeModifiers.castShadows overrides Material (SDK path-level control).
       if (mod.castShadows !== undefined) {
         mesh.castShadow = mod.castShadows
       }
-
-      if (!mod.material) continue
-      const pb = mod.material as PbMaterial
-
-      // Video screens: visible from either side (Creator Hub plane GLBs).
-      if (materialHasVideoTexture(pb)) {
-        mesh.userData.primitiveDoubleSided = true
-      }
-
-      // gltfNodeModifier: static maps may need U flip on LH-mirrored GLB UVs (event boards).
-      const ok = await materials.applyToMesh(mesh, pb, { gltfNodeModifier: true })
-      if (!ok) allOk = false
     }
   }
 

@@ -50,9 +50,14 @@ const STABLE_WARM_MS = 150
 const ENTITY_STABLE_MS = 800
 /** Brief soft attach budget only — long soft windows + high budgets freeze select UI. */
 const SOFT_HYDRATION_MS = 2_000
-/** No attach progress + no downloads — unrecoverable tail (disabled: loading waits for full attach). */
-const ATTACH_STALL_MS = 20_000
-const ENABLE_ATTACH_STALL_BAILOUT = false
+/**
+ * No attach progress + no downloads for this long → force-ready.
+ * Custom/marketplace worlds often leave 1–2 GLBs pending forever (missing hashes /
+ * bad relative paths). Genesis cold still makes progress with inflight>0 so this
+ * only fires on a true stall tail — not mid-download.
+ */
+const ATTACH_STALL_MS = 25_000
+const ENABLE_ATTACH_STALL_BAILOUT = true
 /** Wait before treating peakGltfEntities===0 as complete when composite may still publish GltfContainer. */
 const ZERO_GLTF_FALLBACK_MS = 12_000
 /** Fast path when projection never gets GltfContainer and manifest downloads are idle. */

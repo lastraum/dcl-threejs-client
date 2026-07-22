@@ -34,10 +34,12 @@ import {
 } from '../../../avatar/vrm/osaGallery'
 import { fetchUrlBytes } from '../../../avatar/odk/parseMml'
 import { getActiveProfileAddress } from '../../../avatar/LocalAvatar'
+import { fetchProfileFaceUrl } from '../../../avatar/peerApi'
 import {
   getEquippedCustomAvatar,
   setEquippedCustomAvatar
 } from '../../../avatar/vrm/vrmEquipStorage'
+import { setExtendedAvatarColor } from '../../../avatar/extendedColors'
 import { backpackCategoryIcon } from './backpackCategoryIcons'
 import {
   createColorPicker,
@@ -85,18 +87,28 @@ import {
 import { getSessionAssetCache } from '../../../rendering/AssetCache'
 import {
   guessWearableRarity,
+  sortWearablesByGroup,
+  sortWearablesByRarity,
   wearableRarityBackground,
   wearableRarityLabel,
   WEARABLE_RARITY_COLORS
 } from '../profile/wearableThumb'
+import { annotateItemsWithCollections } from './wearableCollections'
 
 type CategoryDef = { id: WearableCategory | 'all'; label: string }
 type BackpackSubTab = 'wearables' | 'emotes' | 'vrm' | 'osa'
+type BackpackSortMode = 'name' | 'rarity' | 'collection' | 'creator'
+type GroupableItem = { collectionName?: string; creatorName?: string }
+
+function parseSortMode(value: string): BackpackSortMode {
+  return value === 'rarity' || value === 'collection' || value === 'creator' ? value : 'name'
+}
 
 const OSA_GRID_COLUMNS = 3
 const OSA_GRID_ROWS = 3
 const OSA_ITEMS_PER_PAGE = OSA_GRID_COLUMNS * OSA_GRID_ROWS
-const EMOTE_ITEMS_PER_PAGE = 12
+/** Same 3×3 board as wearables inventory. */
+const EMOTE_ITEMS_PER_PAGE = 9
 
 type BackpackViewOptions = {
   onVrmEquipChange?: () => void | Promise<void>
@@ -139,6 +151,8 @@ export class BackpackView {
   readonly root: HTMLElement
   private session: SessionIdentity
   private readonly onVrmEquipChange?: () => void | Promise<void>
+  /** Sub-header row; SettingsOverlay relocates it into the shared top bar. */
+  private subHeaderEl: HTMLElement | null = null
   private activeSubTab: BackpackSubTab = 'wearables'
   private selectedCategory: WearableCategory | 'all' = 'all'
   private currentPage = 1
@@ -152,6 +166,9 @@ export class BackpackView {
   private wearablesLoadGen = 0
   private equippedLoadGen = 0
   private searchQuery = ''
+  private sortMode: BackpackSortMode = 'name'
+  /** Active collection/creator name filter (only while sortMode is collection/creator). */
+  private groupFilter: string | null = null
   private previewZoom = PREVIEW_ZOOM_DEFAULT
   private orbitYaw = 0
   private dragPointerId: number | null = null
@@ -206,10 +223,9 @@ export class BackpackView {
 
     this.root.innerHTML = `
       <div class="backpack-view__sub-header">
-        <h2 class="backpack-view__title">Backpack</h2>
         <div class="backpack-view__sub-tabs">
           <button class="backpack-view__sub-tab is-active" data-subtab="wearables">
-            <span>👕</span> Wearables
+            <span class="backpack-view__sub-tab-ico" aria-hidden="true">${backpackCategoryIcon('upper_body')}</span> Wearables
           </button>
           <button class="backpack-view__sub-tab" data-subtab="emotes">
             <span>💃</span> Emotes
@@ -222,11 +238,17 @@ export class BackpackView {
           </button>
         </div>
         <div class="backpack-view__toolbar backpack-view__toolbar--wearables">
-          <button class="backpack-view__filter-btn">⚙ FILTER &amp; SORT</button>
+          <select class="backpack-view__sort" data-sort-select aria-label="Sort items">
+            <option value="name" selected>Sort: A–Z</option>
+            <option value="rarity">Sort: Rarest first</option>
+            <option value="collection">Sort: Collection</option>
+            <option value="creator">Sort: Creator</option>
+          </select>
+          <select class="backpack-view__sort backpack-view__group-filter" data-group-filter aria-label="Filter by collection or creator" hidden></select>
           <input class="backpack-view__search" type="text" placeholder="Search item" />
         </div>
-        <input type="file" accept=".vrm,.mml,model/vrm" class="backpack-view__vrm-file-input" hidden />
       </div>
+      <input type="file" accept=".vrm,.mml,model/vrm" class="backpack-view__vrm-file-input" hidden />
       <div class="backpack-view__columns">
         <div class="backpack-view__left">
           <div class="backpack-view__avatar-stage"></div>
@@ -319,6 +341,13 @@ export class BackpackView {
                     `<option value="${c.id}"${c.id === 'all' ? ' selected' : ''}>${c.label}</option>`
                 ).join('')}
               </select>
+              <select class="backpack-view__mobile-inv-filter" data-mobile-inv-sort aria-label="Sort items">
+                <option value="name" selected>A–Z</option>
+                <option value="rarity">Rarest</option>
+                <option value="collection">Collection</option>
+                <option value="creator">Creator</option>
+              </select>
+              <select class="backpack-view__mobile-inv-filter backpack-view__mobile-inv-filter--group" data-mobile-inv-group aria-label="Filter by collection or creator" hidden></select>
             </div>
             <div class="backpack-view__mobile-inv-grid backpack-view__grid" data-mobile-inv-grid></div>
             <div class="backpack-view__mobile-inv-pagination backpack-view__pagination" data-mobile-inv-pagination></div>
@@ -329,6 +358,7 @@ export class BackpackView {
     `
 
     this.vrmFileInput = this.root.querySelector('.backpack-view__vrm-file-input')
+    this.subHeaderEl = this.root.querySelector('.backpack-view__sub-header')
     this.buildCategories()
     void this.loadWearables()
     void this.loadEquippedWearables()
@@ -364,6 +394,21 @@ export class BackpackView {
     })
   }
 
+  /** Query root + the (possibly relocated) sub-header row. */
+  private q<T extends Element = Element>(selector: string): T | null {
+    const hit = this.root.querySelector(selector)
+    if (hit) return hit as T
+    return (this.subHeaderEl?.querySelector(selector) ?? null) as T | null
+  }
+
+  private qa<T extends Element = Element>(selector: string): T[] {
+    const out = [...this.root.querySelectorAll(selector)] as T[]
+    if (this.subHeaderEl && !this.root.contains(this.subHeaderEl)) {
+      out.push(...([...this.subHeaderEl.querySelectorAll(selector)] as T[]))
+    }
+    return out
+  }
+
   private wireMobileInventoryToolbar(): void {
     const search = this.root.querySelector('[data-mobile-inv-search]') as HTMLInputElement | null
     const filter = this.root.querySelector('[data-mobile-inv-filter]') as HTMLSelectElement | null
@@ -371,7 +416,7 @@ export class BackpackView {
       this.searchQuery = search.value
       this.currentPage = 1
       // Keep desktop search in sync when present.
-      const desktop = this.root.querySelector('.backpack-view__search') as HTMLInputElement | null
+      const desktop = this.q<HTMLInputElement>('.backpack-view__search')
       if (desktop && desktop !== search) desktop.value = search.value
       if (this.activeSubTab === 'wearables') this.renderGrid()
       if (this.activeSubTab === 'emotes') {
@@ -388,6 +433,14 @@ export class BackpackView {
       this.renderGrid()
       this.hideMobileInventoryDetail()
       this.updateCategoryEquipped()
+    })
+    const sort = this.root.querySelector('[data-mobile-inv-sort]') as HTMLSelectElement | null
+    sort?.addEventListener('change', () => {
+      this.setSortMode(parseSortMode(sort.value))
+    })
+    const group = this.root.querySelector('[data-mobile-inv-group]') as HTMLSelectElement | null
+    group?.addEventListener('change', () => {
+      this.setGroupFilter(group.value || null)
     })
   }
 
@@ -422,8 +475,10 @@ export class BackpackView {
   private syncMobileInventoryToolbar(): void {
     const search = this.root.querySelector('[data-mobile-inv-search]') as HTMLInputElement | null
     const filter = this.root.querySelector('[data-mobile-inv-filter]') as HTMLSelectElement | null
+    const sort = this.root.querySelector('[data-mobile-inv-sort]') as HTMLSelectElement | null
     if (search) search.value = this.searchQuery
     if (filter) filter.value = this.selectedCategory
+    if (sort) sort.value = this.sortMode
   }
 
   private openMobileDrawer(id: 'equipped' | 'inventory'): void {
@@ -574,6 +629,118 @@ export class BackpackView {
       if (this.activeSubTab === 'wearables') this.renderGrid()
       if (this.activeSubTab === 'emotes') this.renderEmoteGrid()
     })
+    const sort = this.root.querySelector('[data-sort-select]') as HTMLSelectElement | null
+    sort?.addEventListener('change', () => {
+      this.setSortMode(parseSortMode(sort.value))
+    })
+    const group = this.root.querySelector('[data-group-filter]') as HTMLSelectElement | null
+    group?.addEventListener('change', () => {
+      this.setGroupFilter(group.value || null)
+    })
+  }
+
+  /** Grid ordering for wearables + emotes; both desktop and mobile controls funnel here. */
+  private setSortMode(mode: BackpackSortMode): void {
+    if (mode === this.sortMode) return
+    this.sortMode = mode
+    this.groupFilter = null
+    this.currentPage = 1
+    this.emotePage = 1
+    for (const sel of this.qa<HTMLSelectElement>('[data-sort-select], [data-mobile-inv-sort]')) {
+      sel.value = mode
+    }
+    if (this.activeSubTab === 'wearables') this.renderGrid()
+    if (this.activeSubTab === 'emotes') this.renderEmoteGrid()
+  }
+
+  private setGroupFilter(value: string | null): void {
+    const next = value || null
+    if (next === this.groupFilter) return
+    this.groupFilter = next
+    this.currentPage = 1
+    this.emotePage = 1
+    if (this.activeSubTab === 'wearables') this.renderGrid()
+    if (this.activeSubTab === 'emotes') this.renderEmoteGrid()
+  }
+
+  /** Apply the active sort to an already-filtered item list (name order is load order). */
+  private sortItems<T extends { name: string; rarity: string } & GroupableItem>(items: T[]): T[] {
+    if (this.sortMode === 'rarity') return sortWearablesByRarity(items)
+    if (this.sortMode === 'collection') return sortWearablesByGroup(items, (i) => i.collectionName)
+    if (this.sortMode === 'creator') return sortWearablesByGroup(items, (i) => i.creatorName)
+    return items
+  }
+
+  /** Narrow to the collection/creator picked in the group-filter dropdown, if any. */
+  private applyGroupFilter<T extends GroupableItem>(items: T[]): T[] {
+    if (!this.groupFilter) return items
+    if (this.sortMode === 'collection') {
+      return items.filter((i) => i.collectionName === this.groupFilter)
+    }
+    if (this.sortMode === 'creator') {
+      return items.filter((i) => i.creatorName === this.groupFilter)
+    }
+    return items
+  }
+
+  /** Category + search + group filtered, sorted wearables (single source for grid + slot focus). */
+  private visibleWearables(
+    category: WearableCategory | 'all' = this.selectedCategory
+  ): BackpackWearableItem[] {
+    return this.sortItems(
+      this.applyGroupFilter(filterBackpackWearables(this.wearableItems, category, this.searchQuery))
+    )
+  }
+
+  private visibleEmotes(): BackpackEmoteItem[] {
+    return this.sortItems(this.applyGroupFilter(filterBackpackEmotes(this.emoteItems, this.searchQuery)))
+  }
+
+  /**
+   * Rebuild the collection/creator filter dropdowns (desktop + mobile). Hidden
+   * unless sorting by collection or creator; options reflect the current
+   * category + search scope with per-group counts.
+   */
+  private syncGroupControls(): void {
+    const selects = this.qa<HTMLSelectElement>('[data-group-filter], [data-mobile-inv-group]')
+    if (!selects.length) return
+    const grouping = this.sortMode === 'collection' || this.sortMode === 'creator'
+    if (!grouping || this.activeSubTab === 'vrm' || this.activeSubTab === 'osa') {
+      for (const sel of selects) sel.hidden = true
+      return
+    }
+
+    const items: GroupableItem[] =
+      this.activeSubTab === 'emotes'
+        ? filterBackpackEmotes(this.emoteItems, this.searchQuery)
+        : filterBackpackWearables(this.wearableItems, this.selectedCategory, this.searchQuery)
+    const byCollection = this.sortMode === 'collection'
+    const counts = new Map<string, number>()
+    for (const item of items) {
+      const name = byCollection ? item.collectionName : item.creatorName
+      if (name) counts.set(name, (counts.get(name) ?? 0) + 1)
+    }
+    const names = [...counts.keys()].sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: 'base' })
+    )
+    if (this.groupFilter && !counts.has(this.groupFilter)) this.groupFilter = null
+
+    const allLabel = byCollection
+      ? `All collections (${names.length})`
+      : `All creators (${names.length})`
+    const html =
+      `<option value="">${this.escapeHtml(allLabel)}</option>` +
+      names
+        .map(
+          (n) =>
+            `<option value="${this.escapeHtml(n)}">${this.escapeHtml(n)} (${counts.get(n)})</option>`
+        )
+        .join('')
+    for (const sel of selects) {
+      sel.hidden = false
+      sel.innerHTML = html
+      sel.value = this.groupFilter ?? ''
+    }
   }
 
   updateSession(session: SessionIdentity): void {
@@ -586,6 +753,28 @@ export class BackpackView {
     if (this.activeSubTab === 'wearables' || this.activeSubTab === 'emotes') {
       void this.loadAvatarModel()
     }
+  }
+
+  /** Open a sub-tab (wearables / emotes / …) from external callers (emote wheel Customize). */
+  setSubTab(tab: BackpackSubTab): void {
+    if (tab === this.activeSubTab) {
+      this.applySubTabLayout()
+      return
+    }
+    this.activeSubTab = tab
+    const subTabs = this.root.querySelectorAll('.backpack-view__sub-tab')
+    subTabs.forEach((b) => {
+      const el = b as HTMLElement
+      el.classList.toggle('is-active', el.dataset.subtab === tab)
+    })
+    // Sub-header may live in settings overlay header slot.
+    if (this.subHeaderEl && !this.root.contains(this.subHeaderEl)) {
+      this.subHeaderEl.querySelectorAll('.backpack-view__sub-tab').forEach((b) => {
+        const el = b as HTMLElement
+        el.classList.toggle('is-active', el.dataset.subtab === tab)
+      })
+    }
+    this.applySubTabLayout()
   }
 
   private wireSubTabs(): void {
@@ -663,7 +852,7 @@ export class BackpackView {
   }
 
   private applySubTabLayout(): void {
-    const wearablesToolbar = this.root.querySelector('.backpack-view__toolbar--wearables') as HTMLElement
+    const wearablesToolbar = this.q<HTMLElement>('.backpack-view__toolbar--wearables')!
     const wearablesMidTabs = this.root.querySelector('.backpack-view__middle-tabs--wearables') as HTMLElement
     const vrmMidTabs = this.root.querySelector('.backpack-view__middle-tabs--vrm') as HTMLElement
     const osaMidTabs = this.root.querySelector('.backpack-view__middle-tabs--osa') as HTMLElement
@@ -729,6 +918,7 @@ export class BackpackView {
       )
       if (gen !== this.emotesLoadGen || this.disposed) return
       this.emoteItems = items.length ? items : baseEmoteCatalogAsItems()
+      void this.annotateEmoteCollections(gen)
       this.emotesError = null
     } catch (err) {
       if (gen !== this.emotesLoadGen || this.disposed) return
@@ -820,6 +1010,10 @@ export class BackpackView {
     }
   }
 
+  /**
+   * Emotes inventory — same 3×3 board + gap + empty slots as wearables {@link renderGrid}.
+   * Uses `backpack-view__item` so spacing matches wearables exactly.
+   */
   private renderEmoteGrid(): void {
     if (this.activeSubTab !== 'emotes') return
     const gridEl = this.root.querySelector('.backpack-view__middle .backpack-view__grid') as HTMLElement | null
@@ -829,7 +1023,7 @@ export class BackpackView {
     if (!gridEl || !paginationEl) return
 
     gridEl.innerHTML = ''
-    gridEl.classList.add('backpack-view__grid--emotes')
+    gridEl.classList.remove('backpack-view__grid--emotes')
     paginationEl.innerHTML = ''
 
     if (this.emotesLoading && !this.emoteItems.length) {
@@ -837,7 +1031,8 @@ export class BackpackView {
       return
     }
 
-    const catalog = filterBackpackEmotes(this.emoteItems, this.searchQuery)
+    this.syncGroupControls()
+    const catalog = this.visibleEmotes()
     if (!catalog.length) {
       gridEl.innerHTML = `<p class="backpack-view__grid-status${
         this.emotesError ? ' backpack-view__grid-status--error' : ''
@@ -854,27 +1049,37 @@ export class BackpackView {
     for (const item of pageItems) {
       const badgeKey = this.emoteSlotBadgeKey(item.urn)
       const isSelected = !!this.selectedEmoteId && this.emoteMatches(this.selectedEmoteId, item.urn)
-      const rarity = item.rarity || 'common'
+      const rarity = item.rarity || guessWearableRarity(item.urn)
       const card = document.createElement('button')
       card.type = 'button'
       card.className =
-        'backpack-view__emote-card is-' +
+        'backpack-view__item is-' +
         rarity +
         (isSelected ? ' is-selected' : '') +
         (badgeKey ? ' is-equipped' : '')
       card.dataset.emoteId = item.urn
+      card.title = item.name
       card.style.setProperty('--wearable-rarity-bg', wearableRarityBackground(rarity))
-      card.innerHTML = `
-        <img class="backpack-view__emote-card-thumb" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" />
-        ${badgeKey ? `<span class="backpack-view__emote-card-badge">${this.escapeHtml(badgeKey)}</span>` : ''}
-        <span class="backpack-view__emote-card-name">${this.escapeHtml(item.name)}</span>
-      `
+      card.innerHTML = `<img class="backpack-view__item-img" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" />${
+        badgeKey
+          ? `<span class="backpack-view__item-amount" title="Wheel slot ${this.escapeHtml(badgeKey)}">${this.escapeHtml(badgeKey)}</span>`
+          : ''
+      }`
       card.addEventListener('click', () => {
         this.selectedEmoteId = item.urn
         // Select only — play via "Play preview" in the detail panel.
         this.renderEmotesUi()
       })
       gridEl.appendChild(card)
+    }
+
+    // Fixed 3×3 board — same empty fillers as wearables.
+    const emptySlots = EMOTE_ITEMS_PER_PAGE - pageItems.length
+    for (let i = 0; i < emptySlots; i++) {
+      const empty = document.createElement('div')
+      empty.className = 'backpack-view__item backpack-view__item--empty'
+      empty.setAttribute('aria-hidden', 'true')
+      gridEl.appendChild(empty)
     }
 
     if (totalPages > 1) {
@@ -889,7 +1094,8 @@ export class BackpackView {
       })
       paginationEl.appendChild(prev)
 
-      for (let i = 1; i <= Math.min(totalPages, 6); i++) {
+      const firstBtn = Math.max(1, Math.min(page - 2, totalPages - 4))
+      for (let i = firstBtn; i <= Math.min(totalPages, firstBtn + 4); i++) {
         const pageBtn = document.createElement('button')
         pageBtn.type = 'button'
         pageBtn.className = 'backpack-view__page-btn' + (i === page ? ' is-active' : '')
@@ -1082,14 +1288,14 @@ export class BackpackView {
     }
 
     this.selectedCategory = cat
-    let items = filterBackpackWearables(this.wearableItems, cat, this.searchQuery)
+    let items = this.visibleWearables(cat)
     let index = items.findIndex((i) => this.isSameWearableUrn(i.urn, equipped.urn))
 
     if (index < 0) {
       const invItem = this.wearableItems.find((i) => this.isSameWearableUrn(i.urn, equipped.urn))
       if (invItem && invItem.category !== cat) {
         invItem.category = cat
-        items = filterBackpackWearables(this.wearableItems, cat, this.searchQuery)
+        items = this.visibleWearables(cat)
         index = items.findIndex((i) => this.isSameWearableUrn(i.urn, equipped.urn))
       }
     }
@@ -1255,6 +1461,7 @@ export class BackpackView {
       }
       if (gen !== this.wearablesLoadGen || this.disposed) return
       this.wearableItems = items
+      void this.annotateWearableCollections(gen)
       this.wearablesError = items.length
         ? null
         : address
@@ -1270,6 +1477,43 @@ export class BackpackView {
         // Async completion must not stomp the Emotes / VRM / OSA UI.
         if (this.activeSubTab === 'wearables') this.renderGrid()
       }
+    }
+  }
+
+  /**
+   * Async collection/creator enrichment — runs after the grid first paints so
+   * the marketplace directory fetch never delays the backpack. Re-renders when
+   * names resolve (grid tooltips, group dropdown, detail pane).
+   */
+  private async annotateWearableCollections(gen: number): Promise<void> {
+    try {
+      const changed = await annotateItemsWithCollections(
+        this.wearableItems,
+        this.session.getLambdasUrl()
+      )
+      if (!changed || gen !== this.wearablesLoadGen || this.disposed) return
+      if (this.activeSubTab === 'wearables') {
+        this.renderGrid()
+        const selected = this.selectedItem
+          ? this.wearableItems.find((i) => this.isSameWearableUrn(i.urn, this.selectedItem!))
+          : null
+        if (selected) this.renderWearableDetail(selected)
+      }
+    } catch (err) {
+      console.warn('[backpack] wearable collection info failed', err)
+    }
+  }
+
+  private async annotateEmoteCollections(gen: number): Promise<void> {
+    try {
+      const changed = await annotateItemsWithCollections(
+        this.emoteItems,
+        this.session.getLambdasUrl()
+      )
+      if (!changed || gen !== this.emotesLoadGen || this.disposed) return
+      if (this.activeSubTab === 'emotes') this.renderEmoteGrid()
+    } catch (err) {
+      console.warn('[backpack] emote collection info failed', err)
     }
   }
 
@@ -1333,7 +1577,8 @@ export class BackpackView {
       return
     }
 
-    const items = filterBackpackWearables(this.wearableItems, this.selectedCategory, this.searchQuery)
+    this.syncGroupControls()
+    const items = this.visibleWearables()
     const totalPages = Math.max(1, Math.ceil(items.length / ITEMS_PER_PAGE))
     const page = Math.min(this.currentPage, totalPages)
     this.currentPage = page
@@ -1360,6 +1605,13 @@ export class BackpackView {
           (isSelected ? ' is-selected' : '') +
           (equipped ? ' is-equipped' : '')
         card.style.setProperty('--wearable-rarity-bg', wearableRarityBackground(rarity))
+        card.title = [
+          item.name,
+          item.collectionName,
+          item.creatorName ? `by ${item.creatorName}` : null
+        ]
+          .filter(Boolean)
+          .join('\n')
         card.innerHTML = `<img class="backpack-view__item-img" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" />${
           item.amount > 1
             ? `<span class="backpack-view__item-amount" title="${item.amount} in wallet">&times;${item.amount}</span>`
@@ -1462,6 +1714,10 @@ export class BackpackView {
         <h4 class="backpack-view__mobile-inv-detail-name">${this.escapeHtml(item.name)}</h4>
         <span class="backpack-view__mobile-inv-detail-category">${this.escapeHtml(category)}</span>
         <span class="backpack-view__mobile-inv-detail-rarity" style="color:${color}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
+        ${this.collectionLineHtml(item, 'backpack-view__detail-collection')}
+        ${this.descriptionHtml(item)}
+        ${this.hidesLineHtml(item)}
+        ${this.shapeFitHtml(item, fitsShape, equipped)}
         <div class="backpack-view__mobile-inv-detail-actions">
           <button type="button" class="backpack-view__mobile-inv-detail-equip" data-mobile-equip ${canEquip ? '' : 'disabled'}>
             ${equipLabel}
@@ -1480,6 +1736,7 @@ export class BackpackView {
     })
 
     this.appendColorPicker(el.querySelector('.backpack-view__mobile-inv-detail-card'), item, profile)
+    this.hydrateCreatorFace(el)
   }
 
   private renderVrmGrid(skipThumbGen = false): void {
@@ -1724,7 +1981,7 @@ export class BackpackView {
         if (!libraryEntry) return
         this.selectedVrmHash = libraryEntry.contentHash
         this.activeSubTab = 'vrm'
-        this.root.querySelectorAll('.backpack-view__sub-tab').forEach((btn) => {
+        this.qa('.backpack-view__sub-tab').forEach((btn) => {
           btn.classList.toggle('is-active', (btn as HTMLElement).dataset.subtab === 'vrm')
         })
         this.applySubTabLayout()
@@ -1876,7 +2133,7 @@ export class BackpackView {
       await this.refreshVrmLibrary()
       this.selectedVrmHash = entry.contentHash
       this.activeSubTab = 'vrm'
-      this.root.querySelectorAll('.backpack-view__sub-tab').forEach((btn) => {
+      this.qa('.backpack-view__sub-tab').forEach((btn) => {
         btn.classList.toggle('is-active', (btn as HTMLElement).dataset.subtab === 'vrm')
       })
       this.applySubTabLayout()
@@ -1904,7 +2161,7 @@ export class BackpackView {
       await this.refreshVrmLibrary()
       this.selectedVrmHash = entry.contentHash
       this.activeSubTab = 'vrm'
-      this.root.querySelectorAll('.backpack-view__sub-tab').forEach((btn) => {
+      this.qa('.backpack-view__sub-tab').forEach((btn) => {
         btn.classList.toggle('is-active', (btn as HTMLElement).dataset.subtab === 'vrm')
       })
       this.applySubTabLayout()
@@ -2001,6 +2258,58 @@ export class BackpackView {
     return isWearableEquipped(profile, item.urn)
   }
 
+  /** "Collection · by Creator" caption for detail panes; empty until annotation resolves. */
+  private collectionLineHtml(item: GroupableItem, className: string): string {
+    if (!item.collectionName && !item.creatorName) return ''
+    const creatorAddr = (item as { creatorAddress?: string }).creatorAddress?.toLowerCase()
+    const faceSlot = creatorAddr
+      ? `<span class="backpack-view__creator-face" data-creator-face="${this.escapeHtml(creatorAddr)}" aria-hidden="true"></span>`
+      : ''
+    const parts = [
+      item.collectionName ? this.escapeHtml(item.collectionName) : null,
+      item.creatorName ? `by ${faceSlot}${this.escapeHtml(item.creatorName)}` : null
+    ].filter(Boolean)
+    return `<span class="${className}">${parts.join(' · ')}</span>`
+  }
+
+  /** Fill creator pfp slots in a freshly rendered detail pane (async, globally cached). */
+  private hydrateCreatorFace(scope: ParentNode | null): void {
+    const slot = scope?.querySelector('[data-creator-face]') as HTMLElement | null
+    if (!slot) return
+    const addr = slot.getAttribute('data-creator-face') ?? ''
+    if (!/^0x[a-f0-9]{40}$/.test(addr)) return
+    void fetchProfileFaceUrl(addr).then((url) => {
+      if (this.disposed || !url || !slot.isConnected) return
+      slot.innerHTML = `<img src="${this.escapeHtml(url)}" alt="" loading="lazy" />`
+      slot.classList.add('is-loaded')
+    })
+  }
+
+  /** Creator-authored description paragraph; empty when metadata carries none. */
+  private descriptionHtml(item: BackpackWearableItem): string {
+    const desc = item.description?.trim()
+    if (!desc) return ''
+    return `<p class="backpack-view__detail-desc">${this.escapeHtml(desc)}</p>`
+  }
+
+  /** "Hides: Hat · Mask" caption from the wearable's hides/replaces lists (ADR-239). */
+  private hidesLineHtml(item: BackpackWearableItem): string {
+    const cats = [...new Set([...(item.hides ?? []), ...(item.replaces ?? [])])]
+      .map((c) => c.trim().toLowerCase())
+      .filter((c) => c && c !== item.category)
+    if (!cats.length) return ''
+    const labels = cats.map((c) =>
+      this.escapeHtml(this.categoryLabel(c as BackpackWearableItem['category']))
+    )
+    return `<span class="backpack-view__detail-hides">Hides: ${labels.join(' · ')}</span>`
+  }
+
+  /** Visible body-shape pill for items that can't be equipped on the current shape. */
+  private shapeFitHtml(item: BackpackWearableItem, fitsShape: boolean, equipped: boolean): string {
+    if (fitsShape || equipped || item.category === 'body_shape') return ''
+    return `<span class="backpack-view__detail-hidden">Not available for your body shape</span>`
+  }
+
   private renderWearableDetail(item: BackpackWearableItem): void {
     const detailEl = this.root.querySelector('.backpack-view__detail')!
     const profile = this.session.getProfile()
@@ -2030,8 +2339,12 @@ export class BackpackView {
         <h3 class="backpack-view__detail-name">${this.escapeHtml(item.name)}</h3>
         <span class="backpack-view__detail-category">${this.escapeHtml(category)}</span>
         <span class="backpack-view__detail-rarity" style="color:${color}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
+        ${this.collectionLineHtml(item, 'backpack-view__detail-collection')}
+        ${this.descriptionHtml(item)}
+        ${this.hidesLineHtml(item)}
         ${item.amount > 1 ? `<span class="backpack-view__detail-owned">&times;${item.amount} in wallet</span>` : ''}
         ${hiddenPill}
+        ${this.shapeFitHtml(item, fitsShape, equipped)}
         <div class="backpack-view__wearable-actions">
           <button type="button" class="backpack-view__wearable-equip-btn" data-action="toggle-equip" ${canEquip ? '' : 'disabled'}${!fitsShape && !equipped ? ' title="Not available for your body shape"' : ''}>
             ${equipLabel}
@@ -2051,6 +2364,7 @@ export class BackpackView {
     })
 
     this.appendColorPicker(detailEl.querySelector('.backpack-view__detail-card'), item, profile)
+    this.hydrateCreatorFace(detailEl)
   }
 
   /**
@@ -2125,12 +2439,40 @@ export class BackpackView {
   }
 
   private avatarColorValue(profile: AvatarProfile, channel: ColorChannel): string {
-    return channel === 'eyes' ? profile.eyes : channel === 'hair' ? profile.hair : profile.skin
+    switch (channel) {
+      case 'eyes':
+        return profile.eyes
+      case 'hair':
+        return profile.hair
+      case 'brows':
+        return profile.browsColor ?? profile.hair
+      case 'facial_hair':
+        return profile.facialHairColor ?? profile.hair
+      default:
+        return profile.skin
+    }
   }
 
   private async setAvatarColor(channel: ColorChannel, hex: string): Promise<void> {
     const profile = this.session.getProfile()
     if (!profile) return
+
+    // Brows / facial hair are D3JS-exclusive: persisted to localStorage (not Catalyst)
+    // and applied in-world immediately — the comms announce carries them as extension keys.
+    if (channel === 'brows' || channel === 'facial_hair') {
+      const address = this.session.getAddress() ?? profile.address
+      if (!address) return
+      setExtendedAvatarColor(address, channel === 'brows' ? 'brows' : 'facialHair', hex)
+      this.session.setProfile(
+        channel === 'brows'
+          ? { ...profile, browsColor: hex }
+          : { ...profile, facialHairColor: hex }
+      )
+      void this.loadAvatarModel()
+      void this.onVrmEquipChange?.()
+      return
+    }
+
     const next: AvatarProfile =
       channel === 'eyes'
         ? { ...profile, eyes: hex }
@@ -2553,5 +2895,7 @@ export class BackpackView {
       this.renderer.dispose()
     }
     this.previewCanvas?.remove()
+    // Sub-header may live in the overlay top bar; the slot clear also covers this.
+    this.subHeaderEl?.remove()
   }
 }

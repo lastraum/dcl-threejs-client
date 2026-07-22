@@ -69,6 +69,8 @@ export type SceneCommsFailureReason =
   | 'scene_ban'
   | 'gatekeeper'
   | 'livekit'
+  /** World /about (or /status) has no LiveKit adapter — solo play is fine. */
+  | 'comms_disabled'
 
 export type SceneCommsConnectResult = { ok: true } | { ok: false; reason: SceneCommsFailureReason }
 
@@ -83,6 +85,13 @@ export type SceneCommsTarget = {
   sceneTitle?: string
   /** Catalyst `metadata.policy.blacklist` — checked again before comms connect. */
   metadataBlacklist?: string[]
+  /**
+   * From world `/about` (+ `/status`). When false, skip LiveKit/gatekeeper join —
+   * content loads solo without chat/peers.
+   */
+  commsEnabled?: boolean
+  /** Realm about adapter hint (signed-login / livekit / archipelago). */
+  commsAdapterHint?: string
 }
 
 export type CommsPeerHandlers = {
@@ -568,6 +577,19 @@ export class CommsService {
       return { ok: false, reason: 'no_identity' }
     }
 
+    const isWorld = target.isWorld ?? !isParcelPointer(normalizePointer(target.pointer))
+    const adapterHint =
+      target.commsAdapterHint?.trim() || this.realmCommsHint || this.realm.commsAdapter || ''
+    // World server owner can omit LiveKit — still load scene content solo (no chat/peers).
+    if (isWorld && (target.commsEnabled === false || !adapterHint)) {
+      clientDebugLog.log(
+        'comms',
+        `World comms disabled by server (no LiveKit adapter) · ${target.pointer} — solo play, chat unavailable`,
+        { level: 'warn', alsoConsole: true }
+      )
+      return { ok: false, reason: 'comms_disabled' }
+    }
+
     if (!acquireWalletSessionLock(this.localAddress)) {
       clientDebugLog.log('comms', 'Blocked second client — wallet already active in another tab', {
         level: 'error'
@@ -583,7 +605,6 @@ export class CommsService {
     // acquireWalletSessionLock + LiveKit single-identity. Checking roster here
     // caused permanent remotePeers:0 after Jump In from scene landing.
     this.walletSessionLockHeld = true
-    const isWorld = target.isWorld ?? !isParcelPointer(normalizePointer(target.pointer))
 
     let sceneId = this.sceneId
     if (!sceneId) {
@@ -618,12 +639,6 @@ export class CommsService {
       `Gatekeeper access check · realm=${realmName} parcel=${parcel} scene=${sceneId.slice(0, 12)}… world=${isWorld}`,
       { level: 'info' }
     )
-    if (isWorld) {
-      console.log(
-        `[cast] gatekeeper realm=${realmName} sceneId=${sceneId.slice(0, 24)}… parcel=${parcel} (must match stream-key mint)`
-      )
-    }
-
     const access = await checkGatekeeperSceneAccess(this.identity, {
       sceneId,
       parcel,
@@ -664,8 +679,13 @@ export class CommsService {
       clientDebugLog.log('comms', `Joining world comms · pointer=${target.pointer}`, { level: 'info' })
       if (!this.worldConnected) {
         this.releaseWalletSessionIfHeld()
-        clientDebugLog.log('comms', 'World LiveKit failed to connect', { level: 'error' })
-        return { ok: false, reason: 'livekit' }
+        // Soft for custom/self-hosted: bad LiveKit (e.g. livekit.host DNS fail) must not block scene load.
+        clientDebugLog.log(
+          'comms',
+          'World LiveKit failed to connect — continuing solo (no peers/chat)',
+          { level: 'warn', alsoConsole: true }
+        )
+        return { ok: false, reason: 'comms_disabled' }
       }
 
       this.transport = 'livekit'
@@ -1113,7 +1133,6 @@ export class CommsService {
     const sessions = this.connectedLiveKitSessions()
     if (sessions.length === 0) {
       onUpdate?.(false)
-      console.log('[cast] bindRemoteCastVideoToHost: no LiveKit sessions')
       return () => {}
     }
 
@@ -1123,7 +1142,6 @@ export class CommsService {
     }
 
     let lastOk = false
-    let ticks = 0
     const tryAll = (force = false): void => {
       // Already showing video — only refresh audio props on same track (no remount).
       if (lastOk && !force && host.querySelector('video') && host.dataset.castTrackSid) {
@@ -1154,7 +1172,6 @@ export class CommsService {
         return
       }
 
-      ticks += 1
       const ordered = [...sessions].sort((a, b) => {
         const aScene = a.getRoomName().includes('scene-room') ? 0 : 1
         const bScene = b.getRoomName().includes('scene-room') ? 0 : 1
@@ -1165,14 +1182,9 @@ export class CommsService {
       })
 
       let attached = false
-      const diag: string[] = []
       for (const s of ordered) {
         const room = s.getRoom()
         if (!room) continue
-        const snap = s.getRemoteVideoPresenceSnapshot()
-        diag.push(
-          `${s.getRoomName().slice(0, 40) || '?'} remotes=${snap.remoteParticipants} video=${snap.remoteVideoPubs}`
-        )
         if (
           reattachFirstRemoteVideoToHost(room, host, {
             muted: opts?.muted,
@@ -1185,9 +1197,6 @@ export class CommsService {
         }
       }
 
-      if (ticks <= 6 || attached !== lastOk) {
-        console.log(`[cast] attach tick=${ticks} ok=${attached} · ${diag.join(' | ') || 'no rooms'}`)
-      }
       if (attached !== lastOk) {
         lastOk = attached
         onUpdate?.(attached)
@@ -1332,16 +1341,10 @@ export class CommsService {
       this.realm.isConnectedSceneRoom = ok
       if (ok) {
         this.realm.commsAdapter = adapterResult.adapter
-        console.log('[cast] scene room joined for Cast detection (late / retry)')
-        clientDebugLog.log('cast', 'Scene LiveKit joined for Cast detection', {
-          level: 'success',
-          alsoConsole: true
-        })
+        clientDebugLog.log('cast', 'Scene LiveKit joined for Cast detection', { level: 'success' })
       }
       return ok
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.warn('[cast] ensureSceneRoomForCastDetection failed', msg)
+    } catch {
       return false
     }
   }
@@ -1505,11 +1508,6 @@ export class CommsService {
     const session = this.primaryAvatarSession()
     if (!session) return
     void session.publishData(packet)
-    clientDebugLog.log(
-      'comms',
-      `RFC4 ProfileRequest → ${key.slice(0, 8)}… v${profileVersion}`,
-      { throttleMs: 1500, throttleKey: `profile-req:${key}` }
-    )
   }
 
   /** Room used for movement/profiles/chat — world for Worlds, else scene. */
@@ -1568,8 +1566,6 @@ export class CommsService {
   /** Ensure Genesis archipelago control plane is up (island LiveKit follows assignment). */
   async ensureArchipelagoConnected(): Promise<void> {
     if (this.isWorldComms()) return
-    const desc = this.archipelago.describe()
-    console.log('[archipelago] ensure', desc, 'islandLiveKit=', this.islandConnected)
     // Prefer bound scene parcel; only (0,0,0) if no scene target yet (shell friends online).
     const seed = this.presenceSeedGenesisMeters()
     this.archipelago.ensurePresenceSeed(seed ?? undefined)
@@ -1584,14 +1580,13 @@ export class CommsService {
     }
     const ok = await this.connectRealmComms()
     this.archipelago.ensurePresenceSeed(seed ?? this.presenceSeedGenesisMeters() ?? undefined)
-    console.log('[archipelago] ensure connectRealmComms ok=', ok, this.archipelago.describe())
-    clientDebugLog.log(
-      'network',
-      ok
-        ? `ensureArchipelagoConnected · started · ${this.archipelago.describe()}`
-        : 'ensureArchipelagoConnected · failed (no adapter?)',
-      { level: ok ? 'info' : 'warn', alsoConsole: true }
-    )
+    if (!ok) {
+      clientDebugLog.log('network', 'ensureArchipelagoConnected · failed (no adapter?)', {
+        level: 'warn',
+        throttleMs: 10_000,
+        throttleKey: 'archipelago-ensure-fail'
+      })
+    }
   }
 
   /** Archipelago WS status for voice diagnostics. */

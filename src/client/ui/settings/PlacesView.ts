@@ -13,6 +13,7 @@ import {
   fetchDclExplorerLiveItems,
   fetchDclGenesisPlaces,
   fetchDclWorldsWithNameFallback,
+  customServerFavoriteAsPlacesWorld,
   formatOwnerShort,
   genesisPlaceJumpRoute,
   matchesPlaceSearch,
@@ -26,6 +27,7 @@ import {
   type DclPlacesWorld,
   type ExplorerSortMode
 } from '../../../social/dclPlaces'
+import { listCustomWorldFavorites } from '../../../network/worlds/customWorldFavorites'
 
 type PlacesSubTab = 'explore' | 'recent' | 'favorites'
 type CardLayout = 'grid'
@@ -49,13 +51,11 @@ function escapeHtml(value: string): string {
 
 const OVERLAY_SHELL = `
   <header class="places-view__header">
-    <h2 class="places-view__title">Explore</h2>
     <div class="places-view__header-actions">
       <select class="places-view__sort" data-sort aria-label="Sort list">
         <option value="most_users">Most users</option>
         <option value="name_az">A–Z</option>
       </select>
-      <button type="button" class="places-view__btn places-view__btn--ghost" data-refresh>Refresh</button>
     </div>
   </header>
   <nav class="places-view__subtabs" data-subtabs role="tablist" aria-label="Places sections">
@@ -257,10 +257,8 @@ export class PlacesView {
       if (!btn) return
       const tab = btn.dataset.subtab as PlacesSubTab | undefined
       if (!tab) return
-      if (tab === 'favorites' && !this.getAuthIdentity?.()) {
-        this.setStatus('Connect your wallet to see favourites', 'error')
-        return
-      }
+      // Favourites: wallet profile favourites + local custom-server favourites.
+      // Allow guests to open the tab so custom-server entries remain visible.
       this.setSubTab(tab)
     })
 
@@ -281,8 +279,7 @@ export class PlacesView {
   private buildCategoryPills(): void {
     this.catBar.innerHTML = PLACES_SCENE_CATEGORIES.map(
       (c) => `
-        <button type="button" class="places-view__cat-pill${c.id === 'all' ? ' is-active' : ''}" data-cat="${escapeHtml(c.id)}" aria-pressed="${c.id === 'all'}">
-          <span class="places-view__cat-swatch" style="background:${c.swatch}" aria-hidden></span>
+        <button type="button" class="places-view__cat-pill${c.id === 'all' ? ' is-active' : ''}" data-cat="${escapeHtml(c.id)}" aria-pressed="${c.id === 'all'}" style="--cat-color:${c.swatch}">
           <span class="places-view__cat-label">${escapeHtml(c.label)}</span>
         </button>
       `
@@ -316,7 +313,7 @@ export class PlacesView {
     }
     const showCats = tab === 'explore'
     this.catBar.hidden = !showCats
-    this.searchInput.disabled = tab === 'favorites' && !this.getAuthIdentity?.()
+    this.searchInput.disabled = false
     void this.reloadAll()
   }
 
@@ -417,7 +414,20 @@ export class PlacesView {
       if (this.disposed || gen !== this.loadGen) return
 
       this.genesisPlaces = places
-      this.worlds = worldsList
+      // Merge localStorage custom-server favourites with Places API favourites.
+      const localCustom =
+        onlyFavorites
+          ? listCustomWorldFavorites().map((f) =>
+              customServerFavoriteAsPlacesWorld({
+                customServer: f.customServer,
+                worldName: f.worldName,
+                title: f.title
+              })
+            )
+          : []
+      this.worlds = onlyFavorites
+        ? mergeUniqueById(localCustom, worldsList)
+        : worldsList
       this.placesOffset = places.length
       this.worldsOffset = worldsList.length
       this.placesHasMore = places.length >= PLACES_PAGE_SIZE
@@ -427,9 +437,25 @@ export class PlacesView {
     } catch (e) {
       if (this.disposed || gen !== this.loadGen) return
       this.genesisPlaces = []
-      this.worlds = []
+      // Still show local custom favourites if Places API fails while on favourites.
+      this.worlds =
+        this.subTab === 'favorites'
+          ? listCustomWorldFavorites().map((f) =>
+              customServerFavoriteAsPlacesWorld({
+                customServer: f.customServer,
+                worldName: f.worldName,
+                title: f.title
+              })
+            )
+          : []
       this.error = e instanceof Error ? e.message : String(e)
-      this.setStatus(this.error, 'error')
+      // Soft-fail: local favourites alone are enough to clear the hard error banner.
+      if (this.subTab === 'favorites' && this.worlds.length > 0) {
+        this.error = null
+        this.setStatus(null)
+      } else {
+        this.setStatus(this.error, 'error')
+      }
       this.renderGrid()
     } finally {
       if (gen === this.loadGen) this.loading = false
@@ -531,7 +557,8 @@ export class PlacesView {
       emptyEl.hidden = this.loading || Boolean(this.error)
       if (!this.loading && !this.error) {
         if (this.subTab === 'favorites') {
-          emptyEl.textContent = 'No favourites yet. Heart places in-world to see them here.'
+          emptyEl.textContent =
+            'No favourites yet. Heart places in-world, or open a custom realm (?realm=host&worldName=Name) to save it here.'
         } else if (this.searchQuery.trim()) {
           emptyEl.textContent = 'No scenes or worlds match your search.'
         } else {
@@ -599,6 +626,24 @@ export class PlacesView {
 
   private visitActionLabel(): string {
     return this.onOpenScene ? 'Visit' : 'Jump In'
+  }
+
+  /** Up to three category chips in the pill colors; "+N" for the rest. Worlds carry no categories. */
+  private categoryPillsHtml(item: DclExploreItem): string {
+    if (item.kind !== 'scene') return ''
+    const cats = item.place.categories.flatMap((slug) => {
+      const def = PLACES_SCENE_CATEGORIES.find((c) => c.slug === slug)
+      return def ? [def] : []
+    })
+    if (!cats.length) return ''
+    const shown = cats.slice(0, 3)
+    const extra = cats.length - shown.length
+    return `<span class="places-view__card-cats" aria-label="Categories">${shown
+      .map(
+        (c) =>
+          `<span class="places-view__card-cat" style="--cat-color:${c.swatch}">${escapeHtml(c.label)}</span>`
+      )
+      .join('')}${extra > 0 ? `<span class="places-view__card-cat places-view__card-cat--more">+${extra}</span>` : ''}</span>`
   }
 
   private renderVisitButton(jumpKind: string, jumpId: string): string {
@@ -785,7 +830,10 @@ export class PlacesView {
           </div>
           <div class="places-view__card-footer">
             <span class="places-view__card-location" title="${escapeHtml(location)}">${escapeHtml(location)}</span>
-            <button type="button" class="places-view__jump" data-jump-route data-jump-kind="${jumpKind}" data-jump-id="${escapeHtml(jumpId)}">${actionLabel}</button>
+            <span class="places-view__card-footer-right">
+              ${this.categoryPillsHtml(item)}
+              <button type="button" class="places-view__jump" data-jump-route data-jump-kind="${jumpKind}" data-jump-id="${escapeHtml(jumpId)}">${actionLabel}</button>
+            </span>
           </div>
         </div>
       </article>

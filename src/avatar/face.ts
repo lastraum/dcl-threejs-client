@@ -141,7 +141,7 @@ export async function applyFacialFeatures(
   // full-color and render untinted (plain white multiply = identity).
   const eyesBase = isDefaultWearable(eyesWearable)
   const eyeColor = hexToColor(config.eyes)
-  const hairColor = hexToColor(config.hair)
+  const browColor = hexToColor(config.brows ?? config.hair)
   const lipColor = lipColorFromSkin(config.skin)
 
   bodyRoot.traverse((obj) => {
@@ -158,7 +158,7 @@ export async function applyFacialFeatures(
     }
     if (name.endsWith('mask_eyebrows')) {
       const [texture, mask] = eyebrows
-      if (texture) applyFeatureMaterial(obj, texture, hairColor, mask)
+      if (texture) applyFeatureMaterial(obj, texture, browColor, mask)
       else obj.visible = false
     }
     if (name.endsWith('mask_mouth')) {

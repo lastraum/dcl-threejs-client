@@ -15,7 +15,11 @@ import { CrdtEncoder } from '../../bridge/CrdtEncoder'
 import { ReservedEntitiesSync, type EntityPose } from '../../bridge/ReservedEntitiesSync'
 import { ThreeBridge } from '../../bridge/ThreeBridge'
 import { applySceneDiff } from '../../bridge/entityStoreApply'
-import type { DclTransformValues } from '../../bridge/dclTransform'
+import {
+  expandTransformAncestors,
+  sortEntitiesByTransformDepth,
+  type DclTransformValues
+} from '../../bridge/dclTransform'
 import { AvatarShapeBridge } from '../../bridge/AvatarShapeBridge'
 import { AvatarEmoteCommandBridge, type AvatarEmoteHandler } from '../../bridge/AvatarEmoteCommandBridge'
 import { BillboardBridge } from '../../bridge/BillboardBridge'
@@ -74,6 +78,7 @@ import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import { skipTheatreSceneScript } from '../../client/devFlags'
 import { mirrorSceneBundle } from '../../dev/mirrorSceneBundle'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
+import type { InputHub } from '../../input/InputHub'
 import { SceneInputRelay } from '../../input/SceneInputRelay'
 import { TriggerAreaSystem } from '../../input/TriggerAreaSystem'
 import { CameraModeAreaSystem } from '../../input/CameraModeAreaSystem'
@@ -86,6 +91,7 @@ import {
 import { MapPinStore } from '../../input/MapPinStore'
 import { RaycastSystem } from '../../input/RaycastSystem'
 import { isRaycastVerbose } from '../../input/raycastConfig'
+import { isGltfLoadingStateVerbose } from '../../bridge/gltfLoadingStateConfig'
 import type { PhysXWorld } from '../../physics/PhysXWorld'
 import { EngineApiEventBridge } from './EngineApiEventBridge'
 import {
@@ -182,6 +188,38 @@ export class SceneScriptSystem {
   }
   private readonly recordRendererLww = (componentId: number, entity: Entity, value: unknown): void => {
     this.encoder.recordLww(componentId, entity, value)
+    // SpaceRunner / ADR-215: loading-state must reach worker promptly (not only via raycast flush,
+    // which is blocked during asset hydration). Coalesce same-tick LOADING→FINISHED into one deliver.
+    if (componentId === this.readComponents.GltfContainerLoadingState.componentId) {
+      this.scheduleGltfLoadingStateFlush(entity, value)
+    }
+  }
+  /** Microtask-coalesced LWW push for GltfContainerLoadingState. */
+  private gltfLwwFlushQueued = false
+  private scheduleGltfLoadingStateFlush(entity: Entity, value: unknown): void {
+    if (isGltfLoadingStateVerbose()) {
+      const state = (value as { currentState?: number } | null)?.currentState
+      clientDebugLog.log(
+        'gltf-load',
+        `queued LWW e${entity as number} state=${state ?? '?'} pending=${this.encoder.pendingLwwPutCount}`,
+        { alsoConsole: true, throttleMs: 0 }
+      )
+    }
+    if (this.gltfLwwFlushQueued) return
+    this.gltfLwwFlushQueued = true
+    queueMicrotask(() => {
+      this.gltfLwwFlushQueued = false
+      if (!this.worker || !this.running) {
+        if (isGltfLoadingStateVerbose()) {
+          clientDebugLog.log('gltf-load', 'flush skipped — worker not ready', {
+            level: 'warn',
+            alsoConsole: true
+          })
+        }
+        return
+      }
+      this.flushRendererLwwToWorker({ reason: 'gltf-loading-state' })
+    })
   }
   private crdtOutboundLogged = false
   /** Phase C — serializes async outbound apply + inbound deliver. */
@@ -199,6 +237,9 @@ export class SceneScriptSystem {
   gltfColliders: GltfColliderExtractor | null = null
   pointerEvents: PointerEventsSystem | null = null
   sceneInputRelay: SceneInputRelay | null = null
+  /** World InputHub — single keyboard bus; this system only subscribes. */
+  private inputHub: InputHub | null = null
+  private inputSubscriberId = 'primary'
   private clearPlayerMoveKeys: (() => void) | null = null
   triggerAreas: TriggerAreaSystem | null = null
   cameraModeAreas: CameraModeAreaSystem | null = null
@@ -225,6 +266,8 @@ export class SceneScriptSystem {
   private tweenBridge: TweenBridge | null = null
   private particleBridge: ParticleSystemBridge | null = null
   private sceneUiBridge: SceneUiBridge | null = null
+  /** `#scene-ui-root` (primary) or `#pe-ui-root` (portable experience). */
+  private uiRootId: 'scene-ui-root' | 'pe-ui-root' = 'scene-ui-root'
   /**
    * Desired `#scene-ui-root` visibility from AppController play chrome.
    * Survives `prepare()` recreating the bridge (constructor always starts hidden).
@@ -265,6 +308,11 @@ export class SceneScriptSystem {
   /** World — enqueue/drain per-entity PhysX cooks (`entity` = GLB just attached; omit = drain queue). */
   private collidersCookCallback: ((entity?: Entity) => void) | null = null
   private collidersPoseCallback: ((entities: Entity[]) => void) | null = null
+  /**
+   * World — drop PhysX statics when extract maps lose an entity.
+   * Required: every syncStaticColliders call uses freezeRemoval:true, so orphans never prune.
+   */
+  private collidersRemoveCallback: ((entity: Entity) => void) | null = null
   /** Hydration / force-recook — full GltfContainer + MeshCollider walk. */
   private colliderFullWalkRequested = true
   /** EntityStore onChange — MeshCollider / GltfContainer structure or mask changes. */
@@ -355,10 +403,15 @@ export class SceneScriptSystem {
     return this.entityStore
   }
 
-  /** Gate `#scene-ui-root` — hidden during 2D landing / hydration until play chrome reveals. */
+  /** Gate scene ECS UI overlay — hidden during 2D landing / hydration until play chrome reveals. */
   setSceneUiVisible(visible: boolean): void {
     this.sceneUiDesiredVisible = visible
     this.sceneUiBridge?.setVisible(visible)
+  }
+
+  /** PE enable / late mount — rebuild interactive DOM even if layout keys match. */
+  forceSceneUiRepaint(): void {
+    this.sceneUiBridge?.forceRepaint()
   }
 
   /** Explorer [N] — refresh AvatarShape NPC overhead name tags. */
@@ -387,14 +440,19 @@ export class SceneScriptSystem {
   }
 
   /** Mirror + bridge setup — call before player spawn so reserved entities exist. */
-  prepare(scene: ResolvedScene, cache: AssetCache, host: SceneHost): void {
+  prepare(
+    scene: ResolvedScene,
+    cache: AssetCache,
+    host: SceneHost,
+    opts?: { rootName?: string; uiRootId?: string }
+  ): void {
     if (!scene.mainEntry || !scene.entityId) return
 
     this.sceneBaseParcel = scene.baseParcel
     this.platformMotionReportDumped = false
     this.reserved.initialize(scene.spawn)
     this.host = host
-    this.entityStore = new EntityStore(host.scene, 'scene-entities')
+    this.entityStore = new EntityStore(host.scene, opts?.rootName ?? 'scene-entities')
     this.entityStoreUnsub = this.entityStore.subscribe((change) => this.onEntityStoreChange(change))
     this.bridge = new ThreeBridge(scene, cache, this.entityStore, this.readComponents)
     this.avatarShapes = new AvatarShapeBridge(this.readComponents, (entity) =>
@@ -430,7 +488,11 @@ export class SceneScriptSystem {
       () => this.bridge?.getEntityNodes()
     )
     this.sceneUiBridge?.dispose()
-    this.sceneUiBridge = new SceneUiBridge(scene, () => this.host?.renderer.domElement ?? null)
+    const uiRootId = opts?.uiRootId === 'pe-ui-root' ? 'pe-ui-root' : 'scene-ui-root'
+    this.uiRootId = uiRootId
+    this.sceneUiBridge = new SceneUiBridge(scene, () => this.host?.renderer.domElement ?? null, {
+      rootId: uiRootId
+    })
     // Bridge constructor starts hidden — re-apply play-chrome desire (teleport / re-prepare).
     this.sceneUiBridge.setVisible(this.sceneUiDesiredVisible)
     if (this.pendingVirtualCanvas) {
@@ -506,6 +568,10 @@ export class SceneScriptSystem {
     this.nftShapeBridge = new NftShapeBridge(this.readComponents, cache, () => this.bridge?.getEntityNodes())
     this.collision = new CollisionSystem(host.scene)
     this.gltfColliders = new GltfColliderExtractor(host.scene)
+    // Extract drop → PhysX removeStatic (cook path uses freezeRemoval and never prunes).
+    const onExtractRemoved = (entity: Entity) => this.collidersRemoveCallback?.(entity)
+    this.collision.setOnRemoved(onExtractRemoved)
+    this.gltfColliders.setOnRemoved(onExtractRemoved)
     this.animatorBridge.setShapeMotionProbe((entity) => {
       const nodes = this.bridge?.getEntityNodes()
       if (!nodes || !this.gltfColliders) return false
@@ -558,6 +624,14 @@ export class SceneScriptSystem {
   /** Called by World — slide PhysX actor poses after colliderPoseDirty (no cook). */
   setCollidersPoseCallback(callback: ((entities: Entity[]) => void) | null): void {
     this.collidersPoseCallback = callback
+  }
+
+  /**
+   * Called by World — invalidate PhysX statics when MeshCollider / GltfContainer extracts drop.
+   * ECS destroy alone only clears extract maps; freezeRemoval keeps orphan actors forever otherwise.
+   */
+  setCollidersRemoveCallback(callback: ((entity: Entity) => void) | null): void {
+    this.collidersRemoveCallback = callback
   }
 
   /** External systems (tweens, scripts) can mark movers without ECS Transform writes. */
@@ -870,9 +944,9 @@ export class SceneScriptSystem {
         }
       } else if (change.kind === 'destroy' && change.entity !== undefined) {
         this.unlinkTransformEntity(change.entity)
-        if (this.colliderRootEntities.has(change.entity)) {
-          this.removeColliderForEntity(change.entity)
-        }
+        // Always attempt collider teardown — lobby/map entity deletes must drop PhysX
+        // even if colliderRootEntities was stale (never rebuilt after partial extract).
+        this.removeColliderForEntity(change.entity)
       }
       return
     }
@@ -910,12 +984,19 @@ export class SceneScriptSystem {
     }
 
     if (componentId === MeshCollider.componentId) {
-      // MeshCollider put may affect child colliders under this root.
-      this.markColliderStructureDirty(entity)
+      // put OR delete — after delete, has() is false so markColliderStructureDirty would no-op.
+      if (change.kind === 'delete') {
+        this.colliderStructureDirty.add(entity)
+      } else {
+        this.markColliderStructureDirty(entity)
+      }
     } else if (componentId === GltfContainer.componentId) {
       // GltfContainer put: mark THIS entity only. Descendant walk on mass spawn
       // (3k+ GltfContainers) was O(n²) and multi-second — children get their own puts.
-      if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
+      // delete: always dirty so extract maps + PhysX drop (lobby HF removes walls this way too).
+      if (change.kind === 'delete') {
+        this.colliderStructureDirty.add(entity)
+      } else if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
         this.colliderStructureDirty.add(entity)
       }
     } else if (componentId === Transform.componentId) {
@@ -1035,6 +1116,59 @@ export class SceneScriptSystem {
     }
   }
 
+  /**
+   * AOI first-frame: re-resolve NetworkParent → Transform.parent after late NetworkEntity puts.
+   * Returns how many transforms changed parent.
+   */
+  rebindAllNetworkParents(): number {
+    const n = this.projection.rebindAllNetworkParents()
+    if (n > 0) this.rebuildTransformChildrenIndex()
+    return n
+  }
+
+  /** Children with NetworkParent whose parent NetworkEntity is not on the projection yet. */
+  countUnresolvedNetworkParents(): number {
+    return this.projection.countUnresolvedNetworkParents()
+  }
+
+  /** Local parent entity for NetworkParent, or null. */
+  resolveNetworkParentLocalEntity(child: Entity): Entity | null {
+    return this.projection.resolveNetworkParentLocalEntity(child)
+  }
+
+  /**
+   * Rebuild full Transform hierarchy on EntityStore (depth-sorted) after NetworkParent rebinds.
+   * Used by AOI first-frame so matrixWorld matches the ECS parent graph.
+   */
+  forceRelinkEntityStoreHierarchy(): number {
+    if (!this.entityStore) return 0
+    this.rebindAllNetworkParents()
+    const { Transform } = this.readComponents
+    const entities = new Set<Entity>()
+    for (const [entity] of this.view.getEntitiesWith(Transform)) {
+      if (
+        entity === this.view.RootEntity ||
+        entity === this.view.PlayerEntity ||
+        entity === this.view.CameraEntity
+      ) {
+        continue
+      }
+      entities.add(entity)
+    }
+    expandTransformAncestors(entities, Transform, this.view)
+    const ordered = sortEntitiesByTransformDepth([...entities], Transform)
+    const diff = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    for (const entity of ordered) {
+      diff.set(entity, new Map([[Transform.componentId, 'put']]))
+    }
+    applySceneDiff(this.entityStore, diff, this.view, this.readComponents, [], {
+      notifySecondary: false,
+      skipSecondaryNotify: () => true
+    })
+    this.entityStore.root.updateMatrixWorld(true)
+    return ordered.length
+  }
+
   private rebuildColliderRootEntities(): void {
     this.colliderRootEntities.clear()
     for (const desc of this.collision?.getPhysicsColliders() ?? []) {
@@ -1046,12 +1180,18 @@ export class SceneScriptSystem {
   }
 
   private removeColliderForEntity(entity: Entity): void {
+    const wasRoot = this.colliderRootEntities.has(entity)
     this.colliderStructureDirty.delete(entity)
     this.colliderPoseDirty.delete(entity)
     this.colliderRootEntities.delete(entity)
     const removedMesh = this.collision?.removeColliderEntity(entity) ?? false
     const removedGltf = this.gltfColliders?.removeColliderEntity(entity) ?? false
-    if (!removedMesh && !removedGltf) return
+    // removeColliderEntity already fires onRemoved → World invalidateStaticCollider.
+    // If maps were empty but we still tracked a root (stale race), force PhysX drop.
+    if (!removedMesh && !removedGltf) {
+      if (wasRoot) this.collidersRemoveCallback?.(entity)
+      return
+    }
     if (removedMesh) this.collision?.finalizeColliderSync()
     if (removedGltf) this.gltfColliders?.finalizeColliderSync()
   }
@@ -1577,9 +1717,19 @@ export class SceneScriptSystem {
         })
         return
       }
-      clientDebugLog.log('scene', msg.message.replace(/^\[(?:log|info|warn|error|debug)\]\s*/, ''), {
-        throttleMs: 100,
-        throttleKey: 'scene-worker-log'
+      const cleaned = msg.message.replace(/^\[(?:log|info|warn|error|debug)\]\s*/, '')
+      // Load-gate / InputModifier path — always mirror to DevTools (Help panel may be off).
+      const loadGate =
+        /InputModifier after|InputModifier final|load-gate clear|GltfContainerLoadingState inject|gltf LWW/i.test(
+          cleaned
+        )
+      if (loadGate) {
+        console.info(`[sceneWorker] ${cleaned}`)
+      }
+      clientDebugLog.log('scene', cleaned, {
+        throttleMs: loadGate ? 0 : 100,
+        throttleKey: loadGate ? `scene-worker-loadgate-${cleaned.slice(0, 48)}` : 'scene-worker-log',
+        alsoConsole: loadGate
       })
       return
     }
@@ -2406,6 +2556,8 @@ export class SceneScriptSystem {
   ): void {
     const mountChanged = bridge.commitMountSet(nextSet)
     this.purgeProjectionUiOutsideWorkerMount()
+    // commitMountSet already clears layout/visual keys when the set changes — paint() is
+    // enough. forceRepaint() zeroed paintCount and thrashed the whole PE HUD (flash).
     bridge.paint(this.view)
     this.clearProjectionUiLag()
     this.logSceneUiRepaintIfEnabled()
@@ -2496,9 +2648,18 @@ export class SceneScriptSystem {
     clientDebugLog.log('scene-ui', `repaint #${this.sceneUiRepaintLogCount}`)
   }
 
-  /** Per-frame relay hook — edge injects only (see SceneInputRelay.sync). */
-  syncSceneInputRelay(tickNumber: number): void {
-    this.sceneInputRelay?.sync(tickNumber)
+  /** Attach this system as an InputHub subscriber (`primary` / `pe:…`). */
+  setInputHub(hub: InputHub | null, subscriberId?: string): void {
+    this.inputHub = hub
+    if (subscriberId) this.inputSubscriberId = subscriberId
+    this.sceneInputRelay?.setSubscriberId(this.inputSubscriberId)
+  }
+
+  /**
+   * @deprecated Hub is synced once from World.inputHub.sync — no per-system hardware sync.
+   */
+  syncSceneInputRelay(_tickNumber: number): void {
+    // no-op
   }
 
   private lastPlayerFrameId = 0
@@ -2521,15 +2682,29 @@ export class SceneScriptSystem {
     this.lastPlayerFrameId = msg.frameId
     const { InputModifier, MainCamera, Transform, VirtualCamera } = this.readComponents
     const { PlayerEntity, CameraEntity } = this.view
+    const hadBefore = InputModifier.has(PlayerEntity)
+    const frozenBefore = hadBefore
+      ? readLocomotionFromComponents(this.readComponents, PlayerEntity).disableAll
+      : false
     if (msg.inputModifierHas && msg.inputModifier !== undefined) {
       InputModifier.createOrReplace(PlayerEntity, msg.inputModifier as never)
     } else {
+      // Facade deleteFrom → projection.deleteRenderer (not the unused ECS engine store).
       InputModifier.deleteFrom(PlayerEntity)
     }
     MainCamera.createOrReplace(CameraEntity, (msg.mainCamera ?? {}) as never)
     this.foldProjectionChanges()
     const mainCam = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
     const locomotion = readLocomotionFromComponents(this.readComponents, PlayerEntity)
+    // Diagnose main/worker freeze desync (SpaceRunner map portal).
+    if (frozenBefore || locomotion.disableAll || !msg.inputModifierHas) {
+      const hadAfter = InputModifier.has(PlayerEntity)
+      console.info(
+        `[player-frame] frameId=${msg.frameId} imHas=${msg.inputModifierHas} ` +
+          `beforeFrozen=${frozenBefore} afterFrozen=${locomotion.disableAll} afterHas=${hadAfter} ` +
+          `locomotion=${canLocomote(locomotion) ? 'allowed' : 'blocked'}`
+      )
+    }
     const vcUnbound =
       mainCam?.virtualCameraEntity === undefined || mainCam?.virtualCameraEntity === null
     // MOVE CAMERA: frozen locomotion — accept vc-pose-live whether lens is bound or not.
@@ -2630,9 +2805,9 @@ export class SceneScriptSystem {
     this.bridge.getEntityNodes()?.get(entity)?.updateMatrixWorld(true)
   }
 
-  /** Drop relayed keys and publish empty snapshot to the worker. */
+  /** Drop all hub keys (global — one keyboard). Prefer World.inputHub.releaseAll. */
   flushSceneKeyboardRelay(reason: string): void {
-    this.sceneInputRelay?.releaseHeldKeys(reason)
+    this.inputHub?.releaseAll(reason) ?? this.sceneInputRelay?.releaseHeldKeys(reason)
   }
 
   /** After flight keys release / unbind — drop live-lane TS so inbound CRDT can reapply. */
@@ -2657,9 +2832,20 @@ export class SceneScriptSystem {
       if (
         change.entity === PlayerEntity &&
         change.componentId === InputModifier.componentId &&
-        change.kind === 'put'
+        (change.kind === 'put' || change.kind === 'delete')
       ) {
+        // put (freeze) or delete (scene unlock / load-gate release) — drop held WASD either way.
         this.clearPlayerMoveKeys?.()
+        if (change.kind === 'put') {
+          const loc = readLocomotionFromComponents(this.readComponents, PlayerEntity)
+          if (loc.disableAll) {
+            console.info(
+              `[projection] InputModifier PUT freeze disableAll=true on PlayerEntity (may override player-frame clear)`
+            )
+          }
+        } else {
+          console.info(`[projection] InputModifier DELETE on PlayerEntity`)
+        }
       }
 
       if (
@@ -2805,6 +2991,8 @@ export class SceneScriptSystem {
       isRelayBlocked: () => boolean
       isLocomotionBlocked?: () => boolean
       clearPlayerMoveKeys?: () => void
+      /** PE drone / freeze — republish pressed keys every frame. */
+      forceRepublishSnapshot?: () => boolean
     },
     setForcedCameraMode?: (mode: ForcedCameraMode | null) => void
   ): void {
@@ -2830,6 +3018,8 @@ export class SceneScriptSystem {
       },
       prepareRaycast: () => this.preparePointerRaycast(),
       recordAppend: this.recordRendererAppend,
+      // Primary vs PX — gate blocks hit-map pierce under the other root's dialog.
+      uiRootId: this.uiRootId,
       pickUiHit: (clientX, clientY, target) =>
         this.sceneUiBridge?.pickUiPointerHit(
           clientX,
@@ -2896,15 +3086,25 @@ export class SceneScriptSystem {
       recordLww: this.recordRendererLww
     })
     if (this.sceneInputRelay && sceneInput) {
-      this.sceneInputRelay.bind({
+      const consumer = {
         isRelayBlocked: sceneInput.isRelayBlocked,
         isLocomotionBlocked: sceneInput.isLocomotionBlocked,
         clearPlayerMoveKeys: sceneInput.clearPlayerMoveKeys,
         pumpWorkerTick: () => this.pumpSceneEngineTick(),
         onFlightKeysReleased: () => this.clearVcLiveTransformLane(),
-        publishInputSnapshot: (body) =>
-          this.publishSceneInputSnapshot({ ...body, tickNumber: this.crdtTick })
-      })
+        publishInputSnapshot: (body: import('../../player/sceneInputSnapshot').SceneInputSnapshotBody) =>
+          this.publishSceneInputSnapshot({ ...body, tickNumber: this.crdtTick }),
+        forceRepublishSnapshot: sceneInput.forceRepublishSnapshot
+      }
+      this.sceneInputRelay.setSubscriberId(this.inputSubscriberId)
+      if (this.inputHub) {
+        this.sceneInputRelay.attachToHub(this.inputHub, consumer)
+      } else {
+        console.warn(
+          `[input] bindPointerEvents without InputHub id=${this.inputSubscriberId} — keys will not reach worker`
+        )
+        this.sceneInputRelay.bind(consumer)
+      }
     }
     let triggerEntities = 0
     for (const [entity] of this.view.getEntitiesWith(this.readComponents.TriggerArea)) {
@@ -3086,13 +3286,40 @@ export class SceneScriptSystem {
     )
   }
 
-  /** Deliver renderer-owned LWW PUTs (VideoPlayer/AudioSource sync) — not blocked by pointer-await. */
-  private flushRendererLwwToWorker(): void {
+  /**
+   * Deliver renderer-owned LWW PUTs (VideoPlayer/AudioSource/GltfLoadingState).
+   * Gltf loading state uses renderer-inbound-deliver (not pointer-crdt-deliver) so we never
+   * open the pointer pause path mid-onStart — that froze SpaceRunner forever.
+   */
+  private flushRendererLwwToWorker(opts?: { reason?: string }): void {
     if (!this.worker || !this.running) return
     if (this.encoder.pendingLwwPutCount === 0) return
+    const pending = this.encoder.pendingLwwPutCount
     const lwwBytes = this.encoder.encodeLwwPutsOnly()
     if (!lwwBytes?.byteLength) return
     const copy = lwwBytes.slice()
+    const gltfPath = opts?.reason === 'gltf-loading-state'
+    if (isGltfLoadingStateVerbose() || gltfPath) {
+      const channel = gltfPath ? 'renderer-inbound-deliver' : 'pointer-crdt-deliver'
+      clientDebugLog.log(
+        'gltf-load',
+        `→ worker ${channel} (${opts?.reason ?? 'lww'}) puts≈${pending} bytes=${copy.byteLength}`,
+        { alsoConsole: true, throttleMs: 50 }
+      )
+      // Help panel may be off; always mirror critical loading-state delivers to DevTools.
+      if (gltfPath) {
+        console.info(
+          `[gltf-load] → worker ${channel} puts≈${pending} bytes=${copy.byteLength}`
+        )
+      }
+    }
+    if (gltfPath) {
+      this.worker.postMessage(
+        { type: 'renderer-inbound-deliver', data: [copy] } satisfies MainToWorker,
+        [copy.buffer]
+      )
+      return
+    }
     this.worker.postMessage(
       { type: 'pointer-crdt-deliver', data: [copy] } satisfies MainToWorker,
       [copy.buffer]
@@ -3163,7 +3390,10 @@ export class SceneScriptSystem {
 
   /** Phase 2 — one unified worker play frame per main rAF (engine.update + pollEvents). */
   tickPlayFrame(): void {
-    if (!this.running || !this.worker || this.bootPhaseActive) return
+    // Do not gate on bootPhaseActive: eval-done sets running while onStart continues, and
+    // World may notifyPlayReady before worker `ready`. Blocking ticks here deadlocks SpaceRunner
+    // (InputModifier.disableAll freeze-watch never gets dt / never sees Gltf FINISHED).
+    if (!this.running || !this.worker) return
     // CameraFollowSystem (and similar) read Transform.get(PlayerEntity) on the worker.
     // Embed poses on play-frame-tick (same message) so PE is current before engine.update —
     // separate renderer-inbound CRDT raced / dirty-skipped and left follow anchors at spawn.
@@ -3213,12 +3443,26 @@ export class SceneScriptSystem {
     } satisfies MainToWorker)
   }
 
-  /** Level keyboard snapshot — worker coalesces during pointer input session. */
+  /** Level keyboard snapshot → worker (InputHub fan-out). */
   private publishSceneInputSnapshot(
     body: import('../../player/sceneInputSnapshot').SceneInputSnapshotBody
   ): void {
-    if (!this.running || !this.worker) return
+    if (!this.running || !this.worker) {
+      clientDebugLog.log(
+        'input',
+        `snapshot drop id=${this.inputSubscriberId} running=${this.running} worker=${!!this.worker} pressed=${body.pressed.length}`,
+        { level: 'warn', alsoConsole: true, throttleMs: 500 }
+      )
+      return
+    }
     this.worker.postMessage({ type: 'scene-input-snapshot', body } satisfies MainToWorker)
+    if (body.pressed.length > 0) {
+      clientDebugLog.log(
+        'input',
+        `snapshot → ${this.inputSubscriberId} pressed=[${body.pressed.join(',')}]`,
+        { alsoConsole: true, throttleMs: 200 }
+      )
+    }
   }
 
   updatePointerEvents(tickNumber: number): void {
@@ -3327,11 +3571,14 @@ export class SceneScriptSystem {
       console.warn('[pointer]', 'pointer deliver skipped — worker missing')
       return
     }
+    const inject = this.pointerEvents?.consumeInjectPayload()
     this.pointerDeliverAwaitingAck = true
-    this.pointerHoldTicksUntilMount = true
+    // Mesh open-panel: hold ticks until mount commits.
+    // Scene DOM UI (react-ecs onMouseDown, CBD Plaza welcome splash): already mounted —
+    // holding pause freezes engine systems that animate fade alpha with real dt (nZ).
+    this.pointerHoldTicksUntilMount = inject?.sceneUi !== true
     this.armPointerDeliverWatchdog()
 
-    const inject = this.pointerEvents?.consumeInjectPayload()
     const pointerChunks = this.pointerResponseStash.filter((c) => c.byteLength > 0)
     const injectOnly = pointerChunks.length === 0
     if (inject) {
@@ -3341,13 +3588,22 @@ export class SceneScriptSystem {
         `${injectOnly ? ' (inject-only)' : ''}` +
         ` sceneUi=${inject.sceneUi ? 1 : 0}` +
         ` down=[${(inject.downEntities ?? inject.entities).join(',')}]`
+      // Always surface inject line — empty-stash inject-only is the normal UI path.
+      console.log('[pointer]', injectLine)
       this.logPointer(injectLine)
       this.worker.postMessage({
         type: 'inject-pointer-click',
         body: inject,
         injectOnly
       } satisfies MainToWorker)
+      // Welcome splash / click-to-fade: free pointer from fullscreen primary-scene scrims.
+      // Never run on PE HUD root — Neurolink / smart-wearable buttons are not welcome
+      // catchers, and force-dismiss + paint thrash caused PX UI flashing.
+      if (inject.sceneUi && this.uiRootId !== 'pe-ui-root') {
+        this.sceneUiBridge?.forceDismissAfterSceneUiClick(inject.entity as never)
+      }
     } else {
+      console.warn('[pointer]', 'inject payload missing — direct CRDT only')
       this.logPointer('inject payload missing — direct CRDT only')
     }
 
@@ -3442,10 +3698,11 @@ export class SceneScriptSystem {
     this.flushUiFrame()
     await this.reconcilePointerCollisionAfterDelivery(opts)
     this.proactiveTweenPushUntil = performance.now() + SceneScriptSystem.PROACTIVE_TWEEN_PUSH_MS
-    // Resume + deferred inbound only after pointer-deliver-done — never mid snapshot batch.
-    if (!this.projectionLagPendingUi && this.pendingUiEntities === undefined) {
-      this.resumeWorkerSceneTicksAfterMountIfHeld()
-    }
+    // Always unpause worker after pointer ack. Gating on projection UiTransform catch-up
+    // left sceneTicksPaused stuck while CBD Plaza welcome fade (and similar systems) need
+    // real dt — splash stayed opaque white forever after PET_DOWN/UP on the scrim.
+    // Mount paint lag is handled by flushUiFrame / maybeForceResumeWorkerTicksOnUiLag.
+    this.forceResumeWorkerSceneTicks(source)
     if (this.pointerFlushCoalesceRequested && this.pointerEvents?.hasPendingInput()) {
       this.pointerFlushCoalesceRequested = false
       void this.flushPendingPointerCrdt()
@@ -3726,8 +3983,13 @@ export class SceneScriptSystem {
   }
 
   /** Scene + PhysX colliders ready — throttle worker onUpdate (called from World after boot cook). */
-  notifyPlayReady(options?: { plazaScale?: boolean; engineTickIntervalMs?: number }): void {
-    this.bridgeSyncEvery = BRIDGE_ECS_SYNC_RUNTIME
+  notifyPlayReady(options?: {
+    plazaScale?: boolean
+    engineTickIntervalMs?: number
+    portableExperience?: boolean
+  }): void {
+    // PE: bind Animator every async frame (propellers / drone clips); primary keeps 12-frame stride.
+    this.bridgeSyncEvery = options?.portableExperience ? 1 : BRIDGE_ECS_SYNC_RUNTIME
     this.setSceneWorkerOnUpdatePaused(false)
     this.setSceneWorkerTicksPaused(false)
     this.avatarShapes?.setPlayReady(true)
@@ -3738,7 +4000,8 @@ export class SceneScriptSystem {
       performanceTier: this.performanceTier,
       plazaScale: options?.plazaScale,
       engineTickIntervalMs:
-        options?.engineTickIntervalMs ?? resolveEngineTickIntervalMs(this.performanceTier)
+        options?.engineTickIntervalMs ?? resolveEngineTickIntervalMs(this.performanceTier),
+      portableExperience: options?.portableExperience === true
     } satisfies MainToWorker)
   }
 
@@ -4161,11 +4424,13 @@ export class SceneScriptSystem {
 
     if (structureTouched) {
       const cooked = structureEntities.filter((entity) => !this.colliderStructureDirty.has(entity))
-      if (cooked.length >= 8) {
-        this.collidersCookCallback?.()
-      } else {
-        for (const entity of cooked) this.collidersCookCallback?.(entity)
-      }
+      // Always enqueue cooks for every entity that finished extract this pass.
+      // Previously batches ≥8 called cook with no entity → World.reconcile only validated
+      // the existing queue and never discovered new post-boot extracts (SpaceRunner map1
+      // + traps spawn ~30 GLBs → floors never cooked → fall-through).
+      for (const entity of cooked) this.collidersCookCallback?.(entity)
+      // Bulk discover any remaining unsynced descriptors (roots not in structureEntities).
+      if (cooked.length > 0) this.collidersCookCallback?.()
       this.refreshPointerTargets()
     }
 
@@ -4353,6 +4618,7 @@ export class SceneScriptSystem {
     this.pointerEvents = null
     this.sceneInputRelay?.dispose()
     this.sceneInputRelay = null
+    this.inputHub = null
     this.triggerAreas?.dispose()
     this.triggerAreas = null
     this.cameraModeAreas?.dispose()

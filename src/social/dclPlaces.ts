@@ -67,6 +67,8 @@ export type DclPlacesWorld = {
   creatorAddress: string | null
   highlighted: boolean
   isLive: boolean
+  /** Present for localStorage custom-server favourites (not Places API). */
+  customServer?: string | null
 }
 
 export type DclExploreItem =
@@ -389,8 +391,40 @@ export function genesisPlaceJumpRoute(place: DclGenesisPlace): RouteTarget {
 
 export function placesWorldJumpRoute(world: DclPlacesWorld): RouteTarget {
   const raw = world.worldName.trim() || world.id.trim()
-  const worldName = raw.includes('.') ? raw : `${raw}.dcl.eth`
-  return { kind: 'world', worldName, segment: worldName }
+  const customServer = world.customServer?.trim() || undefined
+  // Custom servers keep the world name as stored; official bare names get `.dcl.eth`.
+  const worldName =
+    customServer || raw.includes('.') ? raw : `${raw}.dcl.eth`
+  return {
+    kind: 'world',
+    worldName,
+    segment: worldName,
+    ...(customServer ? { customServer } : {})
+  }
+}
+
+/** Convert a local custom-server favourite into a Places world row for the Favourites tab. */
+export function customServerFavoriteAsPlacesWorld(input: {
+  customServer: string
+  worldName: string
+  title?: string
+}): DclPlacesWorld {
+  const worldName = input.worldName.trim()
+  const customServer = input.customServer.trim()
+  const id = `custom:${customServer.toLowerCase()}:${worldName.toLowerCase()}`
+  return {
+    id,
+    worldName,
+    title: input.title?.trim() || worldName,
+    image: null,
+    userCount: 0,
+    likePercent: null,
+    owner: null,
+    creatorAddress: null,
+    highlighted: false,
+    isLive: false,
+    customServer
+  }
 }
 
 export function placeOwnerAddress(item: DclGenesisPlace | DclPlacesWorld): string | null {

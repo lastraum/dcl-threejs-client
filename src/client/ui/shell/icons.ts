@@ -1,5 +1,7 @@
 /** Explorer-style sidebar icon SVGs (24×24 viewBox). */
 
+import { backpackCategoryIcon } from '../settings/backpackCategoryIcons'
+
 export const SIDEBAR_ICONS = {
   nearbyVoice: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <circle cx="12" cy="9" r="3.5" stroke="currentColor" stroke-width="1.5"/>
@@ -64,11 +66,8 @@ export const SIDEBAR_ICONS = {
     <circle cx="16.5" cy="9" r="2" stroke="currentColor" stroke-width="1.3"/>
     <path d="M13.5 17c.4-1.6 1.7-2.8 3.3-2.8 1 0 1.9.4 2.5 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
   </svg>`,
-  backpack: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-    <path d="M8 8V6.5A4 4 0 0 1 12 2.5 4 4 0 0 1 16 6.5V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-    <rect x="6" y="8" width="12" height="12.5" rx="2" stroke="currentColor" stroke-width="1.5"/>
-    <path d="M12 12v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-  </svg>`,
+  // Shared "accepted" backpack mark — same glyph as the backpack categories "All" row.
+  backpack: backpackCategoryIcon('all'),
   marketplace: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <path d="M7 8.5V7a5 5 0 0 1 10 0v1.5" stroke="currentColor" stroke-width="1.5"/>
     <path d="M6 8.5h12l-1 11H7L6 8.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>

@@ -5,6 +5,7 @@ import type { ContentFile } from '../dcl/content/types'
 import type { AvatarProfile, BodyShape } from './types'
 import { fetchEntityContentById } from '../network/catalyst/CatalystClient'
 import { getActiveSceneManifest } from '../rendering/DclTextureResolver'
+import { safeDecodeURIComponent } from '../util/safeDecodeURIComponent'
 
 type CatalystContent = { file: string; hash: string }
 
@@ -19,6 +20,7 @@ type CatalystEmoteEntity = {
   metadata: {
     id?: string
     name?: string
+    rarity?: string | null
     emoteDataADR74?: {
       loop?: boolean
       representations?: EmoteRepresentation[]
@@ -40,6 +42,40 @@ export type EmoteWheelSlot = {
   label: string
   /** URN or base-emote slug — passed to playback + wire encode. */
   id: string
+  /** DCL rarity (`base`, `common`, `legendary`, …) for wheel wedge tint. */
+  rarity?: string
+  /** Catalyst collections thumbnail (base-emotes + marketplace). */
+  thumbnailUrl?: string
+}
+
+/** Thumbnail for a wheel slot id (slug or full URN). */
+export function emoteWheelThumbnailUrl(emoteRef: string, peerUrl = PEER_URL): string {
+  const ref = emoteRef.trim()
+  if (!ref) return ''
+  const urn = ref.startsWith('urn:') ? ref : baseEmoteUrn(ref)
+  const asset = assetUrnFromCompleteUrn(urn)
+  return `${peerUrl.replace(/\/$/, '')}/lambdas/collections/contents/${encodeURIComponent(asset)}/thumbnail`
+}
+
+/** Free base / default wheel emotes → `base`; otherwise guess from URN keywords. */
+export function emoteRarityFromRef(emoteRef: string): string {
+  const ref = emoteRef.trim()
+  if (!ref) return 'base'
+  const slug = baseEmoteSlugFromRef(ref)
+  if (slug && (BUNDLED_EMOTE_FILES[slug] || EMOTE_LABELS[slug])) return 'base'
+  const low = ref.toLowerCase()
+  if (low.includes('base-emotes') || low.includes('off-chain:base')) return 'base'
+  if (low.includes('mythic')) return 'mythic'
+  if (low.includes('unique')) return 'unique'
+  if (low.includes('exotic')) return 'exotic'
+  if (low.includes('legendary')) return 'legendary'
+  if (low.includes('epic')) return 'epic'
+  if (low.includes('uncommon')) return 'uncommon'
+  if (low.includes('rare')) return 'rare'
+  if (low.includes('common')) return 'common'
+  // Marketplace collection items without keyword — treat as common until hydrated.
+  if (low.startsWith('urn:')) return 'common'
+  return 'base'
 }
 
 export const EMOTE_WHEEL_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'] as const
@@ -173,7 +209,7 @@ export function parseSceneEmoteUrn(ref: string): ParsedSceneEmoteUrn | null {
 }
 
 function normalizeSceneContentPath(path: string): string {
-  return decodeURIComponent(path.trim().replace(/^\.\//, '').replace(/\\/g, '/')).toLowerCase()
+  return safeDecodeURIComponent(path.trim().replace(/^\.\//, '').replace(/\\/g, '/')).toLowerCase()
 }
 
 /** Map `triggerSceneEmote({ src })` file path → scene-emote URN for local playback. */
@@ -311,7 +347,13 @@ export function buildEmoteWheelSlots(profile?: AvatarProfile | null): EmoteWheel
   return WHEEL_KEYS.map((key, index) => {
     const ref = equipped.get(index) ?? DEFAULT_WHEEL_BY_SLOT[index] ?? 'wave'
     const fallbackLabel = EMOTE_LABELS[DEFAULT_WHEEL_BY_SLOT[index] ?? 'wave']
-    return { key, label: emoteLabel(ref, fallbackLabel), id: ref }
+    return {
+      key,
+      label: emoteLabel(ref, fallbackLabel),
+      id: ref,
+      rarity: emoteRarityFromRef(ref),
+      thumbnailUrl: emoteWheelThumbnailUrl(ref)
+    }
   })
 }
 
@@ -345,13 +387,64 @@ export function buildEmoteBackpackWheelSlots(
   return WHEEL_KEYS.map((key, index) => {
     const ref = equipped.get(index)
     if (!ref) {
-      return { key, index, id: '', label: 'Empty', empty: true }
+      return {
+        key,
+        index,
+        id: '',
+        label: 'Empty',
+        empty: true,
+        rarity: 'base',
+        thumbnailUrl: ''
+      }
     }
-    return { key, index, id: ref, label: emoteLabel(ref), empty: false }
+    return {
+      key,
+      index,
+      id: ref,
+      label: emoteLabel(ref),
+      empty: false,
+      rarity: emoteRarityFromRef(ref),
+      thumbnailUrl: emoteWheelThumbnailUrl(ref)
+    }
   })
 }
 
-/** Resolve display names for profile-owned emotes (Catalyst metadata). */
+const emoteMetaCache = new Map<string, Promise<{ name: string | null; rarity: string | null }>>()
+
+async function fetchEmoteEntityMeta(
+  emoteRef: string,
+  peerUrl: string
+): Promise<{ name: string | null; rarity: string | null }> {
+  const cacheKey = `${peerUrl}|meta|${emoteRef.toLowerCase()}`
+  let pending = emoteMetaCache.get(cacheKey)
+  if (!pending) {
+    pending = (async () => {
+      try {
+        const pointer = catalystPointerForEmoteUrn(emoteRef)
+        const res = await fetch(`${peerUrl.replace(/\/$/, '')}/content/entities/active`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pointers: [pointer] })
+        })
+        if (!res.ok) return { name: null, rarity: null }
+        const entities = (await res.json()) as CatalystEmoteEntity[]
+        const meta = entities[0]?.metadata
+        const name = meta?.name?.trim() || null
+        const rarity =
+          typeof meta?.rarity === 'string' && meta.rarity.trim()
+            ? meta.rarity.trim().toLowerCase()
+            : null
+        return { name, rarity }
+      } catch {
+        return { name: null, rarity: null }
+      }
+    })()
+    emoteMetaCache.set(cacheKey, pending)
+  }
+  return pending
+}
+
+/** Resolve display names + rarity for profile-owned emotes (Catalyst metadata). */
 export async function hydrateEmoteWheelSlots(
   profile?: AvatarProfile | null,
   peerUrl = PEER_URL
@@ -361,12 +454,33 @@ export async function hydrateEmoteWheelSlots(
 
   return Promise.all(
     slots.map(async (slot) => {
-      if (!slot.id.startsWith('urn:')) return slot
+      const thumb = slot.thumbnailUrl || emoteWheelThumbnailUrl(slot.id, peerUrl)
+      if (!slot.id.startsWith('urn:')) {
+        return {
+          ...slot,
+          rarity: slot.rarity ?? emoteRarityFromRef(slot.id),
+          thumbnailUrl: thumb
+        }
+      }
       const baseSlug = baseEmoteSlugFromRef(slot.id)
-      if (baseSlug && BUNDLED_EMOTE_FILES[baseSlug]) return slot
+      if (baseSlug && BUNDLED_EMOTE_FILES[baseSlug]) {
+        return { ...slot, rarity: 'base', thumbnailUrl: thumb }
+      }
 
-      const label = await resolveEmoteDisplayName(slot.id, bodyShape, peerUrl)
-      return label ? { ...slot, label } : slot
+      const meta = await fetchEmoteEntityMeta(slot.id, peerUrl)
+      // Keep label cache path for callers that only need names.
+      if (meta.name) {
+        const labelKey = `${peerUrl}|${bodyShape}|label|${slot.id.toLowerCase()}`
+        if (!emoteLabelCache.has(labelKey)) {
+          emoteLabelCache.set(labelKey, Promise.resolve(meta.name))
+        }
+      }
+      return {
+        ...slot,
+        label: meta.name || slot.label,
+        rarity: meta.rarity || slot.rarity || emoteRarityFromRef(slot.id),
+        thumbnailUrl: thumb
+      }
     })
   )
 }
@@ -386,16 +500,8 @@ export async function resolveEmoteDisplayName(
   let pending = emoteLabelCache.get(cacheKey)
   if (!pending) {
     pending = (async () => {
-      const pointer = catalystPointerForEmoteUrn(ref)
-      const res = await fetch(`${peerUrl.replace(/\/$/, '')}/content/entities/active`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pointers: [pointer] })
-      })
-      if (!res.ok) return null
-      const entities = (await res.json()) as CatalystEmoteEntity[]
-      const name = entities[0]?.metadata?.name?.trim()
-      return name || null
+      const meta = await fetchEmoteEntityMeta(ref, peerUrl)
+      return meta.name
     })()
     emoteLabelCache.set(cacheKey, pending)
   }

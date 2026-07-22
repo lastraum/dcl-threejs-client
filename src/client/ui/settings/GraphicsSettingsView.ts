@@ -9,6 +9,9 @@ import {
   MAX_SCENE_LIGHTS_CAP,
   RESOLUTION_SCALE_MAX,
   RESOLUTION_SCALE_MIN,
+  SCENE_LOAD_RADIUS_DEFAULT_M,
+  SCENE_LOAD_RADIUS_MAX_M,
+  SCENE_LOAD_RADIUS_MIN_M,
   renderQuality,
   type FpsLimitOption,
   type GraphicsPreset,
@@ -186,9 +189,30 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
       ]
     },
     {
+      title: 'Toon shaders',
+      items: [
+        {
+          type: 'toggle',
+          label: 'Avatar toon shading',
+          defaultOn: rq.avatarToonEnabled,
+          onChange: (on) => renderQuality.setAvatarToonEnabled(on)
+        }
+        // Room for future knobs: band thresholds, albedo mix, matte clamp, etc.
+      ]
+    },
+    {
       title: 'Landscape and Foliage',
       items: [
-        { type: 'slider', label: 'Scene Distance', min: 0, max: 200, defaultValue: 100, stub: true },
+        {
+          type: 'slider',
+          // Outer AOI: main.composite GLBs + roads + empty. Inner ~48m warms scripts (fixed).
+          label: 'Scene Distance',
+          min: SCENE_LOAD_RADIUS_MIN_M,
+          max: SCENE_LOAD_RADIUS_MAX_M,
+          defaultValue: rq.sceneLoadRadiusM ?? SCENE_LOAD_RADIUS_DEFAULT_M,
+          suffix: ' m',
+          onChange: (v) => renderQuality.setSceneLoadRadiusM(v)
+        },
         { type: 'slider', label: 'Landscape Distance', min: 0, max: 10000, defaultValue: 7000, stub: true }
       ]
     },
@@ -376,6 +400,9 @@ export class GraphicsSettingsView {
           case 'Bloom':
             if (control.kind === 'toggle') control.input.checked = opts.bloomEnabled
             break
+          case 'Avatar toon shading':
+            if (control.kind === 'toggle') control.input.checked = opts.avatarToonEnabled
+            break
           case 'Enable Scene Lights':
             if (control.kind === 'toggle') control.input.checked = opts.sceneLightsEnabled
             break
@@ -388,6 +415,13 @@ export class GraphicsSettingsView {
             break
           case 'Quality':
             if (control.kind === 'dropdown') control.select.value = shadowLabel(opts.shadowQuality)
+            break
+          case 'Scene Distance':
+            if (control.kind === 'slider') {
+              control.input.value = String(opts.sceneLoadRadiusM)
+              control.label.textContent = `${opts.sceneLoadRadiusM}${control.suffix ?? ''}`
+              this.setSliderPct(control.input, control.min, control.max)
+            }
             break
         }
       }

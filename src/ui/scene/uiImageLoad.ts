@@ -46,7 +46,13 @@ export function assignUiImageSrc(img: HTMLImageElement, url: string): void {
         return res.blob()
       })
       .then((blob) => {
-        if (!blob.type.startsWith('image/')) throw new Error(`not image: ${blob.type}`)
+        // Catalyst often serves PNGs as application/octet-stream — still displayable.
+        const looksImage =
+          blob.type.startsWith('image/') ||
+          blob.type === '' ||
+          blob.type === 'application/octet-stream' ||
+          /\.(png|jpe?g|gif|webp|svg)(\?|#|$)/i.test(key)
+        if (!looksImage) throw new Error(`not image: ${blob.type}`)
         const blobUrl = URL.createObjectURL(blob)
         blobByUrl.set(key, blobUrl)
         img.src = blobUrl

@@ -19,6 +19,17 @@ import {
   sceneWorldBounds,
   type PlayerWalkBounds
 } from '../player/SceneBounds'
+import { genesisCityWalkBounds } from '../player/genesisCityBounds'
+import { AoiVisualLayer } from '../dcl/aoi/AoiVisualLayer'
+import { ScenePromoteController } from '../dcl/aoi/ScenePromoteController'
+import type { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
+import { PeMainThreadMirror } from '../dcl/multiScene/PeMainThreadMirror'
+import {
+  resolvePortableExperiencesPolicy,
+  type PortableExperiencesPolicy
+} from '../dcl/multiScene/resolvePortableExperiences'
+import { renderQuality } from '../rendering/RenderQualitySettings'
+import type { PerformanceTier } from '../shim/types'
 import { LandscapeSystem } from './systems/LandscapeSystem'
 import { SceneScriptSystem } from './systems/SceneScriptSystem'
 import { EnvironmentSystem } from '../environment/EnvironmentSystem'
@@ -76,7 +87,6 @@ import { feetDclToPlayerEntityPosition } from '../player/dclPlayerEntity'
 import type { PhysicsColliderDesc } from '../physics/PhysXWorld'
 
 import { openExternalUrl } from '../player/openExternalUrl'
-import { confirmChangeRealm, parseChangeRealmTarget } from '../player/changeRealm'
 import { copyToClipboard } from '../player/copyToClipboard'
 import { openNftDialog } from '../player/openNftDialog'
 import { parseTeleportParcel } from '../player/teleportTo'
@@ -96,7 +106,9 @@ import {
 } from '../physics/geometryToPxMesh'
 import { clearPrimedPhysxCookStreams } from '../physics/physxCookByteCache'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
+import { isTextInputFocused } from '../client/ui/textInputFocus'
 import { skipRemoteAvatars } from '../client/devFlags'
+import { InputHub } from '../input/InputHub'
 import { initMainThreadPerfFromUrl, recordMainThreadPerf } from '../debug/MainThreadPerf'
 import { VrmPeerSync } from '../avatar/vrm/VrmPeerSync'
 import { clearVrmRamCache } from '../avatar/vrm/vrmRamCache'
@@ -123,7 +135,8 @@ type SceneWater = {
 export class World {
   readonly assets = getSessionAssetCache()
   readonly landscape = new LandscapeSystem()
-  readonly sceneScript = new SceneScriptSystem()
+  /** Mutable so promote handoff can adopt a live secondary worker as primary. */
+  sceneScript = new SceneScriptSystem()
   readonly physics = new PhysXWorld()
   readonly session = new SessionIdentity()
   /** May be replaced by landing handoff (`adoptComms`) — keep LiveKit without reconnect. */
@@ -192,6 +205,42 @@ export class World {
     { messageId: string; originalText: string; shownAt: number }
   >()
   private playerWalkBounds: PlayerWalkBounds | null = null
+  /** Phase A2 — coords AOI blank ground + composite secondary visuals (tertiary). */
+  private readonly aoiVisual = new AoiVisualLayer()
+  /**
+   * Multi-scene runtime (secondary live workers + PE ticks). Owned by AppController
+   * so PE preferences survive World rebuild on /goto.
+   */
+  private multiScene: MultiSceneRuntime | null = null
+  private readonly peMirror = new PeMainThreadMirror()
+  /**
+   * Single keyboard bus — primary scene + PE workers subscribe; hardware owned once.
+   * Sync once per play frame (not per SceneScriptSystem).
+   */
+  readonly inputHub = new InputHub()
+  private performanceTier: PerformanceTier = 'high'
+  private loadedPrimaryScene: ResolvedScene | null = null
+  /**
+   * Multi-scene Phase B — stand-on-parcel promotes that scene to primary
+   * (full scripts). Wired to navigateHandler after load.
+   */
+  private promoteNavigate:
+    | ((target: Extract<RouteTarget, { kind: 'coords' }>, reason: string) => void)
+    | null = null
+  private promoteSoftRoute: ((x: number, y: number) => void) | null = null
+  private promotePrefetch: ((x: number, y: number) => void) | null = null
+  private readonly scenePromote = new ScenePromoteController({
+    onPromote: (target, reason) => {
+      console.info(`[World] promote primary → ${target.x},${target.y} (${reason})`)
+      if (this.promoteNavigate) this.promoteNavigate(target, reason)
+      else this.navigateHandler?.(target)
+    },
+    onSoftRoute: (x, y) => this.promoteSoftRoute?.(x, y),
+    // Inner radius: warm scripts/manifests. Outer Scene Distance = composite GLBs (AoiVisualLayer).
+    onPrefetch: (x, y) => this.promotePrefetch?.(x, y),
+    dwellMs: 320,
+    cooldownMs: 2_000
+  })
   private ezTreeGrass: EzTreeGrassFieldHandle | null = null
   private ezTreeGrassElapsed = 0
   private desertAtmosphere: import('../environment/DesertAtmosphere').DesertAtmosphere | null = null
@@ -219,6 +268,7 @@ export class World {
   constructor(container: HTMLElement) {
     this.host = new SceneHost(container)
     const performanceTier = detectPerformanceTier(this.host.renderer.getContext())
+    this.performanceTier = performanceTier
     applyClientPerformanceDefaults(this.host.renderer, performanceTier)
     this.sceneScript.setPerformanceTier(performanceTier)
     if (performanceTier !== 'high') {
@@ -281,13 +331,14 @@ export class World {
     const address = this.session.getAddress()
     const identity = this.session.getAuthIdentity()
     if (!address || !identity) return
+    const chatOk = scene.browserChatEnabled && scene.realm.commsEnabled !== false
     void this.social.attachSceneComms({
       comms: this.comms,
       sceneTab: {
         key: scene.commsPointer,
         label: scene.title || scene.commsPointer,
         pointer: scene.commsPointer,
-        browserChatEnabled: scene.browserChatEnabled
+        browserChatEnabled: chatOk
       },
       contentUrl: scene.realm.contentUrl
     })
@@ -474,7 +525,10 @@ export class World {
       parcels: scene.parcels,
       isWorld,
       sceneTitle: scene.title,
-      metadataBlacklist: blacklistFromMetadata(scene.metadata)
+      metadataBlacklist: blacklistFromMetadata(scene.metadata),
+      // Worlds: optional LiveKit — false when /about has no adapter (content-only server).
+      commsEnabled: scene.realm.commsEnabled,
+      commsAdapterHint: scene.realm.commsAdapterHint
     }
   }
 
@@ -633,12 +687,38 @@ export class World {
 
     onProgress?.('Initialising physics…')
     await this.physics.init()
+    // Coords + Scene Distance > 0: open Genesis walk (infinite ground plane) — no parcel walls.
+    const openCityWalk =
+      scene.source.kind === 'coords' && renderQuality.getSceneLoadRadiusM() > 0
     this.physics.syncLandscapeGround(terrain.landscapeParcelKeys, scene.baseParcel, scene.parcels, {
-      perimeterWalls: !openIslandShore && !openOcean
+      perimeterWalls: !openIslandShore && !openOcean && !openCityWalk
     })
     this.playerWalkBounds = openIslandShore
       ? islandCircularWalkBounds(scene.parcels, scene.baseParcel, landscapeProfile.borderPadding)
-      : { mode: 'rect', bounds: sceneWorldBounds(scene.parcels, scene.baseParcel) }
+      : openCityWalk
+        ? genesisCityWalkBounds(scene.baseParcel)
+        : { mode: 'rect', bounds: sceneWorldBounds(scene.parcels, scene.baseParcel) }
+
+    this.loadedPrimaryScene = scene
+    this.aoiVisual.bind({
+      scene,
+      cache: this.assets,
+      hostScene: this.host.scene,
+      syncRoadColliders: (descs) => {
+        const result = this.physics.syncAoiRoadColliders(descs)
+        if (result.geometryChanged) this.physics.warmStaticScene()
+      },
+      clearRoadColliders: () => this.physics.clearAoiRoadColliders(),
+      onSecondaryCandidates: (candidates) => {
+        this.multiScene?.reconcileSecondaries(candidates)
+      }
+    })
+    this.scenePromote.bind(scene)
+    if (openCityWalk) {
+      console.info(
+        `[aoi] Genesis walk — outer composites=${renderQuality.getSceneLoadRadiusM()}m · inner script-warm via promote · base=${scene.baseParcel}`
+      )
+    }
 
     if (scene.mainEntry && scene.entityId) {
       this.resetColliderBootState()
@@ -660,6 +740,7 @@ export class World {
       )
       this.sceneScript.setCollidersCookCallback((entity) => this.onColliderCookRequest(entity))
       this.sceneScript.setCollidersPoseCallback((entities) => this.applyColliderPoseSlides(entities))
+      this.sceneScript.setCollidersRemoveCallback((entity) => this.onColliderEntityRemoved(entity))
       this.sceneScript.setRealmInfoProvider(() => this.comms.getRealmInfo())
       this.sceneScript.setCommsHandler({
         setCommunicationsAdapter: async (body) => ({
@@ -702,6 +783,7 @@ export class World {
       this.sceneScript.setOpenExternalUrlHandler((request) => openExternalUrl(request))
       this.sceneScript.setOpenNftDialogHandler((request) => openNftDialog(request))
       this.sceneScript.setCopyToClipboardHandler((request) => copyToClipboard(request))
+      // teleportTo = global parcel coords (Genesis) → navigate; not scene-local movePlayerTo.
       this.sceneScript.setTeleportToHandler((request) => {
         const parcel = parseTeleportParcel(request)
         if (!parcel) return false
@@ -713,12 +795,10 @@ export class World {
         })
         return true
       })
-      this.sceneScript.setChangeRealmHandler(async (request) => {
-        if (!(await confirmChangeRealm(request))) return false
-        const target = parseChangeRealmTarget(request.realm)
-        if (!target) return false
-        this.navigateHandler?.(target)
-        return true
+      // changeRealm is deprecated — keep handler for SDK compat but never navigate.
+      this.sceneScript.setChangeRealmHandler(() => {
+        console.info('[World] changeRealm ignored (deprecated)')
+        return false
       })
     }
 
@@ -875,6 +955,11 @@ export class World {
       await this.vrmPeerSync.onSceneConnected()
       return
     }
+    if (connectResult.reason === 'comms_disabled') {
+      // Content-only or broken LiveKit — play solo without chat/peers.
+      onProgress?.('Multiplayer unavailable — continuing solo')
+      return
+    }
     if (connectResult.reason === 'duplicate_wallet') {
       onProgress?.('This wallet is already connected in another session — close the other client first')
       return
@@ -883,7 +968,11 @@ export class World {
       onProgress?.('Access denied — you cannot join comms in this place')
       return
     }
-    onProgress?.('Comms connection failed — check console')
+    if (connectResult.reason === 'livekit') {
+      onProgress?.('Multiplayer unavailable — continuing solo')
+      return
+    }
+    onProgress?.('Comms connection failed — continuing without multiplayer')
   }
 
   /**
@@ -931,17 +1020,24 @@ export class World {
         }
         if (connectResult.ok) {
           onProgress?.('Connected to DCL comms')
+        } else if (
+          connectResult.reason === 'comms_disabled' ||
+          connectResult.reason === 'livekit'
+        ) {
+          onProgress?.('Multiplayer unavailable — continuing solo')
         } else if (connectResult.reason === 'duplicate_wallet') {
           onProgress?.('This wallet is already connected in another session — close the other client first')
         } else if (connectResult.reason === 'scene_ban') {
           onProgress?.('Access denied — you cannot join comms in this place')
         } else {
-          onProgress?.('Comms connection failed — check console')
+          onProgress?.('Comms connection failed — continuing without multiplayer')
         }
       }
 
       onProgress?.('Loading social services…')
       const profile = this.session.getProfile()
+      // No LiveKit on this world → disable scene chat tab even if scene.json allows browserChat.
+      const chatOk = scene.browserChatEnabled && scene.realm.commsEnabled !== false
       await this.social.init({
         address,
         identity,
@@ -950,7 +1046,7 @@ export class World {
           key: scene.commsPointer,
           label: scene.title || scene.commsPointer,
           pointer: scene.commsPointer,
-          browserChatEnabled: scene.browserChatEnabled
+          browserChatEnabled: chatOk
         },
         comms: this.comms,
         contentUrl: scene.realm.contentUrl
@@ -1028,6 +1124,8 @@ export class World {
     this.sceneScript.refreshAllInstancedTransforms()
     this.sceneScript.preparePointerRaycast()
     this.sceneScript.refreshPointerTargets()
+    this.startInputHub()
+    this.sceneScript.setInputHub(this.inputHub, 'primary')
     this.sceneScript.bindPointerEvents(
       () => this.player?.getWorldPosition() ?? null,
       () => this.player?.isPointerBlocked() ?? true,
@@ -1206,10 +1304,9 @@ export class World {
       onSyncFrame: (delta) => {
         startFrame++
         if (!this.editorPreviewMode) {
-          // Character select / menus bind VirtualCamera — skip FFT ocean GPGPU while VC is live
+          // Character select / menus / PE drone bind VirtualCamera — skip FFT ocean GPGPU while VC is live
           // so main-thread budget goes to UI + late GLB attach (Explorer is not paying this tax).
-          const vcActive = this.sceneScript.getVirtualCameraBridge()?.isActive() === true
-          if (!vcActive) {
+          if (!this.isAnyVirtualCameraActive()) {
             this.ocean?.update(delta, this.host.camera)
           }
           if (this.ezTreeGrass) {
@@ -1233,6 +1330,9 @@ export class World {
           // Motion first — PE pose + TriggerArea enter must beat worker onUpdate.
           const platformT0 = performance.now()
           this.syncPlayerMotionFrame(delta, startFrame)
+          // PE owns VirtualCamera / MainCamera (drone, vehicle) — drive lens from PE bridge,
+          // never from a MainCamera entity id mirrored onto empty primary ECS.
+          this.selectActiveVirtualCameraBridge()
           const platformMs = performance.now() - platformT0
           const playerT0 = performance.now()
           this.player.update(delta)
@@ -1246,13 +1346,29 @@ export class World {
             this.lastVoluntaryEmoteAllowed = emoteAllowed
             this.onVoluntaryEmoteAllowedChange?.(emoteAllowed)
           }
-          this.sceneScript.syncClientEntities(this.player.getEntityPose(), this.player.getCameraEntityPose())
+          const playerPose = this.player.getEntityPose()
+          const cameraPose = this.player.getCameraEntityPose()
+          // Keyboard bus first — PE/primary onUpdate this frame sees isPressed for drone WASD.
+          this.inputHub.sync(startFrame)
+          this.sceneScript.syncClientEntities(playerPose, cameraPose)
           // Detect enter/exit with post-move CCT feet, then flush PE+TriggerAreaResult to worker.
           this.sceneScript.updateTriggerAreas()
           // Worker onUpdate with current PE (bounce parasols read Transform.get(PlayerEntity)).
           this.sceneScript.tickPlayFrame()
+          // Portable experiences + live secondaries (primary already ticked — primary wins intents).
+          this.multiScene?.tickSync(playerPose, cameraPose, startFrame)
+          // PE tween/billboard/attach motion + reserved-parent meshes (same as primary pump).
+          this.pumpPeMotionBridges(delta, startFrame)
+          // After PE player-frame may have bound VC this tick — re-select before next freecam frame.
+          this.selectActiveVirtualCameraBridge()
+          // Mirror PE player-affecting state onto primary (InputModifier, forces) — not MainCamera ids.
+          this.applyPeMainThreadMirror()
 
           const pos = this.player.getPosition()
+          // AOI tertiary visuals — scene-local DCL feet (throttled inside layer).
+          this.aoiVisual.update(pos.x, pos.z)
+          // Multi-scene: dwell on foreign parcel → promote that scene to primary.
+          this.scenePromote.tick(pos.x, pos.z)
           const yaw = this.player.getNetworkYaw()
           const isEmoting = this.player.isProfileEmoteActive()
           const locomotion = this.player.getLocomotionWireState()
@@ -1303,7 +1419,7 @@ export class World {
           this.sceneScript.preparePointerRaycast()
           this.sceneScript.updateRaycasts()
           this.sceneScript.updatePointerEvents(startFrame)
-          this.sceneScript.syncSceneInputRelay(startFrame)
+          // Hub already synced before scene/PE ticks; late edges still publish on keydown.
         }
         if (!this.editorPreviewMode) {
           // Campfire sprite UV animation — sync frame (tiny tracked set, self-prunes static planes).
@@ -1346,6 +1462,26 @@ export class World {
 
         const t2 = performance.now()
         await this.sceneScript.syncAsyncBridges()
+        // PE + secondary async projection + multi-scene colliders into PhysX.
+        if (this.multiScene) {
+          const { colliders, invalidatePhysIds } = await this.multiScene.tickAsync()
+          for (const id of invalidatePhysIds) {
+            this.physics.invalidateStaticCollider(id)
+          }
+          if (colliders.length && this.collidersLoadingComplete && !this.deferPhysxCooks) {
+            try {
+              const result = this.physics.syncStaticColliders(colliders, {
+                cookBudget: Math.min(16, colliders.length),
+                freezeRemoval: true,
+                forceRecookOnPoseChange: false,
+                geometryCache: true
+              })
+              if (result.geometryChanged) this.scheduleStaticGeometryWarm()
+            } catch (err) {
+              console.warn('[multi-scene] PE/secondary collider sync failed', err)
+            }
+          }
+        }
         const bridgesMs = performance.now() - t2
         const totalMs = performance.now() - t0
         // Diagnose multi-second async frames (was ~3300ms = cold GLB parse await / 3k pending walk).
@@ -1953,9 +2089,69 @@ export class World {
     if (ecsEntity !== undefined) {
       this.enqueueColliderCook(ecsEntity)
     } else {
-      this.reconcileColliderCookQueue()
+      // Empty callback = discover every unsynced extract (mass spawn / post-structure).
+      // Must not use validate-only reconcile — that never enqueues new post-boot actors.
+      this.discoverUnsyncedColliderCooks()
     }
     this.maybeBeginRuntimeColliderBurst(queueBefore)
+  }
+
+  /**
+   * Enqueue every extracted descriptor that is not live+synced in PhysX.
+   * Used after structure extracts (map spawns) and when cook is requested without an entity.
+   */
+  private discoverUnsyncedColliderCooks(): void {
+    if (this.deferPhysxCooks) {
+      this.pendingColliderCooks = this.colliderCookQueue.size
+      return
+    }
+    this.sceneScript.flushSceneGraphMatrices()
+    let added = 0
+    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      if (this.physics.isColliderSynced(desc)) {
+        this.colliderCookQueue.delete(desc.entity)
+        continue
+      }
+      if (!this.colliderCookQueue.has(desc.entity)) added++
+      this.colliderCookQueue.add(desc.entity)
+    }
+    // Drop queue entries whose extract is gone (entity destroy / orphan remove).
+    for (const physId of [...this.colliderCookQueue]) {
+      if (!this.sceneScript.getPhysicsColliderDesc(physId)) {
+        this.colliderCookQueue.delete(physId)
+      }
+    }
+    this.pendingColliderCooks = this.colliderCookQueue.size
+    if (added > 0) {
+      console.info(
+        `[phys] cook discover — +${added} unsynced (queue=${this.colliderCookQueue.size} ` +
+          `static=${this.physics.staticColliderCount} gltfActors=${this.physics.gltfStaticActorCount})`
+      )
+    }
+  }
+
+  /**
+   * ECS extract maps dropped a collider entity — remove live PhysX statics.
+   * All runtime cooks use freezeRemoval:true so orphans never leave the scene otherwise
+   * (SpaceRunner lobby walls/dome stayed solid after HF entity deletes).
+   */
+  private onColliderEntityRemoved(ecsEntity: Entity): void {
+    const meshId = ecsEntity as number
+    const gltfId = GLTF_COLLIDER_ENTITY_BASE + ecsEntity
+    const hadMesh = this.physics.hasStaticActor(meshId)
+    const hadGltf = this.physics.hasStaticActor(gltfId)
+    if (hadMesh) this.physics.invalidateStaticCollider(meshId)
+    if (hadGltf) this.physics.invalidateStaticCollider(gltfId)
+    this.colliderCookQueue.delete(meshId)
+    this.colliderCookQueue.delete(gltfId)
+    if (hadMesh || hadGltf) {
+      this.physics.invalidateControllerCache()
+      console.info(
+        `[phys] removed orphan static ecs=e${ecsEntity}` +
+          (hadMesh ? ` mesh=e${meshId}` : '') +
+          (hadGltf ? ` gltf=${gltfId}` : '')
+      )
+    }
   }
 
   /** Start worker cooks as soon as late GLTF colliders enqueue — drain only deserializes on main. */
@@ -2000,7 +2196,10 @@ export class World {
   private enqueueColliderCook(ecsEntity: Entity): void {
     if (this.deferPhysxCooks) return
     const enqueuedPhysIds: number[] = []
-    for (const entity of this.sceneScript.collectColliderEntitiesInSubtree(ecsEntity)) {
+    // Subtree roots + the entity itself (extract may land before colliderRootEntities rebuild).
+    const entities = new Set(this.sceneScript.collectColliderEntitiesInSubtree(ecsEntity))
+    entities.add(ecsEntity)
+    for (const entity of entities) {
       for (const physId of this.sceneScript.collectPhysCookTargets(entity)) {
         if (this.collidersLoadingComplete) {
           this.sceneScript.refreshColliderPose(physId)
@@ -2512,8 +2711,8 @@ export class World {
   /** Toggle Explorer In-World Camera (C / sidebar). */
   togglePhotoCamera(): void {
     if (!this.playerMode || !this.player) return
-    // Scene VirtualCamera owns the lens — don't fight it.
-    if (this.sceneScript.getVirtualCameraBridge()?.isActive()) {
+    // Scene / PE VirtualCamera owns the lens — don't fight it.
+    if (this.isAnyVirtualCameraActive()) {
       clientDebugLog.log('client', 'Photo camera blocked — scene VirtualCamera is active', {
         alsoConsole: true,
         throttleMs: 2000
@@ -2526,7 +2725,7 @@ export class World {
 
   enterPhotoCamera(): void {
     if (!this.playerMode || !this.player) return
-    if (this.sceneScript.getVirtualCameraBridge()?.isActive()) return
+    if (this.isAnyVirtualCameraActive()) return
     this.ensurePhotoCamera()
     this.photoCamera?.enter()
   }
@@ -2625,6 +2824,20 @@ export class World {
   }
 
   /**
+   * Multi-scene seamless promote — place feet at Genesis City meters after a
+   * primary swap (new base parcel origin). Instant, no settle drop.
+   */
+  restoreGenesisFeet(genesis: { x: number; y: number; z: number }): boolean {
+    if (!this.playerMode || !this.player) return false
+    const origin = this.comms.getSceneOrigin()
+    const localX = genesis.x - origin.x
+    const localZ = genesis.z - origin.z
+    return this.player.movePlayerTo({
+      newRelativePosition: { x: localX, y: genesis.y, z: localZ }
+    })
+  }
+
+  /**
    * Minimap triangle rotation (canvas radians, 0 = tip north / up).
    * Uses **visual body yaw** (same as the avatar mesh), including travel facing while moving —
    * not freecam orbit and not a separate wire-yaw path that can lag or disagree.
@@ -2674,6 +2887,535 @@ export class World {
     handler: ((target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>) => void) | null
   ): void {
     this.navigateHandler = handler
+  }
+
+  /**
+   * Multi-scene seamless promote (no full loading screen) + optional AOI prefetch.
+   * Prefer over navigateHandler for stand-on-parcel primary swaps.
+   */
+  setPromoteHandlers(opts: {
+    onPromote: ((target: Extract<RouteTarget, { kind: 'coords' }>, reason: string) => void) | null
+    onSoftRoute?: ((x: number, y: number) => void) | null
+    onPrefetch?: ((x: number, y: number) => void) | null
+  }): void {
+    this.promoteNavigate = opts.onPromote
+    this.promoteSoftRoute = opts.onSoftRoute ?? null
+    this.promotePrefetch = opts.onPrefetch ?? null
+  }
+
+  /**
+   * Attach session multi-scene runtime (PE + live secondaries). Call after loadScene.
+   * PE manager must outlive World so /goto can restore without re-prompt.
+   */
+  attachMultiScene(runtime: MultiSceneRuntime | null): void {
+    if (this.multiScene && this.multiScene !== runtime) {
+      this.multiScene.unbindWorld()
+    }
+    this.multiScene = runtime
+    if (!runtime || !this.loadedPrimaryScene) return
+    runtime.setOnLiveSecondaryIds((ids) => this.aoiVisual.setLiveSecondaryIds(ids))
+    // PE worker: full main-thread surface (identity, pointer, keys, avatar modifiers, physics lamport).
+    runtime.pe.setOnPeWorkerReady((system, physOffset) => {
+      this.wirePeWorkerToMainThread(system, physOffset)
+    })
+    // Impulse Lamport = max(primary, all PE) so PE bounce pads / thrusters fire once.
+    this.player?.setImpulseLamportProvider(() => {
+      if (!this.multiScene) return this.sceneScript.getPhysicsImpulseLamport()
+      return this.peMirror.impulseLamportAcross(this.sceneScript, this.multiScene.pe)
+    })
+    const pePolicy: PortableExperiencesPolicy =
+      this.loadedPrimaryScene.portableExperiencesPolicy ??
+      resolvePortableExperiencesPolicy(this.loadedPrimaryScene.metadata)
+    runtime.bindWorld({
+      primaryScene: this.loadedPrimaryScene,
+      cache: this.assets,
+      host: this.host,
+      tier: this.performanceTier,
+      poseProvider: () => {
+        if (this.player) {
+          return {
+            player: this.player.getEntityPose(),
+            camera: this.player.getCameraEntityPose()
+          }
+        }
+        return {
+          player: {
+            position: new THREE.Vector3(0, 0, 0),
+            rotation: new THREE.Quaternion()
+          },
+          camera: {
+            position: new THREE.Vector3(0, 1.6, 0),
+            rotation: new THREE.Quaternion()
+          }
+        }
+      },
+      pePolicy
+    })
+  }
+
+  getMultiScene(): MultiSceneRuntime | null {
+    return this.multiScene
+  }
+
+  getPerformanceTier(): PerformanceTier {
+    return this.performanceTier
+  }
+
+  /**
+   * Wire a PE SceneScriptSystem to main-thread player/input/physics — same surface as primary
+   * minus exclusive privileges (teleport still via arbiter).
+   */
+  private wirePeWorkerToMainThread(
+    system: import('./systems/SceneScriptSystem').SceneScriptSystem,
+    physOffset = 0
+  ): void {
+    system.setPlayerIdentity(
+      buildPlayerMirrorIdentity({
+        address: this.session.getAddress(),
+        profile: this.session.getProfile()
+      })
+    )
+    system.setRealmInfo(this.comms.getRealmInfo())
+    system.setClientPoseProvider(() => ({
+      player: this.player!.getEntityPose(),
+      camera: this.player!.getCameraEntityPose()
+    }))
+    system.setVirtualCameraPoseProviders(
+      () => this.player!.getEntityPose(),
+      () => this.player!.getCameraEntityPose()
+    )
+    // PE entity delete → drop PhysX statics in the PE id namespace (freezeRemoval would leave ghosts).
+    system.setCollidersRemoveCallback((entity) => {
+      this.onColliderEntityRemovedWithOffset(entity, physOffset)
+    })
+    system.setCollidersPoseCallback((entities) => {
+      // Pose slides use remapped phys ids in multi-scene tick; skip primary-only slide path.
+      void entities
+    })
+    // PE is a full scene runtime — play-ready so engine ticks match primary.
+    system.notifyPlayReady({
+      engineTickIntervalMs: resolveEngineTickIntervalMs(this.performanceTier),
+      portableExperience: true
+    })
+    this.startInputHub()
+    // Same keyboard bus as primary — subscribe as pe:<physOffset>, no second window listener.
+    system.setInputHub(this.inputHub, `pe:${physOffset}`)
+    system.bindPointerEvents(
+      () => this.player?.getWorldPosition() ?? null,
+      () => this.player?.isPointerBlocked() ?? false,
+      () => this.physics,
+      {
+        // Hub global block covers chat/settings; PE worker still receives keys while frozen.
+        isRelayBlocked: () => this.isInputHubBlocked(),
+        isLocomotionBlocked: () =>
+          this.multiScene?.pe.isAvatarLocomotionFrozenByPe() === true ||
+          (this.player?.isLocomotionBlocked() ?? false),
+        clearPlayerMoveKeys: () => this.player?.clearMoveKeys(),
+        // PE drone freeze — republish every hub.sync so worker isPressed stays live.
+        forceRepublishSnapshot: () => this.multiScene?.pe.isAvatarLocomotionFrozenByPe() === true
+      },
+      (mode) => this.player?.setForcedCameraMode(mode)
+    )
+    system.setAvatarModifierProviders({
+      getSamples: () => {
+        const samples: { id: string; position: { x: number; y: number; z: number } }[] = []
+        const localPos = this.player?.getPosition()
+        if (localPos) {
+          const localId = this.session.getAddress()?.toLowerCase() ?? ''
+          samples.push({
+            id: localId,
+            position: { x: localPos.x, y: localPos.y, z: localPos.z }
+          })
+        }
+        this.remoteAvatars?.collectModifierSamples(samples)
+        return samples
+      },
+      apply: (id, effects) => {
+        const localId = this.session.getAddress()?.toLowerCase() ?? ''
+        if (!id || id === localId) {
+          this.player?.setModifierHidden(effects.hide)
+        } else {
+          this.remoteAvatars?.setModifierHidden(id, effects.hide)
+        }
+      }
+    })
+    // Prefer PE VC bridge immediately if already bound (restore / late wire).
+    this.selectActiveVirtualCameraBridge()
+    console.info(
+      `[pe] wired full primary-class runtime (hub sub=pe:${physOffset}, play-ready, pointer, VC, physics)`
+    )
+  }
+
+  /**
+   * Global keyboard gate for InputHub — chat / client overlays / primary scene text fields.
+   * PE HUD buttons are not blocked (only #scene-ui-root text inputs).
+   */
+  private isInputHubBlocked(): boolean {
+    if (isTextInputFocused()) return true
+    // Emote wheel modal — B/0-9/E owned by HUD; never fan-out E (IA_PRIMARY) to workers.
+    if (document.querySelector('.emote-wheel-overlay:not([hidden])')) return true
+    if (document.querySelector('.settings-overlay.is-open')) return true
+    if (document.querySelector('.preferences-panel.is-open')) return true
+    // Primary scene ECS text/select only (not PE HUD buttons / pe-ui-root).
+    const ae = document.activeElement
+    if (
+      ae instanceof HTMLElement &&
+      ae.closest('#scene-ui-root') &&
+      (ae.classList.contains('scene-ui-node__input') ||
+        ae.classList.contains('scene-ui-node__select'))
+    ) {
+      return true
+    }
+    // Client HUD chat dock etc. — but do not block when only PE UI has focus.
+    if (this.player?.isSceneRelayBlocked()) {
+      if (ae instanceof HTMLElement && ae.closest('#pe-ui-root') && !ae.closest('#scene-ui-root')) {
+        return false
+      }
+      return true
+    }
+    return false
+  }
+
+  /** Start the single keyboard bus (idempotent). */
+  private startInputHub(): void {
+    this.inputHub.start({
+      isBlocked: () => this.isInputHubBlocked(),
+      isLocomotionBlocked: () =>
+        this.multiScene?.pe.isAvatarLocomotionFrozenByPe() === true ||
+        (this.player?.isLocomotionBlocked() ?? false),
+      clearPlayerMoveKeys: () => this.player?.clearMoveKeys()
+    })
+  }
+
+  /** Last selected lens owner for one-shot logs (primary vs pe). */
+  private lastVcBridgeOwner: 'none' | 'primary' | 'pe' = 'none'
+
+  /**
+   * PlayerSystem only had the primary VirtualCameraBridge. PE drone/vehicle cameras live on the
+   * PE SceneScriptSystem — switch the player lens to any PE that has MainCamera→VC bound.
+   */
+  private selectActiveVirtualCameraBridge(): void {
+    if (!this.player) return
+    const peSystems = this.multiScene?.pe.getRunningSystems() ?? []
+    for (const sys of peSystems) {
+      const bridge = sys.getVirtualCameraBridge()
+      if (!bridge) continue
+      if (bridge.isMainCameraVcBound() || bridge.isActive()) {
+        this.player.setVirtualCameraBridge(bridge)
+        if (this.lastVcBridgeOwner !== 'pe') {
+          this.lastVcBridgeOwner = 'pe'
+          console.info(
+            `[pe] VirtualCamera lens → PE bridge (mainBound=${bridge.isMainCameraVcBound()} active=${bridge.isActive()})`
+          )
+        }
+        return
+      }
+    }
+    this.player.setVirtualCameraBridge(this.sceneScript.getVirtualCameraBridge())
+    if (this.lastVcBridgeOwner === 'pe') {
+      this.lastVcBridgeOwner = 'primary'
+      console.info('[pe] VirtualCamera lens → primary (PE VC unbound)')
+    } else if (this.lastVcBridgeOwner === 'none') {
+      this.lastVcBridgeOwner = 'primary'
+    }
+  }
+
+  private isAnyVirtualCameraActive(): boolean {
+    if (this.sceneScript.getVirtualCameraBridge()?.isActive() === true) return true
+    for (const sys of this.multiScene?.pe.getRunningSystems() ?? []) {
+      if (sys.getVirtualCameraBridge()?.isActive() === true) return true
+    }
+    return false
+  }
+
+  /** PE tweens / billboards / animators — same motion pump as primary. */
+  private pumpPeMotionBridges(delta: number, frame: number): void {
+    for (const sys of this.multiScene?.pe.getRunningSystems() ?? []) {
+      try {
+        sys.pumpMotionBridges(delta, frame)
+      } catch (err) {
+        console.warn('[pe] pumpMotionBridges failed', err)
+      }
+    }
+  }
+
+  /** PE entity remove with phys-id offset (PE namespace). */
+  private onColliderEntityRemovedWithOffset(ecsEntity: Entity, physOffset: number): void {
+    const meshId = (ecsEntity as number) + physOffset
+    const gltfId = GLTF_COLLIDER_ENTITY_BASE + (ecsEntity as number) + physOffset
+    // Also try PE-remapped gltf base used in multi-scene fingerprints.
+    const peGltfId = GLTF_COLLIDER_ENTITY_BASE + meshId
+    for (const id of [meshId, gltfId, peGltfId]) {
+      if (this.physics.hasStaticActor(id)) {
+        this.physics.invalidateStaticCollider(id)
+        this.colliderCookQueue.delete(id)
+      }
+    }
+    // Registered phys ids from SceneWorkerSlot use entity+offset for both mesh-style descs.
+    this.physics.invalidateControllerCache()
+  }
+
+  /** PE worker → primary projection + player (InputModifier, forces, intents). */
+  private applyPeMainThreadMirror(): void {
+    if (!this.multiScene) return
+    this.peMirror.apply({
+      pe: this.multiScene.pe,
+      primary: this.sceneScript,
+      player: this.player,
+      drainPrivilegedIntents: () => this.drainPePrivilegedIntents()
+    })
+  }
+
+  getLoadedPrimaryScene(): ResolvedScene | null {
+    return this.loadedPrimaryScene
+  }
+
+  /**
+   * PE has full capability but lower priority. Intents submitted to the arbiter
+   * during PE tick are applied here if still pending (primary already ran and
+   * would have applied its own handlers directly — so remaining = PE wins only
+   * when primary was silent on that channel).
+   *
+   * - movePlayerTo: scene-local feet
+   * - teleportTo: global Genesis parcel → navigate (distinct from movePlayerTo)
+   * - openExternal: handled directly on PE worker (confirm + tab; no reload)
+   * - changeRealm: deprecated / ignored
+   */
+  private drainPePrivilegedIntents(): void {
+    const arbiter = this.multiScene?.arbiter
+    if (!arbiter || !this.player) return
+
+    const move = arbiter.take('movePlayer')
+    if (move && move.kind === 'pe') {
+      try {
+        this.player.movePlayerTo(move.payload as Parameters<PlayerSystem['movePlayerTo']>[0])
+        this.sceneScript.nudgePlayAfterSceneTeleport()
+      } catch (err) {
+        console.warn('[pe] movePlayer apply failed', err)
+      }
+    }
+
+    const emote = arbiter.take('emote')
+    if (emote && emote.kind === 'pe') {
+      const req = emote.payload as { predefinedEmote?: string }
+      const name = req.predefinedEmote?.trim()
+      if (name) void this.playLocalEmote(name, { loop: undefined, sceneTriggered: true })
+    }
+
+    // PE teleportTo = global parcel jump (not local movePlayerTo).
+    const teleport = arbiter.take('teleport')
+    if (teleport && teleport.kind === 'pe') {
+      const parcel = parseTeleportParcel(
+        teleport.payload as Parameters<typeof parseTeleportParcel>[0]
+      )
+      if (parcel) {
+        console.info(`[pe] teleportTo → ${parcel.x},${parcel.y} (global)`)
+        this.navigateHandler?.({
+          kind: 'coords',
+          x: parcel.x,
+          y: parcel.y,
+          segment: `${parcel.x},${parcel.y}`
+        })
+      }
+    }
+
+    // openExternal is applied on PE worker directly; drop any queued leftovers.
+    arbiter.take('openExternal')
+    arbiter.take('changeRealm')
+    arbiter.take('camera')
+    arbiter.take('locomotionClear')
+  }
+
+  /**
+   * In-world promote (no World rebuild):
+   * 1) handoff if target already live secondary
+   * 2) else force-boot secondary for target, then handoff
+   * Always demotes outgoing primary → sticky secondary (walk-back = resume, no reload).
+   */
+  async tryPromoteInWorld(target: { x: number; y: number }): Promise<boolean> {
+    const multi = this.multiScene
+    if (!multi || !this.player) return false
+
+    let handoff = multi.takeSecondaryForPromote(target.x, target.y)
+    if (!handoff) {
+      console.info(
+        `[promote] no live secondary @ ${target.x},${target.y} — force-boot for handoff…`
+      )
+      const booted = await multi.ensureSecondaryForParcel(target.x, target.y)
+      if (!booted) return false
+      handoff = multi.takeSecondaryForPromote(target.x, target.y)
+      if (!handoff) return false
+    }
+
+    return this.applyPromoteHandoff(handoff)
+  }
+
+  /**
+   * @deprecated use tryPromoteInWorld — kept for call sites that already have a secondary.
+   */
+  async tryPromoteFromSecondary(target: { x: number; y: number }): Promise<boolean> {
+    return this.tryPromoteInWorld(target)
+  }
+
+  /**
+   * Adopt secondary as primary; demote old primary to sticky secondary for resume.
+   */
+  private async applyPromoteHandoff(handoff: {
+    entityId: string
+    scene: ResolvedScene
+    system: import('./systems/SceneScriptSystem').SceneScriptSystem
+    physIds: number[]
+  }): Promise<boolean> {
+    const multi = this.multiScene
+    if (!multi || !this.player) return false
+
+    const pos = this.player.getPosition()
+    const origin = this.comms.getSceneOrigin()
+    const genesis = {
+      x: pos.x + origin.x,
+      y: pos.y,
+      z: pos.z + origin.z
+    }
+
+    const oldPrimary = this.sceneScript
+    const oldScene = this.loadedPrimaryScene
+    const newScene = handoff.scene
+    const newSystem = handoff.system
+
+    // Drop secondary-offset colliders for the adopted scene (will re-register as primary ids).
+    for (const id of handoff.physIds) {
+      this.physics.invalidateStaticCollider(id)
+    }
+
+    // Demote old primary → sticky secondary (resume without reload when walking back).
+    // Do this before wiring new primary so entity roots stay valid.
+    if (oldScene?.entityId && oldScene.mainEntry && oldScene.entityId !== newScene.entityId) {
+      const demoted = await multi.demotePrimaryToSecondary(oldPrimary, oldScene)
+      if (demoted) {
+        for (const id of demoted.primaryPhysIds) {
+          this.physics.invalidateStaticCollider(id)
+        }
+        // Demoted will re-register colliders under secondary offset on next multi-scene tick.
+      } else {
+        try {
+          oldPrimary.dispose()
+        } catch (err) {
+          console.warn('[promote] old primary dispose after demote fail', err)
+        }
+      }
+    } else {
+      try {
+        oldPrimary.dispose()
+      } catch (err) {
+        console.warn('[promote] old primary dispose', err)
+      }
+    }
+
+    this.sceneScript = newSystem
+    this.loadedPrimaryScene = newScene
+    this.assets.setScene(newScene)
+
+    // Pose + player identity on the adopted worker.
+    this.sceneScript.setClientPoseProvider(() => ({
+      player: this.player!.getEntityPose(),
+      camera: this.player!.getCameraEntityPose()
+    }))
+    this.sceneScript.setPerformanceTier(this.performanceTier)
+    this.sceneScript.setPlayerIdentity(
+      buildPlayerMirrorIdentity({
+        address: this.session.getAddress(),
+        profile: this.session.getProfile()
+      })
+    )
+    this.sceneScript.setRealmInfo(this.comms.getRealmInfo())
+    this.sceneScript.setCollidersCookCallback((entity) => this.onColliderCookRequest(entity))
+    this.sceneScript.setCollidersPoseCallback((entities) => this.applyColliderPoseSlides(entities))
+    this.sceneScript.setCollidersRemoveCallback((entity) => this.onColliderEntityRemoved(entity))
+    this.remoteAvatars?.setEntityStore(this.sceneScript.getEntityStore())
+
+    // Full primary RestrictedActions surface.
+    this.sceneScript.setOpenExternalUrlHandler((request) => openExternalUrl(request))
+    this.sceneScript.setOpenNftDialogHandler((request) => openNftDialog(request))
+    this.sceneScript.setCopyToClipboardHandler((request) => copyToClipboard(request))
+    this.sceneScript.setTeleportToHandler((request) => {
+      const parcel = parseTeleportParcel(request)
+      if (!parcel) return false
+      this.navigateHandler?.({
+        kind: 'coords',
+        x: parcel.x,
+        y: parcel.y,
+        segment: `${parcel.x},${parcel.y}`
+      })
+      return true
+    })
+    this.sceneScript.setChangeRealmHandler(() => {
+      console.info('[World] changeRealm ignored (deprecated)')
+      return false
+    })
+    this.sceneScript.setMovePlayerHandler((request) => {
+      const ok = this.player!.movePlayerTo(request)
+      this.sceneScript.nudgePlayAfterSceneTeleport()
+      return ok
+    })
+    this.sceneScript.setTriggerEmoteHandler((request) => {
+      const emote = request.predefinedEmote?.trim()
+      if (!emote) return false
+      void this.playLocalEmote(emote, { loop: undefined, sceneTriggered: true })
+      return true
+    })
+    this.sceneScript.setSceneUiVisible(true)
+
+    // Comms / signed-fetch context for new primary.
+    this.signedFetchSceneContext = {
+      sceneId: newScene.entityId ?? '',
+      parcel: newScene.baseParcel,
+      realmName: newScene.realm.realmName,
+      isWorld: newScene.source.kind === 'world'
+    }
+    this.sceneScript.setSignedFetchHandler(async (body) =>
+      performSignedFetch(body, this.session.getAuthIdentity(), this.signedFetchSceneContext)
+    )
+    this.sceneScript.setSignedFetchGetHeadersHandler(async (body) =>
+      performGetSignedHeaders(body, this.session.getAuthIdentity())
+    )
+    this.comms.applyRealmAbout(newScene.realm, newScene.commsPointer)
+    this.session.setCatalystEndpoints(newScene.realm.contentUrl, newScene.realm.lambdasUrl)
+
+    // AOI tertiary + promote controller retarget to new primary footprint.
+    this.aoiVisual.bind({
+      scene: newScene,
+      cache: this.assets,
+      hostScene: this.host.scene,
+      syncRoadColliders: (descs) => {
+        const result = this.physics.syncAoiRoadColliders(descs)
+        if (result.geometryChanged) this.physics.warmStaticScene()
+      },
+      clearRoadColliders: () => this.physics.clearAoiRoadColliders(),
+      onSecondaryCandidates: (candidates) => {
+        this.multiScene?.reconcileSecondaries(candidates)
+      }
+    })
+    this.scenePromote.bind(newScene)
+
+    // Multi-scene keeps PE + demoted/remaining secondaries; retarget content map.
+    multi.notifyPrimaryChanged(newScene)
+    multi.setOnLiveSecondaryIds((ids) => this.aoiVisual.setLiveSecondaryIds(ids))
+
+    // Re-cook colliders under primary entity ids.
+    this.colliderCookQueue.clear()
+    this.sceneScript.syncCollisionForce()
+    this.reconcileColliderCookQueue()
+    if (this.colliderCookQueue.size > 0) {
+      void this.scheduleColliderCookDrain()
+    }
+
+    // Feet stay put in Genesis space.
+    const ok = this.restoreGenesisFeet(genesis)
+    console.info(
+      `[promote] handoff+demote OK “${newScene.title}” base=${newScene.baseParcel}` +
+        ` prev=${oldScene?.title ?? 'none'} restoreFeet=${ok}`
+    )
+    return true
   }
 
   getRemoteAvatarManager(): RemoteAvatarManager | null {
@@ -2959,6 +3701,14 @@ export class World {
     this.photoChromeHandler = null
     this.host.stop()
 
+    // Detach multi-scene (PE workers) before primary host dies — PE prefs stay on manager.
+    if (this.multiScene) {
+      this.multiScene.unbindWorld()
+      this.multiScene = null
+    }
+    this.peMirror.reset()
+    this.inputHub.dispose()
+
     // Scene systems first — CameraModeArea / pointer dispose still call into player.
     this.sceneScript.gltfColliders?.setLandscapeRoot(null)
     this.sceneScript.dispose()
@@ -2971,6 +3721,9 @@ export class World {
     this.clearOcean()
     this.environment.dispose()
 
+    this.aoiVisual.dispose()
+    this.scenePromote.unbind()
+    this.loadedPrimaryScene = null
     this.ezTreeGrass?.dispose()
     this.ezTreeGrass = null
     this.desertAtmosphere = null

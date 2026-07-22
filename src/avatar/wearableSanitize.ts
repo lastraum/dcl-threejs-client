@@ -9,10 +9,13 @@ const _worldScale = new THREE.Vector3()
  * Junk geometry inside wearable GLBs (colliders, LOD, helpers).
  * Do NOT match `*BaseMesh*` here — that is the standard DCL wearable display mesh
  * (e.g. ShapeB_uBody_BaseMesh). Body-shape shells are hidden via `applyBodyShapeVisibility`.
+ * `armature`/`skeleton`/`root` must stay EXACT-name matches: skeleton-costume wearables
+ * name their display meshes Skeleton_Head / Skeleton_Torso / Skeleton_Legs, and a
+ * substring match hid the whole item (headless avatar with hides:["head"] masks).
  */
 // LOD1 is often the only NFT display mesh (e.g. ProcessedMeshNode_LOD1) — hide LOD2+ only.
 const WEARABLE_HIDE_NAME =
-  /collider|_lod[2-9]\d*$|_lod_[2-9]|helper|invisible|physics|_anchor|_target|vfx|particle|reference|^armature$|skeleton|rig_|^root$/i
+  /collider|_lod[2-9]\d*$|_lod_[2-9]|helper|invisible|physics|_anchor|_target|vfx|particle|reference|^armature$|^skeleton$|rig_|^root$/i
 
 /** Max mesh extent in meters — larger geometry is almost always a bad export or VFX plane. */
 const MAX_WEARABLE_MESH_EXTENT_M = 3.5

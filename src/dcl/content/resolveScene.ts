@@ -5,17 +5,16 @@ import { BLANK_SCENE_TEMPLATE } from './types'
 import { layoutFromSceneMetadata } from './sceneLayout'
 import { resolveBrowserChatEnabled } from './resolveBrowserChat'
 import { resolveNameTagsVisible } from './resolveNameTags'
+import { resolvePortableExperiencesPolicy } from '../multiScene/resolvePortableExperiences'
 import { resolveSceneEnvironment } from '../landscape/resolveLandscapeEnvironment'
 import { catalystContentAssetUrl, catalystRootFromContentUrl, fetchSceneEntityByPointer } from '../../network/catalyst/CatalystClient'
 import { fetchCatalystRealmAbout, fetchWorldRealmAbout } from '../../network/catalyst/realmAbout'
-
-const WORLDS = 'https://worlds-content-server.decentraland.org'
-
-function entityIdFromUrn(urn: string): string | null {
-  const prefix = 'urn:decentraland:entity:'
-  if (!urn.startsWith(prefix)) return null
-  return urn.slice(prefix.length).split(/[?&#]/)[0]?.trim() || null
-}
+import {
+  contentBaseFromScenesUrn,
+  entityIdFromScenesUrn,
+  worldsAboutUrl,
+  worldsContentBase
+} from '../../network/worlds/worldsServerConfig'
 
 function parseContent(raw: unknown): ContentFile[] {
   if (!Array.isArray(raw)) return []
@@ -101,19 +100,26 @@ function realmFromAbout(about: Awaited<ReturnType<typeof fetchWorldRealmAbout>>)
     networkId: about.networkId,
     contentUrl: catalystRootFromContentUrl(about.contentUrl),
     lambdasUrl: about.lambdasUrl,
-    commsAdapterHint: about.commsAdapterHint
+    commsAdapterHint: about.commsAdapterHint,
+    commsEnabled: about.commsEnabled
   }
 }
 
-async function fetchWorldEntity(worldName: string): Promise<{
+async function fetchWorldEntity(
+  worldName: string,
+  customServer?: string | null
+): Promise<{
   entity: Record<string, unknown>
   skybox?: { textures?: string[] }
   realm: RealmEndpoints
+  contentServerBase: string
+  contentsRoot: string
 } | null> {
-  const about = await fetchWorldRealmAbout(worldName).catch(() => null)
+  const contentServerBase = worldsContentBase(customServer)
+  const about = await fetchWorldRealmAbout(worldName, contentServerBase).catch(() => null)
   if (!about) return null
 
-  const aboutRes = await fetch(`${WORLDS}/world/${encodeURIComponent(worldName)}/about`, {
+  const aboutRes = await fetch(worldsAboutUrl(contentServerBase, worldName), {
     headers: { Accept: 'application/json' }
   })
   if (!aboutRes.ok) return null
@@ -124,10 +130,14 @@ async function fetchWorldEntity(worldName: string): Promise<{
   const urn = aboutJson.configurations?.scenesUrn?.[0]
   if (typeof urn !== 'string') return null
 
-  const entityId = entityIdFromUrn(urn)
+  const entityId = entityIdFromScenesUrn(urn)
   if (!entityId) return null
 
-  const entityRes = await fetch(`${WORLDS}/contents/${encodeURIComponent(entityId)}`, {
+  // Prefer baseUrl on scenesUrn when present (official about often embeds it).
+  const urnContentsRoot = contentBaseFromScenesUrn(urn)
+  const contentsRoot = urnContentsRoot ?? `${contentServerBase}/contents`
+
+  const entityRes = await fetch(`${contentsRoot.replace(/\/+$/, '')}/${encodeURIComponent(entityId)}`, {
     headers: { Accept: 'application/json' }
   })
   if (!entityRes.ok) return null
@@ -136,7 +146,9 @@ async function fetchWorldEntity(worldName: string): Promise<{
   return {
     entity: { ...entity, id: entityId },
     skybox: aboutJson.configurations?.skybox,
-    realm: realmFromAbout(about)
+    realm: realmFromAbout(about),
+    contentServerBase,
+    contentsRoot: contentsRoot.replace(/\/+$/, '')
   }
 }
 
@@ -154,6 +166,104 @@ async function fetchParcelEntity(x: number, y: number): Promise<{
   return {
     entity: result.entity,
     realm: realmFromAbout(realmAbout)
+  }
+}
+
+const FALLBACK_GENESIS_REALM: RealmEndpoints = {
+  realmName: 'main',
+  networkId: 1,
+  contentUrl: 'https://peer.decentraland.org',
+  lambdasUrl: 'https://peer.decentraland.org/lambdas',
+  commsEnabled: true
+}
+
+/**
+ * Classic foundation open-road / SDK6 tile — cannot run as primary, but should not
+ * hard-fail Jump In. AOI road layer still draws the GLB; primary is synthetic empty.
+ */
+export function isOpenRoadOrNonRunnableSdk6Entity(entity: Record<string, unknown>): boolean {
+  const meta =
+    entity.metadata && typeof entity.metadata === 'object'
+      ? (entity.metadata as Record<string, unknown>)
+      : {}
+  const display =
+    meta.display && typeof meta.display === 'object'
+      ? (meta.display as Record<string, unknown>)
+      : {}
+  const title = typeof display.title === 'string' ? display.title : ''
+  const main = typeof meta.main === 'string' ? meta.main.trim().toLowerCase() : ''
+  const rv = meta.runtimeVersion
+  const rvStr = rv === undefined || rv === null ? '' : String(rv).trim()
+
+  if (rvStr === '7' || rvStr.startsWith('7.')) return false
+  if (rvStr === '6' || rvStr.startsWith('6.')) return true
+  if (/^Road at /i.test(title)) return true
+
+  if (main === 'game.js' || main.endsWith('/game.js') || main === 'bin/game.js') {
+    const content = Array.isArray(entity.content) ? entity.content : []
+    const hasRoadGlb = content.some((row) => {
+      if (!row || typeof row !== 'object') return false
+      const file =
+        typeof (row as { file?: string }).file === 'string' ? (row as { file: string }).file : ''
+      const base = file.split('/').pop() ?? file
+      return /^(OpenRoad_|OpenFork_|Road_|DeadEnd_|Fork_|Corner_|EmptyFork_)/i.test(base)
+    })
+    if (hasRoadGlb || /road|openroad|openfork|tram/i.test(title)) return true
+    // Classic Builder SDK6 without runtimeVersion 7
+    return true
+  }
+  return false
+}
+
+/**
+ * Synthetic 1×1 genesis primary — empty land or non-runnable SDK6 (roads).
+ * AOI still supplies road GLBs / blank floor. Never throws.
+ */
+async function resolveEmptyCoordsScene(
+  x: number,
+  y: number,
+  opts?: { title?: string; reason?: string }
+): Promise<ResolvedScene> {
+  const pointer = `${x},${y}`
+  let realm: RealmEndpoints = FALLBACK_GENESIS_REALM
+  try {
+    const about = await fetchCatalystRealmAbout()
+    realm = realmFromAbout(about)
+  } catch (err) {
+    console.warn('[resolve] empty parcel — realm about failed, using peer.decentraland.org', err)
+  }
+  const contentUrl = catalystRootFromContentUrl(realm.contentUrl)
+  // Live feet coords live on the location card / URL — don't bake base into the title.
+  const title = opts?.title?.trim() || 'Empty land'
+  const metadata: SceneMetadata = {
+    display: { title },
+    scene: { parcels: [pointer], base: pointer },
+    // genesis sky; ground + trees / roads come from AoiVisualLayer
+    environment: 'genesis'
+  }
+  const resolvedEnv = resolveSceneEnvironment(metadata, { kind: 'coords', x, y })
+  console.info(
+    `[resolve] synthetic primary ${pointer} — “${title}”${opts?.reason ? ` (${opts.reason})` : ''}`
+  )
+  return {
+    title,
+    parcels: [pointer],
+    baseParcel: pointer,
+    spawn: { x: 8, y: 0, z: 8, fromSpawnPoints: false },
+    metadata,
+    landscapeEnvironment: resolvedEnv.landscapeEnvironment,
+    skyLighting: resolvedEnv.skyLighting,
+    content: [],
+    contentsBaseUrl: contentUrl,
+    assetUrl: (hash) => catalystContentAssetUrl(realm.contentUrl, hash),
+    source: { kind: 'coords', x, y },
+    entityId: null,
+    mainEntry: null,
+    commsPointer: pointer,
+    browserChatEnabled: resolveBrowserChatEnabled(metadata),
+    nameTagsVisible: resolveNameTagsVisible(metadata),
+    portableExperiencesPolicy: resolvePortableExperiencesPolicy(metadata),
+    realm
   }
 }
 
@@ -231,6 +341,7 @@ function resolvedFromEntity(
     commsPointer: opts.commsPointer,
     browserChatEnabled: resolveBrowserChatEnabled(metadata),
     nameTagsVisible: resolveNameTagsVisible(metadata),
+    portableExperiencesPolicy: resolvePortableExperiencesPolicy(metadata),
     realm: opts.realm
   }
 }
@@ -251,13 +362,70 @@ export async function fetchDeployedSceneDisplayTitle(
     return result ? displayTitleFromEntity(result.entity) : null
   }
 
+  const customServer = target.customServer
   for (const pointer of worldPointersForTarget(target)) {
-    const result = await fetchWorldEntity(pointer)
+    const result = await fetchWorldEntity(pointer, customServer)
     if (!result) continue
     const title = displayTitleFromEntity(result.entity)
     if (title) return title
   }
   return null
+}
+
+export type WorldDeployDisplayMeta = {
+  title: string | null
+  description: string
+  imageUrl: string | null
+  contentServerBase: string
+}
+
+/**
+ * Title / description / thumbnail from the worlds content server entity
+ * (not Places API). Used for custom-realm landing so we never show DCL catalog data.
+ */
+export async function fetchWorldDeployDisplayMeta(
+  worldName: string,
+  customServer?: string | null
+): Promise<WorldDeployDisplayMeta | null> {
+  const result = await fetchWorldEntity(worldName, customServer)
+  if (!result) return null
+  const metadata = (result.entity.metadata ?? {}) as Record<string, unknown>
+  const display =
+    metadata.display && typeof metadata.display === 'object'
+      ? (metadata.display as Record<string, unknown>)
+      : {}
+  const title = displayTitleFromEntity(result.entity)
+  const description =
+    (typeof display.description === 'string' && display.description.trim()) ||
+    (typeof metadata.description === 'string' && metadata.description.trim()) ||
+    ''
+
+  let imageUrl: string | null = null
+  const thumb = typeof display.navmapThumbnail === 'string' ? display.navmapThumbnail.trim() : ''
+  if (thumb) {
+    if (/^https?:\/\//i.test(thumb)) {
+      imageUrl = thumb
+    } else {
+      const content = Array.isArray(result.entity.content) ? result.entity.content : []
+      for (const row of content) {
+        if (!row || typeof row !== 'object') continue
+        const file = typeof (row as { file?: string }).file === 'string' ? (row as { file: string }).file : ''
+        const hash = typeof (row as { hash?: string }).hash === 'string' ? (row as { hash: string }).hash : ''
+        if (!file || !hash) continue
+        if (file === thumb || file.endsWith(`/${thumb}`) || file.endsWith(thumb)) {
+          imageUrl = `${result.contentsRoot}/${encodeURIComponent(hash)}`
+          break
+        }
+      }
+    }
+  }
+
+  return {
+    title,
+    description,
+    imageUrl,
+    contentServerBase: result.contentServerBase
+  }
 }
 
 export async function resolveSceneFromRoute(target: RouteTarget): Promise<ResolvedScene> {
@@ -290,49 +458,66 @@ export async function resolveSceneFromRoute(target: RouteTarget): Promise<Resolv
       landscapeEnvironment: resolvedEnv.landscapeEnvironment,
       skyLighting: resolvedEnv.skyLighting,
       browserChatEnabled: resolveBrowserChatEnabled(metadata),
-      nameTagsVisible: resolveNameTagsVisible(metadata)
+      nameTagsVisible: resolveNameTagsVisible(metadata),
+      portableExperiencesPolicy: resolvePortableExperiencesPolicy(metadata)
     }
   }
 
   if (target.kind === 'coords') {
     const result = await fetchParcelEntity(target.x, target.y)
-    if (!result) {
-      throw new Error(
-        `No deployed scene at parcel ${target.x},${target.y}. Try a parcel with a scene or use a world (e.g. /lastslice.dcl.eth).`
-      )
-    }
     const pointer = `${target.x},${target.y}`
-    return resolvedFromEntity(result.entity, {
-      title: pointer,
-      commsPointer: pointer,
-      realm: result.realm,
-      source: { kind: 'coords', x: target.x, y: target.y },
-      contentsBaseUrl: catalystRootFromContentUrl(result.realm.contentUrl),
-      assetUrl: (hash) => catalystContentAssetUrl(result.realm.contentUrl, hash)
-    })
+    if (result) {
+      // Open roads / classic SDK6 — enter as synthetic empty primary; AOI draws road GLBs.
+      if (isOpenRoadOrNonRunnableSdk6Entity(result.entity)) {
+        const meta = (result.entity.metadata ?? {}) as SceneMetadata
+        const roadTitle = meta.display?.title?.trim()
+        return resolveEmptyCoordsScene(target.x, target.y, {
+          title: roadTitle || `Open road ${pointer}`,
+          reason: 'open-road/SDK6 — not runnable as primary'
+        })
+      }
+      return resolvedFromEntity(result.entity, {
+        title: pointer,
+        commsPointer: pointer,
+        realm: result.realm,
+        source: { kind: 'coords', x: target.x, y: target.y },
+        contentsBaseUrl: catalystRootFromContentUrl(result.realm.contentUrl),
+        assetUrl: (hash) => catalystContentAssetUrl(result.realm.contentUrl, hash)
+      })
+    }
+    // True empty parcel — synthetic 1×1 so AOI blank + scatter + open walk can run.
+    return resolveEmptyCoordsScene(target.x, target.y)
   }
 
   const tried: string[] = []
+  const customServer = target.customServer
   for (const pointer of worldPointersForTarget(target)) {
     tried.push(pointer)
-    const result = await fetchWorldEntity(pointer)
+    const result = await fetchWorldEntity(pointer, customServer)
     if (!result) continue
 
     const entityId = typeof result.entity.id === 'string' ? result.entity.id : null
     if (!entityId) continue
 
+    const contentsRoot = result.contentsRoot
     return resolvedFromEntity(result.entity, {
       title: pointer,
       commsPointer: pointer.toLowerCase(),
       realm: result.realm,
-      source: { kind: 'world', worldName: pointer, entityId },
-      contentsBaseUrl: WORLDS,
-      assetUrl: (hash) => `${WORLDS}/contents/${encodeURIComponent(hash)}`,
+      source: {
+        kind: 'world',
+        worldName: pointer,
+        entityId,
+        ...(customServer ? { customServer: result.contentServerBase } : {})
+      },
+      contentsBaseUrl: result.contentServerBase,
+      assetUrl: (hash) => `${contentsRoot}/${encodeURIComponent(hash)}`,
       aboutSkybox: result.skybox
     })
   }
 
-  throw new Error(`World not found (${tried.join(' → ')}). Check the name on worlds-content-server.`)
+  const serverLabel = customServer ? worldsContentBase(customServer) : 'worlds-content-server'
+  throw new Error(`World not found (${tried.join(' → ')}). Check the name on ${serverLabel}.`)
 }
 
 /** @deprecated Prefer `resolveSceneFromRoute(resolveRouteTarget())`. */

@@ -1,0 +1,410 @@
+import type { RouteTarget } from '../content/route'
+import type { ResolvedScene } from '../content/types'
+import { parseParcelKey } from '../content/parseParcel'
+import { PARCEL_SIZE } from '../content/types'
+import { fetchSceneEntityByPointer } from '../../network/catalyst/CatalystClient'
+import {
+  SCENE_SCRIPT_WARM_RADIUS_M,
+  distanceToParcelCenterM
+} from './parcelAoi'
+import {
+  fetchActiveEntitiesForPointers,
+  isOpenRoadEntity,
+  type ActiveSceneEntity
+} from './fetchActiveEntities'
+
+export type PromoteCoordsTarget = Extract<RouteTarget, { kind: 'coords' }>
+
+export type ScenePromoteControllerOptions = {
+  /** Full primary swap (seamless jump) — only for real promotable SDK7 scenes. */
+  onPromote: (target: PromoteCoordsTarget, reason: string) => void
+  /**
+   * Soft URL / HUD only (replaceState) — empty land, roads, and every parcel under feet.
+   * Never reloads the world.
+   */
+  onSoftRoute?: (x: number, y: number) => void
+  /**
+   * Warm script/manifest assets for a real scene near the player (inner radius).
+   * Outer Scene Distance still owns composite GLB visuals.
+   */
+  onPrefetch?: (x: number, y: number) => void
+  dwellMs?: number
+  cooldownMs?: number
+  /** Override inner script-warm radius (default SCENE_SCRIPT_WARM_RADIUS_M). */
+  scriptWarmRadiusM?: number
+}
+
+/**
+ * Multi-scene Phase B — dual radii + stand-on-parcel primary promotion.
+ *
+ * - **Outer** (Scene Distance setting → AoiVisualLayer): composite GLBs / roads / empty.
+ * - **Inner** (`SCENE_SCRIPT_WARM_RADIUS_M`): batch catalyst lookup → prefetch real SDK7
+ *   scene manifests (Angzaar etc. with no composite still warm here).
+ * - Soft-updates the SPA URL as you walk (no reload).
+ * - Full promote only when dwelling on a **real SDK7 scene** that is not primary.
+ * - Empty land and roads never trigger a scene reload (that was thrashing promote).
+ */
+export class ScenePromoteController {
+  private primary: ResolvedScene | null = null
+  private readonly primaryParcels = new Set<string>()
+  /** Parcels we already classified as empty/road — no re-fetch spam. */
+  private readonly skipPromoteKeys = new Set<string>()
+  /** Entity ids already queued for script warm. */
+  private readonly warmedEntityIds = new Set<string>()
+  private dwellKey = ''
+  private dwellSince = 0
+  private lastPromoteAt = 0
+  private lastSoftKey = ''
+  private lastWarmScanAt = 0
+  private warmScanInFlight = false
+  private inFlight = false
+  private evalGen = 0
+  private readonly onPromote: ScenePromoteControllerOptions['onPromote']
+  private readonly onSoftRoute: ScenePromoteControllerOptions['onSoftRoute']
+  private readonly onPrefetch: ScenePromoteControllerOptions['onPrefetch']
+  private readonly dwellMs: number
+  private readonly cooldownMs: number
+  private readonly scriptWarmRadiusM: number
+
+  constructor(opts: ScenePromoteControllerOptions) {
+    this.onPromote = opts.onPromote
+    this.onSoftRoute = opts.onSoftRoute
+    this.onPrefetch = opts.onPrefetch
+    this.dwellMs = opts.dwellMs ?? 320
+    this.cooldownMs = opts.cooldownMs ?? 2_000
+    this.scriptWarmRadiusM = opts.scriptWarmRadiusM ?? SCENE_SCRIPT_WARM_RADIUS_M
+  }
+
+  bind(scene: ResolvedScene): void {
+    this.primary = scene
+    this.primaryParcels.clear()
+    this.skipPromoteKeys.clear()
+    this.warmedEntityIds.clear()
+    for (const p of scene.parcels) this.primaryParcels.add(p.trim())
+    this.primaryParcels.add(scene.baseParcel.trim())
+    this.dwellKey = ''
+    this.dwellSince = 0
+    this.inFlight = false
+    this.warmScanInFlight = false
+    this.lastSoftKey = ''
+    this.lastWarmScanAt = 0
+    this.evalGen++
+    console.info(
+      `[promote] bound primary “${scene.title}” base=${scene.baseParcel} parcels=${this.primaryParcels.size} entity=${scene.entityId?.slice(0, 12) ?? 'none'} scriptWarm=${this.scriptWarmRadiusM}m`
+    )
+  }
+
+  unbind(): void {
+    this.primary = null
+    this.primaryParcels.clear()
+    this.skipPromoteKeys.clear()
+    this.warmedEntityIds.clear()
+    this.dwellKey = ''
+    this.inFlight = false
+    this.warmScanInFlight = false
+    this.evalGen++
+  }
+
+  /**
+   * Per-frame — scene-local DCL feet.
+   * Soft-routes URL every parcel; warms scripts in the inner radius;
+   * full promote only for foreign SDK7 scenes under feet.
+   */
+  tick(dclX: number, dclZ: number): void {
+    const scene = this.primary
+    if (!scene || scene.source.kind !== 'coords') return
+
+    const base = parseParcelKey(scene.baseParcel)
+    const px = base.x + Math.floor(dclX / PARCEL_SIZE)
+    const py = base.y + Math.floor(dclZ / PARCEL_SIZE)
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return
+    const key = `${px},${py}`
+
+    // Always keep the address bar on the parcel under your feet (SPA only).
+    if (key !== this.lastSoftKey && !this.inFlight) {
+      this.lastSoftKey = key
+      this.onSoftRoute?.(px, py)
+    }
+
+    // Inner radius: batch-warm nearby real SDK7 scenes (not per-parcel road spam).
+    this.scheduleScriptWarmScan(dclX, dclZ, scene.baseParcel)
+
+    if (this.inFlight) return
+
+    const now = performance.now()
+    if (now - this.lastPromoteAt < this.cooldownMs) return
+
+    // Still on primary footprint — no promote (warm still ran above).
+    if (this.primaryParcels.has(key)) {
+      this.dwellKey = ''
+      return
+    }
+
+    // Empty / road already classified — soft URL only.
+    if (this.skipPromoteKeys.has(key)) {
+      this.dwellKey = ''
+      return
+    }
+
+    if (key !== this.dwellKey) {
+      this.dwellKey = key
+      this.dwellSince = now
+      return
+    }
+
+    if (now - this.dwellSince < this.dwellMs) return
+
+    void this.evaluate(px, py, key)
+  }
+
+  /**
+   * Throttled kick — actual work is async batch catalyst /entities/active.
+   * Roads/empty are classified and skipped; only real SDK7 scenes get onPrefetch.
+   */
+  private scheduleScriptWarmScan(dclX: number, dclZ: number, baseParcel: string): void {
+    if (!this.onPrefetch || this.scriptWarmRadiusM <= 0) return
+    if (this.warmScanInFlight) return
+    const now = performance.now()
+    if (now - this.lastWarmScanAt < 1_200) return
+    this.lastWarmScanAt = now
+    void this.runScriptWarmScan(dclX, dclZ, baseParcel)
+  }
+
+  private async runScriptWarmScan(
+    dclX: number,
+    dclZ: number,
+    baseParcel: string
+  ): Promise<void> {
+    const scene = this.primary
+    if (!scene || !this.onPrefetch) return
+    this.warmScanInFlight = true
+    const gen = this.evalGen
+
+    try {
+      const ring = Math.max(1, Math.ceil(this.scriptWarmRadiusM / PARCEL_SIZE) + 1)
+      const center = {
+        x: parseParcelKey(baseParcel).x + Math.floor(dclX / PARCEL_SIZE),
+        y: parseParcelKey(baseParcel).y + Math.floor(dclZ / PARCEL_SIZE)
+      }
+
+      const pointers: string[] = []
+      for (let dx = -ring; dx <= ring; dx++) {
+        for (let dy = -ring; dy <= ring; dy++) {
+          const parcel = { x: center.x + dx, y: center.y + dy }
+          const key = `${parcel.x},${parcel.y}`
+          if (this.primaryParcels.has(key)) continue
+          if (this.skipPromoteKeys.has(key)) continue
+          const dist = distanceToParcelCenterM(dclX, dclZ, parcel, baseParcel)
+          if (dist > this.scriptWarmRadiusM) continue
+          pointers.push(key)
+        }
+      }
+
+      if (!pointers.length) return
+
+      const entities = await fetchActiveEntitiesForPointers(
+        scene.realm.contentUrl,
+        pointers
+      )
+      if (gen !== this.evalGen || this.primary !== scene) return
+
+      const owned = new Set<string>()
+      let warmed = 0
+      let skippedRoad = 0
+      let skippedOther = 0
+
+      // Prefer nearest / smaller scenes first so mega-estates don't starve neighbors.
+      const ranked = [...entities].sort((a, b) => {
+        const da = minEntityDistanceM(a, dclX, dclZ, baseParcel)
+        const db = minEntityDistanceM(b, dclX, dclZ, baseParcel)
+        if (da !== db) return da - db
+        const pa = (a.parcels.length || a.pointers.length) || 999
+        const pb = (b.parcels.length || b.pointers.length) || 999
+        return pa - pb
+      })
+
+      for (const ent of ranked) {
+        const keys = ent.pointers.length ? ent.pointers : ent.parcels
+        for (const p of keys) owned.add(p.trim())
+
+        if (this.warmedEntityIds.has(ent.id)) continue
+        if (scene.entityId && ent.id === scene.entityId) {
+          this.warmedEntityIds.add(ent.id)
+          continue
+        }
+
+        if (isOpenRoadEntity(ent) || !isScriptWarmCandidate(ent)) {
+          // Never promote roads / SDK6 / empty shells — remember footprints.
+          for (const p of keys) this.skipPromoteKeys.add(p.trim())
+          if (isOpenRoadEntity(ent)) skippedRoad++
+          else skippedOther++
+          continue
+        }
+
+        // Only warm if at least one footprint parcel is inside the ring we queried.
+        const inRing = keys.some((p) => pointers.includes(p.trim()))
+        if (!inRing) continue
+
+        const base = parseParcelKey(ent.base)
+        if (!Number.isFinite(base.x) || !Number.isFinite(base.y)) continue
+
+        this.warmedEntityIds.add(ent.id)
+        warmed++
+        console.info(
+          `[promote] script-warm queue “${ent.title || ent.base}” base=${ent.base} parcels=${keys.length} main=${ent.main || '—'} dist≈${minEntityDistanceM(ent, dclX, dclZ, baseParcel).toFixed(0)}m`
+        )
+        this.onPrefetch(base.x, base.y)
+      }
+
+      // Pointers with no catalyst entity → empty land (don't re-query every scan).
+      for (const p of pointers) {
+        if (!owned.has(p)) this.skipPromoteKeys.add(p)
+      }
+
+      if (warmed > 0 || skippedRoad > 0) {
+        console.info(
+          `[promote] script-warm scan feet=${center.x},${center.y} ring=${pointers.length} entities=${entities.length} warmed=${warmed} roads=${skippedRoad} otherSkip=${skippedOther}`
+        )
+      }
+    } catch (err) {
+      console.warn('[promote] script-warm scan failed', err)
+    } finally {
+      this.warmScanInFlight = false
+    }
+  }
+
+  private async evaluate(px: number, py: number, key: string): Promise<void> {
+    const scene = this.primary
+    if (!scene || this.inFlight) return
+    if (this.dwellKey !== key) return
+
+    const gen = ++this.evalGen
+    this.inFlight = true
+
+    try {
+      const hit = await fetchSceneEntityByPointer(scene.realm.contentUrl, key)
+      if (gen !== this.evalGen || this.primary !== scene) return
+
+      if (!hit) {
+        // Empty land — do NOT reload primary (was thrashing seamless jumps).
+        this.skipPromoteKeys.add(key)
+        this.dwellKey = ''
+        this.inFlight = false
+        this.onSoftRoute?.(px, py)
+        return
+      }
+
+      if (isNonPromotableEntity(hit.entity)) {
+        // Roads / SDK6 — stay on current primary.
+        this.skipPromoteKeys.add(key)
+        this.dwellKey = ''
+        this.inFlight = false
+        this.onSoftRoute?.(px, py)
+        return
+      }
+
+      if (hit.id && scene.entityId && hit.id === scene.entityId) {
+        this.primaryParcels.add(key)
+        this.dwellKey = ''
+        this.inFlight = false
+        return
+      }
+
+      // Real SDK7 (or composite) scene — seamless promote to primary.
+      const title =
+        typeof (hit.entity.metadata as { display?: { title?: string } } | undefined)?.display
+          ?.title === 'string'
+          ? (hit.entity.metadata as { display: { title: string } }).display.title
+          : hit.id.slice(0, 12)
+      this.fire(px, py, `scene:${title}`)
+    } catch (err) {
+      console.warn('[promote] evaluate failed', key, err)
+      this.inFlight = false
+    }
+  }
+
+  private fire(x: number, y: number, reason: string): void {
+    this.lastPromoteAt = performance.now()
+    this.dwellKey = ''
+    console.info(`[promote] → primary ${x},${y} (${reason})`)
+    this.onPromote({ kind: 'coords', x, y, segment: `${x},${y}` }, reason)
+    window.setTimeout(() => {
+      if (this.inFlight) this.inFlight = false
+    }, this.cooldownMs + 800)
+  }
+}
+
+/** Real SDK7 scene worth warming scripts/manifests for (not roads). */
+function isScriptWarmCandidate(ent: ActiveSceneEntity): boolean {
+  if (isOpenRoadEntity(ent)) return false
+  const rv = ent.runtimeVersion
+  if (rv === '7' || rv.startsWith('7.')) return true
+  const main = ent.main.toLowerCase()
+  if (main.includes('bin/index.js') || main.endsWith('/index.js')) return true
+  // Composite-only estates (still have a main entry usually)
+  if (main && !main.endsWith('game.js') && !main.includes('/game.js')) return true
+  return false
+}
+
+function minEntityDistanceM(
+  ent: ActiveSceneEntity,
+  dclX: number,
+  dclZ: number,
+  baseParcel: string
+): number {
+  const keys = ent.pointers.length ? ent.pointers : ent.parcels
+  let best = Infinity
+  for (const key of keys) {
+    try {
+      const p = parseParcelKey(key)
+      const d = distanceToParcelCenterM(dclX, dclZ, p, baseParcel)
+      if (d < best) best = d
+    } catch {
+      /* bad pointer */
+    }
+  }
+  // Fall back to base parcel if footprint missing from ring query.
+  if (!Number.isFinite(best)) {
+    try {
+      const p = parseParcelKey(ent.base)
+      return distanceToParcelCenterM(dclX, dclZ, p, baseParcel)
+    } catch {
+      return Infinity
+    }
+  }
+  return best
+}
+
+/** Classic roads + SDK6 — cannot be primary in this client. */
+function isNonPromotableEntity(entity: Record<string, unknown>): boolean {
+  const meta =
+    entity.metadata && typeof entity.metadata === 'object'
+      ? (entity.metadata as Record<string, unknown>)
+      : {}
+  const display =
+    meta.display && typeof meta.display === 'object'
+      ? (meta.display as Record<string, unknown>)
+      : {}
+  const title = typeof display.title === 'string' ? display.title : ''
+  const main = typeof meta.main === 'string' ? meta.main.trim().toLowerCase() : ''
+  const rv = meta.runtimeVersion
+  const rvStr = rv === undefined || rv === null ? '' : String(rv).trim()
+
+  if (rvStr === '6' || rvStr.startsWith('6.')) return true
+  if (/^Road at /i.test(title)) return true
+
+  if (main === 'game.js' || main.endsWith('/game.js') || main === 'bin/game.js') {
+    const content = Array.isArray(entity.content) ? entity.content : []
+    const hasRoadGlb = content.some((row) => {
+      if (!row || typeof row !== 'object') return false
+      const file =
+        typeof (row as { file?: string }).file === 'string' ? (row as { file: string }).file : ''
+      const base = file.split('/').pop() ?? file
+      return /^(OpenRoad_|OpenFork_|Road_|DeadEnd_|Fork_|Corner_|EmptyFork_)/i.test(base)
+    })
+    if (hasRoadGlb || /road|openroad|openfork|tram/i.test(title)) return true
+    if (!(rvStr === '7' || rvStr.startsWith('7.'))) return true
+  }
+
+  return false
+}

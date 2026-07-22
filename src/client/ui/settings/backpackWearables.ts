@@ -23,6 +23,13 @@ export type BackpackWearableItem = WearableDisplayCard & {
   /** Categories this wearable hides/replaces when equipped (ADR-239). */
   hides?: string[]
   replaces?: string[]
+  /** Creator-authored description from Catalyst metadata. */
+  description?: string
+  /** Marketplace collection display name (annotated async — see wearableCollections). */
+  collectionName?: string
+  /** Collection creator wallet (lowercase) + resolved profile name. */
+  creatorAddress?: string
+  creatorName?: string
 }
 
 type OwnedEntry = OwnedWearableEntry
@@ -30,6 +37,7 @@ type OwnedEntry = OwnedWearableEntry
 type WearableApiHit = {
   id?: string
   name?: string
+  description?: string
   rarity?: string | null
   thumbnail?: string
   data?: { category?: string; hides?: string[]; replaces?: string[] }
@@ -39,6 +47,8 @@ type BaseCatalogHit = WearableApiHit & {
   i18n?: Array<{ code?: string; text?: string }>
   data?: {
     category?: string
+    hides?: string[]
+    replaces?: string[]
     representations?: Array<{ bodyShapes?: string[] }>
   }
 }
@@ -206,7 +216,8 @@ function itemFromApiHit(hit: WearableApiHit, urn: string, assetUrn: string): Bac
     category,
     amount: 1,
     hides: hit.data?.hides,
-    replaces: hit.data?.replaces
+    replaces: hit.data?.replaces,
+    description: hit.description?.trim() || undefined
   }
 }
 
@@ -375,7 +386,10 @@ async function fetchBaseWearableCatalog(lambdasUrl: string): Promise<BackpackWea
       category,
       amount: 1,
       isBase: true,
-      bodyShapes: bodyShapes.length ? bodyShapes : undefined
+      bodyShapes: bodyShapes.length ? bodyShapes : undefined,
+      hides: hit.data?.hides,
+      replaces: hit.data?.replaces,
+      description: hit.description?.trim() || undefined
     })
   }
   return items
@@ -456,7 +470,9 @@ export function filterBackpackWearables(
     return (
       item.name.toLowerCase().includes(q) ||
       item.urn.toLowerCase().includes(q) ||
-      item.rarity.toLowerCase().includes(q)
+      item.rarity.toLowerCase().includes(q) ||
+      (item.collectionName?.toLowerCase().includes(q) ?? false) ||
+      (item.creatorName?.toLowerCase().includes(q) ?? false)
     )
   })
 }

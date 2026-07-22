@@ -28,6 +28,10 @@ export async function resolveSceneChatAdapter(
   const contentUrl = scene.realm.contentUrl.replace(/\/$/, '')
 
   if (isWorld) {
+    // World server owner can run content-only (no LiveKit) — chat stays off, scene still loads.
+    if (scene.realm.commsEnabled === false) {
+      return { ok: false, reason: 'world_comms_disabled' }
+    }
     const hint = scene.realm.commsAdapterHint?.trim()
     if (!hint) {
       return { ok: false, reason: 'world_comms_adapter_missing' }

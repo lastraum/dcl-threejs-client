@@ -2,9 +2,17 @@ export type ContentFile = { file: string; hash: string }
 
 export type SceneSource =
   | { kind: 'blank' }
-  | { kind: 'world'; worldName: string; entityId: string }
+  | {
+      kind: 'world'
+      worldName: string
+      entityId: string
+      /** Custom worlds content server origin when not using the official host. */
+      customServer?: string
+    }
   | { kind: 'coords'; x: number; y: number }
   | { kind: 'local'; projectId: string }
+  /** Smart wearable / portable experience scene (not parcel-bound). */
+  | { kind: 'portable'; urn: string }
 
 export type SceneLayout = {
   parcels: string[]
@@ -46,7 +54,11 @@ export type SceneEnvironmentKind =
  * Ignored by Unity/Godot Explorer. ThreejsClient-only scene.json environment.water knobs.
  */
 export type SceneWaterConfig = {
-  /** When false, no client water mesh (same as `?water=0`). Default true for island/water biomes. */
+  /**
+   * When false, no client water mesh (same as `?water=0`).
+   * Default true only when biome is `island`/`water` (those profiles set showWater).
+   * Worlds no longer default to island — set `environment.kind` / `"island"` to get water.
+   */
   enabled?: boolean
   /** When false, use Water.js fallback instead of GPGPU FFT. Default true when WebGL2. */
   fft?: boolean
@@ -291,6 +303,11 @@ export type SceneMetadata = {
    */
   environment?: SceneEnvironmentKind | SceneEnvironmentConfig
   featureToggles?: SceneFeatureToggles
+  /**
+   * Portable experience / smart wearable permissions (scene.json root).
+   * Not enforced on parcel scenes — consent UI + future PE capability gates.
+   */
+  requiredPermissions?: string[]
   /** `featureToggles.browserChat` alias — `"disabled"` or `{ "enabled": false }`. */
   browserChat?: SceneFeatureToggle | SceneBrowserChatConfig
   /**
@@ -316,13 +333,18 @@ export type SkyboxConfig = {
   moonExposure?: number
 }
 
-/** Catalyst / worlds realm endpoints from `/about`. */
+/** Catalyst / worlds realm endpoints from `/about` (+ worlds `/status` for LiveKit). */
 export type RealmEndpoints = {
   realmName: string
   networkId: number
   contentUrl: string
   lambdasUrl: string
   commsAdapterHint?: string
+  /**
+   * When false, world server has no LiveKit/comms adapter — solo play, no scene chat.
+   * Default true for parcels / Genesis.
+   */
+  commsEnabled?: boolean
 }
 
 export type ResolvedScene = {
@@ -348,6 +370,15 @@ export type ResolvedScene = {
   browserChatEnabled: boolean
   /** scene.json `featureToggles.nameTags` / top-level `nameTags` (+ `?nameTags=`). Default true. */
   nameTagsVisible: boolean
+  /**
+   * scene.json `featureToggles.portableExperiences` (+ URL override).
+   * Controls whether equipped PE / smart wearables may run in this primary scene.
+   */
+  portableExperiencesPolicy?: {
+    allowed: boolean
+    uiAllowed: boolean
+    raw: 'enabled' | 'disabled' | 'hideUi' | 'default'
+  }
   realm: RealmEndpoints
 }
 

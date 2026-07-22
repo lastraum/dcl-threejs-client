@@ -42,6 +42,10 @@ export type AvatarProfile = {
   skin: string
   hair: string
   eyes: string
+  /** D3JS-only brows tint (extension key / localStorage) — hair color when unset. */
+  browsColor?: string
+  /** D3JS-only facial hair tint (extension key / localStorage) — hair color when unset. */
+  facialHairColor?: string
   wearables: string[]
   forceRender: string[]
   emotes: ProfileEmoteSlot[]
@@ -63,6 +67,10 @@ export type AvatarComposeConfig = {
   skin: string
   hair: string
   eyes: string
+  /** D3JS-only brows tint — hair color when unset. */
+  brows?: string
+  /** D3JS-only facial hair tint — hair color when unset. */
+  facialHair?: string
   wearables: WearableDefinition[]
   forceRender: string[]
 }

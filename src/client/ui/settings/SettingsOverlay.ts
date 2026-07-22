@@ -4,13 +4,24 @@ import {
   profileDeployFingerprint
 } from '../../../avatar/deployProfile'
 import { CommunitiesBrowseView } from '../explore/CommunitiesBrowseView'
+import { backpackCategoryIcon } from './backpackCategoryIcons'
 import { BackpackView } from './BackpackView'
 import { EventsView, type EventsViewOptions } from './EventsView'
 import { MapView, type MapPlayerState } from './MapView'
 import { GalleryView } from './GalleryView'
 import { PlacesView, type PlacesViewOptions } from './PlacesView'
 
-export type SettingsTab = 'events' | 'places' | 'communities' | 'map' | 'backpack' | 'gallery'
+export type SettingsTab =
+  | 'events'
+  | 'places'
+  | 'communities'
+  | 'map'
+  | 'backpack'
+  | 'gallery'
+  | 'explore'
+
+/** Binoculars — experimental in-3D Explore tab. Matches the backpack line-icon style. */
+const BINOCULARS_ICON = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4.1" y="4.7" width="3.3" height="2.8" rx="0.6" stroke="currentColor" stroke-width="1.3"/><rect x="16.6" y="4.7" width="3.3" height="2.8" rx="0.6" stroke="currentColor" stroke-width="1.3"/><path d="M4.1 7.5h3.3l1.1 3.8v5.6a1.2 1.2 0 0 1-1.2 1.2H4.2A1.2 1.2 0 0 1 3 16.9v-5.4z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M19.9 7.5h-3.3l-1.1 3.8v5.6a1.2 1.2 0 0 0 1.2 1.2h3.1a1.2 1.2 0 0 0 1.2-1.2v-5.4z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8.5 11.3h7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`
 
 type TabDef = {
   id: SettingsTab
@@ -23,10 +34,18 @@ const TABS: TabDef[] = [
   { id: 'events', label: 'EVENTS', shortcut: 'X', icon: `<svg viewBox="0 0 24 24" fill="none"><rect x="5" y="6" width="14" height="13" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V7M16 4.5V7M5 10h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>` },
   { id: 'places', label: 'PLACES', shortcut: '?', icon: `<svg viewBox="0 0 24 24" fill="none"><path d="M12 21s6-4.35 6-10a6 6 0 1 0-12 0c0 5.65 6 10 6 10z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="11" r="2" fill="currentColor"/></svg>` },
   { id: 'communities', label: 'COMMUNITIES', shortcut: 'O', icon: `<svg viewBox="0 0 24 24" fill="none"><circle cx="9" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 17c0-2.2 2-4 4.5-4s4.5 1.8 4.5 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="16.5" cy="9" r="2" stroke="currentColor" stroke-width="1.3"/><path d="M13.5 17c.4-1.6 1.7-2.8 3.3-2.8 1 0 1.9.4 2.5 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>` },
-  { id: 'map', label: 'MAP', shortcut: 'M', icon: `<svg viewBox="0 0 24 24" fill="none"><path d="M12 21s6-4.35 6-10a6 6 0 1 0-12 0c0 5.65 6 10 6 10z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="11" r="2" fill="currentColor"/></svg>` },
-  { id: 'backpack', label: 'BACKPACK', shortcut: 'I', icon: `<svg viewBox="0 0 24 24" fill="none"><path d="M8 8V6.5A4 4 0 0 1 12 2.5 4 4 0 0 1 16 6.5V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="6" y="8" width="12" height="12.5" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M12 12v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>` },
-  { id: 'gallery', label: 'GALLERY', shortcut: 'K', icon: `<svg viewBox="0 0 24 24" fill="none"><rect x="4" y="6" width="16" height="12" rx="1.5" stroke="currentColor" stroke-width="1.5"/><circle cx="9" cy="10.5" r="1.5" fill="currentColor"/><path d="m6 16 4-3 3 2.5 2-1.5 3 3" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>` }
+  // Folded-map glyph — distinct from the PLACES pin above.
+  { id: 'map', label: 'MAP', shortcut: 'M', icon: `<svg viewBox="0 0 24 24" fill="none"><path d="M3.5 6.75v13.5L9 17.75l6 2.5 5.5-2.5V4.25L15 6.75l-6-2.5-5.5 2.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M9 4.25v13.5M15 6.75v13.5" stroke="currentColor" stroke-width="1.3"/></svg>` },
+  // Shared "accepted" backpack mark — same glyph as the backpack categories "All" row.
+  { id: 'backpack', label: 'BACKPACK', shortcut: 'I', icon: backpackCategoryIcon('all') },
+  { id: 'gallery', label: 'GALLERY', shortcut: 'K', icon: `<svg viewBox="0 0 24 24" fill="none"><rect x="4" y="6" width="16" height="12" rx="1.5" stroke="currentColor" stroke-width="1.5"/><circle cx="9" cy="10.5" r="1.5" fill="currentColor"/><path d="m6 16 4-3 3 2.5 2-1.5 3 3" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>` },
+  // Experimental: the full 2D Explore experience surfaced inside the 3D overlay.
+  // No keyboard shortcut — KeyE is IA_PRIMARY (in-world interact) and must stay free.
+  { id: 'explore', label: 'EXPLORE', shortcut: '', icon: BINOCULARS_ICON }
 ]
+
+/** Simplified Decentraland mark (two pyramids + two suns); overlay-header fallback. */
+const LOGO_MARK = `<svg viewBox="0 0 44 44" width="22" height="22" aria-hidden="true"><circle cx="22" cy="22" r="22" fill="#FF2D55"/><circle cx="13.6" cy="11.4" r="2.5" fill="none" stroke="#fff" stroke-width="1.8"/><circle cx="28.2" cy="14.2" r="4.7" fill="none" stroke="#fff" stroke-width="1.8"/><polygon points="15.6,14.6 7,30 22.6,30" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/><polygon points="29.4,21 21,30 38,30" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/></svg>`
 
 const SHORTCUT_KEY_MAP: Record<string, SettingsTab> = {
   KeyX: 'events',
@@ -40,6 +59,7 @@ export type SettingsOverlayOptions = {
   session: SessionIdentity
   getMapPlayerState?: () => MapPlayerState | null
   onMapJumpIn?: (px: number, py: number) => void
+  onMapJumpInWorld?: (worldName: string) => void
   onEventJumpIn?: EventsViewOptions['onJumpIn']
   onEventViewScene?: EventsViewOptions['onViewScene']
   onPlaceJumpIn?: PlacesViewOptions['onJumpIn']
@@ -51,6 +71,8 @@ export type SettingsOverlayOptions = {
   onVrmEquipChange?: () => void | Promise<void>
   /** Community modal 💬 → chat dock / in-world panel. */
   onOpenCommunityChat?: (community: { id: string; name: string }) => void
+  /** Leave the 3D overlay for the 2D Explore shell (the top-left "2D" dot). */
+  onExitTo2D?: () => void
 }
 
 export class SettingsOverlay {
@@ -68,6 +90,7 @@ export class SettingsOverlay {
   private session: SessionIdentity
   private getMapPlayerState?: () => MapPlayerState | null
   private onMapJumpIn?: (px: number, py: number) => void
+  private onMapJumpInWorld?: (worldName: string) => void
   private onEventJumpIn?: EventsViewOptions['onJumpIn']
   private onEventViewScene?: EventsViewOptions['onViewScene']
   private onPlaceJumpIn?: PlacesViewOptions['onJumpIn']
@@ -82,11 +105,13 @@ export class SettingsOverlay {
   private onClose?: () => void
   private onVrmEquipChange?: () => void | Promise<void>
   private onOpenCommunityChat?: SettingsOverlayOptions['onOpenCommunityChat']
+  private onExitTo2D?: () => void
 
   constructor(opts: SettingsOverlayOptions) {
     this.session = opts.session
     this.getMapPlayerState = opts.getMapPlayerState
     this.onMapJumpIn = opts.onMapJumpIn
+    this.onMapJumpInWorld = opts.onMapJumpInWorld
     this.onEventJumpIn = opts.onEventJumpIn
     this.onEventViewScene = opts.onEventViewScene
     this.onPlaceJumpIn = opts.onPlaceJumpIn
@@ -97,6 +122,7 @@ export class SettingsOverlay {
     this.onClose = opts.onClose
     this.onVrmEquipChange = opts.onVrmEquipChange
     this.onOpenCommunityChat = opts.onOpenCommunityChat
+    this.onExitTo2D = opts.onExitTo2D
 
     this.root = document.createElement('div')
     this.root.className = 'settings-overlay'
@@ -106,9 +132,14 @@ export class SettingsOverlay {
       <aside class="settings-overlay__panel" role="dialog" aria-label="Options" aria-modal="true">
         <div class="settings-overlay__header">
           <div class="settings-overlay__heading">
-            <svg viewBox="0 0 44 44" width="22" height="22" aria-hidden="true"><circle cx="22" cy="22" r="22" fill="#FF2D55"/><path fill="#fff" d="M10 28l6-14h2.2l3.4 8.2L25 14h2.1l6 14h-2.4l-1.2-3H13.6l-1.2 3H10zm5.8-5.2h6.8L19.8 17l-4 5.8z"/></svg>
+            <button type="button" class="settings-overlay__logo" data-logo title="Go to the 2D Explore site" aria-label="Go to the 2D Explore site">
+              <span class="settings-overlay__logo-icon" data-logo-icon aria-hidden="true">${LOGO_MARK}</span>
+              <span class="settings-overlay__logo-2d" aria-hidden="true">2D</span>
+            </button>
             <span class="settings-overlay__title">SETTINGS</span>
+            <span class="settings-overlay__title-count" data-title-count hidden></span>
           </div>
+          <div class="settings-overlay__header-slot" data-header-slot></div>
           <span class="settings-overlay__user-name"></span>
           <button class="settings-overlay__close" type="button" aria-label="Close">&times;</button>
         </div>
@@ -125,6 +156,10 @@ export class SettingsOverlay {
 
     this.buildTabs()
     this.closeBtn.addEventListener('click', () => this.hide())
+    this.root.querySelector('[data-logo]')?.addEventListener('click', () => {
+      if (this.onExitTo2D) this.onExitTo2D()
+      else this.hide()
+    })
     this.root.addEventListener('click', (e) => {
       if (e.target === this.root) this.hide()
     })
@@ -139,8 +174,8 @@ export class SettingsOverlay {
       btn.className = 'settings-overlay__tab'
       btn.dataset.tab = tab.id
       btn.setAttribute('role', 'tab')
-      btn.title = `${tab.label} [${tab.shortcut}]`
-      btn.setAttribute('aria-label', `${tab.label} (${tab.shortcut})`)
+      btn.title = tab.shortcut ? `${tab.label} [${tab.shortcut}]` : tab.label
+      btn.setAttribute('aria-label', tab.shortcut ? `${tab.label} (${tab.shortcut})` : tab.label)
       btn.innerHTML = `<span class="settings-overlay__tab-icon">${tab.icon}</span>`
       btn.addEventListener('click', () => this.switchTab(tab.id))
       this.tabBar.appendChild(btn)
@@ -187,6 +222,15 @@ export class SettingsOverlay {
     this.updateUserInfo()
     this.switchTab(tab)
     this.onOpen?.()
+  }
+
+  /** Emote wheel Customize [E] — backpack with Emotes sub-tab selected. */
+  showBackpackEmotes(): void {
+    this.show('backpack')
+    // BackpackView mounts in switchTab; select emotes after DOM is ready.
+    requestAnimationFrame(() => {
+      this.backpackView?.setSubTab('emotes')
+    })
   }
 
   /** Open communities tab and a specific community modal (HUD toasts). */
@@ -465,14 +509,31 @@ export class SettingsOverlay {
     const titleEl = this.root.querySelector('.settings-overlay__title')
     const tabDef = TABS.find((tab) => tab.id === id)
     if (titleEl) titleEl.textContent = tabDef?.label ?? 'SETTINGS'
+    // Red-dot mark mirrors the active rail tab's icon (its hover state swaps to "2D").
+    const logoIcon = this.root.querySelector('[data-logo-icon]') as HTMLElement | null
+    if (logoIcon && tabDef) logoIcon.innerHTML = tabDef.icon
     if (activeBtn && window.matchMedia('(max-width: 767px)').matches) {
       activeBtn.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' })
     }
     this.renderContent()
   }
 
+  /** Move view-owned controls into the top bar; cleared on every tab switch. */
+  private headerSlotEl(): HTMLElement {
+    return this.root.querySelector('[data-header-slot]') as HTMLElement
+  }
+
+  private setTitleCount(total: number | null): void {
+    const el = this.root.querySelector('[data-title-count]') as HTMLElement | null
+    if (!el) return
+    el.hidden = total === null
+    el.textContent = total === null ? '' : `(${total})`
+  }
+
   private renderContent(): void {
     this.contentArea.innerHTML = ''
+    this.headerSlotEl().innerHTML = ''
+    this.setTitleCount(null)
     this.backpackView?.dispose()
     this.backpackView = null
     this.eventsView?.dispose()
@@ -496,6 +557,11 @@ export class SettingsOverlay {
         worldName: this.worldName
       })
       this.contentArea.appendChild(this.eventsView.root)
+      // Merged top bar: week nav + layout toggle + Today/Create left, search right.
+      const actions = this.eventsView.root.querySelector('.events-view__header-actions')
+      const eventsSearch = this.eventsView.root.querySelector('.events-view__search')
+      if (actions) this.headerSlotEl().appendChild(actions)
+      if (eventsSearch) this.headerSlotEl().appendChild(eventsSearch)
       this.eventsView.mount()
     } else if (this.activeTab === 'places') {
       this.placesView = new PlacesView({
@@ -503,6 +569,16 @@ export class SettingsOverlay {
         getAuthIdentity: () => this.session.getAuthIdentity()
       })
       this.contentArea.appendChild(this.placesView.root)
+      // Merged top bar: sub-tabs left, sort + search right; emptied wrappers collapse.
+      const slot = this.headerSlotEl()
+      const subtabs = this.placesView.root.querySelector('[data-subtabs]')
+      const sort = this.placesView.root.querySelector('[data-sort]')
+      const search = this.placesView.root.querySelector('[data-search]')
+      if (subtabs) slot.appendChild(subtabs)
+      if (sort) slot.appendChild(sort)
+      if (search) slot.appendChild(search)
+      this.placesView.root.querySelector('.places-view__header')?.remove()
+      this.placesView.root.querySelector('.places-view__toolbar')?.remove()
       this.placesView.mount()
     } else if (this.activeTab === 'communities') {
       this.communitiesView = new CommunitiesBrowseView({
@@ -510,10 +586,21 @@ export class SettingsOverlay {
         getUserAddress: () => this.session.getAddress() ?? null,
         onOpenChat: (community) => {
           this.onOpenCommunityChat?.({ id: community.id, name: community.name })
-        }
+        },
+        onBrowseCount: (total) => this.setTitleCount(total)
       })
       this.communitiesView.root.classList.add('communities-browse-view--embedded')
       this.contentArea.appendChild(this.communitiesView.root)
+      // Merged top bar: create + invites left, search right; browse title is CSS-hidden.
+      const slot = this.headerSlotEl()
+      const create = this.communitiesView.root.querySelector('[data-create]')
+      const invites = this.communitiesView.root.querySelector('[data-invites]')
+      const searchWrap = this.communitiesView.root.querySelector(
+        '.communities-browse-view__search-wrap'
+      )
+      if (create) slot.appendChild(create)
+      if (invites) slot.appendChild(invites)
+      if (searchWrap) slot.appendChild(searchWrap)
       this.communitiesView.mount()
     } else if (this.activeTab === 'gallery') {
       this.galleryView = new GalleryView({
@@ -522,12 +609,20 @@ export class SettingsOverlay {
         peerUrl: this.session.getContentUrl() || undefined
       })
       this.contentArea.appendChild(this.galleryView.root)
+      // Merged top bar: metadata search + refresh right.
+      const gallerySearch = this.galleryView.root.querySelector('[data-search]')
+      const galleryRefresh = this.galleryView.root.querySelector('[data-refresh]')
+      if (gallerySearch) this.headerSlotEl().appendChild(gallerySearch)
+      if (galleryRefresh) this.headerSlotEl().appendChild(galleryRefresh)
       this.galleryView.mount()
     } else if (this.activeTab === 'backpack') {
       this.backpackView = new BackpackView(this.session, {
         onVrmEquipChange: () => this.onVrmEquipChange?.()
       })
       this.contentArea.appendChild(this.backpackView.root)
+      // Merged top bar: sub-tabs left, sort/search right — same pattern as other tabs.
+      const subHeader = this.backpackView.root.querySelector('.backpack-view__sub-header')
+      if (subHeader) this.headerSlotEl().appendChild(subHeader)
     } else if (this.activeTab === 'map' && this.getMapPlayerState) {
       // In-world / settings panel — no Explore/Map social shell or Genesis Plaza HUD.
       const player = this.getMapPlayerState()
@@ -535,13 +630,33 @@ export class SettingsOverlay {
       this.mapView = new MapView({
         getPlayerState: this.getMapPlayerState,
         onJumpIn: this.onMapJumpIn,
+        onJumpInWorld: this.onMapJumpInWorld,
         embedded: true,
+        // Live feet follow — initialCenter alone used to freeze the marker.
+        followPlayer: true,
         initialCenter: m
           ? { px: parseInt(m[1]!, 10), py: parseInt(m[2]!, 10) }
           : null
       })
       this.contentArea.appendChild(this.mapView.root)
+      // Merged top bar: player/world search right.
+      const mapSearch = this.mapView.root.querySelector('.dcl-map__search')
+      if (mapSearch) this.headerSlotEl().appendChild(mapSearch)
       this.mapView.mount()
+    } else if (this.activeTab === 'explore') {
+      // Experimental: the full 2D Explore experience (Live Now + Featured + browse)
+      // surfaced inside the 3D overlay. Needs its own scroll container for infinite scroll.
+      const scroller = document.createElement('div')
+      scroller.className = 'settings-overlay__explore-scroll'
+      this.placesView = new PlacesView({
+        variant: 'explorer',
+        scrollRoot: scroller,
+        onJumpIn: this.onPlaceJumpIn,
+        getAuthIdentity: () => this.session.getAuthIdentity()
+      })
+      scroller.appendChild(this.placesView.root)
+      this.contentArea.appendChild(scroller)
+      this.placesView.mount()
     } else {
       const placeholder = document.createElement('div')
       placeholder.className = 'settings-overlay__placeholder'

@@ -5,10 +5,74 @@
 # Dev panel Community tab renders this as a single workflow table.
 
 schema_version: 2
-updated: 2026-07-15
+updated: 2026-07-21
 source: github
 base_branch: dev-latest
 workflow:
+  - stage: merged
+    integration_ref: pr:43
+    title: stop PE HUD flash from paint thrash
+    owner: lastraum
+    pr: 43
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/43
+    updated: 2026-07-21
+  - stage: merged
+    integration_ref: pr:42
+    title: stop PE HUD flash on every click
+    owner: lastraum
+    pr: 42
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/42
+    updated: 2026-07-21
+  - stage: merged
+    integration_ref: pr:41
+    title: Genesis multi-scene AOI, Explorer roads, empty land
+    owner: lastraum
+    pr: 41
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/41
+    updated: 2026-07-21
+  - stage: merged
+    integration_ref: pr:40
+    title: opt-in toon shading via Graphics settings
+    owner: lastraum
+    pr: 40
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/40
+    updated: 2026-07-21
+  - stage: merged
+    integration_ref: pr:39
+    title: parallel-skeleton fallback + facial-hair tint order
+    owner: lastraum
+    pr: 39
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/39
+    updated: 2026-07-21
+  - stage: merged
+    integration_ref: pr:34
+    title: official DCL rarity colors + sort by rarity
+    owner: awedjob
+    pr: 34
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/34
+    updated: 2026-07-21
+  - stage: merged
+    integration_ref: pr:29
+    title: D3JS-exclusive brow + facial hair colors
+    owner: awedjob
+    pr: 29
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/29
+    updated: 2026-07-20
+  - stage: merged
+    integration_ref: pr:28
+    title: skeleton-named display meshes pruned invisible + hides-driven base shell
+      hiding
+    owner: awedjob
+    pr: 28
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/28
+    updated: 2026-07-20
+  - stage: merged
+    integration_ref: pr:26
+    title: hand-drawn category icon set
+    owner: awedjob
+    pr: 26
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/26
+    updated: 2026-07-17
   - stage: merged
     integration_ref: pr:25
     title: handoff LiveKit, stabilize cast video, cut main-thread tax
@@ -86,31 +150,3 @@ workflow:
     pr: 11
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/11
     updated: 2026-07-10
-  - stage: merged
-    integration_ref: pr:10
-    title: route /api/texture to the encoded host instead of arweave.net
-    owner: awedjob
-    pr: 10
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/10
-    updated: 2026-07-09
-  - stage: merged
-    integration_ref: pr:5
-    title: "perf(tween): stop Genesis hot-loop + silence worker deliver logs"
-    owner: lastraum
-    pr: 5
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/5
-    updated: 2026-06-17
-  - stage: merged
-    integration_ref: pr:4
-    title: proactive TweenState delivery for tweenCompleted parity
-    owner: lastraum
-    pr: 4
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/4
-    updated: 2026-06-17
-  - stage: merged
-    integration_ref: ecs:TriggerArea
-    title: TriggerArea Tier A — volume enter/exit and scene callbacks
-    owner: lastraum
-    pr: 2
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/2
-    updated: 2026-06-17

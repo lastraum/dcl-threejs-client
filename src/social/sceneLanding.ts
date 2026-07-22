@@ -1,7 +1,7 @@
 import { identityFromAvatarProfile } from '../avatar/displayName'
 import { fetchProfileCached } from '../avatar/peerApi'
 import type { RouteTarget } from '../dcl/content/route'
-import { fetchParcelInfo } from '../map/parcelInfo'
+import { fetchParcelInfo, isAtlasMapTileUrl } from '../map/parcelInfo'
 import {
   dedupeEventsById,
   eventJumpRoute,
@@ -20,9 +20,15 @@ import {
   worldNameSearchCandidates,
   type DclPlacesWorld
 } from './dclPlaces'
+import { fetchWorldDeployDisplayMeta } from '../dcl/content/resolveScene'
 import { fetchPublicSceneTitle } from './sceneDisplayTitle'
+import { formatRealmParam } from '../network/worlds/worldsServerConfig'
 
-const WORLDS = 'https://worlds-content-server.decentraland.org'
+import {
+  worldsAboutUrl,
+  worldsContentBase,
+  worldsContentsUrl
+} from '../network/worlds/worldsServerConfig'
 /** Same default as dcl-companion server (`MARKETPLACE_SUBGRAPH_URL`). */
 const MARKETPLACE_SUBGRAPH =
   (import.meta.env.VITE_MARKETPLACE_SUBGRAPH_URL as string | undefined)?.trim().replace(/\/$/, '') ||
@@ -34,6 +40,11 @@ export type SceneLandingMeta = {
   imageUrl: string | null
   pointerLabel: string
   kind: 'parcel' | 'world'
+  /**
+   * Custom worlds content server origin when this landing is not on the official host.
+   * Landing UI shows kind label "Custom" instead of "World".
+   */
+  customServer?: string | null
   userCount: number
   ownerAddress: string | null
   /**
@@ -43,6 +54,13 @@ export type SceneLandingMeta = {
   ownerAddresses: string[]
   ownerDisplayName: string
   categories: string[]
+}
+
+/** Landing card kind chip: Parcel | World | Custom (self-hosted worlds server). */
+export function sceneLandingKindLabel(meta: Pick<SceneLandingMeta, 'kind' | 'customServer'>): string {
+  if (meta.kind === 'parcel') return 'Parcel'
+  if (meta.customServer?.trim()) return 'Custom'
+  return 'World'
 }
 
 /** ENS label for a world pointer: `rickroll.dcl.eth` → `rickroll`. */
@@ -140,9 +158,13 @@ function entityIdFromUrn(urn: string): string | null {
   return m?.[1] ?? null
 }
 
-async function fetchWorldDeploymentDescription(worldName: string): Promise<string> {
+async function fetchWorldDeploymentDescription(
+  worldName: string,
+  customServer?: string | null
+): Promise<string> {
   try {
-    const res = await fetch(`${WORLDS}/world/${encodeURIComponent(worldName)}/about`, {
+    const base = worldsContentBase(customServer)
+    const res = await fetch(worldsAboutUrl(base, worldName), {
       headers: { Accept: 'application/json' }
     })
     if (!res.ok) return ''
@@ -151,7 +173,7 @@ async function fetchWorldDeploymentDescription(worldName: string): Promise<strin
     if (typeof urn !== 'string') return ''
     const entityId = entityIdFromUrn(urn)
     if (!entityId) return ''
-    const entityRes = await fetch(`${WORLDS}/contents/${encodeURIComponent(entityId)}`, {
+    const entityRes = await fetch(worldsContentsUrl(base, entityId), {
       headers: { Accept: 'application/json' }
     })
     if (!entityRes.ok) return ''
@@ -162,14 +184,17 @@ async function fetchWorldDeploymentDescription(worldName: string): Promise<strin
   }
 }
 
-async function resolveWorldDescription(worldName: string): Promise<string> {
+async function resolveWorldDescription(
+  worldName: string,
+  customServer?: string | null
+): Promise<string> {
   const short = worldName.replace(/\.dcl\.eth$/i, '').trim() || worldName
   const candidates = new Set<string>([worldName, short])
   if (!worldName.toLowerCase().endsWith('.dcl.eth')) {
     candidates.add(`${short}.dcl.eth`)
   }
   for (const name of candidates) {
-    const description = await fetchWorldDeploymentDescription(name)
+    const description = await fetchWorldDeploymentDescription(name, customServer)
     if (description) return description
   }
   return ''
@@ -255,10 +280,19 @@ export async function fetchSceneLandingMeta(
 
     const title = await fetchPublicSceneTitle(route)
 
+    // Explorer card uses Places `image` (scene art / PlazaPic). Prefer that over the
+    // atlas map tile parcel.imageUrl falls back to when scene-thumbnail.png is absent.
+    const parcelImg = parcel?.imageUrl?.trim() || null
+    const placeImg = place?.image?.trim() || null
+    const imageUrl =
+      placeImg ??
+      (parcelImg && !isAtlasMapTileUrl(parcelImg) ? parcelImg : null) ??
+      parcelImg
+
     return {
       title,
       description: parcel?.description?.trim() ?? '',
-      imageUrl: parcel?.imageUrl ?? place?.image ?? null,
+      imageUrl,
       pointerLabel: `${route.x}, ${route.y}`,
       kind: 'parcel',
       userCount: place?.userCount ?? 0,
@@ -269,7 +303,39 @@ export async function fetchSceneLandingMeta(
     }
   }
 
-  // Prefer exact `names=` match so Places owner wallet is reliable for world-name owners.
+  const customServer = route.customServer?.trim() || null
+  const shortName = route.worldName.replace(/\.dcl\.eth$/i, '').trim() || route.worldName
+
+  // Custom realm: landing card from THAT server's deployed entity only — never Places/DCL catalog.
+  if (customServer) {
+    const deploy = await fetchWorldDeployDisplayMeta(route.worldName, customServer).catch(() => null)
+    const title =
+      deploy?.title?.trim() ||
+      (await fetchPublicSceneTitle(route).catch(() => null)) ||
+      shortName
+    const description =
+      deploy?.description?.trim() ||
+      (await resolveWorldDescription(route.worldName, customServer)) ||
+      ''
+    const realmHost = formatRealmParam(customServer) || customServer
+    return {
+      title,
+      description,
+      imageUrl: deploy?.imageUrl ?? null,
+      pointerLabel: route.worldName,
+      kind: 'world',
+      customServer,
+      // Show host so the card is obviously not the official WCS listing.
+      // Owner/userCount from DCL Places would be wrong for custom servers.
+      userCount: 0,
+      ownerAddress: null,
+      ownerAddresses: [],
+      ownerDisplayName: realmHost,
+      categories: []
+    }
+  }
+
+  // Official worlds: Prefer exact `names=` match so Places owner wallet is reliable.
   const nameCandidates = worldNameSearchCandidates(route.worldName)
   const [byName, bySearch] = await Promise.all([
     nameCandidates.length
@@ -309,9 +375,8 @@ export async function fetchSceneLandingMeta(
     world?.owner,
     world ? placeOwnerAddress(world) : null
   )
-  const shortName = route.worldName.replace(/\.dcl\.eth$/i, '').trim() || route.worldName
   const ownerDisplay = await ownerDisplayName(owners.primary, shortName)
-  const description = await resolveWorldDescription(route.worldName)
+  const description = await resolveWorldDescription(route.worldName, null)
   const title = await fetchPublicSceneTitle(route)
 
   return {
@@ -320,6 +385,7 @@ export async function fetchSceneLandingMeta(
     imageUrl: world?.image ?? null,
     pointerLabel: route.worldName,
     kind: 'world',
+    customServer: null,
     userCount: world?.userCount ?? 0,
     ownerAddress: owners.primary,
     ownerAddresses: owners.all,

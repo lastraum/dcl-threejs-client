@@ -2,9 +2,10 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-19  
-> **Current phase:** **v1.3.x** — production beta + place analytics; still not full Explorer parity.  
-> **Shipped (1.x):** **public place analytics (landing stats)** · **v1.3.0 plaza/poker PE · TextShape UV · UiBackground tint · chat translate** · **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · multi-room chat · nearby voice · P4 bloom · glider.  
+> **Last updated:** 2026-07-22  
+> **Current phase:** **v1.4.x** — production beta; custom worlds + map/UI shell; still not full Explorer parity.  
+> **Shipped (1.x):** **v1.4.0 custom worlds · Worlds map · AOI · notifications/credits/emotes · place analytics** · **v1.3.0 plaza/poker PE · TextShape UV · UiBackground tint · chat translate** · **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · multi-room chat · nearby voice · P4 bloom · glider.  
+
 > **1.x next:** backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page · graphics P3 distance culls · analytics charts polish.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
@@ -13,6 +14,37 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — v1.4.0 release (Custom worlds · Worlds map · AOI · shell UI) (2026-07-22)
+
+**Status: release cut** — `dev-latest` → `main` · tag `v1.4.0`.
+
+### What's new
+
+- **Custom worlds** — deep links (`?realm=` + `worldName=`), solo/LiveKit, custom landing labels, favourites, load reliability
+- **Worlds map** — Explorer-style A–Z world grid next to Genesis Plaza; View hover + red Jump In modal
+- **Area of Interest** — Genesis multi-scene AOI with surrounding scene visibility (roads + first-frame secondaries)
+- **Notifications + credits** — sidebar notifications inbox and marketplace weekly rewards panel
+- **Emote wheel / backpack** — rarity gradients, thumbnails, E opens Emotes; wearables-parity emote grid
+- **Shell UI** — overlay/backpack redesign, 2D↔3D toggle, auth reliability fixes
+- **Avatar / graphics** — opt-in toon shading, skeleton/hides polish, brow + facial hair colors
+- **Place analytics** — public landing stats (`build:prod`); plain build keeps analytics off
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Custom worlds** | 🟢 | Routing · LiveKit optional · deploy-meta landing · env defaults |
+| **Worlds map + modal** | 🟢 | Places catalog · live occupancy · Jump In → world |
+| **Genesis AOI** | 🟢 | Multi-scene visibility · Explorer roads |
+| **Notifications / credits** | 🟢 | Signed notifications API · seasons/credits |
+| **Emote wheel** | 🟢 | Rarity · thumbs · E→backpack emotes |
+| **PE HUD flash** | 🟢 | Paint thrash + force-dismiss fixes |
+| **Place analytics** | 🟢 | Landing charts · prod flag |
+
+**QA (release smoke):** custom world deep link + Jump In · Worlds map View→modal · Genesis AOI neighbors · notifications/credits wallet · emote wheel + E · plaza load · auth 2D/3D.
+
+**Tip:** `v1.4.0` on `main`.
 
 ---
 

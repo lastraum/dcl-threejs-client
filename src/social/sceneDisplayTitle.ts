@@ -44,6 +44,13 @@ export async function fetchPublicSceneTitle(
     )
   }
 
+  const shortName = route.worldName.replace(/\.dcl\.eth$/i, '').trim() || route.worldName
+
+  // Custom realm: never fall back to DCL Places catalog (same worldName can collide).
+  if (route.customServer?.trim()) {
+    return deployedTitle ?? shortName
+  }
+
   const worlds = await fetchDclWorldsWithNameFallback({
     search: route.worldName,
     limit: 8,
@@ -51,7 +58,6 @@ export async function fetchPublicSceneTitle(
   }).catch(() => [] as DclPlacesWorld[])
 
   const world = pickWorldForRoute(worlds, route.worldName)
-  const shortName = route.worldName.replace(/\.dcl\.eth$/i, '').trim() || route.worldName
   return deployedTitle ?? world?.title ?? shortName
 }
 

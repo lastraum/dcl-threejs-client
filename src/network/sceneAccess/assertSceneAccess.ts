@@ -65,7 +65,15 @@ export async function assertSceneAccess(
   const isWorld = scene.source.kind === 'world'
   let sceneId = scene.entityId?.trim() || ''
   if (!sceneId) {
-    sceneId = (await resolveCommsSceneId(pointer, scene.realm.contentUrl, null))?.trim() || ''
+    sceneId =
+      (
+        await resolveCommsSceneId(
+          pointer,
+          scene.realm.contentUrl,
+          null,
+          scene.source.kind === 'world' ? scene.source.customServer : null
+        )
+      )?.trim() || ''
   }
   if (!sceneId) {
     clientDebugLog.log('client', `Scene access check skipped — no scene id for ${pointer}`, {

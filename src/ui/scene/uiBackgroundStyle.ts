@@ -208,14 +208,15 @@ export function resolveUiBackgroundImageUrl(
   return resolveSceneTextureUrl(src, scene)
 }
 
+/** Near-white RGB only (alpha ignored). */
+function isWhiteRgb(c: { r?: number; g?: number; b?: number; a?: number } | undefined): boolean {
+  if (!c) return true
+  return (c.r ?? 1) >= 0.99 && (c.g ?? 1) >= 0.99 && (c.b ?? 1) >= 0.99
+}
+
 function isOpaqueWhite(c: { r?: number; g?: number; b?: number; a?: number } | undefined): boolean {
   if (!c) return true
-  return (
-    (c.r ?? 1) >= 0.99 &&
-    (c.g ?? 1) >= 0.99 &&
-    (c.b ?? 1) >= 0.99 &&
-    effectiveUiBackgroundAlpha(c) >= 0.99
-  )
+  return isWhiteRgb(c) && effectiveUiBackgroundAlpha(c) >= 0.99
 }
 
 function isOpaqueBlack(c: { r?: number; g?: number; b?: number; a?: number } | undefined): boolean {
@@ -234,11 +235,21 @@ function colorMultiplyKey(
   return `${imageUrl}|${r},${g},${b},${a}`
 }
 
-/** True when color is not opaque white — texture must be multiplied (Explorer parity). */
+/**
+ * True when RGB tint must be baked into the texture (Explorer color×texture).
+ *
+ * **White RGB + any alpha** does NOT need canvas bake — CSS `img.opacity` matches
+ * Explorer `Color4(1,1,1,a)` multiply. Canvas bake on animated alpha (CBD Plaza
+ * welcome splash fades 0→0.92→0) was re-baking every frame and, while pending or
+ * on CORS/getImageData failure, left a solid white panel forever.
+ *
+ * Dark/tinted RGB (Poker welcome, green buttons) still needs premultiply bake.
+ */
 function needsTextureColorMultiply(
   c: { r?: number; g?: number; b?: number; a?: number } | null | undefined
 ): boolean {
   if (!c) return false
+  if (isWhiteRgb(c)) return false
   if (isOpaqueWhite(c)) return false
   return true
 }
@@ -246,6 +257,9 @@ function needsTextureColorMultiply(
 /**
  * Return a blob URL of `imageUrl` with per-texel color multiply, or null while baking.
  * Fires `scene-ui-image-loaded` when a bake completes so the DOM can repaint.
+ *
+ * On hard failure, caches `imageUrl` itself under the multiply key so callers stop
+ * painting solid tint forever (CBD Plaza welcome splash).
  */
 function resolveColorMultipliedImageUrl(
   imageUrl: string,
@@ -261,6 +275,13 @@ function resolveColorMultipliedImageUrl(
   const mg = clamp01(c.g ?? 1)
   const mb = clamp01(c.b ?? 1)
   const ma = effectiveUiBackgroundAlpha(c)
+
+  const failBake = (): void => {
+    // Prefer raw texture over permanent white solid panel.
+    multipliedImageUrl.set(key, imageUrl)
+    multipliedImageLoading.delete(key)
+    notifyUiImageReady()
+  }
 
   const bake = (img: HTMLImageElement) => {
     try {
@@ -284,20 +305,19 @@ function resolveColorMultipliedImageUrl(
       ctx.putImageData(imageData, 0, 0)
       canvas.toBlob(
         (blob) => {
-          multipliedImageLoading.delete(key)
           if (!blob) {
-            notifyUiImageReady()
+            failBake()
             return
           }
           const url = URL.createObjectURL(blob)
           multipliedImageUrl.set(key, url)
+          multipliedImageLoading.delete(key)
           notifyUiImageReady()
         },
         'image/png'
       )
     } catch {
-      multipliedImageLoading.delete(key)
-      notifyUiImageReady()
+      failBake()
     }
   }
 
@@ -317,14 +337,12 @@ function resolveColorMultipliedImageUrl(
         }
         retry.onerror = () => {
           URL.revokeObjectURL(blobUrl)
-          multipliedImageLoading.delete(key)
-          notifyUiImageReady()
+          failBake()
         }
         retry.src = blobUrl
       })
       .catch(() => {
-        multipliedImageLoading.delete(key)
-        notifyUiImageReady()
+        failBake()
       })
   }
   img.src = imageUrl
@@ -622,6 +640,19 @@ export function applyUiBackgroundStyles(
   imageUrl: string | null,
   scale?: UiScreenScale
 ): void {
+  const c = bg?.color
+  const tint = color4Css(c)
+  const rawSrc = extractUiTextureSrc(bg?.texture)
+  const mode = imageUrl
+    ? normalizeBackgroundTextureMode(bg?.textureMode, rawSrc, bg?.textureSlices)
+    : -1
+  // Skip full style thrash when paint re-visits stable PE HUD panels every tick.
+  // Clearing borderImage / swapping solid→texture every frame is the PX UI flash.
+  const uvsKey = bg?.uvs?.length ? bg.uvs.map((n) => Number(n).toFixed(4)).join(',') : ''
+  const sig = `${imageUrl ?? ''}|${mode}|${tint}|${uvsKey}`
+  if (el.dataset.dclUiBgSig === sig) return
+  el.dataset.dclUiBgSig = sig
+
   el.style.borderImage = ''
   el.style.borderImageSource = ''
   el.style.borderImageSlice = ''
@@ -630,8 +661,6 @@ export function applyUiBackgroundStyles(
   el.style.borderImageOutset = ''
   el.style.backgroundBlendMode = ''
 
-  const c = bg?.color
-  const tint = color4Css(c)
   if (!imageUrl) {
     clearBgImg(el)
     el.style.backgroundImage = ''
@@ -646,8 +675,6 @@ export function applyUiBackgroundStyles(
     return
   }
 
-  const rawSrc = extractUiTextureSrc(bg?.texture)
-  const mode = normalizeBackgroundTextureMode(bg?.textureMode, rawSrc, bg?.textureSlices)
   const screenScale = scale ?? { scaleX: 1, scaleY: 1, uniform: 1 }
 
   if (mode === BackgroundTextureMode.NINE_SLICES) {
@@ -660,12 +687,14 @@ export function applyUiBackgroundStyles(
   }
 
   // Stretch/center: Explorer multiplies full Color4 × texture (not alpha alone).
+  // White RGB + alpha → raw texture + CSS opacity (splash fades, no canvas thrash).
   let paintUrl = imageUrl
   let imgAlpha = effectiveUiBackgroundAlpha(c)
   if (c && needsTextureColorMultiply(c)) {
     const baked = resolveColorMultipliedImageUrl(imageUrl, c)
     if (!baked) {
-      // Instant solid tint — never flash raw white texture while bake runs.
+      // Dark tint bake in flight — solid tint, not raw white sheet.
+      // (White RGB never enters this branch; see needsTextureColorMultiply.)
       clearBgImg(el)
       el.style.backgroundImage = ''
       el.style.backgroundColor = tint === 'transparent' ? 'transparent' : tint
@@ -674,11 +703,13 @@ export function applyUiBackgroundStyles(
       return
     }
     paintUrl = baked
-    imgAlpha = 1
+    // When failBake cached the raw URL, still apply CSS alpha.
+    imgAlpha = baked === imageUrl ? effectiveUiBackgroundAlpha(c) : 1
   }
 
   // Clear any leftover nine-slice opacity on this element (alpha lives on the img).
   el.style.opacity = ''
+  el.style.backgroundColor = 'transparent'
   applyBgImg(el, paintUrl, mode, imgAlpha, bg?.uvs)
 }
 

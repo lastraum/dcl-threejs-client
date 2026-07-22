@@ -66,6 +66,7 @@ Offline: `?docsGithubFetch=0` shows placeholder notices only (not live progress)
 ## Debug flags
 
 - `?pointerverbose` — pointer flush diagnostics
+- `?gltfloadstate` / `?gltfloadingverbose` — host→worker `GltfContainerLoadingState` (SpaceRunner InputModifier freeze/release)
 - `?docsGithubFetch=0` — offline docs snapshots
 
-Prefer real scenes: Genesis Plaza, `rickroll.dcl.eth`, `pizzapizza.dcl.eth`, `deadsurge.dcl.eth` (large combat / VC / PE attach).
+Prefer real scenes: Genesis Plaza, `rickroll.dcl.eth`, `pizzapizza.dcl.eth`, `deadsurge.dcl.eth` (large combat / VC / PE attach), `spacerunner.dcl.eth` (load freeze → Gltf FINISHED release).

@@ -41,13 +41,8 @@ export class CastLiveKitRoom {
           }
         }
       }
-      console.log(
-        `[cast] Cast 2.0 room connected name=${room.name} remotes=${room.remoteParticipants.size}`
-      )
       return room.state === ConnectionState.Connected
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      console.warn('[cast] Cast 2.0 room connect failed', msg)
+    } catch {
       this.disconnect()
       return false
     }
@@ -68,22 +63,21 @@ export class CastLiveKitRoom {
     }
 
     let last = false
-    const attach = (reason: string): void => {
+    const attach = (): void => {
       forceSubscribeRemoteVideo(room)
       const ok = reattachFirstRemoteVideoToHost(room, host, {
         muted: opts?.muted,
         volume: opts?.volume,
         controls: false
       })
-      // Only notify / log on transition — reattach itself no-ops same track (no flicker).
+      // Only notify on transition — reattach itself no-ops same track (no flicker).
       if (ok !== last) {
         last = ok
-        console.log(`[cast] video attached=${ok} (${reason}) remotes=${room.remoteParticipants.size}`)
         onUpdate?.(ok)
       }
     }
 
-    const onEv = (): void => attach('track')
+    const onEv = (): void => attach()
     room.on(RoomEvent.TrackSubscribed, onEv)
     room.on(RoomEvent.TrackUnsubscribed, onEv)
     room.on(RoomEvent.TrackPublished, onEv)
@@ -92,10 +86,10 @@ export class CastLiveKitRoom {
     room.on(RoomEvent.ParticipantDisconnected, onEv)
     room.on(RoomEvent.Disconnected, onEv)
 
-    attach('start')
+    attach()
     // Poll for late RTMP publishers and stream-end (clears host + onUpdate(false)).
     const poll = window.setInterval(() => {
-      attach(last ? 'poll-live' : 'poll')
+      attach()
     }, 2000)
     this.hostUnsub = () => {
       window.clearInterval(poll)

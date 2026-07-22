@@ -37,7 +37,24 @@ export type RenderQualityOptions = {
    * Off = 8-bit path (cheaper, more clip).
    */
   hdrEnabled: boolean
+  /**
+   * Official DCL avatar toon banding (posterize + matte clamp). Off by default —
+   * independent of graphics presets so users can opt in without Custom.
+   */
+  avatarToonEnabled: boolean
+  /**
+   * Outer AOI radius (meters) for secondary **visual** loads (main.composite GLBs,
+   * roads, empty layer). 0 = primary only. Independent of graphics presets.
+   * Script warming uses a separate fixed inner radius (see SCENE_SCRIPT_WARM_RADIUS_M).
+   */
+  sceneLoadRadiusM: number
 }
+
+/** Min/max for Preferences → Scene Distance (AOI neighbor load radius). */
+export const SCENE_LOAD_RADIUS_MIN_M = 0
+export const SCENE_LOAD_RADIUS_MAX_M = 200
+/** Default AOI — ~6 parcels; used until multi-scene secondary loader exists. */
+export const SCENE_LOAD_RADIUS_DEFAULT_M = 100
 
 /** Max ECS LightSource lights active at once (nearest to avatar) — preset defaults. */
 export const LIGHT_LIMITS: Record<RenderQualityTier, number> = {
@@ -80,7 +97,10 @@ export const TONE_MAPPING_EXPOSURE: Record<RenderQualityTier, number> = {
 
 type PresetId = Exclude<GraphicsPreset, 'custom'>
 
-const PRESET_BUNDLES: Record<PresetId, Omit<RenderQualityOptions, 'preset'>> = {
+/** Graphics preset fields — AOI radius + toon are user-owned, not preset-bundled. */
+type PresetBundle = Omit<RenderQualityOptions, 'preset' | 'sceneLoadRadiusM' | 'avatarToonEnabled'>
+
+const PRESET_BUNDLES: Record<PresetId, PresetBundle> = {
   low: {
     tier: RenderQualityTier.Low,
     shadowQuality: 'low',
@@ -136,7 +156,10 @@ const PRESET_BUNDLES: Record<PresetId, Omit<RenderQualityOptions, 'preset'>> = {
 
 const DEFAULT_OPTIONS: RenderQualityOptions = {
   preset: 'medium',
-  ...PRESET_BUNDLES.medium
+  ...PRESET_BUNDLES.medium,
+  // Explicit — not flipped by named presets.
+  avatarToonEnabled: false,
+  sceneLoadRadiusM: SCENE_LOAD_RADIUS_DEFAULT_M
 }
 
 type Listener = (options: RenderQualityOptions) => void
@@ -147,6 +170,13 @@ function clampResolutionScale(value: number): number {
 
 function clampMaxLights(value: number): number {
   return Math.round(Math.max(0, Math.min(MAX_SCENE_LIGHTS_CAP, value)))
+}
+
+function clampSceneLoadRadiusM(value: number): number {
+  if (!Number.isFinite(value)) return SCENE_LOAD_RADIUS_DEFAULT_M
+  return Math.round(
+    Math.max(SCENE_LOAD_RADIUS_MIN_M, Math.min(SCENE_LOAD_RADIUS_MAX_M, value))
+  )
 }
 
 function isTier(v: unknown): v is RenderQualityTier {
@@ -282,10 +312,28 @@ class RenderQualityStore {
     return this.options.hdrEnabled
   }
 
-  /** Apply a named preset bundle (not custom). */
+  getAvatarToonEnabled(): boolean {
+    return this.options.avatarToonEnabled
+  }
+
+  getSceneLoadRadiusM(): number {
+    return this.options.sceneLoadRadiusM
+  }
+
+  /** AOI neighbor scene load radius in meters (0 = primary only). */
+  setSceneLoadRadiusM(sceneLoadRadiusM: number): void {
+    this.patch({ sceneLoadRadiusM: clampSceneLoadRadiusM(sceneLoadRadiusM) })
+  }
+
+  /** Apply a named preset bundle (not custom). Preserves toon + AOI radius. */
   applyPreset(preset: PresetId): void {
     const bundle = PRESET_BUNDLES[preset]
-    this.commit({ preset, ...bundle })
+    this.commit({
+      preset,
+      ...bundle,
+      avatarToonEnabled: this.options.avatarToonEnabled,
+      sceneLoadRadiusM: this.options.sceneLoadRadiusM
+    })
   }
 
   setTier(tier: RenderQualityTier): void {
@@ -328,6 +376,10 @@ class RenderQualityStore {
     this.patch({ hdrEnabled })
   }
 
+  setAvatarToonEnabled(avatarToonEnabled: boolean): void {
+    this.patch({ avatarToonEnabled })
+  }
+
   setOptions(partial: Partial<RenderQualityOptions>): void {
     if (partial.preset && partial.preset !== 'custom' && isPreset(partial.preset)) {
       this.applyPreset(partial.preset)
@@ -354,6 +406,7 @@ class RenderQualityStore {
     const next: RenderQualityOptions = { ...this.options, ...partial }
     next.maxSceneLights = clampMaxLights(next.maxSceneLights)
     next.resolutionScale = clampResolutionScale(next.resolutionScale)
+    next.sceneLoadRadiusM = clampSceneLoadRadiusM(next.sceneLoadRadiusM)
     if (!isFpsLimit(next.fpsLimit)) next.fpsLimit = this.options.fpsLimit
     if (!isShadowQuality(next.shadowQuality)) next.shadowQuality = this.options.shadowQuality
     if (!isTier(next.tier)) next.tier = this.options.tier
@@ -361,6 +414,7 @@ class RenderQualityStore {
     if (typeof next.vsync !== 'boolean') next.vsync = this.options.vsync
     if (typeof next.bloomEnabled !== 'boolean') next.bloomEnabled = this.options.bloomEnabled
     if (typeof next.hdrEnabled !== 'boolean') next.hdrEnabled = this.options.hdrEnabled
+    if (typeof next.avatarToonEnabled !== 'boolean') next.avatarToonEnabled = this.options.avatarToonEnabled
 
     if (partial.preset === undefined || partial.preset === 'custom') {
       next.preset = this.inferPreset(next)
@@ -384,6 +438,7 @@ class RenderQualityStore {
         state.vsync === b.vsync &&
         state.bloomEnabled === b.bloomEnabled &&
         state.hdrEnabled === b.hdrEnabled
+        // avatarToonEnabled intentionally excluded — opt-in aesthetic, not a preset field
       ) {
         return id
       }
@@ -403,7 +458,9 @@ class RenderQualityStore {
       a.msaaSamples === b.msaaSamples &&
       a.vsync === b.vsync &&
       a.bloomEnabled === b.bloomEnabled &&
-      a.hdrEnabled === b.hdrEnabled
+      a.hdrEnabled === b.hdrEnabled &&
+      a.avatarToonEnabled === b.avatarToonEnabled &&
+      a.sceneLoadRadiusM === b.sceneLoadRadiusM
     )
   }
 
@@ -446,6 +503,10 @@ class RenderQualityStore {
       if (typeof parsed.vsync === 'boolean') next.vsync = parsed.vsync
       if (typeof parsed.bloomEnabled === 'boolean') next.bloomEnabled = parsed.bloomEnabled
       if (typeof parsed.hdrEnabled === 'boolean') next.hdrEnabled = parsed.hdrEnabled
+      if (typeof parsed.avatarToonEnabled === 'boolean') next.avatarToonEnabled = parsed.avatarToonEnabled
+      if (typeof parsed.sceneLoadRadiusM === 'number') {
+        next.sceneLoadRadiusM = clampSceneLoadRadiusM(parsed.sceneLoadRadiusM)
+      }
 
       if (isPreset(parsed.preset)) {
         next.preset = parsed.preset === 'custom' ? this.inferPreset(next) : parsed.preset

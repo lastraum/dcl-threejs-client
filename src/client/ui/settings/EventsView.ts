@@ -21,6 +21,7 @@ import {
 } from '../../../social/dclEvents'
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import type { RouteTarget } from '../../../dcl/content/route'
+import { fetchProfileFaceUrl } from '../../../avatar/peerApi'
 import { EventModal } from '../events/EventModal'
 import { CreateEventView } from './CreateEventView'
 
@@ -70,6 +71,10 @@ export class EventsView {
 
   private events: DclEvent[] = []
   private eventsPerDay = new Map<number, DclEvent[]>()
+  private searchQuery = ''
+  /** Organizer wallet → face snapshot URL (null = profile has none). */
+  private readonly faceCache = new Map<string, string | null>()
+  private readonly facePending = new Set<string>()
   private viewYear: number
   private viewMonth: number
   private selectedDayMs: number
@@ -118,6 +123,7 @@ export class EventsView {
           <button type="button" class="events-view__btn events-view__btn--ghost" data-today>Today</button>
           <button type="button" class="events-view__btn events-view__btn--primary" data-create>Create Event</button>
         </div>
+        <input type="search" class="events-view__search" data-search placeholder="Search events" aria-label="Search events" autocomplete="off" spellcheck="false" />
       </header>
 
       <p class="events-view__status" data-status hidden></p>
@@ -169,6 +175,13 @@ export class EventsView {
     this.root.querySelector('[data-next-month]')!.addEventListener('click', () => this.shiftMonth(1))
     this.weekNavPrev.addEventListener('click', () => this.shiftWeekWindow(-1))
     this.weekNavNext.addEventListener('click', () => this.shiftWeekWindow(1))
+
+    const search = this.root.querySelector('[data-search]') as HTMLInputElement | null
+    search?.addEventListener('input', () => {
+      this.searchQuery = search.value
+      this.eventsPerDay = eventsByLocalDay(this.visibleEvents())
+      this.renderAll()
+    })
 
     this.calendarGrid.addEventListener('click', (ev) => {
       const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>('[data-day-ms]')
@@ -237,13 +250,25 @@ export class EventsView {
     this.root.classList.remove('events-view--creating')
   }
 
+  /** Events matching the top-bar search (name, host, place, description, coords). */
+  private visibleEvents(): DclEvent[] {
+    const q = this.searchQuery.trim().toLowerCase()
+    if (!q) return this.events
+    return this.events.filter((ev) => {
+      const coords = ev.coordinates?.join(',') ?? `${ev.x ?? ''},${ev.y ?? ''}`
+      return [ev.name, ev.user_name, ev.scene_name, ev.description, ev.url, coords]
+        .filter(Boolean)
+        .some((field) => String(field).toLowerCase().includes(q))
+    })
+  }
+
   private async loadEvents(): Promise<void> {
     this.loading = true
     this.error = null
     this.renderStatus()
     try {
       this.events = await fetchDclActiveEventsWithLive(100)
-      this.eventsPerDay = eventsByLocalDay(this.events)
+      this.eventsPerDay = eventsByLocalDay(this.visibleEvents())
       if (!this.selectedEventId) {
         const todayEvents = this.eventsPerDay.get(this.selectedDayMs)
         if (todayEvents?.[0]) this.selectedEventId = todayEvents[0].id
@@ -453,6 +478,45 @@ export class EventsView {
     this.renderCalendar()
     this.renderHighlight()
     if (this.layoutMode === 'weekly') this.renderColumns()
+    this.hydrateEventFaces()
+  }
+
+  /** Swap organizer placeholders for lambdas face snapshots (async, cached). */
+  private hydrateEventFaces(): void {
+    for (const slot of this.root.querySelectorAll<HTMLElement>('[data-event-face]')) {
+      const addr = (slot.getAttribute('data-event-face') ?? '').toLowerCase()
+      if (!/^0x[a-f0-9]{40}$/.test(addr)) continue
+      const cached = this.faceCache.get(addr)
+      if (cached !== undefined) {
+        if (cached) this.fillFaceSlot(slot, cached)
+        continue
+      }
+      if (this.facePending.has(addr)) continue
+      this.facePending.add(addr)
+      fetchProfileFaceUrl(addr)
+        .then((url) => {
+          this.faceCache.set(addr, url)
+          this.facePending.delete(addr)
+          if (this.disposed || !url) return
+          for (const s of this.root.querySelectorAll<HTMLElement>(`[data-event-face="${addr}"]`)) {
+            this.fillFaceSlot(s, url)
+          }
+        })
+        .catch(() => {
+          // Negative-cache failures so renderAll() does not re-hammer lambdas.
+          this.faceCache.set(addr, null)
+          this.facePending.delete(addr)
+        })
+    }
+  }
+
+  private fillFaceSlot(slot: HTMLElement, url: string): void {
+    const img = document.createElement('img')
+    img.className = slot.getAttribute('data-face-class') ?? slot.className
+    img.src = url
+    img.alt = ''
+    img.loading = 'lazy'
+    slot.replaceWith(img)
   }
 
   private renderStatus(): void {
@@ -598,13 +662,14 @@ export class EventsView {
     const scheduleRange = formatEventScheduleRange(event)
     const organizer = event.user_name?.trim()
 
+    const organizerAddr = (event.user ?? '').trim().toLowerCase()
     const organizerRow =
       organizer || face
         ? `<div class="events-view__organizer">
             ${
               face
                 ? `<img class="events-view__organizer-avatar" src="${escapeHtml(face)}" alt="" loading="lazy" />`
-                : '<span class="events-view__organizer-avatar events-view__organizer-avatar--fallback" aria-hidden="true">👤</span>'
+                : `<span class="events-view__organizer-avatar events-view__organizer-avatar--fallback" data-event-face="${escapeHtml(organizerAddr)}" data-face-class="events-view__organizer-avatar" aria-hidden="true">👤</span>`
             }
             <div class="events-view__organizer-text">
               ${organizer ? `<span class="events-view__organizer-name">By ${escapeHtml(organizer)}</span>` : ''}
@@ -683,7 +748,7 @@ export class EventsView {
 
   private renderColumns(): void {
     if (this.layoutMode !== 'weekly') return
-    const columns = groupEventsIntoRollingLocalDays(this.events, {
+    const columns = groupEventsIntoRollingLocalDays(this.visibleEvents(), {
       windowOffsetDays: this.dayWindowOffset,
       columnCount: ROLLING_EVENTS_DAY_COLUMNS
     })
@@ -743,7 +808,7 @@ export class EventsView {
             ${
               face
                 ? `<img class="events-view__event-card-avatar" src="${escapeHtml(face)}" alt="" loading="lazy" />`
-                : ''
+                : `<span class="events-view__event-card-avatar events-view__event-card-avatar--fallback" data-event-face="${escapeHtml((ev.user ?? '').trim().toLowerCase())}" data-face-class="events-view__event-card-avatar" aria-hidden="true"></span>`
             }
             <span class="events-view__event-card-organizer-name">${escapeHtml(ev.user_name?.trim() || 'Community')}</span>
           </div>

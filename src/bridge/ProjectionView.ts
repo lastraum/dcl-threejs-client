@@ -51,6 +51,13 @@ export function createStoreComponents(
         return value
       }
     }
+    // Must override deleteFrom: Object.create(def) inherits engine deleteFrom which writes
+    // the wrong store. has/get read projection — engine delete left freeze stuck forever.
+    if (typeof (def as { deleteFrom?: unknown }).deleteFrom === 'function') {
+      facade.deleteFrom = (entity: Entity): void => {
+        projection.deleteRenderer(componentId, entity)
+      }
+    }
     if (typeof (def as { addValue?: unknown }).addValue === 'function') {
       facade.addValue = (entity: Entity, value: unknown): unknown => {
         projection.appendRenderer(componentId, entity, value)

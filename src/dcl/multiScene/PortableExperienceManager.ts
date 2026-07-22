@@ -290,9 +290,7 @@ export class PortableExperienceManager {
       // UI: user pref AND scene policy. (PE start already revealed UI for first mount paint.)
       const uiOn = slot.uiEnabled && this.pePolicy.uiAllowed
       worker.setUiVisible(uiOn)
-      // Do not schedule forceSceneUiRepaint — full cache wipe re-paints every PE node and
-      // re-clears background/border-image (visible HUD flash). setUiVisible + normal
-      // mount snapshots already paint when UI arrives from the worker.
+      // Mount snapshots from the worker paint UI; no forceRepaint (wipes style cache).
       this.workers.set(id, worker)
       slot.status = 'running'
       slot.wantEnabled = true
@@ -350,7 +348,7 @@ export class PortableExperienceManager {
     if (worker) {
       const uiOn = enabled && this.pePolicy.uiAllowed && slot.status === 'running'
       worker.setUiVisible(uiOn)
-      // No forceSceneUiRepaint — same flash risk as enable path.
+      // Mount snapshots paint; no forceRepaint.
     }
     this.emit()
   }

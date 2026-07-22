@@ -50,7 +50,10 @@ import { nextWorkerPointerEventTimestamp } from './workerPointerEventTimestamp'
 import { PointerEventType } from '../../input/pointerConstants'
 import { InputAction, type InputActionValue } from '../../input/pointerConstants'
 import { injectRendererGrowOnlyAppendsOnEngine } from './injectRendererGrowOnlyAppends'
-import { injectRendererLwwPutsOnEngine } from './injectRendererLwwPuts'
+import {
+  injectRendererLwwPutsOnEngine,
+  stripReservedPlayerCameraTransformsFromChunks
+} from './injectRendererLwwPuts'
 import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransforms'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
@@ -111,6 +114,9 @@ import {
   describeWorkerInputModifier,
   forceClearDisableAllAfterLoadGate,
   forceUnfreezeModeOnlyFromMain,
+  isWorkerLocomotionFreezeLatched,
+  isWorkerSceneFreeFlightActive,
+  setWorkerPortableExperienceMode,
   isWorkerMoveCameraFlightLatched,
   resetPlayerFrameEgressBaseline,
   stripPlayerFrameComponentsFromCrdt,
@@ -1044,6 +1050,12 @@ function applyPlayFrameReservedPoses(
   }
 ): void {
   if (!sceneEngine) return
+  // Always ensure PlayerEntity exists (parent target for weapons / attach).
+  ensurePlayerEntityTransform(sceneEngine)
+
+  // Live IM free-flight (PE drone) — do not stomp with main avatar feet.
+  if (isWorkerSceneFreeFlightActive(sceneEngine)) return
+
   const Transform = extended.Transform(sceneEngine)
   const write = (
     entity: Entity,
@@ -1190,31 +1202,57 @@ function publishVcPoseLiveIfBound(): void {
 }
 
 /**
- * MOVE CAMERA flight — MainCamera unbound; mirror VC Transform moves (gizmo is parented under VC).
- * Phase 1 hot lane alongside player-frame (no CRDT ack wait).
+ * Free-flight pose live lane:
+ * - MOVE CAMERA (pointer-move latch): unbound MainCamera VCs
+ * - Scene free-flight (PE drone / vehicle): PE+Camera + all VirtualCameras (systems own motion)
  */
 function publishVcPoseLiveDuringEditFlight(): void {
-  // Only MOVE CAMERA (pointer-move latch) — not menu freezes.
-  if (!sceneEngine || !sceneOnStartComplete || !isWorkerMoveCameraFlightLatched()) {
+  if (!sceneEngine || !sceneOnStartComplete) {
+    editFlightVcPoseKeys.clear()
+    return
+  }
+  const moveCam = isWorkerMoveCameraFlightLatched()
+  const freeFlight = isWorkerSceneFreeFlightActive(sceneEngine)
+  if (!moveCam && !freeFlight) {
     editFlightVcPoseKeys.clear()
     return
   }
   const MainCamera = generated.MainCamera(sceneEngine)
   const main = MainCamera.getOrNull(sceneEngine.CameraEntity) as { virtualCameraEntity?: number } | null
-  if (main?.virtualCameraEntity !== undefined && main?.virtualCameraEntity !== null) return
+  // MOVE CAMERA only posts when MainCamera is unbound. Scene free-flight always posts.
+  if (moveCam && !freeFlight) {
+    if (main?.virtualCameraEntity !== undefined && main?.virtualCameraEntity !== null) return
+  }
 
   const VirtualCamera = generated.VirtualCamera(sceneEngine)
   const Transform = extended.Transform(sceneEngine)
   const live = new Set<number>()
-  for (const [entity] of sceneEngine.getEntitiesWith(VirtualCamera)) {
+  const maybePost = (entity: Entity): void => {
     const id = entity as number
     live.add(id)
-    const tr = Transform.getOrNull(entity as Entity)
-    if (!tr) continue
+    const tr = Transform.getOrNull(entity)
+    if (!tr) return
     const key = vcTransformPoseKey(tr)
-    if (editFlightVcPoseKeys.get(id) === key) continue
+    if (editFlightVcPoseKeys.get(id) === key) return
     editFlightVcPoseKeys.set(id, key)
-    postVcPoseLive(entity as Entity, tr)
+    postVcPoseLive(entity, {
+      position: { x: tr.position.x, y: tr.position.y, z: tr.position.z },
+      rotation: { x: tr.rotation.x, y: tr.rotation.y, z: tr.rotation.z, w: tr.rotation.w },
+      scale: {
+        x: tr.scale?.x ?? 1,
+        y: tr.scale?.y ?? 1,
+        z: tr.scale?.z ?? 1
+      },
+      parent: tr.parent as number | undefined
+    })
+  }
+  // Scene free-flight: systems often move PlayerEntity / CameraEntity (not only VC).
+  if (freeFlight) {
+    maybePost(sceneEngine.PlayerEntity as Entity)
+    maybePost(sceneEngine.CameraEntity as Entity)
+  }
+  for (const [entity] of sceneEngine.getEntitiesWith(VirtualCamera)) {
+    maybePost(entity as Entity)
   }
   for (const id of editFlightVcPoseKeys.keys()) {
     if (!live.has(id)) editFlightVcPoseKeys.delete(id)
@@ -1379,43 +1417,63 @@ function reassertPressedKeysOnEngine(): void {
 
 /** PE vehicle/drone — engine.update even when residual pointer session would block primary ticks. */
 let lastPeInputPumpAt = 0
+/** True when a pump was skipped (in-flight / rate-limit) while keys or freeze need another tick. */
+let peInputPumpQueued = false
 
 async function runPeVehicleInputPump(): Promise<void> {
   if (!sceneEngine || !portableExperienceWorker || sceneOnUpdatePaused) return
-  // Never interleave with pointer UI (menu open thrash) or mid-deliver batches.
+  // Only block mid-inject races. Residual pointer session after PE UI must NOT starve this pump.
   if (
     pointerDeliveryInFlight ||
     pointerDeliverWorkInFlight ||
     pointerDeliverBatchOpen ||
     queuedPointerDeliver ||
-    pendingInjectPointer ||
-    isPointerInputSessionActive() ||
-    sceneTicksPaused
+    pendingInjectPointer
   ) {
+    peInputPumpQueued = true
     return
   }
-  // Post-click hold: still run eng.update (systems/dt) but react-ecs is deferred via
-  // shouldDeferCooperativeReactEcs wall-clock hold — keeps open menu ECS mount stable.
-  if (sceneUpdateInFlight || sceneUpdatePromiseActive) return
+  if (sceneUpdateInFlight || sceneUpdatePromiseActive) {
+    peInputPumpQueued = true
+    return
+  }
 
   const now = performance.now()
-  if (lastPeInputPumpAt > 0 && now - lastPeInputPumpAt < SCENE_FLIGHT_TICK_MIN_MS) return
+  const hasKeys = workerSnapshotPressed.size > 0
+  // Live IM free-flight — latch alone misses PE freezes that never got pointer-move tagging.
+  const freeFlight = isWorkerSceneFreeFlightActive(sceneEngine)
+  // Held keys: ~60Hz. Free-flight idle (rotors/materials): ~20Hz. Idle: stop after first pump.
+  const minGapMs = hasKeys
+    ? SCENE_FLIGHT_TICK_MIN_MS
+    : freeFlight
+      ? 48
+      : SCENE_FLIGHT_TICK_MIN_MS
+  if (lastPeInputPumpAt > 0 && now - lastPeInputPumpAt < minGapMs) {
+    if (hasKeys || freeFlight) peInputPumpQueued = true
+    return
+  }
+  if (!hasKeys && !freeFlight && lastPeInputPumpAt > 0) {
+    return
+  }
   const dt =
     lastPeInputPumpAt > 0
-      ? Math.min((now - lastPeInputPumpAt) / 1000, 0.1)
+      ? Math.min(Math.max((now - lastPeInputPumpAt) / 1000, 1 / 120), 0.1)
       : SCENE_FLIGHT_TICK_MIN_MS / 1000
   lastPeInputPumpAt = now
+  peInputPumpQueued = false
 
   reassertPressedKeysOnEngine()
 
-  if (now - lastFlightPumpLogAt > 500 && workerSnapshotPressed.size > 0) {
+  if (now - lastFlightPumpLogAt > 500 && (hasKeys || freeFlight)) {
     lastFlightPumpLogAt = now
     const pressed = [...workerSnapshotPressed].join(',')
     const player = sceneEngine.PlayerEntity as Entity
     const isFwd = isSceneInputPressedOnPlayer(sceneEngine, player, InputAction.IA_FORWARD)
-    workerLog(
-      'log',
-      `[sceneWorker] pe-input pump — pressed=[${pressed}] isPressed F=${isFwd ? 1 : 0} dt=${dt.toFixed(3)}`
+    // Always surface in DevTools — diagnose free-flight without Help console mirror.
+    console.info(
+      `[sceneWorker] pe-input pump — pressed=[${pressed}] isPressed F=${isFwd ? 1 : 0} ` +
+        `freeFlight=${freeFlight ? 1 : 0} latch=${isWorkerLocomotionFreezeLatched() ? 1 : 0} ` +
+        `moveCam=${isWorkerMoveCameraFlightLatched() ? 1 : 0} dt=${dt.toFixed(3)}`
     )
   }
 
@@ -1426,8 +1484,17 @@ async function runPeVehicleInputPump(): Promise<void> {
   sceneUpdateStartedAt = now
   armSceneUpdateAbortTimer()
   try {
+    // Phase 1 — systems + isTriggered reassert. Scene systems own free-flight (no VC shim).
     await runSceneEngineUpdateNow(dt)
+    // Hot path: lens pose before poll — vehicle motion must not wait for CRDT batching.
+    publishVcPoseLiveEgress()
+    // UI mount egress is pointer phase-4 / cooperative dirty only — not the pe-input hot path.
+    // Phase 2 — pollEvents/sendBatch (Transform/Material CRDT). Keys or free-flight: always poll.
+    if (sceneOnUpdate && (hasKeys || freeFlight)) {
+      await runPlayFramePollPhase(sceneOnUpdate, dt)
+    }
     completePlayFrameColdEgress()
+    publishVcPoseLiveEgress()
   } catch (err) {
     workerLog(
       'error',
@@ -1438,6 +1505,12 @@ async function runPeVehicleInputPump(): Promise<void> {
     flightPumpBypassPause = false
     sceneUpdateInFlight = false
     sceneUpdatePromiseActive = false
+    if (peInputPumpQueued) {
+      peInputPumpQueued = false
+      queueMicrotask(() => {
+        void runPeVehicleInputPump()
+      })
+    }
   }
 }
 
@@ -2134,6 +2207,11 @@ function isSealedEngineError(err: unknown): boolean {
   return msg.includes('already sealed')
 }
 
+/** Scene free-flight owns PE/Camera Transform (live freeze / scene latch, not MOVE CAMERA). */
+function sceneOwnsReservedPlayerCameraPose(): boolean {
+  return isWorkerSceneFreeFlightActive(sceneEngine)
+}
+
 function applyRendererInboundChunks(chunks: Uint8Array[]): {
   tweenPuts: number
   raycastPuts: number
@@ -2158,9 +2236,15 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
   let pointerAppends = 0
   let uiInputResultPuts = 0
   let uiDropdownResultPuts = 0
+  const sceneOwnsPose = sceneOwnsReservedPlayerCameraPose()
+  const transportChunks = sceneOwnsPose
+    ? stripReservedPlayerCameraTransformsFromChunks(chunks)
+    : chunks
   if (sceneEngine) {
     try {
-      const lww = injectRendererLwwPutsOnEngine(sceneEngine, chunks)
+      const lww = injectRendererLwwPutsOnEngine(sceneEngine, chunks, {
+        skipReservedPlayerCameraTransform: sceneOwnsPose
+      })
       tweenPuts = lww.tweenPuts
       raycastPuts = lww.raycastPuts
       videoPlayerPuts = lww.videoPlayerPuts
@@ -2189,14 +2273,15 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
         'warn',
         '[sceneWorker] renderer inject blocked (sealed) — falling back to transport'
       )
-      rendererInboundApply(chunks)
+      rendererInboundApply(transportChunks)
       return EMPTY_RENDERER_INJECT_COUNTS
     }
   }
   // Transport still applies identity / camera / grow-only; direct inject above guarantees
   // PlayerEntity Transform is current before the next scene read (movePlayerTo, etc.).
+  // Free-flight: strip host PE/Camera Transform so main avatar feet cannot undo scene systems.
   if (rendererInboundApply) {
-    rendererInboundApply(chunks)
+    rendererInboundApply(transportChunks)
   }
   return {
     tweenPuts,
@@ -3133,6 +3218,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   if (msg.type === 'scene-play-ready') {
     playReadyPerformanceTier = msg.performanceTier
     portableExperienceWorker = msg.portableExperience === true
+    setWorkerPortableExperienceMode(portableExperienceWorker)
     // Do NOT set playFrameTickMainDriven yet — World often notifies play-ready while main still
     // has bootPhaseActive (eval-done resolved, worker `ready` not processed). Switching to
     // main-driven ticks before the first play-frame-tick stops the hydration interval and
@@ -3140,10 +3226,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     applyPlayReadyTiming(msg.performanceTier, 'scene-play-ready', {
       engineTickOverrideMs: msg.engineTickIntervalMs
     })
-    workerLog(
-      'log',
-      `[sceneWorker] scene-play-ready — keep interval ticks until first play-frame-tick from main` +
-        (portableExperienceWorker ? ' pe=1' : '')
+    console.info(
+      `[sceneWorker] scene-play-ready pe=${portableExperienceWorker ? 1 : 0} — free-flight path ${
+        portableExperienceWorker ? 'ARMED' : 'off (primary)'
+      }`
     )
     // Kick one engine tick so load-freeze systems can see GltfContainerLoadingState FINISHED.
     if (sceneOnStartComplete && sceneEngine) {
@@ -3377,6 +3463,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     sceneBootInProgress = true
     playFrameTickMainDriven = false
     portableExperienceWorker = false
+    setWorkerPortableExperienceMode(false)
     clearPlayModeColdCrdtBuffer()
     resetSceneEngineScheduler()
     resetWorkerUiFingerprint()

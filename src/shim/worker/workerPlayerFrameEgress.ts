@@ -43,6 +43,16 @@ let latchSourceAtInjectStart: LocomotionFreezeLatchSource | null = null
  * Refuse freeze writes until a fresh MOVE inject (hadLatch=false) captures freeze again.
  */
 let refuseFreezeWrites = false
+/**
+ * Portable-experience worker — freezes are vehicle/drone scene ownership, never MOVE CAMERA.
+ * Tagging PE freeze as pointer-move re-injects main avatar feet every play-frame and kills WASD.
+ */
+let portableExperienceWorkerMode = false
+
+/** Called when the worker is a PE layer (scene-play-ready / dispose). */
+export function setWorkerPortableExperienceMode(isPe: boolean): void {
+  portableExperienceWorkerMode = isPe
+}
 
 type StandardMode = {
   disableAll?: boolean
@@ -136,6 +146,30 @@ export function isWorkerMoveCameraFlightLatched(): boolean {
   return locomotionFreezeLatch !== null && locomotionFreezeLatchSource === 'pointer-move'
 }
 
+/**
+ * Scene free-flight owns Player/Camera Transform (vehicle / PE drone).
+ * Prefer live InputModifier when latch missed a write path; PE never uses MOVE CAMERA latch.
+ */
+export function isWorkerSceneFreeFlightActive(engine: IEngine | null | undefined): boolean {
+  if (portableExperienceWorkerMode) {
+    // PE: never MOVE CAMERA. Live freeze or latch both mean free-flight.
+    if (engine) {
+      preregisterRendererInjectedComponents(engine)
+      const InputModifier = generated.InputModifier(engine)
+      const live = InputModifier.getOrNull(engine.PlayerEntity as Entity)
+      if (live && isLocomotionFrozenValue(live)) return true
+    }
+    return locomotionFreezeLatch !== null
+  }
+  if (isWorkerMoveCameraFlightLatched()) return false
+  if (locomotionFreezeLatch !== null && locomotionFreezeLatchSource === 'scene') return true
+  if (!engine) return false
+  preregisterRendererInjectedComponents(engine)
+  const InputModifier = generated.InputModifier(engine)
+  const live = InputModifier.getOrNull(engine.PlayerEntity as Entity)
+  return !!(live && isLocomotionFrozenValue(live) && locomotionFreezeLatchSource !== 'pointer-move')
+}
+
 export function getWorkerLocomotionFreezeLatchSource(): 'pointer-move' | 'scene' | null {
   return locomotionFreezeLatchSource
 }
@@ -187,12 +221,16 @@ export function noteWorkerLocomotionFreezeWrite(value: unknown): void {
     return
   }
   refuseFreezeWrites = false
-  // During pointer inject:
-  // - disableAll / full lock → MOVE CAMERA (or menu) flight path
-  // - mode-only (walk/jog/run) → scene sit/stool content, NOT MOVE CAMERA
+  // PE: freeze always means scene free-flight ownership (drone/vehicle), even on UI inject.
+  // Primary inject:
+  // - disableAll / full lock → MOVE CAMERA path (pointer-move)
+  // - mode-only (walk/jog/run) → scene sit/stool (scene)
   // Outside inject → always scene.
   let source: LocomotionFreezeLatchSource = 'scene'
-  if (intentionalUnfreezeWindow()) {
+  if (portableExperienceWorkerMode) {
+    if (intentionalUnfreezeWindow()) freezeWrittenThisInject = true
+    source = 'scene'
+  } else if (intentionalUnfreezeWindow()) {
     freezeWrittenThisInject = true
     source = isModeOnlyLocomotionFreeze(value) ? 'scene' : 'pointer-move'
   }
@@ -563,11 +601,13 @@ export function collectPlayerFrameSnapshot(engine: IEngine): PlayerFrameSnapshot
     }
     clearLocomotionFreezeLatchState()
   } else if (liveHas && liveModifier && isLocomotionFrozenValue(liveModifier)) {
-    // First observe as scene freeze unless already tagged pointer-move.
-    setLocomotionFreezeLatch(
-      liveModifier,
-      locomotionFreezeLatchSource === 'pointer-move' ? 'pointer-move' : 'scene'
-    )
+    // PE freezes are always scene free-flight. Primary: keep pointer-move if already MOVE CAMERA.
+    const source: LocomotionFreezeLatchSource = portableExperienceWorkerMode
+      ? 'scene'
+      : locomotionFreezeLatchSource === 'pointer-move'
+        ? 'pointer-move'
+        : 'scene'
+    setLocomotionFreezeLatch(liveModifier, source)
   } else if (locomotionFreezeLatch) {
     const cleared = !liveHas || !liveModifier || isLocomotionClearedValue(liveModifier)
     if (cleared && intentionalUnfreezeWindow() && !freezeWrittenThisInject) {

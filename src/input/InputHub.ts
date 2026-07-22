@@ -98,6 +98,7 @@ export class InputHub {
   private tickNumber = 0
   private listening = false
   private lastFlightPumpMs = 0
+  private lastHubDownLogMs = 0
   /** Last published signature per subscriber (forceRepublish bypasses). */
   private readonly lastSigBySub = new Map<string, string>()
   private static readonly FLIGHT_PUMP_MS = 16
@@ -226,6 +227,14 @@ export class InputHub {
       clientDebugLog.log('input', `hub DOWN button=${action}`, { throttleMs: 80, alsoConsole: true })
     }
     if (changed) {
+      const t = performance.now()
+      if (t - this.lastHubDownLogMs > 200) {
+        this.lastHubDownLogMs = t
+        // Raw console — ClientDebugLog alsoConsole is ignored (mirror flag only).
+        console.info(
+          `[input-hub] DOWN pressed=[${[...this.pressed].join(',')}] subs=${this.subscribers.size}`
+        )
+      }
       for (const sub of this.subscribers.values()) this.publishToOne(sub, false)
     }
 

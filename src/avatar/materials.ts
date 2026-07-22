@@ -37,28 +37,59 @@ export function isAvatarToonEnabled(): boolean {
   return renderQuality.getAvatarToonEnabled()
 }
 
-/** Match the official matte/toon avatar look — banded color, no specular response. */
-export function applyAvatarToonShading(root: THREE.Object3D): void {
-  if (!isAvatarToonEnabled()) return
+/**
+ * Match the official matte/toon avatar look — banded color, no specular response.
+ * Pass `enabled` to apply/remove live (Preferences toggle); omit to use current prefs/URL.
+ */
+export function applyAvatarToonShading(root: THREE.Object3D, enabled = isAvatarToonEnabled()): void {
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return
     const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
     for (const mat of materials) {
       if (!isStandardMaterial(mat)) continue
       const userData = mat.userData as Record<string, unknown>
-      if (userData.dclToon) continue
-      userData.dclToon = true
-      if (!userData.dclEmissiveBoosted) {
-        mat.metalness = 0
-        mat.roughness = Math.max(mat.roughness, 0.9)
-        mat.envMapIntensity = 0
+      const hasToon = userData.dclToon === true
+
+      if (enabled) {
+        if (hasToon) continue
+        userData.dclToon = true
+        if (!userData.dclEmissiveBoosted) {
+          userData.dclToonPrevMetalness = mat.metalness
+          userData.dclToonPrevRoughness = mat.roughness
+          userData.dclToonPrevEnvMapIntensity = mat.envMapIntensity
+          mat.metalness = 0
+          mat.roughness = Math.max(mat.roughness, 0.9)
+          mat.envMapIntensity = 0
+        }
+        mat.onBeforeCompile = (shader) => {
+          shader.fragmentShader = shader.fragmentShader.replace(
+            '#include <opaque_fragment>',
+            `${TOON_BAND_CHUNK}\n#include <opaque_fragment>`
+          )
+        }
+        // Force program rebuild when toggling (Three caches by material identity).
+        mat.customProgramCacheKey = () => 'dcl-avatar-toon'
+        mat.needsUpdate = true
+        continue
       }
-      mat.onBeforeCompile = (shader) => {
-        shader.fragmentShader = shader.fragmentShader.replace(
-          '#include <opaque_fragment>',
-          `${TOON_BAND_CHUNK}\n#include <opaque_fragment>`
-        )
+
+      if (!hasToon) continue
+      delete userData.dclToon
+      // Remove shader hook; restore PBR fields we changed for matte look.
+      mat.onBeforeCompile = () => {}
+      if (typeof userData.dclToonPrevMetalness === 'number') {
+        mat.metalness = userData.dclToonPrevMetalness
+        delete userData.dclToonPrevMetalness
       }
+      if (typeof userData.dclToonPrevRoughness === 'number') {
+        mat.roughness = userData.dclToonPrevRoughness
+        delete userData.dclToonPrevRoughness
+      }
+      if (typeof userData.dclToonPrevEnvMapIntensity === 'number') {
+        mat.envMapIntensity = userData.dclToonPrevEnvMapIntensity
+        delete userData.dclToonPrevEnvMapIntensity
+      }
+      mat.customProgramCacheKey = () => 'dcl-avatar-lit'
       mat.needsUpdate = true
     }
   })

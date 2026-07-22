@@ -29,6 +29,7 @@ import {
   type PortableExperiencesPolicy
 } from '../dcl/multiScene/resolvePortableExperiences'
 import { renderQuality } from '../rendering/RenderQualitySettings'
+import { applyAvatarToonShading } from '../avatar/materials'
 import type { PerformanceTier } from '../shim/types'
 import { LandscapeSystem } from './systems/LandscapeSystem'
 import { SceneScriptSystem } from './systems/SceneScriptSystem'
@@ -196,6 +197,9 @@ export class World {
   private spawnColliderSealComplete = false
   private unsubAvatarChat: (() => void) | null = null
   private unsubAvatarChatTranslate: (() => void) | null = null
+  /** Preferences → Graphics → Avatar toon — re-skin live meshes without full reload. */
+  private unsubAvatarToon: (() => void) | null = null
+  private lastAvatarToonEnabled: boolean | null = null
   /**
    * Last overhead chat per peer — used to swap in a translation when it arrives
    * before the bubble expires (Unity Explorer auto-translate bubbles).
@@ -284,8 +288,21 @@ export class World {
     this.remoteAvatars = new RemoteAvatarManager(this.host.scene)
 
     this.unsubEnvironmentDebug = environmentDebug.subscribe(() => this.applyEnvironmentDebugVisibility())
+    // Live Preferences → Graphics → Avatar toon (no full avatar reload / page refresh).
+    this.unsubAvatarToon = renderQuality.subscribe((opts) => {
+      if (this.lastAvatarToonEnabled === opts.avatarToonEnabled) return
+      this.lastAvatarToonEnabled = opts.avatarToonEnabled
+      this.applyAvatarToonToLiveMeshes(opts.avatarToonEnabled)
+    })
 
     this.wireCommsHandlers()
+  }
+
+  /** Re-skin local + remote avatars when toon preference toggles. */
+  private applyAvatarToonToLiveMeshes(enabled: boolean): void {
+    const local = this.player?.getLocalAvatar()?.getModel()
+    if (local) applyAvatarToonShading(local, enabled)
+    this.remoteAvatars?.forEachModel((model) => applyAvatarToonShading(model, enabled))
   }
 
   /**
@@ -2995,6 +3012,7 @@ export class World {
       void entities
     })
     // PE is a full scene runtime — play-ready so engine ticks match primary.
+    // Free-flight intent is queued if the worker is not up yet (flushed on ready/boot).
     system.notifyPlayReady({
       engineTickIntervalMs: resolveEngineTickIntervalMs(this.performanceTier),
       portableExperience: true
@@ -3018,6 +3036,26 @@ export class World {
       },
       (mode) => this.player?.setForcedCameraMode(mode)
     )
+    // Re-attach primary so hub has primary + PE (PE wire must not leave a 1-subscriber bus).
+    this.sceneScript.setInputHub(this.inputHub, 'primary')
+    this.sceneScript.bindPointerEvents(
+      () => this.player?.getWorldPosition() ?? null,
+      () => this.player?.isPointerBlocked() ?? true,
+      () => this.physics,
+      {
+        isRelayBlocked: () => this.isInputHubBlocked(),
+        isLocomotionBlocked: () =>
+          this.multiScene?.pe.isAvatarLocomotionFrozenByPe() === true ||
+          (this.player?.isLocomotionBlocked() ?? true),
+        clearPlayerMoveKeys: () => this.player?.clearMoveKeys()
+      },
+      (mode) => this.player?.setForcedCameraMode(mode)
+    )
+    // Worker may already be up after prepare race — flush PE free-flight again.
+    system.notifyPlayReady({
+      engineTickIntervalMs: resolveEngineTickIntervalMs(this.performanceTier),
+      portableExperience: true
+    })
     system.setAvatarModifierProviders({
       getSamples: () => {
         const samples: { id: string; position: { x: number; y: number; z: number } }[] = []
@@ -3715,6 +3753,8 @@ export class World {
 
     this.player?.dispose()
     this.player = null
+    this.unsubAvatarToon?.()
+    this.unsubAvatarToon = null
     this.remoteAvatars?.dispose()
     this.remoteAvatars = null
 

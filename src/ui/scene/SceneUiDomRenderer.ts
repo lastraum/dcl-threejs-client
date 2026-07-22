@@ -65,6 +65,16 @@ export type SceneUiDrawInput = {
   authoritativeEntities: ReadonlySet<Entity>
   /** Yoga layout boxes — sole geometry authority for paint + hit-map (canvas-absolute). */
   layoutBoxes: ReadonlyMap<Entity, LayoutBox>
+  /**
+   * When set (incremental patch), only these entities re-style.
+   * Clean survivors under a dirty root are walked for dirty descendants only.
+   */
+  dirtyEntities?: ReadonlySet<Entity>
+  /**
+   * Subset of dirtyEntities: visual fingerprint unchanged, Yoga box moved/resized.
+   * Apply geometry only — backgrounds/text already match.
+   */
+  layoutOnlyEntities?: ReadonlySet<Entity>
 }
 
 /** Yoga canvas-absolute box → client-space hit region (same mapping as DOM paint). */
@@ -445,6 +455,33 @@ export class SceneUiDomRenderer {
     if (!transform || !isUiEntityVisible(entity, input.transformOf)) {
       const hidden = this.nodes.get(entity)
       if (hidden) this.applyHiddenDomState(hidden)
+      const children = input.forest.get(entity) ?? []
+      for (const child of children) {
+        this.renderEntityTree(child, input, alive, visited, depth + 1, regions, scale)
+      }
+      return
+    }
+
+    // Layout-only: geometry + hit region; content styles already match fingerprint.
+    if (input.layoutOnlyEntities?.has(entity) && this.nodes.has(entity)) {
+      const layoutBox = input.layoutBoxes.get(entity)
+      if (layoutBox && layoutBox.width > 0.5 && layoutBox.height > 0.5) {
+        const { parent: domParent, coords } = this.resolveDomParent(transform)
+        const shell = this.nodes.get(entity)!
+        adoptNode(domParent, shell)
+        const radius = borderRadiusCss(transform, scale)
+        const clipShell =
+          !!radius ||
+          transform.overflow === YGOverflow.HIDDEN ||
+          transform.overflow === YGOverflow.SCROLL
+        applyYogaLayoutBox(shell, layoutBox, scale, coords, clipShell)
+        shell.style.opacity = String(Math.min(1, Math.max(0, transform.opacity ?? 1)))
+        shell.style.zIndex = String(transform.zIndex ?? 0)
+        shell.style.visibility = 'visible'
+        shell.removeAttribute('inert')
+        shell.removeAttribute('aria-hidden')
+        pushLayoutHitRegion(regions, entity, transform, layoutBox, input, depth)
+      }
       const children = input.forest.get(entity) ?? []
       for (const child of children) {
         this.renderEntityTree(child, input, alive, visited, depth + 1, regions, scale)

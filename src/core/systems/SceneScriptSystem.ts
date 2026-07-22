@@ -240,6 +240,7 @@ export class SceneScriptSystem {
   /** World InputHub — single keyboard bus; this system only subscribes. */
   private inputHub: InputHub | null = null
   private inputSubscriberId = 'primary'
+  private lastPeSnapshotLogMs = 0
   private clearPlayerMoveKeys: (() => void) | null = null
   triggerAreas: TriggerAreaSystem | null = null
   cameraModeAreas: CameraModeAreaSystem | null = null
@@ -1651,6 +1652,8 @@ export class SceneScriptSystem {
 
     this.bootProgressReporter = null
     if (!this.running) this.running = true
+    // PE often queued play-ready before Worker existed; ensure post after start resolves.
+    this.flushPlayReadyToWorker()
     if (isMotionFocusActive() && typeof globalThis !== 'undefined') {
       const g = globalThis as typeof globalThis & {
         __dumpMotionFocus?: () => void
@@ -1689,6 +1692,8 @@ export class SceneScriptSystem {
         if (readyUiEntities?.length) this.applyUiFrame([], readyUiEntities)
         else this.flushUiFrame()
       })
+      // Boot wiped worker portableExperience — re-post PE free-flight intent now that worker is ready.
+      this.flushPlayReadyToWorker()
       clientDebugLog.log('scene', 'Scene worker ready (main thread)', { level: 'success' })
       onReady()
       return
@@ -1718,9 +1723,9 @@ export class SceneScriptSystem {
         return
       }
       const cleaned = msg.message.replace(/^\[(?:log|info|warn|error|debug)\]\s*/, '')
-      // Load-gate / InputModifier path — always mirror to DevTools (Help panel may be off).
+      // Load-gate / PE free-flight path — always mirror to DevTools (Help panel may be off).
       const loadGate =
-        /InputModifier after|InputModifier final|load-gate clear|GltfContainerLoadingState inject|gltf LWW/i.test(
+        /InputModifier after|InputModifier final|load-gate clear|GltfContainerLoadingState inject|gltf LWW|pe-input pump|sceneOwnsPose|scene-input-snapshot pe=1/i.test(
           cleaned
         )
       if (loadGate) {
@@ -2786,13 +2791,22 @@ export class SceneScriptSystem {
   private applyVcPoseLive(entity: Entity, transform: DclTransformValues): void {
     if (!this.running || !this.entityStore || !this.bridge) return
     const { MainCamera, Transform } = this.readComponents
-    const { CameraEntity } = this.view
+    const { CameraEntity, PlayerEntity } = this.view
     const main = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
     const boundActive =
       main?.virtualCameraEntity !== undefined && main?.virtualCameraEntity !== null
 
-    // Unbound: only MOVE CAMERA flight lane. Bound: trust worker filter (VC + parents/lookAt).
+    // Unbound: free-flight / MOVE CAMERA lane. Bound: VC hierarchy from worker.
+    // playerEditFlightLiveLane is true whenever InputModifier freezes locomotion (PE drone).
     if (!boundActive && !this.playerEditFlightLiveLane) return
+
+    // Free-flight PE/Camera reserved poses — allow worker Transform ownership on main.
+    if (
+      this.playerEditFlightLiveLane &&
+      (entity === PlayerEntity || entity === CameraEntity)
+    ) {
+      this.projection.setAllowWorkerReservedTransforms(true)
+    }
 
     this.projection.setVcLiveTransform(entity, transform)
 
@@ -3382,7 +3396,10 @@ export class SceneScriptSystem {
     this.pointerEvents?.triggerInputAction(action, phase)
   }
 
-  /** ~60Hz worker ticks during held flight keys — snapshot is level-state (no edge spam). */
+  /**
+   * Hub high-rate pump while keys held / PE frozen.
+   * PE and primary both post pump-scene-engine-tick (worker routes PE → pe-input).
+   */
   private pumpSceneEngineTick(): void {
     if (!this.running || !this.worker) return
     this.worker.postMessage({ type: 'pump-scene-engine-tick' } satisfies MainToWorker)
@@ -3456,12 +3473,15 @@ export class SceneScriptSystem {
       return
     }
     this.worker.postMessage({ type: 'scene-input-snapshot', body } satisfies MainToWorker)
-    if (body.pressed.length > 0) {
-      clientDebugLog.log(
-        'input',
-        `snapshot → ${this.inputSubscriberId} pressed=[${body.pressed.join(',')}]`,
-        { alsoConsole: true, throttleMs: 200 }
-      )
+    if (body.pressed.length > 0 && this.inputSubscriberId.startsWith('pe:')) {
+      // Throttled PE path only — prove keys fan-out to the PE worker.
+      const t = performance.now()
+      if (t - this.lastPeSnapshotLogMs > 250) {
+        this.lastPeSnapshotLogMs = t
+        console.info(
+          `[input] snapshot → ${this.inputSubscriberId} pressed=[${body.pressed.join(',')}]`
+        )
+      }
     }
   }
 
@@ -3596,10 +3616,8 @@ export class SceneScriptSystem {
         body: inject,
         injectOnly
       } satisfies MainToWorker)
-      // Welcome splash / click-to-fade: free pointer from fullscreen primary-scene scrims.
-      // Never run on PE HUD root — Neurolink / smart-wearable buttons are not welcome
-      // catchers, and force-dismiss + paint thrash caused PX UI flashing.
-      if (inject.sceneUi && this.uiRootId !== 'pe-ui-root') {
+      // Fullscreen welcome scrim only (collectFullscreenDismissTargets). HUD buttons no-op.
+      if (inject.sceneUi) {
         this.sceneUiBridge?.forceDismissAfterSceneUiClick(inject.entity as never)
       }
     } else {
@@ -3959,6 +3977,12 @@ export class SceneScriptSystem {
   }
 
   private playReadyNotified = false
+  /** Stash until worker exists; re-flush after boot (boot clears portableExperience on worker). */
+  private pendingPlayReady: {
+    plazaScale?: boolean
+    engineTickIntervalMs?: number
+    portableExperience?: boolean
+  } | null = null
   private performanceTier: PerformanceTier = 'high'
 
   setPerformanceTier(tier: PerformanceTier): void {
@@ -3982,7 +4006,13 @@ export class SceneScriptSystem {
     this.worker?.postMessage({ type: 'pause-scene-onupdate', paused } satisfies MainToWorker)
   }
 
-  /** Scene + PhysX colliders ready — throttle worker onUpdate (called from World after boot cook). */
+  /**
+   * Scene + PhysX colliders ready — unpause worker play path.
+   *
+   * Platform rule: may be called before the Worker exists (PE onSystemPrepared).
+   * Intent is queued and flushed once the worker is ready. Worker `boot` clears
+   * portableExperience — so PE free-flight **must** re-post after boot/ready.
+   */
   notifyPlayReady(options?: {
     plazaScale?: boolean
     engineTickIntervalMs?: number
@@ -3993,16 +4023,30 @@ export class SceneScriptSystem {
     this.setSceneWorkerOnUpdatePaused(false)
     this.setSceneWorkerTicksPaused(false)
     this.avatarShapes?.setPlayReady(true)
-    if (this.playReadyNotified) return
-    this.playReadyNotified = true
-    this.worker?.postMessage({
-      type: 'scene-play-ready',
-      performanceTier: this.performanceTier,
+    this.pendingPlayReady = {
       plazaScale: options?.plazaScale,
       engineTickIntervalMs:
         options?.engineTickIntervalMs ?? resolveEngineTickIntervalMs(this.performanceTier),
       portableExperience: options?.portableExperience === true
+    }
+    this.flushPlayReadyToWorker()
+  }
+
+  /** Post scene-play-ready when worker is alive (after create + after boot/ready). */
+  private flushPlayReadyToWorker(): void {
+    if (!this.worker || !this.pendingPlayReady) return
+    const opts = this.pendingPlayReady
+    this.worker.postMessage({
+      type: 'scene-play-ready',
+      performanceTier: this.performanceTier,
+      plazaScale: opts.plazaScale,
+      engineTickIntervalMs: opts.engineTickIntervalMs,
+      portableExperience: opts.portableExperience === true
     } satisfies MainToWorker)
+    this.playReadyNotified = true
+    console.info(
+      `[scene] scene-play-ready → worker pe=${opts.portableExperience ? 1 : 0} sub=${this.inputSubscriberId}`
+    )
   }
 
   /** Parent transform moved — mark collider poses dirty down the subtree only. */

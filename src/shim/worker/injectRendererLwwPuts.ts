@@ -3,8 +3,18 @@ import * as extended from '@dcl/ecs/dist/components'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
 import { ReadWriteByteBuffer } from '@dcl/ecs/dist/serialization/ByteBuffer'
+import { DeleteComponent } from '@dcl/ecs/dist/serialization/crdt/deleteComponent'
+import { DeleteEntity } from '@dcl/ecs/dist/serialization/crdt/deleteEntity'
+import { DeleteComponentNetwork } from '@dcl/ecs/dist/serialization/crdt/network/deleteComponentNetwork'
+import { DeleteEntityNetwork } from '@dcl/ecs/dist/serialization/crdt/network/deleteEntityNetwork'
+import { PutNetworkComponentOperation } from '@dcl/ecs/dist/serialization/crdt/network/putComponentNetwork'
+import { AppendValueOperation } from '@dcl/ecs/dist/serialization/crdt/appendValue'
 import { readMessage } from '@dcl/ecs/dist/serialization/crdt/message'
-import { CrdtMessageType } from '@dcl/ecs/dist/serialization/crdt/types'
+import { PutComponentOperation } from '@dcl/ecs/dist/serialization/crdt/putComponent'
+import { CrdtMessageType, type CrdtMessage } from '@dcl/ecs/dist/serialization/crdt/types'
+
+/** `core::Transform` component id (SDK7 fixed). */
+const TRANSFORM_COMPONENT_ID = 1
 
 /** SDK7 reserved entities — renderer-owned Transform must land same-tick on the worker. */
 const RESERVED_ENTITIES = new Set<Entity>([0 as Entity, 1 as Entity, 2 as Entity])
@@ -52,11 +62,26 @@ function isTerminalGltfLoadingState(currentState: unknown): boolean {
   return s === 2 || s === 3 || s === 4
 }
 
+/** Player (1) + Camera (2) — free-flight may own these; Root (0) always host-owned. */
+const RESERVED_PLAYER_CAMERA = new Set<Entity>([1 as Entity, 2 as Entity])
+
+export type InjectRendererLwwOpts = {
+  /**
+   * Scene free-flight (InputModifier freeze, not MOVE CAMERA): skip Player/Camera
+   * Transform inject so main avatar feet cannot undo WASD motion every grow-only / inbound.
+   */
+  skipReservedPlayerCameraTransform?: boolean
+}
+
 /**
  * Apply renderer-encoded LWW PUTs for renderer-owned dynamic components directly on the scene worker engine.
  * Mirrors `injectTriggerAreaAppendsOnEngine` — same-tick delivery without waiting for transport LWW.
  */
-export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Array[]): RendererLwwInjectCounts {
+export function injectRendererLwwPutsOnEngine(
+  engine: IEngine,
+  chunks: Uint8Array[],
+  opts?: InjectRendererLwwOpts
+): RendererLwwInjectCounts {
   preregisterRendererInjectedComponents(engine)
   const Transform = extended.Transform(engine)
   const transformId = Transform.componentId
@@ -70,6 +95,7 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
   const CameraMode = generated.CameraMode(engine)
   const PointerLock = generated.PointerLock(engine)
   const RealmInfo = generated.RealmInfo(engine)
+  const skipPlayerCamera = opts?.skipReservedPlayerCameraTransform === true
   let tweenPuts = 0
   let raycastPuts = 0
   let gltfLoadingStatePuts = 0
@@ -89,10 +115,14 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
     while (msg) {
       if (msg.type === CrdtMessageType.PUT_COMPONENT) {
         if (msg.componentId === transformId && RESERVED_ENTITIES.has(msg.entityId as Entity)) {
-          const valueBuf = new ReadWriteByteBuffer(msg.data)
-          const value = Transform.schema.deserialize(valueBuf)
-          Transform.createOrReplace(msg.entityId as Entity, value)
-          reservedTransformPuts++
+          if (skipPlayerCamera && RESERVED_PLAYER_CAMERA.has(msg.entityId as Entity)) {
+            // Scene owns free-flight PE/Camera — ignore host re-pin.
+          } else {
+            const valueBuf = new ReadWriteByteBuffer(msg.data)
+            const value = Transform.schema.deserialize(valueBuf)
+            Transform.createOrReplace(msg.entityId as Entity, value)
+            reservedTransformPuts++
+          }
         } else if (msg.componentId === TWEEN_STATE_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = TweenState.schema.deserialize(valueBuf)
@@ -166,5 +196,84 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
     pointerLockPuts,
     realmInfoPuts,
     reservedTransformPuts
+  }
+}
+
+/**
+ * Drop Player/Camera Transform PUTs from renderer inbound chunks so transport
+ * apply cannot re-pin free-flight PE after inject skipped them.
+ */
+export function stripReservedPlayerCameraTransformsFromChunks(chunks: Uint8Array[]): Uint8Array[] {
+  const out: Uint8Array[] = []
+  for (const chunk of chunks) {
+    if (!chunk.byteLength) continue
+    const writeBuf = new ReadWriteByteBuffer()
+    const readBuf = new ReadWriteByteBuffer(chunk)
+    let wrote = false
+    let dropped = false
+    try {
+      let msg = readMessage(readBuf)
+      while (msg) {
+        const drop =
+          (msg.type === CrdtMessageType.PUT_COMPONENT ||
+            msg.type === CrdtMessageType.PUT_COMPONENT_NETWORK) &&
+          msg.componentId === TRANSFORM_COMPONENT_ID &&
+          RESERVED_PLAYER_CAMERA.has(msg.entityId as Entity)
+        if (drop) {
+          dropped = true
+        } else {
+          rewriteCrdtMessage(msg, writeBuf)
+          wrote = true
+        }
+        msg = readMessage(readBuf)
+      }
+    } catch {
+      out.push(chunk)
+      continue
+    }
+    if (!dropped) {
+      out.push(chunk)
+      continue
+    }
+    if (wrote) {
+      const bin = writeBuf.toBinary()
+      if (bin.byteLength) out.push(bin)
+    }
+  }
+  return out
+}
+
+function rewriteCrdtMessage(msg: CrdtMessage, buf: ReadWriteByteBuffer): void {
+  switch (msg.type) {
+    case CrdtMessageType.PUT_COMPONENT:
+      PutComponentOperation.write(msg.entityId, msg.timestamp, msg.componentId, msg.data, buf)
+      break
+    case CrdtMessageType.PUT_COMPONENT_NETWORK:
+      PutNetworkComponentOperation.write(
+        msg.entityId,
+        msg.timestamp,
+        msg.componentId,
+        msg.networkId,
+        msg.data,
+        buf
+      )
+      break
+    case CrdtMessageType.DELETE_COMPONENT:
+      DeleteComponent.write(msg.entityId, msg.componentId, msg.timestamp, buf)
+      break
+    case CrdtMessageType.DELETE_COMPONENT_NETWORK:
+      DeleteComponentNetwork.write(msg.entityId, msg.componentId, msg.timestamp, msg.networkId, buf)
+      break
+    case CrdtMessageType.APPEND_VALUE:
+      AppendValueOperation.write(msg.entityId, msg.timestamp, msg.componentId, msg.data, buf)
+      break
+    case CrdtMessageType.DELETE_ENTITY:
+      DeleteEntity.write(msg.entityId, buf)
+      break
+    case CrdtMessageType.DELETE_ENTITY_NETWORK:
+      DeleteEntityNetwork.write(msg.entityId, msg.networkId, buf)
+      break
+    default:
+      break
   }
 }

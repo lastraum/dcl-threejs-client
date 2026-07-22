@@ -144,6 +144,11 @@ export class CrdtProjection {
   private pendingMainCameraBind: PendingMainCameraBind | null = null
   /** Pointer uiEntities batch — recycled entity ids must not lose to pre-clear stale LWW rows. */
   private forceWorkerUiPuts = false
+  /**
+   * When true, accept worker Transform PUTs for reserved Player/Camera (scene free-flight
+   * while InputModifier freezes avatar locomotion). Default rejects so avatar feet win.
+   */
+  private allowWorkerReservedTransforms = false
 
   constructor(
     components: MirrorComponents,
@@ -261,10 +266,24 @@ export class CrdtProjection {
     }
   }
 
+  /**
+   * Scene free-flight (vehicle / PE drone): worker systems own Player/Camera Transform.
+   * When false (default), inbound reserved Transforms are ignored so avatar feet win.
+   */
+  setAllowWorkerReservedTransforms(allow: boolean): void {
+    this.allowWorkerReservedTransforms = allow
+  }
+
   private putComponent(entity: Entity, componentId: number, timestamp: number, data: Uint8Array): void {
     // DCL recycles entity ids after DELETE_ENTITY — next PUT revives the slot (campfire sprite pool, etc.).
     this.deletedEntities.delete(entity)
-    if (componentId === this.transformId && this.reservedEntities.has(entity)) return
+    if (
+      componentId === this.transformId &&
+      this.reservedEntities.has(entity) &&
+      !this.allowWorkerReservedTransforms
+    ) {
+      return
+    }
     if (this.shouldRejectStaleInboundVcTransform(entity, componentId, timestamp)) return
     const meta = this.meta.get(componentId)
     if (!meta) return

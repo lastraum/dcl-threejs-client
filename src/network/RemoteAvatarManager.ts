@@ -228,6 +228,13 @@ export class RemoteAvatarManager {
     return count
   }
 
+  /** Apply a material/shader pass to every fully composed remote (e.g. toon toggle). */
+  forEachModel(fn: (model: THREE.Object3D) => void): void {
+    for (const record of this.peers.values()) {
+      if (record.model) fn(record.model)
+    }
+  }
+
   /** Peers that still need a full avatar compose (placeholder / loading). */
   get pendingComposePeerCount(): number {
     let count = 0

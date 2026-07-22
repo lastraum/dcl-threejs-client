@@ -93,6 +93,8 @@ export class SceneUiBridge {
   private lastPaintLayoutKey = ''
   private lastPaintVisualKey = ''
   private lastEntityVisualKeys = new Map<Entity, string>()
+  /** Yoga box signature per entity — layout-only dirty detection. */
+  private lastEntityLayoutSig = new Map<Entity, string>()
   /** False until AppController reveals 3D play chrome — avoids UI on 2D landing during hydration. */
   private domVisible = false
   private readonly unbindImageLoaded: () => void
@@ -166,11 +168,11 @@ export class SceneUiBridge {
     this.domVisible = visible
     this.root.hidden = !visible
     if (!visible) return
-    // Invalidate on false→true only — re-calling setVisible(true) while shown must not
-    // thrash full Yoga rebuilds (that caused PE HUD flicker: first paint spam).
-    if (!wasVisible) {
-      this.invalidatePaintCache()
-      if (this.lastView) this.paint(this.lastView)
+    // DOM kept while hidden. Re-show: skip full thrash if survivor cache exists (PE HUD flash).
+    // First show / empty cache: paint once.
+    if (!wasVisible && this.lastView) {
+      if (this.paintCount > 0 && this.lastEntityVisualKeys.size > 0) return
+      this.paint(this.lastView)
     }
     // Already visible: leave paint to mount snapshots / dirty frames — do not re-paint
     // on every setUiVisible(true) from PE policy ticks.
@@ -184,13 +186,8 @@ export class SceneUiBridge {
   }
 
   /**
-   * After sceneUi inject-pointer-click: free the pointer from a **fullscreen** catcher only.
-   * CBD Plaza welcome fades Color4.a over several frames; if worker ticks lag the shell
-   * stays pointer-events:auto and blocks WASD/look.
-   *
-   * Must NOT touch non-fullscreen PE HUD buttons (Neurolink, menus, CREATOR cards):
-   * stripping interactive / pointer-events then re-painting causes visible flash on every
-   * click — the PX UI flashing regression.
+   * After sceneUi inject-pointer-click: free the pointer from a **fullscreen** catcher only
+   * (≥72% viewport — welcome scrim). Non-fullscreen HUD controls are ignored.
    */
   forceDismissAfterSceneUiClick(entity: Entity): void {
     if (this.forceDismissedEntities.has(entity)) {
@@ -288,6 +285,7 @@ export class SceneUiBridge {
     this.lastPaintLayoutKey = ''
     this.lastPaintVisualKey = ''
     this.lastEntityVisualKeys.clear()
+    this.lastEntityLayoutSig.clear()
     this.paintCount = 0
     this.firstPaintLogged = false
   }
@@ -373,6 +371,7 @@ export class SceneUiBridge {
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
+      this.lastEntityLayoutSig.clear()
       this.input.pruneStaleEntities(new Set())
     } else if (changed) {
       this.lastMountedUiEntities.clear()
@@ -380,6 +379,7 @@ export class SceneUiBridge {
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
+      this.lastEntityLayoutSig.clear()
     }
 
     this.workerUiEntitiesKnown = true
@@ -523,6 +523,7 @@ export class SceneUiBridge {
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
+      this.lastEntityLayoutSig.clear()
       return
     }
 
@@ -534,11 +535,15 @@ export class SceneUiBridge {
     this.reconcileMountedUiLifecycle(mounted)
 
     if (records.length === 0) {
+      // Worker mount still non-empty but nothing canvas-reachable = parent-chain lag.
+      // Keep survivor cache/DOM; next frame with a full parent chain repaints normally.
+      if ((this.workerUiEntities?.size ?? 0) > 0) return
       this.scrubUnauthoritativeDom()
       disposeSceneUiDebug()
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
+      this.lastEntityLayoutSig.clear()
       return
     }
 
@@ -657,20 +662,46 @@ export class SceneUiBridge {
       onRegions: (regions: UiScreenRegion[]) => this.hitMap.replace(regions)
     }
 
-    // Layout stable + few visual-only dirties → patch DOM only (skip full tree walk).
+    // Incremental paint: survivors with stable style cache only restyle dirty subtrees.
+    // layout-only = Yoga box changed, visual fingerprint unchanged → geometry, not bg/text.
     let usedPatch = false
-    if (layoutCacheHit && this.lastEntityVisualKeys.size > 0 && this.paintCount > 1) {
-      const dirty: Entity[] = []
+    if (this.lastEntityVisualKeys.size > 0) {
+      const dirtySet = new Set<Entity>()
+      const layoutOnly = new Set<Entity>()
       for (const [entity, key] of entityVisualKeys) {
-        if (this.lastEntityVisualKeys.get(entity) !== key) dirty.push(entity)
+        if (this.lastEntityVisualKeys.get(entity) !== key) dirtySet.add(entity)
       }
       for (const entity of this.lastEntityVisualKeys.keys()) {
-        if (!entityVisualKeys.has(entity)) dirty.push(entity)
+        if (!entityVisualKeys.has(entity)) dirtySet.add(entity)
       }
-      if (dirty.length > 0 && dirty.length <= 32 && dirty.length < mounted.size * 0.25) {
-        usedPatch = this.dom.patchEntities(dirty, drawInput)
+      for (const [entity, box] of layoutBoxMap) {
+        const sig = `${box.left},${box.top},${box.width},${box.height}`
+        if (this.lastEntityLayoutSig.get(entity) === sig) continue
+        if (!dirtySet.has(entity) && this.lastEntityVisualKeys.has(entity)) {
+          layoutOnly.add(entity)
+        }
+        dirtySet.add(entity)
+      }
+      if (dirtySet.size > 0) {
+        const dirtyRoots: Entity[] = []
+        for (const entity of dirtySet) {
+          if (!mounted.has(entity)) {
+            dirtyRoots.push(entity)
+            continue
+          }
+          const parent = (transformOf(entity)?.parent ?? 0) as Entity
+          if (parent && parent !== 0 && dirtySet.has(parent)) continue
+          dirtyRoots.push(entity)
+        }
+        usedPatch = this.dom.patchEntities(dirtyRoots, {
+          ...drawInput,
+          dirtyEntities: dirtySet,
+          layoutOnlyEntities: layoutOnly
+        })
         if (usedPatch && this.paintCount <= 20) {
-          console.info(`[scene-ui] incremental paint — dirty=${dirty.length} mount=${mounted.size}`)
+          console.info(
+            `[scene-ui] incremental paint — dirty=${dirtySet.size} layoutOnly=${layoutOnly.size} mount=${mounted.size}`
+          )
         }
       }
     }
@@ -682,6 +713,9 @@ export class SceneUiBridge {
     this.lastPaintLayoutKey = layoutKey
     this.lastPaintVisualKey = visualKey
     this.lastEntityVisualKeys = entityVisualKeys
+    this.lastEntityLayoutSig = new Map(
+      [...layoutBoxMap.entries()].map(([e, b]) => [e, `${b.left},${b.top},${b.width},${b.height}`])
+    )
 
     this.input.pruneStaleEntities(mounted)
     this.input.releaseAllIfNothingMounted(mounted)
@@ -1073,16 +1107,27 @@ export class SceneUiBridge {
     }
   }
 
-  /** Release DOM for entities no longer canvas-reachable in this projection frame. */
+  /**
+   * Pool release follows worker mount set (UITransformReleaseSystem), not one-frame
+   * canvas-reachability. Parent-chain lag must not destroy nodes still on the mount set.
+   */
   private reconcileMountedUiLifecycle(mounted: Set<Entity>): void {
     const removed = new Set<Entity>()
     for (const entity of this.lastMountedUiEntities) {
-      if (!mounted.has(entity)) removed.add(entity)
+      if (mounted.has(entity)) continue
+      if (this.workerUiEntities?.has(entity)) continue
+      removed.add(entity)
     }
     if (removed.size > 0) {
       this.releaseUiEntities(removed)
     }
-    this.lastMountedUiEntities = new Set(mounted)
+    const next = new Set(mounted)
+    if (this.workerUiEntities) {
+      for (const entity of this.lastMountedUiEntities) {
+        if (this.workerUiEntities.has(entity) && !mounted.has(entity)) next.add(entity)
+      }
+    }
+    this.lastMountedUiEntities = next
   }
 
   /** Drop any DOM node whose entity id is not on the worker mount set (ghost scrims). */

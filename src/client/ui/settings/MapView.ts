@@ -937,11 +937,13 @@ export class MapView {
     const markerPeers = this.allPlayerRows()
     const seenMarkers = new Set<string>()
     for (const peer of markerPeers) {
-      seenMarkers.add(peer.address)
       const parcelKey = parcelKeyFromPeer(peer)
+      // Reproject every pan/zoom frame. If off-screen, drop the node — otherwise
+      // a prior left/top sticks to the viewport and "slides" with the map wrongly.
       const rect = playerMarkerRect(parcelKey, peer.position, w, h, this.view)
       if (!rect) continue
 
+      seenMarkers.add(peer.address)
       let btn = this.markerNodes.get(peer.address)
       if (!btn) {
         btn = document.createElement('button')
@@ -970,7 +972,13 @@ export class MapView {
       btn.title = `${name} · ${parcelKey}`
       btn.setAttribute('aria-label', `${name} at ${parcelKey}`)
       btn.setAttribute('aria-pressed', selected ? 'true' : 'false')
-      btn.innerHTML = renderAvatar(name, this.faceUrlForPeer(peer), rect.size)
+      // Avoid rewriting avatar DOM every pan frame (image flicker / layout thrash).
+      const face = this.faceUrlForPeer(peer)
+      const mark = `${name}\0${face ?? ''}\0${rect.size}\0${selected ? 1 : 0}`
+      if (btn.dataset.markerKey !== mark) {
+        btn.dataset.markerKey = mark
+        btn.innerHTML = renderAvatar(name, face, rect.size)
+      }
     }
 
     for (const [address, btn] of this.markerNodes) {

@@ -46,6 +46,14 @@ const FF_MAX_VISIBLE = 3
  */
 const FF_MAX_RETAINED = 6
 
+/**
+ * Hotfix: skip neighbor scene meshes (composite GLBs + first-frame samples)
+ * and do not advertise secondary candidates for live workers.
+ * Roads + empty parcel blanks/scatter still run.
+ * Flip true to restore full AOI scene visuals.
+ */
+const LOAD_AOI_SCENE_VISUALS = false
+
 export type AoiVisualLayerContext = {
   scene: ResolvedScene
   cache: AssetCache
@@ -343,6 +351,21 @@ export class AoiVisualLayer {
     // --- Classic open-road foundation tiles (only if ownership still maps to the road) ---
     await this.refreshRoadTiles(entities, pointerToEntity, base, gen, ctx)
     if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
+
+    if (!LOAD_AOI_SCENE_VISUALS) {
+      // Hotfix: roads + empty only — clear any prior scene bakes, no secondary workers.
+      this.compositeRoot.clear()
+      this.loadedCompositeIds.clear()
+      this.clearFirstFrameGroups()
+      this.firstFrameSampler.reset()
+      ctx.onSecondaryCandidates?.([])
+      if (gen === this.refreshGen) {
+        console.info(
+          `[aoi] refresh parcels=${pointers.length} vacant=${vacantKeys.length} footprint=${secondaryFootprint.size} roads=${this.loadedRoadIds.size} composites=off firstFrame=off radius=${radiusM}m`
+        )
+      }
+      return
+    }
 
     // --- Secondary visuals: main.composite (outer) + first-frame sample (inner).
     const compositeCandidates = entities.filter(

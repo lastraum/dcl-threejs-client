@@ -27,7 +27,10 @@ const TAM = {
  *   Mesh local X is written with DCL→Three flip (−meshX) so pivot matches entity positions
  *   that already go through dclToThreePos (without the flip, left looked like right / columns
  *   sat too far toward −board-X).
- * - Wrap / fontAutoSize: full auth box, glyphs paint with textAlign inside.
+ * - Wrap **with authored height**: full auth box, glyphs paint with textAlign inside.
+ * - Wrap **without height** (common — e.g. Xarvon monitor): wrap to width, **content-size
+ *   height** (Explorer collapses omitted height). textAlign is a pivot, not “top of a 1 m slab”.
+ * - Default textAlign when omitted: MIDDLE_CENTER (SDK).
  */
 
 const PIXELS_PER_METER = 160
@@ -172,19 +175,30 @@ function disposeMat(m: THREE.Material): void {
 
 /**
  * Layout text at authored fontSize (world meters = fontSize * 0.1).
- * Non-wrap: content-sized plane + textAlign as entity pivot.
- * Wrap: full auth plane, align painted inside.
+ * Non-wrap / wrap-without-height: content-sized plane + textAlign as entity pivot.
+ * Wrap with authored height: full auth plane, align painted inside.
  */
 function layoutTextShape(spec: PBTextShape): TextLayout {
-  const authW = Math.max(PLANE_MIN, spec.width ?? 1)
-  const authH = Math.max(PLANE_MIN, spec.height ?? 1)
+  const widthAuthored = spec.width != null && Number.isFinite(spec.width)
+  const heightAuthored = spec.height != null && Number.isFinite(spec.height)
+  const authW = Math.max(PLANE_MIN, widthAuthored ? (spec.width as number) : 1)
+  const authH = Math.max(PLANE_MIN, heightAuthored ? (spec.height as number) : 1)
   const wrap = spec.textWrapping === true
+  /** Full-box paint only when wrap + explicit height (vertical align has a real box). */
+  const fullBox = wrap && heightAuthored
   const family = fontFamilyForSpec(spec)
   const align = alignFromSpec(spec)
   const plain = stripTextShapeMarkup(spec.text ?? '')
 
   const boxW = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(authW * PIXELS_PER_METER)))
-  const boxH = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(authH * PIXELS_PER_METER)))
+  // When height is omitted, start from a generous measure box then shrink to content.
+  const measureH = heightAuthored
+    ? authH
+    : Math.max(authH, 4)
+  const boxH = Math.min(
+    CANVAS_MAX,
+    Math.max(CANVAS_MIN, Math.round(measureH * PIXELS_PER_METER))
+  )
 
   const padL0 = Math.max(0, (spec.paddingLeft ?? 0) * boxW * 0.5)
   const padR0 = Math.max(0, (spec.paddingRight ?? 0) * boxW * 0.5)
@@ -202,7 +216,7 @@ function layoutTextShape(spec: PBTextShape): TextLayout {
   mcanvas.height = 4
   const mctx = mcanvas.getContext('2d')!
 
-  if (spec.fontAutoSize === true) {
+  if (spec.fontAutoSize === true && heightAuthored) {
     fontPx = Math.min(fontPx, innerH0 * 0.85)
     for (let guard = 0; guard < 24; guard++) {
       mctx.font = `600 ${fontPx}px ${family}`
@@ -233,7 +247,7 @@ function layoutTextShape(spec: PBTextShape): TextLayout {
   let meshX = 0
   let meshY = 0
 
-  if (wrap) {
+  if (fullBox) {
     // Full authored box — multi-line wrap + align inside (mesh stays centered).
     canvasW = boxW
     canvasH = boxH
@@ -242,17 +256,22 @@ function layoutTextShape(spec: PBTextShape): TextLayout {
     meshX = 0
     meshY = 0
   } else {
-    // Content-sized plane. Auth width/height are caps only (Jump Zone uses width:12–20).
+    // Content-sized plane. Auth width is wrap/max width; height is content (or cap if authored).
     const padX = Math.max(padL0 + padR0, fontPx * 0.2)
     const padY = Math.max(padT0 + padB0, fontPx * 0.2)
-    const contentWpx = Math.min(boxW, Math.max(CANVAS_MIN, Math.ceil(widest + padX)))
-    const contentHpx = Math.min(boxH, Math.max(CANVAS_MIN, Math.ceil(blockH + padY)))
-    canvasW = contentWpx
-    canvasH = contentHpx
-    planeW = Math.max(PLANE_MIN, contentWpx / PIXELS_PER_METER)
-    planeH = Math.max(PLANE_MIN, contentHpx / PIXELS_PER_METER)
+    // Wrap without height: keep authored width so lines wrap as intended; height hugs content.
+    const contentWpx = wrap
+      ? boxW
+      : Math.min(boxW, Math.max(CANVAS_MIN, Math.ceil(widest + padX)))
+    const contentHpx = heightAuthored
+      ? Math.min(boxH, Math.max(CANVAS_MIN, Math.ceil(blockH + padY)))
+      : Math.max(CANVAS_MIN, Math.ceil(blockH + padY))
+    canvasW = Math.min(CANVAS_MAX, contentWpx)
+    canvasH = Math.min(CANVAS_MAX, contentHpx)
+    planeW = Math.max(PLANE_MIN, canvasW / PIXELS_PER_METER)
+    planeH = Math.max(PLANE_MIN, canvasH / PIXELS_PER_METER)
 
-    // textAlign = pivot on entity origin (not placement inside a huge auth box).
+    // textAlign = pivot on entity origin (not placement inside a huge default 1 m box).
     // Plane geometry is centered on mesh local 0 — shift so the align edge hits origin.
     if (align.h === 'left') meshX = planeW * 0.5
     else if (align.h === 'right') meshX = -planeW * 0.5
@@ -412,8 +431,8 @@ function fontFamilyForSpec(spec: PBTextShape): string {
 }
 
 function alignFromSpec(spec: PBTextShape): Align {
-  // Default middle-left — leaderboards / labels; explicit textAlign still wins.
-  const a = spec.textAlign ?? TAM.MIDDLE_LEFT
+  // SDK default TAM_MIDDLE_CENTER when omitted. Explicit values (incl. TOP_*) still win.
+  const a = spec.textAlign ?? TAM.MIDDLE_CENTER
   switch (a) {
     case TAM.TOP_LEFT:
       return { textAlign: 'left', h: 'left', v: 'top' }
@@ -434,7 +453,7 @@ function alignFromSpec(spec: PBTextShape): Align {
     case TAM.MIDDLE_CENTER:
       return { textAlign: 'center', h: 'center', v: 'middle' }
     default:
-      return { textAlign: 'left', h: 'left', v: 'middle' }
+      return { textAlign: 'center', h: 'center', v: 'middle' }
   }
 }
 

@@ -16,8 +16,8 @@ export type ChangeRealmResponse = {
 
 /**
  * Map realm string → playable route (coords, official world, or custom server URL).
- * Accepts Explorer-style `host/world/Name`, full jump URLs with `?realm=`,
- * and legacy `customServer=&worldName=` (same as chat `/changerealm` / `/goto`).
+ * Accepts `host worldName`, `realm=host&worldName=name`, composite `host/world/Name`,
+ * and full jump URLs (same as chat `/changerealm` / `/goto`).
  */
 export function parseChangeRealmTarget(
   realm: string

@@ -46,8 +46,8 @@ export type RouteTarget =
       /**
        * Custom worlds content server origin (`https://host`).
        * Omit / undefined = official / env default.
-       * Deep link (Explorer parity):
-       *   `?realm=worlds.example.com/world/MyWorld.dcl.eth`
+       * Deep link:
+       *   `?realm=worlds.example.com&worldName=MyWorld.dcl.eth`
        */
       customServer?: string
     }
@@ -140,27 +140,36 @@ function worldTargetFromCustom(
 }
 
 /**
- * Path + query (Explorer jump-style):
- * - `/?realm=worlds.dcl-iwb.co/world/BuilderWorld.dcl.eth` — custom worlds server
- * - `/?position=1,1` — parcel (Explorer `position` query)
- * - `/rickroll` or `/rickroll.dcl.eth` — official worlds server
- * - legacy `?customServer=&worldName=` still accepted
+ * Path + query:
+ * - `/?realm=worlds.dcl-iwb.co&worldName=BuilderWorld.dcl.eth` — preferred custom host
+ * - `/?realm=host/world/Name` — still accepted (Explorer paste)
+ * - `/?position=1,1` — parcel
+ * - `/rickroll` — official worlds server
+ * - legacy `?customServer=` still accepted
  */
 export function resolveRouteTarget(): RouteTarget {
   const params = new URLSearchParams(window.location.search)
 
-  // 1) Explorer `?realm=host/world/Name`
+  const worldNameQ =
+    params.get('worldName')?.trim() ||
+    params.get('world')?.trim() ||
+    params.get('name')?.trim() ||
+    ''
+
+  // 1) `?realm=<domain>` + `?worldName=<name>` (preferred — no /world/ typing)
   const realmRaw = params.get('realm')?.trim()
   if (realmRaw) {
-    const parsed = parseRealmParam(realmRaw)
+    const parsed = parseRealmParam(realmRaw, worldNameQ || undefined)
     if (parsed) return worldTargetFromCustom(parsed.customServer, parsed.worldName)
-    // Bare world name in realm= (no host path)
-    const asWorld = parseRouteTarget(realmRaw)
-    if (asWorld.kind === 'world') return asWorld
   }
 
   // 2) Path segment (official worlds / parcels / app shells)
   const fromPath = parseRouteTarget(readRouteSegmentFromPath())
+  if (fromPath.kind === 'world' && realmRaw) {
+    // Path world name with realm host override
+    const host = normalizeCustomServerUrl(realmRaw.split(/[/?#]/)[0] ?? realmRaw)
+    if (host) return worldTargetFromCustom(host, fromPath.worldName)
+  }
   if (fromPath.kind !== 'blank') return fromPath
 
   // 3) Explorer `?position=x,y`
@@ -170,23 +179,17 @@ export function resolveRouteTarget(): RouteTarget {
     if (t.kind === 'coords') return t
   }
 
-  // 4) Legacy customServer + worldName
+  // 4) Legacy customServer + worldName (realm host aliases)
   const legacyServer = normalizeCustomServerUrl(
     params.get('customServer') ?? params.get('server') ?? params.get('worldServer')
   )
-  const legacyWorld =
-    params.get('worldName')?.trim() ||
-    params.get('world')?.trim() ||
-    params.get('name')?.trim() ||
-    ''
-  if (legacyServer && legacyWorld) {
-    return worldTargetFromCustom(legacyServer, legacyWorld)
+  if (legacyServer && worldNameQ) {
+    return worldTargetFromCustom(legacyServer, worldNameQ)
   }
 
-  // 5) Legacy ?world= only
-  const fromQuery = params.get('world')?.trim()
-  if (fromQuery) {
-    const t = parseRouteTarget(fromQuery)
+  // 5) worldName alone → official worlds content server
+  if (worldNameQ && !realmRaw) {
+    const t = parseRouteTarget(worldNameQ)
     if (t.kind !== 'blank') return t
   }
 
@@ -205,7 +208,7 @@ export function routePathForTarget(target: RouteTarget): string {
   if (target.kind === 'profile') return '/profile'
   if (target.kind === 'editor') return '/editor'
   if (target.kind === 'coords') return `/${encodeURIComponent(`${target.x},${target.y}`)}`
-  // Custom server worlds: `/` + `?realm=host/world/Name` (Explorer-style).
+  // Custom server worlds: `/` + `?realm=host&worldName=Name`.
   if (target.customServer) return '/'
   return routePathForWorld(target.worldName)
 }
@@ -251,14 +254,14 @@ export function routeEquals(a: RouteTarget, b: RouteTarget): boolean {
 }
 
 /**
- * Free-text travel target: coords, official world, Explorer `host/world/name`,
- * full URLs, or legacy `customServer=&worldName=`.
+ * Free-text travel target: coords, official world, `host Name`,
+ * `realm=host&worldName=name`, composite `host/world/name`, full URLs.
  */
 export function parseTravelTarget(raw: string): RouteTarget | null {
   const text = raw.trim()
   if (!text) return null
 
-  // Explorer realm form first (host/world/Name or full jump URL)
+  // Query blob or composite host/world/Name / full URL
   const realm = parseRealmParam(text)
   if (realm) {
     return worldTargetFromCustom(realm.customServer, realm.worldName)
@@ -269,7 +272,7 @@ export function parseTravelTarget(raw: string): RouteTarget | null {
     return worldTargetFromCustom(custom.customServer, custom.worldName)
   }
 
-  // Two-token: `https://host worldName` or `host worldName`
+  // Two-token: `host worldName` or `https://host worldName` (preferred chat form)
   const two = /^(\S+)\s+(\S+)$/.exec(text)
   if (two) {
     const server = normalizeCustomServerUrl(two[1])
@@ -284,8 +287,8 @@ export function parseTravelTarget(raw: string): RouteTarget | null {
 }
 
 /**
- * Chat `/goto` and `/changerealm` — parcel coords, world name, bare name → `.dcl.eth`,
- * or Explorer-style `host/world/Name` / full jump URL with `?realm=`.
+ * Chat `/goto` and `/changerealm` — parcel coords, world name,
+ * `host worldName`, or `realm=host&worldName=name`.
  */
 export function parseGotoCommand(text: string): RouteTarget | null {
   const match = /^\/(?:goto|changerealm|change-realm|realm)\s+(.+)$/i.exec(text.trim())
@@ -297,7 +300,7 @@ export function applyRouteToHistory(target: RouteTarget, replace = false): void 
   const url = new URL(window.location.href)
   url.pathname = routePathForTarget(target)
 
-  // Clear travel-related query keys, then re-apply for custom worlds / Explorer parity.
+  // Clear travel-related query keys, then re-apply for custom worlds.
   url.searchParams.delete('world')
   url.searchParams.delete('worldName')
   url.searchParams.delete('name')
@@ -308,16 +311,14 @@ export function applyRouteToHistory(target: RouteTarget, replace = false): void 
   url.searchParams.delete('position')
 
   if (target.kind === 'world' && target.customServer) {
-    const realm = formatRealmParam(target.customServer, target.worldName)
-    if (realm) url.searchParams.set('realm', realm)
+    const realmHost = formatRealmParam(target.customServer)
+    if (realmHost) url.searchParams.set('realm', realmHost)
+    url.searchParams.set('worldName', target.worldName)
     // Persist custom worlds for Favourites tab (merged with Places profile favourites).
     addCustomWorldFavorite({
       customServer: target.customServer,
       worldName: target.worldName
     })
-  } else if (target.kind === 'coords') {
-    // Optional Explorer-style position query when using path `/{x},{y}` is enough;
-    // keep path as primary, no need to force ?position= for internal nav.
   }
 
   const state = { route: target }

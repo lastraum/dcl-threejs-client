@@ -3052,6 +3052,8 @@ export class World {
    */
   private isInputHubBlocked(): boolean {
     if (isTextInputFocused()) return true
+    // Emote wheel modal — B/0-9/E owned by HUD; never fan-out E (IA_PRIMARY) to workers.
+    if (document.querySelector('.emote-wheel-overlay:not([hidden])')) return true
     if (document.querySelector('.settings-overlay.is-open')) return true
     if (document.querySelector('.preferences-panel.is-open')) return true
     // Primary scene ECS text/select only (not PE HUD buttons / pe-ui-root).

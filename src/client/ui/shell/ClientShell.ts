@@ -9,6 +9,8 @@ import type { AvatarProfile } from '../../../avatar/types'
 import { ProfilePopup } from './ProfilePopup'
 import { SkyboxPanel } from './SkyboxPanel'
 import { NearbyVoicePanel } from './NearbyVoicePanel'
+import { MarketplaceCreditsPanel } from './MarketplaceCreditsPanel'
+import { NotificationsPanel } from './NotificationsPanel'
 import { PortableExperiencePanel } from './PortableExperiencePanel'
 import type { PortableExperienceManager } from '../../../dcl/multiScene/PortableExperienceManager'
 import type { VoiceChatService } from '../../../network/voice/VoiceChatService'
@@ -80,8 +82,11 @@ export class ClientShell {
   private readonly skyboxPanel: SkyboxPanel
   private readonly nearbyVoicePanel: NearbyVoicePanel
   private readonly pePanel: PortableExperiencePanel
+  private readonly notificationsPanel: NotificationsPanel
+  private readonly marketplaceCreditsPanel: MarketplaceCreditsPanel
   private readonly emoteWheel: EmoteWheelPanel
   private readonly buttons = new Map<string, SidebarButton>()
+  private unreadPollTimer: ReturnType<typeof setInterval> | null = null
   private readonly debugPanel: DebugPanel
   private readonly devProgressPanel: DevProgressPanel | null
   private chatPanel: ChatPanel | null
@@ -155,6 +160,7 @@ export class ClientShell {
     this.emoteWheel.setCallbacks({
       canOpen: () => this.emoteWheelEnabled,
       onEmoteSelected: (emoteId) => this.onEmoteSelected?.(emoteId),
+      onCustomize: () => this.openEmoteCustomize(),
       onVisibilityChange: (visible) => {
         this.buttons.get('emotes')?.setActive(visible)
         this.onEmoteWheelVisibility?.(visible)
@@ -196,6 +202,17 @@ export class ClientShell {
       onClose: () => this.buttons.get('smart-wearable')?.setActive(false)
     })
 
+    this.notificationsPanel = new NotificationsPanel({
+      getSession: () => this.session,
+      onUnreadChange: (count) => this.buttons.get('notifications')?.setBadge(count > 0 ? count : null),
+      onClose: () => this.buttons.get('notifications')?.setActive(false)
+    })
+
+    this.marketplaceCreditsPanel = new MarketplaceCreditsPanel({
+      getSession: () => this.session,
+      onClose: () => this.buttons.get('marketplace-credits')?.setActive(false)
+    })
+
     this.profileButton = new ProfileSidebarButton('Profile', () => this.profilePopup.toggle())
     this.drawerProfileSlot.appendChild(this.profileButton.element)
 
@@ -222,6 +239,13 @@ export class ClientShell {
       btn.element.dataset.shellId = cfg.id
       bottom.appendChild(btn.element)
     }
+
+    // Unread badge poll (wallet only; guests get 0).
+    void this.notificationsPanel.refreshUnreadBadge()
+    this.unreadPollTimer = setInterval(() => {
+      if (document.visibilityState === 'hidden') return
+      void this.notificationsPanel.refreshUnreadBadge()
+    }, 90_000)
 
     this.drawerCloseBtn = this.root.querySelector('.client-shell__drawer-close') as HTMLButtonElement
     this.mobileLocationPill = document.createElement('div')
@@ -478,6 +502,10 @@ export class ClientShell {
   dispose(): void {
     cancelAnimationFrame(this.locationCoordsRaf)
     this.getLocationCoordsLabel = null
+    if (this.unreadPollTimer) {
+      clearInterval(this.unreadPollTimer)
+      this.unreadPollTimer = null
+    }
     this.mobileQuery.removeEventListener('change', this.onMobileQueryChange)
     this.unsubChatUnread?.()
     this.unsubChatUnread = null
@@ -486,6 +514,8 @@ export class ClientShell {
     this.profilePopup.dispose()
     this.skyboxPanel.hide()
     this.nearbyVoicePanel.hide()
+    this.notificationsPanel.dispose()
+    this.marketplaceCreditsPanel.dispose()
     this.pePanel.dispose()
     this.emoteWheel.dispose()
     this.devProgressPanel?.hide()
@@ -632,6 +662,30 @@ export class ClientShell {
       }
     }
 
+    if (id === 'notifications') {
+      return (ev) => {
+        ev.stopPropagation()
+        this.closeMobileDrawerForOverlay()
+        this.marketplaceCreditsPanel.hide()
+        this.buttons.get('marketplace-credits')?.setActive(false)
+        this.notificationsPanel.toggle()
+        this.buttons.get('notifications')?.setActive(this.notificationsPanel.isVisible())
+      }
+    }
+
+    if (id === 'marketplace-credits') {
+      return (ev) => {
+        ev.stopPropagation()
+        this.closeMobileDrawerForOverlay()
+        this.notificationsPanel.hide()
+        this.buttons.get('notifications')?.setActive(false)
+        this.marketplaceCreditsPanel.toggle()
+        this.buttons
+          .get('marketplace-credits')
+          ?.setActive(this.marketplaceCreditsPanel.isVisible())
+      }
+    }
+
     const overlayTabs: Record<string, SettingsTab> = {
       events: 'events',
       map: 'map',
@@ -650,8 +704,6 @@ export class ClientShell {
     }
 
     const labels: Record<string, string> = {
-      notifications: 'Notifications',
-      'marketplace-credits': 'Marketplace credits',
       marketplace: 'Marketplace',
       help: 'Help',
       dev: 'Dev progress',
@@ -680,6 +732,19 @@ export class ClientShell {
   toggleEmotes(): void {
     if (!this.emoteWheelEnabled) return
     this.emoteWheel.toggle()
+  }
+
+  /** Emote wheel Customize [E] — close wheel + open backpack Emotes. */
+  openEmoteCustomize(): void {
+    this.emoteWheel.hide()
+    this.closeMobileDrawerForOverlay()
+    this.preferencesPanel?.hide()
+    this.buttons.get('settings')?.setActive(false)
+    if (this.settingsOverlay) {
+      this.settingsOverlay.showBackpackEmotes()
+      return
+    }
+    console.warn('[client-ui] emote customize — settings overlay not attached')
   }
 
   setEmoteHudActive(active: boolean): void {

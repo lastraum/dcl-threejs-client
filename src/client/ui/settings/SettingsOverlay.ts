@@ -221,6 +221,15 @@ export class SettingsOverlay {
     this.onOpen?.()
   }
 
+  /** Emote wheel Customize [E] — backpack with Emotes sub-tab selected. */
+  showBackpackEmotes(): void {
+    this.show('backpack')
+    // BackpackView mounts in switchTab; select emotes after DOM is ready.
+    requestAnimationFrame(() => {
+      this.backpackView?.setSubTab('emotes')
+    })
+  }
+
   /** Open communities tab and a specific community modal (HUD toasts). */
   openCommunity(
     communityId: string,

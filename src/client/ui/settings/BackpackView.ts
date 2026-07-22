@@ -107,7 +107,8 @@ function parseSortMode(value: string): BackpackSortMode {
 const OSA_GRID_COLUMNS = 3
 const OSA_GRID_ROWS = 3
 const OSA_ITEMS_PER_PAGE = OSA_GRID_COLUMNS * OSA_GRID_ROWS
-const EMOTE_ITEMS_PER_PAGE = 12
+/** Same 3×3 board as wearables inventory. */
+const EMOTE_ITEMS_PER_PAGE = 9
 
 type BackpackViewOptions = {
   onVrmEquipChange?: () => void | Promise<void>
@@ -754,6 +755,28 @@ export class BackpackView {
     }
   }
 
+  /** Open a sub-tab (wearables / emotes / …) from external callers (emote wheel Customize). */
+  setSubTab(tab: BackpackSubTab): void {
+    if (tab === this.activeSubTab) {
+      this.applySubTabLayout()
+      return
+    }
+    this.activeSubTab = tab
+    const subTabs = this.root.querySelectorAll('.backpack-view__sub-tab')
+    subTabs.forEach((b) => {
+      const el = b as HTMLElement
+      el.classList.toggle('is-active', el.dataset.subtab === tab)
+    })
+    // Sub-header may live in settings overlay header slot.
+    if (this.subHeaderEl && !this.root.contains(this.subHeaderEl)) {
+      this.subHeaderEl.querySelectorAll('.backpack-view__sub-tab').forEach((b) => {
+        const el = b as HTMLElement
+        el.classList.toggle('is-active', el.dataset.subtab === tab)
+      })
+    }
+    this.applySubTabLayout()
+  }
+
   private wireSubTabs(): void {
     const subTabs = this.root.querySelectorAll('.backpack-view__sub-tab')
     subTabs.forEach((btn) => {
@@ -987,6 +1010,10 @@ export class BackpackView {
     }
   }
 
+  /**
+   * Emotes inventory — same 3×3 board + gap + empty slots as wearables {@link renderGrid}.
+   * Uses `backpack-view__item` so spacing matches wearables exactly.
+   */
   private renderEmoteGrid(): void {
     if (this.activeSubTab !== 'emotes') return
     const gridEl = this.root.querySelector('.backpack-view__middle .backpack-view__grid') as HTMLElement | null
@@ -996,7 +1023,7 @@ export class BackpackView {
     if (!gridEl || !paginationEl) return
 
     gridEl.innerHTML = ''
-    gridEl.classList.add('backpack-view__grid--emotes')
+    gridEl.classList.remove('backpack-view__grid--emotes')
     paginationEl.innerHTML = ''
 
     if (this.emotesLoading && !this.emoteItems.length) {
@@ -1022,27 +1049,37 @@ export class BackpackView {
     for (const item of pageItems) {
       const badgeKey = this.emoteSlotBadgeKey(item.urn)
       const isSelected = !!this.selectedEmoteId && this.emoteMatches(this.selectedEmoteId, item.urn)
-      const rarity = item.rarity || 'common'
+      const rarity = item.rarity || guessWearableRarity(item.urn)
       const card = document.createElement('button')
       card.type = 'button'
       card.className =
-        'backpack-view__emote-card is-' +
+        'backpack-view__item is-' +
         rarity +
         (isSelected ? ' is-selected' : '') +
         (badgeKey ? ' is-equipped' : '')
       card.dataset.emoteId = item.urn
+      card.title = item.name
       card.style.setProperty('--wearable-rarity-bg', wearableRarityBackground(rarity))
-      card.innerHTML = `
-        <img class="backpack-view__emote-card-thumb" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" />
-        ${badgeKey ? `<span class="backpack-view__emote-card-badge">${this.escapeHtml(badgeKey)}</span>` : ''}
-        <span class="backpack-view__emote-card-name">${this.escapeHtml(item.name)}</span>
-      `
+      card.innerHTML = `<img class="backpack-view__item-img" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" />${
+        badgeKey
+          ? `<span class="backpack-view__item-amount" title="Wheel slot ${this.escapeHtml(badgeKey)}">${this.escapeHtml(badgeKey)}</span>`
+          : ''
+      }`
       card.addEventListener('click', () => {
         this.selectedEmoteId = item.urn
         // Select only — play via "Play preview" in the detail panel.
         this.renderEmotesUi()
       })
       gridEl.appendChild(card)
+    }
+
+    // Fixed 3×3 board — same empty fillers as wearables.
+    const emptySlots = EMOTE_ITEMS_PER_PAGE - pageItems.length
+    for (let i = 0; i < emptySlots; i++) {
+      const empty = document.createElement('div')
+      empty.className = 'backpack-view__item backpack-view__item--empty'
+      empty.setAttribute('aria-hidden', 'true')
+      gridEl.appendChild(empty)
     }
 
     if (totalPages > 1) {
@@ -1057,7 +1094,8 @@ export class BackpackView {
       })
       paginationEl.appendChild(prev)
 
-      for (let i = 1; i <= Math.min(totalPages, 6); i++) {
+      const firstBtn = Math.max(1, Math.min(page - 2, totalPages - 4))
+      for (let i = firstBtn; i <= Math.min(totalPages, firstBtn + 4); i++) {
         const pageBtn = document.createElement('button')
         pageBtn.type = 'button'
         pageBtn.className = 'backpack-view__page-btn' + (i === page ? ' is-active' : '')

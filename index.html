@@ -64,6 +64,8 @@
         --z-scene-ui: 40;
         --z-pointer-reticle: 50;
         --z-client-hud: 100;
+        /* Left chrome + icon tooltips — above minimap/location stack, below popovers */
+        --z-client-sidebar: 105;
         --z-client-hud-raised: 111;
         --z-client-overlay: 200;
         --z-client-system: 210;
@@ -972,12 +974,12 @@
         display: block;
       }
 
-      /* Client chrome — left sidebar (Explorer-style, always above scene UI) */
+      /* Client chrome — left sidebar (Explorer-style, above map so icon tooltips win) */
       .client-shell {
         position: fixed;
         top: 0;
         left: 0;
-        z-index: var(--z-client-hud);
+        z-index: var(--z-client-sidebar);
         display: flex;
         flex-direction: column;
         width: clamp(36px, 2vw, 48px);
@@ -986,6 +988,7 @@
         background: rgba(12, 12, 16, 0.92);
         border-right: 1px solid rgba(255, 255, 255, 0.06);
         pointer-events: auto;
+        overflow: visible;
       }
       .client-shell__top,
       .client-shell__bottom {
@@ -1074,7 +1077,7 @@
         cursor: pointer;
         transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
       }
-      /* Explorer-style HUD hover tips: "Backpack [I]" */
+      /* Explorer-style HUD hover tips: "Backpack [I]" — above minimap (sidebar stacking) */
       .client-sidebar__btn[data-tooltip]::after {
         content: attr(data-tooltip);
         position: absolute;
@@ -1096,7 +1099,7 @@
         visibility: hidden;
         pointer-events: none;
         transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s ease;
-        z-index: 2;
+        z-index: 50;
       }
       .client-sidebar__btn[data-tooltip]:hover::after,
       .client-sidebar__btn[data-tooltip]:focus-visible::after {
@@ -1499,6 +1502,510 @@
         filter: brightness(1.05);
       }
 
+      /* Marketplace credits / weekly rewards modal */
+      .marketplace-credits-panel {
+        position: fixed;
+        inset: 0;
+        z-index: calc(var(--z-client-hud-raised) + 20);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        pointer-events: auto;
+      }
+      .marketplace-credits-panel[hidden] {
+        display: none !important;
+      }
+      body.marketplace-credits-open {
+        overflow: hidden;
+      }
+      .marketplace-credits-panel__backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.55);
+        backdrop-filter: blur(4px);
+      }
+      .marketplace-credits-panel__card {
+        position: relative;
+        z-index: 1;
+        width: min(720px, 100%);
+        max-height: min(90vh, 560px);
+        overflow: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+        border-radius: 20px;
+        background:
+          radial-gradient(ellipse 80% 60% at 85% 0%, rgba(180, 40, 120, 0.45), transparent 55%),
+          radial-gradient(ellipse 60% 50% at 10% 100%, rgba(80, 20, 100, 0.5), transparent 50%),
+          linear-gradient(160deg, #1a0e22 0%, #120a18 45%, #0e0a14 100%);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.65);
+        color: #fff;
+      }
+      .marketplace-credits-panel__card::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
+      .marketplace-credits-panel__close {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        z-index: 2;
+        width: 36px;
+        height: 36px;
+        border: none;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 22px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      .marketplace-credits-panel__close:hover {
+        background: rgba(255, 255, 255, 0.14);
+      }
+      .marketplace-credits-panel__body {
+        padding: 28px 28px 24px;
+      }
+      .marketplace-credits-panel__loading {
+        margin: 40px 0;
+        text-align: center;
+        color: rgba(255, 255, 255, 0.55);
+        font-size: 14px;
+      }
+      .marketplace-credits-panel__layout {
+        display: grid;
+        grid-template-columns: minmax(140px, 200px) 1fr;
+        gap: 20px 24px;
+        align-items: stretch;
+      }
+      .marketplace-credits-panel__hero {
+        position: relative;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        min-height: 220px;
+      }
+      .marketplace-credits-panel__hero-glow {
+        position: absolute;
+        inset: 20% 10% 5%;
+        background: radial-gradient(circle, rgba(255, 60, 120, 0.35), transparent 70%);
+        filter: blur(8px);
+        pointer-events: none;
+      }
+      .marketplace-credits-panel__hero-figure {
+        position: relative;
+        width: 100%;
+        max-width: 180px;
+      }
+      .marketplace-credits-panel__hero-svg {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+      .marketplace-credits-panel__main {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .marketplace-credits-panel__head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        padding-right: 28px;
+      }
+      .marketplace-credits-panel__title {
+        margin: 0 0 6px;
+        font-size: clamp(22px, 2.4vw, 28px);
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: #fff;
+      }
+      .marketplace-credits-panel__subtitle {
+        margin: 0;
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.62);
+      }
+      .marketplace-credits-panel__balance-wrap {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+        min-width: 160px;
+      }
+      .marketplace-credits-panel__balance {
+        padding: 10px 14px 12px;
+        border-radius: 12px;
+        background: linear-gradient(135deg, rgba(40, 20, 50, 0.9), rgba(25, 12, 35, 0.95));
+        border: 1px solid rgba(255, 140, 80, 0.45);
+        box-shadow: 0 0 0 1px rgba(255, 100, 150, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      }
+      .marketplace-credits-panel__balance-label {
+        display: block;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.5);
+        margin-bottom: 6px;
+      }
+      .marketplace-credits-panel__balance-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .marketplace-credits-panel__balance-icon {
+        display: inline-flex;
+        color: #ff8a5c;
+      }
+      .marketplace-credits-panel__balance-value {
+        font-size: 28px;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        line-height: 1;
+      }
+      .marketplace-credits-panel__cta {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 11px 16px;
+        border-radius: 10px;
+        background: #ff2d55;
+        color: #fff;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        text-decoration: none;
+        box-shadow: 0 6px 20px rgba(255, 45, 85, 0.4);
+      }
+      .marketplace-credits-panel__cta:hover {
+        filter: brightness(1.06);
+      }
+      .marketplace-credits-panel__guest {
+        margin: 0;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .marketplace-credits-panel__banner {
+        padding: 16px 18px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .marketplace-credits-panel__banner--live {
+        border-color: rgba(255, 45, 85, 0.35);
+        background: rgba(255, 45, 85, 0.1);
+      }
+      .marketplace-credits-panel__banner--warn {
+        border-color: rgba(255, 180, 60, 0.35);
+        background: rgba(255, 160, 40, 0.1);
+      }
+      .marketplace-credits-panel__banner-title {
+        margin: 0 0 8px;
+        font-size: 15px;
+        font-weight: 700;
+        color: #fff;
+      }
+      .marketplace-credits-panel__banner-text {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.5;
+        color: rgba(255, 255, 255, 0.72);
+      }
+      .marketplace-credits-panel__banner-text a {
+        color: #ff5c7a;
+        font-weight: 700;
+        text-decoration: none;
+      }
+      .marketplace-credits-panel__banner-text a:hover {
+        text-decoration: underline;
+      }
+      .marketplace-credits-panel__banner-meta {
+        margin: 10px 0 0;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      @media (max-width: 640px) {
+        .marketplace-credits-panel__layout {
+          grid-template-columns: 1fr;
+        }
+        .marketplace-credits-panel__hero {
+          min-height: 140px;
+          order: 2;
+        }
+        .marketplace-credits-panel__main {
+          order: 1;
+        }
+        .marketplace-credits-panel__head {
+          flex-direction: column;
+          padding-right: 32px;
+        }
+        .marketplace-credits-panel__balance-wrap {
+          width: 100%;
+        }
+      }
+
+      /* Notifications inbox — Explorer-style list popup (notifications.decentraland.org) */
+      .notifications-panel {
+        position: fixed;
+        z-index: var(--z-client-hud-raised);
+        left: calc(var(--client-safe-left) + 4px);
+        top: 72px;
+        width: min(380px, calc(100vw - var(--client-safe-left) - 24px));
+        max-height: min(72vh, 560px);
+        display: flex;
+        flex-direction: column;
+        padding: 0;
+        border-radius: 16px;
+        background: rgba(18, 16, 28, 0.98);
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        color: #fff;
+        box-shadow: 0 18px 56px rgba(0, 0, 0, 0.6);
+        pointer-events: auto;
+        overflow: hidden;
+        font-family: inherit;
+      }
+      .notifications-panel[hidden] {
+        display: none !important;
+      }
+      .notifications-panel__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 14px 14px 12px 16px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        flex-shrink: 0;
+      }
+      .notifications-panel__title {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+        text-transform: none;
+        color: rgba(255, 255, 255, 0.95);
+      }
+      .notifications-panel__actions {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+      .notifications-panel__icon-btn {
+        width: 30px;
+        height: 30px;
+        border: none;
+        border-radius: 8px;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 18px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      .notifications-panel__icon-btn:hover {
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+      }
+      .notifications-panel__text-btn {
+        border: none;
+        background: transparent;
+        color: #ff6b8a;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 4px 8px;
+        border-radius: 6px;
+      }
+      .notifications-panel__text-btn:hover {
+        background: rgba(255, 45, 85, 0.12);
+      }
+      .notifications-panel__text-btn:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .notifications-panel__status {
+        margin: 0;
+        padding: 10px 16px 0;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.5);
+        flex-shrink: 0;
+      }
+      .notifications-panel__list {
+        flex: 1;
+        overflow: auto;
+        padding: 4px 0 8px;
+        /* Hide native scrollbar — still scrollable (trackpad / wheel / touch) */
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .notifications-panel__list::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
+      .notifications-panel__empty {
+        margin: 28px 16px;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.45);
+        text-align: center;
+      }
+      /* Explorer list row: avatar | title+body+time | type badge */
+      .notifications-panel__item {
+        display: grid;
+        grid-template-columns: 44px 1fr;
+        gap: 12px;
+        padding: 12px 16px;
+        margin: 0;
+        border-radius: 0;
+        background: transparent;
+        border: none;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        transition: background 0.12s ease;
+      }
+      .notifications-panel__item:last-child {
+        border-bottom: none;
+      }
+      .notifications-panel__item.is-clickable {
+        cursor: pointer;
+      }
+      .notifications-panel__item:hover {
+        background: rgba(255, 255, 255, 0.04);
+      }
+      .notifications-panel__item.is-unread {
+        background: rgba(255, 45, 85, 0.06);
+      }
+      .notifications-panel__item.is-unread:hover {
+        background: rgba(255, 45, 85, 0.1);
+      }
+      .notifications-panel__avatar {
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        overflow: hidden;
+        flex-shrink: 0;
+        background: rgba(255, 255, 255, 0.08);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .notifications-panel__avatar-img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .notifications-panel__avatar-fallback {
+        font-size: 16px;
+        font-weight: 700;
+        color: rgba(255, 255, 255, 0.55);
+        line-height: 1;
+        user-select: none;
+      }
+      .notifications-panel__content {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .notifications-panel__row-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .notifications-panel__item-title {
+        font-size: 14px;
+        font-weight: 700;
+        color: rgba(255, 255, 255, 0.95);
+        line-height: 1.25;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+      }
+      .notifications-panel__item-title.is-person {
+        color: #3fe07a;
+      }
+      .notifications-panel__item-time {
+        flex-shrink: 0;
+        font-size: 11px;
+        font-weight: 500;
+        color: rgba(255, 255, 255, 0.4);
+        line-height: 1.35;
+        white-space: nowrap;
+        padding-top: 1px;
+      }
+      .notifications-panel__item-body {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 400;
+        line-height: 1.35;
+        color: rgba(255, 255, 255, 0.72);
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        padding-right: 28px;
+      }
+      .notifications-panel__row-foot {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 2px;
+        min-height: 18px;
+      }
+      .notifications-panel__type-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .notifications-panel__type-badge--friendship {
+        background: rgba(255, 90, 120, 0.18);
+        color: #ff7a96;
+      }
+      .notifications-panel__type-badge--campaign {
+        background: rgba(120, 160, 255, 0.16);
+        color: #8eb4ff;
+      }
+      .notifications-panel__type-badge--event {
+        background: rgba(180, 130, 255, 0.16);
+        color: #c4a0ff;
+      }
+      .notifications-panel__type-badge--reward {
+        background: rgba(63, 224, 122, 0.14);
+        color: #3fe07a;
+      }
+      .notifications-panel__type-badge--marketplace {
+        background: rgba(255, 190, 80, 0.14);
+        color: #ffc24d;
+      }
+      .notifications-panel__type-badge--governance {
+        background: rgba(100, 200, 220, 0.14);
+        color: #6ed4e8;
+      }
+      .notifications-panel__type-badge--world {
+        background: rgba(255, 255, 255, 0.1);
+        color: rgba(255, 255, 255, 0.65);
+      }
+      @media (max-width: 767px) {
+        .notifications-panel {
+          left: 12px;
+          right: 12px;
+          top: auto;
+          bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+          width: auto;
+          max-height: min(58vh, 460px);
+        }
+      }
+
       /* Portable experiences / smart wearables panel */
       .pe-panel {
         position: fixed;
@@ -1506,6 +2013,8 @@
         width: min(300px, var(--client-panel-max-w));
         max-height: min(70vh, 480px);
         overflow: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
         padding: 14px 14px 12px;
         border-radius: 14px;
         background: rgba(22, 22, 28, 0.97);
@@ -1514,6 +2023,11 @@
         box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
         pointer-events: auto;
         user-select: none;
+      }
+      .pe-panel::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
       .pe-panel__header {
         margin: 0 0 8px;
@@ -6110,84 +6624,7 @@
         font-style: italic;
         font-weight: 600;
       }
-      .backpack-view__grid--emotes {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        grid-template-rows: none;
-        grid-auto-rows: minmax(0, auto);
-        min-height: 0;
-      }
-      .backpack-view__emote-card {
-        position: relative;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
-        aspect-ratio: 1;
-        min-height: 0;
-        min-width: 0;
-        padding: 10px 6px;
-        border: 2px solid rgba(255, 255, 255, 0.55);
-        border-radius: 12px;
-        background: var(
-          --wearable-rarity-bg,
-          linear-gradient(160deg, rgba(255, 255, 255, 0.14) 0%, rgba(80, 40, 120, 0.35) 100%)
-        );
-        color: #fff;
-        font: inherit;
-        cursor: pointer;
-        -webkit-tap-highlight-color: transparent;
-        transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
-      }
-      .backpack-view__emote-card:hover {
-        transform: scale(1.03);
-        border-color: rgba(255, 255, 255, 0.9);
-      }
-      .backpack-view__emote-card.is-selected {
-        border: 3px solid #f0a020;
-        box-shadow: 0 4px 16px rgba(240, 160, 32, 0.4);
-      }
-      .backpack-view__emote-card.is-equipped {
-        border-color: rgba(255, 160, 70, 0.85);
-      }
-      .backpack-view__emote-card-icon {
-        font-size: 28px;
-        line-height: 1;
-        opacity: 0.92;
-      }
-      .backpack-view__emote-card-thumb {
-        width: 72%;
-        height: 62%;
-        object-fit: contain;
-        object-position: center bottom;
-        display: block;
-        filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
-      }
-      .backpack-view__emote-card-badge {
-        position: absolute;
-        top: 6px;
-        right: 6px;
-        min-width: 18px;
-        height: 18px;
-        padding: 0 4px;
-        border-radius: 6px;
-        background: rgba(0, 0, 0, 0.55);
-        font-size: 10px;
-        font-weight: 800;
-        line-height: 18px;
-        text-align: center;
-      }
-      .backpack-view__emote-card-name {
-        font-size: 10px;
-        font-weight: 700;
-        text-align: center;
-        line-height: 1.2;
-        max-width: 100%;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        opacity: 0.9;
-      }
+      /* Emotes use the same .backpack-view__grid + .backpack-view__item board as wearables. */
       .backpack-view__detail-card--emote {
         align-items: center;
         text-align: center;
@@ -13294,14 +13731,14 @@
         height: 1px;
       }
 
-      /* Emote wheel — DCL Explorer-style radial menu */
+      /* Emote wheel — Explorer-style radial menu (gradient wedges + hover pop) */
       .emote-wheel-overlay {
         position: fixed;
         inset: 0;
         z-index: var(--z-client-overlay);
         display: grid;
         place-items: center;
-        background: rgba(0, 0, 0, 0.62);
+        background: radial-gradient(ellipse at center, rgba(20, 12, 36, 0.55) 0%, rgba(0, 0, 0, 0.72) 70%);
         cursor: default;
         opacity: 0;
         pointer-events: auto;
@@ -13314,76 +13751,119 @@
         opacity: 1;
       }
       .emote-wheel__svg {
-        width: min(420px, 82vmin);
-        height: min(420px, 82vmin);
-        filter: drop-shadow(0 6px 36px rgba(0, 0, 0, 0.55));
-        transform: scale(0.82);
-        transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+        width: min(480px, 90vmin);
+        height: min(480px, 90vmin);
+        filter: drop-shadow(0 10px 40px rgba(0, 0, 0, 0.6));
+        transform: scale(0.86);
+        transition: transform 0.28s cubic-bezier(0.34, 1.4, 0.64, 1);
         pointer-events: none;
+        overflow: visible;
       }
       .emote-wheel-overlay.is-open .emote-wheel__svg {
         transform: scale(1);
       }
       .emote-wheel__glow {
         fill: none;
-        stroke: rgba(140, 100, 255, 0.12);
-        stroke-width: 2;
+        stroke: rgba(180, 140, 255, 0.22);
+        stroke-width: 10;
+        opacity: 0.55;
+      }
+      .emote-wheel__disc {
+        fill: rgba(18, 16, 28, 0.45);
+        stroke: rgba(255, 255, 255, 0.06);
+        stroke-width: 1;
       }
       .emote-wheel__slot {
         pointer-events: auto;
         cursor: pointer;
+        transform-box: view-box;
+        transform-origin: 220px 220px;
+        transition: transform 0.16s cubic-bezier(0.34, 1.55, 0.64, 1);
+      }
+      .emote-wheel__slot.is-hovered {
+        transform: scale(1.09);
       }
       .emote-wheel__wedge {
-        fill: rgba(120, 120, 128, 0.88);
-        stroke: rgba(255, 255, 255, 0.14);
-        stroke-width: 0.8;
-        transition: fill 0.12s ease;
+        stroke: rgba(255, 255, 255, 0.28);
+        stroke-width: 1.1;
+        transition: stroke 0.14s ease, stroke-width 0.14s ease, filter 0.14s ease;
       }
       .emote-wheel__wedge.is-hovered,
-      .emote-wheel__slot:hover .emote-wheel__wedge {
-        fill: rgba(168, 168, 176, 0.95);
+      .emote-wheel__slot.is-hovered .emote-wheel__wedge {
+        stroke: rgba(255, 255, 255, 0.72);
+        stroke-width: 1.6;
+        filter: brightness(1.08) drop-shadow(0 0 10px rgba(255, 120, 180, 0.35));
       }
-      .emote-wheel__slot:hover .emote-wheel__key {
-        fill: rgba(255, 255, 255, 0.72);
+      .emote-wheel__thumb {
+        opacity: 0.96;
+        pointer-events: none;
+        filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.25));
+        transition: opacity 0.12s ease, filter 0.12s ease;
+      }
+      .emote-wheel__slot.is-hovered .emote-wheel__thumb {
+        opacity: 1;
+        filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.35));
       }
       .emote-wheel__key {
-        fill: rgba(255, 255, 255, 0.38);
+        fill: rgba(20, 16, 28, 0.55);
         font-family: system-ui, sans-serif;
-        font-size: 9px;
+        font-size: 11px;
+        font-weight: 800;
+        text-anchor: middle;
+        dominant-baseline: central;
+        pointer-events: none;
+        transition: fill 0.12s ease, font-size 0.12s ease;
+      }
+      .emote-wheel__slot.is-hovered .emote-wheel__key {
+        fill: rgba(20, 16, 28, 0.85);
+      }
+      .emote-wheel__name {
+        fill: rgba(18, 14, 28, 0.88);
+        font-family: system-ui, sans-serif;
+        font-size: 10px;
         font-weight: 700;
         text-anchor: middle;
         dominant-baseline: central;
         pointer-events: none;
-        transition: fill 0.12s ease;
+        paint-order: stroke fill;
+        stroke: rgba(255, 255, 255, 0.4);
+        stroke-width: 0.5px;
+        transition: fill 0.12s ease, font-size 0.12s ease;
       }
-      .emote-wheel__name {
-        fill: rgba(255, 255, 255, 0.9);
-        font-family: system-ui, sans-serif;
-        font-size: 10px;
-        font-weight: 600;
-        text-anchor: middle;
-        dominant-baseline: central;
-        pointer-events: none;
+      .emote-wheel__slot.is-hovered .emote-wheel__name {
+        fill: rgba(12, 8, 20, 0.95);
+        font-size: 11px;
       }
       .emote-wheel__center {
-        fill: rgba(96, 96, 104, 0.94);
-        stroke: rgba(255, 255, 255, 0.18);
+        cursor: pointer;
+      }
+      .emote-wheel__center:hover {
+        filter: brightness(1.12);
+      }
+      .emote-wheel__center {
+        fill: url(#emote-center-grad);
+        stroke: none;
+      }
+      .emote-wheel__center-ring {
+        fill: none;
+        stroke: rgba(255, 255, 255, 0.16);
         stroke-width: 1.5;
+        pointer-events: none;
       }
       .emote-wheel__center-title {
-        fill: rgba(255, 255, 255, 0.92);
+        fill: rgba(255, 255, 255, 0.95);
         font-family: system-ui, sans-serif;
-        font-size: 13px;
+        font-size: 14px;
         font-weight: 800;
-        letter-spacing: 0.16em;
+        letter-spacing: 0.14em;
         text-anchor: middle;
         dominant-baseline: central;
         pointer-events: none;
       }
       .emote-wheel__center-sub {
-        fill: rgba(255, 255, 255, 0.42);
+        fill: rgba(255, 255, 255, 0.48);
         font-family: system-ui, sans-serif;
-        font-size: 9px;
+        font-size: 10px;
         font-weight: 600;
         text-anchor: middle;
         dominant-baseline: central;
@@ -13395,19 +13875,21 @@
         bottom: max(24px, 5vh);
         transform: translateX(-50%);
         padding: 8px 16px;
-        border-radius: 8px;
-        background: rgba(0, 0, 0, 0.5);
-        color: rgba(255, 255, 255, 0.6);
+        border-radius: 999px;
+        background: rgba(0, 0, 0, 0.55);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.62);
         font-size: 12px;
         white-space: nowrap;
         pointer-events: none;
+        backdrop-filter: blur(8px);
       }
       .emote-wheel__hint kbd {
         display: inline-block;
         padding: 1px 6px;
         border-radius: 4px;
         background: rgba(255, 255, 255, 0.12);
-        color: rgba(255, 255, 255, 0.85);
+        color: rgba(255, 255, 255, 0.88);
         font-family: system-ui, sans-serif;
         font-size: 11px;
         font-weight: 700;

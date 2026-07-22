@@ -8,10 +8,10 @@
  * Run: node scripts/sweep-wearables.mjs [mode] [...]
  *   l1                              — sample classic ethereum collections-v1 sets
  *   <year>                          — sample matic collections-v2 collections of that year
- *   wallet <addr> [category] [shape] — sweep a wallet's whole inventory (paginated);
+ *   wallet <addr> [category|shape]… — sweep a wallet's whole inventory (paginated);
  *                                      optional category filter (e.g. lower_body) also
  *                                      pulls the base-avatars catalog for that category;
- *                                      shape = male (default) | female
+ *                                      shape = male (default) | female (either optional slot)
  */
 import { createServer } from 'vite'
 import { readFile } from 'node:fs/promises'
@@ -21,15 +21,72 @@ import { fileURLToPath } from 'node:url'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PEER = 'https://peer.decentraland.org'
 const MODE = process.argv[2] ?? '2021'
-const WALLET = MODE === 'wallet' ? (process.argv[3] ?? '').toLowerCase() : null
-const CATEGORY_FILTER = MODE === 'wallet' ? (process.argv[4] || null) : null
-const SHAPE = (MODE === 'wallet' ? process.argv[5] : null) === 'female' ? 'female' : 'male'
+const FETCH_POOL = 4
+
+/**
+ * Wallet CLI: `wallet <addr> [category|shape] [category|shape]`
+ * Shape tokens (`male`/`female`) may appear in either optional slot so
+ * `wallet 0x… female` works (not only `wallet 0x… lower_body female`).
+ */
+function parseWalletArgs(argv) {
+  const addr = (argv[3] ?? '').trim().toLowerCase()
+  let category = null
+  let shape = 'male'
+  for (const raw of argv.slice(4)) {
+    if (!raw) continue
+    const a = raw.trim().toLowerCase()
+    if (a === 'male' || a === 'female') shape = a
+    else category = a
+  }
+  return { addr, category, shape }
+}
+
+const walletArgs = MODE === 'wallet' ? parseWalletArgs(process.argv) : null
+const WALLET = walletArgs?.addr || null
+const CATEGORY_FILTER = walletArgs?.category || null
+const SHAPE = walletArgs?.shape === 'female' ? 'female' : 'male'
 const SHAPE_MATCH = SHAPE === 'female' ? 'basefemale' : 'basemale'
 const BODY_GLB =
   SHAPE === 'female'
     ? 'public/avatar/wearables/BaseFemale/BaseFemale.glb'
     : 'public/avatar/wearables/BaseMale/BaseMale.glb'
-const FETCH_POOL = 4
+
+/** Categories that legitimately sit off the body midline (skip XZ centering check). */
+const ASYMMETRIC_CATEGORIES = new Set(['earring', 'hands_wear', 'eyewear', 'tiara'])
+
+/**
+ * Approximate Y bands (meters, BaseMale/Female standing pose) for static fallback
+ * placement smoke checks. Local to this harness — not a runtime API.
+ * @returns {{ min: number, max: number } | null}
+ */
+function fallbackSlotRegion(category, hides = []) {
+  const hideHead = hides.some((h) => String(h).toLowerCase() === 'head')
+  switch (category) {
+    case 'feet':
+      return { min: -0.05, max: 0.45 }
+    case 'lower_body':
+      return { min: -0.05, max: 1.15 }
+    case 'upper_body':
+      return hideHead ? { min: 0.45, max: 2.05 } : { min: 0.55, max: 1.75 }
+    case 'hands_wear':
+      return { min: 0.4, max: 1.5 }
+    case 'hair':
+    case 'helmet':
+    case 'hat':
+    case 'top_head':
+    case 'mask':
+    case 'eyewear':
+    case 'earring':
+    case 'tiara':
+    case 'facial_hair':
+    case 'eyebrows':
+    case 'eyes':
+    case 'mouth':
+      return { min: 1.2, max: 2.15 }
+    default:
+      return null
+  }
+}
 
 const L1_COLLECTIONS = [
   'halloween_2019',
@@ -145,7 +202,10 @@ async function collectWalletPointers(addr) {
     const res = await fetch(
       `${PEER}/lambdas/users/${addr}/wearables?pageSize=100&pageNum=${pageNum}`
     )
-    if (!res.ok) break
+    if (!res.ok) {
+      console.warn(`wallet inventory page ${pageNum} failed: HTTP ${res.status}`)
+      break
+    }
     const raw = await res.json()
     if (Array.isArray(raw)) {
       rows.push(...raw)
@@ -156,6 +216,19 @@ async function collectWalletPointers(addr) {
     const total = typeof raw.totalAmount === 'number' ? raw.totalAmount : rows.length
     if (raw.elements.length < 100 || rows.length >= total) break
   }
+
+  // Match backpackWearables: fall back to wearables-by-owner when paginated path is empty.
+  if (!rows.length) {
+    const res = await fetch(`${PEER}/lambdas/collections/wearables-by-owner/${addr}`)
+    if (res.ok) {
+      const raw = await res.json()
+      if (Array.isArray(raw)) rows.push(...raw)
+      else console.warn('wearables-by-owner returned unexpected payload')
+    } else {
+      console.warn(`wearables-by-owner failed: HTTP ${res.status}`)
+    }
+  }
+
   const pointers = new Set()
   for (const row of rows) {
     const urn = row.urn ?? row.definition?.id ?? row.id
@@ -169,19 +242,34 @@ async function collectBasePointers(category) {
     `${PEER}/lambdas/collections/wearables?collectionId=${encodeURIComponent(
       'urn:decentraland:off-chain:base-avatars'
     )}`
-  ).then((r) => r.json())
-  return (res.wearables ?? [])
+  )
+  if (!res.ok) {
+    console.warn(`base-avatars catalog failed: HTTP ${res.status}`)
+    return []
+  }
+  const raw = await res.json()
+  return (raw.wearables ?? [])
     .filter((w) => !category || w.data?.category === category)
     .map((w) => w.id.toLowerCase())
 }
 
+/** Worker-aware pool: `fn(item, index, workerId)`. */
 async function mapPool(items, size, fn) {
   const results = new Array(items.length)
   let next = 0
-  const workers = Array.from({ length: Math.min(size, items.length) }, async () => {
+  const n = Math.min(size, items.length)
+  const workers = Array.from({ length: n }, async (_, workerId) => {
     while (next < items.length) {
       const i = next++
-      results[i] = await fn(items[i], i)
+      try {
+        results[i] = await fn(items[i], i, workerId)
+      } catch (err) {
+        results[i] = {
+          name: items[i]?.metadata?.name ?? '?',
+          category: items[i]?.metadata?.data?.category ?? '?',
+          verdict: `ERROR: ${String(err?.message ?? err).slice(0, 70)}`
+        }
+      }
     }
   })
   await Promise.all(workers)
@@ -200,8 +288,8 @@ try {
   const THREE = await server.ssrLoadModule('three')
   const { GLTFLoader } = await server.ssrLoadModule('three/examples/jsm/loaders/GLTFLoader.js')
   const lw = await server.ssrLoadModule('/src/avatar/loadWearable.ts')
-  const ws = await server.ssrLoadModule('/src/avatar/wearableSanitize.ts')
-  const loader = new GLTFLoader()
+  // One loader per pool worker — GLTFLoader is not safe for overlapping parseAsync.
+  const loaders = Array.from({ length: FETCH_POOL }, () => new GLTFLoader())
 
   const bodyBuf = (await readFile(path.join(ROOT, BODY_GLB))).buffer
   const bodyJsonLen = new DataView(bodyBuf).getUint32(12, true)
@@ -212,8 +300,11 @@ try {
 
   let pointers
   if (MODE === 'wallet') {
-    if (!WALLET) {
-      console.error('usage: node scripts/sweep-wearables.mjs wallet <address> [category] [shape]')
+    if (!WALLET || !/^0x[a-f0-9]{40}$/.test(WALLET)) {
+      console.error(
+        'usage: node scripts/sweep-wearables.mjs wallet <0xAddress> [category] [male|female]\n' +
+          '  shape may appear in either optional slot, e.g. wallet 0x… female'
+      )
       process.exit(2)
     }
     pointers = await collectWalletPointers(WALLET)
@@ -229,14 +320,31 @@ try {
   )
 
   const entities = []
+  let entityBatchFailed = false
   for (let i = 0; i < pointers.length; i += 40) {
     const chunk = pointers.slice(i, i + 40)
-    const batch = await fetch(`${PEER}/content/entities/active`, {
+    const chunkIdx = Math.floor(i / 40)
+    const res = await fetch(`${PEER}/content/entities/active`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pointers: chunk })
-    }).then((r) => r.json())
-    if (Array.isArray(batch)) entities.push(...batch)
+    })
+    if (!res.ok) {
+      console.error(`entities/active chunk ${chunkIdx} failed: HTTP ${res.status}`)
+      entityBatchFailed = true
+      continue
+    }
+    const batch = await res.json()
+    if (!Array.isArray(batch)) {
+      console.error(`entities/active chunk ${chunkIdx}: unexpected payload`)
+      entityBatchFailed = true
+      continue
+    }
+    entities.push(...batch)
+  }
+  if (entityBatchFailed) {
+    console.error('one or more entities/active batches failed — inventory may be under-sampled')
+    process.exitCode = 1
   }
 
   const candidates = entities.filter(
@@ -244,7 +352,7 @@ try {
   )
   console.log(`${entities.length} entities resolved, ${candidates.length} after category filter\n`)
 
-  const results = await mapPool(candidates, FETCH_POOL, async (ent) => {
+  const results = await mapPool(candidates, FETCH_POOL, async (ent, _i, workerId) => {
     const urn = ent.metadata?.id ?? '?'
     const name = ent.metadata?.name ?? urn.split(':').pop()
     const category = ent.metadata?.data?.category ?? '?'
@@ -254,10 +362,13 @@ try {
     )
     if (!rep) return { name, category, verdict: `SKIP (no ${SHAPE} rep)` }
     if (rep.mainFile.endsWith('.png')) return { name, category, verdict: 'SKIP (texture-only)' }
+    if (!Array.isArray(ent.content)) return { name, category, verdict: 'SKIP (no content)' }
     const contentFile = ent.content.find(
       (c) => c.file === rep.mainFile || c.file.toLowerCase() === rep.mainFile.toLowerCase()
     )
     if (!contentFile) return { name, category, verdict: 'SKIP (mainFile missing)' }
+
+    const loader = loaders[workerId] ?? loaders[0]
 
     try {
       const buf = await fetch(`${PEER}/content/contents/${contentFile.hash}`).then((r) =>
@@ -281,7 +392,7 @@ try {
       const body = bodyGltf.scene
       const skeleton = lw.findSkeleton(body)
 
-      const opts = { category, wearableId: urn, bodyRoot: body, hides }
+      const opts = { category, wearableId: urn, bodyRoot: body }
       const target = new THREE.Group()
       target.add(body)
       let mode = 'merge'
@@ -303,10 +414,10 @@ try {
         ok = lw.attachWearableFallback(wear, skeleton, target, opts)
         mode = ok ? 'fallback' : 'no merge, no fallback'
         if (ok) {
-          // Placement check: the statically-placed wearable must sit in its slot band.
+          // Placement smoke: statically-placed wearable should sit near its slot Y band.
           wear.updateWorldMatrix(true, true)
           const box = new THREE.Box3().setFromObject(wear)
-          const region = ws.fallbackSlotRegion(category, hides)
+          const region = fallbackSlotRegion(category, hides)
           if (box.isEmpty()) {
             ok = false
             placement = ' EMPTY BOX'
@@ -315,12 +426,15 @@ try {
             const center = box.getCenter(new THREE.Vector3())
             const overlaps = box.max.y >= region.min - 0.25 && box.min.y <= region.max + 0.25
             const grounded = box.min.y > -0.35
+            const requireCentered = !ASYMMETRIC_CATEGORIES.has(category)
             const centered = Math.hypot(center.x, center.z) < 0.6
-            const sane = Math.max(size.x, size.y, size.z) <= 3.6
+            const sane = Math.max(size.x, size.y, size.z) <= 3.5
             placement = ` y=[${box.min.y.toFixed(2)}..${box.max.y.toFixed(2)}]`
-            if (!(overlaps && grounded && centered && sane)) {
+            if (!(overlaps && grounded && (!requireCentered || centered) && sane)) {
               ok = false
-              placement += ` MISPLACED vs [${region.min}..${region.max}]${centered ? '' : ' off-axis'}${sane ? '' : ' oversize'}`
+              placement += ` MISPLACED vs [${region.min}..${region.max}]`
+              if (requireCentered && !centered) placement += ' off-axis'
+              if (!sane) placement += ' oversize'
             }
           }
         }
@@ -335,7 +449,10 @@ try {
           extent = Math.max(extent, size.x, size.y, size.z)
         }
         placement = extent > 0 ? ` ${extent.toFixed(2)}m` : ''
-        if (extent > 3.6 || (extent > 0 && extent < 0.02)) {
+        // Tiny-extent gate only for body clothing (earrings/tiaras are often <2cm on one axis).
+        const bodyClothing = new Set(['upper_body', 'lower_body', 'feet', 'hair'])
+        const tinyBad = bodyClothing.has(category) && extent > 0 && extent < 0.02
+        if (extent > 3.5 || tinyBad) {
           ok = false
           placement += ' BAD EXTENT'
         }

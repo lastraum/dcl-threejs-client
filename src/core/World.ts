@@ -956,8 +956,8 @@ export class World {
       return
     }
     if (connectResult.reason === 'comms_disabled') {
-      // Content-only world — play solo without LiveKit chat/peers.
-      onProgress?.('World has no multiplayer (LiveKit off) — solo play')
+      // Content-only or broken LiveKit — play solo without chat/peers.
+      onProgress?.('Multiplayer unavailable — continuing solo')
       return
     }
     if (connectResult.reason === 'duplicate_wallet') {
@@ -968,7 +968,11 @@ export class World {
       onProgress?.('Access denied — you cannot join comms in this place')
       return
     }
-    onProgress?.('Comms connection failed — check console')
+    if (connectResult.reason === 'livekit') {
+      onProgress?.('Multiplayer unavailable — continuing solo')
+      return
+    }
+    onProgress?.('Comms connection failed — continuing without multiplayer')
   }
 
   /**
@@ -1016,14 +1020,17 @@ export class World {
         }
         if (connectResult.ok) {
           onProgress?.('Connected to DCL comms')
-        } else if (connectResult.reason === 'comms_disabled') {
-          onProgress?.('World has no multiplayer (LiveKit off) — solo play')
+        } else if (
+          connectResult.reason === 'comms_disabled' ||
+          connectResult.reason === 'livekit'
+        ) {
+          onProgress?.('Multiplayer unavailable — continuing solo')
         } else if (connectResult.reason === 'duplicate_wallet') {
           onProgress?.('This wallet is already connected in another session — close the other client first')
         } else if (connectResult.reason === 'scene_ban') {
           onProgress?.('Access denied — you cannot join comms in this place')
         } else {
-          onProgress?.('Comms connection failed — check console')
+          onProgress?.('Comms connection failed — continuing without multiplayer')
         }
       }
 

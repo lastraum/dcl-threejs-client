@@ -679,8 +679,13 @@ export class CommsService {
       clientDebugLog.log('comms', `Joining world comms · pointer=${target.pointer}`, { level: 'info' })
       if (!this.worldConnected) {
         this.releaseWalletSessionIfHeld()
-        clientDebugLog.log('comms', 'World LiveKit failed to connect', { level: 'error' })
-        return { ok: false, reason: 'livekit' }
+        // Soft for custom/self-hosted: bad LiveKit (e.g. livekit.host DNS fail) must not block scene load.
+        clientDebugLog.log(
+          'comms',
+          'World LiveKit failed to connect — continuing solo (no peers/chat)',
+          { level: 'warn', alsoConsole: true }
+        )
+        return { ok: false, reason: 'comms_disabled' }
       }
 
       this.transport = 'livekit'

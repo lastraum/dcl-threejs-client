@@ -13,3 +13,33 @@ export function isLiveKitAdapter(connectionString: string): boolean {
   const trimmed = connectionString.trim()
   return trimmed.startsWith('livekit:') || /^wss?:\/\//i.test(trimmed)
 }
+
+/**
+ * Hosts that are clearly misconfigured placeholders (common on self-hosted world servers
+ * that mint tokens against `livekit.host` without a real DNS target).
+ * Connecting will only spam ERR_NAME_NOT_RESOLVED — treat as comms unavailable.
+ */
+const PLACEHOLDER_LIVEKIT_HOSTS = new Set([
+  'livekit.host',
+  'livekit.local',
+  'localhost',
+  '127.0.0.1',
+  '0.0.0.0',
+  'example.com',
+  'example.org'
+])
+
+/** True when adapter string points at a known-useless LiveKit host. */
+export function isUnusableLiveKitAdapter(connectionString: string): boolean {
+  try {
+    const { url } = parseLiveKitConnectionString(connectionString)
+    const host = new URL(url).hostname.toLowerCase()
+    if (PLACEHOLDER_LIVEKIT_HOSTS.has(host)) return true
+    // Generic “*.host” placeholders (livekit.host already covered; other *.host TLDs)
+    if (host.endsWith('.host') && !host.includes('.')) return true
+    if (/\.host$/i.test(host) && host.split('.').length === 2) return true
+    return false
+  } catch {
+    return true
+  }
+}

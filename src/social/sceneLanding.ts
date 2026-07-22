@@ -38,6 +38,11 @@ export type SceneLandingMeta = {
   imageUrl: string | null
   pointerLabel: string
   kind: 'parcel' | 'world'
+  /**
+   * Custom worlds content server origin when this landing is not on the official host.
+   * Landing UI shows kind label "Custom" instead of "World".
+   */
+  customServer?: string | null
   userCount: number
   ownerAddress: string | null
   /**
@@ -47,6 +52,13 @@ export type SceneLandingMeta = {
   ownerAddresses: string[]
   ownerDisplayName: string
   categories: string[]
+}
+
+/** Landing card kind chip: Parcel | World | Custom (self-hosted worlds server). */
+export function sceneLandingKindLabel(meta: Pick<SceneLandingMeta, 'kind' | 'customServer'>): string {
+  if (meta.kind === 'parcel') return 'Parcel'
+  if (meta.customServer?.trim()) return 'Custom'
+  return 'World'
 }
 
 /** ENS label for a world pointer: `rickroll.dcl.eth` → `rickroll`. */
@@ -340,6 +352,7 @@ export async function fetchSceneLandingMeta(
     imageUrl: world?.image ?? null,
     pointerLabel: route.worldName,
     kind: 'world',
+    customServer: route.customServer?.trim() || null,
     userCount: world?.userCount ?? 0,
     ownerAddress: owners.primary,
     ownerAddresses: owners.all,

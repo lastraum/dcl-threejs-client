@@ -11,6 +11,7 @@ import {
 import {
   fetchSceneLandingMeta,
   fetchSceneRelatedEvents,
+  sceneLandingKindLabel,
   type SceneLandingMeta
 } from '../../../social/sceneLanding'
 import {
@@ -614,7 +615,7 @@ export class SceneLandingView {
   private buildStreamWatchPillHtml(): string {
     const meta = this.meta
     const title = meta?.title?.trim() || 'Scene'
-    const kindLabel = meta?.kind === 'world' ? 'World' : meta?.kind === 'parcel' ? 'Parcel' : 'Place'
+    const kindLabel = meta ? sceneLandingKindLabel(meta) : 'Place'
     const pointer = meta?.pointerLabel?.trim() || ''
     const userCount = meta?.userCount ?? 0
     const inWorldLabel = meta?.kind === 'world' ? 'in-world' : 'here'
@@ -1456,8 +1457,13 @@ export class SceneLandingView {
   }
 
   private renderLayout(meta: SceneLandingMeta): string {
-    const kindLabel = meta.kind === 'world' ? 'World' : 'Parcel'
-    const creatorLabel = meta.kind === 'world' ? 'World owner' : 'Creator'
+    const kindLabel = sceneLandingKindLabel(meta)
+    const creatorLabel =
+      meta.kind === 'world'
+        ? meta.customServer?.trim()
+          ? 'Custom world owner'
+          : 'World owner'
+        : 'Creator'
     const inWorldLabel = meta.kind === 'world' ? 'in world' : 'here'
     const liveBadge = this.showLiveBadge()
       ? `<span class="scene-watch-cast-live-badge" data-cast-live-badge role="status">LIVE</span>`

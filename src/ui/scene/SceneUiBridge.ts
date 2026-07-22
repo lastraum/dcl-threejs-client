@@ -101,9 +101,6 @@ export class SceneUiBridge {
   private imageRepaintQueued = false
   /** Latest pointer phase-4 rows — authoritative for DOM hits when projection lags. */
   private mountSnapshotPointerEvents = new Map<Entity, unknown>()
-  /** Last pointer position — re-evaluate cursor after Sync/modal DOM swaps. */
-  private lastPointerClientX = 0
-  private lastPointerClientY = 0
   /**
    * Fullscreen PE entities force-hidden after sceneUi inject (welcome splash click-to-fade).
    * Worker fade may lag; paint must not re-enable PE until unmount.
@@ -168,14 +165,12 @@ export class SceneUiBridge {
     this.domVisible = visible
     this.root.hidden = !visible
     if (!visible) return
-    // DOM kept while hidden. Re-show: skip full thrash if survivor cache exists (PE HUD flash).
-    // First show / empty cache: paint once.
+    // Re-show after host PE HUD toggle: always repaint. Skipping when survivor keys
+    // existed left pe-ui-root empty after hide→show (DOM released / lag while hidden).
     if (!wasVisible && this.lastView) {
-      if (this.paintCount > 0 && this.lastEntityVisualKeys.size > 0) return
+      this.invalidatePaintCache()
       this.paint(this.lastView)
     }
-    // Already visible: leave paint to mount snapshots / dirty frames — do not re-paint
-    // on every setUiVisible(true) from PE policy ticks.
   }
 
   /** Force Yoga+DOM rebuild + interactive hit regions (rare: late mount / debug). */
@@ -281,7 +276,8 @@ export class SceneUiBridge {
     }
   }
 
-  private invalidatePaintCache(): void {
+  /** Drop paint short-circuit keys — next paint() always runs Yoga+DOM (pointer phase-4 open). */
+  invalidatePaintCache(): void {
     this.lastPaintLayoutKey = ''
     this.lastPaintVisualKey = ''
     this.lastEntityVisualKeys.clear()
@@ -748,24 +744,22 @@ export class SceneUiBridge {
     this.refreshHoverCursor()
   }
 
-  /** Recompute cursor from element under last pointer — call after DOM mount changes. */
+  /**
+   * Clear any canvas cursor we may have set historically.
+   *
+   * Scene UI cursors belong on the interactive DOM nodes only (CSS / inline).
+   * Writing `canvas.style.cursor = 'pointer'` stuck the hand over the whole world
+   * after leaving a PE button — canvas sits under `#pe-ui-root` and never got
+   * cleared until pointer-lock toggled.
+   */
   private refreshHoverCursor(): void {
     const canvas = this.getCanvas()
-    if (!canvas || typeof document === 'undefined') return
-    const x = this.lastPointerClientX
-    const y = this.lastPointerClientY
-    if (!x && !y) {
+    if (!canvas) return
+    // Only clear a stuck hand — do not fight pointer-lock (`none`) or other owners.
+    if (canvas.style.cursor === 'pointer') {
       canvas.style.cursor = 'default'
-      this.root.style.cursor = 'default'
-      return
     }
-    const under = document.elementFromPoint(x, y)
-    const interactive =
-      under instanceof Element &&
-      !!under.closest('.scene-ui-node--interactive, .scene-ui-node__input, .scene-ui-node__select')
-    const next = interactive ? 'pointer' : 'default'
-    canvas.style.cursor = next
-    this.root.style.cursor = next
+    this.root.style.cursor = ''
   }
 
   /**
@@ -777,8 +771,6 @@ export class SceneUiBridge {
     clientY: number,
     camera: THREE.Camera
   ): PointerHit | null {
-    this.lastPointerClientX = clientX
-    this.lastPointerClientY = clientY
     if (!this.domVisible) return null
     // PX dialog above primary (or reverse): do not claim hover / block with our hit-map.
     if (isForeignUiRootOnTop(this.root.id, clientX, clientY)) return null
@@ -1011,8 +1003,6 @@ export class SceneUiBridge {
     state: PointerEventTypeValue = PointerEventType.PET_DOWN,
     eventTarget?: EventTarget | null
   ): PointerHit | null {
-    this.lastPointerClientX = clientX
-    this.lastPointerClientY = clientY
     if (!this.domVisible) return null
     // Primary hit-map still covers the full screen under a PX enable/close popup.
     // Only the topmost interactive root (`#pe-ui-root` vs `#scene-ui-root`) may inject.

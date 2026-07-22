@@ -10,6 +10,7 @@ import { SCENE_SCRIPT_WARM_RADIUS_M } from '../aoi/parcelAoi'
 import { secondaryLiveCap, secondaryTickIntervalMs } from './caps'
 import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import { secondaryPhysOffset } from './physOffsets'
+import type { SceneLayerRegistry } from './SceneLayerRegistry'
 import { SceneWorkerSlot } from './SceneWorkerSlot'
 import type { SecondaryLiveRequest } from './types'
 
@@ -40,6 +41,25 @@ export class SecondaryLiveManager {
   private onLiveIdsChange: ((ids: ReadonlySet<string>) => void) | null = null
   private lastReconcileAt = 0
   private nextSlotIndex = 0
+  /** Phase A — register secondary slots as layers. */
+  private layerRegistry: SceneLayerRegistry | null = null
+
+  setLayerRegistry(registry: SceneLayerRegistry | null): void {
+    this.layerRegistry = registry
+  }
+
+  private registerLayer(slot: SceneWorkerSlot): void {
+    this.layerRegistry?.register({
+      id: slot.id,
+      kind: 'secondary',
+      system: slot.system,
+      physOffset: slot.physOffset
+    })
+  }
+
+  private unregisterLayer(id: string): void {
+    this.layerRegistry?.unregister(id)
+  }
 
   bind(opts: {
     primaryScene: ResolvedScene
@@ -100,6 +120,7 @@ export class SecondaryLiveManager {
       const parcels = slot.scene.parcels
       const base = slot.scene.baseParcel.trim()
       if (base === key || parcels.some((p) => p.trim() === key)) {
+        this.unregisterLayer(entityId)
         this.slots.delete(entityId)
         this.stickyIds.delete(entityId)
         this.emitLiveIds()
@@ -178,6 +199,7 @@ export class SecondaryLiveManager {
       return null
     }
     this.slots.set(id, slot)
+    this.registerLayer(slot)
     this.stickyIds.add(id)
     this.emitLiveIds()
     console.info(
@@ -238,6 +260,7 @@ export class SecondaryLiveManager {
       }
       if (this.primaryScene) this.cache.setScene(this.primaryScene)
       this.slots.set(scene.entityId, slot)
+      this.registerLayer(slot)
       this.emitLiveIds()
       console.info(
         `[multi-scene] force-boot secondary for promote “${scene.title}” @ ${key}`
@@ -260,6 +283,7 @@ export class SecondaryLiveManager {
       const victim = nonSticky[0] ?? [...this.slots.entries()][0]
       if (!victim) break
       const [id, slot] = victim
+      this.unregisterLayer(id)
       slot.dispose()
       this.slots.delete(id)
       this.stickyIds.delete(id)
@@ -286,6 +310,7 @@ export class SecondaryLiveManager {
 
     for (const [id, slot] of this.slots) {
       if (!want.has(id)) {
+        this.unregisterLayer(id)
         slot.dispose()
         this.slots.delete(id)
         this.stickyIds.delete(id)
@@ -335,6 +360,7 @@ export class SecondaryLiveManager {
       }
       if (this.primaryScene) this.cache.setScene(this.primaryScene)
       this.slots.set(req.entityId, slot)
+      this.registerLayer(slot)
       this.emitLiveIds()
       console.info(
         `[multi-scene] secondary live “${req.title}” base=${req.base} dist≈${req.distM.toFixed(0)}m`
@@ -377,7 +403,10 @@ export class SecondaryLiveManager {
 
   dispose(): void {
     this.disposed = true
-    for (const slot of this.slots.values()) slot.dispose()
+    for (const slot of this.slots.values()) {
+      this.unregisterLayer(slot.id)
+      slot.dispose()
+    }
     this.slots.clear()
     this.stickyIds.clear()
     this.booting.clear()

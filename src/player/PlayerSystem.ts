@@ -204,6 +204,12 @@ export class PlayerSystem {
    */
   private disableAllHoldFeet: THREE.Vector3 | null = null
   /**
+   * PE free-flight / vehicle: scene systems own PlayerEntity Transform via worker.
+   * When true, disableAll must NOT pin feet — that fights WASD drone motion every frame.
+   * SpaceRunner map-load freeze keeps this false (pin required).
+   */
+  private allowSceneOwnedMotion = false
+  /**
    * Last long movePlayerTo feet (Three space). Death→map rebuild freezes, settles on a
    * temporary freeze pad, then unfreezes as the pad is deleted and map colliders are still
    * cooking — re-seat here on unfreeze so we land on spawn, not freefall / edge bounce.
@@ -462,9 +468,29 @@ export class PlayerSystem {
     this.avatar?.setLocomotionVfxScene(scene)
   }
 
+  /**
+   * PE free-flight InputModifier when primary has **no** InputModifier component.
+   * Primary IM always wins if present (see PlayerClaimMerger).
+   */
+  private peLocomotionOverride: LocomotionConfig | null = null
+
   getLocomotionConfig(): LocomotionConfig {
-    if (!this.readComponents) return defaultLocomotionConfig()
+    if (!this.readComponents) return this.peLocomotionOverride ?? defaultLocomotionConfig()
+    // Primary has InputModifier → primary wins (never use PE override).
+    if (this.readComponents.InputModifier.has(SDK_RESERVED.player)) {
+      return readLocomotionFromComponents(this.readComponents, SDK_RESERVED.player)
+    }
+    // No primary IM → PE claim may supply freeze/modes.
+    if (this.peLocomotionOverride) return this.peLocomotionOverride
     return readLocomotionFromComponents(this.readComponents, SDK_RESERVED.player)
+  }
+
+  /**
+   * Layer claim bus: PE InputModifier when primary has none.
+   * Pass null when primary has IM or PE cleared freeze.
+   */
+  setPeLocomotionOverride(config: LocomotionConfig | null): void {
+    this.peLocomotionOverride = config
   }
 
   /** Main/World — clear stuck sit mode-freeze when player presses WASD/Space. */
@@ -645,6 +671,35 @@ export class PlayerSystem {
 
   isLocomotionBlocked(): boolean {
     return !canLocomote(this.getLocomotionConfig())
+  }
+
+  /**
+   * PE drone/vehicle free-flight — InputModifier freezes avatar WASD but scene systems
+   * drive Player/Camera. Pinning feet would cancel worker motion every PlayerSystem.update.
+   */
+  setAllowSceneOwnedMotion(allow: boolean): void {
+    if (this.allowSceneOwnedMotion === allow) return
+    this.allowSceneOwnedMotion = allow
+    if (allow) {
+      // Drop load-freeze pin so PE poses / VC follow can move the root.
+      this.disableAllHoldFeet = null
+      console.info('[player] scene-owned motion ON — disableAll foot pin released (PE free-flight)')
+    } else {
+      console.info('[player] scene-owned motion OFF — normal disableAll pin resume')
+    }
+  }
+
+  /**
+   * Apply PE free-flight PlayerEntity pose (Three feet) while scene-owned motion is on.
+   * Worker systems move PE; main must follow or freecam/VC parent stay at spawn.
+   */
+  applySceneOwnedFeetPose(feetThree: THREE.Vector3): void {
+    if (!this.allowSceneOwnedMotion || !this.enabled) return
+    this.root.position.copy(feetThree)
+    this.physics.teleport(feetThree)
+    this.root.position.copy(feetThree)
+    this.grounded = true
+    this.groundCoyote = 0.12
   }
 
   clearMoveKeys(): void {
@@ -906,6 +961,32 @@ export class PlayerSystem {
       _velocity.set(0, 0, 0)
       _externalVelocity.set(0, 0, 0)
       _force.set(0, 0, 0)
+      if (this.allowSceneOwnedMotion) {
+        // PE drone/vehicle free-flight: systems own PE Transform. Do not pin feet.
+        this.disableAllHoldFeet = null
+        this.grounded = true
+        this.groundCoyote = 0.12
+        this.syncWireYawFromAvatar()
+        this.syncPlayerEntityAttach()
+        this.syncNameTag()
+        this.avatar?.setYaw(this.playerYaw)
+        this.avatar?.update(delta, {
+          horizontalSpeed: 0,
+          grounded: true,
+          nearGround: true,
+          verticalVelocity: 0,
+          locomotionMode: this.locomotionMode,
+          jumping: false,
+          doubleJumping: false,
+          doubleJumpTriggered: false,
+          falling: false
+        })
+        this.applyCameraInputFromPointer()
+        this.syncCamera(false, delta)
+        this.input.endFrame()
+        this.wasLocomotionAllowed = false
+        return
+      }
       // Pin authored feet for the whole freeze. Do NOT accept physics.positionOut after
       // teleport — while map colliders rebuild, CCT can shove the capsule to the walk
       // bound edge (SpaceRunner fall-reset bounce at x≈96 instead of spawn).

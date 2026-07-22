@@ -46,6 +46,7 @@ SceneInputRelay (WASD)              inputSystem.isPressed
 | [CONTRIBUTOR_TESTING.md](./CONTRIBUTOR_TESTING.md) | How to test before PR |
 | [DEPLOYMENT.md](./DEPLOYMENT.md) | Build / host / smoke |
 | [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) | Original phase sketch (historical) |
+| [SCENE_LAYERS_PLAN.md](./SCENE_LAYERS_PLAN.md) | Multi-scene layers recovery (A–D, incremental — not a rewrite) |
 | [PR_CHECKLIST.md](./PR_CHECKLIST.md) | PR gate |
 | [REPO_MANAGEMENT.md](./REPO_MANAGEMENT.md) | Branches, release, community |
 | [TASKS.yaml](./TASKS.yaml) | Re-arch history — **not** a pickup queue |

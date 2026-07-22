@@ -363,6 +363,8 @@ function ensureBgImg(el: HTMLElement): HTMLImageElement {
 
 function clearBgImg(el: HTMLElement): void {
   el.querySelector('.scene-ui-node__bg-img')?.remove()
+  delete el.dataset.dclUvCrop
+  delete el.dataset.dclUiBgSig
 }
 
 /**
@@ -370,13 +372,21 @@ function clearBgImg(el: HTMLElement): void {
  *   [u0,v0, u1,v1, u2,v2, u3,v3] = BL, TL, TR, BR
  * Dead Surge atlas: createAtlasUvs → [left,bottom, left,top, right,top, right,bottom].
  * Returns axis-aligned UV rect, or null when full texture / unusable.
+ *
+ * Accepts ArrayLike (Float32Array / protobuf repeated) — `.map` is not always present.
  */
 export function parseUiBackgroundUvRect(
-  uvs: number[] | null | undefined
+  uvs: ArrayLike<number> | null | undefined
 ): { u0: number; v0: number; u1: number; v1: number } | null {
-  if (!uvs || uvs.length < 8) return null
-  const nums = uvs.map((n) => Number(n))
-  if (nums.some((n) => !Number.isFinite(n))) return null
+  if (!uvs || typeof (uvs as { length?: number }).length !== 'number' || uvs.length < 8) {
+    return null
+  }
+  const nums: number[] = []
+  for (let i = 0; i < 8; i++) {
+    const n = Number(uvs[i])
+    if (!Number.isFinite(n)) return null
+    nums.push(n)
+  }
   // Prefer corners BL/TR; also min/max in case winding differs.
   const us = [nums[0]!, nums[2]!, nums[4]!, nums[6]!]
   const vs = [nums[1]!, nums[3]!, nums[5]!, nums[7]!]
@@ -395,11 +405,12 @@ function applyBgImg(
   imageUrl: string,
   mode: number,
   colorAlpha = 1,
-  uvs?: number[] | null
+  uvs?: ArrayLike<number> | null
 ): void {
   const img = ensureBgImg(el)
   assignUiImageSrc(img, imageUrl)
-  if (getComputedStyle(el).position === 'static') el.style.position = 'relative'
+  // Always relative for absolute-positioned UV crop img — avoid getComputedStyle reflow thrash.
+  el.style.position = 'relative'
   img.style.position = 'absolute'
   img.style.pointerEvents = 'none'
   // Explorer multiplies UiBackground.color with the texture (incl. alpha).
@@ -408,16 +419,15 @@ function applyBgImg(
   img.style.objectFit = 'fill'
   img.style.objectPosition = 'center'
 
-  // Atlas UV crop (stretch + uvs) — clip sheet sprite into the element box.
-  // Without this, Dead Surge lobby buttons paint the whole HUD_LOBBY2 atlas
-  // squashed into each small rect ("UI scaled wrong").
-  const rect =
-    mode === BackgroundTextureMode.STRETCH ? parseUiBackgroundUvRect(uvs) : null
+  // Atlas UV crop whenever uvs define a sub-rect — not only STRETCH.
+  // CENTER / mis-normalized modes previously painted the whole HUD atlas into each button.
+  const rect = parseUiBackgroundUvRect(uvs)
   if (rect) {
     const { u0, v0, u1, v1 } = rect
-    const uSpan = u1 - u0
-    const vSpan = v1 - v0
+    const uSpan = Math.max(1e-6, u1 - u0)
+    const vSpan = Math.max(1e-6, v1 - v0)
     // GL v=0 bottom; CSS top=0 top → image top edge is at (1 - v1).
+    el.dataset.dclUvCrop = '1'
     el.style.overflow = 'hidden'
     img.style.inset = 'unset'
     img.style.right = 'auto'
@@ -426,7 +436,9 @@ function applyBgImg(
     img.style.height = `${(100 / vSpan).toFixed(4)}%`
     img.style.left = `${((-u0 / uSpan) * 100).toFixed(4)}%`
     img.style.top = `${((-(1 - v1) / vSpan) * 100).toFixed(4)}%`
+    img.style.objectFit = 'fill'
   } else {
+    delete el.dataset.dclUvCrop
     el.style.overflow = ''
     img.style.inset = '0'
     img.style.left = ''
@@ -648,9 +660,15 @@ export function applyUiBackgroundStyles(
     : -1
   // Skip full style thrash when paint re-visits stable PE HUD panels every tick.
   // Clearing borderImage / swapping solid→texture every frame is the PX UI flash.
-  const uvsKey = bg?.uvs?.length ? bg.uvs.map((n) => Number(n).toFixed(4)).join(',') : ''
+  const uvsKey = bg?.uvs?.length
+    ? Array.from({ length: Math.min(8, bg.uvs.length) }, (_, i) => Number(bg.uvs![i]).toFixed(4)).join(',')
+    : ''
   const sig = `${imageUrl ?? ''}|${mode}|${tint}|${uvsKey}`
-  if (el.dataset.dclUiBgSig === sig) return
+  if (el.dataset.dclUiBgSig === sig) {
+    // Content styles run every paint and set overflow:visible — re-assert UV clip.
+    if (el.dataset.dclUvCrop === '1') el.style.overflow = 'hidden'
+    return
+  }
   el.dataset.dclUiBgSig = sig
 
   el.style.borderImage = ''

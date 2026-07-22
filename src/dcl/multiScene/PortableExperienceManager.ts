@@ -10,6 +10,7 @@ import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import { pePhysOffset } from './physOffsets'
 import { discoverEquippedPortableExperiences } from './resolveSmartWearablePe'
 import type { PortableExperiencesPolicy } from './resolvePortableExperiences'
+import type { SceneLayerRegistry } from './SceneLayerRegistry'
 import { SceneWorkerSlot } from './SceneWorkerSlot'
 import type { PeCandidate, PeSlotState } from './types'
 
@@ -53,6 +54,18 @@ export class PortableExperienceManager {
         physOffset: number
       ) => void)
     | null = null
+  /**
+   * World wires getUserData / identity before scene main() (profile fetch).
+   * Must run after prepare, before system.start.
+   */
+  private onPeBeforeSceneStart:
+    | ((
+        system: import('../../core/systems/SceneScriptSystem').SceneScriptSystem,
+        physOffset: number
+      ) => void)
+    | null = null
+  /** Phase A — register PE workers as layers when enabled. */
+  private layerRegistry: SceneLayerRegistry | null = null
 
   subscribe(fn: PeManagerListener): () => void {
     this.listeners.add(fn)
@@ -89,6 +102,21 @@ export class PortableExperienceManager {
       | null
   ): void {
     this.onPeWorkerReady = fn
+  }
+
+  setOnPeBeforeSceneStart(
+    fn:
+      | ((
+          system: import('../../core/systems/SceneScriptSystem').SceneScriptSystem,
+          physOffset: number
+        ) => void)
+      | null
+  ): void {
+    this.onPeBeforeSceneStart = fn
+  }
+
+  setLayerRegistry(registry: SceneLayerRegistry | null): void {
+    this.layerRegistry = registry
   }
 
   async attachWorld(opts: {
@@ -137,6 +165,7 @@ export class PortableExperienceManager {
   detachWorld(): void {
     for (const [id, worker] of this.workers) {
       this.pendingPhysInvalidation.push(...worker.registeredPhysicsEntities())
+      this.layerRegistry?.unregister(id)
       worker.dispose()
       this.workers.delete(id)
       const slot = this.slots.get(id)
@@ -278,20 +307,27 @@ export class PortableExperienceManager {
         performanceTier: this.tier,
         arbiter: this.arbiter,
         poseProvider: this.poseProvider,
-        physOffset: pePhysOffset(peIndex)
+        physOffset: pePhysOffset(peIndex),
+        onBeforeSceneStart: (system, offset) => this.onPeBeforeSceneStart?.(system, offset)
       })
       await worker.start()
       if (this.disposed || !this.worldBound) {
         worker.dispose()
         return false
       }
-      // Wire pointer + player identity so PE UI clicks and getPlayer() work.
+      // Post-start: play-ready, input hub, pointer (identity/comms already before main).
       this.onPeWorkerReady?.(worker.system, worker.physOffset)
       // UI: user pref AND scene policy. (PE start already revealed UI for first mount paint.)
       const uiOn = slot.uiEnabled && this.pePolicy.uiAllowed
       worker.setUiVisible(uiOn)
       // Mount snapshots from the worker paint UI; no forceRepaint (wipes style cache).
       this.workers.set(id, worker)
+      this.layerRegistry?.register({
+        id,
+        kind: 'pe',
+        system: worker.system,
+        physOffset: worker.physOffset
+      })
       slot.status = 'running'
       slot.wantEnabled = true
       if (this.primaryScene) this.cache.setScene(this.primaryScene)
@@ -317,6 +353,7 @@ export class PortableExperienceManager {
     const worker = this.workers.get(id)
     if (worker) {
       this.pendingPhysInvalidation.push(...worker.registeredPhysicsEntities())
+      this.layerRegistry?.unregister(id)
       worker.dispose()
       this.workers.delete(id)
     }
@@ -358,6 +395,7 @@ export class PortableExperienceManager {
       const worker = this.workers.get(id)
       if (worker) {
         this.pendingPhysInvalidation.push(...worker.registeredPhysicsEntities())
+        this.layerRegistry?.unregister(id)
         worker.dispose()
       }
       this.workers.delete(id)
@@ -457,7 +495,10 @@ export class PortableExperienceManager {
 
   dispose(): void {
     this.disposed = true
-    for (const w of this.workers.values()) w.dispose()
+    for (const [id, w] of this.workers) {
+      this.layerRegistry?.unregister(id)
+      w.dispose()
+    }
     this.workers.clear()
     this.slots.clear()
     this.scenes.clear()

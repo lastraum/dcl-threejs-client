@@ -25,6 +25,15 @@ import { ScenePromoteController } from '../dcl/aoi/ScenePromoteController'
 import type { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
 import { PeMainThreadMirror } from '../dcl/multiScene/PeMainThreadMirror'
 import {
+  collectPlayerClaims,
+  PlayerClaimApplier
+} from '../dcl/multiScene/PlayerClaimMerger'
+import {
+  hostPoseModeFromClaims,
+  hostPoseModeLabel,
+  type HostPoseMode
+} from '../dcl/multiScene/HostPoseMode'
+import {
   resolvePortableExperiencesPolicy,
   type PortableExperiencesPolicy
 } from '../dcl/multiScene/resolvePortableExperiences'
@@ -84,7 +93,10 @@ import { shortenAddress } from '../avatar/displayName'
 import { buildPlayerMirrorIdentity, getOrCreateGuestAddress } from '../bridge/playerMirrorIdentity'
 import type { AvatarAttachTargetResolver } from '../avatar/AvatarAttachTargets'
 import { dclToThreeVec, type DclTransformValues } from '../bridge/dclTransform'
-import { feetDclToPlayerEntityPosition } from '../player/dclPlayerEntity'
+import {
+  feetDclToPlayerEntityPosition,
+  feetThreeFromPlayerEntityDcl
+} from '../player/dclPlayerEntity'
 import type { PhysicsColliderDesc } from '../physics/PhysXWorld'
 
 import { openExternalUrl } from '../player/openExternalUrl'
@@ -217,6 +229,10 @@ export class World {
    */
   private multiScene: MultiSceneRuntime | null = null
   private readonly peMirror = new PeMainThreadMirror()
+  /** Phase B — continuous claims from all layers (locomotion / camera / pose / force). */
+  private readonly playerClaims = new PlayerClaimApplier()
+  /** Phase D — last host pose mode (for one-shot logs). */
+  private lastHostPoseMode: HostPoseMode = 'host_feet'
   /**
    * Single keyboard bus — primary scene + PE workers subscribe; hardware owned once.
    * Sync once per play frame (not per SceneScriptSystem).
@@ -1349,8 +1365,8 @@ export class World {
           // Motion first — PE pose + TriggerArea enter must beat worker onUpdate.
           const platformT0 = performance.now()
           this.syncPlayerMotionFrame(delta, startFrame)
-          // PE owns VirtualCamera / MainCamera (drone, vehicle) — drive lens from PE bridge,
-          // never from a MainCamera entity id mirrored onto empty primary ECS.
+          // Claims from previous frame (poseDrive / freeze) until post-tick re-merge.
+          // PE owns VirtualCamera / MainCamera (drone, vehicle) — claim merger selects lens.
           this.selectActiveVirtualCameraBridge()
           const platformMs = performance.now() - platformT0
           const playerT0 = performance.now()
@@ -1378,10 +1394,12 @@ export class World {
           this.multiScene?.tickSync(playerPose, cameraPose, startFrame)
           // PE tween/billboard/attach motion + reserved-parent meshes (same as primary pump).
           this.pumpPeMotionBridges(delta, startFrame)
-          // After PE player-frame may have bound VC this tick — re-select before next freecam frame.
+          // Phase B — merge layer claims (locomotion / camera / poseDrive / force) + discrete intents.
+          this.applyLayerPlayerClaims()
+          // PE free-flight: pull winning poseDrive layer PlayerEntity onto the capsule.
+          this.syncPlayerFromPoseDriveClaim()
+          // After claims / player-frame may have bound VC — re-select lens.
           this.selectActiveVirtualCameraBridge()
-          // Mirror PE player-affecting state onto primary (InputModifier, forces) — not MainCamera ids.
-          this.applyPeMainThreadMirror()
 
           const pos = this.player.getPosition()
           // AOI tertiary visuals — scene-local DCL feet (throttled inside layer).
@@ -2928,12 +2946,18 @@ export class World {
    */
   attachMultiScene(runtime: MultiSceneRuntime | null): void {
     if (this.multiScene && this.multiScene !== runtime) {
+      this.multiScene.unregisterPrimary()
       this.multiScene.unbindWorld()
     }
     this.multiScene = runtime
     if (!runtime || !this.loadedPrimaryScene) return
+    // Phase A — primary is a layer like PE/secondary (docs/SCENE_LAYERS_PLAN.md).
+    runtime.registerPrimary(this.sceneScript)
     runtime.setOnLiveSecondaryIds((ids) => this.aoiVisual.setLiveSecondaryIds(ids))
-    // PE worker: full main-thread surface (identity, pointer, keys, avatar modifiers, physics lamport).
+    // PE: identity + getUserData BEFORE scene main(); play-ready/input AFTER start.
+    runtime.pe.setOnPeBeforeSceneStart((system, physOffset) => {
+      this.wirePeIdentityAndComms(system, physOffset)
+    })
     runtime.pe.setOnPeWorkerReady((system, physOffset) => {
       this.wirePeWorkerToMainThread(system, physOffset)
     })
@@ -2981,12 +3005,12 @@ export class World {
   }
 
   /**
-   * Wire a PE SceneScriptSystem to main-thread player/input/physics — same surface as primary
-   * minus exclusive privileges (teleport still via arbiter).
+   * PE pre-main wire — identity + UserIdentity RPC + poses.
+   * Must run before `system.start()` so `getUserData()` does not return {}.
    */
-  private wirePeWorkerToMainThread(
+  private wirePeIdentityAndComms(
     system: import('./systems/SceneScriptSystem').SceneScriptSystem,
-    physOffset = 0
+    _physOffset = 0
   ): void {
     system.setPlayerIdentity(
       buildPlayerMirrorIdentity({
@@ -2995,6 +3019,7 @@ export class World {
       })
     )
     system.setRealmInfo(this.comms.getRealmInfo())
+    system.setRealmInfoProvider(() => this.comms.getRealmInfo())
     system.setClientPoseProvider(() => ({
       player: this.player!.getEntityPose(),
       camera: this.player!.getCameraEntityPose()
@@ -3003,6 +3028,54 @@ export class World {
       () => this.player!.getEntityPose(),
       () => this.player!.getCameraEntityPose()
     )
+    // Same UserIdentity surface as primary — PE scene main() often calls getUserData().
+    system.setCommsHandler({
+      setCommunicationsAdapter: async (body) => ({
+        success: await this.comms.connectAdapter(body.connectionString)
+      }),
+      sendBinary: async (body) => this.handleSendBinary(body),
+      send: async (body) => {
+        await this.comms.publishCommsMessage(body.message)
+        return {}
+      },
+      getUserData: async () => this.buildUserData(),
+      getRealm: async () => ({ realmInfo: this.comms.getRealmInfo() }),
+      subscribeToTopic: async (body) => {
+        this.comms.subscribeToTopic(body.topic)
+        return {}
+      },
+      unsubscribeFromTopic: async (body) => {
+        this.comms.unsubscribeFromTopic(body.topic)
+        return {}
+      },
+      publishData: async (body) => {
+        await this.comms.publishTopicData(body.topic, body.data)
+        return {}
+      },
+      consumeMessages: async (body) => this.comms.consumeMessages(body.topic),
+      getActiveVideoStreams: async () => this.comms.getActiveVideoStreams()
+    })
+    // Signed fetch — same session identity as primary (PE wearables / permissions).
+    system.setSignedFetchHandler(async (body) =>
+      performSignedFetch(body, this.session.getAuthIdentity(), this.signedFetchSceneContext)
+    )
+    system.setSignedFetchGetHeadersHandler(async (body) =>
+      performGetSignedHeaders(body, this.session.getAuthIdentity())
+    )
+    console.info('[pe] identity+comms wired before scene main (getUserData ready)')
+  }
+
+  /**
+   * Wire a PE SceneScriptSystem to main-thread player/input/physics — same surface as primary
+   * minus exclusive privileges (teleport still via arbiter).
+   * Call after system.start(); identity/comms should already be on via wirePeIdentityAndComms.
+   */
+  private wirePeWorkerToMainThread(
+    system: import('./systems/SceneScriptSystem').SceneScriptSystem,
+    physOffset = 0
+  ): void {
+    // Re-assert identity in case session profile arrived late during start.
+    this.wirePeIdentityAndComms(system, physOffset)
     // PE entity delete → drop PhysX statics in the PE id namespace (freezeRemoval would leave ghosts).
     system.setCollidersRemoveCallback((entity) => {
       this.onColliderEntityRemovedWithOffset(entity, physOffset)
@@ -3129,21 +3202,20 @@ export class World {
   private lastVcBridgeOwner: 'none' | 'primary' | 'pe' = 'none'
 
   /**
-   * PlayerSystem only had the primary VirtualCameraBridge. PE drone/vehicle cameras live on the
-   * PE SceneScriptSystem — switch the player lens to any PE that has MainCamera→VC bound.
+   * Lens from camera claim (Phase B) or PE bound MainCamera, else primary freecam bridge.
    */
   private selectActiveVirtualCameraBridge(): void {
     if (!this.player) return
-    const peSystems = this.multiScene?.pe.getRunningSystems() ?? []
-    for (const sys of peSystems) {
-      const bridge = sys.getVirtualCameraBridge()
-      if (!bridge) continue
-      if (bridge.isMainCameraVcBound() || bridge.isActive()) {
-        this.player.setVirtualCameraBridge(bridge)
-        if (this.lastVcBridgeOwner !== 'pe') {
-          this.lastVcBridgeOwner = 'pe'
+    // Prefer claim winner when multi-scene is live.
+    if (this.multiScene) {
+      const claims = collectPlayerClaims(this.multiScene.listLayers())
+      if (claims.camera?.bridge && claims.camera.mainCameraBound) {
+        this.player.setVirtualCameraBridge(claims.camera.bridge)
+        const owner = claims.camera.kind === 'pe' ? 'pe' : 'primary'
+        if (this.lastVcBridgeOwner !== owner) {
+          this.lastVcBridgeOwner = owner
           console.info(
-            `[pe] VirtualCamera lens → PE bridge (mainBound=${bridge.isMainCameraVcBound()} active=${bridge.isActive()})`
+            `[layers] VirtualCamera lens → ${owner} (${claims.camera.layerId.slice(0, 24)})`
           )
         }
         return
@@ -3152,7 +3224,7 @@ export class World {
     this.player.setVirtualCameraBridge(this.sceneScript.getVirtualCameraBridge())
     if (this.lastVcBridgeOwner === 'pe') {
       this.lastVcBridgeOwner = 'primary'
-      console.info('[pe] VirtualCamera lens → primary (PE VC unbound)')
+      console.info('[layers] VirtualCamera lens → primary (no camera claim)')
     } else if (this.lastVcBridgeOwner === 'none') {
       this.lastVcBridgeOwner = 'primary'
     }
@@ -3193,15 +3265,64 @@ export class World {
     this.physics.invalidateControllerCache()
   }
 
-  /** PE worker → primary projection + player (InputModifier, forces, intents). */
-  private applyPeMainThreadMirror(): void {
+  /**
+   * Phase B+D — continuous claims + HostPoseMode + discrete privileged intents.
+   */
+  private applyLayerPlayerClaims(): void {
     if (!this.multiScene) return
-    this.peMirror.apply({
-      pe: this.multiScene.pe,
+    const claims = collectPlayerClaims(this.multiScene.listLayers())
+    const poseMode = hostPoseModeFromClaims(claims)
+    if (poseMode !== this.lastHostPoseMode) {
+      this.lastHostPoseMode = poseMode
+      console.info(`[layers] HostPoseMode → ${hostPoseModeLabel(poseMode)}`)
+    }
+    // Every layer: skip reserved feet inject when layer_drive.
+    const drive = poseMode === 'layer_drive'
+    this.sceneScript.setHostLayerDrivePoses(drive)
+    for (const layer of this.multiScene.listLayers()) {
+      if (layer.kind === 'primary') continue
+      try {
+        layer.system.setHostLayerDrivePoses(drive && claims.poseDrive?.layerId === layer.id)
+      } catch {
+        /* ignore */
+      }
+    }
+
+    this.playerClaims.apply(claims, {
       primary: this.sceneScript,
       player: this.player,
-      drainPrivilegedIntents: () => this.drainPePrivilegedIntents()
+      setVirtualCameraBridge: (bridge) => {
+        if (bridge) this.player?.setVirtualCameraBridge(bridge)
+      },
+      primaryVirtualCameraBridge: () => this.sceneScript.getVirtualCameraBridge()
     })
+    // PE IM is a PlayerSystem override — never written onto primary ECS, so no retain mirror.
+    this.sceneScript.setRetainPeMirroredInputModifier(false)
+    // Discrete intents still via arbiter (movePlayer / emote / teleport).
+    this.drainPePrivilegedIntents()
+  }
+
+  /**
+   * layer_drive: copy poseDrive layer PlayerEntity onto capsule.
+   */
+  private syncPlayerFromPoseDriveClaim(): void {
+    if (!this.player || !this.multiScene) return
+    if (this.lastHostPoseMode !== 'layer_drive') return
+    const claims = collectPlayerClaims(this.multiScene.listLayers())
+    if (!claims.poseDrive || claims.poseDrive.kind !== 'pe') return
+    this.player.setAllowSceneOwnedMotion(true)
+    const sys = claims.poseDrive.system
+    try {
+      const tr = sys.readComponents.Transform.getOrNull(sys.view.PlayerEntity) as
+        | { position?: { x: number; y: number; z: number } }
+        | null
+      const p = tr?.position
+      if (!p || ![p.x, p.y, p.z].every((n) => Number.isFinite(n))) return
+      const feet = feetThreeFromPlayerEntityDcl(new THREE.Vector3(p.x, p.y, p.z))
+      this.player.applySceneOwnedFeetPose(feet)
+    } catch {
+      /* ignore */
+    }
   }
 
   getLoadedPrimaryScene(): ResolvedScene | null {
@@ -3741,10 +3862,12 @@ export class World {
 
     // Detach multi-scene (PE workers) before primary host dies — PE prefs stay on manager.
     if (this.multiScene) {
+      this.multiScene.unregisterPrimary()
       this.multiScene.unbindWorld()
       this.multiScene = null
     }
     this.peMirror.reset()
+    this.playerClaims.reset()
     this.inputHub.dispose()
 
     // Scene systems first — CameraModeArea / pointer dispose still call into player.

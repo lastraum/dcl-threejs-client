@@ -35,9 +35,7 @@ import {
 import {
   beginPointerPlayerFrameBatch,
   describeWorkerInputModifier,
-  isRefuseFreezeWrites,
-  reconcileLocomotionLatchAfterInjectDown,
-  rewriteStopMoveCameraUiLabels
+  reconcileLocomotionLatchAfterInjectDown
 } from './workerPlayerFrameEgress'
 
 /**
@@ -49,7 +47,7 @@ import {
  *      (hydration splash + play-mode async UI: QR textures, remote lists — not Ui* CRDT wire)
  *
  * Pointer interactive tick:
- *   sceneUi: DOWN → flush → phase-4 → UP(PlayerEntity, react-ecs off) → non-ui
+ *   sceneUi: DOWN → post-DOWN react flush (open menu) → phase-4 → UP(PlayerEntity, react off)
  *   mesh:    DOWN → UP(entity) → flush → phase-4 → non-ui
  * Inject path skips exports.onUpdate. Skipped onUpdate is not replayed in the deliver chain.
  */
@@ -126,6 +124,8 @@ let engineUpdateRelease: (() => void) | null = null
 let engineUpdateInFlight = false
 /** True only during intentional Ui CRDT transport emit — rpcCrdt must not attach uiEntities otherwise. */
 let attachUiMountSnapshot = false
+/** Last pointer phase-4 mount size — cooperative dirty must not post shrink below this (modal collapse). */
+let lastPointerUiMountSize = 0
 export function shouldAttachUiMountSnapshot(): boolean {
   return attachUiMountSnapshot
 }
@@ -186,6 +186,7 @@ export function resetSceneEngineScheduler(): void {
   bootSealed = false
   diagCount = 0
   tickEpoch = 0
+  lastPointerUiMountSize = 0
   resetPlayModePointerUiEgress()
 }
 
@@ -359,11 +360,30 @@ export function sceneEngineTickDue(now: number): boolean {
  *
  * Safe after inject-only PE append discard: cooperative remount no longer re-fires CAM toggle.
  */
+/** Play/PE continuous path — ship UI only when worker fingerprint changes (no thrash). */
+export async function emitSceneUiMountSnapshotIfDirtyNow(): Promise<void> {
+  const eng = engine
+  if (!eng || !bootSealed || !config) return
+  await emitSceneUiMountSnapshotIfDirty(eng)
+}
+
 async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
   const cfg = config!
   if (cfg.pointerBlocksTick()) return
   if (!planSceneUiCrdtEmit(eng, cfg.log)) return
   const mountEntityIds = collectWorkerUiMountEntityIds(eng)
+  // Refuse cooperative shrink below last pointer OPEN floor (RickRoll CAM / Neurolink 1245→1203).
+  if (
+    !cfg.isHydration() &&
+    lastPointerUiMountSize > 0 &&
+    mountEntityIds.length < lastPointerUiMountSize
+  ) {
+    cfg.log(
+      `[sceneWorker] ui dirty skip shrink — cooperative ${mountEntityIds.length} < pointer floor ${lastPointerUiMountSize}`
+    )
+    commitSceneUiCrdtBaseline(eng)
+    return
+  }
   const partial = shouldUsePartialUiMountSnapshot(mountEntityIds.length)
   const dirtyOnly = partial
     ? new Set(getLastPlannedUiDirtyEntities().map((e) => e as number))
@@ -446,6 +466,7 @@ function runPointerUiPhase4Egress(eng: IEngine): void {
   const mountEntities = new Set(snapshot.filter((r) => r.componentId === 1050).map((r) => r.entity))
   if (!cfg.isHydration()) {
     notePlayModePointerUiEgress(mountEntities.size)
+    lastPointerUiMountSize = mountEntities.size
   }
   cfg.log(
     `[sceneWorker] pointer ui snapshot — mount=${mountEntities.size} rows=${snapshot.length} ` +
@@ -691,7 +712,6 @@ async function flushReactEcsForUiSnapshot(
     await runSerializedEngineUpdate(async () => {
       await eng.update(0)
     })
-    // Do not bump lastExecutedAt on dt=0 — preserves wall-clock for NeonScreen etc.
     const mount = countWorkerUiMount(eng)
     const fp = computeWorkerUiFingerprint(eng)
     log(
@@ -729,14 +749,15 @@ async function runPointerNonUiPhase(eng: IEngine): Promise<void> {
 /**
  * Pointer interactive tick — one universal pipeline (worker-input-architecture).
  *
- * sceneUi (DOM / react-ecs onMouseDown) — PE Neurolink launcher thrash fix:
+ * sceneUi (DOM / react-ecs onMouseDown) — PE Neurolink / RickRoll CAM open:
  *   1. inject PET_DOWN → engine.update(0) — onMouseDown toggle + remount (open panel)
- *   2. inject PET_UP (PlayerEntity + click entity), react-ecs OFF — clear isPressed
- *      without multi-pass fingerprint flush (that re-ran eng.update and toggled closed
- *      1245→1203 every click)
- *   3. phase-4 snapshot of the OPEN mount immediately
- *   4. hold cooperative react-ecs so PE pump / residual ticks cannot collapse the panel
+ *   2. phase-4 snapshot of the OPEN mount BEFORE any UP (sole play-mode UI egress)
+ *   3. inject PET_UP on PlayerEntity only, react-ecs OFF — clear isPressed without remount
+ *   4. hold cooperative react-ecs when mount grew (let main paint open before re-reconcile)
  *   5. non-ui phase
+ *
+ * Multi-pass fingerprint flush after DOWN is intentionally skipped: it re-ran eng.update
+ * and toggled Neurolink closed (1245→1203) every click. (4bd25b6 / lastraum PE path)
  *
  * mesh / getClick:
  *   1. inject PET_DOWN → update
@@ -780,47 +801,9 @@ export async function runSceneEnginePointerTick(
       )
 
       if (injectOnlyUiClick) {
-        // PET_UP clears isPressed. react-ecs OFF so we do not re-reconcile (and thrash toggles).
-        // Multi-pass flush was collapsing Neurolink open→closed every click (1245→1203).
-        setPointerInteractivePhase('inject')
-        setPointerInteractiveTickActive(false)
-        await runSerializedEngineUpdate(async () => {
-          injectPointerClickUpOnEngine(eng, splitPointerInject)
-          // Also UP the original click entity so residual PET_DOWN is not the latest on that id
-          // (PlayerEntity-only UP left e2907 DOWN; later EventSystem edge cases re-toggle).
-          const clickEntity = splitPointerInject.entity
-          if (clickEntity !== (eng.PlayerEntity as number)) {
-            injectPointerClickUpOnEngine(eng, {
-              ...splitPointerInject,
-              sceneUi: false,
-              entities: [clickEntity],
-              upEntities: [clickEntity],
-              downEntities: [clickEntity]
-            })
-          }
-          await eng.update(0)
-        })
-        const mountAfterUp = countWorkerUiMount(eng)
-        cfg.log(
-          `[sceneWorker] pointer UP early (no multi-flush) — mount ${mountAfterDownUpdate}→${mountAfterUp}` +
-            ` (sceneUi; down was e${splitPointerInject.entity})` +
-            ` texts=[${sampleWorkerUiTexts(eng)}]`
-        )
-
-        // Phase-4 from OPEN ECS state (react-ecs remount from DOWN still present).
+        // Phase-4 from OPEN ECS state before any UP. Do NOT multi-pass flush (Neurolink 1245→1203).
         setPointerInteractivePhase('flush')
-        if (isRefuseFreezeWrites()) {
-          const n = rewriteStopMoveCameraUiLabels(eng)
-          if (n > 0) {
-            cfg.log(`[sceneWorker] UI label fix — rewrote ${n} STOP MOVE CAMERA → MOVE CAMERA`)
-          }
-        }
         runPointerUiPhase4Egress(eng)
-        // Hold cooperative react-ecs ONLY when a menu actually opened (mount grew).
-        // PE Neurolink thrash: residual reconcile collapsed open panel (1245→1203).
-        // CBD Plaza welcome splash: onMouseDown only starts a fade (same mount size) —
-        // systems update Color4.a every frame; holding react-ecs freezes that alpha on the
-        // last paint and leaves a half-visible full-screen PE catcher (pointer stuck).
         const mountGrew = mountAfterDownUpdate > mountBeforeDown
         if (mountGrew) {
           holdCooperativeReactEcs(90)
@@ -835,11 +818,22 @@ export async function runSceneEnginePointerTick(
           )
         }
 
+        // PET_UP PlayerEntity only (sceneUi resolveUpInjectTargets) — never UP click entity.
+        setPointerInteractivePhase('inject')
+        setPointerInteractiveTickActive(false)
+        await runSerializedEngineUpdate(async () => {
+          injectPointerClickUpOnEngine(eng, splitPointerInject)
+          await eng.update(0)
+        })
+        cfg.log(
+          `[sceneWorker] pointer UP PlayerEntity-only — mount ${mountAfterDownUpdate}→${countWorkerUiMount(eng)}` +
+            ` (sceneUi; down was e${splitPointerInject.entity})` +
+            ` texts=[${sampleWorkerUiTexts(eng)}]`
+        )
+
         cfg.onAfterEngineTick?.()
         cfg.log('[sceneWorker] pointer tick — skipping exports.onUpdate (inject path)')
         await runPointerNonUiPhase(eng)
-        // Unblock cooperative eng.update NOW — welcome fade (nZ) needs real dt every frame.
-        // Waiting for main forceResume left isPointerInputSessionActive true and starved systems.
         cfg.onSceneUiInjectPointerComplete?.({ mountGrew })
       } else {
         // Mesh inject path continues below for UP + flush + phase-4
@@ -858,13 +852,6 @@ export async function runSceneEnginePointerTick(
         cfg.log('[sceneWorker] pointer ui flush — post-UP react-ecs fingerprint')
         await flushReactEcsForUiSnapshot(eng, cfg.log, true)
 
-        if (isRefuseFreezeWrites()) {
-          const n = rewriteStopMoveCameraUiLabels(eng)
-          if (n > 0) {
-            cfg.log(`[sceneWorker] UI label fix — rewrote ${n} STOP MOVE CAMERA → MOVE CAMERA`)
-          }
-        }
-
         runPointerUiPhase4Egress(eng)
         await runPointerNonUiPhase(eng)
       }
@@ -881,11 +868,6 @@ export async function runSceneEnginePointerTick(
 
       setPointerInteractivePhase('flush')
       await flushReactEcsForUiSnapshot(eng, cfg.log, false)
-
-      if (isRefuseFreezeWrites()) {
-        const n = rewriteStopMoveCameraUiLabels(eng)
-        if (n > 0) cfg.log(`[sceneWorker] UI label fix — rewrote ${n} STOP MOVE CAMERA → MOVE CAMERA`)
-      }
 
       runPointerUiPhase4Egress(eng)
       await runPointerNonUiPhase(eng)

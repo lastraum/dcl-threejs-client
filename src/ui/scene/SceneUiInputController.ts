@@ -48,7 +48,7 @@ export class SceneUiInputController {
    * Never keep DOM after ECS unmount — react-ecs recycles entity ids on re-open; pinned nodes
    * stole clicks (PET_DOWN to dead entities) until the user hammered the real control.
    */
-  shouldPinEntity(_entity: Entity, _el: HTMLElement, _alive: Set<Entity>): boolean {
+  shouldPinEntity(_entity: Entity, _el: HTMLElement, _alive: ReadonlySet<Entity>): boolean {
     return false
   }
 

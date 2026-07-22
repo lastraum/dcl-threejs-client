@@ -25,6 +25,14 @@ export type SceneWorkerSlotOptions = {
    * to secondary privilege + renames entity root.
    */
   existingSystem?: SceneScriptSystem
+  /**
+   * PE only — wire getUserData / identity / poses **before** `system.start()` so
+   * scene `main()` does not throw "Couldn't fetch profile data".
+   */
+  onBeforeSceneStart?: (
+    system: SceneScriptSystem,
+    physOffset: number
+  ) => void
 }
 
 /**
@@ -111,6 +119,8 @@ export class SceneWorkerSlot {
       // Manager may hide after start if user disabled the UI toggle.
       this.system.setSceneUiVisible(true)
       this.wirePeHandlers()
+      // Identity + getUserData must exist before main() — Neurolink fetches profile at boot.
+      this.opts.onBeforeSceneStart?.(this.system, this.physOffset)
     } else {
       this.wireSecondaryHandlers()
     }

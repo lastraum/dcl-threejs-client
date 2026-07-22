@@ -189,7 +189,8 @@ export function applyUiTransformContentStyles(
   el.style.alignContent = flex.alignContent
   el.style.justifyContent = flex.justifyContent
   el.style.flexWrap = flex.flexWrap
-  el.style.overflow = flex.overflow
+  // Atlas UV crop needs overflow:hidden — do not stomp it to visible on every paint.
+  el.style.overflow = el.dataset.dclUvCrop === '1' ? 'hidden' : flex.overflow
   el.style.flexGrow = ''
   el.style.flexShrink = ''
   el.style.flexBasis = ''

@@ -210,7 +210,7 @@ type SceneUiDomCallbacks = {
    * Keep DOM nodes alive while focused/editing — only while the entity is still mounted in ECS.
    * `alive` = mounted entity set (includes display:none); unmounted entities must not pin.
    */
-  shouldPinEntity?: (entity: Entity, el: HTMLElement, alive: Set<Entity>) => boolean
+  shouldPinEntity?: (entity: Entity, el: HTMLElement, alive: ReadonlySet<Entity>) => boolean
   /** Entity removed from ECS — clear edit state before DOM teardown. */
   onEntityReleased?: (entity: Entity) => void
 }
@@ -340,11 +340,7 @@ export class SceneUiDomRenderer {
       if (el) this.applyHiddenDomState(el)
     }
 
-    for (const [entity, el] of [...this.nodes]) {
-      if (input.authoritativeEntities.has(entity) && input.mountedEntities.has(entity)) continue
-      if (this.callbacks.shouldPinEntity?.(entity, el, alive)) continue
-      this.releaseNode(entity, el)
-    }
+    this.reconcilePooledNodes(input, alive)
 
     this.purgeStaleDomTreeInternal(input.authoritativeEntities)
     this.purgeDisconnectedNodes()
@@ -371,10 +367,35 @@ export class SceneUiDomRenderer {
       // depth ignored for patch (regions rebuilt below)
       this.renderEntityTree(entity, input, alive, new Set(), 0, [], scale)
     }
+    // Incremental path previously skipped pool purge — unmounted menu shells stacked
+    // under parents and stayed interactive (double panels + stuck pointer).
+    this.reconcilePooledNodes(input, alive)
+    this.purgeDisconnectedNodes()
+    this.purgeOrphanHostChildren()
     const regions: UiScreenRegion[] = []
     this.collectHitRegionsFromForest(input, regions)
     input.onRegions?.(regions)
     return true
+  }
+
+  /**
+   * Drop non-authoritative nodes; hide authoritative-but-not-mounted (parent-chain lag).
+   * Never release worker-mounted ids that are only temporarily off canvas — that forced
+   * remount flash on the next paint.
+   */
+  private reconcilePooledNodes(input: SceneUiDrawInput, alive: ReadonlySet<Entity>): void {
+    for (const [entity, el] of [...this.nodes]) {
+      if (input.authoritativeEntities.has(entity)) {
+        if (!input.mountedEntities.has(entity)) {
+          this.applyHiddenDomState(el)
+        } else if (!isUiEntityVisible(entity, input.transformOf)) {
+          this.applyHiddenDomState(el)
+        }
+        continue
+      }
+      if (this.callbacks.shouldPinEntity?.(entity, el, alive)) continue
+      this.releaseNode(entity, el)
+    }
   }
 
   /**
@@ -596,11 +617,13 @@ export class SceneUiDomRenderer {
         : BackgroundTextureMode.STRETCH
     if (hasBg) {
       if (colorOnlyBg) {
+        delete el.dataset.dclUvCrop
         el.querySelector('.scene-ui-node__bg')?.remove()
         el.querySelector('.scene-ui-node__bg-img')?.remove()
         applyUiBackgroundStyles(el, bg, null, scale)
       } else if (imageUrl && texMode === BackgroundTextureMode.NINE_SLICES) {
         el.style.backgroundColor = 'transparent'
+        delete el.dataset.dclUvCrop
         el.querySelector('.scene-ui-node__bg-img')?.remove()
         const bgEl = ensureBgLayer(el)
         bgEl.style.position = 'absolute'
@@ -625,6 +648,8 @@ export class SceneUiDomRenderer {
       el.style.borderImageSource = ''
       el.style.opacity = ''
       el.style.overflow = ''
+      delete el.dataset.dclUvCrop
+      delete el.dataset.dclUiBgSig
       el.querySelector('.scene-ui-node__bg')?.remove()
       el.querySelector('.scene-ui-node__bg-img')?.remove()
     }
@@ -662,6 +687,46 @@ export class SceneUiDomRenderer {
     const children = input.forest.get(entity) ?? []
     for (const child of children) {
       this.renderEntityTree(child, input, alive, visited, depth + 1, regions, scale)
+    }
+    // Menu switch reuses parent shells; old child shells left nested → stacked panels.
+    this.detachOrphanChildShells(shell, entity, input)
+  }
+
+  /**
+   * Drop nested `.scene-ui-node` children that are no longer forest children of `entity`.
+   * Alive entities parented elsewhere stay until adoptNode moves them.
+   */
+  private detachOrphanChildShells(
+    shell: HTMLElement,
+    entity: Entity,
+    input: SceneUiDrawInput
+  ): void {
+    const expected = new Set(input.forest.get(entity) ?? [])
+    for (const child of [...shell.children]) {
+      if (!(child instanceof HTMLElement)) continue
+      if (!child.classList.contains('scene-ui-node')) continue
+      const id = Number(child.dataset.entity)
+      if (!Number.isFinite(id)) {
+        child.remove()
+        continue
+      }
+      const childEntity = id as Entity
+      if (expected.has(childEntity)) continue
+      const t = input.transformOf(childEntity)
+      const parentId = (t?.parent ?? 0) as Entity
+      // Still ECS-parented here (forest lag) — leave until next paint.
+      if (parentId === entity && input.mountedEntities.has(childEntity)) continue
+      // Still alive under a different parent — wait for adoptNode on that parent.
+      if (
+        input.authoritativeEntities.has(childEntity) &&
+        input.mountedEntities.has(childEntity) &&
+        parentId !== entity
+      ) {
+        continue
+      }
+      const mapped = this.nodes.get(childEntity)
+      if (mapped === child) this.releaseNode(childEntity, child)
+      else child.remove()
     }
   }
 

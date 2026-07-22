@@ -48,7 +48,7 @@ import {
 import { injectSceneKeyOnEngine } from '../../player/injectSceneInput'
 import { nextWorkerPointerEventTimestamp } from './workerPointerEventTimestamp'
 import { PointerEventType } from '../../input/pointerConstants'
-import { InputAction, type InputActionValue } from '../../input/pointerConstants'
+import type { InputActionValue } from '../../input/pointerConstants'
 import { injectRendererGrowOnlyAppendsOnEngine } from './injectRendererGrowOnlyAppends'
 import {
   injectRendererLwwPutsOnEngine,
@@ -114,10 +114,8 @@ import {
   describeWorkerInputModifier,
   forceClearDisableAllAfterLoadGate,
   forceUnfreezeModeOnlyFromMain,
-  isWorkerLocomotionFreezeLatched,
   isWorkerSceneFreeFlightActive,
   setWorkerPortableExperienceMode,
-  isWorkerMoveCameraFlightLatched,
   resetPlayerFrameEgressBaseline,
   stripPlayerFrameComponentsFromCrdt,
   takeForcedPlayerFrameClearSnapshot
@@ -157,6 +155,10 @@ import {
   sceneEngineTickDue,
   syncSceneEngineHydrationTimer
 } from './sceneEngineScheduler'
+import {
+  isCooperativeReactEcsHeld,
+  scheduleAfterCooperativeReactEcsHold
+} from './sceneEngineUiScheduler'
 const VIDEO_PLAYER_NULL_MUTABLE = /VideoPlayer for null not found/
 
 const ctx = self
@@ -226,17 +228,11 @@ const SCENE_UPDATE_ABORT_MS = 2000
 const SCENE_UPDATE_ABORT_PLAY_MS = 600
 const SCENE_UPDATE_ABORT_PLAY_MEDIUM_MS = 1400
 const SCENE_UPDATE_ABORT_PLAY_LOW_MS = 2800
-const SCENE_UPDATE_ABORT_ADAPTIVE_WINDOW_MS = 20_000
-const SCENE_UPDATE_ABORT_ADAPTIVE_THRESHOLD = 4
 /** Abort pointer engine tick if sceneEngine.update / onUpdate stalls awaiting main-thread CRDT. */
 const POINTER_ENGINE_TICK_ABORT_MS = 4000
 /** Abort timer — shorter once the scene is interactive. */
 let sceneUpdateAbortMs = SCENE_UPDATE_ABORT_MS
 let sceneTickIntervalMs = SCENE_LOOP_POLL_MS
-let playReadyPerformanceTier: PerformanceTier | undefined
-let adaptiveLowPerfMode = false
-let sceneUpdateAbortStreak = 0
-let sceneUpdateAbortWindowStart = 0
 let sceneTicksPaused = false
 /** PET_UP deferred until after onUpdate in the pointer interactive tick. */
 let pendingSplitPointerInject: InjectPointerClickBody | null = null
@@ -375,19 +371,6 @@ function clearSceneUpdateAbortTimer(): void {
   }
 }
 
-function recordSceneUpdateAbort(): void {
-  const now = performance.now()
-  if (!sceneUpdateAbortWindowStart || now - sceneUpdateAbortWindowStart > SCENE_UPDATE_ABORT_ADAPTIVE_WINDOW_MS) {
-    sceneUpdateAbortWindowStart = now
-    sceneUpdateAbortStreak = 0
-  }
-  sceneUpdateAbortStreak++
-  if (sceneUpdateAbortStreak >= SCENE_UPDATE_ABORT_ADAPTIVE_THRESHOLD && !adaptiveLowPerfMode) {
-    adaptiveLowPerfMode = true
-    applyPlayReadyTiming(playReadyPerformanceTier, 'adaptive-abort-backoff')
-  }
-}
-
 function setCooperativeLoopInterval(intervalMs: number): void {
   sceneTickIntervalMs = intervalMs
   if (sceneTickTimer) clearInterval(sceneTickTimer)
@@ -401,7 +384,7 @@ function applyPlayReadyTiming(
   reason: string,
   options?: { engineTickOverrideMs?: number }
 ): void {
-  const low = tier === 'low' || adaptiveLowPerfMode
+  const low = tier === 'low'
   const medium = !low && tier === 'medium'
   fullSceneOnUpdateIntervalMs = low
     ? FULL_SCENE_ONUPDATE_INTERVAL_PLAY_LOW_MS
@@ -428,28 +411,10 @@ function applyPlayReadyTiming(
   }
   workerLog(
     'log',
-    `[sceneWorker] play-ready timing (${reason}) — tier=${tier ?? 'default'} adaptiveLow=${adaptiveLowPerfMode} ` +
+    `[sceneWorker] play-ready timing (${reason}) — tier=${tier ?? 'default'} ` +
       `engineTick ${engineTickIntervalMs}ms, onUpdate interval ${fullSceneOnUpdateIntervalMs}ms, abort ${sceneUpdateAbortMs}ms`
   )
   setCooperativeLoopInterval(engineTickIntervalMs)
-}
-
-function armSceneUpdateAbortTimer(): void {
-  clearSceneUpdateAbortTimer()
-  sceneUpdateAbortTimer = setTimeout(() => {
-    if (!sceneUpdateInFlight) return
-    workerLog(
-      'error',
-      `[sceneWorker] scene onUpdate exceeded ${sceneUpdateAbortMs}ms — aborting for pointer priority`
-    )
-    recordSceneUpdateAbort()
-    sceneUpdateInFlight = false
-    // sceneUpdatePromiseActive stays true until the promise finally() — no overlapping onUpdate.
-    // Do not set sceneTicksPaused here — pointer batches pause explicitly; a stuck pause
-    // freezes worker onUpdate (campfire sprite pool) while trigger delivers keep firing.
-    // Do not interrupt pending CRDT — empty responses drop composite/sprite diffs on main.
-    drainQueuedPointerDeliver()
-  }, sceneUpdateAbortMs)
 }
 
 /** Only call from main `pause-scene-ticks:false` — never from cooperative onUpdate / inbound paths. */
@@ -809,34 +774,8 @@ function workerLog(level: 'log' | 'info' | 'warn' | 'error' | 'debug', message: 
 
 /** Bound-VC follow rig — pose keys for VC + lookAt/parent entities. */
 const boundVcPoseKeys = new Map<number, string>()
-const editFlightVcPoseKeys = new Map<number, string>()
-let lastFlightSceneUpdateAt = 0
-/** True while pump-scene-engine-tick runs flight — bypass sceneTicksPaused / pointer session. */
-let flightPumpBypassPause = false
-
-/** Scene keyboard relay actions that drive creator VC flight (MOVE CAMERA). */
-const SCENE_FLIGHT_INPUT_ACTIONS: ReadonlySet<InputActionValue> = new Set([
-  InputAction.IA_FORWARD,
-  InputAction.IA_BACKWARD,
-  InputAction.IA_RIGHT,
-  InputAction.IA_LEFT,
-  InputAction.IA_JUMP,
-  InputAction.IA_WALK,
-  InputAction.IA_MODIFIER, // camera-operator WALK_ACTION=14 — Shift descends
-  InputAction.IA_PRIMARY,
-  InputAction.IA_SECONDARY,
-  InputAction.IA_ACTION_3,
-  InputAction.IA_ACTION_4,
-  InputAction.IA_ACTION_5,
-  InputAction.IA_ACTION_6
-])
-
-function sceneSnapshotHasFlightKeys(body: SceneInputSnapshotBody): boolean {
-  for (const action of body.pressed) {
-    if (SCENE_FLIGHT_INPUT_ACTIONS.has(action)) return true
-  }
-  return false
-}
+/** Free-flight live pose keys (Player/Camera/VCs while IM freezes locomotion). */
+const freeFlightVcPoseKeys = new Map<number, string>()
 
 function applySceneInputSnapshotNow(body: SceneInputSnapshotBody): boolean {
   if (!sceneEngine) return false
@@ -869,17 +808,7 @@ function applySceneInputSnapshotNow(body: SceneInputSnapshotBody): boolean {
 function applyCoalescedKeyboardSnapshot(body: SceneInputSnapshotBody): void {
   if (!sceneEngine) return
   const changed = applySceneInputSnapshotNow(body)
-  // Flight pump only for MOVE CAMERA (freeze + unbound VC) — not character-select freeze+bound.
-  const flight = isEditFlightMode() && sceneSnapshotHasFlightKeys(body)
-  if (flight) {
-    scheduleSceneInputEngineTick({ flightPump: true })
-    return
-  }
-  // PE drone/vehicle: pump immediately on key edges (and holds via forceRepublish).
-  if (portableExperienceWorker && (changed || body.pressed.length > 0)) {
-    void runPeVehicleInputPump()
-    return
-  }
+  // All layers: same cooperative tick path (holds via InputHub → pump-scene-engine-tick).
   if (!changed) return
   scheduleSceneInputEngineTick()
 }
@@ -1202,26 +1131,17 @@ function publishVcPoseLiveIfBound(): void {
 }
 
 /**
- * Free-flight pose live lane:
- * - MOVE CAMERA (pointer-move latch): unbound MainCamera VCs
- * - Scene free-flight (PE drone / vehicle): PE+Camera + all VirtualCameras (systems own motion)
+ * Free-flight pose live lane (all layers): live IM freeze → systems own Player/Camera/VC motion.
+ * Host mirrors via vc-pose-live; no MOVE CAMERA special case.
  */
-function publishVcPoseLiveDuringEditFlight(): void {
+function publishVcPoseLiveDuringFreeFlight(): void {
   if (!sceneEngine || !sceneOnStartComplete) {
-    editFlightVcPoseKeys.clear()
+    freeFlightVcPoseKeys.clear()
     return
   }
-  const moveCam = isWorkerMoveCameraFlightLatched()
-  const freeFlight = isWorkerSceneFreeFlightActive(sceneEngine)
-  if (!moveCam && !freeFlight) {
-    editFlightVcPoseKeys.clear()
+  if (!isWorkerSceneFreeFlightActive(sceneEngine)) {
+    freeFlightVcPoseKeys.clear()
     return
-  }
-  const MainCamera = generated.MainCamera(sceneEngine)
-  const main = MainCamera.getOrNull(sceneEngine.CameraEntity) as { virtualCameraEntity?: number } | null
-  // MOVE CAMERA only posts when MainCamera is unbound. Scene free-flight always posts.
-  if (moveCam && !freeFlight) {
-    if (main?.virtualCameraEntity !== undefined && main?.virtualCameraEntity !== null) return
   }
 
   const VirtualCamera = generated.VirtualCamera(sceneEngine)
@@ -1233,8 +1153,8 @@ function publishVcPoseLiveDuringEditFlight(): void {
     const tr = Transform.getOrNull(entity)
     if (!tr) return
     const key = vcTransformPoseKey(tr)
-    if (editFlightVcPoseKeys.get(id) === key) return
-    editFlightVcPoseKeys.set(id, key)
+    if (freeFlightVcPoseKeys.get(id) === key) return
+    freeFlightVcPoseKeys.set(id, key)
     postVcPoseLive(entity, {
       position: { x: tr.position.x, y: tr.position.y, z: tr.position.z },
       rotation: { x: tr.rotation.x, y: tr.rotation.y, z: tr.rotation.z, w: tr.rotation.w },
@@ -1246,22 +1166,19 @@ function publishVcPoseLiveDuringEditFlight(): void {
       parent: tr.parent as number | undefined
     })
   }
-  // Scene free-flight: systems often move PlayerEntity / CameraEntity (not only VC).
-  if (freeFlight) {
-    maybePost(sceneEngine.PlayerEntity as Entity)
-    maybePost(sceneEngine.CameraEntity as Entity)
-  }
+  maybePost(sceneEngine.PlayerEntity as Entity)
+  maybePost(sceneEngine.CameraEntity as Entity)
   for (const [entity] of sceneEngine.getEntitiesWith(VirtualCamera)) {
     maybePost(entity as Entity)
   }
-  for (const id of editFlightVcPoseKeys.keys()) {
-    if (!live.has(id)) editFlightVcPoseKeys.delete(id)
+  for (const id of freeFlightVcPoseKeys.keys()) {
+    if (!live.has(id)) freeFlightVcPoseKeys.delete(id)
   }
 }
 
 function publishVcPoseLiveEgress(): void {
   publishVcPoseLiveIfBound()
-  publishVcPoseLiveDuringEditFlight()
+  publishVcPoseLiveDuringFreeFlight()
 }
 
 initSceneEngineScheduler({
@@ -1276,6 +1193,15 @@ initSceneEngineScheduler({
     pointerUiMountEgressPending = true
   },
   postUiMountSnapshot: (snapshot, mountEntityIds) => {
+    // Never let cooperative dirty UI thrash over a pinned phase-4 OPEN (1245→1203 flash).
+    if (pointerUiMountEgressPending || isCooperativeReactEcsHeld()) {
+      workerLog(
+        'log',
+        `[sceneWorker] ui dirty snapshot suppressed — phase4Pending=${pointerUiMountEgressPending ? 1 : 0} hold=1 ` +
+          `mount=${mountEntityIds.length} rows=${snapshot.length}`
+      )
+      return
+    }
     const uiEntities =
       mountEntityIds.length > 0 ? mountEntityIds : extractSnapshotMountEntityIds(snapshot)
     if (!uiEntities.length && !snapshot.length) return
@@ -1329,21 +1255,21 @@ initSceneEngineScheduler({
     )
   },
   onSceneUiInjectPointerComplete: ({ mountGrew }) => {
-    // Drop pointer session so pointerBlocksEngineTick no longer returns true.
-    // CBD Plaza welcome: nZ(dt) fades Color4.a; without eng.update the splash freezes mid-fade
-    // and the full-screen PE catcher keeps the pointer captive.
+    // Drop pointer session so pointer is free for next click.
+    // PET_UP already processed (react off). Hold suppresses dirty UI thrash until main paints OPEN.
     resetPointerInputSession()
     sceneTicksPaused = false
     workerLog(
       'log',
-      `[sceneWorker] sceneUi inject complete — session ended, ticks unpaused (mountGrew=${mountGrew ? 1 : 0})`
+      `[sceneWorker] sceneUi inject complete — session ended (mountGrew=${mountGrew ? 1 : 0}) ` +
+        `hold=${isCooperativeReactEcsHeld() ? 1 : 0}`
     )
-    // requestSceneEngineTick during pointerDeliverWorkInFlight is blocked — schedule after drain.
-    const kick = (): void => requestSceneEngineTick()
-    queueMicrotask(kick)
-    setTimeout(kick, 0)
-    setTimeout(kick, 32)
-    setTimeout(kick, 100)
+    // Resume cooperative ticks only after OPEN paint hold — early dirty ships CLOSED (1203).
+    scheduleAfterCooperativeReactEcsHold(() => {
+      if (pointerDeliverWorkInFlight || pointerDeliveryInFlight) return
+      workerLog('log', '[sceneWorker] sceneUi hold ended — resume requestSceneEngineTick')
+      requestSceneEngineTick()
+    })
   }
 })
 
@@ -1360,20 +1286,9 @@ function workerVerboseLog(
 function pointerBlocksEngineTick(): boolean {
   if (pointerDeliveryInFlight || queuedPointerDeliver || pointerDeliverWorkInFlight) return true
   if (sceneOnUpdatePaused) return false
-  if (flightPumpBypassPause) return false
   if (isPointerInputSessionActive()) return true
   return sceneTicksPaused || !!pendingInjectPointer || pointerDeliverBatchOpen
 }
-
-/** Matches camera-operator `Math.max(16, dt * 1000)` — do not outrun scene integration. */
-const SCENE_FLIGHT_TICK_MIN_MS = 16
-
-/**
- * MOVE CAMERA flight — engine.update only (VirtualCameraRig lives in addSystem, not exports.onUpdate).
- * SDK exports.onUpdate ends with pollEvents(sendBatch) which replays UI clicks and toggles flight off.
- * Bypasses sceneTicksPaused while main mount commit holds cooperative ticks after a UI click.
- */
-let lastFlightPumpLogAt = 0
 
 /**
  * Level-state reassert for keyboard relay.
@@ -1415,442 +1330,12 @@ function reassertPressedKeysOnEngine(): void {
   }
 }
 
-/** PE vehicle/drone — engine.update even when residual pointer session would block primary ticks. */
-let lastPeInputPumpAt = 0
-/** True when a pump was skipped (in-flight / rate-limit) while keys or freeze need another tick. */
-let peInputPumpQueued = false
-
-async function runPeVehicleInputPump(): Promise<void> {
-  if (!sceneEngine || !portableExperienceWorker || sceneOnUpdatePaused) return
-  // Only block mid-inject races. Residual pointer session after PE UI must NOT starve this pump.
-  if (
-    pointerDeliveryInFlight ||
-    pointerDeliverWorkInFlight ||
-    pointerDeliverBatchOpen ||
-    queuedPointerDeliver ||
-    pendingInjectPointer
-  ) {
-    peInputPumpQueued = true
-    return
-  }
-  if (sceneUpdateInFlight || sceneUpdatePromiseActive) {
-    peInputPumpQueued = true
-    return
-  }
-
-  const now = performance.now()
-  const hasKeys = workerSnapshotPressed.size > 0
-  // Live IM free-flight — latch alone misses PE freezes that never got pointer-move tagging.
-  const freeFlight = isWorkerSceneFreeFlightActive(sceneEngine)
-  // Held keys: ~60Hz. Free-flight idle (rotors/materials): ~20Hz. Idle: stop after first pump.
-  const minGapMs = hasKeys
-    ? SCENE_FLIGHT_TICK_MIN_MS
-    : freeFlight
-      ? 48
-      : SCENE_FLIGHT_TICK_MIN_MS
-  if (lastPeInputPumpAt > 0 && now - lastPeInputPumpAt < minGapMs) {
-    if (hasKeys || freeFlight) peInputPumpQueued = true
-    return
-  }
-  if (!hasKeys && !freeFlight && lastPeInputPumpAt > 0) {
-    return
-  }
-  const dt =
-    lastPeInputPumpAt > 0
-      ? Math.min(Math.max((now - lastPeInputPumpAt) / 1000, 1 / 120), 0.1)
-      : SCENE_FLIGHT_TICK_MIN_MS / 1000
-  lastPeInputPumpAt = now
-  peInputPumpQueued = false
-
-  reassertPressedKeysOnEngine()
-
-  if (now - lastFlightPumpLogAt > 500 && (hasKeys || freeFlight)) {
-    lastFlightPumpLogAt = now
-    const pressed = [...workerSnapshotPressed].join(',')
-    const player = sceneEngine.PlayerEntity as Entity
-    const isFwd = isSceneInputPressedOnPlayer(sceneEngine, player, InputAction.IA_FORWARD)
-    // Always surface in DevTools — diagnose free-flight without Help console mirror.
-    console.info(
-      `[sceneWorker] pe-input pump — pressed=[${pressed}] isPressed F=${isFwd ? 1 : 0} ` +
-        `freeFlight=${freeFlight ? 1 : 0} latch=${isWorkerLocomotionFreezeLatched() ? 1 : 0} ` +
-        `moveCam=${isWorkerMoveCameraFlightLatched() ? 1 : 0} dt=${dt.toFixed(3)}`
-    )
-  }
-
-  // Reuse flight bypass so pointerBlocksEngineTick does not starve PE systems mid-menu residual.
-  flightPumpBypassPause = true
-  sceneUpdateInFlight = true
-  sceneUpdatePromiseActive = true
-  sceneUpdateStartedAt = now
-  armSceneUpdateAbortTimer()
-  try {
-    // Phase 1 — systems + isTriggered reassert. Scene systems own free-flight (no VC shim).
-    await runSceneEngineUpdateNow(dt)
-    // Hot path: lens pose before poll — vehicle motion must not wait for CRDT batching.
-    publishVcPoseLiveEgress()
-    // UI mount egress is pointer phase-4 / cooperative dirty only — not the pe-input hot path.
-    // Phase 2 — pollEvents/sendBatch (Transform/Material CRDT). Keys or free-flight: always poll.
-    if (sceneOnUpdate && (hasKeys || freeFlight)) {
-      await runPlayFramePollPhase(sceneOnUpdate, dt)
-    }
-    completePlayFrameColdEgress()
-    publishVcPoseLiveEgress()
-  } catch (err) {
-    workerLog(
-      'error',
-      `[sceneWorker] pe-input pump failed — ${err instanceof Error ? err.message : String(err)}`
-    )
-  } finally {
-    clearSceneUpdateAbortTimer()
-    flightPumpBypassPause = false
-    sceneUpdateInFlight = false
-    sceneUpdatePromiseActive = false
-    if (peInputPumpQueued) {
-      peInputPumpQueued = false
-      queueMicrotask(() => {
-        void runPeVehicleInputPump()
-      })
-    }
-  }
-}
-
-/** Selected creator VC for shim flight — green emissive body (camera-operator SELECTED_COLOR). */
-let shimFlightVcEntity: number | null = null
-
-function captureAllVcPoseKeys(): string {
-  if (!sceneEngine) return ''
-  const VirtualCamera = generated.VirtualCamera(sceneEngine)
-  const Transform = extended.Transform(sceneEngine)
-  const parts: string[] = []
-  for (const [entity] of sceneEngine.getEntitiesWith(VirtualCamera)) {
-    const tr = Transform.getOrNull(entity as Entity)
-    if (!tr) continue
-    parts.push(`${entity as number}:${vcTransformPoseKey(tr)}`)
-  }
-  return parts.join('|')
-}
-
-/**
- * Resolve selected VirtualCamera: gizmo body is parented under VC with green emissive
- * (selected) vs red (unselected) — see camera-operator setCameraBoxSelected.
- * Prefer MainCamera bind target when MOVE CAMERA previews through that lens.
- */
-function resolveShimFlightVcEntity(): Entity | null {
-  if (!sceneEngine) return null
-  const VirtualCamera = generated.VirtualCamera(sceneEngine)
-  const Transform = extended.Transform(sceneEngine)
-  const Material = generated.Material(sceneEngine)
-  const MainCamera = generated.MainCamera(sceneEngine)
-
-  const main = MainCamera.getOrNull(sceneEngine.CameraEntity) as { virtualCameraEntity?: number } | null
-  const bound = main?.virtualCameraEntity
-  if (bound !== undefined && bound !== null && VirtualCamera.has(bound as Entity)) {
-    shimFlightVcEntity = bound
-    return bound as Entity
-  }
-
-  if (shimFlightVcEntity != null && VirtualCamera.has(shimFlightVcEntity as Entity)) {
-    return shimFlightVcEntity as Entity
-  }
-  shimFlightVcEntity = null
-
-  for (const [child, tr] of sceneEngine.getEntitiesWith(Transform)) {
-    const parent = tr.parent as number | undefined
-    if (parent === undefined || parent === null) continue
-    if (!VirtualCamera.has(parent as Entity)) continue
-    const mat = Material.getOrNull(child as Entity) as {
-      material?: { $case?: string; pbr?: { emissiveColor?: { r?: number; g?: number; b?: number } } }
-    } | null
-    if (!mat?.material || mat.material.$case !== 'pbr') continue
-    const em = mat.material.pbr?.emissiveColor
-    if (!em) continue
-    // SELECTED_COLOR ≈ (0.1, 1, 0.1) · UNSELECTED ≈ (1, 0.2, 0.2)
-    if ((em.g ?? 0) > 0.7 && (em.r ?? 1) < 0.45) {
-      shimFlightVcEntity = parent
-      return parent as Entity
-    }
-  }
-
-  // Single VC scene — safe fallback
-  let only: Entity | null = null
-  let count = 0
-  for (const [entity] of sceneEngine.getEntitiesWith(VirtualCamera)) {
-    only = entity as Entity
-    count++
-  }
-  if (count === 1 && only != null) {
-    shimFlightVcEntity = only as number
-    return only
-  }
-  return null
-}
-
-export function noteShimFlightTargetFromMove(): void {
-  shimFlightVcEntity = null
-  const target = resolveShimFlightVcEntity()
-  if (target != null) {
-    workerLog('log', `[sceneWorker] shim flight target VC entity=${target as number}`)
-  } else {
-    workerLog('warn', '[sceneWorker] shim flight — no selected VC found (green gizmo)')
-  }
-}
-
-export function clearShimFlightTarget(): void {
-  shimFlightVcEntity = null
-}
-
-function multiplyQuat(
-  a: { x: number; y: number; z: number; w: number },
-  b: { x: number; y: number; z: number; w: number }
-): { x: number; y: number; z: number; w: number } {
-  return {
-    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
-    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
-  }
-}
-
-/** Yaw about world +Y (same as scene Quaternion.fromAngleAxis(deg, Up) * rotation). */
-function applyYawToRotation(
-  rotation: { x: number; y: number; z: number; w: number },
-  deg: number
-): { x: number; y: number; z: number; w: number } {
-  const half = (deg * Math.PI) / 360
-  const qYaw = { x: 0, y: Math.sin(half), z: 0, w: Math.cos(half) }
-  return multiplyQuat(qYaw, rotation)
-}
-
-/** Match camera-operator rigEulerToQuaternion / worldYawPitchFromLookAt. */
-function yawPitchFromRotation(rotation: {
-  x: number
-  y: number
-  z: number
-  w: number
-}): { yawDeg: number; pitchDeg: number } {
-  // Forward = rotate (0,0,1) by quat
-  const { x, y, z, w } = rotation
-  const fx = 2 * (x * z + w * y)
-  const fy = 2 * (y * z - w * x)
-  const fz = 1 - 2 * (x * x + y * y)
-  const mag = Math.hypot(fx, fy, fz) || 1
-  const nx = fx / mag
-  const ny = fy / mag
-  const nz = fz / mag
-  const yawDeg = (Math.atan2(nx, nz) * 180) / Math.PI
-  const dist = Math.hypot(nx, nz)
-  const pitchDeg = (Math.atan2(ny, Math.max(1e-5, dist)) * 180) / Math.PI
-  return { yawDeg, pitchDeg }
-}
-
-/**
- * Match DCL `Quaternion.fromEulerDegrees(-pitchDeg, yawDeg, rollDeg)` /
- * `rigEulerToQuaternion` (Unity YawPitchRoll — NOT intrinsic XYZ).
- * Wrong order inverted pitch at yaw≈180° (default VC facing), so VIEW SHOT
- * disagreed with MOVE CAMERA when the shim wrote the pose.
- */
-function rotationFromYawPitch(yawDeg: number, pitchDeg: number, rollDeg = 0): {
-  x: number
-  y: number
-  z: number
-  w: number
-} {
-  // fromEulerDegrees(x,y,z) → fromRotationYawPitchRoll(y_rad, x_rad, z_rad)
-  const halfPitch = ((-pitchDeg) * Math.PI) / 360
-  const halfYaw = (yawDeg * Math.PI) / 360
-  const halfRoll = (rollDeg * Math.PI) / 360
-  const c1 = Math.cos(halfPitch)
-  const c2 = Math.cos(halfYaw)
-  const c3 = Math.cos(halfRoll)
-  const s1 = Math.sin(halfPitch)
-  const s2 = Math.sin(halfYaw)
-  const s3 = Math.sin(halfRoll)
-  return {
-    x: c2 * s1 * c3 + s2 * c1 * s3,
-    y: s2 * c1 * c3 - c2 * s1 * s3,
-    z: c2 * c1 * s3 - s2 * s1 * c3,
-    w: c2 * c1 * c3 + s2 * s1 * s3
-  }
-}
-
-/** MainCamera has a bound virtualCameraEntity (VIEW SHOT / select) — not MOVE CAMERA flight. */
-/**
- * MOVE CAMERA edit flight: pointer-move freeze latch (not menu lock-all).
- * May run with MainCamera bound (lens preview) — then we fly that bound VC.
- * Character-select freezes via scene latch + bound VC — no flight pump.
- */
-function isEditFlightMode(): boolean {
-  return isWorkerMoveCameraFlightLatched()
-}
-
-/**
- * Fallback when scene updateCreatorEditFlight does not run (editFlightActive cleared by
- * double-toggle) but MOVE freeze is still active — move selected / bound VirtualCamera.
- *
- * Keyboard (VirtualCameraRig): WASD · Space/Shift · Digit1/2 yaw · E/F pitch.
- */
-function applyShimVcFlightFromRelay(dtSec: number): number {
-  if (!sceneEngine || workerSnapshotPressed.size === 0) return 0
-  // Menu freezes bind VC for character select — never invent flight on scene latch.
-  if (!isWorkerMoveCameraFlightLatched()) return 0
-  const target = resolveShimFlightVcEntity()
-  if (target == null) return 0
-  const Transform = extended.Transform(sceneEngine)
-  const tr = Transform.getOrNull(target)
-  if (!tr) return 0
-  const moveSpeed = 4
-  const verticalSpeed = 3.5
-  const rotateSpeed = 80
-  let rotation = {
-    x: tr.rotation.x,
-    y: tr.rotation.y,
-    z: tr.rotation.z,
-    w: tr.rotation.w
-  }
-  const siny = 2 * (rotation.w * rotation.y + rotation.x * rotation.z)
-  const cosy = 1 - 2 * (rotation.y * rotation.y + rotation.x * rotation.x)
-  const yawRad = Math.atan2(siny, cosy)
-  const forward = { x: Math.sin(yawRad), z: Math.cos(yawRad) }
-  const right = { x: Math.cos(yawRad), z: -Math.sin(yawRad) }
-  let dx = 0
-  let dz = 0
-  let dy = 0
-  if (workerSnapshotPressed.has(InputAction.IA_FORWARD)) {
-    dx += forward.x
-    dz += forward.z
-  }
-  if (workerSnapshotPressed.has(InputAction.IA_BACKWARD)) {
-    dx -= forward.x
-    dz -= forward.z
-  }
-  if (workerSnapshotPressed.has(InputAction.IA_RIGHT)) {
-    dx += right.x
-    dz += right.z
-  }
-  if (workerSnapshotPressed.has(InputAction.IA_LEFT)) {
-    dx -= right.x
-    dz -= right.z
-  }
-  if (workerSnapshotPressed.has(InputAction.IA_JUMP) || workerSnapshotPressed.has(InputAction.IA_ACTION_5)) {
-    dy += verticalSpeed * dtSec
-  }
-  if (
-    workerSnapshotPressed.has(InputAction.IA_MODIFIER) ||
-    workerSnapshotPressed.has(InputAction.IA_WALK) ||
-    workerSnapshotPressed.has(InputAction.IA_ACTION_6)
-  ) {
-    dy -= verticalSpeed * dtSec
-  }
-
-  // Match VirtualCameraRig.updateCreatorEditFlight:
-  // ACTION_3/4 (Digit1/2) = yaw · PRIMARY/SECONDARY (E/F) = pitch
-  // (Panel legend says "E/F yaw" but scene code uses E/F for pitch.)
-  let yawDelta = 0
-  if (workerSnapshotPressed.has(InputAction.IA_ACTION_3)) yawDelta -= rotateSpeed * dtSec
-  if (workerSnapshotPressed.has(InputAction.IA_ACTION_4)) yawDelta += rotateSpeed * dtSec
-  if (yawDelta !== 0) {
-    rotation = applyYawToRotation(rotation, yawDelta)
-  }
-
-  let pitchInput = 0
-  if (workerSnapshotPressed.has(InputAction.IA_PRIMARY)) pitchInput += 1
-  if (workerSnapshotPressed.has(InputAction.IA_SECONDARY)) pitchInput -= 1
-  if (pitchInput !== 0) {
-    const aim = yawPitchFromRotation(rotation)
-    const pitchDeg = Math.max(-80, Math.min(80, aim.pitchDeg + pitchInput * rotateSpeed * dtSec))
-    rotation = rotationFromYawPitch(aim.yawDeg, pitchDeg)
-  }
-
-  if (dx === 0 && dz === 0 && dy === 0 && yawDelta === 0 && pitchInput === 0) return 0
-  Transform.createOrReplace(target, {
-    position: {
-      x: tr.position.x + dx * moveSpeed * dtSec,
-      y: tr.position.y + dy,
-      z: tr.position.z + dz * moveSpeed * dtSec
-    },
-    rotation,
-    scale: tr.scale,
-    parent: tr.parent
-  })
-  return 1
-}
-
-async function runSceneFlightPump(): Promise<void> {
-  if (!sceneEngine || sceneOnUpdatePaused) return
-  if (pointerDeliveryInFlight || queuedPointerDeliver || pointerDeliverWorkInFlight) return
-  // Only MOVE CAMERA (freeze + unbound MainCamera). Bound VC + freeze = fixed shot — no flight.
-  const editFlight = isEditFlightMode()
-  if (!editFlight && (sceneUpdateInFlight || sceneUpdatePromiseActive)) return
-  if (!editFlight) return
-
-  const now = performance.now()
-  if (lastFlightSceneUpdateAt > 0 && now - lastFlightSceneUpdateAt < SCENE_FLIGHT_TICK_MIN_MS) return
-  const dt =
-    lastFlightSceneUpdateAt > 0
-      ? Math.min((now - lastFlightSceneUpdateAt) / 1000, 0.1)
-      : SCENE_FLIGHT_TICK_MIN_MS / 1000
-  lastFlightSceneUpdateAt = now
-
-  reassertPressedKeysOnEngine()
-
-  const poseBefore = captureAllVcPoseKeys()
-
-  if (now - lastFlightPumpLogAt > 500) {
-    lastFlightPumpLogAt = now
-    const pressed = [...workerSnapshotPressed].join(',')
-    const player = sceneEngine.PlayerEntity as Entity
-    const isFwd = isSceneInputPressedOnPlayer(sceneEngine, player, InputAction.IA_FORWARD)
-    const isLeft = isSceneInputPressedOnPlayer(sceneEngine, player, InputAction.IA_LEFT)
-    workerLog(
-      'log',
-      `[sceneWorker] flight pump — editFlight pressed=[${pressed}] isPressed F/L=${isFwd}/${isLeft} dt=${dt.toFixed(3)}`
-    )
-  }
-
-  flightPumpBypassPause = true
-  sceneUpdateInFlight = true
-  sceneUpdatePromiseActive = true
-  sceneUpdateStartedAt = now
-  armSceneUpdateAbortTimer()
-  try {
-    await runSceneEngineUpdateNow(dt)
-    if (workerSnapshotPressed.size > 0) {
-      const poseAfter = captureAllVcPoseKeys()
-      if (poseBefore === poseAfter) {
-        // Scene flight system did not move VC (editFlightActive likely false after double-toggle).
-        const n = applyShimVcFlightFromRelay(dt)
-        if (n > 0 && now - lastFlightPumpLogAt > 500) {
-          workerLog(
-            'log',
-            `[sceneWorker] flight pump — shim moved selected VC e${shimFlightVcEntity} (scene flight idle)`
-          )
-        }
-      }
-    }
-    completePlayFrameColdEgress()
-    publishVcPoseLiveDuringEditFlight()
-  } catch (err) {
-    workerLog(
-      'error',
-      `[sceneWorker] scene flight pump failed — ${err instanceof Error ? err.message : String(err)}`
-    )
-  } finally {
-    clearSceneUpdateAbortTimer()
-    flightPumpBypassPause = false
-    sceneUpdateInFlight = false
-    sceneUpdatePromiseActive = false
-  }
-}
-
-/** Keyboard relay — pump scene onUpdate + engine.update while flight keys are held. */
-function scheduleSceneInputEngineTick(opts?: { flightPump?: boolean }): void {
+/** Keyboard relay — same cooperative tick path for every layer. */
+function scheduleSceneInputEngineTick(): void {
   if (!sceneEngine || pointerDeliveryInFlight) return
-  if (opts?.flightPump) {
-    void runSceneFlightPump()
-    return
-  }
   requestSceneEngineTick()
 }
+
 
 /**
  * Lightweight tween-state path — no pointer pause / preempt / full deliver batch.
@@ -3107,9 +2592,6 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
       'log',
       '[sceneWorker] virtualCamera bind + AvatarAttach create guards installed (post-onStart)'
     )
-    const g = globalThis as Record<string, unknown>
-    g.__THREEJS_NOTE_SHIM_FLIGHT_TARGET__ = () => noteShimFlightTargetFromMove()
-    g.__THREEJS_CLEAR_SHIM_FLIGHT_TARGET__ = () => clearShimFlightTarget()
   } catch (err) {
     workerLog(
       'warn',
@@ -3216,7 +2698,6 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     return
   }
   if (msg.type === 'scene-play-ready') {
-    playReadyPerformanceTier = msg.performanceTier
     portableExperienceWorker = msg.portableExperience === true
     setWorkerPortableExperienceMode(portableExperienceWorker)
     // Do NOT set playFrameTickMainDriven yet — World often notifies play-ready while main still
@@ -3250,13 +2731,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     snapBoundPeFollowAnchorIfNearPlayer()
     // Reassert level keys every play frame so pollEvents cannot drop isPressed mid-hold
     // AND so isTriggered(PET_DOWN) edges fire every tick (Neurolink drone latches).
+    // PE and primary share this path — no continuous-tick fork.
     reassertPressedKeysOnEngine()
-    // PE drone/vehicle: residual pointer session after PE UI must not starve engine systems.
-    // Dedicated pump bypasses pointer session while still avoiding mid-inject races.
-    if (portableExperienceWorker && sceneEngine && !sceneOnUpdatePaused) {
-      void runPeVehicleInputPump()
-      return
-    }
     // Do not gate on sceneTicksPaused: pointer UI hold must not freeze CameraFollow forever
     // (left the gameplay VC stuck at cameraParent spawn near world origin).
     // Still avoid overlapping a mid-batch pointer engine.update.
@@ -3444,16 +2920,9 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     return
   }
   if (msg.type === 'pump-scene-engine-tick') {
-    // flightPump only for MOVE CAMERA (freeze + unbound). Bound VC + freeze = fixed shot.
-    // PE drone: dedicated pump so residual pointer session cannot drop isTriggered edges.
-    if (isEditFlightMode()) {
-      scheduleSceneInputEngineTick({ flightPump: true })
-    } else if (portableExperienceWorker) {
-      void runPeVehicleInputPump()
-    } else {
-      reassertPressedKeysOnEngine()
-      scheduleSceneInputEngineTick()
-    }
+    // All layers: reassert keys + cooperative tick (InputHub holds / forceRepublish).
+    reassertPressedKeysOnEngine()
+    scheduleSceneInputEngineTick()
     return
   }
   if (msg.type !== 'boot') return

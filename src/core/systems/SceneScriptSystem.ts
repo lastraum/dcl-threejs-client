@@ -364,6 +364,8 @@ export class SceneScriptSystem {
   private pointerDeliverFailWatchdog: ReturnType<typeof setTimeout> | null = null
   /** Click flush pending — cleared on pointer-deliver-done. */
   private pointerAwaitingWorkerApply = false
+  /** Peak mount size during current pointer delivery — refuse shrink thrash (OPEN→CLOSED). */
+  private pointerOpenMountFloor = 0
   /** Mount set commit deferred — projection UiTransform lagging worker uiEntities. */
   private projectionLagPendingUi = false
   /** performance.now when projection lag first became pending (0 = not lagging). */
@@ -1359,11 +1361,52 @@ export class SceneScriptSystem {
     this.clientPoseProvider = provider
   }
 
+  /**
+   * Phase D — when true, host skips reserved Player/Camera feet inject (layer_drive free-flight).
+   * Set by World from HostPoseMode; PE free-flight also sets via player-frame freeze path.
+   */
+  private hostLayerDrivePoses = false
+  /**
+   * PE free-flight freeze is mirrored onto primary PlayerEntity. Primary worker player-frame
+   * with imHas=false must NOT delete it (that fought PE freeze every frame → WASD jitter).
+   */
+  private retainPeMirroredInputModifier = false
+
+  /**
+   * World / claim merger: layer owns Player/Camera Transform (PE drone free-flight).
+   */
+  setHostLayerDrivePoses(drive: boolean): void {
+    this.hostLayerDrivePoses = drive
+    this.projection.setAllowWorkerReservedTransforms(drive)
+  }
+
+  /** World claim applier: keep PE freeze on primary while PE free-flight is active. */
+  setRetainPeMirroredInputModifier(retain: boolean): void {
+    this.retainPeMirroredInputModifier = retain
+  }
+
+  /**
+   * Scene free-flight or host layer_drive: systems own Player/Camera Transform.
+   * Host must not pin PE to avatar feet, and must accept worker PE Transform CRDT.
+   */
+  private sceneOwnsReservedPoses(): boolean {
+    if (this.hostLayerDrivePoses) return true
+    try {
+      const loc = readLocomotionFromComponents(this.readComponents, this.view.PlayerEntity)
+      // Only skip feet inject when playerEditFlightLiveLane (set from freeze) — not every disableAll.
+      return this.playerEditFlightLiveLane && !canLocomote(loc)
+    } catch {
+      return false
+    }
+  }
+
   /** EngineInfo + poses + RealmInfo before a renderer→worker CRDT deliver. */
   private prepareReservedRoundTrip(player: EntityPose, camera: EntityPose): void {
     this.engineFrame++
     this.reserved.setEngineCounters(this.engineFrame, this.crdtTick)
-    this.reserved.prepareRendererRoundTrip(player, camera)
+    const skipPoses = this.sceneOwnsReservedPoses()
+    this.projection.setAllowWorkerReservedTransforms(skipPoses)
+    this.reserved.prepareRendererRoundTrip(player, camera, { skipPoses })
   }
 
   /** Push player/camera into the mirror before the worker calls crdtGetState at boot. */
@@ -1723,12 +1766,13 @@ export class SceneScriptSystem {
         return
       }
       const cleaned = msg.message.replace(/^\[(?:log|info|warn|error|debug)\]\s*/, '')
-      // Load-gate / PE free-flight path — always mirror to DevTools (Help panel may be off).
+      // Load-gate / PE free-flight / pointer UI path — always mirror to DevTools.
       const loadGate =
-        /InputModifier after|InputModifier final|load-gate clear|GltfContainerLoadingState inject|gltf LWW|pe-input pump|sceneOwnsPose|scene-input-snapshot pe=1/i.test(
+        /InputModifier after|InputModifier final|load-gate clear|GltfContainerLoadingState inject|gltf LWW|pe-input pump|sceneOwnsPose|scene-input-snapshot pe=1|pointer inject|pointer DOWN|pointer UP|pointer phase-4|pointer ui snapshot|pointer ui egress|pointer deliver|inject-pointer-click batch|sceneUi inject complete/i.test(
           cleaned
         )
-      if (loadGate) {
+      // Always mirror pointer/UI worker diagnostics — alsoConsole alone is gated by Help panel.
+      if (loadGate || /\[sceneWorker\].*pointer|phase-4|ui snapshot|ui egress|inject-pointer/i.test(cleaned)) {
         console.info(`[sceneWorker] ${cleaned}`)
       }
       clientDebugLog.log('scene', cleaned, {
@@ -1869,7 +1913,18 @@ export class SceneScriptSystem {
       return
     }
     if (msg.type === 'get-user-data') {
+      // Real session profile only — no guest fallback (PE scenes reject empty/fake data).
+      // PE must wire setCommsHandler before system.start() (onBeforeSceneStart).
       const body = (await this.commsHandler?.getUserData()) ?? {}
+      if (
+        !body ||
+        typeof body !== 'object' ||
+        (body as { data?: unknown }).data == null
+      ) {
+        console.error(
+          '[scene] get-user-data missing data — PE/scene will fail; check wirePeIdentityAndComms before main()'
+        )
+      }
       this.worker?.postMessage({
         type: 'get-user-data-response',
         id: msg.id,
@@ -2198,21 +2253,56 @@ export class SceneScriptSystem {
           this.foldProjectionChanges()
         }
         if (latestUiMountSnapshot?.length) {
-          projectionDeletes.length = 0
-          this.projection.changes.length = 0
-          this.sceneUiBridge?.ingestMountSnapshot(latestUiMountSnapshot)
-          this.projection.applyWorkerUiMountSnapshot(
-            latestUiMountSnapshot.map((row) => ({
-              entity: row.entity as Entity,
-              componentId: row.componentId,
-              value: row.value
-            }))
-          )
-          batchTouchesUi = true
-          this.foldProjectionChanges()
+          const ents = latestUiEntities?.length ?? extractSnapshotMountEntityIds(latestUiMountSnapshot).length
+          // Refuse CLOSED thrash over OPEN in same pointer delivery (1245→1203 flash).
+          if (
+            this.pointerAwaitingWorkerApply &&
+            this.pointerOpenMountFloor > 0 &&
+            ents > 0 &&
+            ents < this.pointerOpenMountFloor
+          ) {
+            console.info(
+              `[scene-ui] pointer mount snapshot IGNORED shrink ${this.pointerOpenMountFloor}→${ents}` +
+                ` rows=${latestUiMountSnapshot.length} pe=${this.uiRootId === 'pe-ui-root' ? 1 : 0}`
+            )
+          } else {
+            projectionDeletes.length = 0
+            this.projection.changes.length = 0
+            this.sceneUiBridge?.ingestMountSnapshot(latestUiMountSnapshot)
+            this.projection.applyWorkerUiMountSnapshot(
+              latestUiMountSnapshot.map((row) => ({
+                entity: row.entity as Entity,
+                componentId: row.componentId,
+                value: row.value
+              }))
+            )
+            batchTouchesUi = true
+            this.foldProjectionChanges()
+            if (this.pointerAwaitingWorkerApply) {
+              if (ents > this.pointerOpenMountFloor) this.pointerOpenMountFloor = ents
+              this.sceneUiBridge?.invalidatePaintCache()
+              // PE menus: always force paint after phase-4 (visual-key short-circuit hid opens).
+              if (this.uiRootId === 'pe-ui-root') {
+                this.sceneUiBridge?.setVisible(true)
+                this.sceneUiBridge?.forceRepaint()
+              }
+              console.info(
+                `[scene-ui] pointer mount snapshot rows=${latestUiMountSnapshot.length}` +
+                  ` entities=${ents}` +
+                  ` pe=${this.uiRootId === 'pe-ui-root' ? 1 : 0}` +
+                  ` floor=${this.pointerOpenMountFloor}`
+              )
+            }
+          }
         } else if (hasUiMountSnapshot) {
           projectionDeletes.length = 0
           batchTouchesUi = true
+          if (this.pointerAwaitingWorkerApply) {
+            console.info(
+              `[scene-ui] pointer mount snapshot EMPTY rows=0 entities=${latestUiEntities?.length ?? 0}` +
+                ` pe=${this.uiRootId === 'pe-ui-root' ? 1 : 0}`
+            )
+          }
         }
       } finally {
         if (pointerUiMountBatch) this.projection.endForceWorkerUiPuts()
@@ -2668,7 +2758,7 @@ export class SceneScriptSystem {
   }
 
   private lastPlayerFrameId = 0
-  /** MOVE CAMERA — apply vc-pose-live without MainCamera bind while locomotion is frozen. */
+  /** Free-flight live lane — apply vc-pose-live while InputModifier freezes locomotion. */
   private playerEditFlightLiveLane = false
   private lastPlayerFrameMainCameraKey = ''
   private lastVcBindHydrateLogKey = ''
@@ -2693,10 +2783,11 @@ export class SceneScriptSystem {
       : false
     if (msg.inputModifierHas && msg.inputModifier !== undefined) {
       InputModifier.createOrReplace(PlayerEntity, msg.inputModifier as never)
-    } else {
+    } else if (!this.retainPeMirroredInputModifier) {
       // Facade deleteFrom → projection.deleteRenderer (not the unused ECS engine store).
       InputModifier.deleteFrom(PlayerEntity)
     }
+    // else: PE free-flight freeze mirrored on primary — ignore empty primary player-frame clear.
     MainCamera.createOrReplace(CameraEntity, (msg.mainCamera ?? {}) as never)
     this.foldProjectionChanges()
     const mainCam = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
@@ -2712,9 +2803,9 @@ export class SceneScriptSystem {
     }
     const vcUnbound =
       mainCam?.virtualCameraEntity === undefined || mainCam?.virtualCameraEntity === null
-    // MOVE CAMERA: frozen locomotion — accept vc-pose-live whether lens is bound or not.
-    // (Bound = preview through the VC being flown; unbound = free edit flight.)
+    // Free-flight (any layer): frozen locomotion → accept vc-pose-live; scene owns reserved transforms.
     this.playerEditFlightLiveLane = !canLocomote(locomotion)
+    this.projection.setAllowWorkerReservedTransforms(!canLocomote(locomotion))
     if (vcUnbound && canLocomote(locomotion)) {
       this.projection.clearVcLiveTransformForUnbind()
       this.vcBindHydratePullPending = false
@@ -3398,7 +3489,7 @@ export class SceneScriptSystem {
 
   /**
    * Hub high-rate pump while keys held / PE frozen.
-   * PE and primary both post pump-scene-engine-tick (worker routes PE → pe-input).
+   * PE and primary both post pump-scene-engine-tick → same reassert + requestSceneEngineTick.
    */
   private pumpSceneEngineTick(): void {
     if (!this.running || !this.worker) return
@@ -3579,6 +3670,7 @@ export class SceneScriptSystem {
         level: stashedBytes ? 'success' : 'warn'
       })
       this.pointerAwaitingWorkerApply = true
+      this.pointerOpenMountFloor = 0
       this.deliverPointerToWorker()
     } finally {
       this.pointerFlushInFlight = false
@@ -3646,7 +3738,9 @@ export class SceneScriptSystem {
   }
 
   private onPointerDeliverDone(): void {
-    this.logPointer('pointer-deliver-done — worker finished pointer tick + onUpdate CRDT flush')
+    const line = 'pointer-deliver-done — worker finished pointer tick + onUpdate CRDT flush'
+    this.logPointer(line)
+    console.info('[pointer]', line)
     this.videoPlayerBridge?.notifyUserPointerDelivered()
     void this.finishPointerDeliveryAfterWorkerAck().catch((err) => {
       console.error(
@@ -3708,6 +3802,7 @@ export class SceneScriptSystem {
     if (!this.pointerAwaitingWorkerApply && !this.pointerDeliverAwaitingAck) return
     clientDebugLog.log('pointer', `delivery complete — ${source}`, { alsoConsole: false })
     this.pointerAwaitingWorkerApply = false
+    this.pointerOpenMountFloor = 0
     this.pointerOutboundDeferBuffer = []
     this.clearPointerDeliverWatchdog()
     if (!opts?.afterOutboundBatch) {

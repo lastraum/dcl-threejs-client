@@ -92,10 +92,20 @@ export class ReservedEntitiesSync {
     this.writeTransform(this.reserved.camera, pose)
   }
 
-  /** Apply latest client poses immediately before a renderer CRDT round-trip. */
-  prepareRendererRoundTrip(player: EntityPose, camera: EntityPose): void {
-    this.syncPlayer(player)
-    this.syncCamera(camera)
+  /**
+   * Apply latest client poses immediately before a renderer CRDT round-trip.
+   * `skipPoses`: scene free-flight owns Player/Camera Transform — only identity /
+   * RealmInfo / EngineInfo (do not pin PE/drone to avatar feet every frame).
+   */
+  prepareRendererRoundTrip(
+    player: EntityPose,
+    camera: EntityPose,
+    opts?: { skipPoses?: boolean }
+  ): void {
+    if (!opts?.skipPoses) {
+      this.syncPlayer(player)
+      this.syncCamera(camera)
+    }
     if (this.playerIdentity) this.applyPlayerIdentity()
     if (this.realmInfo) this.applyRealmInfo()
     this.applyEngineInfo()

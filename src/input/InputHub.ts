@@ -164,7 +164,7 @@ export class InputHub {
 
   /**
    * Per-frame: reconcile hardware, clear avatar move keys if frozen, broadcast snapshots,
-   * pump workers that need continuous ticks.
+   * pump workers while keys held / forceRepublish (PE freeze).
    */
   sync(tickNumber: number): void {
     if (!this.opts) return

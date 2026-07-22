@@ -71,18 +71,22 @@ export function entityUiVisualPaintKey(
   } | null,
   pointerKey: string
 ): string {
-  const o = transform.opacity ?? 1
+  // Quantize opacity — continuous PE fades must not thrash full paint every float tick.
+  const o = Math.round((transform.opacity ?? 1) * 20) / 20
   const z = transform.zIndex ?? 0
   const pf = transform.pointerFilter ?? 0
   const d = transform.display ?? 0
   let t = ''
   if (text?.value != null) {
-    t = `t${text.value.length}:${text.value.slice(0, 48)}:${text.fontSize ?? 10}:${text.textWrap ?? 0}:${text.color?.r ?? 1},${text.color?.g ?? 1},${text.color?.b ?? 1},${text.color?.a ?? 1}`
+    const tc = text.color
+    const ta = tc ? Math.round((tc.a ?? 1) * 20) / 20 : 1
+    t = `t${text.value.length}:${text.value.slice(0, 48)}:${text.fontSize ?? 10}:${text.textWrap ?? 0}:${tc?.r ?? 1},${tc?.g ?? 1},${tc?.b ?? 1},${ta}`
   }
   let b = ''
   if (bg) {
     const c = bg.color
-    b = c ? `bg${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 1}` : 'bg'
+    const ba = c ? Math.round((c.a ?? 1) * 20) / 20 : 1
+    b = c ? `bg${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${ba}` : 'bg'
     if (bg.texture) b += ':tex'
     if (bg.textureMode != null) b += `:tm${bg.textureMode}`
     // Atlas sprite rect — lobby buttons share one sheet and differ only by uvs.

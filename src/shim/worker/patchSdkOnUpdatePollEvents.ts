@@ -1,12 +1,11 @@
-import { isWorkerMoveCameraFlightLatched } from './workerPlayerFrameEgress'
-
 /**
  * SDK default exports.onUpdate ends with pollEvents(sendBatch). After an inject-only UI pointer
- * click, the next cooperative onUpdate replays that batch and undoes handler egress (MOVE CAMERA
- * toggle, InputModifier freeze). Skip pollEvents once — engine.update already ran in the pointer tick.
+ * click, the next cooperative onUpdate can replay that batch and undo handler egress.
+ * One-shot defer only — no freeze-latch / MOVE CAMERA special case.
  *
  * Phase 2 — cooperative tick runs engine.update; onUpdate runs pollEvents only via SKIP_ENGINE_UPDATE.
  */
+
 export const DEFER_SDK_POLL_EVENTS_KEY = '__THREEJS_DEFER_SDK_POLL_EVENTS__'
 export const DEFER_SDK_POLL_EVENTS_LATCH_KEY = '__THREEJS_DEFER_SDK_POLL_EVENTS_LATCH__'
 export const SKIP_ENGINE_UPDATE_KEY = '__THREEJS_SKIP_ENGINE_UPDATE_THIS_FRAME__'
@@ -64,9 +63,8 @@ export function patchSdkOnUpdatePollEventsBoundary(code: string): { code: string
 
 export function installSdkPollEventsLatchHook(): void {
   const g = globalThis as Record<string, unknown>
-  // Only MOVE CAMERA — scene freezes (Flagtag lobby) must keep pollEvents running
-  // so join / CUSTOM_EVENT / UI handlers still process.
-  g[DEFER_SDK_POLL_EVENTS_LATCH_KEY] = () => isWorkerMoveCameraFlightLatched()
+  // No continuous freeze latch — only one-shot inject defer (DEFER_SDK_POLL_EVENTS_KEY).
+  g[DEFER_SDK_POLL_EVENTS_LATCH_KEY] = () => false
 }
 
 export function markDeferSdkPollEventsAfterInjectUiClick(): void {
@@ -84,11 +82,8 @@ export function isInjectOnlySdkPollEventsDeferred(): boolean {
 }
 
 /**
- * True while MOVE CAMERA freeze latch is active or after inject-only UI click (one onUpdate).
- * Scene lock-all freezes (Flagtag lobby) do NOT defer pollEvents.
- * Do NOT use this to gate react-ecs.
+ * True only after inject-only UI click (one onUpdate). Freeze does not defer pollEvents.
  */
 export function isSdkPollEventsDeferred(): boolean {
-  if (isWorkerMoveCameraFlightLatched()) return true
   return isInjectOnlySdkPollEventsDeferred()
 }

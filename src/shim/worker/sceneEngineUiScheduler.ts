@@ -93,12 +93,28 @@ export function isCooperativeReactEcsHeld(): boolean {
   return performance.now() < cooperativeReactEcsHoldUntilMs
 }
 
+/** Ms until wall-clock react-ecs hold expires (0 if not held). */
+export function cooperativeReactEcsHoldRemainingMs(): number {
+  return Math.max(0, cooperativeReactEcsHoldUntilMs - performance.now())
+}
+
+/**
+ * Run fn after the post-click react-ecs hold ends (+ one frame slack).
+ * Platform: phase-4 OPEN paints first; deferred work drains PET_UP etc. after main has the open mount.
+ */
+export function scheduleAfterCooperativeReactEcsHold(fn: () => void): void {
+  const delay = cooperativeReactEcsHoldRemainingMs() + 16
+  setTimeout(fn, delay)
+}
+
 /**
  * Play-mode react-ecs gate.
  *
  * - Pointer inject / flush: always reconcile (open menus, stabilize fingerprint).
  * - Pointer non-ui phase: suppress (phase-4 snapshot already taken; re-reconcile collapses UI).
  * - Pointer session (non-interactive): suppress (pointer batch owns UI).
+ * - Post-click hold + PE continuous eng.update: suppress (PE layer-tick never enters
+ *   cooperative depth — without this, menus open then flash closed every ~48ms).
  * - Cooperative: at most every COOPERATIVE_REACT_ECS_MIN_MS (systems still run).
  *
  * Do NOT gate on freeze latch or inject-only pollEvents DEFER.
@@ -107,17 +123,17 @@ export function shouldDeferCooperativeReactEcs(): boolean {
   // isPointerInteractiveTickActive is false during non-ui phase — fall through to session suppress.
   if (isPointerInteractiveTickActive()) return false
   if (shouldSuppressPointerSessionReactEcs()) return true
+  const now = performance.now()
   // Wall-clock hold after PE/sceneUi phase-4 — suppress even when not in cooperative depth
-  // (PE vehicle pump uses runSceneEngineUpdateNow without enterCooperativeSchedulerTick).
-  if (performance.now() < cooperativeReactEcsHoldUntilMs) return true
-  if (cooperativeSchedulerTickDepth > 0) {
-    if (cooperativeReactEcsHoldTicks > 0) {
-      cooperativeReactEcsHoldTicks--
-      return true
-    }
-    const now = performance.now()
-    if (now - lastCooperativeReactEcsAt < COOPERATIVE_REACT_ECS_MIN_MS) return true
+  // (PE vehicle/layer pump uses runSceneEngineUpdateNow without enterCooperativeSchedulerTick).
+  if (now < cooperativeReactEcsHoldUntilMs) return true
+  if (cooperativeSchedulerTickDepth > 0 && cooperativeReactEcsHoldTicks > 0) {
+    cooperativeReactEcsHoldTicks--
+    return true
   }
+  // Always throttle react-ecs in play (cooperative depth OR PE continuous eng.update).
+  // Systems keep running; only @dcl/react-ecs reconcile is gated.
+  if (now - lastCooperativeReactEcsAt < COOPERATIVE_REACT_ECS_MIN_MS) return true
   return false
 }
 
@@ -188,13 +204,14 @@ export function installEngineSystemLoopPartition(): void {
       safeRunSystem(system, dt, runOne)
     }
     const suppressReact = shouldDeferCooperativeReactEcs()
-    if (suppressReact && cooperativeSchedulerTickDepth > 0 && !isPointerInteractiveTickActive()) {
+    if (suppressReact && !isPointerInteractiveTickActive()) {
       cooperativeReactEcsSkippedThisTick = true
     }
     if (scale && !suppressReact) safeRunSystem(scale, dt, runOne)
     if (react && !suppressReact) {
       safeRunSystem(react, dt, runOne)
-      if (cooperativeSchedulerTickDepth > 0) lastCooperativeReactEcsAt = performance.now()
+      // Always stamp — PE continuous eng.update has cooperative depth 0 but must throttle too.
+      lastCooperativeReactEcsAt = performance.now()
     }
   }
 }
@@ -259,7 +276,9 @@ export function hasWorkerReactEcsSync(_engine: IEngine): boolean {
 
 function colorKey(c: { r?: number; g?: number; b?: number; a?: number } | undefined): string {
   if (!c) return ''
-  return `${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 0}`
+  // Quantize alpha — continuous PE fades must not flip fingerprint every float tick.
+  const a = Math.round((c.a ?? 1) * 20) / 20
+  return `${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${a}`
 }
 
 function pointerEventsKey(
@@ -301,8 +320,11 @@ export function computeWorkerUiFingerprint(engine: IEngine): string {
       margin?: { top?: number; right?: number; bottom?: number; left?: number }
       padding?: { top?: number; right?: number; bottom?: number; left?: number }
     }
+    // Quantize opacity — PE splash fades o every frame; full-float fingerprint forced
+    // continuous mount snapshots → HUD paint thrash (flash). 0.05 steps still animates.
+    const op = Math.round((tr.opacity ?? 1) * 20) / 20
     let line =
-      `${entity}:d${normalizeYGDisplay(tr.display)}:o${tr.opacity ?? 1}:p${tr.parent ?? 0}` +
+      `${entity}:d${normalizeYGDisplay(tr.display)}:o${op}:p${tr.parent ?? 0}` +
       `:pf${normalizePointerFilterMode(tr.pointerFilter)}` +
       `:w${tr.width ?? 0}:${tr.widthUnit ?? 0}:h${tr.height ?? 0}:${tr.heightUnit ?? 0}` +
       `:fd${tr.flexDirection ?? 0}:j${tr.justifyContent ?? 0}:ai${tr.alignItems ?? 0}` +

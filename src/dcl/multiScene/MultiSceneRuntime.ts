@@ -1,4 +1,5 @@
 import type { EntityPose } from '../../bridge/ReservedEntitiesSync'
+import type { SceneScriptSystem } from '../../core/systems/SceneScriptSystem'
 import type { AssetCache } from '../../rendering/AssetCache'
 import type { SceneHost } from '../../rendering/SceneHost'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
@@ -7,6 +8,11 @@ import type { ResolvedScene } from '../content/types'
 import { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import { PortableExperienceManager } from './PortableExperienceManager'
 import type { PortableExperiencesPolicy } from './resolvePortableExperiences'
+import {
+  PRIMARY_LAYER_ID,
+  SceneLayerRegistry,
+  type SceneLayer
+} from './SceneLayerRegistry'
 import {
   SecondaryLiveManager,
   type PromoteHandoffPayload
@@ -20,13 +26,16 @@ export type MultiSceneRuntimeOptions = {
 
 /**
  * World-attached multi-scene runtime: secondary live workers + PE tick hooks.
- * Primary remains World.sceneScript (not managed here) until promote handoff.
+ * Primary is registered as a layer (World.sceneScript) for unified host loops.
  *
  * Priority: primary (World) > PE > secondary > tertiary (AOI, no workers).
+ * @see docs/SCENE_LAYERS_PLAN.md
  */
 export class MultiSceneRuntime {
   readonly arbiter = new PrivilegedIntentArbiter()
   readonly pe: PortableExperienceManager
+  /** Phase A — all running scene systems (primary + PE + secondary). */
+  readonly layers = new SceneLayerRegistry()
 
   private secondary: SecondaryLiveManager | null = null
   private primaryScene: ResolvedScene | null = null
@@ -39,6 +48,24 @@ export class MultiSceneRuntime {
   constructor(opts: MultiSceneRuntimeOptions) {
     this.pe = opts.peManager
     this.onLiveSecondaryIds = opts.onLiveSecondaryIds ?? null
+  }
+
+  /** Register World primary SceneScriptSystem as layer `primary`. */
+  registerPrimary(system: SceneScriptSystem): void {
+    this.layers.register({
+      id: PRIMARY_LAYER_ID,
+      kind: 'primary',
+      system,
+      physOffset: 0
+    })
+  }
+
+  unregisterPrimary(): void {
+    this.layers.unregister(PRIMARY_LAYER_ID)
+  }
+
+  listLayers(): SceneLayer[] {
+    return this.layers.list()
   }
 
   setOnLiveSecondaryIds(fn: ((ids: ReadonlySet<string>) => void) | null): void {
@@ -63,6 +90,7 @@ export class MultiSceneRuntime {
 
     this.secondary?.dispose()
     this.secondary = new SecondaryLiveManager()
+    this.secondary.setLayerRegistry(this.layers)
     this.secondary.bind({
       primaryScene: opts.primaryScene,
       cache: opts.cache,
@@ -73,6 +101,7 @@ export class MultiSceneRuntime {
       onLiveIdsChange: (ids) => this.onLiveSecondaryIds?.(ids)
     })
 
+    this.pe.setLayerRegistry(this.layers)
     void this.pe.attachWorld({
       primaryScene: opts.primaryScene,
       cache: opts.cache,
@@ -99,6 +128,10 @@ export class MultiSceneRuntime {
     this.secondary?.dispose()
     this.secondary = null
     this.pe.detachWorld()
+    // Keep primary layer if World still owns sceneScript — only clear PE/secondary entries.
+    for (const layer of this.layers.list()) {
+      if (layer.kind !== 'primary') this.layers.unregister(layer.id)
+    }
     this.arbiter.clear()
     this.primaryScene = null
     this.cache = null

@@ -129,7 +129,12 @@ export function eventLocationLabel(e: DclEvent): string {
 }
 
 export function eventCreatorFaceUrl(e: DclEvent): string | null {
-  return resolveFaceSnapshotUrl(e.user)
+  const v = typeof e.user === 'string' ? e.user.trim() : ''
+  // `user` is the organizer's WALLET — an address is not a snapshot hash/URL,
+  // so building a profile-images entity URL from it 404s. Callers resolve
+  // addresses asynchronously via fetchProfileFaceUrl instead.
+  if (!v || /^0x[a-f0-9]{40}$/i.test(v)) return null
+  return resolveFaceSnapshotUrl(v)
 }
 
 export function eventShareUrl(e: DclEvent): string {

@@ -17,6 +17,8 @@ export type CommunitiesBrowseViewOptions = {
   getUserAddress?: () => string | null
   /** Open community text channel (dock / in-world chat). */
   onOpenChat?: (community: CommunityDetail) => void
+  /** Reports the browse total after each load (embedded overlay title count). */
+  onBrowseCount?: (total: number) => void
 }
 
 const SEARCH_DEBOUNCE_MS = 280
@@ -70,6 +72,7 @@ export class CommunitiesBrowseView {
   private readonly searchInput: HTMLInputElement
   private readonly communityModal: CommunityModal
   private readonly getAuthIdentity?: () => AuthIdentity | null
+  private readonly onBrowseCount?: (total: number) => void
   private communitiesById = new Map<string, CommunityListRow>()
   private mineById = new Map<string, CommunityListRow>()
   private selectedMineId: string | null = null
@@ -82,6 +85,7 @@ export class CommunitiesBrowseView {
 
   constructor(opts: CommunitiesBrowseViewOptions = {}) {
     this.getAuthIdentity = opts.getAuthIdentity
+    this.onBrowseCount = opts.onBrowseCount
     this.communityModal = new CommunityModal({
       getAuthIdentity: opts.getAuthIdentity,
       getUserAddress: opts.getUserAddress,
@@ -217,6 +221,7 @@ export class CommunitiesBrowseView {
       if (this.disposed || gen !== this.loadGen) return
       this.statusEl.hidden = true
       this.countEl.textContent = `Browse Communities (${total})`
+      this.onBrowseCount?.(total)
 
       if (communities.length === 0) {
         this.emptyEl.hidden = false

@@ -138,6 +138,28 @@ export function sortWearablesByRarity<T extends { name: string; rarity: string }
   })
 }
 
+/**
+ * Sorted copy grouped alphabetically by collection or creator name; items still
+ * missing that metadata (annotation pending or failed) sort last. Ties fall back
+ * to item name A–Z.
+ */
+export function sortWearablesByGroup<T extends { name: string }>(
+  items: readonly T[],
+  key: (item: T) => string | undefined
+): T[] {
+  return [...items].sort((a, b) => {
+    const ga = key(a)
+    const gb = key(b)
+    if (ga !== gb) {
+      if (!ga) return 1
+      if (!gb) return -1
+      const d = ga.localeCompare(gb, undefined, { sensitivity: 'base' })
+      if (d !== 0) return d
+    }
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+  })
+}
+
 export function wearableRarityLabel(rarity: string): string {
   return rarity.trim().toUpperCase() || 'COMMON'
 }

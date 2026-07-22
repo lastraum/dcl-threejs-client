@@ -13,6 +13,7 @@ import {
   fetchDclExplorerLiveItems,
   fetchDclGenesisPlaces,
   fetchDclWorldsWithNameFallback,
+  customServerFavoriteAsPlacesWorld,
   formatOwnerShort,
   genesisPlaceJumpRoute,
   matchesPlaceSearch,
@@ -26,6 +27,7 @@ import {
   type DclPlacesWorld,
   type ExplorerSortMode
 } from '../../../social/dclPlaces'
+import { listCustomWorldFavorites } from '../../../network/worlds/customWorldFavorites'
 
 type PlacesSubTab = 'explore' | 'recent' | 'favorites'
 type CardLayout = 'grid'
@@ -255,10 +257,8 @@ export class PlacesView {
       if (!btn) return
       const tab = btn.dataset.subtab as PlacesSubTab | undefined
       if (!tab) return
-      if (tab === 'favorites' && !this.getAuthIdentity?.()) {
-        this.setStatus('Connect your wallet to see favourites', 'error')
-        return
-      }
+      // Favourites: wallet profile favourites + local custom-server favourites.
+      // Allow guests to open the tab so custom-server entries remain visible.
       this.setSubTab(tab)
     })
 
@@ -313,7 +313,7 @@ export class PlacesView {
     }
     const showCats = tab === 'explore'
     this.catBar.hidden = !showCats
-    this.searchInput.disabled = tab === 'favorites' && !this.getAuthIdentity?.()
+    this.searchInput.disabled = false
     void this.reloadAll()
   }
 
@@ -414,7 +414,20 @@ export class PlacesView {
       if (this.disposed || gen !== this.loadGen) return
 
       this.genesisPlaces = places
-      this.worlds = worldsList
+      // Merge localStorage custom-server favourites with Places API favourites.
+      const localCustom =
+        onlyFavorites
+          ? listCustomWorldFavorites().map((f) =>
+              customServerFavoriteAsPlacesWorld({
+                customServer: f.customServer,
+                worldName: f.worldName,
+                title: f.title
+              })
+            )
+          : []
+      this.worlds = onlyFavorites
+        ? mergeUniqueById(localCustom, worldsList)
+        : worldsList
       this.placesOffset = places.length
       this.worldsOffset = worldsList.length
       this.placesHasMore = places.length >= PLACES_PAGE_SIZE
@@ -424,9 +437,25 @@ export class PlacesView {
     } catch (e) {
       if (this.disposed || gen !== this.loadGen) return
       this.genesisPlaces = []
-      this.worlds = []
+      // Still show local custom favourites if Places API fails while on favourites.
+      this.worlds =
+        this.subTab === 'favorites'
+          ? listCustomWorldFavorites().map((f) =>
+              customServerFavoriteAsPlacesWorld({
+                customServer: f.customServer,
+                worldName: f.worldName,
+                title: f.title
+              })
+            )
+          : []
       this.error = e instanceof Error ? e.message : String(e)
-      this.setStatus(this.error, 'error')
+      // Soft-fail: local favourites alone are enough to clear the hard error banner.
+      if (this.subTab === 'favorites' && this.worlds.length > 0) {
+        this.error = null
+        this.setStatus(null)
+      } else {
+        this.setStatus(this.error, 'error')
+      }
       this.renderGrid()
     } finally {
       if (gen === this.loadGen) this.loading = false
@@ -528,7 +557,8 @@ export class PlacesView {
       emptyEl.hidden = this.loading || Boolean(this.error)
       if (!this.loading && !this.error) {
         if (this.subTab === 'favorites') {
-          emptyEl.textContent = 'No favourites yet. Heart places in-world to see them here.'
+          emptyEl.textContent =
+            'No favourites yet. Heart places in-world, or open a custom server world (?customServer=&worldName=) to save it here.'
         } else if (this.searchQuery.trim()) {
           emptyEl.textContent = 'No scenes or worlds match your search.'
         } else {

@@ -2,7 +2,13 @@ export type ContentFile = { file: string; hash: string }
 
 export type SceneSource =
   | { kind: 'blank' }
-  | { kind: 'world'; worldName: string; entityId: string }
+  | {
+      kind: 'world'
+      worldName: string
+      entityId: string
+      /** Custom worlds content server origin when not using the official host. */
+      customServer?: string
+    }
   | { kind: 'coords'; x: number; y: number }
   | { kind: 'local'; projectId: string }
   /** Smart wearable / portable experience scene (not parcel-bound). */

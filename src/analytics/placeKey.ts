@@ -21,9 +21,10 @@ export function placeFieldsFromRoute(target: RouteTarget | null | undefined): Pl
   }
   if (target.kind === 'world') {
     const world_name = target.worldName.trim().toLowerCase()
+    const server = target.customServer?.trim().toLowerCase()
     return {
       place_kind: 'world',
-      place_key: `world:${world_name}`,
+      place_key: server ? `world:${server}:${world_name}` : `world:${world_name}`,
       world_name
     }
   }

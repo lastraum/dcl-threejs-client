@@ -1,3 +1,5 @@
+import { worldsAboutUrl, worldsContentBase } from '../worlds/worldsServerConfig'
+
 export type RealmAbout = {
   realmName: string
   networkId: number
@@ -10,7 +12,6 @@ export type RealmAbout = {
 
 /** Content/lambdas peer (CDN) — not the realm control plane. */
 const DEFAULT_CONTENT_PEER = 'https://peer.decentraland.org'
-const WORLDS = 'https://worlds-content-server.decentraland.org'
 /**
  * Genesis main realm control plane (Explorer / EA).
  * This is the correct `/about` for comms.adapter + realm metadata.
@@ -80,10 +81,18 @@ export async function fetchCatalystRealmAbout(catalystBase = DEFAULT_CONTENT_PEE
   return about
 }
 
-export async function fetchWorldRealmAbout(worldName: string): Promise<RealmAbout> {
-  const res = await fetch(`${WORLDS}/world/${encodeURIComponent(worldName)}/about`, {
+/**
+ * World realm `/about`. Pass `customServer` (origin) for self-hosted worlds content servers.
+ * Default = official / env worlds content server.
+ */
+export async function fetchWorldRealmAbout(
+  worldName: string,
+  customServer?: string | null
+): Promise<RealmAbout> {
+  const base = worldsContentBase(customServer)
+  const res = await fetch(worldsAboutUrl(base, worldName), {
     headers: { Accept: 'application/json' }
   })
-  if (!res.ok) throw new Error(`World about failed (${res.status})`)
+  if (!res.ok) throw new Error(`World about failed (${res.status}) from ${base}`)
   return parseAbout((await res.json()) as AboutJson, worldName.toLowerCase())
 }

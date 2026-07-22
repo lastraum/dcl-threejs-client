@@ -9,14 +9,12 @@ import { resolvePortableExperiencesPolicy } from '../multiScene/resolvePortableE
 import { resolveSceneEnvironment } from '../landscape/resolveLandscapeEnvironment'
 import { catalystContentAssetUrl, catalystRootFromContentUrl, fetchSceneEntityByPointer } from '../../network/catalyst/CatalystClient'
 import { fetchCatalystRealmAbout, fetchWorldRealmAbout } from '../../network/catalyst/realmAbout'
-
-const WORLDS = 'https://worlds-content-server.decentraland.org'
-
-function entityIdFromUrn(urn: string): string | null {
-  const prefix = 'urn:decentraland:entity:'
-  if (!urn.startsWith(prefix)) return null
-  return urn.slice(prefix.length).split(/[?&#]/)[0]?.trim() || null
-}
+import {
+  contentBaseFromScenesUrn,
+  entityIdFromScenesUrn,
+  worldsAboutUrl,
+  worldsContentBase
+} from '../../network/worlds/worldsServerConfig'
 
 function parseContent(raw: unknown): ContentFile[] {
   if (!Array.isArray(raw)) return []
@@ -106,15 +104,21 @@ function realmFromAbout(about: Awaited<ReturnType<typeof fetchWorldRealmAbout>>)
   }
 }
 
-async function fetchWorldEntity(worldName: string): Promise<{
+async function fetchWorldEntity(
+  worldName: string,
+  customServer?: string | null
+): Promise<{
   entity: Record<string, unknown>
   skybox?: { textures?: string[] }
   realm: RealmEndpoints
+  contentServerBase: string
+  contentsRoot: string
 } | null> {
-  const about = await fetchWorldRealmAbout(worldName).catch(() => null)
+  const contentServerBase = worldsContentBase(customServer)
+  const about = await fetchWorldRealmAbout(worldName, contentServerBase).catch(() => null)
   if (!about) return null
 
-  const aboutRes = await fetch(`${WORLDS}/world/${encodeURIComponent(worldName)}/about`, {
+  const aboutRes = await fetch(worldsAboutUrl(contentServerBase, worldName), {
     headers: { Accept: 'application/json' }
   })
   if (!aboutRes.ok) return null
@@ -125,10 +129,14 @@ async function fetchWorldEntity(worldName: string): Promise<{
   const urn = aboutJson.configurations?.scenesUrn?.[0]
   if (typeof urn !== 'string') return null
 
-  const entityId = entityIdFromUrn(urn)
+  const entityId = entityIdFromScenesUrn(urn)
   if (!entityId) return null
 
-  const entityRes = await fetch(`${WORLDS}/contents/${encodeURIComponent(entityId)}`, {
+  // Prefer baseUrl on scenesUrn when present (official about often embeds it).
+  const urnContentsRoot = contentBaseFromScenesUrn(urn)
+  const contentsRoot = urnContentsRoot ?? `${contentServerBase}/contents`
+
+  const entityRes = await fetch(`${contentsRoot.replace(/\/+$/, '')}/${encodeURIComponent(entityId)}`, {
     headers: { Accept: 'application/json' }
   })
   if (!entityRes.ok) return null
@@ -137,7 +145,9 @@ async function fetchWorldEntity(worldName: string): Promise<{
   return {
     entity: { ...entity, id: entityId },
     skybox: aboutJson.configurations?.skybox,
-    realm: realmFromAbout(about)
+    realm: realmFromAbout(about),
+    contentServerBase,
+    contentsRoot: contentsRoot.replace(/\/+$/, '')
   }
 }
 
@@ -421,26 +431,34 @@ export async function resolveSceneFromRoute(target: RouteTarget): Promise<Resolv
   }
 
   const tried: string[] = []
+  const customServer = target.customServer
   for (const pointer of worldPointersForTarget(target)) {
     tried.push(pointer)
-    const result = await fetchWorldEntity(pointer)
+    const result = await fetchWorldEntity(pointer, customServer)
     if (!result) continue
 
     const entityId = typeof result.entity.id === 'string' ? result.entity.id : null
     if (!entityId) continue
 
+    const contentsRoot = result.contentsRoot
     return resolvedFromEntity(result.entity, {
       title: pointer,
       commsPointer: pointer.toLowerCase(),
       realm: result.realm,
-      source: { kind: 'world', worldName: pointer, entityId },
-      contentsBaseUrl: WORLDS,
-      assetUrl: (hash) => `${WORLDS}/contents/${encodeURIComponent(hash)}`,
+      source: {
+        kind: 'world',
+        worldName: pointer,
+        entityId,
+        ...(customServer ? { customServer: result.contentServerBase } : {})
+      },
+      contentsBaseUrl: result.contentServerBase,
+      assetUrl: (hash) => `${contentsRoot}/${encodeURIComponent(hash)}`,
       aboutSkybox: result.skybox
     })
   }
 
-  throw new Error(`World not found (${tried.join(' → ')}). Check the name on worlds-content-server.`)
+  const serverLabel = customServer ? worldsContentBase(customServer) : 'worlds-content-server'
+  throw new Error(`World not found (${tried.join(' → ')}). Check the name on ${serverLabel}.`)
 }
 
 /** @deprecated Prefer `resolveSceneFromRoute(resolveRouteTarget())`. */

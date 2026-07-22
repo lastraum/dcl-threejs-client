@@ -22,7 +22,11 @@ import {
 } from './dclPlaces'
 import { fetchPublicSceneTitle } from './sceneDisplayTitle'
 
-const WORLDS = 'https://worlds-content-server.decentraland.org'
+import {
+  worldsAboutUrl,
+  worldsContentBase,
+  worldsContentsUrl
+} from '../network/worlds/worldsServerConfig'
 /** Same default as dcl-companion server (`MARKETPLACE_SUBGRAPH_URL`). */
 const MARKETPLACE_SUBGRAPH =
   (import.meta.env.VITE_MARKETPLACE_SUBGRAPH_URL as string | undefined)?.trim().replace(/\/$/, '') ||
@@ -140,9 +144,13 @@ function entityIdFromUrn(urn: string): string | null {
   return m?.[1] ?? null
 }
 
-async function fetchWorldDeploymentDescription(worldName: string): Promise<string> {
+async function fetchWorldDeploymentDescription(
+  worldName: string,
+  customServer?: string | null
+): Promise<string> {
   try {
-    const res = await fetch(`${WORLDS}/world/${encodeURIComponent(worldName)}/about`, {
+    const base = worldsContentBase(customServer)
+    const res = await fetch(worldsAboutUrl(base, worldName), {
       headers: { Accept: 'application/json' }
     })
     if (!res.ok) return ''
@@ -151,7 +159,7 @@ async function fetchWorldDeploymentDescription(worldName: string): Promise<strin
     if (typeof urn !== 'string') return ''
     const entityId = entityIdFromUrn(urn)
     if (!entityId) return ''
-    const entityRes = await fetch(`${WORLDS}/contents/${encodeURIComponent(entityId)}`, {
+    const entityRes = await fetch(worldsContentsUrl(base, entityId), {
       headers: { Accept: 'application/json' }
     })
     if (!entityRes.ok) return ''
@@ -162,14 +170,17 @@ async function fetchWorldDeploymentDescription(worldName: string): Promise<strin
   }
 }
 
-async function resolveWorldDescription(worldName: string): Promise<string> {
+async function resolveWorldDescription(
+  worldName: string,
+  customServer?: string | null
+): Promise<string> {
   const short = worldName.replace(/\.dcl\.eth$/i, '').trim() || worldName
   const candidates = new Set<string>([worldName, short])
   if (!worldName.toLowerCase().endsWith('.dcl.eth')) {
     candidates.add(`${short}.dcl.eth`)
   }
   for (const name of candidates) {
-    const description = await fetchWorldDeploymentDescription(name)
+    const description = await fetchWorldDeploymentDescription(name, customServer)
     if (description) return description
   }
   return ''
@@ -320,7 +331,7 @@ export async function fetchSceneLandingMeta(
   )
   const shortName = route.worldName.replace(/\.dcl\.eth$/i, '').trim() || route.worldName
   const ownerDisplay = await ownerDisplayName(owners.primary, shortName)
-  const description = await resolveWorldDescription(route.worldName)
+  const description = await resolveWorldDescription(route.worldName, route.customServer)
   const title = await fetchPublicSceneTitle(route)
 
   return {

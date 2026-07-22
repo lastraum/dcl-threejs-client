@@ -2,6 +2,12 @@
  * Reserved single-segment paths — not scene/world routes.
  * Keep in sync with dcl-companion `ROOT_SCENE_SEGMENT_DENY` / SPA fallback.
  */
+import { addCustomWorldFavorite } from '../../network/worlds/customWorldFavorites'
+import {
+  normalizeCustomServerUrl,
+  parseCustomServerWorldRef
+} from '../../network/worlds/worldsServerConfig'
+
 const ROUTE_SEGMENT_DENY = new Set(
   [
     'assets',
@@ -31,7 +37,17 @@ export type RouteTarget =
   | { kind: 'communities' }
   | { kind: 'profile' }
   | { kind: 'editor' }
-  | { kind: 'world'; worldName: string; segment: string }
+  | {
+      kind: 'world'
+      worldName: string
+      segment: string
+      /**
+       * Custom worlds content server origin (`https://host`).
+       * Omit / undefined = official / env default.
+       * Deep link: `?customServer=https://…&worldName=…`
+       */
+      customServer?: string
+    }
   | { kind: 'coords'; x: number; y: number; segment: string }
 
 const EVENTS_ROUTE_SEGMENT = 'events'
@@ -80,6 +96,7 @@ export function readRouteSegmentFromPath(pathname = window.location.pathname): s
 /**
  * Parse `/:segment` as parcel coords (`80,-1`) or ENS world (`name.dcl.eth`).
  * Bare names (`rickroll`) normalize to `rickroll.dcl.eth`.
+ * Does not read `customServer` — use {@link resolveRouteTarget} for full URL.
  */
 export function parseRouteTarget(segment: string | null): RouteTarget {
   if (!segment) return { kind: 'blank' }
@@ -107,13 +124,64 @@ export function parseRouteTarget(segment: string | null): RouteTarget {
   return { kind: 'blank' }
 }
 
-/** Path route wins; `?world=` is legacy fallback; `/` is Explorer (no scene segment). */
+function readCustomServerFromSearch(search = window.location.search): string | null {
+  const params = new URLSearchParams(search)
+  return normalizeCustomServerUrl(
+    params.get('customServer') ?? params.get('server') ?? params.get('worldServer')
+  )
+}
+
+function readWorldNameFromSearch(search = window.location.search): string | null {
+  const params = new URLSearchParams(search)
+  const name =
+    params.get('worldName')?.trim() ||
+    params.get('world')?.trim() ||
+    params.get('name')?.trim() ||
+    ''
+  return name || null
+}
+
+/**
+ * Path route + query:
+ * - `/?customServer=https://host&worldName=my.dcl.eth` — custom worlds server
+ * - `/rickroll` or `/rickroll.dcl.eth` — official worlds server
+ * - `?world=` legacy fallback when path blank
+ */
 export function resolveRouteTarget(): RouteTarget {
+  const customServer = readCustomServerFromSearch()
+  const worldNameQuery = readWorldNameFromSearch()
+
+  // Explicit custom server + world (path optional). Prefer query worldName.
+  if (customServer && worldNameQuery) {
+    return {
+      kind: 'world',
+      worldName: worldNameQuery,
+      segment: worldNameQuery,
+      customServer
+    }
+  }
+
   const fromPath = parseRouteTarget(readRouteSegmentFromPath())
+  if (fromPath.kind === 'world' && customServer) {
+    return { ...fromPath, customServer }
+  }
   if (fromPath.kind !== 'blank') return fromPath
 
+  // customServer alone is incomplete without a world name
+  if (customServer && !worldNameQuery) return { kind: 'blank' }
+
   const fromQuery = new URLSearchParams(window.location.search).get('world')?.trim()
-  if (fromQuery) return parseRouteTarget(fromQuery)
+  if (fromQuery) {
+    const t = parseRouteTarget(fromQuery)
+    if (t.kind === 'world' && customServer) return { ...t, customServer }
+    return t
+  }
+
+  if (worldNameQuery) {
+    const t = parseRouteTarget(worldNameQuery)
+    if (t.kind === 'world' && customServer) return { ...t, customServer }
+    return t
+  }
 
   return { kind: 'blank' }
 }
@@ -130,6 +198,8 @@ export function routePathForTarget(target: RouteTarget): string {
   if (target.kind === 'profile') return '/profile'
   if (target.kind === 'editor') return '/editor'
   if (target.kind === 'coords') return `/${encodeURIComponent(`${target.x},${target.y}`)}`
+  // Custom server worlds use `/` + query (shareable `?customServer=&worldName=`).
+  if (target.customServer) return '/'
   return routePathForWorld(target.worldName)
 }
 
@@ -163,22 +233,86 @@ export function routeEquals(a: RouteTarget, b: RouteTarget): boolean {
     return true
   }
   if (a.kind === 'coords' && b.kind === 'coords') return a.x === b.x && a.y === b.y
-  if (a.kind === 'world' && b.kind === 'world') return a.worldName.toLowerCase() === b.worldName.toLowerCase()
+  if (a.kind === 'world' && b.kind === 'world') {
+    const serverA = (a.customServer ?? '').toLowerCase()
+    const serverB = (b.customServer ?? '').toLowerCase()
+    return (
+      a.worldName.toLowerCase() === b.worldName.toLowerCase() && serverA === serverB
+    )
+  }
   return false
 }
 
-/** Chat `/goto` — parcel coords, world name, or bare name → `.dcl.eth`. */
-export function parseGotoCommand(text: string): RouteTarget | null {
-  const match = /^\/goto\s+(.+)$/i.exec(text.trim())
-  if (!match?.[1]) return null
-  const target = parseRouteTarget(match[1].trim())
+/**
+ * Free-text travel target: coords, official world, full custom server URL,
+ * or `customServer=…&worldName=…`.
+ */
+export function parseTravelTarget(raw: string): RouteTarget | null {
+  const text = raw.trim()
+  if (!text) return null
+
+  // Full URL or customServer= query blob
+  const custom = parseCustomServerWorldRef(text)
+  if (custom) {
+    return {
+      kind: 'world',
+      worldName: custom.worldName,
+      segment: custom.worldName,
+      customServer: custom.customServer
+    }
+  }
+
+  // Two-token: `https://host worldName` or `host worldName`
+  const two = /^(\S+)\s+(\S+)$/.exec(text)
+  if (two) {
+    const server = normalizeCustomServerUrl(two[1])
+    const name = two[2]!.trim()
+    if (server && name && !/^-?\d+\s*,\s*-?\d+$/.test(name)) {
+      return {
+        kind: 'world',
+        worldName: name.includes('.') || server ? name : `${name}.dcl.eth`,
+        segment: name,
+        customServer: server
+      }
+    }
+  }
+
+  const target = parseRouteTarget(text)
   return target.kind === 'blank' ? null : target
+}
+
+/**
+ * Chat `/goto` and `/changerealm` — parcel coords, world name, bare name → `.dcl.eth`,
+ * or a full custom-server URL / `customServer=&worldName=` string.
+ */
+export function parseGotoCommand(text: string): RouteTarget | null {
+  const match = /^\/(?:goto|changerealm|change-realm|realm)\s+(.+)$/i.exec(text.trim())
+  if (!match?.[1]) return null
+  return parseTravelTarget(match[1])
 }
 
 export function applyRouteToHistory(target: RouteTarget, replace = false): void {
   const url = new URL(window.location.href)
   url.pathname = routePathForTarget(target)
+
+  // Clear travel-related query keys, then re-apply for custom worlds.
   url.searchParams.delete('world')
+  url.searchParams.delete('worldName')
+  url.searchParams.delete('name')
+  url.searchParams.delete('customServer')
+  url.searchParams.delete('server')
+  url.searchParams.delete('worldServer')
+
+  if (target.kind === 'world' && target.customServer) {
+    url.searchParams.set('customServer', target.customServer)
+    url.searchParams.set('worldName', target.worldName)
+    // Persist custom worlds for Favourites tab (merged with Places profile favourites).
+    addCustomWorldFavorite({
+      customServer: target.customServer,
+      worldName: target.worldName
+    })
+  }
+
   const state = { route: target }
   if (replace) history.replaceState(state, '', url)
   else history.pushState(state, '', url)

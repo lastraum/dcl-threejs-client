@@ -558,7 +558,7 @@ export class PlacesView {
       if (!this.loading && !this.error) {
         if (this.subTab === 'favorites') {
           emptyEl.textContent =
-            'No favourites yet. Heart places in-world, or open a custom server world (?customServer=&worldName=) to save it here.'
+            'No favourites yet. Heart places in-world, or open a custom realm (?realm=host/world/Name) to save it here.'
         } else if (this.searchQuery.trim()) {
           emptyEl.textContent = 'No scenes or worlds match your search.'
         } else {

@@ -95,13 +95,72 @@ export function contentBaseFromScenesUrn(urn: string): string | null {
 }
 
 /**
+ * Explorer-style `?realm=` value (and free-text equivalents):
+ * - `worlds.dcl-iwb.co/world/BuilderWorld.dcl.eth`
+ * - `https://worlds.dcl-iwb.co/world/BuilderWorld.dcl.eth`
+ * - full jump URLs that already contain `?realm=…`
+ *
+ * @see https://decentraland.org/jump?realm=worlds.dcl-iwb.co%2Fworld%2FBuilderWorld.dcl.eth
+ */
+export function parseRealmParam(raw: string): {
+  customServer: string
+  worldName: string
+} | null {
+  let text = raw.trim()
+  if (!text) return null
+
+  // Nested jump URL: extract ?realm=
+  try {
+    const asUrl =
+      /^https?:\/\//i.test(text) || text.startsWith('//')
+        ? new URL(text.startsWith('//') ? `https:${text}` : text)
+        : null
+    if (asUrl) {
+      const nested = asUrl.searchParams.get('realm')?.trim()
+      if (nested) text = nested
+    }
+  } catch {
+    /* not a full URL — treat as host/path */
+  }
+
+  try {
+    if (/%[0-9a-f]{2}/i.test(text)) text = decodeURIComponent(text)
+  } catch {
+    /* keep raw */
+  }
+
+  // host/world/Name or https://host/world/Name
+  const m = /^(?:https?:\/\/)?([^/?#\s]+)\/worlds?\/([^/?#\s]+)\/?$/i.exec(text)
+  if (m) {
+    const server = normalizeCustomServerUrl(m[1])
+    let worldName = m[2]!
+    try {
+      worldName = decodeURIComponent(worldName)
+    } catch {
+      /* keep */
+    }
+    if (server && worldName) return { customServer: server, worldName }
+  }
+
+  return parseCustomServerWorldRef(text)
+}
+
+/** Serialize for `?realm=` — Explorer parity: `host/world/WorldName` (no scheme). */
+export function formatRealmParam(customServer: string, worldName: string): string | null {
+  const base = normalizeCustomServerUrl(customServer)
+  const name = worldName.trim()
+  if (!base || !name) return null
+  const host = base.replace(/^https?:\/\//i, '').replace(/\/+$/, '')
+  return `${host}/world/${name}`
+}
+
+/**
  * Parse a free-form travel string into custom server + world name when possible.
  * Accepts:
- * - `https://host` + separate world (caller supplies world)
+ * - Explorer `host/world/name` (same as `?realm=`)
  * - `https://host/world/my.dcl.eth`
- * - `https://host/?customServer=…&worldName=…` (redundant but ok)
- * - `https://host/?worldName=foo`
- * - query fragment `customServer=https://…&worldName=foo`
+ * - `https://host/?realm=host/world/name`
+ * - legacy `customServer=…&worldName=…`
  */
 export function parseCustomServerWorldRef(raw: string): {
   customServer: string
@@ -110,16 +169,36 @@ export function parseCustomServerWorldRef(raw: string): {
   const text = raw.trim()
   if (!text) return null
 
-  // Query-only: customServer=…&worldName=…
-  if (!/^https?:\/\//i.test(text) && /customServer=/i.test(text)) {
+  // Query-only: realm=… or customServer=…&worldName=…
+  if (!/^https?:\/\//i.test(text) && (/(?:^|[?&])realm=/i.test(text) || /customServer=/i.test(text))) {
     const qs = new URLSearchParams(text.includes('?') ? text.split('?').pop()! : text)
-    const server = normalizeCustomServerUrl(qs.get('customServer') ?? qs.get('server'))
+    const realm = qs.get('realm')?.trim()
+    if (realm) {
+      const fromRealm = parseRealmParam(realm)
+      if (fromRealm) return fromRealm
+    }
+    const server = normalizeCustomServerUrl(
+      qs.get('customServer') ?? qs.get('server') ?? qs.get('worldServer')
+    )
     const world =
       qs.get('worldName')?.trim() ||
       qs.get('world')?.trim() ||
       qs.get('name')?.trim() ||
       ''
     if (server && world) return { customServer: server, worldName: world }
+  }
+
+  // Scheme-less host/world/Name (already handled by parseRealmParam; avoid recursion)
+  const hostWorld = /^(?:https?:\/\/)?([^/?#\s]+)\/worlds?\/([^/?#\s]+)\/?$/i.exec(text)
+  if (hostWorld && !/^https?:\/\//i.test(text)) {
+    const server = normalizeCustomServerUrl(hostWorld[1])
+    let worldName = hostWorld[2]!
+    try {
+      worldName = decodeURIComponent(worldName)
+    } catch {
+      /* keep */
+    }
+    if (server && worldName) return { customServer: server, worldName }
   }
 
   if (!/^https?:\/\//i.test(text)) return null
@@ -131,8 +210,16 @@ export function parseCustomServerWorldRef(raw: string): {
     return null
   }
 
+  const realmQ = url.searchParams.get('realm')?.trim()
+  if (realmQ) {
+    const fromRealm = parseRealmParam(realmQ)
+    if (fromRealm) return fromRealm
+  }
+
   const serverFromQuery = normalizeCustomServerUrl(
-    url.searchParams.get('customServer') ?? url.searchParams.get('server')
+    url.searchParams.get('customServer') ??
+      url.searchParams.get('server') ??
+      url.searchParams.get('worldServer')
   )
   const worldFromQuery =
     url.searchParams.get('worldName')?.trim() ||

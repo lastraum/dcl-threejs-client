@@ -33,6 +33,8 @@ export class SceneHost {
   /** Min ms between full frames; 0 = every rAF. */
   private frameIntervalMs = 0
   private lastFrameTime = 0
+  /** When tab is hidden, cap to ~8 FPS so work drains without false “stuck” load. */
+  private static readonly HIDDEN_FRAME_INTERVAL_MS = 1000 / 8
   /** Effective MSAA after GPU clamp (0 = render straight to canvas). */
   private msaaSamples: MsaaSamples = 0
   private msaaTarget: THREE.WebGLRenderTarget | null = null
@@ -352,8 +354,14 @@ export class SceneHost {
 
     this.renderer.setAnimationLoop(() => {
       const frameT0 = performance.now()
-      if (this.frameIntervalMs > 0 && this.lastFrameTime > 0) {
-        if (frameT0 - this.lastFrameTime < this.frameIntervalMs) return
+      const minInterval = Math.max(
+        this.frameIntervalMs,
+        typeof document !== 'undefined' && document.hidden
+          ? SceneHost.HIDDEN_FRAME_INTERVAL_MS
+          : 0
+      )
+      if (minInterval > 0 && this.lastFrameTime > 0) {
+        if (frameT0 - this.lastFrameTime < minInterval) return
       }
       this.lastFrameTime = frameT0
 

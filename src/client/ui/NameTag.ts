@@ -197,6 +197,7 @@ export class NameTag {
    */
   setVoiceLevel(level: number): void {
     const next = Math.max(0, Math.min(1, level))
+    if (Math.abs(next - this.voiceLevel) < 0.01) return
     const was = this.voiceLevel > 0.02
     const now = next > 0.02
     this.voiceLevel = next

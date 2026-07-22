@@ -71,10 +71,14 @@ const GROUND_BOX_HALF_EXTENT = 5000
  */
 const GROUND_BOX_HALF_HEIGHT = 2.5
 /** Max vertical displacement per CCT substep — avoids tunneling when FPS tanks. */
-const CCT_MAX_VERTICAL_STEP_M = 0.4
-/** Max horizontal displacement per CCT substep — thin plaza walls at low FPS. */
-const CCT_MAX_HORIZONTAL_STEP_M = 0.35
-const CCT_MAX_SUBSTEPS = 8
+const CCT_MAX_VERTICAL_STEP_M = 0.35
+/**
+ * Max horizontal displacement per CCT substep.
+ * Remote avatar compose can drop plaza to 2–6fps; 0.35m × 8 steps only covers ~2.8m/frame
+ * and tunnels thin walls. Tighter steps + higher cap keep CCT solid under remotes.
+ */
+const CCT_MAX_HORIZONTAL_STEP_M = 0.2
+const CCT_MAX_SUBSTEPS = 24
 /** Absolute floor — if CCT still reports feet below this, snap up and force grounded. */
 const HARD_FLOOR_Y = 0
 /**

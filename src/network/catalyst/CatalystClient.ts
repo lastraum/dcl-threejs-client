@@ -1,4 +1,8 @@
 import type { ContentFile } from '../../dcl/content/types'
+import {
+  CATALYST_FETCH_TIMEOUT_MS,
+  fetchWithTimeout
+} from '../../util/fetchWithTimeout'
 import { isParcelPointer, normalizePointer } from './pointer'
 
 import {
@@ -53,7 +57,10 @@ export async function fetchEntityContentById(
   if (!trimmed) return null
 
   const tryFetch = async (url: string): Promise<ContentFile[] | null> => {
-    const res = await fetch(url, { headers: { Accept: 'application/json' } })
+    const res = await fetchWithTimeout(url, {
+      headers: { Accept: 'application/json' },
+      timeoutMs: CATALYST_FETCH_TIMEOUT_MS
+    })
     if (!res.ok) return null
     const entity = (await res.json()) as { content?: unknown }
     const content = parseEntityContent(entity.content)
@@ -70,10 +77,11 @@ export async function fetchSceneEntityByPointer(
   contentUrl: string,
   pointer: string
 ): Promise<{ id: string; entity: Record<string, unknown> } | null> {
-  const res = await fetch(catalystEntitiesActiveUrl(contentUrl), {
+  const res = await fetchWithTimeout(catalystEntitiesActiveUrl(contentUrl), {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pointers: [normalizePointer(pointer)] })
+    body: JSON.stringify({ pointers: [normalizePointer(pointer)] }),
+    timeoutMs: CATALYST_FETCH_TIMEOUT_MS
   })
   if (!res.ok) return null
 
@@ -110,12 +118,13 @@ export async function resolveWorldSceneId(
 
   if (isOfficialWorldsServer(server)) {
     try {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `${ASSET_BUNDLE_REGISTRY}/entities/active?world_name=${encodeURIComponent(pointer)}`,
         {
           method: 'POST',
           headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pointers: ['0,0'] })
+          body: JSON.stringify({ pointers: ['0,0'] }),
+          timeoutMs: CATALYST_FETCH_TIMEOUT_MS
         }
       )
       if (res.ok) {
@@ -130,8 +139,9 @@ export async function resolveWorldSceneId(
     }
   }
 
-  const aboutRes = await fetch(worldsAboutUrl(server, pointer), {
-    headers: { Accept: 'application/json' }
+  const aboutRes = await fetchWithTimeout(worldsAboutUrl(server, pointer), {
+    headers: { Accept: 'application/json' },
+    timeoutMs: CATALYST_FETCH_TIMEOUT_MS
   })
   if (!aboutRes.ok) return null
   const about = (await aboutRes.json()) as { configurations?: { scenesUrn?: string[] } }

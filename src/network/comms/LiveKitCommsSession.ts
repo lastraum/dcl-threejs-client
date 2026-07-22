@@ -36,9 +36,12 @@ import {
   type ActiveVideoStream
 } from './livekitVideoStreams'
 import { TransportType, type PeerLifecycleHandlers } from './Transport'
+import { perfNoteMovementSent, perfNoteMovementSkippedIdle } from '../../util/perfCounters'
 
 const PROFILE_EVERY_N_BROADCASTS = 30
 const MOVE_EPSILON = 0.02
+/** While standing still, still send a pose keepalive so late joiners / loss recover. */
+const IDLE_KEEPALIVE_MS = 3_000
 const OUTBOUND_DEBUG_LOGS = 5
 
 export type PacketHandler = (transport: TransportType, address: string, data: Uint8Array) => void
@@ -71,7 +74,10 @@ export class LiveKitCommsSession {
   } | null = null
   private lastSentTransform: { x: number; y: number; z: number; yaw: number } | null = null
   private sessionStartedAt = performance.now()
+  /** Rate-limit for flush attempts (send or idle skip). */
   private lastBroadcast = 0
+  /** Wall time of last published movement packet (idle keepalive). */
+  private lastMovementSentAt = 0
   private broadcastCount = 0
   private outboundDebugLogs = 0
   private connected = false
@@ -583,11 +589,30 @@ export class LiveKitCommsSession {
 
     const { x, y, z, yaw, isEmoting, locomotion } = this.pendingTransform
     const prev = this.lastSentTransform
-    const moving = isEmoting
-      ? false
-      : !prev ||
-        Math.hypot(x - prev.x, y - prev.y, z - prev.z) > MOVE_EPSILON ||
-        Math.abs(yaw - prev.yaw) > MOVE_EPSILON
+    const poseChanged =
+      !prev ||
+      Math.hypot(x - prev.x, y - prev.y, z - prev.z) > MOVE_EPSILON ||
+      Math.abs(yaw - prev.yaw) > MOVE_EPSILON
+    const moving = isEmoting ? false : poseChanged
+    // Standing still: skip identical movement packets (Phase A). Keepalive so peers recover pose.
+    const forceLocomotion =
+      !!locomotion &&
+      (locomotion.isJumping === true ||
+        locomotion.isFalling === true ||
+        (typeof locomotion.jumpCount === 'number' && locomotion.jumpCount > 0))
+    if (
+      !poseChanged &&
+      !isEmoting &&
+      !forceLocomotion &&
+      prev &&
+      this.lastMovementSentAt > 0 &&
+      now - this.lastMovementSentAt < IDLE_KEEPALIVE_MS
+    ) {
+      perfNoteMovementSkippedIdle()
+      this.lastBroadcast = now
+      this.pendingTransform = null
+      return
+    }
 
     const elapsedSec = (now - this.sessionStartedAt) / 1000
     const velocity = isEmoting
@@ -614,9 +639,11 @@ export class LiveKitCommsSession {
     )
 
     void this.safePublishData(movementPacket, false)
+    perfNoteMovementSent()
 
     this.broadcastCount++
     this.lastSentTransform = { x, y, z, yaw }
+    this.lastMovementSentAt = now
 
     if (this.outboundDebugLogs < OUTBOUND_DEBUG_LOGS) {
       this.outboundDebugLogs++
@@ -849,6 +876,8 @@ export class LiveKitCommsSession {
     this.connected = false
     this.pendingTransform = null
     this.lastSentTransform = null
+    this.lastBroadcast = 0
+    this.lastMovementSentAt = 0
     this.broadcastCount = 0
     this.outboundDebugLogs = 0
     const room = this.room

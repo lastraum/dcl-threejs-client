@@ -42,6 +42,16 @@ function isAnimatorFocusSrc(src: string): boolean {
   return ANIMATOR_FOCUS_SRC.test(src)
 }
 
+/** True if mixer needs update this frame (running, scheduled, or non-zero weight fade). */
+function mixerHasActiveWork(entry: AnimEntry): boolean {
+  for (const action of entry.actions.values()) {
+    if (action.isRunning() || action.isScheduled()) return true
+    if (action.getEffectiveWeight() > 1e-3) return true
+    if (action.enabled && action.weight > 1e-3) return true
+  }
+  return false
+}
+
 /** One name→node map per bind — per-track traverse was O(tracks × nodes) on huge characters. */
 function buildNodeNameMap(root: THREE.Object3D): Map<string, THREE.Object3D> {
   const byName = new Map<string, THREE.Object3D>()
@@ -385,6 +395,8 @@ export class AnimatorBridge {
     if (!this.entries.size) return
 
     for (const [entity, entry] of this.entries) {
+      // Phase C: skip mixer.tick when nothing is running / fading (idle GLTF animators).
+      if (!mixerHasActiveWork(entry)) continue
       entry.mixer.update(delta)
       if (this.shapeMotionProbe?.(entity)) {
         this.shapeMotionEntities.add(entity)

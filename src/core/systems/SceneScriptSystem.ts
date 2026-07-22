@@ -1058,10 +1058,24 @@ export class SceneScriptSystem {
   /**
    * GLB mesh landed — mark collider structure dirty only.
    * Extract / pose / PhysX cook commit in World.applyPhysicsColliders (async frame).
+   * Also dirties ancestor collider poses: attaching a child can settle parent matrixWorld
+   * for already-cooked solids (otherwise PhysX stays at mid-hydration pose).
    */
   flushIncrementalColliders(entity: Entity): void {
     this.markColliderStructureDirty(entity)
+    this.markAncestorColliderPosesDirty(entity)
     this.pointerStructureDirty = true
+  }
+
+  /** Walk Transform parents — any already-extracted collider root must pose-slide. */
+  private markAncestorColliderPosesDirty(entity: Entity): void {
+    let parent = this.transformParent.get(entity)
+    while (parent !== undefined) {
+      if (this.colliderRootEntities.has(parent)) {
+        this.colliderPoseDirty.add(parent)
+      }
+      parent = this.transformParent.get(parent)
+    }
   }
 
   /**
@@ -2471,6 +2485,8 @@ export class SceneScriptSystem {
     if (!bridge) return
 
     bridge.applyProjectionChanges(projectionDeletes)
+    // Phase C: any UI CRDT/mount path dirties paint; redundant flushes no-op via epoch.
+    bridge.markContentDirty()
     this.flushUiFrame(uiEntities)
   }
 
@@ -2543,8 +2559,11 @@ export class SceneScriptSystem {
     }
     this.clearProjectionUiLag()
     this.purgeProjectionUiOutsideWorkerMount()
-    bridge.paint(this.view)
-    this.logSceneUiRepaintIfEnabled()
+    // Phase C: skip paint walk when content epoch already painted (lag resume, double flush).
+    if (bridge.isContentDirty()) {
+      bridge.paint(this.view)
+      this.logSceneUiRepaintIfEnabled()
+    }
     if (!this.pointerAwaitingWorkerApply) {
       this.resumeWorkerSceneTicksAfterMountIfHeld()
     }
@@ -2924,8 +2943,14 @@ export class SceneScriptSystem {
     this.collision.syncPointerPoses(this.bridge.getEntityNodes())
   }
 
-  /** MatrixWorld + CL_POINTER MeshCollider poses immediately before pointer raycast. */
-  preparePointerRaycast(): void {
+  /**
+   * MatrixWorld + CL_POINTER MeshCollider poses immediately before pointer raycast.
+   * Phase C: skip when pointer system reports idle (no move / lock / pending click).
+   */
+  preparePointerRaycast(tickNumber = 0): void {
+    if (this.pointerEvents && !this.pointerEvents.needsRaycastPrepare(tickNumber)) {
+      return
+    }
     this.consumeSyncFrameTransforms()
     this.flushSceneGraphMatrices()
     // Full syncCollision runs on the async frame (World.applyPhysicsColliders) — not here.
@@ -4482,7 +4507,12 @@ export class SceneScriptSystem {
   pumpMotionBridges(delta: number, tickNumber = 0): void {
     if (!this.running || !this.bridge) return
     this.maybeDumpMotionFocus()
+    // Phase C: always sync to pick up new Tween signatures; update only when live.
     this.tweenBridge?.sync(this.view)
+    if (this.tweenBridge?.hasLiveTweens()) {
+      this.tweenBridge.update(delta, this.view)
+      this.markTweenColliderPosesDirty()
+    }
     this.videoPlayerBridge?.sync(this.view)
     this.audioSourceBridge?.sync(this.view)
     this.audioStreamBridge?.sync(this.view)
@@ -4496,8 +4526,6 @@ export class SceneScriptSystem {
     this.flushAvatarAttachTransforms()
     // PlayerEntity-parented scene meshes (Dead Surge path arrow) — re-parent each frame.
     this.bridge.syncReservedParentedTransforms(this.view)
-    this.tweenBridge?.update(delta, this.view)
-    this.markTweenColliderPosesDirty()
     this.billboardBridge?.sync(this.view)
     this.billboardBridge?.update()
     this.markMotionEmitterColliderDirty()

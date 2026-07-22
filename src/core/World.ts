@@ -43,6 +43,7 @@ import {
   type FftOceanSettings
 } from '../environment/fftOcean/readFftOceanOverride'
 import type { OceanPerfInfo } from '../client/ui/RenderStats'
+import { perfSetRemoteStats } from '../util/perfCounters'
 import type { OutdoorLightingSnapshot } from '../environment/OutdoorLighting'
 import type { IslandShoreMaterial } from '../dcl/landscape/IslandShoreMaterial'
 import {
@@ -187,8 +188,15 @@ export class World {
   private warmStaticScenePending = false
   private colliderCookDrainInFlight = false
   private bootAssetsTimedOut = false
-  /** Plaza-scale scenes — keep cooking near-player GLTF colliders after hydration timeout. */
+  /** Plaza-scale scenes — keep cooking near-player / late GLTF colliders after boot. */
   private postBootColliderCatchUpUntil = 0
+  /**
+   * Brief window for full-scene PhysX pose push after seal (hydration graph settle only).
+   * Must stay short — 180s of pushAll@400ms was 40–240ms collision thrash every async frame.
+   */
+  private postBootPoseResyncUntil = 0
+  private lastHydrationPoseResyncMs = 0
+  private static readonly HYDRATION_POSE_RESYNC_MS = 750
 
   /** Runtime burst (e.g. theatre Scene 11/12) — drain with loading-style recook until idle. */
   private runtimeColliderBurstUntil = 0
@@ -1122,6 +1130,9 @@ export class World {
     this.sceneScript.flushSceneGraphMatrices()
     // One more instance rewrite at spawn — catch late parent transforms after seal.
     this.sceneScript.refreshAllInstancedTransforms()
+    // Comms/profile work can take seconds after seal — slide again so PhysX matches live graph.
+    this.pushAllColliderPosesToPhysX()
+    this.physics.warmStaticScene()
     this.sceneScript.preparePointerRaycast()
     this.sceneScript.refreshPointerTargets()
     this.startInputHub()
@@ -1403,9 +1414,29 @@ export class World {
         }
 
         if (!skipRemoteAvatars()) {
+          // Keep scene asset pressure on the load queue after play-ready so remote composes
+          // don't fight late GLB attach / collider pose resync (walk-through under remotes).
+          const assetStats = this.assets.getLoadStats()
+          this.remoteAvatars?.setSceneAssetPressure(
+            assetStats.gltfInflight,
+            assetStats.textureInflight
+          )
           this.vrmPeerSync.gcStaleFetches()
-          this.remoteAvatars?.update(delta)
+          // Low FPS (remote compose thrash): skip a remote tick every other frame so
+          // player CCT + async collider apply keep budget.
+          const skipHeavyRemote = delta > 0.05 && startFrame % 2 === 0
+          const remoteTick = skipHeavyRemote ? undefined : this.remoteAvatars?.update(delta)
           this.reportRemoteAvatarProgress()
+          if (this.remoteAvatars) {
+            perfSetRemoteStats({
+              visible: this.remoteAvatars.visiblePeerCount,
+              loaded: this.remoteAvatars.loadedPeerCount,
+              composePending: this.remoteAvatars.composeQueueDepth,
+              composeActive: this.remoteAvatars.activeComposeCount,
+              poseSkipped: remoteTick?.poseSkipped ?? 0,
+              nameTagsShown: remoteTick?.nameTagsShown ?? 0
+            })
+          }
         }
         // Spatial voice reparents as peer poses land (cheap map walk).
         this.voice.tickSpatial()
@@ -1416,7 +1447,7 @@ export class World {
           this.sceneScript.pumpMotionBridges(delta, startFrame)
         }
         if (this.playerMode && this.player) {
-          this.sceneScript.preparePointerRaycast()
+          this.sceneScript.preparePointerRaycast(startFrame)
           this.sceneScript.updateRaycasts()
           this.sceneScript.updatePointerEvents(startFrame)
           // Hub already synced before scene/PE ticks; late edges still publish on keydown.
@@ -1435,8 +1466,9 @@ export class World {
         await this.sceneScript.syncRenderer()
         const rendererMs = performance.now() - t0
 
+        // Async pointer prepare only when dirty — full flush already ran on sync if needed.
         if (this.playerMode && this.player) {
-          this.sceneScript.preparePointerRaycast()
+          this.sceneScript.preparePointerRaycast(startFrame)
         }
 
         // Sync frame already runs syncCollision after motion bridges — async only when
@@ -1669,12 +1701,35 @@ export class World {
       }
     }
 
+    // Boot cooks while hundreds of GLBs are still pending. After seal, parent/child
+    // matrixWorld keeps moving without Transform CRDT → no pose-dirty. Resync all
+    // entity-local actors so solids track the live scene graph (plaza walk-through).
+    if (this.shouldResyncColliderPosesForHydration()) {
+      this.pushAllColliderPosesToPhysX()
+    }
+
     if (colliderWork || this.colliderCookQueue.size > 0) {
       this.reconcileColliderCookQueue()
     }
     if (this.colliderCookQueue.size > 0) {
       void this.scheduleColliderCookDrain()
     }
+  }
+
+  /**
+   * Full pushAll only while meshes still attaching or during a short post-seal settle.
+   * Late cook catch-up (postBootColliderCatchUpUntil) does NOT force full pose push —
+   * dirty-entity slides + initialOnly cooks handle that without thrashing main.
+   */
+  private shouldResyncColliderPosesForHydration(): boolean {
+    const now = performance.now()
+    if (now - this.lastHydrationPoseResyncMs < World.HYDRATION_POSE_RESYNC_MS) return false
+    const lite = this.sceneScript.getAttachProgressLite()
+    const pendingMesh = (lite?.pendingMesh ?? 0) > 0
+    const briefPoseSettle = now < this.postBootPoseResyncUntil
+    if (!pendingMesh && !briefPoseSettle) return false
+    this.lastHydrationPoseResyncMs = now
+    return true
   }
 
   /** Single in-flight cook drain — never stack async drains from attach callbacks. */
@@ -2659,10 +2714,19 @@ export class World {
       this.collidersLoadingComplete = true
       this.spawnColliderSealComplete = false
       this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
-      if (assetsTimedOut) {
-        this.postBootColliderCatchUpUntil = performance.now() + 60_000
+      // Plaza: brief full pose resync while attach settles; longer cook-only catch-up for late GLBs.
+      const hydGltf = this.sceneScript.getHydrationStats()?.gltfEntities ?? 0
+      const attachLite = this.sceneScript.getAttachProgressLite()
+      const stillAttaching = (attachLite?.pendingMesh ?? 0) > 0
+      const largeScene = finalGltfCount >= 50 || hydGltf >= 100 || stillAttaching
+      if (assetsTimedOut || largeScene) {
+        const now = performance.now()
+        this.postBootPoseResyncUntil = now + 12_000
+        this.postBootColliderCatchUpUntil = now + 120_000
+        this.lastHydrationPoseResyncMs = 0
         console.info(
-          '[World] hydration timed out — post-boot near-player collider catch-up active (60s)'
+          `[World] post-boot catch-up — pose resync 12s + late cooks 120s` +
+            (assetsTimedOut ? ' · hydration timed out' : ' · large/still-attaching scene')
         )
       }
       if (platformMotionDebug.isEnabled() && this.player) {

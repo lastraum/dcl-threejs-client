@@ -1,4 +1,5 @@
 import { worldsAboutUrl, worldsContentBase } from '../worlds/worldsServerConfig'
+import { ABOUT_FETCH_TIMEOUT_MS, fetchWithTimeout } from '../../util/fetchWithTimeout'
 
 export type RealmAbout = {
   realmName: string
@@ -130,7 +131,10 @@ function parseAbout(
 
 async function fetchAboutJson(url: string): Promise<AboutJson | null> {
   try {
-    const res = await fetch(url, { headers: { Accept: 'application/json' } })
+    const res = await fetchWithTimeout(url, {
+      headers: { Accept: 'application/json' },
+      timeoutMs: ABOUT_FETCH_TIMEOUT_MS
+    })
     if (!res.ok) return null
     return (await res.json()) as AboutJson
   } catch {
@@ -157,7 +161,10 @@ export async function fetchCatalystRealmAbout(catalystBase = DEFAULT_CONTENT_PEE
 
   // 2) Fallback: direct catalyst peer /about (may lack comms)
   const base = catalystBase.replace(/\/$/, '')
-  const res = await fetch(`${base}/about`, { headers: { Accept: 'application/json' } })
+  const res = await fetchWithTimeout(`${base}/about`, {
+    headers: { Accept: 'application/json' },
+    timeoutMs: ABOUT_FETCH_TIMEOUT_MS
+  })
   if (!res.ok) throw new Error(`Catalyst about failed (${res.status})`)
   const about = parseAbout((await res.json()) as AboutJson, 'main')
   if (!about.commsAdapterHint) {
@@ -173,7 +180,10 @@ export async function fetchWorldsServerStatus(
 ): Promise<StatusJson | null> {
   const base = worldsContentBase(contentServerBase)
   try {
-    const res = await fetch(`${base}/status`, { headers: { Accept: 'application/json' } })
+    const res = await fetchWithTimeout(`${base}/status`, {
+      headers: { Accept: 'application/json' },
+      timeoutMs: ABOUT_FETCH_TIMEOUT_MS
+    })
     if (!res.ok) return null
     return (await res.json()) as StatusJson
   } catch {
@@ -195,7 +205,10 @@ export async function fetchWorldRealmAbout(
 ): Promise<RealmAbout> {
   const base = worldsContentBase(customServer)
   const [aboutRes, status] = await Promise.all([
-    fetch(worldsAboutUrl(base, worldName), { headers: { Accept: 'application/json' } }),
+    fetchWithTimeout(worldsAboutUrl(base, worldName), {
+      headers: { Accept: 'application/json' },
+      timeoutMs: ABOUT_FETCH_TIMEOUT_MS
+    }),
     fetchWorldsServerStatus(base)
   ])
   if (!aboutRes.ok) throw new Error(`World about failed (${aboutRes.status}) from ${base}`)

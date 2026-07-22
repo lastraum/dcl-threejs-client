@@ -18,9 +18,15 @@ export class LightManager {
   private readonly scene: THREE.Scene
   /** Avatar (or fallback camera) focus used for nearest-N + distance cull. */
   private readonly focusPos = new THREE.Vector3()
+  private readonly lastCullFocus = new THREE.Vector3()
   private readonly worldPos = new THREE.Vector3()
   private readonly cullDistSq = LIGHT_CULL_DISTANCE_M * LIGHT_CULL_DISTANCE_M
   private activeNearbyCount = 0
+  private lastCullAt = 0
+  /** Re-cull when focus moves this far (m²). */
+  private static readonly FOCUS_MOVE_M2 = 0.85 * 0.85
+  /** Max time between full light culls while standing still (ms). */
+  private static readonly CULL_INTERVAL_MS = 150
 
   constructor(scene: THREE.Scene) {
     this.scene = scene
@@ -34,8 +40,18 @@ export class LightManager {
   /**
    * Re-evaluate which managed lights are visible and may cast shadows.
    * @param focusPosition Avatar world position (prefer feet/root) — not the camera.
+   * Phase C: skip full scene.traverse when focus is still (dirty-gated).
    */
   update(focusPosition: THREE.Vector3): void {
+    const now = performance.now()
+    const moved =
+      this.lastCullAt <= 0 ||
+      this.lastCullFocus.distanceToSquared(focusPosition) > LightManager.FOCUS_MOVE_M2
+    if (!moved && now - this.lastCullAt < LightManager.CULL_INTERVAL_MS) {
+      return
+    }
+    this.lastCullAt = now
+    this.lastCullFocus.copy(focusPosition)
     this.focusPos.copy(focusPosition)
     const maxLights = renderQuality.getMaxActiveLights()
     const shadowsOn = renderQuality.shadowsEnabled()

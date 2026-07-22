@@ -529,19 +529,48 @@ export class TweenBridge {
     }
   }
 
+  /**
+   * Phase C: true when any runtime needs a per-frame advance (playing / continuous / just reset).
+   * Parked completed tweens do not count.
+   */
+  hasLiveTweens(): boolean {
+    if (!this.runtime.size) return false
+    const { Tween } = this.ecs
+    for (const [entity, runtime] of this.runtime) {
+      if (!Tween.has(entity)) continue
+      if (runtime.justReset) return true
+      if (runtime.completed && runtime.completedDirtySent) continue
+      const tween = Tween.get(entity)
+      if (tween.playing === false && runtime.lastWrittenState === 2 && !runtime.completed) {
+        continue
+      }
+      return true
+    }
+    return false
+  }
+
   update(delta: number, view: ProjectionView): void {
     this.motionFocusView = view
     this.transformMotionEntities.clear()
+    if (!this.runtime.size) return
+
     const { Tween, TweenState, Transform, AvatarAttach } = this.ecs
 
-    for (const [entity] of view.getEntitiesWith(Tween)) {
-      const runtime = this.runtime.get(entity)
+    // Phase C dirty set: iterate runtime only (not full ECS scan). Skip parked completed/paused.
+    for (const [entity, runtime] of this.runtime) {
+      if (!Tween.has(entity)) continue
       const tween = Tween.get(entity)
 
       if (AvatarAttach.has(entity)) {
         this.logTween(`Tween skip — entity ${entity} has AvatarAttach`, { entity, throttleMs: 2000 })
         continue
       }
+
+      // Parked: finished finite tween already reported to worker — wait for next signature via sync.
+      if (runtime.completed && runtime.completedDirtySent && !runtime.justReset) {
+        continue
+      }
+
       const node = this.store.getNode(entity)
       // Never log no-node during attach storms (Genesis: thousands of tweens).
 
@@ -550,9 +579,19 @@ export class TweenBridge {
       const textureMode = isTextureMode(tween.mode)
       const durationSec = Math.max(tween.duration / 1000, 0)
 
-      // Completed finite tween: pin end until scene installs the next Tween (pause is scene-side).
-      if (runtime?.completed) {
-        if (node && textureMode) {
+      // Paused and already wrote TweenState=2 — no per-frame work until playing/signature changes.
+      if (
+        !playing &&
+        !runtime.completed &&
+        !runtime.justReset &&
+        runtime.lastWrittenState === 2
+      ) {
+        continue
+      }
+
+      // Completed finite tween: pin end once, encode dirty once, then park.
+      if (runtime.completed) {
+        if (node && textureMode && !runtime.completedDirtySent) {
           this.applyTextureTween(node, tween, runtime, 0, 1, true)
         }
         TweenState.createOrReplace(entity, { state: 1, currentTime: 1 })
@@ -573,12 +612,12 @@ export class TweenBridge {
         continue
       }
 
-      let progress = runtime?.progress ?? 0
-      if (runtime?.justReset) {
+      let progress = runtime.progress ?? 0
+      if (runtime.justReset) {
         progress = runtime.progress
         runtime.justReset = false
       }
-      if (runtime && !runtime.completed && playing) {
+      if (!runtime.completed && playing) {
         if (!continuous && durationSec > 0) {
           progress = Math.min(1, progress + delta / durationSec)
         } else if (textureMode && durationSec <= 0) {
@@ -588,7 +627,7 @@ export class TweenBridge {
           )
         }
       }
-      if (runtime) runtime.progress = progress
+      runtime.progress = progress
 
       const eased = applyEasing(tween.easingFunction ?? 0, progress)
       let applied = false
@@ -630,24 +669,22 @@ export class TweenBridge {
       }
 
       const reachedEnd = !continuous && durationSec > 0 && progress >= 1
-      const completed = reachedEnd && !runtime?.completed
-      if (runtime && reachedEnd) {
+      const completed = reachedEnd && !runtime.completed
+      if (reachedEnd) {
         runtime.completed = true
       }
 
       const state = !playing && !reachedEnd ? 2 : reachedEnd ? 1 : 0
 
       TweenState.createOrReplace(entity, { state, currentTime: progress })
-      const stateChanged = runtime?.lastWrittenState !== state
+      const stateChanged = runtime.lastWrittenState !== state
       const progressChanged =
-        runtime?.lastWrittenProgress === undefined ||
+        runtime.lastWrittenProgress === undefined ||
         Math.abs(runtime.lastWrittenProgress - progress) >= 0.02
       if (stateChanged || progressChanged || completed) {
-        if (runtime) {
-          runtime.lastWrittenState = state
-          runtime.lastWrittenProgress = progress
-          if (reachedEnd) runtime.completedDirtySent = true
-        }
+        runtime.lastWrittenState = state
+        runtime.lastWrittenProgress = progress
+        if (reachedEnd) runtime.completedDirtySent = true
         this.encodeDirty.add(entity)
       }
       this.logTweenState(entity, tween, state, progress, continuous)

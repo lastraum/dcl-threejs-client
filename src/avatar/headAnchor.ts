@@ -39,7 +39,9 @@ export function updateNameTagAnchor(
   anchor: THREE.Object3D,
   model: THREE.Object3D | null,
   fallbackY = 1.72,
-  offsetY = NAME_TAG_HEAD_OFFSET_Y
+  offsetY = NAME_TAG_HEAD_OFFSET_Y,
+  /** Cached head bone — avoids traverse-every-frame on remotes. */
+  cachedHead: THREE.Bone | null | undefined = undefined
 ): void {
   const tagY = fallbackY + offsetY
   if (!model || !anchor.parent) {
@@ -50,7 +52,7 @@ export function updateNameTagAnchor(
   model.updateWorldMatrix(true, false)
   anchor.parent.updateWorldMatrix(true, false)
 
-  const head = findHeadBone(model)
+  const head = cachedHead !== undefined ? cachedHead : findHeadBone(model)
   if (!head) {
     anchor.position.set(0, tagY, 0)
     return

@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import Stats from 'three/examples/jsm/libs/stats.module.js'
+import { perfSnapshot } from '../../util/perfCounters'
 
 export type OceanPerfInfo =
   | { backend: 'water.js'; variant: 'open' | 'island'; planeSpanM: number }
@@ -92,6 +93,12 @@ export class RenderStats {
         `gpu: geo=${memory.geometries} tex=${memory.textures}`
       )
     }
+    const perf = perfSnapshot()
+    lines.push(
+      `remotes: vis=${perf.remoteVisible} loaded=${perf.remoteLoaded} poseSkip=${perf.remotePoseSkipped}`,
+      `compose: q=${perf.remoteComposePending} active=${perf.remoteComposeActive}  tags=${perf.nameTagsShown}`,
+      `move out: ${perf.movementSentPerSec.toFixed(1)}/s  idle skip: ${perf.movementSkippedPerSec.toFixed(1)}/s`
+    )
     this.extra.textContent = lines.join('\n')
   }
 

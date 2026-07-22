@@ -31,6 +31,19 @@ import { readEnvironmentWindShader } from '../readEnvironmentWindShader'
 import { hashParcelCoords } from '../Utils/SeededRandom'
 
 /**
+ * Genesis Plaza deploy (coords around 0,0). Plaza ships full ground meshes; client
+ * default FloorBase underlays z-fight the red carpet / show empty-land grid.
+ */
+function isGenesisPlazaScene(scene: ResolvedScene): boolean {
+  const base = (scene.baseParcel ?? '').trim()
+  if (base === '0,0') return true
+  for (const p of scene.parcels) {
+    if (p.trim() === '0,0') return true
+  }
+  return false
+}
+
+/**
  * Mirror of Unity Explorer `DCL.Landscape.Systems.RenderGroundSystem` +
  * `WorldTerrainGenerator` — builds ground mesh + parcel decoration per environment profile.
  */
@@ -65,9 +78,10 @@ export async function buildParcelLandscape(
         landscape.userData.windShader = windShader
       }
     }
-    // Genesis City: Explorer still draws the default empty-land floor under scene parcels
-    // (FloorBase / red grass pack). Skip only when the scene authored its own terrain mesh.
-    if (profile.kind === 'genesis' && !authorTerrain) {
+    // Genesis City: default empty-land floor under scene parcels (FloorBase / red-grass pack).
+    // Skip when the scene authored its own terrain, or Genesis Plaza (0,0) — plaza has full
+    // ground art; the client floor z-fights the red carpet / tan grid underlay.
+    if (profile.kind === 'genesis' && !authorTerrain && !isGenesisPlazaScene(scene)) {
       const base = parseParcelKey(scene.baseParcel)
       const groundHash = profile.sceneGround
       onProgress?.(`Default floor GLB on ${scene.parcels.length} scene parcel(s)…`)
@@ -88,6 +102,8 @@ export async function buildParcelLandscape(
         parcelRoot.add(ground)
         landscape.add(parcelRoot)
       }
+    } else if (profile.kind === 'genesis' && isGenesisPlazaScene(scene) && !authorTerrain) {
+      onProgress?.('Landscape: genesis plaza — skip default floor GLB (scene art owns ground)')
     }
     return landscape
   }

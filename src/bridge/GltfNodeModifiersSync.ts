@@ -60,6 +60,25 @@ export function gltfNodeModifiersSignature(mods: PBGltfNodeModifiers): string {
   }
 }
 
+/** Full apply key: material mods + mesh UV/scale mirror (re-apply when scale.x settles). */
+export function gltfNodeModifiersApplyKey(
+  entityRoot: THREE.Object3D,
+  mods: PBGltfNodeModifiers
+): string {
+  entityRoot.updateWorldMatrix(true, true)
+  return `${gltfNodeModifiersSignature(mods)}|${meshMirrorKey(entityRoot)}`
+}
+
+/** True when last apply used a different mirror fingerprint (e.g. scale.x landed late). */
+export function gltfNodeModifiersMirrorStale(
+  entityRoot: THREE.Object3D,
+  mods: PBGltfNodeModifiers
+): boolean {
+  const prev = entityRoot.userData[APPLIED_SIG_KEY]
+  if (typeof prev !== 'string' || !prev) return false
+  return prev !== gltfNodeModifiersApplyKey(entityRoot, mods)
+}
+
 /**
  * Apply GltfNodeModifiers materials / castShadows to meshes under the entity.
  * Caches original materials on first override so component removal can restore.
@@ -71,7 +90,9 @@ export async function applyGltfNodeModifiersToEntity(
   materials: MaterialApplier,
   opts?: { logPathMiss?: boolean; entity?: Entity }
 ): Promise<boolean> {
-  const sig = gltfNodeModifiersSignature(mods)
+  // Include per-mesh UV mirror + world scale.x reflection so plaza event cards re-apply
+  // after Transform.scale.x = −1 lands (first paint often runs at scale +1).
+  const sig = gltfNodeModifiersApplyKey(entityRoot, mods)
   if (entityRoot.userData[APPLIED_SIG_KEY] === sig && !modifiersNeedVideoRetry(mods, materials)) {
     return true
   }
@@ -127,6 +148,52 @@ export async function applyGltfNodeModifiersToEntity(
     delete entityRoot.userData[APPLIED_SIG_KEY]
   }
   return allOk
+}
+
+/** Compact UV-mirror × world-reflection fingerprint for each mesh under root. */
+function meshMirrorKey(root: THREE.Object3D): string {
+  const parts: string[] = []
+  root.traverse((obj) => {
+    if (!(obj as THREE.Mesh).isMesh) return
+    const mesh = obj as THREE.Mesh
+    const uvM = meshUvMirroredOnX(mesh) ? '1' : '0'
+    const scM = objectScaleMirrorX(mesh) ? '1' : '0'
+    parts.push(`${mesh.id}:${uvM}${scM}`)
+  })
+  return parts.join(',') || '0'
+}
+
+function meshUvMirroredOnX(mesh: THREE.Mesh): boolean {
+  const pos = mesh.geometry?.getAttribute('position')
+  const uv = mesh.geometry?.getAttribute('uv')
+  if (!pos || !uv || pos.count < 2 || uv.count < 2) return false
+  let minX = Infinity
+  let maxX = -Infinity
+  let uAtMin = 0
+  let uAtMax = 0
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i)
+    if (x < minX) {
+      minX = x
+      uAtMin = uv.getX(i)
+    }
+    if (x > maxX) {
+      maxX = x
+      uAtMax = uv.getX(i)
+    }
+  }
+  if (!(maxX - minX > 1e-5)) return false
+  return uAtMin > uAtMax + 1e-5
+}
+
+function objectScaleMirrorX(obj: THREE.Object3D): boolean {
+  let sx = 1
+  let o: THREE.Object3D | null = obj
+  for (let i = 0; i < 48 && o; i++) {
+    sx *= o.scale.x
+    o = o.parent
+  }
+  return sx < 0
 }
 
 /** Restore materials/castShadows cached before the first GltfNodeModifiers apply. */

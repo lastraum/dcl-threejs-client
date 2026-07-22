@@ -1,6 +1,7 @@
 import { catalystProfilesEndpoint } from './mapConfig'
 import type { PlayerProfile } from './types'
 import { normalizeWallet } from './peerParcel'
+import { fetchWithTimeout, PROFILE_FETCH_TIMEOUT_MS } from '../util/fetchWithTimeout'
 
 const BATCH_SIZE = 50
 const FALLBACK: PlayerProfile = { displayName: '?', faceUrl: null }
@@ -55,8 +56,9 @@ export async function fetchCatalystProfiles(wallets: string[]): Promise<Map<stri
     try {
       if (batch.length === 1) {
         const wallet = batch[0]
-        const res = await fetch(`${base}/${encodeURIComponent(wallet)}`, {
-          headers: { Accept: 'application/json' }
+        const res = await fetchWithTimeout(`${base}/${encodeURIComponent(wallet)}`, {
+          headers: { Accept: 'application/json' },
+          timeoutMs: PROFILE_FETCH_TIMEOUT_MS
         })
         if (!res.ok) {
           result.set(wallet, profileFromBody(null, wallet))
@@ -67,10 +69,11 @@ export async function fetchCatalystProfiles(wallets: string[]): Promise<Map<stri
         continue
       }
 
-      const res = await fetch(base, {
+      const res = await fetchWithTimeout(base, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ ids: batch })
+        body: JSON.stringify({ ids: batch }),
+        timeoutMs: PROFILE_FETCH_TIMEOUT_MS
       })
       if (!res.ok) throw new Error(`profiles ${res.status}`)
       const data = await res.json()

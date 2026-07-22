@@ -5,7 +5,7 @@ import { composeAvatarFromProfile } from '../avatar/AvatarComposer'
 import { disposeWearableInstance } from '../avatar/loadWearable'
 import { AVATAR_YAW_OFFSET, BODY_SHAPE_URN, PEER_URL } from '../avatar/constants'
 import { applyAvatarPivotOffset } from '../avatar/feetAlign'
-import { updateNameTagAnchor } from '../avatar/headAnchor'
+import { findHeadBone, updateNameTagAnchor } from '../avatar/headAnchor'
 import { defaultProfileIdentity, identityFromAvatarProfile, type ProfileIdentity } from '../avatar/displayName'
 import {
   profileFromSerializedEntry,
@@ -51,6 +51,44 @@ import { RemoteAvatarLoadQueue } from './RemoteAvatarLoadQueue'
 import type { InteractiveNameTagHit } from '../client/ui/overlayHitTest'
 import { buildPlayerMirrorIdentity } from '../bridge/playerMirrorIdentity'
 import { GliderProp, GlideStateWire, glideStateWantsOpen } from '../avatar/GliderProp'
+
+/** Packet / lerp settle epsilon (meters / radians). */
+const POSE_EPS = 0.02
+const POSE_YAW_EPS = 0.02
+const SPEED_IDLE = 0.08
+/**
+ * Name-tag distance cull with hysteresis — a hard 64m edge toggled every frame when
+ * camera/peer jitter around the boundary (far pills "flickering like crazy").
+ */
+const NAME_TAG_SHOW_M2 = 56 * 56
+const NAME_TAG_HIDE_M2 = 72 * 72
+/** Full head-track every frame inside this radius. */
+const NAME_TAG_NEAR_M2 = 28 * 28
+/** Far (but not culled) tags: refresh head anchor at most this often. */
+const NAME_TAG_FAR_INTERVAL_MS = 200
+
+/**
+ * LOD bands for already-tracked peers (horizontal m).
+ * Full compose only starts inside LOAD (see RemoteAvatarLoadQueue); models are never
+ * unloaded for distance — mid/far only throttle pose/anim.
+ */
+const LOD_NEAR_M2 = 20 * 20
+const LOD_MID_M2 = 40 * 40
+/** Mid band: ~20 Hz pose/anim. */
+const LOD_MID_INTERVAL_MS = 50
+/** Far band: ~10 Hz pose; no skinned anim. */
+const LOD_FAR_INTERVAL_MS = 100
+
+/** Distance cull with hysteresis — sticky visible state. */
+function nameTagWantedForDist(
+  prevWanted: boolean,
+  dist2: number,
+  hasCameraPos: boolean
+): boolean {
+  if (!hasCameraPos) return true
+  if (prevWanted) return dist2 <= NAME_TAG_HIDE_M2
+  return dist2 <= NAME_TAG_SHOW_M2
+}
 
 type RemotePeerRecord = {
   address: string
@@ -99,6 +137,14 @@ type RemotePeerRecord = {
   /** RFC4 Movement.glideState */
   glideState: number
   glider: GliderProp
+  /** Cached head bone for name-tag follow (avoids traverse each frame). */
+  headBone: THREE.Bone | null
+  /** Last time name-tag anchor was recomputed (far throttle). */
+  nameTagLastAnchorAt: number
+  /** Hysteresis state for distance cull (avoids edge flicker). */
+  nameTagWanted: boolean
+  /** Last mid/far LOD pose/anim tick (performance.now). */
+  lastLodUpdateAt: number
 }
 
 function blankProfile(address: string): AvatarProfile {
@@ -265,6 +311,16 @@ export class RemoteAvatarManager {
     }
   }
 
+  /** In-flight full avatar composes (not waiting queue). */
+  get activeComposeCount(): number {
+    return this.loadQueue.getActiveComposeCount()
+  }
+
+  /** Waiting + in-flight compose jobs. */
+  get composeQueueDepth(): number {
+    return this.loadQueue.getPendingComposeCount()
+  }
+
   setCatalystEndpoints(contentUrl: string, lambdasUrl: string): void {
     this.contentUrl = contentUrl.replace(/\/$/, '')
     this.lambdasUrl = lambdasUrl.replace(/\/$/, '')
@@ -278,6 +334,12 @@ export class RemoteAvatarManager {
     this.cameraWorldPos.copy(position)
     this.hasCameraPos = true
     this.loadQueue.setCameraPosition(position)
+    // Walking toward pills: re-check hard load radius without waiting for peer packets.
+    for (const [key, record] of this.peers) {
+      if (record.model || !record.hasPosition) continue
+      this.loadQueue.updatePeerDistance(key, record.targetPosition)
+      this.tryStartAvatarLoad(key, record)
+    }
   }
 
   /** Scene asset hydration — throttle remote composes so scene GLTF attach wins. */
@@ -285,12 +347,15 @@ export class RemoteAvatarManager {
     this.loadQueue.setHydrationMode(active)
   }
 
-  /** Begin remote avatar composes after spawn/play-ready (not at hydration end). */
+  /**
+   * Begin remote avatar pipeline after spawn/play-ready.
+   * Full composes stay held briefly (collider pose resync / CCT) then plaza-staggered.
+   */
   setPlayReady(plazaScale = false): void {
     this.loadQueue.setPlayReady(plazaScale)
     clientDebugLog.log(
       'network',
-      `Remote avatar composes enabled${plazaScale ? ' (plaza stagger)' : ''}`,
+      `Remote avatars: collider-hold then 1 compose / 10s${plazaScale ? ' (plaza)' : ''}`,
       { alsoConsole: true, throttleMs: 30_000 }
     )
   }
@@ -689,7 +754,11 @@ export class RemoteAvatarManager {
         doubleJumpTriggered: false,
         verticalVelocity: 0,
         glideState: GlideStateWire.PROP_CLOSED,
-        glider: new GliderProp()
+        glider: new GliderProp(),
+        headBone: null,
+        nameTagLastAnchorAt: 0,
+        nameTagWanted: false,
+        lastLodUpdateAt: 0
       }
       this.peers.set(key, record)
       void record.glider.attach(record.pivot)
@@ -787,11 +856,44 @@ export class RemoteAvatarManager {
     if (!record) return
 
     const now = performance.now()
-    const dt = (now - record.receivedAt) / 1000
     const prevTargetX = record.targetPosition.x
     const prevTargetY = record.targetPosition.y
     const prevTargetZ = record.targetPosition.z
     const prevVy = record.verticalVelocity
+
+    // Keepalive / unchanged pose: skip velocity recompute + target write (Phase B pose skip).
+    if (record.hasPosition) {
+      const samePose =
+        Math.hypot(position.x - prevTargetX, position.y - prevTargetY, position.z - prevTargetZ) <=
+          POSE_EPS && Math.abs(yaw - record.targetYaw) <= POSE_YAW_EPS
+      const wireHoriz = velocity ? Math.hypot(velocity.x, velocity.z) : 0
+      const wireBusy =
+        wireHoriz > 0.05 ||
+        (velocity !== undefined && Math.abs(velocity.y) > 1.5) ||
+        (locomotion?.isJumping === true) ||
+        (typeof locomotion?.jumpCount === 'number' && locomotion.jumpCount > 0) ||
+        (locomotion?.glideState !== undefined &&
+          locomotion.glideState !== record.glideState &&
+          locomotion.glideState !== GlideStateWire.PROP_CLOSED)
+      const locoChanged =
+        !!locomotion &&
+        ((locomotion.isGrounded !== undefined && locomotion.isGrounded !== record.remoteGrounded) ||
+          (locomotion.isJumping !== undefined && locomotion.isJumping !== record.remoteJumping) ||
+          (locomotion.jumpCount !== undefined && locomotion.jumpCount !== record.jumpCount) ||
+          (locomotion.glideState !== undefined && locomotion.glideState !== record.glideState))
+
+      if (samePose && !wireBusy && !locoChanged) {
+        record.receivedAt = now
+        if (record.horizontalSpeed > SPEED_IDLE) record.horizontalSpeed = 0
+        if (record.velocity.x !== 0 || record.velocity.y !== 0 || record.velocity.z !== 0) {
+          record.velocity.set(0, 0, 0)
+        }
+        if (velocity) record.verticalVelocity = velocity.y
+        return
+      }
+    }
+
+    const dt = (now - record.receivedAt) / 1000
 
     if (record.hasPosition && dt > 0.001) {
       const dx = position.x - prevTargetX
@@ -852,36 +954,112 @@ export class RemoteAvatarManager {
     this.tryStartAvatarLoad(key, record)
   }
 
-  update(delta: number): void {
-    const alpha = 1 - Math.exp(-8 * delta)
-    const speedAlpha = 1 - Math.exp(-10 * delta)
-    // Soft budget: full VRM/ODK anim only for near peers. Far peers still lerp pose.
-    // Prevents N remotes × VRM update from hitching sync on sparse water scenes.
-    const NEAR_ANIM_M2 = 48 * 48
+  /**
+   * Per-frame remote tick. Returns pose-skip / name-tag counts for RenderStats.
+   */
+  update(delta: number): { poseSkipped: number; nameTagsShown: number } {
+    const now = performance.now()
+    let poseSkipped = 0
+    let nameTagsShown = 0
+    const tagsAllowed = areSceneNameTagsVisible()
 
     for (const [key, record] of this.peers.entries()) {
-      if (record.hasPosition) {
-        record.root.position.lerp(record.targetPosition, alpha)
-      }
+      const remoteGlidingEarly =
+        glideStateWantsOpen(record.glideState) ||
+        record.glideState === GlideStateWire.CLOSING_PROP
+      const emoteBusy = !!record.activeEmoteUrn
+      const airBusy =
+        record.remoteJumping ||
+        record.jumpCount > 0 ||
+        remoteGlidingEarly ||
+        Math.abs(record.verticalVelocity) > 1.5
 
-      // Snap facing while moving so rotation does not trail position interpolation.
-      if (record.horizontalSpeed > 0.35) {
-        record.currentYaw = record.targetYaw
-      } else {
-        record.currentYaw += (record.targetYaw - record.currentYaw) * alpha
-      }
-      record.pivot.rotation.y = record.currentYaw + AVATAR_YAW_OFFSET
-
-      record.smoothedSpeed += (record.horizontalSpeed - record.smoothedSpeed) * speedAlpha
-
-      let nearForAnim = true
+      let dist2 = 0
       if (this.hasCameraPos && record.hasPosition) {
         const dx = record.root.position.x - this.cameraWorldPos.x
         const dz = record.root.position.z - this.cameraWorldPos.z
-        nearForAnim = dx * dx + dz * dz <= NEAR_ANIM_M2
+        dist2 = dx * dx + dz * dz
       }
 
-      if (nearForAnim) {
+      // LOD band for loaded + pill peers (horizontal).
+      // near ≤20m every frame · mid ≤40m ~20Hz · far ~10Hz pose / no anim
+      let lodIntervalMs = 0
+      let allowAnim = true
+      if (this.hasCameraPos && record.hasPosition) {
+        if (dist2 > LOD_MID_M2) {
+          lodIntervalMs = LOD_FAR_INTERVAL_MS
+          allowAnim = false
+        } else if (dist2 > LOD_NEAR_M2) {
+          lodIntervalMs = LOD_MID_INTERVAL_MS
+          allowAnim = true
+        }
+      }
+
+      if (lodIntervalMs > 0 && record.lastLodUpdateAt > 0 && now - record.lastLodUpdateAt < lodIntervalMs) {
+        // Still refresh name-tag visibility cheaply; skip pose/anim this frame.
+        record.nameTagWanted = nameTagWantedForDist(
+          record.nameTagWanted,
+          dist2,
+          this.hasCameraPos
+        )
+        const showTag =
+          tagsAllowed && !record.modifierHidden && record.hasPosition && record.nameTagWanted
+        if (record.nameTag && record.nameTag.object.visible !== showTag) {
+          record.nameTag.object.visible = showTag
+        }
+        if (showTag) nameTagsShown++
+        continue
+      }
+
+      const tickDelta =
+        lodIntervalMs > 0 && record.lastLodUpdateAt > 0
+          ? Math.min((now - record.lastLodUpdateAt) / 1000, 0.12)
+          : delta
+      record.lastLodUpdateAt = now
+
+      const alpha = 1 - Math.exp(-8 * tickDelta)
+      const speedAlpha = 1 - Math.exp(-10 * tickDelta)
+
+      // Settled: on target, not moving, no jump/glide/emote — skip lerp.
+      const atTarget =
+        record.hasPosition &&
+        Math.hypot(
+          record.root.position.x - record.targetPosition.x,
+          record.root.position.y - record.targetPosition.y,
+          record.root.position.z - record.targetPosition.z
+        ) <= POSE_EPS &&
+        Math.abs(record.currentYaw - record.targetYaw) <= POSE_YAW_EPS
+      const settled =
+        atTarget &&
+        record.horizontalSpeed < SPEED_IDLE &&
+        record.smoothedSpeed < SPEED_IDLE &&
+        !emoteBusy &&
+        !airBusy
+
+      if (settled) {
+        poseSkipped++
+        record.root.position.copy(record.targetPosition)
+        record.currentYaw = record.targetYaw
+        record.pivot.rotation.y = record.currentYaw + AVATAR_YAW_OFFSET
+        record.smoothedSpeed = 0
+      } else {
+        if (record.hasPosition) {
+          record.root.position.lerp(record.targetPosition, alpha)
+        }
+
+        // Snap facing while moving so rotation does not trail position interpolation.
+        if (record.horizontalSpeed > 0.35) {
+          record.currentYaw = record.targetYaw
+        } else {
+          record.currentYaw += (record.targetYaw - record.currentYaw) * alpha
+        }
+        record.pivot.rotation.y = record.currentYaw + AVATAR_YAW_OFFSET
+
+        record.smoothedSpeed += (record.horizontalSpeed - record.smoothedSpeed) * speedAlpha
+      }
+
+      // Near/mid: full skinned update. Far (incl. loaded-but-distant): pose only.
+      if (allowAnim) {
         const speed = record.smoothedSpeed
         let emoteActive =
           record.renderMode === 'vrm'
@@ -925,13 +1103,13 @@ export class RemoteAvatarManager {
           gliding: remoteGliding
         }
         if (record.renderMode === 'vrm') {
-          record.vrmLocomotion?.update(delta, locomotionState)
-          record.vrmAvatar?.update(delta)
+          record.vrmLocomotion?.update(tickDelta, locomotionState)
+          record.vrmAvatar?.update(tickDelta)
         } else if (record.renderMode === 'odk') {
-          record.odkLocomotion?.update(delta, locomotionState)
-          record.odkAvatar?.update(delta)
+          record.odkLocomotion?.update(tickDelta, locomotionState)
+          record.odkAvatar?.update(tickDelta)
         } else {
-          record.animations?.update(delta, locomotionState)
+          record.animations?.update(tickDelta, locomotionState)
         }
         const stillEmoting =
           record.renderMode === 'vrm'
@@ -947,20 +1125,52 @@ export class RemoteAvatarManager {
           void this.reloadPeerAvatar(key, record)
         }
       }
-      // Prop open/close + rotors — always (cheap; not gated by near-anim budget).
-      record.glider.update(delta)
+      // Prop open/close + rotors — skip when fully closed and settled.
+      if (!settled || remoteGlidingEarly || record.glideState !== GlideStateWire.PROP_CLOSED) {
+        record.glider.update(tickDelta)
+      }
       record.doubleJumpTriggered = false
 
+      // Name tags: hysteretic distance cull + throttle head follow when far.
+      record.nameTagWanted = nameTagWantedForDist(
+        record.nameTagWanted,
+        dist2,
+        this.hasCameraPos
+      )
+      const showTag =
+        tagsAllowed && !record.modifierHidden && record.hasPosition && record.nameTagWanted
       if (record.nameTag) {
-        record.nameTag.object.visible =
-          !record.modifierHidden && areSceneNameTagsVisible()
+        if (record.nameTag.object.visible !== showTag) {
+          record.nameTag.object.visible = showTag
+        }
       }
-
-      const nameTagTarget = record.model ?? record.placeholder
-      if (nameTagTarget) {
-        updateNameTagAnchor(record.nameTagAnchor, nameTagTarget)
+      if (showTag) {
+        nameTagsShown++
+        const nameTagTarget = record.model ?? record.placeholder
+        if (nameTagTarget) {
+          const needAnchor =
+            !this.hasCameraPos ||
+            dist2 <= NAME_TAG_NEAR_M2 ||
+            !settled ||
+            now - record.nameTagLastAnchorAt >= NAME_TAG_FAR_INTERVAL_MS
+          if (needAnchor) {
+            if (!record.headBone && record.model) {
+              record.headBone = findHeadBone(record.model)
+            }
+            updateNameTagAnchor(
+              record.nameTagAnchor,
+              nameTagTarget,
+              1.72,
+              undefined,
+              record.model ? record.headBone : null
+            )
+            record.nameTagLastAnchorAt = now
+          }
+        }
       }
     }
+
+    return { poseSkipped, nameTagsShown }
   }
 
   dispose(): void {
@@ -977,24 +1187,30 @@ export class RemoteAvatarManager {
   ): Promise<void> | null {
     if (!record.hasPosition || record.model) return null
     if (record.loading && !force) return record.loading
-    let resolveLoad!: () => void
-    const loadPromise = new Promise<void>((resolve) => {
-      resolveLoad = resolve
-    })
-    record.loading = loadPromise
+    // Enqueue always; hard ≤20 m gate is in the load queue pump (no far fallback).
+    // `loading` is set only when the job actually starts so far waiters don't stick.
     this.loadQueue.enqueue(
       address,
       record.targetPosition,
       async () => {
+        if (record.model) return
+        let resolveLoad!: () => void
+        const loadPromise = new Promise<void>((resolve) => {
+          resolveLoad = resolve
+        })
+        record.loading = loadPromise
         try {
+          // Distance checked at pump start; once started we finish even if they walk out.
+          // Models are never unloaded for distance.
           await this.loadPeerAvatar(address, record)
         } finally {
           resolveLoad()
+          if (record.loading === loadPromise) record.loading = null
         }
       },
       force
     )
-    return loadPromise
+    return record.loading
   }
 
   private async reloadPeerAvatar(address: string, record: RemotePeerRecord): Promise<void> {
@@ -1068,7 +1284,20 @@ export class RemoteAvatarManager {
   }
 
   private finalizeNameTag(record: RemotePeerRecord): void {
+    if (record.model) {
+      record.headBone = findHeadBone(record.model)
+    }
     this.ensureNameTag(record, false)
+    if (record.model || record.placeholder) {
+      updateNameTagAnchor(
+        record.nameTagAnchor,
+        record.model ?? record.placeholder,
+        1.72,
+        undefined,
+        record.headBone
+      )
+      record.nameTagLastAnchorAt = performance.now()
+    }
   }
 
   private clearLoadingPresentation(record: RemotePeerRecord): void {
@@ -1434,6 +1663,7 @@ export class RemoteAvatarManager {
     record.odkLocomotion = null
     record.activeEmoteUrn = null
     record.vrmLoadedHash = null
+    record.headBone = null
     this.clearLoadingPresentation(record)
     if (record.vrmAvatar) {
       record.pivot.remove(record.vrmAvatar.root)

@@ -93,6 +93,12 @@ export class SceneUiBridge {
   private lastPaintLayoutKey = ''
   private lastPaintVisualKey = ''
   private lastEntityVisualKeys = new Map<Entity, string>()
+  /**
+   * Phase C dirty set — contentEpoch bumps when mount/CRDT/image/size changes.
+   * paint() skips record walk when epoch already painted (redundant flushUiFrame).
+   */
+  private contentEpoch = 0
+  private paintedEpoch = -1
   /** False until AppController reveals 3D play chrome — avoids UI on 2D landing during hydration. */
   private domVisible = false
   private readonly unbindImageLoaded: () => void
@@ -156,8 +162,19 @@ export class SceneUiBridge {
     this.imageRepaintQueued = true
     window.setTimeout(() => {
       this.imageRepaintQueued = false
+      this.markContentDirty()
       if (this.lastView) this.paint(this.lastView)
     }, 80)
+  }
+
+  /** Phase C — mark UI content dirty (CRDT put, mount, image, size). */
+  markContentDirty(): void {
+    this.contentEpoch++
+  }
+
+  /** True when a paint is needed (content changed since last successful paint). */
+  isContentDirty(): boolean {
+    return this.paintedEpoch !== this.contentEpoch
   }
 
   /** Show/hide scene ECS UI overlay — primary `#scene-ui-root` or PE `#pe-ui-root`. */
@@ -170,6 +187,7 @@ export class SceneUiBridge {
     // thrash full Yoga rebuilds (that caused PE HUD flicker: first paint spam).
     if (!wasVisible) {
       this.invalidatePaintCache()
+      this.markContentDirty()
       if (this.lastView) this.paint(this.lastView)
     }
     // Already visible: leave paint to mount snapshots / dirty frames — do not re-paint
@@ -180,6 +198,7 @@ export class SceneUiBridge {
   forceRepaint(): void {
     if (!this.domVisible) return
     this.invalidatePaintCache()
+    this.markContentDirty()
     if (this.lastView) this.paint(this.lastView)
   }
 
@@ -290,6 +309,8 @@ export class SceneUiBridge {
     this.lastEntityVisualKeys.clear()
     this.paintCount = 0
     this.firstPaintLogged = false
+    this.paintedEpoch = -1
+    this.markContentDirty()
   }
 
   isVisible(): boolean {
@@ -338,6 +359,7 @@ export class SceneUiBridge {
   commitMountSet(next: ReadonlySet<Entity>): boolean {
     const uiKey = [...next].sort((a, b) => (a as number) - (b as number)).join(',')
     const changed = !this.workerUiEntitiesKnown || uiKey !== this.lastWorkerUiKey
+    if (changed) this.markContentDirty()
 
     if (this.workerUiEntitiesKnown && this.workerUiEntities) {
       const prevSize = this.workerUiEntities.size
@@ -443,6 +465,7 @@ export class SceneUiBridge {
       }
     }
     if (!removed.size) return
+    this.markContentDirty()
     this.releaseUiEntities(removed)
   }
 
@@ -466,6 +489,7 @@ export class SceneUiBridge {
       const next = { width: Math.floor(width), height: Math.floor(height) }
       if (next.width !== this.virtual.width || next.height !== this.virtual.height) {
         this.layoutCache.clear()
+        this.markContentDirty()
       }
       this.virtual = next
     }
@@ -510,6 +534,10 @@ export class SceneUiBridge {
       }
       return
     }
+    // Phase C: skip full mount/record walk when nothing marked dirty since last paint.
+    if (this.paintCount > 0 && this.paintedEpoch === this.contentEpoch) {
+      return
+    }
     const ecs = view.components
 
     const interactable = readInteractableArea(this.getCanvas())
@@ -523,6 +551,7 @@ export class SceneUiBridge {
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
+      this.paintedEpoch = this.contentEpoch
       return
     }
 
@@ -539,6 +568,7 @@ export class SceneUiBridge {
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
+      this.paintedEpoch = this.contentEpoch
       return
     }
 
@@ -567,6 +597,7 @@ export class SceneUiBridge {
       layoutKey === this.lastPaintLayoutKey &&
       visualKey === this.lastPaintVisualKey
     ) {
+      this.paintedEpoch = this.contentEpoch
       return
     }
 
@@ -682,6 +713,7 @@ export class SceneUiBridge {
     this.lastPaintLayoutKey = layoutKey
     this.lastPaintVisualKey = visualKey
     this.lastEntityVisualKeys = entityVisualKeys
+    this.paintedEpoch = this.contentEpoch
 
     this.input.pruneStaleEntities(mounted)
     this.input.releaseAllIfNothingMounted(mounted)

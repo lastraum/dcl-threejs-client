@@ -41,10 +41,13 @@ export class BillboardBridge {
   }
 
   update(): void {
+    const billboards = this.store.getBillboardEntities()
+    if (!billboards.length) return
+
     const { Billboard } = this.ecs
     const camPos = this.getCamera().position
 
-    for (const entity of this.store.getBillboardEntities()) {
+    for (const entity of billboards) {
       const obj = this.store.nodes.get(entity)
       if (!obj) continue
 

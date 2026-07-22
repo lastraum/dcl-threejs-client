@@ -447,10 +447,16 @@ export class MaterialApplier {
     const geo = mesh.geometry as THREE.BufferGeometry | undefined
     const marqueeAtlas = !!geo?.userData?.dclTextAlongYBasis
     const flipY = mesh.userData.primitiveMeshKey != null && !marqueeAtlas
-    // Genesis Plaza event_card_thumbnail etc.: GLB UVs map spatial −X → U=1 (LH-authored).
-    // Three RH view reads L–R mirrored; flip static maps only (not video / MeshRenderer).
-    const flipMapU =
-      !!options?.gltfNodeModifier && !marqueeAtlas && meshUvMapsUMirroredOnX(mesh)
+    // Plaza event cards: thumbnail GLB UVs are LH-mirrored; bottom (JUMP IN) UVs are normal.
+    // Parent Transform.scale.x = −1 is common. Flip map U when UV-mirror XOR scale-mirror.
+    // MeshRenderer planes with scale.x < 0 also need the flip (no UV-mirror bit).
+    const worldMirror = objectWorldMirrorX(mesh)
+    const uvMirror = meshUvMapsUMirroredOnX(mesh)
+    const flipMapU = !marqueeAtlas && (
+      options?.gltfNodeModifier
+        ? uvMirror !== worldMirror
+        : mesh.userData.primitiveMeshKey != null && worldMirror
+    )
 
     let texturesOk = true
     let alphaTex: THREE.Texture | null = null
@@ -765,7 +771,8 @@ function getTextureDef(union?: TextureUnion): TextureDef | undefined {
 
 /**
  * True when mesh UVs map spatial −X → higher U than +X (L–R mirrored vs reading order).
- * Plaza `event_card_thumbnail.glb` is authored this way for Unity LH; Three RH needs a map U flip.
+ * Plaza `event_card_thumbnail.glb` is authored this way for Unity LH; Three RH needs a map U flip
+ * unless parent scale.x is already negative (then they cancel).
  */
 function meshUvMapsUMirroredOnX(mesh: THREE.Mesh): boolean {
   const pos = mesh.geometry?.getAttribute('position')
@@ -790,12 +797,32 @@ function meshUvMapsUMirroredOnX(mesh: THREE.Mesh): boolean {
   return uAtMin > uAtMax + 1e-5
 }
 
-/** Flip texture U after authored offset/tiling: sample' = 1 − sample. */
+/** Product of local scale.x up the parent chain (DCL boards often use scale.x = −1). */
+function objectWorldMirrorX(obj: THREE.Object3D): boolean {
+  obj.updateWorldMatrix(true, false)
+  let sx = 1
+  let o: THREE.Object3D | null = obj
+  for (let i = 0; i < 48 && o; i++) {
+    sx *= o.scale.x
+    o = o.parent
+  }
+  // Odd negative scales (reflection) — det < 0 also catches multi-axis flips.
+  if (sx < 0) return true
+  try {
+    return obj.matrixWorld.determinant() < 0
+  } catch {
+    return false
+  }
+}
+
+/** Flip texture U after authored offset/tiling: sample' = 1 − sample. Fresh clones only. */
 function flipTextureU(tex: THREE.Texture): void {
+  if (tex.userData.dclMapUFlipped) return
   const rep = tex.repeat.x
   const off = tex.offset.x
   tex.repeat.x = -rep
   tex.offset.x = 1 - off
+  tex.userData.dclMapUFlipped = true
   tex.needsUpdate = true
 }
 

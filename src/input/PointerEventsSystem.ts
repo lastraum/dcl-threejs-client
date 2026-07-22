@@ -198,6 +198,20 @@ export class PointerEventsSystem {
     return { x: clientX, y: clientY }
   }
 
+  /**
+   * Phase C — true when matrix/collider prepare is needed before raycast/hover.
+   * Avoids full scene-graph flush every frame while the pointer is idle.
+   */
+  needsRaycastPrepare(tickNumber: number): boolean {
+    if (!this.deps) return false
+    if (this.pointerDirty || this.primaryKeyDown) return true
+    if (this.hasPendingInput()) return true
+    if (document.pointerLockElement === this.canvas) return true
+    // Periodic hover refresh while looking around without mouse events (rare).
+    if (tickNumber % 3 === 0) return true
+    return false
+  }
+
   /** Tooltip + mesh highlight only (no CRDT). */
   updateVisuals(tickNumber: number): void {
     if (!this.deps) return
@@ -205,9 +219,7 @@ export class PointerEventsSystem {
     this.tickNumber = tickNumber
     this.rebuildPointerCacheIfNeeded()
 
-    const pointerLocked = document.pointerLockElement === this.canvas
-    const needsRaycast =
-      this.pointerDirty || pointerLocked || tickNumber % 3 === 0 || this.primaryKeyDown
+    const needsRaycast = this.needsRaycastPrepare(tickNumber)
     if (!needsRaycast && this.lastHit) {
       this.applyHoverFromHit(this.lastHit)
       this.screenDx = 0

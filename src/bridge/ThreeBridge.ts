@@ -39,6 +39,7 @@ import { cloneGltfInstance } from '../rendering/skinnedMeshInstance'
 import { SceneGltfInstancer, templateIsInstancable } from '../rendering/SceneGltfInstancer'
 import {
   applyGltfNodeModifiersToEntity,
+  gltfNodeModifiersMirrorStale,
   gltfNodeModifiersReferenceVideo,
   restoreGltfNodeModifierOriginals
 } from './GltfNodeModifiersSync'
@@ -1261,6 +1262,18 @@ export class ThreeBridge {
         if (visual && this.materials.needsReapply(entity, pb, visual)) this.pendingMaterialEntities.add(entity)
       }
       if (GltfNodeModifiers.has(entity)) {
+        this.pendingGltfNodeModEntities.add(entity)
+      }
+    }
+    // Re-apply event-card materials when Transform.scale.x lands after first paint
+    // (JUMP IN / thumbnails otherwise stay L–R mirrored).
+    for (const entity of applied.upserts) {
+      if (!GltfNodeModifiers.has(entity)) continue
+      if (this.pendingGltfNodeModEntities.has(entity)) continue
+      const obj = this.store.nodes.get(entity)
+      if (!obj) continue
+      const mods = GltfNodeModifiers.get(entity) as PBGltfNodeModifiers
+      if (gltfNodeModifiersMirrorStale(obj, mods)) {
         this.pendingGltfNodeModEntities.add(entity)
       }
     }

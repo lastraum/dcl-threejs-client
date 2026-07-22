@@ -362,13 +362,70 @@ export async function fetchDeployedSceneDisplayTitle(
     return result ? displayTitleFromEntity(result.entity) : null
   }
 
+  const customServer = target.customServer
   for (const pointer of worldPointersForTarget(target)) {
-    const result = await fetchWorldEntity(pointer)
+    const result = await fetchWorldEntity(pointer, customServer)
     if (!result) continue
     const title = displayTitleFromEntity(result.entity)
     if (title) return title
   }
   return null
+}
+
+export type WorldDeployDisplayMeta = {
+  title: string | null
+  description: string
+  imageUrl: string | null
+  contentServerBase: string
+}
+
+/**
+ * Title / description / thumbnail from the worlds content server entity
+ * (not Places API). Used for custom-realm landing so we never show DCL catalog data.
+ */
+export async function fetchWorldDeployDisplayMeta(
+  worldName: string,
+  customServer?: string | null
+): Promise<WorldDeployDisplayMeta | null> {
+  const result = await fetchWorldEntity(worldName, customServer)
+  if (!result) return null
+  const metadata = (result.entity.metadata ?? {}) as Record<string, unknown>
+  const display =
+    metadata.display && typeof metadata.display === 'object'
+      ? (metadata.display as Record<string, unknown>)
+      : {}
+  const title = displayTitleFromEntity(result.entity)
+  const description =
+    (typeof display.description === 'string' && display.description.trim()) ||
+    (typeof metadata.description === 'string' && metadata.description.trim()) ||
+    ''
+
+  let imageUrl: string | null = null
+  const thumb = typeof display.navmapThumbnail === 'string' ? display.navmapThumbnail.trim() : ''
+  if (thumb) {
+    if (/^https?:\/\//i.test(thumb)) {
+      imageUrl = thumb
+    } else {
+      const content = Array.isArray(result.entity.content) ? result.entity.content : []
+      for (const row of content) {
+        if (!row || typeof row !== 'object') continue
+        const file = typeof (row as { file?: string }).file === 'string' ? (row as { file: string }).file : ''
+        const hash = typeof (row as { hash?: string }).hash === 'string' ? (row as { hash: string }).hash : ''
+        if (!file || !hash) continue
+        if (file === thumb || file.endsWith(`/${thumb}`) || file.endsWith(thumb)) {
+          imageUrl = `${result.contentsRoot}/${encodeURIComponent(hash)}`
+          break
+        }
+      }
+    }
+  }
+
+  return {
+    title,
+    description,
+    imageUrl,
+    contentServerBase: result.contentServerBase
+  }
 }
 
 export async function resolveSceneFromRoute(target: RouteTarget): Promise<ResolvedScene> {

@@ -20,7 +20,9 @@ import {
   worldNameSearchCandidates,
   type DclPlacesWorld
 } from './dclPlaces'
+import { fetchWorldDeployDisplayMeta } from '../dcl/content/resolveScene'
 import { fetchPublicSceneTitle } from './sceneDisplayTitle'
+import { formatRealmParam } from '../network/worlds/worldsServerConfig'
 
 import {
   worldsAboutUrl,
@@ -301,7 +303,39 @@ export async function fetchSceneLandingMeta(
     }
   }
 
-  // Prefer exact `names=` match so Places owner wallet is reliable for world-name owners.
+  const customServer = route.customServer?.trim() || null
+  const shortName = route.worldName.replace(/\.dcl\.eth$/i, '').trim() || route.worldName
+
+  // Custom realm: landing card from THAT server's deployed entity only — never Places/DCL catalog.
+  if (customServer) {
+    const deploy = await fetchWorldDeployDisplayMeta(route.worldName, customServer).catch(() => null)
+    const title =
+      deploy?.title?.trim() ||
+      (await fetchPublicSceneTitle(route).catch(() => null)) ||
+      shortName
+    const description =
+      deploy?.description?.trim() ||
+      (await resolveWorldDescription(route.worldName, customServer)) ||
+      ''
+    const realmHost = formatRealmParam(customServer) || customServer
+    return {
+      title,
+      description,
+      imageUrl: deploy?.imageUrl ?? null,
+      pointerLabel: route.worldName,
+      kind: 'world',
+      customServer,
+      // Show host so the card is obviously not the official WCS listing.
+      // Owner/userCount from DCL Places would be wrong for custom servers.
+      userCount: 0,
+      ownerAddress: null,
+      ownerAddresses: [],
+      ownerDisplayName: realmHost,
+      categories: []
+    }
+  }
+
+  // Official worlds: Prefer exact `names=` match so Places owner wallet is reliable.
   const nameCandidates = worldNameSearchCandidates(route.worldName)
   const [byName, bySearch] = await Promise.all([
     nameCandidates.length
@@ -341,9 +375,8 @@ export async function fetchSceneLandingMeta(
     world?.owner,
     world ? placeOwnerAddress(world) : null
   )
-  const shortName = route.worldName.replace(/\.dcl\.eth$/i, '').trim() || route.worldName
   const ownerDisplay = await ownerDisplayName(owners.primary, shortName)
-  const description = await resolveWorldDescription(route.worldName, route.customServer)
+  const description = await resolveWorldDescription(route.worldName, null)
   const title = await fetchPublicSceneTitle(route)
 
   return {
@@ -352,7 +385,7 @@ export async function fetchSceneLandingMeta(
     imageUrl: world?.image ?? null,
     pointerLabel: route.worldName,
     kind: 'world',
-    customServer: route.customServer?.trim() || null,
+    customServer: null,
     userCount: world?.userCount ?? 0,
     ownerAddress: owners.primary,
     ownerAddresses: owners.all,

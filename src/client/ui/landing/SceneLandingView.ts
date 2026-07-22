@@ -1461,7 +1461,7 @@ export class SceneLandingView {
     const creatorLabel =
       meta.kind === 'world'
         ? meta.customServer?.trim()
-          ? 'Custom world owner'
+          ? 'Custom realm'
           : 'World owner'
         : 'Creator'
     const inWorldLabel = meta.kind === 'world' ? 'in world' : 'here'

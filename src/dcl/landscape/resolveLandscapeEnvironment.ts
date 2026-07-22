@@ -126,7 +126,9 @@ export type ResolvedSceneEnvironment = {
 }
 
 function defaultLandscapeEnvironmentForSource(source: SceneSource): LandscapeEnvironmentKind {
-  if (source.kind === 'world') return 'island'
+  // Worlds: no auto island/ocean — creators opt in via scene.json `environment`
+  // (`island` / `water` / `land` / …) or `?environment=`. Avoids FFT water on every world.
+  if (source.kind === 'world') return 'none'
   // Local authoring keeps void/blank; Genesis City parcels get skybox + quiet ground.
   if (source.kind === 'local' || source.kind === 'blank' || source.kind === 'portable') return 'none'
   return 'genesis'
@@ -137,7 +139,8 @@ function defaultLandscapeEnvironmentForSource(source: SceneSource): LandscapeEnv
  * `?environment=none&disableSun=1` cannot fall back to island when `kind` is omitted from JSON.
  *
  * Parcel scenes (`coords`) default to `genesis` (skybox, no void) unless `scene.json` sets `environment`.
- * Worlds default to `island`. Local/blank default to `none` (void authoring sky).
+ * Worlds default to `none` (no client landscape/water) unless scene.json or `?environment=` sets a biome.
+ * Local/blank default to `none` (void authoring sky).
  */
 export function resolveSceneEnvironment(
   metadata: SceneMetadata,

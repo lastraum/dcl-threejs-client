@@ -54,7 +54,11 @@ export type SceneEnvironmentKind =
  * Ignored by Unity/Godot Explorer. ThreejsClient-only scene.json environment.water knobs.
  */
 export type SceneWaterConfig = {
-  /** When false, no client water mesh (same as `?water=0`). Default true for island/water biomes. */
+  /**
+   * When false, no client water mesh (same as `?water=0`).
+   * Default true only when biome is `island`/`water` (those profiles set showWater).
+   * Worlds no longer default to island — set `environment.kind` / `"island"` to get water.
+   */
   enabled?: boolean
   /** When false, use Water.js fallback instead of GPGPU FFT. Default true when WebGL2. */
   fft?: boolean

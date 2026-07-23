@@ -104,6 +104,11 @@ export class DebugAvatarCrowd {
   private composeSerial: Promise<void> = Promise.resolve()
   private disposed = false
   private busy = false
+  /**
+   * World position captured when the first crowd avatar of a session is placed.
+   * Ring stays fixed here — does **not** follow the player when they walk away.
+   */
+  private layoutAnchor: THREE.Vector3 | null = null
 
   constructor(opts: {
     scene: THREE.Scene
@@ -154,6 +159,7 @@ export class DebugAvatarCrowd {
 
   clear(): void {
     this.targetCount = 0
+    this.layoutAnchor = null
     void this.reconcile()
   }
 
@@ -179,6 +185,7 @@ export class DebugAvatarCrowd {
   dispose(): void {
     this.disposed = true
     this.targetCount = 0
+    this.layoutAnchor = null
     while (this.instances.length) {
       this.removeLast()
     }
@@ -197,7 +204,7 @@ export class DebugAvatarCrowd {
           if (this.disposed) break
           await this.spawnOne()
         }
-        this.layoutRing()
+        // Do not re-layout existing avatars — positions stay where they were spawned.
       } finally {
         this.busy = false
       }
@@ -415,6 +422,7 @@ export class DebugAvatarCrowd {
     }
 
     stabilizeSkinnedMeshes(model)
+    repairCrowdBlackMaterials(model, profile.skin)
     const root = new THREE.Group()
     root.name = `debug-crowd-${index}`
     const pivot = new THREE.Group()
@@ -443,39 +451,84 @@ export class DebugAvatarCrowd {
       animations,
       address: profile.address ?? `crowd-${index}`
     })
-    // Place immediately (don't wait for full batch) so partial spawns aren't at origin.
-    this.layoutRing()
+    // Place this instance only once around a fixed anchor (does not follow player).
+    this.placeInstance(root, this.instances.length - 1)
     clientDebugLog.log('debug', `crowd spawn ${this.instances.length}/${this.targetCount}`)
   }
 
-  private layoutRing(): void {
-    const feet = this.getPlayerFeet()
-    // Prefer live player feet; never leave everyone at world origin if player is elsewhere.
-    let cx = 0
-    let cy = 0
-    let cz = 0
-    if (feet && Number.isFinite(feet.x) && Number.isFinite(feet.z)) {
-      cx = feet.x
-      cy = feet.y
-      cz = feet.z
-    } else if (this.instances.length > 0) {
-      // Keep previous ring center if player briefly unavailable mid-spawn.
-      return
+  /**
+   * Place a single avatar in a spiral ring around {@link layoutAnchor}.
+   * Anchor is frozen at first placement — later player movement does not move the crowd.
+   */
+  private placeInstance(root: THREE.Group, index: number): void {
+    if (!this.layoutAnchor) {
+      const feet = this.getPlayerFeet()
+      this.layoutAnchor =
+        feet && Number.isFinite(feet.x) && Number.isFinite(feet.z)
+          ? feet.clone()
+          : new THREE.Vector3(0, 0, 0)
     }
-    const n = this.instances.length
-    if (n === 0) return
-    // Spiral / rings so many avatars don't stack on one point.
-    const baseR = 2.5
-    for (let i = 0; i < n; i++) {
-      const ring = Math.floor(i / 12)
-      const slot = i % 12
-      const inRing = Math.min(12, n - ring * 12)
-      const angle = (slot / Math.max(1, inRing)) * Math.PI * 2 + ring * 0.35
-      const r = baseR + ring * 2.2
-      const inst = this.instances[i]!
-      inst.root.position.set(cx + Math.sin(angle) * r, cy, cz + Math.cos(angle) * r)
-      // Face toward ring center (player).
-      inst.root.rotation.y = angle + Math.PI
-    }
+    const { x: cx, y: cy, z: cz } = this.layoutAnchor
+    const ring = Math.floor(index / 12)
+    const slot = index % 12
+    const inRing = 12
+    const angle = (slot / inRing) * Math.PI * 2 + ring * 0.35
+    const r = 2.5 + ring * 2.2
+    root.position.set(cx + Math.sin(angle) * r, cy, cz + Math.cos(angle) * r)
+    root.rotation.y = angle + Math.PI
   }
+}
+
+/**
+ * Marketplace / failed GLB textures often leave MeshStandardMaterial with a broken map
+ * or pure black baseColor → solid black clothing. Lift broken maps and black metals.
+ */
+function repairCrowdBlackMaterials(root: THREE.Object3D, skinHex: string): void {
+  const skinColor = new THREE.Color(`#${skinHex.replace('#', '')}`)
+  root.traverse((obj) => {
+    if (!(obj as THREE.Mesh).isMesh) return
+    const mesh = obj as THREE.Mesh
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+    for (const mat of mats) {
+      if (!mat || !('isMeshStandardMaterial' in mat)) continue
+      const m = mat as THREE.MeshStandardMaterial
+      const name = (m.name ?? '').toLowerCase()
+      const mapBroken = isTextureBroken(m.map)
+      if (mapBroken) {
+        m.map = null
+        m.needsUpdate = true
+      }
+      const luma = m.color.r + m.color.g + m.color.b
+      // Pure black + no usable map → unreadable silhouette
+      if (luma < 0.04 && !m.map) {
+        if (name.includes('skin') || name.includes('avatarskin')) {
+          m.color.copy(skinColor)
+        } else {
+          m.color.setRGB(0.45, 0.45, 0.48)
+        }
+        m.metalness = Math.min(m.metalness, 0.15)
+        m.roughness = Math.max(m.roughness, 0.65)
+        m.needsUpdate = true
+      } else if (m.metalness > 0.92 && luma < 0.12 && !m.envMap) {
+        // Chrome-black without env map reads as a void silhouette in our lighting.
+        m.metalness = 0.2
+        m.roughness = Math.max(m.roughness, 0.55)
+        if (luma < 0.08) m.color.setRGB(0.35, 0.35, 0.38)
+        m.needsUpdate = true
+      }
+    }
+  })
+}
+
+function isTextureBroken(tex: THREE.Texture | null | undefined): boolean {
+  if (!tex) return true
+  const img = tex.image as
+    | { complete?: boolean; naturalWidth?: number; width?: number; height?: number }
+    | undefined
+  if (!img) return true
+  if (img.complete === false) return true
+  if (typeof img.naturalWidth === 'number' && img.naturalWidth === 0) return true
+  const w = img.width ?? img.naturalWidth ?? 0
+  const h = img.height ?? 0
+  return w < 1 || h < 1
 }

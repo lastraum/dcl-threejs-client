@@ -667,22 +667,30 @@ export class AppController {
 
     this.unsubCommunityFollow?.()
     this.unsubCommunityFollow = this.communityFollow.subscribe((ev) => {
+      if (ev.kind === 'changed') {
+        this.syncTourUiFromController()
+        return
+      }
       if (ev.kind === 'flag_changed') {
-        this.applyFollowFlag(ev.leaderAddress, ev.flagDataUrl)
+        // Only tour participants render the leader flag (leader + followers).
+        if (this.isTourParticipant(ev.communityId)) {
+          this.applyFollowFlag(ev.leaderAddress, ev.flagDataUrl)
+        } else if (!this.communityFollow?.isLeading() && !this.communityFollow?.isFollowing()) {
+          this.followFlagManager?.clear()
+        }
+        this.syncTourOptionsSidebarVisibility()
         return
       }
       if (ev.kind === 'tour_ended') {
-        // Clear flag when this was the tour we were showing.
-        const showing = this.followFlagManager?.getLeaderAddress()
-        if (!showing) return
-        const still = this.communityFollow?.getActiveFlag()
-        if (!still?.flagDataUrl) this.followFlagManager?.clear()
+        this.syncTourUiFromController()
         return
       }
       if (ev.kind === 'tour_started') {
-        if (ev.session.flagDataUrl) {
+        // Leader sees own flag immediately; followers apply when they Follow (or via flag_changed).
+        if (ev.isLocalLeader && ev.session.flagDataUrl) {
           this.applyFollowFlag(ev.session.leaderAddress, ev.session.flagDataUrl)
         }
+        this.syncTourOptionsSidebarVisibility()
         if (!ev.isLocalLeader) {
           this.ensureSocialMobileNotifications()
           const name =
@@ -705,6 +713,8 @@ export class AppController {
       if (ev.kind === 'follow_goto') {
         // Avoid re-entrancy while already navigating from a previous pulse.
         if (this.navigating) return
+        // Ensure flag is on for this follower when jumping with the leader.
+        this.syncFollowFlagFromController()
         const route = followTargetToRoute(ev.target)
         // Already with the leader (same primary / same feet parcel) — don't reload.
         // Leader /goto or map Jump In to a *new* place still teleports followers.
@@ -725,6 +735,15 @@ export class AppController {
         void this.jumpInToScene(route, { fastAssets: true, source: 'goto' })
       }
     })
+    this.syncTourUiFromController()
+  }
+
+  /** Local user is leading or following this community tour. */
+  private isTourParticipant(communityId: string): boolean {
+    const follow = this.communityFollow
+    if (!follow) return false
+    const id = communityId.trim().toLowerCase()
+    return follow.isLeading(id) || follow.isFollowing(id)
   }
 
   private applyFollowFlag(leaderAddress: string, flagDataUrl: string | null): void {
@@ -740,13 +759,30 @@ export class AppController {
     this.followFlagManager.setImageDataUrl(flagDataUrl)
   }
 
+  /**
+   * Flag 3D prop only for tour participants; sidebar Tour Options only for leader.
+   */
   private syncFollowFlagFromController(): void {
-    const active = this.communityFollow?.getActiveFlag()
+    const follow = this.communityFollow
+    if (!follow?.isLeading() && !follow?.isFollowing()) {
+      this.followFlagManager?.clear()
+      return
+    }
+    const active = follow.getActiveFlag()
     if (active?.flagDataUrl) {
       this.applyFollowFlag(active.leaderAddress, active.flagDataUrl)
     } else {
       this.followFlagManager?.clear()
     }
+  }
+
+  private syncTourOptionsSidebarVisibility(): void {
+    this.shell?.setTourOptionsVisible(Boolean(this.communityFollow?.isLeading()))
+  }
+
+  private syncTourUiFromController(): void {
+    this.syncFollowFlagFromController()
+    this.syncTourOptionsSidebarVisibility()
   }
 
   /** Sidebar 🚩 Tour Options — enable/disable flag + stop tour. */
@@ -2786,6 +2822,7 @@ export class AppController {
     this.tourOptionsPopup = null
     this.tourFlagImageModal?.dispose()
     this.tourFlagImageModal = null
+    this.shell?.setTourOptionsVisible(false)
   }
 
   /** Sign out wallet → fall back to stable browser guest (same machine keeps guest key). */

@@ -235,6 +235,8 @@ export class ClientShell {
     for (const cfg of TOP_BUTTONS) {
       const btn = new SidebarButton({ ...cfg, onClick: (ev) => this.actionHandler(cfg.id)(ev) })
       this.buttons.set(cfg.id, btn)
+      // Tour Options only appears while leading a tour (AppController toggles).
+      if (cfg.id === 'tour-options') btn.element.hidden = true
       top.appendChild(btn.element)
       if (cfg.dividerAfter) top.appendChild(createSidebarDivider())
     }
@@ -392,6 +394,14 @@ export class ClientShell {
 
   setTourOptionsHandler(handler: (() => void) | null): void {
     this.onTourOptions = handler
+  }
+
+  /** Tour Options flag icon — only for the active tour leader. */
+  setTourOptionsVisible(visible: boolean): void {
+    const btn = this.buttons.get('tour-options')
+    if (!btn) return
+    btn.element.hidden = !visible
+    if (!visible) btn.setActive(false)
   }
 
   setEmoteWheelProfile(profile: AvatarProfile | null | undefined): void {

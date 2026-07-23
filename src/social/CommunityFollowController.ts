@@ -245,6 +245,16 @@ export class CommunityFollowController {
     this.followingCommunityId = id
     this.followingSessionId = session.sessionId
     this.emit({ kind: 'changed' })
+    // Apply leader flag immediately if we already learned it via start/hb/flag wire.
+    if (session.flagDataUrl) {
+      this.emit({
+        kind: 'flag_changed',
+        communityId: id,
+        sessionId: session.sessionId,
+        leaderAddress: session.leaderAddress,
+        flagDataUrl: session.flagDataUrl
+      })
+    }
     if (session.lastTarget) {
       this.emit({
         kind: 'follow_goto',
@@ -262,8 +272,20 @@ export class CommunityFollowController {
   }
 
   unfollow(): void {
+    const was = this.followingCommunityId
+    const session = was ? this.sessions.get(was) : null
     this.followingCommunityId = null
     this.followingSessionId = null
+    // Drop flag visual for this client when leaving the tour.
+    if (session) {
+      this.emit({
+        kind: 'flag_changed',
+        communityId: session.communityId,
+        sessionId: session.sessionId,
+        leaderAddress: session.leaderAddress,
+        flagDataUrl: null
+      })
+    }
     this.emit({ kind: 'changed' })
   }
 

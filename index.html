@@ -227,7 +227,7 @@
         top: var(--client-safe-top);
         right: var(--client-safe-right);
         z-index: var(--z-client-debug);
-        width: min(420px, calc(100vw - var(--client-safe-right) - 16px));
+        width: min(440px, calc(100vw - var(--client-safe-right) - 16px));
         max-height: calc(100vh - var(--client-safe-top) - var(--client-safe-bottom));
         display: none;
         flex-direction: column;
@@ -240,6 +240,7 @@
         line-height: 1.45;
         box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
         pointer-events: auto;
+        overflow: hidden;
       }
       .debug-panel.is-open {
         display: flex;
@@ -250,13 +251,16 @@
         letter-spacing: 0.12em;
         margin-bottom: 8px;
         color: rgba(255, 255, 255, 0.75);
+        flex-shrink: 0;
       }
-      .debug-panel__body.error {
-        color: #ff8a80;
-      }
-      .debug-panel__body code {
-        font-size: 11px;
-        opacity: 0.9;
+      .debug-panel__tools {
+        flex: 0 1 auto;
+        overflow: auto;
+        min-height: 0;
+        max-height: min(38vh, 320px);
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
       }
       .debug-panel__physx {
         margin-top: 10px;
@@ -329,13 +333,20 @@
         flex-shrink: 0;
       }
       .debug-panel__position {
-        margin-top: 10px;
-        padding-top: 8px;
-        border-top: 1px solid rgba(255, 255, 255, 0.08);
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
         font-size: 10px;
         line-height: 1.45;
         flex-shrink: 0;
+      }
+      .debug-panel__environment {
+        margin-top: 10px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .debug-panel__check--log {
+        margin: 2px 0;
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.78);
       }
       .debug-panel__position-title {
         font-size: 10px;
@@ -350,9 +361,6 @@
         color: rgba(255, 255, 255, 0.88);
       }
       .debug-panel__logs {
-        margin-top: 10px;
-        padding-top: 8px;
-        border-top: 1px solid rgba(255, 255, 255, 0.08);
         display: flex;
         flex-direction: column;
         min-height: 0;
@@ -392,13 +400,16 @@
       }
       .debug-panel__logs-body {
         overflow: auto;
-        max-height: min(280px, 40vh);
+        flex: 1 1 auto;
+        min-height: min(320px, 42vh);
+        max-height: min(520px, 58vh);
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
         font-size: 10px;
         line-height: 1.35;
         border-radius: 8px;
         background: rgba(0, 0, 0, 0.28);
         padding: 6px 8px;
+        margin-top: 6px;
       }
       .debug-panel__logs-empty {
         color: rgba(255, 255, 255, 0.4);

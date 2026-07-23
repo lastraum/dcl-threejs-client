@@ -3,7 +3,6 @@ import { environmentDebug, type EnvironmentDebugState } from '../../debug/Enviro
 import { physxColliderDebug, type PhysxColliderDebugOptions } from '../../debug/PhysxColliderDebug'
 import { cameraCollisionDebug } from '../../debug/CameraCollisionDebug'
 import { platformMotionDebug } from '../../debug/PlatformMotionDebug'
-import { sceneBanDebug } from '../../network/sceneAccess/sceneBanDebug'
 import {
   MAX_SHADOW_SPOT_LIGHTS,
   LIGHT_CULL_DISTANCE_M,
@@ -36,7 +35,6 @@ export type DebugPanelOptions = {
 /** Top-right debug overlay — toggled from the Help sidebar button. */
 export class DebugPanel {
   readonly root: HTMLDivElement
-  private readonly body: HTMLDivElement
   private readonly physxSceneToggle: HTMLInputElement
   private readonly physxGltfToggle: HTMLInputElement
   private readonly physxPlayerToggle: HTMLInputElement
@@ -93,70 +91,6 @@ export class DebugPanel {
     this.root.className = 'debug-panel'
     this.root.innerHTML = `
       <div class="debug-panel__header">Debug</div>
-      <div class="debug-panel__body"></div>
-      <div class="debug-panel__environment">
-        <div class="debug-panel__physx-title">Environment</div>
-        <label class="debug-panel__check">
-          <input type="checkbox" data-env-disable />
-          <span>Disable loaded environment</span>
-        </label>
-        <div class="debug-panel__render-quality-hint" data-env-hint></div>
-      </div>
-      <div class="debug-panel__scene-ban">
-        <div class="debug-panel__physx-title">Scene ban (dev)</div>
-        <button type="button" class="debug-panel__logs-btn" data-scene-ban-sim>Simulate scene ban</button>
-        <div class="debug-panel__render-quality-hint">URL: ?sceneban or ?sceneban=15 (delay seconds)</div>
-      </div>
-      <div class="debug-panel__physx">
-        <div class="debug-panel__physx-title">PhysX colliders</div>
-        <label class="debug-panel__check">
-          <input type="checkbox" data-physx-scene />
-          <span>Scene MeshColliders</span>
-        </label>
-        <label class="debug-panel__check">
-          <input type="checkbox" data-physx-gltf />
-          <span>GLTF colliders</span>
-        </label>
-        <label class="debug-panel__check">
-          <input type="checkbox" data-physx-player />
-          <span>Local player capsule</span>
-        </label>
-        <label class="debug-panel__check">
-          <input type="checkbox" data-physx-probe />
-          <span>Log PhysX probe (collidersphys)</span>
-        </label>
-        <label class="debug-panel__check">
-          <input type="checkbox" data-physx-runtime-recook />
-          <span>Runtime drift recook (colliderrecook)</span>
-        </label>
-        <label class="debug-panel__check">
-          <input type="checkbox" data-platform-motion />
-          <span>Platform velocity transfer log</span>
-        </label>
-        <label class="debug-panel__check">
-          <input type="checkbox" data-camera-wall-occlusion />
-          <span>Third-person camera wall sweep (camerasweep)</span>
-        </label>
-        <button type="button" class="debug-panel__logs-btn" data-physx-recook>Force recook all colliders</button>
-      </div>
-      <div class="debug-panel__render-quality">
-        <div class="debug-panel__render-quality-title">Render quality</div>
-        <label class="debug-panel__render-quality-row">
-          <span>Light culling tier</span>
-          <select data-render-quality>
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-            <option value="ultra">Ultra</option>
-          </select>
-        </label>
-        <div class="debug-panel__render-quality-hint" data-render-quality-hint></div>
-      </div>
-      <div class="debug-panel__position">
-        <div class="debug-panel__position-title">Position</div>
-        <div class="debug-panel__position-local">Scene-local: —</div>
-        <div class="debug-panel__position-world">World: —</div>
-      </div>
       <div class="debug-panel__logs">
         <div class="debug-panel__logs-header">
           <span class="debug-panel__logs-title">Client log</span>
@@ -165,17 +99,83 @@ export class DebugPanel {
             <button type="button" class="debug-panel__logs-btn debug-panel__logs-clear">Clear</button>
           </div>
         </div>
-        <label class="debug-panel__check" style="margin:6px 0 4px">
-          <input type="checkbox" data-console-mirror />
-          <span>Browser console logs (on in local dev)</span>
+        <label class="debug-panel__check debug-panel__check--log">
+          <input type="checkbox" data-all-client-logs />
+          <span>All client logs (incl. silenced categories)</span>
         </label>
-        <div class="debug-panel__render-quality-hint">Local vite: on by default. Prod: off unless checked. When off, logs stay in this panel only.</div>
+        <label class="debug-panel__check debug-panel__check--log">
+          <input type="checkbox" data-console-capture />
+          <span>Capture console.log / warn / error here</span>
+        </label>
+        <label class="debug-panel__check debug-panel__check--log">
+          <input type="checkbox" data-console-mirror />
+          <span>Mirror panel → browser console</span>
+        </label>
         <div class="debug-panel__logs-body" role="log" aria-live="polite"></div>
       </div>
-      <div class="debug-panel__stats"></div>
+      <div class="debug-panel__tools">
+        <div class="debug-panel__position">
+          <div class="debug-panel__position-title">Position</div>
+          <div class="debug-panel__position-local">Scene-local: —</div>
+          <div class="debug-panel__position-world">World: —</div>
+        </div>
+        <div class="debug-panel__environment">
+          <div class="debug-panel__physx-title">Environment</div>
+          <label class="debug-panel__check">
+            <input type="checkbox" data-env-disable />
+            <span>Disable loaded environment</span>
+          </label>
+          <div class="debug-panel__render-quality-hint" data-env-hint></div>
+        </div>
+        <div class="debug-panel__physx">
+          <div class="debug-panel__physx-title">PhysX colliders</div>
+          <label class="debug-panel__check">
+            <input type="checkbox" data-physx-scene />
+            <span>Scene MeshColliders</span>
+          </label>
+          <label class="debug-panel__check">
+            <input type="checkbox" data-physx-gltf />
+            <span>GLTF colliders</span>
+          </label>
+          <label class="debug-panel__check">
+            <input type="checkbox" data-physx-player />
+            <span>Local player capsule</span>
+          </label>
+          <label class="debug-panel__check">
+            <input type="checkbox" data-physx-probe />
+            <span>Log PhysX probe (collidersphys)</span>
+          </label>
+          <label class="debug-panel__check">
+            <input type="checkbox" data-physx-runtime-recook />
+            <span>Runtime drift recook (colliderrecook)</span>
+          </label>
+          <label class="debug-panel__check">
+            <input type="checkbox" data-platform-motion />
+            <span>Platform velocity transfer log</span>
+          </label>
+          <label class="debug-panel__check">
+            <input type="checkbox" data-camera-wall-occlusion />
+            <span>Third-person camera wall sweep (camerasweep)</span>
+          </label>
+          <button type="button" class="debug-panel__logs-btn" data-physx-recook>Force recook all colliders</button>
+        </div>
+        <div class="debug-panel__render-quality">
+          <div class="debug-panel__render-quality-title">Render quality</div>
+          <label class="debug-panel__render-quality-row">
+            <span>Light culling tier</span>
+            <select data-render-quality>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="ultra">Ultra</option>
+            </select>
+          </label>
+          <div class="debug-panel__render-quality-hint" data-render-quality-hint></div>
+        </div>
+        <div class="debug-panel__stats"></div>
+      </div>
     `
 
-    this.body = this.root.querySelector('.debug-panel__body') as HTMLDivElement
     this.physxSceneToggle = this.root.querySelector('[data-physx-scene]') as HTMLInputElement
     this.physxGltfToggle = this.root.querySelector('[data-physx-gltf]') as HTMLInputElement
     this.physxPlayerToggle = this.root.querySelector('[data-physx-player]') as HTMLInputElement
@@ -195,6 +195,22 @@ export class DebugPanel {
     this.logsBody = this.root.querySelector('.debug-panel__logs-body') as HTMLDivElement
     const statsHost = this.root.querySelector('.debug-panel__stats') as HTMLDivElement
     statsHost.appendChild(renderStats.dom)
+
+    const allClientLogsToggle = this.root.querySelector(
+      '[data-all-client-logs]'
+    ) as HTMLInputElement
+    allClientLogsToggle.checked = clientDebugLog.isAllClientLogs()
+    allClientLogsToggle.addEventListener('change', () => {
+      clientDebugLog.setAllClientLogs(allClientLogsToggle.checked)
+    })
+
+    const consoleCaptureToggle = this.root.querySelector(
+      '[data-console-capture]'
+    ) as HTMLInputElement
+    consoleCaptureToggle.checked = clientDebugLog.isConsoleCapture()
+    consoleCaptureToggle.addEventListener('change', () => {
+      clientDebugLog.setConsoleCapture(consoleCaptureToggle.checked)
+    })
 
     const consoleMirrorToggle = this.root.querySelector(
       '[data-console-mirror]'
@@ -216,7 +232,6 @@ export class DebugPanel {
 
     this.unsubscribeLogs = clientDebugLog.subscribe((entries) => this.renderLogs(entries))
 
-    this.wireSceneBanDebugControls()
     this.wirePhysxDebugControls()
     this.wirePlatformMotionControls()
     this.wireCameraCollisionControls()
@@ -227,9 +242,9 @@ export class DebugPanel {
     document.addEventListener('click', this.onDocumentClick, true)
   }
 
-  setStatusHtml(html: string, isError = false): void {
-    this.body.className = isError ? 'debug-panel__body error' : 'debug-panel__body'
-    this.body.innerHTML = html
+  /** Kept for callers; scene summary was removed to free log space. */
+  setStatusHtml(_html: string, _isError = false): void {
+    /* no-op */
   }
 
   replaceRenderStats(renderStats: RenderStats): void {
@@ -460,13 +475,6 @@ export class DebugPanel {
     })
 
     this.unsubscribeEnvironmentDebug = environmentDebug.subscribe(syncFromStore)
-  }
-
-  private wireSceneBanDebugControls(): void {
-    const btn = this.root.querySelector('[data-scene-ban-sim]') as HTMLButtonElement | null
-    btn?.addEventListener('click', () => {
-      sceneBanDebug.triggerNow()
-    })
   }
 
   private wirePlatformMotionControls(): void {

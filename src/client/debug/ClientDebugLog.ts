@@ -33,6 +33,8 @@ const SILENCED_CATEGORIES: ReadonlySet<string> =
   import.meta.env.DEV === true ? new Set() : new Set(['comms'])
 
 const CONSOLE_MIRROR_KEY = 'dcl.debug.consoleMirror'
+const CONSOLE_CAPTURE_KEY = 'dcl.debug.consoleCapture'
+const ALL_CLIENT_LOGS_KEY = 'dcl.debug.allClientLogs'
 
 /** Local `vite` / `import.meta.env.DEV` — mirror client logs to DevTools by default. */
 function defaultConsoleMirror(): boolean {
@@ -43,15 +45,37 @@ function defaultConsoleMirror(): boolean {
  * Explicit localStorage wins (`1` / `0`).
  * Unset → on in local DEV, off in production builds.
  */
-function readConsoleMirrorPref(): boolean {
+function readBoolPref(key: string, fallback: boolean): boolean {
   try {
-    const raw = localStorage.getItem(CONSOLE_MIRROR_KEY)
+    const raw = localStorage.getItem(key)
     if (raw === '1') return true
     if (raw === '0') return false
   } catch {
     /* ignore */
   }
-  return defaultConsoleMirror()
+  return fallback
+}
+
+function writeBoolPref(key: string, enabled: boolean): void {
+  try {
+    localStorage.setItem(key, enabled ? '1' : '0')
+  } catch {
+    /* ignore */
+  }
+}
+
+function formatConsoleArgs(args: unknown[]): string {
+  return args
+    .map((a) => {
+      if (typeof a === 'string') return a
+      if (a instanceof Error) return a.stack || a.message
+      try {
+        return JSON.stringify(a)
+      } catch {
+        return String(a)
+      }
+    })
+    .join(' ')
 }
 
 /** In-memory client log — rendered in the Help debug panel. */
@@ -64,25 +88,70 @@ export class ClientDebugLog {
    * When false, never print to browser console — Help panel only.
    * Default: on in local DEV, off in prod (unless checkbox / localStorage).
    */
-  private consoleMirror = readConsoleMirrorPref()
+  private consoleMirror = readBoolPref(CONSOLE_MIRROR_KEY, defaultConsoleMirror())
+  /**
+   * When true, show silenced categories (e.g. comms in prod) in the panel.
+   * Default off — opt-in via Help → Debug.
+   */
+  private allClientLogs = readBoolPref(ALL_CLIENT_LOGS_KEY, false)
+  /**
+   * When true, hook console.log/warn/error into this panel so ad-hoc logs appear here.
+   */
+  private consoleCapture = readBoolPref(CONSOLE_CAPTURE_KEY, false)
+  private consoleHookInstalled = false
+  private origConsole: {
+    log: typeof console.log
+    info: typeof console.info
+    warn: typeof console.warn
+    error: typeof console.error
+  } | null = null
+  /** Avoid re-entrancy when our own mirror writes to console. */
+  private writingConsole = false
+
+  constructor() {
+    if (this.consoleCapture) this.installConsoleHook()
+  }
 
   /** Help → Debug “Browser console logs”. Default on in local DEV, off in prod. */
   setConsoleMirror(enabled: boolean): void {
     this.consoleMirror = !!enabled
-    try {
-      // Persist both states so DEV default-on can still be turned off and stick.
-      localStorage.setItem(CONSOLE_MIRROR_KEY, enabled ? '1' : '0')
-    } catch {
-      /* ignore */
-    }
+    writeBoolPref(CONSOLE_MIRROR_KEY, this.consoleMirror)
   }
 
   isConsoleMirror(): boolean {
     return this.consoleMirror
   }
 
+  /**
+   * Help → Debug “All client logs” — include normally silenced categories (comms in prod).
+   */
+  setAllClientLogs(enabled: boolean): void {
+    this.allClientLogs = !!enabled
+    writeBoolPref(ALL_CLIENT_LOGS_KEY, this.allClientLogs)
+  }
+
+  isAllClientLogs(): boolean {
+    return this.allClientLogs
+  }
+
+  /**
+   * Help → Debug “Capture console.log here” — pipe browser console into this panel.
+   */
+  setConsoleCapture(enabled: boolean): void {
+    const next = !!enabled
+    if (next === this.consoleCapture) return
+    this.consoleCapture = next
+    writeBoolPref(CONSOLE_CAPTURE_KEY, next)
+    if (next) this.installConsoleHook()
+    else this.uninstallConsoleHook()
+  }
+
+  isConsoleCapture(): boolean {
+    return this.consoleCapture
+  }
+
   log(category: string, message: string, options: DebugLogOptions = {}): void {
-    const silenced = SILENCED_CATEGORIES.has(category)
+    const silenced = !this.allClientLogs && SILENCED_CATEGORIES.has(category)
     if (silenced) return
 
     const level = options.level ?? 'info'
@@ -95,9 +164,25 @@ export class ClientDebugLog {
       this.throttleAt.set(key, now)
     }
 
+    this.pushEntry(category, level, message)
+
+    if (this.consoleMirror) {
+      this.writingConsole = true
+      try {
+        const prefix = `[${category}]`
+        if (level === 'warn') console.warn(prefix, message)
+        else if (level === 'error') console.error(prefix, message)
+        else console.log(prefix, message)
+      } finally {
+        this.writingConsole = false
+      }
+    }
+  }
+
+  private pushEntry(category: string, level: DebugLogLevel, message: string): void {
     const entry: DebugLogEntry = {
       id: this.nextId++,
-      at: now,
+      at: Date.now(),
       category,
       level,
       message
@@ -108,13 +193,49 @@ export class ClientDebugLog {
       this.entries.splice(0, this.entries.length - MAX_ENTRIES)
     }
     for (const listener of this.listeners) listener(this.entries)
+  }
 
-    if (this.consoleMirror) {
-      const prefix = `[${category}]`
-      if (level === 'warn') console.warn(prefix, message)
-      else if (level === 'error') console.error(prefix, message)
-      else console.log(prefix, message)
+  private installConsoleHook(): void {
+    if (this.consoleHookInstalled || typeof console === 'undefined') return
+    this.origConsole = {
+      log: console.log.bind(console),
+      info: console.info.bind(console),
+      warn: console.warn.bind(console),
+      error: console.error.bind(console)
     }
+    const capture = (level: DebugLogLevel, args: unknown[]) => {
+      if (this.writingConsole || !this.consoleCapture) return
+      const msg = formatConsoleArgs(args).slice(0, 2000)
+      if (!msg) return
+      this.pushEntry('console', level, msg)
+    }
+    console.log = (...args: unknown[]) => {
+      this.origConsole!.log(...args)
+      capture('info', args)
+    }
+    console.info = (...args: unknown[]) => {
+      this.origConsole!.info(...args)
+      capture('info', args)
+    }
+    console.warn = (...args: unknown[]) => {
+      this.origConsole!.warn(...args)
+      capture('warn', args)
+    }
+    console.error = (...args: unknown[]) => {
+      this.origConsole!.error(...args)
+      capture('error', args)
+    }
+    this.consoleHookInstalled = true
+  }
+
+  private uninstallConsoleHook(): void {
+    if (!this.consoleHookInstalled || !this.origConsole) return
+    console.log = this.origConsole.log
+    console.info = this.origConsole.info
+    console.warn = this.origConsole.warn
+    console.error = this.origConsole.error
+    this.origConsole = null
+    this.consoleHookInstalled = false
   }
 
   /**

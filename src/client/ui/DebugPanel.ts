@@ -23,6 +23,10 @@ export type DebugPanelOptions = {
   getPlayerPosition?: () => DebugPanelPosition | null
   getSceneOrigin?: () => DebugPanelSceneOrigin
   onRecookColliders?: () => void | Promise<void>
+  /** Multi-avatar perf harness — spawn fake peers around the player. */
+  onCrowdDelta?: (delta: number) => void
+  onCrowdClear?: () => void
+  getCrowdCount?: () => { count: number; target: number; busy: boolean }
 }
 
 /** Top-right debug overlay — toggled from the Help sidebar button. */
@@ -52,6 +56,10 @@ export class DebugPanel {
   private unsubscribePhysxDebug: (() => void) | null = null
   private unsubscribeEnvironmentDebug: (() => void) | null = null
   private onRecookColliders: (() => void | Promise<void>) | null = null
+  private onCrowdDelta: ((delta: number) => void) | null = null
+  private onCrowdClear: (() => void) | null = null
+  private getCrowdCount: (() => { count: number; target: number; busy: boolean }) | null = null
+  private crowdStatusEl: HTMLDivElement | null = null
   private readonly onDocumentClick = (ev: MouseEvent) => {
     if (this.ignoreOutsideClick) {
       this.ignoreOutsideClick = false
@@ -70,13 +78,19 @@ export class DebugPanel {
     onVisibilityChange,
     getPlayerPosition,
     getSceneOrigin,
-    onRecookColliders
+    onRecookColliders,
+    onCrowdDelta,
+    onCrowdClear,
+    getCrowdCount
   }: DebugPanelOptions) {
     this.anchor = anchor
     this.onVisibilityChange = onVisibilityChange
     this.getPlayerPosition = getPlayerPosition
     this.getSceneOrigin = getSceneOrigin
     this.onRecookColliders = onRecookColliders ?? null
+    this.onCrowdDelta = onCrowdDelta ?? null
+    this.onCrowdClear = onCrowdClear ?? null
+    this.getCrowdCount = getCrowdCount ?? null
     this.root = document.createElement('div')
     this.root.id = 'debug-panel'
     this.root.className = 'debug-panel'
@@ -157,6 +171,18 @@ export class DebugPanel {
           </label>
           <button type="button" class="debug-panel__logs-btn" data-physx-recook>Force recook all colliders</button>
         </div>
+        <div class="debug-panel__crowd">
+          <div class="debug-panel__physx-title">Avatar crowd (perf)</div>
+          <div class="debug-panel__render-quality-hint" data-crowd-status>0 / 0</div>
+          <div class="debug-panel__crowd-row">
+            <button type="button" class="debug-panel__logs-btn" data-crowd-minus5 title="Remove 5">−5</button>
+            <button type="button" class="debug-panel__logs-btn" data-crowd-minus1 title="Remove 1">−1</button>
+            <button type="button" class="debug-panel__logs-btn" data-crowd-plus1 title="Add 1">+1</button>
+            <button type="button" class="debug-panel__logs-btn" data-crowd-plus5 title="Add 5">+5</button>
+            <button type="button" class="debug-panel__logs-btn" data-crowd-plus10 title="Add 10">+10</button>
+            <button type="button" class="debug-panel__logs-btn" data-crowd-clear title="Clear all">Clear</button>
+          </div>
+        </div>
       </div>
     `
 
@@ -224,9 +250,53 @@ export class DebugPanel {
     this.wirePlatformMotionControls()
     this.wireCameraCollisionControls()
     this.wireEnvironmentDebugControls()
+    this.wireCrowdControls()
 
     document.body.appendChild(this.root)
     document.addEventListener('click', this.onDocumentClick, true)
+  }
+
+  private wireCrowdControls(): void {
+    this.crowdStatusEl = this.root.querySelector('[data-crowd-status]') as HTMLDivElement
+    const bind = (sel: string, delta: number | 'clear') => {
+      const btn = this.root.querySelector(sel) as HTMLButtonElement | null
+      btn?.addEventListener('click', (e) => {
+        e.stopPropagation()
+        if (delta === 'clear') this.onCrowdClear?.()
+        else this.onCrowdDelta?.(delta)
+        this.refreshCrowdStatus()
+      })
+    }
+    bind('[data-crowd-minus5]', -5)
+    bind('[data-crowd-minus1]', -1)
+    bind('[data-crowd-plus1]', 1)
+    bind('[data-crowd-plus5]', 5)
+    bind('[data-crowd-plus10]', 10)
+    bind('[data-crowd-clear]', 'clear')
+    this.refreshCrowdStatus()
+  }
+
+  refreshCrowdStatus(): void {
+    if (!this.crowdStatusEl) return
+    if (!this.getCrowdCount) {
+      this.crowdStatusEl.textContent = 'Crowd harness not bound'
+      return
+    }
+    const { count, target, busy } = this.getCrowdCount()
+    this.crowdStatusEl.textContent = busy
+      ? `Spawning… ${count} ready → target ${target}`
+      : `${count} avatars (target ${target})`
+  }
+
+  setCrowdHandlers(opts: {
+    onCrowdDelta?: (delta: number) => void
+    onCrowdClear?: () => void
+    getCrowdCount?: () => { count: number; target: number; busy: boolean }
+  }): void {
+    this.onCrowdDelta = opts.onCrowdDelta ?? null
+    this.onCrowdClear = opts.onCrowdClear ?? null
+    this.getCrowdCount = opts.getCrowdCount ?? null
+    this.refreshCrowdStatus()
   }
 
   /** Kept for callers; scene summary was removed to free log space. */
@@ -289,6 +359,7 @@ export class DebugPanel {
     const tick = () => {
       if (!this.visible) return
       this.updatePositionHud()
+      this.refreshCrowdStatus()
       this.positionRafId = window.requestAnimationFrame(tick)
     }
     this.positionRafId = window.requestAnimationFrame(tick)

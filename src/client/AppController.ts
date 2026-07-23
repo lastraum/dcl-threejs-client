@@ -2118,11 +2118,39 @@ export class AppController {
         onVisibilityChange: (visible) => this.shell?.getButton('help')?.setActive(visible),
         getPlayerPosition: () => this.world?.getPlayerPosition() ?? null,
         getSceneOrigin: () => this.world?.comms.getSceneOrigin() ?? { x: 0, z: 0 },
-        onRecookColliders: () => this.world?.recookPhysicsColliders({ force: true })
+        onRecookColliders: () => this.world?.recookPhysicsColliders({ force: true }),
+        onCrowdDelta: (delta) => {
+          this.world?.getOrCreateDebugAvatarCrowd().add(delta)
+          this.debugPanel?.refreshCrowdStatus()
+        },
+        onCrowdClear: () => {
+          this.world?.getDebugAvatarCrowd()?.clear()
+          this.debugPanel?.refreshCrowdStatus()
+        },
+        getCrowdCount: () => {
+          const c = this.world?.getDebugAvatarCrowd()
+          if (!c) return { count: 0, target: 0, busy: false }
+          return { count: c.count, target: c.target, busy: c.isBusy }
+        }
       })
     } else {
       this.debugPanel.replaceRenderStats(world.host.renderStats)
       this.debugPanel.setRecookCollidersHandler(() => this.world?.recookPhysicsColliders({ force: true }))
+      this.debugPanel.setCrowdHandlers({
+        onCrowdDelta: (delta) => {
+          this.world?.getOrCreateDebugAvatarCrowd().add(delta)
+          this.debugPanel?.refreshCrowdStatus()
+        },
+        onCrowdClear: () => {
+          this.world?.getDebugAvatarCrowd()?.clear()
+          this.debugPanel?.refreshCrowdStatus()
+        },
+        getCrowdCount: () => {
+          const c = this.world?.getDebugAvatarCrowd()
+          if (!c) return { count: 0, target: 0, busy: false }
+          return { count: c.count, target: c.target, busy: c.isBusy }
+        }
+      })
     }
 
     this.ensureDevProgressPanel()

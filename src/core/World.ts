@@ -3,6 +3,7 @@ import type { ResolvedScene } from '../dcl/content/types'
 import * as THREE from 'three'
 import { createTerrainModel } from '../dcl/landscape/Worlds/TerrainModel'
 import { getSessionAssetCache, prefetchSceneManifestAssets } from '../rendering/AssetCache'
+import { DebugAvatarCrowd } from '../debug/DebugAvatarCrowd'
 import {
   applyClientPerformanceDefaults,
   detectPerformanceTier,
@@ -151,6 +152,8 @@ export class World {
   private ocean: SceneWater | null = null
   private player: PlayerSystem | null = null
   private remoteAvatars: RemoteAvatarManager | null = null
+  /** Help → Debug crowd harness (local composed avatars for multi-avatar FPS tests). */
+  private debugAvatarCrowd: DebugAvatarCrowd | null = null
   private readonly vrmPeerSync = new VrmPeerSync()
   /** Community tour flag (session-owned manager bound here for spine attach + tick). */
   private followFlagManager: import('../social/FollowFlagManager').FollowFlagManager | null = null
@@ -1499,6 +1502,8 @@ export class World {
         }
         // Tour flag: spine attach for local or remote leader (after avatar pose ticks).
         this.followFlagManager?.update(delta)
+        // Debug crowd idle anim (Help → Avatar crowd).
+        this.debugAvatarCrowd?.update(delta)
         // Tour Focus: leader freecam publish + follower lens apply (needs remote pose).
         this.tourFocusTick?.(delta)
         // Spatial voice reparents as peer poses land (cheap map walk).
@@ -3586,6 +3591,25 @@ export class World {
     return true
   }
 
+  /** Help → Debug multi-avatar perf harness. */
+  getOrCreateDebugAvatarCrowd(): DebugAvatarCrowd {
+    if (!this.debugAvatarCrowd) {
+      this.debugAvatarCrowd = new DebugAvatarCrowd({
+        scene: this.host.scene,
+        getPlayerFeet: () => this.getPlayerWorldPosition(),
+        contentUrl: this.session.getContentUrl(),
+        lambdasUrl: this.session.getLambdasUrl()
+      })
+    } else {
+      this.debugAvatarCrowd.setCatalyst(this.session.getContentUrl(), this.session.getLambdasUrl())
+    }
+    return this.debugAvatarCrowd
+  }
+
+  getDebugAvatarCrowd(): DebugAvatarCrowd | null {
+    return this.debugAvatarCrowd
+  }
+
   getRemoteAvatarManager(): RemoteAvatarManager | null {
     return this.remoteAvatars
   }
@@ -3874,6 +3898,8 @@ export class World {
     this.lastVoluntaryEmoteAllowed = true
     this.followFlagManager?.unbindScene()
     this.followFlagManager = null
+    this.debugAvatarCrowd?.dispose()
+    this.debugAvatarCrowd = null
     this.tourFocusTick = null
     this.avatarAttachResolver = null
     this.unsubAvatarChat?.()

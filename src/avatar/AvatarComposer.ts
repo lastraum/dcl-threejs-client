@@ -18,6 +18,7 @@ import {
 } from './loadWearable'
 import { pushWearableMappings, popWearableMappings } from '../rendering/DclTextureResolver'
 import { applyAvatarToonShading, applyWearableEmissives } from './materials'
+import { applyAvatarOpaqueAtlas } from './avatarOpaqueAtlas'
 import { buildComposeConfig } from './resolveProfile'
 import { resolveAvatarProfile } from './peerApi'
 import { isModelWearable } from './slots'
@@ -220,5 +221,8 @@ async function composeFromConfig(
   // Opt-in via Preferences → Graphics → Toon shaders (default off).
   applyAvatarToonShading(avatar)
   stabilizeSkinnedMeshes(avatar)
+  // Opaque albedo atlas (hair / alpha / neon left alone) — cheaper draws when many remotes.
+  await yieldToNextFrame()
+  await applyAvatarOpaqueAtlas(avatar)
   return avatar
 }

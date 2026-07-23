@@ -24,6 +24,14 @@ export function detachObject3D(obj: THREE.Object3D): void {
 }
 
 export function disposeOwnedObject3D(obj: THREE.Object3D): void {
+  // Per-avatar opaque atlas (if composed) — not shared with AssetCache.
+  const atlas = (obj.userData as Record<string, unknown>).dclOpaqueAtlasTexture as
+    | { dispose?: () => void }
+    | undefined
+  if (atlas?.dispose) {
+    atlas.dispose()
+    delete (obj.userData as Record<string, unknown>).dclOpaqueAtlasTexture
+  }
   obj.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return
     if (!isSharedAssetResource(child.geometry)) {
@@ -32,6 +40,12 @@ export function disposeOwnedObject3D(obj: THREE.Object3D): void {
     const materials = Array.isArray(child.material) ? child.material : [child.material]
     for (const material of materials) {
       if (material && !isSharedAssetResource(material)) {
+        // Don't dispose the shared atlas map here more than once — texture.dispose is idempotent-ish
+        // but multiple materials share one atlas; dispose atlas only via root userData above.
+        const map = (material as THREE.MeshStandardMaterial).map
+        if (map && (map.userData as Record<string, unknown> | undefined)?.dclAvatarAtlas) {
+          ;(material as THREE.MeshStandardMaterial).map = null
+        }
         material.dispose()
       }
     }

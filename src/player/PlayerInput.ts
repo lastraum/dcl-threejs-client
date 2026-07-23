@@ -431,7 +431,21 @@ export class PlayerInput {
 
   private togglePointerLock(): void {
     this.stopOrbit()
-    if (this.pointer.locked) document.exitPointerLock()
-    else this.canvas.requestPointerLock()
+    if (this.pointer.locked) {
+      document.exitPointerLock()
+      return
+    }
+    // Canvas may be detached / in a non-lockable document after World rebuild
+    // or when the click originated from a different browsing context.
+    try {
+      if (!this.canvas.isConnected) return
+      const req = this.canvas.requestPointerLock()
+      // Spec returns Promise in modern browsers.
+      void Promise.resolve(req).catch(() => {
+        /* WrongDocumentError / NotAllowedError — ignore */
+      })
+    } catch {
+      /* WrongDocumentError: root document not valid for pointer lock */
+    }
   }
 }

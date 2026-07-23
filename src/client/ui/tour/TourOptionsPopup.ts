@@ -11,6 +11,8 @@ export type TourRosterPerson = {
 export type TourOptionsPopupState = {
   isLeading: boolean
   flagEnabled: boolean
+  /** Leader Tour Focus — take over follower cameras. */
+  focusActive: boolean
   communityName?: string | null
   /** Leader + followers (leader first). */
   roster: TourRosterPerson[]
@@ -20,6 +22,8 @@ export type TourOptionsPopupOptions = {
   getState: () => TourOptionsPopupState
   onEnableFlag: () => void
   onDisableFlag: () => void | Promise<void>
+  /** Leader toggle Tour Focus on/off. */
+  onToggleFocus?: (on: boolean) => void | Promise<void>
   onStopTour?: () => void | Promise<void>
   onClose: () => void
   /** Optional async face URL resolver after open. */
@@ -126,6 +130,19 @@ export class TourOptionsPopup {
           }
           ${
             st.isLeading
+              ? st.focusActive
+                ? `<button type="button" class="tour-options-popup-btn tour-options-popup-btn--focus-on" data-tour-opt-focus-off
+                    title="Release follower cameras">
+                    Focus camera · ON
+                  </button>`
+                : `<button type="button" class="tour-options-popup-btn" data-tour-opt-focus-on
+                    title="Take over followers' cameras with your POV (incl. FOV)">
+                    Focus camera
+                  </button>`
+              : ''
+          }
+          ${
+            st.isLeading
               ? `<button type="button" class="tour-options-popup-btn" data-tour-opt-stop-tour>Stop tour</button>`
               : ''
           }
@@ -197,6 +214,12 @@ export class TourOptionsPopup {
     })
     this.root.querySelector('[data-tour-opt-disable-flag]')?.addEventListener('click', () => {
       void this.opts.onDisableFlag()
+    })
+    this.root.querySelector('[data-tour-opt-focus-on]')?.addEventListener('click', () => {
+      void this.opts.onToggleFocus?.(true)
+    })
+    this.root.querySelector('[data-tour-opt-focus-off]')?.addEventListener('click', () => {
+      void this.opts.onToggleFocus?.(false)
     })
     this.root.querySelector('[data-tour-opt-stop-tour]')?.addEventListener('click', () => {
       void this.opts.onStopTour?.()

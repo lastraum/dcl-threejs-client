@@ -231,8 +231,10 @@ export class CommsService {
         if (!this.shouldAcceptChatTransport(transport)) return
         this.chatMediaHandler?.({ senderAddress: address, data })
       },
-      onPeerAvatarVrm: (address, data, transport) => {
-        if (!this.shouldAcceptChatTransport(transport)) return
+      onPeerAvatarVrm: (address, data, _transport) => {
+        // DAV is not chat — accept from any LiveKit room (world / scene / island).
+        // Worlds previously dropped SceneRoom packets via shouldAcceptChatTransport, so
+        // late joiners never saw peer custom VRM when announce landed on the Cast room.
         this.avatarVrmHandler?.(address, data)
       }
     })
@@ -353,12 +355,23 @@ export class CommsService {
     this.avatarVrmHandler = handler
   }
 
-  /** DAV v1 — custom VRM P2P on RFC4 Scene `dcl.client.avatar`. */
-  async sendSceneAvatarVrm(envelopes: Uint8Array[]): Promise<boolean> {
-    const sessions = this.liveKitChatSessions()
+  /**
+   * DAV v1 — custom VRM P2P on RFC4 Scene `dcl.client.avatar`.
+   * @param roomMode `broadcast` = all LiveKit rooms (announce/clear/want only).
+   *   `primary` = single chat room (fetch request + multi‑MB chunk streams).
+   *   Fetch must never dual-publish — concurrent serves race FetchEnd and drop chunks.
+   */
+  async sendSceneAvatarVrm(
+    envelopes: Uint8Array[],
+    roomMode: 'broadcast' | 'primary' = 'primary'
+  ): Promise<boolean> {
+    const sessions =
+      roomMode === 'broadcast' ? this.liveKitDavSessions() : this.liveKitChatSessions()
     if (!sessions.length || !envelopes.length) return false
-    const paceEvery = envelopes.length > 8 ? 8 : 0
-    const paceMs = envelopes.length > 64 ? 8 : 2
+    // Large streams: pace harder so reliable DC doesn't drop trailing packets.
+    const large = envelopes.length > 32
+    const paceEvery = large ? 4 : envelopes.length > 8 ? 8 : 0
+    const paceMs = large ? 12 : envelopes.length > 64 ? 8 : 2
     let sent = false
     for (const session of sessions) {
       try {
@@ -1814,5 +1827,31 @@ export class CommsService {
     if (this.sceneLiveKit.isConnected()) return this.sceneLiveKit
     if (this.worldConnected) return this.worldLiveKit
     return null
+  }
+
+  /**
+   * LiveKit rooms for DAV custom-avatar sync — all connected rooms.
+   * Unlike chat (single room to avoid doubles), avatar announce/fetch must reach
+   * peers whether they joined via world or scene Cast room first.
+   */
+  private liveKitDavSessions(): LiveKitCommsSession[] {
+    const out: LiveKitCommsSession[] = []
+    const seen = new Set<LiveKitCommsSession>()
+    const add = (s: LiveKitCommsSession) => {
+      if (!s.isConnected() || seen.has(s)) return
+      seen.add(s)
+      out.push(s)
+    }
+    // Prefer primary comms rooms first (order only affects send order).
+    if (this.isWorldComms()) {
+      add(this.worldLiveKit)
+      add(this.sceneLiveKit)
+      add(this.islandLiveKit)
+    } else {
+      add(this.sceneLiveKit)
+      add(this.islandLiveKit)
+      add(this.worldLiveKit)
+    }
+    return out
   }
 }

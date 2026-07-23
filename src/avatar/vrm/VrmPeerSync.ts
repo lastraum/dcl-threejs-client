@@ -8,6 +8,7 @@ import {
   encodeDavFetchError,
   encodeDavFetchRequest,
   encodeDavVrmChunkStream,
+  encodeDavWantAnnounce,
   tryDecodeDavMessage
 } from './dclClientAvatar'
 import { VRM_MAX_BYTES, type CustomAvatarFormat } from './constants'
@@ -71,6 +72,10 @@ export class VrmPeerSync {
       clearTimeout(this.peerJoinReannounceTimer)
       this.peerJoinReannounceTimer = null
     }
+    if (this.wantAnnounceReplyTimer) {
+      clearTimeout(this.wantAnnounceReplyTimer)
+      this.wantAnnounceReplyTimer = null
+    }
     this.comms?.setAvatarVrmHandler(null)
     this.comms = null
     this.callbacks = null
@@ -123,6 +128,10 @@ export class VrmPeerSync {
     remote.setPeerVrmHash(key, hash, format)
     if (ramReady) {
       remote.onPeerVrmBytesReady(key, hash, getVrmRamFormat(hash) ?? format)
+    } else {
+      // Announce may have landed before the peer record existed (fetch never started or
+      // failed). Re-request bytes now that RemoteAvatarManager can mount them.
+      void this.requestPeerVrm(key, hash, true)
     }
   }
 
@@ -141,9 +150,24 @@ export class VrmPeerSync {
   async onSceneConnected(): Promise<void> {
     this.publishedHash = undefined
     await this.refreshLocalEquipped(this.localAddress)
+    // Late joiners often attach DAV only after landing→World handoff. Ask peers to
+    // re-announce so we don't sit forever on their DCL body after missing the first announce.
+    void this.requestPeerAnnounces()
+  }
+
+  /**
+   * Probe peers for custom-avatar state. Safe to call after World attaches / peer seed.
+   */
+  async requestPeerAnnounces(): Promise<void> {
+    const sent = await this.publish(encodeDavEnvelopes(encodeDavWantAnnounce()), 'want-announce')
+    if (sent) {
+      odkNetInfo('DAV WantAnnounce sent — asking peers to re-announce equip')
+    }
   }
 
   private peerJoinReannounceTimer: ReturnType<typeof setTimeout> | null = null
+  /** Coalesce rapid peer joins; first reannounce is snappy so late joiners see VRM immediately. */
+  private static readonly PEER_JOIN_REANNOUNCE_MS = 350
 
   /**
    * Re-announce local equip when peers join (debounced) so late joiners receive DAV state
@@ -155,7 +179,7 @@ export class VrmPeerSync {
     this.peerJoinReannounceTimer = setTimeout(() => {
       this.peerJoinReannounceTimer = null
       void this.reannounceEquippedToPeers()
-    }, 2500)
+    }, VrmPeerSync.PEER_JOIN_REANNOUNCE_MS)
   }
 
   private async reannounceEquippedToPeers(): Promise<void> {
@@ -251,7 +275,14 @@ export class VrmPeerSync {
       odkNetWarn('DAV publish skipped — no comms or empty envelope', { kind })
       return false
     }
-    const sent = await this.comms.sendSceneAvatarVrm(envelopes)
+    // Announce / clear / want → all rooms so late joiners hear equip.
+    // Fetch request + chunk streams → primary only (dual-room concurrent serves
+    // caused incomplete assembly: first FetchEnd before all chunks landed).
+    const roomMode =
+      kind === 'announce' || kind === 'clear' || kind === 'want-announce'
+        ? 'broadcast'
+        : 'primary'
+    const sent = await this.comms.sendSceneAvatarVrm(envelopes, roomMode)
     if (!sent) {
       odkNetWarn('DAV publish failed — scene comms not connected', {
         kind,
@@ -290,7 +321,27 @@ export class VrmPeerSync {
       case DavMessageType.FetchError:
         this.onFetchError(from, msg.hash, msg.reason)
         break
+      case DavMessageType.WantAnnounce:
+        void this.onWantAnnounce(from)
+        break
     }
+  }
+
+  private wantAnnounceReplyTimer: ReturnType<typeof setTimeout> | null = null
+
+  /** Peer asked us to re-announce (they likely missed our first announce on shell). */
+  private async onWantAnnounce(from: string): Promise<void> {
+    if (!this.equippedHash) return
+    odkNetInfo('DAV WantAnnounce from peer — will re-announce', {
+      peer: shortAddr(from),
+      hash: shortHash(this.equippedHash)
+    })
+    // Debounce replies when many late joiners probe at once.
+    if (this.wantAnnounceReplyTimer) return
+    this.wantAnnounceReplyTimer = setTimeout(() => {
+      this.wantAnnounceReplyTimer = null
+      void this.reannounceEquippedToPeers()
+    }, 120)
   }
 
   private onPeerAnnounce(
@@ -300,24 +351,28 @@ export class VrmPeerSync {
     format: CustomAvatarFormat
   ): void {
     const prev = this.peerEquippedHash.get(address)
-    if (prev === hash && this.peerEquippedFormat.get(address) === format) {
-      odkNetInfo('peer DAV announce unchanged — skip', {
+    const sameEquip = prev === hash && this.peerEquippedFormat.get(address) === format
+    if (!sameEquip) {
+      if (prev) this.clearPeerFetchState(address)
+      this.peerEquippedHash.set(address, hash)
+      this.peerEquippedFormat.set(address, format)
+      odkNetInfo('peer DAV announce', {
         peer: shortAddr(address),
         format: formatTag(format),
-        hash: shortHash(hash)
+        hash: shortHash(hash),
+        bytes: byteSize,
+        hadPrevious: !!prev
       })
-      return
+    } else {
+      // Same hash re-announce (late joiner / peer-join rebroadcast). Still push to
+      // RemoteAvatarManager — first announce often arrived before the peer record existed.
+      odkNetInfo('peer DAV announce rebroadcast — reapply', {
+        peer: shortAddr(address),
+        format: formatTag(format),
+        hash: shortHash(hash),
+        ramReady: hasVrmRamBytes(hash)
+      })
     }
-    if (prev) this.clearPeerFetchState(address)
-    this.peerEquippedHash.set(address, hash)
-    this.peerEquippedFormat.set(address, format)
-    odkNetInfo('peer DAV announce', {
-      peer: shortAddr(address),
-      format: formatTag(format),
-      hash: shortHash(hash),
-      bytes: byteSize,
-      hadPrevious: !!prev
-    })
     this.callbacks?.onPeerVrmChanged(address, hash, format)
 
     if (hasVrmRamBytes(hash)) {
@@ -337,9 +392,12 @@ export class VrmPeerSync {
     odkNetInfo('peer bytes missing — DAV fetch request', {
       peer: shortAddr(address),
       format: formatTag(format),
-      hash: shortHash(hash)
+      hash: shortHash(hash),
+      force: !sameEquip
     })
-    void this.requestPeerVrm(address, hash, true)
+    // Rebroadcast (same hash): don't force a new request if one is already in flight —
+    // dual-room announce used to spam fetch until MAX_FETCH_ATTEMPTS and stall the pill.
+    void this.requestPeerVrm(address, hash, !sameEquip)
   }
 
   private onPeerClear(address: string): void {
@@ -378,40 +436,44 @@ export class VrmPeerSync {
 
   private async onFetchRequest(requester: string, hash: string): Promise<void> {
     const serveKey = `${hash}:${requester}`
+    // Reserve immediately (before any await) so dual FetchRequest can't start two serves.
     if (this.servingKeys.has(serveKey)) {
-      await this.publish(encodeDavEnvelopes(encodeDavFetchError(hash, 'busy')))
+      await this.publish(encodeDavEnvelopes(encodeDavFetchError(hash, 'busy')), 'fetch-error')
       return
     }
-
-    const canServe =
-      (this.equippedHash === hash && (await loadVrmLibraryBytes(hash))) ||
-      getVrmRamBytes(hash)
-    if (!canServe) {
-      odkNetWarn('DAV fetch serve refused — not_found', {
-        requester: shortAddr(requester),
-        hash: shortHash(hash),
-        localEquipped: shortHash(this.equippedHash)
-      })
-      await this.publish(encodeDavEnvelopes(encodeDavFetchError(hash, 'not_found')), 'fetch-error')
-      return
-    }
-
-    const bytes =
-      (this.equippedHash === hash ? await loadVrmLibraryBytes(hash) : null) ??
-      getVrmRamBytes(hash)
-    if (!bytes) {
-      await this.publish(encodeDavEnvelopes(encodeDavFetchError(hash, 'not_found')))
-      return
-    }
-    if (bytes.byteLength > VRM_MAX_BYTES) {
-      await this.publish(encodeDavEnvelopes(encodeDavFetchError(hash, 'oversize')))
-      return
-    }
-
     this.servingKeys.add(serveKey)
+
     try {
+      const canServe =
+        (this.equippedHash === hash && (await loadVrmLibraryBytes(hash))) ||
+        getVrmRamBytes(hash)
+      if (!canServe) {
+        odkNetWarn('DAV fetch serve refused — not_found', {
+          requester: shortAddr(requester),
+          hash: shortHash(hash),
+          localEquipped: shortHash(this.equippedHash)
+        })
+        await this.publish(encodeDavEnvelopes(encodeDavFetchError(hash, 'not_found')), 'fetch-error')
+        return
+      }
+
+      const bytes =
+        (this.equippedHash === hash ? await loadVrmLibraryBytes(hash) : null) ??
+        getVrmRamBytes(hash)
+      if (!bytes) {
+        await this.publish(encodeDavEnvelopes(encodeDavFetchError(hash, 'not_found')), 'fetch-error')
+        return
+      }
+      if (bytes.byteLength > VRM_MAX_BYTES) {
+        await this.publish(encodeDavEnvelopes(encodeDavFetchError(hash, 'oversize')), 'fetch-error')
+        return
+      }
+
       const envelopes = encodeDavVrmChunkStream(hash, bytes)
-      const format = this.equippedHash === hash ? (await getVrmLibraryEntry(hash))?.format : getVrmRamFormat(hash)
+      const format =
+        this.equippedHash === hash
+          ? (await getVrmLibraryEntry(hash))?.format
+          : getVrmRamFormat(hash)
       await this.publish(envelopes, 'fetch-serve')
       odkNetInfo('DAV serve complete', {
         requester: shortAddr(requester),
@@ -439,8 +501,15 @@ export class VrmPeerSync {
     if (totalSize <= 0) return
     const key = this.fetchKey(provider, hash)
     const existing = this.incomingFetches.get(key)
-    // Ignore duplicate FetchBegin while a stream is still assembling (retry overlap).
-    if (existing?.hash === hash && existing.totalSize === totalSize && existing.chunks.size > 0) {
+    // Never reset an in-flight assembly — concurrent serve FetchBegin used to wipe
+    // half-received chunks and leave us incomplete forever.
+    if (existing?.hash === hash && existing.totalSize === totalSize) {
+      odkNetInfo('DAV fetch begin ignored — already assembling', {
+        peer: shortAddr(provider),
+        hash: shortHash(hash),
+        chunks: existing.chunks.size,
+        receivedBytes: existing.receivedBytes
+      })
       return
     }
     this.incomingFetches.set(key, {
@@ -505,45 +574,63 @@ export class VrmPeerSync {
     const key = this.fetchKey(provider, hash)
     const fetch = this.incomingFetches.get(key)
     this.pendingRequests.delete(key)
-    this.fetchAttempts.delete(key)
     if (!fetch || fetch.hash !== hash) return
     if (this.peerEquippedHash.get(provider) !== hash) {
       this.incomingFetches.delete(key)
       return
     }
 
-    try {
-      const out = this.assembleFetch(fetch)
-      if (!out) {
-        this.failFetchAssembly(provider, hash, 'incomplete', {
-          chunks: fetch.chunks.size,
-          receivedBytes: fetch.receivedBytes,
-          total: fetch.totalSize
-        })
-        return
-      }
+    const tryComplete = (allowWait: boolean): void => {
+      const current = this.incomingFetches.get(key)
+      if (!current || current.hash !== hash) return
+      try {
+        const out = this.assembleFetch(current)
+        if (!out) {
+          // FetchEnd often races last chunks on the reliable DC — wait once for stragglers.
+          if (allowWait && current.receivedBytes > current.totalSize * 0.5) {
+            odkNetInfo('DAV fetch end incomplete — waiting for late chunks', {
+              peer: shortAddr(provider),
+              hash: shortHash(hash),
+              chunks: current.chunks.size,
+              receivedBytes: current.receivedBytes,
+              total: current.totalSize
+            })
+            window.setTimeout(() => tryComplete(false), 450)
+            return
+          }
+          this.failFetchAssembly(provider, hash, 'incomplete', {
+            chunks: current.chunks.size,
+            receivedBytes: current.receivedBytes,
+            total: current.totalSize
+          })
+          return
+        }
 
-      this.incomingFetches.delete(key)
-      const buffer = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer
-      const format = this.peerEquippedFormat.get(provider) ?? 'vrm'
-      putVrmRamBytes(hash, buffer, format)
-      odkNetInfo('DAV fetch complete — mounting remote avatar', {
-        peer: shortAddr(provider),
-        format: formatTag(format),
-        hash: shortHash(hash),
-        bytes: buffer.byteLength
-      })
-      clientDebugLog.log(
-        'vrm',
-        `DAV received · ${format} ${provider.slice(0, 8)}… ${hash.slice(0, 12)}… (${buffer.byteLength} B)`,
-        { level: 'success' }
-      )
-      this.callbacks?.onPeerVrmBytesReady(provider, hash, format)
-    } catch (err) {
-      this.failFetchAssembly(provider, hash, 'error', {
-        message: err instanceof Error ? err.message : String(err)
-      })
+        this.incomingFetches.delete(key)
+        this.fetchAttempts.delete(key)
+        const buffer = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer
+        const format = this.peerEquippedFormat.get(provider) ?? 'vrm'
+        putVrmRamBytes(hash, buffer, format)
+        odkNetInfo('DAV fetch complete — mounting remote avatar', {
+          peer: shortAddr(provider),
+          format: formatTag(format),
+          hash: shortHash(hash),
+          bytes: buffer.byteLength
+        })
+        clientDebugLog.log(
+          'vrm',
+          `DAV received · ${format} ${provider.slice(0, 8)}… ${hash.slice(0, 12)}… (${buffer.byteLength} B)`,
+          { level: 'success' }
+        )
+        this.callbacks?.onPeerVrmBytesReady(provider, hash, format)
+      } catch (err) {
+        this.failFetchAssembly(provider, hash, 'error', {
+          message: err instanceof Error ? err.message : String(err)
+        })
+      }
     }
+
+    tryComplete(true)
   }
 
   private onFetchError(provider: string, hash: string, reason: string): void {

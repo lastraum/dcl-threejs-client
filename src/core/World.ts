@@ -154,6 +154,8 @@ export class World {
   private readonly vrmPeerSync = new VrmPeerSync()
   /** Community tour flag (session-owned manager bound here for spine attach + tick). */
   private followFlagManager: import('../social/FollowFlagManager').FollowFlagManager | null = null
+  /** AppController: Tour Focus cam publish (leader) + apply (follower). */
+  private tourFocusTick: ((delta: number) => void) | null = null
   private avatarAttachResolver: import('../avatar/AvatarAttachTargets').AvatarAttachTargetResolver | null =
     null
   /** Explorer In-World Camera (photo fly mode) — dedicated lens, not orbit freecam. */
@@ -1282,6 +1284,11 @@ export class World {
     this.bindFollowFlagCct()
   }
 
+  /** Tour Focus frame hook — runs after remote avatar pose so leader feet are current. */
+  setTourFocusTick(tick: ((delta: number) => void) | null): void {
+    this.tourFocusTick = tick
+  }
+
   private bindFollowFlagCct(): void {
     if (!this.followFlagManager) return
     this.followFlagManager.bind(this.host.scene, {
@@ -1479,6 +1486,8 @@ export class World {
         }
         // Tour flag: spine attach for local or remote leader (after avatar pose ticks).
         this.followFlagManager?.update(delta)
+        // Tour Focus: leader freecam publish + follower lens apply (needs remote pose).
+        this.tourFocusTick?.(delta)
         // Spatial voice reparents as peer poses land (cheap map walk).
         this.voice.tickSpatial()
         this.comms.flushBroadcast()
@@ -3527,6 +3536,21 @@ export class World {
     return this.remoteAvatars
   }
 
+  /** Tour Focus follower — freeze locomotion / freecam while lens is taken over. */
+  setPlayerTourFocusActive(active: boolean): void {
+    this.player?.setTourFocusActive(active)
+  }
+
+  /** Leader freecam snapshot for Tour Focus wire (null if no player). */
+  getPlayerFreecamState(): {
+    yaw: number
+    pitch: number
+    dist: number
+    firstPerson: boolean
+  } | null {
+    return this.player?.getFreecamState() ?? null
+  }
+
   /** HUD toast while many remotes compose (community-style banner). */
   setRemoteAvatarProgressHandler(
     handler: ((progress: { total: number; loaded: number; pending: number }) => void) | null
@@ -3796,6 +3820,7 @@ export class World {
     this.lastVoluntaryEmoteAllowed = true
     this.followFlagManager?.unbindScene()
     this.followFlagManager = null
+    this.tourFocusTick = null
     this.avatarAttachResolver = null
     this.unsubAvatarChat?.()
     this.unsubAvatarChat = null

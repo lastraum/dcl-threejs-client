@@ -36,11 +36,13 @@ import { SocialChatController } from './ui/chat/SocialChatController'
 import { SocialChatDock } from './ui/chat/SocialChatDock'
 import { CommunityFollowController } from '../social/CommunityFollowController'
 import { FollowFlagManager } from '../social/FollowFlagManager'
+import { TourFocusController } from '../social/TourFocusController'
 import {
   followTargetLabel,
   followTargetToRoute,
   type FollowTarget
 } from '../social/communityFollowWire'
+import { clientSettings } from '../rendering/ClientSettings'
 import { TourOptionsPopup } from './ui/tour/TourOptionsPopup'
 import { TourFlagImageModal } from './ui/tour/TourFlagImageModal'
 import { PreferencesPanel } from './ui/settings/PreferencesPanel'
@@ -164,6 +166,14 @@ export class AppController {
   private unsubCommunityFollow: (() => void) | null = null
   /** Tour leader flag (spine pole + banner) — session-scoped across World rebuilds. */
   private followFlagManager: FollowFlagManager | null = null
+  /** Tour Focus — follower lens takeover; session-scoped across World rebuilds. */
+  private tourFocus: TourFocusController | null = null
+  private tourFocusHost: import('../rendering/SceneHost').SceneHost | null = null
+  /**
+   * Follower Esc during Focus: stay on tour, dismiss only this Focus period.
+   * Cleared when leader turns Focus off (or tour ends) so the next Focus ON re-enters.
+   */
+  private tourFocusOptOut = false
   private tourOptionsPopup: TourOptionsPopup | null = null
   private tourFlagImageModal: TourFlagImageModal | null = null
   /** Re-open this community thread on ChatPanel after a follow jump World rebuild. */
@@ -659,11 +669,16 @@ export class AppController {
     if (!this.followFlagManager) {
       this.followFlagManager = new FollowFlagManager()
     }
+    this.ensureTourFocusController(world)
 
     world.social.setFollowController(this.communityFollow)
     world.setFollowFlagManager(this.followFlagManager)
     // Restore flag visual after World rebuild if tour still active.
     this.syncFollowFlagFromController()
+    // Re-bind Tour Focus tick after World rebuild.
+    this.bindTourFocusTick(world)
+    // If we were following under Focus, re-enter after rebuild (goto).
+    this.syncTourFocusFromController()
 
     this.unsubCommunityFollow?.()
     this.unsubCommunityFollow = this.communityFollow.subscribe((ev) => {
@@ -681,7 +696,23 @@ export class AppController {
         this.syncTourOptionsSidebarVisibility()
         return
       }
+      if (ev.kind === 'focus_changed') {
+        this.applyTourFocusEvent(ev.leaderAddress, ev.focusActive, ev.communityId)
+        this.tourOptionsPopup?.refresh()
+        return
+      }
+      if (ev.kind === 'cam_update') {
+        if (this.communityFollow?.isFollowing(ev.communityId) && !this.tourFocusOptOut) {
+          this.tourFocus?.setCam(ev.cam)
+          if (!this.tourFocus?.isActive()) {
+            this.tourFocus?.enter(ev.leaderAddress, ev.cam)
+          }
+        }
+        return
+      }
       if (ev.kind === 'tour_ended') {
+        this.tourFocusOptOut = false
+        this.tourFocus?.exit()
         this.syncTourUiFromController()
         return
       }
@@ -738,6 +769,112 @@ export class AppController {
     this.syncTourUiFromController()
   }
 
+  private ensureTourFocusController(world: World): void {
+    if (this.tourFocus) {
+      // World rebuilds create a new SceneHost — recreate controller against the live host.
+      const prevHost = this.tourFocusHost
+      if (prevHost === world.host) return
+      const wasActive = this.tourFocus.isActive()
+      const leader = this.tourFocus.getLeaderAddress()
+      const cam = this.communityFollow?.getLastCam() ?? null
+      this.tourFocus.dispose()
+      this.tourFocus = null
+      this.tourFocusHost = null
+      const next = this.createTourFocusController(world)
+      if (wasActive && leader && !this.tourFocusOptOut) next.enter(leader, cam)
+      return
+    }
+    this.createTourFocusController(world)
+  }
+
+  private createTourFocusController(world: World): TourFocusController {
+    this.tourFocusHost = world.host
+    const controller = new TourFocusController({
+      host: world.host,
+      getLeaderFeet: () => {
+        const addr = this.tourFocus?.getLeaderAddress()
+        if (!addr) return null
+        return this.world?.getRemoteAvatarManager()?.getPeerRoot(addr) ?? null
+      },
+      setPlayerTourFocusActive: (active) => {
+        this.world?.setPlayerTourFocusActive(active)
+      },
+      isSceneVirtualCameraDriving: () => Boolean(this.world?.isPhotoCameraActive()),
+      onLeave: () => {
+        // Esc = dismiss this Focus period only (stay on tour). Next Focus ON re-enters.
+        this.tourFocusOptOut = true
+        this.tourFocus?.exit()
+      }
+    })
+    this.tourFocus = controller
+    return controller
+  }
+
+  private bindTourFocusTick(world: World): void {
+    this.ensureTourFocusController(world)
+    world.setTourFocusTick((delta) => {
+      // Leader: stream freecam + FOV while Focus is on.
+      this.communityFollow?.tickLeaderCam(() => {
+        const fc = this.world?.getPlayerFreecamState()
+        if (!fc) return null
+        return {
+          fp: fc.firstPerson,
+          yaw: fc.yaw,
+          pitch: fc.pitch,
+          dist: fc.dist,
+          fov: clientSettings.getFov()
+        }
+      })
+      this.tourFocus?.update(delta)
+    })
+  }
+
+  private applyTourFocusEvent(
+    leaderAddress: string,
+    focusActive: boolean,
+    communityId: string
+  ): void {
+    // Leaders don't take over their own camera.
+    if (this.communityFollow?.isLeading(communityId)) {
+      return
+    }
+    if (!this.communityFollow?.isFollowing(communityId)) {
+      this.tourFocus?.exit()
+      return
+    }
+    if (focusActive) {
+      // New Focus period from leader — clear Esc opt-out so we re-enter.
+      this.tourFocusOptOut = false
+      const cam = this.communityFollow.getLastCam(communityId)
+      this.tourFocus?.enter(leaderAddress, cam)
+    } else {
+      // Leader ended Focus — ready for the next ON.
+      this.tourFocusOptOut = false
+      this.tourFocus?.exit()
+    }
+  }
+
+  private syncTourFocusFromController(): void {
+    const follow = this.communityFollow
+    if (!follow?.isFollowing()) {
+      this.tourFocus?.exit()
+      return
+    }
+    if (!follow.isFocusReceiving() || this.tourFocusOptOut) {
+      // Keep opt-out while leader Focus is still on; exit lens only.
+      if (!follow.isFocusReceiving()) this.tourFocusOptOut = false
+      this.tourFocus?.exit()
+      return
+    }
+    const session =
+      follow.listSessions().find((s) => follow.isFollowing(s.communityId) && s.focusActive) ?? null
+    if (session) {
+      this.tourFocus?.enter(session.leaderAddress, session.lastCam)
+    } else {
+      this.tourFocus?.exit()
+    }
+  }
+
   /** Local user is leading or following this community tour. */
   private isTourParticipant(communityId: string): boolean {
     const follow = this.communityFollow
@@ -783,6 +920,7 @@ export class AppController {
   private syncTourUiFromController(): void {
     this.syncFollowFlagFromController()
     this.syncTourOptionsSidebarVisibility()
+    this.syncTourFocusFromController()
   }
 
   /** Sidebar 🚩 Tour Options — enable/disable flag + stop tour. */
@@ -796,7 +934,9 @@ export class AppController {
         const follow = this.communityFollow
         const active = follow?.getActiveFlag()
         const leading = Boolean(follow?.isLeading())
-        const cid = active?.communityId
+        const cid =
+          active?.communityId ??
+          follow?.listSessions().find((s) => follow.isLeading(s.communityId))?.communityId
         const communityName = cid
           ? this.world?.social.getCommunities().find((c) => c.id.toLowerCase() === cid)?.name ??
             null
@@ -815,6 +955,7 @@ export class AppController {
         return {
           isLeading: leading,
           flagEnabled: Boolean(active?.flagDataUrl),
+          focusActive: Boolean(follow?.isFocusActive()),
           communityName,
           roster
         }
@@ -836,7 +977,15 @@ export class AppController {
         await this.communityFollow?.setFlagImage(null)
         this.tourOptionsPopup?.refresh()
       },
+      onToggleFocus: async (on) => {
+        await this.communityFollow?.setFocusActive(on)
+        this.tourOptionsPopup?.refresh()
+      },
       onStopTour: async () => {
+        // Turn off focus before stop so followers get a clean exit if stop is delayed.
+        if (this.communityFollow?.isFocusBroadcasting()) {
+          await this.communityFollow.setFocusActive(false)
+        }
         await this.communityFollow?.stopLead()
         this.tourOptionsPopup?.dispose()
         this.tourOptionsPopup = null
@@ -848,7 +997,12 @@ export class AppController {
     })
     // Live roster updates while the panel is open.
     const unsub = this.communityFollow?.subscribe((ev) => {
-      if (ev.kind === 'changed' || ev.kind === 'flag_changed' || ev.kind === 'tour_ended') {
+      if (
+        ev.kind === 'changed' ||
+        ev.kind === 'flag_changed' ||
+        ev.kind === 'focus_changed' ||
+        ev.kind === 'tour_ended'
+      ) {
         this.tourOptionsPopup?.refresh()
       }
     })
@@ -2851,6 +3005,10 @@ export class AppController {
   private disposeCommunityFollow(): void {
     this.unsubCommunityFollow?.()
     this.unsubCommunityFollow = null
+    this.tourFocus?.dispose()
+    this.tourFocus = null
+    this.tourFocusHost = null
+    this.tourFocusOptOut = false
     this.communityFollow?.dispose()
     this.communityFollow = null
     this.followFlagManager?.dispose()

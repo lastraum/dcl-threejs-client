@@ -30,7 +30,10 @@ import { areSceneNameTagsVisible } from '../client/ui/nameTagVisibility'
 import { resolveProfileEmote, loadResolvedProfileEmote } from '../avatar/profileEmotes'
 import type { AssetCache } from '../rendering/AssetCache'
 import { yieldToNextFrame } from '../rendering/mainThreadYield'
-import { createRemoteAvatarPlaceholder } from '../avatar/remotePlaceholder'
+import {
+  createRemoteAvatarPlaceholder,
+  disposeRemoteAvatarPlaceholder
+} from '../avatar/remotePlaceholder'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import { VrmAvatar } from '../avatar/vrm/VrmAvatar'
 import { VrmLocomotionAnimations } from '../avatar/vrm/VrmLocomotionAnimations'
@@ -152,6 +155,9 @@ type RemotePeerRecord = {
   nameTagWanted: boolean
   /** Last mid/far LOD pose/anim tick (performance.now). */
   lastLodUpdateAt: number
+  /** Custom mesh mount attempts (setPeerVrmHash / VRM parse) — max 3 with backoff. */
+  customMeshAttempts: number
+  customMeshRetryTimer: ReturnType<typeof setTimeout> | null
 }
 
 /** Shared extrapolated pose goal (one peer at a time in update). */
@@ -211,6 +217,22 @@ export class RemoteAvatarManager {
   private readonly scene: THREE.Scene
   private readonly loadQueue = new RemoteAvatarLoadQueue()
   private readonly peerReloadSeq = new Map<string, number>()
+  /**
+   * setPeerVrmHash arrived before upsertPeer — retry apply up to 3× with backoff.
+   * (DAV announce often beats LiveKit join on landing→World handoff.)
+   */
+  private readonly pendingVrmHash = new Map<
+    string,
+    {
+      hash: string | null
+      format: CustomAvatarFormat | null
+      attempts: number
+      timer: ReturnType<typeof setTimeout> | null
+    }
+  >()
+  private static readonly PEER_MESH_MAX_ATTEMPTS = 3
+  /** Backoff after attempt 1, 2 (attempt 3 is final). */
+  private static readonly PEER_MESH_BACKOFF_MS = [500, 1500, 3500] as const
   private entityStore: EntityStore | null = null
   private localAddress: string | null = null
   private readonly cameraWorldPos = new THREE.Vector3()
@@ -598,13 +620,20 @@ export class RemoteAvatarManager {
     const key = address.toLowerCase()
     const record = this.peers.get(key)
     if (!record) {
-      odkNetWarn('setPeerVrmHash — no remote peer record yet', {
-        peer: shortAddr(key),
-        format: formatTag(format),
-        hash: shortHash(contentHash)
-      })
+      // Announce can land before LiveKit join / upsertPeer — queue with 3-try backoff.
+      this.queuePendingVrmHash(key, contentHash, format)
       return
     }
+    this.clearPendingVrmHash(key)
+    this.applyPeerVrmHash(key, record, contentHash, format)
+  }
+
+  private applyPeerVrmHash(
+    key: string,
+    record: RemotePeerRecord,
+    contentHash: string | null,
+    format: CustomAvatarFormat | null
+  ): void {
     const normalized = contentHash?.toLowerCase() ?? null
     const resolvedFormat = normalized ? (format ?? record.customAvatarFormat ?? 'vrm') : null
     if (record.vrmContentHash === normalized && record.customAvatarFormat === resolvedFormat) {
@@ -619,9 +648,16 @@ export class RemoteAvatarManager {
           hash: shortHash(normalized),
           renderMode: record.renderMode
         })
+        this.clearCustomMeshRetry(record)
+        record.customMeshAttempts = 0
         return
       }
       if (!normalized && record.renderMode === 'dcl') return
+    }
+    // New equip target — reset mount retry budget.
+    if (record.vrmContentHash !== normalized) {
+      this.clearCustomMeshRetry(record)
+      record.customMeshAttempts = 0
     }
     record.vrmContentHash = normalized
     record.customAvatarFormat = resolvedFormat
@@ -630,19 +666,159 @@ export class RemoteAvatarManager {
         peer: shortAddr(key),
         wasMode: record.renderMode
       })
+      this.clearCustomMeshRetry(record)
+      record.customMeshAttempts = 0
       if (record.renderMode === 'vrm' || record.renderMode === 'odk') {
         void this.reloadPeerAvatar(key, record)
       }
       return
     }
+    const ramReady = !!getVrmRamBytes(normalized)
     odkNetInfo('setPeerVrmHash — reload scheduled', {
       peer: shortAddr(key),
       format: formatTag(resolvedFormat),
       hash: shortHash(normalized),
-      ramReady: !!getVrmRamBytes(normalized),
-      wasMode: record.renderMode
+      ramReady,
+      wasMode: record.renderMode,
+      attempt: record.customMeshAttempts + 1
     })
+    // No bytes yet: keep an existing DCL body as interim (avoid pill forever while DAV fails).
+    // Still kick a first load if we have no model at all.
+    if (!ramReady) {
+      if (record.model && record.renderMode === 'dcl') {
+        return
+      }
+      if (!record.model) {
+        void this.tryStartAvatarLoad(key, record, true)
+      }
+      return
+    }
     void this.reloadPeerAvatar(key, record)
+  }
+
+  private queuePendingVrmHash(
+    key: string,
+    contentHash: string | null,
+    format: CustomAvatarFormat | null
+  ): void {
+    const existing = this.pendingVrmHash.get(key)
+    if (existing?.timer) clearTimeout(existing.timer)
+    const attempts = existing?.attempts ?? 0
+    const next: {
+      hash: string | null
+      format: CustomAvatarFormat | null
+      attempts: number
+      timer: ReturnType<typeof setTimeout> | null
+    } = {
+      hash: contentHash?.toLowerCase() ?? null,
+      format,
+      attempts,
+      timer: null
+    }
+    this.pendingVrmHash.set(key, next)
+
+    if (attempts >= RemoteAvatarManager.PEER_MESH_MAX_ATTEMPTS) {
+      odkNetWarn('setPeerVrmHash — gave up waiting for peer record (3 tries)', {
+        peer: shortAddr(key),
+        format: formatTag(format),
+        hash: shortHash(contentHash)
+      })
+      return
+    }
+
+    const delay =
+      RemoteAvatarManager.PEER_MESH_BACKOFF_MS[
+        Math.min(attempts, RemoteAvatarManager.PEER_MESH_BACKOFF_MS.length - 1)
+      ] ?? 3500
+    odkNetWarn('setPeerVrmHash — no remote peer record yet, will retry', {
+      peer: shortAddr(key),
+      format: formatTag(format),
+      hash: shortHash(contentHash),
+      attempt: attempts + 1,
+      retryMs: delay
+    })
+    next.timer = setTimeout(() => {
+      next.timer = null
+      next.attempts += 1
+      const record = this.peers.get(key)
+      if (record) {
+        this.pendingVrmHash.delete(key)
+        this.applyPeerVrmHash(key, record, next.hash, next.format)
+        return
+      }
+      // Still no record — re-queue (increments attempts).
+      this.queuePendingVrmHash(key, next.hash, next.format)
+    }, delay)
+  }
+
+  private flushPendingVrmHash(key: string): void {
+    const pending = this.pendingVrmHash.get(key)
+    if (!pending) return
+    if (pending.timer) clearTimeout(pending.timer)
+    this.pendingVrmHash.delete(key)
+    const record = this.peers.get(key)
+    if (!record) return
+    this.applyPeerVrmHash(key, record, pending.hash, pending.format)
+  }
+
+  private clearPendingVrmHash(key: string): void {
+    const pending = this.pendingVrmHash.get(key)
+    if (!pending) return
+    if (pending.timer) clearTimeout(pending.timer)
+    this.pendingVrmHash.delete(key)
+  }
+
+  private clearCustomMeshRetry(record: RemotePeerRecord): void {
+    if (record.customMeshRetryTimer) {
+      clearTimeout(record.customMeshRetryTimer)
+      record.customMeshRetryTimer = null
+    }
+  }
+
+  /**
+   * After a custom mesh parse/mount failure — retry up to 3× with backoff, then DCL fallback.
+   * Keeps vrmContentHash so a later successful DAV re-fetch can still win.
+   */
+  private scheduleCustomMeshRetry(key: string, record: RemotePeerRecord, reason: string): void {
+    if (!record.vrmContentHash) return
+    if (record.customMeshAttempts >= RemoteAvatarManager.PEER_MESH_MAX_ATTEMPTS) {
+      odkNetWarn('custom mesh mount gave up after 3 tries — DCL fallback', {
+        peer: shortAddr(key),
+        hash: shortHash(record.vrmContentHash),
+        reason
+      })
+      const hash = record.vrmContentHash
+      record.vrmContentHash = null
+      record.vrmLoadedHash = null
+      record.customAvatarFormat = null
+      record.renderMode = 'dcl'
+      this.clearCustomMeshRetry(record)
+      record.customMeshAttempts = 0
+      void this.loadPeerAvatar(key, record)
+      void hash
+      return
+    }
+    const attempt = record.customMeshAttempts
+    const delay =
+      RemoteAvatarManager.PEER_MESH_BACKOFF_MS[
+        Math.min(attempt, RemoteAvatarManager.PEER_MESH_BACKOFF_MS.length - 1)
+      ] ?? 3500
+    this.clearCustomMeshRetry(record)
+    odkNetInfo('custom mesh mount retry scheduled', {
+      peer: shortAddr(key),
+      hash: shortHash(record.vrmContentHash),
+      attempt: attempt + 1,
+      retryMs: delay,
+      reason
+    })
+    record.customMeshRetryTimer = setTimeout(() => {
+      record.customMeshRetryTimer = null
+      if (!this.peers.has(key) || !record.vrmContentHash) return
+      if (record.hasPosition && !record.placeholder && !record.model) {
+        this.attachLoadingPresentation(record)
+      }
+      void this.reloadPeerAvatar(key, record)
+    }, delay)
   }
 
   onPeerVrmBytesReady(
@@ -653,13 +829,11 @@ export class RemoteAvatarManager {
     const key = address.toLowerCase()
     const record = this.peers.get(key)
     if (!record) {
-      odkNetWarn('onPeerVrmBytesReady — no remote peer record', {
-        peer: shortAddr(key),
-        format: formatTag(format),
-        hash: shortHash(contentHash)
-      })
+      // Bytes arrived before peer record — same 3-try path as setPeerVrmHash.
+      this.queuePendingVrmHash(key, contentHash, format)
       return
     }
+    this.clearPendingVrmHash(key)
     const hash = contentHash.toLowerCase()
     if (!record.vrmContentHash) {
       record.vrmContentHash = hash
@@ -686,6 +860,8 @@ export class RemoteAvatarManager {
         hash: shortHash(hash),
         renderMode: record.renderMode
       })
+      this.clearCustomMeshRetry(record)
+      record.customMeshAttempts = 0
       return
     }
     odkNetInfo('onPeerVrmBytesReady — reload scheduled', {
@@ -785,11 +961,15 @@ export class RemoteAvatarManager {
         headBone: null,
         nameTagLastAnchorAt: 0,
         nameTagWanted: false,
-        lastLodUpdateAt: 0
+        lastLodUpdateAt: 0,
+        customMeshAttempts: 0,
+        customMeshRetryTimer: null
       }
       this.peers.set(key, record)
       void record.glider.attach(record.pivot)
       odkNetInfo('remote peer record created', { peer: shortAddr(key) })
+      // Flush DAV equip that arrived before the peer record existed.
+      this.flushPendingVrmHash(key)
     }
 
     if (positionDcl) {
@@ -861,8 +1041,13 @@ export class RemoteAvatarManager {
   removePeer(address: string): void {
     const key = address.toLowerCase()
     const record = this.peers.get(key)
-    if (!record) return
+    if (!record) {
+      this.clearPendingVrmHash(key)
+      return
+    }
     this.loadQueue.cancel(key)
+    this.clearPendingVrmHash(key)
+    this.clearCustomMeshRetry(record)
     record.glider.dispose()
     this.disposePeerModel(record)
     record.nameTag?.dispose()
@@ -1240,6 +1425,9 @@ export class RemoteAvatarManager {
     for (const key of [...this.peers.keys()]) {
       this.removePeer(key)
     }
+    for (const key of [...this.pendingVrmHash.keys()]) {
+      this.clearPendingVrmHash(key)
+    }
     this.root.removeFromParent()
   }
 
@@ -1365,8 +1553,7 @@ export class RemoteAvatarManager {
 
   private clearLoadingPresentation(record: RemotePeerRecord): void {
     if (record.placeholder) {
-      record.pivot.remove(record.placeholder)
-      this.disposeModel(record.placeholder)
+      disposeRemoteAvatarPlaceholder(record.placeholder)
       record.placeholder = null
     }
   }
@@ -1393,6 +1580,7 @@ export class RemoteAvatarManager {
 
       if (!this.peers.has(key)) return
 
+      // Prefer custom mesh when bytes are already in RAM.
       if (record.vrmContentHash) {
         const customBytes = getVrmRamBytes(record.vrmContentHash)
         if (customBytes) {
@@ -1414,13 +1602,13 @@ export class RemoteAvatarManager {
           }
           return
         }
-        odkNetInfo('loadPeerAvatar — waiting for DAV bytes', {
+        // DAV announce without bytes yet (or fetch failing) — do NOT stay on pill forever.
+        // Compose DCL body as interim; onPeerVrmBytesReady will swap to custom when ready.
+        odkNetInfo('loadPeerAvatar — DAV pending, composing DCL interim', {
           peer: shortAddr(key),
           format: formatTag(record.customAvatarFormat),
           hash: shortHash(record.vrmContentHash)
         })
-        if (!record.placeholder) this.attachLoadingPresentation(record)
-        return
       }
 
       const composed = await composeAvatarFromProfile(profile, this.contentUrl || undefined, this.assetCache)
@@ -1433,13 +1621,27 @@ export class RemoteAvatarManager {
         return
       }
 
+      // Bytes may have arrived during Catalyst compose — prefer custom mesh.
       if (record.vrmContentHash) {
-        this.disposeModel(composed)
-        if (!record.placeholder) this.attachLoadingPresentation(record)
-        return
+        const lateBytes = getVrmRamBytes(record.vrmContentHash)
+        if (lateBytes) {
+          this.disposeModel(composed)
+          const format =
+            record.customAvatarFormat ??
+            getVrmRamFormat(record.vrmContentHash) ??
+            'vrm'
+          if (format === 'odk') {
+            await this.loadOdkPeerAvatar(key, record, lateBytes)
+          } else {
+            await this.loadVrmPeerAvatar(key, record, lateBytes)
+          }
+          return
+        }
+        // Still no custom bytes — keep DCL interim (do not dispose back to pill).
       }
 
       record.model = composed
+      record.renderMode = 'dcl'
       this.clearLoadingPresentation(record)
 
       record.pivot.add(record.model)
@@ -1514,6 +1716,8 @@ export class RemoteAvatarManager {
       record.renderMode = 'odk'
       record.vrmLoadedHash = record.vrmContentHash
       record.customAvatarFormat = 'odk'
+      this.clearCustomMeshRetry(record)
+      record.customMeshAttempts = 0
 
       this.clearLoadingPresentation(record)
       record.pivot.add(odkAvatar.root)
@@ -1557,16 +1761,16 @@ export class RemoteAvatarManager {
         void this.applyPeerEmote(record, pending)
       }
     } catch (err) {
-      odkNetWarn('remote ODK load failed — falling back to DCL avatar', {
+      const msg = err instanceof Error ? err.message : String(err)
+      odkNetWarn('remote ODK load failed', {
         peer: shortAddr(record.address),
         hash: shortHash(record.vrmContentHash),
-        error: err instanceof Error ? err.message : String(err)
+        attempt: record.customMeshAttempts + 1,
+        error: msg
       })
-      record.vrmContentHash = null
-      record.vrmLoadedHash = null
-      record.customAvatarFormat = null
+      record.customMeshAttempts += 1
       record.renderMode = 'dcl'
-      await this.loadPeerAvatar(key, record)
+      this.scheduleCustomMeshRetry(key, record, msg)
     }
   }
 
@@ -1599,6 +1803,8 @@ export class RemoteAvatarManager {
       record.renderMode = 'vrm'
       record.vrmLoadedHash = record.vrmContentHash
       record.customAvatarFormat = 'vrm'
+      this.clearCustomMeshRetry(record)
+      record.customMeshAttempts = 0
 
       this.clearLoadingPresentation(record)
       record.pivot.add(vrmAvatar.root)
@@ -1636,11 +1842,17 @@ export class RemoteAvatarManager {
         void this.applyPeerEmote(record, pending)
       }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
       console.warn(`[network] remote VRM load failed for ${record.address}`, err)
-      record.vrmContentHash = null
-      record.vrmLoadedHash = null
+      odkNetWarn('remote VRM load failed', {
+        peer: shortAddr(record.address),
+        hash: shortHash(record.vrmContentHash),
+        attempt: record.customMeshAttempts + 1,
+        error: msg
+      })
+      record.customMeshAttempts += 1
       record.renderMode = 'dcl'
-      await this.loadPeerAvatar(key, record)
+      this.scheduleCustomMeshRetry(key, record, msg)
     }
   }
 

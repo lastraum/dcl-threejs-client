@@ -9952,6 +9952,49 @@
         border-color: rgba(248, 113, 113, 0.45);
         color: #fecaca;
       }
+      .tour-options-popup-btn--focus-on {
+        background: rgba(56, 189, 248, 0.22);
+        border-color: rgba(56, 189, 248, 0.55);
+        color: #e0f2fe;
+      }
+      .tour-focus-banner {
+        position: fixed;
+        left: 50%;
+        top: calc(var(--client-safe-top, 12px) + 12px);
+        transform: translateX(-50%);
+        z-index: var(--z-client-hud, 10040);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 16px;
+        border-radius: 999px;
+        background: rgba(12, 18, 28, 0.92);
+        border: 1px solid rgba(56, 189, 248, 0.45);
+        box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
+        color: #e0f2fe;
+        font-size: 13px;
+        font-weight: 650;
+        pointer-events: none;
+        max-width: min(92vw, 420px);
+      }
+      .tour-focus-banner-icon {
+        color: #38bdf8;
+        font-size: 1rem;
+      }
+      .tour-focus-banner-text {
+        flex: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .tour-focus-banner-hint {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(224, 242, 254, 0.55);
+        white-space: nowrap;
+      }
       .tour-flag-image-modal-host {
         position: fixed;
         inset: 0;

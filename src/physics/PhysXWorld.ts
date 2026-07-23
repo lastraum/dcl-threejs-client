@@ -51,7 +51,7 @@ const CONTROLLER_SLOPE_LIMIT_DEG = 45
 const CONTROLLER_STEP_OFFSET = 0.45
 const CONTROLLER_CONTACT_OFFSET = 0.08
 /** Descending platform overhead — max gap from feet to walk surface to start transfer (≈ capsule). */
-const PLATFORM_OVERHEAD_CATCH = 1.6 + CONTROLLER_STEP_OFFSET + 0.35
+const PLATFORM_OVERHEAD_CATCH = 1.88 + CONTROLLER_STEP_OFFSET + 0.35
 /** Per-frame platform Δ sanity — rejects collider pose glitches (walk surface jumping to far global bbox). */
 const MAX_PLATFORM_DELTA_HORIZ = 1.25
 const MAX_PLATFORM_DELTA_TOTAL = 2.5
@@ -239,8 +239,12 @@ export class PhysXWorld {
   private controllerFilters: any = null
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private controller: any = null
+  /**
+   * PhysX CCT capsule — full height including hemispherical caps (metres).
+   * Matches typical DCL body scale (~1.88 m); previously 1.6 m felt short vs avatar mesh.
+   */
   private capsuleRadius = 0.3
-  private capsuleHeight = 1.6
+  private capsuleHeight = 1.88
   private capsuleDebugGroup: THREE.Group | null = null
   private readonly unsubscribeDebug: () => void
 

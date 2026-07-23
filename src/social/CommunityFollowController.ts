@@ -15,10 +15,13 @@ import {
   canPostCommunityAnnouncements
 } from './communityPermissions'
 import {
+  followCamEqual,
   followTargetLabel,
   followTargetsEqual,
   newFollowSessionId,
+  quantizeFollowCam,
   routeToFollowTarget,
+  type FollowCamState,
   type FollowTarget,
   type FollowWireMsg
 } from './communityFollowWire'
@@ -26,6 +29,8 @@ import type { CommunityListRow } from './types'
 
 const HEARTBEAT_MS = 45_000
 const GOTO_MIN_INTERVAL_MS = 3_000
+/** Leader freecam stream while Tour Focus is on. */
+const CAM_PUBLISH_INTERVAL_MS = 100
 
 export type CommunityTourSession = {
   communityId: string
@@ -37,6 +42,10 @@ export type CommunityTourSession = {
   flagDataUrl: string | null
   /** Follower wallets (lowercase) — tracked by leader via join/leave wire. */
   followerAddresses: string[]
+  /** Leader Tour Focus — take over follower cameras. */
+  focusActive: boolean
+  /** Last freecam snapshot from leader (for late joiners / UI). */
+  lastCam: FollowCamState | null
 }
 
 export type TourRosterEntry = {
@@ -61,6 +70,20 @@ export type CommunityFollowEvent =
       sessionId: string
       leaderAddress: string
       flagDataUrl: string | null
+    }
+  | {
+      kind: 'focus_changed'
+      communityId: string
+      sessionId: string
+      leaderAddress: string
+      focusActive: boolean
+    }
+  | {
+      kind: 'cam_update'
+      communityId: string
+      sessionId: string
+      leaderAddress: string
+      cam: FollowCamState
     }
   | { kind: 'changed' }
 
@@ -94,6 +117,9 @@ export class CommunityFollowController {
   /** Coalesce hard /goto spam so rate-limit still flushes the latest intentional jump. */
   private pendingGotoTimer = 0
   private pendingGotoTarget: FollowTarget | null = null
+  /** Leader: throttle freecam publish while Focus is on. */
+  private lastCamSentAt = 0
+  private lastPublishedCam: FollowCamState | null = null
   private disposed = false
   private readonly listeners = new Set<(ev: CommunityFollowEvent) => void>()
 
@@ -119,7 +145,35 @@ export class CommunityFollowController {
     this.followingCommunityId = null
     this.followingSessionId = null
     this.lastPublishedGoto = null
+    this.lastPublishedCam = null
+    this.lastCamSentAt = 0
     this.listeners.clear()
+  }
+
+  /** Local user is leading and Tour Focus is currently on. */
+  isFocusBroadcasting(): boolean {
+    if (!this.leadingCommunityId) return false
+    const s = this.sessions.get(this.leadingCommunityId)
+    return Boolean(s?.focusActive)
+  }
+
+  /** Local follower is under leader Tour Focus. */
+  isFocusReceiving(): boolean {
+    if (!this.followingCommunityId) return false
+    const s = this.sessions.get(this.followingCommunityId)
+    return Boolean(s?.focusActive)
+  }
+
+  isFocusActive(communityId?: string): boolean {
+    const id = (communityId ?? this.leadingCommunityId ?? this.followingCommunityId)?.trim().toLowerCase()
+    if (!id) return false
+    return Boolean(this.sessions.get(id)?.focusActive)
+  }
+
+  getLastCam(communityId?: string): FollowCamState | null {
+    const id = (communityId ?? this.leadingCommunityId ?? this.followingCommunityId)?.trim().toLowerCase()
+    if (!id) return null
+    return this.sessions.get(id)?.lastCam ?? null
   }
 
   getSession(communityId: string): CommunityTourSession | null {
@@ -212,7 +266,10 @@ export class CommunityFollowController {
       followerAddresses:
         existing?.sessionId === sessionId && existing.leaderAddress === local
           ? [...existing.followerAddresses]
-          : []
+          : [],
+      // Focus does not auto-resume — leader must re-enable after restart.
+      focusActive: false,
+      lastCam: null
     }
 
     const startMsg: FollowWireMsg = {
@@ -221,7 +278,8 @@ export class CommunityFollowController {
       l: local,
       at: Date.now(),
       ...(target ? { target } : {}),
-      ...(session.flagDataUrl ? { flag: session.flagDataUrl } : {})
+      ...(session.flagDataUrl ? { flag: session.flagDataUrl } : {}),
+      focus: false
     }
     const ok = await this.publish(id, startMsg)
     if (!ok) return false
@@ -303,6 +361,25 @@ export class CommunityFollowController {
         flagDataUrl: session.flagDataUrl
       })
     }
+    // Late join into an active Focus session — take over camera immediately.
+    if (session.focusActive) {
+      this.emit({
+        kind: 'focus_changed',
+        communityId: id,
+        sessionId: session.sessionId,
+        leaderAddress: session.leaderAddress,
+        focusActive: true
+      })
+      if (session.lastCam) {
+        this.emit({
+          kind: 'cam_update',
+          communityId: id,
+          sessionId: session.sessionId,
+          leaderAddress: session.leaderAddress,
+          cam: session.lastCam
+        })
+      }
+    }
     if (session.lastTarget) {
       this.emit({
         kind: 'follow_goto',
@@ -323,6 +400,7 @@ export class CommunityFollowController {
     const was = this.followingCommunityId
     const session = was ? this.sessions.get(was) : null
     const local = this.getLocalAddress()?.toLowerCase() ?? ''
+    const wasFocus = Boolean(session?.focusActive)
     this.followingCommunityId = null
     this.followingSessionId = null
     if (session && local && ADDR_RE.test(local)) {
@@ -342,6 +420,15 @@ export class CommunityFollowController {
         leaderAddress: session.leaderAddress,
         flagDataUrl: null
       })
+      if (wasFocus) {
+        this.emit({
+          kind: 'focus_changed',
+          communityId: session.communityId,
+          sessionId: session.sessionId,
+          leaderAddress: session.leaderAddress,
+          focusActive: false
+        })
+      }
     }
     this.emit({ kind: 'changed' })
   }
@@ -379,6 +466,82 @@ export class CommunityFollowController {
     })
     this.emit({ kind: 'changed' })
     return ok
+  }
+
+  /**
+   * Leader: enable/disable Tour Focus (take over follower freecam + FOV).
+   * While on, call {@link tickLeaderCam} each frame with a freecam sample.
+   */
+  async setFocusActive(on: boolean): Promise<boolean> {
+    if (this.disposed || !this.leadingCommunityId || !this.leadingSessionId) return false
+    const id = this.leadingCommunityId
+    const session = this.sessions.get(id)
+    if (!session || session.sessionId !== this.leadingSessionId) return false
+    if (session.focusActive === on) return true
+    const local = this.getLocalAddress()?.toLowerCase() ?? session.leaderAddress
+    session.focusActive = on
+    if (!on) {
+      session.lastCam = null
+      this.lastPublishedCam = null
+    }
+    this.sessions.set(id, session)
+    const ok = await this.publish(id, {
+      t: 'focus',
+      s: session.sessionId,
+      l: local,
+      at: Date.now(),
+      on
+    })
+    this.emit({
+      kind: 'focus_changed',
+      communityId: id,
+      sessionId: session.sessionId,
+      leaderAddress: session.leaderAddress,
+      focusActive: on
+    })
+    this.emit({ kind: 'changed' })
+    clientDebugLog.log(
+      'social',
+      `Tour Focus ${on ? 'ON' : 'OFF'} · community=${id.slice(0, 8)}…`,
+      { level: 'info', alsoConsole: true }
+    )
+    return ok
+  }
+
+  /**
+   * Leader frame tick: publish freecam while Focus is on (~10 Hz).
+   * `sample` should read local freecam yaw/pitch/dist/fp + FOV.
+   */
+  tickLeaderCam(sample: () => FollowCamState | null): void {
+    if (this.disposed || !this.leadingCommunityId || !this.leadingSessionId) return
+    const id = this.leadingCommunityId
+    const session = this.sessions.get(id)
+    if (!session || !session.focusActive || session.sessionId !== this.leadingSessionId) return
+    const now = Date.now()
+    if (now - this.lastCamSentAt < CAM_PUBLISH_INTERVAL_MS) return
+    const raw = sample()
+    if (!raw) return
+    const cam = quantizeFollowCam(raw)
+    // Always send first packet after focus-on; then skip identical snapshots.
+    if (this.lastPublishedCam && followCamEqual(this.lastPublishedCam, cam) && now - this.lastCamSentAt < 500) {
+      return
+    }
+    this.lastCamSentAt = now
+    this.lastPublishedCam = cam
+    session.lastCam = cam
+    this.sessions.set(id, session)
+    const local = this.getLocalAddress()?.toLowerCase() ?? session.leaderAddress
+    void this.publish(id, {
+      t: 'cam',
+      s: session.sessionId,
+      l: local,
+      at: now,
+      fp: cam.fp,
+      yaw: cam.yaw,
+      pitch: cam.pitch,
+      dist: cam.dist,
+      fov: cam.fov
+    })
   }
 
   getActiveFlag(): {
@@ -559,7 +722,8 @@ export class CommunityFollowController {
         msg.target,
         msg.t === 'hb',
         local,
-        'flag' in msg ? msg.flag : undefined
+        'flag' in msg ? msg.flag : undefined,
+        'focus' in msg ? msg.focus : undefined
       )
       // Re-announce presence so leader roster recovers after reload / late hb.
       if (
@@ -583,6 +747,20 @@ export class CommunityFollowController {
     }
     if (msg.t === 'flag') {
       this.applyFlag(id, leader, msg.s, msg.flag, local)
+      return
+    }
+    if (msg.t === 'focus') {
+      this.applyFocus(id, leader, msg.s, msg.on, local)
+      return
+    }
+    if (msg.t === 'cam') {
+      this.applyCam(
+        id,
+        leader,
+        msg.s,
+        { fp: msg.fp, yaw: msg.yaw, pitch: msg.pitch, dist: msg.dist, fov: msg.fov },
+        local
+      )
       return
     }
     if (msg.t === 'join') {
@@ -624,7 +802,8 @@ export class CommunityFollowController {
     target: FollowTarget | undefined,
     fromHeartbeat: boolean,
     local: string,
-    flag?: string | null
+    flag?: string | null,
+    focus?: boolean
   ): void {
     const existing = this.sessions.get(communityId)
     if (existing) {
@@ -637,6 +816,8 @@ export class CommunityFollowController {
     const isNew = !existing || existing.sessionId !== sessionId
     const prevFlag = existing?.sessionId === sessionId ? existing.flagDataUrl : null
     const nextFlag = flag !== undefined ? flag : prevFlag
+    const prevFocus = existing?.sessionId === sessionId ? existing.focusActive : false
+    const nextFocus = focus !== undefined ? focus : prevFocus
     const session: CommunityTourSession = {
       communityId,
       sessionId,
@@ -645,7 +826,9 @@ export class CommunityFollowController {
       startedAt: existing && existing.sessionId === sessionId ? existing.startedAt : at,
       flagDataUrl: nextFlag,
       followerAddresses:
-        existing && existing.sessionId === sessionId ? [...existing.followerAddresses] : []
+        existing && existing.sessionId === sessionId ? [...existing.followerAddresses] : [],
+      focusActive: nextFocus,
+      lastCam: existing && existing.sessionId === sessionId ? existing.lastCam : null
     }
     if (target) session.lastTarget = target
     this.sessions.set(communityId, session)
@@ -657,6 +840,16 @@ export class CommunityFollowController {
         sessionId,
         leaderAddress: leader,
         flagDataUrl: nextFlag
+      })
+    }
+
+    if (nextFocus !== prevFocus) {
+      this.emit({
+        kind: 'focus_changed',
+        communityId,
+        sessionId,
+        leaderAddress: leader,
+        focusActive: nextFocus
       })
     }
 
@@ -712,6 +905,7 @@ export class CommunityFollowController {
     if (existing.sessionId !== sessionId && existing.leaderAddress !== leader) return
 
     const hadFlag = Boolean(existing.flagDataUrl)
+    const hadFocus = Boolean(existing.focusActive)
     this.sessions.delete(communityId)
     if (this.leadingCommunityId === communityId) this.clearLocalLead()
     if (this.followingCommunityId === communityId) {
@@ -725,6 +919,15 @@ export class CommunityFollowController {
         sessionId: existing.sessionId,
         leaderAddress: existing.leaderAddress,
         flagDataUrl: null
+      })
+    }
+    if (hadFocus) {
+      this.emit({
+        kind: 'focus_changed',
+        communityId,
+        sessionId: existing.sessionId,
+        leaderAddress: existing.leaderAddress,
+        focusActive: false
       })
     }
     this.emit({ kind: 'tour_ended', communityId, sessionId: existing.sessionId })
@@ -750,7 +953,9 @@ export class CommunityFollowController {
             lastTarget: existing?.lastTarget ?? null,
             startedAt: existing?.startedAt ?? Date.now(),
             flagDataUrl: flag,
-            followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : []
+            followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : [],
+            focusActive: existing?.focusActive ?? false,
+            lastCam: existing?.lastCam ?? null
           }
     if (existing && existing.leaderAddress !== leader && existing.sessionId !== sessionId) {
       return
@@ -773,6 +978,112 @@ export class CommunityFollowController {
     this.emit({ kind: 'changed' })
   }
 
+  private applyFocus(
+    communityId: string,
+    leader: string,
+    sessionId: string,
+    on: boolean,
+    local: string
+  ): void {
+    const existing = this.sessions.get(communityId)
+    if (existing && existing.leaderAddress !== leader && existing.sessionId !== sessionId) {
+      return
+    }
+    // Only the tour leader may toggle focus.
+    if (existing && existing.leaderAddress !== leader) return
+
+    const session: CommunityTourSession =
+      existing && existing.sessionId === sessionId
+        ? {
+            ...existing,
+            leaderAddress: leader,
+            focusActive: on,
+            lastCam: on ? existing.lastCam : null
+          }
+        : {
+            communityId,
+            sessionId,
+            leaderAddress: leader,
+            lastTarget: existing?.lastTarget ?? null,
+            startedAt: existing?.startedAt ?? Date.now(),
+            flagDataUrl: existing?.flagDataUrl ?? null,
+            followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : [],
+            focusActive: on,
+            lastCam: null
+          }
+    this.sessions.set(communityId, session)
+
+    // Ignore echo of our own leader publish for focus_changed (UI already updated).
+    const isLocalLeader = Boolean(local && leader === local && this.leadingCommunityId === communityId)
+    if (!isLocalLeader || existing?.focusActive !== on) {
+      this.emit({
+        kind: 'focus_changed',
+        communityId,
+        sessionId,
+        leaderAddress: leader,
+        focusActive: on
+      })
+    }
+    this.emit({ kind: 'changed' })
+  }
+
+  private applyCam(
+    communityId: string,
+    leader: string,
+    sessionId: string,
+    cam: FollowCamState,
+    local: string
+  ): void {
+    const existing = this.sessions.get(communityId)
+    if (existing && existing.leaderAddress !== leader && existing.sessionId !== sessionId) {
+      return
+    }
+    if (existing && existing.leaderAddress !== leader) return
+
+    const session: CommunityTourSession =
+      existing && existing.sessionId === sessionId
+        ? { ...existing, leaderAddress: leader, lastCam: cam, focusActive: true }
+        : {
+            communityId,
+            sessionId,
+            leaderAddress: leader,
+            lastTarget: existing?.lastTarget ?? null,
+            startedAt: existing?.startedAt ?? Date.now(),
+            flagDataUrl: existing?.flagDataUrl ?? null,
+            followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : [],
+            focusActive: true,
+            lastCam: cam
+          }
+    const focusJustOn = !existing?.focusActive
+    this.sessions.set(communityId, session)
+
+    // Echo of our own leader cam stream — skip follower apply.
+    if (local && leader === local) return
+
+    if (
+      this.followingCommunityId === communityId &&
+      (this.followingSessionId === sessionId || !this.followingSessionId)
+    ) {
+      if (!this.followingSessionId) this.followingSessionId = sessionId
+      if (focusJustOn) {
+        this.emit({
+          kind: 'focus_changed',
+          communityId,
+          sessionId,
+          leaderAddress: leader,
+          focusActive: true
+        })
+      }
+      this.emit({
+        kind: 'cam_update',
+        communityId,
+        sessionId,
+        leaderAddress: leader,
+        cam
+      })
+    }
+  }
+
   private applyGoto(
     communityId: string,
     leader: string,
@@ -791,7 +1102,9 @@ export class CommunityFollowController {
           lastTarget: target,
           startedAt: Date.now(),
           flagDataUrl: existing?.flagDataUrl ?? null,
-          followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : []
+          followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : [],
+          focusActive: existing?.focusActive ?? false,
+          lastCam: existing?.lastCam ?? null
         }
 
     if (existing && existing.leaderAddress !== leader && existing.sessionId !== sessionId) {
@@ -826,6 +1139,8 @@ export class CommunityFollowController {
     this.leadingCommunityId = null
     this.leadingSessionId = null
     this.lastPublishedGoto = null
+    this.lastPublishedCam = null
+    this.lastCamSentAt = 0
     this.stopHeartbeat()
     this.clearPendingGoto()
   }
@@ -855,7 +1170,9 @@ export class CommunityFollowController {
       at: Date.now(),
       ...(session.lastTarget ? { target: session.lastTarget } : {}),
       // Rebroadcast flag so late joiners get the banner without a separate request.
-      ...(session.flagDataUrl ? { flag: session.flagDataUrl } : {})
+      ...(session.flagDataUrl ? { flag: session.flagDataUrl } : {}),
+      // Late joiners learn Focus is on (cam stream fills in shortly after).
+      focus: session.focusActive
     }
     await this.publish(id, msg)
   }

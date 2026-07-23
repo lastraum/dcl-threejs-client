@@ -231,6 +231,8 @@ export class PlayerSystem {
   private preForceCamDistance: number | null = null
   /** Explorer In-World Camera (photo mode) — dedicated lens owns host.camera. */
   private photoModeActive = false
+  /** Tour Focus follower — blocks locomotion + freecam; external controller owns the lens. */
+  private tourFocusActive = false
   /**
    * After spawn when settle finds no solid, briefly hold Y and re-probe while late
    * collider pose slides land. No synthetic pad — pure authored geometry only.
@@ -315,10 +317,16 @@ export class PlayerSystem {
     )
     this.input = new PlayerInput(this.host.renderer.domElement)
     this.input.setLocomotionBlocked(
-      () => this.photoModeActive || !canLocomote(this.getLocomotionConfig())
+      () =>
+        this.photoModeActive ||
+        this.tourFocusActive ||
+        !canLocomote(this.getLocomotionConfig())
     )
     this.input.setLookBlocked(
-      () => this.photoModeActive || this.isSceneVirtualCameraDriving()
+      () =>
+        this.photoModeActive ||
+        this.tourFocusActive ||
+        this.isSceneVirtualCameraDriving()
     )
     const feetY = spawn.fromSpawnPoints
       ? spawn.y
@@ -593,6 +601,33 @@ export class PlayerSystem {
 
   isPhotoModeActive(): boolean {
     return this.photoModeActive
+  }
+
+  /**
+   * Tour Focus (follower) — blocks locomotion + freecam look/zoom.
+   * {@link TourFocusController} drives host.camera from the leader freecam stream.
+   */
+  setTourFocusActive(active: boolean): void {
+    this.tourFocusActive = active
+    if (active) {
+      this.input?.stopOrbitIfActive()
+      if (this.input?.pointer.locked) document.exitPointerLock()
+      this.input?.clearMovementKeys()
+    }
+  }
+
+  isTourFocusActive(): boolean {
+    return this.tourFocusActive
+  }
+
+  /** Leader freecam snapshot for Tour Focus wire (yaw/pitch/dist/fp). */
+  getFreecamState(): { yaw: number; pitch: number; dist: number; firstPerson: boolean } {
+    return {
+      yaw: this.camYaw,
+      pitch: this.camPitch,
+      dist: this.camDistance,
+      firstPerson: this.isFirstPerson()
+    }
   }
 
   /**
@@ -1078,6 +1113,30 @@ export class PlayerSystem {
 
     // Photo mode: freeze locomotion input; dedicated PhotoCameraController owns the lens.
     if (this.photoModeActive) {
+      this.physics.step(delta)
+      this.root.position.copy(this.physics.positionOut)
+      this.syncNameTag()
+      this.avatar?.setYaw(this.playerYaw)
+      this.avatar?.update(delta, {
+        horizontalSpeed: 0,
+        grounded: this.grounded,
+        nearGround: this.nearGround,
+        verticalVelocity: 0,
+        locomotionMode: this.locomotionMode,
+        jumping: false,
+        doubleJumping: false,
+        doubleJumpTriggered: false,
+        falling: false,
+        gliding: false,
+        moveAxisX: 0,
+        moveAxisZ: 0
+      })
+      this.input.endFrame()
+      return
+    }
+
+    // Tour Focus (follower): freeze locomotion; TourFocusController owns the lens.
+    if (this.tourFocusActive) {
       this.physics.step(delta)
       this.root.position.copy(this.physics.positionOut)
       this.syncNameTag()

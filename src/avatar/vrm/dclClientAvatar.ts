@@ -6,8 +6,12 @@
 import { DavAvatarFormat, VRM_MAX_BYTES, type CustomAvatarFormat } from './constants'
 
 export const DAV_SCENE_ID = 'dcl.client.avatar'
-/** Payload bytes per LiveKit chunk (room for RFC4 + DAV headers). */
-export const DAV_CHUNK_DATA_SIZE = 12_000
+/**
+ * Payload bytes per LiveKit reliable packet (room for RFC4 + DAV headers).
+ * Keep well under LiveKit/SCTP practical limits — 12KB was losing trailing chunks
+ * on multi‑MB VRMs (assembly incomplete ~2.5/2.7 MB).
+ */
+export const DAV_CHUNK_DATA_SIZE = 6_000
 
 const MAGIC = new Uint8Array([0x44, 0x41, 0x56, 0x01])
 const VERSION_V1 = 1
@@ -20,7 +24,13 @@ export const DavMessageType = {
   FetchBegin: 4,
   FetchChunk: 5,
   FetchEnd: 6,
-  FetchError: 7
+  FetchError: 7,
+  /**
+   * Late joiner probe — "please re-announce your equip".
+   * Needed when announce was published before the receiver had a DAV handler
+   * (landing LiveKit → World handoff).
+   */
+  WantAnnounce: 8
 } as const
 
 export type DavFetchErrorReason = 'not_found' | 'oversize' | 'busy'
@@ -66,6 +76,11 @@ export function encodeDavAnnounce(
 
 export function encodeDavClear(): Uint8Array {
   return writeHeader(VERSION_V2, DavMessageType.Clear, 0)
+}
+
+/** Ask peers to re-broadcast their DAV Announce (late joiner recovery). */
+export function encodeDavWantAnnounce(): Uint8Array {
+  return writeHeader(VERSION_V2, DavMessageType.WantAnnounce, 0)
 }
 
 export function encodeDavFetchRequest(contentHashHex: string): Uint8Array {
@@ -140,6 +155,7 @@ export type DecodedDavMessage =
   | { type: typeof DavMessageType.FetchChunk; hash: string; offset: number; data: Uint8Array }
   | { type: typeof DavMessageType.FetchEnd; hash: string }
   | { type: typeof DavMessageType.FetchError; hash: string; reason: DavFetchErrorReason }
+  | { type: typeof DavMessageType.WantAnnounce }
 
 export function tryDecodeDavMessage(data: Uint8Array): DecodedDavMessage | null {
   if (data.length < 6) return null
@@ -200,6 +216,8 @@ export function tryDecodeDavMessage(data: Uint8Array): DecodedDavMessage | null 
         code === 2 ? 'oversize' : code === 3 ? 'busy' : 'not_found'
       return { type, hash: hashBytesToHex(data.subarray(6, 38)), reason }
     }
+    case DavMessageType.WantAnnounce:
+      return { type }
     default:
       return null
   }

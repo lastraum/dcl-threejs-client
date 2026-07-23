@@ -64,12 +64,46 @@ export type FollowTarget =
  */
 export type FollowFlagPayload = string
 
+/**
+ * Leader freecam snapshot for Tour Focus — followers reconstruct the same POV
+ * from the leader remote-avatar feet + these params (incl FOV).
+ */
+export type FollowCamState = {
+  /** First-person (true) vs third-person boom. */
+  fp: boolean
+  /** Orbit / look yaw (radians, Three freecam). */
+  yaw: number
+  /** Orbit elevation or FPV pitch (radians). */
+  pitch: number
+  /** Boom distance (0 ≈ FPV). */
+  dist: number
+  /** Perspective FOV degrees. */
+  fov: number
+}
+
 export type FollowWireMsg =
-  | { t: 'start'; s: string; l: string; at: number; target?: FollowTarget; flag?: FollowFlagPayload }
+  | {
+      t: 'start'
+      s: string
+      l: string
+      at: number
+      target?: FollowTarget
+      flag?: FollowFlagPayload
+      /** Tour Focus active when tour starts (rare; usually toggled later). */
+      focus?: boolean
+    }
   | { t: 'stop'; s: string; l: string; at: number }
   | { t: 'goto'; s: string; l: string; at: number; target: FollowTarget }
-  /** Heartbeat so late joiners learn an active tour + current stop (+ flag rebroadcast). */
-  | { t: 'hb'; s: string; l: string; at: number; target?: FollowTarget; flag?: FollowFlagPayload }
+  /** Heartbeat so late joiners learn an active tour + current stop (+ flag / focus). */
+  | {
+      t: 'hb'
+      s: string
+      l: string
+      at: number
+      target?: FollowTarget
+      flag?: FollowFlagPayload
+      focus?: boolean
+    }
   /** Leader set / clear tour flag image (pole + banner on spine). */
   | { t: 'flag'; s: string; l: string; at: number; flag: FollowFlagPayload | null }
   /**
@@ -79,6 +113,23 @@ export type FollowWireMsg =
   | { t: 'join'; s: string; l: string; at: number }
   /** Follower left the tour. `l` is the follower wallet. */
   | { t: 'leave'; s: string; l: string; at: number }
+  /** Leader toggles Tour Focus — take over follower cameras. */
+  | { t: 'focus'; s: string; l: string; at: number; on: boolean }
+  /**
+   * Leader freecam stream while Focus is on (~10 Hz).
+   * `l` is the leader wallet.
+   */
+  | {
+      t: 'cam'
+      s: string
+      l: string
+      at: number
+      fp: boolean
+      yaw: number
+      pitch: number
+      dist: number
+      fov: number
+    }
 
 export function isCommunityFollowWireText(text: string): boolean {
   const raw = text.trimStart()
@@ -127,6 +178,35 @@ function parseFollowFlag(raw: unknown): FollowFlagPayload | null | undefined {
   return undefined
 }
 
+function parseFocusFlag(raw: unknown): boolean | undefined {
+  if (typeof raw === 'boolean') return raw
+  if (raw === 1 || raw === '1' || raw === 'true') return true
+  if (raw === 0 || raw === '0' || raw === 'false') return false
+  return undefined
+}
+
+function parseCamState(o: Record<string, unknown>): FollowCamState | null {
+  const yaw = Number(o.yaw)
+  const pitch = Number(o.pitch)
+  const dist = Number(o.dist)
+  const fov = Number(o.fov)
+  if (![yaw, pitch, dist, fov].every((n) => Number.isFinite(n))) return null
+  const fpRaw = o.fp
+  const fp =
+    fpRaw === true ||
+    fpRaw === 1 ||
+    fpRaw === '1' ||
+    fpRaw === 'true' ||
+    (typeof dist === 'number' && dist <= 0.35 && fpRaw !== false && fpRaw !== 0)
+  return {
+    fp: Boolean(fp),
+    yaw,
+    pitch,
+    dist: Math.max(0, dist),
+    fov: Math.max(20, Math.min(140, fov))
+  }
+}
+
 function parseFollowWireObject(o: Record<string, unknown>): FollowWireMsg | null {
   if (!o || typeof o !== 'object') return null
   const t = o.t
@@ -138,8 +218,11 @@ function parseFollowWireObject(o: Record<string, unknown>): FollowWireMsg | null
   if (t === 'start') {
     const target = parseFollowTarget(o.target)
     const flag = parseFollowFlag(o.flag)
+    const focus = parseFocusFlag(o.focus)
     const base = target ? { t: 'start' as const, s, l, at, target } : { t: 'start' as const, s, l, at }
-    return flag !== undefined && flag !== null ? { ...base, flag } : base
+    const withFlag =
+      flag !== undefined && flag !== null ? { ...base, flag } : base
+    return focus !== undefined ? { ...withFlag, focus } : withFlag
   }
   if (t === 'stop') return { t: 'stop', s, l, at }
   if (t === 'goto') {
@@ -150,8 +233,11 @@ function parseFollowWireObject(o: Record<string, unknown>): FollowWireMsg | null
   if (t === 'hb') {
     const target = parseFollowTarget(o.target)
     const flag = parseFollowFlag(o.flag)
+    const focus = parseFocusFlag(o.focus)
     const base = target ? { t: 'hb' as const, s, l, at, target } : { t: 'hb' as const, s, l, at }
-    return flag !== undefined && flag !== null ? { ...base, flag } : base
+    const withFlag =
+      flag !== undefined && flag !== null ? { ...base, flag } : base
+    return focus !== undefined ? { ...withFlag, focus } : withFlag
   }
   if (t === 'flag') {
     const flag = parseFollowFlag(o.flag)
@@ -161,7 +247,49 @@ function parseFollowWireObject(o: Record<string, unknown>): FollowWireMsg | null
   }
   if (t === 'join') return { t: 'join', s, l, at }
   if (t === 'leave') return { t: 'leave', s, l, at }
+  if (t === 'focus') {
+    const on = parseFocusFlag(o.on)
+    if (on === undefined) return null
+    return { t: 'focus', s, l, at, on }
+  }
+  if (t === 'cam') {
+    const cam = parseCamState(o)
+    if (!cam) return null
+    return {
+      t: 'cam',
+      s,
+      l,
+      at,
+      fp: cam.fp,
+      yaw: cam.yaw,
+      pitch: cam.pitch,
+      dist: cam.dist,
+      fov: cam.fov
+    }
+  }
   return null
+}
+
+/** Quantize freecam for wire (smaller JSON, stable equality). */
+export function quantizeFollowCam(cam: FollowCamState): FollowCamState {
+  return {
+    fp: cam.fp,
+    yaw: Math.round(cam.yaw * 1000) / 1000,
+    pitch: Math.round(cam.pitch * 1000) / 1000,
+    dist: Math.round(cam.dist * 100) / 100,
+    fov: Math.round(cam.fov)
+  }
+}
+
+export function followCamEqual(a: FollowCamState | null | undefined, b: FollowCamState | null | undefined): boolean {
+  if (!a || !b) return a === b
+  return (
+    a.fp === b.fp &&
+    a.yaw === b.yaw &&
+    a.pitch === b.pitch &&
+    a.dist === b.dist &&
+    a.fov === b.fov
+  )
 }
 
 const ADDR_RE = /^0x[a-f0-9]{40}$/

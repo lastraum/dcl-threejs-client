@@ -96,6 +96,7 @@ export class ChatPanel {
   private readonly followStopBtn: HTMLButtonElement
   private readonly followFlagBtn: HTMLButtonElement
   private readonly followFlagInput: HTMLInputElement
+  private readonly followFlagThumb: HTMLImageElement
 
   constructor({ social, onVisibilityChange, onGoto, onOpenProfile, getCurrentRoute }: ChatPanelOptions) {
     this.social = social
@@ -131,7 +132,8 @@ export class ChatPanel {
         <div class="chat-panel__follow-actions">
           <input type="file" accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
             class="chat-panel__follow-flag-input" hidden data-follow-flag-input />
-          <button type="button" class="chat-panel__follow-btn chat-panel__follow-btn--flag" hidden data-follow-flag-btn title="Tour flag image">Flag</button>
+          <img class="chat-panel__follow-flag-thumb" alt="" data-follow-flag-thumb hidden />
+          <button type="button" class="chat-panel__follow-btn chat-panel__follow-btn--flag" hidden data-follow-flag-btn title="Upload a banner for your tour flag pole">🚩 Set flag</button>
           <button type="button" class="chat-panel__follow-btn chat-panel__follow-btn--primary" hidden></button>
           <button type="button" class="chat-panel__follow-btn chat-panel__follow-btn--stop" hidden></button>
         </div>
@@ -175,6 +177,9 @@ export class ChatPanel {
     this.followFlagInput = this.panelEl.querySelector(
       '[data-follow-flag-input]'
     ) as HTMLInputElement
+    this.followFlagThumb = this.panelEl.querySelector(
+      '[data-follow-flag-thumb]'
+    ) as HTMLImageElement
 
     this.channelMenu = new ChatChannelMenu({
       getChannelKey: () => socialChannelKey(this.social.getChannel()),
@@ -560,23 +565,36 @@ export class ChatPanel {
     this.followActionBtn.hidden = true
     this.followStopBtn.hidden = true
     this.followFlagBtn.hidden = true
+    this.followFlagThumb.hidden = true
     this.followActionBtn.disabled = false
     this.followStopBtn.disabled = false
     this.followFlagBtn.disabled = false
-    this.followFlagBtn.dataset.hasFlag = session?.flagDataUrl ? '1' : '0'
-    this.followFlagBtn.textContent = session?.flagDataUrl ? 'Clear flag' : 'Flag'
+    const hasFlag = Boolean(session?.flagDataUrl)
+    this.followFlagBtn.dataset.hasFlag = hasFlag ? '1' : '0'
+    this.followFlagBtn.textContent = hasFlag ? 'Clear flag' : '🚩 Set flag'
     this.followFlagBtn.setAttribute(
       'aria-label',
-      session?.flagDataUrl ? 'Remove tour flag image' : 'Upload tour flag image'
+      hasFlag ? 'Remove tour flag image' : 'Upload tour flag image for your spine banner'
     )
+    if (hasFlag && session?.flagDataUrl) {
+      this.followFlagThumb.src = session.flagDataUrl
+      this.followFlagThumb.hidden = false
+    } else {
+      this.followFlagThumb.removeAttribute('src')
+    }
 
     if (leading) {
-      this.followLabelEl.textContent = stopLabel
-        ? `Leading · ${stopLabel} · /goto moves group`
-        : 'Leading · /goto moves group (walk only updates label)'
+      this.followLabelEl.textContent = hasFlag
+        ? stopLabel
+          ? `Leading · ${stopLabel} · flag on`
+          : 'Leading · flag on · /goto moves group'
+        : stopLabel
+          ? `Leading · ${stopLabel} · 🚩 Set flag for banner`
+          : 'Leading · 🚩 Set flag for your banner · /goto moves group'
       this.followStopBtn.hidden = false
       this.followStopBtn.textContent = 'Stop tour'
       this.followStopBtn.setAttribute('aria-label', 'Stop community tour')
+      // Flag is only for the active leader (tour already started).
       this.followFlagBtn.hidden = false
       return
     }

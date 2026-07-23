@@ -9973,6 +9973,7 @@
       .chat-panel__follow-bar {
         display: flex;
         align-items: center;
+        flex-wrap: wrap;
         gap: 8px;
         padding: 8px 10px 8px 12px;
         border-bottom: 1px solid rgba(180, 120, 255, 0.28);
@@ -9987,7 +9988,7 @@
         display: none !important;
       }
       .chat-panel__follow-label {
-        flex: 1;
+        flex: 1 1 120px;
         min-width: 0;
         font-size: 11px;
         font-weight: 600;
@@ -10000,8 +10001,20 @@
       .chat-panel__follow-actions {
         display: inline-flex;
         align-items: center;
+        flex-wrap: wrap;
         gap: 4px;
         flex-shrink: 0;
+      }
+      .chat-panel__follow-flag-thumb {
+        width: 22px;
+        height: 22px;
+        border-radius: 4px;
+        object-fit: cover;
+        border: 1px solid rgba(255, 200, 100, 0.55);
+        flex-shrink: 0;
+      }
+      .chat-panel__follow-flag-thumb[hidden] {
+        display: none !important;
       }
       .chat-panel__follow-btn {
         height: 26px;
@@ -10040,12 +10053,13 @@
         color: #fff;
       }
       .chat-panel__follow-btn--flag {
-        background: rgba(255, 200, 80, 0.18);
-        border-color: rgba(255, 200, 100, 0.4);
-        color: #ffe6a8;
+        background: rgba(255, 180, 40, 0.35);
+        border-color: rgba(255, 210, 80, 0.75);
+        color: #fff8e0;
+        box-shadow: 0 0 0 1px rgba(255, 200, 80, 0.25);
       }
       .chat-panel__follow-btn--flag:hover:not(:disabled) {
-        background: rgba(255, 200, 80, 0.32);
+        background: rgba(255, 190, 50, 0.55);
         color: #fff;
       }
       .chat-panel__header-text {

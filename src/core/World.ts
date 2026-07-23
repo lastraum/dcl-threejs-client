@@ -152,6 +152,10 @@ export class World {
   private player: PlayerSystem | null = null
   private remoteAvatars: RemoteAvatarManager | null = null
   private readonly vrmPeerSync = new VrmPeerSync()
+  /** Community tour flag (session-owned manager bound here for spine attach + tick). */
+  private followFlagManager: import('../social/FollowFlagManager').FollowFlagManager | null = null
+  private avatarAttachResolver: import('../avatar/AvatarAttachTargets').AvatarAttachTargetResolver | null =
+    null
   /** Explorer In-World Camera (photo fly mode) — dedicated lens, not orbit freecam. */
   private photoCamera: PhotoCameraController | null = null
   private photoChromeHandler: ((visible: boolean) => void) | null = null
@@ -1261,7 +1265,23 @@ export class World {
       }
     }
 
+    this.avatarAttachResolver = resolver
     this.sceneScript.setAvatarAttachTargets(resolver)
+    this.followFlagManager?.bind(this.host.scene, resolver)
+  }
+
+  /**
+   * Bind session-scoped tour flag manager (AppController). Re-bound on each World
+   * so the prop tracks the leader spine across /goto rebuilds.
+   */
+  setFollowFlagManager(
+    manager: import('../social/FollowFlagManager').FollowFlagManager | null
+  ): void {
+    this.followFlagManager?.unbindScene()
+    this.followFlagManager = manager
+    if (manager && this.avatarAttachResolver) {
+      manager.bind(this.host.scene, this.avatarAttachResolver)
+    }
   }
 
   /** Block until scene GLBs/textures hydrate — call after `loadScene`, before `start()`. */
@@ -1446,6 +1466,8 @@ export class World {
             })
           }
         }
+        // Tour flag: spine attach for local or remote leader (after avatar pose ticks).
+        this.followFlagManager?.update(delta)
         // Spatial voice reparents as peer poses land (cheap map walk).
         this.voice.tickSpatial()
         this.comms.flushBroadcast()
@@ -3761,6 +3783,9 @@ export class World {
   dispose(): void {
     this.onVoluntaryEmoteAllowedChange = null
     this.lastVoluntaryEmoteAllowed = true
+    this.followFlagManager?.unbindScene()
+    this.followFlagManager = null
+    this.avatarAttachResolver = null
     this.unsubAvatarChat?.()
     this.unsubAvatarChat = null
     this.unsubAvatarChatTranslate?.()

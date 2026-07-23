@@ -18,6 +18,10 @@ import { parseGotoCommand } from '../../../dcl/content/route'
 import { sceneChatRailIcon } from '../shell/icons'
 import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import { followTargetLabel, routeToFollowTarget } from '../../../social/communityFollowWire'
+import {
+  isAllowedFollowFlagFile,
+  prepareFollowFlagImage
+} from '../../../social/prepareFollowFlagImage'
 import { isAllowedChatImageFile } from '../../../social/prepareChatImage'
 import { socialChannelKey } from '../../../social/SocialService'
 import {
@@ -90,6 +94,8 @@ export class ChatPanel {
   private readonly followLabelEl: HTMLElement
   private readonly followActionBtn: HTMLButtonElement
   private readonly followStopBtn: HTMLButtonElement
+  private readonly followFlagBtn: HTMLButtonElement
+  private readonly followFlagInput: HTMLInputElement
 
   constructor({ social, onVisibilityChange, onGoto, onOpenProfile, getCurrentRoute }: ChatPanelOptions) {
     this.social = social
@@ -123,6 +129,9 @@ export class ChatPanel {
       <div class="chat-panel__follow-bar" hidden>
         <span class="chat-panel__follow-label"></span>
         <div class="chat-panel__follow-actions">
+          <input type="file" accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
+            class="chat-panel__follow-flag-input" hidden data-follow-flag-input />
+          <button type="button" class="chat-panel__follow-btn chat-panel__follow-btn--flag" hidden data-follow-flag-btn title="Tour flag image">Flag</button>
           <button type="button" class="chat-panel__follow-btn chat-panel__follow-btn--primary" hidden></button>
           <button type="button" class="chat-panel__follow-btn chat-panel__follow-btn--stop" hidden></button>
         </div>
@@ -162,6 +171,10 @@ export class ChatPanel {
     this.followLabelEl = this.panelEl.querySelector('.chat-panel__follow-label')!
     this.followActionBtn = this.panelEl.querySelector('.chat-panel__follow-btn--primary')!
     this.followStopBtn = this.panelEl.querySelector('.chat-panel__follow-btn--stop')!
+    this.followFlagBtn = this.panelEl.querySelector('[data-follow-flag-btn]') as HTMLButtonElement
+    this.followFlagInput = this.panelEl.querySelector(
+      '[data-follow-flag-input]'
+    ) as HTMLInputElement
 
     this.channelMenu = new ChatChannelMenu({
       getChannelKey: () => socialChannelKey(this.social.getChannel()),
@@ -201,6 +214,14 @@ export class ChatPanel {
 
     this.followActionBtn.addEventListener('click', () => void this.onFollowPrimaryClick())
     this.followStopBtn.addEventListener('click', () => void this.onFollowStopClick())
+    this.followFlagBtn.addEventListener('click', () => {
+      if (this.followFlagBtn.dataset.hasFlag === '1') {
+        void this.clearFollowFlag()
+        return
+      }
+      this.followFlagInput.click()
+    })
+    this.followFlagInput.addEventListener('change', () => void this.onFollowFlagFilePicked())
 
     this.root.addEventListener('mousedown', this.onChatPointerDown)
     this.sceneCanvas?.addEventListener('mousedown', this.onScenePointerDown)
@@ -538,8 +559,16 @@ export class ChatPanel {
     this.followBarEl.hidden = false
     this.followActionBtn.hidden = true
     this.followStopBtn.hidden = true
+    this.followFlagBtn.hidden = true
     this.followActionBtn.disabled = false
     this.followStopBtn.disabled = false
+    this.followFlagBtn.disabled = false
+    this.followFlagBtn.dataset.hasFlag = session?.flagDataUrl ? '1' : '0'
+    this.followFlagBtn.textContent = session?.flagDataUrl ? 'Clear flag' : 'Flag'
+    this.followFlagBtn.setAttribute(
+      'aria-label',
+      session?.flagDataUrl ? 'Remove tour flag image' : 'Upload tour flag image'
+    )
 
     if (leading) {
       this.followLabelEl.textContent = stopLabel
@@ -548,13 +577,14 @@ export class ChatPanel {
       this.followStopBtn.hidden = false
       this.followStopBtn.textContent = 'Stop tour'
       this.followStopBtn.setAttribute('aria-label', 'Stop community tour')
+      this.followFlagBtn.hidden = false
       return
     }
 
     if (following && session) {
       this.followLabelEl.textContent = stopLabel
-        ? `Following ${leaderShort} · ${stopLabel}`
-        : `Following ${leaderShort}`
+        ? `Following ${leaderShort} · ${stopLabel}${session.flagDataUrl ? ' · flag' : ''}`
+        : `Following ${leaderShort}${session.flagDataUrl ? ' · flag' : ''}`
       this.followStopBtn.hidden = false
       this.followStopBtn.textContent = 'Stop'
       this.followStopBtn.setAttribute('aria-label', 'Stop following tour')
@@ -576,6 +606,41 @@ export class ChatPanel {
     this.followActionBtn.hidden = false
     this.followActionBtn.textContent = 'Start tour'
     this.followActionBtn.setAttribute('aria-label', 'Start community tour')
+  }
+
+  private async onFollowFlagFilePicked(): Promise<void> {
+    const file = this.followFlagInput.files?.[0]
+    this.followFlagInput.value = ''
+    if (!file) return
+    const follow = this.social.getFollow()
+    if (!follow?.isLeading()) return
+    if (!isAllowedFollowFlagFile(file)) {
+      this.followLabelEl.textContent = 'Flag: use JPEG, PNG, WebP, or GIF'
+      return
+    }
+    this.followFlagBtn.disabled = true
+    try {
+      const dataUrl = await prepareFollowFlagImage(file)
+      const ok = await follow.setFlagImage(dataUrl)
+      if (!ok) {
+        this.followLabelEl.textContent = 'Could not set tour flag — try again'
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Could not process flag image'
+      this.followLabelEl.textContent = msg
+    } finally {
+      this.followFlagBtn.disabled = false
+      this.renderFollowBar()
+    }
+  }
+
+  private async clearFollowFlag(): Promise<void> {
+    const follow = this.social.getFollow()
+    if (!follow?.isLeading()) return
+    this.followFlagBtn.disabled = true
+    await follow.setFlagImage(null)
+    this.followFlagBtn.disabled = false
+    this.renderFollowBar()
   }
 
   private shortLeaderLabel(address: string): string {

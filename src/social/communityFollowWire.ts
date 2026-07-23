@@ -58,12 +58,20 @@ export type FollowTarget =
   | { kind: 'coords'; x: number; y: number }
   | { kind: 'world'; worldName: string }
 
+/**
+ * Tour flag image payload — compressed data URL (`data:image/…;base64,…`).
+ * Keep small (see prepareFollowFlagImage) for LiveKit reliable data limits.
+ */
+export type FollowFlagPayload = string
+
 export type FollowWireMsg =
-  | { t: 'start'; s: string; l: string; at: number; target?: FollowTarget }
+  | { t: 'start'; s: string; l: string; at: number; target?: FollowTarget; flag?: FollowFlagPayload }
   | { t: 'stop'; s: string; l: string; at: number }
   | { t: 'goto'; s: string; l: string; at: number; target: FollowTarget }
-  /** Heartbeat so late joiners learn an active tour + current stop. */
-  | { t: 'hb'; s: string; l: string; at: number; target?: FollowTarget }
+  /** Heartbeat so late joiners learn an active tour + current stop (+ flag rebroadcast). */
+  | { t: 'hb'; s: string; l: string; at: number; target?: FollowTarget; flag?: FollowFlagPayload }
+  /** Leader set / clear tour flag image (pole + banner on spine). */
+  | { t: 'flag'; s: string; l: string; at: number; flag: FollowFlagPayload | null }
 
 export function isCommunityFollowWireText(text: string): boolean {
   const raw = text.trimStart()
@@ -97,6 +105,21 @@ export function tryParseFollowWire(text: string): FollowWireMsg | null {
   }
 }
 
+function parseFollowFlag(raw: unknown): FollowFlagPayload | null | undefined {
+  if (raw === null) return null
+  if (typeof raw !== 'string') return undefined
+  const v = raw.trim()
+  if (!v) return null
+  // data URL or bare base64 — cap to avoid runaway packets
+  if (v.length > 80_000) return undefined
+  if (v.startsWith('data:image/')) return v
+  // bare base64 → assume jpeg
+  if (/^[A-Za-z0-9+/=\s]+$/.test(v) && v.length > 32) {
+    return `data:image/jpeg;base64,${v.replace(/\s+/g, '')}`
+  }
+  return undefined
+}
+
 function parseFollowWireObject(o: Record<string, unknown>): FollowWireMsg | null {
   if (!o || typeof o !== 'object') return null
   const t = o.t
@@ -107,7 +130,9 @@ function parseFollowWireObject(o: Record<string, unknown>): FollowWireMsg | null
 
   if (t === 'start') {
     const target = parseFollowTarget(o.target)
-    return target ? { t: 'start', s, l, at, target } : { t: 'start', s, l, at }
+    const flag = parseFollowFlag(o.flag)
+    const base = target ? { t: 'start' as const, s, l, at, target } : { t: 'start' as const, s, l, at }
+    return flag !== undefined && flag !== null ? { ...base, flag } : base
   }
   if (t === 'stop') return { t: 'stop', s, l, at }
   if (t === 'goto') {
@@ -117,7 +142,15 @@ function parseFollowWireObject(o: Record<string, unknown>): FollowWireMsg | null
   }
   if (t === 'hb') {
     const target = parseFollowTarget(o.target)
-    return target ? { t: 'hb', s, l, at, target } : { t: 'hb', s, l, at }
+    const flag = parseFollowFlag(o.flag)
+    const base = target ? { t: 'hb' as const, s, l, at, target } : { t: 'hb' as const, s, l, at }
+    return flag !== undefined && flag !== null ? { ...base, flag } : base
+  }
+  if (t === 'flag') {
+    const flag = parseFollowFlag(o.flag)
+    // Explicit null clears; missing/invalid drops the message.
+    if (flag === undefined) return null
+    return { t: 'flag', s, l, at, flag }
   }
   return null
 }

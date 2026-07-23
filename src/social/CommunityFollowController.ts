@@ -33,6 +33,8 @@ export type CommunityTourSession = {
   leaderAddress: string
   lastTarget: FollowTarget | null
   startedAt: number
+  /** Leader flag banner image (data URL), if set. */
+  flagDataUrl: string | null
 }
 
 export type CommunityFollowEvent =
@@ -46,6 +48,13 @@ export type CommunityFollowEvent =
     }
   | { kind: 'tour_ended'; communityId: string; sessionId: string }
   | { kind: 'follow_goto'; communityId: string; target: FollowTarget; sessionId: string }
+  | {
+      kind: 'flag_changed'
+      communityId: string
+      sessionId: string
+      leaderAddress: string
+      flagDataUrl: string | null
+    }
   | { kind: 'changed' }
 
 export type CommunityFollowControllerOptions = {
@@ -162,12 +171,18 @@ export class CommunityFollowController {
       sessionId,
       leaderAddress: local,
       lastTarget: target,
-      startedAt: Date.now()
+      startedAt: Date.now(),
+      flagDataUrl: existing?.leaderAddress === local ? existing.flagDataUrl : null
     }
 
-    const startMsg: FollowWireMsg = target
-      ? { t: 'start', s: sessionId, l: local, at: Date.now(), target }
-      : { t: 'start', s: sessionId, l: local, at: Date.now() }
+    const startMsg: FollowWireMsg = {
+      t: 'start',
+      s: sessionId,
+      l: local,
+      at: Date.now(),
+      ...(target ? { target } : {}),
+      ...(session.flagDataUrl ? { flag: session.flagDataUrl } : {})
+    }
     const ok = await this.publish(id, startMsg)
     if (!ok) return false
 
@@ -250,6 +265,76 @@ export class CommunityFollowController {
     this.followingCommunityId = null
     this.followingSessionId = null
     this.emit({ kind: 'changed' })
+  }
+
+  /**
+   * Leader: set or clear the tour flag image (data URL). Broadcasts on the wire
+   * and attaches to the session for heartbeat rebroadcast.
+   */
+  async setFlagImage(dataUrl: string | null): Promise<boolean> {
+    if (this.disposed || !this.leadingCommunityId || !this.leadingSessionId) return false
+    const id = this.leadingCommunityId
+    const session = this.sessions.get(id)
+    if (!session || session.sessionId !== this.leadingSessionId) return false
+    const local = this.getLocalAddress()?.toLowerCase() ?? session.leaderAddress
+    const flag = dataUrl?.trim() || null
+    if (flag && flag.length > 80_000) {
+      clientDebugLog.log('social', 'Follow flag image too large', { level: 'warn' })
+      return false
+    }
+    session.flagDataUrl = flag
+    this.sessions.set(id, session)
+    const ok = await this.publish(id, {
+      t: 'flag',
+      s: session.sessionId,
+      l: local,
+      at: Date.now(),
+      flag
+    })
+    this.emit({
+      kind: 'flag_changed',
+      communityId: id,
+      sessionId: session.sessionId,
+      leaderAddress: session.leaderAddress,
+      flagDataUrl: flag
+    })
+    this.emit({ kind: 'changed' })
+    return ok
+  }
+
+  getActiveFlag(): {
+    communityId: string
+    sessionId: string
+    leaderAddress: string
+    flagDataUrl: string | null
+  } | null {
+    // Prefer the tour we're leading or following; else any session with a flag.
+    const prefer =
+      this.leadingCommunityId ||
+      this.followingCommunityId ||
+      null
+    if (prefer) {
+      const s = this.sessions.get(prefer)
+      if (s) {
+        return {
+          communityId: s.communityId,
+          sessionId: s.sessionId,
+          leaderAddress: s.leaderAddress,
+          flagDataUrl: s.flagDataUrl
+        }
+      }
+    }
+    for (const s of this.sessions.values()) {
+      if (s.flagDataUrl) {
+        return {
+          communityId: s.communityId,
+          sessionId: s.sessionId,
+          leaderAddress: s.leaderAddress,
+          flagDataUrl: s.flagDataUrl
+        }
+      }
+    }
+    return null
   }
 
   /**
@@ -387,7 +472,16 @@ export class CommunityFollowController {
     const local = this.getLocalAddress()?.toLowerCase() ?? ''
 
     if (msg.t === 'start' || msg.t === 'hb') {
-      this.applyLeadAnnounce(id, leader, msg.s, msg.at, msg.target, msg.t === 'hb', local)
+      this.applyLeadAnnounce(
+        id,
+        leader,
+        msg.s,
+        msg.at,
+        msg.target,
+        msg.t === 'hb',
+        local,
+        'flag' in msg ? msg.flag : undefined
+      )
       return
     }
     if (msg.t === 'stop') {
@@ -396,6 +490,10 @@ export class CommunityFollowController {
     }
     if (msg.t === 'goto') {
       this.applyGoto(id, leader, msg.s, msg.target, local)
+      return
+    }
+    if (msg.t === 'flag') {
+      this.applyFlag(id, leader, msg.s, msg.flag, local)
     }
   }
 
@@ -406,7 +504,8 @@ export class CommunityFollowController {
     at: number,
     target: FollowTarget | undefined,
     fromHeartbeat: boolean,
-    local: string
+    local: string,
+    flag?: string | null
   ): void {
     const existing = this.sessions.get(communityId)
     if (existing) {
@@ -417,15 +516,28 @@ export class CommunityFollowController {
     }
 
     const isNew = !existing || existing.sessionId !== sessionId
+    const prevFlag = existing?.sessionId === sessionId ? existing.flagDataUrl : null
+    const nextFlag = flag !== undefined ? flag : prevFlag
     const session: CommunityTourSession = {
       communityId,
       sessionId,
       leaderAddress: leader,
       lastTarget: target ?? existing?.lastTarget ?? null,
-      startedAt: existing && existing.sessionId === sessionId ? existing.startedAt : at
+      startedAt: existing && existing.sessionId === sessionId ? existing.startedAt : at,
+      flagDataUrl: nextFlag
     }
     if (target) session.lastTarget = target
     this.sessions.set(communityId, session)
+
+    if (nextFlag !== prevFlag) {
+      this.emit({
+        kind: 'flag_changed',
+        communityId,
+        sessionId,
+        leaderAddress: leader,
+        flagDataUrl: nextFlag
+      })
+    }
 
     // If we thought we were leading but someone else took over (shouldn't) — drop local lead.
     if (this.leadingCommunityId === communityId && leader !== local) {
@@ -478,15 +590,65 @@ export class CommunityFollowController {
     if (!existing) return
     if (existing.sessionId !== sessionId && existing.leaderAddress !== leader) return
 
+    const hadFlag = Boolean(existing.flagDataUrl)
     this.sessions.delete(communityId)
     if (this.leadingCommunityId === communityId) this.clearLocalLead()
     if (this.followingCommunityId === communityId) {
       this.followingCommunityId = null
       this.followingSessionId = null
     }
+    if (hadFlag) {
+      this.emit({
+        kind: 'flag_changed',
+        communityId,
+        sessionId: existing.sessionId,
+        leaderAddress: existing.leaderAddress,
+        flagDataUrl: null
+      })
+    }
     this.emit({ kind: 'tour_ended', communityId, sessionId: existing.sessionId })
     this.emit({ kind: 'changed' })
     void local
+  }
+
+  private applyFlag(
+    communityId: string,
+    leader: string,
+    sessionId: string,
+    flag: string | null,
+    local: string
+  ): void {
+    const existing = this.sessions.get(communityId)
+    const session: CommunityTourSession =
+      existing && existing.sessionId === sessionId
+        ? { ...existing, leaderAddress: leader, flagDataUrl: flag }
+        : {
+            communityId,
+            sessionId,
+            leaderAddress: leader,
+            lastTarget: existing?.lastTarget ?? null,
+            startedAt: existing?.startedAt ?? Date.now(),
+            flagDataUrl: flag
+          }
+    if (existing && existing.leaderAddress !== leader && existing.sessionId !== sessionId) {
+      return
+    }
+    // Only the tour leader may set the flag.
+    if (existing && existing.leaderAddress !== leader && existing.sessionId === sessionId) {
+      return
+    }
+    this.sessions.set(communityId, session)
+    if (local && leader === local && this.leadingCommunityId === communityId) {
+      // Echo of our own publish — still update UI.
+    }
+    this.emit({
+      kind: 'flag_changed',
+      communityId,
+      sessionId,
+      leaderAddress: leader,
+      flagDataUrl: flag
+    })
+    this.emit({ kind: 'changed' })
   }
 
   private applyGoto(
@@ -505,7 +667,8 @@ export class CommunityFollowController {
           sessionId,
           leaderAddress: leader,
           lastTarget: target,
-          startedAt: Date.now()
+          startedAt: Date.now(),
+          flagDataUrl: existing?.flagDataUrl ?? null
         }
 
     if (existing && existing.leaderAddress !== leader && existing.sessionId !== sessionId) {
@@ -562,15 +725,15 @@ export class CommunityFollowController {
     const session = this.sessions.get(id)
     if (!session) return
     const local = this.getLocalAddress()?.toLowerCase() ?? session.leaderAddress
-    const msg: FollowWireMsg = session.lastTarget
-      ? {
-          t: 'hb',
-          s: session.sessionId,
-          l: local,
-          at: Date.now(),
-          target: session.lastTarget
-        }
-      : { t: 'hb', s: session.sessionId, l: local, at: Date.now() }
+    const msg: FollowWireMsg = {
+      t: 'hb',
+      s: session.sessionId,
+      l: local,
+      at: Date.now(),
+      ...(session.lastTarget ? { target: session.lastTarget } : {}),
+      // Rebroadcast flag so late joiners get the banner without a separate request.
+      ...(session.flagDataUrl ? { flag: session.flagDataUrl } : {})
+    }
     await this.publish(id, msg)
   }
 

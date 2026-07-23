@@ -35,6 +35,7 @@ import { ChatPanel } from './ui/chat/ChatPanel'
 import { SocialChatController } from './ui/chat/SocialChatController'
 import { SocialChatDock } from './ui/chat/SocialChatDock'
 import { CommunityFollowController } from '../social/CommunityFollowController'
+import { FollowFlagManager } from '../social/FollowFlagManager'
 import {
   followTargetLabel,
   followTargetToRoute,
@@ -159,6 +160,8 @@ export class AppController {
    */
   private communityFollow: CommunityFollowController | null = null
   private unsubCommunityFollow: (() => void) | null = null
+  /** Tour leader flag (spine pole + banner) — session-scoped across World rebuilds. */
+  private followFlagManager: FollowFlagManager | null = null
   /** Re-open this community thread on ChatPanel after a follow jump World rebuild. */
   private pendingFollowCommunityOpen: { id: string; name: string } | null = null
   /** Unsubscribe scene-room Cast presence poller for the open landing. */
@@ -647,27 +650,50 @@ export class AppController {
         getCommunities: () => this.world?.social.getCommunities() ?? []
       })
     }
+    if (!this.followFlagManager) {
+      this.followFlagManager = new FollowFlagManager()
+    }
 
     world.social.setFollowController(this.communityFollow)
+    world.setFollowFlagManager(this.followFlagManager)
+    // Restore flag visual after World rebuild if tour still active.
+    this.syncFollowFlagFromController()
 
     this.unsubCommunityFollow?.()
     this.unsubCommunityFollow = this.communityFollow.subscribe((ev) => {
-      if (ev.kind === 'tour_started' && !ev.isLocalLeader) {
-        this.ensureSocialMobileNotifications()
-        const name =
-          this.world?.social.getCommunities().find((c) => c.id.toLowerCase() === ev.communityId)
-            ?.name ?? 'Community'
-        const sub = ev.lateJoin
-          ? 'Tour in progress — open community chat to Follow'
-          : 'Tour started — open community chat to Follow'
-        this.socialMobileNotifications?.pushSystemToast({
-          id: `tour:${ev.session.sessionId}`,
-          appName: 'COMMUNITY · TOUR',
-          title: name,
-          sub,
-          dismissMs: 10_000,
-          onClick: () => this.openCommunityChatChannel(ev.communityId, name)
-        })
+      if (ev.kind === 'flag_changed') {
+        this.applyFollowFlag(ev.leaderAddress, ev.flagDataUrl)
+        return
+      }
+      if (ev.kind === 'tour_ended') {
+        // Clear flag when this was the tour we were showing.
+        const showing = this.followFlagManager?.getLeaderAddress()
+        if (!showing) return
+        const still = this.communityFollow?.getActiveFlag()
+        if (!still?.flagDataUrl) this.followFlagManager?.clear()
+        return
+      }
+      if (ev.kind === 'tour_started') {
+        if (ev.session.flagDataUrl) {
+          this.applyFollowFlag(ev.session.leaderAddress, ev.session.flagDataUrl)
+        }
+        if (!ev.isLocalLeader) {
+          this.ensureSocialMobileNotifications()
+          const name =
+            this.world?.social.getCommunities().find((c) => c.id.toLowerCase() === ev.communityId)
+              ?.name ?? 'Community'
+          const sub = ev.lateJoin
+            ? 'Tour in progress — open community chat to Follow'
+            : 'Tour started — open community chat to Follow'
+          this.socialMobileNotifications?.pushSystemToast({
+            id: `tour:${ev.session.sessionId}`,
+            appName: 'COMMUNITY · TOUR',
+            title: name,
+            sub,
+            dismissMs: 10_000,
+            onClick: () => this.openCommunityChatChannel(ev.communityId, name)
+          })
+        }
         return
       }
       if (ev.kind === 'follow_goto') {
@@ -693,6 +719,28 @@ export class AppController {
         void this.jumpInToScene(route, { fastAssets: true, source: 'goto' })
       }
     })
+  }
+
+  private applyFollowFlag(leaderAddress: string, flagDataUrl: string | null): void {
+    if (!this.followFlagManager) {
+      this.followFlagManager = new FollowFlagManager()
+      this.world?.setFollowFlagManager(this.followFlagManager)
+    }
+    if (!flagDataUrl) {
+      this.followFlagManager.clear()
+      return
+    }
+    this.followFlagManager.setLeader(leaderAddress)
+    this.followFlagManager.setImageDataUrl(flagDataUrl)
+  }
+
+  private syncFollowFlagFromController(): void {
+    const active = this.communityFollow?.getActiveFlag()
+    if (active?.flagDataUrl) {
+      this.applyFollowFlag(active.leaderAddress, active.flagDataUrl)
+    } else {
+      this.followFlagManager?.clear()
+    }
   }
 
   private openLocalProfileFromShell(): void {
@@ -2655,6 +2703,8 @@ export class AppController {
     this.unsubCommunityFollow = null
     this.communityFollow?.dispose()
     this.communityFollow = null
+    this.followFlagManager?.dispose()
+    this.followFlagManager = null
   }
 
   /** Sign out wallet → fall back to stable browser guest (same machine keeps guest key). */

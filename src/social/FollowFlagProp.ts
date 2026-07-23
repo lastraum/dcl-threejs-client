@@ -9,10 +9,10 @@ import {
   sampleAvatarAttachAnchor
 } from '../avatar/avatarAttachAnchors'
 
-const POLE_HEIGHT = 0.95
+const POLE_HEIGHT = 0.95 * 2 // 2× taller pole
 const POLE_RADIUS = 0.018
-const FLAG_W = 0.48
-const FLAG_H = 0.32
+const FLAG_W = 0.48 * 2.5 // 2.5× larger cloth
+const FLAG_H = 0.32 * 2.5
 /** Spine-local offset: slightly up, right, and back of torso. */
 const SPINE_LOCAL_OFFSET = new THREE.Vector3(0.14, 0.22, -0.06)
 

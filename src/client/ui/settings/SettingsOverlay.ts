@@ -3,7 +3,10 @@ import {
   deployAvatarProfile,
   profileDeployFingerprint
 } from '../../../avatar/deployProfile'
-import { CommunitiesBrowseView } from '../explore/CommunitiesBrowseView'
+import {
+  CommunitiesBrowseView,
+  type CommunitiesBrowseViewOptions
+} from '../explore/CommunitiesBrowseView'
 import { backpackCategoryIcon } from './backpackCategoryIcons'
 import { BackpackView } from './BackpackView'
 import { EventsView, type EventsViewOptions } from './EventsView'
@@ -75,6 +78,8 @@ export type SettingsOverlayOptions = {
   onJoinedCommunity?: (community: { id: string; name: string; role?: string }) => void
   /** Leave the 3D overlay for the 2D Explore shell (the top-left "2D" dot). */
   onExitTo2D?: () => void
+  getFollow?: CommunitiesBrowseViewOptions['getFollow']
+  getCurrentRoute?: CommunitiesBrowseViewOptions['getCurrentRoute']
 }
 
 export class SettingsOverlay {
@@ -109,6 +114,8 @@ export class SettingsOverlay {
   private onOpenCommunityChat?: SettingsOverlayOptions['onOpenCommunityChat']
   private onJoinedCommunity?: SettingsOverlayOptions['onJoinedCommunity']
   private onExitTo2D?: () => void
+  private getFollow?: SettingsOverlayOptions['getFollow']
+  private getCurrentRoute?: SettingsOverlayOptions['getCurrentRoute']
 
   constructor(opts: SettingsOverlayOptions) {
     this.session = opts.session
@@ -127,6 +134,8 @@ export class SettingsOverlay {
     this.onOpenCommunityChat = opts.onOpenCommunityChat
     this.onJoinedCommunity = opts.onJoinedCommunity
     this.onExitTo2D = opts.onExitTo2D
+    this.getFollow = opts.getFollow
+    this.getCurrentRoute = opts.getCurrentRoute
 
     this.root = document.createElement('div')
     this.root.className = 'settings-overlay'
@@ -592,7 +601,9 @@ export class SettingsOverlay {
           this.onOpenCommunityChat?.({ id: community.id, name: community.name })
         },
         onBrowseCount: (total) => this.setTitleCount(total),
-        onJoinedCommunity: (communityId) => this.onJoinedCommunity?.(communityId)
+        onJoinedCommunity: (communityId) => this.onJoinedCommunity?.(communityId),
+        getFollow: this.getFollow,
+        getCurrentRoute: this.getCurrentRoute
       })
       this.communitiesView.root.classList.add('communities-browse-view--embedded')
       this.contentArea.appendChild(this.communitiesView.root)

@@ -9695,6 +9695,202 @@
         opacity: 0.55;
         cursor: not-allowed;
       }
+      .community-modal-tour-slot {
+        margin-top: 10px;
+      }
+      .community-modal-tour-cta {
+        width: 100%;
+        padding: 12px 14px;
+        border: none;
+        border-radius: 10px;
+        background: linear-gradient(90deg, #a855f7, #7c3aed);
+        color: #fff;
+        font-size: 0.78rem;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        font-family: inherit;
+        cursor: pointer;
+        box-shadow: 0 4px 16px rgba(124, 58, 237, 0.4);
+      }
+      .community-modal-tour-cta:hover:not(:disabled) {
+        filter: brightness(1.08);
+      }
+      .community-modal-tour-cta.is-live {
+        background: #ef4444;
+        box-shadow: 0 4px 16px rgba(239, 68, 68, 0.35);
+      }
+      .community-modal-tour-cta:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .community-modal-tour-hint {
+        margin: 8px 0 0;
+        font-size: 0.72rem;
+        line-height: 1.35;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .tour-options-popup-host {
+        position: fixed;
+        left: 72px;
+        top: 50%;
+        transform: translateY(-50%);
+        z-index: 10040;
+        pointer-events: none;
+      }
+      .tour-options-popup {
+        pointer-events: auto;
+        width: min(280px, calc(100vw - 90px));
+        padding: 14px 14px 12px;
+        border-radius: 14px;
+        background: #1a1b22;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+      }
+      .tour-options-popup-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+      .tour-options-popup-title {
+        margin: 0;
+        font-size: 0.9rem;
+        font-weight: 700;
+        color: #fff;
+      }
+      .tour-options-popup-close {
+        appearance: none;
+        border: none;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.55);
+        font-size: 1.25rem;
+        line-height: 1;
+        cursor: pointer;
+        padding: 0 2px;
+      }
+      .tour-options-popup-hint {
+        margin: 0 0 12px;
+        font-size: 0.78rem;
+        line-height: 1.4;
+        color: rgba(244, 244, 245, 0.6);
+      }
+      .tour-options-popup-actions {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .tour-options-popup-btn {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.06);
+        color: #f4f4f5;
+        font: inherit;
+        font-size: 0.8rem;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .tour-options-popup-btn:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .tour-options-popup-btn--primary {
+        background: rgba(255, 180, 40, 0.35);
+        border-color: rgba(255, 210, 80, 0.65);
+        color: #fff8e0;
+      }
+      .tour-options-popup-btn--danger {
+        background: rgba(239, 68, 68, 0.2);
+        border-color: rgba(248, 113, 113, 0.45);
+        color: #fecaca;
+      }
+      .tour-flag-image-modal-host {
+        position: fixed;
+        inset: 0;
+        z-index: 10060;
+      }
+      .tour-flag-image-modal-backdrop {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: rgba(0, 0, 0, 0.62);
+        backdrop-filter: blur(4px);
+      }
+      .tour-flag-image-modal {
+        width: min(420px, 100%);
+        padding: 20px 18px 16px;
+        border-radius: 16px;
+        background: #1a1b22;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+      }
+      .tour-flag-image-title {
+        margin: 0 0 8px;
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #fff;
+      }
+      .tour-flag-image-hint {
+        margin: 0 0 14px;
+        font-size: 0.85rem;
+        line-height: 1.45;
+        color: rgba(244, 244, 245, 0.65);
+      }
+      .tour-flag-image-drop {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 140px;
+        padding: 20px;
+        border-radius: 12px;
+        border: 2px dashed rgba(255, 200, 100, 0.45);
+        background: rgba(255, 180, 40, 0.06);
+        cursor: pointer;
+        text-align: center;
+      }
+      .tour-flag-image-drop.is-dragover {
+        border-color: rgba(255, 210, 80, 0.9);
+        background: rgba(255, 180, 40, 0.14);
+      }
+      .tour-flag-image-drop-icon {
+        font-size: 1.75rem;
+      }
+      .tour-flag-image-drop-label {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: rgba(255, 240, 200, 0.9);
+      }
+      .tour-flag-image-error {
+        margin: 10px 0 0;
+        font-size: 0.8rem;
+        color: #fecaca;
+      }
+      .tour-flag-image-error[hidden] {
+        display: none !important;
+      }
+      .tour-flag-image-actions {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 14px;
+      }
+      .tour-flag-image-btn {
+        padding: 8px 14px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(255, 255, 255, 0.06);
+        color: #f4f4f5;
+        font: inherit;
+        font-size: 0.8rem;
+        font-weight: 600;
+        cursor: pointer;
+      }
       .community-modal-events-empty {
         text-align: center;
         padding: 28px 10px;

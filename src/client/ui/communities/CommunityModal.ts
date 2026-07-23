@@ -18,12 +18,18 @@ import {
 } from '../../../social/socialApi'
 import { endCommunityVoiceChatViaSocialRpc } from '../../../social/socialServiceV2'
 import type { CommunityDetail, CommunityListRow } from '../../../social/types'
+import type { CommunityFollowController } from '../../../social/CommunityFollowController'
+import type { RouteTarget } from '../../../dcl/content/route'
+import { routeToFollowTarget } from '../../../social/communityFollowWire'
 
 export type CommunityModalOptions = {
   getAuthIdentity?: () => AuthIdentity | null
   getUserAddress?: () => string | null
   /** Open community text channel in chat dock / panel. */
   onOpenChat?: (community: CommunityDetail) => void
+  /** In-play follow controller (Start tour under Voice Stream). */
+  getFollow?: () => CommunityFollowController | null
+  getCurrentRoute?: () => RouteTarget | null
 }
 
 export type CommunityModalOpenOptions = {
@@ -104,6 +110,8 @@ export class CommunityModal {
   private readonly getAuthIdentity?: () => AuthIdentity | null
   private readonly getUserAddress?: () => string | null
   private readonly onOpenChat?: (community: CommunityDetail) => void
+  private readonly getFollow?: () => CommunityFollowController | null
+  private readonly getCurrentRoute?: () => RouteTarget | null
   private readonly onKeyDown: (ev: KeyboardEvent) => void
   private openGen = 0
   private disposed = false
@@ -113,6 +121,7 @@ export class CommunityModal {
   private members: CommunityMemberRow[] = []
   private placeIds: string[] = []
   private tabLoading = false
+  private unsubFollow: (() => void) | null = null
 
   private sessionAddress(): string | null {
     return this.getUserAddress?.()?.trim().toLowerCase() || null
@@ -136,6 +145,8 @@ export class CommunityModal {
     this.getAuthIdentity = opts.getAuthIdentity
     this.getUserAddress = opts.getUserAddress
     this.onOpenChat = opts.onOpenChat
+    this.getFollow = opts.getFollow
+    this.getCurrentRoute = opts.getCurrentRoute
 
     this.root = document.createElement('div')
     this.root.className = 'community-modal-host'
@@ -144,6 +155,11 @@ export class CommunityModal {
     this.onKeyDown = (ev: KeyboardEvent) => {
       if (ev.key === 'Escape') this.close()
     }
+  }
+
+  /** Owner/mod can lead tours (same gate as announcements). */
+  private canLeadTour(community: CommunityDetail | null = this.current): boolean {
+    return this.canPostAnnouncements(community)
   }
 
   mount(): void {
@@ -169,6 +185,8 @@ export class CommunityModal {
 
   close(): void {
     this.openGen++
+    this.unsubFollow?.()
+    this.unsubFollow = null
     this.root.hidden = true
     this.root.innerHTML = ''
     this.current = null
@@ -180,6 +198,25 @@ export class CommunityModal {
     this.disposed = true
     this.close()
     this.root.remove()
+  }
+
+  /** Refresh tour CTA if follow state changes while modal is open. */
+  private wireFollowUi(): void {
+    this.unsubFollow?.()
+    this.unsubFollow = null
+    const follow = this.getFollow?.()
+    if (!follow) return
+    this.unsubFollow = follow.subscribe(() => {
+      if (this.disposed || this.root.hidden || !this.current) return
+      this.refreshTourCta()
+    })
+  }
+
+  private refreshTourCta(): void {
+    const host = this.root.querySelector('[data-community-tour-slot]') as HTMLElement | null
+    if (!host || !this.current) return
+    host.innerHTML = this.renderTourCta(this.current)
+    this.bindTourCta()
   }
 
   private paint(opts: { loading?: boolean; detailError?: string | null } = {}): void {
@@ -277,12 +314,86 @@ export class CommunityModal {
     this.root.querySelector('[data-community-voice-end]')?.addEventListener('click', () => {
       void this.endCommunityVoiceForEveryone(merged)
     })
+    this.bindTourCta()
+    this.wireFollowUi()
     for (const tabBtn of this.root.querySelectorAll<HTMLElement>('[data-tab]')) {
       tabBtn.addEventListener('click', () => {
         const t = tabBtn.dataset.tab as TabId | undefined
         if (t) this.setTab(t)
       })
     }
+  }
+
+  private bindTourCta(): void {
+    this.root.querySelector('[data-community-tour-start]')?.addEventListener('click', () => {
+      void this.onTourStartClick()
+    })
+    this.root.querySelector('[data-community-tour-stop]')?.addEventListener('click', () => {
+      void this.onTourStopClick()
+    })
+  }
+
+  private async onTourStartClick(): Promise<void> {
+    const community = this.current
+    const follow = this.getFollow?.()
+    if (!community || !follow) return
+    if (!this.canLeadTour(community)) return
+    if (follow.isLeading(community.id)) return
+    const btn = this.root.querySelector<HTMLButtonElement>('[data-community-tour-start]')
+    if (btn) {
+      btn.disabled = true
+      btn.textContent = 'STARTING…'
+    }
+    const initial = routeToFollowTarget(this.getCurrentRoute?.() ?? null)
+    const ok = await follow.startLead(community.id, initial)
+    if (btn) {
+      btn.disabled = false
+      if (!ok) btn.title = 'Could not start tour — join the scene in play mode and try again'
+    }
+    this.refreshTourCta()
+  }
+
+  private async onTourStopClick(): Promise<void> {
+    const follow = this.getFollow?.()
+    if (!follow?.isLeading()) return
+    const btn = this.root.querySelector<HTMLButtonElement>('[data-community-tour-stop]')
+    if (btn) btn.disabled = true
+    await follow.stopLead()
+    this.refreshTourCta()
+  }
+
+  private renderTourCta(merged: CommunityDetail): string {
+    if (!this.canLeadTour(merged)) return ''
+    const follow = this.getFollow?.()
+    const leading = Boolean(follow?.isLeading(merged.id))
+    const followReady = Boolean(follow)
+    if (leading) {
+      return `
+        <button
+          type="button"
+          class="community-modal-tour-cta is-live"
+          data-community-tour-stop
+          title="Stop community tour"
+        >● STOP TOUR</button>
+        <p class="community-modal-tour-hint">Tour live — use sidebar 🚩 Tour Options for flag banner</p>`
+    }
+    return `
+      <button
+        type="button"
+        class="community-modal-tour-cta"
+        data-community-tour-start
+        ${followReady ? '' : 'disabled'}
+        title="${
+          followReady
+            ? 'Start a tour — followers jump on your /goto'
+            : 'Jump into a scene (play mode) to start a tour'
+        }"
+      >◉ START TOUR</button>
+      ${
+        followReady
+          ? ''
+          : `<p class="community-modal-tour-hint">Available in play mode</p>`
+      }`
   }
 
   private renderActiveTab(): void {
@@ -682,6 +793,9 @@ export class CommunityModal {
                 >END FOR EVERYONE</button>`
                     : ''
                 }
+                <div class="community-modal-tour-slot" data-community-tour-slot>
+                  ${this.renderTourCta(merged)}
+                </div>
               </section>
               <section class="community-modal-rail-card community-modal-rail-card--events">
                 <div class="community-modal-rail-title-row">

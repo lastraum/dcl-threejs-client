@@ -66,6 +66,11 @@ export const SIDEBAR_ICONS = {
     <circle cx="16.5" cy="9" r="2" stroke="currentColor" stroke-width="1.3"/>
     <path d="M13.5 17c.4-1.6 1.7-2.8 3.3-2.8 1 0 1.9.4 2.5 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
   </svg>`,
+  /** Tour Options — flag pole + banner */
+  tourOptions: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <path d="M6 3.5v17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M6.5 4.5h9.5l-1.8 3.2 1.8 3.3H6.5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+  </svg>`,
   // Shared "accepted" backpack mark — same glyph as the backpack categories "All" row.
   backpack: backpackCategoryIcon('all'),
   marketplace: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">

@@ -17,7 +17,7 @@ import type { RouteTarget } from '../../../dcl/content/route'
 import { parseGotoCommand } from '../../../dcl/content/route'
 import { sceneChatRailIcon } from '../shell/icons'
 import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
-import { followTargetLabel, routeToFollowTarget } from '../../../social/communityFollowWire'
+import { followTargetLabel } from '../../../social/communityFollowWire'
 import {
   isAllowedFollowFlagFile,
   prepareFollowFlagImage
@@ -70,7 +70,6 @@ export class ChatPanel {
   private readonly channelMenu: ChatChannelMenu
   private readonly onGoto?: ChatPanelOptions['onGoto']
   private readonly onOpenProfile?: ChatPanelOptions['onOpenProfile']
-  private readonly getCurrentRoute?: ChatPanelOptions['getCurrentRoute']
   private onVisibilityChange: ((visible: boolean) => void) | null = null
   /** Fired when open+pinned vs closed/scene-mode changes (HUD unread badge). */
   private onReadingChange: ((reading: boolean) => void) | null = null
@@ -98,11 +97,10 @@ export class ChatPanel {
   private readonly followFlagInput: HTMLInputElement
   private readonly followFlagThumb: HTMLImageElement
 
-  constructor({ social, onVisibilityChange, onGoto, onOpenProfile, getCurrentRoute }: ChatPanelOptions) {
+  constructor({ social, onVisibilityChange, onGoto, onOpenProfile }: ChatPanelOptions) {
     this.social = social
     this.onGoto = onGoto
     this.onOpenProfile = onOpenProfile
-    this.getCurrentRoute = getCurrentRoute
     this.onVisibilityChange = onVisibilityChange ?? null
     this.sceneCanvas = document.querySelector('#app canvas')
 
@@ -589,13 +587,13 @@ export class ChatPanel {
           ? `Leading · ${stopLabel} · flag on`
           : 'Leading · flag on · /goto moves group'
         : stopLabel
-          ? `Leading · ${stopLabel} · 🚩 Set flag for banner`
-          : 'Leading · 🚩 Set flag for your banner · /goto moves group'
+          ? `Leading · ${stopLabel} · sidebar 🚩 Tour Options for flag`
+          : 'Leading · /goto moves group · sidebar 🚩 for flag'
       this.followStopBtn.hidden = false
       this.followStopBtn.textContent = 'Stop tour'
       this.followStopBtn.setAttribute('aria-label', 'Stop community tour')
-      // Flag is only for the active leader (tour already started).
-      this.followFlagBtn.hidden = false
+      // Flag upload moved to sidebar Tour Options (and community START TOUR).
+      this.followFlagBtn.hidden = true
       return
     }
 
@@ -619,11 +617,9 @@ export class ChatPanel {
       return
     }
 
-    // Can lead, no active tour.
-    this.followLabelEl.textContent = 'Start a tour — followers jump on your /goto'
-    this.followActionBtn.hidden = false
-    this.followActionBtn.textContent = 'Start tour'
-    this.followActionBtn.setAttribute('aria-label', 'Start community tour')
+    // Can lead, no active tour — start from community panel (under Voice Stream).
+    this.followLabelEl.textContent = 'Start a tour from Communities → your community → START TOUR'
+    this.followActionBtn.hidden = true
   }
 
   private async onFollowFlagFilePicked(): Promise<void> {
@@ -683,16 +679,7 @@ export class ChatPanel {
       return
     }
 
-    if (!session && follow.canLead(communityId)) {
-      this.followActionBtn.disabled = true
-      const initial = routeToFollowTarget(this.getCurrentRoute?.() ?? null)
-      const ok = await follow.startLead(communityId, initial)
-      this.followActionBtn.disabled = false
-      if (!ok) {
-        this.followLabelEl.textContent = 'Could not start tour — try again'
-      }
-      this.renderFollowBar()
-    }
+    // Start tour moved to Community modal (under Voice Stream).
   }
 
   private async onFollowStopClick(): Promise<void> {

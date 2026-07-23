@@ -34,6 +34,8 @@ export type ClientShellOptions = {
   onEmoteSelected?: (emoteId: string) => void
   /** Explorer In-World Camera (photo mode) — C / sidebar camera. */
   onTogglePhotoCamera?: () => void
+  /** Sidebar Tour Options (flag under Communities). */
+  onTourOptions?: () => void
   onSignOut: () => void | Promise<void>
   onExit: () => void | Promise<void>
 }
@@ -46,6 +48,7 @@ const TOP_BUTTONS: TopButtonConfig[] = [
   { id: 'events', icon: 'events', label: 'Events', shortcut: 'X' },
   { id: 'map', icon: 'map', label: 'Map', shortcut: 'M' },
   { id: 'communities', icon: 'communities', label: 'Communities', shortcut: 'O' },
+  { id: 'tour-options', icon: 'tourOptions', label: 'Tour Options' },
   { id: 'backpack', icon: 'backpack', label: 'Backpack', shortcut: 'I' },
   { id: 'marketplace', icon: 'marketplace', label: 'Marketplace' },
   { id: 'pictures', icon: 'pictures', label: 'Pictures', shortcut: 'K' },
@@ -95,6 +98,7 @@ export class ClientShell {
   private session: SessionIdentity
   private onEmoteSelected: ((emoteId: string) => void) | null = null
   private onTogglePhotoCamera: (() => void) | null = null
+  private onTourOptions: (() => void) | null = null
   private emoteWheelEnabled = true
   private unreadChat = 0
   private unsubChatUnread: (() => void) | null = null
@@ -126,12 +130,14 @@ export class ClientShell {
     preferencesPanel = null,
     onEmoteSelected,
     onTogglePhotoCamera,
+    onTourOptions,
     onSignOut,
     onExit
   }: ClientShellOptions) {
     this.session = session
     this.onEmoteSelected = onEmoteSelected ?? null
     this.onTogglePhotoCamera = onTogglePhotoCamera ?? null
+    this.onTourOptions = onTourOptions ?? null
     this.root = document.createElement('aside')
     this.root.id = 'client-shell'
     this.root.className = 'client-shell'
@@ -382,6 +388,10 @@ export class ClientShell {
 
   setPhotoCameraHandler(handler: (() => void) | null): void {
     this.onTogglePhotoCamera = handler
+  }
+
+  setTourOptionsHandler(handler: (() => void) | null): void {
+    this.onTourOptions = handler
   }
 
   setEmoteWheelProfile(profile: AvatarProfile | null | undefined): void {
@@ -659,6 +669,14 @@ export class ClientShell {
         ev.stopPropagation()
         this.closeMobileDrawerForOverlay()
         this.onTogglePhotoCamera?.()
+      }
+    }
+
+    if (id === 'tour-options') {
+      return (ev) => {
+        ev.stopPropagation()
+        this.closeMobileDrawerForOverlay()
+        this.onTourOptions?.()
       }
     }
 

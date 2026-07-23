@@ -41,6 +41,8 @@ import {
   followTargetToRoute,
   type FollowTarget
 } from '../social/communityFollowWire'
+import { TourOptionsPopup } from './ui/tour/TourOptionsPopup'
+import { TourFlagImageModal } from './ui/tour/TourFlagImageModal'
 import { PreferencesPanel } from './ui/settings/PreferencesPanel'
 import { SettingsOverlay, type SettingsTab } from './ui/settings/SettingsOverlay'
 import type { MapPlayerState } from './ui/settings/MapView'
@@ -162,6 +164,8 @@ export class AppController {
   private unsubCommunityFollow: (() => void) | null = null
   /** Tour leader flag (spine pole + banner) — session-scoped across World rebuilds. */
   private followFlagManager: FollowFlagManager | null = null
+  private tourOptionsPopup: TourOptionsPopup | null = null
+  private tourFlagImageModal: TourFlagImageModal | null = null
   /** Re-open this community thread on ChatPanel after a follow jump World rebuild. */
   private pendingFollowCommunityOpen: { id: string; name: string } | null = null
   /** Unsubscribe scene-room Cast presence poller for the open landing. */
@@ -607,6 +611,8 @@ export class AppController {
         void this.socialChat?.getSocial()?.refreshMemberCommunities()
         void this.world?.social.refreshMemberCommunities()
       },
+      getFollow: () => this.communityFollow,
+      getCurrentRoute: () => this.currentRoute,
       onExitTo2D: () => {
         this.settingsOverlay?.hide()
         void this.navigateTo({ kind: 'blank' })
@@ -741,6 +747,75 @@ export class AppController {
     } else {
       this.followFlagManager?.clear()
     }
+  }
+
+  /** Sidebar 🚩 Tour Options — enable/disable flag + stop tour. */
+  private openTourOptionsPopup(): void {
+    if (this.tourOptionsPopup) {
+      this.tourOptionsPopup.dispose()
+      this.tourOptionsPopup = null
+    }
+    this.tourOptionsPopup = new TourOptionsPopup({
+      getState: () => {
+        const follow = this.communityFollow
+        const active = follow?.getActiveFlag()
+        const leading = Boolean(follow?.isLeading())
+        const cid = active?.communityId
+        const communityName = cid
+          ? this.world?.social.getCommunities().find((c) => c.id.toLowerCase() === cid)?.name ??
+            null
+          : null
+        return {
+          isLeading: leading,
+          flagEnabled: Boolean(active?.flagDataUrl),
+          communityName
+        }
+      },
+      onEnableFlag: () => {
+        this.tourOptionsPopup?.dispose()
+        this.tourOptionsPopup = null
+        this.openTourFlagImageModal()
+      },
+      onDisableFlag: async () => {
+        await this.communityFollow?.setFlagImage(null)
+        this.tourOptionsPopup?.refresh()
+      },
+      onStopTour: async () => {
+        await this.communityFollow?.stopLead()
+        this.tourOptionsPopup?.dispose()
+        this.tourOptionsPopup = null
+      },
+      onClose: () => {
+        this.tourOptionsPopup?.dispose()
+        this.tourOptionsPopup = null
+      }
+    })
+  }
+
+  private openTourFlagImageModal(): void {
+    if (!this.communityFollow?.isLeading()) {
+      clientDebugLog.log(
+        'social',
+        'Enable flag requires an active tour — start one from Community → START TOUR',
+        { level: 'warn', alsoConsole: true }
+      )
+      return
+    }
+    this.tourFlagImageModal?.dispose()
+    this.tourFlagImageModal = new TourFlagImageModal({
+      onPicked: async (dataUrl) => {
+        const ok = await this.communityFollow?.setFlagImage(dataUrl)
+        this.tourFlagImageModal?.dispose()
+        this.tourFlagImageModal = null
+        if (!ok) {
+          clientDebugLog.log('social', 'Could not set tour flag', { level: 'warn' })
+        }
+      },
+      onCancel: () => {
+        this.tourFlagImageModal?.dispose()
+        this.tourFlagImageModal = null
+      }
+    })
   }
 
   private openLocalProfileFromShell(): void {
@@ -1833,6 +1908,7 @@ export class AppController {
         devProgressPanel: this.devProgressPanel,
         onEmoteSelected: (emoteId) => world.playLocalEmote(emoteId, { loop: false }),
         onTogglePhotoCamera: () => world.togglePhotoCamera(),
+        onTourOptions: () => this.openTourOptionsPopup(),
         onSignOut: () => this.signOut(),
         onExit: () => this.leavePlayMode()
       })
@@ -1840,6 +1916,7 @@ export class AppController {
       this.shell.updateWorldBindings(world.session, world.environment)
       this.shell.setEmoteHandler((emoteId) => world.playLocalEmote(emoteId, { loop: false }))
       this.shell.setPhotoCameraHandler(() => world.togglePhotoCamera())
+      this.shell.setTourOptionsHandler(() => this.openTourOptionsPopup())
     }
     if (opts.deferPlayChromeReveal) {
       this.hidePlayChrome()
@@ -2705,6 +2782,10 @@ export class AppController {
     this.communityFollow = null
     this.followFlagManager?.dispose()
     this.followFlagManager = null
+    this.tourOptionsPopup?.dispose()
+    this.tourOptionsPopup = null
+    this.tourFlagImageModal?.dispose()
+    this.tourFlagImageModal = null
   }
 
   /** Sign out wallet → fall back to stable browser guest (same machine keeps guest key). */

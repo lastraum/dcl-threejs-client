@@ -11,6 +11,8 @@ import {
   joinCommunitySigned
 } from '../../../social/socialApi'
 import type { CommunityDetail, CommunityListRow } from '../../../social/types'
+import type { CommunityFollowController } from '../../../social/CommunityFollowController'
+import type { RouteTarget } from '../../../dcl/content/route'
 
 export type CommunitiesBrowseViewOptions = {
   getAuthIdentity?: () => AuthIdentity | null
@@ -21,6 +23,8 @@ export type CommunitiesBrowseViewOptions = {
   onBrowseCount?: (total: number) => void
   /** Fired after a successful Social API join (refresh shell member lists). */
   onJoinedCommunity?: (community: CommunityListRow) => void
+  getFollow?: () => CommunityFollowController | null
+  getCurrentRoute?: () => RouteTarget | null
 }
 
 const SEARCH_DEBOUNCE_MS = 280
@@ -93,7 +97,9 @@ export class CommunitiesBrowseView {
     this.communityModal = new CommunityModal({
       getAuthIdentity: opts.getAuthIdentity,
       getUserAddress: opts.getUserAddress,
-      onOpenChat: opts.onOpenChat
+      onOpenChat: opts.onOpenChat,
+      getFollow: opts.getFollow,
+      getCurrentRoute: opts.getCurrentRoute
     })
 
     this.root = document.createElement('div')

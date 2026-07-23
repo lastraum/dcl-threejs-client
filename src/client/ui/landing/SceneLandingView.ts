@@ -1305,7 +1305,7 @@ export class SceneLandingView {
     if (!this.isSceneOwner()) return
     const login = this.currentLogin()
     if (login.kind !== 'wallet') {
-      this.showStreamNotice('Sign in with a wallet to manage stream settings.')
+      this.showStreamNotice('Sign in with a wallet to manage this place.')
       return
     }
     const wallet = this.sessionWallet()

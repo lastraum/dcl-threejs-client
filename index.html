@@ -17721,6 +17721,147 @@
         width: min(520px, 100%);
         max-height: min(90vh, 780px);
       }
+      .scene-watch-settings-modal--manage {
+        width: min(640px, 100%);
+        max-height: min(92vh, 860px);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        padding-bottom: 16px;
+      }
+      .place-manage-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        flex-shrink: 0;
+      }
+      .place-manage-header .scene-watch-settings-modal-title {
+        margin-bottom: 4px;
+      }
+      .place-manage-tabs {
+        display: flex;
+        gap: 4px;
+        margin: 12px 0 0;
+        padding-bottom: 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+        flex-shrink: 0;
+      }
+      .place-manage-tab {
+        appearance: none;
+        border: none;
+        background: transparent;
+        color: rgba(244, 244, 245, 0.55);
+        font: inherit;
+        font-size: 0.8rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        padding: 10px 14px 12px;
+        margin-bottom: -1px;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        transition: color 0.15s, border-color 0.15s;
+      }
+      .place-manage-tab:hover {
+        color: rgba(244, 244, 245, 0.9);
+      }
+      .place-manage-tab.is-active {
+        color: #fff;
+        border-bottom-color: #ff2d55;
+      }
+      .place-manage-body {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: auto;
+        margin-top: 14px;
+        padding-right: 2px;
+      }
+      .place-manage-panel[hidden] {
+        display: none !important;
+      }
+      .place-manage-subtabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 0 0 12px;
+      }
+      .place-manage-subtab {
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.04);
+        color: rgba(244, 244, 245, 0.7);
+        font: inherit;
+        font-size: 0.75rem;
+        font-weight: 650;
+        padding: 6px 12px;
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      .place-manage-subtab.is-active {
+        background: rgba(255, 45, 85, 0.22);
+        border-color: rgba(255, 45, 85, 0.55);
+        color: #fff;
+      }
+      .place-manage-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+      .place-manage-toolbar .scene-watch-settings-modal-label {
+        margin: 0;
+      }
+      .place-manage-empty {
+        padding: 28px 16px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        text-align: center;
+        color: rgba(244, 244, 245, 0.45);
+        font-size: 0.875rem;
+      }
+      .place-manage-loading {
+        margin: 12px 0;
+        font-size: 0.85rem;
+        color: rgba(244, 244, 245, 0.55);
+      }
+      .place-manage-kv-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .place-manage-kv-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.28);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      .place-manage-kv-key {
+        font-size: 0.85rem;
+        font-weight: 600;
+        word-break: break-all;
+        color: rgba(244, 244, 245, 0.92);
+      }
+      .place-manage-kv-actions {
+        display: flex;
+        flex-shrink: 0;
+        gap: 6px;
+      }
+      .place-manage-player-search {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+      }
+      .place-manage-player-search .scene-watch-settings-modal-input {
+        flex: 1;
+        margin-bottom: 0;
+      }
       .scene-watch-settings-modal-divider {
         border: none;
         border-top: 1px solid rgba(255, 255, 255, 0.1);

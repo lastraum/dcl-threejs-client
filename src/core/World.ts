@@ -290,6 +290,12 @@ export class World {
       camera: this.player!.getCameraEntityPose()
     }))
     this.remoteAvatars = new RemoteAvatarManager(this.host.scene)
+    // Island peers often join before first Movement packet — show placeholder near local feet.
+    this.remoteAvatars.setProvisionalPositionProvider(() => {
+      // Three.js world feet (same space as remote avatar roots).
+      const pos = this.player?.getWorldPosition()
+      return pos ? pos.clone() : null
+    })
 
     this.unsubEnvironmentDebug = environmentDebug.subscribe(() => this.applyEnvironmentDebugVisibility())
 
@@ -954,6 +960,8 @@ export class World {
       this.sceneCommsConnected = true
       // Genesis island routing needs world meters ASAP (not after first render frame).
       this.comms.seedArchipelagoSceneLocal(scene.spawn.x, scene.spawn.y, scene.spawn.z)
+      // Gatekeeper seed + any room remotes already present (follow teleports miss join events).
+      this.comms.notifyHandlersOfCurrentPeers()
       this.syncVoiceRoom()
       clientDebugLog.log('network', 'Early scene comms connected during hydration', {
         level: 'success',
@@ -1024,9 +1032,9 @@ export class World {
         const connectResult = await this.comms.connectSceneRoom(this.buildCommsTarget(scene))
         this.sceneCommsConnected = connectResult.ok
         if (connectResult.ok) {
+          this.comms.seedArchipelagoSceneLocal(scene.spawn.x, scene.spawn.y, scene.spawn.z)
+          this.comms.notifyHandlersOfCurrentPeers()
           await this.vrmPeerSync.onSceneConnected()
-        }
-        if (connectResult.ok) {
           onProgress?.('Connected to DCL comms')
         } else if (
           connectResult.reason === 'comms_disabled' ||

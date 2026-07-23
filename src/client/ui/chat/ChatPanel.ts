@@ -17,6 +17,7 @@ import type { RouteTarget } from '../../../dcl/content/route'
 import { parseGotoCommand } from '../../../dcl/content/route'
 import { sceneChatRailIcon } from '../shell/icons'
 import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
+import { followTargetLabel, routeToFollowTarget } from '../../../social/communityFollowWire'
 import { isAllowedChatImageFile } from '../../../social/prepareChatImage'
 import { socialChannelKey } from '../../../social/SocialService'
 import {
@@ -33,6 +34,8 @@ export type ChatPanelOptions = {
   onVisibilityChange?: (visible: boolean) => void
   onGoto?: (target: RouteTarget) => void | Promise<void>
   onOpenProfile?: (address: string) => void
+  /** Current play route — seeds tour start + leader pulses. */
+  getCurrentRoute?: () => RouteTarget | null
 }
 
 type ChatBodyMode = 'messages' | 'users'
@@ -63,6 +66,7 @@ export class ChatPanel {
   private readonly channelMenu: ChatChannelMenu
   private readonly onGoto?: ChatPanelOptions['onGoto']
   private readonly onOpenProfile?: ChatPanelOptions['onOpenProfile']
+  private readonly getCurrentRoute?: ChatPanelOptions['getCurrentRoute']
   private onVisibilityChange: ((visible: boolean) => void) | null = null
   /** Fired when open+pinned vs closed/scene-mode changes (HUD unread badge). */
   private onReadingChange: ((reading: boolean) => void) | null = null
@@ -73,6 +77,7 @@ export class ChatPanel {
   private unsubProfiles: (() => void) | null = null
   private unsubTranslate: (() => void) | null = null
   private unsubTranslateSettings: (() => void) | null = null
+  private unsubFollow: (() => void) | null = null
   private presenceTimer: number | null = null
   private mounted = false
   private readonly sceneCanvas: HTMLElement | null
@@ -81,11 +86,16 @@ export class ChatPanel {
   private mentionPopupRows: MentionCandidate[] = []
   private lastMentionStart: number | null = null
   private imageSending = false
+  private readonly followBarEl: HTMLElement
+  private readonly followLabelEl: HTMLElement
+  private readonly followActionBtn: HTMLButtonElement
+  private readonly followStopBtn: HTMLButtonElement
 
-  constructor({ social, onVisibilityChange, onGoto, onOpenProfile }: ChatPanelOptions) {
+  constructor({ social, onVisibilityChange, onGoto, onOpenProfile, getCurrentRoute }: ChatPanelOptions) {
     this.social = social
     this.onGoto = onGoto
     this.onOpenProfile = onOpenProfile
+    this.getCurrentRoute = getCurrentRoute
     this.onVisibilityChange = onVisibilityChange ?? null
     this.sceneCanvas = document.querySelector('#app canvas')
 
@@ -110,6 +120,13 @@ export class ChatPanel {
           <button type="button" class="chat-panel__close" aria-label="Close chat">×</button>
         </div>
       </header>
+      <div class="chat-panel__follow-bar" hidden>
+        <span class="chat-panel__follow-label"></span>
+        <div class="chat-panel__follow-actions">
+          <button type="button" class="chat-panel__follow-btn chat-panel__follow-btn--primary" hidden></button>
+          <button type="button" class="chat-panel__follow-btn chat-panel__follow-btn--stop" hidden></button>
+        </div>
+      </div>
       <div class="chat-panel__messages" role="log" aria-live="polite"></div>
       <form class="chat-panel__composer">
         <div class="chat-panel__mention-dock" hidden>
@@ -141,6 +158,10 @@ export class ChatPanel {
     this.mentionDockEl = this.panelEl.querySelector('.chat-panel__mention-dock')!
     this.mentionListEl = this.panelEl.querySelector('.chat-panel__mention-list')!
     this.inputEl = this.panelEl.querySelector('.chat-panel__input')!
+    this.followBarEl = this.panelEl.querySelector('.chat-panel__follow-bar')!
+    this.followLabelEl = this.panelEl.querySelector('.chat-panel__follow-label')!
+    this.followActionBtn = this.panelEl.querySelector('.chat-panel__follow-btn--primary')!
+    this.followStopBtn = this.panelEl.querySelector('.chat-panel__follow-btn--stop')!
 
     this.channelMenu = new ChatChannelMenu({
       getChannelKey: () => socialChannelKey(this.social.getChannel()),
@@ -149,6 +170,7 @@ export class ChatPanel {
         this.syncAutoTranslateIndicator()
         if (this.bodyMode === 'messages') this.renderMessages()
       },
+      onCopyChat: () => void this.copyChannelTranscript(),
       onDeleteHistory: () => {
         this.social.clearChannelHistory()
         this.bodyMode = 'messages'
@@ -176,6 +198,9 @@ export class ChatPanel {
     this.composerEl.addEventListener('dragover', this.onComposerDragOver)
     this.composerEl.addEventListener('dragleave', this.onComposerDragLeave)
     this.composerEl.addEventListener('drop', this.onComposerDrop)
+
+    this.followActionBtn.addEventListener('click', () => void this.onFollowPrimaryClick())
+    this.followStopBtn.addEventListener('click', () => void this.onFollowStopClick())
 
     this.root.addEventListener('mousedown', this.onChatPointerDown)
     this.sceneCanvas?.addEventListener('mousedown', this.onScenePointerDown)
@@ -258,6 +283,10 @@ export class ChatPanel {
       this.syncAutoTranslateIndicator()
       if (this.visible && this.bodyMode === 'messages') this.renderMessages()
     })
+    this.unsubFollow?.()
+    this.unsubFollow = this.social.getFollow()?.subscribe(() => {
+      if (this.visible) this.renderFollowBar()
+    }) ?? null
     this.syncAutoTranslateIndicator()
     this.startPresencePoll()
     this.social.setChannelThreadOpen(true)
@@ -280,11 +309,13 @@ export class ChatPanel {
     this.unsubProfiles?.()
     this.unsubTranslate?.()
     this.unsubTranslateSettings?.()
+    this.unsubFollow?.()
     this.unsubChat = null
     this.unsubChannel = null
     this.unsubProfiles = null
     this.unsubTranslate = null
     this.unsubTranslateSettings = null
+    this.unsubFollow = null
     this.social.setChannelThreadOpen(false)
     this.onVisibilityChange?.(false)
     this.onReadingChange?.(false)
@@ -301,6 +332,46 @@ export class ChatPanel {
 
   isVisible(): boolean {
     return this.visible
+  }
+
+  private async copyChannelTranscript(): Promise<void> {
+    const social = this.social
+    const title = social.getChannelTitle()
+    const lines = social.getMessages()
+    const parts: string[] = [`# ${title}`, '']
+    for (const line of lines) {
+      if (isChatImageLine(line)) {
+        const who = line.self
+          ? social.getLocalDisplay().displayName
+          : social.getPeerDisplay(line.senderAddress).displayName
+        parts.push(`[${SocialService.formatLineTime(line)}] ${who}: [image]`)
+        continue
+      }
+      const who = line.self
+        ? social.getLocalDisplay().displayName
+        : (line.senderName?.trim() ||
+            social.getPeerDisplay(line.senderAddress).displayName)
+      parts.push(`[${SocialService.formatLineTime(line)}] ${who}: ${line.text}`)
+    }
+    const text = parts.join('\n').trim()
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      // Fallback for non-secure contexts
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      try {
+        document.execCommand('copy')
+      } catch {
+        /* ignore */
+      }
+      ta.remove()
+    }
   }
 
   dispose(): void {
@@ -423,6 +494,7 @@ export class ChatPanel {
     this.headerSubtitle.hidden = !subtitle.trim()
     this.syncAutoTranslateIndicator()
     this.updateUsersButton()
+    this.renderFollowBar()
     this.renderRail()
     if (this.bodyMode === 'users') this.renderUsersList()
     else this.renderMessages()
@@ -436,6 +508,129 @@ export class ChatPanel {
           : 'Press Enter to chat'
     }
     this.updateComposerDropUi()
+  }
+
+  /** Sticky Follow / Tour row under community chat title (in-world only). */
+  private renderFollowBar(): void {
+    const channel = this.social.getChannel()
+    const follow = this.social.getFollow()
+    if (channel.kind !== 'community' || this.bodyMode === 'users' || !follow) {
+      this.followBarEl.hidden = true
+      return
+    }
+
+    const communityId = channel.communityId
+    const session = follow.getSession(communityId)
+    const canLead = follow.canLead(communityId)
+    const leading = follow.isLeading(communityId)
+    const following = follow.isFollowing(communityId)
+    const stopLabel = followTargetLabel(session?.lastTarget ?? null)
+    const leaderShort = session
+      ? this.shortLeaderLabel(session.leaderAddress)
+      : ''
+
+    // Hide entirely when idle and user cannot lead (no tour to join).
+    if (!session && !canLead) {
+      this.followBarEl.hidden = true
+      return
+    }
+
+    this.followBarEl.hidden = false
+    this.followActionBtn.hidden = true
+    this.followStopBtn.hidden = true
+    this.followActionBtn.disabled = false
+    this.followStopBtn.disabled = false
+
+    if (leading) {
+      this.followLabelEl.textContent = stopLabel
+        ? `Leading · ${stopLabel} · /goto moves group`
+        : 'Leading · /goto moves group (walk only updates label)'
+      this.followStopBtn.hidden = false
+      this.followStopBtn.textContent = 'Stop tour'
+      this.followStopBtn.setAttribute('aria-label', 'Stop community tour')
+      return
+    }
+
+    if (following && session) {
+      this.followLabelEl.textContent = stopLabel
+        ? `Following ${leaderShort} · ${stopLabel}`
+        : `Following ${leaderShort}`
+      this.followStopBtn.hidden = false
+      this.followStopBtn.textContent = 'Stop'
+      this.followStopBtn.setAttribute('aria-label', 'Stop following tour')
+      return
+    }
+
+    if (session) {
+      this.followLabelEl.textContent = stopLabel
+        ? `Tour live · ${leaderShort} @ ${stopLabel}`
+        : `Tour live · ${leaderShort}`
+      this.followActionBtn.hidden = false
+      this.followActionBtn.textContent = 'Follow'
+      this.followActionBtn.setAttribute('aria-label', 'Follow community tour')
+      return
+    }
+
+    // Can lead, no active tour.
+    this.followLabelEl.textContent = 'Start a tour — followers jump on your /goto'
+    this.followActionBtn.hidden = false
+    this.followActionBtn.textContent = 'Start tour'
+    this.followActionBtn.setAttribute('aria-label', 'Start community tour')
+  }
+
+  private shortLeaderLabel(address: string): string {
+    const name = this.social.getPeerDisplay(address)?.displayName?.trim()
+    if (name) return name
+    const a = address.toLowerCase()
+    if (a.startsWith('0x') && a.length >= 10) return `${a.slice(0, 6)}…${a.slice(-4)}`
+    return 'leader'
+  }
+
+  private async onFollowPrimaryClick(): Promise<void> {
+    const channel = this.social.getChannel()
+    if (channel.kind !== 'community') return
+    const follow = this.social.getFollow()
+    if (!follow) return
+    const communityId = channel.communityId
+    const session = follow.getSession(communityId)
+
+    if (session && !follow.isLeading(communityId) && !follow.isFollowing(communityId)) {
+      follow.follow(communityId)
+      this.renderFollowBar()
+      return
+    }
+
+    if (!session && follow.canLead(communityId)) {
+      this.followActionBtn.disabled = true
+      const initial = routeToFollowTarget(this.getCurrentRoute?.() ?? null)
+      const ok = await follow.startLead(communityId, initial)
+      this.followActionBtn.disabled = false
+      if (!ok) {
+        this.followLabelEl.textContent = 'Could not start tour — try again'
+      }
+      this.renderFollowBar()
+    }
+  }
+
+  private async onFollowStopClick(): Promise<void> {
+    const channel = this.social.getChannel()
+    if (channel.kind !== 'community') return
+    const follow = this.social.getFollow()
+    if (!follow) return
+    const communityId = channel.communityId
+
+    if (follow.isLeading(communityId)) {
+      this.followStopBtn.disabled = true
+      await follow.stopLead()
+      this.followStopBtn.disabled = false
+      this.renderFollowBar()
+      return
+    }
+
+    if (follow.isFollowing(communityId)) {
+      follow.unfollow()
+      this.renderFollowBar()
+    }
   }
 
   private startPresencePoll(): void {

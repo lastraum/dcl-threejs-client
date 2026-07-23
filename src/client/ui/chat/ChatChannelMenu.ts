@@ -7,6 +7,7 @@ import { chatTranslationSettings } from '../../../social/translation'
 const ICONS = {
   bell: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a5 5 0 0 0-5 5v2.2c0 .7-.2 1.4-.6 2L5 15h14l-1.4-2.8c-.4-.6-.6-1.3-.6-2V8a5 5 0 0 0-5-5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 18a2 2 0 0 0 4 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
   translate: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5h7M7.5 5v1a8 8 0 0 0 8 8h.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M5 19h14M13 9l3.5 10M20.5 19 17 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  copy: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="1.5" stroke="currentColor" stroke-width="1.6"/><path d="M7 15H6a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 6 3h9A1.5 1.5 0 0 1 16.5 4.5V6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
   trash: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M8 7l1 12h6l1-12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   chevron: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   check: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12.5 10 17l9-10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`
@@ -21,6 +22,8 @@ const PING_OPTIONS: Array<{ mode: ChatNotificationPing; label: string }> = [
 export type ChatChannelMenuHandlers = {
   getChannelKey: () => string
   onAutoTranslateChange?: (enabled: boolean) => void
+  /** Copy visible chat transcript for this channel to the clipboard. */
+  onCopyChat?: () => void | Promise<void>
   onDeleteHistory?: () => void
   onClose?: () => void
 }
@@ -174,6 +177,24 @@ export class ChatChannelMenu {
       this.render()
     })
     this.root.appendChild(autoRow)
+
+    // Copy chat transcript
+    if (this.handlers.onCopyChat) {
+      const copyRow = document.createElement('button')
+      copyRow.type = 'button'
+      copyRow.className = 'chat-channel-menu__row'
+      copyRow.setAttribute('role', 'menuitem')
+      copyRow.innerHTML = `
+        <span class="chat-channel-menu__icon">${ICONS.copy}</span>
+        <span class="chat-channel-menu__label">Copy Chat</span>
+      `
+      copyRow.addEventListener('click', (e) => {
+        e.stopPropagation()
+        this.hide()
+        void this.handlers.onCopyChat?.()
+      })
+      this.root.appendChild(copyRow)
+    }
 
     // Delete Chat History
     const delRow = document.createElement('button')

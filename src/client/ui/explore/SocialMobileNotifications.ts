@@ -429,6 +429,8 @@ export class SocialMobileNotifications {
     appName?: string
     /** 0 = stay until replaced/dismissed (progress toasts). */
     dismissMs?: number
+    /** Optional click action (e.g. open community chat for a tour toast). */
+    onClick?: () => void
   }): void {
     const existing = this.banners.find((b) => b.id === opts.id)
     if (existing) {
@@ -465,7 +467,10 @@ export class SocialMobileNotifications {
         </div>
       </div>
     `
-    banner.addEventListener('click', () => this.dismissBanner(banner))
+    banner.addEventListener('click', () => {
+      this.dismissBanner(banner)
+      opts.onClick?.()
+    })
     this.showBanner(banner, opts.id, opts.dismissMs ?? AUTO_DISMISS_MS)
   }
 

@@ -205,6 +205,8 @@ export class RemoteAvatarManager {
   private localAddress: string | null = null
   private readonly cameraWorldPos = new THREE.Vector3()
   private hasCameraPos = false
+  /** Scene-local feet for provisional peer placement until first transform arrives. */
+  private provisionalPositionProvider: (() => THREE.Vector3 | null) | null = null
   /** Host→scene CRDT mirror for remote PlayerIdentityData / AvatarBase / AvatarEquippedData. */
   private onPeerMirrorIdentity:
     | ((entity: Entity, identity: ReturnType<typeof buildPlayerMirrorIdentity> | null) => void)
@@ -214,6 +216,14 @@ export class RemoteAvatarManager {
     this.scene = scene
     this.root.name = 'remote-avatars'
     scene.add(this.root)
+  }
+
+  /**
+   * Optional local feet (Three.js scene space). Peers that join without a pose yet
+   * spawn a visible placeholder here instead of staying `visible=false` forever.
+   */
+  setProvisionalPositionProvider(provider: (() => THREE.Vector3 | null) | null): void {
+    this.provisionalPositionProvider = provider
   }
 
   setPeerMirrorIdentityHandler(
@@ -774,9 +784,26 @@ export class RemoteAvatarManager {
       if (!record.model && !record.placeholder) {
         this.attachLoadingPresentation(record)
       }
+    } else if (!record.hasPosition) {
+      // Join without pose (common right after island LiveKit connect): show a
+      // provisional body near the local player so remotes are not "invisible".
+      // Mark hasPosition so compose can start — first real transform snaps pose.
+      // (Previously hasPosition stayed false → tryStartAvatarLoad no-op → eternal pills.)
+      const provisional = this.provisionalPositionProvider?.()
+      if (provisional) {
+        record.root.position.copy(provisional)
+        record.targetPosition.copy(provisional)
+        record.root.visible = !record.modifierHidden
+        record.hasPosition = true
+        if (!record.model && !record.placeholder) {
+          this.attachLoadingPresentation(record)
+        }
+      }
     }
 
-    this.tryStartAvatarLoad(key, record)
+    // Force when we only have a provisional colocated pose so load radius / camera
+    // not-yet-set doesn't leave the peer queued forever as a pill.
+    this.tryStartAvatarLoad(key, record, !positionDcl && record.hasPosition)
   }
 
   applyPeerProfile(address: string, serializedProfile: string): void {

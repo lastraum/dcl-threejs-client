@@ -19,6 +19,8 @@ export type CommunitiesBrowseViewOptions = {
   onOpenChat?: (community: CommunityDetail) => void
   /** Reports the browse total after each load (embedded overlay title count). */
   onBrowseCount?: (total: number) => void
+  /** Fired after a successful Social API join (refresh shell member lists). */
+  onJoinedCommunity?: (community: CommunityListRow) => void
 }
 
 const SEARCH_DEBOUNCE_MS = 280
@@ -73,6 +75,7 @@ export class CommunitiesBrowseView {
   private readonly communityModal: CommunityModal
   private readonly getAuthIdentity?: () => AuthIdentity | null
   private readonly onBrowseCount?: (total: number) => void
+  private readonly onJoinedCommunity?: (community: CommunityListRow) => void
   private communitiesById = new Map<string, CommunityListRow>()
   private mineById = new Map<string, CommunityListRow>()
   private selectedMineId: string | null = null
@@ -86,6 +89,7 @@ export class CommunitiesBrowseView {
   constructor(opts: CommunitiesBrowseViewOptions = {}) {
     this.getAuthIdentity = opts.getAuthIdentity
     this.onBrowseCount = opts.onBrowseCount
+    this.onJoinedCommunity = opts.onJoinedCommunity
     this.communityModal = new CommunityModal({
       getAuthIdentity: opts.getAuthIdentity,
       getUserAddress: opts.getUserAddress,
@@ -395,11 +399,14 @@ export class CommunitiesBrowseView {
     const identity = this.getAuthIdentity?.() ?? null
     if (!identity) {
       btn.title = 'Sign in to join'
+      this.setStatus('Sign in (wallet or guest) to join communities', 'error')
       return
     }
     this.joiningId = id
     btn.disabled = true
     btn.textContent = 'JOINING…'
+    btn.title = ''
+    this.setStatus('Joining community…', 'loading')
     const result = await joinCommunitySigned(identity, id)
     this.joiningId = null
     if (this.disposed) return
@@ -407,16 +414,26 @@ export class CommunitiesBrowseView {
       btn.disabled = false
       btn.textContent = 'JOIN'
       btn.title = result.error
+      this.setStatus(`Could not join: ${result.error}`, 'error')
       return
     }
     // Promote into mine list and refresh CTAs.
     const row = this.communitiesById.get(id)
-    if (row) {
-      this.mineById.set(id, { ...row, role: row.role ?? 'member' })
-    }
+    const joined: CommunityListRow | null = row
+      ? { ...row, role: row.role ?? 'member' }
+      : { id, name: 'Community', role: 'member' }
+    this.mineById.set(id, joined)
+    this.setStatus('Joined — opening community…', 'ok')
+    this.onJoinedCommunity?.(joined)
     await this.loadMine()
     void this.loadBrowse()
     this.openCommunity(id)
+  }
+
+  private setStatus(message: string, tone: 'loading' | 'error' | 'ok' | 'info' = 'info'): void {
+    this.statusEl.hidden = !message
+    this.statusEl.textContent = message
+    this.statusEl.className = `communities-browse-view__status communities-browse-view__status--${tone}`
   }
 
   private wireImages(root: HTMLElement): void {

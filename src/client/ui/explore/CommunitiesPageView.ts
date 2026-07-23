@@ -5,6 +5,10 @@ import { SocialShellTopNav, type SocialShellChromeHandlers, type SocialShellTab 
 export type CommunitiesPageViewOptions = SocialShellChromeHandlers & {
   login: LoginResult
   onNavigate: (tab: SocialShellTab) => void
+  /** Open community text channel after join / from modal 💬. */
+  onOpenChat?: (community: { id: string; name: string }) => void
+  /** Refresh shell/world member lists after a successful join. */
+  onJoinedCommunity?: (community: { id: string; name: string; role?: string }) => void
 }
 
 /** Full-page communities browse at `/communities`. */
@@ -35,9 +39,15 @@ export class CommunitiesPageView {
     })
 
     this.browseView = new CommunitiesBrowseView({
-      getAuthIdentity: () => (this.login.kind === 'wallet' ? this.login.identity : null),
+      // Guests have a signed AuthIdentity too — required for Social API join/members.
+      getAuthIdentity: () =>
+        this.login.kind === 'wallet' || this.login.kind === 'guest' ? this.login.identity : null,
       getUserAddress: () =>
-        this.login.kind === 'wallet' || this.login.kind === 'guest' ? this.login.address : null
+        this.login.kind === 'wallet' || this.login.kind === 'guest' ? this.login.address : null,
+      onOpenChat: opts.onOpenChat
+        ? (c) => opts.onOpenChat?.({ id: c.id, name: c.name })
+        : undefined,
+      onJoinedCommunity: opts.onJoinedCommunity
     })
 
     this.root.appendChild(this.topNav.el)

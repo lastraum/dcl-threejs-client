@@ -34,6 +34,8 @@ import { ExplorerAuthPanel } from './ui/explore/ExplorerAuthPanel'
 import { ChatPanel } from './ui/chat/ChatPanel'
 import { SocialChatController } from './ui/chat/SocialChatController'
 import { SocialChatDock } from './ui/chat/SocialChatDock'
+import { CommunityFollowController } from '../social/CommunityFollowController'
+import { followTargetToRoute } from '../social/communityFollowWire'
 import { PreferencesPanel } from './ui/settings/PreferencesPanel'
 import { SettingsOverlay, type SettingsTab } from './ui/settings/SettingsOverlay'
 import type { MapPlayerState } from './ui/settings/MapView'
@@ -147,6 +149,14 @@ export class AppController {
   private socialChat: SocialChatController | null = null
   private socialChatDock: SocialChatDock | null = null
   private socialMobileNotifications: SocialMobileNotifications | null = null
+  /**
+   * Community Follow/Tour — survives World rebuild on /goto so follow opt-in
+   * and lead session stay alive across teleports.
+   */
+  private communityFollow: CommunityFollowController | null = null
+  private unsubCommunityFollow: (() => void) | null = null
+  /** Re-open this community thread on ChatPanel after a follow jump World rebuild. */
+  private pendingFollowCommunityOpen: { id: string; name: string } | null = null
   /** Unsubscribe scene-room Cast presence poller for the open landing. */
   private castLiveUnsub: (() => void) | null = null
   /** Dedicated Cast 2.0 watcher LiveKit room (separate from scene chat). */
@@ -511,9 +521,14 @@ export class AppController {
       getMapPlayerState: () => this.getMapPlayerState(),
       onMapJumpIn: (px, py) => {
         this.settingsOverlay?.hide()
+        // Always in-world /goto-style load — never drop back to 2D landing from map Jump In.
         void this.jumpInToScene(
           { kind: 'coords', x: px, y: py, segment: `${px},${py}` },
-          { entry: 'map', source: 'map' }
+          {
+            entry: this.appMode === 'play' ? 'teleport' : 'map',
+            source: 'map',
+            fastAssets: this.appMode === 'play'
+          }
         )
       },
       onMapJumpInWorld: (worldName) => {
@@ -522,22 +537,40 @@ export class AppController {
         if (!name) return
         void this.jumpInToScene(
           { kind: 'world', worldName: name, segment: name },
-          { entry: 'map', source: 'map' }
+          {
+            entry: this.appMode === 'play' ? 'teleport' : 'map',
+            source: 'map',
+            fastAssets: this.appMode === 'play'
+          }
         )
       },
       onEventJumpIn: (target, _event: DclEvent) => {
         this.settingsOverlay?.hide()
-        void this.jumpInToScene(target, { fastAssets: true })
+        void this.jumpInToScene(target, {
+          fastAssets: true,
+          entry: this.appMode === 'play' ? 'teleport' : 'event_card',
+          source: 'map'
+        })
       },
       onEventViewScene: (target, _event: DclEvent) => {
         this.settingsOverlay?.hide()
         if (target.kind === 'coords' || target.kind === 'world') {
-          void this.showSceneLanding(target)
+          // Already in 3D — Jump-to-scene-page is 2D only; teleport instead.
+          if (this.appMode === 'play') {
+            void this.jumpInToScene(target, { fastAssets: true, entry: 'teleport', source: 'map' })
+          } else {
+            void this.showSceneLanding(target)
+          }
         }
       },
       onPlaceJumpIn: (target) => {
         this.settingsOverlay?.hide()
-        void this.navigateTo(target)
+        // Jump In must load the scene (same as /goto), not open 2D landing.
+        void this.jumpInToScene(target, {
+          entry: this.appMode === 'play' ? 'teleport' : 'map',
+          source: 'map',
+          fastAssets: this.appMode === 'play'
+        })
       },
       getDefaultEventCoords: () => {
         const state = this.getMapPlayerState()
@@ -561,6 +594,12 @@ export class AppController {
       onOpenCommunityChat: (community) => {
         this.openCommunityChatChannel(community.id, community.name)
       },
+      onJoinedCommunity: (community) => {
+        this.socialChat?.getSocial()?.noteJoinedCommunity(community)
+        this.world?.social.noteJoinedCommunity(community)
+        void this.socialChat?.getSocial()?.refreshMemberCommunities()
+        void this.world?.social.refreshMemberCommunities()
+      },
       onExitTo2D: () => {
         this.settingsOverlay?.hide()
         void this.navigateTo({ kind: 'blank' })
@@ -571,12 +610,75 @@ export class AppController {
   /** Community modal 💬 → in-world ChatPanel or 2D SocialChatDock. */
   private openCommunityChatChannel(communityId: string, displayName: string): void {
     this.settingsOverlay?.hide()
-    if (this.world && this.chatPanel) {
-      this.shell?.openCommunityChat(communityId, displayName)
+    if (this.appMode === 'play') {
+      if (this.chatPanel) {
+        this.shell?.openCommunityChat(communityId, displayName)
+      } else {
+        // Mid World rebuild (follow jump) — open after ChatPanel is reattached.
+        this.pendingFollowCommunityOpen = { id: communityId, name: displayName }
+      }
       return
     }
     this.ensureSocialChatShell()
     this.socialChatDock?.openCommunityChat(communityId, displayName)
+  }
+
+  /**
+   * Community Follow / Tour — toast on start; hard /goto only for followers
+   * (soft parcel walk is label-only; auto-pilot is a future mode).
+   * Controller is session-scoped (survives World rebuild); re-attached to each world.social.
+   */
+  private wireCommunityFollow(world: World): void {
+    if (!this.communityFollow) {
+      this.communityFollow = new CommunityFollowController({
+        publish: (communityId, msg) => {
+          const social = this.world?.social
+          if (!social) return Promise.resolve(false)
+          return social.publishCommunityControl(communityId, msg)
+        },
+        getLocalAddress: () => {
+          const a = this.login?.kind === 'wallet' || this.login?.kind === 'guest' ? this.login.address : null
+          return a?.toLowerCase() ?? this.world?.social.getLocalAddress() ?? null
+        },
+        getCommunities: () => this.world?.social.getCommunities() ?? []
+      })
+    }
+
+    world.social.setFollowController(this.communityFollow)
+
+    this.unsubCommunityFollow?.()
+    this.unsubCommunityFollow = this.communityFollow.subscribe((ev) => {
+      if (ev.kind === 'tour_started' && !ev.isLocalLeader) {
+        this.ensureSocialMobileNotifications()
+        const name =
+          this.world?.social.getCommunities().find((c) => c.id.toLowerCase() === ev.communityId)
+            ?.name ?? 'Community'
+        const sub = ev.lateJoin
+          ? 'Tour in progress — open community chat to Follow'
+          : 'Tour started — open community chat to Follow'
+        this.socialMobileNotifications?.pushSystemToast({
+          id: `tour:${ev.session.sessionId}`,
+          appName: 'COMMUNITY · TOUR',
+          title: name,
+          sub,
+          dismissMs: 10_000,
+          onClick: () => this.openCommunityChatChannel(ev.communityId, name)
+        })
+        return
+      }
+      if (ev.kind === 'follow_goto') {
+        // Avoid re-entrancy while already navigating from a previous pulse.
+        if (this.navigating) return
+        const route = followTargetToRoute(ev.target)
+        // After World rebuild, re-open the community thread (Follow bar + tour context).
+        const name =
+          this.world?.social
+            .getCommunities()
+            .find((c) => c.id.toLowerCase() === ev.communityId.toLowerCase())?.name ?? 'Community'
+        this.pendingFollowCommunityOpen = { id: ev.communityId, name }
+        void this.jumpInToScene(route, { fastAssets: true, source: 'goto' })
+      }
+    })
   }
 
   private openLocalProfileFromShell(): void {
@@ -598,6 +700,7 @@ export class AppController {
     this.currentRoute = { kind: 'blank' }
     this.appMode = 'explorer'
     this.clearSceneBanWatch()
+    this.disposeCommunityFollow()
 
     await this.teardownScene()
     this.teardownLanding()
@@ -635,6 +738,7 @@ export class AppController {
     if (this.appMode === 'play') stopDwellTracking('shell')
 
     if (this.appMode === 'play') {
+      this.disposeCommunityFollow()
       await this.teardownScene()
     }
 
@@ -689,6 +793,7 @@ export class AppController {
   ): Promise<void> {
     if (this.appMode === 'play') {
       stopDwellTracking('shell')
+      this.disposeCommunityFollow()
       await this.teardownScene()
     }
 
@@ -732,6 +837,7 @@ export class AppController {
   ): Promise<void> {
     if (this.appMode === 'play') {
       stopDwellTracking('shell')
+      this.disposeCommunityFollow()
       await this.teardownScene()
     }
 
@@ -757,6 +863,13 @@ export class AppController {
     this.communitiesPageView = new CommunitiesPageView({
       login: this.login,
       onNavigate: (tab) => this.navigateSocialShell(tab),
+      onOpenChat: (community) => this.openCommunityChatChannel(community.id, community.name),
+      onJoinedCommunity: (community) => {
+        this.socialChat?.getSocial()?.noteJoinedCommunity(community)
+        this.world?.social.noteJoinedCommunity(community)
+        void this.socialChat?.getSocial()?.refreshMemberCommunities()
+        void this.world?.social.refreshMemberCommunities()
+      },
       ...this.socialShellLoginHandlers()
     })
     this.communitiesPageView.mount(this.container)
@@ -769,6 +882,7 @@ export class AppController {
   ): Promise<void> {
     if (this.appMode === 'play') {
       stopDwellTracking('shell')
+      this.disposeCommunityFollow()
       await this.teardownScene()
     }
 
@@ -861,6 +975,7 @@ export class AppController {
   ): Promise<void> {
     if (this.appMode === 'play') {
       stopDwellTracking('landing')
+      this.disposeCommunityFollow()
       await this.teardownScene()
     }
 
@@ -1094,6 +1209,12 @@ export class AppController {
   }
 
   private ensureSocialChatShell(): void {
+    // Never revive 2D dock while in 3D play (follow jumps / notification seed used to do this).
+    if (this.appMode === 'play') {
+      this.socialChatDock?.hide()
+      document.body.classList.remove('social-shell-with-chat')
+      return
+    }
     if (!this.socialChat) {
       this.socialChat = new SocialChatController({
         onStatusChange: () => this.socialChatDock?.refresh()
@@ -1121,28 +1242,66 @@ export class AppController {
     if (this.socialMobileNotifications) return
     this.socialMobileNotifications = new SocialMobileNotifications({
       login: this.login!,
-      getSocial: () => this.socialChat?.getSocial() ?? null,
+      // Prefer in-world social while playing so shell is not required for toasts.
+      getSocial: () => this.world?.social ?? this.socialChat?.getSocial() ?? null,
       getAuthIdentity: () =>
-        this.login?.kind === 'wallet' ? this.login.identity : null,
+        this.login?.kind === 'wallet' || this.login?.kind === 'guest' ? this.login.identity : null,
       getUserAddress: () =>
-        this.login?.kind === 'wallet' ? this.login.address : null,
+        this.login?.kind === 'wallet' || this.login?.kind === 'guest' ? this.login.address : null,
       onEnsureSocial: async () => {
+        if (this.appMode === 'play') {
+          // World social is owned by World.spawnLocalPlayer — do not spin up 2D shell.
+          return
+        }
         this.ensureSocialChatShell()
         this.socialChat?.applyLogin(this.login)
         await this.socialChat?.ensureShellInit()
       },
       onOpenChat: () => {
+        if (this.appMode === 'play') {
+          this.shell?.openChatPanel()
+          return
+        }
         this.ensureSocialChatShell()
         this.socialChatDock?.openFromNotification()
       },
-      onOpenUserProfile: (address) => this.socialChat?.openProfileForAddress(address),
+      onOpenUserProfile: (address) => {
+        if (this.appMode === 'play') {
+          this.profileUi?.openProfileForAddress(address)
+          return
+        }
+        this.socialChat?.openProfileForAddress(address)
+      },
       onOpenCommunity: (communityId, kind) => {
+        if (this.appMode === 'play' && kind === 'announcement') {
+          // Tour / community toast in 3D → in-world community chat, not Settings.
+          const name =
+            this.world?.social
+              .getCommunities()
+              .find((c) => c.id.toLowerCase() === communityId.toLowerCase())?.name ?? 'Community'
+          this.openCommunityChatChannel(communityId, name)
+          return
+        }
         void this.openCommunityFromNotification(communityId, kind)
       },
-      isChatNotificationSuppressed: (channelKey) =>
-        this.socialChatDock?.isChatNotificationSuppressed(channelKey) ?? false
+      isChatNotificationSuppressed: (channelKey) => {
+        if (this.appMode === 'play') {
+          return this.chatPanel?.isActivelyReading() === true && this.isActiveChannelKey(channelKey)
+        }
+        return this.socialChatDock?.isChatNotificationSuppressed(channelKey) ?? false
+      }
     })
     this.socialMobileNotifications.mount()
+  }
+
+  private isActiveChannelKey(channelKey: string): boolean {
+    const social = this.world?.social ?? this.socialChat?.getSocial()
+    if (!social) return false
+    const ch = social.getChannel()
+    if (ch.kind === 'scene') return channelKey === `scene:${ch.sceneKey}`
+    if (ch.kind === 'community') return channelKey === `community:${ch.communityId.toLowerCase()}`
+    if (ch.kind === 'dm') return channelKey === `dm:${ch.peerAddress.toLowerCase()}`
+    return channelKey === 'messages'
   }
 
   /** HUD community toast click → Settings → Communities → modal (+ join voice when live). */
@@ -1237,6 +1396,16 @@ export class AppController {
   ): Promise<void> {
     if (target.kind !== 'coords' && target.kind !== 'world' && target.kind !== 'editor') return
 
+    // Leader tour hard pulse — intentional Jump In / /goto while leading only.
+    // Soft parcel walk uses noteLeaderLocation (label only; no follower reloads).
+    if (
+      this.appMode === 'play' &&
+      (target.kind === 'coords' || target.kind === 'world') &&
+      this.communityFollow?.isLeading()
+    ) {
+      this.communityFollow.noteLeaderGoto(target)
+    }
+
     // Editor / already-in-play teleports skip re-auth; first entry from 2D needs session.
     if (target.kind !== 'editor' && this.appMode !== 'play') {
       const neededAuth = !this.playSessionReady
@@ -1320,8 +1489,15 @@ export class AppController {
       }
     })
 
+    // Entering play from 2D: fully dispose shell chat. In-play teleports (follow / /goto):
+    // only hide shell chrome — never remount 2D dock mid-jump.
     if (!fromSceneLanding && !seamless) {
-      this.teardownSocialChatShell(true)
+      if (fromPlay) {
+        this.teardownSocialChatShell(false)
+        document.body.classList.remove('social-shell-with-chat')
+      } else {
+        this.teardownSocialChatShell(true)
+      }
     }
 
     this.navigating = true
@@ -1385,10 +1561,13 @@ export class AppController {
         this.revealPlayChrome()
       } else if (loading) {
         await loading.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
+        // In-play / follow teleports: loading.finish does not call revealPlayChrome.
+        this.revealPlayChrome()
       } else {
         // Seamless promote — chrome already visible.
         this.revealPlayChrome()
       }
+      this.ensureInWorldChromeOnly()
     } catch (err) {
       if (err instanceof SceneAccessDeniedError) {
         const ui = formatSceneBanMessage(err)
@@ -1443,6 +1622,7 @@ export class AppController {
   private async leavePlayMode(): Promise<void> {
     if (this.appMode !== 'play' || !this.currentRoute) return
     if (this.currentRoute.kind !== 'coords' && this.currentRoute.kind !== 'world') return
+    this.disposeCommunityFollow()
     await this.showSceneLanding(this.currentRoute, { replace: true })
   }
 
@@ -1634,14 +1814,17 @@ export class AppController {
         sceneConfig.source.kind === 'world' ? sceneConfig.source.worldName : null
       )
       this.settingsOverlay.updateMapPlayerState(() => this.getMapPlayerState())
+      // Keep Jump In as in-world teleport (/goto path). Do NOT navigateTo → 2D landing.
       this.settingsOverlay.updateMapJumpIn((px, py) => {
         this.settingsOverlay?.hide()
-        void this.navigateTo({
-          kind: 'coords',
-          x: px,
-          y: py,
-          segment: `${px},${py}`
-        })
+        void this.jumpInToScene(
+          { kind: 'coords', x: px, y: py, segment: `${px},${py}` },
+          {
+            entry: this.appMode === 'play' ? 'teleport' : 'map',
+            source: 'map',
+            fastAssets: this.appMode === 'play'
+          }
+        )
       })
     }
 
@@ -1845,9 +2028,17 @@ export class AppController {
     this.chatPanel = new ChatPanel({
       social: world.social,
       onGoto: (target) => void this.jumpInToScene(target, { fastAssets: true }),
-      onOpenProfile: (address) => this.profileUi?.openProfileForAddress(address)
+      onOpenProfile: (address) => this.profileUi?.openProfileForAddress(address),
+      getCurrentRoute: () => this.currentRoute
     })
+    this.wireCommunityFollow(world)
     this.shell.attachChatPanel(this.chatPanel, world.social)
+    // Follow jump: restore community thread so Follow bar + tour context stay visible.
+    const pendingCommunity = this.pendingFollowCommunityOpen
+    if (pendingCommunity) {
+      this.pendingFollowCommunityOpen = null
+      this.chatPanel.openCommunityChannel(pendingCommunity.id, pendingCommunity.name)
+    }
     if (this.settingsOverlay) this.shell.attachSettingsOverlay(this.settingsOverlay)
     if (this.preferencesPanel) this.shell.attachPreferencesPanel(this.preferencesPanel)
     this.bindNearbyVoice(world)
@@ -1991,6 +2182,7 @@ export class AppController {
     // Fresh enter always shows chrome (U hide is session-in-play only).
     this.clientHudVisible = true
     document.body.classList.remove('client-hud-hidden')
+    this.ensureInWorldChromeOnly()
     this.shell?.show()
     this.worldLocationCard?.setVisible(true)
     if (this.locationMapStack) this.locationMapStack.hidden = false
@@ -2000,6 +2192,12 @@ export class AppController {
     }
     this.mobileHud?.setShellVisible(true)
     this.world?.setSceneUiVisible(true)
+  }
+
+  /** Drop 2D social-shell chrome that can leak onto the 3D HUD after teleports. */
+  private ensureInWorldChromeOnly(): void {
+    document.body.classList.remove('social-shell-with-chat')
+    this.socialChatDock?.hide()
   }
 
   private resetClientHudVisible(): void {
@@ -2141,14 +2339,22 @@ export class AppController {
   ): void {
     if (this.navigating) return
     const nextPath = routePathForTarget(target)
-    if (window.location.pathname === nextPath) return
-    // Compare decoded paths too (`/-9%2C-91` vs `/-9,-91`)
-    try {
-      if (decodeURIComponent(window.location.pathname) === decodeURIComponent(nextPath)) return
-    } catch {
-      /* ignore */
+    let pathChanged = window.location.pathname !== nextPath
+    if (pathChanged) {
+      try {
+        pathChanged = decodeURIComponent(window.location.pathname) !== decodeURIComponent(nextPath)
+      } catch {
+        /* keep pathChanged from pathname compare */
+      }
     }
-    applyRouteToHistory(target, true)
+    if (pathChanged) {
+      applyRouteToHistory(target, true)
+    }
+    // Tour leader walking parcels — label only (no follower /goto reloads).
+    // Hard jumps go through jumpInToScene → noteLeaderGoto.
+    if (this.appMode === 'play' && this.communityFollow?.isLeading()) {
+      this.communityFollow.noteLeaderLocation(target)
+    }
   }
 
   /** Push scene/world name into desktop location card + mobile pill. */
@@ -2388,9 +2594,21 @@ export class AppController {
     this.locationMapStack = null
     this.chatPanel?.hide()
     this.hidePlayChrome()
+    // Keep communityFollow across in-play World rebuilds (/goto pulses).
+    // Drop only when leaving play — see disposeCommunityFollow().
+    this.unsubCommunityFollow?.()
+    this.unsubCommunityFollow = null
     await disconnectAll(this.world, { keepLiveKit: opts?.keepLiveKit === true })
     this.world = null
     if (this.container) this.container.innerHTML = ''
+  }
+
+  /** End Follow/Tour session when leaving 3D play (session-only product rule). */
+  private disposeCommunityFollow(): void {
+    this.unsubCommunityFollow?.()
+    this.unsubCommunityFollow = null
+    this.communityFollow?.dispose()
+    this.communityFollow = null
   }
 
   /** Sign out wallet → fall back to stable browser guest (same machine keeps guest key). */
@@ -2426,6 +2644,7 @@ export class AppController {
 
   async signOut(): Promise<void> {
     window.removeEventListener('popstate', this.onPopState)
+    this.disposeCommunityFollow()
     this.profileUi?.dispose()
     this.profileUi = null
     this.chatPanel?.dispose()

@@ -71,6 +71,8 @@ export type SettingsOverlayOptions = {
   onVrmEquipChange?: () => void | Promise<void>
   /** Community modal 💬 → chat dock / in-world panel. */
   onOpenCommunityChat?: (community: { id: string; name: string }) => void
+  /** After browse JOIN — refresh shell/world member community lists. */
+  onJoinedCommunity?: (community: { id: string; name: string; role?: string }) => void
   /** Leave the 3D overlay for the 2D Explore shell (the top-left "2D" dot). */
   onExitTo2D?: () => void
 }
@@ -105,6 +107,7 @@ export class SettingsOverlay {
   private onClose?: () => void
   private onVrmEquipChange?: () => void | Promise<void>
   private onOpenCommunityChat?: SettingsOverlayOptions['onOpenCommunityChat']
+  private onJoinedCommunity?: SettingsOverlayOptions['onJoinedCommunity']
   private onExitTo2D?: () => void
 
   constructor(opts: SettingsOverlayOptions) {
@@ -122,6 +125,7 @@ export class SettingsOverlay {
     this.onClose = opts.onClose
     this.onVrmEquipChange = opts.onVrmEquipChange
     this.onOpenCommunityChat = opts.onOpenCommunityChat
+    this.onJoinedCommunity = opts.onJoinedCommunity
     this.onExitTo2D = opts.onExitTo2D
 
     this.root = document.createElement('div')
@@ -587,7 +591,8 @@ export class SettingsOverlay {
         onOpenChat: (community) => {
           this.onOpenCommunityChat?.({ id: community.id, name: community.name })
         },
-        onBrowseCount: (total) => this.setTitleCount(total)
+        onBrowseCount: (total) => this.setTitleCount(total),
+        onJoinedCommunity: (communityId) => this.onJoinedCommunity?.(communityId)
       })
       this.communitiesView.root.classList.add('communities-browse-view--embedded')
       this.contentArea.appendChild(this.communitiesView.root)

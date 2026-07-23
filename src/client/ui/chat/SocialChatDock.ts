@@ -181,6 +181,7 @@ export class SocialChatDock {
         this.syncAutoTranslateIndicator()
         if (this.threadOpen) this.renderMessages()
       },
+      onCopyChat: () => void this.copyChannelTranscript(),
       onDeleteHistory: () => {
         this.social().clearChannelHistory()
         this.renderMessages()
@@ -972,6 +973,45 @@ export class SocialChatDock {
     badge.textContent = count > 99 ? '99+' : String(count)
     badge.setAttribute('aria-label', `${count} unread message${count === 1 ? '' : 's'}`)
     container.appendChild(badge)
+  }
+
+  private async copyChannelTranscript(): Promise<void> {
+    const social = this.social()
+    const title = social.getChannelTitle()
+    const lines = social.getMessages()
+    const parts: string[] = [`# ${title}`, '']
+    for (const line of lines) {
+      if (isChatImageLine(line)) {
+        const who = line.self
+          ? social.getLocalDisplay().displayName
+          : social.getPeerDisplay(line.senderAddress).displayName
+        parts.push(`[${SocialService.formatLineTime(line)}] ${who}: [image]`)
+        continue
+      }
+      const who = line.self
+        ? social.getLocalDisplay().displayName
+        : (line.senderName?.trim() ||
+            social.getPeerDisplay(line.senderAddress).displayName)
+      parts.push(`[${SocialService.formatLineTime(line)}] ${who}: ${line.text}`)
+    }
+    const text = parts.join('\n').trim()
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      try {
+        document.execCommand('copy')
+      } catch {
+        /* ignore */
+      }
+      ta.remove()
+    }
   }
 
   private renderMessages(): void {

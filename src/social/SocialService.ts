@@ -21,6 +21,8 @@ import {
 import { prepareChatImageFile } from './prepareChatImage'
 import { isSceneChatEmoteWireText } from './dclRfc4Chat'
 import { PrivateMessagesService } from './PrivateMessagesService'
+import type { CommunityFollowController } from './CommunityFollowController'
+import { tryParseFollowWire, type FollowWireMsg } from './communityFollowWire'
 import {
   isChatImageLine,
   type ChatChannelChoice,
@@ -129,6 +131,12 @@ export class SocialService {
   private readonly privateMessages = new PrivateMessagesService()
   private unsubPrivateMessages: (() => void) | null = null
   private unsubCommunityMessages: (() => void) | null = null
+  private unsubCommunityFollowData: (() => void) | null = null
+  /**
+   * Session-scoped Follow/Tour controller (owned by AppController so it survives
+   * World rebuild on /goto). Optional until play wires it.
+   */
+  private communityFollow: CommunityFollowController | null = null
 
   /** Wire multi-room publish (pool / controller). Falls back to primary CommsService. */
   setSceneChatTransport(options: {
@@ -137,6 +145,19 @@ export class SocialService {
   }): void {
     this.sceneChatSend = options.send ?? null
     this.sceneChatMediaSend = options.sendMedia ?? null
+  }
+
+  /**
+   * Attach session-scoped Follow controller (AppController owns lifecycle).
+   * Does not dispose previous — ownership is external.
+   */
+  setFollowController(controller: CommunityFollowController | null): void {
+    this.communityFollow = controller
+  }
+
+  /** In-world community Follow / Tour session controller (may be null before play wire). */
+  getFollow(): CommunityFollowController | null {
+    return this.communityFollow
   }
 
   /** Mark a scene chat room live or offline (multi-room pool + primary). */
@@ -173,16 +194,16 @@ export class SocialService {
     this.comms = null
     this.channel = { kind: 'messages' }
     this.peerProfiles.setPeerUrl(options.contentUrl ?? 'https://peer.decentraland.org')
-    // Guests can use LiveKit scene chat; skip social APIs that need a real DCL account.
+    // Guest wallets are real signed identities (stable browser guest key) — they can join
+    // public communities + use ADR-208 private-messages (community group chat SFU).
+    // Friendships / social-graph APIs still skip for guests (wallet-oriented).
+    await this.loadMemberCommunities(options.identity)
+    void this.ensurePrivateMessagesConnected()
     if (!options.isGuest) {
-      await this.loadMemberCommunities(options.identity)
       void this.ensureFriendshipSnapshot()
-      void this.ensurePrivateMessagesConnected()
     } else {
-      this.communities = []
       this.friendshipSnapshot = null
       this.friendshipRelationByAddress.clear()
-      this.teardownPrivateMessages()
     }
     this.ready = true
     this.notifyChannelChange()
@@ -222,7 +243,9 @@ export class SocialService {
 
   async init(options: SocialInitOptions): Promise<void> {
     this.comms = options.comms
-    this.authIdentity = options.isGuest ? null : options.identity
+    // Keep guest AuthIdentity — needed for community membership + private-messages SFU.
+    // (Previously nulled for guests, which hid all community rails and blocked chat.)
+    this.authIdentity = options.identity
     this.localAddress = options.address?.toLowerCase() ?? null
     this.displayName = options.address ? 'You' : 'Guest'
     this.friendshipSnapshot = null
@@ -238,8 +261,13 @@ export class SocialService {
       this.liveSceneKeys.add(options.sceneTab.key)
     }
 
-    if (!options.isGuest && options.identity) {
+    if (options.identity) {
       await this.loadMemberCommunities(options.identity)
+      // Warm PM room so community chat + Follow/tour control arrive without opening a thread first.
+      void this.ensurePrivateMessagesConnected()
+      if (!options.isGuest) {
+        void this.ensureFriendshipSnapshot()
+      }
     }
 
     this.ready = true
@@ -848,6 +876,14 @@ export class SocialService {
         this.ingestCommunityMessage(ev.communityId, ev.fromAddress, ev.text, ev.time)
       })
     }
+    if (!this.unsubCommunityFollowData) {
+      this.unsubCommunityFollowData = this.privateMessages.subscribeCommunityFollow((ev) => {
+        // Only honor tours for communities we belong to.
+        const known = this.communities.some((c) => c.id.toLowerCase() === ev.communityId.toLowerCase())
+        if (!known) return
+        this.communityFollow?.handleRemote(ev.communityId, ev.fromAddress, ev.msg)
+      })
+    }
     await this.privateMessages.connect(this.authIdentity, this.localAddress)
     this.notifyChannelChange()
   }
@@ -857,6 +893,8 @@ export class SocialService {
     this.unsubPrivateMessages = null
     this.unsubCommunityMessages?.()
     this.unsubCommunityMessages = null
+    this.unsubCommunityFollowData?.()
+    this.unsubCommunityFollowData = null
     this.privateMessages.disconnect()
   }
 
@@ -892,6 +930,13 @@ export class SocialService {
     const known = this.communities.some((c) => c.id.toLowerCase() === id)
     if (!known) return
 
+    // Follow / tour control plane — not shown as chat bubbles.
+    const followWire = tryParseFollowWire(text)
+    if (followWire) {
+      this.communityFollow?.handleRemote(id, fromAddress, followWire)
+      return
+    }
+
     const key = `community:${id}`
     const peer = fromAddress.toLowerCase()
     const profile = this.peerProfiles.get(peer)
@@ -913,6 +958,22 @@ export class SocialService {
       this.notifyChannelChange()
     }
     void this.peerProfiles.ensurePeer(peer)
+  }
+
+  /**
+   * Publish follow/tour control via PM-room non-chat data (not community SFU chat).
+   * No chat bubble, no Explorer community-chat line.
+   */
+  async publishCommunityControl(communityId: string, msg: FollowWireMsg): Promise<boolean> {
+    await this.ensurePrivateMessagesConnected()
+    if (!this.privateMessages.isConnected()) {
+      clientDebugLog.log('social', 'Follow control send failed — private-messages room not ready', {
+        level: 'warn',
+        alsoConsole: true
+      })
+      return false
+    }
+    return this.privateMessages.sendCommunityFollow(communityId, msg)
   }
 
   /**
@@ -1038,6 +1099,37 @@ export class SocialService {
     void this.ensureFriendshipSnapshot()
   }
 
+  /** Re-fetch member communities (e.g. after JOIN from browse). */
+  async refreshMemberCommunities(): Promise<void> {
+    if (!this.authIdentity) return
+    await this.loadMemberCommunities(this.authIdentity)
+    // Warm PM so community chat is live as soon as the rail shows the new tab.
+    void this.ensurePrivateMessagesConnected()
+    this.notifyChannelChange()
+  }
+
+  /**
+   * Optimistic membership after JOIN (before refresh returns).
+   * Ensures community appears on chat rails immediately for guests/wallets.
+   */
+  noteJoinedCommunity(row: Pick<CommunityListRow, 'id' | 'name'> & Partial<CommunityListRow>): void {
+    const id = row.id.trim()
+    if (!id) return
+    const key = id.toLowerCase()
+    const existing = this.communities.findIndex((c) => c.id.toLowerCase() === key)
+    const merged: CommunityListRow = {
+      ...(existing >= 0 ? this.communities[existing]! : {}),
+      ...row,
+      id,
+      name: row.name?.trim() || this.communities[existing]?.name || 'Community',
+      role: row.role ?? this.communities[existing]?.role ?? 'member'
+    }
+    if (existing >= 0) this.communities.splice(existing, 1)
+    this.communities.unshift(merged)
+    void this.ensurePrivateMessagesConnected()
+    this.notifyChannelChange()
+  }
+
   dispose(): void {
     // Only clear handlers when we still own the service. After handoff, shell
     // social.releaseCommsOwnership() leaves this.comms null so World's rewire survives.
@@ -1046,6 +1138,8 @@ export class SocialService {
       this.comms.setChatMediaHandler(null)
     }
     this.teardownPrivateMessages()
+    // Follow controller is session-scoped on AppController — do not dispose here.
+    this.communityFollow = null
     for (const url of this.mediaObjectUrls) URL.revokeObjectURL(url)
     this.mediaObjectUrls.clear()
     this.comms = null

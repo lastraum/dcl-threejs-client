@@ -765,15 +765,20 @@ export class CommsService {
         isWorld: false
       })
       if (!adapterResult.ok) {
-        this.releaseWalletSessionIfHeld()
         if (adapterResult.status === 403 || adapterResult.status === 401) {
+          this.releaseWalletSessionIfHeld()
           clientDebugLog.log('comms', `Scene access denied at comms connect: ${adapterResult.error}`, {
             level: 'error'
           })
           return { ok: false, reason: 'scene_ban' }
         }
-        clientDebugLog.log('comms', `Gatekeeper failed: ${adapterResult.error}`, { level: 'error' })
-        return { ok: false, reason: 'gatekeeper' }
+        // Empty land / no scene room: still play multiplayer on archipelago island.
+        clientDebugLog.log(
+          'comms',
+          `Gatekeeper scene adapter unavailable (${adapterResult.error}) — island-only multiplayer`,
+          { level: 'warn', alsoConsole: true }
+        )
+        return this.finishParcelIslandOnlyComms()
       }
       sceneAdapter = adapterResult.adapter
     }
@@ -784,9 +789,12 @@ export class CommsService {
 
     const connected = await this.sceneLiveKit.connect(sceneAdapter)
     if (!connected) {
-      this.releaseWalletSessionIfHeld()
-      clientDebugLog.log('comms', 'Scene LiveKit failed to connect', { level: 'error' })
-      return { ok: false, reason: 'livekit' }
+      clientDebugLog.log(
+        'comms',
+        'Scene LiveKit failed — continuing with archipelago island multiplayer',
+        { level: 'warn', alsoConsole: true }
+      )
+      return this.finishParcelIslandOnlyComms()
     }
 
     let participants: Awaited<ReturnType<typeof fetchSceneParticipants>> = []
@@ -813,6 +821,24 @@ export class CommsService {
     clientDebugLog.log('comms', 'Transport: LiveKit scene room · RFC4 Movement + Scene packets', {
       level: 'success'
     })
+    return { ok: true }
+  }
+
+  /**
+   * Parcel multiplayer without a scene LiveKit room (empty land / gatekeeper fail).
+   * Archipelago already started in connectSceneRoomImpl — movement/profiles ride the island room.
+   */
+  private finishParcelIslandOnlyComms(): SceneCommsConnectResult {
+    this.transport = 'livekit'
+    this.realm.isConnectedSceneRoom = false
+    this.seedArchipelagoPresenceFromScene('island-only')
+    this.notifyLiveKitRoomsChanged()
+    this.announceProfile('connect')
+    clientDebugLog.log(
+      'comms',
+      'Transport: LiveKit island-only (no scene room) · RFC4 Movement + profiles on archipelago',
+      { level: 'success', alsoConsole: true }
+    )
     return { ok: true }
   }
 
@@ -914,6 +940,17 @@ export class CommsService {
     return [...addresses].sort((a, b) => a.localeCompare(b))
   }
 
+  /** True when any LiveKit room can carry RFC4 movement (scene, world, or island). */
+  private canPublishLiveKitMovement(): boolean {
+    return (
+      this.transport === 'livekit' ||
+      this.islandConnected ||
+      this.sceneLiveKit.isConnected() ||
+      this.worldConnected ||
+      this.worldLiveKit.isConnected()
+    )
+  }
+
   broadcastTransform(
     x: number,
     y: number,
@@ -928,12 +965,14 @@ export class CommsService {
       glideState?: number
     }
   ): void {
-    if (this.transport === 'livekit') {
+    // Heal transport if island/scene connected after a failed scene-room connect (empty land).
+    if (this.canPublishLiveKitMovement()) {
+      this.transport = 'livekit'
       this.pendingTransform = { type: 'avatar-transform', x, y, z, yaw }
       if (this.sceneLiveKit.isConnected()) {
         this.sceneLiveKit.queueTransform(x, y, z, yaw, isEmoting, locomotion)
       }
-      if (this.worldConnected) {
+      if (this.worldConnected || this.worldLiveKit.isConnected()) {
         this.worldLiveKit.queueTransform(x, y, z, yaw, isEmoting, locomotion)
       }
       if (this.islandConnected) {
@@ -956,9 +995,12 @@ export class CommsService {
     if (this.walletSessionLockHeld && this.localAddress) {
       refreshWalletSessionLock(this.localAddress)
     }
-    if (this.transport === 'livekit') {
+    if (this.canPublishLiveKitMovement()) {
+      this.transport = 'livekit'
       if (this.sceneLiveKit.isConnected()) this.sceneLiveKit.flushBroadcast(now, BROADCAST_INTERVAL_MS)
-      if (this.worldConnected) this.worldLiveKit.flushBroadcast(now, BROADCAST_INTERVAL_MS)
+      if (this.worldConnected || this.worldLiveKit.isConnected()) {
+        this.worldLiveKit.flushBroadcast(now, BROADCAST_INTERVAL_MS)
+      }
       if (this.islandConnected) this.islandLiveKit.flushBroadcast(now, BROADCAST_INTERVAL_MS)
       return
     }
@@ -1388,7 +1430,18 @@ export class CommsService {
       { level: connected ? 'success' : 'error', alsoConsole: true }
     )
     // Island is movement + (for parcels) nearby voice alongside scene room.
-    if (connected) this.notifyLiveKitRoomsChanged()
+    if (connected) {
+      // Genesis empty land / gatekeeper scene-room failures still join island — without
+      // this, transport stays 'none' and broadcastTransform never publishes RFC4 Movement,
+      // so peers freeze as name-tag pills forever.
+      this.transport = 'livekit'
+      this.notifyLiveKitRoomsChanged()
+      // LiveKit connect already fires onPeerJoin for remotes present at join, but after a
+      // World rebuild / follow teleport handlers may have been rewired — re-push the roster
+      // so RemoteAvatarManager does not stay empty while voice already sees peers.
+      this.notifyHandlersOfCurrentPeers()
+      this.announceProfile('connect')
+    }
   }
 
   /** Optional hook — World rebinds voice when LiveKit rooms change. */

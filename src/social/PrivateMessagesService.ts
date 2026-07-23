@@ -10,6 +10,13 @@ import {
   MESSAGE_ROUTER_FALLBACK_IDENTITIES,
   parseCommunityChatTopic
 } from './communityChatWire'
+import {
+  communityFollowTopic,
+  encodeFollowDataPacket,
+  parseCommunityFollowTopic,
+  tryParseFollowDataPacket,
+  type FollowWireMsg
+} from './communityFollowWire'
 import { tryDecodeRfc4ChatPacket } from './dclRfc4Chat'
 
 export type PrivateMessageEvent = {
@@ -25,11 +32,18 @@ export type CommunityMessageEvent = {
   time: number
 }
 
+export type CommunityFollowDataEvent = {
+  communityId: string
+  fromAddress: string
+  msg: FollowWireMsg
+}
+
 /**
  * ADR-208 private chat room — one persistent LiveKit connection for:
  * - 1:1 DMs (RFC4 Chat + destinationIdentities, no topic)
  * - Community group text via **comms-message-sfu**:
  *   dest = message-router-*, topic = `community:{id}`
+ * - Community Follow/Tour control (non-chat data, topic `d3js-follow:{id}`)
  */
 export class PrivateMessagesService {
   private session: LiveKitCommsSession | null = null
@@ -40,6 +54,7 @@ export class PrivateMessagesService {
   private localAddress: string | null = null
   private readonly inbound = new Set<(ev: PrivateMessageEvent) => void>()
   private readonly communityInbound = new Set<(ev: CommunityMessageEvent) => void>()
+  private readonly followInbound = new Set<(ev: CommunityFollowDataEvent) => void>()
 
   subscribe(listener: (ev: PrivateMessageEvent) => void): () => void {
     this.inbound.add(listener)
@@ -52,6 +67,13 @@ export class PrivateMessagesService {
     this.communityInbound.add(listener)
     return () => {
       this.communityInbound.delete(listener)
+    }
+  }
+
+  subscribeCommunityFollow(listener: (ev: CommunityFollowDataEvent) => void): () => void {
+    this.followInbound.add(listener)
+    return () => {
+      this.followInbound.delete(listener)
     }
   }
 
@@ -144,6 +166,13 @@ export class PrivateMessagesService {
   }
 
   private handleTopicPacket(topic: string, address: string, data: Uint8Array): void {
+    // Follow/Tour control — raw data on d3js-follow:{id}, not RFC4 chat / not SFU.
+    const followCommunityId = parseCommunityFollowTopic(topic)
+    if (followCommunityId) {
+      this.handleFollowDataPacket(followCommunityId, address, data)
+      return
+    }
+
     const communityId = parseCommunityChatTopic(topic)
     if (!communityId) return
     const chat = tryDecodeRfc4ChatPacket(data)
@@ -161,6 +190,16 @@ export class PrivateMessagesService {
     const time = typeof chat.time === 'number' && Number.isFinite(chat.time) ? chat.time : Date.now() / 1000
     const ev: CommunityMessageEvent = { communityId, fromAddress: from, text, time }
     for (const listener of this.communityInbound) listener(ev)
+  }
+
+  private handleFollowDataPacket(communityId: string, address: string, data: Uint8Array): void {
+    if (isMessageRouterIdentity(address)) return
+    const from = address.trim().toLowerCase()
+    if (!from || from === this.localAddress) return
+    const msg = tryParseFollowDataPacket(data)
+    if (!msg) return
+    const ev: CommunityFollowDataEvent = { communityId, fromAddress: from, msg }
+    for (const listener of this.followInbound) listener(ev)
   }
 
   async sendTo(peerAddress: string, text: string): Promise<boolean> {
@@ -200,6 +239,35 @@ export class PrivateMessagesService {
       )
     }
     return ok
+  }
+
+  /**
+   * Follow/Tour control — room-broadcast non-chat data on topic `d3js-follow:{id}`.
+   * Does **not** go through message-router / community chat UI path.
+   * Reaches peers currently in the private-messages LiveKit room (our clients + anyone else
+   * who ignores unknown topics).
+   */
+  async sendCommunityFollow(communityId: string, msg: FollowWireMsg): Promise<boolean> {
+    const id = communityId.trim().toLowerCase()
+    if (!id || !this.session || !this.connected) return false
+    const topic = communityFollowTopic(id)
+    const packet = encodeFollowDataPacket(msg)
+    try {
+      await this.session.publishTopicData(topic, packet, true)
+      clientDebugLog.log('social', `Follow control → PM room topic=${topic} t=${msg.t}`, {
+        level: 'success',
+        alsoConsole: true
+      })
+      return true
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      this.lastError = detail
+      clientDebugLog.log('social', `Follow control publish failed: ${detail}`, {
+        level: 'warn',
+        alsoConsole: true
+      })
+      return false
+    }
   }
 
   /** Prefer live SFU identities; fall back to default replica names. */

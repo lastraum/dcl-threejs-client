@@ -54,35 +54,34 @@ function mixerHasActiveWork(entry: AnimEntry): boolean {
 }
 
 /**
- * Freeze a clip at a pose without resetting time to 0.
- * - Mid-play / already advanced → hold current time (SyncEntity door mid-open).
- * - Never advanced + non-loop → snap to end frame (late join sees open door, not closed).
- * - Never advanced + loop → fully off.
+ * Freeze a clip without resetting time (Explorer / SyncEntity doors).
+ * - If the action has advanced (or finished with clampWhenFinished), hold that time.
+ * - If never advanced (time≈0), stay at rest (closed). Do NOT snap to end — that put
+ *   doors on the wrong keyframe when CRDT only said playing=false.
+ * CRDT does not carry clip time; mid-open hold only works if this client already played.
  */
-function holdActionPose(action: THREE.AnimationAction, loop: boolean, weight: number): void {
-  const duration = action.getClip().duration
+function holdActionPose(action: THREE.AnimationAction, weight: number): void {
   action.enabled = true
   action.setEffectiveWeight(weight)
   action.clampWhenFinished = true
+  action.setEffectiveTimeScale(0)
 
-  if (action.isRunning() || action.time > 1e-4) {
+  // isRunning() stays true while paused — still treat as "has a pose to hold".
+  if (action.isRunning() || action.isScheduled() || action.time > 1e-4) {
     action.paused = true
     return
   }
 
-  if (!loop && duration > 1e-4) {
-    // CRDT does not sync clip time — Explorer shows the finished pose when stopped.
-    action.reset()
-    action.time = duration
-    action.paused = true
-    action.play()
-    action.paused = true
-    return
-  }
-
+  // Rest pose (closed): never played on this client.
   action.stop()
-  action.enabled = false
+  action.enabled = weight > 1e-3
   action.paused = false
+  action.time = 0
+  if (weight > 1e-3) {
+    // Keep weight so rest bones bind; no play.
+    action.enabled = true
+    action.paused = true
+  }
 }
 
 /** One name→node map per bind — per-track traverse was O(tracks × nodes) on huge characters. */
@@ -393,31 +392,34 @@ export class AnimatorBridge {
         }
         const loop = state.loop !== false
         const weight = state.weight ?? 1
-        action.setEffectiveTimeScale(state.speed ?? 1)
         action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)
         action.clampWhenFinished = !loop
         if (state.playing !== false) {
           action.enabled = true
           action.paused = false
           action.setEffectiveWeight(weight)
+          action.setEffectiveTimeScale(state.speed ?? 1)
           // Explorer: shouldReset restarts one-shots; forceReplay also restarts when scene
           // re-dirties Animator with the same shouldReset=true payload.
+          // Resume without shouldReset keeps current time (door re-open mid-motion).
           if (state.shouldReset || forceReplay) action.reset()
           if (!action.isRunning()) action.play()
+          else action.paused = false
           playingClips.push(clipName)
         } else if (weight > 1e-3) {
-          holdActionPose(action, loop, weight)
+          holdActionPose(action, weight)
           if (action.enabled) heldClips.push(clipName)
         } else {
           action.stop()
           action.enabled = false
           action.paused = false
           action.setEffectiveWeight(0)
+          action.setEffectiveTimeScale(1)
         }
       }
 
-      // Bake held/end poses immediately (don't wait for next mixer tick).
-      if (heldClips.length && !playingClips.length) {
+      // Bake held poses immediately so the skeleton matches this frame.
+      if (heldClips.length) {
         bound.mixer.update(0)
       }
 

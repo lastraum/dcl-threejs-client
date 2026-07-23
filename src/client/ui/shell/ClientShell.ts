@@ -401,6 +401,8 @@ export class ClientShell {
     const btn = this.buttons.get('tour-options')
     if (!btn) return
     btn.element.hidden = !visible
+    // Belt-and-suspenders: some layouts set display on .client-sidebar__btn
+    btn.element.style.display = visible ? '' : 'none'
     if (!visible) btn.setActive(false)
   }
 

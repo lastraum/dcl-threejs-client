@@ -1088,6 +1088,10 @@
         cursor: pointer;
         transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
       }
+      /* display:grid above would otherwise override HTML [hidden] */
+      .client-sidebar__btn[hidden] {
+        display: none !important;
+      }
       /* Explorer-style HUD hover tips: "Backpack [I]" — above minimap (sidebar stacking) */
       .client-sidebar__btn[data-tooltip]::after {
         content: attr(data-tooltip);

@@ -1,5 +1,6 @@
 import type { VoiceChatService, VoiceChatSnapshot } from '../../../network/voice/VoiceChatService'
 import { soundSettings, VOLUME_MAX, VOLUME_MIN } from '../../../rendering/SoundSettings'
+import { clientDebugLog } from '../../debug/ClientDebugLog'
 
 export type NearbyVoicePanelOptions = {
   anchor: () => HTMLElement | undefined
@@ -65,12 +66,14 @@ export class NearbyVoicePanel {
     })
     this.speakBtn.addEventListener('click', () => {
       if (!this.voice) {
-        console.warn('[voice] Speak clicked but VoiceChatService not bound')
+        clientDebugLog.log('voice', 'Speak clicked but VoiceChatService not bound', {
+          level: 'warn'
+        })
         this.errorEl.hidden = false
         this.errorEl.textContent = 'Voice not ready — rejoin the scene'
         return
       }
-      console.log('[voice] Speak button clicked')
+      clientDebugLog.log('voice', 'Speak button clicked')
       void this.voice.toggleSpeaking()
     })
 

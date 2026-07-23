@@ -1,0 +1,214 @@
+import {
+  renderQuality,
+  SHADOW_QUALITY_LADDER,
+  type ShadowQuality
+} from './RenderQualitySettings'
+
+/**
+ * Runtime FPS → temporary shadow quality + resolution scale.
+ *
+ * - Never writes Preferences / localStorage for step-down values.
+ * - Never raises quality above the user's ceiling (slider / preset).
+ * - Prefer stepping **shadows first**, then resolution (shadows are a big GPU multiplier;
+ *   soft/no shadows hurt less than a blurry full-screen res drop).
+ */
+export class AdaptiveQualityController {
+  /** Need this many consecutive low windows before stepping down. */
+  private static readonly BAD_WINDOWS = 2
+  /** Need this many consecutive healthy windows before stepping up. */
+  private static readonly GOOD_WINDOWS = 3
+  private static readonly LOW_FPS = 26
+  private static readonly HIGH_FPS = 42
+  /** Min ms between any step (down or up). */
+  private static readonly COOLDOWN_MS = 2800
+  private static readonly RES_STEP = 10
+  private static readonly RES_FLOOR = 55
+
+  private windowFrames = 0
+  private windowStart = 0
+  private badStreak = 0
+  private goodStreak = 0
+  private lastStepAt = 0
+  /** 0 = at user ceiling; positive = steps below. */
+  private resStepsDown = 0
+  private shadowStepsDown = 0
+  private unsub: (() => void) | null = null
+  private lastCeilingRes = -1
+  private lastCeilingShadow: ShadowQuality | '' = ''
+
+  start(): void {
+    if (this.unsub) return
+    this.lastCeilingRes = renderQuality.getUserResolutionScale()
+    this.lastCeilingShadow = renderQuality.getUserShadowQuality()
+    // Re-clamp when user moves Preferences ceiling; ignore adaptive-only notifies.
+    this.unsub = renderQuality.subscribe(() => {
+      if (!renderQuality.getAdaptiveQualityEnabled()) {
+        this.resStepsDown = 0
+        this.shadowStepsDown = 0
+        this.lastCeilingRes = renderQuality.getUserResolutionScale()
+        this.lastCeilingShadow = renderQuality.getUserShadowQuality()
+        return
+      }
+      const ceilingRes = renderQuality.getUserResolutionScale()
+      const ceilingShadow = renderQuality.getUserShadowQuality()
+      if (ceilingRes !== this.lastCeilingRes || ceilingShadow !== this.lastCeilingShadow) {
+        this.lastCeilingRes = ceilingRes
+        this.lastCeilingShadow = ceilingShadow
+        // User raised/lowered settings — reset temporary steps so prefs win.
+        this.resStepsDown = 0
+        this.shadowStepsDown = 0
+        renderQuality.clearAdaptiveOverrides()
+      }
+    })
+  }
+
+  stop(): void {
+    this.unsub?.()
+    this.unsub = null
+    this.resStepsDown = 0
+    this.shadowStepsDown = 0
+    renderQuality.clearAdaptiveOverrides()
+  }
+
+  /**
+   * Call once per completed rendered frame (not when rAF is interval-skipped).
+   */
+  noteFrame(): void {
+    if (!renderQuality.getAdaptiveQualityEnabled()) {
+      if (renderQuality.isAdaptiveReducing()) {
+        this.resStepsDown = 0
+        this.shadowStepsDown = 0
+        renderQuality.clearAdaptiveOverrides()
+      }
+      return
+    }
+
+    const now = performance.now()
+    if (this.windowStart <= 0) {
+      this.windowStart = now
+      this.windowFrames = 1
+      return
+    }
+    this.windowFrames++
+    const elapsed = now - this.windowStart
+    if (elapsed < 1000) return
+
+    const fps = (this.windowFrames * 1000) / elapsed
+    this.windowStart = now
+    this.windowFrames = 0
+    this.onFpsSample(fps, now)
+  }
+
+  private onFpsSample(fps: number, now: number): void {
+    if (fps < AdaptiveQualityController.LOW_FPS) {
+      this.badStreak++
+      this.goodStreak = 0
+      if (
+        this.badStreak >= AdaptiveQualityController.BAD_WINDOWS &&
+        now - this.lastStepAt >= AdaptiveQualityController.COOLDOWN_MS
+      ) {
+        if (this.stepDown()) {
+          this.lastStepAt = now
+          this.badStreak = 0
+        }
+      }
+      return
+    }
+
+    if (fps >= AdaptiveQualityController.HIGH_FPS) {
+      this.goodStreak++
+      this.badStreak = 0
+      if (
+        this.goodStreak >= AdaptiveQualityController.GOOD_WINDOWS &&
+        now - this.lastStepAt >= AdaptiveQualityController.COOLDOWN_MS &&
+        (this.resStepsDown > 0 || this.shadowStepsDown > 0)
+      ) {
+        if (this.stepUp()) {
+          this.lastStepAt = now
+          this.goodStreak = 0
+        }
+      }
+      return
+    }
+
+    // Mid band — hold; reset streaks slowly so we don't thrash.
+    this.badStreak = 0
+    this.goodStreak = 0
+  }
+
+  private stepDown(): boolean {
+    // Prefer shadows before resolution — fill/res drop is more noticeable than softer shadows.
+    const ceilingShadow = renderQuality.getUserShadowQuality()
+    const ceilingIdx = SHADOW_QUALITY_LADDER.indexOf(ceilingShadow)
+    if (ceilingIdx > 0 && this.shadowStepsDown < ceilingIdx) {
+      this.shadowStepsDown++
+      this.applyFromSteps()
+      return true
+    }
+
+    const ceilingRes = renderQuality.getUserResolutionScale()
+    const minRes = Math.min(ceilingRes, AdaptiveQualityController.RES_FLOOR)
+    const maxResSteps = Math.max(
+      0,
+      Math.floor((ceilingRes - minRes) / AdaptiveQualityController.RES_STEP)
+    )
+    if (this.resStepsDown < maxResSteps) {
+      this.resStepsDown++
+      this.applyFromSteps()
+      return true
+    }
+
+    return false
+  }
+
+  private stepUp(): boolean {
+    // Reverse of step-down: restore resolution first, then shadows.
+    if (this.resStepsDown > 0) {
+      this.resStepsDown--
+      this.applyFromSteps()
+      return true
+    }
+    if (this.shadowStepsDown > 0) {
+      this.shadowStepsDown--
+      this.applyFromSteps()
+      return true
+    }
+    return false
+  }
+
+  private applyFromSteps(): void {
+    if (!renderQuality.getAdaptiveQualityEnabled()) {
+      renderQuality.clearAdaptiveOverrides()
+      return
+    }
+
+    const ceilingRes = renderQuality.getUserResolutionScale()
+    const minRes = Math.min(ceilingRes, AdaptiveQualityController.RES_FLOOR)
+    const maxResSteps = Math.max(
+      0,
+      Math.floor((ceilingRes - minRes) / AdaptiveQualityController.RES_STEP)
+    )
+    this.resStepsDown = Math.min(this.resStepsDown, maxResSteps)
+
+    const ceilingShadow = renderQuality.getUserShadowQuality()
+    const ceilingIdx = Math.max(0, SHADOW_QUALITY_LADDER.indexOf(ceilingShadow))
+    this.shadowStepsDown = Math.min(this.shadowStepsDown, ceilingIdx)
+
+    const nextRes =
+      this.resStepsDown <= 0
+        ? null
+        : Math.max(minRes, ceilingRes - this.resStepsDown * AdaptiveQualityController.RES_STEP)
+
+    let nextShadow: ShadowQuality | null = null
+    if (this.shadowStepsDown > 0) {
+      const idx = Math.max(0, ceilingIdx - this.shadowStepsDown)
+      nextShadow = SHADOW_QUALITY_LADDER[idx] ?? 'off'
+      if (nextShadow === ceilingShadow) nextShadow = null
+    }
+
+    renderQuality.setAdaptiveOverrides({
+      resolutionScale: nextRes,
+      shadowQuality: nextShadow
+    })
+  }
+}

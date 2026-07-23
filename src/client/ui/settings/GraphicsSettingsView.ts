@@ -134,6 +134,12 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
           onChange: (v) => renderQuality.setResolutionScale(v)
         },
         {
+          type: 'toggle',
+          label: 'Auto quality (FPS)',
+          defaultOn: rq.adaptiveQualityEnabled,
+          onChange: (on) => renderQuality.setAdaptiveQualityEnabled(on)
+        },
+        {
           type: 'slider',
           label: 'Field of View',
           min: FOV_MIN,
@@ -387,6 +393,9 @@ export class GraphicsSettingsView {
               control.label.textContent = `${opts.resolutionScale}${control.suffix ?? ''}`
               this.setSliderPct(control.input, control.min, control.max)
             }
+            break
+          case 'Auto quality (FPS)':
+            if (control.kind === 'toggle') control.input.checked = opts.adaptiveQualityEnabled
             break
           case 'FPS Limit':
             if (control.kind === 'dropdown') control.select.value = fpsLabel(opts.fpsLimit)

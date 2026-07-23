@@ -1018,8 +1018,9 @@ export class SocialService {
         time: payload.time,
         senderAddress: payload.senderAddress
       })
-      console.log(
-        `[chat] 3d inbound ← ${payload.senderAddress.slice(0, 10)}… ${payload.text.slice(0, 48)}`
+      clientDebugLog.log(
+        'chat',
+        `3d inbound ← ${payload.senderAddress.slice(0, 10)}… ${payload.text.slice(0, 48)}`
       )
     })
 

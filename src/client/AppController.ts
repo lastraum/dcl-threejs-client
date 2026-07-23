@@ -2875,7 +2875,7 @@ export class AppController {
     this.unsubVoiceSpeaking = null
     world.syncVoiceRoom()
     this.shell?.bindNearbyVoice(world.voice)
-    console.log('[voice] panel bound ·', world.comms.describeLiveKitRooms())
+    clientDebugLog.log('voice', `panel bound · ${world.comms.describeLiveKitRooms()}`)
     this.unsubVoiceUi = world.voice.subscribe((snap) => {
       this.shell?.setNearbyVoiceUi({
         hearing: snap.hearing,

@@ -38,7 +38,8 @@ export class RemoteAvatarLoadQueue {
   static readonly COLLIDER_HOLD_MS_PLAZA = 10_000
   static readonly COLLIDER_HOLD_MS_DEFAULT = 4_000
 
-  private readonly camera = new THREE.Vector3()
+  /** Local player feet (Three world) — load radius / sort origin, not camera. */
+  private readonly localPlayer = new THREE.Vector3()
   private readonly waiting = new Map<string, QueuedLoad>()
   private readonly active = new Set<string>()
   private running = 0
@@ -53,9 +54,15 @@ export class RemoteAvatarLoadQueue {
   private lastComposeStartMs = 0
   private intervalPumpTimer: ReturnType<typeof setTimeout> | null = null
 
-  setCameraPosition(position: THREE.Vector3): void {
-    this.camera.copy(position)
+  /** Reference for distance gates — pass local player feet, not freecam / orbit camera. */
+  setLocalPlayerPosition(position: THREE.Vector3): void {
+    this.localPlayer.copy(position)
     this.pump()
+  }
+
+  /** @deprecated use {@link setLocalPlayerPosition} */
+  setCameraPosition(position: THREE.Vector3): void {
+    this.setLocalPlayerPosition(position)
   }
 
   setHydrationMode(active: boolean): void {
@@ -116,12 +123,12 @@ export class RemoteAvatarLoadQueue {
 
   /**
    * Queue a peer avatar load.
-   * `force` ignores load radius (profile reload / explicit) by parking at camera.
+   * `force` ignores load radius (profile reload / explicit) by parking at local player.
    * Far peers may still be enqueued; {@link pump} will not start them until inside radius
    * (unless force) so walking toward a pill can promote without re-enqueue races.
    *
    * If already waiting: only refresh position (and force-park) — keep the existing `run`
-   * so camera walk rechecks do not allocate a new closure every frame.
+   * so player walk rechecks do not allocate a new closure every frame.
    */
   enqueue(
     address: string,
@@ -135,7 +142,7 @@ export class RemoteAvatarLoadQueue {
     const existing = this.waiting.get(key)
     if (existing) {
       if (force) {
-        existing.position.copy(this.camera)
+        existing.position.copy(this.localPlayer)
       } else {
         existing.position.copy(peerPosition)
       }
@@ -145,15 +152,15 @@ export class RemoteAvatarLoadQueue {
 
     const pos = peerPosition.clone()
     if (force) {
-      // Park “at camera” so sort priority wins and hard gate treats as in-range.
-      pos.copy(this.camera)
+      // Park at local player so sort priority wins and hard gate treats as in-range.
+      pos.copy(this.localPlayer)
     }
     this.waiting.set(key, { address: key, position: pos, run })
     this.pump()
   }
 
   /**
-   * Refresh position when a waiting peer moves (or camera-driven recheck).
+   * Refresh position when a waiting peer moves (or player-driven recheck).
    * Pass `pump=false` when bulk-updating many peers; call {@link notifyPump} once after.
    */
   updatePeerDistance(address: string, peerPosition: THREE.Vector3, pump = true): void {
@@ -173,10 +180,10 @@ export class RemoteAvatarLoadQueue {
     this.waiting.delete(address.toLowerCase())
   }
 
-  /** True if horizontal distance is within the hard compose radius. */
+  /** True if horizontal distance is within the hard compose radius of the local player. */
   isWithinLoadDistance(peerPosition: THREE.Vector3): boolean {
     return (
-      horizontalDistanceSq(peerPosition, this.camera) <=
+      horizontalDistanceSq(peerPosition, this.localPlayer) <=
       RemoteAvatarLoadQueue.LOAD_DISTANCE * RemoteAvatarLoadQueue.LOAD_DISTANCE
     )
   }
@@ -248,7 +255,7 @@ export class RemoteAvatarLoadQueue {
       const candidates = [...this.waiting.values()]
         .map((c) => ({
           c,
-          distanceSq: horizontalDistanceSq(c.position, this.camera)
+          distanceSq: horizontalDistanceSq(c.position, this.localPlayer)
         }))
         .sort((a, b) => a.distanceSq - b.distanceSq)
 

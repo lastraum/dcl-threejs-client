@@ -15,7 +15,6 @@ const CONTENT_HASH_RE = /^(bafy|bafkre|Qm)[\w-]+$/i
 const CONTENT_HASH_IN_URL_RE = /\/contents\/([^/?#]+)/i
 
 let dbPromise: Promise<IDBDatabase> | null = null
-const loggedKeys = new Set<string>()
 
 /** Stable storage key — always prefer Catalyst content hash over full URL. */
 export function normalizeGlbCacheKey(keyOrHashOrUrl: string): string {
@@ -93,12 +92,6 @@ function withStore<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => I
   )
 }
 
-function logOnce(key: string, message: string): void {
-  if (loggedKeys.has(key)) return
-  loggedKeys.add(key)
-  console.debug(`[glbByteCache] ${message}`, key.slice(0, 20))
-}
-
 /** Drop a corrupt or superseded entry so the next load re-fetches from network. */
 export async function deleteGlbBytes(key: string): Promise<void> {
   const storageKey = normalizeGlbCacheKey(key)
@@ -120,10 +113,8 @@ export async function readGlbBytes(key: string): Promise<ArrayBuffer | null> {
     if (buffer?.byteLength) {
       return buffer
     }
-    logOnce(storageKey, 'miss')
     return null
-  } catch (err) {
-    logOnce(storageKey, `read failed — ${err instanceof Error ? err.message : String(err)}`)
+  } catch {
     return null
   }
 }
@@ -136,12 +127,7 @@ export async function writeGlbBytes(key: string, buffer: ArrayBuffer): Promise<v
     // Copy so GLTF parsing cannot race the structured-clone put.
     const copy = buffer.slice(0)
     await withStore('readwrite', (store) => store.put(copy, storageKey))
-    logOnce(`${storageKey}:stored`, `stored (${(copy.byteLength / 1024).toFixed(0)} KB)`)
-  } catch (err) {
-    if (err instanceof DOMException && err.name === 'QuotaExceededError') {
-      console.warn('[glbByteCache] quota exceeded — skipping persist for', storageKey.slice(0, 12))
-      return
-    }
-    console.warn('[glbByteCache] write failed', storageKey.slice(0, 12), err)
+  } catch {
+    // Silent — cache is best-effort; quota/write failures must not spam console.
   }
 }

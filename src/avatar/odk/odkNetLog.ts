@@ -1,14 +1,23 @@
 import type { CustomAvatarFormat } from '../vrm/constants'
+import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 
-/** Console + Help debug trail for DAV / remote ODK avatar sync. */
+/** Console + Help debug trail for DAV / remote ODK avatar sync — opt-in only. */
 export function odkNetInfo(message: string, detail?: Record<string, unknown>): void {
-  if (detail) console.info(`[odk-net] ${message}`, detail)
-  else console.info(`[odk-net] ${message}`)
+  const suffix = detail ? ` ${safeDetail(detail)}` : ''
+  clientDebugLog.log('odk-net', `${message}${suffix}`)
 }
 
 export function odkNetWarn(message: string, detail?: Record<string, unknown>): void {
-  if (detail) console.warn(`[odk-net] ${message}`, detail)
-  else console.warn(`[odk-net] ${message}`)
+  const suffix = detail ? ` ${safeDetail(detail)}` : ''
+  clientDebugLog.log('odk-net', `${message}${suffix}`, { level: 'warn' })
+}
+
+function safeDetail(detail: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(detail)
+  } catch {
+    return String(detail)
+  }
 }
 
 export function shortAddr(address: string): string {

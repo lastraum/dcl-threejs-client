@@ -38,9 +38,13 @@ const ALL_CLIENT_LOGS_KEY = 'dcl.debug.allClientLogs'
 /** Master gate: nothing lands in the Help panel unless this is on. */
 const PANEL_RECORD_KEY = 'dcl.debug.panelRecord'
 
-/** Local `vite` / `import.meta.env.DEV` — mirror client logs to DevTools by default. */
+/**
+ * Browser console is **opt-in only** (Help → Debug “Browser console logs”).
+ * Never default on — verbose paths (voice, FPS, odk-net, compose) must stay quiet
+ * until the user enables them; logging itself can tank FPS with many remotes.
+ */
 function defaultConsoleMirror(): boolean {
-  return import.meta.env.DEV === true
+  return false
 }
 
 /**

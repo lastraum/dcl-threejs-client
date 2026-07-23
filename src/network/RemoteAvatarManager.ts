@@ -109,9 +109,9 @@ const SHADOW_BUDGET_INTERVAL_MS = 250
 function nameTagWantedForDist(
   prevWanted: boolean,
   dist2: number,
-  hasCameraPos: boolean
+  hasLocalPlayerPos: boolean
 ): boolean {
-  if (!hasCameraPos) return true
+  if (!hasLocalPlayerPos) return true
   if (prevWanted) return dist2 <= NAME_TAG_HIDE_M2
   return dist2 <= NAME_TAG_SHOW_M2
 }
@@ -279,8 +279,9 @@ export class RemoteAvatarManager {
   private static readonly PEER_MESH_BACKOFF_MS = [500, 1500, 3500] as const
   private entityStore: EntityStore | null = null
   private localAddress: string | null = null
-  private readonly cameraWorldPos = new THREE.Vector3()
-  private hasCameraPos = false
+  /** Local player feet (Three world) — LOD / load / tags / shadows; not freecam. */
+  private readonly localPlayerWorldPos = new THREE.Vector3()
+  private hasLocalPlayerPos = false
   /** Scene-local feet for provisional peer placement until first transform arrives. */
   private provisionalPositionProvider: (() => THREE.Vector3 | null) | null = null
   /** Host→scene CRDT mirror for remote PlayerIdentityData / AvatarBase / AvatarEquippedData. */
@@ -419,10 +420,14 @@ export class RemoteAvatarManager {
     this.assetCache = cache
   }
 
-  setCameraPosition(position: THREE.Vector3): void {
-    this.cameraWorldPos.copy(position)
-    this.hasCameraPos = true
-    this.loadQueue.setCameraPosition(position)
+  /**
+   * Distance reference for load radius, LOD, name tags, and shadow budget.
+   * Must be **local player feet** (not orbit/freecam) so looking away does not unload peers.
+   */
+  setLocalPlayerPosition(position: THREE.Vector3): void {
+    this.localPlayerWorldPos.copy(position)
+    this.hasLocalPlayerPos = true
+    this.loadQueue.setLocalPlayerPosition(position)
     // Walking toward pills: refresh waiting distances; only enqueue peers not yet queued.
     // Do not re-enqueue every frame — that allocated a new run() closure + Vector3.clone each peer.
     let bulkDistance = false
@@ -436,6 +441,11 @@ export class RemoteAvatarManager {
       }
     }
     if (bulkDistance) this.loadQueue.notifyPump()
+  }
+
+  /** @deprecated use {@link setLocalPlayerPosition} */
+  setCameraPosition(position: THREE.Vector3): void {
+    this.setLocalPlayerPosition(position)
   }
 
   /** Scene asset hydration — throttle remote composes so scene GLTF attach wins. */
@@ -1300,10 +1310,11 @@ export class RemoteAvatarManager {
         remoteGlidingEarly ||
         Math.abs(record.verticalVelocity) > 1.5
 
+      // Horizontal distance to local player feet (not freecam / orbit camera).
       let dist2 = 0
-      if (this.hasCameraPos && record.hasPosition) {
-        const dx = record.root.position.x - this.cameraWorldPos.x
-        const dz = record.root.position.z - this.cameraWorldPos.z
+      if (this.hasLocalPlayerPos && record.hasPosition) {
+        const dx = record.root.position.x - this.localPlayerWorldPos.x
+        const dz = record.root.position.z - this.localPlayerWorldPos.z
         dist2 = dx * dx + dz * dz
       }
 
@@ -1312,7 +1323,7 @@ export class RemoteAvatarManager {
       let lodIntervalMs = 0
       let allowAnim = true
       let lodBand: 'near' | 'mid' | 'far' = 'near'
-      if (this.hasCameraPos && record.hasPosition) {
+      if (this.hasLocalPlayerPos && record.hasPosition) {
         if (dist2 > LOD_MID_M2) {
           lodIntervalMs = LOD_FAR_INTERVAL_MS
           allowAnim = emoteBusy
@@ -1329,7 +1340,7 @@ export class RemoteAvatarManager {
         record.nameTagWanted = nameTagWantedForDist(
           record.nameTagWanted,
           dist2,
-          this.hasCameraPos
+          this.hasLocalPlayerPos
         )
         const showTag =
           tagsAllowed && !record.modifierHidden && record.hasPosition && record.nameTagWanted
@@ -1519,7 +1530,7 @@ export class RemoteAvatarManager {
       record.nameTagWanted = nameTagWantedForDist(
         record.nameTagWanted,
         dist2,
-        this.hasCameraPos
+        this.hasLocalPlayerPos
       )
       const showTag =
         tagsAllowed && !record.modifierHidden && record.hasPosition && record.nameTagWanted
@@ -1539,7 +1550,7 @@ export class RemoteAvatarManager {
                 ? NAME_TAG_FAR_INTERVAL_MS
                 : 0
           const needAnchor =
-            !this.hasCameraPos ||
+            !this.hasLocalPlayerPos ||
             anchorIntervalMs === 0 ||
             now - record.nameTagLastAnchorAt >= anchorIntervalMs
           if (needAnchor) {
@@ -1571,15 +1582,15 @@ export class RemoteAvatarManager {
     }
   }
 
-  /** Enable castShadow only on the nearest loaded remotes (GPU budget). */
+  /** Enable castShadow only on the nearest loaded remotes (GPU budget vs local player). */
   private applyRemoteShadowBudget(): void {
-    if (!this.hasCameraPos) return
+    if (!this.hasLocalPlayerPos) return
     type Ranked = { record: RemotePeerRecord; dist2: number }
     const ranked: Ranked[] = []
     for (const record of this.peers.values()) {
       if (!record.model || record.modifierHidden || !record.hasPosition) continue
-      const dx = record.root.position.x - this.cameraWorldPos.x
-      const dz = record.root.position.z - this.cameraWorldPos.z
+      const dx = record.root.position.x - this.localPlayerWorldPos.x
+      const dz = record.root.position.z - this.localPlayerWorldPos.z
       ranked.push({ record, dist2: dx * dx + dz * dz })
     }
     ranked.sort((a, b) => a.dist2 - b.dist2)

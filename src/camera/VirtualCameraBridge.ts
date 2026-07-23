@@ -187,8 +187,9 @@ export class VirtualCameraBridge {
         const look = target.lookAtPoint
           ? `lookAt=(${target.lookAtPoint.x.toFixed(1)},${target.lookAtPoint.y.toFixed(1)},${target.lookAtPoint.z.toFixed(1)})`
           : 'lookAt=entity-quat'
-        console.info(
-          `[vc-lens] bind e${virtualEntity} pos=(${target.position.x.toFixed(1)},${target.position.y.toFixed(1)},${target.position.z.toFixed(1)}) ${look}`
+        clientDebugLog.log(
+          'vc-lens',
+          `bind e${virtualEntity} pos=(${target.position.x.toFixed(1)},${target.position.y.toFixed(1)},${target.position.z.toFixed(1)}) ${look}`
         )
       }
       if (vcDebugVerbose()) {

@@ -10,6 +10,7 @@ import {
   type RemoteTrackPublication
 } from 'livekit-client'
 import { isTextInputFocused } from '../../client/ui/textInputFocus'
+import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import {
   soundSettings,
   voiceChatVolumeMultiplier,
@@ -1106,8 +1107,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 function voiceLog(message: string, level: 'log' | 'warn' | 'error' = 'log'): void {
-  const prefix = '[voice]'
-  if (level === 'warn') console.warn(prefix, message)
-  else if (level === 'error') console.error(prefix, message)
-  else console.log(prefix, message)
+  // Opt-in only — Help → Debug “Browser console logs” / panel record.
+  const map: 'info' | 'warn' | 'error' = level === 'log' ? 'info' : level
+  clientDebugLog.log('voice', message, { level: map })
 }

@@ -362,7 +362,7 @@ export class World {
       },
       contentUrl: scene.realm.contentUrl
     })
-    console.log('[chat] 3d social bootstrapped ·', scene.commsPointer)
+    clientDebugLog.log('chat', `3d social bootstrapped · ${scene.commsPointer}`)
   }
 
   /**
@@ -374,7 +374,7 @@ export class World {
   syncVoiceRoom(): void {
     this.comms.onLiveKitRoomsChanged = () => {
       this.voice.refreshRooms()
-      console.log('[voice]', 'rooms changed', this.comms.describeLiveKitRooms())
+      clientDebugLog.log('voice', `rooms changed ${this.comms.describeLiveKitRooms()}`)
       this.voice.dumpStatus('rooms-changed', true)
       this.logAllRoomsAudio('rooms-changed')
     }
@@ -383,7 +383,7 @@ export class World {
     this.voice.bindInventoryProvider(() => this.comms.describeAllRoomsAudioInventory())
     this.wireVoiceSpatial()
     this.voice.refreshRooms()
-    console.log('[voice]', 'syncVoiceRoom', this.comms.describeLiveKitRooms())
+    clientDebugLog.log('voice', `syncVoiceRoom ${this.comms.describeLiveKitRooms()}`)
     this.voice.dumpStatus('sync')
   }
 
@@ -411,7 +411,10 @@ export class World {
     void this.voice.unlockRemotePlayback('in-play')
     this.armVoiceUnlockOnUserGesture()
     this.logAllRoomsAudio('in-play')
-    console.log('[voice] unlocked · displayName=', dn ?? '(none)', '·', this.comms.describeLiveKitRooms())
+    clientDebugLog.log(
+      'voice',
+      `unlocked · displayName=${dn ?? '(none)'} · ${this.comms.describeLiveKitRooms()}`
+    )
   }
 
   /**
@@ -435,7 +438,7 @@ export class World {
   /** Log scene/world/island remote track inventory (find mic on wrong room). */
   logAllRoomsAudio(reason: string): void {
     const inv = this.comms.describeAllRoomsAudioInventory()
-    console.log(`[voice] all-rooms inventory (${reason}):\n${inv}`)
+    clientDebugLog.log('voice', `all-rooms inventory (${reason}):\n${inv}`)
   }
 
   /** Drive 3 green voice bars on local + remote name tags. */
@@ -1309,9 +1312,10 @@ export class World {
     onProgress?: (msg: string, fraction?: number) => void,
     options?: WaitForSceneAssetsOptions
   ) {
-    const spawnCamera = new THREE.Vector3(scene.spawn.x, scene.spawn.y, scene.spawn.z)
+    // Before CCT exists, spawn feet are the best local-player reference for load radius.
+    const spawnFeet = new THREE.Vector3(scene.spawn.x, scene.spawn.y, scene.spawn.z)
     if (!skipRemoteAvatars()) {
-      this.remoteAvatars?.setCameraPosition(spawnCamera)
+      this.remoteAvatars?.setLocalPlayerPosition(spawnFeet)
       this.remoteAvatars?.setHydrationLoading(true)
     }
 
@@ -1377,7 +1381,10 @@ export class World {
         }
         this.lightManager.update(this.player?.getWorldPosition() ?? this.host.camera.position)
         if (!skipRemoteAvatars()) {
-          this.remoteAvatars?.setCameraPosition(this.host.camera.position)
+          // Avatar load/LOD/tags use player feet — freecam/orbit must not change distances.
+          this.remoteAvatars?.setLocalPlayerPosition(
+            this.player?.getWorldPosition() ?? this.host.camera.position
+          )
         }
         if (!this.editorPreviewMode) {
           this.environment.update(delta, this.sceneScript.view, this.sceneScript.readComponents)
@@ -1576,7 +1583,8 @@ export class World {
         if (totalMs > 100) {
           // Lite counters only — full getHydrationStats walks every GltfContainer (was 3k+).
           const lite = this.sceneScript.getAttachProgressLite()
-          console.warn(
+          clientDebugLog.consoleOnly(
+            'warn',
             `[fps] async breakdown ${totalMs.toFixed(0)}ms — renderer=${rendererMs.toFixed(0)} ` +
               `collision=${collisionMs.toFixed(0)} bridges=${bridgesMs.toFixed(0)} ` +
               `gltfCached=${this.assets.getLoadStats().gltfCached} inflight=${this.assets.getLoadStats().gltfInflight}` +

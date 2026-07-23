@@ -15,6 +15,8 @@ import {
 } from './RenderQualitySettings'
 import { BloomPipeline } from './BloomPipeline'
 import { clientSettings } from './ClientSettings'
+import { clientDebugLog } from '../client/debug/ClientDebugLog'
+import { AdaptiveQualityController } from './AdaptiveQualityController'
 
 export class SceneHost {
   readonly renderer: THREE.WebGLRenderer
@@ -53,6 +55,7 @@ export class SceneHost {
    * At/above → fast bloom (1× geo, luminance threshold). Plaza is always fast.
    */
   private static readonly BLOOM_SELECTIVE_MESH_CAP = 900
+  private readonly adaptiveQuality = new AdaptiveQualityController()
 
   constructor(container: HTMLElement) {
     // Canvas AA off — sample count is controlled via multisample render target (runtime prefs).
@@ -169,9 +172,12 @@ export class SceneHost {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = TONE_MAPPING_EXPOSURE[options.tier]
-    this.renderer.shadowMap.enabled = options.shadowQuality !== 'off'
+    // Effective shadow/res may be temporarily lowered by AdaptiveQualityController.
+    const shadowQ = renderQuality.getShadowQuality()
+    const resScale = renderQuality.getResolutionScale()
+    this.renderer.shadowMap.enabled = shadowQ !== 'off'
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
-    this.renderer.setPixelRatio(effectivePixelRatio(options.resolutionScale))
+    this.renderer.setPixelRatio(effectivePixelRatio(resScale))
 
     // VSync On + Max FPS → pure rAF (display-aligned). VSync Off still uses rAF (browser limit).
     // Explicit FPS caps always apply.
@@ -339,6 +345,7 @@ export class SceneHost {
     onAsyncFrame?: (delta: number) => Promise<void>
   } = {}): void {
     this.clock.start()
+    this.adaptiveQuality.start()
     let asyncBusy = false
     let frameCount = 0
     let windowStart = performance.now()
@@ -392,6 +399,8 @@ export class SceneHost {
       const renderMs = performance.now() - renderT0
       this.renderStats.end()
       this.renderStats.update()
+      // Count completed frames only (skipped interval frames never reach here).
+      this.adaptiveQuality.noteFrame()
 
       if (frameCount === 1) {
         console.info(
@@ -433,7 +442,9 @@ export class SceneHost {
         const painful = fps < 28 || windowSlow > n * 0.25
         if (painful && now - lastFpsWarnMs > 5000) {
           lastFpsWarnMs = now
-          console.warn(
+          // Opt-in only — spam console.warn every 5s under load worsens the hitch.
+          clientDebugLog.consoleOnly(
+            'warn',
             `[fps] ${fps.toFixed(0)}fps over ${windowFrames}f — ` +
               `sync=${(windowSyncMs / n).toFixed(1)}ms render=${(windowRenderMs / n).toFixed(1)}ms ` +
               `async~=${(windowAsyncMs / n).toFixed(1)}ms slow>${33}ms=${windowSlow}`
@@ -451,6 +462,7 @@ export class SceneHost {
 
   stop(): void {
     this.renderer.setAnimationLoop(null)
+    this.adaptiveQuality.stop()
   }
 
   dispose(): void {

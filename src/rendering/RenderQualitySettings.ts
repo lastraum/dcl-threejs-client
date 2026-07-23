@@ -48,6 +48,12 @@ export type RenderQualityOptions = {
    * Script warming uses a separate fixed inner radius (see SCENE_SCRIPT_WARM_RADIUS_M).
    */
   sceneLoadRadiusM: number
+  /**
+   * When true, runtime may temporarily lower resolution scale + shadow quality
+   * under sustained low FPS (see AdaptiveQualityController). User slider values
+   * stay as the ceiling and are what Preferences shows.
+   */
+  adaptiveQualityEnabled: boolean
 }
 
 /** Min/max for Preferences → Scene Distance (AOI neighbor load radius). */
@@ -97,8 +103,11 @@ export const TONE_MAPPING_EXPOSURE: Record<RenderQualityTier, number> = {
 
 type PresetId = Exclude<GraphicsPreset, 'custom'>
 
-/** Graphics preset fields — AOI radius + toon are user-owned, not preset-bundled. */
-type PresetBundle = Omit<RenderQualityOptions, 'preset' | 'sceneLoadRadiusM' | 'avatarToonEnabled'>
+/** Graphics preset fields — AOI / toon / adaptive are user-owned, not preset-bundled. */
+type PresetBundle = Omit<
+  RenderQualityOptions,
+  'preset' | 'sceneLoadRadiusM' | 'avatarToonEnabled' | 'adaptiveQualityEnabled'
+>
 
 const PRESET_BUNDLES: Record<PresetId, PresetBundle> = {
   low: {
@@ -159,8 +168,19 @@ const DEFAULT_OPTIONS: RenderQualityOptions = {
   ...PRESET_BUNDLES.medium,
   // Explicit — not flipped by named presets.
   avatarToonEnabled: false,
-  sceneLoadRadiusM: SCENE_LOAD_RADIUS_DEFAULT_M
+  sceneLoadRadiusM: SCENE_LOAD_RADIUS_DEFAULT_M,
+  /** On by default — steps down only under load; never raises above user settings. */
+  adaptiveQualityEnabled: true
 }
+
+/** Shadow ladder low → high (adaptive steps down toward index 0). */
+export const SHADOW_QUALITY_LADDER: readonly ShadowQuality[] = [
+  'off',
+  'low',
+  'medium',
+  'high',
+  'ultra'
+] as const
 
 type Listener = (options: RenderQualityOptions) => void
 
@@ -243,6 +263,12 @@ class RenderQualityStore {
   private options: RenderQualityOptions = { ...DEFAULT_OPTIONS }
   private readonly listeners = new Set<Listener>()
   private persisted = false
+  /**
+   * Temporary runtime overrides from AdaptiveQualityController.
+   * Not persisted — Preferences always shows {@link options} (user ceiling).
+   */
+  private adaptiveResolutionScale: number | null = null
+  private adaptiveShadowQuality: ShadowQuality | null = null
 
   constructor() {
     this.load()
@@ -253,6 +279,7 @@ class RenderQualityStore {
     return this.persisted
   }
 
+  /** User-facing settings (Preferences + ceiling for adaptive). */
   getOptions(): RenderQualityOptions {
     return { ...this.options }
   }
@@ -265,16 +292,22 @@ class RenderQualityStore {
     return this.options.preset
   }
 
+  /** Effective shadow quality for the renderer (includes adaptive step-down). */
   getShadowQuality(): ShadowQuality {
+    return this.adaptiveShadowQuality ?? this.options.shadowQuality
+  }
+
+  /** User ceiling (Preferences) — ignores adaptive override. */
+  getUserShadowQuality(): ShadowQuality {
     return this.options.shadowQuality
   }
 
   shadowsEnabled(): boolean {
-    return this.options.shadowQuality !== 'off'
+    return this.getShadowQuality() !== 'off'
   }
 
   getShadowMapSize(): number {
-    const q = this.options.shadowQuality
+    const q = this.getShadowQuality()
     if (q === 'off') return 0
     return SHADOW_MAP_SIZE[q]
   }
@@ -288,8 +321,69 @@ class RenderQualityStore {
     return this.options.maxSceneLights
   }
 
+  /** Effective resolution scale % for the renderer (includes adaptive step-down). */
   getResolutionScale(): number {
+    return this.adaptiveResolutionScale ?? this.options.resolutionScale
+  }
+
+  /** User ceiling (Preferences) — ignores adaptive override. */
+  getUserResolutionScale(): number {
     return this.options.resolutionScale
+  }
+
+  getAdaptiveQualityEnabled(): boolean {
+    return this.options.adaptiveQualityEnabled
+  }
+
+  setAdaptiveQualityEnabled(adaptiveQualityEnabled: boolean): void {
+    this.patch({ adaptiveQualityEnabled: !!adaptiveQualityEnabled })
+    if (!adaptiveQualityEnabled) this.clearAdaptiveOverrides()
+  }
+
+  /**
+   * Temporary render overrides. Does **not** change Preferences / localStorage.
+   * Pass null to clear that axis.
+   */
+  setAdaptiveOverrides(opts: {
+    resolutionScale?: number | null
+    shadowQuality?: ShadowQuality | null
+  }): void {
+    let changed = false
+    if (opts.resolutionScale !== undefined) {
+      const next =
+        opts.resolutionScale === null
+          ? null
+          : clampResolutionScale(opts.resolutionScale)
+      if (next !== this.adaptiveResolutionScale) {
+        this.adaptiveResolutionScale = next
+        changed = true
+      }
+    }
+    if (opts.shadowQuality !== undefined) {
+      const next =
+        opts.shadowQuality === null
+          ? null
+          : isShadowQuality(opts.shadowQuality)
+            ? opts.shadowQuality
+            : this.adaptiveShadowQuality
+      if (next !== this.adaptiveShadowQuality) {
+        this.adaptiveShadowQuality = next
+        changed = true
+      }
+    }
+    if (changed) this.notify()
+  }
+
+  clearAdaptiveOverrides(): void {
+    if (this.adaptiveResolutionScale === null && this.adaptiveShadowQuality === null) return
+    this.adaptiveResolutionScale = null
+    this.adaptiveShadowQuality = null
+    this.notify()
+  }
+
+  /** True when adaptive is actively lowering something below the user ceiling. */
+  isAdaptiveReducing(): boolean {
+    return this.adaptiveResolutionScale !== null || this.adaptiveShadowQuality !== null
   }
 
   getFpsLimit(): FpsLimitOption {
@@ -325,15 +419,18 @@ class RenderQualityStore {
     this.patch({ sceneLoadRadiusM: clampSceneLoadRadiusM(sceneLoadRadiusM) })
   }
 
-  /** Apply a named preset bundle (not custom). Preserves toon + AOI radius. */
+  /** Apply a named preset bundle (not custom). Preserves toon + AOI radius + adaptive toggle. */
   applyPreset(preset: PresetId): void {
     const bundle = PRESET_BUNDLES[preset]
     this.commit({
       preset,
       ...bundle,
       avatarToonEnabled: this.options.avatarToonEnabled,
-      sceneLoadRadiusM: this.options.sceneLoadRadiusM
+      sceneLoadRadiusM: this.options.sceneLoadRadiusM,
+      adaptiveQualityEnabled: this.options.adaptiveQualityEnabled
     })
+    // New ceiling — drop temporary overrides so the preset is what you get.
+    this.clearAdaptiveOverrides()
   }
 
   setTier(tier: RenderQualityTier): void {
@@ -342,6 +439,11 @@ class RenderQualityStore {
 
   setShadowQuality(shadowQuality: ShadowQuality): void {
     this.patch({ shadowQuality })
+    // User raised/lowered ceiling — stop fighting with adaptive on this axis.
+    if (this.adaptiveShadowQuality !== null) {
+      this.adaptiveShadowQuality = null
+      this.notify()
+    }
   }
 
   setSceneLightsEnabled(sceneLightsEnabled: boolean): void {
@@ -354,6 +456,10 @@ class RenderQualityStore {
 
   setResolutionScale(resolutionScale: number): void {
     this.patch({ resolutionScale: clampResolutionScale(resolutionScale) })
+    if (this.adaptiveResolutionScale !== null) {
+      this.adaptiveResolutionScale = null
+      this.notify()
+    }
   }
 
   setFpsLimit(fpsLimit: FpsLimitOption): void {
@@ -415,6 +521,9 @@ class RenderQualityStore {
     if (typeof next.bloomEnabled !== 'boolean') next.bloomEnabled = this.options.bloomEnabled
     if (typeof next.hdrEnabled !== 'boolean') next.hdrEnabled = this.options.hdrEnabled
     if (typeof next.avatarToonEnabled !== 'boolean') next.avatarToonEnabled = this.options.avatarToonEnabled
+    if (typeof next.adaptiveQualityEnabled !== 'boolean') {
+      next.adaptiveQualityEnabled = this.options.adaptiveQualityEnabled
+    }
 
     if (partial.preset === undefined || partial.preset === 'custom') {
       next.preset = this.inferPreset(next)
@@ -460,7 +569,8 @@ class RenderQualityStore {
       a.bloomEnabled === b.bloomEnabled &&
       a.hdrEnabled === b.hdrEnabled &&
       a.avatarToonEnabled === b.avatarToonEnabled &&
-      a.sceneLoadRadiusM === b.sceneLoadRadiusM
+      a.sceneLoadRadiusM === b.sceneLoadRadiusM &&
+      a.adaptiveQualityEnabled === b.adaptiveQualityEnabled
     )
   }
 
@@ -504,6 +614,9 @@ class RenderQualityStore {
       if (typeof parsed.bloomEnabled === 'boolean') next.bloomEnabled = parsed.bloomEnabled
       if (typeof parsed.hdrEnabled === 'boolean') next.hdrEnabled = parsed.hdrEnabled
       if (typeof parsed.avatarToonEnabled === 'boolean') next.avatarToonEnabled = parsed.avatarToonEnabled
+      if (typeof parsed.adaptiveQualityEnabled === 'boolean') {
+        next.adaptiveQualityEnabled = parsed.adaptiveQualityEnabled
+      }
       if (typeof parsed.sceneLoadRadiusM === 'number') {
         next.sceneLoadRadiusM = clampSceneLoadRadiusM(parsed.sceneLoadRadiusM)
       }

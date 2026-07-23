@@ -95,8 +95,9 @@ export class RenderStats {
     }
     const perf = perfSnapshot()
     lines.push(
-      `remotes: vis=${perf.remoteVisible} loaded=${perf.remoteLoaded} poseSkip=${perf.remotePoseSkipped}`,
-      `compose: q=${perf.remoteComposePending} active=${perf.remoteComposeActive}  tags=${perf.nameTagsShown}`,
+      `remotes: vis=${perf.remoteVisible} loaded=${perf.remoteLoaded} poseSkip=${perf.remotePoseSkipped} animSkip=${perf.remoteAnimSkipped}`,
+      `remote ms: ${perf.remoteUpdateMs.toFixed(1)} (anim ${perf.remoteAnimMs.toFixed(1)})  lod n/m/f=${perf.lodNear}/${perf.lodMid}/${perf.lodFar}`,
+      `compose: q=${perf.remoteComposePending} active=${perf.remoteComposeActive} last=${perf.lastComposeMs.toFixed(0)}ms  tags=${perf.nameTagsShown}`,
       `move out: ${perf.movementSentPerSec.toFixed(1)}/s  idle skip: ${perf.movementSkippedPerSec.toFixed(1)}/s`
     )
     this.extra.textContent = lines.join('\n')

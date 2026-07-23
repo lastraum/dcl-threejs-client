@@ -181,14 +181,21 @@ Phase D — Resilience
 
 | Item | What landed | Where |
 | ---- | ----------- | ----- |
-| **1.6 Pose skip** | Identical movement packets skip velocity/target rewrite; settled peers skip lerp/yaw (near idle anim still runs) | [`RemoteAvatarManager.ts`](../src/network/RemoteAvatarManager.ts) |
-| **1.5 Name tags** | Cull CSS2D beyond 64 m; far tags re-anchor every 200 ms; cache head bone (no traverse/frame); voice CSS early-out | same + [`headAnchor.ts`](../src/avatar/headAnchor.ts), [`NameTag.ts`](../src/client/ui/NameTag.ts) |
-| **1.2 LOD** | **Load ≤20 m hard** (pill beyond); **never unload** for distance; camera move re-checks; mid 20–40 m ~20 Hz; far >40 m ~10 Hz pose, no anim | [`RemoteAvatarLoadQueue.ts`](../src/network/RemoteAvatarLoadQueue.ts), manager update |
+| **1.6 Pose skip** | Identical movement packets skip velocity/target rewrite; settled peers skip lerp/yaw | [`RemoteAvatarManager.ts`](../src/network/RemoteAvatarManager.ts) |
+| **1.5 Name tags** | Cull CSS2D beyond 64 m; settled near ~12 Hz / far 200 ms; head bone cache; voice only speakers | same + [`headAnchor.ts`](../src/avatar/headAnchor.ts), [`NameTag.ts`](../src/client/ui/NameTag.ts) |
+| **1.2 LOD** | **Load ≤20 m hard** (pill beyond); **never unload**; update bands **near ≤14 m full**, mid ≤22 m ~25 Hz, far ~15 Hz pose (emote keeps anim) | [`RemoteAvatarLoadQueue.ts`](../src/network/RemoteAvatarLoadQueue.ts), manager update |
 | **1.3** | Skipped (no impostors / no Hyperfy atlas nametags for now) | — |
+| **Settled loco-idle anim** | Mixer ~12 Hz when settled **and not emoting** (looping emotes full rate); `animSkip` counter | manager + `perfCounters` |
+| **Walk→idle** | Wire silence 0.28 s clears stale speed; faster speed/blend decay; keepalive does not refresh `receivedAt` | manager + `AvatarAnimations` / VRM / ODK |
+| **GPU hygiene** | Fixed skinned bounds + frustum cull; FrontSide default; nearest 6 remotes cast shadows | `skinnedMeshInstance`, materials, manager |
+| **Parallel wearables** | Cache pairs at bind; no traverse/frame | `loadWearable` + `AvatarAnimations` |
+| **Queue fixes** | No direct `loadPeerAvatar` outside queue; provisional joins don't force-compose; no per-frame re-enqueue GC | manager + load queue |
 
-RenderStats: `poseSkip=N` and `tags=N` on remotes/compose lines.
+RenderStats: `poseSkip`, `animSkip`, `remote ms`, `lod n/m/f`, `compose last=ms`, tags.
 
-**Parked on branch (not doing now):** atlas/single-draw nametags, impostors, Phase C/D.
+**Compose policy (locked):** `MAX_CONCURRENT=1`, `MIN_COMPOSE_INTERVAL_MS=10_000` — do not speed up for plaza triangle load.
+
+**Parked:** atlas/single-draw nametags, impostors, hide-avatars distance slider (product setting later).
 
 ---
 

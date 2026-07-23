@@ -537,6 +537,7 @@ export class SceneLandingView {
       mediaUrl: v.mediaUrl,
       isHls: v.isHls,
       playing: v.playing,
+      loop: v.loop,
       entityId: v.entityId
     }))
     // Order: LiveKit cast (if live) → composite scene screens → user listings.
@@ -845,7 +846,7 @@ export class SceneLandingView {
         this.showStreamNotice('Scene video URL is not playable in the browser.')
         return
       }
-      this.openStreamPlayer(opt.mediaUrl, opt.label)
+      this.openStreamPlayer(opt.mediaUrl, opt.label, { loop: opt.loop })
       return
     }
     const url =
@@ -1248,7 +1249,11 @@ export class SceneLandingView {
     }, 1500)
   }
 
-  private openStreamPlayer(mediaUrl: string, title: string): void {
+  private openStreamPlayer(
+    mediaUrl: string,
+    title: string,
+    options?: { loop?: boolean }
+  ): void {
     const host = this.enterStreamWatchMode(title, 'http')
     if (!host) return
     const waiting = this.root.querySelector('[data-cast-waiting]') as HTMLElement | null
@@ -1258,6 +1263,8 @@ export class SceneLandingView {
     video.controls = false
     video.playsInline = true
     video.autoplay = true
+    // Parity with WebVideoPlayer / ECS VideoPlayer.loop (e.g. gather.dcl.eth theatre).
+    video.loop = options?.loop === true
     video.muted = this.castMuted
     video.volume = this.castMuted ? 0 : this.castVolume
     host.replaceChildren(video)
@@ -1276,6 +1283,18 @@ export class SceneLandingView {
           hint.textContent = 'Could not play this stream (network or codec error).'
         }
       })
+      // HLS VOD may still fire `ended` even with loop=true; restart for ECS parity.
+      if (options?.loop === true) {
+        video.addEventListener('ended', () => {
+          if (!video.loop || this.disposed || !this.streamWatchActive) return
+          try {
+            video.currentTime = 0
+          } catch {
+            /* ignore seek failures on non-seekable media */
+          }
+          void video.play().catch(() => {})
+        })
+      }
     } else if (isHls && video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = mediaUrl
     } else if (isHls) {

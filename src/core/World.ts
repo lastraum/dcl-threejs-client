@@ -1480,7 +1480,13 @@ export class World {
               composePending: this.remoteAvatars.composeQueueDepth,
               composeActive: this.remoteAvatars.activeComposeCount,
               poseSkipped: remoteTick?.poseSkipped ?? 0,
-              nameTagsShown: remoteTick?.nameTagsShown ?? 0
+              animSkipped: remoteTick?.animSkipped ?? 0,
+              nameTagsShown: remoteTick?.nameTagsShown ?? 0,
+              remoteUpdateMs: remoteTick?.remoteUpdateMs ?? 0,
+              remoteAnimMs: remoteTick?.remoteAnimMs ?? 0,
+              lodNear: remoteTick?.lodNear ?? 0,
+              lodMid: remoteTick?.lodMid ?? 0,
+              lodFar: remoteTick?.lodFar ?? 0
             })
           }
         }
@@ -1993,8 +1999,10 @@ export class World {
   }
 
   /**
-   * Gate play until a temporary CCT can stand on authored geometry at scene.json spawn.
-   * No synthetic pad — keeps pose-sliding / cooking until settle succeeds or timeout.
+   * Gate play until spawn ground is proven near scene.json feet.
+   * Collider **seal** already ran before this — we only re-push poses / drain late cooks
+   * and try CCT settle. Elevated air spawns used to wait up to 30s even when the deck
+   * was already under the probe; now we fail/accept faster with probe soft-accept.
    * @returns grounded feet (Three space) for final capsule spawn, or null on timeout.
    */
   private async waitForSpawnFloorReady(
@@ -2004,15 +2012,27 @@ export class World {
     const feetY = spawn.fromSpawnPoints ? spawn.y : spawn.y <= 0.01 ? 1 : spawn.y
     const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
     const elevated = spawnThree.y > 8
-    const maxWaitMs = elevated ? 30_000 : 10_000
+    // Seal already completed in sealBootCollidersBeforeSpawn — do not hang 30s on towers.
+    // Elevated: a few seconds for late pose slides; ground-level: shorter.
+    const maxWaitMs = elevated ? 8_000 : 5_000
+    /** Accept last probe after this many ms of stable probe without CCT (seal complete). */
+    const probeSoftAcceptMs = elevated ? 1_500 : 2_000
+    const probeMaxDrop = elevated ? 12 : 8
     const started = performance.now()
     let attempt = 0
     let lastProgressLog = 0
     let lastProbeFeet: THREE.Vector3 | null = null
+    let probeOkSince = 0
+    let probeOkStreak = 0
 
-    onProgress?.('Waiting for floor colliders…')
+    onProgress?.(
+      this.spawnColliderSealComplete
+        ? 'Checking spawn ground…'
+        : 'Waiting for floor colliders…'
+    )
     console.info(
-      `[World] spawn floor wait — authored feet three=(${spawnThree.x.toFixed(1)}, ${spawnThree.y.toFixed(2)}, ${spawnThree.z.toFixed(1)}) maxWait=${(maxWaitMs / 1000).toFixed(0)}s`
+      `[World] spawn floor wait — authored feet three=(${spawnThree.x.toFixed(1)}, ${spawnThree.y.toFixed(2)}, ${spawnThree.z.toFixed(1)})` +
+        ` elevated=${elevated} sealed=${this.spawnColliderSealComplete} maxWait=${(maxWaitMs / 1000).toFixed(0)}s`
     )
 
     while (performance.now() - started < maxWaitMs) {
@@ -2031,15 +2051,21 @@ export class World {
         spawnThree.x,
         spawnThree.z,
         spawnThree.y + 1.2,
-        8,
+        probeMaxDrop,
         spawnThree.y
       )
       const probeOk = probed != null && isPlausibleSpawnSurfaceY(probed, spawnThree.y)
+      const now = performance.now()
       if (probeOk && probed != null) {
         lastProbeFeet = new THREE.Vector3(spawnThree.x, probed, spawnThree.z)
+        probeOkStreak++
+        if (probeOkSince <= 0) probeOkSince = now
+      } else {
+        probeOkStreak = 0
+        probeOkSince = 0
       }
 
-      // CCT is the real gate — sweep alone can hit thin/wrong shapes.
+      // CCT is the preferred gate — sweep alone can hit thin/wrong shapes.
       const settledFeet = this.physics.trySettleAtPosition(spawnThree, spawnThree.y)
       if (
         settledFeet &&
@@ -2056,19 +2082,36 @@ export class World {
         return settledFeet
       }
 
-      const now = performance.now()
+      // Soft accept: seal done + stable probe under spawn, CCT still flaky (common on elevated decks).
+      // Better than waiting full timeout then freefalling from air Y.
+      if (
+        this.spawnColliderSealComplete &&
+        lastProbeFeet &&
+        probeOkStreak >= 3 &&
+        probeOkSince > 0 &&
+        now - probeOkSince >= probeSoftAcceptMs
+      ) {
+        const elapsed = ((now - started) / 1000).toFixed(1)
+        console.info(
+          `[World] spawn floor ready — probe soft-accept after ${elapsed}s (attempts=${attempt}` +
+            `, probeY=${lastProbeFeet.y.toFixed(2)}, CCT miss)`
+        )
+        onProgress?.('Floor ready')
+        return lastProbeFeet
+      }
+
       if (now - lastProgressLog > 2000) {
         lastProgressLog = now
         const sec = ((now - started) / 1000).toFixed(0)
         onProgress?.(
           probeOk
-            ? `Waiting for floor… ${sec}s (probe hit, CCT settling)`
-            : `Waiting for floor… ${sec}s`
+            ? `Finding spawn ground… ${sec}s`
+            : `Finding spawn ground… ${sec}s (no surface yet)`
         )
         this.physics.logStaticCollidersNear(spawnThree.x, spawnThree.y, spawnThree.z, 16)
         clientDebugLog.log(
           'player',
-          `spawn floor wait — t=${sec}s attempt=${attempt} probe=${probed?.toFixed(2) ?? 'none'} cct=miss`,
+          `spawn floor wait — t=${sec}s attempt=${attempt} probe=${probed?.toFixed(2) ?? 'none'} cct=miss sealed=${this.spawnColliderSealComplete}`,
           { alsoConsole: true, level: 'info' }
         )
       }
@@ -2078,10 +2121,13 @@ export class World {
 
     const elapsed = ((performance.now() - started) / 1000).toFixed(1)
     console.warn(
-      `[World] spawn floor wait timed out after ${elapsed}s (attempts=${attempt}) — spawning anyway (may freefall)`
+      `[World] spawn floor wait timed out after ${elapsed}s (attempts=${attempt}) — spawning anyway` +
+        (lastProbeFeet ? ` at probe y=${lastProbeFeet.y.toFixed(2)}` : ' (may freefall)')
     )
     this.physics.logStaticCollidersNear(spawnThree.x, spawnThree.y, spawnThree.z, 16)
-    onProgress?.('Floor wait timed out — spawning…')
+    onProgress?.(
+      lastProbeFeet ? 'Spawn ground timed out — using probe…' : 'Spawn ground timed out — spawning…'
+    )
     // Prefer last walk-surface probe over raw authored air spawn.
     return lastProbeFeet
   }

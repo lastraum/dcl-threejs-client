@@ -17,7 +17,12 @@ import {
   splitEmoteClips
 } from './emotePlayback'
 import { remapClipToAvatar } from './emoteBoneMap'
-import { findBodyShapeRoot, syncParallelWearableSkeletons } from './loadWearable'
+import {
+  collectParallelWearableStates,
+  findBodyShapeRoot,
+  syncParallelWearableStates,
+  type ParallelWearableState
+} from './loadWearable'
 import { getRemappedLocomotionClip } from './locomotionClipCache'
 import type { AssetCache, CachedGltf } from '../rendering/AssetCache'
 import { yieldToNextFrame } from '../rendering/mainThreadYield'
@@ -80,6 +85,8 @@ export class AvatarAnimations {
   private jumpBlend = 0
   private glideBlend = 0
   private bindGeneration = 0
+  /** Parallel-skeleton wearable states cached at bind (no traverse per frame). */
+  private parallelWearables: ParallelWearableState[] = []
 
   setVfxScene(scene: THREE.Scene | null): void {
     this.vfxScene = scene
@@ -99,6 +106,7 @@ export class AvatarAnimations {
     this.avatarRoot = avatarRoot
     const animationRoot = findBodyShapeRoot(avatarRoot)
     this.attachParent = attachParent ?? avatarRoot.parent ?? avatarRoot
+    this.parallelWearables = collectParallelWearableStates(avatarRoot)
     this.mixer = new THREE.AnimationMixer(animationRoot)
     this.mixer.addEventListener('finished', this.onMixerFinished)
 
@@ -443,7 +451,7 @@ export class AvatarAnimations {
   private advancePose(delta: number): void {
     this.mixer?.update(delta)
     this.propMixer?.update(delta)
-    if (this.avatarRoot) syncParallelWearableSkeletons(this.avatarRoot)
+    if (this.parallelWearables.length) syncParallelWearableStates(this.parallelWearables)
   }
 
   update(delta: number, state: AvatarLocomotionState): void {
@@ -487,7 +495,11 @@ export class AvatarAnimations {
       return
     }
 
-    const k = 1 - Math.exp(-14 * delta)
+    // Asymmetric blend: stop walk/run faster than start (remote idle lag fix).
+    const kIn = 1 - Math.exp(-14 * delta)
+    const kOut = 1 - Math.exp(-32 * delta)
+    const blendToward = (cur: number, target: number): number =>
+      cur + (target - cur) * (target < cur - 1e-4 ? kOut : kIn)
     let targetWalk = 0
     let targetRun = 0
     let targetJump = 0
@@ -533,12 +545,17 @@ export class AvatarAnimations {
       this.walkBlend = 0
       this.runBlend = 0
       this.jumpBlend = targetJump
-      this.glideBlend += (targetGlide - this.glideBlend) * Math.min(1, k * 2)
+      this.glideBlend = blendToward(this.glideBlend, targetGlide)
     } else {
-      this.walkBlend += (targetWalk - this.walkBlend) * k
-      this.runBlend += (targetRun - this.runBlend) * k
-      this.jumpBlend += (targetJump - this.jumpBlend) * k
-      this.glideBlend += (targetGlide - this.glideBlend) * k
+      this.walkBlend = blendToward(this.walkBlend, targetWalk)
+      this.runBlend = blendToward(this.runBlend, targetRun)
+      this.jumpBlend = blendToward(this.jumpBlend, targetJump)
+      this.glideBlend = blendToward(this.glideBlend, targetGlide)
+      // Snap residual walk when fully stopped — avoids multi-second moonwalk after remote halt.
+      if (targetWalk === 0 && targetRun === 0 && this.walkBlend + this.runBlend < 0.06) {
+        this.walkBlend = 0
+        this.runBlend = 0
+      }
     }
 
     const airBlend = Math.max(this.jumpBlend, this.glideBlend)
@@ -610,6 +627,7 @@ export class AvatarAnimations {
   dispose(): void {
     this.bindGeneration++
     this.twirl.reset()
+    this.parallelWearables = []
     if (this.mixer) {
       this.mixer.removeEventListener('finished', this.onMixerFinished)
       this.mixer.stopAllAction()

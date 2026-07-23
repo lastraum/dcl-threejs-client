@@ -45,7 +45,7 @@ export const PARALLEL_WEARABLE_USERDATA = 'dclParallelWearable'
 
 type ParallelBonePair = { body: THREE.Bone; wearable: THREE.Bone }
 
-type ParallelWearableState = {
+export type ParallelWearableState = {
   pairs: ParallelBonePair[]
   skeletons: THREE.Skeleton[]
 }
@@ -487,16 +487,32 @@ function applyParallelBonePairs(pairs: ParallelBonePair[]): void {
 }
 
 /**
- * Drive parallel wearable skeletons after body animation has been applied.
- * Safe no-op when no fallback roots are present.
+ * Collect parallel-skeleton wearable states once at anim bind (avoid traverse every frame).
  */
-export function syncParallelWearableSkeletons(avatarRoot: THREE.Object3D): void {
+export function collectParallelWearableStates(avatarRoot: THREE.Object3D): ParallelWearableState[] {
+  const out: ParallelWearableState[] = []
   avatarRoot.traverse((obj) => {
     const state = obj.userData[PARALLEL_WEARABLE_USERDATA] as ParallelWearableState | undefined
-    if (!state?.pairs?.length) return
+    if (state?.pairs?.length) out.push(state)
+  })
+  return out
+}
+
+/** Drive cached parallel wearable states after body animation has been applied. */
+export function syncParallelWearableStates(states: readonly ParallelWearableState[]): void {
+  for (const state of states) {
+    if (!state.pairs.length) continue
     applyParallelBonePairs(state.pairs)
     for (const sk of state.skeletons) sk.update()
-  })
+  }
+}
+
+/**
+ * Drive parallel wearable skeletons after body animation has been applied.
+ * Prefer {@link collectParallelWearableStates} + {@link syncParallelWearableStates} on hot paths.
+ */
+export function syncParallelWearableSkeletons(avatarRoot: THREE.Object3D): void {
+  syncParallelWearableStates(collectParallelWearableStates(avatarRoot))
 }
 
 /**

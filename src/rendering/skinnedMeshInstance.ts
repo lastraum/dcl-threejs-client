@@ -115,10 +115,18 @@ function repairSkinWeights(geometry: THREE.BufferGeometry): void {
   if (changed) weights.needsUpdate = true
 }
 
-/** Keep skinned meshes out of the bounding-sphere frustum-cull path (avatars / wearables only). */
+/**
+ * Avatar / wearable skinned mesh hygiene.
+ * Fixed generous bounds + frustumCulled so off-screen remotes can skip draw
+ * without relying on expensive (and often broken) bone-derived spheres.
+ */
 export function repairSkinnedMesh(mesh: THREE.SkinnedMesh): void {
-  mesh.frustumCulled = false
-  fallbackBoundingSphere(mesh)
+  // ~human-sized capsule from feet to head + accessories; better than infinite always-draw.
+  if (!mesh.boundingSphere) mesh.boundingSphere = new THREE.Sphere()
+  mesh.boundingSphere.set(new THREE.Vector3(0, 1.0, 0), 2.6)
+  if (!mesh.geometry.boundingSphere) mesh.geometry.boundingSphere = new THREE.Sphere()
+  mesh.geometry.boundingSphere.copy(mesh.boundingSphere)
+  mesh.frustumCulled = true
   repairSkinWeights(mesh.geometry)
 }
 

@@ -54,6 +54,7 @@ import { RemoteAvatarLoadQueue } from './RemoteAvatarLoadQueue'
 import type { InteractiveNameTagHit } from '../client/ui/overlayHitTest'
 import { buildPlayerMirrorIdentity } from '../bridge/playerMirrorIdentity'
 import { GliderProp, GlideStateWire, glideStateWantsOpen } from '../avatar/GliderProp'
+import { perfNoteComposeMs } from '../util/perfCounters'
 
 /** Packet / lerp settle epsilon (meters / radians). */
 const POSE_EPS = 0.02
@@ -65,29 +66,44 @@ const SPEED_IDLE = 0.08
  */
 const NAME_TAG_SHOW_M2 = 56 * 56
 const NAME_TAG_HIDE_M2 = 72 * 72
-/** Full head-track every frame inside this radius. */
+/** Full head-track every frame while moving inside this radius. */
 const NAME_TAG_NEAR_M2 = 28 * 28
 /** Far (but not culled) tags: refresh head anchor at most this often. */
 const NAME_TAG_FAR_INTERVAL_MS = 200
+/** Settled near tags: idle head bob is low-frequency — ~12 Hz is enough. */
+const NAME_TAG_SETTLED_INTERVAL_MS = 80
 
 /**
- * LOD bands for already-tracked peers (horizontal m).
- * Full compose only starts inside LOAD (see RemoteAvatarLoadQueue); models are never
+ * Update-rate bands for already-tracked peers (horizontal m).
+ * Compose only starts ≤20 m (RemoteAvatarLoadQueue.LOAD_DISTANCE); models are never
  * unloaded for distance — mid/far only throttle pose/anim.
- * Near band is generous so close peers always get full-rate smooth pose.
+ * Bands sit inside/around the load radius so loaded nearby peers are not all full-rate.
  */
-const LOD_NEAR_M2 = 36 * 36
-const LOD_MID_M2 = 64 * 64
-/** Mid band: ~30 Hz pose/anim (wire is ~10 Hz — still interpolate every tick). */
-const LOD_MID_INTERVAL_MS = 33
-/** Far band: ~15 Hz pose; no skinned anim. */
+const LOD_NEAR_M2 = 14 * 14
+const LOD_MID_M2 = 22 * 22
+/** Mid band: ~25 Hz pose/anim. */
+const LOD_MID_INTERVAL_MS = 40
+/** Far band: ~15 Hz pose; no skinned anim unless emote active. */
 const LOD_FAR_INTERVAL_MS = 66
+/**
+ * Settled loco-idle (no emote): advance mixer at ~12 Hz.
+ * Looping profile emotes always run full rate within allowAnim.
+ */
+const ANIM_SETTLED_INTERVAL_MS = 80
+/**
+ * After this many seconds without a pose-changing packet, snap horizontal speed to 0.
+ * Idle senders only keepalive ~3s — without this, last walk speed keeps the walk clip alive.
+ */
+const WIRE_MOVE_STALE_S = 0.28
 /** Max seconds to dead-reckon past last packet (wire ~100 ms). */
 const EXTRAP_MAX_S = 0.14
 /** Position follow rate while moving (higher = stickier to path, less lag). */
 const POSE_FOLLOW_RATE = 14
 /** Position settle rate when nearly idle. */
 const POSE_SETTLE_RATE = 18
+/** Nearest loaded remotes that cast shadows (GPU budget; not distance-hide). */
+const REMOTE_SHADOW_CASTERS = 6
+const SHADOW_BUDGET_INTERVAL_MS = 250
 
 /** Distance cull with hysteresis — sticky visible state. */
 function nameTagWantedForDist(
@@ -155,6 +171,8 @@ type RemotePeerRecord = {
   nameTagWanted: boolean
   /** Last mid/far LOD pose/anim tick (performance.now). */
   lastLodUpdateAt: number
+  /** Last settled-idle mixer tick (performance.now). */
+  lastAnimUpdateAt: number
   /** Custom mesh mount attempts (setPeerVrmHash / VRM parse) — max 3 with backoff. */
   customMeshAttempts: number
   customMeshRetryTimer: ReturnType<typeof setTimeout> | null
@@ -162,6 +180,32 @@ type RemotePeerRecord = {
 
 /** Shared extrapolated pose goal (one peer at a time in update). */
 const _extrapGoal = new THREE.Vector3()
+/** Reused locomotion state — avoid per-peer object alloc every anim tick. */
+const _locoState: {
+  horizontalSpeed: number
+  targetLocomotionSpeed: number
+  grounded: boolean
+  nearGround: boolean
+  verticalVelocity: number
+  locomotionMode: LocomotionMode
+  jumping: boolean
+  doubleJumping: boolean
+  doubleJumpTriggered: boolean
+  falling: boolean
+  gliding: boolean
+} = {
+  horizontalSpeed: 0,
+  targetLocomotionSpeed: 0,
+  grounded: true,
+  nearGround: true,
+  verticalVelocity: 0,
+  locomotionMode: 'walk',
+  jumping: false,
+  doubleJumping: false,
+  doubleJumpTriggered: false,
+  falling: false,
+  gliding: false
+}
 
 function blankProfile(address: string): AvatarProfile {
   return {
@@ -243,6 +287,9 @@ export class RemoteAvatarManager {
   private onPeerMirrorIdentity:
     | ((entity: Entity, identity: ReturnType<typeof buildPlayerMirrorIdentity> | null) => void)
     | null = null
+  /** Peers that were speaking last voice tick — zero their bars when they drop out of the map. */
+  private readonly lastSpeakingPeers = new Set<string>()
+  private lastShadowBudgetAt = 0
 
   constructor(scene: THREE.Scene) {
     this.scene = scene
@@ -376,12 +423,19 @@ export class RemoteAvatarManager {
     this.cameraWorldPos.copy(position)
     this.hasCameraPos = true
     this.loadQueue.setCameraPosition(position)
-    // Walking toward pills: re-check hard load radius without waiting for peer packets.
+    // Walking toward pills: refresh waiting distances; only enqueue peers not yet queued.
+    // Do not re-enqueue every frame — that allocated a new run() closure + Vector3.clone each peer.
+    let bulkDistance = false
     for (const [key, record] of this.peers) {
       if (record.model || !record.hasPosition) continue
-      this.loadQueue.updatePeerDistance(key, record.targetPosition)
-      this.tryStartAvatarLoad(key, record)
+      if (this.loadQueue.isQueued(key)) {
+        this.loadQueue.updatePeerDistance(key, record.targetPosition, false)
+        bulkDistance = true
+      } else {
+        this.tryStartAvatarLoad(key, record)
+      }
     }
+    if (bulkDistance) this.loadQueue.notifyPump()
   }
 
   /** Scene asset hydration — throttle remote composes so scene GLTF attach wins. */
@@ -428,9 +482,20 @@ export class RemoteAvatarManager {
 
   /** Nearby-voice bars on remote name tags (address → 0–1 level). */
   applyVoiceLevels(levels: ReadonlyMap<string, number>): void {
-    for (const [key, record] of this.peers) {
-      record.nameTag?.setVoiceLevel(levels.get(key) ?? 0)
+    const speaking = new Set<string>()
+    for (const [key, level] of levels) {
+      const record = this.peers.get(key)
+      if (!record?.nameTag) continue
+      record.nameTag.setVoiceLevel(level)
+      if (level > 0.02) speaking.add(key)
     }
+    // Zero bars for peers that stopped appearing in the levels map.
+    for (const key of this.lastSpeakingPeers) {
+      if (speaking.has(key) || levels.has(key)) continue
+      this.peers.get(key)?.nameTag?.setVoiceLevel(0)
+    }
+    this.lastSpeakingPeers.clear()
+    for (const key of speaking) this.lastSpeakingPeers.add(key)
   }
 
   /**
@@ -794,7 +859,9 @@ export class RemoteAvatarManager {
       record.renderMode = 'dcl'
       this.clearCustomMeshRetry(record)
       record.customMeshAttempts = 0
-      void this.loadPeerAvatar(key, record)
+      // Must go through the load queue (MAX_CONCURRENT=1 / 10s stagger) — never call
+      // loadPeerAvatar outside a queue run() callback (plaza hitch under multi-peer DAV fail).
+      void this.reloadPeerAvatar(key, record)
       void hash
       return
     }
@@ -962,6 +1029,7 @@ export class RemoteAvatarManager {
         nameTagLastAnchorAt: 0,
         nameTagWanted: false,
         lastLodUpdateAt: 0,
+        lastAnimUpdateAt: 0,
         customMeshAttempts: 0,
         customMeshRetryTimer: null
       }
@@ -983,9 +1051,10 @@ export class RemoteAvatarManager {
       }
     } else if (!record.hasPosition) {
       // Join without pose (common right after island LiveKit connect): show a
-      // provisional body near the local player so remotes are not "invisible".
-      // Mark hasPosition so compose can start — first real transform snaps pose.
-      // (Previously hasPosition stayed false → tryStartAvatarLoad no-op → eternal pills.)
+      // provisional pill near the local player so remotes are not "invisible".
+      // Do NOT compose yet — provisional is colocated with local, which would pass
+      // the ≤20 m gate (or force-park at camera) and permanently load far peers.
+      // First real RFC4 transform in updatePeerTransform starts the queue.
       const provisional = this.provisionalPositionProvider?.()
       if (provisional) {
         record.root.position.copy(provisional)
@@ -998,9 +1067,10 @@ export class RemoteAvatarManager {
       }
     }
 
-    // Force when we only have a provisional colocated pose so load radius / camera
-    // not-yet-set doesn't leave the peer queued forever as a pill.
-    this.tryStartAvatarLoad(key, record, !positionDcl && record.hasPosition)
+    // Real pose only — never force-compose provisional joins (steals slots + far skinned bodies).
+    if (positionDcl) {
+      this.tryStartAvatarLoad(key, record, false)
+    }
   }
 
   applyPeerProfile(address: string, serializedProfile: string): void {
@@ -1112,12 +1182,19 @@ export class RemoteAvatarManager {
           (locomotion.glideState !== undefined && locomotion.glideState !== record.glideState))
 
       if (samePose && !wireBusy && !locoChanged) {
-        record.receivedAt = now
+        // Do NOT refresh receivedAt — keepalives must not invalidate settle (ageS).
+        // Snap loco speed so walk clip does not linger until the next 3s keepalive.
         if (record.horizontalSpeed > SPEED_IDLE) record.horizontalSpeed = 0
+        if (record.smoothedSpeed > SPEED_IDLE) record.smoothedSpeed = 0
         if (record.velocity.x !== 0 || record.velocity.y !== 0 || record.velocity.z !== 0) {
           record.velocity.set(0, 0, 0)
         }
         if (velocity) record.verticalVelocity = velocity.y
+        // Provisional joins may first wire at the same colocated pose — still start compose.
+        if (!record.model) {
+          this.loadQueue.updatePeerDistance(key, record.targetPosition)
+          this.tryStartAvatarLoad(key, record)
+        }
         return
       }
     }
@@ -1184,13 +1261,33 @@ export class RemoteAvatarManager {
   }
 
   /**
-   * Per-frame remote tick. Returns pose-skip / name-tag counts for RenderStats.
+   * Per-frame remote tick. Returns counters for RenderStats / perfCounters.
    */
-  update(delta: number): { poseSkipped: number; nameTagsShown: number } {
-    const now = performance.now()
+  update(delta: number): {
+    poseSkipped: number
+    animSkipped: number
+    nameTagsShown: number
+    remoteUpdateMs: number
+    remoteAnimMs: number
+    lodNear: number
+    lodMid: number
+    lodFar: number
+  } {
+    const updateT0 = performance.now()
+    const now = updateT0
     let poseSkipped = 0
+    let animSkipped = 0
     let nameTagsShown = 0
+    let animMs = 0
+    let lodNear = 0
+    let lodMid = 0
+    let lodFar = 0
     const tagsAllowed = areSceneNameTagsVisible()
+
+    if (now - this.lastShadowBudgetAt >= SHADOW_BUDGET_INTERVAL_MS) {
+      this.lastShadowBudgetAt = now
+      this.applyRemoteShadowBudget()
+    }
 
     for (const [key, record] of this.peers.entries()) {
       const remoteGlidingEarly =
@@ -1210,17 +1307,20 @@ export class RemoteAvatarManager {
         dist2 = dx * dx + dz * dz
       }
 
-      // LOD band for loaded + pill peers (horizontal).
-      // near ≤20m every frame · mid ≤40m ~20Hz · far ~10Hz pose / no anim
+      // LOD: near ≤14 m every frame · mid ≤22 m ~25 Hz · far ~15 Hz pose / no anim
+      // (unless emote — keep looping emotes alive at mid rate when far).
       let lodIntervalMs = 0
       let allowAnim = true
+      let lodBand: 'near' | 'mid' | 'far' = 'near'
       if (this.hasCameraPos && record.hasPosition) {
         if (dist2 > LOD_MID_M2) {
           lodIntervalMs = LOD_FAR_INTERVAL_MS
-          allowAnim = false
+          allowAnim = emoteBusy
+          lodBand = 'far'
         } else if (dist2 > LOD_NEAR_M2) {
           lodIntervalMs = LOD_MID_INTERVAL_MS
           allowAnim = true
+          lodBand = 'mid'
         }
       }
 
@@ -1240,6 +1340,10 @@ export class RemoteAvatarManager {
         continue
       }
 
+      if (lodBand === 'near') lodNear++
+      else if (lodBand === 'mid') lodMid++
+      else lodFar++
+
       const tickDelta =
         lodIntervalMs > 0 && record.lastLodUpdateAt > 0
           ? Math.min((now - record.lastLodUpdateAt) / 1000, 0.12)
@@ -1248,6 +1352,15 @@ export class RemoteAvatarManager {
 
       // Dead-reckon a short way past the last packet so 10 Hz wire doesn't stutter.
       const ageS = Math.max(0, (now - record.receivedAt) / 1000)
+
+      // Wire silence after stop: idle peers only keepalive ~3s — clear stale walk speed.
+      if (ageS > WIRE_MOVE_STALE_S && !airBusy && !emoteBusy) {
+        if (record.horizontalSpeed > SPEED_IDLE) record.horizontalSpeed = 0
+        if (record.velocity.x !== 0 || record.velocity.y !== 0 || record.velocity.z !== 0) {
+          record.velocity.set(0, 0, 0)
+        }
+      }
+
       const extrapS = Math.min(ageS, EXTRAP_MAX_S)
       const moving =
         record.horizontalSpeed > SPEED_IDLE ||
@@ -1265,7 +1378,9 @@ export class RemoteAvatarManager {
 
       const followRate = moving ? POSE_FOLLOW_RATE : POSE_SETTLE_RATE
       const alpha = 1 - Math.exp(-followRate * tickDelta)
-      const speedAlpha = 1 - Math.exp(-12 * tickDelta)
+      // Faster speed decay when stopping — walk anim was lingering on remotes.
+      const decelerating = record.horizontalSpeed < record.smoothedSpeed - 0.01
+      const speedAlpha = 1 - Math.exp(-(decelerating ? 28 : 12) * tickDelta)
       const yawAlpha = 1 - Math.exp(-(moving ? 16 : 10) * tickDelta)
 
       // Settled: on target, not moving, no jump/glide/emote — skip lerp.
@@ -1304,73 +1419,94 @@ export class RemoteAvatarManager {
         record.pivot.rotation.y = record.currentYaw + AVATAR_YAW_OFFSET
 
         record.smoothedSpeed += (record.horizontalSpeed - record.smoothedSpeed) * speedAlpha
+        if (record.horizontalSpeed < SPEED_IDLE && record.smoothedSpeed < 0.04) {
+          record.smoothedSpeed = 0
+        }
       }
 
-      // Near/mid: full skinned update. Far (incl. loaded-but-distant): pose only.
+      // Near/mid: skinned update. Far: pose only unless emote (looping sits/dances).
       if (allowAnim) {
-        const speed = record.smoothedSpeed
         let emoteActive =
           record.renderMode === 'vrm'
             ? (record.vrmLocomotion?.isProfileEmoteActive() ?? false)
             : record.renderMode === 'odk'
               ? (record.odkLocomotion?.isProfileEmoteActive() ?? false)
               : (record.animations?.isProfileEmoteActive() ?? false)
-        // Local player cancels emotes on WASD; remotes must cancel when wire speed shows walk/run
-        // or they keep sit loops while sliding (mauhetti-style glitch after hitch).
-        if (emoteActive && speed > 0.45) {
-          this.stopPeerProfileEmote(record)
-          emoteActive = false
-        }
-        const locomotionMode = inferRemoteLocomotionMode(speed)
-        const targetLocomotionSpeed =
-          !emoteActive && speed > 0.08 ? remoteTargetLocomotionSpeed(locomotionMode) : 0
-        const grounded = record.remoteGrounded && record.verticalVelocity > -8
-        const remoteGliding =
-          !grounded &&
-          (glideStateWantsOpen(record.glideState) ||
-            record.glideState === GlideStateWire.CLOSING_PROP)
-        const jumping = record.remoteJumping && record.jumpCount <= 1 && !remoteGliding
-        const doubleJumping = record.jumpCount >= 2 && !grounded && !remoteGliding
+        // Settled loco-idle (no emote): throttle mixer ~12 Hz — not when looping emotes.
+        const locoIdleSettled = settled && !emoteActive && !emoteBusy
+        if (
+          locoIdleSettled &&
+          record.lastAnimUpdateAt > 0 &&
+          now - record.lastAnimUpdateAt < ANIM_SETTLED_INTERVAL_MS
+        ) {
+          animSkipped++
+        } else {
+          const animDelta =
+            locoIdleSettled && record.lastAnimUpdateAt > 0
+              ? Math.min((now - record.lastAnimUpdateAt) / 1000, 0.12)
+              : tickDelta
+          record.lastAnimUpdateAt = now
 
-        const locomotionState = {
-          horizontalSpeed: emoteActive ? 0 : speed,
-          targetLocomotionSpeed,
-          grounded,
-          nearGround: grounded,
-          verticalVelocity: record.verticalVelocity,
-          locomotionMode,
-          jumping,
-          doubleJumping,
-          doubleJumpTriggered: record.doubleJumpTriggered,
-          falling:
+          const speed = record.smoothedSpeed
+          // Local player cancels emotes on WASD; remotes must cancel when wire speed shows walk/run
+          // or they keep sit loops while sliding (mauhetti-style glitch after hitch).
+          if (emoteActive && speed > 0.45) {
+            this.stopPeerProfileEmote(record)
+            emoteActive = false
+          }
+          const locomotionMode = inferRemoteLocomotionMode(speed)
+          const targetLocomotionSpeed =
+            !emoteActive && speed > 0.08 ? remoteTargetLocomotionSpeed(locomotionMode) : 0
+          const grounded = record.remoteGrounded && record.verticalVelocity > -8
+          const remoteGliding =
+            !grounded &&
+            (glideStateWantsOpen(record.glideState) ||
+              record.glideState === GlideStateWire.CLOSING_PROP)
+          const jumping = record.remoteJumping && record.jumpCount <= 1 && !remoteGliding
+          const doubleJumping = record.jumpCount >= 2 && !grounded && !remoteGliding
+
+          _locoState.horizontalSpeed = emoteActive ? 0 : speed
+          _locoState.targetLocomotionSpeed = targetLocomotionSpeed
+          _locoState.grounded = grounded
+          _locoState.nearGround = grounded
+          _locoState.verticalVelocity = record.verticalVelocity
+          _locoState.locomotionMode = locomotionMode
+          _locoState.jumping = jumping
+          _locoState.doubleJumping = doubleJumping
+          _locoState.doubleJumpTriggered = record.doubleJumpTriggered
+          _locoState.falling =
             !grounded &&
             !jumping &&
             !doubleJumping &&
             !remoteGliding &&
-            record.verticalVelocity < -1.5,
-          gliding: remoteGliding
-        }
-        if (record.renderMode === 'vrm') {
-          record.vrmLocomotion?.update(tickDelta, locomotionState)
-          record.vrmAvatar?.update(tickDelta)
-        } else if (record.renderMode === 'odk') {
-          record.odkLocomotion?.update(tickDelta, locomotionState)
-          record.odkAvatar?.update(tickDelta)
-        } else {
-          record.animations?.update(tickDelta, locomotionState)
-        }
-        const stillEmoting =
-          record.renderMode === 'vrm'
-            ? record.vrmLocomotion?.isProfileEmoteActive()
-            : record.renderMode === 'odk'
-              ? record.odkLocomotion?.isProfileEmoteActive()
-              : record.animations?.isProfileEmoteActive()
-        if (record.activeEmoteUrn && !stillEmoting) {
-          record.activeEmoteUrn = null
-        }
-        if (record.deferredProfileReload && !stillEmoting) {
-          record.deferredProfileReload = false
-          void this.reloadPeerAvatar(key, record)
+            record.verticalVelocity < -1.5
+          _locoState.gliding = remoteGliding
+
+          const animT0 = performance.now()
+          if (record.renderMode === 'vrm') {
+            record.vrmLocomotion?.update(animDelta, _locoState)
+            record.vrmAvatar?.update(animDelta)
+          } else if (record.renderMode === 'odk') {
+            record.odkLocomotion?.update(animDelta, _locoState)
+            record.odkAvatar?.update(animDelta)
+          } else {
+            record.animations?.update(animDelta, _locoState)
+          }
+          animMs += performance.now() - animT0
+
+          const stillEmoting =
+            record.renderMode === 'vrm'
+              ? record.vrmLocomotion?.isProfileEmoteActive()
+              : record.renderMode === 'odk'
+                ? record.odkLocomotion?.isProfileEmoteActive()
+                : record.animations?.isProfileEmoteActive()
+          if (record.activeEmoteUrn && !stillEmoting) {
+            record.activeEmoteUrn = null
+          }
+          if (record.deferredProfileReload && !stillEmoting) {
+            record.deferredProfileReload = false
+            void this.reloadPeerAvatar(key, record)
+          }
         }
       }
       // Prop open/close + rotors — skip when fully closed and settled.
@@ -1379,7 +1515,7 @@ export class RemoteAvatarManager {
       }
       record.doubleJumpTriggered = false
 
-      // Name tags: hysteretic distance cull + throttle head follow when far.
+      // Name tags: hysteretic distance cull + throttle head follow when far / settled.
       record.nameTagWanted = nameTagWantedForDist(
         record.nameTagWanted,
         dist2,
@@ -1396,11 +1532,16 @@ export class RemoteAvatarManager {
         nameTagsShown++
         const nameTagTarget = record.model ?? record.placeholder
         if (nameTagTarget) {
+          const anchorIntervalMs =
+            settled && dist2 <= NAME_TAG_NEAR_M2
+              ? NAME_TAG_SETTLED_INTERVAL_MS
+              : dist2 > NAME_TAG_NEAR_M2
+                ? NAME_TAG_FAR_INTERVAL_MS
+                : 0
           const needAnchor =
             !this.hasCameraPos ||
-            dist2 <= NAME_TAG_NEAR_M2 ||
-            !settled ||
-            now - record.nameTagLastAnchorAt >= NAME_TAG_FAR_INTERVAL_MS
+            anchorIntervalMs === 0 ||
+            now - record.nameTagLastAnchorAt >= anchorIntervalMs
           if (needAnchor) {
             if (!record.headBone && record.model) {
               record.headBone = findHeadBone(record.model)
@@ -1418,7 +1559,40 @@ export class RemoteAvatarManager {
       }
     }
 
-    return { poseSkipped, nameTagsShown }
+    return {
+      poseSkipped,
+      animSkipped,
+      nameTagsShown,
+      remoteUpdateMs: performance.now() - updateT0,
+      remoteAnimMs: animMs,
+      lodNear,
+      lodMid,
+      lodFar
+    }
+  }
+
+  /** Enable castShadow only on the nearest loaded remotes (GPU budget). */
+  private applyRemoteShadowBudget(): void {
+    if (!this.hasCameraPos) return
+    type Ranked = { record: RemotePeerRecord; dist2: number }
+    const ranked: Ranked[] = []
+    for (const record of this.peers.values()) {
+      if (!record.model || record.modifierHidden || !record.hasPosition) continue
+      const dx = record.root.position.x - this.cameraWorldPos.x
+      const dz = record.root.position.z - this.cameraWorldPos.z
+      ranked.push({ record, dist2: dx * dx + dz * dz })
+    }
+    ranked.sort((a, b) => a.dist2 - b.dist2)
+    for (let i = 0; i < ranked.length; i++) {
+      const cast = i < REMOTE_SHADOW_CASTERS
+      const model = ranked[i]!.record.model
+      if (!model) continue
+      model.traverse((obj) => {
+        if ((obj as THREE.Mesh).isMesh) {
+          ;(obj as THREE.Mesh).castShadow = cast
+        }
+      })
+    }
   }
 
   dispose(): void {
@@ -1438,7 +1612,13 @@ export class RemoteAvatarManager {
   ): Promise<void> | null {
     if (!record.hasPosition || record.model) return null
     if (record.loading && !force) return record.loading
-    // Enqueue always; hard ≤20 m gate is in the load queue pump (no far fallback).
+    const key = address.toLowerCase()
+    // Already queued: refresh distance only — do not allocate a new run() each frame.
+    if (!force && this.loadQueue.isQueued(key)) {
+      this.loadQueue.updatePeerDistance(key, record.targetPosition)
+      return record.loading
+    }
+    // Enqueue; hard ≤20 m gate is in the load queue pump (no far fallback).
     // `loading` is set only when the job actually starts so far waiters don't stick.
     this.loadQueue.enqueue(
       address,
@@ -1560,6 +1740,7 @@ export class RemoteAvatarManager {
 
   private async loadPeerAvatar(address: string, record: RemotePeerRecord): Promise<void> {
     const key = address.toLowerCase()
+    const composeT0 = performance.now()
     try {
       if (!this.peers.has(key)) return
 
@@ -1600,6 +1781,7 @@ export class RemoteAvatarManager {
           } else {
             await this.loadVrmPeerAvatar(key, record, customBytes)
           }
+          perfNoteComposeMs(performance.now() - composeT0)
           return
         }
         // DAV announce without bytes yet (or fetch failing) — do NOT stay on pill forever.
@@ -1635,6 +1817,7 @@ export class RemoteAvatarManager {
           } else {
             await this.loadVrmPeerAvatar(key, record, lateBytes)
           }
+          perfNoteComposeMs(performance.now() - composeT0)
           return
         }
         // Still no custom bytes — keep DCL interim (do not dispose back to pill).
@@ -1678,6 +1861,7 @@ export class RemoteAvatarManager {
         record.pendingEmote = null
         void this.applyPeerEmote(record, pending)
       }
+      perfNoteComposeMs(performance.now() - composeT0)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       clientDebugLog.log('network', `Remote avatar failed · ${address.slice(0, 8)}… ${msg}`, { level: 'error' })

@@ -14,6 +14,7 @@ export function prepareWearableCacheRoot(root: THREE.Object3D): void {
   pruneWearableDisplayMeshes(root, { extentCheck: false })
   root.traverse((obj) => {
     if (obj instanceof THREE.Mesh) {
+      // Default on; RemoteAvatarManager may disable cast for distant remotes (shadow budget).
       obj.castShadow = true
       obj.receiveShadow = true
     }

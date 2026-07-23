@@ -108,11 +108,20 @@ export class RemoteAvatarLoadQueue {
     if (!busy) this.pump()
   }
 
+  /** True if this peer is waiting or actively composing. */
+  isQueued(address: string): boolean {
+    const key = address.toLowerCase()
+    return this.waiting.has(key) || this.active.has(key)
+  }
+
   /**
-   * Queue a peer avatar load. Replaces any pending entry for the same address.
-   * `force` ignores load radius (profile reload / explicit).
+   * Queue a peer avatar load.
+   * `force` ignores load radius (profile reload / explicit) by parking at camera.
    * Far peers may still be enqueued; {@link pump} will not start them until inside radius
    * (unless force) so walking toward a pill can promote without re-enqueue races.
+   *
+   * If already waiting: only refresh position (and force-park) — keep the existing `run`
+   * so camera walk rechecks do not allocate a new closure every frame.
    */
   enqueue(
     address: string,
@@ -123,6 +132,17 @@ export class RemoteAvatarLoadQueue {
     const key = address.toLowerCase()
     if (this.active.has(key)) return
 
+    const existing = this.waiting.get(key)
+    if (existing) {
+      if (force) {
+        existing.position.copy(this.camera)
+      } else {
+        existing.position.copy(peerPosition)
+      }
+      this.pump()
+      return
+    }
+
     const pos = peerPosition.clone()
     if (force) {
       // Park “at camera” so sort priority wins and hard gate treats as in-range.
@@ -132,12 +152,20 @@ export class RemoteAvatarLoadQueue {
     this.pump()
   }
 
-  /** Refresh position when a waiting peer moves (or camera-driven recheck). */
-  updatePeerDistance(address: string, peerPosition: THREE.Vector3): void {
+  /**
+   * Refresh position when a waiting peer moves (or camera-driven recheck).
+   * Pass `pump=false` when bulk-updating many peers; call {@link notifyPump} once after.
+   */
+  updatePeerDistance(address: string, peerPosition: THREE.Vector3, pump = true): void {
     const key = address.toLowerCase()
     const entry = this.waiting.get(key)
     if (!entry) return
     entry.position.copy(peerPosition)
+    if (pump) this.pump()
+  }
+
+  /** Re-evaluate the wait queue (e.g. after bulk distance updates). */
+  notifyPump(): void {
     this.pump()
   }
 

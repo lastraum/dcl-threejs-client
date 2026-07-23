@@ -132,9 +132,17 @@ export function prepareAvatarMaterials(root: THREE.Object3D): void {
     if (!(obj instanceof THREE.Mesh)) return
     const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
     for (const mat of materials) {
-      mat.side = THREE.DoubleSide
+      // DoubleSide only when needed (hair cards / alpha) — FrontSide cuts overdraw on opaque body.
+      const name = (mat.name ?? '').toLowerCase()
+      const needsDouble =
+        mat.transparent === true ||
+        (typeof mat.alphaTest === 'number' && mat.alphaTest > 0) ||
+        name.includes('hair') ||
+        name.includes('eyelash') ||
+        name.includes('fur')
+      mat.side = needsDouble ? THREE.DoubleSide : THREE.FrontSide
     }
-    if (obj instanceof THREE.SkinnedMesh) obj.frustumCulled = false
+    // Skinned bounds repaired in repairSkinnedMesh — keep frustum cull on.
   })
 }
 

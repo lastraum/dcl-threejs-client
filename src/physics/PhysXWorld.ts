@@ -93,13 +93,17 @@ const SPAWN_FEET_CLEARANCE_M = 0.12
  * tower floors are not punched through; probe-first path lands near the deck.
  */
 const SPAWN_SETTLE_MAX_DROP_M = 1.35
+/** When a probe already found the deck, allow a slightly longer CCT drop (thin/step meshes). */
+const SPAWN_SETTLE_PROBE_DROP_M = 2.6
 /** Elevated decks only: allow a longer CCT drop when probe misses but floor is below. */
-const SPAWN_SETTLE_ELEVATED_MAX_DROP_M = 3.25
+const SPAWN_SETTLE_ELEVATED_MAX_DROP_M = 5.5
 /**
  * Sweep search under authored feet when CCT settle fails.
  * Flagtag tower: deck may sit slightly below spawn or only exist at nearby XZ samples.
  */
 const SPAWN_PROBE_MAX_DROP_M = 8
+/** Elevated authored spawn: search farther under feet (still gated by accept band). */
+const SPAWN_PROBE_ELEVATED_MAX_DROP_M = 12
 /**
  * Accept settled feet only within this band of authored spawn Y.
  * Reject roof/arch false-grounds (Flagtag upper shell) and deep freefall hits.
@@ -747,11 +751,13 @@ export class PhysXWorld {
     }
 
     // Prefer surface nearest authored Y (deck), not absolute highest hit (roofs).
+    const probeDrop =
+      authoredFeetY > 8 ? SPAWN_PROBE_ELEVATED_MAX_DROP_M : SPAWN_PROBE_MAX_DROP_M
     const probed = this.probeWalkSurfaceFeetY(
       feetX,
       feetZ,
       liftY + 0.4,
-      SPAWN_PROBE_MAX_DROP_M,
+      probeDrop,
       authoredFeetY
     )
 
@@ -760,6 +766,15 @@ export class PhysXWorld {
         clientDebugLog.log(
           'player',
           `spawn settle probe+CCT — feet y=${this.position.y.toFixed(2)} (authored ${authoredFeetY.toFixed(2)}, probe ${probed.toFixed(2)})`,
+          { alsoConsole: true, level: 'info' }
+        )
+        return true
+      }
+      // Probe found the deck but short drop missed (thin step / first-frame contact).
+      if (tryCctDropFrom(probed + SPAWN_FEET_CLEARANCE_M, SPAWN_SETTLE_PROBE_DROP_M)) {
+        clientDebugLog.log(
+          'player',
+          `spawn settle probe+CCT long — feet y=${this.position.y.toFixed(2)} (authored ${authoredFeetY.toFixed(2)}, probe ${probed.toFixed(2)})`,
           { alsoConsole: true, level: 'info' }
         )
         return true

@@ -199,8 +199,10 @@ export class OdkLocomotionAnimations {
       rawSpeed > 0.08 && targetSpeed > 0
         ? Math.min(targetSpeed, Math.max(rawSpeed, targetSpeed * 0.72))
         : rawSpeed
-    const speedK = 1 - Math.exp(-9 * delta)
+    // Faster decay when stopping so walk does not linger after remote halt.
+    const speedK = 1 - Math.exp(-(speedGoal < this.speedSmooth - 0.01 ? 22 : 9) * delta)
     this.speedSmooth += (speedGoal - this.speedSmooth) * speedK
+    if (speedGoal < 0.05 && this.speedSmooth < 0.04) this.speedSmooth = 0
     const animSpeed = this.speedSmooth
 
     let targetWalk = 0
@@ -227,12 +229,26 @@ export class OdkLocomotionAnimations {
       }
     }
 
-    const k = 1 - Math.exp(-14 * delta)
-    this.walkBlend += (targetWalk - this.walkBlend) * k
-    this.jogBlend += (targetJog - this.jogBlend) * k
-    this.runBlend += (targetRun - this.runBlend) * k
-    this.jumpBlend += (targetJump - this.jumpBlend) * k
-    this.fallBlend += (targetFall - this.fallBlend) * k
+    // Asymmetric: stop walk/jog/run faster than start (remote idle lag).
+    const kIn = 1 - Math.exp(-14 * delta)
+    const kOut = 1 - Math.exp(-32 * delta)
+    const blendToward = (cur: number, target: number): number =>
+      cur + (target - cur) * (target < cur - 1e-4 ? kOut : kIn)
+    this.walkBlend = blendToward(this.walkBlend, targetWalk)
+    this.jogBlend = blendToward(this.jogBlend, targetJog)
+    this.runBlend = blendToward(this.runBlend, targetRun)
+    this.jumpBlend = blendToward(this.jumpBlend, targetJump)
+    this.fallBlend = blendToward(this.fallBlend, targetFall)
+    if (
+      targetWalk === 0 &&
+      targetJog === 0 &&
+      targetRun === 0 &&
+      this.walkBlend + this.jogBlend + this.runBlend < 0.06
+    ) {
+      this.walkBlend = 0
+      this.jogBlend = 0
+      this.runBlend = 0
+    }
 
     if (this.wasGrounded && !locomotionGrounded && vy > 0.2 && this.jumpAction) {
       this.jumpAction.reset()

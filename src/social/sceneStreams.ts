@@ -37,6 +37,8 @@ export type JoinLiveOption =
       mediaUrl: string
       isHls: boolean
       playing: boolean
+      /** ECS VideoPlayer.loop — progressive/VOD should restart when true. */
+      loop: boolean
       entityId: number
     }
 

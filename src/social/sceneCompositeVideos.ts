@@ -16,6 +16,8 @@ export type SceneCompositeVideo = {
   /** Browser-playable absolute URL (https or content CDN). */
   mediaUrl: string
   playing: boolean
+  /** Matches ECS VideoPlayer.loop (default false) — same as in-world WebVideoPlayer. */
+  loop: boolean
   isHls: boolean
 }
 
@@ -97,7 +99,7 @@ export function extractCompositeVideos(
   for (const [entKey, raw] of Object.entries(videoData)) {
     const entityId = Number(entKey)
     if (!Number.isFinite(entityId)) continue
-    const spec = unwrap(raw) as { src?: string; playing?: boolean } | null
+    const spec = unwrap(raw) as { src?: string; playing?: boolean; loop?: boolean } | null
     const src = typeof spec?.src === 'string' ? spec.src.trim() : ''
     if (!src || isLiveKitVideoSrc(src)) continue
 
@@ -120,6 +122,8 @@ export function extractCompositeVideos(
       src,
       mediaUrl,
       playing: spec?.playing !== false,
+      // Match WebVideoPlayer: only loop when ECS explicitly sets loop === true.
+      loop: spec?.loop === true,
       isHls: isHttpsM3u8(mediaUrl)
     })
   }

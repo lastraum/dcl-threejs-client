@@ -46,10 +46,43 @@ function isAnimatorFocusSrc(src: string): boolean {
 function mixerHasActiveWork(entry: AnimEntry): boolean {
   for (const action of entry.actions.values()) {
     if (action.isRunning() || action.isScheduled()) return true
-    if (action.getEffectiveWeight() > 1e-3) return true
+    // Paused holds still need weight applied so the pose stays on the skeleton.
+    if (action.enabled && action.getEffectiveWeight() > 1e-3) return true
     if (action.enabled && action.weight > 1e-3) return true
   }
   return false
+}
+
+/**
+ * Freeze a clip at a pose without resetting time to 0.
+ * - Mid-play / already advanced → hold current time (SyncEntity door mid-open).
+ * - Never advanced + non-loop → snap to end frame (late join sees open door, not closed).
+ * - Never advanced + loop → fully off.
+ */
+function holdActionPose(action: THREE.AnimationAction, loop: boolean, weight: number): void {
+  const duration = action.getClip().duration
+  action.enabled = true
+  action.setEffectiveWeight(weight)
+  action.clampWhenFinished = true
+
+  if (action.isRunning() || action.time > 1e-4) {
+    action.paused = true
+    return
+  }
+
+  if (!loop && duration > 1e-4) {
+    // CRDT does not sync clip time — Explorer shows the finished pose when stopped.
+    action.reset()
+    action.time = duration
+    action.paused = true
+    action.play()
+    action.paused = true
+    return
+  }
+
+  action.stop()
+  action.enabled = false
+  action.paused = false
 }
 
 /** One name→node map per bind — per-track traverse was O(tracks × nodes) on huge characters. */
@@ -348,6 +381,7 @@ export class AnimatorBridge {
       }
 
       const playingClips: string[] = []
+      const heldClips: string[] = []
       const missingClips: string[] = []
 
       for (const state of states) {
@@ -358,28 +392,33 @@ export class AnimatorBridge {
           continue
         }
         const loop = state.loop !== false
-        action.setEffectiveWeight(state.weight ?? 1)
+        const weight = state.weight ?? 1
         action.setEffectiveTimeScale(state.speed ?? 1)
         action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)
         action.clampWhenFinished = !loop
         if (state.playing !== false) {
           action.enabled = true
           action.paused = false
+          action.setEffectiveWeight(weight)
           // Explorer: shouldReset restarts one-shots; forceReplay also restarts when scene
           // re-dirties Animator with the same shouldReset=true payload.
           if (state.shouldReset || forceReplay) action.reset()
           if (!action.isRunning()) action.play()
           playingClips.push(clipName)
-        } else if (action.isRunning() || action.time > 1e-4) {
-          // Hold current frame (door stays open). stop() would snap shut / full replay next.
-          action.enabled = true
-          action.paused = true
-          action.setEffectiveWeight(state.weight ?? 1)
+        } else if (weight > 1e-3) {
+          holdActionPose(action, loop, weight)
+          if (action.enabled) heldClips.push(clipName)
         } else {
           action.stop()
           action.enabled = false
           action.paused = false
+          action.setEffectiveWeight(0)
         }
+      }
+
+      // Bake held/end poses immediately (don't wait for next mixer tick).
+      if (heldClips.length && !playingClips.length) {
+        bound.mixer.update(0)
       }
 
       if (missingClips.length) {
@@ -389,10 +428,9 @@ export class AnimatorBridge {
         )
       }
 
-      const logSignature = `${stateSignature}|playing:${playingClips.join(',')}`
-      if (bound.lastAppliedSignature !== logSignature) {
+      if (bound.lastAppliedSignature !== stateSignature) {
         this.logAnimator(
-          `Animator states — entity ${entity} · ${src} · ${formatAnimatorStates(states)} · active clips [${playingClips.join(', ') || '(none)'}]${usingDefaultAutoPlay ? ' · default auto-play' : ''}`,
+          `Animator states — entity ${entity} · ${src} · ${formatAnimatorStates(states)} · active clips [${playingClips.join(', ') || '(none)'}]${heldClips.length ? ` · held [${heldClips.join(', ')}]` : ''}${usingDefaultAutoPlay ? ' · default auto-play' : ''}`,
           { entity }
         )
       }

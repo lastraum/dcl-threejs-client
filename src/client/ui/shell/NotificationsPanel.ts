@@ -4,6 +4,7 @@ import {
   fetchNotifications,
   formatNotificationRelativeTime,
   formatNotificationTime,
+  markAllNotificationsRead,
   markNotificationsRead,
   notificationActorAddress,
   notificationBody,
@@ -87,7 +88,9 @@ export class NotificationsPanel {
       <header class="notifications-panel__header">
         <h2 class="notifications-panel__title">Notifications</h2>
         <div class="notifications-panel__actions">
-          <button type="button" class="notifications-panel__text-btn" data-mark-all hidden>Mark all read</button>
+          <button type="button" class="notifications-panel__text-btn" data-mark-all hidden title="PUT /notifications/read">
+            Mark all as read
+          </button>
           <button type="button" class="notifications-panel__icon-btn" data-refresh aria-label="Refresh">↻</button>
           <button type="button" class="notifications-panel__icon-btn" data-close aria-label="Close">×</button>
         </div>
@@ -103,7 +106,10 @@ export class NotificationsPanel {
 
     this.element.querySelector('[data-close]')!.addEventListener('click', () => this.hide())
     this.refreshBtn.addEventListener('click', () => void this.reload())
-    this.markAllBtn.addEventListener('click', () => void this.markAllRead())
+    this.markAllBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation()
+      void this.markAllRead()
+    })
 
     this.onKeyDown = (ev) => {
       if (ev.key === 'Escape' && this.visible) this.hide()
@@ -159,6 +165,8 @@ export class NotificationsPanel {
       this.options.onUnreadChange?.(0)
       return
     }
+    // Count only truly unread (onlyUnread). Cap 50 matches API max per page —
+    // badge shows "50+" visually via count; full clear uses markAllNotificationsRead.
     const result = await fetchNotifications(identity, { limit: 50, onlyUnread: true })
     if (!result.ok) return
     this.options.onUnreadChange?.(result.notifications.length)
@@ -227,6 +235,16 @@ export class NotificationsPanel {
         if (link) window.open(link, '_blank', 'noopener,noreferrer')
       })
     })
+
+    this.listEl.querySelectorAll<HTMLButtonElement>('[data-mark-read]').forEach((btn) => {
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault()
+        ev.stopPropagation()
+        const id = btn.dataset.markRead
+        if (!id) return
+        void this.markRead([id])
+      })
+    })
   }
 
   private rowHtml(n: DclNotification): string {
@@ -246,6 +264,12 @@ export class NotificationsPanel {
          <span class="notifications-panel__avatar-fallback" hidden aria-hidden="true">${escapeHtml(initial)}</span>`
       : `<span class="notifications-panel__avatar-fallback" aria-hidden="true" data-face-for="${escapeHtml(n.id)}">${escapeHtml(initial)}</span>`
 
+    const markReadBtn = unread
+      ? `<button type="button" class="notifications-panel__mark-read" data-mark-read="${escapeHtml(n.id)}" aria-label="Mark as read">
+           Mark as read
+         </button>`
+      : ''
+
     return `
       <article
         class="notifications-panel__item${unread ? ' is-unread' : ''}${link ? ' is-clickable' : ''}"
@@ -263,6 +287,7 @@ export class NotificationsPanel {
             <span class="notifications-panel__type-badge notifications-panel__type-badge--${kind}" title="${escapeHtml(n.type)}">
               ${typeIconSvg(kind)}
             </span>
+            ${markReadBtn}
           </div>
         </div>
       </article>
@@ -328,25 +353,95 @@ export class NotificationsPanel {
   }
 
   private async markAllRead(): Promise<void> {
-    const unreadIds = this.items.filter((n) => !n.read).map((n) => n.id)
-    if (!unreadIds.length) return
-    await this.markRead(unreadIds)
+    const identity = this.authIdentity()
+    if (!identity) return
+
+    this.markAllBtn.disabled = true
+    this.statusEl.hidden = false
+    this.statusEl.textContent = 'Marking all as read…'
+    this.listEl.querySelectorAll<HTMLButtonElement>('[data-mark-read]').forEach((b) => {
+      b.disabled = true
+    })
+
+    // Paginate onlyUnread server-side — panel only holds one page of mixed read/unread.
+    const result = await markAllNotificationsRead(identity)
+    this.markAllBtn.disabled = false
+
+    if (!result.ok) {
+      this.statusEl.hidden = false
+      this.statusEl.textContent =
+        result.status === 401 || result.status === 403
+          ? 'Could not mark as read — try signing in again.'
+          : `Mark all as read failed: ${result.error}`
+      this.listEl.querySelectorAll<HTMLButtonElement>('[data-mark-read]').forEach((b) => {
+        b.disabled = false
+      })
+      return
+    }
+
+    // Prefer server remaining count for badge (not optimistic panel filter).
+    const remaining =
+      typeof result.remainingUnread === 'number'
+        ? result.remainingUnread
+        : Math.max(0, this.items.filter((n) => !n.read).length - result.updated)
+    this.options.onUnreadChange?.(remaining)
+
+    if (result.updated === 0 && remaining > 0) {
+      this.statusEl.hidden = false
+      this.statusEl.textContent = 'Nothing was marked read — still have unread on server.'
+    } else if (remaining > 0) {
+      this.statusEl.hidden = false
+      this.statusEl.textContent = `Marked ${result.updated} read — ${remaining} still unread.`
+    } else {
+      this.statusEl.hidden = true
+      this.statusEl.textContent = ''
+    }
+
+    // Reload list from server so `read` flags match inbox.
+    await this.reload()
   }
 
+  /**
+   * PUT https://notifications.decentraland.org/notifications/read
+   * Body: `{ notificationIds: string[] }` — signed explorer fetch.
+   */
   private async markRead(ids: string[]): Promise<void> {
     const identity = this.authIdentity()
     if (!identity || !ids.length) return
+
+    const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
+    if (!unique.length) return
+
     this.markAllBtn.disabled = true
-    const result = await markNotificationsRead(identity, ids)
+    this.listEl.querySelectorAll<HTMLButtonElement>('[data-mark-read]').forEach((b) => {
+      b.disabled = true
+    })
+
+    const result = await markNotificationsRead(identity, unique)
+
     this.markAllBtn.disabled = false
     if (!result.ok) {
       this.statusEl.hidden = false
-      this.statusEl.textContent = `Mark read failed: ${result.error}`
+      this.statusEl.textContent =
+        result.status === 401 || result.status === 403
+          ? 'Could not mark as read — try signing in again.'
+          : `Mark as read failed: ${result.error}`
+      this.listEl.querySelectorAll<HTMLButtonElement>('[data-mark-read]').forEach((b) => {
+        b.disabled = false
+      })
       return
     }
-    const idSet = new Set(ids)
+
+    this.statusEl.hidden = true
+    this.statusEl.textContent = ''
+    const idSet = new Set(unique)
     this.items = this.items.map((n) => (idSet.has(n.id) ? { ...n, read: true } : n))
-    const unread = this.items.filter((n) => !n.read).length
+
+    // Badge from server, not optimistic panel count.
+    const badge = await fetchNotifications(identity, { limit: 50, onlyUnread: true })
+    const unread = badge.ok
+      ? badge.notifications.length
+      : this.items.filter((n) => !n.read).length
     this.options.onUnreadChange?.(unread)
     this.markAllBtn.hidden = unread === 0
     this.renderList(this.items.length ? null : 'No notifications yet.')

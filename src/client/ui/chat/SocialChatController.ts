@@ -214,16 +214,33 @@ export class SocialChatController {
     if (this.disposed) return false
     const key = normalizeSceneKey(sceneKey)
     this.chatPool.leave(key)
+    let droppedPrimary = false
     if (this.connectedPointer && normalizeSceneKey(this.connectedPointer) === key) {
       // Keep cast/landing optional: user closed chat — drop primary room too so identity frees.
       this.comms.disconnect()
       this.connectedPointer = null
-      if (this.status.kind === 'connected' || this.status.kind === 'browser_chat_disabled') {
-        this.setStatus({ kind: 'idle' })
-      }
+      droppedPrimary = true
     }
     const closed = this.social.closeSceneTab(sceneKey)
     this.syncLiveKeys()
+    if (
+      droppedPrimary &&
+      (this.status.kind === 'connected' || this.status.kind === 'browser_chat_disabled')
+    ) {
+      // Promote remaining live multi-room tab if any; otherwise idle (list still shows
+      // offline tabs — dock must not treat that as full empty-state wipe).
+      const nextLive = this.social
+        .getLiveSceneKeys()
+        .map((k) =>
+          this.social.getSceneTabs().find((t) => normalizeSceneKey(t.key) === normalizeSceneKey(k))
+        )
+        .find((t): t is NonNullable<typeof t> => Boolean(t))
+      if (nextLive) {
+        this.setStatus({ kind: 'connected', sceneLabel: nextLive.label })
+      } else {
+        this.setStatus({ kind: 'idle' })
+      }
+    }
     return closed
   }
 

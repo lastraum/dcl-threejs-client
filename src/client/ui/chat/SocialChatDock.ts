@@ -555,9 +555,17 @@ export class SocialChatDock {
         message = status.message
         tone = 'error'
         break
-      case 'idle':
-        message = this.social().getCommunities().length > 0 ? '' : 'Visit a scene for scene chat'
+      case 'idle': {
+        // Only empty-prompt when nothing is left to list. Closing the primary
+        // LiveKit room used to flip idle while other scene tabs remained — and
+        // idle-empty CSS hid the whole channel list.
+        const hasChannels =
+          this.social().getSceneTabs().length > 0 ||
+          this.social().getCommunities().length > 0 ||
+          this.social().getDmPeers().length > 0
+        message = hasChannels ? '' : 'Visit a scene for scene chat'
         break
+      }
       case 'connected':
         message = ''
         break

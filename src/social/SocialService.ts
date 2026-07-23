@@ -405,17 +405,35 @@ export class SocialService {
   /**
    * Dismiss a scene chat tab (history + leave LiveKit via controller).
    * Any open multi-room tab can be closed, including the landing room.
+   * Only removes the matching tab — never clears the rest of the list.
    */
   closeSceneTab(sceneKey: string): boolean {
-    const idx = this.sceneTabs.findIndex((t) => t.key === sceneKey)
+    const want = sceneKey.trim().toLowerCase()
+    if (!want) return false
+    const idx = this.sceneTabs.findIndex((t) => t.key.trim().toLowerCase() === want)
     if (idx < 0) return false
+    const tab = this.sceneTabs[idx]!
+    const actualKey = tab.key
     this.sceneTabs.splice(idx, 1)
-    this.liveSceneKeys.delete(sceneKey)
-    if (this.connectedSceneKey === sceneKey) this.connectedSceneKey = null
-    const key = `scene:${sceneKey}`
+    // liveSceneKeys may store either raw or normalized pointer — clear both forms.
+    this.liveSceneKeys.delete(actualKey)
+    this.liveSceneKeys.delete(want)
+    if (
+      this.connectedSceneKey &&
+      this.connectedSceneKey.trim().toLowerCase() === want
+    ) {
+      this.connectedSceneKey = null
+    }
+    const key = `scene:${actualKey}`
+    const keyNorm = `scene:${want}`
     this.messages.delete(key)
+    this.messages.delete(keyNorm)
     this.unreadCounts.delete(key)
-    if (this.channel.kind === 'scene' && this.channel.sceneKey === sceneKey) {
+    this.unreadCounts.delete(keyNorm)
+    if (
+      this.channel.kind === 'scene' &&
+      this.channel.sceneKey.trim().toLowerCase() === want
+    ) {
       const nextLive =
         [...this.liveSceneKeys]
           .map((k) => this.findSceneTab(k))
@@ -986,7 +1004,12 @@ export class SocialService {
   }
 
   private findSceneTab(key: string): SceneChatTab | undefined {
-    return this.sceneTabs.find((tab) => tab.key === key)
+    const want = key.trim().toLowerCase()
+    if (!want) return undefined
+    return (
+      this.sceneTabs.find((tab) => tab.key === key) ??
+      this.sceneTabs.find((tab) => tab.key.trim().toLowerCase() === want)
+    )
   }
 
   /** Newest scene first; revisiting moves an existing entry to the front. */

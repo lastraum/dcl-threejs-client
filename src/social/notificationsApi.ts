@@ -136,10 +136,11 @@ export async function markNotificationsRead(
   identity: AuthIdentity,
   notificationIds: string[]
 ): Promise<MarkNotificationsReadResult> {
-  const ids = notificationIds.map((id) => id.trim()).filter(Boolean)
+  const ids = [...new Set(notificationIds.map((id) => id.trim()).filter(Boolean))]
   if (!ids.length) return { ok: false, status: 400, error: 'notificationIds required' }
 
   const url = `${NOTIFICATIONS_URL}/notifications/read`
+  const payload = JSON.stringify({ notificationIds: ids })
   let res: Response
   try {
     res = await signedFetch(url, {
@@ -148,7 +149,7 @@ export async function markNotificationsRead(
         Accept: 'application/json',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ notificationIds: ids }),
+      body: payload,
       identity,
       metadata: EXPLORER_METADATA
     })
@@ -168,15 +169,91 @@ export async function markNotificationsRead(
     const error =
       body && typeof body === 'object' && typeof (body as { message?: unknown }).message === 'string'
         ? (body as { message: string }).message
-        : res.statusText || 'mark_read_failed'
+        : body && typeof body === 'object' && typeof (body as { error?: unknown }).error === 'string'
+          ? (body as { error: string }).error
+          : res.statusText || 'mark_read_failed'
+    console.warn('[notifications] mark read failed', res.status, error, { count: ids.length })
     return { ok: false, status: res.status, error }
   }
 
-  const updated =
-    body && typeof body === 'object' && typeof (body as { updated?: unknown }).updated === 'number'
-      ? (body as { updated: number }).updated
-      : ids.length
+  // Do NOT invent success — Explorer must report a real `updated` count.
+  if (!body || typeof body !== 'object' || typeof (body as { updated?: unknown }).updated !== 'number') {
+    console.warn('[notifications] mark read: missing updated in response', body)
+    return { ok: false, status: res.status, error: 'invalid_mark_read_response' }
+  }
+  const updated = (body as { updated: number }).updated
+  if (updated <= 0) {
+    console.warn('[notifications] mark read: updated=0', { sent: ids.length, ids: ids.slice(0, 5) })
+    return { ok: false, status: 200, error: 'no notifications were updated (check ids / auth)' }
+  }
+  console.info('[notifications] mark read ok', { updated, sent: ids.length })
   return { ok: true, updated }
+}
+
+/**
+ * Fetch every unread notification (paginated, max 50 per page).
+ * Used by "Mark all as read" so we don't only clear the first panel page.
+ */
+export async function fetchAllUnreadNotifications(
+  identity: AuthIdentity,
+  options?: { maxPages?: number }
+): Promise<FetchNotificationsResult> {
+  const maxPages = options?.maxPages ?? 20
+  const byId = new Map<string, DclNotification>()
+  let fromMs = 0
+
+  for (let page = 0; page < maxPages; page++) {
+    const result = await fetchNotifications(identity, {
+      limit: 50,
+      onlyUnread: true,
+      from: fromMs > 0 ? fromMs : undefined
+    })
+    if (!result.ok) return result
+    if (!result.notifications.length) break
+
+    let maxTsMs = fromMs
+    for (const n of result.notifications) {
+      byId.set(n.id, n)
+      const raw = Number(n.timestamp)
+      if (!Number.isFinite(raw) || raw <= 0) continue
+      // API stores seconds; `from` query is ms.
+      const ms = raw < 1e12 ? raw * 1000 : raw
+      if (ms > maxTsMs) maxTsMs = ms
+    }
+
+    if (result.notifications.length < 50) break
+    // Inclusive `from` — advance 1ms past last page max to avoid infinite loops; ids dedupe.
+    const nextFrom = maxTsMs + 1
+    if (nextFrom <= fromMs) break
+    fromMs = nextFrom
+  }
+
+  return { ok: true, notifications: [...byId.values()] }
+}
+
+/** Mark every unread notification as read (paginated fetch + batched PUT). */
+export async function markAllNotificationsRead(
+  identity: AuthIdentity
+): Promise<MarkNotificationsReadResult & { remainingUnread?: number }> {
+  const unread = await fetchAllUnreadNotifications(identity)
+  if (!unread.ok) return unread
+  if (!unread.notifications.length) return { ok: true, updated: 0, remainingUnread: 0 }
+
+  const ids = unread.notifications.map((n) => n.id)
+  let totalUpdated = 0
+  // API accepts arrays; batch to stay well under body limits.
+  const BATCH = 50
+  for (let i = 0; i < ids.length; i += BATCH) {
+    const chunk = ids.slice(i, i + BATCH)
+    const result = await markNotificationsRead(identity, chunk)
+    if (!result.ok) return result
+    totalUpdated += result.updated
+  }
+
+  // Server truth for badge.
+  const verify = await fetchNotifications(identity, { limit: 50, onlyUnread: true })
+  const remainingUnread = verify.ok ? verify.notifications.length : undefined
+  return { ok: true, updated: totalUpdated, remainingUnread }
 }
 
 function metaString(m: Record<string, unknown>, keys: readonly string[]): string {

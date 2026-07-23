@@ -19,11 +19,12 @@ export function parcelWorldOrigin(parcel: ParcelCoord, base: ParcelCoord): {
  * Parent parcel root is at dclToThree(SW) = (-swX, swZ). Local offset must also
  * respect the X reflection so mesh center lands on dclToThree(parcel center):
  *   three = (-(swX+8), swZ+8)  ⇒  local = (-8, y, +8)
- * Y is nudged slightly below y=0 so scene floors at zero do not z-fight the padding ground.
+ * Y is nudged below y=0 so scene floors / default FloorBase at zero do not z-fight
+ * the client empty-land ground (was -0.01; still fought on some published floors).
  */
 export const EMPTY_LAND_GROUND_OFFSET = {
   x: -PARCEL_SIZE / 2,
-  y: -0.01,
+  y: -0.02,
   z: PARCEL_SIZE / 2
 } as const
 

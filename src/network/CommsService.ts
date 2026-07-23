@@ -1478,7 +1478,12 @@ export class CommsService {
     const connected = await session.connect(adapter)
     if (label === 'world') this.worldConnected = connected
     if (label === 'island') this.islandConnected = connected
-    if (connected) this.notifyLiveKitRoomsChanged()
+    if (connected) {
+      this.notifyLiveKitRoomsChanged()
+      // Follow teleport / World rebuild: remotes already in room must re-hit onPeerJoin
+      // (join events already fired during connect before handlers were rewired).
+      this.notifyHandlersOfCurrentPeers()
+    }
     return connected
   }
 

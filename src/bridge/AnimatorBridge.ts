@@ -327,15 +327,25 @@ export class AnimatorBridge {
       const stateSignature = animatorStateSignature(states, usingDefaultAutoPlay)
       const forceReplay = this.dirtyReplay.has(entity)
       this.dirtyReplay.delete(entity)
-      // Signature skip is correct for idle holds — but identical shouldReset re-fires
-      // (muzzle flash / gun shot) arrive as CRDT dirties with the same state payload.
-      if (!rebinding && !forceReplay && bound.lastAppliedSignature === stateSignature) {
-        continue
+      // Skip unchanged state. SyncEntity re-puts the same Animator often — only re-apply
+      // when signature changed, or markDirty + shouldReset (one-shot re-fire).
+      if (!rebinding && bound.lastAppliedSignature === stateSignature) {
+        const oneShotRefire =
+          forceReplay && states.some((s) => s.shouldReset === true && s.playing !== false)
+        if (!oneShotRefire) continue
       }
 
+      /**
+       * Explorer-style apply:
+       * 1) Stop every action (clean slate — open/close clips don't fight).
+       * 2) Configure each ECS state; play only when playing !== false.
+       * 3) Non-looping clamps on last frame (open holds) until another clip plays (close).
+       */
       for (const action of bound.actions.values()) {
         action.stop()
         action.enabled = false
+        action.paused = false
+        action.setEffectiveTimeScale(1)
       }
 
       const playingClips: string[] = []
@@ -348,14 +358,17 @@ export class AnimatorBridge {
           if (clipName) missingClips.push(clipName)
           continue
         }
+        const loop = state.loop !== false
+        const weight = state.weight ?? 1
         action.enabled = true
-        action.setEffectiveWeight(state.weight ?? 1)
+        action.paused = false
+        action.setEffectiveWeight(weight)
         action.setEffectiveTimeScale(state.speed ?? 1)
-        action.setLoop(state.loop !== false ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)
+        action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)
+        // One-shot open stays on last frame until close clip is played.
+        action.clampWhenFinished = !loop
         if (state.playing !== false) {
-          // Explorer: shouldReset restarts one-shots; forceReplay also restarts when scene
-          // re-dirties Animator with the same shouldReset=true payload.
-          if (state.shouldReset || forceReplay) action.reset()
+          if (state.shouldReset) action.reset()
           action.play()
           playingClips.push(clipName)
         }

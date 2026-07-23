@@ -57,7 +57,7 @@ export function showHudConfirm(options: HudConfirmOptions): Promise<boolean> {
     overlay.setAttribute('role', 'dialog')
     overlay.setAttribute('aria-modal', 'true')
     overlay.setAttribute('aria-labelledby', 'hud-confirm-title')
-    // Above scene-ui / chat dock; must beat pointer-lock canvas hit targets.
+    // Above --z-top-modal (10000) and client HUD; must beat canvas / scene-ui.
     overlay.style.cssText = [
       'position:fixed',
       'inset:0',
@@ -89,14 +89,34 @@ export function showHudConfirm(options: HudConfirmOptions): Promise<boolean> {
       'cursor:default'
     ].join(';')
 
-    card.innerHTML = `
-      <h2 id="hud-confirm-title" style="margin:0;font-size:18px;font-weight:650;line-height:1.3">${escapeHtml(title)}</h2>
-      <p style="margin:0;font-size:14px;line-height:1.5;opacity:0.9;word-break:break-word;white-space:pre-wrap">${escapeHtml(message)}</p>
-      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:4px;flex-wrap:wrap">
-        <button type="button" data-cancel style="padding:10px 16px;border-radius:10px;border:1px solid rgba(255,255,255,0.16);background:transparent;color:#fff;cursor:pointer;font-weight:600;font-size:14px;pointer-events:auto">${escapeHtml(cancelLabel)}</button>
-        <button type="button" data-confirm style="padding:10px 16px;border-radius:10px;border:none;background:#ff2d55;color:#fff;cursor:pointer;font-weight:650;font-size:14px;pointer-events:auto">${escapeHtml(confirmLabel)}</button>
-      </div>
-    `
+    const cancelBtn = document.createElement('button')
+    cancelBtn.type = 'button'
+    cancelBtn.textContent = cancelLabel
+    cancelBtn.style.cssText =
+      'padding:10px 16px;border-radius:10px;border:1px solid rgba(255,255,255,0.16);background:transparent;color:#fff;cursor:pointer;font-weight:600;font-size:14px;pointer-events:auto'
+
+    const confirmBtn = document.createElement('button')
+    confirmBtn.type = 'button'
+    confirmBtn.textContent = confirmLabel
+    confirmBtn.style.cssText =
+      'padding:10px 16px;border-radius:10px;border:none;background:#ff2d55;color:#fff;cursor:pointer;font-weight:650;font-size:14px;pointer-events:auto'
+
+    const titleEl = document.createElement('h2')
+    titleEl.id = 'hud-confirm-title'
+    titleEl.style.cssText = 'margin:0;font-size:18px;font-weight:650;line-height:1.3'
+    titleEl.textContent = title
+
+    const msgEl = document.createElement('p')
+    msgEl.style.cssText =
+      'margin:0;font-size:14px;line-height:1.5;opacity:0.9;word-break:break-word;white-space:pre-wrap'
+    msgEl.textContent = message
+
+    const row = document.createElement('div')
+    row.style.cssText =
+      'display:flex;gap:10px;justify-content:flex-end;margin-top:4px;flex-wrap:wrap'
+    row.append(cancelBtn, confirmBtn)
+
+    card.append(titleEl, msgEl, row)
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -110,41 +130,40 @@ export function showHudConfirm(options: HudConfirmOptions): Promise<boolean> {
       }
     }
 
-    // Capture-phase so canvas/pointer handlers cannot swallow the click first.
-    overlay.addEventListener(
-      'pointerdown',
-      (e) => {
-        e.stopPropagation()
-        if (e.target === overlay) finish(false)
-      },
-      true
-    )
-    overlay.addEventListener(
-      'click',
-      (e) => {
-        e.stopPropagation()
-        if (e.target === overlay) finish(false)
-      },
-      true
-    )
-    card.querySelector('[data-cancel]')?.addEventListener(
-      'click',
-      (e) => {
-        e.preventDefault()
-        e.stopPropagation()
-        finish(false)
-      },
-      true
-    )
-    card.querySelector('[data-confirm]')?.addEventListener(
-      'click',
-      (e) => {
-        e.preventDefault()
-        e.stopPropagation()
-        finish(true)
-      },
-      true
-    )
+    // Scrim only: do NOT stopPropagation on card/button hits — that made Open/Cancel dead
+    // (capture-phase overlay handler ran first and blocked button listeners).
+    const onScrim = (e: Event) => {
+      if (e.target !== overlay) return
+      e.preventDefault()
+      e.stopPropagation()
+      finish(false)
+    }
+    overlay.addEventListener('pointerdown', onScrim, true)
+    overlay.addEventListener('click', onScrim, true)
+
+    // Bubble phase on the buttons themselves — reliable after pointer-lock exit.
+    cancelBtn.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      finish(false)
+    })
+    confirmBtn.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      finish(true)
+    })
+    // pointerup as backup if a parent steals click
+    cancelBtn.addEventListener('pointerup', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      finish(false)
+    })
+    confirmBtn.addEventListener('pointerup', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      finish(true)
+    })
+
     document.addEventListener('keydown', onKey, true)
 
     activeConfirm = { finish, overlay }
@@ -153,8 +172,10 @@ export function showHudConfirm(options: HudConfirmOptions): Promise<boolean> {
     // Re-assert unlock after append (some clients re-lock on click-up of the open_link).
     requestAnimationFrame(() => {
       releasePointerLockForModal()
-      ;(card.querySelector('[data-confirm]') as HTMLButtonElement | null)?.focus()
+      confirmBtn.focus()
     })
+    // Second frame: pointer-lock can re-engage after the scene click that opened the link.
+    window.setTimeout(() => releasePointerLockForModal(), 50)
   })
 }
 
@@ -170,12 +191,4 @@ export function closeHudConfirm(): void {
 
 export function isHudConfirmOpen(): boolean {
   return activeConfirm !== null || document.getElementById(OVERLAY_ID) !== null
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
 }

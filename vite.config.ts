@@ -10,6 +10,7 @@ const ARCHIPELAGO_PEERS = 'https://archipelago-ea-stats.decentraland.org/peers'
 const PARCELS_API = 'https://api.decentraland.org/v2/parcels'
 const WORLDS_LIVE_DATA = 'https://worlds-content-server.decentraland.org/live-data'
 const PLACES_API = 'https://places.decentraland.org/api'
+const STORAGE_API = 'https://storage.decentraland.org'
 
 export default defineConfig({
   plugins: [
@@ -89,6 +90,13 @@ export default defineConfig({
         target: 'https://auth-api.decentraland.org',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/dcl-auth-api/, '')
+      },
+      // World Storage Service — direct CORS returns Allow-Origin: false for localhost
+      '/api/storage': {
+        target: STORAGE_API,
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/api\/storage/, '')
       }
     }
   },

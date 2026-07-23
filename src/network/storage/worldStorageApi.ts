@@ -2,20 +2,33 @@
  * World Storage Service client (authoritative server data).
  * Signed fetch ADR-44 — place context via metadata (realm / parcel).
  *
+ * Place resolution (server-side):
+ * - Genesis parcels → Places `?positions=x,y` (realm defaults to `main`)
+ * - Worlds (`*.dcl.eth`) → Places `?names=<world>&positions=<baseParcel>`
+ *   Storage defaults missing parcel to `0,0`; multi-scene worlds need the scene base.
+ *
+ * CORS: storage.decentraland.org returns `Access-Control-Allow-Origin: false` for
+ * localhost and custom domains (e.g. decentraland.social). Browser calls go through
+ * same-origin `/api/storage` (Vite/nginx proxy). Signature is still over the real
+ * API path (`/env`, `/values/…`) so the service verifies correctly after rewrite.
+ *
  * @see https://docs.decentraland.org/creator/scenes-sdk7/networking/authoritative-servers
  * @see https://github.com/decentraland/world-storage-service
  */
+import { Authenticator } from '@dcl/crypto'
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
-import signedFetch from 'decentraland-crypto-fetch'
 import type { RouteTarget } from '../../dcl/content/route'
+import { resolveSceneFromRoute } from '../../dcl/content/resolveScene'
 
 export const STORAGE_API_URL_PROD = 'https://storage.decentraland.org'
 export const STORAGE_API_URL_ZONE = 'https://storage.decentraland.zone'
+/** Same-origin proxy path (vite.config + deploy/nginx). */
+export const STORAGE_API_PROXY_PATH = '/api/storage'
 
 export type StoragePlaceContext = {
   /** World name e.g. myworld.dcl.eth */
   realm?: string | null
-  /** Parcel e.g. 10,20 */
+  /** Parcel e.g. 10,20 — for worlds, scene base parcel (Places place_id). */
   position?: string | null
 }
 
@@ -23,10 +36,11 @@ export type StorageApiResult<T> =
   | { ok: true; data: T }
   | { ok: false; status: number; error: string }
 
-function baseUrl(): string {
+/** Upstream host (prod vs zone) — used only for docs/logging; fetch always via proxy when possible. */
+export function storageUpstreamOrigin(): string {
   try {
     const host = window.location.hostname
-    if (host.includes('localhost') || host.includes('127.0.0.1') || host.includes('decentraland.zone')) {
+    if (host.endsWith('decentraland.zone') || host.includes('.decentraland.zone')) {
       return STORAGE_API_URL_ZONE
     }
   } catch {
@@ -35,24 +49,91 @@ function baseUrl(): string {
   return STORAGE_API_URL_PROD
 }
 
-/** Map landing route → storage signed-fetch place context. */
+/**
+ * Browser fetch base. Prefer same-origin proxy — direct storage CORS fails on localhost
+ * and custom domains (`Access-Control-Allow-Origin: false`).
+ * Override with VITE_STORAGE_API_URL if needed.
+ */
+function storageFetchBase(): string {
+  const fromEnv =
+    typeof import.meta !== 'undefined' ? import.meta.env?.VITE_STORAGE_API_URL?.trim() : ''
+  if (fromEnv) return fromEnv.replace(/\/$/, '')
+  return STORAGE_API_PROXY_PATH
+}
+
+/**
+ * ADR-44 identity headers. Path must be the **upstream** API path (`/env`), not the
+ * proxy prefix (`/api/storage/env`) — crypto-middleware validates against the path
+ * the storage service sees after rewrite.
+ */
+function signedStorageHeaders(
+  identity: AuthIdentity,
+  method: string,
+  apiPath: string,
+  metadata: Record<string, unknown>,
+  extra?: Record<string, string>
+): Record<string, string> {
+  const timestamp = String(Date.now())
+  const data = JSON.stringify(metadata)
+  const payload = [method, apiPath, timestamp, data].join(':').toLowerCase()
+  const chain = Authenticator.signPayload(identity, payload)
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    ...(extra ?? {})
+  }
+  chain.forEach((link, i) => {
+    headers[`x-identity-auth-chain-${i}`] = JSON.stringify(link)
+  })
+  headers['x-identity-timestamp'] = timestamp
+  headers['x-identity-metadata'] = data
+  return headers
+}
+
+/** Sync map landing route → storage context (worlds use realm only; parcel may default server-side). */
 export function storageContextFromRoute(
   route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
 ): StoragePlaceContext {
   if (route.kind === 'world') {
-    return { realm: route.worldName.trim(), position: null }
+    return { realm: route.worldName.trim().toLowerCase(), position: '0,0' }
   }
   return { realm: null, position: `${route.x},${route.y}` }
+}
+
+/**
+ * Resolve storage place context for signed fetch.
+ * Worlds: realm + deployed scene base parcel (Places `names` + `positions` path).
+ * Parcels: position only (Genesis).
+ */
+export async function resolveStoragePlaceContext(
+  route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
+): Promise<StoragePlaceContext> {
+  if (route.kind === 'coords') {
+    return { realm: null, position: `${route.x},${route.y}` }
+  }
+
+  const realm = route.worldName.trim().toLowerCase()
+  try {
+    const scene = await resolveSceneFromRoute(route)
+    const base = scene.baseParcel?.trim()
+    // Prefer deployed scene base so multi-scene worlds hit the correct place_id.
+    if (base && /^-?\d+,-?\d+$/.test(base)) {
+      return { realm, position: base }
+    }
+  } catch {
+    /* fall through — still send realm + 0,0 */
+  }
+  return { realm, position: '0,0' }
 }
 
 function buildMetadata(ctx: StoragePlaceContext): Record<string, unknown> {
   const meta: Record<string, unknown> = {}
   if (ctx.realm) {
-    meta.realm = { serverName: ctx.realm }
-    meta.realmName = ctx.realm
+    const realm = ctx.realm.trim().toLowerCase()
+    meta.realm = { serverName: realm }
+    meta.realmName = realm
   }
   if (ctx.position) {
-    meta.parcel = ctx.position
+    meta.parcel = ctx.position.trim()
   }
   return meta
 }
@@ -63,23 +144,26 @@ async function storageRequest(
   path: string,
   init: { method: string; body?: unknown; headers?: Record<string, string> }
 ): Promise<StorageApiResult<unknown>> {
-  const url = `${baseUrl().replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`
-  const headers: Record<string, string> = {
-    Accept: 'application/json',
-    ...(init.headers ?? {})
-  }
+  const apiPath = path.startsWith('/') ? path : `/${path}`
+  const url = `${storageFetchBase()}${apiPath}`
   let body: string | undefined
+  const extra: Record<string, string> = { ...(init.headers ?? {}) }
   if (init.body !== undefined) {
-    headers['Content-Type'] = 'application/json'
+    extra['Content-Type'] = 'application/json'
     body = JSON.stringify(init.body)
   }
+  const headers = signedStorageHeaders(
+    identity,
+    init.method,
+    apiPath,
+    buildMetadata(ctx),
+    extra
+  )
   try {
-    const res = await signedFetch(url, {
+    const res = await fetch(url, {
       method: init.method,
       headers,
-      body,
-      identity,
-      metadata: buildMetadata(ctx)
+      body
     })
     if (res.status === 204) return { ok: true, data: null }
     const text = await res.text()

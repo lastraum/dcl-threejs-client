@@ -17723,11 +17723,14 @@
       }
       .scene-watch-settings-modal--manage {
         width: min(640px, 100%);
-        max-height: min(92vh, 860px);
+        height: min(720px, 92vh);
+        max-width: 640px;
+        max-height: min(720px, 92vh);
         display: flex;
         flex-direction: column;
         overflow: hidden;
         padding-bottom: 16px;
+        box-sizing: border-box;
       }
       .place-manage-header {
         display: flex;
@@ -17861,6 +17864,119 @@
       .place-manage-player-search .scene-watch-settings-modal-input {
         flex: 1;
         margin-bottom: 0;
+      }
+      .place-manage-ban-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .place-manage-ban-addr {
+        font-size: 0.72rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        color: rgba(244, 244, 245, 0.45);
+        word-break: break-all;
+      }
+      .place-manage-ban-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-top: 12px;
+      }
+      .place-manage-ban-count {
+        font-size: 0.75rem;
+        color: rgba(244, 244, 245, 0.5);
+      }
+      .place-manage-dialog-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 10050;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: rgba(0, 0, 0, 0.62);
+        backdrop-filter: blur(4px);
+      }
+      .place-manage-dialog {
+        width: min(420px, 100%);
+        max-height: min(88vh, 640px);
+        overflow: auto;
+        border-radius: 14px;
+        background: #1a1b22;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+        padding: 18px 18px 16px;
+      }
+      .place-manage-dialog-title {
+        margin: 0 0 8px;
+        font-size: 1rem;
+        font-weight: 700;
+        color: #fff;
+      }
+      .place-manage-dialog-message {
+        margin: 0 0 14px;
+        font-size: 0.85rem;
+        line-height: 1.45;
+        color: rgba(244, 244, 245, 0.68);
+      }
+      .place-manage-dialog-form {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .place-manage-dialog-field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .place-manage-dialog-label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(244, 244, 245, 0.55);
+      }
+      .place-manage-dialog-input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(0, 0, 0, 0.35);
+        color: #f4f4f5;
+        font: inherit;
+        font-size: 0.875rem;
+      }
+      .place-manage-dialog-input:focus {
+        outline: none;
+        border-color: rgba(255, 45, 85, 0.65);
+        box-shadow: 0 0 0 2px rgba(255, 45, 85, 0.18);
+      }
+      .place-manage-dialog-input--mono,
+      .place-manage-dialog-textarea.place-manage-dialog-input--mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.8rem;
+      }
+      .place-manage-dialog-textarea {
+        resize: vertical;
+        min-height: 96px;
+        line-height: 1.4;
+      }
+      .place-manage-dialog-error {
+        margin: 0;
+        font-size: 0.8rem;
+        color: #fecaca;
+      }
+      .place-manage-dialog-error[hidden] {
+        display: none !important;
+      }
+      .place-manage-dialog-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 4px;
       }
       .scene-watch-settings-modal-divider {
         border: none;

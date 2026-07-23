@@ -1,11 +1,18 @@
 /**
  * Owner "Manage place" modal (landing gear ⚙):
  * - Streams — RTMP keys, watch pointer, live listings
- * - Bans — scaffold (scene ban management)
+ * - Bans — gatekeeper scene-bans list / ban / unban
  * - Multiplayer — authoritative server env / scene / player storage
  */
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import type { RouteTarget } from '../../../dcl/content/route'
+import {
+  addSceneBan,
+  listSceneBans,
+  removeSceneBan,
+  type SceneBanEntry,
+  type SceneBanParams
+} from '../../../network/gatekeeper/sceneBansApi'
 import {
   formatTimeLeftMs,
   sceneStreamAccessAdd,
@@ -26,6 +33,7 @@ import {
   setEnvValue,
   setPlayerValue,
   setSceneValue,
+  resolveStoragePlaceContext,
   storageContextFromRoute,
   type StoragePlaceContext
 } from '../../../network/storage/worldStorageApi'
@@ -41,6 +49,7 @@ import {
   type SceneStreamKind,
   type UserSceneStream
 } from '../../../social/sceneStreams'
+import { placeManageConfirm, placeManagePrompt } from './placeManageDialogs'
 
 function escapeHtml(value: string): string {
   return value
@@ -70,7 +79,8 @@ type MultiTab = 'env' | 'scene' | 'player'
 export class SceneStreamSettingsModal {
   readonly root: HTMLElement
   private readonly opts: SceneStreamSettingsModalOptions
-  private readonly storageCtx: StoragePlaceContext
+  private storageCtx: StoragePlaceContext
+  private storageCtxReady: Promise<StoragePlaceContext> | null = null
   private credentials: SceneStreamCredentials | null = null
   private listAttempted = false
   private ctxBusy = false
@@ -81,9 +91,16 @@ export class SceneStreamSettingsModal {
   private sceneKeys: string[] = []
   private playerKeys: string[] = []
   private playerAddress = ''
+  private banParams: SceneBanParams | null = null
+  private banEntries: SceneBanEntry[] = []
+  private banTotal = 0
+  private banOffset = 0
+  private banBusy = false
+  private readonly banPageSize = 50
 
   constructor(opts: SceneStreamSettingsModalOptions) {
     this.opts = opts
+    // Sync fallback; multiplayer awaits resolveStoragePlaceContext (world base parcel).
     this.storageCtx = storageContextFromRoute(opts.route)
     this.root = document.createElement('div')
     this.root.className = 'scene-watch-settings-modal-backdrop'
@@ -94,6 +111,17 @@ export class SceneStreamSettingsModal {
     })
     this.bindShell()
     this.showMainTab('streams')
+  }
+
+  /** Worlds need realm + scene base parcel for Places `names`+`positions` path. */
+  private ensureStorageCtx(): Promise<StoragePlaceContext> {
+    if (!this.storageCtxReady) {
+      this.storageCtxReady = resolveStoragePlaceContext(this.opts.route).then((ctx) => {
+        this.storageCtx = ctx
+        return ctx
+      })
+    }
+    return this.storageCtxReady
   }
 
   mount(parent: HTMLElement): void {
@@ -482,34 +510,271 @@ export class SceneStreamSettingsModal {
   private renderBansPanel(): void {
     const panel = this.root.querySelector('[data-panel="bans"]') as HTMLElement
     panel.innerHTML = `
-      <h4 class="scene-watch-settings-modal-label">Scene bans</h4>
-      <p class="scene-watch-settings-modal-text">
-        Manage wallets blocked from joining chat / comms in this place.
-        Full ban list management is coming soon — mid-session bans already work via gatekeeper when players are denied entry.
-      </p>
-      <div class="place-manage-empty">
-        Ban list tools will appear here (list · unban · notes).
+      <div class="place-manage-toolbar">
+        <h4 class="scene-watch-settings-modal-label">Scene bans</h4>
+        <button type="button" class="scene-stream-access-modal-btn scene-stream-access-modal-btn--primary" data-ban-add>+ Ban wallet</button>
       </div>
+      <p class="scene-watch-settings-modal-text scene-watch-settings-modal-text--tight">
+        Wallets blocked from chat / voice / LiveKit for this place (gatekeeper).
+        Owners and scene admins can list, ban, and unban.
+      </p>
+      <div class="place-manage-kv-list" data-ban-list>
+        <p class="place-manage-loading">Loading bans…</p>
+      </div>
+      <div class="place-manage-ban-footer" data-ban-footer hidden></div>
+      <p class="scene-watch-settings-modal-error" data-ban-error hidden></p>
     `
+    panel.querySelector('[data-ban-add]')?.addEventListener('click', () => void this.promptAddBan())
+    void this.loadBans({ reset: true })
+  }
+
+  private setBanError(msg: string | null): void {
+    const el = this.root.querySelector('[data-ban-error]') as HTMLElement | null
+    if (!el) return
+    if (!msg) {
+      el.hidden = true
+      el.textContent = ''
+      return
+    }
+    el.hidden = false
+    el.textContent = msg
+  }
+
+  private async ensureBanParams(): Promise<SceneBanParams | null> {
+    if (this.banParams) return this.banParams
+    try {
+      const ctx = await resolveStreamAccessContext(this.opts.route, { isGuest: false })
+      this.banParams = {
+        sceneId: ctx.sceneId,
+        parcel: ctx.parcel,
+        realmName: ctx.realmName,
+        isWorld: ctx.isWorld,
+        isGuest: false,
+        worldsContentHost: ctx.worldsContentHost
+      }
+      return this.banParams
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e)
+      this.setBanError(`Could not resolve place for bans: ${detail}`)
+      return null
+    }
+  }
+
+  private async loadBans(opts?: { reset?: boolean; append?: boolean }): Promise<void> {
+    if (this.banBusy) return
+    const list = this.root.querySelector('[data-ban-list]') as HTMLElement | null
+    const footer = this.root.querySelector('[data-ban-footer]') as HTMLElement | null
+    if (!list) return
+
+    if (opts?.reset) {
+      this.banOffset = 0
+      this.banEntries = []
+      this.banTotal = 0
+    }
+
+    this.banBusy = true
+    this.setBanError(null)
+    if (!opts?.append) {
+      list.innerHTML = `<p class="place-manage-loading">Loading bans…</p>`
+    }
+
+    const params = await this.ensureBanParams()
+    if (!params || this.disposed) {
+      this.banBusy = false
+      return
+    }
+
+    const r = await listSceneBans(this.opts.identity, params, {
+      limit: this.banPageSize,
+      offset: this.banOffset
+    })
+    this.banBusy = false
+    if (this.disposed) return
+
+    if (!r.ok) {
+      list.innerHTML = `<div class="place-manage-empty">Could not load ban list.</div>`
+      this.setBanError(r.error)
+      if (footer) footer.hidden = true
+      return
+    }
+
+    if (opts?.append) {
+      this.banEntries = [...this.banEntries, ...r.data.results]
+    } else {
+      this.banEntries = r.data.results
+    }
+    this.banTotal = r.data.total
+    this.banOffset = this.banEntries.length
+    this.paintBanList()
+  }
+
+  private paintBanList(): void {
+    const list = this.root.querySelector('[data-ban-list]') as HTMLElement | null
+    const footer = this.root.querySelector('[data-ban-footer]') as HTMLElement | null
+    if (!list) return
+
+    if (this.banEntries.length === 0) {
+      list.innerHTML = `<div class="place-manage-empty">No banned wallets for this place</div>`
+    } else {
+      list.innerHTML = this.banEntries
+        .map((entry, index) => {
+          const label = entry.name
+            ? escapeHtml(entry.name)
+            : escapeHtml(entry.bannedAddress || 'Unknown')
+          const sub =
+            entry.name && entry.bannedAddress
+              ? `<span class="place-manage-ban-addr">${escapeHtml(entry.bannedAddress)}</span>`
+              : ''
+          return `
+            <div class="place-manage-kv-row place-manage-ban-row" data-ban-index="${index}">
+              <div class="place-manage-ban-meta">
+                <span class="place-manage-kv-key">${label}</span>
+                ${sub}
+              </div>
+              <span class="place-manage-kv-actions">
+                <button type="button" class="scene-stream-access-modal-btn scene-stream-access-modal-btn--danger" data-ban-unban="${index}">Unban</button>
+              </span>
+            </div>`
+        })
+        .join('')
+      list.querySelectorAll<HTMLButtonElement>('[data-ban-unban]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const i = Number(btn.dataset.banUnban)
+          if (!Number.isFinite(i)) return
+          void this.confirmUnban(this.banEntries[i])
+        })
+      })
+    }
+
+    if (footer) {
+      const more = this.banEntries.length < this.banTotal
+      footer.hidden = this.banTotal === 0 && !more
+      footer.innerHTML = `
+        <span class="place-manage-ban-count">${this.banEntries.length}${
+          this.banTotal > this.banEntries.length ? ` of ${this.banTotal}` : this.banTotal ? ` · ${this.banTotal} total` : ''
+        }</span>
+        ${
+          more
+            ? `<button type="button" class="scene-stream-access-modal-btn" data-ban-more>Load more</button>`
+            : ''
+        }
+      `
+      footer.querySelector('[data-ban-more]')?.addEventListener('click', () => {
+        void this.loadBans({ append: true })
+      })
+    }
+  }
+
+  private async promptAddBan(): Promise<void> {
+    const values = await placeManagePrompt({
+      title: 'Ban wallet',
+      message: 'Block a wallet (and optionally a name) from this place’s chat and voice.',
+      confirmLabel: 'Ban',
+      danger: true,
+      fields: [
+        {
+          name: 'address',
+          label: 'Wallet address (0x…)',
+          placeholder: '0x…',
+          monospaced: true
+        },
+        {
+          name: 'name',
+          label: 'Name (optional)',
+          placeholder: 'Display name if known'
+        }
+      ]
+    })
+    if (!values) return
+    const address = values.address?.trim() ?? ''
+    const name = values.name?.trim() ?? ''
+    if (!address && !name) {
+      this.setBanError('Enter a wallet address or name.')
+      return
+    }
+    if (address && !/^0x[a-fA-F0-9]{40}$/.test(address)) {
+      this.setBanError('Wallet must be a valid 0x address (40 hex chars).')
+      return
+    }
+    const params = await this.ensureBanParams()
+    if (!params) return
+    const r = await addSceneBan(this.opts.identity, params, {
+      bannedAddress: address || undefined,
+      bannedName: name || undefined
+    })
+    if (!r.ok) {
+      this.setBanError(r.error)
+      return
+    }
+    void this.loadBans({ reset: true })
+  }
+
+  private async confirmUnban(entry: SceneBanEntry | undefined): Promise<void> {
+    if (!entry) return
+    const who = entry.name || entry.bannedAddress || 'this user'
+    const ok = await placeManageConfirm({
+      title: 'Unban wallet',
+      message: `Remove ban for ${who}? They will be able to rejoin chat and voice for this place.`,
+      confirmLabel: 'Unban',
+      danger: true
+    })
+    if (!ok) return
+    const params = await this.ensureBanParams()
+    if (!params) return
+    const r = await removeSceneBan(this.opts.identity, params, {
+      bannedAddress: entry.bannedAddress || undefined,
+      bannedName: entry.name || undefined
+    })
+    if (!r.ok) {
+      this.setBanError(r.error)
+      return
+    }
+    void this.loadBans({ reset: true })
   }
 
   // ── Multiplayer / storage ────────────────────────────────────────────────
 
   private renderMultiplayerPanel(): void {
     const panel = this.root.querySelector('[data-panel="multiplayer"]') as HTMLElement
+    panel.innerHTML = `
+      <p class="scene-watch-settings-modal-text place-manage-loading">Resolving place storage context…</p>
+      <div class="place-manage-multi-body" data-multi-body></div>
+      <p class="scene-watch-settings-modal-error" data-storage-error hidden></p>
+    `
+    void this.mountMultiplayerPanel()
+  }
+
+  private async mountMultiplayerPanel(): Promise<void> {
+    const panel = this.root.querySelector('[data-panel="multiplayer"]') as HTMLElement | null
+    if (!panel || this.disposed) return
+    try {
+      await this.ensureStorageCtx()
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e)
+      panel.innerHTML = `
+        <div class="place-manage-empty">Could not resolve storage place context.</div>
+        <p class="scene-watch-settings-modal-error">${escapeHtml(detail)}</p>
+      `
+      return
+    }
+    if (this.disposed) return
     const place =
       this.storageCtx.realm?.trim() ||
       this.storageCtx.position?.trim() ||
       this.opts.pointer
+    const placeDetail =
+      this.storageCtx.realm && this.storageCtx.position
+        ? `${this.storageCtx.realm} @ ${this.storageCtx.position}`
+        : place
     panel.innerHTML = `
       <p class="scene-watch-settings-modal-text">
-        Authoritative server data for <strong>${escapeHtml(place)}</strong>
+        Authoritative server data for <strong>${escapeHtml(placeDetail)}</strong>
         (signed storage API). Env vars hold secrets; scene/player storage holds JSON game state.
       </p>
       <nav class="place-manage-subtabs" role="tablist" aria-label="Multiplayer storage">
-        <button type="button" class="place-manage-subtab is-active" data-multi-tab="env">Environment</button>
-        <button type="button" class="place-manage-subtab" data-multi-tab="scene">Scene</button>
-        <button type="button" class="place-manage-subtab" data-multi-tab="player">Player</button>
+        <button type="button" class="place-manage-subtab${this.multiTab === 'env' ? ' is-active' : ''}" data-multi-tab="env">Environment</button>
+        <button type="button" class="place-manage-subtab${this.multiTab === 'scene' ? ' is-active' : ''}" data-multi-tab="scene">Scene</button>
+        <button type="button" class="place-manage-subtab${this.multiTab === 'player' ? ' is-active' : ''}" data-multi-tab="player">Player</button>
       </nav>
       <div class="place-manage-multi-body" data-multi-body></div>
       <p class="scene-watch-settings-modal-error" data-storage-error hidden></p>
@@ -600,18 +865,36 @@ export class SceneStreamSettingsModal {
   }
 
   private async promptSetEnv(existingKey?: string): Promise<void> {
-    const key =
-      existingKey?.trim() ||
-      window.prompt('Environment variable key (e.g. API_KEY, MAX_PLAYERS):')?.trim()
+    const editing = !!existingKey?.trim()
+    const values = await placeManagePrompt({
+      title: editing ? 'Edit environment variable' : 'Add environment variable',
+      message: editing
+        ? 'Overwrites the value. Previous value is not shown if encrypted on the server.'
+        : 'Server-only secrets and config for this place’s authoritative server.',
+      confirmLabel: editing ? 'Save' : 'Add',
+      fields: [
+        {
+          name: 'key',
+          label: 'Key',
+          placeholder: 'API_KEY, MAX_PLAYERS…',
+          value: existingKey?.trim() ?? '',
+          required: true,
+          monospaced: true
+        },
+        {
+          name: 'value',
+          label: 'Value',
+          type: 'textarea',
+          rows: 4,
+          placeholder: 'Secret or config value',
+          monospaced: true
+        }
+      ]
+    })
+    if (!values) return
+    const key = values.key?.trim()
     if (!key) return
-    const value = window.prompt(
-      existingKey
-        ? `New value for ${key} (overwrites; previous value is not shown if encrypted):`
-        : `Value for ${key}:`,
-      ''
-    )
-    if (value === null) return
-    const r = await setEnvValue(this.opts.identity, this.storageCtx, key, value)
+    const r = await setEnvValue(this.opts.identity, this.storageCtx, key, values.value ?? '')
     if (!r.ok) {
       this.setStorageError(r.error)
       return
@@ -620,7 +903,14 @@ export class SceneStreamSettingsModal {
   }
 
   private async confirmDeleteEnv(key: string): Promise<void> {
-    if (!key || !window.confirm(`Delete environment variable “${key}”?`)) return
+    if (!key) return
+    const ok = await placeManageConfirm({
+      title: 'Delete environment variable',
+      message: `Delete “${key}”? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true
+    })
+    if (!ok) return
     const r = await deleteEnvKey(this.opts.identity, this.storageCtx, key)
     if (!r.ok) {
       this.setStorageError(r.error)
@@ -679,22 +969,55 @@ export class SceneStreamSettingsModal {
   }
 
   private async promptSetScene(existingKey?: string): Promise<void> {
-    const key =
-      existingKey?.trim() || window.prompt('Scene storage key (e.g. leaderboard):')?.trim()
-    if (!key) return
-    let initial = ''
-    if (existingKey) {
-      const got = await getSceneValue(this.opts.identity, this.storageCtx, key)
+    const editing = !!existingKey?.trim()
+    let initial = '""'
+    if (editing && existingKey) {
+      const got = await getSceneValue(this.opts.identity, this.storageCtx, existingKey.trim())
       if (got.ok) {
         initial =
-          typeof got.data === 'string' ? got.data : JSON.stringify(got.data ?? null, null, 2)
+          typeof got.data === 'string'
+            ? JSON.stringify(got.data)
+            : JSON.stringify(got.data ?? null, null, 2)
       }
     }
-    const raw = window.prompt(`JSON value for “${key}”:`, initial || '""')
-    if (raw === null) return
+    const values = await placeManagePrompt({
+      title: editing ? 'Edit scene value' : 'Add scene value',
+      message: 'Shared world/scene key-value data. Value must be valid JSON.',
+      confirmLabel: editing ? 'Save' : 'Add',
+      fields: [
+        {
+          name: 'key',
+          label: 'Key',
+          placeholder: 'leaderboard, doors…',
+          value: existingKey?.trim() ?? '',
+          required: true,
+          monospaced: true
+        },
+        {
+          name: 'value',
+          label: 'JSON value',
+          type: 'textarea',
+          rows: 8,
+          value: initial,
+          required: true,
+          monospaced: true,
+          validate: (raw) => {
+            try {
+              JSON.parse(raw)
+              return null
+            } catch {
+              return 'Value must be valid JSON (use quotes for plain strings).'
+            }
+          }
+        }
+      ]
+    })
+    if (!values) return
+    const key = values.key?.trim()
+    if (!key) return
     let value: unknown
     try {
-      value = JSON.parse(raw)
+      value = JSON.parse(values.value)
     } catch {
       this.setStorageError('Value must be valid JSON (use quotes for plain strings).')
       return
@@ -708,7 +1031,14 @@ export class SceneStreamSettingsModal {
   }
 
   private async confirmDeleteScene(key: string): Promise<void> {
-    if (!key || !window.confirm(`Delete scene key “${key}”?`)) return
+    if (!key) return
+    const ok = await placeManageConfirm({
+      title: 'Delete scene key',
+      message: `Delete scene key “${key}”?`,
+      confirmLabel: 'Delete',
+      danger: true
+    })
+    if (!ok) return
     const r = await deleteSceneKey(this.opts.identity, this.storageCtx, key)
     if (!r.ok) {
       this.setStorageError(r.error)
@@ -794,27 +1124,60 @@ export class SceneStreamSettingsModal {
 
   private async promptSetPlayer(existingKey?: string): Promise<void> {
     if (!this.playerAddress) return
-    const key =
-      existingKey?.trim() || window.prompt('Player storage key (e.g. progress):')?.trim()
-    if (!key) return
-    let initial = ''
-    if (existingKey) {
+    const editing = !!existingKey?.trim()
+    let initial = '""'
+    if (editing && existingKey) {
       const got = await getPlayerValue(
         this.opts.identity,
         this.storageCtx,
         this.playerAddress,
-        key
+        existingKey.trim()
       )
       if (got.ok) {
         initial =
-          typeof got.data === 'string' ? got.data : JSON.stringify(got.data ?? null, null, 2)
+          typeof got.data === 'string'
+            ? JSON.stringify(got.data)
+            : JSON.stringify(got.data ?? null, null, 2)
       }
     }
-    const raw = window.prompt(`JSON value for “${key}”:`, initial || '""')
-    if (raw === null) return
+    const values = await placeManagePrompt({
+      title: editing ? 'Edit player value' : 'Add player value',
+      message: `JSON storage for ${this.playerAddress}`,
+      confirmLabel: editing ? 'Save' : 'Add',
+      fields: [
+        {
+          name: 'key',
+          label: 'Key',
+          placeholder: 'progress, inventory…',
+          value: existingKey?.trim() ?? '',
+          required: true,
+          monospaced: true
+        },
+        {
+          name: 'value',
+          label: 'JSON value',
+          type: 'textarea',
+          rows: 8,
+          value: initial,
+          required: true,
+          monospaced: true,
+          validate: (raw) => {
+            try {
+              JSON.parse(raw)
+              return null
+            } catch {
+              return 'Value must be valid JSON.'
+            }
+          }
+        }
+      ]
+    })
+    if (!values) return
+    const key = values.key?.trim()
+    if (!key) return
     let value: unknown
     try {
-      value = JSON.parse(raw)
+      value = JSON.parse(values.value)
     } catch {
       this.setStorageError('Value must be valid JSON.')
       return
@@ -835,7 +1198,13 @@ export class SceneStreamSettingsModal {
 
   private async confirmDeletePlayer(key: string): Promise<void> {
     if (!key || !this.playerAddress) return
-    if (!window.confirm(`Delete player key “${key}” for ${this.playerAddress}?`)) return
+    const ok = await placeManageConfirm({
+      title: 'Delete player key',
+      message: `Delete “${key}” for ${this.playerAddress}?`,
+      confirmLabel: 'Delete',
+      danger: true
+    })
+    if (!ok) return
     const r = await deletePlayerKey(
       this.opts.identity,
       this.storageCtx,

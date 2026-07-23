@@ -350,8 +350,10 @@ export function retargetClipToOdk(
     const trackBoneName = parts[0] ?? ''
     const prop = parts[1]
 
+    // Locomotion: no pelvis translation — CCT owns vertical motion (same as DCL/VRM).
+    // Profile/full emotes may still drive pelvis position.
     if (
-      (kind === 'locomotion' || kind === 'full') &&
+      kind === 'full' &&
       profile.pelvisPosition &&
       track instanceof THREE.VectorKeyframeTrack &&
       prop === 'position'

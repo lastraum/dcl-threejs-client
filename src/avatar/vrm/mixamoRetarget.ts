@@ -133,12 +133,21 @@ export function extractRootToHipsMeters(vrm: VRM): number {
   return 1
 }
 
+export type RetargetClipOptions = {
+  /**
+   * Locomotion only: drop hips/root translation so jump clips cannot lift the mesh
+   * above the PhysX CCT (physics owns vertical motion).
+   */
+  stripHipsPosition?: boolean
+}
+
 export function retargetClipToVrm(
   clip: THREE.AnimationClip,
   glbScene: THREE.Object3D,
   vrm: VRM,
   rootToHips: number,
-  metaVersion: string | undefined
+  metaVersion: string | undefined,
+  opts?: RetargetClipOptions
 ): THREE.AnimationClip {
   const scale =
     glbScene.children[0]?.scale.x && glbScene.children[0].scale.x > 1e-6
@@ -146,6 +155,7 @@ export function retargetClipToVrm(
       : 1
   const scaler = rootToHips * scale
   const isV0 = metaVersion === '0'
+  const stripHipsPosition = opts?.stripHipsPosition === true
 
   const getBoneName = (vrmKey: string): string | undefined => {
     return vrm.humanoid.getRawBoneNode(vrmKey as VRMHumanBoneName)?.name
@@ -169,6 +179,8 @@ export function retargetClipToVrm(
         )
       )
     } else if (track instanceof THREE.VectorKeyframeTrack) {
+      // CCT owns world Y — hips.position on jump/walk launches the mesh above the pill.
+      if (stripHipsPosition && prop === 'position' && vrmKey === 'hips') continue
       tracks.push(
         new THREE.VectorKeyframeTrack(
           `${nodeName}.${prop}`,
@@ -195,6 +207,7 @@ export function retargetGltfClipToVrm(
   const prepared = clip.clone()
   filterAndPrepClip(prepared, glbScene, 1)
   const rootToHips = extractRootToHipsMeters(vrm)
+  // Profile emotes may use hip translation — keep position tracks.
   return retargetClipToVrm(prepared, glbScene, vrm, rootToHips, vrm.meta?.metaVersion)
 }
 
@@ -207,5 +220,8 @@ export async function loadRetargetedClip(url: string, vrm: VRM): Promise<THREE.A
   const clip = clipIn.clone()
   filterAndPrepClip(clip, gltf.scene, 1)
   const rootToHips = extractRootToHipsMeters(vrm)
-  return retargetClipToVrm(clip, gltf.scene, vrm, rootToHips, vrm.meta?.metaVersion)
+  // Locomotion: strip hips.position so jump/fall stay locked to CCT feet.
+  return retargetClipToVrm(clip, gltf.scene, vrm, rootToHips, vrm.meta?.metaVersion, {
+    stripHipsPosition: true
+  })
 }

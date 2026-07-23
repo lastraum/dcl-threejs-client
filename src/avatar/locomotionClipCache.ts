@@ -5,7 +5,26 @@ import { remapClipToAvatar } from './emoteBoneMap'
 const cache = new Map<string, THREE.AnimationClip>()
 
 function cacheKey(bodyShape: BodyShape, clip: THREE.AnimationClip): string {
-  return `${bodyShape}:${clip.name}:${clip.duration}:${clip.tracks.length}`
+  return `${bodyShape}:${clip.name}:${clip.duration}:${clip.tracks.length}:noHipPos`
+}
+
+/**
+ * Drop hips/root translation tracks so jump/walk clips cannot lift the mesh above the CCT.
+ * Physics owns vertical motion; animation should only pose bones relative to feet.
+ */
+function stripRootPositionTracks(clip: THREE.AnimationClip): THREE.AnimationClip {
+  const kept = clip.tracks.filter((track) => {
+    if (!track.name.endsWith('.position')) return true
+    const bone = track.name.slice(0, -'.position'.length).replace(/\.\d+$/, '')
+    const n = bone
+      .replace(/^Avatar_/i, '')
+      .replace(/^CTRL_Avatar_/i, '')
+      .replace(/^CTRL_FK_Avatar_/i, '')
+      .replace(/^mixamorig/i, '')
+    return !/^(Hips|hip|Armature|Root|root|Pelvis)$/i.test(n)
+  })
+  if (kept.length === clip.tracks.length) return clip
+  return new THREE.AnimationClip(clip.name, clip.duration, kept)
 }
 
 /**
@@ -23,7 +42,7 @@ export function getRemappedLocomotionClip(
   if (!template) {
     const remapped = remapClipToAvatar(clip, avatarRoot)
     if (!remapped) return null
-    template = remapped
+    template = stripRootPositionTracks(remapped)
     cache.set(key, template)
   }
   return template.clone()

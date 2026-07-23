@@ -72,6 +72,13 @@ export type FollowWireMsg =
   | { t: 'hb'; s: string; l: string; at: number; target?: FollowTarget; flag?: FollowFlagPayload }
   /** Leader set / clear tour flag image (pole + banner on spine). */
   | { t: 'flag'; s: string; l: string; at: number; flag: FollowFlagPayload | null }
+  /**
+   * Follower joined the tour. `l` is the **follower** wallet (not the leader).
+   * Leader tracks roster for Tour Options user list.
+   */
+  | { t: 'join'; s: string; l: string; at: number }
+  /** Follower left the tour. `l` is the follower wallet. */
+  | { t: 'leave'; s: string; l: string; at: number }
 
 export function isCommunityFollowWireText(text: string): boolean {
   const raw = text.trimStart()
@@ -152,6 +159,8 @@ function parseFollowWireObject(o: Record<string, unknown>): FollowWireMsg | null
     if (flag === undefined) return null
     return { t: 'flag', s, l, at, flag }
   }
+  if (t === 'join') return { t: 'join', s, l, at }
+  if (t === 'leave') return { t: 'leave', s, l, at }
   return null
 }
 

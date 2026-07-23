@@ -801,10 +801,30 @@ export class AppController {
           ? this.world?.social.getCommunities().find((c) => c.id.toLowerCase() === cid)?.name ??
             null
           : null
+        const roster = (follow?.getTourRoster() ?? []).map((entry) => {
+          const peer = this.world?.social.getPeerDisplay(entry.address)
+          return {
+            address: entry.address,
+            displayName:
+              peer?.displayName?.trim() ||
+              `${entry.address.slice(0, 6)}…${entry.address.slice(-4)}`,
+            faceUrl: peer?.faceUrl ?? null,
+            isLeader: entry.isLeader
+          }
+        })
         return {
           isLeading: leading,
           flagEnabled: Boolean(active?.flagDataUrl),
-          communityName
+          communityName,
+          roster
+        }
+      },
+      resolveFaceUrl: async (address) => {
+        try {
+          const { fetchProfileFaceUrl } = await import('../avatar/peerApi')
+          return await fetchProfileFaceUrl(address)
+        } catch {
+          return null
         }
       },
       onEnableFlag: () => {
@@ -826,6 +846,23 @@ export class AppController {
         this.tourOptionsPopup = null
       }
     })
+    // Live roster updates while the panel is open.
+    const unsub = this.communityFollow?.subscribe((ev) => {
+      if (ev.kind === 'changed' || ev.kind === 'flag_changed' || ev.kind === 'tour_ended') {
+        this.tourOptionsPopup?.refresh()
+      }
+    })
+    if (unsub) {
+      const prevClose = this.tourOptionsPopup
+      // Dispose path already removes popup; extra unsub on close via refresh cycle is fine
+      // if we wrap dispose — attach once:
+      const originalDispose = this.tourOptionsPopup.dispose.bind(this.tourOptionsPopup)
+      this.tourOptionsPopup.dispose = () => {
+        unsub()
+        originalDispose()
+      }
+      void prevClose
+    }
   }
 
   private openTourFlagImageModal(): void {

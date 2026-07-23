@@ -35,6 +35,13 @@ export type CommunityTourSession = {
   startedAt: number
   /** Leader flag banner image (data URL), if set. */
   flagDataUrl: string | null
+  /** Follower wallets (lowercase) — tracked by leader via join/leave wire. */
+  followerAddresses: string[]
+}
+
+export type TourRosterEntry = {
+  address: string
+  isLeader: boolean
 }
 
 export type CommunityFollowEvent =
@@ -124,6 +131,29 @@ export class CommunityFollowController {
     return [...this.sessions.values()]
   }
 
+  /**
+   * Leader + followers for the local tour (prefer leading, else following).
+   * Count = roster length.
+   */
+  getTourRoster(communityId?: string): TourRosterEntry[] {
+    const id = (communityId ?? this.leadingCommunityId ?? this.followingCommunityId)?.trim().toLowerCase()
+    if (!id) return []
+    const session = this.sessions.get(id)
+    if (!session) return []
+    const leader = session.leaderAddress.toLowerCase()
+    const followers = session.followerAddresses
+      .map((a) => a.toLowerCase())
+      .filter((a) => a && a !== leader && ADDR_RE.test(a))
+    const seen = new Set<string>([leader])
+    const out: TourRosterEntry[] = [{ address: leader, isLeader: true }]
+    for (const a of followers) {
+      if (seen.has(a)) continue
+      seen.add(a)
+      out.push({ address: a, isLeader: false })
+    }
+    return out
+  }
+
   isLeading(communityId?: string): boolean {
     if (!this.leadingCommunityId) return false
     if (!communityId) return true
@@ -177,7 +207,12 @@ export class CommunityFollowController {
       leaderAddress: local,
       lastTarget: target,
       startedAt: Date.now(),
-      flagDataUrl: existing?.leaderAddress === local ? existing.flagDataUrl : null
+      flagDataUrl: existing?.leaderAddress === local ? existing.flagDataUrl : null,
+      // New session clears roster; resume same session keeps prior followers if any.
+      followerAddresses:
+        existing?.sessionId === sessionId && existing.leaderAddress === local
+          ? [...existing.followerAddresses]
+          : []
     }
 
     const startMsg: FollowWireMsg = {
@@ -246,9 +281,17 @@ export class CommunityFollowController {
     if (!session) return false
     const local = this.getLocalAddress()?.toLowerCase() ?? ''
     if (local && session.leaderAddress === local) return false
+    if (!local || !ADDR_RE.test(local)) return false
 
     this.followingCommunityId = id
     this.followingSessionId = session.sessionId
+    // Announce to leader (and peers) so Tour Options roster updates.
+    void this.publish(id, {
+      t: 'join',
+      s: session.sessionId,
+      l: local,
+      at: Date.now()
+    })
     this.emit({ kind: 'changed' })
     // Apply leader flag immediately if we already learned it via start/hb/flag wire.
     if (session.flagDataUrl) {
@@ -279,8 +322,17 @@ export class CommunityFollowController {
   unfollow(): void {
     const was = this.followingCommunityId
     const session = was ? this.sessions.get(was) : null
+    const local = this.getLocalAddress()?.toLowerCase() ?? ''
     this.followingCommunityId = null
     this.followingSessionId = null
+    if (session && local && ADDR_RE.test(local)) {
+      void this.publish(session.communityId, {
+        t: 'leave',
+        s: session.sessionId,
+        l: local,
+        at: Date.now()
+      })
+    }
     // Drop flag visual for this client when leaving the tour.
     if (session) {
       this.emit({
@@ -509,6 +561,16 @@ export class CommunityFollowController {
         local,
         'flag' in msg ? msg.flag : undefined
       )
+      // Re-announce presence so leader roster recovers after reload / late hb.
+      if (
+        msg.t === 'hb' &&
+        this.followingCommunityId === id &&
+        this.followingSessionId === msg.s &&
+        local &&
+        ADDR_RE.test(local)
+      ) {
+        void this.publish(id, { t: 'join', s: msg.s, l: local, at: Date.now() })
+      }
       return
     }
     if (msg.t === 'stop') {
@@ -521,7 +583,37 @@ export class CommunityFollowController {
     }
     if (msg.t === 'flag') {
       this.applyFlag(id, leader, msg.s, msg.flag, local)
+      return
     }
+    if (msg.t === 'join') {
+      // `l` is the follower address (or fall back to packet sender).
+      this.applyFollowerJoin(id, msg.s, (msg.l || from).toLowerCase())
+      return
+    }
+    if (msg.t === 'leave') {
+      this.applyFollowerLeave(id, msg.s, (msg.l || from).toLowerCase())
+    }
+  }
+
+  private applyFollowerJoin(communityId: string, sessionId: string, follower: string): void {
+    if (!ADDR_RE.test(follower)) return
+    const session = this.sessions.get(communityId)
+    if (!session || session.sessionId !== sessionId) return
+    if (follower === session.leaderAddress) return
+    if (session.followerAddresses.includes(follower)) return
+    session.followerAddresses = [...session.followerAddresses, follower]
+    this.sessions.set(communityId, session)
+    this.emit({ kind: 'changed' })
+  }
+
+  private applyFollowerLeave(communityId: string, sessionId: string, follower: string): void {
+    const session = this.sessions.get(communityId)
+    if (!session || session.sessionId !== sessionId) return
+    const next = session.followerAddresses.filter((a) => a !== follower)
+    if (next.length === session.followerAddresses.length) return
+    session.followerAddresses = next
+    this.sessions.set(communityId, session)
+    this.emit({ kind: 'changed' })
   }
 
   private applyLeadAnnounce(
@@ -551,7 +643,9 @@ export class CommunityFollowController {
       leaderAddress: leader,
       lastTarget: target ?? existing?.lastTarget ?? null,
       startedAt: existing && existing.sessionId === sessionId ? existing.startedAt : at,
-      flagDataUrl: nextFlag
+      flagDataUrl: nextFlag,
+      followerAddresses:
+        existing && existing.sessionId === sessionId ? [...existing.followerAddresses] : []
     }
     if (target) session.lastTarget = target
     this.sessions.set(communityId, session)
@@ -655,7 +749,8 @@ export class CommunityFollowController {
             leaderAddress: leader,
             lastTarget: existing?.lastTarget ?? null,
             startedAt: existing?.startedAt ?? Date.now(),
-            flagDataUrl: flag
+            flagDataUrl: flag,
+            followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : []
           }
     if (existing && existing.leaderAddress !== leader && existing.sessionId !== sessionId) {
       return
@@ -695,7 +790,8 @@ export class CommunityFollowController {
           leaderAddress: leader,
           lastTarget: target,
           startedAt: Date.now(),
-          flagDataUrl: existing?.flagDataUrl ?? null
+          flagDataUrl: existing?.flagDataUrl ?? null,
+          followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : []
         }
 
     if (existing && existing.leaderAddress !== leader && existing.sessionId !== sessionId) {

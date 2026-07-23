@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 import { dclToThreePos, dclToThreeQuat } from '../../bridge/dclTransform'
+import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import { catalystContentAssetUrl } from '../../network/catalyst/CatalystClient'
 import type { AssetCache } from '../../rendering/AssetCache'
 import { PARCEL_SIZE } from '../content/types'
@@ -191,6 +192,24 @@ export type RoadTilePlacement = {
 
 /** Reserved PhysX entity ids for AOI road furniture (positive — not landscape walls). */
 export const ROAD_AOI_COLLIDER_ENTITY_BASE = 21_000_000
+/**
+ * Span for stable hashed road entity ids.
+ * Must not overlap GLTF base 20_000_000 or small primary MeshCollider ECS ids.
+ */
+export const ROAD_AOI_COLLIDER_ID_SPAN = 8_000_000
+
+/**
+ * Stable PhysX entity id for a road prop instance across AOI rebuilds.
+ * Sequential ids (old path) forced a full 400-actor remove+recook every parcel edge change.
+ */
+export function stableRoadColliderEntityId(instanceKey: string): number {
+  let h = 2166136261
+  for (let i = 0; i < instanceKey.length; i++) {
+    h ^= instanceKey.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return ROAD_AOI_COLLIDER_ENTITY_BASE + ((h >>> 0) % ROAD_AOI_COLLIDER_ID_SPAN)
+}
 
 export type InstancedRoadBuildResult = {
   root: THREE.Group
@@ -294,7 +313,8 @@ export async function buildInstancedRoadLayer(opts: {
 
   const buckets = new Map<string, { leaf: PropMeshLeaf; matrices: THREE.Matrix4[] }>()
   const colliders: import('../../physics/PhysXWorld').PhysicsColliderDesc[] = []
-  let nextColliderEntity = ROAD_AOI_COLLIDER_ENTITY_BASE
+  /** Detect rare stable-id collisions within one build. */
+  const usedColliderEntities = new Set<number>()
   const fallbackRoot = new THREE.Group()
   fallbackRoot.name = 'aoi-roads-catalyst-fallback'
 
@@ -325,7 +345,11 @@ export async function buildInstancedRoadLayer(opts: {
     }
   }
 
-  const pushColliders = async (meshName: string, worldProp: THREE.Matrix4) => {
+  const pushColliders = async (
+    meshName: string,
+    worldProp: THREE.Matrix4,
+    instanceKey: string
+  ) => {
     const leaves = await loadPropColliderLeaves(meshName)
     if (!leaves.length) return
     // Shared geom fingerprint across instances → PhysX geometryToPxMesh cache hit.
@@ -335,8 +359,12 @@ export async function buildInstancedRoadLayer(opts: {
       localMatrix: c.localMatrix.clone()
     }))
     const geomKey = shapes.map((s) => s.fingerprint).join('|')
+    let entity = stableRoadColliderEntityId(instanceKey)
+    // Extremely rare hash collision within one build — linear probe.
+    while (usedColliderEntities.has(entity)) entity++
+    usedColliderEntities.add(entity)
     colliders.push({
-      entity: nextColliderEntity++,
+      entity,
       kind: 'gltf-multi',
       fingerprint: `road-aoi:v1-inst:${geomKey}`,
       matrix: worldProp.clone(),
@@ -398,14 +426,14 @@ export async function buildInstancedRoadLayer(opts: {
       )
       baseMat.multiplyMatrices(rootMat, partMat)
       pushLeaves(leaves, baseMat)
-      await pushColliders(part.mesh, baseMat)
+      await pushColliders(part.mesh, baseMat, `${p.parcelKey}|${part.mesh}`)
       placedAny = true
 
       // Explorer prefabs parent planter + flower strip under long hedges.
       for (const extra of explorerCompanionMeshes(part.mesh)) {
         const extraLeaves = await loadPropMeshLeaves(extra)
         if (extraLeaves.length) pushLeaves(extraLeaves, baseMat)
-        await pushColliders(extra, baseMat)
+        await pushColliders(extra, baseMat, `${p.parcelKey}|${extra}`)
       }
     }
 
@@ -416,7 +444,9 @@ export async function buildInstancedRoadLayer(opts: {
     if (!matrices.length) continue
     const mesh = new THREE.InstancedMesh(leaf.geometry, leaf.material, matrices.length)
     mesh.name = `road-inst:${leaf.key}`
-    mesh.castShadow = true
+    // Roads dominate castSh (~hundreds of instanced leaves). Receive only — sun soft
+    // shadow pass was ~3× submitTris on plaza with adaptive quality off.
+    mesh.castShadow = false
     mesh.receiveShadow = true
     mesh.frustumCulled = true
 
@@ -435,7 +465,8 @@ export async function buildInstancedRoadLayer(opts: {
   root.userData.roadDrawBuckets = buckets.size
   root.userData.roadColliders = colliders.length
 
-  console.info(
+  clientDebugLog.consoleOnly(
+    'info',
     `[roads] instanced parcels=${parcelCount} instances=${instanceCount} draws=${buckets.size}` +
       ` colliders=${colliders.length}` +
       (fallbackClones ? ` catalystFallback=${fallbackClones}` : '')
@@ -836,7 +867,7 @@ async function applyExplorerRoadMaterial(
       prev?.dispose?.()
     }
     node.material = mat
-    node.castShadow = true
+    node.castShadow = false
     node.receiveShadow = true
   })
 }

@@ -1732,18 +1732,22 @@ export class SceneScriptSystem {
         return
       }
       const cleaned = msg.message.replace(/^\[(?:log|info|warn|error|debug)\]\s*/, '')
-      // Load-gate / InputModifier path — always mirror to DevTools (Help panel may be off).
-      const loadGate =
+      // Load-gate spam (every late GLB FINISHED) was flooding DevTools + tanking FPS.
+      // Keep real freeze transitions; throttle the rest.
+      const loadGateNoise =
         /InputModifier after|InputModifier final|load-gate clear|GltfContainerLoadingState inject|gltf LWW/i.test(
           cleaned
         )
-      if (loadGate) {
+      const loadGateHot =
+        /load-gate clear.*wasFrozen=true|disableAll=true|locomotion=blocked/i.test(cleaned)
+      if (loadGateHot) {
         console.info(`[sceneWorker] ${cleaned}`)
       }
       clientDebugLog.log('scene', cleaned, {
-        throttleMs: loadGate ? 0 : 100,
-        throttleKey: loadGate ? `scene-worker-loadgate-${cleaned.slice(0, 48)}` : 'scene-worker-log',
-        alsoConsole: loadGate
+        throttleMs: loadGateNoise ? (loadGateHot ? 500 : 5000) : 100,
+        throttleKey: loadGateNoise
+          ? `scene-worker-loadgate-${cleaned.slice(0, 40)}`
+          : 'scene-worker-log'
       })
       return
     }
@@ -2715,8 +2719,8 @@ export class SceneScriptSystem {
     this.foldProjectionChanges()
     const mainCam = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
     const locomotion = readLocomotionFromComponents(this.readComponents, PlayerEntity)
-    // Diagnose main/worker freeze desync (SpaceRunner map portal).
-    if (frozenBefore || locomotion.disableAll || !msg.inputModifierHas) {
+    // Diagnose freeze transitions only — `!imHas` is normal free play and was logging every frame.
+    if (frozenBefore || locomotion.disableAll) {
       const hadAfter = InputModifier.has(PlayerEntity)
       console.info(
         `[player-frame] frameId=${msg.frameId} imHas=${msg.inputModifierHas} ` +
@@ -3155,9 +3159,8 @@ export class SceneScriptSystem {
     }
     const bindMsg =
       `input bound — ${pointerEntities} PointerEvents · ${triggerEntities} TriggerArea · ${raycastEntities} Raycast`
-    clientDebugLog.log('pointer', bindMsg, { level: 'success', alsoConsole: true })
-    // Always visible — alsoConsole is ignored unless Help→Debug console mirror is on.
-    console.info('[pointer]', bindMsg)
+    clientDebugLog.log('pointer', bindMsg, { level: 'success' })
+    clientDebugLog.consoleOnly('info', `[pointer] ${bindMsg}`)
   }
 
   private syncTriggerAreas(): void {
@@ -3326,16 +3329,12 @@ export class SceneScriptSystem {
     const gltfPath = opts?.reason === 'gltf-loading-state'
     if (isGltfLoadingStateVerbose() || gltfPath) {
       const channel = gltfPath ? 'renderer-inbound-deliver' : 'pointer-crdt-deliver'
-      clientDebugLog.log(
-        'gltf-load',
-        `→ worker ${channel} (${opts?.reason ?? 'lww'}) puts≈${pending} bytes=${copy.byteLength}`,
-        { alsoConsole: true, throttleMs: 50 }
-      )
-      // Help panel may be off; always mirror critical loading-state delivers to DevTools.
-      if (gltfPath) {
-        console.info(
-          `[gltf-load] → worker ${channel} puts≈${pending} bytes=${copy.byteLength}`
-        )
+      const msg = `→ worker ${channel} (${opts?.reason ?? 'lww'}) puts≈${pending} bytes=${copy.byteLength}`
+      if (isGltfLoadingStateVerbose()) {
+        clientDebugLog.log('gltf-load', msg, { throttleMs: 50 })
+      } else if (gltfPath) {
+        // Respect Help → Debug console mirror (plaza can emit hundreds of these).
+        clientDebugLog.consoleOnly('info', `[gltf-load] ${msg}`)
       }
     }
     if (gltfPath) {
@@ -3613,9 +3612,8 @@ export class SceneScriptSystem {
         `${injectOnly ? ' (inject-only)' : ''}` +
         ` sceneUi=${inject.sceneUi ? 1 : 0}` +
         ` down=[${(inject.downEntities ?? inject.entities).join(',')}]`
-      // Always surface inject line — empty-stash inject-only is the normal UI path.
-      console.log('[pointer]', injectLine)
       this.logPointer(injectLine)
+      clientDebugLog.consoleOnly('info', `[pointer] ${injectLine}`)
       this.worker.postMessage({
         type: 'inject-pointer-click',
         body: inject,
@@ -4454,8 +4452,10 @@ export class SceneScriptSystem {
       // the existing queue and never discovered new post-boot extracts (SpaceRunner map1
       // + traps spawn ~30 GLBs → floors never cooked → fall-through).
       for (const entity of cooked) this.collidersCookCallback?.(entity)
-      // Bulk discover any remaining unsynced descriptors (roots not in structureEntities).
-      if (cooked.length > 0) this.collidersCookCallback?.()
+      // Do NOT call collidersCookCallback() with no entity after each batch.
+      // That ran World.discoverUnsynced over every plaza collider on every late GLB attach
+      // batch (~40–50ms collision + thrash) and soft-killed furniture after ~1 min.
+      // Per-entity enqueue above is enough for late attaches; boot uses explicit discover.
       this.refreshPointerTargets()
     }
 

@@ -36,6 +36,7 @@ import {
   FF_HIERARCHY_VERSION,
   SecondaryFirstFrameSampler
 } from './SecondaryFirstFrameSampler'
+import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 
 /** Visible first-frame secondaries inside the inner radius. */
 const FF_MAX_VISIBLE = 3
@@ -360,7 +361,8 @@ export class AoiVisualLayer {
       this.firstFrameSampler.reset()
       ctx.onSecondaryCandidates?.([])
       if (gen === this.refreshGen) {
-        console.info(
+        clientDebugLog.consoleOnly(
+          'info',
           `[aoi] refresh parcels=${pointers.length} vacant=${vacantKeys.length} footprint=${secondaryFootprint.size} roads=${this.loadedRoadIds.size} composites=off firstFrame=off radius=${radiusM}m`
         )
       }
@@ -416,7 +418,8 @@ export class AoiVisualLayer {
         group.visible = !this.liveSecondaryIds.has(ent.id)
         this.compositeRoot.add(group)
         this.loadedCompositeIds.add(ent.id)
-        console.info(
+        clientDebugLog.consoleOnly(
+          'info',
           `[aoi] secondary composite entity=${ent.id.slice(0, 16)}… “${ent.title || ent.base}” gltfs≈${group.children.length}`
         )
       } catch (err) {
@@ -430,7 +433,8 @@ export class AoiVisualLayer {
     if (gen === this.refreshGen) {
       let ffVis = 0
       for (const g of this.firstFrameGroups.values()) if (g.visible) ffVis++
-      console.info(
+      clientDebugLog.consoleOnly(
+        'info',
         `[aoi] refresh parcels=${pointers.length} vacant=${vacantKeys.length} footprint=${secondaryFootprint.size} roads=${this.loadedRoadIds.size} composites=${this.loadedCompositeIds.size} firstFrame=${ffVis}/${this.firstFrameGroups.size} radius=${radiusM}m`
       )
     }
@@ -731,11 +735,14 @@ export class AoiVisualLayer {
         disposeRoadInstancedRoot(built.root)
         return
       }
-      this.clearRoads()
+      // Swap visuals first, then sync colliders without a pre-wipe gap.
+      // clearRoads() used to clearRoadColliders() before rebuild → ~400 soft planters mid-hitch.
+      this.roadRoot.clear()
       this.roadRoot.add(built.root)
       this.roadParcelSignature = signature
       this.loadedRoadIds.clear()
       for (const p of placements) this.loadedRoadIds.add(`parcel:${p.parcelKey}`)
+      // syncAoiRoadColliders replace-keeps live actors and drops orphans — no clear first.
       ctx.syncRoadColliders?.(built.colliders)
     } catch (err) {
       console.warn('[aoi] instanced roads failed', err)

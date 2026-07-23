@@ -1649,23 +1649,15 @@ export class AppController {
         void this.openCommunityFromNotification(communityId, kind)
       },
       isChatNotificationSuppressed: (channelKey) => {
+        // 3D play: never show center mobile-style chat banners (overhead + Chat panel only).
+        // Hard /goto from a chat link was leaving Explore-style toasts over the world.
         if (this.appMode === 'play') {
-          return this.chatPanel?.isActivelyReading() === true && this.isActiveChannelKey(channelKey)
+          return true
         }
         return this.socialChatDock?.isChatNotificationSuppressed(channelKey) ?? false
       }
     })
     this.socialMobileNotifications.mount()
-  }
-
-  private isActiveChannelKey(channelKey: string): boolean {
-    const social = this.world?.social ?? this.socialChat?.getSocial()
-    if (!social) return false
-    const ch = social.getChannel()
-    if (ch.kind === 'scene') return channelKey === `scene:${ch.sceneKey}`
-    if (ch.kind === 'community') return channelKey === `community:${ch.communityId.toLowerCase()}`
-    if (ch.kind === 'dm') return channelKey === `dm:${ch.peerAddress.toLowerCase()}`
-    return channelKey === 'messages'
   }
 
   /** HUD community toast click → Settings → Communities → modal (+ join voice when live). */

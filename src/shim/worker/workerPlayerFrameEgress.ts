@@ -391,18 +391,29 @@ export function forceUnfreezeModeOnlyFromMain(engine: IEngine, reason: string): 
  * Always leaves worker IM cleared (deleteFrom) and invalidates player-frame dedupe so main
  * can receive has=false. Callers must force-post player-frame after this returns true.
  */
+/** Read-only: is PlayerEntity under disableAll load freeze? No side effects. */
+export function isWorkerDisableAllFrozen(engine: IEngine): boolean {
+  preregisterRendererInjectedComponents(engine)
+  const InputModifier = generated.InputModifier(engine)
+  const player = engine.PlayerEntity as Entity
+  const live = InputModifier.getOrNull(player)
+  return !!(live && isLocomotionFrozenValue(live) && readStandardMode(live)?.disableAll)
+}
+
 export function forceClearDisableAllAfterLoadGate(engine: IEngine, reason: string): boolean {
   preregisterRendererInjectedComponents(engine)
   const InputModifier = generated.InputModifier(engine)
   const player = engine.PlayerEntity as Entity
   const live = InputModifier.getOrNull(player)
   const wasFrozen = !!(live && isLocomotionFrozenValue(live) && readStandardMode(live)?.disableAll)
-  // Even if already clear on worker, still invalidate egress so main can catch up
-  // (desync: worker cleared, main still disableAll from stale player-frame/CRDT).
-  clearLocomotionFreezeLatchState()
-  freezeWrittenThisInject = false
-  refuseFreezeWrites = false
-  lastSnapshotKey = ''
+  // Only invalidate egress when we actually clear a freeze — probing free play must not
+  // reset player-frame dedupe (late GLB FINISHED was doing that every frame).
+  if (wasFrozen) {
+    clearLocomotionFreezeLatchState()
+    freezeWrittenThisInject = false
+    refuseFreezeWrites = false
+    lastSnapshotKey = ''
+  }
 
   if (wasFrozen) {
     // deleteFrom first (SpaceRunner xo contract). Bypass is not available; guard always allows.
@@ -433,9 +444,13 @@ export function forceClearDisableAllAfterLoadGate(engine: IEngine, reason: strin
 
   const after = InputModifier.getOrNull(player)
   const stillFrozen = !!(after && isLocomotionFrozenValue(after))
-  workerLog(
-    `[input-modifier] load-gate clear disableAll — ${reason} wasFrozen=${wasFrozen} stillFrozen=${stillFrozen} has=${InputModifier.has(player)}`
-  )
+  // Only log when freeze is involved — late GLB FINISHED was calling this every frame and
+  // flooding main/console (plaza pool attach storm).
+  if (wasFrozen || stillFrozen) {
+    workerLog(
+      `[input-modifier] load-gate clear disableAll — ${reason} wasFrozen=${wasFrozen} stillFrozen=${stillFrozen} has=${InputModifier.has(player)}`
+    )
+  }
   // true = worker had (or still needs) a load freeze release — caller must force-post player-frame.
   return wasFrozen || stillFrozen
 }

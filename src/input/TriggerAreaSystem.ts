@@ -82,13 +82,13 @@ export class TriggerAreaSystem {
         this.backend === 'physx'
           ? `physx-query${this.parityMode ? ' + parity' : ''}`
           : `cct-capsule${this.parityMode ? ' + parity' : ''}`
-      console.info(
+      clientDebugLog.log('input', `TriggerArea backend: ${label}`, {
+        level: 'info'
+      })
+      clientDebugLog.consoleOnly(
+        'info',
         `[input] TriggerArea backend: ${label} (Explorer = avatar/CCT volume overlap, one capsule)`
       )
-      clientDebugLog.log('input', `TriggerArea backend: ${label}`, {
-        level: 'info',
-        alsoConsole: true
-      })
     }
   }
 
@@ -136,8 +136,8 @@ export class TriggerAreaSystem {
         ? ` mesh=${this.volumes.filter((v) => v.mesh === TRIGGER_MESH_SPHERE).length}sphere/` +
           `${this.volumes.filter((v) => v.mesh !== TRIGGER_MESH_SPHERE).length}box`
         : '')
-    console.info(`[input] ${msg}`)
-    clientDebugLog.log('input', msg, { level: 'info', alsoConsole: true, throttleMs: 5000 })
+    clientDebugLog.log('input', msg, { level: 'info', throttleMs: 5000 })
+    clientDebugLog.consoleOnly('info', `[input] ${msg}`)
   }
 
   /**
@@ -273,8 +273,8 @@ export class TriggerAreaSystem {
       `feet=(${fx.toFixed(1)},${fy.toFixed(2)},${fz.toFixed(1)}) ` +
       `vols=${this.volumes.length} inside=${insideCount} skipMat=${skippedMatrix} ` +
       `near12m=${nearHits} nearest=${nearest}`
-    console.info(`[input] ${msg}`)
-    clientDebugLog.log('input', msg, { level: 'info', alsoConsole: true })
+    clientDebugLog.log('input', msg, { level: 'info' })
+    clientDebugLog.consoleOnly('info', `[input] ${msg}`)
   }
 
   private logVerboseProbe(

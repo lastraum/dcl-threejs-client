@@ -110,6 +110,7 @@ import {
   collectPlayerFrameSnapshot,
   describeWorkerInputModifier,
   forceClearDisableAllAfterLoadGate,
+  isWorkerDisableAllFrozen,
   forceUnfreezeModeOnlyFromMain,
   isWorkerMoveCameraFlightLatched,
   resetPlayerFrameEgressBaseline,
@@ -2062,6 +2063,9 @@ const EMPTY_RENDERER_INJECT_COUNTS = {
  *
  * When terminal LoadingState PUTs land and the scene still leaves disableAll after systems
  * tick, release the load-gate freeze (SpaceRunner map portal). Mode-only freezes untouched.
+ *
+ * Free-play late attaches (pool cells etc.): one engine tick only — never the 3-tick
+ * load-gate path (that flooded player-frame + tanked plaza FPS/colliders).
  */
 function afterHostLwwSystemsReact(
   label: string,
@@ -2069,9 +2073,22 @@ function afterHostLwwSystemsReact(
   terminalPuts = 0
 ): void {
   if (!sceneEngine || gltfPuts <= 0) return
+  const eng = sceneEngine
+  const inSyncWindow = performance.now() < mainImClearSyncUntilMs
+  // Fast path: terminal GLBs while free-playing and not in freeze-recovery window.
+  if (
+    terminalPuts > 0 &&
+    !portableExperienceWorker &&
+    !inSyncWindow &&
+    !isWorkerDisableAllFrozen(eng)
+  ) {
+    // One tick so LoadingState-driven systems see FINISHED — no 3× engine + no forced PF.
+    void runSceneEngineUpdateNow(1 / 30).then(() => publishPlayerFrameIfChanged())
+    return
+  }
+
   // Invalidate player-frame dedupe so a freeze→clear transition always ships.
   resetPlayerFrameEgressBaseline()
-  const eng = sceneEngine
   void runSceneEngineUpdateNow(1 / 30)
     .then(() => {
       publishPlayerFrameIfChanged()
@@ -2082,7 +2099,9 @@ function afterHostLwwSystemsReact(
       publishPlayerFrameIfChanged()
       try {
         const desc = describeWorkerInputModifier(eng)
-        workerLog('log', `[sceneWorker] InputModifier after ${label} — ${desc}`)
+        if (/disableAll=true|frozen=true|latched=true/i.test(desc)) {
+          workerLog('log', `[sceneWorker] InputModifier after ${label} — ${desc}`)
+        }
       } catch {
         /* best-effort */
       }
@@ -2090,8 +2109,7 @@ function afterHostLwwSystemsReact(
       return runSceneEngineUpdateNow(1 / 30)
     })
     .then(() => {
-      // Terminal load-gate: release disableAll on worker and push clear to main.
-      // Logs showed worker load-gate clear while main stayed disableAll (player-frame never applied).
+      // Terminal load-gate: only when locomotion is actually frozen (or recovering).
       // PE workers: never force-clear — drone/vehicle freezes are intentional after GLB FINISHED.
       if (terminalPuts > 0 && !portableExperienceWorker) {
         const cleared = forceClearDisableAllAfterLoadGate(
@@ -2100,13 +2118,12 @@ function afterHostLwwSystemsReact(
         )
         if (cleared) {
           mainImClearSyncUntilMs = performance.now() + 4000
-        }
-        const syncWindow = performance.now() < mainImClearSyncUntilMs
-        if (cleared || syncWindow) {
           publishForcedPlayerFrameClear(
-            cleared
-              ? `${label} terminal=${terminalPuts} after load-gate clear`
-              : `${label} terminal=${terminalPuts} main sync window`
+            `${label} terminal=${terminalPuts} after load-gate clear`
+          )
+        } else if (performance.now() < mainImClearSyncUntilMs) {
+          publishForcedPlayerFrameClear(
+            `${label} terminal=${terminalPuts} main sync window`
           )
         } else {
           publishPlayerFrameIfChanged()
@@ -2122,7 +2139,9 @@ function afterHostLwwSystemsReact(
       }
       try {
         const desc = describeWorkerInputModifier(eng)
-        workerLog('log', `[sceneWorker] InputModifier final ${label} — ${desc}`)
+        if (/disableAll=true|frozen=true|latched=true/i.test(desc)) {
+          workerLog('log', `[sceneWorker] InputModifier final ${label} — ${desc}`)
+        }
       } catch {
         /* best-effort */
       }

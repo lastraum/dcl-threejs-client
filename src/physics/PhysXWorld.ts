@@ -14,6 +14,10 @@ import { bootColliderCookSignature, entityLocalColliderCookSignature } from './p
 import { ensureIndexedForCook } from './colliderGeometryPrep'
 import { loadPhysX } from './loadPhysX'
 import { isSignificantPlatformDelta, MAX_RIDING_DELTA_HORIZ } from './platformMotion'
+import {
+  ROAD_AOI_COLLIDER_ENTITY_BASE,
+  ROAD_AOI_COLLIDER_ID_SPAN
+} from '../dcl/aoi/roadTiles'
 
 export type PhysicsColliderShapeDesc = {
   fingerprint: string
@@ -236,6 +240,12 @@ export class PhysXWorld {
   private readonly failedCookFp = new Set<string>()
   private readonly loggedFailedCookFp = new Set<string>()
   private landscapeFp = ''
+  /**
+   * After collider seal, zero-dt `scene.simulate(0)` during geometry warm can corrupt PhysX WASM
+   * when concurrent pose slides run on large scenes (see refreshStaticColliderQueries comment).
+   * Boot/seal may still use full warm; runtime only invalidates the CCT obstacle cache.
+   */
+  private allowZeroDtWarmSim = true
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private controllerManager: any = null
@@ -923,13 +933,39 @@ export class PhysXWorld {
     this.ensureInfiniteGroundPlane()
   }
 
-  /** Remove every scene static actor (keeps infinite ground) — manual recook / pose drift reset. */
-  clearAllSceneStaticActors(): void {
+  /**
+   * Remove every scene static actor (keeps infinite ground) — manual recook / pose drift reset.
+   * Preserves AOI road furniture colliders so a scene recook does not soft road planters
+   * until the next AOI rebuild.
+   *
+   * Prefer {@link staleNonRoadColliderFingerprints} for hot integrity — clearAll creates a
+   * multi-second soft window while ~700 actors recook.
+   */
+  clearAllSceneStaticActors(options?: { preserveAoiRoads?: boolean }): void {
+    const keepRoads = options?.preserveAoiRoads !== false
     for (const entity of [...this.staticActors.keys()]) {
       if (entity === INFINITE_GROUND_ENTITY) continue
+      // Preserve by id range (not only bookkeeping set) so roads never die on scene recook.
+      if (keepRoads && this.isAoiRoadColliderEntity(entity)) continue
       this.removeStatic(entity)
     }
     this.ensureInfiniteGroundPlane()
+  }
+
+  /**
+   * Mark primary scene colliders as needing recook without removing live PhysX actors.
+   * replaceStaticWithCook keeps the prior solid until the new cook succeeds — no soft hole.
+   */
+  staleNonRoadColliderFingerprints(): number {
+    let n = 0
+    for (const entity of [...this.staticFp.keys()]) {
+      if (entity === INFINITE_GROUND_ENTITY) continue
+      if (this.isAoiRoadColliderEntity(entity)) continue
+      this.staticFp.delete(entity)
+      this.staticPoseFp.delete(entity)
+      n++
+    }
+    return n
   }
 
   /** Remove one static actor + sync fingerprints — boot cook always recooks fresh. */
@@ -1307,19 +1343,38 @@ export class PhysXWorld {
   }
 
   /**
-   * After bulk static registration, run a zero-dt sim + CCT interaction pass so scene
-   * queries and the controller obstacle cache see new actors (same pattern as infinite ground).
+   * Boot may use zero-dt sim; after seal World sets this false so runtime warms never
+   * `simulate(0)` (corrupts WASM under concurrent pose slides on plaza-scale scenes).
+   */
+  setAllowZeroDtWarmSim(allowed: boolean): void {
+    this.allowZeroDtWarmSim = allowed
+  }
+
+  /**
+   * After bulk static registration, optionally run a zero-dt sim + CCT interaction pass so
+   * queries see new actors. Runtime (post-seal) only invalidates the CCT obstacle cache.
    */
   warmStaticScene(): void {
     if (!this.scene) return
     this.ensureInfiniteGroundPlane()
-    try {
-      this.scene.simulate(0)
-      this.scene.fetchResults(true)
-      this.controllerManager?.computeInteractions(0)
-    } catch (err) {
-      console.warn('[PhysXWorld] warmStaticScene failed:', err)
+    if (this.allowZeroDtWarmSim) {
+      try {
+        this.scene.simulate(0)
+        this.scene.fetchResults(true)
+        this.controllerManager?.computeInteractions(0)
+      } catch (err) {
+        console.warn('[PhysXWorld] warmStaticScene failed:', err)
+      }
     }
+    this.invalidateControllerCache()
+  }
+
+  /**
+   * Runtime-safe refresh after late cooks / road AOI / heavy main-thread hitch.
+   * Never runs simulate(0) — CCT re-queries solids via cache invalidate only.
+   */
+  refreshStaticAfterRuntimeGeometryChange(): void {
+    this.ensureInfiniteGroundPlane()
     this.invalidateControllerCache()
   }
 
@@ -1423,36 +1478,64 @@ export class PhysXWorld {
 
   /**
    * Genesis AOI road furniture colliders — real FBX `*_collider` meshes (not boxes).
-   * Uses multi-shape + geometryCache so each prop type cooks once; instances share.
-   * Entity ids should be in ROAD_AOI_COLLIDER_ENTITY_BASE range (positive).
+   * Entity ids live only in ROAD_AOI_COLLIDER_ENTITY_BASE range.
+   *
+   * Isolation contract (hard): AOI may ONLY add/remove/update actors whose entity id is in
+   * that range. Primary scene MeshCollider / GLTF colliders (small ECS ids / 20_000_000+)
+   * must never be touched by this path — shared PhysX scene, separate ownership.
    */
   private aoiRoadEntityIds = new Set<number>()
 
+  /** True when entity id is reserved for AOI road furniture (not primary scene). */
+  isAoiRoadColliderEntity(entity: number): boolean {
+    return (
+      entity >= ROAD_AOI_COLLIDER_ENTITY_BASE &&
+      entity < ROAD_AOI_COLLIDER_ENTITY_BASE + ROAD_AOI_COLLIDER_ID_SPAN
+    )
+  }
+
   syncAoiRoadColliders(descs: PhysicsColliderDesc[]): { geometryChanged: boolean; pendingCooks: number } {
-    const next = new Set(descs.map((d) => d.entity))
+    // Drop any non-road ids that somehow appear in the payload — never write over scene solids.
+    const roadOnly = descs.filter((d) => this.isAoiRoadColliderEntity(d.entity))
+    if (roadOnly.length !== descs.length) {
+      console.warn(
+        `[PhysXWorld] AOI road sync rejected ${descs.length - roadOnly.length} non-road entity id(s)`
+      )
+    }
+
+    const next = new Set(roadOnly.map((d) => d.entity))
     for (const entity of this.aoiRoadEntityIds) {
-      if (!next.has(entity)) {
-        try {
-          this.removeStatic(entity)
-        } catch (err) {
-          console.warn('[PhysXWorld] aoi road collider remove failed', entity, err)
-        }
+      if (next.has(entity)) continue
+      if (!this.isAoiRoadColliderEntity(entity)) {
+        // Corrupt bookkeeping — never removeStatic a primary id.
+        console.warn(`[PhysXWorld] AOI bookkeeping had non-road id e${entity} — ignored`)
+        continue
+      }
+      try {
+        this.removeStatic(entity)
+      } catch (err) {
+        console.warn('[PhysXWorld] aoi road collider remove failed', entity, err)
       }
     }
     this.aoiRoadEntityIds = next
 
-    // geometryCache + shared fingerprints: each prop type cooks once; instances reuse.
-    const result = this.syncStaticColliders(descs, {
+    // freezeRemoval:true is mandatory — syncStaticColliders must not prune actors absent
+    // from this road-only list (that would delete every plaza furniture solid).
+    const result = this.syncStaticColliders(roadOnly, {
       freezeRemoval: true,
       geometryCache: true,
-      cookBudget: descs.length
+      cookBudget: roadOnly.length
     })
-    if (result.geometryChanged) this.invalidateControllerCache()
+    if (result.geometryChanged) {
+      // CCT cache only — never zero-dt simulate (that corrupted all actors under load).
+      this.refreshStaticAfterRuntimeGeometryChange()
+    }
     return result
   }
 
   clearAoiRoadColliders(): void {
     for (const entity of this.aoiRoadEntityIds) {
+      if (!this.isAoiRoadColliderEntity(entity)) continue
       try {
         this.removeStatic(entity)
       } catch {

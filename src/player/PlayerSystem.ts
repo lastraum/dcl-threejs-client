@@ -815,7 +815,8 @@ export class PlayerSystem {
         const settle = longRespawn || !avatarTarget
         const reqDcl = requestedFeetDcl
         const tgtDcl = threeToDclVec(target)
-        console.info(
+        clientDebugLog.consoleOnly(
+          'info',
           `[player] movePlayerTo · dcl=(${reqDcl.x.toFixed(1)},${reqDcl.y.toFixed(2)},${reqDcl.z.toFixed(1)}) ` +
             `→ three=(${target.x.toFixed(1)},${target.y.toFixed(2)},${target.z.toFixed(1)}) ` +
             `tgtDcl=(${tgtDcl.x.toFixed(1)},${tgtDcl.y.toFixed(2)},${tgtDcl.z.toFixed(1)}) ` +
@@ -905,19 +906,17 @@ export class PlayerSystem {
     const locomotion = this.getLocomotionConfig()
     const locomotionAllowed = canLocomote(locomotion)
     if (!locomotionAllowed) {
-      // Flagtag / SpaceRunner freezes walk — log so "can't move" is diagnosable in DevTools
-      // even when Help console-mirror is off (prod default).
+      // Flagtag / SpaceRunner freezes walk — Help panel + optional console mirror.
       const blockedMsg =
         `locomotion blocked — disableAll=${locomotion.disableAll} walk=${locomotion.disableWalk} jog=${locomotion.disableJog} run=${locomotion.disableRun}`
       clientDebugLog.log('player', blockedMsg, {
         throttleMs: 3000,
-        throttleKey: 'locomotion-blocked',
-        alsoConsole: true
+        throttleKey: 'locomotion-blocked'
       })
       const nowBlocked = performance.now()
       if (nowBlocked - this.lastLocomotionBlockedConsoleAt > 3000) {
         this.lastLocomotionBlockedConsoleAt = nowBlocked
-        console.warn(`[player] ${blockedMsg}`)
+        clientDebugLog.consoleOnly('warn', `[player] ${blockedMsg}`)
       }
       // Sit/stool mode-freeze (not disableAll): WASD/Space escapes when scene forgot to unfreeze
       // (handler crashed before triggerSceneEmote — remotes can still sit via Explorer emotes).
@@ -1991,7 +1990,8 @@ export class PlayerSystem {
       const locOk = canLocomote(locomotion)
       const out = this.physics.positionOut
       const outDcl = threeToDclVec(out)
-      console.info(
+      clientDebugLog.consoleOnly(
+        'info',
         `[player] teleport settle — three=(${out.x.toFixed(1)},${out.y.toFixed(2)},${out.z.toFixed(1)}) ` +
           `dcl=(${outDcl.x.toFixed(1)},${outDcl.y.toFixed(2)},${outDcl.z.toFixed(1)}) ` +
           `targetY=${positionThree.y.toFixed(2)} grounded=${settled} softHold=${!settled || elevatedLong} ` +

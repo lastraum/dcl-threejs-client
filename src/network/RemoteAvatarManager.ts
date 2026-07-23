@@ -79,12 +79,17 @@ const NAME_TAG_SETTLED_INTERVAL_MS = 80
  * unloaded for distance — mid/far only throttle pose/anim.
  * Bands sit inside/around the load radius so loaded nearby peers are not all full-rate.
  */
-const LOD_NEAR_M2 = 14 * 14
-const LOD_MID_M2 = 22 * 22
-/** Mid band: ~25 Hz pose/anim. */
-const LOD_MID_INTERVAL_MS = 40
-/** Far band: ~15 Hz pose; no skinned anim unless emote active. */
-const LOD_FAR_INTERVAL_MS = 66
+/**
+ * LOD bands sit inside the 20 m load radius (RemoteAvatarLoadQueue.LOAD_DISTANCE).
+ * Old near=14 m made almost every loaded plaza peer full-rate (mid annulus empty).
+ * Near ≤8 m full rate · mid 8–20 m throttled · far >20 m pose only (pills / outside load).
+ */
+const LOD_NEAR_M2 = 8 * 8
+const LOD_MID_M2 = 20 * 20
+/** Mid band: ~20 Hz pose; anim only if moving / emote / air. */
+const LOD_MID_INTERVAL_MS = 50
+/** Far band: ~12 Hz pose; no skinned anim unless emote active. */
+const LOD_FAR_INTERVAL_MS = 80
 /**
  * Settled loco-idle (no emote): advance mixer at ~12 Hz.
  * Looping profile emotes always run full rate within allowAnim.
@@ -101,9 +106,18 @@ const EXTRAP_MAX_S = 0.14
 const POSE_FOLLOW_RATE = 14
 /** Position settle rate when nearly idle. */
 const POSE_SETTLE_RATE = 18
-/** Nearest loaded remotes that cast shadows (GPU budget; not distance-hide). */
-const REMOTE_SHADOW_CASTERS = 6
+/**
+ * Nearest loaded remotes that cast shadows (GPU budget).
+ * Soft sun + multi-mesh wearables dominate submitTris — keep this small.
+ */
+const REMOTE_SHADOW_CASTERS = 3
 const SHADOW_BUDGET_INTERVAL_MS = 250
+/** Sphere radius for camera-frustum anim skip (avatar torso + a bit of headroom). */
+const FRUSTUM_SKIP_RADIUS_M = 1.4
+
+const _frustum = new THREE.Frustum()
+const _projScreen = new THREE.Matrix4()
+const _frustumSphere = new THREE.Sphere()
 
 /** Distance cull with hysteresis — sticky visible state. */
 function nameTagWantedForDist(
@@ -282,6 +296,8 @@ export class RemoteAvatarManager {
   /** Local player feet (Three world) — LOD / load / tags / shadows; not freecam. */
   private readonly localPlayerWorldPos = new THREE.Vector3()
   private hasLocalPlayerPos = false
+  /** Active camera for frustum anim skip (looking away from a huddle). */
+  private camera: THREE.Camera | null = null
   /** Scene-local feet for provisional peer placement until first transform arrives. */
   private provisionalPositionProvider: (() => THREE.Vector3 | null) | null = null
   /** Host→scene CRDT mirror for remote PlayerIdentityData / AvatarBase / AvatarEquippedData. */
@@ -291,11 +307,20 @@ export class RemoteAvatarManager {
   /** Peers that were speaking last voice tick — zero their bars when they drop out of the map. */
   private readonly lastSpeakingPeers = new Set<string>()
   private lastShadowBudgetAt = 0
+  /**
+   * After a full remote compose finishes (main-thread hitch) — World refreshes CCT cache
+   * so plaza solids aren't left soft after multi-second avatar work.
+   */
+  private onComposeSettled: (() => void) | null = null
 
   constructor(scene: THREE.Scene) {
     this.scene = scene
     this.root.name = 'remote-avatars'
     scene.add(this.root)
+  }
+
+  setOnComposeSettled(handler: (() => void) | null): void {
+    this.onComposeSettled = handler
   }
 
   /**
@@ -446,6 +471,11 @@ export class RemoteAvatarManager {
   /** @deprecated use {@link setLocalPlayerPosition} */
   setCameraPosition(position: THREE.Vector3): void {
     this.setLocalPlayerPosition(position)
+  }
+
+  /** Camera used for off-screen remote anim skip (orbit / freecam / player cam). */
+  setViewCamera(camera: THREE.Camera | null): void {
+    this.camera = camera
   }
 
   /** Scene asset hydration — throttle remote composes so scene GLTF attach wins. */
@@ -1299,6 +1329,15 @@ export class RemoteAvatarManager {
       this.applyRemoteShadowBudget()
     }
 
+    // One frustum for the whole peer tick — skip skinned anim for off-camera remotes.
+    let frustumReady = false
+    if (this.camera) {
+      this.camera.updateMatrixWorld(false)
+      _projScreen.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse)
+      _frustum.setFromProjectionMatrix(_projScreen)
+      frustumReady = true
+    }
+
     for (const [key, record] of this.peers.entries()) {
       const remoteGlidingEarly =
         glideStateWantsOpen(record.glideState) ||
@@ -1309,6 +1348,7 @@ export class RemoteAvatarManager {
         record.jumpCount > 0 ||
         remoteGlidingEarly ||
         Math.abs(record.verticalVelocity) > 1.5
+      const movingBusy = record.horizontalSpeed > SPEED_IDLE || airBusy || emoteBusy
 
       // Horizontal distance to local player feet (not freecam / orbit camera).
       let dist2 = 0
@@ -1318,8 +1358,7 @@ export class RemoteAvatarManager {
         dist2 = dx * dx + dz * dz
       }
 
-      // LOD: near ≤14 m every frame · mid ≤22 m ~25 Hz · far ~15 Hz pose / no anim
-      // (unless emote — keep looping emotes alive at mid rate when far).
+      // LOD: near ≤8 m full · mid ≤20 m throttled · far pose-only (unless emote).
       let lodIntervalMs = 0
       let allowAnim = true
       let lodBand: 'near' | 'mid' | 'far' = 'near'
@@ -1330,8 +1369,19 @@ export class RemoteAvatarManager {
           lodBand = 'far'
         } else if (dist2 > LOD_NEAR_M2) {
           lodIntervalMs = LOD_MID_INTERVAL_MS
-          allowAnim = true
+          // Mid: skip idle skinning — only animate walk/emote/air.
+          allowAnim = movingBusy
           lodBand = 'mid'
+        }
+      }
+
+      // Off-camera: drop skinned mixer unless emote (Focus / look-away from huddle).
+      if (frustumReady && allowAnim && !emoteBusy && record.hasPosition) {
+        _frustumSphere.center.copy(record.root.position)
+        _frustumSphere.center.y += 0.9
+        _frustumSphere.radius = FRUSTUM_SKIP_RADIUS_M
+        if (!_frustum.intersectsSphere(_frustumSphere)) {
+          allowAnim = false
         }
       }
 
@@ -1582,27 +1632,35 @@ export class RemoteAvatarManager {
     }
   }
 
+  /** Disable cast on every mesh under a remote model (wearables default cast-on). */
+  private setModelCastShadow(model: THREE.Object3D, cast: boolean): void {
+    model.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) {
+        ;(obj as THREE.Mesh).castShadow = cast
+      }
+    })
+  }
+
   /** Enable castShadow only on the nearest loaded remotes (GPU budget vs local player). */
   private applyRemoteShadowBudget(): void {
-    if (!this.hasLocalPlayerPos) return
     type Ranked = { record: RemotePeerRecord; dist2: number }
     const ranked: Ranked[] = []
     for (const record of this.peers.values()) {
-      if (!record.model || record.modifierHidden || !record.hasPosition) continue
-      const dx = record.root.position.x - this.localPlayerWorldPos.x
-      const dz = record.root.position.z - this.localPlayerWorldPos.z
-      ranked.push({ record, dist2: dx * dx + dz * dz })
+      if (!record.model || record.modifierHidden) continue
+      let dist2 = Number.POSITIVE_INFINITY
+      if (this.hasLocalPlayerPos && record.hasPosition) {
+        const dx = record.root.position.x - this.localPlayerWorldPos.x
+        const dz = record.root.position.z - this.localPlayerWorldPos.z
+        dist2 = dx * dx + dz * dz
+      }
+      ranked.push({ record, dist2 })
     }
     ranked.sort((a, b) => a.dist2 - b.dist2)
     for (let i = 0; i < ranked.length; i++) {
       const cast = i < REMOTE_SHADOW_CASTERS
       const model = ranked[i]!.record.model
       if (!model) continue
-      model.traverse((obj) => {
-        if ((obj as THREE.Mesh).isMesh) {
-          ;(obj as THREE.Mesh).castShadow = cast
-        }
-      })
+      this.setModelCastShadow(model, cast)
     }
   }
 
@@ -1793,6 +1851,11 @@ export class RemoteAvatarManager {
             await this.loadVrmPeerAvatar(key, record, customBytes)
           }
           perfNoteComposeMs(performance.now() - composeT0)
+          try {
+            this.onComposeSettled?.()
+          } catch {
+            /* never break load path */
+          }
           return
         }
         // DAV announce without bytes yet (or fetch failing) — do NOT stay on pill forever.
@@ -1829,6 +1892,11 @@ export class RemoteAvatarManager {
             await this.loadVrmPeerAvatar(key, record, lateBytes)
           }
           perfNoteComposeMs(performance.now() - composeT0)
+          try {
+            this.onComposeSettled?.()
+          } catch {
+            /* never break load path */
+          }
           return
         }
         // Still no custom bytes — keep DCL interim (do not dispose back to pill).
@@ -1840,6 +1908,9 @@ export class RemoteAvatarManager {
 
       record.pivot.add(record.model)
       applyAvatarPivotOffset(record.pivot, record.model)
+      // Wearables default cast-on — clear immediately; nearest-N budget re-enables a few.
+      this.setModelCastShadow(record.model, false)
+      this.applyRemoteShadowBudget()
       this.finalizeNameTag(record)
 
       // Bind locomotion/emote clips on the next frame so first GPU upload isn't stacked with bind.
@@ -1873,6 +1944,11 @@ export class RemoteAvatarManager {
         void this.applyPeerEmote(record, pending)
       }
       perfNoteComposeMs(performance.now() - composeT0)
+      try {
+        this.onComposeSettled?.()
+      } catch {
+        /* never break load path */
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       clientDebugLog.log('network', `Remote avatar failed · ${address.slice(0, 8)}… ${msg}`, { level: 'error' })
@@ -1919,6 +1995,8 @@ export class RemoteAvatarManager {
       prepareCustomAvatarScene(odkAvatar.root)
       applyOdkPivotOffset(record.pivot, odkAvatar.root)
       prepareCustomAvatarScene(odkAvatar.root)
+      this.setModelCastShadow(odkAvatar.root, false)
+      this.applyRemoteShadowBudget()
       this.finalizeNameTag(record)
 
       await yieldToNextFrame()
@@ -2004,6 +2082,8 @@ export class RemoteAvatarManager {
       this.clearLoadingPresentation(record)
       record.pivot.add(vrmAvatar.root)
       prepareCustomAvatarScene(vrmAvatar.root)
+      this.setModelCastShadow(vrmAvatar.root, false)
+      this.applyRemoteShadowBudget()
       this.finalizeNameTag(record)
 
       await yieldToNextFrame()

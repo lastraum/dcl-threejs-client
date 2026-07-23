@@ -176,7 +176,14 @@ export class SceneHost {
     const shadowQ = renderQuality.getShadowQuality()
     const resScale = renderQuality.getResolutionScale()
     this.renderer.shadowMap.enabled = shadowQ !== 'off'
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
+    // Soft PCF multiplies shadow-pass cost. High/ultra keep soft; medium/low use cheaper maps
+    // (plaza at 22 FPS with soft + 300+ casters was submit/mesh ~3×).
+    this.renderer.shadowMap.type =
+      shadowQ === 'ultra' || shadowQ === 'high'
+        ? THREE.PCFSoftShadowMap
+        : shadowQ === 'medium'
+          ? THREE.PCFShadowMap
+          : THREE.BasicShadowMap
     this.renderer.setPixelRatio(effectivePixelRatio(resScale))
 
     // VSync On + Max FPS → pure rAF (display-aligned). VSync Off still uses rAF (browser limit).

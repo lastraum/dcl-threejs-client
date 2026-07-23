@@ -7,6 +7,7 @@ import {
   resolveSceneBytesWarm,
   resolveSceneLoadWarm
 } from './sceneLoadWarm'
+import { clientDebugLog } from '../client/debug/ClientDebugLog'
 
 export type SceneHydrationStats = {
   entityCount: number
@@ -232,11 +233,13 @@ export async function waitForSceneAssets(
   if (!bytesWarm && !warmScene) {
     // Wait for content-map bytes — no short ceiling; progress continues via attach loop.
     const wait = await assets.waitForPrefetchBytes(Number.POSITIVE_INFINITY)
-    console.info(
+    clientDebugLog.consoleOnly(
+      'info',
       `[Hydration] content-map GLB bytes ready — remainingInflight=${wait.remaining} waited=${(wait.waitedMs / 1000).toFixed(1)}s gltfCached=${cacheAtStart} (no bulk parse)`
     )
   } else {
-    console.info(
+    clientDebugLog.consoleOnly(
+      'info',
       `[Hydration] ${warmScene ? 'session already has templates' : 'IDB bytes warm'} — no bulk parse (gltfCached=${cacheAtStart})`
     )
   }
@@ -341,7 +344,8 @@ export async function waitForSceneAssets(
           }
           lastStatusLogAt = performance.now()
           const elapsedSec = (elapsed / 1000).toFixed(1)
-          console.info(
+          clientDebugLog.consoleOnly(
+            'info',
             `[Hydration] ${stats.gltfLoaded}/${stats.gltfEntities} attached (${elapsedSec}s) — ` +
               `${stats.gltfPending} pending (${stats.gltfAbandoned} abandoned), ${stats.gltfInflight} downloading, ` +
               `tex ${stats.textureInflight}, entities ${stats.entityCount}, ` +
@@ -419,7 +423,8 @@ export async function waitForSceneAssets(
           const entitiesStable = performance.now() - entityStableSince >= entityStableMs
           if (assetsStable && entitiesStable) {
             const elapsed = ((performance.now() - started) / 1000).toFixed(1)
-            console.info(
+            clientDebugLog.consoleOnly(
+              'info',
               `[Hydration] Scene ready in ${elapsed}s — ${stats.gltfLoaded}/${stats.gltfEntities} GLTFs, ${stats.entityCount} entities`
             )
             onProgress?.('Scene ready', ASSET_PROGRESS_END)

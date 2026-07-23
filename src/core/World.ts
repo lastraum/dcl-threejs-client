@@ -204,8 +204,29 @@ export class World {
    * Must stay short — 180s of pushAll@400ms was 40–240ms collision thrash every async frame.
    */
   private postBootPoseResyncUntil = 0
+  /**
+   * Full-scene pose pushAll is only for the initial attach wave after seal.
+   * Once the graph has been idle past postBootPoseResyncUntil, latch off permanently so a
+   * late GLB storm (pool disco cells, PE, neighbor scenes) cannot thrash every plaza solid
+   * and leave furniture colliders soft under main-thread load.
+   */
+  private sceneGraphPoseResyncActive = false
   private lastHydrationPoseResyncMs = 0
   private static readonly HYDRATION_POSE_RESYNC_MS = 750
+  /**
+   * One quiet integrity hot-replace after seal. Does not wait for pendingMesh=0
+   * (plaza/pool keep attaching; that used to block integrity forever).
+   */
+  private postSettleIntegrityDone = false
+  private postSettleIntegrityInFlight = false
+  private postSettleIntegrityArmed = false
+  /** performance.now() when collidersLoadingComplete flipped true. */
+  private collidersSealedAtMs = 0
+  private lastNeverCookedScanMs = 0
+  /** First integrity pass after seal (do not wait for attach-idle). */
+  private static readonly INTEGRITY_AFTER_SEAL_MS = 6_000
+  /** Scan for never-cooked extracts while catch-up is open. */
+  private static readonly NEVER_COOKED_SCAN_MS = 1_500
 
   /** Runtime burst (e.g. theatre Scene 11/12) — drain with loading-style recook until idle. */
   private runtimeColliderBurstUntil = 0
@@ -304,6 +325,11 @@ export class World {
       // Three.js world feet (same space as remote avatar roots).
       const pos = this.player?.getWorldPosition()
       return pos ? pos.clone() : null
+    })
+    // Heavy compose hitches can leave CCT obstacle cache / zero-dt warm state stale — soft solids.
+    this.remoteAvatars.setOnComposeSettled(() => {
+      if (!this.collidersLoadingComplete) return
+      this.physics.refreshStaticAfterRuntimeGeometryChange()
     })
 
     this.unsubEnvironmentDebug = environmentDebug.subscribe(() => this.applyEnvironmentDebugVisibility())
@@ -731,8 +757,8 @@ export class World {
       cache: this.assets,
       hostScene: this.host.scene,
       syncRoadColliders: (descs) => {
-        const result = this.physics.syncAoiRoadColliders(descs)
-        if (result.geometryChanged) this.physics.warmStaticScene()
+        // Runtime road rebuilds use cache-invalidate only (no simulate(0) — see PhysXWorld).
+        this.physics.syncAoiRoadColliders(descs)
       },
       clearRoadColliders: () => this.physics.clearAoiRoadColliders(),
       onSecondaryCandidates: (candidates) => {
@@ -864,15 +890,15 @@ export class World {
       this.sceneScript.setTriggerSceneEmoteHandler((request) => {
         const src = request.src?.trim()
         if (!src) return false
-        console.log('[pointer]', `triggerSceneEmote handler — src=${src}`)
+        clientDebugLog.consoleOnly('info', `[pointer] triggerSceneEmote handler — src=${src}`)
         const resolved = resolveSceneEmoteFromSrc(src, request.loop ?? false)
         if (!resolved) {
-          console.warn('[pointer]', `triggerSceneEmote miss — ${src}`)
-          clientDebugLog.log('pointer', `triggerSceneEmote miss — ${src}`, { level: 'warn', alsoConsole: true })
+          clientDebugLog.log('pointer', `triggerSceneEmote miss — ${src}`, { level: 'warn' })
+          clientDebugLog.consoleOnly('warn', `[pointer] triggerSceneEmote miss — ${src}`)
           return false
         }
-        console.log('[pointer]', `triggerSceneEmote → ${resolved.urn}`)
-        clientDebugLog.log('pointer', `triggerSceneEmote → ${resolved.urn}`, { alsoConsole: true })
+        clientDebugLog.log('pointer', `triggerSceneEmote → ${resolved.urn}`)
+        clientDebugLog.consoleOnly('info', `[pointer] triggerSceneEmote → ${resolved.urn}`)
         void this.playLocalEmote(resolved.urn, { loop: resolved.loop, sceneTriggered: true })
         return true
       })
@@ -1388,6 +1414,8 @@ export class World {
           this.remoteAvatars?.setLocalPlayerPosition(
             this.player?.getWorldPosition() ?? this.host.camera.position
           )
+          // Frustum anim skip uses the active view camera (player or freecam).
+          this.remoteAvatars?.setViewCamera(this.host.camera)
         }
         if (!this.editorPreviewMode) {
           this.environment.update(delta, this.sceneScript.view, this.sceneScript.readComponents)
@@ -1777,6 +1805,11 @@ export class World {
       this.pushAllColliderPosesToPhysX()
     }
 
+    // Timed integrity after seal (does not wait for pendingMesh — pool can attach forever).
+    this.maybeArmPostSettleColliderIntegrity()
+    // Catch extracts that never got a PhysX actor (boot race / late structure).
+    this.maybeDiscoverNeverCookedColliders()
+
     if (colliderWork || this.colliderCookQueue.size > 0) {
       this.reconcileColliderCookQueue()
     }
@@ -1786,17 +1819,150 @@ export class World {
   }
 
   /**
-   * Full pushAll only while meshes still attaching or during a short post-seal settle.
+   * Arm once after seal grace — do NOT require pendingMesh=0 (that blocked integrity forever
+   * on plaza while pool GLBs kept attaching → collision≈0 and soft world).
+   */
+  private maybeArmPostSettleColliderIntegrity(): void {
+    if (this.postSettleIntegrityDone || this.postSettleIntegrityInFlight || this.postSettleIntegrityArmed) {
+      return
+    }
+    if (!this.collidersSealedAtMs) return
+    const now = performance.now()
+    const sealAge = now - this.collidersSealedAtMs
+    // Wait for brief pose-resync window, or hard cap after seal.
+    const pastPoseWindow = now >= this.postBootPoseResyncUntil
+    const pastHardCap = sealAge >= World.INTEGRITY_AFTER_SEAL_MS
+    if (!pastPoseWindow && !pastHardCap) return
+    this.postSettleIntegrityArmed = true
+    void this.runPostSettleColliderIntegrity()
+  }
+
+  /**
+   * Queue descriptors that have an extract but no live PhysX actor.
+   * Cheap; does not rescan "unsynced pose" of already-cooked solids (that thrashed plaza).
+   */
+  private maybeDiscoverNeverCookedColliders(): void {
+    if (!this.collidersLoadingComplete || this.deferPhysxCooks) return
+    if (this.postSettleIntegrityInFlight) return
+    const now = performance.now()
+    if (now - this.lastNeverCookedScanMs < World.NEVER_COOKED_SCAN_MS) return
+    // Stop scanning once integrity is done and catch-up window closed.
+    if (
+      this.postSettleIntegrityDone &&
+      now >= this.postBootColliderCatchUpUntil &&
+      this.colliderCookQueue.size === 0
+    ) {
+      return
+    }
+    this.lastNeverCookedScanMs = now
+    let added = 0
+    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
+      if (this.physics.hasStaticActor(desc.entity)) continue
+      if (!this.colliderCookQueue.has(desc.entity)) added++
+      this.colliderCookQueue.add(desc.entity)
+    }
+    this.pendingColliderCooks = this.colliderCookQueue.size
+    if (added > 0) {
+      clientDebugLog.log(
+        'collision',
+        `Never-cooked scan — +${added} (queue=${this.colliderCookQueue.size} ` +
+          `static=${this.physics.staticColliderCount})`,
+        { level: 'info', throttleMs: 3_000 }
+      )
+      this.maybeBeginRuntimeColliderBurst(this.colliderCookQueue.size - added)
+    }
+  }
+
+  /**
+   * Quiet re-extract + hot-replace recook from live matrices after seal grace.
+   * NEVER clearAll / pre-invalidate live actors. Does not wait for attach-idle.
+   */
+  private async runPostSettleColliderIntegrity(): Promise<void> {
+    if (this.postSettleIntegrityDone || !this.playerMode || !this.collidersLoadingComplete) return
+    this.postSettleIntegrityInFlight = true
+    try {
+      await new Promise<void>((r) => requestAnimationFrame(() => r()))
+
+      const pendingMesh = this.sceneScript.getAttachProgressLite()?.pendingMesh ?? 0
+      const startMsg =
+        `Post-settle integrity — hot-replace (pendingMesh=${pendingMesh}, no clearAll)…`
+      clientDebugLog.log('collision', startMsg, { level: 'info' })
+      // Always visible — integrity must not be silent when Help mirror is off.
+      console.info(`[phys] ${startMsg}`)
+
+      while (this.colliderCookDrainInFlight) {
+        await new Promise<void>((r) => setTimeout(r, 16))
+      }
+      this.colliderCookDrainInFlight = true
+      try {
+        this.sceneScript.flushSceneGraphMatrices()
+        this.sceneScript.refreshAllInstancedTransforms()
+        this.physics.clearFailedCookCaches()
+        this.sceneScript.invalidateGltfColliderSyncCache()
+        this.sceneScript.syncCollisionForce()
+
+        const staleN = this.physics.staleNonRoadColliderFingerprints()
+        this.colliderCookQueue.clear()
+        for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+          if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
+          this.colliderCookQueue.add(desc.entity)
+        }
+        this.pendingColliderCooks = this.colliderCookQueue.size
+        const queued = this.colliderCookQueue.size
+
+        let passes = 0
+        const maxPasses = Math.max(64, Math.ceil(Math.max(queued, 1) / 48) + 8)
+        while (this.colliderCookQueue.size > 0 && passes < maxPasses) {
+          await this.drainColliderCookQueue({ integrity: true })
+          passes++
+          await new Promise<void>((r) => requestAnimationFrame(() => r()))
+        }
+        this.pushAllColliderPosesToPhysX()
+        this.physics.refreshStaticAfterRuntimeGeometryChange()
+        this.postSettleIntegrityDone = true
+        // Pose pushAll latch off — late attaches must not re-slide the whole scene.
+        this.sceneGraphPoseResyncActive = false
+        const doneMsg =
+          `Post-settle integrity done — static=${this.physics.staticColliderCount} ` +
+          `gltfActors=${this.physics.gltfStaticActorCount} staleFp=${staleN} ` +
+          `pending=${this.colliderCookQueue.size}`
+        clientDebugLog.log('collision', doneMsg, {
+          level: this.physics.staticColliderCount > 0 ? 'success' : 'warn'
+        })
+        console.info(`[phys] ${doneMsg}`)
+      } finally {
+        this.colliderCookDrainInFlight = false
+        this.pendingColliderCooks = this.colliderCookQueue.size
+      }
+    } catch (err) {
+      console.warn('[World] post-settle collider integrity failed', err)
+      this.postSettleIntegrityArmed = false
+    } finally {
+      this.postSettleIntegrityInFlight = false
+    }
+  }
+
+  /**
+   * Full pushAll only during the initial post-seal attach wave (armed at seal).
    * Late cook catch-up (postBootColliderCatchUpUntil) does NOT force full pose push —
    * dirty-entity slides + initialOnly cooks handle that without thrashing main.
+   *
+   * Important: do not re-arm when a late pendingMesh storm appears after minutes of play
+   * (mass GLB attach waves) — that re-slides every planter/bench and can leave solids soft.
    */
   private shouldResyncColliderPosesForHydration(): boolean {
+    if (!this.sceneGraphPoseResyncActive) return false
     const now = performance.now()
     if (now - this.lastHydrationPoseResyncMs < World.HYDRATION_POSE_RESYNC_MS) return false
     const lite = this.sceneScript.getAttachProgressLite()
     const pendingMesh = (lite?.pendingMesh ?? 0) > 0
     const briefPoseSettle = now < this.postBootPoseResyncUntil
-    if (!pendingMesh && !briefPoseSettle) return false
+    if (!pendingMesh && !briefPoseSettle) {
+      // Initial wave settled — never full-scene pushAll again until next scene seal.
+      this.sceneGraphPoseResyncActive = false
+      return false
+    }
     this.lastHydrationPoseResyncMs = now
     return true
   }
@@ -1909,7 +2075,17 @@ export class World {
     this.colliderCookQueue.clear()
     this.pendingColliderCooks = 0
     this.lastPhysicsBatchFp = ''
-
+    this.sceneGraphPoseResyncActive = false
+    this.postBootPoseResyncUntil = 0
+    this.postBootColliderCatchUpUntil = 0
+    this.lastHydrationPoseResyncMs = 0
+    this.postSettleIntegrityDone = false
+    this.postSettleIntegrityInFlight = false
+    this.postSettleIntegrityArmed = false
+    this.collidersSealedAtMs = 0
+    this.lastNeverCookedScanMs = 0
+    // Boot may use zero-dt warm sim again until the next seal.
+    this.physics.setAllowZeroDtWarmSim(true)
   }
 
   /**
@@ -1935,25 +2111,34 @@ export class World {
     return descs
   }
 
-  /** Incremental pose push — entity-local actors; legacy world-baked upgrades on actual dirty entities. */
+  /**
+   * Incremental pose push — entity-local actors; legacy world-baked upgrades on dirty entities.
+   *
+   * After post-settle integrity: pose slides only (Animator / emotes / late attaches must NOT
+   * enqueue cooks). Cooking is reserved for new extracts + explicit boot/integrity/manual paths.
+   */
   private applyColliderPoseSlidesForPhysIds(physIds: number[]): void {
     if (!this.playerMode || !physIds.length) return
+    // After integrity: never feed the cook queue from pose/animator motion.
+    const allowCookFromPose = !this.postSettleIntegrityDone
     for (const physId of physIds) {
+      if (this.physics.isAoiRoadColliderEntity(physId)) continue
       this.sceneScript.refreshColliderPose(physId)
     }
     const descs = this.collectColliderDescs(physIds)
     const slideDescs: PhysicsColliderDesc[] = []
     for (const desc of descs) {
+      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (
         this.physics.isWorldBakedStatic(desc.entity) ||
         this.physics.needsWorldBakedPoseRecook(desc)
       ) {
-        // Do not force-recook here — syncStaticColliders remove→add leaves a hole mid-walk.
-        // Queue for budgeted drain; world-baked pose drift keeps the live actor until boot force.
-        this.colliderCookQueue.add(desc.entity)
+        // World-baked cannot pose-slide; only queue recook before integrity settles.
+        if (allowCookFromPose) this.colliderCookQueue.add(desc.entity)
         continue
       }
       if (!this.physics.hasStaticActor(desc.entity)) {
+        // Never-cooked actor (new spawn) — always allowed to cook.
         this.colliderCookQueue.add(desc.entity)
         continue
       }
@@ -1961,10 +2146,11 @@ export class World {
     }
     const updated = this.physics.applyStaticColliderPoseUpdates(slideDescs)
     if (updated > 0) this.physics.refreshStaticColliderQueries()
-    // Unsafe slides invalidate actors — requeue so initialOnly / burst drain can recook.
-    for (const desc of slideDescs) {
-      if (!this.physics.hasStaticActor(desc.entity) || !this.physics.isColliderSynced(desc)) {
-        this.colliderCookQueue.add(desc.entity)
+    if (allowCookFromPose) {
+      for (const desc of slideDescs) {
+        if (!this.physics.hasStaticActor(desc.entity) || !this.physics.isColliderSynced(desc)) {
+          this.colliderCookQueue.add(desc.entity)
+        }
       }
     }
     this.pendingColliderCooks = this.colliderCookQueue.size
@@ -2253,16 +2439,18 @@ export class World {
     if (ecsEntity !== undefined) {
       this.enqueueColliderCook(ecsEntity)
     } else {
-      // Empty callback = discover every unsynced extract (mass spawn / post-structure).
-      // Must not use validate-only reconcile — that never enqueues new post-boot actors.
-      this.discoverUnsyncedColliderCooks()
+      // Empty = global discover. Safe only during boot / pre-integrity. After play settles,
+      // per-entity enqueue handles late attaches (pool disco cells must not rescan all plaza).
+      if (!this.collidersLoadingComplete || !this.postSettleIntegrityDone) {
+        this.discoverUnsyncedColliderCooks()
+      }
     }
     this.maybeBeginRuntimeColliderBurst(queueBefore)
   }
 
   /**
    * Enqueue every extracted descriptor that is not live+synced in PhysX.
-   * Used after structure extracts (map spawns) and when cook is requested without an entity.
+   * Boot / post-structure only — not on every late GLB attach (that thrashed plaza solids).
    */
   private discoverUnsyncedColliderCooks(): void {
     if (this.deferPhysxCooks) {
@@ -2272,6 +2460,7 @@ export class World {
     this.sceneScript.flushSceneGraphMatrices()
     let added = 0
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isColliderSynced(desc)) {
         this.colliderCookQueue.delete(desc.entity)
         continue
@@ -2287,7 +2476,8 @@ export class World {
     }
     this.pendingColliderCooks = this.colliderCookQueue.size
     if (added > 0) {
-      console.info(
+      clientDebugLog.consoleOnly(
+        'info',
         `[phys] cook discover — +${added} unsynced (queue=${this.colliderCookQueue.size} ` +
           `static=${this.physics.staticColliderCount} gltfActors=${this.physics.gltfStaticActorCount})`
       )
@@ -2365,10 +2555,16 @@ export class World {
     entities.add(ecsEntity)
     for (const entity of entities) {
       for (const physId of this.sceneScript.collectPhysCookTargets(entity)) {
-        if (this.collidersLoadingComplete) {
-          this.sceneScript.refreshColliderPose(physId)
-        } else if (!this.deferPhysxCooks) {
-          this.sceneScript.refreshColliderBeforeCook(physId)
+        if (this.physics.isAoiRoadColliderEntity(physId)) continue
+        // After integrity: only refresh pose for never-cooked actors. Refreshing every
+        // late attach rewrote extract poses from mid-storm matrices and re-queued plaza
+        // furniture as "unsynced" (cook discover +9 spam, soft solids).
+        if (!this.collidersLoadingComplete || !this.physics.hasStaticActor(physId)) {
+          if (this.collidersLoadingComplete) {
+            this.sceneScript.refreshColliderPose(physId)
+          } else if (!this.deferPhysxCooks) {
+            this.sceneScript.refreshColliderBeforeCook(physId)
+          }
         }
         const desc = this.sceneScript.getPhysicsColliderDesc(physId)
         if (!desc || this.physics.isColliderSynced(desc)) {
@@ -2428,23 +2624,32 @@ export class World {
   private async drainColliderCookQueue(options?: {
     hydration?: boolean
     loading?: boolean
+    /**
+     * Hot integrity: force recook from live extracts without pre-removing actors.
+     * loading:true pre-invalidates every solid (soft hole) — never use for post-play integrity.
+     */
+    integrity?: boolean
     /** Post-load: register never-cooked / unsynced actors — pose slides handle pure entity-local drift. */
     initialOnly?: boolean
   }): Promise<void> {
     const burstActive = performance.now() < this.runtimeColliderBurstUntil
+    const integrityPass = options?.integrity === true
     const budget = options?.hydration
       ? World.HYDRATION_COLLIDER_COOK_BUDGET
       : options?.loading
         ? World.LOADING_COLLIDER_COOK_BUDGET
-        : options?.initialOnly
-          ? burstActive
-            ? World.RUNTIME_COLLIDER_BURST_BUDGET
-            : World.RUNTIME_COLLIDER_COOK_BUDGET
-          : Number.POSITIVE_INFINITY
+        : integrityPass
+          ? World.LOADING_COLLIDER_COOK_BUDGET
+          : options?.initialOnly
+            ? burstActive
+              ? World.RUNTIME_COLLIDER_BURST_BUDGET
+              : World.RUNTIME_COLLIDER_COOK_BUDGET
+            : Number.POSITIVE_INFINITY
 
+    // integrity is NOT a loading pass — never pre-invalidate live actors.
     const loadingPass = !!(options?.loading || options?.hydration)
     const toCook: PhysicsColliderDesc[] = []
-    const queueOrder = loadingPass
+    const queueOrder = loadingPass || integrityPass
       ? this.sortedColliderCookQueue(this.colliderCookPriority)
       : this.sortedColliderCookQueue()
     for (const physId of queueOrder) {
@@ -2454,7 +2659,7 @@ export class World {
         if (!loadingPass) this.colliderCookQueue.delete(physId)
         continue
       }
-      if (!loadingPass && this.physics.isColliderSynced(desc)) {
+      if (!loadingPass && !integrityPass && this.physics.isColliderSynced(desc)) {
         this.colliderCookQueue.delete(physId)
         continue
       }
@@ -2465,6 +2670,7 @@ export class World {
       const needsRecook = !this.physics.isColliderSynced(desc)
       if (
         !loadingPass &&
+        !integrityPass &&
         hasActor &&
         !needsRecook &&
         (options?.initialOnly || !this.allowsRuntimeColliderRecook())
@@ -2474,9 +2680,9 @@ export class World {
       }
       this.sceneScript.flushSceneGraphMatrices()
       this.sceneScript.refreshColliderBeforeCook(physId)
-      // Do not pre-invalidate when an actor is live — replaceStaticWithCook keeps the
-      // previous solid until the new cook succeeds (avoids mid-walk floor holes).
-      if (loadingPass || !hasActor) {
+      // Boot loading/hydration may pre-remove. Integrity MUST NOT — that wiped every
+      // plaza solid for seconds after load ("worked then something killed them").
+      if (!integrityPass && (loadingPass || !hasActor)) {
         this.physics.invalidateStaticCollider(physId)
       }
       const fresh = this.sceneScript.getPhysicsColliderDesc(physId)
@@ -2502,7 +2708,8 @@ export class World {
         cookBudget: toCook.length,
         freezeRemoval: true,
         // Recook when queued — including partial cooks / failed slides after boot.
-        forceRecookOnPoseChange: loadingPass || options?.initialOnly === true,
+        forceRecookOnPoseChange:
+          loadingPass || integrityPass || options?.initialOnly === true,
         geometryCache: true
       })
       for (const desc of toCook) {
@@ -2570,7 +2777,8 @@ export class World {
     if (options?.force !== false) {
       this.lastPhysicsBatchFp = ''
       this.physics.clearFailedCookCaches()
-      this.physics.clearAllSceneStaticActors()
+      // Stale fingerprints only — never clearAll (that softs the whole plaza for seconds).
+      this.physics.staleNonRoadColliderFingerprints()
       this.colliderCookQueue.clear()
       this.sceneScript.invalidateGltfColliderSyncCache()
     }
@@ -2581,6 +2789,7 @@ export class World {
 
     // Full re-enqueue (do not rely on post-boot reconcile — it only prunes the live queue).
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       this.colliderCookQueue.add(desc.entity)
     }
     this.pendingColliderCooks = this.colliderCookQueue.size
@@ -2589,7 +2798,7 @@ export class World {
     if (!options?.quiet) {
       clientDebugLog.log(
         'collision',
-        `Manual recook — cooking ${queued} collider(s)…`,
+        `Manual recook — hot-replace ${queued} collider(s)…`,
         { level: 'info', alsoConsole: true }
       )
     }
@@ -2602,9 +2811,10 @@ export class World {
       this.colliderCookDrainInFlight = true
       try {
         let passes = 0
-        const maxPasses = Math.max(64, Math.ceil(queued / 8) + 8)
+        const maxPasses = Math.max(64, Math.ceil(queued / 48) + 8)
         while (this.colliderCookQueue.size > 0 && passes < maxPasses) {
-          await this.drainColliderCookQueue({ loading: true })
+          // integrity:true keeps live actors until each replace succeeds.
+          await this.drainColliderCookQueue({ integrity: true })
           passes++
           // Yield so rAF / player input keep running during plaza-scale recooks.
           await new Promise<void>((r) => requestAnimationFrame(() => r()))
@@ -2615,7 +2825,7 @@ export class World {
           )
         }
         this.pushAllColliderPosesToPhysX()
-        this.physics.warmStaticScene()
+        this.physics.refreshStaticAfterRuntimeGeometryChange()
       } finally {
         this.colliderCookDrainInFlight = false
         this.pendingColliderCooks = this.colliderCookQueue.size
@@ -2821,21 +3031,34 @@ export class World {
       }
 
       this.collidersLoadingComplete = true
+      this.collidersSealedAtMs = performance.now()
       this.spawnColliderSealComplete = false
       this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
+      // After seal: never zero-dt simulate during geometry warm — corrupts WASM under pose slides.
+      this.physics.setAllowZeroDtWarmSim(false)
       // Plaza: brief full pose resync while attach settles; longer cook-only catch-up for late GLBs.
       const hydGltf = this.sceneScript.getHydrationStats()?.gltfEntities ?? 0
       const attachLite = this.sceneScript.getAttachProgressLite()
       const stillAttaching = (attachLite?.pendingMesh ?? 0) > 0
       const largeScene = finalGltfCount >= 50 || hydGltf >= 100 || stillAttaching
+      const now = performance.now()
+      // Always open a catch-up window so never-cooked scan + integrity can run.
+      this.postBootPoseResyncUntil = Math.max(this.postBootPoseResyncUntil, now + 12_000)
+      this.postBootColliderCatchUpUntil = Math.max(
+        this.postBootColliderCatchUpUntil,
+        now + 120_000
+      )
       if (assetsTimedOut || largeScene) {
-        const now = performance.now()
-        this.postBootPoseResyncUntil = now + 12_000
-        this.postBootColliderCatchUpUntil = now + 120_000
         this.lastHydrationPoseResyncMs = 0
+        // Arm once for this scene's initial attach wave only (see shouldResyncColliderPosesForHydration).
+        this.sceneGraphPoseResyncActive = true
         console.info(
-          `[World] post-boot catch-up — pose resync 12s + late cooks 120s` +
+          `[World] post-boot catch-up — pose resync 12s + late cooks 120s + integrity @14s` +
             (assetsTimedOut ? ' · hydration timed out' : ' · large/still-attaching scene')
+        )
+      } else {
+        console.info(
+          `[World] post-boot catch-up — integrity @14s (small scene)`
         )
       }
       if (platformMotionDebug.isEnabled() && this.player) {
@@ -3560,8 +3783,7 @@ export class World {
       cache: this.assets,
       hostScene: this.host.scene,
       syncRoadColliders: (descs) => {
-        const result = this.physics.syncAoiRoadColliders(descs)
-        if (result.geometryChanged) this.physics.warmStaticScene()
+        this.physics.syncAoiRoadColliders(descs)
       },
       clearRoadColliders: () => this.physics.clearAoiRoadColliders(),
       onSecondaryCandidates: (candidates) => {

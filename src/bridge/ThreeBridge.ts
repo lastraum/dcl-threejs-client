@@ -637,16 +637,16 @@ export class ThreeBridge {
     }
     const hasSink = !!this.recordLww
     this.recordLww?.(def.componentId, entity, value)
+    // Terminal FINISHED/FAILED noise is enormous on plaza (100s of disco cells). Only when
+    // Help → Debug “Browser console logs” is on, or ?gltfloadverbose=1.
     if (isGltfLoadingStateVerbose() || currentState === 4 || currentState === 3 || currentState === 2) {
       const src =
         this.ecs.GltfContainer.has(entity) ? this.ecs.GltfContainer.get(entity).src : '(no GltfContainer)'
       const msg = `host LWW e${entity as number} → ${gltfLoadingStateLabel(currentState)} sink=${hasSink ? 'ok' : 'MISSING'} ${src}`
       if (isGltfLoadingStateVerbose()) {
-        clientDebugLog.log('gltf-load', msg, { alsoConsole: true, throttleMs: 0 })
-      }
-      // Always surface terminal states in DevTools (prod mirror may be off).
-      if (currentState === 4 || currentState === 3 || currentState === 2) {
-        console.info(`[gltf-load] ${msg}`)
+        clientDebugLog.log('gltf-load', msg, { throttleMs: 0 })
+      } else if (currentState === 4 || currentState === 3 || currentState === 2) {
+        clientDebugLog.consoleOnly('info', `[gltf-load] ${msg}`)
       }
     }
   }

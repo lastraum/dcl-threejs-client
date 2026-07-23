@@ -1,9 +1,11 @@
 /**
- * Physics / walk-bound diagnostics — always log high-signal events to DevTools so
- * "invisible wall / floating floor / no fall" is diagnosable without Help panel.
+ * Physics / walk-bound diagnostics.
+ * Console lines respect Help → Debug “Browser console logs” (or `?physdebug`).
  *
  * `?physdebug` — extra detail (more collider samples, unthrottled freeze hold notes).
  */
+import { clientDebugLog } from '../client/debug/ClientDebugLog'
+
 function params(): URLSearchParams | null {
   if (typeof window === 'undefined') return null
   return new URLSearchParams(window.location.search)
@@ -17,13 +19,17 @@ export function isPhysicsDiagVerbose(): boolean {
 
 const lastAt = new Map<string, number>()
 
-/** Throttled console.info under `[phys]` — high-signal locomotion / collider events. */
+/** Throttled `[phys]` line — console only when mirror is on or `?physdebug`. */
 export function physLog(key: string, message: string, throttleMs = 800): void {
   const now = performance.now()
   const prev = lastAt.get(key) ?? 0
   if (now - prev < throttleMs && !isPhysicsDiagVerbose()) return
   lastAt.set(key, now)
-  console.info(`[phys] ${message}`)
+  if (isPhysicsDiagVerbose()) {
+    console.info(`[phys] ${message}`)
+    return
+  }
+  clientDebugLog.consoleOnly('info', `[phys] ${message}`)
 }
 
 export function formatWalkBounds(walk: {

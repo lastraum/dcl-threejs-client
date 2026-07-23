@@ -12,6 +12,11 @@ import {
 } from '../../../social/socialApi'
 import type { CommunityDetail, CommunityListRow } from '../../../social/types'
 import type { CommunityFollowController } from '../../../social/CommunityFollowController'
+import {
+  fetchActiveCommunityVoiceChats,
+  type ActiveCommunityVoiceChat
+} from '../../../network/gatekeeper/communityVoice'
+import { followTargetLabel } from '../../../social/communityFollowWire'
 import type { RouteTarget } from '../../../dcl/content/route'
 
 export type CommunitiesBrowseViewOptions = {
@@ -28,6 +33,7 @@ export type CommunitiesBrowseViewOptions = {
 }
 
 const SEARCH_DEBOUNCE_MS = 280
+const ACTIVE_VOICE_POLL_MS = 45_000
 
 function escapeHtml(value: string): string {
   return value
@@ -76,8 +82,13 @@ export class CommunitiesBrowseView {
   private readonly emptyEl: HTMLElement
   private readonly countEl: HTMLElement
   private readonly searchInput: HTMLInputElement
+  private readonly activeVoiceSection: HTMLElement
+  private readonly activeVoiceRow: HTMLElement
+  private readonly activeToursSection: HTMLElement
+  private readonly activeToursRow: HTMLElement
   private readonly communityModal: CommunityModal
   private readonly getAuthIdentity?: () => AuthIdentity | null
+  private readonly getFollow?: () => CommunityFollowController | null
   private readonly onBrowseCount?: (total: number) => void
   private readonly onJoinedCommunity?: (community: CommunityListRow) => void
   private communitiesById = new Map<string, CommunityListRow>()
@@ -86,12 +97,16 @@ export class CommunitiesBrowseView {
   private searchQuery = ''
   private searchDebounced = ''
   private searchTimer = 0
+  private voicePollTimer = 0
   private loadGen = 0
   private disposed = false
   private joiningId: string | null = null
+  private unsubFollow: (() => void) | null = null
+  private activeVoice: ActiveCommunityVoiceChat[] = []
 
   constructor(opts: CommunitiesBrowseViewOptions = {}) {
     this.getAuthIdentity = opts.getAuthIdentity
+    this.getFollow = opts.getFollow
     this.onBrowseCount = opts.onBrowseCount
     this.onJoinedCommunity = opts.onJoinedCommunity
     this.communityModal = new CommunityModal({
@@ -137,6 +152,22 @@ export class CommunitiesBrowseView {
             />
           </label>
         </div>
+        <div class="communities-browse-view__live" data-live-sections>
+          <section class="communities-browse-view__live-section" data-active-voice hidden>
+            <h2 class="communities-browse-view__live-title">
+              <span class="communities-browse-view__live-dot communities-browse-view__live-dot--voice" aria-hidden></span>
+              Active Voice Streams
+            </h2>
+            <div class="communities-browse-view__live-row" data-active-voice-row role="list"></div>
+          </section>
+          <section class="communities-browse-view__live-section" data-active-tours hidden>
+            <h2 class="communities-browse-view__live-title">
+              <span class="communities-browse-view__live-dot communities-browse-view__live-dot--tour" aria-hidden></span>
+              Active Tours
+            </h2>
+            <div class="communities-browse-view__live-row" data-active-tours-row role="list"></div>
+          </section>
+        </div>
         <p class="communities-browse-view__status" data-status hidden></p>
         <div class="communities-browse-view__grid" data-grid role="list"></div>
         <p class="communities-browse-view__empty" data-empty hidden>No communities match your search.</p>
@@ -151,6 +182,10 @@ export class CommunitiesBrowseView {
     this.emptyEl = this.root.querySelector('[data-empty]')!
     this.countEl = this.root.querySelector('[data-count]')!
     this.searchInput = this.root.querySelector('[data-search]')!
+    this.activeVoiceSection = this.root.querySelector('[data-active-voice]')!
+    this.activeVoiceRow = this.root.querySelector('[data-active-voice-row]')!
+    this.activeToursSection = this.root.querySelector('[data-active-tours]')!
+    this.activeToursRow = this.root.querySelector('[data-active-tours-row]')!
 
     this.searchInput.addEventListener('input', () => {
       this.searchQuery = this.searchInput.value
@@ -166,13 +201,31 @@ export class CommunitiesBrowseView {
     this.communityModal.mount()
     void this.loadMine()
     void this.loadBrowse()
+    void this.refreshActiveVoice()
+    this.voicePollTimer = window.setInterval(() => void this.refreshActiveVoice(), ACTIVE_VOICE_POLL_MS)
+    this.wireFollowLive()
+    this.renderActiveTours()
   }
 
   dispose(): void {
     this.disposed = true
     window.clearTimeout(this.searchTimer)
+    if (this.voicePollTimer) window.clearInterval(this.voicePollTimer)
+    this.voicePollTimer = 0
+    this.unsubFollow?.()
+    this.unsubFollow = null
     this.communityModal.dispose()
     this.root.remove()
+  }
+
+  private wireFollowLive(): void {
+    this.unsubFollow?.()
+    this.unsubFollow = null
+    const follow = this.getFollow?.()
+    if (!follow) return
+    this.unsubFollow = follow.subscribe(() => {
+      if (!this.disposed) this.renderActiveTours()
+    })
   }
 
   private async loadMine(): Promise<void> {
@@ -245,11 +298,146 @@ export class CommunitiesBrowseView {
       this.gridEl.innerHTML = communities.map((c) => this.renderCard(c)).join('')
       this.wireImages(this.gridEl)
       this.wireCards()
+      // Names/thumbs may resolve after browse load.
+      this.renderActiveVoice()
+      this.renderActiveTours()
     } catch (err) {
       if (this.disposed || gen !== this.loadGen) return
       this.statusEl.hidden = false
       this.statusEl.textContent = err instanceof Error ? err.message : 'Could not load communities'
       this.statusEl.className = 'communities-browse-view__status communities-browse-view__status--error'
+    }
+  }
+
+  private async refreshActiveVoice(): Promise<void> {
+    const identity = this.getAuthIdentity?.() ?? null
+    if (!identity) {
+      this.activeVoice = []
+      this.renderActiveVoice()
+      return
+    }
+    try {
+      this.activeVoice = await fetchActiveCommunityVoiceChats(identity)
+    } catch {
+      this.activeVoice = []
+    }
+    if (this.disposed) return
+    this.renderActiveVoice()
+  }
+
+  private renderActiveVoice(): void {
+    if (this.activeVoice.length === 0) {
+      this.activeVoiceSection.hidden = true
+      this.activeVoiceRow.innerHTML = ''
+      return
+    }
+    this.activeVoiceSection.hidden = false
+    this.activeVoiceRow.innerHTML = this.activeVoice
+      .map((v) => {
+        const row =
+          this.communitiesById.get(v.communityId) ??
+          this.mineById.get(v.communityId) ??
+          [...this.communitiesById.values()].find(
+            (c) => c.id.toLowerCase() === v.communityId.toLowerCase()
+          )
+        const name = (v.communityName || row?.name || 'Community').trim()
+        const thumb =
+          v.communityImage?.trim() ||
+          communityDisplayImageUrl(v.communityId, row?.thumbnails)
+        const initial = name.charAt(0).toUpperCase() || '?'
+        const people = v.participantCount > 0 ? `${v.participantCount} live` : 'Live'
+        return `
+          <button type="button" class="communities-browse-view__live-chip" role="listitem"
+            data-live-voice-id="${escapeHtml(v.communityId)}" title="Open ${escapeHtml(name)}">
+            <span class="communities-browse-view__live-chip-media">
+              ${
+                thumb
+                  ? `<img src="${escapeHtml(thumb)}" alt="" loading="lazy" decoding="async" />`
+                  : `<span class="communities-browse-view__live-chip-fallback" aria-hidden>${escapeHtml(initial)}</span>`
+              }
+              <span class="communities-browse-view__live-chip-badge" aria-hidden>●</span>
+            </span>
+            <span class="communities-browse-view__live-chip-text">
+              <span class="communities-browse-view__live-chip-name">${escapeHtml(name)}</span>
+              <span class="communities-browse-view__live-chip-meta">${escapeHtml(people)}</span>
+            </span>
+          </button>`
+      })
+      .join('')
+    this.wireImages(this.activeVoiceRow)
+    for (const btn of this.activeVoiceRow.querySelectorAll<HTMLButtonElement>('[data-live-voice-id]')) {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.liveVoiceId
+        if (!id) return
+        this.openCommunityById(id, btn.querySelector('.communities-browse-view__live-chip-name')?.textContent ?? 'Community', {
+          autoJoinVoice: true
+        })
+      })
+    }
+  }
+
+  private renderActiveTours(): void {
+    const follow = this.getFollow?.()
+    const sessions = follow?.listSessions() ?? []
+    if (sessions.length === 0) {
+      this.activeToursSection.hidden = true
+      this.activeToursRow.innerHTML = ''
+      return
+    }
+    this.activeToursSection.hidden = false
+    this.activeToursRow.innerHTML = sessions
+      .map((s) => {
+        const row =
+          this.communitiesById.get(s.communityId) ??
+          this.mineById.get(s.communityId) ??
+          [...this.mineById.values()].find((c) => c.id.toLowerCase() === s.communityId) ??
+          [...this.communitiesById.values()].find((c) => c.id.toLowerCase() === s.communityId)
+        const name = (row?.name || 'Community').trim()
+        const thumb = communityDisplayImageUrl(s.communityId, row?.thumbnails)
+        const initial = name.charAt(0).toUpperCase() || '?'
+        const stop = followTargetLabel(s.lastTarget)
+        const leading = follow?.isLeading(s.communityId)
+        const following = follow?.isFollowing(s.communityId)
+        const meta = leading
+          ? stop
+            ? `Leading · ${stop}`
+            : 'Leading'
+          : following
+            ? stop
+              ? `Following · ${stop}`
+              : 'Following'
+            : stop
+              ? `Tour · ${stop}`
+              : 'Tour live'
+        const flag = s.flagDataUrl ? ' · 🚩' : ''
+        return `
+          <button type="button" class="communities-browse-view__live-chip communities-browse-view__live-chip--tour" role="listitem"
+            data-live-tour-id="${escapeHtml(s.communityId)}" title="Open ${escapeHtml(name)}">
+            <span class="communities-browse-view__live-chip-media">
+              ${
+                thumb
+                  ? `<img src="${escapeHtml(thumb)}" alt="" loading="lazy" decoding="async" />`
+                  : `<span class="communities-browse-view__live-chip-fallback" aria-hidden>${escapeHtml(initial)}</span>`
+              }
+              <span class="communities-browse-view__live-chip-badge communities-browse-view__live-chip-badge--tour" aria-hidden>🚩</span>
+            </span>
+            <span class="communities-browse-view__live-chip-text">
+              <span class="communities-browse-view__live-chip-name">${escapeHtml(name)}</span>
+              <span class="communities-browse-view__live-chip-meta">${escapeHtml(meta)}${flag}</span>
+            </span>
+          </button>`
+      })
+      .join('')
+    this.wireImages(this.activeToursRow)
+    for (const btn of this.activeToursRow.querySelectorAll<HTMLButtonElement>('[data-live-tour-id]')) {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.liveTourId
+        if (!id) return
+        this.openCommunityById(
+          id,
+          btn.querySelector('.communities-browse-view__live-chip-name')?.textContent ?? 'Community'
+        )
+      })
     }
   }
 

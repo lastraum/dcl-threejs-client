@@ -119,6 +119,11 @@ export class CommunityFollowController {
     return this.sessions.get(communityId.trim().toLowerCase()) ?? null
   }
 
+  /** All tours this client currently knows about (start / hb / goto wire). */
+  listSessions(): CommunityTourSession[] {
+    return [...this.sessions.values()]
+  }
+
   isLeading(communityId?: string): boolean {
     if (!this.leadingCommunityId) return false
     if (!communityId) return true

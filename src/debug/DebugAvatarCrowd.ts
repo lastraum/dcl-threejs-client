@@ -1,7 +1,13 @@
 import * as THREE from 'three'
 import { AvatarAnimations } from '../avatar/AvatarAnimations'
 import { composeAvatarFromProfile } from '../avatar/AvatarComposer'
-import { BODY_SHAPE_URN, DEFAULT_WEARABLE_CATEGORIES, defaultWearableUrn, PEER_URL } from '../avatar/constants'
+import {
+  assetUrnFromCompleteUrn,
+  BODY_SHAPE_URN,
+  DEFAULT_WEARABLE_CATEGORIES,
+  defaultWearableUrn,
+  PEER_URL
+} from '../avatar/constants'
 import { applyAvatarPivotOffset } from '../avatar/feetAlign'
 import type { AvatarProfile, BodyShape, WearableCategory } from '../avatar/types'
 import { getSessionAssetCache } from '../rendering/AssetCache'
@@ -13,25 +19,37 @@ const SKIN_HEX = ['f5d0c5', 'e0ac69', 'c68642', '8d5524', 'f1c27d', 'ffdbac', 'c
 const HAIR_HEX = ['1a1a1a', '4a3728', 'b55239', 'd4a017', '6b3fa0', 'c0c0c0', '2c1b18'] as const
 const EYE_HEX = ['3d2314', '4a7c59', '3b6ea5', '6b4f3a', '2f2f2f', '5b7c99'] as const
 
-/** Categories we randomize for crowd variety. */
+/** Marketplace / catalog categories we can put on a crowd avatar. */
 const OUTFIT_CATEGORIES: WearableCategory[] = [
   'upper_body',
   'lower_body',
   'feet',
   'hair',
-  'eyebrows',
-  'eyes',
-  'mouth',
-  'facial_hair',
   'hat',
+  'helmet',
+  'mask',
   'eyewear',
-  'earring'
+  'earring',
+  'tiara',
+  'top_head',
+  'facial_hair',
+  'hands_wear'
 ]
 
-/**
- * Sample on-chain collections-v1 — best-effort; failures fall back to base-avatars.
- * Enough variety for multi-avatar GPU/CPU stress without owning NFTs.
- */
+/** Face defaults always applied so random 3–7 outfits don’t leave blank faces. */
+const FACE_CATEGORIES: WearableCategory[] = ['eyebrows', 'eyes', 'mouth']
+
+const MIN_OUTFIT_ITEMS = 3
+const MAX_OUTFIT_ITEMS = 7
+
+const MARKETPLACE_API = 'https://marketplace-api.decentraland.org/v1'
+/** How many marketplace item pages to pull (first=100 each). */
+const MARKETPLACE_PAGES = 4
+const MARKETPLACE_PAGE_SIZE = 100
+
+const BASE_COLLECTION_ID = 'urn:decentraland:off-chain:base-avatars'
+
+/** Fallback on-chain collections if marketplace CORS fails. */
 const ON_CHAIN_COLLECTION_IDS = [
   'urn:decentraland:ethereum:collections-v1:dg_atari',
   'urn:decentraland:ethereum:collections-v1:halloween_2019',
@@ -39,10 +57,10 @@ const ON_CHAIN_COLLECTION_IDS = [
   'urn:decentraland:ethereum:collections-v1:mch_collection',
   'urn:decentraland:ethereum:collections-v1:dappcraft_moonminer',
   'urn:decentraland:ethereum:collections-v1:community_contest',
-  'urn:decentraland:ethereum:collections-v1:dc_niftyblocksmith'
+  'urn:decentraland:ethereum:collections-v1:dc_niftyblocksmith',
+  'urn:decentraland:ethereum:collections-v1:xmas_2020',
+  'urn:decentraland:ethereum:collections-v1:mf_sammichgamer'
 ]
-
-const BASE_COLLECTION_ID = 'urn:decentraland:off-chain:base-avatars'
 
 type CrowdInstance = {
   root: THREE.Group
@@ -67,8 +85,7 @@ function randomHex(list: readonly string[]): string {
 
 /**
  * Spawns debug avatars in a ring around the local player for multi-avatar perf testing.
- * Uses Catalyst collection catalogs (base + sample on-chain) with random outfits; falls
- * back to default base URNs if catalog fetch fails.
+ * Outfits: random 3–7 wearables from Marketplace item search (+ Catalyst catalogs as fallback).
  */
 export class DebugAvatarCrowd {
   static readonly MAX = 60
@@ -210,22 +227,28 @@ export class DebugAvatarCrowd {
 
   private async loadPool(): Promise<void> {
     const pool = new Map<string, string[]>()
+    const seen = new Set<string>()
     const add = (category: string, id: string) => {
       const cat = category.toLowerCase()
+      // Asset URN only (strip token id) for Catalyst entity resolve.
+      const urn = assetUrnFromCompleteUrn(id.trim())
+      if (!urn || seen.has(`${cat}:${urn}`)) return
+      seen.add(`${cat}:${urn}`)
       const list = pool.get(cat) ?? []
-      list.push(id)
+      list.push(urn)
       pool.set(cat, list)
     }
 
-    // Base avatars (always try first — reliable).
-    await this.fetchCollectionInto(BASE_COLLECTION_ID, add)
+    // 1) Marketplace search — primary source of real on-chain variety.
+    const marketCount = await this.fetchMarketplaceWearables(add)
 
-    // Sample on-chain collections (best-effort).
+    // 2) Catalyst base + sample collections (always useful; face + fallback).
+    await this.fetchCollectionInto(BASE_COLLECTION_ID, add)
     for (const col of ON_CHAIN_COLLECTION_IDS) {
       await this.fetchCollectionInto(col, add)
     }
 
-    // Ensure defaults exist for every outfit category.
+    // 3) Hard defaults so compose never goes bald/blank-faced.
     for (const shape of ['male', 'female'] as BodyShape[]) {
       for (const cat of DEFAULT_WEARABLE_CATEGORIES) {
         const urn = defaultWearableUrn(cat, shape)
@@ -237,8 +260,54 @@ export class DebugAvatarCrowd {
     const total = [...pool.values()].reduce((n, a) => n + a.length, 0)
     clientDebugLog.log(
       'debug',
-      `avatar crowd catalog ready — ${pool.size} categories, ${total} urns`
+      `avatar crowd catalog ready — marketplace≈${marketCount} · ${pool.size} cats · ${total} unique urns`
     )
+  }
+
+  /**
+   * Marketplace item search (`/v1/items?category=wearable`) — real listings with categories.
+   * Multiple pages with different orderBy for variety. CORS may fail on some deploys; returns 0 then.
+   */
+  private async fetchMarketplaceWearables(
+    add: (category: string, id: string) => void
+  ): Promise<number> {
+    let added = 0
+    const orderings = ['newest', 'recently_listed', 'recently_sold', 'cheapest'] as const
+    for (let page = 0; page < MARKETPLACE_PAGES; page++) {
+      const orderBy = orderings[page % orderings.length]!
+      const skip = page * MARKETPLACE_PAGE_SIZE
+      // Some rarities for more diverse looks across pages.
+      const rarity = page % 2 === 0 ? '' : '&rarity=epic&rarity=legendary&rarity=mythic&rarity=unique'
+      const url =
+        `${MARKETPLACE_API}/items?first=${MARKETPLACE_PAGE_SIZE}&skip=${skip}` +
+        `&category=wearable&orderBy=${orderBy}${rarity}`
+      try {
+        const res = await fetch(url)
+        if (!res.ok) continue
+        const raw = (await res.json()) as {
+          data?: Array<Record<string, unknown>>
+        }
+        for (const row of raw.data ?? []) {
+          const item = (row.item as Record<string, unknown> | undefined) ?? row
+          const urn = String(item.urn ?? item.id ?? '').trim()
+          const wearable = (item.data as { wearable?: { category?: string } } | undefined)
+            ?.wearable
+          const cat = (wearable?.category ?? (item.category as string | undefined) ?? '')
+            .trim()
+            .toLowerCase()
+          if (!urn || !cat) continue
+          // Skip pure base face/body slots from marketplace noise.
+          if (cat === 'body_shape' || cat === 'eyebrows' || cat === 'eyes' || cat === 'mouth') {
+            continue
+          }
+          add(cat, urn)
+          added++
+        }
+      } catch {
+        /* CORS / network — collections fallback still runs */
+      }
+    }
+    return added
   }
 
   private async fetchCollectionInto(
@@ -260,25 +329,43 @@ export class DebugAvatarCrowd {
     }
   }
 
+  private pickUrn(category: WearableCategory, bodyShape: BodyShape): string | null {
+    const fromPool = this.pool?.get(category)
+    if (fromPool?.length) return pick(fromPool)
+    return defaultWearableUrn(category, bodyShape)
+  }
+
   private randomProfile(index: number): AvatarProfile {
     const bodyShape: BodyShape = Math.random() < 0.5 ? 'male' : 'female'
     const wearables: string[] = [BODY_SHAPE_URN[bodyShape]]
-    const pool = this.pool
 
-    for (const cat of OUTFIT_CATEGORIES) {
-      // facial_hair only sometimes
-      if (cat === 'facial_hair' && Math.random() < 0.55) continue
-      if ((cat === 'hat' || cat === 'eyewear' || cat === 'earring') && Math.random() < 0.45) {
-        continue
-      }
-      const fromPool = pool?.get(cat)
-      let urn: string | null = null
-      if (fromPool?.length) {
-        // Prefer items that list a matching body shape when we have API metadata — pool is flat ids.
-        urn = pick(fromPool)
-      }
-      if (!urn) urn = defaultWearableUrn(cat, bodyShape)
+    // Face defaults (not counted in 3–7 outfit budget).
+    for (const cat of FACE_CATEGORIES) {
+      const urn = this.pickUrn(cat, bodyShape) ?? defaultWearableUrn(cat, bodyShape)
       if (urn) wearables.push(urn)
+    }
+
+    // Random 3–7 marketplace/catalog slots, unique categories.
+    const n =
+      MIN_OUTFIT_ITEMS +
+      Math.floor(Math.random() * (MAX_OUTFIT_ITEMS - MIN_OUTFIT_ITEMS + 1))
+    const shuffled = [...OUTFIT_CATEGORIES].sort(() => Math.random() - 0.5)
+    const chosen = shuffled.slice(0, Math.min(n, shuffled.length))
+
+    for (const cat of chosen) {
+      const urn = this.pickUrn(cat, bodyShape)
+      if (urn) wearables.push(urn)
+    }
+
+    // Ensure at least something on the body if marketplace was empty.
+    const hasClothes = chosen.some((c) =>
+      c === 'upper_body' || c === 'lower_body' || c === 'feet' || c === 'skin'
+    )
+    if (!hasClothes) {
+      for (const cat of ['upper_body', 'lower_body', 'feet'] as WearableCategory[]) {
+        const urn = this.pickUrn(cat, bodyShape) ?? defaultWearableUrn(cat, bodyShape)
+        if (urn && !wearables.includes(urn)) wearables.push(urn)
+      }
     }
 
     const addr = `0xdebug${(index + 1).toString(16).padStart(34, '0')}`.slice(0, 42)

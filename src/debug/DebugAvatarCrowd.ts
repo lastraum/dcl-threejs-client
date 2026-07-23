@@ -377,7 +377,8 @@ export class DebugAvatarCrowd {
       wearables,
       forceRender: [],
       emotes: [],
-      fromWallet: true,
+      // false so resolveProfile can backfill base defaults when a marketplace URN fails.
+      fromWallet: false,
       address: addr,
       displayName: `Crowd ${index + 1}`,
       hasClaimedName: false
@@ -442,17 +443,28 @@ export class DebugAvatarCrowd {
       animations,
       address: profile.address ?? `crowd-${index}`
     })
+    // Place immediately (don't wait for full batch) so partial spawns aren't at origin.
+    this.layoutRing()
     clientDebugLog.log('debug', `crowd spawn ${this.instances.length}/${this.targetCount}`)
   }
 
   private layoutRing(): void {
     const feet = this.getPlayerFeet()
-    const cx = feet?.x ?? 0
-    const cy = feet?.y ?? 0
-    const cz = feet?.z ?? 0
+    // Prefer live player feet; never leave everyone at world origin if player is elsewhere.
+    let cx = 0
+    let cy = 0
+    let cz = 0
+    if (feet && Number.isFinite(feet.x) && Number.isFinite(feet.z)) {
+      cx = feet.x
+      cy = feet.y
+      cz = feet.z
+    } else if (this.instances.length > 0) {
+      // Keep previous ring center if player briefly unavailable mid-spawn.
+      return
+    }
     const n = this.instances.length
     if (n === 0) return
-    // Spiral / rings so many avatars don't stack.
+    // Spiral / rings so many avatars don't stack on one point.
     const baseR = 2.5
     for (let i = 0; i < n; i++) {
       const ring = Math.floor(i / 12)
@@ -462,6 +474,7 @@ export class DebugAvatarCrowd {
       const r = baseR + ring * 2.2
       const inst = this.instances[i]!
       inst.root.position.set(cx + Math.sin(angle) * r, cy, cz + Math.cos(angle) * r)
+      // Face toward ring center (player).
       inst.root.rotation.y = angle + Math.PI
     }
   }

@@ -10,9 +10,31 @@ import { yieldToNextFrame } from '../rendering/mainThreadYield'
  * - hair / eyelash / fur named materials
  * - emissive-boosted / Em.* materials (neon)
  *
- * Goal: fewer unique textures + material map binds when many remotes are on screen,
- * without a full multi-map bake pipeline.
+ * **Default OFF** — incomplete source images / flipY mismatches produced solid-black
+ * wearables in crowd tests. Enable with `?avataratlas=1` or localStorage
+ * `dcl.avatar.opaqueAtlas=1` after further hardening.
+ *
+ * Goal: fewer unique textures + material map binds when many remotes are on screen.
  */
+
+/** Runtime gate for opaque atlas pass (default false). */
+export function isAvatarOpaqueAtlasEnabled(): boolean {
+  try {
+    if (typeof window !== 'undefined') {
+      const q = new URLSearchParams(window.location.search)
+      if (q.get('avataratlas') === '0' || q.has('noavataratlas')) return false
+      if (q.get('avataratlas') === '1' || q.has('avataratlas')) return true
+    }
+    if (typeof localStorage !== 'undefined') {
+      const v = localStorage.getItem('dcl.avatar.opaqueAtlas')
+      if (v === '1') return true
+      if (v === '0') return false
+    }
+  } catch {
+    /* ignore */
+  }
+  return false
+}
 
 const EMISSIVE_NAME = /^em\.|emissive|glow|neon|em_/i
 const HAIR_NAME = /hair|eyelash|fur|brow|beard|mustache/i
@@ -57,12 +79,29 @@ function shouldSkipMaterial(mat: THREE.MeshStandardMaterial): boolean {
   if (typeof mat.alphaTest === 'number' && mat.alphaTest > 0.001) return true
   if (HAIR_NAME.test(name)) return true
   if (EMISSIVE_NAME.test(name)) return true
+  // Skin is grayscale + tint — atlasing often blacks out if flipY/draw fails.
+  if (name.includes('avatarskin') || name.includes('skin')) return true
   const ud = mat.userData as Record<string, unknown>
   if (ud.dclEmissiveBoosted) return true
   if (ud.dclOpaqueAtlas) return true
   // No albedo map — solid color only; leave as-is.
   if (!mat.map?.image) return true
+  // Incomplete / not decodable for canvas (common cause of solid black after UV remap).
+  if (!imageReadyForCanvas(mat.map)) return true
   return false
+}
+
+function imageReadyForCanvas(tex: THREE.Texture): boolean {
+  const img = tex.image as
+    | (CanvasImageSource & { complete?: boolean; naturalWidth?: number })
+    | undefined
+  if (!img) return false
+  if (typeof img === 'object' && 'complete' in img && img.complete === false) return false
+  const size = imageSize(img)
+  if (!size) return false
+  // HTMLImageElement still loading / broken
+  if ('naturalWidth' in img && img.naturalWidth === 0) return false
+  return true
 }
 
 function imageSize(img: unknown): { w: number; h: number } | null {

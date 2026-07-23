@@ -54,32 +54,18 @@ function mixerHasActiveWork(entry: AnimEntry): boolean {
 }
 
 /**
- * Freeze a clip without resetting time (Explorer / SyncEntity doors).
- * - If the action has advanced (or finished with clampWhenFinished), hold that time.
- * - If never advanced (time≈0), stay at rest (closed). Do NOT snap to end — that put
- *   doors on the wrong keyframe when CRDT only said playing=false.
- * CRDT does not carry clip time; mid-open hold only works if this client already played.
+ * Freeze a clip at its current sample time — never reset() / stop() (those zero time
+ * and snap SyncEntity doors to a weird rest pose on every network re-broadcast).
  */
 function holdActionPose(action: THREE.AnimationAction, weight: number): void {
   action.enabled = true
-  action.setEffectiveWeight(weight)
+  action.setEffectiveWeight(Math.max(0, weight))
   action.clampWhenFinished = true
+  action.paused = true
   action.setEffectiveTimeScale(0)
-
-  // isRunning() stays true while paused — still treat as "has a pose to hold".
-  if (action.isRunning() || action.isScheduled() || action.time > 1e-4) {
-    action.paused = true
-    return
-  }
-
-  // Rest pose (closed): never played on this client.
-  action.stop()
-  action.enabled = weight > 1e-3
-  action.paused = false
-  action.time = 0
-  if (weight > 1e-3) {
-    // Keep weight so rest bones bind; no play.
-    action.enabled = true
+  // Rest at t=0 if never sampled: schedule once so the bind pose is applied, then pause.
+  if (!action.isRunning() && !action.isScheduled() && action.time <= 1e-4) {
+    action.play()
     action.paused = true
   }
 }
@@ -365,17 +351,18 @@ export class AnimatorBridge {
         continue
       }
 
-      // Do not action.stop() everything first — that resets clip time to 0 and forces full
-      // open→close on the next play (SyncEntity doors / gates). Explorer keeps the current
-      // pose when playing=false and only restarts on shouldReset.
+      // Do not mass-stop all actions first — stop() zeros time and snaps pose.
+      // Only fade out clips that are no longer listed in ECS states.
       const activeClipNames = new Set(
         states.map((s) => s.clip ?? '').filter((n) => n.length > 0)
       )
       for (const [name, action] of bound.actions) {
         if (!activeClipNames.has(name)) {
-          action.stop()
+          action.fadeOut(0.05)
+          action.setEffectiveWeight(0)
           action.enabled = false
           action.paused = false
+          action.setEffectiveTimeScale(1)
         }
       }
 
@@ -399,18 +386,17 @@ export class AnimatorBridge {
           action.paused = false
           action.setEffectiveWeight(weight)
           action.setEffectiveTimeScale(state.speed ?? 1)
-          // Explorer: shouldReset restarts one-shots; forceReplay also restarts when scene
-          // re-dirties Animator with the same shouldReset=true payload.
-          // Resume without shouldReset keeps current time (door re-open mid-motion).
-          if (state.shouldReset || forceReplay) action.reset()
+          // ONLY shouldReset restarts — never forceReplay alone.
+          // SyncEntity re-dirties Animator every put; forceReplay+reset snapped doors to t=0.
+          if (state.shouldReset) action.reset()
           if (!action.isRunning()) action.play()
           else action.paused = false
           playingClips.push(clipName)
         } else if (weight > 1e-3) {
           holdActionPose(action, weight)
-          if (action.enabled) heldClips.push(clipName)
+          heldClips.push(clipName)
         } else {
-          action.stop()
+          // Zero weight: disable without stop() so time is preserved if weight returns.
           action.enabled = false
           action.paused = false
           action.setEffectiveWeight(0)
@@ -418,8 +404,8 @@ export class AnimatorBridge {
         }
       }
 
-      // Bake held poses immediately so the skeleton matches this frame.
-      if (heldClips.length) {
+      // Bake pose immediately (hold + weight changes).
+      if (heldClips.length || playingClips.length) {
         bound.mixer.update(0)
       }
 

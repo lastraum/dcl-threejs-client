@@ -1,20 +1,19 @@
 /**
- * Tour leader flag: pole + banner mesh, posed each frame from avatar spine bone.
+ * Tour leader flag: pole + banner mesh.
+ * Posed from the player CCT / remote peer feet root (not skeleton bones) so
+ * custom VRM / ODK avatars show the flag too.
  */
 import * as THREE from 'three'
-import {
-  AAPT_SPINE2,
-  AAPT_SPINE1,
-  AAPT_SPINE,
-  sampleAvatarAttachAnchor
-} from '../avatar/avatarAttachAnchors'
 
 const POLE_HEIGHT = 0.95 * 2 // 2× taller pole
 const POLE_RADIUS = 0.018
 const FLAG_W = 0.48 * 2.5 // 2.5× larger cloth
 const FLAG_H = 0.32 * 2.5
-/** Spine-local offset: slightly up, right, and back of torso. */
-const SPINE_LOCAL_OFFSET = new THREE.Vector3(0.14, 0.22, -0.06)
+/**
+ * Offset from CCT feet in body space (Y-up, facing +Z after yaw):
+ * slightly up (chest), right, and back.
+ */
+const CCT_LOCAL_OFFSET = new THREE.Vector3(0.22, 1.15, -0.12)
 
 const _offset = new THREE.Vector3()
 const _up = new THREE.Vector3(0, 1, 0)
@@ -22,6 +21,7 @@ const _forward = new THREE.Vector3()
 const _right = new THREE.Vector3()
 const _look = new THREE.Matrix4()
 const _quat = new THREE.Quaternion()
+const _yawQuat = new THREE.Quaternion()
 
 export class FollowFlagProp {
   readonly root: THREE.Group
@@ -31,6 +31,7 @@ export class FollowFlagProp {
   private texture: THREE.Texture | null = null
   private flutterT = 0
   private disposed = false
+  private hasImage = false
 
   constructor() {
     this.root = new THREE.Group()
@@ -73,6 +74,7 @@ export class FollowFlagProp {
   setImageDataUrl(dataUrl: string | null): void {
     if (this.disposed) return
     this.disposeTexture()
+    this.hasImage = false
     if (!dataUrl) {
       this.flagMat.map = null
       this.flagMat.color.setHex(0xaa3344)
@@ -95,35 +97,37 @@ export class FollowFlagProp {
         this.flagMat.map = tex
         this.flagMat.color.setHex(0xffffff)
         this.flagMat.needsUpdate = true
+        this.hasImage = true
         this.root.visible = true
       },
       undefined,
       () => {
-        // Fallback solid if decode fails
         this.flagMat.map = null
         this.flagMat.color.setHex(0xaa3344)
         this.flagMat.needsUpdate = true
+        this.hasImage = true
         this.root.visible = true
       }
     )
   }
 
   /**
-   * Pose flag from avatar model spine. Returns false if bone missing.
+   * Pose flag from CCT / peer feet world position + body yaw (radians, Three Y-up).
+   * `yaw` should match visual facing (e.g. playerYaw + AVATAR_YAW_OFFSET).
    */
-  updateFromAvatar(model: THREE.Object3D, dt: number): boolean {
-    if (this.disposed || !this.root.visible) return false
-    const pose =
-      sampleAvatarAttachAnchor(model, AAPT_SPINE2) ??
-      sampleAvatarAttachAnchor(model, AAPT_SPINE1) ??
-      sampleAvatarAttachAnchor(model, AAPT_SPINE)
-    if (!pose) return false
+  updateFromCct(feetWorld: THREE.Vector3, yaw: number, dt: number): boolean {
+    if (this.disposed || !this.hasImage) {
+      this.root.visible = false
+      return false
+    }
+    this.root.visible = true
 
-    _offset.copy(SPINE_LOCAL_OFFSET).applyQuaternion(pose.quaternion)
-    this.root.position.copy(pose.position).add(_offset)
+    _yawQuat.setFromAxisAngle(_up, yaw)
+    _offset.copy(CCT_LOCAL_OFFSET).applyQuaternion(_yawQuat)
+    this.root.position.copy(feetWorld).add(_offset)
 
-    // Keep pole world-up; yaw from avatar facing (spine forward ≈ -Z in many rigs).
-    _forward.set(0, 0, 1).applyQuaternion(pose.quaternion)
+    // Pole world-up; face same yaw as body.
+    _forward.set(0, 0, 1).applyQuaternion(_yawQuat)
     _forward.y = 0
     if (_forward.lengthSq() < 1e-6) _forward.set(0, 0, 1)
     else _forward.normalize()
@@ -142,7 +146,7 @@ export class FollowFlagProp {
   }
 
   setVisible(v: boolean): void {
-    this.root.visible = v && !!this.flagMat.map
+    this.root.visible = v && this.hasImage
   }
 
   dispose(): void {

@@ -1267,21 +1267,33 @@ export class World {
 
     this.avatarAttachResolver = resolver
     this.sceneScript.setAvatarAttachTargets(resolver)
-    this.followFlagManager?.bind(this.host.scene, resolver)
+    this.bindFollowFlagCct()
   }
 
   /**
    * Bind session-scoped tour flag manager (AppController). Re-bound on each World
-   * so the prop tracks the leader spine across /goto rebuilds.
+   * so the prop tracks the leader CCT / peer root across /goto rebuilds.
    */
   setFollowFlagManager(
     manager: import('../social/FollowFlagManager').FollowFlagManager | null
   ): void {
     this.followFlagManager?.unbindScene()
     this.followFlagManager = manager
-    if (manager && this.avatarAttachResolver) {
-      manager.bind(this.host.scene, this.avatarAttachResolver)
-    }
+    this.bindFollowFlagCct()
+  }
+
+  private bindFollowFlagCct(): void {
+    if (!this.followFlagManager) return
+    this.followFlagManager.bind(this.host.scene, {
+      getLocalWallet: () =>
+        this.avatarAttachResolver?.getLocalWallet() ??
+        this.session.getAddress()?.toLowerCase() ??
+        null,
+      getLocalCctRoot: () => this.player?.getPlayerFeetRoot() ?? null,
+      getLocalYaw: () => (this.player ? this.player.getNetworkYaw() : null),
+      getRemoteCctRoot: (address) => this.remoteAvatars?.getPeerRoot(address) ?? null,
+      getRemoteYaw: (address) => this.remoteAvatars?.getPeerYaw(address) ?? null
+    })
   }
 
   /** Block until scene GLBs/textures hydrate — call after `loadScene`, before `start()`. */

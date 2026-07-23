@@ -500,6 +500,13 @@ export class RemoteAvatarManager {
     return record.root
   }
 
+  /** Visual body yaw in Three space (includes AVATAR_YAW_OFFSET). */
+  getPeerYaw(address: string): number | null {
+    const record = this.peers.get(address.toLowerCase())
+    if (!record || !record.hasPosition) return null
+    return record.currentYaw + AVATAR_YAW_OFFSET
+  }
+
   /**
    * Photo-mode metadata samples — remotes with a pose (world-space feet/root).
    * Frustum tests happen in photoMetadata.peopleInPhotoFrustum.

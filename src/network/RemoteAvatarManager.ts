@@ -71,13 +71,20 @@ const NAME_TAG_FAR_INTERVAL_MS = 200
  * LOD bands for already-tracked peers (horizontal m).
  * Full compose only starts inside LOAD (see RemoteAvatarLoadQueue); models are never
  * unloaded for distance — mid/far only throttle pose/anim.
+ * Near band is generous so close peers always get full-rate smooth pose.
  */
-const LOD_NEAR_M2 = 20 * 20
-const LOD_MID_M2 = 40 * 40
-/** Mid band: ~20 Hz pose/anim. */
-const LOD_MID_INTERVAL_MS = 50
-/** Far band: ~10 Hz pose; no skinned anim. */
-const LOD_FAR_INTERVAL_MS = 100
+const LOD_NEAR_M2 = 36 * 36
+const LOD_MID_M2 = 64 * 64
+/** Mid band: ~30 Hz pose/anim (wire is ~10 Hz — still interpolate every tick). */
+const LOD_MID_INTERVAL_MS = 33
+/** Far band: ~15 Hz pose; no skinned anim. */
+const LOD_FAR_INTERVAL_MS = 66
+/** Max seconds to dead-reckon past last packet (wire ~100 ms). */
+const EXTRAP_MAX_S = 0.14
+/** Position follow rate while moving (higher = stickier to path, less lag). */
+const POSE_FOLLOW_RATE = 14
+/** Position settle rate when nearly idle. */
+const POSE_SETTLE_RATE = 18
 
 /** Distance cull with hysteresis — sticky visible state. */
 function nameTagWantedForDist(
@@ -146,6 +153,9 @@ type RemotePeerRecord = {
   /** Last mid/far LOD pose/anim tick (performance.now). */
   lastLodUpdateAt: number
 }
+
+/** Shared extrapolated pose goal (one peer at a time in update). */
+const _extrapGoal = new THREE.Vector3()
 
 function blankProfile(address: string): AvatarProfile {
   return {
@@ -1044,8 +1054,27 @@ export class RemoteAvatarManager {
           : delta
       record.lastLodUpdateAt = now
 
-      const alpha = 1 - Math.exp(-8 * tickDelta)
-      const speedAlpha = 1 - Math.exp(-10 * tickDelta)
+      // Dead-reckon a short way past the last packet so 10 Hz wire doesn't stutter.
+      const ageS = Math.max(0, (now - record.receivedAt) / 1000)
+      const extrapS = Math.min(ageS, EXTRAP_MAX_S)
+      const moving =
+        record.horizontalSpeed > SPEED_IDLE ||
+        Math.abs(record.verticalVelocity) > 0.6 ||
+        airBusy
+      if (record.hasPosition) {
+        _extrapGoal.copy(record.targetPosition)
+        if (moving && extrapS > 0.001) {
+          // Horizontal extrap full; damp vertical (jumps already carry velocity spikes).
+          _extrapGoal.x += record.velocity.x * extrapS
+          _extrapGoal.y += record.velocity.y * extrapS * 0.4
+          _extrapGoal.z += record.velocity.z * extrapS
+        }
+      }
+
+      const followRate = moving ? POSE_FOLLOW_RATE : POSE_SETTLE_RATE
+      const alpha = 1 - Math.exp(-followRate * tickDelta)
+      const speedAlpha = 1 - Math.exp(-12 * tickDelta)
+      const yawAlpha = 1 - Math.exp(-(moving ? 16 : 10) * tickDelta)
 
       // Settled: on target, not moving, no jump/glide/emote — skip lerp.
       const atTarget =
@@ -1061,7 +1090,8 @@ export class RemoteAvatarManager {
         record.horizontalSpeed < SPEED_IDLE &&
         record.smoothedSpeed < SPEED_IDLE &&
         !emoteBusy &&
-        !airBusy
+        !airBusy &&
+        ageS > 0.05
 
       if (settled) {
         poseSkipped++
@@ -1071,15 +1101,14 @@ export class RemoteAvatarManager {
         record.smoothedSpeed = 0
       } else {
         if (record.hasPosition) {
-          record.root.position.lerp(record.targetPosition, alpha)
+          record.root.position.lerp(_extrapGoal, alpha)
         }
 
-        // Snap facing while moving so rotation does not trail position interpolation.
-        if (record.horizontalSpeed > 0.35) {
-          record.currentYaw = record.targetYaw
-        } else {
-          record.currentYaw += (record.targetYaw - record.currentYaw) * alpha
-        }
+        // Smooth yaw always (snapping every packet reads as jitter when wire is 10 Hz).
+        let dyaw = record.targetYaw - record.currentYaw
+        while (dyaw > Math.PI) dyaw -= Math.PI * 2
+        while (dyaw < -Math.PI) dyaw += Math.PI * 2
+        record.currentYaw += dyaw * yawAlpha
         record.pivot.rotation.y = record.currentYaw + AVATAR_YAW_OFFSET
 
         record.smoothedSpeed += (record.horizontalSpeed - record.smoothedSpeed) * speedAlpha

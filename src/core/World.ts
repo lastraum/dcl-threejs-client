@@ -1450,10 +1450,9 @@ export class World {
             assetStats.textureInflight
           )
           this.vrmPeerSync.gcStaleFetches()
-          // Low FPS (remote compose thrash): skip a remote tick every other frame so
-          // player CCT + async collider apply keep budget.
-          const skipHeavyRemote = delta > 0.05 && startFrame % 2 === 0
-          const remoteTick = skipHeavyRemote ? undefined : this.remoteAvatars?.update(delta)
+          // Always tick remote pose (skipping frames made peers look choppy).
+          // LOD inside RemoteAvatarManager already throttles far anim work.
+          const remoteTick = this.remoteAvatars?.update(delta)
           this.reportRemoteAvatarProgress()
           if (this.remoteAvatars) {
             perfSetRemoteStats({

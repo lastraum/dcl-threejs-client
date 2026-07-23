@@ -3,13 +3,6 @@ import { environmentDebug, type EnvironmentDebugState } from '../../debug/Enviro
 import { physxColliderDebug, type PhysxColliderDebugOptions } from '../../debug/PhysxColliderDebug'
 import { cameraCollisionDebug } from '../../debug/CameraCollisionDebug'
 import { platformMotionDebug } from '../../debug/PlatformMotionDebug'
-import {
-  MAX_SHADOW_SPOT_LIGHTS,
-  LIGHT_CULL_DISTANCE_M,
-  renderQuality,
-  RenderQualityTier,
-  type RenderQualityOptions
-} from '../../rendering/RenderQualitySettings'
 import type { RenderStats } from './RenderStats'
 
 export type DebugPanelPosition = {
@@ -45,8 +38,6 @@ export class DebugPanel {
   private readonly environmentDisableToggle: HTMLInputElement
   private readonly environmentHint: HTMLDivElement
   private readonly physxRecookBtn: HTMLButtonElement
-  private readonly renderQualitySelect: HTMLSelectElement
-  private readonly renderQualityHint: HTMLDivElement
   private readonly positionLocalEl: HTMLDivElement
   private readonly positionWorldEl: HTMLDivElement
   private readonly logsBody: HTMLDivElement
@@ -92,9 +83,12 @@ export class DebugPanel {
     this.root.innerHTML = `
       <div class="debug-panel__header">Debug</div>
       <div class="debug-panel__position">
-        <div class="debug-panel__position-title">Position</div>
-        <div class="debug-panel__position-local">Scene-local: —</div>
-        <div class="debug-panel__position-world">World: —</div>
+        <div class="debug-panel__position-main">
+          <div class="debug-panel__position-title">Position</div>
+          <div class="debug-panel__position-local">Scene-local: —</div>
+          <div class="debug-panel__position-world">World: —</div>
+        </div>
+        <div class="debug-panel__stats" data-debug-stats></div>
       </div>
       <div class="debug-panel__logs">
         <div class="debug-panel__logs-header">
@@ -163,20 +157,6 @@ export class DebugPanel {
           </label>
           <button type="button" class="debug-panel__logs-btn" data-physx-recook>Force recook all colliders</button>
         </div>
-        <div class="debug-panel__render-quality">
-          <div class="debug-panel__render-quality-title">Render quality</div>
-          <label class="debug-panel__render-quality-row">
-            <span>Light culling tier</span>
-            <select data-render-quality>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-              <option value="ultra">Ultra</option>
-            </select>
-          </label>
-          <div class="debug-panel__render-quality-hint" data-render-quality-hint></div>
-        </div>
-        <div class="debug-panel__stats"></div>
       </div>
     `
 
@@ -192,12 +172,10 @@ export class DebugPanel {
     this.environmentDisableToggle = this.root.querySelector('[data-env-disable]') as HTMLInputElement
     this.environmentHint = this.root.querySelector('[data-env-hint]') as HTMLDivElement
     this.physxRecookBtn = this.root.querySelector('[data-physx-recook]') as HTMLButtonElement
-    this.renderQualitySelect = this.root.querySelector('[data-render-quality]') as HTMLSelectElement
-    this.renderQualityHint = this.root.querySelector('[data-render-quality-hint]') as HTMLDivElement
     this.positionLocalEl = this.root.querySelector('.debug-panel__position-local') as HTMLDivElement
     this.positionWorldEl = this.root.querySelector('.debug-panel__position-world') as HTMLDivElement
     this.logsBody = this.root.querySelector('.debug-panel__logs-body') as HTMLDivElement
-    const statsHost = this.root.querySelector('.debug-panel__stats') as HTMLDivElement
+    const statsHost = this.root.querySelector('[data-debug-stats]') as HTMLDivElement
     statsHost.appendChild(renderStats.dom)
 
     const panelRecordToggle = this.root.querySelector('[data-panel-record]') as HTMLInputElement
@@ -246,7 +224,6 @@ export class DebugPanel {
     this.wirePlatformMotionControls()
     this.wireCameraCollisionControls()
     this.wireEnvironmentDebugControls()
-    this.wireRenderQualityControls()
 
     document.body.appendChild(this.root)
     document.addEventListener('click', this.onDocumentClick, true)
@@ -258,7 +235,7 @@ export class DebugPanel {
   }
 
   replaceRenderStats(renderStats: RenderStats): void {
-    const host = this.root.querySelector('.debug-panel__stats') as HTMLDivElement
+    const host = this.root.querySelector('[data-debug-stats]') as HTMLDivElement
     host.replaceChildren(renderStats.dom)
   }
 
@@ -362,33 +339,6 @@ export class DebugPanel {
     if (stickToBottom) {
       this.logsBody.scrollTop = this.logsBody.scrollHeight
     }
-  }
-
-  private wireRenderQualityControls(): void {
-    const syncFromStore = (options: RenderQualityOptions) => {
-      this.renderQualitySelect.value = options.tier
-      const maxLights = options.maxSceneLights
-      const shadows = options.shadowQuality
-      this.renderQualityHint.textContent =
-        `≤${maxLights} lights within ${LIGHT_CULL_DISTANCE_M}m · shadows ${shadows}` +
-        (shadows !== 'off' ? ` · ≤${MAX_SHADOW_SPOT_LIGHTS} spot shadows` : '')
-    }
-
-    syncFromStore(renderQuality.getOptions())
-
-    this.renderQualitySelect.addEventListener('change', () => {
-      const tier = this.renderQualitySelect.value as RenderQualityTier
-      if (
-        tier === RenderQualityTier.Low ||
-        tier === RenderQualityTier.Medium ||
-        tier === RenderQualityTier.High ||
-        tier === RenderQualityTier.Ultra
-      ) {
-        renderQuality.setTier(tier)
-      }
-    })
-
-    renderQuality.subscribe(syncFromStore)
   }
 
   private wirePhysxDebugControls(): void {

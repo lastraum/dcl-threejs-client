@@ -291,48 +291,16 @@
         margin: 0;
         accent-color: #86efac;
       }
-      .debug-panel__render-quality {
-        margin-top: 10px;
-        padding-top: 8px;
-        border-top: 1px solid rgba(255, 255, 255, 0.08);
-        flex-shrink: 0;
-      }
-      .debug-panel__render-quality-title {
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        color: rgba(255, 255, 255, 0.55);
-        margin-bottom: 6px;
-      }
-      .debug-panel__render-quality-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-        color: rgba(255, 255, 255, 0.88);
-      }
-      .debug-panel__render-quality-row select {
-        min-width: 96px;
-        padding: 4px 8px;
-        border-radius: 6px;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        background: rgba(255, 255, 255, 0.06);
-        color: #fff;
-        font-size: 12px;
-      }
       .debug-panel__render-quality-hint {
         margin-top: 6px;
         font-size: 10px;
         color: rgba(255, 255, 255, 0.5);
       }
-      .debug-panel__stats {
-        margin-top: 10px;
-        padding-top: 8px;
-        border-top: 1px solid rgba(255, 255, 255, 0.08);
-        flex-shrink: 0;
-      }
       .debug-panel__position {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
         font-size: 10px;
         line-height: 1.45;
@@ -340,6 +308,35 @@
         margin-bottom: 10px;
         padding-bottom: 8px;
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .debug-panel__position-main {
+        min-width: 0;
+        flex: 1 1 auto;
+      }
+      .debug-panel__stats {
+        flex: 0 0 auto;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        margin: 0;
+        padding: 0;
+        border: none;
+      }
+      .debug-panel__stats #render-stats-host {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+      }
+      .debug-panel__stats #render-stats {
+        position: relative !important;
+        inset: auto !important;
+        transform: scale(0.92);
+        transform-origin: top right;
+      }
+      .debug-panel__stats #render-stats-extra {
+        text-align: right;
+        font-size: 10px !important;
+        margin-top: 2px !important;
       }
       .debug-panel__environment {
         margin-top: 10px;

@@ -35,7 +35,11 @@ import { ChatPanel } from './ui/chat/ChatPanel'
 import { SocialChatController } from './ui/chat/SocialChatController'
 import { SocialChatDock } from './ui/chat/SocialChatDock'
 import { CommunityFollowController } from '../social/CommunityFollowController'
-import { followTargetToRoute } from '../social/communityFollowWire'
+import {
+  followTargetLabel,
+  followTargetToRoute,
+  type FollowTarget
+} from '../social/communityFollowWire'
 import { PreferencesPanel } from './ui/settings/PreferencesPanel'
 import { SettingsOverlay, type SettingsTab } from './ui/settings/SettingsOverlay'
 import type { MapPlayerState } from './ui/settings/MapView'
@@ -670,6 +674,16 @@ export class AppController {
         // Avoid re-entrancy while already navigating from a previous pulse.
         if (this.navigating) return
         const route = followTargetToRoute(ev.target)
+        // Already with the leader (same primary / same feet parcel) — don't reload.
+        // Leader /goto or map Jump In to a *new* place still teleports followers.
+        if (this.isAlreadyAtFollowTarget(ev.target)) {
+          clientDebugLog.log(
+            'social',
+            `Follow skip teleport — already at ${followTargetLabel(ev.target)}`,
+            { level: 'info', alsoConsole: true }
+          )
+          return
+        }
         // After World rebuild, re-open the community thread (Follow bar + tour context).
         const name =
           this.world?.social
@@ -2311,6 +2325,38 @@ export class AppController {
     const m = /^(-?\d+),(-?\d+)$/.exec(state.parcelKey.trim())
     if (!m) return null
     return { px: parseInt(m[1]!, 10), py: parseInt(m[2]!, 10) }
+  }
+
+  /**
+   * Follow teleport gate: skip Jump In when already co-located with the tour stop.
+   * - Loaded primary matches target (same scene/world jump)
+   * - Or feet parcel matches target coords (standing next to leader after soft walk)
+   * - Or primary multi-parcel scene contains the target parcel
+   */
+  private isAlreadyAtFollowTarget(target: FollowTarget): boolean {
+    if (this.appMode !== 'play' || !this.world) return false
+    const route = followTargetToRoute(target)
+
+    if (this.currentRoute && routeEquals(this.currentRoute, route)) return true
+
+    if (target.kind === 'coords') {
+      const feet = this.parcelFromPlayerState(this.getMapPlayerState())
+      if (feet && feet.px === target.x && feet.py === target.y) return true
+
+      const primary = this.world.getLoadedPrimaryScene?.()
+      if (primary?.source.kind === 'coords' && primary.parcels?.length) {
+        const key = `${target.x},${target.y}`
+        if (primary.parcels.includes(key) || primary.baseParcel === key) return true
+      }
+    }
+
+    if (target.kind === 'world' && this.currentRoute?.kind === 'world') {
+      return (
+        this.currentRoute.worldName.trim().toLowerCase() === target.worldName.trim().toLowerCase()
+      )
+    }
+
+    return false
   }
 
   private ensureDevProgressPanel(): DevProgressPanel {

@@ -35,6 +35,8 @@ const SILENCED_CATEGORIES: ReadonlySet<string> =
 const CONSOLE_MIRROR_KEY = 'dcl.debug.consoleMirror'
 const CONSOLE_CAPTURE_KEY = 'dcl.debug.consoleCapture'
 const ALL_CLIENT_LOGS_KEY = 'dcl.debug.allClientLogs'
+/** Master gate: nothing lands in the Help panel unless this is on. */
+const PANEL_RECORD_KEY = 'dcl.debug.panelRecord'
 
 /** Local `vite` / `import.meta.env.DEV` — mirror client logs to DevTools by default. */
 function defaultConsoleMirror(): boolean {
@@ -90,12 +92,17 @@ export class ClientDebugLog {
    */
   private consoleMirror = readBoolPref(CONSOLE_MIRROR_KEY, defaultConsoleMirror())
   /**
-   * When true, show silenced categories (e.g. comms in prod) in the panel.
-   * Default off — opt-in via Help → Debug.
+   * Master gate for the Help → Debug log body. Default **off** so the panel stays
+   * quiet until the user opts in.
+   */
+  private panelRecord = readBoolPref(PANEL_RECORD_KEY, false)
+  /**
+   * When true (and panel record on), include silenced categories (e.g. comms in prod).
    */
   private allClientLogs = readBoolPref(ALL_CLIENT_LOGS_KEY, false)
   /**
    * When true, hook console.log/warn/error into this panel so ad-hoc logs appear here.
+   * Also implies panel recording for those console lines.
    */
   private consoleCapture = readBoolPref(CONSOLE_CAPTURE_KEY, false)
   private consoleHookInstalled = false
@@ -123,7 +130,20 @@ export class ClientDebugLog {
   }
 
   /**
-   * Help → Debug “All client logs” — include normally silenced categories (comms in prod).
+   * Help → Debug “Record client logs” — master panel gate (default off).
+   */
+  setPanelRecord(enabled: boolean): void {
+    this.panelRecord = !!enabled
+    writeBoolPref(PANEL_RECORD_KEY, this.panelRecord)
+  }
+
+  isPanelRecord(): boolean {
+    return this.panelRecord
+  }
+
+  /**
+   * Help → Debug “All categories” — include normally silenced categories (comms in prod).
+   * Only applies when panel recording is on.
    */
   setAllClientLogs(enabled: boolean): void {
     this.allClientLogs = !!enabled
@@ -151,8 +171,12 @@ export class ClientDebugLog {
   }
 
   log(category: string, message: string, options: DebugLogOptions = {}): void {
+    // Silenced categories stay out unless “all categories” is on.
     const silenced = !this.allClientLogs && SILENCED_CATEGORIES.has(category)
-    if (silenced) return
+    if (silenced) {
+      // Still allow console mirror for non-panel path when mirror is on and panel is on?
+      return
+    }
 
     const level = options.level ?? 'info'
     const key = options.throttleKey ?? `${category}:${level}`
@@ -164,7 +188,10 @@ export class ClientDebugLog {
       this.throttleAt.set(key, now)
     }
 
-    this.pushEntry(category, level, message)
+    // Panel stays empty until user opts in (Record client logs).
+    if (this.panelRecord) {
+      this.pushEntry(category, level, message)
+    }
 
     if (this.consoleMirror) {
       this.writingConsole = true
@@ -207,6 +234,7 @@ export class ClientDebugLog {
       if (this.writingConsole || !this.consoleCapture) return
       const msg = formatConsoleArgs(args).slice(0, 2000)
       if (!msg) return
+      // Console capture always records into the panel when enabled.
       this.pushEntry('console', level, msg)
     }
     console.log = (...args: unknown[]) => {

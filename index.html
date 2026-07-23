@@ -337,6 +337,9 @@
         font-size: 10px;
         line-height: 1.45;
         flex-shrink: 0;
+        margin-bottom: 10px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
       }
       .debug-panel__environment {
         margin-top: 10px;
@@ -9738,6 +9741,10 @@
         opacity: 0.55;
         cursor: not-allowed;
       }
+      .community-modal-tour-cta--follow {
+        background: linear-gradient(90deg, #0ea5e9, #2563eb);
+        box-shadow: 0 4px 16px rgba(37, 99, 235, 0.4);
+      }
       .community-modal-tour-hint {
         margin: 8px 0 0;
         font-size: 0.72rem;
@@ -9746,33 +9753,36 @@
       }
       .tour-options-popup-host {
         position: fixed;
-        left: 72px;
+        left: var(--client-safe-left);
         top: 50%;
         transform: translateY(-50%);
-        z-index: 10040;
+        z-index: var(--z-client-hud, 10040);
         pointer-events: none;
       }
       .tour-options-popup {
         pointer-events: auto;
-        width: min(280px, calc(100vw - 90px));
-        padding: 14px 14px 12px;
+        width: min(248px, var(--client-panel-max-w, calc(100vw - 90px)));
+        padding: 14px 14px 16px;
         border-radius: 14px;
-        background: #1a1b22;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+        background: rgba(22, 22, 28, 0.97);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+        color: #fff;
       }
       .tour-options-popup-head {
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
         gap: 8px;
-        margin-bottom: 6px;
+        margin-bottom: 12px;
       }
       .tour-options-popup-title {
         margin: 0;
-        font-size: 0.9rem;
+        font-size: 11px;
         font-weight: 700;
-        color: #fff;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.92);
       }
       .tour-options-popup-close {
         appearance: none;

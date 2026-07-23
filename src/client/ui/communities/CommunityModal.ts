@@ -328,8 +328,14 @@ export class CommunityModal {
     this.root.querySelector('[data-community-tour-start]')?.addEventListener('click', () => {
       void this.onTourStartClick()
     })
+    this.root.querySelector('[data-community-tour-follow]')?.addEventListener('click', () => {
+      this.onTourFollowClick()
+    })
     this.root.querySelector('[data-community-tour-stop]')?.addEventListener('click', () => {
       void this.onTourStopClick()
+    })
+    this.root.querySelector('[data-community-tour-unfollow]')?.addEventListener('click', () => {
+      this.onTourUnfollowClick()
     })
   }
 
@@ -353,6 +359,16 @@ export class CommunityModal {
     this.refreshTourCta()
   }
 
+  private onTourFollowClick(): void {
+    const community = this.current
+    const follow = this.getFollow?.()
+    if (!community || !follow) return
+    if (!follow.getSession(community.id)) return
+    if (follow.isLeading(community.id) || follow.isFollowing(community.id)) return
+    follow.follow(community.id)
+    this.refreshTourCta()
+  }
+
   private async onTourStopClick(): Promise<void> {
     const follow = this.getFollow?.()
     if (!follow?.isLeading()) return
@@ -362,11 +378,22 @@ export class CommunityModal {
     this.refreshTourCta()
   }
 
-  private renderTourCta(merged: CommunityDetail): string {
-    if (!this.canLeadTour(merged)) return ''
+  private onTourUnfollowClick(): void {
     const follow = this.getFollow?.()
+    if (!follow?.isFollowing()) return
+    follow.unfollow()
+    this.refreshTourCta()
+  }
+
+  private renderTourCta(merged: CommunityDetail): string {
+    const follow = this.getFollow?.()
+    const session = follow?.getSession(merged.id) ?? null
     const leading = Boolean(follow?.isLeading(merged.id))
+    const following = Boolean(follow?.isFollowing(merged.id))
     const followReady = Boolean(follow)
+    const canLead = this.canLeadTour(merged)
+
+    // Active tour, local leader
     if (leading) {
       return `
         <button
@@ -377,6 +404,43 @@ export class CommunityModal {
         >● STOP TOUR</button>
         <p class="community-modal-tour-hint">Tour live — use sidebar 🚩 Tour Options for flag banner</p>`
     }
+
+    // Active tour, already following
+    if (session && following) {
+      return `
+        <button
+          type="button"
+          class="community-modal-tour-cta is-live"
+          data-community-tour-unfollow
+          title="Stop following this tour"
+        >● STOP FOLLOWING</button>
+        <p class="community-modal-tour-hint">Following the leader — /goto jumps with them</p>`
+    }
+
+    // Active tour, not the leader → Follow Tour (any member)
+    if (session) {
+      return `
+        <button
+          type="button"
+          class="community-modal-tour-cta community-modal-tour-cta--follow"
+          data-community-tour-follow
+          ${followReady ? '' : 'disabled'}
+          title="${
+            followReady
+              ? 'Follow this tour — jump when the leader /goto'
+              : 'Jump into a scene (play mode) to follow a tour'
+          }"
+        >◉ FOLLOW TOUR</button>
+        ${
+          followReady
+            ? `<p class="community-modal-tour-hint">Tour live — join the group</p>`
+            : `<p class="community-modal-tour-hint">Available in play mode</p>`
+        }`
+    }
+
+    // No tour — only owners/mods can start
+    if (!canLead) return ''
+
     return `
       <button
         type="button"

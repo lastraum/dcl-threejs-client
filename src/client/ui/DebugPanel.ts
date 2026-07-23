@@ -91,6 +91,11 @@ export class DebugPanel {
     this.root.className = 'debug-panel'
     this.root.innerHTML = `
       <div class="debug-panel__header">Debug</div>
+      <div class="debug-panel__position">
+        <div class="debug-panel__position-title">Position</div>
+        <div class="debug-panel__position-local">Scene-local: —</div>
+        <div class="debug-panel__position-world">World: —</div>
+      </div>
       <div class="debug-panel__logs">
         <div class="debug-panel__logs-header">
           <span class="debug-panel__logs-title">Client log</span>
@@ -100,8 +105,12 @@ export class DebugPanel {
           </div>
         </div>
         <label class="debug-panel__check debug-panel__check--log">
+          <input type="checkbox" data-panel-record />
+          <span>Record client logs in this panel</span>
+        </label>
+        <label class="debug-panel__check debug-panel__check--log">
           <input type="checkbox" data-all-client-logs />
-          <span>All client logs (incl. silenced categories)</span>
+          <span>Include all categories (comms, etc.)</span>
         </label>
         <label class="debug-panel__check debug-panel__check--log">
           <input type="checkbox" data-console-capture />
@@ -114,11 +123,6 @@ export class DebugPanel {
         <div class="debug-panel__logs-body" role="log" aria-live="polite"></div>
       </div>
       <div class="debug-panel__tools">
-        <div class="debug-panel__position">
-          <div class="debug-panel__position-title">Position</div>
-          <div class="debug-panel__position-local">Scene-local: —</div>
-          <div class="debug-panel__position-world">World: —</div>
-        </div>
         <div class="debug-panel__environment">
           <div class="debug-panel__physx-title">Environment</div>
           <label class="debug-panel__check">
@@ -195,6 +199,12 @@ export class DebugPanel {
     this.logsBody = this.root.querySelector('.debug-panel__logs-body') as HTMLDivElement
     const statsHost = this.root.querySelector('.debug-panel__stats') as HTMLDivElement
     statsHost.appendChild(renderStats.dom)
+
+    const panelRecordToggle = this.root.querySelector('[data-panel-record]') as HTMLInputElement
+    panelRecordToggle.checked = clientDebugLog.isPanelRecord()
+    panelRecordToggle.addEventListener('change', () => {
+      clientDebugLog.setPanelRecord(panelRecordToggle.checked)
+    })
 
     const allClientLogsToggle = this.root.querySelector(
       '[data-all-client-logs]'

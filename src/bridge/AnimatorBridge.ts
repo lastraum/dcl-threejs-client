@@ -46,28 +46,10 @@ function isAnimatorFocusSrc(src: string): boolean {
 function mixerHasActiveWork(entry: AnimEntry): boolean {
   for (const action of entry.actions.values()) {
     if (action.isRunning() || action.isScheduled()) return true
-    // Paused holds still need weight applied so the pose stays on the skeleton.
-    if (action.enabled && action.getEffectiveWeight() > 1e-3) return true
+    if (action.getEffectiveWeight() > 1e-3) return true
     if (action.enabled && action.weight > 1e-3) return true
   }
   return false
-}
-
-/**
- * Freeze a clip at its current sample time — never reset() / stop() (those zero time
- * and snap SyncEntity doors to a weird rest pose on every network re-broadcast).
- */
-function holdActionPose(action: THREE.AnimationAction, weight: number): void {
-  action.enabled = true
-  action.setEffectiveWeight(Math.max(0, weight))
-  action.clampWhenFinished = true
-  action.paused = true
-  action.setEffectiveTimeScale(0)
-  // Rest at t=0 if never sampled: schedule once so the bind pose is applied, then pause.
-  if (!action.isRunning() && !action.isScheduled() && action.time <= 1e-4) {
-    action.play()
-    action.paused = true
-  }
 }
 
 /** One name→node map per bind — per-track traverse was O(tracks × nodes) on huge characters. */
@@ -345,29 +327,28 @@ export class AnimatorBridge {
       const stateSignature = animatorStateSignature(states, usingDefaultAutoPlay)
       const forceReplay = this.dirtyReplay.has(entity)
       this.dirtyReplay.delete(entity)
-      // Signature skip is correct for idle holds — but identical shouldReset re-fires
-      // (muzzle flash / gun shot) arrive as CRDT dirties with the same state payload.
-      if (!rebinding && !forceReplay && bound.lastAppliedSignature === stateSignature) {
-        continue
+      // Skip unchanged state. SyncEntity re-puts the same Animator often — only re-apply
+      // when signature changed, or markDirty + shouldReset (one-shot re-fire).
+      if (!rebinding && bound.lastAppliedSignature === stateSignature) {
+        const oneShotRefire =
+          forceReplay && states.some((s) => s.shouldReset === true && s.playing !== false)
+        if (!oneShotRefire) continue
       }
 
-      // Do not mass-stop all actions first — stop() zeros time and snaps pose.
-      // Only fade out clips that are no longer listed in ECS states.
-      const activeClipNames = new Set(
-        states.map((s) => s.clip ?? '').filter((n) => n.length > 0)
-      )
-      for (const [name, action] of bound.actions) {
-        if (!activeClipNames.has(name)) {
-          action.fadeOut(0.05)
-          action.setEffectiveWeight(0)
-          action.enabled = false
-          action.paused = false
-          action.setEffectiveTimeScale(1)
-        }
+      /**
+       * Explorer-style apply:
+       * 1) Stop every action (clean slate — open/close clips don't fight).
+       * 2) Configure each ECS state; play only when playing !== false.
+       * 3) Non-looping clamps on last frame (open holds) until another clip plays (close).
+       */
+      for (const action of bound.actions.values()) {
+        action.stop()
+        action.enabled = false
+        action.paused = false
+        action.setEffectiveTimeScale(1)
       }
 
       const playingClips: string[] = []
-      const heldClips: string[] = []
       const missingClips: string[] = []
 
       for (const state of states) {
@@ -379,34 +360,18 @@ export class AnimatorBridge {
         }
         const loop = state.loop !== false
         const weight = state.weight ?? 1
+        action.enabled = true
+        action.paused = false
+        action.setEffectiveWeight(weight)
+        action.setEffectiveTimeScale(state.speed ?? 1)
         action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)
+        // One-shot open stays on last frame until close clip is played.
         action.clampWhenFinished = !loop
         if (state.playing !== false) {
-          action.enabled = true
-          action.paused = false
-          action.setEffectiveWeight(weight)
-          action.setEffectiveTimeScale(state.speed ?? 1)
-          // ONLY shouldReset restarts — never forceReplay alone.
-          // SyncEntity re-dirties Animator every put; forceReplay+reset snapped doors to t=0.
           if (state.shouldReset) action.reset()
-          if (!action.isRunning()) action.play()
-          else action.paused = false
+          action.play()
           playingClips.push(clipName)
-        } else if (weight > 1e-3) {
-          holdActionPose(action, weight)
-          heldClips.push(clipName)
-        } else {
-          // Zero weight: disable without stop() so time is preserved if weight returns.
-          action.enabled = false
-          action.paused = false
-          action.setEffectiveWeight(0)
-          action.setEffectiveTimeScale(1)
         }
-      }
-
-      // Bake pose immediately (hold + weight changes).
-      if (heldClips.length || playingClips.length) {
-        bound.mixer.update(0)
       }
 
       if (missingClips.length) {
@@ -416,9 +381,10 @@ export class AnimatorBridge {
         )
       }
 
-      if (bound.lastAppliedSignature !== stateSignature) {
+      const logSignature = `${stateSignature}|playing:${playingClips.join(',')}`
+      if (bound.lastAppliedSignature !== logSignature) {
         this.logAnimator(
-          `Animator states — entity ${entity} · ${src} · ${formatAnimatorStates(states)} · active clips [${playingClips.join(', ') || '(none)'}]${heldClips.length ? ` · held [${heldClips.join(', ')}]` : ''}${usingDefaultAutoPlay ? ' · default auto-play' : ''}`,
+          `Animator states — entity ${entity} · ${src} · ${formatAnimatorStates(states)} · active clips [${playingClips.join(', ') || '(none)'}]${usingDefaultAutoPlay ? ' · default auto-play' : ''}`,
           { entity }
         )
       }

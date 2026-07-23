@@ -423,6 +423,9 @@ export class RemoteAvatarManager {
     this.cameraWorldPos.copy(position)
     this.hasCameraPos = true
     this.loadQueue.setCameraPosition(position)
+    // Follow teleports re-push island peers before local player exists — root stays
+    // invisible (hasPosition=false). Once we have a feet/camera origin, place pills.
+    this.backfillProvisionalPeers()
     // Walking toward pills: refresh waiting distances; only enqueue peers not yet queued.
     // Do not re-enqueue every frame — that allocated a new run() closure + Vector3.clone each peer.
     let bulkDistance = false
@@ -436,6 +439,26 @@ export class RemoteAvatarManager {
       }
     }
     if (bulkDistance) this.loadQueue.notifyPump()
+  }
+
+  /**
+   * Peers joined before local feet were ready (World rebuild / follow /goto): show
+   * provisional pills so remotes are not invisible until the first RFC4 transform.
+   */
+  backfillProvisionalPeers(): void {
+    const provisional = this.provisionalPositionProvider?.()
+    if (!provisional) return
+    for (const record of this.peers.values()) {
+      if (record.hasPosition) continue
+      if (record.modifierHidden) continue
+      record.root.position.copy(provisional)
+      record.targetPosition.copy(provisional)
+      record.root.visible = true
+      record.hasPosition = true
+      if (!record.model && !record.placeholder) {
+        this.attachLoadingPresentation(record)
+      }
+    }
   }
 
   /** Scene asset hydration — throttle remote composes so scene GLTF attach wins. */

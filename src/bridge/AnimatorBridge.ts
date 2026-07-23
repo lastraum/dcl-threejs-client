@@ -333,9 +333,18 @@ export class AnimatorBridge {
         continue
       }
 
-      for (const action of bound.actions.values()) {
-        action.stop()
-        action.enabled = false
+      // Do not action.stop() everything first — that resets clip time to 0 and forces full
+      // open→close on the next play (SyncEntity doors / gates). Explorer keeps the current
+      // pose when playing=false and only restarts on shouldReset.
+      const activeClipNames = new Set(
+        states.map((s) => s.clip ?? '').filter((n) => n.length > 0)
+      )
+      for (const [name, action] of bound.actions) {
+        if (!activeClipNames.has(name)) {
+          action.stop()
+          action.enabled = false
+          action.paused = false
+        }
       }
 
       const playingClips: string[] = []
@@ -348,16 +357,28 @@ export class AnimatorBridge {
           if (clipName) missingClips.push(clipName)
           continue
         }
-        action.enabled = true
+        const loop = state.loop !== false
         action.setEffectiveWeight(state.weight ?? 1)
         action.setEffectiveTimeScale(state.speed ?? 1)
-        action.setLoop(state.loop !== false ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)
+        action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)
+        action.clampWhenFinished = !loop
         if (state.playing !== false) {
+          action.enabled = true
+          action.paused = false
           // Explorer: shouldReset restarts one-shots; forceReplay also restarts when scene
           // re-dirties Animator with the same shouldReset=true payload.
           if (state.shouldReset || forceReplay) action.reset()
-          action.play()
+          if (!action.isRunning()) action.play()
           playingClips.push(clipName)
+        } else if (action.isRunning() || action.time > 1e-4) {
+          // Hold current frame (door stays open). stop() would snap shut / full replay next.
+          action.enabled = true
+          action.paused = true
+          action.setEffectiveWeight(state.weight ?? 1)
+        } else {
+          action.stop()
+          action.enabled = false
+          action.paused = false
         }
       }
 

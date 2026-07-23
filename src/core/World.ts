@@ -1137,6 +1137,10 @@ export class World {
     )
     if (worldFeet) {
       this.physics.logStaticCollidersNear(worldFeet.x, worldFeet.y, worldFeet.z, 16)
+      // Follow /goto: island peers often joined before capsule existed (invisible roots).
+      this.remoteAvatars?.setCameraPosition(worldFeet)
+      this.remoteAvatars?.backfillProvisionalPeers()
+      this.comms.notifyHandlersOfCurrentPeers()
     }
     this.logBootColliderDiag()
     this.sceneScript.syncClientEntities(this.player.getEntityPose(), this.player.getCameraEntityPose())

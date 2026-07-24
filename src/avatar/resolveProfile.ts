@@ -1,7 +1,7 @@
 import {
   assetUrnFromCompleteUrn,
+  BACKFILL_WEARABLE_CATEGORIES,
   BODY_SHAPE_URN,
-  DEFAULT_WEARABLE_CATEGORIES,
   defaultWearableUrn,
   normalizeUrn
 } from './constants'
@@ -39,9 +39,9 @@ function wearablesCoverProfileUrns(
   return true
 }
 
-/** Every default category resolved for this body shape — missing these render bald or blank-faced. */
+/** Face/hair backfill present — missing these render bald or blank-faced. */
 function coversDefaultCategories(wearables: WearableDefinition[], bodyShape: BodyShape): boolean {
-  return DEFAULT_WEARABLE_CATEGORIES.every((category) =>
+  return BACKFILL_WEARABLE_CATEGORIES.every((category) =>
     wearables.some((w) => w.data.category === category && hasRepresentation(w, bodyShape))
   )
 }
@@ -98,11 +98,11 @@ export async function buildComposeConfig(
   let wearables = await fetchWearablesByUrns(profileUrns, catalystUrl)
   wearables = wearables.filter((w) => hasRepresentation(w, profile.bodyShape))
 
-  // Profiles omit default head/body items (only colors are stored) — clients are expected
-  // to backfill defaults for missing categories, like the Unity Explorer. Wallet profiles
-  // relying on defaults were rendering bald / blank-faced when this only ran for guests.
+  // Profiles omit default face/hair items (only colors are stored) — backfill those only.
+  // Clothing slots stay empty on purpose: unequipped upper/lower/feet ⇒ base underwear
+  // (Explorer parity). Guest creation still equips a full DEFAULT_WEARABLE_CATEGORIES outfit.
   const missing: string[] = []
-  for (const category of DEFAULT_WEARABLE_CATEGORIES) {
+  for (const category of BACKFILL_WEARABLE_CATEGORIES) {
     if (wearables.some((w) => w.data.category === category && hasRepresentation(w, profile.bodyShape)))
       continue
     const urn = defaultWearableUrn(category, profile.bodyShape)

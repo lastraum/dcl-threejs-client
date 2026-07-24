@@ -63,6 +63,7 @@ export function defaultWearableUrn(category: WearableCategory, shape: BodyShape)
   }
 }
 
+/** Full starter outfit — guest profile creation equips these explicitly. */
 export const DEFAULT_WEARABLE_CATEGORIES: WearableCategory[] = [
   'eyebrows',
   'mouth',
@@ -71,6 +72,17 @@ export const DEFAULT_WEARABLE_CATEGORIES: WearableCategory[] = [
   'upper_body',
   'lower_body',
   'feet'
+]
+
+/**
+ * Profile resolve backfill only — face/hair (profiles store colors; missing these = bald/blank).
+ * Clothing is NOT backfilled: empty upper/lower/feet shows base underwear (Explorer parity).
+ */
+export const BACKFILL_WEARABLE_CATEGORIES: WearableCategory[] = [
+  'eyebrows',
+  'mouth',
+  'eyes',
+  'hair'
 ]
 
 export function normalizeUrn(urn: string): string {

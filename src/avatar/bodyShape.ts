@@ -1,9 +1,13 @@
 import * as THREE from 'three'
+import { isModelWearable } from './slots'
 import type { WearableCategory, WearableDefinition } from './types'
 
 type HideTarget = WearableCategory | 'head' | 'hands'
 
-/** Forge `isHidden` — equipped category OR explicit hides/replaces. */
+/**
+ * Equipped category OR explicit hides/replaces — Explorer / Forge rule.
+ * Same-category auto-hide applies so base underwear is covered under jeans, etc.
+ */
 function isHiddenByWearable(wearable: WearableDefinition, target: HideTarget): boolean {
   if (target === 'head') {
     return wearable.data.hides?.includes('head') || wearable.data.replaces?.includes('head') || false
@@ -32,10 +36,23 @@ function isHandsHidden(wearables: WearableDefinition[]): boolean {
   })
 }
 
+/**
+ * True when the mesh belongs to a wearable GLB parented under bodyRoot
+ * (`wearable:<category>` roots). Basemesh hide rules must not touch those meshes —
+ * DCL wearables often reuse `*_BaseMesh` naming.
+ */
+function isInsideAttachedWearable(obj: THREE.Object3D, bodyRoot: THREE.Object3D): boolean {
+  for (let p: THREE.Object3D | null = obj; p && p !== bodyRoot; p = p.parent) {
+    if (p.name.startsWith('wearable:')) return true
+  }
+  return false
+}
+
 export type BodyShapeVisibilityOptions = {
   /**
-   * Categories that actually attached a mesh this compose. When set, hide basemesh for a
-   * category only if it is in the set (or skin) — so a failed feet attach keeps base feet.
+   * Categories that actually attached a mesh this compose. When set, a wearable's
+   * hides/replaces (and own-slot coverage) only count if it attached — so a failed
+   * feet attach keeps base feet. Texture-only categories always count.
    */
   attachedCategories?: ReadonlySet<WearableCategory>
   /** Categories the user force-renders despite hides (ADR-239) — keep their base shell. */
@@ -48,32 +65,33 @@ export function applyBodyShapeVisibility(
   wearables: WearableDefinition[],
   options: BodyShapeVisibilityOptions = {}
 ): void {
-  const hasSkin = wearables.some((w) => w.data.category === 'skin')
   const attached = options.attachedCategories
+  // Hides only count once mesh attached. body_shape + texture slots (eyes/brows/mouth)
+  // never attach as model layers — always keep them in the effective set.
+  const effective = attached
+    ? wearables.filter(
+        (w) =>
+          w.data.category === 'body_shape' ||
+          !isModelWearable(w) ||
+          attached.has(w.data.category)
+      )
+    : wearables
+  const hasSkin = effective.some((w) => w.data.category === 'skin')
   const force = new Set(options.forceRender ?? [])
-  // A category hidden by ANOTHER wearable's hides/replaces hides the base shell even
-  // though nothing attached in that slot (e.g. Skeleton Legs hides:["feet"] with no
-  // feet equipped). The attach gate below only protects the equipped-but-failed case.
-  const hiddenByOthers = (cat: WearableCategory) =>
-    !force.has(cat) &&
-    wearables.some(
-      (w) =>
-        w.data.category !== cat &&
-        ((w.data.hides?.includes(cat) ?? false) || (w.data.replaces?.includes(cat) ?? false))
-    )
+
   const covered = (cat: WearableCategory) =>
-    hasSkin ||
-    hiddenByOthers(cat) ||
-    (attached ? attached.has(cat) || attached.has('skin') : isHiddenCategory(wearables, cat))
+    !force.has(cat) && (hasSkin || isHiddenCategory(effective, cat))
 
   const hideUpper = covered('upper_body')
   const hideLower = covered('lower_body')
   const hideFeet = covered('feet')
-  const hideHead = hasSkin || isHiddenCategory(wearables, 'head')
-  const hideHands = isHandsHidden(wearables)
+  const hideHead = hasSkin || isHiddenCategory(effective, 'head')
+  const hideHands = isHandsHidden(effective)
 
   bodyRoot.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return
+    // Wearable layers under bodyRoot can share basemesh names — never hide/reset them here.
+    if (isInsideAttachedWearable(obj, bodyRoot)) return
     obj.visible = true
     const name = obj.name.toLowerCase()
     if (name.endsWith('ubody_basemesh') && hideUpper) obj.visible = false

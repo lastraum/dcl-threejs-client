@@ -240,9 +240,10 @@ export class PhysXWorld {
    */
   private readonly actorIsKinematic = new Set<number>()
   /**
-   * Cook-time shape local matrices — Animator slides use current * baseline⁻¹ as shape pose.
-   * Geometry bakes full entityScale × localMatrix into verts (scale and placement do not commute,
-   * so absolute shape-pose mode is invalid for DCL Transform.scale and softed plaza).
+   * Cook-time shape baselines for relative slides (current * inv(baseline) → setLocalPose).
+   * - Entity-local (ROOT solids): baseline = shape.localMatrix at cook
+   * - PART (world cook): baseline = entityWorld × localMatrix at cook
+   * PxTransform is T+R only — world-relative PART math keeps residual scale out of the pose.
    */
   private readonly shapeBaselineLocal = new Map<number, THREE.Matrix4[]>()
   /**
@@ -938,36 +939,104 @@ export class PhysXWorld {
   }
 
   /**
-   * Ensure multi-shape collider is a **kinematic** rigid dynamic (PART / Animator movers).
-   * Cooks entity-local geometry once; subsequent frames only set pose (no re-bake).
+   * Platform PART motion — child/bone hulls moved relative to entity root.
+   * Scene-agnostic. Caller already filtered to hulls whose **live world fingerprint changed**.
+   *
+   * PhysX triangle meshes cannot track child/bone motion via setLocalPose alone
+   * (pose is T+R only; residual scale is dropped; SQ bounds lag). PART therefore
+   * **re-cooks world-space hulls** for those entities only — not the whole scene.
+   *
+   * No cook budget: the fingerprint gate is the thrash guard. Capping cooks caused
+   * movers to be skipped and left on stale hulls.
+   *
+   * ROOT solids stay entity-local cook-once + actor T+R (never enter this API).
+   *
+   * @returns `doneIds` — entities actually updated this call
+   */
+  applyPartColliderMotions(
+    descs: PhysicsColliderDesc[]
+  ): { updated: number; cooked: number; doneIds: number[] } {
+    if (!descs.length) return { updated: 0, cooked: 0, doneIds: [] }
+
+    const rootOnly: PhysicsColliderDesc[] = []
+    const worldCook: PhysicsColliderDesc[] = []
+    const doneIds: number[] = []
+
+    for (const desc of descs) {
+      if (!desc.shapes?.length) rootOnly.push(desc)
+      else worldCook.push(desc)
+    }
+
+    let updated = 0
+    if (rootOnly.length) {
+      const n = this.applyStaticColliderPoseUpdates(rootOnly, {
+        force: true,
+        forceEntities: new Set(rootOnly.map((d) => d.entity)),
+        actorRootOnly: true
+      })
+      updated += n
+      if (n > 0) for (const d of rootOnly) doneIds.push(d.entity)
+    }
+
+    let cooked = 0
+    if (worldCook.length) {
+      // Force remove so syncStaticColliders cannot no-op on matching pose fingerprint.
+      for (const desc of worldCook) {
+        if (this.staticActors.has(desc.entity)) this.invalidateStaticCollider(desc.entity)
+      }
+      try {
+        const result = this.syncStaticColliders(worldCook, {
+          cookBudget: worldCook.length,
+          freezeRemoval: true,
+          forceRecookOnPoseChange: true,
+          geometryCache: false,
+          skipWorkerStream: true
+        })
+        if (result.geometryChanged) {
+          for (const desc of worldCook) {
+            if (this.staticActors.has(desc.entity)) {
+              doneIds.push(desc.entity)
+              cooked++
+            }
+          }
+          updated += cooked
+          this.rebuildStaticSceneQueryTree()
+        }
+      } catch (err) {
+        console.warn('[PhysXWorld] PART world hull cook failed', err)
+      }
+    }
+
+    return { updated, cooked, doneIds }
+  }
+
+  /**
+   * Ensure multi-shape collider is a **kinematic** rigid dynamic (legacy / root kinematic).
+   * PART child/bone motion uses {@link applyPartColliderMotions} instead.
    */
   ensureKinematicMultiShape(desc: PhysicsColliderDesc): boolean {
     if (!desc.shapes?.length || !this.physics || !this.scene) return false
     if (this.actorIsKinematic.has(desc.entity) && this.staticActors.has(desc.entity)) {
       if (this.geomFingerprintMatches(desc) && this.hasShapeBaselines(desc.entity)) return true
     }
-    // Drop static / stale kinematic — rebuild kinematic with current geometry.
     if (this.staticActors.has(desc.entity)) this.removeStatic(desc.entity)
     return this.addMultiShapeKinematic(desc)
   }
 
   /**
-   * Pose multi-shape PART mover from live desc (entity T+R + relative shape locals).
-   * Cooks entity-local once (kinematic promote); subsequent frames only move poses.
-   * Call after forceRefreshAnimatedShapeLocals / refreshShapeLocalMatrices.
+   * Pose kinematic multi-shape (entity T+R + relative shape locals). Prefer
+   * {@link applyPartColliderMotions} for Animator PART / child hull motion.
    */
   updateKinematicMultiShapePose(desc: PhysicsColliderDesc): boolean {
     if (!this.ensureKinematicMultiShape(desc)) return false
     const actor = this.staticActors.get(desc.entity)
     if (!actor) return false
-    // Scale-drift check can block first poses after promote — still apply T+R + shape locals.
     if (!this.matrixHasFinitePose(desc.matrix)) return false
     if (!desc.shapes?.length) return false
     for (const shape of desc.shapes) {
       if (!this.matrixHasFinitePose(shape.localMatrix)) return false
     }
     try {
-      // If shape count mismatch, re-promote next call.
       let nb = 0
       try {
         nb = actor.getNbShapes()
@@ -983,7 +1052,6 @@ export class PhysXWorld {
       if (!this.updateMultiShapeActorPose(act, desc, true, { skipScaleCheck: true })) return false
       this.staticFp.set(desc.entity, desc.fingerprint)
       this.staticPoseFp.set(desc.entity, multiShapePoseFingerprint(desc))
-      // setLocalPose does not expand SQ bounds — reinsert so CCT hits swung door panels.
       this.reinsertStaticActorForSceneQuery(act)
       this.invalidateControllerCache()
       return true
@@ -1159,8 +1227,12 @@ export class PhysXWorld {
       if (desc.shapes?.length) {
         if (!this.geomFingerprintMatches(desc)) continue
         const actor = this.staticActors.get(desc.entity)
-        // World-baked verts are fixed in world space — root/shape slides cannot track bones.
-        if (!actor || this.actorWorldBaked.get(desc.entity)) continue
+        if (!actor) continue
+        const worldBaked = this.actorWorldBaked.get(desc.entity) === true
+
+        // World-baked: verts fixed in world space at cook. Root-only slides are no-ops.
+        // PART shape-motion uses world-relative shape poses (see updateMultiShapeActorPose).
+        if (worldBaked && (actorRootOnly || !shapeMotion)) continue
 
         if (actorRootOnly || !shapeMotion) {
           // Plaza static / entity Transform only: slide actor root; keep cooked shape locals.
@@ -1182,23 +1254,29 @@ export class PhysXWorld {
           continue
         }
 
-        // Shape-motion (doors): relative shape poses + actor root.
+        // PART shape-motion: relative shape poses (world-relative when world-baked).
         const poseFp = multiShapePoseFingerprint(desc)
         const prevPoseFp = this.staticPoseFp.get(desc.entity)
-        // forceThis allows shape slides — still skip pure no-ops (FPS: 120→40 was rewrite thrash).
+        // Skip pure no-ops (rewrite thrash kills FPS).
         if (prevPoseFp === poseFp) continue
-        if (!this.isPoseSlideSafe(actor, desc)) {
-          // Unsafe (scale drift / shape count) — leave actor; caller may queue recook.
+        // World-baked PART uses world baselines — skip entity-local scale gate.
+        if (!worldBaked && !this.isPoseSlideSafe(actor, desc)) {
           continue
         }
+        if (worldBaked && !this.hasShapeBaselines(desc.entity)) continue
         try {
           const kinematic = this.actorIsKinematic.has(desc.entity)
-          if (!this.updateMultiShapeActorPose(actor, desc, kinematic)) continue
+          if (
+            !this.updateMultiShapeActorPose(actor, desc, kinematic, {
+              skipScaleCheck: worldBaked
+            })
+          ) {
+            continue
+          }
           this.staticPoseFp.set(desc.entity, poseFp)
           updated++
           shapeLocalsChanged = true
-          // setLocalPose does not expand actor SQ bounds — reinsert so CCT hits swung panels.
-          // Required for both static and kinematic multi-shape PART movers.
+          // setLocalPose does not expand actor SQ bounds — reinsert for CCT.
           this.reinsertStaticActorForSceneQuery(actor)
         } catch (err) {
           console.warn('[PhysXWorld] multi-shape pose slide failed:', desc.entity, err)
@@ -1224,8 +1302,8 @@ export class PhysXWorld {
         this.invalidateStaticCollider(desc.entity)
       }
     }
-    // Critical: PhysX SQ stores one bound per static actor. shape.setLocalPose (door panels)
-    // does NOT expand that bound — CCT never tests the swung hull without a static tree rebuild.
+    // PhysX SQ stores one bound per static actor. setLocalPose does not expand it —
+    // rebuild so CCT tests updated child hulls.
     if (shapeLocalsChanged) {
       this.rebuildStaticSceneQueryTree()
     } else if (updated > 0) {
@@ -1235,8 +1313,8 @@ export class PhysXWorld {
   }
 
   /**
-   * After multi-shape child local poses move (Animator doors/lifts), rebuild static SQ structure
-   * so character-controller queries see the new panel bounds. No-op if scene missing.
+   * After multi-shape child local poses move, rebuild static SQ structure so CCT
+   * queries see the new hull bounds. No-op if scene missing.
    */
   rebuildStaticSceneQueryTree(): void {
     if (!this.scene) {
@@ -2742,13 +2820,26 @@ export class PhysXWorld {
     this.registerStaticActor(desc.entity, actor)
     this.pmeshHandles.set(desc.entity, handles)
     this.actorWorldBaked.set(desc.entity, actorAtOrigin)
-    if (!actorAtOrigin && shapes.length) {
-      this.shapeBaselineLocal.set(
-        desc.entity,
-        shapes.map((shape) => shape.localMatrix.clone())
-      )
-      desc.matrix.decompose(this._pos, this._quat, this._scale)
-      this.actorCookScale.set(desc.entity, this._scale.clone())
+    if (shapes.length) {
+      if (actorAtOrigin) {
+        // World-bake: baseline = full world matrix at cook (entity * local). PART slides via
+        // currentWorld * inv(baselineWorld). Actor stays at origin.
+        this.shapeBaselineLocal.set(
+          desc.entity,
+          shapes.map((shape) => {
+            const w = new THREE.Matrix4().copy(desc.matrix).multiply(shape.localMatrix)
+            return w
+          })
+        )
+        this.actorCookScale.delete(desc.entity)
+      } else {
+        this.shapeBaselineLocal.set(
+          desc.entity,
+          shapes.map((shape) => shape.localMatrix.clone())
+        )
+        desc.matrix.decompose(this._pos, this._quat, this._scale)
+        this.actorCookScale.set(desc.entity, this._scale.clone())
+      }
     } else {
       this.actorCookScale.delete(desc.entity)
     }
@@ -3015,6 +3106,44 @@ export class PhysXWorld {
       return false
     }
 
+    const worldBaked = this.actorWorldBaked.get(desc.entity) === true
+    const baselines = this.shapeBaselineLocal.get(desc.entity)
+
+    if (worldBaked) {
+      // PART cook model: actor at origin; verts in world space at baseline.
+      // shapePose = currentWorld * inv(baselineWorld). Exact when rel is pure T+R.
+      this._pos.set(0, 0, 0)
+      this._identityQuat.set(0, 0, 0, 1)
+      this._pos.toPxTransform(this.actorPoseTransform)
+      this._identityQuat.toPxTransform(this.actorPoseTransform)
+      actor.setGlobalPose(this.actorPoseTransform)
+      if (kinematic && typeof actor.setKinematicTarget === 'function') {
+        actor.setKinematicTarget(this.actorPoseTransform)
+      }
+
+      const nbShapes = actor.getNbShapes()
+      const shapeBuffer = this.ensureShapePtrBuffer(nbShapes)
+      const shapesCount = actor.getShapes(shapeBuffer.begin(), nbShapes, 0)
+      for (let i = 0; i < shapesCount && i < shapes.length; i++) {
+        const pxShape = shapeBuffer.get(i)
+        const baseline = baselines?.[i]
+        // current world = entityWorld * shapeLocal (force-refreshed from mesh/bone)
+        this._worldMatrix.copy(desc.matrix).multiply(shapes[i]!.localMatrix)
+        if (baseline) {
+          this._shapeRel.copy(baseline).invert()
+          this._shapeRel.premultiply(this._worldMatrix)
+          this.setPxShapeLocalPose(pxShape, this._shapeRel)
+        } else {
+          this._pos.set(0, 0, 0)
+          this._identityQuat.set(0, 0, 0, 1)
+          this._pos.toPxTransform(this.shapeLocalPoseTransform)
+          this._identityQuat.toPxTransform(this.shapeLocalPoseTransform)
+          pxShape.setLocalPose(this.shapeLocalPoseTransform)
+        }
+      }
+      return true
+    }
+
     desc.matrix.decompose(this._pos, this._quat, this._scale)
     this._pos.toPxTransform(this.actorPoseTransform)
     this._quat.toPxTransform(this.actorPoseTransform)
@@ -3024,9 +3153,6 @@ export class PhysXWorld {
       actor.setKinematicTarget(this.actorPoseTransform)
     }
 
-    if (this.actorWorldBaked.get(desc.entity)) return true
-
-    const baselines = this.shapeBaselineLocal.get(desc.entity)
     const nbShapes = actor.getNbShapes()
     const shapeBuffer = this.ensureShapePtrBuffer(nbShapes)
     const shapesCount = actor.getShapes(shapeBuffer.begin(), nbShapes, 0)
@@ -3035,7 +3161,7 @@ export class PhysXWorld {
       const current = shapes[i]!.localMatrix
       const baseline = baselines?.[i]
       if (baseline) {
-        // Door/lift: verts baked at baseline local; shape pose carries open*inv(closed).
+        // Entity-local: verts baked at baseline local; shape pose = current * inv(baseline).
         this._shapeRel.copy(baseline).invert()
         this._shapeRel.premultiply(current)
         this.setPxShapeLocalPose(pxShape, this._shapeRel)

@@ -329,15 +329,16 @@ export class GltfColliderExtractor {
 
   /**
    * Live world-pose fingerprint of extracted `_collider` / physics meshes.
-   * Used to gate PART PhysX pose writes (skip when panel pose unchanged).
+   * PART gate: digits=2 so sub-centimetre / float noise does not thrash world cooks.
    */
-  getColliderMeshWorldFingerprint(entity: Entity): string | null {
+  getColliderMeshWorldFingerprint(entity: Entity, digits = 2): string | null {
     const state = this.syncState.get(entity)
     if (!state) return null
     return this.colliderMeshWorldFingerprint(
       state.mesh,
       state.hasVisiblePhysics,
-      state.hasInvisiblePhysics
+      state.hasInvisiblePhysics,
+      digits
     )
   }
 
@@ -501,23 +502,28 @@ export class GltfColliderExtractor {
   /**
    * Full world matrix fingerprint for collider child meshes.
    * Translation-only fingerprints miss hinged doors (pivot origin fixed while panel rotates).
+   *
+   * @param digits quantize — PART gate uses 2 (~1cm / small angle) so float noise does not
+   *   re-cook every frame; diagnostics can use 3.
    */
   private colliderMeshWorldFingerprint(
     gltfRoot: THREE.Object3D,
     hasVisiblePhysics: boolean,
-    hasInvisiblePhysics: boolean
+    hasInvisiblePhysics: boolean,
+    digits = 3
   ): string | null {
     const meshes = this.collectColliderMeshes(gltfRoot, hasVisiblePhysics, hasInvisiblePhysics)
     if (!meshes.length) return null
     const parts: string[] = []
+    const d = digits
     for (const mesh of meshes) {
       const e = this.colliderMeshWorldMatrix(mesh).elements
       // 12 floats of the 4x3 affine block — enough for T+R+S without full 16.
       parts.push(
-        `${e[0]!.toFixed(3)},${e[1]!.toFixed(3)},${e[2]!.toFixed(3)},` +
-          `${e[4]!.toFixed(3)},${e[5]!.toFixed(3)},${e[6]!.toFixed(3)},` +
-          `${e[8]!.toFixed(3)},${e[9]!.toFixed(3)},${e[10]!.toFixed(3)},` +
-          `${e[12]!.toFixed(3)},${e[13]!.toFixed(3)},${e[14]!.toFixed(3)}`
+        `${e[0]!.toFixed(d)},${e[1]!.toFixed(d)},${e[2]!.toFixed(d)},` +
+          `${e[4]!.toFixed(d)},${e[5]!.toFixed(d)},${e[6]!.toFixed(d)},` +
+          `${e[8]!.toFixed(d)},${e[9]!.toFixed(d)},${e[10]!.toFixed(d)},` +
+          `${e[12]!.toFixed(d)},${e[13]!.toFixed(d)},${e[14]!.toFixed(d)}`
       )
     }
     return parts.join('|')

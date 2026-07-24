@@ -209,11 +209,11 @@ export class World {
   /** True after prepareCollidersForPlay finishes cooking. */
   private spawnColliderSealComplete = false
   /**
-   * Last PART mesh-world fingerprint we posed in PhysX (cook-once + move).
-   * Unchanged fp → skip pose write (looping props with fixed wall hulls no-op).
+   * Last PART hull fingerprint written to PhysX (cook-once + move).
+   * Unchanged → skip (decorative loops with fixed hulls no-op).
    */
-  private readonly animatedPartPoseFp = new Map<number, string>()
-  private loggedAnimatorNoCollider = new Set<number>()
+  private readonly partMotionPoseFp = new Map<number, string>()
+  private loggedPartNoCollider = new Set<number>()
   private unsubAvatarChat: (() => void) | null = null
   private unsubAvatarChatTranslate: (() => void) | null = null
   /**
@@ -2370,118 +2370,70 @@ export class World {
   }
 
   /**
-   * Animator PART → cook once, then move colliders (no live world-bake thrash).
-   *
-   * 1) Force-refresh shape locals from mesh/bone worlds (doors swing on bones).
-   * 2) If actor is world-baked / missing baselines → one entity-local recook (baselines).
-   * 3) Else relative shape pose + actor T+R + SQ reinsert (geometry stays cooked).
-   *
-   * Only entities in animatorPart (active mixer / system part) — not Transform-only plaza.
-   * Stable pose fp → no PhysX write (looping props with fixed wall hulls stay solid).
+   * PART follow — platform path for child/bone hull motion (Animator / system part).
+   * Refresh live shape locals → when hull world fingerprint changes, world-cook that
+   * entity only ({@link PhysXWorld.applyPartColliderMotions}). See policy doc.
    */
   private pushColliderPartPoses(animatorPart: ReadonlySet<Entity>): void {
     if (!this.playerMode || !animatorPart.size) return
 
-    // Live shape locals from mesh/bone worlds — required before relative pose math.
+    // Live mesh/bone worlds → shape.localMatrix (world cook uses entity × local).
     const poseFps = this.sceneScript.forceRefreshPartColliderPoses(animatorPart)
 
-    let updated = 0
-    /** One-shot entity-local recooks only (missing baselines / world-baked) — never per-frame. */
-    const needEntityLocalCook: PhysicsColliderDesc[] = []
+    const descs: PhysicsColliderDesc[] = []
+    const pendingFp = new Map<number, string>()
 
     for (const entity of animatorPart) {
       const physId = this.sceneScript.physEntityIdForPoseSync(entity)
       if (physId === null) continue
       const desc = this.sceneScript.getPhysicsColliderDesc(physId)
       if (!desc) {
-        if (!this.loggedAnimatorNoCollider.has(entity)) {
-          this.loggedAnimatorNoCollider.add(entity)
+        if (!this.loggedPartNoCollider.has(entity)) {
+          this.loggedPartNoCollider.add(entity)
           console.warn(
-            `[phys] PART entity ${entity} has no collider extract — cannot track (need _collider + CL_PHYSICS)`
+            `[phys] PART entity ${entity} has no collider extract (need physics hull / MeshCollider)`
           )
         }
         continue
       }
+
       if (!desc.shapes?.length) {
-        updated += this.physics.applyStaticColliderPoseUpdates([desc], {
-          force: true,
-          forceEntities: new Set([desc.entity]),
-          actorRootOnly: true
-        })
+        descs.push(desc)
         continue
       }
 
       const poseFp =
         poseFps.get(entity) ??
-        this.sceneScript.getGltfColliderMeshWorldFingerprint(entity) ??
+        this.sceneScript.getGltfColliderMeshWorldFingerprint(entity, 2) ??
         ''
-      if (!poseFp) continue
-      // Unchanged panel pose → skip (flags/loops with fixed hulls).
-      if (this.animatedPartPoseFp.get(desc.entity) === poseFp) continue
-
-      // World-baked or no baselines cannot relative-slide — convert once to entity-local cook.
-      if (
-        this.physics.isWorldBakedStatic(desc.entity) ||
-        !this.physics.hasShapeBaselines(desc.entity)
-      ) {
-        needEntityLocalCook.push(desc)
-        if (needEntityLocalCook.length >= 4) break
+      if (!poseFp) {
+        if (!this.loggedPartNoCollider.has(entity)) {
+          this.loggedPartNoCollider.add(entity)
+          console.warn(
+            `[phys] PART entity ${entity} has multi-shape extract but no live hull fingerprint`
+          )
+        }
         continue
       }
+      // Stable hull pose (coarse) → no PhysX work.
+      if (this.partMotionPoseFp.get(desc.entity) === poseFp) continue
 
-      // Cook once, move: relative shape pose + actor T+R + SQ reinsert (no geometry recook).
-      // Prefer existing static actor — avoids promote/remove thrash on first swing.
-      const n = this.physics.applyStaticColliderPoseUpdates([desc], {
-        force: true,
-        forceEntities: new Set([desc.entity]),
-        actorRootOnly: false
-      })
-      if (n > 0) {
-        this.animatedPartPoseFp.set(desc.entity, poseFp)
-        updated += n
-        continue
-      }
-
-      // Static slide failed (e.g. actor missing) — kinematic promote cooks once, then poses.
-      if (this.physics.updateKinematicMultiShapePose(desc)) {
-        this.animatedPartPoseFp.set(desc.entity, poseFp)
-        updated++
-      }
+      descs.push(desc)
+      pendingFp.set(desc.entity, poseFp)
     }
 
-    if (needEntityLocalCook.length) {
-      try {
-        // Entity-local cook ONCE so baselines exist for relative slides — not world-bake thrash.
-        const result = this.physics.syncStaticColliders(needEntityLocalCook, {
-          cookBudget: needEntityLocalCook.length,
-          freezeRemoval: true,
-          forceRecookOnPoseChange: true,
-          geometryCache: true,
-          skipWorkerStream: true
-        })
-        if (result.geometryChanged) {
-          for (const desc of needEntityLocalCook) {
-            const ecs =
-              desc.entity >= GLTF_COLLIDER_ENTITY_BASE
-                ? ((desc.entity - GLTF_COLLIDER_ENTITY_BASE) as Entity)
-                : null
-            const fp =
-              (ecs !== null ? poseFps.get(ecs) : undefined) ??
-              (ecs !== null
-                ? this.sceneScript.getGltfColliderMeshWorldFingerprint(ecs)
-                : null) ??
-              ''
-            if (fp) this.animatedPartPoseFp.set(desc.entity, fp)
-          }
-          updated += needEntityLocalCook.length
-          this.physics.rebuildStaticSceneQueryTree()
-        }
-      } catch (err) {
-        console.warn('[phys] PART entity-local cook (once) failed', err)
-      }
+    if (!descs.length) return
+
+    // No cook budget — coarse fp gate limits work. Every meaningfully moved hull cooks.
+    const { updated, doneIds } = this.physics.applyPartColliderMotions(descs)
+
+    for (const physId of doneIds) {
+      const fp = pendingFp.get(physId)
+      if (fp) this.partMotionPoseFp.set(physId, fp)
     }
 
     if (updated > 0) this.physics.refreshStaticColliderQueries()
+    // Intentional: no per-frame console spam (was flooding at 50+ logs/s during thrash).
     this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
   }
 

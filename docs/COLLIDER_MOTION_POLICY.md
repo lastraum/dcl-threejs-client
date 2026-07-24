@@ -1,64 +1,84 @@
-# Collider motion policy (scene-agnostic)
+# Collider motion policy (platform-wide)
 
-**Status:** enforced on `dev-latest`  
+**Status:** active  
 **Engine:** PhysX (CCT player + scene solids)  
-**Last updated:** 2026-07-24  
+**Scope:** all scenes — no content labels, no asset-type branches  
 
-## Rule (two sources only)
+## Two motion sources only
 
 ```text
-DEFAULT
-  cook once (entity-local multi-shape / MeshCollider)
-  do not touch PhysX geometry
+DEFAULT (boot)
+  cook once — entity-local multi-shape / MeshCollider
+  do not touch PhysX geometry until motion demands it
 
 Transform dirty  →  ROOT follow
-  actor pose = entity world T+R
-  shape locals / cooked verts stay fixed
-  sources: CRDT Transform, Tween, Billboard, system lerp
-  (anything that dirties Transform — not separate PhysX paths)
+  sources: CRDT Transform, Tween, Billboard, system Transform writes
+  PhysX: actor global pose = entity T+R only
+  cooked verts / shape locals unchanged  (true cook-once + move)
 
-Animator         →  PART follow
-  any active mixer is a PART *candidate*
-  PhysX write only when _collider mesh/bone world fingerprint **changes**
-  force-refresh shape locals from mesh/bone worlds
-  cook once (entity-local multi-shape + baselines)
-  move: actor T+R + relative shape pose (current * inv(baseline)) + SQ reinsert
-  if missing baselines / world-baked → **one** entity-local recook, then pose forever
-  never per-frame world-bake thrash
+Animator / system part  →  PART follow
+  sources: active AnimationMixer, system part marks
+  expand to extracted collider owner (parent/child tree)
+  PhysX write only when live hull world fingerprint **changes**
+  (fixed hulls under looping clips → stable fp → no-op)
 
-else             →  no PhysX pose work
+  PART model (platform — PhysX triangle mesh constraint):
+    1. PART candidates = mixers with running/scheduled clips only
+       (not residual weight after finish — that caused forever thrash)
+    2. force-refresh shape localMatrix from mesh/bone matrixWorld
+    3. gate on coarse hull mesh-world fp (toFixed 2 ≈ 1cm) — float noise no-ops
+    4. world-cook every entity whose coarse fp changed (geometryCache:false)
+    5. rebuild SQ
+    NO cook budget — coarse fp + running-clip gate are the thrash guards
+
+else  →  no PhysX pose work
 ```
+
+## Why PART is not “pose-only”
+
+PhysX shape local pose is **position + quaternion only**. Child/bone hull motion
+leaves residual scale and invalid relative transforms; `setLocalPose` + SQ bounds
+do not keep CCT in lockstep with skinned/hinged panels.
+
+| Path | Geometry | Motion |
+|------|----------|--------|
+| **ROOT** | entity-local cook once | actor T+R only |
+| **PART** | world-cook when hull fp changes | exact world hulls for CCT |
+
+ROOT is cook-once + move. PART is **cook-when-hull-moves** (fp-gated, budgeted).
+That is the platform rule for any scene — not a one-off content fix.
 
 ## Not policy
 
-- Content labels (“building”, “plaza”, “door asset”)
-- “Could this move someday?” at extract
-- Live world-re-bake of statics for motion (removed; caused soft toggle)
+- Content labels (“plaza”, “door”, “building”, parcel ids)
+- “Might this move someday?” at extract
+- World-recook every Animator frame for every active mixer (soft thrash)
 - Separate PhysX branches named Tween / Billboard
 
 ## Extract (facts only)
 
 - Has physics shapes?
-- Geometry fingerprints / entity-local cook
+- Geometry + fingerprint
 
-No motion destiny stored at extract.
+No motion destiny at extract. Motion is runtime: Transform dirty | Animator part.
 
 ## Runtime sets
 
-| Set | Built from | PhysX API |
-|-----|------------|-----------|
-| `transformDirty` | Transform writers + entities with colliders | `pushColliderRootPoses` |
-| `animatorPart` | Animator active mixer / part motion + tree expand to extract owner | `pushColliderPartPoses` (pose only) |
+| Set | Built from | API |
+|-----|------------|-----|
+| `transformDirty` | Transform writers with colliders | `pushColliderRootPoses` |
+| `animatorPart` | active mixer / system part + tree expand | `pushColliderPartPoses` → `applyPartColliderMotions` |
 
 ## Code entry points
 
-- `SceneScriptSystem.getPhysMotionSets()`
-- `World.syncPlayerMotionFrame` — ordered: transforms → bridges → root poses → part poses → platform Δ
-- `PhysXWorld.applyStaticColliderPoseUpdates` (shape motion) / `updateKinematicMultiShapePose`
-- SQ: `reinsertStaticActorForSceneQuery` after `setLocalPose` (static **and** kinematic)
+- `SceneScriptSystem.snapshotPhysMotionSets()`
+- `World.syncPlayerMotionFrame` / async Animator path — ROOT then PART
+- `PhysXWorld.applyPartColliderMotions` — world hull cook on fp change (all of them)
+- `PhysXWorld.applyStaticColliderPoseUpdates` — ROOT actor slides
 
 ## Forbidden
 
-- `geometryCache: false` re-cook every Animator frame (live world-bake thrash)
-- Multi-shape shape-local rewrite on Transform-only dirty
-- Classifying entities as forever-static at load
+- Classifying entities forever-static at load
+- Shape-local rewrite on Transform-only dirty
+- Scene/asset name checks in PhysX paths
+- Budget-capping PART cooks (skips movers; fp gate is enough)

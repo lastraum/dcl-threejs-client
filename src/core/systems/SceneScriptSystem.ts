@@ -860,19 +860,22 @@ export class SceneScriptSystem {
     return found
   }
 
-  getGltfColliderMeshWorldFingerprint(entity: Entity): string | null {
-    return this.gltfColliders?.getColliderMeshWorldFingerprint(entity) ?? null
+  getGltfColliderMeshWorldFingerprint(entity: Entity, digits = 2): string | null {
+    return this.gltfColliders?.getColliderMeshWorldFingerprint(entity, digits) ?? null
   }
 
   /**
-   * Force live shape locals for PART entities; returns entity → pose fingerprint for bake gate.
+   * Force live shape locals for PART cook, then return **coarse mesh-world** fingerprints
+   * for the cook gate (not full gltfColliderPoseFp — that fluttered every frame).
    */
   forceRefreshPartColliderPoses(entities: ReadonlySet<Entity>): Map<Entity, string> {
     const out = new Map<Entity, string>()
     const nodes = this.bridge?.getEntityNodes()
     if (!nodes || !this.gltfColliders) return out
     for (const entity of entities) {
-      const fp = this.gltfColliders.forceRefreshAnimatedShapeLocals(entity, nodes)
+      // Update shape.localMatrix for world cook; gate on coarse mesh world fp only.
+      this.gltfColliders.forceRefreshAnimatedShapeLocals(entity, nodes)
+      const fp = this.gltfColliders.getColliderMeshWorldFingerprint(entity, 2)
       if (fp) out.set(entity, fp)
     }
     return out

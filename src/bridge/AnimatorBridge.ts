@@ -53,13 +53,15 @@ function mixerHasActiveWork(entry: AnimEntry): boolean {
 }
 
 /**
- * PART PhysX candidates: any active mixer work.
- * World only applies PART updates when _collider mesh/bone world fingerprint **changes**,
- * so looping flags with fixed wall colliders no-op (stable fp) without soft thrash.
- * Ice-rink doors often use loop:true for open/close — one-shot-only missed them.
+ * PART PhysX candidates: clip is **actually advancing** (running/scheduled).
+ * Residual weight after clamp/finish must NOT keep entities in PART forever —
+ * that + float noise re-cooked hulls every frame (~50 FPS thrash).
  */
 function hasPartColliderWork(entry: AnimEntry): boolean {
-  return mixerHasActiveWork(entry)
+  for (const action of entry.actions.values()) {
+    if (action.isRunning() || action.isScheduled()) return true
+  }
+  return false
 }
 
 /** One name→node map per bind — per-track traverse was O(tracks × nodes) on huge characters. */
@@ -181,11 +183,14 @@ export class AnimatorBridge {
     return out
   }
 
-  /** Entities with a bound mixer that still has active clip work this frame. */
+  /**
+   * PART candidates: mixers with a running/scheduled clip (not residual weight).
+   * Used by getPhysMotionSets → pushColliderPartPoses.
+   */
   getActiveMixerEntities(): Entity[] {
     const out: Entity[] = []
     for (const [entity, entry] of this.entries) {
-      if (mixerHasActiveWork(entry)) out.push(entity)
+      if (hasPartColliderWork(entry)) out.push(entity)
     }
     return out
   }

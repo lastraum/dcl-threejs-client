@@ -52,19 +52,6 @@ function mixerHasActiveWork(entry: AnimEntry): boolean {
   return false
 }
 
-/**
- * One-shot open/close doors (LoopOnce / clampWhenFinished) — always emit shape-motion while
- * the clip is advancing. Looping plaza props stay probe-gated only (flags softed PhysX).
- */
-function hasRunningOneShotAction(entry: AnimEntry): boolean {
-  for (const action of entry.actions.values()) {
-    if (!action.isRunning() && !action.isScheduled()) continue
-    if (action.clampWhenFinished) return true
-    if (action.loop === THREE.LoopOnce) return true
-  }
-  return false
-}
-
 /** One name→node map per bind — per-track traverse was O(tracks × nodes) on huge characters. */
 function buildNodeNameMap(root: THREE.Object3D): Map<string, THREE.Object3D> {
   const byName = new Map<string, THREE.Object3D>()
@@ -436,12 +423,10 @@ export class AnimatorBridge {
       const entityNode = entry.root.parent
       if (entityNode) entityNode.updateMatrixWorld(true)
       else entry.root.updateMatrixWorld(true)
-      // Looping plaza props: probe-only (child mesh actually moved).
-      // One-shot doors/lifts: always mark while clip runs so PhysX tracks every frame.
-      const oneShot = hasRunningOneShotAction(entry)
-      if (oneShot || this.shapeMotionProbe?.(entity)) {
-        this.shapeMotionEntities.add(entity)
-      }
+      // ANY active clip (loop or one-shot) drives PhysX shape slides for bone/child _colliders.
+      // Probe-only / one-shot gates were band-aids that left looping doors/lifts stuck at cook pose.
+      // Plaza soft came from actor-root double-transform + mass recook — not from sliding movers.
+      this.shapeMotionEntities.add(entity)
     }
 
     if (!this.verbose) return

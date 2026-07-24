@@ -1657,10 +1657,10 @@ export class World {
       this.sceneScript.syncCollision()
     }
 
-    // Animator shape-motion (doors, lifts): only entities whose collider meshes actually moved
-    // (probe-gated). Must run even when standing still — not platform-riding only.
-    // Never schedule a cook drain here: that recooked multi-shape plaza actors every frame
-    // under looping animators and wiped solids after ~1 min.
+    // Animator shape-motion: every active mixer (loop + one-shot) that has extracted colliders.
+    // Must run while standing still — not platform-riding only. PhysX id only exists when
+    // colliders were extracted, so decorative-only animators no-op here.
+    // Never mass-recook on pose mismatch (that wiped plaza solids under looping props).
     const shapeMotionEarly =
       this.collidersLoadingComplete && !this.deferPhysxCooks
         ? this.sceneScript.getFrameShapeMotionEntities(groundEcsEarly)
@@ -2359,7 +2359,8 @@ export class World {
           forceEntities,
           actorRootOnly: false
         })
-        // World-baked / missing baselines / failed slide (scale drift): entity-local recook.
+        // Only structural failures: world-baked or missing baselines.
+        // Never recook every frame on pose mismatch — that thrashed plaza solids under looping anims.
         let queued = 0
         for (const desc of forceDescs) {
           if (!desc.shapes?.length) continue
@@ -2371,8 +2372,7 @@ export class World {
           const needsRecook =
             this.physics.isWorldBakedStatic(desc.entity) ||
             !this.physics.hasShapeBaselines(desc.entity) ||
-            !this.physics.hasStaticActor(desc.entity) ||
-            !this.physics.actorPoseMatchesDesc(desc)
+            !this.physics.hasStaticActor(desc.entity)
           if (!needsRecook) continue
           if (!this.colliderCookQueue.has(desc.entity)) {
             this.colliderCookQueue.add(desc.entity)

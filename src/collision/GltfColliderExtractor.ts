@@ -241,8 +241,8 @@ export class GltfColliderExtractor {
 
   /**
    * Pose-only update for one GLTF collider actor.
-   * @param allowShapeMotion follow animated `_collider` child meshes — only when grounded on this
-   *   entity or ECS transform drives the platform; decorative animators stay at rest pose.
+   * @param allowShapeMotion follow animated `_collider` child meshes (any active Animator clip —
+   *   loop or one-shot). When false, only the entity-root matrix is refreshed.
    */
   syncColliderEntityPose(
     entity: Entity,

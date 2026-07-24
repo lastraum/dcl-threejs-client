@@ -168,6 +168,107 @@ export class AnimatorBridge {
     return out
   }
 
+  /**
+   * Apply ECS Animator states for already-bound mixers that were markDirty'd.
+   * Must run on the **sync motion path** — full `sync()` only runs async, which left
+   * door open/close one frame late and often missed shape-slide samples.
+   */
+  applyDirtyBoundStates(view: ProjectionView): void {
+    this.motionFocusView = view
+    if (!this.dirtyReplay.size || !this.entries.size) return
+    const { Animator } = this.ecs
+    for (const entity of [...this.dirtyReplay]) {
+      const entry = this.entries.get(entity)
+      if (!entry || !Animator.has(entity)) continue
+      const states = (Animator.get(entity).states ?? []) as readonly AnimatorStateView[]
+      // forceApply: CRDT markDirty always re-applies (door open/close).
+      this.applyStatesToEntry(entity, entry, states, entry.gltfSrc, false, true)
+      this.dirtyReplay.delete(entity)
+    }
+  }
+
+  /** After mixer sample: matrixWorld + flag for PhysX shape slides. */
+  private markShapeMotionAfterSample(entity: Entity, entry: AnimEntry): void {
+    entry.root.traverse((obj) => {
+      const sk = obj as THREE.SkinnedMesh
+      if (sk.isSkinnedMesh && sk.skeleton) sk.skeleton.update()
+    })
+    const entityNode = entry.root.parent
+    if (entityNode) entityNode.updateMatrixWorld(true)
+    else entry.root.updateMatrixWorld(true)
+    this.shapeMotionEntities.add(entity)
+  }
+
+  private applyStatesToEntry(
+    entity: Entity,
+    bound: AnimEntry,
+    states: readonly AnimatorStateView[],
+    src: string,
+    usingDefaultAutoPlay: boolean,
+    forceApply = false
+  ): void {
+    const stateSignature = animatorStateSignature(states, usingDefaultAutoPlay)
+    const forceReplay = forceApply || this.dirtyReplay.has(entity)
+    this.dirtyReplay.delete(entity)
+    if (!forceApply && bound.lastAppliedSignature === stateSignature) {
+      const oneShotRefire =
+        forceReplay && states.some((s) => s.shouldReset === true && s.playing !== false)
+      if (!oneShotRefire) return
+    }
+
+    for (const action of bound.actions.values()) {
+      action.stop()
+      action.enabled = false
+      action.paused = false
+      action.setEffectiveTimeScale(1)
+    }
+
+    const playingClips: string[] = []
+    const missingClips: string[] = []
+    for (const state of states) {
+      const clipName = state.clip ?? ''
+      const action = bound.actions.get(clipName)
+      if (!action) {
+        if (clipName) missingClips.push(clipName)
+        continue
+      }
+      const loop = state.loop !== false
+      const weight = state.weight ?? 1
+      action.enabled = true
+      action.paused = false
+      action.setEffectiveWeight(weight)
+      action.setEffectiveTimeScale(state.speed ?? 1)
+      action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)
+      action.clampWhenFinished = !loop
+      if (state.playing !== false) {
+        if (state.shouldReset) action.reset()
+        action.play()
+        playingClips.push(clipName)
+      }
+    }
+
+    if (missingClips.length) {
+      this.logAnimator(
+        `Animator clip missing — entity ${entity} · ${src} · requested [${missingClips.join(', ')}] · available [${[...bound.actions.keys()].join(', ')}]`,
+        { entity, level: 'warn', throttleMs: 1500 }
+      )
+    }
+
+    const logSignature = `${stateSignature}|playing:${playingClips.join(',')}`
+    if (bound.lastAppliedSignature !== logSignature) {
+      this.logAnimator(
+        `Animator states — entity ${entity} · ${src} · ${formatAnimatorStates(states)} · active clips [${playingClips.join(', ') || '(none)'}]${usingDefaultAutoPlay ? ' · default auto-play' : ''}`,
+        { entity }
+      )
+    }
+    bound.lastAppliedSignature = stateSignature
+    // Sample current pose immediately so PhysX can track the first open frame.
+    if (playingClips.length || mixerHasActiveWork(bound)) {
+      bound.mixer.update(0)
+      this.markShapeMotionAfterSample(entity, bound)
+    }
+  }
+
   private logAnimator(
     message: string,
     options: { level?: 'info' | 'warn' | 'success'; throttleMs?: number; entity?: Entity } = {}
@@ -318,71 +419,9 @@ export class AnimatorBridge {
       if (!states.length) continue
       active.add(entity)
 
-      const stateSignature = animatorStateSignature(states, usingDefaultAutoPlay)
-      const forceReplay = this.dirtyReplay.has(entity)
-      this.dirtyReplay.delete(entity)
-      // Skip unchanged state. SyncEntity re-puts the same Animator often — only re-apply
-      // when signature changed, or markDirty + shouldReset (one-shot re-fire).
-      if (!rebinding && bound.lastAppliedSignature === stateSignature) {
-        const oneShotRefire =
-          forceReplay && states.some((s) => s.shouldReset === true && s.playing !== false)
-        if (!oneShotRefire) continue
-      }
-
-      /**
-       * Explorer-style apply:
-       * 1) Stop every action (clean slate — open/close clips don't fight).
-       * 2) Configure each ECS state; play only when playing !== false.
-       * 3) Non-looping clamps on last frame (open holds) until another clip plays (close).
-       */
-      for (const action of bound.actions.values()) {
-        action.stop()
-        action.enabled = false
-        action.paused = false
-        action.setEffectiveTimeScale(1)
-      }
-
-      const playingClips: string[] = []
-      const missingClips: string[] = []
-
-      for (const state of states) {
-        const clipName = state.clip ?? ''
-        const action = bound.actions.get(clipName)
-        if (!action) {
-          if (clipName) missingClips.push(clipName)
-          continue
-        }
-        const loop = state.loop !== false
-        const weight = state.weight ?? 1
-        action.enabled = true
-        action.paused = false
-        action.setEffectiveWeight(weight)
-        action.setEffectiveTimeScale(state.speed ?? 1)
-        action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)
-        // One-shot open stays on last frame until close clip is played.
-        action.clampWhenFinished = !loop
-        if (state.playing !== false) {
-          if (state.shouldReset) action.reset()
-          action.play()
-          playingClips.push(clipName)
-        }
-      }
-
-      if (missingClips.length) {
-        this.logAnimator(
-          `Animator clip missing — entity ${entity} · ${src} · requested [${missingClips.join(', ')}] · available [${[...bound.actions.keys()].join(', ')}]`,
-          { entity, level: 'warn', throttleMs: 1500 }
-        )
-      }
-
-      const logSignature = `${stateSignature}|playing:${playingClips.join(',')}`
-      if (bound.lastAppliedSignature !== logSignature) {
-        this.logAnimator(
-          `Animator states — entity ${entity} · ${src} · ${formatAnimatorStates(states)} · active clips [${playingClips.join(', ') || '(none)'}]${usingDefaultAutoPlay ? ' · default auto-play' : ''}`,
-          { entity }
-        )
-      }
-      bound.lastAppliedSignature = stateSignature
+      // Explorer apply: stop-all, play playing states, clamp one-shots (open holds until close).
+      if (rebinding) bound.lastAppliedSignature = undefined
+      this.applyStatesToEntry(entity, bound, states, src, usingDefaultAutoPlay)
     }
 
     for (const [entity, entry] of this.entries) {
@@ -398,27 +437,17 @@ export class AnimatorBridge {
     }
   }
 
-  update(delta: number): void {
+  update(delta: number, view?: ProjectionView): void {
     if (!this.entries.size) return
+    // Door open/close CRDT often lands between async sync ticks — apply dirty before sample.
+    if (view) this.applyDirtyBoundStates(view)
 
     for (const [entity, entry] of this.entries) {
       // Phase C: skip mixer.tick when nothing is running / fading (idle GLTF animators).
       if (!mixerHasActiveWork(entry)) continue
       entry.mixer.update(delta)
-      // Mixer only writes local TRS. Bone-parented `_collider` mesh.matrixWorld is stale until
-      // the hierarchy updates — required before PhysX shape slides (ice-rink doors).
-      entry.root.traverse((obj) => {
-        const sk = obj as THREE.SkinnedMesh
-        if (sk.isSkinnedMesh && sk.skeleton) {
-          sk.skeleton.update()
-        }
-      })
-      // Entity parent (ECS Transform) must be current before child world matrices are read.
-      const entityNode = entry.root.parent
-      if (entityNode) entityNode.updateMatrixWorld(true)
-      else entry.root.updateMatrixWorld(true)
-      // Flag this entity as ANIMATED this frame (World: multi-shape slide). Static unless active.
-      this.shapeMotionEntities.add(entity)
+      // Bone-parented `_collider` matrixWorld after mixer — required for PhysX door slides.
+      this.markShapeMotionAfterSample(entity, entry)
     }
 
     if (!this.verbose) return

@@ -4555,7 +4555,7 @@ export class SceneScriptSystem {
     this.nftShapeBridge?.sync(this.view)
     this.nftShapeBridge?.update()
     this.avatarShapes?.update(delta)
-    this.animatorBridge?.update(delta)
+    this.animatorBridge?.update(delta, this.view)
     this.particleBridge?.update(delta)
     this.avatarAttachBridge?.update(this.view)
     this.flushAvatarAttachTransforms()
@@ -4584,7 +4584,21 @@ export class SceneScriptSystem {
     await this.avatarShapes?.sync(this.view)
     this.avatarEmoteBridge?.sync(this.view)
     await this.animatorBridge?.sync(this.view)
+    // Same async frame as Animator open/close apply — sample mixers so doors aren't one frame late.
+    this.animatorBridge?.update(0, this.view)
     await this.particleBridge?.sync(this.view)
+  }
+
+  /**
+   * After async Animator sync: refresh multi-shape locals for active animators.
+   * World calls this so ice-rink doors PhysX-slide the same frame the clip starts.
+   */
+  refreshAnimatorColliderPosesNow(): Set<Entity> {
+    const animated = this.getAnimatedColliderEntities(null)
+    if (animated.size) {
+      this.refreshColliderDescPoses([...animated], animated)
+    }
+    return animated
   }
 
   /** @deprecated Prefer pumpMotionBridges + syncAsyncBridges */

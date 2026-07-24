@@ -1585,6 +1585,18 @@ export class World {
 
         const t2 = performance.now()
         await this.sceneScript.syncAsyncBridges()
+        // Animator.sync is async-only — slide door colliders the same frame open/close applies.
+        if (this.playerMode && this.player && this.collidersLoadingComplete && !this.deferPhysxCooks) {
+          const animated = this.sceneScript.refreshAnimatorColliderPosesNow()
+          if (animated.size > 0) {
+            const animatedPhys = new Set<number>()
+            for (const entity of animated) {
+              const physId = this.sceneScript.physEntityIdForPoseSync(entity)
+              if (physId !== null) animatedPhys.add(physId)
+            }
+            this.pushColliderPosesToPhysX({ animatedPhysIds: animatedPhys })
+          }
+        }
         // PE + secondary async projection + multi-scene colliders into PhysX.
         if (this.multiScene) {
           const { colliders, invalidatePhysIds } = await this.multiScene.tickAsync()
@@ -2369,22 +2381,35 @@ export class World {
           forceEntities: animatedPhysIds,
           actorRootOnly: false
         })
-        // Structural only: world-baked / missing baselines (never mass-recook on pose noise).
-        let queued = 0
+        // If relative slide failed (world-baked / no baselines / geom mismatch / scale drift),
+        // recook entity-local NOW so door hulls match the live open/close pose.
+        const stale: PhysicsColliderDesc[] = []
         for (const desc of animatedDescs) {
           if (!desc.shapes?.length) continue
-          const needsRecook =
-            this.physics.isWorldBakedStatic(desc.entity) ||
-            !this.physics.hasShapeBaselines(desc.entity) ||
-            !this.physics.hasStaticActor(desc.entity)
-          if (!needsRecook) continue
-          if (!this.colliderCookQueue.has(desc.entity)) {
-            this.colliderCookQueue.add(desc.entity)
-            queued++
+          const ok =
+            this.physics.hasStaticActor(desc.entity) &&
+            this.physics.hasShapeBaselines(desc.entity) &&
+            !this.physics.isWorldBakedStatic(desc.entity) &&
+            this.physics.geomFingerprintMatches(desc) &&
+            this.physics.actorPoseMatchesDesc(desc)
+          if (!ok) stale.push(desc)
+        }
+        if (stale.length) {
+          try {
+            const result = this.physics.syncStaticColliders(stale, {
+              cookBudget: stale.length,
+              freezeRemoval: true,
+              forceRecookOnPoseChange: true,
+              geometryCache: true
+            })
+            if (result.geometryChanged) {
+              updated += stale.length
+              this.physics.rebuildStaticSceneQueryTree()
+            }
+          } catch (err) {
+            console.warn('[World] animated multi-shape recook failed', err)
           }
         }
-        this.pendingColliderCooks = this.colliderCookQueue.size
-        if (queued > 0) void this.scheduleColliderCookDrain()
       }
     }
 

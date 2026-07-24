@@ -129,6 +129,14 @@ export class AppController {
   private locationTitleGen = 0
   /** Last parcel key applied to the location pill title. */
   private lastLocationTitleKey = ''
+  /**
+   * Script-warm queue — CBD can enqueue many neighbors; never run resolve+IDB
+   * prefetch unbounded in parallel (starves primary rAF → 2fps thrash).
+   */
+  private readonly scriptWarmQueue: Array<{ x: number; y: number }> = []
+  private readonly scriptWarmQueuedKeys = new Set<string>()
+  private scriptWarmInFlight = 0
+  private static readonly SCRIPT_WARM_MAX_CONCURRENT = 1
   /** Parcel to center the full map on after leave-play (minimap click). */
   private mapFocusParcel: { px: number; py: number } | null = null
   /**
@@ -2214,7 +2222,7 @@ export class AppController {
         void this.refreshLocationTitleForParcel(x, y)
       },
       onPrefetch: (x, y) => {
-        void this.prefetchPromoteTarget(x, y)
+        this.enqueueScriptWarm(x, y)
       }
     })
     // Community-style toast when plaza has many remotes still composing.
@@ -2996,7 +3004,32 @@ export class AppController {
    * promote is fast. Visual AOI uses the same radius (composites / first-frame).
    * (Script-built estates like Angzaar have no main.composite — warm is the only
    * pre-promote load path for their GLBs.)
+   *
+   * Serialized: one resolve+IDB warm at a time so CBD 30+ neighbors don't thrash.
    */
+  private enqueueScriptWarm(x: number, y: number): void {
+    const key = `${x},${y}`
+    if (this.scriptWarmQueuedKeys.has(key)) return
+    this.scriptWarmQueuedKeys.add(key)
+    this.scriptWarmQueue.push({ x, y })
+    this.drainScriptWarmQueue()
+  }
+
+  private drainScriptWarmQueue(): void {
+    while (
+      this.scriptWarmInFlight < AppController.SCRIPT_WARM_MAX_CONCURRENT &&
+      this.scriptWarmQueue.length > 0
+    ) {
+      const next = this.scriptWarmQueue.shift()!
+      this.scriptWarmInFlight++
+      void this.prefetchPromoteTarget(next.x, next.y).finally(() => {
+        this.scriptWarmInFlight--
+        this.scriptWarmQueuedKeys.delete(`${next.x},${next.y}`)
+        this.drainScriptWarmQueue()
+      })
+    }
+  }
+
   private async prefetchPromoteTarget(x: number, y: number): Promise<void> {
     try {
       const target = { kind: 'coords' as const, x, y, segment: `${x},${y}` }
@@ -3010,7 +3043,8 @@ export class AppController {
       }
       const glbCount = scene.content.filter((f) => /\.glb$/i.test(f.file)).length
       console.info(
-        `[promote] script-warm “${scene.title}” @ ${x},${y} entity=${scene.entityId.slice(0, 12)}… glbs=${glbCount} main=${scene.mainEntry}`
+        `[promote] script-warm “${scene.title}” @ ${x},${y} entity=${scene.entityId.slice(0, 12)}… glbs=${glbCount} main=${scene.mainEntry}` +
+          (this.scriptWarmQueue.length ? ` queue=${this.scriptWarmQueue.length}` : '')
       )
       prefetchSceneManifestAssets(getSessionAssetCache(), scene)
     } catch (err) {

@@ -11,6 +11,13 @@ import {
   type ActiveSceneEntity
 } from './fetchActiveEntities'
 
+/**
+ * Dense Genesis (CBD) can have 30–50+ SDK7 scenes inside Scene Distance.
+ * Queueing all of them in one scan (resolve + IDB GLB prefetch) starves the
+ * primary worker → 2–5 fps thrash. Nearest-first trickle; later scans continue.
+ */
+const MAX_SCRIPT_WARM_PER_SCAN = 3
+
 export type PromoteCoordsTarget = Extract<RouteTarget, { kind: 'coords' }>
 
 export type ScenePromoteControllerOptions = {
@@ -231,6 +238,7 @@ export class ScenePromoteController {
         return pa - pb
       })
 
+      let deferredWarm = 0
       for (const ent of ranked) {
         const keys = ent.pointers.length ? ent.pointers : ent.parcels
         for (const p of keys) owned.add(p.trim())
@@ -256,6 +264,12 @@ export class ScenePromoteController {
         const base = parseParcelKey(ent.base)
         if (!Number.isFinite(base.x) || !Number.isFinite(base.y)) continue
 
+        // Budget: nearest first; leave rest unmarked so the next scan continues.
+        if (warmed >= MAX_SCRIPT_WARM_PER_SCAN) {
+          deferredWarm++
+          continue
+        }
+
         this.warmedEntityIds.add(ent.id)
         warmed++
         console.info(
@@ -269,9 +283,11 @@ export class ScenePromoteController {
         if (!owned.has(p)) this.skipPromoteKeys.add(p)
       }
 
-      if (warmed > 0 || skippedRoad > 0) {
+      if (warmed > 0 || skippedRoad > 0 || deferredWarm > 0) {
         console.info(
-          `[promote] script-warm scan feet=${center.x},${center.y} ring=${pointers.length} entities=${entities.length} warmed=${warmed} roads=${skippedRoad} otherSkip=${skippedOther}`
+          `[promote] script-warm scan feet=${center.x},${center.y} ring=${pointers.length} entities=${entities.length} warmed=${warmed}/${MAX_SCRIPT_WARM_PER_SCAN}` +
+            (deferredWarm > 0 ? ` deferred=${deferredWarm}` : '') +
+            ` roads=${skippedRoad} otherSkip=${skippedOther}`
         )
       }
     } catch (err) {

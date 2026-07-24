@@ -388,7 +388,8 @@ export class AoiVisualLayer {
       return aParcels - bParcels
     })
 
-    const toLoad = ranked.filter((c) => !this.loadedCompositeIds.has(c.id)).slice(0, 6)
+    // CBD density: loading 6×60 GLB clones per refresh freezes main. Trickle 2.
+    const toLoad = ranked.filter((c) => !this.loadedCompositeIds.has(c.id)).slice(0, 2)
     for (const ent of toLoad) {
       const comp = findCompositeFile(ent.content)
       if (!comp) continue
@@ -400,7 +401,7 @@ export class AoiVisualLayer {
           compositeHash: comp.hash,
           neighborBase: ent.base,
           primaryBase: base,
-          maxGltfs: 60
+          maxGltfs: 40
         })
         if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) {
           group.clear()

@@ -18,9 +18,10 @@ Transform dirty  →  ROOT follow
   (anything that dirties Transform — not separate PhysX paths)
 
 Animator         →  PART follow
-  child / bone / _collider pose may change under the entity
+  any active mixer is a PART *candidate*
+  PhysX write only when _collider mesh/bone world fingerprint **changes**
   kinematic multi-shape: cook once, setKinematicTarget + relative shape locals
-  one-shot clips preferred for PhysX part set (looping decorative = visual only)
+  if kinematic promote fails → single-entity live-bake fallback (not plaza-wide)
 
 else             →  no PhysX pose work
 ```

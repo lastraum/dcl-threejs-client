@@ -53,18 +53,13 @@ function mixerHasActiveWork(entry: AnimEntry): boolean {
 }
 
 /**
- * Door open/close etc. — LoopOnce / clampWhenFinished.
- * Looping plaza flags must NOT enter PhysX live-bake (that softed Genesis after ~1 min).
+ * PART PhysX candidates: any active mixer work.
+ * World only applies PART updates when _collider mesh/bone world fingerprint **changes**,
+ * so looping flags with fixed wall colliders no-op (stable fp) without soft thrash.
+ * Ice-rink doors often use loop:true for open/close — one-shot-only missed them.
  */
-function hasOneShotColliderWork(entry: AnimEntry): boolean {
-  for (const action of entry.actions.values()) {
-    const oneShot = action.clampWhenFinished === true || action.loop === THREE.LoopOnce
-    if (!oneShot) continue
-    if (action.isRunning() || action.isScheduled()) return true
-    // Held on last frame (open door) — still "animated" for set membership; mesh fp stable → no recook.
-    if (action.enabled && action.getEffectiveWeight() > 1e-3) return true
-  }
-  return false
+function hasPartColliderWork(entry: AnimEntry): boolean {
+  return mixerHasActiveWork(entry)
 }
 
 /** One name→node map per bind — per-track traverse was O(tracks × nodes) on huge characters. */
@@ -214,8 +209,8 @@ export class AnimatorBridge {
     const entityNode = entry.root.parent
     if (entityNode) entityNode.updateMatrixWorld(true)
     else entry.root.updateMatrixWorld(true)
-    // Looping plaza props still get mixer.update above — never live-bake PhysX.
-    if (hasOneShotColliderWork(entry)) {
+    // PART set: World gates actual PhysX writes on collider mesh pose change.
+    if (hasPartColliderWork(entry)) {
       this.shapeMotionEntities.add(entity)
     }
   }

@@ -959,9 +959,27 @@ export class PhysXWorld {
     if (!this.ensureKinematicMultiShape(desc)) return false
     const actor = this.staticActors.get(desc.entity)
     if (!actor) return false
-    if (!this.isPoseSlideSafe(actor, desc)) return false
+    // Scale-drift check can block first poses after promote — still apply T+R + shape locals.
+    if (!this.matrixHasFinitePose(desc.matrix)) return false
+    if (!desc.shapes?.length) return false
+    for (const shape of desc.shapes) {
+      if (!this.matrixHasFinitePose(shape.localMatrix)) return false
+    }
     try {
-      if (!this.updateMultiShapeActorPose(actor, desc, true)) return false
+      // If shape count mismatch, re-promote next call.
+      let nb = 0
+      try {
+        nb = actor.getNbShapes()
+      } catch {
+        return false
+      }
+      if (nb !== desc.shapes.length) {
+        this.removeStatic(desc.entity)
+        if (!this.ensureKinematicMultiShape(desc)) return false
+      }
+      const act = this.staticActors.get(desc.entity)
+      if (!act) return false
+      if (!this.updateMultiShapeActorPose(act, desc, true)) return false
       this.staticFp.set(desc.entity, desc.fingerprint)
       this.staticPoseFp.set(desc.entity, multiShapePoseFingerprint(desc))
       this.invalidateControllerCache()

@@ -2370,21 +2370,24 @@ export class World {
   }
 
   /**
-   * Animator PART → kinematic multi-shape (cook once, setKinematicTarget + shape locals).
-   * Caller must refreshColliderDescPoses with allowShapeMotion first.
+   * Animator PART → kinematic multi-shape (cook once, pose every frame).
+   * Only writes PhysX when _collider mesh/bone world fingerprint changes (doors swing;
+   * looping props with fixed wall hulls no-op). Falls back to one-entity live-bake if
+   * kinematic promote fails.
    */
   private pushColliderPartPoses(animatorPart: ReadonlySet<Entity>): void {
     if (!this.playerMode || !animatorPart.size) return
     let updated = 0
+    const liveBakeFallback: PhysicsColliderDesc[] = []
     for (const entity of animatorPart) {
       const physId = this.sceneScript.physEntityIdForPoseSync(entity)
       if (physId === null) continue
       const desc = this.sceneScript.getPhysicsColliderDesc(physId)
       if (!desc) {
-        if (!this.loggedAnimatorNoCollider.has(physId)) {
-          this.loggedAnimatorNoCollider.add(physId)
+        if (!this.loggedAnimatorNoCollider.has(entity)) {
+          this.loggedAnimatorNoCollider.add(entity)
           console.warn(
-            `[phys] PART entity ${entity} physId=${physId} has no collider desc — cannot track`
+            `[phys] PART entity ${entity} has no collider extract — cannot track (need _collider + CL_PHYSICS)`
           )
         }
         continue
@@ -2397,11 +2400,47 @@ export class World {
         })
         continue
       }
+
+      const meshFp = this.sceneScript.getGltfColliderMeshWorldFingerprint(entity)
+      const wasKinematic = this.physics.isKinematicActor(desc.entity)
+      // Skip no-op when already kinematic and panel pose unchanged.
+      if (wasKinematic && meshFp && this.animatedLiveBakeMeshFp.get(desc.entity) === meshFp) {
+        continue
+      }
+
       if (this.physics.updateKinematicMultiShapePose(desc)) {
         updated++
-        this.animatedLiveBakeMeshFp.delete(desc.entity)
+        if (meshFp) this.animatedLiveBakeMeshFp.set(desc.entity, meshFp)
+        continue
+      }
+
+      // Kinematic failed — last-resort single-entity world-bake (door only, not plaza thrash).
+      if (meshFp && this.animatedLiveBakeMeshFp.get(desc.entity) === meshFp) continue
+      if (meshFp) this.animatedLiveBakeMeshFp.set(desc.entity, meshFp)
+      liveBakeFallback.push(desc)
+    }
+
+    if (liveBakeFallback.length) {
+      try {
+        const result = this.physics.syncStaticColliders(liveBakeFallback, {
+          cookBudget: Math.min(4, liveBakeFallback.length),
+          freezeRemoval: true,
+          forceRecookOnPoseChange: true,
+          geometryCache: false,
+          skipWorkerStream: true
+        })
+        if (result.geometryChanged) {
+          updated += liveBakeFallback.length
+          this.physics.rebuildStaticSceneQueryTree()
+          console.warn(
+            `[phys] PART kinematic failed — live-bake fallback for ${liveBakeFallback.length} actor(s)`
+          )
+        }
+      } catch (err) {
+        console.warn('[phys] PART live-bake fallback failed', err)
       }
     }
+
     if (updated > 0) this.physics.refreshStaticColliderQueries()
     this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
   }

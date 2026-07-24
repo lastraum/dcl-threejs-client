@@ -105,6 +105,16 @@ export class MultiSceneRuntime {
     this.lastMultiPhysIds.clear()
   }
 
+  /**
+   * Drop all live secondaries immediately (keep PE).
+   * Call before seamless promote so cold plaza load isn't competing with 6 neighbor workers.
+   */
+  disposeSecondariesOnly(): void {
+    this.secondary?.dispose()
+    this.secondary = null
+    this.onLiveSecondaryIds?.(new Set())
+  }
+
   /** Stand-on promote: adopt live secondary if present. */
   takeSecondaryForPromote(x: number, y: number): PromoteHandoffPayload | null {
     return this.secondary?.takeForPromote(x, y) ?? null

@@ -1897,10 +1897,12 @@ export class AppController {
       replace?: boolean
       fastAssets?: boolean
       /**
-       * Multi-scene stand-on-parcel promote: no full loading screen, keep HUD,
-       * restore Genesis feet after spawn.
+       * Multi-scene stand-on-parcel promote: keep HUD, restore Genesis feet after spawn.
+       * Pair with `showSeamlessLoading` for large cold promotes (avoid blank 2fps thrash).
        */
       seamless?: boolean
+      /** When seamless, still show a fast loading screen (CBD plaza cold promote). */
+      showSeamlessLoading?: boolean
       entry?: 'landing_cta' | 'event_card' | 'deep_link' | 'map' | 'other' | 'teleport'
       source?: AnalyticsSource
     } = {}
@@ -2013,9 +2015,14 @@ export class AppController {
 
     this.navigating = true
     let loading: LoadingScreen | null = null
-    // Seamless promote (in-world multi-scene): no loading chrome.
+    // Seamless promote: keep feet; optional loading chrome for cold large-scene jumps.
     // Everything else (landing Jump In, map Jump In, teleports) shows a loading affordance.
-    if (seamless) {
+    if (seamless && opts.showSeamlessLoading) {
+      console.info('[promote] seamless primary swap — with loading screen')
+      loading = new LoadingScreen('Entering scene…', { fast: true })
+      loading.mount()
+      loading.startLoadingTimer()
+    } else if (seamless) {
       console.info('[promote] seamless primary swap — no loading screen')
     } else if (fromSceneLanding) {
       this.hidePlayChrome()
@@ -3135,10 +3142,17 @@ export class AppController {
         console.warn('[promote] in-world handoff failed — falling back to seamless jump', err)
       }
     }
+    // Free neighbor workers + warm queue so CBD plaza load isn't dual-resident thrash.
+    this.multiSceneRuntime.disposeSecondariesOnly()
+    this.scriptWarmQueue.length = 0
+    this.scriptWarmQueuedKeys.clear()
+    this.scriptWarmInFlight = 0
     console.info(`[promote] seamless jump ${target.x},${target.y} (${reason})`)
     await this.jumpInToScene(target, {
       fastAssets: true,
+      // Keep Genesis feet, but show loading chrome (blank seamless was brutal on large plazas).
       seamless: true,
+      showSeamlessLoading: true,
       replace: true,
       entry: 'teleport',
       source: 'goto'

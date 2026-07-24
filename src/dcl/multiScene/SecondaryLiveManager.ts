@@ -6,8 +6,12 @@ import type { PerformanceTier } from '../../shim/types'
 import type { SceneScriptSystem } from '../../core/systems/SceneScriptSystem'
 import { resolveSceneFromRoute } from '../content/resolveScene'
 import type { ResolvedScene } from '../content/types'
-import { renderQuality } from '../../rendering/RenderQualitySettings'
-import { secondaryLiveCap, secondaryTickIntervalMs } from './caps'
+import {
+  SECONDARY_LIVE_BOOT_CONCURRENCY,
+  secondaryLiveCap,
+  secondaryLiveRadiusM,
+  secondaryTickIntervalMs
+} from './caps'
 import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import { secondaryPhysOffset } from './physOffsets'
 import { isModestSceneForSecondary } from './sceneWeight'
@@ -316,10 +320,10 @@ export class SecondaryLiveManager {
     if (now - this.lastReconcileAt < 800) return
     this.lastReconcileAt = now
 
-    // Warm band = user Scene Distance; live pool still distance-ranked + capped.
-    const warmRadiusM = renderQuality.getSceneLoadRadiusM()
+    // Live radius ≤ Scene Distance (default max 64m). Far warm/tertiary stay outside live.
+    const liveRadiusM = secondaryLiveRadiusM()
     const inRange = candidates
-      .filter((c) => warmRadiusM > 0 && c.distM <= warmRadiusM)
+      .filter((c) => liveRadiusM > 0 && c.distM <= liveRadiusM)
       .sort((a, b) => a.distM - b.distM)
       .slice(0, Math.max(cap, 0))
 
@@ -337,11 +341,14 @@ export class SecondaryLiveManager {
     }
     this.emitLiveIds()
 
-    // Warm remaining capacity with nearest candidates (sticky already occupy slots).
+    // Serial boot — one full secondary worker at a time (parallel boots starve seamless promote).
+    if (this.booting.size >= SECONDARY_LIVE_BOOT_CONCURRENCY) return
+
     for (const req of inRange) {
       if (this.slots.has(req.entityId) || this.booting.has(req.entityId)) continue
       if (this.slots.size + this.booting.size >= cap) break
       void this.bootOne(req)
+      break // only start one per reconcile
     }
   }
 

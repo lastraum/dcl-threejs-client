@@ -8,7 +8,15 @@ export type {
   SecondaryLiveRequest
 } from './types'
 export { SCENE_WORKER_PRIORITY } from './types'
-export { secondaryLiveCap, peLiveCap, secondaryTickIntervalMs, peTickIntervalMs } from './caps'
+export {
+  secondaryLiveCap,
+  secondaryLiveRadiusM,
+  SECONDARY_LIVE_MAX_RADIUS_M,
+  SECONDARY_LIVE_BOOT_CONCURRENCY,
+  peLiveCap,
+  secondaryTickIntervalMs,
+  peTickIntervalMs
+} from './caps'
 export {
   isModestSceneForSecondary,
   sceneGlbCount,

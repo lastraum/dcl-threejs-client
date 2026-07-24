@@ -1,8 +1,9 @@
 import type { PerformanceTier } from '../../shim/types'
+import { renderQuality } from '../../rendering/RenderQualitySettings'
 
 /**
- * Live secondary workers inside Scene Distance warm band (not first-frame / tertiary).
- * Warm-all ≠ live-all: nearest N only (+ sticky demoted primary for walk-back if modest).
+ * Live secondary workers: nearest N inside a **live radius** (not full Scene Distance).
+ * Warm + tertiary still use full Scene Distance. Live scripts are expensive.
  * Large multi-parcel plazas still refuse live/sticky (see sceneWeight.ts).
  *
  * Middle tier targets ~6 concurrent muted neighbors; scale low/high around that.
@@ -12,6 +13,22 @@ export function secondaryLiveCap(tier: PerformanceTier): number {
   if (tier === 'medium') return 6
   return 9 // high
 }
+
+/**
+ * Max distance for live secondary workers (meters).
+ * Clamped to Scene Distance; never farther than this even if Scene Distance is 200m.
+ * Farther scenes still get warm (bytes) + tertiary visuals only.
+ */
+export const SECONDARY_LIVE_MAX_RADIUS_M = 64
+
+export function secondaryLiveRadiusM(): number {
+  const warm = renderQuality.getSceneLoadRadiusM()
+  if (warm <= 0) return 0
+  return Math.min(warm, SECONDARY_LIVE_MAX_RADIUS_M)
+}
+
+/** Only one secondary full boot at a time — parallel 2MB workers thrash CBD promotes. */
+export const SECONDARY_LIVE_BOOT_CONCURRENCY = 1
 
 /** Concurrent portable-experience workers. */
 export function peLiveCap(tier: PerformanceTier): number {

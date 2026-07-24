@@ -774,9 +774,9 @@ export class SceneScriptSystem {
   /**
    * **Static by default.**
    *
-   * **Shape-animated** (this set): Animator active mixer, or {@link markSystemAnimatedCollider}.
-   * These get multi-shape live-bake (doors). Pointer may hit entity 523 while GltfContainer
-   * colliders live on a parent/child — we expand along the Transform tree.
+   * **Live-bake shape-animated** (this set): one-shot Animator only (doors open/close), or
+   * {@link markSystemAnimatedCollider}. Looping Animator (flags, idle props) stay **static**
+   * for PhysX — world-baking them every frame softed/toggled Genesis Plaza after ~1 min.
    *
    * **Root-animated** (NOT in this set): Tween / Billboard / CRDT Transform → actor-root-only.
    */
@@ -785,9 +785,14 @@ export class SceneScriptSystem {
     const addWithTree = (entity: Entity): void => {
       for (const e of this.expandToExtractedColliderEntities(entity)) out.add(e)
     }
+    // One-shot doors only (AnimatorBridge filters loops out of pendingShapeMotion).
     for (const entity of this.animatorBridge?.pendingShapeMotionEntities() ?? []) addWithTree(entity)
     for (const entity of this.systemAnimatedColliders) addWithTree(entity)
-    if (groundEcs !== null && this.isAnimatedGltfColliderEntity(groundEcs)) addWithTree(groundEcs)
+    // Grounded platform: only if it is currently one-shot shape-motion (not every Animator GLTF).
+    if (groundEcs !== null && out.has(groundEcs) === false) {
+      // Keep standing platform if system marked it; do not pull all Animator+Gltf of plaza.
+      void groundEcs
+    }
     return out
   }
 

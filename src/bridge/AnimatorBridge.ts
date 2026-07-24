@@ -52,6 +52,21 @@ function mixerHasActiveWork(entry: AnimEntry): boolean {
   return false
 }
 
+/**
+ * Door open/close etc. — LoopOnce / clampWhenFinished.
+ * Looping plaza flags must NOT enter PhysX live-bake (that softed Genesis after ~1 min).
+ */
+function hasOneShotColliderWork(entry: AnimEntry): boolean {
+  for (const action of entry.actions.values()) {
+    const oneShot = action.clampWhenFinished === true || action.loop === THREE.LoopOnce
+    if (!oneShot) continue
+    if (action.isRunning() || action.isScheduled()) return true
+    // Held on last frame (open door) — still "animated" for set membership; mesh fp stable → no recook.
+    if (action.enabled && action.getEffectiveWeight() > 1e-3) return true
+  }
+  return false
+}
+
 /** One name→node map per bind — per-track traverse was O(tracks × nodes) on huge characters. */
 function buildNodeNameMap(root: THREE.Object3D): Map<string, THREE.Object3D> {
   const byName = new Map<string, THREE.Object3D>()
@@ -129,7 +144,10 @@ export class AnimatorBridge {
    */
   private readonly dirtyReplay = new Set<Entity>()
   private motionFocusView: ProjectionView | null = null
-  /** GLTF entities with an active mixer this frame — World slides their PhysX multi-shapes. */
+  /**
+   * One-shot Animator entities this frame (doors) — World may live-bake PhysX multi-shapes.
+   * Looping decorative mixers are intentionally excluded (plaza soft / toggle).
+   */
   private readonly shapeMotionEntities = new Set<Entity>()
 
   constructor(
@@ -187,7 +205,7 @@ export class AnimatorBridge {
     }
   }
 
-  /** After mixer sample: matrixWorld + flag for PhysX shape slides. */
+  /** After mixer sample: matrixWorld; flag PhysX only for one-shot (door) clips. */
   private markShapeMotionAfterSample(entity: Entity, entry: AnimEntry): void {
     entry.root.traverse((obj) => {
       const sk = obj as THREE.SkinnedMesh
@@ -196,7 +214,10 @@ export class AnimatorBridge {
     const entityNode = entry.root.parent
     if (entityNode) entityNode.updateMatrixWorld(true)
     else entry.root.updateMatrixWorld(true)
-    this.shapeMotionEntities.add(entity)
+    // Looping plaza props still get mixer.update above — never live-bake PhysX.
+    if (hasOneShotColliderWork(entry)) {
+      this.shapeMotionEntities.add(entity)
+    }
   }
 
   private applyStatesToEntry(

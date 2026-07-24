@@ -2374,12 +2374,12 @@ export class World {
 
     let updated = 0
 
-    // 1) ANIMATED multi-shape (doors): LIVE WORLD-BAKE when collider mesh world pose changes.
-    // Relative shape.setLocalPose + entity-local baselines repeatedly failed for ice-rink doors
-    // (CCT never tracked the panel). World-bake at current mesh pose is correct and simple.
+    // 1) ONE-SHOT doors only: live world-bake when _collider mesh/bone world pose changes.
+    // Never world-bake looping plaza animators — that remove/recook thrash softed solids after ~1 min.
     if (animatedPhysIds?.size) {
       const liveBake: PhysicsColliderDesc[] = []
       const rootOnly: PhysicsColliderDesc[] = []
+      const MAX_LIVE_BAKE_PER_FRAME = 4
       for (const physId of animatedPhysIds) {
         const desc = this.sceneScript.getPhysicsColliderDesc(physId)
         if (!desc) {
@@ -2409,13 +2409,12 @@ export class World {
                 `(missing _collider / CL_PHYSICS?) — door will not track`
             )
           }
-          // Still try relative path below via rootOnly empty — force live bake with desc as-is
-          liveBake.push(desc)
           continue
         }
         if (this.animatedLiveBakeMeshFp.get(desc.entity) === meshFp) continue
         this.animatedLiveBakeMeshFp.set(desc.entity, meshFp)
         liveBake.push(desc)
+        if (liveBake.length >= MAX_LIVE_BAKE_PER_FRAME) break
       }
       if (rootOnly.length) {
         updated += this.physics.applyStaticColliderPoseUpdates(rootOnly, {

@@ -809,7 +809,9 @@ export class SceneScriptSystem {
     for (const entity of this.billboardBridge?.pendingMotionEntities() ?? []) addRoot(entity)
     for (const entity of this.systemTransformDirty) addRoot(entity)
 
+    // Prefer pending shape-motion marks; also include any active mixer (doors after CRDT apply).
     for (const entity of this.animatorBridge?.pendingShapeMotionEntities() ?? []) addPart(entity)
+    for (const entity of this.animatorBridge?.getActiveMixerEntities() ?? []) addPart(entity)
     for (const entity of this.systemPartColliders) addPart(entity)
 
     return { transformDirty, animatorPart }
@@ -860,6 +862,20 @@ export class SceneScriptSystem {
 
   getGltfColliderMeshWorldFingerprint(entity: Entity): string | null {
     return this.gltfColliders?.getColliderMeshWorldFingerprint(entity) ?? null
+  }
+
+  /**
+   * Force live shape locals for PART entities; returns entity → pose fingerprint for bake gate.
+   */
+  forceRefreshPartColliderPoses(entities: ReadonlySet<Entity>): Map<Entity, string> {
+    const out = new Map<Entity, string>()
+    const nodes = this.bridge?.getEntityNodes()
+    if (!nodes || !this.gltfColliders) return out
+    for (const entity of entities) {
+      const fp = this.gltfColliders.forceRefreshAnimatedShapeLocals(entity, nodes)
+      if (fp) out.set(entity, fp)
+    }
+    return out
   }
 
   /** System moved entity Transform (root follow). Prefer writing Transform via ECS when possible. */

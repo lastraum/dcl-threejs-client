@@ -181,6 +181,15 @@ export class AnimatorBridge {
     return out
   }
 
+  /** Entities with a bound mixer that still has active clip work this frame. */
+  getActiveMixerEntities(): Entity[] {
+    const out: Entity[] = []
+    for (const [entity, entry] of this.entries) {
+      if (mixerHasActiveWork(entry)) out.push(entity)
+    }
+    return out
+  }
+
   /**
    * Apply ECS Animator states for already-bound mixers that were markDirty'd.
    * Must run on the **sync motion path** — full `sync()` only runs async, which left

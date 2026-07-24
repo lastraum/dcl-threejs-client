@@ -2370,15 +2370,19 @@ export class World {
   }
 
   /**
-   * Animator PART → kinematic multi-shape (cook once, pose every frame).
-   * Only writes PhysX when _collider mesh/bone world fingerprint changes (doors swing;
-   * looping props with fixed wall hulls no-op). Falls back to one-entity live-bake if
-   * kinematic promote fails.
+   * Animator PART → live world-bake when multi-shape pose fingerprint changes.
+   * This is the path that worked for ice-rink doors (kinematic relative was not tracking).
+   * Only entities in animatorPart (active mixer / system part) — not Transform-only.
+   * Stable pose fp → no recook (looping props with fixed wall hulls stay solid).
    */
   private pushColliderPartPoses(animatorPart: ReadonlySet<Entity>): void {
     if (!this.playerMode || !animatorPart.size) return
+
+    // Always force live shape locals from mesh/bone worlds before bake gate.
+    const poseFps = this.sceneScript.forceRefreshPartColliderPoses(animatorPart)
+
+    const liveBake: PhysicsColliderDesc[] = []
     let updated = 0
-    const liveBakeFallback: PhysicsColliderDesc[] = []
     for (const entity of animatorPart) {
       const physId = this.sceneScript.physEntityIdForPoseSync(entity)
       if (physId === null) continue
@@ -2401,43 +2405,33 @@ export class World {
         continue
       }
 
-      const meshFp = this.sceneScript.getGltfColliderMeshWorldFingerprint(entity)
-      const wasKinematic = this.physics.isKinematicActor(desc.entity)
-      // Skip no-op when already kinematic and panel pose unchanged.
-      if (wasKinematic && meshFp && this.animatedLiveBakeMeshFp.get(desc.entity) === meshFp) {
-        continue
-      }
-
-      if (this.physics.updateKinematicMultiShapePose(desc)) {
-        updated++
-        if (meshFp) this.animatedLiveBakeMeshFp.set(desc.entity, meshFp)
-        continue
-      }
-
-      // Kinematic failed — last-resort single-entity world-bake (door only, not plaza thrash).
-      if (meshFp && this.animatedLiveBakeMeshFp.get(desc.entity) === meshFp) continue
-      if (meshFp) this.animatedLiveBakeMeshFp.set(desc.entity, meshFp)
-      liveBakeFallback.push(desc)
+      const poseFp =
+        poseFps.get(entity) ??
+        this.sceneScript.getGltfColliderMeshWorldFingerprint(entity) ??
+        ''
+      if (!poseFp) continue
+      if (this.animatedLiveBakeMeshFp.get(desc.entity) === poseFp) continue
+      this.animatedLiveBakeMeshFp.set(desc.entity, poseFp)
+      liveBake.push(desc)
+      if (liveBake.length >= 4) break
     }
 
-    if (liveBakeFallback.length) {
+    if (liveBake.length) {
       try {
-        const result = this.physics.syncStaticColliders(liveBakeFallback, {
-          cookBudget: Math.min(4, liveBakeFallback.length),
+        // World-bake at current open/close pose — proven for ice-rink door CCT hits.
+        const result = this.physics.syncStaticColliders(liveBake, {
+          cookBudget: liveBake.length,
           freezeRemoval: true,
           forceRecookOnPoseChange: true,
           geometryCache: false,
           skipWorkerStream: true
         })
         if (result.geometryChanged) {
-          updated += liveBakeFallback.length
+          updated += liveBake.length
           this.physics.rebuildStaticSceneQueryTree()
-          console.warn(
-            `[phys] PART kinematic failed — live-bake fallback for ${liveBakeFallback.length} actor(s)`
-          )
         }
       } catch (err) {
-        console.warn('[phys] PART live-bake fallback failed', err)
+        console.warn('[phys] PART live-bake failed', err)
       }
     }
 

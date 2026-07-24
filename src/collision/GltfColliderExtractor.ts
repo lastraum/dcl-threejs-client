@@ -341,6 +341,35 @@ export class GltfColliderExtractor {
     )
   }
 
+  /**
+   * Force rewrite shape local matrices from live mesh/bone worlds (Animator PART).
+   * Returns multi-shape pose fingerprint string for change detection, or null.
+   */
+  forceRefreshAnimatedShapeLocals(
+    entity: Entity,
+    entityNodes: Map<Entity, THREE.Group>
+  ): string | null {
+    const stored = this.extracted.get(entity)
+    const obj = entityNodes.get(entity)
+    if (!stored?.shapes?.length || !obj) return null
+    const state = this.syncState.get(entity)
+    const gltfMesh = state?.mesh ?? obj.children.find((c) => c.name.startsWith('__mesh_'))
+    if (!gltfMesh || !state) return null
+    obj.updateMatrixWorld(true)
+    gltfMesh.updateMatrixWorld(true)
+    this.refreshShapeLocalMatrices(
+      gltfMesh,
+      obj,
+      stored.shapes,
+      state.hasVisiblePhysics,
+      state.hasInvisiblePhysics
+    )
+    stored.matrix.copy(obj.matrixWorld)
+    const fp = gltfColliderPoseFp(stored)
+    this.poseFingerprints.set(entity, fp)
+    return fp
+  }
+
   private recordWalkSurfaceDelta(
     entity: Entity,
     entityNodes: Map<Entity, THREE.Group>,

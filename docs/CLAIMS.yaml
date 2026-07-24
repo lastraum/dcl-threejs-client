@@ -10,6 +10,13 @@ source: github
 base_branch: dev-latest
 workflow:
   - stage: merged
+    integration_ref: pr:47
+    title: export equipped DCL avatar as VRM 0.0
+    owner: lastraum
+    pr: 47
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/47
+    updated: 2026-07-24
+  - stage: merged
     integration_ref: pr:46
     title: Tour v2 — locations, circular flag, end-tour export
     owner: lastraum
@@ -135,13 +142,6 @@ workflow:
     owner: awedjob
     pr: 14
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/14
-    updated: 2026-07-11
-  - stage: merged
-    integration_ref: pr:15
-    title: sun/moon azimuth 180° off vs Unity Explorer
-    owner: awedjob
-    pr: 15
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/15
     updated: 2026-07-11
   - stage: merged
     integration_ref: ecs:TriggerArea

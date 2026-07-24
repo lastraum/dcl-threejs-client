@@ -3528,24 +3528,25 @@ export class World {
   }
 
   /**
-   * In-world promote (no World rebuild):
-   * 1) handoff if target already live secondary
-   * 2) else force-boot secondary for target, then handoff
-   * Always demotes outgoing primary → sticky secondary (walk-back = resume, no reload).
+   * In-world promote (no World rebuild) — **only** when target is already a live secondary.
+   *
+   * We deliberately do **not** force-boot a cold scene as secondary then hand off:
+   * CBD multi-parcel plazas would load a full second SceneScriptSystem while the old
+   * primary still lives (dual-resident thrash → tab death). Cold promotes fall through
+   * to seamless jumpIn (single resident).
+   *
+   * Modest demoted primaries may become sticky secondaries for walk-back resume.
    */
   async tryPromoteInWorld(target: { x: number; y: number }): Promise<boolean> {
     const multi = this.multiScene
     if (!multi || !this.player) return false
 
-    let handoff = multi.takeSecondaryForPromote(target.x, target.y)
+    const handoff = multi.takeSecondaryForPromote(target.x, target.y)
     if (!handoff) {
       console.info(
-        `[promote] no live secondary @ ${target.x},${target.y} — force-boot for handoff…`
+        `[promote] no live secondary @ ${target.x},${target.y} — skip force-boot (seamless jump)`
       )
-      const booted = await multi.ensureSecondaryForParcel(target.x, target.y)
-      if (!booted) return false
-      handoff = multi.takeSecondaryForPromote(target.x, target.y)
-      if (!handoff) return false
+      return false
     }
 
     return this.applyPromoteHandoff(handoff)

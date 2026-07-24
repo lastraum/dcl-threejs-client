@@ -10,6 +10,7 @@ import { renderQuality } from '../../rendering/RenderQualitySettings'
 import { secondaryLiveCap, secondaryTickIntervalMs } from './caps'
 import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import { secondaryPhysOffset } from './physOffsets'
+import { isModestSceneForSecondary } from './sceneWeight'
 import { SceneWorkerSlot } from './SceneWorkerSlot'
 import type { SecondaryLiveRequest } from './types'
 
@@ -128,6 +129,7 @@ export class SecondaryLiveManager {
 
   /**
    * Keep outgoing primary warm as a secondary so walking back can resume without reload.
+   * Large multi-parcel scenes are disposed instead (sticky dual-resident kills CBD).
    * Returns phys entity ids that used primary (native) ids — World must invalidate them.
    */
   async adoptDemotedPrimary(
@@ -158,6 +160,21 @@ export class SecondaryLiveManager {
       }
       this.stickyIds.add(id)
       return { entityId: id, primaryPhysIds: [] }
+    }
+
+    // CBD plaza / large multi-parcel — never sticky demote (two full systems = tab death).
+    if (!isModestSceneForSecondary(scene)) {
+      const parcels = scene.parcels?.length ?? 0
+      const glbs = scene.content?.filter((f) => /\.glb$/i.test(f.file)).length ?? 0
+      console.info(
+        `[multi-scene] demote dispose “${scene.title}” — too large for sticky secondary (parcels=${parcels} glbs=${glbs})`
+      )
+      try {
+        system.dispose()
+      } catch {
+        /* ignore */
+      }
+      return null
     }
 
     // Make room — prefer evicting non-sticky warm secondaries.
@@ -199,7 +216,9 @@ export class SecondaryLiveManager {
   }
 
   /**
-   * Force-boot a secondary for parcel if missing (for in-world promote without prior warm).
+   * Force-boot a secondary for parcel if missing.
+   * Refuses large multi-parcel scenes (use seamless promote instead).
+   * Prefer not calling this from promote — cold dual-boot kills CBD.
    */
   async ensureSecondaryForParcel(
     x: number,
@@ -224,6 +243,15 @@ export class SecondaryLiveManager {
       if (this.disposed || !scene?.mainEntry || !scene.entityId) return false
       if (this.primaryScene?.entityId === scene.entityId) return false
       if (this.slots.has(scene.entityId)) return true
+
+      if (!isModestSceneForSecondary(scene)) {
+        const parcels = scene.parcels?.length ?? 0
+        const glbs = scene.content?.filter((f) => /\.glb$/i.test(f.file)).length ?? 0
+        console.info(
+          `[multi-scene] skip force-boot “${scene.title}” @ ${key} — too large (parcels=${parcels} glbs=${glbs})`
+        )
+        return false
+      }
 
       this.evictToCapacity(this.maxSlots() - 1)
 
@@ -330,6 +358,14 @@ export class SecondaryLiveManager {
       if (this.disposed || !scene?.mainEntry || !scene.entityId) return
       if (this.primaryScene?.entityId === scene.entityId) return
       if (this.slots.has(req.entityId)) return
+
+      // Large multi-parcel plazas: visuals/warm only — never dual-resident live worker.
+      if (!isModestSceneForSecondary(scene)) {
+        console.info(
+          `[multi-scene] skip live secondary “${req.title}” — too large (parcels=${scene.parcels?.length ?? 0})`
+        )
+        return
+      }
 
       const slotIndex = this.nextSlotIndex++
       const slot = new SceneWorkerSlot({

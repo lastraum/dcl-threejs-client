@@ -9,6 +9,11 @@ export type {
 } from './types'
 export { SCENE_WORKER_PRIORITY } from './types'
 export { secondaryLiveCap, peLiveCap, secondaryTickIntervalMs, peTickIntervalMs } from './caps'
+export {
+  isModestSceneForSecondary,
+  sceneGlbCount,
+  sceneParcelCount
+} from './sceneWeight'
 export { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 export { SceneWorkerSlot } from './SceneWorkerSlot'
 export { SecondaryLiveManager, type PromoteHandoffPayload } from './SecondaryLiveManager'

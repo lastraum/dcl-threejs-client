@@ -7,6 +7,10 @@ import type { ResolvedScene } from '../content/types'
 import type { PerformanceTier } from '../../shim/types'
 import { openExternalUrl } from '../../player/openExternalUrl'
 import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
+import {
+  applySecondarySceneRootOrigin,
+  clearSecondarySceneRootOrigin
+} from './secondarySceneOrigin'
 import { SCENE_WORKER_PRIORITY, type SceneWorkerKind } from './types'
 
 export type SceneWorkerSlotOptions = {
@@ -20,6 +24,12 @@ export type SceneWorkerSlotOptions = {
   poseProvider: () => { player: EntityPose; camera: EntityPose }
   /** PhysX entity id offset so multi-scene colliders don't clash with primary. */
   physOffset: number
+  /**
+   * Primary scene base parcel — secondaries must offset their entity root by
+   * (neighborBase − primaryBase) so meshes sit in the correct Genesis footprint.
+   * PE ignores this (avatar-local / host origin).
+   */
+  primaryBaseParcel?: string
   /**
    * Already-running system (demoted primary). Skips prepare/boot — only rewires
    * to secondary privilege + renames entity root.
@@ -45,6 +55,7 @@ export class SceneWorkerSlot {
   private readonly adopted: boolean
   /** Phys ids we registered (with offset) — invalidate on dispose. */
   private readonly registeredPhysIds = new Set<number>()
+  private primaryBaseParcel: string
 
   constructor(private readonly opts: SceneWorkerSlotOptions) {
     this.id = opts.id
@@ -54,6 +65,29 @@ export class SceneWorkerSlot {
     this.physOffset = opts.physOffset
     this.adopted = !!opts.existingSystem
     this.system = opts.existingSystem ?? new SceneScriptSystem()
+    this.primaryBaseParcel = (opts.primaryBaseParcel ?? '').trim()
+  }
+
+  /**
+   * After primary promote — re-place this secondary relative to the new primary SW.
+   * Without this, demoted scenes stay at host origin and overrun the new primary.
+   */
+  retargetPrimaryBase(primaryBaseParcel: string): void {
+    this.primaryBaseParcel = primaryBaseParcel.trim()
+    if (this.kind !== 'secondary' || this.disposed || this.detached) return
+    this.applySceneOriginOffset()
+    // World matrices moved — force collider extract so PhysX matches new footprint.
+    try {
+      this.system.syncCollisionForce()
+    } catch {
+      /* ignore during teardown */
+    }
+  }
+
+  private applySceneOriginOffset(): void {
+    if (this.kind !== 'secondary') return
+    const root = this.system.getEntityStore()?.root
+    applySecondarySceneRootOrigin(root, this.scene.baseParcel, this.primaryBaseParcel)
   }
 
   get isRunning(): boolean {
@@ -79,10 +113,12 @@ export class SceneWorkerSlot {
       if (store?.root) {
         store.root.name = `secondary-entities:${this.id.slice(0, 16)}`
       }
+      // Was host origin as primary — shift into new primary's frame (or 0 until retarget).
+      this.applySceneOriginOffset()
       this.running = true
       this.lastTickAt = performance.now()
       console.info(
-        `[multi-scene] demoted primary → secondary “${scene.title}” id=${this.id.slice(0, 16)}… (resume-ready)`
+        `[multi-scene] demoted primary → secondary “${scene.title}” id=${this.id.slice(0, 16)}… origin→${this.primaryBaseParcel || 'pending'} (resume-ready)`
       )
       return
     }
@@ -126,10 +162,15 @@ export class SceneWorkerSlot {
     await this.system.start(scene, cache, host)
     // Force collider extract so PE/secondary geometry can enter PhysX.
     this.system.syncCollisionForce()
+    // Place neighbor content at Genesis footprint (not on primary origin).
+    this.applySceneOriginOffset()
     this.running = true
     this.lastTickAt = performance.now()
     console.info(
-      `[multi-scene] started ${this.kind} “${scene.title}” id=${this.id.slice(0, 20)}… physOffset=${this.physOffset}`
+      `[multi-scene] started ${this.kind} “${scene.title}” id=${this.id.slice(0, 20)}… physOffset=${this.physOffset}` +
+        (this.kind === 'secondary'
+          ? ` origin=${this.scene.baseParcel}→${this.primaryBaseParcel || '?'}`
+          : '')
     )
   }
 
@@ -258,6 +299,8 @@ export class SceneWorkerSlot {
     this.system.setChangeRealmHandler(null)
     this.system.setOpenExternalUrlHandler(null)
     this.system.setTriggerEmoteHandler(null)
+    // Becoming primary — host origin is this scene's SW again.
+    clearSecondarySceneRootOrigin(this.system.getEntityStore()?.root)
     return this.system
   }
 

@@ -61,6 +61,13 @@ export class SecondaryLiveManager {
 
   setPrimaryScene(scene: ResolvedScene): void {
     this.primaryScene = scene
+    // Every secondary was authored relative to its own SW; host origin is now
+    // the new primary SW — re-apply (neighbor − primary) offsets or demoted
+    // content piles on the new primary (rogue GLBs).
+    const base = scene.baseParcel
+    for (const slot of this.slots.values()) {
+      slot.retargetPrimaryBase(base)
+    }
   }
 
   setTier(tier: PerformanceTier): void {
@@ -160,6 +167,10 @@ export class SecondaryLiveManager {
     const primaryPhysIds = system.getAllPhysicsColliderDescs().map((d) => d.entity)
 
     const slotIndex = this.nextSlotIndex++
+    // Prefer current primary base; handoff may still be mid-swap — notifyPrimaryChanged
+    // retargets immediately after if needed.
+    const primaryBase =
+      this.primaryScene?.baseParcel?.trim() || scene.baseParcel
     const slot = new SceneWorkerSlot({
       id,
       kind: 'secondary',
@@ -170,6 +181,7 @@ export class SecondaryLiveManager {
       arbiter: this.arbiter,
       poseProvider: this.poseProvider,
       physOffset: secondaryPhysOffset(slotIndex),
+      primaryBaseParcel: primaryBase,
       existingSystem: system
     })
     await slot.start()
@@ -225,7 +237,8 @@ export class SecondaryLiveManager {
         performanceTier: this.tier,
         arbiter: this.arbiter,
         poseProvider: this.poseProvider,
-        physOffset: secondaryPhysOffset(slotIndex)
+        physOffset: secondaryPhysOffset(slotIndex),
+        primaryBaseParcel: this.primaryScene?.baseParcel
       })
       const boot = slot.start()
       const timed = await Promise.race([
@@ -328,7 +341,8 @@ export class SecondaryLiveManager {
         performanceTier: this.tier,
         arbiter: this.arbiter,
         poseProvider: this.poseProvider,
-        physOffset: secondaryPhysOffset(slotIndex)
+        physOffset: secondaryPhysOffset(slotIndex),
+        primaryBaseParcel: this.primaryScene?.baseParcel
       })
       await slot.start()
       if (this.disposed) {

@@ -40,11 +40,20 @@ import { TourFocusController } from '../social/TourFocusController'
 import {
   followTargetLabel,
   followTargetToRoute,
+  routeToFollowTarget,
   type FollowTarget
 } from '../social/communityFollowWire'
 import { clientSettings } from '../rendering/ClientSettings'
 import { TourOptionsPopup } from './ui/tour/TourOptionsPopup'
+import { TourEndModal } from './ui/tour/TourEndModal'
 import { TourFlagImageModal } from './ui/tour/TourFlagImageModal'
+import {
+  deleteTourSessionPhotos,
+  getTourLocationPhoto,
+  listTourLocationPhotos,
+  putTourLocationPhoto
+} from '../social/tourLocationPhotoStore'
+import { downloadTourCsvOnly, downloadTourZip } from '../social/tourExport'
 import { PreferencesPanel } from './ui/settings/PreferencesPanel'
 import { SettingsOverlay, type SettingsTab } from './ui/settings/SettingsOverlay'
 import type { MapPlayerState } from './ui/settings/MapView'
@@ -164,7 +173,7 @@ export class AppController {
    */
   private communityFollow: CommunityFollowController | null = null
   private unsubCommunityFollow: (() => void) | null = null
-  /** Tour leader flag (spine pole + banner) — session-scoped across World rebuilds. */
+  /** Tour leader flag (circular badge above nametag) — session-scoped across World rebuilds. */
   private followFlagManager: FollowFlagManager | null = null
   /** Tour Focus — follower lens takeover; session-scoped across World rebuilds. */
   private tourFocus: TourFocusController | null = null
@@ -175,7 +184,10 @@ export class AppController {
    */
   private tourFocusOptOut = false
   private tourOptionsPopup: TourOptionsPopup | null = null
+  private tourEndModal: TourEndModal | null = null
   private tourFlagImageModal: TourFlagImageModal | null = null
+  /** Locations tab: next Camera Reel shot binds to this location id. */
+  private tourPhotoBindLocationId: string | null = null
   /** Re-open this community thread on ChatPanel after a follow jump World rebuild. */
   private pendingFollowCommunityOpen: { id: string; name: string } | null = null
   /** Unsubscribe scene-room Cast presence poller for the open landing. */
@@ -923,12 +935,30 @@ export class AppController {
     this.syncTourFocusFromController()
   }
 
-  /** Sidebar 🚩 Tour Options — enable/disable flag + stop tour. */
+  /** Sidebar 🚩 Tour Options — Users / Locations / Settings (leader). */
   private openTourOptionsPopup(): void {
     if (this.tourOptionsPopup) {
       this.tourOptionsPopup.dispose()
       this.tourOptionsPopup = null
     }
+    const photoThumbs = new Map<string, string>()
+
+    const refreshThumbs = async () => {
+      const follow = this.communityFollow
+      if (!follow?.isLeading()) return
+      const session = follow.listSessions().find((s) => follow.isLeading(s.communityId))
+      if (!session) return
+      try {
+        const photos = await listTourLocationPhotos(session.sessionId)
+        photoThumbs.clear()
+        for (const p of photos) photoThumbs.set(p.locationId, p.dataUrl)
+        this.tourOptionsPopup?.refresh()
+      } catch {
+        /* ignore */
+      }
+    }
+    void refreshThumbs()
+
     this.tourOptionsPopup = new TourOptionsPopup({
       getState: () => {
         const follow = this.communityFollow
@@ -952,17 +982,22 @@ export class AppController {
             isLeader: entry.isLeader
           }
         })
+        const locations = (follow?.getLocations() ?? []).map((loc) => ({
+          ...loc,
+          photoThumb: photoThumbs.get(loc.id) ?? null
+        }))
         return {
           isLeading: leading,
           flagEnabled: Boolean(active?.flagDataUrl),
           focusActive: Boolean(follow?.isFocusActive()),
           communityName,
-          roster
+          roster,
+          locations,
+          photoBindLocationId: this.tourPhotoBindLocationId
         }
       },
       resolveFaceUrl: async (address) => {
         try {
-          const { fetchProfileFaceUrl } = await import('../avatar/peerApi')
           return await fetchProfileFaceUrl(address)
         } catch {
           return null
@@ -981,21 +1016,72 @@ export class AppController {
         await this.communityFollow?.setFocusActive(on)
         this.tourOptionsPopup?.refresh()
       },
-      onStopTour: async () => {
-        // Turn off focus before stop so followers get a clean exit if stop is delayed.
-        if (this.communityFollow?.isFocusBroadcasting()) {
-          await this.communityFollow.setFocusActive(false)
-        }
-        await this.communityFollow?.stopLead()
+      onRequestEndTour: () => {
         this.tourOptionsPopup?.dispose()
         this.tourOptionsPopup = null
+        this.openTourEndModal()
+      },
+      onAddLocation: async () => {
+        const follow = this.communityFollow
+        if (!follow?.isLeading()) return
+        const target = routeToFollowTarget(this.currentRoute)
+        if (!target) {
+          clientDebugLog.log('social', 'Add location: no coords/world route', {
+            level: 'warn',
+            alsoConsole: true
+          })
+          return
+        }
+        const sceneName = this.resolveTourLocationSceneName(target)
+        await follow.addLocation({ target, sceneName })
+        this.tourOptionsPopup?.refresh()
+      },
+      onRemoveLocation: async (locationId) => {
+        await this.communityFollow?.removeLocation(locationId)
+        this.tourOptionsPopup?.refresh()
+      },
+      onRenameLocation: async (locationId, name) => {
+        await this.communityFollow?.renameLocation(locationId, name)
+        this.tourOptionsPopup?.refresh()
+      },
+      onAddPhoto: async (locationId) => {
+        this.tourPhotoBindLocationId = locationId
+        const session = this.communityFollow
+          ?.listSessions()
+          .find((s) => this.communityFollow?.isLeading(s.communityId))
+        if (!session || !this.world) return
+        // Hide tour modal so Camera Reel has a full view.
+        this.tourOptionsPopup?.dispose()
+        this.tourOptionsPopup = null
+        this.world.beginTourLocationPhotoCapture({
+          onCapture: async (result) => {
+            try {
+              await putTourLocationPhoto(session.sessionId, locationId, result.blob)
+              const photo = await getTourLocationPhoto(session.sessionId, locationId)
+              if (photo) photoThumbs.set(locationId, photo.dataUrl)
+              clientDebugLog.log('social', 'Tour location photo saved', {
+                level: 'success',
+                alsoConsole: true
+              })
+            } catch (err) {
+              console.warn('[tour] photo bind failed', err)
+              throw err
+            }
+          },
+          onExit: (_captured) => {
+            this.tourPhotoBindLocationId = null
+            // Re-open Tour Options after shot or Esc cancel (modal was hidden for full view).
+            if (this.communityFollow?.isLeading()) {
+              this.openTourOptionsPopup()
+            }
+          }
+        })
       },
       onClose: () => {
         this.tourOptionsPopup?.dispose()
         this.tourOptionsPopup = null
       }
     })
-    // Live roster updates while the panel is open.
     const unsub = this.communityFollow?.subscribe((ev) => {
       if (
         ev.kind === 'changed' ||
@@ -1006,17 +1092,78 @@ export class AppController {
         this.tourOptionsPopup?.refresh()
       }
     })
-    if (unsub) {
-      const prevClose = this.tourOptionsPopup
-      // Dispose path already removes popup; extra unsub on close via refresh cycle is fine
-      // if we wrap dispose — attach once:
+    if (unsub && this.tourOptionsPopup) {
       const originalDispose = this.tourOptionsPopup.dispose.bind(this.tourOptionsPopup)
       this.tourOptionsPopup.dispose = () => {
         unsub()
         originalDispose()
       }
-      void prevClose
     }
+  }
+
+  private openTourEndModal(): void {
+    if (this.tourEndModal) {
+      this.tourEndModal.dispose()
+      this.tourEndModal = null
+    }
+    const follow = this.communityFollow
+    if (!follow?.isLeading()) return
+    const session = follow.listSessions().find((s) => follow.isLeading(s.communityId))
+    if (!session) return
+    const communityName =
+      this.world?.social.getCommunities().find((c) => c.id.toLowerCase() === session.communityId)
+        ?.name ?? 'Tour'
+    const startedAt = session.startedAt
+    const locationsSnapshot = follow.finalizeTourDwell()
+    let photoCount = 0
+    void listTourLocationPhotos(session.sessionId).then((photos) => {
+      photoCount = photos.length
+    })
+
+    this.tourEndModal = new TourEndModal({
+      getStats: () => ({
+        communityName,
+        locationCount: locationsSnapshot.length,
+        photoCount,
+        rosterCount: follow.getTourRoster().length,
+        durationSec: Math.max(0, Math.round((Date.now() - startedAt) / 1000))
+      }),
+      onDownloadCsv: async () => {
+        await downloadTourCsvOnly(locationsSnapshot, {
+          communityName,
+          sessionId: session.sessionId,
+          startedAt,
+          endedAt: Date.now()
+        })
+      },
+      onDownloadZip: async () => {
+        await downloadTourZip(locationsSnapshot, {
+          communityName,
+          sessionId: session.sessionId,
+          startedAt,
+          endedAt: Date.now()
+        })
+      },
+      onEndWithoutDownload: async () => {
+        if (follow.isFocusBroadcasting()) {
+          await follow.setFocusActive(false)
+        }
+        await follow.stopLead()
+        try {
+          await deleteTourSessionPhotos(session.sessionId)
+        } catch {
+          /* ignore */
+        }
+        this.tourPhotoBindLocationId = null
+        this.tourEndModal?.dispose()
+        this.tourEndModal = null
+      },
+      onCancel: () => {
+        this.tourEndModal?.dispose()
+        this.tourEndModal = null
+        this.openTourOptionsPopup()
+      }
+    })
   }
 
   private openTourFlagImageModal(): void {
@@ -2688,6 +2835,15 @@ export class AppController {
     const pos = this.world?.getPlayerPosition()
     if (pos) return `${Math.floor(pos.x)}, ${Math.floor(pos.z)}`
     return '—'
+  }
+
+  /** Display name for a tour pin (scene title when known). */
+  private resolveTourLocationSceneName(target: FollowTarget): string {
+    if (this.monitoredScene) {
+      const t = sceneDisplayTitle(this.monitoredScene)
+      if (t?.trim()) return t.trim()
+    }
+    return followTargetLabel(target) || 'Scene'
   }
 
   private parcelFromPlayerState(

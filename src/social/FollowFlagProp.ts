@@ -1,35 +1,25 @@
 /**
- * Tour leader flag: pole + banner mesh.
- * Posed from the player CCT / remote peer feet root (not skeleton bones) so
- * custom VRM / ODK avatars show the flag too.
+ * Tour leader flag: circular image badge above the nametag (not a flagpole).
+ * Posed from feet world position + nametag world Y.
  */
 import * as THREE from 'three'
 
-const POLE_HEIGHT = 0.95 * 2 // 2× taller pole
-const POLE_RADIUS = 0.018
-const FLAG_W = 0.48 * 2.5 // 2.5× larger cloth
-const FLAG_H = 0.32 * 2.5
-/**
- * Offset from CCT feet in body space (Y-up, facing +Z after yaw):
- * slightly up (chest), right, and back.
- */
-const CCT_LOCAL_OFFSET = new THREE.Vector3(0.22, 1.15, -0.12)
+/** Diameter of the circular badge (world metres). */
+const BADGE_DIAMETER = 0.42
+/** Gap between nametag top and badge bottom (world metres). */
+const ABOVE_NAMETAG_GAP = 0.12
+/** Fallback nametag height when no anchor is available (typical head + CSS2D). */
+const DEFAULT_NAMETAG_Y = 1.95
 
-const _offset = new THREE.Vector3()
 const _up = new THREE.Vector3(0, 1, 0)
-const _forward = new THREE.Vector3()
-const _right = new THREE.Vector3()
-const _look = new THREE.Matrix4()
+const _camDir = new THREE.Vector3()
 const _quat = new THREE.Quaternion()
-const _yawQuat = new THREE.Quaternion()
 
 export class FollowFlagProp {
   readonly root: THREE.Group
-  private readonly pole: THREE.Mesh
-  private readonly flag: THREE.Mesh
-  private readonly flagMat: THREE.MeshBasicMaterial
+  private readonly disc: THREE.Mesh
+  private readonly discMat: THREE.MeshBasicMaterial
   private texture: THREE.Texture | null = null
-  private flutterT = 0
   private disposed = false
   private hasImage = false
 
@@ -37,38 +27,19 @@ export class FollowFlagProp {
     this.root = new THREE.Group()
     this.root.name = 'follow-tour-flag'
     this.root.visible = false
-    this.root.renderOrder = 2
+    this.root.renderOrder = 4
 
-    const poleGeo = new THREE.CylinderGeometry(POLE_RADIUS, POLE_RADIUS * 1.15, POLE_HEIGHT, 8)
-    const poleMat = new THREE.MeshStandardMaterial({
-      color: 0xc4a574,
-      metalness: 0.15,
-      roughness: 0.65
-    })
-    this.pole = new THREE.Mesh(poleGeo, poleMat)
-    this.pole.position.y = POLE_HEIGHT * 0.5
-    this.pole.castShadow = false
-    this.root.add(this.pole)
-
-    // Knob
-    const knob = new THREE.Mesh(
-      new THREE.SphereGeometry(POLE_RADIUS * 1.8, 8, 8),
-      new THREE.MeshStandardMaterial({ color: 0xe8d5a3, metalness: 0.35, roughness: 0.4 })
-    )
-    knob.position.y = POLE_HEIGHT
-    this.root.add(knob)
-
-    this.flagMat = new THREE.MeshBasicMaterial({
+    // Soft circular alpha via radial gradient canvas so any flag image is masked.
+    this.discMat = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       side: THREE.DoubleSide,
       transparent: true,
-      depthWrite: true
+      depthWrite: false,
+      alphaTest: 0.08
     })
-    const flagGeo = new THREE.PlaneGeometry(FLAG_W, FLAG_H, 6, 4)
-    this.flag = new THREE.Mesh(flagGeo, this.flagMat)
-    // Hang from top of pole, extending +X (right of pole in local space)
-    this.flag.position.set(FLAG_W * 0.5 + POLE_RADIUS, POLE_HEIGHT - FLAG_H * 0.5, 0)
-    this.root.add(this.flag)
+    const geo = new THREE.CircleGeometry(BADGE_DIAMETER * 0.5, 48)
+    this.disc = new THREE.Mesh(geo, this.discMat)
+    this.root.add(this.disc)
   }
 
   setImageDataUrl(dataUrl: string | null): void {
@@ -76,9 +47,8 @@ export class FollowFlagProp {
     this.disposeTexture()
     this.hasImage = false
     if (!dataUrl) {
-      this.flagMat.map = null
-      this.flagMat.color.setHex(0xaa3344)
-      this.flagMat.needsUpdate = true
+      this.discMat.map = null
+      this.discMat.needsUpdate = true
       this.root.visible = false
       return
     }
@@ -93,18 +63,26 @@ export class FollowFlagProp {
         this.disposeTexture()
         tex.colorSpace = THREE.SRGBColorSpace
         tex.anisotropy = 4
-        this.texture = tex
-        this.flagMat.map = tex
-        this.flagMat.color.setHex(0xffffff)
-        this.flagMat.needsUpdate = true
+        // Circle-mask the image into a canvas so non-square flags still look round.
+        const masked = maskTextureCircular(tex)
+        if (masked) {
+          tex.dispose()
+          this.texture = masked
+          this.discMat.map = masked
+        } else {
+          this.texture = tex
+          this.discMat.map = tex
+        }
+        this.discMat.color.setHex(0xffffff)
+        this.discMat.needsUpdate = true
         this.hasImage = true
         this.root.visible = true
       },
       undefined,
       () => {
-        this.flagMat.map = null
-        this.flagMat.color.setHex(0xaa3344)
-        this.flagMat.needsUpdate = true
+        this.discMat.map = null
+        this.discMat.color.setHex(0xaa3344)
+        this.discMat.needsUpdate = true
         this.hasImage = true
         this.root.visible = true
       }
@@ -112,37 +90,48 @@ export class FollowFlagProp {
   }
 
   /**
-   * Pose flag from CCT / peer feet world position + body yaw (radians, Three Y-up).
-   * `yaw` should match visual facing (e.g. playerYaw + AVATAR_YAW_OFFSET).
+   * Pose badge above the nametag height.
+   * @param feetWorld — CCT / peer feet world position
+   * @param nametagWorldY — absolute world Y of the nametag anchor (top of head area)
+   * @param camera — optional; disc billboards toward camera
    */
-  updateFromCct(feetWorld: THREE.Vector3, yaw: number, dt: number): boolean {
+  updateAboveNametag(
+    feetWorld: THREE.Vector3,
+    nametagWorldY: number | null,
+    camera: THREE.Camera | null,
+    _dt: number
+  ): boolean {
     if (this.disposed || !this.hasImage) {
       this.root.visible = false
       return false
     }
     this.root.visible = true
 
-    _yawQuat.setFromAxisAngle(_up, yaw)
-    _offset.copy(CCT_LOCAL_OFFSET).applyQuaternion(_yawQuat)
-    this.root.position.copy(feetWorld).add(_offset)
+    const tagY =
+      nametagWorldY != null && Number.isFinite(nametagWorldY)
+        ? nametagWorldY
+        : feetWorld.y + DEFAULT_NAMETAG_Y
+    // Place center of disc so bottom of circle sits above nametag.
+    const centerY = tagY + ABOVE_NAMETAG_GAP + BADGE_DIAMETER * 0.5
+    this.root.position.set(feetWorld.x, centerY, feetWorld.z)
 
-    // Pole world-up; face same yaw as body.
-    _forward.set(0, 0, 1).applyQuaternion(_yawQuat)
-    _forward.y = 0
-    if (_forward.lengthSq() < 1e-6) _forward.set(0, 0, 1)
-    else _forward.normalize()
-    _right.crossVectors(_up, _forward).normalize()
-    _forward.crossVectors(_right, _up).normalize()
-    _look.makeBasis(_right, _up, _forward)
-    _quat.setFromRotationMatrix(_look)
-    this.root.quaternion.copy(_quat)
-
-    // Gentle flutter
-    this.flutterT += dt
-    const wave = Math.sin(this.flutterT * 3.2) * 0.08
-    this.flag.rotation.y = wave
-    this.flag.rotation.z = Math.sin(this.flutterT * 2.1) * 0.04
+    if (camera) {
+      camera.getWorldPosition(_camDir)
+      _camDir.sub(this.root.position).normalize()
+      // Billboard: face camera, keep upright.
+      this.root.lookAt(camera.getWorldPosition(new THREE.Vector3()))
+      // Stabilise roll
+      this.root.up.copy(_up)
+    } else {
+      this.root.quaternion.identity()
+    }
+    void _quat
     return true
+  }
+
+  /** @deprecated use updateAboveNametag */
+  updateFromCct(feetWorld: THREE.Vector3, _yaw: number, dt: number): boolean {
+    return this.updateAboveNametag(feetWorld, null, null, dt)
   }
 
   setVisible(v: boolean): void {
@@ -153,10 +142,8 @@ export class FollowFlagProp {
     this.disposed = true
     this.disposeTexture()
     this.root.removeFromParent()
-    this.pole.geometry.dispose()
-    ;(this.pole.material as THREE.Material).dispose()
-    this.flag.geometry.dispose()
-    this.flagMat.dispose()
+    this.disc.geometry.dispose()
+    this.discMat.dispose()
   }
 
   private disposeTexture(): void {
@@ -164,6 +151,49 @@ export class FollowFlagProp {
       this.texture.dispose()
       this.texture = null
     }
-    this.flagMat.map = null
+    this.discMat.map = null
+  }
+}
+
+function maskTextureCircular(src: THREE.Texture): THREE.Texture | null {
+  try {
+    const img = src.image as
+      | HTMLImageElement
+      | HTMLCanvasElement
+      | ImageBitmap
+      | undefined
+    if (!img) return null
+    const w = 'width' in img ? Number(img.width) : 0
+    const h = 'height' in img ? Number(img.height) : 0
+    if (!w || !h) return null
+    const size = Math.min(256, Math.max(w, h))
+    const canvas = document.createElement('canvas')
+    canvas.width = size
+    canvas.height = size
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    const scale = size / Math.max(w, h)
+    const dw = w * scale
+    const dh = h * scale
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2)
+    ctx.closePath()
+    ctx.clip()
+    ctx.drawImage(img as CanvasImageSource, (size - dw) / 2, (size - dh) / 2, dw, dh)
+    ctx.restore()
+    // Soft edge
+    const grad = ctx.createRadialGradient(size / 2, size / 2, size * 0.42, size / 2, size / 2, size * 0.5)
+    grad.addColorStop(0, 'rgba(0,0,0,0)')
+    grad.addColorStop(1, 'rgba(0,0,0,1)')
+    ctx.globalCompositeOperation = 'destination-out'
+    ctx.fillStyle = grad
+    ctx.fillRect(0, 0, size, size)
+    const tex = new THREE.CanvasTexture(canvas)
+    tex.colorSpace = THREE.SRGBColorSpace
+    tex.needsUpdate = true
+    return tex
+  } catch {
+    return null
   }
 }

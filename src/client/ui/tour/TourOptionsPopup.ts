@@ -1,6 +1,9 @@
 /**
- * Sidebar Tour Options popup — flag tools + tour roster (leader view).
+ * Leader Tour Options — center modal (~2×), tabs: Users · Locations · Settings.
  */
+import type { TourLocationWire } from '../../../social/communityFollowWire'
+import { followTargetLabel } from '../../../social/communityFollowWire'
+
 export type TourRosterPerson = {
   address: string
   displayName: string
@@ -8,35 +11,45 @@ export type TourRosterPerson = {
   isLeader: boolean
 }
 
+export type TourLocationRow = TourLocationWire & {
+  /** Local photo thumbnail data URL (leader only). */
+  photoThumb?: string | null
+}
+
 export type TourOptionsPopupState = {
   isLeading: boolean
   flagEnabled: boolean
-  /** Leader Tour Focus — take over follower cameras. */
   focusActive: boolean
   communityName?: string | null
-  /** Leader + followers (leader first). */
   roster: TourRosterPerson[]
+  locations: TourLocationRow[]
+  /** Location waiting for next Camera Reel shutter. */
+  photoBindLocationId?: string | null
 }
 
 export type TourOptionsPopupOptions = {
   getState: () => TourOptionsPopupState
   onEnableFlag: () => void
   onDisableFlag: () => void | Promise<void>
-  /** Leader toggle Tour Focus on/off. */
   onToggleFocus?: (on: boolean) => void | Promise<void>
-  onStopTour?: () => void | Promise<void>
+  /** Opens End Tour modal (does not stop immediately). */
+  onRequestEndTour?: () => void
   onClose: () => void
-  /** Optional async face URL resolver after open. */
   resolveFaceUrl?: (address: string) => Promise<string | null>
+  onAddLocation?: () => void | Promise<void>
+  onRemoveLocation?: (locationId: string) => void | Promise<void>
+  onRenameLocation?: (locationId: string, name: string) => void | Promise<void>
+  /** Select row and open photo mode; next shutter binds to this id. */
+  onAddPhoto?: (locationId: string) => void | Promise<void>
 }
 
-type PanelView = 'main' | 'users'
+type TabId = 'users' | 'locations' | 'settings'
 
 export class TourOptionsPopup {
   readonly root: HTMLElement
   private readonly opts: TourOptionsPopupOptions
   private disposed = false
-  private view: PanelView = 'main'
+  private tab: TabId = 'users'
   private faceCache = new Map<string, string | null>()
   private readonly onDocDown: (e: MouseEvent) => void
   private readonly onKey: (e: KeyboardEvent) => void
@@ -44,22 +57,16 @@ export class TourOptionsPopup {
   constructor(opts: TourOptionsPopupOptions) {
     this.opts = opts
     this.root = document.createElement('div')
-    this.root.className = 'tour-options-popup-host'
+    this.root.className = 'tour-options-popup-host tour-options-popup-host--v2'
     this.root.innerHTML = this.renderBody()
     document.body.appendChild(this.root)
     this.bind()
     this.onDocDown = (e) => {
-      if (!this.root.contains(e.target as Node)) this.opts.onClose()
+      const panel = this.root.querySelector('.tour-options-popup')
+      if (panel && !panel.contains(e.target as Node)) this.opts.onClose()
     }
     this.onKey = (e) => {
-      if (e.key === 'Escape') {
-        if (this.view === 'users') {
-          this.view = 'main'
-          this.refresh()
-          return
-        }
-        this.opts.onClose()
-      }
+      if (e.key === 'Escape') this.opts.onClose()
     }
     queueMicrotask(() => {
       if (this.disposed) return
@@ -86,128 +93,166 @@ export class TourOptionsPopup {
 
   private renderBody(): string {
     const st = this.opts.getState()
-    if (this.view === 'users') {
-      return this.renderUsersView(st)
-    }
-    return this.renderMainView(st)
-  }
-
-  private renderMainView(st: TourOptionsPopupState): string {
     const title = st.communityName?.trim()
       ? `Tour Options · ${escapeHtml(st.communityName.trim())}`
       : 'Tour Options'
-    const count = st.roster.length
-    const leadingHint = st.isLeading
-      ? 'You are leading a tour.'
-      : 'Start a tour from a community you own (under Voice Stream).'
     return `
-      <div class="tour-options-popup" role="dialog" aria-label="Tour Options">
+      <div class="tour-options-popup-backdrop" data-tour-opt-close></div>
+      <div class="tour-options-popup tour-options-popup--v2" role="dialog" aria-label="Tour Options">
         <div class="tour-options-popup-head">
           <h3 class="tour-options-popup-title">${title}</h3>
           <button type="button" class="tour-options-popup-close" data-tour-opt-close aria-label="Close">&times;</button>
         </div>
-        <p class="tour-options-popup-hint">${leadingHint}</p>
         ${
           st.isLeading
-            ? `<button type="button" class="tour-options-popup-count" data-tour-opt-users title="View people on this tour">
-                <span class="tour-options-popup-count-icon" aria-hidden>👥</span>
-                <span class="tour-options-popup-count-label">${count} on tour</span>
-                <span class="tour-options-popup-count-chevron" aria-hidden>›</span>
-              </button>`
-            : ''
+            ? `<div class="tour-options-tabs" role="tablist">
+                ${this.tabBtn('users', 'Users', st.roster.length)}
+                ${this.tabBtn('locations', 'Locations', st.locations.length)}
+                ${this.tabBtn('settings', 'Settings')}
+              </div>
+              <div class="tour-options-tab-body">
+                ${
+                  this.tab === 'users'
+                    ? this.renderUsers(st)
+                    : this.tab === 'locations'
+                      ? this.renderLocations(st)
+                      : this.renderSettings(st)
+                }
+              </div>`
+            : `<p class="tour-options-popup-hint">Start a tour from a community you own (under Voice Stream).</p>`
         }
-        <div class="tour-options-popup-actions">
-          ${
-            st.flagEnabled
-              ? `<button type="button" class="tour-options-popup-btn tour-options-popup-btn--danger" data-tour-opt-disable-flag>
-                  Disable flag
-                </button>`
-              : `<button type="button" class="tour-options-popup-btn tour-options-popup-btn--primary" data-tour-opt-enable-flag
-                  ${st.isLeading ? '' : 'disabled'}
-                  title="${st.isLeading ? 'Upload a banner for your spine flag' : 'Start a tour first'}">
-                  Enable flag
-                </button>`
-          }
-          ${
-            st.isLeading
-              ? st.focusActive
-                ? `<button type="button" class="tour-options-popup-btn tour-options-popup-btn--focus-on" data-tour-opt-focus-off
-                    title="Release follower cameras">
-                    Focus camera · ON
-                  </button>`
-                : `<button type="button" class="tour-options-popup-btn" data-tour-opt-focus-on
-                    title="Take over followers' cameras with your POV (incl. FOV)">
-                    Focus camera
-                  </button>`
-              : ''
-          }
-          ${
-            st.isLeading
-              ? `<button type="button" class="tour-options-popup-btn" data-tour-opt-stop-tour>Stop tour</button>`
-              : ''
-          }
-        </div>
       </div>
     `
   }
 
-  private renderUsersView(st: TourOptionsPopupState): string {
+  private tabBtn(id: TabId, label: string, count?: number): string {
+    const active = this.tab === id ? ' tour-options-tab--active' : ''
+    const badge =
+      count != null ? `<span class="tour-options-tab-badge">${count}</span>` : ''
+    return `<button type="button" role="tab" class="tour-options-tab${active}" data-tour-tab="${id}">
+      ${escapeHtml(label)}${badge}
+    </button>`
+  }
+
+  private renderUsers(st: TourOptionsPopupState): string {
+    if (!st.roster.length) {
+      return `<p class="tour-options-popup-hint">No one on the tour yet — share the community chat Follow CTA.</p>`
+    }
+    const rows = st.roster
+      .map((p) => {
+        const cached = this.faceCache.get(p.address.toLowerCase())
+        const face = cached ?? p.faceUrl
+        const initial = (p.displayName.trim().charAt(0) || '?').toUpperCase()
+        const badge = p.isLeader
+          ? `<span class="tour-options-popup-user-badge">Leader</span>`
+          : ''
+        return `
+          <div class="tour-options-popup-user-row">
+            <span class="tour-options-popup-user-avatar">
+              ${
+                face
+                  ? `<img src="${escapeHtml(face)}" alt="" width="36" height="36" />`
+                  : `<span class="tour-options-popup-user-fallback" aria-hidden>${escapeHtml(initial)}</span>`
+              }
+            </span>
+            <span class="tour-options-popup-user-meta">
+              <span class="tour-options-popup-user-name">${escapeHtml(p.displayName)}${badge}</span>
+              <span class="tour-options-popup-user-addr">${escapeHtml(shortAddr(p.address))}</span>
+            </span>
+            <button type="button" class="tour-options-popup-copy" data-copy-addr="${escapeHtml(p.address)}">Copy</button>
+          </div>`
+      })
+      .join('')
+    return `<div class="tour-options-popup-user-list">${rows}</div>`
+  }
+
+  private renderLocations(st: TourOptionsPopupState): string {
     const rows =
-      st.roster.length === 0
-        ? `<p class="tour-options-popup-hint">No one on the tour yet.</p>`
-        : st.roster
-            .map((p) => {
-              const cached = this.faceCache.get(p.address.toLowerCase())
-              const face = cached ?? p.faceUrl
-              const initial = (p.displayName.trim().charAt(0) || '?').toUpperCase()
-              const badge = p.isLeader
-                ? `<span class="tour-options-popup-user-badge">Leader</span>`
-                : ''
+      st.locations.length === 0
+        ? `<p class="tour-options-popup-hint">No stops yet. Pin your current place, then optionally add a photo via Camera Reel.</p>`
+        : st.locations
+            .map((loc) => {
+              const label = loc.name?.trim() || loc.sceneName
+              const coords = followTargetLabel(loc.target)
+              const dwell =
+                loc.dwellSec != null && loc.dwellSec > 0 ? ` · ${loc.dwellSec}s` : ''
+              const people = loc.people != null ? ` · ${loc.people} ppl` : ''
+              const binding =
+                st.photoBindLocationId === loc.id
+                  ? `<span class="tour-loc-binding">Waiting for Camera Reel shot…</span>`
+                  : ''
+              const thumb = loc.photoThumb
+                ? `<img class="tour-loc-thumb" src="${escapeHtml(loc.photoThumb)}" alt="" />`
+                : `<span class="tour-loc-thumb tour-loc-thumb--empty" aria-hidden></span>`
               return `
-                <div class="tour-options-popup-user-row" data-user-addr="${escapeHtml(p.address)}">
-                  <span class="tour-options-popup-user-avatar">
-                    ${
-                      face
-                        ? `<img src="${escapeHtml(face)}" alt="" width="32" height="32" />`
-                        : `<span class="tour-options-popup-user-fallback" aria-hidden>${escapeHtml(initial)}</span>`
-                    }
-                  </span>
-                  <span class="tour-options-popup-user-meta">
-                    <span class="tour-options-popup-user-name">${escapeHtml(p.displayName)}${badge}</span>
-                    <span class="tour-options-popup-user-addr">${escapeHtml(shortAddr(p.address))}</span>
-                  </span>
-                  <button type="button" class="tour-options-popup-copy" data-copy-addr="${escapeHtml(p.address)}" title="Copy wallet">
-                    Copy
-                  </button>
+                <div class="tour-loc-row" data-loc-id="${escapeHtml(loc.id)}">
+                  ${thumb}
+                  <div class="tour-loc-meta">
+                    <input class="tour-loc-name" data-loc-rename="${escapeHtml(loc.id)}"
+                      value="${escapeHtml(label)}" title="Rename stop" />
+                    <span class="tour-loc-sub">${escapeHtml(coords)}${dwell}${people}</span>
+                    ${binding}
+                  </div>
+                  <div class="tour-loc-actions">
+                    <button type="button" class="tour-options-popup-btn tour-loc-btn" data-loc-photo="${escapeHtml(loc.id)}"
+                      title="Open Camera Reel; next shot attaches here">Photo</button>
+                    <button type="button" class="tour-loc-trash" data-loc-trash="${escapeHtml(loc.id)}" title="Remove">🗑</button>
+                  </div>
                 </div>`
             })
             .join('')
 
     return `
-      <div class="tour-options-popup tour-options-popup--users" role="dialog" aria-label="Tour users">
-        <div class="tour-options-popup-head">
-          <button type="button" class="tour-options-popup-back" data-tour-opt-back aria-label="Back">‹</button>
-          <h3 class="tour-options-popup-title">On tour · ${st.roster.length}</h3>
-          <button type="button" class="tour-options-popup-close" data-tour-opt-close aria-label="Close">&times;</button>
-        </div>
-        <div class="tour-options-popup-user-list">
-          ${rows}
-        </div>
+      <div class="tour-loc-toolbar">
+        <button type="button" class="tour-options-popup-btn tour-options-popup-btn--primary" data-tour-add-loc>
+          Add location
+        </button>
       </div>
+      <div class="tour-loc-list">${rows}</div>
+    `
+  }
+
+  private renderSettings(st: TourOptionsPopupState): string {
+    return `
+      <div class="tour-options-popup-actions">
+        ${
+          st.flagEnabled
+            ? `<button type="button" class="tour-options-popup-btn tour-options-popup-btn--danger" data-tour-opt-disable-flag>
+                Disable flag image
+              </button>`
+            : `<button type="button" class="tour-options-popup-btn tour-options-popup-btn--primary" data-tour-opt-enable-flag>
+                Enable flag image
+              </button>`
+        }
+        ${
+          st.focusActive
+            ? `<button type="button" class="tour-options-popup-btn tour-options-popup-btn--focus-on" data-tour-opt-focus-off>
+                Focus camera · ON
+              </button>`
+            : `<button type="button" class="tour-options-popup-btn" data-tour-opt-focus-on>
+                Focus camera
+              </button>`
+        }
+        <button type="button" class="tour-options-popup-btn tour-options-popup-btn--danger" data-tour-opt-stop-tour>
+          End tour…
+        </button>
+      </div>
+      <p class="tour-options-popup-hint">Flag appears as a circular badge above your nametag for followers.</p>
     `
   }
 
   private bind(): void {
-    this.root.querySelector('[data-tour-opt-close]')?.addEventListener('click', () => {
-      this.opts.onClose()
+    this.root.querySelectorAll('[data-tour-opt-close]').forEach((el) => {
+      el.addEventListener('click', () => this.opts.onClose())
     })
-    this.root.querySelector('[data-tour-opt-back]')?.addEventListener('click', () => {
-      this.view = 'main'
-      this.refresh()
-    })
-    this.root.querySelector('[data-tour-opt-users]')?.addEventListener('click', () => {
-      this.view = 'users'
-      this.refresh()
+    this.root.querySelectorAll<HTMLButtonElement>('[data-tour-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const t = btn.dataset.tourTab as TabId
+        if (t === 'users' || t === 'locations' || t === 'settings') {
+          this.tab = t
+          this.refresh()
+        }
+      })
     })
     this.root.querySelector('[data-tour-opt-enable-flag]')?.addEventListener('click', () => {
       this.opts.onEnableFlag()
@@ -222,7 +267,36 @@ export class TourOptionsPopup {
       void this.opts.onToggleFocus?.(false)
     })
     this.root.querySelector('[data-tour-opt-stop-tour]')?.addEventListener('click', () => {
-      void this.opts.onStopTour?.()
+      this.opts.onRequestEndTour?.()
+    })
+    this.root.querySelector('[data-tour-add-loc]')?.addEventListener('click', () => {
+      void this.opts.onAddLocation?.()
+    })
+    this.root.querySelectorAll<HTMLButtonElement>('[data-loc-trash]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.locTrash
+        if (id) void this.opts.onRemoveLocation?.(id)
+      })
+    })
+    this.root.querySelectorAll<HTMLButtonElement>('[data-loc-photo]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.locPhoto
+        if (id) void this.opts.onAddPhoto?.(id)
+      })
+    })
+    this.root.querySelectorAll<HTMLInputElement>('[data-loc-rename]').forEach((input) => {
+      const commit = () => {
+        const id = input.dataset.locRename
+        if (id) void this.opts.onRenameLocation?.(id, input.value)
+      }
+      input.addEventListener('change', commit)
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          commit()
+          input.blur()
+        }
+      })
     })
     this.root.querySelectorAll<HTMLButtonElement>('[data-copy-addr]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -237,10 +311,7 @@ export class TourOptionsPopup {
             }, 1200)
           },
           () => {
-            btn.textContent = 'Fail'
-            window.setTimeout(() => {
-              btn.textContent = 'Copy'
-            }, 1200)
+            /* ignore */
           }
         )
       })
@@ -248,7 +319,7 @@ export class TourOptionsPopup {
   }
 
   private async hydrateFaces(): Promise<void> {
-    if (!this.opts.resolveFaceUrl || this.disposed) return
+    if (!this.opts.resolveFaceUrl || this.disposed || this.tab !== 'users') return
     const st = this.opts.getState()
     let changed = false
     await Promise.all(
@@ -267,9 +338,7 @@ export class TourOptionsPopup {
         }
       })
     )
-    if (changed && !this.disposed && this.view === 'users') {
-      this.refresh()
-    }
+    if (changed && !this.disposed && this.tab === 'users') this.refresh()
   }
 }
 

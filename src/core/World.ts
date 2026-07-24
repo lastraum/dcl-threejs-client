@@ -1332,8 +1332,44 @@ export class World {
       getLocalCctRoot: () => this.player?.getPlayerFeetRoot() ?? null,
       getLocalYaw: () => (this.player ? this.player.getNetworkYaw() : null),
       getRemoteCctRoot: (address) => this.remoteAvatars?.getPeerRoot(address) ?? null,
-      getRemoteYaw: (address) => this.remoteAvatars?.getPeerYaw(address) ?? null
+      getRemoteYaw: (address) => this.remoteAvatars?.getPeerYaw(address) ?? null,
+      getLocalNameTagWorldY: () => {
+        const anchor = this.player?.getLocalAvatar()?.nameTagAnchor
+        if (!anchor) return null
+        anchor.updateWorldMatrix(true, false)
+        const y = anchor.getWorldPosition(new THREE.Vector3()).y
+        return Number.isFinite(y) ? y : null
+      },
+      getRemoteNameTagWorldY: (address) =>
+        this.remoteAvatars?.getPeerNameTagWorldY(address) ?? null,
+      getCamera: () => this.host.camera
     })
+  }
+
+  /**
+   * Tour Locations “Add photo”: open Camera Reel in tour mode.
+   * Caller should hide the tour modal; onExit(false) when Esc/cancel without a shot.
+   */
+  beginTourLocationPhotoCapture(opts: {
+    onCapture: (
+      result: import('../photo/photoCapture').PhotoCaptureResult
+    ) => void | Promise<void>
+    onExit: (captured: boolean) => void
+  }): void {
+    if (!this.playerMode || !this.player) {
+      opts.onExit(false)
+      return
+    }
+    if (this.isAnyVirtualCameraActive()) {
+      opts.onExit(false)
+      return
+    }
+    this.ensurePhotoCamera()
+    this.photoCamera?.beginTourLocationCapture(opts)
+  }
+
+  isTourLocationPhotoCapture(): boolean {
+    return this.photoCamera?.isTourLocationCapture() === true
   }
 
   /** Block until scene GLBs/textures hydrate — call after `loadScene`, before `start()`. */

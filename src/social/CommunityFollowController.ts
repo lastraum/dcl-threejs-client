@@ -19,11 +19,14 @@ import {
   followTargetLabel,
   followTargetsEqual,
   newFollowSessionId,
+  newTourLocationId,
   quantizeFollowCam,
   routeToFollowTarget,
+  TOUR_LOCATIONS_WIRE_CAP,
   type FollowCamState,
   type FollowTarget,
-  type FollowWireMsg
+  type FollowWireMsg,
+  type TourLocationWire
 } from './communityFollowWire'
 import type { CommunityListRow } from './types'
 
@@ -46,6 +49,10 @@ export type CommunityTourSession = {
   focusActive: boolean
   /** Last freecam snapshot from leader (for late joiners / UI). */
   lastCam: FollowCamState | null
+  /** Tour stops (coords + scene names). Photos are leader-local only. */
+  locations: TourLocationWire[]
+  /** When the current stop started (dwell timer). */
+  locationEnteredAt: number | null
 }
 
 export type TourRosterEntry = {
@@ -269,7 +276,15 @@ export class CommunityFollowController {
           : [],
       // Focus does not auto-resume — leader must re-enable after restart.
       focusActive: false,
-      lastCam: null
+      lastCam: null,
+      locations:
+        existing?.sessionId === sessionId && existing.leaderAddress === local
+          ? [...existing.locations]
+          : [],
+      locationEnteredAt:
+        existing?.sessionId === sessionId && existing.leaderAddress === local
+          ? existing.locationEnteredAt
+          : null
     }
 
     const startMsg: FollowWireMsg = {
@@ -279,7 +294,8 @@ export class CommunityFollowController {
       at: Date.now(),
       ...(target ? { target } : {}),
       ...(session.flagDataUrl ? { flag: session.flagDataUrl } : {}),
-      focus: false
+      focus: false,
+      ...(session.locations.length ? { locations: session.locations } : {})
     }
     const ok = await this.publish(id, startMsg)
     if (!ok) return false
@@ -723,7 +739,8 @@ export class CommunityFollowController {
         msg.t === 'hb',
         local,
         'flag' in msg ? msg.flag : undefined,
-        'focus' in msg ? msg.focus : undefined
+        'focus' in msg ? msg.focus : undefined,
+        'locations' in msg ? msg.locations : undefined
       )
       // Re-announce presence so leader roster recovers after reload / late hb.
       if (
@@ -739,6 +756,10 @@ export class CommunityFollowController {
     }
     if (msg.t === 'stop') {
       this.applyStop(id, leader, msg.s, local)
+      return
+    }
+    if (msg.t === 'loc') {
+      this.applyLocations(id, msg.s, leader, msg.locations)
       return
     }
     if (msg.t === 'goto') {
@@ -803,7 +824,8 @@ export class CommunityFollowController {
     fromHeartbeat: boolean,
     local: string,
     flag?: string | null,
-    focus?: boolean
+    focus?: boolean,
+    locations?: TourLocationWire[]
   ): void {
     const existing = this.sessions.get(communityId)
     if (existing) {
@@ -818,6 +840,12 @@ export class CommunityFollowController {
     const nextFlag = flag !== undefined ? flag : prevFlag
     const prevFocus = existing?.sessionId === sessionId ? existing.focusActive : false
     const nextFocus = focus !== undefined ? focus : prevFocus
+    const nextLocations =
+      locations !== undefined
+        ? locations.slice(0, TOUR_LOCATIONS_WIRE_CAP)
+        : existing && existing.sessionId === sessionId
+          ? existing.locations
+          : []
     const session: CommunityTourSession = {
       communityId,
       sessionId,
@@ -828,7 +856,10 @@ export class CommunityFollowController {
       followerAddresses:
         existing && existing.sessionId === sessionId ? [...existing.followerAddresses] : [],
       focusActive: nextFocus,
-      lastCam: existing && existing.sessionId === sessionId ? existing.lastCam : null
+      lastCam: existing && existing.sessionId === sessionId ? existing.lastCam : null,
+      locations: nextLocations,
+      locationEnteredAt:
+        existing && existing.sessionId === sessionId ? existing.locationEnteredAt : null
     }
     if (target) session.lastTarget = target
     this.sessions.set(communityId, session)
@@ -955,7 +986,9 @@ export class CommunityFollowController {
             flagDataUrl: flag,
             followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : [],
             focusActive: existing?.focusActive ?? false,
-            lastCam: existing?.lastCam ?? null
+            lastCam: existing?.lastCam ?? null,
+            locations: existing?.locations ? [...existing.locations] : [],
+            locationEnteredAt: existing?.locationEnteredAt ?? null
           }
     if (existing && existing.leaderAddress !== leader && existing.sessionId !== sessionId) {
       return
@@ -1009,7 +1042,9 @@ export class CommunityFollowController {
             flagDataUrl: existing?.flagDataUrl ?? null,
             followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : [],
             focusActive: on,
-            lastCam: null
+            lastCam: null,
+            locations: existing?.locations ? [...existing.locations] : [],
+            locationEnteredAt: existing?.locationEnteredAt ?? null
           }
     this.sessions.set(communityId, session)
 
@@ -1052,7 +1087,9 @@ export class CommunityFollowController {
             flagDataUrl: existing?.flagDataUrl ?? null,
             followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : [],
             focusActive: true,
-            lastCam: cam
+            lastCam: cam,
+            locations: existing?.locations ? [...existing.locations] : [],
+            locationEnteredAt: existing?.locationEnteredAt ?? null
           }
     const focusJustOn = !existing?.focusActive
     this.sessions.set(communityId, session)
@@ -1104,7 +1141,9 @@ export class CommunityFollowController {
           flagDataUrl: existing?.flagDataUrl ?? null,
           followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : [],
           focusActive: existing?.focusActive ?? false,
-          lastCam: existing?.lastCam ?? null
+          lastCam: existing?.lastCam ?? null,
+          locations: existing?.locations ? [...existing.locations] : [],
+          locationEnteredAt: existing?.locationEnteredAt ?? null
         }
 
     if (existing && existing.leaderAddress !== leader && existing.sessionId !== sessionId) {
@@ -1172,9 +1211,156 @@ export class CommunityFollowController {
       // Rebroadcast flag so late joiners get the banner without a separate request.
       ...(session.flagDataUrl ? { flag: session.flagDataUrl } : {}),
       // Late joiners learn Focus is on (cam stream fills in shortly after).
-      focus: session.focusActive
+      focus: session.focusActive,
+      ...(session.locations.length ? { locations: session.locations.slice(0, TOUR_LOCATIONS_WIRE_CAP) } : {})
     }
     await this.publish(id, msg)
+  }
+
+  /** Leader: pin current place as a tour stop. */
+  async addLocation(input: {
+    target: FollowTarget
+    sceneName: string
+    name?: string
+  }): Promise<TourLocationWire | null> {
+    if (this.disposed || !this.leadingCommunityId || !this.leadingSessionId) return null
+    const id = this.leadingCommunityId
+    const session = this.sessions.get(id)
+    if (!session || session.sessionId !== this.leadingSessionId) return null
+    if (session.locations.length >= TOUR_LOCATIONS_WIRE_CAP) {
+      clientDebugLog.log('social', 'Tour location cap reached', { level: 'warn' })
+      return null
+    }
+    const now = Date.now()
+    this.finalizeCurrentLocationDwell(session, now)
+    const people = 1 + session.followerAddresses.length
+    const loc: TourLocationWire = {
+      id: newTourLocationId(),
+      at: now,
+      target: input.target,
+      sceneName: input.sceneName.trim() || followTargetLabel(input.target) || 'Scene',
+      people,
+      ...(input.name?.trim() ? { name: input.name.trim().slice(0, 80) } : {})
+    }
+    session.locations = [...session.locations, loc]
+    session.locationEnteredAt = now
+    this.sessions.set(id, session)
+    await this.publishLocations(session)
+    this.emit({ kind: 'changed' })
+    return loc
+  }
+
+  async renameLocation(locationId: string, name: string): Promise<boolean> {
+    const session = this.getLeadingSession()
+    if (!session) return false
+    const idx = session.locations.findIndex((l) => l.id === locationId)
+    if (idx < 0) return false
+    const next = [...session.locations]
+    const trimmed = name.trim().slice(0, 80)
+    const cur = next[idx]!
+    next[idx] = trimmed
+      ? { ...cur, name: trimmed }
+      : { id: cur.id, at: cur.at, target: cur.target, sceneName: cur.sceneName, people: cur.people, dwellSec: cur.dwellSec }
+    session.locations = next
+    this.sessions.set(session.communityId, session)
+    await this.publishLocations(session)
+    this.emit({ kind: 'changed' })
+    return true
+  }
+
+  async removeLocation(locationId: string): Promise<boolean> {
+    const session = this.getLeadingSession()
+    if (!session) return false
+    const next = session.locations.filter((l) => l.id !== locationId)
+    if (next.length === session.locations.length) return false
+    session.locations = next
+    if (session.locations.length === 0) session.locationEnteredAt = null
+    this.sessions.set(session.communityId, session)
+    await this.publishLocations(session)
+    this.emit({ kind: 'changed' })
+    return true
+  }
+
+  /** Finalize dwell on last stop (call before end tour export). */
+  finalizeTourDwell(): TourLocationWire[] {
+    const session = this.getLeadingSession()
+    if (!session) return []
+    this.finalizeCurrentLocationDwell(session, Date.now())
+    this.sessions.set(session.communityId, session)
+    return session.locations.map((l) => ({ ...l }))
+  }
+
+  getLocations(communityId?: string): TourLocationWire[] {
+    if (communityId) {
+      return [...(this.sessions.get(communityId.trim().toLowerCase())?.locations ?? [])]
+    }
+    const lead = this.getLeadingSession()
+    if (lead) return [...lead.locations]
+    if (this.followingCommunityId) {
+      return [...(this.sessions.get(this.followingCommunityId)?.locations ?? [])]
+    }
+    return []
+  }
+
+  private getLeadingSession(): CommunityTourSession | null {
+    if (!this.leadingCommunityId || !this.leadingSessionId) return null
+    const s = this.sessions.get(this.leadingCommunityId)
+    if (!s || s.sessionId !== this.leadingSessionId) return null
+    return s
+  }
+
+  private finalizeCurrentLocationDwell(session: CommunityTourSession, now: number): void {
+    if (!session.locations.length || session.locationEnteredAt == null) return
+    const last = session.locations[session.locations.length - 1]
+    if (!last) return
+    const dwell = Math.max(0, Math.round((now - session.locationEnteredAt) / 1000))
+    session.locations = [
+      ...session.locations.slice(0, -1),
+      { ...last, dwellSec: (last.dwellSec ?? 0) + dwell }
+    ]
+    session.locationEnteredAt = null
+  }
+
+  private async publishLocations(session: CommunityTourSession): Promise<void> {
+    const local = this.getLocalAddress()?.toLowerCase() ?? session.leaderAddress
+    await this.publish(session.communityId, {
+      t: 'loc',
+      s: session.sessionId,
+      l: local,
+      at: Date.now(),
+      locations: session.locations.slice(0, TOUR_LOCATIONS_WIRE_CAP)
+    })
+  }
+
+  private applyLocations(
+    communityId: string,
+    sessionId: string,
+    leader: string,
+    locations: TourLocationWire[]
+  ): void {
+    const existing = this.sessions.get(communityId)
+    if (existing && existing.sessionId !== sessionId) return
+    if (existing && existing.leaderAddress !== leader) return
+    const session: CommunityTourSession = existing
+      ? {
+          ...existing,
+          locations: locations.slice(0, TOUR_LOCATIONS_WIRE_CAP)
+        }
+      : {
+          communityId,
+          sessionId,
+          leaderAddress: leader,
+          lastTarget: null,
+          startedAt: Date.now(),
+          flagDataUrl: null,
+          followerAddresses: [],
+          focusActive: false,
+          lastCam: null,
+          locations: locations.slice(0, TOUR_LOCATIONS_WIRE_CAP),
+          locationEnteredAt: null
+        }
+    this.sessions.set(communityId, session)
+    this.emit({ kind: 'changed' })
   }
 
   private emit(ev: CommunityFollowEvent): void {

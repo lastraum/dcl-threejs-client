@@ -51,13 +51,32 @@ export type ScenePromoteControllerOptions = {
  * - Empty land and roads never trigger a scene reload (that was thrashing promote).
  * - FocusOwner stays primary; secondaries (if live) are hard-muted media / no UI.
  */
+type PendingWarmEntry = {
+  entityId: string
+  title: string
+  baseX: number
+  baseY: number
+  /** Parcel count for ranking (multi-parcel estates load once). */
+  parcelCount: number
+  /** Last known min distance to player (m). */
+  distM: number
+}
+
 export class ScenePromoteController {
   private primary: ResolvedScene | null = null
   private readonly primaryParcels = new Set<string>()
-  /** Parcels we already classified as empty/road — no re-fetch spam. */
+  /** Parcels we already classified as empty/road — no re-fetch spam / no promote thrash. */
   private readonly skipPromoteKeys = new Set<string>()
-  /** Entity ids already queued for script warm. */
+  /** Entity ids already queued for script warm (one per estate, not per parcel). */
   private readonly warmedEntityIds = new Set<string>()
+  /**
+   * Parcels covered by a known catalyst entity (primary, warmed, deferred, road, etc.).
+   * Multi-parcel estates: all footprint parcels after first discovery — never re-query
+   * or treat as separate loads.
+   */
+  private readonly coveredEntityParcels = new Set<string>()
+  /** Discovered warmable entities not yet prefetched (budget deferred). */
+  private readonly pendingWarm = new Map<string, PendingWarmEntry>()
   private dwellKey = ''
   private dwellSince = 0
   private lastPromoteAt = 0
@@ -89,13 +108,31 @@ export class ScenePromoteController {
     return renderQuality.getSceneLoadRadiusM()
   }
 
+  /** Remember full estate footprint so parcel-ring scans never re-load the same scene. */
+  private coverEntityParcels(keys: readonly string[]): void {
+    for (const p of keys) {
+      const k = p.trim()
+      if (k) this.coveredEntityParcels.add(k)
+    }
+  }
+
+  private entityKeys(ent: ActiveSceneEntity): string[] {
+    const raw = ent.pointers.length ? ent.pointers : ent.parcels
+    return raw.map((p) => p.trim()).filter(Boolean)
+  }
+
   bind(scene: ResolvedScene): void {
     this.primary = scene
     this.primaryParcels.clear()
     this.skipPromoteKeys.clear()
     this.warmedEntityIds.clear()
+    this.coveredEntityParcels.clear()
+    this.pendingWarm.clear()
     for (const p of scene.parcels) this.primaryParcels.add(p.trim())
     this.primaryParcels.add(scene.baseParcel.trim())
+    // Whole multi-parcel primary footprint is already loaded — never AOI-warm it again.
+    this.coverEntityParcels([...this.primaryParcels])
+    if (scene.entityId) this.warmedEntityIds.add(scene.entityId)
     this.dwellKey = ''
     this.dwellSince = 0
     this.inFlight = false
@@ -113,6 +150,8 @@ export class ScenePromoteController {
     this.primaryParcels.clear()
     this.skipPromoteKeys.clear()
     this.warmedEntityIds.clear()
+    this.coveredEntityParcels.clear()
+    this.pendingWarm.clear()
     this.dwellKey = ''
     this.inFlight = false
     this.warmScanInFlight = false
@@ -196,96 +235,123 @@ export class ScenePromoteController {
     const scriptWarmRadiusM = this.getScriptWarmRadiusM()
 
     try {
+      // 1) Drain deferred multi-parcel estates first (already discovered by entity id).
+      let warmed = this.drainPendingWarm(dclX, dclZ, baseParcel, MAX_SCRIPT_WARM_PER_SCAN)
+      let budgetLeft = MAX_SCRIPT_WARM_PER_SCAN - warmed
+
       const ring = Math.max(1, Math.ceil(scriptWarmRadiusM / PARCEL_SIZE) + 1)
       const center = {
         x: parseParcelKey(baseParcel).x + Math.floor(dclX / PARCEL_SIZE),
         y: parseParcelKey(baseParcel).y + Math.floor(dclZ / PARCEL_SIZE)
       }
 
+      // 2) Only query parcels not already owned by a known estate / primary / empty/road.
       const pointers: string[] = []
+      let skippedCovered = 0
       for (let dx = -ring; dx <= ring; dx++) {
         for (let dy = -ring; dy <= ring; dy++) {
           const parcel = { x: center.x + dx, y: center.y + dy }
           const key = `${parcel.x},${parcel.y}`
           if (this.primaryParcels.has(key)) continue
           if (this.skipPromoteKeys.has(key)) continue
+          if (this.coveredEntityParcels.has(key)) {
+            skippedCovered++
+            continue
+          }
           const dist = distanceToParcelCenterM(dclX, dclZ, parcel, baseParcel)
           if (dist > scriptWarmRadiusM) continue
           pointers.push(key)
         }
       }
 
-      if (!pointers.length) return
-
-      const entities = await fetchActiveEntitiesForPointers(
-        scene.realm.contentUrl,
-        pointers
-      )
-      if (gen !== this.evalGen || this.primary !== scene) return
-
-      const owned = new Set<string>()
-      let warmed = 0
       let skippedRoad = 0
       let skippedOther = 0
+      let entitiesLen = 0
+      let deferredWarm = this.pendingWarm.size
 
-      // Prefer nearest / smaller scenes first so mega-estates don't starve neighbors.
-      const ranked = [...entities].sort((a, b) => {
-        const da = minEntityDistanceM(a, dclX, dclZ, baseParcel)
-        const db = minEntityDistanceM(b, dclX, dclZ, baseParcel)
-        if (da !== db) return da - db
-        const pa = (a.parcels.length || a.pointers.length) || 999
-        const pb = (b.parcels.length || b.pointers.length) || 999
-        return pa - pb
-      })
-
-      let deferredWarm = 0
-      for (const ent of ranked) {
-        const keys = ent.pointers.length ? ent.pointers : ent.parcels
-        for (const p of keys) owned.add(p.trim())
-
-        if (this.warmedEntityIds.has(ent.id)) continue
-        if (scene.entityId && ent.id === scene.entityId) {
-          this.warmedEntityIds.add(ent.id)
-          continue
-        }
-
-        if (isOpenRoadEntity(ent) || !isScriptWarmCandidate(ent)) {
-          // Never promote roads / SDK6 / empty shells — remember footprints.
-          for (const p of keys) this.skipPromoteKeys.add(p.trim())
-          if (isOpenRoadEntity(ent)) skippedRoad++
-          else skippedOther++
-          continue
-        }
-
-        // Only warm if at least one footprint parcel is inside the ring we queried.
-        const inRing = keys.some((p) => pointers.includes(p.trim()))
-        if (!inRing) continue
-
-        const base = parseParcelKey(ent.base)
-        if (!Number.isFinite(base.x) || !Number.isFinite(base.y)) continue
-
-        // Budget: nearest first; leave rest unmarked so the next scan continues.
-        if (warmed >= MAX_SCRIPT_WARM_PER_SCAN) {
-          deferredWarm++
-          continue
-        }
-
-        this.warmedEntityIds.add(ent.id)
-        warmed++
-        console.info(
-          `[promote] script-warm queue “${ent.title || ent.base}” base=${ent.base} parcels=${keys.length} main=${ent.main || '—'} dist≈${minEntityDistanceM(ent, dclX, dclZ, baseParcel).toFixed(0)}m`
+      if (pointers.length && budgetLeft > 0) {
+        const entities = await fetchActiveEntitiesForPointers(
+          scene.realm.contentUrl,
+          pointers
         )
-        this.onPrefetch(base.x, base.y)
+        if (gen !== this.evalGen || this.primary !== scene) return
+        entitiesLen = entities.length
+
+        const owned = new Set<string>()
+
+        // Prefer nearest / smaller scenes first so mega-estates don't starve neighbors.
+        const ranked = [...entities].sort((a, b) => {
+          const da = minEntityDistanceM(a, dclX, dclZ, baseParcel)
+          const db = minEntityDistanceM(b, dclX, dclZ, baseParcel)
+          if (da !== db) return da - db
+          const pa = (a.parcels.length || a.pointers.length) || 999
+          const pb = (b.parcels.length || b.pointers.length) || 999
+          return pa - pb
+        })
+
+        for (const ent of ranked) {
+          const keys = this.entityKeys(ent)
+          for (const p of keys) owned.add(p)
+          // Always cover full footprint once — estate loads once, not per parcel.
+          this.coverEntityParcels(keys)
+
+          if (this.warmedEntityIds.has(ent.id)) {
+            this.pendingWarm.delete(ent.id)
+            continue
+          }
+          if (scene.entityId && ent.id === scene.entityId) {
+            this.warmedEntityIds.add(ent.id)
+            this.pendingWarm.delete(ent.id)
+            continue
+          }
+
+          if (isOpenRoadEntity(ent) || !isScriptWarmCandidate(ent)) {
+            for (const p of keys) this.skipPromoteKeys.add(p)
+            this.pendingWarm.delete(ent.id)
+            if (isOpenRoadEntity(ent)) skippedRoad++
+            else skippedOther++
+            continue
+          }
+
+          // Only warm if at least one footprint parcel is inside the ring we queried.
+          const inRing = keys.some((p) => pointers.includes(p))
+          if (!inRing) continue
+
+          const base = parseParcelKey(ent.base)
+          if (!Number.isFinite(base.x) || !Number.isFinite(base.y)) continue
+
+          const distM = minEntityDistanceM(ent, dclX, dclZ, baseParcel)
+          const entry: PendingWarmEntry = {
+            entityId: ent.id,
+            title: ent.title || ent.base,
+            baseX: base.x,
+            baseY: base.y,
+            parcelCount: keys.length,
+            distM
+          }
+
+          if (budgetLeft <= 0) {
+            this.pendingWarm.set(ent.id, entry)
+            continue
+          }
+
+          this.queueWarm(entry)
+          warmed++
+          budgetLeft--
+        }
+
+        // Pointers with no catalyst entity → empty land (don't re-query every scan).
+        for (const p of pointers) {
+          if (!owned.has(p)) this.skipPromoteKeys.add(p)
+        }
       }
 
-      // Pointers with no catalyst entity → empty land (don't re-query every scan).
-      for (const p of pointers) {
-        if (!owned.has(p)) this.skipPromoteKeys.add(p)
-      }
+      deferredWarm = this.pendingWarm.size
 
-      if (warmed > 0 || skippedRoad > 0 || deferredWarm > 0) {
+      if (warmed > 0 || skippedRoad > 0 || deferredWarm > 0 || skippedCovered > 0) {
         console.info(
-          `[promote] script-warm scan feet=${center.x},${center.y} ring=${pointers.length} entities=${entities.length} warmed=${warmed}/${MAX_SCRIPT_WARM_PER_SCAN}` +
+          `[promote] script-warm scan feet=${center.x},${center.y} ring=${pointers.length}` +
+            ` coveredSkip=${skippedCovered} entities=${entitiesLen} warmed=${warmed}/${MAX_SCRIPT_WARM_PER_SCAN}` +
             (deferredWarm > 0 ? ` deferred=${deferredWarm}` : '') +
             ` roads=${skippedRoad} otherSkip=${skippedOther}`
         )
@@ -295,6 +361,60 @@ export class ScenePromoteController {
     } finally {
       this.warmScanInFlight = false
     }
+  }
+
+  /** Fire prefetch for one estate (entity id) — never per-parcel. */
+  private queueWarm(entry: PendingWarmEntry): void {
+    if (this.warmedEntityIds.has(entry.entityId)) {
+      this.pendingWarm.delete(entry.entityId)
+      return
+    }
+    this.warmedEntityIds.add(entry.entityId)
+    this.pendingWarm.delete(entry.entityId)
+    console.info(
+      `[promote] script-warm queue “${entry.title}” base=${entry.baseX},${entry.baseY}` +
+        ` parcels=${entry.parcelCount} dist≈${entry.distM.toFixed(0)}m`
+    )
+    this.onPrefetch?.(entry.baseX, entry.baseY)
+  }
+
+  /** Prefetch nearest pending estates without re-hitting catalyst for their parcels. */
+  private drainPendingWarm(
+    dclX: number,
+    dclZ: number,
+    baseParcel: string,
+    max: number
+  ): number {
+    if (!this.onPrefetch || max <= 0 || this.pendingWarm.size === 0) return 0
+
+    // Refresh distances for ranking (player may have moved).
+    const ranked = [...this.pendingWarm.values()]
+      .map((e) => {
+        try {
+          const d = distanceToParcelCenterM(
+            dclX,
+            dclZ,
+            { x: e.baseX, y: e.baseY },
+            baseParcel
+          )
+          return { ...e, distM: d }
+        } catch {
+          return e
+        }
+      })
+      .sort((a, b) => a.distM - b.distM || a.parcelCount - b.parcelCount)
+
+    let n = 0
+    for (const entry of ranked) {
+      if (n >= max) break
+      if (this.warmedEntityIds.has(entry.entityId)) {
+        this.pendingWarm.delete(entry.entityId)
+        continue
+      }
+      this.queueWarm(entry)
+      n++
+    }
+    return n
   }
 
   private async evaluate(px: number, py: number, key: string): Promise<void> {
@@ -328,7 +448,9 @@ export class ScenePromoteController {
       }
 
       if (hit.id && scene.entityId && hit.id === scene.entityId) {
+        // Multi-parcel primary: fold this parcel into primary footprint (no re-load).
         this.primaryParcels.add(key)
+        this.coveredEntityParcels.add(key)
         this.dwellKey = ''
         this.inFlight = false
         return

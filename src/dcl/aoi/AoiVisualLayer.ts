@@ -364,9 +364,23 @@ export class AoiVisualLayer {
     }
 
     // --- Secondary visuals: main.composite (outer) + first-frame sample (inner).
-    const compositeCandidates = entities.filter(
-      (e) => e.id !== primaryId && isSecondarySceneCandidate(e) && findCompositeFile(e.content)
-    )
+    // Entity-id dedupe only — multi-parcel estates appear once (not once per parcel).
+    // Never re-load the primary entity as a secondary (full footprint already in primaryParcelSet).
+    const compositeCandidates = entities.filter((e) => {
+      if (primaryId && e.id === primaryId) return false
+      if (!isSecondarySceneCandidate(e) || !findCompositeFile(e.content)) return false
+      // Estate whose entire in-ring footprint is already primary parcels → skip.
+      const keys = e.pointers.length ? e.pointers : e.parcels
+      const inRing = keys.filter((p) => pointerSet.has(p.trim()))
+      if (
+        inRing.length > 0 &&
+        inRing.every((p) => this.primaryParcelSet.has(p.trim())) &&
+        !this.primaryIsEmpty
+      ) {
+        return false
+      }
+      return true
+    })
 
     // Drop secondaries that left the AOI or are no longer composite-loadable
     const wantIds = new Set(compositeCandidates.map((c) => c.id))
@@ -455,13 +469,22 @@ export class AoiVisualLayer {
     if (!ctx || this.disposed) return
 
     const scriptBuilt = entities.filter((e) => {
-      if (e.id === primaryId) return false
+      if (primaryId && e.id === primaryId) return false
       if (!isSecondarySceneCandidate(e)) return false
       if (findCompositeFile(e.content)) return false // outer composite path owns these
       if (isOpenRoadEntity(e)) return false
       // Must intersect outer AOI pointers we already fetched
       const keys = e.pointers.length ? e.pointers : e.parcels
-      return keys.some((p) => pointerSet.has(p.trim()))
+      const inRing = keys.filter((p) => pointerSet.has(p.trim()))
+      if (!inRing.length) return false
+      // Don't sample estates already covered by the primary multi-parcel footprint.
+      if (
+        !this.primaryIsEmpty &&
+        inRing.every((p) => this.primaryParcelSet.has(p.trim()))
+      ) {
+        return false
+      }
+      return true
     })
 
     // Prefer nearer / smaller estates.

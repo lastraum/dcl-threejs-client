@@ -2,12 +2,15 @@ import type { PerformanceTier } from '../../shim/types'
 
 /**
  * Live secondary workers inside Scene Distance warm band (not first-frame / tertiary).
- * Warm-all ≠ live-all: nearest N only (+ sticky demoted primary for walk-back).
+ * Warm-all ≠ live-all: nearest N only (+ sticky demoted primary for walk-back if modest).
+ * Large multi-parcel plazas still refuse live/sticky (see sceneWeight.ts).
+ *
+ * Middle tier targets ~6 concurrent muted neighbors; scale low/high around that.
  */
 export function secondaryLiveCap(tier: PerformanceTier): number {
-  if (tier === 'low') return 0
-  if (tier === 'medium') return 1
-  return 2
+  if (tier === 'low') return 3
+  if (tier === 'medium') return 6
+  return 9 // high
 }
 
 /** Concurrent portable-experience workers. */

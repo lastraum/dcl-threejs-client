@@ -17,8 +17,7 @@ import {
 import {
   distanceToParcelCenterM,
   parcelsInLoadRadius,
-  parcelSwSceneLocal,
-  SCENE_SCRIPT_WARM_RADIUS_M
+  parcelSwSceneLocal
 } from './parcelAoi'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
 import {
@@ -48,12 +47,11 @@ const FF_MAX_VISIBLE = 3
 const FF_MAX_RETAINED = 6
 
 /**
- * Hotfix: skip neighbor scene meshes (composite GLBs + first-frame samples)
- * and do not advertise secondary candidates for live workers.
- * Roads + empty parcel blanks/scatter still run.
- * Flip true to restore full AOI scene visuals.
+ * Neighbor scene meshes (composite GLBs + first-frame) + live-secondary candidates.
+ * Kill switch: set false if plaza thrash returns. FocusOwner gates keep non-primary
+ * media hard-muted when live workers run.
  */
-const LOAD_AOI_SCENE_VISUALS = false
+const LOAD_AOI_SCENE_VISUALS = true
 
 export type AoiVisualLayerContext = {
   scene: ResolvedScene
@@ -79,15 +77,13 @@ export type AoiVisualLayerContext = {
 }
 
 /**
- * Phase A2+ — coords-only AOI visuals (outer radius = Scene Distance):
+ * Phase A2+ — coords-only AOI (radius = user Scene Distance warm band):
  * - Empty layer: instanced blank ground + trees/bushes on vacant parcels
  * - Genesis roads via **Explorer catalog + OriginalAssets FBX** (tile + street
  *   furniture), not runtime SDK6 game.js
  * - Neighbor main.composite GLBs (render-only, no colliders / anim) — **tertiary**
- *
- * Inner radius (SCENE_SCRIPT_WARM_RADIUS_M):
- * - First-frame samples → static visual secondaries (tertiary when no live worker)
- * - Live secondary workers (optional) hide first-frame / composite for same entityId
+ * - First-frame samples for script-built scenes (tertiary when no live worker)
+ * - Live secondary candidates (budgeted workers; FocusOwner = primary only)
  */
 export class AoiVisualLayer {
   private root = new THREE.Group()
@@ -167,15 +163,13 @@ export class AoiVisualLayer {
     if (!this.enabled) return
     ctx.hostScene.add(this.root)
     console.info(
-      '[aoi] bound — Scene Distance AOI visuals (coords only); radius=',
+      '[aoi] bound — Scene Distance warm band (coords only); radius=',
       renderQuality.getSceneLoadRadiusM(),
-      'm · first-frame inner=',
-      SCENE_SCRIPT_WARM_RADIUS_M,
-      'm (visible≤',
+      'm · first-frame visible≤',
       FF_MAX_VISIBLE,
       ' retained≤',
       FF_MAX_RETAINED,
-      ')',
+      ' · FocusOwner=primary',
       this.primaryIsEmpty ? '(empty primary)' : ''
     )
   }
@@ -486,9 +480,12 @@ export class AoiVisualLayer {
       resolveY: number
       distM: number
     }> = []
+    // Warm band = user Scene Distance (live eligibility + first-frame samples).
+    const warmRadiusM = renderQuality.getSceneLoadRadiusM()
+
     for (const ent of ranked) {
       const dist = minEntDist(ent, dclX, dclZ, primaryBase)
-      if (dist > SCENE_SCRIPT_WARM_RADIUS_M) continue
+      if (warmRadiusM <= 0 || dist > warmRadiusM) continue
       try {
         const baseCoord = parseParcelKey(ent.base)
         liveCandidates.push({
@@ -511,7 +508,7 @@ export class AoiVisualLayer {
 
     for (const ent of ranked) {
       const dist = minEntDist(ent, dclX, dclZ, primaryBase)
-      if (dist > SCENE_SCRIPT_WARM_RADIUS_M) continue
+      if (warmRadiusM <= 0 || dist > warmRadiusM) continue
       // Live secondary worker owns this scene — no static first-frame.
       if (this.liveSecondaryIds.has(ent.id)) continue
       if (visibleSlots >= FF_MAX_VISIBLE) break

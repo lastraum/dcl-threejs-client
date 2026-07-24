@@ -3,10 +3,8 @@ import type { ResolvedScene } from '../content/types'
 import { parseParcelKey } from '../content/parseParcel'
 import { PARCEL_SIZE } from '../content/types'
 import { fetchSceneEntityByPointer } from '../../network/catalyst/CatalystClient'
-import {
-  SCENE_SCRIPT_WARM_RADIUS_M,
-  distanceToParcelCenterM
-} from './parcelAoi'
+import { renderQuality } from '../../rendering/RenderQualitySettings'
+import { distanceToParcelCenterM } from './parcelAoi'
 import {
   fetchActiveEntitiesForPointers,
   isOpenRoadEntity,
@@ -24,25 +22,27 @@ export type ScenePromoteControllerOptions = {
    */
   onSoftRoute?: (x: number, y: number) => void
   /**
-   * Warm script/manifest assets for a real scene near the player (inner radius).
-   * Outer Scene Distance still owns composite GLB visuals.
+   * Warm script/manifest assets for real scenes in Scene Distance warm band.
    */
   onPrefetch?: (x: number, y: number) => void
   dwellMs?: number
   cooldownMs?: number
-  /** Override inner script-warm radius (default SCENE_SCRIPT_WARM_RADIUS_M). */
-  scriptWarmRadiusM?: number
+  /**
+   * Override warm radius (meters). Default: live Scene Distance setting.
+   * Pass a getter via constructor when testing.
+   */
+  scriptWarmRadiusM?: number | (() => number)
 }
 
 /**
- * Multi-scene Phase B — dual radii + stand-on-parcel primary promotion.
+ * Multi-scene Phase B — Scene Distance warm band + stand-on-parcel primary promotion.
  *
- * - **Outer** (Scene Distance setting → AoiVisualLayer): composite GLBs / roads / empty.
- * - **Inner** (`SCENE_SCRIPT_WARM_RADIUS_M`): batch catalyst lookup → prefetch real SDK7
- *   scene manifests (Angzaar etc. with no composite still warm here).
+ * - **Warm band** (Scene Distance → AoiVisualLayer + this controller): visuals +
+ *   batch catalyst lookup → prefetch real SDK7 manifests (Angzaar etc.).
  * - Soft-updates the SPA URL as you walk (no reload).
  * - Full promote only when dwelling on a **real SDK7 scene** that is not primary.
  * - Empty land and roads never trigger a scene reload (that was thrashing promote).
+ * - FocusOwner stays primary; secondaries (if live) are hard-muted media / no UI.
  */
 export class ScenePromoteController {
   private primary: ResolvedScene | null = null
@@ -64,7 +64,7 @@ export class ScenePromoteController {
   private readonly onPrefetch: ScenePromoteControllerOptions['onPrefetch']
   private readonly dwellMs: number
   private readonly cooldownMs: number
-  private readonly scriptWarmRadiusM: number
+  private readonly scriptWarmRadiusOpt: number | (() => number) | undefined
 
   constructor(opts: ScenePromoteControllerOptions) {
     this.onPromote = opts.onPromote
@@ -72,7 +72,14 @@ export class ScenePromoteController {
     this.onPrefetch = opts.onPrefetch
     this.dwellMs = opts.dwellMs ?? 320
     this.cooldownMs = opts.cooldownMs ?? 2_000
-    this.scriptWarmRadiusM = opts.scriptWarmRadiusM ?? SCENE_SCRIPT_WARM_RADIUS_M
+    this.scriptWarmRadiusOpt = opts.scriptWarmRadiusM
+  }
+
+  /** Live warm radius — tracks Preferences Scene Distance unless overridden. */
+  private getScriptWarmRadiusM(): number {
+    if (typeof this.scriptWarmRadiusOpt === 'function') return this.scriptWarmRadiusOpt()
+    if (typeof this.scriptWarmRadiusOpt === 'number') return this.scriptWarmRadiusOpt
+    return renderQuality.getSceneLoadRadiusM()
   }
 
   bind(scene: ResolvedScene): void {
@@ -90,7 +97,7 @@ export class ScenePromoteController {
     this.lastWarmScanAt = 0
     this.evalGen++
     console.info(
-      `[promote] bound primary “${scene.title}” base=${scene.baseParcel} parcels=${this.primaryParcels.size} entity=${scene.entityId?.slice(0, 12) ?? 'none'} scriptWarm=${this.scriptWarmRadiusM}m`
+      `[promote] bound primary “${scene.title}” base=${scene.baseParcel} parcels=${this.primaryParcels.size} entity=${scene.entityId?.slice(0, 12) ?? 'none'} scriptWarm=${this.getScriptWarmRadiusM()}m`
     )
   }
 
@@ -162,7 +169,7 @@ export class ScenePromoteController {
    * Roads/empty are classified and skipped; only real SDK7 scenes get onPrefetch.
    */
   private scheduleScriptWarmScan(dclX: number, dclZ: number, baseParcel: string): void {
-    if (!this.onPrefetch || this.scriptWarmRadiusM <= 0) return
+    if (!this.onPrefetch || this.getScriptWarmRadiusM() <= 0) return
     if (this.warmScanInFlight) return
     const now = performance.now()
     if (now - this.lastWarmScanAt < 1_200) return
@@ -179,9 +186,10 @@ export class ScenePromoteController {
     if (!scene || !this.onPrefetch) return
     this.warmScanInFlight = true
     const gen = this.evalGen
+    const scriptWarmRadiusM = this.getScriptWarmRadiusM()
 
     try {
-      const ring = Math.max(1, Math.ceil(this.scriptWarmRadiusM / PARCEL_SIZE) + 1)
+      const ring = Math.max(1, Math.ceil(scriptWarmRadiusM / PARCEL_SIZE) + 1)
       const center = {
         x: parseParcelKey(baseParcel).x + Math.floor(dclX / PARCEL_SIZE),
         y: parseParcelKey(baseParcel).y + Math.floor(dclZ / PARCEL_SIZE)
@@ -195,7 +203,7 @@ export class ScenePromoteController {
           if (this.primaryParcels.has(key)) continue
           if (this.skipPromoteKeys.has(key)) continue
           const dist = distanceToParcelCenterM(dclX, dclZ, parcel, baseParcel)
-          if (dist > this.scriptWarmRadiusM) continue
+          if (dist > scriptWarmRadiusM) continue
           pointers.push(key)
         }
       }

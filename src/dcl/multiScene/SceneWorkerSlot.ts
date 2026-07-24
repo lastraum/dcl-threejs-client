@@ -69,7 +69,8 @@ export class SceneWorkerSlot {
       this.system.setPerformanceTier(performanceTier)
       this.system.setClientPoseProvider(poseProvider)
       this.wireSecondaryHandlers()
-      this.system.setSceneUiVisible(false)
+      // FocusOwner: hard mute + video stop + UI off (keeps SceneUiBridge for promote resume).
+      this.system.setFocusPolicy('secondary')
       // Clear primary-only colliders cook hooks (World owns primary cooks only).
       this.system.setCollidersCookCallback(null)
       this.system.setCollidersPoseCallback(null)
@@ -102,16 +103,21 @@ export class SceneWorkerSlot {
     this.system.prepare(scene, cache, host, {
       rootName,
       // PE gets its own DOM overlay so primary setVisible / paint never steals clicks.
-      uiRootId: this.kind === 'pe' ? 'pe-ui-root' : 'scene-ui-root'
+      // Secondary: detached off-DOM host — never share #scene-ui-root.
+      uiRootId: this.kind === 'pe' ? 'pe-ui-root' : `secondary-ui:${this.id.slice(0, 16)}`,
+      uiDetached: this.kind === 'secondary',
+      focusPolicy: this.kind === 'pe' ? 'pe' : 'secondary'
     })
 
     if (this.kind === 'pe') {
       // Paint PE UI on first worker mount (not deferred until after start).
       // Primary waits for play chrome; PE is always "in play" once enabled.
       // Manager may hide after start if user disabled the UI toggle.
+      this.system.setFocusPolicy('pe')
       this.system.setSceneUiVisible(true)
       this.wirePeHandlers()
     } else {
+      this.system.setFocusPolicy('secondary')
       this.wireSecondaryHandlers()
     }
 

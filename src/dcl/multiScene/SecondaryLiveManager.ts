@@ -6,7 +6,7 @@ import type { PerformanceTier } from '../../shim/types'
 import type { SceneScriptSystem } from '../../core/systems/SceneScriptSystem'
 import { resolveSceneFromRoute } from '../content/resolveScene'
 import type { ResolvedScene } from '../content/types'
-import { SCENE_SCRIPT_WARM_RADIUS_M } from '../aoi/parcelAoi'
+import { renderQuality } from '../../rendering/RenderQualitySettings'
 import { secondaryLiveCap, secondaryTickIntervalMs } from './caps'
 import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import { secondaryPhysOffset } from './physOffsets'
@@ -275,8 +275,10 @@ export class SecondaryLiveManager {
     if (now - this.lastReconcileAt < 800) return
     this.lastReconcileAt = now
 
+    // Warm band = user Scene Distance; live pool still distance-ranked + capped.
+    const warmRadiusM = renderQuality.getSceneLoadRadiusM()
     const inRange = candidates
-      .filter((c) => c.distM <= SCENE_SCRIPT_WARM_RADIUS_M)
+      .filter((c) => warmRadiusM > 0 && c.distM <= warmRadiusM)
       .sort((a, b) => a.distM - b.distM)
       .slice(0, Math.max(cap, 0))
 

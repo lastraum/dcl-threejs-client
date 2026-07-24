@@ -2,12 +2,16 @@ import { parseParcelKey, type ParcelCoord } from '../content/parseParcel'
 import { PARCEL_SIZE } from '../content/types'
 
 /**
- * Dual-radius multi-scene:
- * - **Outer** (`sceneLoadRadiusM` / Scene Distance setting): composite GLBs, roads, empty layer.
- * - **Inner** (this constant): warm script/manifest assets for nearby real scenes so stand-on
- *   promote is near-instant. Not a user setting — stays inside the outer radius.
+ * Multi-scene AOI (FocusOwner model):
+ * - **Warm + visual band** = user Scene Distance (`sceneLoadRadiusM`): roads, empty,
+ *   composites, first-frame, script/manifest prefetch, live-secondary *eligibility*.
+ * - **FocusOwner** = primary only (UI / audio / video / inputs / locomotion).
+ * - **Live secondaries** = budgeted (tier cap) subset of warm band — not all-in-radius.
+ *
+ * @deprecated Prefer `renderQuality.getSceneLoadRadiusM()`. Kept as fallback when
+ * settings are unavailable (tests / early init). Default matches Scene Distance default (100m).
  */
-export const SCENE_SCRIPT_WARM_RADIUS_M = 48
+export const SCENE_SCRIPT_WARM_RADIUS_M = 100
 
 /** Absolute genesis parcel under a scene-local DCL feet position. */
 export function absoluteParcelAtSceneLocal(

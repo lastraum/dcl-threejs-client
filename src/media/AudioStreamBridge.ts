@@ -24,6 +24,11 @@ export class AudioStreamBridge {
   private readonly streams = new Map<Entity, StreamEntry>()
   private userGestureUnlocked = false
   private eventTimestamp = 1
+  /**
+   * FocusOwner gate — when false, stop/dispose all streams and ignore ECS playing.
+   * Does not write playing=false back to ECS so promote can resume intent.
+   */
+  private mediaEnabled = true
   private readonly unsubscribeSoundSettings: () => void
 
   constructor(
@@ -47,7 +52,31 @@ export class AudioStreamBridge {
     }
   }
 
+  /**
+   * FocusOwner media gate. false → hard mute streams; true → next sync may recreate.
+   * Never mutates ECS AudioStream.playing.
+   */
+  setMediaEnabled(enabled: boolean): void {
+    if (this.mediaEnabled === enabled) return
+    this.mediaEnabled = enabled
+    if (!enabled) {
+      for (const entity of [...this.streams.keys()]) {
+        this.removeStream(entity)
+      }
+    }
+  }
+
+  isMediaEnabled(): boolean {
+    return this.mediaEnabled
+  }
+
   sync(view: ProjectionView): void {
+    if (!this.mediaEnabled) {
+      if (this.streams.size) {
+        for (const entity of [...this.streams.keys()]) this.removeStream(entity)
+      }
+      return
+    }
     const { AudioStream, VisibilityComponent, Transform } = this.ecs
     const active = new Set<Entity>()
 
@@ -98,6 +127,7 @@ export class AudioStreamBridge {
   }
 
   update(_tickNumber: number, view: ProjectionView): void {
+    if (!this.mediaEnabled) return
     const { AudioStream, AudioEvent } = this.ecs
 
     for (const [entity] of view.getEntitiesWith(AudioStream)) {

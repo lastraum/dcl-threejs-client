@@ -118,11 +118,26 @@ export class SceneUiBridge {
   constructor(
     scene: ResolvedScene | null = null,
     getCanvas: () => HTMLElement | null = () => null,
-    opts?: { rootId?: string }
+    opts?: {
+      rootId?: string
+      /**
+       * Off-DOM UI host for non-focus workers (secondary live). Never paints into
+       * `#scene-ui-root` and does not register global authoritative pick checks.
+       */
+      detached?: boolean
+    }
   ) {
     this.scene = scene
     this.getCanvas = getCanvas
-    this.root = ensureSceneUiRoot(opts?.rootId ?? 'scene-ui-root')
+    if (opts?.detached) {
+      // Isolated host — never share primary/PE document roots.
+      this.root = document.createElement('div')
+      this.root.id = opts.rootId ?? `secondary-ui-detached-${Math.random().toString(36).slice(2, 10)}`
+      this.root.hidden = true
+      this.root.style.display = 'none'
+    } else {
+      this.root = ensureSceneUiRoot(opts?.rootId ?? 'scene-ui-root')
+    }
     this.setVisible(false)
     this.dom = new SceneUiDomRenderer(this.root, {
       onInputChange: (entity, value) => {
@@ -146,11 +161,14 @@ export class SceneUiBridge {
       isAuthoritativeUiEntity: (entity) => this.isAuthoritativeUiEntity(entity)
     })
     this.input.bind()
-    const isPeRoot = (opts?.rootId ?? 'scene-ui-root') === 'pe-ui-root'
-    if (isPeRoot) {
-      setPeUiAuthoritativeEntityCheck((entity) => this.isAuthoritativeUiEntity(entity))
-    } else {
-      setSceneUiAuthoritativeEntityCheck((entity) => this.isAuthoritativeUiEntity(entity))
+    // Detached secondary UI must not steal primary/PE hit-map registration.
+    if (!opts?.detached) {
+      const isPeRoot = (opts?.rootId ?? 'scene-ui-root') === 'pe-ui-root'
+      if (isPeRoot) {
+        setPeUiAuthoritativeEntityCheck((entity) => this.isAuthoritativeUiEntity(entity))
+      } else {
+        setSceneUiAuthoritativeEntityCheck((entity) => this.isAuthoritativeUiEntity(entity))
+      }
     }
     this.unbindImageLoaded = onSceneUiImageLoaded(() => this.scheduleImageRepaint())
   }

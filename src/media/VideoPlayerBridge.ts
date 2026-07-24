@@ -35,6 +35,11 @@ export class VideoPlayerBridge {
   private pendingUserVideoToggleFrames = 0
   private listener: THREE.AudioListener | null = null
   private loggedVideoSkip = false
+  /**
+   * FocusOwner gate — when false, dispose all decoders and ignore ECS playing.
+   * Does not write playing=false back to ECS so promote can resume intent.
+   */
+  private mediaEnabled = true
   private readonly unsubscribeSoundSettings: () => void
 
   constructor(
@@ -80,6 +85,24 @@ export class VideoPlayerBridge {
     }
   }
 
+  /**
+   * FocusOwner media gate. false → hard-stop video (dispose decoders); true → next sync may recreate.
+   * Never mutates ECS VideoPlayer.playing.
+   */
+  setMediaEnabled(enabled: boolean): void {
+    if (this.mediaEnabled === enabled) return
+    this.mediaEnabled = enabled
+    if (!enabled) {
+      for (const entity of [...this.decoders.keys()]) {
+        this.removeDecoder(entity)
+      }
+    }
+  }
+
+  isMediaEnabled(): boolean {
+    return this.mediaEnabled
+  }
+
   getTexture(entity: Entity): THREE.Texture | null {
     const entry = this.decoders.get(entity)
     if (!entry?.player.canAttachTexture()) return null
@@ -103,6 +126,12 @@ export class VideoPlayerBridge {
 
   sync(view: ProjectionView): void {
     if (this.drainIfVideoSkipped()) return
+    if (!this.mediaEnabled) {
+      if (this.decoders.size) {
+        for (const entity of [...this.decoders.keys()]) this.removeDecoder(entity)
+      }
+      return
+    }
     const { VideoPlayer, VisibilityComponent, Transform } = this.ecs
     const active = new Set<Entity>()
     const fromUserToggle = this.pendingUserVideoToggle
@@ -188,6 +217,7 @@ export class VideoPlayerBridge {
   }
 
   update(tickNumber: number, view: ProjectionView): void {
+    if (!this.mediaEnabled) return
     if (skipSceneVideoPlayers()) return
     const { VideoPlayer, VideoEvent } = this.ecs
 

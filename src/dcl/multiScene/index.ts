@@ -1,4 +1,5 @@
 export type {
+  FocusPolicy,
   PeCandidate,
   PeSlotState,
   PeSlotStatus,

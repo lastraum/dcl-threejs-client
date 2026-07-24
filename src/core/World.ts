@@ -754,7 +754,7 @@ export class World {
     this.scenePromote.bind(scene)
     if (openCityWalk) {
       console.info(
-        `[aoi] Genesis walk — outer composites=${renderQuality.getSceneLoadRadiusM()}m · inner script-warm via promote · base=${scene.baseParcel}`
+        `[aoi] Genesis walk — Scene Distance warm=${renderQuality.getSceneLoadRadiusM()}m · FocusOwner=primary · base=${scene.baseParcel}`
       )
     }
 
@@ -3591,6 +3591,9 @@ export class World {
     // Demote old primary → sticky secondary (resume without reload when walking back).
     // Do this before wiring new primary so entity roots stay valid.
     if (oldScene?.entityId && oldScene.mainEntry && oldScene.entityId !== newScene.entityId) {
+      // Revoke FocusOwner before sticky adopt (mute/stop media; drop primary InputHub).
+      oldPrimary.setFocusPolicy('secondary')
+      oldPrimary.setInputHub(null)
       const demoted = await multi.demotePrimaryToSecondary(oldPrimary, oldScene)
       if (demoted) {
         for (const id of demoted.primaryPhysIds) {
@@ -3664,6 +3667,9 @@ export class World {
       void this.playLocalEmote(emote, { loop: undefined, sceneTriggered: true })
       return true
     })
+    // FocusOwner swap: media + UI for adopted primary; InputHub primary subscriber.
+    this.sceneScript.setFocusPolicy('primary')
+    this.sceneScript.setInputHub(this.inputHub, 'primary')
     this.sceneScript.setSceneUiVisible(true)
 
     // Comms / signed-fetch context for new primary.

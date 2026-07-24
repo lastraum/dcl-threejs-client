@@ -27,6 +27,11 @@ export class AudioSourceBridge {
   private readonly listener: THREE.AudioListener
   private userGestureUnlocked = false
   private eventTimestamp = 1
+  /**
+   * FocusOwner gate — when false, stop/dispose all players and ignore ECS playing.
+   * Does not write playing=false back to ECS so promote can resume intent.
+   */
+  private mediaEnabled = true
   private readonly unsubscribeSoundSettings: () => void
 
   constructor(
@@ -78,7 +83,31 @@ export class AudioSourceBridge {
     }
   }
 
+  /**
+   * FocusOwner media gate. false → hard mute (dispose players); true → next sync may recreate.
+   * Never mutates ECS AudioSource.playing.
+   */
+  setMediaEnabled(enabled: boolean): void {
+    if (this.mediaEnabled === enabled) return
+    this.mediaEnabled = enabled
+    if (!enabled) {
+      for (const entity of [...this.players.keys()]) {
+        this.removePlayer(entity)
+      }
+    }
+  }
+
+  isMediaEnabled(): boolean {
+    return this.mediaEnabled
+  }
+
   sync(view: ProjectionView): void {
+    if (!this.mediaEnabled) {
+      if (this.players.size) {
+        for (const entity of [...this.players.keys()]) this.removePlayer(entity)
+      }
+      return
+    }
     const { AudioSource, VisibilityComponent, Transform } = this.ecs
     const active = new Set<Entity>()
 
@@ -126,6 +155,7 @@ export class AudioSourceBridge {
   }
 
   update(_tickNumber: number, view: ProjectionView): void {
+    if (!this.mediaEnabled) return
     const { AudioSource, AudioEvent } = this.ecs
 
     for (const [entity] of view.getEntitiesWith(AudioSource)) {

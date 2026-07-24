@@ -1,6 +1,9 @@
 import type { PerformanceTier } from '../../shim/types'
 
-/** Live secondary workers inside SCRIPT_WARM radius (not first-frame samples). */
+/**
+ * Live secondary workers inside Scene Distance warm band (not first-frame / tertiary).
+ * Warm-all ≠ live-all: nearest N only (+ sticky demoted primary for walk-back).
+ */
 export function secondaryLiveCap(tier: PerformanceTier): number {
   if (tier === 'low') return 0
   if (tier === 'medium') return 1

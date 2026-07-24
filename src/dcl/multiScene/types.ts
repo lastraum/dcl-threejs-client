@@ -1,12 +1,23 @@
 /**
  * Multi-scene worker tiers:
- * - primary: parcel under feet (full privilege)
- * - secondary: inner AOI live scripts (throttled, limited privilege)
+ * - primary: parcel under feet — **FocusOwner** (UI, audio, video, inputs, locomotion)
+ * - secondary: AOI live scripts in Scene Distance warm band (throttled; no focus media/UI)
  * - tertiary: outer AOI visuals only (no worker — AoiVisualLayer)
- * - pe: portable experience / smart wearable (full surface, below primary)
+ * - pe: portable experience / smart wearable (own UI root; arbiter below primary)
+ *
+ * Warm band = user Scene Distance (`sceneLoadRadiusM`). Live secondaries are
+ * still budgeted by tier (see caps.ts) — warm-all ≠ live-all.
  */
 
 export type SceneWorkerKind = 'primary' | 'secondary' | 'pe'
+
+/**
+ * Focus policy for a SceneScriptSystem.
+ * - primary: media on, UI may show (play-chrome gates visibility)
+ * - secondary: hard mute + video stop + UI never shown
+ * - pe: media on; UI owned by PortableExperienceManager
+ */
+export type FocusPolicy = 'primary' | 'secondary' | 'pe'
 
 /** Higher number wins on privileged channels. */
 export const SCENE_WORKER_PRIORITY: Record<SceneWorkerKind, number> = {

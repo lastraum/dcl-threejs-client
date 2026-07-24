@@ -2992,8 +2992,8 @@ export class AppController {
   }
 
   /**
-   * Inner script-warm radius — prefetch real scene manifests/scripts so stand-on
-   * promote is fast. Outer Scene Distance still owns composite GLB visuals only.
+   * Scene Distance warm band — prefetch real scene manifests/scripts so stand-on
+   * promote is fast. Visual AOI uses the same radius (composites / first-frame).
    * (Script-built estates like Angzaar have no main.composite — warm is the only
    * pre-promote load path for their GLBs.)
    */

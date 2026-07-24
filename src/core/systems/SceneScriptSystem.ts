@@ -273,6 +273,8 @@ export class SceneScriptSystem {
    * Survives `prepare()` recreating the bridge (constructor always starts hidden).
    */
   private sceneUiDesiredVisible = false
+  /** FocusOwner — secondary hard-mutes media and never shows scene UI. */
+  private focusPolicy: import('../../dcl/multiScene/types').FocusPolicy = 'primary'
   private sceneUiResizeObserver: ResizeObserver | null = null
   private unbindSceneUiWindowResize: (() => void) | null = null
   private avatarAttachBridge: AvatarAttachBridge | null = null
@@ -418,8 +420,41 @@ export class SceneScriptSystem {
 
   /** Gate scene ECS UI overlay — hidden during 2D landing / hydration until play chrome reveals. */
   setSceneUiVisible(visible: boolean): void {
+    // Secondary focus never paints UI (FocusOwner = primary only).
+    if (this.focusPolicy === 'secondary' && visible) return
     this.sceneUiDesiredVisible = visible
     this.sceneUiBridge?.setVisible(visible)
+  }
+
+  /**
+   * FocusOwner policy for multi-scene:
+   * - primary: media on; UI may show when play chrome asks
+   * - secondary: hard mute + video stop + UI forced off
+   * - pe: media on; UI owned by PE manager
+   */
+  setFocusPolicy(policy: import('../../dcl/multiScene/types').FocusPolicy): void {
+    if (this.focusPolicy === policy) {
+      // Still re-apply media/UI in case bridges were recreated after prepare.
+      this.applyFocusPolicy(policy)
+      return
+    }
+    this.focusPolicy = policy
+    this.applyFocusPolicy(policy)
+  }
+
+  getFocusPolicy(): import('../../dcl/multiScene/types').FocusPolicy {
+    return this.focusPolicy
+  }
+
+  private applyFocusPolicy(policy: import('../../dcl/multiScene/types').FocusPolicy): void {
+    const mediaOn = policy !== 'secondary'
+    this.videoPlayerBridge?.setMediaEnabled(mediaOn)
+    this.audioSourceBridge?.setMediaEnabled(mediaOn)
+    this.audioStreamBridge?.setMediaEnabled(mediaOn)
+    if (policy === 'secondary') {
+      this.sceneUiDesiredVisible = false
+      this.sceneUiBridge?.setVisible(false)
+    }
   }
 
   /** PE enable / late mount — rebuild interactive DOM even if layout keys match. */
@@ -457,7 +492,17 @@ export class SceneScriptSystem {
     scene: ResolvedScene,
     cache: AssetCache,
     host: SceneHost,
-    opts?: { rootName?: string; uiRootId?: string }
+    opts?: {
+      rootName?: string
+      uiRootId?: string
+      /**
+       * Off-DOM UI for secondary live workers — never share `#scene-ui-root`.
+       * PE uses `pe-ui-root`; primary uses default `scene-ui-root`.
+       */
+      uiDetached?: boolean
+      /** Initial FocusOwner policy (default primary). Secondary boots pass 'secondary'. */
+      focusPolicy?: import('../../dcl/multiScene/types').FocusPolicy
+    }
   ): void {
     if (!scene.mainEntry || !scene.entityId) return
 
@@ -468,6 +513,7 @@ export class SceneScriptSystem {
     this.entityStore = new EntityStore(host.scene, opts?.rootName ?? 'scene-entities')
     this.entityStoreUnsub = this.entityStore.subscribe((change) => this.onEntityStoreChange(change))
     this.bridge = new ThreeBridge(scene, cache, this.entityStore, this.readComponents)
+    if (opts?.focusPolicy) this.focusPolicy = opts.focusPolicy
     this.avatarShapes = new AvatarShapeBridge(this.readComponents, (entity) =>
       this.bridge?.getEntityNodes().get(entity)
     )
@@ -501,13 +547,22 @@ export class SceneScriptSystem {
       () => this.bridge?.getEntityNodes()
     )
     this.sceneUiBridge?.dispose()
-    const uiRootId = opts?.uiRootId === 'pe-ui-root' ? 'pe-ui-root' : 'scene-ui-root'
-    this.uiRootId = uiRootId
+    const uiDetached = opts?.uiDetached === true
+    const uiRootId = uiDetached
+      ? (opts?.uiRootId ?? `secondary-ui:${scene.entityId?.slice(0, 12) ?? 'anon'}`)
+      : opts?.uiRootId === 'pe-ui-root'
+        ? 'pe-ui-root'
+        : 'scene-ui-root'
+    this.uiRootId = uiRootId === 'pe-ui-root' ? 'pe-ui-root' : 'scene-ui-root'
     this.sceneUiBridge = new SceneUiBridge(scene, () => this.host?.renderer.domElement ?? null, {
-      rootId: uiRootId
+      rootId: uiRootId,
+      detached: uiDetached
     })
     // Bridge constructor starts hidden — re-apply play-chrome desire (teleport / re-prepare).
-    this.sceneUiBridge.setVisible(this.sceneUiDesiredVisible)
+    // Secondary focus never reveals UI.
+    this.sceneUiBridge.setVisible(
+      this.focusPolicy === 'secondary' ? false : this.sceneUiDesiredVisible
+    )
     if (this.pendingVirtualCanvas) {
       this.sceneUiBridge.setVirtualSize(
         this.pendingVirtualCanvas.width,
@@ -572,6 +627,8 @@ export class SceneScriptSystem {
       this.recordRendererAppend
     )
     this.bridge.setAudioStreamBridge(this.audioStreamBridge)
+    // Apply FocusOwner after bridges exist (secondary = hard mute / video stop).
+    this.applyFocusPolicy(this.focusPolicy)
     this.assetLoadBridge = new AssetLoadBridge(
       this.readComponents,
       scene,
@@ -2613,6 +2670,9 @@ export class SceneScriptSystem {
   ): void {
     const bridge = this.sceneUiBridge
     if (!bridge) return
+    // FocusOwner: secondary never mutates DOM (demoted primary still holds SceneUiBridge
+    // for promote resume — must not fight #scene-ui-root with the new primary).
+    if (this.focusPolicy === 'secondary') return
 
     bridge.applyProjectionChanges(projectionDeletes)
     // Phase C: any UI CRDT/mount path dirties paint; redundant flushes no-op via epoch.
@@ -4763,6 +4823,7 @@ export class SceneScriptSystem {
     this.sceneUiBridge?.dispose()
     this.sceneUiBridge = null
     this.sceneUiDesiredVisible = false
+    this.focusPolicy = 'primary'
     this.pendingVirtualCanvas = null
     this.pendingUiEntities = undefined
     this.pendingInboundAfterUiMount = []

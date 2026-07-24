@@ -43,9 +43,10 @@ export type RenderQualityOptions = {
    */
   avatarToonEnabled: boolean
   /**
-   * Outer AOI radius (meters) for secondary **visual** loads (main.composite GLBs,
-   * roads, empty layer). 0 = primary only. Independent of graphics presets.
-   * Script warming uses a separate fixed inner radius (see SCENE_SCRIPT_WARM_RADIUS_M).
+   * AOI warm + visual radius (meters): roads, empty layer, composites, first-frame,
+   * script/manifest prefetch, and live-secondary *eligibility*. 0 = primary only.
+   * Independent of graphics presets. Live workers stay tier-capped (see multiScene/caps).
+   * FocusOwner (UI/audio/video/inputs) is always primary only.
    */
   sceneLoadRadiusM: number
   /**
@@ -59,7 +60,7 @@ export type RenderQualityOptions = {
 /** Min/max for Preferences → Scene Distance (AOI neighbor load radius). */
 export const SCENE_LOAD_RADIUS_MIN_M = 0
 export const SCENE_LOAD_RADIUS_MAX_M = 200
-/** Default AOI — ~6 parcels; used until multi-scene secondary loader exists. */
+/** Default AOI warm/visual band — ~6 parcels. */
 export const SCENE_LOAD_RADIUS_DEFAULT_M = 100
 
 /** Max ECS LightSource lights active at once (nearest to avatar) — preset defaults. */

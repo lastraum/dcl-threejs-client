@@ -19,6 +19,7 @@ import { buildIslandCircularShore } from './IslandShoreRing'
 import { buildDesertGoldGround } from './DesertGoldGround'
 import { buildLandColorGround } from './LandColorGround'
 import { buildInfiniteGround, outerScatterContext } from './InfiniteGround'
+import { buildInstancedGroundTiles } from '../gltfInstancing'
 import { buildForestOuterScatter } from '../ForestScatter'
 import { buildDesertOuterRockScatter, buildPerlinInstancedScatter } from '../PerlinScatter'
 import { finalizeFoliageWindLandscape, resetFoliageWindRegistry } from '../foliageWind'
@@ -78,30 +79,32 @@ export async function buildParcelLandscape(
         landscape.userData.windShader = windShader
       }
     }
-    // Genesis City: default empty-land floor under scene parcels (FloorBase / red-grass pack).
-    // Skip when the scene authored its own terrain, or Genesis Plaza (0,0) — plaza has full
-    // ground art; the client floor z-fights the red carpet / tan grid underlay.
+    // Genesis City: default empty-land floor under **every** scene parcel (FloorBase /
+    // red-grass pack at Y=-0.02 — same as Winterfest ice rink). Multi-parcel plazas
+    // (e.g. CBD 116 parcels) use instancing — sequential clone was multi-second thrash.
+    // Skip when the scene authored terrain, or Genesis Plaza (0,0) — full ground art.
     if (profile.kind === 'genesis' && !authorTerrain && !isGenesisPlazaScene(scene)) {
       const base = parseParcelKey(scene.baseParcel)
       const groundHash = profile.sceneGround
-      onProgress?.(`Default floor GLB on ${scene.parcels.length} scene parcel(s)…`)
-      for (const key of scene.parcels) {
+      const n = scene.parcels.length
+      onProgress?.(`Default floor GLB on ${n} scene parcel(s)…`)
+      // SW corners in scene-local DCL meters (instancer applies EMPTY_LAND_GROUND_OFFSET).
+      const tiles = scene.parcels.map((key) => {
         const parcel = parseParcelKey(key)
-        const parcelRoot = new THREE.Group()
-        parcelRoot.name = `parcel:${key}:scene`
         const origin = parcelWorldOrigin(parcel, base)
-        dclToThreePos(origin.x, origin.y, origin.z, parcelRoot.position)
-        const ground = await cache.clone(catalystAssetUrl(groundHash), groundHash, {
-          landscape: true
-        })
-        ground.position.set(
-          EMPTY_LAND_GROUND_OFFSET.x,
-          EMPTY_LAND_GROUND_OFFSET.y,
-          EMPTY_LAND_GROUND_OFFSET.z
-        )
-        parcelRoot.add(ground)
-        landscape.add(parcelRoot)
-      }
+        return { x: origin.x, z: origin.z }
+      })
+      const floors = await buildInstancedGroundTiles(
+        cache,
+        groundHash,
+        tiles,
+        'landscape:scene-default-floor',
+        base
+      )
+      landscape.add(floors)
+      console.info(
+        `[landscape] genesis default floor ×${n} parcels @ y=${EMPTY_LAND_GROUND_OFFSET.y} (instanced)`
+      )
     } else if (profile.kind === 'genesis' && isGenesisPlazaScene(scene) && !authorTerrain) {
       onProgress?.('Landscape: genesis plaza — skip default floor GLB (scene art owns ground)')
     }

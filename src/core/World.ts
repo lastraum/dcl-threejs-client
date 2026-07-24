@@ -738,6 +738,8 @@ export class World {
         : { mode: 'rect', bounds: sceneWorldBounds(scene.parcels, scene.baseParcel) }
 
     this.loadedPrimaryScene = scene
+    // Neighbors stay off until notifyPlayReady (setNeighborActivityEnabled).
+    this.multiScene?.setSecondaryActivityEnabled(false)
     this.aoiVisual.bind({
       scene,
       cache: this.assets,
@@ -1228,6 +1230,10 @@ export class World {
       plazaScale,
       engineTickIntervalMs: resolveEngineTickIntervalMs(this.sceneScript.getPerformanceTier())
     })
+    // AOI warm/live/visuals only after primary is play-ready — dual-boot kills CBD.
+    this.aoiVisual.setNeighborActivityEnabled(true)
+    this.scenePromote.setNeighborActivityEnabled(true)
+    this.multiScene?.setSecondaryActivityEnabled(true)
     if (!skipRemoteAvatars()) {
       this.remoteAvatars?.setPlayReady(plazaScale)
     }
@@ -3690,6 +3696,8 @@ export class World {
     this.session.setCatalystEndpoints(newScene.realm.contentUrl, newScene.realm.lambdasUrl)
 
     // AOI tertiary + promote controller retarget to new primary footprint.
+    // Handoff primary is already running — re-enable neighbors immediately.
+    multi.setSecondaryActivityEnabled(true)
     this.aoiVisual.bind({
       scene: newScene,
       cache: this.assets,
@@ -3702,7 +3710,9 @@ export class World {
         this.multiScene?.reconcileSecondaries(candidates)
       }
     })
+    this.aoiVisual.setNeighborActivityEnabled(true)
     this.scenePromote.bind(newScene)
+    this.scenePromote.setNeighborActivityEnabled(true)
 
     // Multi-scene keeps PE + demoted/remaining secondaries; retarget content map.
     multi.notifyPrimaryChanged(newScene)

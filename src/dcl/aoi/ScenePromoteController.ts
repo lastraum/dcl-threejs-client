@@ -91,6 +91,8 @@ export class ScenePromoteController {
   private warmScanInFlight = false
   private inFlight = false
   private evalGen = 0
+  /** When false, skip warm scan + promote evaluate (primary still booting). */
+  private neighborActivityEnabled = false
   private readonly onPromote: ScenePromoteControllerOptions['onPromote']
   private readonly onSoftRoute: ScenePromoteControllerOptions['onSoftRoute']
   private readonly onPrefetch: ScenePromoteControllerOptions['onPrefetch']
@@ -150,11 +152,12 @@ export class ScenePromoteController {
     this.dwellSince = 0
     this.inFlight = false
     this.warmScanInFlight = false
+    this.neighborActivityEnabled = false
     this.lastSoftKey = ''
     this.lastWarmScanAt = 0
     this.evalGen++
     console.info(
-      `[promote] bound primary “${scene.title}” base=${scene.baseParcel} parcels=${this.primaryParcels.size} entity=${scene.entityId?.slice(0, 12) ?? 'none'} scriptWarm=${this.getScriptWarmRadiusM()}m`
+      `[promote] bound primary “${scene.title}” base=${scene.baseParcel} parcels=${this.primaryParcels.size} entity=${scene.entityId?.slice(0, 12) ?? 'none'} scriptWarm=${this.getScriptWarmRadiusM()}m (warm deferred until play-ready)`
     )
   }
 
@@ -168,7 +171,12 @@ export class ScenePromoteController {
     this.dwellKey = ''
     this.inFlight = false
     this.warmScanInFlight = false
+    this.neighborActivityEnabled = false
     this.evalGen++
+  }
+
+  setNeighborActivityEnabled(enabled: boolean): void {
+    this.neighborActivityEnabled = enabled
   }
 
   /**
@@ -192,7 +200,9 @@ export class ScenePromoteController {
       this.onSoftRoute?.(px, py)
     }
 
-    // Inner radius: batch-warm nearby real SDK7 scenes (not per-parcel road spam).
+    if (!this.neighborActivityEnabled) return
+
+    // Warm band: batch-warm nearby real SDK7 scenes (not per-parcel road spam).
     this.scheduleScriptWarmScan(dclX, dclZ, scene.baseParcel)
 
     if (this.inFlight) return

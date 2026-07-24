@@ -35,6 +35,8 @@ export class MultiSceneRuntime {
   private onLiveSecondaryIds: ((ids: ReadonlySet<string>) => void) | null
   /** Last multi-scene phys descs — for tracking invalidation. */
   private lastMultiPhysIds = new Set<number>()
+  /** Live secondary tick/reconcile gated until primary play-ready. */
+  private secondaryActivityEnabled = false
 
   constructor(opts: MultiSceneRuntimeOptions) {
     this.pe = opts.peManager
@@ -137,13 +139,20 @@ export class MultiSceneRuntime {
     return this.secondary?.hasSecondaryForParcel(x, y) ?? false
   }
 
+  setSecondaryActivityEnabled(enabled: boolean): void {
+    this.secondaryActivityEnabled = enabled
+  }
+
   reconcileSecondaries(candidates: SecondaryLiveRequest[]): void {
+    if (!this.secondaryActivityEnabled) return
     this.secondary?.reconcile(candidates)
   }
 
   tickSync(player: EntityPose, camera: EntityPose, frame = 0): void {
     this.pe.tickSync(player, camera, frame)
-    this.secondary?.tickSync(player, camera)
+    if (this.secondaryActivityEnabled) {
+      this.secondary?.tickSync(player, camera)
+    }
   }
 
   /**
@@ -156,7 +165,9 @@ export class MultiSceneRuntime {
   }> {
     const colliders: PhysicsColliderDesc[] = []
     colliders.push(...(await this.pe.tickAsync()))
-    colliders.push(...((await this.secondary?.tickAsync()) ?? []))
+    if (this.secondaryActivityEnabled) {
+      colliders.push(...((await this.secondary?.tickAsync()) ?? []))
+    }
 
     if (this.primaryScene && this.cache) {
       this.cache.setScene(this.primaryScene)

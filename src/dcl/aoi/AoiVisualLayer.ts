@@ -113,6 +113,11 @@ export class AoiVisualLayer {
   private readonly firstFrameSampler = new SecondaryFirstFrameSampler()
   /** Live secondary workers — hide tertiary FF/composite for these entity ids. */
   private readonly liveSecondaryIds = new Set<string>()
+  /**
+   * When false, skip refresh (neighbor visuals + secondary candidates).
+   * Primary mega-scenes must finish boot before AOI steals main thread.
+   */
+  private neighborActivityEnabled = false
 
   constructor() {
     this.root.name = 'aoi-visual-layer'
@@ -143,12 +148,30 @@ export class AoiVisualLayer {
     }
   }
 
+  /**
+   * Enable/disable neighbor AOI work (visuals + live candidates).
+   * Call true only after primary notifyPlayReady — CBD-scale primary + AOI dual-boot = 2fps.
+   */
+  setNeighborActivityEnabled(enabled: boolean): void {
+    if (this.neighborActivityEnabled === enabled) return
+    this.neighborActivityEnabled = enabled
+    if (enabled) {
+      console.info('[aoi] neighbor activity ON (primary play-ready)')
+      // Force refresh next update so ring fills after boot gate lifts.
+      this.lastParcelKey = ''
+      this.lastRefreshAt = 0
+    } else {
+      console.info('[aoi] neighbor activity OFF (primary booting)')
+    }
+  }
+
   /** Call after primary scene is known — coords only. */
   bind(ctx: AoiVisualLayerContext): void {
     this.unbind()
     this.disposed = false
     this.ctx = ctx
     this.enabled = ctx.scene.source.kind === 'coords'
+    this.neighborActivityEnabled = false
     this.primaryIsEmpty = !ctx.scene.entityId?.trim() && !ctx.scene.mainEntry?.trim()
     this.primaryParcelSet.clear()
     this.liveSecondaryIds.clear()
@@ -169,7 +192,7 @@ export class AoiVisualLayer {
       FF_MAX_VISIBLE,
       ' retained≤',
       FF_MAX_RETAINED,
-      ' · FocusOwner=primary',
+      ' · FocusOwner=primary · neighbors deferred until play-ready',
       this.primaryIsEmpty ? '(empty primary)' : ''
     )
   }
@@ -199,10 +222,11 @@ export class AoiVisualLayer {
 
   /**
    * Throttled refresh from player feet (scene-local DCL meters).
-   * No-op for worlds / radius 0.
+   * No-op for worlds / radius 0 / until neighbor activity enabled.
    */
   update(dclX: number, dclZ: number, force = false): void {
     if (this.disposed || !this.enabled || !this.ctx) return
+    if (!this.neighborActivityEnabled && !force) return
     const radius = renderQuality.getSceneLoadRadiusM()
     if (radius <= 0) {
       if (this.lastRadius !== 0) {

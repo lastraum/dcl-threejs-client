@@ -5,10 +5,31 @@
 # Dev panel Community tab renders this as a single workflow table.
 
 schema_version: 2
-updated: 2026-07-21
+updated: 2026-07-24
 source: github
 base_branch: dev-latest
 workflow:
+  - stage: merged
+    integration_ref: pr:46
+    title: Tour v2 — locations, circular flag, end-tour export
+    owner: lastraum
+    pr: 46
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/46
+    updated: 2026-07-24
+  - stage: merged
+    integration_ref: pr:45
+    title: wallet-inventory mode for the wearable sweep harness
+    owner: awedjob
+    pr: 45
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/45
+    updated: 2026-07-22
+  - stage: merged
+    integration_ref: pr:44
+    title: overlay/backpack redesign, 2D↔3D toggle, and cross-tab consistency
+    owner: awedjob
+    pr: 44
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/44
+    updated: 2026-07-22
   - stage: merged
     integration_ref: pr:43
     title: stop PE HUD flash from paint thrash
@@ -24,11 +45,11 @@ workflow:
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/42
     updated: 2026-07-21
   - stage: merged
-    integration_ref: pr:41
-    title: Genesis multi-scene AOI, Explorer roads, empty land
+    integration_ref: pr:39
+    title: parallel-skeleton fallback + facial-hair tint order
     owner: lastraum
-    pr: 41
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/41
+    pr: 39
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/39
     updated: 2026-07-21
   - stage: merged
     integration_ref: pr:40
@@ -38,11 +59,11 @@ workflow:
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/40
     updated: 2026-07-21
   - stage: merged
-    integration_ref: pr:39
-    title: parallel-skeleton fallback + facial-hair tint order
+    integration_ref: pr:41
+    title: Genesis multi-scene AOI, Explorer roads, empty land
     owner: lastraum
-    pr: 39
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/39
+    pr: 41
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/41
     updated: 2026-07-21
   - stage: merged
     integration_ref: pr:34
@@ -123,30 +144,9 @@ workflow:
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/15
     updated: 2026-07-11
   - stage: merged
-    integration_ref: pr:13
-    title: empty texture slots, AUTO alpha parity, per-frame re-apply loop
-    owner: awedjob
-    pr: 13
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/13
-    updated: 2026-07-11
-  - stage: merged
-    integration_ref: pr:16
-    title: VirtualCamera bind reliability, PE-follow, and chrome cleanup
+    integration_ref: ecs:TriggerArea
+    title: TriggerArea Tier A — volume enter/exit and scene callbacks
     owner: lastraum
-    pr: 16
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/16
-    updated: 2026-07-11
-  - stage: merged
-    integration_ref: pr:12
-    title: "perf(mesh): P0 frame law — hash drain, instancing, no bulk soft-prime"
-    owner: lastraum
-    pr: 12
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/12
-    updated: 2026-07-10
-  - stage: merged
-    integration_ref: pr:11
-    title: scene UI stack + pointer/input path (lastraum → dev-latest)
-    owner: lastraum
-    pr: 11
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/11
-    updated: 2026-07-10
+    pr: 2
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/2
+    updated: 2026-06-17

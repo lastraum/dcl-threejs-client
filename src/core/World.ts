@@ -1591,17 +1591,11 @@ export class World {
 
         const t2 = performance.now()
         await this.sceneScript.syncAsyncBridges()
-        // Animator.sync is async-only — slide door colliders the same frame open/close applies.
+        // Animator.sync is async-only — PART kinematic pose same frame open/close applies.
         if (this.playerMode && this.player && this.collidersLoadingComplete && !this.deferPhysxCooks) {
-          const animated = this.sceneScript.refreshAnimatorColliderPosesNow()
-          if (animated.size > 0) {
-            const animatedPhys = new Set<number>()
-            for (const entity of animated) {
-              const physId = this.sceneScript.physEntityIdForPoseSync(entity)
-              if (physId !== null) animatedPhys.add(physId)
-            }
-            this.pushColliderPosesToPhysX({ animatedPhysIds: animatedPhys })
-          }
+          this.sceneScript.snapshotPhysMotionSets()
+          const part = this.sceneScript.refreshAnimatorColliderPosesNow()
+          if (part.size > 0) this.pushColliderPartPoses(part)
         }
         // PE + secondary async projection + multi-scene colliders into PhysX.
         if (this.multiScene) {
@@ -1675,43 +1669,42 @@ export class World {
       }
     }
 
+    // 1) Transform writers (CRDT) already applied. 2) Tween/Billboard/Animator.
     this.sceneScript.pumpMotionBridges(delta, startFrame)
     if (this.sceneScript.hasColliderWorkPending()) {
       this.sceneScript.syncCollision()
     }
 
-    // STATIC default. ANIMATED = Animator | Tween | Billboard | system Transform | markSystem*.
-    // Only animated entities get multi-shape child slides; never the whole plaza.
-    const animatedEarly =
-      this.collidersLoadingComplete && !this.deferPhysxCooks
-        ? this.sceneScript.getAnimatedColliderEntities(groundEcsEarly)
-        : new Set<Entity>()
-    if (animatedEarly.size > 0) {
-      this.sceneScript.refreshColliderDescPoses([...animatedEarly], animatedEarly)
-      const animatedPhys = new Set<number>()
-      for (const entity of animatedEarly) {
-        const physId = this.sceneScript.physEntityIdForPoseSync(entity)
-        if (physId !== null) animatedPhys.add(physId)
-      }
-      this.pushColliderPosesToPhysX({ animatedPhysIds: animatedPhys })
+    // Two PhysX sources only (docs/COLLIDER_MOTION_POLICY.md): Transform dirty | Animator part.
+    const physReady = this.collidersLoadingComplete && !this.deferPhysxCooks
+    const { transformDirty, animatorPart } = physReady
+      ? this.sceneScript.snapshotPhysMotionSets()
+      : { transformDirty: new Set<Entity>(), animatorPart: new Set<Entity>() }
+
+    if (transformDirty.size > 0) {
+      this.pushColliderRootPoses(transformDirty)
+    }
+    if (animatorPart.size > 0) {
+      this.sceneScript.refreshColliderDescPoses([...animatorPart], animatorPart)
+      this.pushColliderPartPoses(animatorPart)
     }
 
     let meshMotion: Entity[] = []
-    if (this.collidersLoadingComplete && !this.deferPhysxCooks && needsPlatformPipeline && feet) {
+    if (physReady && needsPlatformPipeline && feet) {
       const groundEcs = groundEcsEarly
-      const animated = this.sceneScript.getAnimatedColliderEntities(groundEcs)
       const frameMotion = this.sceneScript.consumeFrameMotionEntities()
       meshMotion = this.sceneScript.recordWalkSurfaceDeltasForEntities(
         frameMotion,
-        animated,
+        animatorPart,
         feet,
         standPhysEntity
       )
       if (this.sceneScript.hasColliderWorkPending()) {
         this.sceneScript.syncCollision()
       }
-      const poseSync = this.sceneScript.collectPhysXPoseSyncEntities(meshMotion, animated)
+      const poseSync = this.sceneScript.collectPhysXPoseSyncEntities(meshMotion, animatorPart)
       const platformEntities = new Set<Entity>(poseSync)
+      for (const e of transformDirty) platformEntities.add(e)
       if (groundEcs !== null) platformEntities.add(groundEcs)
 
       let platformDescs: ReturnType<SceneScriptSystem['getPhysicsColliderDescsForEntities']> | null =
@@ -1723,31 +1716,19 @@ export class World {
         return platformDescs
       }
 
-      // Remaining poseSync not already in animatedEarly: still animated this frame (e.g. late
-      // transform) — root/shape slide via the same animated gate only.
-      if (poseSync.length) {
-        const late = poseSync.filter((e) => !animatedEarly.has(e) && animated.has(e))
-        if (late.length) {
-          this.sceneScript.refreshColliderDescPoses(late, animated)
-          const animatedPhys = new Set<number>()
-          for (const entity of late) {
-            const physId = this.sceneScript.physEntityIdForPoseSync(entity)
-            if (physId !== null) animatedPhys.add(physId)
-          }
-          this.pushColliderPosesToPhysX({ animatedPhysIds: animatedPhys })
-        }
-      }
-
       const groundIsMoving =
-        groundEcs !== null && (meshMotion.includes(groundEcs) || animated.has(groundEcs))
+        groundEcs !== null &&
+        (meshMotion.includes(groundEcs) ||
+          animatorPart.has(groundEcs) ||
+          transformDirty.has(groundEcs))
       const standScoped = standPhysEntity !== null && standPhysEntity !== -1
 
-      if (groundIsMoving || animated.size > 0) {
+      if (groundIsMoving || animatorPart.size > 0 || transformDirty.size > 0) {
         const descs = ensurePlatformDescs()
-        if (!onSceneGround || animated.size > 0) {
+        if (!onSceneGround || animatorPart.size > 0 || transformDirty.size > 0) {
           this.physics.snapshotActorRootPoses(descs)
         }
-        if (animated.size > 0 && standScoped) {
+        if (animatorPart.size > 0 && standScoped) {
           this.physics.snapshotGltfColliderWalkSurfaces(descs, feet, standPhysEntity)
         }
       }
@@ -1762,7 +1743,11 @@ export class World {
       if (groundIsMoving) {
         this.physics.applyActorRootPoseDeltas(ensurePlatformDescs(), standPhysEntity)
       }
-      if (feet && groundEcs !== null && (groundIsMoving || animated.has(groundEcs))) {
+      if (
+        feet &&
+        groundEcs !== null &&
+        (groundIsMoving || animatorPart.has(groundEcs) || transformDirty.has(groundEcs))
+      ) {
         this.sceneScript.computeAnimatorOriginDeltas(feet, groundEcs)
       }
       this.physics.mergeAnimatorOriginPlatformMotion(
@@ -2184,7 +2169,7 @@ export class World {
    * Slide entity-root T+R for all multi-shape / primitive statics.
    * NEVER re-extract shape local matrices + relative-slide against cook baselines
    * (that double-transformed plaza solids → soft world / toggle).
-   * Animated colliders use pushColliderPosesToPhysX({ animatedPhysIds }) with shape motion.
+   * Play-time PART movers use pushColliderPartPoses (kinematic); ROOT uses pushColliderRootPoses.
    */
   private pushAllColliderPosesToPhysX(): void {
     if (!this.playerMode) return
@@ -2339,94 +2324,90 @@ export class World {
 
 
   /**
-   * Pose slide only.
-   *
-   * **Static** (default): CRDT Transform dirty → actor root T+R only.
-   * **Animated** (`animatedPhysIds`): Animator / Tween / Billboard / system movers →
-   * full multi-shape child slides + SQ rebuild when hulls move.
-   *
-   * Never puts static plaza furniture on the animated path.
+   * Transform dirty → ROOT follow (actor pose = entity). Never rewrites shape geometry.
+   * See `docs/COLLIDER_MOTION_POLICY.md`.
    */
-  private pushColliderPosesToPhysX(options?: {
-    /** PhysX entity ids for {@link SceneScriptSystem.getAnimatedColliderEntities}. */
-    animatedPhysIds?: ReadonlySet<number>
-    /** @deprecated use animatedPhysIds */
-    forceEntities?: ReadonlySet<number>
-  }): void {
-    if (!this.playerMode) return
-    const dirty = this.sceneScript.getLastPoseChangedEntities()
-    const animatedPhysIds = options?.animatedPhysIds ?? options?.forceEntities
-    if (!animatedPhysIds?.size && !dirty.length) return
-
-    // Animated: caller already refreshed with allowShapeMotion.
-    // Static dirty: entity-root matrix only — never rewrite child shape locals.
-    if (dirty.length) {
-      const dirtyOnly = animatedPhysIds?.size
-        ? dirty.filter((e) => {
-            const physId = this.sceneScript.physEntityIdForPoseSync(e)
-            return physId === null || !animatedPhysIds.has(physId)
-          })
-        : dirty
-      if (dirtyOnly.length) {
-        this.sceneScript.refreshColliderDescPoses(dirtyOnly)
+  private pushColliderRootPoses(transformDirty: ReadonlySet<Entity>): void {
+    if (!this.playerMode || !transformDirty.size) return
+    this.sceneScript.refreshColliderDescPoses([...transformDirty])
+    const descs = this.sceneScript.getPhysicsColliderDescsForEntities([...transformDirty])
+    if (!descs.length) return
+    // Prefer kinematic root pose for multi-shape already promoted; else static root slide.
+    let updated = 0
+    const staticRoot: PhysicsColliderDesc[] = []
+    for (const desc of descs) {
+      if (desc.shapes?.length && this.physics.isKinematicActor(desc.entity)) {
+        if (this.physics.updateKinematicMultiShapePose(desc)) updated++
+      } else {
+        staticRoot.push(desc)
       }
     }
-
-    let updated = 0
-
-    // 1) ANIMATOR PART movers → kinematic multi-shape (cook once, pose every frame).
-    // Not live world-bake: that recook thrash softed large scenes. CCT already queries eDYNAMIC.
-    if (animatedPhysIds?.size) {
-      for (const physId of animatedPhysIds) {
-        const desc = this.sceneScript.getPhysicsColliderDesc(physId)
-        if (!desc) {
-          if (!this.loggedAnimatorNoCollider.has(physId)) {
-            this.loggedAnimatorNoCollider.add(physId)
-            console.warn(
-              `[phys] animated entity physId=${physId} has no collider desc — cannot track door`
-            )
-          }
-          continue
-        }
-        if (!desc.shapes?.length) {
-          // Single-shape / MeshCollider: root follow on existing static is enough.
-          updated += this.physics.applyStaticColliderPoseUpdates([desc], {
-            force: true,
-            forceEntities: new Set([desc.entity]),
+    if (staticRoot.length) {
+      updated += this.physics.applyStaticColliderPoseUpdates(staticRoot, {
+        force: true,
+        actorRootOnly: true
+      })
+    }
+    // Also fold CRDT pose-dirty roots not already covered.
+    const lastDirty = this.sceneScript.getLastPoseChangedEntities()
+    if (lastDirty.length) {
+      const extra = lastDirty.filter((e) => !transformDirty.has(e))
+      if (extra.length) {
+        this.sceneScript.refreshColliderDescPoses(extra)
+        const extraDescs = this.sceneScript
+          .getPhysicsColliderDescsForEntities(extra)
+          .filter((d) => !this.physics.isKinematicActor(d.entity))
+        if (extraDescs.length) {
+          updated += this.physics.applyStaticColliderPoseUpdates(extraDescs, {
+            force: false,
             actorRootOnly: true
           })
-          continue
-        }
-        if (this.physics.updateKinematicMultiShapePose(desc)) {
-          updated++
-          this.animatedLiveBakeMeshFp.delete(desc.entity) // no longer on bake path
         }
       }
     }
-
-    // 2) STATIC — actor root only (plaza / CRDT dirty that is not animated this frame).
-    if (dirty.length) {
-      const staticDescs: PhysicsColliderDesc[] = []
-      for (const d of this.sceneScript.getPhysicsColliderDescsForEntities(dirty)) {
-        if (animatedPhysIds?.has(d.entity)) continue
-        staticDescs.push(d)
-      }
-      if (staticDescs.length) {
-        updated += this.physics.applyStaticColliderPoseUpdates(staticDescs, {
-          force: false,
-          actorRootOnly: true
-        })
-      }
-    }
-
     if (updated > 0) this.physics.refreshStaticColliderQueries()
     this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
   }
 
   /**
-   * Animator GLTF colliders (doors, lifts, propellers) must be entity-local with shape baselines
-   * so child `_collider` meshes can pose-slide when clips play. Force entity-local recook for
-   * every animated extract (not only world-baked leftovers).
+   * Animator PART → kinematic multi-shape (cook once, setKinematicTarget + shape locals).
+   * Caller must refreshColliderDescPoses with allowShapeMotion first.
+   */
+  private pushColliderPartPoses(animatorPart: ReadonlySet<Entity>): void {
+    if (!this.playerMode || !animatorPart.size) return
+    let updated = 0
+    for (const entity of animatorPart) {
+      const physId = this.sceneScript.physEntityIdForPoseSync(entity)
+      if (physId === null) continue
+      const desc = this.sceneScript.getPhysicsColliderDesc(physId)
+      if (!desc) {
+        if (!this.loggedAnimatorNoCollider.has(physId)) {
+          this.loggedAnimatorNoCollider.add(physId)
+          console.warn(
+            `[phys] PART entity ${entity} physId=${physId} has no collider desc — cannot track`
+          )
+        }
+        continue
+      }
+      if (!desc.shapes?.length) {
+        updated += this.physics.applyStaticColliderPoseUpdates([desc], {
+          force: true,
+          forceEntities: new Set([desc.entity]),
+          actorRootOnly: true
+        })
+        continue
+      }
+      if (this.physics.updateKinematicMultiShapePose(desc)) {
+        updated++
+        this.animatedLiveBakeMeshFp.delete(desc.entity)
+      }
+    }
+    if (updated > 0) this.physics.refreshStaticColliderQueries()
+    this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
+  }
+
+  /**
+   * Animator multi-shape at boot — entity-local cook so PART kinematics have baselines.
    */
   private recookAnimatedGltfEntityLocal(): void {
     const stale: PhysicsColliderDesc[] = []

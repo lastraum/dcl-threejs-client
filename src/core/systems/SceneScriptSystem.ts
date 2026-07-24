@@ -323,10 +323,18 @@ export class SceneScriptSystem {
   private readonly lastSyncFrameTransformEntities = new Set<Entity>()
   private readonly lastPoseChangedEntities: Entity[] = []
   /**
-   * Systems outside Animator/Tween/Billboard that moved a collider this frame
-   * (call {@link markSystemAnimatedCollider}). Cleared at the start of each motion pump.
+   * Systems that moved **parts** (bone/_collider) this frame — PART path.
+   * Cleared at the start of each motion pump. Prefer Animator; use this for custom systems.
    */
-  private readonly systemAnimatedColliders = new Set<Entity>()
+  private readonly systemPartColliders = new Set<Entity>()
+  /**
+   * Systems that moved **entity Transform** without going through Tween/CRDT/Billboard — ROOT path.
+   * Cleared at the start of each motion pump.
+   */
+  private readonly systemTransformDirty = new Set<Entity>()
+  /** Frozen after pumpMotionBridges — valid for the rest of the motion frame. */
+  private physMotionSnapshot: { transformDirty: Set<Entity>; animatorPart: Set<Entity> } | null =
+    null
   private platformMotionReportDumped = false
   private sceneBaseParcel: string | null = null
   /** True when syncCollision already ran incremental pose descriptor refresh this pass. */
@@ -761,39 +769,64 @@ export class SceneScriptSystem {
 
   /** Union of all motion emitters after bridges + syncCollision — O(moved). */
   consumeFrameMotionEntities(): ReadonlySet<Entity> {
-    const out = new Set<Entity>()
-    for (const entity of this.lastTweenMotionEntities) out.add(entity)
-    for (const entity of this.billboardBridge?.consumeMotionEntities() ?? []) out.add(entity)
-    for (const entity of this.animatorBridge?.consumeShapeMotionEntities() ?? []) out.add(entity)
-    for (const entity of this.lastSyncFrameTransformEntities) out.add(entity)
+    const { transformDirty, animatorPart } = this.getPhysMotionSets()
+    const out = new Set<Entity>(transformDirty)
+    for (const e of animatorPart) out.add(e)
     for (const entity of this.lastPoseChangedEntities) out.add(entity)
-    for (const entity of this.systemAnimatedColliders) out.add(entity)
     return out
   }
 
   /**
-   * **Static by default.**
+   * PhysX motion sets — **only two sources** (see `docs/COLLIDER_MOTION_POLICY.md`):
+   * - `transformDirty` — entity Transform changed (Tween, Billboard, CRDT, system)
+   * - `animatorPart` — Animator part/bone motion (one-shot doors) or system part mark
    *
-   * **Live-bake shape-animated** (this set): one-shot Animator only (doors open/close), or
-   * {@link markSystemAnimatedCollider}. Looping Animator (flags, idle props) stay **static**
-   * for PhysX — world-baking them every frame softed/toggled Genesis Plaza after ~1 min.
-   *
-   * **Root-animated** (NOT in this set): Tween / Billboard / CRDT Transform → actor-root-only.
+   * Snapshot is frozen after {@link snapshotPhysMotionSets} (post-pump); safe to call repeatedly.
    */
-  getAnimatedColliderEntities(groundEcs: Entity | null = null): Set<Entity> {
-    const out = new Set<Entity>()
-    const addWithTree = (entity: Entity): void => {
-      for (const e of this.expandToExtractedColliderEntities(entity)) out.add(e)
+  getPhysMotionSets(): { transformDirty: Set<Entity>; animatorPart: Set<Entity> } {
+    if (this.physMotionSnapshot) return this.physMotionSnapshot
+    return this.buildPhysMotionSets()
+  }
+
+  /** Call once after pumpMotionBridges so transform/animator sets stay stable for the frame. */
+  snapshotPhysMotionSets(): { transformDirty: Set<Entity>; animatorPart: Set<Entity> } {
+    this.physMotionSnapshot = this.buildPhysMotionSets()
+    return this.physMotionSnapshot
+  }
+
+  private buildPhysMotionSets(): { transformDirty: Set<Entity>; animatorPart: Set<Entity> } {
+    const transformDirty = new Set<Entity>()
+    const animatorPart = new Set<Entity>()
+    const addRoot = (entity: Entity): void => {
+      if (this.physEntityIdForPoseSync(entity) !== null) transformDirty.add(entity)
     }
-    // One-shot doors only (AnimatorBridge filters loops out of pendingShapeMotion).
-    for (const entity of this.animatorBridge?.pendingShapeMotionEntities() ?? []) addWithTree(entity)
-    for (const entity of this.systemAnimatedColliders) addWithTree(entity)
-    // Grounded platform: only if it is currently one-shot shape-motion (not every Animator GLTF).
-    if (groundEcs !== null && out.has(groundEcs) === false) {
-      // Keep standing platform if system marked it; do not pull all Animator+Gltf of plaza.
-      void groundEcs
+    const addPart = (entity: Entity): void => {
+      for (const e of this.expandToExtractedColliderEntities(entity)) animatorPart.add(e)
     }
-    return out
+
+    for (const entity of this.lastSyncFrameTransformEntities) addRoot(entity)
+    for (const entity of this.lastTweenMotionEntities) addRoot(entity)
+    for (const entity of this.billboardBridge?.pendingMotionEntities() ?? []) addRoot(entity)
+    for (const entity of this.systemTransformDirty) addRoot(entity)
+
+    for (const entity of this.animatorBridge?.pendingShapeMotionEntities() ?? []) addPart(entity)
+    for (const entity of this.systemPartColliders) addPart(entity)
+
+    return { transformDirty, animatorPart }
+  }
+
+  /**
+   * @deprecated Use {@link getPhysMotionSets} — returns animatorPart only.
+   */
+  getAnimatedColliderEntities(_groundEcs: Entity | null = null): Set<Entity> {
+    return this.getPhysMotionSets().animatorPart
+  }
+
+  /**
+   * @deprecated Use {@link getPhysMotionSets}.
+   */
+  getFrameShapeMotionEntities(groundEcs: Entity | null): Set<Entity> {
+    return this.getAnimatedColliderEntities(groundEcs)
   }
 
   /**
@@ -809,14 +842,12 @@ export class SceneScriptSystem {
       if (this.physEntityIdForPoseSync(e) !== null) found.push(e)
     }
     consider(entity)
-    // Parents
     let p: Entity | undefined = this.transformParent.get(entity)
     let guard = 0
     while (p !== undefined && guard++ < 32) {
       consider(p)
       p = this.transformParent.get(p)
     }
-    // Direct children (and one level of grand-children — door handle vs GLB root)
     const stack = [...(this.transformChildren.get(entity) ?? [])]
     while (stack.length && guard++ < 64) {
       const c = stack.pop()!
@@ -831,19 +862,26 @@ export class SceneScriptSystem {
     return this.gltfColliders?.getColliderMeshWorldFingerprint(entity) ?? null
   }
 
-  /**
-   * @deprecated Use {@link getAnimatedColliderEntities}.
-   */
-  getFrameShapeMotionEntities(groundEcs: Entity | null): Set<Entity> {
-    return this.getAnimatedColliderEntities(groundEcs)
+  /** System moved entity Transform (root follow). Prefer writing Transform via ECS when possible. */
+  markTransformDirty(entity: Entity): void {
+    this.systemTransformDirty.add(entity)
+    if (this.physEntityIdForPoseSync(entity) !== null) {
+      this.colliderPoseDirty.add(entity)
+      this.markDescendantColliderPosesDirty(entity)
+    }
   }
 
   /**
-   * Systems that move **child** colliders (not just entity Transform) must call this the same
-   * frame so PhysX does multi-shape slides. Pure Transform/Tween movers do not need this.
+   * System moved **child** colliders (PART path). Prefer Animator for bone doors.
+   * @deprecated name — use {@link markSystemPartCollider}
    */
   markSystemAnimatedCollider(entity: Entity): void {
-    this.systemAnimatedColliders.add(entity)
+    this.markSystemPartCollider(entity)
+  }
+
+  /** System moved child / bone colliders this frame — PART path. */
+  markSystemPartCollider(entity: Entity): void {
+    this.systemPartColliders.add(entity)
   }
 
   /** Walk-surface Δ for motion emitter union — replaces full extracted scan. */
@@ -4490,13 +4528,13 @@ export class SceneScriptSystem {
 
     const poseChangedEntities: Entity[] = []
     this.lastPoseChangedEntities.length = 0
-    // Child _collider matrices only for ANIMATED entities this frame (not all dirty).
-    const animated = this.getAnimatedColliderEntities(null)
+    // Child _collider matrices only for Animator PART this frame (not Transform-only dirty).
+    const { animatorPart } = this.getPhysMotionSets()
     if (this.colliderPoseDirty.size) {
       for (const entity of this.colliderPoseDirty) {
         let changed = false
         if (this.collision.syncColliderEntityPose(entity, nodes)) changed = true
-        const allowShapes = animated.has(entity)
+        const allowShapes = animatorPart.has(entity)
         if (this.gltfColliders?.syncColliderEntityPose(entity, nodes, allowShapes)) changed = true
         if (changed) poseChangedEntities.push(entity)
       }
@@ -4578,7 +4616,9 @@ export class SceneScriptSystem {
     if (!this.running || !this.bridge) return
     this.maybeDumpMotionFocus()
     // Fresh animated set each frame — systems re-mark if they moved colliders.
-    this.systemAnimatedColliders.clear()
+    this.systemPartColliders.clear()
+    this.systemTransformDirty.clear()
+    this.physMotionSnapshot = null
     // Phase C: always sync to pick up new Tween signatures; update only when live.
     this.tweenBridge?.sync(this.view)
     if (this.tweenBridge?.hasLiveTweens()) {
@@ -4627,15 +4667,15 @@ export class SceneScriptSystem {
   }
 
   /**
-   * After async Animator sync: refresh multi-shape locals for active animators.
-   * World calls this so ice-rink doors PhysX-slide the same frame the clip starts.
+   * After async Animator sync: refresh multi-shape locals for PART movers.
+   * World calls this so doors kinematic-pose the same frame the clip starts.
    */
   refreshAnimatorColliderPosesNow(): Set<Entity> {
-    const animated = this.getAnimatedColliderEntities(null)
-    if (animated.size) {
-      this.refreshColliderDescPoses([...animated], animated)
+    const { animatorPart } = this.getPhysMotionSets()
+    if (animatorPart.size) {
+      this.refreshColliderDescPoses([...animatorPart], animatorPart)
     }
-    return animated
+    return animatorPart
   }
 
   /** @deprecated Prefer pumpMotionBridges + syncAsyncBridges */

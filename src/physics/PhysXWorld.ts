@@ -234,8 +234,17 @@ export class PhysXWorld {
   private readonly staticPoseFp = new Map<number, string>()
   /** World-space baked trimesh — actor stays at origin; never apply setGlobalPose. */
   private readonly actorWorldBaked = new Map<number, boolean>()
-  /** Cook-time shape local poses — runtime Animator slides use current * baseline⁻¹. */
+  /**
+   * Cook-time shape local matrices — Animator slides use current * baseline⁻¹ as shape pose.
+   * Geometry bakes full entityScale × localMatrix into verts (scale and placement do not commute,
+   * so absolute shape-pose mode is invalid for DCL Transform.scale and softed plaza).
+   */
   private readonly shapeBaselineLocal = new Map<number, THREE.Matrix4[]>()
+  /**
+   * Entity world scale baked into entity-local verts at cook time.
+   * Pose slides only move T+R — scale drift must force recook or colliders stay unit-sized.
+   */
+  private readonly actorCookScale = new Map<number, THREE.Vector3>()
   /** Fingerprints whose trimesh cook failed — skip retry until fingerprint changes. */
   private readonly failedCookFp = new Set<string>()
   private readonly loggedFailedCookFp = new Set<string>()
@@ -1039,45 +1048,74 @@ export class PhysXWorld {
   /**
    * Runtime pose slide — moves existing actors without remove/recook gaps.
    * Returns how many actors were repositioned.
-   * Entities that cannot slide safely are invalidated so the cook queue can recook them
-   * (shape-count mismatch / corrupt pose must not leave ghost walk-through solids).
+   *
+   * @param options.actorRootOnly — multi-shape: only set actor global T+R from desc.matrix;
+   *   leave per-shape local poses alone. Required after boot: re-extracting shape locals and
+   *   applying relative slides against cook baselines double-transforms plaza solids (soft world).
+   * @param options.forceEntities — allow-list that also enables full multi-shape shape slides
+   *   (Animator door/lift shape-motion only).
    */
   applyStaticColliderPoseUpdates(
     descs: PhysicsColliderDesc[],
-    options?: { force?: boolean; forceEntities?: ReadonlySet<number> }
+    options?: {
+      force?: boolean
+      forceEntities?: ReadonlySet<number>
+      /** Entity root T+R only — never rewrite multi-shape local poses. */
+      actorRootOnly?: boolean
+    }
   ): number {
     const forceAll = options?.force === true
     const forceEntities = options?.forceEntities
+    const actorRootOnly = options?.actorRootOnly === true
     let updated = 0
     for (const desc of descs) {
       if (this.failedCookFp.has(desc.fingerprint)) continue
       if (forceEntities && !forceAll && !forceEntities.has(desc.entity)) continue
+      const forceThis = forceAll || (!!forceEntities && forceEntities.has(desc.entity))
+      const shapeMotion = forceThis && !actorRootOnly
 
       if (desc.shapes?.length) {
         if (!this.geomFingerprintMatches(desc)) continue
-        const poseFp = multiShapePoseFingerprint(desc)
-        if (!forceAll && this.staticPoseFp.get(desc.entity) === poseFp) continue
         const actor = this.staticActors.get(desc.entity)
         if (!actor || this.actorWorldBaked.get(desc.entity)) continue
-        if (!this.isPoseSlideSafe(actor, desc)) {
-          // Leave live actor (no mid-walk hole). poseFp stays stale → isColliderSynced false
-          // → cook queue recooks via replaceStaticWithCook.
+
+        if (actorRootOnly || !shapeMotion) {
+          // Plaza static / entity Transform only: slide actor root; keep cooked shape locals.
+          if (!this.matrixHasFinitePose(desc.matrix)) continue
+          // Skip no-op when not forced (shape locals stay at cook baseline).
+          if (!forceThis && this.staticPoseFp.get(desc.entity) === multiShapePoseFingerprint(desc)) {
+            continue
+          }
+          try {
+            desc.matrix.decompose(this._pos, this._quat, this._scale)
+            this._pos.toPxTransform(this.actorPoseTransform)
+            this._quat.toPxTransform(this.actorPoseTransform)
+            actor.setGlobalPose(this.actorPoseTransform)
+            this.staticPoseFp.set(desc.entity, multiShapePoseFingerprint(desc))
+            updated++
+          } catch (err) {
+            console.warn('[PhysXWorld] multi-shape root pose slide failed:', desc.entity, err)
+          }
           continue
         }
+
+        // Shape-motion (doors): relative shape poses + actor root.
+        const poseFp = multiShapePoseFingerprint(desc)
+        if (!forceThis && this.staticPoseFp.get(desc.entity) === poseFp) continue
+        if (!this.isPoseSlideSafe(actor, desc)) continue
         try {
           if (!this.updateMultiShapeActorPose(actor, desc)) continue
           this.staticPoseFp.set(desc.entity, poseFp)
           updated++
         } catch (err) {
           console.warn('[PhysXWorld] multi-shape pose slide failed:', desc.entity, err)
-          // Keep prior actor; requeue via unsynced pose fingerprint.
         }
         continue
       }
 
       if (!this.geomFingerprintMatches(desc)) continue
       const poseFp = matrixFingerprint(desc.matrix)
-      if (!forceAll && this.staticPoseFp.get(desc.entity) === poseFp) continue
+      if (!forceThis && this.staticPoseFp.get(desc.entity) === poseFp) continue
       const actor = this.staticActors.get(desc.entity)
       if (!actor || this.actorWorldBaked.get(desc.entity)) continue
       if (!this.matrixHasFinitePose(desc.matrix)) continue
@@ -2417,6 +2455,7 @@ export class PhysXWorld {
     this.platformMotionDelta.delete(entity)
     this.platformWalkSurfacePos.delete(entity)
     this.shapeBaselineLocal.delete(entity)
+    this.actorCookScale.delete(entity)
   }
 
   /** Scene queries — bilateral layer test (matches CCT preFilter). */
@@ -2516,7 +2555,8 @@ export class PhysXWorld {
 
     for (const shapeDesc of shapes) {
       if (!shapeDesc.geometry) continue
-      // Entity-local cook only — actor root carries world pose; no world-baked vertex teleport path.
+      // Entity-local: bake entityScale × shape localMatrix into verts; actor T+R; shape pose
+      // identity at rest. Animator slides: shape pose = currentLocal * inv(baselineLocal).
       const result = this.createLocalTrimeshShape(
         shapeDesc,
         handles,
@@ -2574,6 +2614,10 @@ export class PhysXWorld {
         desc.entity,
         shapes.map((shape) => shape.localMatrix.clone())
       )
+      desc.matrix.decompose(this._pos, this._quat, this._scale)
+      this.actorCookScale.set(desc.entity, this._scale.clone())
+    } else {
+      this.actorCookScale.delete(desc.entity)
     }
     if (attached < shapes.length) {
       console.warn(
@@ -2669,7 +2713,7 @@ export class PhysXWorld {
       let entityLocalGeo: THREE.BufferGeometry | null = null
 
       if (!geometryCache) {
-        // Boot cook — world-space vertices, actor at origin (matches placed Three.js object).
+        // World-space vertices, actor at origin.
         this._worldMatrix.copy(desc.matrix).multiply(shapeDesc.localMatrix)
         const worldGeo = bakeTrimeshGeometry(indexed, this._worldMatrix)
         const workerKey = bootColliderCookSignature(geometry, desc, shapeDesc.localMatrix, false)
@@ -2677,9 +2721,9 @@ export class PhysXWorld {
         if (pxGeometry) worldBaked = true
         worldGeo.dispose()
       } else {
-        // Entity-local bake: actor carries T+R only — MUST bake entity world scale into verts
-        // or scaled floors (common DCL Transform.scale) land at unit size / miss the CCT.
-        // Pure authored geometry: no thickness inflate — only the scene's Transform.scale.
+        // Entity-local: bake entity world scale × shape localMatrix into verts (placement+scale
+        // do not commute — must bake together). Shape pose stays identity; Animator slides via
+        // relative shape pose current * inv(baseline).
         desc.matrix.decompose(this._pos, this._quat, this._scale)
         this._entityScaleMat.makeScale(
           Number.isFinite(this._scale.x) && Math.abs(this._scale.x) > 1e-8 ? this._scale.x : 1,
@@ -2720,8 +2764,7 @@ export class PhysXWorld {
       shape.setQueryFilterData(filterData)
       shape.setSimulationFilterData(filterData)
 
-      // Geometry already carries local/scale bake — shape pose must be identity (not a stale
-      // transform left over from a prior pose-slide on shapeLocalPoseTransform).
+      // Geometry carries local bake — shape pose identity at rest.
       this._pos.set(0, 0, 0)
       this._identityQuat.set(0, 0, 0, 1)
       this._pos.toPxTransform(this.shapeLocalPoseTransform)
@@ -2758,6 +2801,27 @@ export class PhysXWorld {
     if (nbShapes <= 0 || nbShapes !== shapes.length) return false
     for (const shape of shapes) {
       if (!this.matrixHasFinitePose(shape.localMatrix)) return false
+    }
+    // Entity-local cooks bake world scale into verts — T+R slide cannot fix scale drift.
+    // Parent scale settle after boot cook used to leave unit-sized soft furniture.
+    if (!this.actorWorldBaked.get(desc.entity)) {
+      const cookScale = this.actorCookScale.get(desc.entity)
+      if (cookScale) {
+        desc.matrix.decompose(this._pos, this._quat, this._scale)
+        const sx = Math.abs(this._scale.x)
+        const sy = Math.abs(this._scale.y)
+        const sz = Math.abs(this._scale.z)
+        const cx = Math.abs(cookScale.x)
+        const cy = Math.abs(cookScale.y)
+        const cz = Math.abs(cookScale.z)
+        const rel = (a: number, b: number) => {
+          const den = Math.max(a, b, 1e-4)
+          return Math.abs(a - b) / den
+        }
+        if (rel(sx, cx) > 0.04 || rel(sy, cy) > 0.04 || rel(sz, cz) > 0.04) {
+          return false
+        }
+      }
     }
     return true
   }
@@ -2813,12 +2877,11 @@ export class PhysXWorld {
       const current = shapes[i]!.localMatrix
       const baseline = baselines?.[i]
       if (baseline) {
+        // Door/lift: verts baked at baseline local; shape pose carries open*inv(closed).
         this._shapeRel.copy(baseline).invert()
         this._shapeRel.premultiply(current)
         this.setPxShapeLocalPose(pxShape, this._shapeRel)
       } else {
-        // Entity-local cooks bake localMatrix into verts — shape pose stays identity.
-        // Never re-apply raw localMatrix (double-transform → ghost solids).
         this._pos.set(0, 0, 0)
         this._identityQuat.set(0, 0, 0, 1)
         this._pos.toPxTransform(this.shapeLocalPoseTransform)
@@ -2972,6 +3035,7 @@ export class PhysXWorld {
     const prevPoseFp = this.staticPoseFp.get(entity)
     const prevWorldBaked = this.actorWorldBaked.get(entity)
     const prevBaseline = this.shapeBaselineLocal.get(entity)
+    const prevCookScale = this.actorCookScale.get(entity)
 
     if (prevActor) {
       // Detach from maps so cook can own the entity key — actor stays in the scene.
@@ -2982,6 +3046,7 @@ export class PhysXWorld {
       this.staticPoseFp.delete(entity)
       this.actorWorldBaked.delete(entity)
       this.shapeBaselineLocal.delete(entity)
+      this.actorCookScale.delete(entity)
     }
 
     let ok = false
@@ -3022,6 +3087,7 @@ export class PhysXWorld {
       if (prevPoseFp !== undefined) this.staticPoseFp.set(entity, prevPoseFp)
       if (prevWorldBaked !== undefined) this.actorWorldBaked.set(entity, prevWorldBaked)
       if (prevBaseline) this.shapeBaselineLocal.set(entity, prevBaseline)
+      if (prevCookScale) this.actorCookScale.set(entity, prevCookScale)
     }
     return false
   }

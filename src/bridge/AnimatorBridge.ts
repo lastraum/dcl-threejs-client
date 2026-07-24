@@ -411,6 +411,18 @@ export class AnimatorBridge {
       // Phase C: skip mixer.tick when nothing is running / fading (idle GLTF animators).
       if (!mixerHasActiveWork(entry)) continue
       entry.mixer.update(delta)
+      // Mixer only writes local TRS. Bone-parented `_collider` mesh.matrixWorld is stale until
+      // the hierarchy updates — required before PhysX shape slides (ice-rink doors).
+      entry.root.traverse((obj) => {
+        const sk = obj as THREE.SkinnedMesh
+        if (sk.isSkinnedMesh && sk.skeleton) {
+          sk.skeleton.update()
+        }
+      })
+      entry.root.updateMatrixWorld(true)
+      // ONLY mark shape-motion when collider child matrices actually changed.
+      // Marking every looping plaza flag/prop forever force-slid all multi-shape solids
+      // every frame and softed Genesis Plaza after ~1 min under load.
       if (this.shapeMotionProbe?.(entity)) {
         this.shapeMotionEntities.add(entity)
       }

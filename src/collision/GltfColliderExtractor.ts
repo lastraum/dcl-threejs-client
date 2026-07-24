@@ -444,7 +444,10 @@ export class GltfColliderExtractor {
     const colliderMeshes: THREE.Mesh[] = []
     gltfRoot.traverse((node) => {
       if (!(node instanceof THREE.Mesh)) return
-      if ((node as THREE.SkinnedMesh).isSkinnedMesh) return
+      // Skinned render meshes are unstable hulls; skinned `_collider` names still extract
+      // (bind-pose geo + bone matrixWorld after mixer — rigid door panels under bones).
+      const skinned = (node as THREE.SkinnedMesh).isSkinnedMesh === true
+      if (skinned && !isGltfInvisibleColliderMesh(node, gltfRoot)) return
       if (isGltfVisibleClassMesh(node)) {
         if (hasVisiblePhysics) colliderMeshes.push(node)
         return
@@ -453,11 +456,15 @@ export class GltfColliderExtractor {
         if (hasInvisiblePhysics) colliderMeshes.push(node)
         return
       }
-      if (hasVisiblePhysics) colliderMeshes.push(node)
+      if (hasVisiblePhysics && !skinned) colliderMeshes.push(node)
     })
     return colliderMeshes
   }
 
+  /**
+   * Full world matrix fingerprint for collider child meshes.
+   * Translation-only fingerprints miss hinged doors (pivot origin fixed while panel rotates).
+   */
   private colliderMeshWorldFingerprint(
     gltfRoot: THREE.Object3D,
     hasVisiblePhysics: boolean,
@@ -469,12 +476,22 @@ export class GltfColliderExtractor {
     for (const mesh of meshes) {
       mesh.updateMatrixWorld(true)
       const e = mesh.matrixWorld.elements
-      parts.push(`${e[12]!.toFixed(3)},${e[13]!.toFixed(3)},${e[14]!.toFixed(3)}`)
+      // 12 floats of the 4x3 affine block — enough for T+R+S without full 16.
+      parts.push(
+        `${e[0]!.toFixed(3)},${e[1]!.toFixed(3)},${e[2]!.toFixed(3)},` +
+          `${e[4]!.toFixed(3)},${e[5]!.toFixed(3)},${e[6]!.toFixed(3)},` +
+          `${e[8]!.toFixed(3)},${e[9]!.toFixed(3)},${e[10]!.toFixed(3)},` +
+          `${e[12]!.toFixed(3)},${e[13]!.toFixed(3)},${e[14]!.toFixed(3)}`
+      )
     }
     return parts.join('|')
   }
 
-  /** Animator / skinned GLTF — child `_collider` meshes move without entity-root Transform changes. */
+  /**
+   * Animator GLTF — child `_collider` / physics meshes move with clips (ice-rink doors, lifts).
+   * Matches shapes by geometry.uuid from fingerprint (not fragile traverse index order).
+   * Caller must have updated the GLB hierarchy matrixWorld after mixer.update.
+   */
   private refreshShapeLocalMatrices(
     gltfRoot: THREE.Object3D,
     entityObj: THREE.Object3D,
@@ -482,25 +499,47 @@ export class GltfColliderExtractor {
     hasVisiblePhysics: boolean,
     hasInvisiblePhysics: boolean
   ): boolean {
+    // Full hierarchy from entity root so bone-parented `_collider` children get live poses.
+    entityObj.updateMatrixWorld(true)
+    gltfRoot.updateMatrixWorld(true)
+
     const colliderMeshes = this.collectColliderMeshes(gltfRoot, hasVisiblePhysics, hasInvisiblePhysics)
-    const eligibleMeshes = colliderMeshes.filter((mesh) => {
+    const byGeoUuid = new Map<string, THREE.Mesh>()
+    const byName = new Map<string, THREE.Mesh>()
+    for (const mesh of colliderMeshes) {
       const posAttr = mesh.geometry.getAttribute('position')
-      return posAttr && posAttr.count >= 3
-    })
-    if (!eligibleMeshes.length || eligibleMeshes.length !== shapes.length) return false
+      if (!posAttr || posAttr.count < 3) continue
+      byGeoUuid.set(mesh.geometry.uuid, mesh)
+      if (mesh.name) byName.set(mesh.name, mesh)
+    }
+    if (!byGeoUuid.size) return false
 
     _entityInv.copy(entityObj.matrixWorld).invert()
     let changed = false
+    let matched = 0
     for (let i = 0; i < shapes.length; i++) {
-      const mesh = eligibleMeshes[i]!
+      const shape = shapes[i]!
+      // fingerprint: gltf:inv|vis:entity:idx:meshName:geoUuid
+      const parts = shape.fingerprint.split(':')
+      const geoUuid = parts.length >= 6 ? parts[parts.length - 1]! : ''
+      const meshName = parts.length >= 6 ? parts.slice(4, -1).join(':') : ''
+      const mesh =
+        (geoUuid && byGeoUuid.get(geoUuid)) ||
+        (meshName && byName.get(meshName)) ||
+        null
+      if (!mesh) continue
+      matched++
       mesh.updateMatrixWorld(true)
       _worldMatrix.copy(mesh.matrixWorld).premultiply(_entityInv)
       const nextFp = colliderPoseFp(_worldMatrix)
-      if (colliderPoseFp(shapes[i]!.localMatrix) !== nextFp) {
-        shapes[i]!.localMatrix.copy(_worldMatrix)
+      if (colliderPoseFp(shape.localMatrix) !== nextFp) {
+        shape.localMatrix.copy(_worldMatrix)
         changed = true
       }
     }
+    // Only report change when a localMatrix actually moved (doors). Returning matched>0
+    // forced PhysX rewrites every frame for idle multi-shape buildings and softed plaza.
+    void matched
     return changed
   }
 
@@ -898,7 +937,9 @@ export class GltfColliderExtractor {
     const colliderMeshes: THREE.Mesh[] = []
     gltfRoot.traverse((node) => {
       if (!(node instanceof THREE.Mesh)) return
-      if ((node as THREE.SkinnedMesh).isSkinnedMesh) return
+      const skinned = (node as THREE.SkinnedMesh).isSkinnedMesh === true
+      // Allow skinned `_collider` hulls (bone-driven doors); skip skinned render meshes.
+      if (skinned && !isGltfInvisibleColliderMesh(node, gltfRoot)) return
       // Named visible-class meshes (RickRoll Cube) — honor visible mask only, not _collider ancestry.
       if (isGltfVisibleClassMesh(node)) {
         if (hasVisiblePhysics) colliderMeshes.push(node)
@@ -909,12 +950,13 @@ export class GltfColliderExtractor {
         return
       }
       // Unnamed visible-category meshes (common in plaza GLBs) — need explicit CL_PHYSICS on visible mask.
-      if (hasVisiblePhysics) colliderMeshes.push(node)
+      if (hasVisiblePhysics && !skinned) colliderMeshes.push(node)
     })
 
     if (!colliderMeshes.length) return null
 
     entityObj.updateMatrixWorld(true)
+    gltfRoot.updateMatrixWorld(true)
     _entityInv.copy(entityObj.matrixWorld).invert()
 
     const shapes: PhysicsColliderShapeDesc[] = []

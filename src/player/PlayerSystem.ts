@@ -198,6 +198,11 @@ export class PlayerSystem {
   /** Prior frame locomotion allowed — clear position lock when scene unfreezes. */
   private wasLocomotionAllowed = true
   /**
+   * Client gate: World holds locomotion until primary-scene colliders are prepared.
+   * Independent of scene InputModifier (many scenes never freeze on load).
+   */
+  private collidersReadyBlock = true
+  /**
    * Feet position to pin while InputModifier.disableAll is active (SpaceRunner map load /
    * fall-reset). Re-running PhysX teleport and accepting positionOut lets CCT slide off
    * spawn while map colliders rebuild → bounce at world edge, never at start.
@@ -318,6 +323,7 @@ export class PlayerSystem {
     this.input = new PlayerInput(this.host.renderer.domElement)
     this.input.setLocomotionBlocked(
       () =>
+        this.collidersReadyBlock ||
         this.photoModeActive ||
         this.tourFocusActive ||
         !canLocomote(this.getLocomotionConfig())
@@ -679,7 +685,22 @@ export class PlayerSystem {
   }
 
   isLocomotionBlocked(): boolean {
-    return !canLocomote(this.getLocomotionConfig())
+    return this.collidersReadyBlock || !canLocomote(this.getLocomotionConfig())
+  }
+
+  /**
+   * World platform gate — walk only after primary colliders are prepared for play.
+   * Starts blocked; World calls true after prepareCollidersForPlay + capsule.
+   */
+  setCollidersReady(ready: boolean): void {
+    this.collidersReadyBlock = !ready
+    if (ready) {
+      this.clearMoveKeys()
+    }
+  }
+
+  isCollidersReady(): boolean {
+    return !this.collidersReadyBlock
   }
 
   clearMoveKeys(): void {
@@ -904,7 +925,7 @@ export class PlayerSystem {
     delta = Math.min(delta, 1 / 20)
 
     const locomotion = this.getLocomotionConfig()
-    const locomotionAllowed = canLocomote(locomotion)
+    const locomotionAllowed = !this.collidersReadyBlock && canLocomote(locomotion)
     if (!locomotionAllowed) {
       // Flagtag / SpaceRunner freezes walk — Help panel + optional console mirror.
       const blockedMsg =

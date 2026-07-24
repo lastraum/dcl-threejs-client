@@ -20,8 +20,11 @@ Transform dirty  →  ROOT follow
 Animator         →  PART follow
   any active mixer is a PART *candidate*
   PhysX write only when _collider mesh/bone world fingerprint **changes**
-  kinematic multi-shape: cook once, setKinematicTarget + relative shape locals
-  if kinematic promote fails → single-entity live-bake fallback (not plaza-wide)
+  force-refresh shape locals from mesh/bone worlds
+  cook once (entity-local multi-shape + baselines)
+  move: actor T+R + relative shape pose (current * inv(baseline)) + SQ reinsert
+  if missing baselines / world-baked → **one** entity-local recook, then pose forever
+  never per-frame world-bake thrash
 
 else             →  no PhysX pose work
 ```
@@ -45,16 +48,17 @@ No motion destiny stored at extract.
 | Set | Built from | PhysX API |
 |-----|------------|-----------|
 | `transformDirty` | Transform writers + entities with colliders | `pushColliderRootPoses` |
-| `animatorPart` | Animator one-shot / part motion + tree expand to extract owner | `pushColliderPartPoses` (kinematic) |
+| `animatorPart` | Animator active mixer / part motion + tree expand to extract owner | `pushColliderPartPoses` (pose only) |
 
 ## Code entry points
 
 - `SceneScriptSystem.getPhysMotionSets()`
 - `World.syncPlayerMotionFrame` — ordered: transforms → bridges → root poses → part poses → platform Δ
-- `PhysXWorld.ensureKinematicMultiShape` / `updateKinematicMultiShapePose`
+- `PhysXWorld.applyStaticColliderPoseUpdates` (shape motion) / `updateKinematicMultiShapePose`
+- SQ: `reinsertStaticActorForSceneQuery` after `setLocalPose` (static **and** kinematic)
 
 ## Forbidden
 
-- `geometryCache: false` re-cook for Animator loops
+- `geometryCache: false` re-cook every Animator frame (live world-bake thrash)
 - Multi-shape shape-local rewrite on Transform-only dirty
 - Classifying entities as forever-static at load

@@ -140,7 +140,7 @@ export class AnimatorBridge {
   private readonly dirtyReplay = new Set<Entity>()
   private motionFocusView: ProjectionView | null = null
   /**
-   * One-shot Animator entities this frame (doors) — World may live-bake PhysX multi-shapes.
+   * Active Animator PART candidates this frame (doors) — World poses PhysX multi-shapes (cook once).
    * Looping decorative mixers are intentionally excluded (plaza soft / toggle).
    */
   private readonly shapeMotionEntities = new Set<Entity>()

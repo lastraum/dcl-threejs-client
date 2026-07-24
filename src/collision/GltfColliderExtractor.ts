@@ -329,7 +329,7 @@ export class GltfColliderExtractor {
 
   /**
    * Live world-pose fingerprint of extracted `_collider` / physics meshes.
-   * Used to decide when Animator doors need a PhysX live-bake (not relative slide).
+   * Used to gate PART PhysX pose writes (skip when panel pose unchanged).
    */
   getColliderMeshWorldFingerprint(entity: Entity): string | null {
     const state = this.syncState.get(entity)

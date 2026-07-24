@@ -952,8 +952,9 @@ export class PhysXWorld {
   }
 
   /**
-   * Pose kinematic multi-shape from live desc (entity T+R + relative shape locals).
-   * Call after refreshShapeLocalMatrices for Animator frames.
+   * Pose multi-shape PART mover from live desc (entity T+R + relative shape locals).
+   * Cooks entity-local once (kinematic promote); subsequent frames only move poses.
+   * Call after forceRefreshAnimatedShapeLocals / refreshShapeLocalMatrices.
    */
   updateKinematicMultiShapePose(desc: PhysicsColliderDesc): boolean {
     if (!this.ensureKinematicMultiShape(desc)) return false
@@ -979,9 +980,11 @@ export class PhysXWorld {
       }
       const act = this.staticActors.get(desc.entity)
       if (!act) return false
-      if (!this.updateMultiShapeActorPose(act, desc, true)) return false
+      if (!this.updateMultiShapeActorPose(act, desc, true, { skipScaleCheck: true })) return false
       this.staticFp.set(desc.entity, desc.fingerprint)
       this.staticPoseFp.set(desc.entity, multiShapePoseFingerprint(desc))
+      // setLocalPose does not expand SQ bounds — reinsert so CCT hits swung door panels.
+      this.reinsertStaticActorForSceneQuery(act)
       this.invalidateControllerCache()
       return true
     } catch (err) {
@@ -1194,9 +1197,9 @@ export class PhysXWorld {
           this.staticPoseFp.set(desc.entity, poseFp)
           updated++
           shapeLocalsChanged = true
-          // Static only: re-register so SQ bounds include child setLocalPose (CCT).
-          // Kinematic uses setKinematicTarget + eDYNAMIC queries — no reinsert.
-          if (!kinematic) this.reinsertStaticActorForSceneQuery(actor)
+          // setLocalPose does not expand actor SQ bounds — reinsert so CCT hits swung panels.
+          // Required for both static and kinematic multi-shape PART movers.
+          this.reinsertStaticActorForSceneQuery(actor)
         } catch (err) {
           console.warn('[PhysXWorld] multi-shape pose slide failed:', desc.entity, err)
         }
@@ -2983,26 +2986,42 @@ export class PhysXWorld {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   /**
-   * Slide actor root + per-shape relative poses — geometry baked at cook baseline.
-   * @param kinematic — use setKinematicTarget when available so CCT SQ sees the move.
-   * @returns false when the actor cannot be slid safely (caller must recook).
+   * Slide actor root + per-shape relative poses — geometry cooked once at baseline.
+   * Cook once, move forever: verts stay baked; only actor T+R + shape local pose change.
+   *
+   * @param kinematic — also seed setKinematicTarget (still setGlobalPose for immediate CCT SQ).
+   * @param options.skipScaleCheck — PART path already validated; scale gate can block first slide.
+   * @returns false when the actor cannot be slid safely (caller may entity-local recook once).
    */
   private updateMultiShapeActorPose(
     actor: any,
     desc: PhysicsColliderDesc,
-    kinematic = false
+    kinematic = false,
+    options?: { skipScaleCheck?: boolean }
   ): boolean {
     const shapes = desc.shapes
     if (!shapes?.length) return false
-    if (!this.isPoseSlideSafe(actor, desc)) return false
+    if (options?.skipScaleCheck) {
+      if (!this.matrixHasFinitePose(desc.matrix)) return false
+      for (const shape of shapes) {
+        if (!this.matrixHasFinitePose(shape.localMatrix)) return false
+      }
+      try {
+        if (actor.getNbShapes() !== shapes.length) return false
+      } catch {
+        return false
+      }
+    } else if (!this.isPoseSlideSafe(actor, desc)) {
+      return false
+    }
 
     desc.matrix.decompose(this._pos, this._quat, this._scale)
     this._pos.toPxTransform(this.actorPoseTransform)
     this._quat.toPxTransform(this.actorPoseTransform)
+    // Immediate SQ pose — CCT runs scene queries before/without relying on kinematic target apply.
+    actor.setGlobalPose(this.actorPoseTransform)
     if (kinematic && typeof actor.setKinematicTarget === 'function') {
       actor.setKinematicTarget(this.actorPoseTransform)
-    } else {
-      actor.setGlobalPose(this.actorPoseTransform)
     }
 
     if (this.actorWorldBaked.get(desc.entity)) return true

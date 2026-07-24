@@ -209,10 +209,10 @@ export class World {
   /** True after prepareCollidersForPlay finishes cooking. */
   private spawnColliderSealComplete = false
   /**
-   * Last live mesh-world fingerprint we world-baked for an animated multi-shape actor.
-   * Relative shape slides are unreliable for ice-rink doors — we re-cook world verts when this changes.
+   * Last PART mesh-world fingerprint we posed in PhysX (cook-once + move).
+   * Unchanged fp → skip pose write (looping props with fixed wall hulls no-op).
    */
-  private readonly animatedLiveBakeMeshFp = new Map<number, string>()
+  private readonly animatedPartPoseFp = new Map<number, string>()
   private loggedAnimatorNoCollider = new Set<number>()
   private unsubAvatarChat: (() => void) | null = null
   private unsubAvatarChatTranslate: (() => void) | null = null
@@ -2370,19 +2370,25 @@ export class World {
   }
 
   /**
-   * Animator PART → live world-bake when multi-shape pose fingerprint changes.
-   * This is the path that worked for ice-rink doors (kinematic relative was not tracking).
-   * Only entities in animatorPart (active mixer / system part) — not Transform-only.
-   * Stable pose fp → no recook (looping props with fixed wall hulls stay solid).
+   * Animator PART → cook once, then move colliders (no live world-bake thrash).
+   *
+   * 1) Force-refresh shape locals from mesh/bone worlds (doors swing on bones).
+   * 2) If actor is world-baked / missing baselines → one entity-local recook (baselines).
+   * 3) Else relative shape pose + actor T+R + SQ reinsert (geometry stays cooked).
+   *
+   * Only entities in animatorPart (active mixer / system part) — not Transform-only plaza.
+   * Stable pose fp → no PhysX write (looping props with fixed wall hulls stay solid).
    */
   private pushColliderPartPoses(animatorPart: ReadonlySet<Entity>): void {
     if (!this.playerMode || !animatorPart.size) return
 
-    // Always force live shape locals from mesh/bone worlds before bake gate.
+    // Live shape locals from mesh/bone worlds — required before relative pose math.
     const poseFps = this.sceneScript.forceRefreshPartColliderPoses(animatorPart)
 
-    const liveBake: PhysicsColliderDesc[] = []
     let updated = 0
+    /** One-shot entity-local recooks only (missing baselines / world-baked) — never per-frame. */
+    const needEntityLocalCook: PhysicsColliderDesc[] = []
+
     for (const entity of animatorPart) {
       const physId = this.sceneScript.physEntityIdForPoseSync(entity)
       if (physId === null) continue
@@ -2410,28 +2416,68 @@ export class World {
         this.sceneScript.getGltfColliderMeshWorldFingerprint(entity) ??
         ''
       if (!poseFp) continue
-      if (this.animatedLiveBakeMeshFp.get(desc.entity) === poseFp) continue
-      this.animatedLiveBakeMeshFp.set(desc.entity, poseFp)
-      liveBake.push(desc)
-      if (liveBake.length >= 4) break
+      // Unchanged panel pose → skip (flags/loops with fixed hulls).
+      if (this.animatedPartPoseFp.get(desc.entity) === poseFp) continue
+
+      // World-baked or no baselines cannot relative-slide — convert once to entity-local cook.
+      if (
+        this.physics.isWorldBakedStatic(desc.entity) ||
+        !this.physics.hasShapeBaselines(desc.entity)
+      ) {
+        needEntityLocalCook.push(desc)
+        if (needEntityLocalCook.length >= 4) break
+        continue
+      }
+
+      // Cook once, move: relative shape pose + actor T+R + SQ reinsert (no geometry recook).
+      // Prefer existing static actor — avoids promote/remove thrash on first swing.
+      const n = this.physics.applyStaticColliderPoseUpdates([desc], {
+        force: true,
+        forceEntities: new Set([desc.entity]),
+        actorRootOnly: false
+      })
+      if (n > 0) {
+        this.animatedPartPoseFp.set(desc.entity, poseFp)
+        updated += n
+        continue
+      }
+
+      // Static slide failed (e.g. actor missing) — kinematic promote cooks once, then poses.
+      if (this.physics.updateKinematicMultiShapePose(desc)) {
+        this.animatedPartPoseFp.set(desc.entity, poseFp)
+        updated++
+      }
     }
 
-    if (liveBake.length) {
+    if (needEntityLocalCook.length) {
       try {
-        // World-bake at current open/close pose — proven for ice-rink door CCT hits.
-        const result = this.physics.syncStaticColliders(liveBake, {
-          cookBudget: liveBake.length,
+        // Entity-local cook ONCE so baselines exist for relative slides — not world-bake thrash.
+        const result = this.physics.syncStaticColliders(needEntityLocalCook, {
+          cookBudget: needEntityLocalCook.length,
           freezeRemoval: true,
           forceRecookOnPoseChange: true,
-          geometryCache: false,
+          geometryCache: true,
           skipWorkerStream: true
         })
         if (result.geometryChanged) {
-          updated += liveBake.length
+          for (const desc of needEntityLocalCook) {
+            const ecs =
+              desc.entity >= GLTF_COLLIDER_ENTITY_BASE
+                ? ((desc.entity - GLTF_COLLIDER_ENTITY_BASE) as Entity)
+                : null
+            const fp =
+              (ecs !== null ? poseFps.get(ecs) : undefined) ??
+              (ecs !== null
+                ? this.sceneScript.getGltfColliderMeshWorldFingerprint(ecs)
+                : null) ??
+              ''
+            if (fp) this.animatedPartPoseFp.set(desc.entity, fp)
+          }
+          updated += needEntityLocalCook.length
           this.physics.rebuildStaticSceneQueryTree()
         }
       } catch (err) {
-        console.warn('[phys] PART live-bake failed', err)
+        console.warn('[phys] PART entity-local cook (once) failed', err)
       }
     }
 

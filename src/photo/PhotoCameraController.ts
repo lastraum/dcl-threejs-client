@@ -86,6 +86,8 @@ export class PhotoCameraController {
   private readonly hud: PhotoCameraHud
   private readonly review: PhotoReviewPanel
   private peoplePollAcc = 0
+  /** Tour location bind: first successful shutter invokes then clears. */
+  private nextCaptureHandler: ((result: PhotoCaptureResult) => void) | null = null
 
   constructor(private readonly deps: PhotoCameraDeps) {
     this.hud = new PhotoCameraHud({
@@ -269,6 +271,11 @@ export class PhotoCameraController {
     cam.updateMatrixWorld(true)
   }
 
+  /** Tour Locations: bind next shutter to a handler (one-shot). */
+  setNextCaptureHandler(handler: ((result: PhotoCaptureResult) => void) | null): void {
+    this.nextCaptureHandler = handler
+  }
+
   async takePhoto(): Promise<PhotoCaptureResult | null> {
     if (!this.active || this.capturing || this.reviewing) return null
     this.capturing = true
@@ -304,6 +311,21 @@ export class PhotoCameraController {
       this.hud.setCaptureChromeVisible(true)
       this.hud.playFlash()
       this.hud.setStatus('')
+
+      const bind = this.nextCaptureHandler
+      if (bind) {
+        this.nextCaptureHandler = null
+        try {
+          bind(result)
+        } catch (err) {
+          console.warn('[photo-camera] next-capture handler failed', err)
+        }
+        // Tour bind: skip review rail — photo is already attached to the stop.
+        this.capturing = false
+        this.exit()
+        return result
+      }
+
       this.openReview(result)
 
       console.info('[photo-camera] capture → review', {

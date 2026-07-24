@@ -65,6 +65,29 @@ export type FollowTarget =
 export type FollowFlagPayload = string
 
 /**
+ * Tour stop pin — coords/world + scene name only on the wire (no photos).
+ * Photos stay leader-local until end-tour ZIP export.
+ */
+export type TourLocationWire = {
+  /** Stable id (uuid). */
+  id: string
+  /** Unix ms when pinned. */
+  at: number
+  target: FollowTarget
+  /** Scene display name at pin time. */
+  sceneName: string
+  /** Optional leader rename. */
+  name?: string
+  /** Dwell seconds at this stop (filled when leaving stop or ending tour). */
+  dwellSec?: number
+  /** Roster size (leader + followers) when pinned. */
+  people?: number
+}
+
+/** Max locations on heartbeats / loc messages (keeps LiveKit packets small). */
+export const TOUR_LOCATIONS_WIRE_CAP = 50
+
+/**
  * Leader freecam snapshot for Tour Focus — followers reconstruct the same POV
  * from the leader remote-avatar feet + these params (incl FOV).
  */
@@ -91,6 +114,7 @@ export type FollowWireMsg =
       flag?: FollowFlagPayload
       /** Tour Focus active when tour starts (rare; usually toggled later). */
       focus?: boolean
+      locations?: TourLocationWire[]
     }
   | { t: 'stop'; s: string; l: string; at: number }
   | { t: 'goto'; s: string; l: string; at: number; target: FollowTarget }
@@ -103,8 +127,11 @@ export type FollowWireMsg =
       target?: FollowTarget
       flag?: FollowFlagPayload
       focus?: boolean
+      locations?: TourLocationWire[]
     }
-  /** Leader set / clear tour flag image (pole + banner on spine). */
+  /** Immediate location list sync (add / rename / delete). */
+  | { t: 'loc'; s: string; l: string; at: number; locations: TourLocationWire[] }
+  /** Leader set / clear tour flag image (circular badge above nametag). */
   | { t: 'flag'; s: string; l: string; at: number; flag: FollowFlagPayload | null }
   /**
    * Follower joined the tour. `l` is the **follower** wallet (not the leader).
@@ -219,10 +246,12 @@ function parseFollowWireObject(o: Record<string, unknown>): FollowWireMsg | null
     const target = parseFollowTarget(o.target)
     const flag = parseFollowFlag(o.flag)
     const focus = parseFocusFlag(o.focus)
+    const locations = parseTourLocations(o.locations)
     const base = target ? { t: 'start' as const, s, l, at, target } : { t: 'start' as const, s, l, at }
     const withFlag =
       flag !== undefined && flag !== null ? { ...base, flag } : base
-    return focus !== undefined ? { ...withFlag, focus } : withFlag
+    const withFocus = focus !== undefined ? { ...withFlag, focus } : withFlag
+    return locations ? { ...withFocus, locations } : withFocus
   }
   if (t === 'stop') return { t: 'stop', s, l, at }
   if (t === 'goto') {
@@ -234,10 +263,17 @@ function parseFollowWireObject(o: Record<string, unknown>): FollowWireMsg | null
     const target = parseFollowTarget(o.target)
     const flag = parseFollowFlag(o.flag)
     const focus = parseFocusFlag(o.focus)
+    const locations = parseTourLocations(o.locations)
     const base = target ? { t: 'hb' as const, s, l, at, target } : { t: 'hb' as const, s, l, at }
     const withFlag =
       flag !== undefined && flag !== null ? { ...base, flag } : base
-    return focus !== undefined ? { ...withFlag, focus } : withFlag
+    const withFocus = focus !== undefined ? { ...withFlag, focus } : withFlag
+    return locations ? { ...withFocus, locations } : withFocus
+  }
+  if (t === 'loc') {
+    const locations = parseTourLocations(o.locations)
+    if (!locations) return null
+    return { t: 'loc', s, l, at, locations }
   }
   if (t === 'flag') {
     const flag = parseFollowFlag(o.flag)
@@ -309,6 +345,38 @@ function parseFollowTarget(raw: unknown): FollowTarget | null {
     return { kind: 'world', worldName }
   }
   return null
+}
+
+function parseTourLocations(raw: unknown): TourLocationWire[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out: TourLocationWire[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const o = item as Record<string, unknown>
+    const id = typeof o.id === 'string' ? o.id.trim() : ''
+    const at = typeof o.at === 'number' && Number.isFinite(o.at) ? o.at : 0
+    const target = parseFollowTarget(o.target)
+    const sceneName = typeof o.sceneName === 'string' ? o.sceneName.trim() : ''
+    if (!id || !target || !sceneName) continue
+    const loc: TourLocationWire = { id, at: at || Date.now(), target, sceneName }
+    if (typeof o.name === 'string' && o.name.trim()) loc.name = o.name.trim().slice(0, 80)
+    if (typeof o.dwellSec === 'number' && Number.isFinite(o.dwellSec) && o.dwellSec >= 0) {
+      loc.dwellSec = Math.round(o.dwellSec)
+    }
+    if (typeof o.people === 'number' && Number.isFinite(o.people) && o.people >= 0) {
+      loc.people = Math.round(o.people)
+    }
+    out.push(loc)
+    if (out.length >= TOUR_LOCATIONS_WIRE_CAP) break
+  }
+  return out
+}
+
+export function newTourLocationId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `loc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 export function routeToFollowTarget(route: RouteTarget | null | undefined): FollowTarget | null {

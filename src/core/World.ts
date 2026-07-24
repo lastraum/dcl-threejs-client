@@ -1332,8 +1332,29 @@ export class World {
       getLocalCctRoot: () => this.player?.getPlayerFeetRoot() ?? null,
       getLocalYaw: () => (this.player ? this.player.getNetworkYaw() : null),
       getRemoteCctRoot: (address) => this.remoteAvatars?.getPeerRoot(address) ?? null,
-      getRemoteYaw: (address) => this.remoteAvatars?.getPeerYaw(address) ?? null
+      getRemoteYaw: (address) => this.remoteAvatars?.getPeerYaw(address) ?? null,
+      getLocalNameTagWorldY: () => {
+        const anchor = this.player?.getLocalAvatar()?.nameTagAnchor
+        if (!anchor) return null
+        anchor.updateWorldMatrix(true, false)
+        const y = anchor.getWorldPosition(new THREE.Vector3()).y
+        return Number.isFinite(y) ? y : null
+      },
+      getRemoteNameTagWorldY: (address) =>
+        this.remoteAvatars?.getPeerNameTagWorldY(address) ?? null,
+      getCamera: () => this.host.camera
     })
+  }
+
+  /**
+   * One-shot: next Camera Reel shutter (before review) invokes handler.
+   * Used by tour Locations “Add photo”.
+   */
+  setNextPhotoCaptureHandler(
+    handler: ((result: import('../photo/photoCapture').PhotoCaptureResult) => void) | null
+  ): void {
+    this.ensurePhotoCamera()
+    this.photoCamera?.setNextCaptureHandler(handler)
   }
 
   /** Block until scene GLBs/textures hydrate — call after `loadScene`, before `start()`. */

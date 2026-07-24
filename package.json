@@ -32,6 +32,7 @@
     "decentraland-crypto-fetch": "^2.0.1",
     "gifenc": "^1.0.3",
     "hls.js": "^1.6.2",
+    "jszip": "^3.10.1",
     "livekit-client": "^2.19.2",
     "protobufjs": "^8.6.3",
     "three": "^0.175.0",

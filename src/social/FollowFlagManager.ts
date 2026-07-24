@@ -1,9 +1,8 @@
 /**
- * Session-scoped tour flag: follows the leader CCT / remote peer feet root
- * (not skeleton bones — works for custom VRM/ODK as well as DCL base).
+ * Session-scoped tour flag: circular badge above the leader nametag.
+ * Works for local CCT + remote peers (DCL / VRM / ODK).
  */
 import * as THREE from 'three'
-import { AVATAR_YAW_OFFSET } from '../avatar/constants'
 import { FollowFlagProp } from './FollowFlagProp'
 
 export type FollowFlagCctProvider = {
@@ -16,6 +15,12 @@ export type FollowFlagCctProvider = {
   getRemoteCctRoot(address: string): THREE.Object3D | null
   /** Remote visual yaw in Three space (already includes mesh offset if any). */
   getRemoteYaw(address: string): number | null
+  /** World Y of local nametag anchor (top of head). */
+  getLocalNameTagWorldY?(): number | null
+  /** World Y of remote nametag anchor. */
+  getRemoteNameTagWorldY?(address: string): number | null
+  /** Active scene camera for billboarding. */
+  getCamera?(): THREE.Camera | null
 }
 
 const _feetWorld = new THREE.Vector3()
@@ -77,26 +82,25 @@ export class FollowFlagManager {
     }
     const local = this.cct.getLocalWallet()?.toLowerCase() ?? ''
     let feet: THREE.Object3D | null = null
-    let yaw: number | null = null
+    let nametagY: number | null = null
 
     if (local && local === this.leaderAddress) {
       feet = this.cct.getLocalCctRoot()
-      const bodyYaw = this.cct.getLocalYaw()
-      yaw = bodyYaw != null ? bodyYaw + AVATAR_YAW_OFFSET : null
+      nametagY = this.cct.getLocalNameTagWorldY?.() ?? null
     } else {
       feet = this.cct.getRemoteCctRoot(this.leaderAddress)
-      yaw = this.cct.getRemoteYaw(this.leaderAddress)
+      nametagY = this.cct.getRemoteNameTagWorldY?.(this.leaderAddress) ?? null
     }
 
-    if (!feet || yaw == null) {
+    if (!feet) {
       this.prop.root.visible = false
       return
     }
 
-    // World position of CCT feet (root may be under scene / entity store).
     feet.updateWorldMatrix(true, false)
     feet.getWorldPosition(_feetWorld)
-    this.prop.updateFromCct(_feetWorld, yaw, dt)
+    const cam = this.cct.getCamera?.() ?? null
+    this.prop.updateAboveNametag(_feetWorld, nametagY, cam, dt)
   }
 
   clear(): void {

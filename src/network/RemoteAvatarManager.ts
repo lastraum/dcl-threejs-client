@@ -657,6 +657,15 @@ export class RemoteAvatarManager {
     return record.currentYaw + AVATAR_YAW_OFFSET
   }
 
+  /** World Y of the peer nametag anchor (for tour flag badge above the name). */
+  getPeerNameTagWorldY(address: string): number | null {
+    const record = this.peers.get(address.toLowerCase())
+    if (!record || !record.hasPosition) return null
+    record.nameTagAnchor.updateWorldMatrix(true, false)
+    const y = record.nameTagAnchor.getWorldPosition(new THREE.Vector3()).y
+    return Number.isFinite(y) ? y : null
+  }
+
   /**
    * Photo-mode metadata samples — remotes with a pose (world-space feet/root).
    * Frustum tests happen in photoMetadata.peopleInPhotoFrustum.

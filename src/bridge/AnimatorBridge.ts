@@ -417,9 +417,7 @@ export class AnimatorBridge {
       const entityNode = entry.root.parent
       if (entityNode) entityNode.updateMatrixWorld(true)
       else entry.root.updateMatrixWorld(true)
-      // ANY active clip (loop or one-shot) drives PhysX shape slides for bone/child _colliders.
-      // Probe-only / one-shot gates were band-aids that left looping doors/lifts stuck at cook pose.
-      // Plaza soft came from actor-root double-transform + mass recook — not from sliding movers.
+      // Flag this entity as ANIMATED this frame (World: multi-shape slide). Static unless active.
       this.shapeMotionEntities.add(entity)
     }
 

@@ -322,6 +322,11 @@ export class SceneScriptSystem {
   private readonly lastTweenMotionEntities = new Set<Entity>()
   private readonly lastSyncFrameTransformEntities = new Set<Entity>()
   private readonly lastPoseChangedEntities: Entity[] = []
+  /**
+   * Systems outside Animator/Tween/Billboard that moved a collider this frame
+   * (call {@link markSystemAnimatedCollider}). Cleared at the start of each motion pump.
+   */
+  private readonly systemAnimatedColliders = new Set<Entity>()
   private platformMotionReportDumped = false
   private sceneBaseParcel: string | null = null
   /** True when syncCollision already ran incremental pose descriptor refresh this pass. */
@@ -762,14 +767,51 @@ export class SceneScriptSystem {
     for (const entity of this.animatorBridge?.consumeShapeMotionEntities() ?? []) out.add(entity)
     for (const entity of this.lastSyncFrameTransformEntities) out.add(entity)
     for (const entity of this.lastPoseChangedEntities) out.add(entity)
+    for (const entity of this.systemAnimatedColliders) out.add(entity)
     return out
   }
 
-  /** Animator shape motion + grounded animated platform (post-bridge). */
-  getFrameShapeMotionEntities(groundEcs: Entity | null): Set<Entity> {
-    const out = new Set<Entity>(this.animatorBridge?.pendingShapeMotionEntities() ?? [])
-    if (groundEcs !== null && this.isAnimatedGltfColliderEntity(groundEcs)) out.add(groundEcs)
+  /**
+   * **Static by default.** Colliders stay cook-once / actor-root until a motion system
+   * moves the entity this frame:
+   * - Animator (active mixer — loop or one-shot)
+   * - Tween
+   * - Billboard
+   * - CRDT / scene-system Transform this sync frame
+   * - Explicit {@link markSystemAnimatedCollider}
+   *
+   * Only this set gets multi-shape child `_collider` slides (+ SQ rebuild).
+   * Everything else is static (root slide only if Transform dirty).
+   */
+  getAnimatedColliderEntities(groundEcs: Entity | null = null): Set<Entity> {
+    const out = new Set<Entity>()
+    const add = (entity: Entity): void => {
+      if (this.physEntityIdForPoseSync(entity) === null) return
+      out.add(entity)
+    }
+    for (const entity of this.animatorBridge?.pendingShapeMotionEntities() ?? []) add(entity)
+    for (const entity of this.lastTweenMotionEntities) add(entity)
+    for (const entity of this.billboardBridge?.pendingMotionEntities() ?? []) add(entity)
+    for (const entity of this.lastSyncFrameTransformEntities) add(entity)
+    for (const entity of this.systemAnimatedColliders) add(entity)
+    // Standing on an Animator GLTF platform — keep shape tracking while grounded.
+    if (groundEcs !== null && this.isAnimatedGltfColliderEntity(groundEcs)) add(groundEcs)
     return out
+  }
+
+  /**
+   * @deprecated Use {@link getAnimatedColliderEntities} — same set (Animator + motion systems).
+   */
+  getFrameShapeMotionEntities(groundEcs: Entity | null): Set<Entity> {
+    return this.getAnimatedColliderEntities(groundEcs)
+  }
+
+  /**
+   * Scene systems that move a collider outside Animator/Tween/Billboard must call this
+   * the same frame the transform/mesh moves so PhysX treats the entity as animated.
+   */
+  markSystemAnimatedCollider(entity: Entity): void {
+    this.systemAnimatedColliders.add(entity)
   }
 
   /** Walk-surface Δ for motion emitter union — replaces full extracted scan. */
@@ -4416,12 +4458,13 @@ export class SceneScriptSystem {
 
     const poseChangedEntities: Entity[] = []
     this.lastPoseChangedEntities.length = 0
-    const shapeMotion = this.animatorBridge?.pendingShapeMotionEntities()
+    // Child _collider matrices only for ANIMATED entities this frame (not all dirty).
+    const animated = this.getAnimatedColliderEntities(null)
     if (this.colliderPoseDirty.size) {
       for (const entity of this.colliderPoseDirty) {
         let changed = false
         if (this.collision.syncColliderEntityPose(entity, nodes)) changed = true
-        const allowShapes = shapeMotion?.has(entity) ?? false
+        const allowShapes = animated.has(entity)
         if (this.gltfColliders?.syncColliderEntityPose(entity, nodes, allowShapes)) changed = true
         if (changed) poseChangedEntities.push(entity)
       }
@@ -4502,6 +4545,8 @@ export class SceneScriptSystem {
   pumpMotionBridges(delta: number, tickNumber = 0): void {
     if (!this.running || !this.bridge) return
     this.maybeDumpMotionFocus()
+    // Fresh animated set each frame — systems re-mark if they moved colliders.
+    this.systemAnimatedColliders.clear()
     // Phase C: always sync to pick up new Tween signatures; update only when live.
     this.tweenBridge?.sync(this.view)
     if (this.tweenBridge?.hasLiveTweens()) {

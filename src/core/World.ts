@@ -208,6 +208,12 @@ export class World {
   private runtimeColliderBurstUntil = 0
   /** True after prepareCollidersForPlay finishes cooking. */
   private spawnColliderSealComplete = false
+  /**
+   * Last live mesh-world fingerprint we world-baked for an animated multi-shape actor.
+   * Relative shape slides are unreliable for ice-rink doors — we re-cook world verts when this changes.
+   */
+  private readonly animatedLiveBakeMeshFp = new Map<number, string>()
+  private loggedAnimatorNoCollider = new Set<number>()
   private unsubAvatarChat: (() => void) | null = null
   private unsubAvatarChatTranslate: (() => void) | null = null
   /**
@@ -2368,47 +2374,72 @@ export class World {
 
     let updated = 0
 
-    // 1) ANIMATED — multi-shape relative slide (doors, lifts, tweened multi-mesh).
+    // 1) ANIMATED multi-shape (doors): LIVE WORLD-BAKE when collider mesh world pose changes.
+    // Relative shape.setLocalPose + entity-local baselines repeatedly failed for ice-rink doors
+    // (CCT never tracked the panel). World-bake at current mesh pose is correct and simple.
     if (animatedPhysIds?.size) {
-      const animatedDescs: PhysicsColliderDesc[] = []
+      const liveBake: PhysicsColliderDesc[] = []
+      const rootOnly: PhysicsColliderDesc[] = []
       for (const physId of animatedPhysIds) {
         const desc = this.sceneScript.getPhysicsColliderDesc(physId)
-        if (desc) animatedDescs.push(desc)
-      }
-      if (animatedDescs.length) {
-        updated += this.physics.applyStaticColliderPoseUpdates(animatedDescs, {
-          force: true,
-          forceEntities: animatedPhysIds,
-          actorRootOnly: false
-        })
-        // If relative slide failed (world-baked / no baselines / geom mismatch / scale drift),
-        // recook entity-local NOW so door hulls match the live open/close pose.
-        const stale: PhysicsColliderDesc[] = []
-        for (const desc of animatedDescs) {
-          if (!desc.shapes?.length) continue
-          const ok =
-            this.physics.hasStaticActor(desc.entity) &&
-            this.physics.hasShapeBaselines(desc.entity) &&
-            !this.physics.isWorldBakedStatic(desc.entity) &&
-            this.physics.geomFingerprintMatches(desc) &&
-            this.physics.actorPoseMatchesDesc(desc)
-          if (!ok) stale.push(desc)
-        }
-        if (stale.length) {
-          try {
-            const result = this.physics.syncStaticColliders(stale, {
-              cookBudget: stale.length,
-              freezeRemoval: true,
-              forceRecookOnPoseChange: true,
-              geometryCache: true
-            })
-            if (result.geometryChanged) {
-              updated += stale.length
-              this.physics.rebuildStaticSceneQueryTree()
-            }
-          } catch (err) {
-            console.warn('[World] animated multi-shape recook failed', err)
+        if (!desc) {
+          if (!this.loggedAnimatorNoCollider.has(physId)) {
+            this.loggedAnimatorNoCollider.add(physId)
+            console.warn(
+              `[phys] animated entity physId=${physId} has no collider desc — cannot track door`
+            )
           }
+          continue
+        }
+        if (!desc.shapes?.length) {
+          rootOnly.push(desc)
+          continue
+        }
+        const ecs =
+          desc.entity >= GLTF_COLLIDER_ENTITY_BASE
+            ? ((desc.entity - GLTF_COLLIDER_ENTITY_BASE) as Entity)
+            : null
+        const meshFp =
+          ecs !== null ? this.sceneScript.getGltfColliderMeshWorldFingerprint(ecs) : null
+        if (!meshFp) {
+          if (ecs !== null && !this.loggedAnimatorNoCollider.has(ecs)) {
+            this.loggedAnimatorNoCollider.add(ecs)
+            console.warn(
+              `[phys] Animator entity ${ecs} multi-shape extract has no live mesh fingerprint ` +
+                `(missing _collider / CL_PHYSICS?) — door will not track`
+            )
+          }
+          // Still try relative path below via rootOnly empty — force live bake with desc as-is
+          liveBake.push(desc)
+          continue
+        }
+        if (this.animatedLiveBakeMeshFp.get(desc.entity) === meshFp) continue
+        this.animatedLiveBakeMeshFp.set(desc.entity, meshFp)
+        liveBake.push(desc)
+      }
+      if (rootOnly.length) {
+        updated += this.physics.applyStaticColliderPoseUpdates(rootOnly, {
+          force: true,
+          forceEntities: new Set(rootOnly.map((d) => d.entity)),
+          actorRootOnly: true
+        })
+      }
+      if (liveBake.length) {
+        try {
+          // geometryCache:false → world-space verts at current open/close pose; actor at origin.
+          const result = this.physics.syncStaticColliders(liveBake, {
+            cookBudget: liveBake.length,
+            freezeRemoval: true,
+            forceRecookOnPoseChange: true,
+            geometryCache: false,
+            skipWorkerStream: true
+          })
+          if (result.geometryChanged) {
+            updated += liveBake.length
+            this.physics.rebuildStaticSceneQueryTree()
+          }
+        } catch (err) {
+          console.warn('[World] animated door live-bake failed', err)
         }
       }
     }

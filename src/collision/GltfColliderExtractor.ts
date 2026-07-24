@@ -319,18 +319,26 @@ export class GltfColliderExtractor {
    * Animator emitter — true when collider child mesh world positions changed since last probe.
    */
   probeColliderMeshMotion(entity: Entity, _entityNodes: Map<Entity, THREE.Group>): boolean {
-    const state = this.syncState.get(entity)
-    if (!state) return false
-    const fp = this.colliderMeshWorldFingerprint(
-      state.mesh,
-      state.hasVisiblePhysics,
-      state.hasInvisiblePhysics
-    )
+    const fp = this.getColliderMeshWorldFingerprint(entity)
     if (!fp) return false
     const prev = this.lastColliderMeshWorldFp.get(entity)
     if (prev === fp) return false
     this.lastColliderMeshWorldFp.set(entity, fp)
     return true
+  }
+
+  /**
+   * Live world-pose fingerprint of extracted `_collider` / physics meshes.
+   * Used to decide when Animator doors need a PhysX live-bake (not relative slide).
+   */
+  getColliderMeshWorldFingerprint(entity: Entity): string | null {
+    const state = this.syncState.get(entity)
+    if (!state) return null
+    return this.colliderMeshWorldFingerprint(
+      state.mesh,
+      state.hasVisiblePhysics,
+      state.hasInvisiblePhysics
+    )
   }
 
   private recordWalkSurfaceDelta(
@@ -474,8 +482,7 @@ export class GltfColliderExtractor {
     if (!meshes.length) return null
     const parts: string[] = []
     for (const mesh of meshes) {
-      mesh.updateMatrixWorld(true)
-      const e = mesh.matrixWorld.elements
+      const e = this.colliderMeshWorldMatrix(mesh).elements
       // 12 floats of the 4x3 affine block — enough for T+R+S without full 16.
       parts.push(
         `${e[0]!.toFixed(3)},${e[1]!.toFixed(3)},${e[2]!.toFixed(3)},` +
@@ -485,6 +492,33 @@ export class GltfColliderExtractor {
       )
     }
     return parts.join('|')
+  }
+
+  /**
+   * World matrix for a physics mesh. Skinned `_collider` panels often leave mesh.matrixWorld
+   * fixed while bones drive the visual — use bone/parent bone world then.
+   */
+  private colliderMeshWorldMatrix(mesh: THREE.Mesh): THREE.Matrix4 {
+    mesh.updateMatrixWorld(true)
+    const sk = mesh as THREE.SkinnedMesh
+    if (sk.isSkinnedMesh && sk.skeleton) {
+      sk.skeleton.update()
+      const parent = mesh.parent
+      if (parent) {
+        parent.updateMatrixWorld(true)
+        // Bone-parented panel: parent (joint) carries the open/close rotation.
+        if ((parent as THREE.Bone).isBone || /bone|joint|door|hinge/i.test(parent.name)) {
+          return parent.matrixWorld
+        }
+      }
+      // Fallback: first bone that moved from bind (common single-bone door skins).
+      const bones = sk.skeleton.bones
+      if (bones.length > 0) {
+        bones[0]!.updateMatrixWorld(true)
+        return bones[0]!.matrixWorld
+      }
+    }
+    return mesh.matrixWorld
   }
 
   /**
@@ -531,8 +565,7 @@ export class GltfColliderExtractor {
         // Index fallback: same traverse order as extract (door uuid remount edge cases).
         (i < eligible.length ? eligible[i]! : null)
       if (!mesh) continue
-      mesh.updateMatrixWorld(true)
-      _worldMatrix.copy(mesh.matrixWorld).premultiply(_entityInv)
+      _worldMatrix.copy(this.colliderMeshWorldMatrix(mesh)).premultiply(_entityInv)
       const nextFp = colliderPoseFp(_worldMatrix)
       if (colliderPoseFp(shape.localMatrix) !== nextFp) {
         shape.localMatrix.copy(_worldMatrix)

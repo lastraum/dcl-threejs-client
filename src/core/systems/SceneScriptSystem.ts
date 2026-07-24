@@ -775,23 +775,55 @@ export class SceneScriptSystem {
    * **Static by default.**
    *
    * **Shape-animated** (this set): Animator active mixer, or {@link markSystemAnimatedCollider}.
-   * These get multi-shape child `_collider` slides + SQ rebuild (doors, bone panels, lifts).
+   * These get multi-shape live-bake (doors). Pointer may hit entity 523 while GltfContainer
+   * colliders live on a parent/child — we expand along the Transform tree.
    *
-   * **Root-animated** (NOT in this set): Tween / Billboard / CRDT Transform — already mark
-   * `colliderPoseDirty` and use **actor-root-only** slides. Putting them here forced full
-   * multi-shape rewrites every frame and crushed FPS on basic scenes.
+   * **Root-animated** (NOT in this set): Tween / Billboard / CRDT Transform → actor-root-only.
    */
   getAnimatedColliderEntities(groundEcs: Entity | null = null): Set<Entity> {
     const out = new Set<Entity>()
-    const add = (entity: Entity): void => {
-      if (this.physEntityIdForPoseSync(entity) === null) return
-      out.add(entity)
+    const addWithTree = (entity: Entity): void => {
+      for (const e of this.expandToExtractedColliderEntities(entity)) out.add(e)
     }
-    for (const entity of this.animatorBridge?.pendingShapeMotionEntities() ?? []) add(entity)
-    for (const entity of this.systemAnimatedColliders) add(entity)
-    // Standing on an Animator GLTF platform — keep shape tracking while grounded.
-    if (groundEcs !== null && this.isAnimatedGltfColliderEntity(groundEcs)) add(groundEcs)
+    for (const entity of this.animatorBridge?.pendingShapeMotionEntities() ?? []) addWithTree(entity)
+    for (const entity of this.systemAnimatedColliders) addWithTree(entity)
+    if (groundEcs !== null && this.isAnimatedGltfColliderEntity(groundEcs)) addWithTree(groundEcs)
     return out
+  }
+
+  /**
+   * Animator/pointer entity may not own the GltfContainer extract — walk parents + children
+   * for any entity that has multi-shape / MeshCollider physics.
+   */
+  private expandToExtractedColliderEntities(entity: Entity): Entity[] {
+    const found: Entity[] = []
+    const seen = new Set<Entity>()
+    const consider = (e: Entity): void => {
+      if (seen.has(e)) return
+      seen.add(e)
+      if (this.physEntityIdForPoseSync(e) !== null) found.push(e)
+    }
+    consider(entity)
+    // Parents
+    let p: Entity | undefined = this.transformParent.get(entity)
+    let guard = 0
+    while (p !== undefined && guard++ < 32) {
+      consider(p)
+      p = this.transformParent.get(p)
+    }
+    // Direct children (and one level of grand-children — door handle vs GLB root)
+    const stack = [...(this.transformChildren.get(entity) ?? [])]
+    while (stack.length && guard++ < 64) {
+      const c = stack.pop()!
+      consider(c)
+      const kids = this.transformChildren.get(c)
+      if (kids) for (const k of kids) stack.push(k)
+    }
+    return found
+  }
+
+  getGltfColliderMeshWorldFingerprint(entity: Entity): string | null {
+    return this.gltfColliders?.getColliderMeshWorldFingerprint(entity) ?? null
   }
 
   /**

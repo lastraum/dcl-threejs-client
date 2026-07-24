@@ -56,7 +56,10 @@ type PendingWarmEntry = {
   title: string
   baseX: number
   baseY: number
-  /** Parcel count for ranking (multi-parcel estates load once). */
+  /**
+   * Footprint size for ranking. Covers any multi-parcel scene deployment
+   * (scene.json parcels[]) and formal estates — both are one catalyst entity.
+   */
   parcelCount: number
   /** Last known min distance to player (m). */
   distM: number
@@ -67,12 +70,15 @@ export class ScenePromoteController {
   private readonly primaryParcels = new Set<string>()
   /** Parcels we already classified as empty/road — no re-fetch spam / no promote thrash. */
   private readonly skipPromoteKeys = new Set<string>()
-  /** Entity ids already queued for script warm (one per estate, not per parcel). */
+  /**
+   * Catalyst scene entity ids already queued for script warm.
+   * One id per deployment — multi-parcel scene.json and estates alike (not per parcel).
+   */
   private readonly warmedEntityIds = new Set<string>()
   /**
    * Parcels covered by a known catalyst entity (primary, warmed, deferred, road, etc.).
-   * Multi-parcel estates: all footprint parcels after first discovery — never re-query
-   * or treat as separate loads.
+   * After first discovery, cover the entity's full pointer/parcel footprint so we never
+   * re-query or warm parcel-by-parcel for the same multi-parcel deployment.
    */
   private readonly coveredEntityParcels = new Set<string>()
   /** Discovered warmable entities not yet prefetched (budget deferred). */
@@ -108,7 +114,10 @@ export class ScenePromoteController {
     return renderQuality.getSceneLoadRadiusM()
   }
 
-  /** Remember full estate footprint so parcel-ring scans never re-load the same scene. */
+  /**
+   * Remember full deployment footprint (entity.pointers ∪ scene.parcels) so parcel-ring
+   * scans never re-load the same multi-parcel scene or estate.
+   */
   private coverEntityParcels(keys: readonly string[]): void {
     for (const p of keys) {
       const k = p.trim()
@@ -116,6 +125,10 @@ export class ScenePromoteController {
     }
   }
 
+  /**
+   * Catalyst active entity footprint: prefer content-server pointers (authoritative for
+   * multi-parcel deployments), else metadata scene.parcels.
+   */
   private entityKeys(ent: ActiveSceneEntity): string[] {
     const raw = ent.pointers.length ? ent.pointers : ent.parcels
     return raw.map((p) => p.trim()).filter(Boolean)
@@ -130,7 +143,7 @@ export class ScenePromoteController {
     this.pendingWarm.clear()
     for (const p of scene.parcels) this.primaryParcels.add(p.trim())
     this.primaryParcels.add(scene.baseParcel.trim())
-    // Whole multi-parcel primary footprint is already loaded — never AOI-warm it again.
+    // Whole multi-parcel primary deployment is already loaded — never AOI-warm it again.
     this.coverEntityParcels([...this.primaryParcels])
     if (scene.entityId) this.warmedEntityIds.add(scene.entityId)
     this.dwellKey = ''
@@ -235,7 +248,7 @@ export class ScenePromoteController {
     const scriptWarmRadiusM = this.getScriptWarmRadiusM()
 
     try {
-      // 1) Drain deferred multi-parcel estates first (already discovered by entity id).
+      // 1) Drain deferred multi-parcel deployments first (already discovered by entity id).
       let warmed = this.drainPendingWarm(dclX, dclZ, baseParcel, MAX_SCRIPT_WARM_PER_SCAN)
       let budgetLeft = MAX_SCRIPT_WARM_PER_SCAN - warmed
 
@@ -245,7 +258,7 @@ export class ScenePromoteController {
         y: parseParcelKey(baseParcel).y + Math.floor(dclZ / PARCEL_SIZE)
       }
 
-      // 2) Only query parcels not already owned by a known estate / primary / empty/road.
+      // 2) Only query parcels not already owned by a known deployment / primary / empty/road.
       const pointers: string[] = []
       let skippedCovered = 0
       for (let dx = -ring; dx <= ring; dx++) {
@@ -279,7 +292,7 @@ export class ScenePromoteController {
 
         const owned = new Set<string>()
 
-        // Prefer nearest / smaller scenes first so mega-estates don't starve neighbors.
+        // Prefer nearest / smaller footprints first so huge multi-parcel deploys don't starve neighbors.
         const ranked = [...entities].sort((a, b) => {
           const da = minEntityDistanceM(a, dclX, dclZ, baseParcel)
           const db = minEntityDistanceM(b, dclX, dclZ, baseParcel)
@@ -292,7 +305,7 @@ export class ScenePromoteController {
         for (const ent of ranked) {
           const keys = this.entityKeys(ent)
           for (const p of keys) owned.add(p)
-          // Always cover full footprint once — estate loads once, not per parcel.
+          // Always cover full footprint once — multi-parcel deployment loads once, not per parcel.
           this.coverEntityParcels(keys)
 
           if (this.warmedEntityIds.has(ent.id)) {
@@ -363,7 +376,7 @@ export class ScenePromoteController {
     }
   }
 
-  /** Fire prefetch for one estate (entity id) — never per-parcel. */
+  /** Fire prefetch for one catalyst scene entity — never per-parcel. */
   private queueWarm(entry: PendingWarmEntry): void {
     if (this.warmedEntityIds.has(entry.entityId)) {
       this.pendingWarm.delete(entry.entityId)
@@ -378,7 +391,7 @@ export class ScenePromoteController {
     this.onPrefetch?.(entry.baseX, entry.baseY)
   }
 
-  /** Prefetch nearest pending estates without re-hitting catalyst for their parcels. */
+  /** Prefetch nearest pending multi-parcel deployments without re-querying their parcels. */
   private drainPendingWarm(
     dclX: number,
     dclZ: number,

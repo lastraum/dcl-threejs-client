@@ -3,8 +3,12 @@ import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import type { CommsService } from '../network/CommsService'
 import { ChatPeerProfiles, type PeerChatProfile } from './ChatPeerProfiles'
 import {
+  acceptFriendshipRequestSigned,
   buildFriendshipRelationMap,
   fetchFriendshipSnapshotSigned,
+  rejectFriendshipRequestSigned,
+  removeFriendshipSigned,
+  requestFriendshipSigned,
   resolveFriendshipRelation,
   type FriendshipRelation,
   type FriendshipSnapshot
@@ -669,6 +673,54 @@ export class SocialService {
     return [...this.friendshipSnapshot.incoming].sort((a, b) => a.localeCompare(b))
   }
 
+  getOutgoingFriendAddresses(): string[] {
+    if (!this.friendshipSnapshot) return []
+    return [...this.friendshipSnapshot.outgoing].sort((a, b) => a.localeCompare(b))
+  }
+
+  getFriendAddresses(): string[] {
+    if (!this.friendshipSnapshot) return []
+    return [...this.friendshipSnapshot.friends].sort((a, b) => a.localeCompare(b))
+  }
+
+  /**
+   * Friends currently online in the connected scene / island LiveKit rooms.
+   * Broader presence (world map) is not available without the social presence API.
+   */
+  getOnlineFriendAddresses(): Set<string> {
+    const out = new Set<string>()
+    if (!this.friendshipSnapshot) return out
+    for (const addr of this.comms?.getSceneChatMentionAddresses() ?? []) {
+      const key = addr.toLowerCase()
+      if (this.friendshipSnapshot.friends.has(key)) out.add(key)
+    }
+    return out
+  }
+
+  async acceptFriendRequest(address: string): Promise<void> {
+    if (!this.authIdentity) throw new Error('Not signed in')
+    await acceptFriendshipRequestSigned(this.authIdentity, address)
+    await this.refreshFriendshipSnapshot()
+  }
+
+  async rejectFriendRequest(address: string): Promise<void> {
+    if (!this.authIdentity) throw new Error('Not signed in')
+    await rejectFriendshipRequestSigned(this.authIdentity, address)
+    await this.refreshFriendshipSnapshot()
+  }
+
+  async removeFriend(address: string): Promise<void> {
+    if (!this.authIdentity) throw new Error('Not signed in')
+    await removeFriendshipSigned(this.authIdentity, address)
+    await this.refreshFriendshipSnapshot()
+  }
+
+  async requestFriend(address: string): Promise<void> {
+    if (!this.authIdentity) throw new Error('Not signed in')
+    await requestFriendshipSigned(this.authIdentity, address)
+    await this.refreshFriendshipSnapshot()
+  }
+
   getTotalUnreadCount(): number {
     let total = 0
     for (const count of this.unreadCounts.values()) total += count
@@ -730,6 +782,7 @@ export class SocialService {
     const hit = this.peerProfiles.get(address)
     if (hit) return hit
     if (address) {
+      void this.peerProfiles.ensurePeer(address)
       return {
         displayName: `${address.slice(0, 6)}…${address.slice(-4)}`,
         nameColor: '#ff6ad5',
@@ -737,6 +790,10 @@ export class SocialService {
       }
     }
     return { displayName: 'Player', nameColor: '#ff6ad5', faceUrl: null }
+  }
+
+  onPeerProfileChange(listener: () => void): () => void {
+    return this.peerProfiles.onUpdate(listener)
   }
 
   async sendImageFile(file: File): Promise<boolean> {

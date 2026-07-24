@@ -269,6 +269,20 @@ export class ChatPanel {
     this.renderAll()
   }
 
+  /** Open a 1:1 private message thread (Friends panel / profile). */
+  openDirectMessage(peerAddress: string, displayName: string): void {
+    const address = peerAddress.trim().toLowerCase()
+    if (!address) return
+    const name = displayName.trim() || `${address.slice(0, 6)}…${address.slice(-4)}`
+    this.social.selectChannel({
+      kind: 'dm',
+      peerAddress: address,
+      displayName: name
+    })
+    this.show()
+    this.renderAll()
+  }
+
   show(): void {
     this.ensureMounted()
     this.visible = true

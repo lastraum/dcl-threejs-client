@@ -12,6 +12,7 @@ import { NearbyVoicePanel } from './NearbyVoicePanel'
 import { MarketplaceCreditsPanel } from './MarketplaceCreditsPanel'
 import { NotificationsPanel } from './NotificationsPanel'
 import { PortableExperiencePanel } from './PortableExperiencePanel'
+import { FriendsPanel } from './FriendsPanel'
 import type { PortableExperienceManager } from '../../../dcl/multiScene/PortableExperienceManager'
 import type { VoiceChatService } from '../../../network/voice/VoiceChatService'
 import type { DebugPanel } from '../DebugPanel'
@@ -87,21 +88,26 @@ export class ClientShell {
   private readonly pePanel: PortableExperiencePanel
   private readonly notificationsPanel: NotificationsPanel
   private readonly marketplaceCreditsPanel: MarketplaceCreditsPanel
+  private readonly friendsPanel: FriendsPanel
   private readonly emoteWheel: EmoteWheelPanel
   private readonly buttons = new Map<string, SidebarButton>()
   private unreadPollTimer: ReturnType<typeof setInterval> | null = null
   private readonly debugPanel: DebugPanel
   private readonly devProgressPanel: DevProgressPanel | null
   private chatPanel: ChatPanel | null
+  private social: SocialService | null = null
   private settingsOverlay: SettingsOverlay | null
   private preferencesPanel: PreferencesPanel | null
   private session: SessionIdentity
   private onEmoteSelected: ((emoteId: string) => void) | null = null
   private onTogglePhotoCamera: (() => void) | null = null
   private onTourOptions: (() => void) | null = null
+  private onOpenProfile: ((address: string) => void) | null = null
+  private onJumpToFriend: ((address: string) => void) | null = null
   private emoteWheelEnabled = true
   private unreadChat = 0
   private unsubChatUnread: (() => void) | null = null
+  private unsubFriendBadge: (() => void) | null = null
   private onEmoteWheelVisibility: ((visible: boolean) => void) | null = null
   private readonly mobileQuery = window.matchMedia(MOBILE_LAYOUT_QUERY)
   private readonly onMobileQueryChange = (): void => this.applyMobileLayout()
@@ -217,6 +223,31 @@ export class ClientShell {
     this.marketplaceCreditsPanel = new MarketplaceCreditsPanel({
       getSession: () => this.session,
       onClose: () => this.buttons.get('marketplace-credits')?.setActive(false)
+    })
+
+    this.friendsPanel = new FriendsPanel({
+      getSession: () => this.session,
+      getSocial: () => this.social,
+      anchor: () => this.buttons.get('friend-requests')?.element,
+      onClose: () => this.buttons.get('friend-requests')?.setActive(false),
+      onChat: (address, displayName) => {
+        this.friendsPanel.hide()
+        if (this.chatPanel) {
+          this.chatPanel.openDirectMessage(address, displayName)
+          this.openChatPanel()
+        } else {
+          console.info('[friends] chat →', displayName, address)
+        }
+      },
+      onJumpIn: (address) => {
+        this.friendsPanel.hide()
+        if (this.onJumpToFriend) this.onJumpToFriend(address)
+        else console.info('[friends] jump in — no location handler', address)
+      },
+      onViewProfile: (address) => {
+        this.friendsPanel.hide()
+        this.onOpenProfile?.(address)
+      }
     })
 
     this.profileButton = new ProfileSidebarButton('Profile', () => this.profilePopup.toggle())
@@ -354,11 +385,15 @@ export class ClientShell {
     this.buttons.get('dev')?.setActive(false)
     this.chatPanel?.hide()
     this.buttons.get('chat')?.setActive(false)
+    this.friendsPanel.hide()
+    this.buttons.get('friend-requests')?.setActive(false)
   }
 
   attachChatPanel(panel: ChatPanel, social: SocialService): void {
     this.unsubChatUnread?.()
+    this.unsubFriendBadge?.()
     this.chatPanel = panel
+    this.social = social
     this.unreadChat = 0
     this.updateChatBadge()
     this.wireChatPanel(panel)
@@ -369,6 +404,21 @@ export class ClientShell {
       this.unreadChat++
       this.updateChatBadge()
     })
+    this.unsubFriendBadge = social.onFriendshipChange(() => this.updateFriendRequestBadge())
+    void social.ensureFriendshipSnapshot().then(() => this.updateFriendRequestBadge())
+  }
+
+  setOnOpenProfile(handler: ((address: string) => void) | null): void {
+    this.onOpenProfile = handler
+  }
+
+  setOnJumpToFriend(handler: ((address: string) => void) | null): void {
+    this.onJumpToFriend = handler
+  }
+
+  private updateFriendRequestBadge(): void {
+    const n = this.social?.getIncomingFriendAddresses().length ?? 0
+    this.buttons.get('friend-requests')?.setBadge(n > 0 ? n : null)
   }
 
   attachSettingsOverlay(overlay: SettingsOverlay): void {
@@ -531,6 +581,8 @@ export class ClientShell {
     this.mobileQuery.removeEventListener('change', this.onMobileQueryChange)
     this.unsubChatUnread?.()
     this.unsubChatUnread = null
+    this.unsubFriendBadge?.()
+    this.unsubFriendBadge = null
     this.unsubPe?.()
     this.unsubPe = null
     this.profilePopup.dispose()
@@ -538,6 +590,7 @@ export class ClientShell {
     this.nearbyVoicePanel.hide()
     this.notificationsPanel.dispose()
     this.marketplaceCreditsPanel.dispose()
+    this.friendsPanel.dispose()
     this.pePanel.dispose()
     this.emoteWheel.dispose()
     this.devProgressPanel?.hide()
@@ -600,6 +653,8 @@ export class ClientShell {
       return (ev) => {
         ev.stopPropagation()
         this.closeMobileDrawerForOverlay()
+        this.friendsPanel.hide()
+        this.buttons.get('friend-requests')?.setActive(false)
         if (!this.chatPanel) return
         const open = this.chatPanel.toggle()
         this.syncChatFabState(open)
@@ -716,6 +771,21 @@ export class ClientShell {
       }
     }
 
+    if (id === 'friend-requests') {
+      return (ev) => {
+        ev.stopPropagation()
+        this.closeMobileDrawerForOverlay()
+        this.notificationsPanel.hide()
+        this.buttons.get('notifications')?.setActive(false)
+        this.marketplaceCreditsPanel.hide()
+        this.buttons.get('marketplace-credits')?.setActive(false)
+        this.chatPanel?.hide()
+        this.buttons.get('chat')?.setActive(false)
+        void this.friendsPanel.toggle()
+        this.buttons.get('friend-requests')?.setActive(this.friendsPanel.isVisible())
+      }
+    }
+
     const overlayTabs: Record<string, SettingsTab> = {
       events: 'events',
       map: 'map',
@@ -736,9 +806,7 @@ export class ClientShell {
     const labels: Record<string, string> = {
       marketplace: 'Marketplace',
       help: 'Help',
-      dev: 'Dev progress',
-      'friend-requests': 'Friend requests',
-      chat: 'Chat'
+      dev: 'Dev progress'
     }
     return (ev) => {
       ev.stopPropagation()

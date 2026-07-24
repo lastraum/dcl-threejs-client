@@ -152,3 +152,67 @@ export async function fetchFriendshipSnapshotSigned(
 
   return { friends, incoming, outgoing }
 }
+
+async function friendshipMutation(
+  identity: AuthIdentity,
+  path: string,
+  method: 'POST' | 'PUT' | 'DELETE'
+): Promise<void> {
+  const base = getSocialServiceBaseUrl()
+  const res = await signedFetch(`${base}${path}`, {
+    method,
+    headers: { Accept: 'application/json' },
+    identity
+  })
+  if (res.ok || res.status === 204) return
+  throw new Error(await readSocialServiceError(res))
+}
+
+/** Accept an incoming friend request. */
+export async function acceptFriendshipRequestSigned(
+  identity: AuthIdentity,
+  peerAddress: string
+): Promise<void> {
+  const addr = peerAddress.trim().toLowerCase()
+  // Prefer REST accept; fall through common path variants used by social service.
+  try {
+    await friendshipMutation(identity, `/v1/friendships/${addr}/accept`, 'POST')
+    return
+  } catch {
+    /* try alternate */
+  }
+  await friendshipMutation(identity, `/v1/friendships/me/requests/${addr}/accept`, 'POST')
+}
+
+/** Reject / delete an incoming friend request. */
+export async function rejectFriendshipRequestSigned(
+  identity: AuthIdentity,
+  peerAddress: string
+): Promise<void> {
+  const addr = peerAddress.trim().toLowerCase()
+  try {
+    await friendshipMutation(identity, `/v1/friendships/${addr}/reject`, 'POST')
+    return
+  } catch {
+    /* try alternate */
+  }
+  await friendshipMutation(identity, `/v1/friendships/me/requests/${addr}`, 'DELETE')
+}
+
+/** Cancel an outgoing friend request or remove an existing friendship. */
+export async function removeFriendshipSigned(
+  identity: AuthIdentity,
+  peerAddress: string
+): Promise<void> {
+  const addr = peerAddress.trim().toLowerCase()
+  await friendshipMutation(identity, `/v1/friendships/${addr}`, 'DELETE')
+}
+
+/** Send a friend request to an address. */
+export async function requestFriendshipSigned(
+  identity: AuthIdentity,
+  peerAddress: string
+): Promise<void> {
+  const addr = peerAddress.trim().toLowerCase()
+  await friendshipMutation(identity, `/v1/friendships/${addr}`, 'POST')
+}

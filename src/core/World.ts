@@ -2317,7 +2317,8 @@ export class World {
 
 
   /**
-   * Pose slide only — never recooks geometry.
+   * Pose slide only — never recooks geometry (except queuing entity-local recook when
+   * an animated multi-shape actor cannot slide safely).
    * forceEntities (Animator shape-motion / platform) must UNION with CRDT dirty — previously
    * any non-empty dirty list dropped forceEntities, so rink doors stopped sliding PhysX while
    * billboards/tweens were dirty elsewhere in the scene.
@@ -2328,57 +2329,77 @@ export class World {
     const forceEntities = options?.forceEntities
     if (!forceEntities?.size && !dirty.length) return
 
-    // Caller already refreshed forceEntities with shapeMotion. Only refresh CRDT-dirty roots
-    // (entity matrix) — do not re-run without shapeMotion or door child matrices get stale.
+    // Shape-motion (doors): caller already refreshed with allowShapeMotion.
+    // CRDT dirty only: entity-root matrix — never re-sync door shape locals without motion flag
+    // (that left child matrices stale and PhysX stuck at cook pose).
     if (dirty.length) {
-      this.sceneScript.refreshColliderDescPoses(dirty)
+      const dirtyOnly = forceEntities?.size
+        ? dirty.filter((e) => {
+            const physId = this.sceneScript.physEntityIdForPoseSync(e)
+            return physId === null || !forceEntities.has(physId)
+          })
+        : dirty
+      if (dirtyOnly.length) {
+        this.sceneScript.refreshColliderDescPoses(dirtyOnly)
+      }
     }
 
-    const seen = new Set<number>()
-    const descs: PhysicsColliderDesc[] = []
-    const addDesc = (desc: PhysicsColliderDesc | null | undefined) => {
-      if (!desc || seen.has(desc.entity)) return
-      seen.add(desc.entity)
-      descs.push(desc)
-    }
-    if (dirty.length) {
-      for (const d of this.sceneScript.getPhysicsColliderDescsForEntities(dirty)) addDesc(d)
-    }
+    let updated = 0
+
+    // 1) Animator shape-motion — full multi-shape relative slide (doors/lifts).
     if (forceEntities?.size) {
+      const forceDescs: PhysicsColliderDesc[] = []
       for (const physId of forceEntities) {
-        addDesc(this.sceneScript.getPhysicsColliderDesc(physId))
+        const desc = this.sceneScript.getPhysicsColliderDesc(physId)
+        if (desc) forceDescs.push(desc)
       }
-    }
-    if (!descs.length) return
-
-    // Shape-motion entities: full multi-shape relative slide. Dirty-only: actor root only
-    // (never rewrite shape locals without Animator shape-motion).
-    const updated = this.physics.applyStaticColliderPoseUpdates(descs, {
-      force: false,
-      forceEntities: forceEntities?.size ? forceEntities : undefined,
-      actorRootOnly: !forceEntities?.size
-    })
-    if (updated > 0) this.physics.refreshStaticColliderQueries()
-    // World-baked + animated: one-shot queue entity-local recook (drain via normal play path).
-    let queuedWorldBaked = 0
-    for (const desc of descs) {
-      if (!forceEntities?.has(desc.entity)) continue
-      if (!this.physics.isWorldBakedStatic(desc.entity)) continue
-      const ecs =
-        desc.entity >= GLTF_COLLIDER_ENTITY_BASE
-          ? ((desc.entity - GLTF_COLLIDER_ENTITY_BASE) as Entity)
-          : null
-      if (ecs !== null && this.sceneScript.isAnimatedGltfColliderEntity(ecs)) {
-        if (!this.colliderCookQueue.has(desc.entity)) {
-          this.colliderCookQueue.add(desc.entity)
-          queuedWorldBaked++
+      if (forceDescs.length) {
+        updated += this.physics.applyStaticColliderPoseUpdates(forceDescs, {
+          force: true,
+          forceEntities,
+          actorRootOnly: false
+        })
+        // World-baked / missing baselines / failed slide (scale drift): entity-local recook.
+        let queued = 0
+        for (const desc of forceDescs) {
+          if (!desc.shapes?.length) continue
+          const ecs =
+            desc.entity >= GLTF_COLLIDER_ENTITY_BASE
+              ? ((desc.entity - GLTF_COLLIDER_ENTITY_BASE) as Entity)
+              : null
+          if (ecs !== null && !this.sceneScript.isAnimatedGltfColliderEntity(ecs)) continue
+          const needsRecook =
+            this.physics.isWorldBakedStatic(desc.entity) ||
+            !this.physics.hasShapeBaselines(desc.entity) ||
+            !this.physics.hasStaticActor(desc.entity) ||
+            !this.physics.actorPoseMatchesDesc(desc)
+          if (!needsRecook) continue
+          if (!this.colliderCookQueue.has(desc.entity)) {
+            this.colliderCookQueue.add(desc.entity)
+            queued++
+          }
         }
+        this.pendingColliderCooks = this.colliderCookQueue.size
+        if (queued > 0) void this.scheduleColliderCookDrain()
       }
     }
-    this.pendingColliderCooks = this.colliderCookQueue.size
-    if (queuedWorldBaked > 0) {
-      void this.scheduleColliderCookDrain()
+
+    // 2) CRDT / dirty entity roots only — never rewrite multi-shape locals (plaza soft path).
+    if (dirty.length) {
+      const dirtyDescs: PhysicsColliderDesc[] = []
+      for (const d of this.sceneScript.getPhysicsColliderDescsForEntities(dirty)) {
+        if (forceEntities?.has(d.entity)) continue
+        dirtyDescs.push(d)
+      }
+      if (dirtyDescs.length) {
+        updated += this.physics.applyStaticColliderPoseUpdates(dirtyDescs, {
+          force: false,
+          actorRootOnly: true
+        })
+      }
     }
+
+    if (updated > 0) this.physics.refreshStaticColliderQueries()
     this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
   }
 

@@ -52,6 +52,19 @@ function mixerHasActiveWork(entry: AnimEntry): boolean {
   return false
 }
 
+/**
+ * One-shot open/close doors (LoopOnce / clampWhenFinished) — always emit shape-motion while
+ * the clip is advancing. Looping plaza props stay probe-gated only (flags softed PhysX).
+ */
+function hasRunningOneShotAction(entry: AnimEntry): boolean {
+  for (const action of entry.actions.values()) {
+    if (!action.isRunning() && !action.isScheduled()) continue
+    if (action.clampWhenFinished) return true
+    if (action.loop === THREE.LoopOnce) return true
+  }
+  return false
+}
+
 /** One name→node map per bind — per-track traverse was O(tracks × nodes) on huge characters. */
 function buildNodeNameMap(root: THREE.Object3D): Map<string, THREE.Object3D> {
   const byName = new Map<string, THREE.Object3D>()
@@ -419,11 +432,14 @@ export class AnimatorBridge {
           sk.skeleton.update()
         }
       })
-      entry.root.updateMatrixWorld(true)
-      // ONLY mark shape-motion when collider child matrices actually changed.
-      // Marking every looping plaza flag/prop forever force-slid all multi-shape solids
-      // every frame and softed Genesis Plaza after ~1 min under load.
-      if (this.shapeMotionProbe?.(entity)) {
+      // Entity parent (ECS Transform) must be current before child world matrices are read.
+      const entityNode = entry.root.parent
+      if (entityNode) entityNode.updateMatrixWorld(true)
+      else entry.root.updateMatrixWorld(true)
+      // Looping plaza props: probe-only (child mesh actually moved).
+      // One-shot doors/lifts: always mark while clip runs so PhysX tracks every frame.
+      const oneShot = hasRunningOneShotAction(entry)
+      if (oneShot || this.shapeMotionProbe?.(entity)) {
         this.shapeMotionEntities.add(entity)
       }
     }

@@ -504,31 +504,33 @@ export class GltfColliderExtractor {
     gltfRoot.updateMatrixWorld(true)
 
     const colliderMeshes = this.collectColliderMeshes(gltfRoot, hasVisiblePhysics, hasInvisiblePhysics)
+    const eligible: THREE.Mesh[] = []
     const byGeoUuid = new Map<string, THREE.Mesh>()
     const byName = new Map<string, THREE.Mesh>()
     for (const mesh of colliderMeshes) {
       const posAttr = mesh.geometry.getAttribute('position')
       if (!posAttr || posAttr.count < 3) continue
+      eligible.push(mesh)
       byGeoUuid.set(mesh.geometry.uuid, mesh)
       if (mesh.name) byName.set(mesh.name, mesh)
     }
-    if (!byGeoUuid.size) return false
+    if (!eligible.length) return false
 
     _entityInv.copy(entityObj.matrixWorld).invert()
     let changed = false
-    let matched = 0
     for (let i = 0; i < shapes.length; i++) {
       const shape = shapes[i]!
-      // fingerprint: gltf:inv|vis:entity:idx:meshName:geoUuid
+      // fingerprint: gltf:inv|vis:entity:idx:meshName:geoUuid  (uuid is always last)
       const parts = shape.fingerprint.split(':')
       const geoUuid = parts.length >= 6 ? parts[parts.length - 1]! : ''
+      // Mesh name is everything between idx and uuid — may contain ':' rarely; prefer uuid.
       const meshName = parts.length >= 6 ? parts.slice(4, -1).join(':') : ''
       const mesh =
         (geoUuid && byGeoUuid.get(geoUuid)) ||
         (meshName && byName.get(meshName)) ||
-        null
+        // Index fallback: same traverse order as extract (door uuid remount edge cases).
+        (i < eligible.length ? eligible[i]! : null)
       if (!mesh) continue
-      matched++
       mesh.updateMatrixWorld(true)
       _worldMatrix.copy(mesh.matrixWorld).premultiply(_entityInv)
       const nextFp = colliderPoseFp(_worldMatrix)
@@ -539,7 +541,6 @@ export class GltfColliderExtractor {
     }
     // Only report change when a localMatrix actually moved (doors). Returning matched>0
     // forced PhysX rewrites every frame for idle multi-shape buildings and softed plaza.
-    void matched
     return changed
   }
 

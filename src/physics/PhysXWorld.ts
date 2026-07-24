@@ -997,6 +997,21 @@ export class PhysXWorld {
     return this.actorWorldBaked.get(entity) === true && this.staticActors.has(entity)
   }
 
+  /** Entity-local multi-shape cooks store baselines for relative door/lift slides. */
+  hasShapeBaselines(entity: number): boolean {
+    const bas = this.shapeBaselineLocal.get(entity)
+    return !!bas && bas.length > 0
+  }
+
+  /** True when last cooked/slid pose fingerprint matches the live descriptor. */
+  actorPoseMatchesDesc(desc: PhysicsColliderDesc): boolean {
+    if (!this.staticActors.has(desc.entity)) return false
+    const poseFp = desc.shapes?.length
+      ? multiShapePoseFingerprint(desc)
+      : matrixFingerprint(desc.matrix)
+    return this.staticPoseFp.get(desc.entity) === poseFp
+  }
+
   /** Descriptor pose moved (CRDT resync) — world-baked vertices are already in world space. */
   ackStaticPoseFingerprint(desc: PhysicsColliderDesc): void {
     const poseFp = desc.shapes?.length
@@ -1102,7 +1117,10 @@ export class PhysXWorld {
         // Shape-motion (doors): relative shape poses + actor root.
         const poseFp = multiShapePoseFingerprint(desc)
         if (!forceThis && this.staticPoseFp.get(desc.entity) === poseFp) continue
-        if (!this.isPoseSlideSafe(actor, desc)) continue
+        if (!this.isPoseSlideSafe(actor, desc)) {
+          // Unsafe (scale drift / shape count) — leave actor; caller may queue recook.
+          continue
+        }
         try {
           if (!this.updateMultiShapeActorPose(actor, desc)) continue
           this.staticPoseFp.set(desc.entity, poseFp)

@@ -24,6 +24,26 @@ function isVideoKind(kind: unknown): boolean {
   return String(kind).toLowerCase() === 'video'
 }
 
+function isAudioKind(kind: unknown): boolean {
+  if (kind === Track.Kind.Audio) return true
+  return String(kind).toLowerCase() === 'audio'
+}
+
+/**
+ * Stream A/V audio sources (OBS screen-share audio, unknown/ingress).
+ * Microphone is usually peer voice — only attached when it is the *same* video publisher
+ * (LiveKit RTMP ingress often labels ingress audio as Microphone).
+ */
+function isNonMicStreamAudioSource(source: Track.Source): boolean {
+  return source !== Track.Source.Microphone
+}
+
+function trackSidOf(track: Track, publication?: RemoteTrackPublication): string {
+  const fromPub = publication?.trackSid?.trim()
+  if (fromPub) return fromPub
+  return typeof track.sid === 'string' ? track.sid.trim() : ''
+}
+
 function collectFromParticipant(participant: Participant, out: ActiveVideoStream[]): void {
   const identity = participant.identity?.trim()
   if (!identity) return
@@ -143,6 +163,169 @@ export function forceSubscribeRemoteVideo(room: Room | null): number {
   return n
 }
 
+/**
+ * Force-subscribe remote audio that may belong to a cast/ingress stream.
+ * LiveKit RTMP / Cast publish audio as a separate track from video — without this the
+ * 2D landing cast stage is silent even when mute UI shows unmuted.
+ */
+export function forceSubscribeRemoteStreamAudio(
+  room: Room | null,
+  preferredIdentity?: string
+): number {
+  if (!room || room.state !== ConnectionState.Connected) return 0
+  const preferred = (preferredIdentity ?? '').trim().toLowerCase()
+  let n = 0
+  for (const participant of room.remoteParticipants.values()) {
+    if (participant.isLocal) continue
+    const identity = (participant.identity ?? '').trim().toLowerCase()
+    const samePublisher = preferred.length > 0 && identity === preferred
+    for (const publication of participant.trackPublications.values()) {
+      if (!isAudioKind(publication.kind)) continue
+      // Same video publisher: subscribe all audio (ingress often = Microphone).
+      // Other peers: only non-mic (ScreenShareAudio / unknown) so we do not pull every voice.
+      if (!samePublisher && !isNonMicStreamAudioSource(publication.source)) continue
+      const rp = publication as RemoteTrackPublication
+      n += 1
+      if (rp.isSubscribed && rp.track) continue
+      try {
+        rp.setSubscribed(true)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return n
+}
+
+type RemoteStreamAudioPick = {
+  track: Track
+  publication: RemoteTrackPublication
+  identity: string
+  sid: string
+}
+
+/**
+ * Companion audio for a cast/ingress video publisher.
+ * Prefer same-participant audio (incl. mic-labelled ingress); else any remote non-mic audio.
+ */
+function pickCompanionStreamAudioTracks(
+  room: Room,
+  preferredIdentity: string
+): RemoteStreamAudioPick[] {
+  forceSubscribeRemoteStreamAudio(room, preferredIdentity)
+  const preferred = preferredIdentity.trim().toLowerCase()
+  const same: RemoteStreamAudioPick[] = []
+  const others: RemoteStreamAudioPick[] = []
+
+  for (const p of room.remoteParticipants.values()) {
+    if (p.isLocal) continue
+    const identity = p.identity?.trim() || ''
+    const isPreferred = preferred.length > 0 && identity.toLowerCase() === preferred
+    for (const pub of p.trackPublications.values()) {
+      if (!isAudioKind(pub.kind)) continue
+      // Same publisher: take mic + stream audio. Others: stream-only (no peer voice).
+      if (!isPreferred && !isNonMicStreamAudioSource(pub.source)) continue
+      const rp = pub as RemoteTrackPublication
+      if (!rp.isSubscribed) {
+        try {
+          rp.setSubscribed(true)
+        } catch {
+          /* ignore */
+        }
+      }
+      const t = rp.track
+      if (!t || !isAudioKind(t.kind)) continue
+      if (rp.isMuted === true) continue
+      const sid = trackSidOf(t, rp) || `${identity}-audio`
+      const row: RemoteStreamAudioPick = { track: t, publication: rp, identity, sid }
+      if (isPreferred) same.push(row)
+      else others.push(row)
+    }
+  }
+  // Same publisher first; otherwise any stream audio (single OBS room common case).
+  return same.length > 0 ? same : others
+}
+
+/**
+ * Attach (or keep) hidden `<audio>` elements for stream audio next to the cast `<video>`.
+ * When `preserveAudioUi` is true, do not overwrite mute/volume (landing mute toggle owns them).
+ */
+function ensureCompanionStreamAudioOnHost(
+  room: Room,
+  host: HTMLElement,
+  preferredIdentity: string,
+  opts?: { muted?: boolean; volume?: number },
+  preserveAudioUi = false
+): void {
+  const picks = pickCompanionStreamAudioTracks(room, preferredIdentity)
+  const wanted = new Set(picks.map((p) => p.sid))
+
+  // Drop stale stream-audio elements (publisher swap / unpublish).
+  host.querySelectorAll('audio[data-cast-audio-sid]').forEach((node) => {
+    const el = node as HTMLAudioElement
+    const sid = el.dataset.castAudioSid ?? ''
+    if (wanted.has(sid)) return
+    try {
+      el.pause()
+      el.srcObject = null
+      el.remove()
+    } catch {
+      /* ignore */
+    }
+  })
+
+  const muted = opts?.muted === true
+  const volume = muted ? 0 : Math.min(1, Math.max(0, opts?.volume ?? 1))
+
+  for (const pick of picks) {
+    const existing = Array.from(host.querySelectorAll('audio[data-cast-audio-sid]')).find(
+      (node) => (node as HTMLAudioElement).dataset.castAudioSid === pick.sid
+    ) as HTMLAudioElement | undefined
+    if (existing?.isConnected) {
+      if (!preserveAudioUi) {
+        existing.muted = muted
+        existing.volume = volume
+      }
+      if (existing.paused) void existing.play().catch(() => {})
+      continue
+    }
+
+    try {
+      pick.track.detach().forEach((n) => {
+        if (n !== existing) n.remove()
+      })
+    } catch {
+      /* ignore */
+    }
+
+    const el = pick.track.attach()
+    if (!(el instanceof HTMLMediaElement)) continue
+    const audio = el as HTMLAudioElement
+    audio.autoplay = true
+    audio.dataset.castAudioSid = pick.sid
+    audio.className = 'scene-watch-cast-stage__audio'
+    // Keep out of layout; volume still applies.
+    audio.style.cssText =
+      'position:absolute;width:0;height:0;opacity:0;pointer-events:none;overflow:hidden'
+    if (preserveAudioUi) {
+      // Match current video mute state if present (Join-live gesture already set UI).
+      const video = host.querySelector('video') as HTMLVideoElement | null
+      if (video) {
+        audio.muted = video.muted
+        audio.volume = video.volume
+      } else {
+        audio.muted = muted
+        audio.volume = volume
+      }
+    } else {
+      audio.muted = muted
+      audio.volume = volume
+    }
+    host.appendChild(audio)
+    void audio.play().catch(() => {})
+  }
+}
+
 /** Unity `PRESENTATION_BOT_IDENTITY_PREFIX` — DCL Cast slide/presentation publisher. */
 export const PRESENTATION_BOT_IDENTITY_PREFIX = 'presentation-bot:'
 
@@ -235,6 +418,7 @@ export function pickCurrentStreamVideoTrack(room: Room | null): Track | null {
 
 /**
  * Companion `reattachFirstRemoteVideoTrack` — force-sub, pick best, attach into host.
+ * Also attaches companion stream **audio** (separate LiveKit track from OBS/Cast).
  * Returns true when a `<video>` is showing.
  * **Does not remount** if the same track SID is already attached (avoids flicker).
  */
@@ -260,16 +444,15 @@ export function reattachFirstRemoteVideoToHost(
   }
 
   const nextSid =
-    pick.publication.trackSid?.trim() ||
-    (typeof pick.track.sid === 'string' ? pick.track.sid.trim() : '') ||
-    'unknown'
+    trackSidOf(pick.track, pick.publication) || 'unknown'
   const existing = host.querySelector('video')
   const currentSid = host.dataset.castTrackSid ?? ''
 
   // Same track already mounted — do not remount (no flicker) and do **not** stomp
-  // mute/volume (UI mute toggle owns those after first attach).
+  // mute/volume (UI mute toggle owns those after first attach). Still attach late audio.
   if (existing instanceof HTMLVideoElement && currentSid === nextSid && existing.isConnected) {
     if (existing.paused) void existing.play().catch(() => {})
+    ensureCompanionStreamAudioOnHost(room, host, pick.identity, opts, true)
     return true
   }
 
@@ -296,6 +479,8 @@ export function reattachFirstRemoteVideoToHost(
   host.dataset.castTrackSid = nextSid
   host.appendChild(el)
   void el.play().catch(() => {})
+  // OBS / Cast publish audio as a second track — video-only attach was silent on landing.
+  ensureCompanionStreamAudioOnHost(room, host, pick.identity, opts, false)
   return true
 }
 

@@ -1142,8 +1142,8 @@ export class SceneLandingView {
       const media = node as HTMLMediaElement
       media.muted = this.castMuted
       media.volume = this.castMuted ? 0 : this.castVolume
-      // User gesture (mute button) unlocks audio after autoplay-muted start.
-      if (!this.castMuted && media.paused) {
+      // User gesture (mute / volume) unlocks audio after autoplay policies or late LiveKit attach.
+      if (!this.castMuted) {
         void media.play().catch(() => {})
       }
     })

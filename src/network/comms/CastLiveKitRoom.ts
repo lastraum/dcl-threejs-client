@@ -29,8 +29,13 @@ export class CastLiveKitRoom {
       // url may be wss://… or livekit:wss://…
       const u = url.trim().startsWith('livekit:') ? url.trim().slice('livekit:'.length) : url.trim()
       await room.connect(u, token, { autoSubscribe: true })
-      void room.startAudio().catch(() => {})
-      // Force-sub remote video/audio (companion)
+      // Join live is a user gesture path — unlock remote A/V playback ASAP.
+      try {
+        await room.startAudio()
+      } catch {
+        void room.startAudio().catch(() => {})
+      }
+      // Force-sub remote video + stream audio (mic stays for voice chat if shared room).
       for (const p of room.remoteParticipants.values()) {
         for (const pub of p.trackPublications.values()) {
           if (pub.kind !== Track.Kind.Video && pub.kind !== Track.Kind.Audio) continue
@@ -65,6 +70,7 @@ export class CastLiveKitRoom {
     let last = false
     const attach = (): void => {
       forceSubscribeRemoteVideo(room)
+      // reattach also force-subs + mounts companion stream audio tracks
       const ok = reattachFirstRemoteVideoToHost(room, host, {
         muted: opts?.muted,
         volume: opts?.volume,

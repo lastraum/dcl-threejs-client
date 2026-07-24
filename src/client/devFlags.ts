@@ -33,3 +33,13 @@ export function usePerfDebug(): boolean {
   if (!params) return false
   return params.has('perfdebug') || params.has('perf')
 }
+
+/**
+ * Kill multi-scene AOI: no neighbor visuals, script-warm, live secondaries, or promote.
+ * Primary scene only. Use for CBD / mega-scene perf isolation: `?noaoi=1`
+ */
+export function skipAoiNeighbors(): boolean {
+  const params = readSearchParams()
+  if (!params) return false
+  return params.has('noaoi') || params.has('skipaoi')
+}

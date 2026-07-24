@@ -30,6 +30,7 @@ import {
   type PortableExperiencesPolicy
 } from '../dcl/multiScene/resolvePortableExperiences'
 import { renderQuality } from '../rendering/RenderQualitySettings'
+import { skipAoiNeighbors } from '../client/devFlags'
 import type { PerformanceTier } from '../shim/types'
 import { LandscapeSystem } from './systems/LandscapeSystem'
 import { SceneScriptSystem } from './systems/SceneScriptSystem'
@@ -726,6 +727,8 @@ export class World {
     onProgress?.('Initialising physics…')
     await this.physics.init()
     // Coords + Scene Distance > 0: open Genesis walk (infinite ground plane) — no parcel walls.
+    // ?noaoi keeps walk open if radius > 0, but skips neighbor systems.
+    const aoiOff = skipAoiNeighbors()
     const openCityWalk =
       scene.source.kind === 'coords' && renderQuality.getSceneLoadRadiusM() > 0
     this.physics.syncLandscapeGround(terrain.landscapeParcelKeys, scene.baseParcel, scene.parcels, {
@@ -739,24 +742,32 @@ export class World {
 
     this.loadedPrimaryScene = scene
     // Neighbors stay off until notifyPlayReady (setNeighborActivityEnabled).
+    // ?noaoi=1 — never bind AOI / promote / live secondaries (primary-only CBD debug).
     this.multiScene?.setSecondaryActivityEnabled(false)
-    this.aoiVisual.bind({
-      scene,
-      cache: this.assets,
-      hostScene: this.host.scene,
-      syncRoadColliders: (descs) => {
-        // Runtime road rebuilds use cache-invalidate only (no simulate(0) — see PhysXWorld).
-        this.physics.syncAoiRoadColliders(descs)
-      },
-      clearRoadColliders: () => this.physics.clearAoiRoadColliders(),
-      onSecondaryCandidates: (candidates) => {
-        this.multiScene?.reconcileSecondaries(candidates)
-      }
-    })
-    this.scenePromote.bind(scene)
-    if (openCityWalk) {
+    if (openCityWalk && !aoiOff) {
+      this.aoiVisual.bind({
+        scene,
+        cache: this.assets,
+        hostScene: this.host.scene,
+        syncRoadColliders: (descs) => {
+          // Runtime road rebuilds use cache-invalidate only (no simulate(0) — see PhysXWorld).
+          this.physics.syncAoiRoadColliders(descs)
+        },
+        clearRoadColliders: () => this.physics.clearAoiRoadColliders(),
+        onSecondaryCandidates: (candidates) => {
+          this.multiScene?.reconcileSecondaries(candidates)
+        }
+      })
+      this.scenePromote.bind(scene)
       console.info(
         `[aoi] Genesis walk — Scene Distance warm=${renderQuality.getSceneLoadRadiusM()}m · FocusOwner=primary · base=${scene.baseParcel}`
+      )
+    } else if (aoiOff) {
+      this.aoiVisual.unbind()
+      this.scenePromote.unbind()
+      this.multiScene?.disposeSecondariesOnly()
+      console.info(
+        `[aoi] DISABLED (?noaoi) — primary only · base=${scene.baseParcel} parcels=${scene.parcels.length}`
       )
     }
 
@@ -1231,9 +1242,12 @@ export class World {
       engineTickIntervalMs: resolveEngineTickIntervalMs(this.sceneScript.getPerformanceTier())
     })
     // AOI warm/live/visuals only after primary is play-ready — dual-boot kills CBD.
-    this.aoiVisual.setNeighborActivityEnabled(true)
-    this.scenePromote.setNeighborActivityEnabled(true)
-    this.multiScene?.setSecondaryActivityEnabled(true)
+    // Honor ?noaoi so neighbors never start.
+    if (!skipAoiNeighbors()) {
+      this.aoiVisual.setNeighborActivityEnabled(true)
+      this.scenePromote.setNeighborActivityEnabled(true)
+      this.multiScene?.setSecondaryActivityEnabled(true)
+    }
     if (!skipRemoteAvatars()) {
       this.remoteAvatars?.setPlayReady(plazaScale)
     }

@@ -48,8 +48,7 @@ const FF_MAX_RETAINED = 6
 
 /**
  * Neighbor scene meshes (composite GLBs + first-frame) + live-secondary candidates.
- * Kill switch: set false if plaza thrash returns. FocusOwner gates keep non-primary
- * media hard-muted when live workers run.
+ * Prefer URL kill switch `?noaoi` (World skips bind entirely). This only gates meshes.
  */
 const LOAD_AOI_SCENE_VISUALS = true
 

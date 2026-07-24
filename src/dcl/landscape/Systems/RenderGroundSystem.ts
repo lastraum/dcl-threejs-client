@@ -79,16 +79,17 @@ export async function buildParcelLandscape(
         landscape.userData.windShader = windShader
       }
     }
-    // Genesis City: default empty-land floor under **every** scene parcel (FloorBase /
-    // red-grass pack at Y=-0.02 — same as Winterfest ice rink). Multi-parcel plazas
-    // (e.g. CBD 116 parcels) use instancing — sequential clone was multi-second thrash.
-    // Skip when the scene authored terrain, or Genesis Plaza (0,0) — full ground art.
+    // Genesis City: EMPTY_LAND.ground (FloorBase / red-grass) on **every deployed parcel**.
+    // Same GLB as empty-land tiles — InstancedMesh, Y=-0.02. Not canvas / not a plane paint.
+    // Skip when author terrain, or Genesis Plaza (0,0) which ships full ground art.
     if (profile.kind === 'genesis' && !authorTerrain && !isGenesisPlazaScene(scene)) {
       const base = parseParcelKey(scene.baseParcel)
       const groundHash = profile.sceneGround
       const n = scene.parcels.length
-      onProgress?.(`Default floor GLB on ${n} scene parcel(s)…`)
-      // SW corners in scene-local DCL meters (instancer applies EMPTY_LAND_GROUND_OFFSET).
+      onProgress?.(`Default floor GLB (instanced) on ${n} scene parcel(s)…`)
+      // Preload so mesh templates always resolve (genesis path used to skip preload).
+      await cache.preload([{ url: catalystAssetUrl(groundHash), hash: groundHash }])
+      // SW corners in scene-local DCL meters (same as InfiniteGround / AOI blanks).
       const tiles = scene.parcels.map((key) => {
         const parcel = parseParcelKey(key)
         const origin = parcelWorldOrigin(parcel, base)
@@ -101,12 +102,28 @@ export async function buildParcelLandscape(
         'landscape:scene-default-floor',
         base
       )
+      // Large multi-parcel footprints can sit outside a bad sphere before instances settle.
+      floors.traverse((o) => {
+        if (o instanceof THREE.Mesh) {
+          o.frustumCulled = false
+          o.receiveShadow = true
+        }
+      })
+      const meshCount = floors.children.length
       landscape.add(floors)
       console.info(
-        `[landscape] genesis default floor ×${n} parcels @ y=${EMPTY_LAND_GROUND_OFFSET.y} (instanced)`
+        `[landscape] genesis default floor GLB ×${n} parcels @ y=${EMPTY_LAND_GROUND_OFFSET.y}` +
+          ` instancedMeshes=${meshCount} hash=${groundHash.slice(0, 12)}…`
       )
+      if (meshCount === 0) {
+        console.warn(
+          `[landscape] default floor produced 0 meshes — EMPTY_LAND ground failed to load (${groundHash})`
+        )
+      }
     } else if (profile.kind === 'genesis' && isGenesisPlazaScene(scene) && !authorTerrain) {
       onProgress?.('Landscape: genesis plaza — skip default floor GLB (scene art owns ground)')
+    } else if (profile.kind === 'genesis' && authorTerrain) {
+      console.info('[landscape] genesis + author terrain — skip default floor GLB')
     }
     return landscape
   }

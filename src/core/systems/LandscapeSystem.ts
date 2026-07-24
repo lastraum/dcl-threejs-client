@@ -23,8 +23,14 @@ export class LandscapeSystem {
     onProgress?: (msg: string) => void
   ): Promise<void> {
     const profile = landscapeProfileForScene(scene)
-    // none / genesis / water — no empty-land ground.glb preload
-    if (profile.kind === 'none' || profile.kind === 'genesis' || profile.kind === 'water') {
+    // genesis still needs EMPTY_LAND.ground for default floor on scene parcels
+    if (profile.kind === 'genesis') {
+      await cache.preload([{ url: catalystAssetUrl(profile.sceneGround), hash: profile.sceneGround }])
+      this.state.landscapeRoot = await buildParcelLandscape(scene, cache, onProgress)
+      return
+    }
+    // none / water — no empty-land ground.glb
+    if (profile.kind === 'none' || profile.kind === 'water') {
       this.state.landscapeRoot = await buildParcelLandscape(scene, cache, onProgress)
       return
     }

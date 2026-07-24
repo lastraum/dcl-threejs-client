@@ -2374,12 +2374,9 @@ export class World {
 
     let updated = 0
 
-    // 1) ONE-SHOT doors only: live world-bake when _collider mesh/bone world pose changes.
-    // Never world-bake looping plaza animators — that remove/recook thrash softed solids after ~1 min.
+    // 1) ANIMATOR PART movers → kinematic multi-shape (cook once, pose every frame).
+    // Not live world-bake: that recook thrash softed large scenes. CCT already queries eDYNAMIC.
     if (animatedPhysIds?.size) {
-      const liveBake: PhysicsColliderDesc[] = []
-      const rootOnly: PhysicsColliderDesc[] = []
-      const MAX_LIVE_BAKE_PER_FRAME = 4
       for (const physId of animatedPhysIds) {
         const desc = this.sceneScript.getPhysicsColliderDesc(physId)
         if (!desc) {
@@ -2392,53 +2389,17 @@ export class World {
           continue
         }
         if (!desc.shapes?.length) {
-          rootOnly.push(desc)
-          continue
-        }
-        const ecs =
-          desc.entity >= GLTF_COLLIDER_ENTITY_BASE
-            ? ((desc.entity - GLTF_COLLIDER_ENTITY_BASE) as Entity)
-            : null
-        const meshFp =
-          ecs !== null ? this.sceneScript.getGltfColliderMeshWorldFingerprint(ecs) : null
-        if (!meshFp) {
-          if (ecs !== null && !this.loggedAnimatorNoCollider.has(ecs)) {
-            this.loggedAnimatorNoCollider.add(ecs)
-            console.warn(
-              `[phys] Animator entity ${ecs} multi-shape extract has no live mesh fingerprint ` +
-                `(missing _collider / CL_PHYSICS?) — door will not track`
-            )
-          }
-          continue
-        }
-        if (this.animatedLiveBakeMeshFp.get(desc.entity) === meshFp) continue
-        this.animatedLiveBakeMeshFp.set(desc.entity, meshFp)
-        liveBake.push(desc)
-        if (liveBake.length >= MAX_LIVE_BAKE_PER_FRAME) break
-      }
-      if (rootOnly.length) {
-        updated += this.physics.applyStaticColliderPoseUpdates(rootOnly, {
-          force: true,
-          forceEntities: new Set(rootOnly.map((d) => d.entity)),
-          actorRootOnly: true
-        })
-      }
-      if (liveBake.length) {
-        try {
-          // geometryCache:false → world-space verts at current open/close pose; actor at origin.
-          const result = this.physics.syncStaticColliders(liveBake, {
-            cookBudget: liveBake.length,
-            freezeRemoval: true,
-            forceRecookOnPoseChange: true,
-            geometryCache: false,
-            skipWorkerStream: true
+          // Single-shape / MeshCollider: root follow on existing static is enough.
+          updated += this.physics.applyStaticColliderPoseUpdates([desc], {
+            force: true,
+            forceEntities: new Set([desc.entity]),
+            actorRootOnly: true
           })
-          if (result.geometryChanged) {
-            updated += liveBake.length
-            this.physics.rebuildStaticSceneQueryTree()
-          }
-        } catch (err) {
-          console.warn('[World] animated door live-bake failed', err)
+          continue
+        }
+        if (this.physics.updateKinematicMultiShapePose(desc)) {
+          updated++
+          this.animatedLiveBakeMeshFp.delete(desc.entity) // no longer on bake path
         }
       }
     }

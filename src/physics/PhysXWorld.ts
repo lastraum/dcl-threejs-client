@@ -235,6 +235,11 @@ export class PhysXWorld {
   /** World-space baked trimesh — actor stays at origin; never apply setGlobalPose. */
   private readonly actorWorldBaked = new Map<number, boolean>()
   /**
+   * Kinematic rigid dynamics (Animator doors / PART movers). Geometry cooked once entity-local;
+   * pose updated each frame — never live-re-bake statics.
+   */
+  private readonly actorIsKinematic = new Set<number>()
+  /**
    * Cook-time shape local matrices — Animator slides use current * baseline⁻¹ as shape pose.
    * Geometry bakes full entityScale × localMatrix into verts (scale and placement do not commute,
    * so absolute shape-pose mode is invalid for DCL Transform.scale and softed plaza).
@@ -928,6 +933,45 @@ export class PhysXWorld {
     return this.staticActors.has(entity)
   }
 
+  isKinematicActor(entity: number): boolean {
+    return this.actorIsKinematic.has(entity)
+  }
+
+  /**
+   * Ensure multi-shape collider is a **kinematic** rigid dynamic (PART / Animator movers).
+   * Cooks entity-local geometry once; subsequent frames only set pose (no re-bake).
+   */
+  ensureKinematicMultiShape(desc: PhysicsColliderDesc): boolean {
+    if (!desc.shapes?.length || !this.physics || !this.scene) return false
+    if (this.actorIsKinematic.has(desc.entity) && this.staticActors.has(desc.entity)) {
+      if (this.geomFingerprintMatches(desc) && this.hasShapeBaselines(desc.entity)) return true
+    }
+    // Drop static / stale kinematic — rebuild kinematic with current geometry.
+    if (this.staticActors.has(desc.entity)) this.removeStatic(desc.entity)
+    return this.addMultiShapeKinematic(desc)
+  }
+
+  /**
+   * Pose kinematic multi-shape from live desc (entity T+R + relative shape locals).
+   * Call after refreshShapeLocalMatrices for Animator frames.
+   */
+  updateKinematicMultiShapePose(desc: PhysicsColliderDesc): boolean {
+    if (!this.ensureKinematicMultiShape(desc)) return false
+    const actor = this.staticActors.get(desc.entity)
+    if (!actor) return false
+    if (!this.isPoseSlideSafe(actor, desc)) return false
+    try {
+      if (!this.updateMultiShapeActorPose(actor, desc, true)) return false
+      this.staticFp.set(desc.entity, desc.fingerprint)
+      this.staticPoseFp.set(desc.entity, multiShapePoseFingerprint(desc))
+      this.invalidateControllerCache()
+      return true
+    } catch (err) {
+      console.warn('[PhysXWorld] kinematic multi-shape pose failed:', desc.entity, err)
+      return false
+    }
+  }
+
   /** Clears trimesh cook failure blacklist — use before a manual recook pass. */
   clearFailedCookCaches(): void {
     this.failedCookFp.clear()
@@ -1127,12 +1171,14 @@ export class PhysXWorld {
           continue
         }
         try {
-          if (!this.updateMultiShapeActorPose(actor, desc)) continue
+          const kinematic = this.actorIsKinematic.has(desc.entity)
+          if (!this.updateMultiShapeActorPose(actor, desc, kinematic)) continue
           this.staticPoseFp.set(desc.entity, poseFp)
           updated++
           shapeLocalsChanged = true
-          // Re-register static actor so SQ bounds include new child poses (CCT hits doors).
-          this.reinsertStaticActorForSceneQuery(actor)
+          // Static only: re-register so SQ bounds include child setLocalPose (CCT).
+          // Kinematic uses setKinematicTarget + eDYNAMIC queries — no reinsert.
+          if (!kinematic) this.reinsertStaticActorForSceneQuery(actor)
         } catch (err) {
           console.warn('[PhysXWorld] multi-shape pose slide failed:', desc.entity, err)
         }
@@ -2920,9 +2966,14 @@ export class PhysXWorld {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   /**
    * Slide actor root + per-shape relative poses — geometry baked at cook baseline.
+   * @param kinematic — use setKinematicTarget when available so CCT SQ sees the move.
    * @returns false when the actor cannot be slid safely (caller must recook).
    */
-  private updateMultiShapeActorPose(actor: any, desc: PhysicsColliderDesc): boolean {
+  private updateMultiShapeActorPose(
+    actor: any,
+    desc: PhysicsColliderDesc,
+    kinematic = false
+  ): boolean {
     const shapes = desc.shapes
     if (!shapes?.length) return false
     if (!this.isPoseSlideSafe(actor, desc)) return false
@@ -2930,7 +2981,11 @@ export class PhysXWorld {
     desc.matrix.decompose(this._pos, this._quat, this._scale)
     this._pos.toPxTransform(this.actorPoseTransform)
     this._quat.toPxTransform(this.actorPoseTransform)
-    actor.setGlobalPose(this.actorPoseTransform)
+    if (kinematic && typeof actor.setKinematicTarget === 'function') {
+      actor.setKinematicTarget(this.actorPoseTransform)
+    } else {
+      actor.setGlobalPose(this.actorPoseTransform)
+    }
 
     if (this.actorWorldBaked.get(desc.entity)) return true
 
@@ -2954,6 +3009,108 @@ export class PhysXWorld {
         this._identityQuat.toPxTransform(this.shapeLocalPoseTransform)
         pxShape.setLocalPose(this.shapeLocalPoseTransform)
       }
+    }
+    return true
+  }
+
+  /**
+   * Multi-shape kinematic rigid dynamic — same entity-local cook as static, but CCT-friendly
+   * pose updates via setKinematicTarget (doors / PART movers).
+   */
+  private addMultiShapeKinematic(desc: PhysicsColliderDesc): boolean {
+    const shapes = desc.shapes
+    if (!shapes?.length || !this.physics || !this.scene) return false
+
+    const handles: PxMeshHandle[] = []
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pxShapes: any[] = []
+    let attached = 0
+
+    for (const shapeDesc of shapes) {
+      if (!shapeDesc.geometry) continue
+      // Always entity-local for kinematics (baselines + relative shape pose).
+      const result = this.createLocalTrimeshShape(
+        shapeDesc,
+        handles,
+        desc,
+        false,
+        true,
+        false,
+        false,
+        true
+      )
+      if (!result || result.worldBaked) continue
+      pxShapes.push(result.shape)
+      attached++
+    }
+
+    desc.matrix.decompose(this._pos, this._quat, this._scale)
+    this._pos.toPxTransform(this.actorPoseTransform)
+    this._quat.toPxTransform(this.actorPoseTransform)
+
+    let actor: any
+    try {
+      actor = this.physics.createRigidDynamic(this.actorPoseTransform)
+      if (typeof actor.setRigidBodyFlag === 'function') {
+        actor.setRigidBodyFlag(PHYSX.PxRigidBodyFlagEnum.eKINEMATIC, true)
+        // CCT scene queries use the kinematic target pose when set.
+        if (PHYSX.PxRigidBodyFlagEnum.eUSE_KINEMATIC_TARGET_FOR_SCENE_QUERIES != null) {
+          actor.setRigidBodyFlag(
+            PHYSX.PxRigidBodyFlagEnum.eUSE_KINEMATIC_TARGET_FOR_SCENE_QUERIES,
+            true
+          )
+        }
+      }
+    } catch (err) {
+      console.warn('[PhysXWorld] createRigidDynamic kinematic failed:', desc.entity, err)
+      for (const h of handles) {
+        try {
+          h.release()
+        } catch {
+          /* ignore */
+        }
+      }
+      return false
+    }
+
+    for (const pxShape of pxShapes) {
+      actor.attachShape(pxShape)
+    }
+
+    if (!attached) {
+      try {
+        this.scene.removeActor?.(actor)
+        actor.release?.()
+      } catch {
+        /* ignore */
+      }
+      for (const handle of handles) {
+        try {
+          handle.release()
+        } catch {
+          /* ignore */
+        }
+      }
+      this.logCookFailedOnce(desc.fingerprint, '[PhysXWorld] kinematic multi-shape cook failed:')
+      return false
+    }
+
+    this.scene.addActor(actor)
+    this.staticActors.set(desc.entity, actor)
+    this.registerStaticActor(desc.entity, actor)
+    this.pmeshHandles.set(desc.entity, handles)
+    this.actorWorldBaked.set(desc.entity, false)
+    this.actorIsKinematic.add(desc.entity)
+    this.shapeBaselineLocal.set(
+      desc.entity,
+      shapes.map((shape) => shape.localMatrix.clone())
+    )
+    this.actorCookScale.set(desc.entity, this._scale.clone())
+    this.staticFp.set(desc.entity, desc.fingerprint)
+    this.staticPoseFp.set(desc.entity, multiShapePoseFingerprint(desc))
+    // Seed kinematic target so CCT sees initial pose.
+    if (typeof actor.setKinematicTarget === 'function') {
+      actor.setKinematicTarget(this.actorPoseTransform)
     }
     return true
   }
@@ -3066,7 +3223,9 @@ export class PhysXWorld {
     this.staticFp.delete(entity)
     this.staticPoseFp.delete(entity)
     this.actorWorldBaked.delete(entity)
+    this.actorIsKinematic.delete(entity)
     this.shapeBaselineLocal.delete(entity)
+    this.actorCookScale.delete(entity)
     const pmeshList = this.pmeshHandles.get(entity)
     this.pmeshHandles.delete(entity)
 

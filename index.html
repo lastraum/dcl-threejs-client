@@ -2057,22 +2057,26 @@
       }
 
 
-      /* Friends panel (sidebar friend-requests) */
+      /* Friends panel — same shell slot as chat (bottom-left HUD) */
       .friends-panel {
         position: fixed;
         z-index: var(--z-client-hud-raised);
-        left: calc(var(--client-safe-left) + 4px);
-        top: 72px;
-        width: min(380px, calc(100vw - var(--client-safe-left) - 24px));
-        max-height: min(72vh, 560px);
+        left: var(--client-safe-left);
+        right: auto;
+        bottom: var(--client-safe-bottom);
+        top: auto;
+        width: var(--client-hud-max-w);
+        max-width: calc(100vw - var(--client-safe-left) - var(--client-safe-right) - 48px);
+        height: var(--client-chat-max-h);
+        max-height: var(--client-chat-max-h);
         display: flex;
         flex-direction: column;
         padding: 0;
         border-radius: 16px;
-        background: rgba(18, 16, 28, 0.98);
-        border: 1px solid rgba(255, 255, 255, 0.07);
+        background: rgba(28, 20, 16, 0.94);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         color: #fff;
-        box-shadow: 0 18px 56px rgba(0, 0, 0, 0.6);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
         pointer-events: auto;
         overflow: hidden;
         font-family: inherit;
@@ -2084,7 +2088,7 @@
         justify-content: space-between;
         gap: 8px;
         padding: 10px 10px 0 12px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         flex-shrink: 0;
       }
       .friends-panel__tabs {
@@ -2147,9 +2151,11 @@
         font-size: 12px;
         color: #ff8aa3;
         border-bottom: 1px solid rgba(255,255,255,0.05);
+        flex-shrink: 0;
       }
       .friends-panel__body {
         flex: 1;
+        min-height: 0;
         overflow: auto;
         padding: 6px 0 10px;
         scrollbar-width: thin;
@@ -2322,6 +2328,12 @@
       .friends-panel__empty {
         padding: 36px 28px 40px;
         text-align: center;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        box-sizing: border-box;
       }
       .friends-panel__empty-icon {
         color: rgba(255,255,255,0.55);
@@ -2376,13 +2388,15 @@
         color: #ff6b8a;
       }
       @media (max-width: 767px) {
-        .friends-panel {
-          left: 12px;
-          right: 12px;
-          top: auto;
-          bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+        .client-mobile .friends-panel {
+          left: calc(max(12px, env(safe-area-inset-left, 0px)) + var(--scene-chat-fab-size) + var(--scene-chat-fab-gap));
+          right: var(--client-safe-right);
+          bottom: calc(
+            max(12px, env(safe-area-inset-bottom, 0px)) + var(--scene-chat-fab-size) + var(--scene-chat-fab-gap)
+          );
           width: auto;
-          max-height: min(58vh, 460px);
+          max-width: none;
+          height: var(--client-chat-max-h);
         }
       }
 

@@ -195,18 +195,12 @@ export class FriendsPanel {
     this.statusEl.textContent = msg
   }
 
+  /** Chat-panel shell slot — CSS owns left/bottom/width/height (no JS anchor offset). */
   private positionPanel(): void {
-    const anchor = this.options.anchor?.()
-    if (!anchor) {
-      this.element.style.left = ''
-      this.element.style.top = ''
-      return
-    }
-    const r = anchor.getBoundingClientRect()
-    const left = Math.min(r.right + 10, window.innerWidth - 380)
-    const top = Math.min(Math.max(12, r.top - 8), window.innerHeight - 120)
-    this.element.style.left = `${Math.max(12, left)}px`
-    this.element.style.top = `${top}px`
+    this.element.style.left = ''
+    this.element.style.top = ''
+    this.element.style.right = ''
+    this.element.style.bottom = ''
   }
 
   private syncRequestBadge(): void {

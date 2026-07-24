@@ -129,7 +129,7 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   { id: 'ui:dev-progress', name: 'Dev progress panel (</>)', status: 'render', category: 'client-ui', notes: 'Community claims + parity gaps + PROGRESS.md from GitHub' },
   { id: 'ui:settings-events', name: 'Settings → Events (X)', status: 'render', category: 'client-ui', notes: 'DCL Events API, weekly/calendar' },
   { id: 'ui:settings-map', name: 'Settings → Map (M)', status: 'render', category: 'client-ui', notes: 'Genesis tiles, peers, Jump In; embedded mode hides page HUD when opened from minimap/shell' },
-  { id: 'ui:settings-backpack', name: 'Settings → Backpack (I)', status: 'render', category: 'client-ui', notes: 'Avatar preview, equipped wearables' },
+  { id: 'ui:settings-backpack', name: 'Settings → Backpack (I)', status: 'render', category: 'client-ui', notes: 'Avatar preview, equipped wearables, Export VRM (DCL→VRM0)' },
   { id: 'ui:preferences-panel', name: 'Preferences panel (P / ⚙)', status: 'render', category: 'client-ui', notes: 'Right rail; world input passes through' },
   { id: 'ui:preferences-graphics', name: 'Preferences → Graphics', status: 'partial', category: 'client-ui', notes: 'Preset L/M/H/Custom, shadows, lights, res scale, FPS, MSAA, FOV, lighting, Bloom + HDR live (P4); VSync hidden; Resolution/Fullscreen stub; P3 distance stubs' },
   { id: 'ui:preferences-sounds', name: 'Preferences → Sounds', status: 'render', category: 'client-ui', notes: 'Volume sliders; mic device; PTT vs open-mic; mute-in-background wired to VoiceChatService' },

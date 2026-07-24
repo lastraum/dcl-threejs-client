@@ -2863,6 +2863,13 @@
           overflow-y: auto;
           -webkit-overflow-scrolling: touch;
           padding: 0 0 max(8px, env(safe-area-inset-bottom, 0px));
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+        .client-mobile .client-shell__drawer-scroll::-webkit-scrollbar {
+          display: none;
+          width: 0;
+          height: 0;
         }
         .client-mobile .client-shell__top,
         .client-mobile .client-shell__bottom {
@@ -5064,6 +5071,14 @@
         background: rgba(0, 0, 0, 0.22);
         border-right: 1px solid rgba(255, 255, 255, 0.06);
         overflow-y: auto;
+        /* Invisible scrollbar — still scrollable (wheel / trackpad / touch) */
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .settings-overlay__tabs::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
       .settings-overlay__tab {
         display: flex;
@@ -5491,6 +5506,13 @@
         background: rgba(0, 0, 0, 0.22);
         border-right: 1px solid rgba(255, 255, 255, 0.06);
         overflow-y: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .preferences-panel__tabs::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
       .preferences-panel__tab {
         display: flex;
@@ -5574,16 +5596,13 @@
         padding: 20px 18px 28px;
         box-sizing: border-box;
         max-width: 100%;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
       }
       .gfx-settings__scroll::-webkit-scrollbar {
-        width: 6px;
-      }
-      .gfx-settings__scroll::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      .gfx-settings__scroll::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.15);
-        border-radius: 3px;
+        display: none;
+        width: 0;
+        height: 0;
       }
       .gfx-settings__section {
         margin-bottom: 28px;
@@ -7347,17 +7366,29 @@
         background: rgba(255, 255, 255, 0.1);
         color: #fff;
       }
-      .backpack-view__marketplace-link {
+      .backpack-view__export-vrm {
         margin-left: auto;
         padding: 6px 14px;
-        border: 1px solid rgba(255, 255, 255, 0.15);
+        border: 1px solid rgba(124, 92, 255, 0.55);
         border-radius: 8px;
-        background: rgba(255, 255, 255, 0.06);
-        color: rgba(255, 255, 255, 0.85);
+        background: rgba(124, 92, 255, 0.22);
+        color: #fff;
         font-size: 11px;
         font-weight: 700;
-        text-decoration: none;
         letter-spacing: 0.04em;
+        cursor: pointer;
+        font-family: inherit;
+        white-space: nowrap;
+        transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+      }
+      .backpack-view__export-vrm:hover:not(:disabled) {
+        background: rgba(124, 92, 255, 0.38);
+        border-color: rgba(160, 132, 255, 0.85);
+      }
+      .backpack-view__export-vrm:disabled,
+      .backpack-view__export-vrm.is-busy {
+        opacity: 0.55;
+        cursor: not-allowed;
       }
       .backpack-view__middle-body {
         display: flex;
@@ -7375,6 +7406,13 @@
         overflow-y: auto;
         border-right: 1px solid rgba(255, 255, 255, 0.06);
         align-content: start;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .backpack-view__categories::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
       /* Emotes: left rail is wheel slots 1–9,0 (Explorer-style). */
       .backpack-view__categories--emotes {
@@ -7641,6 +7679,13 @@
         min-width: 0;
         padding: 12px;
         overflow-y: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .backpack-view__grid-area::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
       .backpack-view--vrm .backpack-view__categories,
       .backpack-view--osa .backpack-view__categories {
@@ -7821,6 +7866,13 @@
         flex-direction: column;
         padding: 16px;
         overflow-y: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .backpack-view__right::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
       .backpack-view__detail {
         flex: 1;
@@ -13530,8 +13582,12 @@
         display: none;
       }
       .social-chat-dock__pills .chat-panel__rail-scroll {
-        /* Let name/× float outside the rail without clipping. */
-        overflow-x: visible;
+        /*
+         * Keep overflow-x: hidden so overflow-y: auto still scrolls and the
+         * invisible scrollbar rules apply. Name/× floats use position:fixed
+         * (body-level), so they are not clipped by this rail.
+         */
+        overflow-x: hidden;
       }
       .social-chat-dock__pills .chat-panel__rail-chip {
         align-self: flex-end;
@@ -14381,6 +14437,14 @@
         -webkit-overflow-scrolling: touch;
         padding: 0 clamp(16px, 3vw, 40px) 32px;
         box-sizing: border-box;
+        /* Invisible scrollbar — still scrollable (wheel / trackpad / touch) */
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .explorer-view__main::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
       .places-view--explorer {
         width: 100%;
@@ -15539,6 +15603,13 @@
         -webkit-overflow-scrolling: touch;
         padding: 0 clamp(16px, 3vw, 40px) 32px;
         box-sizing: border-box;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .events-page-view__main::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
       .events-page-view__main .events-view {
         height: auto;
@@ -15587,6 +15658,13 @@
         -webkit-overflow-scrolling: touch;
         padding: 0 clamp(16px, 3vw, 40px) 32px;
         box-sizing: border-box;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .communities-page-view__main::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
       body.communities-route,
       body.communities-route #app {
@@ -15623,6 +15701,13 @@
         -webkit-overflow-scrolling: touch;
         padding: 0 clamp(16px, 3vw, 40px) 40px;
         box-sizing: border-box;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .profile-page-view__main::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
       .profile-page-view__loading {
         display: flex;
@@ -17805,6 +17890,14 @@
         flex: 1;
         min-height: 0;
         overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .scene-landing-view__main::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
       .scene-landing-view__loading {
         display: flex;

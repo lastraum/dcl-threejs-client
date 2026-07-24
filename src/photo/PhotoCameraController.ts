@@ -87,7 +87,14 @@ export class PhotoCameraController {
   private readonly review: PhotoReviewPanel
   private peoplePollAcc = 0
   /** Tour location bind: first successful shutter invokes then clears. */
-  private nextCaptureHandler: ((result: PhotoCaptureResult) => void) | null = null
+  private nextCaptureHandler:
+    | ((result: PhotoCaptureResult) => void | Promise<void>)
+    | null = null
+  /** True while Camera Reel was opened from Tour Locations → Add photo. */
+  private tourLocationCapture = false
+  /** Fired when leaving tour photo mode: captured=true if a shot bound successfully. */
+  private onTourCaptureExit: ((captured: boolean) => void) | null = null
+  private tourCaptureSucceeded = false
 
   constructor(private readonly deps: PhotoCameraDeps) {
     this.hud = new PhotoCameraHud({
@@ -201,6 +208,22 @@ export class PhotoCameraController {
     document.body.classList.remove('photo-camera-mode')
     this.deps.setWorldChromeVisible(true)
 
+    // Tour location photo flow: always notify exit (success or cancel via Esc).
+    const wasTour = this.tourLocationCapture
+    const captured = this.tourCaptureSucceeded
+    const onTourExit = this.onTourCaptureExit
+    this.tourLocationCapture = false
+    this.tourCaptureSucceeded = false
+    this.nextCaptureHandler = null
+    this.onTourCaptureExit = null
+    if (wasTour && onTourExit) {
+      try {
+        onTourExit(captured)
+      } catch (err) {
+        console.warn('[photo-camera] tour capture exit handler failed', err)
+      }
+    }
+
     console.info('[photo-camera] exited In-World Camera mode')
   }
 
@@ -272,8 +295,29 @@ export class PhotoCameraController {
   }
 
   /** Tour Locations: bind next shutter to a handler (one-shot). */
-  setNextCaptureHandler(handler: ((result: PhotoCaptureResult) => void) | null): void {
+  setNextCaptureHandler(
+    handler: ((result: PhotoCaptureResult) => void | Promise<void>) | null
+  ): void {
     this.nextCaptureHandler = handler
+  }
+
+  isTourLocationCapture(): boolean {
+    return this.tourLocationCapture
+  }
+
+  /**
+   * Open Camera Reel for a tour location photo.
+   * Caller hides tour chrome; on exit without shot, `onExit(false)`.
+   */
+  beginTourLocationCapture(opts: {
+    onCapture: (result: PhotoCaptureResult) => void | Promise<void>
+    onExit: (captured: boolean) => void
+  }): void {
+    this.tourLocationCapture = true
+    this.tourCaptureSucceeded = false
+    this.onTourCaptureExit = opts.onExit
+    this.nextCaptureHandler = opts.onCapture
+    if (!this.active) this.enter()
   }
 
   async takePhoto(): Promise<PhotoCaptureResult | null> {
@@ -313,12 +357,14 @@ export class PhotoCameraController {
       this.hud.setStatus('')
 
       const bind = this.nextCaptureHandler
-      if (bind) {
+      if (bind || this.tourLocationCapture) {
         this.nextCaptureHandler = null
         try {
-          bind(result)
+          await Promise.resolve(bind?.(result))
+          this.tourCaptureSucceeded = true
         } catch (err) {
           console.warn('[photo-camera] next-capture handler failed', err)
+          this.tourCaptureSucceeded = false
         }
         // Tour bind: skip review rail — photo is already attached to the stop.
         this.capturing = false

@@ -1347,14 +1347,29 @@ export class World {
   }
 
   /**
-   * One-shot: next Camera Reel shutter (before review) invokes handler.
-   * Used by tour Locations “Add photo”.
+   * Tour Locations “Add photo”: open Camera Reel in tour mode.
+   * Caller should hide the tour modal; onExit(false) when Esc/cancel without a shot.
    */
-  setNextPhotoCaptureHandler(
-    handler: ((result: import('../photo/photoCapture').PhotoCaptureResult) => void) | null
-  ): void {
+  beginTourLocationPhotoCapture(opts: {
+    onCapture: (
+      result: import('../photo/photoCapture').PhotoCaptureResult
+    ) => void | Promise<void>
+    onExit: (captured: boolean) => void
+  }): void {
+    if (!this.playerMode || !this.player) {
+      opts.onExit(false)
+      return
+    }
+    if (this.isAnyVirtualCameraActive()) {
+      opts.onExit(false)
+      return
+    }
     this.ensurePhotoCamera()
-    this.photoCamera?.setNextCaptureHandler(handler)
+    this.photoCamera?.beginTourLocationCapture(opts)
+  }
+
+  isTourLocationPhotoCapture(): boolean {
+    return this.photoCamera?.isTourLocationCapture() === true
   }
 
   /** Block until scene GLBs/textures hydrate — call after `loadScene`, before `start()`. */

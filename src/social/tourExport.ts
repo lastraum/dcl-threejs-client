@@ -25,12 +25,22 @@ function sanitizeFilePart(value: string): string {
     .slice(0, 80) || 'untitled'
 }
 
+/** Display-style date with slashes (CSV only — never use in ZIP paths). */
 function formatDateMdY(ms: number): string {
   const d = new Date(ms)
   const mm = String(d.getMonth() + 1).padStart(2, '0')
   const dd = String(d.getDate()).padStart(2, '0')
   const yyyy = d.getFullYear()
   return `${mm}/${dd}/${yyyy}`
+}
+
+/** Safe for ZIP entry names — no `/` or `\` (those create nested folders). */
+function formatDateForFilename(ms: number): string {
+  const d = new Date(ms)
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  const yyyy = d.getFullYear()
+  return `${mm}-${dd}-${yyyy}`
 }
 
 function coordsLabel(loc: TourLocationWire): string {
@@ -78,8 +88,11 @@ export function photoFileName(
   const coords = sanitizeFilePart(coordsLabel(loc))
   const locName = sanitizeFilePart(loc.name?.trim() || loc.sceneName)
   const community = sanitizeFilePart(communityName)
-  const date = formatDateMdY(capturedAt)
-  return `${coords} - ${locName} - ${community} - ${date}.png`
+  // mm-dd-yyyy — never use `/` or JSZip treats it as a folder path
+  const date = formatDateForFilename(capturedAt)
+  // Force single path segment (top-level in zip)
+  const base = `${coords} - ${locName} - ${community} - ${date}.png`.replace(/[/\\]/g, '-')
+  return base
 }
 
 export async function buildTourExportZip(
@@ -90,11 +103,21 @@ export async function buildTourExportZip(
   const byLoc = new Map(photos.map((p) => [p.locationId, p]))
   const csv = buildTourLocationsCsv(locations, meta, new Set(byLoc.keys()))
   const zip = new JSZip()
+  // Root-level only: locations.csv + flat PNGs
   zip.file('locations.csv', csv)
+  const usedNames = new Set<string>(['locations.csv'])
   for (const loc of locations) {
     const photo = byLoc.get(loc.id)
     if (!photo) continue
-    const name = photoFileName(loc, meta.communityName, photo.capturedAt)
+    let name = photoFileName(loc, meta.communityName, photo.capturedAt)
+    // Avoid collisions flattening to same name
+    if (usedNames.has(name)) {
+      const stem = name.replace(/\.png$/i, '')
+      let n = 2
+      while (usedNames.has(`${stem} (${n}).png`)) n++
+      name = `${stem} (${n}).png`
+    }
+    usedNames.add(name)
     zip.file(name, photo.blob)
   }
   return zip.generateAsync({ type: 'blob' })

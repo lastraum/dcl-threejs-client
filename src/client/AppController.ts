@@ -1049,27 +1049,33 @@ export class AppController {
         const session = this.communityFollow
           ?.listSessions()
           .find((s) => this.communityFollow?.isLeading(s.communityId))
-        if (!session) return
-        this.world?.setNextPhotoCaptureHandler((result) => {
-          void (async () => {
+        if (!session || !this.world) return
+        // Hide tour modal so Camera Reel has a full view.
+        this.tourOptionsPopup?.dispose()
+        this.tourOptionsPopup = null
+        this.world.beginTourLocationPhotoCapture({
+          onCapture: async (result) => {
             try {
               await putTourLocationPhoto(session.sessionId, locationId, result.blob)
-              this.tourPhotoBindLocationId = null
               const photo = await getTourLocationPhoto(session.sessionId, locationId)
               if (photo) photoThumbs.set(locationId, photo.dataUrl)
-              this.tourOptionsPopup?.refresh()
               clientDebugLog.log('social', 'Tour location photo saved', {
                 level: 'success',
                 alsoConsole: true
               })
             } catch (err) {
               console.warn('[tour] photo bind failed', err)
-              this.tourPhotoBindLocationId = null
+              throw err
             }
-          })()
+          },
+          onExit: (_captured) => {
+            this.tourPhotoBindLocationId = null
+            // Re-open Tour Options after shot or Esc cancel (modal was hidden for full view).
+            if (this.communityFollow?.isLeading()) {
+              this.openTourOptionsPopup()
+            }
+          }
         })
-        this.world?.enterPhotoCamera()
-        this.tourOptionsPopup?.refresh()
       },
       onClose: () => {
         this.tourOptionsPopup?.dispose()

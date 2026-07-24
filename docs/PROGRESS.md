@@ -3,11 +3,10 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-07-23  
-> **Current phase:** **v1.5.0 RC** on `dev-latest` — collider PART/ROOT platform + avatar/social train; cut to `main` pending.  
-> **Shipped (1.x):** **v1.4.0 custom worlds · Worlds map · AOI · shell UI · place analytics** · **v1.3.0 plaza/poker PE · TextShape UV · chat translate** · **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · multi-room chat · nearby voice · P4 bloom · glider.  
+> **Current phase:** **v1.5.0** production beta — collider PART/ROOT · Animator · avatar compose · social/tours; still not full Explorer parity.  
+> **Shipped (1.x):** **v1.5.0 PART/ROOT colliders · Animator hold · avatar compose · tours · cast audio** · **v1.4.0 custom worlds · Worlds map · AOI · shell UI · place analytics** · **v1.3.0 plaza/poker PE · TextShape UV · chat translate** · **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · multi-room chat · nearby voice · P4 bloom · glider.  
 
-> **1.5.0 focus (this RC):** animated collider PART policy (doors track, plaza solid) · Animator hold/SyncEntity · avatar crowd perf · follow tours · landing manage/bans · cast stream audio.  
-> **1.x next (after 1.5 cut):** backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page · graphics P3 distance culls · analytics charts polish.  
+> **1.x next:** backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page · graphics P3 distance culls · analytics charts polish · broken-rig wearable fallback (shelved).  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
 > **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  

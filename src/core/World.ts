@@ -430,9 +430,14 @@ export class World {
   private armVoiceUnlockOnUserGesture(): void {
     if (this.voiceGestureUnlockBound) return
     this.voiceGestureUnlockBound = true
+    let lastUnlockMs = 0
     const onGesture = (): void => {
       if (!this.voice.isInPlay()) return
       if (!this.voice.needsPlaybackUnlock() && this.voice.getSnapshot().remoteCount > 0) return
+      const now = performance.now()
+      // Pointer spam was unlockRemotePlayback every click/frame and nuked FPS.
+      if (now - lastUnlockMs < 1500) return
+      lastUnlockMs = now
       void this.voice.unlockRemotePlayback('user-gesture')
     }
     window.addEventListener('pointerdown', onGesture, true)

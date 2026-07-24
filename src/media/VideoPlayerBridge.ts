@@ -22,6 +22,8 @@ type DecoderEntry = {
   lastState: VideoStateValue
   lastOffset: number
   lastLength: number
+  /** Wall-clock of last VideoEvent append — throttle offset spam to worker. */
+  lastEventAtMs: number
 }
 
 /** ECS VideoPlayer → HTML decoders (one per playing entity); grow-only VideoEvent back to mirror. */
@@ -201,14 +203,18 @@ export class VideoPlayerBridge {
       const videoLength = entry.player.getVideoLength()
 
       const stateChanged = state !== entry.lastState
-      const offsetChanged = Math.abs(currentOffset - entry.lastOffset) > 0.05
       const lengthChanged = Math.abs(videoLength - entry.lastLength) > 0.05 && videoLength > 0
+      // Offset heartbeat only — 0.05s + every frame was videoEvent worker spam (FPS 120→40).
+      const now = performance.now()
+      const offsetChanged =
+        Math.abs(currentOffset - entry.lastOffset) > 0.35 && now - entry.lastEventAtMs > 250
 
       if (!stateChanged && !offsetChanged && !lengthChanged) continue
 
       entry.lastState = state
       entry.lastOffset = currentOffset
       entry.lastLength = videoLength
+      entry.lastEventAtMs = now
 
       const event: PBVideoEvent = {
         timestamp: this.eventTimestamp++,
@@ -251,7 +257,8 @@ export class VideoPlayerBridge {
       lastSpatialMax: 60,
       lastState: VS_NONE,
       lastOffset: -1,
-      lastLength: -1
+      lastLength: -1,
+      lastEventAtMs: 0
     })
     this.onTextureReady?.(entity)
   }

@@ -1120,7 +1120,8 @@ export class PhysXWorld {
         // Shape-motion (doors): relative shape poses + actor root.
         const poseFp = multiShapePoseFingerprint(desc)
         const prevPoseFp = this.staticPoseFp.get(desc.entity)
-        if (!forceThis && prevPoseFp === poseFp) continue
+        // forceThis allows shape slides — still skip pure no-ops (FPS: 120→40 was rewrite thrash).
+        if (prevPoseFp === poseFp) continue
         if (!this.isPoseSlideSafe(actor, desc)) {
           // Unsafe (scale drift / shape count) — leave actor; caller may queue recook.
           continue
@@ -1129,8 +1130,9 @@ export class PhysXWorld {
           if (!this.updateMultiShapeActorPose(actor, desc)) continue
           this.staticPoseFp.set(desc.entity, poseFp)
           updated++
-          // Only rebuild SQ when hulls actually moved — looping idle props stay cheap.
-          if (prevPoseFp !== poseFp) shapeLocalsChanged = true
+          shapeLocalsChanged = true
+          // Re-register static actor so SQ bounds include new child poses (CCT hits doors).
+          this.reinsertStaticActorForSceneQuery(actor)
         } catch (err) {
           console.warn('[PhysXWorld] multi-shape pose slide failed:', desc.entity, err)
         }
@@ -1181,6 +1183,21 @@ export class PhysXWorld {
       console.warn('[PhysXWorld] forceDynamicTreeRebuild failed:', err)
     }
     this.invalidateControllerCache()
+  }
+
+  /**
+   * PhysX static actors keep a single SQ bound; setLocalPose on shapes does not expand it.
+   * Remove+add forces the bound to match current shape poses so CCT can hit swung doors.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private reinsertStaticActorForSceneQuery(actor: any): void {
+    if (!this.scene || !actor) return
+    try {
+      this.scene.removeActor(actor)
+      this.scene.addActor(actor)
+    } catch (err) {
+      console.warn('[PhysXWorld] reinsert static actor for SQ failed:', err)
+    }
   }
 
   isColliderSynced(desc: PhysicsColliderDesc): boolean {

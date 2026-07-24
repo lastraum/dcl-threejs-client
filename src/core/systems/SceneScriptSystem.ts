@@ -772,16 +772,14 @@ export class SceneScriptSystem {
   }
 
   /**
-   * **Static by default.** Colliders stay cook-once / actor-root until a motion system
-   * moves the entity this frame:
-   * - Animator (active mixer — loop or one-shot)
-   * - Tween
-   * - Billboard
-   * - CRDT / scene-system Transform this sync frame
-   * - Explicit {@link markSystemAnimatedCollider}
+   * **Static by default.**
    *
-   * Only this set gets multi-shape child `_collider` slides (+ SQ rebuild).
-   * Everything else is static (root slide only if Transform dirty).
+   * **Shape-animated** (this set): Animator active mixer, or {@link markSystemAnimatedCollider}.
+   * These get multi-shape child `_collider` slides + SQ rebuild (doors, bone panels, lifts).
+   *
+   * **Root-animated** (NOT in this set): Tween / Billboard / CRDT Transform — already mark
+   * `colliderPoseDirty` and use **actor-root-only** slides. Putting them here forced full
+   * multi-shape rewrites every frame and crushed FPS on basic scenes.
    */
   getAnimatedColliderEntities(groundEcs: Entity | null = null): Set<Entity> {
     const out = new Set<Entity>()
@@ -790,9 +788,6 @@ export class SceneScriptSystem {
       out.add(entity)
     }
     for (const entity of this.animatorBridge?.pendingShapeMotionEntities() ?? []) add(entity)
-    for (const entity of this.lastTweenMotionEntities) add(entity)
-    for (const entity of this.billboardBridge?.pendingMotionEntities() ?? []) add(entity)
-    for (const entity of this.lastSyncFrameTransformEntities) add(entity)
     for (const entity of this.systemAnimatedColliders) add(entity)
     // Standing on an Animator GLTF platform — keep shape tracking while grounded.
     if (groundEcs !== null && this.isAnimatedGltfColliderEntity(groundEcs)) add(groundEcs)
@@ -800,15 +795,15 @@ export class SceneScriptSystem {
   }
 
   /**
-   * @deprecated Use {@link getAnimatedColliderEntities} — same set (Animator + motion systems).
+   * @deprecated Use {@link getAnimatedColliderEntities}.
    */
   getFrameShapeMotionEntities(groundEcs: Entity | null): Set<Entity> {
     return this.getAnimatedColliderEntities(groundEcs)
   }
 
   /**
-   * Scene systems that move a collider outside Animator/Tween/Billboard must call this
-   * the same frame the transform/mesh moves so PhysX treats the entity as animated.
+   * Systems that move **child** colliders (not just entity Transform) must call this the same
+   * frame so PhysX does multi-shape slides. Pure Transform/Tween movers do not need this.
    */
   markSystemAnimatedCollider(entity: Entity): void {
     this.systemAnimatedColliders.add(entity)

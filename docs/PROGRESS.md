@@ -18,10 +18,9 @@
 
 ---
 
-## 🎉 Milestone — v1.5.0 RC (Collider PART platform · Animator · avatar/social) (2026-07-23)
+## 🎉 Milestone — v1.5.0 release (Collider PART platform · Animator · avatar compose · social) (2026-07-23)
 
-**Status: release candidate on `dev-latest`** (`e24ce7f`) — ice rink + Genesis Plaza QA green.  
-**Next:** bump `package.json` → `1.5.0`, tag, merge `dev-latest` → `main`.
+**Status: release cut** — `dev-latest` → `main` · tag `v1.5.0`.
 
 ### What's new
 
@@ -30,7 +29,7 @@
 - **Genesis Plaza solids** — no soft-floor thrash; PART only when a clip is running and coarse hull fp moves
 - **Animator** — Explorer-style open/close hold; no SyncEntity snap-to-end; playing=false holds correct keyframe
 - **Landing** — LiveKit cast stream **audio** on 2D stage; Manage place (streams / bans / multiplayer storage)
-- **Avatar / perf** — crowd path, adaptive quality, jump mesh pin, remote stagger, elevated spawn ground
+- **Avatar / perf** — crowd path, adaptive quality, jump mesh pin, remote stagger; **compose hides + face-only backfill** (Explorer underwear slots)
 - **Social** — community follow tours, Tour Focus POV, tour flag/roster, smoother remotes
 
 | Area | Status | Notes |
@@ -40,22 +39,11 @@
 | **Animator hold / SyncEntity** | 🟢 | Door hold + network re-dirty safe |
 | **Cast landing audio** | 🟢 | 2D stage LiveKit playback |
 | **Follow tours** | 🟢 | Leader flag · Focus POV · roster |
-| **Avatar crowd** | 🟢 | Stagger · compose budget path · debug harness |
+| **Avatar crowd + compose** | 🟢 | Stagger · hide attached wearables · face/hair backfill only |
 
-**QA (1.5.0 smoke):**
+**QA (release smoke):** Genesis Plaza solids · ice-rink door · PE pads · 2D cast audio · jump/remotes · follow tour when available ✅
 
-| Scene / flow | Expect |
-| ------------ | ------ |
-| Genesis Plaza idle 2+ min | Solids hard · no PART cook spam · FPS stable · RAM settles |
-| Ice rink door open/close | Visual + CCT hull track · walk through when open |
-| Plaza bounce / PE pads | Impulse still fires (1.3 PE path) |
-| 2D landing with live stream | Video + **audio** on cast stage |
-| Jump + remotes | Mesh stays on CCT · peers move smoothly |
-| Follow tour (if available) | Flag / Focus / roster |
-
-**Docs / policy:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md) (scene solids + PE) · `integrationRegistry` PART notes.
-
-**Tip commit:** `e24ce7f` on `dev-latest` / `feat/avatar-performance`.
+**Tip:** `v1.5.0` on `main`.
 
 ---
 

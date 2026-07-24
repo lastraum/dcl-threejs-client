@@ -14,7 +14,6 @@ import {
 } from './caps'
 import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import { secondaryPhysOffset } from './physOffsets'
-import { isModestSceneForSecondary } from './sceneWeight'
 import { SceneWorkerSlot } from './SceneWorkerSlot'
 import type { SecondaryLiveRequest } from './types'
 
@@ -166,21 +165,6 @@ export class SecondaryLiveManager {
       return { entityId: id, primaryPhysIds: [] }
     }
 
-    // CBD plaza / large multi-parcel — never sticky demote (two full systems = tab death).
-    if (!isModestSceneForSecondary(scene)) {
-      const parcels = scene.parcels?.length ?? 0
-      const glbs = scene.content?.filter((f) => /\.glb$/i.test(f.file)).length ?? 0
-      console.info(
-        `[multi-scene] demote dispose “${scene.title}” — too large for sticky secondary (parcels=${parcels} glbs=${glbs})`
-      )
-      try {
-        system.dispose()
-      } catch {
-        /* ignore */
-      }
-      return null
-    }
-
     // Make room — prefer evicting non-sticky warm secondaries.
     this.evictToCapacity(this.maxSlots() - 1)
 
@@ -247,15 +231,6 @@ export class SecondaryLiveManager {
       if (this.disposed || !scene?.mainEntry || !scene.entityId) return false
       if (this.primaryScene?.entityId === scene.entityId) return false
       if (this.slots.has(scene.entityId)) return true
-
-      if (!isModestSceneForSecondary(scene)) {
-        const parcels = scene.parcels?.length ?? 0
-        const glbs = scene.content?.filter((f) => /\.glb$/i.test(f.file)).length ?? 0
-        console.info(
-          `[multi-scene] skip force-boot “${scene.title}” @ ${key} — too large (parcels=${parcels} glbs=${glbs})`
-        )
-        return false
-      }
 
       this.evictToCapacity(this.maxSlots() - 1)
 
@@ -365,14 +340,6 @@ export class SecondaryLiveManager {
       if (this.disposed || !scene?.mainEntry || !scene.entityId) return
       if (this.primaryScene?.entityId === scene.entityId) return
       if (this.slots.has(req.entityId)) return
-
-      // Large multi-parcel plazas: visuals/warm only — never dual-resident live worker.
-      if (!isModestSceneForSecondary(scene)) {
-        console.info(
-          `[multi-scene] skip live secondary “${req.title}” — too large (parcels=${scene.parcels?.length ?? 0})`
-        )
-        return
-      }
 
       const slotIndex = this.nextSlotIndex++
       const slot = new SceneWorkerSlot({

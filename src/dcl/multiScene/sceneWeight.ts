@@ -1,13 +1,18 @@
 /**
- * Dual-resident multi-scene (primary + sticky/live secondary) is only safe for
- * modest footprints. CBD-scale multi-parcel plazas (dozens of parcels, 100+ GLBs)
- * kill the tab when force-booted cold as secondary while the old primary still lives.
+ * Live-secondary eligibility helpers.
+ *
+ * Multi-parcel deployments (any size, including CBD-scale) are allowed as live
+ * secondaries. Concurrency is gated by tier cap + live radius (see caps.ts), not
+ * by parcel count. Cold promote still never force-boots as secondary (World
+ * seamless jump only when no live secondary).
  */
 
 export type SceneWeightInput = {
   parcels?: readonly string[] | null
   content?: readonly { file: string }[] | null
   title?: string
+  entityId?: string | null
+  mainEntry?: string | null
 }
 
 export function sceneParcelCount(scene: SceneWeightInput): number {
@@ -25,9 +30,16 @@ export function sceneGlbCount(scene: SceneWeightInput): number {
 }
 
 /**
- * Eligible for live secondary worker and/or sticky demote after promote.
- * Larger scenes use seamless primary swap (single resident) instead.
+ * Eligible for live secondary worker and sticky demote.
+ * No parcel-count cap — multi-parcel estates / plazas may be live secondaries.
+ * (Named historically “modest”; kept for call-site stability.)
  */
 export function isModestSceneForSecondary(scene: SceneWeightInput): boolean {
-  return sceneParcelCount(scene) <= 8 && sceneGlbCount(scene) <= 100
+  // Need a real scene script to boot a worker.
+  if (scene.mainEntry === null || scene.mainEntry === '') {
+    // ResolvedScene always has mainEntry field; Active paths pass full ResolvedScene.
+    // If caller only passes parcels/content, allow through.
+    if ('mainEntry' in scene && !scene.mainEntry) return false
+  }
+  return true
 }

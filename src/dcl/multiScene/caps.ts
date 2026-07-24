@@ -4,7 +4,7 @@ import { renderQuality } from '../../rendering/RenderQualitySettings'
 /**
  * Live secondary workers: nearest N inside a **live radius** (not full Scene Distance).
  * Warm + tertiary still use full Scene Distance. Live scripts are expensive.
- * Large multi-parcel plazas still refuse live/sticky (see sceneWeight.ts).
+ * Multi-parcel size is not a reject gate — concurrency + live radius are the budget.
  *
  * Middle tier targets ~6 concurrent muted neighbors; scale low/high around that.
  */

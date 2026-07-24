@@ -572,11 +572,6 @@ export class SceneScriptSystem {
     const onExtractRemoved = (entity: Entity) => this.collidersRemoveCallback?.(entity)
     this.collision.setOnRemoved(onExtractRemoved)
     this.gltfColliders.setOnRemoved(onExtractRemoved)
-    this.animatorBridge.setShapeMotionProbe((entity) => {
-      const nodes = this.bridge?.getEntityNodes()
-      if (!nodes || !this.gltfColliders) return false
-      return this.gltfColliders.probeColliderMeshMotion(entity, nodes)
-    })
     this.pointerEvents = new PointerEventsSystem(host.renderer.domElement)
     this.sceneInputRelay = new SceneInputRelay()
     this.triggerAreas = new TriggerAreaSystem()

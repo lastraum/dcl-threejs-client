@@ -129,9 +129,8 @@ export class AnimatorBridge {
    */
   private readonly dirtyReplay = new Set<Entity>()
   private motionFocusView: ProjectionView | null = null
-  /** GLTF collider child meshes moved by skinning / clips this frame. */
+  /** GLTF entities with an active mixer this frame — World slides their PhysX multi-shapes. */
   private readonly shapeMotionEntities = new Set<Entity>()
-  private shapeMotionProbe: ((entity: Entity) => boolean) | null = null
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -145,11 +144,6 @@ export class AnimatorBridge {
         : 'Animator verbose — logging bind, clips, and playback (?animatorverbose)'
       clientDebugLog.log('animator', hint, { level: 'info', alsoConsole: true })
     }
-  }
-
-  /** After mixer.update — detect per-shape collider tread motion (GltfColliderExtractor probe). */
-  setShapeMotionProbe(probe: ((entity: Entity) => boolean) | null): void {
-    this.shapeMotionProbe = probe
   }
 
   /**

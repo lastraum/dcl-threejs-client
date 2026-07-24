@@ -1083,6 +1083,8 @@ export class PhysXWorld {
     const forceEntities = options?.forceEntities
     const actorRootOnly = options?.actorRootOnly === true
     let updated = 0
+    /** True when any multi-shape child local pose changed (needs SQ tree rebuild). */
+    let shapeLocalsChanged = false
     for (const desc of descs) {
       if (this.failedCookFp.has(desc.fingerprint)) continue
       if (forceEntities && !forceAll && !forceEntities.has(desc.entity)) continue
@@ -1092,6 +1094,7 @@ export class PhysXWorld {
       if (desc.shapes?.length) {
         if (!this.geomFingerprintMatches(desc)) continue
         const actor = this.staticActors.get(desc.entity)
+        // World-baked verts are fixed in world space — root/shape slides cannot track bones.
         if (!actor || this.actorWorldBaked.get(desc.entity)) continue
 
         if (actorRootOnly || !shapeMotion) {
@@ -1116,7 +1119,8 @@ export class PhysXWorld {
 
         // Shape-motion (doors): relative shape poses + actor root.
         const poseFp = multiShapePoseFingerprint(desc)
-        if (!forceThis && this.staticPoseFp.get(desc.entity) === poseFp) continue
+        const prevPoseFp = this.staticPoseFp.get(desc.entity)
+        if (!forceThis && prevPoseFp === poseFp) continue
         if (!this.isPoseSlideSafe(actor, desc)) {
           // Unsafe (scale drift / shape count) — leave actor; caller may queue recook.
           continue
@@ -1125,6 +1129,8 @@ export class PhysXWorld {
           if (!this.updateMultiShapeActorPose(actor, desc)) continue
           this.staticPoseFp.set(desc.entity, poseFp)
           updated++
+          // Only rebuild SQ when hulls actually moved — looping idle props stay cheap.
+          if (prevPoseFp !== poseFp) shapeLocalsChanged = true
         } catch (err) {
           console.warn('[PhysXWorld] multi-shape pose slide failed:', desc.entity, err)
         }
@@ -1149,8 +1155,32 @@ export class PhysXWorld {
         this.invalidateStaticCollider(desc.entity)
       }
     }
-    if (updated > 0) this.invalidateControllerCache()
+    // Critical: PhysX SQ stores one bound per static actor. shape.setLocalPose (door panels)
+    // does NOT expand that bound — CCT never tests the swung hull without a static tree rebuild.
+    if (shapeLocalsChanged) {
+      this.rebuildStaticSceneQueryTree()
+    } else if (updated > 0) {
+      this.invalidateControllerCache()
+    }
     return updated
+  }
+
+  /**
+   * After multi-shape child local poses move (Animator doors/lifts), rebuild static SQ structure
+   * so character-controller queries see the new panel bounds. No-op if scene missing.
+   */
+  rebuildStaticSceneQueryTree(): void {
+    if (!this.scene) {
+      this.invalidateControllerCache()
+      return
+    }
+    try {
+      // (rebuildStaticStructure, rebuildDynamicStructure)
+      this.scene.forceDynamicTreeRebuild(true, false)
+    } catch (err) {
+      console.warn('[PhysXWorld] forceDynamicTreeRebuild failed:', err)
+    }
+    this.invalidateControllerCache()
   }
 
   isColliderSynced(desc: PhysicsColliderDesc): boolean {
@@ -1393,6 +1423,7 @@ export class PhysXWorld {
   /**
    * Pose-only actor moves — invalidate CCT cache without simulating.
    * simulate(0) during incremental pose slides corrupts WASM state on large scenes.
+   * Prefer rebuildStaticSceneQueryTree() after shape-local (door) pose slides.
    */
   refreshStaticColliderQueries(): void {
     this.invalidateControllerCache()

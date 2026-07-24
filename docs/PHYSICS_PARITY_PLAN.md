@@ -1,10 +1,14 @@
 # Physics parity plan — Unity Explorer vs ThreejsClient
 
-**Status:** **P0+P1+P2 on `dev-latest`** · impulse = Explorer-raw Δv · force keeps arcade scale · P3 manual QA open  
-**Branch context:** `dev-latest` (merged from `lastraum` 2026-07-19)  
-**Last updated:** 2026-07-19  
+**Status:** **PE P0+P1+P2 ✅** · **scene collider PART/ROOT ✅ (v1.5.0 RC)** · PE P3 pad/wind manual QA still open  
+**Branch context:** `dev-latest`  
+**Last updated:** 2026-07-23  
 
-Related code: [`src/player/externalPhysics.ts`](../src/player/externalPhysics.ts), [`src/player/PlayerSystem.ts`](../src/player/PlayerSystem.ts) (`applyScenePhysicsCombined`), [`src/player/locomotion.ts`](../src/player/locomotion.ts) (`GLIDING_FORCE_MULTIPLIER`), PhysX CCT in [`src/physics/PhysXWorld.ts`](../src/physics/PhysXWorld.ts).
+Related code:
+
+- PE: [`src/player/externalPhysics.ts`](../src/player/externalPhysics.ts), [`PlayerSystem.ts`](../src/player/PlayerSystem.ts), [`locomotion.ts`](../src/player/locomotion.ts)
+- Scene solids: [`PhysXWorld.ts`](../src/physics/PhysXWorld.ts), [`World.ts`](../src/core/World.ts) (`pushColliderRootPoses` / `pushColliderPartPoses`)
+- Policy: [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)
 
 Official scene API: [Player Physics](https://docs.decentraland.org/creator/scenes-sdk7/interactivity/player-physics).
 
@@ -193,6 +197,24 @@ Options:
 
 ---
 
+## Scene solids / CCT colliders (v1.5.0) ✅
+
+Separate from PE force/impulse: **GLTF multi-shape + MeshCollider** motion under PhysX CCT.
+
+| Track | Model | Status |
+|-------|--------|--------|
+| **ROOT** | Transform dirty → actor T+R only; entity-local cook once | 🟢 |
+| **PART** | Animator running clip + coarse hull fp change → world-cook that entity | 🟢 |
+| Thrash guards | Running/scheduled clips only · `toFixed(2)` hull fp · no cook budget | 🟢 |
+| QA | Ice-rink door open/walk-through · Genesis Plaza solids idle | 🟢 |
+
+Full policy: [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md).  
+Code: `PhysXWorld.applyPartColliderMotions`, `World.pushColliderPartPoses`, `SceneScriptSystem.snapshotPhysMotionSets`.
+
+**Out of scope for PART (still open):** continuous high-rate deforming hulls without Animator (prefer Tween/Transform ROOT or future per-shape actors).
+
+---
+
 ## Recommendation (shipped defaults)
 
 - mass = 1  
@@ -202,7 +224,8 @@ Options:
 - **Impulse:** raw scene J (Explorer)  
 - jump height still `sqrt(2 * 20 * h)`  
 
-Next: **P3** pad/wind scene smoke vs Explorer (plaza bounce height QA), then tweak force scale only if needed.  
+Next (PE only): **P3** pad/wind scene smoke vs Explorer (plaza bounce height QA), then tweak force scale only if needed.  
+Scene solids PART/ROOT: **done for v1.5.0 RC** — expand only if new scene classes fail QA.
 
 ---
 
@@ -211,3 +234,4 @@ Next: **P3** pad/wind scene smoke vs Explorer (plaza bounce height QA), then twe
 - Free camera / C key  
 - Full locomotion curve parity (acceleration curves, wall slide, edge slip)  
 - Remote players simulating the same local forces (forces are local-only by design)
+- Content-specific collider hacks (plaza vs door labels) — use PART/ROOT policy only

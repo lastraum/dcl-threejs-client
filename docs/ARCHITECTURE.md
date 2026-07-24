@@ -96,13 +96,16 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 | Social | Multi-room + cast ✅; 2D chat FAB dock ✅; community toasts/mod gates ✅; nearby voice + spatial audio ✅; DMs ✅; community voice Bearer parity · create/invites open |
 | Play HUD | Location pill + circular Genesis minimap (parcels) ✅; worlds pill-only |
 | In-World Camera / Gallery | Photo fly mode (C) + Camera Reel save/list/detail ✅; gallery multi-page open |
-| Spawn / physics | Elevated deck settle + PE stage-before-script ✅; PhysicsCombined force/impulse ✅; hold-Space glider ✅ |
+| Spawn / physics | Elevated deck settle + PE stage-before-script ✅; PhysicsCombined force/impulse ✅; hold-Space glider ✅; **PART/ROOT collider motion (v1.5)** ✅ |
 | Backpack | Wearables/emotes/colors ✅; outfits + marketplace open |
 | Graphics P3/P4 | **P4 bloom/HDR shipped** (`BloomPipeline` emissive extract + depth) · P3 distance culls open · untextured VFX additive glow |
 | PhysicsCombined* | Force + impulse on PE + glider force 1.5× |
+| Scene colliders (CCT) | ROOT cook-once + actor T+R · PART world-cook on hull fp ([COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)) |
 | GltfNodeModifiers | 🟢 full path + material/shadow overrides; instance promote |
 | NftShape | 🟢 procedural frames + OpenSea proxy |
 | GltfContainerLoadingState, AvatarBase | 🔵 host LWW (done) |
+| Social / tours | Follow tours · Focus POV · cast landing audio ✅ (v1.5 RC) |
+| Avatar crowd | Stagger · compose path · jump mesh pin ✅ (v1.5 RC) |
 
 ### P3 — Hygiene
 
@@ -112,13 +115,14 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 
 ---
 
-## Suggested next engineering order (post-v1.0)
+## Suggested next engineering order (post-v1.5 RC)
 
-1. Product **1.x**: backpack outfits · scene UI text-measure · community voice Bearer parity · create-community / invites.  
-2. Optional: graphics **P3** distance culls; MSAA+bloom concurrent; SyncEntities auth-host.  
-3. Mesh frame-law / instancing follow-through (motion promote already covers dynamic props).  
-4. EnvironmentApi/Testing only if scenes need them.  
-5. Keep INTEGRATION registry + PROGRESS updated on each ship.
+1. **Cut v1.5.0** — bump version, tag, `dev-latest` → `main` after smoke matrix in PROGRESS.  
+2. Product **1.x**: backpack outfits · scene UI text-measure · community voice Bearer parity · create-community / invites.  
+3. Optional: graphics **P3** distance culls; MSAA+bloom concurrent; SyncEntities auth-host.  
+4. Mesh frame-law / instancing follow-through (motion promote already covers dynamic props).  
+5. EnvironmentApi/Testing only if scenes need them.  
+6. Keep INTEGRATION registry + PROGRESS updated on each ship.
 
 ---
 

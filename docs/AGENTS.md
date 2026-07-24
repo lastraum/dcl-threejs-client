@@ -4,8 +4,9 @@
 
 ## Reading order
 
-1. **[PROGRESS.md](./PROGRESS.md)** — latest release, what’s next, shipped history  
+1. **[PROGRESS.md](./PROGRESS.md)** — latest release / RC (v1.5.0), what’s next, shipped history  
 2. **[INTEGRATION.md](./INTEGRATION.md)** + **`src/client/dev/integrationRegistry.ts`** — parity matrix  
+2b. **[COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)** — PhysX PART vs ROOT (v1.5)  
 3. **[CLAIMS.yaml](./CLAIMS.yaml)** — who is already working on what  
 4. **[ARCHITECTURE.md](./ARCHITECTURE.md)** — scene I/O model + debt  
 5. **[DEPLOYMENT.md](./DEPLOYMENT.md)** — build / preview / go-live  

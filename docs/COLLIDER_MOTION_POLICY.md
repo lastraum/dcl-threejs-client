@@ -1,8 +1,9 @@
 # Collider motion policy (platform-wide)
 
-**Status:** active  
+**Status:** **v1.5.0 RC** — shipped on `dev-latest` (`e24ce7f`); ice rink + Genesis Plaza QA green  
 **Engine:** PhysX (CCT player + scene solids)  
 **Scope:** all scenes — no content labels, no asset-type branches  
+**Last updated:** 2026-07-23  
 
 ## Two motion sources only
 

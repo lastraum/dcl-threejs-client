@@ -1,8 +1,9 @@
 # Performance optimizations
 
-> Branch: `feat/optimizations` · off `dev-latest` (post-v1.4.0)  
+> Branch context: `dev-latest` / `feat/optimizations` · post-**v1.5.0 RC** (collider PART thrash fixed; avatar crowd path on train)  
 > Scope: **runtime performance only** — crowds, CRDT, systems, network stalls, hang UX.  
-> Out of scope: product features, shell UI, parity cosmetics unless they cut frame cost.
+> Out of scope: product features, shell UI, parity cosmetics unless they cut frame cost.  
+> **Shipped with 1.5 RC:** PART cook only on coarse hull fp + running clips (no plaza soft thrash); avatar crowd stagger / compose path.
 
 ---
 
@@ -53,7 +54,7 @@
 | **2.1 Skip idle components** | Do not re-encode / re-apply components with no change since last send/apply | P0 |
 | **2.2 Transform send cache** | Cache last sent transform; skip identical (or under epsilon) updates | P0 |
 | **2.3 Buffer reuse** | Reuse CRDT encode/decode buffers; avoid per-tick allocations | P1 |
-| **2.4 Dirty-only pose slides** | Expand existing dirty-entity collider/pose paths; avoid global scans | P1 |
+| **2.4 Dirty-only pose slides** | ✅ v1.5 — ROOT Transform dirty + PART hull fp gate; avoid global scans | done |
 | **2.5 UI vs gameplay CRDT** | Keep pointer/UI CRDT prioritization; avoid cold full flushes when possible | P2 |
 
 **Likely touchpoints:** `sceneWorker`, entity store apply, transport outbound, pose dirty sets.

@@ -2,9 +2,9 @@
 
 > Browser-native Decentraland client: load deployed Worlds/scenes, shim SDK7 runtime, mirror ECS → Three.js, expand to open world.
 
-**Status:** **v1.3.0** production beta ✅ (still not full Explorer parity). PE force/impulse · plaza TriggerArea pads · TextShape/plane UV parity · UiBackground color×texture · chat translate · quiet debug console. **1.x next:** outfits/marketplace · scene UI text-measure · community voice Bearer (see [`PROGRESS.md`](./PROGRESS.md))  
+**Status:** **v1.5.0 RC** on `dev-latest` ✅ (still not full Explorer parity). Collider PART/ROOT · Animator hold · avatar crowd · follow tours · cast audio · (prior 1.3–1.4 PE pads · worlds map · AOI). **Cut next:** tag → main. **1.x after:** outfits/marketplace · scene UI text-measure · community voice Bearer (see [`PROGRESS.md`](./PROGRESS.md)).  
 **ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md)  
-**Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) for current work.
+**Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) + [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) for current work.
 
 **Related repos in workspace:** `dcl-companion` (content resolution), `dcl-avatar-hyperfy` (VRM/Three.js), `colyseus-scene` (multiplayer), `blank-scene` (test deploy)
 

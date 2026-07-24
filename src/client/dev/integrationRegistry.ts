@@ -257,7 +257,22 @@ export const PERFORMANCE_INTEGRATION: IntegrationEntry[] = [
     notes:
       'waitForSpawnFloorReady + settleSpawnOntoFloor; PE stage before script; preferNearY probe; reject roof false-grounds (Flagtag deck)'
   },
-  { id: 'perf:hyperfy-colliders', name: 'GLTF collider grouped actors', status: 'render', category: 'performance', notes: 'Pose-only sync for movers' },
+  {
+    id: 'perf:hyperfy-colliders',
+    name: 'GLTF collider PART/ROOT motion',
+    status: 'render',
+    category: 'performance',
+    notes:
+      'v1.5: ROOT=Transform actor T+R cook-once; PART=Animator world-cook on coarse hull fp (running clips only). docs/COLLIDER_MOTION_POLICY.md; ice rink + plaza QA'
+  },
+  {
+    id: 'physics:part-root-colliders',
+    name: 'Scene collider PART vs ROOT policy',
+    status: 'render',
+    category: 'performance',
+    notes:
+      'snapshotPhysMotionSets → pushColliderRootPoses / pushColliderPartPoses → applyPartColliderMotions; no content labels'
+  },
   { id: 'perf:player-idle-skip', name: 'Idle player physics skip', status: 'render', category: 'performance' },
   { id: 'perf:instancing', name: 'GLTF InstancedMesh path', status: 'partial', category: 'performance', notes: 'Static multi-hash GPU instances; 3× Transform churn promotes private clone (coins/projectiles)' },
   { id: 'perf:shadow-pass', name: 'Shadow pass tuning', status: 'partial', category: 'performance', notes: 'e10 deferred' },

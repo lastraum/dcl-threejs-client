@@ -2,18 +2,61 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-22  
-> **Current phase:** **v1.4.x** — production beta; custom worlds + map/UI shell; still not full Explorer parity.  
-> **Shipped (1.x):** **v1.4.0 custom worlds · Worlds map · AOI · notifications/credits/emotes · place analytics** · **v1.3.0 plaza/poker PE · TextShape UV · UiBackground tint · chat translate** · **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · multi-room chat · nearby voice · P4 bloom · glider.  
+> **Last updated:** 2026-07-23  
+> **Current phase:** **v1.5.0 RC** on `dev-latest` — collider PART/ROOT platform + avatar/social train; cut to `main` pending.  
+> **Shipped (1.x):** **v1.4.0 custom worlds · Worlds map · AOI · shell UI · place analytics** · **v1.3.0 plaza/poker PE · TextShape UV · chat translate** · **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · multi-room chat · nearby voice · P4 bloom · glider.  
 
-> **1.x next:** backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page · graphics P3 distance culls · analytics charts polish.  
+> **1.5.0 focus (this RC):** animated collider PART policy (doors track, plaza solid) · Animator hold/SyncEntity · avatar crowd perf · follow tours · landing manage/bans · cast stream audio.  
+> **1.x next (after 1.5 cut):** backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page · graphics P3 distance culls · analytics charts polish.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
+> **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) · **Place analytics:** [CREATOR_ANALYTICS.md](./CREATOR_ANALYTICS.md)
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — v1.5.0 RC (Collider PART platform · Animator · avatar/social) (2026-07-23)
+
+**Status: release candidate on `dev-latest`** (`e24ce7f`) — ice rink + Genesis Plaza QA green.  
+**Next:** bump `package.json` → `1.5.0`, tag, merge `dev-latest` → `main`.
+
+### What's new
+
+- **Collider motion platform** — two sources only: **Transform → ROOT** (cook once, actor T+R) · **Animator → PART** (world-cook when hull pose changes). See [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)
+- **Ice-rink doors** — bone/`_collider` panels track open/close; CCT walks through when open
+- **Genesis Plaza solids** — no soft-floor thrash; PART only when a clip is running and coarse hull fp moves
+- **Animator** — Explorer-style open/close hold; no SyncEntity snap-to-end; playing=false holds correct keyframe
+- **Landing** — LiveKit cast stream **audio** on 2D stage; Manage place (streams / bans / multiplayer storage)
+- **Avatar / perf** — crowd path, adaptive quality, jump mesh pin, remote stagger, elevated spawn ground
+- **Social** — community follow tours, Tour Focus POV, tour flag/roster, smoother remotes
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **PART / ROOT colliders** | 🟢 | `applyPartColliderMotions` · coarse fp gate · running-clip only |
+| **Plaza soft regression** | 🟢 | No unbounded live-bake; RAM settles after load |
+| **Animator hold / SyncEntity** | 🟢 | Door hold + network re-dirty safe |
+| **Cast landing audio** | 🟢 | 2D stage LiveKit playback |
+| **Follow tours** | 🟢 | Leader flag · Focus POV · roster |
+| **Avatar crowd** | 🟢 | Stagger · compose budget path · debug harness |
+
+**QA (1.5.0 smoke):**
+
+| Scene / flow | Expect |
+| ------------ | ------ |
+| Genesis Plaza idle 2+ min | Solids hard · no PART cook spam · FPS stable · RAM settles |
+| Ice rink door open/close | Visual + CCT hull track · walk through when open |
+| Plaza bounce / PE pads | Impulse still fires (1.3 PE path) |
+| 2D landing with live stream | Video + **audio** on cast stage |
+| Jump + remotes | Mesh stays on CCT · peers move smoothly |
+| Follow tour (if available) | Flag / Focus / roster |
+
+**Docs / policy:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md) (scene solids + PE) · `integrationRegistry` PART notes.
+
+**Tip commit:** `e24ce7f` on `dev-latest` / `feat/avatar-performance`.
 
 ---
 

@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-19 (PE force/impulse · TextShape/plane UV · UiBackground color×texture · plaza banners · chat translate · quiet logs)
+> **Last updated:** 2026-07-23 (**v1.5.0 RC** — PART/ROOT colliders · Animator hold · avatar/social train; see [PROGRESS.md](./PROGRESS.md))
 
 ---
 
@@ -54,7 +54,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | GltfNodeModifiers | 1099 | 🟢 | Scene-graph path (Group→meshes); de-instance; restore on remove; videoTexture re-apply; static map U flip when GLB UVs L–R mirrored |
 | MeshRenderer | 1018 | 🟢 | Primitives + custom UVs · docs-order dual-face planes (v21) · marquee re-basis separate |
 | Material | 1017 | 🟢 | PBR/unlit + video; `cast_shadows` default **true** (omit = on); AUTO cutout only with alphaMap |
-| Animator | 1042 | 🟢 | `AnimatorBridge` — LWW identical `shouldReset` re-fires one-shots (muzzle / gun) |
+| Animator | 1042 | 🟢 | `AnimatorBridge` — shouldReset one-shots · hold on playing=false · PART hull candidates while running ([COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)) |
 | Billboard | 1090 | 🟢 | `BillboardBridge` |
 | LightSource | 1079 | 🟢 | Culling + quality tiers |
 | TextShape | 1030 | 🟢 | Canvas planes · docs-order UVs · FrontSide · `scale.x<0` map U flip (Poker boards) |
@@ -64,7 +64,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 
 | Component | ID | Status | Notes |
 | --------- | -- | ------ | ----- |
-| MeshCollider | 1019 | 🟢 | PhysX static + GLTF trimesh |
+| MeshCollider | 1019 | 🟢 | PhysX static + GLTF trimesh · ROOT actor T+R · PART world-cook on hull motion ([COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)) |
 | AvatarLocomotionSettings | 1211 | 🟢 | jump / doubleJump / glidingSpeed / glidingFallingSpeed / hardLandingCooldown |
 | PhysicsCombinedForce | 1216 | 🟢 | PE force → external XZ + effective-g Y; ×`20/9.8` arcade scale; 1.5× while gliding (`externalPhysics.ts`) |
 | PhysicsCombinedImpulse | 1215 | 🟢 | Explorer-raw Δv (no g-scale); eventId **or** LWW Lamport for plaza eventId=0; unground + cancel fall |
@@ -92,7 +92,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | --------- | -- | ------ | ----- |
 | VideoPlayer | 1043 | 🟢 | `VideoPlayerBridge` — decode, texture, pointer play/pause, end replay |
 | VideoEvent | 1044 | 🔵 | Grow-only playback events → worker (`injectRendererGrowOnlyAppends`) |
-| Tween | 1102 | 🟢 | Transform + textureMove |
+| Tween | 1102 | 🟢 | Transform + textureMove · ROOT collider follow when Transform dirty |
 | TweenSequence | 1104 | 🟢 | Genesis blimp orbit |
 | TweenState | 1103 | 🔵 | Written by TweenBridge |
 | AudioSource | 1020 | 🟢 | `AudioSourceBridge` — buffer clips; in-world + player-parent emote gain |

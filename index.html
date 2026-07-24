@@ -64,9 +64,14 @@
         --z-scene-ui: 40;
         --z-pointer-reticle: 50;
         --z-client-hud: 100;
-        /* Left chrome + icon tooltips — above minimap/location stack, below popovers */
-        --z-client-sidebar: 105;
+        /* Chat / friends / skybox panels (bottom-left HUD slot) */
         --z-client-hud-raised: 111;
+        /*
+         * Left chrome + icon tooltips must stack above HUD panels so hover tips
+         * ("Friend requests", "Emotes [B]", …) are not covered by friends/chat.
+         * Still below overlays/system (200+).
+         */
+        --z-client-sidebar: 120;
         --z-client-overlay: 200;
         --z-client-system: 210;
         --z-client-debug: 230;
@@ -913,6 +918,33 @@
         line-height: 1;
         flex-shrink: 0;
       }
+      .avatar-name-tag__dm-badge {
+        display: none;
+        color: #ff4db8;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        line-height: 1;
+        flex-shrink: 0;
+        text-transform: uppercase;
+      }
+      .avatar-name-tag--dm .avatar-name-tag__dm-badge {
+        display: inline;
+      }
+      .avatar-name-tag__dm-to {
+        display: none;
+        color: rgba(255, 255, 255, 0.78);
+        font-size: 11px;
+        font-weight: 500;
+        line-height: 1.2;
+        max-width: 9em;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .avatar-name-tag--dm .avatar-name-tag__dm-to:not([hidden]) {
+        display: inline;
+      }
       .avatar-name-tag__chat {
         display: none;
         box-sizing: border-box;
@@ -1103,7 +1135,7 @@
       .client-sidebar__btn[hidden] {
         display: none !important;
       }
-      /* Explorer-style HUD hover tips: "Backpack [I]" — above minimap (sidebar stacking) */
+      /* Explorer-style HUD hover tips: "Backpack [I]" — paint above all HUD panels */
       .client-sidebar__btn[data-tooltip]::after {
         content: attr(data-tooltip);
         position: absolute;
@@ -1125,7 +1157,8 @@
         visibility: hidden;
         pointer-events: none;
         transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s ease;
-        z-index: 50;
+        /* Within sidebar stacking context (already above --z-client-hud-raised). */
+        z-index: 20;
       }
       .client-sidebar__btn[data-tooltip]:hover::after,
       .client-sidebar__btn[data-tooltip]:focus-visible::after {
@@ -1158,6 +1191,29 @@
         opacity: 0.38;
         cursor: not-allowed;
         pointer-events: none;
+      }
+      /*
+       * Scene feature restriction (e.g. smart wearables blocked by scene.json).
+       * Keep pointer-events so hover tooltip still shows; clicks are no-ops in JS.
+       */
+      .client-sidebar__btn.is-restricted {
+        opacity: 0.42;
+        cursor: not-allowed;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .client-sidebar__btn.is-restricted:hover {
+        background: transparent;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .client-sidebar__btn.is-restricted.is-active {
+        background: transparent;
+      }
+      .client-sidebar__btn.has-multiline-tooltip[data-tooltip]::after {
+        white-space: normal;
+        max-width: 200px;
+        line-height: 1.35;
+        text-align: left;
+        padding: 8px 12px;
       }
       .client-sidebar__icon {
         display: grid;
@@ -2057,20 +2113,34 @@
       }
 
 
-      /* Friends panel — same shell slot as chat (bottom-left HUD) */
-      .friends-panel {
+      /* Friends panel — same bottom-left HUD slot as .chat-panel-wrap */
+      .friends-panel-wrap {
         position: fixed;
-        z-index: var(--z-client-hud-raised);
         left: var(--client-safe-left);
         right: auto;
         bottom: var(--client-safe-bottom);
         top: auto;
+        z-index: var(--z-client-hud-raised);
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        pointer-events: auto;
         width: var(--client-hud-max-w);
         max-width: calc(100vw - var(--client-safe-left) - var(--client-safe-right) - 48px);
         height: var(--client-chat-max-h);
         max-height: var(--client-chat-max-h);
+        overflow: hidden;
+      }
+      .friends-panel-wrap[hidden] {
+        display: none !important;
+        pointer-events: none !important;
+      }
+      .friends-panel {
         display: flex;
         flex-direction: column;
+        width: 100%;
+        height: 100%;
+        min-height: 0;
         padding: 0;
         border-radius: 16px;
         background: rgba(28, 20, 16, 0.94);
@@ -2080,8 +2150,8 @@
         pointer-events: auto;
         overflow: hidden;
         font-family: inherit;
+        box-sizing: border-box;
       }
-      .friends-panel[hidden] { display: none !important; }
       .friends-panel__header {
         display: flex;
         align-items: center;
@@ -2145,6 +2215,35 @@
         color: #fff;
         background: rgba(255,255,255,0.08);
       }
+      .friends-panel__search-wrap {
+        flex-shrink: 0;
+        padding: 10px 12px 0;
+      }
+      .friends-panel__search-wrap[hidden] {
+        display: none !important;
+      }
+      .friends-panel__search {
+        display: block;
+        width: 100%;
+        box-sizing: border-box;
+        margin: 0;
+        padding: 9px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(0, 0, 0, 0.28);
+        color: #fff;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        outline: none;
+      }
+      .friends-panel__search::placeholder {
+        color: rgba(255, 255, 255, 0.38);
+      }
+      .friends-panel__search:focus {
+        border-color: rgba(255, 45, 85, 0.55);
+        box-shadow: 0 0 0 2px rgba(255, 45, 85, 0.15);
+      }
       .friends-panel__status {
         margin: 0;
         padding: 8px 14px;
@@ -2158,7 +2257,14 @@
         min-height: 0;
         overflow: auto;
         padding: 6px 0 10px;
-        scrollbar-width: thin;
+        /* Invisible scrollbar — still scrollable (trackpad / wheel / touch) */
+        scrollbar-width: none !important;
+        -ms-overflow-style: none !important;
+      }
+      .friends-panel__body::-webkit-scrollbar {
+        width: 0 !important;
+        height: 0 !important;
+        display: none !important;
       }
       .friends-panel__section { margin-top: 4px; }
       .friends-panel__section-head,
@@ -2200,6 +2306,7 @@
         padding: 8px 8px;
         border-radius: 12px;
         min-height: 52px;
+        background: transparent;
       }
       .friends-panel__row:hover {
         background: rgba(255,255,255,0.05);
@@ -2218,6 +2325,8 @@
         object-fit: cover;
         flex-shrink: 0;
         background: rgba(255,255,255,0.08);
+        border: 2px solid var(--friend-name-color, rgba(255,255,255,0.2));
+        box-sizing: border-box;
       }
       .friends-panel__avatar--fallback {
         display: inline-flex;
@@ -2225,13 +2334,14 @@
         justify-content: center;
         font-size: 14px;
         font-weight: 700;
-        color: rgba(255,255,255,0.75);
+        color: var(--friend-name-color, rgba(255,255,255,0.75));
+        background: color-mix(in srgb, var(--friend-name-color, #fff) 18%, rgba(0,0,0,0.35));
       }
       .friends-panel__row-text { min-width: 0; }
       .friends-panel__name {
         font-size: 14px;
-        font-weight: 650;
-        color: rgba(255,255,255,0.95);
+        font-weight: 700;
+        color: var(--friend-name-color, rgba(255,255,255,0.95));
         display: flex;
         align-items: center;
         gap: 6px;
@@ -2245,6 +2355,7 @@
         border-radius: 50%;
         background: #3fe07a;
         box-shadow: 0 0 0 2px rgba(63,224,122,0.25);
+        flex-shrink: 0;
         flex-shrink: 0;
       }
       .friends-panel__sub {
@@ -2356,10 +2467,11 @@
         color: rgba(255,255,255,0.42);
         font-size: 12px;
       }
+      /* Floated outside the friends panel (body-level fixed), to the right of the shell */
       .friends-panel__context {
         position: fixed;
-        z-index: calc(var(--z-client-hud-raised) + 5);
-        min-width: 180px;
+        z-index: calc(var(--z-client-sidebar) + 5);
+        min-width: 188px;
         padding: 6px;
         border-radius: 12px;
         background: rgba(28, 24, 40, 0.98);
@@ -2368,6 +2480,7 @@
         display: flex;
         flex-direction: column;
         gap: 2px;
+        pointer-events: auto;
       }
       .friends-panel__context button {
         border: 0;
@@ -2387,8 +2500,120 @@
       .friends-panel__context button.is-danger {
         color: #ff6b8a;
       }
+
+      /* RestrictedActions openExternalUrl — Explorer-style purple confirm */
+      .external-link-modal-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 10060;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.55);
+        padding: 24px;
+        font-family: Inter, system-ui, -apple-system, sans-serif;
+        pointer-events: auto;
+        cursor: default;
+      }
+      .external-link-modal {
+        width: min(440px, 100%);
+        padding: 32px 28px 22px;
+        border-radius: 28px;
+        background: linear-gradient(165deg, #7a2eb8 0%, #5b1f96 55%, #4a1880 100%);
+        color: #fff;
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+        text-align: center;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0;
+        pointer-events: auto;
+      }
+      .external-link-modal__title {
+        margin: 0 0 14px;
+        font-size: 22px;
+        font-weight: 700;
+        line-height: 1.25;
+        letter-spacing: -0.01em;
+      }
+      .external-link-modal__copy {
+        margin: 0 0 14px;
+        max-width: 34em;
+        font-size: 14px;
+        font-weight: 500;
+        line-height: 1.45;
+        color: rgba(255, 255, 255, 0.78);
+      }
+      .external-link-modal__url {
+        display: block;
+        margin: 0 0 22px;
+        max-width: 100%;
+        font-size: 15px;
+        font-weight: 650;
+        line-height: 1.35;
+        color: #5ed4ff;
+        word-break: break-all;
+        text-decoration: none;
+      }
+      .external-link-modal__url:hover {
+        color: #8ae0ff;
+        text-decoration: underline;
+      }
+      .external-link-modal__actions {
+        display: flex;
+        gap: 12px;
+        justify-content: center;
+        flex-wrap: wrap;
+        width: 100%;
+        margin-bottom: 18px;
+      }
+      .external-link-modal__btn {
+        min-width: 132px;
+        padding: 12px 22px;
+        border: 0;
+        border-radius: 14px;
+        font: inherit;
+        font-size: 14px;
+        font-weight: 750;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        cursor: pointer;
+        pointer-events: auto;
+      }
+      .external-link-modal__btn--cancel {
+        background: #3a1a6e;
+        color: #fff;
+      }
+      .external-link-modal__btn--cancel:hover {
+        background: #4a2488;
+      }
+      .external-link-modal__btn--continue {
+        background: #ff2d55;
+        color: #fff;
+      }
+      .external-link-modal__btn--continue:hover {
+        background: #ff4569;
+      }
+      .external-link-modal__allow {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        margin: 0;
+        font-size: 13px;
+        font-weight: 500;
+        color: rgba(255, 255, 255, 0.88);
+        cursor: pointer;
+        user-select: none;
+      }
+      .external-link-modal__allow input {
+        width: 16px;
+        height: 16px;
+        margin: 0;
+        accent-color: #ff2d55;
+        cursor: pointer;
+      }
       @media (max-width: 767px) {
-        .client-mobile .friends-panel {
+        .client-mobile .friends-panel-wrap {
           left: calc(max(12px, env(safe-area-inset-left, 0px)) + var(--scene-chat-fab-size) + var(--scene-chat-fab-gap));
           right: var(--client-safe-right);
           bottom: calc(
@@ -2397,6 +2622,11 @@
           width: auto;
           max-width: none;
           height: var(--client-chat-max-h);
+        }
+        .client-mobile .friends-panel {
+          width: 100%;
+          max-width: none;
+          border-radius: 16px;
         }
       }
 
@@ -12209,6 +12439,81 @@
         display: none !important;
         background: transparent !important;
       }
+      /*
+       * Rail chip: fixed 36×36 avatar stays clickable.
+       * Name + × float absolutely to the LEFT (outside the rail), not over the icon.
+       */
+      .chat-panel__rail-chip {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        width: 36px;
+        height: 36px;
+        border-radius: 18px;
+        box-sizing: border-box;
+        z-index: 1;
+        overflow: visible;
+      }
+      .chat-panel__rail-chip.is-named.is-hover-open {
+        z-index: 12;
+      }
+      /* Body-level fixed float (JS adds .is-open); never covers the avatar. */
+      .chat-panel__rail-chip-hover {
+        position: fixed;
+        left: 0;
+        top: 0;
+        transform: translate(-100%, -50%);
+        display: none;
+        flex-direction: row;
+        align-items: center;
+        gap: 6px;
+        max-width: min(200px, 40vw);
+        padding: 5px 10px 5px 6px;
+        border-radius: 16px;
+        background: rgba(12, 8, 20, 0.96);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+        white-space: nowrap;
+        pointer-events: none;
+        z-index: calc(var(--social-chat-dock-z, 25) + 20);
+      }
+      .chat-panel__rail-chip-hover.is-open {
+        display: flex;
+        pointer-events: auto;
+      }
+      .chat-panel__rail-chip-close {
+        flex: 0 0 22px;
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        border: none;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.1);
+        color: rgba(255, 255, 255, 0.88);
+        font-size: 16px;
+        font-weight: 600;
+        line-height: 1;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .chat-panel__rail-chip-close:hover {
+        background: rgba(255, 80, 100, 0.4);
+        color: #fff;
+      }
+      .chat-panel__rail-chip-label {
+        min-width: 0;
+        max-width: 140px;
+        color: #fff;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.2;
+        letter-spacing: 0.01em;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .chat-panel__rail-btn {
         position: relative;
         flex-shrink: 0;
@@ -12225,9 +12530,67 @@
         font-weight: 700;
         cursor: pointer;
         padding: 0;
+        /* Clip only the avatar image; presence badges live on the chip (sibling). */
         overflow: hidden;
         line-height: 0;
         box-sizing: border-box;
+      }
+      .chat-panel__rail-chip .chat-panel__rail-btn {
+        margin: 0;
+      }
+      /* DM presence: dim offline faces; online keeps full color + green dot. */
+      .chat-panel__rail-chip.is-offline .chat-panel__rail-btn {
+        opacity: 0.48;
+        filter: grayscale(0.55) brightness(0.85);
+      }
+      .chat-panel__rail-chip.is-online .chat-panel__rail-btn {
+        opacity: 1;
+        filter: none;
+      }
+      /*
+       * Presence markers sit on the CHIP (outside the overflow:hidden button)
+       * so they overlay the top of the profile circle, not clipped inside it.
+       */
+      .chat-panel__rail-chip {
+        overflow: visible;
+      }
+      .chat-panel__rail-online-dot {
+        position: absolute;
+        right: -2px;
+        bottom: -2px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #3ddc84;
+        box-shadow: 0 0 0 2px rgba(12, 8, 20, 0.95);
+        pointer-events: none;
+        z-index: 6;
+      }
+      /* Unread badge bottom-right (same corner as online dot); covers the dot when both. */
+      .chat-panel__rail-chip > .social-chat-dock__unread,
+      .chat-panel__rail-chip > .chat-panel__rail-unread {
+        position: absolute;
+        top: auto;
+        right: -5px;
+        bottom: -5px;
+        left: auto;
+        min-width: 16px;
+        height: 16px;
+        padding: 0 4px;
+        border-radius: 999px;
+        background: #ff3b5c;
+        color: #fff;
+        font-size: 9px;
+        font-weight: 800;
+        line-height: 16px;
+        text-align: center;
+        pointer-events: none;
+        box-shadow: 0 0 0 2px rgba(12, 8, 20, 0.95);
+        z-index: 7;
+      }
+      /* When unread is present, hide the green dot (badge owns the corner). */
+      .chat-panel__rail-chip.has-unread .chat-panel__rail-online-dot {
+        display: none;
       }
       .chat-panel__rail-btn.is-active {
         border-color: rgba(255, 255, 255, 0.9);
@@ -13165,6 +13528,13 @@
         width: 0;
         height: 0;
         display: none;
+      }
+      .social-chat-dock__pills .chat-panel__rail-scroll {
+        /* Let name/× float outside the rail without clipping. */
+        overflow-x: visible;
+      }
+      .social-chat-dock__pills .chat-panel__rail-chip {
+        align-self: flex-end;
       }
       .social-chat-dock__pills .chat-panel__rail-btn {
         flex-shrink: 0;
@@ -19439,6 +19809,7 @@
       body.client-hud-hidden .mobile-scene-location-pill,
       body.client-hud-hidden .client-mobile-drawer-backdrop,
       body.client-hud-hidden .chat-panel-wrap,
+      body.client-hud-hidden .friends-panel-wrap,
       body.client-hud-hidden .skybox-panel,
       body.client-hud-hidden .nearby-voice-panel,
       body.client-hud-hidden .emote-wheel-overlay,

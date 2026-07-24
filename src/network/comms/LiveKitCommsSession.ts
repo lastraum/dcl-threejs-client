@@ -1,11 +1,13 @@
 import {
   ConnectionState,
+  DataPacket_Kind,
   Room,
   RoomEvent,
   Track,
   type Participant,
   type RemoteTrackPublication
 } from 'livekit-client'
+import { DataPacket, UserPacket } from '@livekit/protocol'
 import type { CommsProfileEntity } from '../../avatar/peerApi'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import { setLiveKitSession } from '../SessionConnections'
@@ -164,6 +166,12 @@ export class LiveKitCommsSession {
 
   getRoomName(): string {
     return this.room?.name?.trim() || ''
+  }
+
+  /** Local participant identity from the LiveKit token (wallet address for DCL rooms). */
+  getLocalIdentity(): string | null {
+    const id = this.room?.localParticipant?.identity?.trim()
+    return id ? id.toLowerCase() : this.localAddress
   }
 
   /** Raw LiveKit participant identities currently in the room (including SFU bots). */
@@ -449,12 +457,28 @@ export class LiveKitCommsSession {
       _kind?: unknown,
       topic?: string
     ) => {
-      const address = participant?.identity?.trim().toLowerCase()
-      if (!address || address === this.localAddress || participant?.isLocal) return
-      // Explorer may tag chat/emote data with a LiveKit topic. Always run the RFC4 packet
-      // path (chat/profile/emote). Topic queue is additive for SDK topic consumers.
-      if (topic) {
-        this.topicHandler?.(topic, address, payload)
+      // LiveKit looks up remotes by exact identity key; casing/race can omit participant.
+      if (participant?.isLocal) return
+      const address = participant?.identity?.trim().toLowerCase() || ''
+      if (!address) {
+        const topicTrimEmpty = topic?.trim() ?? ''
+        if (topicTrimEmpty.startsWith('private:') || !topicTrimEmpty) {
+          clientDebugLog.log(
+            'comms',
+            `DataReceived dropped — no participant identity (topic=${topicTrimEmpty.slice(0, 24) || 'none'} len=${payload.byteLength}) transport=${this.transport}`,
+            { level: 'warn', alsoConsole: true, throttleMs: 3000, throttleKey: `dr-noid:${this.transport}` }
+          )
+        }
+        return
+      }
+      const me = (this.localAddress || this.room?.localParticipant?.identity || '').toLowerCase()
+      if (me && address === me) return
+      const topicTrim = topic?.trim() ?? ''
+      // Topic-scoped: community SFU, private:{to}, follow — topicHandler only.
+      // Bare (no topic): 1:1 DMs → packetHandler.
+      if (topicTrim) {
+        this.topicHandler?.(topicTrim, address, payload)
+        return
       }
       this.packetHandler?.(this.transport, address, payload)
     }
@@ -747,19 +771,24 @@ export class LiveKitCommsSession {
       destinationAddresses && destinationAddresses.length > 0
         ? this.resolveDestinationIdentities(destinationAddresses)
         : undefined
+    // Empty destination list would mean "deliver to nobody" — treat as failure for directed DMs.
+    if (destinationAddresses && destinationAddresses.length > 0 && (!dest || dest.length === 0)) {
+      console.error(`[chat] RFC4 publish failed (${this.transport}): no destination identities`)
+      return false
+    }
     const ok = await this.safePublishData(packet, true, dest, topic)
     if (!ok) {
       console.error(`[chat] RFC4 publish failed (${this.transport}): room not ready`)
       return false
     }
-    const destNote = dest?.length ? ` → ${dest.map((d) => d.slice(0, 10)).join(',')}` : ''
+    const destNote = dest?.length ? ` → ${dest.map((d) => d.slice(0, 12)).join(',')}` : ' → room'
     const topicNote = topic ? ` topic=${topic}` : ''
     console.log(
       `[chat] RFC4 out → ${this.transport} room=${this.room?.name ?? '?'}${destNote}${topicNote} len=${packet.byteLength} oleTs=${oleTs.toFixed(5)}`
     )
     clientDebugLog.log(
       'comms',
-      `RFC4 Chat out → ${this.transport} len=${packet.byteLength} ole=${oleTs.toFixed(3)}`,
+      `RFC4 Chat out → ${this.transport}${destNote} len=${packet.byteLength} ole=${oleTs.toFixed(3)}`,
       { throttleMs: 0, throttleKey: `chat-out:${this.transport}` }
     )
     return true
@@ -795,12 +824,21 @@ export class LiveKitCommsSession {
 
   /** True when a remote participant identity is currently in the room (case-insensitive). */
   hasRemoteIdentity(identity: string): boolean {
+    return this.getExactRemoteIdentity(identity) != null
+  }
+
+  /**
+   * Exact LiveKit identity string for a wallet/address currently in the room
+   * (preserves casing the SFU uses for destinationIdentities routing).
+   */
+  getExactRemoteIdentity(identity: string): string | null {
     const key = identity.trim().toLowerCase()
-    if (!key || !this.room || this.room.state !== ConnectionState.Connected) return false
+    if (!key || !this.room || this.room.state !== ConnectionState.Connected) return null
     for (const p of this.room.remoteParticipants.values()) {
-      if (p.identity?.trim().toLowerCase() === key) return true
+      const id = p.identity?.trim()
+      if (id && id.toLowerCase() === key) return id
     }
-    return false
+    return null
   }
 
   /**
@@ -838,6 +876,11 @@ export class LiveKitCommsSession {
   /**
    * publishData that never rejects. LiveKit throws UnexpectedConnectionState when the
    * room disconnects between isConnected() and the async publish (handoff / leave).
+   *
+   * **Directed packets (DMs):** destinationIdentities are set on the **DataPacket top-level**
+   * (modern LiveKit SFU routing field) *and* nested UserPacket. The stock
+   * `localParticipant.publishData` only nests dest on UserPacket — DCL’s private-messages
+   * SFU was treating those as room broadcasts, leaking 1:1 chat to every remotes in the room.
    */
   private async safePublishData(
     packet: Uint8Array,
@@ -852,16 +895,72 @@ export class LiveKitCommsSession {
         destinationIdentities && destinationIdentities.length > 0
           ? [...destinationIdentities]
           : undefined
-      const topicTrim = topic?.trim()
+      const topicTrim = topic?.trim() || undefined
+
+      if (dest && dest.length > 0) {
+        await this.publishDirectedUserData(packet, reliable, dest, topicTrim)
+        return true
+      }
+
+      // Room broadcast (scene chat, etc.) — no destination list.
       await room.localParticipant.publishData(packet, {
         reliable,
-        ...(dest ? { destinationIdentities: dest } : {}),
         ...(topicTrim ? { topic: topicTrim } : {})
       })
       return true
     } catch {
       return false
     }
+  }
+
+  /**
+   * Directed data with destinationIdentities on DataPacket (field 5) + UserPacket.
+   * Required for ADR-208 private-messages privacy — SFU must not fan out to the whole room.
+   */
+  private async publishDirectedUserData(
+    payload: Uint8Array,
+    reliable: boolean,
+    destinationIdentities: string[],
+    topic?: string
+  ): Promise<void> {
+    const room = this.room
+    if (!room) throw new Error('no room')
+    const lp = room.localParticipant
+    const engine = (lp as { engine?: { sendDataPacket: (p: unknown, k: number) => Promise<void> } })
+      .engine
+    if (!engine?.sendDataPacket) {
+      // Fallback — still pass dest (nested only); better than silent broadcast omit.
+      await lp.publishData(payload, {
+        reliable,
+        destinationIdentities,
+        ...(topic ? { topic } : {})
+      })
+      clientDebugLog.log(
+        'comms',
+        'Directed publish via publishData fallback (no engine.sendDataPacket)',
+        { level: 'warn', alsoConsole: true, throttleMs: 10_000, throttleKey: 'dir-pub-fallback' }
+      )
+      return
+    }
+
+    const userPacket = new UserPacket({
+      participantIdentity: lp.identity,
+      payload,
+      destinationIdentities,
+      ...(topic ? { topic } : {})
+    })
+    const dataPacket = new DataPacket({
+      kind: reliable ? DataPacket_Kind.RELIABLE : DataPacket_Kind.LOSSY,
+      // TOP-LEVEL — this is what LiveKit SFU uses for selective forward.
+      destinationIdentities,
+      value: {
+        case: 'user',
+        value: userPacket
+      }
+    })
+    // DataChannelKind.RELIABLE = 0, LOSSY = 1 (mirrors livekit-client engine).
+    const channelKind = reliable ? 0 : 1
+    await engine.sendDataPacket(dataPacket, channelKind)
   }
 
   disconnect(): void {

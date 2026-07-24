@@ -742,6 +742,15 @@ export class PlayerSystem {
     this.nameTag?.showChat(text)
   }
 
+  /** Local-only private message overhead (outgoing: "Name DM to Peer"). */
+  showNameTagDmChat(
+    text: string,
+    options: { mode: 'outgoing' | 'incoming'; peerName?: string }
+  ): void {
+    if (!areSceneNameTagsVisible()) return
+    this.nameTag?.showDmChat(text, options)
+  }
+
   getPlayerYaw(): number {
     return this.playerYaw
   }

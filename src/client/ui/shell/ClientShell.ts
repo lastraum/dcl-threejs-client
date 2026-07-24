@@ -105,8 +105,8 @@ export class ClientShell {
   private onOpenProfile: ((address: string) => void) | null = null
   private onJumpToFriend: ((address: string) => void) | null = null
   private emoteWheelEnabled = true
-  private unreadChat = 0
   private unsubChatUnread: (() => void) | null = null
+  private unsubChatChannelBadge: (() => void) | null = null
   private unsubFriendBadge: (() => void) | null = null
   private onEmoteWheelVisibility: ((visible: boolean) => void) | null = null
   private readonly mobileQuery = window.matchMedia(MOBILE_LAYOUT_QUERY)
@@ -233,8 +233,11 @@ export class ClientShell {
       onChat: (address, displayName) => {
         this.friendsPanel.hide()
         if (this.chatPanel) {
+          // Opens DM channel + warms private-messages LiveKit room (ADR-208).
           this.chatPanel.openDirectMessage(address, displayName)
           this.openChatPanel()
+          this.buttons.get('chat')?.setActive(true)
+          this.buttons.get('friend-requests')?.setActive(false)
         } else {
           console.info('[friends] chat →', displayName, address)
         }
@@ -391,21 +394,21 @@ export class ClientShell {
 
   attachChatPanel(panel: ChatPanel, social: SocialService): void {
     this.unsubChatUnread?.()
+    this.unsubChatChannelBadge?.()
     this.unsubFriendBadge?.()
     this.chatPanel = panel
     this.social = social
-    this.unreadChat = 0
-    this.updateChatBadge()
     this.wireChatPanel(panel)
-    // Badge when chat is closed OR faded scene-mode (still "mounted" but not reading).
+    // Sidebar chat badge = total unread across all channels (scene / DM / community).
+    // Still badges when the panel is open but you're reading a *different* channel.
     this.unsubChatUnread = social.onChat((event) => {
-      if (this.chatPanel?.isActivelyReading()) return
       if (social.isOwnLine(event.line)) return
-      this.unreadChat++
-      this.updateChatBadge()
+      this.syncChatBadgeFromSocial()
     })
+    this.unsubChatChannelBadge = social.onChannelChange(() => this.syncChatBadgeFromSocial())
     this.unsubFriendBadge = social.onFriendshipChange(() => this.updateFriendRequestBadge())
     void social.ensureFriendshipSnapshot().then(() => this.updateFriendRequestBadge())
+    this.syncChatBadgeFromSocial()
   }
 
   setOnOpenProfile(handler: ((address: string) => void) | null): void {
@@ -478,12 +481,12 @@ export class ClientShell {
   private wireChatPanel(panel: ChatPanel): void {
     panel.setOnVisibilityChange((visible) => {
       this.syncChatFabState(visible)
+      // Closing chat doesn't clear per-channel unreads; re-sync total.
+      this.syncChatBadgeFromSocial()
     })
-    panel.setOnReadingChange((reading) => {
-      if (reading) {
-        this.unreadChat = 0
-        this.updateChatBadge()
-      }
+    panel.setOnReadingChange(() => {
+      // Opening/focusing a thread clears that channel's unread → refresh total.
+      this.syncChatBadgeFromSocial()
     })
   }
 
@@ -495,10 +498,11 @@ export class ClientShell {
     this.mobileChatFab.setAttribute('title', visible ? 'Close chat' : 'Chat')
   }
 
-  private updateChatBadge(): void {
-    const count = this.unreadChat > 0 ? this.unreadChat : null
-    this.buttons.get('chat')?.setBadge(count)
-    if (count) {
+  /** HUD chat badge from SocialService per-channel unreads (DMs included). */
+  private syncChatBadgeFromSocial(): void {
+    const count = this.social?.getTotalUnreadCount() ?? 0
+    this.buttons.get('chat')?.setBadge(count > 0 ? count : null)
+    if (count > 0) {
       this.mobileChatFabBadge.hidden = false
       this.mobileChatFabBadge.textContent = count > 99 ? '99+' : String(count)
     } else {
@@ -506,6 +510,8 @@ export class ClientShell {
       this.mobileChatFabBadge.textContent = ''
     }
   }
+
+
 
   async refreshProfile(): Promise<void> {
     const address = getActiveProfileAddress()
@@ -581,6 +587,8 @@ export class ClientShell {
     this.mobileQuery.removeEventListener('change', this.onMobileQueryChange)
     this.unsubChatUnread?.()
     this.unsubChatUnread = null
+    this.unsubChatChannelBadge?.()
+    this.unsubChatChannelBadge = null
     this.unsubFriendBadge?.()
     this.unsubFriendBadge = null
     this.unsubPe?.()
@@ -703,9 +711,12 @@ export class ClientShell {
     if (id === 'smart-wearable') {
       return (ev) => {
         ev.stopPropagation()
+        const btn = this.buttons.get('smart-wearable')
+        // scene.json featureToggles.portableExperiences = disabled
+        if (btn?.isRestricted()) return
         this.closeMobileDrawerForOverlay()
         this.pePanel.toggle()
-        this.buttons.get('smart-wearable')?.setActive(this.pePanel.isVisible())
+        btn?.setActive(this.pePanel.isVisible())
         if (this.pePanel.isVisible()) {
           this.skyboxPanel.hide()
           this.nearbyVoicePanel.hide()
@@ -874,18 +885,30 @@ export class ClientShell {
     this.pePanel.bindManager(manager)
     const btn = this.buttons.get('smart-wearable')
     if (!manager) {
+      btn?.setRestricted(false)
       btn?.setBadge(null)
       this.pePanel.hide()
       return
     }
-    this.unsubPe = manager.subscribe((slots) => {
+    const syncSmartWearableBtn = () => {
+      if (!btn) return
+      // Scene blocked PE/smart wearables — Explorer-style restriction tip, no open.
+      if (!manager.isPeAllowed()) {
+        btn.setRestricted(true, 'This scene is restricting the use of some features')
+        this.pePanel.hide()
+        return
+      }
+      btn.setRestricted(false)
+      const slots = manager.listSlots()
       const n = slots.filter((s) => s.status === 'running').length
       const available = slots.length
-      btn?.setBadge(n > 0 ? n : available > 0 ? available : null)
+      btn.setBadge(n > 0 ? n : available > 0 ? available : null)
       if (!this.pePanel.isVisible()) {
-        btn?.setActive(n > 0)
+        btn.setActive(n > 0)
       }
-    })
+    }
+    this.unsubPe = manager.subscribe(() => syncSmartWearableBtn())
+    syncSmartWearableBtn()
   }
 
   /** Sidebar status from voice service. */

@@ -12,6 +12,7 @@ import { blacklistFromMetadata } from '../../../network/sceneAccess/sceneAccessC
 import { SessionIdentity } from '../../../network/SessionIdentity'
 import { SceneChatRoomPool } from '../../../social/SceneChatRoomPool'
 import { resolveSceneChatAdapter } from '../../../social/resolveSceneChatAdapter'
+import { clearSessionPeerDisplayCache } from '../../../social/ChatPeerProfiles'
 import { SocialService } from '../../../social/SocialService'
 import type { SceneLoadErrorMessage } from '../../formatSceneLoadError'
 import { UserProfileModal } from '../profile/UserProfileModal'
@@ -160,6 +161,8 @@ export class SocialChatController {
     this.profileModal?.dispose()
     this.profileModal = null
     this.social.dispose()
+    // New wallet session — drop display cache so we do not leak prior account faces/names.
+    clearSessionPeerDisplayCache()
     this.social = new SocialService()
     this.wireSocialTransport()
     this.login = null

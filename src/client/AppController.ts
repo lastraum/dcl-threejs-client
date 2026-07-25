@@ -3148,7 +3148,7 @@ export class AppController {
           )
           this.multiSceneRuntime.setSecondaryPriorityParcel(target.x, null)
           this.currentRoute = target
-          // PE already attached; keep HUD PE panel bound.
+          // Re-bind PE HUD so scene.json portableExperiences policy refreshes the icon.
           this.shell?.bindPortableExperiences(this.peManager)
           const next = world.getLoadedPrimaryScene()
           if (next) {
@@ -3200,13 +3200,18 @@ export class AppController {
       }
       const bodyShape = profile?.bodyShape === 'female' ? 'female' : 'male'
       console.info(
-        `[pe] bootstrap wearables=${wearables.length} body=${bodyShape} peer=${peerUrl}`
+        `[pe] bootstrap wearables=${wearables.length} body=${bodyShape} peer=${peerUrl}` +
+          ` policy=${this.peManager.getPePolicy().raw}`
       )
       await this.peManager.discoverFromWearables(wearables, peerUrl, { bodyShape })
+      // Re-sync HUD restriction after discovery (scene may already block PE).
+      this.shell?.bindPortableExperiences(this.peManager)
       // Give the frame loop a beat so HUD is up, then consent (no auto-start).
       await new Promise<void>((r) => window.setTimeout(r, 600))
       if (this.world !== world) return
       await this.peManager.maybeShowConsentPrompt()
+      // Consent path may emit; keep icon restriction in sync.
+      this.shell?.bindPortableExperiences(this.peManager)
     } catch (err) {
       console.warn('[pe] bootstrap failed', err)
     }

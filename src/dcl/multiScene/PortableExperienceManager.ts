@@ -10,6 +10,7 @@ import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import { pePhysOffset } from './physOffsets'
 import { discoverEquippedPortableExperiences } from './resolveSmartWearablePe'
 import type { PortableExperiencesPolicy } from './resolvePortableExperiences'
+import { PE_SCENE_OVERRIDE_MESSAGE } from './resolvePortableExperiences'
 import { SceneWorkerSlot } from './SceneWorkerSlot'
 import type { PeCandidate, PeSlotState } from './types'
 
@@ -118,6 +119,9 @@ export class PortableExperienceManager {
     this.poseProvider = opts.poseProvider
     this.pePolicy = opts.pePolicy
     this.worldBound = true
+    console.info(
+      `[pe] scene policy attach raw=${opts.pePolicy.raw} allowed=${opts.pePolicy.allowed} uiAllowed=${opts.pePolicy.uiAllowed}`
+    )
 
     if (!opts.pePolicy.allowed) {
       await this.blockAllForScene()
@@ -400,17 +404,41 @@ export class PortableExperienceManager {
     this.emit()
   }
 
-  /** Primary scene changed without full detach (rare). */
+  /**
+   * Primary scene changed (promote handoff or re-bind).
+   * disabled → unload all PE + scene_blocked HUD; hideUi → force PE UI off.
+   */
   applyScenePolicy(policy: PortableExperiencesPolicy): void {
+    const prev = this.pePolicy
     this.pePolicy = policy
+    if (prev.raw !== policy.raw || prev.allowed !== policy.allowed) {
+      console.info(
+        `[pe] scene policy → raw=${policy.raw} allowed=${policy.allowed} uiAllowed=${policy.uiAllowed}` +
+          (!policy.allowed ? ` (${PE_SCENE_OVERRIDE_MESSAGE})` : '')
+      )
+    }
     if (!policy.allowed) {
       void this.blockAllForScene()
       return
+    }
+    // Unblock slots that were only scene-blocked.
+    for (const slot of this.slots.values()) {
+      if (slot.status === 'scene_blocked') {
+        slot.status = slot.wantEnabled ? 'available' : 'user_disabled'
+      }
     }
     for (const [id, worker] of this.workers) {
       const slot = this.slots.get(id)
       if (!slot) continue
       worker.setUiVisible(slot.uiEnabled && policy.uiAllowed)
+    }
+    // Restore wantEnabled PEs if we just re-entered an allowed scene.
+    if (policy.allowed && this.worldBound) {
+      for (const slot of this.slots.values()) {
+        if (slot.wantEnabled && slot.status !== 'running' && !this.workers.has(slot.candidate.id)) {
+          void this.enablePe(slot.candidate.id, { fromRestore: true })
+        }
+      }
     }
     this.emit()
   }

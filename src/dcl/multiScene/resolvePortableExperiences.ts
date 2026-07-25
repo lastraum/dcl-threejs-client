@@ -4,8 +4,8 @@
  *   "featureToggles": { "portableExperiences": "enabled" | "disabled" | "hideUi" }
  *
  * - enabled (default): PE may run with UI
- * - disabled: unload PE workers, block enable
- * - hideUi: PE may run, force UI off
+ * - disabled: unload PE workers, block enable; HUD icon restricted + hover tip
+ * - hideUi: PE may run, force PE scene UI off
  */
 import type { SceneFeatureToggle, SceneMetadata } from '../content/types'
 
@@ -17,12 +17,26 @@ export type PortableExperiencesPolicy = {
   raw: SceneFeatureToggle | 'default'
 }
 
+/** Hover / panel copy when scene.json disables PE. */
+export const PE_SCENE_OVERRIDE_MESSAGE =
+  'This scene is overriding portable experiences'
+
 function parseFeatureToggle(raw: unknown): SceneFeatureToggle | null {
+  if (typeof raw === 'boolean') return raw ? 'enabled' : 'disabled'
+  if (raw && typeof raw === 'object') {
+    const o = raw as { enabled?: boolean; disabled?: boolean }
+    if (o.enabled === false || o.disabled === true) return 'disabled'
+    if (o.enabled === true || o.disabled === false) return 'enabled'
+  }
   if (typeof raw !== 'string') return null
   const v = raw.trim().toLowerCase()
-  if (v === 'enabled') return 'enabled'
-  if (v === 'disabled') return 'disabled'
-  if (v === 'hideui') return 'hideUi'
+  if (v === 'enabled' || v === 'enable' || v === 'on' || v === 'true' || v === '1') {
+    return 'enabled'
+  }
+  if (v === 'disabled' || v === 'disable' || v === 'off' || v === 'false' || v === '0') {
+    return 'disabled'
+  }
+  if (v === 'hideui' || v === 'hide_ui' || v === 'hide-ui') return 'hideUi'
   return null
 }
 
@@ -50,9 +64,33 @@ export function readPortableExperiencesUrlOverride(): SceneFeatureToggle | null 
   return null
 }
 
+function readToggleFromMetadata(metadata: SceneMetadata): SceneFeatureToggle | null {
+  const ft = metadata.featureToggles
+  // Official path
+  const fromFeature = parseFeatureToggle(ft?.portableExperiences)
+  if (fromFeature) return fromFeature
+  // Aliases some deploys / older tools use
+  const loose = ft as Record<string, unknown> | undefined
+  if (loose) {
+    for (const key of [
+      'portableExperiences',
+      'portableExperience',
+      'portable_experiences',
+      'smartWearables',
+      'smartWearable'
+    ]) {
+      const t = parseFeatureToggle(loose[key])
+      if (t) return t
+    }
+  }
+  // Top-level alias (rare)
+  const top = (metadata as { portableExperiences?: unknown }).portableExperiences
+  return parseFeatureToggle(top)
+}
+
 export function resolvePortableExperiencesPolicy(metadata: SceneMetadata): PortableExperiencesPolicy {
   const url = readPortableExperiencesUrlOverride()
-  const fromScene = parseFeatureToggle(metadata.featureToggles?.portableExperiences)
+  const fromScene = readToggleFromMetadata(metadata)
   const raw = url ?? fromScene ?? 'default'
 
   if (raw === 'disabled') {

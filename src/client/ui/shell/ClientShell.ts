@@ -892,10 +892,15 @@ export class ClientShell {
     }
     const syncSmartWearableBtn = () => {
       if (!btn) return
-      // Scene blocked PE/smart wearables — Explorer-style restriction tip, no open.
+      // scene.json featureToggles.portableExperiences = disabled
+      // → icon stays visible but restricted; hover explains scene override; panel closed.
       if (!manager.isPeAllowed()) {
-        btn.setRestricted(true, 'This scene is restricting the use of some features')
+        btn.setRestricted(
+          true,
+          'This scene is overriding portable experiences'
+        )
         this.pePanel.hide()
+        btn.setBadge(null)
         return
       }
       btn.setRestricted(false)

@@ -80,11 +80,22 @@ export class PortableExperiencePanel {
 
   private render(slots: PeSlotState[]): void {
     this.listEl.innerHTML = ''
+    const policy = this.manager?.getPePolicy()
+    const sceneBlocks = policy ? !policy.allowed : false
+    const sceneHidesUi = policy ? !policy.uiAllowed : false
     const running = slots.filter((s) => s.status === 'running').length
-    this.statusEl.textContent =
-      slots.length === 0
-        ? ''
-        : `${running} running · ${slots.length} available`
+
+    if (sceneBlocks) {
+      this.statusEl.textContent = 'This scene is overriding portable experiences'
+      this.statusEl.hidden = false
+    } else if (sceneHidesUi) {
+      this.statusEl.textContent = 'This scene hides portable experience UI'
+      this.statusEl.hidden = false
+    } else {
+      this.statusEl.textContent =
+        slots.length === 0 ? '' : `${running} running · ${slots.length} available`
+      this.statusEl.hidden = !this.statusEl.textContent
+    }
 
     if (!slots.length) {
       this.emptyEl.hidden = false
@@ -96,14 +107,14 @@ export class PortableExperiencePanel {
       const row = document.createElement('div')
       row.className = 'pe-panel__row'
       const running = slot.status === 'running'
-      const blocked = slot.status === 'scene_blocked'
+      const blocked = slot.status === 'scene_blocked' || sceneBlocks
       const title = document.createElement('div')
       title.className = 'pe-panel__title'
       title.textContent = slot.candidate.title
       const sub = document.createElement('div')
       sub.className = 'pe-panel__sub'
       sub.textContent = blocked
-        ? 'Blocked in this scene'
+        ? 'Scene is overriding'
         : running
           ? 'Running'
           : slot.wantEnabled
@@ -116,7 +127,9 @@ export class PortableExperiencePanel {
       // Enable toggle
       const enableLabel = document.createElement('label')
       enableLabel.className = 'pe-panel__switch'
-      enableLabel.title = blocked ? 'Scene disables portable experiences' : 'Enable portable experience'
+      enableLabel.title = blocked
+        ? 'This scene is overriding portable experiences'
+        : 'Enable portable experience'
       const enableInput = document.createElement('input')
       enableInput.type = 'checkbox'
       enableInput.checked = running || slot.wantEnabled
@@ -134,14 +147,16 @@ export class PortableExperiencePanel {
       enableText.className = 'pe-panel__ctl-label'
       enableText.textContent = 'On'
 
-      // UI toggle
+      // UI toggle — also disabled when scene hideUi / disabled
       const uiLabel = document.createElement('label')
       uiLabel.className = 'pe-panel__switch'
-      uiLabel.title = 'Show portable experience UI'
+      uiLabel.title = sceneHidesUi || blocked
+        ? 'This scene is overriding portable experience UI'
+        : 'Show portable experience UI'
       const uiInput = document.createElement('input')
       uiInput.type = 'checkbox'
-      uiInput.checked = slot.uiEnabled
-      uiInput.disabled = !running && !slot.wantEnabled
+      uiInput.checked = sceneHidesUi || blocked ? false : slot.uiEnabled
+      uiInput.disabled = blocked || sceneHidesUi || (!running && !slot.wantEnabled)
       uiInput.addEventListener('change', () => {
         this.manager?.setPeUiEnabled(slot.candidate.id, uiInput.checked)
       })

@@ -6,7 +6,10 @@ import type { PerformanceTier } from '../../shim/types'
 import type { ResolvedScene } from '../content/types'
 import { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import { PortableExperienceManager } from './PortableExperienceManager'
-import type { PortableExperiencesPolicy } from './resolvePortableExperiences'
+import {
+  resolvePortableExperiencesPolicy,
+  type PortableExperiencesPolicy
+} from './resolvePortableExperiences'
 import {
   SecondaryLiveManager,
   type PromoteHandoffPayload
@@ -88,12 +91,16 @@ export class MultiSceneRuntime {
 
   /**
    * After promote handoff — keep secondaries/PE alive, retarget primary scene for content map.
+   * Re-applies scene.json portableExperiences policy (disable / hideUi) for the new primary.
    */
   notifyPrimaryChanged(scene: ResolvedScene): void {
     this.primaryScene = scene
     this.secondary?.setPrimaryScene(scene)
     this.pe.setPrimaryScene(scene)
     if (this.cache) this.cache.setScene(scene)
+    const pePolicy =
+      scene.portableExperiencesPolicy ?? resolvePortableExperiencesPolicy(scene.metadata)
+    this.pe.applyScenePolicy(pePolicy)
   }
 
   /** Before World.dispose / host teardown. */

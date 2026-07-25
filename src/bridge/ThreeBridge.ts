@@ -424,6 +424,43 @@ export class ThreeBridge {
     this.instancer.updateAll(this.store.nodes)
   }
 
+  private distCullTick = 0
+  private static readonly GLTF_DIST_CULL_M = 64
+  private static readonly GLTF_DIST_CULL_EVERY = 3
+
+  /**
+   * Hide clone GLTF presentation beyond {@link GLTF_DIST_CULL_M} (camera world).
+   * Instanced tiles stay (already one draw/template). Cuts CBD draw/CPU for far clones.
+   * Does not touch colliders / systems — only `__mesh_*` visual children.
+   */
+  updateGltfDistanceCull(camera: THREE.Camera): void {
+    this.distCullTick++
+    if (this.distCullTick % ThreeBridge.GLTF_DIST_CULL_EVERY !== 0) return
+    camera.updateMatrixWorld(true)
+    const e = camera.matrixWorld.elements
+    const cx = e[12]!
+    const cy = e[13]!
+    const cz = e[14]!
+    const maxSq = ThreeBridge.GLTF_DIST_CULL_M * ThreeBridge.GLTF_DIST_CULL_M
+    for (const obj of this.store.nodes.values()) {
+      if (obj.userData.dclInstanced) continue
+      if (!obj.userData.gltfSrcKey && !obj.userData.animationRig) continue
+      // Entity group world pos (renderer already updates matrixWorld).
+      const me = obj.matrixWorld.elements
+      const dx = me[12]! - cx
+      const dy = me[13]! - cy
+      const dz = me[14]! - cz
+      const far = dx * dx + dy * dy + dz * dz > maxSq
+      if (obj.userData.dclDistCulled === far) continue
+      obj.userData.dclDistCulled = far
+      for (const child of obj.children) {
+        if (typeof child.name === 'string' && child.name.startsWith('__mesh_')) {
+          child.visible = !far
+        }
+      }
+    }
+  }
+
   getEntityStore(): EntityStore {
     return this.store
   }

@@ -4733,6 +4733,10 @@ export class SceneScriptSystem {
     if (!skipSceneAnimators()) {
       this.animatorBridge?.update(delta, this.view, this.animatorSampleContext())
     }
+    // Far clone GLTF mesh hide — CBD 3k+ meshes; free GPU when not near camera.
+    if (this.host?.camera) {
+      this.bridge.updateGltfDistanceCull(this.host.camera)
+    }
     this.particleBridge?.update(delta)
     this.avatarAttachBridge?.update(this.view)
     this.flushAvatarAttachTransforms()

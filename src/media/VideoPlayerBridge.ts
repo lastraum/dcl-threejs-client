@@ -243,24 +243,29 @@ export class VideoPlayerBridge {
       const videoLength = entry.player.getVideoLength()
       const now = performance.now()
 
-      // PLAYING↔BUFFERING flapping was spamming VideoEvent every frame (CBD neon
-      // screens) → worker renderer-append-deliver every tick. Soft states only
-      // re-emit after a dwell; hard states (error/pause/loading) always pass.
+      // CBD neon screens flap PLAYING↔BUFFERING every few hundred ms. Soft states
+      // are collapsed for emit; hard states always pass; offset heartbeat ≤1/2s.
       const softPlayingLike = (s: number) =>
         s === VS_PLAYING || s === VS_BUFFERING || s === VS_READY
       const hardChange =
         state !== entry.lastState &&
         !(softPlayingLike(state) && softPlayingLike(entry.lastState))
+      // Soft changes: only if last emit was >2s ago (not every buffering blip).
       const softChange =
         state !== entry.lastState &&
         softPlayingLike(state) &&
         softPlayingLike(entry.lastState) &&
-        now - entry.lastEventAtMs > 800
+        now - entry.lastEventAtMs > 2000
       const stateChanged = hardChange || softChange
-      const lengthChanged = Math.abs(videoLength - entry.lastLength) > 0.05 && videoLength > 0
-      // Offset heartbeat only — never every frame.
+      const lengthChanged =
+        Math.abs(videoLength - entry.lastLength) > 0.5 &&
+        videoLength > 0 &&
+        now - entry.lastEventAtMs > 2000
       const offsetChanged =
-        Math.abs(currentOffset - entry.lastOffset) > 0.5 && now - entry.lastEventAtMs > 500
+        Math.abs(currentOffset - entry.lastOffset) > 1.0 && now - entry.lastEventAtMs > 2000
+
+      // Absolute rate limit per decoder (multiple VideoPlayers × soft thrash).
+      if (!hardChange && now - entry.lastEventAtMs < 500) continue
 
       if (!stateChanged && !offsetChanged && !lengthChanged) continue
 

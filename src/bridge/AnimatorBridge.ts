@@ -65,10 +65,12 @@ const NEAR_PLAYER_FULL_RATE_M = 16
 const FRUSTUM_EXPAND_M = 6
 /**
  * Beyond this distance, decorative mixers **sleep** (timeScale 0, no sample).
- * Waking restarts phase from wall clock so we don't bank multi-second jumps.
- * Doors/PART near the player are never slept. Cuts active set massively on CBD.
+ * Previously only slept off-frustum, so dense plaza kept ~80 "fair" awake in view.
+ * Distance-only sleep (except near/PART) is what actually shrinks CBD active set.
  */
-const SLEEP_BEYOND_M = 36
+const SLEEP_BEYOND_M = 28
+/** Hard cap on awake fair-ring mixers (nearest kept). Rest sleep even if in frustum. */
+const MAX_FAIR_AWAKE = 20
 /**
  * Hard ceiling — adaptive budget is almost always lower.
  * 64 full mixer.update()s per frame was crushing CBD to ~10 FPS (HUD showed
@@ -725,48 +727,57 @@ export class AnimatorBridge {
     let sleeping = 0
     const sleepSq = SLEEP_BEYOND_M * SLEEP_BEYOND_M
 
+    const putToSleep = (entry: AnimEntry): void => {
+      if (!entry.sleeping) {
+        entry.sleeping = true
+        entry.deferredSampleDt = 0
+        entry.mixer.timeScale = 0
+      }
+      sleeping++
+    }
+    const wake = (entry: AnimEntry): void => {
+      if (!entry.sleeping) return
+      entry.sleeping = false
+      entry.mixer.timeScale = 1
+      entry.deferredSampleDt = 0
+      for (const action of entry.actions.values()) {
+        if (!action.isRunning() && !action.isScheduled()) continue
+        const dur = action.getClip().duration
+        if (dur > 1e-3) action.time = (performance.now() / 1000) % dur
+      }
+    }
+
     for (const [entity, entry] of this.entries) {
       if (!mixerHasActiveWork(entry) && !entry.sleeping) {
         entry.deferredSampleDt = 0
         continue
       }
       const { priority, distSq } = this.samplePriority(entry, sampleCtx!)
-      // Far decorative: sleep entirely (no bank, no sample). PART never sleeps.
       const isPart = hasPartColliderWork(entry)
-      if (!isPart && distSq > sleepSq && priority < 1) {
-        if (!entry.sleeping) {
-          entry.sleeping = true
-          entry.deferredSampleDt = 0
-          entry.mixer.timeScale = 0
-        }
-        sleeping++
+      // Distance-only sleep (ignore frustum) — dense plaza frustum kept everyone awake.
+      if (!isPart && priority < 2 && distSq > sleepSq) {
+        putToSleep(entry)
         continue
       }
-      if (entry.sleeping) {
-        entry.sleeping = false
-        entry.mixer.timeScale = 1
-        entry.deferredSampleDt = 0
-        // Phase from wall clock so we don't jump multi-second banked time.
-        for (const action of entry.actions.values()) {
-          if (!action.isRunning() && !action.isScheduled()) continue
-          const dur = action.getClip().duration
-          if (dur > 1e-3) {
-            action.time = (performance.now() / 1000) % dur
-          }
-        }
-      }
-      // Everyone accumulates wall time; sampled entries clear their debt.
+      wake(entry)
       entry.deferredSampleDt += delta
       const cand: Cand = { entity, entry, priority, distSq }
-      // priority ≥ 2: near camera or PART door — try every-frame.
       if (priority >= 2) near.push(cand)
       else fair.push(cand)
     }
 
     // Near: closer / PART first.
     near.sort((a, b) => b.priority - a.priority || a.distSq - b.distSq)
-    // Fair ring: stable order by entity id so phase is deterministic.
-    fair.sort((a, b) => (a.entity as number) - (b.entity as number))
+    // Fair: nearest first, then cap awake count — overflow goes back to sleep.
+    fair.sort((a, b) => a.distSq - b.distSq)
+    if (fair.length > MAX_FAIR_AWAKE) {
+      for (let i = MAX_FAIR_AWAKE; i < fair.length; i++) {
+        const drop = fair[i]!
+        drop.entry.deferredSampleDt = 0
+        putToSleep(drop.entry)
+      }
+      fair.length = MAX_FAIR_AWAKE
+    }
 
     // Budget from *previous* frame length so a hitch this frame doesn't double-dip.
     const { budget, nearCap } = adaptiveSampleBudget(this.prevFrameDt)

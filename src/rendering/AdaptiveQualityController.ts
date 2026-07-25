@@ -14,15 +14,18 @@ import {
  */
 export class AdaptiveQualityController {
   /** Need this many consecutive low windows before stepping down. */
-  private static readonly BAD_WINDOWS = 2
+  private static readonly BAD_WINDOWS = 1
   /** Need this many consecutive healthy windows before stepping up. */
-  private static readonly GOOD_WINDOWS = 3
-  private static readonly LOW_FPS = 26
-  private static readonly HIGH_FPS = 42
+  private static readonly GOOD_WINDOWS = 4
+  private static readonly LOW_FPS = 28
+  private static readonly HIGH_FPS = 45
   /** Min ms between any step (down or up). */
-  private static readonly COOLDOWN_MS = 2800
-  private static readonly RES_STEP = 10
-  private static readonly RES_FLOOR = 55
+  private static readonly COOLDOWN_MS = 1600
+  private static readonly RES_STEP = 12
+  /** CBD can sit at 8–15 FPS with full mesh inventory — allow more internal res drop. */
+  private static readonly RES_FLOOR = 40
+  /** Below this, step resolution even if shadows already at floor. */
+  private static readonly CRITICAL_FPS = 14
 
   private windowFrames = 0
   private windowStart = 0
@@ -103,13 +106,23 @@ export class AdaptiveQualityController {
     if (fps < AdaptiveQualityController.LOW_FPS) {
       this.badStreak++
       this.goodStreak = 0
+      const critical = fps < AdaptiveQualityController.CRITICAL_FPS
+      const cooldown = critical
+        ? AdaptiveQualityController.COOLDOWN_MS * 0.5
+        : AdaptiveQualityController.COOLDOWN_MS
       if (
         this.badStreak >= AdaptiveQualityController.BAD_WINDOWS &&
-        now - this.lastStepAt >= AdaptiveQualityController.COOLDOWN_MS
+        now - this.lastStepAt >= cooldown
       ) {
-        if (this.stepDown()) {
+        // Critical: try up to 2 steps (shadow + res) in one window so CBD recovers.
+        let stepped = this.stepDown()
+        if (critical && stepped) stepped = this.stepDown() || stepped
+        if (stepped) {
           this.lastStepAt = now
           this.badStreak = 0
+          console.info(
+            `[adaptive-quality] step-down fps=${fps.toFixed(0)} resSteps=${this.resStepsDown} shadowSteps=${this.shadowStepsDown}`
+          )
         }
       }
       return

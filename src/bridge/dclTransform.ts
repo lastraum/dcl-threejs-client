@@ -120,6 +120,8 @@ export function applyDclLocalTransform(obj: THREE.Object3D, t: DclTransformValue
   // Keep authored scale (do not swap for marquee re-basis — panels are spaced by scale.x
   // along the curve; swapping made them overlap and double-draw LED rows).
   obj.scale.set(t.scale.x, t.scale.y, t.scale.z)
+  // Static plaza GLTFs freeze matrixAutoUpdate — still need local matrix after pose write.
+  if (!obj.matrixAutoUpdate) obj.updateMatrix()
 }
 
 /** Live Three.js anchors for reserved ECS parents (PlayerEntity / CameraEntity). */

@@ -156,6 +156,20 @@ function countObjectTriangles(root: THREE.Object3D): number {
   return tris
 }
 
+/** Static GLTF leaves — skip per-frame local matrix rebuild in scene.updateMatrixWorld. */
+function freezeStaticObject3D(root: THREE.Object3D): void {
+  root.traverse((o) => {
+    o.matrixAutoUpdate = false
+    o.updateMatrix()
+  })
+}
+
+function unfreezeObject3D(root: THREE.Object3D): void {
+  root.traverse((o) => {
+    o.matrixAutoUpdate = true
+  })
+}
+
 /** Sync mirror ECS state → Three.js scene graph (Phase 1 + 1b render components). */
 export class ThreeBridge {
   /** Runtime attach slots — keep ≤1 heavy unit per play frame (P0 mesh frame law). */
@@ -2010,10 +2024,10 @@ export class ThreeBridge {
         return false
       }
     }
-    // PointerEvents / MeshCollider need live meshes in the entity graph (raycast / ECS MeshCollider).
-    // GLB `_collider` physics uses template shapes + entity pose (see InstanceColliderShape).
+    // PointerEvents need live meshes for raycast (promote later if PE arrives).
     if (this.ecs.PointerEvents.has(entity)) return false
-    if (this.ecs.MeshCollider.has(entity)) return false
+    // MeshCollider: PhysX uses template collider shapes + entity pose for instances —
+    // do NOT force clone (CBD puts MeshCollider on almost every prop).
     // Material / shadow overrides must not share InstancedMesh materials with siblings.
     if (this.ecs.GltfNodeModifiers.has(entity)) return false
     return templateIsInstancable(template.root)
@@ -2059,7 +2073,11 @@ export class ThreeBridge {
     const srcKey = hash
     const ok = this.attachCachedGltf(entity, obj, mk, src, srcKey, hash, template, templateTris)
     if (!ok) return null
-    return obj.getObjectByName(mk) ?? null
+    // Mixer needs live matrices.
+    obj.matrixAutoUpdate = true
+    const mesh = obj.getObjectByName(mk) ?? null
+    if (mesh) unfreezeObject3D(mesh)
+    return mesh
   }
 
   /** Clone a cached template onto the entity node. Returns false on failure / skip. */
@@ -2081,6 +2099,9 @@ export class ThreeBridge {
         const result = this.instancer.attach(entity, obj, hash, template.root, mk)
         if (result.ok) {
           obj.userData.gltfSrcKey = srcKey
+          // Static instance host — skip per-frame local matrix rebuild.
+          obj.matrixAutoUpdate = false
+          obj.updateMatrix()
           enableSceneGltfVertexColors(template.root)
           this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
           this.notifyGltfAttached(entity)
@@ -2145,6 +2166,13 @@ export class ThreeBridge {
       } else {
         syncGltfInstanceRenderState(clone)
         enableMeshShadows(clone)
+      }
+      // Static rest / no ECS Animator: freeze leaf matrices (scene graph of 3k+ meshes
+      // was rebuilding every frame). Animator promote re-enables autoUpdate.
+      if (!this.ecs.Animator.has(entity)) {
+        freezeStaticObject3D(clone)
+        obj.matrixAutoUpdate = false
+        obj.updateMatrix()
       }
       obj.add(clone)
       this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)

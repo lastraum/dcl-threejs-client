@@ -5,7 +5,13 @@ import type { PBVideoPlayer } from '@dcl/ecs/dist/components/generated/pb/decent
 import type { MirrorComponents } from '../bridge/mirrorComponents'
 import type { ProjectionView } from '../bridge/ProjectionView'
 import type { ResolvedScene } from '../dcl/content/types'
-import { VS_NONE, type VideoStateValue } from './videoConstants'
+import {
+  VS_BUFFERING,
+  VS_NONE,
+  VS_PLAYING,
+  VS_READY,
+  type VideoStateValue
+} from './videoConstants'
 import type { LiveKitVideoBinder } from './WebVideoPlayer'
 import { WebVideoPlayer } from './WebVideoPlayer'
 import { resolveSpatialAudioAttach, type SpatialAudioAnchors } from './spatialAudioParent'
@@ -235,13 +241,26 @@ export class VideoPlayerBridge {
       const state = entry.player.getVideoState()
       const currentOffset = entry.player.getCurrentOffset()
       const videoLength = entry.player.getVideoLength()
-
-      const stateChanged = state !== entry.lastState
-      const lengthChanged = Math.abs(videoLength - entry.lastLength) > 0.05 && videoLength > 0
-      // Offset heartbeat only — 0.05s + every frame was videoEvent worker spam (FPS 120→40).
       const now = performance.now()
+
+      // PLAYING↔BUFFERING flapping was spamming VideoEvent every frame (CBD neon
+      // screens) → worker renderer-append-deliver every tick. Soft states only
+      // re-emit after a dwell; hard states (error/pause/loading) always pass.
+      const softPlayingLike = (s: number) =>
+        s === VS_PLAYING || s === VS_BUFFERING || s === VS_READY
+      const hardChange =
+        state !== entry.lastState &&
+        !(softPlayingLike(state) && softPlayingLike(entry.lastState))
+      const softChange =
+        state !== entry.lastState &&
+        softPlayingLike(state) &&
+        softPlayingLike(entry.lastState) &&
+        now - entry.lastEventAtMs > 800
+      const stateChanged = hardChange || softChange
+      const lengthChanged = Math.abs(videoLength - entry.lastLength) > 0.05 && videoLength > 0
+      // Offset heartbeat only — never every frame.
       const offsetChanged =
-        Math.abs(currentOffset - entry.lastOffset) > 0.35 && now - entry.lastEventAtMs > 250
+        Math.abs(currentOffset - entry.lastOffset) > 0.5 && now - entry.lastEventAtMs > 500
 
       if (!stateChanged && !offsetChanged && !lengthChanged) continue
 

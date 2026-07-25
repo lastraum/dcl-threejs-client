@@ -22,6 +22,8 @@ type AnimEntry = {
   deferredSampleDt: number
   /** Bound root has SkinnedMesh — needs skeleton.update after sample. */
   hasSkinned: boolean
+  /** Far decorative — paused, not sampled until camera approaches. */
+  sleeping: boolean
 }
 
 /** Sample scheduling context — near camera / frustum bias for fair phase slice. */
@@ -35,8 +37,10 @@ export type AnimatorSampleContext = {
 export type AnimatorSampleStats = {
   /** Bound mixers (with or without active clips). */
   bound: number
-  /** Active clips this frame (running / weight). */
+  /** Active clips this frame (running / weight) — excludes sleeping far props. */
   active: number
+  /** Far decorative mixers paused (timeScale 0) until camera approaches. */
+  sleeping: number
   near: number
   fair: number
   sampled: number
@@ -59,6 +63,12 @@ export type AnimatorSampleStats = {
 const NEAR_PLAYER_FULL_RATE_M = 16
 /** Sphere radius added around entity root for expanded-frustum tests (turn without pop). */
 const FRUSTUM_EXPAND_M = 6
+/**
+ * Beyond this distance, decorative mixers **sleep** (timeScale 0, no sample).
+ * Waking restarts phase from wall clock so we don't bank multi-second jumps.
+ * Doors/PART near the player are never slept. Cuts active set massively on CBD.
+ */
+const SLEEP_BEYOND_M = 36
 /**
  * Hard ceiling — adaptive budget is almost always lower.
  * 64 full mixer.update()s per frame was crushing CBD to ~10 FPS (HUD showed
@@ -236,6 +246,7 @@ export class AnimatorBridge {
   private lastStats: AnimatorSampleStats = {
     bound: 0,
     active: 0,
+    sleeping: 0,
     near: 0,
     fair: 0,
     sampled: 0,
@@ -591,7 +602,8 @@ export class AnimatorBridge {
         gltfHash: hash,
         gltfSrc: src,
         deferredSampleDt: 0,
-        hasSkinned
+        hasSkinned,
+        sleeping: false
       }
       const nodeByName = loaded.animations.length ? buildNodeNameMap(mesh) : undefined
       for (const clip of loaded.animations) {
@@ -671,6 +683,7 @@ export class AnimatorBridge {
         ...this.lastStats,
         bound: 0,
         active: 0,
+        sleeping: 0,
         near: 0,
         fair: 0,
         sampled: 0,
@@ -709,15 +722,41 @@ export class AnimatorBridge {
     type Cand = { entity: Entity; entry: AnimEntry; priority: number; distSq: number }
     const near: Cand[] = []
     const fair: Cand[] = []
+    let sleeping = 0
+    const sleepSq = SLEEP_BEYOND_M * SLEEP_BEYOND_M
 
     for (const [entity, entry] of this.entries) {
-      if (!mixerHasActiveWork(entry)) {
+      if (!mixerHasActiveWork(entry) && !entry.sleeping) {
         entry.deferredSampleDt = 0
         continue
       }
+      const { priority, distSq } = this.samplePriority(entry, sampleCtx!)
+      // Far decorative: sleep entirely (no bank, no sample). PART never sleeps.
+      const isPart = hasPartColliderWork(entry)
+      if (!isPart && distSq > sleepSq && priority < 1) {
+        if (!entry.sleeping) {
+          entry.sleeping = true
+          entry.deferredSampleDt = 0
+          entry.mixer.timeScale = 0
+        }
+        sleeping++
+        continue
+      }
+      if (entry.sleeping) {
+        entry.sleeping = false
+        entry.mixer.timeScale = 1
+        entry.deferredSampleDt = 0
+        // Phase from wall clock so we don't jump multi-second banked time.
+        for (const action of entry.actions.values()) {
+          if (!action.isRunning() && !action.isScheduled()) continue
+          const dur = action.getClip().duration
+          if (dur > 1e-3) {
+            action.time = (performance.now() / 1000) % dur
+          }
+        }
+      }
       // Everyone accumulates wall time; sampled entries clear their debt.
       entry.deferredSampleDt += delta
-      const { priority, distSq } = this.samplePriority(entry, sampleCtx!)
       const cand: Cand = { entity, entry, priority, distSq }
       // priority ≥ 2: near camera or PART door — try every-frame.
       if (priority >= 2) near.push(cand)
@@ -791,6 +830,7 @@ export class AnimatorBridge {
     this.lastStats = {
       bound: this.entries.size,
       active: near.length + fair.length,
+      sleeping,
       near: near.length,
       fair: fairN,
       sampled,

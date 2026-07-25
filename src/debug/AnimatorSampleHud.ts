@@ -56,12 +56,13 @@ export class AnimatorSampleHud {
       row('display', `${fps} fps`),
       row('bound', String(stats.bound)),
       row('active', String(stats.active)),
+      row('sleep', String(stats.sleeping ?? 0)),
       row('near', `${stats.near} @ ~${nearHz} Hz`),
       row('fair', `${stats.fair} @ ~${farHz} Hz`),
       row('sampled', `${stats.sampled} / ${stats.budget}`),
       row('deferred', String(stats.deferred)),
       `<div style="opacity:.55;margin-top:5px;font-size:10px;max-width:200px;white-space:normal">` +
-        `far Hz = sample rate (time-correct speed). display ≠ anim speed.` +
+        `sleep = far props paused. fair Hz = sample rate (1× speed when awake).` +
         `</div>`
     ].join('')
   }

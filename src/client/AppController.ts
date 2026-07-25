@@ -56,6 +56,7 @@ import {
 import { downloadTourCsvOnly, downloadTourZip } from '../social/tourExport'
 import { PreferencesPanel } from './ui/settings/PreferencesPanel'
 import { SettingsOverlay, type SettingsTab } from './ui/settings/SettingsOverlay'
+import { warmBackpackProvenance } from './ui/settings/backpackProvenance'
 import type { MapPlayerState } from './ui/settings/MapView'
 import { genesisMetersToParcel } from '../map/genesisMapViewport'
 import type { ResolvedScene } from '../dcl/content/types'
@@ -463,6 +464,9 @@ export class AppController {
         this.login = login
         this.playSessionReady = true
         recordLoginEvent(login)
+        // Pre-warm backpack provenance (mint numbers + collection directory) so
+        // detail panes resolve instantly when the backpack first opens.
+        if (login.kind === 'wallet') warmBackpackProvenance(login.address)
         this.socialMobileNotifications?.setLogin(login)
         this.applyLoginToSocialShellViews(login)
         this.editorApp?.setLogin(login)

@@ -45,9 +45,14 @@ export function loadCollectionDirectory(): Promise<Map<string, CollectionDirecto
 async function fetchCollectionDirectory(): Promise<Map<string, CollectionDirectoryEntry>> {
   const out = new Map<string, CollectionDirectoryEntry>()
   for (let page = 0; page < DIRECTORY_MAX_PAGES; page++) {
-    const res = await fetch(
-      `${MARKETPLACE_API}/collections?first=${DIRECTORY_PAGE_SIZE}&skip=${page * DIRECTORY_PAGE_SIZE}`
-    )
+    const url = `${MARKETPLACE_API}/collections?first=${DIRECTORY_PAGE_SIZE}&skip=${page * DIRECTORY_PAGE_SIZE}`
+    let res = await fetch(url)
+    if (!res.ok) {
+      // One failed page used to sink the whole directory (every collection then
+      // rendered as "0x00c5…1d23"). Rate-limit blips heal on a short retry.
+      await new Promise((r) => setTimeout(r, 800))
+      res = await fetch(url)
+    }
     if (!res.ok) throw new Error(`collection directory failed (${res.status})`)
     const raw = (await res.json()) as { data?: CollectionRow[]; total?: number }
     const rows = Array.isArray(raw.data) ? raw.data : []

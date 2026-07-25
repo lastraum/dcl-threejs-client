@@ -39,7 +39,8 @@ const RARITY_GRADIENTS: Record<string, [string, string, string?]> = {
   legendary: ['#f0e0ff', '#a14bf3', '#6b1fc4'],
   mythic: ['#ffe0f7', '#ff4bed', '#b010a0'],
   unique: ['#fff0d4', '#fea217', '#c47800'],
-  exotic: ['#f5d4d4', '#9b2222', '#5c1010']
+  // Official schemas gradient (light #E4FFB8 → #CAFF73); announcement-era red retired.
+  exotic: ['#e4ffb8', '#caff73', '#8ab838']
 }
 
 function normalizeRarity(raw: string | undefined): string {

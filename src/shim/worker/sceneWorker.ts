@@ -202,7 +202,7 @@ let pointerDeliveryStartedAt = 0
 let queuedPointerDeliver: Uint8Array[] | null = null
 /** Boot cooperative poll — responsive pointer lane before play-ready. */
 const SCENE_LOOP_POLL_MS = 25
-/** Play-ready cooperative + engine tick — matches dev-latest (10 Hz). */
+/** Play-ready engine tick floor — ~60 Hz (Explorer display-class). Override via ?scenetick=. */
 const SCENE_TICK_PLAY_INTERVAL_MS = 16
 /** Min ms between lightweight engine ticks during boot. */
 const SCENE_TICK_BOOT_INTERVAL_MS = 100

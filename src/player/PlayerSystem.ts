@@ -265,7 +265,10 @@ export class PlayerSystem {
     this.host.scene.add(this.root)
   }
 
-  /** Keep PE attach root at chest height with the same yaw scenes read from PlayerEntity. */
+  /**
+   * Keep Three.js PE-child attach at chest (+0.88) with PE yaw.
+   * CRDT PlayerEntity position is feet — attach offset is visual hierarchy only.
+   */
   private syncPlayerEntityAttach(): void {
     this.playerEntityAttach.position.set(0, DCL_PLAYER_ENTITY_Y_OFFSET, 0)
     // Match getEntityPose() PE rotation: Three yaw quat (before threeToDclQuat).
@@ -532,7 +535,10 @@ export class PlayerSystem {
     this.syncCamera(true)
   }
 
-  /** SDK7 `Transform.get(PlayerEntity).position` — chest height in scene-relative DCL meters. */
+  /**
+   * `Transform.get(PlayerEntity).position` — **feet** in scene-relative DCL meters.
+   * (Chest attach for PE-parented meshes lives on {@link getPlayerRoot}, not here.)
+   */
   getPlayerEntityPositionDcl(): THREE.Vector3 {
     if (!this.enabled && this.stagedPlayerPose) {
       return this.stagedPlayerPose.position.clone()
@@ -540,7 +546,7 @@ export class PlayerSystem {
     return playerEntityPositionFromThreeFeet(this.root.position)
   }
 
-  /** PlayerEntity pose for CRDT / scene reads — rotation uses immediate wire yaw, not smoothed body turn. */
+  /** PlayerEntity pose for CRDT / scene reads — position is feet; rotation is wire yaw. */
   getEntityPose(): EntityPose {
     if (!this.enabled && this.stagedPlayerPose) {
       return {
@@ -555,8 +561,9 @@ export class PlayerSystem {
   }
 
   /**
-   * PlayerEntity attach root (chest + PE yaw) — spatial audio + Transform.parent=PlayerEntity.
-   * Not the feet capsule; Explorer PE children are relative to chest pose.
+   * Three.js parent for Transform.parent=PlayerEntity (spatial audio, weapons).
+   * Elevated +0.88 so PE-child local offsets match Explorer chest-relative parenting,
+   * while CRDT PE position remains feet.
    */
   getPlayerRoot(): THREE.Object3D {
     return this.playerEntityAttach

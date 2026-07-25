@@ -148,13 +148,12 @@ type WallClockWrappedEngine = IEngine & { __threejsWallClockWrapped?: boolean }
 
 /**
  * Intercept every engine.update — SDK onUpdate, pointer ticks, cooperative, flight.
- * Positive dt is clamped to wall-clock debt and committed to the scene-time ledger so
- * NeonScreen pauseDuration cannot be compressed by double ticks or unpatched paths.
+ *
+ * Explorer-style: positive dt is wall elapsed since the last positive update (capped),
+ * not a cumulative “debt ledger” that zeroed timers when concurrent paths raced.
+ * dt=0 stays transport-only (TweenState inject, pointer UI).
  *
  * Do NOT substep nativeUpdate: each call runs every scene system + network transport.
- * Multi-stepping (even 2–3×) multiplies worker cost and starves TriggerArea / UI on large
- * scenes. Projectile tunneling is a discrete-sample scene concern, not solved by replaying
- * the full ECS loop.
  */
 function wrapEngineUpdateWithWallClock(eng: IEngine): void {
   const wrapped = eng as WallClockWrappedEngine
@@ -279,53 +278,60 @@ export function setSceneEngineLastExecutedAt(ms: number): void {
 }
 
 /**
- * Wall-clock debt still available for scene systems (seconds).
- * sum(positive engine.update dt) is not allowed to exceed wall time since origin.
+ * Explorer-style max frame step (seconds). Timers (`accumulatedTime += 1000*dt`) and
+ * continuous systems need hitch recovery; 33ms was too tight and leftover “debt skips”
+ * froze SDK setTimeout (Spring flower scale 0.1→1 after 500ms).
+ * Unity/Explorer-class engines typically clamp ~50–100ms after a hitch.
  */
-function wallClockDebtSec(now = performance.now()): number {
-  if (wallClockOriginMs <= 0) return 0
-  const wallSec = (now - wallClockOriginMs) / 1000
-  return Math.max(0, wallSec - sceneTimeSec)
+const MAX_ENGINE_DT_SEC = 0.1
+
+/**
+ * Wall elapsed still available for a positive system step (seconds).
+ * Based on last positive update — not a cumulative ledger that can go permanently flat.
+ */
+function wallElapsedSinceLastTickSec(now = performance.now()): number {
+  if (lastExecutedAt <= 0) return 1 / 60
+  return Math.max(0, (now - lastExecutedAt) / 1000)
 }
 
 /**
- * Positive dt for engine.update (seconds), hard-capped by wall-clock debt.
+ * Positive dt for engine.update (seconds).
  * dt=0 callers (TweenState inject, pointer UI) must pass 0 explicitly and not call this.
+ *
+ * Explorer model: dt = clamp(wall since last positive tick, 0, MAX). No skip-on-debt-ledger.
  */
-/**
- * Cap a single engine.update dt (seconds). Explorer-class systems often run near 30–60 Hz;
- * allowing 100 ms jumps makes fast projectiles teleport (miss discrete hit spheres) and
- * look faster than wall clock after a hitch. Debt remains and is spent over following ticks
- * — not multi-update substeps (those re-run all systems and starve TriggerArea/UI).
- */
-const MAX_ENGINE_DT_SEC = 1 / 30
-
 function resolveDt(): number {
   const now = performance.now()
-  if (wallClockOriginMs <= 0) {
-    // Seed origin one starter interval in the past so the first tick has real debt
-    // (origin=now would yield debt=0 forever until a later frame).
-    const starter = Math.min(MAX_ENGINE_DT_SEC, Math.max(1 / 120, resolveIntervalMs() / 1000))
-    wallClockOriginMs = now - starter * 1000
+  if (wallClockOriginMs <= 0 || lastExecutedAt <= 0) {
+    wallClockOriginMs = now
+    lastExecutedAt = now
     sceneTimeSec = 0
-    return starter
+    // First system step — ~one frame so timers start immediately.
+    return Math.min(1 / 60, MAX_ENGINE_DT_SEC)
   }
-  const debt = wallClockDebtSec(now)
-  if (debt <= 1e-6) return 0
-  return Math.min(debt, MAX_ENGINE_DT_SEC)
+  const elapsed = wallElapsedSinceLastTickSec(now)
+  if (elapsed <= 1e-5) return 0
+  return Math.min(elapsed, MAX_ENGINE_DT_SEC)
 }
 
-/** Clamp an explicit dt (e.g. flight pump) so it cannot race NeonScreen past wall clock. */
+/**
+ * Clamp an explicit positive dt so two concurrent update paths cannot double-count
+ * the same wall interval. dt=0 remains exact 0.
+ *
+ * Same-ms re-entry: grant a tiny floor so SDK timers (`+= 1000*dt`) never hard-stall
+ * under thrash (Explorer keeps advancing each frame).
+ */
 function clampDtToWallClock(requested: number): number {
   if (!(requested > 0)) return 0
-  if (wallClockOriginMs <= 0) {
-    // Seed ledger, then clamp request to the first-tick debt.
-    const starter = resolveDt()
-    return Math.min(requested, starter, MAX_ENGINE_DT_SEC)
+  if (wallClockOriginMs <= 0 || lastExecutedAt <= 0) {
+    wallClockOriginMs = performance.now()
+    lastExecutedAt = wallClockOriginMs
+    sceneTimeSec = 0
+    return Math.min(requested, MAX_ENGINE_DT_SEC)
   }
-  const debt = wallClockDebtSec()
-  if (debt <= 1e-6) return 0
-  return Math.min(requested, debt, MAX_ENGINE_DT_SEC)
+  const elapsed = wallElapsedSinceLastTickSec()
+  if (elapsed <= 1e-5) return Math.min(requested, 1 / 120, MAX_ENGINE_DT_SEC)
+  return Math.min(requested, elapsed, MAX_ENGINE_DT_SEC)
 }
 
 /** Commit scene time after a successful eng.update with dt>0. */
@@ -342,10 +348,9 @@ function resolveIntervalMs(): number {
 
 export function sceneEngineTickDue(now: number): boolean {
   if (!engine || !bootSealed) return false
-  // Prefer wall-clock debt: if we already spent scene time up to wall, wait.
-  // Also respect the configured play/hydration interval so we don't thrash at 0-debt.
-  if (wallClockOriginMs <= 0 || lastExecutedAt <= 0) return true
-  if (wallClockDebtSec(now) <= 1e-6) return false
+  // Explorer: run on the play/hydration interval. Do not require leftover “debt”
+  // (that skipped ticks and froze SDK timers when dt was already spent that frame).
+  if (lastExecutedAt <= 0) return true
   return now - lastExecutedAt >= resolveIntervalMs()
 }
 
@@ -461,19 +466,21 @@ async function runCooperativeEngineTickPhases(engineDt: number): Promise<void> {
   const cfg = config!
   const eng = engine!
   if (cfg.pointerBlocksTick()) return
-  // Re-clamp at execution time — resolveDt may have been computed before an async gap.
-  // eng.update is wall-clock wrapped (clamp + ledger commit); skip empty positive requests.
-  const dt = clampDtToWallClock(engineDt)
+  // Re-clamp at execution time (async gap since resolveDt). Always run systems when
+  // we still have wall elapsed — never drop a positive request to a no-op skip that
+  // freezes timers for the whole interval.
+  let dt = engineDt > 0 ? clampDtToWallClock(engineDt) : engineDt
   if (dt <= 0 && engineDt > 0) {
-    // No wall debt left (another path already spent it) — skip systems this turn.
-    return
+    // Race: another path committed the interval. Still give timers a tiny step so
+    // setTimeout(500) cannot stall forever under thrash (Explorer keeps advancing).
+    dt = Math.min(1 / 120, MAX_ENGINE_DT_SEC)
   }
   const epoch = tickEpoch
   if (diagCount < 8) {
     diagCount++
     cfg.log(
       `[sceneWorker] engine tick #${diagCount} dt=${dt.toFixed(3)} hydration=${cfg.isHydration()}` +
-        ` sceneT=${sceneTimeSec.toFixed(2)}s debt=${wallClockDebtSec().toFixed(3)}`
+        ` sceneT=${sceneTimeSec.toFixed(2)}s elapsed=${wallElapsedSinceLastTickSec().toFixed(3)}`
     )
   }
   enterCooperativeSchedulerTick()
@@ -591,11 +598,14 @@ export function requestSceneEngineTick(): void {
     tickQueued = true
     return
   }
-  const dt = resolveDt()
-  // No wall time since last real tick — skip. Queued thrash must not invent scene time.
+  let dt = resolveDt()
+  // Same-frame re-entry: no wall elapsed yet — do not invent large time, but queue so
+  // the next play-frame-tick can run (was a hard return that starved timers).
   if (dt <= 0 && lastExecutedAt > 0) {
+    tickQueued = true
     return
   }
+  if (dt <= 0) dt = Math.min(1 / 60, MAX_ENGINE_DT_SEC)
   const epoch = tickEpoch
   tickInFlight = true
   tickStartedAt = performance.now()

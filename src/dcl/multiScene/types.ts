@@ -73,4 +73,6 @@ export type SecondaryLiveRequest = {
   resolveX: number
   resolveY: number
   distM: number
+  /** Parcel footprint size — large estates prefer composite, not full live worker. */
+  parcelCount?: number
 }

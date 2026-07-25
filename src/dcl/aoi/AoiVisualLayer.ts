@@ -387,25 +387,54 @@ export class AoiVisualLayer {
       return
     }
 
-    // TEMP: live secondaries only (cap 3, ≤64m) — no composite / first-frame tertiary thrash.
+    // TEMP: hard-cap live workers + skip first-frame/script-warm thrash.
+    // Still load multi-parcel composites so CBD plaza ring stays visible when nested
+    // hole scenes (Spring in the Snow @ -142,99) are primary.
     if (aoiLiveSecondariesOnly()) {
-      this.compositeRoot.clear()
-      this.loadedCompositeIds.clear()
       this.clearFirstFrameGroups()
       this.firstFrameSampler.reset()
       this.emitLiveSecondaryCandidatesOnly(entities, primaryId, base, dclX, dclZ, pointerSet)
+      await this.loadSecondaryComposites(entities, primaryId, base, pointerSet, gen, ctx)
+      if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
       if (gen === this.refreshGen) {
-        clientDebugLog.consoleOnly(
-          'info',
-          `[aoi] refresh LIVE-SECONDARIES-ONLY parcels=${pointers.length} roads=${this.loadedRoadIds.size} ` +
-            `liveRadius=${secondaryLiveRadiusM()}m (no composite/first-frame/script-warm)`
+        console.info(
+          `[aoi] refresh LIVE+COMPOSITE parcels=${pointers.length} roads=${this.loadedRoadIds.size} ` +
+            `composites=${this.loadedCompositeIds.size} liveRadius=${secondaryLiveRadiusM()}m ` +
+            `(no first-frame/script-warm — plaza ring via composite)`
         )
       }
       return
     }
 
     // --- Secondary visuals: main.composite (outer) + first-frame sample (inner).
-    // Entity-id dedupe — multi-parcel scene.json deploys and estates appear once (not per parcel).
+    await this.loadSecondaryComposites(entities, primaryId, base, pointerSet, gen, ctx)
+    if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
+
+    // Script-built neighbors (Angzaar etc.): no composite → first-frame worker sample in inner radius.
+    this.queueFirstFrameSecondaries(entities, primaryId, base, dclX, dclZ, pointerSet)
+
+    if (gen === this.refreshGen) {
+      let ffVis = 0
+      for (const g of this.firstFrameGroups.values()) if (g.visible) ffVis++
+      clientDebugLog.consoleOnly(
+        'info',
+        `[aoi] refresh parcels=${pointers.length} vacant=${vacantKeys.length} footprint=${secondaryFootprint.size} roads=${this.loadedRoadIds.size} composites=${this.loadedCompositeIds.size} firstFrame=${ffVis}/${this.firstFrameGroups.size} radius=${radiusM}m`
+      )
+    }
+  }
+
+  /**
+   * main.composite tertiary meshes for multi-parcel neighbors (plaza ring, estates).
+   * Entity-id dedupe; hide when a live secondary worker owns the same entity.
+   */
+  private async loadSecondaryComposites(
+    entities: ActiveSceneEntity[],
+    primaryId: string,
+    primaryBase: string,
+    pointerSet: Set<string>,
+    gen: number,
+    ctx: NonNullable<typeof this.ctx>
+  ): Promise<void> {
     // Never re-load the primary entity as a secondary (full footprint already in primaryParcelSet).
     const compositeCandidates = entities.filter((e) => {
       if (primaryId && e.id === primaryId) return false
@@ -433,21 +462,25 @@ export class AoiVisualLayer {
       }
     }
 
-    // Prefer smaller scenes that intersect AOI (plaza buildings before mega-estates).
+    // Prefer multi-parcel ring owners first (CBD plaza around nested hole), then denser hits.
     const ranked = [...compositeCandidates].sort((a, b) => {
       const aHit = (a.pointers.length ? a.pointers : a.parcels).filter((p) => pointerSet.has(p)).length
       const bHit = (b.pointers.length ? b.pointers : b.parcels).filter((p) => pointerSet.has(p)).length
       if (bHit !== aHit) return bHit - aHit
       const aParcels = a.parcels.length || a.pointers.length
       const bParcels = b.parcels.length || b.pointers.length
-      return aParcels - bParcels
+      // Larger multi-parcel first among equal hits — plaza ring before 1×1 props.
+      return bParcels - aParcels
     })
 
     // CBD density: loading 6×60 GLB clones per refresh freezes main. Trickle 2.
+    // Prefer larger maxGltfs for multi-parcel ring so plaza isn't a hollow shell.
     const toLoad = ranked.filter((c) => !this.loadedCompositeIds.has(c.id)).slice(0, 2)
     for (const ent of toLoad) {
       const comp = findCompositeFile(ent.content)
       if (!comp) continue
+      const parcels = ent.parcels.length || ent.pointers.length
+      const maxGltfs = parcels >= 16 ? 80 : 40
       try {
         const group = await buildCompositeVisualGroup({
           cache: ctx.cache,
@@ -455,8 +488,8 @@ export class AoiVisualLayer {
           content: ent.content,
           compositeHash: comp.hash,
           neighborBase: ent.base,
-          primaryBase: base,
-          maxGltfs: 40
+          primaryBase,
+          maxGltfs
         })
         if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) {
           group.clear()
@@ -468,25 +501,13 @@ export class AoiVisualLayer {
         group.visible = !this.liveSecondaryIds.has(ent.id)
         this.compositeRoot.add(group)
         this.loadedCompositeIds.add(ent.id)
-        clientDebugLog.consoleOnly(
-          'info',
-          `[aoi] secondary composite entity=${ent.id.slice(0, 16)}… “${ent.title || ent.base}” gltfs≈${group.children.length}`
+        console.info(
+          `[aoi] secondary composite entity=${ent.id.slice(0, 16)}… “${ent.title || ent.base}” ` +
+            `parcels=${parcels} gltfs≈${group.children.length}`
         )
       } catch (err) {
         console.warn('[aoi] secondary composite failed', ent.id, err)
       }
-    }
-
-    // Script-built neighbors (Angzaar etc.): no composite → first-frame worker sample in inner radius.
-    this.queueFirstFrameSecondaries(entities, primaryId, base, dclX, dclZ, pointerSet)
-
-    if (gen === this.refreshGen) {
-      let ffVis = 0
-      for (const g of this.firstFrameGroups.values()) if (g.visible) ffVis++
-      clientDebugLog.consoleOnly(
-        'info',
-        `[aoi] refresh parcels=${pointers.length} vacant=${vacantKeys.length} footprint=${secondaryFootprint.size} roads=${this.loadedRoadIds.size} composites=${this.loadedCompositeIds.size} firstFrame=${ffVis}/${this.firstFrameGroups.size} radius=${radiusM}m`
-      )
     }
   }
 
@@ -533,6 +554,7 @@ export class AoiVisualLayer {
       resolveX: number
       resolveY: number
       distM: number
+      parcelCount: number
     }> = []
 
     for (const ent of ranked) {
@@ -540,13 +562,15 @@ export class AoiVisualLayer {
       if (dist > liveRadiusM) continue
       try {
         const baseCoord = parseParcelKey(ent.base)
+        const parcelCount = ent.parcels.length || ent.pointers.length || 1
         liveCandidates.push({
           entityId: ent.id,
           title: ent.title || ent.base,
           base: ent.base,
           resolveX: baseCoord.x,
           resolveY: baseCoord.y,
-          distM: dist
+          distM: dist,
+          parcelCount
         })
       } catch {
         /* skip */
@@ -554,11 +578,13 @@ export class AoiVisualLayer {
     }
     this.ctx?.onSecondaryCandidates?.(liveCandidates)
     if (liveCandidates.length) {
-      clientDebugLog.consoleOnly(
-        'info',
+      console.info(
         `[aoi] live-secondary candidates n=${liveCandidates.length} nearest=${liveCandidates
           .slice(0, 3)
-          .map((c) => `“${c.title}”@${c.base}(${c.distM.toFixed(0)}m)`)
+          .map(
+            (c) =>
+              `“${c.title}”@${c.base}(${c.distM.toFixed(0)}m,p=${c.parcelCount})`
+          )
           .join(' · ')}`
       )
     }
@@ -618,6 +644,7 @@ export class AoiVisualLayer {
       resolveX: number
       resolveY: number
       distM: number
+      parcelCount: number
     }> = []
     // Warm band = user Scene Distance (live eligibility + first-frame samples).
     const warmRadiusM = renderQuality.getSceneLoadRadiusM()
@@ -627,13 +654,15 @@ export class AoiVisualLayer {
       if (warmRadiusM <= 0 || dist > warmRadiusM) continue
       try {
         const baseCoord = parseParcelKey(ent.base)
+        const parcelCount = ent.parcels.length || ent.pointers.length || 1
         liveCandidates.push({
           entityId: ent.id,
           title: ent.title || ent.base,
           base: ent.base,
           resolveX: baseCoord.x,
           resolveY: baseCoord.y,
-          distM: dist
+          distM: dist,
+          parcelCount
         })
       } catch {
         /* skip */

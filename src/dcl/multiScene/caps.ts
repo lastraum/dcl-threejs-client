@@ -2,8 +2,9 @@ import type { PerformanceTier } from '../../shim/types'
 import { renderQuality } from '../../rendering/RenderQualitySettings'
 
 /**
- * TEMP (AOI load test on feat/aoi-focus-owner): live secondaries only, hard cap 3.
- * No tier scaling — keeps CBD from booting 6–9 full workers.
+ * TEMP (AOI load test on feat/aoi-focus-owner): hard-cap live secondary *workers*.
+ * Composite tertiary meshes still load for multi-parcel ring plazas (CBD hole).
+ * Skip script-warm + first-frame sample thrash only.
  */
 const AOI_LIVE_SECONDARIES_ONLY = true
 const AOI_LIVE_SECONDARY_HARD_CAP = 3
@@ -36,10 +37,21 @@ export function secondaryLiveRadiusM(): number {
   return Math.min(warm, SECONDARY_LIVE_MAX_RADIUS_M)
 }
 
-/** When true, skip script-warm / tertiary; only live secondary workers. */
+/**
+ * When true: skip script-warm + first-frame sample; keep composite tertiary for
+ * multi-parcel neighbors (plaza ring around nested hole scenes). Live workers still
+ * hard-capped. Full dual-worker plaza+nested thrash is what crashed CBD promotes.
+ */
 export function aoiLiveSecondariesOnly(): boolean {
   return AOI_LIVE_SECONDARIES_ONLY
 }
+
+/**
+ * Auto-boot live workers only for modest neighbors (nested hole scenes, buildings).
+ * Plaza-scale multi-parcel estates stay as composite meshes unless demoted sticky /
+ * under-feet priority. Dual full plaza workers freeze the tab.
+ */
+export const SECONDARY_LIVE_AUTO_MAX_PARCELS = 16
 
 /** Only one secondary full boot at a time — parallel 2MB workers thrash CBD promotes. */
 export const SECONDARY_LIVE_BOOT_CONCURRENCY = 1

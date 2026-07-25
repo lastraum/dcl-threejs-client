@@ -7,6 +7,7 @@ import type { SceneScriptSystem } from '../../core/systems/SceneScriptSystem'
 import { resolveSceneFromRoute } from '../content/resolveScene'
 import type { ResolvedScene } from '../content/types'
 import {
+  SECONDARY_LIVE_AUTO_MAX_PARCELS,
   SECONDARY_LIVE_BOOT_CONCURRENCY,
   secondaryLiveCap,
   secondaryLiveRadiusM,
@@ -142,7 +143,8 @@ export class SecondaryLiveManager {
 
   /**
    * Keep outgoing primary warm as a secondary so walking back can resume without reload.
-   * Large multi-parcel scenes are disposed instead (sticky dual-resident kills CBD).
+   * Large multi-parcel scenes are disposed instead (sticky dual-resident kills CBD) —
+   * plaza ring stays visible via AOI composite tertiary.
    * Returns phys entity ids that used primary (native) ids — World must invalidate them.
    */
   async adoptDemotedPrimary(
@@ -162,6 +164,23 @@ export class SecondaryLiveManager {
     }
 
     const id = scene.entityId
+    const parcelCount = scene.parcels?.length || 1
+
+    // Plaza-scale dual full workers thrash/crash on nested-hole promote. Drop the
+    // heavy demoted primary; composite tertiary re-draws the ring after handoff.
+    if (parcelCount > SECONDARY_LIVE_AUTO_MAX_PARCELS) {
+      const primaryPhysIds = system.getAllPhysicsColliderDescs().map((d) => d.entity)
+      console.info(
+        `[multi-scene] demote dispose large “${scene.title}” parcels=${parcelCount} ` +
+          `(composite tertiary keeps ring; dual live thrash)`
+      )
+      try {
+        system.dispose()
+      } catch {
+        /* ignore */
+      }
+      return { entityId: id, primaryPhysIds }
+    }
 
     // Already have this entity as secondary — keep existing, drop demoted system.
     if (this.slots.has(id)) {
@@ -348,10 +367,16 @@ export class SecondaryLiveManager {
     if (this.booting.size >= SECONDARY_LIVE_BOOT_CONCURRENCY) return
 
     // Prefer booting priority parcel first.
+    // Skip plaza-scale multi-parcel auto-boots (composite shows them; dual-worker thrash
+    // unloads CBD when nested hole scene promotes). Under-feet priority still boots.
     const bootOrder = [...inRange]
     for (const req of bootOrder) {
       if (this.slots.has(req.entityId) || this.booting.has(req.entityId)) continue
       if (this.slots.size + this.booting.size >= cap) break
+      const parcels = req.parcelCount ?? 1
+      if (parcels > SECONDARY_LIVE_AUTO_MAX_PARCELS && !coversPri(req)) {
+        continue
+      }
       void this.bootOne(req)
       break // only start one per reconcile
     }

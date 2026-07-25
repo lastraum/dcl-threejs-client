@@ -30,7 +30,7 @@ import {
   type PortableExperiencesPolicy
 } from '../dcl/multiScene/resolvePortableExperiences'
 import { renderQuality } from '../rendering/RenderQualitySettings'
-import { skipAoiNeighbors } from '../client/devFlags'
+import { skipAoiNeighbors, skipSceneAnimators } from '../client/devFlags'
 import type { PerformanceTier } from '../shim/types'
 import { LandscapeSystem } from './systems/LandscapeSystem'
 import { SceneScriptSystem } from './systems/SceneScriptSystem'
@@ -769,6 +769,9 @@ export class World {
       console.info(
         `[aoi] DISABLED (?noaoi) — primary only · base=${scene.baseParcel} parcels=${scene.parcels.length}`
       )
+    }
+    if (skipSceneAnimators()) {
+      console.info('[perf] ?noanim ACTIVE — scene AnimatorBridge bind/update skipped')
     }
 
     if (scene.mainEntry && scene.entityId) {

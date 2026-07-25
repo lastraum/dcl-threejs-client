@@ -43,3 +43,13 @@ export function skipAoiNeighbors(): boolean {
   if (!params) return false
   return params.has('noaoi') || params.has('skipaoi')
 }
+
+/**
+ * Skip scene GLTF Animator bind + mixer playback (clips frozen; nothing advances).
+ * PhysX / AOI / tweens unchanged. Perf isolation: `?noanim=1`
+ */
+export function skipSceneAnimators(): boolean {
+  const params = readSearchParams()
+  if (!params) return false
+  return params.has('noanim')
+}

@@ -75,7 +75,7 @@ import type { SceneHost } from '../../rendering/SceneHost'
 import type { PlayerMirrorIdentity } from '../../bridge/playerMirrorIdentity'
 import type { CommsRealmInfo } from '../../network/comms/types'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
-import { skipTheatreSceneScript } from '../../client/devFlags'
+import { skipSceneAnimators, skipTheatreSceneScript } from '../../client/devFlags'
 import { mirrorSceneBundle } from '../../dev/mirrorSceneBundle'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
 import type { InputHub } from '../../input/InputHub'
@@ -4711,7 +4711,10 @@ export class SceneScriptSystem {
     this.nftShapeBridge?.sync(this.view)
     this.nftShapeBridge?.update()
     this.avatarShapes?.update(delta)
-    this.animatorBridge?.update(delta, this.view)
+    // ?noanim — skip mixer sample (clips frozen; default auto-play never advances).
+    if (!skipSceneAnimators()) {
+      this.animatorBridge?.update(delta, this.view)
+    }
     this.particleBridge?.update(delta)
     this.avatarAttachBridge?.update(this.view)
     this.flushAvatarAttachTransforms()
@@ -4739,9 +4742,12 @@ export class SceneScriptSystem {
     this.bridgeDirty = false
     await this.avatarShapes?.sync(this.view)
     this.avatarEmoteBridge?.sync(this.view)
-    await this.animatorBridge?.sync(this.view)
-    // Same async frame as Animator open/close apply — sample mixers so doors aren't one frame late.
-    this.animatorBridge?.update(0, this.view)
+    // ?noanim — skip bind + sample so no GLTF clips start or advance.
+    if (!skipSceneAnimators()) {
+      await this.animatorBridge?.sync(this.view)
+      // Same async frame as Animator open/close apply — sample mixers so doors aren't one frame late.
+      this.animatorBridge?.update(0, this.view)
+    }
     await this.particleBridge?.sync(this.view)
   }
 

@@ -87,6 +87,7 @@ import {
 import { getSessionAssetCache } from '../../../rendering/AssetCache'
 import {
   guessWearableRarity,
+  parseCollectionsV2WearableUrn,
   sortWearablesByGroup,
   sortWearablesByRarity,
   wearableRarityBackground,
@@ -94,6 +95,13 @@ import {
   WEARABLE_RARITY_COLORS
 } from '../profile/wearableThumb'
 import { annotateItemsWithCollections } from './wearableCollections'
+import {
+  applyCreatorStore,
+  loadCollectionPreview,
+  loadOwnedMintNumbers,
+  persistCreatorStore,
+  rarityMaxSupply
+} from './backpackProvenance'
 import { exportDclAvatarToVrm } from '../../../avatar/exportDclAvatarVrm'
 import { identityFromAvatarProfile } from '../../../avatar/displayName'
 
@@ -159,6 +167,10 @@ export class BackpackView {
   private selectedCategory: WearableCategory | 'all' = 'all'
   private currentPage = 1
   private selectedItem: string | null = null
+  /** "assetUrn:tokenId" (lowercase) → marketplace issue number; null until fetched. */
+  private mintNumbers: Map<string, string> | null = null
+  /** Rarity tier filter (set from the detail-pane rarity chip); null = all rarities. */
+  private rarityFilter: string | null = null
   private wearableItems: BackpackWearableItem[] = []
   private equippedByCategory = new Map<WearableCategory, BackpackWearableItem>()
   /** Hidden category → the equipped category that hides it (ADR-239, pre-forceRender). */
@@ -248,6 +260,7 @@ export class BackpackView {
             <option value="creator">Sort: Creator</option>
           </select>
           <select class="backpack-view__sort backpack-view__group-filter" data-group-filter aria-label="Filter by collection or creator" hidden></select>
+          <button class="backpack-view__rarity-chip" data-rarity-chip type="button" hidden></button>
           <input class="backpack-view__search" type="text" placeholder="Search item" />
         </div>
       </div>
@@ -353,6 +366,7 @@ export class BackpackView {
                 <option value="creator">Creator</option>
               </select>
               <select class="backpack-view__mobile-inv-filter backpack-view__mobile-inv-filter--group" data-mobile-inv-group aria-label="Filter by collection or creator" hidden></select>
+              <button class="backpack-view__rarity-chip" data-rarity-chip type="button" hidden></button>
             </div>
             <div class="backpack-view__mobile-inv-grid backpack-view__grid" data-mobile-inv-grid></div>
             <div class="backpack-view__mobile-inv-pagination backpack-view__pagination" data-mobile-inv-pagination></div>
@@ -644,6 +658,10 @@ export class BackpackView {
     group?.addEventListener('change', () => {
       this.setGroupFilter(group.value || null)
     })
+    // Both toolbar chips (desktop + mobile drawer) clear the rarity filter.
+    for (const chip of this.root.querySelectorAll<HTMLButtonElement>('[data-rarity-chip]')) {
+      chip.addEventListener('click', () => this.setRarityFilter(null))
+    }
   }
 
   private wireExportVrm(): void {
@@ -739,6 +757,38 @@ export class BackpackView {
     if (this.activeSubTab === 'emotes') this.renderEmoteGrid()
   }
 
+  /** Rarity tier filter (detail-pane rarity chip toggles it; toolbar chip clears it). */
+  private setRarityFilter(rarity: string | null): void {
+    const next = rarity?.trim().toLowerCase() || null
+    if (next === this.rarityFilter) return
+    this.rarityFilter = next
+    this.currentPage = 1
+    this.emotePage = 1
+    this.syncRarityChips()
+    if (this.activeSubTab === 'wearables') this.renderGrid()
+    if (this.activeSubTab === 'emotes') this.renderEmoteGrid()
+  }
+
+  /** Toolbar "EPIC ✕" chips — visible while a rarity filter is active. */
+  private syncRarityChips(): void {
+    const hide = !this.rarityFilter || this.activeSubTab === 'vrm' || this.activeSubTab === 'osa'
+    for (const chip of this.qa<HTMLButtonElement>('[data-rarity-chip]')) {
+      chip.hidden = hide
+      if (hide || !this.rarityFilter) continue
+      chip.textContent = `${wearableRarityLabel(this.rarityFilter)} ✕`
+      chip.title = 'Clear rarity filter'
+      chip.style.color = WEARABLE_RARITY_COLORS[this.rarityFilter] ?? ''
+    }
+  }
+
+  /** Narrow to the active rarity tier, if any. */
+  private applyRarityFilter<T extends { urn: string; rarity: string }>(items: T[]): T[] {
+    if (!this.rarityFilter) return items
+    return items.filter(
+      (i) => (i.rarity?.trim().toLowerCase() || guessWearableRarity(i.urn)) === this.rarityFilter
+    )
+  }
+
   /** Apply the active sort to an already-filtered item list (name order is load order). */
   private sortItems<T extends { name: string; rarity: string } & GroupableItem>(items: T[]): T[] {
     if (this.sortMode === 'rarity') return sortWearablesByRarity(items)
@@ -764,12 +814,16 @@ export class BackpackView {
     category: WearableCategory | 'all' = this.selectedCategory
   ): BackpackWearableItem[] {
     return this.sortItems(
-      this.applyGroupFilter(filterBackpackWearables(this.wearableItems, category, this.searchQuery))
+      this.applyRarityFilter(
+        this.applyGroupFilter(filterBackpackWearables(this.wearableItems, category, this.searchQuery))
+      )
     )
   }
 
   private visibleEmotes(): BackpackEmoteItem[] {
-    return this.sortItems(this.applyGroupFilter(filterBackpackEmotes(this.emoteItems, this.searchQuery)))
+    return this.sortItems(
+      this.applyRarityFilter(this.applyGroupFilter(filterBackpackEmotes(this.emoteItems, this.searchQuery)))
+    )
   }
 
   /**
@@ -778,6 +832,7 @@ export class BackpackView {
    * category + search scope with per-group counts.
    */
   private syncGroupControls(): void {
+    this.syncRarityChips()
     const selects = this.qa<HTMLSelectElement>('[data-group-filter], [data-mobile-inv-group]')
     if (!selects.length) return
     const grouping = this.sortMode === 'collection' || this.sortMode === 'creator'
@@ -995,7 +1050,9 @@ export class BackpackView {
       )
       if (gen !== this.emotesLoadGen || this.disposed) return
       this.emoteItems = items.length ? items : baseEmoteCatalogAsItems()
+      applyCreatorStore(this.emoteItems)
       void this.annotateEmoteCollections(gen)
+      if (address) void this.loadMintNumbers(address)
       this.emotesError = null
     } catch (err) {
       if (gen !== this.emotesLoadGen || this.disposed) return
@@ -1111,9 +1168,12 @@ export class BackpackView {
     this.syncGroupControls()
     const catalog = this.visibleEmotes()
     if (!catalog.length) {
+      const emptyNote = this.rarityFilter
+        ? `No ${wearableRarityLabel(this.rarityFilter).toLowerCase()} emotes found`
+        : 'No emotes found'
       gridEl.innerHTML = `<p class="backpack-view__grid-status${
         this.emotesError ? ' backpack-view__grid-status--error' : ''
-      }">${this.escapeHtml(this.emotesError || 'No emotes found')}</p>`
+      }">${this.escapeHtml(this.emotesError || emptyNote)}</p>`
       return
     }
 
@@ -1232,8 +1292,12 @@ export class BackpackView {
             : `<div class="backpack-view__emote-detail-icon" aria-hidden="true">💃</div>`
         }
         <h3 class="backpack-view__detail-name">${this.escapeHtml(label)}</h3>
-        <span class="backpack-view__detail-category">${this.escapeHtml(slotHint)}</span>
-        <span class="backpack-view__detail-rarity" style="color:${rarityColor}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
+        <span class="backpack-view__detail-meta-row">
+          <span class="backpack-view__detail-category">${this.escapeHtml(slotHint)}</span>
+          <span class="backpack-view__detail-rarity" data-detail-filter="rarity" role="button" title="Show only this rarity" style="color:${rarityColor}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
+          ${item ? this.mintLineHtml({ urn: item.urn, rarity }) : ''}
+        </span>
+        ${item ? this.collectionLineHtml(item, 'backpack-view__detail-collection') : ''}
         <p class="backpack-view__detail-urn">${this.escapeHtml(urn)}</p>
         <div class="backpack-view__wearable-actions">
           <button type="button" class="backpack-view__wearable-equip-btn" data-action="play-emote">
@@ -1253,6 +1317,9 @@ export class BackpackView {
       if (equipped) this.unequipEmote(emoteId)
       else this.equipEmote(emoteId, targetIndex)
     })
+    this.hydrateCreatorFace(detailEl)
+    this.hydrateCollectionThumb(detailEl)
+    this.wireDetailMetaFilters(detailEl, item ?? { rarity })
   }
 
   private equipEmote(emoteId: string, slotIndex: number): void {
@@ -1537,8 +1604,12 @@ export class BackpackView {
         items = mergeEquippedIntoInventory(items, profile.wearables)
       }
       if (gen !== this.wearablesLoadGen || this.disposed) return
+      // Instant provenance from the persisted URN→creator store; the live
+      // annotation pass below reconciles and writes back any changes.
+      applyCreatorStore(items)
       this.wearableItems = items
       void this.annotateWearableCollections(gen)
+      if (address) void this.loadMintNumbers(address)
       this.wearablesError = items.length
         ? null
         : address
@@ -1568,7 +1639,9 @@ export class BackpackView {
         this.wearableItems,
         this.session.getLambdasUrl()
       )
-      if (!changed || gen !== this.wearablesLoadGen || this.disposed) return
+      if (gen !== this.wearablesLoadGen || this.disposed) return
+      if (changed) persistCreatorStore(this.wearableItems)
+      if (!changed) return
       if (this.activeSubTab === 'wearables') {
         this.renderGrid()
         const selected = this.selectedItem
@@ -1581,14 +1654,42 @@ export class BackpackView {
     }
   }
 
+  /** Marketplace issue numbers for the wallet — repaints the open detail on arrival. */
+  private async loadMintNumbers(address: string): Promise<void> {
+    if (this.mintNumbers) return
+    try {
+      const map = await loadOwnedMintNumbers(address)
+      if (this.disposed) return
+      this.mintNumbers = map
+      if (this.activeSubTab === 'wearables' && this.selectedItem) {
+        const selected = this.wearableItems.find((i) =>
+          this.isSameWearableUrn(i.urn, this.selectedItem!)
+        )
+        if (selected) {
+          this.renderWearableDetail(selected)
+          this.renderMobileInventoryDetail(selected)
+        }
+      } else if (this.activeSubTab === 'emotes' && this.selectedEmoteId) {
+        this.renderEmoteDetail(this.selectedEmoteId)
+      }
+    } catch (err) {
+      console.warn('[backpack] mint numbers unavailable', err)
+    }
+  }
+
   private async annotateEmoteCollections(gen: number): Promise<void> {
     try {
       const changed = await annotateItemsWithCollections(
         this.emoteItems,
         this.session.getLambdasUrl()
       )
-      if (!changed || gen !== this.emotesLoadGen || this.disposed) return
-      if (this.activeSubTab === 'emotes') this.renderEmoteGrid()
+      if (gen !== this.emotesLoadGen || this.disposed) return
+      if (!changed) return
+      persistCreatorStore(this.emoteItems)
+      if (this.activeSubTab === 'emotes') {
+        this.renderEmoteGrid()
+        if (this.selectedEmoteId) this.renderEmoteDetail(this.selectedEmoteId)
+      }
     } catch (err) {
       console.warn('[backpack] emote collection info failed', err)
     }
@@ -1663,7 +1764,10 @@ export class BackpackView {
     const pageItems = items.slice(start, start + ITEMS_PER_PAGE)
 
     if (!pageItems.length) {
-      paintStatus(`<p class="backpack-view__grid-status">No wearables in this category</p>`)
+      const rarityNote = this.rarityFilter
+        ? `No ${wearableRarityLabel(this.rarityFilter).toLowerCase()} wearables here`
+        : 'No wearables in this category'
+      paintStatus(`<p class="backpack-view__grid-status">${this.escapeHtml(rarityNote)}</p>`)
       return
     }
 
@@ -1789,8 +1893,11 @@ export class BackpackView {
           <img src="${this.escapeHtml(item.thumbnailUrl)}" alt="" />
         </div>
         <h4 class="backpack-view__mobile-inv-detail-name">${this.escapeHtml(item.name)}</h4>
-        <span class="backpack-view__mobile-inv-detail-category">${this.escapeHtml(category)}</span>
-        <span class="backpack-view__mobile-inv-detail-rarity" style="color:${color}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
+        <span class="backpack-view__detail-meta-row">
+          <span class="backpack-view__mobile-inv-detail-category" data-detail-filter="category" role="button" title="Show only this category">${this.categoryIconHtml(item.category)}<span>${this.escapeHtml(category)}</span></span>
+          <span class="backpack-view__mobile-inv-detail-rarity" data-detail-filter="rarity" role="button" title="Show only this rarity" style="color:${color}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
+          ${this.mintLineHtml({ urn: item.urn, rarity })}
+        </span>
         ${this.collectionLineHtml(item, 'backpack-view__detail-collection')}
         ${this.descriptionHtml(item)}
         ${this.hidesLineHtml(item)}
@@ -1814,6 +1921,8 @@ export class BackpackView {
 
     this.appendColorPicker(el.querySelector('.backpack-view__mobile-inv-detail-card'), item, profile)
     this.hydrateCreatorFace(el)
+    this.hydrateCollectionThumb(el)
+    this.wireDetailMetaFilters(el, item, { mobile: true })
   }
 
   private renderVrmGrid(skipThumbGen = false): void {
@@ -2317,6 +2426,12 @@ export class BackpackView {
     return CATEGORIES.find((c) => c.id === category)?.label ?? category.replace(/_/g, ' ')
   }
 
+  /** Leading icon for the detail category pill — empty for unknown categories. */
+  private categoryIconHtml(category: BackpackWearableItem['category']): string {
+    if (category === 'unknown') return ''
+    return `<span class="backpack-view__detail-category-icon" aria-hidden="true">${backpackCategoryIcon(category)}</span>`
+  }
+
   /** False only when the item declares representations and none match the profile's shape. */
   private itemFitsBodyShape(item: BackpackWearableItem): boolean {
     // Both body-shape tiles are always selectable — they switch shape, not fill a slot.
@@ -2342,11 +2457,98 @@ export class BackpackView {
     const faceSlot = creatorAddr
       ? `<span class="backpack-view__creator-face" data-creator-face="${this.escapeHtml(creatorAddr)}" aria-hidden="true"></span>`
       : ''
+    // Collection montage — only collections-v2 contracts have a marketplace item list.
+    const urn = (item as { urn?: string }).urn
+    const contract = urn ? parseCollectionsV2WearableUrn(urn)?.contract : undefined
+    const montageSlot =
+      contract && item.collectionName
+        ? `<span class="backpack-view__collection-thumb" data-collection-thumb="${this.escapeHtml(contract)}" aria-hidden="true"></span>`
+        : ''
     const parts = [
-      item.collectionName ? this.escapeHtml(item.collectionName) : null,
-      item.creatorName ? `by ${faceSlot}${this.escapeHtml(item.creatorName)}` : null
+      item.collectionName
+        ? `<span class="backpack-view__detail-meta-link" data-detail-filter="collection" role="button" title="Group items by collection">${montageSlot}${this.escapeHtml(item.collectionName)}</span>`
+        : null,
+      item.creatorName
+        ? `<span class="backpack-view__detail-meta-sep">by</span><span class="backpack-view__detail-meta-link" data-detail-filter="creator" role="button" title="Group items by creator">${faceSlot}${this.escapeHtml(item.creatorName)}</span>`
+        : null
     ].filter(Boolean)
-    return `<span class="${className}">${parts.join(' · ')}</span>`
+    return `<span class="${className}">${parts.join(' ')}</span>`
+  }
+
+  /** Detail-pane meta chips → grid sort/filter shortcuts (category/rarity/collection/creator). */
+  private wireDetailMetaFilters(
+    scope: ParentNode | null,
+    item: {
+      category?: BackpackWearableItem['category']
+      rarity?: string
+      collectionName?: string
+      creatorName?: string
+    },
+    opts: { mobile?: boolean } = {}
+  ): void {
+    if (!scope) return
+    const apply = (fn: () => void): void => {
+      fn()
+      // On mobile the grid sits behind the detail drilldown — pop back to show results.
+      if (opts.mobile) this.hideMobileInventoryDetail()
+    }
+    // Each chip is a JUMP — "show everything in my backpack with this attribute" —
+    // not an intersection with whatever filters happen to be active. Search stays.
+    scope.querySelector('[data-detail-filter="category"]')?.addEventListener('click', () => {
+      const cat = item.category
+      if (!cat || cat === 'unknown') return
+      apply(() => {
+        this.setRarityFilter(null)
+        this.setGroupFilter(null)
+        this.filterToCategoryKeepSelection(cat)
+      })
+    })
+    scope.querySelector('[data-detail-filter="rarity"]')?.addEventListener('click', () => {
+      const rarity = item.rarity?.trim().toLowerCase()
+      if (!rarity) return
+      apply(() => {
+        this.setGroupFilter(null)
+        this.filterToCategoryKeepSelection('all')
+        // Toggle: clicking the active tier again clears the filter.
+        this.setRarityFilter(this.rarityFilter === rarity ? null : rarity)
+      })
+    })
+    scope.querySelector('[data-detail-filter="collection"]')?.addEventListener('click', () => {
+      apply(() => {
+        this.setRarityFilter(null)
+        this.filterToCategoryKeepSelection('all')
+        this.setSortMode('collection')
+        this.setGroupFilter(item.collectionName ?? null)
+      })
+    })
+    scope.querySelector('[data-detail-filter="creator"]')?.addEventListener('click', () => {
+      apply(() => {
+        this.setRarityFilter(null)
+        this.filterToCategoryKeepSelection('all')
+        this.setSortMode('creator')
+        this.setGroupFilter(item.creatorName ?? null)
+      })
+    })
+  }
+
+  /** Category filter from the detail pane — unlike selectCategory, keeps the open detail. */
+  private filterToCategoryKeepSelection(cat: WearableCategory | 'all'): void {
+    if (this.selectedCategory === cat) return
+    this.selectedCategory = cat
+    this.currentPage = 1
+    this.syncMobileInventoryToolbar()
+    this.syncDesktopCategoryActive()
+    this.renderGrid()
+    this.updateCategoryEquipped()
+  }
+
+  /** "#42 / 100" — owned issue number over the rarity's fixed max supply. */
+  private mintLineHtml(item: { urn: string; rarity: string }): string {
+    const max = rarityMaxSupply(item.rarity)
+    if (!max) return ''
+    const issued = this.mintNumbers?.get(item.urn.trim().toLowerCase())
+    if (!issued) return ''
+    return `<span class="backpack-view__detail-mint">#${this.escapeHtml(issued)} / ${max}</span>`
   }
 
   /** Fill creator pfp slots in a freshly rendered detail pane (async, globally cached). */
@@ -2360,6 +2562,27 @@ export class BackpackView {
       slot.innerHTML = `<img src="${this.escapeHtml(url)}" alt="" loading="lazy" />`
       slot.classList.add('is-loaded')
     })
+  }
+
+  /** Fill the collection montage slot — 2×2 of the collection's item thumbs on rarity fills. */
+  private hydrateCollectionThumb(scope: ParentNode | null): void {
+    const slot = scope?.querySelector('[data-collection-thumb]') as HTMLElement | null
+    if (!slot) return
+    const contract = slot.getAttribute('data-collection-thumb') ?? ''
+    if (!/^0x[a-f0-9]{40}$/.test(contract)) return
+    void loadCollectionPreview(contract)
+      .then((tiles) => {
+        if (this.disposed || !tiles.length || !slot.isConnected) return
+        slot.innerHTML = tiles
+          .slice(0, 4)
+          .map(
+            (tile) =>
+              `<span style="background:${wearableRarityBackground(tile.rarity)}"><img src="${this.escapeHtml(tile.thumbnailUrl)}" alt="" loading="lazy" /></span>`
+          )
+          .join('')
+        slot.classList.add('is-loaded')
+      })
+      .catch(() => {})
   }
 
   /** Creator-authored description paragraph; empty when metadata carries none. */
@@ -2414,8 +2637,11 @@ export class BackpackView {
           <img class="backpack-view__detail-img" src="${this.escapeHtml(item.thumbnailUrl)}" alt="" />
         </div>
         <h3 class="backpack-view__detail-name">${this.escapeHtml(item.name)}</h3>
-        <span class="backpack-view__detail-category">${this.escapeHtml(category)}</span>
-        <span class="backpack-view__detail-rarity" style="color:${color}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
+        <span class="backpack-view__detail-meta-row">
+          <span class="backpack-view__detail-category" data-detail-filter="category" role="button" title="Show only this category">${this.categoryIconHtml(item.category)}<span>${this.escapeHtml(category)}</span></span>
+          <span class="backpack-view__detail-rarity" data-detail-filter="rarity" role="button" title="Show only this rarity" style="color:${color}">${this.escapeHtml(wearableRarityLabel(rarity))}</span>
+          ${this.mintLineHtml({ urn: item.urn, rarity })}
+        </span>
         ${this.collectionLineHtml(item, 'backpack-view__detail-collection')}
         ${this.descriptionHtml(item)}
         ${this.hidesLineHtml(item)}
@@ -2442,6 +2668,8 @@ export class BackpackView {
 
     this.appendColorPicker(detailEl.querySelector('.backpack-view__detail-card'), item, profile)
     this.hydrateCreatorFace(detailEl)
+    this.hydrateCollectionThumb(detailEl)
+    this.wireDetailMetaFilters(detailEl, item)
   }
 
   /**

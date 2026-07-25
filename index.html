@@ -7263,6 +7263,9 @@
           word-break: break-word;
         }
         .backpack-view__mobile-inv-detail-category {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
           font-size: 11px;
           font-weight: 800;
           letter-spacing: 0.08em;
@@ -7921,8 +7924,9 @@
         word-break: break-word;
       }
       .backpack-view__detail-category {
-        display: inline-block;
-        margin-top: -4px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
         padding: 4px 12px;
         border-radius: 999px;
         background: rgba(255, 255, 255, 0.1);
@@ -7933,16 +7937,108 @@
         text-transform: uppercase;
         color: rgba(255, 255, 255, 0.78);
       }
+      /* Category glyph inside the pill — shared by desktop + mobile detail. */
+      .backpack-view__detail-category-icon {
+        display: inline-flex;
+      }
+      .backpack-view__detail-category-icon svg {
+        width: 14px;
+        height: 14px;
+        display: block;
+      }
       .backpack-view__detail-rarity {
         font-size: 14px;
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.08em;
       }
+      /* "[icon] UPPER BODY  LEGENDARY  #42 / 100" — category + rarity + mint on one line. */
+      .backpack-view__detail-meta-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .backpack-view__detail-mint {
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        color: rgba(255, 255, 255, 0.65);
+      }
       .backpack-view__detail-collection {
-        font-size: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 7px;
+        font-size: 13px;
         color: rgba(255, 255, 255, 0.62);
         word-break: break-word;
+      }
+      /* Clickable meta chips — category / rarity / collection / creator sort shortcuts. */
+      [data-detail-filter] {
+        cursor: pointer;
+      }
+      [data-detail-filter]:hover {
+        filter: brightness(1.2);
+      }
+      .backpack-view__detail-meta-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .backpack-view__detail-meta-link:hover {
+        color: rgba(255, 255, 255, 0.92);
+        text-decoration: underline;
+      }
+      .backpack-view__detail-meta-sep {
+        opacity: 0.75;
+      }
+      /* Toolbar "EPIC ✕" chip — active rarity filter, click to clear. */
+      .backpack-view__rarity-chip {
+        padding: 6px 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.25);
+        background: rgba(255, 255, 255, 0.08);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+      .backpack-view__rarity-chip:hover {
+        background: rgba(255, 255, 255, 0.16);
+      }
+      /* Collection montage — 2×2 item thumbs on rarity fills, square crop.
+         Hidden until the marketplace item list resolves. */
+      .backpack-view__collection-thumb {
+        display: none;
+      }
+      .backpack-view__collection-thumb.is-loaded {
+        display: inline-grid;
+        grid-template-columns: 1fr 1fr;
+        grid-auto-rows: 1fr;
+        width: 40px;
+        height: 40px;
+        border-radius: 6px;
+        overflow: hidden;
+      }
+      /* 1-item collections fill the whole circle; 2-item halves; 3–4 quadrants. */
+      .backpack-view__collection-thumb.is-loaded > span:only-child {
+        grid-column: span 2;
+      }
+      .backpack-view__collection-thumb.is-loaded > span {
+        display: block;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+      .backpack-view__collection-thumb.is-loaded img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
       }
       /* Creator pfp — hidden until the lambdas snapshot resolves. */
       .backpack-view__creator-face {
@@ -7950,12 +8046,10 @@
       }
       .backpack-view__creator-face.is-loaded {
         display: inline-block;
-        width: 16px;
-        height: 16px;
+        width: 32px;
+        height: 32px;
         border-radius: 50%;
         overflow: hidden;
-        vertical-align: -3px;
-        margin-right: 5px;
       }
       .backpack-view__creator-face img {
         width: 100%;

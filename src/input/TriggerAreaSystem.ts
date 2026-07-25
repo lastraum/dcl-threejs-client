@@ -177,7 +177,7 @@ export class TriggerAreaSystem {
 
   /**
    * CCT feet in DCL scene space — authoritative for volume tests.
-   * PE Transform is chest (+0.88); physics root is capsule feet (Three display → DCL).
+   * PE Transform is also feet; physics root is capsule feet (Three display → DCL).
    */
   private sampleFeetDcl(): { x: number; y: number; z: number } | null {
     const feetThree = this.deps?.getPlayerWorldPosition() ?? null
@@ -239,7 +239,7 @@ export class TriggerAreaSystem {
     this.lastFeetDiagAt = now
     const pe = playerTransform.position
     const fx = feetDcl?.x ?? pe.x
-    const fy = feetDcl?.y ?? pe.y - 0.88
+    const fy = feetDcl?.y ?? pe.y
     const fz = feetDcl?.z ?? pe.z
     let nearest = 'none'
     let nearestD = Number.POSITIVE_INFINITY

@@ -3,8 +3,12 @@ import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import type { CommsService } from '../network/CommsService'
 import { ChatPeerProfiles, type PeerChatProfile } from './ChatPeerProfiles'
 import {
+  acceptFriendshipRequestSigned,
   buildFriendshipRelationMap,
   fetchFriendshipSnapshotSigned,
+  rejectFriendshipRequestSigned,
+  removeFriendshipSigned,
+  requestFriendshipSigned,
   resolveFriendshipRelation,
   type FriendshipRelation,
   type FriendshipSnapshot
@@ -20,9 +24,17 @@ import {
 } from './dcmChatMedia'
 import { prepareChatImageFile } from './prepareChatImage'
 import { isSceneChatEmoteWireText } from './dclRfc4Chat'
-import { PrivateMessagesService } from './PrivateMessagesService'
+import { getPrivateMessagesService } from './PrivateMessagesService'
 import type { CommunityFollowController } from './CommunityFollowController'
 import { tryParseFollowWire, type FollowWireMsg } from './communityFollowWire'
+import {
+  loadDmLocalThreads,
+  removeDmLocalThread,
+  saveAllDmLocalThreads,
+  storedLinesToChat,
+  upsertDmLocalThread
+} from './dmLocalStore'
+import { consumeFriendConnectivityUpdates } from './socialServiceV2'
 import {
   isChatImageLine,
   type ChatChannelChoice,
@@ -42,6 +54,7 @@ export type SocialChatEvent = {
 export type DmPeerRow = {
   address: string
   displayName: string
+  faceUrl?: string | null
 }
 
 type SocialInitOptions = {
@@ -118,8 +131,22 @@ export class SocialService {
   private readonly peerProfiles = new ChatPeerProfiles()
   private authIdentity: AuthIdentity | null = null
   private friendshipSnapshot: FriendshipSnapshot | null = null
+  private friendshipSnapshotAt = 0
   private friendshipRelationByAddress = new Map<string, FriendshipRelation>()
   private friendshipLoad: Promise<void> | null = null
+  /** Open 1:1 DM threads (friends panel / profile) — address → display name. */
+  private readonly openDmPeers = new Map<string, string>()
+  /**
+   * Global friend presence from Social Service
+   * `SubscribeToFriendConnectivityUpdates` (ONLINE / AWAY / OFFLINE).
+   */
+  private readonly friendConnectivityOnline = new Set<string>()
+  /** Peer address → online-until (ms). Recent DM traffic keeps the rail green for a few minutes. */
+  private readonly recentDmOnlineUntil = new Map<string, number>()
+  private connectivityAbort: AbortController | null = null
+  private connectivityRetryTimer: ReturnType<typeof setTimeout> | null = null
+  /** Debounce localStorage pin/history writes. */
+  private dmPersistTimer: ReturnType<typeof setTimeout> | null = null
   private ready = false
   private readonly seenChatKeys = new Map<string, number>()
   private readonly seenMediaKeys = new Map<string, number>()
@@ -128,7 +155,9 @@ export class SocialService {
   private channelThreadOpen = false
   private readonly mediaAssembler = new DcmInboundAssembler()
   private readonly mediaObjectUrls = new Set<string>()
-  private readonly privateMessages = new PrivateMessagesService()
+  /** Shared process-wide private-messages LiveKit room (World + 2D shell). */
+  private readonly privateMessages = getPrivateMessagesService()
+  private privateMessagesRetained = false
   private unsubPrivateMessages: (() => void) | null = null
   private unsubCommunityMessages: (() => void) | null = null
   private unsubCommunityFollowData: (() => void) | null = null
@@ -186,7 +215,9 @@ export class SocialService {
   /** 2D shell bootstrap — communities + profile without scene comms. */
   async initShell(options: SocialShellInitOptions): Promise<void> {
     this.authIdentity = options.identity
-    this.localAddress = options.address.toLowerCase()
+    const nextAddr = options.address.toLowerCase()
+    const walletChanged = this.localAddress !== nextAddr
+    this.localAddress = nextAddr
     this.displayName = options.displayName?.trim() || 'You'
     this.sceneTabs = []
     this.connectedSceneKey = null
@@ -194,16 +225,18 @@ export class SocialService {
     this.comms = null
     this.channel = { kind: 'messages' }
     this.peerProfiles.setPeerUrl(options.contentUrl ?? 'https://peer.decentraland.org')
+    if (walletChanged || this.openDmPeers.size === 0) this.hydrateDmLocalHistory()
     // Guest wallets are real signed identities (stable browser guest key) — they can join
     // public communities + use ADR-208 private-messages (community group chat SFU).
     // Friendships / social-graph APIs still skip for guests (wallet-oriented).
     await this.loadMemberCommunities(options.identity)
     void this.ensurePrivateMessagesConnected()
     if (!options.isGuest) {
-      void this.ensureFriendshipSnapshot()
+      void this.ensureFriendshipSnapshot().then(() => this.startFriendConnectivitySubscription())
     } else {
       this.friendshipSnapshot = null
       this.friendshipRelationByAddress.clear()
+      this.stopFriendConnectivitySubscription()
     }
     this.ready = true
     this.notifyChannelChange()
@@ -246,11 +279,22 @@ export class SocialService {
     // Keep guest AuthIdentity — needed for community membership + private-messages SFU.
     // (Previously nulled for guests, which hid all community rails and blocked chat.)
     this.authIdentity = options.identity
-    this.localAddress = options.address?.toLowerCase() ?? null
+    const nextAddr = options.address?.toLowerCase() ?? null
+    // Keep friendship graph across scene loads for the same wallet (panel open must not re-RPC).
+    if (this.localAddress !== nextAddr) {
+      this.friendshipSnapshot = null
+      this.friendshipSnapshotAt = 0
+      this.friendshipRelationByAddress.clear()
+      this.friendshipLoad = null
+      this.localAddress = nextAddr
+      // Wallet switch / first bind — restore pinned DMs + last-N text history.
+      this.hydrateDmLocalHistory()
+    } else {
+      this.localAddress = nextAddr
+      // Soft re-init after dispose cleared memory — re-hydrate if rail is empty.
+      if (this.openDmPeers.size === 0) this.hydrateDmLocalHistory()
+    }
     this.displayName = options.address ? 'You' : 'Guest'
-    this.friendshipSnapshot = null
-    this.friendshipRelationByAddress.clear()
-    this.friendshipLoad = null
     this.upsertSceneTab(options.sceneTab)
     this.channel = { kind: 'scene', sceneKey: options.sceneTab.key, label: options.sceneTab.label }
     this.peerProfiles.setPeerUrl(options.contentUrl)
@@ -266,7 +310,9 @@ export class SocialService {
       // Warm PM room so community chat + Follow/tour control arrive without opening a thread first.
       void this.ensurePrivateMessagesConnected()
       if (!options.isGuest) {
-        void this.ensureFriendshipSnapshot()
+        void this.ensureFriendshipSnapshot().then(() => this.startFriendConnectivitySubscription())
+      } else {
+        this.stopFriendConnectivitySubscription()
       }
     }
 
@@ -323,29 +369,102 @@ export class SocialService {
       return 'Community chat'
     }
     if (this.channel.kind === 'dm') {
-      if (this.privateMessages.isConnected()) return 'Private message'
       if (this.privateMessages.isConnecting()) return 'Joining private chat…'
-      if (this.privateMessages.getLastError()) return 'Private chat offline'
-      return 'Direct message'
+      if (!this.privateMessages.isConnected()) {
+        if (this.privateMessages.getLastError()) return 'Private chat offline'
+        return 'Connecting private chat…'
+      }
+      const peer = this.channel.peerAddress.toLowerCase()
+      // Directed LiveKit DMs only deliver while the peer is in the private-messages room.
+      if (!this.privateMessages.hasPeerInRoom(peer)) {
+        return 'Private message · peer offline from chat'
+      }
+      return 'Private message'
     }
     return 'Pick a friend to message'
   }
 
-  /** Friends available for 1:1 DMs (ADR-208). */
+  /**
+   * Open 1:1 DM threads for chat rails (not every friend — that would be 200+ pills).
+   * Includes: explicitly opened DMs, threads with message history, current channel.
+   */
   getDmPeers(): DmPeerRow[] {
-    const out: DmPeerRow[] = []
-    for (const [address, relation] of this.friendshipRelationByAddress) {
-      if (relation !== 'friends') continue
-      if (this.localAddress && address === this.localAddress) continue
-      const profile = this.peerProfiles.get(address)
-      out.push({
-        address,
-        displayName: profile?.displayName?.trim() || `${address.slice(0, 6)}…${address.slice(-4)}`
-      })
-      void this.peerProfiles.ensurePeer(address)
+    const byAddr = new Map<string, string>()
+    const add = (address: string, displayName?: string) => {
+      const key = address.toLowerCase()
+      if (!/^0x[a-f0-9]{40}$/.test(key)) return
+      if (this.localAddress && key === this.localAddress) return
+      const profile = this.peerProfiles.get(key)
+      const name =
+        displayName?.trim() ||
+        profile?.displayName?.trim() ||
+        this.openDmPeers.get(key) ||
+        `${key.slice(0, 6)}…${key.slice(-4)}`
+      if (!byAddr.has(key) || (displayName && displayName.trim())) byAddr.set(key, name)
     }
+
+    for (const [addr, name] of this.openDmPeers) add(addr, name)
+    for (const key of this.messages.keys()) {
+      if (!key.startsWith('dm:')) continue
+      add(key.slice(3))
+    }
+    if (this.channel.kind === 'dm') {
+      add(this.channel.peerAddress, this.channel.displayName)
+    }
+    // Unread DM threads even if not explicitly opened this session.
+    for (const key of this.unreadCounts.keys()) {
+      if (!key.startsWith('dm:')) continue
+      add(key.slice(3))
+    }
+
+    const out: DmPeerRow[] = [...byAddr.entries()].map(([address, displayName]) => {
+      const faceUrl = this.peerProfiles.get(address)?.faceUrl ?? null
+      return { address, displayName, faceUrl }
+    })
     out.sort((a, b) => a.displayName.localeCompare(b.displayName))
     return out
+  }
+
+  /**
+   * Open a 1:1 private message channel (Friends chat icon / profile).
+   * Ensures the ADR-208 private-messages LiveKit room is connected for send.
+   */
+  async openDirectMessage(peerAddress: string, displayName?: string): Promise<boolean> {
+    const address = peerAddress.trim().toLowerCase()
+    if (!/^0x[a-f0-9]{40}$/.test(address)) return false
+    const name =
+      displayName?.trim() ||
+      this.peerProfiles.get(address)?.displayName?.trim() ||
+      `${address.slice(0, 6)}…${address.slice(-4)}`
+    this.openDmPeers.set(address, name)
+    this.channel = { kind: 'dm', peerAddress: address, displayName: name }
+    this.unreadCounts.delete(channelKey(this.channel))
+    this.pinDmLocal(address, name)
+    this.notifyChannelChange()
+    void this.peerProfiles.ensurePeer(address, { fast: true })
+    await this.ensurePrivateMessagesConnected()
+    return this.privateMessages.isConnected()
+  }
+
+  /**
+   * Remove a 1:1 DM from the chat rail (Explorer-style dismiss).
+   * Drops localStorage pin + history for this peer (ADR-208 — no catalyst store).
+   */
+  closeDirectMessage(peerAddress: string): boolean {
+    const address = peerAddress.trim().toLowerCase()
+    if (!/^0x[a-f0-9]{40}$/.test(address)) return false
+    const key = `dm:${address}`
+    this.openDmPeers.delete(address)
+    this.messages.delete(key)
+    this.unreadCounts.delete(key)
+    if (this.localAddress) removeDmLocalThread(this.localAddress, address)
+    if (this.channel.kind === 'dm' && this.channel.peerAddress.toLowerCase() === address) {
+      // Fall back to primary scene tab if live, else messages hub.
+      const primary = this.primarySceneChannelChoice()
+      this.channel = primary ?? { kind: 'messages' }
+    }
+    this.notifyChannelChange()
+    return true
   }
 
   isPrivateMessagesReady(): boolean {
@@ -363,6 +482,12 @@ export class SocialService {
   selectChannel(channel: ChatChannelChoice): void {
     this.channel = channel
     this.unreadCounts.delete(channelKey(channel))
+    if (channel.kind === 'dm') {
+      const addr = channel.peerAddress.toLowerCase()
+      const name = channel.displayName.trim() || addr
+      this.openDmPeers.set(addr, name)
+      this.pinDmLocal(addr, name)
+    }
     this.notifyChannelChange()
     // Warm private-messages LiveKit room (shared highway for DMs + community SFU).
     if (channel.kind === 'community' || channel.kind === 'dm') {
@@ -559,7 +684,27 @@ export class SocialService {
   }
 
   async ensurePeerProfile(address: string): Promise<void> {
-    await this.peerProfiles.ensurePeer(address)
+    await this.peerProfiles.ensurePeer(address, { fast: true })
+  }
+
+  /**
+   * Prefetch display rows for many addresses with a small concurrency pool.
+   * Uses session cache — already-known peers are free.
+   */
+  async ensurePeerProfilesBatch(addresses: string[], concurrency = 6): Promise<void> {
+    // ensurePeer is a no-op when session cache already has name+face.
+    const pending = addresses
+      .map((a) => a.toLowerCase())
+      .filter((a) => /^0x[a-f0-9]{40}$/.test(a))
+    if (!pending.length) return
+    let i = 0
+    const workers = Array.from({ length: Math.min(concurrency, pending.length) }, async () => {
+      while (i < pending.length) {
+        const addr = pending[i++]!
+        await this.peerProfiles.ensurePeer(addr, { fast: true })
+      }
+    })
+    await Promise.all(workers)
   }
 
   getLocalDisplay(): PeerChatProfile {
@@ -599,7 +744,7 @@ export class SocialService {
     return [...addrs]
       .map((address) => {
         const peer = this.getPeerDisplay(address)
-        void this.peerProfiles.ensurePeer(address)
+        void this.peerProfiles.ensurePeer(address, { fast: true })
         return { address, displayName: peer.displayName, faceUrl: peer.faceUrl }
       })
       .sort((a, b) =>
@@ -648,7 +793,7 @@ export class SocialService {
         faceUrl: peer.faceUrl,
         isSelf: false
       })
-      void this.peerProfiles.ensurePeer(key)
+      void this.peerProfiles.ensurePeer(key, { fast: true })
     }
 
     rows.sort((a, b) => {
@@ -669,6 +814,110 @@ export class SocialService {
     return [...this.friendshipSnapshot.incoming].sort((a, b) => a.localeCompare(b))
   }
 
+  getOutgoingFriendAddresses(): string[] {
+    if (!this.friendshipSnapshot) return []
+    return [...this.friendshipSnapshot.outgoing].sort((a, b) => a.localeCompare(b))
+  }
+
+  getFriendAddresses(): string[] {
+    if (!this.friendshipSnapshot) return []
+    return [...this.friendshipSnapshot.friends].sort((a, b) => a.localeCompare(b))
+  }
+
+  /**
+   * Friends currently online — union of:
+   * 1) Social Service `SubscribeToFriendConnectivityUpdates` (ONLINE / AWAY)
+   * 2) Nearby scene / island / world LiveKit peers
+   * 3) Peers currently in the private-messages LiveKit room (ADR-208)
+   */
+  getOnlineFriendAddresses(): Set<string> {
+    const out = new Set<string>()
+    if (!this.friendshipSnapshot) return out
+    const isFriend = (key: string) => this.friendshipSnapshot!.friends.has(key)
+
+    for (const addr of this.friendConnectivityOnline) {
+      if (isFriend(addr)) out.add(addr)
+    }
+    const live =
+      this.comms?.getLivePeerAddresses?.() ??
+      this.comms?.getSceneChatMentionAddresses() ??
+      []
+    for (const addr of live) {
+      const key = addr.toLowerCase()
+      if (isFriend(key)) out.add(key)
+    }
+    // DMing someone means they are in the private-messages room → treat as online.
+    for (const id of this.privateMessages.getRemoteIdentities()) {
+      const key = id.trim().toLowerCase()
+      if (isFriend(key)) out.add(key)
+    }
+    return out
+  }
+
+  /** True when this wallet is a friend and currently online (see getOnlineFriendAddresses). */
+  isFriendOnline(address: string): boolean {
+    const key = address.trim().toLowerCase()
+    if (!key) return false
+    return this.getOnlineFriendAddresses().has(key)
+  }
+
+  /**
+   * Presence for any peer (DM rail etc.).
+   * Matches Friends panel ONLINE: friend connectivity stream first, then nearby /
+   * PM-room / recent DM activity (so non-friends in a DM thread still light up).
+   */
+  isPeerOnline(address: string): boolean {
+    const key = address.trim().toLowerCase()
+    if (!key) return false
+    // Same source as Friends list ONLINE section (when they are a friend).
+    if (this.getOnlineFriendAddresses().has(key)) return true
+    // Connectivity stream even before friendship snapshot filters (belt-and-suspenders).
+    if (this.friendConnectivityOnline.has(key)) return true
+    if (this.privateMessages.hasPeerInRoom(key)) return true
+    const until = this.recentDmOnlineUntil.get(key) ?? 0
+    if (until > Date.now()) return true
+    if (until > 0) this.recentDmOnlineUntil.delete(key)
+    const live =
+      this.comms?.getLivePeerAddresses?.() ??
+      this.comms?.getSceneChatMentionAddresses() ??
+      []
+    for (const addr of live) {
+      if (addr.toLowerCase() === key) return true
+    }
+    return false
+  }
+
+  /** Mark peer online for a short window (inbound/outbound DM). */
+  private touchDmPeerOnline(address: string, ttlMs = 5 * 60_000): void {
+    const key = address.trim().toLowerCase()
+    if (!/^0x[a-f0-9]{40}$/.test(key)) return
+    this.recentDmOnlineUntil.set(key, Date.now() + ttlMs)
+  }
+
+  async acceptFriendRequest(address: string): Promise<void> {
+    if (!this.authIdentity) throw new Error('Not signed in')
+    await acceptFriendshipRequestSigned(this.authIdentity, address)
+    await this.refreshFriendshipSnapshot()
+  }
+
+  async rejectFriendRequest(address: string): Promise<void> {
+    if (!this.authIdentity) throw new Error('Not signed in')
+    await rejectFriendshipRequestSigned(this.authIdentity, address)
+    await this.refreshFriendshipSnapshot()
+  }
+
+  async removeFriend(address: string): Promise<void> {
+    if (!this.authIdentity) throw new Error('Not signed in')
+    await removeFriendshipSigned(this.authIdentity, address)
+    await this.refreshFriendshipSnapshot()
+  }
+
+  async requestFriend(address: string): Promise<void> {
+    if (!this.authIdentity) throw new Error('Not signed in')
+    await requestFriendshipSigned(this.authIdentity, address)
+    await this.refreshFriendshipSnapshot()
+  }
+
   getTotalUnreadCount(): number {
     let total = 0
     for (const count of this.unreadCounts.values()) total += count
@@ -683,26 +932,48 @@ export class SocialService {
   async refreshFriendshipSnapshot(): Promise<void> {
     if (!this.authIdentity || !this.localAddress) return
     this.friendshipSnapshot = null
+    this.friendshipSnapshotAt = 0
     this.friendshipLoad = null
     await this.ensureFriendshipSnapshot()
   }
 
-  async ensureFriendshipSnapshot(): Promise<void> {
+  /**
+   * Load friendships once per session (or when older than maxAgeMs).
+   * Opening the Friends panel should call with a TTL so we do not re-hit social-rpc every open.
+   */
+  async ensureFriendshipSnapshot(opts?: { maxAgeMs?: number }): Promise<void> {
     if (!this.authIdentity || !this.localAddress) return
-    if (this.friendshipSnapshot) return
+    const maxAge = opts?.maxAgeMs
+    if (
+      this.friendshipSnapshot &&
+      (maxAge == null || Date.now() - this.friendshipSnapshotAt < maxAge)
+    ) {
+      return
+    }
     if (this.friendshipLoad) {
       await this.friendshipLoad
       return
     }
+    // Soft refresh: keep previous snapshot visible until the new one lands.
+    const prev = this.friendshipSnapshot
     this.friendshipLoad = fetchFriendshipSnapshotSigned(this.authIdentity, this.localAddress)
       .then((snapshot) => {
         this.applyFriendshipSnapshot(snapshot)
         clientDebugLog.log('social', `Loaded ${snapshot.friends.size} friends`, { level: 'success' })
+        // Snapshot may land after peers already joined LiveKit — refresh ONLINE section.
+        this.notifyFriendshipChange()
       })
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err)
         clientDebugLog.log('social', `Friendships unavailable: ${msg}`, { level: 'warn' })
-        this.applyFriendshipSnapshot({ friends: new Set(), incoming: new Set(), outgoing: new Set() })
+        // Keep prior friends if we already had a good list — don't wipe UI to empty on blip.
+        if (!prev || prev.friends.size === 0) {
+          this.applyFriendshipSnapshot({
+            friends: new Set(),
+            incoming: new Set(),
+            outgoing: new Set()
+          })
+        }
       })
       .finally(() => {
         this.friendshipLoad = null
@@ -710,13 +981,119 @@ export class SocialService {
     await this.friendshipLoad
   }
 
-  /** Preload signed friendship data when a remote peer appears in-scene. */
+  /** Preload signed friendship data when a remote peer appears nearby. */
   onRemotePeerJoined(address: string): void {
     void this.ensureFriendshipSnapshot()
     const key = address.toLowerCase()
-    if (this.friendshipRelationByAddress.has(key)) return
-    if (!this.friendshipSnapshot) return
-    this.friendshipRelationByAddress.set(key, resolveFriendshipRelation(key, this.friendshipSnapshot))
+    if (!this.friendshipRelationByAddress.has(key) && this.friendshipSnapshot) {
+      this.friendshipRelationByAddress.set(key, resolveFriendshipRelation(key, this.friendshipSnapshot))
+    }
+    // Friends panel online section depends on nearby peers — refresh listeners.
+    if (this.friendshipSnapshot?.friends.has(key)) {
+      this.notifyFriendshipChange()
+    }
+  }
+
+  /** Peer left nearby transport — update friends online section. */
+  onRemotePeerLeft(address: string): void {
+    const key = address.toLowerCase()
+    if (this.friendshipSnapshot?.friends.has(key)) {
+      this.notifyFriendshipChange()
+    }
+  }
+
+  /**
+   * SubscribeToFriendConnectivityUpdates — global friend ONLINE/OFFLINE/AWAY.
+   * Replaces “nearby only” for the Friends panel ONLINE section.
+   */
+  private startFriendConnectivitySubscription(): void {
+    if (!this.authIdentity || !this.localAddress) return
+    // Already running for this session.
+    if (this.connectivityAbort && !this.connectivityAbort.signal.aborted) return
+    this.stopFriendConnectivitySubscription()
+    const identity = this.authIdentity
+    const abort = new AbortController()
+    this.connectivityAbort = abort
+
+    const run = async (): Promise<void> => {
+      try {
+        await consumeFriendConnectivityUpdates(
+          identity,
+          (ev) => {
+            if (abort.signal.aborted) return
+            // Seed profile from stream payload when present.
+            if (ev.displayName || ev.faceUrl || ev.nameColor) {
+              this.peerProfiles.seed(ev.address, {
+                displayName: ev.displayName,
+                faceUrl: ev.faceUrl ?? null,
+                nameColor: ev.nameColor ?? undefined
+              })
+            }
+            let changed = false
+            if (ev.online) {
+              if (!this.friendConnectivityOnline.has(ev.address)) {
+                this.friendConnectivityOnline.add(ev.address)
+                changed = true
+              }
+            } else if (this.friendConnectivityOnline.delete(ev.address)) {
+              changed = true
+            }
+            if (changed) {
+              clientDebugLog.log(
+                'social',
+                `Friend ${ev.online ? 'online' : 'offline'} · ${ev.address.slice(0, 10)}… (connectivity=${this.friendConnectivityOnline.size})`,
+                { level: 'info', alsoConsole: true, throttleMs: 0 }
+              )
+              this.notifyFriendshipChange()
+            }
+          },
+          abort.signal
+        )
+      } catch (err) {
+        if (abort.signal.aborted) return
+        const msg = err instanceof Error ? err.message : String(err)
+        clientDebugLog.log('social', `Friend connectivity stream ended: ${msg}`, {
+          level: 'warn',
+          alsoConsole: true
+        })
+        // Retry with backoff while still signed in.
+        if (this.connectivityRetryTimer) clearTimeout(this.connectivityRetryTimer)
+        this.connectivityRetryTimer = setTimeout(() => {
+          this.connectivityRetryTimer = null
+          if (this.authIdentity && this.localAddress && !this.connectivityAbort?.signal.aborted) {
+            // Force restart after stream death.
+            this.connectivityAbort = null
+            this.startFriendConnectivitySubscription()
+          }
+        }, 8_000)
+        return
+      }
+      // Clean end — retry so we keep presence alive.
+      if (!abort.signal.aborted) {
+        this.connectivityAbort = null
+        if (this.connectivityRetryTimer) clearTimeout(this.connectivityRetryTimer)
+        this.connectivityRetryTimer = setTimeout(() => {
+          this.connectivityRetryTimer = null
+          this.startFriendConnectivitySubscription()
+        }, 5_000)
+      }
+    }
+    void run()
+    clientDebugLog.log('social', 'Subscribed to friend connectivity updates', {
+      level: 'success',
+      alsoConsole: true
+    })
+  }
+
+  private stopFriendConnectivitySubscription(): void {
+    if (this.connectivityRetryTimer) {
+      clearTimeout(this.connectivityRetryTimer)
+      this.connectivityRetryTimer = null
+    }
+    if (this.connectivityAbort) {
+      this.connectivityAbort.abort()
+      this.connectivityAbort = null
+    }
   }
 
   getFriendshipRelation(address: string): FriendshipRelation {
@@ -730,6 +1107,8 @@ export class SocialService {
     const hit = this.peerProfiles.get(address)
     if (hit) return hit
     if (address) {
+      // Do not kick a network storm from pure getters used in list render.
+      // Callers that need a fetch should use ensurePeerProfile / ensurePeerProfilesBatch.
       return {
         displayName: `${address.slice(0, 6)}…${address.slice(-4)}`,
         nameColor: '#ff6ad5',
@@ -737,6 +1116,17 @@ export class SocialService {
       }
     }
     return { displayName: 'Player', nameColor: '#ff6ad5', faceUrl: null }
+  }
+
+  /** Prefer scheduleEnsurePeer when displaying unknown addresses (lazy, fast path). */
+  scheduleEnsurePeer(address: string): void {
+    void this.peerProfiles.ensurePeer(address, { fast: true })
+  }
+
+  onPeerProfileChange(
+    listener: (changedAddresses: ReadonlySet<string> | null) => void
+  ): () => void {
+    return this.peerProfiles.onUpdate(listener)
   }
 
   async sendImageFile(file: File): Promise<boolean> {
@@ -788,15 +1178,28 @@ export class SocialService {
     }
 
     if (this.channel.kind === 'dm') {
-      await this.ensurePrivateMessagesConnected()
       const peer = this.channel.peerAddress.toLowerCase()
+      this.openDmPeers.set(peer, this.channel.displayName)
+      this.touchDmPeerOnline(peer)
+      await this.ensurePrivateMessagesConnected()
+      if (!this.privateMessages.isConnected()) {
+        // One hard reconnect attempt (keeps shared holders)
+        this.privateMessages.forceDisconnect()
+        this.privateMessagesRetained = false
+        await this.ensurePrivateMessagesConnected()
+      }
       const sent = await this.privateMessages.sendTo(peer, trimmed)
       if (!sent) {
-        clientDebugLog.log('social', 'DM send failed — private messages room not ready', {
-          level: 'warn'
-        })
+        const err = this.privateMessages.getLastError()
+        const inRoom = this.privateMessages.hasPeerInRoom(peer)
+        clientDebugLog.log(
+          'social',
+          `DM send failed — ${err || 'private messages room not ready'} (peerInRoom=${inRoom})`,
+          { level: 'warn', alsoConsole: true }
+        )
         return false
       }
+      // Always show local bubble when LiveKit accepted the publish.
       this.appendLine(channelKey(this.channel), {
         id: `local-${++lineCounter}`,
         text: trimmed,
@@ -865,7 +1268,7 @@ export class SocialService {
 
   private async ensurePrivateMessagesConnected(): Promise<void> {
     if (!this.authIdentity || !this.localAddress) return
-    if (this.privateMessages.isConnected()) return
+    this.retainPrivateMessages()
     if (!this.unsubPrivateMessages) {
       this.unsubPrivateMessages = this.privateMessages.subscribe((ev) => {
         this.ingestPrivateMessage(ev.fromAddress, ev.text, ev.time)
@@ -884,8 +1287,18 @@ export class SocialService {
         this.communityFollow?.handleRemote(ev.communityId, ev.fromAddress, ev.msg)
       })
     }
+    if (this.privateMessages.isConnected()) {
+      this.notifyChannelChange()
+      return
+    }
     await this.privateMessages.connect(this.authIdentity, this.localAddress)
     this.notifyChannelChange()
+  }
+
+  private retainPrivateMessages(): void {
+    if (this.privateMessagesRetained) return
+    this.privateMessages.retain()
+    this.privateMessagesRetained = true
   }
 
   private teardownPrivateMessages(): void {
@@ -895,28 +1308,36 @@ export class SocialService {
     this.unsubCommunityMessages = null
     this.unsubCommunityFollowData?.()
     this.unsubCommunityFollowData = null
-    this.privateMessages.disconnect()
+    // Shared room: release holder; only the last SocialService tears down LiveKit.
+    if (this.privateMessagesRetained) {
+      this.privateMessages.release()
+      this.privateMessagesRetained = false
+    }
   }
 
   private ingestPrivateMessage(fromAddress: string, text: string, time: number): void {
     const peer = fromAddress.toLowerCase()
     const key = `dm:${peer}`
     const profile = this.peerProfiles.get(peer)
+    const displayName =
+      profile?.displayName?.trim() || `${peer.slice(0, 6)}…${peer.slice(-4)}`
+    // Ensure DM appears on the chat rail even if not opened yet.
+    if (!this.openDmPeers.has(peer)) {
+      this.openDmPeers.set(peer, displayName)
+      this.notifyChannelChange()
+    }
+    // Recent DM traffic → green online on rail (Explorer-style activity).
+    this.touchDmPeerOnline(peer)
+    // Unread is handled once inside appendLine (do not double-count here).
     this.appendLine(key, {
       id: `remote-${++lineCounter}`,
       text,
       time,
       self: false,
       senderAddress: peer,
-      senderName: profile?.displayName
+      senderName: displayName
     })
-    // Unread when not actively reading this DM thread.
-    if (!(this.channel.kind === 'dm' && this.channel.peerAddress.toLowerCase() === peer && this.channelThreadOpen)) {
-      const prev = this.unreadCounts.get(key) ?? 0
-      this.unreadCounts.set(key, prev + 1)
-      this.notifyChannelChange()
-    }
-    void this.peerProfiles.ensurePeer(peer)
+    void this.peerProfiles.ensurePeer(peer, { fast: true })
   }
 
   private ingestCommunityMessage(
@@ -957,7 +1378,7 @@ export class SocialService {
       this.unreadCounts.set(key, prev + 1)
       this.notifyChannelChange()
     }
-    void this.peerProfiles.ensurePeer(peer)
+    void this.peerProfiles.ensurePeer(peer, { fast: true })
   }
 
   /**
@@ -1138,6 +1559,14 @@ export class SocialService {
       this.comms.setChatHandler(null)
       this.comms.setChatMediaHandler(null)
     }
+    // Flush DM pins before clearing memory so a soft re-init can hydrate again.
+    if (this.dmPersistTimer != null) {
+      clearTimeout(this.dmPersistTimer)
+      this.dmPersistTimer = null
+    }
+    this.flushDmLocalPersist()
+    this.stopFriendConnectivitySubscription()
+    this.friendConnectivityOnline.clear()
     this.teardownPrivateMessages()
     // Follow controller is session-scoped on AppController — do not dispose here.
     this.communityFollow = null
@@ -1150,14 +1579,15 @@ export class SocialService {
     this.channelListeners.clear()
     this.messages.clear()
     this.unreadCounts.clear()
+    this.openDmPeers.clear()
     this.channelThreadOpen = false
     this.sceneTabs = []
     this.connectedSceneKey = null
     this.liveSceneKeys.clear()
+    // Drop listeners only — session display cache survives for the browser tab.
     this.peerProfiles.clear()
     this.authIdentity = null
-    this.friendshipSnapshot = null
-    this.friendshipRelationByAddress.clear()
+    // Keep friendshipSnapshot for soft re-init of the same World; full logout creates a new service.
     this.friendshipLoad = null
     this.friendshipListeners.clear()
     this.ready = false
@@ -1165,7 +1595,18 @@ export class SocialService {
 
   private applyFriendshipSnapshot(snapshot: FriendshipSnapshot): void {
     this.friendshipSnapshot = snapshot
+    this.friendshipSnapshotAt = Date.now()
     this.friendshipRelationByAddress = buildFriendshipRelationMap(snapshot)
+    // Seed session display cache from social-rpc FriendProfile rows (name + picture + color).
+    if (snapshot.displayHints) {
+      for (const [addr, hint] of snapshot.displayHints) {
+        this.peerProfiles.seed(addr, {
+          displayName: hint.displayName,
+          faceUrl: hint.faceUrl,
+          nameColor: hint.nameColor
+        })
+      }
+    }
     this.notifyFriendshipChange()
   }
 
@@ -1205,6 +1646,92 @@ export class SocialService {
         isImage: false
       })
     }
+
+    // Pin + history for 1:1 DMs (localStorage; not catalyst).
+    if (key.startsWith('dm:')) {
+      const peer = key.slice(3)
+      const senderName = !isChatImageLine(line) ? line.senderName?.trim() : undefined
+      const name =
+        this.openDmPeers.get(peer) ||
+        senderName ||
+        this.peerProfiles.get(peer)?.displayName ||
+        peer
+      if (!this.openDmPeers.has(peer) && !line.self) {
+        this.openDmPeers.set(peer, name)
+      }
+      this.scheduleDmLocalPersist()
+    }
+  }
+
+  /** Restore pinned DMs + last-N text lines from localStorage for the current wallet. */
+  private hydrateDmLocalHistory(): void {
+    // Drop in-memory DM state when switching wallets so we don't leak another account's threads.
+    for (const key of [...this.messages.keys()]) {
+      if (key.startsWith('dm:')) this.messages.delete(key)
+    }
+    for (const key of [...this.unreadCounts.keys()]) {
+      if (key.startsWith('dm:')) this.unreadCounts.delete(key)
+    }
+    this.openDmPeers.clear()
+    if (!this.localAddress) return
+
+    const threads = loadDmLocalThreads(this.localAddress)
+    let maxCounter = lineCounter
+    for (const t of threads) {
+      this.openDmPeers.set(t.address, t.displayName)
+      const lines = storedLinesToChat(t.lines)
+      if (lines.length) this.messages.set(`dm:${t.address}`, lines)
+      for (const line of lines) {
+        const m = /^(?:local|remote|in|stored)-(\d+)$/.exec(line.id)
+        if (m) {
+          const n = Number(m[1])
+          if (Number.isFinite(n) && n > maxCounter) maxCounter = n
+        }
+      }
+      void this.peerProfiles.ensurePeer(t.address, { fast: true })
+    }
+    lineCounter = maxCounter
+  }
+
+  private pinDmLocal(peerAddress: string, displayName: string): void {
+    if (!this.localAddress) return
+    const key = `dm:${peerAddress}`
+    const lines = this.messages.get(key) ?? []
+    upsertDmLocalThread(this.localAddress, peerAddress, displayName, lines)
+  }
+
+  private scheduleDmLocalPersist(): void {
+    if (!this.localAddress) return
+    if (this.dmPersistTimer != null) clearTimeout(this.dmPersistTimer)
+    this.dmPersistTimer = setTimeout(() => {
+      this.dmPersistTimer = null
+      this.flushDmLocalPersist()
+    }, 300)
+  }
+
+  private flushDmLocalPersist(): void {
+    if (!this.localAddress) return
+    const threads: Array<{ address: string; displayName: string; lines: ChatLine[] }> = []
+    for (const [addr, name] of this.openDmPeers) {
+      threads.push({
+        address: addr,
+        displayName: name,
+        lines: this.messages.get(`dm:${addr}`) ?? []
+      })
+    }
+    // Also pin peers that only have message history (inbound before openDmPeers set).
+    for (const key of this.messages.keys()) {
+      if (!key.startsWith('dm:')) continue
+      const addr = key.slice(3)
+      if (this.openDmPeers.has(addr)) continue
+      threads.push({
+        address: addr,
+        displayName:
+          this.peerProfiles.get(addr)?.displayName || `${addr.slice(0, 6)}…${addr.slice(-4)}`,
+        lines: this.messages.get(key) ?? []
+      })
+    }
+    saveAllDmLocalThreads(this.localAddress, threads)
   }
 
   private notifyChannelChange(): void {

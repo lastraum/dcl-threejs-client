@@ -953,6 +953,25 @@ export class CommsService {
     return [...addresses].sort((a, b) => a.localeCompare(b))
   }
 
+  /**
+   * All nearby wallets currently on any live transport: scene, island (archipelago), world.
+   * Used for friends online status (Explorer-style "in my area"), not only scene-chat mentions.
+   */
+  getLivePeerAddresses(): string[] {
+    const self = this.localAddress?.toLowerCase() ?? null
+    const addresses = new Set<string>()
+    const add = (address: string) => {
+      const key = address.toLowerCase()
+      if (!key || (self && key === self)) return
+      addresses.add(key)
+    }
+    for (const address of this.peerTransports.keys()) add(address)
+    for (const address of this.sceneLiveKit.getRemotePeerAddresses()) add(address)
+    for (const address of this.islandLiveKit.getRemotePeerAddresses()) add(address)
+    for (const address of this.worldLiveKit.getRemotePeerAddresses()) add(address)
+    return [...addresses].sort((a, b) => a.localeCompare(b))
+  }
+
   /** True when any LiveKit room can carry RFC4 movement (scene, world, or island). */
   private canPublishLiveKitMovement(): boolean {
     return (

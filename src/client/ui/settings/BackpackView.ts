@@ -94,6 +94,8 @@ import {
   WEARABLE_RARITY_COLORS
 } from '../profile/wearableThumb'
 import { annotateItemsWithCollections } from './wearableCollections'
+import { exportDclAvatarToVrm } from '../../../avatar/exportDclAvatarVrm'
+import { identityFromAvatarProfile } from '../../../avatar/displayName'
 
 type CategoryDef = { id: WearableCategory | 'all'; label: string }
 type BackpackSubTab = 'wearables' | 'emotes' | 'vrm' | 'osa'
@@ -213,6 +215,7 @@ export class BackpackView {
   private emotesLoading = false
   private emotesError: string | null = null
   private emotesLoadGen = 0
+  private exportVrmBusy = false
 
   constructor(session: SessionIdentity, options: BackpackViewOptions = {}) {
     this.session = session
@@ -257,7 +260,9 @@ export class BackpackView {
           <div class="backpack-view__middle-tabs backpack-view__middle-tabs--wearables">
             <button class="backpack-view__mid-tab is-active" data-midtab="categories">☰ CATEGORIES</button>
             <button class="backpack-view__mid-tab" data-midtab="outfits">♡ SAVED OUTFITS</button>
-            <a class="backpack-view__marketplace-link" href="https://market.decentraland.org" target="_blank" rel="noopener">🛒 MARKETPLACE</a>
+            <button type="button" class="backpack-view__export-vrm" data-export-vrm title="Export equipped DCL avatar as VRM">
+              Export VRM
+            </button>
           </div>
           <div class="backpack-view__middle-tabs backpack-view__middle-tabs--vrm" hidden>
             <span class="backpack-view__vrm-library-label">Your avatar library (stored on this device)</span>
@@ -365,12 +370,14 @@ export class BackpackView {
     void this.loadEmotes()
     this.initAvatarPreview()
     this.wireWearablesSearch()
+    this.wireExportVrm()
     this.wireMobileInventoryToolbar()
     this.wireSubTabs()
     this.wireVrmDropZone()
     this.wireMmlUrlImport()
     this.wireOsaSearch()
     this.wireMobileDrawers()
+    this.syncExportVrmButton()
     void this.refreshVrmLibrary()
   }
 
@@ -639,6 +646,75 @@ export class BackpackView {
     })
   }
 
+  private wireExportVrm(): void {
+    const btn = this.root.querySelector<HTMLButtonElement>('[data-export-vrm]')
+    btn?.addEventListener('click', () => {
+      void this.handleExportVrm()
+    })
+  }
+
+  private syncExportVrmButton(): void {
+    // Lives in middle-tabs (marketplace slot) — always in root, not relocated sub-header.
+    const btn = this.root.querySelector<HTMLButtonElement>('[data-export-vrm]')
+    if (!btn) return
+    const onWearables = this.activeSubTab === 'wearables'
+    // Parent row is already hidden on non-wearables; keep disabled state accurate.
+    if (!onWearables) {
+      btn.disabled = true
+      return
+    }
+
+    const profile = this.session.getProfile()
+    const address = this.session.getAddress()
+    const canExport =
+      Boolean(profile && address) && this.previewMode === 'dcl' && !this.exportVrmBusy
+    btn.disabled = !canExport
+    btn.classList.toggle('is-busy', this.exportVrmBusy)
+    btn.textContent = this.exportVrmBusy ? 'Exporting…' : 'Export VRM'
+    btn.title = this.exportVrmBusy
+      ? 'Building VRM…'
+      : !profile || !address
+        ? 'Sign in with a wallet to export your avatar'
+        : 'Export equipped DCL avatar as VRM'
+  }
+
+  private async handleExportVrm(): Promise<void> {
+    if (this.exportVrmBusy || this.disposed) return
+    const profile = this.session.getProfile()
+    const address = this.session.getAddress()
+    if (!profile || !address) {
+      console.warn('[backpack] export VRM — no wallet profile')
+      return
+    }
+    if (this.activeSubTab !== 'wearables' || this.previewMode !== 'dcl') return
+
+    this.exportVrmBusy = true
+    this.syncExportVrmButton()
+    try {
+      const identity = identityFromAvatarProfile(profile, address)
+      await exportDclAvatarToVrm({
+        profile,
+        address,
+        displayName: identity.displayName,
+        download: true
+      })
+    } catch (err) {
+      console.error('[backpack] export VRM failed', err)
+      const btn = this.root.querySelector<HTMLButtonElement>('[data-export-vrm]')
+      if (btn) {
+        const prevTitle = btn.title
+        btn.title =
+          err instanceof Error ? `Export failed: ${err.message}` : 'Export failed — check console'
+        window.setTimeout(() => {
+          if (!this.disposed && btn) btn.title = prevTitle
+        }, 4000)
+      }
+    } finally {
+      this.exportVrmBusy = false
+      this.syncExportVrmButton()
+    }
+  }
+
   /** Grid ordering for wearables + emotes; both desktop and mobile controls funnel here. */
   private setSortMode(mode: BackpackSortMode): void {
     if (mode === this.sortMode) return
@@ -876,6 +952,7 @@ export class BackpackView {
     // Emotes reuses the left rail for wheel slots (not wearable categories).
     categories.hidden = isAvatarLibraryTab
     gridArea?.classList.remove('is-dragover')
+    this.syncExportVrmButton()
 
     if (isVrm) {
       this.renderVrmGrid()
@@ -2733,6 +2810,7 @@ export class BackpackView {
     this.subjectSize = alignPreviewAvatarToGround(avatar, 'dcl')
     this.pivot!.rotation.y = this.orbitYaw
     this.frameCamera(this.subjectSize)
+    this.syncExportVrmButton()
   }
 
   private async loadCustomAvatarPreview(contentHash: string | null): Promise<void> {

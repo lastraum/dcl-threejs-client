@@ -74,8 +74,11 @@ export class SocialChatDock {
   private unsubChat: (() => void) | null = null
   private unsubChannel: (() => void) | null = null
   private unsubProfiles: (() => void) | null = null
+  private unsubFriendship: (() => void) | null = null
   private unsubTranslate: (() => void) | null = null
   private unsubTranslateSettings: (() => void) | null = null
+  private presencePollTimer: ReturnType<typeof setInterval> | null = null
+  private lastPresenceKey = ''
   private autoIndicatorEl: HTMLElement | null = null
   private moreBtn: HTMLButtonElement | null = null
   private channelMenu: ChatChannelMenu | null = null
@@ -434,7 +437,13 @@ export class SocialChatDock {
     this.unsubChannel = social.onChannelChange(() => this.renderAll())
     this.unsubProfiles = social.onPeerProfilesChange(() => {
       this.renderMessages()
+      this.renderPills()
+      this.renderThreadHeader()
       this.updateComposerUi()
+    })
+    // Connectivity / nearby presence — refresh ONLINE section + rail green dots.
+    this.unsubFriendship = social.onFriendshipChange(() => {
+      this.renderPills()
     })
     this.unsubTranslate = chatTranslationService.onUpdate(() => {
       if (this.threadOpen) this.renderMessages()
@@ -443,19 +452,54 @@ export class SocialChatDock {
       this.syncAutoTranslateIndicator()
       if (this.threadOpen) this.renderMessages()
     })
+    this.startPresencePoll()
   }
 
   private unbindSocial(): void {
     this.unsubChat?.()
     this.unsubChannel?.()
     this.unsubProfiles?.()
+    this.unsubFriendship?.()
     this.unsubTranslate?.()
     this.unsubTranslateSettings?.()
     this.unsubChat = null
     this.unsubChannel = null
     this.unsubProfiles = null
+    this.unsubFriendship = null
     this.unsubTranslate = null
     this.unsubTranslateSettings = null
+    this.stopPresencePoll()
+  }
+
+  /** Poll DM/friend presence (PM room + LiveKit) so green dots update without waiting for stream. */
+  private startPresencePoll(): void {
+    this.stopPresencePoll()
+    this.lastPresenceKey = this.presenceKey()
+    this.presencePollTimer = setInterval(() => {
+      if (!this.visible) return
+      const key = this.presenceKey()
+      if (key === this.lastPresenceKey) return
+      this.lastPresenceKey = key
+      this.renderPills()
+    }, 2500)
+  }
+
+  private stopPresencePoll(): void {
+    if (this.presencePollTimer) {
+      clearInterval(this.presencePollTimer)
+      this.presencePollTimer = null
+    }
+  }
+
+  private presenceKey(): string {
+    try {
+      const social = this.social()
+      const dms = social.getDmPeers().map((p) => `${p.address}:${social.isPeerOnline(p.address) ? 1 : 0}`)
+      const online = [...social.getOnlineFriendAddresses()].sort()
+      return `${online.join(',')}|${dms.join(',')}`
+    } catch {
+      return ''
+    }
   }
 
   private social(): SocialService {
@@ -639,7 +683,21 @@ export class SocialChatDock {
     }
 
     if (channel.kind === 'dm') {
-      this.headerAvatarEl.textContent = channel.displayName.slice(0, 1).toUpperCase() || '✉'
+      const face = social.getPeerDisplay(channel.peerAddress).faceUrl
+      const fallback = channel.displayName.slice(0, 1).toUpperCase() || '✉'
+      if (face) {
+        const img = document.createElement('img')
+        img.src = face
+        img.alt = ''
+        img.addEventListener('error', () => {
+          img.remove()
+          this.headerAvatarEl.textContent = fallback
+        })
+        this.headerAvatarEl.appendChild(img)
+      } else {
+        this.headerAvatarEl.textContent = fallback
+        social.scheduleEnsurePeer(channel.peerAddress)
+      }
       return
     }
 
@@ -648,6 +706,8 @@ export class SocialChatDock {
 
   private renderPills(): void {
     this.hidePillTip()
+    // Drop body-level rail hover floats from the previous render.
+    document.querySelectorAll('.chat-panel__rail-chip-hover').forEach((el) => el.remove())
     const social = this.social()
     const current = social.getChannel()
     this.pillsScrollEl.innerHTML = ''
@@ -684,6 +744,33 @@ export class SocialChatDock {
       )
     }
 
+    // Private DMs sit above community channels (profile face when known).
+    for (const peer of social.getDmPeers()) {
+      const channel = {
+        kind: 'dm' as const,
+        peerAddress: peer.address,
+        displayName: peer.displayName
+      }
+      const active = current.kind === 'dm' && current.peerAddress.toLowerCase() === peer.address
+      const viewingChannel = active && this.threadOpen
+      const face = peer.faceUrl || social.getPeerDisplay(peer.address).faceUrl
+      if (!face) social.scheduleEnsurePeer(peer.address)
+      const isOnline = social.isPeerOnline(peer.address)
+      this.pillsScrollEl.appendChild(
+        this.createChannelEntry({
+          channel,
+          title: peer.displayName,
+          subtitle: isOnline ? 'Online · Direct message' : 'Offline · Direct message',
+          imageUrl: face ?? undefined,
+          fallback: peer.displayName.slice(0, 1).toUpperCase() || '?',
+          active,
+          unreadCount: viewingChannel ? 0 : social.getUnreadCount(channel),
+          closable: true,
+          online: isOnline
+        })
+      )
+    }
+
     for (const community of social.getCommunities()) {
       const channel = {
         kind: 'community' as const,
@@ -705,26 +792,6 @@ export class SocialChatDock {
         })
       )
     }
-
-    for (const peer of social.getDmPeers()) {
-      const channel = {
-        kind: 'dm' as const,
-        peerAddress: peer.address,
-        displayName: peer.displayName
-      }
-      const active = current.kind === 'dm' && current.peerAddress.toLowerCase() === peer.address
-      const viewingChannel = active && this.threadOpen
-      this.pillsScrollEl.appendChild(
-        this.createChannelEntry({
-          channel,
-          title: peer.displayName,
-          subtitle: 'Direct message',
-          fallback: peer.displayName.slice(0, 1).toUpperCase() || '?',
-          active,
-          unreadCount: viewingChannel ? 0 : social.getUnreadCount(channel)
-        })
-      )
-    }
   }
 
   private createChannelEntry(options: {
@@ -738,6 +805,8 @@ export class SocialChatDock {
     disabled?: boolean
     unreadCount?: number
     closable?: boolean
+    /** DM presence — dims offline avatars and shows green online dot. */
+    online?: boolean
   }): HTMLElement {
     if (this.useExpandedChannelList()) return this.createListRow(options)
     return this.createPillButton(options)
@@ -771,6 +840,18 @@ export class SocialChatDock {
     this.renderAll()
   }
 
+  private closeDmChannel(peerAddress: string, ev?: Event): void {
+    ev?.stopPropagation()
+    ev?.preventDefault()
+    const social = this.social()
+    if (!social.closeDirectMessage(peerAddress)) return
+    if (this.threadOpen && social.getChannel().kind === 'messages') {
+      this.threadOpen = false
+    }
+    this.syncLayout()
+    this.renderAll()
+  }
+
   private createPillButton(options: {
     channel: ChatChannelChoice
     title: string
@@ -781,7 +862,45 @@ export class SocialChatDock {
     active: boolean
     disabled?: boolean
     unreadCount?: number
-  }): HTMLButtonElement {
+    closable?: boolean
+    online?: boolean
+  }): HTMLElement {
+    // Explorer-style chip: circular avatar; name/× float outside the dock to the left.
+    const chip = document.createElement('div')
+    chip.className = `chat-panel__rail-chip${options.active ? ' is-active' : ''}${
+      options.closable ? ' is-closable' : ''
+    }`
+    if (options.channel.kind === 'dm') {
+      chip.classList.add(options.online ? 'is-online' : 'is-offline')
+    }
+
+    const hover = document.createElement('div')
+    hover.className = 'chat-panel__rail-chip-hover'
+    hover.setAttribute('aria-hidden', 'true')
+
+    if (options.closable) {
+      const close = document.createElement('button')
+      close.type = 'button'
+      close.className = 'chat-panel__rail-chip-close'
+      close.setAttribute('aria-label', `Remove ${options.title}`)
+      close.textContent = '×'
+      close.addEventListener('click', (ev) => {
+        if (options.channel.kind === 'scene') {
+          this.closeSceneChannel(options.channel.sceneKey, ev)
+        } else if (options.channel.kind === 'dm') {
+          this.closeDmChannel(options.channel.peerAddress, ev)
+        }
+      })
+      hover.appendChild(close)
+    }
+
+    const label = document.createElement('span')
+    label.className = 'chat-panel__rail-chip-label'
+    label.textContent = options.title
+    hover.appendChild(label)
+    // Body-level so rail overflow never clips; cleaned up when pills re-render.
+    document.body.appendChild(hover)
+
     const btn = document.createElement('button')
     btn.type = 'button'
     btn.className = `chat-panel__rail-btn${options.active ? ' is-active' : ''}`
@@ -807,14 +926,94 @@ export class SocialChatDock {
       btn.textContent = options.fallback ?? '?'
     }
 
-    this.appendUnreadBadge(btn, options.unreadCount ?? 0)
-    this.wirePillTip(btn, options.title)
-
     if (!options.disabled) {
       btn.addEventListener('click', () => this.openChannel(options.channel))
     }
 
-    return btn
+    chip.appendChild(btn)
+
+    // Presence markers on the CHIP (sibling of overflow:hidden button) so they sit ON TOP of the face.
+    if (options.channel.kind === 'dm') {
+      this.appendPresenceAndUnread(chip, {
+        online: !!options.online,
+        unread: options.unreadCount ?? 0
+      })
+    } else if ((options.unreadCount ?? 0) > 0) {
+      this.appendUnreadBadge(chip, options.unreadCount ?? 0)
+    }
+
+    // Name + × float left of the entire chat rail (outside the panel).
+    if (options.channel.kind === 'community' || options.closable) {
+      chip.classList.add('is-named')
+      this.wireRailChipHover(chip, btn, hover)
+    } else {
+      this.wirePillTip(btn, options.title)
+    }
+
+    return chip
+  }
+
+  /**
+   * Green online dot + unread badge as chip children (not clipped by avatar overflow).
+   * Unread sits top-right ON the profile; online dot bottom-right; unread hides the dot.
+   */
+  private appendPresenceAndUnread(
+    chip: HTMLElement,
+    opts: { online: boolean; unread: number }
+  ): void {
+    if (opts.unread > 0) {
+      chip.classList.add('has-unread')
+      this.appendUnreadBadge(chip, opts.unread)
+    }
+    if (opts.online) {
+      const dot = document.createElement('span')
+      dot.className = 'chat-panel__rail-online-dot'
+      dot.title = 'Online'
+      dot.setAttribute('aria-label', 'Online')
+      chip.appendChild(dot)
+    }
+  }
+
+  /**
+   * Pin name/× to the LEFT of the chat rail panel (outside the dock, never over the avatar).
+   * JS open class so moving onto the float keeps × clickable.
+   */
+  private wireRailChipHover(chip: HTMLElement, btn: HTMLElement, hover: HTMLElement): void {
+    let hideTimer: ReturnType<typeof setTimeout> | null = null
+    const place = (): void => {
+      // Prefer left edge of the pills rail / dock so the float sits over the world, not the icon.
+      const rail =
+        this.pillsEl?.getBoundingClientRect?.() ??
+        document.querySelector('.social-chat-dock')?.getBoundingClientRect() ??
+        null
+      const btnRect = btn.getBoundingClientRect()
+      const leftEdge = rail ? rail.left : btnRect.left
+      hover.style.left = `${Math.round(leftEdge - 10)}px`
+      hover.style.top = `${Math.round(btnRect.top + btnRect.height / 2)}px`
+    }
+    const open = (): void => {
+      if (hideTimer) {
+        clearTimeout(hideTimer)
+        hideTimer = null
+      }
+      place()
+      chip.classList.add('is-hover-open')
+      hover.classList.add('is-open')
+    }
+    const scheduleClose = (): void => {
+      if (hideTimer) clearTimeout(hideTimer)
+      hideTimer = setTimeout(() => {
+        hideTimer = null
+        chip.classList.remove('is-hover-open')
+        hover.classList.remove('is-open')
+      }, 120)
+    }
+    chip.addEventListener('mouseenter', open)
+    chip.addEventListener('mouseleave', scheduleClose)
+    chip.addEventListener('focusin', open)
+    chip.addEventListener('focusout', scheduleClose)
+    hover.addEventListener('mouseenter', open)
+    hover.addEventListener('mouseleave', scheduleClose)
   }
 
   private wirePillTip(btn: HTMLButtonElement, label: string): void {
@@ -911,6 +1110,15 @@ export class SocialChatDock {
       close.addEventListener('click', (ev) => this.closeSceneChannel(sceneKey, ev))
       wrap.appendChild(close)
       this.wireListRowSwipe(wrap, sceneKey)
+    } else if (options.closable && options.channel.kind === 'dm') {
+      const peer = options.channel.peerAddress
+      const close = document.createElement('button')
+      close.type = 'button'
+      close.className = 'social-chat-dock__list-close'
+      close.setAttribute('aria-label', `Remove ${options.title}`)
+      close.textContent = '×'
+      close.addEventListener('click', (ev) => this.closeDmChannel(peer, ev))
+      wrap.appendChild(close)
     }
 
     return wrap

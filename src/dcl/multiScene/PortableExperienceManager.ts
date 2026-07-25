@@ -76,6 +76,16 @@ export class PortableExperienceManager {
     return this.workers.size
   }
 
+  /** scene.json featureToggles.portableExperiences (and URL override). */
+  getPePolicy(): PortableExperiencesPolicy {
+    return this.pePolicy
+  }
+
+  /** False when the active scene blocks PE / smart wearables. */
+  isPeAllowed(): boolean {
+    return this.pePolicy.allowed
+  }
+
   /**
    * Bind to a live World host. Restores wantEnabled PEs without re-prompt.
    * Call after primary loadScene + start.
@@ -182,18 +192,29 @@ export class PortableExperienceManager {
         if (!this.slots.has(c.id)) {
           this.slots.set(c.id, {
             candidate: c,
-            status: 'available',
+            status: this.pePolicy.allowed ? 'available' : 'scene_blocked',
             uiEnabled: true,
             wantEnabled: false
           })
         } else {
           const s = this.slots.get(c.id)!
           s.candidate = c
+          // Scene currently blocks PE — force blocked state for HUD.
+          if (!this.pePolicy.allowed) {
+            if (s.status === 'running') {
+              /* attachWorld/blockAllForScene should already have unloaded */
+            } else {
+              s.status = 'scene_blocked'
+            }
+            continue
+          }
           // Don't re-prompt if user already decided this session.
           if (s.status === 'user_disabled' || s.status === 'running' || s.wantEnabled) {
             /* keep status */
           } else if (s.status === 'prompted') {
             /* keep */
+          } else if (s.status === 'scene_blocked') {
+            s.status = 'available'
           } else {
             s.status = 'available'
           }
@@ -210,7 +231,13 @@ export class PortableExperienceManager {
    * NO / YES — never auto-starts. Remaining PEs stay available in HUD.
    */
   async maybeShowConsentPrompt(): Promise<void> {
-    if (this.disposed || !this.worldBound || !this.pePolicy.allowed) return
+    // Never show activate-PEX popup when the scene disables portable experiences.
+    if (this.disposed || !this.worldBound || !this.pePolicy.allowed) {
+      if (!this.pePolicy.allowed) {
+        console.info('[pe] consent skipped — scene disables portable experiences')
+      }
+      return
+    }
     if (this.consentShownThisSession) return
 
     const pending = [...this.slots.values()].filter(

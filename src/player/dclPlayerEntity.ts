@@ -2,19 +2,29 @@ import * as THREE from 'three'
 import { dclToThreeVec, threeToDclVec } from '../bridge/dclTransform'
 
 /**
- * SDK7 `Transform.get(engine.PlayerEntity).position` — chest height, not feet.
- * @see https://docs.decentraland.org/creator/scenes-sdk7/interactivity/user-data.md
+ * Chest height above feet for **Three.js PE attach** (weapons / Transform.parent=PlayerEntity
+ * meshes authored against Explorer’s chest-relative PE). Not applied to the CRDT
+ * `Transform.get(PlayerEntity).position` scenes read — that is always **feet**.
+ *
+ * Official docs still describe PE as ~0.88 chest; we intentionally report feet so
+ * ground systems (Spring flower trail, etc.) match player soles. Attach stays elevated.
  */
 export const DCL_PLAYER_ENTITY_Y_OFFSET = 0.88
 
-/** Feet (capsule root) → scene-relative PlayerEntity position in DCL space. */
+/**
+ * Feet (capsule root) → scene-relative PlayerEntity position in DCL space.
+ * **Identity on Y** — PE is always feet for scene/worker reads.
+ */
 export function feetDclToPlayerEntityPosition(feetDcl: THREE.Vector3, out = new THREE.Vector3()): THREE.Vector3 {
-  return out.set(feetDcl.x, feetDcl.y + DCL_PLAYER_ENTITY_Y_OFFSET, feetDcl.z)
+  return out.set(feetDcl.x, feetDcl.y, feetDcl.z)
 }
 
-/** PlayerEntity position → capsule feet in DCL space (inverse of kernel write). */
+/**
+ * PlayerEntity position → capsule feet in DCL space.
+ * Identity — PE is already feet.
+ */
 export function playerEntityPositionToFeetDcl(playerEntityDcl: THREE.Vector3, out = new THREE.Vector3()): THREE.Vector3 {
-  return out.set(playerEntityDcl.x, playerEntityDcl.y - DCL_PLAYER_ENTITY_Y_OFFSET, playerEntityDcl.z)
+  return out.set(playerEntityDcl.x, playerEntityDcl.y, playerEntityDcl.z)
 }
 
 export function playerEntityPositionFromThreeFeet(feetThree: THREE.Vector3, out = new THREE.Vector3()): THREE.Vector3 {

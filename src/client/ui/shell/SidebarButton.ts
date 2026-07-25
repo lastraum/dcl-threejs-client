@@ -25,6 +25,8 @@ export class SidebarButton {
   private badgeEl: HTMLSpanElement | null = null
   private statusEl: HTMLSpanElement | null = null
   private shortcut: string | null = null
+  private label: string
+  private restricted = false
 
   constructor(config: SidebarButtonConfig) {
     this.element = document.createElement('button')
@@ -32,6 +34,7 @@ export class SidebarButton {
     this.element.className = 'client-sidebar__btn'
     this.element.dataset.action = config.id
     this.shortcut = config.shortcut?.trim() || null
+    this.label = config.label
     this.setTitle(config.label)
 
     const icon = document.createElement('span')
@@ -48,7 +51,14 @@ export class SidebarButton {
 
     if (config.badge) this.setBadgeText(config.badge)
 
-    this.element.addEventListener('click', (ev) => config.onClick?.(ev))
+    this.element.addEventListener('click', (ev) => {
+      if (this.restricted) {
+        ev.preventDefault()
+        ev.stopPropagation()
+        return
+      }
+      config.onClick?.(ev)
+    })
   }
 
   setStatusDot(kind: SidebarStatusDot | null): void {
@@ -65,10 +75,44 @@ export class SidebarButton {
   }
 
   setTitle(label: string): void {
+    this.label = label
+    if (this.restricted) return
     const tip = formatSidebarTooltip(label, this.shortcut)
     this.element.dataset.tooltip = tip
+    this.element.classList.remove('has-multiline-tooltip')
     this.element.removeAttribute('title')
     this.element.setAttribute('aria-label', tip)
+  }
+
+  /**
+   * Scene feature restriction (e.g. portableExperiences disabled).
+   * Keeps pointer-events so the restriction tooltip still shows on hover;
+   * clicks are swallowed by the click handler.
+   */
+  setRestricted(restricted: boolean, message?: string): void {
+    this.restricted = restricted
+    this.element.classList.toggle('is-restricted', restricted)
+    if (restricted) {
+      const tip = (message ?? 'This scene is restricting the use of some features').trim()
+      this.element.disabled = false
+      this.element.classList.remove('is-disabled')
+      this.element.dataset.tooltip = tip
+      this.element.classList.add('has-multiline-tooltip')
+      this.element.removeAttribute('title')
+      this.element.setAttribute('aria-label', tip)
+      this.element.setAttribute('aria-disabled', 'true')
+      this.setActive(false)
+      this.setTalking(false)
+      this.setBadge(null)
+    } else {
+      this.element.removeAttribute('aria-disabled')
+      this.element.classList.remove('has-multiline-tooltip')
+      this.setTitle(this.label)
+    }
+  }
+
+  isRestricted(): boolean {
+    return this.restricted
   }
 
   setBadge(count: number | null): void {

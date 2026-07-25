@@ -543,6 +543,17 @@ export class RemoteAvatarManager {
     record?.nameTag?.showChat(text)
   }
 
+  /** Local-only private message overhead on a remote (incoming: "Name DM"). */
+  showPeerNameTagDmChat(
+    address: string,
+    text: string,
+    options: { mode: 'outgoing' | 'incoming'; peerName?: string } = { mode: 'incoming' }
+  ): void {
+    if (!areSceneNameTagsVisible()) return
+    const record = this.peers.get(address.toLowerCase())
+    record?.nameTag?.showDmChat(text, options)
+  }
+
   /** Nearby-voice bars on remote name tags (address → 0–1 level). */
   applyVoiceLevels(levels: ReadonlyMap<string, number>): void {
     const speaking = new Set<string>()

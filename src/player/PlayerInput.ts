@@ -350,6 +350,7 @@ export class PlayerInput {
       document.querySelector('.explorer-auth-panel:not([hidden])') !== null ||
       // RestrictedActions openExternalUrl / openNftDialog — block re-lock while faded dialog is up
       document.getElementById('threejs-hud-confirm-overlay') !== null ||
+      document.getElementById('threejs-external-link-overlay') !== null ||
       document.getElementById('threejs-nft-dialog-overlay') !== null
     )
   }

@@ -38,12 +38,21 @@ const OPTIONS_TOOLTIP_HTML = `
   </span>
 `
 
+export type NameTagDmChatOptions = {
+  /** Outgoing: "Name DM to Peer". Incoming: "Name DM". */
+  mode: 'outgoing' | 'incoming'
+  /** Peer display name for outgoing "to …" suffix. */
+  peerName?: string
+}
+
 /** Floating label above an avatar — billboard via CSS2DRenderer. */
 export class NameTag {
   readonly object: CSS2DObject
   private readonly rootEl: HTMLDivElement
   private readonly textEl: HTMLSpanElement
   private readonly badgeEl: HTMLSpanElement | null
+  private readonly dmBadgeEl: HTMLSpanElement
+  private readonly dmToEl: HTMLSpanElement
   private readonly chatEl: HTMLDivElement
   private readonly loadingEl: HTMLDivElement
   private readonly voiceEl: HTMLDivElement
@@ -73,6 +82,18 @@ export class NameTag {
       this.badgeEl.textContent = '✓'
       header.appendChild(this.badgeEl)
     }
+
+    // Explorer-style pink "DM" marker — only visible while a private message is shown.
+    this.dmBadgeEl = document.createElement('span')
+    this.dmBadgeEl.className = 'avatar-name-tag__dm-badge'
+    this.dmBadgeEl.textContent = 'DM'
+    this.dmBadgeEl.hidden = true
+    header.appendChild(this.dmBadgeEl)
+
+    this.dmToEl = document.createElement('span')
+    this.dmToEl.className = 'avatar-name-tag__dm-to'
+    this.dmToEl.hidden = true
+    header.appendChild(this.dmToEl)
 
     // 3 green voice bars inside the pill, to the right of name / checkmark.
     this.voiceEl = document.createElement('div')
@@ -163,14 +184,35 @@ export class NameTag {
       this.clearChat()
       return
     }
-    if (this.chatHideTimer !== null) {
-      clearTimeout(this.chatHideTimer)
-      this.chatHideTimer = null
+    // Scene chat — clear any leftover private-DM header chrome.
+    this.rootEl.classList.remove('avatar-name-tag--dm')
+    this.dmBadgeEl.hidden = true
+    this.dmToEl.hidden = true
+    this.dmToEl.textContent = ''
+    this.beginChatDisplay(trimmed, durationMs)
+  }
+
+  /**
+   * Private message overhead (local client only).
+   * Outgoing: `Name ✓ DM to Peer` + message.
+   * Incoming: `Name ✓ DM` + message.
+   */
+  showDmChat(text: string, options: NameTagDmChatOptions, durationMs = NAME_TAG_CHAT_DISPLAY_MS): void {
+    const trimmed = stripDuplicateNameFromChat(text, this.label)
+    if (!trimmed) {
+      this.clearChat()
+      return
     }
-    this.chatEl.textContent = trimmed
-    this.rootEl.classList.add('avatar-name-tag--has-chat')
-    this.chatEl.setAttribute('aria-hidden', 'false')
-    this.chatHideTimer = setTimeout(() => this.clearChat(), durationMs)
+    this.dmBadgeEl.hidden = false
+    this.rootEl.classList.add('avatar-name-tag--dm')
+    if (options.mode === 'outgoing' && options.peerName?.trim()) {
+      this.dmToEl.textContent = `to ${options.peerName.trim()}`
+      this.dmToEl.hidden = false
+    } else {
+      this.dmToEl.textContent = ''
+      this.dmToEl.hidden = true
+    }
+    this.beginChatDisplay(trimmed, durationMs)
   }
 
   clearChat(): void {
@@ -180,7 +222,22 @@ export class NameTag {
     }
     this.chatEl.textContent = ''
     this.rootEl.classList.remove('avatar-name-tag--has-chat')
+    this.rootEl.classList.remove('avatar-name-tag--dm')
+    this.dmBadgeEl.hidden = true
+    this.dmToEl.hidden = true
+    this.dmToEl.textContent = ''
     this.chatEl.setAttribute('aria-hidden', 'true')
+  }
+
+  private beginChatDisplay(trimmed: string, durationMs: number): void {
+    if (this.chatHideTimer !== null) {
+      clearTimeout(this.chatHideTimer)
+      this.chatHideTimer = null
+    }
+    this.chatEl.textContent = trimmed
+    this.rootEl.classList.add('avatar-name-tag--has-chat')
+    this.chatEl.setAttribute('aria-hidden', 'false')
+    this.chatHideTimer = setTimeout(() => this.clearChat(), durationMs)
   }
 
   /** Centered spinner overlay while a remote avatar is still loading. */

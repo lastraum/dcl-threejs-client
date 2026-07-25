@@ -493,6 +493,7 @@ export class World {
           if (skipRemoteAvatars()) return
           this.vrmPeerSync.onPeerLeave(address)
           this.remoteAvatars?.removePeer(address)
+          this.social.onRemotePeerLeft(address)
         },
         onPeerTransform: (address, payload) => {
           if (skipRemoteAvatars()) return
@@ -3900,14 +3901,32 @@ export class World {
     this.unsubAvatarChatTranslate?.()
 
     this.unsubAvatarChat = this.social.onChat((event) => {
-      if (!event.channelKey.startsWith('scene:')) return
-      const address = event.line.senderAddress?.toLowerCase()
-      if (!address) return
       if (!isChatTextLine(event.line)) return
       // Prefer live translation when already ready (cache hit / fast auto-translate).
       const display = chatTranslationService.displayText(event.line.id, event.line.text)
       const text = overheadChatText(display)
       if (!text) return
+
+      // 1:1 DMs — local client only (already private transport). Explorer-style DM badge.
+      if (event.channelKey.startsWith('dm:')) {
+        const peerAddr = event.channelKey.slice(3).toLowerCase()
+        const local = this.session.getAddress()?.toLowerCase() ?? ''
+        const sender = event.line.senderAddress?.toLowerCase() || (event.line.self ? local : '')
+        if (!sender) return
+        const peerName =
+          this.social.getDmPeers().find((p) => p.address === peerAddr)?.displayName ||
+          this.social.getPeerDisplay(peerAddr).displayName
+        if (event.line.self || (local && sender === local)) {
+          this.player?.showNameTagDmChat(text, { mode: 'outgoing', peerName })
+        } else if (!skipRemoteAvatars()) {
+          this.remoteAvatars?.showPeerNameTagDmChat(sender, text, { mode: 'incoming' })
+        }
+        return
+      }
+
+      if (!event.channelKey.startsWith('scene:')) return
+      const address = event.line.senderAddress?.toLowerCase()
+      if (!address) return
       this.overheadChatActive.set(address, {
         messageId: event.line.id,
         originalText: event.line.text,

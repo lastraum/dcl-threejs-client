@@ -41,6 +41,7 @@ export function isClientOverlayTarget(target: EventTarget | null): boolean {
       '.user-profile-modal',
       '.user-profile-modal-backdrop',
       '#threejs-hud-confirm-overlay',
+      '#threejs-external-link-overlay',
       '#threejs-nft-dialog-overlay'
     ].join(', ')
   )

@@ -4,9 +4,15 @@ import type { PerformanceTier } from '../shim/types'
 
 export type { PerformanceTier } from '../shim/types'
 
-/** Scene-worker engine tick interval after play-ready. Override with `?scenetick=25` (16–100 ms). */
+/**
+ * Scene-worker min interval between engine.update ticks after play-ready.
+ * Explorer runs systems near display rate; high = ~60 Hz, medium ~15 Hz, low ~10 Hz.
+ * Override: `?scenetick=25` (16–100 ms).
+ *
+ * Each tick's dt is wall elapsed (capped at 100ms hitch) — see sceneEngineScheduler.
+ */
 export function resolveEngineTickIntervalMs(tier: PerformanceTier): number {
-  if (typeof window === 'undefined') return 33
+  if (typeof window === 'undefined') return 16
   const raw = new URLSearchParams(window.location.search).get('scenetick')
   if (raw) {
     const parsed = Number.parseInt(raw, 10)
@@ -14,7 +20,7 @@ export function resolveEngineTickIntervalMs(tier: PerformanceTier): number {
   }
   if (tier === 'low') return 100
   if (tier === 'medium') return 66
-  // Match camera-operator Math.max(16, dt*1000) — ~60Hz engine integration in Explorer.
+  // ~60 Hz — Explorer-class system integration (timers, Tween, continuous motion).
   return 16
 }
 

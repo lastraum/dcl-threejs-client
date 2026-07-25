@@ -78,10 +78,12 @@ export class ChatPanel {
   private unsubChat: (() => void) | null = null
   private unsubChannel: (() => void) | null = null
   private unsubProfiles: (() => void) | null = null
+  private unsubFriendship: (() => void) | null = null
   private unsubTranslate: (() => void) | null = null
   private unsubTranslateSettings: (() => void) | null = null
   private unsubFollow: (() => void) | null = null
   private presenceTimer: number | null = null
+  private lastRailPresenceKey = ''
   private mounted = false
   private readonly sceneCanvas: HTMLElement | null
   private inputCaret = 0
@@ -269,6 +271,25 @@ export class ChatPanel {
     this.renderAll()
   }
 
+  /** Open a 1:1 private message thread (Friends panel / profile). */
+  openDirectMessage(peerAddress: string, displayName: string): void {
+    const address = peerAddress.trim().toLowerCase()
+    if (!address) return
+    const name = displayName.trim() || `${address.slice(0, 6)}…${address.slice(-4)}`
+    // Fire-and-forget open; PM room connect is async — sendMessage also reconnects.
+    void this.social.openDirectMessage(address, name).then((ready) => {
+      if (!ready) {
+        console.warn('[chat] private-messages room not ready after openDirectMessage')
+      }
+      if (this.visible) this.renderAll()
+    })
+    this.show()
+    this.renderAll()
+    this.bodyMode = 'messages'
+    this.inputEl.placeholder = 'Private message — press Enter to send'
+    window.setTimeout(() => this.focusComposer(), 0)
+  }
+
   show(): void {
     this.ensureMounted()
     this.visible = true
@@ -283,6 +304,8 @@ export class ChatPanel {
     // Always re-render when a line lands (even if panel was empty/stale channel).
     this.unsubChat = this.social.onChat(() => {
       if (this.bodyMode === 'messages') this.renderMessages()
+      // Refresh rail presence/unread badges when DMs arrive on another channel.
+      this.renderRail()
       this.updateComposerUi()
       this.updateUsersButton()
     })
@@ -297,8 +320,14 @@ export class ChatPanel {
     this.unsubProfiles = this.social.onPeerProfilesChange(() => {
       if (this.bodyMode === 'users') this.renderUsersList()
       else this.renderMessages()
+      // Refresh DM rail faces when profile snapshots arrive.
+      this.renderRail()
       this.updateComposerUi()
       this.updateUsersButton()
+    })
+    // Friend connectivity stream → green dots on DM faces (same source as Friends ONLINE).
+    this.unsubFriendship = this.social.onFriendshipChange(() => {
+      if (this.visible) this.renderRail()
     })
     this.unsubTranslate = chatTranslationService.onUpdate(() => {
       if (this.visible && this.bodyMode === 'messages') this.renderMessages()
@@ -331,12 +360,14 @@ export class ChatPanel {
     this.unsubChat?.()
     this.unsubChannel?.()
     this.unsubProfiles?.()
+    this.unsubFriendship?.()
     this.unsubTranslate?.()
     this.unsubTranslateSettings?.()
     this.unsubFollow?.()
     this.unsubChat = null
     this.unsubChannel = null
     this.unsubProfiles = null
+    this.unsubFriendship = null
     this.unsubTranslate = null
     this.unsubTranslateSettings = null
     this.unsubFollow = null
@@ -443,6 +474,7 @@ export class ChatPanel {
       document.querySelector('.settings-overlay.is-open') !== null ||
       document.querySelector('.emote-wheel-overlay.is-open') !== null ||
       document.getElementById('threejs-hud-confirm-overlay') !== null ||
+      document.getElementById('threejs-external-link-overlay') !== null ||
       document.getElementById('threejs-nft-dialog-overlay') !== null
     )
   }
@@ -526,10 +558,23 @@ export class ChatPanel {
     this.updateComposerUi()
     this.inputEl.disabled = this.imageSending || this.bodyMode === 'users'
     if (this.bodyMode === 'messages') {
-      this.inputEl.placeholder =
-        this.social.getChannel().kind === 'scene'
-          ? 'Press Enter to chat — drop an image'
-          : 'Press Enter to chat'
+      const kind = this.social.getChannel().kind
+      if (kind === 'scene') {
+        this.inputEl.placeholder = 'Press Enter to chat — drop an image'
+      } else if (kind === 'dm') {
+        const pmReady = this.social.isPrivateMessagesReady()
+        const pmConnecting = this.social.isPrivateMessagesConnecting()
+        this.inputEl.placeholder = pmConnecting
+          ? 'Connecting private chat…'
+          : pmReady
+            ? 'Private message — press Enter to send'
+            : this.social.getPrivateMessagesError()
+              ? 'Private chat offline — try again'
+              : 'Private message — press Enter to send'
+        this.inputEl.disabled = this.imageSending || pmConnecting
+      } else {
+        this.inputEl.placeholder = 'Press Enter to chat'
+      }
     }
     this.updateComposerDropUi()
   }
@@ -705,11 +750,34 @@ export class ChatPanel {
 
   private startPresencePoll(): void {
     this.stopPresencePoll()
+    this.lastRailPresenceKey = this.railPresenceKey()
     this.presenceTimer = window.setInterval(() => {
       if (!this.visible) return
       this.updateUsersButton()
       if (this.bodyMode === 'users') this.renderUsersList()
-    }, 2500)
+      // Re-render rail when friend online / unread / PM-room presence changes.
+      const key = this.railPresenceKey()
+      if (key !== this.lastRailPresenceKey) {
+        this.lastRailPresenceKey = key
+        this.renderRail()
+      }
+    }, 2000)
+  }
+
+  private railPresenceKey(): string {
+    try {
+      const parts = this.social.getDmPeers().map((p) => {
+        const ch = {
+          kind: 'dm' as const,
+          peerAddress: p.address,
+          displayName: p.displayName
+        }
+        return `${p.address}:${this.social.isPeerOnline(p.address) ? 1 : 0}:${this.social.getUnreadCount(ch)}`
+      })
+      return parts.join('|')
+    } catch {
+      return ''
+    }
   }
 
   private stopPresencePoll(): void {
@@ -813,6 +881,7 @@ export class ChatPanel {
   }
 
   private renderRail(): void {
+    document.querySelectorAll('.chat-panel__rail-chip-hover').forEach((el) => el.remove())
     this.railScrollEl.innerHTML = ''
     const current = this.social.getChannel()
 
@@ -823,6 +892,32 @@ export class ChatPanel {
           title: scene.label,
           iconSvg: sceneChatRailIcon(),
           active: current.kind === 'scene' && current.sceneKey === scene.key
+        })
+      )
+    }
+
+    // Private DMs above community channels — profile face when known.
+    for (const peer of this.social.getDmPeers()) {
+      const face = peer.faceUrl || this.social.getPeerDisplay(peer.address).faceUrl
+      if (!face) this.social.scheduleEnsurePeer(peer.address)
+      const channel = {
+        kind: 'dm' as const,
+        peerAddress: peer.address,
+        displayName: peer.displayName
+      }
+      const active = current.kind === 'dm' && current.peerAddress.toLowerCase() === peer.address
+      // Unread badge when this DM is not the active open thread.
+      const viewingThis = active && this.isActivelyReading()
+      this.railScrollEl.appendChild(
+        this.createRailButton({
+          channel,
+          title: peer.displayName,
+          imageUrl: face ?? undefined,
+          fallback: peer.displayName.slice(0, 1).toUpperCase() || '?',
+          active,
+          closable: true,
+          online: this.social.isPeerOnline(peer.address),
+          unreadCount: viewingThis ? 0 : this.social.getUnreadCount(channel)
         })
       )
     }
@@ -847,7 +942,48 @@ export class ChatPanel {
     iconSvg?: string
     fallback?: string
     active: boolean
-  }): HTMLButtonElement {
+    closable?: boolean
+    online?: boolean
+    unreadCount?: number
+  }): HTMLElement {
+    const chip = document.createElement('div')
+    chip.className = `chat-panel__rail-chip${options.active ? ' is-active' : ''}${
+      options.closable ? ' is-closable' : ''
+    }`
+    if (options.channel.kind === 'community' || options.closable) {
+      chip.classList.add('is-named')
+    }
+    if (options.channel.kind === 'dm') {
+      chip.classList.add(options.online ? 'is-online' : 'is-offline')
+    }
+
+    const hover = document.createElement('div')
+    hover.className = 'chat-panel__rail-chip-hover'
+    hover.setAttribute('aria-hidden', 'true')
+
+    if (options.closable) {
+      const close = document.createElement('button')
+      close.type = 'button'
+      close.className = 'chat-panel__rail-chip-close'
+      close.setAttribute('aria-label', `Remove ${options.title}`)
+      close.textContent = '×'
+      close.addEventListener('click', (ev) => {
+        ev.stopPropagation()
+        ev.preventDefault()
+        if (options.channel.kind === 'dm') {
+          this.social.closeDirectMessage(options.channel.peerAddress)
+          this.renderAll()
+        }
+      })
+      hover.appendChild(close)
+    }
+
+    const label = document.createElement('span')
+    label.className = 'chat-panel__rail-chip-label'
+    label.textContent = options.title
+    hover.appendChild(label)
+    document.body.appendChild(hover)
+
     const btn = document.createElement('button')
     btn.type = 'button'
     btn.className = `chat-panel__rail-btn${options.active ? ' is-active' : ''}`
@@ -876,7 +1012,62 @@ export class ChatPanel {
       this.social.selectChannel(options.channel)
       this.renderAll()
     })
-    return btn
+    chip.appendChild(btn)
+
+    // Presence on CHIP (not inside overflow:hidden button) so badge/dot sit ON the profile.
+    if (options.channel.kind === 'dm') {
+      const unread = options.unreadCount ?? 0
+      if (unread > 0) {
+        chip.classList.add('has-unread')
+        const badge = document.createElement('span')
+        badge.className = 'social-chat-dock__unread'
+        badge.textContent = unread > 99 ? '99+' : String(unread)
+        badge.setAttribute('aria-label', `${unread} unread`)
+        chip.appendChild(badge)
+      }
+      if (options.online) {
+        const dot = document.createElement('span')
+        dot.className = 'chat-panel__rail-online-dot'
+        dot.title = 'Online'
+        dot.setAttribute('aria-label', 'Online')
+        chip.appendChild(dot)
+      }
+    }
+    if (chip.classList.contains('is-named')) {
+      let hideTimer: ReturnType<typeof setTimeout> | null = null
+      const place = (): void => {
+        // Left edge of the whole chat rail (outside the panel), not over the avatar.
+        const rail = this.railScrollEl?.getBoundingClientRect?.() ?? null
+        const btnRect = btn.getBoundingClientRect()
+        const leftEdge = rail ? rail.left : btnRect.left
+        hover.style.left = `${Math.round(leftEdge - 10)}px`
+        hover.style.top = `${Math.round(btnRect.top + btnRect.height / 2)}px`
+      }
+      const open = (): void => {
+        if (hideTimer) {
+          clearTimeout(hideTimer)
+          hideTimer = null
+        }
+        place()
+        chip.classList.add('is-hover-open')
+        hover.classList.add('is-open')
+      }
+      const scheduleClose = (): void => {
+        if (hideTimer) clearTimeout(hideTimer)
+        hideTimer = setTimeout(() => {
+          hideTimer = null
+          chip.classList.remove('is-hover-open')
+          hover.classList.remove('is-open')
+        }, 120)
+      }
+      chip.addEventListener('mouseenter', open)
+      chip.addEventListener('mouseleave', scheduleClose)
+      chip.addEventListener('focusin', open)
+      chip.addEventListener('focusout', scheduleClose)
+      hover.addEventListener('mouseenter', open)
+      hover.addEventListener('mouseleave', scheduleClose)
+    }
+    return chip
   }
 
   private renderMessages(): void {

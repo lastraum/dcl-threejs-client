@@ -148,6 +148,15 @@ export class MultiSceneRuntime {
     this.secondary?.reconcile(candidates)
   }
 
+  /** Prefer live-secondary boot for the parcel under feet (promote without /goto). */
+  setSecondaryPriorityParcel(x: number, y: number | null): void {
+    this.secondary?.setPriorityParcel(x, y)
+  }
+
+  hasLiveSecondaryForParcel(x: number, y: number): boolean {
+    return this.secondary?.hasSecondaryForParcel(x, y) ?? false
+  }
+
   tickSync(player: EntityPose, camera: EntityPose, frame = 0): void {
     this.pe.tickSync(player, camera, frame)
     if (this.secondaryActivityEnabled) {

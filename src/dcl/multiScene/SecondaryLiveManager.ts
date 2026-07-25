@@ -44,6 +44,11 @@ export class SecondaryLiveManager {
   private onLiveIdsChange: ((ids: ReadonlySet<string>) => void) | null = null
   private lastReconcileAt = 0
   private nextSlotIndex = 0
+  /**
+   * Parcel under feet (absolute) — always prefer a covering candidate for live secondary
+   * so walk-on promote can hand off without a cold /goto loading screen.
+   */
+  private priorityParcelKey: string | null = null
 
   bind(opts: {
     primaryScene: ResolvedScene
@@ -89,6 +94,11 @@ export class SecondaryLiveManager {
 
   hasSecondaryForParcel(x: number, y: number): boolean {
     return this.findSlotForParcel(x, y) !== null
+  }
+
+  /** Prefer booting a live secondary that covers this absolute parcel (under feet). */
+  setPriorityParcel(x: number, y: number | null): void {
+    this.priorityParcelKey = x != null && y != null ? `${x},${y}` : null
   }
 
   private findSlotForParcel(x: number, y: number): SceneWorkerSlot | null {
@@ -297,9 +307,22 @@ export class SecondaryLiveManager {
 
     // Live radius ≤ Scene Distance (default max 64m). Far warm/tertiary stay outside live.
     const liveRadiusM = secondaryLiveRadiusM()
+    const pri = this.priorityParcelKey
+    const coversPri = (c: SecondaryLiveRequest): boolean => {
+      if (!pri) return false
+      const base = c.base.trim()
+      if (base === pri) return true
+      return `${c.resolveX},${c.resolveY}` === pri
+    }
     const inRange = candidates
       .filter((c) => liveRadiusM > 0 && c.distM <= liveRadiusM)
-      .sort((a, b) => a.distM - b.distM)
+      .sort((a, b) => {
+        // Under-feet parcel first so promote handoff is ready without /goto rebuild.
+        const ap = coversPri(a) ? 0 : 1
+        const bp = coversPri(b) ? 0 : 1
+        if (ap !== bp) return ap - bp
+        return a.distM - b.distM
+      })
       .slice(0, Math.max(cap, 0))
 
     const want = new Set(inRange.map((c) => c.entityId))
@@ -308,6 +331,11 @@ export class SecondaryLiveManager {
 
     for (const [id, slot] of this.slots) {
       if (!want.has(id)) {
+        // Never evict the under-feet priority while pinned (promote path).
+        if (pri && (slot.scene.baseParcel.trim() === pri || slot.scene.parcels.some((p) => p.trim() === pri))) {
+          want.add(id)
+          continue
+        }
         slot.dispose()
         this.slots.delete(id)
         this.stickyIds.delete(id)
@@ -319,7 +347,9 @@ export class SecondaryLiveManager {
     // Serial boot — one full secondary worker at a time (parallel boots starve seamless promote).
     if (this.booting.size >= SECONDARY_LIVE_BOOT_CONCURRENCY) return
 
-    for (const req of inRange) {
+    // Prefer booting priority parcel first.
+    const bootOrder = [...inRange]
+    for (const req of bootOrder) {
       if (this.slots.has(req.entityId) || this.booting.has(req.entityId)) continue
       if (this.slots.size + this.booting.size >= cap) break
       void this.bootOne(req)

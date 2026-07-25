@@ -2231,6 +2231,8 @@ export class AppController {
       onSoftRoute: (x, y) => {
         this.softUpdatePlayRoute({ kind: 'coords', x, y, segment: `${x},${y}` })
         void this.refreshLocationTitleForParcel(x, y)
+        // Prefer live-secondary boot for the parcel under feet (before promote dwell).
+        this.multiSceneRuntime.setSecondaryPriorityParcel(x, y)
       },
       onPrefetch: (x, y) => {
         this.enqueueScriptWarm(x, y)
@@ -3125,12 +3127,26 @@ export class AppController {
   ): Promise<void> {
     const world = this.world
     if (world) {
+      // Pin under-feet parcel so live secondary boots first (handoff, no loading screen).
+      this.multiSceneRuntime.setSecondaryPriorityParcel(target.x, target.y)
       try {
-        const handed = await world.tryPromoteInWorld(target)
+        let handed = await world.tryPromoteInWorld(target)
+        if (!handed) {
+          // Wait for nearby secondary boot (already loading while we stood nearby / just pinned).
+          console.info(
+            `[promote] wait for live secondary @ ${target.x},${target.y} before cold jump…`
+          )
+          for (let i = 0; i < 20 && !handed; i++) {
+            await new Promise<void>((r) => setTimeout(r, 400))
+            if (this.world !== world) return
+            handed = await world.tryPromoteInWorld(target)
+          }
+        }
         if (handed) {
           console.info(
             `[promote] in-world handoff+demote ${target.x},${target.y} (${reason})`
           )
+          this.multiSceneRuntime.setSecondaryPriorityParcel(target.x, null)
           this.currentRoute = target
           // PE already attached; keep HUD PE panel bound.
           this.shell?.bindPortableExperiences(this.peManager)
@@ -3151,12 +3167,15 @@ export class AppController {
     this.scriptWarmQueue.length = 0
     this.scriptWarmQueuedKeys.clear()
     this.scriptWarmInFlight = 0
-    console.info(`[promote] seamless jump ${target.x},${target.y} (${reason})`)
+    console.info(
+      `[promote] seamless jump ${target.x},${target.y} (${reason}) — no live secondary after wait`
+    )
     await this.jumpInToScene(target, {
       fastAssets: true,
-      // Keep Genesis feet, but show loading chrome (blank seamless was brutal on large plazas).
+      // Keep Genesis feet. No full /goto loading chrome on parcel walk —
+      // scene should already have been loading as a nearby secondary.
       seamless: true,
-      showSeamlessLoading: true,
+      showSeamlessLoading: false,
       replace: true,
       entry: 'teleport',
       source: 'goto'

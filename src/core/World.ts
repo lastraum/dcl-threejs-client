@@ -773,7 +773,11 @@ export class World {
     }
     if (skipSceneAnimators()) {
       console.info(
-        '[perf] scene animators OFF by default (AOI load test) — AnimatorBridge bind/update skipped; ?anim=1 to re-enable'
+        '[perf] scene animators OFF (?noanim) — AnimatorBridge bind/update skipped'
+      )
+    } else {
+      console.info(
+        '[perf] scene animators ON — fair phase-slice sampling (near every frame, rest time-correct ring)'
       )
     }
 

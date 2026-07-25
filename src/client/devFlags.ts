@@ -48,15 +48,12 @@ export function skipAoiNeighbors(): boolean {
  * Skip scene GLTF Animator bind + mixer playback (clips frozen; nothing advances).
  * PhysX / AOI / tweens unchanged.
  *
- * TEMP (AOI multi-scene load test): **default ON** so animators stay off without a URL flag.
- * Re-enable scene animators with `?anim=1` or `?sceneanim=1`.
- * Legacy: `?noanim=1` still forces skip (redundant while default is off).
+ * Default: animators **ON**. Isolate cost with `?noanim=1`.
+ * Fair phase-sliced sampling (AnimatorBridge) keeps all clips advancing under budget.
  */
 export function skipSceneAnimators(): boolean {
   const params = readSearchParams()
-  if (!params) return true
-  // Explicit opt-in to restore scene mixers while default is forced off.
+  if (!params) return false
   if (params.has('anim') || params.has('sceneanim')) return false
-  // Default: disabled (was opt-in via ?noanim only).
-  return true
+  return params.has('noanim') || params.has('skipanim')
 }

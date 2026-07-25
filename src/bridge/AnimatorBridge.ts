@@ -18,31 +18,35 @@ type AnimEntry = {
   gltfSrc: string
   /** Last applied ECS/default animator states — skip stop/play when unchanged. */
   lastAppliedSignature?: string
-  /** Accumulated dt while off-camera sample was deferred (time-correct catch-up). */
+  /** Accumulated dt while sample was deferred (time-correct catch-up — never freezes clock). */
   deferredSampleDt: number
+  /** Bound root has SkinnedMesh — needs skeleton.update after sample. */
+  hasSkinned: boolean
 }
 
-/** Sample scheduling context — full rate in expanded frustum or near player. */
+/** Sample scheduling context — near camera / frustum bias for fair phase slice. */
 export type AnimatorSampleContext = {
   camera: THREE.Camera
   /** Player feet / focus (world space). */
   playerWorld: THREE.Vector3
 }
 
-/** Full-rate sample within this radius of the camera even if off-camera. */
+/** Always-sample (or 2× fair share) within this radius of the camera. */
 const NEAR_PLAYER_FULL_RATE_M = 16
 /** Sphere radius added around entity root for expanded-frustum tests (turn without pop). */
 const FRUSTUM_EXPAND_M = 6
 /**
- * Hard cap: even on-camera CBD can put hundreds of mixers in the "prefer" set.
- * Frustum-only never recovers FPS there — budget is required. Priority fills the budget.
+ * Per-frame main-thread budget (mixer.update + optional matrix/skeleton).
+ * CBD can have 200–800 active mixers — we never sample all every frame.
+ *
+ * Fair phase slice: every active mixer advances on a rotating schedule with
+ * accumulated dt (time-correct). Near-camera gets priority slots first so the
+ * view stays smooth; the rest of the budget is a round-robin cursor so nothing
+ * is permanently starved (unlike hard-cap-only which froze mid-plaza props).
  */
-const MAX_SAMPLES_PER_FRAME = 48
-/**
- * Off-frustum + beyond near radius (and overflow preferred): sample every N frames
- * with accumulated dt (~15 Hz at 60 FPS display).
- */
-const OFFSCREEN_SAMPLE_EVERY_N = 4
+const MAX_SAMPLES_PER_FRAME = 64
+/** Near / PART: try to sample every frame (capped so far ring still gets budget). */
+const MAX_NEAR_ALWAYS_PER_FRAME = 24
 
 const _frustum = new THREE.Frustum()
 const _projScreen = new THREE.Matrix4()
@@ -269,17 +273,26 @@ export class AnimatorBridge {
     }
   }
 
-  /** After mixer sample: matrixWorld; flag PhysX only for one-shot (door) clips. */
+  /**
+   * After mixer sample: only pay matrix/skeleton when needed.
+   * Decorative rigid loops: mixer writes local TRS; renderer scene updateMatrixWorld
+   * covers them next frame. PART doors + skinned need same-frame matrix/skeleton.
+   */
   private markShapeMotionAfterSample(entity: Entity, entry: AnimEntry): void {
-    entry.root.traverse((obj) => {
-      const sk = obj as THREE.SkinnedMesh
-      if (sk.isSkinnedMesh && sk.skeleton) sk.skeleton.update()
-    })
-    const entityNode = entry.root.parent
-    if (entityNode) entityNode.updateMatrixWorld(true)
-    else entry.root.updateMatrixWorld(true)
+    const part = hasPartColliderWork(entry)
+    if (entry.hasSkinned) {
+      entry.root.traverse((obj) => {
+        const sk = obj as THREE.SkinnedMesh
+        if (sk.isSkinnedMesh && sk.skeleton) sk.skeleton.update()
+      })
+    }
+    if (part || entry.hasSkinned) {
+      const entityNode = entry.root.parent
+      if (entityNode) entityNode.updateMatrixWorld(true)
+      else entry.root.updateMatrixWorld(true)
+    }
     // PART set: World gates actual PhysX writes on collider mesh pose change.
-    if (hasPartColliderWork(entry)) {
+    if (part) {
       this.shapeMotionEntities.add(entity)
     }
   }
@@ -506,13 +519,18 @@ export class AnimatorBridge {
       entry?.mixer.stopAllAction()
       const loaded = template
       const clipNames = loaded.animations.map((c) => c.name)
+      let hasSkinned = false
+      mesh.traverse((obj) => {
+        if ((obj as THREE.SkinnedMesh).isSkinnedMesh) hasSkinned = true
+      })
       entry = {
         mixer: new THREE.AnimationMixer(mesh),
         actions: new Map(),
         root: mesh,
         gltfHash: hash,
         gltfSrc: src,
-        deferredSampleDt: 0
+        deferredSampleDt: 0,
+        hasSkinned
       }
       const nodeByName = loaded.animations.length ? buildNodeNameMap(mesh) : undefined
       for (const clip of loaded.animations) {
@@ -573,11 +591,16 @@ export class AnimatorBridge {
   }
 
   /**
-   * Advance mixers with view/near priority + hard per-frame budget.
+   * Advance mixers with **fair phase-sliced sampling** (all clips keep running).
    *
-   * Prefer: within 16 m of **camera** (world space) or expanded frustum.
-   * Dense plaza: prefer set is still huge → {@link MAX_SAMPLES_PER_FRAME} cap with priority.
-   * Overflow / off-cam: accumulate dt, sample on stride (time-correct).
+   * Problem: CBD has hundreds of active mixers. Sampling all every frame kills FPS.
+   * Old hard-cap starved mid-plaza props (first 48 near cam only).
+   *
+   * Solution — two layers, nothing permanently stopped:
+   * 1) **Near/PART** (≤16m or doors): sample every frame up to {@link MAX_NEAR_ALWAYS_PER_FRAME}.
+   * 2) **Fair ring**: remaining active mixers share leftover budget via a rotating cursor.
+   *    Each sample uses accumulated `deferredSampleDt` so wall-clock is correct
+   *    (2× dt every 2 frames ≈ same motion as 1× dt every frame).
    *
    * `delta === 0` (post-bind pose): sample all active work (no cull) so doors get first pose.
    */
@@ -608,84 +631,87 @@ export class AnimatorBridge {
     _frustum.setFromProjectionMatrix(_projScreen)
 
     type Cand = { entity: Entity; entry: AnimEntry; priority: number; distSq: number }
-    const preferred: Cand[] = []
-    const background: Cand[] = []
+    const near: Cand[] = []
+    const fair: Cand[] = []
 
     for (const [entity, entry] of this.entries) {
       if (!mixerHasActiveWork(entry)) {
         entry.deferredSampleDt = 0
         continue
       }
+      // Everyone accumulates wall time; sampled entries clear their debt.
+      entry.deferredSampleDt += delta
       const { priority, distSq } = this.samplePriority(entry, sampleCtx!)
       const cand: Cand = { entity, entry, priority, distSq }
-      if (priority > 0) preferred.push(cand)
-      else background.push(cand)
+      // priority ≥ 2: near camera or PART door — try every-frame.
+      if (priority >= 2) near.push(cand)
+      else fair.push(cand)
     }
 
-    // Near / PART first, then closer frustum hits.
-    preferred.sort((a, b) => b.priority - a.priority || a.distSq - b.distSq)
+    // Near: closer / PART first.
+    near.sort((a, b) => b.priority - a.priority || a.distSq - b.distSq)
+    // Fair ring: stable order by entity id so phase is deterministic.
+    fair.sort((a, b) => (a.entity as number) - (b.entity as number))
 
     let sampled = 0
     let deferred = 0
 
-    const runSample = (entity: Entity, entry: AnimEntry, step: number): void => {
-      entry.mixer.update(step)
+    const runSample = (entity: Entity, entry: AnimEntry): void => {
+      const step = entry.deferredSampleDt
+      entry.deferredSampleDt = 0
+      if (step > 1e-8) entry.mixer.update(step)
       sampled++
       this.markShapeMotionAfterSample(entity, entry)
     }
 
-    for (const cand of preferred) {
-      const { entity, entry } = cand
-      if (sampled < MAX_SAMPLES_PER_FRAME) {
-        const step = delta + entry.deferredSampleDt
-        entry.deferredSampleDt = 0
-        runSample(entity, entry, step)
-      } else {
-        // Prefer-set overflow — still time-slice, not free full-rate for hundreds of props.
-        entry.deferredSampleDt += delta
-        if ((this.sampleFrame + (entity as number)) % OFFSCREEN_SAMPLE_EVERY_N === 0) {
-          if (sampled < MAX_SAMPLES_PER_FRAME + 16) {
-            // Small overflow allowance so mid-frustum isn't frozen when plaza is dense.
-            const step = entry.deferredSampleDt
-            entry.deferredSampleDt = 0
-            runSample(entity, entry, step)
-          } else {
-            deferred++
-          }
-        } else {
-          deferred++
-        }
+    // --- Layer 1: near / PART (smooth view + doors) ---
+    for (const cand of near) {
+      if (sampled >= MAX_NEAR_ALWAYS_PER_FRAME) {
+        // Overflow near → fair ring still advances them this or next frames.
+        fair.push(cand)
+        continue
       }
+      if (sampled >= MAX_SAMPLES_PER_FRAME) {
+        deferred++
+        continue
+      }
+      runSample(cand.entity, cand.entry)
     }
 
-    for (const cand of background) {
-      const { entity, entry } = cand
-      entry.deferredSampleDt += delta
-      if ((this.sampleFrame + (entity as number)) % OFFSCREEN_SAMPLE_EVERY_N !== 0) {
-        deferred++
-        continue
+    // --- Layer 2: fair phase slice over remaining budget ---
+    const budgetLeft = Math.max(0, MAX_SAMPLES_PER_FRAME - sampled)
+    if (fair.length > 0 && budgetLeft > 0) {
+      // Cursor walks the fair ring so every mixer is sampled every ceil(n/budget) frames.
+      const n = fair.length
+      const start = this.fairRingCursor % n
+      this.fairRingCursor = (start + budgetLeft) % n
+      for (let i = 0; i < budgetLeft; i++) {
+        const cand = fair[(start + i) % n]!
+        // Skip if already sampled as near this frame (shouldn't be in fair).
+        if (cand.entry.deferredSampleDt < 1e-8) continue
+        runSample(cand.entity, cand.entry)
       }
-      if (sampled >= MAX_SAMPLES_PER_FRAME + 16) {
-        deferred++
-        continue
-      }
-      const step = entry.deferredSampleDt
-      entry.deferredSampleDt = 0
-      runSample(entity, entry, step)
+      deferred += Math.max(0, n - budgetLeft)
+    } else if (fair.length) {
+      deferred += fair.length
     }
 
     if (!this.verbose) return
     this.logAnimator(
-      `Animator tick — ${this.entries.size} mixers · pref=${preferred.length} bg=${background.length} ` +
-        `sampled=${sampled} deferred=${deferred} budget=${MAX_SAMPLES_PER_FRAME}`,
+      `Animator tick — ${this.entries.size} mixers · near=${near.length} fair=${fair.length} ` +
+        `sampled=${sampled} deferred=${deferred} budget=${MAX_SAMPLES_PER_FRAME} ` +
+        `cursor=${this.fairRingCursor}`,
       { throttleMs: 3000 }
     )
   }
 
+  /** Rotating start index into the fair (non-near) active set. */
+  private fairRingCursor = 0
+
   /**
-   * priority > 0 → preferred full-rate candidate (still subject to budget).
-   * Uses camera world position (player ECS pose is scene-local — do not mix spaces).
-   * Cheap: matrixWorld elements only — no getWorldPosition() forced update.
+   * priority ≥ 2 → try every-frame (near / PART).
+   * priority 1 → frustum (fair ring, slightly prefer via sort if we ever dual-queue).
+   * priority 0 → off-cam fair ring.
    */
   private samplePriority(
     entry: AnimEntry,

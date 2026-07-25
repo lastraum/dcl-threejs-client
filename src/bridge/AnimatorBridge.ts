@@ -60,17 +60,31 @@ const NEAR_PLAYER_FULL_RATE_M = 16
 /** Sphere radius added around entity root for expanded-frustum tests (turn without pop). */
 const FRUSTUM_EXPAND_M = 6
 /**
- * Per-frame main-thread budget (mixer.update + optional matrix/skeleton).
- * CBD can have 200–800 active mixers — we never sample all every frame.
- *
- * Fair phase slice: every active mixer advances on a rotating schedule with
- * accumulated dt (time-correct). Near-camera gets priority slots first so the
- * view stays smooth; the rest of the budget is a round-robin cursor so nothing
- * is permanently starved (unlike hard-cap-only which froze mid-plaza props).
+ * Hard ceiling — adaptive budget is almost always lower.
+ * 64 full mixer.update()s per frame was crushing CBD to ~10 FPS (HUD showed
+ * sampled 64/64 @ 10 display fps). Fair ring still advances all clips with
+ * accumulated dt; we just spend fewer samples when the frame is already long.
  */
-const MAX_SAMPLES_PER_FRAME = 64
-/** Near / PART: try to sample every frame (capped so far ring still gets budget). */
-const MAX_NEAR_ALWAYS_PER_FRAME = 24
+const MAX_SAMPLES_PER_FRAME = 32
+/** Near / PART absolute ceiling (adaptive near cap is lower under load). */
+const MAX_NEAR_ALWAYS_PER_FRAME = 12
+
+/**
+ * Scale sample count from last frame's wall dt so we recover FPS instead of
+ * locking into a death spiral (low fps → large dt → expensive samples → lower fps).
+ */
+function adaptiveSampleBudget(frameDt: number): { budget: number; nearCap: number } {
+  // ≥100ms (~10 fps): emergency — keep doors/near barely alive
+  if (frameDt >= 0.1) return { budget: 6, nearCap: 3 }
+  // ~20 fps
+  if (frameDt >= 0.05) return { budget: 10, nearCap: 4 }
+  // ~30 fps
+  if (frameDt >= 0.033) return { budget: 14, nearCap: 6 }
+  // ~45–50 fps
+  if (frameDt >= 0.022) return { budget: 20, nearCap: 8 }
+  // ≥60 fps headroom
+  return { budget: MAX_SAMPLES_PER_FRAME, nearCap: MAX_NEAR_ALWAYS_PER_FRAME }
+}
 
 const _frustum = new THREE.Frustum()
 const _projScreen = new THREE.Matrix4()
@@ -233,6 +247,8 @@ export class AnimatorBridge {
     frameDt: 0,
     disabled: false
   }
+  /** Previous frame wall dt — drives adaptive budget (death-spiral brake). */
+  private prevFrameDt = 1 / 60
 
   /** Latest fair phase-slice counters (always updated on scheduled ticks). */
   getSampleStats(): AnimatorSampleStats {
@@ -713,6 +729,10 @@ export class AnimatorBridge {
     // Fair ring: stable order by entity id so phase is deterministic.
     fair.sort((a, b) => (a.entity as number) - (b.entity as number))
 
+    // Budget from *previous* frame length so a hitch this frame doesn't double-dip.
+    const { budget, nearCap } = adaptiveSampleBudget(this.prevFrameDt)
+    this.prevFrameDt = delta
+
     let sampled = 0
     let deferred = 0
     let nearSampled = 0
@@ -721,7 +741,9 @@ export class AnimatorBridge {
     const runSample = (entity: Entity, entry: AnimEntry, layer: 'near' | 'fair'): void => {
       const step = entry.deferredSampleDt
       entry.deferredSampleDt = 0
-      if (step > 1e-8) entry.mixer.update(step)
+      // Cap single jump so one hitch doesn't blow a multi-second sample (still time-correct overall).
+      const clamped = Math.min(step, 0.25)
+      if (clamped > 1e-8) entry.mixer.update(clamped)
       sampled++
       if (layer === 'near') nearSampled++
       else fairSampled++
@@ -730,12 +752,12 @@ export class AnimatorBridge {
 
     // --- Layer 1: near / PART (smooth view + doors) ---
     for (const cand of near) {
-      if (sampled >= MAX_NEAR_ALWAYS_PER_FRAME) {
+      if (sampled >= nearCap) {
         // Overflow near → fair ring still advances them this or next frames.
         fair.push(cand)
         continue
       }
-      if (sampled >= MAX_SAMPLES_PER_FRAME) {
+      if (sampled >= budget) {
         deferred++
         continue
       }
@@ -743,7 +765,7 @@ export class AnimatorBridge {
     }
 
     // --- Layer 2: fair phase slice over remaining budget ---
-    const budgetLeft = Math.max(0, MAX_SAMPLES_PER_FRAME - sampled)
+    const budgetLeft = Math.max(0, budget - sampled)
     if (fair.length > 0 && budgetLeft > 0) {
       // Cursor walks the fair ring so every mixer is sampled every ceil(n/budget) frames.
       const n = fair.length
@@ -773,8 +795,8 @@ export class AnimatorBridge {
       fair: fairN,
       sampled,
       deferred,
-      budget: MAX_SAMPLES_PER_FRAME,
-      nearCap: MAX_NEAR_ALWAYS_PER_FRAME,
+      budget,
+      nearCap,
       fairSampleHz,
       displayFps,
       frameDt: delta,
@@ -785,7 +807,7 @@ export class AnimatorBridge {
     this.logAnimator(
       `Animator tick — ${this.entries.size} mixers · near=${near.length} fair=${fair.length} ` +
         `sampled=${sampled} (n=${nearSampled}/f=${fairSampled}) deferred=${deferred} ` +
-        `budget=${MAX_SAMPLES_PER_FRAME} fairHz≈${fairSampleHz.toFixed(0)}`,
+        `budget=${budget}/${nearCap} fairHz≈${fairSampleHz.toFixed(0)}`,
       { throttleMs: 3000 }
     )
   }

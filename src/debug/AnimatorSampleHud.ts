@@ -12,10 +12,11 @@ export class AnimatorSampleHud {
     this.el = document.createElement('div')
     this.el.id = 'animator-sample-hud'
     this.el.setAttribute('aria-live', 'polite')
+    // Bottom-right — do not cover stats.js FPS / debug panel (top-right).
     this.el.style.cssText = [
       'position:fixed',
-      'top:10px',
-      'right:10px',
+      'bottom:12px',
+      'right:12px',
       'z-index:10050',
       'pointer-events:none',
       'font:11px/1.35 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace',

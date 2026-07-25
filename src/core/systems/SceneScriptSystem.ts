@@ -652,12 +652,18 @@ export class SceneScriptSystem {
     this.avatarShapes.setAssetCache(cache, scene.realm.contentUrl)
     this.bridge.setOnGltfAttached((entity) => {
       this.flushIncrementalColliders(entity)
-      // Mesh often lands *after* Animator CRDT. Re-dirty + bind same frame so one-shot grow
-      // clips start (Spring flowers: mesh rest scale ~0.003 without anim = black needles).
+      // ?noanim — 58bee02 added bind-on-attach; without this guard the isolation flag no longer
+      // skips mixer bind (only skipped update + async sync from d35596f).
+      if (skipSceneAnimators()) return
+      // Explicit Animator: bind immediately (doors / grow / scripted clips).
+      // Default auto-play (no Animator component): mark dirty only — budgeted in async sync
+      // so plaza attach does not create thousands of full-rate mixers in one frame.
       this.bridgeDirty = true
       const { Animator } = this.readComponents
-      if (Animator.has(entity)) this.animatorBridge?.markDirty(entity)
-      this.animatorBridge?.syncEntity(entity, this.view)
+      this.animatorBridge?.markDirty(entity)
+      if (Animator.has(entity)) {
+        this.animatorBridge?.syncEntity(entity, this.view)
+      }
     })
     this.bridge.setRecordLww(this.recordRendererLww)
     this.bindSceneUiViewportSync(host)
@@ -1238,10 +1244,14 @@ export class SceneScriptSystem {
         (Animator.has(entity) || AvatarShape.has(entity) || GltfContainer.has(entity)))
     ) {
       this.bridgeDirty = true
-      // One-shot clips re-fire via getMutable + shouldReset with often-identical state;
-      // mark entity so AnimatorBridge restarts even when the state signature is unchanged.
+      // Animator dirty-only bind — NOT Transform. Transform/tween motion is a different path.
+      // Animator put: re-apply clips (one-shot shouldReset). Gltf put/delete: rebind or drop mixer.
       if (componentId === Animator.componentId) {
-        this.animatorBridge?.markDirty(entity)
+        if (change.kind === 'delete') this.animatorBridge?.markRemoved(entity)
+        else this.animatorBridge?.markDirty(entity)
+      } else if (componentId === GltfContainer.componentId) {
+        if (change.kind === 'delete') this.animatorBridge?.markRemoved(entity)
+        else this.animatorBridge?.markDirty(entity)
       }
     }
   }
@@ -4721,7 +4731,7 @@ export class SceneScriptSystem {
     this.avatarShapes?.update(delta)
     // ?noanim — skip mixer sample (clips frozen; default auto-play never advances).
     if (!skipSceneAnimators()) {
-      this.animatorBridge?.update(delta, this.view)
+      this.animatorBridge?.update(delta, this.view, this.animatorSampleContext())
     }
     this.particleBridge?.update(delta)
     this.avatarAttachBridge?.update(this.view)
@@ -4754,9 +4764,23 @@ export class SceneScriptSystem {
     if (!skipSceneAnimators()) {
       await this.animatorBridge?.sync(this.view)
       // Same async frame as Animator open/close apply — sample mixers so doors aren't one frame late.
+      // delta=0: no frustum cull (pose apply only).
       this.animatorBridge?.update(0, this.view)
     }
     await this.particleBridge?.sync(this.view)
+  }
+
+  private readonly animatorSamplePlayerWorld = new THREE.Vector3()
+
+  /**
+   * Camera for frustum + near-camera full-rate (world space).
+   * Player ECS pose is scene-local — near tests use camera.matrixWorld, not PE feet.
+   */
+  private animatorSampleContext(): import('../../bridge/AnimatorBridge').AnimatorSampleContext | undefined {
+    const camera = this.host?.camera
+    if (!camera) return undefined
+    this.animatorSamplePlayerWorld.setFromMatrixPosition(camera.matrixWorld)
+    return { camera, playerWorld: this.animatorSamplePlayerWorld }
   }
 
   /**

@@ -18,7 +18,37 @@ type AnimEntry = {
   gltfSrc: string
   /** Last applied ECS/default animator states — skip stop/play when unchanged. */
   lastAppliedSignature?: string
+  /** Accumulated dt while off-camera sample was deferred (time-correct catch-up). */
+  deferredSampleDt: number
 }
+
+/** Sample scheduling context — full rate in expanded frustum or near player. */
+export type AnimatorSampleContext = {
+  camera: THREE.Camera
+  /** Player feet / focus (world space). */
+  playerWorld: THREE.Vector3
+}
+
+/** Full-rate sample within this radius of the camera even if off-camera. */
+const NEAR_PLAYER_FULL_RATE_M = 16
+/** Sphere radius added around entity root for expanded-frustum tests (turn without pop). */
+const FRUSTUM_EXPAND_M = 6
+/**
+ * Hard cap: even on-camera CBD can put hundreds of mixers in the "prefer" set.
+ * Frustum-only never recovers FPS there — budget is required. Priority fills the budget.
+ */
+const MAX_SAMPLES_PER_FRAME = 48
+/**
+ * Off-frustum + beyond near radius (and overflow preferred): sample every N frames
+ * with accumulated dt (~15 Hz at 60 FPS display).
+ */
+const OFFSCREEN_SAMPLE_EVERY_N = 4
+
+const _frustum = new THREE.Frustum()
+const _projScreen = new THREE.Matrix4()
+const _worldPos = new THREE.Vector3()
+const _sphere = new THREE.Sphere()
+const _camPos = new THREE.Vector3()
 
 /**
  * Resolve scene GLB path → content hash.
@@ -141,17 +171,24 @@ export class AnimatorBridge {
   /** GLBs probed with no ECS Animator and zero embedded clips — skip re-probing each sync. */
   private readonly staticGltfNoClips = new Set<Entity>()
   /**
-   * Animator CRDT PUTs since last sync — re-apply even when state signature is unchanged.
-   * Scenes re-fire one-shots by getMutable + shouldReset=true; LWW payload may be identical
-   * to the previous put so signature skip would never restart muzzle/gun clips.
+   * Animator / GltfContainer CRDT or attach since last successful bind+apply.
+   * Re-apply even when state signature is unchanged (getMutable + shouldReset one-shots).
+   * Also drives dirty-only async `sync()` — never full-scene GltfContainer walks.
    */
   private readonly dirtyReplay = new Set<Entity>()
+  /**
+   * Waiting for scene node / __mesh_* / GLB template cache — retry on next async sync only.
+   * Without this, dirty-only would drop entities that saw Animator CRDT before mesh attach.
+   */
+  private readonly pendingBind = new Set<Entity>()
   private motionFocusView: ProjectionView | null = null
   /**
    * Active Animator PART candidates this frame (doors) — World poses PhysX multi-shapes (cook once).
    * Looping decorative mixers are intentionally excluded (plaza soft / toggle).
    */
   private readonly shapeMotionEntities = new Set<Entity>()
+  /** Monotonic frame counter for off-screen sample stride. */
+  private sampleFrame = 0
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -168,11 +205,23 @@ export class AnimatorBridge {
   }
 
   /**
-   * Animator CRDT put / getMutable re-fire — must re-apply clip even if state signature matches.
-   * Call from projection fold when Animator.componentId changes.
+   * Animator / GltfContainer put or attach — must bind or re-apply even if signature matches.
+   * Call from projection fold / GLB attach. Does **not** mean Transform moved.
    */
   markDirty(entity: Entity): void {
     this.dirtyReplay.add(entity)
+  }
+
+  /** Drop mixer when GltfContainer is removed (dirty-only sync no longer full-scans). */
+  markRemoved(entity: Entity): void {
+    this.dirtyReplay.delete(entity)
+    this.pendingBind.delete(entity)
+    this.staticGltfNoClips.delete(entity)
+    const entry = this.entries.get(entity)
+    if (!entry) return
+    entry.mixer.stopAllAction()
+    this.entries.delete(entity)
+    this.logAnimator(`Animator removed — entity ${entity}`, { entity })
   }
 
   getActiveEntities(): Entity[] {
@@ -337,41 +386,74 @@ export class AnimatorBridge {
    */
   syncEntity(entity: Entity, view: ProjectionView): boolean {
     this.motionFocusView = view
-    return this.bindAndApplyEntity(entity)
+    const result = this.bindAndApplyEntity(entity)
+    if (result === 'bound') {
+      this.dirtyReplay.delete(entity)
+      this.pendingBind.delete(entity)
+      return true
+    }
+    if (result === 'waiting') {
+      this.pendingBind.add(entity)
+      return false
+    }
+    this.dirtyReplay.delete(entity)
+    this.pendingBind.delete(entity)
+    return false
   }
 
+  /**
+   * Dirty-only bind/apply — O(dirty + pending + bound), not O(all GltfContainers).
+   * Plaza CBD: full getEntitiesWith(GltfContainer) every async stride was the noanim smoking gun.
+   * First bind is attach `syncEntity` + Animator/Gltf CRDT markDirty; this only retries those.
+   */
   async sync(view: ProjectionView): Promise<void> {
     this.motionFocusView = view
     const { GltfContainer } = this.ecs
-    const nodes = this.getNodes()
-    if (!nodes) return
-    const active = new Set<Entity>()
+    if (!this.getNodes()) return
 
-    for (const [entity] of view.getEntitiesWith(GltfContainer)) {
-      if (this.bindAndApplyEntity(entity)) active.add(entity)
-    }
+    const toProcess = new Set<Entity>()
+    for (const e of this.dirtyReplay) toProcess.add(e)
+    for (const e of this.pendingBind) toProcess.add(e)
 
-    for (const [entity, entry] of this.entries) {
-      if (!active.has(entity)) {
-        entry.mixer.stopAllAction()
-        this.entries.delete(entity)
-        this.logAnimator(`Animator removed — entity ${entity}`, { entity })
+    for (const entity of toProcess) {
+      if (!GltfContainer.has(entity)) {
+        this.markRemoved(entity)
+        continue
+      }
+      const result = this.bindAndApplyEntity(entity)
+      if (result === 'bound') {
+        this.dirtyReplay.delete(entity)
+        this.pendingBind.delete(entity)
+      } else if (result === 'waiting') {
+        // Keep in pending; drop dirtyReplay so we don't thrash markDirty bookkeeping.
+        this.dirtyReplay.delete(entity)
+        this.pendingBind.add(entity)
+      } else {
+        // skip — no clips / static / given up
+        this.dirtyReplay.delete(entity)
+        this.pendingBind.delete(entity)
       }
     }
 
-    for (const entity of this.staticGltfNoClips) {
+    // O(bound mixers) prune — entities deleted without a component fold reaching us.
+    for (const entity of [...this.entries.keys()]) {
+      if (!GltfContainer.has(entity)) this.markRemoved(entity)
+    }
+    for (const entity of [...this.staticGltfNoClips]) {
       if (!GltfContainer.has(entity)) this.staticGltfNoClips.delete(entity)
     }
   }
 
-  /** @returns true when entity has an active mixer after this call */
-  private bindAndApplyEntity(entity: Entity): boolean {
+  /**
+   * @returns `bound` mixer ready · `waiting` retry later (no node/mesh/cache) · `skip` permanent for now
+   */
+  private bindAndApplyEntity(entity: Entity): 'bound' | 'waiting' | 'skip' {
     const { Animator, GltfContainer } = this.ecs
-    if (!GltfContainer.has(entity)) return false
+    if (!GltfContainer.has(entity)) return 'skip'
     const { src } = GltfContainer.get(entity)
     const hasExplicitAnimator = Animator.has(entity)
     if (!hasExplicitAnimator && this.staticGltfNoClips.has(entity) && !this.entries.has(entity)) {
-      return false
+      return 'skip'
     }
 
     const nodes = this.getNodes()
@@ -385,7 +467,7 @@ export class AnimatorBridge {
           level: 'warn'
         })
       }
-      return false
+      return 'waiting'
     }
 
     const hash = hashFromSrc(src, this.sceneConfig)
@@ -395,7 +477,7 @@ export class AnimatorBridge {
         throttleMs: 2000,
         level: 'warn'
       })
-      return false
+      return 'skip'
     }
 
     const mesh = node.getObjectByName(`__mesh_${entity}`)
@@ -404,7 +486,7 @@ export class AnimatorBridge {
         entity,
         throttleMs: 2000
       })
-      return false
+      return 'waiting'
     }
 
     let entry = this.entries.get(entity)
@@ -413,12 +495,13 @@ export class AnimatorBridge {
       const template =
         this.cache.peekCached(hash) ?? this.cache.peekCached(this.sceneConfig.assetUrl(hash))
       if (!template) {
-        if (!this.cache.isResolving(hash) && !this.cache.hasGivenUp(hash)) {
+        if (this.cache.hasGivenUp(hash)) return 'skip'
+        if (!this.cache.isResolving(hash)) {
           void this.cache
             .load(this.sceneConfig.assetUrl(hash), hash, { quiet: true })
             .catch(() => {})
         }
-        return false
+        return 'waiting'
       }
       entry?.mixer.stopAllAction()
       const loaded = template
@@ -428,7 +511,8 @@ export class AnimatorBridge {
         actions: new Map(),
         root: mesh,
         gltfHash: hash,
-        gltfSrc: src
+        gltfSrc: src,
+        deferredSampleDt: 0
       }
       const nodeByName = loaded.animations.length ? buildNodeNameMap(mesh) : undefined
       for (const clip of loaded.animations) {
@@ -437,7 +521,7 @@ export class AnimatorBridge {
       }
       if (!hasExplicitAnimator && !clipNames.length) {
         this.staticGltfNoClips.add(entity)
-        return false
+        return 'skip'
       }
       this.staticGltfNoClips.delete(entity)
       entry.lastAppliedSignature = undefined
@@ -456,7 +540,7 @@ export class AnimatorBridge {
     }
 
     const bound = this.entries.get(entity)
-    if (!bound) return false
+    if (!bound) return 'skip'
 
     const clipNames = [...bound.actions.keys()]
     let states: readonly AnimatorStateView[]
@@ -473,7 +557,7 @@ export class AnimatorBridge {
         )
       }
     }
-    if (!states.length) return false
+    if (!states.length) return 'skip'
 
     if (rebinding) bound.lastAppliedSignature = undefined
     this.applyStatesToEntry(
@@ -485,43 +569,147 @@ export class AnimatorBridge {
       rebinding || this.dirtyReplay.has(entity)
     )
     this.dirtyReplay.delete(entity)
-    return true
+    return 'bound'
   }
 
-  update(delta: number, view?: ProjectionView): void {
+  /**
+   * Advance mixers with view/near priority + hard per-frame budget.
+   *
+   * Prefer: within 16 m of **camera** (world space) or expanded frustum.
+   * Dense plaza: prefer set is still huge → {@link MAX_SAMPLES_PER_FRAME} cap with priority.
+   * Overflow / off-cam: accumulate dt, sample on stride (time-correct).
+   *
+   * `delta === 0` (post-bind pose): sample all active work (no cull) so doors get first pose.
+   */
+  update(delta: number, view?: ProjectionView, sampleCtx?: AnimatorSampleContext): void {
     if (!this.entries.size) return
     // Door open/close CRDT often lands between async sync ticks — apply dirty before sample.
     if (view) this.applyDirtyBoundStates(view)
 
+    this.sampleFrame++
+    const schedule = delta > 1e-8 && sampleCtx != null
+
+    // delta=0 pose pass — no budget (bind just applied).
+    if (!schedule) {
+      for (const [entity, entry] of this.entries) {
+        if (!mixerHasActiveWork(entry)) continue
+        entry.mixer.update(0)
+        this.markShapeMotionAfterSample(entity, entry)
+      }
+      return
+    }
+
+    sampleCtx!.camera.updateMatrixWorld(true)
+    _camPos.setFromMatrixPosition(sampleCtx!.camera.matrixWorld)
+    _projScreen.multiplyMatrices(
+      sampleCtx!.camera.projectionMatrix,
+      sampleCtx!.camera.matrixWorldInverse
+    )
+    _frustum.setFromProjectionMatrix(_projScreen)
+
+    type Cand = { entity: Entity; entry: AnimEntry; priority: number; distSq: number }
+    const preferred: Cand[] = []
+    const background: Cand[] = []
+
     for (const [entity, entry] of this.entries) {
-      // Phase C: skip mixer.tick when nothing is running / fading (idle GLTF animators).
-      if (!mixerHasActiveWork(entry)) continue
-      entry.mixer.update(delta)
-      // Bone-parented `_collider` matrixWorld after mixer — required for PhysX door slides.
+      if (!mixerHasActiveWork(entry)) {
+        entry.deferredSampleDt = 0
+        continue
+      }
+      const { priority, distSq } = this.samplePriority(entry, sampleCtx!)
+      const cand: Cand = { entity, entry, priority, distSq }
+      if (priority > 0) preferred.push(cand)
+      else background.push(cand)
+    }
+
+    // Near / PART first, then closer frustum hits.
+    preferred.sort((a, b) => b.priority - a.priority || a.distSq - b.distSq)
+
+    let sampled = 0
+    let deferred = 0
+
+    const runSample = (entity: Entity, entry: AnimEntry, step: number): void => {
+      entry.mixer.update(step)
+      sampled++
       this.markShapeMotionAfterSample(entity, entry)
     }
 
-    if (!this.verbose) return
-
-    const playing: string[] = []
-    for (const [entity, entry] of this.entries) {
-      const active = [...entry.actions.entries()]
-        .filter(([, action]) => action.isRunning() && action.enabled)
-        .map(([name]) => name)
-      if (active.length) playing.push(`${entity}:[${active.join(',')}]`)
+    for (const cand of preferred) {
+      const { entity, entry } = cand
+      if (sampled < MAX_SAMPLES_PER_FRAME) {
+        const step = delta + entry.deferredSampleDt
+        entry.deferredSampleDt = 0
+        runSample(entity, entry, step)
+      } else {
+        // Prefer-set overflow — still time-slice, not free full-rate for hundreds of props.
+        entry.deferredSampleDt += delta
+        if ((this.sampleFrame + (entity as number)) % OFFSCREEN_SAMPLE_EVERY_N === 0) {
+          if (sampled < MAX_SAMPLES_PER_FRAME + 16) {
+            // Small overflow allowance so mid-frustum isn't frozen when plaza is dense.
+            const step = entry.deferredSampleDt
+            entry.deferredSampleDt = 0
+            runSample(entity, entry, step)
+          } else {
+            deferred++
+          }
+        } else {
+          deferred++
+        }
+      }
     }
 
-    const maxListed = 6
-    const listed = playing.slice(0, maxListed)
-    const overflow = playing.length > maxListed ? ` · +${playing.length - maxListed} more` : ''
-    const focusRunning = playing.filter((line) => {
-      const entityId = Number(line.split(':')[0])
-      const entry = this.entries.get(entityId as Entity)
-      return entry != null && isAnimatorFocusSrc(entry.gltfSrc)
-    })
+    for (const cand of background) {
+      const { entity, entry } = cand
+      entry.deferredSampleDt += delta
+      if ((this.sampleFrame + (entity as number)) % OFFSCREEN_SAMPLE_EVERY_N !== 0) {
+        deferred++
+        continue
+      }
+      if (sampled >= MAX_SAMPLES_PER_FRAME + 16) {
+        deferred++
+        continue
+      }
+      const step = entry.deferredSampleDt
+      entry.deferredSampleDt = 0
+      runSample(entity, entry, step)
+    }
+
+    if (!this.verbose) return
     this.logAnimator(
-      `Animator tick — ${this.entries.size} mixer(s) · ${playing.length} running · ${listed.join(' · ') || '(none)'}${overflow}${focusRunning.length ? ` · focus ${focusRunning.join(' · ')}` : ''}`,
+      `Animator tick — ${this.entries.size} mixers · pref=${preferred.length} bg=${background.length} ` +
+        `sampled=${sampled} deferred=${deferred} budget=${MAX_SAMPLES_PER_FRAME}`,
       { throttleMs: 3000 }
     )
+  }
+
+  /**
+   * priority > 0 → preferred full-rate candidate (still subject to budget).
+   * Uses camera world position (player ECS pose is scene-local — do not mix spaces).
+   * Cheap: matrixWorld elements only — no getWorldPosition() forced update.
+   */
+  private samplePriority(
+    entry: AnimEntry,
+    _ctx: AnimatorSampleContext
+  ): { priority: number; distSq: number } {
+    const anchor = entry.root.parent ?? entry.root
+    _worldPos.setFromMatrixPosition(anchor.matrixWorld)
+
+    const dx = _worldPos.x - _camPos.x
+    const dy = _worldPos.y - _camPos.y
+    const dz = _worldPos.z - _camPos.z
+    const distSq = dx * dx + dy * dy + dz * dz
+    const nearSq = NEAR_PLAYER_FULL_RATE_M * NEAR_PLAYER_FULL_RATE_M
+
+    // PART / one-shot doors near camera — highest.
+    if (hasPartColliderWork(entry) && distSq <= nearSq * 2.25) {
+      return { priority: 3, distSq }
+    }
+    if (distSq <= nearSq) return { priority: 2, distSq }
+
+    _sphere.center.copy(_worldPos)
+    _sphere.radius = FRUSTUM_EXPAND_M
+    if (_frustum.intersectsSphere(_sphere)) return { priority: 1, distSq }
+
+    return { priority: 0, distSq }
   }
 }

@@ -324,8 +324,9 @@ export class SecondaryLiveManager {
     if (now - this.lastReconcileAt < 800) return
     this.lastReconcileAt = now
 
-    // Live radius ≤ Scene Distance (default max 64m). Far warm/tertiary stay outside live.
-    const liveRadiusM = secondaryLiveRadiusM()
+    // distM is **scene-to-scene** footprint edge distance (not player).
+    // Nested hole scenes (Spring in plaza) are ~0m → always in range when primary is plaza.
+    const liveProxM = secondaryLiveRadiusM()
     const pri = this.priorityParcelKey
     const coversPri = (c: SecondaryLiveRequest): boolean => {
       if (!pri) return false
@@ -334,13 +335,15 @@ export class SecondaryLiveManager {
       return `${c.resolveX},${c.resolveY}` === pri
     }
     const inRange = candidates
-      .filter((c) => liveRadiusM > 0 && c.distM <= liveRadiusM)
+      .filter((c) => liveProxM > 0 && c.distM <= liveProxM)
       .sort((a, b) => {
         // Under-feet parcel first so promote handoff is ready without /goto rebuild.
         const ap = coversPri(a) ? 0 : 1
         const bp = coversPri(b) ? 0 : 1
         if (ap !== bp) return ap - bp
-        return a.distM - b.distM
+        // Closer scene footprints first; then smaller (nested) over mega-estates.
+        if (a.distM !== b.distM) return a.distM - b.distM
+        return (a.parcelCount ?? 1) - (b.parcelCount ?? 1)
       })
       .slice(0, Math.max(cap, 0))
 
@@ -418,7 +421,8 @@ export class SecondaryLiveManager {
       this.slots.set(req.entityId, slot)
       this.emitLiveIds()
       console.info(
-        `[multi-scene] secondary live “${req.title}” base=${req.base} dist≈${req.distM.toFixed(0)}m`
+        `[multi-scene] secondary live “${req.title}” base=${req.base} ` +
+          `sceneDist≈${req.distM.toFixed(0)}m parcels=${req.parcelCount ?? '?'}`
       )
     } catch (err) {
       console.warn(`[multi-scene] secondary boot failed “${req.title}”`, err)

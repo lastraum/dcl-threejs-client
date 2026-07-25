@@ -72,6 +72,10 @@ export type SecondaryLiveRequest = {
   base: string
   resolveX: number
   resolveY: number
+  /**
+   * Min edge distance (m) between **primary footprint** and this scene's parcels.
+   * Scene-to-scene, not player — nested hole scenes are ~0.
+   */
   distM: number
   /** Parcel footprint size — large estates prefer composite, not full live worker. */
   parcelCount?: number

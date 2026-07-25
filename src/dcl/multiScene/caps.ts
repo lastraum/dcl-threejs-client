@@ -24,17 +24,25 @@ export function secondaryLiveCap(tier: PerformanceTier): number {
 }
 
 /**
- * Max distance for live secondary workers (meters).
- * Clamped to Scene Distance; never farther than this even if Scene Distance is 200m.
- * Farther scenes still get warm (bytes) + tertiary visuals only.
+ * Live secondary eligibility: **scene-to-scene** footprint edge distance (meters).
+ * Not player distance — nested hole scenes (Spring in plaza cutout) sit ~0m from
+ * primary parcels and always qualify. Player frustum LOD is separate.
+ * One parcel = 16m; 16m ≈ adjacent + same-parcel contact.
  */
-export const SECONDARY_LIVE_MAX_RADIUS_M = 64
+export const SECONDARY_LIVE_SCENE_PROXIMITY_M = 16
 
+/** @deprecated use SECONDARY_LIVE_SCENE_PROXIMITY_M — kept for call-site greps. */
+export const SECONDARY_LIVE_MAX_RADIUS_M = SECONDARY_LIVE_SCENE_PROXIMITY_M
+
+/**
+ * Scene-adjacency band for live workers. Independent of player Scene Distance
+ * (warm/composite still use Scene Distance). Returns 0 only if Scene Distance is 0
+ * (AOI fully off).
+ */
 export function secondaryLiveRadiusM(): number {
   const warm = renderQuality.getSceneLoadRadiusM()
   if (warm <= 0) return 0
-  // Live band only — same hard radius even when Scene Distance is huge.
-  return Math.min(warm, SECONDARY_LIVE_MAX_RADIUS_M)
+  return SECONDARY_LIVE_SCENE_PROXIMITY_M
 }
 
 /**

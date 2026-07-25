@@ -4,9 +4,10 @@ import { PARCEL_SIZE } from '../content/types'
 /**
  * Multi-scene AOI (FocusOwner model):
  * - **Warm + visual band** = user Scene Distance (`sceneLoadRadiusM`): roads, empty,
- *   composites, first-frame, script/manifest prefetch, live-secondary *eligibility*.
+ *   composites, first-frame, script/manifest prefetch.
  * - **FocusOwner** = primary only (UI / audio / video / inputs / locomotion).
- * - **Live secondaries** = budgeted (tier cap) subset of warm band — not all-in-radius.
+ * - **Live secondaries** = scenes whose footprint is within scene-proximity meters of
+ *   the **primary footprint** (not player). Cap + serial boot; frustum LOD is separate.
  *
  * @deprecated Prefer `renderQuality.getSceneLoadRadiusM()`. Kept as fallback when
  * settings are unavailable (tests / early init). Default matches Scene Distance default (100m).
@@ -72,4 +73,84 @@ export function parcelSwSceneLocal(parcelKey: string, baseParcel: string): { x: 
     x: (p.x - base.x) * PARCEL_SIZE,
     z: (p.y - base.y) * PARCEL_SIZE
   }
+}
+
+/**
+ * Edge distance (meters) between two absolute parcels as axis-aligned squares.
+ * Adjacent parcels → 0; one parcel gap → PARCEL_SIZE (16). Overlap/same → 0.
+ */
+export function parcelEdgeDistanceM(a: ParcelCoord, b: ParcelCoord): number {
+  const a0x = a.x * PARCEL_SIZE
+  const a1x = (a.x + 1) * PARCEL_SIZE
+  const a0z = a.y * PARCEL_SIZE
+  const a1z = (a.y + 1) * PARCEL_SIZE
+  const b0x = b.x * PARCEL_SIZE
+  const b1x = (b.x + 1) * PARCEL_SIZE
+  const b0z = b.y * PARCEL_SIZE
+  const b1z = (b.y + 1) * PARCEL_SIZE
+  const dx = Math.max(0, a0x - b1x, b0x - a1x)
+  const dz = Math.max(0, a0z - b1z, b0z - a1z)
+  return Math.hypot(dx, dz)
+}
+
+/**
+ * Min edge distance between two scene footprints (absolute parcel keys).
+ * Used for live-secondary eligibility: **scene-to-scene**, not player position.
+ * Nested hole scenes (Spring in plaza cutout) → ~0m → always live candidates.
+ */
+export function minSceneFootprintDistanceM(
+  parcelsA: readonly string[],
+  parcelsB: readonly string[]
+): number {
+  if (!parcelsA.length || !parcelsB.length) return Infinity
+  let best = Infinity
+  for (const ka of parcelsA) {
+    let a: ParcelCoord
+    try {
+      a = parseParcelKey(ka.trim())
+    } catch {
+      continue
+    }
+    for (const kb of parcelsB) {
+      try {
+        const d = parcelEdgeDistanceM(a, parseParcelKey(kb.trim()))
+        if (d < best) best = d
+        if (best === 0) return 0
+      } catch {
+        /* bad key */
+      }
+    }
+  }
+  return best
+}
+
+/**
+ * Absolute parcel keys within `expandM` of any footprint parcel (edge distance).
+ * Ensures nested hole / adjacent deployments are fetched even if the player is
+ * on the far side of a multi-parcel primary.
+ */
+export function parcelsNearFootprint(
+  footprintKeys: readonly string[],
+  expandM: number
+): string[] {
+  if (!footprintKeys.length || expandM < 0) return []
+  const ring = Math.max(0, Math.ceil(expandM / PARCEL_SIZE))
+  const out = new Set<string>()
+  for (const key of footprintKeys) {
+    let p: ParcelCoord
+    try {
+      p = parseParcelKey(key.trim())
+    } catch {
+      continue
+    }
+    for (let dx = -ring; dx <= ring; dx++) {
+      for (let dy = -ring; dy <= ring; dy++) {
+        const q = { x: p.x + dx, y: p.y + dy }
+        if (parcelEdgeDistanceM(p, q) <= expandM + 0.01) {
+          out.add(`${q.x},${q.y}`)
+        }
+      }
+    }
+  }
+  return [...out]
 }

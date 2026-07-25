@@ -16,7 +16,9 @@ import {
 } from './fetchActiveEntities'
 import {
   distanceToParcelCenterM,
+  minSceneFootprintDistanceM,
   parcelsInLoadRadius,
+  parcelsNearFootprint,
   parcelSwSceneLocal
 } from './parcelAoi'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
@@ -83,7 +85,8 @@ export type AoiVisualLayerContext = {
  *   furniture), not runtime SDK6 game.js
  * - Neighbor main.composite GLBs (render-only, no colliders / anim) — **tertiary**
  * - First-frame samples for script-built scenes (tertiary when no live worker)
- * - Live secondary candidates (budgeted workers; FocusOwner = primary only)
+ * - Live secondary candidates by **scene-to-scene** footprint proximity
+ *   (budgeted workers; FocusOwner = primary only; frustum LOD is player-side)
  */
 export class AoiVisualLayer {
   private root = new THREE.Group()
@@ -270,7 +273,15 @@ export class AoiVisualLayer {
     if (!ctx || this.disposed) return
     const gen = ++this.refreshGen
     const base = ctx.scene.baseParcel
-    const pointers = parcelsInLoadRadius(dclX, dclZ, base, radiusM)
+    // Player warm band (composites/roads) ∪ primary-footprint + live proximity
+    // so nested hole scenes are always discovered regardless of where you stand.
+    const playerPointers = parcelsInLoadRadius(dclX, dclZ, base, radiusM)
+    const liveProxM = secondaryLiveRadiusM()
+    const primaryAdjacent =
+      liveProxM > 0 && this.primaryParcelSet.size
+        ? parcelsNearFootprint([...this.primaryParcelSet], liveProxM)
+        : []
+    const pointers = [...new Set([...playerPointers, ...primaryAdjacent])]
     if (!pointers.length) return
 
     // Warm Explorer road catalog early so vacant layer can skip road parcels.
@@ -512,19 +523,26 @@ export class AoiVisualLayer {
   }
 
   /**
-   * Live-secondary candidate list only (no tertiary meshes).
-   * Allows nested SDK7 scenes whose parcels sit inside a multi-parcel primary (CBD plaza).
+   * Live-secondary candidates by **scene-to-scene** footprint proximity (not player).
+   * Nested hole scenes (Spring @ plaza cutout) have ~0m edge distance → always live.
+   * Player frustum LOD is applied later on the live worker meshes, not for eligibility.
    */
   private emitLiveSecondaryCandidatesOnly(
     entities: ActiveSceneEntity[],
     primaryId: string,
-    primaryBase: string,
-    dclX: number,
-    dclZ: number,
+    _primaryBase: string,
+    _dclX: number,
+    _dclZ: number,
     pointerSet: Set<string>
   ): void {
-    const liveRadiusM = secondaryLiveRadiusM()
-    if (liveRadiusM <= 0) {
+    const liveProxM = secondaryLiveRadiusM()
+    if (liveProxM <= 0) {
+      this.ctx?.onSecondaryCandidates?.([])
+      return
+    }
+
+    const primaryParcels = [...this.primaryParcelSet]
+    if (!primaryParcels.length) {
       this.ctx?.onSecondaryCandidates?.([])
       return
     }
@@ -534,18 +552,24 @@ export class AoiVisualLayer {
       if (!isSecondarySceneCandidate(e)) return false
       if (isOpenRoadEntity(e)) return false
       const keys = e.pointers.length ? e.pointers : e.parcels
-      const inRing = keys.filter((p) => pointerSet.has(p.trim()))
-      // Must touch the current AOI pointer ring.
-      if (!inRing.length) return false
+      // Must appear in fetched pointer set (player warm ∪ primary+proximity ring).
+      if (!keys.some((p) => pointerSet.has(p.trim()))) return false
       return true
     })
 
-    const ranked = [...scriptBuilt].sort((a, b) => {
-      const da = minEntDist(a, dclX, dclZ, primaryBase)
-      const db = minEntDist(b, dclX, dclZ, primaryBase)
-      if (da !== db) return da - db
-      return (a.parcels.length || a.pointers.length) - (b.parcels.length || b.pointers.length)
+    const withSceneDist = scriptBuilt.map((e) => {
+      const keys = (e.pointers.length ? e.pointers : e.parcels).map((p) => p.trim())
+      const dist = minSceneFootprintDistanceM(primaryParcels, keys)
+      return { ent: e, dist, parcelCount: keys.length || 1 }
     })
+
+    const ranked = withSceneDist
+      .filter((x) => Number.isFinite(x.dist) && x.dist <= liveProxM)
+      .sort((a, b) => {
+        if (a.dist !== b.dist) return a.dist - b.dist
+        // Prefer modest nested scenes for live boot (Spring before mega-estates).
+        return a.parcelCount - b.parcelCount
+      })
 
     const liveCandidates: Array<{
       entityId: string
@@ -557,12 +581,9 @@ export class AoiVisualLayer {
       parcelCount: number
     }> = []
 
-    for (const ent of ranked) {
-      const dist = minEntDist(ent, dclX, dclZ, primaryBase)
-      if (dist > liveRadiusM) continue
+    for (const { ent, dist, parcelCount } of ranked) {
       try {
         const baseCoord = parseParcelKey(ent.base)
-        const parcelCount = ent.parcels.length || ent.pointers.length || 1
         liveCandidates.push({
           entityId: ent.id,
           title: ent.title || ent.base,
@@ -579,11 +600,11 @@ export class AoiVisualLayer {
     this.ctx?.onSecondaryCandidates?.(liveCandidates)
     if (liveCandidates.length) {
       console.info(
-        `[aoi] live-secondary candidates n=${liveCandidates.length} nearest=${liveCandidates
+        `[aoi] live-secondary (scene-prox≤${liveProxM}m) n=${liveCandidates.length} nearest=${liveCandidates
           .slice(0, 3)
           .map(
             (c) =>
-              `“${c.title}”@${c.base}(${c.distM.toFixed(0)}m,p=${c.parcelCount})`
+              `“${c.title}”@${c.base}(scene ${c.distM.toFixed(0)}m,p=${c.parcelCount})`
           )
           .join(' · ')}`
       )
@@ -636,7 +657,7 @@ export class AoiVisualLayer {
       return (a.parcels.length || a.pointers.length) - (b.parcels.length || b.pointers.length)
     })
 
-    // Feed multi-scene live secondary manager (nearest first, full inner ring list).
+    // Live secondaries: scene-to-scene footprint proximity (not player distance).
     const liveCandidates: Array<{
       entityId: string
       title: string
@@ -646,15 +667,14 @@ export class AoiVisualLayer {
       distM: number
       parcelCount: number
     }> = []
-    // Warm band = user Scene Distance (live eligibility + first-frame samples).
-    const warmRadiusM = renderQuality.getSceneLoadRadiusM()
-
+    const liveProxM = secondaryLiveRadiusM()
+    const primaryParcels = [...this.primaryParcelSet]
     for (const ent of ranked) {
-      const dist = minEntDist(ent, dclX, dclZ, primaryBase)
-      if (warmRadiusM <= 0 || dist > warmRadiusM) continue
+      const keys = (ent.pointers.length ? ent.pointers : ent.parcels).map((p) => p.trim())
+      const dist = minSceneFootprintDistanceM(primaryParcels, keys)
+      if (liveProxM <= 0 || !Number.isFinite(dist) || dist > liveProxM) continue
       try {
         const baseCoord = parseParcelKey(ent.base)
-        const parcelCount = ent.parcels.length || ent.pointers.length || 1
         liveCandidates.push({
           entityId: ent.id,
           title: ent.title || ent.base,
@@ -662,13 +682,16 @@ export class AoiVisualLayer {
           resolveX: baseCoord.x,
           resolveY: baseCoord.y,
           distM: dist,
-          parcelCount
+          parcelCount: keys.length || 1
         })
       } catch {
         /* skip */
       }
     }
     this.ctx?.onSecondaryCandidates?.(liveCandidates)
+
+    // First-frame tertiary: still player warm band (visual LOD by where you stand).
+    const warmRadiusM = renderQuality.getSceneLoadRadiusM()
 
     const wantFf = new Set<string>()
     let visibleSlots = 0

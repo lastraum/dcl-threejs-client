@@ -253,6 +253,8 @@ export class SceneScriptSystem {
   raycasts: RaycastSystem | null = null
   readonly engineApiEvents = new EngineApiEventBridge()
   private bridge: ThreeBridge | null = null
+  /** Cleared distance-cull experiment once so all scene GLTFs stay visible. */
+  private restoredGltfCull = false
   /** Phase 4 — unified scene-graph entity store (Three.js groups keyed by ECS entity). */
   private entityStore: EntityStore | null = null
   private entityStoreUnsub: (() => void) | null = null
@@ -4733,9 +4735,10 @@ export class SceneScriptSystem {
     if (!skipSceneAnimators()) {
       this.animatorBridge?.update(delta, this.view, this.animatorSampleContext())
     }
-    // Far clone GLTF mesh hide — CBD 3k+ meshes; free GPU when not near camera.
-    if (this.host?.camera) {
-      this.bridge.updateGltfDistanceCull(this.host.camera)
+    // One-shot: clear mesh distance-cull leftovers (we no longer hide scene GLTFs).
+    if (!this.restoredGltfCull) {
+      this.restoredGltfCull = true
+      this.bridge.restoreGltfDistanceCull()
     }
     this.particleBridge?.update(delta)
     this.avatarAttachBridge?.update(this.view)

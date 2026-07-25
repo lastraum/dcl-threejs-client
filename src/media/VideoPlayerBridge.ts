@@ -243,29 +243,24 @@ export class VideoPlayerBridge {
       const videoLength = entry.player.getVideoLength()
       const now = performance.now()
 
-      // CBD neon screens flap PLAYING↔BUFFERING every few hundred ms. Soft states
-      // are collapsed for emit; hard states always pass; offset heartbeat ≤1/2s.
+      // Soft PLAYING↔BUFFERING thrash: collapse for worker events only (texture
+      // upload is independent — keep SCENE_VIDEO_MAX_FPS watchable).
       const softPlayingLike = (s: number) =>
         s === VS_PLAYING || s === VS_BUFFERING || s === VS_READY
       const hardChange =
         state !== entry.lastState &&
         !(softPlayingLike(state) && softPlayingLike(entry.lastState))
-      // Soft changes: only if last emit was >2s ago (not every buffering blip).
       const softChange =
         state !== entry.lastState &&
         softPlayingLike(state) &&
         softPlayingLike(entry.lastState) &&
-        now - entry.lastEventAtMs > 2000
+        now - entry.lastEventAtMs > 1000
       const stateChanged = hardChange || softChange
-      const lengthChanged =
-        Math.abs(videoLength - entry.lastLength) > 0.5 &&
-        videoLength > 0 &&
-        now - entry.lastEventAtMs > 2000
+      const lengthChanged = Math.abs(videoLength - entry.lastLength) > 0.25 && videoLength > 0
       const offsetChanged =
-        Math.abs(currentOffset - entry.lastOffset) > 1.0 && now - entry.lastEventAtMs > 2000
+        Math.abs(currentOffset - entry.lastOffset) > 0.5 && now - entry.lastEventAtMs > 400
 
-      // Absolute rate limit per decoder (multiple VideoPlayers × soft thrash).
-      if (!hardChange && now - entry.lastEventAtMs < 500) continue
+      if (!hardChange && now - entry.lastEventAtMs < 200) continue
 
       if (!stateChanged && !offsetChanged && !lengthChanged) continue
 

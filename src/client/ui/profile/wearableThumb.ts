@@ -96,7 +96,8 @@ export const WEARABLE_RARITY_COLORS: Record<string, string> = {
   common: '#73D3D3',
   base: '#73D3D3',
   unique: '#FEA217',
-  exotic: '#9B2222',
+  // Announcement-era red was retired — marketplace/schemas settled on lime green.
+  exotic: '#CAFF73',
   mythic: '#FF4BED'
 }
 
@@ -109,7 +110,7 @@ export const WEARABLE_RARITY_BACKGROUNDS: Record<string, string> = {
   common: '#73D3D3',
   base: '#73D3D3',
   unique: '#FEA217',
-  exotic: '#9B2222',
+  exotic: '#CAFF73',
   mythic: '#FF4BED'
 }
 

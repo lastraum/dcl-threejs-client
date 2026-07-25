@@ -36,6 +36,7 @@ import {
   SecondaryFirstFrameSampler
 } from './SecondaryFirstFrameSampler'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
+import { aoiLiveSecondariesOnly, secondaryLiveRadiusM } from '../multiScene/caps'
 
 /** Visible first-frame secondaries inside the inner radius. */
 const FF_MAX_VISIBLE = 3
@@ -386,6 +387,23 @@ export class AoiVisualLayer {
       return
     }
 
+    // TEMP: live secondaries only (cap 3, ≤64m) — no composite / first-frame tertiary thrash.
+    if (aoiLiveSecondariesOnly()) {
+      this.compositeRoot.clear()
+      this.loadedCompositeIds.clear()
+      this.clearFirstFrameGroups()
+      this.firstFrameSampler.reset()
+      this.emitLiveSecondaryCandidatesOnly(entities, primaryId, base, dclX, dclZ, pointerSet)
+      if (gen === this.refreshGen) {
+        clientDebugLog.consoleOnly(
+          'info',
+          `[aoi] refresh LIVE-SECONDARIES-ONLY parcels=${pointers.length} roads=${this.loadedRoadIds.size} ` +
+            `liveRadius=${secondaryLiveRadiusM()}m (no composite/first-frame/script-warm)`
+        )
+      }
+      return
+    }
+
     // --- Secondary visuals: main.composite (outer) + first-frame sample (inner).
     // Entity-id dedupe — multi-parcel scene.json deploys and estates appear once (not per parcel).
     // Never re-load the primary entity as a secondary (full footprint already in primaryParcelSet).
@@ -468,6 +486,80 @@ export class AoiVisualLayer {
       clientDebugLog.consoleOnly(
         'info',
         `[aoi] refresh parcels=${pointers.length} vacant=${vacantKeys.length} footprint=${secondaryFootprint.size} roads=${this.loadedRoadIds.size} composites=${this.loadedCompositeIds.size} firstFrame=${ffVis}/${this.firstFrameGroups.size} radius=${radiusM}m`
+      )
+    }
+  }
+
+  /**
+   * Live-secondary candidate list only (no tertiary meshes).
+   * Allows nested SDK7 scenes whose parcels sit inside a multi-parcel primary (CBD plaza).
+   */
+  private emitLiveSecondaryCandidatesOnly(
+    entities: ActiveSceneEntity[],
+    primaryId: string,
+    primaryBase: string,
+    dclX: number,
+    dclZ: number,
+    pointerSet: Set<string>
+  ): void {
+    const liveRadiusM = secondaryLiveRadiusM()
+    if (liveRadiusM <= 0) {
+      this.ctx?.onSecondaryCandidates?.([])
+      return
+    }
+
+    const scriptBuilt = entities.filter((e) => {
+      if (primaryId && e.id === primaryId) return false
+      if (!isSecondarySceneCandidate(e)) return false
+      if (isOpenRoadEntity(e)) return false
+      const keys = e.pointers.length ? e.pointers : e.parcels
+      const inRing = keys.filter((p) => pointerSet.has(p.trim()))
+      // Must touch the current AOI pointer ring.
+      if (!inRing.length) return false
+      return true
+    })
+
+    const ranked = [...scriptBuilt].sort((a, b) => {
+      const da = minEntDist(a, dclX, dclZ, primaryBase)
+      const db = minEntDist(b, dclX, dclZ, primaryBase)
+      if (da !== db) return da - db
+      return (a.parcels.length || a.pointers.length) - (b.parcels.length || b.pointers.length)
+    })
+
+    const liveCandidates: Array<{
+      entityId: string
+      title: string
+      base: string
+      resolveX: number
+      resolveY: number
+      distM: number
+    }> = []
+
+    for (const ent of ranked) {
+      const dist = minEntDist(ent, dclX, dclZ, primaryBase)
+      if (dist > liveRadiusM) continue
+      try {
+        const baseCoord = parseParcelKey(ent.base)
+        liveCandidates.push({
+          entityId: ent.id,
+          title: ent.title || ent.base,
+          base: ent.base,
+          resolveX: baseCoord.x,
+          resolveY: baseCoord.y,
+          distM: dist
+        })
+      } catch {
+        /* skip */
+      }
+    }
+    this.ctx?.onSecondaryCandidates?.(liveCandidates)
+    if (liveCandidates.length) {
+      clientDebugLog.consoleOnly(
+        'info',
+        `[aoi] live-secondary candidates n=${liveCandidates.length} nearest=${liveCandidates
+          .slice(0, 3)
+          .map((c) => `“${c.title}”@${c.base}(${c.distM.toFixed(0)}m)`)
+          .join(' · ')}`
       )
     }
   }

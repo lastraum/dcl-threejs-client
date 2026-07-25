@@ -10,6 +10,7 @@ import {
   isOpenRoadEntity,
   type ActiveSceneEntity
 } from './fetchActiveEntities'
+import { aoiLiveSecondariesOnly } from '../multiScene/caps'
 
 /**
  * Dense Genesis (CBD) can have 30–50+ SDK7 scenes inside Scene Distance.
@@ -238,6 +239,8 @@ export class ScenePromoteController {
    * Roads/empty are classified and skipped; only real SDK7 scenes get onPrefetch.
    */
   private scheduleScriptWarmScan(dclX: number, dclZ: number, baseParcel: string): void {
+    // TEMP: live secondaries only — no distant IDB/script-warm thrash while walking.
+    if (aoiLiveSecondariesOnly()) return
     if (!this.onPrefetch || this.getScriptWarmRadiusM() <= 0) return
     if (this.warmScanInFlight) return
     const now = performance.now()

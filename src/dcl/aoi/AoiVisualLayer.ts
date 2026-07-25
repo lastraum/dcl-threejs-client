@@ -74,6 +74,8 @@ export type AoiVisualLayerContext = {
       resolveX: number
       resolveY: number
       distM: number
+      parcelCount?: number
+      parcels?: string[]
     }>
   ) => void
 }
@@ -558,16 +560,22 @@ export class AoiVisualLayer {
     })
 
     const withSceneDist = scriptBuilt.map((e) => {
-      const keys = (e.pointers.length ? e.pointers : e.parcels).map((p) => p.trim())
+      const keys = [
+        ...new Set((e.pointers.length ? e.pointers : e.parcels).map((p) => p.trim()).filter(Boolean))
+      ]
       const dist = minSceneFootprintDistanceM(primaryParcels, keys)
-      return { ent: e, dist, parcelCount: keys.length || 1 }
+      // Nested hole: zero edge distance and no parcel owned by primary (Spring in plaza cutout).
+      const nestedHole =
+        dist === 0 && keys.length > 0 && keys.every((p) => !this.primaryParcelSet.has(p))
+      return { ent: e, dist, parcelCount: keys.length || 1, keys, nestedHole }
     })
 
     const ranked = withSceneDist
       .filter((x) => Number.isFinite(x.dist) && x.dist <= liveProxM)
       .sort((a, b) => {
+        // Nested hole scenes first (always live when standing in CBD plaza).
+        if (a.nestedHole !== b.nestedHole) return a.nestedHole ? -1 : 1
         if (a.dist !== b.dist) return a.dist - b.dist
-        // Prefer modest nested scenes for live boot (Spring before mega-estates).
         return a.parcelCount - b.parcelCount
       })
 
@@ -579,9 +587,10 @@ export class AoiVisualLayer {
       resolveY: number
       distM: number
       parcelCount: number
+      parcels: string[]
     }> = []
 
-    for (const { ent, dist, parcelCount } of ranked) {
+    for (const { ent, dist, parcelCount, keys } of ranked) {
       try {
         const baseCoord = parseParcelKey(ent.base)
         liveCandidates.push({
@@ -591,7 +600,8 @@ export class AoiVisualLayer {
           resolveX: baseCoord.x,
           resolveY: baseCoord.y,
           distM: dist,
-          parcelCount
+          parcelCount,
+          parcels: keys
         })
       } catch {
         /* skip */
@@ -601,7 +611,7 @@ export class AoiVisualLayer {
     if (liveCandidates.length) {
       console.info(
         `[aoi] live-secondary (scene-prox≤${liveProxM}m) n=${liveCandidates.length} nearest=${liveCandidates
-          .slice(0, 3)
+          .slice(0, 5)
           .map(
             (c) =>
               `“${c.title}”@${c.base}(scene ${c.distM.toFixed(0)}m,p=${c.parcelCount})`
@@ -666,11 +676,14 @@ export class AoiVisualLayer {
       resolveY: number
       distM: number
       parcelCount: number
+      parcels: string[]
     }> = []
     const liveProxM = secondaryLiveRadiusM()
     const primaryParcels = [...this.primaryParcelSet]
     for (const ent of ranked) {
-      const keys = (ent.pointers.length ? ent.pointers : ent.parcels).map((p) => p.trim())
+      const keys = [
+        ...new Set((ent.pointers.length ? ent.pointers : ent.parcels).map((p) => p.trim()).filter(Boolean))
+      ]
       const dist = minSceneFootprintDistanceM(primaryParcels, keys)
       if (liveProxM <= 0 || !Number.isFinite(dist) || dist > liveProxM) continue
       try {
@@ -682,7 +695,8 @@ export class AoiVisualLayer {
           resolveX: baseCoord.x,
           resolveY: baseCoord.y,
           distM: dist,
-          parcelCount: keys.length || 1
+          parcelCount: keys.length || 1,
+          parcels: keys
         })
       } catch {
         /* skip */

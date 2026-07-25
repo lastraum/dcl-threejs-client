@@ -317,35 +317,50 @@ export class SecondaryLiveManager {
     this.emitLiveIds()
   }
 
+  private requestCoversParcel(c: SecondaryLiveRequest, key: string | null): boolean {
+    if (!key) return false
+    if (c.base.trim() === key) return true
+    if (`${c.resolveX},${c.resolveY}` === key) return true
+    if (c.parcels?.some((p) => p.trim() === key)) return true
+    return false
+  }
+
   reconcile(candidates: SecondaryLiveRequest[]): void {
     if (this.disposed || !this.cache || !this.host || !this.arbiter || !this.poseProvider) return
     const cap = this.maxSlots()
     const now = performance.now()
-    if (now - this.lastReconcileAt < 800) return
+    // Faster when under-feet priority is pinned (promote path needs quick boot).
+    const minGap = this.priorityParcelKey ? 200 : 800
+    if (now - this.lastReconcileAt < minGap) return
     this.lastReconcileAt = now
 
     // distM is **scene-to-scene** footprint edge distance (not player).
     // Nested hole scenes (Spring in plaza) are ~0m → always in range when primary is plaza.
     const liveProxM = secondaryLiveRadiusM()
     const pri = this.priorityParcelKey
-    const coversPri = (c: SecondaryLiveRequest): boolean => {
-      if (!pri) return false
-      const base = c.base.trim()
-      if (base === pri) return true
-      return `${c.resolveX},${c.resolveY}` === pri
+    const coversPri = (c: SecondaryLiveRequest): boolean => this.requestCoversParcel(c, pri)
+
+    const eligible = candidates.filter((c) => liveProxM > 0 && c.distM <= liveProxM)
+    const priorityReq = pri ? eligible.find((c) => coversPri(c)) : undefined
+
+    const sorted = [...eligible].sort((a, b) => {
+      // Under-feet parcel first so promote handoff is ready without /goto rebuild.
+      const ap = coversPri(a) ? 0 : 1
+      const bp = coversPri(b) ? 0 : 1
+      if (ap !== bp) return ap - bp
+      // Closer scene footprints first; then smaller over mega-estates.
+      if (a.distM !== b.distM) return a.distM - b.distM
+      return (a.parcelCount ?? 1) - (b.parcelCount ?? 1)
+    })
+
+    // Always reserve a slot for under-feet priority even if it was outside top-N noise.
+    const inRange: SecondaryLiveRequest[] = []
+    if (priorityReq) inRange.push(priorityReq)
+    for (const c of sorted) {
+      if (inRange.some((x) => x.entityId === c.entityId)) continue
+      if (inRange.length >= Math.max(cap, 0)) break
+      inRange.push(c)
     }
-    const inRange = candidates
-      .filter((c) => liveProxM > 0 && c.distM <= liveProxM)
-      .sort((a, b) => {
-        // Under-feet parcel first so promote handoff is ready without /goto rebuild.
-        const ap = coversPri(a) ? 0 : 1
-        const bp = coversPri(b) ? 0 : 1
-        if (ap !== bp) return ap - bp
-        // Closer scene footprints first; then smaller (nested) over mega-estates.
-        if (a.distM !== b.distM) return a.distM - b.distM
-        return (a.parcelCount ?? 1) - (b.parcelCount ?? 1)
-      })
-      .slice(0, Math.max(cap, 0))
 
     const want = new Set(inRange.map((c) => c.entityId))
     // Sticky demoted primaries always wanted (resume path).
@@ -369,39 +384,59 @@ export class SecondaryLiveManager {
     // Serial boot — one full secondary worker at a time (parallel boots starve seamless promote).
     if (this.booting.size >= SECONDARY_LIVE_BOOT_CONCURRENCY) return
 
-    // Prefer booting priority parcel first.
-    // Skip plaza-scale multi-parcel auto-boots (composite shows them; dual-worker thrash
-    // unloads CBD when nested hole scene promotes). Under-feet priority still boots.
+    // Prefer booting priority parcel first. Evict non-priority to make room if needed.
+    // Skip plaza-scale multi-parcel auto-boots (composite shows them) unless under-feet.
     const bootOrder = [...inRange]
     for (const req of bootOrder) {
       if (this.slots.has(req.entityId) || this.booting.has(req.entityId)) continue
-      if (this.slots.size + this.booting.size >= cap) break
       const parcels = req.parcelCount ?? 1
       if (parcels > SECONDARY_LIVE_AUTO_MAX_PARCELS && !coversPri(req)) {
         continue
       }
-      void this.bootOne(req)
+      if (this.slots.size + this.booting.size >= cap) {
+        // Make room for priority / next candidate — drop non-sticky non-priority.
+        this.evictToCapacity(cap - 1)
+        if (this.slots.size + this.booting.size >= cap) break
+      }
+      void this.bootOne(req, coversPri(req) ? pri : null)
       break // only start one per reconcile
     }
   }
 
-  private async bootOne(req: SecondaryLiveRequest): Promise<void> {
+  private async bootOne(req: SecondaryLiveRequest, preferParcelKey: string | null = null): Promise<void> {
     if (this.disposed || !this.cache || !this.host || !this.arbiter || !this.poseProvider) return
     this.booting.add(req.entityId)
     try {
+      // Resolve via under-feet parcel when pinned (base alone can miss multi-parcel cells).
+      let rx = req.resolveX
+      let ry = req.resolveY
+      if (preferParcelKey) {
+        try {
+          const [px, py] = preferParcelKey.split(',').map(Number)
+          if (Number.isFinite(px) && Number.isFinite(py)) {
+            rx = px
+            ry = py
+          }
+        } catch {
+          /* keep base */
+        }
+      }
       const scene = await resolveSceneFromRoute({
         kind: 'coords',
-        x: req.resolveX,
-        y: req.resolveY,
-        segment: `${req.resolveX},${req.resolveY}`
+        x: rx,
+        y: ry,
+        segment: `${rx},${ry}`
       })
       if (this.disposed || !scene?.mainEntry || !scene.entityId) return
       if (this.primaryScene?.entityId === scene.entityId) return
       if (this.slots.has(req.entityId)) return
+      // Catalyst may return a different entity id than active-entities list — still slot it.
+      if (this.slots.has(scene.entityId)) return
 
       const slotIndex = this.nextSlotIndex++
+      const slotId = scene.entityId
       const slot = new SceneWorkerSlot({
-        id: req.entityId,
+        id: slotId,
         kind: 'secondary',
         scene,
         cache: this.cache,
@@ -418,11 +453,12 @@ export class SecondaryLiveManager {
         return
       }
       if (this.primaryScene) this.cache.setScene(this.primaryScene)
-      this.slots.set(req.entityId, slot)
+      this.slots.set(slotId, slot)
       this.emitLiveIds()
       console.info(
         `[multi-scene] secondary live “${req.title}” base=${req.base} ` +
-          `sceneDist≈${req.distM.toFixed(0)}m parcels=${req.parcelCount ?? '?'}`
+          `sceneDist≈${req.distM.toFixed(0)}m parcels=${req.parcelCount ?? '?'} ` +
+          (preferParcelKey ? `priority=${preferParcelKey}` : '')
       )
     } catch (err) {
       console.warn(`[multi-scene] secondary boot failed “${req.title}”`, err)

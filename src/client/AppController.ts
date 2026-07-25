@@ -12,6 +12,7 @@ import { EditorApp } from '../editor/EditorApp'
 import { World } from '../core/World'
 import { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
 import { PortableExperienceManager } from '../dcl/multiScene/PortableExperienceManager'
+import { resolvePortableExperiencesPolicy } from '../dcl/multiScene/resolvePortableExperiences'
 import { readSceneDevQueryKey } from '../environment/fftOcean/readFftOceanOverride'
 import { disconnectAll } from '../network/SessionConnections'
 import { SessionIdentity } from '../network/SessionIdentity'
@@ -117,6 +118,9 @@ export class AppController {
   private readonly multiSceneRuntime = new MultiSceneRuntime({
     peManager: this.peManager
   })
+  /** Serialize promote — concurrent dwells were spamming seamless jumps. */
+  private promoteInFlight: Promise<void> | null = null
+  private promoteInFlightKey = ''
   private debugPanel: DebugPanel | null = null
   private devProgressPanel: DevProgressPanel | null = null
   private worldLocationCard: WorldLocationCard | null = null
@@ -3125,6 +3129,33 @@ export class AppController {
     target: Extract<RouteTarget, { kind: 'coords' }>,
     reason: string
   ): Promise<void> {
+    const key = `${target.x},${target.y}`
+    // Collapse concurrent dwells (logs showed promote spam every 200ms → dual seamless jumps).
+    if (this.promoteInFlight) {
+      if (this.promoteInFlightKey === key) {
+        await this.promoteInFlight
+        return
+      }
+      // Different parcel — wait for current then re-evaluate if still under feet later.
+      await this.promoteInFlight
+    }
+    const run = this.promotePrimaryBody(target, reason)
+    this.promoteInFlight = run
+    this.promoteInFlightKey = key
+    try {
+      await run
+    } finally {
+      if (this.promoteInFlight === run) {
+        this.promoteInFlight = null
+        this.promoteInFlightKey = ''
+      }
+    }
+  }
+
+  private async promotePrimaryBody(
+    target: Extract<RouteTarget, { kind: 'coords' }>,
+    reason: string
+  ): Promise<void> {
     const world = this.world
     if (world) {
       // Pin under-feet parcel so live secondary boots first (handoff, no loading screen).
@@ -3132,15 +3163,28 @@ export class AppController {
       try {
         let handed = await world.tryPromoteInWorld(target)
         if (!handed) {
-          // Wait for nearby secondary boot (already loading while we stood nearby / just pinned).
+          // Force-boot under-feet scene as secondary (cap used to starve Spring for HEX Club).
           console.info(
             `[promote] wait for live secondary @ ${target.x},${target.y} before cold jump…`
           )
-          for (let i = 0; i < 20 && !handed; i++) {
+          const bootPromise = this.multiSceneRuntime.ensureSecondaryForParcel(
+            target.x,
+            target.y,
+            22_000
+          )
+          for (let i = 0; i < 30 && !handed; i++) {
             await new Promise<void>((r) => setTimeout(r, 400))
             if (this.world !== world) return
             handed = await world.tryPromoteInWorld(target)
+            if (handed) break
+            // Bail early if force-boot finished and still missing.
+            if (i > 5 && (await Promise.race([bootPromise.then(() => true), Promise.resolve(false)]))) {
+              handed = await world.tryPromoteInWorld(target)
+              if (!handed && i > 12) break
+            }
           }
+          await bootPromise.catch(() => false)
+          if (!handed) handed = await world.tryPromoteInWorld(target)
         }
         if (handed) {
           console.info(
@@ -3199,9 +3243,15 @@ export class AppController {
         wearables = profile?.wearables ?? []
       }
       const bodyShape = profile?.bodyShape === 'female' ? 'female' : 'male'
+      // Re-apply scene policy from resolved primary (promote / seamless can race attach).
+      const pePolicy =
+        scene.portableExperiencesPolicy ?? resolvePortableExperiencesPolicy(scene.metadata)
+      this.peManager.applyScenePolicy(pePolicy)
+      const ft = scene.metadata?.featureToggles
       console.info(
         `[pe] bootstrap wearables=${wearables.length} body=${bodyShape} peer=${peerUrl}` +
-          ` policy=${this.peManager.getPePolicy().raw}`
+          ` policy=${this.peManager.getPePolicy().raw} allowed=${this.peManager.isPeAllowed()}` +
+          ` featureToggles.pe=${JSON.stringify(ft?.portableExperiences ?? null)}`
       )
       await this.peManager.discoverFromWearables(wearables, peerUrl, { bodyShape })
       // Re-sync HUD restriction after discovery (scene may already block PE).
@@ -3209,6 +3259,12 @@ export class AppController {
       // Give the frame loop a beat so HUD is up, then consent (no auto-start).
       await new Promise<void>((r) => window.setTimeout(r, 600))
       if (this.world !== world) return
+      // Re-check after attach races — never show activate-PEX when scene disables PE.
+      if (!this.peManager.isPeAllowed()) {
+        console.info('[pe] consent skipped after re-check — scene disables portable experiences')
+        this.shell?.bindPortableExperiences(this.peManager)
+        return
+      }
       await this.peManager.maybeShowConsentPrompt()
       // Consent path may emit; keep icon restriction in sync.
       this.shell?.bindPortableExperiences(this.peManager)

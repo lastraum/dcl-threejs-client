@@ -79,4 +79,9 @@ export type SecondaryLiveRequest = {
   distM: number
   /** Parcel footprint size — large estates prefer composite, not full live worker. */
   parcelCount?: number
+  /**
+   * Absolute parcel keys this deployment covers. Required for under-feet priority
+   * (base alone fails when player stands on a non-base multi-parcel cell).
+   */
+  parcels?: string[]
 }

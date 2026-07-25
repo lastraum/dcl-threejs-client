@@ -102,3 +102,10 @@ export function resolvePortableExperiencesPolicy(metadata: SceneMetadata): Porta
   // enabled or default
   return { allowed: true, uiAllowed: true, raw: raw === 'enabled' ? 'enabled' : 'default' }
 }
+
+/** Debug helper — log why PE is allowed/blocked for a scene. */
+export function describePortableExperiencesPolicy(metadata: SceneMetadata): string {
+  const policy = resolvePortableExperiencesPolicy(metadata)
+  const ft = metadata.featureToggles?.portableExperiences
+  return `raw=${policy.raw} allowed=${policy.allowed} ui=${policy.uiAllowed} scene.json=${JSON.stringify(ft ?? null)}`
+}

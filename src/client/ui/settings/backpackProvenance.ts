@@ -5,8 +5,8 @@
  * - collection preview montages (2×2 of the collection's item thumbnails —
  *   the marketplace composes these client-side too; there is no collection
  *   image field on the API)
- * - a persisted URN → collection/creator store so detail lines paint
- *   instantly on later sessions, reconciled against live data at load
+ * - a **per-wallet** persisted URN → collection/creator store so detail lines
+ *   paint instantly on later sessions (reconciled against live data at load)
  */
 
 import { loadCollectionDirectory } from './wearableCollections'
@@ -42,16 +42,17 @@ type NftRow = {
 }
 
 const NFT_PAGE_SIZE = 100
-const NFT_MAX_PAGES = 25
+/** 50 × 100 = 5000 NFTs — covers large wardrobes; beyond that mint lines may be missing. */
+const NFT_MAX_PAGES = 50
 
-/** Per-wallet memo — `Map<"assetUrn:tokenId" (lowercase), issuedId>`. */
+/** Per-wallet memo — `Map<itemUrn lowercase, issuedId>`. */
 const mintNumbersCache = new Map<string, Promise<Map<string, string>>>()
 
 /**
- * Issue numbers for every NFT the wallet owns (wearables + emotes), keyed by
- * the complete item URN (asset URN + token id, lowercased) — the same shape as
- * backpack item URNs from `expandOwnedWearableRows`. A failed fetch clears the
- * memo so the next backpack open retries.
+ * Issue numbers for every NFT the wallet owns (wearables + emotes).
+ * Keys match backpack item URNs from `expandOwnedWearableRows` (`assetUrn:tokenId`).
+ * Also indexes the marketplace asset urn alone when it already equals the instance form.
+ * A failed fetch clears the memo so the next backpack open retries.
  */
 export function loadOwnedMintNumbers(address: string): Promise<Map<string, string>> {
   const key = address.trim().toLowerCase()
@@ -63,6 +64,25 @@ export function loadOwnedMintNumbers(address: string): Promise<Map<string, strin
   })
   mintNumbersCache.set(key, promise)
   return promise
+}
+
+/**
+ * Resolve issuedId for a backpack item URN (case-insensitive).
+ * Tries full instance URN, then last-segment-as-tokenId composite if needed.
+ */
+export function mintNumberForUrn(map: Map<string, string> | null | undefined, itemUrn: string): string | null {
+  if (!map || !itemUrn) return null
+  const k = itemUrn.trim().toLowerCase()
+  const direct = map.get(k)
+  if (direct) return direct
+  // Backpack complete URN ends with :tokenId; map may only have assetUrn:tokenId if shapes differ slightly.
+  const parts = k.split(':')
+  if (parts.length >= 2) {
+    const tokenId = parts[parts.length - 1]!
+    const asset = parts.slice(0, -1).join(':')
+    return map.get(`${asset}:${tokenId}`) ?? null
+  }
+  return null
 }
 
 async function fetchOwnedMintNumbers(address: string): Promise<Map<string, string>> {
@@ -80,7 +100,11 @@ async function fetchOwnedMintNumbers(address: string): Promise<Map<string, strin
       const issuedId = row.nft?.issuedId != null ? String(row.nft.issuedId).trim() : ''
       // LAND/names have no urn; unminted rows no issuedId — both useless here.
       if (!urn || !tokenId || !issuedId) continue
-      out.set(`${urn}:${tokenId}`, issuedId)
+      // Primary: complete instance URN (matches expandOwnedWearableRows).
+      const complete = urn.endsWith(`:${tokenId}`) ? urn : `${urn}:${tokenId}`
+      out.set(complete, issuedId)
+      // Secondary: raw marketplace urn (when API already returns the instance form).
+      out.set(urn, issuedId)
     }
     const total = typeof raw.total === 'number' ? raw.total : rows.length
     if (rows.length < NFT_PAGE_SIZE || (page + 1) * NFT_PAGE_SIZE >= total) break
@@ -132,17 +156,19 @@ async function fetchCollectionPreview(contract: string): Promise<CollectionPrevi
 }
 
 // ---------------------------------------------------------------------------
-// Persisted URN → collection/creator store
+// Per-wallet persisted URN → collection/creator store
 // ---------------------------------------------------------------------------
 
-const CREATOR_STORE_KEY = 'd3js-backpack-creators-v1'
-/** Soft cap — a very large wardrobe stays well under origin quota (~100 bytes/row). */
+const CREATOR_STORE_PREFIX = 'd3js-backpack-creators-v2:'
+/** Soft cap per wallet — stays under origin quota (~100 bytes/row). */
 const CREATOR_STORE_MAX_ENTRIES = 4000
 
 export type CreatorStoreEntry = {
   collectionName?: string
   creatorAddress?: string
   creatorName?: string
+  /** Last write time — used for LRU eviction when over cap. */
+  at?: number
 }
 
 type CreatorStore = Record<string, CreatorStoreEntry>
@@ -154,10 +180,19 @@ type ProvenanceAnnotatable = {
   creatorName?: string
 }
 
-function readCreatorStore(): CreatorStore {
+function normalizeWallet(address: string | null | undefined): string | null {
+  const a = address?.trim().toLowerCase() ?? ''
+  return /^0x[a-f0-9]{40}$/.test(a) ? a : null
+}
+
+function creatorStoreKey(wallet: string): string {
+  return `${CREATOR_STORE_PREFIX}${wallet}`
+}
+
+function readCreatorStore(wallet: string): CreatorStore {
   if (typeof window === 'undefined') return {}
   try {
-    const raw = localStorage.getItem(CREATOR_STORE_KEY)
+    const raw = localStorage.getItem(creatorStoreKey(wallet))
     if (!raw) return {}
     const parsed = JSON.parse(raw) as CreatorStore
     return parsed && typeof parsed === 'object' ? parsed : {}
@@ -166,14 +201,16 @@ function readCreatorStore(): CreatorStore {
   }
 }
 
-function writeCreatorStore(store: CreatorStore): void {
+function writeCreatorStore(wallet: string, store: CreatorStore): void {
   if (typeof window === 'undefined') return
   let entries = Object.entries(store)
   if (entries.length > CREATOR_STORE_MAX_ENTRIES) {
-    entries = entries.slice(entries.length - CREATOR_STORE_MAX_ENTRIES)
+    // LRU: keep most recently written rows.
+    entries.sort((a, b) => (b[1].at ?? 0) - (a[1].at ?? 0))
+    entries = entries.slice(0, CREATOR_STORE_MAX_ENTRIES)
   }
   try {
-    localStorage.setItem(CREATOR_STORE_KEY, JSON.stringify(Object.fromEntries(entries)))
+    localStorage.setItem(creatorStoreKey(wallet), JSON.stringify(Object.fromEntries(entries)))
   } catch {
     /* quota — provenance is a cache, live annotation still works */
   }
@@ -193,12 +230,17 @@ function isFallbackName(value: string | undefined): boolean {
 }
 
 /**
- * Synchronously fill missing collection/creator fields from the persisted
- * store — call before first render so detail lines paint instantly. Returns
- * whether anything was filled.
+ * Synchronously fill missing collection/creator fields from the **per-wallet**
+ * persisted store — call before first render so detail lines paint instantly.
+ * No-ops when address is missing (guest / catalog-only).
  */
-export function applyCreatorStore(items: ProvenanceAnnotatable[]): boolean {
-  const store = readCreatorStore()
+export function applyCreatorStore(
+  items: ProvenanceAnnotatable[],
+  address: string | null | undefined
+): boolean {
+  const wallet = normalizeWallet(address)
+  if (!wallet) return false
+  const store = readCreatorStore(wallet)
   let changed = false
   for (const item of items) {
     const entry = store[storeKey(item.urn)]
@@ -219,9 +261,15 @@ export function applyCreatorStore(items: ProvenanceAnnotatable[]): boolean {
   return changed
 }
 
-/** Write resolved collection/creator info back so the next session skips the wait. */
-export function persistCreatorStore(items: ProvenanceAnnotatable[]): void {
-  const store = readCreatorStore()
+/** Write resolved collection/creator info for this wallet so the next session skips the wait. */
+export function persistCreatorStore(
+  items: ProvenanceAnnotatable[],
+  address: string | null | undefined
+): void {
+  const wallet = normalizeWallet(address)
+  if (!wallet) return
+  const store = readCreatorStore(wallet)
+  const now = Date.now()
   let changed = false
   for (const item of items) {
     // Drop short-address fallbacks — persist only real resolved names.
@@ -236,16 +284,22 @@ export function persistCreatorStore(items: ProvenanceAnnotatable[]): void {
       prev.creatorAddress === item.creatorAddress &&
       prev.creatorName === creatorName
     ) {
+      // Touch LRU without rewriting if nothing else changed.
+      if ((prev.at ?? 0) < now - 60_000) {
+        store[key] = { ...prev, at: now }
+        changed = true
+      }
       continue
     }
     store[key] = {
       collectionName,
       creatorAddress: item.creatorAddress,
-      creatorName
+      creatorName,
+      at: now
     }
     changed = true
   }
-  if (changed) writeCreatorStore(store)
+  if (changed) writeCreatorStore(wallet, store)
 }
 
 // ---------------------------------------------------------------------------

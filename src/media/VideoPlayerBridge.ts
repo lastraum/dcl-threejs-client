@@ -15,6 +15,8 @@ import { clientDebugLog } from '../client/debug/ClientDebugLog'
 type DecoderEntry = {
   player: WebVideoPlayer
   lastSpecKey: string
+  /** Last ECS VideoPlayer.src — explicit change detection for mp4 ↔ m3u8 swaps. */
+  lastSrc: string
   lastAppliedPlaying: boolean | undefined
   lastSpatial: boolean
   lastSpatialMin: number
@@ -105,7 +107,9 @@ export class VideoPlayerBridge {
 
   getTexture(entity: Entity): THREE.Texture | null {
     const entry = this.decoders.get(entity)
-    if (!entry?.player.canAttachTexture()) return null
+    if (!entry) return null
+    // Always bind the canvas map (black idle / loading, or live frames).
+    // Gating on canAttachTexture left materials with null map → default white albedo.
     return entry.player.texture
   }
 
@@ -281,6 +285,7 @@ export class VideoPlayerBridge {
     this.decoders.set(entity, {
       player,
       lastSpecKey: '',
+      lastSrc: '',
       lastAppliedPlaying: undefined,
       lastSpatial: false,
       lastSpatialMin: 0,
@@ -290,6 +295,7 @@ export class VideoPlayerBridge {
       lastLength: -1,
       lastEventAtMs: 0
     })
+    // Bind black placeholder immediately so video screens never render white.
     this.onTextureReady?.(entity)
   }
 
@@ -328,6 +334,14 @@ export class VideoPlayerBridge {
     const entry = this.decoders.get(entity)
     if (!entry) return false
     const ecsPlaying = spec.playing !== false
+    // Explicit src tracking — force re-apply on mp4 ↔ m3u8 ↔ livekit even if other
+    // fields hash the same after soft-hold / CRDT noise.
+    const src = (spec.src ?? '').trim()
+    const srcChanged = src !== entry.lastSrc
+    if (srcChanged) {
+      entry.lastSrc = src
+      entry.lastSpecKey = ''
+    }
     // Include live flag so we re-apply when stream-key/Cast starts/stops without ECS src change.
     const specKey = `${liveKitRemoteLive ? '1' : '0'}:${JSON.stringify(spec)}`
     const bridgePlayingChanged =
@@ -335,10 +349,13 @@ export class VideoPlayerBridge {
     const playerPlayingChanged = entry.player.wouldEcsPlayingChange(ecsPlaying)
     const playingChanged = bridgePlayingChanged || playerPlayingChanged
     const needsEndedReplay = entry.player.needsReplayAfterEnd(playerPlayingChanged, fromUserToggle)
-    if (entry.lastSpecKey === specKey && !playingChanged && !needsEndedReplay) return false
+    if (entry.lastSpecKey === specKey && !playingChanged && !needsEndedReplay && !srcChanged) {
+      return false
+    }
     entry.lastSpecKey = specKey
     entry.lastAppliedPlaying = ecsPlaying
     entry.player.applySpec(spec, { fromUserToggle, liveKitRemoteLive })
+    // Rebind materials after src swap / idle black / first frame.
     this.onTextureReady?.(entity)
     return fromUserToggle && (playingChanged || entry.player.isHoldingAtEnd())
   }

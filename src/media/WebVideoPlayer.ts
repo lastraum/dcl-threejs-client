@@ -101,8 +101,10 @@ export class WebVideoPlayer {
 
   get texture(): THREE.Texture {
     if (this.usesSharedLiveKit) {
+      // Prefer shared LiveKit canvas when bound; fall back to local black/loading canvas.
       return getSharedLiveKitVideoStream().getTexture() ?? this.ensureLocalTexture().texture
     }
+    // Always create local canvas (constructor clears to black) so idle screens bind a map.
     return this.ensureLocalTexture().texture
   }
 
@@ -369,26 +371,35 @@ export class WebVideoPlayer {
 
     let src = spec.src.trim()
     // Authority is ECS VideoPlayer.src (composite + scene/Admin MessageBus; later SyncComponents).
-    // Only soft-hold: if we already decoded livekit-video:// and a late CRDT defaultURL races
-    // in while the scene LiveKit room still has a live pub, keep LiveKit until ECS settles.
+    // Soft-hold LiveKit only when ECS clears src (empty) while stream-key is still live —
+    // never block an intentional switch to a real URL (mp4 / m3u8 / new LiveKit key).
     if (
       this.liveKitSource &&
       remoteLive &&
-      src &&
-      !isLiveKitVideoSrc(src) &&
+      !src &&
       isLiveKitCurrentStreamSrc(this.loadedSrc)
     ) {
       src = this.loadedSrc
     }
 
-    if (src && src !== this.loadedSrc) {
+    // Explicit src transition (mp4 ↔ m3u8 ↔ livekit) — always clear + reload.
+    const srcChanged = src !== this.loadedSrc
+    if (src && srcChanged) {
       if (isLiveKitVideoSrc(src)) {
         if (isLiveKitCurrentStreamSrc(src)) void this.loadLiveKitSource(src)
-        else this.setState(VS_ERROR)
+        else {
+          this.clearMediaSource()
+          this.ensureLocalTexture().clearToBlack()
+          this.setState(VS_ERROR)
+        }
       } else {
         const url = resolveSceneMediaUrl(src, this.scene)
         if (url) void this.loadSource(url)
-        else this.setState(VS_ERROR)
+        else {
+          this.clearMediaSource()
+          this.ensureLocalTexture().clearToBlack()
+          this.setState(VS_ERROR)
+        }
       }
     } else if (isLiveKitCurrentStreamSrc(src) && this.resolveLiveKitBinder()) {
       // Retry when binder/scene room appeared after first attempt, or shared bind was torn down.
@@ -396,7 +407,9 @@ export class WebVideoPlayer {
         void this.loadLiveKitSource(src)
       }
     } else if (!src) {
-      this.setState(VS_ERROR)
+      if (this.loadedSrc) this.clearMediaSource()
+      this.ensureLocalTexture().clearToBlack()
+      this.setState(VS_NONE)
     }
 
     this.video.loop = !this.liveKitSource && spec.loop === true
@@ -422,6 +435,7 @@ export class WebVideoPlayer {
         this.holdingAtEnd = true
         this.wantsPlaying = false
         this.bumpPlayGeneration()
+        this.ensureLocalTexture().clearToBlack()
         return
       }
       if (this.usesSharedLiveKit) void this.tryPlayShared(getSharedLiveKitVideoStream().video)
@@ -432,6 +446,8 @@ export class WebVideoPlayer {
       this.playInFlight = false
       if (!this.usesSharedLiveKit) this.video.pause()
       this.syncThrottledPlayback()
+      // Idle / not playing — Explorer-like black screen (not last frame / white).
+      this.ensureLocalTexture().clearToBlack()
     }
   }
 
@@ -595,11 +611,13 @@ export class WebVideoPlayer {
     this.hls = null
     this.bumpPlayGeneration()
     if (!this.usesSharedLiveKit) {
+      // stop() clears canvas to black — avoids stale frame when switching mp4 ↔ m3u8.
       this.throttledTexture?.stop()
       this.video.pause()
       this.video.srcObject = null
       this.video.removeAttribute('src')
       this.video.load()
+      this.throttledTexture?.clearToBlack()
     }
     this.loadedSrc = ''
     this.liveKitSource = false

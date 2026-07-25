@@ -59,6 +59,8 @@ export class ThrottledVideoTexture {
     this.texture.magFilter = THREE.LinearFilter
     // glTF video screens (default path) — flipY false; MeshRenderer reconfigures on apply.
     configureSceneVideoTexture(this.texture, false)
+    // Idle / no-frame screens must be black (not uninit white × material albedo).
+    this.clearToBlack()
   }
 
   start(): void {
@@ -77,10 +79,32 @@ export class ThrottledVideoTexture {
       cancelAnimationFrame(this.rafHandle)
       this.rafHandle = 0
     }
+    // Paused / idle: Explorer-like black, not last-frame flash or white.
+    this.clearToBlack()
+  }
+
+  /**
+   * Fill the canvas solid black and mark the texture dirty.
+   * Used for idle screens, src clear, and pre-first-frame so materials never show white.
+   */
+  clearToBlack(): void {
+    const w = Math.max(1, this.canvas.width)
+    const h = Math.max(1, this.canvas.height)
+    if (this.canvas.width !== w || this.canvas.height !== h) {
+      this.canvas.width = w
+      this.canvas.height = h
+    }
+    this.ctx.fillStyle = '#000000'
+    this.ctx.fillRect(0, 0, w, h)
+    this.texture.needsUpdate = true
   }
 
   /** Called when the underlying video element reports new metadata / track attach. */
   notifySourceChanged(): void {
+    if (this.video.videoWidth <= 0 || this.video.videoHeight <= 0) {
+      this.clearToBlack()
+      return
+    }
     if (this.running) this.uploadFrame(performance.now(), true)
   }
 
@@ -110,7 +134,11 @@ export class ThrottledVideoTexture {
   private uploadFrame(nowMs: number, force = false): void {
     const vw = this.video.videoWidth
     const vh = this.video.videoHeight
-    if (vw <= 0 || vh <= 0) return
+    if (vw <= 0 || vh <= 0) {
+      // No decoded frame yet — keep black placeholder (never leave uninit/white).
+      this.clearToBlack()
+      return
+    }
     if (!force && nowMs - this.lastUploadMs < this.minFrameMs) return
     this.lastUploadMs = nowMs
 

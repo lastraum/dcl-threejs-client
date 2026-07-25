@@ -166,13 +166,14 @@ export class SecondaryLiveManager {
     const id = scene.entityId
     const parcelCount = scene.parcels?.length || 1
 
-    // Plaza-scale dual full workers thrash/crash on nested-hole promote. Drop the
-    // heavy demoted primary; composite tertiary re-draws the ring after handoff.
+    // Plaza-scale dual full workers thrash on nested-hole promote (CBD + Spring).
+    // Dispose the **script worker** only — AOI composite tertiary re-draws the ring.
+    // Looks like “scene unloaded” for a few seconds until composite loads (~80 GLBs).
     if (parcelCount > SECONDARY_LIVE_AUTO_MAX_PARCELS) {
       const primaryPhysIds = system.getAllPhysicsColliderDescs().map((d) => d.entity)
       console.info(
         `[multi-scene] demote dispose large “${scene.title}” parcels=${parcelCount} ` +
-          `(composite tertiary keeps ring; dual live thrash)`
+          `(worker off → composite tertiary; not a full /goto unload)`
       )
       try {
         system.dispose()

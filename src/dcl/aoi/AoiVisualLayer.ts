@@ -486,9 +486,10 @@ export class AoiVisualLayer {
       return bParcels - aParcels
     })
 
-    // CBD density: loading 6×60 GLB clones per refresh freezes main. Trickle 2.
+    // CBD density: loading 6×60 GLB clones per refresh freezes main.
+    // Trickle 3 after promote so plaza ring returns faster (still serial per refresh).
     // Prefer larger maxGltfs for multi-parcel ring so plaza isn't a hollow shell.
-    const toLoad = ranked.filter((c) => !this.loadedCompositeIds.has(c.id)).slice(0, 2)
+    const toLoad = ranked.filter((c) => !this.loadedCompositeIds.has(c.id)).slice(0, 3)
     for (const ent of toLoad) {
       const comp = findCompositeFile(ent.content)
       if (!comp) continue

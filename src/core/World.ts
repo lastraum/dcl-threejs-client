@@ -3715,9 +3715,10 @@ export class World {
     this.comms.applyRealmAbout(newScene.realm, newScene.commsPointer)
     this.session.setCatalystEndpoints(newScene.realm.contentUrl, newScene.realm.lambdasUrl)
 
-    // AOI tertiary + promote controller retarget to new primary footprint.
-    // Handoff primary is already running — re-enable neighbors immediately.
-    multi.setSecondaryActivityEnabled(true)
+    // AOI tertiary (composites) retarget immediately so plaza ring doesn't stay blank.
+    // Live secondary *workers* stay off for a settle window — Spring hydrating + BrandonManus
+    // + Jarod dual boots was the post-promote hitch (shadows/bloom off don't help script+GLB).
+    multi.setSecondaryActivityEnabled(false)
     this.aoiVisual.bind({
       scene: newScene,
       cache: this.assets,
@@ -3748,9 +3749,20 @@ export class World {
 
     // Feet stay put in Genesis space.
     const ok = this.restoreGenesisFeet(genesis)
+    const SETTLE_LIVE_SECONDARIES_MS = 5_000
+    window.setTimeout(() => {
+      if (this.loadedPrimaryScene?.entityId !== newScene.entityId) return
+      multi.setSecondaryActivityEnabled(true)
+      console.info(
+        `[promote] live secondaries re-enabled after ${SETTLE_LIVE_SECONDARIES_MS}ms settle ` +
+          `(primary “${newScene.title}” hydrating alone)`
+      )
+    }, SETTLE_LIVE_SECONDARIES_MS)
+
     console.info(
       `[promote] handoff+demote OK “${newScene.title}” base=${newScene.baseParcel}` +
-        ` prev=${oldScene?.title ?? 'none'} restoreFeet=${ok}`
+        ` prev=${oldScene?.title ?? 'none'} restoreFeet=${ok}` +
+        ` (large prev disposed→composite; live secondaries pause ${SETTLE_LIVE_SECONDARIES_MS}ms)`
     )
     return true
   }

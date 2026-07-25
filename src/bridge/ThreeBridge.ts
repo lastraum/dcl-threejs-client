@@ -1983,7 +1983,7 @@ export class ThreeBridge {
     scheduleNext(pump)
   }
 
-  /** Prefer GPU InstancedMesh for static same-hash GLBs; clone for skinned / Animator / morphs. */
+  /** Prefer GPU InstancedMesh for static same-hash GLBs; clone for skinned / ECS Animator / morphs. */
   private canInstanceAttach(
     entity: Entity,
     template: { root: THREE.Group; animations: THREE.AnimationClip[] }
@@ -1991,11 +1991,12 @@ export class ThreeBridge {
     // Prior motion promote — stay on private clone (collectible bob, projectiles).
     const existing = this.store.nodes.get(entity)
     if (existing?.userData.dclForceCloneAttach) return false
-    // Skinned / Animator need full clone + mixer rebind.
+    // Explicit ECS Animator needs a private hierarchy for the mixer.
     if (this.ecs.Animator.has(entity)) return false
-    // Embedded clips (incl. morph weights) need a per-entity mesh + AnimationMixer —
-    // DCL auto-plays the first clip when no ECS Animator (arrow.glb blink).
-    if (template.animations.length > 0) return false
+    // Rigid GLBs with embedded clips MAY instance as rest-pose (huge CBD win).
+    // templateIsInstancable rejects skinned/morph. AnimatorBridge promotes to clone
+    // when default autoplay actually needs to run (near camera).
+    void template.animations
     // TextureMove writes material UVs; scale squash (plaza bounce parasols) needs hierarchy
     // TRS on a private clone — GPU instance slots lag / hide short 800ms elastic scales.
     if (this.ecs.Tween.has(entity)) {
@@ -2016,6 +2017,49 @@ export class ThreeBridge {
     // Material / shadow overrides must not share InstancedMesh materials with siblings.
     if (this.ecs.GltfNodeModifiers.has(entity)) return false
     return templateIsInstancable(template.root)
+  }
+
+  /**
+   * Sync promote InstancedMesh → private clone so AnimationMixer can bind.
+   * Used when a rest-pose instance starts default autoplay near the camera.
+   */
+  ensureCloneMeshForAnimator(entity: Entity): THREE.Object3D | null {
+    const obj = this.store.nodes.get(entity)
+    if (!obj) return null
+    const mk = `__mesh_${entity}`
+    if (!obj.userData.dclInstanced) {
+      return obj.getObjectByName(mk) ?? null
+    }
+    if (!this.ecs.GltfContainer.has(entity)) return null
+    const { src } = this.ecs.GltfContainer.get(entity)
+    const hash =
+      /^(bafy|bafkre|Qm)/i.test(src.trim())
+        ? src.trim()
+        : resolveGltfSrcHash(this.sceneConfig.content, src.trim())
+    if (!hash) return null
+    const template =
+      this.cache.peekCached(hash) ?? this.cache.peekCached(this.sceneConfig.assetUrl(hash))
+    if (!template) return null
+
+    const prevTris = (obj.userData.dclAttachedTris as number | undefined) ?? 0
+    this.instancer.detach(entity, obj)
+    this.instanceMotionHits.delete(entity)
+    delete obj.userData.dclInstanced
+    delete obj.userData.gltfSrcKey
+    obj.userData.dclForceCloneAttach = true
+    if (prevTris > 0) this.attachedSceneTris = Math.max(0, this.attachedSceneTris - prevTris)
+
+    const templateTris =
+      (template.root.userData.dclTriCount as number | undefined) ??
+      (() => {
+        const t = countObjectTriangles(template.root)
+        template.root.userData.dclTriCount = t
+        return t
+      })()
+    const srcKey = hash
+    const ok = this.attachCachedGltf(entity, obj, mk, src, srcKey, hash, template, templateTris)
+    if (!ok) return null
+    return obj.getObjectByName(mk) ?? null
   }
 
   /** Clone a cached template onto the entity node. Returns false on failure / skip. */

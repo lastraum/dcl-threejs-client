@@ -539,7 +539,8 @@ export class SceneScriptSystem {
       this.readComponents,
       cache,
       scene,
-      () => this.bridge?.getEntityNodes()
+      () => this.bridge?.getEntityNodes(),
+      (entity) => this.bridge?.ensureCloneMeshForAnimator(entity) ?? null
     )
     this.tweenBridge = new TweenBridge(this.readComponents, this.entityStore)
     this.particleBridge = new ParticleSystemBridge(

@@ -245,6 +245,11 @@ export class AnimatorBridge {
   private sampleFrame = 0
   /** Rotating start index into the fair (non-near) active set. */
   private fairRingCursor = 0
+  /**
+   * When false, default autoplay (no ECS Animator) stays pending — GLB can remain
+   * GPU-instanced rest pose until camera is near.
+   */
+  private allowDefaultAutoplayBind = false
   private lastStats: AnimatorSampleStats = {
     bound: 0,
     active: 0,
@@ -272,7 +277,12 @@ export class AnimatorBridge {
     private readonly ecs: MirrorComponents,
     private readonly cache: AssetCache,
     private readonly sceneConfig: ResolvedScene,
-    private readonly getNodes: () => Map<Entity, THREE.Group> | undefined
+    private readonly getNodes: () => Map<Entity, THREE.Group> | undefined,
+    /**
+     * Promote GPU InstancedMesh rest-pose → private clone for mixer bind.
+     * Required when decorative clips use default autoplay near camera.
+     */
+    private readonly ensureCloneMesh?: (entity: Entity) => THREE.Object3D | null
   ) {
     if (this.verbose) {
       const hint = isMotionFocusActive()
@@ -542,6 +552,12 @@ export class AnimatorBridge {
     if (!hasExplicitAnimator && this.staticGltfNoClips.has(entity) && !this.entries.has(entity)) {
       return 'skip'
     }
+    // Default autoplay (DCL first-clip): defer until near-camera sample path so far
+    // plaza props stay GPU-instanced rest poses (visibility intact, no 3k clones).
+    if (!hasExplicitAnimator && !this.allowDefaultAutoplayBind && !this.entries.has(entity)) {
+      this.pendingBind.add(entity)
+      return 'waiting'
+    }
 
     const nodes = this.getNodes()
     const node = nodes?.get(entity)
@@ -567,7 +583,11 @@ export class AnimatorBridge {
       return 'skip'
     }
 
-    const mesh = node.getObjectByName(`__mesh_${entity}`)
+    // Instanced rest-pose → private clone so mixer can bind.
+    let mesh = node.getObjectByName(`__mesh_${entity}`) as THREE.Object3D | null
+    if (node.userData.dclInstanced || !mesh) {
+      mesh = this.ensureCloneMesh?.(entity) ?? mesh
+    }
     if (!mesh) {
       this.logAnimator(`Animator wait mesh — entity ${entity} · ${src} (no __mesh_${entity} yet)`, {
         entity,
@@ -720,6 +740,27 @@ export class AnimatorBridge {
       sampleCtx!.camera.matrixWorldInverse
     )
     _frustum.setFromProjectionMatrix(_projScreen)
+
+    // Near-only: promote + bind deferred default autoplay (instanced rest → clone).
+    this.allowDefaultAutoplayBind = true
+    const nearBindSq = SLEEP_BEYOND_M * SLEEP_BEYOND_M
+    for (const entity of [...this.pendingBind]) {
+      if (this.entries.has(entity)) {
+        this.pendingBind.delete(entity)
+        continue
+      }
+      const node = this.getNodes()?.get(entity)
+      if (!node) continue
+      _worldPos.setFromMatrixPosition(node.matrixWorld)
+      const dx = _worldPos.x - _camPos.x
+      const dy = _worldPos.y - _camPos.y
+      const dz = _worldPos.z - _camPos.z
+      if (dx * dx + dy * dy + dz * dz > nearBindSq) continue
+      const result = this.bindAndApplyEntity(entity)
+      if (result === 'bound') this.pendingBind.delete(entity)
+      else if (result === 'skip') this.pendingBind.delete(entity)
+    }
+    this.allowDefaultAutoplayBind = false
 
     type Cand = { entity: Entity; entry: AnimEntry; priority: number; distSq: number }
     const near: Cand[] = []

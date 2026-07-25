@@ -4795,6 +4795,11 @@ export class SceneScriptSystem {
     return animatorPart
   }
 
+  /** Phase-slice sample counters for top-right AnimatorSampleHud. */
+  getAnimatorSampleStats(): import('../../bridge/AnimatorBridge').AnimatorSampleStats | null {
+    return this.animatorBridge?.getSampleStats() ?? null
+  }
+
   /** @deprecated Prefer pumpMotionBridges + syncAsyncBridges */
   async syncBridges(delta: number): Promise<void> {
     this.pumpMotionBridges(delta)

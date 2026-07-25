@@ -31,6 +31,30 @@ export type AnimatorSampleContext = {
   playerWorld: THREE.Vector3
 }
 
+/** Last scheduled sample tick — for top-right HUD. */
+export type AnimatorSampleStats = {
+  /** Bound mixers (with or without active clips). */
+  bound: number
+  /** Active clips this frame (running / weight). */
+  active: number
+  near: number
+  fair: number
+  sampled: number
+  deferred: number
+  budget: number
+  nearCap: number
+  /**
+   * Estimated sample rate for a typical fair-ring mixer (Hz), given current
+   * display frame interval and fair budget share. Time-correct: still 1× speed.
+   */
+  fairSampleHz: number
+  /** Wall-clock estimate of main-loop FPS from last frame dt. */
+  displayFps: number
+  /** Frame dt used for this sample pass (seconds). */
+  frameDt: number
+  disabled: boolean
+}
+
 /** Always-sample (or 2× fair share) within this radius of the camera. */
 const NEAR_PLAYER_FULL_RATE_M = 16
 /** Sphere radius added around entity root for expanded-frustum tests (turn without pop). */
@@ -193,6 +217,27 @@ export class AnimatorBridge {
   private readonly shapeMotionEntities = new Set<Entity>()
   /** Monotonic frame counter for off-screen sample stride. */
   private sampleFrame = 0
+  /** Rotating start index into the fair (non-near) active set. */
+  private fairRingCursor = 0
+  private lastStats: AnimatorSampleStats = {
+    bound: 0,
+    active: 0,
+    near: 0,
+    fair: 0,
+    sampled: 0,
+    deferred: 0,
+    budget: MAX_SAMPLES_PER_FRAME,
+    nearCap: MAX_NEAR_ALWAYS_PER_FRAME,
+    fairSampleHz: 0,
+    displayFps: 0,
+    frameDt: 0,
+    disabled: false
+  }
+
+  /** Latest fair phase-slice counters (always updated on scheduled ticks). */
+  getSampleStats(): AnimatorSampleStats {
+    return { ...this.lastStats }
+  }
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -605,7 +650,22 @@ export class AnimatorBridge {
    * `delta === 0` (post-bind pose): sample all active work (no cull) so doors get first pose.
    */
   update(delta: number, view?: ProjectionView, sampleCtx?: AnimatorSampleContext): void {
-    if (!this.entries.size) return
+    if (!this.entries.size) {
+      this.lastStats = {
+        ...this.lastStats,
+        bound: 0,
+        active: 0,
+        near: 0,
+        fair: 0,
+        sampled: 0,
+        deferred: 0,
+        frameDt: delta,
+        displayFps: delta > 1e-6 ? 1 / delta : 0,
+        fairSampleHz: 0,
+        disabled: false
+      }
+      return
+    }
     // Door open/close CRDT often lands between async sync ticks — apply dirty before sample.
     if (view) this.applyDirtyBoundStates(view)
 
@@ -655,12 +715,16 @@ export class AnimatorBridge {
 
     let sampled = 0
     let deferred = 0
+    let nearSampled = 0
+    let fairSampled = 0
 
-    const runSample = (entity: Entity, entry: AnimEntry): void => {
+    const runSample = (entity: Entity, entry: AnimEntry, layer: 'near' | 'fair'): void => {
       const step = entry.deferredSampleDt
       entry.deferredSampleDt = 0
       if (step > 1e-8) entry.mixer.update(step)
       sampled++
+      if (layer === 'near') nearSampled++
+      else fairSampled++
       this.markShapeMotionAfterSample(entity, entry)
     }
 
@@ -675,7 +739,7 @@ export class AnimatorBridge {
         deferred++
         continue
       }
-      runSample(cand.entity, cand.entry)
+      runSample(cand.entity, cand.entry, 'near')
     }
 
     // --- Layer 2: fair phase slice over remaining budget ---
@@ -689,24 +753,42 @@ export class AnimatorBridge {
         const cand = fair[(start + i) % n]!
         // Skip if already sampled as near this frame (shouldn't be in fair).
         if (cand.entry.deferredSampleDt < 1e-8) continue
-        runSample(cand.entity, cand.entry)
+        runSample(cand.entity, cand.entry, 'fair')
       }
       deferred += Math.max(0, n - budgetLeft)
     } else if (fair.length) {
       deferred += fair.length
     }
 
+    const displayFps = delta > 1e-6 ? 1 / delta : 0
+    // Each fair mixer is hit every ceil(fairN / fairSamples) frames → Hz = fps / period.
+    const fairN = fair.length
+    const fairPeriod = fairN > 0 && fairSampled > 0 ? Math.max(1, fairN / fairSampled) : 0
+    const fairSampleHz = fairPeriod > 0 ? displayFps / fairPeriod : fairN === 0 ? displayFps : 0
+
+    this.lastStats = {
+      bound: this.entries.size,
+      active: near.length + fair.length,
+      near: near.length,
+      fair: fairN,
+      sampled,
+      deferred,
+      budget: MAX_SAMPLES_PER_FRAME,
+      nearCap: MAX_NEAR_ALWAYS_PER_FRAME,
+      fairSampleHz,
+      displayFps,
+      frameDt: delta,
+      disabled: false
+    }
+
     if (!this.verbose) return
     this.logAnimator(
       `Animator tick — ${this.entries.size} mixers · near=${near.length} fair=${fair.length} ` +
-        `sampled=${sampled} deferred=${deferred} budget=${MAX_SAMPLES_PER_FRAME} ` +
-        `cursor=${this.fairRingCursor}`,
+        `sampled=${sampled} (n=${nearSampled}/f=${fairSampled}) deferred=${deferred} ` +
+        `budget=${MAX_SAMPLES_PER_FRAME} fairHz≈${fairSampleHz.toFixed(0)}`,
       { throttleMs: 3000 }
     )
   }
-
-  /** Rotating start index into the fair (non-near) active set. */
-  private fairRingCursor = 0
 
   /**
    * priority ≥ 2 → try every-frame (near / PART).

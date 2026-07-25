@@ -31,6 +31,7 @@ import {
 } from '../dcl/multiScene/resolvePortableExperiences'
 import { renderQuality } from '../rendering/RenderQualitySettings'
 import { skipAoiNeighbors, skipSceneAnimators } from '../client/devFlags'
+import { AnimatorSampleHud } from '../debug/AnimatorSampleHud'
 import type { PerformanceTier } from '../shim/types'
 import { LandscapeSystem } from './systems/LandscapeSystem'
 import { SceneScriptSystem } from './systems/SceneScriptSystem'
@@ -269,6 +270,8 @@ export class World {
   private unsubEnvironmentDebug: (() => void) | null = null
   private lastVoluntaryEmoteAllowed = true
   private onVoluntaryEmoteAllowedChange: ((allowed: boolean) => void) | null = null
+  /** Always-on top-right phase-slice animator counters. */
+  private readonly animatorSampleHud = new AnimatorSampleHud()
 
   /** Per-tick budget while GLBs still attaching on the loading screen. */
   /** Per-frame budget during the post-hydration loading drain. */
@@ -1621,6 +1624,7 @@ export class World {
           // Texture retries — sync frame so failed loads don't block async projection drain.
           this.sceneScript.tickDeferredMaterials()
         }
+        this.refreshAnimatorSampleHud(delta)
       },
       onAsyncFrame: async (_delta) => {
         if (this.editorPreviewMode) return
@@ -1737,6 +1741,7 @@ export class World {
 
     // 1) Transform writers (CRDT) already applied. 2) Tween/Billboard/Animator.
     this.sceneScript.pumpMotionBridges(delta, startFrame)
+    this.refreshAnimatorSampleHud(delta)
     if (this.sceneScript.hasColliderWorkPending()) {
       this.sceneScript.syncCollision()
     }
@@ -4091,9 +4096,33 @@ export class World {
     staleOpenOcean?.removeFromParent()
   }
 
+  /** Top-right always-on phase-slice counters (display fps vs sample Hz). */
+  private refreshAnimatorSampleHud(frameDt: number): void {
+    if (skipSceneAnimators()) {
+      this.animatorSampleHud.setDisabled('OFF (?noanim)')
+      return
+    }
+    const stats = this.sceneScript.getAnimatorSampleStats()
+    if (!stats) {
+      this.animatorSampleHud.setDisabled('no bridge yet')
+      return
+    }
+    // If pump path skipped update this frame, still show last stats with fresh display fps.
+    if (stats.frameDt <= 0 && frameDt > 0) {
+      this.animatorSampleHud.update({
+        ...stats,
+        frameDt,
+        displayFps: 1 / frameDt
+      })
+      return
+    }
+    this.animatorSampleHud.update(stats)
+  }
+
   dispose(): void {
     this.onVoluntaryEmoteAllowedChange = null
     this.lastVoluntaryEmoteAllowed = true
+    this.animatorSampleHud.dispose()
     this.followFlagManager?.unbindScene()
     this.followFlagManager = null
     this.debugAvatarCrowd?.dispose()

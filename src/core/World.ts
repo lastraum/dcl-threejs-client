@@ -772,7 +772,9 @@ export class World {
       )
     }
     if (skipSceneAnimators()) {
-      console.info('[perf] ?noanim ACTIVE — scene AnimatorBridge bind/update skipped')
+      console.info(
+        '[perf] scene animators OFF by default (AOI load test) — AnimatorBridge bind/update skipped; ?anim=1 to re-enable'
+      )
     }
 
     if (scene.mainEntry && scene.entityId) {

@@ -1,8 +1,13 @@
 export type PhysxColliderDebugOptions = {
   /** ECS MeshCollider primitives (box/sphere/cylinder). */
   sceneMeshColliders: boolean
-  /** GLTF meshes named `_collider*`. */
+  /** GLTF cooked hulls + live `_collider` source mesh tint. */
   gltfColliders: boolean
+  /**
+   * When GLTF colliders are on: solid filled volumes (true) vs wireframe (false).
+   * Solid + source tint is deeper than wireframe alone for locating hulls.
+   */
+  gltfColliderSolids: boolean
   /** Local player PhysX capsule ("pill"). */
   localPlayerCapsule: boolean
   /** Log staticColliderCount + nearest sweep hit each second. */
@@ -28,19 +33,29 @@ function readRuntimeRecookDefault(): boolean {
   return new URLSearchParams(window.location.search).has('colliderrecook')
 }
 
+function readSolidDefault(): boolean {
+  if (typeof window === 'undefined') return false
+  // ?colliders=solid or ?collidersolid
+  const sp = new URLSearchParams(window.location.search)
+  if (sp.has('collidersolid')) return true
+  return sp.get('colliders') === 'solid'
+}
+
 const urlDefault = readUrlDefault()
 const collidersPhysDefault = readCollidersPhysDefault()
 const runtimeRecookDefault = readRuntimeRecookDefault()
+const solidDefault = readSolidDefault()
 
 const DEFAULT_OPTIONS: PhysxColliderDebugOptions = {
   sceneMeshColliders: urlDefault,
-  gltfColliders: urlDefault,
+  gltfColliders: urlDefault || solidDefault,
+  gltfColliderSolids: solidDefault || urlDefault,
   localPlayerCapsule: urlDefault,
   collidersPhys: collidersPhysDefault,
   runtimeRecook: runtimeRecookDefault
 }
 
-/** Shared toggles for PhysX collider debug wireframes (Help debug panel + `?colliders`). */
+/** Shared toggles for PhysX collider debug (Help debug panel + `?colliders` / `?collidersolid`). */
 class PhysxColliderDebugStore {
   private options: PhysxColliderDebugOptions = { ...DEFAULT_OPTIONS }
   private readonly listeners = new Set<Listener>()
@@ -72,6 +87,11 @@ class PhysxColliderDebugStore {
     return this.options.gltfColliders
   }
 
+  /** Solid filled cooked hulls (vs wireframe). Default on when GLTF debug is on. */
+  isGltfColliderSolids(): boolean {
+    return this.options.gltfColliderSolids
+  }
+
   isLocalPlayerCapsuleVisible(): boolean {
     return this.options.localPlayerCapsule
   }
@@ -94,6 +114,7 @@ function optionsEqual(a: PhysxColliderDebugOptions, b: PhysxColliderDebugOptions
   return (
     a.sceneMeshColliders === b.sceneMeshColliders &&
     a.gltfColliders === b.gltfColliders &&
+    a.gltfColliderSolids === b.gltfColliderSolids &&
     a.localPlayerCapsule === b.localPlayerCapsule &&
     a.collidersPhys === b.collidersPhys &&
     a.runtimeRecook === b.runtimeRecook

@@ -131,7 +131,7 @@ Three velocity channels stay separate.
 | Velocity split | `_velocity` (walk+g+jump) + `_externalVelocity` | Move / Gravity / External |
 | External drag | Env 0.5 + ground friction 4; max 50 | Same |
 | Grounded external Y | Cleared | Cleared |
-| Gravity constant | Jump **20**; continuous F × `20/9.8`; **impulse raw** (Explorer J as Δv) | **9.8** |
+| Gravity constant | Jump **20**; continuous F × `20/9.8`; **impulse × `9.8/20`** (platform client scale) | **9.8** |
 | Multi-scene forces | Single PE (this client) — documented | Sum per World if IsCurrent |
 | Stale impulse on re-enter | Reset latch on init/teleport/dispose + eventId 0 / missing | Clear dirty on re-activate |
 | Mass | 1 | CharacterMass 1 |
@@ -165,7 +165,8 @@ Options:
 ### P1 — Calibration ✅ (impulse refined 2026-07-19)
 
 7. ✅ Keep jump `GRAVITY = 20`; **force** × `EXTERNAL_SCENE_SCALE = 20/9.8` so pads balance arcade g.  
-7b. ✅ **Impulse not scaled** — plaza/scene J stays Explorer Δv (`scaleImpulseForClient` = 1/mass only). Over-boost when both F and J used the g-ratio.  
+7b. ✅ **Impulse platform scale** — `IMPULSE_CLIENT_SCALE = 9.8/20` (Explorer g / arcade g). Same scene J as Explorer mass=1, but our CCT + arcade g launch hotter at raw J; single global factor (not per-scene).  
+7c. ✅ **Impulse launch grace** — only ~0.18s suppress re-ground after pad (Explorer zeros external Y on land; old `extY>2.5` lofted 3–6s).  
 8. ✅ Continuous upward force ungrounds + no Y-strip when external/lift active (P0).
 
 ### P2 — Edge cases ✅

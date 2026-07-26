@@ -85,13 +85,22 @@ export function cycleDuration(spec: ParticleSpec, bursts: BurstRuntime[]): numbe
   return Math.max(lifetime, maxT)
 }
 
-function lerpRange(range: { start: number; end: number } | undefined, fallback: number): number {
+/**
+ * Random sample between FloatRange start/end (Explorer MinMaxCurve for startSize / startSpeed).
+ * Missing range → constant `fallback` (initialSize default 1, velocity default 1).
+ */
+function lerpRange(range: { start?: number; end?: number } | undefined, fallback: number): number {
   if (!range) return fallback
-  return range.start + Math.random() * (range.end - range.start)
+  const a = range.start ?? range.end ?? fallback
+  const b = range.end ?? range.start ?? fallback
+  return a + Math.random() * (b - a)
 }
 
-function sampleColorRange(
-  range: { start?: { r?: number; g?: number; b?: number; a?: number }; end?: { r?: number; g?: number; b?: number; a?: number } } | undefined,
+type Color4 = { r?: number; g?: number; b?: number; a?: number }
+
+/** Birth color: random between ColorRange start/end (Explorer MinMaxGradient). */
+function sampleBirthColor(
+  range: { start?: Color4; end?: Color4 } | undefined,
   out: THREE.Color,
   alphaOut: { value: number },
   fallback: THREE.Color
@@ -99,13 +108,74 @@ function sampleColorRange(
   const start = range?.start
   const end = range?.end ?? start
   const t = Math.random()
-  const r = (start?.r ?? fallback.r) + t * ((end?.r ?? start?.r ?? fallback.r) - (start?.r ?? fallback.r))
-  const g = (start?.g ?? fallback.g) + t * ((end?.g ?? start?.g ?? fallback.g) - (start?.g ?? fallback.g))
-  const b = (start?.b ?? fallback.b) + t * ((end?.b ?? start?.b ?? fallback.b) - (start?.b ?? fallback.b))
-  out.setRGB(r, g, b)
+  const r0 = start?.r ?? fallback.r
+  const g0 = start?.g ?? fallback.g
+  const b0 = start?.b ?? fallback.b
   const a0 = start?.a ?? 1
+  const r1 = end?.r ?? start?.r ?? fallback.r
+  const g1 = end?.g ?? start?.g ?? fallback.g
+  const b1 = end?.b ?? start?.b ?? fallback.b
   const a1 = end?.a ?? a0
+  out.setRGB(r0 + t * (r1 - r0), g0 + t * (g1 - g0), b0 + t * (b1 - b0))
   alphaOut.value = a0 + t * (a1 - a0)
+}
+
+/**
+ * Explorer colorOverLifetime: final = startColor * gradient(t).
+ * Bakes absolute t=0 / t=1 colors so the GPU path keeps a simple lerp.
+ */
+function applyColorOverLifetime(
+  startColor: THREE.Color,
+  startAlphaOut: { value: number },
+  cot: { start?: Color4; end?: Color4 } | undefined,
+  endColor: THREE.Color,
+  endAlphaOut: { value: number }
+): void {
+  if (!cot) {
+    endColor.copy(startColor)
+    endAlphaOut.value = startAlphaOut.value
+    return
+  }
+  const c0 = cot.start
+  const c1 = cot.end ?? cot.start
+  const r0 = c0?.r ?? 1
+  const g0 = c0?.g ?? 1
+  const b0 = c0?.b ?? 1
+  const a0 = c0?.a ?? 1
+  const r1 = c1?.r ?? r0
+  const g1 = c1?.g ?? g0
+  const b1 = c1?.b ?? b0
+  const a1 = c1?.a ?? a0
+  const birthA = startAlphaOut.value
+  endColor.setRGB(startColor.r * r1, startColor.g * g1, startColor.b * b1)
+  endAlphaOut.value = birthA * a1
+  startColor.setRGB(startColor.r * r0, startColor.g * g0, startColor.b * b0)
+  startAlphaOut.value = birthA * a0
+}
+
+/**
+ * Explorer sizeOverLifetime is a **multiplier** curve on startSize (not an absolute size).
+ * When SizeOverTime is null the module is disabled → multiplier stays 1.
+ * @see ParticleSystemApplyPropertiesSystem.ApplySizeOverLifetime (unity-explorer)
+ */
+function sizeEndsFromSpec(
+  birthSize: number,
+  sizeOverTime: { start?: number; end?: number } | undefined
+): { startSize: number; endSize: number } {
+  if (!sizeOverTime) {
+    return { startSize: birthSize, endSize: birthSize }
+  }
+  const mul0 = sizeOverTime.start ?? 1
+  const mul1 = sizeOverTime.end ?? mul0
+  return {
+    startSize: Math.max(0.001, birthSize * mul0),
+    endSize: Math.max(0.001, birthSize * mul1)
+  }
+}
+
+/** Explorer: gravity omitted → 0 (not 1). */
+function gravityMultiplier(spec: ParticleSpec): number {
+  return spec.gravity ?? 0
 }
 
 function quatToEulerRates(q?: { x?: number; y?: number; z?: number; w?: number }): THREE.Vector3 {
@@ -190,15 +260,17 @@ function buildParticle(spec: ParticleSpec, ctx: SpawnContext, lifetime: number, 
   const speed = Math.max(0, lerpRange(spec.initialVelocitySpeed, 1))
   const dir = sampleShapeDirection(spec.shape)
 
-  const startSize = Math.max(0.001, lerpRange(spec.initialSize, 0.1))
-  const endSize = Math.max(0.001, lerpRange(spec.sizeOverTime, startSize))
+  // Explorer: startSize default 1; sizeOverLifetime multiplies startSize (null → ×1).
+  const birthSize = Math.max(0.001, lerpRange(spec.initialSize, 1))
+  const { startSize, endSize } = sizeEndsFromSpec(birthSize, spec.sizeOverTime)
 
   const startColor = new THREE.Color()
   const endColor = new THREE.Color()
   const startAlpha = { value: 1 }
   const endAlpha = { value: 1 }
-  sampleColorRange(spec.initialColor, startColor, startAlpha, _scratchColor)
-  sampleColorRange(spec.colorOverTime, endColor, endAlpha, startColor)
+  sampleBirthColor(spec.initialColor, startColor, startAlpha, _scratchColor)
+  // Mutates startColor/startAlpha when colorOverTime is set (Unity multiplies gradient).
+  applyColorOverLifetime(startColor, startAlpha, spec.colorOverTime, endColor, endAlpha)
 
   if (ctx.worldSpace) {
     ctx.parent.updateWorldMatrix(true, false)
@@ -216,7 +288,7 @@ function buildParticle(spec: ParticleSpec, ctx: SpawnContext, lifetime: number, 
     rotation.y += angularVelocity.y * age
     rotation.z += angularVelocity.z * age
     _emitPos.addScaledVector(_emitVel, age)
-    const gMul = spec.gravity ?? 1
+    const gMul = gravityMultiplier(spec)
     _gravity.set(0, gMul * DCL_SCENE_GRAVITY * age, 0)
     const force = spec.additionalForce ?? { x: 0, y: 0, z: 0 }
     _force.set(force.x ?? 0, force.y ?? 0, force.z ?? 0)
@@ -301,7 +373,7 @@ export function emitContinuous(
 }
 
 export function simulateParticles(live: LiveParticle[], spec: ParticleSpec, delta: number): void {
-  const gMul = spec.gravity ?? 1
+  const gMul = gravityMultiplier(spec)
   _gravity.set(0, gMul * DCL_SCENE_GRAVITY, 0)
   const force = spec.additionalForce ?? { x: 0, y: 0, z: 0 }
   _force.set(force.x ?? 0, force.y ?? 0, force.z ?? 0)

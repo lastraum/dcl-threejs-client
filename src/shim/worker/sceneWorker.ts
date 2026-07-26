@@ -103,6 +103,7 @@ import {
   reconcileWorkerAuthoritativeCrdtEgress,
   resetInputModifierEgressBaseline,
   resetWorkerSceneUiCrdtLamport,
+  stripRendererHostGrowOnlyAppendsBytes,
   stripSceneUiCrdtBytes,
   stripWorkerAuthoritativeCrdtBytes
 } from './workerSceneUiCrdtOutbound'
@@ -2212,10 +2213,14 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
       return EMPTY_RENDERER_INJECT_COUNTS
     }
   }
-  // Transport still applies identity / camera / grow-only; direct inject above guarantees
-  // PlayerEntity Transform is current before the next scene read (movePlayerTo, etc.).
+  // Transport still applies identity / camera LWW. Grow-only was already injected above —
+  // re-APPEND via transport doubles TriggerArea enter (health −2), pointer, video handlers.
   if (rendererInboundApply) {
-    rendererInboundApply(chunks)
+    const forTransport =
+      sceneEngine != null
+        ? chunks.map((c) => stripRendererHostGrowOnlyAppendsBytes(c)).filter((c) => c.byteLength > 0)
+        : chunks
+    if (forTransport.length) rendererInboundApply(forTransport)
   }
   return {
     tweenPuts,

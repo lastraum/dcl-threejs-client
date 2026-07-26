@@ -43,13 +43,14 @@ export function collectGltfPointerTargetMeshes(
 
   gltfRoot.traverse((node) => {
     if (!(node instanceof THREE.Mesh)) return
-    if (isGltfVisibleClassMesh(node)) {
+    // Ancestry-first: children of `*_collider` groups are invisible-class (Explorer).
+    if (isGltfInvisibleColliderMesh(node, gltfRoot)) {
+      if (!invisiblePointer) return
+      // Keep even when visible=false — CL_POINTER hulls must still hit.
+    } else if (isGltfVisibleClassMesh(node, gltfRoot)) {
       if (!includeVisible) return
       // Opacity-0 proxy hulls stay raycastable; truly culled art does not.
       if (node.visible === false) return
-    } else if (isGltfInvisibleColliderMesh(node, gltfRoot)) {
-      if (!invisiblePointer) return
-      // Keep even when visible=false — CL_POINTER hulls must still hit.
     } else {
       if (!includeVisible) return
       if (node.visible === false) return

@@ -862,6 +862,9 @@ export class World {
         // Round-reset teleports often land while InputModifier is frozen / ticks held after UI.
         // Nudge worker play so scene systems can clear freeze and advance reset timers.
         this.sceneScript.nudgePlayAfterSceneTeleport()
+        // SpaceRunner map↔lobby: lobby/map GLBs re-attach after teleport. Kick a missing-actor
+        // cook burst so gravity can land on real floors once the scene freeze clears.
+        if (ok) this.kickPostTeleportColliderCatchup()
         return ok
       })
       this.player.setModeFreezeEscapeHandler(() => {
@@ -2006,6 +2009,30 @@ export class World {
   }
 
   /**
+   * After RestrictedActions.movePlayerTo (SpaceRunner map↔lobby, Flagtag drown-respawn):
+   * re-scan never-cooked extracts near the new feet and open a short cook burst so gravity
+   * can land on real floors once the scene load freeze clears (no mid-air soft-hold).
+   */
+  private kickPostTeleportColliderCatchup(): void {
+    if (!this.playerMode || !this.collidersLoadingComplete || this.deferPhysxCooks) return
+    this.sceneScript.flushSceneGraphMatrices()
+    // Force never-cooked scan even if the periodic throttle would skip — teleports are rare.
+    this.lastNeverCookedScanMs = 0
+    this.discoverMissingColliderActors()
+    this.runtimeColliderBurstUntil = Math.max(
+      this.runtimeColliderBurstUntil,
+      performance.now() + World.RUNTIME_COLLIDER_BURST_MS
+    )
+    const near = this.countNearPlayerColliderQueue(40)
+    if (near > 0 || this.colliderCookQueue.size > 0) {
+      clientDebugLog.consoleOnly(
+        'info',
+        `[phys] post-teleport cook catch-up — queue=${this.colliderCookQueue.size} near40m=${near}`
+      )
+    }
+  }
+
+  /**
    * Block until GLB attach pressure settles enough that matrixWorld is trustworthy
    * for PhysX cooks. Pool/disco can attach forever — we only wait for a stable window
    * or a hard cap, not pendingMesh===0 forever.
@@ -2224,11 +2251,11 @@ export class World {
   }
 
   /**
-   * Gate play until spawn ground is proven near scene.json feet.
-   * Collider **seal** already ran before this — we only re-push poses / drain late cooks
-   * and try CCT settle. Elevated air spawns used to wait up to 30s even when the deck
-   * was already under the probe; now we fail/accept faster with probe soft-accept.
-   * @returns grounded feet (Three space) for final capsule spawn, or null on timeout.
+   * Gate play until a walk surface exists under scene.json spawn (probe only).
+   * Does **not** CCT-settle or return a lower floor Y — placement stays at authored
+   * feet; the capsule freefalls with gravity after initCapsule.
+   *
+   * @returns authored spawn feet (Three space) when a surface is under the column, else null.
    */
   private async waitForSpawnFloorReady(
     spawn: ResolvedScene['spawn'],
@@ -2238,15 +2265,13 @@ export class World {
     const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
     const elevated = spawnThree.y > 8
     // Seal already completed in sealBootCollidersBeforeSpawn — do not hang 30s on towers.
-    // Elevated: a few seconds for late pose slides; ground-level: shorter.
     const maxWaitMs = elevated ? 8_000 : 5_000
-    /** Accept last probe after this many ms of stable probe without CCT (seal complete). */
     const probeSoftAcceptMs = elevated ? 1_500 : 2_000
     const probeMaxDrop = elevated ? 12 : 8
     const started = performance.now()
     let attempt = 0
     let lastProgressLog = 0
-    let lastProbeFeet: THREE.Vector3 | null = null
+    let lastProbeY: number | null = null
     let probeOkSince = 0
     let probeOkStreak = 0
 
@@ -2257,14 +2282,14 @@ export class World {
     )
     console.info(
       `[World] spawn floor wait — authored feet three=(${spawnThree.x.toFixed(1)}, ${spawnThree.y.toFixed(2)}, ${spawnThree.z.toFixed(1)})` +
-        ` elevated=${elevated} sealed=${this.spawnColliderSealComplete} maxWait=${(maxWaitMs / 1000).toFixed(0)}s`
+        ` elevated=${elevated} sealed=${this.spawnColliderSealComplete} maxWait=${(maxWaitMs / 1000).toFixed(0)}s` +
+        ` (probe only — no CCT settle)`
     )
 
     while (performance.now() - started < maxWaitMs) {
       attempt++
       await this.sceneScript.yieldForWorkerMessages()
       this.sceneScript.flushSceneGraphMatrices()
-      // Do not syncCollisionForce here — re-extract + relative slide softs cooked solids.
       this.pushAllColliderPosesToPhysX()
       this.reconcileColliderCookQueue()
       await this.drainPendingColliderCooksInitialOnly()
@@ -2282,7 +2307,7 @@ export class World {
       const probeOk = probed != null && isPlausibleSpawnSurfaceY(probed, spawnThree.y)
       const now = performance.now()
       if (probeOk && probed != null) {
-        lastProbeFeet = new THREE.Vector3(spawnThree.x, probed, spawnThree.z)
+        lastProbeY = probed
         probeOkStreak++
         if (probeOkSince <= 0) probeOkSince = now
       } else {
@@ -2290,39 +2315,32 @@ export class World {
         probeOkSince = 0
       }
 
-      // CCT is the preferred gate — sweep alone can hit thin/wrong shapes.
-      const settledFeet = this.physics.trySettleAtPosition(spawnThree, spawnThree.y)
-      if (
-        settledFeet &&
-        isPlausibleSpawnSurfaceY(settledFeet.y, spawnThree.y)
-      ) {
-        const elapsed = ((performance.now() - started) / 1000).toFixed(1)
-        console.info(
-          `[World] spawn floor ready — CCT grounded after ${elapsed}s (attempts=${attempt}` +
-            `, feetY=${settledFeet.y.toFixed(2)}` +
-            (probed != null ? `, probeY=${probed.toFixed(2)}` : '') +
-            ')'
-        )
-        onProgress?.('Floor ready')
-        return settledFeet
-      }
-
-      // Soft accept: seal done + stable probe under spawn, CCT still flaky (common on elevated decks).
-      // Better than waiting full timeout then freefalling from air Y.
+      // Surface under column is enough — place at authored Y and drop (no CCT snap).
       if (
         this.spawnColliderSealComplete &&
-        lastProbeFeet &&
+        lastProbeY != null &&
         probeOkStreak >= 3 &&
         probeOkSince > 0 &&
         now - probeOkSince >= probeSoftAcceptMs
       ) {
         const elapsed = ((now - started) / 1000).toFixed(1)
         console.info(
-          `[World] spawn floor ready — probe soft-accept after ${elapsed}s (attempts=${attempt}` +
-            `, probeY=${lastProbeFeet.y.toFixed(2)}, CCT miss)`
+          `[World] spawn floor ready — probe under column after ${elapsed}s (attempts=${attempt}` +
+            `, probeY=${lastProbeY.toFixed(2)}, place authoredY=${spawnThree.y.toFixed(2)})`
         )
         onProgress?.('Floor ready')
-        return lastProbeFeet
+        return spawnThree.clone()
+      }
+
+      // Early exit when seal complete and first solid probe (elevated drop-in scenes).
+      if (this.spawnColliderSealComplete && probeOk && lastProbeY != null && elevated) {
+        const elapsed = ((now - started) / 1000).toFixed(1)
+        console.info(
+          `[World] spawn floor ready — elevated probe after ${elapsed}s` +
+            ` (probeY=${lastProbeY.toFixed(2)}, place authoredY=${spawnThree.y.toFixed(2)})`
+        )
+        onProgress?.('Floor ready')
+        return spawnThree.clone()
       }
 
       if (now - lastProgressLog > 2000) {
@@ -2336,7 +2354,7 @@ export class World {
         this.physics.logStaticCollidersNear(spawnThree.x, spawnThree.y, spawnThree.z, 16)
         clientDebugLog.log(
           'player',
-          `spawn floor wait — t=${sec}s attempt=${attempt} probe=${probed?.toFixed(2) ?? 'none'} cct=miss sealed=${this.spawnColliderSealComplete}`,
+          `spawn floor wait — t=${sec}s attempt=${attempt} probe=${probed?.toFixed(2) ?? 'none'} sealed=${this.spawnColliderSealComplete}`,
           { alsoConsole: true, level: 'info' }
         )
       }
@@ -2346,15 +2364,13 @@ export class World {
 
     const elapsed = ((performance.now() - started) / 1000).toFixed(1)
     console.warn(
-      `[World] spawn floor wait timed out after ${elapsed}s (attempts=${attempt}) — spawning anyway` +
-        (lastProbeFeet ? ` at probe y=${lastProbeFeet.y.toFixed(2)}` : ' (may freefall)')
+      `[World] spawn floor wait timed out after ${elapsed}s (attempts=${attempt}) — spawning at authored` +
+        (lastProbeY != null ? ` (had probe y=${lastProbeY.toFixed(2)})` : ' (may freefall)')
     )
     this.physics.logStaticCollidersNear(spawnThree.x, spawnThree.y, spawnThree.z, 16)
-    onProgress?.(
-      lastProbeFeet ? 'Spawn ground timed out — using probe…' : 'Spawn ground timed out — spawning…'
-    )
-    // Prefer last walk-surface probe over raw authored air spawn.
-    return lastProbeFeet
+    onProgress?.('Spawn ground timed out — spawning at authored…')
+    // Always authored placement — gravity handles the drop.
+    return spawnThree.clone()
   }
 
   
@@ -3657,6 +3673,7 @@ export class World {
     this.sceneScript.setMovePlayerHandler((request) => {
       const ok = this.player!.movePlayerTo(request)
       this.sceneScript.nudgePlayAfterSceneTeleport()
+      if (ok) this.kickPostTeleportColliderCatchup()
       return ok
     })
     this.sceneScript.setTriggerEmoteHandler((request) => {

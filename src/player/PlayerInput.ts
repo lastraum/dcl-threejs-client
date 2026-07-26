@@ -1,4 +1,8 @@
-import { isClientOverlayTarget } from '../client/ui/overlayHitTest'
+import {
+  isClientOverlayTarget,
+  tryOpenPeerContextMenu,
+  tryOpenPeerContextMenuFromPillRect
+} from '../client/ui/overlayHitTest'
 import { PointerLockReticle } from '../client/ui/PointerLockReticle'
 import { isTextInputFocused } from '../client/ui/textInputFocus'
 import { clearPointerLockAim } from '../input/pointerLockAim'
@@ -265,6 +269,12 @@ export class PlayerInput {
       this.notifyUserGesture()
       // Left-click drag orbit only when unlocked. In pointer lock, movement alone orbits.
       if (this.pointer.locked) return
+      // Clicking the pill (or its Options hint) is a UI action — orbiting instead
+      // rotates the avatar out from under the cursor and drops the hover.
+      if (tryOpenPeerContextMenuFromPillRect(e.clientX, e.clientY)) {
+        e.preventDefault()
+        return
+      }
       if (this.isLookBlocked()) return
       this.orbiting = true
       this.orbitPointerId = e.pointerId
@@ -280,6 +290,10 @@ export class PlayerInput {
     if (e.button === 2) {
       e.preventDefault()
       this.notifyUserGesture()
+      // Peer options win over camera look while the cursor is free: entering
+      // pointer lock re-aims at screen center, losing the pill we clicked on.
+      // While already locked, right-click keeps its unlock role.
+      if (!this.pointer.locked && tryOpenPeerContextMenu(e.clientX, e.clientY)) return
       // Right-click toggles pointer lock (look without holding a button).
       // Scene VC owns the lens — do not enter freecam look.
       if (this.isLookBlocked()) return

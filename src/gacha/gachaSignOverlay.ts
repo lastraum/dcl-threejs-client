@@ -78,9 +78,15 @@ export function syncGachaSignOverlay(state: GachaSignOverlayState | null): void 
     continueHandler = state.onContinue
   }
 
+  const hasError = state.steps.some((s) => s.status === 'error')
+  const closeBtn = hasError
+    ? `<button type="button" class="gacha-sign-overlay__close" data-gacha-sign-close aria-label="Close">×</button>`
+    : ''
+
   host.innerHTML = `
     <div class="gacha-sign-overlay__backdrop" aria-hidden="true"></div>
-    <div class="gacha-sign-overlay__card">
+    <div class="gacha-sign-overlay__card${hasError ? ' gacha-sign-overlay__card--error' : ''}">
+      ${closeBtn}
       <div class="gacha-sign-overlay__kicker">Grab bag</div>
       <h2 class="gacha-sign-overlay__title">${escapeHtml(title)}</h2>
       ${status ? `<p class="gacha-sign-overlay__status">${escapeHtml(status)}</p>` : ''}
@@ -89,12 +95,26 @@ export function syncGachaSignOverlay(state: GachaSignOverlayState | null): void 
         cont
           ? `<button type="button" class="gacha-sign-overlay__continue" data-gacha-sign-continue>${escapeHtml(cont)}</button>
              <p class="gacha-sign-overlay__hint">Click to open the next wallet signature (mint into grab bag).</p>`
-          : `<p class="gacha-sign-overlay__hint">Check your wallet / browser extension if a signature prompt is open.</p>`
+          : hasError
+            ? `<p class="gacha-sign-overlay__hint">Something went wrong — close this and try again.</p>`
+            : `<p class="gacha-sign-overlay__hint">Check your wallet / browser extension if a signature prompt is open.</p>`
       }
     </div>
   `
   host.hidden = false
   document.documentElement.classList.add('gacha-sign-open')
+
+  if (hasError) {
+    const close = host.querySelector('[data-gacha-sign-close]') as HTMLButtonElement | null
+    close?.addEventListener(
+      'click',
+      (ev) => {
+        ev.preventDefault()
+        hideGachaSignOverlay()
+      },
+      { once: true }
+    )
+  }
 
   const btn = host.querySelector('[data-gacha-sign-continue]') as HTMLButtonElement | null
   if (btn && continueHandler) {

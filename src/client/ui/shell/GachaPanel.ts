@@ -416,7 +416,10 @@ export class GachaPanel {
     this.feeEl.textContent = `Fee ${fee} mMANA`
     const bal = this.wallet ? formatMana(this.wallet.mana) : '—'
     this.balanceEl.textContent = `Balance ${bal}`
-    const n = this.pool?.positions.length ?? 0
+    const n =
+      this.pool != null
+        ? Math.max(Number(this.pool.activeCount), this.pool.positions.length)
+        : 0
     this.poolCountEl.textContent = `In bag ${n}`
   }
 
@@ -472,6 +475,7 @@ export class GachaPanel {
       return
     }
 
+    // positions are oldest → newest; new deposits sit at the end
     const chances = computeClaimChanceLabels(positions)
     const cards = positions
       .map((p) => this.shelfCardHtml(p, chances.get(p.positionId) ?? '—'))
@@ -484,6 +488,10 @@ export class GachaPanel {
         </div>
       </div>
     `
+    requestAnimationFrame(() => {
+      const shelf = this.bodyEl.querySelector('[data-shelf]') as HTMLElement | null
+      if (shelf) shelf.scrollTo({ left: shelf.scrollWidth, behavior: 'smooth' })
+    })
   }
 
   private shelfCardHtml(p: GachaPosition, chanceLabel: string): string {
@@ -496,20 +504,18 @@ export class GachaPanel {
         : p.issuedId
           ? `Issue #${escapeHtml(p.issuedId)}`
           : `Token #${escapeHtml(p.tokenId)}`
-    const issueLine = isPack
-      ? ''
+    // Same line stack as wearables: title → detail → rarity → backed by → chance
+    const detail = isPack
+      ? `Prize ${formatMana(p.packMana)} mMANA`
       : p.issuedId
         ? `Issue #${escapeHtml(p.issuedId)}`
         : `Token #${escapeHtml(p.tokenId)}`
-    // If title already is the issue #, don't repeat it
-    const showIssue =
-      !isPack && p.name?.trim() && issueLine
-        ? `<div class="gacha-panel__card-line">${issueLine}</div>`
-        : ''
+    // Wearables with a real name show issue under title; title-only issue tokens skip the duplicate
+    const detailHtml = isPack || p.name?.trim()
+      ? `<div class="gacha-panel__card-line">${detail}</div>`
+      : ''
     const rarityLabel = isPack ? 'pack' : escapeHtml(rarity)
-    const backing = isPack
-      ? `Prize ${formatMana(p.packMana)} · Backed by ${formatMana(p.backing)}`
-      : `Backed by ${formatMana(p.backing)} mMANA`
+    const backing = `Backed by ${formatMana(p.backing)} mMANA`
     const chance = chanceLabel === '—' ? '— chance' : `${escapeHtml(chanceLabel)} chance`
     const img = p.imageUrl
       ? `<img class="gacha-panel__card-img" src="${escapeHtml(p.imageUrl)}" alt="" loading="lazy" decoding="async" />`
@@ -518,7 +524,7 @@ export class GachaPanel {
       <article class="gacha-panel__card${isPack ? ' is-pack' : ''} gacha-rarity--${escapeHtml(rarity)}" data-pos="${p.positionId}" data-rarity="${escapeHtml(rarity)}">
         <div class="gacha-panel__card-media gacha-rarity-bg--${escapeHtml(rarity)}">${img}</div>
         <div class="gacha-panel__card-line gacha-panel__card-line--title" title="${title}">${title}</div>
-        ${showIssue}
+        ${detailHtml}
         <div class="gacha-panel__card-line gacha-panel__card-line--rarity is-${escapeHtml(rarity)}">${rarityLabel}</div>
         <div class="gacha-panel__card-line">${backing}</div>
         <div class="gacha-panel__card-line gacha-panel__card-line--chance">${chance}</div>
@@ -828,7 +834,7 @@ export class GachaPanel {
       : `Position #${win.positionId}`
     const sub = p
       ? isPack
-        ? `Prize ${formatMana(p.packMana)} · Backed by ${formatMana(p.backing)}`
+        ? `Prize ${formatMana(p.packMana)} mMANA · Backed by ${formatMana(p.backing)} mMANA`
         : `Backed by ${formatMana(p.backing)} mMANA · ${shortAddr(p.depositor)}`
       : 'Settle your claim'
     const glyph = isPack ? '◈' : '✦'

@@ -22,8 +22,25 @@ type RawPosition = {
   active: boolean
 }
 
+function normalizeRawPosition(pos: RawPosition | readonly unknown[]): RawPosition {
+  if (Array.isArray(pos)) {
+    return {
+      kind: Number(pos[0]),
+      collection: pos[1] as Address,
+      tokenId: pos[2] as bigint,
+      depositor: pos[3] as Address,
+      backing: pos[4] as bigint,
+      packMana: pos[5] as bigint,
+      feeDebt: pos[6] as bigint,
+      fenwickIndex: Number(pos[7]),
+      active: Boolean(pos[8])
+    }
+  }
+  return pos as RawPosition
+}
+
 function toPosition(id: number, pos: RawPosition): GachaPosition {
-  const kind: GachaPosition['kind'] = pos.kind === 1 ? 'manaPack' : 'nft'
+  const kind: GachaPosition['kind'] = Number(pos.kind) === 1 ? 'manaPack' : 'nft'
   const base: GachaPosition = {
     positionId: id,
     kind,
@@ -32,7 +49,7 @@ function toPosition(id: number, pos: RawPosition): GachaPosition {
     depositor: pos.depositor,
     backing: BigInt(pos.backing),
     packMana: BigInt(pos.packMana),
-    active: pos.active
+    active: Boolean(pos.active)
   }
   if (kind === 'nft') {
     try {
@@ -101,15 +118,20 @@ export async function fetchPoolSnapshot(): Promise<PoolSnapshot> {
     client.readContract({ address: pool, abi: gachaPoolAbi, functionName: 'testFulfillEnabled' })
   ])
 
+  // nextPositionId = next free id → valid positions are 1 … nextId-1
   const nextId = Number(nextPositionId as bigint)
-  const maxScan = Math.min(nextId, MAX_POSITION_SCAN)
+  const lastId = Math.max(0, nextId - 1)
+  // Prefer the most recent window when history is huge so new deposits always appear
+  const scanEnd = lastId + 1 // exclusive
+  const scanStart =
+    lastId > MAX_POSITION_SCAN ? lastId - MAX_POSITION_SCAN + 1 : 1
   const positions: GachaPosition[] = []
 
   // Parallel batches of 16 to keep RPC load reasonable
   const batchSize = 16
-  for (let start = 1; start < maxScan; start += batchSize) {
+  for (let start = scanStart; start < scanEnd; start += batchSize) {
     const ids: number[] = []
-    for (let id = start; id < Math.min(start + batchSize, maxScan); id++) ids.push(id)
+    for (let id = start; id < Math.min(start + batchSize, scanEnd); id++) ids.push(id)
     const rows = await Promise.all(
       ids.map(async (id) => {
         try {
@@ -127,12 +149,18 @@ export async function fetchPoolSnapshot(): Promise<PoolSnapshot> {
     )
     for (const row of rows) {
       if (!row) continue
-      const p = toPosition(row.id, row.pos)
-      if (!p.active) continue
+      // viem may return a tuple array or a named struct
+      const raw = row.pos as RawPosition & unknown[]
+      const active = typeof raw.active === 'boolean' ? raw.active : Boolean((raw as unknown[])[8])
+      if (!active) continue
+      const p = toPosition(row.id, normalizeRawPosition(raw))
       if (p.depositor.toLowerCase() === ZERO && p.backing === 0n) continue
       positions.push(p)
     }
   }
+
+  // Oldest → newest (new deposits land at the end of the shelf)
+  positions.sort((a, b) => a.positionId - b.positionId)
 
   await enrichPositionNames(positions)
 

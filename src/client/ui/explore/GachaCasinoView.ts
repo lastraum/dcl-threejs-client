@@ -219,7 +219,6 @@ export class GachaCasinoView {
               </button>
               <button type="button" class="gacha-casino__btn gacha-casino__btn--claim" data-claim>
                 <span class="gacha-casino__claim-label">Claim from grab bag</span>
-                <span class="gacha-casino__claim-sub">weighted draw · settle after</span>
               </button>
             </div>
           </div>
@@ -385,10 +384,10 @@ export class GachaCasinoView {
       this.syncInventoryFromWallet()
       this.renderHud()
       if (this.mode === 'play') {
-        this.renderShelf(this.pool.positions)
+        this.renderShelf(this.pool.positions, { scrollToEnd: true })
         this.renderResult()
         this.status =
-          this.pool.positions.length > 0
+          this.pool.positions.length > 0 || this.pool.activeCount > 0n
             ? ''
             : 'Empty grab bag — deposit a wearable or MANA pack to fill the shelf'
         this.renderStatus()
@@ -407,7 +406,11 @@ export class GachaCasinoView {
   private renderHud(): void {
     this.feeEl.textContent = this.pool ? `${formatMana(this.pool.acquisitionFee)} mMANA` : '—'
     this.balEl.textContent = this.wallet ? formatMana(this.wallet.mana) : '—'
-    const n = this.pool?.positions.length ?? 0
+    // Prefer on-chain activeCount (truth); fall back to loaded shelf rows
+    const n =
+      this.pool != null
+        ? Math.max(Number(this.pool.activeCount), this.pool.positions.length)
+        : 0
     this.poolCountEl.textContent = String(n)
   }
 
@@ -418,7 +421,7 @@ export class GachaCasinoView {
     this.shelfEl.innerHTML = shelfLoadingHtml(6, 'Opening the grab bag…')
   }
 
-  private renderShelf(positions: GachaPosition[]): void {
+  private renderShelf(positions: GachaPosition[], opts?: { scrollToEnd?: boolean }): void {
     this.shelfEl.innerHTML = ''
     this.shelfEl.classList.toggle('is-empty', positions.length === 0)
     this.shelfEl.classList.remove('is-loading')
@@ -434,6 +437,7 @@ export class GachaCasinoView {
       return
     }
 
+    // positions are oldest → newest; new deposits sit at the end
     const chances = computeClaimChanceLabels(positions)
     const track = document.createElement('div')
     track.className = 'gacha-vitrine__track'
@@ -442,15 +446,19 @@ export class GachaCasinoView {
     }
     this.shelfEl.appendChild(track)
 
-    // Scroll highlighted card into view after claim
-    if (this.highlightPosId != null) {
-      requestAnimationFrame(() => {
+    // Scroll highlighted card into view after claim, else jump to newest (right end)
+    requestAnimationFrame(() => {
+      if (this.highlightPosId != null) {
         const card = this.shelfEl.querySelector(
           `[data-pos="${this.highlightPosId}"]`
         ) as HTMLElement | null
         card?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
-      })
-    }
+        return
+      }
+      if (opts?.scrollToEnd) {
+        this.shelfEl.scrollTo({ left: this.shelfEl.scrollWidth, behavior: 'smooth' })
+      }
+    })
   }
 
   private makeShelfCard(p: GachaPosition, chanceLabel: string): HTMLElement {
@@ -466,20 +474,21 @@ export class GachaCasinoView {
       ? `<img class="gacha-vitrine__card-img" src="${escapeHtml(p.imageUrl)}" alt="" loading="lazy" decoding="async" />`
       : `<div class="gacha-vitrine__card-glyph" aria-hidden="true">${glyph}</div>`
     const title = itemLabel(p)
-    const issue =
-      p.kind === 'manaPack' ? '' : p.issuedId ? `Issue #${p.issuedId}` : `Token #${p.tokenId}`
-    const rarityLabel = p.kind === 'manaPack' ? 'pack' : rarity
-    const backing =
-      p.kind === 'manaPack'
-        ? `Prize ${formatMana(p.packMana)} · Backed by ${formatMana(p.backing)}`
-        : `Backed by ${formatMana(p.backing)} mMANA`
+    // Same line stack as wearables: title → detail → rarity → backed by → chance
+    const detail = isPack
+      ? `Prize ${formatMana(p.packMana)} mMANA`
+      : p.issuedId
+        ? `Issue #${p.issuedId}`
+        : `Token #${p.tokenId}`
+    const rarityLabel = isPack ? 'pack' : rarity
+    const backing = `Backed by ${formatMana(p.backing)} mMANA`
     const chance =
       chanceLabel === '—' ? '— chance' : `${escapeHtml(chanceLabel)} chance`
     el.innerHTML = `
       <div class="gacha-vitrine__card-art gacha-rarity-bg--${escapeHtml(rarity)}">${img}</div>
       <div class="gacha-vitrine__card-body">
         <div class="gacha-vitrine__card-line gacha-vitrine__card-line--title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
-        ${issue ? `<div class="gacha-vitrine__card-line">${escapeHtml(issue)}</div>` : ''}
+        <div class="gacha-vitrine__card-line">${escapeHtml(detail)}</div>
         <div class="gacha-vitrine__card-line gacha-vitrine__card-line--rarity is-${escapeHtml(rarity)}">${escapeHtml(rarityLabel)}</div>
         <div class="gacha-vitrine__card-line">${escapeHtml(backing)}</div>
         <div class="gacha-vitrine__card-line gacha-vitrine__card-line--chance">${chance}</div>

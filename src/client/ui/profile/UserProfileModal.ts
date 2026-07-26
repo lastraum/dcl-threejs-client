@@ -3,6 +3,13 @@ import { resolveRemotePeerProfile } from '../../../avatar/peerApi'
 import type { AvatarProfile } from '../../../avatar/types'
 import type { SessionIdentity } from '../../../network/SessionIdentity'
 import { fetchUserBadges, type UserBadge } from '../../../social/badgesApi'
+import {
+  type DclGalleryImage,
+  fetchUserGallery,
+  formatGalleryDateTime,
+  galleryReelsUrl,
+  parseGalleryDateTime
+} from '../../../social/dclGallery'
 import type { SocialService } from '../../../social/SocialService'
 import { friendshipActionLabel } from '../../../social/friendshipsApi'
 import { AvatarPreviewMini } from './AvatarPreviewMini'
@@ -46,6 +53,11 @@ export class UserProfileModal {
   private loadToken = 0
   private loaded: LoadedProfile | null = null
   private avatarAddress: string | null = null
+  private photos: DclGalleryImage[] = []
+  private photosState: 'idle' | 'loading' | 'ready' | 'error' = 'idle'
+  private photosError: string | null = null
+  /** Address the loaded photos belong to, so a re-opened modal refetches. */
+  private photosAddress: string | null = null
 
   constructor(
     private readonly session: SessionIdentity,
@@ -88,6 +100,7 @@ export class UserProfileModal {
     this.activeTab = 'overview'
     this.loaded = null
     this.avatarAddress = null
+    this.resetPhotos()
     this.renderShell()
     this.visible = true
     document.body.appendChild(this.backdrop)
@@ -103,6 +116,7 @@ export class UserProfileModal {
     this.target = null
     this.loaded = null
     this.avatarAddress = null
+    this.resetPhotos()
     this.loadToken++
     this.preview?.dispose()
     this.preview = null
@@ -168,6 +182,14 @@ export class UserProfileModal {
         this.renderContentPanel()
       })
     }
+
+    // Photo tiles are re-rendered on every state change — delegate from the
+    // panel, which survives until the next renderShell().
+    this.root.querySelector('.user-profile-modal__content')?.addEventListener('click', (ev) => {
+      const tile = (ev.target as HTMLElement).closest('[data-photo-url]') as HTMLElement | null
+      const url = tile?.getAttribute('data-photo-url')
+      if (url) window.open(url, '_blank', 'noopener,noreferrer')
+    })
   }
 
   private syncTabButtons(): void {
@@ -316,6 +338,66 @@ export class UserProfileModal {
     if (!panel || !this.loaded) return
     panel.classList.remove('user-profile-modal__content--loading')
     panel.innerHTML = this.renderTabBody(this.loaded)
+
+    if (this.activeTab !== 'photos') return
+    if (this.photosState === 'idle') {
+      void this.loadPhotos()
+      return
+    }
+    for (const img of panel.querySelectorAll<HTMLImageElement>('.user-profile-modal__photo-img')) {
+      img.addEventListener('error', () => img.classList.add('is-broken'))
+    }
+  }
+
+  private resetPhotos(): void {
+    this.photos = []
+    this.photosState = 'idle'
+    this.photosError = null
+    this.photosAddress = null
+  }
+
+  /**
+   * Camera Reel gallery for the profile being viewed. Own profile uses the
+   * signed identity (private photos included); other players are fetched
+   * unsigned, so the service only returns photos they marked public.
+   */
+  private async loadPhotos(): Promise<void> {
+    const data = this.loaded
+    const address = data?.address?.trim().toLowerCase()
+    const token = this.loadToken
+
+    if (!address) {
+      this.photos = []
+      this.photosState = 'ready'
+      this.photosAddress = null
+      if (this.activeTab === 'photos') this.renderContentPanel()
+      return
+    }
+
+    this.photosAddress = address
+    this.photosState = 'loading'
+    this.photosError = null
+    if (this.activeTab === 'photos') this.renderContentPanel()
+
+    try {
+      const identity = data?.isSelf ? this.session.getAuthIdentity() : null
+      const gallery = await fetchUserGallery(address, identity)
+      if (token !== this.loadToken || !this.visible || this.photosAddress !== address) return
+      this.photos = [...gallery.images].sort(
+        (a, b) =>
+          (parseGalleryDateTime(b.dateTime)?.getTime() ?? 0) -
+          (parseGalleryDateTime(a.dateTime)?.getTime() ?? 0)
+      )
+      this.photosState = 'ready'
+    } catch (err) {
+      if (token !== this.loadToken || !this.visible || this.photosAddress !== address) return
+      console.warn('[profile] gallery load failed', address, err)
+      this.photos = []
+      this.photosError = err instanceof Error ? err.message : String(err)
+      this.photosState = 'error'
+    }
+
+    if (this.activeTab === 'photos') this.renderContentPanel()
   }
 
   private async ensureAvatarPreview(token: number): Promise<void> {
@@ -353,7 +435,7 @@ export class UserProfileModal {
       return this.renderBadgesSection(data.badges, true)
     }
     if (this.activeTab === 'photos') {
-      return `<section class="user-profile-modal__section"><h3>Photos</h3><p class="user-profile-modal__empty">Photos coming soon.</p></section>`
+      return this.renderPhotosSection(data)
     }
     return `
       ${this.renderBadgesSection(data.badges, false)}
@@ -374,6 +456,63 @@ export class UserProfileModal {
         <div class="user-profile-modal__wearables">${this.renderEmotes(data.emotes)}</div>
       </section>
     `
+  }
+
+  private renderPhotosSection(data: LoadedProfile): string {
+    const shell = (heading: string, body: string): string =>
+      `<section class="user-profile-modal__section"><h3>${heading}</h3>${body}</section>`
+
+    if (this.photosState === 'idle' || this.photosState === 'loading') {
+      const skeletons = Array.from(
+        { length: 6 },
+        () => `<div class="user-profile-modal__photo-skeleton" role="presentation"></div>`
+      ).join('')
+      return shell('Photos', `<div class="user-profile-modal__photos">${skeletons}</div>`)
+    }
+
+    if (this.photosState === 'error') {
+      return shell(
+        'Photos',
+        `<p class="user-profile-modal__empty">${escapeHtml(
+          this.photosError || 'Could not load photos.'
+        )}</p>`
+      )
+    }
+
+    if (!this.photos.length) {
+      const empty = data.isSelf
+        ? 'No photos yet. Press <kbd>C</kbd> in-world for the camera, then Save.'
+        : 'No public photos. Only photos this player marked public are visible here.'
+      return shell('Photos', `<p class="user-profile-modal__empty">${empty}</p>`)
+    }
+
+    const tiles = this.photos
+      .map((photo) => {
+        const when = formatGalleryDateTime(photo.dateTime, 'short')
+        const src = photo.thumbnailUrl || photo.url
+        return `
+          <button
+            type="button"
+            class="user-profile-modal__photo"
+            data-photo-url="${escapeHtml(galleryReelsUrl(photo.id))}"
+            title="${escapeHtml(when)}"
+            aria-label="Open photo from ${escapeHtml(when)}"
+          >
+            <img
+              class="user-profile-modal__photo-img"
+              src="${escapeHtml(src)}"
+              alt=""
+              loading="lazy"
+              decoding="async"
+              referrerpolicy="no-referrer"
+            />
+            <span class="user-profile-modal__photo-date">${escapeHtml(when)}</span>
+          </button>`
+      })
+      .join('')
+
+    const heading = `Photos <span class="user-profile-modal__count">${this.photos.length}</span>`
+    return shell(heading, `<div class="user-profile-modal__photos">${tiles}</div>`)
   }
 
   private renderBadgesSection(badges: UserBadge[], fullTab: boolean): string {

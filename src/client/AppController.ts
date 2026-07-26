@@ -2307,6 +2307,7 @@ export class AppController {
         onEmoteSelected: (emoteId) => world.playLocalEmote(emoteId, { loop: false }),
         onTogglePhotoCamera: () => world.togglePhotoCamera(),
         onTourOptions: () => this.openTourOptionsPopup(),
+        onActivePetChange: () => world.onActivePetInventoryChange(),
         onSignOut: () => this.signOut(),
         onExit: () => this.leavePlayMode()
       })
@@ -2315,6 +2316,7 @@ export class AppController {
       this.shell.setEmoteHandler((emoteId) => world.playLocalEmote(emoteId, { loop: false }))
       this.shell.setPhotoCameraHandler(() => world.togglePhotoCamera())
       this.shell.setTourOptionsHandler(() => this.openTourOptionsPopup())
+      this.shell.setActivePetChangeHandler(() => world.onActivePetInventoryChange())
     }
     if (opts.deferPlayChromeReveal) {
       this.hidePlayChrome()

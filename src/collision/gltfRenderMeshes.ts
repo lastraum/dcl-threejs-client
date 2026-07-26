@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { isGltfInvisibleColliderName } from './gltfColliderNaming'
+import { isGltfInvisibleColliderMesh, isGltfInvisibleColliderName } from './gltfColliderNaming'
 
 function meshMaterials(mesh: THREE.Mesh): THREE.Material[] {
   return Array.isArray(mesh.material) ? mesh.material : [mesh.material]
@@ -50,15 +50,26 @@ export function syncGltfInstanceRenderState(root: THREE.Object3D): void {
 
   root.traverse((node) => {
     if (!(node instanceof THREE.Mesh)) return
-    if (isGltfInvisibleColliderName(node.name)) colliderClass.push(node)
-    else visibleClass.push(node)
+    // Explorer parity: child of `*_collider` group (e.g. Cube.045 under HummingBird_collider)
+    // is invisible-class even when the leaf name has no `_collider` suffix.
+    if (isGltfInvisibleColliderMesh(node, root) || isGltfInvisibleColliderName(node.name)) {
+      colliderClass.push(node)
+    } else {
+      visibleClass.push(node)
+    }
   })
 
   const visibleHasDisplay = visibleClass.some(gltfMeshHasDisplayMaps)
   const misExport = !visibleHasDisplay && colliderClass.some(gltfMeshHasDisplayMaps)
 
   root.traverse((node) => {
-    if (isGltfInvisibleColliderName(node.name)) {
+    if (!(node instanceof THREE.Mesh) && !isGltfInvisibleColliderName(node.name)) return
+
+    const isCollider =
+      isGltfInvisibleColliderName(node.name) ||
+      (node instanceof THREE.Mesh && isGltfInvisibleColliderMesh(node, root))
+
+    if (isCollider) {
       if (node instanceof THREE.Mesh) {
         node.visible = misExport && gltfMeshHasDisplayMaps(node)
       } else {

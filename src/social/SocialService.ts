@@ -226,18 +226,11 @@ export class SocialService {
     this.channel = { kind: 'messages' }
     this.peerProfiles.setPeerUrl(options.contentUrl ?? 'https://peer.decentraland.org')
     if (walletChanged || this.openDmPeers.size === 0) this.hydrateDmLocalHistory()
-    // Guest wallets are real signed identities (stable browser guest key) — they can join
-    // public communities + use ADR-208 private-messages (community group chat SFU).
-    // Friendships / social-graph APIs still skip for guests (wallet-oriented).
+    // Guest wallets are real signed identities (stable browser guest key + catalyst profile).
+    // Same social rails as wallets: communities, private-messages, friendship graph.
     await this.loadMemberCommunities(options.identity)
     void this.ensurePrivateMessagesConnected()
-    if (!options.isGuest) {
-      void this.ensureFriendshipSnapshot().then(() => this.startFriendConnectivitySubscription())
-    } else {
-      this.friendshipSnapshot = null
-      this.friendshipRelationByAddress.clear()
-      this.stopFriendConnectivitySubscription()
-    }
+    void this.ensureFriendshipSnapshot().then(() => this.startFriendConnectivitySubscription())
     this.ready = true
     this.notifyChannelChange()
   }
@@ -309,11 +302,8 @@ export class SocialService {
       await this.loadMemberCommunities(options.identity)
       // Warm PM room so community chat + Follow/tour control arrive without opening a thread first.
       void this.ensurePrivateMessagesConnected()
-      if (!options.isGuest) {
-        void this.ensureFriendshipSnapshot().then(() => this.startFriendConnectivitySubscription())
-      } else {
-        this.stopFriendConnectivitySubscription()
-      }
+      // Guests have stable 0x addresses + catalyst profiles — same graph rights as wallets.
+      void this.ensureFriendshipSnapshot().then(() => this.startFriendConnectivitySubscription())
     }
 
     this.ready = true

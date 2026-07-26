@@ -71,6 +71,13 @@ export const SIDEBAR_ICONS = {
     <path d="M6 3.5v17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
     <path d="M6.5 4.5h9.5l-1.8 3.2 1.8 3.3H6.5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
   </svg>`,
+  pets: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <circle cx="9" cy="10" r="3.2" stroke="currentColor" stroke-width="1.5"/>
+    <path d="M12.5 11.5c1.2-2.2 3.4-3.4 5.5-2.8 1.4.4 2.3 1.6 2.5 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    <path d="M5.5 14.5c.9 2.4 2.8 4 5 4s3.2-.6 4.2-1.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M7.2 7.2c-.8-1.3-2.2-1.8-3.2-1.2M10.8 7.2c.8-1.3 2.2-1.8 3.2-1.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+    <path d="M16.5 8.2c.3-1.2 1.2-2 2.2-1.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+  </svg>`,
   // Shared "accepted" backpack mark — same glyph as the backpack categories "All" row.
   backpack: backpackCategoryIcon('all'),
   marketplace: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">

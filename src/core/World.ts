@@ -113,6 +113,9 @@ import { InputHub } from '../input/InputHub'
 import { initMainThreadPerfFromUrl, recordMainThreadPerf } from '../debug/MainThreadPerf'
 import { VrmPeerSync } from '../avatar/vrm/VrmPeerSync'
 import { clearVrmRamCache } from '../avatar/vrm/vrmRamCache'
+import { PetManager } from '../pets/PetManager'
+import { PetPeerSync } from '../pets/PetPeerSync'
+import { PetContextMenu } from '../pets/PetContextMenu'
 import { PhotoCameraController } from '../photo/PhotoCameraController'
 import type { PhotoPersonSample } from '../photo/photoMetadata'
 
@@ -154,6 +157,14 @@ export class World {
   /** Help → Debug crowd harness (local composed avatars for multi-avatar FPS tests). */
   private debugAvatarCrowd: DebugAvatarCrowd | null = null
   private readonly vrmPeerSync = new VrmPeerSync()
+  /** Client pets (DPET over RFC4 — not scene CRDT). */
+  private readonly petPeerSync = new PetPeerSync()
+  private readonly petManager = new PetManager()
+  private petContextMenu: PetContextMenu | null = null
+  private petContextMenuBound = false
+  private readonly onCanvasPetContextMenu = (ev: MouseEvent): void => {
+    this.handlePetContextMenu(ev)
+  }
   /** Community tour flag (session-owned manager bound here for spine attach + tick). */
   private followFlagManager: import('../social/FollowFlagManager').FollowFlagManager | null = null
   /** AppController: Tour Focus cam publish (leader) + apply (follower). */
@@ -315,7 +326,28 @@ export class World {
 
     this.unsubEnvironmentDebug = environmentDebug.subscribe(() => this.applyEnvironmentDebugVisibility())
 
+    this.petManager.bindScene(this.host.scene)
+    this.petManager.attachPeerSync(this.petPeerSync)
     this.wireCommsHandlers()
+    this.bindPetContextMenu()
+    this.bindIslandLiveKitReady()
+  }
+
+  /** Empty land: multiplayer is island-only — re-probe DAV/DPET once island LiveKit is up. */
+  private bindIslandLiveKitReady(): void {
+    this.comms.onIslandLiveKitReady = () => {
+      const addr = this.session.getAddress() ?? null
+      this.vrmPeerSync.setLocalAddress(addr)
+      this.petPeerSync.setLocalAddress(addr)
+      void this.vrmPeerSync.onSceneConnected()
+      void this.petPeerSync.onSceneConnected()
+      if (this.remoteAvatars) {
+        this.vrmPeerSync.replayAllPeerEquips(this.remoteAvatars)
+      }
+      this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
+      void this.petManager.restoreFromInventory(addr)
+      console.info('[pets/vrm] island LiveKit ready — re-announce + WantAnnounce')
+    }
   }
 
   /**
@@ -323,27 +355,43 @@ export class World {
    * Does **not** disconnect LiveKit — only rewires peer handlers onto this World.
    */
   adoptComms(shellComms: CommsService, opts?: { isWorld?: boolean }): void {
+    const addr = this.session.getAddress() ?? null
     if (this.comms === shellComms) {
       this.sceneCommsConnected = shellComms.isLiveKitConnected()
       if (opts?.isWorld != null) this.comms.pruneUnusedLiveKitForTarget({ isWorld: opts.isWorld })
       // Handoff cleared chat handlers — re-bind 3D SocialService immediately.
       this.social.rewireComms(this.comms)
+      // Same LiveKit instance, but World just attached — re-seed peers + DAV probe.
+      this.vrmPeerSync.setLocalAddress(addr)
+      this.petPeerSync.setLocalAddress(addr)
+      this.comms.notifyHandlersOfCurrentPeers()
+      void this.vrmPeerSync.requestPeerAnnounces()
+      this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
       return
     }
     this.vrmPeerSync.detach()
+    this.petPeerSync.detach()
     const unused = this.comms
     this.comms = shellComms
     // Fresh World service never joined — safe to dispose without killing LiveKit.
     unused.dispose()
 
     this.wireCommsHandlers()
+    this.bindIslandLiveKitReady()
     // Shell cleared setChatHandler(null) on transfer — bind 3D chat NOW (not after long spawn).
     this.social.rewireComms(this.comms)
     this.sceneCommsConnected = this.comms.isLiveKitConnected()
     if (opts?.isWorld != null) this.comms.pruneUnusedLiveKitForTarget({ isWorld: opts.isWorld })
+    this.vrmPeerSync.setLocalAddress(addr)
+    this.petPeerSync.setLocalAddress(addr)
+    this.petManager.setLocalWallet(addr)
+    this.petManager.attachPeerSync(this.petPeerSync)
     // Peers already in the room never re-fire join — push them into RemoteAvatarManager.
     this.comms.notifyHandlersOfCurrentPeers()
     this.syncVoiceRoom()
+    // Ask everyone for custom VRM equip — landing often missed their first announce.
+    void this.vrmPeerSync.requestPeerAnnounces()
+    this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
     const counts = this.comms.getLivePeerCounts()
     clientDebugLog.log(
       'network',
@@ -475,6 +523,28 @@ export class World {
       }
     })
 
+    this.petPeerSync.attach(this.comms, {
+      onPeerPetChanged: (address, contentHash, category, meshYawOffsetDeg) => {
+        this.petManager.onPeerPetChanged(address, contentHash, category, meshYawOffsetDeg ?? 0)
+      },
+      onPeerPetBytesReady: (address, contentHash, category, meshYawOffsetDeg) => {
+        void this.petManager.onPeerPetBytesReady(
+          address,
+          contentHash,
+          category,
+          meshYawOffsetDeg ?? 0
+        )
+      },
+      onPeerPetPose: (address, pose) => {
+        this.petManager.onPeerPetPose(address, pose)
+      }
+    })
+    this.petManager.setPeerFeetProvider((address) => {
+      const root = this.remoteAvatars?.getPeerRoot(address)
+      if (!root) return null
+      return root.position.clone()
+    })
+
     this.remoteAvatars &&
       this.comms.setHandlers({
         onPeerJoin: (address) => {
@@ -485,12 +555,17 @@ export class World {
             this.vrmPeerSync.syncPeerToRemoteAvatars(address, this.remoteAvatars)
           }
           void this.vrmPeerSync.onPeerJoined(address)
+          void this.petPeerSync.onPeerJoined(address)
+          // Announce may have landed before this peer was tracked — re-apply.
+          this.petPeerSync.replayPeerEquip(address)
           void this.social.ensurePeerProfile(address)
           this.social.onRemotePeerJoined(address)
         },
         onPeerLeave: (address) => {
           if (skipRemoteAvatars()) return
           this.vrmPeerSync.onPeerLeave(address)
+          this.petPeerSync.onPeerLeave(address)
+          this.petManager.removeRemote(address)
           this.remoteAvatars?.removePeer(address)
           this.social.onRemotePeerLeft(address)
         },
@@ -539,7 +614,10 @@ export class World {
     this.loginIsGuest = choice?.kind === 'guest'
     this.session.applyLogin(choice)
     this.comms.setIdentity(this.session.getAddress(), this.session.getAuthIdentity())
-    this.vrmPeerSync.setLocalAddress(this.session.getAddress() ?? null)
+    const addr = this.session.getAddress() ?? null
+    this.vrmPeerSync.setLocalAddress(addr)
+    this.petPeerSync.setLocalAddress(addr)
+    this.petManager.setLocalWallet(addr)
   }
 
   /** Local `/editor` preview — fly camera, no player controller, lightweight frame loop. */
@@ -947,6 +1025,8 @@ export class World {
     this.comms.setLambdasUrl(scene.realm.lambdasUrl)
     this.remoteAvatars?.setLocalAddress(address)
     this.vrmPeerSync.setLocalAddress(address)
+    this.petPeerSync.setLocalAddress(address)
+    this.petManager.setLocalWallet(address)
 
     // Landing handoff: already in the rooms — do not disconnect/reconnect.
     if (this.sceneCommsConnected || this.comms.isLiveKitConnected()) {
@@ -974,6 +1054,12 @@ export class World {
       })
       onProgress?.('Receiving peer updates…')
       await this.vrmPeerSync.onSceneConnected()
+      await this.petPeerSync.onSceneConnected()
+      if (this.remoteAvatars) {
+        this.vrmPeerSync.replayAllPeerEquips(this.remoteAvatars)
+      }
+      this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
+      void this.petManager.restoreFromInventory(address)
       return
     }
 
@@ -997,11 +1083,18 @@ export class World {
       })
       onProgress?.('Receiving peer updates…')
       await this.vrmPeerSync.onSceneConnected()
+      await this.petPeerSync.onSceneConnected()
+      if (this.remoteAvatars) {
+        this.vrmPeerSync.replayAllPeerEquips(this.remoteAvatars)
+      }
+      this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
+      void this.petManager.restoreFromInventory(address)
       return
     }
     if (connectResult.reason === 'comms_disabled') {
       // Content-only or broken LiveKit — play solo without chat/peers.
       onProgress?.('Multiplayer unavailable — continuing solo')
+      void this.petManager.restoreFromInventory(address)
       return
     }
     if (connectResult.reason === 'duplicate_wallet') {
@@ -1056,12 +1149,15 @@ export class World {
         this.comms.setLambdasUrl(scene.realm.lambdasUrl)
         this.remoteAvatars?.setLocalAddress(address)
         this.vrmPeerSync.setLocalAddress(address)
+        this.petPeerSync.setLocalAddress(address)
+        this.petManager.setLocalWallet(address)
         const connectResult = await this.comms.connectSceneRoom(this.buildCommsTarget(scene))
         this.sceneCommsConnected = connectResult.ok
         if (connectResult.ok) {
           this.comms.seedArchipelagoSceneLocal(scene.spawn.x, scene.spawn.y, scene.spawn.z)
           this.comms.notifyHandlersOfCurrentPeers()
           await this.vrmPeerSync.onSceneConnected()
+          await this.petPeerSync.onSceneConnected()
           onProgress?.('Connected to DCL comms')
         } else if (
           connectResult.reason === 'comms_disabled' ||
@@ -1075,6 +1171,7 @@ export class World {
         } else {
           onProgress?.('Comms connection failed — continuing without multiplayer')
         }
+        void this.petManager.restoreFromInventory(address)
       }
 
       onProgress?.('Loading social services…')
@@ -1186,6 +1283,19 @@ export class World {
     this.physics.warmStaticScene()
     this.sceneScript.preparePointerRaycast()
     this.sceneScript.refreshPointerTargets()
+    // After capsule exists — re-equip pet from inventory (World rebuild on /goto must not lose equip).
+    if (address) {
+      this.petManager.setLocalWallet(address)
+      this.petPeerSync.setLocalAddress(address)
+      this.vrmPeerSync.setLocalAddress(address)
+      void this.petManager.restoreFromInventory(address)
+      // Peers present before our DAV handler was ready — re-probe custom avatars.
+      if (this.remoteAvatars) {
+        this.vrmPeerSync.replayAllPeerEquips(this.remoteAvatars)
+      }
+      void this.vrmPeerSync.requestPeerAnnounces()
+      this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
+    }
     this.startInputHub()
     this.sceneScript.setInputHub(this.inputHub, 'primary')
     this.sceneScript.bindPointerEvents(
@@ -1324,6 +1434,87 @@ export class World {
   /** Tour Focus frame hook — runs after remote avatar pose so leader feet are current. */
   setTourFocusTick(tick: ((delta: number) => void) | null): void {
     this.tourFocusTick = tick
+  }
+
+  /** Pets panel enable/disable — restore active pet from local inventory + re-announce DPET. */
+  async onActivePetInventoryChange(): Promise<void> {
+    const address = this.session.getAddress() ?? null
+    this.petManager.setLocalWallet(address)
+    this.petPeerSync.setLocalAddress(address)
+    await this.petManager.restoreFromInventory(address)
+  }
+
+  private bindPetContextMenu(): void {
+    if (this.petContextMenuBound) return
+    const canvas = this.host.renderer.domElement
+    canvas.addEventListener('contextmenu', this.onCanvasPetContextMenu)
+    this.petContextMenuBound = true
+    if (!this.petContextMenu) {
+      this.petContextMenu = new PetContextMenu({
+        onAction: (action, target) => {
+          if (action === 'disable' && target.kind === 'local') {
+            void this.petManager.disableLocal()
+          } else if (action === 'view-owner' && target.kind === 'remote') {
+            window.dispatchEvent(
+              new CustomEvent('dcl-open-profile', { detail: { address: target.ownerAddress } })
+            )
+          } else if (action === 'view-info') {
+            const msg =
+              target.kind === 'local'
+                ? `Your pet · ${target.name} · ${target.category}`
+                : `Pet · ${target.name} · ${target.category} · owner ${target.ownerAddress.slice(0, 10)}…`
+            console.info('[pets]', msg)
+            clientDebugLog.log('pets', msg, { level: 'info' })
+          } else if (action === 'report') {
+            console.info('[pets] report — coming soon')
+          }
+        }
+      })
+    }
+  }
+
+  private unbindPetContextMenu(): void {
+    if (!this.petContextMenuBound) return
+    this.host.renderer.domElement.removeEventListener('contextmenu', this.onCanvasPetContextMenu)
+    this.petContextMenuBound = false
+  }
+
+  private handlePetContextMenu(ev: MouseEvent): void {
+    if (!this.playerMode || !this.player) return
+    const canvas = this.host.renderer.domElement
+    const hit = this.petManager.pickAtPointer(ev.clientX, ev.clientY, this.host.camera, canvas)
+    if (!hit) return
+    ev.preventDefault()
+    ev.stopPropagation()
+    const localSpec = this.petManager.getLocalSpec()
+    if (hit.kind === 'local' && localSpec) {
+      this.petContextMenu?.show(
+        {
+          kind: 'local',
+          name: localSpec.nickname || localSpec.fileName || 'Pet',
+          category: localSpec.category,
+          hash: localSpec.contentHash
+        },
+        ev.clientX,
+        ev.clientY
+      )
+      return
+    }
+    if (hit.kind === 'remote' && hit.address) {
+      const hash = this.petPeerSync.getPeerEquippedHash(hit.address) ?? ''
+      const category = this.petPeerSync.getPeerCategory(hit.address) ?? 'walking'
+      this.petContextMenu?.show(
+        {
+          kind: 'remote',
+          name: 'Pet',
+          category,
+          hash,
+          ownerAddress: hit.address
+        },
+        ev.clientX,
+        ev.clientY
+      )
+    }
   }
 
   private bindFollowFlagCct(): void {
@@ -1548,6 +1739,7 @@ export class World {
             assetStats.textureInflight
           )
           this.vrmPeerSync.gcStaleFetches()
+          this.petPeerSync.gcStaleFetches()
           // Always tick remote pose (skipping frames made peers look choppy).
           // LOD inside RemoteAvatarManager already throttles far anim work.
           const remoteTick = this.remoteAvatars?.update(delta)
@@ -1568,6 +1760,12 @@ export class World {
               lodFar: remoteTick?.lodFar ?? 0
             })
           }
+        }
+        // Local pet leash (owner feet Y + category height) then remote pet lerp.
+        if (this.player) {
+          const feet = this.player.getWorldPosition()
+          this.petManager.updateLocal(delta, feet, this.player.getPlayerYaw(), 0)
+          this.petManager.updateRemotes(delta, feet)
         }
         // Tour flag: spine attach for local or remote leader (after avatar pose ticks).
         this.followFlagManager?.update(delta)
@@ -4111,6 +4309,11 @@ export class World {
     this.physics.dispose()
 
     this.vrmPeerSync.detach()
+    this.petPeerSync.detach()
+    this.petManager.dispose()
+    this.unbindPetContextMenu()
+    this.petContextMenu?.dispose()
+    this.petContextMenu = null
     clearVrmRamCache()
     this.voice.setInPlay(false)
     this.voice.dispose()

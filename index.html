@@ -2113,6 +2113,199 @@
       }
 
 
+
+      /* Pets panel — same bottom-left HUD slot as friends */
+      .pets-panel-wrap {
+        position: fixed;
+        left: var(--client-safe-left);
+        right: auto;
+        bottom: var(--client-safe-bottom);
+        top: auto;
+        z-index: var(--z-client-hud-raised);
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        pointer-events: auto;
+        width: var(--client-hud-max-w);
+        max-width: calc(100vw - var(--client-safe-left) - var(--client-safe-right) - 48px);
+        height: var(--client-chat-max-h);
+        max-height: var(--client-chat-max-h);
+        overflow: hidden;
+      }
+      .pets-panel-wrap[hidden] {
+        display: none !important;
+        pointer-events: none !important;
+      }
+      .pets-panel {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        border-radius: 16px;
+        background: rgba(28, 20, 16, 0.94);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #fff;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+        overflow: hidden;
+        font-family: inherit;
+        box-sizing: border-box;
+      }
+      .pets-panel__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 12px 12px 8px 14px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        flex-shrink: 0;
+      }
+      .pets-panel__title {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 650;
+        letter-spacing: 0.02em;
+      }
+      .pets-panel__close {
+        appearance: none;
+        border: 0;
+        background: transparent;
+        color: rgba(255,255,255,0.7);
+        font-size: 22px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 2px 6px;
+      }
+      .pets-panel__close:hover { color: #fff; }
+      .pets-panel__upload {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px 12px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        flex-shrink: 0;
+      }
+      .pets-panel__cat-row {
+        display: flex;
+        gap: 6px;
+      }
+      .pets-panel__cat {
+        flex: 1;
+        appearance: none;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: rgba(255,255,255,0.04);
+        color: rgba(255,255,255,0.75);
+        border-radius: 8px;
+        padding: 6px 8px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .pets-panel__cat.is-active {
+        background: rgba(255, 45, 85, 0.22);
+        border-color: rgba(255, 45, 85, 0.55);
+        color: #fff;
+      }
+      .pets-panel__upload-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 10px;
+        padding: 8px 12px;
+        background: linear-gradient(135deg, #ff2d55, #ff8a3d);
+        color: #fff;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .pets-panel__hint {
+        margin: 0;
+        padding: 8px 14px 0;
+        font-size: 11px;
+        line-height: 1.35;
+        color: rgba(255,255,255,0.55);
+        flex-shrink: 0;
+      }
+      .pets-panel__status {
+        margin: 6px 14px 0;
+        font-size: 12px;
+        color: #ffb4b4;
+        flex-shrink: 0;
+      }
+      .pets-panel__body {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        padding: 8px 10px 12px;
+      }
+      .pets-panel__empty {
+        padding: 24px 12px;
+        text-align: center;
+        color: rgba(255,255,255,0.5);
+        font-size: 13px;
+      }
+      .pets-panel__row {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px;
+        margin-bottom: 8px;
+        border-radius: 12px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.06);
+      }
+      .pets-panel__row.is-active {
+        border-color: rgba(255, 45, 85, 0.45);
+        background: rgba(255, 45, 85, 0.08);
+      }
+      .pets-panel__row-name {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .pets-panel__row-meta {
+        font-size: 11px;
+        color: rgba(255,255,255,0.5);
+        margin-top: 2px;
+      }
+      .pets-panel__row-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+      .pets-panel__select {
+        appearance: none;
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: rgba(0,0,0,0.25);
+        color: #fff;
+        font-size: 11px;
+        padding: 5px 8px;
+      }
+      .pets-panel__btn {
+        appearance: none;
+        border: 1px solid rgba(255,255,255,0.14);
+        background: rgba(255,255,255,0.08);
+        color: #fff;
+        border-radius: 8px;
+        padding: 5px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .pets-panel__btn.is-on {
+        background: rgba(255, 45, 85, 0.28);
+        border-color: rgba(255, 45, 85, 0.5);
+      }
+      .pets-panel__btn--ghost {
+        background: transparent;
+        min-width: 32px;
+      }
+      .pets-panel__btn--danger {
+        background: transparent;
+        color: #ff8f8f;
+        border-color: rgba(255,100,100,0.25);
+        min-width: 32px;
+      }
+
       /* Friends panel — same bottom-left HUD slot as .chat-panel-wrap */
       .friends-panel-wrap {
         position: fixed;

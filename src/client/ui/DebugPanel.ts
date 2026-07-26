@@ -34,6 +34,7 @@ export class DebugPanel {
   readonly root: HTMLDivElement
   private readonly physxSceneToggle: HTMLInputElement
   private readonly physxGltfToggle: HTMLInputElement
+  private readonly physxGltfSolidToggle: HTMLInputElement
   private readonly physxPlayerToggle: HTMLInputElement
   private readonly physxProbeToggle: HTMLInputElement
   private readonly physxRuntimeRecookToggle: HTMLInputElement
@@ -147,7 +148,11 @@ export class DebugPanel {
           </label>
           <label class="debug-panel__check">
             <input type="checkbox" data-physx-gltf />
-            <span>GLTF colliders</span>
+            <span>GLTF colliders (magenta = _collider source + cooked)</span>
+          </label>
+          <label class="debug-panel__check">
+            <input type="checkbox" data-physx-gltf-solid />
+            <span>Solid filled hulls (off = wireframe only)</span>
           </label>
           <label class="debug-panel__check">
             <input type="checkbox" data-physx-player />
@@ -188,6 +193,7 @@ export class DebugPanel {
 
     this.physxSceneToggle = this.root.querySelector('[data-physx-scene]') as HTMLInputElement
     this.physxGltfToggle = this.root.querySelector('[data-physx-gltf]') as HTMLInputElement
+    this.physxGltfSolidToggle = this.root.querySelector('[data-physx-gltf-solid]') as HTMLInputElement
     this.physxPlayerToggle = this.root.querySelector('[data-physx-player]') as HTMLInputElement
     this.physxProbeToggle = this.root.querySelector('[data-physx-probe]') as HTMLInputElement
     this.physxRuntimeRecookToggle = this.root.querySelector('[data-physx-runtime-recook]') as HTMLInputElement
@@ -416,6 +422,7 @@ export class DebugPanel {
     const syncFromStore = (options: PhysxColliderDebugOptions) => {
       this.physxSceneToggle.checked = options.sceneMeshColliders
       this.physxGltfToggle.checked = options.gltfColliders
+      this.physxGltfSolidToggle.checked = options.gltfColliderSolids
       this.physxPlayerToggle.checked = options.localPlayerCapsule
       this.physxProbeToggle.checked = options.collidersPhys
       this.physxRuntimeRecookToggle.checked = options.runtimeRecook
@@ -428,7 +435,15 @@ export class DebugPanel {
     })
 
     this.physxGltfToggle.addEventListener('change', () => {
-      physxColliderDebug.setOptions({ gltfColliders: this.physxGltfToggle.checked })
+      const on = this.physxGltfToggle.checked
+      // Turning GLTF debug on defaults solid fill so hulls are obvious (wireframe is optional).
+      physxColliderDebug.setOptions(
+        on ? { gltfColliders: true, gltfColliderSolids: true } : { gltfColliders: false }
+      )
+    })
+
+    this.physxGltfSolidToggle.addEventListener('change', () => {
+      physxColliderDebug.setOptions({ gltfColliderSolids: this.physxGltfSolidToggle.checked })
     })
 
     this.physxPlayerToggle.addEventListener('change', () => {

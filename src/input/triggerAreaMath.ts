@@ -1,6 +1,5 @@
 import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
-import { DCL_PLAYER_ENTITY_Y_OFFSET } from '../player/dclPlayerEntity'
 import {
   resolveEntityWorldMatrix,
   type EntityWorldTransformDeps
@@ -193,7 +192,7 @@ export function composeTriggerWorldMatrix(
 /**
  * Explorer parity: **player CCT capsule** vs trigger volume (not a single bone/point).
  *
- * Prefer `feetDcl` from the CCT foot position. Falls back to PE chest − 0.88.
+ * Prefer `feetDcl` from the CCT foot position. Falls back to PE position (PE is feet).
  * `playerTransform` is only used for PE fallback + result payloads.
  */
 export function isPlayerInsideTriggerDcl(
@@ -210,9 +209,10 @@ export function isPlayerInsideTriggerDcl(
   capsuleHeight: number = PLAYER_CCT_HEIGHT
 ): boolean {
   const pe = playerTransform.position
+  // PE Transform is feet (same as CCT soles).
   const feet = feetDcl ?? {
     x: pe.x,
-    y: pe.y - DCL_PLAYER_ENTITY_Y_OFFSET,
+    y: pe.y,
     z: pe.z
   }
   if (capsuleOverlapsTriggerMatrix(feet, worldMatrix, mesh, capsuleRadius, capsuleHeight)) {

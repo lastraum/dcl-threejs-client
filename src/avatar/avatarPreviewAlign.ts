@@ -10,6 +10,13 @@ const _center = new THREE.Vector3()
 const _size = new THREE.Vector3()
 
 /**
+ * Max sole lift for DCL rigs. Foot/toe bones sit above the sole, so thick shoes
+ * sink into the disc; clamp so a prop hanging below the feet (staff, tail) can't
+ * launch the avatar off the ground instead.
+ */
+const MAX_SOLE_LIFT = 0.14
+
+/**
  * Place preview root so soles sit on y=0 and the stance (feet midpoint) sits on
  * the origin — not mesh AABB, which props skew off the ground disc.
  */
@@ -77,6 +84,13 @@ export function alignPreviewAvatarToGround(
       root.position.x -= stance2.centerX
       root.position.z -= stance2.centerZ
       root.position.y -= stance2.feetY
+      root.updateWorldMatrix(true, true)
+    }
+    // Bones are the ankle/toe joints, not the sole — lift the mesh back onto y=0
+    // so boots and platform shoes rest on the disc instead of clipping through it.
+    _box.setFromObject(root)
+    if (!_box.isEmpty() && _box.min.y < 0) {
+      root.position.y += Math.min(-_box.min.y, MAX_SOLE_LIFT)
       root.updateWorldMatrix(true, true)
     }
   } else {

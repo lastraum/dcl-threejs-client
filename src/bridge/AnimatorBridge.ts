@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
 import type { ResolvedScene } from '../dcl/content/types'
 import type { AssetCache } from '../rendering/AssetCache'
+import { resolveGltfSrcHash } from '../rendering/DclTextureResolver'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionView } from './ProjectionView'
@@ -19,11 +20,16 @@ type AnimEntry = {
   lastAppliedSignature?: string
 }
 
+/**
+ * Resolve scene GLB path → content hash.
+ * Must match ThreeBridge (case-insensitive): scenes often use `models/` while the
+ * manifest has `Models/` (Spring in the Snow). Exact-match only left Animator
+ * unbound while meshes still attached → rest scale ~0.003 needles.
+ */
 function hashFromSrc(src: string, scene: ResolvedScene): string | null {
   const trimmed = src.trim()
   if (/^(bafy|bafkre|Qm)/i.test(trimmed)) return trimmed
-  const hit = scene.content.find((c) => c.file === trimmed || c.file.endsWith(`/${trimmed}`))
-  return hit?.hash ?? null
+  return resolveGltfSrcHash(scene.content, trimmed)
 }
 
 type AnimatorStateView = Readonly<{
@@ -271,7 +277,9 @@ export class AnimatorBridge {
       action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)
       action.clampWhenFinished = !loop
       if (state.playing !== false) {
-        if (state.shouldReset) action.reset()
+        // One-shots (Spring flower mesh scale tracks, doors): always start at t=0 even when
+        // shouldReset is omitted — otherwise re-bind can sit at clamp end (rest scale ~0.003).
+        if (state.shouldReset || !loop) action.reset()
         action.play()
         playingClips.push(clipName)
       }
@@ -322,136 +330,25 @@ export class AnimatorBridge {
     })
   }
 
+  /**
+   * Bind + play as soon as `__mesh_*` exists. Call from GLB attach — Animator CRDT often
+   * lands before the mesh; waiting for the 12-frame async bridge stride leaves grow clips
+   * (Spring flowers rest scale ~0.003) stuck as black needles.
+   */
+  syncEntity(entity: Entity, view: ProjectionView): boolean {
+    this.motionFocusView = view
+    return this.bindAndApplyEntity(entity)
+  }
+
   async sync(view: ProjectionView): Promise<void> {
     this.motionFocusView = view
-    const { Animator, GltfContainer } = this.ecs
+    const { GltfContainer } = this.ecs
     const nodes = this.getNodes()
     if (!nodes) return
     const active = new Set<Entity>()
 
     for (const [entity] of view.getEntitiesWith(GltfContainer)) {
-      const { src } = GltfContainer.get(entity)
-      const hasExplicitAnimator = Animator.has(entity)
-      if (!hasExplicitAnimator && this.staticGltfNoClips.has(entity) && !this.entries.has(entity)) {
-        continue
-      }
-
-      const node = nodes.get(entity)
-      if (!node) {
-        const skipKey = `no-node:${entity}:${src}`
-        if (!this.loggedSkips.has(skipKey)) {
-          this.loggedSkips.add(skipKey)
-          this.logAnimator(`Animator skip — entity ${entity} · ${src} (no scene node)`, {
-            entity,
-            level: 'warn'
-          })
-        }
-        continue
-      }
-
-      const hash = hashFromSrc(src, this.sceneConfig)
-      if (!hash) {
-        this.logAnimator(`Animator skip — entity ${entity} · ${src} (unresolved hash)`, {
-          entity,
-          throttleMs: 2000,
-          level: 'warn'
-        })
-        continue
-      }
-
-      const mesh = node.getObjectByName(`__mesh_${entity}`)
-      if (!mesh) {
-        this.logAnimator(`Animator wait mesh — entity ${entity} · ${src} (no __mesh_${entity} yet)`, {
-          entity,
-          throttleMs: 2000
-        })
-        continue
-      }
-
-      let entry = this.entries.get(entity)
-      const rebinding = !entry || entry.gltfHash !== hash || entry.root !== mesh
-      if (rebinding) {
-        // P0 mesh: never await cold parse on the bridge tick. Peek cache only; kick idle load if cold.
-        const template =
-          this.cache.peekCached(hash) ?? this.cache.peekCached(this.sceneConfig.assetUrl(hash))
-        if (!template) {
-          if (!this.cache.isResolving(hash) && !this.cache.hasGivenUp(hash)) {
-            void this.cache
-              .load(this.sceneConfig.assetUrl(hash), hash, { quiet: true })
-              .catch(() => {})
-          }
-          continue
-        }
-        entry?.mixer.stopAllAction()
-        const loaded = template
-        const clipNames = loaded.animations.map((c) => c.name)
-        entry = {
-          mixer: new THREE.AnimationMixer(mesh),
-          actions: new Map(),
-          root: mesh,
-          gltfHash: hash,
-          gltfSrc: src
-        }
-        // Build name map once for all clips (characters can have dozens of tracks × many bones).
-        const nodeByName = loaded.animations.length ? buildNodeNameMap(mesh) : undefined
-        for (const clip of loaded.animations) {
-          const instanceClip = retargetAnimationClip(clip, mesh, nodeByName)
-          entry.actions.set(clip.name, entry.mixer.clipAction(instanceClip, mesh))
-        }
-        if (!hasExplicitAnimator && !clipNames.length) {
-          this.staticGltfNoClips.add(entity)
-          continue
-        }
-        this.staticGltfNoClips.delete(entity)
-        entry.lastAppliedSignature = undefined
-        this.entries.set(entity, entry)
-        const focus = isAnimatorFocusSrc(src)
-        this.logAnimator(
-          `Animator bind — entity ${entity} · ${src} · clips [${clipNames.join(', ') || '(none)'}] · mesh children ${mesh.children.length}`,
-          { entity, level: clipNames.length ? 'success' : 'warn', throttleMs: focus ? 0 : undefined }
-        )
-        if (focus) {
-          const childNames: string[] = []
-          mesh.traverse((obj) => {
-            if (obj !== mesh && obj.name) childNames.push(obj.name)
-          })
-          this.logAnimator(
-            `Animator focus — entity ${entity} · nodes [${childNames.slice(0, 24).join(', ')}${childNames.length > 24 ? ',…' : ''}]`,
-            { entity, throttleMs: 0 }
-          )
-        }
-        if (!clipNames.length) {
-          this.logAnimator(`Animator no clips in GLB — entity ${entity} · ${src}`, {
-            entity,
-            level: 'warn'
-          })
-        }
-      }
-
-      const bound = this.entries.get(entity)
-      if (!bound) continue
-
-      const clipNames = [...bound.actions.keys()]
-      let states: readonly AnimatorStateView[]
-      let usingDefaultAutoPlay = false
-      if (Animator.has(entity)) {
-        states = (Animator.get(entity).states ?? []) as readonly AnimatorStateView[]
-      } else {
-        states = deriveDefaultAnimatorStates(clipNames)
-        usingDefaultAutoPlay = states.length > 0
-        if (usingDefaultAutoPlay) {
-          this.logAnimator(
-            `Animator default — entity ${entity} · ${src} · auto-play first clip [${states[0]?.clip ?? '?'}] (DCL spec, no ECS Animator)`,
-            { entity, level: 'info', throttleMs: isAnimatorFocusSrc(src) ? 0 : 5000 }
-          )
-        }
-      }
-      if (!states.length) continue
-      active.add(entity)
-
-      // Explorer apply: stop-all, play playing states, clamp one-shots (open holds until close).
-      if (rebinding) bound.lastAppliedSignature = undefined
-      this.applyStatesToEntry(entity, bound, states, src, usingDefaultAutoPlay)
+      if (this.bindAndApplyEntity(entity)) active.add(entity)
     }
 
     for (const [entity, entry] of this.entries) {
@@ -465,6 +362,130 @@ export class AnimatorBridge {
     for (const entity of this.staticGltfNoClips) {
       if (!GltfContainer.has(entity)) this.staticGltfNoClips.delete(entity)
     }
+  }
+
+  /** @returns true when entity has an active mixer after this call */
+  private bindAndApplyEntity(entity: Entity): boolean {
+    const { Animator, GltfContainer } = this.ecs
+    if (!GltfContainer.has(entity)) return false
+    const { src } = GltfContainer.get(entity)
+    const hasExplicitAnimator = Animator.has(entity)
+    if (!hasExplicitAnimator && this.staticGltfNoClips.has(entity) && !this.entries.has(entity)) {
+      return false
+    }
+
+    const nodes = this.getNodes()
+    const node = nodes?.get(entity)
+    if (!node) {
+      const skipKey = `no-node:${entity}:${src}`
+      if (!this.loggedSkips.has(skipKey)) {
+        this.loggedSkips.add(skipKey)
+        this.logAnimator(`Animator skip — entity ${entity} · ${src} (no scene node)`, {
+          entity,
+          level: 'warn'
+        })
+      }
+      return false
+    }
+
+    const hash = hashFromSrc(src, this.sceneConfig)
+    if (!hash) {
+      this.logAnimator(`Animator skip — entity ${entity} · ${src} (unresolved hash)`, {
+        entity,
+        throttleMs: 2000,
+        level: 'warn'
+      })
+      return false
+    }
+
+    const mesh = node.getObjectByName(`__mesh_${entity}`)
+    if (!mesh) {
+      this.logAnimator(`Animator wait mesh — entity ${entity} · ${src} (no __mesh_${entity} yet)`, {
+        entity,
+        throttleMs: 2000
+      })
+      return false
+    }
+
+    let entry = this.entries.get(entity)
+    const rebinding = !entry || entry.gltfHash !== hash || entry.root !== mesh
+    if (rebinding) {
+      const template =
+        this.cache.peekCached(hash) ?? this.cache.peekCached(this.sceneConfig.assetUrl(hash))
+      if (!template) {
+        if (!this.cache.isResolving(hash) && !this.cache.hasGivenUp(hash)) {
+          void this.cache
+            .load(this.sceneConfig.assetUrl(hash), hash, { quiet: true })
+            .catch(() => {})
+        }
+        return false
+      }
+      entry?.mixer.stopAllAction()
+      const loaded = template
+      const clipNames = loaded.animations.map((c) => c.name)
+      entry = {
+        mixer: new THREE.AnimationMixer(mesh),
+        actions: new Map(),
+        root: mesh,
+        gltfHash: hash,
+        gltfSrc: src
+      }
+      const nodeByName = loaded.animations.length ? buildNodeNameMap(mesh) : undefined
+      for (const clip of loaded.animations) {
+        const instanceClip = retargetAnimationClip(clip, mesh, nodeByName)
+        entry.actions.set(clip.name, entry.mixer.clipAction(instanceClip, mesh))
+      }
+      if (!hasExplicitAnimator && !clipNames.length) {
+        this.staticGltfNoClips.add(entity)
+        return false
+      }
+      this.staticGltfNoClips.delete(entity)
+      entry.lastAppliedSignature = undefined
+      this.entries.set(entity, entry)
+      const focus = isAnimatorFocusSrc(src)
+      this.logAnimator(
+        `Animator bind — entity ${entity} · ${src} · clips [${clipNames.join(', ') || '(none)'}] · mesh children ${mesh.children.length}`,
+        { entity, level: clipNames.length ? 'success' : 'warn', throttleMs: focus ? 0 : undefined }
+      )
+      if (!clipNames.length) {
+        this.logAnimator(`Animator no clips in GLB — entity ${entity} · ${src}`, {
+          entity,
+          level: 'warn'
+        })
+      }
+    }
+
+    const bound = this.entries.get(entity)
+    if (!bound) return false
+
+    const clipNames = [...bound.actions.keys()]
+    let states: readonly AnimatorStateView[]
+    let usingDefaultAutoPlay = false
+    if (Animator.has(entity)) {
+      states = (Animator.get(entity).states ?? []) as readonly AnimatorStateView[]
+    } else {
+      states = deriveDefaultAnimatorStates(clipNames)
+      usingDefaultAutoPlay = states.length > 0
+      if (usingDefaultAutoPlay) {
+        this.logAnimator(
+          `Animator default — entity ${entity} · ${src} · auto-play first clip [${states[0]?.clip ?? '?'}] (DCL spec, no ECS Animator)`,
+          { entity, level: 'info', throttleMs: isAnimatorFocusSrc(src) ? 0 : 5000 }
+        )
+      }
+    }
+    if (!states.length) return false
+
+    if (rebinding) bound.lastAppliedSignature = undefined
+    this.applyStatesToEntry(
+      entity,
+      bound,
+      states,
+      src,
+      usingDefaultAutoPlay,
+      rebinding || this.dirtyReplay.has(entity)
+    )
+    this.dirtyReplay.delete(entity)
+    return true
   }
 
   update(delta: number, view?: ProjectionView): void {

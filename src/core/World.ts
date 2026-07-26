@@ -113,6 +113,9 @@ import { InputHub } from '../input/InputHub'
 import { initMainThreadPerfFromUrl, recordMainThreadPerf } from '../debug/MainThreadPerf'
 import { VrmPeerSync } from '../avatar/vrm/VrmPeerSync'
 import { clearVrmRamCache } from '../avatar/vrm/vrmRamCache'
+import { PetManager } from '../pets/PetManager'
+import { PetPeerSync } from '../pets/PetPeerSync'
+import { PetContextMenu } from '../pets/PetContextMenu'
 import { PhotoCameraController } from '../photo/PhotoCameraController'
 import type { PhotoPersonSample } from '../photo/photoMetadata'
 
@@ -154,6 +157,14 @@ export class World {
   /** Help → Debug crowd harness (local composed avatars for multi-avatar FPS tests). */
   private debugAvatarCrowd: DebugAvatarCrowd | null = null
   private readonly vrmPeerSync = new VrmPeerSync()
+  /** Client pets (DPET over RFC4 — not scene CRDT). */
+  private readonly petPeerSync = new PetPeerSync()
+  private readonly petManager = new PetManager()
+  private petContextMenu: PetContextMenu | null = null
+  private petContextMenuBound = false
+  private readonly onCanvasPetContextMenu = (ev: MouseEvent): void => {
+    this.handlePetContextMenu(ev)
+  }
   /** Community tour flag (session-owned manager bound here for spine attach + tick). */
   private followFlagManager: import('../social/FollowFlagManager').FollowFlagManager | null = null
   /** AppController: Tour Focus cam publish (leader) + apply (follower). */
@@ -315,7 +326,28 @@ export class World {
 
     this.unsubEnvironmentDebug = environmentDebug.subscribe(() => this.applyEnvironmentDebugVisibility())
 
+    this.petManager.bindScene(this.host.scene)
+    this.petManager.attachPeerSync(this.petPeerSync)
     this.wireCommsHandlers()
+    this.bindPetContextMenu()
+    this.bindIslandLiveKitReady()
+  }
+
+  /** Empty land: multiplayer is island-only — re-probe DAV/DPET once island LiveKit is up. */
+  private bindIslandLiveKitReady(): void {
+    this.comms.onIslandLiveKitReady = () => {
+      const addr = this.session.getAddress() ?? null
+      this.vrmPeerSync.setLocalAddress(addr)
+      this.petPeerSync.setLocalAddress(addr)
+      void this.vrmPeerSync.onSceneConnected()
+      void this.petPeerSync.onSceneConnected()
+      if (this.remoteAvatars) {
+        this.vrmPeerSync.replayAllPeerEquips(this.remoteAvatars)
+      }
+      this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
+      void this.petManager.restoreFromInventory(addr)
+      console.info('[pets/vrm] island LiveKit ready — re-announce + WantAnnounce')
+    }
   }
 
   /**
@@ -323,27 +355,43 @@ export class World {
    * Does **not** disconnect LiveKit — only rewires peer handlers onto this World.
    */
   adoptComms(shellComms: CommsService, opts?: { isWorld?: boolean }): void {
+    const addr = this.session.getAddress() ?? null
     if (this.comms === shellComms) {
       this.sceneCommsConnected = shellComms.isLiveKitConnected()
       if (opts?.isWorld != null) this.comms.pruneUnusedLiveKitForTarget({ isWorld: opts.isWorld })
       // Handoff cleared chat handlers — re-bind 3D SocialService immediately.
       this.social.rewireComms(this.comms)
+      // Same LiveKit instance, but World just attached — re-seed peers + DAV probe.
+      this.vrmPeerSync.setLocalAddress(addr)
+      this.petPeerSync.setLocalAddress(addr)
+      this.comms.notifyHandlersOfCurrentPeers()
+      void this.vrmPeerSync.requestPeerAnnounces()
+      this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
       return
     }
     this.vrmPeerSync.detach()
+    this.petPeerSync.detach()
     const unused = this.comms
     this.comms = shellComms
     // Fresh World service never joined — safe to dispose without killing LiveKit.
     unused.dispose()
 
     this.wireCommsHandlers()
+    this.bindIslandLiveKitReady()
     // Shell cleared setChatHandler(null) on transfer — bind 3D chat NOW (not after long spawn).
     this.social.rewireComms(this.comms)
     this.sceneCommsConnected = this.comms.isLiveKitConnected()
     if (opts?.isWorld != null) this.comms.pruneUnusedLiveKitForTarget({ isWorld: opts.isWorld })
+    this.vrmPeerSync.setLocalAddress(addr)
+    this.petPeerSync.setLocalAddress(addr)
+    this.petManager.setLocalWallet(addr)
+    this.petManager.attachPeerSync(this.petPeerSync)
     // Peers already in the room never re-fire join — push them into RemoteAvatarManager.
     this.comms.notifyHandlersOfCurrentPeers()
     this.syncVoiceRoom()
+    // Ask everyone for custom VRM equip — landing often missed their first announce.
+    void this.vrmPeerSync.requestPeerAnnounces()
+    this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
     const counts = this.comms.getLivePeerCounts()
     clientDebugLog.log(
       'network',
@@ -475,6 +523,28 @@ export class World {
       }
     })
 
+    this.petPeerSync.attach(this.comms, {
+      onPeerPetChanged: (address, contentHash, category, meshYawOffsetDeg) => {
+        this.petManager.onPeerPetChanged(address, contentHash, category, meshYawOffsetDeg ?? 0)
+      },
+      onPeerPetBytesReady: (address, contentHash, category, meshYawOffsetDeg) => {
+        void this.petManager.onPeerPetBytesReady(
+          address,
+          contentHash,
+          category,
+          meshYawOffsetDeg ?? 0
+        )
+      },
+      onPeerPetPose: (address, pose) => {
+        this.petManager.onPeerPetPose(address, pose)
+      }
+    })
+    this.petManager.setPeerFeetProvider((address) => {
+      const root = this.remoteAvatars?.getPeerRoot(address)
+      if (!root) return null
+      return root.position.clone()
+    })
+
     this.remoteAvatars &&
       this.comms.setHandlers({
         onPeerJoin: (address) => {
@@ -485,12 +555,17 @@ export class World {
             this.vrmPeerSync.syncPeerToRemoteAvatars(address, this.remoteAvatars)
           }
           void this.vrmPeerSync.onPeerJoined(address)
+          void this.petPeerSync.onPeerJoined(address)
+          // Announce may have landed before this peer was tracked — re-apply.
+          this.petPeerSync.replayPeerEquip(address)
           void this.social.ensurePeerProfile(address)
           this.social.onRemotePeerJoined(address)
         },
         onPeerLeave: (address) => {
           if (skipRemoteAvatars()) return
           this.vrmPeerSync.onPeerLeave(address)
+          this.petPeerSync.onPeerLeave(address)
+          this.petManager.removeRemote(address)
           this.remoteAvatars?.removePeer(address)
           this.social.onRemotePeerLeft(address)
         },
@@ -539,7 +614,10 @@ export class World {
     this.loginIsGuest = choice?.kind === 'guest'
     this.session.applyLogin(choice)
     this.comms.setIdentity(this.session.getAddress(), this.session.getAuthIdentity())
-    this.vrmPeerSync.setLocalAddress(this.session.getAddress() ?? null)
+    const addr = this.session.getAddress() ?? null
+    this.vrmPeerSync.setLocalAddress(addr)
+    this.petPeerSync.setLocalAddress(addr)
+    this.petManager.setLocalWallet(addr)
   }
 
   /** Local `/editor` preview — fly camera, no player controller, lightweight frame loop. */
@@ -862,6 +940,9 @@ export class World {
         // Round-reset teleports often land while InputModifier is frozen / ticks held after UI.
         // Nudge worker play so scene systems can clear freeze and advance reset timers.
         this.sceneScript.nudgePlayAfterSceneTeleport()
+        // SpaceRunner map↔lobby: lobby/map GLBs re-attach after teleport. Kick a missing-actor
+        // cook burst so gravity can land on real floors once the scene freeze clears.
+        if (ok) this.kickPostTeleportColliderCatchup()
         return ok
       })
       this.player.setModeFreezeEscapeHandler(() => {
@@ -944,6 +1025,8 @@ export class World {
     this.comms.setLambdasUrl(scene.realm.lambdasUrl)
     this.remoteAvatars?.setLocalAddress(address)
     this.vrmPeerSync.setLocalAddress(address)
+    this.petPeerSync.setLocalAddress(address)
+    this.petManager.setLocalWallet(address)
 
     // Landing handoff: already in the rooms — do not disconnect/reconnect.
     if (this.sceneCommsConnected || this.comms.isLiveKitConnected()) {
@@ -971,6 +1054,12 @@ export class World {
       })
       onProgress?.('Receiving peer updates…')
       await this.vrmPeerSync.onSceneConnected()
+      await this.petPeerSync.onSceneConnected()
+      if (this.remoteAvatars) {
+        this.vrmPeerSync.replayAllPeerEquips(this.remoteAvatars)
+      }
+      this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
+      void this.petManager.restoreFromInventory(address)
       return
     }
 
@@ -994,11 +1083,18 @@ export class World {
       })
       onProgress?.('Receiving peer updates…')
       await this.vrmPeerSync.onSceneConnected()
+      await this.petPeerSync.onSceneConnected()
+      if (this.remoteAvatars) {
+        this.vrmPeerSync.replayAllPeerEquips(this.remoteAvatars)
+      }
+      this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
+      void this.petManager.restoreFromInventory(address)
       return
     }
     if (connectResult.reason === 'comms_disabled') {
       // Content-only or broken LiveKit — play solo without chat/peers.
       onProgress?.('Multiplayer unavailable — continuing solo')
+      void this.petManager.restoreFromInventory(address)
       return
     }
     if (connectResult.reason === 'duplicate_wallet') {
@@ -1053,12 +1149,15 @@ export class World {
         this.comms.setLambdasUrl(scene.realm.lambdasUrl)
         this.remoteAvatars?.setLocalAddress(address)
         this.vrmPeerSync.setLocalAddress(address)
+        this.petPeerSync.setLocalAddress(address)
+        this.petManager.setLocalWallet(address)
         const connectResult = await this.comms.connectSceneRoom(this.buildCommsTarget(scene))
         this.sceneCommsConnected = connectResult.ok
         if (connectResult.ok) {
           this.comms.seedArchipelagoSceneLocal(scene.spawn.x, scene.spawn.y, scene.spawn.z)
           this.comms.notifyHandlersOfCurrentPeers()
           await this.vrmPeerSync.onSceneConnected()
+          await this.petPeerSync.onSceneConnected()
           onProgress?.('Connected to DCL comms')
         } else if (
           connectResult.reason === 'comms_disabled' ||
@@ -1072,6 +1171,7 @@ export class World {
         } else {
           onProgress?.('Comms connection failed — continuing without multiplayer')
         }
+        void this.petManager.restoreFromInventory(address)
       }
 
       onProgress?.('Loading social services…')
@@ -1183,6 +1283,19 @@ export class World {
     this.physics.warmStaticScene()
     this.sceneScript.preparePointerRaycast()
     this.sceneScript.refreshPointerTargets()
+    // After capsule exists — re-equip pet from inventory (World rebuild on /goto must not lose equip).
+    if (address) {
+      this.petManager.setLocalWallet(address)
+      this.petPeerSync.setLocalAddress(address)
+      this.vrmPeerSync.setLocalAddress(address)
+      void this.petManager.restoreFromInventory(address)
+      // Peers present before our DAV handler was ready — re-probe custom avatars.
+      if (this.remoteAvatars) {
+        this.vrmPeerSync.replayAllPeerEquips(this.remoteAvatars)
+      }
+      void this.vrmPeerSync.requestPeerAnnounces()
+      this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
+    }
     this.startInputHub()
     this.sceneScript.setInputHub(this.inputHub, 'primary')
     this.sceneScript.bindPointerEvents(
@@ -1321,6 +1434,87 @@ export class World {
   /** Tour Focus frame hook — runs after remote avatar pose so leader feet are current. */
   setTourFocusTick(tick: ((delta: number) => void) | null): void {
     this.tourFocusTick = tick
+  }
+
+  /** Pets panel enable/disable — restore active pet from local inventory + re-announce DPET. */
+  async onActivePetInventoryChange(): Promise<void> {
+    const address = this.session.getAddress() ?? null
+    this.petManager.setLocalWallet(address)
+    this.petPeerSync.setLocalAddress(address)
+    await this.petManager.restoreFromInventory(address)
+  }
+
+  private bindPetContextMenu(): void {
+    if (this.petContextMenuBound) return
+    const canvas = this.host.renderer.domElement
+    canvas.addEventListener('contextmenu', this.onCanvasPetContextMenu)
+    this.petContextMenuBound = true
+    if (!this.petContextMenu) {
+      this.petContextMenu = new PetContextMenu({
+        onAction: (action, target) => {
+          if (action === 'disable' && target.kind === 'local') {
+            void this.petManager.disableLocal()
+          } else if (action === 'view-owner' && target.kind === 'remote') {
+            window.dispatchEvent(
+              new CustomEvent('dcl-open-profile', { detail: { address: target.ownerAddress } })
+            )
+          } else if (action === 'view-info') {
+            const msg =
+              target.kind === 'local'
+                ? `Your pet · ${target.name} · ${target.category}`
+                : `Pet · ${target.name} · ${target.category} · owner ${target.ownerAddress.slice(0, 10)}…`
+            console.info('[pets]', msg)
+            clientDebugLog.log('pets', msg, { level: 'info' })
+          } else if (action === 'report') {
+            console.info('[pets] report — coming soon')
+          }
+        }
+      })
+    }
+  }
+
+  private unbindPetContextMenu(): void {
+    if (!this.petContextMenuBound) return
+    this.host.renderer.domElement.removeEventListener('contextmenu', this.onCanvasPetContextMenu)
+    this.petContextMenuBound = false
+  }
+
+  private handlePetContextMenu(ev: MouseEvent): void {
+    if (!this.playerMode || !this.player) return
+    const canvas = this.host.renderer.domElement
+    const hit = this.petManager.pickAtPointer(ev.clientX, ev.clientY, this.host.camera, canvas)
+    if (!hit) return
+    ev.preventDefault()
+    ev.stopPropagation()
+    const localSpec = this.petManager.getLocalSpec()
+    if (hit.kind === 'local' && localSpec) {
+      this.petContextMenu?.show(
+        {
+          kind: 'local',
+          name: localSpec.nickname || localSpec.fileName || 'Pet',
+          category: localSpec.category,
+          hash: localSpec.contentHash
+        },
+        ev.clientX,
+        ev.clientY
+      )
+      return
+    }
+    if (hit.kind === 'remote' && hit.address) {
+      const hash = this.petPeerSync.getPeerEquippedHash(hit.address) ?? ''
+      const category = this.petPeerSync.getPeerCategory(hit.address) ?? 'walking'
+      this.petContextMenu?.show(
+        {
+          kind: 'remote',
+          name: 'Pet',
+          category,
+          hash,
+          ownerAddress: hit.address
+        },
+        ev.clientX,
+        ev.clientY
+      )
+    }
   }
 
   private bindFollowFlagCct(): void {
@@ -1545,6 +1739,7 @@ export class World {
             assetStats.textureInflight
           )
           this.vrmPeerSync.gcStaleFetches()
+          this.petPeerSync.gcStaleFetches()
           // Always tick remote pose (skipping frames made peers look choppy).
           // LOD inside RemoteAvatarManager already throttles far anim work.
           const remoteTick = this.remoteAvatars?.update(delta)
@@ -1565,6 +1760,12 @@ export class World {
               lodFar: remoteTick?.lodFar ?? 0
             })
           }
+        }
+        // Local pet leash (owner feet Y + category height) then remote pet lerp.
+        if (this.player) {
+          const feet = this.player.getWorldPosition()
+          this.petManager.updateLocal(delta, feet, this.player.getPlayerYaw(), 0)
+          this.petManager.updateRemotes(delta, feet)
         }
         // Tour flag: spine attach for local or remote leader (after avatar pose ticks).
         this.followFlagManager?.update(delta)
@@ -2006,6 +2207,30 @@ export class World {
   }
 
   /**
+   * After RestrictedActions.movePlayerTo (SpaceRunner map↔lobby, Flagtag drown-respawn):
+   * re-scan never-cooked extracts near the new feet and open a short cook burst so gravity
+   * can land on real floors once the scene load freeze clears (no mid-air soft-hold).
+   */
+  private kickPostTeleportColliderCatchup(): void {
+    if (!this.playerMode || !this.collidersLoadingComplete || this.deferPhysxCooks) return
+    this.sceneScript.flushSceneGraphMatrices()
+    // Force never-cooked scan even if the periodic throttle would skip — teleports are rare.
+    this.lastNeverCookedScanMs = 0
+    this.discoverMissingColliderActors()
+    this.runtimeColliderBurstUntil = Math.max(
+      this.runtimeColliderBurstUntil,
+      performance.now() + World.RUNTIME_COLLIDER_BURST_MS
+    )
+    const near = this.countNearPlayerColliderQueue(40)
+    if (near > 0 || this.colliderCookQueue.size > 0) {
+      clientDebugLog.consoleOnly(
+        'info',
+        `[phys] post-teleport cook catch-up — queue=${this.colliderCookQueue.size} near40m=${near}`
+      )
+    }
+  }
+
+  /**
    * Block until GLB attach pressure settles enough that matrixWorld is trustworthy
    * for PhysX cooks. Pool/disco can attach forever — we only wait for a stable window
    * or a hard cap, not pendingMesh===0 forever.
@@ -2224,11 +2449,11 @@ export class World {
   }
 
   /**
-   * Gate play until spawn ground is proven near scene.json feet.
-   * Collider **seal** already ran before this — we only re-push poses / drain late cooks
-   * and try CCT settle. Elevated air spawns used to wait up to 30s even when the deck
-   * was already under the probe; now we fail/accept faster with probe soft-accept.
-   * @returns grounded feet (Three space) for final capsule spawn, or null on timeout.
+   * Gate play until a walk surface exists under scene.json spawn (probe only).
+   * Does **not** CCT-settle or return a lower floor Y — placement stays at authored
+   * feet; the capsule freefalls with gravity after initCapsule.
+   *
+   * @returns authored spawn feet (Three space) when a surface is under the column, else null.
    */
   private async waitForSpawnFloorReady(
     spawn: ResolvedScene['spawn'],
@@ -2238,15 +2463,13 @@ export class World {
     const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
     const elevated = spawnThree.y > 8
     // Seal already completed in sealBootCollidersBeforeSpawn — do not hang 30s on towers.
-    // Elevated: a few seconds for late pose slides; ground-level: shorter.
     const maxWaitMs = elevated ? 8_000 : 5_000
-    /** Accept last probe after this many ms of stable probe without CCT (seal complete). */
     const probeSoftAcceptMs = elevated ? 1_500 : 2_000
     const probeMaxDrop = elevated ? 12 : 8
     const started = performance.now()
     let attempt = 0
     let lastProgressLog = 0
-    let lastProbeFeet: THREE.Vector3 | null = null
+    let lastProbeY: number | null = null
     let probeOkSince = 0
     let probeOkStreak = 0
 
@@ -2257,14 +2480,14 @@ export class World {
     )
     console.info(
       `[World] spawn floor wait — authored feet three=(${spawnThree.x.toFixed(1)}, ${spawnThree.y.toFixed(2)}, ${spawnThree.z.toFixed(1)})` +
-        ` elevated=${elevated} sealed=${this.spawnColliderSealComplete} maxWait=${(maxWaitMs / 1000).toFixed(0)}s`
+        ` elevated=${elevated} sealed=${this.spawnColliderSealComplete} maxWait=${(maxWaitMs / 1000).toFixed(0)}s` +
+        ` (probe only — no CCT settle)`
     )
 
     while (performance.now() - started < maxWaitMs) {
       attempt++
       await this.sceneScript.yieldForWorkerMessages()
       this.sceneScript.flushSceneGraphMatrices()
-      // Do not syncCollisionForce here — re-extract + relative slide softs cooked solids.
       this.pushAllColliderPosesToPhysX()
       this.reconcileColliderCookQueue()
       await this.drainPendingColliderCooksInitialOnly()
@@ -2282,7 +2505,7 @@ export class World {
       const probeOk = probed != null && isPlausibleSpawnSurfaceY(probed, spawnThree.y)
       const now = performance.now()
       if (probeOk && probed != null) {
-        lastProbeFeet = new THREE.Vector3(spawnThree.x, probed, spawnThree.z)
+        lastProbeY = probed
         probeOkStreak++
         if (probeOkSince <= 0) probeOkSince = now
       } else {
@@ -2290,39 +2513,32 @@ export class World {
         probeOkSince = 0
       }
 
-      // CCT is the preferred gate — sweep alone can hit thin/wrong shapes.
-      const settledFeet = this.physics.trySettleAtPosition(spawnThree, spawnThree.y)
-      if (
-        settledFeet &&
-        isPlausibleSpawnSurfaceY(settledFeet.y, spawnThree.y)
-      ) {
-        const elapsed = ((performance.now() - started) / 1000).toFixed(1)
-        console.info(
-          `[World] spawn floor ready — CCT grounded after ${elapsed}s (attempts=${attempt}` +
-            `, feetY=${settledFeet.y.toFixed(2)}` +
-            (probed != null ? `, probeY=${probed.toFixed(2)}` : '') +
-            ')'
-        )
-        onProgress?.('Floor ready')
-        return settledFeet
-      }
-
-      // Soft accept: seal done + stable probe under spawn, CCT still flaky (common on elevated decks).
-      // Better than waiting full timeout then freefalling from air Y.
+      // Surface under column is enough — place at authored Y and drop (no CCT snap).
       if (
         this.spawnColliderSealComplete &&
-        lastProbeFeet &&
+        lastProbeY != null &&
         probeOkStreak >= 3 &&
         probeOkSince > 0 &&
         now - probeOkSince >= probeSoftAcceptMs
       ) {
         const elapsed = ((now - started) / 1000).toFixed(1)
         console.info(
-          `[World] spawn floor ready — probe soft-accept after ${elapsed}s (attempts=${attempt}` +
-            `, probeY=${lastProbeFeet.y.toFixed(2)}, CCT miss)`
+          `[World] spawn floor ready — probe under column after ${elapsed}s (attempts=${attempt}` +
+            `, probeY=${lastProbeY.toFixed(2)}, place authoredY=${spawnThree.y.toFixed(2)})`
         )
         onProgress?.('Floor ready')
-        return lastProbeFeet
+        return spawnThree.clone()
+      }
+
+      // Early exit when seal complete and first solid probe (elevated drop-in scenes).
+      if (this.spawnColliderSealComplete && probeOk && lastProbeY != null && elevated) {
+        const elapsed = ((now - started) / 1000).toFixed(1)
+        console.info(
+          `[World] spawn floor ready — elevated probe after ${elapsed}s` +
+            ` (probeY=${lastProbeY.toFixed(2)}, place authoredY=${spawnThree.y.toFixed(2)})`
+        )
+        onProgress?.('Floor ready')
+        return spawnThree.clone()
       }
 
       if (now - lastProgressLog > 2000) {
@@ -2336,7 +2552,7 @@ export class World {
         this.physics.logStaticCollidersNear(spawnThree.x, spawnThree.y, spawnThree.z, 16)
         clientDebugLog.log(
           'player',
-          `spawn floor wait — t=${sec}s attempt=${attempt} probe=${probed?.toFixed(2) ?? 'none'} cct=miss sealed=${this.spawnColliderSealComplete}`,
+          `spawn floor wait — t=${sec}s attempt=${attempt} probe=${probed?.toFixed(2) ?? 'none'} sealed=${this.spawnColliderSealComplete}`,
           { alsoConsole: true, level: 'info' }
         )
       }
@@ -2346,15 +2562,13 @@ export class World {
 
     const elapsed = ((performance.now() - started) / 1000).toFixed(1)
     console.warn(
-      `[World] spawn floor wait timed out after ${elapsed}s (attempts=${attempt}) — spawning anyway` +
-        (lastProbeFeet ? ` at probe y=${lastProbeFeet.y.toFixed(2)}` : ' (may freefall)')
+      `[World] spawn floor wait timed out after ${elapsed}s (attempts=${attempt}) — spawning at authored` +
+        (lastProbeY != null ? ` (had probe y=${lastProbeY.toFixed(2)})` : ' (may freefall)')
     )
     this.physics.logStaticCollidersNear(spawnThree.x, spawnThree.y, spawnThree.z, 16)
-    onProgress?.(
-      lastProbeFeet ? 'Spawn ground timed out — using probe…' : 'Spawn ground timed out — spawning…'
-    )
-    // Prefer last walk-surface probe over raw authored air spawn.
-    return lastProbeFeet
+    onProgress?.('Spawn ground timed out — spawning at authored…')
+    // Always authored placement — gravity handles the drop.
+    return spawnThree.clone()
   }
 
   
@@ -3657,6 +3871,7 @@ export class World {
     this.sceneScript.setMovePlayerHandler((request) => {
       const ok = this.player!.movePlayerTo(request)
       this.sceneScript.nudgePlayAfterSceneTeleport()
+      if (ok) this.kickPostTeleportColliderCatchup()
       return ok
     })
     this.sceneScript.setTriggerEmoteHandler((request) => {
@@ -4094,6 +4309,11 @@ export class World {
     this.physics.dispose()
 
     this.vrmPeerSync.detach()
+    this.petPeerSync.detach()
+    this.petManager.dispose()
+    this.unbindPetContextMenu()
+    this.petContextMenu?.dispose()
+    this.petContextMenu = null
     clearVrmRamCache()
     this.voice.setInPlay(false)
     this.voice.dispose()

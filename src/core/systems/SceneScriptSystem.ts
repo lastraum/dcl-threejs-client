@@ -593,7 +593,15 @@ export class SceneScriptSystem {
     this.mapPins = new MapPinStore()
     this.raycasts = new RaycastSystem()
     this.avatarShapes.setAssetCache(cache, scene.realm.contentUrl)
-    this.bridge.setOnGltfAttached((entity) => this.flushIncrementalColliders(entity))
+    this.bridge.setOnGltfAttached((entity) => {
+      this.flushIncrementalColliders(entity)
+      // Mesh often lands *after* Animator CRDT. Re-dirty + bind same frame so one-shot grow
+      // clips start (Spring flowers: mesh rest scale ~0.003 without anim = black needles).
+      this.bridgeDirty = true
+      const { Animator } = this.readComponents
+      if (Animator.has(entity)) this.animatorBridge?.markDirty(entity)
+      this.animatorBridge?.syncEntity(entity, this.view)
+    })
     this.bridge.setRecordLww(this.recordRendererLww)
     this.bindSceneUiViewportSync(host)
     this.prepared = true

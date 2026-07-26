@@ -702,10 +702,8 @@ export class SocialChatController {
     })
     this.wireSocialTransport()
     // Presence for Explorer friend/community ONLINE (archipelago stats heartbeats).
-    // Without this, community chat bubbles show us greyed-out / offline in Explorer.
-    if (!isGuest) {
-      void this.comms.ensureArchipelagoConnected()
-    }
+    // Guests with catalyst profiles use the same signed wallet address — connect too.
+    void this.comms.ensureArchipelagoConnected()
     void this.hydrateLocalProfile()
     this.onStatusChange?.()
   }

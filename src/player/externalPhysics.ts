@@ -21,9 +21,23 @@ export const CLIENT_ARCADE_GRAVITY = 20
 
 /**
  * Continuous force only: scale so F balances arcade jump g the way Explorer’s F balances g≈9.8.
- * Impulse is **not** scaled — Explorer applies scene J as Δv (m=1) with no g-ratio boost.
  */
 export const EXTERNAL_SCENE_SCALE = CLIENT_ARCADE_GRAVITY / EXPLORER_GRAVITY_MAG
+
+/**
+ * Platform-wide impulse Δv scale (all scenes — not per-scene).
+ *
+ * Explorer: `Δv = J / CharacterMass` with mass=1 ({@link ApplyExternalImpulse}).
+ * Our client keeps arcade jump `g=20` + PhysX CCT + external channel integration, which
+ * launches ~2–2.5× hotter than Unity CharacterController (g≈9.8) for the same scene J.
+ * Single constant keeps every pad/knockback consistent with DCL client feel.
+ *
+ * Continuous force stays on {@link EXTERNAL_SCENE_SCALE} (force fights gravity every frame).
+ */
+export const IMPULSE_CLIENT_SCALE = EXPLORER_GRAVITY_MAG / CLIENT_ARCADE_GRAVITY
+
+/** @deprecated Use {@link IMPULSE_CLIENT_SCALE} — same value, platform-wide. */
+export const IMPULSE_SCENE_SCALE = IMPULSE_CLIENT_SCALE
 
 /** Unity ExternalEnvDrag — always applied to external velocity. */
 export const EXTERNAL_ENV_DRAG = 0.5
@@ -33,6 +47,13 @@ export const EXTERNAL_GROUND_FRICTION = 4
 
 /** Unity MaxExternalVelocity (m/s). */
 export const MAX_EXTERNAL_VELOCITY = 50
+
+/**
+ * Brief window after a pad/knockback where CCT may still report grounded under the
+ * trampoline mesh — suppress re-stick so the launch can leave the surface (Explorer
+ * ungrounds on J.y > 0). After this, grounded always clears external Y like Unity.
+ */
+export const IMPULSE_LAUNCH_GRACE_SEC = 0.18
 
 /**
  * Continuous force → acceleration (m=1).
@@ -48,11 +69,10 @@ export function forceToAcceleration(
 }
 
 /**
- * Impulse world vector → Δv (Explorer CharacterMass=1).
- * No EXTERNAL_SCENE_SCALE — plaza (0,25,0) stays Δv=25, same as DCL client.
+ * Impulse world vector → Δv (mass=1 × platform client scale).
  */
 export function scaleImpulseForClient(impulseWorld: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
-  return out.copy(impulseWorld).multiplyScalar(1 / CHARACTER_MASS)
+  return out.copy(impulseWorld).multiplyScalar(IMPULSE_CLIENT_SCALE / CHARACTER_MASS)
 }
 
 /**

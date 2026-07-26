@@ -94,6 +94,14 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   },
   { id: 'ui:profile-pill', name: 'Profile / name pills + menu', status: 'render', category: 'client-ui', notes: 'Hover, badges row, right-click profile modal' },
   {
+    id: 'client:pets',
+    name: 'Client pets (upload GLB, walking/flying, multiplayer DPET)',
+    status: 'render',
+    category: 'client-ui',
+    notes:
+      'HUD inventory + localStorage; leash follow (owner feet Y + category height); DPET RFC4 scene_id dcl.client.pet (not worker CRDT); right-click pet menu'
+  },
+  {
     id: 'ui:name-tags',
     name: 'Overhead name tags',
     status: 'render',

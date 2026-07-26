@@ -6,8 +6,12 @@ export function isGltfInvisibleColliderName(name: string | undefined): boolean {
   return /_collider/i.test(name)
 }
 
-/** Match mesh or any ancestor up to `stopBefore` (exclusive). Handles unnamed mesh under a collider group. */
-export function isGltfInvisibleColliderMesh(mesh: THREE.Mesh, stopBefore: THREE.Object3D): boolean {
+/**
+ * Match mesh or any ancestor up to `stopBefore` (exclusive).
+ * Explorer parity: floor/wall hulls are often named `Floor` under a `*_collider` group — ancestry
+ * must count, not only the leaf mesh name.
+ */
+export function isGltfInvisibleColliderMesh(mesh: THREE.Object3D, stopBefore: THREE.Object3D): boolean {
   let node: THREE.Object3D | null = mesh
   while (node && node !== stopBefore) {
     if (isGltfInvisibleColliderName(node.name)) return true
@@ -17,9 +21,12 @@ export function isGltfInvisibleColliderMesh(mesh: THREE.Mesh, stopBefore: THREE.
 }
 
 /**
- * Named non-`_collider` mesh — visible GLTF class (`visibleMeshesCollisionMask`).
- * Stays visible-class even when nested under a `_collider` group (RickRoll drone `Cube` proxy).
+ * Visible GLTF class (`visibleMeshesCollisionMask`) — named mesh that is **not** under a
+ * `_collider` hierarchy. Must pass `stopBefore` (GLB root) so ancestry is checked; without it
+ * only the leaf name is tested (legacy callers).
  */
-export function isGltfVisibleClassMesh(mesh: THREE.Mesh): boolean {
-  return mesh.name.length > 0 && !isGltfInvisibleColliderName(mesh.name)
+export function isGltfVisibleClassMesh(mesh: THREE.Mesh, stopBefore?: THREE.Object3D): boolean {
+  if (isGltfInvisibleColliderName(mesh.name)) return false
+  if (stopBefore && isGltfInvisibleColliderMesh(mesh, stopBefore)) return false
+  return mesh.name.length > 0
 }

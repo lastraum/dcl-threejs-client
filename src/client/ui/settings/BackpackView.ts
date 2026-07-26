@@ -99,6 +99,7 @@ import {
   applyCreatorStore,
   loadCollectionPreview,
   loadOwnedMintNumbers,
+  mintNumberForUrn,
   persistCreatorStore,
   rarityMaxSupply
 } from './backpackProvenance'
@@ -167,8 +168,10 @@ export class BackpackView {
   private selectedCategory: WearableCategory | 'all' = 'all'
   private currentPage = 1
   private selectedItem: string | null = null
-  /** "assetUrn:tokenId" (lowercase) → marketplace issue number; null until fetched. */
+  /** "complete item urn" (lowercase) → marketplace issue number; null until fetched. */
   private mintNumbers: Map<string, string> | null = null
+  /** Wallet the current mintNumbers map belongs to (reload when address changes). */
+  private mintNumbersForAddress: string | null = null
   /** Rarity tier filter (set from the detail-pane rarity chip); null = all rarities. */
   private rarityFilter: string | null = null
   private wearableItems: BackpackWearableItem[] = []
@@ -1050,7 +1053,7 @@ export class BackpackView {
       )
       if (gen !== this.emotesLoadGen || this.disposed) return
       this.emoteItems = items.length ? items : baseEmoteCatalogAsItems()
-      applyCreatorStore(this.emoteItems)
+      applyCreatorStore(this.emoteItems, address)
       void this.annotateEmoteCollections(gen)
       if (address) void this.loadMintNumbers(address)
       this.emotesError = null
@@ -1606,7 +1609,7 @@ export class BackpackView {
       if (gen !== this.wearablesLoadGen || this.disposed) return
       // Instant provenance from the persisted URN→creator store; the live
       // annotation pass below reconciles and writes back any changes.
-      applyCreatorStore(items)
+      applyCreatorStore(items, address)
       this.wearableItems = items
       void this.annotateWearableCollections(gen)
       if (address) void this.loadMintNumbers(address)
@@ -1640,7 +1643,7 @@ export class BackpackView {
         this.session.getLambdasUrl()
       )
       if (gen !== this.wearablesLoadGen || this.disposed) return
-      if (changed) persistCreatorStore(this.wearableItems)
+      if (changed) persistCreatorStore(this.wearableItems, this.session.getAddress())
       if (!changed) return
       if (this.activeSubTab === 'wearables') {
         this.renderGrid()
@@ -1656,11 +1659,13 @@ export class BackpackView {
 
   /** Marketplace issue numbers for the wallet — repaints the open detail on arrival. */
   private async loadMintNumbers(address: string): Promise<void> {
-    if (this.mintNumbers) return
+    const key = address.trim().toLowerCase()
+    if (this.mintNumbers && this.mintNumbersForAddress === key) return
     try {
       const map = await loadOwnedMintNumbers(address)
       if (this.disposed) return
       this.mintNumbers = map
+      this.mintNumbersForAddress = key
       if (this.activeSubTab === 'wearables' && this.selectedItem) {
         const selected = this.wearableItems.find((i) =>
           this.isSameWearableUrn(i.urn, this.selectedItem!)
@@ -1685,7 +1690,7 @@ export class BackpackView {
       )
       if (gen !== this.emotesLoadGen || this.disposed) return
       if (!changed) return
-      persistCreatorStore(this.emoteItems)
+      persistCreatorStore(this.emoteItems, this.session.getAddress())
       if (this.activeSubTab === 'emotes') {
         this.renderEmoteGrid()
         if (this.selectedEmoteId) this.renderEmoteDetail(this.selectedEmoteId)
@@ -2494,7 +2499,20 @@ export class BackpackView {
     }
     // Each chip is a JUMP — "show everything in my backpack with this attribute" —
     // not an intersection with whatever filters happen to be active. Search stays.
-    scope.querySelector('[data-detail-filter="category"]')?.addEventListener('click', () => {
+    const wireChip = (sel: string, onActivate: () => void): void => {
+      const el = scope.querySelector(sel) as HTMLElement | null
+      if (!el) return
+      if (!el.hasAttribute('tabindex')) el.tabIndex = 0
+      const run = (e: Event): void => {
+        e.preventDefault()
+        onActivate()
+      }
+      el.addEventListener('click', run)
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') run(e)
+      })
+    }
+    wireChip('[data-detail-filter="category"]', () => {
       const cat = item.category
       if (!cat || cat === 'unknown') return
       apply(() => {
@@ -2503,7 +2521,7 @@ export class BackpackView {
         this.filterToCategoryKeepSelection(cat)
       })
     })
-    scope.querySelector('[data-detail-filter="rarity"]')?.addEventListener('click', () => {
+    wireChip('[data-detail-filter="rarity"]', () => {
       const rarity = item.rarity?.trim().toLowerCase()
       if (!rarity) return
       apply(() => {
@@ -2513,7 +2531,7 @@ export class BackpackView {
         this.setRarityFilter(this.rarityFilter === rarity ? null : rarity)
       })
     })
-    scope.querySelector('[data-detail-filter="collection"]')?.addEventListener('click', () => {
+    wireChip('[data-detail-filter="collection"]', () => {
       apply(() => {
         this.setRarityFilter(null)
         this.filterToCategoryKeepSelection('all')
@@ -2521,7 +2539,7 @@ export class BackpackView {
         this.setGroupFilter(item.collectionName ?? null)
       })
     })
-    scope.querySelector('[data-detail-filter="creator"]')?.addEventListener('click', () => {
+    wireChip('[data-detail-filter="creator"]', () => {
       apply(() => {
         this.setRarityFilter(null)
         this.filterToCategoryKeepSelection('all')
@@ -2546,7 +2564,7 @@ export class BackpackView {
   private mintLineHtml(item: { urn: string; rarity: string }): string {
     const max = rarityMaxSupply(item.rarity)
     if (!max) return ''
-    const issued = this.mintNumbers?.get(item.urn.trim().toLowerCase())
+    const issued = mintNumberForUrn(this.mintNumbers, item.urn)
     if (!issued) return ''
     return `<span class="backpack-view__detail-mint">#${this.escapeHtml(issued)} / ${max}</span>`
   }
@@ -2582,7 +2600,9 @@ export class BackpackView {
           .join('')
         slot.classList.add('is-loaded')
       })
-      .catch(() => {})
+      .catch((err) => {
+        console.warn('[backpack] collection montage unavailable', contract, err)
+      })
   }
 
   /** Creator-authored description paragraph; empty when metadata carries none. */

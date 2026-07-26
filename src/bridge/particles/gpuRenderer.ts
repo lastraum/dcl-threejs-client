@@ -1,5 +1,12 @@
 import * as THREE from 'three'
-import { PSB_ADD, PSB_MULTIPLY, TFM_POINT, TFM_TRILINEAR, TWM_MIRROR, TWM_REPEAT } from './constants'
+import {
+  PSB_ADD,
+  PSB_MULTIPLY,
+  TFM_POINT,
+  TFM_TRILINEAR,
+  TWM_MIRROR,
+  TWM_REPEAT
+} from './constants'
 import type { LiveParticle, ParticleBuffers, ParticleSpec } from './types'
 
 function wrapMode(mode?: number): THREE.Wrapping {
@@ -275,6 +282,7 @@ export function uploadParticlesToGpu(
     buffers.colors[i * 4 + 2] = _scratchColor.b
     buffers.colors[i * 4 + 3] = Math.max(0, alpha)
 
+    // startSize/endSize already bake Explorer sizeOverLifetime multipliers (see simulation).
     const size = p.startSize + (p.endSize - p.startSize) * t
     buffers.sizes[i] = Math.max(0.001, size)
 

@@ -1,25 +1,43 @@
 name: Sync community claims
 
+# Keep docs/CLAIMS.yaml in sync for the dev panel Community tab.
+#
+# Important: use pull_request_target (not pull_request) so GITHUB_TOKEN runs in the
+# base-repo context with contents:write. pull_request tokens often cannot push to
+# dev-latest (403 github-actions[bot]), which red-X'd every PR even when the
+# script itself succeeded.
+#
+# Safety: we only check out ref: dev-latest and run our own script — never PR head code.
 on:
   issues:
     types: [opened, edited, labeled, unlabeled, closed, reopened, deleted]
-  pull_request:
+  pull_request_target:
     types: [opened, edited, closed, reopened, synchronize, ready_for_review, converted_to_draft]
+  # Fallback if events are missed (stale board)
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: sync-community-claims
+  cancel-in-progress: true
 
 jobs:
   sync:
     if: github.repository == 'lastraum/dcl-threejs-client'
     runs-on: ubuntu-latest
     steps:
-      # Always update CLAIMS on the integration branch. PR heads (esp. forks) may not
-      # exist on this repo after merge/close — committing there fails with
-      # "fatal: invalid reference: <pr-branch>".
+      # Always update CLAIMS on the integration branch. Never check out the PR head —
+      # after merge/close that ref may be gone, and PR head code must not run here.
       - uses: actions/checkout@v5
         with:
           ref: dev-latest
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-node@v5
         with:

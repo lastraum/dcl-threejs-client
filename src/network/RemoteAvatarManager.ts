@@ -834,6 +834,9 @@ export class RemoteAvatarManager {
     // Still kick a first load if we have no model at all.
     if (!ramReady) {
       if (record.model && record.renderMode === 'dcl') {
+        // Hash is known but bytes not in RAM — ensure we aren't stuck after a failed
+        // first fetch (login). Retry custom mesh when RAM eventually fills.
+        this.scheduleCustomMeshRetry(key, record, 'waiting-for-dav-bytes')
         return
       }
       if (!record.model) {
@@ -1138,12 +1141,13 @@ export class RemoteAvatarManager {
       // Do NOT compose yet — provisional is colocated with local, which would pass
       // the ≤20 m gate (or force-park at camera) and permanently load far peers.
       // First real RFC4 transform in updatePeerTransform starts the queue.
+      // hasPosition stays false so we don't treat provisional as a real pose (avoids
+      // "stuck next to me" when the first transform is delayed on empty-land islands).
       const provisional = this.provisionalPositionProvider?.()
       if (provisional) {
         record.root.position.copy(provisional)
         record.targetPosition.copy(provisional)
         record.root.visible = !record.modifierHidden
-        record.hasPosition = true
         if (!record.model && !record.placeholder) {
           this.attachLoadingPresentation(record)
         }

@@ -161,12 +161,12 @@ export class SocialMobileNotifications {
     return this.isSignedIn() && notificationPrefs.isPoolClaimsEnabled()
   }
 
-  /** Peer Wearable Pool claim (PM topic). Local winner uses the win modal, not this toast. */
+  /** Peer grab bag claim (PM topic). Local winner uses the win modal, not this toast. */
   private pushPoolClaimBanner(ev: PoolClaimDataEvent): void {
     if (!this.canShowPoolClaims()) {
       clientDebugLog.log(
         'social',
-        'Pool claim toast suppressed (banners or pool claims off in Chat settings)',
+        'Grab bag claim toast suppressed (banners or grab bag claims off in Chat settings)',
         { level: 'info', alsoConsole: true, throttleMs: 5000, throttleKey: 'pool-claim-prefs-off' }
       )
       return
@@ -175,7 +175,7 @@ export class SocialMobileNotifications {
     const prize = ev.msg.l || `pos ${ev.msg.p}`
     const demo = ev.msg.demo ? ' · demo' : ''
     const title = name
-    const sub = `claimed ${prize} from the Wearable Pool${demo}`
+    const sub = `claimed ${prize} from the grab bag${demo}`
 
     const banner = document.createElement('button')
     banner.type = 'button'

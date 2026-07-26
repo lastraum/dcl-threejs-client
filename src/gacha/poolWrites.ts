@@ -1,5 +1,5 @@
 import { maxUint256, parseEther, type Abi, type Address, type Hex } from 'viem'
-import { ADDRESSES, USE_TEST_FULFILL } from './config'
+import { ADDRESSES, MAX_STOCK_PER_TX, USE_TEST_FULFILL } from './config'
 import {
   ensureWalletAddress,
   getManaAllowance,
@@ -7,10 +7,17 @@ import {
   isNftApprovedForAll,
   sendContractMetaTx,
   waitReceipt,
+  DCL_COLLECTION_V2_META_TX_DOMAIN,
+  type MetaTxDomain,
   gachaPoolAbi,
   mockManaAbi,
   mockWearableAbi
 } from './metaTx'
+import {
+  collectionV2MinterAbi,
+  getCollectionMinterStatus,
+  humanizeStockError
+} from './collectionMinter'
 import { findPendingWinForPurchaser } from './poolReads'
 import type { PendingWin } from './types'
 
@@ -32,6 +39,7 @@ async function sendAndWait(
     args?: readonly unknown[]
     from: Address
     label: string
+    domainOverride?: MetaTxDomain
   }
 ): Promise<Hex> {
   const stepId = api.pushStep(args.label)
@@ -41,17 +49,18 @@ async function sendAndWait(
       abi: args.abi,
       functionName: args.functionName,
       args: args.args,
-      from: args.from
+      from: args.from,
+      domainOverride: args.domainOverride
     })
-    api.finishStep(stepId, { hash, detail: 'Waiting for confirmation…' })
-    api.note(`Waiting for receipt ${hash.slice(0, 10)}…`)
+    api.finishStep(stepId, { hash, detail: 'Waiting for network…' })
+    api.note('Waiting for network confirmation…')
     await waitReceipt(hash)
-    api.finishStep(stepId, { hash, detail: 'Confirmed' })
+    api.finishStep(stepId, { hash, detail: 'Done' })
     return hash
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
+    const msg = humanizeStockError(e)
     api.finishStep(stepId, { detail: msg, error: true })
-    throw e
+    throw new Error(msg)
   }
 }
 
@@ -87,7 +96,7 @@ export async function runDepositNft(args: {
       functionName: 'setApprovalForAll',
       args: [pool, true],
       from,
-      label: 'NFT setApprovalForAll → pool'
+      label: 'NFT setApprovalForAll → grab bag'
     })
   } else {
     args.api.note('NFT already approved — skip')
@@ -185,6 +194,188 @@ export async function runDepositManaPack(args: {
     from,
     label: 'depositManaPack'
   })
+}
+
+/**
+ * Creator stock: mint Collection V2 items into the pool and open active slots.
+ *
+ * Meta-tx sign chain (each after receipt may use `waitForContinue` for user-gesture):
+ *  1) setMinters([pool], true) on collection — if pool cannot mint yet (creator only)
+ *  2) mMANA approve — if allowance low
+ *  3) stockFromCollection ×N (chunked if needed)
+ */
+export async function runStockFromCollection(args: {
+  sessionAddress?: string | null
+  collection: string
+  itemId: number | bigint
+  mintCount: number
+  avgBackingMana: string
+  api: FlowApi
+  /** After any async step, prompt a click before the next eth_signTypedData */
+  waitForContinue?: (info: {
+    needsApprove: boolean
+    mintCount: number
+    label: string
+  }) => Promise<void>
+}): Promise<Hex[]> {
+  const from = await ensureWalletAddress(args.sessionAddress)
+  const pool = ADDRESSES.gachaPool
+  const collection = args.collection.trim().toLowerCase() as Address
+  if (!/^0x[a-f0-9]{40}$/.test(collection)) {
+    throw new Error('Invalid collection address')
+  }
+  const itemId = BigInt(args.itemId)
+  if (itemId < 0n) throw new Error('Invalid item id')
+  const mintCount = Math.floor(Number(args.mintCount))
+  if (!Number.isFinite(mintCount) || mintCount < 1) {
+    throw new Error('Mint count must be at least 1')
+  }
+  const avgBacking = parseEther(args.avgBackingMana || '0')
+  if (avgBacking <= 0n) throw new Error('Avg backing must be greater than 0')
+
+  const totalBacking = avgBacking * BigInt(mintCount)
+  args.api.note(`Preparing to stock ${mintCount} items…`)
+
+  let minter = await getCollectionMinterStatus(collection, {
+    itemId,
+    account: from
+  })
+  if (!minter.mintingAllowed) {
+    throw new Error(humanizeStockError(new Error('MINT_NOT_ALLOWED')))
+  }
+
+  let stepNo = 0
+  const nextStep = (label: string) => {
+    stepNo += 1
+    return label
+  }
+
+  // ── 1) Authorize minting (setMinters) if needed ──────────────────────────
+  if (!minter.canMintItem) {
+    if (minter.creator && minter.creator !== from.toLowerCase()) {
+      throw new Error(
+        `Grab bag cannot mint and you are not the collection creator (${minter.creator.slice(0, 10)}…). ` +
+          'Ask the creator to authorize the grab bag as minter.'
+      )
+    }
+    args.api.note('Confirm in wallet: allow the grab bag to mint from your collection')
+    await sendAndWait(args.api, {
+      address: collection,
+      abi: collectionV2MinterAbi as unknown as Abi,
+      functionName: 'setMinters',
+      args: [[pool], [true]],
+      from,
+      label: nextStep('Allow grab bag to mint from collection'),
+      domainOverride: DCL_COLLECTION_V2_META_TX_DOMAIN
+    })
+
+    for (let i = 0; i < 16; i++) {
+      minter = await getCollectionMinterStatus(collection, { itemId, account: from })
+      if (minter.canMintItem) break
+      if (i === 15) {
+        throw new Error(
+          'Mint permission confirmed but not visible yet — wait a few seconds and retry'
+        )
+      }
+      await sleep(1500)
+    }
+
+    if (args.waitForContinue) {
+      await args.waitForContinue({
+        needsApprove: true,
+        mintCount,
+        label: 'Mint permission saved. Continue to the next step.'
+      })
+    }
+  }
+
+  if (
+    !minter.isGlobalMinter &&
+    minter.itemAllowance > 0n &&
+    minter.itemAllowance < BigInt(mintCount) &&
+    minter.itemAllowance !== maxUint256
+  ) {
+    throw new Error(
+      `Mint allowance is only ${minter.itemAllowance.toString()} — lower the count or raise the allowance.`
+    )
+  }
+
+  // ── 2) mMANA approve ─────────────────────────────────────────────────────
+  const allowance = await getManaAllowance(from, pool)
+  if (allowance < totalBacking) {
+    args.api.note('Confirm in wallet: allow the grab bag to use your mMANA')
+    await sendAndWait(args.api, {
+      address: ADDRESSES.mockMana,
+      abi: mockManaAbi,
+      functionName: 'approve',
+      args: [pool, MANA_MAX_APPROVAL],
+      from,
+      label: nextStep('Allow grab bag to use mMANA')
+    })
+
+    for (let i = 0; i < 20; i++) {
+      const a = await getManaAllowance(from, pool)
+      if (a >= totalBacking) break
+      if (i === 19) {
+        throw new Error('mMANA allowance not visible on-chain yet. Wait a few seconds and retry.')
+      }
+      await sleep(1500)
+    }
+
+    if (args.waitForContinue) {
+      await args.waitForContinue({
+        needsApprove: true,
+        mintCount,
+        label: `mMANA ready. Continue to mint ${mintCount} into the grab bag.`
+      })
+    }
+  } else if (args.waitForContinue && stepNo > 0) {
+    await args.waitForContinue({
+      needsApprove: false,
+      mintCount,
+      label: `Continue to mint ${mintCount} into the grab bag.`
+    })
+  }
+
+  // ── 3) Mint into grab bag ────────────────────────────────────────────────
+  const hashes: Hex[] = []
+  let remaining = mintCount
+  let chunkIdx = 0
+  const totalChunks = Math.ceil(mintCount / MAX_STOCK_PER_TX)
+  while (remaining > 0) {
+    const n = Math.min(remaining, MAX_STOCK_PER_TX)
+    chunkIdx += 1
+    const stepLabel =
+      totalChunks > 1
+        ? nextStep(`Mint ${n} into grab bag (${chunkIdx}/${totalChunks})`)
+        : nextStep(`Mint ${n} into grab bag`)
+    args.api.note(
+      totalChunks > 1
+        ? `Confirm in wallet: mint batch ${chunkIdx} of ${totalChunks}`
+        : `Confirm in wallet: mint ${n} into the grab bag`
+    )
+    const hash = await sendAndWait(args.api, {
+      address: pool,
+      abi: gachaPoolAbi,
+      functionName: 'stockFromCollection',
+      args: [collection, itemId, BigInt(n), avgBacking],
+      from,
+      label: stepLabel
+    })
+    hashes.push(hash)
+    remaining -= n
+
+    if (remaining > 0 && args.waitForContinue) {
+      await args.waitForContinue({
+        needsApprove: false,
+        mintCount: remaining,
+        label: `Batch ${chunkIdx} done. Continue for the next ${remaining}.`
+      })
+    }
+  }
+
+  args.api.note(`Done — ${mintCount} items in the grab bag`)
+  return hashes
 }
 
 export async function runPull(args: {

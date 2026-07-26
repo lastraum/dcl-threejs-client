@@ -5,7 +5,8 @@ import { mockManaAbi } from './abis/MockMANA'
 import { mockWearableAbi } from './abis/MockWearable'
 import { polygonPublicClient } from './polygonClient'
 import type { GachaPosition, PoolSnapshot, WalletSnapshot } from './types'
-import { resolvePositionMedia } from './resolvePositionMedia'
+import { decodeCollectionV2TokenId, resolvePositionMedia } from './resolvePositionMedia'
+import { fetchCollectionItems } from './creatorCollections'
 
 const ZERO = '0x0000000000000000000000000000000000000000'
 
@@ -33,8 +34,49 @@ function toPosition(id: number, pos: RawPosition): GachaPosition {
     packMana: BigInt(pos.packMana),
     active: pos.active
   }
+  if (kind === 'nft') {
+    try {
+      const { itemId, issuedId } = decodeCollectionV2TokenId(pos.tokenId)
+      base.itemId = itemId
+      base.issuedId = issuedId.toString()
+    } catch {
+      /* ignore */
+    }
+  }
   base.imageUrl = resolvePositionMedia(base)
   return base
+}
+
+/** Attach marketplace names for unique DCL collections (best-effort). */
+async function enrichPositionNames(positions: GachaPosition[]): Promise<void> {
+  const byCollection = new Map<string, GachaPosition[]>()
+  for (const p of positions) {
+    if (p.kind !== 'nft') continue
+    if (p.itemId == null) continue
+    const c = p.collection.toLowerCase()
+    if (c === ADDRESSES.mockWearable.toLowerCase()) continue
+    const list = byCollection.get(c) ?? []
+    list.push(p)
+    byCollection.set(c, list)
+  }
+  await Promise.all(
+    [...byCollection.entries()].map(async ([contract, list]) => {
+      try {
+        const items = await fetchCollectionItems(contract, { first: 100 })
+        const byItem = new Map(items.map((it) => [it.itemId, it] as const))
+        for (const p of list) {
+          if (p.itemId == null) continue
+          const it = byItem.get(p.itemId)
+          if (!it) continue
+          if (it.name) p.name = it.name
+          if (it.thumbnail) p.imageUrl = it.thumbnail
+          if (it.rarity) p.rarity = it.rarity.toLowerCase()
+        }
+      } catch {
+        /* keep catalyst URL only */
+      }
+    })
+  )
 }
 
 export async function fetchPoolSnapshot(): Promise<PoolSnapshot> {
@@ -91,6 +133,8 @@ export async function fetchPoolSnapshot(): Promise<PoolSnapshot> {
       positions.push(p)
     }
   }
+
+  await enrichPositionNames(positions)
 
   return {
     acquisitionFee: acquisitionFee as bigint,

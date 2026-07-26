@@ -47,3 +47,42 @@ export function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
 }
+
+/**
+ * On-chain weight = WEIGHT_SCALE / backing (wei), so chance ∝ 1/backing.
+ * @see GachaPoolUpgradeable.WEIGHT_SCALE = 1e36
+ */
+const WEIGHT_SCALE = 10n ** 36n
+
+/**
+ * Map positionId → display chance string (e.g. "12.4%") for the active shelf.
+ * Matches contract inverse-backing weights.
+ */
+export function computeClaimChanceLabels(
+  positions: readonly { positionId: number; backing: bigint }[]
+): Map<number, string> {
+  let total = 0n
+  const weights = new Map<number, bigint>()
+  for (const p of positions) {
+    if (p.backing <= 0n) {
+      weights.set(p.positionId, 0n)
+      continue
+    }
+    const w = WEIGHT_SCALE / p.backing
+    weights.set(p.positionId, w)
+    total += w
+  }
+  const out = new Map<number, string>()
+  for (const [id, w] of weights) {
+    if (total === 0n || w === 0n) {
+      out.set(id, '—')
+      continue
+    }
+    // One decimal place, half-up: tenths of a percent
+    const tenths = (w * 1000n + total / 2n) / total
+    const whole = tenths / 10n
+    const frac = tenths % 10n
+    out.set(id, `${whole}.${frac}%`)
+  }
+  return out
+}

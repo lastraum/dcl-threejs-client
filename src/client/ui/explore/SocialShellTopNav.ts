@@ -64,7 +64,7 @@ export class SocialShellTopNav {
         <button type="button" class="social-shell-topnav__link" data-shell-tab="map">Map</button>
         <button type="button" class="social-shell-topnav__link" data-shell-tab="communities">Communities</button>
         <button type="button" class="social-shell-topnav__link" data-shell-tab="events">Events</button>
-        <button type="button" class="social-shell-topnav__link social-shell-topnav__link--gacha" data-shell-tab="gacha">Pool</button>
+        <button type="button" class="social-shell-topnav__link social-shell-topnav__link--gacha" data-shell-tab="gacha">Grab bag</button>
         <button type="button" class="social-shell-topnav__link" data-shell-tab="editor" aria-label="Terrain editor">Terrain</button>
       </nav>
       <div class="social-shell-topnav__account" data-account></div>

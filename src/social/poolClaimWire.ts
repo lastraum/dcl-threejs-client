@@ -1,5 +1,5 @@
 /**
- * Wearable Pool claim announcements over the private-messages LiveKit room.
+ * Grab bag claim announcements over the private-messages LiveKit room.
  *
  * Same pattern as Community Follow/Tour:
  * - non-chat reliable data

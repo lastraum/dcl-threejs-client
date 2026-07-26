@@ -80,7 +80,7 @@ export type PoolClaimDataEvent = {
  * - Community group text via **comms-message-sfu**:
  *   dest = message-router-*, topic = `community:{id}`
  * - Community Follow/Tour control (non-chat data, topic `d3js-follow:{id}`)
- * - Wearable Pool claims (non-chat data, topic `d3js-gacha:claims`)
+ * - Grab bag claims (non-chat data, topic `d3js-gacha:claims`)
  *
  * Inbound 1:1 accepts: topic=`0x…` (to me), topic=`private:{me}`, or bare directed Chat.
  *
@@ -352,7 +352,7 @@ class PrivateMessagesServiceImpl {
       return
     }
 
-    // Wearable Pool claims — room broadcast, peer toasts (not self).
+    // Grab bag claims — room broadcast, peer toasts (not self).
     if (isPoolClaimTopic(topic)) {
       this.handlePoolClaimDataPacket(address, data)
       return
@@ -453,7 +453,7 @@ class PrivateMessagesServiceImpl {
   }
 
   /**
-   * Wearable Pool claim — room-broadcast non-chat data on topic `d3js-gacha:claims`.
+   * Grab bag claim — room-broadcast non-chat data on topic `d3js-gacha:claims`.
    * Peers show a toast; local client should not toast self (filtered on receive).
    */
   async sendPoolClaim(msg: PoolClaimWireMsg): Promise<boolean> {

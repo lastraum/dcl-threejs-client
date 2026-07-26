@@ -1,5 +1,5 @@
 /**
- * Publish a Wearable Pool claim on the private-messages LiveKit room
+ * Publish a grab bag claim on the private-messages LiveKit room
  * (topic `d3js-gacha:claims`). Peers toast; sender does not.
  */
 import type { AuthIdentity } from '@dcl/crypto/dist/types'

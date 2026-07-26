@@ -11,8 +11,16 @@ export type GachaPosition = {
   backing: bigint
   packMana: bigint
   active: boolean
-  /** Optional media for carousel (empty on mock stack) */
+  /** Catalyst / marketplace thumbnail (DCL Collection V2) */
   imageUrl?: string
+  /** Collection V2 item (design) id when decoded from tokenId */
+  itemId?: number
+  /** Issued edition within the item (1…maxSupply) */
+  issuedId?: string
+  /** Wearable name from marketplace when enriched */
+  name?: string
+  /** DCL rarity (common…unique) for card chrome */
+  rarity?: string
 }
 
 export type PoolSnapshot = {

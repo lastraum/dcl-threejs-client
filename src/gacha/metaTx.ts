@@ -159,9 +159,22 @@ async function ethSignTypedDataV4(account: string, dataToSign: TypedDataPayload)
   })) as string
 }
 
+/** EIP-712 domain for NativeMetaTransaction (name + version). */
+export type MetaTxDomain = { name: string; version: string }
+
+/**
+ * DCL Collection V2 / wearables-contracts — all Collection V2 proxies share this domain.
+ * @see ERC721BaseCollectionV2 _initializeEIP712('Decentraland Collection', '2')
+ */
+export const DCL_COLLECTION_V2_META_TX_DOMAIN: MetaTxDomain = {
+  name: 'Decentraland Collection',
+  version: '2'
+}
+
 /**
  * Sign + relay a call on a NativeMetaTransaction contract.
  * Does NOT switch MetaMask network.
+ * @param domainOverride — e.g. Collection V2 (`DCL_COLLECTION_V2_META_TX_DOMAIN`) when address is not in META_TX_DOMAINS
  */
 export async function sendContractMetaTx(args: {
   address: Address
@@ -169,10 +182,12 @@ export async function sendContractMetaTx(args: {
   functionName: string
   args?: readonly unknown[]
   from?: Address
+  domainOverride?: MetaTxDomain
 }): Promise<Hex> {
   const from = ((args.from || (await requestAccounts())) as string).toLowerCase() as Address
 
-  const domain = META_TX_DOMAINS[args.address.toLowerCase()]
+  const domain =
+    args.domainOverride ?? META_TX_DOMAINS[args.address.toLowerCase()]
   if (!domain) {
     throw new Error(`Contract ${args.address} has no meta-tx domain configured`)
   }

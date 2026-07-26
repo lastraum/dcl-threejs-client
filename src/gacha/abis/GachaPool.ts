@@ -119,6 +119,41 @@ export const gachaPoolAbi = [
     "type": "function"
   },
   {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "collection",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "itemId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "mintCount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "avgBacking",
+        "type": "uint256"
+      }
+    ],
+    "name": "stockFromCollection",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "MAX_STOCK_PER_TX",
+    "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
     "inputs": [],
     "name": "depositorBidRateBps",
     "outputs": [

@@ -4,7 +4,7 @@ export type NotificationPrefsState = {
   /** Master switch for toast banners (chat, community, pool, system). */
   enabled: boolean
   /**
-   * Wearable Pool claims from peers (PM topic `d3js-gacha:claims`).
+   * Grab bag claims from peers (PM topic `d3js-gacha:claims`).
    * Default on. Does not toast your own claim (local win modal only).
    */
   poolClaims: boolean

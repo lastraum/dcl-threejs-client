@@ -3,16 +3,27 @@ import {
   ADDRESSES,
   EXPLORER_TX,
   USE_FAKE_CLAIM,
+  computeClaimChanceLabels,
   formatMana,
   shortAddr,
   escapeHtml,
   fetchPoolSnapshot,
   fetchWalletSnapshot,
+  fetchCreatorCollections,
+  fetchCollectionItems,
   runDepositManaPack,
   runDepositNft,
+  runStockFromCollection,
   runPull,
   runSettle,
   runWithdrawRewards,
+  humanizeStockError,
+  hideGachaSignOverlay,
+  requestGachaSignContinue,
+  showGachaSuccessOverlay,
+  syncGachaSignOverlay,
+  type CreatorCollection,
+  type CreatorCollectionItem,
   type FlowApi,
   type GachaPosition,
   type PendingWin,
@@ -28,10 +39,13 @@ export type GachaPanelOptions = {
 }
 
 type PanelMode = 'main' | 'deposit'
+/** Wallet inventory deposit vs creator Collection V2 stock */
+type DepositSource = 'wallet' | 'creator'
 
 const INV_PAGE_SIZE = 8
 const DEFAULT_BACKING = '10'
 const DEFAULT_PACK_PRIZE = '5'
+const DEFAULT_STOCK_COUNT = '5'
 const MANA_PACK_INV_ID = 'mana-pack'
 
 type InvKind = 'nft' | 'pack'
@@ -81,8 +95,8 @@ function formatManaDisplay(n: number): string {
 }
 
 /**
- * Left HUD wearable pool — ~2× chat width.
- * Main: glass vitrine shelf · Deposit: 1/3 + 2/3 inventory · Win: center modal.
+ * Left HUD grab bag — ~2× chat width.
+ * Main: glass display shelf · Deposit: 1/3 + 2/3 inventory · Win: center modal.
  */
 export class GachaPanel {
   readonly element: HTMLDivElement
@@ -90,11 +104,24 @@ export class GachaPanel {
   private visible = false
   private busy = false
   private mode: PanelMode = 'main'
+  private depositSource: DepositSource = 'wallet'
   private pool: PoolSnapshot | null = null
   private wallet: WalletSnapshot | null = null
   private inventory: InvItem[] = []
   private selections: DepositSelection[] = []
   private invPage = 0
+  /** Creator stock (Collection V2 → grab bag) — grid browse + stock selection */
+  private creatorBrowse: 'collections' | 'items' = 'collections'
+  private creatorCollections: CreatorCollection[] = []
+  private creatorItems: CreatorCollectionItem[] = []
+  private creatorLoading = false
+  private creatorLoadError: string | null = null
+  private creatorPage = 0
+  private selectedCreatorCollection: CreatorCollection | null = null
+  private stockItem: CreatorCollectionItem | null = null
+  private stockMintCount = DEFAULT_STOCK_COUNT
+  private stockAvgBacking = DEFAULT_BACKING
+  private creatorAbort: AbortController | null = null
   private steps: TxStep[] = []
   private status = ''
   private error: string | null = null
@@ -106,7 +133,7 @@ export class GachaPanel {
   private readonly titleEl: HTMLElement
   private readonly feeEl: HTMLElement
   private readonly balanceEl: HTMLElement
-  private readonly walletEl: HTMLElement
+  private readonly poolCountEl: HTMLElement
   private readonly bodyEl: HTMLElement
   private readonly statusEl: HTMLElement
   private readonly stepsEl: HTMLElement
@@ -119,18 +146,17 @@ export class GachaPanel {
     this.element.className = 'gacha-panel-wrap'
     this.element.hidden = true
     this.element.setAttribute('role', 'dialog')
-    this.element.setAttribute('aria-label', 'Wearable Pool')
+    this.element.setAttribute('aria-label', 'Grab bag')
     this.element.innerHTML = `
       <div class="gacha-panel gacha-panel--vitrine">
         <header class="gacha-panel__header">
           <div class="gacha-panel__header-main">
-            <h2 class="gacha-panel__title" data-title>Wearable Pool</h2>
-            <p class="gacha-panel__subtitle">Shared locker · deposit or claim</p>
+            <h2 class="gacha-panel__title" data-title>Grab bag</h2>
             <div class="gacha-panel__stats">
               <span class="gacha-panel__stat" data-fee title="Claim fee">Fee —</span>
               <span class="gacha-panel__stat gacha-panel__stat--mana" data-balance title="Your MockMANA">Balance —</span>
+              <span class="gacha-panel__stat" data-pool-count title="Items in the grab bag">In bag —</span>
             </div>
-            <div class="gacha-panel__wallet" data-wallet></div>
           </div>
           <div class="gacha-panel__header-actions">
             <button type="button" class="gacha-panel__icon-btn" data-refresh title="Refresh" aria-label="Refresh">↻</button>
@@ -138,7 +164,7 @@ export class GachaPanel {
           </div>
         </header>
         <div class="gacha-panel__body" data-body>
-          <p class="gacha-panel__loading">Loading pool…</p>
+          <p class="gacha-panel__loading">Loading grab bag…</p>
         </div>
         <div class="gacha-panel__steps" data-steps hidden></div>
         <p class="gacha-panel__status" data-status hidden></p>
@@ -155,7 +181,7 @@ export class GachaPanel {
     this.winModal.hidden = true
     this.winModal.setAttribute('role', 'dialog')
     this.winModal.setAttribute('aria-modal', 'true')
-    this.winModal.setAttribute('aria-label', 'Pool claim result')
+    this.winModal.setAttribute('aria-label', 'Grab bag claim result')
     this.winModal.innerHTML = `
       <div class="gacha-win-modal__backdrop" data-win-backdrop></div>
       <div class="gacha-win-modal__card" data-win-card></div>
@@ -164,7 +190,7 @@ export class GachaPanel {
     this.titleEl = this.element.querySelector('[data-title]')!
     this.feeEl = this.element.querySelector('[data-fee]')!
     this.balanceEl = this.element.querySelector('[data-balance]')!
-    this.walletEl = this.element.querySelector('[data-wallet]')!
+    this.poolCountEl = this.element.querySelector('[data-pool-count]')!
     this.bodyEl = this.element.querySelector('[data-body]')!
     this.statusEl = this.element.querySelector('[data-status]')!
     this.stepsEl = this.element.querySelector('[data-steps]')!
@@ -222,7 +248,7 @@ export class GachaPanel {
   }
 
   /**
-   * Always land on main pool shelf when reopening — clear deposit state, win modal, etc.
+   * Always land on main grab bag shelf when reopening — clear deposit state, win modal, etc.
    */
   private resetToMainMenu(): void {
     this.mode = 'main'
@@ -237,7 +263,7 @@ export class GachaPanel {
     this.busy = false
     this.element.classList.remove('is-deposit-mode', 'is-busy')
     this.footerEl.hidden = false
-    this.titleEl.textContent = 'Wearable Pool'
+    this.titleEl.textContent = 'Grab bag'
     this.closeWinModal({ clearPending: true })
     this.stepsEl.hidden = true
     this.stepsEl.innerHTML = ''
@@ -261,6 +287,7 @@ export class GachaPanel {
       note: (label) => {
         this.status = label
         this.renderStatus()
+        if (this.steps.length) this.renderSteps()
       },
       pushStep: (label) => {
         const id = `s${++this.stepSeq}`
@@ -268,8 +295,8 @@ export class GachaPanel {
           s.status === 'active' ? { ...s, status: 'done' as const } : s
         )
         this.steps = [...this.steps, { id, label, status: 'active' }]
-        this.renderSteps()
         this.status = label
+        this.renderSteps()
         this.renderStatus()
         return id
       },
@@ -294,6 +321,7 @@ export class GachaPanel {
       ;(b as HTMLButtonElement).disabled = on
     })
     this.element.classList.toggle('is-busy', on)
+    if (!on && this.steps.length === 0) hideGachaSignOverlay()
     // Keep settle buttons in sync (modal HTML is static after open)
     this.winModal.querySelectorAll<HTMLButtonElement>('[data-settle-keep], [data-settle-take]').forEach((b) => {
       b.disabled = on
@@ -325,7 +353,7 @@ export class GachaPanel {
   async refresh(): Promise<void> {
     this.error = null
     if (this.mode === 'main') {
-      this.status = 'Loading pool…'
+      this.status = 'Loading grab bag…'
       this.renderStatus()
     }
     try {
@@ -347,8 +375,8 @@ export class GachaPanel {
       } else {
         this.renderMainBody()
         this.status = this.pool.positions.length
-          ? `${this.pool.positions.length} on the shelf · deposit or claim`
-          : 'Empty shelf — deposit a wearable or MANA pack'
+          ? ''
+          : 'Empty grab bag — deposit a wearable or MANA pack'
         this.renderStatus()
       }
     } catch (e) {
@@ -364,11 +392,8 @@ export class GachaPanel {
     this.feeEl.textContent = `Fee ${fee} mMANA`
     const bal = this.wallet ? formatMana(this.wallet.mana) : '—'
     this.balanceEl.textContent = `Balance ${bal}`
-    const addr = this.sessionAddress()
-    this.walletEl.textContent = addr ? shortAddr(addr) : 'Connect wallet to play'
-    if (this.wallet && this.wallet.claimable > 0n) {
-      this.walletEl.textContent += ` · claimable ${formatMana(this.wallet.claimable)}`
-    }
+    const n = this.pool?.positions.length ?? 0
+    this.poolCountEl.textContent = `In bag ${n}`
   }
 
   private setMode(mode: PanelMode): void {
@@ -376,11 +401,11 @@ export class GachaPanel {
     this.element.classList.toggle('is-deposit-mode', mode === 'deposit')
     this.footerEl.hidden = mode === 'deposit'
     if (mode === 'deposit') {
-      this.titleEl.textContent = 'Deposit to pool'
+      this.titleEl.textContent = 'Deposit to grab bag'
       this.closeWinModal({ clearPending: false })
       this.renderDepositBody()
     } else {
-      this.titleEl.textContent = 'Wearable Pool'
+      this.titleEl.textContent = 'Grab bag'
       this.renderMainBody()
     }
   }
@@ -393,6 +418,7 @@ export class GachaPanel {
       return
     }
     this.error = null
+    this.depositSource = 'wallet'
     this.syncInventory()
     const owned = new Set(this.inventory.map((i) => i.id))
     this.selections = this.selections.filter((s) => owned.has(s.item.id))
@@ -412,13 +438,16 @@ export class GachaPanel {
       this.bodyEl.innerHTML = `
         <div class="gacha-panel__empty">
           <div class="gacha-panel__empty-icon" aria-hidden="true">◇</div>
-          <p>Nothing on the shelf yet</p>
-          <p class="gacha-panel__muted">Deposit a wearable or MANA pack to fill the pool.</p>
+          <p>Nothing in the grab bag yet</p>
+          <p class="gacha-panel__muted">Deposit a wearable or MANA pack to fill the grab bag.</p>
         </div>`
       return
     }
 
-    const cards = positions.map((p) => this.shelfCardHtml(p)).join('')
+    const chances = computeClaimChanceLabels(positions)
+    const cards = positions
+      .map((p) => this.shelfCardHtml(p, chances.get(p.positionId) ?? '—'))
+      .join('')
     this.bodyEl.innerHTML = `
       <div class="gacha-panel__vitrine">
         <div class="gacha-panel__vitrine-glass" aria-hidden="true"></div>
@@ -426,29 +455,209 @@ export class GachaPanel {
           <div class="gacha-panel__shelf-track">${cards}</div>
         </div>
       </div>
-      <p class="gacha-panel__page-label">${positions.length} in pool · scroll the shelf</p>
     `
   }
 
-  private shelfCardHtml(p: GachaPosition): string {
+  private shelfCardHtml(p: GachaPosition, chanceLabel: string): string {
     const isPack = p.kind === 'manaPack'
-    const title = isPack ? 'MANA Pack' : `Token #${escapeHtml(p.tokenId)}`
-    const sub = isPack ? `Prize ${formatMana(p.packMana)}` : `Back ${formatMana(p.backing)}`
+    const rarity = isPack ? 'legendary' : (p.rarity || 'common').toLowerCase()
+    const title = isPack
+      ? 'MANA Pack'
+      : p.name?.trim()
+        ? escapeHtml(p.name.trim())
+        : p.issuedId
+          ? `Issue #${escapeHtml(p.issuedId)}`
+          : `Token #${escapeHtml(p.tokenId)}`
+    const issueLine = isPack
+      ? ''
+      : p.issuedId
+        ? `Issue #${escapeHtml(p.issuedId)}`
+        : `Token #${escapeHtml(p.tokenId)}`
+    // If title already is the issue #, don't repeat it
+    const showIssue =
+      !isPack && p.name?.trim() && issueLine
+        ? `<div class="gacha-panel__card-line">${issueLine}</div>`
+        : ''
+    const rarityLabel = isPack ? 'pack' : escapeHtml(rarity)
+    const backing = isPack
+      ? `Prize ${formatMana(p.packMana)} · Back ${formatMana(p.backing)}`
+      : `Back ${formatMana(p.backing)} mMANA`
+    const chance = chanceLabel === '—' ? '— chance' : `${escapeHtml(chanceLabel)} chance`
     const img = p.imageUrl
-      ? `<img class="gacha-panel__card-img" src="${escapeHtml(p.imageUrl)}" alt="" loading="lazy" />`
+      ? `<img class="gacha-panel__card-img" src="${escapeHtml(p.imageUrl)}" alt="" loading="lazy" decoding="async" />`
       : `<div class="gacha-panel__card-placeholder" aria-hidden="true">${isPack ? '◈' : '✦'}</div>`
     return `
-      <article class="gacha-panel__card${isPack ? ' is-pack' : ''}" data-pos="${p.positionId}">
-        <div class="gacha-panel__card-media">${img}</div>
-        <div class="gacha-panel__card-title">${title}</div>
-        <div class="gacha-panel__card-sub">${sub}</div>
-        <div class="gacha-panel__card-depositor">${shortAddr(p.depositor)}</div>
-        <div class="gacha-panel__card-id">pos ${p.positionId}</div>
+      <article class="gacha-panel__card${isPack ? ' is-pack' : ''} gacha-rarity--${escapeHtml(rarity)}" data-pos="${p.positionId}" data-rarity="${escapeHtml(rarity)}">
+        <div class="gacha-panel__card-media gacha-rarity-bg--${escapeHtml(rarity)}">${img}</div>
+        <div class="gacha-panel__card-line gacha-panel__card-line--title" title="${title}">${title}</div>
+        ${showIssue}
+        <div class="gacha-panel__card-line gacha-panel__card-line--rarity is-${escapeHtml(rarity)}">${rarityLabel}</div>
+        <div class="gacha-panel__card-line">${backing}</div>
+        <div class="gacha-panel__card-line gacha-panel__card-line--chance">${chance}</div>
       </article>`
   }
 
-  /** Same layout as 2D: 1/3 To Deposit · 2/3 inventory (pack always first). */
+  private renderCreatorDepositHtml(balLabel: string, tabs: string): string {
+    const count = Math.max(0, Math.floor(Number(this.stockMintCount) || 0))
+    const avg = Number(this.stockAvgBacking) || 0
+    const lockEst = this.stockItem && count > 0 && avg > 0 ? formatManaDisplay(count * avg) : '0'
+    const pageSize = INV_PAGE_SIZE
+    const browsingItems = this.creatorBrowse === 'items'
+    const gridList = browsingItems ? this.creatorItems : this.creatorCollections
+    const totalPages = Math.max(1, Math.ceil(gridList.length / pageSize))
+    if (this.creatorPage >= totalPages) this.creatorPage = totalPages - 1
+    const start = this.creatorPage * pageSize
+    const pageSlice = gridList.slice(start, start + pageSize)
+    const canPrev = this.creatorPage > 0
+    const canNext = this.creatorPage + 1 < totalPages
+
+    const selBlock = !this.stockItem
+      ? `<p class="gacha-dep__empty">Pick a collection, then an item →</p>`
+      : `
+        <div class="gacha-dep__stock-card">
+          <button type="button" class="gacha-dep__stock-clear" data-stock-clear aria-label="Clear selection" ${this.busy ? 'disabled' : ''}>×</button>
+          <div class="gacha-dep__stock-top">
+            <div class="gacha-dep__stock-thumb gacha-dep__thumb--${escapeHtml(this.stockItem.rarity)}">
+              ${
+                this.stockItem.thumbnail
+                  ? `<img src="${escapeHtml(this.stockItem.thumbnail)}" alt="" loading="lazy" />`
+                  : 'NFT'
+              }
+            </div>
+            <div class="gacha-dep__stock-meta">
+              <div class="gacha-dep__stock-name" title="${escapeHtml(this.stockItem.name)}">${escapeHtml(this.stockItem.name)}</div>
+              <div class="gacha-dep__stock-tags">
+                <span class="gacha-dep__pill gacha-dep__pill--${escapeHtml(this.stockItem.rarity)}">${escapeHtml(this.stockItem.rarity)}</span>
+                <span class="gacha-dep__pill">item ${this.stockItem.itemId}</span>
+              </div>
+              <div class="gacha-dep__stock-addr" title="${escapeHtml(this.stockItem.contractAddress)}">${escapeHtml(shortAddr(this.stockItem.contractAddress))}</div>
+            </div>
+          </div>
+          <div class="gacha-dep__stock-fields">
+            <label class="gacha-dep__stock-field">
+              <span>Mint count</span>
+              <input type="text" inputmode="numeric" data-stock-count value="${escapeHtml(this.stockMintCount)}" ${this.busy ? 'disabled' : ''} />
+            </label>
+            <label class="gacha-dep__stock-field">
+              <span>Avg backing</span>
+              <input type="text" inputmode="decimal" data-stock-backing value="${escapeHtml(this.stockAvgBacking)}" ${this.busy ? 'disabled' : ''} />
+            </label>
+          </div>
+        </div>`
+
+    let cells = ''
+    if (this.creatorLoading) {
+      cells = `<div class="gacha-dep__empty gacha-dep__empty--center">Loading…</div>`
+    } else if (this.creatorLoadError) {
+      cells = `<div class="gacha-dep__empty gacha-dep__empty--center">${escapeHtml(this.creatorLoadError)}</div>`
+    } else if (gridList.length === 0) {
+      cells = browsingItems
+        ? `<div class="gacha-dep__empty gacha-dep__empty--center">No items in this collection</div>`
+        : `<div class="gacha-dep__empty gacha-dep__empty--center">No Polygon collections for this wallet (marketplace index)</div>`
+    } else {
+      const parts: string[] = []
+      for (let i = 0; i < pageSize; i++) {
+        const row = pageSlice[i]
+        if (!row) {
+          parts.push(`<div class="gacha-dep__cell gacha-dep__cell--empty" aria-hidden="true"></div>`)
+          continue
+        }
+        if (browsingItems) {
+          const it = row as CreatorCollectionItem
+          const on =
+            this.stockItem?.contractAddress === it.contractAddress &&
+            this.stockItem?.itemId === it.itemId
+          const thumb = it.thumbnail
+            ? `<img class="gacha-dep__cell-img" src="${escapeHtml(it.thumbnail)}" alt="" loading="lazy" />`
+            : 'NFT'
+          const avail =
+            it.available != null ? `${it.available} left` : `item ${it.itemId}`
+          parts.push(`
+            <button type="button" class="gacha-dep__cell${on ? ' is-selected' : ''}" data-creator-item="${it.itemId}" ${this.busy ? 'disabled' : ''}>
+              <div class="gacha-dep__cell-thumb gacha-dep__thumb--${escapeHtml(it.rarity)}">${thumb}</div>
+              <div class="gacha-dep__cell-name">${escapeHtml(it.name)}</div>
+              <div class="gacha-dep__cell-sub">${escapeHtml(it.rarity.toUpperCase())} · ${escapeHtml(avail)}</div>
+            </button>`)
+        } else {
+          const col = row as CreatorCollection
+          const on =
+            this.selectedCreatorCollection?.contractAddress === col.contractAddress
+          const thumb = col.thumbnail
+            ? `<img class="gacha-dep__cell-img" src="${escapeHtml(col.thumbnail)}" alt="" loading="lazy" />`
+            : 'COL'
+          parts.push(`
+            <button type="button" class="gacha-dep__cell${on ? ' is-selected' : ''}" data-creator-col="${escapeHtml(col.contractAddress)}" ${this.busy ? 'disabled' : ''}>
+              <div class="gacha-dep__cell-thumb gacha-dep__thumb--epic">${thumb}</div>
+              <div class="gacha-dep__cell-name">${escapeHtml(col.name)}</div>
+              <div class="gacha-dep__cell-sub">${col.size} item${col.size === 1 ? '' : 's'} · ${escapeHtml(shortAddr(col.contractAddress))}</div>
+            </button>`)
+        }
+      }
+      cells = parts.join('')
+    }
+
+    const invTitle = browsingItems
+      ? `${this.selectedCreatorCollection?.name ?? 'Items'} · ${this.creatorItems.length}`
+      : `Your collections · ${this.creatorCollections.length}`
+    const upBtn = browsingItems
+      ? `<button type="button" class="gacha-dep__page-btn" data-creator-up ${this.busy ? 'disabled' : ''} title="Back to collections">↑</button>`
+      : ''
+
+    return `
+      <div class="gacha-dep gacha-dep--hud gacha-dep--creator">
+        <div class="gacha-dep__header gacha-dep__header--compact">
+          <button type="button" class="gacha-panel__btn gacha-panel__btn--secondary gacha-dep__back" data-dep-back ${this.busy ? 'disabled' : ''}>← Back</button>
+          <div class="gacha-dep__header-stats">
+            <span class="gacha-dep__stat gacha-dep__stat--ok">${escapeHtml(balLabel)} mMANA</span>
+            <span class="gacha-dep__stat gacha-dep__stat--gold">Lock ~${escapeHtml(lockEst)}</span>
+          </div>
+        </div>
+        ${tabs}
+        <div class="gacha-dep__body">
+          <aside class="gacha-dep__left">
+            <h3 class="gacha-dep__section-title">To stock</h3>
+            <div class="gacha-dep__list">${selBlock}</div>
+          </aside>
+          <section class="gacha-dep__right">
+            <div class="gacha-dep__inv-head">
+              <h3 class="gacha-dep__section-title">${escapeHtml(invTitle)}</h3>
+              <div class="gacha-dep__pager">
+                ${upBtn}
+                <button type="button" class="gacha-dep__page-btn" data-creator-prev ${!canPrev || this.busy || this.creatorLoading ? 'disabled' : ''}>‹</button>
+                <span class="gacha-dep__page-label">${this.creatorPage + 1}/${totalPages}</span>
+                <button type="button" class="gacha-dep__page-btn" data-creator-next ${!canNext || this.busy || this.creatorLoading ? 'disabled' : ''}>›</button>
+              </div>
+            </div>
+            <div class="gacha-dep__grid gacha-dep__grid--hud">${cells}</div>
+          </section>
+        </div>
+        <footer class="gacha-dep__footer">
+          ${
+            this.error || (this.status && this.mode === 'deposit')
+              ? `<p class="gacha-dep__footer-hint">${escapeHtml(this.error || this.status)}</p>`
+              : ''
+          }
+          <button type="button" class="gacha-panel__btn gacha-panel__btn--primary gacha-dep__confirm" data-stock-confirm ${this.busy || !this.stockItem ? 'disabled' : ''}>
+            Stock into grab bag
+          </button>
+        </footer>
+      </div>`
+  }
+
+  /** Deposit: wallet inventory (1/3·2/3) or creator Collection V2 stock form. */
   private renderDepositBody(): void {
+    const balLabel = this.wallet ? formatMana(this.wallet.mana) : '—'
+    const tabs = `
+      <div class="gacha-dep__tabs" role="tablist">
+        <button type="button" class="gacha-dep__tab${this.depositSource === 'wallet' ? ' is-active' : ''}" data-dep-source="wallet" ${this.busy ? 'disabled' : ''}>Wallet</button>
+        <button type="button" class="gacha-dep__tab${this.depositSource === 'creator' ? ' is-active' : ''}" data-dep-source="creator" ${this.busy ? 'disabled' : ''}>Creator collection</button>
+      </div>`
+
+    if (this.depositSource === 'creator') {
+      this.bodyEl.innerHTML = this.renderCreatorDepositHtml(balLabel, tabs)
+      return
+    }
+
     const nftCount = this.inventory.filter((i) => i.kind === 'nft').length
     const invTotal = this.inventory.length
     const totalPages = Math.max(1, Math.ceil(invTotal / INV_PAGE_SIZE))
@@ -456,7 +665,6 @@ export class GachaPanel {
     const start = this.invPage * INV_PAGE_SIZE
     const pageItems = this.inventory.slice(start, start + INV_PAGE_SIZE)
     const selectedIds = new Set(this.selections.map((s) => s.item.id))
-    const balLabel = this.wallet ? formatMana(this.wallet.mana) : '—'
     const totalLock = this.totalLockMana()
     const canPrev = this.invPage > 0
     const canNext = this.invPage + 1 < totalPages
@@ -474,35 +682,49 @@ export class GachaPanel {
             .map((sel) => {
               if (this.isPackSel(sel)) {
                 return `
-        <div class="gacha-dep__row gacha-dep__row--pack" data-sel-id="${escapeHtml(sel.item.id)}">
-          <div class="gacha-dep__thumb gacha-dep__thumb--pack">◈</div>
-          <div class="gacha-dep__row-meta">
-            <div class="gacha-dep__row-name">${escapeHtml(sel.item.name)}</div>
-            <div class="gacha-dep__row-sub">PRIZE + BACKING</div>
+        <div class="gacha-dep__stock-card gacha-dep__stock-card--pack" data-sel-id="${escapeHtml(sel.item.id)}">
+          <button type="button" class="gacha-dep__stock-clear" data-remove="${escapeHtml(sel.item.id)}" aria-label="Remove" ${this.busy ? 'disabled' : ''}>×</button>
+          <div class="gacha-dep__stock-top">
+            <div class="gacha-dep__stock-thumb gacha-dep__thumb--pack">◈</div>
+            <div class="gacha-dep__stock-meta">
+              <div class="gacha-dep__stock-name">${escapeHtml(sel.item.name)}</div>
+              <div class="gacha-dep__stock-tags">
+                <span class="gacha-dep__pill gacha-dep__pill--legendary">pack</span>
+                <span class="gacha-dep__pill">escrow</span>
+              </div>
+            </div>
           </div>
-          <label class="gacha-dep__backing">
-            <span>Prize</span>
-            <input type="text" inputmode="decimal" data-prize-id="${escapeHtml(sel.item.id)}" value="${escapeHtml(sel.packPrizeMana || DEFAULT_PACK_PRIZE)}" ${this.busy ? 'disabled' : ''} />
-          </label>
-          <label class="gacha-dep__backing">
-            <span>Back</span>
-            <input type="text" inputmode="decimal" data-backing-id="${escapeHtml(sel.item.id)}" value="${escapeHtml(sel.backingMana)}" ${this.busy ? 'disabled' : ''} />
-          </label>
-          <button type="button" class="gacha-dep__remove" data-remove="${escapeHtml(sel.item.id)}" aria-label="Remove" ${this.busy ? 'disabled' : ''}>✕</button>
+          <div class="gacha-dep__stock-fields">
+            <label class="gacha-dep__stock-field">
+              <span>Pack prize</span>
+              <input type="text" inputmode="decimal" data-prize-id="${escapeHtml(sel.item.id)}" value="${escapeHtml(sel.packPrizeMana || DEFAULT_PACK_PRIZE)}" ${this.busy ? 'disabled' : ''} />
+            </label>
+            <label class="gacha-dep__stock-field">
+              <span>Backing</span>
+              <input type="text" inputmode="decimal" data-backing-id="${escapeHtml(sel.item.id)}" value="${escapeHtml(sel.backingMana)}" ${this.busy ? 'disabled' : ''} />
+            </label>
+          </div>
         </div>`
               }
               return `
-        <div class="gacha-dep__row" data-sel-id="${escapeHtml(sel.item.id)}">
-          <div class="gacha-dep__thumb gacha-dep__thumb--${escapeHtml(sel.item.rarity)}">NFT</div>
-          <div class="gacha-dep__row-meta">
-            <div class="gacha-dep__row-name">${escapeHtml(sel.item.name)}</div>
-            <div class="gacha-dep__row-sub">${escapeHtml(sel.item.rarity.toUpperCase())} · #${escapeHtml(sel.item.tokenId)}</div>
+        <div class="gacha-dep__stock-card gacha-dep__stock-card--nft" data-sel-id="${escapeHtml(sel.item.id)}">
+          <button type="button" class="gacha-dep__stock-clear" data-remove="${escapeHtml(sel.item.id)}" aria-label="Remove" ${this.busy ? 'disabled' : ''}>×</button>
+          <div class="gacha-dep__stock-top">
+            <div class="gacha-dep__stock-thumb gacha-dep__thumb--${escapeHtml(sel.item.rarity)}">NFT</div>
+            <div class="gacha-dep__stock-meta">
+              <div class="gacha-dep__stock-name">${escapeHtml(sel.item.name)}</div>
+              <div class="gacha-dep__stock-tags">
+                <span class="gacha-dep__pill gacha-dep__pill--${escapeHtml(sel.item.rarity)}">${escapeHtml(sel.item.rarity)}</span>
+                <span class="gacha-dep__pill">#${escapeHtml(sel.item.tokenId)}</span>
+              </div>
+            </div>
           </div>
-          <label class="gacha-dep__backing">
-            <span>Back</span>
-            <input type="text" inputmode="decimal" data-backing-id="${escapeHtml(sel.item.id)}" value="${escapeHtml(sel.backingMana)}" ${this.busy ? 'disabled' : ''} />
-          </label>
-          <button type="button" class="gacha-dep__remove" data-remove="${escapeHtml(sel.item.id)}" aria-label="Remove" ${this.busy ? 'disabled' : ''}>✕</button>
+          <div class="gacha-dep__stock-fields gacha-dep__stock-fields--single">
+            <label class="gacha-dep__stock-field">
+              <span>Backing</span>
+              <input type="text" inputmode="decimal" data-backing-id="${escapeHtml(sel.item.id)}" value="${escapeHtml(sel.backingMana)}" ${this.busy ? 'disabled' : ''} />
+            </label>
+          </div>
         </div>`
             })
             .join('')
@@ -534,6 +756,7 @@ export class GachaPanel {
             <span class="gacha-dep__stat gacha-dep__stat--gold">Lock ${escapeHtml(formatManaDisplay(totalLock))}</span>
           </div>
         </div>
+        ${tabs}
         <div class="gacha-dep__body">
           <aside class="gacha-dep__left">
             <h3 class="gacha-dep__section-title">To Deposit</h3>
@@ -552,7 +775,11 @@ export class GachaPanel {
           </section>
         </div>
         <footer class="gacha-dep__footer">
-          <p class="gacha-dep__footer-hint">${this.error ? escapeHtml(this.error) : this.status && this.mode === 'deposit' ? escapeHtml(this.status) : 'Pack always available · set prize + backing'}</p>
+          ${
+            this.error || (this.status && this.mode === 'deposit')
+              ? `<p class="gacha-dep__footer-hint">${escapeHtml(this.error || this.status)}</p>`
+              : ''
+          }
           <button type="button" class="gacha-panel__btn gacha-panel__btn--primary gacha-dep__confirm" data-dep-confirm ${this.busy || this.selections.length === 0 ? 'disabled' : ''}>
             Confirm${this.selections.length ? ` (${this.selections.length})` : ''}
           </button>
@@ -584,7 +811,7 @@ export class GachaPanel {
     const card = this.winModal.querySelector('[data-win-card]')!
     card.innerHTML = `
       <button type="button" class="gacha-win-modal__x" data-win-close aria-label="Close">×</button>
-      <div class="gacha-win-modal__kicker">Selected from pool</div>
+      <div class="gacha-win-modal__kicker">Selected from grab bag</div>
       <div class="gacha-win-modal__art" aria-hidden="true">${glyph}</div>
       <h3 class="gacha-win-modal__title">${title}</h3>
       <p class="gacha-win-modal__sub">${sub}</p>
@@ -611,6 +838,27 @@ export class GachaPanel {
   }
 
   private renderSteps(): void {
+    // Centered viewport overlay for all sign / meta-tx steps (2D + 3D).
+    if (this.steps.length > 0) {
+      const active = this.steps.find((s) => s.status === 'active')
+      const title =
+        this.mode === 'deposit'
+          ? this.depositSource === 'creator'
+            ? 'Stock into grab bag'
+            : 'Deposit to grab bag'
+          : 'Grab bag transaction'
+      // Avoid duplicating the step label in the status line
+      const statusLine = active != null ? 'Confirm in your wallet…' : this.status?.trim() || 'Working…'
+      syncGachaSignOverlay({
+        title,
+        status: statusLine,
+        steps: this.steps
+      })
+    } else {
+      hideGachaSignOverlay()
+    }
+
+    // Keep inline list only on main panel (non-deposit); deposit uses overlay only.
     if (!this.steps.length || this.mode === 'deposit') {
       this.stepsEl.hidden = true
       this.stepsEl.innerHTML = ''
@@ -656,6 +904,64 @@ export class GachaPanel {
       this.closeDeposit()
       return
     }
+    const sourceBtn = t.closest('[data-dep-source]') as HTMLElement | null
+    if (sourceBtn?.dataset.depSource === 'wallet' || sourceBtn?.dataset.depSource === 'creator') {
+      if (this.busy) return
+      this.depositSource = sourceBtn.dataset.depSource
+      this.error = null
+      if (this.depositSource === 'creator') void this.ensureCreatorCollectionsLoaded()
+      this.renderDepositBody()
+      return
+    }
+    if (t.closest('[data-creator-up]')) {
+      this.creatorBrowse = 'collections'
+      this.selectedCreatorCollection = null
+      this.creatorItems = []
+      this.creatorPage = 0
+      this.renderDepositBody()
+      return
+    }
+    if (t.closest('[data-creator-prev]')) {
+      if (this.creatorPage > 0) {
+        this.creatorPage -= 1
+        this.renderDepositBody()
+      }
+      return
+    }
+    if (t.closest('[data-creator-next]')) {
+      const n =
+        this.creatorBrowse === 'items' ? this.creatorItems.length : this.creatorCollections.length
+      const totalPages = Math.max(1, Math.ceil(n / INV_PAGE_SIZE))
+      if (this.creatorPage + 1 < totalPages) {
+        this.creatorPage += 1
+        this.renderDepositBody()
+      }
+      return
+    }
+    const colBtn = t.closest('[data-creator-col]') as HTMLElement | null
+    if (colBtn?.dataset.creatorCol) {
+      void this.openCreatorCollection(colBtn.dataset.creatorCol)
+      return
+    }
+    const itemBtn = t.closest('[data-creator-item]') as HTMLElement | null
+    if (itemBtn?.dataset.creatorItem != null) {
+      const id = Number(itemBtn.dataset.creatorItem)
+      const it = this.creatorItems.find((x) => x.itemId === id)
+      if (it) {
+        this.stockItem = it
+        this.renderDepositBody()
+      }
+      return
+    }
+    if (t.closest('[data-stock-clear]')) {
+      this.stockItem = null
+      this.renderDepositBody()
+      return
+    }
+    if (t.closest('[data-stock-confirm]')) {
+      await this.confirmStockFromCollection()
+      return
+    }
     if (t.closest('[data-inv-prev]')) {
       if (this.invPage > 0) {
         this.invPage -= 1
@@ -690,6 +996,26 @@ export class GachaPanel {
   private onBodyInput(ev: Event): void {
     if (this.mode !== 'deposit') return
     const input = ev.target as HTMLInputElement
+    if ('stockCount' in input.dataset) {
+      this.stockMintCount = input.value
+      const gold = this.bodyEl.querySelector('.gacha-dep__stat--gold')
+      if (gold) {
+        const c = Math.max(0, Math.floor(Number(this.stockMintCount) || 0))
+        const a = Number(this.stockAvgBacking) || 0
+        gold.textContent = `Lock ~${formatManaDisplay(c * a)}`
+      }
+      return
+    }
+    if ('stockBacking' in input.dataset) {
+      this.stockAvgBacking = input.value
+      const gold = this.bodyEl.querySelector('.gacha-dep__stat--gold')
+      if (gold) {
+        const c = Math.max(0, Math.floor(Number(this.stockMintCount) || 0))
+        const a = Number(this.stockAvgBacking) || 0
+        gold.textContent = `Lock ~${formatManaDisplay(c * a)}`
+      }
+      return
+    }
     const prizeId = input.dataset.prizeId
     const backingId = input.dataset.backingId
     if (prizeId) {
@@ -705,6 +1031,145 @@ export class GachaPanel {
     }
     const gold = this.bodyEl.querySelector('.gacha-dep__stat--gold')
     if (gold) gold.textContent = `Lock ${formatManaDisplay(this.totalLockMana())}`
+  }
+
+  private async ensureCreatorCollectionsLoaded(): Promise<void> {
+    const addr = this.sessionAddress()
+    if (!addr) {
+      this.creatorLoadError = 'Connect a wallet'
+      this.creatorCollections = []
+      this.renderDepositBody()
+      return
+    }
+    if (this.creatorLoading) return
+    // Reload when empty or address changed context
+    this.creatorAbort?.abort()
+    this.creatorAbort = new AbortController()
+    this.creatorLoading = true
+    this.creatorLoadError = null
+    this.creatorBrowse = 'collections'
+    this.selectedCreatorCollection = null
+    this.creatorItems = []
+    this.creatorPage = 0
+    this.renderDepositBody()
+    try {
+      this.creatorCollections = await fetchCreatorCollections(addr, {
+        signal: this.creatorAbort.signal
+      })
+    } catch (e) {
+      if ((e as Error)?.name === 'AbortError') return
+      this.creatorLoadError = e instanceof Error ? e.message : String(e)
+      this.creatorCollections = []
+    } finally {
+      this.creatorLoading = false
+      if (this.mode === 'deposit' && this.depositSource === 'creator') this.renderDepositBody()
+    }
+  }
+
+  private async openCreatorCollection(contractAddress: string): Promise<void> {
+    if (this.busy) return
+    const col =
+      this.creatorCollections.find(
+        (c) => c.contractAddress.toLowerCase() === contractAddress.toLowerCase()
+      ) ?? null
+    if (!col) return
+    this.selectedCreatorCollection = col
+    this.creatorBrowse = 'items'
+    this.creatorPage = 0
+    this.creatorItems = []
+    this.creatorLoading = true
+    this.creatorLoadError = null
+    this.renderDepositBody()
+    this.creatorAbort?.abort()
+    this.creatorAbort = new AbortController()
+    try {
+      this.creatorItems = await fetchCollectionItems(col.contractAddress, {
+        signal: this.creatorAbort.signal
+      })
+    } catch (e) {
+      if ((e as Error)?.name === 'AbortError') return
+      this.creatorLoadError = e instanceof Error ? e.message : String(e)
+      this.creatorItems = []
+    } finally {
+      this.creatorLoading = false
+      if (this.mode === 'deposit' && this.depositSource === 'creator') this.renderDepositBody()
+    }
+  }
+
+  private async confirmStockFromCollection(): Promise<void> {
+    if (this.busy) return
+    if (!this.sessionAddress()) {
+      this.error = 'Connect a wallet to stock'
+      this.renderDepositBody()
+      return
+    }
+    const item = this.stockItem
+    if (!item) {
+      this.error = 'Select an item from the grid'
+      this.renderDepositBody()
+      return
+    }
+    const mintCount = Math.floor(Number(this.stockMintCount))
+    if (!Number.isFinite(mintCount) || mintCount < 1) {
+      this.error = 'Mint count must be at least 1'
+      this.renderDepositBody()
+      return
+    }
+    const avg = Number(this.stockAvgBacking)
+    if (!Number.isFinite(avg) || avg <= 0) {
+      this.error = 'Avg backing must be greater than 0'
+      this.renderDepositBody()
+      return
+    }
+
+    this.setBusy(true)
+    this.error = null
+    this.steps = []
+    this.stepSeq = 0
+    this.status = `Stocking ${mintCount}× ${item.name}…`
+    this.renderDepositBody()
+    try {
+      await runStockFromCollection({
+        sessionAddress: this.sessionAddress(),
+        collection: item.contractAddress,
+        itemId: item.itemId,
+        mintCount,
+        avgBackingMana: this.stockAvgBacking,
+        api: this.flowApi(),
+        waitForContinue: async ({ label }) => {
+          await requestGachaSignContinue({
+            title: 'Stock into grab bag',
+            status: label,
+            steps: this.steps,
+            buttonLabel: 'Continue'
+          })
+        }
+      })
+      this.steps = []
+      hideGachaSignOverlay()
+      this.stockItem = null
+      await this.refresh()
+      this.setBusy(false)
+      await showGachaSuccessOverlay({
+        title: 'Stocked!',
+        message: `${mintCount} item${mintCount === 1 ? '' : 's'} added to the grab bag.`,
+        detail: item.name,
+        buttonLabel: 'Back to grab bag'
+      })
+      this.setMode('main')
+      this.status = `Stocked ${mintCount} into grab bag`
+      this.renderStatus()
+    } catch (e) {
+      this.error = humanizeStockError(e)
+      // Stay on deposit; keep failed step visible in overlay
+      this.renderDepositBody()
+      this.renderSteps()
+      this.setBusy(false)
+      if (this.mode === 'deposit') this.renderDepositBody()
+      return
+    }
+    this.setBusy(false)
+    if (this.mode === 'deposit') this.renderDepositBody()
   }
 
   private togglePick(id: string): void {
@@ -790,7 +1255,7 @@ export class GachaPanel {
       this.steps = []
       await this.refresh()
       this.setMode('main')
-      this.status = 'Deposits locked in — pool refreshed'
+      this.status = 'Deposits locked in — grab bag refreshed'
       this.renderStatus()
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e)
@@ -809,7 +1274,7 @@ export class GachaPanel {
       return
     }
     if (!this.pool || this.pool.positions.length === 0) {
-      this.error = 'Pool is empty — deposit first'
+      this.error = 'Grab bag is empty — deposit first'
       this.renderStatus()
       return
     }
@@ -822,7 +1287,7 @@ export class GachaPanel {
     this.stepSeq = 0
     this.closeWinModal({ clearPending: true })
     this.renderSteps()
-    this.status = USE_FAKE_CLAIM ? 'Demo claim…' : 'Claiming from pool…'
+    this.status = USE_FAKE_CLAIM ? 'Demo claim…' : 'Claiming from grab bag…'
     this.renderStatus()
 
     try {

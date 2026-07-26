@@ -1,6 +1,9 @@
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import type { LoginResult } from '../../../auth/AuthClient'
+import { clientDebugLog } from '../../../client/debug/ClientDebugLog'
 import { notificationPrefs } from '../../../social/notificationPrefs'
+import { getPrivateMessagesService } from '../../../social/PrivateMessagesService'
+import type { PoolClaimDataEvent } from '../../../social/PrivateMessagesService'
 import { resolveNotificationPeer } from '../../../social/resolveNotificationPeer'
 import type { SocialChatEvent, SocialService } from '../../../social/SocialService'
 import { isChatImageLine, isChatTextLine } from '../../../social/types'
@@ -69,6 +72,7 @@ export class SocialMobileNotifications {
   private unsubFriendship: (() => void) | null = null
   private unsubChat: (() => void) | null = null
   private unsubPrefs: (() => void) | null = null
+  private unsubPoolClaim: (() => void) | null = null
   private communityWatcher: CommunityHudToastWatcher | null = null
 
   private baselineReady = false
@@ -104,6 +108,16 @@ export class SocialMobileNotifications {
         this.syncCommunityWatcher()
       }
     })
+    // Peer pool claims — PM room topic (tour-style); never self-toast (filtered in PM service).
+    // Idempotent: Jump In / setLogin must not leave us unsubscribed.
+    this.unsubPoolClaim?.()
+    this.unsubPoolClaim = getPrivateMessagesService().subscribePoolClaim((ev) => {
+      this.pushPoolClaimBanner(ev)
+    })
+    clientDebugLog.log('social', 'Pool claim toast listener attached', {
+      level: 'success',
+      alsoConsole: true
+    })
     void this.seedBaseline()
   }
 
@@ -113,6 +127,7 @@ export class SocialMobileNotifications {
     this.knownIncoming.clear()
     this.clearAll()
     this.communityWatcher?.stop()
+    this.releasePoolClaimRoom()
     void this.seedBaseline()
   }
 
@@ -120,9 +135,12 @@ export class SocialMobileNotifications {
     this.desktopMq.removeEventListener('change', this.onDesktopMqChange)
     this.unsubPrefs?.()
     this.unsubPrefs = null
+    this.unsubPoolClaim?.()
+    this.unsubPoolClaim = null
     this.unbindSocialListeners()
     this.communityWatcher?.dispose()
     this.communityWatcher = null
+    this.releasePoolClaimRoom()
     this.clearAll()
     this.host.remove()
   }
@@ -139,14 +157,69 @@ export class SocialMobileNotifications {
     return this.isSignedIn() && notificationPrefs.isEnabled()
   }
 
+  private canShowPoolClaims(): boolean {
+    return this.isSignedIn() && notificationPrefs.isPoolClaimsEnabled()
+  }
+
+  /** Peer Wearable Pool claim (PM topic). Local winner uses the win modal, not this toast. */
+  private pushPoolClaimBanner(ev: PoolClaimDataEvent): void {
+    if (!this.canShowPoolClaims()) {
+      clientDebugLog.log(
+        'social',
+        'Pool claim toast suppressed (banners or pool claims off in Chat settings)',
+        { level: 'info', alsoConsole: true, throttleMs: 5000, throttleKey: 'pool-claim-prefs-off' }
+      )
+      return
+    }
+    const name = ev.msg.n?.trim() || `${ev.fromAddress.slice(0, 6)}…${ev.fromAddress.slice(-4)}`
+    const prize = ev.msg.l || `pos ${ev.msg.p}`
+    const demo = ev.msg.demo ? ' · demo' : ''
+    const title = name
+    const sub = `claimed ${prize} from the Wearable Pool${demo}`
+
+    const banner = document.createElement('button')
+    banner.type = 'button'
+    banner.className = 'social-mobile-notif'
+    banner.setAttribute('aria-label', `${title} ${sub}`)
+    banner.innerHTML = `
+      <div class="social-mobile-notif__card">
+        <div class="social-mobile-notif__header">
+          <span class="social-mobile-notif__app-icon" aria-hidden="true">◇</span>
+          <span class="social-mobile-notif__app-name">WEARABLE POOL</span>
+          <span class="social-mobile-notif__time">now</span>
+        </div>
+        <div class="social-mobile-notif__body">
+          <span class="social-mobile-notif__avatar"><span class="social-mobile-notif__avatar-fallback" aria-hidden="true">◈</span></span>
+          <span class="social-mobile-notif__text">
+            <span class="social-mobile-notif__title">${escapeHtml(title)}</span>
+            <span class="social-mobile-notif__sub">${escapeHtml(sub)}</span>
+          </span>
+        </div>
+      </div>
+    `
+    banner.addEventListener('click', () => {
+      this.dismissBanner(banner)
+      // 3D: open pool panel if available via chat open is weak — leave as dismiss for now.
+      this.onOpenChat?.()
+    })
+    this.showBanner(
+      banner,
+      `pool-claim:${ev.fromAddress}:${ev.msg.p}:${ev.msg.at}`,
+      COMMUNITY_AUTO_DISMISS_MS
+    )
+  }
+
   private async seedBaseline(): Promise<void> {
     if (!this.isSignedIn()) {
       this.unbindSocialListeners()
       this.communityWatcher?.stop()
+      this.releasePoolClaimRoom()
       return
     }
     await this.onEnsureSocial?.()
     this.bindSocialListeners()
+    // Stay on PM LiveKit room so peer pool-claim toasts work (tour-style topic).
+    void this.ensurePoolClaimRoom()
     const social = this.getSocial()
     if (!social) {
       this.syncCommunityWatcher()
@@ -161,6 +234,47 @@ export class SocialMobileNotifications {
     }
     this.baselineReady = true
     this.syncCommunityWatcher()
+  }
+
+  private poolClaimRoomHeld = false
+
+  /** Hold the shared PM room so we receive `d3js-gacha:claims` while notifications are mounted. */
+  private async ensurePoolClaimRoom(): Promise<void> {
+    const id = this.getAuthIdentity?.() ?? null
+    const addr = this.getUserAddress?.()?.trim().toLowerCase() ?? null
+    if (!id || !addr || !/^0x[a-f0-9]{40}$/.test(addr)) {
+      clientDebugLog.log(
+        'social',
+        'Pool claim toast room skip — not signed in (need wallet/guest identity)',
+        { level: 'info', alsoConsole: true, throttleMs: 15_000, throttleKey: 'pool-claim-room-skip' }
+      )
+      return
+    }
+    const pm = getPrivateMessagesService()
+    if (!this.poolClaimRoomHeld) {
+      pm.retain()
+      this.poolClaimRoomHeld = true
+    }
+    const ok = await pm.connect(id, addr)
+    if (!ok || !pm.isConnected()) {
+      clientDebugLog.log(
+        'social',
+        `Pool claim toast room offline: ${pm.getLastError() ?? 'connect failed'}`,
+        { level: 'warn', alsoConsole: true, throttleMs: 10_000, throttleKey: 'pool-claim-room-fail' }
+      )
+      return
+    }
+    clientDebugLog.log(
+      'social',
+      `Pool claim toast room ready · remotes=${pm.getRemoteIdentities().length}`,
+      { level: 'success', alsoConsole: true, throttleMs: 20_000, throttleKey: 'pool-claim-room-ok' }
+    )
+  }
+
+  private releasePoolClaimRoom(): void {
+    if (!this.poolClaimRoomHeld) return
+    getPrivateMessagesService().release()
+    this.poolClaimRoomHeld = false
   }
 
   private syncCommunityWatcher(): void {

@@ -2,7 +2,7 @@ import type { LoginResult } from '../../../auth/AuthClient'
 import type { SocialService } from '../../../social/SocialService'
 import { SocialProfileMenu } from './SocialProfileMenu'
 
-export type SocialShellTab = 'explore' | 'map' | 'communities' | 'events' | 'editor'
+export type SocialShellTab = 'explore' | 'map' | 'communities' | 'events' | 'gacha' | 'editor'
 
 export type SocialShellChromeHandlers = {
   onLoginChange?: (login: LoginResult) => void
@@ -33,10 +33,11 @@ const SHELL_TABS: readonly SocialShellTab[] = [
   'map',
   'communities',
   'events',
+  'gacha',
   'editor'
 ]
 
-/** Shared 2D shell nav — Explore · Map · Communities · Events · Terrain + account chrome. */
+/** Shared 2D shell nav — Explore · Map · Communities · Events · Gacha · Terrain + account chrome. */
 export class SocialShellTopNav {
   readonly el: HTMLElement
 
@@ -63,6 +64,7 @@ export class SocialShellTopNav {
         <button type="button" class="social-shell-topnav__link" data-shell-tab="map">Map</button>
         <button type="button" class="social-shell-topnav__link" data-shell-tab="communities">Communities</button>
         <button type="button" class="social-shell-topnav__link" data-shell-tab="events">Events</button>
+        <button type="button" class="social-shell-topnav__link social-shell-topnav__link--gacha" data-shell-tab="gacha">Pool</button>
         <button type="button" class="social-shell-topnav__link" data-shell-tab="editor" aria-label="Terrain editor">Terrain</button>
       </nav>
       <div class="social-shell-topnav__account" data-account></div>

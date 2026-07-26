@@ -1,0 +1,291 @@
+/**
+ * Meta-tx path ported from gacha/admin/src/metaTx.ts.
+ * EIP-712 sign via client ethereum provider → forge dcl-meta-tx POST /v1/transactions.
+ */
+import { encodeFunctionData, type Abi, type Address, type Hex } from 'viem'
+import { getEthereumProvider } from '../auth/ethereumProvider'
+import { ADDRESSES, CHAIN_ID, META_TX_DOMAINS, META_TX_URL } from './config'
+import { polygonPublicClient } from './polygonClient'
+import { gachaPoolAbi } from './abis/GachaPool'
+import { mockManaAbi } from './abis/MockMANA'
+import { mockWearableAbi } from './abis/MockWearable'
+
+const DOMAIN_TYPE = [
+  { name: 'name', type: 'string' },
+  { name: 'version', type: 'string' },
+  { name: 'verifyingContract', type: 'address' },
+  { name: 'salt', type: 'bytes32' }
+] as const
+
+const META_TRANSACTION_TYPE = [
+  { name: 'nonce', type: 'uint256' },
+  { name: 'from', type: 'address' },
+  { name: 'functionSignature', type: 'bytes' }
+] as const
+
+const GET_NONCE_SELECTOR = '2d0335ab'
+const EXECUTE_META_TX_SELECTOR = '0c53c51c'
+
+function to32Bytes(value: number | string): string {
+  return value.toString().replace(/^0x/i, '').padStart(64, '0')
+}
+
+function getSalt(chainId: number): string {
+  return `0x${to32Bytes(chainId.toString(16))}`
+}
+
+function normalizeVersion(version: string): string {
+  let parsed = parseInt(version, 16)
+  if (parsed < 27) parsed += 27
+  if (parsed !== 27 && parsed !== 28) {
+    throw new Error(`Invalid signature v "${version}" (parsed ${parsed})`)
+  }
+  return parsed.toString(16)
+}
+
+export function getExecuteMetaTransactionData(
+  account: string,
+  fullSignature: string,
+  functionSignature: string
+): string {
+  const signature = fullSignature.replace(/^0x/, '')
+  const r = signature.substring(0, 64)
+  const s = signature.substring(64, 128)
+  const v = normalizeVersion(signature.substring(128, 130))
+  const method = functionSignature.replace(/^0x/, '')
+  const signatureLength = (method.length / 2).toString(16)
+  const signaturePadding = Math.ceil(method.length / 64)
+
+  return [
+    '0x',
+    EXECUTE_META_TX_SELECTOR,
+    to32Bytes(account),
+    to32Bytes('a0'),
+    r,
+    s,
+    to32Bytes(v),
+    to32Bytes(signatureLength),
+    method.padEnd(64 * signaturePadding, '0')
+  ].join('')
+}
+
+async function getNonce(account: string, contractAddress: string): Promise<string> {
+  const data = (`0x${GET_NONCE_SELECTOR}${to32Bytes(account)}`) as Hex
+  const result = await polygonPublicClient.call({
+    to: contractAddress as Address,
+    data
+  })
+  if (!result.data) throw new Error(`getNonce empty for ${contractAddress}`)
+  return to32Bytes(result.data)
+}
+
+type TypedDataPayload = {
+  types: {
+    EIP712Domain: typeof DOMAIN_TYPE
+    MetaTransaction: typeof META_TRANSACTION_TYPE
+  }
+  domain: {
+    name: string
+    version: string
+    verifyingContract: string
+    salt: string
+  }
+  primaryType: 'MetaTransaction'
+  message: {
+    nonce: number
+    from: string
+    functionSignature: string
+  }
+}
+
+export function getDataToSign(
+  account: string,
+  nonceHex32: string,
+  functionSignature: string,
+  verifyingContract: string,
+  domainName: string,
+  domainVersion: string
+): TypedDataPayload {
+  return {
+    types: {
+      EIP712Domain: DOMAIN_TYPE,
+      MetaTransaction: META_TRANSACTION_TYPE
+    },
+    domain: {
+      name: domainName,
+      version: domainVersion,
+      verifyingContract,
+      salt: getSalt(CHAIN_ID)
+    },
+    primaryType: 'MetaTransaction',
+    message: {
+      nonce: parseInt(nonceHex32, 16),
+      from: account,
+      functionSignature
+    }
+  }
+}
+
+export function supportsMetaTx(address: Address): boolean {
+  return address.toLowerCase() in META_TX_DOMAINS
+}
+
+async function requestAccounts(): Promise<Address> {
+  const provider = getEthereumProvider()
+  if (!provider?.request) {
+    throw new Error('No Ethereum wallet found — connect MetaMask or similar')
+  }
+  let accounts: string[] = []
+  try {
+    const existing = (await provider.request({ method: 'eth_accounts' })) as string[]
+    if (Array.isArray(existing) && existing.length > 0) accounts = existing
+  } catch {
+    /* fall through */
+  }
+  if (accounts.length === 0) {
+    accounts = (await provider.request({ method: 'eth_requestAccounts' })) as string[]
+  }
+  if (!accounts?.length) throw new Error('No account returned — unlock wallet and connect')
+  return accounts[0].toLowerCase() as Address
+}
+
+async function ethSignTypedDataV4(account: string, dataToSign: TypedDataPayload): Promise<string> {
+  const provider = getEthereumProvider()
+  if (!provider?.request) throw new Error('No Ethereum wallet found')
+
+  return (await provider.request({
+    method: 'eth_signTypedData_v4',
+    params: [account, JSON.stringify(dataToSign)]
+  })) as string
+}
+
+/**
+ * Sign + relay a call on a NativeMetaTransaction contract.
+ * Does NOT switch MetaMask network.
+ */
+export async function sendContractMetaTx(args: {
+  address: Address
+  abi: Abi
+  functionName: string
+  args?: readonly unknown[]
+  from?: Address
+}): Promise<Hex> {
+  const from = ((args.from || (await requestAccounts())) as string).toLowerCase() as Address
+
+  const domain = META_TX_DOMAINS[args.address.toLowerCase()]
+  if (!domain) {
+    throw new Error(`Contract ${args.address} has no meta-tx domain configured`)
+  }
+
+  const functionSignature = encodeFunctionData({
+    abi: args.abi,
+    functionName: args.functionName,
+    args: args.args as never
+  })
+
+  const contract = args.address
+  const nonce = await getNonce(from, contract)
+  const dataToSign = getDataToSign(
+    from,
+    nonce,
+    functionSignature,
+    contract,
+    domain.name,
+    domain.version
+  )
+
+  const signature = await ethSignTypedDataV4(from, dataToSign)
+  const txData = getExecuteMetaTransactionData(from, signature, functionSignature)
+
+  const body = {
+    transactionData: {
+      from,
+      params: [contract, txData] as [string, string]
+    }
+  }
+
+  let res: Response
+  try {
+    res = await fetch(META_TX_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    throw new Error(
+      `Meta-tx relay unreachable (${META_TX_URL}). Start forge dcl-meta-tx on :5356. ${msg}`
+    )
+  }
+
+  const json = (await res.json().catch(() => ({}))) as {
+    ok?: boolean
+    txHash?: string
+    message?: string
+  }
+
+  if (!res.ok || json.ok === false || !json.txHash) {
+    throw new Error(
+      json.message ||
+        `Meta-tx relay failed HTTP ${res.status}: ${JSON.stringify(json).slice(0, 240)}`
+    )
+  }
+
+  return json.txHash as Hex
+}
+
+export async function ensureWalletAddress(preferred?: string | null): Promise<Address> {
+  if (preferred && /^0x[a-fA-F0-9]{40}$/.test(preferred)) {
+    // Still ensure provider is unlocked / accounts match when possible
+    try {
+      const connected = await requestAccounts()
+      if (connected.toLowerCase() === preferred.toLowerCase()) return connected
+      // Prefer session wallet only if provider has it; otherwise use connected
+      return connected
+    } catch {
+      return preferred.toLowerCase() as Address
+    }
+  }
+  return requestAccounts()
+}
+
+export async function getManaAllowance(owner: Address, spender: Address): Promise<bigint> {
+  return polygonPublicClient.readContract({
+    address: ADDRESSES.mockMana,
+    abi: mockManaAbi,
+    functionName: 'allowance',
+    args: [owner, spender]
+  }) as Promise<bigint>
+}
+
+export async function getNftApproved(tokenId: bigint): Promise<Address> {
+  return polygonPublicClient.readContract({
+    address: ADDRESSES.mockWearable,
+    abi: mockWearableAbi,
+    functionName: 'getApproved',
+    args: [tokenId]
+  }) as Promise<Address>
+}
+
+export async function isNftApprovedForAll(owner: Address, operator: Address): Promise<boolean> {
+  return polygonPublicClient.readContract({
+    address: ADDRESSES.mockWearable,
+    abi: mockWearableAbi,
+    functionName: 'isApprovedForAll',
+    args: [owner, operator]
+  }) as Promise<boolean>
+}
+
+/** Wait for receipt; throw if reverted */
+export async function waitReceipt(hash: Hex): Promise<void> {
+  const receipt = await polygonPublicClient.waitForTransactionReceipt({
+    hash,
+    timeout: 180_000,
+    confirmations: 1
+  })
+  if (receipt.status === 'reverted') {
+    throw new Error(`Transaction reverted on-chain: ${hash}`)
+  }
+}
+
+export { gachaPoolAbi, mockManaAbi, mockWearableAbi }

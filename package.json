@@ -36,6 +36,7 @@
     "livekit-client": "^2.19.2",
     "protobufjs": "^8.6.3",
     "three": "^0.175.0",
+    "viem": "^2.55.8",
     "yaml": "^2.9.0",
     "yoga-layout-prebuilt": "^1.10.0"
   },

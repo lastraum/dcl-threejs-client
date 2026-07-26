@@ -21,6 +21,7 @@ const ROUTE_SEGMENT_DENY = new Set(
     'communities',
     'map',
     'profile',
+    'gacha',
     'chat',
     'favicon.ico',
     'robots.txt',
@@ -38,6 +39,7 @@ export type RouteTarget =
   | { kind: 'events' }
   | { kind: 'communities' }
   | { kind: 'profile' }
+  | { kind: 'gacha' }
   | { kind: 'editor' }
   | {
       kind: 'world'
@@ -57,12 +59,14 @@ const EVENTS_ROUTE_SEGMENT = 'events'
 const COMMUNITIES_ROUTE_SEGMENT = 'communities'
 const MAP_ROUTE_SEGMENT = 'map'
 const PROFILE_ROUTE_SEGMENT = 'profile'
+const GACHA_ROUTE_SEGMENT = 'gacha'
 
 const APP_ROUTE_SEGMENTS = new Set([
   EVENTS_ROUTE_SEGMENT,
   COMMUNITIES_ROUTE_SEGMENT,
   MAP_ROUTE_SEGMENT,
-  PROFILE_ROUTE_SEGMENT
+  PROFILE_ROUTE_SEGMENT,
+  GACHA_ROUTE_SEGMENT
 ])
 
 const EDITOR_ROUTE_SEGMENT = 'editor'
@@ -109,6 +113,7 @@ export function parseRouteTarget(segment: string | null): RouteTarget {
   if (segment.toLowerCase() === COMMUNITIES_ROUTE_SEGMENT) return { kind: 'communities' }
   if (segment.toLowerCase() === MAP_ROUTE_SEGMENT) return { kind: 'map' }
   if (segment.toLowerCase() === PROFILE_ROUTE_SEGMENT) return { kind: 'profile' }
+  if (segment.toLowerCase() === GACHA_ROUTE_SEGMENT) return { kind: 'gacha' }
 
   const coordMatch = /^(-?\d+)\s*,\s*(-?\d+)$/.exec(segment)
   if (coordMatch) {
@@ -206,6 +211,7 @@ export function routePathForTarget(target: RouteTarget): string {
   if (target.kind === 'communities') return '/communities'
   if (target.kind === 'map') return '/map'
   if (target.kind === 'profile') return '/profile'
+  if (target.kind === 'gacha') return '/gacha'
   if (target.kind === 'editor') return '/editor'
   if (target.kind === 'coords') return `/${encodeURIComponent(`${target.x},${target.y}`)}`
   // Custom server worlds: `/` + `?realm=host&worldName=Name`.
@@ -238,7 +244,8 @@ export function routeEquals(a: RouteTarget, b: RouteTarget): boolean {
     a.kind === 'events' ||
     a.kind === 'communities' ||
     a.kind === 'map' ||
-    a.kind === 'profile'
+    a.kind === 'profile' ||
+    a.kind === 'gacha'
   ) {
     return true
   }

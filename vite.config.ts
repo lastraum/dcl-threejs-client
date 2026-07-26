@@ -97,6 +97,11 @@ export default defineConfig({
         changeOrigin: true,
         secure: true,
         rewrite: (path) => path.replace(/^\/api\/storage/, '')
+      },
+      // Forge dcl-meta-tx self-relayer (gacha gasless writes) — same-origin to avoid CORS
+      '/v1': {
+        target: 'http://localhost:5356',
+        changeOrigin: true
       }
     }
   },

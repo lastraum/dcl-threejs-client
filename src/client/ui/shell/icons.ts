@@ -78,6 +78,16 @@ export const SIDEBAR_ICONS = {
     <path d="M7.2 7.2c-.8-1.3-2.2-1.8-3.2-1.2M10.8 7.2c.8-1.3 2.2-1.8 3.2-1.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
     <path d="M16.5 8.2c.3-1.2 1.2-2 2.2-1.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
   </svg>`,
+  /** Wearable gacha — slot machine */
+  gacha: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <rect x="4.5" y="5" width="13" height="15" rx="2" stroke="currentColor" stroke-width="1.5"/>
+    <rect x="6.5" y="8" width="3" height="7" rx="0.8" stroke="currentColor" stroke-width="1.3"/>
+    <rect x="10.5" y="8" width="3" height="7" rx="0.8" stroke="currentColor" stroke-width="1.3"/>
+    <rect x="14.5" y="8" width="1.5" height="7" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
+    <path d="M17.5 9.5h1.2a1.3 1.3 0 0 1 1.3 1.3v2.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    <circle cx="20" cy="14.5" r="1.4" fill="currentColor"/>
+    <path d="M7.5 17.5h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+  </svg>`,
   // Shared "accepted" backpack mark — same glyph as the backpack categories "All" row.
   backpack: backpackCategoryIcon('all'),
   marketplace: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">

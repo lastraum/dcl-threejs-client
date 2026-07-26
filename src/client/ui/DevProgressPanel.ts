@@ -372,6 +372,7 @@ export class DevProgressPanel {
     if (route.kind === 'events') return 'events'
     if (route.kind === 'communities') return 'communities'
     if (route.kind === 'profile') return 'profile'
+    if (route.kind === 'gacha') return 'gacha'
     if (route.kind === 'editor') return 'editor'
     return undefined
   }

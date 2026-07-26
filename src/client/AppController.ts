@@ -79,6 +79,7 @@ import { bindWhatsNewShippedOpener, openWhatsNewFromMenu } from './whatsNew/What
 import { CommunitiesPageView } from './ui/explore/CommunitiesPageView'
 import { EventsPageView } from './ui/explore/EventsPageView'
 import { ExplorerView } from './ui/explore/ExplorerView'
+import { GachaPageView } from './ui/explore/GachaPageView'
 import { MapPageView } from './ui/explore/MapPageView'
 import { ProfilePageView } from './ui/explore/ProfilePageView'
 import type { SocialShellTab } from './ui/explore/SocialShellTopNav'
@@ -162,6 +163,7 @@ export class AppController {
   private explorerView: ExplorerView | null = null
   private mapPageView: MapPageView | null = null
   private eventsPageView: EventsPageView | null = null
+  private gachaPageView: GachaPageView | null = null
   private communitiesPageView: CommunitiesPageView | null = null
   private profilePageView: ProfilePageView | null = null
   private sceneLandingView: SceneLandingView | null = null
@@ -243,6 +245,11 @@ export class AppController {
 
     if (postLoginRoute.kind === 'events') {
       await this.showEventsPage({ replace: true })
+      return
+    }
+
+    if (postLoginRoute.kind === 'gacha') {
+      await this.showGachaPage({ replace: true })
       return
     }
 
@@ -331,6 +338,16 @@ export class AppController {
       return
     }
 
+    if (target.kind === 'gacha') {
+      this.navigating = true
+      try {
+        await this.showGachaPage({ fromHistory: opts.fromHistory, replace: opts.replace })
+      } finally {
+        this.navigating = false
+      }
+      return
+    }
+
     if (target.kind === 'map') {
       this.navigating = true
       try {
@@ -383,6 +400,7 @@ export class AppController {
     if (tab === 'explore') void this.navigateTo({ kind: 'blank' })
     else if (tab === 'map') void this.navigateTo({ kind: 'map' })
     else if (tab === 'communities') void this.navigateTo({ kind: 'communities' })
+    else if (tab === 'gacha') void this.navigateTo({ kind: 'gacha' })
     else if (tab === 'editor') void this.navigateTo({ kind: 'editor' })
     else void this.navigateTo({ kind: 'events' })
   }
@@ -401,6 +419,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownGachaPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
     this.teardownExplorer()
@@ -1221,6 +1240,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownGachaPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1268,6 +1288,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownGachaPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1323,6 +1344,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownGachaPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1347,6 +1369,45 @@ export class AppController {
     this.collapseSocialChatThread()
   }
 
+  private async showGachaPage(
+    opts: { fromHistory?: boolean; replace?: boolean } = {}
+  ): Promise<void> {
+    if (this.appMode === 'play') {
+      stopDwellTracking('shell')
+      this.disposeCommunityFollow()
+      await this.teardownScene()
+    }
+
+    if (!opts.fromHistory) {
+      applyRouteToHistory({ kind: 'gacha' }, opts.replace ?? false)
+    }
+    this.currentRoute = { kind: 'gacha' }
+    this.appMode = 'gacha'
+    this.clearSceneBanWatch()
+
+    this.teardownExplorer()
+    this.teardownLanding()
+    this.teardownMapPage()
+    this.teardownEventsPage()
+    this.teardownGachaPage()
+    this.teardownCommunitiesPage()
+    this.teardownProfilePage()
+
+    if (!this.container || !this.login) return
+
+    const hudEl = document.getElementById('hud')
+    if (hudEl) hudEl.hidden = true
+
+    this.gachaPageView = new GachaPageView({
+      login: this.login,
+      onNavigate: (tab) => this.navigateSocialShell(tab),
+      ...this.socialShellLoginHandlers()
+    })
+    this.gachaPageView.mount(this.container)
+    this.ensureSocialChatShell()
+    this.collapseSocialChatThread()
+  }
+
   private async showCommunitiesPage(
     opts: { fromHistory?: boolean; replace?: boolean } = {}
   ): Promise<void> {
@@ -1367,6 +1428,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownGachaPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1412,6 +1474,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownGachaPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1447,6 +1510,11 @@ export class AppController {
   private teardownEventsPage(): void {
     this.eventsPageView?.dispose()
     this.eventsPageView = null
+  }
+
+  private teardownGachaPage(): void {
+    this.gachaPageView?.dispose()
+    this.gachaPageView = null
   }
 
   private teardownCommunitiesPage(): void {
@@ -1515,6 +1583,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownGachaPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1837,17 +1906,25 @@ export class AppController {
     this.socialChatDock?.collapseToChannelList()
   }
 
+  /**
+   * Tear down 2D social chat chrome.
+   * Peer toasts (pool claims, tours, friend requests) use SocialMobileNotifications in
+   * both 2D and 3D — never dispose those here or Jump In drops listeners (listeners=0).
+   */
   private teardownSocialChatShell(disposeComms = false): void {
     this.socialChatDock?.hide()
     document.body.classList.remove('social-shell-with-chat')
     if (disposeComms) {
-      this.socialMobileNotifications?.dispose()
-      this.socialMobileNotifications = null
       this.socialChat?.dispose()
       this.socialChat = null
       this.socialChatDock?.dispose()
       this.socialChatDock = null
     }
+  }
+
+  private disposeSocialMobileNotifications(): void {
+    this.socialMobileNotifications?.dispose()
+    this.socialMobileNotifications = null
   }
 
   /**
@@ -2064,6 +2141,7 @@ export class AppController {
       if (fromSceneLanding) {
         await this.sceneLandingView?.completeJumpInLoading()
         this.teardownLanding()
+        // Dispose 2D chat dock only — keep SocialMobileNotifications for peer toasts.
         this.teardownSocialChatShell(true)
         this.revealPlayChrome()
       } else if (loading) {
@@ -2074,6 +2152,9 @@ export class AppController {
         // Seamless promote — chrome already visible.
         this.revealPlayChrome()
       }
+      // Re-bind toast host after any shell teardown so pool-claim / tour listeners stay live.
+      this.ensureSocialMobileNotifications()
+      if (this.login) this.socialMobileNotifications?.setLogin(this.login)
       this.ensureInWorldChromeOnly()
     } catch (err) {
       if (err instanceof SceneAccessDeniedError) {
@@ -3207,6 +3288,7 @@ export class AppController {
     clearStoredIdentity()
     this.socialChat?.signOut()
     this.teardownSocialChatShell(true)
+    this.disposeSocialMobileNotifications()
     this.shellSession = null
     if (!this.world) {
       this.settingsOverlay?.dispose()
@@ -3222,12 +3304,15 @@ export class AppController {
     this.sceneLandingView?.setLogin(this.login)
     this.ensureSocialChatShell()
     this.socialChat?.applyLogin(guest)
+    this.ensureSocialMobileNotifications()
+    this.socialMobileNotifications?.setLogin(guest)
   }
 
   private applyLoginToSocialShellViews(login: LoginResult): void {
     this.explorerView?.setLogin(login)
     this.mapPageView?.setLogin(login)
     this.eventsPageView?.setLogin(login)
+    this.gachaPageView?.setLogin(login)
     this.communitiesPageView?.setLogin(login)
     this.profilePageView?.setLogin(login)
     this.sceneLandingView?.setLogin(login)
@@ -3255,6 +3340,7 @@ export class AppController {
     this.shell?.dispose()
     this.shell = null
     this.teardownSocialChatShell(true)
+    this.disposeSocialMobileNotifications()
     this.teardownExplorer()
     this.teardownLanding()
     this.clearSceneBanWatch()

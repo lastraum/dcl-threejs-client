@@ -490,6 +490,10 @@ export class UserProfileModal {
       .map((photo) => {
         const when = formatGalleryDateTime(photo.dateTime, 'short')
         const src = photo.thumbnailUrl || photo.url
+        // Match /profile My Photos: private images only appear on own gallery (signed fetch).
+        const visibility = photo.isPublic
+          ? ''
+          : `<span class="user-profile-modal__photo-private" title="Only you can see this photo">Private</span>`
         return `
           <button
             type="button"
@@ -506,6 +510,7 @@ export class UserProfileModal {
               decoding="async"
               referrerpolicy="no-referrer"
             />
+            ${visibility}
             <span class="user-profile-modal__photo-date">${escapeHtml(when)}</span>
           </button>`
       })

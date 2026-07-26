@@ -72,6 +72,43 @@ export function buildBoneNameSet(root: THREE.Object3D): Set<string> {
   return names
 }
 
+/**
+ * Collects avatar tracks keeping one per `bone.property`.
+ *
+ * Emote GLBs often bake a deform skeleton (`Avatar_*`) and its control rig (`CTRL_*`)
+ * into a single clip, and alias resolution maps both onto the same avatar bone; a
+ * duplicated skeleton (`Avatar_Hips.001`) collapses the same way. three.js accumulates
+ * same-named tracks into a weighted average rather than letting one win, so keeping
+ * both silently blends the real pose with the control rig's.
+ */
+export class AvatarTrackSet {
+  private readonly bySlot = new Map<string, { track: THREE.KeyframeTrack; rank: number }>()
+
+  /** `track` must already be renamed to `${boneName}.${property}`. */
+  add(track: THREE.KeyframeTrack, clipBoneName: string, boneName: string): void {
+    const rank = sourceRank(clipBoneName, boneName)
+    const existing = this.bySlot.get(track.name)
+    if (existing && existing.rank >= rank) return
+    this.bySlot.set(track.name, { track, rank })
+  }
+
+  get size(): number {
+    return this.bySlot.size
+  }
+
+  tracks(): THREE.KeyframeTrack[] {
+    return [...this.bySlot.values()].map((entry) => entry.track)
+  }
+}
+
+/** Deform bone beats control bone; exact name beats alias. Ties keep the first seen. */
+function sourceRank(clipBoneName: string, boneName: string): number {
+  const source = normalizeBoneName(clipBoneName)
+  if (source === boneName) return 2
+  if (source.startsWith('Avatar_')) return 1
+  return 0
+}
+
 export function resolveBoneName(clipBoneName: string, avatarBones: Set<string>): string | null {
   const candidates = new Set<string>()
 
@@ -98,7 +135,7 @@ export function remapClipToAvatar(
   if (!clip) return null
 
   const bones = buildBoneNameSet(avatarRoot)
-  const tracks: THREE.KeyframeTrack[] = []
+  const tracks = new AvatarTrackSet()
 
   for (const track of clip.tracks) {
     const dot = track.name.indexOf('.')
@@ -110,9 +147,9 @@ export function remapClipToAvatar(
     const property = track.name.slice(dot + 1)
     const cloned = track.clone()
     cloned.name = `${boneName}.${property}`
-    tracks.push(cloned)
+    tracks.add(cloned, clipBoneName, boneName)
   }
 
-  if (!tracks.length) return null
-  return new THREE.AnimationClip(clip.name, clip.duration, tracks)
+  if (!tracks.size) return null
+  return new THREE.AnimationClip(clip.name, clip.duration, tracks.tracks())
 }

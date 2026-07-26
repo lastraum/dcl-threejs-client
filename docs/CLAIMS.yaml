@@ -10,6 +10,13 @@ source: github
 base_branch: dev-latest
 workflow:
   - stage: pending_review
+    integration_ref: pr:53
+    title: make peer name pills clickable again
+    owner: awedjob
+    pr: 53
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/53
+    updated: 2026-07-26
+  - stage: pending_review
     integration_ref: pr:52
     title: photos tabs on the profile page + modal, consistent rarity tiles
     owner: awedjob

@@ -9,14 +9,14 @@ updated: 2026-07-26
 source: github
 base_branch: dev-latest
 workflow:
-  - stage: pending_review
+  - stage: merged
     integration_ref: pr:53
     title: make peer name pills clickable again
     owner: awedjob
     pr: 53
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/53
     updated: 2026-07-26
-  - stage: pending_review
+  - stage: merged
     integration_ref: pr:52
     title: photos tabs on the profile page + modal, consistent rarity tiles
     owner: awedjob
@@ -144,20 +144,6 @@ workflow:
     pr: 25
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/25
     updated: 2026-07-15
-  - stage: merged
-    integration_ref: pr:23
-    title: base-avatars parity — eyes tab + body-shape switching
-    owner: awedjob
-    pr: 23
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/23
-    updated: 2026-07-14
-  - stage: merged
-    integration_ref: pr:24
-    title: avatar color customization — eyes/hair/skin picker + iris tinting
-    owner: awedjob
-    pr: 24
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/24
-    updated: 2026-07-14
   - stage: merged
     integration_ref: ecs:TriggerArea
     title: TriggerArea Tier A — volume enter/exit and scene callbacks

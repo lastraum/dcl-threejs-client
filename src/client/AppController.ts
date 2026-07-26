@@ -218,6 +218,7 @@ export class AppController {
     window.addEventListener('popstate', this.onPopState)
     window.addEventListener('keydown', this.onPlayChromeHotkey, true)
     this.wireSceneBanDebug()
+    this.wireProfileDebug()
     // Toast + profile "What's new" open the same Dev Progress → Shipped view.
     this.ensureDevProgressPanel()
     bindWhatsNewShippedOpener(() => this.openShippedChangelog())
@@ -2701,6 +2702,34 @@ export class AppController {
 
     this.ensureSceneBanMonitor()
     return hydrationTimedOut
+  }
+
+  /**
+   * Dev-only console hook — open any wallet's profile modal without hunting for
+   * a live player to click. `d3jsOpenProfile('0x…')` (no arg = own profile).
+   * Routes exactly like the in-world / 2D shell profile entry points.
+   */
+  private wireProfileDebug(): void {
+    if (!import.meta.env.DEV) return
+    const g = window as typeof window & { d3jsOpenProfile?: (address?: string) => void }
+    g.d3jsOpenProfile = (address?: string) => {
+      const own =
+        this.login?.kind === 'wallet' || this.login?.kind === 'guest'
+          ? this.login.address.toLowerCase()
+          : null
+      const target = address?.trim().toLowerCase() || own
+      if (!target) {
+        console.warn('[dev] d3jsOpenProfile: no address given and no logged-in wallet')
+        return
+      }
+      if (this.appMode === 'play') {
+        this.profileUi?.openProfileForAddress(target)
+        return
+      }
+      this.ensureSocialChatShell()
+      this.socialChat?.openProfileForAddress(target)
+    }
+    console.info('[dev] d3jsOpenProfile(address) available — opens the profile modal for any wallet')
   }
 
   private wireSceneBanDebug(): void {

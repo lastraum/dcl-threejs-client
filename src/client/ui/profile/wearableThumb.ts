@@ -41,7 +41,12 @@ export function wearableThumbnailUrl(urn: string, peerUrl = DEFAULT_CATALYST): s
 }
 
 export function wearableShortLabel(urn: string): string {
-  const tail = urn.split(':').pop() ?? urn
+  const parts = urn.split(':')
+  let tail = parts[parts.length - 1] ?? urn
+  // collections-v2 profile URNs end in a long tokenId — the itemId reads better.
+  if (/^\d{10,}$/.test(tail) && parts[3] === 'collections-v2' && parts[5]) {
+    tail = parts[5]
+  }
   return tail.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
@@ -170,10 +175,131 @@ export function wearableRarityBackground(rarity: string): string {
   return WEARABLE_RARITY_BACKGROUNDS[key] ?? WEARABLE_RARITY_BACKGROUNDS.common!
 }
 
+function escapeCardHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+export type RarityCardInput = {
+  name: string
+  rarity: string
+  thumbnailUrl: string
+  /** Thumbnail used when the primary URL 404s (Catalyst hash vs lambdas path). */
+  fallbackThumbnailUrl?: string
+  /** Corner pill — emote wheel slot, mint number, amount… */
+  badge?: string
+  badgeTitle?: string
+}
+
+/**
+ * Single markup source for every equipped-item tile (wearables and emotes, in
+ * the profile modal and the profile page) so rarity reads identically wherever
+ * it appears: rarity fill behind the thumbnail, name + tier on a dark footer.
+ */
+export function renderRarityCard(item: RarityCardInput): string {
+  const rarity = item.rarity.trim().toLowerCase() || 'common'
+  const bg = wearableRarityBackground(rarity)
+  const color = WEARABLE_RARITY_COLORS[rarity] ?? WEARABLE_RARITY_COLORS.common!
+  const label = wearableRarityLabel(rarity)
+  const name = escapeCardHtml(item.name)
+  const fallback = item.fallbackThumbnailUrl
+    ? ` onerror="this.onerror=null;this.src='${escapeCardHtml(item.fallbackThumbnailUrl)}'"`
+    : ''
+  const badge = item.badge
+    ? `<span class="rarity-card__badge"${item.badgeTitle ? ` title="${escapeCardHtml(item.badgeTitle)}"` : ''}>${escapeCardHtml(item.badge)}</span>`
+    : ''
+
+  return `
+    <article class="rarity-card is-${escapeCardHtml(rarity)}" style="--rarity-bg:${escapeCardHtml(bg)};--rarity-color:${escapeCardHtml(color)}" title="${name} · ${escapeCardHtml(label)}">
+      <div class="rarity-card__tile">
+        <img class="rarity-card__img" src="${escapeCardHtml(item.thumbnailUrl)}" alt="${name}" loading="lazy" decoding="async"${fallback} />
+        ${badge}
+      </div>
+      <div class="rarity-card__meta">
+        <span class="rarity-card__name">${name}</span>
+        <span class="rarity-card__rarity">${escapeCardHtml(label)}</span>
+      </div>
+    </article>
+  `
+}
+
 type WearableMeta = {
   name: string
   rarity: string
   thumbnailUrl: string
+}
+
+type CatalystEntityMeta = {
+  id?: string
+  name?: string
+  rarity?: string | null
+  thumbnail?: string
+  i18n?: Array<{ code?: string; text?: string }>
+}
+
+/** Catalyst caps pointer batches; equipped lists are far smaller, but stay safe. */
+const ENTITY_BATCH_SIZE = 40
+
+/**
+ * One `POST /content/entities/active` per batch — resolves name + rarity +
+ * thumbnail for wearables AND emotes (same entity shape). This is the only
+ * lookup that works for every URN flavour: the marketplace items API misses
+ * collections-v1 / third-party items, which is why equipped grids used to fall
+ * back to "common" (teal) tiles with raw token ids for names.
+ */
+export async function fetchCatalystItemMeta(
+  pointers: string[],
+  peerUrl = DEFAULT_CATALYST
+): Promise<Map<string, WearableMeta>> {
+  const out = new Map<string, WearableMeta>()
+  const unique = [...new Set(pointers.map((p) => p.trim().toLowerCase()).filter(Boolean))]
+  if (!unique.length) return out
+  const root = peerUrl.replace(/\/$/, '')
+
+  for (let i = 0; i < unique.length; i += ENTITY_BATCH_SIZE) {
+    const batch = unique.slice(i, i + ENTITY_BATCH_SIZE)
+    try {
+      const res = await fetch(`${root}/content/entities/active`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pointers: batch })
+      })
+      if (!res.ok) continue
+      const entities = (await res.json()) as Array<{
+        pointers?: string[]
+        metadata?: CatalystEntityMeta
+        content?: Array<{ file: string; hash: string }>
+      }>
+      for (const entity of entities) {
+        const meta = entity.metadata
+        if (!meta) continue
+        const thumbFile = meta.thumbnail || 'thumbnail.png'
+        const thumbHash = entity.content?.find(
+          (c) => c.file === thumbFile || c.file.endsWith('/' + thumbFile)
+        )?.hash
+        const enName = meta.i18n?.find((row) => row.code === 'en')?.text?.trim()
+        const keys = [...(entity.pointers ?? []), meta.id ?? '']
+          .map((k) => k.trim().toLowerCase())
+          .filter(Boolean)
+        if (!keys.length) continue
+        const resolved: WearableMeta = {
+          name: meta.name?.trim() || enName || wearableShortLabel(keys[0]!),
+          rarity: (meta.rarity?.trim().toLowerCase() || guessWearableRarity(keys[0]!)).toLowerCase(),
+          thumbnailUrl: thumbHash
+            ? `${root}/content/contents/${encodeURIComponent(thumbHash)}`
+            : (resolveContentImageUrl(meta.thumbnail, root) ?? wearableThumbnailUrl(keys[0]!, root))
+        }
+        for (const key of keys) out.set(key, resolved)
+      }
+    } catch {
+      /* skip batch — per-item fallbacks still run */
+    }
+  }
+  return out
 }
 
 async function fetchMarketplaceWearableMeta(
@@ -266,19 +392,41 @@ async function resolveWearableMeta(urn: string, peerUrl: string): Promise<Wearab
   return fallback
 }
 
+/** Equipped outfits top out around 16 slots; the cap only guards junk profiles. */
+const MAX_EQUIPPED_CARDS = 32
+
 export async function fetchWearableDisplayCards(
   urns: string[],
   peerUrl = DEFAULT_CATALYST
 ): Promise<WearableDisplayCard[]> {
   const base = peerUrl.replace(/\/$/, '')
-  const equipped = filterEquippedWearables(urns).slice(0, 12)
-  const chunkSize = 4
-  const cards: WearableDisplayCard[] = []
+  const equipped = filterEquippedWearables(urns).slice(0, MAX_EQUIPPED_CARDS)
+  if (!equipped.length) return []
 
-  for (let i = 0; i < equipped.length; i += chunkSize) {
-    const chunk = equipped.slice(i, i + chunkSize)
-    const resolved = await Promise.all(chunk.map((urn) => resolveWearableMeta(urn, base)))
-    cards.push(...resolved)
+  // One batched Catalyst call covers nearly every item; only misses pay for a
+  // per-item marketplace/lambdas round trip.
+  const metaMap = await fetchCatalystItemMeta(
+    equipped.map((urn) => assetUrnFromCompleteUrn(urn)),
+    base
+  )
+
+  const cards: WearableDisplayCard[] = new Array(equipped.length)
+  const misses: number[] = []
+  equipped.forEach((urn, index) => {
+    const meta = metaMap.get(assetUrnFromCompleteUrn(urn).toLowerCase())
+    if (meta) cards[index] = { urn, ...meta }
+    else misses.push(index)
+  })
+
+  const chunkSize = 4
+  for (let i = 0; i < misses.length; i += chunkSize) {
+    const chunk = misses.slice(i, i + chunkSize)
+    const resolved = await Promise.all(
+      chunk.map((index) => resolveWearableMeta(equipped[index]!, base))
+    )
+    chunk.forEach((index, offset) => {
+      cards[index] = resolved[offset]!
+    })
   }
 
   return cards

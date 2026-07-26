@@ -3,13 +3,19 @@ import { CommunityModal } from '../communities/CommunityModal'
 import { AvatarPreviewMini } from '../profile/AvatarPreviewMini'
 import { loadProfilePageData, profilePageWalletLabel, type ProfilePageData } from '../profile/profilePageData'
 import {
+  renderRarityCard,
   resolveContentImageUrl,
-  wearableRarityBackground,
-  wearableRarityLabel,
   wearableThumbnailUrl,
-  WEARABLE_RARITY_COLORS,
   type WearableDisplayCard
 } from '../profile/wearableThumb'
+import type { EmoteDisplayCard } from '../profile/emoteCards'
+import {
+  type DclGalleryImage,
+  fetchUserGallery,
+  formatGalleryDateTime,
+  galleryReelsUrl,
+  groupGalleryByMonth
+} from '../../../social/dclGallery'
 import {
   communityDisplayImageUrl,
   enrichCommunityThumbnailFromDetail
@@ -31,7 +37,7 @@ const PROFILE_TABS: { id: ProfileTabId; label: string; enabled: boolean }[] = [
   { id: 'assets', label: 'My Assets', enabled: false },
   { id: 'communities', label: 'My Communities', enabled: true },
   { id: 'places', label: 'My Places', enabled: false },
-  { id: 'photos', label: 'My Photos', enabled: false },
+  { id: 'photos', label: 'My Photos', enabled: true },
   { id: 'referrals', label: 'Referral Rewards', enabled: false }
 ]
 
@@ -66,6 +72,13 @@ export class ProfilePageView {
   private preview: AvatarPreviewMini | null = null
   private avatarAddress: string | null = null
   private communitiesById = new Map<string, CommunityListRow>()
+  private photos: DclGalleryImage[] = []
+  private photosState: 'idle' | 'loading' | 'ready' | 'error' = 'idle'
+  private photosError: string | null = null
+  private photosCount = 0
+  private photosMax = 0
+  /** Address the loaded photos belong to, so a login change refetches. */
+  private photosAddress: string | null = null
 
   constructor(opts: ProfilePageViewOptions) {
     this.login = opts.login
@@ -109,6 +122,14 @@ export class ProfilePageView {
     this.contentEl.className = 'profile-page-view__content'
     this.contentEl.dataset.content = ''
 
+    // Photo tiles are re-rendered on every state change — delegate from the
+    // content element, which lives for the life of the view.
+    this.contentEl.addEventListener('click', (ev) => {
+      const tile = (ev.target as HTMLElement).closest('[data-photo-url]') as HTMLElement | null
+      const url = tile?.getAttribute('data-photo-url')
+      if (url) window.open(url, '_blank', 'noopener,noreferrer')
+    })
+
     this.root.appendChild(this.topNav.el)
     this.scrollEl.appendChild(this.contentEl)
     this.root.appendChild(this.scrollEl)
@@ -146,6 +167,7 @@ export class ProfilePageView {
     this.preview?.dispose()
     this.preview = null
     this.avatarAddress = null
+    this.resetPhotos()
 
     if (this.login.kind !== 'wallet') {
       loading?.setAttribute('hidden', '')
@@ -258,6 +280,10 @@ export class ProfilePageView {
                 <h2 class="profile-page-view__block-title">Equipped Items</h2>
                 <div class="profile-page-view__equipped">${this.renderEquipped(data.wearables)}</div>
               </section>
+              <section class="profile-page-view__block">
+                <h2 class="profile-page-view__block-title">Emotes</h2>
+                <div class="profile-page-view__equipped">${this.renderEquippedEmotes(data.emotes)}</div>
+              </section>
             </div>
           </div>
         </section>
@@ -275,6 +301,14 @@ export class ProfilePageView {
       return
     }
 
+    if (this.activeTab === 'photos') {
+      this.preview?.dispose()
+      this.preview = null
+      this.avatarAddress = null
+      this.renderPhotosTab()
+      return
+    }
+
     this.preview?.dispose()
     this.preview = null
     this.avatarAddress = null
@@ -282,6 +316,147 @@ export class ProfilePageView {
       <section class="profile-page-view__panel profile-page-view__panel--placeholder">
         <p>This section is coming soon.</p>
       </section>
+    `
+  }
+
+  private resetPhotos(): void {
+    this.photos = []
+    this.photosState = 'idle'
+    this.photosError = null
+    this.photosCount = 0
+    this.photosMax = 0
+    this.photosAddress = null
+  }
+
+  private renderPhotosTab(): void {
+    this.contentEl.innerHTML = this.renderPhotosPanel()
+
+    if (this.photosState === 'idle') {
+      void this.loadPhotos()
+      return
+    }
+    for (const img of this.contentEl.querySelectorAll<HTMLImageElement>('.profile-page-view__photo-img')) {
+      img.addEventListener('error', () => img.classList.add('is-broken'), { once: true })
+    }
+  }
+
+  /**
+   * Own Camera Reel gallery — signed with the wallet identity, so private
+   * photos are included alongside public ones.
+   */
+  private async loadPhotos(): Promise<void> {
+    if (this.login.kind !== 'wallet') return
+    const address = this.login.address.trim().toLowerCase()
+    const identity = this.login.identity
+    const token = this.loadToken
+
+    this.photosAddress = address
+    this.photosState = 'loading'
+    this.photosError = null
+    if (this.activeTab === 'photos') this.renderPhotosTab()
+
+    try {
+      const gallery = await fetchUserGallery(address, identity)
+      if (token !== this.loadToken || this.photosAddress !== address) return
+      this.photos = gallery.images
+      this.photosCount = gallery.currentImages
+      this.photosMax = gallery.maxImages
+      this.photosState = 'ready'
+    } catch (err) {
+      if (token !== this.loadToken || this.photosAddress !== address) return
+      console.warn('[profile] gallery load failed', address, err)
+      this.photos = []
+      this.photosError = err instanceof Error ? err.message : String(err)
+      this.photosState = 'error'
+    }
+
+    if (this.activeTab === 'photos') this.renderPhotosTab()
+  }
+
+  private renderPhotosPanel(): string {
+    const panel = (head: string, body: string): string => `
+      <section class="profile-page-view__panel profile-page-view__panel--photos">
+        <header class="profile-page-view__photos-head">
+          <h2 class="profile-page-view__photos-title">My Photos</h2>
+          ${head}
+        </header>
+        ${body}
+      </section>
+    `
+
+    if (this.photosState === 'idle' || this.photosState === 'loading') {
+      const skeletons = Array.from(
+        { length: 12 },
+        () => `<div class="profile-page-view__photo-skeleton" role="presentation"></div>`
+      ).join('')
+      return panel('', `<div class="profile-page-view__photos-grid">${skeletons}</div>`)
+    }
+
+    if (this.photosState === 'error') {
+      return panel(
+        '',
+        `<p class="profile-page-view__empty">${escapeHtml(
+          this.photosError || 'Could not load photos.'
+        )}</p>`
+      )
+    }
+
+    if (!this.photos.length) {
+      return panel(
+        '',
+        `<p class="profile-page-view__empty">No photos yet. Press <kbd>C</kbd> in-world for the camera, then Save to add photos here.</p>`
+      )
+    }
+
+    const count = `<span class="profile-page-view__photos-count">${this.photosCount || this.photos.length}${
+      this.photosMax ? ` / ${this.photosMax}` : ''
+    } photos</span>`
+
+    const months = groupGalleryByMonth(this.photos)
+      .map(
+        (section) => `
+          <section class="profile-page-view__photos-month">
+            <h3 class="profile-page-view__photos-month-title">
+              ${escapeHtml(section.label)}
+              <span class="profile-page-view__photos-month-count">${section.images.length}</span>
+            </h3>
+            <div class="profile-page-view__photos-grid" role="list">
+              ${section.images.map((img) => this.renderPhotoTile(img)).join('')}
+            </div>
+          </section>
+        `
+      )
+      .join('')
+
+    return panel(count, months)
+  }
+
+  private renderPhotoTile(photo: DclGalleryImage): string {
+    const when = formatGalleryDateTime(photo.dateTime, 'short')
+    const src = photo.thumbnailUrl || photo.url
+    const visibility = photo.isPublic
+      ? ''
+      : `<span class="profile-page-view__photo-private" title="Only you can see this photo">Private</span>`
+    return `
+      <button
+        type="button"
+        class="profile-page-view__photo"
+        role="listitem"
+        data-photo-url="${escapeHtml(galleryReelsUrl(photo.id))}"
+        title="${escapeHtml(when)}"
+        aria-label="Open photo from ${escapeHtml(when)}"
+      >
+        <img
+          class="profile-page-view__photo-img"
+          src="${escapeHtml(src)}"
+          alt=""
+          loading="lazy"
+          decoding="async"
+          referrerpolicy="no-referrer"
+        />
+        ${visibility}
+        <span class="profile-page-view__photo-date">${escapeHtml(when)}</span>
+      </button>
     `
   }
 
@@ -385,23 +560,39 @@ export class ProfilePageView {
 
     const peerUrl = this.catalystUrl.replace(/\/$/, '') || 'https://peer.decentraland.org'
     return wearables
-      .map((item) => {
-        const rarity = item.rarity.toLowerCase()
-        const bg = wearableRarityBackground(rarity)
-        const color = WEARABLE_RARITY_COLORS[rarity] ?? WEARABLE_RARITY_COLORS.common!
-        const thumb =
-          resolveContentImageUrl(item.thumbnailUrl, peerUrl) ?? wearableThumbnailUrl(item.urn, peerUrl)
-        const fallback = escapeHtml(wearableThumbnailUrl(item.urn, peerUrl))
-        return `
-          <article class="profile-page-view__wearable is-${escapeHtml(rarity)}" style="--wearable-rarity-bg:${escapeHtml(bg)};--wearable-rarity-color:${escapeHtml(color)}">
-            <div class="profile-page-view__wearable-thumb">
-              <img src="${escapeHtml(thumb)}" alt="${escapeHtml(item.name)}" loading="lazy" onerror="this.onerror=null;this.src='${fallback}'" />
-            </div>
-            <div class="profile-page-view__wearable-name">${escapeHtml(item.name)}</div>
-            <div class="profile-page-view__wearable-rarity">${escapeHtml(wearableRarityLabel(rarity))}</div>
-          </article>
-        `
-      })
+      .map((item) =>
+        renderRarityCard({
+          name: item.name,
+          rarity: item.rarity,
+          thumbnailUrl:
+            resolveContentImageUrl(item.thumbnailUrl, peerUrl) ??
+            wearableThumbnailUrl(item.urn, peerUrl),
+          fallbackThumbnailUrl: wearableThumbnailUrl(item.urn, peerUrl)
+        })
+      )
+      .join('')
+  }
+
+  private renderEquippedEmotes(emotes: EmoteDisplayCard[]): string {
+    if (!emotes.length) {
+      return `<p class="profile-page-view__empty">No emotes equipped.</p>`
+    }
+
+    const peerUrl = this.catalystUrl.replace(/\/$/, '') || 'https://peer.decentraland.org'
+    return [...emotes]
+      .sort((a, b) => a.slot - b.slot)
+      .map((item) =>
+        renderRarityCard({
+          name: item.name,
+          rarity: item.rarity,
+          thumbnailUrl:
+            resolveContentImageUrl(item.thumbnailUrl, peerUrl) ??
+            wearableThumbnailUrl(item.urn, peerUrl),
+          fallbackThumbnailUrl: wearableThumbnailUrl(item.urn, peerUrl),
+          badge: String(item.slot + 1),
+          badgeTitle: `Emote wheel slot ${item.slot + 1}`
+        })
+      )
       .join('')
   }
 

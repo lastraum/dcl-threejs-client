@@ -18,6 +18,7 @@ import {
   runStockFromCollection,
   runPull,
   runSettle,
+  runWithdrawRewards,
   shortAddr,
   humanizeStockError,
   hideGachaSignOverlay,
@@ -163,6 +164,8 @@ export class GachaCasinoView {
   private readonly depositBodyEl: HTMLElement
   private readonly feeEl: HTMLElement
   private readonly balEl: HTMLElement
+  private readonly claimableEl: HTMLElement
+  private readonly claimableChipBtn: HTMLButtonElement
   private readonly poolCountEl: HTMLElement
   private readonly shelfEl: HTMLElement
   private readonly statusEl: HTMLElement
@@ -171,6 +174,7 @@ export class GachaCasinoView {
   private readonly claimBtn: HTMLButtonElement
   private readonly depositBtn: HTMLButtonElement
   private readonly refreshBtn: HTMLButtonElement
+  private readonly feesModalEl: HTMLElement
 
   constructor(opts: GachaCasinoViewOptions) {
     this.login = opts.login
@@ -189,17 +193,21 @@ export class GachaCasinoView {
           <div class="gacha-casino__play" data-play>
             <div class="gacha-casino__hud">
               <div class="gacha-casino__chip">
-                <span class="gacha-casino__chip-label">Claim fee</span>
+                <span class="gacha-casino__chip-label">Grab cost</span>
                 <span class="gacha-casino__chip-value" data-fee>—</span>
-              </div>
-              <div class="gacha-casino__chip gacha-casino__chip--gold">
-                <span class="gacha-casino__chip-label">Your mMANA</span>
-                <span class="gacha-casino__chip-value" data-bal>—</span>
               </div>
               <div class="gacha-casino__chip gacha-casino__chip--dim">
                 <span class="gacha-casino__chip-label">In bag</span>
                 <span class="gacha-casino__chip-value" data-pool-count>—</span>
               </div>
+              <div class="gacha-casino__chip gacha-casino__chip--gold">
+                <span class="gacha-casino__chip-label">Your mMANA</span>
+                <span class="gacha-casino__chip-value" data-bal>—</span>
+              </div>
+              <button type="button" class="gacha-casino__chip gacha-casino__chip--claimable" data-claimable-chip title="Your share of grab fees">
+                <span class="gacha-casino__chip-label">Grab fees</span>
+                <span class="gacha-casino__chip-value" data-claimable>—</span>
+              </button>
               <button type="button" class="gacha-casino__icon-btn" data-refresh title="Refresh grab bag" aria-label="Refresh">↻</button>
             </div>
 
@@ -226,6 +234,25 @@ export class GachaCasinoView {
           <div class="gacha-casino__deposit-view" data-deposit-view hidden></div>
         </div>
       </div>
+
+      <div class="gacha-fees-modal" data-fees-modal hidden>
+        <div class="gacha-fees-modal__backdrop" data-fees-close></div>
+        <div class="gacha-fees-modal__card" role="dialog" aria-modal="true" aria-labelledby="gacha-fees-title">
+          <button type="button" class="gacha-fees-modal__x" data-fees-close aria-label="Close">×</button>
+          <div class="gacha-fees-modal__kicker">Grab bag</div>
+          <h2 class="gacha-fees-modal__title" id="gacha-fees-title">Your grab fees</h2>
+          <p class="gacha-fees-modal__amount" data-fees-amount>—</p>
+          <div class="gacha-fees-modal__body">
+            <p>When someone pays the <strong>grab cost</strong> to claim from the bag, most of that fee is shared equally across every active deposit.</p>
+            <p>If you have items in the bag (or recently did), your share builds up here as <strong>claimable mMANA</strong>.</p>
+            <p>Withdraw sends that balance to your wallet via a gasless meta-transaction.</p>
+          </div>
+          <p class="gacha-fees-modal__error" data-fees-error hidden></p>
+          <button type="button" class="gacha-casino__btn gacha-casino__btn--claim gacha-fees-modal__withdraw" data-fees-withdraw>
+            Withdraw grab fees
+          </button>
+        </div>
+      </div>
     `
 
     this.marqueeEl = this.root.querySelector('[data-marquee]')!
@@ -233,6 +260,8 @@ export class GachaCasinoView {
     this.depositBodyEl = this.root.querySelector('[data-deposit-view]')!
     this.feeEl = this.root.querySelector('[data-fee]')!
     this.balEl = this.root.querySelector('[data-bal]')!
+    this.claimableEl = this.root.querySelector('[data-claimable]')!
+    this.claimableChipBtn = this.root.querySelector('[data-claimable-chip]')!
     this.poolCountEl = this.root.querySelector('[data-pool-count]')!
     this.shelfEl = this.root.querySelector('[data-shelf]')!
     this.statusEl = this.root.querySelector('[data-status]')!
@@ -241,10 +270,13 @@ export class GachaCasinoView {
     this.claimBtn = this.root.querySelector('[data-claim]')!
     this.depositBtn = this.root.querySelector('[data-deposit-btn]')!
     this.refreshBtn = this.root.querySelector('[data-refresh]')!
+    this.feesModalEl = this.root.querySelector('[data-fees-modal]')!
 
     this.claimBtn.addEventListener('click', () => void this.onClaim())
     this.depositBtn.addEventListener('click', () => this.openDeposit())
     this.refreshBtn.addEventListener('click', () => void this.refresh())
+    this.claimableChipBtn.addEventListener('click', () => this.openFeesModal())
+    this.feesModalEl.addEventListener('click', (ev) => void this.onFeesModalClick(ev))
     this.resultEl.addEventListener('click', (ev) => void this.onResultClick(ev))
     this.depositBodyEl.addEventListener('click', (ev) => void this.onDepositViewClick(ev))
     this.depositBodyEl.addEventListener('input', (ev) => this.onDepositViewInput(ev))
@@ -261,6 +293,7 @@ export class GachaCasinoView {
   }
 
   dispose(): void {
+    this.closeFeesModal()
     this.root.remove()
   }
 
@@ -306,9 +339,11 @@ export class GachaCasinoView {
     this.claimBtn.disabled = on || this.claiming
     this.depositBtn.disabled = on
     this.refreshBtn.disabled = on
+    this.claimableChipBtn.disabled = on || this.claiming
     this.root.classList.toggle('is-busy', on)
     if (!on && this.steps.length === 0) hideGachaSignOverlay()
     if (this.mode === 'deposit') this.renderDepositView()
+    if (!this.feesModalEl.hidden) this.syncFeesModal()
   }
 
   private setMode(mode: ViewMode): void {
@@ -406,12 +441,120 @@ export class GachaCasinoView {
   private renderHud(): void {
     this.feeEl.textContent = this.pool ? `${formatMana(this.pool.acquisitionFee)} mMANA` : '—'
     this.balEl.textContent = this.wallet ? formatMana(this.wallet.mana) : '—'
+    const claimable = this.wallet?.claimable ?? 0n
+    this.claimableEl.textContent = this.wallet ? `${formatMana(claimable)} mMANA` : '—'
+    this.claimableChipBtn.classList.toggle('has-balance', claimable > 0n)
     // Prefer on-chain activeCount (truth); fall back to loaded shelf rows
     const n =
       this.pool != null
         ? Math.max(Number(this.pool.activeCount), this.pool.positions.length)
         : 0
     this.poolCountEl.textContent = String(n)
+    // Keep fees modal amount in sync if open
+    if (!this.feesModalEl.hidden) this.syncFeesModal()
+  }
+
+  private openFeesModal(): void {
+    if (this.busy || this.claiming) return
+    this.syncFeesModal()
+    this.feesModalEl.hidden = false
+    document.documentElement.classList.add('gacha-fees-open')
+  }
+
+  private closeFeesModal(): void {
+    this.feesModalEl.hidden = true
+    document.documentElement.classList.remove('gacha-fees-open')
+    const err = this.feesModalEl.querySelector('[data-fees-error]') as HTMLElement | null
+    if (err) {
+      err.hidden = true
+      err.textContent = ''
+    }
+  }
+
+  private syncFeesModal(): void {
+    const amountEl = this.feesModalEl.querySelector('[data-fees-amount]') as HTMLElement | null
+    const withdrawBtn = this.feesModalEl.querySelector(
+      '[data-fees-withdraw]'
+    ) as HTMLButtonElement | null
+    const claimable = this.wallet?.claimable ?? 0n
+    if (amountEl) {
+      amountEl.textContent = this.wallet
+        ? `${formatMana(claimable)} mMANA claimable`
+        : 'Connect a wallet to see grab fees'
+    }
+    if (withdrawBtn) {
+      withdrawBtn.disabled = this.busy || !this.wallet || claimable <= 0n
+      withdrawBtn.textContent =
+        claimable > 0n ? 'Withdraw grab fees' : 'Nothing to withdraw yet'
+    }
+  }
+
+  private async onFeesModalClick(ev: MouseEvent): Promise<void> {
+    const t = ev.target as HTMLElement
+    if (t.closest('[data-fees-close]')) {
+      this.closeFeesModal()
+      return
+    }
+    if (t.closest('[data-fees-withdraw]')) {
+      await this.onWithdrawFees()
+    }
+  }
+
+  private async onWithdrawFees(): Promise<void> {
+    if (this.busy || this.claiming) return
+    if (!this.addr()) {
+      this.setFeesModalError('Connect a wallet to withdraw')
+      return
+    }
+    const claimable = this.wallet?.claimable ?? 0n
+    if (claimable <= 0n) {
+      this.setFeesModalError('No grab fees to withdraw yet')
+      return
+    }
+
+    this.setBusy(true)
+    this.error = null
+    this.steps = []
+    this.stepSeq = 0
+    this.setFeesModalError(null)
+    this.renderSteps()
+    try {
+      await runWithdrawRewards({
+        sessionAddress: this.addr(),
+        api: this.flowApi()
+      })
+      this.steps = []
+      hideGachaSignOverlay()
+      await this.refresh()
+      this.setBusy(false)
+      this.closeFeesModal()
+      await showGachaSuccessOverlay({
+        title: 'Fees withdrawn!',
+        message: `${formatMana(claimable)} mMANA sent to your wallet.`,
+        buttonLabel: 'Back to grab bag'
+      })
+      this.status = 'Grab fees withdrawn'
+      this.renderStatus()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      this.setFeesModalError(msg)
+      this.error = msg
+      this.renderStatus()
+      this.renderSteps()
+      this.setBusy(false)
+    }
+  }
+
+  private setFeesModalError(msg: string | null): void {
+    const err = this.feesModalEl.querySelector('[data-fees-error]') as HTMLElement | null
+    if (!err) return
+    if (!msg) {
+      err.hidden = true
+      err.textContent = ''
+      return
+    }
+    err.hidden = false
+    err.textContent = msg
   }
 
   // ── Display shelf ─────────────────────────────────────────────────────────
@@ -1203,7 +1346,9 @@ export class GachaCasinoView {
             : 'Deposit to grab bag'
           : this.claiming
             ? 'Claim from grab bag'
-            : 'Grab bag transaction'
+            : this.steps.some((s) => /withdraw|grab fees/i.test(s.label))
+              ? 'Withdraw grab fees'
+              : 'Grab bag transaction'
       const statusLine =
         active != null
           ? 'Confirm in your wallet…'

@@ -451,7 +451,7 @@ export async function runWithdrawRewards(args: {
     abi: gachaPoolAbi,
     functionName: 'withdrawRewards',
     from,
-    label: 'withdrawRewards'
+    label: 'Withdraw grab fees'
   })
 }
 

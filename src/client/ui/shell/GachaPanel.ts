@@ -177,7 +177,7 @@ export class GachaPanel {
           <div class="gacha-panel__header-main">
             <h2 class="gacha-panel__title" data-title>Grab bag</h2>
             <div class="gacha-panel__stats">
-              <span class="gacha-panel__stat" data-fee title="Claim fee">Fee —</span>
+              <span class="gacha-panel__stat" data-fee title="Grab cost">Grab cost —</span>
               <span class="gacha-panel__stat gacha-panel__stat--mana" data-balance title="Your MockMANA">Balance —</span>
               <span class="gacha-panel__stat" data-pool-count title="Items in the grab bag">In bag —</span>
             </div>
@@ -413,7 +413,7 @@ export class GachaPanel {
 
   private renderHeader(): void {
     const fee = this.pool ? formatMana(this.pool.acquisitionFee) : '—'
-    this.feeEl.textContent = `Fee ${fee} mMANA`
+    this.feeEl.textContent = `Grab cost ${fee} mMANA`
     const bal = this.wallet ? formatMana(this.wallet.mana) : '—'
     this.balanceEl.textContent = `Balance ${bal}`
     const n =

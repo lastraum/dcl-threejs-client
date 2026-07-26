@@ -17036,19 +17036,137 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 6px;
+        gap: 8px;
         color: rgba(255, 255, 255, 0.55);
         text-align: center;
         padding: 24px;
       }
       .gacha-vitrine__empty-icon {
-        font-size: 32px;
-        opacity: 0.5;
+        font-size: 40px;
+        opacity: 0.55;
+        color: #c4b5fd;
+      }
+      .gacha-vitrine__empty-title {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 700;
+        color: rgba(255, 255, 255, 0.88);
       }
       .gacha-vitrine__empty-hint {
         margin: 0;
         font-size: 12px;
         color: rgba(255, 255, 255, 0.38);
+        max-width: 280px;
+        line-height: 1.4;
+      }
+      .gacha-vitrine__empty-hint--soft {
+        color: rgba(255, 255, 255, 0.28);
+        font-size: 11px;
+      }
+
+      /* Grab bag shelf skeleton (loading, not empty) */
+      .gacha-shelf-skel {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        justify-content: center;
+        gap: 16px;
+        padding: 12px 8px 8px;
+        box-sizing: border-box;
+      }
+      .gacha-shelf-skel--panel {
+        min-height: 180px;
+        padding: 8px 4px 4px;
+      }
+      .gacha-shelf-skel__track {
+        display: flex;
+        gap: 12px;
+        overflow: hidden;
+        justify-content: flex-start;
+        padding: 4px 8px;
+      }
+      .gacha-shelf-skel__card {
+        flex: 0 0 148px;
+        width: 148px;
+        border-radius: 14px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.04);
+        animation: gacha-skel-pulse 1.4s ease-in-out infinite;
+      }
+      .gacha-shelf-skel__card--panel {
+        flex: 0 0 112px;
+        width: 112px;
+        border-radius: 12px;
+      }
+      .gacha-shelf-skel__art {
+        height: 110px;
+        background: linear-gradient(
+          110deg,
+          rgba(139, 92, 246, 0.12) 0%,
+          rgba(196, 181, 253, 0.28) 40%,
+          rgba(139, 92, 246, 0.12) 80%
+        );
+        background-size: 200% 100%;
+        animation: gacha-skel-shimmer 1.6s linear infinite;
+      }
+      .gacha-shelf-skel__card--panel .gacha-shelf-skel__art {
+        height: 84px;
+      }
+      .gacha-shelf-skel__lines {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px;
+      }
+      .gacha-shelf-skel__line {
+        height: 10px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.1);
+        width: 88%;
+      }
+      .gacha-shelf-skel__line--title {
+        height: 12px;
+        width: 72%;
+        background: rgba(255, 255, 255, 0.16);
+      }
+      .gacha-shelf-skel__line--short {
+        width: 42%;
+        background: rgba(253, 230, 138, 0.18);
+      }
+      .gacha-shelf-skel__footer {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding-bottom: 4px;
+      }
+      .gacha-shelf-skel__label {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 600;
+        color: rgba(221, 214, 254, 0.9);
+        letter-spacing: 0.01em;
+      }
+      .gacha-shelf-skel__spin {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 2px solid rgba(196, 181, 253, 0.25);
+        border-top-color: #c4b5fd;
+        animation: gacha-skel-spin 0.7s linear infinite;
+      }
+      @keyframes gacha-skel-shimmer {
+        0% { background-position: 100% 0; }
+        100% { background-position: -100% 0; }
+      }
+      @keyframes gacha-skel-pulse {
+        0%, 100% { opacity: 0.72; }
+        50% { opacity: 1; }
+      }
+      @keyframes gacha-skel-spin {
+        to { transform: rotate(360deg); }
       }
       .gacha-casino__hud,
       .gacha-casino__controls,

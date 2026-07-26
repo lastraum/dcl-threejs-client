@@ -23,11 +23,19 @@ export const META_TX_DOMAINS: Record<string, { name: string; version: string }> 
 }
 
 /**
- * Meta-tx relay. Dev uses Vite proxy → localhost:5356 (forge dcl-meta-tx).
- * Override with VITE_META_TX_URL for remote forge.
+ * Meta-tx relay (Polygon self-relayer / Gelato).
+ *
+ * - Explicit `VITE_META_TX_URL` always wins.
+ * - Dev default: same-origin `/v1/transactions` (Vite proxies to production — avoids CORS).
+ * - Prod default: https://transactions.lastslice.co/v1/transactions
+ *   (tx server must allow your client Origin in CORS_ORIGIN).
  */
-export const META_TX_URL =
-  (import.meta.env.VITE_META_TX_URL as string | undefined) || '/v1/transactions'
+export const META_TX_URL = (() => {
+  const override = (import.meta.env.VITE_META_TX_URL as string | undefined)?.trim()
+  if (override) return override
+  if (import.meta.env.DEV) return '/v1/transactions'
+  return 'https://transactions.lastslice.co/v1/transactions'
+})()
 
 export const POLYGON_RPC =
   (import.meta.env.VITE_POLYGON_RPC as string | undefined) ||

@@ -103,6 +103,30 @@ function ownedToInventory(tokenIds: number[]): InvItem[] {
   return [manaPackInvItem(), ...nfts]
 }
 
+/** Skeleton shelf while pool snapshot loads (distinct from true empty). */
+function shelfLoadingHtml(count: number, label: string): string {
+  const cards = Array.from({ length: count }, (_, i) => {
+    const delay = (i * 0.08).toFixed(2)
+    return `
+      <div class="gacha-shelf-skel__card" style="animation-delay:${delay}s" aria-hidden="true">
+        <div class="gacha-shelf-skel__art"></div>
+        <div class="gacha-shelf-skel__lines">
+          <div class="gacha-shelf-skel__line gacha-shelf-skel__line--title"></div>
+          <div class="gacha-shelf-skel__line"></div>
+          <div class="gacha-shelf-skel__line gacha-shelf-skel__line--short"></div>
+        </div>
+      </div>`
+  }).join('')
+  return `
+    <div class="gacha-shelf-skel" role="status" aria-live="polite" aria-busy="true">
+      <div class="gacha-shelf-skel__track">${cards}</div>
+      <div class="gacha-shelf-skel__footer">
+        <span class="gacha-shelf-skel__spin" aria-hidden="true"></span>
+        <p class="gacha-shelf-skel__label">${escapeHtml(label)}</p>
+      </div>
+    </div>`
+}
+
 export class GachaCasinoView {
   readonly root: HTMLElement
 
@@ -228,6 +252,7 @@ export class GachaCasinoView {
   }
 
   mount(): void {
+    this.renderShelfLoading()
     void this.refresh()
   }
 
@@ -341,8 +366,9 @@ export class GachaCasinoView {
   async refresh(): Promise<void> {
     this.error = null
     if (this.mode === 'play') {
-      this.status = 'Loading grab bag…'
+      this.status = ''
       this.renderStatus()
+      this.renderShelfLoading()
     }
     try {
       this.pool = await fetchPoolSnapshot()
@@ -387,16 +413,23 @@ export class GachaCasinoView {
 
   // ── Display shelf ─────────────────────────────────────────────────────────
 
+  private renderShelfLoading(): void {
+    this.shelfEl.classList.add('is-empty', 'is-loading')
+    this.shelfEl.innerHTML = shelfLoadingHtml(6, 'Opening the grab bag…')
+  }
+
   private renderShelf(positions: GachaPosition[]): void {
     this.shelfEl.innerHTML = ''
     this.shelfEl.classList.toggle('is-empty', positions.length === 0)
+    this.shelfEl.classList.remove('is-loading')
 
     if (positions.length === 0) {
       this.shelfEl.innerHTML = `
         <div class="gacha-vitrine__empty">
-          <div class="gacha-vitrine__empty-icon" aria-hidden="true">◇</div>
-          <p>Nothing on the shelf yet</p>
-          <p class="gacha-vitrine__empty-hint">Deposit a wearable or MANA pack to fill the grab bag</p>
+          <div class="gacha-vitrine__empty-icon" aria-hidden="true">◈</div>
+          <p class="gacha-vitrine__empty-title">Grab bag is empty</p>
+          <p class="gacha-vitrine__empty-hint">Deposit a wearable or MANA pack to fill the shelf</p>
+          <p class="gacha-vitrine__empty-hint gacha-vitrine__empty-hint--soft">Weighted chance shows once items are in the bag</p>
         </div>`
       return
     }
@@ -438,8 +471,8 @@ export class GachaCasinoView {
     const rarityLabel = p.kind === 'manaPack' ? 'pack' : rarity
     const backing =
       p.kind === 'manaPack'
-        ? `Prize ${formatMana(p.packMana)} · Back ${formatMana(p.backing)}`
-        : `Back ${formatMana(p.backing)} mMANA`
+        ? `Prize ${formatMana(p.packMana)} · Backed by ${formatMana(p.backing)}`
+        : `Backed by ${formatMana(p.backing)} mMANA`
     const chance =
       chanceLabel === '—' ? '— chance' : `${escapeHtml(chanceLabel)} chance`
     el.innerHTML = `

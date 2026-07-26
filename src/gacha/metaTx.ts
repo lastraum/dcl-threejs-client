@@ -229,7 +229,7 @@ export async function sendContractMetaTx(args: {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     throw new Error(
-      `Meta-tx relay unreachable (${META_TX_URL}). Start forge dcl-meta-tx on :5356. ${msg}`
+      `Meta-tx relay unreachable (${META_TX_URL}). Check CORS / network, or set VITE_META_TX_URL. ${msg}`
     )
   }
 

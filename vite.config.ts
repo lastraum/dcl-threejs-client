@@ -98,10 +98,12 @@ export default defineConfig({
         secure: true,
         rewrite: (path) => path.replace(/^\/api\/storage/, '')
       },
-      // Forge dcl-meta-tx self-relayer (gacha gasless writes) — same-origin to avoid CORS
+      // Grab bag meta-tx — same-origin proxy (avoids browser CORS to lastslice)
+      // Local tx server: set target to http://localhost:5356
       '/v1': {
-        target: 'http://localhost:5356',
-        changeOrigin: true
+        target: 'https://transactions.lastslice.co',
+        changeOrigin: true,
+        secure: true
       }
     }
   },

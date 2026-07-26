@@ -2,7 +2,7 @@
 
 interface ImportMetaEnv {
   readonly VITE_SUGGESTION_DISPATCH_URL?: string
-  /** Forge meta-tx endpoint (default /v1/transactions → vite proxy :5356) */
+  /** Meta-tx endpoint (default https://transactions.lastslice.co/v1/transactions) */
   readonly VITE_META_TX_URL?: string
   /** Polygon HTTP RPC for gacha eth_call / receipts */
   readonly VITE_POLYGON_RPC?: string

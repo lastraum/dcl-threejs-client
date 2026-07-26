@@ -94,6 +94,30 @@ function formatManaDisplay(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 0 })
 }
 
+/** Skeleton shelf while pool snapshot loads (distinct from true empty). */
+function shelfLoadingHtml(count: number, label: string): string {
+  const cards = Array.from({ length: count }, (_, i) => {
+    const delay = (i * 0.08).toFixed(2)
+    return `
+      <div class="gacha-shelf-skel__card gacha-shelf-skel__card--panel" style="animation-delay:${delay}s" aria-hidden="true">
+        <div class="gacha-shelf-skel__art"></div>
+        <div class="gacha-shelf-skel__lines">
+          <div class="gacha-shelf-skel__line gacha-shelf-skel__line--title"></div>
+          <div class="gacha-shelf-skel__line"></div>
+          <div class="gacha-shelf-skel__line gacha-shelf-skel__line--short"></div>
+        </div>
+      </div>`
+  }).join('')
+  return `
+    <div class="gacha-shelf-skel gacha-shelf-skel--panel" role="status" aria-live="polite" aria-busy="true">
+      <div class="gacha-shelf-skel__track">${cards}</div>
+      <div class="gacha-shelf-skel__footer">
+        <span class="gacha-shelf-skel__spin" aria-hidden="true"></span>
+        <p class="gacha-shelf-skel__label">${escapeHtml(label)}</p>
+      </div>
+    </div>`
+}
+
 /**
  * Left HUD grab bag — ~2× chat width.
  * Main: glass display shelf · Deposit: 1/3 + 2/3 inventory · Win: center modal.
@@ -163,9 +187,7 @@ export class GachaPanel {
             <button type="button" class="gacha-panel__close" data-close aria-label="Close">×</button>
           </div>
         </header>
-        <div class="gacha-panel__body" data-body>
-          <p class="gacha-panel__loading">Loading grab bag…</p>
-        </div>
+        <div class="gacha-panel__body" data-body></div>
         <div class="gacha-panel__steps" data-steps hidden></div>
         <p class="gacha-panel__status" data-status hidden></p>
         <footer class="gacha-panel__footer" data-footer>
@@ -235,6 +257,7 @@ export class GachaPanel {
     this.visible = true
     this.element.hidden = false
     window.addEventListener('keydown', this.onKeyDown)
+    this.renderShelfLoading()
     await this.refresh()
   }
 
@@ -353,8 +376,9 @@ export class GachaPanel {
   async refresh(): Promise<void> {
     this.error = null
     if (this.mode === 'main') {
-      this.status = 'Loading grab bag…'
+      this.status = ''
       this.renderStatus()
+      this.renderShelfLoading()
     }
     try {
       this.pool = await fetchPoolSnapshot()
@@ -432,13 +456,17 @@ export class GachaPanel {
     this.renderStatus()
   }
 
+  private renderShelfLoading(): void {
+    this.bodyEl.innerHTML = shelfLoadingHtml(4, 'Opening the grab bag…')
+  }
+
   private renderMainBody(): void {
     const positions = this.pool?.positions ?? []
     if (!positions.length) {
       this.bodyEl.innerHTML = `
         <div class="gacha-panel__empty">
-          <div class="gacha-panel__empty-icon" aria-hidden="true">◇</div>
-          <p>Nothing in the grab bag yet</p>
+          <div class="gacha-panel__empty-icon" aria-hidden="true">◈</div>
+          <p>Grab bag is empty</p>
           <p class="gacha-panel__muted">Deposit a wearable or MANA pack to fill the grab bag.</p>
         </div>`
       return
@@ -480,8 +508,8 @@ export class GachaPanel {
         : ''
     const rarityLabel = isPack ? 'pack' : escapeHtml(rarity)
     const backing = isPack
-      ? `Prize ${formatMana(p.packMana)} · Back ${formatMana(p.backing)}`
-      : `Back ${formatMana(p.backing)} mMANA`
+      ? `Prize ${formatMana(p.packMana)} · Backed by ${formatMana(p.backing)}`
+      : `Backed by ${formatMana(p.backing)} mMANA`
     const chance = chanceLabel === '—' ? '— chance' : `${escapeHtml(chanceLabel)} chance`
     const img = p.imageUrl
       ? `<img class="gacha-panel__card-img" src="${escapeHtml(p.imageUrl)}" alt="" loading="lazy" decoding="async" />`
@@ -800,8 +828,8 @@ export class GachaPanel {
       : `Position #${win.positionId}`
     const sub = p
       ? isPack
-        ? `Prize ${formatMana(p.packMana)} · Back ${formatMana(p.backing)}`
-        : `Back ${formatMana(p.backing)} mMANA · ${shortAddr(p.depositor)}`
+        ? `Prize ${formatMana(p.packMana)} · Backed by ${formatMana(p.backing)}`
+        : `Backed by ${formatMana(p.backing)} mMANA · ${shortAddr(p.depositor)}`
       : 'Settle your claim'
     const glyph = isPack ? '◈' : '✦'
     const demo = isFake

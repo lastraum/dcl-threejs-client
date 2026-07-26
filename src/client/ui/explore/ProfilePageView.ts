@@ -3,13 +3,12 @@ import { CommunityModal } from '../communities/CommunityModal'
 import { AvatarPreviewMini } from '../profile/AvatarPreviewMini'
 import { loadProfilePageData, profilePageWalletLabel, type ProfilePageData } from '../profile/profilePageData'
 import {
+  renderRarityCard,
   resolveContentImageUrl,
-  wearableRarityBackground,
-  wearableRarityLabel,
   wearableThumbnailUrl,
-  WEARABLE_RARITY_COLORS,
   type WearableDisplayCard
 } from '../profile/wearableThumb'
+import type { EmoteDisplayCard } from '../profile/emoteCards'
 import {
   communityDisplayImageUrl,
   enrichCommunityThumbnailFromDetail
@@ -258,6 +257,10 @@ export class ProfilePageView {
                 <h2 class="profile-page-view__block-title">Equipped Items</h2>
                 <div class="profile-page-view__equipped">${this.renderEquipped(data.wearables)}</div>
               </section>
+              <section class="profile-page-view__block">
+                <h2 class="profile-page-view__block-title">Emotes</h2>
+                <div class="profile-page-view__equipped">${this.renderEquippedEmotes(data.emotes)}</div>
+              </section>
             </div>
           </div>
         </section>
@@ -385,23 +388,39 @@ export class ProfilePageView {
 
     const peerUrl = this.catalystUrl.replace(/\/$/, '') || 'https://peer.decentraland.org'
     return wearables
-      .map((item) => {
-        const rarity = item.rarity.toLowerCase()
-        const bg = wearableRarityBackground(rarity)
-        const color = WEARABLE_RARITY_COLORS[rarity] ?? WEARABLE_RARITY_COLORS.common!
-        const thumb =
-          resolveContentImageUrl(item.thumbnailUrl, peerUrl) ?? wearableThumbnailUrl(item.urn, peerUrl)
-        const fallback = escapeHtml(wearableThumbnailUrl(item.urn, peerUrl))
-        return `
-          <article class="profile-page-view__wearable is-${escapeHtml(rarity)}" style="--wearable-rarity-bg:${escapeHtml(bg)};--wearable-rarity-color:${escapeHtml(color)}">
-            <div class="profile-page-view__wearable-thumb">
-              <img src="${escapeHtml(thumb)}" alt="${escapeHtml(item.name)}" loading="lazy" onerror="this.onerror=null;this.src='${fallback}'" />
-            </div>
-            <div class="profile-page-view__wearable-name">${escapeHtml(item.name)}</div>
-            <div class="profile-page-view__wearable-rarity">${escapeHtml(wearableRarityLabel(rarity))}</div>
-          </article>
-        `
-      })
+      .map((item) =>
+        renderRarityCard({
+          name: item.name,
+          rarity: item.rarity,
+          thumbnailUrl:
+            resolveContentImageUrl(item.thumbnailUrl, peerUrl) ??
+            wearableThumbnailUrl(item.urn, peerUrl),
+          fallbackThumbnailUrl: wearableThumbnailUrl(item.urn, peerUrl)
+        })
+      )
+      .join('')
+  }
+
+  private renderEquippedEmotes(emotes: EmoteDisplayCard[]): string {
+    if (!emotes.length) {
+      return `<p class="profile-page-view__empty">No emotes equipped.</p>`
+    }
+
+    const peerUrl = this.catalystUrl.replace(/\/$/, '') || 'https://peer.decentraland.org'
+    return [...emotes]
+      .sort((a, b) => a.slot - b.slot)
+      .map((item) =>
+        renderRarityCard({
+          name: item.name,
+          rarity: item.rarity,
+          thumbnailUrl:
+            resolveContentImageUrl(item.thumbnailUrl, peerUrl) ??
+            wearableThumbnailUrl(item.urn, peerUrl),
+          fallbackThumbnailUrl: wearableThumbnailUrl(item.urn, peerUrl),
+          badge: String(item.slot + 1),
+          badgeTitle: `Emote wheel slot ${item.slot + 1}`
+        })
+      )
       .join('')
   }
 

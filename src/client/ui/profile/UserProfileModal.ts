@@ -6,14 +6,13 @@ import { fetchUserBadges, type UserBadge } from '../../../social/badgesApi'
 import type { SocialService } from '../../../social/SocialService'
 import { friendshipActionLabel } from '../../../social/friendshipsApi'
 import { AvatarPreviewMini } from './AvatarPreviewMini'
+import { fetchEmoteDisplayCards, type EmoteDisplayCard } from './emoteCards'
 import {
   fetchWearableDisplayCards,
+  renderRarityCard,
   resolveContentImageUrl,
   type WearableDisplayCard,
-  wearableRarityBackground,
-  wearableRarityLabel,
-  wearableThumbnailUrl,
-  WEARABLE_RARITY_COLORS
+  wearableThumbnailUrl
 } from './wearableThumb'
 
 export type UserProfileModalTarget =
@@ -32,6 +31,7 @@ type LoadedProfile = {
   relation: ReturnType<SocialService['getFriendshipRelation']>
   badges: UserBadge[]
   wearables: WearableDisplayCard[]
+  emotes: EmoteDisplayCard[]
   profileUrl: string
 }
 
@@ -219,9 +219,10 @@ export class UserProfileModal {
       ? `https://decentraland.org/profile/accounts/${address}`
       : 'https://decentraland.org/profile'
 
-    const [badges, wearables] = await Promise.all([
+    const [badges, wearables, emotes] = await Promise.all([
       address ? fetchUserBadges(address) : Promise.resolve([]),
-      profile ? fetchWearableDisplayCards(profile.wearables, peerUrl) : Promise.resolve([])
+      profile ? fetchWearableDisplayCards(profile.wearables, peerUrl) : Promise.resolve([]),
+      profile ? fetchEmoteDisplayCards(profile.emotes, peerUrl) : Promise.resolve([])
     ])
 
     if (token !== this.loadToken || !this.visible) return
@@ -236,6 +237,7 @@ export class UserProfileModal {
       relation,
       badges,
       wearables,
+      emotes,
       profileUrl
     }
 
@@ -367,6 +369,10 @@ export class UserProfileModal {
         <h3>Equipped Items</h3>
         <div class="user-profile-modal__wearables">${this.renderWearables(data.wearables)}</div>
       </section>
+      <section class="user-profile-modal__section">
+        <h3>Emotes</h3>
+        <div class="user-profile-modal__wearables">${this.renderEmotes(data.emotes)}</div>
+      </section>
     `
   }
 
@@ -400,24 +406,38 @@ export class UserProfileModal {
     }
     const peerUrl = this.getPeerUrl().replace(/\/$/, '') || 'https://peer.decentraland.org'
     return wearables
-      .map((item) => {
-        const rarity = item.rarity.toLowerCase()
-        const bg = wearableRarityBackground(rarity)
-        const color = WEARABLE_RARITY_COLORS[rarity] ?? WEARABLE_RARITY_COLORS.common!
-        const thumb =
-          resolveContentImageUrl(item.thumbnailUrl, peerUrl) ??
-          wearableThumbnailUrl(item.urn, peerUrl)
-        const fallback = escapeHtml(wearableThumbnailUrl(item.urn, peerUrl))
-        return `
-          <article class="user-profile-modal__wearable is-${escapeHtml(rarity)}" style="--wearable-rarity-bg:${escapeHtml(bg)};--wearable-rarity-color:${escapeHtml(color)}">
-            <div class="user-profile-modal__wearable-thumb">
-              <img src="${escapeHtml(thumb)}" alt="${escapeHtml(item.name)}" loading="lazy" onerror="this.onerror=null;this.src='${fallback}'" />
-            </div>
-            <div class="user-profile-modal__wearable-name">${escapeHtml(item.name)}</div>
-            <div class="user-profile-modal__wearable-rarity">${escapeHtml(wearableRarityLabel(rarity))}</div>
-          </article>
-        `
-      })
+      .map((item) =>
+        renderRarityCard({
+          name: item.name,
+          rarity: item.rarity,
+          thumbnailUrl:
+            resolveContentImageUrl(item.thumbnailUrl, peerUrl) ??
+            wearableThumbnailUrl(item.urn, peerUrl),
+          fallbackThumbnailUrl: wearableThumbnailUrl(item.urn, peerUrl)
+        })
+      )
+      .join('')
+  }
+
+  private renderEmotes(emotes: EmoteDisplayCard[]): string {
+    if (!emotes.length) {
+      return `<p class="user-profile-modal__empty">No emotes equipped.</p>`
+    }
+    const peerUrl = this.getPeerUrl().replace(/\/$/, '') || 'https://peer.decentraland.org'
+    return [...emotes]
+      .sort((a, b) => a.slot - b.slot)
+      .map((item) =>
+        renderRarityCard({
+          name: item.name,
+          rarity: item.rarity,
+          thumbnailUrl:
+            resolveContentImageUrl(item.thumbnailUrl, peerUrl) ??
+            wearableThumbnailUrl(item.urn, peerUrl),
+          fallbackThumbnailUrl: wearableThumbnailUrl(item.urn, peerUrl),
+          badge: String(item.slot + 1),
+          badgeTitle: `Emote wheel slot ${item.slot + 1}`
+        })
+      )
       .join('')
   }
 }

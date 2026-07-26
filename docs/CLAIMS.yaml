@@ -5,10 +5,39 @@
 # Dev panel Community tab renders this as a single workflow table.
 
 schema_version: 2
-updated: 2026-07-24
+updated: 2026-07-26
 source: github
 base_branch: dev-latest
 workflow:
+  - stage: pending_review
+    integration_ref: pr:52
+    title: photos tabs on the profile page + modal, consistent rarity tiles
+    owner: awedjob
+    pr: 52
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/52
+    updated: 2026-07-26
+  - stage: pending_review
+    integration_ref: pr:51
+    title: rest DCL shoes on the ground disc instead of clipping through
+    owner: awedjob
+    pr: 51
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/51
+    updated: 2026-07-26
+  - stage: merged
+    integration_ref: pr:50
+    title: drop duplicate bone tracks and honor the Catalyst loop flag
+    owner: awedjob
+    pr: 50
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/50
+    updated: 2026-07-26
+  - stage: merged
+    integration_ref: pr:48
+    title: item provenance in detail panes + clickable filter chips; official exotic
+      color
+    owner: awedjob
+    pr: 48
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/48
+    updated: 2026-07-25
   - stage: merged
     integration_ref: pr:47
     title: export equipped DCL avatar as VRM 0.0
@@ -129,20 +158,6 @@ workflow:
     pr: 22
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/22
     updated: 2026-07-13
-  - stage: merged
-    integration_ref: pr:17
-    title: scene.json skyboxConfig sun/moon settings
-    owner: awedjob
-    pr: 17
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/17
-    updated: 2026-07-13
-  - stage: merged
-    integration_ref: pr:14
-    title: match Windows paths in yoga nbind esbuild filter
-    owner: awedjob
-    pr: 14
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/14
-    updated: 2026-07-11
   - stage: merged
     integration_ref: ecs:TriggerArea
     title: TriggerArea Tier A — volume enter/exit and scene callbacks

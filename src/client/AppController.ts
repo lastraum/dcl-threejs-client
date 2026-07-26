@@ -2300,7 +2300,8 @@ export class AppController {
         session: world.session,
         debugPanel: this.debugPanel,
         devProgressPanel: this.devProgressPanel,
-        onEmoteSelected: (emoteId) => world.playLocalEmote(emoteId, { loop: false }),
+        // `undefined` keeps the Catalyst loop flag; `false` would force every emote one-shot.
+        onEmoteSelected: (emoteId) => world.playLocalEmote(emoteId, { loop: undefined }),
         onTogglePhotoCamera: () => world.togglePhotoCamera(),
         onTourOptions: () => this.openTourOptionsPopup(),
         onSignOut: () => this.signOut(),
@@ -2308,7 +2309,7 @@ export class AppController {
       })
     } else {
       this.shell.updateWorldBindings(world.session, world.environment)
-      this.shell.setEmoteHandler((emoteId) => world.playLocalEmote(emoteId, { loop: false }))
+      this.shell.setEmoteHandler((emoteId) => world.playLocalEmote(emoteId, { loop: undefined }))
       this.shell.setPhotoCameraHandler(() => world.togglePhotoCamera())
       this.shell.setTourOptionsHandler(() => this.openTourOptionsPopup())
     }

@@ -29,6 +29,7 @@ export class ProfileUiController {
   private readonly contextMenu: UserContextMenu
   private readonly profileModal: UserProfileModal
   private readonly pillHover: PeerPillHover
+  private swallowNextContextMenu = false
 
   constructor(private readonly options: ProfileUiControllerOptions) {
     this.pillHover = new PeerPillHover({
@@ -84,6 +85,10 @@ export class ProfileUiController {
 
   openContextMenu(address: string, clientX: number, clientY: number): void {
     if (this.options.isPassportDisabled?.(address)) return
+    // Windows fires `contextmenu` on mouse *up*, after the pointerdown that
+    // opened this menu. When the peer is cached the menu is already up by then,
+    // and that trailing event lands on the backdrop, which dismisses it.
+    this.swallowNextContextMenu = true
     this.prepareOverlay()
     const key = address.toLowerCase()
     void this.options.social.ensureFriendshipSnapshot().then(() => {
@@ -102,12 +107,19 @@ export class ProfileUiController {
   }
 
   private onOverlayDismissed(): void {
+    this.swallowNextContextMenu = false
     this.pillHover.setBlocked(false)
     this.pillHover.refresh()
   }
 
   /** Right-click on canvas near a remote pill — Explorer opens profile options from avatar vicinity. */
   private onDocumentContextMenu = (e: MouseEvent): void => {
+    if (this.swallowNextContextMenu) {
+      this.swallowNextContextMenu = false
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
     if (isClientOverlayTarget(e.target)) return
     const canvas = document.querySelector('#app canvas')
     if (!canvas || e.target !== canvas) return

@@ -407,42 +407,63 @@ export class AoiVisualLayer {
       }
     }
 
-    // --- Default ground: vacant + roads-adjacent only ---
-    // NEVER paint empty-land under: primary, sticky demoted, live secondary/tertiary residents.
-    // Painting red under demoted CBD after promote was the void screenshot bug.
+    // --- Already-loaded scenes (any ring): never empty-land candidates ---
+    // Primary, sticky demoted, live secondary/tertiary, composite shells, first-frame samples.
+    const loadedEntityIds = new Set<string>()
+    if (primaryId) loadedEntityIds.add(primaryId)
+    for (const id of this.liveSecondaryIds) loadedEntityIds.add(id)
+    for (const id of this.loadedCompositeIds) loadedEntityIds.add(id)
+    for (const id of this.firstFrameGroups.keys()) loadedEntityIds.add(id)
+
+    const loadedParcelSet = new Set<string>()
+    if (!this.primaryIsEmpty) {
+      for (const p of this.primaryParcelSet) loadedParcelSet.add(p)
+    }
+    for (const p of this.residentParcelSet) loadedParcelSet.add(p)
+    for (const ent of entities) {
+      if (!loadedEntityIds.has(ent.id)) continue
+      for (const p of ent.pointers.length ? ent.pointers : ent.parcels) {
+        if (pointerSet.has(p)) loadedParcelSet.add(p.trim())
+      }
+    }
+
+    // Empty-land = true vacant / catalyst-empty only. Never under a loaded scene graph.
     const vacantKeys: string[] = []
     const groundKeys: string[] = []
-    let skippedResidentGround = 0
+    let skippedLoadedGround = 0
     for (const key of pointers) {
-      if (this.primaryParcelSet.has(key) && !this.primaryIsEmpty) continue
-      // Sticky / live resident mesh graphs own these parcels — no red blank tiles.
-      if (this.residentParcelSet.has(key)) {
-        skippedResidentGround++
+      const k = key.trim()
+      // Already-loaded scene owns this parcel at any ring — never empty fill.
+      if (loadedParcelSet.has(k)) {
+        skippedLoadedGround++
         continue
       }
-      // Live worker entity still covers this pointer — skip blank ground.
-      const owner = pointerToEntity.get(key)
-      if (owner?.id && this.liveSecondaryIds.has(owner.id)) {
-        skippedResidentGround++
+      const ent = pointerToEntity.get(key) ?? pointerToEntity.get(k)
+      if (ent?.id && loadedEntityIds.has(ent.id)) {
+        skippedLoadedGround++
         continue
       }
-      // Explorer road catalog has its own tiles — skip default ground under streets
-      if (isExplorerRoadParcel(key)) continue
-      const ent = pointerToEntity.get(key)
+      // Real non-empty scene footprint (even before our graph is registered) — not empty land.
+      if (secondaryFootprint.has(k) || secondaryFootprint.has(key)) {
+        skippedLoadedGround++
+        continue
+      }
+      if (ent && isSecondarySceneCandidate(ent) && !isVacantForEmptyLayer(ent)) {
+        skippedLoadedGround++
+        continue
+      }
+      // Explorer roads have their own tiles
+      if (isExplorerRoadParcel(key) || isExplorerRoadParcel(k)) continue
       if (ent && isOpenRoadEntity(ent)) continue
-      // Real SDK7 secondary footprint (even before resident slot): no empty-land fill.
-      // Composites / first-frame / live workers own the visual — red ground is for vacant only.
-      if (secondaryFootprint.has(key)) continue
-      if (ent && isSecondarySceneCandidate(ent) && !isVacantForEmptyLayer(ent)) continue
-      groundKeys.push(key)
-      // Scatter (trees/rocks) only on true vacant / catalyst empty land
+      // Only true vacant / catalyst empty parcels get blank ground + scatter.
       if (ent && !isVacantForEmptyLayer(ent)) continue
+      groundKeys.push(key)
       vacantKeys.push(key)
     }
-    if (skippedResidentGround > 0) {
+    if (skippedLoadedGround > 0) {
       console.info(
-        `[aoi] ground skip resident/secondary parcels=${skippedResidentGround} ` +
-          `(no red empty-land under sticky/live graphs)`
+        `[aoi] empty-land skip loaded-scene parcels=${skippedLoadedGround} ` +
+          `(loadedEntities=${loadedEntityIds.size} loadedParcels=${loadedParcelSet.size})`
       )
     }
 

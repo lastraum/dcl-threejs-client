@@ -184,11 +184,16 @@ function hasConcreteSize(unit: number | undefined, value: number | undefined): b
 }
 
 /**
- * Fishing / plaza HUD often authors:
- *   top: '100%' + height  → Yoga places the TOP edge at parent bottom (fully off-screen)
- *   bottom: '100%' + height → places BOTTOM edge at parent top (fully above canvas)
- * Explorer/Unity treat these as “flush to that edge”. Map to bottom:0 / top:0.
- * Same for left/right:100% side drawers.
+ * Absolute edge quirks for percent-positioned HUD.
+ *
+ * Genesis Plaza parks idle chrome **off-canvas** with percent edges — do not “flush”
+ * those parks onto the visible edge (that leaks movie letterbox + confetti/cake HUD):
+ *
+ * - Letterbox bottom bar: top:100% + height 8%  (below canvas until cinematic show)
+ * - Confetti ammo strip:  bottom:100% + height 162 (above canvas until showUi y→0)
+ * - Cake throw strip:     bottom:-20% parked, bottom:0% shown
+ *
+ * Only keep left/right:100% side-drawer remaps (those are not park-off patterns).
  */
 function normalizeAbsoluteEdgeFlush(t: PBUiTransform): {
   topU: number | undefined
@@ -213,37 +218,11 @@ function normalizeAbsoluteEdgeFlush(t: PBUiTransform): {
     return { topU, topV, bottomU, bottomV, leftU, leftV, rightU, rightV }
   }
 
-  const top100 =
-    (topU ?? YGUnit.UNDEFINED) === YGUnit.PERCENT && Math.abs((topV ?? 0) - 100) < 0.01
-  const bottom100 =
-    (bottomU ?? YGUnit.UNDEFINED) === YGUnit.PERCENT && Math.abs((bottomV ?? 0) - 100) < 0.01
   const left100 =
     (leftU ?? YGUnit.UNDEFINED) === YGUnit.PERCENT && Math.abs((leftV ?? 0) - 100) < 0.01
   const right100 =
     (rightU ?? YGUnit.UNDEFINED) === YGUnit.PERCENT && Math.abs((rightV ?? 0) - 100) < 0.01
 
-  // Footer flush: top 100% alone + has height → bottom: 0
-  if (
-    top100 &&
-    positionEdgeUnset(bottomU, bottomV) &&
-    hasConcreteSize(t.heightUnit, t.height)
-  ) {
-    topU = YGUnit.UNDEFINED
-    topV = 0
-    bottomU = YGUnit.POINT
-    bottomV = 0
-  }
-  // Header flush: bottom 100% alone + has height → top: 0
-  if (
-    bottom100 &&
-    positionEdgeUnset(topU, topV) &&
-    hasConcreteSize(t.heightUnit, t.height)
-  ) {
-    bottomU = YGUnit.UNDEFINED
-    bottomV = 0
-    topU = YGUnit.POINT
-    topV = 0
-  }
   // Right drawer: left 100% alone + has width → right: 0
   if (
     left100 &&

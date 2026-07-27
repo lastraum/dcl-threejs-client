@@ -696,13 +696,18 @@ function applySolidColorPanel(
  *
  * Explorer multiplies UiBackground.color × texture. White panel sheets + dark tints
  * (Poker welcome `#050510FE`) need a pre-multiplied source or the panel stays white.
+ *
+ * @returns `'pending'` while color×texture bake is in flight (solid tint placeholder);
+ *          `'done'` when final paint is applied. Caller must not commit a "final" bg
+ *          signature on pending — otherwise image-loaded repaints no-op forever (empty
+ *          inventory detail previews, solid-only shop icons).
  */
 function applyNineSlice(
   el: HTMLElement,
   bg: PBUiBackground,
   imageUrl: string,
   scale: UiScreenScale
-): void {
+): 'pending' | 'done' {
   clearBgImg(el)
   const slices = bg.textureSlices ?? DEFAULT_SLICES
   const topF = clamp01(slices.top ?? DEFAULT_SLICES.top)
@@ -721,7 +726,7 @@ function applyNineSlice(
     const baked = resolveColorMultipliedImageUrl(imageUrl, bg.color)
     if (!baked) {
       applySolidColorPanel(el, tint, topF, rightF, bottomF, leftF)
-      return
+      return 'pending'
     }
     paintUrl = baked
   }
@@ -786,6 +791,7 @@ function applyNineSlice(
   el.style.backgroundColor = 'transparent'
   el.style.backgroundBlendMode = ''
   el.style.borderRadius = ''
+  return 'done'
 }
 
 /** Apply PBUiBackground color + texture to a DOM node. */
@@ -809,9 +815,17 @@ export function applyUiBackgroundStyles(
   if (rectForSig) {
     uvsKey = `${rectForSig.u0.toFixed(4)},${rectForSig.v0.toFixed(4)},${rectForSig.u1.toFixed(4)},${rectForSig.v1.toFixed(4)}`
   }
+  // Final signature only after texture is actually applied. Pending color×texture bake
+  // uses `|pending` so image-loaded → repaint re-enters and upgrades solid → texture
+  // (COD: no permanent empty shop/detail icons after first paint).
   const sig = `${imageUrl ?? ''}|${mode}|${tint}|${uvsKey}`
+  const pendingSig = `${sig}|pending`
   if (el.dataset.dclUiBgSig === sig) return
-  el.dataset.dclUiBgSig = sig
+  // Already showing solid placeholder and bake still in flight — avoid style thrash.
+  if (el.dataset.dclUiBgSig === pendingSig && c && needsTextureColorMultiply(c) && imageUrl) {
+    const key = colorMultiplyKey(imageUrl, c)
+    if (multipliedImageLoading.has(key) && !multipliedImageUrl.has(key)) return
+  }
 
   el.style.borderImage = ''
   el.style.borderImageSource = ''
@@ -832,13 +846,15 @@ export function applyUiBackgroundStyles(
     el.style.borderColor = ''
     // Missing/failed texture — fall back to color tint (Explorer parity).
     el.style.backgroundColor = tint === 'transparent' ? 'transparent' : tint
+    el.dataset.dclUiBgSig = sig
     return
   }
 
   const screenScale = scale ?? { scaleX: 1, scaleY: 1, uniform: 1 }
 
   if (mode === BackgroundTextureMode.NINE_SLICES) {
-    applyNineSlice(el, bg!, imageUrl, screenScale)
+    const status = applyNineSlice(el, bg!, imageUrl, screenScale)
+    el.dataset.dclUiBgSig = status === 'pending' ? pendingSig : sig
     return
   }
 
@@ -860,6 +876,7 @@ export function applyUiBackgroundStyles(
       el.style.backgroundColor = tint === 'transparent' ? 'transparent' : tint
       el.style.opacity = '1'
       el.style.borderRadius = el.style.borderRadius || '10px'
+      el.dataset.dclUiBgSig = pendingSig
       return
     }
     paintUrl = baked
@@ -871,6 +888,7 @@ export function applyUiBackgroundStyles(
   el.style.opacity = ''
   el.style.backgroundColor = 'transparent'
   applyBgImg(el, paintUrl, mode, imgAlpha, bg?.uvs)
+  el.dataset.dclUiBgSig = sig
 }
 
 /** Test helper — clear natural-size cache between tests. */

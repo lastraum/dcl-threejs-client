@@ -39,7 +39,14 @@ import {
   type UiScreenScale
 } from './uiDomStyles'
 
-const yogaUnusableWarned = new Set<number>()
+/** Missing-box (`none`) — real layout bug; warn once per entity. */
+const yogaMissingBoxWarned = new Set<number>()
+/** Sticky 0×0 across many paints — progressive flex fill is normal; only warn when stuck. */
+const yogaZeroBoxStreak = new Map<number, number>()
+const yogaZeroBoxWarned = new Set<number>()
+/** Frames of continuous 0×0 before treating as sticky (COD: quiet progressive inventory fill). */
+const YOGA_ZERO_STICKY_FRAMES = 12
+
 export type SceneUiDrawInput = {
   forest: Map<Entity, Entity[]>
   transformOf: (e: Entity) => PBUiTransform | null
@@ -507,10 +514,22 @@ export class SceneUiDomRenderer {
         input.mountedEntities.has(entity)
       ) {
         const id = entity as number
-        if (!yogaUnusableWarned.has(id)) {
-          yogaUnusableWarned.add(id)
-          const size = layoutBox ? `${layoutBox.width.toFixed(1)}×${layoutBox.height.toFixed(1)}` : 'none'
-          console.warn(`[scene-ui] yoga box unusable for mounted entity ${entity} (${size})`)
+        if (!layoutBox) {
+          // Missing box — layout completeness bug (not progressive flex).
+          if (!yogaMissingBoxWarned.has(id)) {
+            yogaMissingBoxWarned.add(id)
+            console.warn(`[scene-ui] yoga box unusable for mounted entity ${entity} (none)`)
+          }
+        } else {
+          // 0×0 is normal while flex grids fill (inventory slots); only warn if sticky.
+          const streak = (yogaZeroBoxStreak.get(id) ?? 0) + 1
+          yogaZeroBoxStreak.set(id, streak)
+          if (streak >= YOGA_ZERO_STICKY_FRAMES && !yogaZeroBoxWarned.has(id)) {
+            yogaZeroBoxWarned.add(id)
+            console.warn(
+              `[scene-ui] yoga box sticky 0×0 for mounted entity ${entity} (${streak} paints)`
+            )
+          }
         }
       }
       const hideSubtree = (e: Entity): void => {
@@ -528,6 +547,8 @@ export class SceneUiDomRenderer {
       return
     }
 
+    // Recovered a real box — clear progressive 0×0 streak so reopen doesn't false-sticky.
+    yogaZeroBoxStreak.delete(entity as number)
     delete shell.dataset.uiUnusable
     // Undo applyHiddenDomState — display:none stuck after prior hide left dead shells.
     shell.style.display = 'block'
@@ -541,13 +562,15 @@ export class SceneUiDomRenderer {
     shell.style.pointerEvents = ''
     shell.removeAttribute('inert')
 
-    // Clip nearly all sized shells — fishing absolute children escape overflow:visible
-    // parents and stack every OPEN/EQUIP/wood slot across the modal (and the plaza).
+    // Clip modal chrome so absolute children don't spill across the plaza.
+    // Slot cells (≈110×110): allow slight overflow for selection rings, but still clip
+    // when the scene authors overflow:hidden. Mid panels (grid, detail ≥120) clip so
+    // NEW banners / icons stay inside their cell stacking context.
     const clipShell =
       !!radius ||
       transform.overflow === YGOverflow.HIDDEN ||
       transform.overflow === YGOverflow.SCROLL ||
-      (layoutBox.width >= 24 && layoutBox.height >= 24)
+      (layoutBox.width >= 120 && layoutBox.height >= 120)
     if (radius) {
       shell.style.borderRadius = radius
       el.style.borderRadius = radius

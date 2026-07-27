@@ -731,15 +731,26 @@ function sampleWorkerUiTexts(eng: IEngine, limit = 10): string {
 
 /** Extra react-ecs passes after inject — exit on stable UI fingerprint, not mount heuristics. */
 const POINTER_UI_FINGERPRINT_FLUSH_MAX_PASSES = 12
+/** Mesh path: UI rarely thrash-toggles; one stable pass after seeded UP is enough. */
+const POINTER_UI_MESH_FLUSH_MAX_PASSES = 4
+const POINTER_UI_MESH_STABLE_NEEDED = 1
+const POINTER_UI_SCENEU_STABLE_NEEDED = 2
 
 async function flushReactEcsForUiSnapshot(
   eng: IEngine,
   log: (message: string) => void,
   interactive: boolean,
-  maxPasses = POINTER_UI_FINGERPRINT_FLUSH_MAX_PASSES
+  options?: {
+    maxPasses?: number
+    /** Fingerprint after PET_UP — first matching pass can exit without 2× idle thrash. */
+    seedFp?: string
+    stableNeeded?: number
+  }
 ): Promise<void> {
   if (!interactive) return
-  let prevFp = ''
+  const maxPasses = options?.maxPasses ?? POINTER_UI_FINGERPRINT_FLUSH_MAX_PASSES
+  const stableNeeded = options?.stableNeeded ?? POINTER_UI_SCENEU_STABLE_NEEDED
+  let prevFp = options?.seedFp ?? ''
   let stablePasses = 0
   for (let pass = 0; pass < maxPasses; pass++) {
     await runSerializedEngineUpdate(async () => {
@@ -753,7 +764,7 @@ async function flushReactEcsForUiSnapshot(
     )
     if (prevFp && fp === prevFp) {
       stablePasses++
-      if (stablePasses >= 2) return
+      if (stablePasses >= stableNeeded) return
     } else {
       stablePasses = 0
     }
@@ -876,23 +887,40 @@ export async function runSceneEnginePointerTick(
             cfg.log(`[sceneWorker] UI label fix — rewrote ${n} STOP MOVE CAMERA → MOVE CAMERA`)
           }
         }
+        // In-menu selection (inventory slot): mount does not grow, but react-ecs must
+        // reconcile selection highlight after UP. One seeded pass — not full multipass
+        // (that thrash-closed Neurolink). Skip for open/close (mountGrew) and pure fades.
+        mountGrew = mountAfterDownUpdate > mountBeforeDown
+        const mountShrunk = mountAfterUp < mountAfterDownUpdate
+        if (!mountGrew && !mountShrunk) {
+          setPointerInteractiveTickActive(true)
+          const selectSeed = computeWorkerUiFingerprint(eng)
+          await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
+            maxPasses: 2,
+            seedFp: selectSeed,
+            stableNeeded: 1
+          })
+          cfg.log(
+            `[sceneWorker] pointer sceneUi selection settle — mount=${mountAfterUp} seed=${selectSeed.length}B`
+          )
+        }
         runPointerUiPhase4Egress(eng)
         // Hold cooperative react-ecs ONLY when a menu actually opened (mount grew).
         // PE Neurolink thrash: residual reconcile collapsed open panel (1245→1203).
         // CBD Plaza welcome splash: onMouseDown only starts a fade (same mount size) —
         // systems update Color4.a every frame; holding react-ecs freezes that alpha on the
         // last paint and leaves a half-visible full-screen PE catcher (pointer stuck).
-        mountGrew = mountAfterDownUpdate > mountBeforeDown
+        // Short hold (menu open only) — long holds froze tutorial scale / page-pulse tweens.
         if (mountGrew) {
-          holdCooperativeReactEcs(90)
+          holdCooperativeReactEcs(12)
           cfg.log(
             `[sceneWorker] pointer phase-4 hold — mount=${countWorkerUiMount(eng)} ` +
-              `texts=[${sampleWorkerUiTexts(eng)}] (menu open; skip multi-pass flush)`
+              `texts=[${sampleWorkerUiTexts(eng)}] (menu open; short hold then tween UI)`
           )
         } else {
           cfg.log(
             `[sceneWorker] pointer phase-4 no-hold — mount=${countWorkerUiMount(eng)} ` +
-              `texts=[${sampleWorkerUiTexts(eng)}] (same mount; allow fade react-ecs)`
+              `texts=[${sampleWorkerUiTexts(eng)}] (same mount; allow fade/selection/tween UI)`
           )
         }
 
@@ -915,8 +943,17 @@ export async function runSceneEnginePointerTick(
         cfg.onAfterEngineTick?.()
 
         setPointerInteractivePhase('flush')
-        cfg.log('[sceneWorker] pointer ui flush — post-UP react-ecs fingerprint')
-        await flushReactEcsForUiSnapshot(eng, cfg.log, true)
+        // Mesh/getClick (vending, world PE): seed fingerprint after UP so a no-op shop
+        // open exits in 1 pass instead of 3× eng.update(0) + 828-row snapshot thrash.
+        const meshSeedFp = computeWorkerUiFingerprint(eng)
+        cfg.log(
+          `[sceneWorker] pointer ui flush — post-UP react-ecs fingerprint seed=${meshSeedFp.length}B`
+        )
+        await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
+          maxPasses: POINTER_UI_MESH_FLUSH_MAX_PASSES,
+          seedFp: meshSeedFp,
+          stableNeeded: POINTER_UI_MESH_STABLE_NEEDED
+        })
 
         if (isRefuseFreezeWrites()) {
           const n = rewriteStopMoveCameraUiLabels(eng)

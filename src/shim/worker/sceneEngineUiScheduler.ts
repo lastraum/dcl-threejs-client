@@ -64,13 +64,10 @@ export function leaveCooperativeSchedulerTick(): void {
 /**
  * Min spacing between cooperative react-ecs reconciles (not pointer ticks).
  * Systems still run every engine tick (timers, LoadingScreen wall-clock).
- * Full react-ecs on 250–350 Ui* entities every 16ms saturates the worker after
- * connect (NPC flood + character UI) → engine-tick recovery / ~1fps.
- *
- * 100ms made fishing reeling / cast UI feel ~10× slow (zone+marker only paint on
- * react-ecs frames). Prefer ~60Hz; large mount counts still cost but fishing is ~100 nodes.
+ * Active scale/move Tween: never throttle (see shouldDeferCooperativeReactEcs).
+ * Idle: ~30Hz is enough for static HUD; avoids 250–350 entity thrash at 60Hz forever.
  */
-const COOPERATIVE_REACT_ECS_MIN_MS = 16
+const COOPERATIVE_REACT_ECS_IDLE_MIN_MS = 33
 let lastCooperativeReactEcsAt = 0
 /** True when the current cooperative eng.update skipped react-ecs (throttle). */
 let cooperativeReactEcsSkippedThisTick = false
@@ -97,21 +94,63 @@ export function isCooperativeReactEcsHeld(): boolean {
 }
 
 /**
+ * Genesis Plaza / fishing drive popup scale, letterbox, cake/confetti HUD from Transform
+ * tweens (`Nm() = m.get(a9).scale.x`, `bottom: kse()+"%"`, etc.). react-ecs must re-run
+ * every tick while a UI-driving Tween is playing so UiTransform widths / display flip at ~60fps.
+ *
+ * Ignore continuous rotate/move (NPCs, props) — those would force 60Hz UI forever.
+ */
+function workerHasUiDrivingTween(engine: IEngine | null): boolean {
+  if (!engine) return false
+  try {
+    preregisterRendererInjectedComponents(engine)
+    const Tween = generated.Tween(engine)
+    for (const [_e, tw] of engine.getEntitiesWith(Tween)) {
+      const t = tw as {
+        playing?: boolean
+        mode?: { $case?: string }
+      }
+      if (t.playing === false) continue
+      const kind = t.mode?.$case
+      // Scale / move (letterbox slide, popup open, page pulse). Not continuous loops.
+      if (kind === 'scale' || kind === 'move' || kind === 'moveRotateScale') return true
+      // Some scenes omit $case and nest move/scale objects.
+      const mode = t.mode as Record<string, unknown> | undefined
+      if (
+        mode &&
+        (mode.scale != null ||
+          mode.move != null ||
+          mode.moveRotateScale != null)
+      ) {
+        return true
+      }
+    }
+  } catch {
+    /* component not registered yet */
+  }
+  return false
+}
+
+/**
  * Play-mode react-ecs gate.
  *
  * - Pointer inject / flush: always reconcile (open menus, stabilize fingerprint).
+ * - Active Transform/UI Tween: never defer (scale pulse, page flip, show/hide HUD).
  * - Pointer non-ui phase: suppress (phase-4 snapshot already taken; re-reconcile collapses UI).
  * - Pointer session (non-interactive): suppress (pointer batch owns UI).
- * - Cooperative: at most every COOPERATIVE_REACT_ECS_MIN_MS (systems still run).
+ * - Cooperative idle: throttle; animating: every tick (~16ms).
  *
  * Do NOT gate on freeze latch or inject-only pollEvents DEFER.
  */
 export function shouldDeferCooperativeReactEcs(): boolean {
   // isPointerInteractiveTickActive is false during non-ui phase — fall through to session suppress.
   if (isPointerInteractiveTickActive()) return false
+  // Tween-driven UI (tutorial scale, letterbox, cake/confetti slide) — full 60Hz reconcile.
+  if (workerHasUiDrivingTween(boundWorkerEngine)) return false
   if (shouldSuppressPointerSessionReactEcs()) return true
   // Wall-clock hold after PE/sceneUi phase-4 — suppress even when not in cooperative depth
   // (PE vehicle pump uses runSceneEngineUpdateNow without enterCooperativeSchedulerTick).
+  // But never freeze scale animations mid-hold if a tween is live (checked above).
   if (performance.now() < cooperativeReactEcsHoldUntilMs) return true
   if (cooperativeSchedulerTickDepth > 0) {
     if (cooperativeReactEcsHoldTicks > 0) {
@@ -119,7 +158,8 @@ export function shouldDeferCooperativeReactEcs(): boolean {
       return true
     }
     const now = performance.now()
-    if (now - lastCooperativeReactEcsAt < COOPERATIVE_REACT_ECS_MIN_MS) return true
+    const minMs = COOPERATIVE_REACT_ECS_IDLE_MIN_MS
+    if (now - lastCooperativeReactEcsAt < minMs) return true
   }
   return false
 }

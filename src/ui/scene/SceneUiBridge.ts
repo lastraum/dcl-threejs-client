@@ -52,11 +52,16 @@ import {
   computeUiLayoutKey,
   computeUiVisualPaintKey,
   layoutTransformFingerprint,
+  missingVisibleLayoutEntities,
   UiLayoutCache,
   visibleLayoutBoxes
 } from './uiLayoutCache'
 import { layoutUiTree, type LayoutBox } from './yogaLayout'
-import { tryRefineAbsoluteLayoutBoxes } from './fastLayoutPatch'
+import {
+  countCollapsedLayoutBoxes,
+  repairCollapsedLayoutBoxes,
+  tryRefineAbsoluteLayoutBoxes
+} from './fastLayoutPatch'
 import { onSceneUiImageLoaded } from './uiImageLoad'
 
 const _camPos = new THREE.Vector3()
@@ -97,8 +102,19 @@ export class SceneUiBridge {
   private lastEntityVisualKeys = new Map<Entity, string>()
   /** Previous frame Yoga-relevant transform fingerprints (position/size — not opacity). */
   private lastEntityLayoutKeys = new Map<Entity, string>()
-  /** Previous frame layout boxes — refine absolute reeling-bar geometry without full Yoga. */
+  /**
+   * Previous frame *visible* layout boxes (paint geometry).
+   * Do not seed refine/reuse from this alone — shop open can leave children missing.
+   */
   private lastLayoutBoxMap: Map<Entity, LayoutBox> | null = null
+  /**
+   * Full Yoga output from the last layoutUiTree (includes display:none / opacity-0 nodes).
+   * Seed for absolute refine + reuse so newly-visible shop subtrees keep their boxes.
+   */
+  private lastFullLayoutBoxes: LayoutBox[] | null = null
+  /** Consecutive paints with stable visible count — enables patch-heavy path (COD no thrash). */
+  private stableVisibleStreak = 0
+  private lastStableVisibleCount = 0
   /**
    * Phase C dirty set — contentEpoch bumps when mount/CRDT/image/size changes.
    * paint() skips record walk when epoch already painted (redundant flushUiFrame).
@@ -184,6 +200,10 @@ export class SceneUiBridge {
     this.imageRepaintQueued = true
     window.setTimeout(() => {
       this.imageRepaintQueued = false
+      // Visual fingerprint does not include bake completion — without this, paint early-outs
+      // and color×texture upgrades never replace solid placeholders (empty detail icons).
+      this.lastPaintVisualKey = ''
+      this.lastEntityVisualKeys.clear()
       this.markContentDirty()
       if (this.lastView) this.paint(this.lastView)
     }, 80)
@@ -238,6 +258,9 @@ export class SceneUiBridge {
     this.lastEntityVisualKeys.clear()
     this.lastEntityLayoutKeys.clear()
     this.lastLayoutBoxMap = null
+    this.lastFullLayoutBoxes = null
+    this.stableVisibleStreak = 0
+    this.lastStableVisibleCount = 0
     this.paintCount = 0
     this.firstPaintLogged = false
     this.paintedEpoch = -1
@@ -338,6 +361,10 @@ export class SceneUiBridge {
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
       this.lastEntityLayoutKeys.clear()
+      this.lastLayoutBoxMap = null
+      this.lastFullLayoutBoxes = null
+      this.stableVisibleStreak = 0
+      this.lastStableVisibleCount = 0
       this.input.pruneStaleEntities(new Set())
     } else if (changed) {
       this.lastMountedUiEntities.clear()
@@ -346,6 +373,11 @@ export class SceneUiBridge {
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
       this.lastEntityLayoutKeys.clear()
+      // Mount set change — full Yoga next paint (do not refine from prior tree).
+      this.lastLayoutBoxMap = null
+      this.lastFullLayoutBoxes = null
+      this.stableVisibleStreak = 0
+      this.lastStableVisibleCount = 0
     }
 
     this.workerUiEntitiesKnown = true
@@ -495,6 +527,8 @@ export class SceneUiBridge {
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
       this.lastEntityLayoutKeys.clear()
+      this.lastLayoutBoxMap = null
+      this.lastFullLayoutBoxes = null
       this.paintedEpoch = this.contentEpoch
       return
     }
@@ -513,6 +547,8 @@ export class SceneUiBridge {
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
       this.lastEntityLayoutKeys.clear()
+      this.lastLayoutBoxMap = null
+      this.lastFullLayoutBoxes = null
       this.paintedEpoch = this.contentEpoch
       return
     }
@@ -571,6 +607,7 @@ export class SceneUiBridge {
       }
       peIds.sort((a, b) => a - b)
       const peStr = peIds.length ? ` pe=[${peIds.map((e) => `e${e}`).join(',')}]` : ' pe=[]'
+      // visibleYoga filled after layout; log mount vs canvas here, layout completeness later in debug.
       if (!this.firstPaintLogged) {
         this.firstPaintLogged = true
         clientDebugLog.log(
@@ -640,55 +677,160 @@ export class SceneUiBridge {
       layoutDirtyEntities.push(...dirtyEntities)
     }
 
+    const runFullYoga = (): LayoutBox[] => {
+      const { boxes, dispose } = layoutUiTree(
+        records,
+        forest,
+        this.virtual.width,
+        this.virtual.height,
+        textOf,
+        inputOf
+      )
+      dispose()
+      this.layoutCache.set(layoutKey, boxes)
+      this.lastFullLayoutBoxes = boxes
+      return boxes
+    }
+
+    const fullSeedMap = (): Map<Entity, LayoutBox> | null => {
+      if (this.lastFullLayoutBoxes?.length) {
+        return new Map(this.lastFullLayoutBoxes.map((b) => [b.entity, b]))
+      }
+      // Legacy fallback — visible-only seed is incomplete for shop open.
+      if (this.lastLayoutBoxMap?.size) return new Map(this.lastLayoutBoxMap)
+      return null
+    }
+
+    // COD: large modal mounts (inventory ~700+) still refine absolute dirties aggressively
+    // so reeling / slot tweaks never re-Yoga the whole tree every tick.
+    const refineBudget = mounted.size >= 200 ? 64 : 32
+    const patchBudget = mounted.size >= 200 ? 96 : 48
+
     let layoutBoxes = this.layoutCache.get(layoutKey)
     let layoutCacheHit = true
+    let usedFullYoga = false
     if (!layoutBoxes) {
       layoutCacheHit = false
-      // UV/color/text only — reuse last Yoga boxes (COD: no thrash on reeling UV ticks).
-      if (
-        layoutDirtyEntities.length === 0 &&
-        this.lastLayoutBoxMap &&
-        this.lastLayoutBoxMap.size > 0
-      ) {
-        layoutBoxes = [...this.lastLayoutBoxMap.values()]
+      // UV/color/text only — reuse last *full* Yoga boxes (COD: no thrash on reeling UV ticks).
+      if (layoutDirtyEntities.length === 0 && this.lastFullLayoutBoxes?.length) {
+        layoutBoxes = this.lastFullLayoutBoxes
         layoutCacheHit = true
       } else if (
-        this.lastLayoutBoxMap &&
-        this.lastLayoutBoxMap.size > 0 &&
         layoutDirtyEntities.length > 0 &&
-        layoutDirtyEntities.length <= 32 &&
+        layoutDirtyEntities.length <= refineBudget &&
         layoutDirtyEntities.length < mounted.size * 0.4
       ) {
-        // Fishing reeling: absolute height% + position every tick. Refine only those.
-        const refined = tryRefineAbsoluteLayoutBoxes(
-          this.lastLayoutBoxMap,
-          layoutDirtyEntities,
-          transformOf,
-          this.virtual
-        )
-        if (refined) {
-          layoutBoxes = [...refined.values()]
-          layoutCacheHit = true
-          // Don't poison the layout cache with a transient reeling key — keep refining.
+        // Fishing reeling + inventory slot absolute tweaks: refine only those.
+        const seed = fullSeedMap()
+        if (seed?.size) {
+          const refined = tryRefineAbsoluteLayoutBoxes(
+            seed,
+            layoutDirtyEntities,
+            transformOf,
+            this.virtual
+          )
+          if (refined) {
+            layoutBoxes = [...refined.values()]
+            this.lastFullLayoutBoxes = layoutBoxes
+            layoutCacheHit = true
+            // Don't poison the layout cache with a transient reeling key — keep refining.
+          }
         }
       }
       if (!layoutBoxes) {
-        const { boxes, dispose } = layoutUiTree(
-          records,
-          forest,
-          this.virtual.width,
-          this.virtual.height,
-          textOf,
-          inputOf
-        )
-        layoutBoxes = boxes
-        dispose()
-        this.layoutCache.set(layoutKey, layoutBoxes)
+        layoutBoxes = runFullYoga()
+        usedFullYoga = true
       }
+    } else {
+      this.lastFullLayoutBoxes = layoutBoxes
     }
-    const layoutBoxMap = new Map<Entity, LayoutBox>(
+
+    // Repair 0×0 icon wrappers (vending/inventory) before visibility filter + paint.
+    // Must run on the full box list so parent→child multi-pass can unlock stacks.
+    // Cache repaired geometry under layoutKey so we do not thrash fullYoga every frame
+    // (logs showed repaired=53 every click → brutal animation stutter).
+    const repairedCollapsed = repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
+    if (repairedCollapsed > 0) {
+      this.lastFullLayoutBoxes = layoutBoxes
+      this.layoutCache.set(layoutKey, layoutBoxes)
+      // Prefer patch after repair when possible — geometry is now known.
+      layoutCacheHit = true
+    }
+
+    let layoutBoxMap = new Map<Entity, LayoutBox>(
       visibleLayoutBoxes(layoutBoxes, transformOf).map((box) => [box.entity, box])
     )
+
+    // Shop/modal open: display:none → flex brings many nodes into the visible set. Cache/refine
+    // from a HUD-only seed leaves them box-less → "yoga box unusable (none)" + hidden inventory.
+    const missingVisible = missingVisibleLayoutEntities(mounted, transformOf, layoutBoxMap)
+    if (missingVisible.length > 0 && !usedFullYoga) {
+      if (typeof location !== 'undefined' && location.search.includes('sceneuidebug')) {
+        console.warn(
+          `[scene-ui] layout incomplete — ${missingVisible.length} visible entities missing Yoga boxes; full layout ` +
+            `(e.g. ${missingVisible
+              .slice(0, 6)
+              .map((e) => `e${e as number}`)
+              .join(', ')})`
+        )
+      }
+      layoutBoxes = runFullYoga()
+      usedFullYoga = true
+      layoutCacheHit = false
+      repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
+      this.lastFullLayoutBoxes = layoutBoxes
+      layoutBoxMap = new Map<Entity, LayoutBox>(
+        visibleLayoutBoxes(layoutBoxes, transformOf).map((box) => [box.entity, box])
+      )
+    }
+
+    const collapsedVisible = countCollapsedLayoutBoxes(layoutBoxMap.values())
+    const prevVisibleCount = this.lastLayoutBoxMap?.size ?? 0
+    // Visible set growth forces full forest walk (new modal children). Full Yoga alone does NOT —
+    // same visible count after flex reflow can still patch dirty entities (COD: inventory fill).
+    const visibleSetGrew =
+      layoutBoxMap.size > prevVisibleCount + 2 || missingVisible.length > 0
+    const visibleSetShrank = layoutBoxMap.size + 2 < prevVisibleCount
+    const visibleDelta = Math.abs(layoutBoxMap.size - this.lastStableVisibleCount)
+    if (visibleDelta <= 2 && layoutBoxMap.size > 0 && collapsedVisible <= 4) {
+      this.stableVisibleStreak++
+    } else {
+      this.stableVisibleStreak = 0
+      this.lastStableVisibleCount = layoutBoxMap.size
+    }
+    // Do not declare modal stable while many 0×0 icon cells remain (empty vendor after reopen).
+    const modalStable =
+      this.stableVisibleStreak >= 2 && layoutBoxMap.size >= 32 && collapsedVisible <= 4
+
+    // Prefer patch when: layout reused/refined, OR full Yoga but modal already open and few dirties.
+    // Never patch while collapsed icon cells remain — full forest walk after repair.
+    const preferPatch =
+      this.paintCount > 1 &&
+      !visibleSetGrew &&
+      !visibleSetShrank &&
+      collapsedVisible <= 4 &&
+      repairedCollapsed === 0 &&
+      dirtyEntities.length > 0 &&
+      dirtyEntities.length <= patchBudget &&
+      dirtyEntities.length < mounted.size * 0.4 &&
+      (layoutCacheHit || (usedFullYoga && modalStable))
+
+    if (
+      (visibleSetGrew ||
+        missingVisible.length > 0 ||
+        repairedCollapsed > 0 ||
+        collapsedVisible > 4 ||
+        (usedFullYoga && !preferPatch)) &&
+      typeof location !== 'undefined' &&
+      location.search.includes('sceneuidebug')
+    ) {
+      console.log(
+        `[scene-ui] layout paint — visibleYoga=${layoutBoxMap.size} prevVisible=${prevVisibleCount} ` +
+          `fullYoga=${usedFullYoga ? 1 : 0} missingWas=${missingVisible.length} ` +
+          `repaired=${repairedCollapsed} collapsed=${collapsedVisible} ` +
+          `patchEligible=${preferPatch ? 1 : 0} stable=${this.stableVisibleStreak}`
+      )
+    }
 
     const drawInput = {
       forest,
@@ -710,15 +852,10 @@ export class SceneUiBridge {
     }
 
     // Layout stable (or refined) + few dirties → patch DOM only (skip full tree walk).
+    // Never patch when a menu just became visible — children need a full forest walk.
     let usedPatch = false
-    if (layoutCacheHit && this.paintCount > 1) {
-      if (
-        dirtyEntities.length > 0 &&
-        dirtyEntities.length <= 48 &&
-        dirtyEntities.length < mounted.size * 0.4
-      ) {
-        usedPatch = this.dom.patchEntities(dirtyEntities, drawInput)
-      }
+    if (preferPatch) {
+      usedPatch = this.dom.patchEntities(dirtyEntities, drawInput)
     }
 
     if (!usedPatch) {

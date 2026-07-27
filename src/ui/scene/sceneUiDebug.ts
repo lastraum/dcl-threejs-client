@@ -175,12 +175,20 @@ export function reportSceneUiDebug(input: {
     if (!el.isConnected) orphanDom++
   }
   const workerCount = input.workerUiEntityCount ?? -1
-  const statusKey = `${input.uiInputCount}|${input.domInputCount}|${input.layoutCacheHit}|${workerCount}|${pooled}|${connected}|${interactiveDom}|${scrimCandidates}|${orphanDom}|${scrimList.map((s) => s.entity).join(',')}|${visibleRows.map((m) => `${m.entity}:${m.dom.left},${m.dom.top}`).join(';')}`
+  const visibleYoga = input.layoutBoxes?.size ?? 0
+  let unusableDom = 0
+  for (const el of scrimRoot.querySelectorAll('.scene-ui-node[data-ui-unusable="1"]')) {
+    if (el instanceof HTMLElement) unusableDom++
+  }
+  const statusKey = `${input.uiInputCount}|${input.domInputCount}|${input.layoutCacheHit}|${workerCount}|${pooled}|${connected}|${interactiveDom}|${visibleYoga}|${unusableDom}|${scrimCandidates}|${orphanDom}|${scrimList.map((s) => s.entity).join(',')}|${visibleRows.map((m) => `${m.entity}:${m.dom.left},${m.dom.top}`).join(';')}`
   if (statusKey === lastStatusKey) return
   lastStatusKey = statusKey
 
   console.log(
-    `[scene-ui] UiInput=${input.uiInputCount} domInputs=${input.domInputCount} workerUi=${workerCount} pooled=${pooled} connected=${connected} interactiveDom=${interactiveDom} fullscreenScrims=${scrimCandidates} orphanDom=${orphanDom} layout=yoga cacheHit=${input.layoutCacheHit}`
+    `[scene-ui] UiInput=${input.uiInputCount} domInputs=${input.domInputCount} workerUi=${workerCount} ` +
+      `pooled=${pooled} connected=${connected} interactiveDom=${interactiveDom} ` +
+      `visibleYoga=${visibleYoga} unusableDom=${unusableDom} fullscreenScrims=${scrimCandidates} ` +
+      `orphanDom=${orphanDom} layout=yoga cacheHit=${input.layoutCacheHit}`
   )
   const domRects: string[] = []
   for (const el of scrimRoot.querySelectorAll('.scene-ui-node[data-entity]')) {

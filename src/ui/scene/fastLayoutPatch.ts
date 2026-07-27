@@ -20,6 +20,17 @@ export function tryRefineAbsoluteLayoutBoxes(
   virtual: VirtualCanvasSize
 ): Map<Entity, LayoutBox> | null {
   if (!dirty.length || !prev.size) return null
+
+  // Flex/relative/display/parent dirties and brand-new nodes need full Yoga.
+  // Silently keeping a stale prev box (old behavior) left shop roots box-less after
+  // display:none → flex, so SceneUiDomRenderer hid entire inventory subtrees.
+  for (const entity of dirty) {
+    const t = transformOf(entity)
+    if (!t) return null
+    if (normalizeYGPositionType(t.positionType) !== YGPositionType.ABSOLUTE) return null
+    if (!prev.has(entity)) return null
+  }
+
   const next = new Map(prev)
   let refinedAny = false
 
@@ -51,17 +62,15 @@ export function tryRefineAbsoluteLayoutBoxes(
 
   for (const entity of ordered) {
     const t = transformOf(entity)
-    if (!t) continue
-    // Flex/relative dirties keep previous box — do not poison the whole refine.
-    if (normalizeYGPositionType(t.positionType) !== YGPositionType.ABSOLUTE) continue
+    if (!t) return null
 
     const parentId = (t.parent ?? CANVAS_ROOT_ENTITY) as number
     const pb = parentBox(parentId)
-    if (!pb || pb.width <= 0 || pb.height <= 0) continue
+    if (!pb || pb.width <= 0 || pb.height <= 0) return null
 
     const w = resolveSize(t.width, t.widthUnit, pb.width)
     const h = resolveSize(t.height, t.heightUnit, pb.height)
-    if (w == null || h == null) continue
+    if (w == null || h == null) return null
 
     const leftEdge = resolveEdge(t.positionLeft, t.positionLeftUnit, pb.width)
     const rightEdge = resolveEdge(t.positionRight, t.positionRightUnit, pb.width)
@@ -89,7 +98,7 @@ export function tryRefineAbsoluteLayoutBoxes(
     })
     refinedAny = true
   }
-  return refinedAny || dirty.length > 0 ? next : null
+  return refinedAny ? next : null
 }
 
 function resolveSize(
@@ -116,4 +125,134 @@ function resolveEdge(
   if (u === YGUnit.PERCENT) return (parentSize * v) / 100
   if (u === YGUnit.POINT) return v
   return null
+}
+
+/**
+ * Repair 0×0 boxes **only** when the transform authors a resolvable size against a
+ * known parent — never invent "fill parent" for AUTO absolute nodes.
+ *
+ * Aggressive fill-parent (previous) stretched NEW badges / rarity tags to the full
+ * 110×110 slot (wrong UV, wrong layering) and even modal-sized absolute children
+ * to the full inventory panel (UI looked tiny/wrong).
+ *
+ * Safe cases only:
+ *  1. Explicit POINT / PERCENT width×height
+ *  2. Opposite edges (left+right / top+bottom) define the box
+ *  3. PERCENT ≥ 90 on an axis under a *slot-sized* parent (icon full-bleed 100%)
+ *
+ * Multi-pass so parent repairs unlock child % sizes (vending icon stacks).
+ */
+export function repairCollapsedLayoutBoxes(
+  boxes: LayoutBox[],
+  transformOf: (e: Entity) => PBUiTransform | null,
+  virtual: VirtualCanvasSize
+): number {
+  if (!boxes.length) return 0
+  const byEntity = new Map<Entity, LayoutBox>()
+  for (const b of boxes) byEntity.set(b.entity, b)
+
+  const parentBox = (parentId: number): LayoutBox | null => {
+    if (parentId === 0 || parentId === (CANVAS_ROOT_ENTITY as number)) {
+      return {
+        entity: CANVAS_ROOT_ENTITY,
+        left: 0,
+        top: 0,
+        relLeft: 0,
+        relTop: 0,
+        width: virtual.width,
+        height: virtual.height
+      }
+    }
+    return byEntity.get(parentId as Entity) ?? null
+  }
+
+  let repaired = 0
+  const ordered = [...boxes].sort((a, b) => (a.entity as number) - (b.entity as number))
+
+  const repairOne = (box: LayoutBox): boolean => {
+    if (box.width > 0.5 && box.height > 0.5) return false
+    const t = transformOf(box.entity)
+    if (!t) return false
+    const parentId = (t.parent ?? CANVAS_ROOT_ENTITY) as number
+    const pb = parentBox(parentId)
+    if (!pb || pb.width < 1 || pb.height < 1) return false
+
+    let w = resolveSize(t.width, t.widthUnit, pb.width)
+    let h = resolveSize(t.height, t.heightUnit, pb.height)
+
+    const leftEdge = resolveEdge(t.positionLeft, t.positionLeftUnit, pb.width)
+    const rightEdge = resolveEdge(t.positionRight, t.positionRightUnit, pb.width)
+    const topEdge = resolveEdge(t.positionTop, t.positionTopUnit, pb.height)
+    const bottomEdge = resolveEdge(t.positionBottom, t.positionBottomUnit, pb.height)
+
+    // Opposite edges define size (authored inset fill).
+    if ((w == null || w <= 0.5) && leftEdge != null && rightEdge != null) {
+      w = Math.max(0, pb.width - leftEdge - rightEdge)
+    }
+    if ((h == null || h <= 0.5) && topEdge != null && bottomEdge != null) {
+      h = Math.max(0, pb.height - topEdge - bottomEdge)
+    }
+
+    // 100%-ish under a slot cell only — never under a modal/panel (that ballooned NEW badges).
+    const parentIsSlotCell =
+      pb.width >= 24 && pb.height >= 24 && pb.width <= 200 && pb.height <= 200
+    const widthUnit = t.widthUnit ?? YGUnit.UNDEFINED
+    const heightUnit = t.heightUnit ?? YGUnit.UNDEFINED
+    if (parentIsSlotCell) {
+      if ((w == null || w <= 0.5) && widthUnit === YGUnit.PERCENT && (t.width ?? 0) >= 90) {
+        w = (pb.width * (t.width ?? 100)) / 100
+      }
+      if ((h == null || h <= 0.5) && heightUnit === YGUnit.PERCENT && (t.height ?? 0) >= 90) {
+        h = (pb.height * (t.height ?? 100)) / 100
+      }
+    }
+
+    // Corner badges / NEW ribbons: single-edge pin + AUTO size — leave for text measure.
+    // Do NOT fill parent.
+    if (w == null || h == null || w <= 0.5 || h <= 0.5) return false
+
+    const isAbs = normalizeYGPositionType(t.positionType) === YGPositionType.ABSOLUTE
+    let relLeft = box.relLeft
+    let relTop = box.relTop
+    if (leftEdge != null) relLeft = leftEdge
+    else if (rightEdge != null) relLeft = pb.width - rightEdge - w
+    else if (isAbs && (widthUnit === YGUnit.PERCENT || (leftEdge == null && rightEdge == null))) {
+      // Keep yoga's rel when present; only zero when still at collapsed origin.
+      if (box.width <= 0.5 && box.height <= 0.5 && Math.abs(box.relLeft) < 0.5) relLeft = 0
+    }
+
+    if (topEdge != null) relTop = topEdge
+    else if (bottomEdge != null) relTop = pb.height - bottomEdge - h
+    else if (isAbs && (heightUnit === YGUnit.PERCENT || (topEdge == null && bottomEdge == null))) {
+      if (box.width <= 0.5 && box.height <= 0.5 && Math.abs(box.relTop) < 0.5) relTop = 0
+    }
+
+    box.relLeft = relLeft
+    box.relTop = relTop
+    box.left = pb.left + relLeft
+    box.top = pb.top + relTop
+    box.width = Math.max(0, w)
+    box.height = Math.max(0, h)
+    byEntity.set(box.entity, box)
+    return true
+  }
+
+  for (let pass = 0; pass < 4; pass++) {
+    let passRepaired = 0
+    for (const box of ordered) {
+      if (repairOne(box)) passRepaired++
+    }
+    repaired += passRepaired
+    if (passRepaired === 0) break
+  }
+  return repaired
+}
+
+/** Count visible boxes that are still collapsed (0×0) — gate for patch-vs-full paint. */
+export function countCollapsedLayoutBoxes(boxes: Iterable<LayoutBox>): number {
+  let n = 0
+  for (const b of boxes) {
+    if (b.width <= 0.5 || b.height <= 0.5) n++
+  }
+  return n
 }

@@ -146,6 +146,24 @@ export function visibleLayoutBoxes(
   return boxes.filter((box) => isUiEntityVisible(box.entity, transformOf))
 }
 
+/**
+ * Visible mounted entities that lack a Yoga box — paint would force-hide their subtrees
+ * ("yoga box unusable … none"). Callers must re-run full layoutUiTree when this is non-empty
+ * (typical: shop open after display:none while last boxes only tracked the HUD chrome).
+ */
+export function missingVisibleLayoutEntities(
+  mounted: ReadonlySet<Entity>,
+  transformOf: (e: Entity) => PBUiTransform | null,
+  boxes: ReadonlyMap<Entity, LayoutBox>
+): Entity[] {
+  const missing: Entity[] = []
+  for (const entity of mounted) {
+    if (!isUiEntityVisible(entity, transformOf)) continue
+    if (!boxes.has(entity)) missing.push(entity)
+  }
+  return missing
+}
+
 export class UiLayoutCache {
   private key = ''
   private boxes: LayoutBox[] | null = null

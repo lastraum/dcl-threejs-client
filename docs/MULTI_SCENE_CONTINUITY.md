@@ -186,18 +186,35 @@ After adopting sticky → primary: invalidate secondary-offset actors, extract u
 
 ## Primary load solids (Genesis Plaza)
 
-Cold plaza load cooks hundreds of multi-shape actors. Known failure mode:
+Cold plaza load cooks hundreds of multi-shape actors. Order (COD):
+
+```text
+loadScene (worker onStart — scene systems)
+waitForSceneAssets (attach GLBs)
+prewarmPhysicsColliders (extract + progressive cook)
+spawnLocalPlayer:
+  waitForColliderGraphSettle (pendingMesh→0)
+  prepare seal (cook missing only — never wipe all actors)
+  integrity drain
+  initCapsule
+  collidersReady = true
+world.start()
+```
 
 | Symptom | Cause |
 |---------|--------|
-| Log shows walls/floors near feet, but walk-through | Zero-dt `scene.simulate(0)` after bulk cook corrupts CCT query state (actors keep bounds, capsule ignores them) |
+| Soft at play with walls in probe | Graph settle early-exit (old: 4s + pending>0) → incomplete cook seal |
+| Soft after "cook complete" wipe | `clearGltfStaticActors` + cache clear then recook partial extract |
+| Bounds solid, CCT walk-through | Zero-dt `simulate(0)` after bulk cook (removed) |
 | Soft after avatar load | Late GLB attaches never cooked before `collidersReady` |
 
 Platform rules:
 
 - **Never** `simulate(0)` / `computeInteractions(0)` to warm statics — only CCT cache invalidate.
-- `ensurePrimaryColliderIntegrity` after prepare seal + after avatar + pre-walk drains missing actors before free locomotion.
-- Log `[phys] integrity … missing=` — if missing stays high, treat as P0 soft load.
+- Graph settle: wait `pendingMesh===0` (soft only at ≥97% attached + 2s stable).
+- prepare: **seal missing only** — do not wipe all GLTF actors / geometry cache.
+- `ensurePrimaryColliderIntegrity` after prepare + avatar + pre-walk before free walk.
+- Log `[phys] integrity` / `prewarm cook` / `collider graph settle` on collision channel.
 
 ## Open follow-ups
 

@@ -2994,13 +2994,7 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
 
     // Phase 2 — play mode engine ticks are main rAF-driven (play-frame-tick); hydration uses interval.
     const intervalDrivesEngineTick = sceneOnUpdatePaused || !playFrameTickMainDriven
-    if (
-      intervalDrivesEngineTick &&
-      !sceneUpdateInFlight &&
-      !sceneUpdatePromiseActive &&
-      !pointerBlocksEngineTick() &&
-      sceneEngineTickDue(now)
-    ) {
+    if (intervalDrivesEngineTick && !pointerBlocksEngineTick() && sceneEngineTickDue(now)) {
       requestSceneEngineTick()
     }
   }
@@ -3218,20 +3212,13 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Still avoid overlapping a mid-batch pointer engine.update.
     // Allow ticks once sceneEngine exists — not only after onStart — so freeze-watch systems
     // can clear InputModifier while onStart awaits movePlayerTo.
-    if (
-      sceneEngine &&
-      !sceneOnUpdatePaused &&
-      !sceneUpdateInFlight &&
-      !sceneUpdatePromiseActive &&
-      !pointerDeliverBatchOpen &&
-      !pendingInjectPointer
-    ) {
+    // Do not gate on sceneUpdateInFlight — pollEvents runs outside eng.update flight now.
+    // Gating left welcome Color4.a / timers starved whenever plaza onUpdate was slow.
+    if (sceneEngine && !sceneOnUpdatePaused && !pointerDeliverBatchOpen && !pendingInjectPointer) {
       // Always request — requestSceneEngineTick rate-limits via resolveDt / tickInFlight.
-      // Dropping when sceneEngineTickDue was false after a long onUpdate left fishing
-      // cast/reel under-ticked (wall clock advanced, MAX_ENGINE_DT cap → slow-mo).
       requestSceneEngineTick()
     } else if (sceneEngine && !sceneOnUpdatePaused) {
-      // Engine tick skipped (pointer hold / onUpdate still running) — still hydrate VC.
+      // Engine tick skipped (pointer hold) — still hydrate VC.
       if (sceneOnStartComplete) {
         publishVcBindHydrateIfNeeded()
         publishVcPoseLiveIfBound()

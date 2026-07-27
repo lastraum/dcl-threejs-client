@@ -47,6 +47,8 @@ import {
  *   1. engine.update(dt) — closure/timers + deferred react-ecs
  *   2. emitSceneUiMountSnapshotIfDirty — structured snapshot when fingerprint changes
  *      (hydration splash + play-mode async UI: QR textures, remote lists — not Ui* CRDT wire)
+ *   3. onUnifiedPlayFrameComplete (pollEvents) — runs AFTER tickInFlight clears so a slow
+ *      plaza onUpdate cannot starve the next eng.update (welcome Color4.a fade / timers).
  *
  * Pointer interactive tick:
  *   sceneUi: DOWN → flush → phase-4 → UP(PlayerEntity, react-ecs off) → non-ui
@@ -503,14 +505,16 @@ async function runCooperativeEngineTickPhases(engineDt: number): Promise<void> {
   if (!didSkipCooperativeReactEcsThisTick()) {
     await emitSceneUiMountSnapshotIfDirty(eng)
   }
-  if (!cfg.isHydration() && cfg.onUnifiedPlayFrameComplete) {
-    await cfg.onUnifiedPlayFrameComplete(dt)
-  }
+  // onUnifiedPlayFrameComplete runs after tickInFlight clears (see requestSceneEngineTick).
 }
+
+/** Applied positive dt for the last completed eng.update leg (poll phase uses same step). */
+let lastCompletedEngineDt = 0
 
 async function executeTickWork(engineDt: number): Promise<void> {
   const cfg = config!
   let abortTimer: ReturnType<typeof setTimeout> | null = null
+  lastCompletedEngineDt = 0
   try {
     await Promise.race([
       runCooperativeEngineTickPhases(engineDt),
@@ -521,6 +525,7 @@ async function executeTickWork(engineDt: number): Promise<void> {
         )
       })
     ])
+    lastCompletedEngineDt = engineDt
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes('engine tick exceeded')) {
@@ -611,36 +616,49 @@ export function requestSceneEngineTick(): void {
   const epoch = tickEpoch
   tickInFlight = true
   tickStartedAt = performance.now()
-  void executeTickWork(dt).finally(() => {
-    // Always clear if we still own this epoch. If preempt bumped epoch, it already
-    // cleared inFlight — never leave a stuck true that starves fishing bob/cast.
-    if (epoch === tickEpoch) {
-      tickInFlight = false
-      tickStartedAt = 0
-    } else if (tickInFlight && tickStartedAt > 0) {
-      // Defensive: preempt path should have cleared; force clear if something only
-      // bumped epoch.
-      tickInFlight = false
-      tickStartedAt = 0
-    }
-    if (tickQueued && config && !config.pointerBlocksTick()) {
-      // Keep tickQueued if interval not due yet — drainQueued / play-frame will fire later.
-      if (sceneEngineTickDue(performance.now())) {
-        tickQueued = false
-        requestSceneEngineTick()
-      } else {
-        // play-frame-tick can be sparse while eng.update is heavy; ensure the queued
-        // tick still runs when the interval elapses (welcome Color4.a fade, timers).
-        const wait = Math.max(
-          1,
-          resolveIntervalMs() - (performance.now() - lastExecutedAt)
-        )
-        setTimeout(() => {
-          if (tickQueued) drainQueuedSceneEngineTick()
-        }, wait)
+  void executeTickWork(dt)
+    .finally(() => {
+      // Always clear if we still own this epoch. If preempt bumped epoch, it already
+      // cleared inFlight — never leave a stuck true that starves fishing bob/cast.
+      // CRITICAL: clear BEFORE onUpdate (poll) so plaza onUpdate cannot hold eng.update
+      // at ~10Hz and stretch Color4.a fade / PE unmount to multi-second wall time.
+      if (epoch === tickEpoch) {
+        tickInFlight = false
+        tickStartedAt = 0
+      } else if (tickInFlight && tickStartedAt > 0) {
+        tickInFlight = false
+        tickStartedAt = 0
       }
-    }
-  })
+      if (tickQueued && config && !config.pointerBlocksTick()) {
+        if (sceneEngineTickDue(performance.now())) {
+          tickQueued = false
+          requestSceneEngineTick()
+        } else {
+          const wait = Math.max(
+            1,
+            resolveIntervalMs() - (performance.now() - lastExecutedAt)
+          )
+          setTimeout(() => {
+            if (tickQueued) drainQueuedSceneEngineTick()
+          }, wait)
+        }
+      }
+    })
+    .then(async () => {
+      if (epoch !== tickEpoch || !config) return
+      if (config.isHydration() || !config.onUnifiedPlayFrameComplete) return
+      const pollDt = lastCompletedEngineDt
+      if (!(pollDt > 0)) return
+      try {
+        await config.onUnifiedPlayFrameComplete(pollDt)
+      } catch (err) {
+        config.log(
+          `[sceneWorker] play frame poll after tick failed — ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+      }
+    })
 }
 
 export function drainQueuedSceneEngineTick(): void {

@@ -157,15 +157,22 @@ export function hasUiBackgroundTexture(bg: PBUiBackground | null | undefined): b
  * react-ecs may omit textureMode (CENTER intent). Protobuf enum default is NINE_SLICES (0).
  *
  * Atlas UV rects (non-full uvs) always win → STRETCH so applyBgImg crops the sheet.
- * Fishing shop icons ship textureMode=0 + default textureSlices + atlas uvs; treating that
- * as nine-slice painted the whole fish atlas into every cell (full-screen chaos).
  *
- * Honor nine-slice when:
- *  - mode string is 'nine_slices' / 'nine-slices', or
- *  - mode is NINE_SLICES (0), no atlas UV crop, and textureSlices is present
- *
- * Bare mode 0 with **no** textureSlices field → STRETCH.
+ * Critical: PB always serializes textureSlices with default 1/3 when mode is 0. Treating
+ * "mode 0 + any slices object" as nine-slice made every fishing wood slot / shop icon use
+ * border-image (blank brown panels + doubled mash). Only honor nine-slice when slices are
+ * **non-default** (authored) or the mode string is explicitly nine_slices.
  */
+function isDefaultThirdSlices(slices: PBUiBackground['textureSlices'] | null | undefined): boolean {
+  if (slices == null || typeof slices !== 'object') return true
+  const t = Number((slices as { top?: number }).top ?? 1 / 3)
+  const r = Number((slices as { right?: number }).right ?? 1 / 3)
+  const b = Number((slices as { bottom?: number }).bottom ?? 1 / 3)
+  const l = Number((slices as { left?: number }).left ?? 1 / 3)
+  const near = (a: number, x: number) => Math.abs(a - x) < 0.02
+  return near(t, 1 / 3) && near(r, 1 / 3) && near(b, 1 / 3) && near(l, 1 / 3)
+}
+
 export function normalizeBackgroundTextureMode(
   mode: number | string | undefined,
   _src: string | null,
@@ -188,8 +195,9 @@ export function normalizeBackgroundTextureMode(
   }
   const numeric = typeof mode === 'number' ? mode : BackgroundTextureMode.CENTER
   if (numeric === BackgroundTextureMode.NINE_SLICES) {
-    // Slices object present (incl. default 1/3) → real nine-slice panel. Missing → stretch.
-    if (textureSlices != null && typeof textureSlices === 'object') {
+    // Protobuf default mode=0 always ships textureSlices={1/3…}. That is NOT authored
+    // nine-slice — stretch the full texture (wood slots, icons, buttons).
+    if (textureSlices != null && typeof textureSlices === 'object' && !isDefaultThirdSlices(textureSlices)) {
       return BackgroundTextureMode.NINE_SLICES
     }
     return BackgroundTextureMode.STRETCH

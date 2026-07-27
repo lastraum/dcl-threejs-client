@@ -7,10 +7,8 @@ import type { PBUiTransform } from '@dcl/ecs/dist/components/generated/pb/decent
 import type { ResolvedScene } from '../../dcl/content/types'
 import {
   normalizePointerFilterMode,
-  normalizeYGPositionType,
   PointerFilterMode,
-  YGOverflow,
-  YGPositionType
+  YGOverflow
 } from './yogaEnums'
 import { isUiEntityVisible } from './uiVisibility'
 import type { UiViewport, VirtualCanvasSize, ScreenUiRect } from './virtualCanvas'
@@ -80,10 +78,21 @@ function pushLayoutHitRegion(
   entity: Entity,
   transform: PBUiTransform,
   layoutBox: LayoutBox,
-  input: Pick<SceneUiDrawInput, 'interactable' | 'viewport'>,
+  input: Pick<SceneUiDrawInput, 'interactable' | 'viewport' | 'virtual'>,
   depth: number
 ): void {
   if (layoutBox.width <= 0.5 || layoutBox.height <= 0.5) return
+  // Skip off-virtual-canvas hit regions (second shop root at x=2146, etc.).
+  const vw = input.virtual?.width ?? 1920
+  const vh = input.virtual?.height ?? 1080
+  if (
+    layoutBox.left >= vw - 1 ||
+    layoutBox.top >= vh - 1 ||
+    layoutBox.left + layoutBox.width <= 1 ||
+    layoutBox.top + layoutBox.height <= 1
+  ) {
+    return
+  }
   const screen = layoutToScreen(
     input.interactable,
     input.viewport,
@@ -492,6 +501,33 @@ export class SceneUiDomRenderer {
     const borders = borderCss(transform, scale)
     const radius = borderRadiusCss(transform, scale)
     const layoutBox = input.layoutBoxes.get(entity)
+    // Completely outside the virtual canvas (e.g. e4857@x=2146 on 1920 design) — hide.
+    // Dual off-canvas shop roots were painting a second full inventory over the plaza.
+    const vw = input.virtual.width
+    const vh = input.virtual.height
+    if (
+      layoutBox &&
+      (layoutBox.left >= vw - 1 ||
+        layoutBox.top >= vh - 1 ||
+        layoutBox.left + layoutBox.width <= 1 ||
+        layoutBox.top + layoutBox.height <= 1)
+    ) {
+      this.applyHiddenDomState(shell)
+      shell.dataset.uiUnusable = '1'
+      const hideOff = (e: Entity): void => {
+        for (const child of input.forest.get(e) ?? []) {
+          visited.add(child)
+          const node = this.nodes.get(child)
+          if (node) {
+            this.applyHiddenDomState(node)
+            node.dataset.uiUnusable = '1'
+          }
+          hideOff(child)
+        }
+      }
+      hideOff(entity)
+      return
+    }
     if (!layoutBox || layoutBox.width <= 0.5 || layoutBox.height <= 0.5) {
       // Collapsed yoga box — hide shell AND entire subtree. Painting children as
       // canvas-absolute orphans scattered fishing shop icons across the 3D view.
@@ -537,18 +573,13 @@ export class SceneUiDomRenderer {
     shell.removeAttribute('inert')
     shell.removeAttribute('aria-hidden')
 
-    // Clip on shell — child UiEntity shells nest under the parent shell (siblings of
-    // .scene-ui-node__content). Default overflow is VISIBLE (0); large absolute shop
-    // panels MUST clip or inventory icons paint over the whole 3D view.
-    const largePanel =
-      layoutBox.width >= 200 &&
-      layoutBox.height >= 200 &&
-      normalizeYGPositionType(transform.positionType) === YGPositionType.ABSOLUTE
+    // Clip nearly all sized shells — fishing absolute children escape overflow:visible
+    // parents and stack every OPEN/EQUIP/wood slot across the modal (and the plaza).
     const clipShell =
       !!radius ||
       transform.overflow === YGOverflow.HIDDEN ||
       transform.overflow === YGOverflow.SCROLL ||
-      largePanel
+      (layoutBox.width >= 24 && layoutBox.height >= 24)
     if (radius) {
       shell.style.borderRadius = radius
       el.style.borderRadius = radius

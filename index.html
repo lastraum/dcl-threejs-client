@@ -7893,6 +7893,21 @@
         border-top-color: rgba(255, 255, 255, 0.82);
         animation: user-profile-modal-spin 0.8s linear infinite;
       }
+      /* Spinner lives in the stage markup — hide it once the stage is out of
+         the loading state, or it keeps spinning over the finished avatar. */
+      .user-profile-modal__avatar-stage:not(.user-profile-modal__avatar-stage--loading)
+        .user-profile-modal__loading-spinner {
+        display: none;
+      }
+      .user-profile-modal__avatar-empty,
+      .profile-page-view__avatar-empty {
+        position: absolute;
+        inset: auto 12px 12px;
+        margin: 0;
+        text-align: center;
+        font-size: 0.78rem;
+        color: rgba(255, 255, 255, 0.5);
+      }
       @keyframes user-profile-modal-spin {
         to {
           transform: rotate(360deg);

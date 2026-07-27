@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { alignPreviewAvatarToGround } from '../../../avatar/avatarPreviewAlign'
-import { AvatarAnimations } from '../../../avatar/AvatarAnimations'
+import { AvatarAnimations, type AvatarLocomotionState } from '../../../avatar/AvatarAnimations'
 import { composeAvatarFromProfile } from '../../../avatar/AvatarComposer'
 import { disposeWearableInstance } from '../../../avatar/loadWearable'
 import type { AvatarProfile } from '../../../avatar/types'
@@ -8,6 +8,19 @@ import type { AvatarProfile } from '../../../avatar/types'
 export type AvatarPreviewOptions = {
   /** Values above 1 move the camera closer (larger subject). Default 1. */
   zoom?: number
+}
+
+/** Standing still on the ground — the only state a profile preview ever plays. */
+const PREVIEW_LOCOMOTION: AvatarLocomotionState = {
+  horizontalSpeed: 0,
+  grounded: true,
+  nearGround: true,
+  verticalVelocity: 0,
+  locomotionMode: 'jog',
+  jumping: false,
+  doubleJumping: false,
+  doubleJumpTriggered: false,
+  falling: false
 }
 
 /** Compact 3D avatar preview for profile modals. */
@@ -26,18 +39,22 @@ export class AvatarPreviewMini {
   private lastFrame = 0
   private disposed = false
   private resizeObserver: ResizeObserver | null = null
+  /** Bumped by every clear()/dispose() so in-flight loads can bail out. */
+  private showToken = 0
 
   constructor(stage: HTMLElement) {
     this.stage = stage
   }
 
+  /** Resolves true once an avatar is on the stage, false if the load failed or was superseded. */
   async showProfile(
     profile: AvatarProfile,
     contentUrl?: string,
     options: AvatarPreviewOptions = {}
-  ): Promise<void> {
-    this.previewOptions = options
+  ): Promise<boolean> {
     this.clear()
+    const token = this.showToken
+    this.previewOptions = options
     this.canvas = document.createElement('canvas')
     this.canvas.className = 'user-profile-modal__avatar-canvas'
     this.stage.appendChild(this.canvas)
@@ -60,30 +77,26 @@ export class AvatarPreviewMini {
     this.pivot = new THREE.Group()
     this.scene.add(this.pivot)
 
+    let avatar: THREE.Group | null = null
     try {
-      this.avatar = await composeAvatarFromProfile(profile, contentUrl)
-      this.subjectSize = alignPreviewAvatarToGround(this.avatar, 'dcl')
-      this.pivot.add(this.avatar)
-      this.animations = new AvatarAnimations()
-      await this.animations.bind(this.avatar, this.pivot, {
-        bodyShape: profile.bodyShape,
-        peerUrl: contentUrl,
-        assetCache: undefined
-      })
-      this.animations.update(0, {
-        horizontalSpeed: 0,
-        grounded: true,
-        nearGround: true,
-        verticalVelocity: 0,
-        locomotionMode: 'jog',
-        jumping: false,
-        doubleJumping: false,
-        doubleJumpTriggered: false,
-        falling: false
-      })
+      avatar = await composeAvatarFromProfile(profile, contentUrl)
     } catch (err) {
       console.warn('[profile] avatar preview failed', err)
     }
+
+    // A second showProfile() (or a close) landed while the wearables loaded —
+    // drop this one instead of stacking a canvas and a render loop on the stage.
+    if (token !== this.showToken) {
+      if (avatar) disposeWearableInstance(avatar)
+      return false
+    }
+    if (!avatar) return false
+
+    this.avatar = avatar
+    this.subjectSize = alignPreviewAvatarToGround(avatar, 'dcl')
+    this.pivot.add(avatar)
+    await this.bindAnimations(avatar, profile, contentUrl, token)
+    if (token !== this.showToken) return false
 
     this.resize()
     this.frameCamera()
@@ -94,9 +107,49 @@ export class AvatarPreviewMini {
     this.resizeObserver.observe(this.stage)
     this.lastFrame = performance.now()
     this.tick()
+    return true
+  }
+
+  /**
+   * Bind idle locomotion, retrying once: bind() throws when the idle clip loses
+   * a load race, and an unbound avatar renders in its T-pose bind pose.
+   */
+  private async bindAnimations(
+    avatar: THREE.Group,
+    profile: AvatarProfile,
+    contentUrl: string | undefined,
+    token: number
+  ): Promise<void> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const animations = new AvatarAnimations()
+      try {
+        await animations.bind(avatar, this.pivot ?? avatar, {
+          bodyShape: profile.bodyShape,
+          peerUrl: contentUrl,
+          assetCache: undefined
+        })
+        if (token !== this.showToken) {
+          animations.dispose()
+          return
+        }
+        this.animations = animations
+        animations.update(0, PREVIEW_LOCOMOTION)
+        return
+      } catch (err) {
+        animations.dispose()
+        if (token !== this.showToken) return
+        if (attempt === 1) {
+          console.warn('[profile] avatar preview idle animation unavailable', err)
+          return
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 200))
+        if (token !== this.showToken) return
+      }
+    }
   }
 
   clear(): void {
+    this.showToken++
     cancelAnimationFrame(this.raf)
     this.raf = 0
     this.resizeObserver?.disconnect()
@@ -134,17 +187,23 @@ export class AvatarPreviewMini {
     this.camera.updateProjectionMatrix()
   }
 
+  /**
+   * Fill the stage: fit the subject's own extents with a small margin, aimed at
+   * its mid-height. Aiming low (0.42) and padding for absent props used to leave
+   * the avatar at ~two thirds of the stage with dead space under the feet.
+   */
   private frameCamera(): void {
     if (!this.camera || !this.subjectSize) return
     const size = this.subjectSize
-    const lookY = size.y * 0.42
+    const lookY = size.y * 0.5
     const fovRad = THREE.MathUtils.degToRad(this.camera.fov)
     const aspect = Math.max(this.camera.aspect, 0.35)
     const zoom = Math.max(0.5, this.previewOptions.zoom ?? 1)
-    const pad = 1.28 / zoom
-    const fitHeight = ((size.y + 0.35) * pad) / (2 * Math.tan(fovRad / 2))
-    const fitWidth = ((size.x + 0.5) * pad) / (2 * Math.tan(fovRad / 2) * aspect)
-    const distance = Math.max(fitHeight, fitWidth, 2.4)
+    // 6% breathing room around the subject; zoom > 1 tightens into a crop.
+    const margin = 1.06 / zoom
+    const fitHeight = (size.y * margin) / (2 * Math.tan(fovRad / 2))
+    const fitWidth = (size.x * margin) / (2 * Math.tan(fovRad / 2) * aspect)
+    const distance = Math.max(fitHeight, fitWidth, 1.2)
     this.camera.position.set(0, lookY, distance)
     this.camera.lookAt(0, lookY, 0)
     this.camera.updateProjectionMatrix()
@@ -156,17 +215,7 @@ export class AvatarPreviewMini {
     const now = performance.now()
     const delta = Math.min((now - this.lastFrame) / 1000, 0.05)
     this.lastFrame = now
-    this.animations?.update(delta, {
-      horizontalSpeed: 0,
-      grounded: true,
-      nearGround: true,
-      verticalVelocity: 0,
-      locomotionMode: 'jog',
-      jumping: false,
-      doubleJumping: false,
-      doubleJumpTriggered: false,
-      falling: false
-    })
+    this.animations?.update(delta, PREVIEW_LOCOMOTION)
     if (this.pivot) this.pivot.rotation.y += delta * 0.35
     if (this.renderer && this.scene && this.camera) {
       this.renderer.render(this.scene, this.camera)

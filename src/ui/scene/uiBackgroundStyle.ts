@@ -405,14 +405,28 @@ function clearBgImg(el: HTMLElement): void {
  * Returns axis-aligned UV rect, or null when full texture / unusable.
  */
 export function parseUiBackgroundUvRect(
-  uvs: number[] | ArrayLike<number> | null | undefined
+  uvs: number[] | ArrayLike<number> | Record<string, number> | null | undefined
 ): { u0: number; v0: number; u1: number; v1: number } | null {
   if (!uvs) return null
-  const len = (uvs as { length: number }).length
+  // Support real arrays, TypedArray, and post-JSON `{0:u0,1:v0,…}` object form.
+  const readAt = (i: number): number => {
+    if (Array.isArray(uvs) || ArrayBuffer.isView(uvs)) {
+      return Number((uvs as ArrayLike<number>)[i])
+    }
+    return Number((uvs as Record<string, number>)[String(i)])
+  }
+  let len = (uvs as { length?: number }).length
+  if (len == null || !Number.isFinite(len)) {
+    // Object-form: count contiguous numeric keys from 0.
+    let n = 0
+    const o = uvs as Record<string, unknown>
+    while (Object.prototype.hasOwnProperty.call(o, String(n))) n++
+    len = n
+  }
   if (len < 8) return null
   const nums: number[] = []
   for (let i = 0; i < 8; i++) {
-    const n = Number((uvs as ArrayLike<number>)[i])
+    const n = readAt(i)
     if (!Number.isFinite(n)) return null
     nums.push(n)
   }
@@ -529,12 +543,12 @@ function applyAtlasUvAsImgStrip(
 function isUvFillOrScrollStrip(u0: number, v0: number, u1: number, v1: number): boolean {
   const uSpan = u1 - u0
   const vSpan = v1 - v0
-  // Fishing bars: u covers ~full texture width, v is a moving/growing window.
-  if (u0 <= 0.02 && u1 >= 0.98) return true
-  if (v0 <= 0.02 && v1 >= 0.98) return true
-  // Large span in one axis (fill/zone), small in the other
-  if (uSpan >= 0.85 && vSpan < 0.95) return true
-  if (vSpan >= 0.85 && uSpan < 0.95) return true
+  // Atlas cells (tutoE/tutoF, rarity tags) are small in **both** axes — never strip.
+  if (uSpan < 0.55 && vSpan < 0.55) return false
+  // Fishing reeling bars: u covers ~full texture width, v is a moving/growing window.
+  // Require a meaningful partial window on the other axis so full-bleed icons stay cropped.
+  if (uSpan >= 0.85 && vSpan > 0.02 && vSpan < 0.95) return true
+  if (vSpan >= 0.85 && uSpan > 0.02 && uSpan < 0.95) return true
   return false
 }
 
@@ -786,7 +800,12 @@ export function applyUiBackgroundStyles(
     : -1
   // Skip full style thrash when paint re-visits stable PE HUD panels every tick.
   // Clearing borderImage / swapping solid→texture every frame is the PX UI flash.
-  const uvsKey = bg?.uvs?.length ? bg.uvs.map((n) => Number(n).toFixed(4)).join(',') : ''
+  // uvs may be number[] or post-JSON `{0:…}` — never rely on .length alone.
+  let uvsKey = ''
+  const rectForSig = parseUiBackgroundUvRect(bg?.uvs as ArrayLike<number> | null | undefined)
+  if (rectForSig) {
+    uvsKey = `${rectForSig.u0.toFixed(4)},${rectForSig.v0.toFixed(4)},${rectForSig.u1.toFixed(4)},${rectForSig.v1.toFixed(4)}`
+  }
   const sig = `${imageUrl ?? ''}|${mode}|${tint}|${uvsKey}`
   if (el.dataset.dclUiBgSig === sig) return
   el.dataset.dclUiBgSig = sig

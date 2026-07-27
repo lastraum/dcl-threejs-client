@@ -68,9 +68,9 @@ export function leaveCooperativeSchedulerTick(): void {
  * connect (NPC flood + character UI) → engine-tick recovery / ~1fps.
  *
  * 100ms made fishing reeling / cast UI feel ~10× slow (zone+marker only paint on
- * react-ecs frames). 32ms ≈ 30Hz is enough for fluid HUD without saturating Genesis.
+ * react-ecs frames). Prefer ~60Hz; large mount counts still cost but fishing is ~100 nodes.
  */
-const COOPERATIVE_REACT_ECS_MIN_MS = 32
+const COOPERATIVE_REACT_ECS_MIN_MS = 16
 let lastCooperativeReactEcsAt = 0
 /** True when the current cooperative eng.update skipped react-ecs (throttle). */
 let cooperativeReactEcsSkippedThisTick = false
@@ -315,7 +315,30 @@ export function computeWorkerUiFingerprint(engine: IEngine): string {
       `:pad${tr.padding?.top ?? ''},${tr.padding?.right ?? ''},${tr.padding?.bottom ?? ''},${tr.padding?.left ?? ''}`
     const bg = UiBackground.getOrNull(entity)
     if (bg) {
-      line += `:bg${colorKey(bg.color)}:${extractUiTextureSrc(bg.texture) ?? ''}`
+      // Include atlas UVs — without them tutoE/tutoF crop never invalidates the fingerprint
+      // and main keeps painting the full sheet (misrendered “celebrate” banner).
+      let uvKey = ''
+      const uvs = (bg as { uvs?: ArrayLike<number> | number[] }).uvs
+      if (uvs) {
+        const n = (uvs as { length?: number }).length ?? 0
+        const count = n > 0 ? Math.min(8, n) : 0
+        if (count >= 8) {
+          const parts: string[] = []
+          for (let i = 0; i < count; i++) parts.push(Number((uvs as ArrayLike<number>)[i]).toFixed(4))
+          uvKey = parts.join(',')
+        } else if (typeof uvs === 'object' && !Array.isArray(uvs) && !ArrayBuffer.isView(uvs)) {
+          // Object-form after bad plain convert `{0:u0,1:v0,…}`.
+          const parts: string[] = []
+          const o = uvs as unknown as Record<string, number>
+          for (let i = 0; i < 8; i++) {
+            const v = Number(o[String(i)])
+            if (!Number.isFinite(v)) break
+            parts.push(v.toFixed(4))
+          }
+          if (parts.length >= 8) uvKey = parts.join(',')
+        }
+      }
+      line += `:bg${colorKey(bg.color)}:${extractUiTextureSrc(bg.texture) ?? ''}:uv${uvKey}`
     }
     const text = UiText.getOrNull(entity)
     if (text) {

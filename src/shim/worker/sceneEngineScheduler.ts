@@ -612,9 +612,17 @@ export function requestSceneEngineTick(): void {
   tickInFlight = true
   tickStartedAt = performance.now()
   void executeTickWork(dt).finally(() => {
-    if (epoch !== tickEpoch) return
-    tickInFlight = false
-    tickStartedAt = 0
+    // Always clear if we still own this epoch. If preempt bumped epoch, it already
+    // cleared inFlight — never leave a stuck true that starves fishing bob/cast.
+    if (epoch === tickEpoch) {
+      tickInFlight = false
+      tickStartedAt = 0
+    } else if (tickInFlight && tickStartedAt > 0) {
+      // Defensive: preempt path should have cleared; force clear if something only
+      // bumped epoch.
+      tickInFlight = false
+      tickStartedAt = 0
+    }
     if (tickQueued && config && !config.pointerBlocksTick()) {
       // Keep tickQueued if interval not due yet — drainQueued / play-frame will fire later.
       if (sceneEngineTickDue(performance.now())) {

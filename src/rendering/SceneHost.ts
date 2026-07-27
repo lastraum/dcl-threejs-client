@@ -150,19 +150,32 @@ export class SceneHost {
       this.setViewportSize(this.viewportElement.clientWidth, this.viewportElement.clientHeight)
       return
     }
-    // Prefer #app client box (fills 100dvh) over window — avoids black/navy strip when
-    // window.innerHeight ≠ layout height (mobile chrome / dock / address bar).
+    // Prefer #app, but force it to match the visible viewport first — a short #app
+    // (stale CSS / safe-area) left a solid black/navy strip under the WebGL HUD.
     const app = document.getElementById('app')
-    if (app && app.clientWidth > 0 && app.clientHeight > 0) {
-      this.setViewportSize(app.clientWidth, app.clientHeight)
-      return
-    }
     const vv = window.visualViewport
-    if (vv && vv.width > 0 && vv.height > 0) {
-      this.setViewportSize(Math.round(vv.width), Math.round(vv.height))
+    const targetW = Math.max(
+      1,
+      Math.round(vv?.width ?? 0) || document.documentElement.clientWidth || window.innerWidth
+    )
+    const targetH = Math.max(
+      1,
+      Math.round(vv?.height ?? 0) || document.documentElement.clientHeight || window.innerHeight
+    )
+    if (app) {
+      // Keep CSS box in sync with the viewport we render into (no letterbox under #app).
+      if (Math.abs(app.clientWidth - targetW) > 1 || Math.abs(app.clientHeight - targetH) > 1) {
+        app.style.width = `${targetW}px`
+        app.style.height = `${targetH}px`
+        app.style.maxHeight = `${targetH}px`
+        app.style.minHeight = `${targetH}px`
+      }
+      const w = app.clientWidth > 0 ? app.clientWidth : targetW
+      const h = app.clientHeight > 0 ? app.clientHeight : targetH
+      this.setViewportSize(w, h)
       return
     }
-    this.setViewportSize(window.innerWidth, window.innerHeight)
+    this.setViewportSize(targetW, targetH)
   }
 
   focusSpawn(sceneConfig: ResolvedScene): void {

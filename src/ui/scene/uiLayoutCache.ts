@@ -87,12 +87,22 @@ export function entityUiVisualPaintKey(
     if (bg.texture) b += ':tex'
     if (bg.textureMode != null) b += `:tm${bg.textureMode}`
     // Atlas sprite rect + animated fill/zone UVs (fishing reeling bars update every tick).
-    if (bg.uvs != null && (bg.uvs as { length?: number }).length) {
-      const u = bg.uvs as ArrayLike<number>
-      const n = Math.min(8, u.length)
-      const parts: string[] = []
-      for (let i = 0; i < n; i++) parts.push(Number(u[i]).toFixed(4))
-      b += `:uv${parts.join(',')}`
+    // Support number[], TypedArray, and post-JSON `{0:u0,…}` object form (no .length).
+    if (bg.uvs != null) {
+      const u = bg.uvs as ArrayLike<number> | Record<string, number>
+      let n = (u as { length?: number }).length ?? 0
+      if (!n && typeof u === 'object' && !Array.isArray(u) && !ArrayBuffer.isView(u)) {
+        while (Object.prototype.hasOwnProperty.call(u, String(n))) n++
+      }
+      if (n >= 8) {
+        const parts: string[] = []
+        const at = (i: number) =>
+          Array.isArray(u) || ArrayBuffer.isView(u)
+            ? Number((u as ArrayLike<number>)[i])
+            : Number((u as Record<string, number>)[String(i)])
+        for (let i = 0; i < 8; i++) parts.push(at(i).toFixed(4))
+        b += `:uv${parts.join(',')}`
+      }
     }
   }
   return `${entity}|d${d}|o${o}|z${z}|pf${pf}|${t}|${b}|pe${pointerKey}`

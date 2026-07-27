@@ -164,10 +164,71 @@ function reinstateColor4Fields(original: unknown, plain: unknown): unknown {
   return plain
 }
 
+/**
+ * JSON.stringify turns Float32Array / TypedArray into `{0:x,1:y,…}` with **no** `.length`.
+ * UiBackground.uvs from react-ecs is often a TypedArray — after plain conversion the crop
+ * is lost and main paints the full atlas sheet (fishing “Press E to celebrate” ghost banner).
+ */
+function arrayLikeToNumberArray(value: unknown): number[] | null {
+  if (value == null) return null
+  if (Array.isArray(value)) {
+    const out: number[] = []
+    for (const item of value) {
+      const n = Number(item)
+      if (!Number.isFinite(n)) return null
+      out.push(n)
+    }
+    return out
+  }
+  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+    const view = value as unknown as ArrayLike<number>
+    const out: number[] = []
+    for (let i = 0; i < view.length; i++) {
+      const n = Number(view[i])
+      if (!Number.isFinite(n)) return null
+      out.push(n)
+    }
+    return out
+  }
+  // Post-JSON object form `{0:u0,1:v0,…}` (no length).
+  if (typeof value === 'object') {
+    const o = value as Record<string, unknown>
+    const keys = Object.keys(o)
+    if (!keys.length) return null
+    if (!keys.every((k) => /^\d+$/.test(k))) return null
+    const n = keys.length
+    const out: number[] = new Array(n)
+    for (let i = 0; i < n; i++) {
+      const v = Number(o[String(i)])
+      if (!Number.isFinite(v)) return null
+      out[i] = v
+    }
+    return out
+  }
+  return null
+}
+
+function reinstateArrayFields(original: unknown, plain: unknown): unknown {
+  if (!plain || typeof plain !== 'object' || !original || typeof original !== 'object') {
+    return plain
+  }
+  const o = original as Record<string, unknown>
+  const p = plain as Record<string, unknown>
+  // UiBackground.uvs (and any other numeric array field we must keep as a real array).
+  if ('uvs' in o) {
+    const uvs = arrayLikeToNumberArray(o.uvs) ?? arrayLikeToNumberArray(p.uvs)
+    if (uvs && uvs.length >= 8) p.uvs = uvs
+    else if (p.uvs != null && !Array.isArray(p.uvs)) delete p.uvs
+  }
+  return p
+}
+
 function toPlainComponentValue(value: unknown): unknown {
   if (value == null || typeof value !== 'object') return value
   // Capture color.a (incl. 0) before omit-zero serialization.
   let colorSnapshot: { r: number; g: number; b: number; a: number } | undefined
+  // Capture uvs before JSON destroys TypedArray → object-without-length.
+  let uvsSnapshot: number[] | null = null
   try {
     const c = (value as { color?: { r?: number; g?: number; b?: number; a?: number } }).color
     if (c && typeof c === 'object') {
@@ -183,8 +244,14 @@ function toPlainComponentValue(value: unknown): unknown {
     colorSnapshot = undefined
   }
   try {
+    uvsSnapshot = arrayLikeToNumberArray((value as { uvs?: unknown }).uvs)
+  } catch {
+    uvsSnapshot = null
+  }
+  try {
     const plain = JSON.parse(JSON.stringify(value)) as unknown
-    const withColor = reinstateColor4Fields(value, plain)
+    let withColor = reinstateColor4Fields(value, plain)
+    withColor = reinstateArrayFields(value, withColor)
     if (
       colorSnapshot &&
       withColor &&
@@ -200,6 +267,9 @@ function toPlainComponentValue(value: unknown): unknown {
     } else if (colorSnapshot && withColor && typeof withColor === 'object') {
       ;(withColor as { color: typeof colorSnapshot }).color = colorSnapshot
     }
+    if (uvsSnapshot && uvsSnapshot.length >= 8 && withColor && typeof withColor === 'object') {
+      ;(withColor as { uvs: number[] }).uvs = uvsSnapshot
+    }
     return withColor
   } catch {
     /* fall through */
@@ -207,7 +277,12 @@ function toPlainComponentValue(value: unknown): unknown {
   try {
     if (typeof structuredClone === 'function') {
       const cloned = structuredClone(value)
-      return reinstateColor4Fields(value, cloned)
+      let out = reinstateColor4Fields(value, cloned)
+      out = reinstateArrayFields(value, out)
+      if (uvsSnapshot && uvsSnapshot.length >= 8 && out && typeof out === 'object') {
+        ;(out as { uvs: number[] }).uvs = uvsSnapshot
+      }
+      return out
     }
   } catch {
     /* fall through */

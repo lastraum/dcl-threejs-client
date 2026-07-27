@@ -483,7 +483,7 @@ export class RemoteAvatarManager {
 
   /**
    * Peers joined before local feet were ready (World rebuild / follow /goto): show
-   * provisional pills so remotes are not invisible until the first RFC4 transform.
+   * provisional neon BaseMale shells so remotes are not invisible until the first RFC4 transform.
    */
   backfillProvisionalPeers(): void {
     const provisional = this.provisionalPositionProvider?.()
@@ -1137,7 +1137,7 @@ export class RemoteAvatarManager {
       }
     } else if (!record.hasPosition) {
       // Join without pose (common right after island LiveKit connect): show a
-      // provisional pill near the local player so remotes are not "invisible".
+      // provisional neon BaseMale near the local player so remotes are not "invisible".
       // Do NOT compose yet — provisional is colocated with local, which would pass
       // the ≤20 m gate (or force-park at camera) and permanently load far peers.
       // First real RFC4 transform in updatePeerTransform starts the queue.
@@ -1784,7 +1784,7 @@ export class RemoteAvatarManager {
     if (this.peerReloadSeq.get(key) !== seq) return
   }
 
-  private ensureNameTag(record: RemotePeerRecord, loading: boolean): void {
+  private ensureNameTag(record: RemotePeerRecord): void {
     if (!areSceneNameTagsVisible()) {
       record.nameTag?.dispose()
       record.nameTag = null
@@ -1804,7 +1804,8 @@ export class RemoteAvatarManager {
         claimed: record.identity.hasClaimedName
       })
     }
-    record.nameTag.setLoading(loading)
+    // Never show the loading spinner — name tags only appear once the body is ready.
+    record.nameTag.setLoading(false)
     record.nameTag.object.visible = !record.modifierHidden && areSceneNameTagsVisible()
   }
 
@@ -1816,35 +1817,46 @@ export class RemoteAvatarManager {
         record.nameTag = null
         continue
       }
-      const loading = !!record.placeholder && !record.model
-      this.ensureNameTag(record, loading)
+      // Name tags only after a real body is mounted (never on neon loading shell).
+      if (!record.model) {
+        record.nameTag?.dispose()
+        record.nameTag = null
+        continue
+      }
+      this.ensureNameTag(record)
     }
   }
 
   private attachLoadingPresentation(record: RemotePeerRecord): void {
     if (!record.placeholder) {
-      record.placeholder = createRemoteAvatarPlaceholder(true)
+      record.placeholder = createRemoteAvatarPlaceholder()
       record.pivot.add(record.placeholder)
     }
-    this.ensureNameTag(record, true)
+    // No name tag / spinner until the full avatar mesh is ready.
+    if (record.nameTag) {
+      record.nameTag.dispose()
+      record.nameTag = null
+    }
     updateNameTagAnchor(record.nameTagAnchor, record.placeholder)
   }
 
   private finalizeNameTag(record: RemotePeerRecord): void {
-    if (record.model) {
-      record.headBone = findHeadBone(record.model)
+    if (!record.model) {
+      // Compose failed or still shell-only — keep neon mannequin, no overhead label.
+      record.nameTag?.dispose()
+      record.nameTag = null
+      return
     }
-    this.ensureNameTag(record, false)
-    if (record.model || record.placeholder) {
-      updateNameTagAnchor(
-        record.nameTagAnchor,
-        record.model ?? record.placeholder,
-        1.72,
-        undefined,
-        record.headBone
-      )
-      record.nameTagLastAnchorAt = performance.now()
-    }
+    record.headBone = findHeadBone(record.model)
+    this.ensureNameTag(record)
+    updateNameTagAnchor(
+      record.nameTagAnchor,
+      record.model,
+      1.72,
+      undefined,
+      record.headBone
+    )
+    record.nameTagLastAnchorAt = performance.now()
   }
 
   private clearLoadingPresentation(record: RemotePeerRecord): void {

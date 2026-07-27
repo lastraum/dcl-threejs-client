@@ -304,8 +304,9 @@ export class PhysXWorld {
   /** Permanent scene-query flags for sweeps (same GC rule as cctQueryFlags). */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private sceneQueryFlags: any = null
-  /** True after we observed SQ healthy at seal then dead at play — one-shot heal. */
-  private postSealSqHealDone = false
+  /** Last post-seal SQ heal (rebuild) time — throttle, not once-forever. */
+  private lastPostSealSqHealMs = 0
+  private static readonly POST_SEAL_SQ_HEAL_COOLDOWN_MS = 12_000
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private controllerManager: any = null
@@ -714,13 +715,17 @@ export class PhysXWorld {
 
   private setupControllerManager(): void {
     this.controllerManager = PHYSX.PxTopLevelFunctions.prototype.CreateControllerManager(this.scene)
-    // Keep filter data alive — C++ stores a raw pointer only (GC free → soft world).
-    // MUST be non-zero bilateral: (player.group & shape.mask) && (shape.group & player.mask).
-    // word0=word1=0 rejects every CCT hit → walk-through while sphere sweeps still hit ground.
-    // SOLID_FILTER_OPEN on mask + solid shape groups; eTRIGGER_SHAPE still ignored by CCT.
-    this.cctFilterData = new PHYSX.PxFilterData(Layers.player.group, SOLID_FILTER_OPEN, 0, 0)
-    this.controllerFilters = new PHYSX.PxControllerFilters(this.cctFilterData)
-    this.controllerFilters.mFilterData = this.cctFilterData
+    // Collide with ALL static/dynamic shapes. PhysX: null mFilterData = no bilateral filter.
+    // Bilateral word filters kept failing CCT (sides=no) while sphere sweeps still hit.
+    // eTRIGGER_SHAPE is still ignored by the controller for blocking.
+    this.cctFilterData = null
+    this.controllerFilters = new PHYSX.PxControllerFilters()
+    // Explicit null — never leave a dangling filter pointer that rejects all solids.
+    try {
+      this.controllerFilters.mFilterData = null
+    } catch {
+      /* some bindings omit null setter */
+    }
     // No ePREFILTER — custom preFilter was a soft-world footgun.
     this.cctQueryFlags = new PHYSX.PxQueryFlags(
       PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC
@@ -799,12 +804,14 @@ export class PhysXWorld {
     this._v1.set(position.x, position.y + SPAWN_FEET_CLEARANCE_M, position.z)
     this.controller.setFootPosition(this._v1.toPxExtVec3())
     this.syncPlayerTransform()
-    // Re-pin after controller create — seal may have finished before capsule existed.
-    if (this.controllerFilters && this.cctFilterData) {
-      this.cctFilterData.word0 = Layers.player.group
-      this.cctFilterData.word1 = SOLID_FILTER_OPEN
-      this.controllerFilters.mFilterData = this.cctFilterData
-      if (this.cctQueryFlags) this.controllerFilters.mFilterFlags = this.cctQueryFlags
+    // Keep flags pinned; mFilterData stays null (collide-all) — do not re-assign bilateral words.
+    if (this.controllerFilters && this.cctQueryFlags) {
+      this.controllerFilters.mFilterFlags = this.cctQueryFlags
+      try {
+        this.controllerFilters.mFilterData = null
+      } catch {
+        /* omit */
+      }
     }
     this.invalidateControllerCache()
   }
@@ -1931,25 +1938,22 @@ export class PhysXWorld {
         ? `hit d=${d0.distance?.toFixed(2)} ny=${d0.normalY?.toFixed(2)}`
         : 'MISS'
 
-      // Only rebuild if SQ still dead — thrashing rebuild softs plaza later.
-      if (!d0.didHit) {
-        try {
-          this.scene.forceDynamicTreeRebuild(true, false)
-          rebuilt = true
-          if (typeof this.scene.flushQueryUpdates === 'function') {
-            this.scene.flushQueryUpdates()
-          }
-        } catch (err) {
-          console.warn('[PhysXWorld] seal forceDynamicTreeRebuild failed:', err)
+      // Always one static rebuild at seal — plaza SQ dies mid-play without a committed tree
+      // even when the pre-rebuild probe already hits. Never thrash after this (see heal cooldown).
+      try {
+        this.scene.forceDynamicTreeRebuild(true, false)
+        rebuilt = true
+        if (typeof this.scene.flushQueryUpdates === 'function') {
+          this.scene.flushQueryUpdates()
         }
-        this.invalidateControllerCache()
-        const d1 = this.diagnoseSceneQueryAt(px, py, pz, 'seal-after-rebuild')
-        probeAfter = d1.didHit
-          ? `hit d=${d1.distance?.toFixed(2)} ny=${d1.normalY?.toFixed(2)}`
-          : 'MISS'
-      } else {
-        probeAfter = probeBefore
+      } catch (err) {
+        console.warn('[PhysXWorld] seal forceDynamicTreeRebuild failed:', err)
       }
+      this.invalidateControllerCache()
+      const d1 = this.diagnoseSceneQueryAt(px, py, pz, 'seal-after-rebuild')
+      probeAfter = d1.didHit
+        ? `hit d=${d1.distance?.toFixed(2)} ny=${d1.normalY?.toFixed(2)}`
+        : 'MISS'
     }
 
     // Freeze thrash forever after the one commit.
@@ -1990,20 +1994,22 @@ export class PhysXWorld {
   }
 
   /**
-   * One-shot heal when SQ was healthy at seal then went dead at play.
-   * 1) re-pin CCT filters  2) re-add orphans  3) flush  4) one tree rebuild if still MISS.
-   * COD: at most once per boot — never thrash from health every 8s.
+   * Heal when SQ dies after play (healthy at seal). Throttled rebuild — not every health tick.
+   * COD: rare emergency commit, not thrash.
    */
   tryHealPostSealSceneQuery(x: number, y: number, z: number): boolean {
-    if (!this.staticSqSealed || this.postSealSqHealDone || !this.scene) return false
-    this.postSealSqHealDone = true
+    if (!this.staticSqSealed || !this.scene) return false
+    const now = performance.now()
+    if (now - this.lastPostSealSqHealMs < PhysXWorld.POST_SEAL_SQ_HEAL_COOLDOWN_MS) return false
+    this.lastPostSealSqHealMs = now
 
-    // Re-pin CCT filter (zero-word regression left capsule ignoring all solids).
-    if (this.controllerFilters && this.cctFilterData) {
-      this.cctFilterData.word0 = Layers.player.group
-      this.cctFilterData.word1 = SOLID_FILTER_OPEN
-      this.controllerFilters.mFilterData = this.cctFilterData
-      if (this.cctQueryFlags) this.controllerFilters.mFilterFlags = this.cctQueryFlags
+    if (this.controllerFilters && this.cctQueryFlags) {
+      this.controllerFilters.mFilterFlags = this.cctQueryFlags
+      try {
+        this.controllerFilters.mFilterData = null
+      } catch {
+        /* omit */
+      }
     }
 
     let readded = 0
@@ -2017,8 +2023,19 @@ export class PhysXWorld {
       }
     }
     this.ensureInfiniteGroundPlane()
-    // Re-stamp solid filters on every shape (late AOI may have written narrow masks).
-    const filters = this.reapplySolidShapeFilters()
+    try {
+      if (typeof this.scene.flushQueryUpdates === 'function') {
+        this.scene.flushQueryUpdates()
+      }
+    } catch {
+      /* optional */
+    }
+    // Rebuild is the only thing that restored didHit=true after mid-play SQ death.
+    try {
+      this.scene.forceDynamicTreeRebuild(true, false)
+    } catch (err) {
+      console.warn('[PhysXWorld] post-seal heal rebuild failed', err)
+    }
     try {
       if (typeof this.scene.flushQueryUpdates === 'function') {
         this.scene.flushQueryUpdates()
@@ -2027,24 +2044,41 @@ export class PhysXWorld {
       /* optional */
     }
     this.invalidateControllerCache()
-    let d = this.diagnoseSceneQueryAt(x, y, z, 'post-seal-heal')
-    if (!d.didHit) {
-      try {
-        this.scene.forceDynamicTreeRebuild(true, false)
-        if (typeof this.scene.flushQueryUpdates === 'function') {
-          this.scene.flushQueryUpdates()
-        }
-      } catch (err) {
-        console.warn('[PhysXWorld] post-seal heal rebuild failed', err)
-      }
-      this.invalidateControllerCache()
-      d = this.diagnoseSceneQueryAt(x, y, z, 'post-seal-heal-rebuild')
-    }
+    const d = this.diagnoseSceneQueryAt(x, y, z, 'post-seal-heal')
     console.warn(
-      `[PhysXWorld] post-seal SQ heal — readded=${readded} filters=${filters} didHit=${d.didHit} ` +
-        `(CCT filter re-pinned; one rebuild only if still MISS)`
+      `[PhysXWorld] post-seal SQ heal — readded=${readded} didHit=${d.didHit} rebuild=once cooldown=${PhysXWorld.POST_SEAL_SQ_HEAL_COOLDOWN_MS}ms`
     )
     return d.didHit
+  }
+
+  /**
+   * Call once after capsule spawn: commit static SQ so CCT and sweeps share a live tree.
+   * Plaza: seal probe can be healthy then die after integrity/AOI — commit again post-capsule.
+   */
+  commitStaticSceneQueryAfterCapsule(): void {
+    if (!this.scene || !this.staticSqSealed) return
+    try {
+      this.scene.forceDynamicTreeRebuild(true, false)
+    } catch (err) {
+      console.warn('[PhysXWorld] post-capsule SQ rebuild failed', err)
+    }
+    try {
+      if (typeof this.scene.flushQueryUpdates === 'function') {
+        this.scene.flushQueryUpdates()
+      }
+    } catch {
+      /* optional */
+    }
+    if (this.controllerFilters && this.cctQueryFlags) {
+      this.controllerFilters.mFilterFlags = this.cctQueryFlags
+      try {
+        this.controllerFilters.mFilterData = null
+      } catch {
+        /* omit */
+      }
+    }
+    this.invalidateControllerCache()
+    console.warn('[PhysXWorld] post-capsule SQ commit — rebuild=once filter=null (collide-all CCT)')
   }
 
   /**
@@ -2297,10 +2331,9 @@ export class PhysXWorld {
 
     // Always re-assert y=0 floor before any move (scene cook churn must not strand the avatar).
     this.ensureInfiniteGroundPlane()
-    // Re-pin filter data + flags each move — WASM may clear pointers; GC must never free them.
-    if (this.controllerFilters) {
-      if (this.cctFilterData) this.controllerFilters.mFilterData = this.cctFilterData
-      if (this.cctQueryFlags) this.controllerFilters.mFilterFlags = this.cctQueryFlags
+    // Re-pin flags each move; keep mFilterData null (collide-all). Never re-apply bilateral words.
+    if (this.controllerFilters && this.cctQueryFlags) {
+      this.controllerFilters.mFilterFlags = this.cctQueryFlags
     }
 
     this.pendingCctGroundEntity = null

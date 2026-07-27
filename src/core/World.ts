@@ -1279,8 +1279,8 @@ export class World {
     this.sceneScript.flushSceneGraphMatrices()
     this.sceneScript.refreshAllInstancedTransforms()
     this.pushAllColliderPosesToPhysX()
-    // Register any never-cooked attaches that landed during avatar load.
-    await this.ensurePrimaryColliderIntegrity('post-avatar', 48)
+    // After seal: only cook truly missing actors (never force-recook — kills plaza SQ).
+    await this.ensurePrimaryColliderIntegrity('post-avatar', 48, { postSeal: true })
     this.physics.warmStaticScene()
     await this.player.initCapsule(
       scene.spawn,
@@ -1289,8 +1289,10 @@ export class World {
       onProgress,
       provenFeet
     )
-    // Final integrity after capsule teleport/settle (pose slides must stay solid).
-    await this.ensurePrimaryColliderIntegrity('pre-walk', 24)
+    // Commit SQ after capsule exists so CCT and sweeps share a live tree.
+    this.physics.commitStaticSceneQueryAfterCapsule()
+    // Missing-only integrity — no geom force-recook thrash.
+    await this.ensurePrimaryColliderIntegrity('pre-walk', 24, { postSeal: true })
     this.physics.warmStaticScene()
     // Platform gate open — solids prepared before free walk.
     this.collidersReady = true
@@ -2418,12 +2420,15 @@ export class World {
    */
   private async ensurePrimaryColliderIntegrity(
     label: string,
-    maxPasses: number
+    maxPasses: number,
+    options?: { postSeal?: boolean }
   ): Promise<{ missing: number; registered: number; extracted: number }> {
+    const postSeal = options?.postSeal === true || this.spawnColliderSealComplete
     this.sceneScript.flushSceneGraphMatrices()
     this.sceneScript.refreshAllInstancedTransforms()
     this.discoverMissingColliderActors()
-    // Boot seal only: re-cook geom-mismatched actors (scale settle). Pose mismatch = slide.
+    // Pre-seal: re-cook geom-mismatched actors (scale settle).
+    // Post-seal: missing actors only — force-recook replaceStatic thrash softs plaza SQ.
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
@@ -2431,13 +2436,14 @@ export class World {
         this.colliderCookQueue.add(desc.entity)
         continue
       }
-      if (!this.physics.geomFingerprintMatches(desc)) {
+      if (!postSeal && !this.physics.geomFingerprintMatches(desc)) {
         this.colliderCookQueue.add(desc.entity)
       }
     }
     let guard = 0
+    const drainMode = postSeal ? 'play' : 'boot'
     while (this.colliderCookQueue.size > 0 && guard < maxPasses) {
-      await this.drainColliderCookQueue({ mode: 'boot' })
+      await this.drainColliderCookQueue({ mode: drainMode })
       guard++
     }
     this.pushAllColliderPosesToPhysX()
